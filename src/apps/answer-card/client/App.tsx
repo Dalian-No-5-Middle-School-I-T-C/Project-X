@@ -22,9 +22,9 @@ import type {
   SubjectiveKind,
   SubjectiveQuestion,
   SubjectiveStyle
-} from "../shared/types";
-import { buildLayout } from "../shared/layout";
-import { createBlockId } from "../shared/defaultCard";
+} from "../../../shared/types";
+import { buildLayout } from "../../../shared/layout";
+import { createBlockId } from "../../../shared/defaultCard";
 
 const modeLabels: Record<ObjectiveMode, string> = {
   single: "单选",

@@ -2,14 +2,14 @@ import { createReadStream, existsSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomInt } from "node:crypto";
-import type { AnswerCard, CardSummary, LayoutDocument } from "../shared/types";
-import { createDefaultCard } from "../shared/defaultCard";
-import { buildLayout } from "../shared/layout";
+import type { AnswerCard, CardSummary, LayoutDocument } from "../../../shared/types";
+import { createDefaultCard } from "../../../shared/defaultCard";
+import { buildLayout } from "../../../shared/layout";
 
 export const rootDir = process.cwd();
 export const dataDir = process.env.ANSWER_CARD_DATA_DIR
   ? path.resolve(process.env.ANSWER_CARD_DATA_DIR)
-  : path.join(rootDir, "data");
+  : path.join(rootDir, "data", "answer-card");
 export const cardsDir = path.join(dataDir, "cards");
 export const assetsDir = path.join(dataDir, "assets");
 export const layoutsDir = path.join(dataDir, "layouts");

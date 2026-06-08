@@ -7,7 +7,7 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "concurrently \"tsx watch src/server/index.ts\" \"vite --host 127.0.0.1\"",
+    "dev": "concurrently \"tsx watch src/apps/answer-card/server/index.ts\" \"vite --host 127.0.0.1\"",
     "build": "npm run typecheck && npm run build:client && npm run build:server",
     "build:client": "vite build",
     "build:server": "tsx scripts/build-server.ts",
@@ -15,7 +15,7 @@
     "electron:pack": "npm run build && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --dir",
     "electron:dist": "npm run build && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --win portable",
     "electron:msi": "npm run build && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --win msi",
-    "server": "tsx src/server/index.ts",
+    "server": "tsx src/apps/answer-card/server/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

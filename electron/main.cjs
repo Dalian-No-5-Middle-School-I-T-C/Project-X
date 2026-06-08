@@ -13,7 +13,7 @@ async function startLocalServer() {
   const appRoot = getAppRoot();
   const serverBundle = path.join(appRoot, "dist", "server", "index.mjs");
   const clientDist = path.join(appRoot, "dist", "client");
-  const dataDir = path.join(app.getPath("userData"), "data");
+  const dataDir = path.join(app.getPath("userData"), "data", "answer-card");
 
   process.env.ANSWER_CARD_DATA_DIR = dataDir;
   process.env.ANSWER_CARD_CLIENT_DIST = clientDist;

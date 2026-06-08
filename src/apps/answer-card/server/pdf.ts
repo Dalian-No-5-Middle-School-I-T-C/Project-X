@@ -9,8 +9,8 @@ import type {
   PageRenderBlock,
   Rect,
   SubjectiveRenderItem
-} from "../shared/types";
-import { buildLayout } from "../shared/layout";
+} from "../../../shared/types";
+import { buildLayout } from "../../../shared/layout";
 import { cardAssetsDir } from "./storage";
 
 const MM_TO_PT = 72 / 25.4;

@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import type { AnswerCard } from "../shared/types";
+import type { AnswerCard } from "../../../shared/types";
 import { createPdf } from "./pdf";
 import {
   assetsDir,

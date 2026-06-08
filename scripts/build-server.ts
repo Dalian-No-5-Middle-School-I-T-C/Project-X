@@ -1,7 +1,7 @@
 import { build } from "esbuild";
 
 await build({
-  entryPoints: ["src/server/index.ts"],
+  entryPoints: ["src/apps/answer-card/server/index.ts"],
   outfile: "dist/server/index.mjs",
   bundle: true,
   packages: "external",
