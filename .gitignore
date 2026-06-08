@@ -1,0 +1,10 @@
+image/
+convert.py
+node_modules/
+dist/
+data/
+.vite/
+*.log
+.npm-cache/
+*.env
+*.pdf

@@ -1,0 +1,165 @@
+export type ObjectiveMode = "single" | "multiple" | "indefinite";
+export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
+export type SubjectiveStyle = "manual_score_grid" | "plain_subjective";
+export type SubjectiveKind = "blank" | "lined_answer" | "plain_box";
+
+export type PaperSettings = {
+  size: "A4";
+  orientation: "portrait";
+};
+
+export type StudentInfoSettings = {
+  fields: Array<"姓名" | "班级" | "学号">;
+  studentNumberDigits: number;
+};
+
+export type ObjectiveBlock = {
+  id: string;
+  type: "objective";
+  title: string;
+  questionStart: number;
+  questionCount: number;
+  optionCount: number;
+  mode: ObjectiveMode;
+  scorePerQuestion: number;
+  density: ObjectiveDensity;
+  answerKey?: Record<number, string[]>;
+  multipleScoring?: {
+    partialScores: Record<number, number>;
+    wrongOrExtraScore: number;
+  };
+};
+
+export type SubjectiveQuestion = {
+  id: string;
+  number: number;
+  score: number;
+  style: SubjectiveStyle;
+  kind: SubjectiveKind;
+  blanks?: { count: number; widthMm: number; heightMm: number };
+  lineGrid?: { enabled: boolean; lineSpacingMm: number };
+  images?: Array<{
+    assetId: string;
+    originalName?: string;
+    widthMm: number;
+    heightMm: number;
+    align: "left" | "center" | "right";
+  }>;
+  minHeightMm: number;
+};
+
+export type SubjectiveBlock = {
+  id: string;
+  type: "subjective";
+  title: string;
+  questions: SubjectiveQuestion[];
+};
+
+export type BodyBlock = ObjectiveBlock | SubjectiveBlock;
+
+export type AnswerCard = {
+  id: string;
+  title: string;
+  paper: PaperSettings;
+  studentInfo: StudentInfoSettings;
+  bodyBlocks: BodyBlock[];
+  layoutVersion: 1;
+  updatedAt: string;
+};
+
+export type CardSummary = {
+  id: string;
+  title: string;
+  updatedAt: string;
+};
+
+export type Rect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export type LayoutElement =
+  | { id: string; type: "marker"; role: string; rect: Rect }
+  | { id: string; type: "student_digit"; digitIndex: number; digit: number; rect: Rect }
+  | { id: string; type: "objective_row_marker"; blockId: string; row: number; side: "left" | "right"; rect: Rect }
+  | { id: string; type: "objective_option"; blockId: string; questionNumber: number; option: string; rect: Rect }
+  | { id: string; type: "subjective_box"; blockId: string; questionId: string; questionNumber: number; rect: Rect }
+  | { id: string; type: "score_cell"; blockId: string; questionId: string; questionNumber: number; score: number; rect: Rect }
+  | { id: string; type: "image_area"; blockId: string; questionId: string; assetId: string; rect: Rect };
+
+export type ObjectiveRenderItem = {
+  questionNumber: number;
+  options: Array<{ label: string; rect: Rect }>;
+  labelX: number;
+  labelY: number;
+};
+
+export type SubjectiveRenderItem = {
+  blockId: string;
+  questionId: string;
+  questionNumber: number;
+  score: number;
+  style: SubjectiveStyle;
+  kind: SubjectiveKind;
+  rect: Rect;
+  contentRect: Rect;
+  scoreCells: Array<{ score: number; rect: Rect }>;
+  lineYs: number[];
+  blanks: Rect[];
+  images: Array<{ assetId: string; originalName?: string; rect: Rect }>;
+};
+
+export type PageRenderBlock =
+  | {
+      type: "objective";
+      blockId: string;
+      title: string;
+      rect: Rect;
+      frameRect: Rect;
+      rowMarkers: Array<{ row: number; left: Rect; right: Rect }>;
+      items: ObjectiveRenderItem[];
+      density: ObjectiveDensity;
+    }
+  | {
+      type: "subjective";
+      blockId: string;
+      title: string;
+      rect: Rect;
+      questions: SubjectiveRenderItem[];
+    };
+
+export type StudentAreaLayout = {
+  infoRect: Rect;
+  digitRect: Rect;
+  digitCells: Array<{ digitIndex: number; digit: number; rect: Rect }>;
+};
+
+export type PageLayout = {
+  pageNumber: number;
+  width: number;
+  height: number;
+  markers: Array<{ role: string; rect: Rect }>;
+  header: {
+    id: string;
+    title?: string;
+    idTextX: number;
+    idTextY: number;
+    codeBoxes: Rect[];
+    titleX?: number;
+    titleY?: number;
+  };
+  studentArea?: StudentAreaLayout;
+  blocks: PageRenderBlock[];
+  elements: LayoutElement[];
+};
+
+export type LayoutDocument = {
+  cardId: string;
+  width: number;
+  height: number;
+  pages: PageLayout[];
+  elements: LayoutElement[];
+  warnings: string[];
+};
