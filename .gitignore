@@ -6,5 +6,8 @@ data/
 .vite/
 *.log
 .npm-cache/
+.electron-cache/
+.electron-builder-cache/
+release/
 *.env
 *.pdf

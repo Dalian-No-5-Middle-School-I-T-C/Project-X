@@ -7,7 +7,9 @@ import { createDefaultCard } from "../shared/defaultCard";
 import { buildLayout } from "../shared/layout";
 
 export const rootDir = process.cwd();
-export const dataDir = path.join(rootDir, "data");
+export const dataDir = process.env.ANSWER_CARD_DATA_DIR
+  ? path.resolve(process.env.ANSWER_CARD_DATA_DIR)
+  : path.join(rootDir, "data");
 export const cardsDir = path.join(dataDir, "cards");
 export const assetsDir = path.join(dataDir, "assets");
 export const layoutsDir = path.join(dataDir, "layouts");
