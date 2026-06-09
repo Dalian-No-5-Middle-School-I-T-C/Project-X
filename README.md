@@ -3,7 +3,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
-  <img src="https://img.shields.io/badge/license-MIT-yellow.svg" alt="License">
+  <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-Electron%20%7C%20React%20%7C%20Node.js-9cf.svg" alt="Tech Stack">
 </p>
 
@@ -11,7 +11,7 @@
 
 **Project-X** 是大连市第五中学信息化部（I.T.C.）自主开发的智能试卷管理工具，旨在解决学校长期依赖外包扫描答题卡与阅卷系统所带来的**报错频繁、费用高昂、受制于人**等核心痛点。
 
-本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、初航（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
+本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
 > **当前版本**：v0.1.0（答题卡设计系统）  
 > **核心能力**：答题卡设计 → A4 PDF 导出 → Windows 桌面端分发  
