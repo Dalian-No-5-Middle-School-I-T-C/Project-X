@@ -212,7 +212,7 @@ Project-X/
 
 ## 开源协议
 
-本项目采用 [MIT License](LICENSE) 开源协议。
+本项目采用 GPL-3.0 license 开源协议。
 
 ---
 
