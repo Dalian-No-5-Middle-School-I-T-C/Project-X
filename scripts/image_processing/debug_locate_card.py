@@ -34,7 +34,6 @@ def main() -> None:
 
     layout_page = load_layout_page(LAYOUT_PATH, PAGE_NUMBER)
     image = read_image(IMAGE_PATH)
-    begin = time.time()
     candidates, _binary = find_marker_candidates(image)
     matches = match_markers(candidates, image.shape, layout_page, OUTPUT_DPI)
     matched_roles = {match.role for match in matches}
@@ -65,9 +64,6 @@ def main() -> None:
         output_size = a4_pixel_size(layout_page.width_mm, layout_page.height_mm, OUTPUT_DPI)
         warped = warp_to_layout(image, homography, output_size)
         debug_markers = draw_debug_markers(image, candidates, matches, missing_roles)
-
-        end = time.time()
-        print(f"Processing time: {end - begin:.4f} seconds")
 
         write_image(OUTPUT_DIR / "warped.png", warped)
         write_image(OUTPUT_DIR / "debug_markers.png", debug_markers)
