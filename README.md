@@ -101,30 +101,27 @@
 #### 环境要求
 
 - Windows 操作系统
-- Node.js（建议 LTS 版本）
-- npm
-
-> PowerShell 环境下建议使用 `npm.cmd` 执行命令
+- Node.js v25.8.2
 
 #### 安装依赖
 
 ```powershell
-npm.cmd install
+npm install
 ```
 
 #### 开发模式
 
 **Web 开发模式**（前端热更新）：
 ```powershell
-npm.cmd run dev
+npm run dev
 ```
 访问：`http://127.0.0.1:5173`（前端）  
 后端 API 默认端口：`5174`
 
 **本地服务模式**（前后端构建后运行）：
 ```powershell
-npm.cmd run build
-npm.cmd run server
+npm run build
+npm run server
 ```
 访问：`http://127.0.0.1:5174`
 
@@ -132,18 +129,18 @@ npm.cmd run server
 
 ```powershell
 # 构建前端和服务端产物
-npm.cmd run build
+npm run build
 
 # 生成 Electron 目录包（本机测试）
-npm.cmd run electron:pack
+npm run electron:pack
 # 输出：release/win-unpacked/答题卡设计系统.exe
 
 # 生成 Windows 便携版 EXE
-npm.cmd run electron:dist
+npm run electron:dist
 # 输出：release/答题卡设计系统-0.1.0-x64.exe
 
 # 生成 Windows MSI 安装包
-npm.cmd run electron:msi
+npm run electron:msi
 # 输出：release/答题卡设计系统-0.1.0-x64.msi
 ```
 
@@ -157,14 +154,14 @@ npm.cmd run electron:msi
 
 | 命令 | 说明 |
 |------|------|
-| `npm.cmd run typecheck` | TypeScript 类型检查 |
-| `npm.cmd run build` | 构建前端和服务端 |
-| `npm.cmd run dev` | Web 开发模式 |
-| `npm.cmd run server` | 运行本地服务 |
-| `npm.cmd run electron:dev` | 构建后启动 Electron |
-| `npm.cmd run electron:pack` | 生成 Electron 目录包 |
-| `npm.cmd run electron:dist` | 生成 Windows 便携版 EXE |
-| `npm.cmd run electron:msi` | 生成 Windows MSI 安装包 |
+| `npm. run typecheck` | TypeScript 类型检查 |
+| `npm. run build` | 构建前端和服务端 |
+| `npm run dev` | Web 开发模式 |
+| `npm run server` | 运行本地服务 |
+| `npm run electron:dev` | 构建后启动 Electron |
+| `npm run electron:pack` | 生成 Electron 目录包 |
+| `npm run electron:dist` | 生成 Windows 便携版 EXE |
+| `npm run electron:msi` | 生成 Windows MSI 安装包 |
 
 ---
 
@@ -207,7 +204,7 @@ Project-X/
 | **火箭** | 项目牵头人 | 前端与 Electron 桌面端 |
 | **云墨丹心** | 项目牵头人 | UI/UX 设计与答题卡版式 |
 | **近代先人** | 项目牵头人 | 算法与识别模块预研 |
-| **初航** | 往届学长 | 项目奠基与经验传承 |
+| **CH** | 往届学长 | 项目奠基与经验传承 |
 
 > 感谢所有为 Project-X 提供测试反馈、文档建议和代码贡献的同学与老师！
 
