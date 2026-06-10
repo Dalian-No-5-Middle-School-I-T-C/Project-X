@@ -26,7 +26,7 @@ def main(
     )
     if ret:
         return result
-    # print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
     return None
 
 

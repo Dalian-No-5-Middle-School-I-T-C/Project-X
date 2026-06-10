@@ -8,7 +8,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from layout_io import REQUIRED_MARKER_ROLES, ObjectiveOption, Rect, a4_pixel_size, load_layout_page
+from layout_io import REQUIRED_MARKER_ROLES, ObjectiveOption, Rect, StudentDigit, a4_pixel_size, load_layout_page
 from vision_utils import (
     draw_debug_markers,
     estimate_homography,
@@ -63,15 +63,15 @@ def _rect_to_bounds(
     return left, top, right, bottom
 
 
-def _sample_option(warped: np.ndarray, option: ObjectiveOption, dpi: int) -> dict[str, object]:
+def _sample_rect(warped: np.ndarray, rect: Rect, dpi: int, margin_ratio: float) -> dict[str, object]:
     gray = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY) if warped.ndim == 3 else warped
     image_height, image_width = gray.shape[:2]
     left, top, right, bottom = _rect_to_bounds(
-        option.rect,
+        rect,
         dpi,
         image_width,
         image_height,
-        OPTION_INNER_MARGIN_RATIO,
+        margin_ratio,
     )
     roi = gray[top:bottom, left:right]
     if roi.size == 0:
@@ -90,14 +90,25 @@ def _sample_option(warped: np.ndarray, option: ObjectiveOption, dpi: int) -> dic
         dark_ratio = float(np.count_nonzero(roi < 180)) / float(roi.size)
 
     return {
-        "label": option.label,
         "fillRatio": round(fill_ratio, 4),
         "darkRatio": round(dark_ratio, 4),
         "meanGray": round(mean_gray, 2),
         "threshold": round(threshold, 2),
-        "rect": _rect_to_json(option.rect),
+        "rect": _rect_to_json(rect),
         "sampleBounds": {"left": left, "top": top, "right": right, "bottom": bottom},
     }
+
+
+def _sample_option(warped: np.ndarray, option: ObjectiveOption, dpi: int) -> dict[str, object]:
+    result = _sample_rect(warped, option.rect, dpi, OPTION_INNER_MARGIN_RATIO)
+    result["label"] = option.label
+    return result
+
+
+def _sample_student_digit(warped: np.ndarray, digit: StudentDigit, dpi: int) -> dict[str, object]:
+    result = _sample_rect(warped, digit.rect, dpi, OPTION_INNER_MARGIN_RATIO)
+    result["digit"] = digit.digit
+    return result
 
 
 def _selected_options(options: list[dict[str, object]]) -> tuple[list[str], float, dict[str, float]]:
@@ -146,6 +157,53 @@ def _build_questions(option_results: list[tuple[ObjectiveOption, dict[str, objec
             }
         )
     return questions
+
+
+def _selected_digit(samples: list[dict[str, object]]) -> tuple[int | None, list[str], dict[str, float]]:
+    scores = {str(sample["digit"]): float(sample["fillRatio"]) for sample in samples}
+    if len(scores) != 10:
+        return None, [f"expected_10_candidates_got_{len(scores)}"], {
+            digit: round(score, 4) for digit, score in sorted(scores.items(), key=lambda item: int(item[0]))
+        }
+
+    selected = [digit for digit, score in scores.items() if score >= MIN_SELECTED_FILL_RATIO]
+    score_payload = {digit: round(score, 4) for digit, score in sorted(scores.items(), key=lambda item: int(item[0]))}
+    if len(selected) != 1:
+        reason = "no_digit_selected" if not selected else "multiple_digits_selected"
+        return None, [reason], score_payload
+    return int(selected[0]), [], score_payload
+
+
+def _build_student_id(digit_results: list[tuple[StudentDigit, dict[str, object]]]) -> dict[str, object]:
+    by_index: dict[int, list[dict[str, object]]] = defaultdict(list)
+    for digit, result in digit_results:
+        by_index[digit.digit_index].append(result)
+
+    digits: list[dict[str, object]] = []
+    failures: list[dict[str, object]] = []
+    for digit_index in sorted(by_index):
+        selected_digit, reasons, digit_scores = _selected_digit(by_index[digit_index])
+        digit_result: dict[str, object] = {
+            "digitIndex": digit_index,
+            "selectedDigit": selected_digit,
+            "digitScores": digit_scores,
+        }
+        if reasons:
+            digit_result["reasons"] = reasons
+            failures.append(digit_result)
+        digits.append(digit_result)
+
+    missing_indices = [] if by_index else ["all"]
+    if missing_indices:
+        failures.append({"digitIndex": None, "selectedDigit": None, "reasons": ["no_student_digit_candidates"]})
+
+    value = "".join(str(item["selectedDigit"]) for item in digits if item["selectedDigit"] is not None)
+    return {
+        "status": "ok" if not failures else "failed",
+        "value": value if not failures else None,
+        "digits": digits,
+        "failures": failures,
+    }
 
 
 def _quality_payload(
@@ -237,8 +295,18 @@ def recognize_objective_answers(
             (option, _sample_option(warped, option, output_dpi))
             for option in layout_page.objective_options
         ]
+        student_digit_results = [
+            (digit, _sample_student_digit(warped, digit, output_dpi))
+            for digit in layout_page.student_digits
+        ]
+        student_id = _build_student_id(student_digit_results)
+        status = "ok" if not missing_roles else "partial"
+        message = None
+        if student_id["status"] != "ok":
+            status = "failed"
+            message = "Student ID recognition failed."
         result = {
-            "status": "ok" if not missing_roles else "partial",
+            "status": status,
             "imagePath": str(image_path),
             "layoutPath": str(layout_path),
             "cardId": layout_page.card_id,
@@ -249,8 +317,11 @@ def recognize_objective_answers(
                 "heightPx": output_size[1],
             },
             "quality": quality,
+            "studentId": student_id,
             "questions": _build_questions(option_results),
         }
+        if message:
+            result["message"] = message
 
         if debug:
             _write_debug_artifacts(

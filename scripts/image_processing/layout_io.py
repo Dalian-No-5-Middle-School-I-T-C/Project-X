@@ -47,6 +47,13 @@ class ObjectiveOption:
 
 
 @dataclass(frozen=True)
+class StudentDigit:
+    digit_index: int
+    digit: int
+    rect: Rect
+
+
+@dataclass(frozen=True)
 class LayoutPage:
     card_id: str
     page_number: int
@@ -54,6 +61,7 @@ class LayoutPage:
     height_mm: float
     markers: dict[str, LayoutMarker]
     objective_options: tuple[ObjectiveOption, ...] = ()
+    student_digits: tuple[StudentDigit, ...] = ()
 
 
 def _rect_from_json(value: dict[str, Any]) -> Rect:
@@ -121,6 +129,26 @@ def _objective_options_from_page(page_data: dict[str, Any]) -> tuple[ObjectiveOp
     return tuple(sorted(options, key=lambda item: (item.question_number, item.label)))
 
 
+def _student_digits_from_page(page_data: dict[str, Any]) -> tuple[StudentDigit, ...]:
+    digits: list[StudentDigit] = []
+
+    for element in page_data.get("elements", []):
+        if not isinstance(element, dict) or element.get("type") != "student_digit":
+            continue
+        rect_data = element.get("rect")
+        if not isinstance(rect_data, dict):
+            continue
+        digits.append(
+            StudentDigit(
+                digit_index=int(element.get("digitIndex", 0)),
+                digit=int(element.get("digit", 0)),
+                rect=_rect_from_json(rect_data),
+            )
+        )
+
+    return tuple(sorted(digits, key=lambda item: (item.digit_index, item.digit)))
+
+
 def load_layout_page(layout_path: str | Path, page_number: int) -> LayoutPage:
     path = Path(layout_path)
     if not path.exists():
@@ -163,6 +191,7 @@ def load_layout_page(layout_path: str | Path, page_number: int) -> LayoutPage:
         height_mm=float(page_data.get("height") or layout.get("height") or 297),
         markers={role: markers[role] for role in REQUIRED_MARKER_ROLES},
         objective_options=_objective_options_from_page(page_data),
+        student_digits=_student_digits_from_page(page_data),
     )
 
 
