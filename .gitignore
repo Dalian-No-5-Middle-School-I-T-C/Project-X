@@ -19,3 +19,5 @@ __pycache__/
 *.db
 *.sqlite
 *.egg-info/
+native/
+resources/
