@@ -91,7 +91,7 @@
 4. 调整客观题密度和主观题样式
 5. 点击保存
 6. 导出 PDF 并打印
-7. 答题卡的 JSON 文件保存在 `%APPDATA%\答题卡设计系统\data\answer-card\`
+7. 答题卡的 JSON 文件保存在 `%APPDATA%\answer-card-designer\data\answer-card\`
 
 > **数据存储说明**：桌面版会把答题卡数据保存到当前 Windows 用户的应用数据目录，不会写入安装目录，保障多用户环境下的数据隔离。
 
