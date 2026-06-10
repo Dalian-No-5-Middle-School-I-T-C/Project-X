@@ -676,6 +676,46 @@ select:focus {
   border-bottom: 1px solid var(--border);
   background: var(--bg-hover);
   flex-shrink: 0;
+  transition: background 0.2s;
+}
+
+.scan-import-bar.drag-over {
+  background: #e8f4f0;
+  border-color: var(--primary);
+}
+
+/* 拖拽上传区 */
+.drop-zone {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px;
+  border: 2px dashed #bccbc4;
+  border-radius: 10px;
+  background: #fbfdfc;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.drop-zone-active {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 28px 20px;
+  border: 2px dashed var(--primary);
+  border-radius: 10px;
+  background: #e6f3ee;
+  color: var(--primary);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.drop-zone-active p {
+  margin: 0;
 }
 
 .scan-import-group {

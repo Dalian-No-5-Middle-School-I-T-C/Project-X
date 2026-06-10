@@ -18,6 +18,8 @@ import {
   scanFolder,
   type ScannerDriver
 } from "./scanner";
+import { buildLayout } from "../../../shared/layout";
+import { createDefaultCard } from "../../../shared/defaultCard";
 import {
   assetsDir,
   cardAssetsDir,
@@ -77,6 +79,26 @@ export async function createApp(): Promise<express.Express> {
   // 提供扫描缩略图访问
   app.use("/scans", express.static(scansDir));
   app.use("/thumbnails", express.static(thumbnailsDir));
+
+  // 诊断端点：测试所有子步骤
+  app.get("/api/debug/ping", (_req, res) => {
+    res.json({ ok: true, time: new Date().toISOString() });
+  });
+
+  app.get("/api/debug/create-card-test", async (_req, res) => {
+    const steps: string[] = [];
+    try {
+      steps.push("1. createDefaultCard...");
+      const testCard = createDefaultCard("test999");
+      steps.push("2. buildLayout...");
+      const layout = buildLayout(testCard);
+      steps.push(`3. OK - ${layout.pages.length} pages, ${layout.elements.length} elements`);
+      res.json({ ok: true, steps });
+    } catch (err) {
+      steps.push(`FAIL: ${err instanceof Error ? err.message : String(err)}`);
+      res.status(500).json({ ok: false, steps, error: String(err) });
+    }
+  });
 
   const upload = multer({
     storage: multer.diskStorage({
@@ -334,29 +356,37 @@ export async function createApp(): Promise<express.Express> {
     limits: { fileSize: 30 * 1024 * 1024 }
   });
 
-  app.post("/api/scans/upload-file", scanUpload.single("file"), async (req, res, next) => {
+  app.post("/api/scans/upload-file", scanUpload.single("file"), async (req, res) => {
     try {
+      console.log("[api] upload-file 收到请求, file:", req.file?.originalname ?? "无文件");
       if (!req.file) {
         res.status(400).json({ message: "没有收到文件" });
         return;
       }
 
+      console.log(`[api] 文件已保存到: ${req.file.path}, size: ${req.file.size}`);
       const cardId = fieldValue(req.body.cardId) || autoMatchCard() || undefined;
       const dpi = Number(fieldValue(req.body.dpi) || getConfig("default_dpi") || "300");
 
+      console.log(`[api] 开始处理文件: cardId=${cardId}, dpi=${dpi}`);
       const scan = await processFile(req.file.path, {
         cardId,
         dpi: Number.isFinite(dpi) ? dpi : 300
       });
 
       if (!scan) {
-        res.status(500).json({ message: "文件处理失败" });
+        console.error("[api] processFile 返回 null");
+        res.status(500).json({ message: "文件处理失败 (processFile返回null)" });
         return;
       }
 
+      console.log(`[api] 上传成功: ${scan.id}`);
       res.status(201).json(scan);
     } catch (error) {
-      next(error);
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error("[api] upload-file 崩溃:", msg);
+      console.error(error instanceof Error ? error.stack : error);
+      res.status(500).json({ message: `上传失败: ${msg}` });
     }
   });
 

@@ -322,6 +322,7 @@ export function readCard(cardId: string): AnswerCard | null {
 }
 
 export function saveCard(card: AnswerCard): AnswerCard {
+  console.log("[database] saveCard: 开始...");
   const normalized: AnswerCard = {
     ...card,
     id: safeId(card.id),
@@ -333,34 +334,46 @@ export function saveCard(card: AnswerCard): AnswerCard {
   const json = JSON.stringify(normalized, null, 2);
   const now = normalized.updatedAt;
 
+  console.log("[database] saveCard: 写入 cards 表...");
   execAndSave(
     "INSERT OR REPLACE INTO cards (id, title, data_json, updated_at) VALUES (?, ?, ?, ?)",
     [normalized.id, normalized.title, json, now]
   );
+  console.log("[database] saveCard: cards 表写入成功");
 
   // 同时保存布局
   try {
+    console.log("[database] saveCard: 调用 buildLayout...");
     saveLayout(normalized);
+    console.log("[database] saveCard: buildLayout 完成");
   } catch (err) {
     console.error("[database] saveLayout 失败:", err);
     throw new Error(`布局生成失败: ${err instanceof Error ? err.message : String(err)}`);
   }
 
+  console.log("[database] saveCard: 完成");
   return normalized;
 }
 
 export async function createCard(): Promise<AnswerCard> {
+  console.log("[database] createCard: 开始...");
   await getDb(); // 确保数据库已初始化
+  console.log("[database] createCard: DB已就绪");
+  
   let id = "";
   for (let attempt = 0; attempt < 20; attempt += 1) {
     id = String(Math.floor(Math.random() * 100000000)).padStart(8, "0");
     const exists = queryOne("SELECT 1 FROM cards WHERE id = ?", [id]);
     if (!exists) break;
   }
+  console.log(`[database] createCard: 生成ID=${id}`);
 
   try {
+    console.log("[database] createCard: 调用 createDefaultCard...");
     const card = createDefaultCard(id);
+    console.log("[database] createCard: 调用 saveCard...");
     saveCard(card);
+    console.log(`[database] createCard: 完成 ${card.id}`);
     return card;
   } catch (err) {
     console.error("[database] createCard 失败:", err);
@@ -373,7 +386,9 @@ export async function createCard(): Promise<AnswerCard> {
 // ============================================================
 
 export function saveLayout(card: AnswerCard): LayoutDocument {
+  console.log("[database] saveLayout: buildLayout 调用中...");
   const layout = buildLayout(card);
+  console.log(`[database] saveLayout: ${layout.pages.length} pages, ${layout.elements.length} elements`);
   const now = new Date().toISOString();
 
   execAndSave(

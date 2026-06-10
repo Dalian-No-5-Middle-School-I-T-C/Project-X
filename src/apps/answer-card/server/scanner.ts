@@ -165,17 +165,19 @@ export async function processFile(
   options?: { cardId?: string; dpi?: number; skipRecognition?: boolean }
 ): Promise<ScanRecord | null> {
   if (isProcessing) {
-    console.log("[scanner] 正在处理其他文件，稍后重试...");
+    console.log("[scanner] 正在处理其他文件，返回 null");
     return null;
   }
 
   isProcessing = true;
+  console.log(`[scanner] processFile 开始: ${filePath}`);
   try {
     // 1. 验证文件
     if (!existsSync(filePath)) {
       console.log(`[scanner] 文件不存在: ${filePath}`);
       return null;
     }
+    console.log("[scanner] 步骤1: 文件验证通过");
 
     const stat = statSync(filePath);
     const ext = path.extname(filePath).toLowerCase();
@@ -186,16 +188,19 @@ export async function processFile(
     const storedName = `${scanId}${ext}`;
     const storedPath = path.join(scansDir, storedName);
     copyFileSync(filePath, storedPath);
+    console.log("[scanner] 步骤2: 文件复制完成");
 
     // 3. 生成缩略图
     let thumbnailPath: string | null = null;
     try {
+      console.log("[scanner] 步骤3a: 开始生成缩略图...");
       const thumbName = `${scanId}_thumb.jpg`;
       thumbnailPath = path.join(thumbnailsDir, thumbName);
       await sharp(filePath)
         .resize(320, 440, { fit: "inside", withoutEnlargement: true })
         .jpeg({ quality: 75 })
         .toFile(thumbnailPath);
+      console.log("[scanner] 步骤3a: 缩略图生成成功");
     } catch (thumbErr) {
       console.warn(`[scanner] 缩略图生成失败: ${thumbErr}`);
       thumbnailPath = null;
@@ -213,6 +218,7 @@ export async function processFile(
     }
 
     // 5. 写入数据库
+    console.log("[scanner] 步骤5: 开始写入数据库...");
     const dpi = options?.dpi ?? Number(getConfig("default_dpi") ?? "300");
     const cardId = options?.cardId ?? null;
 
@@ -235,6 +241,7 @@ export async function processFile(
       recognition_json: null,
       error_message: null
     });
+    console.log("[scanner] 步骤5: DB写入完成");
 
     // 6. 自动触发识别（如果有 cardId 且未跳过）
     if (cardId && !options?.skipRecognition && getConfig("auto_recognize") !== "false") {

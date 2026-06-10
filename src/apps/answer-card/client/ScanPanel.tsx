@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef, type ChangeEvent, type DragEvent } from "react";
 import {
   FolderOpen,
   RefreshCw,
@@ -90,71 +90,108 @@ export default function ScanPanel() {
   const [isBusy, setIsBusy] = useState(false);
   const [statusFilter, setStatusFilter] = useState<ScanStatus | "">("");
   const [showSettings, setShowSettings] = useState(false);
-  const [importPath, setImportPath] = useState("");
-  const [importCardId, setImportCardId] = useState("");
   const [scanFolderPath, setScanFolderPath] = useState("");
   const [folderProgress, setFolderProgress] = useState("");
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  /** 上传单个 File 对象 */
+  async function uploadFile(file: File): Promise<boolean> {
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      await fetchJson("/api/scans/upload-file", {
+        method: "POST",
+        body: formData
+      });
+      return true;
+    } catch (err) {
+      console.error(`上传 ${file.name} 失败:`, err);
+      return false;
+    }
+  }
+
+  /** 文件选择器选取后批量上传 */
+  async function handleFileSelect(e: ChangeEvent<HTMLInputElement>) {
+    const selectedFiles = e.target.files;
+    if (!selectedFiles || selectedFiles.length === 0) return;
+    setIsBusy(true);
+    setFolderProgress(`正在上传 ${selectedFiles.length} 个文件...`);
+    let ok = 0;
+    for (let i = 0; i < selectedFiles.length; i++) {
+      if (await uploadFile(selectedFiles[i])) ok++;
+      setFolderProgress(`已上传 ${ok}/${selectedFiles.length}...`);
+    }
+    setFolderProgress(`完成！成功导入 ${ok}/${selectedFiles.length} 个文件`);
+    // 清空 input
+    if (fileInputRef.current) fileInputRef.current.value = "";
+    await loadScans();
+    setIsBusy(false);
+  }
+
+  /** 拖拽上传 */
+  function handleDragOver(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  }
+  function handleDragLeave(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  }
+  async function handleDrop(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const droppedFiles = Array.from(e.dataTransfer.files).filter(
+      (f) => f.type.startsWith("image/")
+    );
+    if (droppedFiles.length === 0) {
+      setFolderProgress("没有识别到图片文件");
+      return;
+    }
+    setIsBusy(true);
+    setFolderProgress(`正在上传 ${droppedFiles.length} 个文件...`);
+    let ok = 0;
+    for (let i = 0; i < droppedFiles.length; i++) {
+      if (await uploadFile(droppedFiles[i])) ok++;
+      setFolderProgress(`已上传 ${ok}/${droppedFiles.length}...`);
+    }
+    setFolderProgress(`完成！成功导入 ${ok}/${droppedFiles.length} 个文件`);
+    await loadScans();
+    setIsBusy(false);
+  }
 
   /** 调用 Windows 文件夹选择器，读取所有图片并上传 */
   async function pickFolderAndUpload() {
     try {
-      // 使用 File System Access API 打开文件夹选择器
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const dirHandle = await (window as any).showDirectoryPicker();
       setFolderProgress("正在读取文件夹...");
-
       const imageExts = new Set([".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".gif", ".webp"]);
-      const files: { file: File; name: string }[] = [];
-
-      // 递归读取文件夹中的图片（仅一层）
+      const fileList: File[] = [];
       for await (const [name, handle] of dirHandle.entries()) {
         if (handle.kind === "file") {
           const ext = name.substring(name.lastIndexOf(".")).toLowerCase();
           if (imageExts.has(ext)) {
-            const file = await handle.getFile();
-            files.push({ file, name });
+            fileList.push(await handle.getFile());
           }
         }
       }
-
-      if (files.length === 0) {
-        setFolderProgress("文件夹中没有图片文件");
-        setIsBusy(false);
-        return;
-      }
-
-      setFolderProgress(`正在上传 ${files.length} 个文件...`);
+      if (fileList.length === 0) { setFolderProgress("文件夹中没有图片文件"); return; }
       setIsBusy(true);
-
-      // 逐个上传
-      let successCount = 0;
-      for (let i = 0; i < files.length; i++) {
-        const { file } = files[i];
-        const formData = new FormData();
-        formData.append("file", file);
-        if (importCardId) formData.append("cardId", importCardId);
-
-        try {
-          await fetchJson("/api/scans/upload-file", {
-            method: "POST",
-            body: formData
-          });
-          successCount++;
-          setFolderProgress(`已上传 ${successCount}/${files.length}...`);
-        } catch (err) {
-          console.error(`上传 ${file.name} 失败:`, err);
-        }
+      setFolderProgress(`正在上传 ${fileList.length} 个文件...`);
+      let ok = 0;
+      for (let i = 0; i < fileList.length; i++) {
+        if (await uploadFile(fileList[i])) ok++;
+        setFolderProgress(`已上传 ${ok}/${fileList.length}...`);
       }
-
-      setFolderProgress(`完成！成功导入 ${successCount}/${files.length} 个文件`);
+      setFolderProgress(`完成！成功导入 ${ok}/${fileList.length} 个文件`);
       await loadScans();
     } catch (err) {
-      if ((err as Error).name === "AbortError") {
-        setFolderProgress("");
-      } else {
-        console.error("选择文件夹失败:", err);
-        setFolderProgress("选择文件夹失败，请重试");
-      }
+      if ((err as Error).name === "AbortError") setFolderProgress("");
+      else { console.error("选择文件夹失败:", err); setFolderProgress("选择文件夹失败"); }
     } finally {
       setIsBusy(false);
     }
@@ -219,28 +256,6 @@ export default function ScanPanel() {
       setSelectedScan(detail);
     } catch (err) {
       console.error("加载扫描详情失败:", err);
-    } finally {
-      setIsBusy(false);
-    }
-  }
-
-  // 手动导入
-  async function handleImport() {
-    if (!importPath) return;
-    setIsBusy(true);
-    try {
-      const body: Record<string, unknown> = { path: importPath };
-      if (importCardId) body.cardId = importCardId;
-
-      await fetchJson("/api/scans/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
-      });
-      setImportPath("");
-      await loadScans();
-    } catch (err) {
-      console.error("导入失败:", err);
     } finally {
       setIsBusy(false);
     }
@@ -366,20 +381,44 @@ export default function ScanPanel() {
       </div>
 
       {/* 扫描操作区 */}
-      <div className="scan-import-bar">
+      <div
+        className={`scan-import-bar ${isDragging ? "drag-over" : ""}`}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={(e) => void handleDrop(e)}
+      >
+        {/* 隐藏的文件选择器 */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          onChange={(e) => void handleFileSelect(e)}
+          style={{ display: "none" }}
+        />
+        {isDragging ? (
+          <div className="drop-zone-active">
+            <ImagePlus size={40} />
+            <p>松开鼠标上传图片</p>
+          </div>
+        ) : (
+          <div className="drop-zone">
+            <ImagePlus size={24} />
+            <span>拖拽图片到此处上传，或</span>
+            <button className="ghost-button" onClick={() => fileInputRef.current?.click()}>
+              <Upload size={14} /> 选择文件
+            </button>
+            <span className="scan-or">或</span>
+            <button className="primary-button" onClick={() => void pickFolderAndUpload()} disabled={isBusy}>
+              <FolderOpen size={14} /> 选择文件夹
+            </button>
+          </div>
+        )}
+        {/* 底部手动路径输入 */}
         <div className="scan-import-group">
-          <FolderOpen size={16} className="scan-icon" />
-          <button
-            className="primary-button"
-            onClick={() => void pickFolderAndUpload()}
-            disabled={isBusy}
-          >
-            <FolderOpen size={16} /> 选择文件夹
-          </button>
-          <span className="scan-or">或</span>
           <input
             type="text"
-            placeholder="手动输入文件夹路径后点扫描..."
+            placeholder="高级: 手动输入文件夹路径后点扫描..."
             value={scanFolderPath}
             onChange={(e) => setScanFolderPath(e.target.value)}
             className="scan-path-input"
@@ -389,40 +428,10 @@ export default function ScanPanel() {
             onClick={() => void handleScanFolder()}
             disabled={isBusy || !scanFolderPath}
           >
-            <ScanLine size={16} /> 扫描
+            <ScanLine size={14} /> 扫描
           </button>
         </div>
         {folderProgress && <div className="scan-progress">{folderProgress}</div>}
-        <div className="scan-divider" />
-        <div className="scan-import-group">
-          <Upload size={16} className="scan-icon" />
-          <input
-            type="text"
-            placeholder="单个图片文件路径..."
-            value={importPath}
-            onChange={(e) => setImportPath(e.target.value)}
-            className="scan-path-input"
-          />
-          <select
-            value={importCardId}
-            onChange={(e) => setImportCardId(e.target.value)}
-            className="scan-card-select"
-          >
-            <option value="">自动匹配答题卡</option>
-            {cards.map((card) => (
-              <option key={card.id} value={card.id}>
-                {card.title} ({card.id})
-              </option>
-            ))}
-          </select>
-          <button
-            className="ghost-button"
-            onClick={() => void handleImport()}
-            disabled={isBusy || !importPath}
-          >
-            <Upload size={16} /> 导入
-          </button>
-        </div>
       </div>
 
       {/* 筛选 */}
