@@ -4,6 +4,7 @@ import path from "node:path";
 import { randomInt } from "node:crypto";
 import type { AnswerCard, CardSummary, LayoutDocument } from "../../../shared/types";
 import { createDefaultCard } from "../../../shared/defaultCard";
+import { normalizeObjectiveAnswerKey } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 
 export const rootDir = process.cwd();
@@ -84,6 +85,9 @@ export async function saveCard(card: AnswerCard): Promise<AnswerCard> {
   const normalized: AnswerCard = {
     ...card,
     id: safeId(card.id),
+    bodyBlocks: card.bodyBlocks.map((block) =>
+      block.type === "objective" ? { ...block, answerKey: normalizeObjectiveAnswerKey(block) } : block
+    ),
     paper: { size: "A4", orientation: "portrait" },
     layoutVersion: 1,
     updatedAt: new Date().toISOString()

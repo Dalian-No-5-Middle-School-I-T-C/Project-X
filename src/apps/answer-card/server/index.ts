@@ -5,13 +5,17 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import type { AnswerCard } from "../../../shared/types";
+import { gradeObjectiveRecognition } from "../../../shared/grading";
+import type { AnswerCard, ObjectiveGradingBatchResult, ObjectiveRecognitionResult } from "../../../shared/types";
 import { createPdf } from "./pdf";
+import { recognizeObjectiveAnswers } from "./recognition";
 import {
   assetsDir,
   cardAssetsDir,
   createCard,
+  dataDir,
   ensureDataDirs,
+  layoutPath,
   listCards,
   readCard,
   readLayout,
@@ -22,6 +26,18 @@ import {
 
 function paramValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] : value ?? "";
+}
+
+function fieldValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return String(value[0] ?? "");
+  }
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function boolField(value: unknown): boolean {
+  const normalized = fieldValue(value).trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 export async function createApp(): Promise<express.Express> {
@@ -47,6 +63,23 @@ export async function createApp(): Promise<express.Express> {
       }
     }),
     limits: { fileSize: 12 * 1024 * 1024 }
+  });
+
+  const recognitionUpload = multer({
+    storage: multer.diskStorage({
+      destination: async (req, _file, cb) => {
+        const cardId = safeId(paramValue(req.params.cardId));
+        const dir = path.join(dataDir, "recognition", "uploads", cardId);
+        await mkdir(dir, { recursive: true });
+        cb(null, dir);
+      },
+      filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase() || ".png";
+        const name = `scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+        cb(null, name);
+      }
+    }),
+    limits: { fileSize: 20 * 1024 * 1024 }
   });
 
   app.get("/api/cards", async (_req, res, next) => {
@@ -96,6 +129,95 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       res.json(layout);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/cards/:cardId/recognition/objective", recognitionUpload.single("file"), async (req, res, next) => {
+    try {
+      const cardId = safeId(paramValue(req.params.cardId));
+      const card = await readCard(cardId);
+      if (!card) {
+        res.status(404).json({ message: "绛旈鍗′笉瀛樺湪" });
+        return;
+      }
+      if (!req.file) {
+        res.status(400).json({ message: "娌℃湁鏀跺埌鍥剧墖鏂囦欢" });
+        return;
+      }
+
+      await readLayout(cardId);
+      const pageNumber = Number(fieldValue(req.body.page || req.query.page) || "1");
+      const dpi = Number(fieldValue(req.body.dpi || req.query.dpi) || "300");
+      const debug = boolField(req.body.debug || req.query.debug);
+      const debugDir = debug ? path.join(dataDir, "processed", "recognition-debug", cardId, String(Date.now())) : undefined;
+      if (debugDir) {
+        await mkdir(debugDir, { recursive: true });
+      }
+
+      const result = await recognizeObjectiveAnswers({
+        imagePath: req.file.path,
+        layoutPath: layoutPath(cardId),
+        pageNumber: Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : 1,
+        dpi: Number.isFinite(dpi) && dpi > 0 ? dpi : 300,
+        debugDir
+      });
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files", 200), async (req, res, next) => {
+    try {
+      const cardId = safeId(paramValue(req.params.cardId));
+      const card = await readCard(cardId);
+      if (!card) {
+        res.status(404).json({ message: "答题卡不存在" });
+        return;
+      }
+
+      const files = Array.isArray(req.files) ? req.files : [];
+      if (files.length === 0) {
+        res.status(400).json({ message: "没有收到答题卡图片" });
+        return;
+      }
+
+      await readLayout(cardId);
+      const pageNumber = Number(fieldValue(req.body.page || req.query.page) || "1");
+      const dpi = Number(fieldValue(req.body.dpi || req.query.dpi) || "300");
+      const safePageNumber = Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : 1;
+      const safeDpi = Number.isFinite(dpi) && dpi > 0 ? dpi : 300;
+
+      const rows = [];
+      for (const file of files) {
+        try {
+          const recognition = (await recognizeObjectiveAnswers({
+            imagePath: file.path,
+            layoutPath: layoutPath(cardId),
+            pageNumber: safePageNumber,
+            dpi: safeDpi
+          })) as ObjectiveRecognitionResult;
+          rows.push(gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition));
+        } catch (error) {
+          const recognition: ObjectiveRecognitionResult = {
+            status: "failed",
+            imagePath: file.path,
+            pageNumber: safePageNumber,
+            message: error instanceof Error ? error.message : String(error),
+            questions: []
+          };
+          rows.push(gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition));
+        }
+      }
+
+      const result: ObjectiveGradingBatchResult = {
+        batchId: `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        cardId,
+        rows
+      };
+      res.json(result);
     } catch (error) {
       next(error);
     }
