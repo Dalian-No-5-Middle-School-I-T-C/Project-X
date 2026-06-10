@@ -373,4 +373,34 @@ export class FolderScannerDriver implements ScannerDriver {
 // 导出
 // ============================================================
 
+/**
+ * 扫描指定文件夹内的所有图片文件
+ */
+export async function scanFolder(folderPath: string): Promise<{ count: number; scans: ScanRecord[] }> {
+  const { readdirSync } = await import("node:fs");
+  if (!existsSync(folderPath)) {
+    throw new Error(`文件夹不存在: ${folderPath}`);
+  }
+
+  const entries = readdirSync(folderPath);
+  const imageFiles = entries
+    .map((f) => path.join(folderPath, f))
+    .filter((f) => {
+      const ext = path.extname(f).toLowerCase();
+      return IMAGE_EXTENSIONS.has(ext);
+    });
+
+  const scans: ScanRecord[] = [];
+  for (const filePath of imageFiles) {
+    try {
+      const scan = await processFile(filePath);
+      if (scan) scans.push(scan);
+    } catch (err) {
+      console.error(`[scanner] 处理文件失败 ${filePath}:`, err);
+    }
+  }
+
+  return { count: scans.length, scans };
+}
+
 export { IMAGE_EXTENSIONS };

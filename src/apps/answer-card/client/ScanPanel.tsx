@@ -10,7 +10,8 @@ import {
   AlertCircle,
   Loader,
   X,
-  ImagePlus
+  ImagePlus,
+  ScanLine
 } from "lucide-react";
 
 // ============================================================
@@ -91,6 +92,73 @@ export default function ScanPanel() {
   const [showSettings, setShowSettings] = useState(false);
   const [importPath, setImportPath] = useState("");
   const [importCardId, setImportCardId] = useState("");
+  const [scanFolderPath, setScanFolderPath] = useState("");
+  const [folderProgress, setFolderProgress] = useState("");
+
+  /** 调用 Windows 文件夹选择器，读取所有图片并上传 */
+  async function pickFolderAndUpload() {
+    try {
+      // 使用 File System Access API 打开文件夹选择器
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const dirHandle = await (window as any).showDirectoryPicker();
+      setFolderProgress("正在读取文件夹...");
+
+      const imageExts = new Set([".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".gif", ".webp"]);
+      const files: { file: File; name: string }[] = [];
+
+      // 递归读取文件夹中的图片（仅一层）
+      for await (const [name, handle] of dirHandle.entries()) {
+        if (handle.kind === "file") {
+          const ext = name.substring(name.lastIndexOf(".")).toLowerCase();
+          if (imageExts.has(ext)) {
+            const file = await handle.getFile();
+            files.push({ file, name });
+          }
+        }
+      }
+
+      if (files.length === 0) {
+        setFolderProgress("文件夹中没有图片文件");
+        setIsBusy(false);
+        return;
+      }
+
+      setFolderProgress(`正在上传 ${files.length} 个文件...`);
+      setIsBusy(true);
+
+      // 逐个上传
+      let successCount = 0;
+      for (let i = 0; i < files.length; i++) {
+        const { file } = files[i];
+        const formData = new FormData();
+        formData.append("file", file);
+        if (importCardId) formData.append("cardId", importCardId);
+
+        try {
+          await fetchJson("/api/scans/upload-file", {
+            method: "POST",
+            body: formData
+          });
+          successCount++;
+          setFolderProgress(`已上传 ${successCount}/${files.length}...`);
+        } catch (err) {
+          console.error(`上传 ${file.name} 失败:`, err);
+        }
+      }
+
+      setFolderProgress(`完成！成功导入 ${successCount}/${files.length} 个文件`);
+      await loadScans();
+    } catch (err) {
+      if ((err as Error).name === "AbortError") {
+        setFolderProgress("");
+      } else {
+        console.error("选择文件夹失败:", err);
+        setFolderProgress("选择文件夹失败，请重试");
+      }
+    } finally {
+      setIsBusy(false);
+    }
+  }
 
   // 加载扫描列表
   const loadScans = useCallback(async () => {
@@ -173,6 +241,26 @@ export default function ScanPanel() {
       await loadScans();
     } catch (err) {
       console.error("导入失败:", err);
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  // 扫描文件夹（批量导入文件夹内所有图片）
+  async function handleScanFolder() {
+    if (!scanFolderPath) return;
+    setIsBusy(true);
+    try {
+      await fetchJson("/api/scans/folder", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: scanFolderPath })
+      });
+      setScanFolderPath("");
+      await loadScans();
+    } catch (err) {
+      console.error("扫描文件夹失败:", err);
+      alert("扫描文件夹失败，请检查路径是否正确");
     } finally {
       setIsBusy(false);
     }
@@ -277,34 +365,64 @@ export default function ScanPanel() {
         </div>
       </div>
 
-      {/* 手动导入区 */}
+      {/* 扫描操作区 */}
       <div className="scan-import-bar">
-        <input
-          type="text"
-          placeholder="图片文件路径..."
-          value={importPath}
-          onChange={(e) => setImportPath(e.target.value)}
-          className="scan-path-input"
-        />
-        <select
-          value={importCardId}
-          onChange={(e) => setImportCardId(e.target.value)}
-          className="scan-card-select"
-        >
-          <option value="">自动匹配答题卡</option>
-          {cards.map((card) => (
-            <option key={card.id} value={card.id}>
-              {card.title} ({card.id})
-            </option>
-          ))}
-        </select>
-        <button
-          className="primary-button"
-          onClick={() => void handleImport()}
-          disabled={isBusy || !importPath}
-        >
-          <Upload size={16} /> 导入
-        </button>
+        <div className="scan-import-group">
+          <FolderOpen size={16} className="scan-icon" />
+          <button
+            className="primary-button"
+            onClick={() => void pickFolderAndUpload()}
+            disabled={isBusy}
+          >
+            <FolderOpen size={16} /> 选择文件夹
+          </button>
+          <span className="scan-or">或</span>
+          <input
+            type="text"
+            placeholder="手动输入文件夹路径后点扫描..."
+            value={scanFolderPath}
+            onChange={(e) => setScanFolderPath(e.target.value)}
+            className="scan-path-input"
+          />
+          <button
+            className="ghost-button"
+            onClick={() => void handleScanFolder()}
+            disabled={isBusy || !scanFolderPath}
+          >
+            <ScanLine size={16} /> 扫描
+          </button>
+        </div>
+        {folderProgress && <div className="scan-progress">{folderProgress}</div>}
+        <div className="scan-divider" />
+        <div className="scan-import-group">
+          <Upload size={16} className="scan-icon" />
+          <input
+            type="text"
+            placeholder="单个图片文件路径..."
+            value={importPath}
+            onChange={(e) => setImportPath(e.target.value)}
+            className="scan-path-input"
+          />
+          <select
+            value={importCardId}
+            onChange={(e) => setImportCardId(e.target.value)}
+            className="scan-card-select"
+          >
+            <option value="">自动匹配答题卡</option>
+            {cards.map((card) => (
+              <option key={card.id} value={card.id}>
+                {card.title} ({card.id})
+              </option>
+            ))}
+          </select>
+          <button
+            className="ghost-button"
+            onClick={() => void handleImport()}
+            disabled={isBusy || !importPath}
+          >
+            <Upload size={16} /> 导入
+          </button>
+        </div>
       </div>
 
       {/* 筛选 */}
@@ -493,16 +611,17 @@ export default function ScanPanel() {
             </div>
             <div className="modal-body">
               <label>
-                输入文件夹（扫描仪输出目录）
+                <span className="modal-label-text">输入文件夹（扫描仪输出目录）</span>
                 <input
                   type="text"
                   defaultValue={config?.config.input_folder || ""}
                   id="setting-input-folder"
-                  placeholder="例如: D:\Scans\AnswerCards"
+                  placeholder="例如: D:\\Scans\\AnswerCards"
                 />
+                <small className="modal-hint">将扫描仪输出文件夹设置为本程序的 input_folder，或手动导入图片文件。</small>
               </label>
               <label>
-                默认 DPI
+                <span className="modal-label-text">默认 DPI</span>
                 <input
                   type="number"
                   defaultValue={config?.config.default_dpi || "300"}
@@ -517,10 +636,10 @@ export default function ScanPanel() {
                   defaultChecked={config?.config.auto_recognize !== "false"}
                   id="setting-auto-recognize"
                 />
-                导入后自动识别
+                <span>导入后自动识别</span>
               </label>
               <label>
-                扫描仪驱动（预留，当前仅支持 folder 模式）
+                <span className="modal-label-text">扫描仪驱动</span>
                 <select
                   defaultValue={config?.config.scanner_driver || "folder"}
                   id="setting-scanner-driver"
@@ -536,6 +655,7 @@ export default function ScanPanel() {
                     柯达 SDK 直连（待开发）
                   </option>
                 </select>
+                <small className="modal-hint">当前仅支持 folder 模式</small>
               </label>
             </div>
             <div className="modal-footer">

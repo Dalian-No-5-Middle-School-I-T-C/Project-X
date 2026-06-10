@@ -1,7 +1,7 @@
 import express from "express";
 import multer from "multer";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
@@ -15,6 +15,7 @@ import {
   processFile,
   triggerRecognition,
   autoMatchCard,
+  scanFolder,
   type ScannerDriver
 } from "./scanner";
 import {
@@ -125,9 +126,15 @@ export async function createApp(): Promise<express.Express> {
 
   app.post("/api/cards", async (_req, res, next) => {
     try {
-      res.status(201).json(createCard());
+      const card = await createCard();
+      console.log(`[api] 新建答题卡: ${card.id}`);
+      res.status(201).json(card);
     } catch (error) {
-      next(error);
+      const msg = error instanceof Error ? error.message : String(error ?? "未知错误");
+      console.error("[api] 新建答题卡失败:", msg);
+      console.error(error instanceof Error ? error.stack : error);
+      // 直接返回，不走 next(error)
+      res.status(500).json({ message: msg });
     }
   });
 
@@ -287,6 +294,67 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       res.json(scan);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 扫描文件夹（批量导入）
+  app.post("/api/scans/folder", async (req, res, next) => {
+    try {
+      const folderPath = fieldValue(req.body.path);
+      if (!folderPath) {
+        res.status(400).json({ message: "请提供文件夹路径 (path)" });
+        return;
+      }
+      if (!existsSync(folderPath)) {
+        res.status(404).json({ message: `文件夹不存在: ${folderPath}` });
+        return;
+      }
+
+      const result = await scanFolder(folderPath);
+      res.status(201).json({ message: `已扫描 ${result.count} 个文件`, count: result.count, scans: result.scans });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 上传单个文件（浏览器文件夹选择器用）
+  const scanUpload = multer({
+    storage: multer.diskStorage({
+      destination: async (_req, _file, cb) => {
+        mkdirSync(scansDir, { recursive: true });
+        cb(null, scansDir);
+      },
+      filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase() || ".png";
+        cb(null, `upload_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`);
+      }
+    }),
+    limits: { fileSize: 30 * 1024 * 1024 }
+  });
+
+  app.post("/api/scans/upload-file", scanUpload.single("file"), async (req, res, next) => {
+    try {
+      if (!req.file) {
+        res.status(400).json({ message: "没有收到文件" });
+        return;
+      }
+
+      const cardId = fieldValue(req.body.cardId) || autoMatchCard() || undefined;
+      const dpi = Number(fieldValue(req.body.dpi) || getConfig("default_dpi") || "300");
+
+      const scan = await processFile(req.file.path, {
+        cardId,
+        dpi: Number.isFinite(dpi) ? dpi : 300
+      });
+
+      if (!scan) {
+        res.status(500).json({ message: "文件处理失败" });
+        return;
+      }
+
+      res.status(201).json(scan);
     } catch (error) {
       next(error);
     }
@@ -485,8 +553,12 @@ export async function createApp(): Promise<express.Express> {
   // ============================================================
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error(error);
-    res.status(500).json({ message: error instanceof Error ? error.message : "服务器错误" });
+    const message = error instanceof Error ? error.message : String(error ?? "未知错误");
+    const stack = error instanceof Error ? error.stack : undefined;
+    console.error("[api] 500 错误:", message);
+    if (stack) console.error(stack);
+    // 确保发送 JSON，不依赖类型推导
+    res.status(500).setHeader("Content-Type", "application/json; charset=utf-8").end(JSON.stringify({ message }));
   });
 
   return app;

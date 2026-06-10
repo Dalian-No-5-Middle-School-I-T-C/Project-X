@@ -113,6 +113,7 @@ function App() {
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [status, setStatus] = useState("准备就绪");
+  const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const [activeView, setActiveView] = useState<"design" | "scan">("design");
 
@@ -138,6 +139,18 @@ function App() {
       setSelectedBlockId(created.bodyBlocks[0]?.id ?? null);
       setStatus(`已创建答题卡 ${created.id}`);
       await refreshCards();
+    } catch (err) {
+      let msg = "未知错误";
+      if (err instanceof Error) {
+        try {
+          const parsed = JSON.parse(err.message);
+          msg = parsed.message || err.message;
+        } catch {
+          msg = err.message;
+        }
+      }
+      setError(`创建答题卡失败: ${msg}`);
+      console.error("创建答题卡失败:", err);
     } finally {
       setIsBusy(false);
     }
@@ -294,6 +307,12 @@ function App() {
       </aside>
 
       <section className="workspace">
+        {error && (
+          <div className="error-banner">
+            <span className="error-banner-text">{error}</span>
+            <button className="error-banner-close" onClick={() => setError(null)}>✕</button>
+          </div>
+        )}
         {activeView === "scan" ? (
           <ScanPanel />
         ) : (

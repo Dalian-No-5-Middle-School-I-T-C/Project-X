@@ -16,6 +16,13 @@
   --brand-soft: #e7f2ee;
   --blue: #315c8a;
   --shadow-sm: 0 8px 22px rgb(27 54 46 / 8%);
+  /* 扫描面板缺失的变量 */
+  --bg: #ffffff;
+  --bg-hover: #f6f9f7;
+  --border: #d7e0dc;
+  --primary: #23574d;
+  --text-secondary: #66746f;
+  --text-tertiary: #9aad9f;
 }
 
 * {
@@ -660,14 +667,44 @@ select:focus {
   color: #22c55e;
 }
 
-/* 手动导入栏 */
+/* 扫描/导入操作栏 */
 .scan-import-bar {
   display: flex;
-  gap: 8px;
-  padding: 10px 20px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 20px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-hover);
   flex-shrink: 0;
+}
+
+.scan-import-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scan-icon {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.scan-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 2px 0;
+}
+
+.scan-or {
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.scan-progress {
+  font-size: 12px;
+  color: var(--primary);
+  padding: 4px 0 0 24px;
 }
 
 .scan-path-input {
@@ -1000,9 +1037,21 @@ select:focus {
 .modal-body label {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   font-size: 13px;
   color: var(--text-secondary);
+  margin-bottom: 0;
+}
+
+.modal-label-text {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.modal-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  line-height: 1.4;
 }
 
 .modal-body input[type="text"],
@@ -1030,4 +1079,46 @@ select:focus {
 
 .danger:hover {
   background: #fee2e2 !important;
+}
+
+/* 错误横幅 */
+.error-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 24px;
+  background: #fff0f0;
+  border-bottom: 2px solid #e53e3e;
+  color: #c53030;
+  font-size: 14px;
+  font-weight: 600;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from { transform: translateY(-100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.error-banner-text {
+  flex: 1;
+  line-height: 1.5;
+}
+
+.error-banner-close {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: rgba(197, 48, 48, 0.1);
+  border-radius: 50%;
+  color: #c53030;
+  font-size: 14px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  margin-left: 16px;
+}
+
+.error-banner-close:hover {
+  background: rgba(197, 48, 48, 0.2);
 }

@@ -339,12 +339,18 @@ export function saveCard(card: AnswerCard): AnswerCard {
   );
 
   // 同时保存布局
-  saveLayout(normalized);
+  try {
+    saveLayout(normalized);
+  } catch (err) {
+    console.error("[database] saveLayout 失败:", err);
+    throw new Error(`布局生成失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   return normalized;
 }
 
-export function createCard(): AnswerCard {
+export async function createCard(): Promise<AnswerCard> {
+  await getDb(); // 确保数据库已初始化
   let id = "";
   for (let attempt = 0; attempt < 20; attempt += 1) {
     id = String(Math.floor(Math.random() * 100000000)).padStart(8, "0");
@@ -352,9 +358,14 @@ export function createCard(): AnswerCard {
     if (!exists) break;
   }
 
-  const card = createDefaultCard(id);
-  saveCard(card);
-  return card;
+  try {
+    const card = createDefaultCard(id);
+    saveCard(card);
+    return card;
+  } catch (err) {
+    console.error("[database] createCard 失败:", err);
+    throw err;
+  }
 }
 
 // ============================================================
