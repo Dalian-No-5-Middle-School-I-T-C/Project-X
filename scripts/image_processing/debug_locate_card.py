@@ -15,19 +15,10 @@ from vision_utils import (
 )
 
 import time
+from numpy import ndarray
 
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-
-# Replace this with a scan/photo generated from the same answer card layout.
-IMAGE_PATH = ROOT_DIR / "data" / "answer-card" / "processed" / "test_images" / "test_transform_1.png"
-LAYOUT_PATH = ROOT_DIR / "data" / "answer-card" / "layouts" / "63589964.json"
-PAGE_NUMBER = 1
-OUTPUT_DIR = ROOT_DIR / "data" / "answer-card" / "processed" / "debug"
-OUTPUT_DPI = 300
-
-
-def main() -> None:
+def main(IMAGE_PATH: Path, LAYOUT_PATH: Path, PAGE_NUMBER: int, OUTPUT_DIR: Path, OUTPUT_DPI: int, ret: bool = False) -> None | tuple[ndarray]:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     status = "ok"
     debug: dict[str, object] = {}
@@ -106,6 +97,8 @@ def main() -> None:
                 "inliers": inliers,
             },
         }
+        if ret:
+            return warped, debug_markers
 
     with (OUTPUT_DIR / "debug.json").open("w", encoding="utf-8") as file:
         json.dump(debug, file, ensure_ascii=False, indent=2)
@@ -119,4 +112,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    ROOT_DIR = Path(__file__).resolve().parents[2]
+
+    # Replace this with a scan/photo generated from the same answer card layout.
+    IMAGE_PATH = ROOT_DIR / "data" / "answer-card" / "processed" / "test_images" / "test_transform_1.png"
+    LAYOUT_PATH = ROOT_DIR / "data" / "answer-card" / "layouts" / "63589964.json"
+    PAGE_NUMBER = 1
+    OUTPUT_DIR = ROOT_DIR / "data" / "answer-card" / "processed" / "debug"
+    OUTPUT_DPI = 300
+    main(IMAGE_PATH, LAYOUT_PATH, PAGE_NUMBER, OUTPUT_DIR, OUTPUT_DPI)

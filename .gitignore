@@ -11,3 +11,11 @@ data/
 release/
 *.env
 *.pdf
+test*
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite
+*.egg-info/
