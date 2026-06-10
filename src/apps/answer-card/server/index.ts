@@ -5,7 +5,8 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import type { AnswerCard } from "../../../shared/types";
+import { gradeObjectiveRecognition } from "../../../shared/grading";
+import type { AnswerCard, ObjectiveGradingBatchResult, ObjectiveRecognitionResult } from "../../../shared/types";
 import { createPdf } from "./pdf";
 import { recognizeObjectiveAnswers } from "./recognition";
 import {
@@ -162,6 +163,60 @@ export async function createApp(): Promise<express.Express> {
         dpi: Number.isFinite(dpi) && dpi > 0 ? dpi : 300,
         debugDir
       });
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files", 200), async (req, res, next) => {
+    try {
+      const cardId = safeId(paramValue(req.params.cardId));
+      const card = await readCard(cardId);
+      if (!card) {
+        res.status(404).json({ message: "答题卡不存在" });
+        return;
+      }
+
+      const files = Array.isArray(req.files) ? req.files : [];
+      if (files.length === 0) {
+        res.status(400).json({ message: "没有收到答题卡图片" });
+        return;
+      }
+
+      await readLayout(cardId);
+      const pageNumber = Number(fieldValue(req.body.page || req.query.page) || "1");
+      const dpi = Number(fieldValue(req.body.dpi || req.query.dpi) || "300");
+      const safePageNumber = Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : 1;
+      const safeDpi = Number.isFinite(dpi) && dpi > 0 ? dpi : 300;
+
+      const rows = [];
+      for (const file of files) {
+        try {
+          const recognition = (await recognizeObjectiveAnswers({
+            imagePath: file.path,
+            layoutPath: layoutPath(cardId),
+            pageNumber: safePageNumber,
+            dpi: safeDpi
+          })) as ObjectiveRecognitionResult;
+          rows.push(gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition));
+        } catch (error) {
+          const recognition: ObjectiveRecognitionResult = {
+            status: "failed",
+            imagePath: file.path,
+            pageNumber: safePageNumber,
+            message: error instanceof Error ? error.message : String(error),
+            questions: []
+          };
+          rows.push(gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition));
+        }
+      }
+
+      const result: ObjectiveGradingBatchResult = {
+        batchId: `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        cardId,
+        rows
+      };
       res.json(result);
     } catch (error) {
       next(error);

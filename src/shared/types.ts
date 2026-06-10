@@ -163,3 +163,60 @@ export type LayoutDocument = {
   elements: LayoutElement[];
   warnings: string[];
 };
+
+export type ObjectiveRecognitionQuestion = {
+  questionNumber: number;
+  selectedOptions: string[];
+  confidence: number;
+  optionScores?: Record<string, number>;
+};
+
+export type ObjectiveRecognitionResult = {
+  status: "ok" | "partial" | "failed" | string;
+  cardId?: string;
+  imagePath?: string;
+  layoutPath?: string;
+  pageNumber?: number;
+  message?: string;
+  studentId?: {
+    status: "ok" | "failed" | string;
+    value: string | null;
+    digits?: unknown[];
+    failures?: unknown[];
+  };
+  quality?: Record<string, unknown>;
+  questions: ObjectiveRecognitionQuestion[];
+};
+
+export type ObjectiveQuestionGradeStatus = "correct" | "wrong" | "partial" | "missing_key" | "review";
+
+export type ObjectiveQuestionGrade = {
+  questionNumber: number;
+  selectedOptions: string[];
+  correctOptions: string[];
+  score: number;
+  maxScore: number;
+  confidence: number;
+  status: ObjectiveQuestionGradeStatus;
+  needsReview: boolean;
+  message?: string;
+};
+
+export type ObjectiveGradingRow = {
+  fileName: string;
+  studentId: string | null;
+  recognitionStatus: string;
+  score: number;
+  maxScore: number;
+  needsReviewCount: number;
+  issueCount: number;
+  message?: string;
+  questions: ObjectiveQuestionGrade[];
+  recognition: ObjectiveRecognitionResult;
+};
+
+export type ObjectiveGradingBatchResult = {
+  batchId: string;
+  cardId: string;
+  rows: ObjectiveGradingRow[];
+};

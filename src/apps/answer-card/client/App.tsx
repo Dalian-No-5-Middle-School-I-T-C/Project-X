@@ -2,13 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
+  ClipboardCheck,
+  Download,
   FileDown,
+  FolderOpen,
   ImagePlus,
   ListPlus,
   Plus,
   Save,
   SquarePen,
-  Trash2
+  Trash2,
+  Upload
 } from "lucide-react";
 import type {
   AnswerCard,
@@ -16,6 +20,8 @@ import type {
   CardSummary,
   LayoutDocument,
   ObjectiveBlock,
+  ObjectiveGradingBatchResult,
+  ObjectiveGradingRow,
   ObjectiveMode,
   PageRenderBlock,
   SubjectiveBlock,
@@ -23,6 +29,7 @@ import type {
   SubjectiveQuestion,
   SubjectiveStyle
 } from "../../../shared/types";
+import { normalizeObjectiveAnswerKey, objectiveQuestionNumbers, optionLabelsFor } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
 
@@ -54,6 +61,48 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
     throw new Error(text || response.statusText);
   }
   return (await response.json()) as T;
+}
+
+type AppMode = "design" | "grading";
+
+const directoryInputProps = {
+  webkitdirectory: "",
+  directory: ""
+} as Record<string, string>;
+
+function isImageFile(file: File): boolean {
+  return file.type.startsWith("image/") || /\.(png|jpe?g|bmp|webp|tiff?)$/i.test(file.name);
+}
+
+function answerText(options: string[]): string {
+  return options.length > 0 ? options.join("") : "-";
+}
+
+function downloadCsv(rows: ObjectiveGradingRow[], cardId: string) {
+  const header = ["文件名", "学号", "识别状态", "客观题得分", "客观题满分", "待复核题数", "异常数", "备注"];
+  const lines = [
+    header,
+    ...rows.map((row) => [
+      row.fileName,
+      row.studentId ?? "未识别",
+      row.recognitionStatus,
+      String(row.score),
+      String(row.maxScore),
+      String(row.needsReviewCount),
+      String(row.issueCount),
+      row.message ?? ""
+    ])
+  ];
+  const csv = lines.map((line) => line.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `成绩表_${cardId}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }
 
 function defaultObjective(start: number): ObjectiveBlock {
@@ -110,6 +159,9 @@ function App() {
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [mode, setMode] = useState<AppMode>("design");
+  const [gradingFiles, setGradingFiles] = useState<File[]>([]);
+  const [gradingResult, setGradingResult] = useState<ObjectiveGradingBatchResult | null>(null);
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
 
@@ -146,6 +198,7 @@ function App() {
       const loaded = await fetchJson<AnswerCard>(`/api/cards/${id}`);
       setCard(loaded);
       setSelectedBlockId(loaded.bodyBlocks[0]?.id ?? null);
+      setGradingResult(null);
       setStatus(`已载入 ${loaded.title}`);
     } finally {
       setIsBusy(false);
@@ -245,6 +298,46 @@ function App() {
     setStatus("图片已加入主观题，保存后写入答题卡配置");
   }
 
+  function addGradingFiles(files: FileList | null) {
+    if (!files) return;
+    const nextFiles = Array.from(files).filter(isImageFile);
+    setGradingFiles((current) => {
+      const seen = new Set(current.map((file) => `${file.name}_${file.size}_${file.lastModified}`));
+      return [
+        ...current,
+        ...nextFiles.filter((file) => {
+          const key = `${file.name}_${file.size}_${file.lastModified}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+      ];
+    });
+    if (nextFiles.length > 0) {
+      setStatus(`已加入 ${nextFiles.length} 张待阅卷图片`);
+    }
+  }
+
+  async function gradeObjectiveFiles() {
+    if (!card || gradingFiles.length === 0) return;
+    setIsBusy(true);
+    setStatus("正在识别并判选择题分...");
+    try {
+      const form = new FormData();
+      for (const file of gradingFiles) {
+        form.append("files", file);
+      }
+      const result = await fetchJson<ObjectiveGradingBatchResult>(`/api/cards/${card.id}/grading/objective`, {
+        method: "POST",
+        body: form
+      });
+      setGradingResult(result);
+      setStatus(`阅卷完成：${result.rows.length} 张，${result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0)} 题待复核`);
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   const selectedBlock = card?.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null;
 
   return (
@@ -281,6 +374,14 @@ function App() {
             <p>{card ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个坐标元素` : "创建答题卡后开始编辑"}</p>
           </div>
           <div className="topbar-actions">
+            <div className="mode-toggle" role="tablist" aria-label="工作模式">
+              <button className={mode === "design" ? "active" : ""} onClick={() => setMode("design")} type="button">
+                <SquarePen size={16} /> 设计
+              </button>
+              <button className={mode === "grading" ? "active" : ""} onClick={() => setMode("grading")} type="button">
+                <ClipboardCheck size={16} /> 阅卷
+              </button>
+            </div>
             {card && (
               <>
                 <a className="ghost-button" href={`/api/cards/${card.id}/layout`} target="_blank" rel="noreferrer">
@@ -297,7 +398,7 @@ function App() {
           </div>
         </header>
 
-        <div className="main-grid">
+        <div className={`main-grid ${mode === "design" ? "" : "hidden-panel"}`}>
           <section className="preview-panel">
             {card && layout ? <CardPreview card={card} layout={layout} /> : <div className="blank-preview">选择或新建答题卡</div>}
           </section>
@@ -388,13 +489,189 @@ function App() {
             )}
           </aside>
         </div>
+        <div className={`main-grid grading-grid ${mode === "grading" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel grading-results-panel">
+            <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
+          </section>
+
+          <aside className="inspector">
+            <section className="panel">
+              <div className="panel-title">
+                <ClipboardCheck size={17} /> 阅卷设置
+              </div>
+              <label>
+                答题卡 ID
+                <select value={card?.id ?? ""} onChange={(event) => void loadCard(event.target.value)} disabled={isBusy || cards.length === 0}>
+                  <option value="" disabled>
+                    请选择答题卡
+                  </option>
+                  {cards.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.title} / {item.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="split-actions">
+                <label className="upload-button">
+                  <Upload size={16} /> 导入图片
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={(event) => {
+                      addGradingFiles(event.target.files);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                </label>
+                <label className="upload-button">
+                  <FolderOpen size={16} /> 导入目录
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    {...directoryInputProps}
+                    onChange={(event) => {
+                      addGradingFiles(event.target.files);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+              <div className="file-queue">
+                <div>
+                  <strong>{gradingFiles.length}</strong>
+                  <span>张待阅卷图片</span>
+                </div>
+                <button className="ghost-button" type="button" onClick={() => setGradingFiles([])} disabled={gradingFiles.length === 0 || isBusy}>
+                  清空
+                </button>
+              </div>
+              {gradingFiles.length > 0 && (
+                <div className="queued-files">
+                  {gradingFiles.slice(0, 8).map((file) => (
+                    <span key={`${file.name}_${file.size}_${file.lastModified}`}>{file.webkitRelativePath || file.name}</span>
+                  ))}
+                  {gradingFiles.length > 8 && <span>还有 {gradingFiles.length - 8} 张...</span>}
+                </div>
+              )}
+              <button className="primary-button wide-button" onClick={() => void gradeObjectiveFiles()} disabled={!card || gradingFiles.length === 0 || isBusy}>
+                <ClipboardCheck size={17} /> 开始识别并判分
+              </button>
+              <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
+            </section>
+          </aside>
+        </div>
         <footer className="statusbar">{status}</footer>
       </section>
     </main>
   );
 }
 
+function GradingResults({
+  result,
+  onDownloadCsv
+}: {
+  result: ObjectiveGradingBatchResult | null;
+  onDownloadCsv: () => void;
+}) {
+  if (!result) {
+    return (
+      <div className="grading-empty">
+        <ClipboardCheck size={36} />
+        <h2>等待阅卷</h2>
+        <p>选择答题卡，导入答题卡图片或图片目录后开始识别。</p>
+      </div>
+    );
+  }
+
+  const totalScore = result.rows.reduce((sum, row) => sum + row.score, 0);
+  const totalReview = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
+  const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
+
+  return (
+    <div className="grading-results">
+      <div className="grading-results-header">
+        <div>
+          <h2>成绩表</h2>
+          <p>
+            {result.rows.length} 张答题卡 / 总客观题得分 {totalScore} / 待复核 {totalReview} 题 / 异常 {totalIssues} 处
+          </p>
+        </div>
+        <button className="primary-button" type="button" onClick={onDownloadCsv} disabled={result.rows.length === 0}>
+          <Download size={17} /> CSV
+        </button>
+      </div>
+      <div className="score-table">
+        <div className="score-table-head">
+          <span>文件</span>
+          <span>学号</span>
+          <span>状态</span>
+          <span>得分</span>
+          <span>复核</span>
+        </div>
+        {result.rows.map((row) => (
+          <details className="score-row" key={`${row.fileName}_${row.recognition.imagePath ?? row.fileName}`}>
+            <summary>
+              <span title={row.fileName}>{row.fileName}</span>
+              <span>{row.studentId ?? "未识别"}</span>
+              <span className={row.recognitionStatus === "ok" ? "status-ok" : "status-warn"}>{row.recognitionStatus}</span>
+              <span>
+                {row.score}/{row.maxScore}
+              </span>
+              <span>{row.needsReviewCount}</span>
+            </summary>
+            <div className="question-grade-list">
+              {row.message && <p className="row-message">{row.message}</p>}
+              {row.questions.map((question) => (
+                <div className={`question-grade ${question.needsReview || question.status === "missing_key" ? "needs-review" : ""}`} key={question.questionNumber}>
+                  <strong>{question.questionNumber}</strong>
+                  <span>标准 {answerText(question.correctOptions)}</span>
+                  <span>识别 {answerText(question.selectedOptions)}</span>
+                  <span>
+                    {question.score}/{question.maxScore}
+                  </span>
+                  <span>置信 {question.confidence.toFixed(3)}</span>
+                  <em>{question.message ?? question.status}</em>
+                </div>
+              ))}
+            </div>
+          </details>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange: (mutator: (block: BodyBlock) => void) => void }) {
+  const questions = objectiveQuestionNumbers(block);
+  const options = optionLabelsFor(block);
+  const answerKey = normalizeObjectiveAnswerKey(block);
+  const missingAnswerCount = questions.filter((questionNumber) => !answerKey[questionNumber]?.length).length;
+
+  function toggleAnswer(questionNumber: number, option: string) {
+    onChange((draft) => {
+      const objective = draft as ObjectiveBlock;
+      objective.answerKey = normalizeObjectiveAnswerKey(objective);
+      const current = new Set(objective.answerKey[questionNumber] ?? []);
+      if (objective.mode === "single") {
+        objective.answerKey[questionNumber] = current.has(option) ? [] : [option];
+      } else {
+        if (current.has(option)) {
+          current.delete(option);
+        } else {
+          current.add(option);
+        }
+        objective.answerKey[questionNumber] = Array.from(current).sort();
+      }
+      if (objective.answerKey[questionNumber].length === 0) {
+        delete objective.answerKey[questionNumber];
+      }
+      objective.answerKey = normalizeObjectiveAnswerKey(objective);
+    });
+  }
+
   return (
     <>
       <div className="panel-title">客观题机器阅卷块</div>
@@ -402,20 +679,84 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
         标题
         <input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
       </label>
+      <div className="answer-key-editor">
+        <div className="answer-key-title">
+          <strong>标准答案</strong>
+          <span>{missingAnswerCount === 0 ? "已全部配置" : `${missingAnswerCount} 题未配置`}</span>
+        </div>
+        <div className="answer-key-grid">
+          {questions.map((questionNumber) => (
+            <div className="answer-key-row" key={questionNumber}>
+              <span>{questionNumber}</span>
+              <div>
+                {options.map((option) => {
+                  const active = answerKey[questionNumber]?.includes(option) ?? false;
+                  return (
+                    <button
+                      key={option}
+                      type="button"
+                      className={active ? "active" : ""}
+                      onClick={() => toggleAnswer(questionNumber, option)}
+                      title={`第 ${questionNumber} 题 ${option} 选项`}
+                    >
+                      {option}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
       <div className="two-col">
         <label>
           起始题号
-          <input type="number" min={1} value={block.questionStart} onChange={(event) => onChange((draft) => void ((draft as ObjectiveBlock).questionStart = Number(event.target.value)))} />
+          <input
+            type="number"
+            min={1}
+            value={block.questionStart}
+            onChange={(event) =>
+              onChange((draft) => {
+                const objective = draft as ObjectiveBlock;
+                objective.questionStart = Number(event.target.value);
+                objective.answerKey = normalizeObjectiveAnswerKey(objective);
+              })
+            }
+          />
         </label>
         <label>
           题目数
-          <input type="number" min={1} max={120} value={block.questionCount} onChange={(event) => onChange((draft) => void ((draft as ObjectiveBlock).questionCount = Number(event.target.value)))} />
+          <input
+            type="number"
+            min={1}
+            max={120}
+            value={block.questionCount}
+            onChange={(event) =>
+              onChange((draft) => {
+                const objective = draft as ObjectiveBlock;
+                objective.questionCount = Number(event.target.value);
+                objective.answerKey = normalizeObjectiveAnswerKey(objective);
+              })
+            }
+          />
         </label>
       </div>
       <div className="two-col">
         <label>
           选项数
-          <input type="number" min={2} max={8} value={block.optionCount} onChange={(event) => onChange((draft) => void ((draft as ObjectiveBlock).optionCount = Number(event.target.value)))} />
+          <input
+            type="number"
+            min={2}
+            max={8}
+            value={block.optionCount}
+            onChange={(event) =>
+              onChange((draft) => {
+                const objective = draft as ObjectiveBlock;
+                objective.optionCount = Number(event.target.value);
+                objective.answerKey = normalizeObjectiveAnswerKey(objective);
+              })
+            }
+          />
         </label>
         <label>
           每题分值
@@ -424,7 +765,16 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
       </div>
       <label>
         题型
-        <select value={block.mode} onChange={(event) => onChange((draft) => void ((draft as ObjectiveBlock).mode = event.target.value as ObjectiveMode))}>
+        <select
+          value={block.mode}
+          onChange={(event) =>
+            onChange((draft) => {
+              const objective = draft as ObjectiveBlock;
+              objective.mode = event.target.value as ObjectiveMode;
+              objective.answerKey = normalizeObjectiveAnswerKey(objective);
+            })
+          }
+        >
           {Object.entries(modeLabels).map(([value, label]) => (
             <option key={value} value={value}>
               {label}

@@ -1,0 +1,175 @@
+import type {
+  AnswerCard,
+  ObjectiveBlock,
+  ObjectiveGradingRow,
+  ObjectiveQuestionGrade,
+  ObjectiveRecognitionQuestion,
+  ObjectiveRecognitionResult
+} from "./types";
+
+export const OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD = 0.12;
+
+const OPTION_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+
+function normalizeOptions(options: string[] | undefined, optionCount?: number): string[] {
+  const allowed = new Set(OPTION_LABELS.slice(0, optionCount ?? OPTION_LABELS.length));
+  return Array.from(new Set((options ?? []).map((item) => item.toUpperCase()).filter((item) => allowed.has(item)))).sort();
+}
+
+function sameOptions(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => item === right[index]);
+}
+
+function findObjectiveBlock(card: AnswerCard, questionNumber: number): ObjectiveBlock | null {
+  for (const block of card.bodyBlocks) {
+    if (block.type !== "objective") continue;
+    const first = block.questionStart;
+    const last = block.questionStart + block.questionCount - 1;
+    if (questionNumber >= first && questionNumber <= last) {
+      return block;
+    }
+  }
+  return null;
+}
+
+export function objectiveQuestionNumbers(block: ObjectiveBlock): number[] {
+  return Array.from({ length: block.questionCount }, (_, index) => block.questionStart + index);
+}
+
+export function optionLabelsFor(block: ObjectiveBlock): string[] {
+  return OPTION_LABELS.slice(0, block.optionCount);
+}
+
+export function normalizeObjectiveAnswerKey(block: ObjectiveBlock): Record<number, string[]> {
+  const normalized: Record<number, string[]> = {};
+  for (const questionNumber of objectiveQuestionNumbers(block)) {
+    const options = normalizeOptions(block.answerKey?.[questionNumber], block.optionCount);
+    if (block.mode === "single" && options.length > 1) {
+      normalized[questionNumber] = [options[0]];
+    } else if (options.length > 0) {
+      normalized[questionNumber] = options;
+    }
+  }
+  return normalized;
+}
+
+export function gradeObjectiveQuestion(
+  card: AnswerCard,
+  question: ObjectiveRecognitionQuestion,
+  confidenceThreshold = OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD
+): ObjectiveQuestionGrade {
+  const block = findObjectiveBlock(card, question.questionNumber);
+  const confidence = Number.isFinite(question.confidence) ? question.confidence : 0;
+  const selectedOptions = normalizeOptions(question.selectedOptions, block?.optionCount);
+  const needsReview = confidence < confidenceThreshold;
+
+  if (!block) {
+    return {
+      questionNumber: question.questionNumber,
+      selectedOptions,
+      correctOptions: [],
+      score: 0,
+      maxScore: 0,
+      confidence,
+      status: "review",
+      needsReview: true,
+      message: "题号不在当前答题卡的客观题范围内"
+    };
+  }
+
+  const maxScore = block.scorePerQuestion;
+  const correctOptions = normalizeOptions(block.answerKey?.[question.questionNumber], block.optionCount);
+  if (correctOptions.length === 0) {
+    return {
+      questionNumber: question.questionNumber,
+      selectedOptions,
+      correctOptions,
+      score: 0,
+      maxScore,
+      confidence,
+      status: "missing_key",
+      needsReview: true,
+      message: "未配置标准答案"
+    };
+  }
+
+  if (sameOptions(selectedOptions, correctOptions)) {
+    return {
+      questionNumber: question.questionNumber,
+      selectedOptions,
+      correctOptions,
+      score: maxScore,
+      maxScore,
+      confidence,
+      status: needsReview ? "review" : "correct",
+      needsReview,
+      message: needsReview ? "识别置信度偏低" : undefined
+    };
+  }
+
+  const selectedSet = new Set(selectedOptions);
+  const correctSet = new Set(correctOptions);
+  const hasWrongOrExtra = selectedOptions.some((option) => !correctSet.has(option));
+  const isSubset = selectedOptions.length > 0 && selectedOptions.every((option) => correctSet.has(option));
+  const canPartial = (block.mode === "multiple" || block.mode === "indefinite") && isSubset && !hasWrongOrExtra;
+  const partialScore = canPartial ? (block.multipleScoring?.partialScores[selectedOptions.length] ?? 0) : undefined;
+  const score = partialScore ?? block.multipleScoring?.wrongOrExtraScore ?? 0;
+
+  return {
+    questionNumber: question.questionNumber,
+    selectedOptions,
+    correctOptions,
+    score,
+    maxScore,
+    confidence,
+    status: score > 0 ? "partial" : needsReview ? "review" : "wrong",
+    needsReview,
+    message: needsReview ? "识别置信度偏低" : undefined
+  };
+}
+
+export function gradeObjectiveRecognition(
+  card: AnswerCard,
+  fileName: string,
+  recognition: ObjectiveRecognitionResult
+): ObjectiveGradingRow {
+  const questionMap = new Map(recognition.questions.map((question) => [question.questionNumber, question]));
+  const grades: ObjectiveQuestionGrade[] = [];
+
+  for (const block of card.bodyBlocks) {
+    if (block.type !== "objective") continue;
+    for (const questionNumber of objectiveQuestionNumbers(block)) {
+      const recognized = questionMap.get(questionNumber) ?? {
+        questionNumber,
+        selectedOptions: [],
+        confidence: 0
+      };
+      grades.push(gradeObjectiveQuestion(card, recognized));
+    }
+  }
+
+  const score = roundScore(grades.reduce((sum, item) => sum + item.score, 0));
+  const maxScore = roundScore(grades.reduce((sum, item) => sum + item.maxScore, 0));
+  const needsReviewCount = grades.filter((item) => item.needsReview).length;
+  const issueCount =
+    grades.filter((item) => item.status === "missing_key").length + (recognition.status === "ok" ? 0 : 1);
+  const studentId = recognition.studentId?.status === "ok" ? recognition.studentId.value : null;
+
+  return {
+    fileName,
+    studentId,
+    recognitionStatus: recognition.status,
+    score,
+    maxScore,
+    needsReviewCount,
+    issueCount,
+    message: recognition.message,
+    questions: grades,
+    recognition
+  };
+}
+
+function roundScore(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
