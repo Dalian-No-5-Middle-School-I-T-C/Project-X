@@ -7,11 +7,14 @@ import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import type { AnswerCard } from "../../../shared/types";
 import { createPdf } from "./pdf";
+import { recognizeObjectiveAnswers } from "./recognition";
 import {
   assetsDir,
   cardAssetsDir,
   createCard,
+  dataDir,
   ensureDataDirs,
+  layoutPath,
   listCards,
   readCard,
   readLayout,
@@ -22,6 +25,18 @@ import {
 
 function paramValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] : value ?? "";
+}
+
+function fieldValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return String(value[0] ?? "");
+  }
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function boolField(value: unknown): boolean {
+  const normalized = fieldValue(value).trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 export async function createApp(): Promise<express.Express> {
@@ -47,6 +62,23 @@ export async function createApp(): Promise<express.Express> {
       }
     }),
     limits: { fileSize: 12 * 1024 * 1024 }
+  });
+
+  const recognitionUpload = multer({
+    storage: multer.diskStorage({
+      destination: async (req, _file, cb) => {
+        const cardId = safeId(paramValue(req.params.cardId));
+        const dir = path.join(dataDir, "recognition", "uploads", cardId);
+        await mkdir(dir, { recursive: true });
+        cb(null, dir);
+      },
+      filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase() || ".png";
+        const name = `scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
+        cb(null, name);
+      }
+    }),
+    limits: { fileSize: 20 * 1024 * 1024 }
   });
 
   app.get("/api/cards", async (_req, res, next) => {
@@ -96,6 +128,41 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       res.json(layout);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/cards/:cardId/recognition/objective", recognitionUpload.single("file"), async (req, res, next) => {
+    try {
+      const cardId = safeId(paramValue(req.params.cardId));
+      const card = await readCard(cardId);
+      if (!card) {
+        res.status(404).json({ message: "绛旈鍗′笉瀛樺湪" });
+        return;
+      }
+      if (!req.file) {
+        res.status(400).json({ message: "娌℃湁鏀跺埌鍥剧墖鏂囦欢" });
+        return;
+      }
+
+      await readLayout(cardId);
+      const pageNumber = Number(fieldValue(req.body.page || req.query.page) || "1");
+      const dpi = Number(fieldValue(req.body.dpi || req.query.dpi) || "300");
+      const debug = boolField(req.body.debug || req.query.debug);
+      const debugDir = debug ? path.join(dataDir, "processed", "recognition-debug", cardId, String(Date.now())) : undefined;
+      if (debugDir) {
+        await mkdir(debugDir, { recursive: true });
+      }
+
+      const result = await recognizeObjectiveAnswers({
+        imagePath: req.file.path,
+        layoutPath: layoutPath(cardId),
+        pageNumber: Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : 1,
+        dpi: Number.isFinite(dpi) && dpi > 0 ? dpi : 300,
+        debugDir
+      });
+      res.json(result);
     } catch (error) {
       next(error);
     }

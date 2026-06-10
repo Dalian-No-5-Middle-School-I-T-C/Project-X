@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="answer-card-recognizer/answer-card-recognizer.vcxproj" Id="60dd1033-c795-459f-9ae2-d700bbda31b3" />
+</Solution>

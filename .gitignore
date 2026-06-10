@@ -19,5 +19,14 @@ __pycache__/
 *.db
 *.sqlite
 *.egg-info/
-native/
-resources/
+native/**/.vs/
+native/**/x64/
+native/**/*.vcxproj.user
+native/**/*.pdb
+native/**/*.ilk
+native/**/*.idb
+native/**/*.obj
+native/**/*.tlog/
+resources/native/win-x64/*.dll
+resources/native/win-x64/*.exe
+scripts/image_processing/

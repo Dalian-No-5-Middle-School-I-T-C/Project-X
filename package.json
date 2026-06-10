@@ -54,6 +54,15 @@
       "electron/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "resources/native/win-x64",
+        "to": "native/win-x64",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
     "asar": true,
     "win": {
       "icon": "build/icon.svg",
