@@ -9,6 +9,15 @@ import type { AnswerCard } from "../../../shared/types";
 import { createPdf } from "./pdf";
 import { recognizeObjectiveAnswers } from "./recognition";
 import {
+  startWatching,
+  stopWatching,
+  getWatcherStatus,
+  processFile,
+  triggerRecognition,
+  autoMatchCard,
+  type ScannerDriver
+} from "./scanner";
+import {
   assetsDir,
   cardAssetsDir,
   createCard,
@@ -20,8 +29,21 @@ import {
   readLayout,
   rootDir,
   safeId,
-  saveCard
-} from "./storage";
+  saveCard,
+  // 扫描相关
+  getScan,
+  listScans,
+  getScanCount,
+  updateScan,
+  getConfig,
+  setConfig,
+  getAllConfig,
+  scansDir,
+  thumbnailsDir,
+  closeDb,
+  type ScanRecord,
+  type ScanStatus
+} from "./database";
 
 function paramValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] : value ?? "";
@@ -44,8 +66,16 @@ export async function createApp(): Promise<express.Express> {
 
   await ensureDataDirs();
 
+  // 启动文件夹监听
+  startWatching((scan) => {
+    console.log(`[api] 新扫描记录已创建: ${scan.id} (${scan.file_name})`);
+  });
+
   app.use(express.json({ limit: "8mb" }));
   app.use("/assets", express.static(assetsDir));
+  // 提供扫描缩略图访问
+  app.use("/scans", express.static(scansDir));
+  app.use("/thumbnails", express.static(thumbnailsDir));
 
   const upload = multer({
     storage: multer.diskStorage({
@@ -81,9 +111,13 @@ export async function createApp(): Promise<express.Express> {
     limits: { fileSize: 20 * 1024 * 1024 }
   });
 
+  // ============================================================
+  // 答题卡 API（保持原有接口）
+  // ============================================================
+
   app.get("/api/cards", async (_req, res, next) => {
     try {
-      res.json(await listCards());
+      res.json(listCards());
     } catch (error) {
       next(error);
     }
@@ -91,7 +125,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.post("/api/cards", async (_req, res, next) => {
     try {
-      res.status(201).json(await createCard());
+      res.status(201).json(createCard());
     } catch (error) {
       next(error);
     }
@@ -99,7 +133,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/cards/:cardId", async (req, res, next) => {
     try {
-      const card = await readCard(paramValue(req.params.cardId));
+      const card = readCard(paramValue(req.params.cardId));
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -113,7 +147,7 @@ export async function createApp(): Promise<express.Express> {
   app.put("/api/cards/:cardId", async (req, res, next) => {
     try {
       const card = req.body as AnswerCard;
-      const saved = await saveCard({ ...card, id: safeId(paramValue(req.params.cardId)) });
+      const saved = saveCard({ ...card, id: safeId(paramValue(req.params.cardId)) });
       res.json(saved);
     } catch (error) {
       next(error);
@@ -122,7 +156,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/cards/:cardId/layout", async (req, res, next) => {
     try {
-      const layout = await readLayout(paramValue(req.params.cardId));
+      const layout = readLayout(paramValue(req.params.cardId));
       if (!layout) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -136,17 +170,17 @@ export async function createApp(): Promise<express.Express> {
   app.post("/api/cards/:cardId/recognition/objective", recognitionUpload.single("file"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
-      const card = await readCard(cardId);
+      const card = readCard(cardId);
       if (!card) {
-        res.status(404).json({ message: "绛旈鍗′笉瀛樺湪" });
+        res.status(404).json({ message: "答题卡不存在" });
         return;
       }
       if (!req.file) {
-        res.status(400).json({ message: "娌℃湁鏀跺埌鍥剧墖鏂囦欢" });
+        res.status(400).json({ message: "没有收到图片文件" });
         return;
       }
 
-      await readLayout(cardId);
+      readLayout(cardId);
       const pageNumber = Number(fieldValue(req.body.page || req.query.page) || "1");
       const dpi = Number(fieldValue(req.body.dpi || req.query.dpi) || "300");
       const debug = boolField(req.body.debug || req.query.debug);
@@ -171,7 +205,7 @@ export async function createApp(): Promise<express.Express> {
   app.post("/api/cards/:cardId/assets", upload.single("file"), async (req, res, next) => {
     try {
       const cardId = paramValue(req.params.cardId);
-      const card = await readCard(cardId);
+      const card = readCard(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -192,7 +226,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/cards/:cardId/pdf", async (req, res, next) => {
     try {
-      const card = await readCard(paramValue(req.params.cardId));
+      const card = readCard(paramValue(req.params.cardId));
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -212,6 +246,230 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  // ============================================================
+  // 扫描管理 API（新增）
+  // ============================================================
+
+  // 获取扫描列表
+  app.get("/api/scans", async (req, res, next) => {
+    try {
+      const cardId = paramValue(req.query.cardId) || undefined;
+      const status = paramValue(req.query.status) as ScanStatus | undefined;
+      const studentId = paramValue(req.query.studentId) || undefined;
+      const limit = Number(paramValue(req.query.limit) || "50");
+      const offset = Number(paramValue(req.query.offset) || "0");
+
+      const scans = listScans({
+        cardId: cardId || undefined,
+        status: status || undefined,
+        studentId: studentId || undefined,
+        limit: Number.isFinite(limit) ? limit : 50,
+        offset: Number.isFinite(offset) ? offset : 0
+      });
+
+      const total = getScanCount({
+        cardId: cardId || undefined,
+        status: status || undefined
+      });
+
+      res.json({ scans, total });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 获取单条扫描记录
+  app.get("/api/scans/:scanId", async (req, res, next) => {
+    try {
+      const scan = getScan(paramValue(req.params.scanId));
+      if (!scan) {
+        res.status(404).json({ message: "扫描记录不存在" });
+        return;
+      }
+      res.json(scan);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 手动导入文件
+  app.post("/api/scans/import", async (req, res, next) => {
+    try {
+      const filePath = fieldValue(req.body.path);
+      const cardId = fieldValue(req.body.cardId) || autoMatchCard() || undefined;
+      const dpi = Number(fieldValue(req.body.dpi) || getConfig("default_dpi") || "300");
+      const skipRecognition = boolField(req.body.skipRecognition);
+
+      if (!filePath) {
+        res.status(400).json({ message: "请提供文件路径 (path)" });
+        return;
+      }
+      if (!existsSync(filePath)) {
+        res.status(404).json({ message: `文件不存在: ${filePath}` });
+        return;
+      }
+
+      const scan = await processFile(filePath, {
+        cardId,
+        dpi: Number.isFinite(dpi) ? dpi : 300,
+        skipRecognition
+      });
+
+      if (!scan) {
+        res.status(500).json({ message: "文件处理失败" });
+        return;
+      }
+
+      res.status(201).json(scan);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 手动触发识别
+  app.post("/api/scans/:scanId/recognize", async (req, res, next) => {
+    try {
+      const scanId = paramValue(req.params.scanId);
+      const scan = getScan(scanId);
+      if (!scan) {
+        res.status(404).json({ message: "扫描记录不存在" });
+        return;
+      }
+
+      const cardId = fieldValue(req.body.cardId) || scan.card_id;
+      if (!cardId) {
+        res.status(400).json({ message: "请指定答题卡 ID (cardId)" });
+        return;
+      }
+
+      const dpi = Number(fieldValue(req.body.dpi) || scan.dpi || "300");
+
+      // 异步执行识别
+      triggerRecognition(scanId, cardId, dpi).catch((err) => {
+        console.error(`[api] 识别触发失败:`, err);
+      });
+
+      res.json({ message: "识别已触发", scanId, cardId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 更新扫描记录（手动修正学号等）
+  app.patch("/api/scans/:scanId", async (req, res, next) => {
+    try {
+      const scanId = paramValue(req.params.scanId);
+      const existing = getScan(scanId);
+      if (!existing) {
+        res.status(404).json({ message: "扫描记录不存在" });
+        return;
+      }
+
+      const updates: Partial<ScanRecord> = {};
+      if (req.body.card_id !== undefined) updates.card_id = fieldValue(req.body.card_id) || null;
+      if (req.body.student_id !== undefined) updates.student_id = fieldValue(req.body.student_id) || null;
+      if (req.body.student_name !== undefined) updates.student_name = fieldValue(req.body.student_name) || null;
+      if (req.body.class_name !== undefined) updates.class_name = fieldValue(req.body.class_name) || null;
+      if (req.body.page_number !== undefined) updates.page_number = Number(req.body.page_number) || 1;
+      if (req.body.status !== undefined) updates.status = fieldValue(req.body.status) as ScanStatus;
+
+      const updated = updateScan(scanId, updates);
+      res.json(updated);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 删除扫描记录
+  app.delete("/api/scans/:scanId", async (req, res, next) => {
+    try {
+      const scanId = paramValue(req.params.scanId);
+      const scan = getScan(scanId);
+      if (!scan) {
+        res.status(404).json({ message: "扫描记录不存在" });
+        return;
+      }
+
+      // 清理文件
+      try {
+        const { unlink } = await import("node:fs/promises");
+        if (existsSync(scan.stored_path)) await unlink(scan.stored_path);
+        if (scan.thumbnail_path && existsSync(scan.thumbnail_path)) await unlink(scan.thumbnail_path);
+      } catch (cleanupErr) {
+        console.warn(`[api] 清理扫描文件失败:`, cleanupErr);
+      }
+
+      // 数据库标记为已删除（软删除，实际是更新状态）
+      updateScan(scanId, {
+        status: "error",
+        error_message: "用户已删除"
+      });
+
+      res.json({ message: "已删除" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ============================================================
+  // 扫描配置 API
+  // ============================================================
+
+  // 获取所有配置
+  app.get("/api/scans/config", async (_req, res, next) => {
+    try {
+      const config = getAllConfig();
+      const status = getWatcherStatus();
+      res.json({ config, watcher: status });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 更新配置
+  app.put("/api/scans/config", async (req, res, next) => {
+    try {
+      const updates: Record<string, string> = {};
+      if (req.body.input_folder !== undefined) updates.input_folder = fieldValue(req.body.input_folder);
+      if (req.body.auto_recognize !== undefined) updates.auto_recognize = boolField(req.body.auto_recognize) ? "true" : "false";
+      if (req.body.default_dpi !== undefined) updates.default_dpi = String(Number(req.body.default_dpi) || 300);
+
+      for (const [key, value] of Object.entries(updates)) {
+        setConfig(key, value);
+      }
+
+      // 如果 input_folder 变了，重启监听
+      if (updates.input_folder) {
+        await stopWatching();
+        startWatching((scan) => {
+          console.log(`[api] 新扫描记录: ${scan.id}`);
+        });
+      }
+
+      res.json({ config: getAllConfig(), watcher: getWatcherStatus() });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 获取扫描仪状态（预留接口）
+  app.get("/api/scanner/status", async (_req, res, next) => {
+    try {
+      const driverType = getConfig("scanner_driver") || "folder";
+      res.json({
+        driver: driverType,
+        watcher: getWatcherStatus(),
+        supportedDrivers: ["folder", "twain", "wia", "kodak_sdk"]
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ============================================================
+  // 静态文件 & SPA fallback
+  // ============================================================
+
   const clientDist = process.env.ANSWER_CARD_CLIENT_DIST
     ? path.resolve(process.env.ANSWER_CARD_CLIENT_DIST)
     : path.join(rootDir, "dist", "client");
@@ -221,6 +479,10 @@ export async function createApp(): Promise<express.Express> {
       res.sendFile(path.join(clientDist, "index.html"));
     });
   }
+
+  // ============================================================
+  // 错误处理
+  // ============================================================
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(error);
@@ -238,8 +500,22 @@ export async function startServer(port = Number(process.env.PORT ?? 5174)): Prom
       const address = server.address();
       const actualPort = typeof address === "object" && address ? address.port : port;
       console.log(`Answer card designer API running at http://127.0.0.1:${actualPort}`);
-      resolve(server);
+
+      // 优雅关闭
+      const gracefulShutdown = () => {
+        console.log("[api] 正在关闭...");
+        void stopWatching();
+        closeDb();
+        server.close(() => {
+          console.log("[api] 服务器已关闭");
+          process.exit(0);
+        });
+      };
+
+      process.on("SIGINT", gracefulShutdown);
+      process.on("SIGTERM", gracefulShutdown);
     });
+    resolve(server);
   });
 }
 

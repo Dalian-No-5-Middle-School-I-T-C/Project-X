@@ -7,9 +7,11 @@ import {
   ListPlus,
   Plus,
   Save,
+  ScanLine,
   SquarePen,
   Trash2
 } from "lucide-react";
+import ScanPanel from "./ScanPanel";
 import type {
   AnswerCard,
   BodyBlock,
@@ -112,6 +114,7 @@ function App() {
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
+  const [activeView, setActiveView] = useState<"design" | "scan">("design");
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
@@ -256,9 +259,25 @@ function App() {
             <span>Project-X v1</span>
           </div>
         </div>
-        <button className="primary-button" onClick={createCard} disabled={isBusy}>
-          <Plus size={17} /> 新建答题卡
-        </button>
+        <div className="nav-tabs">
+          <button
+            className={`nav-tab ${activeView === "design" ? "active" : ""}`}
+            onClick={() => setActiveView("design")}
+          >
+            <SquarePen size={16} /> 设计
+          </button>
+          <button
+            className={`nav-tab ${activeView === "scan" ? "active" : ""}`}
+            onClick={() => setActiveView("scan")}
+          >
+            <ScanLine size={16} /> 扫描
+          </button>
+        </div>
+        {activeView === "design" && (
+          <button className="primary-button" onClick={createCard} disabled={isBusy}>
+            <Plus size={17} /> 新建答题卡
+          </button>
+        )}
         <div className="card-list">
           {cards.map((item) => (
             <button
@@ -275,7 +294,11 @@ function App() {
       </aside>
 
       <section className="workspace">
-        <header className="topbar">
+        {activeView === "scan" ? (
+          <ScanPanel />
+        ) : (
+          <>
+            <header className="topbar">
           <div>
             <h1>{card?.title ?? "答题卡设计器"}</h1>
             <p>{card ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个坐标元素` : "创建答题卡后开始编辑"}</p>
@@ -389,6 +412,8 @@ function App() {
           </aside>
         </div>
         <footer className="statusbar">{status}</footer>
+          </>
+        )}
       </section>
     </main>
   );
