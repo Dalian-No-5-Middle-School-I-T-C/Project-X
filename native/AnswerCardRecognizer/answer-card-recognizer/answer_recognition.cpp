@@ -5,7 +5,9 @@
 #include "vision_utils.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <optional>
@@ -19,6 +21,20 @@ constexpr double MIN_SELECTED_OVER_BACKGROUND = 0.10;
 constexpr double MAX_DYNAMIC_SELECTION_THRESHOLD = 0.75;
 constexpr double MIN_LEAD_GAP = 0.06;
 constexpr double OPTION_INNER_MARGIN_RATIO = 0.18;
+constexpr double SCORE_CELL_MARGIN_RATIO = 0.03;
+constexpr double MIN_RED_RATIO = 0.012;
+constexpr double MIN_LINE_EXTENT_RATIO = 0.52;
+constexpr double MAX_LINE_MEAN_ERROR_RATIO = 0.075;
+constexpr double MAX_LINE_MAX_ERROR_RATIO = 0.22;
+
+struct ScoreCellSample {
+    SubjectiveScoreCell cell;
+    bool has_red = false;
+    bool valid = false;
+    double confidence = 0;
+    json metrics = json::object();
+    std::string reason;
+};
 
 json rect_to_json(const Rect& rect) {
     return {
@@ -42,6 +58,27 @@ std::tuple<int, int, int, int> rect_to_bounds(const Rect& rect, int dpi, int ima
     y1 += inset_y;
     x2 -= inset_x;
     y2 -= inset_y;
+
+    const int left = std::max(0, std::min(image_width - 1, static_cast<int>(std::llround(x1))));
+    const int top = std::max(0, std::min(image_height - 1, static_cast<int>(std::llround(y1))));
+    const int right = std::max(left + 1, std::min(image_width, static_cast<int>(std::llround(x2))));
+    const int bottom = std::max(top + 1, std::min(image_height, static_cast<int>(std::llround(y2))));
+    return {left, top, right, bottom};
+}
+
+std::tuple<int, int, int, int> rect_to_outer_bounds(const Rect& rect, int dpi, int image_width, int image_height, double padding_ratio) {
+    const double scale = static_cast<double>(dpi) / 25.4;
+    double x1 = rect.x * scale;
+    double y1 = rect.y * scale;
+    double x2 = (rect.x + rect.width) * scale;
+    double y2 = (rect.y + rect.height) * scale;
+
+    const double pad_x = std::max(1.0, (x2 - x1) * padding_ratio);
+    const double pad_y = std::max(1.0, (y2 - y1) * padding_ratio);
+    x1 -= pad_x;
+    y1 -= pad_y;
+    x2 += pad_x;
+    y2 += pad_y;
 
     const int left = std::max(0, std::min(image_width - 1, static_cast<int>(std::llround(x1))));
     const int top = std::max(0, std::min(image_height - 1, static_cast<int>(std::llround(y1))));
@@ -106,6 +143,158 @@ json sample_student_digit(const cv::Mat& warped, const StudentDigit& digit, int 
     json result = sample_rect(warped, digit.rect, dpi, OPTION_INNER_MARGIN_RATIO);
     result["digit"] = digit.digit;
     return result;
+}
+
+bool is_half_score(double value) {
+    return std::abs(value - 0.5) < 0.001;
+}
+
+bool is_tens_score(double value) {
+    return value >= 10.0 && std::abs(std::fmod(value, 10.0)) < 0.001;
+}
+
+bool is_whole_score(double value) {
+    return std::abs(value - std::round(value)) < 0.001;
+}
+
+json score_cell_to_json(const SubjectiveScoreCell& cell, const json& metrics = json::object(), const std::string& reason = "") {
+    json payload = {
+        {"blockId", cell.block_id},
+        {"questionId", cell.question_id},
+        {"questionNumber", cell.question_number},
+        {"score", round_to(cell.score, 3)},
+        {"rect", rect_to_json(cell.rect)},
+    };
+    if (!metrics.empty()) {
+        payload["metrics"] = metrics;
+    }
+    if (!reason.empty()) {
+        payload["reason"] = reason;
+    }
+    return payload;
+}
+
+ScoreCellSample sample_score_cell(const cv::Mat& warped, const SubjectiveScoreCell& cell, int dpi) {
+    ScoreCellSample sample;
+    sample.cell = cell;
+
+    cv::Mat bgr;
+    if (warped.channels() == 1) {
+        cv::cvtColor(warped, bgr, cv::COLOR_GRAY2BGR);
+    } else {
+        bgr = warped;
+    }
+
+    const auto [left, top, right, bottom] = rect_to_outer_bounds(cell.rect, dpi, bgr.cols, bgr.rows, SCORE_CELL_MARGIN_RATIO);
+    const cv::Mat roi = bgr(cv::Rect(left, top, right - left, bottom - top));
+    if (roi.empty()) {
+        sample.reason = "empty_roi";
+        return sample;
+    }
+
+    cv::Mat hsv;
+    cv::cvtColor(roi, hsv, cv::COLOR_BGR2HSV);
+    cv::Mat red_low;
+    cv::Mat red_high;
+    cv::inRange(hsv, cv::Scalar(0, 55, 55), cv::Scalar(12, 255, 255), red_low);
+    cv::inRange(hsv, cv::Scalar(165, 55, 55), cv::Scalar(180, 255, 255), red_high);
+    cv::Mat red_mask = red_low | red_high;
+
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3, 3));
+    cv::morphologyEx(red_mask, red_mask, cv::MORPH_OPEN, kernel);
+    cv::morphologyEx(red_mask, red_mask, cv::MORPH_CLOSE, kernel);
+
+    const int red_pixels = cv::countNonZero(red_mask);
+    const double red_ratio = static_cast<double>(red_pixels) / static_cast<double>(red_mask.total());
+    sample.has_red = red_ratio >= MIN_RED_RATIO;
+
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(red_mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    std::vector<cv::Point> points;
+    int component_count = 0;
+    const double min_area = std::max(6.0, static_cast<double>(red_mask.total()) * 0.0025);
+    for (const auto& contour : contours) {
+        const double area = cv::contourArea(contour);
+        if (area < min_area) {
+            continue;
+        }
+        component_count += 1;
+        for (const auto& point : contour) {
+            points.push_back(point);
+        }
+    }
+
+    if (red_pixels > 0 && points.size() < static_cast<size_t>(red_pixels)) {
+        std::vector<cv::Point> mask_points;
+        cv::findNonZero(red_mask, mask_points);
+        points = mask_points;
+    }
+
+    double extent_ratio = 0;
+    double mean_error_ratio = 1;
+    double max_error_ratio = 1;
+    double line_quality = 0;
+    if (points.size() >= 8) {
+        cv::Vec4f line;
+        cv::fitLine(points, line, cv::DIST_L2, 0, 0.01, 0.01);
+        const double vx = line[0];
+        const double vy = line[1];
+        const double x0 = line[2];
+        const double y0 = line[3];
+        double min_projection = std::numeric_limits<double>::max();
+        double max_projection = std::numeric_limits<double>::lowest();
+        double error_sum = 0;
+        double max_error = 0;
+        for (const auto& point : points) {
+            const double dx = point.x - x0;
+            const double dy = point.y - y0;
+            const double projection = dx * vx + dy * vy;
+            const double distance = std::abs(dx * vy - dy * vx);
+            min_projection = std::min(min_projection, projection);
+            max_projection = std::max(max_projection, projection);
+            error_sum += distance;
+            max_error = std::max(max_error, distance);
+        }
+        const double diagonal = std::hypot(static_cast<double>(roi.cols), static_cast<double>(roi.rows));
+        extent_ratio = diagonal > 0 ? (max_projection - min_projection) / diagonal : 0;
+        mean_error_ratio = diagonal > 0 ? (error_sum / static_cast<double>(points.size())) / diagonal : 1;
+        max_error_ratio = diagonal > 0 ? max_error / diagonal : 1;
+        const double error_quality = std::max(0.0, 1.0 - mean_error_ratio / MAX_LINE_MEAN_ERROR_RATIO);
+        const double extent_quality = std::min(1.0, extent_ratio / MIN_LINE_EXTENT_RATIO);
+        line_quality = std::max(0.0, std::min(1.0, (error_quality + extent_quality) / 2.0));
+    }
+
+    sample.metrics = {
+        {"redRatio", round_to(red_ratio, 4)},
+        {"componentCount", component_count},
+        {"pointCount", points.size()},
+        {"extentRatio", round_to(extent_ratio, 4)},
+        {"meanErrorRatio", round_to(mean_error_ratio, 4)},
+        {"maxErrorRatio", round_to(max_error_ratio, 4)},
+        {"sampleBounds", {{"left", left}, {"top", top}, {"right", right}, {"bottom", bottom}}},
+    };
+
+    if (!sample.has_red) {
+        sample.reason = "no_red_line";
+        return sample;
+    }
+    if (component_count != 1) {
+        sample.reason = component_count == 0 ? "red_noise_only" : "multiple_red_components";
+        return sample;
+    }
+    if (extent_ratio < MIN_LINE_EXTENT_RATIO) {
+        sample.reason = "red_mark_does_not_cross_cell";
+        return sample;
+    }
+    if (mean_error_ratio > MAX_LINE_MEAN_ERROR_RATIO || max_error_ratio > MAX_LINE_MAX_ERROR_RATIO) {
+        sample.reason = "red_mark_is_not_single_straight_line";
+        return sample;
+    }
+
+    sample.valid = true;
+    sample.confidence = round_to(line_quality, 4);
+    return sample;
 }
 
 std::tuple<std::vector<std::string>, double, json> selected_options(const std::vector<json>& options) {
@@ -262,6 +451,119 @@ json build_student_id(const std::vector<std::pair<StudentDigit, json>>& digit_re
     };
 }
 
+json build_subjective_questions(const std::vector<ScoreCellSample>& samples) {
+    std::map<std::string, std::vector<ScoreCellSample>> by_question;
+    for (const auto& sample : samples) {
+        const std::string key = sample.cell.block_id + "\n" + sample.cell.question_id + "\n" + sample.cell.question_number;
+        by_question[key].push_back(sample);
+    }
+
+    json questions = json::array();
+    for (auto& [_, question_samples] : by_question) {
+        if (question_samples.empty()) {
+            continue;
+        }
+        std::sort(question_samples.begin(), question_samples.end(), [](const auto& left, const auto& right) {
+            return left.cell.score > right.cell.score;
+        });
+
+        const auto& first = question_samples.front().cell;
+        const double max_score = first.max_score;
+        json valid_cells = json::array();
+        json invalid_cells = json::array();
+        std::vector<ScoreCellSample> valid_samples;
+        for (const auto& sample : question_samples) {
+            if (sample.valid) {
+                valid_samples.push_back(sample);
+                valid_cells.push_back(score_cell_to_json(sample.cell, sample.metrics));
+            } else if (sample.has_red) {
+                invalid_cells.push_back(score_cell_to_json(sample.cell, sample.metrics, sample.reason));
+            }
+        }
+
+        std::string status = "ok";
+        std::optional<std::string> message;
+        double score = 0;
+
+        if (valid_samples.empty()) {
+            status = "invalid";
+            message = "no_valid_subjective_score";
+        } else {
+            std::vector<double> half_scores;
+            std::vector<double> base_scores;
+            std::vector<double> tens_scores;
+            std::vector<double> ones_scores;
+
+            for (const auto& sample : valid_samples) {
+                const double value = sample.cell.score;
+                if (is_half_score(value)) {
+                    half_scores.push_back(value);
+                } else if (max_score > 16.0) {
+                    if (is_tens_score(value)) {
+                        tens_scores.push_back(value);
+                    } else if (value >= 0.0 && value <= 9.0 && is_whole_score(value)) {
+                        ones_scores.push_back(value);
+                    } else {
+                        base_scores.push_back(value);
+                    }
+                } else {
+                    base_scores.push_back(value);
+                }
+            }
+
+            if (max_score > 16.0) {
+                if (tens_scores.size() > 1 || ones_scores.size() > 1 || half_scores.size() > 1 || !base_scores.empty()) {
+                    status = "invalid";
+                    message = "invalid_subjective_score_combination";
+                } else {
+                    score =
+                        (tens_scores.empty() ? 0.0 : tens_scores.front()) +
+                        (ones_scores.empty() ? 0.0 : ones_scores.front()) +
+                        (half_scores.empty() ? 0.0 : half_scores.front());
+                }
+            } else {
+                if (base_scores.size() > 1 || half_scores.size() > 1) {
+                    status = "invalid";
+                    message = "invalid_subjective_score_combination";
+                } else {
+                    score =
+                        (base_scores.empty() ? 0.0 : base_scores.front()) +
+                        (half_scores.empty() ? 0.0 : half_scores.front());
+                }
+            }
+
+            if (status == "ok" && score > max_score + 0.001) {
+                status = "invalid";
+                message = "subjective_score_exceeds_max";
+            }
+        }
+
+        double confidence = 0.0;
+        if (!valid_samples.empty()) {
+            confidence = std::accumulate(valid_samples.begin(), valid_samples.end(), 0.0, [](double sum, const auto& sample) {
+                return sum + sample.confidence;
+            }) / static_cast<double>(valid_samples.size());
+        }
+
+        json question = {
+            {"blockId", first.block_id},
+            {"questionId", first.question_id},
+            {"questionNumber", first.question_number},
+            {"score", status == "ok" ? json(round_to(score, 3)) : json(0)},
+            {"maxScore", round_to(max_score, 3)},
+            {"status", status},
+            {"validCells", valid_cells},
+            {"invalidCells", invalid_cells},
+            {"confidence", round_to(confidence, 4)},
+        };
+        if (message) {
+            question["message"] = *message;
+        }
+        questions.push_back(question);
+    }
+    return questions;
+}
+
 json quality_payload(const std::vector<MarkerCandidate>& candidates, const std::vector<MarkerMatch>& matches, const std::vector<std::string>& missing_roles, const std::vector<double>& reprojection_errors, const std::vector<int>& inliers) {
     json errors = json::array();
     for (const double error : reprojection_errors) {
@@ -293,6 +595,7 @@ json failed_result(const std::string& message, const std::filesystem::path& imag
         {"message", message},
         {"quality", quality},
         {"questions", json::array()},
+        {"subjectiveQuestions", json::array()},
     };
 }
 
@@ -319,8 +622,8 @@ json recognize_objective_answers(
 ) {
     try {
         const LayoutPage layout_page = load_layout_page(layout_path, page_number);
-        if (layout_page.objective_options.empty()) {
-            return failed_result("Layout page has no objective options.", image_path, layout_path, page_number);
+        if (layout_page.objective_options.empty() && layout_page.subjective_score_cells.empty()) {
+            return failed_result("Layout page has no recognizable answer or score cells.", image_path, layout_path, page_number);
         }
 
         cv::Mat image = read_image(image_path);
@@ -349,6 +652,11 @@ json recognize_objective_answers(
             option_results.emplace_back(option, sample_option(warped, option, output_dpi));
         }
 
+        std::vector<ScoreCellSample> score_cell_results;
+        for (const auto& cell : layout_page.subjective_score_cells) {
+            score_cell_results.push_back(sample_score_cell(warped, cell, output_dpi));
+        }
+
         std::vector<std::pair<StudentDigit, json>> student_digit_results;
         for (const auto& digit : layout_page.student_digits) {
             student_digit_results.emplace_back(digit, sample_student_digit(warped, digit, output_dpi));
@@ -372,6 +680,7 @@ json recognize_objective_answers(
             {"quality", quality},
             {"studentId", student_id},
             {"questions", build_questions(option_results)},
+            {"subjectiveQuestions", build_subjective_questions(score_cell_results)},
         };
         if (message) {
             result["message"] = *message;

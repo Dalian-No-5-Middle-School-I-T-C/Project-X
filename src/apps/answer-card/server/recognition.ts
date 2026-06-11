@@ -102,3 +102,7 @@ export async function recognizeObjectiveAnswers(request: RecognitionRequest): Pr
   });
 }
 
+export async function recognizeAnswerCard(request: RecognitionRequest): Promise<RecognitionResult> {
+  return recognizeObjectiveAnswers(request);
+}
+

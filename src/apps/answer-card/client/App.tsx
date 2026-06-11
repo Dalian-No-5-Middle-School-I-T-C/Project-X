@@ -16,12 +16,13 @@ import {
 } from "lucide-react";
 import type {
   AnswerCard,
+  BlankLabelStyle,
   BodyBlock,
   CardSummary,
+  CombinedGradingBatchResult,
+  CombinedGradingRow,
   LayoutDocument,
   ObjectiveBlock,
-  ObjectiveGradingBatchResult,
-  ObjectiveGradingRow,
   ObjectiveMode,
   PageRenderBlock,
   SubjectiveBlock,
@@ -32,6 +33,7 @@ import type {
 import { normalizeObjectiveAnswerKey, objectiveQuestionNumbers, optionLabelsFor } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
+import { formatBlankLabel } from "../../../shared/blankLabels";
 
 const modeLabels: Record<ObjectiveMode, string> = {
   single: "单选",
@@ -48,6 +50,12 @@ const kindLabels: Record<SubjectiveKind, string> = {
   blank: "填空",
   lined_answer: "横线格",
   plain_box: "空白大框"
+};
+
+const blankLabelStyleLabels: Record<BlankLabelStyle, string> = {
+  none: "不带序号",
+  arabic_parentheses: "(1)(2)",
+  roman_parentheses: "(i)(ii)"
 };
 
 function cloneCard(card: AnswerCard): AnswerCard {
@@ -78,16 +86,18 @@ function answerText(options: string[]): string {
   return options.length > 0 ? options.join("") : "-";
 }
 
-function downloadCsv(rows: ObjectiveGradingRow[], cardId: string) {
-  const header = ["文件名", "学号", "识别状态", "客观题得分", "客观题满分", "待复核题数", "异常数", "备注"];
+function downloadCsv(rows: CombinedGradingRow[], cardId: string) {
+  const header = ["文件名", "学号", "识别状态", "总分", "满分", "客观题得分", "主观题得分", "待复核题数", "异常数", "备注"];
   const lines = [
     header,
     ...rows.map((row) => [
       row.fileName,
       row.studentId ?? "未识别",
       row.recognitionStatus,
-      String(row.score),
-      String(row.maxScore),
+      String(row.totalScore),
+      String(row.totalMaxScore),
+      `${row.objectiveScore}/${row.objectiveMaxScore}`,
+      `${row.subjectiveScore}/${row.subjectiveMaxScore}`,
       String(row.needsReviewCount),
       String(row.issueCount),
       row.message ?? ""
@@ -144,12 +154,46 @@ function defaultSubjective(nextNumber: number): SubjectiveBlock {
   };
 }
 
+function defaultBlankQuestion(
+  questionNumber: string | number,
+  score = 0,
+  style: SubjectiveStyle = "plain_subjective"
+): SubjectiveQuestion {
+  return {
+    id: createBlockId("q"),
+    number: questionNumber,
+    score,
+    style,
+    kind: "blank",
+    blanks: { count: 1, widthMm: 22, heightMm: 6, labelStyle: "none" },
+    lineGrid: { enabled: false, lineSpacingMm: 8 },
+    images: [],
+    minHeightMm: 14
+  };
+}
+
+function defaultBlankBlock(nextNumber: number): SubjectiveBlock {
+  return {
+    id: createBlockId("subj"),
+    type: "subjective",
+    title: "填空题",
+    questions: Array.from({ length: 10 }, (_, index) =>
+      defaultBlankQuestion(nextNumber + index, index === 0 ? 15 : 0, index === 0 ? "manual_score_grid" : "plain_subjective")
+    )
+  };
+}
+
+function numericQuestionValue(value: string | number): number {
+  const parsed = Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function findNextQuestionNumber(card: AnswerCard): number {
   let max = 0;
   for (const block of card.bodyBlocks) {
     if (block.type === "objective") max = Math.max(max, block.questionStart + block.questionCount - 1);
     if (block.type === "subjective") {
-      for (const question of block.questions) max = Math.max(max, question.number);
+      for (const question of block.questions) max = Math.max(max, numericQuestionValue(question.number));
     }
   }
   return max + 1;
@@ -161,7 +205,7 @@ function App() {
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [mode, setMode] = useState<AppMode>("design");
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
-  const [gradingResult, setGradingResult] = useState<ObjectiveGradingBatchResult | null>(null);
+  const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
 
@@ -272,6 +316,15 @@ function App() {
     setSelectedBlockId(block.id);
   }
 
+  function addBlankBlock() {
+    if (!card) return;
+    const block = defaultBlankBlock(findNextQuestionNumber(card));
+    updateCard((draft) => {
+      draft.bodyBlocks.push(block);
+    });
+    setSelectedBlockId(block.id);
+  }
+
   async function uploadImage(blockId: string, questionId: string, file: File) {
     if (!card) return;
     const form = new FormData();
@@ -318,16 +371,16 @@ function App() {
     }
   }
 
-  async function gradeObjectiveFiles() {
+  async function gradeAnswerCardFiles() {
     if (!card || gradingFiles.length === 0) return;
     setIsBusy(true);
-    setStatus("正在识别并判选择题分...");
+    setStatus("正在识别并汇总客观题、主观题分数...");
     try {
       const form = new FormData();
       for (const file of gradingFiles) {
         form.append("files", file);
       }
-      const result = await fetchJson<ObjectiveGradingBatchResult>(`/api/cards/${card.id}/grading/objective`, {
+      const result = await fetchJson<CombinedGradingBatchResult>(`/api/cards/${card.id}/grading`, {
         method: "POST",
         body: form
       });
@@ -460,6 +513,9 @@ function App() {
                     <button className="ghost-button" onClick={() => addObjectiveBlock()}>
                       <Plus size={16} /> 客观题块
                     </button>
+                    <button className="ghost-button" onClick={addBlankBlock}>
+                      <Plus size={16} /> 填空题块
+                    </button>
                     <button className="ghost-button" onClick={addSubjectiveBlock}>
                       <Plus size={16} /> 主观题块
                     </button>
@@ -556,7 +612,7 @@ function App() {
                   {gradingFiles.length > 8 && <span>还有 {gradingFiles.length - 8} 张...</span>}
                 </div>
               )}
-              <button className="primary-button wide-button" onClick={() => void gradeObjectiveFiles()} disabled={!card || gradingFiles.length === 0 || isBusy}>
+              <button className="primary-button wide-button" onClick={() => void gradeAnswerCardFiles()} disabled={!card || gradingFiles.length === 0 || isBusy}>
                 <ClipboardCheck size={17} /> 开始识别并判分
               </button>
               <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
@@ -573,7 +629,7 @@ function GradingResults({
   result,
   onDownloadCsv
 }: {
-  result: ObjectiveGradingBatchResult | null;
+  result: CombinedGradingBatchResult | null;
   onDownloadCsv: () => void;
 }) {
   if (!result) {
@@ -586,7 +642,7 @@ function GradingResults({
     );
   }
 
-  const totalScore = result.rows.reduce((sum, row) => sum + row.score, 0);
+  const totalScore = result.rows.reduce((sum, row) => sum + row.totalScore, 0);
   const totalReview = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
   const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
 
@@ -596,7 +652,7 @@ function GradingResults({
         <div>
           <h2>成绩表</h2>
           <p>
-            {result.rows.length} 张答题卡 / 总客观题得分 {totalScore} / 待复核 {totalReview} 题 / 异常 {totalIssues} 处
+            {result.rows.length} 张答题卡 / 总分 {totalScore} / 待复核 {totalReview} 题 / 异常 {totalIssues} 处
           </p>
         </div>
         <button className="primary-button" type="button" onClick={onDownloadCsv} disabled={result.rows.length === 0}>
@@ -608,7 +664,8 @@ function GradingResults({
           <span>文件</span>
           <span>学号</span>
           <span>状态</span>
-          <span>得分</span>
+          <span>总分</span>
+          <span>客观/主观</span>
           <span>复核</span>
         </div>
         {result.rows.map((row) => (
@@ -616,19 +673,36 @@ function GradingResults({
             <summary>
               <span title={row.fileName}>{row.fileName}</span>
               <span>{row.studentId ?? "未识别"}</span>
-              <span className={row.recognitionStatus === "ok" ? "status-ok" : "status-warn"}>{row.recognitionStatus}</span>
+              <span className={row.recognitionStatus === "ok" && row.issueCount === 0 ? "status-ok" : "status-warn"}>{row.recognitionStatus}</span>
               <span>
-                {row.score}/{row.maxScore}
+                {row.totalScore}/{row.totalMaxScore}
+              </span>
+              <span>
+                {row.objectiveScore}/{row.objectiveMaxScore} · {row.subjectiveScore}/{row.subjectiveMaxScore}
               </span>
               <span>{row.needsReviewCount}</span>
             </summary>
             <div className="question-grade-list">
               {row.message && <p className="row-message">{row.message}</p>}
+              {row.questions.length > 0 && <p className="grading-section-title">客观题</p>}
               {row.questions.map((question) => (
                 <div className={`question-grade ${question.needsReview || question.status === "missing_key" ? "needs-review" : ""}`} key={question.questionNumber}>
                   <strong>{question.questionNumber}</strong>
                   <span>标准 {answerText(question.correctOptions)}</span>
                   <span>识别 {answerText(question.selectedOptions)}</span>
+                  <span>
+                    {question.score}/{question.maxScore}
+                  </span>
+                  <span>置信 {question.confidence.toFixed(3)}</span>
+                  <em>{question.message ?? question.status}</em>
+                </div>
+              ))}
+              {row.subjectiveQuestions.length > 0 && <p className="grading-section-title">主观题</p>}
+              {row.subjectiveQuestions.map((question) => (
+                <div className={`question-grade subjective-grade ${question.needsReview ? "needs-review" : ""}`} key={question.questionId}>
+                  <strong>{question.questionNumber}</strong>
+                  <span>有效 {question.validCells.map((cell) => cell.score).join("+") || "-"}</span>
+                  <span>无效 {question.invalidCells.length}</span>
                   <span>
                     {question.score}/{question.maxScore}
                   </span>
@@ -828,6 +902,8 @@ function SubjectiveEditor({
   onChange: (mutator: (block: BodyBlock) => void) => void;
   onUpload: (blockId: string, questionId: string, file: File) => Promise<void>;
 }) {
+  const isBlankBlock = block.questions.length > 0 && block.questions.every((question) => question.kind === "blank");
+
   function updateQuestion(questionId: string, mutator: (question: SubjectiveQuestion) => void) {
     onChange((draft) => {
       if (draft.type !== "subjective") return;
@@ -843,6 +919,27 @@ function SubjectiveEditor({
         标题
         <input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
       </label>
+      {isBlankBlock && (
+        <label>
+          填空题块满分
+          <input
+            type="number"
+            min={0}
+            max={60}
+            step={0.5}
+            value={block.questions[0]?.score ?? 0}
+            onChange={(event) =>
+              onChange((draft) => {
+                if (draft.type !== "subjective") return;
+                const scoreQuestion = draft.questions[0];
+                if (!scoreQuestion) return;
+                scoreQuestion.score = Number(event.target.value);
+                scoreQuestion.style = "manual_score_grid";
+              })
+            }
+          />
+        </label>
+      )}
       {block.questions.map((question) => (
         <div className="question-editor" key={question.id}>
           <div className="question-editor-title">
@@ -851,7 +948,14 @@ function SubjectiveEditor({
               title="删除小题"
               onClick={() =>
                 onChange((draft) => {
-                  if (draft.type === "subjective") draft.questions = draft.questions.filter((item) => item.id !== question.id);
+                  if (draft.type !== "subjective") return;
+                  const isScoreQuestion = isBlankBlock && draft.questions[0]?.id === question.id;
+                  const blockScore = draft.questions[0]?.score ?? 0;
+                  draft.questions = draft.questions.filter((item) => item.id !== question.id);
+                  if (isScoreQuestion && draft.questions[0]) {
+                    draft.questions[0].score = blockScore;
+                    draft.questions[0].style = "manual_score_grid";
+                  }
                 })
               }
             >
@@ -861,38 +965,113 @@ function SubjectiveEditor({
           <div className="two-col">
             <label>
               题号
-              <input type="number" min={1} value={question.number} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.number = Number(event.target.value)))} />
+              <input value={question.number} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.number = event.target.value))} />
             </label>
-            <label>
-              分值
-              <input type="number" min={0} step={0.5} value={question.score} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.score = Number(event.target.value)))} />
-            </label>
+            {isBlankBlock ? (
+              <label>
+                横线宽(mm)
+                <input
+                  type="number"
+                  min={8}
+                  value={question.blanks?.widthMm ?? 22}
+                  onChange={(event) =>
+                    updateQuestion(
+                      question.id,
+                      (draft) => void (draft.blanks = { ...(draft.blanks ?? { count: 1, heightMm: 6, labelStyle: "none" }), widthMm: Number(event.target.value) })
+                    )
+                  }
+                />
+              </label>
+            ) : (
+              <label>
+                分值
+                <input type="number" min={0} step={0.5} value={question.score} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.score = Number(event.target.value)))} />
+              </label>
+            )}
           </div>
-          <label>
-            主观题样式
-            <select value={question.style} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.style = event.target.value as SubjectiveStyle))}>
-              {Object.entries(styleLabels).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            作答区类型
-            <select value={question.kind} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.kind = event.target.value as SubjectiveKind))}>
-              {Object.entries(kindLabels).map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            最小高度(mm)
-            <input type="number" min={24} max={220} value={question.minHeightMm} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.minHeightMm = Number(event.target.value)))} />
-          </label>
-          {question.kind === "blank" && (
+          {isBlankBlock ? (
+            <div className="three-col">
+              <label>
+                空数
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={question.blanks?.count ?? 1}
+                  onChange={(event) =>
+                    updateQuestion(
+                      question.id,
+                      (draft) => void (draft.blanks = { ...(draft.blanks ?? { widthMm: 22, heightMm: 6, labelStyle: "none" }), count: Number(event.target.value) })
+                    )
+                  }
+                />
+              </label>
+              <label>
+                横线高度(mm)
+                <input
+                  type="number"
+                  min={4}
+                  value={question.blanks?.heightMm ?? 6}
+                  onChange={(event) =>
+                    updateQuestion(
+                      question.id,
+                      (draft) => void (draft.blanks = { ...(draft.blanks ?? { count: 1, widthMm: 22, labelStyle: "none" }), heightMm: Number(event.target.value) })
+                    )
+                  }
+                />
+              </label>
+              <label>
+                序号类型
+                <select
+                  value={question.blanks?.labelStyle ?? "none"}
+                  onChange={(event) =>
+                    updateQuestion(
+                      question.id,
+                      (draft) =>
+                        void (draft.blanks = {
+                          ...(draft.blanks ?? { count: 1, widthMm: 22, heightMm: 6 }),
+                          labelStyle: event.target.value as BlankLabelStyle
+                        })
+                    )
+                  }
+                >
+                  {Object.entries(blankLabelStyleLabels).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          ) : (
+            <>
+              <label>
+                主观题样式
+                <select value={question.style} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.style = event.target.value as SubjectiveStyle))}>
+                  {Object.entries(styleLabels).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                作答区类型
+                <select value={question.kind} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.kind = event.target.value as SubjectiveKind))}>
+                  {Object.entries(kindLabels).map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                最小高度(mm)
+                <input type="number" min={24} max={220} value={question.minHeightMm} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.minHeightMm = Number(event.target.value)))} />
+              </label>
+            </>
+          )}
+          {question.kind === "blank" && !isBlankBlock && (
             <div className="three-col">
               <label>
                 空数
@@ -908,43 +1087,47 @@ function SubjectiveEditor({
               </label>
             </div>
           )}
-          <label className="check-row">
-            <input
-              type="checkbox"
-              checked={question.lineGrid?.enabled ?? false}
-              onChange={(event) => updateQuestion(question.id, (draft) => void (draft.lineGrid = { ...(draft.lineGrid ?? { lineSpacingMm: 8 }), enabled: event.target.checked }))}
-            />
-            使用横线格
-          </label>
-          <label>
-            横线间距(mm)
-            <input
-              type="number"
-              min={5}
-              max={16}
-              value={question.lineGrid?.lineSpacingMm ?? 8}
-              onChange={(event) => updateQuestion(question.id, (draft) => void (draft.lineGrid = { ...(draft.lineGrid ?? { enabled: true }), lineSpacingMm: Number(event.target.value) }))}
-            />
-          </label>
-          <label className="upload-button">
-            <ImagePlus size={16} /> 插入图片
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void onUpload(block.id, question.id, file);
-                event.currentTarget.value = "";
-              }}
-            />
-          </label>
-          {(question.images ?? []).map((image, index) => (
-            <div className="image-row" key={`${image.assetId}_${index}`}>
-              <span>{image.originalName ?? image.assetId}</span>
-              <input type="number" min={10} value={image.widthMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))} />
-              <input type="number" min={10} value={image.heightMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))} />
-            </div>
-          ))}
+          {!isBlankBlock && (
+            <>
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={question.lineGrid?.enabled ?? false}
+                  onChange={(event) => updateQuestion(question.id, (draft) => void (draft.lineGrid = { ...(draft.lineGrid ?? { lineSpacingMm: 8 }), enabled: event.target.checked }))}
+                />
+                使用横线格
+              </label>
+              <label>
+                横线间距(mm)
+                <input
+                  type="number"
+                  min={5}
+                  max={16}
+                  value={question.lineGrid?.lineSpacingMm ?? 8}
+                  onChange={(event) => updateQuestion(question.id, (draft) => void (draft.lineGrid = { ...(draft.lineGrid ?? { enabled: true }), lineSpacingMm: Number(event.target.value) }))}
+                />
+              </label>
+              <label className="upload-button">
+                <ImagePlus size={16} /> 插入图片
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void onUpload(block.id, question.id, file);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+              {(question.images ?? []).map((image, index) => (
+                <div className="image-row" key={`${image.assetId}_${index}`}>
+                  <span>{image.originalName ?? image.assetId}</span>
+                  <input type="number" min={10} value={image.widthMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))} />
+                  <input type="number" min={10} value={image.heightMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))} />
+                </div>
+              ))}
+            </>
+          )}
         </div>
       ))}
       <button
@@ -952,12 +1135,12 @@ function SubjectiveEditor({
         onClick={() =>
           onChange((draft) => {
             if (draft.type !== "subjective") return;
-            const next = Math.max(0, ...draft.questions.map((item) => item.number)) + 1;
-            draft.questions.push(defaultSubjective(next).questions[0]);
+            const next = Math.max(0, ...draft.questions.map((item) => numericQuestionValue(item.number))) + 1;
+            draft.questions.push(isBlankBlock ? defaultBlankQuestion(next) : defaultSubjective(next).questions[0]);
           })
         }
       >
-        <Plus size={16} /> 添加主观小题
+        <Plus size={16} /> {isBlankBlock ? "添加填空题" : "添加主观小题"}
       </button>
     </>
   );
@@ -1068,12 +1251,30 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
           {block.title}
         </text>
       )}
+      {block.frameRect && <rect {...block.frameRect} fill="none" stroke="#222" strokeWidth="0.25" />}
       {block.questions.map((question) => (
         <g key={question.questionId}>
-          <rect {...question.rect} fill="none" stroke="#222" strokeWidth="0.25" />
+          {!block.frameRect && <rect {...question.rect} fill="none" stroke="#222" strokeWidth="0.25" />}
           {question.style === "manual_score_grid" && (
             <>
-              <line x1={question.rect.x} y1={question.contentRect.y} x2={question.rect.x + question.rect.width} y2={question.contentRect.y} stroke="#777" strokeWidth="0.2" strokeDasharray="1.5 1.5" />
+              {block.frameRect && question.kind === "blank" && question.scoreCells.length > 0 ? (
+                <>
+                  <text x={block.frameRect.x + 4} y={question.scoreCells[0].rect.y + 4.2} className="svg-tiny">
+                    得分
+                  </text>
+                  <line
+                    x1={block.frameRect.x}
+                    y1={question.scoreCells[0].rect.y + question.scoreCells[0].rect.height + 2}
+                    x2={block.frameRect.x + block.frameRect.width}
+                    y2={question.scoreCells[0].rect.y + question.scoreCells[0].rect.height + 2}
+                    stroke="#777"
+                    strokeWidth="0.2"
+                    strokeDasharray="1.5 1.5"
+                  />
+                </>
+              ) : (
+                <line x1={question.rect.x} y1={question.contentRect.y} x2={question.rect.x + question.rect.width} y2={question.contentRect.y} stroke="#777" strokeWidth="0.2" strokeDasharray="1.5 1.5" />
+              )}
               {question.scoreCells.map((cell) => (
                 <g key={cell.score}>
                   <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" />
@@ -1084,20 +1285,31 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
               ))}
             </>
           )}
-          <text x={question.rect.x + 2} y={question.contentRect.y + 6} className="svg-tiny">
-            {question.questionNumber}.（{question.score}分）
-          </text>
+          {question.kind === "blank" ? (
+            <text x={question.contentRect.x + 3} y={question.contentRect.y + 7.2} className="svg-tiny">
+              {question.questionNumber}
+            </text>
+          ) : (
+            <text x={question.rect.x + 2} y={question.contentRect.y + 6} className="svg-tiny">
+              {question.questionNumber}.（{question.score}分）
+            </text>
+          )}
           {question.lineYs.map((lineY) => (
             <line key={lineY} x1={question.contentRect.x + 8} y1={lineY} x2={question.contentRect.x + question.contentRect.width - 6} y2={lineY} stroke="#888" strokeWidth="0.2" />
           ))}
-          {question.blanks.map((blank, index) => (
-            <g key={index}>
-              <text x={blank.x - 6} y={blank.y + 4.2} className="svg-tiny">
-                {question.questionNumber}.{index + 1}
-              </text>
-              <line x1={blank.x} y1={blank.y + blank.height} x2={blank.x + blank.width} y2={blank.y + blank.height} stroke="#333" strokeWidth="0.25" />
-            </g>
-          ))}
+          {question.blanks.map((blank, index) => {
+            const blankLabel = question.kind === "blank" ? formatBlankLabel(question.blankLabelStyle, index) : `${question.questionNumber}.${index + 1}`;
+            return (
+              <g key={index}>
+                {blankLabel && (
+                  <text x={blank.x - blankLabel.length * 1.8 - 0.8} y={blank.y + 4.2} className="svg-tiny">
+                    {blankLabel}
+                  </text>
+                )}
+                <line x1={blank.x} y1={blank.y + blank.height} x2={blank.x + blank.width} y2={blank.y + blank.height} stroke="#333" strokeWidth="0.25" />
+              </g>
+            );
+          })}
           {question.images.map((image) => (
             <g key={image.assetId}>
               <image href={`/assets/${card.id}/${image.assetId}`} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
