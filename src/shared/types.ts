@@ -190,34 +190,6 @@ export type ObjectiveRecognitionResult = {
   };
   quality?: Record<string, unknown>;
   questions: ObjectiveRecognitionQuestion[];
-  subjectiveQuestions?: SubjectiveRecognitionQuestion[];
-};
-
-export type SubjectiveScoreCellRecognition = {
-  blockId?: string;
-  questionId?: string;
-  questionNumber?: SubjectiveQuestionNumber;
-  score: number;
-  rect?: Rect;
-  metrics?: Record<string, unknown>;
-  reason?: string;
-};
-
-export type SubjectiveRecognitionQuestion = {
-  blockId?: string;
-  questionId: string;
-  questionNumber: SubjectiveQuestionNumber;
-  score: number;
-  maxScore: number;
-  status: "ok" | "invalid" | "review" | string;
-  validCells: SubjectiveScoreCellRecognition[];
-  invalidCells: SubjectiveScoreCellRecognition[];
-  confidence: number;
-  message?: string;
-};
-
-export type CombinedRecognitionResult = ObjectiveRecognitionResult & {
-  subjectiveQuestions: SubjectiveRecognitionQuestion[];
 };
 
 export type ObjectiveQuestionGradeStatus = "correct" | "wrong" | "partial" | "missing_key" | "review";
@@ -251,6 +223,33 @@ export type ObjectiveGradingBatchResult = {
   batchId: string;
   cardId: string;
   rows: ObjectiveGradingRow[];
+};
+
+export type SubjectiveScoreCellRecognition = {
+  blockId?: string;
+  questionId?: string;
+  questionNumber?: SubjectiveQuestionNumber;
+  score: number;
+  rect?: Rect;
+  metrics?: Record<string, unknown>;
+  reason?: string;
+};
+
+export type SubjectiveRecognitionQuestion = {
+  blockId?: string;
+  questionId: string;
+  questionNumber: SubjectiveQuestionNumber;
+  score: number;
+  maxScore: number;
+  status: "ok" | "invalid" | "review" | string;
+  validCells: SubjectiveScoreCellRecognition[];
+  invalidCells: SubjectiveScoreCellRecognition[];
+  confidence: number;
+  message?: string;
+};
+
+export type CombinedRecognitionResult = ObjectiveRecognitionResult & {
+  subjectiveQuestions: SubjectiveRecognitionQuestion[];
 };
 
 export type SubjectiveQuestionGradeStatus = "ok" | "invalid" | "missing_score_grid";

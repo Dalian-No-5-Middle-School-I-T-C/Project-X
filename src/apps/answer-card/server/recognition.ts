@@ -103,6 +103,65 @@ export async function recognizeObjectiveAnswers(request: RecognitionRequest): Pr
 }
 
 export async function recognizeAnswerCard(request: RecognitionRequest): Promise<RecognitionResult> {
-  return recognizeObjectiveAnswers(request);
+  const exePath = resolveRecognizerExe();
+  const args = [
+    "--image",
+    request.imagePath,
+    "--layout",
+    request.layoutPath,
+    "--page",
+    String(request.pageNumber),
+    "--dpi",
+    String(request.dpi),
+    "--mode",
+    "answer-card"
+  ];
+  if (request.debugDir) {
+    args.push("--debug-dir", request.debugDir);
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = spawn(exePath, args, {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, 30_000);
+
+    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+      const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
+      if (timedOut) {
+        reject(new Error("Native recognizer timed out after 30000ms."));
+        return;
+      }
+
+      try {
+        const parsed = parseRecognizerOutput(stdout);
+        if (parsed) {
+          resolve(parsed);
+          return;
+        }
+      } catch (error) {
+        reject(new Error(`Native recognizer returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
+        return;
+      }
+
+      reject(new Error(`Native recognizer exited with code ${code ?? "unknown"}${stderr ? `: ${stderr}` : ""}`));
+    });
+  });
 }
 
