@@ -2,6 +2,8 @@ export type ObjectiveMode = "single" | "multiple" | "indefinite";
 export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
 export type SubjectiveStyle = "manual_score_grid" | "plain_subjective";
 export type SubjectiveKind = "blank" | "lined_answer" | "plain_box";
+export type SubjectiveQuestionNumber = number | string;
+export type BlankLabelStyle = "none" | "arabic_parentheses" | "roman_parentheses";
 
 export type PaperSettings = {
   size: "A4";
@@ -32,11 +34,11 @@ export type ObjectiveBlock = {
 
 export type SubjectiveQuestion = {
   id: string;
-  number: number;
+  number: SubjectiveQuestionNumber;
   score: number;
   style: SubjectiveStyle;
   kind: SubjectiveKind;
-  blanks?: { count: number; widthMm: number; heightMm: number };
+  blanks?: { count: number; widthMm: number; heightMm: number; labelStyle?: BlankLabelStyle };
   lineGrid?: { enabled: boolean; lineSpacingMm: number };
   images?: Array<{
     assetId: string;
@@ -85,8 +87,8 @@ export type LayoutElement =
   | { id: string; type: "student_digit"; digitIndex: number; digit: number; rect: Rect }
   | { id: string; type: "objective_row_marker"; blockId: string; row: number; side: "left" | "right"; rect: Rect }
   | { id: string; type: "objective_option"; blockId: string; questionNumber: number; option: string; rect: Rect }
-  | { id: string; type: "subjective_box"; blockId: string; questionId: string; questionNumber: number; rect: Rect }
-  | { id: string; type: "score_cell"; blockId: string; questionId: string; questionNumber: number; score: number; rect: Rect }
+  | { id: string; type: "subjective_box"; blockId: string; questionId: string; questionNumber: SubjectiveQuestionNumber; rect: Rect }
+  | { id: string; type: "score_cell"; blockId: string; questionId: string; questionNumber: SubjectiveQuestionNumber; score: number; rect: Rect }
   | { id: string; type: "image_area"; blockId: string; questionId: string; assetId: string; rect: Rect };
 
 export type ObjectiveRenderItem = {
@@ -99,7 +101,7 @@ export type ObjectiveRenderItem = {
 export type SubjectiveRenderItem = {
   blockId: string;
   questionId: string;
-  questionNumber: number;
+  questionNumber: SubjectiveQuestionNumber;
   score: number;
   style: SubjectiveStyle;
   kind: SubjectiveKind;
@@ -108,6 +110,7 @@ export type SubjectiveRenderItem = {
   scoreCells: Array<{ score: number; rect: Rect }>;
   lineYs: number[];
   blanks: Rect[];
+  blankLabelStyle?: BlankLabelStyle;
   images: Array<{ assetId: string; originalName?: string; rect: Rect }>;
 };
 
@@ -127,6 +130,7 @@ export type PageRenderBlock =
       blockId: string;
       title: string;
       rect: Rect;
+      frameRect?: Rect;
       questions: SubjectiveRenderItem[];
     };
 

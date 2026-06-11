@@ -11,6 +11,7 @@ import type {
   SubjectiveRenderItem
 } from "../../../shared/types";
 import { buildLayout } from "../../../shared/layout";
+import { formatBlankLabel } from "../../../shared/blankLabels";
 import { cardAssetsDir } from "./storage";
 
 const MM_TO_PT = 72 / 25.4;
@@ -117,16 +118,30 @@ function drawSubjectiveBlock(
   if (block.title) {
     drawText(doc, block.title, block.rect.x, block.rect.y - 0.5, 10);
   }
-  block.questions.forEach((question) => drawSubjectiveQuestion(doc, card, question));
+  if (block.frameRect) {
+    drawRect(doc, block.frameRect, { stroke: "#222", lineWidth: 0.25 });
+  }
+  block.questions.forEach((question) => drawSubjectiveQuestion(doc, card, question, block.frameRect));
 }
 
-function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, question: SubjectiveRenderItem) {
-  drawRect(doc, question.rect, { stroke: "#222", lineWidth: 0.25 });
-  drawText(doc, `${question.questionNumber}.（${question.score}分）`, question.rect.x + 2, question.contentRect.y + 2, 8);
+function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, question: SubjectiveRenderItem, frameRect?: Rect) {
+  if (question.kind !== "blank") {
+    drawRect(doc, question.rect, { stroke: "#222", lineWidth: 0.25 });
+    drawText(doc, `${question.questionNumber}.（${question.score}分）`, question.rect.x + 2, question.contentRect.y + 2, 8);
+  } else {
+    drawText(doc, String(question.questionNumber), question.contentRect.x + 3, question.contentRect.y + 3.2, 8);
+  }
 
   if (question.style === "manual_score_grid") {
-    const dividerY = question.contentRect.y;
-    doc.moveTo(pt(question.rect.x), pt(dividerY)).lineTo(pt(question.rect.x + question.rect.width), pt(dividerY)).dash(2, { space: 2 }).stroke();
+    const firstScoreCell = question.scoreCells[0];
+    if (frameRect && question.kind === "blank" && firstScoreCell) {
+      drawText(doc, "得分", frameRect.x + 4, firstScoreCell.rect.y + 1.2, 7);
+      const dividerY = firstScoreCell.rect.y + firstScoreCell.rect.height + 2;
+      doc.moveTo(pt(frameRect.x), pt(dividerY)).lineTo(pt(frameRect.x + frameRect.width), pt(dividerY)).dash(2, { space: 2 }).stroke();
+    } else {
+      const dividerY = question.contentRect.y;
+      doc.moveTo(pt(question.rect.x), pt(dividerY)).lineTo(pt(question.rect.x + question.rect.width), pt(dividerY)).dash(2, { space: 2 }).stroke();
+    }
     doc.undash();
     question.scoreCells.forEach((cell) => {
       drawRect(doc, cell.rect, { stroke: "#222", lineWidth: 0.2 });
@@ -139,7 +154,10 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
   });
 
   question.blanks.forEach((blank, index) => {
-    drawText(doc, `${question.questionNumber}.${index + 1}`, blank.x - 6, blank.y + 1, 6);
+    const blankLabel = question.kind === "blank" ? formatBlankLabel(question.blankLabelStyle, index) : `${question.questionNumber}.${index + 1}`;
+    if (blankLabel) {
+      drawText(doc, blankLabel, blank.x - blankLabel.length * 1.8 - 0.8, blank.y + 1, 6);
+    }
     doc.moveTo(pt(blank.x), pt(blank.y + blank.height)).lineTo(pt(blank.x + blank.width), pt(blank.y + blank.height)).stroke();
   });
 
