@@ -534,7 +534,7 @@ export function listScans(options?: {
     student_id: row.student_id,
     student_name: row.student_name,
     card_id: row.card_id,
-    thumbnail_url: row.thumbnail_path ? `/scans/${path.basename(row.thumbnail_path)}` : null,
+    thumbnail_url: row.thumbnail_path ? `/thumbnails/${path.basename(row.thumbnail_path)}` : null,
     created_at: row.created_at
   }));
 }

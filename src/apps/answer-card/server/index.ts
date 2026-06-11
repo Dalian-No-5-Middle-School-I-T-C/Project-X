@@ -50,8 +50,9 @@ import {
   type ScanStatus
 } from "./database";
 
-function paramValue(value: string | string[] | undefined): string {
-  return Array.isArray(value) ? value[0] : value ?? "";
+function paramValue(value: unknown): string {
+  if (Array.isArray(value)) return String(value[0] ?? "");
+  return typeof value === "string" ? value : "";
 }
 
 function fieldValue(value: unknown): string {

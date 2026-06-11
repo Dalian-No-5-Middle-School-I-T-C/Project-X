@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, type ChangeEvent, type DragEvent } from "react";
+import React, { useEffect, useState, useCallback, useRef, type ChangeEvent, type DragEvent } from "react";
 import {
   FolderOpen,
   RefreshCw,
@@ -392,7 +392,7 @@ export default function ScanPanel() {
 
   // 状态标签
   function statusBadge(status: ScanStatus) {
-    const map: Record<ScanStatus, { icon: JSX.Element; label: string; className: string }> = {
+    const map: Record<ScanStatus, { icon: React.ReactNode; label: string; className: string }> = {
       pending: { icon: <Loader size={13} />, label: "待处理", className: "status-pending" },
       processing: { icon: <Loader size={13} className="spin" />, label: "识别中", className: "status-processing" },
       recognized: { icon: <CheckCircle size={13} />, label: "已识别", className: "status-recognized" },
