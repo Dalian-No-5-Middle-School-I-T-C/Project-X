@@ -45,6 +45,19 @@ static Rect rect_from_json(const json& value) {
     };
 }
 
+static std::string question_number_from_json(const json& value) {
+    if (value.is_string()) {
+        return value.get<std::string>();
+    }
+    if (value.is_number_integer()) {
+        return std::to_string(value.get<int>());
+    }
+    if (value.is_number_float()) {
+        return std::to_string(value.get<double>());
+    }
+    return "";
+}
+
 static std::vector<ObjectiveOption> objective_options_from_page(const json& page_data) {
     std::vector<ObjectiveOption> options;
 
@@ -109,6 +122,74 @@ static std::vector<ObjectiveOption> objective_options_from_page(const json& page
         return std::tie(left.question_number, left.label) < std::tie(right.question_number, right.label);
     });
     return options;
+}
+
+static std::vector<SubjectiveScoreCell> subjective_score_cells_from_page(const json& page_data) {
+    std::vector<SubjectiveScoreCell> cells;
+
+    if (page_data.contains("blocks") && page_data.at("blocks").is_array()) {
+        for (const auto& block : page_data.at("blocks")) {
+            if (!block.is_object() || block.value("type", "") != "subjective") {
+                continue;
+            }
+            const std::string block_id = block.value("blockId", "");
+            if (!block.contains("questions") || !block.at("questions").is_array()) {
+                continue;
+            }
+            for (const auto& question : block.at("questions")) {
+                if (!question.is_object() || !question.contains("scoreCells") || !question.at("scoreCells").is_array()) {
+                    continue;
+                }
+                const std::string question_id = question.value("questionId", "");
+                const std::string question_number = question.contains("questionNumber") ? question_number_from_json(question.at("questionNumber")) : "";
+                const double max_score = question.value("score", 0.0);
+                for (const auto& cell : question.at("scoreCells")) {
+                    if (!cell.is_object() || !cell.contains("rect") || !cell.at("rect").is_object()) {
+                        continue;
+                    }
+                    cells.push_back(SubjectiveScoreCell{
+                        block_id,
+                        question_id,
+                        question_number,
+                        cell.value("score", 0.0),
+                        max_score,
+                        rect_from_json(cell.at("rect")),
+                    });
+                }
+            }
+        }
+    }
+
+    if (!cells.empty()) {
+        std::sort(cells.begin(), cells.end(), [](const auto& left, const auto& right) {
+            return std::tie(left.block_id, left.question_id, left.score) < std::tie(right.block_id, right.question_id, right.score);
+        });
+        return cells;
+    }
+
+    if (page_data.contains("elements") && page_data.at("elements").is_array()) {
+        for (const auto& element : page_data.at("elements")) {
+            if (!element.is_object() || element.value("type", "") != "score_cell") {
+                continue;
+            }
+            if (!element.contains("rect") || !element.at("rect").is_object()) {
+                continue;
+            }
+            cells.push_back(SubjectiveScoreCell{
+                element.value("blockId", ""),
+                element.value("questionId", ""),
+                element.contains("questionNumber") ? question_number_from_json(element.at("questionNumber")) : "",
+                element.value("score", 0.0),
+                0.0,
+                rect_from_json(element.at("rect")),
+            });
+        }
+    }
+
+    std::sort(cells.begin(), cells.end(), [](const auto& left, const auto& right) {
+        return std::tie(left.block_id, left.question_id, left.score) < std::tie(right.block_id, right.question_id, right.score);
+    });
+    return cells;
 }
 
 static std::vector<StudentDigit> student_digits_from_page(const json& page_data) {
@@ -215,6 +296,7 @@ LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_n
         required_markers,
         objective_options_from_page(*page_data),
         student_digits_from_page(*page_data),
+        subjective_score_cells_from_page(*page_data),
     };
 }
 

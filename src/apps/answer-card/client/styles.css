@@ -612,7 +612,7 @@ select:focus {
 .score-table-head,
 .score-row summary {
   display: grid;
-  grid-template-columns: minmax(180px, 1.8fr) minmax(92px, 0.8fr) 78px 82px 58px;
+  grid-template-columns: minmax(170px, 1.6fr) minmax(88px, 0.75fr) 78px 78px minmax(118px, 1fr) 58px;
   gap: 10px;
   align-items: center;
 }
@@ -679,6 +679,13 @@ select:focus {
   font-size: 12px;
 }
 
+.grading-section-title {
+  margin: 5px 0 0;
+  color: var(--brand-strong);
+  font-size: 12px;
+  font-weight: 750;
+}
+
 .question-grade {
   display: grid;
   grid-template-columns: 38px 1fr 1fr 70px 86px minmax(96px, 1fr);
@@ -704,6 +711,10 @@ select:focus {
 .question-grade em {
   color: var(--muted);
   font-style: normal;
+}
+
+.subjective-grade {
+  grid-template-columns: 38px 1fr 70px 70px 86px minmax(120px, 1fr);
 }
 
 .file-queue {
@@ -866,6 +877,6 @@ select:focus {
   .score-table-head,
   .score-row summary,
   .question-grade {
-    min-width: 720px;
+    min-width: 820px;
   }
 }

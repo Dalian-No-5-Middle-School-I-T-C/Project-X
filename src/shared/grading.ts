@@ -1,10 +1,15 @@
 import type {
   AnswerCard,
+  CombinedGradingRow,
+  CombinedRecognitionResult,
   ObjectiveBlock,
   ObjectiveGradingRow,
   ObjectiveQuestionGrade,
   ObjectiveRecognitionQuestion,
-  ObjectiveRecognitionResult
+  ObjectiveRecognitionResult,
+  SubjectiveQuestionGrade,
+  SubjectiveQuestionNumber,
+  SubjectiveRecognitionQuestion
 } from "./types";
 
 export const OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD = 0.12;
@@ -167,6 +172,89 @@ export function gradeObjectiveRecognition(
     message: recognition.message,
     questions: grades,
     recognition
+  };
+}
+
+function subjectiveScoreQuestions(card: AnswerCard): Array<{ questionId: string; questionNumber: SubjectiveQuestionNumber; maxScore: number }> {
+  const questions: Array<{ questionId: string; questionNumber: SubjectiveQuestionNumber; maxScore: number }> = [];
+  for (const block of card.bodyBlocks) {
+    if (block.type !== "subjective") continue;
+    for (const question of block.questions) {
+      if (question.style !== "manual_score_grid") continue;
+      questions.push({
+        questionId: question.id,
+        questionNumber: question.number,
+        maxScore: question.score
+      });
+    }
+  }
+  return questions;
+}
+
+function gradeSubjectiveQuestion(
+  expected: { questionId: string; questionNumber: SubjectiveQuestionNumber; maxScore: number },
+  recognized: SubjectiveRecognitionQuestion | undefined
+): SubjectiveQuestionGrade {
+  if (!recognized) {
+    return {
+      questionId: expected.questionId,
+      questionNumber: expected.questionNumber,
+      score: 0,
+      maxScore: expected.maxScore,
+      status: "invalid",
+      needsReview: true,
+      confidence: 0,
+      validCells: [],
+      invalidCells: [],
+      message: "未识别到有效评分"
+    };
+  }
+
+  const isOk = recognized.status === "ok";
+  return {
+    questionId: expected.questionId,
+    questionNumber: expected.questionNumber,
+    score: isOk ? roundScore(recognized.score) : 0,
+    maxScore: expected.maxScore || recognized.maxScore,
+    status: isOk ? "ok" : "invalid",
+    needsReview: !isOk,
+    confidence: Number.isFinite(recognized.confidence) ? recognized.confidence : 0,
+    validCells: recognized.validCells ?? [],
+    invalidCells: recognized.invalidCells ?? [],
+    message: recognized.message ?? (isOk ? undefined : "未识别到有效评分")
+  };
+}
+
+export function gradeCombinedRecognition(
+  card: AnswerCard,
+  fileName: string,
+  recognition: CombinedRecognitionResult
+): CombinedGradingRow {
+  const objective = gradeObjectiveRecognition(card, fileName, recognition);
+  const recognizedSubjective = new Map((recognition.subjectiveQuestions ?? []).map((question) => [question.questionId, question]));
+  const subjectiveQuestions = subjectiveScoreQuestions(card).map((question) => gradeSubjectiveQuestion(question, recognizedSubjective.get(question.questionId)));
+  const subjectiveScore = roundScore(subjectiveQuestions.reduce((sum, item) => sum + item.score, 0));
+  const subjectiveMaxScore = roundScore(subjectiveQuestions.reduce((sum, item) => sum + item.maxScore, 0));
+  const objectiveScore = objective.score;
+  const objectiveMaxScore = objective.maxScore;
+  const totalScore = roundScore(objectiveScore + subjectiveScore);
+  const totalMaxScore = roundScore(objectiveMaxScore + subjectiveMaxScore);
+  const subjectiveIssueCount = subjectiveQuestions.filter((question) => question.needsReview).length;
+
+  return {
+    ...objective,
+    recognition,
+    score: totalScore,
+    maxScore: totalMaxScore,
+    objectiveScore,
+    objectiveMaxScore,
+    subjectiveScore,
+    subjectiveMaxScore,
+    totalScore,
+    totalMaxScore,
+    issueCount: objective.issueCount + subjectiveIssueCount,
+    needsReviewCount: objective.needsReviewCount + subjectiveIssueCount,
+    subjectiveQuestions
   };
 }
 

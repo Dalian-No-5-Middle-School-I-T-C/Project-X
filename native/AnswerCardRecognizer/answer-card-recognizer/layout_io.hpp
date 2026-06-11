@@ -37,6 +37,15 @@ struct StudentDigit {
     Rect rect;
 };
 
+struct SubjectiveScoreCell {
+    std::string block_id;
+    std::string question_id;
+    std::string question_number;
+    double score = 0;
+    double max_score = 0;
+    Rect rect;
+};
+
 struct LayoutPage {
     std::string card_id;
     int page_number = 1;
@@ -45,6 +54,7 @@ struct LayoutPage {
     std::map<std::string, LayoutMarker> markers;
     std::vector<ObjectiveOption> objective_options;
     std::vector<StudentDigit> student_digits;
+    std::vector<SubjectiveScoreCell> subjective_score_cells;
 };
 
 LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_number);

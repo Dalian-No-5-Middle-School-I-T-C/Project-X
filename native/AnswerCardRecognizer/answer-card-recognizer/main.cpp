@@ -82,6 +82,7 @@ nlohmann::json cli_failed_result(const std::string& message) {
         {"message", message},
         {"quality", nlohmann::json::object()},
         {"questions", nlohmann::json::array()},
+        {"subjectiveQuestions", nlohmann::json::array()},
     };
 }
 }

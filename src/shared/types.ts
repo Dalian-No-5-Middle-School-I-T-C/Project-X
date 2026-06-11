@@ -190,6 +190,34 @@ export type ObjectiveRecognitionResult = {
   };
   quality?: Record<string, unknown>;
   questions: ObjectiveRecognitionQuestion[];
+  subjectiveQuestions?: SubjectiveRecognitionQuestion[];
+};
+
+export type SubjectiveScoreCellRecognition = {
+  blockId?: string;
+  questionId?: string;
+  questionNumber?: SubjectiveQuestionNumber;
+  score: number;
+  rect?: Rect;
+  metrics?: Record<string, unknown>;
+  reason?: string;
+};
+
+export type SubjectiveRecognitionQuestion = {
+  blockId?: string;
+  questionId: string;
+  questionNumber: SubjectiveQuestionNumber;
+  score: number;
+  maxScore: number;
+  status: "ok" | "invalid" | "review" | string;
+  validCells: SubjectiveScoreCellRecognition[];
+  invalidCells: SubjectiveScoreCellRecognition[];
+  confidence: number;
+  message?: string;
+};
+
+export type CombinedRecognitionResult = ObjectiveRecognitionResult & {
+  subjectiveQuestions: SubjectiveRecognitionQuestion[];
 };
 
 export type ObjectiveQuestionGradeStatus = "correct" | "wrong" | "partial" | "missing_key" | "review";
@@ -223,4 +251,36 @@ export type ObjectiveGradingBatchResult = {
   batchId: string;
   cardId: string;
   rows: ObjectiveGradingRow[];
+};
+
+export type SubjectiveQuestionGradeStatus = "ok" | "invalid" | "missing_score_grid";
+
+export type SubjectiveQuestionGrade = {
+  questionId: string;
+  questionNumber: SubjectiveQuestionNumber;
+  score: number;
+  maxScore: number;
+  status: SubjectiveQuestionGradeStatus;
+  needsReview: boolean;
+  confidence: number;
+  validCells: SubjectiveScoreCellRecognition[];
+  invalidCells: SubjectiveScoreCellRecognition[];
+  message?: string;
+};
+
+export type CombinedGradingRow = ObjectiveGradingRow & {
+  objectiveScore: number;
+  objectiveMaxScore: number;
+  subjectiveScore: number;
+  subjectiveMaxScore: number;
+  totalScore: number;
+  totalMaxScore: number;
+  subjectiveQuestions: SubjectiveQuestionGrade[];
+  recognition: CombinedRecognitionResult;
+};
+
+export type CombinedGradingBatchResult = {
+  batchId: string;
+  cardId: string;
+  rows: CombinedGradingRow[];
 };

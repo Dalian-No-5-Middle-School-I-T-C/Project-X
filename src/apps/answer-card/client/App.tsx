@@ -19,10 +19,10 @@ import type {
   BlankLabelStyle,
   BodyBlock,
   CardSummary,
+  CombinedGradingBatchResult,
+  CombinedGradingRow,
   LayoutDocument,
   ObjectiveBlock,
-  ObjectiveGradingBatchResult,
-  ObjectiveGradingRow,
   ObjectiveMode,
   PageRenderBlock,
   SubjectiveBlock,
@@ -86,16 +86,18 @@ function answerText(options: string[]): string {
   return options.length > 0 ? options.join("") : "-";
 }
 
-function downloadCsv(rows: ObjectiveGradingRow[], cardId: string) {
-  const header = ["文件名", "学号", "识别状态", "客观题得分", "客观题满分", "待复核题数", "异常数", "备注"];
+function downloadCsv(rows: CombinedGradingRow[], cardId: string) {
+  const header = ["文件名", "学号", "识别状态", "总分", "满分", "客观题得分", "主观题得分", "待复核题数", "异常数", "备注"];
   const lines = [
     header,
     ...rows.map((row) => [
       row.fileName,
       row.studentId ?? "未识别",
       row.recognitionStatus,
-      String(row.score),
-      String(row.maxScore),
+      String(row.totalScore),
+      String(row.totalMaxScore),
+      `${row.objectiveScore}/${row.objectiveMaxScore}`,
+      `${row.subjectiveScore}/${row.subjectiveMaxScore}`,
       String(row.needsReviewCount),
       String(row.issueCount),
       row.message ?? ""
@@ -203,7 +205,7 @@ function App() {
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [mode, setMode] = useState<AppMode>("design");
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
-  const [gradingResult, setGradingResult] = useState<ObjectiveGradingBatchResult | null>(null);
+  const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
 
@@ -369,16 +371,16 @@ function App() {
     }
   }
 
-  async function gradeObjectiveFiles() {
+  async function gradeAnswerCardFiles() {
     if (!card || gradingFiles.length === 0) return;
     setIsBusy(true);
-    setStatus("正在识别并判选择题分...");
+    setStatus("正在识别并汇总客观题、主观题分数...");
     try {
       const form = new FormData();
       for (const file of gradingFiles) {
         form.append("files", file);
       }
-      const result = await fetchJson<ObjectiveGradingBatchResult>(`/api/cards/${card.id}/grading/objective`, {
+      const result = await fetchJson<CombinedGradingBatchResult>(`/api/cards/${card.id}/grading`, {
         method: "POST",
         body: form
       });
@@ -610,7 +612,7 @@ function App() {
                   {gradingFiles.length > 8 && <span>还有 {gradingFiles.length - 8} 张...</span>}
                 </div>
               )}
-              <button className="primary-button wide-button" onClick={() => void gradeObjectiveFiles()} disabled={!card || gradingFiles.length === 0 || isBusy}>
+              <button className="primary-button wide-button" onClick={() => void gradeAnswerCardFiles()} disabled={!card || gradingFiles.length === 0 || isBusy}>
                 <ClipboardCheck size={17} /> 开始识别并判分
               </button>
               <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
@@ -627,7 +629,7 @@ function GradingResults({
   result,
   onDownloadCsv
 }: {
-  result: ObjectiveGradingBatchResult | null;
+  result: CombinedGradingBatchResult | null;
   onDownloadCsv: () => void;
 }) {
   if (!result) {
@@ -640,7 +642,7 @@ function GradingResults({
     );
   }
 
-  const totalScore = result.rows.reduce((sum, row) => sum + row.score, 0);
+  const totalScore = result.rows.reduce((sum, row) => sum + row.totalScore, 0);
   const totalReview = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
   const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
 
@@ -650,7 +652,7 @@ function GradingResults({
         <div>
           <h2>成绩表</h2>
           <p>
-            {result.rows.length} 张答题卡 / 总客观题得分 {totalScore} / 待复核 {totalReview} 题 / 异常 {totalIssues} 处
+            {result.rows.length} 张答题卡 / 总分 {totalScore} / 待复核 {totalReview} 题 / 异常 {totalIssues} 处
           </p>
         </div>
         <button className="primary-button" type="button" onClick={onDownloadCsv} disabled={result.rows.length === 0}>
@@ -662,7 +664,8 @@ function GradingResults({
           <span>文件</span>
           <span>学号</span>
           <span>状态</span>
-          <span>得分</span>
+          <span>总分</span>
+          <span>客观/主观</span>
           <span>复核</span>
         </div>
         {result.rows.map((row) => (
@@ -670,19 +673,36 @@ function GradingResults({
             <summary>
               <span title={row.fileName}>{row.fileName}</span>
               <span>{row.studentId ?? "未识别"}</span>
-              <span className={row.recognitionStatus === "ok" ? "status-ok" : "status-warn"}>{row.recognitionStatus}</span>
+              <span className={row.recognitionStatus === "ok" && row.issueCount === 0 ? "status-ok" : "status-warn"}>{row.recognitionStatus}</span>
               <span>
-                {row.score}/{row.maxScore}
+                {row.totalScore}/{row.totalMaxScore}
+              </span>
+              <span>
+                {row.objectiveScore}/{row.objectiveMaxScore} · {row.subjectiveScore}/{row.subjectiveMaxScore}
               </span>
               <span>{row.needsReviewCount}</span>
             </summary>
             <div className="question-grade-list">
               {row.message && <p className="row-message">{row.message}</p>}
+              {row.questions.length > 0 && <p className="grading-section-title">客观题</p>}
               {row.questions.map((question) => (
                 <div className={`question-grade ${question.needsReview || question.status === "missing_key" ? "needs-review" : ""}`} key={question.questionNumber}>
                   <strong>{question.questionNumber}</strong>
                   <span>标准 {answerText(question.correctOptions)}</span>
                   <span>识别 {answerText(question.selectedOptions)}</span>
+                  <span>
+                    {question.score}/{question.maxScore}
+                  </span>
+                  <span>置信 {question.confidence.toFixed(3)}</span>
+                  <em>{question.message ?? question.status}</em>
+                </div>
+              ))}
+              {row.subjectiveQuestions.length > 0 && <p className="grading-section-title">主观题</p>}
+              {row.subjectiveQuestions.map((question) => (
+                <div className={`question-grade subjective-grade ${question.needsReview ? "needs-review" : ""}`} key={question.questionId}>
+                  <strong>{question.questionNumber}</strong>
+                  <span>有效 {question.validCells.map((cell) => cell.score).join("+") || "-"}</span>
+                  <span>无效 {question.invalidCells.length}</span>
                   <span>
                     {question.score}/{question.maxScore}
                   </span>
