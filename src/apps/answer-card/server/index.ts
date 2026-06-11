@@ -9,6 +9,7 @@ import { gradeCombinedRecognition, gradeObjectiveRecognition } from "../../../sh
 import type { AnswerCard, CombinedGradingBatchResult, CombinedRecognitionResult, ObjectiveGradingBatchResult, ObjectiveRecognitionResult } from "../../../shared/types";
 import { createPdf } from "./pdf";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
+import { createScannerRouter } from "./scanner/index";
 import {
   assetsDir,
   cardAssetsDir,
@@ -357,6 +358,9 @@ export async function createApp(): Promise<express.Express> {
       next(error);
     }
   });
+
+  // ── Scanner API ───────────────────────────────────────
+  app.use("/api/scanner", createScannerRouter());
 
   const clientDist = process.env.ANSWER_CARD_CLIENT_DIST
     ? path.resolve(process.env.ANSWER_CARD_CLIENT_DIST)

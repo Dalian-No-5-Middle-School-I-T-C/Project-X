@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
+  Camera,
   ClipboardCheck,
   Download,
   FileDown,
@@ -34,6 +35,7 @@ import { normalizeObjectiveAnswerKey, objectiveQuestionNumbers, optionLabelsFor 
 import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../shared/blankLabels";
+import { ScannerPanel } from "./components/ScannerPanel";
 
 const modeLabels: Record<ObjectiveMode, string> = {
   single: "单选",
@@ -208,6 +210,7 @@ function App() {
   const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
+  const [showScanner, setShowScanner] = useState(false);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
@@ -547,7 +550,17 @@ function App() {
         </div>
         <div className={`main-grid grading-grid ${mode === "grading" ? "" : "hidden-panel"}`}>
           <section className="preview-panel grading-results-panel">
-            <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
+            {showScanner && card ? (
+              <ScannerPanel
+                cardId={card.id}
+                onScansComplete={(sessionId, pageCount) => {
+                  setStatus(`扫描完成：${pageCount} 张，学号已识别并存入数据库`);
+                }}
+                onClose={() => setShowScanner(false)}
+              />
+            ) : (
+              <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
+            )}
           </section>
 
           <aside className="inspector">
@@ -595,6 +608,14 @@ function App() {
                   />
                 </label>
               </div>
+              <button
+                className="primary-button wide-button"
+                style={{ marginTop: 8 }}
+                onClick={() => setShowScanner(true)}
+                disabled={!card || isBusy}
+              >
+                <Camera size={17} /> 扫描仪录入
+              </button>
               <div className="file-queue">
                 <div>
                   <strong>{gradingFiles.length}</strong>
