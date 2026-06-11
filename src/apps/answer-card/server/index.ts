@@ -16,6 +16,8 @@ import {
   triggerRecognition,
   autoMatchCard,
   scanFolder,
+  KodakScannerDriver,
+  getActiveDriver,
   type ScannerDriver
 } from "./scanner";
 import { buildLayout } from "../../../shared/layout";
@@ -550,15 +552,55 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  // 获取扫描仪状态（预留接口）
+  // 获取扫描仪状态
   app.get("/api/scanner/status", async (_req, res, next) => {
     try {
       const driverType = getConfig("scanner_driver") || "folder";
+      const driver = getActiveDriver();
+      const deviceStatus = await driver.getStatus();
       res.json({
         driver: driverType,
         watcher: getWatcherStatus(),
-        supportedDrivers: ["folder", "twain", "wia", "kodak_sdk"]
+        supportedDrivers: ["folder", "twain", "wia", "kodak_sdk"],
+        device: deviceStatus
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 柯达扫描仪直连扫描
+  app.post("/api/scanner/scan", async (req, res, next) => {
+    try {
+      const driver = getActiveDriver();
+      if (!(driver instanceof KodakScannerDriver)) {
+        res.status(400).json({
+          success: false,
+          error: "当前驱动不是柯达直连模式。请先在扫描设置中将扫描仪驱动切换为「柯达 SDK 直连」。"
+        });
+        return;
+      }
+
+      const { dpi, colorMode, duplex, paperSize } = req.body ?? {};
+      const result = await driver.scan({
+        dpi: dpi ?? Number(getConfig("default_dpi") ?? "300"),
+        colorMode: colorMode ?? "color",
+        duplex: duplex ?? false,
+        paperSize: paperSize ?? "A4",
+      });
+
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 取消柯达扫描
+  app.post("/api/scanner/scan/cancel", async (_req, res, next) => {
+    try {
+      const driver = getActiveDriver();
+      await driver.cancel();
+      res.json({ success: true });
     } catch (error) {
       next(error);
     }

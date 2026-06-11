@@ -11,6 +11,7 @@ import { watch, FSWatcher } from "chokidar";
 import path from "node:path";
 import { copyFileSync, existsSync, statSync, mkdirSync } from "node:fs";
 import { unlink } from "node:fs/promises";
+import { spawn, type ChildProcess } from "node:child_process";
 import sharp from "sharp";
 import {
   generateScanId,
@@ -373,6 +374,238 @@ export class FolderScannerDriver implements ScannerDriver {
 
   async cancel(): Promise<void> {
     this.scanning = false;
+  }
+}
+
+// ============================================================
+// 柯达 i3000 扫描仪驱动实现（通过 WIA / Python 桥接）
+// ============================================================
+
+interface KodakScanOptions extends ScanOptions {
+  /** 输出文件前缀 */
+  prefix?: string;
+  /** 输出图片格式 */
+  imgFormat?: "jpg" | "png" | "tiff";
+}
+
+export class KodakScannerDriver implements ScannerDriver {
+  private scanning = false;
+  private currentProcess: ChildProcess | null = null;
+  private pythonPath: string;
+  private scriptPath: string;
+
+  constructor() {
+    // Python 解释器路径：优先使用项目配置，其次系统 python3/python
+    this.pythonPath = (getConfig("python_path") as string) || this.detectPython();
+    this.scriptPath = path.join(
+      process.cwd(),
+      "scripts",
+      "scanner",
+      "kodak_scan.py"
+    );
+  }
+
+  private detectPython(): string {
+    // Windows 上常见 Python 路径
+    const candidates = [
+      "python",
+      "python3",
+      process.env.PYTHON_PATH,
+      path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python313", "python.exe"),
+      path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python312", "python.exe"),
+      path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python311", "python.exe"),
+      "C:\\Python313\\python.exe",
+      "C:\\Python312\\python.exe",
+      "C:\\Python311\\python.exe",
+    ].filter(Boolean) as string[];
+    return candidates[0];
+  }
+
+  async scan(options: KodakScanOptions): Promise<ScanResult> {
+    if (this.scanning) {
+      return { success: false, files: [], error: "扫描仪正忙，请等待当前任务完成" };
+    }
+
+    this.scanning = true;
+    const scanId = `scan_${Date.now()}`;
+    // 临时输出到 scans 目录的同级 temp 文件夹
+    const tempDir = path.join(scansDir, "..", "temp_scans");
+    mkdirSync(tempDir, { recursive: true });
+
+    try {
+      const args = [
+        this.scriptPath,
+        "scan",
+        "--dpi", String(options.dpi ?? Number(getConfig("default_dpi") ?? "300")),
+        "--color", options.colorMode ?? "color",
+        "--output", tempDir,
+        "--prefix", options.prefix ?? scanId,
+        "--format", options.imgFormat ?? "jpg",
+      ];
+
+      if (options.duplex) {
+        args.push("--duplex");
+      }
+
+      console.log(`[kodak] 启动扫描: ${this.pythonPath} ${args.join(" ")}`);
+
+      const output = await this.runPython(args);
+
+      if (!output.success) {
+        return { success: false, files: [], error: String(output.error ?? "扫描失败（未知错误）") };
+      }
+
+      const scannedFiles: string[] = (output.files as string[]) ?? [];
+      const processedScans: string[] = [];
+
+      // 将扫描产生的文件逐张导入管线
+      for (const scannedFile of scannedFiles) {
+        try {
+          const scan = await processFile(scannedFile, {
+            dpi: options.dpi,
+          });
+          if (scan) {
+            processedScans.push(scan.id);
+          }
+        } catch (err) {
+          console.error(`[kodak] 处理扫描文件失败 ${scannedFile}:`, err);
+        }
+      }
+
+      // 清理临时文件
+      for (const f of scannedFiles) {
+        try { await unlink(f); } catch { /* 忽略清理错误 */ }
+      }
+
+      console.log(`[kodak] 扫描完成：${scannedFiles.length} 张 → 入库 ${processedScans.length} 条`);
+      return {
+        success: true,
+        files: processedScans,
+      };
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      console.error(`[kodak] 扫描异常:`, errorMsg);
+      return { success: false, files: [], error: errorMsg };
+    } finally {
+      this.scanning = false;
+    }
+  }
+
+  async getStatus(): Promise<ScannerStatus> {
+    try {
+      const output = await this.runPython([this.scriptPath, "status"]);
+      if (typeof output === "object" && output !== null) {
+        const status = output as Record<string, unknown>;
+        return {
+          connected: Boolean(status.connected),
+          name: String(status.name || "Kodak i3000"),
+          manufacturer: String(status.manufacturer || "Kodak Alaris"),
+          scanning: this.scanning,
+        };
+      }
+    } catch (err) {
+      console.warn(`[kodak] 状态查询失败:`, err);
+    }
+
+    return {
+      connected: false,
+      name: "Kodak i3000",
+      manufacturer: "Kodak Alaris",
+      scanning: this.scanning,
+    };
+  }
+
+  async cancel(): Promise<void> {
+    if (this.currentProcess && !this.currentProcess.killed) {
+      try {
+        // Windows 上需要 taskkill 才能杀掉子进程树
+        const pid = this.currentProcess.pid;
+        if (pid) {
+          spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+            stdio: "ignore",
+          });
+        }
+      } catch {
+        // 忽略杀进程错误
+      }
+      this.currentProcess = null;
+    }
+    this.scanning = false;
+  }
+
+  /**
+   * 执行 Python 脚本并返回解析后的 JSON
+   */
+  private runPython(args: string[]): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(this.pythonPath, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
+      this.currentProcess = proc;
+
+      let stdout = "";
+      let stderr = "";
+      const timeoutMs = 120_000; // 2 分钟超时（大批量扫描可能较慢）
+      let timedOut = false;
+
+      const timer = setTimeout(() => {
+        timedOut = true;
+        try { proc.kill(); } catch { /* 忽略 */ }
+        reject(new Error("扫描超时（2 分钟），请检查扫描仪是否卡纸或异常"));
+      }, timeoutMs);
+
+      proc.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf-8");
+      });
+
+      proc.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf-8");
+      });
+
+      proc.on("close", (code) => {
+        clearTimeout(timer);
+        this.currentProcess = null;
+
+        if (timedOut) return;
+
+        if (code !== 0 && stdout.trim() === "") {
+          // 脚本完全没输出 → 可能是 pywin32 没装
+          const pywin32Hint = stderr.includes("pywin32") || stderr.includes("ModuleNotFoundError")
+            ? "请先安装 pywin32：pip install pywin32"
+            : stderr.trim() || `Python 进程退出码 ${code}`;
+          reject(new Error(pywin32Hint));
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(stdout.trim());
+          resolve(parsed as Record<string, unknown>);
+        } catch {
+          if (stderr.trim()) {
+            reject(new Error(`Python 脚本错误: ${stderr.trim().slice(0, 500)}`));
+          } else {
+            reject(new Error(`无法解析扫描脚本输出: ${stdout.trim().slice(0, 200)}`));
+          }
+        }
+      });
+
+      proc.on("error", (err) => {
+        clearTimeout(timer);
+        reject(new Error(`无法启动 Python 进程: ${err.message}。请检查 Python 是否已安装并在 PATH 中。`));
+      });
+    });
+  }
+}
+
+export function getActiveDriver(): ScannerDriver {
+  const driverType = (getConfig("scanner_driver") as string) || "folder";
+  switch (driverType) {
+    case "kodak_sdk":
+      return new KodakScannerDriver();
+    case "folder":
+    default:
+      return new FolderScannerDriver();
   }
 }
 

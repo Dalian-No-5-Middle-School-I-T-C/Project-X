@@ -53,9 +53,17 @@ interface ScanDetail {
   updated_at: string;
 }
 
+interface DeviceStatus {
+  connected: boolean;
+  name: string;
+  manufacturer: string;
+  scanning: boolean;
+}
+
 interface ScanConfig {
   config: Record<string, string>;
   watcher: { watching: boolean; folder: string | null };
+  device?: DeviceStatus;
 }
 
 interface CardSummary {
@@ -94,6 +102,12 @@ export default function ScanPanel() {
   const [folderProgress, setFolderProgress] = useState("");
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 柯达扫描仪直连状态
+  const [kodakScanning, setKodakScanning] = useState(false);
+  const [kodakDpi, setKodakDpi] = useState(300);
+  const [kodakDuplex, setKodakDuplex] = useState(false);
+  const [kodakColor, setKodakColor] = useState<"color" | "grayscale" | "blackwhite">("color");
 
   /** 上传单个 File 对象 */
   async function uploadFile(file: File): Promise<boolean> {
@@ -281,6 +295,44 @@ export default function ScanPanel() {
     }
   }
 
+  // 柯达扫描仪直连扫描
+  async function handleKodakScan() {
+    setKodakScanning(true);
+    try {
+      const result = await fetchJson<{ success: boolean; files: string[]; error?: string }>(
+        "/api/scanner/scan",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            dpi: kodakDpi,
+            colorMode: kodakColor,
+            duplex: kodakDuplex
+          })
+        }
+      );
+      if (!result.success) {
+        alert(result.error || "扫描失败，请检查扫描仪状态");
+      } else {
+        setFolderProgress(`扫描完成，导入了 ${result.files?.length ?? 0} 张图片`);
+        await loadScans();
+      }
+    } catch (err) {
+      console.error("柯达扫描失败:", err);
+      alert("扫描失败，请检查扫描仪连接和 Python 环境");
+    } finally {
+      setKodakScanning(false);
+    }
+  }
+
+  // 取消柯达扫描
+  async function handleKodakCancel() {
+    try {
+      await fetchJson("/api/scanner/scan/cancel", { method: "POST" });
+    } catch { /* 忽略 */ }
+    setKodakScanning(false);
+  }
+
   // 手动触发识别
   async function handleRecognize(scanId: string, cardId: string) {
     setIsBusy(true);
@@ -361,13 +413,25 @@ export default function ScanPanel() {
         <div className="scan-toolbar-left">
           <h2>扫描管理</h2>
           {config && (
-            <span className="watcher-status">
-              {config.watcher.watching ? (
-                <><CheckCircle size={14} /> 监听中: {config.watcher.folder}</>
-              ) : (
-                <><AlertCircle size={14} /> 未监听</>
+            <>
+              <span className="watcher-status">
+                {config.watcher.watching ? (
+                  <><CheckCircle size={14} /> 监听中: {config.watcher.folder}</>
+                ) : (
+                  <><AlertCircle size={14} /> 未监听</>
+                )}
+              </span>
+              {config.device && (
+                <span className={`watcher-status ${config.device.connected ? "connected" : ""}`}>
+                  <ScanLine size={14} />
+                  {config.device.connected ? (
+                    <>{config.device.name} 已就绪</>
+                  ) : (
+                    <>{config.device.name} 未连接</>
+                  )}
+                </span>
               )}
-            </span>
+            </>
           )}
         </div>
         <div className="scan-toolbar-right">
@@ -431,6 +495,54 @@ export default function ScanPanel() {
             <ScanLine size={14} /> 扫描
           </button>
         </div>
+        {/* Kodak 直连扫描控制 */}
+        {config?.config.scanner_driver === "kodak_sdk" && (
+          <div className="kodak-controls">
+            <div className="kodak-controls-row">
+              <label className="kodak-label">
+                DPI
+                <select value={kodakDpi} onChange={(e) => setKodakDpi(Number(e.target.value))}>
+                  <option value={200}>200</option>
+                  <option value={300}>300</option>
+                  <option value={400}>400</option>
+                  <option value={600}>600</option>
+                </select>
+              </label>
+              <label className="kodak-label">
+                色彩
+                <select value={kodakColor} onChange={(e) => setKodakColor(e.target.value as typeof kodakColor)}>
+                  <option value="color">彩色</option>
+                  <option value="grayscale">灰度</option>
+                  <option value="blackwhite">黑白</option>
+                </select>
+              </label>
+              <label className="kodak-label check-label">
+                <input
+                  type="checkbox"
+                  checked={kodakDuplex}
+                  onChange={(e) => setKodakDuplex(e.target.checked)}
+                />
+                双面扫描
+              </label>
+            </div>
+            <div className="kodak-controls-row">
+              {kodakScanning ? (
+                <button className="primary-button danger" onClick={() => void handleKodakCancel()}>
+                  <X size={16} /> 取消扫描
+                </button>
+              ) : (
+                <button
+                  className="primary-button"
+                  onClick={() => void handleKodakScan()}
+                  disabled={isBusy || (config?.device && !config.device.connected)}
+                >
+                  <ScanLine size={16} /> 开始扫描
+                </button>
+              )}
+              {kodakScanning && <span className="scan-progress"><Loader size={14} className="spin" /> 扫描中，请等待...</span>}
+            </div>
+          </div>
+        )}
         {folderProgress && <div className="scan-progress">{folderProgress}</div>}
       </div>
 
@@ -654,17 +766,19 @@ export default function ScanPanel() {
                   id="setting-scanner-driver"
                 >
                   <option value="folder">文件夹监听模式</option>
+                  <option value="kodak_sdk">柯达 SDK 直连（WIA）</option>
                   <option value="twain" disabled>
                     TWAIN 直连（待开发）
                   </option>
                   <option value="wia" disabled>
                     WIA 直连（待开发）
                   </option>
-                  <option value="kodak_sdk" disabled>
-                    柯达 SDK 直连（待开发）
-                  </option>
                 </select>
-                <small className="modal-hint">当前仅支持 folder 模式</small>
+                <small className="modal-hint">
+                  {config?.config.scanner_driver === "kodak_sdk"
+                    ? "柯达模式需要安装 Python + pywin32 库（pip install pywin32）。扫描仪通过 Windows WIA 协议通信。"
+                    : "当前使用文件夹监听模式，请将扫描仪输出到 input_folder"}
+                </small>
               </label>
             </div>
             <div className="modal-footer">
