@@ -19,12 +19,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "bcrypt": "^5.1.1",
+    "better-sqlite3": "^12.1.0",
     "express": "^5.1.0",
     "multer": "^2.0.2",
     "pdfkit": "^0.17.2"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^5.0.4",
+    "@types/bcrypt": "^5.0.2",
     "@types/express": "^5.0.3",
     "@types/multer": "^2.0.0",
     "@types/node": "^24.3.0",
