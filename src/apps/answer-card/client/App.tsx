@@ -1202,7 +1202,7 @@ function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][nu
       {area.digitCells.map((cell) => (
         <g key={`${cell.digitIndex}_${cell.digit}`}>
           <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
-          <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + 2.15} textAnchor="middle" className="svg-tiny">
+          <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
             {cell.digit}
           </text>
         </g>
@@ -1226,13 +1226,13 @@ function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "obje
       ))}
       {block.items.map((item) => (
         <g key={item.questionNumber}>
-          <text x={item.labelX - 2.5} y={item.labelY} className="svg-tiny">
+          <text x={item.labelX - 2.5} y={item.options[0]?.rect.y + (item.options[0]?.rect.height ?? 0) / 2} dominantBaseline="middle" className="svg-option-label">
             {item.questionNumber}
           </text>
           {item.options.map((option) => (
             <g key={option.label}>
               <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
-              <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + 2.05} textAnchor="middle" className="svg-tiny">
+              <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-option-label">
                 {option.label}
               </text>
             </g>
@@ -1302,7 +1302,7 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
             return (
               <g key={index}>
                 {blankLabel && (
-                  <text x={blank.x - blankLabel.length * 1.8 - 0.8} y={blank.y + 4.2} className="svg-tiny">
+                  <text x={blank.x - 0.8} y={blank.y + blank.height} textAnchor="end" dominantBaseline="middle" className="svg-blank-label">
                     {blankLabel}
                   </text>
                 )}

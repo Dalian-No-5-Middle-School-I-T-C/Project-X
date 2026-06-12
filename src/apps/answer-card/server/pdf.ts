@@ -79,10 +79,8 @@ function drawStudentArea(doc: PDFKit.PDFDocument, page: PageLayout) {
   drawText(doc, "班级：", infoRect.x + 5, infoRect.y + 22, 9);
   doc.moveTo(pt(infoRect.x + 18), pt(infoRect.y + 26.5)).lineTo(pt(infoRect.x + infoRect.width - 9), pt(infoRect.y + 26.5)).stroke();
 
-  const leftX = digitRect.x + 6.5;
   for (let row = 0; row < Math.max(...digitCells.map((cell) => cell.digitIndex)) + 1; row += 1) {
     doc.moveTo(pt(digitRect.x), pt(digitRect.y + 7 + row * 4.8)).lineTo(pt(digitRect.x + digitRect.width), pt(digitRect.y + 7 + row * 4.8)).stroke();
-    drawText(doc, String(row), leftX - 2.5, digitRect.y + 7.7 + row * 4.8, 7);
   }
 
   digitCells.forEach((cell) => {
@@ -103,10 +101,13 @@ function drawObjectiveBlock(doc: PDFKit.PDFDocument, block: Extract<PageRenderBl
 }
 
 function drawObjectiveItem(doc: PDFKit.PDFDocument, item: ObjectiveRenderItem) {
-  drawText(doc, String(item.questionNumber), item.labelX - 2.5, item.labelY - 3.2, 6.8);
+  const firstOption = item.options[0];
+  if (firstOption) {
+    drawText(doc, String(item.questionNumber), item.labelX - 2.5, firstOption.rect.y + 0.05, 7.2);
+  }
   item.options.forEach((option) => {
     drawRect(doc, option.rect, { stroke: "#333", lineWidth: 0.15 });
-    drawCenteredText(doc, option.label, option.rect.x, option.rect.y - 0.35, option.rect.width, 5.4);
+    drawCenteredText(doc, option.label, option.rect.x, option.rect.y + 0.35, option.rect.width, 5.8);
   });
 }
 
@@ -156,7 +157,11 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
   question.blanks.forEach((blank, index) => {
     const blankLabel = question.kind === "blank" ? formatBlankLabel(question.blankLabelStyle, index) : `${question.questionNumber}.${index + 1}`;
     if (blankLabel) {
-      drawText(doc, blankLabel, blank.x - blankLabel.length * 1.8 - 0.8, blank.y + 1, 6);
+      const slotWidth = question.blankLabelSlotWidth ?? blankLabel.length * 1.8 + 0.8;
+      drawText(doc, blankLabel, blank.x - slotWidth - 0.8, blank.y + blank.height - 2.35, 8, {
+        width: pt(slotWidth),
+        align: "right"
+      });
     }
     doc.moveTo(pt(blank.x), pt(blank.y + blank.height)).lineTo(pt(blank.x + blank.width), pt(blank.y + blank.height)).stroke();
   });

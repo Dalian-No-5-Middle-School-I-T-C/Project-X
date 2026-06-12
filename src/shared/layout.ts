@@ -315,9 +315,14 @@ function blankLabelWidth(question: SubjectiveQuestion, index: number): number {
   return label ? label.length * 1.8 + 0.8 : 0;
 }
 
-function blankQuestionItemWidth(question: SubjectiveQuestion): number {
+function maxBlankLabelWidth(question: SubjectiveQuestion): number {
   const blankCount = blankQuestionCount(question);
-  const blanksWidth = Array.from({ length: blankCount }, (_, index) => blankLabelWidth(question, index) + blankQuestionLineWidth(question)).reduce(
+  return Math.max(0, ...Array.from({ length: blankCount }, (_, index) => blankLabelWidth(question, index)));
+}
+
+function blankQuestionItemWidth(question: SubjectiveQuestion, labelSlotWidth = maxBlankLabelWidth(question)): number {
+  const blankCount = blankQuestionCount(question);
+  const blanksWidth = Array.from({ length: blankCount }, () => labelSlotWidth + blankQuestionLineWidth(question)).reduce(
     (sum, width) => sum + width,
     0
   );
@@ -325,7 +330,8 @@ function blankQuestionItemWidth(question: SubjectiveQuestion): number {
 }
 
 function blankBlockColumnCount(questions: SubjectiveQuestion[]): number {
-  const maxItemWidth = Math.max(...questions.map(blankQuestionItemWidth));
+  const labelSlotWidth = Math.max(0, ...questions.map(maxBlankLabelWidth));
+  const maxItemWidth = Math.max(...questions.map((question) => blankQuestionItemWidth(question, labelSlotWidth)));
   const usableW = BODY_WIDTH - BLANK_BLOCK_INSET_X * 2;
   const columns = Math.floor((usableW + BLANK_ITEM_GAP_X) / (maxItemWidth + BLANK_ITEM_GAP_X));
   return Math.max(1, Math.min(columns, questions.length));
@@ -389,11 +395,12 @@ function addSubjectiveQuestion(
     const blankW = question.blanks?.widthMm ?? 28;
     const blankH = question.blanks?.heightMm ?? 6;
     const gap = 6;
-    const perRow = Math.max(1, Math.floor((BODY_WIDTH - 14) / (blankW + gap)));
+    const labelSlotWidth = maxBlankLabelWidth(question);
+    const perRow = Math.max(1, Math.floor((BODY_WIDTH - 14) / (blankW + gap + labelSlotWidth)));
     for (let index = 0; index < blankCount; index += 1) {
       const col = index % perRow;
       const row = Math.floor(index / perRow);
-      blanks.push(rect(contentRect.x + 8 + col * (blankW + gap), contentRect.y + 13 + row * (blankH + 5), blankW, blankH));
+      blanks.push(rect(contentRect.x + 8 + labelSlotWidth + col * (blankW + gap + labelSlotWidth), contentRect.y + 13 + row * (blankH + 5), blankW, blankH));
     }
   }
 
@@ -446,6 +453,7 @@ function addSubjectiveQuestion(
         lineYs,
         blanks,
         blankLabelStyle: question.blanks?.labelStyle,
+        blankLabelSlotWidth: maxBlankLabelWidth(question),
         images
       }
     ]
@@ -472,6 +480,7 @@ function addBlankSubjectiveSegment(
   const scoreQuestion = blankScoreQuestion(questions);
   const scoreCellsByQuestionId = new Map<string, Array<{ score: number; rect: Rect }>>();
   const scoreHeader = scoreQuestion ? BLANK_SCORE_HEADER_HEIGHT : 0;
+  const blankLabelSlotWidth = Math.max(0, ...questions.map(maxBlankLabelWidth));
 
   if (scoreQuestion) {
     scoreCellsByQuestionId.set(
@@ -487,7 +496,7 @@ function addBlankSubjectiveSegment(
     const itemX = frameRect.x + BLANK_BLOCK_INSET_X + col * columnW;
     const itemY = frameRect.y + scoreHeader + BLANK_BLOCK_INSET_Y + row * BLANK_ITEM_ROW_HEIGHT;
     const blankCount = blankQuestionCount(question);
-    const labelWidth = Array.from({ length: blankCount }, (_, labelIndex) => blankLabelWidth(question, labelIndex)).reduce((sum, width) => sum + width, 0);
+    const labelWidth = blankLabelSlotWidth * blankCount;
     const lineW = Math.min(
       blankQuestionLineWidth(question),
       Math.max(8, (columnW - BLANK_NUMBER_WIDTH - labelWidth - BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) - 2) / blankCount)
@@ -496,7 +505,7 @@ function addBlankSubjectiveSegment(
     let blankX = itemX + BLANK_NUMBER_WIDTH;
     const blanks: Rect[] = [];
     for (let blankIndex = 0; blankIndex < blankCount; blankIndex += 1) {
-      blankX += blankLabelWidth(question, blankIndex);
+      blankX += blankLabelSlotWidth;
       blanks.push(rect(blankX, itemY + 2, lineW, lineH));
       blankX += lineW + BLANK_INNER_GAP_X;
     }
@@ -524,6 +533,7 @@ function addBlankSubjectiveSegment(
       lineYs: [],
       blanks,
       blankLabelStyle: question.blanks?.labelStyle,
+      blankLabelSlotWidth,
       images: []
     });
   }
