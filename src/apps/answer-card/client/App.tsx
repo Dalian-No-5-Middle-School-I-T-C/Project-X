@@ -218,6 +218,7 @@ function App() {
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [mode, setMode] = useState<AppMode>("design");
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
+  const [gradingExamId, setGradingExamId] = useState<string>("");
   const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
@@ -227,6 +228,10 @@ function App() {
   const [analysisRanking, setAnalysisRanking] = useState<StudentRankingItem[]>([]);
   const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
   const [exams, setExams] = useState<ExamRecord[]>([]);
+  const [showCreateExam, setShowCreateExam] = useState(false);
+  const [newExamName, setNewExamName] = useState("");
+  const [newExamSubject, setNewExamSubject] = useState("");
+  const [newExamCardId, setNewExamCardId] = useState("");
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
@@ -399,12 +404,19 @@ function App() {
       for (const file of gradingFiles) {
         form.append("files", file);
       }
+      if (gradingExamId) {
+        form.append("examId", gradingExamId);
+      }
       const result = await fetchJson<CombinedGradingBatchResult>(`/api/cards/${card.id}/grading`, {
         method: "POST",
         body: form
       });
       setGradingResult(result);
-      setStatus(`阅卷完成：${result.rows.length} 张，${result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0)} 题待复核`);
+      const msg = `阅卷完成：${result.rows.length} 张，${result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0)} 题待复核`;
+      const extra = (result as Record<string, unknown>).persisted
+        ? `，已写入数据库 ${(result as Record<string, unknown>).persisted} 条`
+        : gradingExamId ? "" : "（未选择考试，数据未落库）";
+      setStatus(msg + extra);
     } finally {
       setIsBusy(false);
     }
@@ -629,6 +641,21 @@ function App() {
                   ))}
                 </select>
               </label>
+              <label>
+                考试
+                <select
+                  value={gradingExamId}
+                  onChange={(e) => setGradingExamId(e.target.value)}
+                  onFocus={() => { if (exams.length === 0) loadExams(); }}
+                >
+                  <option value="">不关联考试</option>
+                  {exams.map((exam) => (
+                    <option key={exam.id} value={String(exam.id)}>
+                      {exam.name} {exam.subject ? `(${exam.subject})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <div className="split-actions">
                 <label className="upload-button">
                   <Upload size={16} /> 导入图片
@@ -695,23 +722,88 @@ function App() {
                 <BarChart3 size={17} /> 成绩分析
               </div>
 
-              <label>
-                选择考试
-                <select
-                  value={analysisExamId ?? ""}
-                  onChange={(e) => {
-                    const id = Number(e.target.value);
-                    if (id) loadAnalysis(id);
-                  }}
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+                <label style={{ flex: 1 }}>
+                  考试
+                  <select
+                    value={analysisExamId ?? ""}
+                    onChange={(e) => {
+                      const id = Number(e.target.value);
+                      if (id) loadAnalysis(id);
+                    }}
+                  >
+                    <option value="" disabled>请选择考试</option>
+                    {exams.map((exam) => (
+                      <option key={exam.id} value={exam.id}>
+                        {exam.name} {exam.subject ? `(${exam.subject})` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="ghost-button"
+                  onClick={() => setShowCreateExam(!showCreateExam)}
+                  style={{ marginBottom: 4 }}
                 >
-                  <option value="" disabled>请选择考试</option>
-                  {exams.map((exam) => (
-                    <option key={exam.id} value={exam.id}>
-                      {exam.name} {exam.subject ? `(${exam.subject})` : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                  <Plus size={15} /> 新建
+                </button>
+              </div>
+
+              {showCreateExam && (
+                <div style={{ background: "var(--surface-soft)", borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <input
+                    value={newExamName}
+                    onChange={(e) => setNewExamName(e.target.value)}
+                    placeholder="考试名称（如：2026上学期期中）"
+                    style={{ padding: "6px 8px", border: "1px solid var(--line-strong)", borderRadius: 4 }}
+                  />
+                  <div className="two-col">
+                    <input
+                      value={newExamSubject}
+                      onChange={(e) => setNewExamSubject(e.target.value)}
+                      placeholder="科目（可选）"
+                      style={{ padding: "6px 8px", border: "1px solid var(--line-strong)", borderRadius: 4 }}
+                    />
+                    <select
+                      value={newExamCardId || card?.id || ""}
+                      onChange={(e) => setNewExamCardId(e.target.value)}
+                      style={{ padding: "6px 8px", border: "1px solid var(--line-strong)", borderRadius: 4 }}
+                    >
+                      <option value="" disabled>选择答题卡</option>
+                      {cards.map((c) => (
+                        <option key={c.id} value={c.id}>{c.title} ({c.id})</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      className="primary-button"
+                      onClick={async () => {
+                        const name = newExamName.trim();
+                        const cardId = newExamCardId || card?.id || "";
+                        if (!name || !cardId) { setStatus("请填写考试名称和选择答题卡"); return; }
+                        try {
+                          const res = await fetchJson<ExamRecord>("/api/exams", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ name, cardId, subject: newExamSubject.trim() || undefined })
+                          });
+                          setStatus(`考试已创建: ${res.name}`);
+                          setNewExamName("");
+                          setNewExamSubject("");
+                          setShowCreateExam(false);
+                          loadExams();
+                        } catch (err) {
+                          setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`);
+                        }
+                      }}
+                    >
+                      确认创建
+                    </button>
+                    <button className="ghost-button" onClick={() => setShowCreateExam(false)}>取消</button>
+                  </div>
+                </div>
+              )}
 
               {!analysisExamId && (
                 <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>

@@ -274,7 +274,7 @@ select {
 }
 
 .hidden-panel {
-  display: none;
+  display: none !important;
 }
 
 .preview-panel {

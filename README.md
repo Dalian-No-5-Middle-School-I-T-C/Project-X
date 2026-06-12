@@ -1,10 +1,10 @@
 # Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.1.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.0.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
-  <img src="https://img.shields.io/badge/tech-Electron%20%7C%20React%20%7C%20Node.js-9cf.svg" alt="Tech Stack">
+  <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20Electron-9cf.svg" alt="Tech Stack">
 </p>
 
 ## 项目简介
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v0.3.0 → pre-1.0  
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考号-图片持久化 → 成绩分析  
-> **下个里程碑**：v1.0 正式版
+> **当前版本**：v1.0  
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析  
+> **下个里程碑**：v1.1 — 用户权限管理、多班级分析
 
 ---
 
@@ -36,30 +36,51 @@
 
 ## 功能特性
 
-### 当前已实现（v0.1.0）
+### 答题卡设计
 
-- **答题卡设计**：新建、保存、读取答题卡，每张答题卡自动生成唯一 ID
-- **A4 标准版式**：包含答题卡 ID、标题、六个定位方块、学生信息区、学号填涂区、正文题块和页脚页码
+- **答题卡管理**：新建、保存、读取答题卡，每张自动生成唯一 ID
+- **A4 标准版式**：含标题、六点定位标记、学生信息区、学号填涂区、题块、页码
 - **客观题设计**：
-  - 支持单选、多选、不定项
-  - 可配置选项数、题量、分值
+  - 单选、多选、不定项，可配置选项数、题量、分值
   - 四种密度预设：宽松、标准、紧凑、高密
-  - 题块可灵活插入主观题之间，不固定在最前
+  - 标准答案录入，多选支持部分得分规则
 - **主观题设计**：
-  - 支持带顶部分数填涂区的手工给分样式
-  - 支持无顶部分数填涂区的纯书写块
-  - 内容支持：填空、横线格、空白大框、最小高度设置、图片插入
-- **PDF 导出**：生成标准 A4 PDF，适合直接打印
-- **坐标数据保存**：保存定位块、学号填涂点、客观题填涂点、主观题框、分数格和图片区域的毫米坐标，为后续自动阅卷预留接口
-- **Windows 桌面端**：支持便携版 EXE 和 MSI 安装包两种分发方式
+  - 带分数填涂区的手工给分样式（支持十位/个位/十分位）
+  - 纯书写块、填空题（阿拉伯/罗马数字序号）、横线格、空白大框
+  - 支持图片插入、最小高度设置
+- **PDF 导出**：毫米级精确标准 A4 PDF，直接打印
+- **坐标布局**：所有定位点、填涂框、作答区坐标精确到毫米
 
-### 即将推出（v1.0 正式版）
+### 阅卷识别
 
-- [x] 成绩分析面板 — 考试总览、分数分布、学生排名、题目得分率
-- [x] 考试管理 — 创建考试、选择答题卡、阅卷结果自动落库
-- [ ] 用户权限管理 — 教师/学生端分离，登录系统
-- [ ] 年级分析 — 多班级对比、趋势图
-- [ ] 知识点诊断 — 关联知识图谱定位薄弱环节
+- **批量识别判分**：上传多张答题卡图片（最多 200 张），自动完成：
+  - 客观题：选项填涂检测 + 标准答案对比判分
+  - 主观题：红色划线分数格识别
+  - 学号：数字填涂网格 OCR
+- **低置信度标记**：置信度偏低的题目自动标"待复核"
+- **CSV 导出**：UTF-8 BOM 编码，Excel 直接打开
+
+### 扫描仪直扫
+
+- **柯达 i3000 支持**：通过 C++ TWAIN 原生桥直接驱动高速扫描仪
+- **实时进度**：SSE 推送扫描进度 + 逐页缩略图预览
+- **自动 OCR**：扫描完成自动调用识别引擎提取学号
+- **考号-图片持久化**：学号与图片路径存入 SQLite 数据库
+
+### 成绩分析
+
+- **考试管理**：创建考试、关联答题卡、科目信息
+- **分析总览**：平均分、最高分、最低分、标准差、及格率、优秀率
+- **分数分布**：SVG 柱状图（0-59 / 60-69 / 70-79 / 80-89 / 90-100）
+- **学生排名**：学号、姓名、总分、客观分、主观分、待复核标记
+- **题目分析**：每题得分率、正确率排行，低分题红色高亮
+- **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
+
+### 桌面应用
+
+- **Windows 桌面端**：便携版 EXE + MSI 安装包
+- **Electron 原生打包**：C++ 识别引擎和 TWAIN 桥自动内嵌
+- **数据本地可控**：答题卡、扫描图片、成绩全部存储本地
 
 ---
 
@@ -71,29 +92,30 @@
 
 1. 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 下载：
    ```
-   答题卡设计系统-0.1.0-x64.exe
+   答题卡设计系统-1.0.0-x64.exe
    ```
-2. 双击即可运行，无需安装，不写注册表
+2. 双击即可运行，无需安装
 
 #### 方式二：MSI 安装包（推荐机房部署）
 
 1. 下载：
    ```
-   答题卡设计系统-0.1.0-x64.msi
+   答题卡设计系统-1.0.0-x64.msi
    ```
-2. 适合学校机房、域控、SCCM、Intune、组策略等集中部署场景
+2. 适合学校机房、域控、组策略等集中部署场景
 
 #### 基本使用流程
 
-1. 打开程序
-2. 点击「新建答题卡」
-3. 编辑标题、学生信息、客观题块和主观题块
-4. 调整客观题密度和主观题样式
-5. 点击保存
-6. 导出 PDF 并打印
-7. 答题卡的 JSON 文件保存在 `%APPDATA%\answer-card-designer\data\answer-card\`
+**设计答题卡**：
+1. 打开程序 → 新建答题卡 → 编辑标题、题块、标准答案
+2. 保存 → 导出 PDF → 打印
 
-> **数据存储说明**：桌面版会把答题卡数据保存到当前 Windows 用户的应用数据目录，不会写入安装目录，保障多用户环境下的数据隔离。
+**阅卷判分**：
+1. 切到「阅卷」模式 → 选答题卡 → 选考试 → 导入图片
+2. 点击「开始识别并判分」→ 查看成绩 → 导出 CSV
+
+**查看分析**：
+1. 切到「分析」模式 → 选考试 → 查看总览/排名/题目分析
 
 ---
 
@@ -102,75 +124,51 @@
 #### 环境要求
 
 - Windows 操作系统
-- Node.js v25.8.2
+- Node.js 24+（开发）/ Node.js 22（Electron 打包）
+- Visual Studio 2022（编译 C++ 原生模块需要）
+- OpenCV 4.13+（识别引擎编译需要）
 
 #### 安装依赖
 
 ```powershell
-npm install
+npm install --ignore-scripts
 ```
 
-#### 提示
-
-现在 `node_modules` 是 `Electron ABI`。如果之后要直接跑 `npm run server`，先执行
-
-```powershell
-npm run native:rebuild:node
-```
+> 使用 `--ignore-scripts` 避免 Electron 下载 SSL 问题。安装后需手动重建原生模块：
+> ```powershell
+> npm rebuild better-sqlite3 bcrypt
+> ```
 
 #### 开发模式
 
-**Web 开发模式**（前端热更新）：
 ```powershell
-npm run dev
-```
-访问：`http://127.0.0.1:5173`（前端）  
-后端 API 默认端口：`5174`
+# 终端 1：后端
+npx tsx src/apps/answer-card/server/index.ts
 
-**本地服务模式**（前后端构建后运行）：
-```powershell
-npm run build
-npm run server
+# 终端 2：前端
+npx vite --port 5173
 ```
-访问：`http://127.0.0.1:5174`
+访问 `http://localhost:5173`，后端 API 默认端口 `5174`。
 
 #### 打包发布
 
 ```powershell
-# 构建前端和服务端产物
-npm run build
-
-# 生成 Electron 目录包（本机测试）
-npm run electron:pack
-# 输出：release/win-unpacked/答题卡设计系统.exe
-
-# 生成 Windows 便携版 EXE
-npm run electron:dist
-# 输出：release/答题卡设计系统-0.1.0-x64.exe
-
-# 生成 Windows MSI 安装包
-npm run electron:msi
-# 输出：release/答题卡设计系统-0.1.0-x64.msi
+npm run build                          # 构建前后端
+npm run electron:pack                  # Electron 目录包
+npm run electron:dist                  # 便携版 EXE
+npm run electron:msi                   # MSI 安装包
 ```
 
-> **打包提示**：MSI 由 electron-builder 调用 WiX Toolset 生成。若从旧构建缓存继续打包时遇到 WiX 图标引用错误，可删除旧的 MSI 临时目录后重新打包：
-> ```powershell
-> Remove-Item -Recurse -Force .\release\__msi-x64
-> npm.cmd run electron:msi
-> ```
-
-#### 常用脚本速查
+#### 常用脚本
 
 | 命令 | 说明 |
 |------|------|
-| `npm. run typecheck` | TypeScript 类型检查 |
-| `npm. run build` | 构建前端和服务端 |
+| `npx tsc --noEmit` | TypeScript 类型检查 |
+| `npm run build` | 构建前端 + 后端 |
 | `npm run dev` | Web 开发模式 |
-| `npm run server` | 运行本地服务 |
 | `npm run electron:dev` | 构建后启动 Electron |
-| `npm run electron:pack` | 生成 Electron 目录包 |
-| `npm run electron:dist` | 生成 Windows 便携版 EXE |
-| `npm run electron:msi` | 生成 Windows MSI 安装包 |
+| `npm run electron:dist` | 生成 EXE |
+| `npm run electron:msi` | 生成 MSI |
 
 ---
 
@@ -178,28 +176,93 @@ npm run electron:msi
 
 ```
 Project-X/
-├── src/                    # 源代码
-│   ├── client/             # 前端（React + Electron）
-│   ├── server/             # 后端服务（Node.js）
-│   └── shared/             # 共享类型与工具
-├── dist/                   # 构建产物
-│   ├── client/             # 前端构建输出
-│   └── server/             # 服务端构建输出
-├── release/                # 打包输出（EXE / MSI）
-├── build/                  # 构建配置与图标资源
-└── docs/                   # 文档与 Wiki 资源
+├── src/
+│   ├── apps/answer-card/
+│   │   ├── client/                      # React 前端
+│   │   │   ├── App.tsx                  # 主应用（设计/阅卷/分析三模式）
+│   │   │   ├── styles.css               # 全局样式
+│   │   │   └── components/              # 子组件
+│   │   │       ├── ScannerPanel.tsx       # 扫描仪控制面板
+│   │   │       ├── AnalysisOverview.tsx   # 分析总览卡片
+│   │   │       ├── AnalysisDistribution.tsx # SVG 分数分布图
+│   │   │       ├── AnalysisRanking.tsx     # 学生排名表
+│   │   │       └── AnalysisQuestions.tsx   # 题目得分率排行
+│   │   └── server/                      # Express 后端
+│   │       ├── index.ts                 # 主路由（卡片/识别/阅卷/考试/分析）
+│   │       ├── recognition.ts           # C++ 识别引擎子进程管理
+│   │       ├── storage.ts               # 文件存储层
+│   │       ├── pdf.ts                   # PDF 生成（pdfkit）
+│   │       ├── database/                # 扫描记录 SQLite
+│   │       └── scanner/                 # TWAIN 扫描仪子系统
+│   ├── server/                          # 共享服务模块
+│   │   ├── db/                          # 主数据库（projectx.db）
+│   │   ├── repositories/                # 数据访问层
+│   │   │   ├── CardRepository.ts         # 答题卡 CRUD
+│   │   │   ├── ExamRepository.ts         # 考试 CRUD
+│   │   │   ├── UserRepository.ts         # 用户管理
+│   │   │   └── AnalysisRepository.ts     # 分析查询
+│   │   ├── middleware/                   # 认证中间件
+│   │   └── routes/                       # 认证路由
+│   └── shared/                          # 前后端共享
+│       ├── types.ts                     # 全部类型定义
+│       ├── grading.ts                   # 评分引擎
+│       ├── layout.ts                    # 答题卡坐标布局
+│       ├── blankLabels.ts               # 填空序号格式化
+│       └── defaultCard.ts               # 默认答题卡工厂
+├── native/
+│   ├── AnswerCardRecognizer/            # C++ 识别引擎（OpenCV）
+│   └── ScannerBridge/                   # C++ TWAIN 扫描仪桥接
+├── scripts/
+│   ├── build-server.ts                  # esbuild 后端打包
+│   └── build-scanner-bridge.bat         # 扫描仪桥接一键编译
+├── electron/
+│   └── main.cjs                         # Electron 主进程
+├── data/                                # 运行时数据
+│   ├── answer-card/                     # 答题卡 JSON、扫描图片、资产
+│   └── projectx.db                      # 主数据库（用户/卡片/考试/成绩）
+├── dist/                                # 构建产物
+├── resources/native/win-x64/            # 原生模块打包目录
+└── release/                             # Electron 打包输出
 ```
 
 ---
 
 ## 技术栈
 
-- **前端**：React + TypeScript + Electron
-- **后端**：Node.js + Express/Fastify
-- **构建工具**：Vite
-- **打包工具**：electron-builder + WiX Toolset（MSI）
-- **PDF 生成**：客户端原生支持
-- **数据存储**：本地 JSON / SQLite（后续版本）
+| 层级 | 技术 |
+|------|------|
+| **前端** | React 19 + TypeScript + Vite + Lucide React |
+| **后端** | Node.js + Express 5 + multer |
+| **识别引擎** | C++ + OpenCV 4.13 + nlohmann/json（子进程调用） |
+| **扫描仪** | C++ TWAIN API + GDI+（子进程调用） |
+| **数据库** | SQLite via better-sqlite3（WAL + 外键约束） |
+| **PDF** | pdfkit（毫米级精确排版） |
+| **桌面** | Electron 39 + electron-builder + WiX Toolset |
+| **构建** | Vite（前端）+ esbuild（后端） |
+
+---
+
+## API 接口一览
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET/POST` | `/api/cards` | 答题卡列表 / 创建 |
+| `GET/PUT` | `/api/cards/:id` | 答题卡详情 / 保存 |
+| `GET` | `/api/cards/:id/layout` | 布局坐标 |
+| `GET` | `/api/cards/:id/pdf` | 导出 PDF |
+| `POST` | `/api/cards/:id/recognition` | 单张识别（客观+主观） |
+| `POST` | `/api/cards/:id/grading` | 批量识别判分（支持 examId 落库） |
+| `POST` | `/api/cards/:id/assets` | 上传资源图片 |
+| `GET/POST` | `/api/exams` | 考试列表 / 创建 |
+| `GET` | `/api/exams/:id` | 考试详情+成绩 |
+| `GET` | `/api/analysis/exams/:id/overview` | 考试总览统计 |
+| `GET` | `/api/analysis/exams/:id/students` | 学生排名 |
+| `GET` | `/api/analysis/exams/:id/questions` | 题目得分率 |
+| `GET` | `/api/scanner/sources` | TWAIN 扫描仪检测 |
+| `POST` | `/api/scanner/scan` | 启动扫描会话 |
+| `GET` | `/api/scanner/progress/:id` | SSE 扫描进度 |
+| `POST` | `/api/auth/login` | 登录 |
+| `GET` | `/api/auth/me` | 当前用户信息 |
 
 ---
 
