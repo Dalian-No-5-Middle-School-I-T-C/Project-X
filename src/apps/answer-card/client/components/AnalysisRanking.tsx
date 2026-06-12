@@ -1,11 +1,16 @@
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Eye, X } from "lucide-react";
+import { useState } from "react";
 import type { StudentRankingItem } from "../../../../shared/types";
 
 interface Props {
   ranking: StudentRankingItem[];
+  examId: number;
 }
 
-export function AnalysisRanking({ ranking }: Props) {
+export function AnalysisRanking({ ranking, examId }: Props) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewTitle, setPreviewTitle] = useState("");
+
   if (!ranking || ranking.length === 0) {
     return (
       <div className="analysis-section">
@@ -29,6 +34,7 @@ export function AnalysisRanking({ ranking }: Props) {
               <th style={{ padding: "8px 12px", textAlign: "right", width: 70 }}>客观</th>
               <th style={{ padding: "8px 12px", textAlign: "right", width: 70 }}>主观</th>
               <th style={{ padding: "8px 12px", textAlign: "center", width: 56 }}>复核</th>
+              <th style={{ padding: "8px 12px", textAlign: "center", width: 90 }}>答题卡</th>
             </tr>
           </thead>
           <tbody>
@@ -47,11 +53,64 @@ export function AnalysisRanking({ ranking }: Props) {
                     </span>
                   )}
                 </td>
+                <td style={{ padding: "8px 12px", textAlign: "center" }}>
+                  {item.scanImagePath ? (
+                    <button
+                      onClick={() => {
+                        setPreviewTitle(`${item.studentName} (${item.studentNumber})`);
+                        setPreviewUrl(`/api/analysis/exams/${examId}/scan/${item.studentNumber}`);
+                      }}
+                      style={{
+                        background: "none", border: "1px solid var(--line-strong)", borderRadius: 4,
+                        cursor: "pointer", padding: "2px 8px", fontSize: 12,
+                        display: "inline-flex", alignItems: "center", gap: 4
+                      }}
+                      title="查看答题卡"
+                    >
+                      <Eye size={14} /> 预览
+                    </button>
+                  ) : (
+                    <span style={{ color: "var(--muted)", fontSize: 12 }}>—</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {/* Preview Modal */}
+      {previewUrl && (
+        <div
+          style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 1000,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 24
+          }}
+          onClick={() => { setPreviewUrl(null); setPreviewTitle(""); }}
+        >
+          <div
+            style={{
+              background: "#fff", borderRadius: 12, maxWidth: "90vw", maxHeight: "90vh",
+              overflow: "hidden", position: "relative"
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line)" }}>
+              <strong style={{ fontSize: 14 }}>答题卡预览 — {previewTitle}</strong>
+              <button onClick={() => { setPreviewUrl(null); setPreviewTitle(""); }} style={{ background: "none", border: "none", cursor: "pointer", padding: 4 }}>
+                <X size={20} />
+              </button>
+            </div>
+            <img
+              src={previewUrl}
+              alt={`答题卡 ${previewTitle}`}
+              style={{ maxWidth: "90vw", maxHeight: "calc(90vh - 50px)", objectFit: "contain" }}
+              onError={(e) => { (e.currentTarget as HTMLImageElement).src = ""; }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

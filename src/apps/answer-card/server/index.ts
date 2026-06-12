@@ -1,7 +1,7 @@
 import express from "express";
 import multer from "multer";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
@@ -101,10 +101,28 @@ function parsePositiveNumber(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/** Recursively find a file by name under a directory */
+function findFile(dir: string, filename: string): string | null {
+  if (!existsSync(dir)) return null;
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isFile() && entry.name === filename) return full;
+      if (entry.isDirectory()) {
+        const found = findFile(full, filename);
+        if (found) return found;
+      }
+    }
+  } catch { /* skip */ }
+  return null;
+}
+
 /** Background persistence: save grading results to database without blocking response */
 async function persistGradingResults(
   examIdParam: string,
   rows: CombinedGradingRow[],
+  filePaths: string[],
   createdBy?: number
 ): Promise<void> {
   const { ExamRepository } = await import("../../../server/repositories/ExamRepository");
@@ -137,7 +155,9 @@ async function persistGradingResults(
   let persisted = 0;
 
   const persistTx = db.transaction(() => {
-    for (const row of rows) {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const filePath = filePaths[i] ?? row.fileName;
       if (!row.studentId) continue;
       try {
         // Synchronous: ensure student exists
@@ -145,10 +165,10 @@ async function persistGradingResults(
         const stu = findStudent.get(row.studentId) as { id: number } | undefined;
         if (!stu) continue;
 
-        // Add scan record
+        // Add scan record with actual file path
         examRepo.addScanRecord({
           batch_id: batchId,
-          file_path: row.fileName,
+          file_path: filePath,
           file_name: row.fileName,
           student_number: row.studentId,
           student_id: stu.id
@@ -427,7 +447,9 @@ export async function createApp(): Promise<express.Express> {
       const examIdParam = fieldValue(req.body.examId);
 
       const rows = [];
+      const filePaths: string[] = [];
       for (const file of files) {
+        filePaths.push(file.path);
         try {
           const recognition = (await recognizeAnswerCard({
             imagePath: file.path,
@@ -460,7 +482,7 @@ export async function createApp(): Promise<express.Express> {
 
       // Persist to database asynchronously (non-blocking)
       if (examIdParam) {
-        persistGradingResults(examIdParam, rows, req.user?.id).catch((err) => {
+        persistGradingResults(examIdParam, rows, filePaths, req.user?.id).catch((err) => {
           console.error("[Grading] Persist failed:", err);
         });
       }
@@ -624,6 +646,45 @@ export async function createApp(): Promise<express.Express> {
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
       const questions = analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
       res.json(questions);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Serve scan image by exam + student number
+  app.get("/api/analysis/exams/:examId/scan/:studentNumber", async (req, res, next) => {
+    try {
+      const { getDatabase } = await import("../../../server/db");
+      const db = getDatabase();
+      const row = db.prepare(`
+        SELECT sr.file_path FROM scan_records sr
+        JOIN scan_batches sb ON sb.id = sr.batch_id
+        JOIN users u ON u.id = sr.student_id
+        WHERE sb.exam_id = ? AND u.student_number = ?
+        ORDER BY sr.created_at DESC LIMIT 1
+      `).get(Number(req.params.examId), req.params.studentNumber) as { file_path: string } | undefined;
+
+      if (!row) {
+        res.status(404).json({ message: "扫描图片不存在" });
+        return;
+      }
+
+      // Try exact path first, then fallback to recognition uploads dir
+      let filePath = row.file_path;
+      if (!existsSync(filePath)) {
+        // Fallback: filename might be relative, try recognition uploads
+        const base = path.basename(filePath);
+        const cardDir = path.join(dataDir, "recognition", "uploads");
+        // Search recursively for the file
+        const found = findFile(cardDir, base);
+        if (found) {
+          filePath = found;
+        } else {
+          res.status(404).json({ message: "图片文件不存在" });
+          return;
+        }
+      }
+      res.sendFile(path.resolve(filePath));
     } catch (error) {
       next(error);
     }

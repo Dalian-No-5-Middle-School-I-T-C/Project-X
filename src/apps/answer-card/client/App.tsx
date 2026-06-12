@@ -797,7 +797,7 @@ function App() {
                       {analysisOverview && analysisOverview.distribution.length > 0 && (
                         <AnalysisDistribution distribution={analysisOverview.distribution} />
                       )}
-                      <AnalysisRanking ranking={analysisRanking} />
+                      <AnalysisRanking ranking={analysisRanking} examId={analysisExamId!} />
                       <AnalysisQuestions questions={analysisQuestions} />
                     </>
                   )}

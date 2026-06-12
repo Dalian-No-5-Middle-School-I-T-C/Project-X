@@ -119,7 +119,11 @@ export class AnalysisRepository {
         ss.subjective_score,
         (SELECT COUNT(*) FROM question_scores qs
          WHERE qs.exam_id = ss.exam_id AND qs.student_id = ss.student_id
-         AND (qs.score = 0 OR qs.score < qs.max_score * 0.5)) as review_count
+         AND (qs.score = 0 OR qs.score < qs.max_score * 0.5)) as review_count,
+        (SELECT sr.file_path FROM scan_records sr
+         JOIN scan_batches sb ON sb.id = sr.batch_id
+         WHERE sb.exam_id = ss.exam_id AND sr.student_id = ss.student_id
+         ORDER BY sr.created_at DESC LIMIT 1) as scan_path
       FROM student_scores ss
       JOIN users u ON u.id = ss.student_id
       ${c.join}
@@ -128,6 +132,7 @@ export class AnalysisRepository {
     `).all(examId, ...c.params) as Array<{
       student_number: string; name: string; total_score: number;
       objective_score: number; subjective_score: number; review_count: number;
+      scan_path: string | null;
     }>;
 
     return rows.map((row, idx) => ({
@@ -137,7 +142,8 @@ export class AnalysisRepository {
       totalScore: row.total_score,
       objectiveScore: row.objective_score,
       subjectiveScore: row.subjective_score,
-      needReview: row.review_count > 0
+      needReview: row.review_count > 0,
+      scanImagePath: row.scan_path ?? null
     }));
   }
 

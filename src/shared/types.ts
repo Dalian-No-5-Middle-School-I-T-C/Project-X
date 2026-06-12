@@ -308,6 +308,7 @@ export type StudentRankingItem = {
   objectiveScore: number;
   subjectiveScore: number;
   needReview: boolean;
+  scanImagePath: string | null;
 };
 
 export type QuestionAnalysisItem = {
