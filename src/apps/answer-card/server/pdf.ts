@@ -82,6 +82,8 @@ function drawStudentArea(doc: PDFKit.PDFDocument, page: PageLayout) {
   for (let row = 0; row < Math.max(...digitCells.map((cell) => cell.digitIndex)) + 1; row += 1) {
     doc.moveTo(pt(digitRect.x), pt(digitRect.y + 7 + row * 4.8)).lineTo(pt(digitRect.x + digitRect.width), pt(digitRect.y + 7 + row * 4.8)).stroke();
   }
+  const separatorX = digitRect.x + 8.5;
+  doc.moveTo(pt(separatorX), pt(digitRect.y + 7)).lineTo(pt(separatorX), pt(digitRect.y + digitRect.height)).stroke();
 
   digitCells.forEach((cell) => {
     drawRect(doc, cell.rect, { stroke: "#333", lineWidth: 0.15 });
@@ -103,11 +105,11 @@ function drawObjectiveBlock(doc: PDFKit.PDFDocument, block: Extract<PageRenderBl
 function drawObjectiveItem(doc: PDFKit.PDFDocument, item: ObjectiveRenderItem) {
   const firstOption = item.options[0];
   if (firstOption) {
-    drawText(doc, String(item.questionNumber), item.labelX - 2.5, firstOption.rect.y + 0.05, 7.2);
+    drawText(doc, String(item.questionNumber), item.labelX - 2.5, firstOption.rect.y - 0.2, 7.2);
   }
   item.options.forEach((option) => {
     drawRect(doc, option.rect, { stroke: "#333", lineWidth: 0.15 });
-    drawCenteredText(doc, option.label, option.rect.x, option.rect.y + 0.35, option.rect.width, 5.8);
+    drawCenteredText(doc, option.label, option.rect.x, option.rect.y + 0.05, option.rect.width, 5.8);
   });
 }
 

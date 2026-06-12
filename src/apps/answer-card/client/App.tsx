@@ -1181,6 +1181,7 @@ function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocumen
 
 function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][number]["studentArea"]> }) {
   const rowCount = Math.max(...area.digitCells.map((cell) => cell.digitIndex)) + 1;
+  const separatorX = area.digitRect.x + 8.5;
   return (
     <g>
       <rect {...area.infoRect} fill="none" stroke="#333" strokeWidth="0.25" />
@@ -1199,6 +1200,7 @@ function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][nu
       {Array.from({ length: rowCount }).map((_, row) => (
         <line key={row} x1={area.digitRect.x} y1={area.digitRect.y + 7 + row * 4.8} x2={area.digitRect.x + area.digitRect.width} y2={area.digitRect.y + 7 + row * 4.8} stroke="#999" strokeWidth="0.15" />
       ))}
+      <line x1={separatorX} y1={area.digitRect.y + 7} x2={separatorX} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
       {area.digitCells.map((cell) => (
         <g key={`${cell.digitIndex}_${cell.digit}`}>
           <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
@@ -1226,13 +1228,13 @@ function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "obje
       ))}
       {block.items.map((item) => (
         <g key={item.questionNumber}>
-          <text x={item.labelX - 2.5} y={item.options[0]?.rect.y + (item.options[0]?.rect.height ?? 0) / 2} dominantBaseline="middle" className="svg-option-label">
+          <text x={item.labelX - 2.5} y={(item.options[0]?.rect.y ?? item.labelY) + (item.options[0]?.rect.height ?? 0) / 2 - 0.28} dominantBaseline="middle" className="svg-option-label">
             {item.questionNumber}
           </text>
           {item.options.map((option) => (
             <g key={option.label}>
               <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
-              <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-option-label">
+              <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2 - 0.28} textAnchor="middle" dominantBaseline="middle" className="svg-option-label">
                 {option.label}
               </text>
             </g>
