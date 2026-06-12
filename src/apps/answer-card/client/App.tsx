@@ -99,6 +99,15 @@ function answerText(options: string[]): string {
   return options.length > 0 ? options.join("") : "-";
 }
 
+function csvTextCell(value: string | number | null | undefined): string {
+  // 前导制表符可阻止 Excel 将 "8/10"、"3/4" 等识别为日期
+  const text = String(value ?? "");
+  if (/^\d{1,2}\/\d{1,2}$/.test(text) || /^\d{1,2}-\d{1,2}$/.test(text)) {
+    return `\t${text}`;
+  }
+  return text;
+}
+
 function downloadCsv(rows: CombinedGradingRow[], cardId: string) {
   const header = ["文件名", "学号", "识别状态", "总分", "满分", "客观题得分", "主观题得分", "待复核题数", "异常数", "备注"];
   const lines = [
@@ -109,8 +118,8 @@ function downloadCsv(rows: CombinedGradingRow[], cardId: string) {
       row.recognitionStatus,
       String(row.totalScore),
       String(row.totalMaxScore),
-      `${row.objectiveScore}/${row.objectiveMaxScore}`,
-      `${row.subjectiveScore}/${row.subjectiveMaxScore}`,
+      csvTextCell(`${row.objectiveScore}/${row.objectiveMaxScore}`),
+      csvTextCell(`${row.subjectiveScore}/${row.subjectiveMaxScore}`),
       String(row.needsReviewCount),
       String(row.issueCount),
       row.message ?? ""
