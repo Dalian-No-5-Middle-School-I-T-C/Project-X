@@ -111,6 +111,7 @@ export type SubjectiveRenderItem = {
   lineYs: number[];
   blanks: Rect[];
   blankLabelStyle?: BlankLabelStyle;
+  blankLabelSlotWidth?: number;
   images: Array<{ assetId: string; originalName?: string; rect: Rect }>;
 };
 

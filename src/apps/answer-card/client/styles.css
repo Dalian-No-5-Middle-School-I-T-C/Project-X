@@ -813,6 +813,16 @@ select:focus {
   fill: #111;
 }
 
+.svg-option-label {
+  font-size: 2.55px;
+  fill: #111;
+}
+
+.svg-blank-label {
+  font-size: 2.7px;
+  fill: #111;
+}
+
 .svg-footer {
   font-size: 3px;
   fill: #555;

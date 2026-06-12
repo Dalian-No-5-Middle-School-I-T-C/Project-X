@@ -2,28 +2,29 @@ import express from "express";
 import multer from "multer";
 import path from "node:path";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import { gradeCombinedRecognition, gradeObjectiveRecognition } from "../../../shared/grading";
-import type { AnswerCard, CombinedGradingBatchResult, CombinedRecognitionResult, ObjectiveGradingBatchResult, ObjectiveRecognitionResult } from "../../../shared/types";
+import { ensureDefaultAdmin, initializeDatabase } from "../../../server/db";
+import { scheduleCleanup } from "../../../server/db/cleanup";
+import { CardRepository } from "../../../server/repositories/CardRepository";
+import authRoutes from "../../../server/routes/auth";
+import { createDefaultCard } from "../../../shared/defaultCard";
+import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey } from "../../../shared/grading";
+import { buildLayout } from "../../../shared/layout";
+import type {
+  AnswerCard,
+  CardSummary,
+  CombinedGradingBatchResult,
+  CombinedRecognitionResult,
+  LayoutDocument,
+  ObjectiveGradingBatchResult,
+  ObjectiveRecognitionResult
+} from "../../../shared/types";
 import { createPdf } from "./pdf";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
-import {
-  assetsDir,
-  cardAssetsDir,
-  createCard,
-  dataDir,
-  ensureDataDirs,
-  layoutPath,
-  listCards,
-  readCard,
-  readLayout,
-  rootDir,
-  safeId,
-  saveCard
-} from "./storage";
+import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
 
 function paramValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] : value ?? "";
@@ -41,13 +42,77 @@ function boolField(value: unknown): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
+function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
+  return {
+    ...card,
+    id: safeId(cardId),
+    bodyBlocks: (card.bodyBlocks ?? []).map((block) =>
+      block.type === "objective" ? { ...block, answerKey: normalizeObjectiveAnswerKey(block) } : block
+    ),
+    paper: { size: "A4", orientation: "portrait" },
+    layoutVersion: 1,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function toCardSummary(row: { id: string; title: string; updated_at?: string; updatedAt?: string }): CardSummary {
+  return {
+    id: row.id,
+    title: row.title || "未命名答题卡",
+    updatedAt: row.updatedAt ?? row.updated_at ?? new Date(0).toISOString()
+  };
+}
+
+async function writeLayoutDocument(cardId: string, layout: LayoutDocument): Promise<void> {
+  const targetPath = layoutPath(cardId);
+  await mkdir(path.dirname(targetPath), { recursive: true });
+  await writeFile(targetPath, JSON.stringify(layout, null, 2), "utf8");
+}
+
+async function saveCardWithLayout(cardRepo: CardRepository, card: AnswerCard, createdBy?: number): Promise<AnswerCard> {
+  const normalized = normalizeCard(card, card.id);
+  const layout = buildLayout(normalized);
+  const exists = cardRepo.findById(normalized.id);
+
+  if (exists) {
+    cardRepo.updateCard(normalized, layout);
+  } else {
+    cardRepo.createCard(normalized, createdBy);
+    cardRepo.updateCard(normalized, layout);
+  }
+
+  await writeLayoutDocument(normalized.id, layout);
+  return normalized;
+}
+
+async function prepareLayoutForCard(cardRepo: CardRepository, card: AnswerCard): Promise<string> {
+  const layout = buildLayout(card);
+  cardRepo.updateLayoutData(card.id, layout);
+  await writeLayoutDocument(card.id, layout);
+  return layoutPath(card.id);
+}
+
+function parsePositiveNumber(value: unknown, fallback: number): number {
+  const parsed = Number(fieldValue(value) || String(fallback));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 export async function createApp(): Promise<express.Express> {
   const app = express();
 
+  console.log("[Server] 正在初始化数据库...");
+  initializeDatabase();
+  await ensureDefaultAdmin();
+  const cleanupTimer = scheduleCleanup(24, 30);
+  cleanupTimer.unref();
   await ensureDataDirs();
+  console.log("[Server] 数据库初始化完成");
 
   app.use(express.json({ limit: "8mb" }));
   app.use("/assets", express.static(assetsDir));
+  app.use("/api/auth", authRoutes);
+
+  const cardRepo = new CardRepository();
 
   const upload = multer({
     storage: multer.diskStorage({
@@ -85,15 +150,17 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/cards", async (_req, res, next) => {
     try {
-      res.json(await listCards());
+      res.json(cardRepo.listCards().map(toCardSummary));
     } catch (error) {
       next(error);
     }
   });
 
-  app.post("/api/cards", async (_req, res, next) => {
+  app.post("/api/cards", async (req, res, next) => {
     try {
-      res.status(201).json(await createCard());
+      const card = createDefaultCard(String(Date.now()));
+      const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
+      res.status(201).json(saved);
     } catch (error) {
       next(error);
     }
@@ -101,7 +168,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/cards/:cardId", async (req, res, next) => {
     try {
-      const card = await readCard(paramValue(req.params.cardId));
+      const card = cardRepo.findById(safeId(paramValue(req.params.cardId)));
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -114,8 +181,8 @@ export async function createApp(): Promise<express.Express> {
 
   app.put("/api/cards/:cardId", async (req, res, next) => {
     try {
-      const card = req.body as AnswerCard;
-      const saved = await saveCard({ ...card, id: safeId(paramValue(req.params.cardId)) });
+      const card = normalizeCard(req.body as AnswerCard, paramValue(req.params.cardId));
+      const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
       res.json(saved);
     } catch (error) {
       next(error);
@@ -124,11 +191,14 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/cards/:cardId/layout", async (req, res, next) => {
     try {
-      const layout = await readLayout(paramValue(req.params.cardId));
-      if (!layout) {
+      const card = cardRepo.findById(safeId(paramValue(req.params.cardId)));
+      if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
       }
+      const layout = buildLayout(card);
+      cardRepo.updateLayoutData(card.id, layout);
+      await writeLayoutDocument(card.id, layout);
       res.json(layout);
     } catch (error) {
       next(error);
@@ -138,19 +208,18 @@ export async function createApp(): Promise<express.Express> {
   app.post("/api/cards/:cardId/recognition/objective", recognitionUpload.single("file"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
-      const card = await readCard(cardId);
+      const card = cardRepo.findById(cardId);
       if (!card) {
-        res.status(404).json({ message: "绛旈鍗′笉瀛樺湪" });
+        res.status(404).json({ message: "答题卡不存在" });
         return;
       }
       if (!req.file) {
-        res.status(400).json({ message: "娌℃湁鏀跺埌鍥剧墖鏂囦欢" });
+        res.status(400).json({ message: "没有收到答题卡图片" });
         return;
       }
 
-      await readLayout(cardId);
-      const pageNumber = Number(fieldValue(req.body.page || req.query.page) || "1");
-      const dpi = Number(fieldValue(req.body.dpi || req.query.dpi) || "300");
+      const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
+      const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const debug = boolField(req.body.debug || req.query.debug);
       const debugDir = debug ? path.join(dataDir, "processed", "recognition-debug", cardId, String(Date.now())) : undefined;
       if (debugDir) {
@@ -159,9 +228,9 @@ export async function createApp(): Promise<express.Express> {
 
       const result = await recognizeObjectiveAnswers({
         imagePath: req.file.path,
-        layoutPath: layoutPath(cardId),
-        pageNumber: Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : 1,
-        dpi: Number.isFinite(dpi) && dpi > 0 ? dpi : 300,
+        layoutPath: await prepareLayoutForCard(cardRepo, card),
+        pageNumber,
+        dpi,
         debugDir
       });
       res.json(result);
@@ -173,7 +242,7 @@ export async function createApp(): Promise<express.Express> {
   app.post("/api/cards/:cardId/recognition", recognitionUpload.single("file"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
-      const card = await readCard(cardId);
+      const card = cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -183,9 +252,8 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
 
-      await readLayout(cardId);
-      const pageNumber = Number(fieldValue(req.body.page || req.query.page) || "1");
-      const dpi = Number(fieldValue(req.body.dpi || req.query.dpi) || "300");
+      const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
+      const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const debug = boolField(req.body.debug || req.query.debug);
       const debugDir = debug ? path.join(dataDir, "processed", "recognition-debug", cardId, String(Date.now())) : undefined;
       if (debugDir) {
@@ -194,9 +262,9 @@ export async function createApp(): Promise<express.Express> {
 
       const result = await recognizeAnswerCard({
         imagePath: req.file.path,
-        layoutPath: layoutPath(cardId),
-        pageNumber: Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : 1,
-        dpi: Number.isFinite(dpi) && dpi > 0 ? dpi : 300,
+        layoutPath: await prepareLayoutForCard(cardRepo, card),
+        pageNumber,
+        dpi,
         debugDir
       });
       res.json(result);
@@ -208,7 +276,7 @@ export async function createApp(): Promise<express.Express> {
   app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files", 200), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
-      const card = await readCard(cardId);
+      const card = cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -220,27 +288,25 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
 
-      await readLayout(cardId);
-      const pageNumber = Number(fieldValue(req.body.page || req.query.page) || "1");
-      const dpi = Number(fieldValue(req.body.dpi || req.query.dpi) || "300");
-      const safePageNumber = Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : 1;
-      const safeDpi = Number.isFinite(dpi) && dpi > 0 ? dpi : 300;
+      const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
+      const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
+      const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
 
       const rows = [];
       for (const file of files) {
         try {
           const recognition = (await recognizeObjectiveAnswers({
             imagePath: file.path,
-            layoutPath: layoutPath(cardId),
-            pageNumber: safePageNumber,
-            dpi: safeDpi
+            layoutPath: currentLayoutPath,
+            pageNumber,
+            dpi
           })) as ObjectiveRecognitionResult;
           rows.push(gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition));
         } catch (error) {
           const recognition: ObjectiveRecognitionResult = {
             status: "failed",
             imagePath: file.path,
-            pageNumber: safePageNumber,
+            pageNumber,
             message: error instanceof Error ? error.message : String(error),
             questions: []
           };
@@ -262,7 +328,7 @@ export async function createApp(): Promise<express.Express> {
   app.post("/api/cards/:cardId/grading", recognitionUpload.array("files", 200), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
-      const card = await readCard(cardId);
+      const card = cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -274,20 +340,18 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
 
-      await readLayout(cardId);
-      const pageNumber = Number(fieldValue(req.body.page || req.query.page) || "1");
-      const dpi = Number(fieldValue(req.body.dpi || req.query.dpi) || "300");
-      const safePageNumber = Number.isFinite(pageNumber) && pageNumber > 0 ? pageNumber : 1;
-      const safeDpi = Number.isFinite(dpi) && dpi > 0 ? dpi : 300;
+      const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
+      const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
+      const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
 
       const rows = [];
       for (const file of files) {
         try {
           const recognition = (await recognizeAnswerCard({
             imagePath: file.path,
-            layoutPath: layoutPath(cardId),
-            pageNumber: safePageNumber,
-            dpi: safeDpi
+            layoutPath: currentLayoutPath,
+            pageNumber,
+            dpi
           })) as CombinedRecognitionResult;
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
           rows.push(gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition));
@@ -295,7 +359,7 @@ export async function createApp(): Promise<express.Express> {
           const recognition: CombinedRecognitionResult = {
             status: "failed",
             imagePath: file.path,
-            pageNumber: safePageNumber,
+            pageNumber,
             message: error instanceof Error ? error.message : String(error),
             questions: [],
             subjectiveQuestions: []
@@ -317,8 +381,8 @@ export async function createApp(): Promise<express.Express> {
 
   app.post("/api/cards/:cardId/assets", upload.single("file"), async (req, res, next) => {
     try {
-      const cardId = paramValue(req.params.cardId);
-      const card = await readCard(cardId);
+      const cardId = safeId(paramValue(req.params.cardId));
+      const card = cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -330,7 +394,7 @@ export async function createApp(): Promise<express.Express> {
       res.status(201).json({
         assetId: req.file.filename,
         originalName: req.file.originalname,
-        url: `/assets/${safeId(cardId)}/${req.file.filename}`
+        url: `/assets/${cardId}/${req.file.filename}`
       });
     } catch (error) {
       next(error);
@@ -339,7 +403,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/cards/:cardId/pdf", async (req, res, next) => {
     try {
-      const card = await readCard(paramValue(req.params.cardId));
+      const card = cardRepo.findById(safeId(paramValue(req.params.cardId)));
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -359,7 +423,6 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  // ── Scanner API ───────────────────────────────────────
   app.use("/api/scanner", createScannerRouter());
 
   const clientDist = process.env.ANSWER_CARD_CLIENT_DIST

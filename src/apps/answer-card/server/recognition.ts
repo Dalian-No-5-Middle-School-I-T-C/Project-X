@@ -112,9 +112,7 @@ export async function recognizeAnswerCard(request: RecognitionRequest): Promise<
     "--page",
     String(request.pageNumber),
     "--dpi",
-    String(request.dpi),
-    "--mode",
-    "answer-card"
+    String(request.dpi)
   ];
   if (request.debugDir) {
     args.push("--debug-dir", request.debugDir);

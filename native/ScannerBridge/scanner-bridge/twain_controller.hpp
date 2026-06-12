@@ -66,6 +66,9 @@ public:
     // Cancel an in-progress scan
     void cancel();
 
+    TW_UINT16 processTwainEvent(WPARAM message);
+    static TwainController* current();
+
 private:
     // TWAIN state machine
     bool openDSM();
@@ -91,16 +94,6 @@ private:
     
     // Image saving
     bool saveDIBToFile(HANDLE hbitmap, const std::string& filePath, PageResult& result);
-    
-    // TWAIN callback (static, dispatches to instance)
-    static TW_UINT16 TW_CALLBACK dsmCallback(
-        pTW_IDENTITY origin,
-        pTW_IDENTITY dest,
-        TW_UINT32 dg,
-        TW_UINT16 dat,
-        TW_UINT16 msg,
-        TW_MEMREF data
-    );
     
     // Utility
     std::string twainResultToString(TW_UINT16 rc);

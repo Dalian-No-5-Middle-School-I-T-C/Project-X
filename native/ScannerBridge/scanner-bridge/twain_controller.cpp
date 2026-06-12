@@ -17,6 +17,57 @@
 #include <cstring>
 #include <algorithm>
 
+using DsmEntryProc = TW_UINT16(TW_CALLINGSTYLE*)(
+    pTW_IDENTITY,
+    pTW_IDENTITY,
+    TW_UINT32,
+    TW_UINT16,
+    TW_UINT16,
+    TW_MEMREF
+);
+
+extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
+    pTW_IDENTITY pOrigin,
+    pTW_IDENTITY pDest,
+    TW_UINT32 DG,
+    TW_UINT16 DAT,
+    TW_UINT16 MSG,
+    TW_MEMREF pData)
+{
+    static HMODULE dsmModule = nullptr;
+    static DsmEntryProc dsmEntry = nullptr;
+
+    if (!dsmEntry) {
+        char envPath[MAX_PATH] = {};
+        DWORD envLen = GetEnvironmentVariableA("TWAIN_DSM_DLL", envPath, static_cast<DWORD>(sizeof(envPath)));
+        const char* envCandidate = (envLen > 0 && envLen < sizeof(envPath)) ? envPath : nullptr;
+        const char* candidates[] = {
+            envCandidate,
+            "D:\\twain-dsm-2.5.1\\twain-dsm-2.5.1\\Releases\\dsm_020403\\windows\\64\\TWAINDSM.dll",
+            "TWAINDSM.dll",
+            "twain_32.dll"
+        };
+
+        for (const char* candidate : candidates) {
+            if (!candidate || !candidate[0]) continue;
+            dsmModule = LoadLibraryA(candidate);
+            if (!dsmModule) continue;
+
+            dsmEntry = reinterpret_cast<DsmEntryProc>(GetProcAddress(dsmModule, "DSM_Entry"));
+            if (dsmEntry) break;
+
+            FreeLibrary(dsmModule);
+            dsmModule = nullptr;
+        }
+    }
+
+    if (!dsmEntry) {
+        return TWRC_FAILURE;
+    }
+
+    return dsmEntry(pOrigin, pDest, DG, DAT, MSG, pData);
+}
+
 namespace ScannerBridge {
 
 // ── Globals ───────────────────────────────────────────
@@ -29,33 +80,22 @@ static const DWORD TWAIN_MSG = WM_USER + 1;
 // ── Window Procedure ──────────────────────────────────
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (msg == TWAIN_MSG && TwainController::s_instance) {
-        TW_EVENT event;
-        event.pEvent = (TW_MEMREF)&msg;
-        event.TWMessage = (TW_UINT16)wParam;
-        
-        TW_UINT16 rc = DSM_Entry(
-            &TwainController::s_instance->m_appId,
-            nullptr,
-            DG_CONTROL,
-            DAT_EVENT,
-            MSG_PROCESSEVENT,
-            (TW_MEMREF)&event
-        );
+    if (msg == TWAIN_MSG && TwainController::current()) {
+        TW_UINT16 rc = TwainController::current()->processTwainEvent(wParam);
         return rc == TWRC_DSEVENT ? 0 : 1;
     }
-    return DefWindowProc(hwnd, msg, wParam, lParam);
+    return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
 
 static HWND createHiddenWindow(HINSTANCE hInstance) {
-    WNDCLASSEX wc = {};
-    wc.cbSize = sizeof(WNDCLASSEX);
+    WNDCLASSEXA wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXA);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = WINDOW_CLASS;
-    RegisterClassEx(&wc);
+    RegisterClassExA(&wc);
     
-    return CreateWindowEx(
+    return CreateWindowExA(
         0, WINDOW_CLASS, "ScannerBridge",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
@@ -104,6 +144,35 @@ TwainController::~TwainController() {
     if (m_state >= 1) closeDSM();
     if (m_hwnd) DestroyWindow(m_hwnd);
     s_instance = nullptr;
+}
+
+TwainController* TwainController::current() {
+    return s_instance;
+}
+
+TW_UINT16 TwainController::processTwainEvent(WPARAM message) {
+    TW_EVENT event;
+    event.pEvent = nullptr;
+    event.TWMessage = static_cast<TW_UINT16>(message);
+
+    TW_UINT16 rc = DSM_Entry(
+        &m_appId,
+        nullptr,
+        DG_CONTROL,
+        DAT_EVENT,
+        MSG_PROCESSEVENT,
+        reinterpret_cast<TW_MEMREF>(&event)
+    );
+
+    if (rc == TWRC_DSEVENT) {
+        if (event.TWMessage == MSG_XFERREADY) {
+            m_state = 6;
+        } else if (event.TWMessage == MSG_CLOSEDSREQ || event.TWMessage == MSG_CLOSEDSOK) {
+            m_state = 0;
+        }
+    }
+
+    return rc;
 }
 
 // ── Source Enumeration ────────────────────────────────
@@ -680,7 +749,6 @@ bool TwainController::captureFileTransfer(
     memset(&setup, 0, sizeof(setup));
     strcpy_s(setup.FileName, sizeof(setup.FileName), "scantmp");
     setup.Format = TWFF_TIFF;
-    setup.Priority = TWPR_GROUP1;
     
     TW_UINT16 rc = DSM_Entry(
         &m_appId, &m_sourceId,
@@ -728,36 +796,6 @@ bool TwainController::waitForState(int targetState, DWORD timeoutMs) {
 }
 
 // ── TWAIN Callback ────────────────────────────────────
-
-TW_UINT16 TW_CALLBACK TwainController::dsmCallback(
-    pTW_IDENTITY origin,
-    pTW_IDENTITY dest,
-    TW_UINT32 dg,
-    TW_UINT16 dat,
-    TW_UINT16 msg,
-    TW_MEMREF data)
-{
-    // Handle TWAIN events
-    if (dg == DG_CONTROL && dat == DAT_EVENT && msg == MSG_PROCESSEVENT) {
-        TW_EVENT* event = (TW_EVENT*)data;
-        if (event->TWMessage == MSG_XFERREADY) {
-            if (s_instance) {
-                s_instance->m_state = 4;  // transfer ready
-            }
-            return TWRC_DSEVENT;
-        }
-        if (event->TWMessage == MSG_CLOSEDSOK) {
-            return TWRC_DSEVENT;
-        }
-        if (event->TWMessage == MSG_CLOSEDSREQ) {
-            if (s_instance) {
-                s_instance->m_state = 0;
-            }
-            return TWRC_DSEVENT;
-        }
-    }
-    return TWRC_NOTDSEVENT;
-}
 
 // ── Utilities ─────────────────────────────────────────
 

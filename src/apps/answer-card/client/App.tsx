@@ -427,7 +427,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>{card?.title ?? "答题卡设计器"}</h1>
-            <p>{card ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个坐标元素` : "创建答题卡后开始编辑"}</p>
+            <p>{card ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个 · 预览页面仅供参考，以实际导出的 PDF 文件的样式为准` : "创建答题卡后开始编辑"}</p>
           </div>
           <div className="topbar-actions">
             <div className="mode-toggle" role="tablist" aria-label="工作模式">
@@ -1202,6 +1202,7 @@ function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocumen
 
 function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][number]["studentArea"]> }) {
   const rowCount = Math.max(...area.digitCells.map((cell) => cell.digitIndex)) + 1;
+  const separatorX = area.digitRect.x + 8.5;
   return (
     <g>
       <rect {...area.infoRect} fill="none" stroke="#333" strokeWidth="0.25" />
@@ -1220,10 +1221,11 @@ function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][nu
       {Array.from({ length: rowCount }).map((_, row) => (
         <line key={row} x1={area.digitRect.x} y1={area.digitRect.y + 7 + row * 4.8} x2={area.digitRect.x + area.digitRect.width} y2={area.digitRect.y + 7 + row * 4.8} stroke="#999" strokeWidth="0.15" />
       ))}
+      <line x1={separatorX} y1={area.digitRect.y + 7} x2={separatorX} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
       {area.digitCells.map((cell) => (
         <g key={`${cell.digitIndex}_${cell.digit}`}>
           <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
-          <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + 2.15} textAnchor="middle" className="svg-tiny">
+          <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
             {cell.digit}
           </text>
         </g>
@@ -1247,13 +1249,13 @@ function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "obje
       ))}
       {block.items.map((item) => (
         <g key={item.questionNumber}>
-          <text x={item.labelX - 2.5} y={item.labelY} className="svg-tiny">
+          <text x={item.labelX - 2.5} y={(item.options[0]?.rect.y ?? item.labelY) + (item.options[0]?.rect.height ?? 0) / 2 - 0.28} dominantBaseline="middle" className="svg-option-label">
             {item.questionNumber}
           </text>
           {item.options.map((option) => (
             <g key={option.label}>
               <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
-              <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + 2.05} textAnchor="middle" className="svg-tiny">
+              <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2 - 0.28} textAnchor="middle" dominantBaseline="middle" className="svg-option-label">
                 {option.label}
               </text>
             </g>
@@ -1323,7 +1325,7 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
             return (
               <g key={index}>
                 {blankLabel && (
-                  <text x={blank.x - blankLabel.length * 1.8 - 0.8} y={blank.y + 4.2} className="svg-tiny">
+                  <text x={blank.x - 0.8} y={blank.y + blank.height} textAnchor="end" dominantBaseline="middle" className="svg-blank-label">
                     {blankLabel}
                   </text>
                 )}
