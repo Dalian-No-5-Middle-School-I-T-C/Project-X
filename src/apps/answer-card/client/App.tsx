@@ -424,7 +424,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>{card?.title ?? "答题卡设计器"}</h1>
-            <p>{card ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个坐标元素` : "创建答题卡后开始编辑"}</p>
+            <p>{card ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个 · 预览页面仅供参考，以实际导出的 PDF 文件的样式为准` : "创建答题卡后开始编辑"}</p>
           </div>
           <div className="topbar-actions">
             <div className="mode-toggle" role="tablist" aria-label="工作模式">
