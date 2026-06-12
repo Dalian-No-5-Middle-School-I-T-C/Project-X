@@ -276,7 +276,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files", 200), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = cardRepo.findById(cardId);
@@ -328,7 +328,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/grading", recognitionUpload.array("files", 200), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading", recognitionUpload.array("files"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = cardRepo.findById(cardId);
