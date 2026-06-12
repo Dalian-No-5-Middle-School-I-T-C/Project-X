@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
+  BarChart3,
   Camera,
   ClipboardCheck,
   Download,
@@ -36,6 +37,16 @@ import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../shared/blankLabels";
 import { ScannerPanel } from "./components/ScannerPanel";
+import { AnalysisOverview } from "./components/AnalysisOverview";
+import { AnalysisDistribution } from "./components/AnalysisDistribution";
+import { AnalysisRanking } from "./components/AnalysisRanking";
+import { AnalysisQuestions } from "./components/AnalysisQuestions";
+import type {
+  ExamOverview,
+  ExamRecord,
+  QuestionAnalysisItem,
+  StudentRankingItem
+} from "../../../shared/types";
 
 const modeLabels: Record<ObjectiveMode, string> = {
   single: "单选",
@@ -73,7 +84,7 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-type AppMode = "design" | "grading";
+type AppMode = "design" | "grading" | "analysis";
 
 const directoryInputProps = {
   webkitdirectory: "",
@@ -207,10 +218,24 @@ function App() {
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [mode, setMode] = useState<AppMode>("design");
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
+  const [gradingExamId, setGradingExamId] = useState<string>("");
   const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [analysisExamId, setAnalysisExamId] = useState<number | null>(null);
+  const [analysisClassId, setAnalysisClassId] = useState<string>("");
+  const [analysisClasses, setAnalysisClasses] = useState<Array<{ classId: number; className: string }>>([]);
+  const [analysisOverview, setAnalysisOverview] = useState<ExamOverview | null>(null);
+  const [analysisRanking, setAnalysisRanking] = useState<StudentRankingItem[]>([]);
+  const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
+  const [exams, setExams] = useState<ExamRecord[]>([]);
+  const [showCreateExam, setShowCreateExam] = useState(false);
+  const [newExamName, setNewExamName] = useState("");
+  const [newExamSubject, setNewExamSubject] = useState("");
+  const [newExamCardId, setNewExamCardId] = useState("");
+  const [selectedExamIds, setSelectedExamIds] = useState<Set<number>>(new Set());
+  const [analysisTab, setAnalysisTab] = useState<"manage" | "view">("view");
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
@@ -383,14 +408,51 @@ function App() {
       for (const file of gradingFiles) {
         form.append("files", file);
       }
+      if (gradingExamId) {
+        form.append("examId", gradingExamId);
+      }
       const result = await fetchJson<CombinedGradingBatchResult>(`/api/cards/${card.id}/grading`, {
         method: "POST",
         body: form
       });
       setGradingResult(result);
-      setStatus(`阅卷完成：${result.rows.length} 张，${result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0)} 题待复核`);
+      const msg = `阅卷完成：${result.rows.length} 张，${result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0)} 题待复核`;
+      const extra = gradingExamId ? "，正在后台写入数据库..." : "（未选择考试，数据未落库）";
+      setStatus(msg + extra);
     } finally {
       setIsBusy(false);
+    }
+  }
+
+  async function loadExams() {
+    try {
+      const data = await fetchJson<ExamRecord[]>("/api/exams");
+      setExams(data);
+    } catch {
+      setExams([]);
+    }
+  }
+
+  async function loadAnalysis(examId: number, classId?: string) {
+    setAnalysisExamId(examId);
+    const cidParam = classId ? `?classId=${classId}` : "";
+    try {
+      const [overview, ranking, questions, classes] = await Promise.all([
+        fetchJson<ExamOverview>(`/api/analysis/exams/${examId}/overview${cidParam}`),
+        fetchJson<StudentRankingItem[]>(`/api/analysis/exams/${examId}/students${cidParam}`),
+        fetchJson<QuestionAnalysisItem[]>(`/api/analysis/exams/${examId}/questions${cidParam}`),
+        classId ? Promise.resolve([]) : fetchJson<Array<{ classId: number; className: string }>>(`/api/analysis/exams/${examId}/classes`)
+      ]);
+      setAnalysisOverview(overview);
+      setAnalysisRanking(ranking);
+      setAnalysisQuestions(questions);
+      if (!classId) setAnalysisClasses(classes);
+      setStatus(`分析加载完成：${overview.gradedCount} 人${classId ? "（当前班级）" : ""}`);
+    } catch (err) {
+      setStatus(`分析加载失败：${err instanceof Error ? err.message : String(err)}`);
+      setAnalysisOverview(null);
+      setAnalysisRanking([]);
+      setAnalysisQuestions([]);
     }
   }
 
@@ -436,6 +498,9 @@ function App() {
               </button>
               <button className={mode === "grading" ? "active" : ""} onClick={() => setMode("grading")} type="button">
                 <ClipboardCheck size={16} /> 阅卷
+              </button>
+              <button className={mode === "analysis" ? "active" : ""} onClick={() => { setMode("analysis"); loadExams(); }} type="button">
+                <BarChart3 size={16} /> 分析
               </button>
             </div>
             {card && (
@@ -581,6 +646,21 @@ function App() {
                   ))}
                 </select>
               </label>
+              <label>
+                考试
+                <select
+                  value={gradingExamId}
+                  onChange={(e) => setGradingExamId(e.target.value)}
+                  onFocus={() => { if (exams.length === 0) loadExams(); }}
+                >
+                  <option value="">不关联考试</option>
+                  {exams.map((exam) => (
+                    <option key={exam.id} value={String(exam.id)}>
+                      {exam.name} {exam.subject ? `(${exam.subject})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <div className="split-actions">
                 <label className="upload-button">
                   <Upload size={16} /> 导入图片
@@ -639,6 +719,198 @@ function App() {
               <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
             </section>
           </aside>
+        </div>
+        <div className={`main-grid analysis-grid ${mode === "analysis" ? "" : "hidden-panel"}`}>
+          {/* Sub-tabs */}
+          <section className="preview-panel analysis-results-panel" style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column" }}>
+            <div style={{ display: "flex", gap: 0, marginBottom: 12, borderBottom: "1px solid var(--line)", padding: "0 24px" }}>
+              <button
+                onClick={() => setAnalysisTab("view")}
+                style={{
+                  padding: "8px 18px", border: "none", background: "none", cursor: "pointer",
+                  fontSize: 14, color: analysisTab === "view" ? "var(--brand-strong)" : "var(--muted)",
+                  borderBottom: analysisTab === "view" ? "2px solid var(--brand)" : "2px solid transparent",
+                  fontWeight: analysisTab === "view" ? 600 : 400
+                }}
+              >
+                <BarChart3 size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
+                成绩分析
+              </button>
+              <button
+                onClick={() => setAnalysisTab("manage")}
+                style={{
+                  padding: "8px 18px", border: "none", background: "none", cursor: "pointer",
+                  fontSize: 14, color: analysisTab === "manage" ? "var(--brand-strong)" : "var(--muted)",
+                  borderBottom: analysisTab === "manage" ? "2px solid var(--brand)" : "2px solid transparent",
+                  fontWeight: analysisTab === "manage" ? 600 : 400
+                }}
+              >
+                <ListPlus size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
+                考试管理
+              </button>
+            </div>
+
+            {/* Tab: 成绩分析 */}
+            {analysisTab === "view" && (
+              <div style={{ display: "grid", gridTemplateColumns: "268px minmax(0, 1fr)", minHeight: 0, flex: 1 }}>
+                <aside className="inspector" style={{ borderRight: "1px solid var(--line)", overflowY: "auto" }}>
+                  <section className="panel">
+                    <div className="panel-title">选择考试</div>
+                    {exams.length === 0 ? (
+                      <div className="empty-text" style={{ fontSize: 12 }}>暂无考试，请先创建</div>
+                    ) : (
+                      <div style={{ maxHeight: 400, overflowY: "auto" }}>
+                        {exams.map((exam) => (
+                          <div
+                            key={exam.id}
+                            className={`card-list-item ${analysisExamId === exam.id ? "active" : ""}`}
+                            style={{ cursor: "pointer", padding: "6px 8px" }}
+                            onClick={() => { setAnalysisClassId(""); loadAnalysis(exam.id); }}
+                          >
+                            <span style={{ fontSize: 13, fontWeight: analysisExamId === exam.id ? 600 : 400 }}>{exam.name}</span>
+                            {exam.subject && <small style={{ display: "block", color: "var(--muted)", fontSize: 11 }}>{exam.subject}</small>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+                  {analysisClasses.length > 0 && (
+                    <section className="panel">
+                      <div className="panel-title">班级筛选</div>
+                      <select value={analysisClassId} onChange={(e) => { setAnalysisClassId(e.target.value); if (analysisExamId) loadAnalysis(analysisExamId, e.target.value || undefined); }} style={{ width: "100%", padding: "6px 8px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }}>
+                        <option value="">全部班级</option>
+                        {analysisClasses.map((c) => (<option key={c.classId} value={String(c.classId)}>{c.className}</option>))}
+                      </select>
+                    </section>
+                  )}
+                </aside>
+                <section style={{ overflowY: "auto", padding: 24 }}>
+                  {!analysisExamId ? (
+                    <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>从左侧选择一个考试查看分析。</div>
+                  ) : (
+                    <>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+                        <BarChart3 size={18} style={{ color: "var(--brand)" }} />
+                        <strong style={{ fontSize: 17 }}>{exams.find(e => e.id === analysisExamId)?.name || "成绩分析"}</strong>
+                      </div>
+                      <AnalysisOverview overview={analysisOverview} />
+                      {analysisOverview && analysisOverview.distribution.length > 0 && (
+                        <AnalysisDistribution distribution={analysisOverview.distribution} />
+                      )}
+                      <AnalysisRanking ranking={analysisRanking} />
+                      <AnalysisQuestions questions={analysisQuestions} />
+                    </>
+                  )}
+                </section>
+              </div>
+            )}
+
+            {/* Tab: 考试管理 */}
+            {analysisTab === "manage" && (
+              <div style={{ padding: 24, flex: 1, overflowY: "auto" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+                  <strong style={{ fontSize: 16 }}>考试管理</strong>
+                  <button className="primary-button" onClick={() => setShowCreateExam(!showCreateExam)}>
+                    <Plus size={16} /> 新建考试
+                  </button>
+                  {selectedExamIds.size > 0 && (
+                    <button className="ghost-button" style={{ color: "#b91c1c" }} onClick={async () => {
+                      if (!confirm(`删除选中的 ${selectedExamIds.size} 个考试？`)) return;
+                      for (const id of selectedExamIds) await fetch(`/api/exams/${id}`, { method: "DELETE" });
+                      setSelectedExamIds(new Set());
+                      if (analysisExamId && selectedExamIds.has(analysisExamId)) { setAnalysisExamId(null); setAnalysisOverview(null); setAnalysisRanking([]); setAnalysisQuestions([]); }
+                      loadExams();
+                    }}>
+                      <Trash2 size={16} /> 删除选中 ({selectedExamIds.size})
+                    </button>
+                  )}
+                  {exams.length > 0 && (
+                    <span style={{ marginLeft: "auto", fontSize: 13, color: "var(--muted)" }}>共 {exams.length} 个考试</span>
+                  )}
+                </div>
+
+                {showCreateExam && (
+                  <div style={{ background: "var(--surface-soft)", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
+                    <input value={newExamName} onChange={(e) => setNewExamName(e.target.value)} placeholder="考试名称" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
+                    <input value={newExamSubject} onChange={(e) => setNewExamSubject(e.target.value)} placeholder="科目（可选）" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
+                    <select value={newExamCardId || card?.id || ""} onChange={(e) => setNewExamCardId(e.target.value)} style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }}>
+                      <option value="" disabled>选择答题卡</option>
+                      {cards.map((c) => (<option key={c.id} value={c.id}>{c.title}</option>))}
+                    </select>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button className="primary-button" onClick={async () => {
+                        const name = newExamName.trim();
+                        if (!name || !newExamCardId && !card?.id) { setStatus("请填写名称和选择答题卡"); return; }
+                        try {
+                          await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId: newExamCardId || card?.id, subject: newExamSubject.trim() || undefined }) });
+                          setNewExamName(""); setNewExamSubject(""); setShowCreateExam(false);
+                          loadExams();
+                        } catch (err) { setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`); }
+                      }}>确认创建</button>
+                      <button className="ghost-button" onClick={() => setShowCreateExam(false)}>取消</button>
+                    </div>
+                  </div>
+                )}
+
+                {exams.length === 0 && !showCreateExam && (
+                  <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>暂无考试，点击上方「新建考试」创建。</div>
+                )}
+
+                {exams.length > 0 && (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ borderBottom: "2px solid var(--line)", textAlign: "left" }}>
+                        <th style={{ padding: "8px 10px", width: 40 }}>
+                          <input type="checkbox" onChange={(e) => {
+                            if (e.target.checked) setSelectedExamIds(new Set(exams.map(ex => ex.id)));
+                            else setSelectedExamIds(new Set());
+                          }} checked={selectedExamIds.size === exams.length && exams.length > 0} />
+                        </th>
+                        <th style={{ padding: "8px 10px" }}>考试名称</th>
+                        <th style={{ padding: "8px 10px", width: 120 }}>科目</th>
+                        <th style={{ padding: "8px 10px", width: 100 }}>答题卡</th>
+                        <th style={{ padding: "8px 10px", width: 80 }}>状态</th>
+                        <th style={{ padding: "8px 10px", width: 80 }}>操作</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {exams.map((exam) => (
+                        <tr key={exam.id} style={{ borderBottom: "1px solid var(--line)" }}>
+                          <td style={{ padding: "8px 10px" }}>
+                            <input type="checkbox" checked={selectedExamIds.has(exam.id)} onChange={() => {
+                              const next = new Set(selectedExamIds);
+                              if (next.has(exam.id)) next.delete(exam.id); else next.add(exam.id);
+                              setSelectedExamIds(next);
+                            }} />
+                          </td>
+                          <td style={{ padding: "8px 10px", fontWeight: 500 }}>{exam.name}</td>
+                          <td style={{ padding: "8px 10px", color: "var(--muted)" }}>{exam.subject || "—"}</td>
+                          <td style={{ padding: "8px 10px", color: "var(--muted)", fontSize: 12 }}>{exam.card_id}</td>
+                          <td style={{ padding: "8px 10px" }}>
+                            <span style={{
+                              padding: "1px 8px", borderRadius: 10, fontSize: 11,
+                              background: exam.status === "closed" ? "#dcfce7" : exam.status === "grading" ? "#fef3c7" : "#f3f4f6",
+                              color: exam.status === "closed" ? "#166534" : exam.status === "grading" ? "#92400e" : "#6b7280"
+                            }}>
+                              {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
+                            </span>
+                          </td>
+                          <td style={{ padding: "8px 10px" }}>
+                            <button className="ghost-button" style={{ fontSize: 12, color: "#b91c1c", padding: "2px 6px" }} onClick={async () => {
+                              if (!confirm(`删除「${exam.name}」？`)) return;
+                              await fetch(`/api/exams/${exam.id}`, { method: "DELETE" });
+                              if (analysisExamId === exam.id) { setAnalysisExamId(null); setAnalysisOverview(null); setAnalysisRanking([]); setAnalysisQuestions([]); }
+                              loadExams();
+                            }}>删除</button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+          </section>
         </div>
         <footer className="statusbar">{status}</footer>
       </section>
