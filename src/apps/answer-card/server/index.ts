@@ -8,6 +8,9 @@ import { pathToFileURL } from "node:url";
 import { ensureDefaultAdmin, initializeDatabase } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
+import { ExamRepository } from "../../../server/repositories/ExamRepository";
+import { AnalysisRepository } from "../../../server/repositories/AnalysisRepository";
+import { UserRepository } from "../../../server/repositories/UserRepository";
 import authRoutes from "../../../server/routes/auth";
 import { createDefaultCard } from "../../../shared/defaultCard";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey } from "../../../shared/grading";
@@ -344,6 +347,20 @@ export async function createApp(): Promise<express.Express> {
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
 
+      // examId support: if provided in form data, persist results to database
+      const examIdParam = fieldValue(req.body.examId);
+      const examRepo = new ExamRepository();
+      const userRepo = new UserRepository();
+
+      let examId: number | null = null;
+      if (examIdParam) {
+        const exam = examRepo.findExamById(Number(examIdParam));
+        if (exam) {
+          examId = exam.id;
+          examRepo.updateStatus(examId, "grading");
+        }
+      }
+
       const rows = [];
       for (const file of files) {
         try {
@@ -368,11 +385,79 @@ export async function createApp(): Promise<express.Express> {
         }
       }
 
-      const result: CombinedGradingBatchResult = {
+      // Persist to database if examId provided
+      let persistResult: { persisted: number; skippedNoStudentId: number } | null = null;
+      if (examId && examIdParam) {
+        const batchId = examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, req.user?.id);
+
+        for (const row of rows) {
+          if (!row.studentId) continue;
+
+          // Find or create student
+          let student = userRepo.findByStudentNumber(row.studentId);
+          if (!student) {
+            student = await userRepo.createUser({
+              username: row.studentId,
+              password: row.studentId,  // simple default, can be changed later
+              name: row.studentId,
+              role_id: 3,  // student role
+              student_number: row.studentId
+            });
+            if (!student) { student = userRepo.findByStudentNumber(row.studentId)!; }
+          }
+
+          // Add scan record
+          const recordId = examRepo.addScanRecord({
+            batch_id: batchId,
+            file_path: row.fileName,
+            file_name: row.fileName,
+            student_number: row.studentId,
+            student_id: student.id
+          });
+
+          // Save objective grades
+          for (const q of row.questions) {
+            examRepo.saveObjectiveGrade(
+              recordId, q.questionNumber, "",
+              q.score, q.maxScore,
+              q.status === "correct" ? 1 : 0
+            );
+          }
+
+          // Save student total score
+          examRepo.saveStudentScore(examId, student.id, row.objectiveScore, row.subjectiveScore);
+
+          // Save question-level scores
+          const db = require("../../../server/db").getDatabase();
+          const insertQs = db.prepare(`
+            INSERT OR REPLACE INTO question_scores
+              (exam_id, student_id, question_number, block_id, score, max_score, score_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `);
+
+          for (const q of row.questions) {
+            insertQs.run(examId, student.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+          }
+          for (const sq of row.subjectiveQuestions ?? []) {
+            insertQs.run(examId, student.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective");
+          }
+        }
+
+        examRepo.finishBatch(batchId);
+        examRepo.updateStatus(examId, "closed");
+        persistResult = { persisted: rows.filter((r) => r.studentId).length, skippedNoStudentId: rows.filter((r) => !r.studentId).length };
+      }
+
+      const result: CombinedGradingBatchResult & { persisted?: typeof persistResult } = {
         batchId: `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         cardId,
         rows
       };
+
+      if (persistResult) {
+        Object.assign(result, { persisted: persistResult });
+      }
+
       res.json(result);
     } catch (error) {
       next(error);
@@ -418,6 +503,86 @@ export async function createApp(): Promise<express.Express> {
       res.setHeader("Expires", "0");
       doc.pipe(res);
       doc.end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── Exam API ──────────────────────────────────────────
+
+  app.get("/api/exams", async (_req, res, next) => {
+    try {
+      const examRepo = new ExamRepository();
+      res.json(examRepo.listExams());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/exams", async (req, res, next) => {
+    try {
+      const { name, cardId, gradeId, classId, subject } = req.body as Record<string, unknown>;
+      if (!name || !cardId) {
+        res.status(400).json({ message: "缺少 name 或 cardId" });
+        return;
+      }
+      const examRepo = new ExamRepository();
+      const exam = examRepo.createExam({
+        name: String(name),
+        card_id: String(cardId),
+        grade_id: gradeId ? Number(gradeId) : undefined,
+        class_id: classId ? Number(classId) : undefined,
+        subject: subject ? String(subject) : undefined,
+        created_by: req.user?.id
+      });
+      res.status(201).json(exam);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/exams/:examId", async (req, res, next) => {
+    try {
+      const examRepo = new ExamRepository();
+      const exam = examRepo.findExamById(Number(req.params.examId));
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      const results = examRepo.getExamResults(exam.id);
+      res.json({ ...exam, results });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── Analysis API ──────────────────────────────────────
+
+  app.get("/api/analysis/exams/:examId/overview", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const overview = analysisRepo.getExamOverview(Number(req.params.examId));
+      res.json(overview);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/analysis/exams/:examId/students", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const ranking = analysisRepo.getStudentRanking(Number(req.params.examId));
+      res.json(ranking);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/analysis/exams/:examId/questions", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const questions = analysisRepo.getQuestionAnalysis(Number(req.params.examId));
+      res.json(questions);
     } catch (error) {
       next(error);
     }

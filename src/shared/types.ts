@@ -284,3 +284,52 @@ export type CombinedGradingBatchResult = {
   cardId: string;
   rows: CombinedGradingRow[];
 };
+
+// ── Analysis Types ────────────────────────────────────
+
+export type ExamOverview = {
+  totalStudents: number;
+  gradedCount: number;
+  avgScore: number;
+  maxScore: number;
+  minScore: number;
+  stdDev: number;
+  passRate: number;
+  excellentRate: number;
+  distribution: Array<{ range: string; min: number; max: number; count: number }>;
+  reviewCount: number;
+};
+
+export type StudentRankingItem = {
+  rank: number;
+  studentNumber: string;
+  studentName: string;
+  totalScore: number;
+  objectiveScore: number;
+  subjectiveScore: number;
+  needReview: boolean;
+};
+
+export type QuestionAnalysisItem = {
+  questionNumber: string;
+  questionType: string;
+  scoreRate: number;
+  correctRate: number | null;
+  avgScore: number;
+  maxScore: number;
+  reviewCount: number;
+  totalCount: number;
+};
+
+export type ExamRecord = {
+  id: number;
+  name: string;
+  card_id: string;
+  grade_id: number | null;
+  class_id: number | null;
+  subject: string | null;
+  start_time: string | null;
+  end_time: string | null;
+  status: string;
+  created_at: string;
+};

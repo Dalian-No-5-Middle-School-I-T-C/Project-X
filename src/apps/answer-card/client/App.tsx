@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
+  BarChart3,
   Camera,
   ClipboardCheck,
   Download,
@@ -36,6 +37,16 @@ import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../shared/blankLabels";
 import { ScannerPanel } from "./components/ScannerPanel";
+import { AnalysisOverview } from "./components/AnalysisOverview";
+import { AnalysisDistribution } from "./components/AnalysisDistribution";
+import { AnalysisRanking } from "./components/AnalysisRanking";
+import { AnalysisQuestions } from "./components/AnalysisQuestions";
+import type {
+  ExamOverview,
+  ExamRecord,
+  QuestionAnalysisItem,
+  StudentRankingItem
+} from "../../../shared/types";
 
 const modeLabels: Record<ObjectiveMode, string> = {
   single: "单选",
@@ -73,7 +84,7 @@ async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-type AppMode = "design" | "grading";
+type AppMode = "design" | "grading" | "analysis";
 
 const directoryInputProps = {
   webkitdirectory: "",
@@ -211,6 +222,11 @@ function App() {
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
+  const [analysisExamId, setAnalysisExamId] = useState<number | null>(null);
+  const [analysisOverview, setAnalysisOverview] = useState<ExamOverview | null>(null);
+  const [analysisRanking, setAnalysisRanking] = useState<StudentRankingItem[]>([]);
+  const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
+  const [exams, setExams] = useState<ExamRecord[]>([]);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
@@ -394,6 +410,35 @@ function App() {
     }
   }
 
+  async function loadExams() {
+    try {
+      const data = await fetchJson<ExamRecord[]>("/api/exams");
+      setExams(data);
+    } catch {
+      setExams([]);
+    }
+  }
+
+  async function loadAnalysis(examId: number) {
+    setAnalysisExamId(examId);
+    try {
+      const [overview, ranking, questions] = await Promise.all([
+        fetchJson<ExamOverview>(`/api/analysis/exams/${examId}/overview`),
+        fetchJson<StudentRankingItem[]>(`/api/analysis/exams/${examId}/students`),
+        fetchJson<QuestionAnalysisItem[]>(`/api/analysis/exams/${examId}/questions`)
+      ]);
+      setAnalysisOverview(overview);
+      setAnalysisRanking(ranking);
+      setAnalysisQuestions(questions);
+      setStatus(`分析加载完成：${overview.gradedCount} 人`);
+    } catch (err) {
+      setStatus(`分析加载失败：${err instanceof Error ? err.message : String(err)}`);
+      setAnalysisOverview(null);
+      setAnalysisRanking([]);
+      setAnalysisQuestions([]);
+    }
+  }
+
   const selectedBlock = card?.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null;
 
   return (
@@ -436,6 +481,9 @@ function App() {
               </button>
               <button className={mode === "grading" ? "active" : ""} onClick={() => setMode("grading")} type="button">
                 <ClipboardCheck size={16} /> 阅卷
+              </button>
+              <button className={mode === "analysis" ? "active" : ""} onClick={() => { setMode("analysis"); loadExams(); }} type="button">
+                <BarChart3 size={16} /> 分析
               </button>
             </div>
             {card && (
@@ -639,6 +687,50 @@ function App() {
               <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
             </section>
           </aside>
+        </div>
+        <div className={`main-grid analysis-grid ${mode === "analysis" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel analysis-results-panel">
+            <div className="scanner-panel">
+              <div className="panel-title">
+                <BarChart3 size={17} /> 成绩分析
+              </div>
+
+              <label>
+                选择考试
+                <select
+                  value={analysisExamId ?? ""}
+                  onChange={(e) => {
+                    const id = Number(e.target.value);
+                    if (id) loadAnalysis(id);
+                  }}
+                >
+                  <option value="" disabled>请选择考试</option>
+                  {exams.map((exam) => (
+                    <option key={exam.id} value={exam.id}>
+                      {exam.name} {exam.subject ? `(${exam.subject})` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {!analysisExamId && (
+                <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>
+                  选择一个考试查看分析。
+                </div>
+              )}
+
+              {analysisExamId && (
+                <>
+                  <AnalysisOverview overview={analysisOverview} />
+                  {analysisOverview && analysisOverview.distribution.length > 0 && (
+                    <AnalysisDistribution distribution={analysisOverview.distribution} />
+                  )}
+                  <AnalysisRanking ranking={analysisRanking} />
+                  <AnalysisQuestions questions={analysisQuestions} />
+                </>
+              )}
+            </div>
+          </section>
         </div>
         <footer className="statusbar">{status}</footer>
       </section>
