@@ -56,16 +56,12 @@ body { font-family: 'Noto Sans SC', sans-serif; background: #f1f5f9; }
       <div id="loginForm" class="hidden">
         <div class="space-y-3">
           <div>
-            <label class="block text-sm font-medium text-slate-700 mb-1">用户名 / 工号 / 学号</label>
-            <input type="text" id="username" class="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" placeholder="请输入">
+            <label class="block text-sm font-medium text-slate-700 mb-1">用户名</label>
+            <input type="text" id="username" class="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" placeholder="请输入用户名">
           </div>
           <div>
             <label class="block text-sm font-medium text-slate-700 mb-1">密码</label>
             <input type="password" id="password" class="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none" placeholder="请输入密码">
-          </div>
-          <div id="studentSelector" class="hidden">
-            <label class="block text-sm font-medium text-slate-700 mb-1">选择学生（演示模式）</label>
-            <select id="studentSelect" class="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 outline-none bg-white"></select>
           </div>
           <button onclick="handleLogin()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2.5 rounded-lg transition-colors shadow-lg shadow-blue-600/30">
             登录系统
@@ -127,9 +123,8 @@ body { font-family: 'Noto Sans SC', sans-serif; background: #f1f5f9; }
 </div>
 
 <script>
-
 // ==================== 全局配置 ====================
-const API_BASE = ''; // 空字符串表示同源，如需跨域请改为后端地址如 'http://localhost:5174'
+const API_BASE = ''; // 空字符串表示同源，即 localhost:5174
 let apiMode = 'live'; // 'live' = 对接后端, 'demo' = 演示模式
 let authToken = null;
 let currentUser = null;
@@ -138,12 +133,11 @@ let currentStudent = null;
 let appData = { exams: [], students: [], scores: [], classes: [] };
 let charts = {};
 
-// ==================== API 封装层 ====================
+// ==================== HTTP 工具 ====================
 async function apiGet(path) {
   if (apiMode === 'demo') throw new Error('DEMO_MODE');
-  const res = await fetch(API_BASE + path, {
-    headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
-  });
+  const headers = authToken ? { 'Authorization': 'Bearer ' + authToken } : {};
+  const res = await fetch(API_BASE + path, { headers });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
 }
@@ -152,121 +146,186 @@ async function apiPost(path, body) {
   if (apiMode === 'demo') throw new Error('DEMO_MODE');
   const res = await fetch(API_BASE + path, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(authToken ? { 'Authorization': 'Bearer ' + authToken } : {})
-    },
+    headers: { 'Content-Type': 'application/json', ...(authToken ? { 'Authorization': 'Bearer ' + authToken } : {}) },
     body: JSON.stringify(body)
   });
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
 }
 
-// ==================== 后端接口映射（与 Project-X 对接）====================
-// 以下为预期后端 API，请根据实际后端路由调整
+// ==================== 后端 API 映射（与 Project-X 实际接口对齐）====================
+// 实际后端接口：
+// GET  /api/exams              → 考试列表
+// GET  /api/exams/:id          → 考试详情+成绩
+// GET  /api/analysis/exams/:id/overview   → 考试总览统计
+// GET  /api/analysis/exams/:id/students   → 学生排名
+// GET  /api/analysis/exams/:id/questions  → 题目得分率
+// POST /api/auth/login         → 登录
+// GET  /api/auth/me            → 当前用户信息
 const API = {
-  // 认证
   login: (u, p) => apiPost('/api/auth/login', { username: u, password: p }),
-  // 考试
+  me: () => apiGet('/api/auth/me'),
   getExams: () => apiGet('/api/exams'),
   getExam: (id) => apiGet('/api/exams/' + id),
-  // 学生
-  getStudents: () => apiGet('/api/students'),
-  getStudent: (id) => apiGet('/api/students/' + id),
-  // 成绩
-  getScores: (params) => apiGet('/api/scores?' + new URLSearchParams(params)),
-  getStudentScores: (studentId) => apiGet('/api/students/' + studentId + '/scores'),
-  getExamScores: (examId, className) => apiGet('/api/exams/' + examId + '/scores' + (className ? '?class=' + encodeURIComponent(className) : '')),
-  // 统计
-  getClassStats: (examId) => apiGet('/api/stats/exam/' + examId + '/classes'),
-  getGradeStats: (examId) => apiGet('/api/stats/exam/' + examId + '/grade'),
-  // 排名
-  getRankings: (examId, scope) => apiGet('/api/rankings/' + examId + '?scope=' + (scope || 'grade'))
+  getOverview: (id) => apiGet('/api/analysis/exams/' + id + '/overview'),
+  getStudents: (id) => apiGet('/api/analysis/exams/' + id + '/students'),
+  getQuestions: (id) => apiGet('/api/analysis/exams/' + id + '/questions')
 };
 
-// ==================== 演示数据生成器（仅离线模式使用）====================
+// ==================== 演示数据生成器 ====================
 function generateDemoData() {
-  const subjects = ['语文', '数学', '英语', '物理', '化学', '生物'];
-  const classNames = ['高一(1)班', '高一(2)班', '高一(3)班', '高一(4)班'];
-  const examNames = ['第一次月考', '期中考试', '第二次月考', '期末考试'];
+  const subjects = [{name:'语文',maxScore:150},{name:'数学',maxScore:150},{name:'英语',maxScore:150},{name:'物理',maxScore:100},{name:'化学',maxScore:100},{name:'生物',maxScore:100}];
+  const classNames = ['高一(1)班','高一(2)班','高一(3)班','高一(4)班'];
+  const examNames = ['第一次月考','期中考试','第二次月考','期末考试'];
 
   appData.exams = examNames.map((name, i) => ({
-    id: 'exam_' + i,
-    name: name,
+    id: 'exam_' + i, name: name,
     date: '2025-' + (9 + Math.floor(i/2)) + '-' + (15 + (i%2)*15),
-    subjects: subjects.map(s => ({ name: s, maxScore: 150 }))
+    subjects: subjects
   }));
-
   appData.classes = classNames;
 
-  const lastNames = ['赵', '钱', '孙', '李', '周', '吴', '郑', '王', '冯', '陈', '褚', '卫', '蒋', '沈', '韩', '杨'];
-  const firstNames = ['伟', '芳', '娜', '敏', '静', '丽', '强', '磊', '军', '洋', '勇', '艳', '杰', '娟', '涛', '明'];
+  const lastNames = ['赵','钱','孙','李','周','吴','郑','王','冯','陈','褚','卫','蒋','沈','韩','杨'];
+  const firstNames = ['伟','芳','娜','敏','静','丽','强','磊','军','洋','勇','艳','杰','娟','涛','明'];
 
   appData.students = [];
-  let studentId = 0;
+  let sid = 0;
   classNames.forEach((cls, ci) => {
     for (let i = 0; i < 15; i++) {
-      const name = lastNames[Math.floor(Math.random() * lastNames.length)] +
-        firstNames[Math.floor(Math.random() * firstNames.length)] +
-        (Math.random() > 0.5 ? firstNames[Math.floor(Math.random() * firstNames.length)] : '');
-      appData.students.push({
-        id: 'stu_' + studentId,
-        name: name,
-        className: cls,
-        studentNo: '2025' + String(ci+1).padStart(2,'0') + String(i+1).padStart(2,'0')
-      });
-      studentId++;
+      const name = lastNames[Math.floor(Math.random()*lastNames.length)] + firstNames[Math.floor(Math.random()*firstNames.length)] + (Math.random()>0.5?firstNames[Math.floor(Math.random()*firstNames.length)]:'');
+      appData.students.push({ id:'stu_'+sid, name:name, className:cls, studentNo:'2025'+String(ci+1).padStart(2,'0')+String(i+1).padStart(2,'0') });
+      sid++;
     }
   });
 
   appData.scores = [];
   appData.students.forEach(stu => {
-    const baseAbility = {};
-    subjects.forEach(s => { baseAbility[s] = 60 + Math.random() * 70; });
+    const base = {};
+    subjects.forEach(s => { base[s.name] = s.maxScore * 0.4 + Math.random() * s.maxScore * 0.5; });
     appData.exams.forEach((exam, ei) => {
-      const subjectScores = {};
-      let total = 0;
+      const subScores = {}; let total = 0;
       subjects.forEach(s => {
-        const trend = ei * (Math.random() * 6 - 2);
-        const noise = (Math.random() - 0.5) * 20;
-        let score = Math.round(baseAbility[s] + trend + noise);
-        score = Math.max(0, Math.min(150, score));
-        subjectScores[s] = score;
-        total += score;
+        const trend = ei * (Math.random()*6-2);
+        const noise = (Math.random()-0.5)*20;
+        let sc = Math.round(base[s.name] + trend + noise);
+        sc = Math.max(0, Math.min(s.maxScore, sc));
+        subScores[s.name] = sc; total += sc;
       });
-      appData.scores.push({
-        studentId: stu.id,
-        examId: exam.id,
-        subjectScores: subjectScores,
-        totalScore: total
-      });
+      appData.scores.push({ studentId:stu.id, examId:exam.id, subjectScores:subScores, totalScore:total });
     });
   });
+  apiMode = 'demo';
+  updateApiIndicator();
 }
 
 // ==================== 数据访问层（统一封装，自动切换 live/demo）====================
+// 从考试详情中提取成绩数据
+async function fetchExamWithScores(examId) {
+  if (apiMode === 'demo') {
+    const exam = appData.exams.find(e => e.id === examId);
+    const scores = appData.scores.filter(s => s.examId === examId);
+    return { exam, scores };
+  }
+  const exam = await API.getExam(examId);
+  // 后端 /api/exams/:id 返回考试详情，成绩嵌套在 exam.results 或类似字段中
+  // 这里假设返回格式: { id, name, subjects, results: [{ studentId, subjectScores, totalScore }] }
+  const scores = exam.results || exam.scores || [];
+  return { exam, scores };
+}
+
 async function fetchExams() {
   if (apiMode === 'demo') return appData.exams;
   return API.getExams();
 }
 
-async function fetchStudents() {
-  if (apiMode === 'demo') return appData.students;
-  return API.getStudents();
+async function fetchOverview(examId) {
+  if (apiMode === 'demo') {
+    // 本地计算 overview
+    const scores = appData.scores.filter(s => s.examId === examId);
+    const exam = appData.exams.find(e => e.id === examId);
+    const subjects = exam.subjects.map(s => s.name);
+    const subjectAvgs = {};
+    subjects.forEach(sub => {
+      const sum = scores.reduce((acc, s) => acc + s.subjectScores[sub], 0);
+      subjectAvgs[sub] = scores.length ? Math.round(sum / scores.length * 10) / 10 : 0;
+    });
+    const totalSum = scores.reduce((acc, s) => acc + s.totalScore, 0);
+    return {
+      totalAvg: scores.length ? Math.round(totalSum / scores.length * 10) / 10 : 0,
+      maxScore: scores.length ? Math.max(...scores.map(s => s.totalScore)) : 0,
+      minScore: scores.length ? Math.min(...scores.map(s => s.totalScore)) : 0,
+      count: scores.length,
+      subjectAvgs: subjectAvgs,
+      distribution: {
+        excellent: scores.filter(s => s.totalScore >= 720).length,
+        good: scores.filter(s => s.totalScore >= 600 && s.totalScore < 720).length,
+        pass: scores.filter(s => s.totalScore >= 450 && s.totalScore < 600).length,
+        fail: scores.filter(s => s.totalScore < 450).length
+      }
+    };
+  }
+  return API.getOverview(examId);
 }
 
-async function fetchScores(params) {
+async function fetchStudentRankings(examId) {
   if (apiMode === 'demo') {
-    let scores = appData.scores;
-    if (params.examId) scores = scores.filter(s => s.examId === params.examId);
-    if (params.studentId) scores = scores.filter(s => s.studentId === params.studentId);
-    if (params.className) {
-      const stuIds = appData.students.filter(st => st.className === params.className).map(st => st.id);
-      scores = scores.filter(s => stuIds.includes(s.studentId));
-    }
-    return scores;
+    const scores = appData.scores.filter(s => s.examId === examId);
+    const ranked = scores.map(s => {
+      const stu = appData.students.find(st => st.id === s.studentId);
+      return { ...s, ...stu };
+    }).sort((a, b) => b.totalScore - a.totalScore);
+    ranked.forEach((item, idx) => { item.rank = idx + 1; });
+    return ranked;
   }
-  return API.getScores(params);
+  return API.getStudents(examId);
+}
+
+async function fetchClassStats(examId) {
+  if (apiMode === 'demo') {
+    const exam = appData.exams.find(e => e.id === examId);
+    const subjects = exam.subjects.map(s => s.name);
+    return appData.classes.map(cls => {
+      const stuIds = appData.students.filter(st => st.className === cls).map(st => st.id);
+      const scores = appData.scores.filter(s => s.examId === examId && stuIds.includes(s.studentId));
+      const subjectAvgs = {};
+      subjects.forEach(sub => {
+        const sum = scores.reduce((acc, s) => acc + s.subjectScores[sub], 0);
+        subjectAvgs[sub] = scores.length ? Math.round(sum / scores.length * 10) / 10 : 0;
+      });
+      const totalSum = scores.reduce((acc, s) => acc + s.totalScore, 0);
+      return {
+        className: cls,
+        count: scores.length,
+        totalAvg: scores.length ? Math.round(totalSum / scores.length * 10) / 10 : 0,
+        subjectAvgs: subjectAvgs,
+        maxScore: scores.length ? Math.max(...scores.map(s => s.totalScore)) : 0,
+        minScore: scores.length ? Math.min(...scores.map(s => s.totalScore)) : 0
+      };
+    });
+  }
+  // 后端没有直接的 class stats 接口，从 overview + students 推导
+  const overview = await API.getOverview(examId);
+  const students = await API.getStudents(examId);
+  // 按班级分组计算
+  const classes = [...new Set(students.map(s => s.className))];
+  return classes.map(cls => {
+    const clsStudents = students.filter(s => s.className === cls);
+    const subjects = (await fetchExams()).find(e => e.id === examId).subjects.map(s => s.name);
+    const subjectAvgs = {};
+    subjects.forEach(sub => {
+      const sum = clsStudents.reduce((acc, s) => acc + (s.subjectScores ? s.subjectScores[sub] : 0), 0);
+      subjectAvgs[sub] = clsStudents.length ? Math.round(sum / clsStudents.length * 10) / 10 : 0;
+    });
+    const totalSum = clsStudents.reduce((acc, s) => acc + s.totalScore, 0);
+    return {
+      className: cls,
+      count: clsStudents.length,
+      totalAvg: clsStudents.length ? Math.round(totalSum / clsStudents.length * 10) / 10 : 0,
+      subjectAvgs: subjectAvgs,
+      maxScore: clsStudents.length ? Math.max(...clsStudents.map(s => s.totalScore)) : 0,
+      minScore: clsStudents.length ? Math.min(...clsStudents.map(s => s.totalScore)) : 0
+    };
+  });
 }
 
 async function fetchStudentScores(studentId) {
@@ -277,65 +336,15 @@ async function fetchStudentScores(studentId) {
       return idxA - idxB;
     });
   }
-  return API.getStudentScores(studentId);
-}
-
-async function fetchExamScores(examId, className) {
-  if (apiMode === 'demo') {
-    let scores = appData.scores.filter(s => s.examId === examId);
-    if (className) {
-      const stuIds = appData.students.filter(st => st.className === className).map(st => st.id);
-      scores = scores.filter(s => stuIds.includes(s.studentId));
-    }
-    return scores;
+  // 后端没有直接的学生成绩历史接口，需要从各考试详情中收集
+  const exams = await fetchExams();
+  const scores = [];
+  for (const exam of exams) {
+    const detail = await fetchExamWithScores(exam.id);
+    const score = detail.scores.find(s => s.studentId === studentId);
+    if (score) scores.push({ ...score, examId: exam.id });
   }
-  return API.getExamScores(examId, className);
-}
-
-async function fetchClassStats(examId) {
-  if (apiMode === 'demo') {
-    return appData.classes.map(cls => {
-      const scores = appData.scores.filter(s => s.examId === examId);
-      const stuIds = appData.students.filter(st => st.className === cls).map(st => st.id);
-      const clsScores = scores.filter(s => stuIds.includes(s.studentId));
-      const subjects = appData.exams.find(e => e.id === examId).subjects.map(s => s.name);
-      const subjectAvgs = {};
-      subjects.forEach(sub => {
-        const sum = clsScores.reduce((acc, s) => acc + s.subjectScores[sub], 0);
-        subjectAvgs[sub] = clsScores.length ? Math.round(sum / clsScores.length * 10) / 10 : 0;
-      });
-      const totalSum = clsScores.reduce((acc, s) => acc + s.totalScore, 0);
-      return {
-        className: cls,
-        count: clsScores.length,
-        totalAvg: clsScores.length ? Math.round(totalSum / clsScores.length * 10) / 10 : 0,
-        subjectAvgs: subjectAvgs,
-        maxScore: clsScores.length ? Math.max(...clsScores.map(s => s.totalScore)) : 0,
-        minScore: clsScores.length ? Math.min(...clsScores.map(s => s.totalScore)) : 0
-      };
-    });
-  }
-  return API.getClassStats(examId);
-}
-
-async function fetchGradeStats(examId) {
-  if (apiMode === 'demo') {
-    const scores = appData.scores.filter(s => s.examId === examId);
-    const subjects = appData.exams.find(e => e.id === examId).subjects.map(s => s.name);
-    const subjectAvgs = {};
-    subjects.forEach(sub => {
-      const sum = scores.reduce((acc, s) => acc + s.subjectScores[sub], 0);
-      subjectAvgs[sub] = scores.length ? Math.round(sum / scores.length * 10) / 10 : 0;
-    });
-    const totalSum = scores.reduce((acc, s) => acc + s.totalScore, 0);
-    return {
-      totalAvg: scores.length ? Math.round(totalSum / scores.length * 10) / 10 : 0,
-      subjectAvgs: subjectAvgs,
-      maxScore: scores.length ? Math.max(...scores.map(s => s.totalScore)) : 0,
-      count: scores.length
-    };
-  }
-  return API.getGradeStats(examId);
+  return scores;
 }
 
 async function fetchRankings(examId, scope, studentId) {
@@ -350,9 +359,15 @@ async function fetchRankings(examId, scope, studentId) {
     const rank = scores.findIndex(s => s.studentId === studentId) + 1;
     return { rank, total: scores.length };
   }
-  const data = await API.getRankings(examId, scope);
-  const entry = data.find(d => d.studentId === studentId);
-  return entry || { rank: '-', total: data.length };
+  const students = await API.getStudents(examId);
+  let filtered = students;
+  if (scope === 'class') {
+    const me = await API.me();
+    filtered = students.filter(s => s.className === me.className);
+  }
+  filtered.sort((a, b) => b.totalScore - a.totalScore);
+  const idx = filtered.findIndex(s => s.studentId === studentId);
+  return { rank: idx + 1, total: filtered.length };
 }
 
 // ==================== 健康检查 ====================
@@ -360,26 +375,14 @@ async function checkApiHealth() {
   const statusEl = document.getElementById('apiStatus');
   statusEl.innerHTML = '<span class="text-xs text-slate-500">&#x1F504; 检测中...</span>';
   try {
-    // 尝试访问后端健康检查端点（请根据实际后端调整）
-    const res = await fetch(API_BASE + '/api/health', { method: 'GET', signal: AbortSignal.timeout(3000) });
+    const res = await fetch(API_BASE + '/api/exams', { method: 'GET', signal: AbortSignal.timeout(3000) });
     if (res.ok) {
       apiMode = 'live';
       statusEl.innerHTML = '<span class="api-badge api-live">&#x1F7E2; 后端已连接</span>';
       updateApiIndicator();
       return true;
     }
-  } catch (e) {
-    // 尝试 ping 根路径
-    try {
-      const res2 = await fetch(API_BASE + '/', { method: 'HEAD', signal: AbortSignal.timeout(3000) });
-      if (res2.ok) {
-        apiMode = 'live';
-        statusEl.innerHTML = '<span class="api-badge api-live">&#x1F7E2; 后端已连接</span>';
-        updateApiIndicator();
-        return true;
-      }
-    } catch (e2) {}
-  }
+  } catch (e) {}
   apiMode = 'demo';
   statusEl.innerHTML = '<span class="api-badge api-demo">&#x1F7E1; 演示模式（无后端）</span>';
   updateApiIndicator();
@@ -391,10 +394,10 @@ function updateApiIndicator() {
   if (!el) return;
   if (apiMode === 'live') {
     el.className = 'api-badge api-live';
-    el.textContent = '&#x1F7E2; API 在线';
+    el.textContent = '὾2 API 在线';
   } else {
     el.className = 'api-badge api-demo';
-    el.textContent = '&#x1F7E1; 演示模式';
+    el.textContent = '὾1 演示模式';
   }
 }
 
@@ -402,19 +405,11 @@ function updateApiIndicator() {
 function selectRole(role) {
   currentRole = role;
   document.querySelectorAll('.role-btn').forEach(btn => {
-    btn.classList.remove('border-blue-500', 'bg-blue-50');
+    btn.classList.remove('border-blue-500','bg-blue-50');
     btn.classList.add('border-slate-200');
   });
-  document.getElementById(role === 'teacher' ? 'btnTeacher' : 'btnStudent').classList.add('border-blue-500', 'bg-blue-50');
+  document.getElementById(role==='teacher'?'btnTeacher':'btnStudent').classList.add('border-blue-500','bg-blue-50');
   document.getElementById('loginForm').classList.remove('hidden');
-
-  if (role === 'student' && apiMode === 'demo') {
-    document.getElementById('studentSelector').classList.remove('hidden');
-    const select = document.getElementById('studentSelect');
-    select.innerHTML = appData.students.map(s => '<option value="' + s.id + '">' + s.name + ' (' + s.className + ')</option>').join('');
-  } else {
-    document.getElementById('studentSelector').classList.add('hidden');
-  }
 }
 
 async function handleLogin() {
@@ -426,21 +421,23 @@ async function handleLogin() {
     try {
       const res = await API.login(username, password);
       authToken = res.token;
-      currentUser = res.user;
-      currentRole = res.user.role; // 'teacher' or 'student'
+      const me = await API.me();
+      currentUser = me;
+      currentRole = me.role; // 'teacher' or 'student'
       if (currentRole === 'student') {
-        currentStudent = res.user;
+        currentStudent = me;
       }
     } catch (e) {
-      alert('登录失败: ' + e.message + '\n请检查后端是否运行，或切换到演示模式。');
+      alert('登录失败: ' + e.message + '
+请检查后端是否运行，或切换到演示模式。');
       return;
     }
   } else {
-    // 演示模式登录
+    // 演示模式
     if (currentRole === 'student') {
-      const stuId = document.getElementById('studentSelect').value;
-      currentStudent = appData.students.find(s => s.id === stuId);
-      currentUser = { name: currentStudent.name, role: 'student', id: currentStudent.id };
+      // 演示模式下随机选一个学生
+      currentStudent = appData.students[0];
+      currentUser = { name: currentStudent.name, role: 'student', id: currentStudent.id, className: currentStudent.className };
     } else {
       currentUser = { name: username || '教师', role: 'teacher', id: 'teacher_1' };
     }
@@ -456,11 +453,8 @@ async function handleLogin() {
   initSidebar();
   await initExamFilter();
 
-  if (currentRole === 'teacher') {
-    showSection('teacherOverview');
-  } else {
-    showSection('studentDashboard');
-  }
+  if (currentRole === 'teacher') showSection('teacherOverview');
+  else showSection('studentDashboard');
 }
 
 function logout() {
@@ -471,14 +465,9 @@ function logout() {
   location.reload();
 }
 
-async function loadDemoData() {
-  apiMode = 'demo';
+function loadDemoData() {
   generateDemoData();
-  document.getElementById('apiStatus').innerHTML = '<span class="api-badge api-demo">&#x1F7E1; 演示模式（已加载）</span>';
-  if (currentRole === 'student') {
-    const select = document.getElementById('studentSelect');
-    select.innerHTML = appData.students.map(s => '<option value="' + s.id + '">' + s.name + ' (' + s.className + ')</option>').join('');
-  }
+  document.getElementById('apiStatus').innerHTML = '<span class="api-badge api-demo">὾1 演示模式（已加载）</span>';
   alert('演示数据已加载！请选择角色登录体验。');
 }
 
@@ -488,31 +477,25 @@ function initSidebar() {
   let items = [];
   if (currentRole === 'teacher') {
     items = [
-      { id: 'teacherOverview', icon: '&#x1F4CA;', label: '数据概览' },
-      { id: 'teacherStudents', icon: '&#x1F465;', label: '学生成绩' },
-      { id: 'teacherClassCompare', icon: '&#x1F4C8;', label: '班级对比' },
-      { id: 'teacherAnalysis', icon: '&#x1F4DD;', label: '成绩总结' }
+      { id:'teacherOverview', icon:'ὌA', label:'数据概览' },
+      { id:'teacherStudents', icon:'὆5', label:'学生成绩' },
+      { id:'teacherClassCompare', icon:'Ὄ8', label:'班级对比' },
+      { id:'teacherAnalysis', icon:'ὍD', label:'成绩总结' }
     ];
   } else {
     items = [
-      { id: 'studentDashboard', icon: '&#x1F4CB;', label: '我的成绩' },
-      { id: 'studentTrend', icon: '&#x1F4C9;', label: '成绩趋势' },
-      { id: 'studentAnalysis', icon: '&#x1F50D;', label: '成绩分析' }
+      { id:'studentDashboard', icon:'ὌB', label:'我的成绩' },
+      { id:'studentTrend', icon:'Ὄ9', label:'成绩趋势' },
+      { id:'studentAnalysis', icon:'ὐD', label:'成绩分析' }
     ];
   }
-  nav.innerHTML = items.map(item =>
-    '<div class="sidebar-item px-6 py-3 flex items-center gap-3 text-sm font-medium text-slate-600" onclick="showSection(\'' + item.id + '\')" data-section="' + item.id + '">' +
-    '<span class="text-lg">' + item.icon + '</span>' +
-    '<span>' + item.label + '</span>' +
-    '</div>'
-  ).join('');
+  nav.innerHTML = items.map(it => '<div class="sidebar-item px-6 py-3 flex items-center gap-3 text-sm font-medium text-slate-600" onclick="showSection(''+it.id+'')" data-section="'+it.id+'"><span class="text-lg">'+it.icon+'</span><span>'+it.label+'</span></div>').join('');
 }
 
 async function initExamFilter() {
   const exams = await fetchExams();
   const select = document.getElementById('examFilter');
-  select.innerHTML = '<option value="all">全部考试</option>' +
-    exams.map(e => '<option value="' + e.id + '">' + e.name + '</option>').join('');
+  select.innerHTML = '<option value="all">全部考试</option>' + exams.map(e => '<option value="'+e.id+'">'+e.name+'</option>').join('');
 }
 
 async function showSection(sectionId) {
@@ -550,14 +533,13 @@ async function renderTeacherOverview() {
   const examId = document.getElementById('examFilter').value;
   const exams = await fetchExams();
   const targetExam = examId === 'all' ? exams[exams.length - 1] : exams.find(e => e.id === examId);
-  const students = await fetchStudents();
-  const gradeStats = await fetchGradeStats(targetExam.id);
+  const overview = await fetchOverview(targetExam.id);
 
   let html = '<div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8 fade-in">' +
     '<div class="card bg-white rounded-xl p-6 shadow-sm border border-slate-100">' +
-      '<div class="text-slate-500 text-sm mb-1">学生总数</div>' +
-      '<div class="text-3xl font-bold text-slate-800">' + students.length + '</div>' +
-      '<div class="text-xs text-slate-400 mt-2">' + (apiMode === 'demo' ? appData.classes.length : '?') + ' 个班级</div>' +
+      '<div class="text-slate-500 text-sm mb-1">参考人数</div>' +
+      '<div class="text-3xl font-bold text-slate-800">' + overview.count + '</div>' +
+      '<div class="text-xs text-slate-400 mt-2">' + targetExam.name + '</div>' +
     '</div>' +
     '<div class="card bg-white rounded-xl p-6 shadow-sm border border-slate-100">' +
       '<div class="text-slate-500 text-sm mb-1">考试次数</div>' +
@@ -566,12 +548,12 @@ async function renderTeacherOverview() {
     '</div>' +
     '<div class="card bg-white rounded-xl p-6 shadow-sm border border-slate-100">' +
       '<div class="text-slate-500 text-sm mb-1">年级平均分</div>' +
-      '<div class="text-3xl font-bold text-blue-600">' + (gradeStats ? gradeStats.totalAvg : '-') + '</div>' +
+      '<div class="text-3xl font-bold text-blue-600">' + overview.totalAvg + '</div>' +
       '<div class="text-xs text-slate-400 mt-2">' + targetExam.name + '</div>' +
     '</div>' +
     '<div class="card bg-white rounded-xl p-6 shadow-sm border border-slate-100">' +
       '<div class="text-slate-500 text-sm mb-1">年级最高分</div>' +
-      '<div class="text-3xl font-bold text-emerald-600">' + (gradeStats ? gradeStats.maxScore : '-') + '</div>' +
+      '<div class="text-3xl font-bold text-emerald-600">' + overview.maxScore + '</div>' +
       '<div class="text-xs text-slate-400 mt-2">' + targetExam.name + '</div>' +
     '</div>' +
   '</div>' +
@@ -601,38 +583,21 @@ async function renderTeacherOverview() {
     type: 'bar',
     data: {
       labels: labels,
-      datasets: [{
-        label: '班级平均分',
-        data: avgs,
-        backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'],
-        borderRadius: 6
-      }]
+      datasets: [{ label: '班级平均分', data: avgs, backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'], borderRadius: 6 }]
     },
     options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
   });
 
   // 成绩分布
-  const examScores = await fetchExamScores(targetExam.id);
-  const ranges = ['0-300', '300-450', '450-600', '600-750', '750-900'];
-  const counts = [0, 0, 0, 0, 0];
-  examScores.forEach(s => {
-    const t = s.totalScore;
-    if (t < 300) counts[0]++;
-    else if (t < 450) counts[1]++;
-    else if (t < 600) counts[2]++;
-    else if (t < 750) counts[3]++;
-    else counts[4]++;
-  });
+  const dist = overview.distribution || { excellent: 0, good: 0, pass: 0, fail: 0 };
+  const ranges = ['不及格(<450)', '及格(450-600)', '良好(600-720)', '优秀(≥720)'];
+  const counts = [dist.fail, dist.pass, dist.good, dist.excellent];
 
   charts.gradeDist = new Chart(document.getElementById('gradeDistChart'), {
     type: 'doughnut',
     data: {
       labels: ranges,
-      datasets: [{
-        data: counts,
-        backgroundColor: ['#ef4444', '#f97316', '#f59e0b', '#3b82f6', '#10b981'],
-        borderWidth: 0
-      }]
+      datasets: [{ data: counts, backgroundColor: ['#ef4444', '#f59e0b', '#3b82f6', '#10b981'], borderWidth: 0 }]
     },
     options: { responsive: true, cutout: '60%' }
   });
@@ -640,8 +605,8 @@ async function renderTeacherOverview() {
   // 年级趋势
   const trendData = [];
   for (const exam of exams) {
-    const stats = await fetchGradeStats(exam.id);
-    trendData.push({ name: exam.name, avg: stats.totalAvg });
+    const ov = await fetchOverview(exam.id);
+    trendData.push({ name: exam.name, avg: ov.totalAvg });
   }
 
   charts.gradeTrend = new Chart(document.getElementById('gradeTrendChart'), {
@@ -667,20 +632,10 @@ async function renderTeacherStudents() {
   const examId = document.getElementById('examFilter').value;
   const exams = await fetchExams();
   const targetExam = examId === 'all' ? exams[exams.length - 1] : exams.find(e => e.id === examId);
-  const students = await fetchStudents();
-  const allScores = await fetchScores({ examId: targetExam.id });
+  const rankings = await fetchStudentRankings(targetExam.id);
 
-  let studentData = [];
-  for (const stu of students) {
-    const score = allScores.find(s => s.studentId === stu.id);
-    if (!score) continue;
-    const classRank = await fetchRankings(targetExam.id, 'class', stu.id);
-    const gradeRank = await fetchRankings(targetExam.id, 'grade', stu.id);
-    studentData.push({ ...stu, score, classRank, gradeRank });
-  }
-  studentData.sort((a, b) => a.gradeRank.rank - b.gradeRank.rank);
-
-  const classes = [...new Set(students.map(s => s.className))];
+  // 获取所有班级
+  const classes = [...new Set(rankings.map(s => s.className).filter(Boolean))];
 
   let html = '<div class="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden fade-in">' +
     '<div class="p-4 border-b border-slate-100 flex flex-wrap gap-3 items-center">' +
@@ -698,7 +653,6 @@ async function renderTeacherStudents() {
         '<thead class="bg-slate-50 text-slate-600 font-medium">' +
           '<tr>' +
             '<th class="px-6 py-3">年级排名</th>' +
-            '<th class="px-6 py-3">班级排名</th>' +
             '<th class="px-6 py-3">姓名</th>' +
             '<th class="px-6 py-3">班级</th>' +
             '<th class="px-6 py-3">学号</th>' +
@@ -708,7 +662,7 @@ async function renderTeacherStudents() {
           '</tr>' +
         '</thead>' +
         '<tbody id="studentTableBody" class="divide-y divide-slate-100">' +
-          studentData.map(stu => renderStudentRow(stu, targetExam)).join('') +
+          rankings.map(stu => renderStudentRow(stu, targetExam)).join('') +
         '</tbody>' +
       '</table>' +
     '</div>' +
@@ -718,20 +672,19 @@ async function renderTeacherStudents() {
 }
 
 function renderStudentRow(stu, exam) {
-  const rankClass = stu.gradeRank.rank <= 3 ? 'rank-' + stu.gradeRank.rank : 'rank-other';
+  const rankClass = stu.rank <= 3 ? 'rank-' + stu.rank : 'rank-other';
   return '<tr class="hover:bg-slate-50 transition-colors">' +
-    '<td class="px-6 py-4"><span class="rank-badge ' + rankClass + '">' + stu.gradeRank.rank + '</span></td>' +
-    '<td class="px-6 py-4"><span class="rank-badge rank-other">' + stu.classRank.rank + '</span></td>' +
-    '<td class="px-6 py-4 font-medium text-slate-800">' + stu.name + '</td>' +
-    '<td class="px-6 py-4 text-slate-600">' + stu.className + '</td>' +
-    '<td class="px-6 py-4 text-slate-500 font-mono text-xs">' + stu.studentNo + '</td>' +
-    '<td class="px-6 py-4 font-bold text-blue-600">' + stu.score.totalScore + '</td>' +
+    '<td class="px-6 py-4"><span class="rank-badge ' + rankClass + '">' + stu.rank + '</span></td>' +
+    '<td class="px-6 py-4 font-medium text-slate-800">' + (stu.name || stu.studentName || '未知') + '</td>' +
+    '<td class="px-6 py-4 text-slate-600">' + (stu.className || '-') + '</td>' +
+    '<td class="px-6 py-4 text-slate-500 font-mono text-xs">' + (stu.studentNo || stu.studentId || '-') + '</td>' +
+    '<td class="px-6 py-4 font-bold text-blue-600">' + stu.totalScore + '</td>' +
     exam.subjects.map(s => {
-      const score = stu.score.subjectScores[s.name];
-      const color = score >= 120 ? 'text-emerald-600' : score >= 90 ? 'text-slate-700' : 'text-amber-600';
+      const score = stu.subjectScores ? stu.subjectScores[s.name] : 0;
+      const color = score >= s.maxScore * 0.8 ? 'text-emerald-600' : score >= s.maxScore * 0.6 ? 'text-slate-700' : 'text-amber-600';
       return '<td class="px-4 py-4 ' + color + ' font-medium">' + score + '</td>';
     }).join('') +
-    '<td class="px-6 py-4"><button onclick="showStudentDetail(\'' + stu.id + '\')" class="text-blue-600 hover:text-blue-800 text-sm font-medium">详情</button></td>' +
+    '<td class="px-6 py-4"><button onclick="showStudentDetail('' + stu.studentId + '')" class="text-blue-600 hover:text-blue-800 text-sm font-medium">详情</button></td>' +
   '</tr>';
 }
 
@@ -740,18 +693,20 @@ function filterStudents() {
   const cls = document.getElementById('classFilter').value;
   const rows = document.querySelectorAll('#studentTableBody tr');
   rows.forEach(row => {
-    const name = row.cells[2].textContent.toLowerCase();
-    const className = row.cells[3].textContent;
+    const name = row.cells[1].textContent.toLowerCase();
+    const className = row.cells[2].textContent;
     row.style.display = (name.includes(search) && (cls === 'all' || className === cls)) ? '' : 'none';
   });
 }
 
 async function showStudentDetail(studentId) {
-  const stu = (await fetchStudents()).find(s => s.id === studentId);
-  const scores = await fetchStudentScores(studentId);
   const exams = await fetchExams();
   const latestExam = exams[exams.length - 1];
-  const latestScore = scores.find(s => s.examId === latestExam.id);
+  const rankings = await fetchStudentRankings(latestExam.id);
+  const stu = rankings.find(s => s.studentId === studentId);
+  if (!stu) return;
+
+  const scores = await fetchStudentScores(studentId);
   const classRank = await fetchRankings(latestExam.id, 'class', studentId);
   const gradeRank = await fetchRankings(latestExam.id, 'grade', studentId);
 
@@ -759,15 +714,15 @@ async function showStudentDetail(studentId) {
     '<div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-y-auto fade-in">' +
       '<div class="p-6 border-b border-slate-100 flex justify-between items-center">' +
         '<div>' +
-          '<h3 class="text-xl font-bold text-slate-800">' + stu.name + ' 的成绩详情</h3>' +
-          '<p class="text-sm text-slate-500">' + stu.className + ' · 学号 ' + stu.studentNo + '</p>' +
+          '<h3 class="text-xl font-bold text-slate-800">' + (stu.name || stu.studentName) + ' 的成绩详情</h3>' +
+          '<p class="text-sm text-slate-500">' + (stu.className || '-') + ' · 学号 ' + (stu.studentNo || studentId) + '</p>' +
         '</div>' +
         '<button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 text-2xl">&times;</button>' +
       '</div>' +
       '<div class="p-6 space-y-6">' +
         '<div class="grid grid-cols-3 gap-4">' +
           '<div class="bg-blue-50 rounded-xl p-4 text-center">' +
-            '<div class="text-2xl font-bold text-blue-600">' + (latestScore ? latestScore.totalScore : '-') + '</div>' +
+            '<div class="text-2xl font-bold text-blue-600">' + stu.totalScore + '</div>' +
             '<div class="text-xs text-blue-600/70 mt-1">最新总分</div>' +
           '</div>' +
           '<div class="bg-emerald-50 rounded-xl p-4 text-center">' +
@@ -785,7 +740,7 @@ async function showStudentDetail(studentId) {
         '</div>' +
         '<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">' +
           latestExam.subjects.map(s => {
-            const score = latestScore ? latestScore.subjectScores[s.name] : 0;
+            const score = stu.subjectScores ? stu.subjectScores[s.name] : 0;
             const pct = Math.round(score / s.maxScore * 100);
             const color = pct >= 80 ? 'bg-emerald-100 text-emerald-700' : pct >= 60 ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700';
             return '<div class="' + color + ' rounded-lg p-3 text-center">' +
@@ -840,8 +795,6 @@ async function renderTeacherClassCompare() {
   const exams = await fetchExams();
   const targetExam = examId === 'all' ? exams[exams.length - 1] : exams.find(e => e.id === examId);
   const classStats = await fetchClassStats(targetExam.id);
-  const students = await fetchStudents();
-  const classes = [...new Set(students.map(s => s.className))];
 
   let html = '<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 fade-in">' +
     '<div class="bg-white rounded-xl p-6 shadow-sm border border-slate-100">' +
@@ -928,20 +881,20 @@ async function renderTeacherClassCompare() {
 
   // 趋势对比
   const trendDatasets = [];
+  const classes = classStats.map(c => c.className);
+  const trendColors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
   for (let idx = 0; idx < classes.length; idx++) {
-    const cls = classes[idx];
-    const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'];
     const data = [];
     for (const exam of exams) {
       const stats = await fetchClassStats(exam.id);
-      const clsStat = stats.find(s => s.className === cls);
+      const clsStat = stats.find(s => s.className === classes[idx]);
       data.push(clsStat ? clsStat.totalAvg : 0);
     }
     trendDatasets.push({
-      label: cls.replace(/.*\((.*)\).*/, '$1'),
+      label: classes[idx].replace(/.*\((.*)\).*/, '$1'),
       data: data,
-      borderColor: colors[idx],
-      backgroundColor: colors[idx] + '10',
+      borderColor: trendColors[idx],
+      backgroundColor: trendColors[idx] + '10',
       fill: false,
       tension: 0.3,
       pointRadius: 4
@@ -963,9 +916,8 @@ async function renderTeacherAnalysis() {
   const examId = document.getElementById('examFilter').value;
   const exams = await fetchExams();
   const targetExam = examId === 'all' ? exams[exams.length - 1] : exams.find(e => e.id === examId);
-  const gradeStats = await fetchGradeStats(targetExam.id);
+  const overview = await fetchOverview(targetExam.id);
   const classStats = await fetchClassStats(targetExam.id);
-  const allScores = await fetchExamScores(targetExam.id);
 
   classStats.sort((a, b) => b.totalAvg - a.totalAvg);
   const bestClass = classStats[0];
@@ -973,20 +925,22 @@ async function renderTeacherAnalysis() {
 
   const subjectAvgs = targetExam.subjects.map(s => ({
     name: s.name,
-    avg: gradeStats.subjectAvgs[s.name]
+    avg: overview.subjectAvgs[s.name]
   }));
   subjectAvgs.sort((a, b) => b.avg - a.avg);
   const bestSubject = subjectAvgs[0];
   const weakSubject = subjectAvgs[subjectAvgs.length - 1];
 
-  const excellent = allScores.filter(s => s.totalScore >= 720).length;
-  const good = allScores.filter(s => s.totalScore >= 600 && s.totalScore < 720).length;
-  const pass = allScores.filter(s => s.totalScore >= 450 && s.totalScore < 600).length;
-  const fail = allScores.filter(s => s.totalScore < 450).length;
+  const dist = overview.distribution || { excellent: 0, good: 0, pass: 0, fail: 0 };
+  const allCount = overview.count;
+  const excellent = dist.excellent;
+  const good = dist.good;
+  const pass = dist.pass;
+  const fail = dist.fail;
 
-  const mean = gradeStats.totalAvg;
-  const variance = allScores.reduce((acc, s) => acc + Math.pow(s.totalScore - mean, 2), 0) / allScores.length;
-  const stdDev = Math.sqrt(variance).toFixed(1);
+  const mean = overview.totalAvg;
+  // 标准差需要原始数据，overview 可能没有，用估算
+  const stdDev = overview.stdDev || 'N/A';
 
   let html = '<div class="max-w-4xl mx-auto space-y-6 fade-in">' +
     '<div class="bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl p-8 text-white shadow-lg">' +
@@ -1000,8 +954,8 @@ async function renderTeacherAnalysis() {
         '整体概况' +
       '</h4>' +
       '<div class="prose text-slate-600 leading-relaxed">' +
-        '<p>本次考试（' + targetExam.name + '）全年级共 ' + allScores.length + ' 名学生参加，覆盖 ' + classStats.length + ' 个班级。年级总平均分为 <strong class="text-slate-800">' + gradeStats.totalAvg + '</strong> 分，标准差为 ' + stdDev + '，成绩离散程度' + (stdDev > 80 ? '较大，学生水平差异明显，建议关注分层教学' : '适中，整体水平较为均衡') + '。</p>' +
-        '<p class="mt-2">成绩分布情况：优秀（≥720分）' + excellent + '人，良好（600-720分）' + good + '人，及格（450-600分）' + pass + '人，不及格（<450分）' + fail + '人。及格率为 ' + ((excellent+good+pass)/allScores.length*100).toFixed(1) + '%。</p>' +
+        '<p>本次考试（' + targetExam.name + '）全年级共 ' + allCount + ' 名学生参加，覆盖 ' + classStats.length + ' 个班级。年级总平均分为 <strong class="text-slate-800">' + overview.totalAvg + '</strong> 分。' + (stdDev !== 'N/A' ? '标准差为 ' + stdDev + '，成绩离散程度' + (stdDev > 80 ? '较大，学生水平差异明显，建议关注分层教学' : '适中，整体水平较为均衡') + '。' : '') + '</p>' +
+        '<p class="mt-2">成绩分布情况：优秀（≥720分）' + excellent + '人，良好（600-720分）' + good + '人，及格（450-600分）' + pass + '人，不及格（<450分）' + fail + '人。及格率为 ' + ((excellent+good+pass)/allCount*100).toFixed(1) + '%。</p>' +
       '</div>' +
     '</div>' +
     '<div class="bg-white rounded-xl p-6 shadow-sm border border-slate-100">' +
@@ -1074,7 +1028,7 @@ async function renderStudentDashboard() {
       '<div class="flex items-center justify-between">' +
         '<div>' +
           '<h2 class="text-2xl font-bold">' + stu.name + '</h2>' +
-          '<p class="text-blue-100 mt-1">' + stu.className + ' · 学号 ' + stu.studentNo + '</p>' +
+          '<p class="text-blue-100 mt-1">' + stu.className + ' · 学号 ' + (stu.studentNo || stu.id) + '</p>' +
         '</div>' +
         '<div class="text-right">' +
           '<div class="text-3xl font-bold">' + (latestScore ? latestScore.totalScore : '-') + '</div>' +
@@ -1254,7 +1208,6 @@ async function renderStudentAnalysis() {
   const latestScore = scores.find(s => s.examId === latestExam.id);
   const classStats = await fetchClassStats(latestExam.id);
   const classAvg = classStats.find(c => c.className === stu.className);
-  const gradeStats = await fetchGradeStats(latestExam.id);
 
   document.getElementById('pageTitle').textContent = '成绩分析';
 
