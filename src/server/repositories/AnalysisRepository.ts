@@ -2,6 +2,24 @@ import { getDatabase } from "../db";
 import Database from "better-sqlite3";
 import type { ExamOverview, QuestionAnalysisItem, StudentRankingItem } from "../../shared/types";
 
+function classFilter(classId?: number): { join: string; where: string; params: unknown[] } {
+  if (!classId) return { join: "", where: "", params: [] };
+  return {
+    join: "JOIN class_students cs ON cs.student_id = ss.student_id",
+    where: "AND cs.class_id = ?",
+    params: [classId]
+  };
+}
+
+function classFilterQs(classId?: number): { join: string; where: string; params: unknown[] } {
+  if (!classId) return { join: "", where: "", params: [] };
+  return {
+    join: "JOIN class_students cs ON cs.student_id = qs.student_id",
+    where: "AND cs.class_id = ?",
+    params: [classId]
+  };
+}
+
 export class AnalysisRepository {
   private db: Database.Database;
 
@@ -9,17 +27,32 @@ export class AnalysisRepository {
     this.db = getDatabase();
   }
 
-  getExamOverview(examId: number): ExamOverview {
+  /** List classes that have students with scores for this exam */
+  getExamClasses(examId: number): Array<{ classId: number; className: string }> {
+    return this.db.prepare(`
+      SELECT DISTINCT cs.class_id as classId, c.name as className
+      FROM student_scores ss
+      JOIN class_students cs ON cs.student_id = ss.student_id
+      JOIN classes c ON c.id = cs.class_id
+      WHERE ss.exam_id = ?
+      ORDER BY c.sort_order, c.name
+    `).all(examId) as Array<{ classId: number; className: string }>;
+  }
+
+  getExamOverview(examId: number, classId?: number): ExamOverview {
+    const c = classFilter(classId);
     const stats = this.db.prepare(`
       SELECT
         COUNT(*) as gradedCount,
-        ROUND(AVG(total_score), 1) as avgScore,
-        ROUND(MAX(total_score), 1) as maxScore,
-        ROUND(MIN(total_score), 1) as minScore,
-        SUM(CASE WHEN total_score >= 60 THEN 1 ELSE 0 END) as passCount,
-        SUM(CASE WHEN total_score >= 85 THEN 1 ELSE 0 END) as excellentCount
-      FROM student_scores WHERE exam_id = ?
-    `).get(examId) as {
+        ROUND(AVG(ss.total_score), 1) as avgScore,
+        ROUND(MAX(ss.total_score), 1) as maxScore,
+        ROUND(MIN(ss.total_score), 1) as minScore,
+        SUM(CASE WHEN ss.total_score >= 60 THEN 1 ELSE 0 END) as passCount,
+        SUM(CASE WHEN ss.total_score >= 85 THEN 1 ELSE 0 END) as excellentCount
+      FROM student_scores ss
+      ${c.join}
+      WHERE ss.exam_id = ? ${c.where}
+    `).get(examId, ...c.params) as {
       gradedCount: number; avgScore: number; maxScore: number; minScore: number;
       passCount: number; excellentCount: number;
     } | undefined;
@@ -31,13 +64,13 @@ export class AnalysisRepository {
       };
     }
 
-    // StdDev
     const stdDevRow = this.db.prepare(`
-      SELECT ROUND(SQRT(AVG((total_score - ?) * (total_score - ?))), 1) as stdDev
-      FROM student_scores WHERE exam_id = ?
-    `).get(stats.avgScore, stats.avgScore, examId) as { stdDev: number } | undefined;
+      SELECT ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as stdDev
+      FROM student_scores ss
+      ${c.join}
+      WHERE ss.exam_id = ? ${c.where}
+    `).get(stats.avgScore, stats.avgScore, examId, ...c.params) as { stdDev: number } | undefined;
 
-    // Distribution
     const ranges = [
       { range: "0-59", min: 0, max: 59 },
       { range: "60-69", min: 60, max: 69 },
@@ -47,17 +80,19 @@ export class AnalysisRepository {
     ];
     const distribution = ranges.map((r) => {
       const row = this.db.prepare(`
-        SELECT COUNT(*) as cnt FROM student_scores
-        WHERE exam_id = ? AND total_score >= ? AND total_score <= ?
-      `).get(examId, r.min, r.max) as { cnt: number };
+        SELECT COUNT(*) as cnt FROM student_scores ss
+        ${c.join}
+        WHERE ss.exam_id = ? AND ss.total_score >= ? AND ss.total_score <= ? ${c.where}
+      `).get(examId, r.min, r.max, ...c.params) as { cnt: number };
       return { ...r, count: row.cnt };
     });
 
-    // Review count
     const reviewRow = this.db.prepare(`
-      SELECT COUNT(*) as cnt FROM question_scores
-      WHERE exam_id = ? AND (score = 0 OR score < max_score * 0.5)
-    `).get(examId) as { cnt: number };
+      SELECT COUNT(*) as cnt FROM question_scores qs
+      ${classFilterQs(classId).join}
+      WHERE qs.exam_id = ? AND (qs.score = 0 OR qs.score < qs.max_score * 0.5)
+      ${classFilterQs(classId).where}
+    `).get(examId, ...classFilterQs(classId).params) as { cnt: number };
 
     return {
       totalStudents: stats.gradedCount,
@@ -73,7 +108,8 @@ export class AnalysisRepository {
     };
   }
 
-  getStudentRanking(examId: number): StudentRankingItem[] {
+  getStudentRanking(examId: number, classId?: number): StudentRankingItem[] {
+    const c = classFilter(classId);
     const rows = this.db.prepare(`
       SELECT
         u.student_number,
@@ -86,9 +122,10 @@ export class AnalysisRepository {
          AND (qs.score = 0 OR qs.score < qs.max_score * 0.5)) as review_count
       FROM student_scores ss
       JOIN users u ON u.id = ss.student_id
-      WHERE ss.exam_id = ?
+      ${c.join}
+      WHERE ss.exam_id = ? ${c.where}
       ORDER BY ss.total_score DESC
-    `).all(examId) as Array<{
+    `).all(examId, ...c.params) as Array<{
       student_number: string; name: string; total_score: number;
       objective_score: number; subjective_score: number; review_count: number;
     }>;
@@ -104,7 +141,8 @@ export class AnalysisRepository {
     }));
   }
 
-  getQuestionAnalysis(examId: number): QuestionAnalysisItem[] {
+  getQuestionAnalysis(examId: number, classId?: number): QuestionAnalysisItem[] {
+    const c = classFilterQs(classId);
     const rows = this.db.prepare(`
       SELECT
         qs.question_number,
@@ -115,11 +153,12 @@ export class AnalysisRepository {
         SUM(CASE WHEN qs.score >= qs.max_score THEN 1 ELSE 0 END) as correctCount,
         SUM(CASE WHEN qs.score = 0 OR qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) as reviewCount
       FROM question_scores qs
-      WHERE qs.exam_id = ?
+      ${c.join}
+      WHERE qs.exam_id = ? ${c.where}
       GROUP BY qs.question_number, qs.score_type
       ORDER BY
         CASE WHEN MAX(qs.max_score) > 0 THEN AVG(qs.score) / MAX(qs.max_score) ELSE 1 END ASC
-    `).all(examId) as Array<{
+    `).all(examId, ...c.params) as Array<{
       question_number: number; question_type: string; avgScore: number;
       maxScore: number; totalCount: number; correctCount: number; reviewCount: number;
     }>;

@@ -19,6 +19,7 @@ import type {
   AnswerCard,
   CardSummary,
   CombinedGradingBatchResult,
+  CombinedGradingRow,
   CombinedRecognitionResult,
   LayoutDocument,
   ObjectiveGradingBatchResult,
@@ -98,6 +99,82 @@ async function prepareLayoutForCard(cardRepo: CardRepository, card: AnswerCard):
 function parsePositiveNumber(value: unknown, fallback: number): number {
   const parsed = Number(fieldValue(value) || String(fallback));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** Background persistence: save grading results to database without blocking response */
+async function persistGradingResults(
+  examIdParam: string,
+  rows: CombinedGradingRow[],
+  createdBy?: number
+): Promise<void> {
+  const { ExamRepository } = await import("../../../server/repositories/ExamRepository");
+  const { getDatabase } = await import("../../../server/db");
+
+  const examRepo = new ExamRepository();
+  const db = getDatabase();
+
+  const examId = Number(examIdParam);
+  const exam = examRepo.findExamById(examId);
+  if (!exam) return;
+
+  examRepo.updateStatus(examId, "grading");
+  const batchId = examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
+
+  const ensureStudent = db.prepare(`
+    INSERT OR IGNORE INTO users (username, password_hash, name, role_id, student_number)
+    VALUES (?, '', ?, 3, ?)
+  `);
+  const findStudent = db.prepare(`
+    SELECT id FROM users WHERE student_number = ? AND role_id = 3 LIMIT 1
+  `);
+
+  const insertQs = db.prepare(`
+    INSERT OR REPLACE INTO question_scores
+      (exam_id, student_id, question_number, block_id, score, max_score, score_type)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  let persisted = 0;
+
+  const persistTx = db.transaction(() => {
+    for (const row of rows) {
+      if (!row.studentId) continue;
+      try {
+        // Synchronous: ensure student exists
+        ensureStudent.run(row.studentId, row.studentId, row.studentId);
+        const stu = findStudent.get(row.studentId) as { id: number } | undefined;
+        if (!stu) continue;
+
+        // Add scan record
+        examRepo.addScanRecord({
+          batch_id: batchId,
+          file_path: row.fileName,
+          file_name: row.fileName,
+          student_number: row.studentId,
+          student_id: stu.id
+        });
+
+        // Save total score
+        examRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
+
+        // Save per-question scores
+        for (const q of row.questions) {
+          insertQs.run(examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+        }
+        for (const sq of row.subjectiveQuestions ?? []) {
+          insertQs.run(examId, stu.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective");
+        }
+        persisted++;
+      } catch (err) {
+        console.error(`[Grading] Failed to persist row for ${row.studentId}:`, err);
+      }
+    }
+  });
+
+  persistTx();
+  examRepo.finishBatch(batchId);
+  examRepo.updateStatus(examId, "closed");
+  console.log(`[Grading] Persisted ${persisted} student scores to exam ${examId}`);
 }
 
 export async function createApp(): Promise<express.Express> {
@@ -347,19 +424,7 @@ export async function createApp(): Promise<express.Express> {
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
 
-      // examId support: if provided in form data, persist results to database
       const examIdParam = fieldValue(req.body.examId);
-      const examRepo = new ExamRepository();
-      const userRepo = new UserRepository();
-
-      let examId: number | null = null;
-      if (examIdParam) {
-        const exam = examRepo.findExamById(Number(examIdParam));
-        if (exam) {
-          examId = exam.id;
-          examRepo.updateStatus(examId, "grading");
-        }
-      }
 
       const rows = [];
       for (const file of files) {
@@ -385,80 +450,20 @@ export async function createApp(): Promise<express.Express> {
         }
       }
 
-      // Persist to database if examId provided
-      let persistResult: { persisted: number; skippedNoStudentId: number } | null = null;
-      if (examId && examIdParam) {
-        const batchId = examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, req.user?.id);
-
-        for (const row of rows) {
-          if (!row.studentId) continue;
-
-          // Find or create student
-          let student = userRepo.findByStudentNumber(row.studentId);
-          if (!student) {
-            student = await userRepo.createUser({
-              username: row.studentId,
-              password: row.studentId,  // simple default, can be changed later
-              name: row.studentId,
-              role_id: 3,  // student role
-              student_number: row.studentId
-            });
-            if (!student) { student = userRepo.findByStudentNumber(row.studentId)!; }
-          }
-
-          // Add scan record
-          const recordId = examRepo.addScanRecord({
-            batch_id: batchId,
-            file_path: row.fileName,
-            file_name: row.fileName,
-            student_number: row.studentId,
-            student_id: student.id
-          });
-
-          // Save objective grades
-          for (const q of row.questions) {
-            examRepo.saveObjectiveGrade(
-              recordId, q.questionNumber, "",
-              q.score, q.maxScore,
-              q.status === "correct" ? 1 : 0
-            );
-          }
-
-          // Save student total score
-          examRepo.saveStudentScore(examId, student.id, row.objectiveScore, row.subjectiveScore);
-
-          // Save question-level scores
-          const db = require("../../../server/db").getDatabase();
-          const insertQs = db.prepare(`
-            INSERT OR REPLACE INTO question_scores
-              (exam_id, student_id, question_number, block_id, score, max_score, score_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `);
-
-          for (const q of row.questions) {
-            insertQs.run(examId, student.id, q.questionNumber, "", q.score, q.maxScore, "objective");
-          }
-          for (const sq of row.subjectiveQuestions ?? []) {
-            insertQs.run(examId, student.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective");
-          }
-        }
-
-        examRepo.finishBatch(batchId);
-        examRepo.updateStatus(examId, "closed");
-        persistResult = { persisted: rows.filter((r) => r.studentId).length, skippedNoStudentId: rows.filter((r) => !r.studentId).length };
-      }
-
-      const result: CombinedGradingBatchResult & { persisted?: typeof persistResult } = {
+      // Send response immediately so user sees results
+      const result: CombinedGradingBatchResult = {
         batchId: `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         cardId,
         rows
       };
-
-      if (persistResult) {
-        Object.assign(result, { persisted: persistResult });
-      }
-
       res.json(result);
+
+      // Persist to database asynchronously (non-blocking)
+      if (examIdParam) {
+        persistGradingResults(examIdParam, rows, req.user?.id).catch((err) => {
+          console.error("[Grading] Persist failed:", err);
+        });
+      }
     } catch (error) {
       next(error);
     }
@@ -556,12 +561,46 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  app.delete("/api/exams/:examId", async (req, res, next) => {
+    try {
+      const examRepo = new ExamRepository();
+      const exam = examRepo.findExamById(Number(req.params.examId));
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      const { getDatabase } = await import("../../../server/db");
+      const db = getDatabase();
+      // Cascade: scores → students linked via scores, then exam itself
+      db.transaction(() => {
+        db.prepare("DELETE FROM question_scores WHERE exam_id = ?").run(exam.id);
+        db.prepare("DELETE FROM student_scores WHERE exam_id = ?").run(exam.id);
+        db.prepare("DELETE FROM scan_batches WHERE exam_id = ?").run(exam.id);
+        db.prepare("DELETE FROM exams WHERE id = ?").run(exam.id);
+      })();
+      res.json({ message: "已删除" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ── Analysis API ──────────────────────────────────────
+
+  app.get("/api/analysis/exams/:examId/classes", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const classes = analysisRepo.getExamClasses(Number(req.params.examId));
+      res.json(classes);
+    } catch (error) {
+      next(error);
+    }
+  });
 
   app.get("/api/analysis/exams/:examId/overview", async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
-      const overview = analysisRepo.getExamOverview(Number(req.params.examId));
+      const classId = req.query.classId ? Number(req.query.classId) : undefined;
+      const overview = analysisRepo.getExamOverview(Number(req.params.examId), classId);
       res.json(overview);
     } catch (error) {
       next(error);
@@ -571,7 +610,8 @@ export async function createApp(): Promise<express.Express> {
   app.get("/api/analysis/exams/:examId/students", async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
-      const ranking = analysisRepo.getStudentRanking(Number(req.params.examId));
+      const classId = req.query.classId ? Number(req.query.classId) : undefined;
+      const ranking = analysisRepo.getStudentRanking(Number(req.params.examId), classId);
       res.json(ranking);
     } catch (error) {
       next(error);
@@ -581,7 +621,8 @@ export async function createApp(): Promise<express.Express> {
   app.get("/api/analysis/exams/:examId/questions", async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
-      const questions = analysisRepo.getQuestionAnalysis(Number(req.params.examId));
+      const classId = req.query.classId ? Number(req.query.classId) : undefined;
+      const questions = analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
       res.json(questions);
     } catch (error) {
       next(error);
