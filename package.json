@@ -11,20 +11,24 @@
     "build": "npm run typecheck && npm run build:client && npm run build:server",
     "build:client": "vite build",
     "build:server": "tsx scripts/build-server.ts",
-    "electron:dev": "npm run build && electron .",
-    "electron:pack": "npm run build && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --dir",
-    "electron:dist": "npm run build && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --win portable",
-    "electron:msi": "npm run build && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --win msi",
+    "native:rebuild:node": "npm rebuild better-sqlite3",
+    "native:rebuild:electron": "electron-rebuild -f -w better-sqlite3,bcrypt",
+    "electron:dev": "npm run build && npm run native:rebuild:electron && electron .",
+    "electron:pack": "npm run build && npm run native:rebuild:electron && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --dir",
+    "electron:dist": "npm run build && npm run native:rebuild:electron && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --win portable",
+    "electron:msi": "npm run build && npm run native:rebuild:electron && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --win msi",
     "server": "tsx src/apps/answer-card/server/index.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "bcrypt": "^5.1.1",
     "better-sqlite3": "^12.10.0",
     "express": "^5.1.0",
     "multer": "^2.0.2",
     "pdfkit": "^0.17.2"
   },
   "devDependencies": {
+    "@types/bcrypt": "^5.0.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.3",
     "@types/multer": "^2.0.0",
