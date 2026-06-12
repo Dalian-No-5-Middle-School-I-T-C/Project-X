@@ -13,10 +13,12 @@ async function startLocalServer() {
   const appRoot = getAppRoot();
   const serverBundle = path.join(appRoot, "dist", "server", "index.mjs");
   const clientDist = path.join(appRoot, "dist", "client");
-  const dataDir = path.join(app.getPath("userData"), "data", "answer-card");
+  const userDataDir = app.getPath("userData");
+  const dataDir = path.join(userDataDir, "data", "answer-card");
 
   process.env.ANSWER_CARD_DATA_DIR = dataDir;
   process.env.ANSWER_CARD_CLIENT_DIST = clientDist;
+  process.env.PROJECTX_DB_PATH = path.join(userDataDir, "data", "projectx.db");
 
   const serverModule = await import(pathToFileURL(serverBundle).href);
   server = await serverModule.startServer(0);

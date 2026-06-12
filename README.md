@@ -110,6 +110,14 @@
 npm install
 ```
 
+#### 提示
+
+现在 `node_modules` 是 `Electron ABI`。如果之后要直接跑 `npm run server`，先执行
+
+```powershell
+npm run native:rebuild:node
+```
+
 #### 开发模式
 
 **Web 开发模式**（前端热更新）：
