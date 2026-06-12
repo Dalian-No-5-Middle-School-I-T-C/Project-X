@@ -7,8 +7,10 @@ import type {
   ObjectiveQuestionGrade,
   ObjectiveRecognitionQuestion,
   ObjectiveRecognitionResult,
+  SubjectiveBlock,
+  SubjectiveQuestion,
   SubjectiveQuestionGrade,
-  SubjectiveQuestionNumber,
+  SubjectiveQuestionGradeStatus,
   SubjectiveRecognitionQuestion
 } from "./types";
 
@@ -175,53 +177,50 @@ export function gradeObjectiveRecognition(
   };
 }
 
-function subjectiveScoreQuestions(card: AnswerCard): Array<{ questionId: string; questionNumber: SubjectiveQuestionNumber; maxScore: number }> {
-  const questions: Array<{ questionId: string; questionNumber: SubjectiveQuestionNumber; maxScore: number }> = [];
-  for (const block of card.bodyBlocks) {
-    if (block.type !== "subjective") continue;
-    for (const question of block.questions) {
-      if (question.style !== "manual_score_grid") continue;
-      questions.push({
-        questionId: question.id,
-        questionNumber: question.number,
-        maxScore: question.score
-      });
-    }
-  }
-  return questions;
+function roundScore(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }
 
-function gradeSubjectiveQuestion(
-  expected: { questionId: string; questionNumber: SubjectiveQuestionNumber; maxScore: number },
-  recognized: SubjectiveRecognitionQuestion | undefined
-): SubjectiveQuestionGrade {
-  if (!recognized) {
-    return {
-      questionId: expected.questionId,
-      questionNumber: expected.questionNumber,
-      score: 0,
-      maxScore: expected.maxScore,
-      status: "invalid",
-      needsReview: true,
-      confidence: 0,
-      validCells: [],
-      invalidCells: [],
-      message: "未识别到有效评分"
-    };
+function findSubjectiveBlock(card: AnswerCard, questionId: string): SubjectiveBlock | null {
+  for (const block of card.bodyBlocks) {
+    if (block.type !== "subjective") continue;
+    if (block.questions.some((q) => q.id === questionId)) return block;
   }
+  return null;
+}
 
-  const isOk = recognized.status === "ok";
+function findSubjectiveQuestion(card: AnswerCard, questionId: string): SubjectiveQuestion | undefined {
+  for (const block of card.bodyBlocks) {
+    if (block.type !== "subjective") continue;
+    const q = block.questions.find((q) => q.id === questionId);
+    if (q) return q;
+  }
+  return undefined;
+}
+
+export function gradeSubjectiveRecognition(
+  card: AnswerCard,
+  recognition: SubjectiveRecognitionQuestion
+): SubjectiveQuestionGrade {
+  const question = findSubjectiveQuestion(card, recognition.questionId);
+  const maxScore = question?.score ?? recognition.maxScore;
+  const needsReview = recognition.status !== "ok";
+
+  let status: SubjectiveQuestionGradeStatus = "ok";
+  if (recognition.status === "invalid") status = "invalid";
+  else if (needsReview) status = "missing_score_grid";
+
   return {
-    questionId: expected.questionId,
-    questionNumber: expected.questionNumber,
-    score: isOk ? roundScore(recognized.score) : 0,
-    maxScore: expected.maxScore || recognized.maxScore,
-    status: isOk ? "ok" : "invalid",
-    needsReview: !isOk,
-    confidence: Number.isFinite(recognized.confidence) ? recognized.confidence : 0,
-    validCells: recognized.validCells ?? [],
-    invalidCells: recognized.invalidCells ?? [],
-    message: recognized.message ?? (isOk ? undefined : "未识别到有效评分")
+    questionId: recognition.questionId,
+    questionNumber: recognition.questionNumber,
+    score: Math.min(recognition.score, maxScore),
+    maxScore,
+    status,
+    needsReview,
+    confidence: recognition.confidence,
+    validCells: recognition.validCells,
+    invalidCells: recognition.invalidCells,
+    message: recognition.message
   };
 }
 
@@ -230,34 +229,26 @@ export function gradeCombinedRecognition(
   fileName: string,
   recognition: CombinedRecognitionResult
 ): CombinedGradingRow {
-  const objective = gradeObjectiveRecognition(card, fileName, recognition);
-  const recognizedSubjective = new Map((recognition.subjectiveQuestions ?? []).map((question) => [question.questionId, question]));
-  const subjectiveQuestions = subjectiveScoreQuestions(card).map((question) => gradeSubjectiveQuestion(question, recognizedSubjective.get(question.questionId)));
-  const subjectiveScore = roundScore(subjectiveQuestions.reduce((sum, item) => sum + item.score, 0));
-  const subjectiveMaxScore = roundScore(subjectiveQuestions.reduce((sum, item) => sum + item.maxScore, 0));
-  const objectiveScore = objective.score;
-  const objectiveMaxScore = objective.maxScore;
-  const totalScore = roundScore(objectiveScore + subjectiveScore);
-  const totalMaxScore = roundScore(objectiveMaxScore + subjectiveMaxScore);
-  const subjectiveIssueCount = subjectiveQuestions.filter((question) => question.needsReview).length;
+  const objectiveRow = gradeObjectiveRecognition(card, fileName, recognition);
+
+  const subjectiveQuestions: SubjectiveQuestionGrade[] = (recognition.subjectiveQuestions ?? []).map((sq) =>
+    gradeSubjectiveRecognition(card, sq)
+  );
+
+  const objectiveScore = objectiveRow.score;
+  const objectiveMaxScore = objectiveRow.maxScore;
+  const subjectiveScore = roundScore(subjectiveQuestions.reduce((sum, q) => sum + q.score, 0));
+  const subjectiveMaxScore = roundScore(subjectiveQuestions.reduce((sum, q) => sum + q.maxScore, 0));
 
   return {
-    ...objective,
-    recognition,
-    score: totalScore,
-    maxScore: totalMaxScore,
+    ...objectiveRow,
     objectiveScore,
     objectiveMaxScore,
     subjectiveScore,
     subjectiveMaxScore,
-    totalScore,
-    totalMaxScore,
-    issueCount: objective.issueCount + subjectiveIssueCount,
-    needsReviewCount: objective.needsReviewCount + subjectiveIssueCount,
-    subjectiveQuestions
+    totalScore: roundScore(objectiveScore + subjectiveScore),
+    totalMaxScore: roundScore(objectiveMaxScore + subjectiveMaxScore),
+    subjectiveQuestions,
+    recognition
   };
-}
-
-function roundScore(value: number): number {
-  return Math.round(value * 1000) / 1000;
 }
