@@ -142,6 +142,8 @@ echo.
 set "SLN_DIR=%PROJECT_DIR%..\..\native\ScannerBridge"
 set "OUTPUT=%SLN_DIR%\scanner-bridge\x64\Release\scanner-bridge.exe"
 set "DEST=%PROJECT_DIR%..\..\resources\native\win-x64"
+set "TWAIN_DSM_DLL=%TWAIN_DSM_DLL%"
+if not defined TWAIN_DSM_DLL set "TWAIN_DSM_DLL=D:\twain-dsm-2.5.1\twain-dsm-2.5.1\Releases\dsm_020403\windows\64\TWAINDSM.dll"
 
 if exist "%OUTPUT%" (
     echo Output: %OUTPUT%
@@ -151,6 +153,16 @@ if exist "%OUTPUT%" (
     copy /Y "%OUTPUT%" "%DEST%\scanner-bridge.exe" >nul
     if !ERRORLEVEL! EQU 0 (
         echo Copied to: %DEST%\scanner-bridge.exe
+        if exist "%TWAIN_DSM_DLL%" (
+            copy /Y "%TWAIN_DSM_DLL%" "%DEST%\TWAINDSM.dll" >nul
+            if !ERRORLEVEL! EQU 0 (
+                echo Copied to: %DEST%\TWAINDSM.dll
+            ) else (
+                echo [WARNING] Failed to copy TWAINDSM.dll from: %TWAIN_DSM_DLL%
+            )
+        ) else (
+            echo [WARNING] TWAINDSM.dll not found: %TWAIN_DSM_DLL%
+        )
         echo.
         echo [OK] Ready for packaging.
     ) else (
