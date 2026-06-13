@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     orientation      TEXT DEFAULT 'portrait',
     student_fields   TEXT,                                -- JSON: ["姓名","班级"]
     student_number_digits INTEGER DEFAULT 5,
+    sided           TEXT DEFAULT 'double',              -- single / double
     layout_version   INTEGER DEFAULT 1,
     layout_data      TEXT,                                -- JSON: LayoutDocument 完整坐标
     created_by       INTEGER REFERENCES users(id),

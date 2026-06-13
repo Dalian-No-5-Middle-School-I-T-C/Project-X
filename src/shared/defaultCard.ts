@@ -16,6 +16,7 @@ export function createDefaultCard(id: string): AnswerCard {
       studentNumberDigits: 5
     },
     bodyBlocks: [],
+    sided: "double",
     layoutVersion: 1,
     updatedAt: now
   };

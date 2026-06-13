@@ -1,8 +1,23 @@
 import { Router } from "express";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { listSources, runScanSession, scansDir, getCardScansWithStudents } from "./scanner-service";
-import { listScanRecords, getScanRecordWithResult, deleteScanRecord, getSession, listSessions, deleteSession } from "../database/scan-store";
-import { safeId } from "../storage";
+import {
+  listScanRecords,
+  getScanRecordWithResult,
+  deleteScanRecord,
+  getSession,
+  listSessions,
+  deleteSession,
+  listScanRecordsGroupedByStudent,
+  upsertStudentGradingResult,
+  listStudentGradingResults,
+  type ScanRecordWithResult
+} from "../database/scan-store";
+import { safeId, readCard } from "../storage";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
+import type { CombinedRecognitionResult } from "../../../../shared/types";
+import { gradeSessionStudentResults, type CombinedStudentResult } from "../../../../shared/grading";
 
 export function createScannerRouter(): Router {
   const router = Router();
@@ -180,6 +195,125 @@ export function createScannerRouter(): Router {
             : null
         }))
       );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── Combined Student Results (Session-level) ─────────
+
+  router.get("/session/:sessionId/results", async (req, res, next) => {
+    try {
+      const sessionId = safeId(req.params.sessionId);
+      const session = getSession(sessionId);
+      if (!session) {
+        res.status(404).json({ message: "扫描会话不存在" });
+        return;
+      }
+
+      // Check cached results first
+      const cached = listStudentGradingResults(sessionId);
+      if (cached.length > 0) {
+        res.json(cached.map((r) => ({
+          studentId: r.student_id,
+          totalScore: r.total_score,
+          maxScore: r.max_score,
+          pageCount: r.page_count,
+          objectiveJson: r.objective_json ? JSON.parse(r.objective_json) : null,
+          subjectiveJson: r.subjective_json ? JSON.parse(r.subjective_json) : null
+        })));
+        return;
+      }
+
+      // Compute combined results if not cached
+      const card = await readCard(session.card_id);
+      if (!card) {
+        res.status(404).json({ message: "答题卡不存在" });
+        return;
+      }
+
+      const groups = listScanRecordsGroupedByStudent(sessionId);
+      const results: CombinedStudentResult[] = [];
+
+      for (const group of groups) {
+        const pages = group.records.filter((r) => r.recognition)
+          .map((r) => ({
+            recordId: r.id,
+            pageNum: r.page_num,
+            side: r.side,
+            imagePath: r.image_path,
+            recognition: {
+              status: "ok",
+              studentId: { status: "ok" as const, value: r.student_id },
+              questions: r.recognition?.objective_json ? JSON.parse(r.recognition.objective_json) : [],
+              subjectiveQuestions: r.recognition?.subjective_json ? JSON.parse(r.recognition.subjective_json) : [],
+              message: r.ocr_error ?? undefined
+            } as CombinedRecognitionResult,
+            ocrStatus: r.ocr_status
+          }));
+
+        if (pages.length === 0) continue;
+
+        try {
+          const combined = gradeSessionStudentResults(card, pages);
+          results.push(combined);
+
+          // Cache the result
+          upsertStudentGradingResult({
+            sessionId,
+            studentId: combined.studentId,
+            totalScore: combined.totalScore,
+            maxScore: combined.totalMaxScore,
+            pageCount: combined.pageCount
+          });
+        } catch (err) {
+          console.error(`[Scanner] Combined grading failed for student ${group.studentId}:`, err);
+        }
+      }
+
+      res.json(results.map((r) => ({
+        studentId: r.studentId,
+        totalScore: r.totalScore,
+        maxScore: r.totalMaxScore,
+        pageCount: r.pageCount,
+        objectiveScore: r.objectiveScore,
+        subjectiveScore: r.subjectiveScore,
+        needsReviewCount: r.needsReviewCount,
+        pages: r.pages.map((p) => ({
+          recordId: p.recordId,
+          pageNum: p.pageNum,
+          side: p.side,
+          imagePath: p.imagePath,
+          objectiveScore: p.objectiveScore,
+          subjectiveScore: p.subjectiveScore,
+          totalScore: p.totalScore,
+          totalMaxScore: p.totalMaxScore,
+          needsReviewCount: p.needsReviewCount
+        }))
+      })));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── Scan Image Serving ────────────────────────────────
+
+  router.get("/scan-image/:recordId", async (req, res, next) => {
+    try {
+      const record = getScanRecordWithResult(safeId(req.params.recordId));
+      if (!record || !record.image_path) {
+        res.status(404).json({ message: "扫描记录不存在" });
+        return;
+      }
+      if (!existsSync(record.image_path)) {
+        res.status(404).json({ message: "图片文件不存在" });
+        return;
+      }
+      const ext = path.extname(record.image_path).toLowerCase();
+      const contentType = ext === ".png" ? "image/png" : "image/jpeg";
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "private, max-age=3600");
+      res.sendFile(record.image_path);
     } catch (error) {
       next(error);
     }
