@@ -391,11 +391,24 @@ function App() {
   function addGradingFiles(files: FileList | null) {
     if (!files) return;
     const nextFiles = Array.from(files).filter(isImageFile);
+    // Single-sided card: filter out back-side images (filename ends with B.jpg / B.jpeg / B.png etc.)
+    const isSingleSided = card?.sided === "single";
+    const backSidePattern = /B\.(jpg|jpeg|png|bmp|tiff|tif)$/i;
+    let skippedBacks = 0;
+    const filteredFiles = isSingleSided
+      ? nextFiles.filter((file) => {
+          if (backSidePattern.test(file.name)) {
+            skippedBacks++;
+            return false;
+          }
+          return true;
+        })
+      : nextFiles;
     setGradingFiles((current) => {
       const seen = new Set(current.map((file) => `${file.name}_${file.size}_${file.lastModified}`));
       return [
         ...current,
-        ...nextFiles.filter((file) => {
+        ...filteredFiles.filter((file) => {
           const key = `${file.name}_${file.size}_${file.lastModified}`;
           if (seen.has(key)) return false;
           seen.add(key);
@@ -403,8 +416,11 @@ function App() {
         })
       ];
     });
-    if (nextFiles.length > 0) {
-      setStatus(`已加入 ${nextFiles.length} 张待阅卷图片`);
+    if (filteredFiles.length > 0 || skippedBacks > 0) {
+      const parts: string[] = [];
+      if (filteredFiles.length > 0) parts.push(`已加入 ${filteredFiles.length} 张待阅卷图片`);
+      if (skippedBacks > 0) parts.push(`（单面答题卡：跳过 ${skippedBacks} 张背面）`);
+      setStatus(parts.join(" "));
     }
   }
 
