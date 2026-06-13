@@ -1,12 +1,19 @@
 import { UserRepository, type UserRecord } from "../repositories/UserRepository";
-import { verifyPassword } from "../db";
+import { verifyPassword, hashPassword, getDatabase } from "../db";
+import { permissionsForRole } from "../auth/permissions";
 import { randomBytes } from "node:crypto";
 
 export interface LoginResult {
   success: boolean;
   user?: Omit<UserRecord, "password_hash">;
   token?: string;
+  permissions?: string[];
   message?: string;
+}
+
+export interface ChangePasswordResult {
+  success: boolean;
+  message: string;
 }
 
 /**
@@ -62,8 +69,53 @@ export class AuthService {
       success: true,
       user: safeUser,
       token,
+      permissions: permissionsForRole(user.role_id),
       message: "登录成功"
     };
+  }
+
+  /**
+   * 修改密码（需校验原密码）。
+   * 任何已登录用户均可修改自己的密码。
+   */
+  async changePassword(userId: number, oldPassword: string, newPassword: string): Promise<ChangePasswordResult> {
+    if (!newPassword || newPassword.length < 6) {
+      return { success: false, message: "新密码长度至少 6 位" };
+    }
+
+    const db = getDatabase();
+    const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(userId) as
+      | { password_hash: string }
+      | undefined;
+    if (!row) {
+      return { success: false, message: "用户不存在" };
+    }
+
+    // 默认管理员首次创建时 password_hash 为占位（学生自动建账场景），允许空原密码
+    if (row.password_hash) {
+      const valid = await verifyPassword(oldPassword, row.password_hash);
+      if (!valid) {
+        return { success: false, message: "原密码错误" };
+      }
+    }
+
+    const newHash = await hashPassword(newPassword);
+    db.prepare("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newHash, userId);
+
+    // 安全起见：改密后吊销该用户的所有其它会话
+    this.revokeUserTokens(userId);
+    return { success: true, message: "密码修改成功，请使用新密码重新登录" };
+  }
+
+  /**
+   * 吊销指定用户的所有 token（改密 / 禁用账号时调用）。
+   */
+  revokeUserTokens(userId: number): void {
+    for (const [token, record] of tokenStore.entries()) {
+      if (record.userId === userId) {
+        tokenStore.delete(token);
+      }
+    }
   }
 
   /**
