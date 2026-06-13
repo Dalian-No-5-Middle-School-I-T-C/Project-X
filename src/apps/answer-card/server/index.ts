@@ -101,6 +101,11 @@ function parsePositiveNumber(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function gradingPreviewUrl(cardId: string, imagePath?: string): string | undefined {
+  if (!imagePath) return undefined;
+  return `/api/cards/${encodeURIComponent(cardId)}/grading/preview/${encodeURIComponent(path.basename(imagePath))}`;
+}
+
 /** Background persistence: save grading results to database without blocking response */
 async function persistGradingResults(
   examIdParam: string,
@@ -381,7 +386,10 @@ export async function createApp(): Promise<express.Express> {
             pageNumber,
             dpi
           })) as ObjectiveRecognitionResult;
-          rows.push(gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition));
+          rows.push({
+            ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
+            previewUrl: gradingPreviewUrl(cardId, file.path)
+          });
         } catch (error) {
           const recognition: ObjectiveRecognitionResult = {
             status: "failed",
@@ -390,7 +398,10 @@ export async function createApp(): Promise<express.Express> {
             message: error instanceof Error ? error.message : String(error),
             questions: []
           };
-          rows.push(gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition));
+          rows.push({
+            ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
+            previewUrl: gradingPreviewUrl(cardId, file.path)
+          });
         }
       }
 
@@ -436,7 +447,10 @@ export async function createApp(): Promise<express.Express> {
             dpi
           })) as CombinedRecognitionResult;
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
-          rows.push(gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition));
+          rows.push({
+            ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
+            previewUrl: gradingPreviewUrl(cardId, file.path)
+          });
         } catch (error) {
           const recognition: CombinedRecognitionResult = {
             status: "failed",
@@ -446,7 +460,10 @@ export async function createApp(): Promise<express.Express> {
             questions: [],
             subjectiveQuestions: []
           };
-          rows.push(gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition));
+          rows.push({
+            ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
+            previewUrl: gradingPreviewUrl(cardId, file.path)
+          });
         }
       }
 
@@ -464,6 +481,21 @@ export async function createApp(): Promise<express.Express> {
           console.error("[Grading] Persist failed:", err);
         });
       }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/cards/:cardId/grading/preview/:fileName", (req, res, next) => {
+    try {
+      const cardId = safeId(paramValue(req.params.cardId));
+      const fileName = path.basename(paramValue(req.params.fileName));
+      const targetPath = path.join(dataDir, "recognition", "uploads", cardId, fileName);
+      if (!existsSync(targetPath)) {
+        res.status(404).json({ message: "答题卡图片不存在" });
+        return;
+      }
+      res.sendFile(targetPath);
     } catch (error) {
       next(error);
     }

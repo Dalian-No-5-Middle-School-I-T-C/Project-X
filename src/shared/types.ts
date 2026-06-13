@@ -209,6 +209,7 @@ export type ObjectiveQuestionGrade = {
 
 export type ObjectiveGradingRow = {
   fileName: string;
+  previewUrl?: string;
   studentId: string | null;
   recognitionStatus: string;
   score: number;
