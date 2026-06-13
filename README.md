@@ -173,6 +173,8 @@ npm run electron:msi                   # MSI 安装包
 
 ## 项目架构
 
+> 详细架构说明（分层、数据流、原生模块、构建部署等）见 **[ARCHITECTURE.md](./ARCHITECTURE.md)**。
+
 ```
 Project-X/
 ├── src/
