@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Local answer card designer and PDF exporter for Project-X.",
   "author": "Project-X",
   "private": true,
@@ -51,6 +51,7 @@
   "build": {
     "appId": "cn.projectx.answer-card-designer",
     "productName": "答题卡设计系统",
+    "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "release"
     },
