@@ -635,8 +635,21 @@ export async function createApp(): Promise<express.Express> {
     ? path.resolve(process.env.ANSWER_CARD_CLIENT_DIST)
     : path.join(rootDir, "dist", "client");
   if (existsSync(clientDist)) {
-    app.use(express.static(clientDist));
+    app.use(
+      express.static(clientDist, {
+        setHeaders: (res, filePath) => {
+          const ext = path.extname(filePath).toLowerCase();
+          if (ext === ".html" || ext === ".js" || ext === ".mjs" || ext === ".css" || ext === ".json") {
+            const type = res.getHeader("Content-Type") as string | undefined;
+            if (type && !type.toLowerCase().includes("charset")) {
+              res.setHeader("Content-Type", `${type}; charset=utf-8`);
+            }
+          }
+        }
+      })
+    );
     app.get("/{*splat}", (_req, res) => {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.sendFile(path.join(clientDist, "index.html"));
     });
   }
