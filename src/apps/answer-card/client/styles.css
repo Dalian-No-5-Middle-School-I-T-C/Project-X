@@ -1442,3 +1442,30 @@ select:focus {
   from { opacity: 0; transform: translateY(24px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* ── Export dropdown menu ────────────────────────────── */
+
+.export-menu-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  border-radius: 4px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.export-menu-btn:hover:not(:disabled) {
+  background: var(--surface-soft);
+  color: var(--brand-strong);
+}
+
+.export-menu-btn:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
