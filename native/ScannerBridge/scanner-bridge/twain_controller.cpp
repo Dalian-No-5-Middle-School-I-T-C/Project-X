@@ -11,6 +11,7 @@
 
 #include <gdiplus.h>
 #pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "TWAINDSM.lib")
 
 #include "twain_controller.hpp"
 #include <cstdio>
@@ -23,7 +24,7 @@ namespace ScannerBridge {
 
 TwainController* TwainController::s_instance = nullptr;
 
-static const char* WINDOW_CLASS = "ScannerBridgeTwainClass";
+static const wchar_t* WINDOW_CLASS = L"ScannerBridgeTwainClass";
 static const DWORD TWAIN_MSG = WM_USER + 1;
 
 // ── Window Procedure ──────────────────────────────────
@@ -56,7 +57,7 @@ static HWND createHiddenWindow(HINSTANCE hInstance) {
     RegisterClassEx(&wc);
     
     return CreateWindowEx(
-        0, WINDOW_CLASS, "ScannerBridge",
+        0, WINDOW_CLASS, L"ScannerBridge",
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT,
         100, 100,
@@ -707,7 +708,7 @@ bool TwainController::captureFileTransfer(
     memset(&setup, 0, sizeof(setup));
     strcpy_s(setup.FileName, sizeof(setup.FileName), "scantmp");
     setup.Format = TWFF_TIFF;
-    setup.Priority = TWPR_GROUP1;
+    // setup.Priority = TWPR_GROUP1;  // DSM extension, not in standard twain.h
     
     TW_UINT16 rc = DSM_Entry(
         &m_appId, &m_sourceId,

@@ -108,10 +108,15 @@ private:
     void logError(const std::string& msg);
     bool waitForState(int targetState, DWORD timeoutMs = 30000);
 
-    // TWAIN identities
+public:
+    // TWAIN identities (public for WndProc access)
     TW_IDENTITY m_appId;
     TW_IDENTITY m_sourceId;
-    
+
+    // Single instance for callback (public for WndProc access)
+    static TwainController* s_instance;
+
+private:
     // State
     int m_state;  // 1=DSM open, 2=DS open, 3=DS enabled, 4=transferring, 5=transfer done
     bool m_cancelRequested;
@@ -122,9 +127,6 @@ private:
     
     // Current scan config
     ScanConfig m_config;
-    
-    // Single instance for callback
-    static TwainController* s_instance;
 };
 
 // ── JSON Helpers ──────────────────────────────────────
