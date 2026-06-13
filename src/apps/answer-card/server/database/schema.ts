@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
   {
@@ -59,6 +59,25 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
       );
 
       CREATE INDEX IF NOT EXISTS idx_recognition_scan ON recognition_results(scan_record_id);
+    `
+  },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE IF NOT EXISTS student_grading_results (
+        session_id    TEXT NOT NULL,
+        student_id    TEXT NOT NULL,
+        objective_json  TEXT,
+        subjective_json TEXT,
+        total_score   REAL,
+        max_score     REAL,
+        page_count    INTEGER NOT NULL DEFAULT 1,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (session_id, student_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sgr_session ON student_grading_results(session_id);
+      CREATE INDEX IF NOT EXISTS idx_sgr_student ON student_grading_results(student_id);
     `
   }
 ];

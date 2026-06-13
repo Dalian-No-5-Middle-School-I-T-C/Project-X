@@ -498,7 +498,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>{card?.title ?? "答题卡设计器"}</h1>
-            <p>{card ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个 · 预览页面仅供参考，以实际导出的 PDF 文件的样式为准` : "创建答题卡后开始编辑"}</p>
+            <p>{card ? `ID:${card.id} · ${card.sided === "single" ? "单面" : "双面"} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个 · 预览页面仅供参考，以实际导出的 PDF 文件的样式为准` : "创建答题卡后开始编辑"}</p>
           </div>
           <div className="topbar-actions">
             <div className="mode-toggle" role="tablist" aria-label="工作模式">
@@ -555,6 +555,18 @@ function App() {
                         updateCard((draft) => void (draft.studentInfo.studentNumberDigits = Number(event.target.value)))
                       }
                     />
+                  </label>
+                  <label>
+                    答题卡面
+                    <select
+                      value={card.sided ?? "double"}
+                      onChange={(event) =>
+                        updateCard((draft) => void (draft.sided = event.target.value as "single" | "double"))
+                      }
+                    >
+                      <option value="single">单面（仅正面有题）</option>
+                      <option value="double">双面（正反面均有题）</option>
+                    </select>
                   </label>
                 </section>
 
