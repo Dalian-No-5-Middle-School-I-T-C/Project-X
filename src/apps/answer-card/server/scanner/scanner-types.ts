@@ -41,6 +41,7 @@ export interface ScanSessionConfig {
   colorMode: "gray" | "color" | "bw";
   paperSize: "A4" | "Letter" | "A3";
   maxPages: number;
+  showUi?: boolean;
 }
 
 export interface ScanProgressEvent {

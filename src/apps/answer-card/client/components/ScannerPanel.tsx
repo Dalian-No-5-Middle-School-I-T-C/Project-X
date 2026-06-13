@@ -23,6 +23,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [selectedSource, setSelectedSource] = useState("");
   const [dpi, setDpi] = useState(300);
   const [duplex, setDuplex] = useState(false);
+  const [showUi, setShowUi] = useState(false);
   const [colorMode, setColorMode] = useState<"gray" | "color" | "bw">("gray");
   const [paperSize, setPaperSize] = useState<"A4" | "Letter" | "A3">("A4");
   const [maxPages, setMaxPages] = useState(0);
@@ -146,7 +147,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           duplex,
           colorMode,
           paperSize,
-          maxPages
+          maxPages,
+          showUi
         })
       });
 
@@ -271,6 +273,15 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
               onChange={(e) => setDuplex(e.target.checked)}
             />
             双面扫描
+          </label>
+
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={showUi}
+              onChange={(e) => setShowUi(e.target.checked)}
+            />
+            显示扫描仪界面（调试模式）
           </label>
 
           <button className="primary-button wide-button" onClick={startScan}>

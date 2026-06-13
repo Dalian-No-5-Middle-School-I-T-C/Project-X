@@ -216,7 +216,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     enableADF();
     
     // 5. Enable source (shows scanner UI or goes to ready state)
-    if (!enableSource()) {
+    if (!enableSource(config.showUi)) {
         result.errorMessage = "Failed to enable scanner";
         closeSource();
         closeDSM();
@@ -379,11 +379,11 @@ bool TwainController::closeSource() {
     return rc == TWRC_SUCCESS;
 }
 
-bool TwainController::enableSource() {
+bool TwainController::enableSource(bool showUi) {
     TW_USERINTERFACE ui;
     memset(&ui, 0, sizeof(ui));
-    ui.ShowUI = FALSE;    // No scanner UI
-    ui.ModalUI = FALSE;
+    ui.ShowUI = showUi ? TRUE : FALSE;
+    ui.ModalUI = showUi ? TRUE : FALSE;
     ui.hParent = m_hwnd;
     
     TW_UINT16 rc = DSM_Entry(
@@ -392,22 +392,49 @@ bool TwainController::enableSource() {
         (TW_MEMREF)&ui
     );
     
-    if (rc == TWRC_SUCCESS || rc == TWRC_CHECKSTATUS) {
+    if (rc == TWRC_SUCCESS) {
         m_state = 3;
         return true;
     }
     
-    // Try with UI for first-time configuration
-    ui.ShowUI = TRUE;
-    rc = DSM_Entry(
-        &m_appId, &m_sourceId,
-        DG_CONTROL, DAT_USERINTERFACE, MSG_ENABLEDS,
-        (TW_MEMREF)&ui
-    );
+    if (rc == TWRC_CHECKSTATUS) {
+        // Consume the pending condition code
+        TW_STATUS status;
+        memset(&status, 0, sizeof(status));
+        TW_UINT16 rc2 = DSM_Entry(
+            &m_appId, &m_sourceId,
+            DG_CONTROL, DAT_STATUS, MSG_GET,
+            (TW_MEMREF)&status
+        );
+        if (rc2 == TWRC_SUCCESS && status.ConditionCode == TWCC_SUCCESS) {
+            m_state = 3;
+            return true;
+        }
+        logError("DSM_Entry MSG_ENABLEDS returned CHECKSTATUS with ConditionCode=" + 
+                 std::to_string(status.ConditionCode));
+    }
     
-    if (rc == TWRC_SUCCESS || rc == TWRC_CHECKSTATUS) {
-        m_state = 3;
-        return true;
+    // If ShowUI was FALSE, retry with ShowUI = TRUE (unless explicitly requested UI-less)
+    if (!showUi) {
+        logError("DSM_Entry MSG_ENABLEDS (no UI) failed: " + twainResultToString(rc) + ", retrying with UI...");
+        
+        memset(&ui, 0, sizeof(ui));
+        ui.ShowUI = TRUE;
+        ui.ModalUI = TRUE;
+        ui.hParent = m_hwnd;
+        
+        rc = DSM_Entry(
+            &m_appId, &m_sourceId,
+            DG_CONTROL, DAT_USERINTERFACE, MSG_ENABLEDS,
+            (TW_MEMREF)&ui
+        );
+        
+        if (rc == TWRC_SUCCESS || rc == TWRC_CHECKSTATUS) {
+            m_state = 3;
+            return true;
+        }
+        
+        logError("DSM_Entry MSG_ENABLEDS (with UI) also failed: " + twainResultToString(rc));
     }
     
     logError("DSM_Entry MSG_ENABLEDS failed: " + twainResultToString(rc));
@@ -706,24 +733,23 @@ bool TwainController::waitForState(int targetState, DWORD timeoutMs) {
         // Check cancel
         if (m_cancelRequested) return false;
         
+        // Check if state already reached (e.g. set by a previous event)
+        if (m_state >= targetState) return true;
+        
         // Peek messages for TWAIN
         while (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
             
-            // Check if we got a TWAIN message indicating transfer ready
-            if (msg.message == TWAIN_MSG) {
-                // Process via DSM callback
-                // The actual state tracking happens in the callback
-            }
+            // Check if TWAIN event (MSG_XFERREADY) set the target state
+            if (m_state >= targetState) return true;
         }
-        
-        // For scan command, we need to wait for MSG_XFERREADY from the source
-        // This is signaled through the TWAIN message loop
         
         Sleep(50);
     }
     
+    // Timeout
+    logError("waitForState timeout after " + std::to_string(timeoutMs) + "ms waiting for state " + std::to_string(targetState) + " (current=" + std::to_string(m_state) + ")");
     return false;
 }
 

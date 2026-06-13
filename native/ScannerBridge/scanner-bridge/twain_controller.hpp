@@ -32,6 +32,7 @@ struct ScanConfig {
     std::string outputDir;
     std::string filePrefix = "scan";
     int maxPages = 0;  // 0 = unlimited (use ADF until empty)
+    bool showUi = false;  // Show scanner's native UI
 };
 
 struct PageResult {
@@ -72,7 +73,7 @@ private:
     bool closeDSM();
     bool openSource(const TW_IDENTITY& sourceId);
     bool closeSource();
-    bool enableSource();
+    bool enableSource(bool showUi = false);
     bool disableSource();
     bool startTransfer();
     bool endTransfer();

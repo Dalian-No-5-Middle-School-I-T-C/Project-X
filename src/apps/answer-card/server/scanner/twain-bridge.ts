@@ -58,13 +58,28 @@ function runBridge(args: string[], timeoutMs = 120_000): Promise<{ stdout: strin
       const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
 
       if (timedOut) {
-        reject(new Error(`Scanner bridge timed out after ${timeoutMs}ms`));
+        reject(new Error(`扫描仪桥接程序超时（${timeoutMs}ms）${stderr ? `，诊断：${stderr}` : ""}`));
         return;
       }
 
-      if (code !== 0 && !stdout.trim()) {
-        reject(new Error(`Scanner bridge exited with code ${code}${stderr ? `: ${stderr}` : ""}`));
+      if (code !== 0) {
+        // Always include stderr diagnostics when available
+        const diag = stderr ? `，诊断：${stderr}` : "";
+        if (!stdout.trim()) {
+          reject(new Error(`扫描仪桥接程序退出，错误码：${code}${diag}`));
+          return;
+        }
+        // Still pass stdout (JSON with error message) but log stderr
+        if (stderr) {
+          console.error(`[scanner-bridge stderr] exit=${code}: ${stderr}`);
+        }
+        resolve({ stdout, stderr });
         return;
+      }
+
+      // Success: still log stderr if present (progress messages)
+      if (stderr) {
+        console.log(`[scanner-bridge stderr] ${stderr}`);
       }
 
       resolve({ stdout, stderr });
@@ -92,6 +107,7 @@ export async function scan(config: {
   outputDir: string;
   filePrefix: string;
   maxPages: number;
+  showUi?: boolean;
 }): Promise<BridgeScanResult> {
   const args: string[] = [
     "scan",
@@ -106,6 +122,10 @@ export async function scan(config: {
 
   if (config.duplex) {
     args.push("--duplex");
+  }
+
+  if (config.showUi) {
+    args.push("--show-ui");
   }
 
   const { stdout } = await runBridge(args, 600_000); // 10 min timeout for scanning

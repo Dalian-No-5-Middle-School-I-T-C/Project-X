@@ -56,7 +56,8 @@ export async function runScanSession(
       paperSize: config.paperSize,
       outputDir,
       filePrefix,
-      maxPages: config.maxPages || 0
+      maxPages: config.maxPages || 0,
+      showUi: config.showUi
     };
 
     // Run scan with progress
