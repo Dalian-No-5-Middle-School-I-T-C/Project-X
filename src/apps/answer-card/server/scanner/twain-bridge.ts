@@ -21,7 +21,7 @@ export function resolveScannerBridgeExe(): string {
 
   const found = candidates.find((candidate) => existsSync(candidate));
   if (!found) {
-    throw new Error(`Scanner bridge executable not found. Checked: ${candidates.join("; ")}`);
+    throw new Error(`未找到扫描仪桥接程序，已检查路径：${candidates.join("; ")}`);
   }
   return found;
 }
@@ -58,12 +58,12 @@ function runBridge(args: string[], timeoutMs = 120_000): Promise<{ stdout: strin
       const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
 
       if (timedOut) {
-        reject(new Error(`Scanner bridge timed out after ${timeoutMs}ms`));
+        reject(new Error(`扫描仪桥接程序超时（${timeoutMs}ms）`));
         return;
       }
 
       if (code !== 0 && !stdout.trim()) {
-        reject(new Error(`Scanner bridge exited with code ${code}${stderr ? `: ${stderr}` : ""}`));
+        reject(new Error(`扫描仪桥接程序退出，错误码：${code}${stderr ? `，错误信息：${stderr}` : ""}`));
         return;
       }
 
@@ -74,7 +74,7 @@ function runBridge(args: string[], timeoutMs = 120_000): Promise<{ stdout: strin
 
 function parseBridgeJson(stdout: string): Record<string, unknown> {
   const text = stdout.trim();
-  if (!text) throw new Error("Scanner bridge returned empty output");
+  if (!text) throw new Error("扫描仪桥接程序返回空数据");
   return JSON.parse(text) as Record<string, unknown>;
 }
 

@@ -8,6 +8,9 @@ import { pathToFileURL } from "node:url";
 import { ensureDefaultAdmin, initializeDatabase } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
+import { ExamRepository } from "../../../server/repositories/ExamRepository";
+import { AnalysisRepository } from "../../../server/repositories/AnalysisRepository";
+import { UserRepository } from "../../../server/repositories/UserRepository";
 import authRoutes from "../../../server/routes/auth";
 import { createDefaultCard } from "../../../shared/defaultCard";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey } from "../../../shared/grading";
@@ -16,6 +19,7 @@ import type {
   AnswerCard,
   CardSummary,
   CombinedGradingBatchResult,
+  CombinedGradingRow,
   CombinedRecognitionResult,
   LayoutDocument,
   ObjectiveGradingBatchResult,
@@ -95,6 +99,82 @@ async function prepareLayoutForCard(cardRepo: CardRepository, card: AnswerCard):
 function parsePositiveNumber(value: unknown, fallback: number): number {
   const parsed = Number(fieldValue(value) || String(fallback));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** Background persistence: save grading results to database without blocking response */
+async function persistGradingResults(
+  examIdParam: string,
+  rows: CombinedGradingRow[],
+  createdBy?: number
+): Promise<void> {
+  const { ExamRepository } = await import("../../../server/repositories/ExamRepository");
+  const { getDatabase } = await import("../../../server/db");
+
+  const examRepo = new ExamRepository();
+  const db = getDatabase();
+
+  const examId = Number(examIdParam);
+  const exam = examRepo.findExamById(examId);
+  if (!exam) return;
+
+  examRepo.updateStatus(examId, "grading");
+  const batchId = examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
+
+  const ensureStudent = db.prepare(`
+    INSERT OR IGNORE INTO users (username, password_hash, name, role_id, student_number)
+    VALUES (?, '', ?, 3, ?)
+  `);
+  const findStudent = db.prepare(`
+    SELECT id FROM users WHERE student_number = ? AND role_id = 3 LIMIT 1
+  `);
+
+  const insertQs = db.prepare(`
+    INSERT OR REPLACE INTO question_scores
+      (exam_id, student_id, question_number, block_id, score, max_score, score_type)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  let persisted = 0;
+
+  const persistTx = db.transaction(() => {
+    for (const row of rows) {
+      if (!row.studentId) continue;
+      try {
+        // Synchronous: ensure student exists
+        ensureStudent.run(row.studentId, row.studentId, row.studentId);
+        const stu = findStudent.get(row.studentId) as { id: number } | undefined;
+        if (!stu) continue;
+
+        // Add scan record
+        examRepo.addScanRecord({
+          batch_id: batchId,
+          file_path: row.fileName,
+          file_name: row.fileName,
+          student_number: row.studentId,
+          student_id: stu.id
+        });
+
+        // Save total score
+        examRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
+
+        // Save per-question scores
+        for (const q of row.questions) {
+          insertQs.run(examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+        }
+        for (const sq of row.subjectiveQuestions ?? []) {
+          insertQs.run(examId, stu.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective");
+        }
+        persisted++;
+      } catch (err) {
+        console.error(`[Grading] Failed to persist row for ${row.studentId}:`, err);
+      }
+    }
+  });
+
+  persistTx();
+  examRepo.finishBatch(batchId);
+  examRepo.updateStatus(examId, "closed");
+  console.log(`[Grading] Persisted ${persisted} student scores to exam ${examId}`);
 }
 
 export async function createApp(): Promise<express.Express> {
@@ -273,7 +353,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files", 200), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = cardRepo.findById(cardId);
@@ -325,7 +405,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/grading", recognitionUpload.array("files", 200), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading", recognitionUpload.array("files"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = cardRepo.findById(cardId);
@@ -343,6 +423,8 @@ export async function createApp(): Promise<express.Express> {
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
+
+      const examIdParam = fieldValue(req.body.examId);
 
       const rows = [];
       for (const file of files) {
@@ -368,12 +450,20 @@ export async function createApp(): Promise<express.Express> {
         }
       }
 
+      // Send response immediately so user sees results
       const result: CombinedGradingBatchResult = {
         batchId: `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         cardId,
         rows
       };
       res.json(result);
+
+      // Persist to database asynchronously (non-blocking)
+      if (examIdParam) {
+        persistGradingResults(examIdParam, rows, req.user?.id).catch((err) => {
+          console.error("[Grading] Persist failed:", err);
+        });
+      }
     } catch (error) {
       next(error);
     }
@@ -423,14 +513,143 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  // ── Exam API ──────────────────────────────────────────
+
+  app.get("/api/exams", async (_req, res, next) => {
+    try {
+      const examRepo = new ExamRepository();
+      res.json(examRepo.listExams());
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/exams", async (req, res, next) => {
+    try {
+      const { name, cardId, gradeId, classId, subject } = req.body as Record<string, unknown>;
+      if (!name || !cardId) {
+        res.status(400).json({ message: "缺少 name 或 cardId" });
+        return;
+      }
+      const examRepo = new ExamRepository();
+      const exam = examRepo.createExam({
+        name: String(name),
+        card_id: String(cardId),
+        grade_id: gradeId ? Number(gradeId) : undefined,
+        class_id: classId ? Number(classId) : undefined,
+        subject: subject ? String(subject) : undefined,
+        created_by: req.user?.id
+      });
+      res.status(201).json(exam);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/exams/:examId", async (req, res, next) => {
+    try {
+      const examRepo = new ExamRepository();
+      const exam = examRepo.findExamById(Number(req.params.examId));
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      const results = examRepo.getExamResults(exam.id);
+      res.json({ ...exam, results });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/exams/:examId", async (req, res, next) => {
+    try {
+      const examRepo = new ExamRepository();
+      const exam = examRepo.findExamById(Number(req.params.examId));
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      const { getDatabase } = await import("../../../server/db");
+      const db = getDatabase();
+      // Cascade: scores → students linked via scores, then exam itself
+      db.transaction(() => {
+        db.prepare("DELETE FROM question_scores WHERE exam_id = ?").run(exam.id);
+        db.prepare("DELETE FROM student_scores WHERE exam_id = ?").run(exam.id);
+        db.prepare("DELETE FROM scan_batches WHERE exam_id = ?").run(exam.id);
+        db.prepare("DELETE FROM exams WHERE id = ?").run(exam.id);
+      })();
+      res.json({ message: "已删除" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── Analysis API ──────────────────────────────────────
+
+  app.get("/api/analysis/exams/:examId/classes", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const classes = analysisRepo.getExamClasses(Number(req.params.examId));
+      res.json(classes);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/analysis/exams/:examId/overview", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const classId = req.query.classId ? Number(req.query.classId) : undefined;
+      const overview = analysisRepo.getExamOverview(Number(req.params.examId), classId);
+      res.json(overview);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/analysis/exams/:examId/students", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const classId = req.query.classId ? Number(req.query.classId) : undefined;
+      const ranking = analysisRepo.getStudentRanking(Number(req.params.examId), classId);
+      res.json(ranking);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/analysis/exams/:examId/questions", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const classId = req.query.classId ? Number(req.query.classId) : undefined;
+      const questions = analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
+      res.json(questions);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.use("/api/scanner", createScannerRouter());
 
   const clientDist = process.env.ANSWER_CARD_CLIENT_DIST
     ? path.resolve(process.env.ANSWER_CARD_CLIENT_DIST)
     : path.join(rootDir, "dist", "client");
   if (existsSync(clientDist)) {
-    app.use(express.static(clientDist));
+    app.use(
+      express.static(clientDist, {
+        setHeaders: (res, filePath) => {
+          const ext = path.extname(filePath).toLowerCase();
+          if (ext === ".html" || ext === ".js" || ext === ".mjs" || ext === ".css" || ext === ".json") {
+            const type = res.getHeader("Content-Type") as string | undefined;
+            if (type && !type.toLowerCase().includes("charset")) {
+              res.setHeader("Content-Type", `${type}; charset=utf-8`);
+            }
+          }
+        }
+      })
+    );
     app.get("/{*splat}", (_req, res) => {
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
       res.sendFile(path.join(clientDist, "index.html"));
     });
   }

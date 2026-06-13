@@ -63,7 +63,7 @@ export async function runScanSession(
     const result = await scan(scanConfig);
 
     if (!result.pages || result.pages.length === 0) {
-      throw new Error(result.message || "Scan produced no pages");
+      throw new Error(result.message || "扫描未产生任何页面");
     }
 
     // Create scan records for each page
