@@ -612,6 +612,36 @@ void write_debug_artifacts(const std::filesystem::path& debug_dir, const json& r
 }
 }
 
+static bool is_inverted(const std::vector<MarkerMatch>& matches) {
+    return (((matches[0].candidate.center.y + matches[4].candidate.center.y) / 2 > matches[2].candidate.center.y) ||
+        ((matches[1].candidate.center.y + matches[5].candidate.center.y) / 2 > matches[3].candidate.center.y));
+}
+
+static void invert_correct(std::vector<MarkerMatch>& matches) {
+    if (!is_inverted(matches)) {
+        return;
+    }
+    std::unordered_map<std::string, int> idx;
+    for (size_t i = 0; i < matches.size(); ++i) {
+        idx[matches[i].role] = static_cast<int>(i);
+    }
+    const std::vector<std::pair<std::string, std::string>> role_swaps = {
+        {"bottom-left", "top-right"},
+        {"bottom-right", "top-left"},
+        {"middle-left", "middle-right"},
+    };
+    for (const auto& pr : role_swaps) {
+        auto itA = idx.find(pr.first);
+        auto itB = idx.find(pr.second);
+        if (itA != idx.end() && itB != idx.end()) {
+            int a = itA->second;
+            int b = itB->second;
+            std::swap(matches[a].expected_px, matches[b].expected_px);
+            std::swap(matches[a].role, matches[b].role);
+        }
+    }
+}
+
 json recognize_objective_answers(
     const std::filesystem::path& image_path,
     const std::filesystem::path& layout_path,
@@ -629,6 +659,10 @@ json recognize_objective_answers(
         cv::Mat image = read_image(image_path);
         auto [candidates, binary] = find_marker_candidates(image);
         std::vector<MarkerMatch> matches = match_markers(candidates, image.size(), layout_page, output_dpi);
+
+   //     if (matches.size() == 6) {
+			//invert_correct(matches);
+   //     }
 
         std::vector<std::string> matched_roles;
         for (const auto& match : matches) {

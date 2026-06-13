@@ -612,7 +612,7 @@ select:focus {
 .score-table-head,
 .score-row summary {
   display: grid;
-  grid-template-columns: minmax(170px, 1.6fr) minmax(88px, 0.75fr) 78px 78px minmax(118px, 1fr) 58px;
+  grid-template-columns: minmax(170px, 1.6fr) minmax(88px, 0.75fr) 78px 78px minmax(118px, 1fr) 58px 72px;
   gap: 10px;
   align-items: center;
 }
@@ -645,6 +645,21 @@ select:focus {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.score-preview-link {
+  color: #1d6fd8;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.score-preview-link:hover,
+.score-preview-link:focus-visible {
+  text-decoration: underline;
+}
+
+.muted-cell {
+  color: var(--muted);
 }
 
 .status-ok,

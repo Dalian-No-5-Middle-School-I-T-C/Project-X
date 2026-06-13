@@ -32,3 +32,5 @@ resources/native/win-x64/*.exe
 scripts/image_processing/
 input/818619b500db2b0df1aa6d462872dfe6.jpg
 .workbuddy/
+*.backup
+*.bak

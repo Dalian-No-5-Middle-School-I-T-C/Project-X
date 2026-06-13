@@ -47,7 +47,8 @@ export function createScannerRouter(): Router {
         duplex: body.duplex === true,
         colorMode: body.colorMode || "gray",
         paperSize: body.paperSize || "A4",
-        maxPages: body.maxPages || 0
+        maxPages: body.maxPages || 0,
+        showUi: body.showUi === true
       };
 
       // Start scan in background

@@ -944,7 +944,6 @@ function GradingResults({
     );
   }
 
-  const totalScore = result.rows.reduce((sum, row) => sum + row.totalScore, 0);
   const totalReview = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
   const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
 
@@ -954,7 +953,7 @@ function GradingResults({
         <div>
           <h2>成绩表</h2>
           <p>
-            {result.rows.length} 张答题卡 / 总分 {totalScore} / 待复核 {totalReview} 题 / 异常 {totalIssues} 处
+            {result.rows.length} 张答题卡 / 待复核 {totalReview} 题 / 异常 {totalIssues} 处
           </p>
         </div>
         <button className="primary-button" type="button" onClick={onDownloadCsv} disabled={result.rows.length === 0}>
@@ -969,6 +968,7 @@ function GradingResults({
           <span>总分</span>
           <span>客观/主观</span>
           <span>复核</span>
+          <span>答题卡</span>
         </div>
         {result.rows.map((row) => (
           <details className="score-row" key={`${row.fileName}_${row.recognition.imagePath ?? row.fileName}`}>
@@ -983,6 +983,21 @@ function GradingResults({
                 {row.objectiveScore}/{row.objectiveMaxScore} · {row.subjectiveScore}/{row.subjectiveMaxScore}
               </span>
               <span>{row.needsReviewCount}</span>
+              <span>
+                {row.previewUrl ? (
+                  <a
+                    className="score-preview-link"
+                    href={row.previewUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(event) => event.stopPropagation()}
+                  >
+                    预览
+                  </a>
+                ) : (
+                  <span className="muted-cell">-</span>
+                )}
+              </span>
             </summary>
             <div className="question-grade-list">
               {row.message && <p className="row-message">{row.message}</p>}

@@ -285,7 +285,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     enableADF();
     
     // 5. Enable source (shows scanner UI or goes to ready state)
-    if (!enableSource()) {
+    if (!enableSource(m_config.showUi)) {
         result.errorMessage = "Failed to enable scanner";
         closeSource();
         closeDSM();
@@ -448,11 +448,11 @@ bool TwainController::closeSource() {
     return rc == TWRC_SUCCESS;
 }
 
-bool TwainController::enableSource() {
+bool TwainController::enableSource(bool showUi) {
     TW_USERINTERFACE ui;
     memset(&ui, 0, sizeof(ui));
-    ui.ShowUI = FALSE;    // No scanner UI
-    ui.ModalUI = FALSE;
+    ui.ShowUI = showUi ? TRUE : FALSE;
+    ui.ModalUI = showUi ? TRUE : FALSE;
     ui.hParent = m_hwnd;
     
     TW_UINT16 rc = DSM_Entry(
@@ -462,21 +462,39 @@ bool TwainController::enableSource() {
     );
     
     if (rc == TWRC_SUCCESS || rc == TWRC_CHECKSTATUS) {
+        if (rc == TWRC_CHECKSTATUS) {
+            // Consume pending condition code per TWAIN spec
+            TW_STATUS status;
+            memset(&status, 0, sizeof(status));
+            DSM_Entry(&m_appId, &m_sourceId,
+                DG_CONTROL, DAT_STATUS, MSG_GET,
+                (TW_MEMREF)&status);
+        }
         m_state = 3;
         return true;
     }
     
-    // Try with UI for first-time configuration
-    ui.ShowUI = TRUE;
-    rc = DSM_Entry(
-        &m_appId, &m_sourceId,
-        DG_CONTROL, DAT_USERINTERFACE, MSG_ENABLEDS,
-        (TW_MEMREF)&ui
-    );
-    
-    if (rc == TWRC_SUCCESS || rc == TWRC_CHECKSTATUS) {
-        m_state = 3;
-        return true;
+    // Fallback: if no-UI didn't work, try with UI (unless UI was explicitly requested)
+    if (!showUi) {
+        ui.ShowUI = TRUE;
+        ui.ModalUI = TRUE;
+        rc = DSM_Entry(
+            &m_appId, &m_sourceId,
+            DG_CONTROL, DAT_USERINTERFACE, MSG_ENABLEDS,
+            (TW_MEMREF)&ui
+        );
+        
+        if (rc == TWRC_SUCCESS || rc == TWRC_CHECKSTATUS) {
+            if (rc == TWRC_CHECKSTATUS) {
+                TW_STATUS status;
+                memset(&status, 0, sizeof(status));
+                DSM_Entry(&m_appId, &m_sourceId,
+                    DG_CONTROL, DAT_STATUS, MSG_GET,
+                    (TW_MEMREF)&status);
+            }
+            m_state = 3;
+            return true;
+        }
     }
     
     logError("DSM_Entry MSG_ENABLEDS failed: " + twainResultToString(rc));
@@ -779,15 +797,9 @@ bool TwainController::waitForState(int targetState, DWORD timeoutMs) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
             
-            // Check if we got a TWAIN message indicating transfer ready
-            if (msg.message == TWAIN_MSG) {
-                // Process via DSM callback
-                // The actual state tracking happens in the callback
-            }
+            // Check if TWAIN event processing advanced our state
+            if (m_state >= targetState) return true;
         }
-        
-        // For scan command, we need to wait for MSG_XFERREADY from the source
-        // This is signaled through the TWAIN message loop
         
         Sleep(50);
     }
