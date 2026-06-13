@@ -437,6 +437,12 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
 
+      // Single-sided card: filter out back-side images
+      const backSidePattern = /B\.(jpg|jpeg|png|bmp|tiff|tif)$/i;
+      const gradingFiles = card.sided === "single"
+        ? files.filter((f) => !backSidePattern.test(f.originalname))
+        : files;
+
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
@@ -444,7 +450,7 @@ export async function createApp(): Promise<express.Express> {
       const examIdParam = fieldValue(req.body.examId);
 
       const rows = [];
-      for (const file of files) {
+      for (const file of gradingFiles) {
         try {
           const recognition = (await recognizeAnswerCard({
             imagePath: file.path,
