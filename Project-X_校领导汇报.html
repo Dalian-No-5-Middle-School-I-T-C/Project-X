@@ -1,0 +1,1178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Project-X 智能试卷管理系统 - 校内汇报</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
+            background: #1a1a2e;
+            color: #fff;
+            overflow: hidden;
+        }
+
+        .presentation {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+        }
+
+        .slide {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            padding: 60px 80px;
+            opacity: 0;
+            transform: translateX(100px);
+            transition: all 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+            pointer-events: none;
+        }
+
+        .slide.active {
+            opacity: 1;
+            transform: translateX(0);
+            pointer-events: all;
+        }
+
+        .slide.prev {
+            opacity: 0;
+            transform: translateX(-100px);
+        }
+
+        /* 背景动画粒子 */
+        .particles {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .particle {
+            position: absolute;
+            width: 4px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            animation: float 15s infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(100vh) rotate(0deg); opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { transform: translateY(-10vh) rotate(720deg); opacity: 0; }
+        }
+
+        /* 标题样式 */
+        .slide-title {
+            font-size: 3.2em;
+            font-weight: 700;
+            margin-bottom: 30px;
+            text-align: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            animation: titleGlow 2s ease-in-out infinite alternate;
+        }
+
+        @keyframes titleGlow {
+            from { filter: drop-shadow(0 0 20px rgba(102, 126, 234, 0.3)); }
+            to { filter: drop-shadow(0 0 40px rgba(118, 75, 162, 0.5)); }
+        }
+
+        .slide-subtitle {
+            font-size: 1.4em;
+            color: #a0a0b0;
+            text-align: center;
+            margin-bottom: 50px;
+        }
+
+        /* 内容卡片 */
+        .content-card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 40px;
+            backdrop-filter: blur(10px);
+            max-width: 900px;
+            width: 100%;
+            animation: cardFloat 3s ease-in-out infinite;
+        }
+
+        @keyframes cardFloat {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-10px); }
+        }
+
+        /* 痛点卡片 */
+        .pain-points {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 25px;
+            max-width: 1000px;
+            width: 100%;
+        }
+
+        .pain-card {
+            background: rgba(255, 100, 100, 0.1);
+            border: 1px solid rgba(255, 100, 100, 0.3);
+            border-radius: 15px;
+            padding: 30px;
+            transition: all 0.3s;
+            animation: painPulse 2s ease-in-out infinite;
+        }
+
+        .pain-card:nth-child(2) { animation-delay: 0.5s; }
+        .pain-card:nth-child(3) { animation-delay: 1s; }
+        .pain-card:nth-child(4) { animation-delay: 1.5s; }
+
+        @keyframes painPulse {
+            0%, 100% { box-shadow: 0 0 20px rgba(255, 100, 100, 0.1); }
+            50% { box-shadow: 0 0 40px rgba(255, 100, 100, 0.3); }
+        }
+
+        .pain-card:hover {
+            transform: translateY(-5px) scale(1.02);
+            background: rgba(255, 100, 100, 0.15);
+        }
+
+        .pain-icon {
+            font-size: 2.5em;
+            margin-bottom: 15px;
+        }
+
+        .pain-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #ff6b6b;
+            margin-bottom: 10px;
+        }
+
+        .pain-desc {
+            color: #c0c0d0;
+            font-size: 0.95em;
+            line-height: 1.6;
+        }
+
+        /* 解决方案流程 */
+        .solution-flow {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            max-width: 1100px;
+            width: 100%;
+            flex-wrap: wrap;
+        }
+
+        .flow-step {
+            background: rgba(100, 200, 255, 0.1);
+            border: 2px solid rgba(100, 200, 255, 0.3);
+            border-radius: 20px;
+            padding: 25px 30px;
+            text-align: center;
+            min-width: 140px;
+            transition: all 0.3s;
+            animation: stepGlow 2s ease-in-out infinite;
+        }
+
+        .flow-step:nth-child(1) { animation-delay: 0s; }
+        .flow-step:nth-child(3) { animation-delay: 0.3s; }
+        .flow-step:nth-child(5) { animation-delay: 0.6s; }
+        .flow-step:nth-child(7) { animation-delay: 0.9s; }
+        .flow-step:nth-child(9) { animation-delay: 1.2s; }
+
+        @keyframes stepGlow {
+            0%, 100% { box-shadow: 0 0 15px rgba(100, 200, 255, 0.2); }
+            50% { box-shadow: 0 0 30px rgba(100, 200, 255, 0.4); }
+        }
+
+        .flow-step:hover {
+            transform: translateY(-8px) scale(1.05);
+            background: rgba(100, 200, 255, 0.2);
+        }
+
+        .flow-icon {
+            font-size: 2.2em;
+            margin-bottom: 10px;
+        }
+
+        .flow-text {
+            font-size: 1em;
+            font-weight: 600;
+            color: #64c8ff;
+        }
+
+        .flow-arrow {
+            font-size: 2em;
+            color: #64c8ff;
+            animation: arrowBounce 1s ease-in-out infinite;
+        }
+
+        @keyframes arrowBounce {
+            0%, 100% { transform: translateX(0); }
+            50% { transform: translateX(10px); }
+        }
+
+        /* 优势对比 */
+        .compare-table {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 0;
+            max-width: 1000px;
+            width: 100%;
+            border-radius: 20px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .compare-header {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 20px;
+            text-align: center;
+            font-weight: 600;
+            font-size: 1.1em;
+        }
+
+        .compare-cell {
+            padding: 20px;
+            text-align: center;
+            border-top: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .compare-cell.feature {
+            background: rgba(255, 255, 255, 0.03);
+            text-align: left;
+            font-weight: 500;
+        }
+
+        .compare-cell.old {
+            color: #ff6b6b;
+        }
+
+        .compare-cell.new {
+            color: #51cf66;
+            background: rgba(81, 207, 102, 0.05);
+            font-weight: 600;
+        }
+
+        .check-mark {
+            font-size: 1.5em;
+        }
+
+        /* 数据展示 */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 30px;
+            max-width: 900px;
+            width: 100%;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            padding: 40px 30px;
+            text-align: center;
+            transition: all 0.3s;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-10px);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .stat-number {
+            font-size: 3em;
+            font-weight: 700;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+
+        .stat-label {
+            color: #a0a0b0;
+            font-size: 1.1em;
+        }
+
+        /* 团队展示 */
+        .team-grid {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 25px;
+            max-width: 1100px;
+            width: 100%;
+        }
+
+        .team-member {
+            text-align: center;
+            padding: 30px 20px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            transition: all 0.3s;
+            animation: memberFloat 3s ease-in-out infinite;
+        }
+
+        .team-member:nth-child(1) { animation-delay: 0s; }
+        .team-member:nth-child(2) { animation-delay: 0.2s; }
+        .team-member:nth-child(3) { animation-delay: 0.4s; }
+        .team-member:nth-child(4) { animation-delay: 0.6s; }
+        .team-member:nth-child(5) { animation-delay: 0.8s; }
+
+        @keyframes memberFloat {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-8px); }
+        }
+
+        .team-member:hover {
+            transform: translateY(-10px) scale(1.05);
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .team-avatar {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            margin: 0 auto 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2em;
+            font-weight: 700;
+        }
+
+        .team-name {
+            font-size: 1.2em;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .team-role {
+            color: #a0a0b0;
+            font-size: 0.9em;
+        }
+
+        /* 底部导航 */
+        .nav-controls {
+            position: fixed;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 20px;
+            z-index: 1000;
+        }
+
+        .nav-btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 12px 30px;
+            border-radius: 30px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s;
+            backdrop-filter: blur(10px);
+        }
+
+        .nav-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: scale(1.05);
+        }
+
+        .nav-btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .slide-counter {
+            position: fixed;
+            bottom: 40px;
+            right: 40px;
+            color: #a0a0b0;
+            font-size: 0.9em;
+            z-index: 1000;
+        }
+
+        /* 进度条 */
+        .progress-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 4px;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.5s;
+            z-index: 1000;
+        }
+
+        /* 特殊样式 */
+        .highlight-box {
+            background: rgba(102, 126, 234, 0.15);
+            border-left: 4px solid #667eea;
+            padding: 25px 30px;
+            border-radius: 0 15px 15px 0;
+            margin: 20px 0;
+            max-width: 800px;
+        }
+
+        .highlight-text {
+            font-size: 1.3em;
+            line-height: 1.8;
+            color: #e0e0f0;
+        }
+
+        .badge {
+            display: inline-block;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin-right: 10px;
+        }
+
+        .saving-animation {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 40px;
+            margin-top: 40px;
+        }
+
+        .saving-item {
+            text-align: center;
+            animation: savingPulse 2s ease-in-out infinite;
+        }
+
+        .saving-item:nth-child(2) { animation-delay: 0.3s; }
+        .saving-item:nth-child(3) { animation-delay: 0.6s; }
+
+        @keyframes savingPulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+        }
+
+        .saving-icon {
+            font-size: 3em;
+            margin-bottom: 15px;
+        }
+
+        .saving-amount {
+            font-size: 2em;
+            font-weight: 700;
+            color: #51cf66;
+        }
+
+        .saving-label {
+            color: #a0a0b0;
+            margin-top: 5px;
+        }
+
+        /* 封面特殊样式 */
+        .cover-slide {
+            background: radial-gradient(ellipse at center, #1a1a3e 0%, #0a0a1e 100%);
+        }
+
+        .cover-logo {
+            font-size: 6em;
+            font-weight: 900;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 20px;
+            animation: logoPulse 3s ease-in-out infinite;
+        }
+
+        @keyframes logoPulse {
+            0%, 100% { transform: scale(1); filter: drop-shadow(0 0 30px rgba(102, 126, 234, 0.3)); }
+            50% { transform: scale(1.05); filter: drop-shadow(0 0 60px rgba(118, 75, 162, 0.5)); }
+        }
+
+        .cover-subtitle {
+            font-size: 1.8em;
+            color: #a0a0b0;
+            margin-bottom: 40px;
+        }
+
+        .cover-info {
+            display: flex;
+            gap: 40px;
+            margin-top: 30px;
+        }
+
+        .cover-info-item {
+            text-align: center;
+            padding: 20px 30px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .cover-info-label {
+            font-size: 0.9em;
+            color: #a0a0b0;
+            margin-bottom: 5px;
+        }
+
+        .cover-info-value {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        /* 列表样式 */
+        .feature-list {
+            list-style: none;
+            max-width: 800px;
+        }
+
+        .feature-list li {
+            padding: 15px 20px;
+            margin: 10px 0;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            border-left: 3px solid #667eea;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            transition: all 0.3s;
+        }
+
+        .feature-list li:hover {
+            background: rgba(255, 255, 255, 0.08);
+            transform: translateX(10px);
+        }
+
+        .feature-list .icon {
+            font-size: 1.5em;
+        }
+
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .slide { padding: 30px 20px; }
+            .slide-title { font-size: 2em; }
+            .pain-points { grid-template-columns: 1fr; }
+            .stats-grid { grid-template-columns: 1fr; }
+            .team-grid { grid-template-columns: repeat(2, 1fr); }
+            .compare-table { grid-template-columns: 1fr; }
+            .solution-flow { flex-direction: column; }
+            .flow-arrow { transform: rotate(90deg); }
+        }
+    </style>
+</head>
+<body>
+    <!-- 粒子背景 -->
+    <div class="particles" id="particles"></div>
+
+    <!-- 进度条 -->
+    <div class="progress-bar" id="progressBar" style="width: 0%"></div>
+
+    <div class="presentation" id="presentation">
+
+        <!-- 幻灯片 1: 封面 -->
+        <div class="slide active cover-slide" data-slide="1">
+            <div class="cover-logo">Project-X</div>
+            <div class="cover-subtitle">五中智能试卷管理系统</div>
+            <div class="highlight-box" style="text-align: center; border-left: none; border: 1px solid rgba(102, 126, 234, 0.3);">
+                <div class="highlight-text" style="font-size: 1.5em;">
+                    由五中人 · 为五中人 · 服务五中教学
+                </div>
+            </div>
+            <div class="cover-info">
+                <div class="cover-info-item">
+                    <div class="cover-info-label">汇报单位</div>
+                    <div class="cover-info-value">信息化部 (I.T.C.)</div>
+                </div>
+                <div class="cover-info-item">
+                    <div class="cover-info-label">当前版本</div>
+                    <div class="cover-info-value">v1.0 完整闭环</div>
+                </div>
+                <div class="cover-info-item">
+                    <div class="cover-info-label">开源协议</div>
+                    <div class="cover-info-value">GPL-3.0</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 幻灯片 2: 痛点分析 -->
+        <div class="slide" data-slide="2">
+            <div class="slide-title">😤 当前面临的四大痛点</div>
+            <div class="slide-subtitle">外包系统使用三年，问题日益凸显</div>
+            <div class="pain-points">
+                <div class="pain-card">
+                    <div class="pain-icon">💸</div>
+                    <div class="pain-title">费用高昂</div>
+                    <div class="pain-desc">按次或按年收费，随着考试频次增加，成本持续累积，学校经费压力日益增大</div>
+                </div>
+                <div class="pain-card">
+                    <div class="pain-icon">❌</div>
+                    <div class="pain-title">报错频繁</div>
+                    <div class="pain-desc">对答题卡格式要求苛刻，稍有偏差即扫描失败，教师反复处理异常，效率低下</div>
+                </div>
+                <div class="pain-card">
+                    <div class="pain-icon">🔒</div>
+                    <div class="pain-title">受制于人</div>
+                    <div class="pain-desc">无法自主修改模板，特殊需求响应慢，学生数据需上传第三方服务器，隐私存疑</div>
+                </div>
+                <div class="pain-card">
+                    <div class="pain-icon">🔄</div>
+                    <div class="pain-title">体验割裂</div>
+                    <div class="pain-desc">不同考试反复适应不同系统，操作成本高，误操作率上升，教师负担加重</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 幻灯片 3: 解决方案 -->
+        <div class="slide" data-slide="3">
+            <div class="slide-title">🎯 我们的解决方案</div>
+            <div class="slide-subtitle">一套系统，完整闭环，全流程自主可控</div>
+            <div class="solution-flow">
+                <div class="flow-step">
+                    <div class="flow-icon">📝</div>
+                    <div class="flow-text">答题卡<br>设计</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <div class="flow-icon">🖨️</div>
+                    <div class="flow-text">A4 PDF<br>导出打印</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <div class="flow-icon">📄</div>
+                    <div class="flow-text">扫描仪<br>直扫</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <div class="flow-icon">🤖</div>
+                    <div class="flow-text">AI自动<br>识别判分</div>
+                </div>
+                <div class="flow-arrow">→</div>
+                <div class="flow-step">
+                    <div class="flow-icon">📊</div>
+                    <div class="flow-text">成绩<br>分析</div>
+                </div>
+            </div>
+            <div class="highlight-box" style="margin-top: 40px;">
+                <div class="highlight-text">
+                    <span class="badge">核心优势</span>
+                    从设计到分析，全流程一体化，数据完全本地存储，不上传任何第三方服务器
+                </div>
+            </div>
+        </div>
+
+        <!-- 幻灯片 4: 功能详解 - 设计 -->
+        <div class="slide" data-slide="4">
+            <div class="slide-title">✏️ 智能答题卡设计</div>
+            <div class="slide-subtitle">毫米级精确排版，支持多种题型</div>
+            <div class="content-card">
+                <ul class="feature-list">
+                    <li>
+                        <span class="icon">📐</span>
+                        <div>
+                            <strong>A4 标准版式</strong><br>
+                            <span style="color: #a0a0b0;">六点定位标记，300 DPI 精确打印，直接兼容所有扫描仪</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">⭕</span>
+                        <div>
+                            <strong>客观题智能设计</strong><br>
+                            <span style="color: #a0a0b0;">单选/多选/不定项，支持标准答案录入，多选可设置部分得分规则</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">✍️</span>
+                        <div>
+                            <strong>主观题灵活配置</strong><br>
+                            <span style="color: #a0a0b0;">手工给分样式（支持十位/个位/十分位分别填涂）或纯书写块</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">🎨</span>
+                        <div>
+                            <strong>丰富内容类型</strong><br>
+                            <span style="color: #a0a0b0;">填空题（阿拉伯/罗马数字序号）、横线格、空白大框、图片插入</span>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- 幻灯片 5: 功能详解 - 扫描 -->
+        <div class="slide" data-slide="5">
+            <div class="slide-title">📄 扫描仪直扫</div>
+            <div class="slide-subtitle">柯达 i3000 系列原生驱动，实时进度可视</div>
+            <div class="content-card">
+                <ul class="feature-list">
+                    <li>
+                        <span class="icon">🔌</span>
+                        <div>
+                            <strong>TWAIN 原生桥接</strong><br>
+                            <span style="color: #a0a0b0;">直接驱动柯达 i3200/i3250/i3300 高速扫描仪，无需第三方软件</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">📡</span>
+                        <div>
+                            <strong>SSE 实时推送</strong><br>
+                            <span style="color: #a0a0b0;">扫描进度实时显示，逐页缩略图预览，一目了然</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">🤖</span>
+                        <div>
+                            <strong>自动识别考号</strong><br>
+                            <span style="color: #a0a0b0;">扫描完成自动提取学号，自动关联到数据库，无需手动录入</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">⚡</span>
+                        <div>
+                            <strong>高速处理</strong><br>
+                            <span style="color: #a0a0b0;">i3300 可达 100 张/分钟，一次扫描 50 张答题卡仅需 30 秒</span>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- 幻灯片 6: 功能详解 - 识别 -->
+        <div class="slide" data-slide="6">
+            <div class="slide-title">🤖 AI 自动识别判分</div>
+            <div class="slide-subtitle">C++ OpenCV 引擎，毫米级精度识别</div>
+            <div class="content-card">
+                <ul class="feature-list">
+                    <li>
+                        <span class="icon">🎯</span>
+                        <div>
+                            <strong>客观题自动判分</strong><br>
+                            <span style="color: #a0a0b0;">检测填涂框是否涂黑，与标准答案自动比对，多选支持部分得分</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">🔴</span>
+                        <div>
+                            <strong>主观题分数识别</strong><br>
+                            <span style="color: #a0a0b0;">识别红色划线分数格，支持十位/个位/十分位分别填涂，自动累加</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">🆔</span>
+                        <div>
+                            <strong>学号智能识别</strong><br>
+                            <span style="color: #a0a0b0;">数字填涂网格识别，自动匹配学生身份，准确率 > 99%</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">⚠️</span>
+                        <div>
+                            <strong>低置信度标记</strong><br>
+                            <span style="color: #a0a0b0;">疑似填涂、识别模糊的题目自动标"待复核"，提醒人工确认</span>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- 幻灯片 7: 功能详解 - 分析 -->
+        <div class="slide" data-slide="7">
+            <div class="slide-title">📊 成绩智能分析</div>
+            <div class="slide-subtitle">数据驱动教学，精准定位薄弱环节</div>
+            <div class="content-card">
+                <ul class="feature-list">
+                    <li>
+                        <span class="icon">📈</span>
+                        <div>
+                            <strong>考试总览</strong><br>
+                            <span style="color: #a0a0b0;">平均分、最高分、最低分、标准差、及格率、优秀率，一目了然</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">📊</span>
+                        <div>
+                            <strong>分数分布图</strong><br>
+                            <span style="color: #a0a0b0;">SVG 动态柱状图，直观展示各分数段人数分布</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">🏆</span>
+                        <div>
+                            <strong>学生排名</strong><br>
+                            <span style="color: #a0a0b0;">总分/客观分/主观分多维排名，待复核标记提醒</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">🎯</span>
+                        <div>
+                            <strong>题目分析</strong><br>
+                            <span style="color: #a0a0b0;">每题得分率、正确率排行，低分题红色高亮，精准定位讲评重点</span>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- 幻灯片 8: 对比优势 -->
+        <div class="slide" data-slide="8">
+            <div class="slide-title">⚖️ 前后对比</div>
+            <div class="slide-subtitle">Project-X vs 外包系统</div>
+            <div class="compare-table">
+                <div class="compare-header">对比维度</div>
+                <div class="compare-header">外包系统</div>
+                <div class="compare-header" style="background: rgba(81, 207, 102, 0.2); color: #51cf66;">Project-X</div>
+
+                <div class="compare-cell feature">使用费用</div>
+                <div class="compare-cell old">按次/年收费<br>累计成本高</div>
+                <div class="compare-cell new">✅ 永久免费<br>开源自主</div>
+
+                <div class="compare-cell feature">数据安全</div>
+                <div class="compare-cell old">❌ 上传第三方<br>隐私风险</div>
+                <div class="compare-cell new">✅ 完全本地<br>自主可控</div>
+
+                <div class="compare-cell feature">模板定制</div>
+                <div class="compare-cell old">❌ 无法修改<br>响应慢</div>
+                <div class="compare-cell new">✅ 随时调整<br>即时生效</div>
+
+                <div class="compare-cell feature">判分效率</div>
+                <div class="compare-cell old">人工逐张<br>耗时数小时</div>
+                <div class="compare-cell new">✅ AI 自动<br>5 秒/张</div>
+
+                <div class="compare-cell feature">成绩分析</div>
+                <div class="compare-cell old">Excel 手动统计<br>易出错</div>
+                <div class="compare-cell new">✅ 自动分析<br>可视化图表</div>
+
+                <div class="compare-cell feature">系统集成</div>
+                <div class="compare-cell old">多平台切换<br>体验割裂</div>
+                <div class="compare-cell new">✅ 一套闭环<br>无缝衔接</div>
+            </div>
+        </div>
+
+        <!-- 幻灯片 9: 经济效益 -->
+        <div class="slide" data-slide="9">
+            <div class="slide-title">💰 经济效益分析</div>
+            <div class="slide-subtitle">一次开发投入，长期零成本使用</div>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-number">¥0</div>
+                    <div class="stat-label">后续使用费用</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">100%</div>
+                    <div class="stat-label">数据本地可控</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">5x</div>
+                    <div class="stat-label">判分效率提升</div>
+                </div>
+            </div>
+            <div class="saving-animation">
+                <div class="saving-item">
+                    <div class="saving-icon">📅</div>
+                    <div class="saving-amount">每月 2-3 次</div>
+                    <div class="saving-label">月考/周测频次</div>
+                </div>
+                <div class="saving-item">
+                    <div class="saving-icon">💵</div>
+                    <div class="saving-amount">¥X,XXX/次</div>
+                    <div class="saving-label">外包系统单次费用</div>
+                </div>
+                <div class="saving-item">
+                    <div class="saving-icon">📉</div>
+                    <div class="saving-amount">→ ¥0</div>
+                    <div class="saving-label">使用 Project-X 后</div>
+                </div>
+            </div>
+            <div class="highlight-box" style="margin-top: 30px;">
+                <div class="highlight-text" style="text-align: center;">
+                    <span class="badge">年度节省</span>
+                    按每月 3 次考试计算，一年可节省数万元外包费用，且数据永久留存本校
+                </div>
+            </div>
+        </div>
+
+        <!-- 幻灯片 10: 技术亮点 -->
+        <div class="slide" data-slide="10">
+            <div class="slide-title">🔧 技术亮点</div>
+            <div class="slide-subtitle">自主可控，技术领先</div>
+            <div class="content-card">
+                <ul class="feature-list">
+                    <li>
+                        <span class="icon">⚡</span>
+                        <div>
+                            <strong>C++ 原生识别引擎</strong><br>
+                            <span style="color: #a0a0b0;">OpenCV 4.13 图像处理，单张识别 200ms，比纯 Web 方案快 10 倍</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">🖥️</span>
+                        <div>
+                            <strong>Electron 桌面应用</strong><br>
+                            <span style="color: #a0a0b0;">Windows 原生体验，便携版 EXE + MSI 安装包，机房一键部署</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">🗄️</span>
+                        <div>
+                            <strong>SQLite 本地数据库</strong><br>
+                            <span style="color: #a0a0b0;">所有数据本地存储，WAL 模式高并发，外键约束保证数据完整性</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">📐</span>
+                        <div>
+                            <strong>毫米级精确排版</strong><br>
+                            <span style="color: #a0a0b0;">pdfkit 精确到毫米坐标，300 DPI 标准输出，识别率 > 99%</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">🔓</span>
+                        <div>
+                            <strong>GPL-3.0 开源协议</strong><br>
+                            <span style="color: #a0a0b0;">源代码完全开放，学校拥有全部知识产权，可自由修改扩展</span>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- 幻灯片 11: 团队介绍 -->
+        <div class="slide" data-slide="11">
+            <div class="slide-title">👥 项目团队</div>
+            <div class="slide-subtitle">信息化部 (I.T.C.) 自主开发，学生主导</div>
+            <div class="team-grid">
+                <div class="team-member">
+                    <div class="team-avatar">1g</div>
+                    <div class="team-name">1g NaOH</div>
+                    <div class="team-role">核心架构<br>后端开发</div>
+                </div>
+                <div class="team-member">
+                    <div class="team-avatar">🚀</div>
+                    <div class="team-name">火箭</div>
+                    <div class="team-role">前端开发<br>Electron 桌面端</div>
+                </div>
+                <div class="team-member">
+                    <div class="team-avatar">🎨</div>
+                    <div class="team-name">云墨丹心</div>
+                    <div class="team-role">UI/UX 设计<br>答题卡版式</div>
+                </div>
+                <div class="team-member">
+                    <div class="team-avatar">🔬</div>
+                    <div class="team-name">近代先人</div>
+                    <div class="team-role">算法开发<br>C++ 识别引擎</div>
+                </div>
+                <div class="team-member">
+                    <div class="team-avatar">CH</div>
+                    <div class="team-name">CH</div>
+                    <div class="team-role">往届学长<br>项目奠基</div>
+                </div>
+            </div>
+            <div class="highlight-box" style="margin-top: 30px;">
+                <div class="highlight-text" style="text-align: center;">
+                    <span class="badge">团队特色</span>
+                    全部由在校学生组成，从 v0.1.0 到 v1.0 完整闭环，历时一年自主研发
+                </div>
+            </div>
+        </div>
+
+        <!-- 幻灯片 12: 未来规划 -->
+        <div class="slide" data-slide="12">
+            <div class="slide-title">🚀 未来规划</div>
+            <div class="slide-subtitle">持续迭代，服务教学</div>
+            <div class="content-card">
+                <ul class="feature-list">
+                    <li>
+                        <span class="icon">🔐</span>
+                        <div>
+                            <strong>v1.1 权限管理</strong><br>
+                            <span style="color: #a0a0b0;">管理员/教师/学生三级权限，多班级横向对比，成绩预测与学情预警</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">📝</span>
+                        <div>
+                            <strong>v1.2 识别增强</strong><br>
+                            <span style="color: #a0a0b0;">手写分数 OCR 识别，更多扫描仪兼容，GPU 加速，模型自训练</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">🌐</span>
+                        <div>
+                            <strong>v2.0 平台扩展</strong><br>
+                            <span style="color: #a0a0b0;">跨平台支持（Mac/Linux），云端同步，移动端阅卷，Web 在线版</span>
+                        </div>
+                    </li>
+                    <li>
+                        <span class="icon">🤝</span>
+                        <div>
+                            <strong>开源共享</strong><br>
+                            <span style="color: #a0a0b0;">答题卡模板市场，与兄弟学校共享经验，打造区域教育信息化标杆</span>
+                        </div>
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- 幻灯片 13: 总结 -->
+        <div class="slide" data-slide="13">
+            <div class="slide-title">🎉 总结</div>
+            <div class="slide-subtitle">Project-X 为学校带来的价值</div>
+            <div class="stats-grid" style="grid-template-columns: repeat(2, 1fr); max-width: 800px;">
+                <div class="stat-card">
+                    <div class="stat-number" style="font-size: 2.5em;">💰 降本</div>
+                    <div class="stat-label">永久免费，替代外包<br>年度节省数万元</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" style="font-size: 2.5em;">⚡ 增效</div>
+                    <div class="stat-label">AI 自动判分<br>效率提升 5 倍以上</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" style="font-size: 2.5em;">🔒 安全</div>
+                    <div class="stat-label">数据完全本地<br>隐私自主可控</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" style="font-size: 2.5em;">📊 精准</div>
+                    <div class="stat-label">智能分析成绩<br>精准定位薄弱环节</div>
+                </div>
+            </div>
+            <div class="highlight-box" style="margin-top: 40px; text-align: center; border-left: none;">
+                <div class="highlight-text" style="font-size: 1.5em;">
+                    <span class="badge">核心理念</span><br><br>
+                    由五中人 · 为五中人 · 服务五中教学
+                </div>
+            </div>
+        </div>
+
+        <!-- 幻灯片 14: 感谢页 -->
+        <div class="slide" data-slide="14">
+            <div class="cover-logo" style="font-size: 4em;">感谢聆听</div>
+            <div class="cover-subtitle" style="font-size: 1.5em;">Project-X 智能试卷管理系统</div>
+            <div class="highlight-box" style="text-align: center; border-left: none; margin-top: 30px;">
+                <div class="highlight-text">
+                    信息化部 (I.T.C.) | 大连市第五中学<br><br>
+                    <span style="font-size: 0.9em; color: #a0a0b0;">
+                        GitHub: github.com/Dalian-No-5-Middle-School-I-T-C/Project-X<br>
+                        开源协议: GPL-3.0 | 当前版本: v1.0 完整闭环
+                    </span>
+                </div>
+            </div>
+            <div class="cover-info" style="margin-top: 40px;">
+                <div class="cover-info-item">
+                    <div class="cover-info-label">项目牵头</div>
+                    <div class="cover-info-value">1g NaOH、火箭、云墨丹心、近代先人、CH</div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- 导航控制 -->
+    <div class="nav-controls">
+        <button class="nav-btn" id="prevBtn" onclick="prevSlide()">← 上一页</button>
+        <button class="nav-btn" id="nextBtn" onclick="nextSlide()">下一页 →</button>
+    </div>
+
+    <div class="slide-counter" id="slideCounter">1 / 14</div>
+
+    <script>
+        // 粒子背景
+        function createParticles() {
+            const container = document.getElementById('particles');
+            for (let i = 0; i < 50; i++) {
+                const particle = document.createElement('div');
+                particle.className = 'particle';
+                particle.style.left = Math.random() * 100 + '%';
+                particle.style.animationDelay = Math.random() * 15 + 's';
+                particle.style.animationDuration = (10 + Math.random() * 10) + 's';
+                container.appendChild(particle);
+            }
+        }
+        createParticles();
+
+        // 幻灯片控制
+        let currentSlide = 1;
+        const totalSlides = 14;
+
+        function updateSlide() {
+            const slides = document.querySelectorAll('.slide');
+            slides.forEach((slide, index) => {
+                slide.classList.remove('active', 'prev');
+                if (index + 1 === currentSlide) {
+                    slide.classList.add('active');
+                } else if (index + 1 < currentSlide) {
+                    slide.classList.add('prev');
+                }
+            });
+
+            document.getElementById('slideCounter').textContent = currentSlide + ' / ' + totalSlides;
+            document.getElementById('progressBar').style.width = (currentSlide / totalSlides * 100) + '%';
+
+            document.getElementById('prevBtn').disabled = currentSlide === 1;
+            document.getElementById('nextBtn').disabled = currentSlide === totalSlides;
+        }
+
+        function nextSlide() {
+            if (currentSlide < totalSlides) {
+                currentSlide++;
+                updateSlide();
+            }
+        }
+
+        function prevSlide() {
+            if (currentSlide > 1) {
+                currentSlide--;
+                updateSlide();
+            }
+        }
+
+        // 键盘控制
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight' || e.key === ' ') {
+                e.preventDefault();
+                nextSlide();
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                prevSlide();
+            }
+        });
+
+        // 触摸滑动支持
+        let touchStartX = 0;
+        document.addEventListener('touchstart', (e) => {
+            touchStartX = e.touches[0].clientX;
+        });
+
+        document.addEventListener('touchend', (e) => {
+            const touchEndX = e.changedTouches[0].clientX;
+            const diff = touchStartX - touchEndX;
+            if (Math.abs(diff) > 50) {
+                if (diff > 0) nextSlide();
+                else prevSlide();
+            }
+        });
+
+        // 初始化
+        updateSlide();
+    </script>
+</body>
+</html>
