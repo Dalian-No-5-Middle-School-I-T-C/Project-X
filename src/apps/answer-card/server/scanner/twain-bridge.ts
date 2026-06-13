@@ -92,6 +92,7 @@ export async function scan(config: {
   outputDir: string;
   filePrefix: string;
   maxPages: number;
+  showUi?: boolean;
 }): Promise<BridgeScanResult> {
   const args: string[] = [
     "scan",
@@ -106,6 +107,10 @@ export async function scan(config: {
 
   if (config.duplex) {
     args.push("--duplex");
+  }
+
+  if (config.showUi) {
+    args.push("--show-ui");
   }
 
   const { stdout } = await runBridge(args, 600_000); // 10 min timeout for scanning

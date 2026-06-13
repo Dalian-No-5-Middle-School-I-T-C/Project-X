@@ -27,6 +27,7 @@ struct ScanConfig {
     std::string sourceName;   // TWAIN source product name
     int dpi = 300;
     bool duplex = false;
+    bool showUi = false;     // Show scanner's native UI
     std::string colorMode = "gray";  // "gray", "color", "bw"
     std::string paperSize = "A4";    // "A4", "Letter"
     std::string outputDir;
@@ -75,7 +76,7 @@ private:
     bool closeDSM();
     bool openSource(const TW_IDENTITY& sourceId);
     bool closeSource();
-    bool enableSource();
+    bool enableSource(bool showUi = false);
     bool disableSource();
     bool startTransfer();
     bool endTransfer();
