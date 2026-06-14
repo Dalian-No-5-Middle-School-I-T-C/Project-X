@@ -18,6 +18,7 @@
   --surface-soft: rgba(255, 255, 255, 0.72);
   --surface-glass: rgba(255, 255, 255, 0.25);
   --surface-glass-hover: rgba(255, 255, 255, 0.35);
+  --surface-tint: rgba(192, 15, 40, 0.04);
   --background: #F2F2F7;
   --background-deep: #E5E5EA;
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.06);
@@ -2024,6 +2025,649 @@ input:focus, select:focus {
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(24px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ── Auth & Account Management ───────────────────────── */
+.app-shell.no-card-sidebar {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.login-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(ellipse at 20% 30%, rgba(192, 15, 40, 0.08) 0%, transparent 42%),
+    radial-gradient(ellipse at 80% 70%, rgba(0, 0, 0, 0.04) 0%, transparent 46%),
+    var(--background);
+}
+
+.login-card {
+  width: min(420px, 100%);
+  padding: 28px 28px 22px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(32px) saturate(170%);
+  -webkit-backdrop-filter: blur(32px) saturate(170%);
+  box-shadow: var(--shadow-lg), inset 0 1px 0 rgba(255,255,255,0.45);
+  animation: fadeInScale 0.3s ease;
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 24px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.login-brand-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--brand-light) 0%, var(--brand) 58%, var(--brand-dark) 100%);
+  color: #fff;
+  box-shadow: var(--shadow-brand);
+}
+
+.login-brand strong {
+  display: block;
+  font-size: 18px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.login-brand span,
+.login-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.login-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-secondary);
+}
+
+.login-form input,
+.account-password-form input,
+.account-form-grid input,
+.account-form-grid select,
+.account-filters select,
+.account-import-box textarea,
+.class-add-row input {
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text);
+  outline: none;
+}
+
+.login-form input:focus,
+.account-password-form input:focus,
+.account-form-grid input:focus,
+.account-form-grid select:focus,
+.account-filters select:focus,
+.account-import-box textarea:focus,
+.class-add-row input:focus {
+  border-color: rgba(192, 15, 40, 0.35);
+  box-shadow: 0 0 0 3px var(--brand-soft);
+}
+
+.login-error,
+.login-success {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.login-error {
+  color: #b91c1c;
+}
+
+.login-success {
+  color: #166534;
+}
+
+.login-hint {
+  margin: 16px 0 0;
+  text-align: center;
+}
+
+.account-menu {
+  position: relative;
+}
+
+.account-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.65);
+  color: var(--text-secondary);
+  font-weight: 650;
+  font-size: 13px;
+  backdrop-filter: blur(8px) saturate(140%);
+  -webkit-backdrop-filter: blur(8px) saturate(140%);
+}
+
+.account-menu-trigger:hover {
+  border-color: rgba(192, 15, 40, 0.2);
+  color: var(--brand);
+  box-shadow: var(--shadow-md);
+}
+
+.account-menu-trigger small,
+.account-menu-info span,
+.account-summary,
+.class-list-item small,
+.roster-item small,
+.score-subject,
+.score-rank,
+.score-card-meta,
+.score-detail-head {
+  color: var(--muted);
+}
+
+.rotated {
+  transform: rotate(180deg);
+  transition: transform 160ms ease;
+}
+
+.account-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 100;
+  min-width: 260px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  animation: slideDown 0.18s ease;
+}
+
+.account-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 99;
+}
+
+.account-menu-info {
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
+.account-menu-info strong {
+  display: block;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.account-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+}
+
+.account-menu-item:hover {
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.account-menu-item.danger {
+  color: #b91c1c;
+}
+
+.account-password-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
+}
+
+.account-management,
+.account-panel,
+.scores-panel {
+  padding: 24px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.account-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.account-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.account-tabs button.active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+  font-weight: 700;
+}
+
+.account-panel-header,
+.account-panel-actions,
+.account-filters,
+.account-form-actions,
+.class-add-row,
+.roster-item {
+  display: flex;
+  align-items: center;
+}
+
+.account-panel-header {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.account-panel-header strong {
+  font-size: 16px;
+}
+
+.account-summary {
+  margin-left: 10px;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.account-panel-actions,
+.account-filters,
+.account-form-actions,
+.class-add-row {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.account-filters {
+  margin-bottom: 14px;
+}
+
+.account-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 200px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.account-search input {
+  flex: 1;
+  border: none;
+  padding: 8px 0;
+  background: transparent;
+  outline: none;
+}
+
+.account-form-grid,
+.account-import-box,
+.class-column,
+.score-card {
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.account-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.account-form-actions {
+  grid-column: 1 / -1;
+}
+
+.account-import-box {
+  padding: 14px;
+  margin-bottom: 14px;
+}
+
+.account-import-box textarea {
+  width: 100%;
+  margin: 8px 0;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.account-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.account-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.account-table th,
+.account-table td {
+  padding: 9px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+
+.account-table th {
+  background: var(--surface-tint);
+  color: var(--brand);
+  font-weight: 700;
+}
+
+.account-table tr.inactive-row {
+  opacity: 0.55;
+}
+
+.account-row-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.status-badge.active {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.status-badge.inactive {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.account-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 14px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.class-layout {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  min-height: 360px;
+}
+
+.class-column {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.class-column-title {
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 10px;
+  color: var(--brand);
+}
+
+.class-add-row {
+  margin-bottom: 10px;
+}
+
+.class-add-row input {
+  flex: 1;
+}
+
+.class-list,
+.roster-list,
+.student-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.class-list,
+.roster-list {
+  flex: 1;
+}
+
+.class-list-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+}
+
+.class-list-item.active {
+  border-color: rgba(192, 15, 40, 0.25);
+  background: var(--brand-soft);
+}
+
+.class-list-item button:first-child {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 13px;
+}
+
+.class-list-item small,
+.roster-item small {
+  font-size: 11px;
+}
+
+.icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--muted);
+}
+
+.icon-btn:hover {
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.icon-btn.danger:hover {
+  color: #b91c1c;
+  background: #fef2f2;
+}
+
+.student-search-results {
+  margin-bottom: 8px;
+  max-height: 120px;
+}
+
+.student-search-item {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  text-align: left;
+}
+
+.student-search-item:hover {
+  border-color: rgba(192, 15, 40, 0.25);
+  background: var(--brand-soft);
+}
+
+.roster-item {
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 13px;
+}
+
+.roster-item span {
+  flex: 1;
+}
+
+.scores-empty {
+  text-align: center;
+  padding: 60px 24px;
+  color: var(--muted);
+}
+
+.scores-empty h2 {
+  margin: 12px 0 6px;
+  color: var(--text);
+  font-size: 18px;
+}
+
+.scores-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.score-card {
+  overflow: hidden;
+}
+
+.score-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.score-card-header:hover {
+  background: var(--brand-soft);
+}
+
+.score-card-header strong {
+  font-size: 15px;
+}
+
+.score-subject {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.score-card-stats {
+  margin-left: auto;
+  text-align: right;
+}
+
+.score-total {
+  display: block;
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--brand);
+}
+
+.score-rank,
+.score-card-meta,
+.score-detail-table {
+  font-size: 12px;
+}
+
+.score-card-meta {
+  display: flex;
+  gap: 16px;
+  padding: 0 16px 12px;
+}
+
+.score-detail-table {
+  border-top: 1px solid var(--line);
+  padding: 10px 16px 14px;
+}
+
+.score-detail-head,
+.score-detail-row {
+  display: grid;
+  grid-template-columns: 1fr 80px 80px 100px;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.score-detail-head {
+  font-weight: 700;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 4px;
 }
 
 /* ── Export dropdown menu ────────────────────────────── */
