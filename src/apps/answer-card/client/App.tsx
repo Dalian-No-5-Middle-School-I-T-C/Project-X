@@ -15,8 +15,16 @@ import {
   Save,
   SquarePen,
   Trash2,
-  Upload
+  Upload,
+  Users
 } from "lucide-react";
+import { useAuth } from "./auth/AuthContext";
+import { authFetch, fetchJson, urlWithToken } from "./auth/api";
+import { PERMISSIONS } from "./auth/types";
+import { LoginPage } from "./components/LoginPage";
+import { AccountMenu } from "./components/AccountMenu";
+import { AccountManagement } from "./components/AccountManagement";
+import { StudentScores } from "./components/StudentScores";
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -76,16 +84,19 @@ function cloneCard(card: AnswerCard): AnswerCard {
   return JSON.parse(JSON.stringify(card)) as AnswerCard;
 }
 
-async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, options);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(text || response.statusText);
-  }
-  return (await response.json()) as T;
-}
+type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
 
-type AppMode = "design" | "grading" | "analysis";
+function defaultModeForUser(
+  hasPermission: (perm: string) => boolean,
+  isStudent: boolean
+): AppMode {
+  if (isStudent) return "scores";
+  if (hasPermission(PERMISSIONS.CARD_READ)) return "design";
+  if (hasPermission(PERMISSIONS.GRADE_READ)) return "grading";
+  if (hasPermission(PERMISSIONS.EXAM_READ)) return "analysis";
+  if (hasPermission(PERMISSIONS.USER_MANAGE)) return "account";
+  return "scores";
+}
 
 const directoryInputProps = {
   webkitdirectory: "",
@@ -223,6 +234,7 @@ function findNextQuestionNumber(card: AnswerCard): number {
 }
 
 function App() {
+  const { user, loading, hasPermission, isStudent } = useAuth();
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
@@ -250,9 +262,25 @@ function App() {
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
+  const canDesign = hasPermission(PERMISSIONS.CARD_READ);
+  const canGrade = hasPermission(PERMISSIONS.GRADE_READ);
+  const canAnalyze = hasPermission(PERMISSIONS.EXAM_READ);
+  const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
+  const canViewScores = hasPermission(PERMISSIONS.SCORE_READ);
+  const canManageAccounts = hasPermission(PERMISSIONS.USER_MANAGE);
+  const showCardSidebar = canDesign || canGrade;
+  const showScoresTab = isStudent && canViewScores;
+
   useEffect(() => {
-    void refreshCards(true);
-  }, []);
+    if (user) {
+      setMode(defaultModeForUser(hasPermission, isStudent));
+    }
+  }, [user?.id, isStudent]);
+
+  useEffect(() => {
+    if (!user || (!canDesign && !canGrade)) return;
+    void refreshCards(canDesign);
+  }, [user?.id, canDesign, canGrade]);
 
   async function refreshCards(loadFirst = false) {
     const list = await fetchJson<CardSummary[]>("/api/cards");
@@ -490,7 +518,7 @@ function App() {
     const exam = exams.find(e => e.id === analysisExamId);
     const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.csv`;
 
-    fetch(`/api/analysis/exams/${analysisExamId}/export-csv${params}`)
+    authFetch(`/api/analysis/exams/${analysisExamId}/export-csv${params}`)
       .then(async (res) => {
         if (!res.ok) throw new Error(await res.text());
         const blob = await res.blob();
@@ -509,16 +537,29 @@ function App() {
 
   const selectedBlock = card?.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null;
 
+  if (loading) {
+    return (
+      <div className="login-shell">
+        <p className="empty-text">正在加载...</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <LoginPage />;
+  }
+
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${showCardSidebar ? "" : "no-card-sidebar"}`}>
+      {showCardSidebar && (
       <aside className="sidebar">
         <div className="brand">
           <div>
             <strong>答题卡设计系统</strong>
-            <span>Project-X v1</span>
+            <span>Project-X v1.1</span>
           </div>
         </div>
-        <button className="primary-button" onClick={createCard} disabled={isBusy}>
+        <button className="primary-button" onClick={createCard} disabled={isBusy || !canDesign}>
           <Plus size={17} /> 新建答题卡
         </button>
         <div className="card-list">
@@ -535,31 +576,61 @@ function App() {
           {cards.length === 0 && <p className="empty-text">暂无答题卡，先新建一张。</p>}
         </div>
       </aside>
+      )}
 
       <section className="workspace">
         <header className="topbar">
           <div>
-            <h1>{card?.title ?? "答题卡设计器"}</h1>
-            <p>{card ? `ID:${card.id} · ${card.sided === "single" ? "单面" : "双面"} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个 · 预览页面仅供参考，以实际导出的 PDF 文件的样式为准` : "创建答题卡后开始编辑"}</p>
+            <h1>
+              {mode === "scores" ? "我的成绩" : mode === "account" ? "账号管理" : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
+            </h1>
+            <p>
+              {mode === "scores"
+                ? "查看各场考试得分、排名与逐题明细"
+                : mode === "account"
+                  ? "管理用户、班级与花名册"
+                  : card
+                    ? `ID:${card.id} · ${card.sided === "single" ? "单面" : "双面"} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个 · 预览页面仅供参考，以实际导出的 PDF 文件的样式为准`
+                    : canDesign
+                      ? "创建答题卡后开始编辑"
+                      : `${user.name} · ${user.role_display_name ?? user.role_name}`}
+            </p>
           </div>
           <div className="topbar-actions">
             <div className="mode-toggle" role="tablist" aria-label="工作模式">
+              {canDesign && (
               <button className={mode === "design" ? "active" : ""} onClick={() => setMode("design")} type="button">
                 <SquarePen size={16} /> 设计
               </button>
+              )}
+              {canGrade && (
               <button className={mode === "grading" ? "active" : ""} onClick={() => setMode("grading")} type="button">
                 <ClipboardCheck size={16} /> 阅卷
               </button>
+              )}
+              {canAnalyze && (
               <button className={mode === "analysis" ? "active" : ""} onClick={() => { setMode("analysis"); loadExams(); }} type="button">
                 <BarChart3 size={16} /> 分析
               </button>
+              )}
+              {showScoresTab && (
+              <button className={mode === "scores" ? "active" : ""} onClick={() => setMode("scores")} type="button">
+                <BarChart3 size={16} /> 我的成绩
+              </button>
+              )}
+              {canManageAccounts && (
+              <button className={mode === "account" ? "active" : ""} onClick={() => setMode("account")} type="button">
+                <Users size={16} /> 账号
+              </button>
+              )}
             </div>
-            {card && (
+            <AccountMenu />
+            {card && canDesign && mode === "design" && (
               <>
-                <a className="ghost-button" href={`/api/cards/${card.id}/layout`} target="_blank" rel="noreferrer">
+                <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
                   坐标JSON
                 </a>
-                <a className="ghost-button" href={`/api/cards/${card.id}/pdf?v=${encodeURIComponent(card.updatedAt)}`} target="_blank" rel="noreferrer">
+                <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/pdf?v=${encodeURIComponent(card.updatedAt)}`)} target="_blank" rel="noreferrer">
                   <FileDown size={17} /> PDF
                 </a>
                 <button className="primary-button" onClick={() => void saveCard()} disabled={isBusy}>
@@ -799,6 +870,7 @@ function App() {
                 <BarChart3 size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
                 成绩分析
               </button>
+              {canWriteExam && (
               <button
                 onClick={() => setAnalysisTab("manage")}
                 style={{
@@ -811,6 +883,7 @@ function App() {
                 <ListPlus size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
                 考试管理
               </button>
+              )}
             </div>
 
             {/* Tab: 成绩分析 */}
@@ -904,7 +977,7 @@ function App() {
             )}
 
             {/* Tab: 考试管理 */}
-            {analysisTab === "manage" && (
+            {canWriteExam && analysisTab === "manage" && (
               <div style={{ padding: 24, flex: 1, overflowY: "auto" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
                   <strong style={{ fontSize: 16 }}>考试管理</strong>
@@ -914,7 +987,7 @@ function App() {
                   {selectedExamIds.size > 0 && (
                     <button className="ghost-button" style={{ color: "#b91c1c" }} onClick={async () => {
                       if (!confirm(`删除选中的 ${selectedExamIds.size} 个考试？`)) return;
-                      for (const id of selectedExamIds) await fetch(`/api/exams/${id}`, { method: "DELETE" });
+                      for (const id of selectedExamIds) await fetchJson(`/api/exams/${id}`, { method: "DELETE" });
                       setSelectedExamIds(new Set());
                       if (analysisExamId && selectedExamIds.has(analysisExamId)) { setAnalysisExamId(null); setAnalysisOverview(null); setAnalysisRanking([]); setAnalysisQuestions([]); }
                       loadExams();
@@ -996,7 +1069,7 @@ function App() {
                           <td style={{ padding: "8px 10px" }}>
                             <button className="ghost-button" style={{ fontSize: 12, color: "#b91c1c", padding: "2px 6px" }} onClick={async () => {
                               if (!confirm(`删除「${exam.name}」？`)) return;
-                              await fetch(`/api/exams/${exam.id}`, { method: "DELETE" });
+                              await fetchJson(`/api/exams/${exam.id}`, { method: "DELETE" });
                               if (analysisExamId === exam.id) { setAnalysisExamId(null); setAnalysisOverview(null); setAnalysisRanking([]); setAnalysisQuestions([]); }
                               loadExams();
                             }}>删除</button>
@@ -1008,6 +1081,16 @@ function App() {
                 )}
               </div>
             )}
+          </section>
+        </div>
+        <div className={`main-grid scores-grid ${mode === "scores" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+            <StudentScores />
+          </section>
+        </div>
+        <div className={`main-grid account-grid ${mode === "account" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+            <AccountManagement />
           </section>
         </div>
         <footer className="statusbar">{status}</footer>
@@ -1076,7 +1159,7 @@ function GradingResults({
                 {row.previewUrl ? (
                   <a
                     className="score-preview-link"
-                    href={row.previewUrl}
+                    href={urlWithToken(row.previewUrl)}
                     target="_blank"
                     rel="noreferrer"
                     onClick={(event) => event.stopPropagation()}
