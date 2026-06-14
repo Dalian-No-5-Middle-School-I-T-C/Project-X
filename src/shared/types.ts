@@ -65,6 +65,7 @@ export type AnswerCard = {
   paper: PaperSettings;
   studentInfo: StudentInfoSettings;
   bodyBlocks: BodyBlock[];
+  sided: "single" | "double";
   layoutVersion: 1;
   updatedAt: string;
 };

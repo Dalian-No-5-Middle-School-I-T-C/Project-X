@@ -21,8 +21,8 @@ export class CardRepository {
    */
   createCard(card: AnswerCard, createdBy?: number): void {
     const stmt = this.db.prepare(`
-      INSERT INTO answer_cards (id, title, paper_size, orientation, student_fields, student_number_digits, layout_version, layout_data, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO answer_cards (id, title, paper_size, orientation, student_fields, student_number_digits, sided, layout_version, layout_data, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       card.id,
@@ -31,6 +31,7 @@ export class CardRepository {
       card.paper?.orientation ?? "portrait",
       JSON.stringify(card.studentInfo?.fields ?? []),
       card.studentInfo?.studentNumberDigits ?? 5,
+      card.sided ?? "double",
       card.layoutVersion ?? 1,
       null, // layout_data 在 saveLayout 中更新
       createdBy ?? null
@@ -43,13 +44,14 @@ export class CardRepository {
   updateCard(card: AnswerCard, layoutData?: unknown): void {
     const stmt = this.db.prepare(`
       UPDATE answer_cards
-      SET title = ?, student_fields = ?, student_number_digits = ?, layout_version = ?, layout_data = ?, updated_at = CURRENT_TIMESTAMP
+      SET title = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, layout_data = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `);
     stmt.run(
       card.title,
       JSON.stringify(card.studentInfo?.fields ?? []),
       card.studentInfo?.studentNumberDigits ?? 5,
+      card.sided ?? "double",
       card.layoutVersion ?? 1,
       layoutData ? JSON.stringify(layoutData) : null,
       card.id
@@ -191,6 +193,7 @@ export class CardRepository {
         studentNumberDigits: cardRow.student_number_digits
       },
       bodyBlocks: [],
+      sided: (cardRow.sided as "single" | "double") ?? "double",
       layoutVersion: cardRow.layout_version,
       updatedAt: cardRow.updated_at
     };

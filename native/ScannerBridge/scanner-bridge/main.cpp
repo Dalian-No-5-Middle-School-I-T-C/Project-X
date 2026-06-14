@@ -20,6 +20,7 @@ static void printUsage() {
     fprintf(stderr, "  --output <dir>      Output directory (required for scan)\n");
     fprintf(stderr, "  --prefix <str>      File name prefix (default: scan)\n");
     fprintf(stderr, "  --max-pages <num>   Max pages to scan (default: unlimited)\n");
+    fprintf(stderr, "  --show-ui           Show scanner's native UI\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -67,6 +68,8 @@ int main(int argc, char* argv[]) {
                 config.filePrefix = argv[++i];
             } else if (arg == "--max-pages" && i + 1 < argc) {
                 config.maxPages = atoi(argv[++i]);
+            } else if (arg == "--show-ui") {
+                config.showUi = true;
             } else if (arg == "--help" || arg == "-h") {
                 printUsage();
                 return 0;

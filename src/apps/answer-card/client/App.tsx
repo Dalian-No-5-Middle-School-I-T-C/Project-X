@@ -4,6 +4,7 @@ import {
   ArrowUp,
   BarChart3,
   Camera,
+  ChevronDown,
   ClipboardCheck,
   Download,
   FileDown,
@@ -235,6 +236,7 @@ function App() {
   const [analysisExamId, setAnalysisExamId] = useState<number | null>(null);
   const [analysisClassId, setAnalysisClassId] = useState<string>("");
   const [analysisClasses, setAnalysisClasses] = useState<Array<{ classId: number; className: string }>>([]);
+  const [showExportMenu, setShowExportMenu] = useState(false);
   const [analysisOverview, setAnalysisOverview] = useState<ExamOverview | null>(null);
   const [analysisRanking, setAnalysisRanking] = useState<StudentRankingItem[]>([]);
   const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
@@ -391,11 +393,24 @@ function App() {
   function addGradingFiles(files: FileList | null) {
     if (!files) return;
     const nextFiles = Array.from(files).filter(isImageFile);
+    // Single-sided card: filter out back-side images (filename ends with B.jpg / B.jpeg / B.png etc.)
+    const isSingleSided = card?.sided === "single";
+    const backSidePattern = /B\.(jpg|jpeg|png|bmp|tiff|tif)$/i;
+    let skippedBacks = 0;
+    const filteredFiles = isSingleSided
+      ? nextFiles.filter((file) => {
+          if (backSidePattern.test(file.name)) {
+            skippedBacks++;
+            return false;
+          }
+          return true;
+        })
+      : nextFiles;
     setGradingFiles((current) => {
       const seen = new Set(current.map((file) => `${file.name}_${file.size}_${file.lastModified}`));
       return [
         ...current,
-        ...nextFiles.filter((file) => {
+        ...filteredFiles.filter((file) => {
           const key = `${file.name}_${file.size}_${file.lastModified}`;
           if (seen.has(key)) return false;
           seen.add(key);
@@ -403,8 +418,11 @@ function App() {
         })
       ];
     });
-    if (nextFiles.length > 0) {
-      setStatus(`已加入 ${nextFiles.length} 张待阅卷图片`);
+    if (filteredFiles.length > 0 || skippedBacks > 0) {
+      const parts: string[] = [];
+      if (filteredFiles.length > 0) parts.push(`已加入 ${filteredFiles.length} 张待阅卷图片`);
+      if (skippedBacks > 0) parts.push(`（单面答题卡：跳过 ${skippedBacks} 张背面）`);
+      setStatus(parts.join(" "));
     }
   }
 
@@ -465,6 +483,30 @@ function App() {
     }
   }
 
+  function downloadAnalysisCsv(classId?: string) {
+    if (!analysisExamId) return;
+    setShowExportMenu(false);
+    const params = classId ? `?classId=${classId}` : "";
+    const exam = exams.find(e => e.id === analysisExamId);
+    const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.csv`;
+
+    fetch(`/api/analysis/exams/${analysisExamId}/export-csv${params}`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(await res.text());
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setStatus("CSV 导出完成");
+      })
+      .catch((err) => setStatus(`导出失败: ${err instanceof Error ? err.message : String(err)}`));
+  }
+
   const selectedBlock = card?.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null;
 
   return (
@@ -498,7 +540,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>{card?.title ?? "答题卡设计器"}</h1>
-            <p>{card ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个 · 预览页面仅供参考，以实际导出的 PDF 文件的样式为准` : "创建答题卡后开始编辑"}</p>
+            <p>{card ? `ID:${card.id} · ${card.sided === "single" ? "单面" : "双面"} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个 · 预览页面仅供参考，以实际导出的 PDF 文件的样式为准` : "创建答题卡后开始编辑"}</p>
           </div>
           <div className="topbar-actions">
             <div className="mode-toggle" role="tablist" aria-label="工作模式">
@@ -555,6 +597,18 @@ function App() {
                         updateCard((draft) => void (draft.studentInfo.studentNumberDigits = Number(event.target.value)))
                       }
                     />
+                  </label>
+                  <label>
+                    答题卡面
+                    <select
+                      value={card.sided ?? "double"}
+                      onChange={(event) =>
+                        updateCard((draft) => void (draft.sided = event.target.value as "single" | "double"))
+                      }
+                    >
+                      <option value="single">单面（仅正面有题）</option>
+                      <option value="double">双面（正反面均有题）</option>
+                    </select>
                   </label>
                 </section>
 
@@ -801,7 +855,42 @@ function App() {
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
                         <BarChart3 size={18} style={{ color: "var(--brand)" }} />
                         <strong style={{ fontSize: 17 }}>{exams.find(e => e.id === analysisExamId)?.name || "成绩分析"}</strong>
+                        <div style={{ marginLeft: "auto", position: "relative" }}>
+                          <button
+                            className="primary-button"
+                            style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 13 }}
+                            onClick={() => setShowExportMenu(!showExportMenu)}
+                          >
+                            <Download size={16} /> 导出 <ChevronDown size={14} />
+                          </button>
+                          {showExportMenu && (
+                            <div className="export-menu" style={{
+                              position: "absolute", right: 0, top: "100%", zIndex: 100, marginTop: 4,
+                              background: "#fff", border: "1px solid var(--line-strong)", borderRadius: 8,
+                              boxShadow: "0 4px 16px rgba(0,0,0,0.12)", padding: 4, minWidth: 180
+                            }}>
+                              <button onClick={() => downloadAnalysisCsv()} className="export-menu-btn">
+                                导出年级排名（全部班级）
+                              </button>
+                              <button
+                                onClick={() => downloadAnalysisCsv(analysisClassId || undefined)}
+                                disabled={!analysisClassId}
+                                className="export-menu-btn"
+                                title={!analysisClassId ? "请先在左侧选择班级" : ""}
+                              >
+                                导出班级排名（仅当前班）
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </div>
+                      {/* Click outside to close menu */}
+                      {showExportMenu && (
+                        <div
+                          style={{ position: "fixed", inset: 0, zIndex: 99 }}
+                          onClick={() => setShowExportMenu(false)}
+                        />
+                      )}
                       <AnalysisOverview overview={analysisOverview} />
                       {analysisOverview && analysisOverview.distribution.length > 0 && (
                         <AnalysisDistribution distribution={analysisOverview.distribution} />

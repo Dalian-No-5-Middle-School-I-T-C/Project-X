@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { Camera, Play, Square, RefreshCw, AlertTriangle, Check, Loader } from "lucide-react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { Camera, Play, Square, RefreshCw, AlertTriangle, Check, Loader, Eye, X } from "lucide-react";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 
 interface ScannerPanelProps {
@@ -17,6 +17,37 @@ type ScannerState =
   | "done"
   | "error";
 
+interface ScanPage {
+  pageNum: number;
+  side: string;
+  studentId: string | null;
+  studentConf: number | null;
+  ocrStatus: string;
+}
+
+interface PageResult {
+  recordId: string;
+  pageNum: number;
+  side: string;
+  imagePath: string;
+  objectiveScore: number;
+  subjectiveScore: number;
+  totalScore: number;
+  totalMaxScore: number;
+  needsReviewCount: number;
+}
+
+interface StudentResult {
+  studentId: string;
+  totalScore: number;
+  maxScore: number;
+  pageCount: number;
+  objectiveScore: number;
+  subjectiveScore: number;
+  needsReviewCount: number;
+  pages: PageResult[];
+}
+
 export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelProps) {
   const [state, setState] = useState<ScannerState>("idle");
   const [sources, setSources] = useState<string[]>([]);
@@ -28,14 +59,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [maxPages, setMaxPages] = useState(0);
   const [sessionId, setSessionId] = useState("");
   const [progressMessage, setProgressMessage] = useState("");
-  const [pages, setPages] = useState<Array<{
-    pageNum: number;
-    side: string;
-    studentId: string | null;
-    studentConf: number | null;
-    ocrStatus: string;
-  }>>([]);
+  const [pages, setPages] = useState<ScanPage[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
+  const [studentResults, setStudentResults] = useState<StudentResult[]>([]);
+  const [activeStudent, setActiveStudent] = useState<StudentResult | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   // Detect sources on mount
@@ -46,6 +73,23 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     };
   }, []);
 
+  // Keyboard shortcuts for PDF modal
+  useEffect(() => {
+    if (!activeStudent) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setActiveStudent(null);
+      if (e.key === "PageDown" || e.key === "PageUp") {
+        e.preventDefault();
+        const container = document.getElementById("student-pdf-scroll");
+        if (container) {
+          container.scrollBy({ top: (e.key === "PageDown" ? 1 : -1) * container.clientHeight * 0.8, behavior: "smooth" });
+        }
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [activeStudent]);
+
   async function detectSources() {
     setState("detecting");
     try {
@@ -53,7 +97,6 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       const data: ScannerSourcesResult = await res.json();
       if (data.status === "ok" && data.sources.length > 0) {
         setSources(data.sources.map((s) => s.name));
-        // Auto-select Kodak
         const kodak = data.sources.find((s) =>
           s.name.toLowerCase().includes("kodak") || s.name.toLowerCase().includes("i3000")
         );
@@ -108,9 +151,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           );
           break;
         case "ocr_done":
-          setState("done");
-          setProgressMessage("扫描识别完成");
-          onScansComplete?.(sid, pages.length);
+          setProgressMessage("扫描识别完成，正在汇总成绩...");
           break;
         case "error":
           setState("error");
@@ -118,6 +159,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           break;
         case "done":
           setState("done");
+          onScansComplete?.(sid, pages.length);
+          // Fetch combined results after scan completes
+          fetchCombinedResults(sid);
           break;
       }
     };
@@ -127,12 +171,25 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     };
   }
 
+  async function fetchCombinedResults(sid: string) {
+    try {
+      const res = await fetch(`/api/scanner/session/${sid}/results`);
+      if (res.ok) {
+        const data = await res.json();
+        setStudentResults(data as StudentResult[]);
+      }
+    } catch (err) {
+      console.error("Failed to fetch combined results:", err);
+    }
+  }
+
   async function startScan() {
     if (!selectedSource) return;
 
     setState("scanning");
     setErrorMessage("");
     setPages([]);
+    setStudentResults([]);
 
     try {
       const res = await fetch("/api/scanner/scan", {
@@ -175,9 +232,15 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setState("idle");
     setSessionId("");
     setPages([]);
+    setStudentResults([]);
+    setActiveStudent(null);
     setProgressMessage("");
     setErrorMessage("");
     detectSources();
+  }
+
+  function imageUrl(recordId: string): string {
+    return `/api/scanner/scan-image/${recordId}`;
   }
 
   return (
@@ -319,10 +382,45 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         <div className="scanner-done">
           <div className="scanner-status scanner-success">
             <Check size={20} />
-            <span>扫描完成 — 共 {pages.length} 张</span>
+            <span>扫描完成 — 共 {studentResults.length > 0 ? `${studentResults.length} 名学生` : `${pages.length} 张`}</span>
           </div>
 
-          {pages.length > 0 && (
+          {/* Combined student result list */}
+          {studentResults.length > 0 ? (
+            <div className="student-results-table">
+              <div className="student-results-header">
+                <span>学号</span>
+                <span>页数</span>
+                <span>总分</span>
+                <span>客观/主观</span>
+                <span>待复核</span>
+                <span>操作</span>
+              </div>
+              {studentResults.map((sr, idx) => (
+                <div key={idx} className="student-result-row">
+                  <span className={sr.studentId === "未识别" ? "missing-id" : ""}>
+                    {sr.studentId}
+                  </span>
+                  <span>{sr.pageCount}</span>
+                  <span className="score-cell">
+                    {sr.totalScore}/{sr.maxScore}
+                  </span>
+                  <span className="score-sub">
+                    {sr.objectiveScore}/{sr.maxScore - sr.subjectiveScore} · {sr.subjectiveScore}/{sr.subjectiveScore}
+                  </span>
+                  <span className={sr.needsReviewCount > 0 ? "status-warn" : "status-ok"}>
+                    {sr.needsReviewCount}
+                  </span>
+                  <span>
+                    <button className="ghost-button" style={{ fontSize: 12, padding: "2px 8px" }}
+                      onClick={() => setActiveStudent(sr)}>
+                      <Eye size={14} /> 查看
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
             <div className="scan-results-table">
               <div className="scan-results-header">
                 <span>页码</span>
@@ -361,6 +459,128 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           </button>
         </div>
       )}
+
+      {/* ── PDF-Style Student Detail Modal ──────────────── */}
+      {activeStudent && (
+        <StudentDetailModal
+          student={activeStudent}
+          imageUrl={imageUrl}
+          onClose={() => setActiveStudent(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Student Detail Modal (PDF-style vertical scroll) ──
+
+function StudentDetailModal({
+  student,
+  imageUrl,
+  onClose
+}: {
+  student: StudentResult;
+  imageUrl: (recordId: string) => string;
+  onClose: () => void;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [activePageIndex, setActivePageIndex] = useState(0);
+
+  // Track which page is currently visible
+  const handleScroll = useCallback(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const pageEls = container.querySelectorAll<HTMLElement>(".pdf-page-item");
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    const midY = container.scrollTop + container.clientHeight / 2;
+    pageEls.forEach((el, idx) => {
+      const center = el.offsetTop + el.offsetHeight / 2;
+      const dist = Math.abs(center - midY);
+      if (dist < bestDist) { bestDist = dist; bestIdx = idx; }
+    });
+    setActivePageIndex(bestIdx);
+  }, []);
+
+  function scrollToPage(index: number) {
+    const container = scrollRef.current;
+    if (!container) return;
+    const el = container.querySelectorAll<HTMLElement>(".pdf-page-item")[index];
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  return (
+    <div className="pdf-modal-backdrop" onClick={onClose}>
+      <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
+        {/* Top bar */}
+        <div className="pdf-modal-topbar">
+          <div className="pdf-modal-info">
+            <strong>学号: {student.studentId}</strong>
+            <span>总分 {student.totalScore} / {student.maxScore}</span>
+            <span>客观 {student.objectiveScore} · 主观 {student.subjectiveScore}</span>
+            {student.needsReviewCount > 0 && (
+              <span className="status-warn" style={{ fontSize: 12, padding: "1px 8px" }}>
+                待复核 {student.needsReviewCount} 题
+              </span>
+            )}
+          </div>
+          <button className="ghost-button" onClick={onClose} style={{ padding: "4px 10px" }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* PDF-style scrolling pages */}
+        <div
+          id="student-pdf-scroll"
+          className="pdf-modal-scroll"
+          ref={scrollRef}
+          onScroll={handleScroll}
+        >
+          {student.pages.map((page, idx) => (
+            <div key={page.recordId} className="pdf-page-item">
+              <div className="pdf-page-label">
+                <span>第 {page.pageNum} 页 · {page.side === "front" ? "正面" : "反面"}</span>
+                <span className="pdf-page-score">
+                  {page.totalScore}/{page.totalMaxScore}
+                  {" "}(客观 {page.objectiveScore} · 主观 {page.subjectiveScore})
+                </span>
+              </div>
+              <div className="pdf-page-image-wrapper">
+                <img
+                  src={imageUrl(page.recordId)}
+                  alt={`P${page.pageNum} ${page.side}`}
+                  className="pdf-page-image"
+                  loading={idx < 2 ? "eager" : "lazy"}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* Bottom thumbnail navigation */}
+        <div className="pdf-modal-bottombar">
+          <span className="pdf-page-counter">
+            {activePageIndex + 1} / {student.pages.length}
+          </span>
+          <div className="pdf-thumbnail-strip">
+            {student.pages.map((page, idx) => (
+              <button
+                key={page.recordId}
+                className={`pdf-thumbnail ${idx === activePageIndex ? "active" : ""}`}
+                onClick={() => scrollToPage(idx)}
+                title={`P${page.pageNum} ${page.side === "front" ? "正面" : "反面"}`}
+              >
+                <img
+                  src={imageUrl(page.recordId)}
+                  alt={`P${page.pageNum}`}
+                  loading="lazy"
+                />
+                <span>P{page.pageNum}{page.side === "front" ? "正" : "反"}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

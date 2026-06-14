@@ -373,12 +373,18 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
 
+      // Single-sided card: filter out back-side images
+      const backSidePattern = /B\.(jpg|jpeg|png|bmp|tiff|tif)$/i;
+      const gradingFiles = card.sided === "single"
+        ? files.filter((f) => !backSidePattern.test(f.originalname))
+        : files;
+
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
 
       const rows = [];
-      for (const file of files) {
+      for (const file of gradingFiles) {
         try {
           const recognition = (await recognizeObjectiveAnswers({
             imagePath: file.path,
@@ -431,6 +437,12 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
 
+      // Single-sided card: filter out back-side images
+      const backSidePattern = /B\.(jpg|jpeg|png|bmp|tiff|tif)$/i;
+      const gradingFiles = card.sided === "single"
+        ? files.filter((f) => !backSidePattern.test(f.originalname))
+        : files;
+
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
@@ -438,7 +450,7 @@ export async function createApp(): Promise<express.Express> {
       const examIdParam = fieldValue(req.body.examId);
 
       const rows = [];
-      for (const file of files) {
+      for (const file of gradingFiles) {
         try {
           const recognition = (await recognizeAnswerCard({
             imagePath: file.path,
@@ -656,6 +668,55 @@ export async function createApp(): Promise<express.Express> {
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
       const questions = analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
       res.json(questions);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/analysis/exams/:examId/export-csv", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const classId = req.query.classId ? Number(req.query.classId) : undefined;
+      const examId = Number(req.params.examId);
+
+      const { students, questionHeaders } = analysisRepo.getExportData(examId, classId);
+
+      // Build header row
+      const header = ["班级", "考号", "姓名", "成绩", "班级排名", "年级排名", "客观题成绩", "主观题成绩", ...questionHeaders];
+
+      // Build CSV lines
+      const csvEscape = (v: unknown): string => {
+        const s = v === "" || v === null || v === undefined ? "" : String(v);
+        if (s.includes(",") || s.includes("\"") || s.includes("\n")) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      };
+
+      const lines = [
+        header.map((h) => csvEscape(h)).join(","),
+        ...students.map((s) => [
+          csvEscape(s.className),
+          csvEscape(s.studentNumber),
+          csvEscape(s.name),
+          csvEscape(s.totalScore),
+          csvEscape(s.classRank),
+          csvEscape(s.gradeRank),
+          csvEscape(s.objectiveScore),
+          csvEscape(s.subjectiveScore),
+          ...s.questionScores.map((qs) => csvEscape(qs))
+        ].join(","))
+      ];
+
+      const csv = "\uFEFF" + lines.join("\n");
+
+      // Get exam name for the filename
+      const exam = analysisRepo.getExam(examId);
+      const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.csv`;
+
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+      res.send(csv);
     } catch (error) {
       next(error);
     }

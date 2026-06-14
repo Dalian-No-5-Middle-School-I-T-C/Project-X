@@ -1213,3 +1213,259 @@ select:focus {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* ── Student Results Table ───────────────────────────── */
+
+.student-results-table {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.student-results-header {
+  display: grid;
+  grid-template-columns: 1fr 56px 80px 1fr 64px 72px;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-soft);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.student-result-row {
+  display: grid;
+  grid-template-columns: 1fr 56px 80px 1fr 64px 72px;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+}
+
+.student-result-row:last-child {
+  border-bottom: none;
+}
+
+.student-result-row .score-cell {
+  font-weight: 700;
+  color: var(--brand-strong);
+}
+
+.student-result-row .score-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── PDF-Style Student Detail Modal ──────────────────── */
+
+.pdf-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+
+.pdf-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(92vw, 900px);
+  height: min(92vh, 95vh);
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+  animation: slideUp 0.2s ease;
+}
+
+.pdf-modal-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  background: linear-gradient(180deg, #f8fbf9 0%, #f1f6f3 100%);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.pdf-modal-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 14px;
+}
+
+.pdf-modal-info strong {
+  color: var(--brand-strong);
+}
+
+.pdf-modal-info span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pdf-modal-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  background: #eef3f0;
+  scroll-behavior: smooth;
+}
+
+.pdf-page-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 760px;
+}
+
+.pdf-page-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.pdf-page-score {
+  font-size: 12px;
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+  padding: 1px 8px;
+  border-radius: 4px;
+}
+
+.pdf-page-image-wrapper {
+  background: #fff;
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(31, 49, 43, 0.14);
+  overflow: hidden;
+  display: flex;
+  justify-content: center;
+}
+
+.pdf-page-image {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.pdf-modal-bottombar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  background: #fff;
+  border-top: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.pdf-page-counter {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+  min-width: 48px;
+}
+
+.pdf-thumbnail-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  flex: 1;
+  padding: 2px 0;
+}
+
+.pdf-thumbnail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  border: 2px solid var(--line);
+  border-radius: 6px;
+  padding: 0;
+  background: #fff;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 0.15s, transform 0.15s;
+  overflow: hidden;
+}
+
+.pdf-thumbnail:hover {
+  border-color: #94b6ac;
+  transform: translateY(-1px);
+}
+
+.pdf-thumbnail.active {
+  border-color: var(--brand);
+  box-shadow: 0 2px 8px rgba(35, 87, 77, 0.2);
+}
+
+.pdf-thumbnail img {
+  width: 56px;
+  height: 78px;
+  object-fit: cover;
+  display: block;
+}
+
+.pdf-thumbnail span {
+  font-size: 10px;
+  color: var(--muted);
+  padding: 1px 4px 3px;
+  white-space: nowrap;
+}
+
+.pdf-thumbnail.active span {
+  color: var(--brand-strong);
+  font-weight: 600;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Export dropdown menu ────────────────────────────── */
+
+.export-menu-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  border-radius: 4px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.export-menu-btn:hover:not(:disabled) {
+  background: var(--surface-soft);
+  color: var(--brand-strong);
+}
+
+.export-menu-btn:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}

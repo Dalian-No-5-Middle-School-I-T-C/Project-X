@@ -247,6 +247,83 @@ export function deleteRecognitionResult(scanRecordId: string): void {
   db.prepare("DELETE FROM recognition_results WHERE scan_record_id = ?").run(scanRecordId);
 }
 
+// ── Student Grading Results (combined across pages) ────
+
+export interface StudentGradingResultRow {
+  session_id: string;
+  student_id: string;
+  objective_json: string | null;
+  subjective_json: string | null;
+  total_score: number | null;
+  max_score: number | null;
+  page_count: number;
+  created_at: string;
+}
+
+/** Upsert a combined student grading result */
+export function upsertStudentGradingResult(params: {
+  sessionId: string;
+  studentId: string;
+  objectiveJson?: string | null;
+  subjectiveJson?: string | null;
+  totalScore?: number | null;
+  maxScore?: number | null;
+  pageCount?: number;
+}): void {
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT INTO student_grading_results (session_id, student_id, objective_json, subjective_json, total_score, max_score, page_count)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (session_id, student_id) DO UPDATE SET
+      objective_json = COALESCE(excluded.objective_json, objective_json),
+      subjective_json = COALESCE(excluded.subjective_json, subjective_json),
+      total_score = COALESCE(excluded.total_score, total_score),
+      max_score = COALESCE(excluded.max_score, max_score),
+      page_count = COALESCE(excluded.page_count, page_count),
+      created_at = datetime('now')
+  `);
+  stmt.run(
+    params.sessionId,
+    params.studentId,
+    params.objectiveJson ?? null,
+    params.subjectiveJson ?? null,
+    params.totalScore ?? null,
+    params.maxScore ?? null,
+    params.pageCount ?? 1
+  );
+}
+
+/** Get combined student grading results for a session */
+export function listStudentGradingResults(sessionId: string): StudentGradingResultRow[] {
+  const db = getDb();
+  return db
+    .prepare("SELECT * FROM student_grading_results WHERE session_id = ? ORDER BY student_id")
+    .all(sessionId) as StudentGradingResultRow[];
+}
+
+/** Get scan records for a session grouped by student_id (for combined grading) */
+export function listScanRecordsGroupedByStudent(sessionId: string): Array<{
+  studentId: string;
+  records: ScanRecordWithResult[];
+}> {
+  const db = getDb();
+  const records = db
+    .prepare("SELECT * FROM scan_records WHERE session_id = ? ORDER BY student_id, page_num, side")
+    .all(sessionId) as ScanRecord[];
+
+  const grouped = new Map<string, ScanRecordWithResult[]>();
+  for (const record of records) {
+    const key = record.student_id ?? "__unrecognized__";
+    if (!grouped.has(key)) grouped.set(key, []);
+    const recognition = db
+      .prepare("SELECT * FROM recognition_results WHERE scan_record_id = ?")
+      .get(record.id) as RecognitionResultRow | undefined;
+    grouped.get(key)!.push({ ...record, recognition: recognition ?? null });
+  }
+
+  return Array.from(grouped.entries()).map(([studentId, recs]) => ({ studentId, records: recs }));
+}
+
 // ── Bulk Operations ────────────────────────────────────
 
 /** Get all scan records for a card with their student IDs, images, and recognition results */

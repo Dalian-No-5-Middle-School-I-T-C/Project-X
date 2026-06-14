@@ -9,13 +9,15 @@ import {
   updateScanOcrResult,
   updateScanQuality,
   updateSessionStatus,
-  incrementPageCount
+  incrementPageCount,
+  upsertRecognitionResult
 } from "../database/scan-store";
 import type { ScanProgressEvent, ScanSessionConfig } from "./scanner-types";
 import { listSources, scan } from "./twain-bridge";
 import { recognizeAnswerCard } from "../recognition";
-import { readLayout, layoutPath } from "../storage";
-import type { CombinedRecognitionResult } from "../../../../shared/types";
+import { readLayout, layoutPath, readCard } from "../storage";
+import { gradeCombinedRecognition } from "../../../../shared/grading";
+import type { AnswerCard, CombinedRecognitionResult } from "../../../../shared/types";
 
 export { listSources };
 
@@ -56,7 +58,8 @@ export async function runScanSession(
       paperSize: config.paperSize,
       outputDir,
       filePrefix,
-      maxPages: config.maxPages || 0
+      maxPages: config.maxPages || 0,
+      showUi: config.showUi
     };
 
     // Run scan with progress
@@ -66,9 +69,20 @@ export async function runScanSession(
       throw new Error(result.message || "扫描未产生任何页面");
     }
 
-    // Create scan records for each page
+    // Read card to check if single-sided → discard back sides
+    const card = await readCard(config.cardId);
+    const isSingleSided = card?.sided === "single";
+    const filteredPages = isSingleSided
+      ? result.pages.filter((page) => page.side === "front")
+      : result.pages;
+
+    if (filteredPages.length === 0) {
+      throw new Error("扫描结果中没有任何正面页面");
+    }
+
+    // Create scan records for each page (filtered for single-sided cards)
     const recordIds: string[] = [];
-    for (const page of result.pages) {
+    for (const page of filteredPages) {
       const record = createScanRecord({
         sessionId,
         cardId: config.cardId,
@@ -84,7 +98,16 @@ export async function runScanSession(
         type: "page_done",
         pageNum: page.page,
         side: page.side,
-        totalPages: result.pages.length
+        totalPages: filteredPages.length
+      });
+    }
+
+    if (isSingleSided && result.pages.length > filteredPages.length) {
+      const skipped = result.pages.length - filteredPages.length;
+      onProgress({
+        sessionId,
+        type: "scanning",
+        message: `（单面答题卡：已跳过 ${skipped} 张背面）`
       });
     }
 
@@ -124,17 +147,24 @@ export async function runOcrOnSession(
   const records = listScanRecords(sessionId);
   const layoutJsonPath = layoutPath(cardId);
 
-  // Ensure layout exists
+  // Ensure layout exists and read card for sided info
   await readLayout(cardId);
+  const card = await readCard(cardId);
+  const isSingleSided = card?.sided === "single";
 
   for (const record of records) {
     if (!record.image_path) continue;
+
+    // Compute layout page number
+    const layoutPage = isSingleSided
+      ? record.page_num
+      : (record.page_num - 1) * 2 + (record.side === "front" ? 1 : 2);
 
     try {
       const recognition = (await recognizeAnswerCard({
         imagePath: record.image_path,
         layoutPath: layoutJsonPath,
-        pageNumber: record.page_num,
+        pageNumber: layoutPage,
         dpi: 300
       })) as CombinedRecognitionResult;
 
@@ -151,6 +181,29 @@ export async function runOcrOnSession(
         ocrStatus as "done" | "failed" | "review",
         recognition.message
       );
+
+      // Store recognition results + grading
+      if (card) {
+        try {
+          const graded = gradeCombinedRecognition(card, record.image_path, recognition);
+          upsertRecognitionResult({
+            scanRecordId: record.id,
+            objectiveJson: JSON.stringify(recognition.questions),
+            subjectiveJson: JSON.stringify(recognition.subjectiveQuestions ?? []),
+            totalScore: graded.totalScore,
+            maxScore: graded.totalMaxScore,
+            gradeStatus: "done"
+          });
+        } catch (gradeError) {
+          console.error(`[Scanner] Grading failed for record ${record.id}:`, gradeError);
+          upsertRecognitionResult({
+            scanRecordId: record.id,
+            objectiveJson: JSON.stringify(recognition.questions),
+            subjectiveJson: JSON.stringify(recognition.subjectiveQuestions ?? []),
+            gradeStatus: "pending"
+          });
+        }
+      }
 
       // Update quality if available
       if (recognition.quality?.overallScore !== undefined) {

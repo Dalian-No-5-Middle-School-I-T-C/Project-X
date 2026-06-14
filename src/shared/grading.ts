@@ -252,3 +252,118 @@ export function gradeCombinedRecognition(
     recognition
   };
 }
+
+// ── Multi-page / Duplex Combined Grading ────────────────
+
+export interface PageGradingResult {
+  recordId: string;
+  pageNum: number;
+  side: string;
+  imagePath: string;
+  objectiveScore: number;
+  objectiveMaxScore: number;
+  subjectiveScore: number;
+  subjectiveMaxScore: number;
+  totalScore: number;
+  totalMaxScore: number;
+  ocrStatus: string;
+  needsReviewCount: number;
+}
+
+export interface CombinedStudentResult {
+  studentId: string;
+  pages: PageGradingResult[];
+  totalScore: number;
+  totalMaxScore: number;
+  objectiveScore: number;
+  objectiveMaxScore: number;
+  subjectiveScore: number;
+  subjectiveMaxScore: number;
+  needsReviewCount: number;
+  pageCount: number;
+  objectiveQuestions: ObjectiveQuestionGrade[];
+  subjectiveQuestions: SubjectiveQuestionGrade[];
+}
+
+/**
+ * Combine grading results from multiple pages/sides for the same student.
+ * Deduplicates questions across pages (prefers non-missing_key results, then higher score).
+ */
+export function gradeSessionStudentResults(
+  card: AnswerCard,
+  pages: Array<{
+    recordId: string;
+    pageNum: number;
+    side: string;
+    imagePath: string;
+    recognition: CombinedRecognitionResult;
+    ocrStatus: string;
+  }>
+): CombinedStudentResult {
+  const objQMap = new Map<number, ObjectiveQuestionGrade>();
+  const subjQMap = new Map<string, SubjectiveQuestionGrade>();
+
+  const pageResults: PageGradingResult[] = pages.map((page) => {
+    const row = gradeCombinedRecognition(card, page.imagePath, page.recognition);
+
+    // Deduplicate across pages — prefer better results (non-missing_key, higher score)
+    for (const q of row.questions) {
+      const existing = objQMap.get(q.questionNumber);
+      if (!existing || (existing.status === "missing_key" && q.status !== "missing_key") ||
+          (existing.score < q.score && q.status !== "missing_key")) {
+        objQMap.set(q.questionNumber, q);
+      }
+    }
+    for (const sq of row.subjectiveQuestions) {
+      const key = String(sq.questionId) || String(sq.questionNumber);
+      const existing = subjQMap.get(key);
+      if (!existing || (existing.status === "missing_score_grid" && sq.status !== "missing_score_grid") ||
+          (existing.score < sq.score && sq.status !== "missing_score_grid")) {
+        subjQMap.set(key, sq);
+      }
+    }
+
+    return {
+      recordId: page.recordId,
+      pageNum: page.pageNum,
+      side: page.side,
+      imagePath: page.imagePath,
+      objectiveScore: row.objectiveScore,
+      objectiveMaxScore: row.objectiveMaxScore,
+      subjectiveScore: row.subjectiveScore,
+      subjectiveMaxScore: row.subjectiveMaxScore,
+      totalScore: row.totalScore,
+      totalMaxScore: row.totalMaxScore,
+      ocrStatus: page.ocrStatus,
+      needsReviewCount: row.needsReviewCount
+    };
+  });
+
+  const allObjectiveQuestions = Array.from(objQMap.values());
+  const allSubjectiveQuestions = Array.from(subjQMap.values());
+
+  // Compute totals from deduplicated questions, not from page sums
+  const objectiveScore = roundScore(allObjectiveQuestions.reduce((sum, q) => sum + q.score, 0));
+  const objectiveMaxScore = roundScore(allObjectiveQuestions.reduce((sum, q) => sum + q.maxScore, 0));
+  const subjectiveScore = roundScore(allSubjectiveQuestions.reduce((sum, q) => sum + q.score, 0));
+  const subjectiveMaxScore = roundScore(allSubjectiveQuestions.reduce((sum, q) => sum + q.maxScore, 0));
+  const totalScore = roundScore(objectiveScore + subjectiveScore);
+  const totalMaxScore = roundScore(objectiveMaxScore + subjectiveMaxScore);
+  const needsReviewCount = allObjectiveQuestions.filter((q) => q.needsReview).length +
+                            allSubjectiveQuestions.filter((q) => q.needsReview).length;
+
+  return {
+    studentId: pages[0]?.recognition.studentId?.value ?? "未识别",
+    pages: pageResults,
+    totalScore,
+    totalMaxScore,
+    objectiveScore,
+    objectiveMaxScore,
+    subjectiveScore,
+    subjectiveMaxScore,
+    needsReviewCount,
+    pageCount: pageResults.length,
+    objectiveQuestions: allObjectiveQuestions,
+    subjectiveQuestions: allSubjectiveQuestions
+  };
+}
