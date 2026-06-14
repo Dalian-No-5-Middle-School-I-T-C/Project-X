@@ -21,7 +21,17 @@ async function startLocalServer() {
   process.env.PROJECTX_DB_PATH = path.join(userDataDir, "data", "projectx.db");
 
   const serverModule = await import(pathToFileURL(serverBundle).href);
-  server = await serverModule.startServer(0);
+  const preferredPort = Number(process.env.PROJECTX_ELECTRON_PORT || 5174);
+  try {
+    server = await serverModule.startServer(preferredPort);
+  } catch (error) {
+    if (error && error.code === "EADDRINUSE") {
+      console.warn(`[Electron] Port ${preferredPort} is already in use; falling back to a random port.`);
+      server = await serverModule.startServer(0);
+    } else {
+      throw error;
+    }
+  }
   const address = server.address();
   if (!address || typeof address !== "object") {
     throw new Error("Cannot determine local server port.");

@@ -1088,13 +1088,14 @@ export async function createApp(): Promise<express.Express> {
 export async function startServer(port = Number(process.env.PORT ?? 5174)): Promise<Server> {
   const app = await createApp();
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const server = app.listen(port, "127.0.0.1", () => {
       const address = server.address();
       const actualPort = typeof address === "object" && address ? address.port : port;
       console.log(`Answer card designer API running at http://127.0.0.1:${actualPort}`);
       resolve(server);
     });
+    server.once("error", reject);
   });
 }
 
