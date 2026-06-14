@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -86,6 +86,19 @@ function cloneCard(card: AnswerCard): AnswerCard {
 }
 
 type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
+
+type GradingProgress = {
+  active: boolean;
+  finished: number;
+  total: number;
+};
+
+type GradingProgressEvent = {
+  type: "start" | "progress" | "done" | "error";
+  batchId: string;
+  finished: number;
+  total: number;
+};
 
 function defaultModeForUser(
   hasPermission: (perm: string) => boolean,
@@ -243,8 +256,10 @@ function App() {
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
   const [gradingExamId, setGradingExamId] = useState<string>("");
   const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
+  const [gradingProgress, setGradingProgress] = useState<GradingProgress>({ active: false, finished: 0, total: 0 });
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
+  const gradingProgressSourceRef = useRef<EventSource | null>(null);
   const [showScanner, setShowScanner] = useState(false);
   const [analysisExamId, setAnalysisExamId] = useState<number | null>(null);
   const [analysisClassId, setAnalysisClassId] = useState<string>("");
@@ -283,6 +298,12 @@ function App() {
     if (!user || (!canDesign && !canGrade)) return;
     void refreshCards(canDesign);
   }, [user?.id, canDesign, canGrade]);
+
+  useEffect(() => {
+    return () => {
+      gradingProgressSourceRef.current?.close();
+    };
+  }, []);
 
   async function refreshCards(loadFirst = false) {
     const list = await fetchJson<CardSummary[]>("/api/cards");
@@ -527,15 +548,52 @@ function App() {
     }
   }
 
+  function createGradingProgressId(): string {
+    const randomPart =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID().replace(/-/g, "")
+        : Math.random().toString(36).slice(2, 12);
+    return `grading_${Date.now()}_${randomPart}`;
+  }
+
+  function listenGradingProgress(cardId: string, progressId: string, initialTotal: number) {
+    gradingProgressSourceRef.current?.close();
+    setGradingProgress({ active: true, finished: 0, total: initialTotal });
+    const es = new EventSource(urlWithToken(`/api/cards/${encodeURIComponent(cardId)}/grading/progress/${encodeURIComponent(progressId)}`));
+    gradingProgressSourceRef.current = es;
+
+    es.onmessage = (event) => {
+      const data = JSON.parse(event.data) as GradingProgressEvent;
+      setGradingProgress({
+        active: data.type !== "error",
+        finished: data.finished,
+        total: data.total
+      });
+      if (data.type === "start" || data.type === "progress") {
+        setStatus(`识别答题卡，已识别 ${data.finished}/${data.total} 张`);
+      }
+      if (data.type === "done" || data.type === "error") {
+        es.close();
+      }
+    };
+
+    es.onerror = () => {
+      es.close();
+    };
+  }
+
   async function gradeAnswerCardFiles() {
     if (!card || gradingFiles.length === 0) return;
     setIsBusy(true);
-    setStatus("正在识别并汇总客观题、主观题分数...");
+    const progressId = createGradingProgressId();
+    listenGradingProgress(card.id, progressId, gradingFiles.length);
+    setStatus(`识别答题卡，已识别 0/${gradingFiles.length} 张`);
     try {
       const form = new FormData();
       for (const file of gradingFiles) {
         form.append("files", file);
       }
+      form.append("progressId", progressId);
       if (gradingExamId) {
         form.append("examId", gradingExamId);
       }
@@ -548,6 +606,9 @@ function App() {
       const extra = gradingExamId ? "，正在后台写入数据库..." : "（未选择考试，数据未落库）";
       setStatus(msg + extra);
     } finally {
+      gradingProgressSourceRef.current?.close();
+      gradingProgressSourceRef.current = null;
+      setGradingProgress((current) => ({ ...current, active: false }));
       setIsBusy(false);
     }
   }
@@ -963,6 +1024,21 @@ function App() {
               <button className="primary-button wide-button" onClick={() => void gradeAnswerCardFiles()} disabled={!card || gradingFiles.length === 0 || isBusy}>
                 <ClipboardCheck size={17} /> 开始识别并判分
               </button>
+              {gradingProgress.active && (
+                <div className="grading-progress">
+                  <div className="grading-progress-text">
+                    识别答题卡，已识别 {gradingProgress.finished}/{gradingProgress.total} 张
+                  </div>
+                  <div className="grading-progress-track">
+                    <div
+                      className="grading-progress-fill"
+                      style={{
+                        width: `${gradingProgress.total > 0 ? Math.min(100, (gradingProgress.finished / gradingProgress.total) * 100) : 0}%`
+                      }}
+                    />
+                  </div>
+                </div>
+              )}
               <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
             </section>
           </aside>
