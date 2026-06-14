@@ -167,10 +167,10 @@ export function UserManagement() {
           )}
         </div>
         <div className="account-panel-actions">
-          <button className="primary-button" type="button" onClick={() => setShowCreate(!showCreate)} disabled={busy}>
+          <button className="primary-button" type="button" onClick={() => setShowCreate((open) => !open)}>
             <Plus size={16} /> 新建用户
           </button>
-          <button className="ghost-button" type="button" onClick={() => setShowImport(!showImport)} disabled={busy}>
+          <button className="ghost-button" type="button" onClick={() => setShowImport((open) => !open)}>
             <Download size={16} /> 批量导入学生
           </button>
           <button className="ghost-button" type="button" onClick={() => void loadUsers()} disabled={busy}>
