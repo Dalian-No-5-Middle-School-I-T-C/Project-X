@@ -2286,6 +2286,7 @@ input:focus, select:focus {
 
 .account-menu {
   position: relative;
+  z-index: 20;
 }
 
 .account-menu-trigger {
@@ -2346,7 +2347,8 @@ input:focus, select:focus {
 .account-menu-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 99;
+  z-index: -1;
+  pointer-events: none;
 }
 
 .account-menu-info {
