@@ -5,7 +5,7 @@ import { permissionGrants, type AuthUser, type LoginResponse } from "./types";
 interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
-  login: (identifier: string, password: string) => Promise<void>;
+  login: (identifier: string, password: string, isPersistent?: boolean) => Promise<void>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   hasPermission: (perm: string) => boolean;
@@ -42,11 +42,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, [refreshUser]);
 
-  const login = useCallback(async (identifier: string, password: string) => {
+  const login = useCallback(async (identifier: string, password: string, isPersistent?: boolean) => {
     const result = await fetchJson<LoginResponse>("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier, password })
+      body: JSON.stringify({ identifier, password, isPersistent: !!isPersistent })
     });
     setAuthToken(result.token);
     const nextUser: AuthUser = {

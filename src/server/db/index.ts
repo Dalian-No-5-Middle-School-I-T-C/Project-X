@@ -49,6 +49,18 @@ export function initializeDatabase(): void {
     db.exec("ALTER TABLE answer_cards ADD COLUMN sided TEXT DEFAULT 'double'");
     console.log("[DB] Migration: added sided column to answer_cards");
   }
+  if (!cols.some((c) => c.name === "subject")) {
+    db.exec("ALTER TABLE answer_cards ADD COLUMN subject TEXT");
+    console.log("[DB] Migration: added subject column to answer_cards");
+  }
+  if (!cols.some((c) => c.name === "subject_label")) {
+    db.exec("ALTER TABLE answer_cards ADD COLUMN subject_label TEXT");
+    console.log("[DB] Migration: added subject_label column to answer_cards");
+  }
+  if (!cols.some((c) => c.name === "exam_date")) {
+    db.exec("ALTER TABLE answer_cards ADD COLUMN exam_date TEXT");
+    console.log("[DB] Migration: added exam_date column to answer_cards");
+  }
 
   const roleCount = db.prepare("SELECT COUNT(*) as cnt FROM roles").get() as { cnt: number };
   if (roleCount.cnt === 0) {

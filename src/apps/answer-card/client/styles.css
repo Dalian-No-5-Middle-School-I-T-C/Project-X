@@ -161,6 +161,10 @@ button {
   animation: fadeInUp 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
+.no-card-sidebar {
+  grid-template-columns: 1fr;
+}
+
 /* ── Sidebar ────────────────────────────────────────── */
 .sidebar {
   border-right: 1px solid var(--line);
@@ -196,19 +200,18 @@ button {
   position: relative;
 }
 
-.brand::before {
-  content: "";
+.brand-icon {
   width: 40px;
   height: 40px;
   flex: 0 0 auto;
   margin-right: 12px;
   border-radius: 12px;
-  background: linear-gradient(135deg, var(--brand) 0%, var(--brand-light) 50%, var(--brand-dark) 100%);
+  object-fit: cover;
   box-shadow: 0 8px 24px var(--brand-glow), inset 0 1px 0 rgba(255,255,255,0.3);
   transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.3s ease;
 }
 
-.brand:hover::before {
+.brand:hover .brand-icon {
   transform: scale(1.05) rotate(3deg);
   box-shadow: 0 12px 32px var(--brand-glow), inset 0 1px 0 rgba(255,255,255,0.4);
 }
@@ -392,11 +395,58 @@ button {
   font-weight: 500;
 }
 
+/* 答题卡列表项：主点击区 + 操作按钮 */
+.card-list-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.card-list-main {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  min-width: 0;
+  cursor: pointer;
+  color: inherit;
+}
+
+.card-list-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.card-list-actions button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.card-list-actions button:hover {
+  border-color: rgba(192, 15, 40, 0.2);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--brand);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
 /* ── Workspace ──────────────────────────────────────── */
 .workspace {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
+  max-height: 100vh;
+  overflow: hidden;
   background: transparent;
 }
 
@@ -410,7 +460,6 @@ button {
   border-bottom: 1px solid var(--line);
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 20px;
   position: relative;
   z-index: 5;
@@ -442,6 +491,16 @@ button {
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+.topbar-actions-left {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  flex: 1;
+  justify-content: center;
 }
 
 /* ── Mode Toggle ────────────────────────────────────── */
@@ -2151,6 +2210,23 @@ input:focus, select:focus {
   text-align: center;
 }
 
+.login-remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-direction: row !important;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.login-remember input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
 .account-menu {
   position: relative;
 }
@@ -2737,4 +2813,72 @@ input:focus, select:focus {
 ::selection {
   background: rgba(192, 15, 40, 0.15);
   color: var(--brand-dark);
+}
+
+/* ── Modal ─────────────────────────────────────────────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  animation: fadeIn 0.2s ease;
+}
+
+.modal-card {
+  background: #fff;
+  border-radius: 20px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.15), 0 8px 24px rgba(0, 0, 0, 0.08);
+  padding: 28px;
+  animation: slideUp 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.modal-header h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.modal-close {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  background: var(--surface-raised);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.modal-close:hover {
+  background: #fff;
+  color: var(--brand);
+  border-color: var(--brand-light);
+}
+
+.modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.modal-footer {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 24px;
 }
