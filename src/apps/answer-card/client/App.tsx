@@ -688,10 +688,10 @@ function App() {
       {showCardSidebar && (
       <aside className="sidebar">
         <div className="brand">
-          <img src="/resources/icon.png" alt="" className="brand-icon" />
+          <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1</span>
+            <span>Project-X v1.0.1</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>

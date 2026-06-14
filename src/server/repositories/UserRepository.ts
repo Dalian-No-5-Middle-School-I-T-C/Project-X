@@ -50,6 +50,7 @@ export interface BatchImportResult {
   created: number;
   skipped: number;
   errors: Array<{ row: BatchStudentInput; message: string }>;
+  createdIds: number[];
 }
 
 export class UserRepository {
@@ -305,7 +306,7 @@ export class UserRepository {
    * 已存在的用户名/学号会被跳过并记录到 errors。
    */
   async batchCreateStudents(rows: BatchStudentInput[]): Promise<BatchImportResult> {
-    const result: BatchImportResult = { created: 0, skipped: 0, errors: [] };
+    const result: BatchImportResult = { created: 0, skipped: 0, errors: [], createdIds: [] };
 
     // 预先计算所有密码哈希（hash 为异步，不能放进同步事务）
     const prepared: Array<{ row: BatchStudentInput; username: string; hash: string }> = [];
@@ -332,8 +333,9 @@ export class UserRepository {
     const tx = this.db.transaction(() => {
       for (const item of prepared) {
         try {
-          insert.run(item.username, item.hash, item.row.name, item.row.student_number);
+          const insertResult = insert.run(item.username, item.hash, item.row.name, item.row.student_number);
           result.created++;
+          result.createdIds.push(Number(insertResult.lastInsertRowid));
         } catch (err) {
           result.errors.push({ row: item.row, message: err instanceof Error ? err.message : String(err) });
         }
