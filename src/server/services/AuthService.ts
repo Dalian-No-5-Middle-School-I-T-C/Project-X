@@ -2,6 +2,9 @@ import { UserRepository, type UserRecord } from "../repositories/UserRepository"
 import { verifyPassword, hashPassword, getDatabase } from "../db";
 import { permissionsForRole } from "../auth/permissions";
 import { randomBytes } from "node:crypto";
+import { homedir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export interface LoginResult {
   success: boolean;
@@ -16,26 +19,75 @@ export interface ChangePasswordResult {
   message: string;
 }
 
-/**
- * 简单的 token 存储（生产环境应使用 Redis 或 JWT）
- * key: token, value: { userId, expiresAt }
- */
-const tokenStore = new Map<string, { userId: number; expiresAt: number }>();
+interface TokenRecord {
+  userId: number;
+  expiresAt: number;
+}
+
+const TOKEN_STORE_DIR = join(homedir(), ".projectx");
+const TOKEN_STORE_PATH = join(TOKEN_STORE_DIR, "tokens.json");
 
 const TOKEN_EXPIRE_MS = 8 * 60 * 60 * 1000; // 8小时
+const PERSISTENT_TOKEN_EXPIRE_MS = 180 * 24 * 60 * 60 * 1000; // 6个月
 
 export class AuthService {
   private userRepo: UserRepository;
+  private tokenStore = new Map<string, TokenRecord>();
+  private saveScheduled = false;
 
   constructor() {
     this.userRepo = new UserRepository();
+    this.loadTokens();
+  }
+
+  /** 从磁盘加载持久化 tokens */
+  private loadTokens(): void {
+    try {
+      if (!existsSync(TOKEN_STORE_PATH)) return;
+      const raw = readFileSync(TOKEN_STORE_PATH, "utf8");
+      const data = JSON.parse(raw) as { tokens: Record<string, TokenRecord> };
+      const now = Date.now();
+      for (const [token, record] of Object.entries(data.tokens ?? {})) {
+        if (record.expiresAt > now) {
+          this.tokenStore.set(token, record);
+        }
+      }
+      console.log(`[Auth] 从磁盘加载了 ${this.tokenStore.size} 个有效 token`);
+    } catch (error) {
+      console.error("[Auth] 加载持久化 token 失败:", error);
+    }
+  }
+
+  /** 异步保存 tokens 到磁盘（合并短时间内的多次写入） */
+  private scheduleSave(): void {
+    if (this.saveScheduled) return;
+    this.saveScheduled = true;
+    setImmediate(() => {
+      this.saveScheduled = false;
+      this.persistTokens();
+    });
+  }
+
+  private persistTokens(): void {
+    try {
+      if (!existsSync(TOKEN_STORE_DIR)) {
+        mkdirSync(TOKEN_STORE_DIR, { recursive: true });
+      }
+      const data: { tokens: Record<string, TokenRecord> } = { tokens: {} };
+      for (const [token, record] of this.tokenStore.entries()) {
+        data.tokens[token] = record;
+      }
+      writeFileSync(TOKEN_STORE_PATH, JSON.stringify(data, null, 2), "utf8");
+    } catch (error) {
+      console.error("[Auth] 持久化 token 失败:", error);
+    }
   }
 
   /**
    * 用户登录
    * 支持用户名（学号/职工号）或邮箱登录
    */
-  async login(identifier: string, password: string): Promise<LoginResult> {
+  async login(identifier: string, password: string, isPersistent = false): Promise<LoginResult> {
     // 查找用户（支持 username 或 student_number 或 email）
     let user = this.userRepo.findByUsername(identifier);
 
@@ -59,8 +111,9 @@ export class AuthService {
 
     // 生成 token
     const token = randomBytes(32).toString("hex");
-    const expiresAt = Date.now() + TOKEN_EXPIRE_MS;
-    tokenStore.set(token, { userId: user.id, expiresAt });
+    const expiresAt = Date.now() + (isPersistent ? PERSISTENT_TOKEN_EXPIRE_MS : TOKEN_EXPIRE_MS);
+    this.tokenStore.set(token, { userId: user.id, expiresAt });
+    this.scheduleSave();
 
     // 清除敏感信息
     const { password_hash, ...safeUser } = user;
@@ -111,22 +164,26 @@ export class AuthService {
    * 吊销指定用户的所有 token（改密 / 禁用账号时调用）。
    */
   revokeUserTokens(userId: number): void {
-    for (const [token, record] of tokenStore.entries()) {
+    let changed = false;
+    for (const [token, record] of this.tokenStore.entries()) {
       if (record.userId === userId) {
-        tokenStore.delete(token);
+        this.tokenStore.delete(token);
+        changed = true;
       }
     }
+    if (changed) this.scheduleSave();
   }
 
   /**
    * 验证 token
    */
   verifyToken(token: string): { userId: number } | null {
-    const record = tokenStore.get(token);
+    const record = this.tokenStore.get(token);
     if (!record) return null;
 
     if (Date.now() > record.expiresAt) {
-      tokenStore.delete(token);
+      this.tokenStore.delete(token);
+      this.scheduleSave();
       return null;
     }
 
@@ -151,7 +208,9 @@ export class AuthService {
    * 退出登录
    */
   logout(token: string): void {
-    tokenStore.delete(token);
+    if (this.tokenStore.delete(token)) {
+      this.scheduleSave();
+    }
   }
 
   /**
@@ -159,10 +218,16 @@ export class AuthService {
    */
   cleanupExpiredTokens(): void {
     const now = Date.now();
-    for (const [token, record] of tokenStore.entries()) {
+    let changed = false;
+    for (const [token, record] of this.tokenStore.entries()) {
       if (now > record.expiresAt) {
-        tokenStore.delete(token);
+        this.tokenStore.delete(token);
+        changed = true;
       }
     }
+    if (changed) this.scheduleSave();
   }
 }
+
+/** 全局单例：routes/auth.ts 和 middleware/auth.ts 共享同一个实例 */
+export const authService = new AuthService();

@@ -69,11 +69,14 @@ CREATE TABLE IF NOT EXISTS class_students (
 CREATE TABLE IF NOT EXISTS answer_cards (
     id               TEXT PRIMARY KEY,                    -- 与现有 JSON 一致，8位数字字符串
     title            TEXT NOT NULL,
+    subject          TEXT,                                -- 科目拼音 key，如 wuli/shuxue/yingyu
+    subject_label    TEXT,                                -- 科目中文名，如 物理/数字/英语
+    exam_date        TEXT,                                -- 考试日期 ISO 格式 YYYY-MM-DD（可选）
     paper_size       TEXT DEFAULT 'A4',
     orientation      TEXT DEFAULT 'portrait',
     student_fields   TEXT,                                -- JSON: ["姓名","班级"]
     student_number_digits INTEGER DEFAULT 5,
-    sided           TEXT DEFAULT 'double',              -- single / double
+    sided           TEXT DEFAULT 'single',              -- single / double
     layout_version   INTEGER DEFAULT 1,
     layout_data      TEXT,                                -- JSON: LayoutDocument 完整坐标
     created_by       INTEGER REFERENCES users(id),
