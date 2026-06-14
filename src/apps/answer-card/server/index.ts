@@ -1,8 +1,9 @@
 import express from "express";
 import multer from "multer";
+import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { ensureDefaultAdmin, initializeDatabase } from "../../../server/db";
@@ -12,7 +13,12 @@ import { ExamRepository } from "../../../server/repositories/ExamRepository";
 import { AnalysisRepository } from "../../../server/repositories/AnalysisRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
 import authRoutes from "../../../server/routes/auth";
-import { createDefaultCard } from "../../../shared/defaultCard";
+import userRoutes from "../../../server/routes/users";
+import classRoutes from "../../../server/routes/classes";
+import scoreRoutes from "../../../server/routes/scores";
+import { optionalAuth } from "../../../server/middleware/auth";
+import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
+import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 import type {
@@ -50,6 +56,8 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
   return {
     ...card,
     id: safeId(cardId),
+    subjectLabel: (card as any).subjectLabel ?? card.subjectLabel ?? undefined,
+    examDate: (card as any).examDate ?? card.examDate ?? undefined,
     bodyBlocks: (card.bodyBlocks ?? []).map((block) =>
       block.type === "objective" ? { ...block, answerKey: normalizeObjectiveAnswerKey(block) } : block
     ),
@@ -59,10 +67,13 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
   };
 }
 
-function toCardSummary(row: { id: string; title: string; updated_at?: string; updatedAt?: string }): CardSummary {
+function toCardSummary(row: { id: string; title: string; updated_at?: string; updatedAt?: string; subject?: string; subject_label?: string; exam_date?: string }): CardSummary {
   return {
     id: row.id,
     title: row.title || "未命名答题卡",
+    subject: (row as any).subject ?? undefined,
+    subjectLabel: (row as any).subject_label ?? undefined,
+    examDate: (row as any).exam_date ?? undefined,
     updatedAt: row.updatedAt ?? row.updated_at ?? new Date(0).toISOString()
   };
 }
@@ -104,6 +115,55 @@ function parsePositiveNumber(value: unknown, fallback: number): number {
 function gradingPreviewUrl(cardId: string, imagePath?: string): string | undefined {
   if (!imagePath) return undefined;
   return `/api/cards/${encodeURIComponent(cardId)}/grading/preview/${encodeURIComponent(path.basename(imagePath))}`;
+}
+
+type GradingProgressEvent = {
+  type: "start" | "progress" | "done" | "error";
+  batchId: string;
+  finished: number;
+  total: number;
+};
+
+const gradingProgressListeners = new Map<string, Set<(event: GradingProgressEvent) => void>>();
+const gradingProgressSnapshots = new Map<string, GradingProgressEvent>();
+
+function recognitionConcurrency(): number {
+  const configured = Number(process.env.ANSWER_CARD_RECOGNITION_CONCURRENCY);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(1, Math.floor(configured));
+  }
+  return Math.min(4, Math.max(2, Math.floor(cpus().length / 2)));
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex++;
+        results[currentIndex] = await worker(items[currentIndex], currentIndex);
+      }
+    })
+  );
+  return results;
+}
+
+function emitGradingProgress(event: GradingProgressEvent): void {
+  gradingProgressSnapshots.set(event.batchId, event);
+  const listeners = gradingProgressListeners.get(event.batchId);
+  if (listeners) {
+    for (const listener of listeners) listener(event);
+  }
+  if (event.type === "done" || event.type === "error") {
+    gradingProgressListeners.delete(event.batchId);
+    setTimeout(() => gradingProgressSnapshots.delete(event.batchId), 60_000).unref();
+  }
 }
 
 /** Background persistence: save grading results to database without blocking response */
@@ -182,20 +242,70 @@ async function persistGradingResults(
   console.log(`[Grading] Persisted ${persisted} student scores to exam ${examId}`);
 }
 
+/**
+ * 业务路由的 RBAC 网关。
+ *
+ * 兼容性设计：通过环境变量 PROJECTX_AUTH_ENFORCE 控制是否强制鉴权。
+ *  - 关闭（默认）：仅 optionalAuth 解析用户（用于 created_by），不拦截，保持 v1.0 前端无登录可用；
+ *  - 开启（=1/true）：未登录返回 401，权限不足返回 403。
+ * GET/HEAD 走 readPerm，写操作走 writePerm。
+ */
+function makeGate(enforce: boolean, readPerm: string, writePerm: string) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+    if (!enforce) {
+      next();
+      return;
+    }
+    if (!req.user) {
+      res.status(401).json({ message: "未提供认证令牌" });
+      return;
+    }
+    const required = req.method === "GET" || req.method === "HEAD" ? readPerm : writePerm;
+    if (!roleHasPermission(req.user.role_id, required)) {
+      res.status(403).json({ message: `权限不足：缺少 ${required}` });
+      return;
+    }
+    next();
+  };
+}
+
 export async function createApp(): Promise<express.Express> {
   const app = express();
 
   console.log("[Server] 正在初始化数据库...");
   initializeDatabase();
   await ensureDefaultAdmin();
+  loadRolePermissions(true); // 预热角色权限缓存
   const cleanupTimer = scheduleCleanup(24, 30);
   cleanupTimer.unref();
   await ensureDataDirs();
   console.log("[Server] 数据库初始化完成");
 
+  const enforceAuth =
+    process.env.PROJECTX_AUTH_ENFORCE === "1" || process.env.PROJECTX_AUTH_ENFORCE === "true";
+  console.log(`[Server] RBAC 鉴权强制模式: ${enforceAuth ? "开启" : "关闭（仅解析身份）"}`);
+
   app.use(express.json({ limit: "8mb" }));
   app.use("/assets", express.static(assetsDir));
+  app.use("/resources", express.static(path.join(rootDir, "resources")));
+
+  // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
+  app.use("/api", optionalAuth);
+
+  // 认证与账号控制系统路由
   app.use("/api/auth", authRoutes);
+  app.use("/api/users", userRoutes);
+  app.use("/api/classes", classRoutes);
+  app.use("/api/scores", scoreRoutes);
+
+  // 业务路由 RBAC 网关
+  const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
+  const examGate = makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_WRITE);
+  const analysisGate = makeGate(enforceAuth, PERMISSIONS.GRADE_READ, PERMISSIONS.GRADE_READ);
+  const scannerGate = makeGate(enforceAuth, PERMISSIONS.GRADE_WRITE, PERMISSIONS.GRADE_WRITE);
+  app.use("/api/cards", cardGate);
+  app.use("/api/exams", examGate);
+  app.use("/api/analysis", analysisGate);
 
   const cardRepo = new CardRepository();
 
@@ -243,7 +353,27 @@ export async function createApp(): Promise<express.Express> {
 
   app.post("/api/cards", async (req, res, next) => {
     try {
-      const card = createDefaultCard(String(Date.now()));
+      const subject = (req.body?.subject ?? "").trim();
+      const title = (req.body?.title ?? "").trim();
+      const subjectLabel = (req.body?.subjectLabel ?? "").trim();
+      const examDate = (req.body?.examDate ?? "").trim() || undefined;
+      if (!subject) {
+        res.status(400).json({ error: "科目（subject）为必填项" });
+        return;
+      }
+      if (!title) {
+        res.status(400).json({ error: "考试名称为必填项" });
+        return;
+      }
+      let id = generateCardId(subject);
+      let retry = 0;
+      while (cardRepo.findById(id) && retry < 100) {
+        id = generateCardId(subject + "_" + String(retry++));
+      }
+      const card = createDefaultCard(id, subject);
+      card.title = title;
+      card.subjectLabel = subjectLabel || undefined;
+      card.examDate = examDate;
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
       res.status(201).json(saved);
     } catch (error) {
@@ -358,9 +488,47 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  app.get("/api/cards/:cardId/grading/progress/:batchId", (req, res) => {
+    const batchId = safeId(paramValue(req.params.batchId));
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no"
+    });
+
+    const handler = (event: GradingProgressEvent) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (event.type === "done" || event.type === "error") {
+        res.end();
+      }
+    };
+
+    if (!gradingProgressListeners.has(batchId)) {
+      gradingProgressListeners.set(batchId, new Set());
+    }
+    gradingProgressListeners.get(batchId)!.add(handler);
+
+    const snapshot = gradingProgressSnapshots.get(batchId);
+    if (snapshot) {
+      handler(snapshot);
+    }
+
+    req.on("close", () => {
+      const listeners = gradingProgressListeners.get(batchId);
+      if (listeners) {
+        listeners.delete(handler);
+        if (listeners.size === 0) gradingProgressListeners.delete(batchId);
+      }
+    });
+  });
+
   app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files"), async (req, res, next) => {
+    let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
+      progressId = safeId(fieldValue(req.body.progressId));
       const card = cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
@@ -383,8 +551,12 @@ export async function createApp(): Promise<express.Express> {
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
 
-      const rows = [];
-      for (const file of gradingFiles) {
+      let finished = 0;
+      if (progressId) {
+        emitGradingProgress({ type: "start", batchId: progressId, finished, total: gradingFiles.length });
+      }
+
+      const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file) => {
         try {
           const recognition = (await recognizeObjectiveAnswers({
             imagePath: file.path,
@@ -392,10 +564,10 @@ export async function createApp(): Promise<express.Express> {
             pageNumber,
             dpi
           })) as ObjectiveRecognitionResult;
-          rows.push({
+          return {
             ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
             previewUrl: gradingPreviewUrl(cardId, file.path)
-          });
+          };
         } catch (error) {
           const recognition: ObjectiveRecognitionResult = {
             status: "failed",
@@ -404,11 +576,20 @@ export async function createApp(): Promise<express.Express> {
             message: error instanceof Error ? error.message : String(error),
             questions: []
           };
-          rows.push({
+          return {
             ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
             previewUrl: gradingPreviewUrl(cardId, file.path)
-          });
+          };
+        } finally {
+          finished++;
+          if (progressId) {
+            emitGradingProgress({ type: "progress", batchId: progressId, finished, total: gradingFiles.length });
+          }
         }
+      });
+
+      if (progressId) {
+        emitGradingProgress({ type: "done", batchId: progressId, finished, total: gradingFiles.length });
       }
 
       const result: ObjectiveGradingBatchResult = {
@@ -418,13 +599,24 @@ export async function createApp(): Promise<express.Express> {
       };
       res.json(result);
     } catch (error) {
+      if (progressId) {
+        const snapshot = gradingProgressSnapshots.get(progressId);
+        emitGradingProgress({
+          type: "error",
+          batchId: progressId,
+          finished: snapshot?.finished ?? 0,
+          total: snapshot?.total ?? 0
+        });
+      }
       next(error);
     }
   });
 
   app.post("/api/cards/:cardId/grading", recognitionUpload.array("files"), async (req, res, next) => {
+    let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
+      progressId = safeId(fieldValue(req.body.progressId));
       const card = cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
@@ -449,8 +641,12 @@ export async function createApp(): Promise<express.Express> {
 
       const examIdParam = fieldValue(req.body.examId);
 
-      const rows = [];
-      for (const file of gradingFiles) {
+      let finished = 0;
+      if (progressId) {
+        emitGradingProgress({ type: "start", batchId: progressId, finished, total: gradingFiles.length });
+      }
+
+      const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file) => {
         try {
           const recognition = (await recognizeAnswerCard({
             imagePath: file.path,
@@ -459,10 +655,10 @@ export async function createApp(): Promise<express.Express> {
             dpi
           })) as CombinedRecognitionResult;
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
-          rows.push({
+          return {
             ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
             previewUrl: gradingPreviewUrl(cardId, file.path)
-          });
+          };
         } catch (error) {
           const recognition: CombinedRecognitionResult = {
             status: "failed",
@@ -472,11 +668,20 @@ export async function createApp(): Promise<express.Express> {
             questions: [],
             subjectiveQuestions: []
           };
-          rows.push({
+          return {
             ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
             previewUrl: gradingPreviewUrl(cardId, file.path)
-          });
+          };
+        } finally {
+          finished++;
+          if (progressId) {
+            emitGradingProgress({ type: "progress", batchId: progressId, finished, total: gradingFiles.length });
+          }
         }
+      });
+
+      if (progressId) {
+        emitGradingProgress({ type: "done", batchId: progressId, finished, total: gradingFiles.length });
       }
 
       // Send response immediately so user sees results
@@ -494,6 +699,15 @@ export async function createApp(): Promise<express.Express> {
         });
       }
     } catch (error) {
+      if (progressId) {
+        const snapshot = gradingProgressSnapshots.get(progressId);
+        emitGradingProgress({
+          type: "error",
+          batchId: progressId,
+          finished: snapshot?.finished ?? 0,
+          total: snapshot?.total ?? 0
+        });
+      }
       next(error);
     }
   });
@@ -552,6 +766,123 @@ export async function createApp(): Promise<express.Express> {
       res.setHeader("Expires", "0");
       doc.pipe(res);
       doc.end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── 答题卡导出/导入/删除 ──────────────────────────────
+
+  // DELETE: 删除答题卡
+  app.delete("/api/cards/:cardId", async (req, res, next) => {
+    try {
+      const cardId = safeId(paramValue(req.params.cardId));
+      const card = cardRepo.findById(cardId);
+      if (!card) {
+        res.status(404).json({ message: "答题卡不存在" });
+        return;
+      }
+      // 检查是否被考试引用
+      const examRepo = new ExamRepository();
+      const exams = examRepo.listExams();
+      const referenced = exams.filter((e: any) => e.card_id === cardId);
+      // 删除 SQLite 记录（外键 CASCADE 自动删子表）
+      const deleted = cardRepo.deleteCard(cardId);
+      // 删除 JSON 文件
+      const cardJsonPath = path.join(dataDir, "cards", `${cardId}.json`);
+      const layoutJsonPath = layoutPath(cardId);
+      const assetsPath = cardAssetsDir(cardId);
+      try { if (existsSync(cardJsonPath)) await rm(cardJsonPath); } catch {}
+      try { if (existsSync(layoutJsonPath)) await rm(layoutJsonPath); } catch {}
+      try { if (existsSync(assetsPath)) await rm(assetsPath, { recursive: true, force: true }); } catch {}
+      res.json({
+        ok: true,
+        deleted,
+        referencedExamCount: referenced.length,
+        referencedExamNames: referenced.map((e: any) => e.name)
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // GET: 导出答题卡（含答案 + assets base64）
+  app.get("/api/cards/:cardId/export", async (req, res, next) => {
+    try {
+      const cardId = safeId(paramValue(req.params.cardId));
+      const card = cardRepo.findById(cardId);
+      if (!card) {
+        res.status(404).json({ message: "答题卡不存在" });
+        return;
+      }
+      const layout = cardRepo.getLayoutData(cardId);
+      // 收集 assets base64
+      const assetsMap: Record<string, string> = {};
+      const assetsPath = cardAssetsDir(cardId);
+      if (existsSync(assetsPath)) {
+        const { readdir } = await import("node:fs/promises");
+        const files = await readdir(assetsPath);
+        for (const file of files) {
+          try {
+            const data = await readFile(path.join(assetsPath, file));
+            assetsMap[file] = data.toString("base64");
+          } catch {}
+        }
+      }
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename*=UTF-8''${encodeURIComponent(card.title || cardId)}.projectx-card.json`
+      );
+      res.json({
+        format: "projectx-card",
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        card,
+        layout,
+        assets: assetsMap
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // POST: 导入答题卡
+  app.post("/api/cards/import", async (req, res, next) => {
+    try {
+      const imported = req.body as { format?: string; version?: number; card?: AnswerCard; layout?: unknown; assets?: Record<string, string> };
+      if (!imported || imported.format !== "projectx-card" || imported.version !== 1) {
+        res.status(400).json({ message: "不支持的文件格式，请使用 .projectx-card.json 导出文件" });
+        return;
+      }
+      if (!imported.card) {
+        res.status(400).json({ message: "文件中缺少答题卡数据" });
+        return;
+      }
+      const subject = imported.card.subject ?? "";
+      let newId = generateCardId(subject || "imported");
+      let retry = 0;
+      while (cardRepo.findById(newId) && retry < 100) {
+        newId = generateCardId((subject || "imported") + "_" + String(retry++));
+      }
+      const card = { ...imported.card, id: newId, updatedAt: new Date().toISOString() };
+      const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
+      // 导入 assets
+      if (imported.assets && Object.keys(imported.assets).length > 0) {
+        const assetsPath = cardAssetsDir(newId);
+        await mkdir(assetsPath, { recursive: true });
+        for (const [filename, base64] of Object.entries(imported.assets)) {
+          // 安全检查：仅允许安全的文件名
+          const safeFilename = path.basename(filename);
+          if (safeFilename && /^[a-zA-Z0-9_\-\.]+$/.test(safeFilename)) {
+            try {
+              const buffer = Buffer.from(base64, "base64");
+              await writeFile(path.join(assetsPath, safeFilename), buffer);
+            } catch {}
+          }
+        }
+      }
+      res.status(201).json(toCardSummary({ id: saved.id, title: saved.title, updatedAt: saved.updatedAt }));
     } catch (error) {
       next(error);
     }
@@ -722,7 +1053,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.use("/api/scanner", createScannerRouter());
+  app.use("/api/scanner", scannerGate, createScannerRouter());
 
   const clientDist = process.env.ANSWER_CARD_CLIENT_DIST
     ? path.resolve(process.env.ANSWER_CARD_CLIENT_DIST)

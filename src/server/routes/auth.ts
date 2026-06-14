@@ -1,10 +1,9 @@
 import express from "express";
-import { AuthService } from "../services/AuthService";
-import { getCurrentUserHandler } from "../middleware/auth";
+import { authService } from "../services/AuthService";
+import { getCurrentUserHandler, authMiddleware } from "../middleware/auth";
 import type { Request, Response } from "express";
 
 const router = express.Router();
-const authService = new AuthService();
 
 /**
  * POST /api/auth/login
@@ -14,14 +13,14 @@ const authService = new AuthService();
  */
 router.post("/login", async (req: Request, res: Response) => {
   try {
-    const { identifier, password } = req.body;
+    const { identifier, password, isPersistent } = req.body;
 
     if (!identifier || !password) {
       res.status(400).json({ message: "请输入用户名和密码" });
       return;
     }
 
-    const result = await authService.login(identifier, password);
+    const result = await authService.login(identifier, password, !!isPersistent);
 
     if (!result.success) {
       res.status(401).json({ message: result.message });
@@ -31,6 +30,7 @@ router.post("/login", async (req: Request, res: Response) => {
     res.json({
       token: result.token,
       user: result.user,
+      permissions: result.permissions,
       message: result.message
     });
   } catch (error) {
@@ -57,5 +57,29 @@ router.post("/logout", (req: Request, res: Response) => {
  * 获取当前登录用户信息
  */
 router.get("/me", getCurrentUserHandler);
+
+/**
+ * POST /api/auth/change-password
+ * 修改当前登录用户的密码
+ * Body: { oldPassword: string, newPassword: string }
+ */
+router.post("/change-password", authMiddleware, async (req: Request, res: Response) => {
+  try {
+    const { oldPassword, newPassword } = req.body ?? {};
+    if (!newPassword) {
+      res.status(400).json({ message: "请输入新密码" });
+      return;
+    }
+    const result = await authService.changePassword(req.user!.id, String(oldPassword ?? ""), String(newPassword));
+    if (!result.success) {
+      res.status(400).json({ message: result.message });
+      return;
+    }
+    res.json({ message: result.message });
+  } catch (error) {
+    console.error("Change password error:", error);
+    res.status(500).json({ message: "服务器错误" });
+  }
+});
 
 export default router;

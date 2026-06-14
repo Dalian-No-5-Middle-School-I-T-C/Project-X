@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Camera, Play, Square, RefreshCw, AlertTriangle, Check, Loader, Eye, X } from "lucide-react";
+import { authFetch, urlWithToken } from "../auth/api";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 
 interface ScannerPanelProps {
@@ -54,6 +55,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [selectedSource, setSelectedSource] = useState("");
   const [dpi, setDpi] = useState(300);
   const [duplex, setDuplex] = useState(false);
+  const [showUi, setShowUi] = useState(false);
   const [colorMode, setColorMode] = useState<"gray" | "color" | "bw">("gray");
   const [paperSize, setPaperSize] = useState<"A4" | "Letter" | "A3">("A4");
   const [maxPages, setMaxPages] = useState(0);
@@ -93,7 +95,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   async function detectSources() {
     setState("detecting");
     try {
-      const res = await fetch("/api/scanner/sources");
+      const res = await authFetch("/api/scanner/sources");
       const data: ScannerSourcesResult = await res.json();
       if (data.status === "ok" && data.sources.length > 0) {
         setSources(data.sources.map((s) => s.name));
@@ -114,7 +116,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
   function listenProgress(sid: string) {
     eventSourceRef.current?.close();
-    const es = new EventSource(`/api/scanner/progress/${sid}`);
+    const es = new EventSource(urlWithToken(`/api/scanner/progress/${sid}`));
     eventSourceRef.current = es;
 
     es.onmessage = (event) => {
@@ -173,7 +175,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
   async function fetchCombinedResults(sid: string) {
     try {
-      const res = await fetch(`/api/scanner/session/${sid}/results`);
+      const res = await authFetch(`/api/scanner/session/${sid}/results`);
       if (res.ok) {
         const data = await res.json();
         setStudentResults(data as StudentResult[]);
@@ -192,7 +194,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setStudentResults([]);
 
     try {
-      const res = await fetch("/api/scanner/scan", {
+      const res = await authFetch("/api/scanner/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -203,7 +205,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           duplex,
           colorMode,
           paperSize,
-          maxPages
+          maxPages,
+          showUi
         })
       });
 
@@ -240,7 +243,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }
 
   function imageUrl(recordId: string): string {
-    return `/api/scanner/scan-image/${recordId}`;
+    return urlWithToken(`/api/scanner/scan-image/${recordId}`);
   }
 
   return (
@@ -334,6 +337,15 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
               onChange={(e) => setDuplex(e.target.checked)}
             />
             双面扫描
+          </label>
+
+          <label className="check-row">
+            <input
+              type="checkbox"
+              checked={showUi}
+              onChange={(e) => setShowUi(e.target.checked)}
+            />
+            显示扫描仪界面（调试）
           </label>
 
           <button className="primary-button wide-button" onClick={startScan}>

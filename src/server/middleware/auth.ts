@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
-import { AuthService } from "../services/AuthService";
+import { authService } from "../services/AuthService";
+import { permissionsForRole, roleHasPermission, type Permission } from "../auth/permissions";
 
 // 扩展 Express Request 类型
 declare global {
@@ -11,83 +12,117 @@ declare global {
         name: string;
         role_id: number;
         role_name: string;
+        student_number: string | null;
       };
     }
   }
 }
 
-const authService = new AuthService();
-
-/**
- * 认证中间件：验证 Bearer Token
- * 使用方式：在需要认证的路由前加上 authMiddleware
- *
- * 客户端请求头格式：
- *   Authorization: Bearer <token>
- */
-export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization;
-
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    res.status(401).json({ message: "未提供认证令牌" });
-    return;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    return authHeader.slice(7).trim();
   }
+  // 兼容查询参数（用于 SSE / PDF 等无法设置请求头的场景）
+  const queryToken = req.query.token;
+  if (typeof queryToken === "string" && queryToken) {
+    return queryToken;
+  }
+  return null;
+}
 
-  const token = authHeader.slice(7).trim();
+function attachUser(req: Request, token: string): boolean {
   const user = authService.getUserByToken(token);
-
-  if (!user) {
-    res.status(401).json({ message: "认证令牌无效或已过期" });
-    return;
-  }
-
-  // 将用户信息挂载到 req 上
+  if (!user) return false;
   req.user = {
     id: user.id,
     username: user.username,
     name: user.name,
     role_id: user.role_id,
-    role_name: user.role_name ?? "unknown"
+    role_name: user.role_name ?? "unknown",
+    student_number: user.student_number ?? null
   };
+  return true;
+}
 
+/**
+ * 强制认证中间件：必须携带有效 Bearer Token。
+ * 用法：router.use(authMiddleware) 或在单条路由前挂载。
+ */
+export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const token = extractToken(req);
+  if (!token) {
+    res.status(401).json({ message: "未提供认证令牌" });
+    return;
+  }
+  if (!attachUser(req, token)) {
+    res.status(401).json({ message: "认证令牌无效或已过期" });
+    return;
+  }
   next();
 }
 
 /**
- * 角色鉴权中间件：检查用户是否具备指定角色
- * @param allowedRoles 允许的角色名数组，如 ["admin", "teacher"]
+ * 可选认证中间件：有 token 则解析挂载用户，无 token 也放行。
+ * 用于在“未强制登录”阶段仍然记录 created_by / 区分匿名访问。
  */
-export function requireRole(allowedRoles: string[]) {
+export function optionalAuth(req: Request, _res: Response, next: NextFunction): void {
+  const token = extractToken(req);
+  if (token) {
+    attachUser(req, token);
+  }
+  next();
+}
+
+/**
+ * 角色鉴权中间件：要求用户属于允许的角色之一。
+ * @param allowedRoles 角色名数组，如 ["admin", "teacher"]
+ */
+export function requireRole(...allowedRoles: string[]) {
   return (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user) {
       res.status(401).json({ message: "未认证" });
       return;
     }
-
     if (!allowedRoles.includes(req.user.role_name)) {
-      res.status(403).json({ message: "权限不足" });
+      res.status(403).json({ message: "权限不足：需要角色 " + allowedRoles.join("/") });
       return;
     }
-
     next();
   };
 }
 
 /**
- * 获取当前用户信息的处理器（API 端点）
+ * 权限鉴权中间件：基于角色权限表做细粒度控制（支持 "*" / "域:*" 通配）。
+ * @param permission 所需权限，如 PERMISSIONS.USER_MANAGE
+ */
+export function requirePermission(permission: Permission | string) {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      res.status(401).json({ message: "未认证" });
+      return;
+    }
+    if (!roleHasPermission(req.user.role_id, permission)) {
+      res.status(403).json({ message: `权限不足：缺少 ${permission}` });
+      return;
+    }
+    next();
+  };
+}
+
+/**
+ * 获取当前用户信息的处理器（GET /api/auth/me）。
+ * 额外回传该角色的权限列表，供前端做菜单/按钮级 UI 控制。
  */
 export function getCurrentUserHandler(req: Request, res: Response): void {
-  if (!req.user) {
+  const token = extractToken(req);
+  if (!token) {
     res.status(401).json({ message: "未认证" });
     return;
   }
-
-  const authService = new AuthService();
-  const token = req.headers.authorization?.slice(7).trim() ?? "";
   const user = authService.getUserByToken(token);
-
   if (!user) {
-    res.status(401).json({ message: "用户不存在" });
+    res.status(401).json({ message: "认证令牌无效或已过期" });
     return;
   }
 
@@ -100,6 +135,7 @@ export function getCurrentUserHandler(req: Request, res: Response): void {
     role_display_name: user.role_display_name,
     student_number: user.student_number,
     email: user.email,
-    last_login_at: user.last_login_at
+    last_login_at: user.last_login_at,
+    permissions: permissionsForRole(user.role_id)
   });
 }

@@ -38,7 +38,9 @@
 
 ### 答题卡设计
 
-- **答题卡管理**：新建、保存、读取答题卡，每张自动生成唯一 ID
+- **答题卡管理**：新建（科目弹窗 + 考试名称 + 可选日期）、保存、读取、导出、导入、删除答题卡
+- **确定性 ID**：基于科目 + 时间戳的 8 位纯数字 ID，导入时自动生成新 ID 防冲突
+- **导出/导入**：`.projectx-card.json` 格式，含标准答案 + 配图 base64 + 坐标布局，即插即用
 - **A4 标准版式**：含标题、六点定位标记、学生信息区、学号填涂区、题块、页码
 - **客观题设计**：
   - 单选、多选、不定项，可配置选项数、题量、分值
@@ -80,6 +82,12 @@
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
 - **CSV 成绩导出**：年级排名 / 班级排名两种模式，表头含班级、考号、姓名、成绩、双排名、客观/主观成绩、每题得分
 
+### 账户与安全
+
+- **RBAC 权限体系**：管理员、教师、学生三级角色，细粒度权限控制（设计/阅卷/分析/用户管理/成绩查看）
+- **记住密码**：勾选后签发 180 天持久令牌，令牌存磁盘（`~/.projectx/tokens.json`），服务器/软件重启不丢失
+- **6 个月免登录**：本设备内打开即用，无需反复输入密码
+
 ### 桌面应用
 
 - **Windows 桌面端**：便携版 EXE + MSI 安装包
@@ -111,8 +119,8 @@
 #### 基本使用流程
 
 **设计答题卡**：
-1. 打开程序 → 新建答题卡 → 编辑标题、题块、标准答案
-2. 保存 → 导出 PDF → 打印
+1. 打开程序 → 点击「新建答题卡」→ 弹窗中选择科目、填写考试名称、可选考试日期
+2. 编辑标题、题块、标准答案 → 保存 → 导出 PDF → 打印
 
 **阅卷判分**：
 1. 切到「阅卷」模式 → 选答题卡 → 选考试 → 导入图片
@@ -186,16 +194,21 @@ Project-X/
 ├── src/
 │   ├── apps/answer-card/
 │   │   ├── client/                      # React 前端
-│   │   │   ├── App.tsx                  # 主应用（设计/阅卷/分析三模式）
+│   │   │   ├── App.tsx                  # 主应用（设计/阅卷/分析/成绩/账号五模式）
 │   │   │   ├── styles.css               # 全局样式
 │   │   │   └── components/              # 子组件
-│   │   │       ├── ScannerPanel.tsx       # 扫描仪控制面板
+│   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期）
+│   │   │       ├── LoginPage.tsx            # 登录页（记住密码）
+│   │   │       ├── AccountMenu.tsx          # 账户下拉菜单
+│   │   │       ├── AccountManagement.tsx    # 用户/班级管理
+│   │   │       ├── StudentScores.tsx        # 学生我的成绩
+│   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板
 │   │   │       ├── AnalysisOverview.tsx   # 分析总览卡片
 │   │   │       ├── AnalysisDistribution.tsx # SVG 分数分布图
 │   │   │       ├── AnalysisRanking.tsx     # 学生排名表
 │   │   │       └── AnalysisQuestions.tsx   # 题目得分率排行
 │   │   └── server/                      # Express 后端
-│   │       ├── index.ts                 # 主路由（卡片/识别/阅卷/考试/分析）
+│   │       ├── index.ts                 # 主路由（卡片CRUD/导入导出/识别/阅卷/考试/分析）
 │   │       ├── recognition.ts           # C++ 识别引擎子进程管理
 │   │       ├── storage.ts               # 文件存储层
 │   │       ├── pdf.ts                   # PDF 生成（pdfkit）
@@ -209,13 +222,15 @@ Project-X/
 │   │   │   ├── UserRepository.ts         # 用户管理
 │   │   │   └── AnalysisRepository.ts     # 分析查询
 │   │   ├── middleware/                   # 认证中间件
-│   │   └── routes/                       # 认证路由
+│   │   ├── routes/                       # 认证/用户路由
+│   │   └── services/                     # AuthService（登录/令牌持久化）
 │   └── shared/                          # 前后端共享
 │       ├── types.ts                     # 全部类型定义
 │       ├── grading.ts                   # 评分引擎
 │       ├── layout.ts                    # 答题卡坐标布局
+│       ├── pinyin.ts                    # 科目名→拼音 key 转换
 │       ├── blankLabels.ts               # 填空序号格式化
-│       └── defaultCard.ts               # 默认答题卡工厂
+│       └── defaultCard.ts               # 默认答题卡工厂 + ID 生成
 ├── native/
 │   ├── AnswerCardRecognizer/            # C++ 识别引擎（OpenCV）
 │   └── ScannerBridge/                   # C++ TWAIN 扫描仪桥接
@@ -253,8 +268,10 @@ Project-X/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET/POST` | `/api/cards` | 答题卡列表 / 创建 |
-| `GET/PUT` | `/api/cards/:id` | 答题卡详情 / 保存 |
+| `GET/POST` | `/api/cards` | 答题卡列表 / 创建（含 subject/title/examDate） |
+| `GET/PUT/DELETE` | `/api/cards/:id` | 答题卡详情 / 保存 / 删除 |
+| `GET` | `/api/cards/:id/export` | 导出为 .projectx-card.json（含答案+配图+布局） |
+| `POST` | `/api/cards/import` | 导入答题卡 |
 | `GET` | `/api/cards/:id/layout` | 布局坐标 |
 | `GET` | `/api/cards/:id/pdf` | 导出 PDF |
 | `POST` | `/api/cards/:id/recognition` | 单张识别（客观+主观） |
@@ -272,7 +289,7 @@ Project-X/
 | `GET` | `/api/scanner/progress/:id` | SSE 扫描进度 |
 | `GET` | `/api/scanner/session/:id/results` | 合并学生成绩（多页汇总） |
 | `GET` | `/api/scanner/scan-image/:recordId` | 扫描原图预览 |
-| `POST` | `/api/auth/login` | 登录 |
+| `POST` | `/api/auth/login` | 登录（支持 isPersistent 6 月免登录） |
 | `GET` | `/api/auth/me` | 当前用户信息 |
 
 ---

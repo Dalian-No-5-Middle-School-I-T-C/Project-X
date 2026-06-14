@@ -62,6 +62,9 @@ export type BodyBlock = ObjectiveBlock | SubjectiveBlock;
 export type AnswerCard = {
   id: string;
   title: string;
+  subject?: string;
+  subjectLabel?: string;
+  examDate?: string;
   paper: PaperSettings;
   studentInfo: StudentInfoSettings;
   bodyBlocks: BodyBlock[];
@@ -73,6 +76,9 @@ export type AnswerCard = {
 export type CardSummary = {
   id: string;
   title: string;
+  subject?: string;
+  subjectLabel?: string;
+  examDate?: string;
   updatedAt: string;
 };
 
