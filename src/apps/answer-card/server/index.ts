@@ -1,5 +1,6 @@
 import express from "express";
 import multer from "multer";
+import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -109,6 +110,55 @@ function parsePositiveNumber(value: unknown, fallback: number): number {
 function gradingPreviewUrl(cardId: string, imagePath?: string): string | undefined {
   if (!imagePath) return undefined;
   return `/api/cards/${encodeURIComponent(cardId)}/grading/preview/${encodeURIComponent(path.basename(imagePath))}`;
+}
+
+type GradingProgressEvent = {
+  type: "start" | "progress" | "done" | "error";
+  batchId: string;
+  finished: number;
+  total: number;
+};
+
+const gradingProgressListeners = new Map<string, Set<(event: GradingProgressEvent) => void>>();
+const gradingProgressSnapshots = new Map<string, GradingProgressEvent>();
+
+function recognitionConcurrency(): number {
+  const configured = Number(process.env.ANSWER_CARD_RECOGNITION_CONCURRENCY);
+  if (Number.isFinite(configured) && configured > 0) {
+    return Math.max(1, Math.floor(configured));
+  }
+  return Math.min(4, Math.max(2, Math.floor(cpus().length / 2)));
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex++;
+        results[currentIndex] = await worker(items[currentIndex], currentIndex);
+      }
+    })
+  );
+  return results;
+}
+
+function emitGradingProgress(event: GradingProgressEvent): void {
+  gradingProgressSnapshots.set(event.batchId, event);
+  const listeners = gradingProgressListeners.get(event.batchId);
+  if (listeners) {
+    for (const listener of listeners) listener(event);
+  }
+  if (event.type === "done" || event.type === "error") {
+    gradingProgressListeners.delete(event.batchId);
+    setTimeout(() => gradingProgressSnapshots.delete(event.batchId), 60_000).unref();
+  }
 }
 
 /** Background persistence: save grading results to database without blocking response */
@@ -412,9 +462,47 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  app.get("/api/cards/:cardId/grading/progress/:batchId", (req, res) => {
+    const batchId = safeId(paramValue(req.params.batchId));
+
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no"
+    });
+
+    const handler = (event: GradingProgressEvent) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (event.type === "done" || event.type === "error") {
+        res.end();
+      }
+    };
+
+    if (!gradingProgressListeners.has(batchId)) {
+      gradingProgressListeners.set(batchId, new Set());
+    }
+    gradingProgressListeners.get(batchId)!.add(handler);
+
+    const snapshot = gradingProgressSnapshots.get(batchId);
+    if (snapshot) {
+      handler(snapshot);
+    }
+
+    req.on("close", () => {
+      const listeners = gradingProgressListeners.get(batchId);
+      if (listeners) {
+        listeners.delete(handler);
+        if (listeners.size === 0) gradingProgressListeners.delete(batchId);
+      }
+    });
+  });
+
   app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files"), async (req, res, next) => {
+    let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
+      progressId = safeId(fieldValue(req.body.progressId));
       const card = cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
@@ -437,8 +525,12 @@ export async function createApp(): Promise<express.Express> {
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
 
-      const rows = [];
-      for (const file of gradingFiles) {
+      let finished = 0;
+      if (progressId) {
+        emitGradingProgress({ type: "start", batchId: progressId, finished, total: gradingFiles.length });
+      }
+
+      const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file) => {
         try {
           const recognition = (await recognizeObjectiveAnswers({
             imagePath: file.path,
@@ -446,10 +538,10 @@ export async function createApp(): Promise<express.Express> {
             pageNumber,
             dpi
           })) as ObjectiveRecognitionResult;
-          rows.push({
+          return {
             ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
             previewUrl: gradingPreviewUrl(cardId, file.path)
-          });
+          };
         } catch (error) {
           const recognition: ObjectiveRecognitionResult = {
             status: "failed",
@@ -458,11 +550,20 @@ export async function createApp(): Promise<express.Express> {
             message: error instanceof Error ? error.message : String(error),
             questions: []
           };
-          rows.push({
+          return {
             ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
             previewUrl: gradingPreviewUrl(cardId, file.path)
-          });
+          };
+        } finally {
+          finished++;
+          if (progressId) {
+            emitGradingProgress({ type: "progress", batchId: progressId, finished, total: gradingFiles.length });
+          }
         }
+      });
+
+      if (progressId) {
+        emitGradingProgress({ type: "done", batchId: progressId, finished, total: gradingFiles.length });
       }
 
       const result: ObjectiveGradingBatchResult = {
@@ -472,13 +573,24 @@ export async function createApp(): Promise<express.Express> {
       };
       res.json(result);
     } catch (error) {
+      if (progressId) {
+        const snapshot = gradingProgressSnapshots.get(progressId);
+        emitGradingProgress({
+          type: "error",
+          batchId: progressId,
+          finished: snapshot?.finished ?? 0,
+          total: snapshot?.total ?? 0
+        });
+      }
       next(error);
     }
   });
 
   app.post("/api/cards/:cardId/grading", recognitionUpload.array("files"), async (req, res, next) => {
+    let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
+      progressId = safeId(fieldValue(req.body.progressId));
       const card = cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
@@ -503,8 +615,12 @@ export async function createApp(): Promise<express.Express> {
 
       const examIdParam = fieldValue(req.body.examId);
 
-      const rows = [];
-      for (const file of gradingFiles) {
+      let finished = 0;
+      if (progressId) {
+        emitGradingProgress({ type: "start", batchId: progressId, finished, total: gradingFiles.length });
+      }
+
+      const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file) => {
         try {
           const recognition = (await recognizeAnswerCard({
             imagePath: file.path,
@@ -513,10 +629,10 @@ export async function createApp(): Promise<express.Express> {
             dpi
           })) as CombinedRecognitionResult;
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
-          rows.push({
+          return {
             ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
             previewUrl: gradingPreviewUrl(cardId, file.path)
-          });
+          };
         } catch (error) {
           const recognition: CombinedRecognitionResult = {
             status: "failed",
@@ -526,11 +642,20 @@ export async function createApp(): Promise<express.Express> {
             questions: [],
             subjectiveQuestions: []
           };
-          rows.push({
+          return {
             ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
             previewUrl: gradingPreviewUrl(cardId, file.path)
-          });
+          };
+        } finally {
+          finished++;
+          if (progressId) {
+            emitGradingProgress({ type: "progress", batchId: progressId, finished, total: gradingFiles.length });
+          }
         }
+      });
+
+      if (progressId) {
+        emitGradingProgress({ type: "done", batchId: progressId, finished, total: gradingFiles.length });
       }
 
       // Send response immediately so user sees results
@@ -548,6 +673,15 @@ export async function createApp(): Promise<express.Express> {
         });
       }
     } catch (error) {
+      if (progressId) {
+        const snapshot = gradingProgressSnapshots.get(progressId);
+        emitGradingProgress({
+          type: "error",
+          batchId: progressId,
+          finished: snapshot?.finished ?? 0,
+          total: snapshot?.total ?? 0
+        });
+      }
       next(error);
     }
   });
