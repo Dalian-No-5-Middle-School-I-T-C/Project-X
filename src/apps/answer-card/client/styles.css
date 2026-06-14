@@ -445,6 +445,7 @@ button {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
+  min-height: 0;
   max-height: 100vh;
   overflow: hidden;
   background: transparent;
