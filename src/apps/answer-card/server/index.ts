@@ -12,6 +12,11 @@ import { ExamRepository } from "../../../server/repositories/ExamRepository";
 import { AnalysisRepository } from "../../../server/repositories/AnalysisRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
 import authRoutes from "../../../server/routes/auth";
+import userRoutes from "../../../server/routes/users";
+import classRoutes from "../../../server/routes/classes";
+import scoreRoutes from "../../../server/routes/scores";
+import { optionalAuth } from "../../../server/middleware/auth";
+import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard } from "../../../shared/defaultCard";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
@@ -182,20 +187,69 @@ async function persistGradingResults(
   console.log(`[Grading] Persisted ${persisted} student scores to exam ${examId}`);
 }
 
+/**
+ * 业务路由的 RBAC 网关。
+ *
+ * 兼容性设计：通过环境变量 PROJECTX_AUTH_ENFORCE 控制是否强制鉴权。
+ *  - 关闭（默认）：仅 optionalAuth 解析用户（用于 created_by），不拦截，保持 v1.0 前端无登录可用；
+ *  - 开启（=1/true）：未登录返回 401，权限不足返回 403。
+ * GET/HEAD 走 readPerm，写操作走 writePerm。
+ */
+function makeGate(enforce: boolean, readPerm: string, writePerm: string) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+    if (!enforce) {
+      next();
+      return;
+    }
+    if (!req.user) {
+      res.status(401).json({ message: "未提供认证令牌" });
+      return;
+    }
+    const required = req.method === "GET" || req.method === "HEAD" ? readPerm : writePerm;
+    if (!roleHasPermission(req.user.role_id, required)) {
+      res.status(403).json({ message: `权限不足：缺少 ${required}` });
+      return;
+    }
+    next();
+  };
+}
+
 export async function createApp(): Promise<express.Express> {
   const app = express();
 
   console.log("[Server] 正在初始化数据库...");
   initializeDatabase();
   await ensureDefaultAdmin();
+  loadRolePermissions(true); // 预热角色权限缓存
   const cleanupTimer = scheduleCleanup(24, 30);
   cleanupTimer.unref();
   await ensureDataDirs();
   console.log("[Server] 数据库初始化完成");
 
+  const enforceAuth =
+    process.env.PROJECTX_AUTH_ENFORCE === "1" || process.env.PROJECTX_AUTH_ENFORCE === "true";
+  console.log(`[Server] RBAC 鉴权强制模式: ${enforceAuth ? "开启" : "关闭（仅解析身份）"}`);
+
   app.use(express.json({ limit: "8mb" }));
   app.use("/assets", express.static(assetsDir));
+
+  // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
+  app.use("/api", optionalAuth);
+
+  // 认证与账号控制系统路由
   app.use("/api/auth", authRoutes);
+  app.use("/api/users", userRoutes);
+  app.use("/api/classes", classRoutes);
+  app.use("/api/scores", scoreRoutes);
+
+  // 业务路由 RBAC 网关
+  const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
+  const examGate = makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_WRITE);
+  const analysisGate = makeGate(enforceAuth, PERMISSIONS.GRADE_READ, PERMISSIONS.GRADE_READ);
+  const scannerGate = makeGate(enforceAuth, PERMISSIONS.GRADE_WRITE, PERMISSIONS.GRADE_WRITE);
+  app.use("/api/cards", cardGate);
+  app.use("/api/exams", examGate);
+  app.use("/api/analysis", analysisGate);
 
   const cardRepo = new CardRepository();
 
@@ -373,12 +427,18 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
 
+      // Single-sided card: filter out back-side images
+      const backSidePattern = /B\.(jpg|jpeg|png|bmp|tiff|tif)$/i;
+      const gradingFiles = card.sided === "single"
+        ? files.filter((f) => !backSidePattern.test(f.originalname))
+        : files;
+
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
 
       const rows = [];
-      for (const file of files) {
+      for (const file of gradingFiles) {
         try {
           const recognition = (await recognizeObjectiveAnswers({
             imagePath: file.path,
@@ -431,6 +491,12 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
 
+      // Single-sided card: filter out back-side images
+      const backSidePattern = /B\.(jpg|jpeg|png|bmp|tiff|tif)$/i;
+      const gradingFiles = card.sided === "single"
+        ? files.filter((f) => !backSidePattern.test(f.originalname))
+        : files;
+
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
@@ -438,7 +504,7 @@ export async function createApp(): Promise<express.Express> {
       const examIdParam = fieldValue(req.body.examId);
 
       const rows = [];
-      for (const file of files) {
+      for (const file of gradingFiles) {
         try {
           const recognition = (await recognizeAnswerCard({
             imagePath: file.path,
@@ -661,7 +727,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.use("/api/scanner", createScannerRouter());
+  app.use("/api/scanner", scannerGate, createScannerRouter());
 
   const clientDist = process.env.ANSWER_CARD_CLIENT_DIST
     ? path.resolve(process.env.ANSWER_CARD_CLIENT_DIST)

@@ -43,6 +43,13 @@ export function initializeDatabase(): void {
     console.log("[DB] Schema created successfully");
   }
 
+  // Migrations for existing databases
+  const cols = db.prepare("PRAGMA table_info(answer_cards)").all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "sided")) {
+    db.exec("ALTER TABLE answer_cards ADD COLUMN sided TEXT DEFAULT 'double'");
+    console.log("[DB] Migration: added sided column to answer_cards");
+  }
+
   const roleCount = db.prepare("SELECT COUNT(*) as cnt FROM roles").get() as { cnt: number };
   if (roleCount.cnt === 0) {
     const insertRole = db.prepare(
