@@ -84,9 +84,22 @@ async function writeLayoutDocument(cardId: string, layout: LayoutDocument): Prom
   await writeFile(targetPath, JSON.stringify(layout, null, 2), "utf8");
 }
 
-async function saveCardWithLayout(cardRepo: CardRepository, card: AnswerCard, createdBy?: number): Promise<AnswerCard> {
+function isLayoutDocument(value: unknown): value is LayoutDocument {
+  if (!value || typeof value !== "object") return false;
+  const doc = value as LayoutDocument;
+  return Array.isArray(doc.pages) && Array.isArray(doc.elements);
+}
+
+async function saveCardWithLayout(
+  cardRepo: CardRepository,
+  card: AnswerCard,
+  createdBy?: number,
+  layoutOverride?: LayoutDocument
+): Promise<AnswerCard> {
   const normalized = normalizeCard(card, card.id);
-  const layout = buildLayout(normalized);
+  const layout = layoutOverride
+    ? { ...layoutOverride, cardId: normalized.id }
+    : buildLayout(normalized);
   const exists = cardRepo.findById(normalized.id);
 
   if (exists) {
@@ -865,7 +878,8 @@ export async function createApp(): Promise<express.Express> {
         newId = generateCardId((subject || "imported") + "_" + String(retry++));
       }
       const card = { ...imported.card, id: newId, updatedAt: new Date().toISOString() };
-      const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
+      const importedLayout = isLayoutDocument(imported.layout) ? imported.layout : undefined;
+      const saved = await saveCardWithLayout(cardRepo, card, req.user?.id, importedLayout);
       // 导入 assets
       if (imported.assets && Object.keys(imported.assets).length > 0) {
         const assetsPath = cardAssetsDir(newId);

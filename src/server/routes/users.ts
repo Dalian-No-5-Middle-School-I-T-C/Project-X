@@ -1,9 +1,10 @@
 import express from "express";
 import type { Request, Response } from "express";
-import { UserRepository, type BatchStudentInput } from "../repositories/UserRepository";
+import { UserRepository, type BatchStudentInput, type BatchTeacherInput, type CredentialRecord } from "../repositories/UserRepository";
 import { authService } from "../services/AuthService";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS, ROLE_NAMES } from "../auth/permissions";
+import { buildCredentialsHtml } from "../utils/credentialsHtml";
 
 /**
  * 用户管理 API（仅管理员，要求 user:manage 权限）
@@ -230,6 +231,55 @@ router.post("/import-students", async (req: Request, res: Response) => {
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
   }
+});
+
+/** POST /api/users/import-teachers — 批量导入教师 */
+router.post("/import-teachers", async (req: Request, res: Response) => {
+  try {
+    const teachers = req.body?.teachers;
+    if (!Array.isArray(teachers) || teachers.length === 0) {
+      res.status(400).json({ message: "请提供 teachers 数组" });
+      return;
+    }
+    const rows: BatchTeacherInput[] = teachers.map((t: Record<string, unknown>) => ({
+      username: String(t.username ?? ""),
+      name: String(t.name ?? ""),
+      password: t.password ? String(t.password) : undefined
+    }));
+    const result = await userRepo.batchCreateTeachers(rows);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
+  }
+});
+
+/** POST /api/users/credentials-html — 将账密清单导出为可打印 HTML */
+router.post("/credentials-html", (req: Request, res: Response) => {
+  const credentials = req.body?.credentials;
+  const title = typeof req.body?.title === "string" && req.body.title.trim()
+    ? req.body.title.trim()
+    : "Project-X 账号清单";
+  if (!Array.isArray(credentials) || credentials.length === 0) {
+    res.status(400).json({ message: "请提供 credentials 数组" });
+    return;
+  }
+  const rows: CredentialRecord[] = credentials.map((item: Record<string, unknown>) => ({
+    username: String(item.username ?? ""),
+    name: String(item.name ?? ""),
+    password: String(item.password ?? ""),
+    role: item.role === "teacher" ? "teacher" : "student"
+  }));
+  if (rows.some((row) => !row.username || !row.name || !row.password)) {
+    res.status(400).json({ message: "credentials 中每项需包含 username、name、password" });
+    return;
+  }
+  const html = buildCredentialsHtml(rows, title);
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename*=UTF-8''${encodeURIComponent(title)}.html`
+  );
+  res.send(html);
 });
 
 export default router;

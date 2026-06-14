@@ -1,7 +1,23 @@
 import { useCallback, useEffect, useState } from "react";
-import { Download, Plus, RefreshCw, Search, Trash2, UserCheck, UserX } from "lucide-react";
-import { fetchJson } from "../auth/api";
+import { Download, FileText, Plus, RefreshCw, Search, Trash2, UserCheck, UserX } from "lucide-react";
+import { authFetch, fetchJson } from "../auth/api";
 import { ROLE_LABELS, roleCount, type UserListItem, type UsersListResponse } from "../auth/types";
+
+type ImportMode = "student" | "teacher";
+
+type CredentialRecord = {
+  username: string;
+  name: string;
+  password: string;
+  role: "student" | "teacher";
+};
+
+type BatchImportResponse = {
+  created: number;
+  skipped: number;
+  errors: unknown[];
+  credentials?: CredentialRecord[];
+};
 
 const ROLE_OPTIONS = [
   { value: "", label: "全部角色" },
@@ -20,7 +36,10 @@ export function UserManagement() {
   const [error, setError] = useState("");
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [importMode, setImportMode] = useState<ImportMode>("student");
   const [importText, setImportText] = useState("");
+  const [pendingCredentials, setPendingCredentials] = useState<CredentialRecord[]>([]);
+  const [credentialsTitle, setCredentialsTitle] = useState("账号清单");
   const [form, setForm] = useState({
     username: "",
     password: "",
@@ -87,36 +106,82 @@ export function UserManagement() {
     }
   }
 
-  async function importStudents() {
+  async function importUsers() {
     const lines = importText
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean);
     if (lines.length === 0) {
-      setError("请粘贴学生数据，每行：学号,姓名");
+      setError(importMode === "student" ? "请粘贴学生数据，每行：学号,姓名" : "请粘贴教师数据，每行：用户名,姓名");
       return;
     }
-    const students = lines.map((line) => {
-      const [student_number, name, username] = line.split(/[,，\t]/).map((s) => s.trim());
-      return { student_number, name, username: username || student_number };
-    });
     setBusy(true);
     setError("");
     try {
-      const result = await fetchJson<{ created: number; skipped: number; errors: unknown[] }>(
-        "/api/users/import-students",
-        {
+      if (importMode === "student") {
+        const students = lines.map((line) => {
+          const [student_number, name, username] = line.split(/[,，\t]/).map((s) => s.trim());
+          return { student_number, name, username: username || student_number };
+        });
+        const result = await fetchJson<BatchImportResponse>("/api/users/import-students", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ students })
-        }
-      );
-      setShowImport(false);
-      setImportText("");
-      setError(`导入完成：成功 ${result.created} 人${result.skipped ? `，跳过 ${result.skipped} 人` : ""}`);
+        });
+        setShowImport(false);
+        setImportText("");
+        setPendingCredentials(result.credentials ?? []);
+        setCredentialsTitle("学生账号清单");
+        setError(`学生导入完成：成功 ${result.created} 人${result.skipped ? `，跳过 ${result.skipped} 人` : ""}`);
+      } else {
+        const teachers = lines.map((line) => {
+          const [username, name, password] = line.split(/[,，\t]/).map((s) => s.trim());
+          return { username, name, password: password || undefined };
+        });
+        const result = await fetchJson<BatchImportResponse>("/api/users/import-teachers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ teachers })
+        });
+        setShowImport(false);
+        setImportText("");
+        setPendingCredentials(result.credentials ?? []);
+        setCredentialsTitle("教师账号清单");
+        setError(`教师导入完成：成功 ${result.created} 人${result.skipped ? `，跳过 ${result.skipped} 人` : ""}`);
+      }
       await loadUsers();
     } catch (err) {
       setError(err instanceof Error ? err.message : "导入失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function downloadCredentialsHtml() {
+    if (pendingCredentials.length === 0) return;
+    setBusy(true);
+    try {
+      const title = credentialsTitle;
+      const response = await authFetch("/api/users/credentials-html", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ credentials: pendingCredentials, title })
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      const html = await response.text();
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${title}.html`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "导出 HTML 失败");
     } finally {
       setBusy(false);
     }
@@ -170,9 +235,17 @@ export function UserManagement() {
           <button className="primary-button" type="button" onClick={() => setShowCreate(!showCreate)} disabled={busy}>
             <Plus size={16} /> 新建用户
           </button>
-          <button className="ghost-button" type="button" onClick={() => setShowImport(!showImport)} disabled={busy}>
+          <button className="ghost-button" type="button" onClick={() => { setImportMode("student"); setShowImport(!showImport); }} disabled={busy}>
             <Download size={16} /> 批量导入学生
           </button>
+          <button className="ghost-button" type="button" onClick={() => { setImportMode("teacher"); setShowImport(!showImport); }} disabled={busy}>
+            <Download size={16} /> 批量导入教师
+          </button>
+          {pendingCredentials.length > 0 && (
+            <button className="ghost-button" type="button" onClick={() => void downloadCredentialsHtml()} disabled={busy}>
+              <FileText size={16} /> 下载账密 HTML ({pendingCredentials.length})
+            </button>
+          )}
           <button className="ghost-button" type="button" onClick={() => void loadUsers()} disabled={busy}>
             <RefreshCw size={16} /> 刷新
           </button>
@@ -223,15 +296,21 @@ export function UserManagement() {
 
       {showImport && (
         <div className="account-import-box">
-          <p className="hint">每行格式：学号,姓名 或 学号,姓名,用户名</p>
+          <p className="hint">
+            {importMode === "student"
+              ? "每行格式：学号,姓名 或 学号,姓名,用户名（密码默认学号）"
+              : "每行格式：用户名,姓名 或 用户名,姓名,密码（密码默认用户名，至少 6 位）"}
+          </p>
           <textarea
             rows={6}
-            placeholder={"2024001,张三\n2024002,李四"}
+            placeholder={importMode === "student" ? "2024001,张三\n2024002,李四" : "zhangsan,张三\nlisi,李四,Pass1234"}
             value={importText}
             onChange={(e) => setImportText(e.target.value)}
           />
           <div className="account-form-actions">
-            <button className="primary-button" type="button" onClick={() => void importStudents()} disabled={busy}>开始导入</button>
+            <button className="primary-button" type="button" onClick={() => void importUsers()} disabled={busy}>
+              {importMode === "student" ? "开始导入学生" : "开始导入教师"}
+            </button>
             <button className="ghost-button" type="button" onClick={() => setShowImport(false)}>取消</button>
           </div>
         </div>

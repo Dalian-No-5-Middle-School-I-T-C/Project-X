@@ -148,6 +148,15 @@ async function main(): Promise<void> {
     { username: "20260001", name: "重复", student_number: "20260001" } // 重复应跳过
   ]);
   ok(batch.created === 2 && batch.skipped === 1, `批量导入：新增 ${batch.created} 跳过 ${batch.skipped}`);
+  ok(batch.credentials.length === 2, "批量导入学生返回账密清单");
+
+  const teacherBatch = await userRepo.batchCreateTeachers([
+    { username: "teacher01", name: "赵老师" },
+    { username: "teacher02", name: "钱老师", password: "Pass1234" },
+    { username: "t1001", name: "重复教师" }
+  ]);
+  ok(teacherBatch.created === 2 && teacherBatch.skipped === 1, `批量导入教师：新增 ${teacherBatch.created} 跳过 ${teacherBatch.skipped}`);
+  ok(teacherBatch.credentials.length === 2, "批量导入教师返回账密清单");
 
   // 改密 + 会话吊销
   const changed = await auth.changePassword(student.id, "20260001", "newpass123");

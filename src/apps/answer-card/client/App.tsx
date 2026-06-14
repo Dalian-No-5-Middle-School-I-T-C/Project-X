@@ -401,7 +401,7 @@ function App() {
   async function importCard() {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".json";
+    input.accept = ".json,.projectx-card.json,application/json";
     input.onchange = async () => {
       const file = input.files?.[0];
       if (!file) return;

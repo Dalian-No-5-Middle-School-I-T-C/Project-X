@@ -46,11 +46,25 @@ export interface BatchStudentInput {
   password?: string;
 }
 
+export interface BatchTeacherInput {
+  username: string;
+  name: string;
+  password?: string;
+}
+
+export interface CredentialRecord {
+  username: string;
+  name: string;
+  password: string;
+  role: "student" | "teacher";
+}
+
 export interface BatchImportResult {
   created: number;
   skipped: number;
-  errors: Array<{ row: BatchStudentInput; message: string }>;
+  errors: Array<{ row: BatchStudentInput | BatchTeacherInput; message: string }>;
   createdIds: number[];
+  credentials: CredentialRecord[];
 }
 
 export class UserRepository {
@@ -306,14 +320,15 @@ export class UserRepository {
    * 已存在的用户名/学号会被跳过并记录到 errors。
    */
   async batchCreateStudents(rows: BatchStudentInput[]): Promise<BatchImportResult> {
-    const result: BatchImportResult = { created: 0, skipped: 0, errors: [], createdIds: [] };
+    const result: BatchImportResult = { created: 0, skipped: 0, errors: [], createdIds: [], credentials: [] };
 
     // 预先计算所有密码哈希（hash 为异步，不能放进同步事务）
-    const prepared: Array<{ row: BatchStudentInput; username: string; hash: string }> = [];
+    const prepared: Array<{ row: BatchStudentInput; username: string; password: string; hash: string }> = [];
     for (const row of rows) {
       const username = (row.username || row.student_number || "").trim();
       const studentNumber = (row.student_number || "").trim();
-      if (!username || !studentNumber || !row.name) {
+      const name = (row.name || "").trim();
+      if (!username || !studentNumber || !name) {
         result.errors.push({ row, message: "缺少用户名/学号/姓名" });
         continue;
       }
@@ -322,8 +337,13 @@ export class UserRepository {
         result.errors.push({ row, message: "用户名或学号已存在，已跳过" });
         continue;
       }
-      const hash = await hashPassword(row.password || studentNumber);
-      prepared.push({ row: { ...row, username, student_number: studentNumber }, username, hash });
+      const password = (row.password || studentNumber).trim();
+      if (password.length < 6) {
+        result.errors.push({ row, message: "密码至少 6 位（学生默认使用学号）" });
+        continue;
+      }
+      const hash = await hashPassword(password);
+      prepared.push({ row: { ...row, username, student_number: studentNumber, name }, username, password, hash });
     }
 
     const insert = this.db.prepare(`
@@ -336,6 +356,66 @@ export class UserRepository {
           const insertResult = insert.run(item.username, item.hash, item.row.name, item.row.student_number);
           result.created++;
           result.createdIds.push(Number(insertResult.lastInsertRowid));
+          result.credentials.push({
+            username: item.username,
+            name: item.row.name,
+            password: item.password,
+            role: "student"
+          });
+        } catch (err) {
+          result.errors.push({ row: item.row, message: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    });
+    tx();
+
+    return result;
+  }
+
+  /**
+   * 批量导入教师。密码默认取用户名（至少 6 位），可在导入数据中单独指定。
+   */
+  async batchCreateTeachers(rows: BatchTeacherInput[]): Promise<BatchImportResult> {
+    const result: BatchImportResult = { created: 0, skipped: 0, errors: [], createdIds: [], credentials: [] };
+
+    const prepared: Array<{ row: BatchTeacherInput; username: string; password: string; hash: string }> = [];
+    for (const row of rows) {
+      const username = (row.username || "").trim();
+      const name = (row.name || "").trim();
+      if (!username || !name) {
+        result.errors.push({ row, message: "缺少用户名/姓名" });
+        continue;
+      }
+      if (this.usernameExists(username)) {
+        result.skipped++;
+        result.errors.push({ row, message: "用户名已存在，已跳过" });
+        continue;
+      }
+      const password = (row.password || username).trim();
+      if (password.length < 6) {
+        result.errors.push({ row, message: "密码至少 6 位（可单独指定或确保用户名不少于 6 位）" });
+        continue;
+      }
+      const hash = await hashPassword(password);
+      prepared.push({ row: { ...row, username, name }, username, password, hash });
+    }
+
+    const insert = this.db.prepare(`
+      INSERT INTO users (username, password_hash, name, role_id)
+      VALUES (?, ?, ?, 2)
+    `);
+    const tx = this.db.transaction(() => {
+      for (const item of prepared) {
+        try {
+          const insertResult = insert.run(item.username, item.hash, item.row.name);
+          result.created++;
+          result.createdIds.push(Number(insertResult.lastInsertRowid));
+          result.credentials.push({
+            username: item.username,
+            name: item.row.name,
+            password: item.password,
+            role: "teacher"
+          });
         } catch (err) {
           result.errors.push({ row: item.row, message: err instanceof Error ? err.message : String(err) });
         }
