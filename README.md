@@ -13,8 +13,8 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.1.0（安装包 artifact 版本号 1.0.1，待下次发版同步）  
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → 三级账号与班级管理  
+> **当前版本**：v1.1.0  
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → 教师/学生/班级管理 → 账密批量导入导出  
 > **下个里程碑**：v2.0 — 成绩预测、跨班深度对比分析
 
 ---
@@ -104,7 +104,7 @@
 
 1. 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 下载：
    ```
-   答题卡设计系统-1.0.1-x64.exe
+   答题卡设计系统-1.1.0-x64.exe
    ```
 2. 双击即可运行，无需安装
 
@@ -112,7 +112,7 @@
 
 1. 下载：
    ```
-   答题卡设计系统-1.0.1-x64.msi
+   答题卡设计系统-1.1.0-x64.msi
    ```
 2. 适合学校机房、域控、组策略等集中部署场景
 
@@ -224,7 +224,10 @@ Project-X/
 │   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期）
 │   │   │       ├── LoginPage.tsx            # 登录页（记住密码）
 │   │   │       ├── AccountMenu.tsx          # 账户下拉菜单
-│   │   │       ├── AccountManagement.tsx    # 用户/班级管理
+│   │   │       ├── AccountManagement.tsx    # 教师/学生/班级管理
+│   │   │       ├── TeacherManagement.tsx    # 教师管理（科目/班级关联）
+│   │   │       ├── StudentManagement.tsx    # 学生管理（按班级+导入/导出）
+│   │   │       ├── ImportModal.tsx          # 通用CSV/Excel导入弹窗
 │   │   │       ├── StudentScores.tsx        # 学生我的成绩
 │   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板
 │   │   │       ├── AnalysisOverview.tsx   # 分析总览卡片
@@ -316,6 +319,13 @@ Project-X/
 | `GET` | `/api/scanner/scan-image/:recordId` | 扫描原图预览 |
 | `POST` | `/api/auth/login` | 登录（支持 isPersistent 6 月免登录） |
 | `GET` | `/api/auth/me` | 当前用户信息 |
+| `GET` | `/api/teachers` | 教师列表（按创建时间排序） |
+| `GET/PUT` | `/api/teachers/:id` | 教师详情 / 更新（姓名/科目） |
+| `POST` | `/api/teachers/:id/classes` | 教师关联班级 |
+| `DELETE` | `/api/teachers/:id/classes/:classId` | 教师解除班级关联 |
+| `POST` | `/api/users/import-csv` | 批量导入学生/教师（CSV/Excel） |
+| `GET` | `/api/export/students` | 导出学生账密 Excel |
+| `GET` | `/api/export/teachers` | 导出教师账密 Excel |
 
 ---
 
