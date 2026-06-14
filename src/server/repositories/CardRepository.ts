@@ -5,6 +5,7 @@ import type { AnswerCard } from "../../shared/types";
 export interface CardSummary {
   id: string;
   title: string;
+  subject?: string;
   updated_at: string;
   created_by_name?: string;
 }
@@ -21,19 +22,22 @@ export class CardRepository {
    */
   createCard(card: AnswerCard, createdBy?: number): void {
     const stmt = this.db.prepare(`
-      INSERT INTO answer_cards (id, title, paper_size, orientation, student_fields, student_number_digits, sided, layout_version, layout_data, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO answer_cards (id, title, subject, subject_label, exam_date, paper_size, orientation, student_fields, student_number_digits, sided, layout_version, layout_data, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       card.id,
       card.title,
+      card.subject ?? null,
+      (card as any).subjectLabel ?? null,
+      (card as any).examDate ?? null,
       card.paper?.size ?? "A4",
       card.paper?.orientation ?? "portrait",
       JSON.stringify(card.studentInfo?.fields ?? []),
       card.studentInfo?.studentNumberDigits ?? 5,
       card.sided ?? "double",
       card.layoutVersion ?? 1,
-      null, // layout_data 在 saveLayout 中更新
+      null,
       createdBy ?? null
     );
   }
@@ -44,11 +48,14 @@ export class CardRepository {
   updateCard(card: AnswerCard, layoutData?: unknown): void {
     const stmt = this.db.prepare(`
       UPDATE answer_cards
-      SET title = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, layout_data = ?, updated_at = CURRENT_TIMESTAMP
+      SET title = ?, subject = ?, subject_label = ?, exam_date = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, layout_data = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `);
     stmt.run(
       card.title,
+      card.subject ?? null,
+      (card as any).subjectLabel ?? null,
+      (card as any).examDate ?? null,
       JSON.stringify(card.studentInfo?.fields ?? []),
       card.studentInfo?.studentNumberDigits ?? 5,
       card.sided ?? "double",
@@ -167,7 +174,7 @@ export class CardRepository {
    */
   listCards(): CardSummary[] {
     const stmt = this.db.prepare(`
-      SELECT c.id, c.title, c.updated_at, u.name as created_by_name
+      SELECT c.id, c.title, c.subject, c.subject_label, c.updated_at, u.name as created_by_name
       FROM answer_cards c
       LEFT JOIN users u ON u.id = c.created_by
       ORDER BY c.updated_at DESC
@@ -187,6 +194,9 @@ export class CardRepository {
     const card: AnswerCard = {
       id: cardRow.id,
       title: cardRow.title,
+      subject: cardRow.subject ?? undefined,
+      subjectLabel: cardRow.subject_label ?? undefined,
+      examDate: cardRow.exam_date ?? undefined,
       paper: { size: cardRow.paper_size, orientation: cardRow.orientation },
       studentInfo: {
         fields: JSON.parse(cardRow.student_fields ?? "[]"),

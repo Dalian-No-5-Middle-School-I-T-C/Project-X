@@ -25,6 +25,7 @@ import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
 import { AccountManagement } from "./components/AccountManagement";
 import { StudentScores } from "./components/StudentScores";
+import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -274,6 +275,7 @@ function App() {
   const [newExamCardId, setNewExamCardId] = useState("");
   const [selectedExamIds, setSelectedExamIds] = useState<Set<number>>(new Set());
   const [analysisTab, setAnalysisTab] = useState<"manage" | "view">("view");
+  const [showNewCardModal, setShowNewCardModal] = useState(false);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
@@ -283,7 +285,7 @@ function App() {
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
   const canViewScores = hasPermission(PERMISSIONS.SCORE_READ);
   const canManageAccounts = hasPermission(PERMISSIONS.USER_MANAGE);
-  const showCardSidebar = canDesign || canGrade;
+  const showCardSidebar = mode === "design";
   const showScoresTab = isStudent && canViewScores;
 
   useEffect(() => {
@@ -311,13 +313,23 @@ function App() {
     }
   }
 
-  async function createCard() {
+  async function createCard(formData: NewCardFormData) {
+    setShowNewCardModal(false);
     setIsBusy(true);
     try {
-      const created = await fetchJson<AnswerCard>("/api/cards", { method: "POST" });
+      const created = await fetchJson<AnswerCard>("/api/cards", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject: formData.subject,
+          subjectLabel: formData.subjectLabel,
+          title: formData.title,
+          examDate: formData.examDate
+        })
+      });
       setCard(created);
       setSelectedBlockId(created.bodyBlocks[0]?.id ?? null);
-      setStatus(`已创建答题卡 ${created.id}`);
+      setStatus(`已创建答题卡 「${created.title}」 (${created.id})`);
       await refreshCards();
     } finally {
       setIsBusy(false);
@@ -352,6 +364,67 @@ function App() {
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function deleteCard(cardId: string) {
+    setIsBusy(true);
+    try {
+      const result = await fetchJson<{ ok: boolean; referencedExamCount: number; referencedExamNames: string[] }>(
+        `/api/cards/${cardId}`,
+        { method: "DELETE" }
+      );
+      if (result.referencedExamCount > 0) {
+        setStatus(`已删除答题卡（被 ${result.referencedExamCount} 个考试引用：${result.referencedExamNames.join("、")}）`);
+      } else {
+        setStatus("已删除答题卡");
+      }
+      if (card?.id === cardId) {
+        setCard(null);
+        setSelectedBlockId(null);
+      }
+      await refreshCards();
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function exportCard(cardId: string) {
+    const a = document.createElement("a");
+    a.href = urlWithToken(`/api/cards/${cardId}/export`);
+    a.download = `答题卡_${cardId}.projectx-card.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setStatus("正在导出答题卡...");
+  }
+
+  async function importCard() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      setIsBusy(true);
+      setStatus("正在导入答题卡...");
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+        const result = await fetchJson<CardSummary>("/api/cards/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data)
+        });
+        setStatus(`已导入答题卡：${result.title} (${result.id})`);
+        await refreshCards();
+        await loadCard(result.id);
+      } catch (err) {
+        setStatus(`导入失败：${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        setIsBusy(false);
+      }
+    };
+    input.click();
   }
 
   function updateCard(mutator: (draft: AnswerCard) => void) {
@@ -615,27 +688,53 @@ function App() {
       {showCardSidebar && (
       <aside className="sidebar">
         <div className="brand">
+          <img src="/resources/icon.png" alt="" className="brand-icon" />
           <div>
-            <strong>答题卡设计系统</strong>
+            <strong>答题卡设计阅卷系统</strong>
             <span>Project-X v1</span>
           </div>
         </div>
-        <button className="primary-button" onClick={createCard} disabled={isBusy || !canDesign}>
-          <Plus size={17} /> 新建答题卡
-        </button>
+        <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
+          <button className="primary-button" onClick={() => setShowNewCardModal(true)} disabled={isBusy || !canDesign} style={{ width: "100%" }}>
+            <Plus size={17} /> 新建答题卡
+          </button>
+        </div>
         <div className="card-list">
           {cards.map((item) => (
-            <button
+            <div
               key={item.id}
               className={`card-list-item ${card?.id === item.id ? "active" : ""}`}
-              onClick={() => void loadCard(item.id)}
             >
-              <span>{item.title}</span>
-              <small>ID:{item.id}</small>
-            </button>
+              <button
+                className="card-list-main"
+                onClick={() => void loadCard(item.id)}
+              >
+                <span>{item.title || "未命名答题卡"}</span>
+                <small>{item.subjectLabel ? `${item.subjectLabel} · ` : ""}ID:{item.id}</small>
+              </button>
+              <div className="card-list-actions">
+                <button title="导出" onClick={(e) => { e.stopPropagation(); void exportCard(item.id); }}>
+                  <Download size={14} />
+                </button>
+                <button
+                  title="删除"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (confirm(`确定删除「${item.title || item.id}」？此操作不可撤销。`)) {
+                      void deleteCard(item.id);
+                    }
+                  }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            </div>
           ))}
           {cards.length === 0 && <p className="empty-text">暂无答题卡，先新建一张。</p>}
         </div>
+        <button className="ghost-button" onClick={() => void importCard()} disabled={isBusy} style={{ marginTop: 8, width: "100%" }}>
+          <Upload size={16} /> 导入答题卡
+        </button>
       </aside>
       )}
 
@@ -656,6 +755,21 @@ function App() {
                       ? "创建答题卡后开始编辑"
                       : `${user.name} · ${user.role_display_name ?? user.role_name}`}
             </p>
+          </div>
+          <div className="topbar-actions-left">
+            {card && canDesign && mode === "design" && (
+              <>
+                <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
+                  坐标JSON
+                </a>
+                <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/pdf?v=${encodeURIComponent(card.updatedAt)}`)} target="_blank" rel="noreferrer">
+                  <FileDown size={17} /> PDF
+                </a>
+                <button className="primary-button" onClick={() => void saveCard()} disabled={isBusy}>
+                  <Save size={17} /> 保存
+                </button>
+              </>
+            )}
           </div>
           <div className="topbar-actions">
             <div className="mode-toggle" role="tablist" aria-label="工作模式">
@@ -686,19 +800,6 @@ function App() {
               )}
             </div>
             <AccountMenu />
-            {card && canDesign && mode === "design" && (
-              <>
-                <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
-                  坐标JSON
-                </a>
-                <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/pdf?v=${encodeURIComponent(card.updatedAt)}`)} target="_blank" rel="noreferrer">
-                  <FileDown size={17} /> PDF
-                </a>
-                <button className="primary-button" onClick={() => void saveCard()} disabled={isBusy}>
-                  <Save size={17} /> 保存
-                </button>
-              </>
-            )}
           </div>
         </header>
 
@@ -718,6 +819,18 @@ function App() {
                     标题
                     <input value={card.title} onChange={(event) => updateCard((draft) => void (draft.title = event.target.value))} />
                   </label>
+                  {card.subjectLabel && (
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", fontSize: 13, color: "var(--text-secondary)" }}>
+                      <span>科目</span>
+                      <span style={{ fontWeight: 600, color: "var(--text)" }}>{card.subjectLabel}</span>
+                    </div>
+                  )}
+                  {card.examDate && (
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", fontSize: 13, color: "var(--text-secondary)" }}>
+                      <span>考试时间</span>
+                      <span style={{ fontWeight: 600, color: "var(--text)" }}>{card.examDate}</span>
+                    </div>
+                  )}
                   <label>
                     学号位数
                     <input
@@ -1171,6 +1284,7 @@ function App() {
         </div>
         <footer className="statusbar">{status}</footer>
       </section>
+      <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} />
     </main>
   );
 }

@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { AuthService } from "../services/AuthService";
+import { authService } from "../services/AuthService";
 import { permissionsForRole, roleHasPermission, type Permission } from "../auth/permissions";
 
 // 扩展 Express Request 类型
@@ -17,8 +17,6 @@ declare global {
     }
   }
 }
-
-const authService = new AuthService();
 
 function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization;
