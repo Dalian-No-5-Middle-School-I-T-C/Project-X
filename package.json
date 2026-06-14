@@ -16,7 +16,7 @@
     "electron:dev": "npm run build && npm run native:rebuild:electron && electron .",
     "electron:pack": "npm run build && npm run native:rebuild:electron && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --dir",
     "electron:dist": "npm run build && npm run native:rebuild:electron && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --win portable",
-    "electron:msi": "npm run build && npm run native:rebuild:electron && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --win msi",
+    "electron:msi": "npm run build && npm run native:rebuild:electron && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& set NODE_OPTIONS=--use-system-ca&& electron-builder --win msi",
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
     "typecheck": "tsc --noEmit"
@@ -73,8 +73,9 @@
     ],
     "asar": true,
     "win": {
-      "icon": "build/icon.svg",
+      "icon": "resources/icon.png",
       "executableName": "答题卡设计系统",
+      "signAndEditExecutable": false,
       "target": [
         {
           "target": "portable",
