@@ -6,6 +6,7 @@ export function LoginPage() {
   const { login } = useAuth();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -18,7 +19,7 @@ export function LoginPage() {
     }
     setBusy(true);
     try {
-      await login(identifier.trim(), password);
+      await login(identifier.trim(), password, rememberMe);
     } catch (err) {
       setError(err instanceof Error ? err.message : "登录失败");
     } finally {
@@ -34,7 +35,7 @@ export function LoginPage() {
             <Shield size={28} />
           </div>
           <div>
-            <strong>答题卡设计系统</strong>
+            <strong>答题卡设计阅卷系统</strong>
             <span>Project-X · 账号登录</span>
           </div>
         </div>
@@ -44,7 +45,7 @@ export function LoginPage() {
             <input
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
-              placeholder="admin 或学号"
+              placeholder="请输入用户名 / 学号"
               autoComplete="username"
               disabled={busy}
             />
@@ -60,12 +61,20 @@ export function LoginPage() {
               disabled={busy}
             />
           </label>
+          <label className="login-remember">
+            <input
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              disabled={busy}
+            />
+            <span>记住密码（6个月内免登录）</span>
+          </label>
           {error && <p className="login-error">{error}</p>}
           <button className="primary-button wide-button" type="submit" disabled={busy}>
             <LogIn size={17} /> {busy ? "登录中..." : "登录"}
           </button>
         </form>
-        <p className="login-hint">首次使用默认管理员：admin / admin123，登录后请立即修改密码。</p>
       </div>
     </div>
   );

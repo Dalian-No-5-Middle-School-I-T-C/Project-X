@@ -1,0 +1,312 @@
+import { useState } from "react";
+import { X, ChevronLeft, ChevronRight, Calendar } from "lucide-react";
+import { SUBJECT_OPTIONS, subjectToKey, isPredefinedSubject } from "../../../../shared/pinyin";
+
+export interface NewCardFormData {
+  subject: string;        // 拼音 key，如 wuli
+  subjectLabel: string;   // 中文名称，如 物理
+  title: string;          // 考试名称
+  examDate?: string;      // ISO 日期字符串，可选
+}
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+  onCreate: (data: NewCardFormData) => void;
+}
+
+/**
+ * 简易日历日期选择器（内联组件）
+ */
+function DatePicker({ value, onChange }: { value?: string; onChange: (d: string) => void }) {
+  const today = new Date();
+  const [viewYear, setViewYear] = useState(value ? Number(value.slice(0, 4)) : today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(value ? Number(value.slice(5, 7)) - 1 : today.getMonth());
+  const [manual, setManual] = useState(value ?? "");
+  const [showCalendar, setShowCalendar] = useState(false);
+
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay(); // 0=Sun
+
+  const days: (number | null)[] = [];
+  for (let i = 0; i < firstDayOfWeek; i++) days.push(null);
+  for (let d = 1; d <= daysInMonth; d++) days.push(d);
+
+  function selectDay(day: number | null) {
+    if (day === null) return;
+    const yyyy = String(viewYear).padStart(4, "0");
+    const mm = String(viewMonth + 1).padStart(2, "0");
+    const dd = String(day).padStart(2, "0");
+    const dateStr = `${yyyy}-${mm}-${dd}`;
+    onChange(dateStr);
+    setManual(dateStr);
+    setShowCalendar(false);
+  }
+
+  function handleManualChange(text: string) {
+    setManual(text);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+      onChange(text);
+    }
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        <input
+          type="text"
+          value={manual}
+          onChange={(e) => handleManualChange(e.target.value)}
+          onBlur={() => {
+            if (manual && !/^\d{4}-\d{2}-\d{2}$/.test(manual)) {
+              // 尝试解析
+              const d = new Date(manual);
+              if (!isNaN(d.getTime())) {
+                const yyyy = String(d.getFullYear()).padStart(4, "0");
+                const mm = String(d.getMonth() + 1).padStart(2, "0");
+                const dd = String(d.getDate()).padStart(2, "0");
+                const fixed = `${yyyy}-${mm}-${dd}`;
+                setManual(fixed);
+                onChange(fixed);
+              }
+            }
+          }}
+          placeholder="YYYY-MM-DD（如 2026-06-14）"
+          style={{ width: "100%", paddingRight: 36 }}
+        />
+        <button
+          type="button"
+          onClick={() => setShowCalendar(!showCalendar)}
+          style={{
+            position: "absolute",
+            right: 2,
+            top: 2,
+            width: 34,
+            height: 34,
+            display: "grid",
+            placeItems: "center",
+            border: "none",
+            background: "transparent",
+            cursor: "pointer",
+            borderRadius: 6,
+            color: "var(--text-secondary)"
+          }}
+        >
+          <Calendar size={18} />
+        </button>
+      </div>
+
+      {showCalendar && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            left: 0,
+            zIndex: 100,
+            background: "#fff",
+            border: "1px solid var(--line-strong)",
+            borderRadius: 12,
+            boxShadow: "0 12px 40px rgba(0,0,0,0.12)",
+            padding: 16,
+            marginTop: 4,
+            width: 280
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <button
+              type="button"
+              onClick={() => {
+                if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1); }
+                else setViewMonth(viewMonth - 1);
+              }}
+              style={{ border: "none", background: "transparent", cursor: "pointer", padding: 4, borderRadius: 6 }}
+            >
+              <ChevronLeft size={18} />
+            </button>
+            <strong style={{ fontSize: 14 }}>{viewYear} 年 {viewMonth + 1} 月</strong>
+            <button
+              type="button"
+              onClick={() => {
+                if (viewMonth === 11) { setViewMonth(0); setViewYear(viewYear + 1); }
+                else setViewMonth(viewMonth + 1);
+              }}
+              style={{ border: "none", background: "transparent", cursor: "pointer", padding: 4, borderRadius: 6 }}
+            >
+              <ChevronRight size={18} />
+            </button>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, textAlign: "center", fontSize: 12, fontWeight: 600, color: "var(--muted)", marginBottom: 4 }}>
+            {["日", "一", "二", "三", "四", "五", "六"].map((d) => (<div key={d}>{d}</div>))}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, textAlign: "center" }}>
+            {days.map((day, i) => {
+              const isToday = day !== null && viewYear === today.getFullYear() && viewMonth === today.getMonth() && day === today.getDate();
+              const isSelected = day !== null && value === `${String(viewYear).padStart(4, "0")}-${String(viewMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+              return (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => selectDay(day)}
+                  disabled={day === null}
+                  style={{
+                    width: 32,
+                    height: 32,
+                    border: isSelected ? "2px solid var(--brand)" : "1px solid transparent",
+                    borderRadius: 8,
+                    background: isSelected ? "var(--brand-soft)" : isToday ? "var(--surface-raised)" : "transparent",
+                    fontWeight: isToday ? 700 : 400,
+                    fontSize: 13,
+                    cursor: day !== null ? "pointer" : "default",
+                    color: day !== null ? "var(--text)" : "transparent",
+                    transition: "all 0.15s"
+                  }}
+                >
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function NewCardModal({ open, onCreate, onClose }: Props) {
+  const [subjectLabel, setSubjectLabel] = useState("物理"); // 默认
+  const [showCustom, setShowCustom] = useState(false);
+  const [customSubject, setCustomSubject] = useState("");
+  const [title, setTitle] = useState("");
+  const [examDate, setExamDate] = useState("");
+  const [error, setError] = useState("");
+
+  if (!open) return null;
+
+  function handleSubjectSelect(label: string) {
+    setSubjectLabel(label);
+    if (label === "其他") {
+      setShowCustom(true);
+    } else {
+      setShowCustom(false);
+      setCustomSubject("");
+    }
+  }
+
+  function handleCreate() {
+    const finalLabel = subjectLabel === "其他" ? customSubject.trim() : subjectLabel;
+    if (!finalLabel) {
+      setError("请选择科目或手动输入科目名");
+      return;
+    }
+    const titleTrimmed = title.trim();
+    if (!titleTrimmed) {
+      setError("请输入考试名称（题目）");
+      return;
+    }
+    const key = subjectToKey(finalLabel);
+    onCreate({
+      subject: key,
+      subjectLabel: finalLabel,
+      title: titleTrimmed,
+      examDate: examDate || undefined
+    });
+    // 重置状态
+    setSubjectLabel("物理");
+    setShowCustom(false);
+    setCustomSubject("");
+    setTitle("");
+    setExamDate("");
+    setError("");
+  }
+
+  // 当通过"其他"手动输入的内容命中预定义科目时，自动归类
+  function handleCustomSubjectChange(text: string) {
+    setCustomSubject(text);
+    if (isPredefinedSubject(text.trim())) {
+      setSubjectLabel(text.trim());
+      setShowCustom(false);
+      setCustomSubject("");
+    }
+  }
+
+  return (
+    <div
+      className="modal-backdrop"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="modal-card" style={{ width: 440, maxWidth: "calc(100vw - 40px)" }}>
+        <div className="modal-header">
+          <h2>新建答题卡</h2>
+          <button className="modal-close" onClick={onClose}><X size={20} /></button>
+        </div>
+
+        <div className="modal-body" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+          {/* 科目选择 */}
+          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>科目 <span style={{ color: "var(--brand)" }}>*</span></span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {SUBJECT_OPTIONS.map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => handleSubjectSelect(opt.label)}
+                  style={{
+                    padding: "6px 14px",
+                    borderRadius: 8,
+                    border: subjectLabel === opt.label && !showCustom ? "2px solid var(--brand)" : "1px solid var(--line-strong)",
+                    background: subjectLabel === opt.label && !showCustom ? "var(--brand-soft)" : "#fff",
+                    fontWeight: subjectLabel === opt.label && !showCustom ? 600 : 400,
+                    cursor: "pointer",
+                    fontSize: 14,
+                    transition: "all 0.15s",
+                    color: "var(--text)"
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </label>
+
+          {/* 手动填写科目（选择"其他"时显示） */}
+          {showCustom && (
+            <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>手动填写科目名称</span>
+              <input
+                value={customSubject}
+                onChange={(e) => handleCustomSubjectChange(e.target.value)}
+                placeholder="如：信息技术、日语、韩语..."
+              />
+              {customSubject.trim() && <span style={{ fontSize: 11, color: "var(--muted)" }}>拼音 key: {subjectToKey(customSubject.trim()) || "—"}</span>}
+            </label>
+          )}
+
+          {/* 考试名称 */}
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>考试名称 <span style={{ color: "var(--brand)" }}>*</span></span>
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="如：2026 上学期期中考试"
+            />
+          </label>
+
+          {/* 考试时间（可选） */}
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>考试时间 <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 400 }}>（可选）</span></span>
+            <DatePicker value={examDate} onChange={setExamDate} />
+          </label>
+
+          {error && <p style={{ color: "var(--brand)", fontSize: 13, margin: 0 }}>{error}</p>}
+        </div>
+
+        <div className="modal-footer" style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+          <button className="ghost-button" onClick={onClose}>取消</button>
+          <button className="primary-button" onClick={handleCreate}>创建答题卡</button>
+        </div>
+      </div>
+    </div>
+  );
+}

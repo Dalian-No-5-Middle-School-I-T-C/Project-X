@@ -1,10 +1,9 @@
 import express from "express";
-import { AuthService } from "../services/AuthService";
+import { authService } from "../services/AuthService";
 import { getCurrentUserHandler, authMiddleware } from "../middleware/auth";
 import type { Request, Response } from "express";
 
 const router = express.Router();
-const authService = new AuthService();
 
 /**
  * POST /api/auth/login
@@ -14,14 +13,14 @@ const authService = new AuthService();
  */
 router.post("/login", async (req: Request, res: Response) => {
   try {
-    const { identifier, password } = req.body;
+    const { identifier, password, isPersistent } = req.body;
 
     if (!identifier || !password) {
       res.status(400).json({ message: "请输入用户名和密码" });
       return;
     }
 
-    const result = await authService.login(identifier, password);
+    const result = await authService.login(identifier, password, !!isPersistent);
 
     if (!result.success) {
       res.status(401).json({ message: result.message });

@@ -1,7 +1,7 @@
 import express from "express";
 import type { Request, Response } from "express";
 import { UserRepository, type BatchStudentInput } from "../repositories/UserRepository";
-import { AuthService } from "../services/AuthService";
+import { authService } from "../services/AuthService";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS, ROLE_NAMES } from "../auth/permissions";
 
@@ -11,7 +11,6 @@ import { PERMISSIONS, ROLE_IDS, ROLE_NAMES } from "../auth/permissions";
  */
 const router = express.Router();
 const userRepo = new UserRepository();
-const authService = new AuthService();
 
 // 所有用户管理接口都要求登录 + user:manage 权限
 router.use(authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE));
