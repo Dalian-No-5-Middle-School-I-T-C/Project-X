@@ -3,7 +3,7 @@ import multer from "multer";
 import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { ensureDefaultAdmin, initializeDatabase } from "../../../server/db";
@@ -18,7 +18,7 @@ import classRoutes from "../../../server/routes/classes";
 import scoreRoutes from "../../../server/routes/scores";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
-import { createDefaultCard } from "../../../shared/defaultCard";
+import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 import type {
@@ -56,6 +56,8 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
   return {
     ...card,
     id: safeId(cardId),
+    subjectLabel: (card as any).subjectLabel ?? card.subjectLabel ?? undefined,
+    examDate: (card as any).examDate ?? card.examDate ?? undefined,
     bodyBlocks: (card.bodyBlocks ?? []).map((block) =>
       block.type === "objective" ? { ...block, answerKey: normalizeObjectiveAnswerKey(block) } : block
     ),
@@ -65,10 +67,13 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
   };
 }
 
-function toCardSummary(row: { id: string; title: string; updated_at?: string; updatedAt?: string }): CardSummary {
+function toCardSummary(row: { id: string; title: string; updated_at?: string; updatedAt?: string; subject?: string; subject_label?: string; exam_date?: string }): CardSummary {
   return {
     id: row.id,
     title: row.title || "未命名答题卡",
+    subject: (row as any).subject ?? undefined,
+    subjectLabel: (row as any).subject_label ?? undefined,
+    examDate: (row as any).exam_date ?? undefined,
     updatedAt: row.updatedAt ?? row.updated_at ?? new Date(0).toISOString()
   };
 }
@@ -282,6 +287,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.use(express.json({ limit: "8mb" }));
   app.use("/assets", express.static(assetsDir));
+  app.use("/resources", express.static(path.join(rootDir, "resources")));
 
   // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
   app.use("/api", optionalAuth);
@@ -347,7 +353,27 @@ export async function createApp(): Promise<express.Express> {
 
   app.post("/api/cards", async (req, res, next) => {
     try {
-      const card = createDefaultCard(String(Date.now()));
+      const subject = (req.body?.subject ?? "").trim();
+      const title = (req.body?.title ?? "").trim();
+      const subjectLabel = (req.body?.subjectLabel ?? "").trim();
+      const examDate = (req.body?.examDate ?? "").trim() || undefined;
+      if (!subject) {
+        res.status(400).json({ error: "科目（subject）为必填项" });
+        return;
+      }
+      if (!title) {
+        res.status(400).json({ error: "考试名称为必填项" });
+        return;
+      }
+      let id = generateCardId(subject);
+      let retry = 0;
+      while (cardRepo.findById(id) && retry < 100) {
+        id = generateCardId(subject + "_" + String(retry++));
+      }
+      const card = createDefaultCard(id, subject);
+      card.title = title;
+      card.subjectLabel = subjectLabel || undefined;
+      card.examDate = examDate;
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
       res.status(201).json(saved);
     } catch (error) {
@@ -740,6 +766,123 @@ export async function createApp(): Promise<express.Express> {
       res.setHeader("Expires", "0");
       doc.pipe(res);
       doc.end();
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── 答题卡导出/导入/删除 ──────────────────────────────
+
+  // DELETE: 删除答题卡
+  app.delete("/api/cards/:cardId", async (req, res, next) => {
+    try {
+      const cardId = safeId(paramValue(req.params.cardId));
+      const card = cardRepo.findById(cardId);
+      if (!card) {
+        res.status(404).json({ message: "答题卡不存在" });
+        return;
+      }
+      // 检查是否被考试引用
+      const examRepo = new ExamRepository();
+      const exams = examRepo.listExams();
+      const referenced = exams.filter((e: any) => e.card_id === cardId);
+      // 删除 SQLite 记录（外键 CASCADE 自动删子表）
+      const deleted = cardRepo.deleteCard(cardId);
+      // 删除 JSON 文件
+      const cardJsonPath = path.join(dataDir, "cards", `${cardId}.json`);
+      const layoutJsonPath = layoutPath(cardId);
+      const assetsPath = cardAssetsDir(cardId);
+      try { if (existsSync(cardJsonPath)) await rm(cardJsonPath); } catch {}
+      try { if (existsSync(layoutJsonPath)) await rm(layoutJsonPath); } catch {}
+      try { if (existsSync(assetsPath)) await rm(assetsPath, { recursive: true, force: true }); } catch {}
+      res.json({
+        ok: true,
+        deleted,
+        referencedExamCount: referenced.length,
+        referencedExamNames: referenced.map((e: any) => e.name)
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // GET: 导出答题卡（含答案 + assets base64）
+  app.get("/api/cards/:cardId/export", async (req, res, next) => {
+    try {
+      const cardId = safeId(paramValue(req.params.cardId));
+      const card = cardRepo.findById(cardId);
+      if (!card) {
+        res.status(404).json({ message: "答题卡不存在" });
+        return;
+      }
+      const layout = cardRepo.getLayoutData(cardId);
+      // 收集 assets base64
+      const assetsMap: Record<string, string> = {};
+      const assetsPath = cardAssetsDir(cardId);
+      if (existsSync(assetsPath)) {
+        const { readdir } = await import("node:fs/promises");
+        const files = await readdir(assetsPath);
+        for (const file of files) {
+          try {
+            const data = await readFile(path.join(assetsPath, file));
+            assetsMap[file] = data.toString("base64");
+          } catch {}
+        }
+      }
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename*=UTF-8''${encodeURIComponent(card.title || cardId)}.projectx-card.json`
+      );
+      res.json({
+        format: "projectx-card",
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        card,
+        layout,
+        assets: assetsMap
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // POST: 导入答题卡
+  app.post("/api/cards/import", async (req, res, next) => {
+    try {
+      const imported = req.body as { format?: string; version?: number; card?: AnswerCard; layout?: unknown; assets?: Record<string, string> };
+      if (!imported || imported.format !== "projectx-card" || imported.version !== 1) {
+        res.status(400).json({ message: "不支持的文件格式，请使用 .projectx-card.json 导出文件" });
+        return;
+      }
+      if (!imported.card) {
+        res.status(400).json({ message: "文件中缺少答题卡数据" });
+        return;
+      }
+      const subject = imported.card.subject ?? "";
+      let newId = generateCardId(subject || "imported");
+      let retry = 0;
+      while (cardRepo.findById(newId) && retry < 100) {
+        newId = generateCardId((subject || "imported") + "_" + String(retry++));
+      }
+      const card = { ...imported.card, id: newId, updatedAt: new Date().toISOString() };
+      const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
+      // 导入 assets
+      if (imported.assets && Object.keys(imported.assets).length > 0) {
+        const assetsPath = cardAssetsDir(newId);
+        await mkdir(assetsPath, { recursive: true });
+        for (const [filename, base64] of Object.entries(imported.assets)) {
+          // 安全检查：仅允许安全的文件名
+          const safeFilename = path.basename(filename);
+          if (safeFilename && /^[a-zA-Z0-9_\-\.]+$/.test(safeFilename)) {
+            try {
+              const buffer = Buffer.from(base64, "base64");
+              await writeFile(path.join(assetsPath, safeFilename), buffer);
+            } catch {}
+          }
+        }
+      }
+      res.status(201).json(toCardSummary({ id: saved.id, title: saved.title, updatedAt: saved.updatedAt }));
     } catch (error) {
       next(error);
     }
