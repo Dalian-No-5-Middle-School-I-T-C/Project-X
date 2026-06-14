@@ -727,6 +727,55 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  app.get("/api/analysis/exams/:examId/export-csv", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const classId = req.query.classId ? Number(req.query.classId) : undefined;
+      const examId = Number(req.params.examId);
+
+      const { students, questionHeaders } = analysisRepo.getExportData(examId, classId);
+
+      // Build header row
+      const header = ["班级", "考号", "姓名", "成绩", "班级排名", "年级排名", "客观题成绩", "主观题成绩", ...questionHeaders];
+
+      // Build CSV lines
+      const csvEscape = (v: unknown): string => {
+        const s = v === "" || v === null || v === undefined ? "" : String(v);
+        if (s.includes(",") || s.includes("\"") || s.includes("\n")) {
+          return `"${s.replace(/"/g, '""')}"`;
+        }
+        return s;
+      };
+
+      const lines = [
+        header.map((h) => csvEscape(h)).join(","),
+        ...students.map((s) => [
+          csvEscape(s.className),
+          csvEscape(s.studentNumber),
+          csvEscape(s.name),
+          csvEscape(s.totalScore),
+          csvEscape(s.classRank),
+          csvEscape(s.gradeRank),
+          csvEscape(s.objectiveScore),
+          csvEscape(s.subjectiveScore),
+          ...s.questionScores.map((qs) => csvEscape(qs))
+        ].join(","))
+      ];
+
+      const csv = "\uFEFF" + lines.join("\n");
+
+      // Get exam name for the filename
+      const exam = analysisRepo.getExam(examId);
+      const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.csv`;
+
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+      res.send(csv);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.use("/api/scanner", scannerGate, createScannerRouter());
 
   const clientDist = process.env.ANSWER_CARD_CLIENT_DIST

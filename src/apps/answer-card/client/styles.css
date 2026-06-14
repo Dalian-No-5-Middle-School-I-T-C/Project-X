@@ -2070,3 +2070,30 @@ select:focus {
   transform: rotate(180deg);
   transition: transform 160ms ease;
 }
+
+/* ── Export dropdown menu ────────────────────────────── */
+
+.export-menu-btn {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  border-radius: 4px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.export-menu-btn:hover:not(:disabled) {
+  background: var(--surface-soft);
+  color: var(--brand-strong);
+}
+
+.export-menu-btn:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.5;
+}

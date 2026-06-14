@@ -78,6 +78,7 @@
 - **学生排名**：学号、姓名、总分、客观分、主观分、待复核标记
 - **题目分析**：每题得分率、正确率排行，低分题红色高亮
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
+- **CSV 成绩导出**：年级排名 / 班级排名两种模式，表头含班级、考号、姓名、成绩、双排名、客观/主观成绩、每题得分
 
 ### 桌面应用
 
@@ -119,6 +120,7 @@
 
 **查看分析**：
 1. 切到「分析」模式 → 选考试 → 查看总览/排名/题目分析
+2. 点击「导出」→ 选择「年级排名」或「班级排名」→ 下载 CSV 成绩表
 
 ---
 
@@ -263,6 +265,8 @@ Project-X/
 | `GET` | `/api/analysis/exams/:id/overview` | 考试总览统计 |
 | `GET` | `/api/analysis/exams/:id/students` | 学生排名 |
 | `GET` | `/api/analysis/exams/:id/questions` | 题目得分率 |
+| `GET` | `/api/analysis/exams/:id/classes` | 考试关联班级 |
+| `GET` | `/api/analysis/exams/:id/export-csv` | 导出成绩CSV（?classId= 选班级） |
 | `GET` | `/api/scanner/sources` | TWAIN 扫描仪检测 |
 | `POST` | `/api/scanner/scan` | 启动扫描会话 |
 | `GET` | `/api/scanner/progress/:id` | SSE 扫描进度 |

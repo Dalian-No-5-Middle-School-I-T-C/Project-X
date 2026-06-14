@@ -4,6 +4,7 @@ import {
   ArrowUp,
   BarChart3,
   Camera,
+  ChevronDown,
   ClipboardCheck,
   Download,
   FileDown,
@@ -18,7 +19,7 @@ import {
   Users
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
-import { fetchJson, urlWithToken } from "./auth/api";
+import { authFetch, fetchJson, urlWithToken } from "./auth/api";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
@@ -247,6 +248,7 @@ function App() {
   const [analysisExamId, setAnalysisExamId] = useState<number | null>(null);
   const [analysisClassId, setAnalysisClassId] = useState<string>("");
   const [analysisClasses, setAnalysisClasses] = useState<Array<{ classId: number; className: string }>>([]);
+  const [showExportMenu, setShowExportMenu] = useState(false);
   const [analysisOverview, setAnalysisOverview] = useState<ExamOverview | null>(null);
   const [analysisRanking, setAnalysisRanking] = useState<StudentRankingItem[]>([]);
   const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
@@ -507,6 +509,30 @@ function App() {
       setAnalysisRanking([]);
       setAnalysisQuestions([]);
     }
+  }
+
+  function downloadAnalysisCsv(classId?: string) {
+    if (!analysisExamId) return;
+    setShowExportMenu(false);
+    const params = classId ? `?classId=${classId}` : "";
+    const exam = exams.find(e => e.id === analysisExamId);
+    const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.csv`;
+
+    authFetch(`/api/analysis/exams/${analysisExamId}/export-csv${params}`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error(await res.text());
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setStatus("CSV 导出完成");
+      })
+      .catch((err) => setStatus(`导出失败: ${err instanceof Error ? err.message : String(err)}`));
   }
 
   const selectedBlock = card?.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null;
@@ -902,7 +928,42 @@ function App() {
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
                         <BarChart3 size={18} style={{ color: "var(--brand)" }} />
                         <strong style={{ fontSize: 17 }}>{exams.find(e => e.id === analysisExamId)?.name || "成绩分析"}</strong>
+                        <div style={{ marginLeft: "auto", position: "relative" }}>
+                          <button
+                            className="primary-button"
+                            style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 13 }}
+                            onClick={() => setShowExportMenu(!showExportMenu)}
+                          >
+                            <Download size={16} /> 导出 <ChevronDown size={14} />
+                          </button>
+                          {showExportMenu && (
+                            <div className="export-menu" style={{
+                              position: "absolute", right: 0, top: "100%", zIndex: 100, marginTop: 4,
+                              background: "#fff", border: "1px solid var(--line-strong)", borderRadius: 8,
+                              boxShadow: "0 4px 16px rgba(0,0,0,0.12)", padding: 4, minWidth: 180
+                            }}>
+                              <button onClick={() => downloadAnalysisCsv()} className="export-menu-btn">
+                                导出年级排名（全部班级）
+                              </button>
+                              <button
+                                onClick={() => downloadAnalysisCsv(analysisClassId || undefined)}
+                                disabled={!analysisClassId}
+                                className="export-menu-btn"
+                                title={!analysisClassId ? "请先在左侧选择班级" : ""}
+                              >
+                                导出班级排名（仅当前班）
+                              </button>
+                            </div>
+                          )}
+                        </div>
                       </div>
+                      {/* Click outside to close menu */}
+                      {showExportMenu && (
+                        <div
+                          style={{ position: "fixed", inset: 0, zIndex: 99 }}
+                          onClick={() => setShowExportMenu(false)}
+                        />
+                      )}
                       <AnalysisOverview overview={analysisOverview} />
                       {analysisOverview && analysisOverview.distribution.length > 0 && (
                         <AnalysisDistribution distribution={analysisOverview.distribution} />

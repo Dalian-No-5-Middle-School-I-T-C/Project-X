@@ -2,6 +2,23 @@ import { getDatabase } from "../db";
 import Database from "better-sqlite3";
 import type { ExamOverview, QuestionAnalysisItem, StudentRankingItem } from "../../shared/types";
 
+export interface ExportRow {
+  className: string;
+  studentNumber: string;
+  name: string;
+  totalScore: number;
+  classRank: number | "";
+  gradeRank: number;
+  objectiveScore: number;
+  subjectiveScore: number;
+  questionScores: (number | "")[];
+}
+
+export interface ExportData {
+  students: ExportRow[];
+  questionHeaders: string[];
+}
+
 function classFilter(classId?: number): { join: string; where: string; params: unknown[] } {
   if (!classId) return { join: "", where: "", params: [] };
   return {
@@ -37,6 +54,11 @@ export class AnalysisRepository {
       WHERE ss.exam_id = ?
       ORDER BY c.sort_order, c.name
     `).all(examId) as Array<{ classId: number; className: string }>;
+  }
+
+  /** Get exam name for filename */
+  getExam(examId: number): { name: string } | undefined {
+    return this.db.prepare("SELECT name FROM exams WHERE id = ?").get(examId) as { name: string } | undefined;
   }
 
   getExamOverview(examId: number, classId?: number): ExamOverview {
@@ -174,5 +196,99 @@ export class AnalysisRepository {
       reviewCount: r.reviewCount,
       totalCount: r.totalCount
     }));
+  }
+
+  /** Full data for CSV/XLS export — students + rankings + per-question scores */
+  getExportData(examId: number, classId?: number): ExportData {
+    type StudentRow = {
+      student_id: number; student_number: string | null; name: string | null;
+      total_score: number; objective_score: number; subjective_score: number;
+      class_name: string | null; class_id: number | null;
+    };
+
+    // All students for grade ranking (unfiltered)
+    const allStudents = this.db.prepare(`
+      SELECT
+        ss.student_id, u.student_number, u.name,
+        ss.total_score, ss.objective_score, ss.subjective_score,
+        c.name as class_name, c.id as class_id
+      FROM student_scores ss
+      JOIN users u ON u.id = ss.student_id
+      LEFT JOIN class_students cs ON cs.student_id = ss.student_id
+      LEFT JOIN classes c ON c.id = cs.class_id
+      WHERE ss.exam_id = ?
+      ORDER BY ss.total_score DESC
+    `).all(examId) as StudentRow[];
+
+    if (allStudents.length === 0) {
+      return { students: [], questionHeaders: [] };
+    }
+
+    // Question list for dynamic headers
+    const questionList = this.db.prepare(`
+      SELECT question_number, score_type, MAX(max_score) as max_score
+      FROM question_scores WHERE exam_id = ?
+      GROUP BY question_number, score_type
+      ORDER BY question_number
+    `).all(examId) as Array<{ question_number: number; score_type: string; max_score: number }>;
+
+    const questionHeaders = questionList.map((q) => {
+      const typeLabel = q.score_type === "objective" ? "客观" : "主观";
+      return `第${q.question_number}题(${typeLabel}/${q.max_score}分)`;
+    });
+
+    // All question scores for this exam (bulk fetch)
+    const allQS = this.db.prepare(`
+      SELECT student_id, question_number, score
+      FROM question_scores WHERE exam_id = ?
+    `).all(examId) as Array<{ student_id: number; question_number: number; score: number }>;
+
+    // Build quick lookup: studentId -> questionNumber -> score
+    const qsLookup = new Map<number, Map<number, number>>();
+    for (const qs of allQS) {
+      if (!qsLookup.has(qs.student_id)) qsLookup.set(qs.student_id, new Map());
+      qsLookup.get(qs.student_id)!.set(qs.question_number, qs.score);
+    }
+
+    // Grade rank (already DESC by total_score)
+    type RankedRow = StudentRow & { gradeRank: number; classRank: number | "" };
+    const graded: RankedRow[] = allStudents.map((s, i) => ({
+      ...s, gradeRank: i + 1, classRank: ""
+    }));
+
+    // Class rank: group by class, sort each group by total DESC
+    const classGroups = new Map<string, RankedRow[]>();
+    for (const s of graded) {
+      const key = s.class_name ?? "__unassigned__";
+      if (!classGroups.has(key)) classGroups.set(key, []);
+      classGroups.get(key)!.push(s);
+    }
+    for (const group of classGroups.values()) {
+      // already sorted by total_score DESC from the original query
+      group.forEach((s, i) => (s.classRank = i + 1));
+    }
+
+    // Filter by classId if specified
+    const filtered = classId ? graded.filter((s) => s.class_id === classId) : graded;
+
+    // Build export rows
+    const students: ExportRow[] = filtered.map((s) => ({
+      className: s.class_name ?? "",
+      studentNumber: s.student_number ?? "",
+      name: s.name ?? "",
+      totalScore: s.total_score,
+      classRank: s.classRank,
+      gradeRank: s.gradeRank,
+      objectiveScore: s.objective_score,
+      subjectiveScore: s.subjective_score,
+      questionScores: questionList.map((q) => {
+        const scoreMap = qsLookup.get(s.student_id);
+        if (!scoreMap) return "";
+        const score = scoreMap.get(q.question_number);
+        return score !== undefined ? score : "";
+      })
+    }));
+
+    return { students, questionHeaders };
   }
 }
