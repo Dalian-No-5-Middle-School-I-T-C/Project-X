@@ -287,7 +287,6 @@ export async function createApp(): Promise<express.Express> {
 
   app.use(express.json({ limit: "8mb" }));
   app.use("/assets", express.static(assetsDir));
-  app.use("/resources", express.static(path.join(rootDir, "resources")));
 
   // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
   app.use("/api", optionalAuth);
