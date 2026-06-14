@@ -21,7 +21,7 @@ export function AnalysisRanking({ ranking }: Props) {
       <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 8, background: "#fff", boxShadow: "var(--shadow-sm)" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
-            <tr style={{ background: "var(--surface-tint)", color: "var(--brand-strong)", fontSize: 12, fontWeight: 600 }}>
+            <tr style={{ background: "var(--surface-tint)", color: "var(--brand)", fontSize: 12, fontWeight: 600 }}>
               <th style={{ padding: "8px 12px", textAlign: "left", width: 44 }}>#</th>
               <th style={{ padding: "8px 12px", textAlign: "left" }}>学号</th>
               <th style={{ padding: "8px 12px", textAlign: "left" }}>姓名</th>

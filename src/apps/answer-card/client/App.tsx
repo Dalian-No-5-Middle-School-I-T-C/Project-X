@@ -791,7 +791,7 @@ function App() {
                 onClick={() => setAnalysisTab("view")}
                 style={{
                   padding: "8px 18px", border: "none", background: "none", cursor: "pointer",
-                  fontSize: 14, color: analysisTab === "view" ? "var(--brand-strong)" : "var(--muted)",
+                  fontSize: 14, color: analysisTab === "view" ? "var(--brand)" : "var(--muted)",
                   borderBottom: analysisTab === "view" ? "2px solid var(--brand)" : "2px solid transparent",
                   fontWeight: analysisTab === "view" ? 600 : 400
                 }}
@@ -803,7 +803,7 @@ function App() {
                 onClick={() => setAnalysisTab("manage")}
                 style={{
                   padding: "8px 18px", border: "none", background: "none", cursor: "pointer",
-                  fontSize: 14, color: analysisTab === "manage" ? "var(--brand-strong)" : "var(--muted)",
+                  fontSize: 14, color: analysisTab === "manage" ? "var(--brand)" : "var(--muted)",
                   borderBottom: analysisTab === "manage" ? "2px solid var(--brand)" : "2px solid transparent",
                   fontWeight: analysisTab === "manage" ? 600 : 400
                 }}
@@ -912,7 +912,7 @@ function App() {
                     <Plus size={16} /> 新建考试
                   </button>
                   {selectedExamIds.size > 0 && (
-                    <button className="ghost-button" style={{ color: "#b91c1c" }} onClick={async () => {
+                    <button className="ghost-button" style={{ color: "var(--brand)" }} onClick={async () => {
                       if (!confirm(`删除选中的 ${selectedExamIds.size} 个考试？`)) return;
                       for (const id of selectedExamIds) await fetch(`/api/exams/${id}`, { method: "DELETE" });
                       setSelectedExamIds(new Set());
@@ -994,7 +994,7 @@ function App() {
                             </span>
                           </td>
                           <td style={{ padding: "8px 10px" }}>
-                            <button className="ghost-button" style={{ fontSize: 12, color: "#b91c1c", padding: "2px 6px" }} onClick={async () => {
+                            <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }} onClick={async () => {
                               if (!confirm(`删除「${exam.name}」？`)) return;
                               await fetch(`/api/exams/${exam.id}`, { method: "DELETE" });
                               if (analysisExamId === exam.id) { setAnalysisExamId(null); setAnalysisOverview(null); setAnalysisRanking([]); setAnalysisQuestions([]); }
