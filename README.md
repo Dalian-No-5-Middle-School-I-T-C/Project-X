@@ -90,9 +90,11 @@
 
 ### 桌面应用
 
-- **Windows 桌面端**：便携版 EXE + MSI 安装包
-- **Electron 原生打包**：C++ 识别引擎和 TWAIN 桥自动内嵌
-- **数据本地可控**：答题卡、扫描图片、成绩全部存储本地
+- **Windows 桌面端**：三端产品（学生端 / 教师普通端 / 教师扫描端），便携版 EXE + MSI 安装包
+- **Electron 原生打包**：按端裁剪（学生端不打包 C++ 识别/扫描资源，教师普通端仅打包识别引擎，扫描端全量）
+- **三端共用数据**：`%APPDATA%\answer-card-designer\`（管理员端建账号→学生端直接登录）
+
+> 多端详细说明见 [`readus/多端使用说明.md`](./readus/多端使用说明.md)
 
 ---
 
@@ -102,19 +104,18 @@
 
 #### 方式一：便携版 EXE（推荐临时使用）
 
-1. 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 下载：
-   ```
-   答题卡设计系统-1.1.0-x64.exe
-   ```
-2. 双击即可运行，无需安装
+前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
+```
+Project-X 学生端-1.1.0-x64.exe
+Project-X 教师端-1.1.0-x64.exe
+Project-X 教师扫描端-1.1.0-x64.exe
+```
+
+> 学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
 
 #### 方式二：MSI 安装包（推荐机房部署）
 
-1. 下载：
-   ```
-   答题卡设计系统-1.1.0-x64.msi
-   ```
-2. 适合学校机房、域控、组策略等集中部署场景
+各端均有对应 MSI 安装包，适合学校机房、域控、组策略等集中部署场景。
 
 #### 基本使用流程
 
@@ -174,9 +175,20 @@ npx vite --port 5173
 
 ```powershell
 npm run build                          # 构建前后端
-npm run electron:pack                  # Electron 目录包
-npm run electron:dist                  # 便携版 EXE
-npm run electron:msi                   # MSI 安装包
+
+# 三端分别打包（顺序执行，勿并行）
+npm run electron:pack:student          # 学生端目录包
+npm run electron:pack:teacher          # 教师普通端目录包
+npm run electron:pack:scanner          # 教师扫描端目录包
+
+npm run electron:dist:student          # 学生端便携 EXE
+npm run electron:dist:teacher          # 教师端便携 EXE
+npm run electron:dist:scanner          # 教师扫描端便携 EXE
+
+# 默认命令仍指向扫描端（完整功能包）
+npm run electron:pack                  # = electron:pack:scanner
+npm run electron:dist                  # = electron:dist:scanner
+npm run electron:msi                   # = electron:msi:scanner
 ```
 
 多端打包和使用方式见 **[多端使用说明.md](./readus/多端使用说明.md)**。
@@ -189,8 +201,10 @@ npm run electron:msi                   # MSI 安装包
 | `npm run build` | 构建前端 + 后端 |
 | `npm run dev` | Web 开发模式 |
 | `npm run electron:dev` | 构建后启动 Electron |
-| `npm run electron:dist` | 生成 EXE |
-| `npm run electron:msi` | 生成 MSI |
+| `npm run electron:dist` | 生成扫描端便携 EXE |
+| `npm run electron:dist:student` | 生成学生端便携 EXE |
+| `npm run electron:dist:teacher` | 生成教师端便携 EXE |
+| `npm run electron:msi` | 生成扫描端 MSI |
 | `npm run verify:auth` | 账号权限自动化验证（33 项用例） |
 
 ---
@@ -206,9 +220,9 @@ npm run electron:msi                   # MSI 安装包
 | [DATABASE.md](./readus/DATABASE.md) | SQLite 表结构、Repository、认证与数据清理 | 开发者 / 运维 |
 | [ACCOUNT-ARCHITECTURE.md](./readus/ACCOUNT-ARCHITECTURE.md) | 三级账号 RBAC 全栈架构与 v1.0→v1.1 变更说明 | 开发者 |
 | [ACCOUNT-CONTROL.md](./readus/ACCOUNT-CONTROL.md) | 账号控制系统 API、权限矩阵与启用方式 | 开发者 |
-| [ADMIN-GUIDE.md](./readus/ADMIN-GUIDE.md) | 管理员日常操作：用户、班级、花名册、重置密码 | 机房管理员 / 教务 |
+| [ADMIN-GUIDE.md](./readus/ADMIN-GUIDE.md) | 管理员日常操作：教师/学生管理、导入导出、年级班级花名册 | 机房管理员 / 教务 |
 | [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
-| [CHANGELOG-001.md](./readus/CHANGELOG-001.md) | v1.1 答题卡 UX 增强与卡片管理变更记录 | 开发者 / 测试 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.0.x UX增强 + v1.1.0 批量导入/教师学生管理） | 开发者 / 测试 |
 
 ---
 
@@ -260,7 +274,8 @@ Project-X/
 │       ├── layout.ts                    # 答题卡坐标布局
 │       ├── pinyin.ts                    # 科目名→拼音 key 转换
 │       ├── blankLabels.ts               # 填空序号格式化
-│       └── defaultCard.ts               # 默认答题卡工厂 + ID 生成
+│       ├── defaultCard.ts               # 默认答题卡工厂 + ID 生成
+│       └── appVariant.ts                # 多端变体定义（学生/教师/扫描端）
 ├── native/
 │   ├── AnswerCardRecognizer/            # C++ 识别引擎（OpenCV）
 │   └── ScannerBridge/                   # C++ TWAIN 扫描仪桥接
