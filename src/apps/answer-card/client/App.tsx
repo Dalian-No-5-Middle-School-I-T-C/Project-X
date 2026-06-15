@@ -25,6 +25,7 @@ import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
 import { AccountManagement } from "./components/AccountManagement";
 import { StudentScores } from "./components/StudentScores";
+import { SponsorPage } from "./components/SponsorPage";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import type {
   AnswerCard,
@@ -85,7 +86,7 @@ function cloneCard(card: AnswerCard): AnswerCard {
   return JSON.parse(JSON.stringify(card)) as AnswerCard;
 }
 
-type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
+type AppMode = "design" | "grading" | "analysis" | "scores" | "account" | "sponsor";
 
 type GradingProgress = {
   active: boolean;
@@ -253,6 +254,7 @@ function App() {
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [mode, setMode] = useState<AppMode>("design");
+  const previousModeRef = useRef<AppMode>("design");
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
   const [gradingExamId, setGradingExamId] = useState<string>("");
   const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
@@ -799,7 +801,12 @@ function App() {
               </button>
               )}
             </div>
-            <AccountMenu />
+            <AccountMenu
+              onOpenSponsor={() => {
+                previousModeRef.current = mode;
+                setMode("sponsor");
+              }}
+            />
           </div>
         </header>
 
@@ -1280,6 +1287,11 @@ function App() {
         <div className={`main-grid account-grid ${mode === "account" ? "" : "hidden-panel"}`}>
           <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
             <AccountManagement />
+          </section>
+        </div>
+        <div className={`main-grid sponsor-grid ${mode === "sponsor" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+            <SponsorPage onBack={() => setMode(previousModeRef.current)} />
           </section>
         </div>
         <footer className="statusbar">{status}</footer>

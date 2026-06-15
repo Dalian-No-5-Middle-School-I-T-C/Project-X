@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, KeyRound, LogOut, User } from "lucide-react";
+import { ChevronDown, Heart, KeyRound, LogOut, User } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson } from "../auth/api";
 import { ROLE_LABELS } from "../auth/types";
 
-export function AccountMenu() {
+export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
   const { user, logout } = useAuth();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -109,6 +109,18 @@ export function AccountMenu() {
                 确认修改
               </button>
             </div>
+          )}
+          {onOpenSponsor && (
+            <button
+              type="button"
+              className="account-menu-item"
+              onClick={() => {
+                setOpen(false);
+                onOpenSponsor();
+              }}
+            >
+              <Heart size={15} /> 支持项目
+            </button>
           )}
           <button type="button" className="account-menu-item danger" onClick={() => void logout()}>
             <LogOut size={15} /> 退出登录

@@ -18,6 +18,7 @@ import classRoutes from "../../../server/routes/classes";
 import teacherRoutes from "../../../server/routes/teachers";
 import exportRoutes from "../../../server/routes/export";
 import scoreRoutes from "../../../server/routes/scores";
+import sponsorRoutes from "../../../server/routes/sponsor";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
@@ -300,6 +301,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/teachers", teacherRoutes);
   app.use("/api/export", exportRoutes);
   app.use("/api/scores", scoreRoutes);
+  app.use("/api/sponsor", sponsorRoutes);
   console.log("[Server] v1.1.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv");
 
   // 业务路由 RBAC 网关

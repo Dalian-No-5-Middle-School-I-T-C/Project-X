@@ -3,6 +3,11 @@ convert.py
 node_modules/
 dist/
 data/
+!src/apps/answer-card/server/data/
+!src/apps/answer-card/server/data/sponsor.json
+!data/sponsor/
+!data/sponsor/qr/
+!data/sponsor/qr/.gitkeep
 .vite/
 *.log
 .npm-cache/
