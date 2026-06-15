@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Plus, RefreshCw, Trash2, UserMinus, UserPlus, Upload, X } from "lucide-react";
+import { Download, Plus, RefreshCw, Trash2, Upload, UserMinus, UserPlus, X } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import { getAuthToken } from "../auth/api";
 import type { ClassRecord, ClassStudent, GradeRecord, UserListItem, UsersListResponse } from "../auth/types";
+import { ImportModal } from "./ImportModal";
 
 // ── CSV / 制表符解析工具 ───────────────────────────────────
 function parseCsv(text: string): string[][] {
@@ -95,6 +97,9 @@ export function ClassManagement() {
   const [showNewStudentModal, setShowNewStudentModal] = useState(false);
   const [newStudentName, setNewStudentName] = useState("");
   const [newStudentNumber, setNewStudentNumber] = useState("");
+
+  // v1.1: 批量导入（CSV/Excel）
+  const [showCsvImport, setShowCsvImport] = useState(false);
 
   const loadGrades = useCallback(async () => {
     const data = await fetchJson<GradeRecord[]>("/api/classes/grades");
@@ -346,6 +351,46 @@ export function ClassManagement() {
     }
   }
 
+  // ── v1.1 CSV 批量导入 ────────────────────────────────
+  async function handleCsvImport(csvText: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await fetchJson("/api/users/import-csv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csvText })
+      });
+      await loadGrades();
+      if (selectedGradeId) await loadClasses(selectedGradeId);
+      if (selectedClassId) await loadRoster(selectedClassId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "导入失败");
+      throw err;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleExportStudents() {
+    if (!confirm("导出文件将包含学生明文密码，请妥善保管！\n确定要下载吗？")) return;
+    const token = getAuthToken();
+    fetch("/api/export/students", { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+      .then(async (res) => {
+        if (!res.ok) throw new Error(await res.text());
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "student_accounts.xlsx";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : "导出失败"));
+  }
+
   // ── 新建学生 ───────────────────────────────────────────
   async function handleCreateStudent() {
     if (!selectedClassId || !newStudentName.trim() || !newStudentNumber.trim()) return;
@@ -385,10 +430,18 @@ export function ClassManagement() {
   return (
     <div className="account-panel class-management">
       <div className="account-panel-header">
-        <strong>班级管理</strong>
-        <button className="ghost-button" type="button" onClick={() => void loadGrades()} disabled={busy}>
-          <RefreshCw size={16} /> 刷新
-        </button>
+        <strong>学生管理</strong>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="ghost-button" type="button" onClick={() => void loadGrades()} disabled={busy}>
+            <RefreshCw size={16} /> 刷新
+          </button>
+          <button className="ghost-button" type="button" onClick={() => setShowCsvImport(true)} disabled={busy}>
+            <Download size={16} /> 导入学生
+          </button>
+          <button className="primary-button" type="button" onClick={handleExportStudents}>
+            <Upload size={16} /> 导出学生账密
+          </button>
+        </div>
       </div>
 
       {error && <p className="login-error">{error}</p>}
@@ -451,14 +504,8 @@ export function ClassManagement() {
                   onKeyDown={(e) => e.key === "Enter" && void searchStudents()}
                   disabled={busy}
                 />
-                <button className="ghost-button" type="button" onClick={() => void searchStudents()} disabled={busy} title="搜索添加已有学生">
-                  <UserPlus size={14} />
-                </button>
                 <button className="ghost-button" type="button" onClick={() => setShowNewStudentModal(true)} title="新建学生">
                   <UserPlus size={14} /> 新建
-                </button>
-                <button className="ghost-button" type="button" onClick={() => { setShowImportModal(true); setImportText(""); setImportPreview([]); }} title="批量导入">
-                  <Upload size={14} /> 导入
                 </button>
               </div>
               {studentResults.length > 0 && (
@@ -489,68 +536,6 @@ export function ClassManagement() {
         </section>
       </div>
 
-      {/* ── 导入弹窗 ────────────────────────────────────── */}
-      {showImportModal && (
-        <div className="modal-backdrop" onClick={() => setShowImportModal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 480, maxWidth: "90vw" }}>
-            <div className="modal-header">
-              <h2>批量导入学生</h2>
-              <button className="modal-close" onClick={() => setShowImportModal(false)}><X size={18} /></button>
-            </div>
-            <div className="modal-body">
-              <p className="hint">
-                支持从 Excel 复制粘贴或上传 CSV 文件。格式：每行「姓名, 学号」（可含表头）。
-                <br />
-                用户名与密码默认使用学号。
-              </p>
-              <input
-                type="file"
-                ref={fileInputRef}
-                accept=".csv,.txt"
-                style={{ display: "none" }}
-                onChange={handleFileSelect}
-              />
-              <button className="upload-button" type="button" onClick={() => fileInputRef.current?.click()}>
-                <Upload size={16} /> 选择 CSV / TXT 文件
-              </button>
-              <textarea
-                rows={6}
-                placeholder={`姓名,学号\n张三,2024001\n李四,2024002`}
-                value={importText}
-                onChange={(e) => {
-                  setImportText(e.target.value);
-                  previewImport(e.target.value);
-                }}
-                style={{ borderRadius: 10, padding: 10, border: "1px solid var(--line-strong)", fontSize: 13, fontFamily: "inherit" }}
-              />
-              {importPreview.length > 0 && (
-                <div>
-                  <p className="hint">共解析 {importPreview.length} 条记录：</p>
-                  <div className="account-table-wrap" style={{ maxHeight: 200, overflow: "auto" }}>
-                    <table className="account-table">
-                      <thead>
-                        <tr><th>姓名</th><th>学号</th></tr>
-                      </thead>
-                      <tbody>
-                        {importPreview.slice(0, 50).map((s, i) => (
-                          <tr key={i}><td>{s.name}</td><td>{s.student_number}</td></tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setShowImportModal(false)}>取消</button>
-              <button className="primary-button" type="button" onClick={() => void handleImport()} disabled={busy || importPreview.length === 0}>
-                确认导入 {importPreview.length > 0 ? `(${importPreview.length})` : ""}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ── 新建学生弹窗 ────────────────────────────────── */}
       {showNewStudentModal && (
         <div className="modal-backdrop" onClick={() => setShowNewStudentModal(false)}>
@@ -577,6 +562,16 @@ export function ClassManagement() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ── v1.1 CSV/Excel 批量导入弹窗 ─────────────────── */}
+      {showCsvImport && (
+        <ImportModal
+          title="批量导入学生"
+          csvType="student"
+          onImport={handleCsvImport}
+          onClose={() => setShowCsvImport(false)}
+        />
       )}
     </div>
   );

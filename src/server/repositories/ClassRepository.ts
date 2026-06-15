@@ -147,4 +147,54 @@ export class ClassRepository {
       .get(classId, studentId);
     return Boolean(row);
   }
+
+  // ──────────────────────────────────────────────────────────
+  // v1.1.0: 教师-班级关联
+  // ──────────────────────────────────────────────────────────
+
+  /** 教师关联班级 */
+  addTeacherToClass(teacherId: number, classId: number, subject?: string): void {
+    this.db.prepare(
+      "INSERT OR IGNORE INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, ?)"
+    ).run(teacherId, classId, subject ?? null);
+  }
+
+  /** 教师解除班级关联 */
+  removeTeacherFromClass(teacherId: number, classId: number): void {
+    this.db.prepare(
+      "DELETE FROM teacher_classes WHERE teacher_id = ? AND class_id = ?"
+    ).run(teacherId, classId);
+  }
+
+  /** 获取教师关联的班级列表 */
+  listTeacherClasses(teacherId: number): Array<{
+    class_id: number;
+    class_name: string;
+    grade_name: string;
+    subject: string | null;
+  }> {
+    return this.db.prepare(`
+      SELECT tc.class_id, c.name as class_name, g.name as grade_name, tc.subject
+      FROM teacher_classes tc
+      JOIN classes c ON c.id = tc.class_id
+      JOIN grades g ON g.id = c.grade_id
+      WHERE tc.teacher_id = ?
+      ORDER BY g.sort_order ASC, c.sort_order ASC
+    `).all(teacherId) as any[];
+  }
+
+  /** 列出所有班级（含年级名，供前端下拉用） */
+  listAllClassesWithGrade(): Array<{
+    class_id: number;
+    class_name: string;
+    grade_id: number;
+    grade_name: string;
+  }> {
+    return this.db.prepare(`
+      SELECT c.id as class_id, c.name as class_name, g.id as grade_id, g.name as grade_name
+      FROM classes c
+      JOIN grades g ON g.id = c.grade_id
+      ORDER BY g.sort_order ASC, c.sort_order ASC
+    `).all() as any[];
+  }
 }

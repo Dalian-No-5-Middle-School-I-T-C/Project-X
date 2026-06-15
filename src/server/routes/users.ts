@@ -243,4 +243,50 @@ router.post("/import-students", async (req: Request, res: Response) => {
   }
 });
 
+/** POST /api/users/import-csv — v1.1 统一批量导入（学生+教师从CSV文本） */
+router.post("/import-csv", async (req: Request, res: Response) => {
+  try {
+    const { csvText } = req.body ?? {};
+    if (!csvText || typeof csvText !== "string" || !csvText.trim()) {
+      res.status(400).json({ message: "请提供 csvText（CSV 文本内容）" });
+      return;
+    }
+
+    // 解析 CSV
+    const lines = csvText.split(/\r?\n/).filter((l: string) => l.trim());
+    if (lines.length < 2) {
+      res.status(400).json({ message: "CSV 至少需要表头+1行数据" });
+      return;
+    }
+
+    const parseCsvLine = (line: string): string[] => {
+      const cells: string[] = [];
+      let cell = "";
+      let inQuotes = false;
+      const sep = line.includes(",") ? "," : "\t";
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (inQuotes) {
+          if (ch === '"') {
+            if (line[i + 1] === '"') { cell += '"'; i++; }
+            else { inQuotes = false; }
+          } else { cell += ch; }
+        } else {
+          if (ch === '"') { inQuotes = true; }
+          else if (ch === sep) { cells.push(cell.trim()); cell = ""; }
+          else { cell += ch; }
+        }
+      }
+      cells.push(cell.trim());
+      return cells;
+    };
+
+    const rows = lines.map(parseCsvLine);
+    const result = await userRepo.batchImportFromCsv(rows);
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
+  }
+});
+
 export default router;

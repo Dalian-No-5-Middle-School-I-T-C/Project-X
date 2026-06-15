@@ -677,7 +677,7 @@ function App() {
     setShowExportMenu(false);
     const params = classId ? `?classId=${classId}` : "";
     const exam = exams.find(e => e.id === analysisExamId);
-    const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.csv`;
+    const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.xlsx`;
 
     authFetch(`/api/analysis/exams/${analysisExamId}/export-csv${params}`)
       .then(async (res) => {
@@ -691,7 +691,7 @@ function App() {
         a.click();
         a.remove();
         URL.revokeObjectURL(url);
-        setStatus("CSV 导出完成");
+        setStatus("Excel 导出完成");
       })
       .catch((err) => setStatus(`导出失败: ${err instanceof Error ? err.message : String(err)}`));
   }
@@ -718,7 +718,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.0.1</span>
+            <span>Project-X v1.1.0</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>

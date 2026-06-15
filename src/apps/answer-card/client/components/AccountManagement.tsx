@@ -1,32 +1,32 @@
 import { useState } from "react";
-import { GraduationCap, Users } from "lucide-react";
-import { UserManagement } from "./UserManagement";
+import { GraduationCap, UserCog } from "lucide-react";
+import { TeacherManagement } from "./TeacherManagement";
 import { ClassManagement } from "./ClassManagement";
 
-type AccountTab = "users" | "classes";
+type AccountTab = "teachers" | "classes";
 
 export function AccountManagement() {
-  const [tab, setTab] = useState<AccountTab>("users");
+  const [tab, setTab] = useState<AccountTab>("teachers");
 
   return (
     <div className="account-management">
       <div className="account-tabs">
         <button
           type="button"
-          className={tab === "users" ? "active" : ""}
-          onClick={() => setTab("users")}
+          className={tab === "teachers" ? "active" : ""}
+          onClick={() => setTab("teachers")}
         >
-          <Users size={15} /> 用户管理
+          <UserCog size={15} /> 教师管理
         </button>
         <button
           type="button"
           className={tab === "classes" ? "active" : ""}
           onClick={() => setTab("classes")}
         >
-          <GraduationCap size={15} /> 班级管理
+          <GraduationCap size={15} /> 学生管理
         </button>
       </div>
-      {tab === "users" ? <UserManagement /> : <ClassManagement />}
+      {tab === "teachers" ? <TeacherManagement /> : <ClassManagement />}
     </div>
   );
 }
