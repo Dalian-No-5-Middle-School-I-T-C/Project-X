@@ -15,6 +15,8 @@ import { UserRepository } from "../../../server/repositories/UserRepository";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
+import teacherRoutes from "../../../server/routes/teachers";
+import exportRoutes from "../../../server/routes/export";
 import scoreRoutes from "../../../server/routes/scores";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
@@ -295,7 +297,10 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/auth", authRoutes);
   app.use("/api/users", userRoutes);
   app.use("/api/classes", classRoutes);
+  app.use("/api/teachers", teacherRoutes);
+  app.use("/api/export", exportRoutes);
   app.use("/api/scores", scoreRoutes);
+  console.log("[Server] v1.1.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv");
 
   // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
@@ -1011,42 +1016,38 @@ export async function createApp(): Promise<express.Express> {
 
       const { students, questionHeaders } = analysisRepo.getExportData(examId, classId);
 
-      // Build header row
+      // Build data rows
       const header = ["班级", "考号", "姓名", "成绩", "班级排名", "年级排名", "客观题成绩", "主观题成绩", ...questionHeaders];
+      const data = students.map((s) => [
+        s.className,
+        s.studentNumber,
+        s.name,
+        s.totalScore,
+        s.classRank,
+        s.gradeRank,
+        s.objectiveScore,
+        s.subjectiveScore,
+        ...s.questionScores
+      ]);
 
-      // Build CSV lines
-      const csvEscape = (v: unknown): string => {
-        const s = v === "" || v === null || v === undefined ? "" : String(v);
-        if (s.includes(",") || s.includes("\"") || s.includes("\n")) {
-          return `"${s.replace(/"/g, '""')}"`;
-        }
-        return s;
-      };
-
-      const lines = [
-        header.map((h) => csvEscape(h)).join(","),
-        ...students.map((s) => [
-          csvEscape(s.className),
-          csvEscape(s.studentNumber),
-          csvEscape(s.name),
-          csvEscape(s.totalScore),
-          csvEscape(s.classRank),
-          csvEscape(s.gradeRank),
-          csvEscape(s.objectiveScore),
-          csvEscape(s.subjectiveScore),
-          ...s.questionScores.map((qs) => csvEscape(qs))
-        ].join(","))
+      // Build XLSX
+      const XLSX = await import("xlsx");
+      const ws = XLSX.utils.aoa_to_sheet([header, ...data]);
+      ws["!cols"] = [
+        { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 8 },
+        { wch: 10 }, { wch: 10 }, { wch: 12 }, { wch: 12 }
       ];
-
-      const csv = "\uFEFF" + lines.join("\n");
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "成绩表");
+      const buf = Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }));
 
       // Get exam name for the filename
       const exam = analysisRepo.getExam(examId);
-      const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.csv`;
+      const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.xlsx`;
 
-      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
-      res.send(csv);
+      res.send(buf);
     } catch (error) {
       next(error);
     }

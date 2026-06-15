@@ -86,6 +86,7 @@ npm run server
 │ classes         │ subjective_...  │ scan_records            │
 │ grades          │ card_assets     │ objective_recognitions  │
 │ class_students  │                 │ objective_grades        │
+│ teacher_classes │                 │ subjective_grades       │
 │                 │                 │ subjective_grades       │
 ├─────────────────┴─────────────────┴─────────────────────────┤
 │                      成绩统计                                 │
@@ -115,11 +116,15 @@ npm run server
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | INTEGER PK | 自增主键 |
-| `username` | TEXT UNIQUE | 登录账号（职工号/学号） |
+| `username` | TEXT UNIQUE | 登录账号（学生=P+学号，教师=T+随机数） |
 | `password_hash` | TEXT | bcrypt 哈希密码 |
 | `name` | TEXT | 真实姓名 |
 | `role_id` | INTEGER FK | 关联 roles.id |
-| `student_number` | TEXT UNIQUE | 学号（仅学生） |
+| `student_number` | TEXT UNIQUE | 学号/考号（仅学生） |
+| `subject` | TEXT | 任教科目（仅教师，v1.1新增） |
+| `initial_password` | TEXT | 初始明文密码（用于导出账密，v1.1新增） |
+| `email` | TEXT | 邮箱 |
+| `phone` | TEXT | 联系电话 |
 | `is_active` | INTEGER | 0=禁用 1=启用 |
 | `last_login_at` | DATETIME | 最后登录时间 |
 
@@ -132,6 +137,23 @@ npm run server
 | 1 | admin | `["*"]`（全部权限） |
 | 2 | teacher | 答题卡读写、考试读写、成绩读写 |
 | 3 | student | 成绩查看 |
+
+#### `class_students` — 班级-学生关联
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `class_id` | INTEGER FK | 班级 ID |
+| `student_id` | INTEGER FK | 学生用户 ID |
+| `joined_at` | DATETIME | 加入时间 |
+
+#### `teacher_classes` — 教师-班级关联（v1.1 新增）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `teacher_id` | INTEGER FK | 教师用户 ID |
+| `class_id` | INTEGER FK | 班级 ID |
+| `subject` | TEXT | 可选：该教师在此班级的任教科目覆盖 |
+| `created_at` | DATETIME | 关联创建时间 |
 
 ### 模块二：答题卡设计
 
