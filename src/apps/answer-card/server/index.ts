@@ -1040,7 +1040,7 @@ export async function createApp(): Promise<express.Express> {
       const { students, questionHeaders } = analysisRepo.getExportData(examId, classId);
 
       // Build data rows
-      const header = ["班级", "考号", "姓名", "成绩", "班级排名", "年级排名", "客观题成绩", "主观题成绩", ...questionHeaders];
+      const header = ["班级", "考号", "姓名", "成绩", "班级排名", "年级排名", "客观题", "主观题", ...questionHeaders];
       const data = students.map((s) => [
         s.className,
         s.studentNumber,

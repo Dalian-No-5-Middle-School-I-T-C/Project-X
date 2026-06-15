@@ -233,8 +233,7 @@ export class AnalysisRepository {
     `).all(examId) as Array<{ question_number: number; score_type: string; max_score: number }>;
 
     const questionHeaders = questionList.map((q) => {
-      const typeLabel = q.score_type === "objective" ? "客观" : "主观";
-      return `第${q.question_number}题(${typeLabel}/${q.max_score}分)`;
+      return `${q.question_number}`;
     });
 
     // All question scores for this exam (bulk fetch)
