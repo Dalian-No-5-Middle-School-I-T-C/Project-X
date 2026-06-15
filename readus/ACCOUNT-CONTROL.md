@@ -89,7 +89,8 @@ system:manage               系统维护（仅管理员）
 
 ## 4. 认证与会话（`AuthService` + 中间件）
 
-- **登录**：`identifier`（用户名/职工号/纯数字学号）+ `password`；bcrypt 校验；签发随机 32 字节 hex token，有效期 **8 小时**，存于服务端内存。
+- **登录**：`identifier`（用户名/职工号/学号/`P`+学号）+ `password`；bcrypt 校验；签发随机 32 字节 hex token，有效期 **8 小时**，持久化到 `~/.projectx/tokens.json`。
+- **学生密码**：默认密码为学号（允许 5 位）；学生自改密码仍要求 ≥ 6 位（`passwordPolicy.ts`）。
 - **会话**：`Authorization: Bearer <token>`；也支持 `?token=`（用于 SSE / PDF 等无法设请求头的场景）。
 - **修改密码**：校验原密码 → 写新哈希 → **吊销该用户全部会话**，强制重新登录。
 - **禁用/改密时** 自动调用 `revokeUserTokens(userId)`，避免旧 token 继续生效。
@@ -129,7 +130,7 @@ system:manage               系统维护（仅管理员）
 | POST | `/api/users/:id/reset-password` | 重置密码 `{ newPassword? }`（学生缺省用学号） |
 | DELETE | `/api/users/:id` | 禁用账号（软删除） |
 | POST | `/api/users/:id/reactivate` | 重新启用 |
-| POST | `/api/users/import-students` | 批量导入 `{ students: [{username?, name, student_number, password?}] }` |
+| POST | `/api/users/import-csv` | 批量导入学生/教师（CSV/Excel） |
 
 > **安全护栏**：系统至少保留 1 名管理员——降级或禁用最后一名管理员会被拒绝。
 
@@ -247,15 +248,15 @@ npm run typecheck
 
 1. 登录 admin → 改密；
 2. `POST /api/classes/grades` / `POST /api/classes` 建年级班级；
-3. `POST /api/users` 创建教师，或 `POST /api/users/import-students` 批量导入学生；
+3. `POST /api/users` 创建教师，或 `POST /api/users/import-csv` 批量导入学生；
 4. `POST /api/classes/:id/students` 编排花名册；
-5. 学生用「学号 + 初始密码（默认学号）」登录，`GET /api/scores/me` 查分。
+5. 学生用「P+学号 + 初始密码（P+学号）」登录，`GET /api/scores/me` 查分。
 
 ---
 
 ## 9. 设计取舍
 
-- **Token 存内存**：沿用现有实现，重启失效；满足校内单机/小并发，后续可平滑替换为 JWT/Redis。
+- **Token 存磁盘**：`~/.projectx/tokens.json`，重启后 Token 存活（6 个月持久化 Token）；满足校内单机/小并发，后续可平滑替换为 JWT/Redis。
 - **写权限合并**：业务网关中答题卡写操作要求 `grade:write`（教师/管理员均具备），与三级模型一致，无需对每条路由单独标注，降低耦合。
 - **学生账号自动建档**：阅卷落库时若学生不存在会以占位哈希自动建档（见 `index.ts` 的 `persistGradingResults`）；这类账号 `password_hash` 为空，`changePassword` 对空哈希放行原密码校验，便于后续由管理员重置或学生首次设密。
 - **排名即时计算**：`ScoreRepository` 查询时计算排名/百分位，避免依赖 `student_scores.rank` 是否落库，保证一致性。

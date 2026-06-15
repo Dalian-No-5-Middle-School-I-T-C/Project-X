@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -19,7 +19,7 @@ import {
   Users
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
-import { authFetch, fetchJson, urlWithToken } from "./auth/api";
+import { apiUrl, authFetch, fetchJson, urlWithToken } from "./auth/api";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
@@ -47,6 +47,11 @@ import { normalizeObjectiveAnswerKey, objectiveQuestionNumbers, optionLabelsFor 
 import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../shared/blankLabels";
+import {
+  getProjectXVariantConfig,
+  type ProjectXAppMode,
+  type ProjectXVariantConfig
+} from "../../../shared/appVariant";
 import { ScannerPanel } from "./components/ScannerPanel";
 import { AnalysisOverview } from "./components/AnalysisOverview";
 import { AnalysisDistribution } from "./components/AnalysisDistribution";
@@ -86,7 +91,7 @@ function cloneCard(card: AnswerCard): AnswerCard {
   return JSON.parse(JSON.stringify(card)) as AnswerCard;
 }
 
-type AppMode = "design" | "grading" | "analysis" | "scores" | "account" | "sponsor";
+type AppMode = ProjectXAppMode;
 
 type GradingProgress = {
   active: boolean;
@@ -103,14 +108,20 @@ type GradingProgressEvent = {
 
 function defaultModeForUser(
   hasPermission: (perm: string) => boolean,
-  isStudent: boolean
+  variantConfig: ProjectXVariantConfig
 ): AppMode {
-  if (isStudent) return "scores";
-  if (hasPermission(PERMISSIONS.CARD_READ)) return "design";
-  if (hasPermission(PERMISSIONS.GRADE_READ)) return "grading";
-  if (hasPermission(PERMISSIONS.EXAM_READ)) return "analysis";
-  if (hasPermission(PERMISSIONS.USER_MANAGE)) return "account";
-  return "scores";
+  const canOpenMode = (mode: AppMode): boolean => {
+    if (!variantConfig.allowedModes.includes(mode)) return false;
+    if (mode === "scores") return hasPermission(PERMISSIONS.SCORE_READ);
+    if (mode === "design") return hasPermission(PERMISSIONS.CARD_READ);
+    if (mode === "grading") return hasPermission(PERMISSIONS.GRADE_READ);
+    if (mode === "analysis") return hasPermission(PERMISSIONS.EXAM_READ);
+    if (mode === "account") return hasPermission(PERMISSIONS.USER_MANAGE);
+    return false;
+  };
+
+  if (canOpenMode(variantConfig.defaultMode)) return variantConfig.defaultMode;
+  return variantConfig.allowedModes.find(canOpenMode) ?? variantConfig.defaultMode;
 }
 
 const directoryInputProps = {
@@ -249,7 +260,11 @@ function findNextQuestionNumber(card: AnswerCard): number {
 }
 
 function App() {
-  const { user, loading, hasPermission, isStudent } = useAuth();
+  const { user, loading, hasPermission } = useAuth();
+  const appVariant = useMemo(
+    () => getProjectXVariantConfig(import.meta.env.VITE_PROJECTX_VARIANT),
+    []
+  );
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
@@ -281,20 +296,32 @@ function App() {
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
-  const canDesign = hasPermission(PERMISSIONS.CARD_READ);
-  const canGrade = hasPermission(PERMISSIONS.GRADE_READ);
-  const canAnalyze = hasPermission(PERMISSIONS.EXAM_READ);
+  const variantAllows = useCallback(
+    (modeName: AppMode) => appVariant.allowedModes.includes(modeName),
+    [appVariant]
+  );
+
+  const canDesign = variantAllows("design") && hasPermission(PERMISSIONS.CARD_READ);
+  const canGrade = variantAllows("grading") && hasPermission(PERMISSIONS.GRADE_READ);
+  const canAnalyze = variantAllows("analysis") && hasPermission(PERMISSIONS.EXAM_READ);
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
-  const canViewScores = hasPermission(PERMISSIONS.SCORE_READ);
-  const canManageAccounts = hasPermission(PERMISSIONS.USER_MANAGE);
-  const showCardSidebar = mode === "design";
-  const showScoresTab = isStudent && canViewScores;
+  const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
+  const canManageAccounts = variantAllows("account") && hasPermission(PERMISSIONS.USER_MANAGE);
+  const canUseScanner = appVariant.enableScanner && canGrade;
+  const showCardSidebar = mode === "design" && canDesign;
+  const showScoresTab = canViewScores;
 
   useEffect(() => {
     if (user) {
-      setMode(defaultModeForUser(hasPermission, isStudent));
+      setMode(defaultModeForUser(hasPermission, appVariant));
     }
-  }, [user?.id, hasPermission, isStudent]);
+  }, [user?.id, hasPermission, appVariant]);
+
+  useEffect(() => {
+    if (!canUseScanner && showScanner) {
+      setShowScanner(false);
+    }
+  }, [canUseScanner, showScanner]);
 
   useEffect(() => {
     if (!user || (!canDesign && !canGrade)) return;
@@ -744,14 +771,22 @@ function App() {
         <header className="topbar">
           <div>
             <h1>
-              {mode === "scores" ? "我的成绩" : mode === "account" ? "账号管理" : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
+              {mode === "scores"
+                ? "我的成绩"
+                : mode === "account"
+                  ? "账号管理"
+                  : mode === "sponsor"
+                    ? "支持项目"
+                    : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
             </h1>
             <p>
               {mode === "scores"
                 ? "查看各场考试得分、排名与逐题明细"
                 : mode === "account"
                   ? "管理用户、班级与花名册"
-                  : card
+                  : mode === "sponsor"
+                    ? "感谢您的信任与支持"
+                    : card
                     ? `ID:${card.id} · ${card.sided === "single" ? "单面" : "双面"} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个 · 预览页面仅供参考，以实际导出的 PDF 文件的样式为准`
                     : canDesign
                       ? "创建答题卡后开始编辑"
@@ -1003,6 +1038,7 @@ function App() {
                   />
                 </label>
               </div>
+              {canUseScanner && (
               <button
                 className="primary-button wide-button"
                 style={{ marginTop: 8 }}
@@ -1011,6 +1047,7 @@ function App() {
               >
                 <Camera size={17} /> 扫描仪录入
               </button>
+              )}
               <div className="file-queue">
                 <div>
                   <strong>{gradingFiles.length}</strong>
@@ -2005,7 +2042,7 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
           })}
           {question.images.map((image) => (
             <g key={image.assetId}>
-              <image href={`/assets/${card.id}/${image.assetId}`} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
+              <image href={apiUrl(`/assets/${card.id}/${image.assetId}`)} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
               <rect {...image.rect} fill="none" stroke="#666" strokeWidth="0.18" />
             </g>
           ))}

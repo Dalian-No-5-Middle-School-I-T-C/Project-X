@@ -176,7 +176,7 @@ async function persistGradingResults(
   createdBy?: number
 ): Promise<void> {
   const { ExamRepository } = await import("../../../server/repositories/ExamRepository");
-  const { getDatabase } = await import("../../../server/db");
+  const { getDatabase, hashPassword } = await import("../../../server/db");
 
   const examRepo = new ExamRepository();
   const db = getDatabase();
@@ -190,7 +190,12 @@ async function persistGradingResults(
 
   const ensureStudent = db.prepare(`
     INSERT OR IGNORE INTO users (username, password_hash, name, role_id, student_number)
-    VALUES (?, '', ?, 3, ?)
+    VALUES (?, ?, ?, 3, ?)
+  `);
+  const updateBlankStudentPassword = db.prepare(`
+    UPDATE users
+    SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE student_number = ? AND role_id = 3 AND password_hash = ''
   `);
   const findStudent = db.prepare(`
     SELECT id FROM users WHERE student_number = ? AND role_id = 3 LIMIT 1
@@ -203,13 +208,21 @@ async function persistGradingResults(
   `);
 
   let persisted = 0;
+  const studentPasswordHashes = new Map<string, string>();
+  for (const row of rows) {
+    if (row.studentId && !studentPasswordHashes.has(row.studentId)) {
+      studentPasswordHashes.set(row.studentId, await hashPassword(row.studentId));
+    }
+  }
 
   const persistTx = db.transaction(() => {
     for (const row of rows) {
       if (!row.studentId) continue;
       try {
         // Synchronous: ensure student exists
-        ensureStudent.run(row.studentId, row.studentId, row.studentId);
+        const studentPasswordHash = studentPasswordHashes.get(row.studentId) ?? "";
+        ensureStudent.run(row.studentId, studentPasswordHash, row.studentId, row.studentId);
+        updateBlankStudentPassword.run(studentPasswordHash, row.studentId);
         const stu = findStudent.get(row.studentId) as { id: number } | undefined;
         if (!stu) continue;
 
@@ -270,6 +283,16 @@ function makeGate(enforce: boolean, readPerm: string, writePerm: string) {
     }
     next();
   };
+}
+
+function scannerEnabled(): boolean {
+  if (process.env.PROJECTX_ENABLE_SCANNER === "1" || process.env.PROJECTX_ENABLE_SCANNER === "true") {
+    return true;
+  }
+  if (process.env.PROJECTX_ENABLE_SCANNER === "0" || process.env.PROJECTX_ENABLE_SCANNER === "false") {
+    return false;
+  }
+  return process.env.PROJECTX_VARIANT === "teacher-scanner" || !process.env.PROJECTX_VARIANT;
 }
 
 export async function createApp(): Promise<express.Express> {
@@ -1019,7 +1042,7 @@ export async function createApp(): Promise<express.Express> {
       const { students, questionHeaders } = analysisRepo.getExportData(examId, classId);
 
       // Build data rows
-      const header = ["班级", "考号", "姓名", "成绩", "班级排名", "年级排名", "客观题成绩", "主观题成绩", ...questionHeaders];
+      const header = ["班级", "考号", "姓名", "成绩", "班级排名", "年级排名", "客观题", "主观题", ...questionHeaders];
       const data = students.map((s) => [
         s.className,
         s.studentNumber,
@@ -1055,7 +1078,13 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.use("/api/scanner", scannerGate, createScannerRouter());
+  if (scannerEnabled()) {
+    app.use("/api/scanner", scannerGate, createScannerRouter());
+  } else {
+    app.use("/api/scanner", (_req, res) => {
+      res.status(404).json({ message: "Scanner is disabled in this Project-X package." });
+    });
+  }
 
   const clientDist = process.env.ANSWER_CARD_CLIENT_DIST
     ? path.resolve(process.env.ANSWER_CARD_CLIENT_DIST)

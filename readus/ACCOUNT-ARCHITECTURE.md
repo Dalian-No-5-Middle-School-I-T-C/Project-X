@@ -22,8 +22,8 @@ flowchart TB
         LP[LoginPage]
         AC[AuthContext + localStorage Token]
         AM[AccountManagement]
-        UM[UserManagement]
-        CM[ClassManagement]
+        TM[TeacherManagement]
+        SM[ClassManagement]
         SS[StudentScores]
         APP[App.tsx 角色化模式切换]
     end
@@ -108,8 +108,8 @@ src/apps/answer-card/client/
 │   ├── LoginPage.tsx           # 登录页
 │   ├── AccountMenu.tsx         # 右上角用户菜单（改密、退出）
 │   ├── AccountManagement.tsx   # 管理员双 Tab 容器
-│   ├── UserManagement.tsx      # 用户 CRUD + 批量导入
-│   ├── ClassManagement.tsx     # 年级 / 班级 / 花名册
+│   ├── TeacherManagement.tsx   # 教师管理（科目/班级关联）
+│   ├── ClassManagement.tsx     # 学生管理（年级/班级/花名册，原名班级管理）
 │   └── StudentScores.tsx       # 学生自助查分
 ├── App.tsx              # 主壳：登录门禁 + 角色化模式 Tab
 ├── main.tsx             # AuthProvider 包裹根组件
@@ -159,7 +159,7 @@ sequenceDiagram
 | **阅卷** | `grade:read` | 图片上传、扫描仪、判分结果 |
 | **分析** | `exam:read` | 成绩统计、排名、题目分析；子 Tab「考试管理」需 `exam:write` |
 | **我的成绩** | 学生角色 + `score:read` | `StudentScores` |
-| **账号** | `user:manage` | `AccountManagement`（用户 + 班级） |
+| **账号** | `user:manage` | `AccountManagement`（教师管理 + 学生管理） |
 
 **布局差异：**
 
@@ -200,6 +200,19 @@ Electron 主进程（`electron/main.cjs`）启动内嵌 Express 服务并加载 
 - 新增：`permissions.ts`、`ClassRepository`、`ScoreRepository`、`routes/users|classes|scores`、`verify-auth.ts`
 - 修改：`AuthService`、`UserRepository`、`middleware/auth`、`routes/auth`、`server/index.ts`
 
+**v1.1.0 新增多端变体**：
+
+| 变体 | ID | 默认首页 | 允许模式 | 原生资源 |
+|------|------|------|------|------|
+| 学生端 | `student` | 我的成绩 | `scores` | 无 |
+| 教师普通端 | `teacher` | 设计 | design/grading/analysis/account | 识别引擎 |
+| 教师扫描端 | `teacher-scanner` | 阅卷 | design/grading/analysis/account | 全部（识别+扫描） |
+
+- 三端共用 `%APPDATA%\answer-card-designer` 数据目录
+- 变体配置：`src/shared/appVariant.ts`；打包脚本：`scripts/package-variant.ts`
+- 学生端既限产品功能（只能看我的成绩），也限账号角色权限
+- 新增：`passwordPolicy.ts`（学生默认密码允许5位学号）
+
 **v1.1 前端新增**（相对 v1.0 的 `client/`）：
 
 | 新增文件 | 说明 |
@@ -210,8 +223,8 @@ Electron 主进程（`electron/main.cjs`）启动内嵌 Express 服务并加载 
 | `components/LoginPage.tsx` | 登录页 |
 | `components/AccountMenu.tsx` | 用户菜单 |
 | `components/AccountManagement.tsx` | 账号管理容器 |
-| `components/UserManagement.tsx` | 用户管理 |
-| `components/ClassManagement.tsx` | 班级管理 |
+| `components/TeacherManagement.tsx` | 教师管理 |
+| `components/ClassManagement.tsx` | 学生管理（原班级管理改名） |
 | `components/StudentScores.tsx` | 学生成绩 |
 
 | 修改文件 | 说明 |
@@ -247,7 +260,7 @@ v1.1 当前
 
 | 议题 | 当前方案 | 说明 |
 |------|----------|------|
-| Token 存储 | 服务端内存 Map | 服务重启后会话失效；适合校内单机/小并发 |
+| Token 存储 | 磁盘文件 `~/.projectx/tokens.json` | 服务器重启后 Token 存活（持久化 6 个月） |
 | 前端 Token | `localStorage` | 桌面单机场景可接受；改密/禁用时服务端吊销 |
 | 密码 | bcrypt 哈希 | 默认学生密码=学号，管理员应督促首次登录改密 |
 | 管理员保护 | 至少保留 1 名 admin | 后端拒绝降级/禁用最后一名管理员 |

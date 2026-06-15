@@ -101,10 +101,10 @@ electron/                 ← 桌面打包入口
 
 ## 3. 前端架构
 
-前端是 **单页应用（SPA）**，核心在 `App.tsx`，通过 `AppMode` 切换三种工作模式：
+前端是 **单页应用（SPA）**，核心在 `App.tsx`，通过 `AppMode` 切换五种工作模式：
 
 ```typescript
-type AppMode = "design" | "grading" | "analysis";
+type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
 ```
 
 | 模式 | 职责 | 主要组件 |
@@ -112,6 +112,8 @@ type AppMode = "design" | "grading" | "analysis";
 | **design** | 编辑答题卡、预览、导出 PDF | 内联编辑器 + `buildLayout` 预览 |
 | **grading** | 上传/扫描图片、批量识别判分 | `ScannerPanel`、`GradingResults` |
 | **analysis** | 考试统计、排名、题目分析 | `AnalysisOverview`、`AnalysisDistribution`、`AnalysisRanking`、`AnalysisQuestions` |
+| **scores** | 学生查看个人成绩 | `StudentScores` |
+| **account** | 教师/学生管理 | `AccountManagement`、`TeacherManagement`、`ClassManagement` |
 
 **特点：**
 
@@ -285,7 +287,7 @@ sequenceDiagram
 - `roles` / `users` 表与默认 admin
 - `/api/auth/login`、`Bearer token` 中间件
 
-当前前端 **三模式 UI 未强制登录**；Repository 的 `createdBy` 等字段已预留。README 标明 v1.1 里程碑为「用户权限管理、多班级分析」。
+v1.1 中所有用户强制登录，具有基于角色的 UI（管理员/教师/学生），以及完整的用户权限管理和班级分析功能。
 
 ---
 
@@ -301,8 +303,9 @@ flowchart LR
 
     subgraph Pack
         EB[electron-builder]
-        EB --> EXE[便携 EXE]
-        EB --> MSI[MSI 安装包]
+        EB --> S[学生端 EXE/MSI]
+        EB --> T[教师端 EXE/MSI]
+        EB --> TS[教师扫描端 EXE/MSI]
     end
 
     DC --> EB
@@ -312,7 +315,7 @@ flowchart LR
 
 - **前端：** Vite → `dist/client`
 - **后端：** esbuild 单文件 bundle（`packages: external`，保留 better-sqlite3/bcrypt 等原生依赖）→ `dist/server/index.mjs`，并复制 `schema.sql`
-- **桌面：** electron-builder，Windows x64，asar 打包 + extraResources 原生 exe
+- **桌面：** electron-builder，Windows x64，三端变体（学生/教师/扫描），按端裁剪 native 资源，共用数据目录
 - **原生 Node 模块：** 需对 Electron 单独 `electron-rebuild`（better-sqlite3、bcrypt）
 
 ---
@@ -332,7 +335,7 @@ flowchart LR
 2. **双存储** — 答题卡既在 SQLite 又在 `layouts/` JSON，需保持一致（保存路径已统一在 `saveCardWithLayout`）
 3. **单体 Express** — 路由集中在 `index.ts`（700+ 行），随功能增长可考虑按域拆 router
 4. **子进程识别** — 简单可靠，但高并发批量阅卷时进程开销明显
-5. **Auth 未贯通 UI** — 架构上已具备，产品层尚未完全启用
+5. **Auth 完全贯通** — v1.1 具备登录门禁、角色化 UI 和基于权限的 API 访问
 
 ---
 
@@ -376,4 +379,4 @@ flowchart LR
 ---
 
 > 文档生成日期：2026-06-13  
-> 基于 Project-X v1.0.0 代码库分析
+> 基于 Project-X v1.1.0 代码库分析

@@ -62,7 +62,7 @@
 - **多页合并评分**：双面卡 / 多页卡自动合并正反面成绩，去重汇总总分
 - **PDF 式详情预览**：按学生聚合展示所有页面，纵向滚动翻阅，缩略图导航
 - **低置信度标记**：置信度偏低的题目自动标"待复核"
-- **CSV 导出**：点击导出按钮下载，UTF-8 BOM 编码，Excel 直接打开
+- **Excel (.xlsx) 导出**：点击导出按钮下载，Excel 直接打开
 
 ### 扫描仪直扫
 
@@ -80,7 +80,7 @@
 - **学生排名**：学号、姓名、总分、客观分、主观分、待复核标记
 - **题目分析**：每题得分率、正确率排行，低分题红色高亮
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
-- **CSV 成绩导出**：年级排名 / 班级排名两种模式，表头含班级、考号、姓名、成绩、双排名、客观/主观成绩、每题得分
+- **Excel (.xlsx) 成绩导出**：年级排名 / 班级排名两种模式，表头含班级、考号、姓名、成绩、双排名、客观/主观成绩、每题得分
 
 ### 账户与安全
 
@@ -90,9 +90,12 @@
 
 ### 桌面应用
 
-- **Windows 桌面端**：便携版 EXE + MSI 安装包
-- **Electron 原生打包**：C++ 识别引擎和 TWAIN 桥自动内嵌
-- **数据本地可控**：答题卡、扫描图片、成绩全部存储本地
+- **Windows 桌面端**：三端产品（学生端 / 教师普通端 / 教师扫描端），便携版 EXE + MSI 安装包
+- **Electron 原生打包**：按端裁剪（学生端不打包 C++ 识别/扫描资源，教师普通端仅打包识别引擎，扫描端全量）
+- **三端共用数据**：`%APPDATA%\answer-card-designer\`（管理员端建账号→学生端直接登录）
+- **支持项目**：账号菜单低调入口，JSON 配置驱动的收款码预留接口（详见 [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md)）
+
+> 多端详细说明见 [`readus/多端使用说明.md`](./readus/多端使用说明.md)
 
 ---
 
@@ -102,19 +105,18 @@
 
 #### 方式一：便携版 EXE（推荐临时使用）
 
-1. 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 下载：
-   ```
-   答题卡设计系统-1.1.0-x64.exe
-   ```
-2. 双击即可运行，无需安装
+前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
+```
+Project-X 学生端-1.1.0-x64.exe
+Project-X 教师端-1.1.0-x64.exe
+Project-X 教师扫描端-1.1.0-x64.exe
+```
+
+> 学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
 
 #### 方式二：MSI 安装包（推荐机房部署）
 
-1. 下载：
-   ```
-   答题卡设计系统-1.1.0-x64.msi
-   ```
-2. 适合学校机房、域控、组策略等集中部署场景
+各端均有对应 MSI 安装包，适合学校机房、域控、组策略等集中部署场景。
 
 #### 基本使用流程
 
@@ -124,11 +126,11 @@
 
 **阅卷判分**：
 1. 切到「阅卷」模式 → 选答题卡 → 选考试 → 导入图片
-2. 点击「开始识别并判分」→ 查看成绩 → 导出 CSV
+2. 点击「开始识别并判分」→ 查看成绩 → 导出 Excel (.xlsx)
 
 **查看分析**：
 1. 切到「分析」模式 → 选考试 → 查看总览/排名/题目分析
-2. 点击「导出」→ 选择「年级排名」或「班级排名」→ 下载 CSV 成绩表
+2. 点击「导出」→ 选择「年级排名」或「班级排名」→ 下载 Excel (.xlsx) 成绩表
 
 ---
 
@@ -174,10 +176,23 @@ npx vite --port 5173
 
 ```powershell
 npm run build                          # 构建前后端
-npm run electron:pack                  # Electron 目录包
-npm run electron:dist                  # 便携版 EXE
-npm run electron:msi                   # MSI 安装包
+
+# 三端分别打包（顺序执行，勿并行）
+npm run electron:pack:student          # 学生端目录包
+npm run electron:pack:teacher          # 教师普通端目录包
+npm run electron:pack:scanner          # 教师扫描端目录包
+
+npm run electron:dist:student          # 学生端便携 EXE
+npm run electron:dist:teacher          # 教师端便携 EXE
+npm run electron:dist:scanner          # 教师扫描端便携 EXE
+
+# 默认命令仍指向扫描端（完整功能包）
+npm run electron:pack                  # = electron:pack:scanner
+npm run electron:dist                  # = electron:dist:scanner
+npm run electron:msi                   # = electron:msi:scanner
 ```
+
+多端打包和使用方式见 **[多端使用说明.md](./readus/多端使用说明.md)**。
 
 #### 常用脚本
 
@@ -187,31 +202,36 @@ npm run electron:msi                   # MSI 安装包
 | `npm run build` | 构建前端 + 后端 |
 | `npm run dev` | Web 开发模式 |
 | `npm run electron:dev` | 构建后启动 Electron |
-| `npm run electron:dist` | 生成 EXE |
-| `npm run electron:msi` | 生成 MSI |
+| `npm run electron:dist` | 生成扫描端便携 EXE |
+| `npm run electron:dist:student` | 生成学生端便携 EXE |
+| `npm run electron:dist:teacher` | 生成教师端便携 EXE |
+| `npm run electron:msi` | 生成扫描端 MSI |
 | `npm run verify:auth` | 账号权限自动化验证（33 项用例） |
 
 ---
 
 ## 文档
 
-项目说明与手册类文档统一放在 [`docs/`](./docs/) 目录，按主题分类如下：
+项目说明与手册类文档统一放在 [`readus/`](./readus/) 目录，按主题分类如下：
 
 | 文档 | 说明 | 适合读者 |
 |------|------|----------|
-| [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 | 开发者 |
-| [项目胶囊.md](./docs/项目胶囊.md) | 架构速查：目录、类型、API、约定的一页摘要 | 开发者 |
-| [DATABASE.md](./docs/DATABASE.md) | SQLite 表结构、Repository、认证与数据清理 | 开发者 / 运维 |
-| [ACCOUNT-ARCHITECTURE.md](./docs/ACCOUNT-ARCHITECTURE.md) | 三级账号 RBAC 全栈架构与 v1.0→v1.1 变更说明 | 开发者 |
-| [ACCOUNT-CONTROL.md](./docs/ACCOUNT-CONTROL.md) | 账号控制系统 API、权限矩阵与启用方式 | 开发者 |
-| [ADMIN-GUIDE.md](./docs/ADMIN-GUIDE.md) | 管理员日常操作：用户、班级、花名册、重置密码 | 机房管理员 / 教务 |
-| [CHANGELOG-001.md](./docs/CHANGELOG-001.md) | v1.1 答题卡 UX 增强与卡片管理变更记录 | 开发者 / 测试 |
+| [ARCHITECTURE.md](./readus/ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 | 开发者 |
+| [项目胶囊.md](./readus/项目胶囊.md) | 架构速查：目录、类型、API、约定的一页摘要 | 开发者 |
+| [DATABASE.md](./readus/DATABASE.md) | SQLite 表结构、Repository、认证与数据清理 | 开发者 / 运维 |
+| [ACCOUNT-ARCHITECTURE.md](./readus/ACCOUNT-ARCHITECTURE.md) | 三级账号 RBAC 全栈架构与 v1.0→v1.1 变更说明 | 开发者 |
+| [ACCOUNT-CONTROL.md](./readus/ACCOUNT-CONTROL.md) | 账号控制系统 API、权限矩阵与启用方式 | 开发者 |
+| [ADMIN-GUIDE.md](./readus/ADMIN-GUIDE.md) | 管理员日常操作：教师/学生管理、导入导出、年级班级花名册 | 机房管理员 / 教务 |
+| [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
+| [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.0.x UX增强 + v1.1.0 批量导入/教师学生管理/赞助页面） | 开发者 / 测试 |
+| [CHANGELOG-003.md](./readus/CHANGELOG-003.md) | v1.1.0 赞助页面与收款码预留接口详细变更记录 | 开发者 / 测试 |
 
 ---
 
 ## 项目架构
 
-> 详细架构说明（分层、数据流、原生模块、构建部署等）见 **[ARCHITECTURE.md](./docs/ARCHITECTURE.md)**。
+> 详细架构说明（分层、数据流、原生模块、构建部署等）见 **[ARCHITECTURE.md](./readus/ARCHITECTURE.md)**。
 
 ```
 Project-X/
@@ -223,8 +243,9 @@ Project-X/
 │   │   │   └── components/              # 子组件
 │   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期）
 │   │   │       ├── LoginPage.tsx            # 登录页（记住密码）
-│   │   │       ├── AccountMenu.tsx          # 账户下拉菜单
-│   │   │       ├── AccountManagement.tsx    # 教师/学生/班级管理
+│   │   │       ├── AccountMenu.tsx          # 账户下拉菜单（含支持项目入口）
+│   │   │       ├── SponsorPage.tsx          # 赞助/支持页面（收款码预留）
+│   │   │       ├── AccountManagement.tsx    # 教师/学生管理（双 Tab）
 │   │   │       ├── TeacherManagement.tsx    # 教师管理（科目/班级关联）
 │   │   │       ├── StudentManagement.tsx    # 学生管理（按班级+导入/导出）
 │   │   │       ├── ImportModal.tsx          # 通用CSV/Excel导入弹窗
@@ -249,7 +270,7 @@ Project-X/
 │   │   │   ├── UserRepository.ts         # 用户管理
 │   │   │   └── AnalysisRepository.ts     # 分析查询
 │   │   ├── middleware/                   # 认证中间件
-│   │   ├── routes/                       # 认证/用户路由
+│   │   ├── routes/                       # 认证/用户/赞助等路由
 │   │   └── services/                     # AuthService（登录/令牌持久化）
 │   └── shared/                          # 前后端共享
 │       ├── types.ts                     # 全部类型定义
@@ -257,7 +278,8 @@ Project-X/
 │       ├── layout.ts                    # 答题卡坐标布局
 │       ├── pinyin.ts                    # 科目名→拼音 key 转换
 │       ├── blankLabels.ts               # 填空序号格式化
-│       └── defaultCard.ts               # 默认答题卡工厂 + ID 生成
+│       ├── defaultCard.ts               # 默认答题卡工厂 + ID 生成
+│       └── appVariant.ts                # 多端变体定义（学生/教师/扫描端）
 ├── native/
 │   ├── AnswerCardRecognizer/            # C++ 识别引擎（OpenCV）
 │   └── ScannerBridge/                   # C++ TWAIN 扫描仪桥接
@@ -266,9 +288,10 @@ Project-X/
 │   └── build-scanner-bridge.bat         # 扫描仪桥接一键编译
 ├── electron/
 │   └── main.cjs                         # Electron 主进程
-├── docs/                                # 项目文档（架构、账号、管理员手册等）
+├── readus/                              # 项目文档（架构、账号、管理员手册、多端说明等）
 ├── data/                                # 运行时数据
 │   ├── answer-card/                     # 答题卡 JSON、扫描图片、资产
+│   ├── sponsor/qr/                      # 收款码图片（部署时放置，不进 git）
 │   └── projectx.db                      # 主数据库（用户/卡片/考试/成绩）
 ├── dist/                                # 构建产物
 ├── resources/native/win-x64/            # 原生模块打包目录
@@ -311,7 +334,7 @@ Project-X/
 | `GET` | `/api/analysis/exams/:id/students` | 学生排名 |
 | `GET` | `/api/analysis/exams/:id/questions` | 题目得分率 |
 | `GET` | `/api/analysis/exams/:id/classes` | 考试关联班级 |
-| `GET` | `/api/analysis/exams/:id/export-csv` | 导出成绩CSV（?classId= 选班级） |
+| `GET` | `/api/analysis/exams/:id/export-csv` | 导出成绩 Excel (.xlsx)（?classId= 选班级） |
 | `GET` | `/api/scanner/sources` | TWAIN 扫描仪检测 |
 | `POST` | `/api/scanner/scan` | 启动扫描会话 |
 | `GET` | `/api/scanner/progress/:id` | SSE 扫描进度 |
@@ -326,6 +349,8 @@ Project-X/
 | `POST` | `/api/users/import-csv` | 批量导入学生/教师（CSV/Excel） |
 | `GET` | `/api/export/students` | 导出学生账密 Excel |
 | `GET` | `/api/export/teachers` | 导出教师账密 Excel |
+| `GET` | `/api/sponsor` | 赞助页配置（各渠道收款码 URL） |
+| `GET` | `/api/sponsor/qr/:channelId` | 收款码图片 |
 
 ---
 

@@ -1,6 +1,7 @@
 import { getDatabase } from "../db";
 import Database from "better-sqlite3";
 import { hashPassword, verifyPassword } from "../db";
+import { validateInitialPassword } from "../auth/passwordPolicy";
 import crypto from "node:crypto";
 
 export interface UserRecord {
@@ -329,7 +330,17 @@ export class UserRepository {
         result.errors.push({ row, message: "用户名或学号已存在，已跳过" });
         continue;
       }
-      const hash = await hashPassword(row.password || studentNumber);
+      const initialPassword = row.password || studentNumber;
+      const passwordError = validateInitialPassword({
+        password: initialPassword,
+        isStudent: true,
+        studentNumber
+      });
+      if (passwordError) {
+        result.errors.push({ row, message: passwordError });
+        continue;
+      }
+      const hash = await hashPassword(initialPassword);
       prepared.push({ row: { ...row, username, student_number: studentNumber }, username, hash });
     }
 
