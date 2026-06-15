@@ -38,7 +38,7 @@
 - `GET /api/sponsor` + `GET /api/sponsor/qr/:channelId` 预留收款码接口
 - JSON 配置 `server/data/sponsor.json` + 图片目录 `data/sponsor/qr/`
 - 无收款码时展示占位 UI；部署时放置 PNG 并更新配置即可启用
-- 详见 [`readus/SPONSOR-PAGE.md`](./SPONSOR-PAGE.md)、[`readus/CHANGELOG-003.md`](./CHANGELOG-003.md)
+- 详见 [`readus/SPONSOR-PAGE.md`](./SPONSOR-PAGE.md)
 
 ### Bug 修复
 - Express 5 `router.use()` 单回调限制 → 拆为两行独立调用

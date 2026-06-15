@@ -225,7 +225,6 @@ npm run electron:msi                   # = electron:msi:scanner
 | [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
 | [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.0.x UX增强 + v1.1.0 批量导入/教师学生管理/赞助页面） | 开发者 / 测试 |
-| [CHANGELOG-003.md](./readus/CHANGELOG-003.md) | v1.1.0 赞助页面与收款码预留接口详细变更记录 | 开发者 / 测试 |
 
 ---
 

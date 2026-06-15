@@ -2,7 +2,7 @@
 
 > **适用版本**: v1.1.0 及以上  
 > **关联 Issue**: [#11 赞助页面](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/issues/11)  
-> **关联文档**: [`CHANGELOG-003.md`](./CHANGELOG-003.md) · [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+> **关联文档**: [`CHANGELOG.md`](./CHANGELOG.md) · [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 
 本文说明 Project-X Electron 桌面端中**赞助/支持页面**的设计、入口、配置方式与 API 接口。该功能采用低调视觉呈现，当前无实际收款码图片时展示占位 UI，后续通过配置文件与图片目录即可启用。
 
