@@ -1,0 +1,47 @@
+<view class="container">
+  <view class="brand">
+    <view class="logo">X</view>
+    <view class="title">Project-X 成绩分析系统</view>
+    <view class="subtitle">大连五中信息化部 · 智能试卷管理</view>
+  </view>
+  
+  <view class="form-card">
+    <view class="input-group">
+      <text class="label">服务器地址</text>
+      <input 
+        class="input" 
+        type="text" 
+        placeholder="https://your-domain.com"
+        value="{{serverUrl}}"
+        bindinput="onServerUrlInput"
+      />
+      <text class="hint">填写部署后的网页地址（需 HTTPS）</text>
+    </view>
+    
+    <view class="input-group">
+      <text class="label">登录令牌（可选）</text>
+      <input 
+        class="input" 
+        type="text" 
+        placeholder="从后端获取的 token"
+        value="{{token}}"
+        bindinput="onTokenInput"
+      />
+      <text class="hint">如已登录可自动带入，留空则进入登录页</text>
+    </view>
+    
+    <button class="btn-primary" bindtap="enterSystem">进入系统</button>
+    
+    <view class="divider">
+      <view class="line"></view>
+      <text class="text">或</text>
+      <view class="line"></view>
+    </view>
+    
+    <button class="btn-secondary" bindtap="enterDemo">演示模式体验</button>
+  </view>
+  
+  <view class="footer">
+    <text>提示：企业/组织主体小程序才能使用 web-view 组件</text>
+  </view>
+</view>
