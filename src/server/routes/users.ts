@@ -4,6 +4,7 @@ import { UserRepository, type BatchStudentInput } from "../repositories/UserRepo
 import { authService } from "../services/AuthService";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS, ROLE_NAMES } from "../auth/permissions";
+import { validateInitialPassword } from "../auth/passwordPolicy";
 
 /**
  * 用户管理 API（仅管理员，要求 user:manage 权限）
@@ -93,8 +94,13 @@ router.post("/", async (req: Request, res: Response) => {
 
     // 密码默认：学生用学号，教师/管理员需显式提供
     const finalPassword = password || (roleId === ROLE_IDS.STUDENT ? String(student_number) : "");
-    if (!finalPassword) {
-      res.status(400).json({ message: "请为该账号设置初始密码" });
+    const passwordError = validateInitialPassword({
+      password: String(finalPassword),
+      isStudent: roleId === ROLE_IDS.STUDENT,
+      studentNumber: student_number ? String(student_number) : undefined
+    });
+    if (passwordError) {
+      res.status(400).json({ message: passwordError });
       return;
     }
 
@@ -167,8 +173,13 @@ router.post("/:id/reset-password", async (req: Request, res: Response) => {
     }
     const { newPassword } = req.body ?? {};
     const password = newPassword ? String(newPassword) : existing.student_number || "";
-    if (!password || password.length < 6) {
-      res.status(400).json({ message: "新密码至少 6 位（学生可默认用学号，但学号不足 6 位需手动指定）" });
+    const passwordError = validateInitialPassword({
+      password,
+      isStudent: existing.role_id === ROLE_IDS.STUDENT,
+      studentNumber: existing.student_number
+    });
+    if (passwordError) {
+      res.status(400).json({ message: passwordError });
       return;
     }
     await userRepo.updateUser(id, { password });

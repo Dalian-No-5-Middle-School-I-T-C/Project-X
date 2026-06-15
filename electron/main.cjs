@@ -1,13 +1,65 @@
 const { app, BrowserWindow, dialog, shell } = require("electron");
+const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 let server;
 let mainWindow;
 
+const DEFAULT_VARIANT = "teacher-scanner";
+const VARIANTS = {
+  student: {
+    id: "student",
+    productName: "Project-X 学生端",
+    userDataDir: "answer-card-designer",
+    enableScanner: false
+  },
+  teacher: {
+    id: "teacher",
+    productName: "Project-X 教师端",
+    userDataDir: "answer-card-designer",
+    enableScanner: false
+  },
+  "teacher-scanner": {
+    id: "teacher-scanner",
+    productName: "Project-X 教师扫描端",
+    userDataDir: "answer-card-designer",
+    enableScanner: true
+  }
+};
+
+function normalizeVariant(value) {
+  return value === "student" || value === "teacher" || value === "teacher-scanner"
+    ? value
+    : DEFAULT_VARIANT;
+}
+
 function getAppRoot() {
   return app.getAppPath();
 }
+
+function readPackagedVariant() {
+  try {
+    const packageJsonPath = path.join(getAppRoot(), "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+    return packageJson.projectxVariant;
+  } catch {
+    return undefined;
+  }
+}
+
+function getVariantConfig() {
+  const variant = normalizeVariant(process.env.PROJECTX_VARIANT || readPackagedVariant());
+  return VARIANTS[variant];
+}
+
+const variantConfig = getVariantConfig();
+
+function configureAppIdentity() {
+  app.setName(variantConfig.productName);
+  app.setPath("userData", path.join(app.getPath("appData"), variantConfig.userDataDir));
+}
+
 
 async function startLocalServer() {
   const appRoot = getAppRoot();
@@ -16,6 +68,8 @@ async function startLocalServer() {
   const userDataDir = app.getPath("userData");
   const dataDir = path.join(userDataDir, "data", "answer-card");
 
+  process.env.PROJECTX_VARIANT = variantConfig.id;
+  process.env.PROJECTX_ENABLE_SCANNER = variantConfig.enableScanner ? "1" : "0";
   process.env.ANSWER_CARD_DATA_DIR = dataDir;
   process.env.ANSWER_CARD_CLIENT_DIST = clientDist;
   process.env.PROJECTX_DB_PATH = path.join(userDataDir, "data", "projectx.db");
@@ -39,15 +93,27 @@ async function startLocalServer() {
   return `http://127.0.0.1:${address.port}`;
 }
 
+async function resolveStartUrl() {
+  const serverMode = (process.env.PROJECTX_SERVER_MODE || "local").toLowerCase();
+  if (serverMode === "remote") {
+    const remoteUrl = process.env.PROJECTX_REMOTE_URL;
+    if (!remoteUrl) {
+      throw new Error("PROJECTX_SERVER_MODE=remote requires PROJECTX_REMOTE_URL.");
+    }
+    return remoteUrl;
+  }
+  return startLocalServer();
+}
+
 async function createWindow() {
-  const baseUrl = await startLocalServer();
+  const baseUrl = await resolveStartUrl();
 
   mainWindow = new BrowserWindow({
     width: 1360,
     height: 900,
     minWidth: 1120,
     minHeight: 720,
-    title: "答题卡设计系统",
+    title: variantConfig.productName,
     backgroundColor: "#eef2ef",
     autoHideMenuBar: true,
     webPreferences: {
@@ -67,6 +133,8 @@ async function createWindow() {
 
   await mainWindow.loadURL(baseUrl);
 }
+
+configureAppIdentity();
 
 app.whenReady().then(async () => {
   try {
