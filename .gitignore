@@ -2,7 +2,12 @@ image/
 convert.py
 node_modules/
 dist/
-data/
+data/*
+!data/sponsor/
+data/sponsor/*
+!data/sponsor/qr/
+data/sponsor/qr/*
+!data/sponsor/qr/.gitkeep
 .vite/
 *.log
 .npm-cache/

@@ -93,6 +93,7 @@
 - **Windows 桌面端**：三端产品（学生端 / 教师普通端 / 教师扫描端），便携版 EXE + MSI 安装包
 - **Electron 原生打包**：按端裁剪（学生端不打包 C++ 识别/扫描资源，教师普通端仅打包识别引擎，扫描端全量）
 - **三端共用数据**：`%APPDATA%\answer-card-designer\`（管理员端建账号→学生端直接登录）
+- **支持项目**：账号菜单低调入口，JSON 配置驱动的收款码预留接口（详见 [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md)）
 
 > 多端详细说明见 [`readus/多端使用说明.md`](./readus/多端使用说明.md)
 
@@ -222,7 +223,8 @@ npm run electron:msi                   # = electron:msi:scanner
 | [ACCOUNT-CONTROL.md](./readus/ACCOUNT-CONTROL.md) | 账号控制系统 API、权限矩阵与启用方式 | 开发者 |
 | [ADMIN-GUIDE.md](./readus/ADMIN-GUIDE.md) | 管理员日常操作：教师/学生管理、导入导出、年级班级花名册 | 机房管理员 / 教务 |
 | [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.0.x UX增强 + v1.1.0 批量导入/教师学生管理） | 开发者 / 测试 |
+| [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.0.x UX增强 + v1.1.0 批量导入/教师学生管理/赞助页面） | 开发者 / 测试 |
 
 ---
 
@@ -240,7 +242,8 @@ Project-X/
 │   │   │   └── components/              # 子组件
 │   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期）
 │   │   │       ├── LoginPage.tsx            # 登录页（记住密码）
-│   │   │       ├── AccountMenu.tsx          # 账户下拉菜单
+│   │   │       ├── AccountMenu.tsx          # 账户下拉菜单（含支持项目入口）
+│   │   │       ├── SponsorPage.tsx          # 赞助/支持页面（收款码预留）
 │   │   │       ├── AccountManagement.tsx    # 教师/学生管理（双 Tab）
 │   │   │       ├── TeacherManagement.tsx    # 教师管理（科目/班级关联）
 │   │   │       ├── StudentManagement.tsx    # 学生管理（按班级+导入/导出）
@@ -266,7 +269,7 @@ Project-X/
 │   │   │   ├── UserRepository.ts         # 用户管理
 │   │   │   └── AnalysisRepository.ts     # 分析查询
 │   │   ├── middleware/                   # 认证中间件
-│   │   ├── routes/                       # 认证/用户路由
+│   │   ├── routes/                       # 认证/用户/赞助等路由
 │   │   └── services/                     # AuthService（登录/令牌持久化）
 │   └── shared/                          # 前后端共享
 │       ├── types.ts                     # 全部类型定义
@@ -287,6 +290,7 @@ Project-X/
 ├── readus/                              # 项目文档（架构、账号、管理员手册、多端说明等）
 ├── data/                                # 运行时数据
 │   ├── answer-card/                     # 答题卡 JSON、扫描图片、资产
+│   ├── sponsor/qr/                      # 收款码图片（部署时放置，不进 git）
 │   └── projectx.db                      # 主数据库（用户/卡片/考试/成绩）
 ├── dist/                                # 构建产物
 ├── resources/native/win-x64/            # 原生模块打包目录
@@ -344,6 +348,8 @@ Project-X/
 | `POST` | `/api/users/import-csv` | 批量导入学生/教师（CSV/Excel） |
 | `GET` | `/api/export/students` | 导出学生账密 Excel |
 | `GET` | `/api/export/teachers` | 导出教师账密 Excel |
+| `GET` | `/api/sponsor` | 赞助页配置（各渠道收款码 URL） |
+| `GET` | `/api/sponsor/qr/:channelId` | 收款码图片 |
 
 ---
 

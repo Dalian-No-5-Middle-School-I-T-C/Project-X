@@ -2941,3 +2941,70 @@ input:focus, select:focus {
   justify-content: flex-end;
   margin-top: 24px;
 }
+
+/* ── Sponsor Page ───────────────────────────────────── */
+.sponsor-page {
+  padding: 24px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.sponsor-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  margin-top: 24px;
+}
+
+.sponsor-channel-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 16px;
+}
+
+.sponsor-channel-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 20px;
+  min-width: 220px;
+}
+
+.sponsor-channel-name {
+  margin: 0;
+  font-size: 13px;
+}
+
+.sponsor-qr-image {
+  width: 180px;
+  height: 180px;
+  border-radius: 12px;
+  object-fit: contain;
+}
+
+.sponsor-qr-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 180px;
+  height: 180px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sponsor-qr-placeholder svg {
+  opacity: 0.45;
+}
+
+.sponsor-description {
+  max-width: 420px;
+  text-align: center;
+  line-height: 1.6;
+}
