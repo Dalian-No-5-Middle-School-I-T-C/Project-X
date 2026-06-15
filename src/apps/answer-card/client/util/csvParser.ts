@@ -81,9 +81,22 @@ async function readExcelFile(file: File): Promise<string> {
   const buffer = await file.arrayBuffer();
   const wb = XLSX.read(buffer, { type: "array" });
   const sheet = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, raw: true });
-  // 将所有单元格转字符串，避免数字/日期问题
-  return rows.map((r) => r.map((c) => String(c ?? "")).join(",")).join("\n");
+  if (!sheet) return "";
+
+  const merges = sheet["!merges"] ?? [];
+  for (const merge of merges) {
+    const sourceRef = XLSX.utils.encode_cell(merge.s);
+    const sourceCell = sheet[sourceRef];
+    if (!sourceCell) continue;
+    for (let row = merge.s.r; row <= merge.e.r; row++) {
+      for (let col = merge.s.c; col <= merge.e.c; col++) {
+        const targetRef = XLSX.utils.encode_cell({ r: row, c: col });
+        if (!sheet[targetRef]) sheet[targetRef] = { ...sourceCell };
+      }
+    }
+  }
+
+  return XLSX.utils.sheet_to_csv(sheet, { FS: ",", RS: "\n", blankrows: false });
 }
 
 /** 生成学生模板 CSV */

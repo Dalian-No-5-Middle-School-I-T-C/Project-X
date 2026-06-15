@@ -525,11 +525,11 @@ export class UserRepository {
   async batchImportFromCsv(
     rows: string[][]
   ): Promise<{
-    students: { created: number; skipped: number; errors: Array<{ row: string[]; message: string }> };
+    students: { created: number; linked: number; skipped: number; errors: Array<{ row: string[]; message: string }> };
     teachers: { created: number; skipped: number; errors: Array<{ row: string[]; message: string }> };
   }> {
     const result = {
-      students: { created: 0, skipped: 0, errors: [] as Array<{ row: string[]; message: string }> },
+      students: { created: 0, linked: 0, skipped: 0, errors: [] as Array<{ row: string[]; message: string }> },
       teachers: { created: 0, skipped: 0, errors: [] as Array<{ row: string[]; message: string }> }
     };
 
@@ -553,24 +553,74 @@ export class UserRepository {
         return result;
       }
 
-      const validRows = dataRows.filter((r) => r[numberIdx]?.trim() && r[nameIdx]?.trim());
+      let currentGradeName = "";
+      let currentClassName = "";
 
-      for (const row of validRows) {
+      for (const row of dataRows) {
         try {
-          const gradeName = (row[gradeIdx] ?? "").trim();
-          const className = (row[classIdx] ?? "").trim();
+          const rawGradeName = (row[gradeIdx] ?? "").trim();
+          const rawClassName = (row[classIdx] ?? "").trim();
+          if (rawGradeName && rawGradeName !== currentGradeName) {
+            currentGradeName = rawGradeName;
+            if (!rawClassName) currentClassName = "";
+          }
+          if (rawClassName) currentClassName = rawClassName;
+
+          const gradeName = currentGradeName;
+          const className = currentClassName;
           const studentNumber = (row[numberIdx] ?? "").trim();
           const studentName = (row[nameIdx] ?? "").trim();
+
+          if (!studentNumber && !studentName) {
+            continue;
+          }
+          if (!studentNumber || !studentName) {
+            result.students.errors.push({ row, message: "缺少学号/姓名" });
+            continue;
+          }
+
           const username = `P${studentNumber}`;
           const password = username; // 密码=账号
 
-          if (!gradeName || !className || !studentNumber) {
+          if (!gradeName || !className) {
             result.students.errors.push({ row, message: "缺少年级/班级/学号" });
+            continue;
+          }
+
+          const existingStudent = this.findByStudentNumber(studentNumber);
+          if (existingStudent) {
+            if (existingStudent.role_id !== 3) {
+              result.students.skipped++;
+              result.students.errors.push({ row, message: "学号已被非学生账号占用" });
+              continue;
+            }
+
+            this.db.transaction(() => {
+              let grade = this.db.prepare("SELECT id FROM grades WHERE name = ?").get(gradeName) as { id: number } | undefined;
+              if (!grade) {
+                const gr = this.db.prepare("INSERT INTO grades (name) VALUES (?)").run(gradeName);
+                grade = { id: Number(gr.lastInsertRowid) };
+              }
+
+              let cls = this.db.prepare("SELECT id FROM classes WHERE grade_id = ? AND name = ?").get(grade.id, className) as { id: number } | undefined;
+              if (!cls) {
+                const cr = this.db.prepare("INSERT INTO classes (grade_id, name) VALUES (?, ?)").run(grade.id, className);
+                cls = { id: Number(cr.lastInsertRowid) };
+              }
+
+              this.db.prepare("UPDATE users SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND role_id = 3")
+                .run(studentName, existingStudent.id);
+              this.db.prepare("INSERT OR IGNORE INTO class_students (class_id, student_id) VALUES (?, ?)")
+                .run(cls.id, existingStudent.id);
+            })();
+
+            result.students.linked++;
             continue;
           }
 
           if (this.usernameExists(username) || this.studentNumberExists(studentNumber)) {
             result.students.skipped++;
+            result.students.errors.push({ row, message: "用户名或学号已存在，但未找到可关联的有效学生" });
             continue;
           }
 

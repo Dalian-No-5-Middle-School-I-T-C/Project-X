@@ -81,7 +81,6 @@ export function StudentManagement() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ csvText })
     });
-    setShowImport(false);
     await handleRefresh();
   }
 

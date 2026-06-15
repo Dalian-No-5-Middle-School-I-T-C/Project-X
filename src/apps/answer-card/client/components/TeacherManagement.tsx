@@ -150,7 +150,6 @@ export function TeacherManagement() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ csvText })
     });
-    setShowImport(false);
     await loadTeachers();
   }
 

@@ -361,12 +361,12 @@ export function ClassManagement() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ csvText })
       });
-      setShowCsvImport(false);
       await loadGrades();
       if (selectedGradeId) await loadClasses(selectedGradeId);
       if (selectedClassId) await loadRoster(selectedClassId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "导入失败");
+      throw err;
     } finally {
       setBusy(false);
     }

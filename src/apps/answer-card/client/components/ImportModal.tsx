@@ -14,12 +14,10 @@ export function ImportModal({ title, csvType, onImport, onClose }: ImportModalPr
   const [preview, setPreview] = useState<string[][]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   function handleTextChange(text: string) {
     setImportText(text);
-    setResult("");
     try {
       const parsed = detectAndParse(text);
       if (parsed.error) {
@@ -65,12 +63,9 @@ export function ImportModal({ title, csvType, onImport, onClose }: ImportModalPr
     if (!importText.trim()) return;
     setBusy(true);
     setError("");
-    setResult("");
     try {
       await onImport(importText);
-      setResult("导入完成！");
-      setImportText("");
-      setPreview([]);
+      onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : "导入失败");
     } finally {
@@ -127,7 +122,6 @@ export function ImportModal({ title, csvType, onImport, onClose }: ImportModalPr
             }}
           />
           {error && <p className="login-error">{error}</p>}
-          {result && <p className="hint" style={{ color: "var(--success)" }}>{result}</p>}
           {preview.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <p className="hint">共解析 {preview.length} 条记录：</p>
