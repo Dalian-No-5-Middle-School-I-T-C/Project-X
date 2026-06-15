@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, KeyRound, LogOut, User } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson } from "../auth/api";
@@ -6,6 +6,7 @@ import { ROLE_LABELS } from "../auth/types";
 
 export function AccountMenu() {
   const { user, logout } = useAuth();
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
@@ -13,6 +14,16 @@ export function AccountMenu() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (menuRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [open]);
 
   if (!user) return null;
 
@@ -43,7 +54,7 @@ export function AccountMenu() {
   }
 
   return (
-    <div className="account-menu">
+    <div className="account-menu" ref={menuRef}>
       <button className="account-menu-trigger" type="button" onClick={() => setOpen(!open)}>
         <User size={16} />
         <span>{user.name}</span>

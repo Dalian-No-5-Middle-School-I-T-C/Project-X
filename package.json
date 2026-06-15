@@ -82,8 +82,9 @@
     ],
     "asar": true,
     "win": {
-      "icon": "build/icon.ico",
+      "icon": "resources/icon.png",
       "executableName": "答题卡设计系统",
+      "signAndEditExecutable": false,
       "target": [
         {
           "target": "portable",

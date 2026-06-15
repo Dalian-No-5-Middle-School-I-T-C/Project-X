@@ -158,7 +158,10 @@ export function ClassManagement() {
   }, [selectedClassId, loadRoster]);
 
   async function createGrade() {
-    if (!newGradeName.trim()) return;
+    if (!newGradeName.trim()) {
+      setError("请先填写年级名称");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -191,7 +194,14 @@ export function ClassManagement() {
   }
 
   async function createClass() {
-    if (!selectedGradeId || !newClassName.trim()) return;
+    if (!selectedGradeId) {
+      setError("请先选择年级");
+      return;
+    }
+    if (!newClassName.trim()) {
+      setError("请先填写班级名称");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
@@ -387,8 +397,8 @@ export function ClassManagement() {
         <section className="class-column">
           <div className="class-column-title">年级</div>
           <div className="class-add-row">
-            <input placeholder="新年级名称" value={newGradeName} onChange={(e) => setNewGradeName(e.target.value)} disabled={busy} />
-            <button className="primary-button" type="button" onClick={() => void createGrade()} disabled={busy}>
+            <input placeholder="新年级名称" value={newGradeName} onChange={(e) => setNewGradeName(e.target.value)} />
+            <button className="primary-button" type="button" onClick={() => void createGrade()}>
               <Plus size={14} />
             </button>
           </div>
@@ -408,8 +418,8 @@ export function ClassManagement() {
         <section className="class-column">
           <div className="class-column-title">班级</div>
           <div className="class-add-row">
-            <input placeholder="新班级名称" value={newClassName} onChange={(e) => setNewClassName(e.target.value)} disabled={busy || !selectedGradeId} />
-            <button className="primary-button" type="button" onClick={() => void createClass()} disabled={busy || !selectedGradeId}>
+            <input placeholder="新班级名称" value={newClassName} onChange={(e) => setNewClassName(e.target.value)} disabled={!selectedGradeId} />
+            <button className="primary-button" type="button" onClick={() => void createClass()} disabled={!selectedGradeId}>
               <Plus size={14} />
             </button>
           </div>
@@ -444,10 +454,10 @@ export function ClassManagement() {
                 <button className="ghost-button" type="button" onClick={() => void searchStudents()} disabled={busy} title="搜索添加已有学生">
                   <UserPlus size={14} />
                 </button>
-                <button className="ghost-button" type="button" onClick={() => setShowNewStudentModal(true)} disabled={busy} title="新建学生">
+                <button className="ghost-button" type="button" onClick={() => setShowNewStudentModal(true)} title="新建学生">
                   <UserPlus size={14} /> 新建
                 </button>
-                <button className="ghost-button" type="button" onClick={() => { setShowImportModal(true); setImportText(""); setImportPreview([]); }} disabled={busy} title="批量导入">
+                <button className="ghost-button" type="button" onClick={() => { setShowImportModal(true); setImportText(""); setImportPreview([]); }} title="批量导入">
                   <Upload size={14} /> 导入
                 </button>
               </div>

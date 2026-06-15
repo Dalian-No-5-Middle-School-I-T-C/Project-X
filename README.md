@@ -1,7 +1,7 @@
 # Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.1.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.0.1  
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析  
-> **下个里程碑**：v2.0 — 用户权限管理、多班级分析、成绩预测
+> **当前版本**：v1.1.0（安装包 artifact 版本号 1.0.1，待下次发版同步）  
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → 三级账号与班级管理  
+> **下个里程碑**：v2.0 — 成绩预测、跨班深度对比分析
 
 ---
 
@@ -155,13 +155,20 @@ npm install --ignore-scripts
 #### 开发模式
 
 ```powershell
+npm run dev
+```
+
+一条命令同时启动后端与前端。访问 `http://127.0.0.1:5173`，后端 API 默认端口 `5174`。
+
+如需分终端调试，也可手动启动：
+
+```powershell
 # 终端 1：后端
 npx tsx src/apps/answer-card/server/index.ts
 
 # 终端 2：前端
 npx vite --port 5173
 ```
-访问 `http://127.0.0.1:5173`，后端 API 默认端口 `5174`。
 
 #### 打包发布
 
@@ -182,12 +189,29 @@ npm run electron:msi                   # MSI 安装包
 | `npm run electron:dev` | 构建后启动 Electron |
 | `npm run electron:dist` | 生成 EXE |
 | `npm run electron:msi` | 生成 MSI |
+| `npm run verify:auth` | 账号权限自动化验证（33 项用例） |
+
+---
+
+## 文档
+
+项目说明与手册类文档统一放在 [`docs/`](./docs/) 目录，按主题分类如下：
+
+| 文档 | 说明 | 适合读者 |
+|------|------|----------|
+| [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 | 开发者 |
+| [项目胶囊.md](./docs/项目胶囊.md) | 架构速查：目录、类型、API、约定的一页摘要 | 开发者 |
+| [DATABASE.md](./docs/DATABASE.md) | SQLite 表结构、Repository、认证与数据清理 | 开发者 / 运维 |
+| [ACCOUNT-ARCHITECTURE.md](./docs/ACCOUNT-ARCHITECTURE.md) | 三级账号 RBAC 全栈架构与 v1.0→v1.1 变更说明 | 开发者 |
+| [ACCOUNT-CONTROL.md](./docs/ACCOUNT-CONTROL.md) | 账号控制系统 API、权限矩阵与启用方式 | 开发者 |
+| [ADMIN-GUIDE.md](./docs/ADMIN-GUIDE.md) | 管理员日常操作：用户、班级、花名册、重置密码 | 机房管理员 / 教务 |
+| [CHANGELOG-001.md](./docs/CHANGELOG-001.md) | v1.1 答题卡 UX 增强与卡片管理变更记录 | 开发者 / 测试 |
 
 ---
 
 ## 项目架构
 
-> 详细架构说明（分层、数据流、原生模块、构建部署等）见 **[ARCHITECTURE.md](./ARCHITECTURE.md)**。
+> 详细架构说明（分层、数据流、原生模块、构建部署等）见 **[ARCHITECTURE.md](./docs/ARCHITECTURE.md)**。
 
 ```
 Project-X/
@@ -239,6 +263,7 @@ Project-X/
 │   └── build-scanner-bridge.bat         # 扫描仪桥接一键编译
 ├── electron/
 │   └── main.cjs                         # Electron 主进程
+├── docs/                                # 项目文档（架构、账号、管理员手册等）
 ├── data/                                # 运行时数据
 │   ├── answer-card/                     # 答题卡 JSON、扫描图片、资产
 │   └── projectx.db                      # 主数据库（用户/卡片/考试/成绩）
