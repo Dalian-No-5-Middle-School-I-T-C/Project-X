@@ -89,7 +89,8 @@ system:manage               系统维护（仅管理员）
 
 ## 4. 认证与会话（`AuthService` + 中间件）
 
-- **登录**：`identifier`（用户名/职工号/P+学号）+ `password`；bcrypt 校验；签发随机 32 字节 hex token，有效期 **8 小时**，存于服务端内存。
+- **登录**：`identifier`（用户名/职工号/学号/`P`+学号）+ `password`；bcrypt 校验；签发随机 32 字节 hex token，有效期 **8 小时**，持久化到 `~/.projectx/tokens.json`。
+- **学生密码**：默认密码为学号（允许 5 位）；学生自改密码仍要求 ≥ 6 位（`passwordPolicy.ts`）。
 - **会话**：`Authorization: Bearer <token>`；也支持 `?token=`（用于 SSE / PDF 等无法设请求头的场景）。
 - **修改密码**：校验原密码 → 写新哈希 → **吊销该用户全部会话**，强制重新登录。
 - **禁用/改密时** 自动调用 `revokeUserTokens(userId)`，避免旧 token 继续生效。

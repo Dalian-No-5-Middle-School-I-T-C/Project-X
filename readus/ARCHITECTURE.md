@@ -303,8 +303,9 @@ flowchart LR
 
     subgraph Pack
         EB[electron-builder]
-        EB --> EXE[便携 EXE]
-        EB --> MSI[MSI 安装包]
+        EB --> S[学生端 EXE/MSI]
+        EB --> T[教师端 EXE/MSI]
+        EB --> TS[教师扫描端 EXE/MSI]
     end
 
     DC --> EB
@@ -314,7 +315,7 @@ flowchart LR
 
 - **前端：** Vite → `dist/client`
 - **后端：** esbuild 单文件 bundle（`packages: external`，保留 better-sqlite3/bcrypt 等原生依赖）→ `dist/server/index.mjs`，并复制 `schema.sql`
-- **桌面：** electron-builder，Windows x64，asar 打包 + extraResources 原生 exe
+- **桌面：** electron-builder，Windows x64，三端变体（学生/教师/扫描），按端裁剪 native 资源，共用数据目录
 - **原生 Node 模块：** 需对 Electron 单独 `electron-rebuild`（better-sqlite3、bcrypt）
 
 ---
