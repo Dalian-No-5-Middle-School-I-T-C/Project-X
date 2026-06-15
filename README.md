@@ -179,6 +179,8 @@ npm run electron:dist                  # 便携版 EXE
 npm run electron:msi                   # MSI 安装包
 ```
 
+多端打包和使用方式见 **[多端使用说明.md](./readus/多端使用说明.md)**。
+
 #### 常用脚本
 
 | 命令 | 说明 |
@@ -195,23 +197,24 @@ npm run electron:msi                   # MSI 安装包
 
 ## 文档
 
-项目说明与手册类文档统一放在 [`docs/`](./docs/) 目录，按主题分类如下：
+项目说明与手册类文档统一放在 [`readus/`](./readus/) 目录，按主题分类如下：
 
 | 文档 | 说明 | 适合读者 |
 |------|------|----------|
-| [ARCHITECTURE.md](./docs/ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 | 开发者 |
-| [项目胶囊.md](./docs/项目胶囊.md) | 架构速查：目录、类型、API、约定的一页摘要 | 开发者 |
-| [DATABASE.md](./docs/DATABASE.md) | SQLite 表结构、Repository、认证与数据清理 | 开发者 / 运维 |
-| [ACCOUNT-ARCHITECTURE.md](./docs/ACCOUNT-ARCHITECTURE.md) | 三级账号 RBAC 全栈架构与 v1.0→v1.1 变更说明 | 开发者 |
-| [ACCOUNT-CONTROL.md](./docs/ACCOUNT-CONTROL.md) | 账号控制系统 API、权限矩阵与启用方式 | 开发者 |
-| [ADMIN-GUIDE.md](./docs/ADMIN-GUIDE.md) | 管理员日常操作：用户、班级、花名册、重置密码 | 机房管理员 / 教务 |
-| [CHANGELOG-001.md](./docs/CHANGELOG-001.md) | v1.1 答题卡 UX 增强与卡片管理变更记录 | 开发者 / 测试 |
+| [ARCHITECTURE.md](./readus/ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 | 开发者 |
+| [项目胶囊.md](./readus/项目胶囊.md) | 架构速查：目录、类型、API、约定的一页摘要 | 开发者 |
+| [DATABASE.md](./readus/DATABASE.md) | SQLite 表结构、Repository、认证与数据清理 | 开发者 / 运维 |
+| [ACCOUNT-ARCHITECTURE.md](./readus/ACCOUNT-ARCHITECTURE.md) | 三级账号 RBAC 全栈架构与 v1.0→v1.1 变更说明 | 开发者 |
+| [ACCOUNT-CONTROL.md](./readus/ACCOUNT-CONTROL.md) | 账号控制系统 API、权限矩阵与启用方式 | 开发者 |
+| [ADMIN-GUIDE.md](./readus/ADMIN-GUIDE.md) | 管理员日常操作：用户、班级、花名册、重置密码 | 机房管理员 / 教务 |
+| [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
+| [CHANGELOG-001.md](./readus/CHANGELOG-001.md) | v1.1 答题卡 UX 增强与卡片管理变更记录 | 开发者 / 测试 |
 
 ---
 
 ## 项目架构
 
-> 详细架构说明（分层、数据流、原生模块、构建部署等）见 **[ARCHITECTURE.md](./docs/ARCHITECTURE.md)**。
+> 详细架构说明（分层、数据流、原生模块、构建部署等）见 **[ARCHITECTURE.md](./readus/ARCHITECTURE.md)**。
 
 ```
 Project-X/
@@ -263,7 +266,7 @@ Project-X/
 │   └── build-scanner-bridge.bat         # 扫描仪桥接一键编译
 ├── electron/
 │   └── main.cjs                         # Electron 主进程
-├── docs/                                # 项目文档（架构、账号、管理员手册等）
+├── readus/                              # 项目文档（架构、账号、管理员手册、多端说明等）
 ├── data/                                # 运行时数据
 │   ├── answer-card/                     # 答题卡 JSON、扫描图片、资产
 │   └── projectx.db                      # 主数据库（用户/卡片/考试/成绩）
