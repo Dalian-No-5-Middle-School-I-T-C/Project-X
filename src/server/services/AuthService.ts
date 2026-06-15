@@ -1,6 +1,7 @@
 import { UserRepository, type UserRecord } from "../repositories/UserRepository";
 import { verifyPassword, hashPassword, getDatabase } from "../db";
 import { permissionsForRole } from "../auth/permissions";
+import { validateUserChosenPassword } from "../auth/passwordPolicy";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -100,8 +101,17 @@ export class AuthService {
       return { success: false, message: "用户名或密码错误" };
     }
 
-    // 验证密码
-    const valid = await verifyPassword(password, user.password_hash);
+    // 验证密码。兼容旧流程留下的学生空密码哈希：首次用学号登录时自动补齐为学号密码。
+    let valid = false;
+    if (!user.password_hash && user.role_name === "student" && user.student_number && password === user.student_number) {
+      const newHash = await hashPassword(user.student_number);
+      const db = getDatabase();
+      db.prepare("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newHash, user.id);
+      user.password_hash = newHash;
+      valid = true;
+    } else {
+      valid = await verifyPassword(password, user.password_hash);
+    }
     if (!valid) {
       return { success: false, message: "用户名或密码错误" };
     }
@@ -132,9 +142,8 @@ export class AuthService {
    * 任何已登录用户均可修改自己的密码。
    */
   async changePassword(userId: number, oldPassword: string, newPassword: string): Promise<ChangePasswordResult> {
-    if (!newPassword || newPassword.length < 6) {
-      return { success: false, message: "新密码长度至少 6 位" };
-    }
+    const passwordError = validateUserChosenPassword(newPassword);
+    if (passwordError) return { success: false, message: passwordError };
 
     const db = getDatabase();
     const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(userId) as

@@ -349,8 +349,7 @@ export function ClassManagement() {
           username: newStudentNumber.trim(),
           name: newStudentName.trim(),
           role: "student",
-          student_number: newStudentNumber.trim(),
-          password: newStudentNumber.trim()
+          student_number: newStudentNumber.trim()
         })
       });
 
@@ -557,7 +556,7 @@ export function ClassManagement() {
               </label>
               <label>
                 学号
-                <input value={newStudentNumber} onChange={(e) => setNewStudentNumber(e.target.value)} placeholder="学号（作为用户名和密码）" disabled={busy} />
+                <input value={newStudentNumber} onChange={(e) => setNewStudentNumber(e.target.value)} placeholder="学号（默认作为用户名和初始密码）" disabled={busy} />
               </label>
             </div>
             <div className="modal-footer">

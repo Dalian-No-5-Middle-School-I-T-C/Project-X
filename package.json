@@ -14,9 +14,18 @@
     "native:rebuild:node": "npm rebuild better-sqlite3",
     "native:rebuild:electron": "electron-rebuild -f -w better-sqlite3,bcrypt",
     "electron:dev": "npm run build && npm run native:rebuild:electron && electron .",
-    "electron:pack": "npm run build && npm run native:rebuild:electron && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --dir",
-    "electron:dist": "npm run build && npm run native:rebuild:electron && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --win portable",
-    "electron:msi": "npm run build && npm run native:rebuild:electron && set ELECTRON_BUILDER_CACHE=.electron-builder-cache&& electron-builder --win msi",
+    "electron:pack": "npm run electron:pack:scanner",
+    "electron:dist": "npm run electron:dist:scanner",
+    "electron:msi": "npm run electron:msi:scanner",
+    "electron:pack:student": "tsx scripts/package-variant.ts student dir",
+    "electron:pack:teacher": "tsx scripts/package-variant.ts teacher dir",
+    "electron:pack:scanner": "tsx scripts/package-variant.ts teacher-scanner dir",
+    "electron:dist:student": "tsx scripts/package-variant.ts student portable",
+    "electron:dist:teacher": "tsx scripts/package-variant.ts teacher portable",
+    "electron:dist:scanner": "tsx scripts/package-variant.ts teacher-scanner portable",
+    "electron:msi:student": "tsx scripts/package-variant.ts student msi",
+    "electron:msi:teacher": "tsx scripts/package-variant.ts teacher msi",
+    "electron:msi:scanner": "tsx scripts/package-variant.ts teacher-scanner msi",
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
     "typecheck": "tsc --noEmit"
@@ -73,7 +82,7 @@
     ],
     "asar": true,
     "win": {
-      "icon": "build/icon.svg",
+      "icon": "build/icon.ico",
       "executableName": "答题卡设计系统",
       "target": [
         {
