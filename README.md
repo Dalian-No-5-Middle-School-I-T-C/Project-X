@@ -1,7 +1,7 @@
 # Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.1.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.0.1  
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析  
-> **下个里程碑**：v2.0 — 用户权限管理、多班级分析、成绩预测
+> **当前版本**：v1.1.0  
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → 教师/学生/班级管理 → 账密批量导入导出  
+> **下个里程碑**：v2.0 — 成绩预测、跨班深度对比分析
 
 ---
 
@@ -62,7 +62,7 @@
 - **多页合并评分**：双面卡 / 多页卡自动合并正反面成绩，去重汇总总分
 - **PDF 式详情预览**：按学生聚合展示所有页面，纵向滚动翻阅，缩略图导航
 - **低置信度标记**：置信度偏低的题目自动标"待复核"
-- **CSV 导出**：点击导出按钮下载，UTF-8 BOM 编码，Excel 直接打开
+- **Excel (.xlsx) 导出**：点击导出按钮下载，Excel 直接打开
 
 ### 扫描仪直扫
 
@@ -80,7 +80,7 @@
 - **学生排名**：学号、姓名、总分、客观分、主观分、待复核标记
 - **题目分析**：每题得分率、正确率排行，低分题红色高亮
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
-- **CSV 成绩导出**：年级排名 / 班级排名两种模式，表头含班级、考号、姓名、成绩、双排名、客观/主观成绩、每题得分
+- **Excel (.xlsx) 成绩导出**：年级排名 / 班级排名两种模式，表头含班级、考号、姓名、成绩、双排名、客观/主观成绩、每题得分
 
 ### 账户与安全
 
@@ -104,7 +104,7 @@
 
 1. 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 下载：
    ```
-   答题卡设计系统-1.0.1-x64.exe
+   答题卡设计系统-1.1.0-x64.exe
    ```
 2. 双击即可运行，无需安装
 
@@ -112,7 +112,7 @@
 
 1. 下载：
    ```
-   答题卡设计系统-1.0.1-x64.msi
+   答题卡设计系统-1.1.0-x64.msi
    ```
 2. 适合学校机房、域控、组策略等集中部署场景
 
@@ -124,11 +124,11 @@
 
 **阅卷判分**：
 1. 切到「阅卷」模式 → 选答题卡 → 选考试 → 导入图片
-2. 点击「开始识别并判分」→ 查看成绩 → 导出 CSV
+2. 点击「开始识别并判分」→ 查看成绩 → 导出 Excel (.xlsx)
 
 **查看分析**：
 1. 切到「分析」模式 → 选考试 → 查看总览/排名/题目分析
-2. 点击「导出」→ 选择「年级排名」或「班级排名」→ 下载 CSV 成绩表
+2. 点击「导出」→ 选择「年级排名」或「班级排名」→ 下载 Excel (.xlsx) 成绩表
 
 ---
 
@@ -155,13 +155,20 @@ npm install --ignore-scripts
 #### 开发模式
 
 ```powershell
+npm run dev
+```
+
+一条命令同时启动后端与前端。访问 `http://127.0.0.1:5173`，后端 API 默认端口 `5174`。
+
+如需分终端调试，也可手动启动：
+
+```powershell
 # 终端 1：后端
 npx tsx src/apps/answer-card/server/index.ts
 
 # 终端 2：前端
 npx vite --port 5173
 ```
-访问 `http://127.0.0.1:5173`，后端 API 默认端口 `5174`。
 
 #### 打包发布
 
@@ -171,6 +178,8 @@ npm run electron:pack                  # Electron 目录包
 npm run electron:dist                  # 便携版 EXE
 npm run electron:msi                   # MSI 安装包
 ```
+
+多端打包和使用方式见 **[多端使用说明.md](./readus/多端使用说明.md)**。
 
 #### 常用脚本
 
@@ -182,12 +191,30 @@ npm run electron:msi                   # MSI 安装包
 | `npm run electron:dev` | 构建后启动 Electron |
 | `npm run electron:dist` | 生成 EXE |
 | `npm run electron:msi` | 生成 MSI |
+| `npm run verify:auth` | 账号权限自动化验证（33 项用例） |
+
+---
+
+## 文档
+
+项目说明与手册类文档统一放在 [`readus/`](./readus/) 目录，按主题分类如下：
+
+| 文档 | 说明 | 适合读者 |
+|------|------|----------|
+| [ARCHITECTURE.md](./readus/ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 | 开发者 |
+| [项目胶囊.md](./readus/项目胶囊.md) | 架构速查：目录、类型、API、约定的一页摘要 | 开发者 |
+| [DATABASE.md](./readus/DATABASE.md) | SQLite 表结构、Repository、认证与数据清理 | 开发者 / 运维 |
+| [ACCOUNT-ARCHITECTURE.md](./readus/ACCOUNT-ARCHITECTURE.md) | 三级账号 RBAC 全栈架构与 v1.0→v1.1 变更说明 | 开发者 |
+| [ACCOUNT-CONTROL.md](./readus/ACCOUNT-CONTROL.md) | 账号控制系统 API、权限矩阵与启用方式 | 开发者 |
+| [ADMIN-GUIDE.md](./readus/ADMIN-GUIDE.md) | 管理员日常操作：用户、班级、花名册、重置密码 | 机房管理员 / 教务 |
+| [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
+| [CHANGELOG-001.md](./readus/CHANGELOG-001.md) | v1.1 答题卡 UX 增强与卡片管理变更记录 | 开发者 / 测试 |
 
 ---
 
 ## 项目架构
 
-> 详细架构说明（分层、数据流、原生模块、构建部署等）见 **[ARCHITECTURE.md](./ARCHITECTURE.md)**。
+> 详细架构说明（分层、数据流、原生模块、构建部署等）见 **[ARCHITECTURE.md](./readus/ARCHITECTURE.md)**。
 
 ```
 Project-X/
@@ -200,7 +227,10 @@ Project-X/
 │   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期）
 │   │   │       ├── LoginPage.tsx            # 登录页（记住密码）
 │   │   │       ├── AccountMenu.tsx          # 账户下拉菜单
-│   │   │       ├── AccountManagement.tsx    # 用户/班级管理
+│   │   │       ├── AccountManagement.tsx    # 教师/学生管理（双 Tab）
+│   │   │       ├── TeacherManagement.tsx    # 教师管理（科目/班级关联）
+│   │   │       ├── StudentManagement.tsx    # 学生管理（按班级+导入/导出）
+│   │   │       ├── ImportModal.tsx          # 通用CSV/Excel导入弹窗
 │   │   │       ├── StudentScores.tsx        # 学生我的成绩
 │   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板
 │   │   │       ├── AnalysisOverview.tsx   # 分析总览卡片
@@ -239,6 +269,7 @@ Project-X/
 │   └── build-scanner-bridge.bat         # 扫描仪桥接一键编译
 ├── electron/
 │   └── main.cjs                         # Electron 主进程
+├── readus/                              # 项目文档（架构、账号、管理员手册、多端说明等）
 ├── data/                                # 运行时数据
 │   ├── answer-card/                     # 答题卡 JSON、扫描图片、资产
 │   └── projectx.db                      # 主数据库（用户/卡片/考试/成绩）
@@ -283,7 +314,7 @@ Project-X/
 | `GET` | `/api/analysis/exams/:id/students` | 学生排名 |
 | `GET` | `/api/analysis/exams/:id/questions` | 题目得分率 |
 | `GET` | `/api/analysis/exams/:id/classes` | 考试关联班级 |
-| `GET` | `/api/analysis/exams/:id/export-csv` | 导出成绩CSV（?classId= 选班级） |
+| `GET` | `/api/analysis/exams/:id/export-csv` | 导出成绩 Excel (.xlsx)（?classId= 选班级） |
 | `GET` | `/api/scanner/sources` | TWAIN 扫描仪检测 |
 | `POST` | `/api/scanner/scan` | 启动扫描会话 |
 | `GET` | `/api/scanner/progress/:id` | SSE 扫描进度 |
@@ -291,6 +322,13 @@ Project-X/
 | `GET` | `/api/scanner/scan-image/:recordId` | 扫描原图预览 |
 | `POST` | `/api/auth/login` | 登录（支持 isPersistent 6 月免登录） |
 | `GET` | `/api/auth/me` | 当前用户信息 |
+| `GET` | `/api/teachers` | 教师列表（按创建时间排序） |
+| `GET/PUT` | `/api/teachers/:id` | 教师详情 / 更新（姓名/科目） |
+| `POST` | `/api/teachers/:id/classes` | 教师关联班级 |
+| `DELETE` | `/api/teachers/:id/classes/:classId` | 教师解除班级关联 |
+| `POST` | `/api/users/import-csv` | 批量导入学生/教师（CSV/Excel） |
+| `GET` | `/api/export/students` | 导出学生账密 Excel |
+| `GET` | `/api/export/teachers` | 导出教师账密 Excel |
 
 ---
 

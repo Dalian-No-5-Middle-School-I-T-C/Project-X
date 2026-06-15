@@ -62,6 +62,33 @@ export function initializeDatabase(): void {
     console.log("[DB] Migration: added exam_date column to answer_cards");
   }
 
+  // v1.1.0 migrations: users + teacher_classes
+  const userCols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+  if (!userCols.some((c) => c.name === "subject")) {
+    db.exec("ALTER TABLE users ADD COLUMN subject TEXT");
+    console.log("[DB] Migration (v1.1): added subject column to users");
+  }
+  if (!userCols.some((c) => c.name === "initial_password")) {
+    db.exec("ALTER TABLE users ADD COLUMN initial_password TEXT");
+    console.log("[DB] Migration (v1.1): added initial_password column to users");
+  }
+
+  const hasTc = db.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='teacher_classes'").get() as { cnt: number };
+  if (hasTc.cnt === 0) {
+    db.exec(`
+      CREATE TABLE teacher_classes (
+        teacher_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        class_id    INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+        subject     TEXT,
+        created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (teacher_id, class_id)
+      );
+      CREATE INDEX idx_teacher_classes_teacher ON teacher_classes(teacher_id);
+      CREATE INDEX idx_teacher_classes_class ON teacher_classes(class_id);
+    `);
+    console.log("[DB] Migration (v1.1): created teacher_classes table");
+  }
+
   const roleCount = db.prepare("SELECT COUNT(*) as cnt FROM roles").get() as { cnt: number };
   if (roleCount.cnt === 0) {
     const insertRole = db.prepare(
@@ -98,6 +125,9 @@ export async function hashPassword(password: string): Promise<string> {
 }
 
 export async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  if (!hash || hash === "") {
+    return false;
+  }
   const bcrypt = await import("bcrypt");
   return bcrypt.default.compare(password, hash);
 }

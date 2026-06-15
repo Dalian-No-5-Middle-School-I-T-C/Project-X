@@ -85,8 +85,9 @@ function electronBuilderConfig(config: ProjectXVariantConfig, target: PackageTar
     },
     asar: true,
     win: {
-      icon: "build/icon.ico",
+      icon: "resources/icon.png",
       executableName: config.productName,
+      signAndEditExecutable: false,
       target: [
         {
           target: targetName,

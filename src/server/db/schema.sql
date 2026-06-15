@@ -23,11 +23,13 @@ CREATE TABLE IF NOT EXISTS roles (
 -- 用户表（管理员 + 教师 + 学生统一存储）
 CREATE TABLE IF NOT EXISTS users (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
-    username         TEXT NOT NULL UNIQUE,   -- 登录账号（学号或职工号）
+    username         TEXT NOT NULL UNIQUE,   -- 登录账号（学生=P+学号，教师=T+6位随机数）
     password_hash    TEXT NOT NULL,           -- bcrypt 哈希
     name             TEXT NOT NULL,           -- 真实姓名
     role_id          INTEGER NOT NULL REFERENCES roles(id),
-    student_number   TEXT UNIQUE,            -- 学号（仅学生有）
+    student_number   TEXT UNIQUE,            -- 学号/考号（仅学生有）
+    subject          TEXT,                    -- 任教科目（仅教师）
+    initial_password TEXT,                    -- 初始明文密码（导出账密用）
     email            TEXT,
     phone            TEXT,
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
@@ -59,6 +61,15 @@ CREATE TABLE IF NOT EXISTS class_students (
     student_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     joined_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (class_id, student_id)
+);
+
+-- 教师-班级关联（任教关系）
+CREATE TABLE IF NOT EXISTS teacher_classes (
+    teacher_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    class_id    INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+    subject     TEXT,                                    -- 可选：该教师在此班级的科目覆盖
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (teacher_id, class_id)
 );
 
 -- ============================================================
@@ -316,6 +327,8 @@ CREATE INDEX IF NOT EXISTS idx_users_role ON users(role_id);
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);
 CREATE INDEX IF NOT EXISTS idx_class_students_student ON class_students(student_id);
 CREATE INDEX IF NOT EXISTS idx_class_students_class ON class_students(class_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_classes_teacher ON teacher_classes(teacher_id);
+CREATE INDEX IF NOT EXISTS idx_teacher_classes_class ON teacher_classes(class_id);
 CREATE INDEX IF NOT EXISTS idx_answer_cards_created_by ON answer_cards(created_by);
 CREATE INDEX IF NOT EXISTS idx_answer_cards_updated_at ON answer_cards(updated_at);
 CREATE INDEX IF NOT EXISTS idx_objective_blocks_card ON objective_blocks(card_id);
