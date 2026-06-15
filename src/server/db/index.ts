@@ -98,6 +98,9 @@ export async function hashPassword(password: string): Promise<string> {
 }
 
 export async function verifyPassword(password: string, hash: string): Promise<boolean> {
+  if (!hash || hash === "") {
+    return false;
+  }
   const bcrypt = await import("bcrypt");
   return bcrypt.default.compare(password, hash);
 }

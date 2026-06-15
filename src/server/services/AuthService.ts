@@ -109,7 +109,7 @@ export class AuthService {
       db.prepare("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newHash, user.id);
       user.password_hash = newHash;
       valid = true;
-    } else if (user.password_hash) {
+    } else {
       valid = await verifyPassword(password, user.password_hash);
     }
     if (!valid) {
