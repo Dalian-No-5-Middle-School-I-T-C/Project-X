@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v0.2.0
+> **版本**: v1.1.0
 > **技术栈**: SQLite + better-sqlite3 + bcrypt
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
 
@@ -228,14 +228,14 @@ Body: multipart/form-data, files[]
 
 支持三种登录方式：
 1. **用户名** — 管理员/教师的职工号
-2. **学号** — 学生的纯数字学号
+2. **P+学号** — 学生的 P+学号（如 P24101）
 3. **邮箱** — 预留字段
 
 ### Token 机制
 
 - 登录成功后返回 `token`，有效期 **8 小时**
 - 请求时携带 Header：`Authorization: Bearer <token>`
-- Token 存储在服务端内存中（重启后失效）
+- Token 持久化到 `~/.projectx/tokens.json` 磁盘文件（服务器重启后仍有效，6 个月持久化 Token）
 
 ### 权限控制
 
@@ -349,7 +349,7 @@ UPDATE users SET password_hash = '<new_hash>' WHERE username = 'admin';
 
 ### Q: 如何导入学生名单？
 
-目前需要手动插入到 `users` 和 `class_students` 表。批量导入 API 将在后续版本开发。
+通过 `/api/users/import-csv` 使用批量导入 API 上传 CSV/Excel 文件，一行即可。参见 [ADMIN-GUIDE](./ADMIN-GUIDE.md) 第 4/5 节了解操作说明。
 
 ### Q: 扫描图片存储在哪里？
 
@@ -366,15 +366,25 @@ src/server/
 │   ├── index.ts             # 数据库连接、初始化、密码哈希
 │   └── cleanup.ts           # 数据清理脚本 + 定时任务
 ├── repositories/
-│   ├── UserRepository.ts    # 用户 CRUD
-│   ├── CardRepository.ts    # 答题卡 CRUD（JSON ↔ DB 转换）
-│   └── ExamRepository.ts    # 考试、扫描、成绩存储
+│   ├── UserRepository.ts      # 用户 CRUD + 批量导入 + 导出
+│   ├── CardRepository.ts      # 答题卡 CRUD（JSON ↔ DB 转换）
+│   ├── ExamRepository.ts      # 考试、扫描、成绩存储
+│   ├── ClassRepository.ts     # 年级/班级/花名册数据访问
+│   ├── ScoreRepository.ts     # 学生成绩查询
+│   └── AnalysisRepository.ts  # 分析聚合查询
 ├── services/
-│   └── AuthService.ts       # 登录逻辑、Token 管理
+│   └── AuthService.ts         # 登录逻辑、Token 管理（持久化）
 ├── middleware/
-│   └── auth.ts              # Express 认证中间件、角色鉴权
+│   └── auth.ts                # Express 认证/鉴权中间件
+├── auth/
+│   └── permissions.ts         # 权限模型定义
 └── routes/
-    └── auth.ts              # 认证 API 路由
+    ├── auth.ts                # 认证 API
+    ├── users.ts               # 用户管理 API
+    ├── classes.ts             # 班级管理 API
+    ├── scores.ts              # 成绩查询 API
+    ├── teachers.ts            # 教师管理 API (v1.1)
+    └── export.ts              # 账密导出 API (v1.1)
 ```
 
 ---

@@ -13,8 +13,8 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.1.0（安装包 artifact 版本号 1.0.1，待下次发版同步）  
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → 三级账号与班级管理  
+> **当前版本**：v1.1.0  
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → 教师/学生/班级管理 → 账密批量导入导出  
 > **下个里程碑**：v2.0 — 成绩预测、跨班深度对比分析
 
 ---
@@ -62,7 +62,7 @@
 - **多页合并评分**：双面卡 / 多页卡自动合并正反面成绩，去重汇总总分
 - **PDF 式详情预览**：按学生聚合展示所有页面，纵向滚动翻阅，缩略图导航
 - **低置信度标记**：置信度偏低的题目自动标"待复核"
-- **CSV 导出**：点击导出按钮下载，UTF-8 BOM 编码，Excel 直接打开
+- **Excel (.xlsx) 导出**：点击导出按钮下载，Excel 直接打开
 
 ### 扫描仪直扫
 
@@ -80,7 +80,7 @@
 - **学生排名**：学号、姓名、总分、客观分、主观分、待复核标记
 - **题目分析**：每题得分率、正确率排行，低分题红色高亮
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
-- **CSV 成绩导出**：年级排名 / 班级排名两种模式，表头含班级、考号、姓名、成绩、双排名、客观/主观成绩、每题得分
+- **Excel (.xlsx) 成绩导出**：年级排名 / 班级排名两种模式，表头含班级、考号、姓名、成绩、双排名、客观/主观成绩、每题得分
 
 ### 账户与安全
 
@@ -104,7 +104,7 @@
 
 1. 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 下载：
    ```
-   答题卡设计系统-1.0.1-x64.exe
+   答题卡设计系统-1.1.0-x64.exe
    ```
 2. 双击即可运行，无需安装
 
@@ -112,7 +112,7 @@
 
 1. 下载：
    ```
-   答题卡设计系统-1.0.1-x64.msi
+   答题卡设计系统-1.1.0-x64.msi
    ```
 2. 适合学校机房、域控、组策略等集中部署场景
 
@@ -124,11 +124,11 @@
 
 **阅卷判分**：
 1. 切到「阅卷」模式 → 选答题卡 → 选考试 → 导入图片
-2. 点击「开始识别并判分」→ 查看成绩 → 导出 CSV
+2. 点击「开始识别并判分」→ 查看成绩 → 导出 Excel (.xlsx)
 
 **查看分析**：
 1. 切到「分析」模式 → 选考试 → 查看总览/排名/题目分析
-2. 点击「导出」→ 选择「年级排名」或「班级排名」→ 下载 CSV 成绩表
+2. 点击「导出」→ 选择「年级排名」或「班级排名」→ 下载 Excel (.xlsx) 成绩表
 
 ---
 
@@ -224,7 +224,10 @@ Project-X/
 │   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期）
 │   │   │       ├── LoginPage.tsx            # 登录页（记住密码）
 │   │   │       ├── AccountMenu.tsx          # 账户下拉菜单
-│   │   │       ├── AccountManagement.tsx    # 用户/班级管理
+│   │   │       ├── AccountManagement.tsx    # 教师/学生管理（双 Tab）
+│   │   │       ├── TeacherManagement.tsx    # 教师管理（科目/班级关联）
+│   │   │       ├── StudentManagement.tsx    # 学生管理（按班级+导入/导出）
+│   │   │       ├── ImportModal.tsx          # 通用CSV/Excel导入弹窗
 │   │   │       ├── StudentScores.tsx        # 学生我的成绩
 │   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板
 │   │   │       ├── AnalysisOverview.tsx   # 分析总览卡片
@@ -308,7 +311,7 @@ Project-X/
 | `GET` | `/api/analysis/exams/:id/students` | 学生排名 |
 | `GET` | `/api/analysis/exams/:id/questions` | 题目得分率 |
 | `GET` | `/api/analysis/exams/:id/classes` | 考试关联班级 |
-| `GET` | `/api/analysis/exams/:id/export-csv` | 导出成绩CSV（?classId= 选班级） |
+| `GET` | `/api/analysis/exams/:id/export-csv` | 导出成绩 Excel (.xlsx)（?classId= 选班级） |
 | `GET` | `/api/scanner/sources` | TWAIN 扫描仪检测 |
 | `POST` | `/api/scanner/scan` | 启动扫描会话 |
 | `GET` | `/api/scanner/progress/:id` | SSE 扫描进度 |
@@ -316,6 +319,13 @@ Project-X/
 | `GET` | `/api/scanner/scan-image/:recordId` | 扫描原图预览 |
 | `POST` | `/api/auth/login` | 登录（支持 isPersistent 6 月免登录） |
 | `GET` | `/api/auth/me` | 当前用户信息 |
+| `GET` | `/api/teachers` | 教师列表（按创建时间排序） |
+| `GET/PUT` | `/api/teachers/:id` | 教师详情 / 更新（姓名/科目） |
+| `POST` | `/api/teachers/:id/classes` | 教师关联班级 |
+| `DELETE` | `/api/teachers/:id/classes/:classId` | 教师解除班级关联 |
+| `POST` | `/api/users/import-csv` | 批量导入学生/教师（CSV/Excel） |
+| `GET` | `/api/export/students` | 导出学生账密 Excel |
+| `GET` | `/api/export/teachers` | 导出教师账密 Excel |
 
 ---
 
