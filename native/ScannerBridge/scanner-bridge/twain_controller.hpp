@@ -1,15 +1,7 @@
 #pragma once
 
-#ifndef TWH_CMP_MSC
-#pragma push_macro("_MSC_VER")
-#undef _MSC_VER
 #include <windows.h>
 #include <twain.h>
-#pragma pop_macro("_MSC_VER")
-#else
-#include <windows.h>
-#include <twain.h>
-#endif
 
 #include <string>
 #include <vector>

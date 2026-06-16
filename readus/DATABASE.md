@@ -1,7 +1,7 @@
 # Project-X 数据库模块文档
 
 > **版本**: v1.1.0
-> **技术栈**: SQLite + better-sqlite3 + bcrypt
+> **技术栈**: SQLite + better-sqlite3 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
 
 ---
@@ -28,11 +28,10 @@ npm install
 ```
 
 需要安装的额外依赖（已写入 `package.json`）：
-- `better-sqlite3` — SQLite 同步驱动
-- `bcrypt` — 密码哈希
-- `@types/bcrypt` — bcrypt 类型定义
+- `better-sqlite3` — SQLite 同步驱动，包含原生 C++ 模块
+- `bcryptjs` — 密码哈希，纯 JS 实现，兼容 bcrypt 哈希格式
 
-> **注意**: `better-sqlite3` 包含原生 C++ 模块，首次安装时会编译。如果遇到编译错误，请确保已安装 Python 和 Visual Studio Build Tools。
+> **注意**: 当前需要编译的 Node 依赖只有 `better-sqlite3`。如果遇到编译错误，请确保已安装 Python 和 Visual Studio Build Tools。
 
 ### 2. 启动服务器
 
@@ -117,7 +116,7 @@ npm run server
 |------|------|------|
 | `id` | INTEGER PK | 自增主键 |
 | `username` | TEXT UNIQUE | 登录账号（学生=P+学号，教师=T+随机数） |
-| `password_hash` | TEXT | bcrypt 哈希密码 |
+| `password_hash` | TEXT | bcrypt 格式哈希密码 |
 | `name` | TEXT | 真实姓名 |
 | `role_id` | INTEGER FK | 关联 roles.id |
 | `student_number` | TEXT UNIQUE | 学号/考号（仅学生） |
@@ -366,7 +365,7 @@ copy data\projectx.db data\projectx_backup_20260101.db
 
 删除数据库重新启动，或手动修改数据库：
 ```sql
--- 生成新密码哈希（使用 bcrypt，saltRounds=10）
+-- 生成新密码哈希（使用 bcryptjs，saltRounds=10）
 -- 然后更新数据库
 UPDATE users SET password_hash = '<new_hash>' WHERE username = 'admin';
 ```

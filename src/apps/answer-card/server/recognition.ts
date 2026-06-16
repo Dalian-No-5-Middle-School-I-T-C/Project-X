@@ -17,15 +17,25 @@ function processResourcesPath(): string | undefined {
   return (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
 }
 
+function nativeResourceDir(): string {
+  return process.arch === "ia32" ? "win-ia32" : "win-x64";
+}
+
+function nativeBuildPlatform(): string {
+  return process.arch === "ia32" ? "Win32" : "x64";
+}
+
 export function resolveRecognizerExe(): string {
   const configured = process.env.ANSWER_CARD_RECOGNIZER_EXE;
   const resourcesPath = processResourcesPath();
+  const resourceDir = nativeResourceDir();
+  const buildPlatform = nativeBuildPlatform();
   const candidates = [
     configured,
-    resourcesPath ? path.join(resourcesPath, "native", "win-x64", "answer-card-recognizer.exe") : undefined,
-    path.join(rootDir, "resources", "native", "win-x64", "answer-card-recognizer.exe"),
-    path.join(rootDir, "native", "AnswerCardRecognizer", "x64", "Release", "answer-card-recognizer.exe"),
-    path.join(rootDir, "native", "AnswerCardRecognizer", "x64", "Debug", "answer-card-recognizer.exe")
+    resourcesPath ? path.join(resourcesPath, "native", resourceDir, "answer-card-recognizer.exe") : undefined,
+    path.join(rootDir, "resources", "native", resourceDir, "answer-card-recognizer.exe"),
+    path.join(rootDir, "native", "AnswerCardRecognizer", buildPlatform, "Release", "answer-card-recognizer.exe"),
+    path.join(rootDir, "native", "AnswerCardRecognizer", buildPlatform, "Debug", "answer-card-recognizer.exe")
   ].filter((item): item is string => Boolean(item));
 
   const found = candidates.find((candidate) => existsSync(candidate));

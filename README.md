@@ -92,6 +92,7 @@
 
 - **Windows 桌面端**：三端产品（学生端 / 教师普通端 / 教师扫描端），便携版 EXE + MSI 安装包
 - **Electron 原生打包**：按端裁剪（学生端不打包 C++ 识别/扫描资源，教师普通端仅打包识别引擎，扫描端全量）
+- **x64 / ia32 双架构**：三端均支持 64 位与 32 位 Windows 包；32 位原生资源位于 `resources/native/win-ia32/`
 - **三端共用数据**：`%APPDATA%\answer-card-designer\`（管理员端建账号→学生端直接登录）
 
 > 多端详细说明见 [`readus/多端使用说明.md`](./readus/多端使用说明.md)
@@ -109,9 +110,12 @@
 Project-X 学生端-1.1.0-x64.exe
 Project-X 教师端-1.1.0-x64.exe
 Project-X 教师扫描端-1.1.0-x64.exe
+Project-X 学生端-1.1.0-ia32.exe
+Project-X 教师端-1.1.0-ia32.exe
+Project-X 教师扫描端-1.1.0-ia32.exe
 ```
 
-> 学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
+> 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
 
 #### 方式二：MSI 安装包（推荐机房部署）
 
@@ -150,7 +154,7 @@ npm install --ignore-scripts
 
 > 使用 `--ignore-scripts` 避免 Electron 下载 SSL 问题。安装后需手动重建原生模块：
 > ```powershell
-> npm rebuild better-sqlite3 bcrypt
+> npm rebuild better-sqlite3
 > ```
 
 #### 开发模式
@@ -176,6 +180,10 @@ npx vite --port 5173
 ```powershell
 npm run build                          # 构建前后端
 
+# 如需重新构建 C++ 原生组件，先按目标架构生成 native 资源
+npm run native:build:x64               # 输出到 resources/native/win-x64
+npm run native:build:ia32              # 输出到 resources/native/win-ia32
+
 # 三端分别打包（顺序执行，勿并行）
 npm run electron:pack:student          # 学生端目录包
 npm run electron:pack:teacher          # 教师普通端目录包
@@ -184,6 +192,20 @@ npm run electron:pack:scanner          # 教师扫描端目录包
 npm run electron:dist:student          # 学生端便携 EXE
 npm run electron:dist:teacher          # 教师端便携 EXE
 npm run electron:dist:scanner          # 教师扫描端便携 EXE
+
+# 32 位便携 EXE
+npm run electron:dist:student:ia32
+npm run electron:dist:teacher:ia32
+npm run electron:dist:scanner:ia32
+
+# MSI 安装包
+npm run electron:msi:student           # 学生端 x64 MSI
+npm run electron:msi:teacher           # 教师端 x64 MSI
+npm run electron:msi:scanner           # 教师扫描端 x64 MSI
+npm run electron:msi:student:ia32      # 学生端 32 位 MSI
+npm run electron:msi:teacher:ia32      # 教师端 32 位 MSI
+npm run electron:msi:scanner:ia32      # 教师扫描端 32 位 MSI
+npm run electron:msi:all               # 一次生成三端 x64/ia32 共 6 个 MSI
 
 # 默认命令仍指向扫描端（完整功能包）
 npm run electron:pack                  # = electron:pack:scanner
@@ -204,7 +226,9 @@ npm run electron:msi                   # = electron:msi:scanner
 | `npm run electron:dist` | 生成扫描端便携 EXE |
 | `npm run electron:dist:student` | 生成学生端便携 EXE |
 | `npm run electron:dist:teacher` | 生成教师端便携 EXE |
+| `npm run electron:dist:scanner:ia32` | 生成 32 位教师扫描端便携 EXE |
 | `npm run electron:msi` | 生成扫描端 MSI |
+| `npm run electron:msi:all` | 一次生成三端 x64/ia32 共 6 个 MSI |
 | `npm run verify:auth` | 账号权限自动化验证（33 项用例） |
 
 ---
@@ -289,7 +313,8 @@ Project-X/
 │   ├── answer-card/                     # 答题卡 JSON、扫描图片、资产
 │   └── projectx.db                      # 主数据库（用户/卡片/考试/成绩）
 ├── dist/                                # 构建产物
-├── resources/native/win-x64/            # 原生模块打包目录
+├── resources/native/win-x64/            # 64 位原生模块打包目录
+├── resources/native/win-ia32/           # 32 位原生模块打包目录
 └── release/                             # Electron 打包输出
 ```
 

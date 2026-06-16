@@ -1,6 +1,6 @@
 const { spawnSync } = require("node:child_process");
 
-const nativeModules = ["better-sqlite3", "bcrypt"];
+const nativeModules = ["better-sqlite3"];
 
 function loadNativeModules() {
   const failures = [];
@@ -21,7 +21,7 @@ function formatFailure({ moduleName, error }) {
 
 const failures = loadNativeModules();
 if (failures.length === 0) {
-  console.log("[native] better-sqlite3 and bcrypt are ready for this Node.js version.");
+  console.log("[native] better-sqlite3 is ready for this Node.js version.");
   process.exit(0);
 }
 

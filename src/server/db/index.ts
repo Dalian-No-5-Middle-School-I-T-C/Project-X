@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import bcrypt from "bcryptjs";
 import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -120,16 +121,14 @@ export function initializeDatabase(): void {
 }
 
 export async function hashPassword(password: string): Promise<string> {
-  const bcrypt = await import("bcrypt");
-  return bcrypt.default.hash(password, 10);
+  return bcrypt.hash(password, 10);
 }
 
 export async function verifyPassword(password: string, hash: string): Promise<boolean> {
   if (!hash || hash === "") {
     return false;
   }
-  const bcrypt = await import("bcrypt");
-  return bcrypt.default.compare(password, hash);
+  return bcrypt.compare(password, hash);
 }
 
 export async function ensureDefaultAdmin(): Promise<void> {

@@ -10,22 +10,36 @@ import {
 import packageJson from "../package.json";
 
 type PackageTarget = "dir" | "portable" | "msi";
+type PackageArch = "x64" | "ia32";
+type PackageVariant = ProjectXVariant | "all";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
+const allProjectXVariants: ProjectXVariant[] = ["student", "teacher", "teacher-scanner"];
+const allPackageArchs: PackageArch[] = ["x64", "ia32"];
 
-function normalizeVariant(value: string | undefined): ProjectXVariant {
-  if (value === "student" || value === "teacher" || value === "teacher-scanner") {
+function normalizeVariant(value: string | undefined): PackageVariant {
+  if (value === "all" || value === "student" || value === "teacher" || value === "teacher-scanner") {
     return value;
   }
-  throw new Error("Usage: tsx scripts/package-variant.ts <student|teacher|teacher-scanner> <dir|portable|msi>");
+  throw new Error("Usage: tsx scripts/package-variant.ts <all|student|teacher|teacher-scanner> <dir|portable|msi> [x64|ia32]");
 }
 
 function normalizeTarget(value: string | undefined): PackageTarget {
   if (value === "dir" || value === "portable" || value === "msi") {
     return value;
   }
-  throw new Error("Usage: tsx scripts/package-variant.ts <student|teacher|teacher-scanner> <dir|portable|msi>");
+  throw new Error("Usage: tsx scripts/package-variant.ts <all|student|teacher|teacher-scanner> <dir|portable|msi> [x64|ia32]");
+}
+
+function normalizeArch(value: string | undefined): PackageArch {
+  if (!value || value === "x64") {
+    return "x64";
+  }
+  if (value === "ia32") {
+    return value;
+  }
+  throw new Error("Usage: tsx scripts/package-variant.ts <all|student|teacher|teacher-scanner> <dir|portable|msi> [x64|ia32]");
 }
 
 function command(name: string): string {
@@ -47,7 +61,11 @@ function run(name: string, args: string[], env: NodeJS.ProcessEnv): void {
   }
 }
 
-function nativeResourcesFor(config: ProjectXVariantConfig): unknown[] {
+function nativeResourceDirFor(arch: PackageArch): string {
+  return arch === "ia32" ? "win-ia32" : "win-x64";
+}
+
+function nativeResourcesFor(config: ProjectXVariantConfig, arch: PackageArch): unknown[] {
   if (config.nativeResources === "none") {
     return [];
   }
@@ -57,31 +75,32 @@ function nativeResourcesFor(config: ProjectXVariantConfig): unknown[] {
       ? ["answer-card-recognizer.exe", "opencv_world4130.dll", "scanner-bridge.exe", "TWAINDSM.dll"]
       : ["answer-card-recognizer.exe", "opencv_world4130.dll"];
 
+  const resourceDir = nativeResourceDirFor(arch);
   return [
     {
-      from: "resources/native/win-x64",
-      to: "native/win-x64",
+      from: `resources/native/${resourceDir}`,
+      to: `native/${resourceDir}`,
       filter: filters
     }
   ];
 }
 
-function electronBuilderConfig(config: ProjectXVariantConfig, target: PackageTarget): Record<string, unknown> {
+function electronBuilderConfig(config: ProjectXVariantConfig, target: PackageTarget, arch: PackageArch): Record<string, unknown> {
   const targetName = target === "dir" ? "portable" : target;
-  return {
+  const builderConfig: Record<string, unknown> = {
     extends: null,
     appId: config.appId,
     productName: config.productName,
-    electronDist: "node_modules/electron/dist",
     directories: {
-      output: `release/${config.id}`
+      output: arch === "x64" ? `release/${config.id}` : `release/${config.id}-${arch}`
     },
     files: ["dist/client/**/*", "dist/server/**/*", "electron/**/*", "package.json"],
-    extraResources: nativeResourcesFor(config),
+    extraResources: nativeResourcesFor(config, arch),
     extraMetadata: {
       name: config.packageName,
       productName: config.productName,
-      projectxVariant: config.id
+      projectxVariant: config.id,
+      projectxArch: arch
     },
     asar: true,
     win: {
@@ -91,7 +110,7 @@ function electronBuilderConfig(config: ProjectXVariantConfig, target: PackageTar
       target: [
         {
           target: targetName,
-          arch: ["x64"]
+          arch: [arch]
         }
       ],
       artifactName: `${config.productName}-${packageJson.version}-\${arch}.\${ext}`
@@ -104,30 +123,65 @@ function electronBuilderConfig(config: ProjectXVariantConfig, target: PackageTar
       perMachine: false
     }
   };
+
+  if (arch === "x64") {
+    builderConfig.electronDist = "node_modules/electron/dist";
+  }
+
+  return builderConfig;
+}
+
+function packageVariant(config: ProjectXVariantConfig, target: PackageTarget, arch: PackageArch): void {
+  const env = {
+    ...process.env,
+    PROJECTX_VARIANT: config.id,
+    PROJECTX_ENABLE_SCANNER: config.enableScanner ? "1" : "0",
+    VITE_PROJECTX_VARIANT: config.id,
+    ELECTRON_CACHE: path.join(rootDir, ".electron-cache"),
+    ELECTRON_BUILDER_CACHE: path.join(rootDir, ".electron-builder-cache")
+  };
+  mkdirSync(env.ELECTRON_BUILDER_CACHE, { recursive: true });
+  writeFileSync(
+    path.join(env.ELECTRON_BUILDER_CACHE, "package.json"),
+    JSON.stringify({ private: true, type: "commonjs" }, null, 2),
+    "utf8"
+  );
+
+  console.log(`[Project-X] Packaging ${config.displayName} (${config.id}) as ${target} for ${arch}...`);
+  run(command("npm"), ["run", "build"], env);
+
+  const electronRebuildBin = path.join(rootDir, "node_modules", ".bin", command("electron-rebuild"));
+  const rebuildArgs = arch === "ia32"
+    ? ["-f", "-a", "ia32", "-w", "better-sqlite3"]
+    : ["-f", "-w", "better-sqlite3"];
+
+  const generatedDir = path.join(rootDir, "dist", "package-variants");
+  mkdirSync(generatedDir, { recursive: true });
+  const configPath = path.join(generatedDir, `electron-builder-${config.id}-${target}-${arch}.json`);
+  writeFileSync(configPath, JSON.stringify(electronBuilderConfig(config, target, arch), null, 2), "utf8");
+
+  const builderBin = path.join(rootDir, "node_modules", ".bin", command("electron-builder"));
+  const builderArgs = target === "dir"
+    ? ["--config", configPath, "--dir", `--${arch}`]
+    : ["--config", configPath, "--win", target, `--${arch}`];
+  try {
+    run(electronRebuildBin, rebuildArgs, env);
+    run(builderBin, builderArgs, env);
+  } finally {
+    if (arch === "ia32") {
+      run(command("npm"), ["run", "native:rebuild:node"], env);
+    }
+  }
 }
 
 const variant = normalizeVariant(process.argv[2]);
 const target = normalizeTarget(process.argv[3]);
-const config = getProjectXVariantConfig(variant);
-const env = {
-  ...process.env,
-  PROJECTX_VARIANT: config.id,
-  PROJECTX_ENABLE_SCANNER: config.enableScanner ? "1" : "0",
-  VITE_PROJECTX_VARIANT: config.id,
-  ELECTRON_BUILDER_CACHE: path.join(rootDir, ".electron-builder-cache")
-};
+const archArg = process.argv[4] ? normalizeArch(process.argv[4]) : undefined;
+const variants = variant === "all" ? allProjectXVariants : [variant];
+const archs = archArg ? [archArg] : variant === "all" ? allPackageArchs : ["x64"];
 
-console.log(`[Project-X] Packaging ${config.displayName} (${config.id}) as ${target}...`);
-run(command("npm"), ["run", "build"], env);
-run(command("npm"), ["run", "native:rebuild:electron"], env);
-
-const generatedDir = path.join(rootDir, "dist", "package-variants");
-mkdirSync(generatedDir, { recursive: true });
-const configPath = path.join(generatedDir, `electron-builder-${config.id}-${target}.json`);
-writeFileSync(configPath, JSON.stringify(electronBuilderConfig(config, target), null, 2), "utf8");
-
-const builderBin = path.join(rootDir, "node_modules", ".bin", command("electron-builder"));
-const builderArgs = target === "dir"
-  ? ["--config", configPath, "--dir"]
-  : ["--config", configPath, "--win", target];
-run(builderBin, builderArgs, env);
+for (const selectedArch of archs) {
+  for (const selectedVariant of variants) {
+    packageVariant(getProjectXVariantConfig(selectedVariant), target, selectedArch);
+  }
+}
