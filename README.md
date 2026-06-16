@@ -1,7 +1,7 @@
 # Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.1.5-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,7 +13,7 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.1.0  
+> **当前版本**：v1.1.5  
 > **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → 教师/学生/班级管理 → 账密批量导入导出  
 > **下个里程碑**：v2.0 — 成绩预测、跨班深度对比分析
 
@@ -38,7 +38,7 @@
 
 ### 答题卡设计
 
-- **答题卡管理**：新建（科目弹窗 + 考试名称 + 可选日期）、保存、读取、导出、导入、删除答题卡
+- **答题卡管理**：新建（科目弹窗 + 考试名称 + 可选日期 + 同步创建/关联考试）、保存、读取、导出、导入、删除答题卡
 - **确定性 ID**：基于科目 + 时间戳的 8 位纯数字 ID，导入时自动生成新 ID 防冲突
 - **导出/导入**：`.projectx-card.json` 格式，含标准答案 + 配图 base64 + 坐标布局，即插即用
 - **A4 标准版式**：含标题、六点定位标记、学生信息区、学号填涂区、题块、页码
@@ -74,7 +74,7 @@
 
 ### 成绩分析
 
-- **考试管理**：创建考试、关联答题卡、科目信息
+- **考试管理**：创建考试、关联答题卡（支持新建答题卡时同步创建/关联）、科目信息
 - **分析总览**：平均分、最高分、最低分、标准差、及格率、优秀率
 - **分数分布**：SVG 柱状图（0-59 / 60-69 / 70-79 / 80-89 / 90-100）
 - **学生排名**：学号、姓名、总分、客观分、主观分、待复核标记
@@ -108,12 +108,12 @@
 
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
 ```
-Project-X 学生端-1.1.0-x64.exe
-Project-X 教师端-1.1.0-x64.exe
-Project-X 教师扫描端-1.1.0-x64.exe
-Project-X 学生端-1.1.0-ia32.exe
-Project-X 教师端-1.1.0-ia32.exe
-Project-X 教师扫描端-1.1.0-ia32.exe
+Project-X 学生端-1.1.5-x64.exe
+Project-X 教师端-1.1.5-x64.exe
+Project-X 教师扫描端-1.1.5-x64.exe
+Project-X 学生端-1.1.5-ia32.exe
+Project-X 教师端-1.1.5-ia32.exe
+Project-X 教师扫描端-1.1.5-ia32.exe
 ```
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
@@ -129,7 +129,7 @@ Project-X 教师扫描端-1.1.0-ia32.exe
 2. 编辑标题、题块、标准答案 → 保存 → 导出 PDF → 打印
 
 **阅卷判分**：
-1. 切到「阅卷」模式 → 选答题卡 → 选考试 → 导入图片
+1. 切到「阅卷」模式 → 选考试（答题卡自动关联）→ 导入图片
 2. 点击「开始识别并判分」→ 查看成绩 → 导出 Excel (.xlsx)
 
 **查看分析**：
@@ -264,7 +264,7 @@ Project-X/
 │   │   │   ├── App.tsx                  # 主应用（设计/阅卷/分析/成绩/账号五模式）
 │   │   │   ├── styles.css               # 全局样式
 │   │   │   └── components/              # 子组件
-│   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期）
+│   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期+考试关联）
 │   │   │       ├── LoginPage.tsx            # 登录页（记住密码）
 │   │   │       ├── AccountMenu.tsx          # 账户下拉菜单（含支持项目入口）
 │   │   │       ├── SponsorPage.tsx          # 赞助/支持页面（收款码预留）
@@ -354,6 +354,8 @@ Project-X/
 | `POST` | `/api/cards/:id/assets` | 上传资源图片 |
 | `GET/POST` | `/api/exams` | 考试列表 / 创建 |
 | `GET` | `/api/exams/:id` | 考试详情+成绩 |
+| `PATCH` | `/api/exams/:id` | 更新考试（cardId/name/subject） |
+| `DELETE` | `/api/exams/:id` | 删除考试 |
 | `GET` | `/api/analysis/exams/:id/overview` | 考试总览统计 |
 | `GET` | `/api/analysis/exams/:id/students` | 学生排名 |
 | `GET` | `/api/analysis/exams/:id/questions` | 题目得分率 |
