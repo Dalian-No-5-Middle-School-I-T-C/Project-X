@@ -1791,9 +1791,309 @@ input:focus, select:focus {
   margin: 18px 0;
 }
 
+.analysis-ranking-table-wrap {
+  --analysis-ranking-row-height: 36px;
+  overflow: auto;
+  max-height: calc(var(--analysis-ranking-row-height) * 11 + 1px);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+}
+
+.analysis-ranking-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.analysis-ranking-table th,
+.analysis-ranking-table td {
+  height: var(--analysis-ranking-row-height);
+  padding: 0 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.analysis-ranking-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-tint);
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: inset 0 -1px 0 var(--line);
+}
+
+.analysis-ranking-table td {
+  border-top: 1px solid var(--line);
+}
+
+.analysis-ranking-table tbody tr:first-child td {
+  border-top: none;
+}
+
+.analysis-ranking-table .rank-col {
+  width: 44px;
+}
+
+.analysis-ranking-table .score-col {
+  width: 70px;
+  text-align: right;
+}
+
+.analysis-ranking-table .review-col {
+  width: 56px;
+  text-align: center;
+}
+
+.analysis-ranking-table .score-value {
+  font-weight: 600;
+}
+
+.analysis-ranking-table .review-col span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .distribution-chart {
   width: 100%;
   max-width: 320px;
+}
+
+.boxplot-card,
+.trend-panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: var(--shadow-sm);
+  padding: 14px;
+}
+
+.boxplot-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+}
+
+.trend-chart {
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  height: auto;
+}
+
+.boxplot-chart {
+  display: inline-block;
+  width: auto;
+  height: auto;
+  max-width: none;
+}
+
+.boxplot-axis,
+.boxplot-whisker,
+.boxplot-tick,
+.trend-axis {
+  stroke: #8a9994;
+  stroke-width: 1.4;
+}
+
+.boxplot-grid-line,
+.boxplot-mean-guide {
+  stroke: rgba(138, 153, 148, 0.28);
+  stroke-width: 1;
+}
+
+.boxplot-box {
+  fill: rgba(138, 153, 148, 0.16);
+  stroke: #8a9994;
+  stroke-width: 1.6;
+}
+
+.boxplot-box-active {
+  fill: rgba(192, 15, 40, 0.15);
+  stroke: var(--brand);
+}
+
+.boxplot-median {
+  stroke: #66746f;
+  stroke-width: 2.2;
+}
+
+.boxplot-mean {
+  fill: #66746f;
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.boxplot-active-stroke {
+  stroke: var(--brand);
+}
+
+.boxplot-mean-active {
+  fill: var(--brand);
+}
+
+.boxplot-mean-label,
+.boxplot-axis-label,
+.boxplot-class-label,
+.boxplot-count-label,
+.trend-axis-label,
+.trend-point-label,
+.trend-exam-label {
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+.boxplot-mean-label {
+  fill: #23574d;
+  font-weight: 700;
+}
+
+.boxplot-class-label {
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.boxplot-class-label.active {
+  fill: var(--brand);
+}
+
+.boxplot-count-label {
+  font-size: 10px;
+}
+
+.boxplot-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(58px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.boxplot-summary-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.64);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.boxplot-summary-item span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.boxplot-summary-item strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.trend-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.trend-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trend-controls select {
+  min-width: 150px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.trend-grid-line {
+  stroke: rgba(138, 153, 148, 0.2);
+  stroke-width: 1;
+}
+
+.trend-line {
+  fill: none;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trend-line-grade {
+  stroke: var(--brand);
+}
+
+.trend-line-class {
+  stroke: #23574d;
+}
+
+.trend-dot {
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.trend-dot-grade {
+  fill: var(--brand);
+}
+
+.trend-dot-class {
+  fill: #23574d;
+}
+
+.trend-point-label {
+  font-weight: 700;
+  fill: var(--brand);
+}
+
+.trend-point-label-class {
+  fill: #23574d;
+}
+
+.trend-exam-label {
+  font-size: 11px;
+}
+
+.trend-legend {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 8px;
+}
+
+.trend-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.trend-legend i {
+  display: inline-block;
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+}
+
+.trend-legend-grade {
+  background: var(--brand);
+}
+
+.trend-legend-class {
+  background: #23574d;
 }
 
 .rank-cell {
@@ -1854,6 +2154,19 @@ input:focus, select:focus {
 @media (max-width: 700px) {
   .analysis-cards {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .boxplot-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trend-controls {
+    flex-direction: column;
+  }
+
+  .trend-controls label,
+  .trend-controls select {
+    width: 100%;
   }
 }
 

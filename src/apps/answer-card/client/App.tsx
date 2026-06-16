@@ -57,6 +57,7 @@ import { AnalysisOverview } from "./components/AnalysisOverview";
 import { AnalysisDistribution } from "./components/AnalysisDistribution";
 import { AnalysisRanking } from "./components/AnalysisRanking";
 import { AnalysisQuestions } from "./components/AnalysisQuestions";
+import { AnalysisTrend } from "./components/AnalysisTrend";
 import type {
   ExamOverview,
   ExamRecord,
@@ -291,7 +292,7 @@ function App() {
   const [newExamSubject, setNewExamSubject] = useState("");
   const [newExamCardId, setNewExamCardId] = useState("");
   const [selectedExamIds, setSelectedExamIds] = useState<Set<number>>(new Set());
-  const [analysisTab, setAnalysisTab] = useState<"manage" | "view">("view");
+  const [analysisTab, setAnalysisTab] = useState<"manage" | "view" | "trend">("view");
   const [showNewCardModal, setShowNewCardModal] = useState(false);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
@@ -787,7 +788,7 @@ function App() {
                   : mode === "sponsor"
                     ? "感谢您的信任与支持"
                     : card
-                    ? `ID:${card.id} · ${card.sided === "single" ? "单面" : "双面"} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个 · 预览页面仅供参考，以实际导出的 PDF 文件的样式为准`
+                    ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
                     : canDesign
                       ? "创建答题卡后开始编辑"
                       : `${user.name} · ${user.role_display_name ?? user.role_name}`}
@@ -1103,6 +1104,18 @@ function App() {
                 <BarChart3 size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
                 成绩分析
               </button>
+              <button
+                onClick={() => { setAnalysisTab("trend"); loadExams(); }}
+                style={{
+                  padding: "8px 18px", border: "none", background: "none", cursor: "pointer",
+                  fontSize: 14, color: analysisTab === "trend" ? "var(--brand)" : "var(--muted)",
+                  borderBottom: analysisTab === "trend" ? "2px solid var(--brand)" : "2px solid transparent",
+                  fontWeight: analysisTab === "trend" ? 600 : 400
+                }}
+              >
+                <BarChart3 size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
+                成绩变化
+              </button>
               {canWriteExam && (
               <button
                 onClick={() => setAnalysisTab("manage")}
@@ -1198,8 +1211,13 @@ function App() {
                         />
                       )}
                       <AnalysisOverview overview={analysisOverview} />
-                      {analysisOverview && analysisOverview.distribution.length > 0 && (
-                        <AnalysisDistribution distribution={analysisOverview.distribution} />
+                      {analysisOverview?.scoreSummary && (
+                        <AnalysisDistribution
+                          summary={analysisOverview.scoreSummary}
+                          overallSummary={analysisOverview.overallScoreSummary}
+                          classSummaries={analysisOverview.classSummaries}
+                          selectedClassId={analysisClassId}
+                        />
                       )}
                       <AnalysisRanking ranking={analysisRanking} />
                       <AnalysisQuestions questions={analysisQuestions} />
@@ -1210,6 +1228,12 @@ function App() {
             )}
 
             {/* Tab: 考试管理 */}
+            {analysisTab === "trend" && (
+              <div style={{ overflowY: "auto", padding: 24, flex: 1 }}>
+                <AnalysisTrend exams={exams} />
+              </div>
+            )}
+
             {canWriteExam && analysisTab === "manage" && (
               <div style={{ padding: 24, flex: 1, overflowY: "auto" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>

@@ -18,29 +18,29 @@ export function AnalysisRanking({ ranking }: Props) {
   return (
     <div className="analysis-section">
       <div className="panel-title">学生排名</div>
-      <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 8, background: "#fff", boxShadow: "var(--shadow-sm)" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+      <div className="analysis-ranking-table-wrap">
+        <table className="analysis-ranking-table">
           <thead>
-            <tr style={{ background: "var(--surface-tint)", color: "var(--brand)", fontSize: 12, fontWeight: 600 }}>
-              <th style={{ padding: "8px 12px", textAlign: "left", width: 44 }}>#</th>
-              <th style={{ padding: "8px 12px", textAlign: "left" }}>学号</th>
-              <th style={{ padding: "8px 12px", textAlign: "left" }}>姓名</th>
-              <th style={{ padding: "8px 12px", textAlign: "right", width: 70 }}>总分</th>
-              <th style={{ padding: "8px 12px", textAlign: "right", width: 70 }}>客观</th>
-              <th style={{ padding: "8px 12px", textAlign: "right", width: 70 }}>主观</th>
-              <th style={{ padding: "8px 12px", textAlign: "center", width: 56 }}>复核</th>
+            <tr>
+              <th className="rank-col">#</th>
+              <th>学号</th>
+              <th>姓名</th>
+              <th className="score-col">总分</th>
+              <th className="score-col">客观</th>
+              <th className="score-col">主观</th>
+              <th className="review-col">复核</th>
             </tr>
           </thead>
           <tbody>
             {ranking.map((item) => (
-              <tr key={item.studentNumber} style={{ borderTop: "1px solid var(--line)" }}>
-                <td style={{ padding: "8px 12px", fontWeight: 600, color: "var(--brand)" }}>{item.rank}</td>
-                <td style={{ padding: "8px 12px" }}>{item.studentNumber}</td>
-                <td style={{ padding: "8px 12px" }}>{item.studentName}</td>
-                <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 600 }}>{item.totalScore}</td>
-                <td style={{ padding: "8px 12px", textAlign: "right" }}>{item.objectiveScore}</td>
-                <td style={{ padding: "8px 12px", textAlign: "right" }}>{item.subjectiveScore}</td>
-                <td style={{ padding: "8px 12px", textAlign: "center" }}>
+              <tr key={item.studentNumber}>
+                <td className="rank-cell">{item.rank}</td>
+                <td>{item.studentNumber}</td>
+                <td>{item.studentName}</td>
+                <td className="score-col score-value">{item.totalScore}</td>
+                <td className="score-col">{item.objectiveScore}</td>
+                <td className="score-col">{item.subjectiveScore}</td>
+                <td className="review-col">
                   {item.needReview && (
                     <span title="有待复核题">
                       <AlertTriangle size={14} color="#d97706" />

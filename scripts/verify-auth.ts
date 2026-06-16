@@ -81,6 +81,7 @@ async function main(): Promise<void> {
   const { UserRepository } = await import("../src/server/repositories/UserRepository");
   const { ClassRepository } = await import("../src/server/repositories/ClassRepository");
   const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
+  const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
   const { requirePermission, requireRole } = await import("../src/server/middleware/auth");
   const perms = await import("../src/server/auth/permissions");
   const { PERMISSIONS, ROLE_IDS, roleHasPermission, permissionsForRole, loadRolePermissions } = perms;
@@ -162,7 +163,7 @@ async function main(): Promise<void> {
 
   // 禁用与启用
   userRepo.deactivateUser(teacher.id);
-  ok(userRepo.findByUsername("t1001") === null, "禁用后普通查询不可见");
+  ok(!userRepo.findByUsername("t1001"), "禁用后普通查询不可见");
   ok(userRepo.findByIdIncludingInactive(teacher.id)?.is_active === 0, "管理员仍可见禁用账号");
   userRepo.reactivateUser(teacher.id);
   ok(userRepo.findByUsername("t1001")?.is_active === 1, "重新启用成功");
@@ -212,7 +213,84 @@ async function main(): Promise<void> {
   ok(myScores[0].rank === 1 && myScores[0].class_size === 2, "即时排名计算正确（第1/共2）");
   ok(!scoreRepo.hasScore(student.id, examId + 999), "不存在的考试返回无成绩");
 
-  // ── 7. 中间件鉴权 ─────────────────────────────────────
+  // ── 6.1 成绩分析趋势与统计 ─────────────────────────────
+  section("6.1 Score analysis trend and summary");
+  classRepo.addStudents(klass.id, [student.id]);
+  const extraA = await userRepo.createUser({
+    username: "20260010",
+    password: "20260010",
+    name: "Extra A",
+    role_id: ROLE_IDS.STUDENT,
+    student_number: "20260010"
+  });
+  const extraB = await userRepo.createUser({
+    username: "20260011",
+    password: "20260011",
+    name: "Extra B",
+    role_id: ROLE_IDS.STUDENT,
+    student_number: "20260011"
+  });
+  const trendExam1 = (
+    db.prepare("INSERT INTO exams (name, card_id, subject, start_time, status) VALUES ('Trend 1', '99999999', 'TrendPhysics', '2026-01-01', 'closed')")
+      .run().lastInsertRowid as number
+  );
+  const trendExam2 = (
+    db.prepare("INSERT INTO exams (name, card_id, subject, start_time, status) VALUES ('Trend 2', '99999999', 'TrendPhysics', '2026-02-01', 'closed')")
+      .run().lastInsertRowid as number
+  );
+  const insertScore = db.prepare(
+    "INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)"
+  );
+  insertScore.run(trendExam1, student.id, 80, 0, 80);
+  insertScore.run(trendExam1, otherStudent.id, 60, 0, 60);
+  insertScore.run(trendExam2, student.id, 90, 0, 90);
+  insertScore.run(trendExam2, otherStudent.id, 70, 0, 70);
+
+  const summaryEvenExam = (
+    db.prepare("INSERT INTO exams (name, card_id, subject, start_time, status) VALUES ('Summary Even', '99999999', 'TrendMath', '2026-03-01', 'closed')")
+      .run().lastInsertRowid as number
+  );
+  insertScore.run(summaryEvenExam, student.id, 60, 0, 60);
+  insertScore.run(summaryEvenExam, otherStudent.id, 70, 0, 70);
+  insertScore.run(summaryEvenExam, extraA.id, 80, 0, 80);
+  insertScore.run(summaryEvenExam, extraB.id, 90, 0, 90);
+
+  const summaryOddExam = (
+    db.prepare("INSERT INTO exams (name, card_id, subject, start_time, status) VALUES ('Summary Odd', '99999999', 'TrendMath', '2026-04-01', 'closed')")
+      .run().lastInsertRowid as number
+  );
+  insertScore.run(summaryOddExam, student.id, 50, 0, 50);
+  insertScore.run(summaryOddExam, otherStudent.id, 70, 0, 70);
+  insertScore.run(summaryOddExam, extraA.id, 90, 0, 90);
+
+  const analysisRepo = new AnalysisRepository();
+  const trend = analysisRepo.getScoreTrend("TrendPhysics");
+  ok(trend.length === 2 && trend[0].examName === "Trend 1" && trend[1].examName === "Trend 2", "single-subject trend is ordered by exam time");
+  ok(trend[0].gradeAvg === 70 && trend[1].gradeAvg === 80, "single-subject grade averages are correct");
+  const classTrend = analysisRepo.getScoreTrend("TrendPhysics", klass.id);
+  ok(classTrend[0].classAvg === 80 && classTrend[0].classCount === 1, "single-subject class average filter is correct");
+  const unknownTrend = analysisRepo.getScoreTrend("TrendPhysics", 0);
+  ok(unknownTrend[0].classAvg === 60 && unknownTrend[0].classCount === 1, "single-subject unknown class average filter is correct");
+  const trendClasses = analysisRepo.getExamClasses(trendExam1);
+  ok(trendClasses.some((item) => item.classId === 0 && item.className === "未知班级"), "exam class list includes unknown class");
+  ok(analysisRepo.getScoreTrend("").length === 0, "empty subject returns empty trend");
+  ok(analysisRepo.getScoreSummary(examId + 999) === null, "score summary returns null without scores");
+
+  const evenSummary = analysisRepo.getScoreSummary(summaryEvenExam);
+  ok(
+    evenSummary?.min === 60 && evenSummary.q1 === 67.5 && evenSummary.median === 75 && evenSummary.q3 === 82.5 && evenSummary.max === 90 && evenSummary.avg === 75,
+    "even-sized score summary is correct"
+  );
+  const oddSummary = analysisRepo.getScoreSummary(summaryOddExam);
+  ok(
+    oddSummary?.min === 50 && oddSummary.q1 === 60 && oddSummary.median === 70 && oddSummary.q3 === 80 && oddSummary.max === 90 && oddSummary.avg === 70,
+    "odd-sized score summary is correct"
+  );
+  const overviewWithSummary = analysisRepo.getExamOverview(summaryEvenExam);
+  ok(overviewWithSummary.scoreSummary?.median === 75, "exam overview includes score summary");
+  const selectedClassOverview = analysisRepo.getExamOverview(trendExam1, klass.id);
+  ok(selectedClassOverview.scoreSummary?.avg === 80 && selectedClassOverview.overallScoreSummary?.avg === 70, "selected class overview keeps overall summary separate");
+
   section("7. 中间件 requirePermission / requireRole");
   const adminUser = { id: adminRow.id, role_id: ROLE_IDS.ADMIN, role_name: "admin" };
   const teacherUser = { id: teacher.id, role_id: ROLE_IDS.TEACHER, role_name: "teacher" };

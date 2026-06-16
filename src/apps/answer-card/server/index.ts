@@ -990,6 +990,18 @@ export async function createApp(): Promise<express.Express> {
 
   // ── Analysis API ──────────────────────────────────────
 
+  app.get("/api/analysis/trends", async (req, res, next) => {
+    try {
+      const subject = typeof req.query.subject === "string" ? req.query.subject : "";
+      const classId = req.query.classId ? Number(req.query.classId) : undefined;
+      const analysisRepo = new AnalysisRepository();
+      const trend = analysisRepo.getScoreTrend(subject, classId);
+      res.json(trend);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/analysis/exams/:examId/classes", async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();

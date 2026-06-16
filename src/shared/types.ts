@@ -295,6 +295,33 @@ export type CombinedGradingBatchResult = {
 
 // ── Analysis Types ────────────────────────────────────
 
+export type ScoreSummary = {
+  min: number;
+  q1: number;
+  median: number;
+  q3: number;
+  max: number;
+  avg: number;
+  count: number;
+};
+
+export type ScoreTrendPoint = {
+  examId: number;
+  examName: string;
+  subject: string;
+  examTime: string;
+  gradeAvg: number;
+  gradeCount: number;
+  classAvg?: number | null;
+  classCount?: number;
+};
+
+export type ClassScoreSummary = {
+  classId: number;
+  className: string;
+  summary: ScoreSummary;
+};
+
 export type ExamOverview = {
   totalStudents: number;
   gradedCount: number;
@@ -305,6 +332,9 @@ export type ExamOverview = {
   passRate: number;
   excellentRate: number;
   distribution: Array<{ range: string; min: number; max: number; count: number }>;
+  scoreSummary: ScoreSummary | null;
+  overallScoreSummary: ScoreSummary | null;
+  classSummaries: ClassScoreSummary[];
   reviewCount: number;
 };
 
