@@ -7,12 +7,24 @@ export interface NewCardFormData {
   subjectLabel: string;   // 中文名称，如 物理
   title: string;          // 考试名称
   examDate?: string;      // ISO 日期字符串，可选
+  // 考试关联（v1.1.5 新增）
+  examAction: "none" | "create" | "link";
+  examName?: string;      // examAction="create" 时使用，默认 = title
+  linkExamId?: number;    // examAction="link" 时使用
+}
+
+interface ExamOption {
+  id: number;
+  name: string;
+  subject?: string | null;
+  card_id?: string;
 }
 
 interface Props {
   open: boolean;
   onClose: () => void;
   onCreate: (data: NewCardFormData) => void;
+  exams?: ExamOption[];   // 已有考试列表（用于"关联已有"）
 }
 
 /**
@@ -174,13 +186,19 @@ function DatePicker({ value, onChange }: { value?: string; onChange: (d: string)
   );
 }
 
-export function NewCardModal({ open, onCreate, onClose }: Props) {
+export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
   const [subjectLabel, setSubjectLabel] = useState("物理"); // 默认
   const [showCustom, setShowCustom] = useState(false);
   const [customSubject, setCustomSubject] = useState("");
   const [title, setTitle] = useState("");
   const [examDate, setExamDate] = useState("");
   const [error, setError] = useState("");
+
+  // 考试关联
+  const [examAction, setExamAction] = useState<"none" | "create" | "link">("none");
+  const [examName, setExamName] = useState("");
+  const [linkExamId, setLinkExamId] = useState<number | null>(null);
+  const [examNameManual, setExamNameManual] = useState(false);  // 用户是否手动改过考试名
 
   if (!open) return null;
 
@@ -205,12 +223,24 @@ export function NewCardModal({ open, onCreate, onClose }: Props) {
       setError("请输入考试名称（题目）");
       return;
     }
+    // 校验考试关联
+    if (examAction === "create" && !examName.trim()) {
+      setError("请输入关联考试的考试名称");
+      return;
+    }
+    if (examAction === "link" && !linkExamId) {
+      setError("请选择要关联的已有考试");
+      return;
+    }
     const key = subjectToKey(finalLabel);
     onCreate({
       subject: key,
       subjectLabel: finalLabel,
       title: titleTrimmed,
-      examDate: examDate || undefined
+      examDate: examDate || undefined,
+      examAction,
+      examName: examAction === "create" ? examName.trim() || titleTrimmed : undefined,
+      linkExamId: examAction === "link" && linkExamId ? linkExamId : undefined
     });
     // 重置状态
     setSubjectLabel("物理");
@@ -218,6 +248,10 @@ export function NewCardModal({ open, onCreate, onClose }: Props) {
     setCustomSubject("");
     setTitle("");
     setExamDate("");
+    setExamAction("none");
+    setExamName("");
+    setLinkExamId(null);
+    setExamNameManual(false);
     setError("");
   }
 
@@ -288,7 +322,11 @@ export function NewCardModal({ open, onCreate, onClose }: Props) {
             <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>考试名称 <span style={{ color: "var(--brand)" }}>*</span></span>
             <input
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                // 考试名称跟随标题联动（除非用户手动改过）
+                if (!examNameManual) setExamName(e.target.value);
+              }}
               placeholder="如：2026 上学期期中考试"
             />
           </label>
@@ -298,6 +336,81 @@ export function NewCardModal({ open, onCreate, onClose }: Props) {
             <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>考试时间 <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 400 }}>（可选）</span></span>
             <DatePicker value={examDate} onChange={setExamDate} />
           </label>
+
+          {/* 考试关联（可选） */}
+          <fieldset style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "14px 16px", margin: 0 }}>
+            <legend style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", padding: "0 6px" }}>
+              考试关联 <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 400 }}>（可选）</span>
+            </legend>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {/* 选项 1：不关联 */}
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                <input
+                  type="radio"
+                  name="examAction"
+                  value="none"
+                  checked={examAction === "none"}
+                  onChange={() => setExamAction("none")}
+                />
+                不关联考试
+              </label>
+
+              {/* 选项 2：同时创建新考试 */}
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                <input
+                  type="radio"
+                  name="examAction"
+                  value="create"
+                  checked={examAction === "create"}
+                  onChange={() => { setExamAction("create"); if (!examName) setExamName(title.trim()); }}
+                />
+                同时创建新考试
+              </label>
+              {examAction === "create" && (
+                <div style={{ marginLeft: 24, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <input
+                    value={examName}
+                    onChange={(e) => { setExamName(e.target.value); setExamNameManual(true); }}
+                    placeholder="考试名称（默认与答题卡标题一致）"
+                    style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 6, fontSize: 13 }}
+                  />
+                  <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                    科目：{subjectLabel === "其他" ? (customSubject || "—") : subjectLabel}（继承自答题卡）
+                  </span>
+                </div>
+              )}
+
+              {/* 选项 3：关联已有考试 */}
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }}>
+                <input
+                  type="radio"
+                  name="examAction"
+                  value="link"
+                  checked={examAction === "link"}
+                  onChange={() => setExamAction("link")}
+                  disabled={exams.length === 0}
+                />
+                关联已有考试
+                {exams.length === 0 && <span style={{ fontSize: 11, color: "var(--muted)" }}>（暂无考试）</span>}
+              </label>
+              {examAction === "link" && (
+                <div style={{ marginLeft: 24 }}>
+                  <select
+                    value={linkExamId ?? ""}
+                    onChange={(e) => setLinkExamId(e.target.value ? Number(e.target.value) : null)}
+                    style={{ width: "100%", padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 6, fontSize: 13 }}
+                  >
+                    <option value="">— 请选择考试 —</option>
+                    {exams.map((exam) => (
+                      <option key={exam.id} value={exam.id}>
+                        {exam.name}{exam.subject ? `（${exam.subject}）` : ""}{exam.card_id ? ` · 已关联答题卡 ${exam.card_id}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+          </fieldset>
 
           {error && <p style={{ color: "var(--brand)", fontSize: 13, margin: 0 }}>{error}</p>}
         </div>

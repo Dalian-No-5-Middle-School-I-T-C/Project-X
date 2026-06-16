@@ -988,6 +988,31 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  app.patch("/api/exams/:examId", async (req, res, next) => {
+    try {
+      const examRepo = new ExamRepository();
+      const exam = examRepo.findExamById(Number(req.params.examId));
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      const { cardId, name, subject } = req.body as Record<string, unknown>;
+      const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      if (cardId !== undefined) updates.card_id = String(cardId);
+      if (name !== undefined) updates.name = String(name);
+      if (subject !== undefined) updates.subject = String(subject);
+      const { getDatabase } = await import("../../../server/db");
+      const db = getDatabase();
+      const setClauses = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
+      const values = Object.values(updates);
+      db.prepare(`UPDATE exams SET ${setClauses} WHERE id = ?`).run(...values, exam.id);
+      const updated = examRepo.findExamById(exam.id);
+      res.json(updated);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ── Analysis API ──────────────────────────────────────
 
   app.get("/api/analysis/exams/:examId/classes", async (req, res, next) => {

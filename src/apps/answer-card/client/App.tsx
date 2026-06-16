@@ -366,7 +366,29 @@ function App() {
       });
       setCard(created);
       setSelectedBlockId(created.bodyBlocks[0]?.id ?? null);
-      setStatus(`已创建答题卡 「${created.title}」 (${created.id})`);
+
+      // 处理考试关联
+      let statusExtra = "";
+      if (formData.examAction === "create") {
+        const examName = formData.examName || formData.title;
+        await fetchJson("/api/exams", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: examName, cardId: created.id, subject: formData.subjectLabel })
+        });
+        statusExtra = "，已同步创建考试";
+        await loadExams();
+      } else if (formData.examAction === "link" && formData.linkExamId) {
+        await fetchJson(`/api/exams/${formData.linkExamId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cardId: created.id })
+        });
+        statusExtra = "，已关联到已有考试";
+        await loadExams();
+      }
+
+      setStatus(`已创建答题卡 「${created.title}」 (${created.id})${statusExtra}`);
       await refreshCards();
     } finally {
       setIsBusy(false);
@@ -732,7 +754,7 @@ function App() {
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
-          <button className="primary-button" onClick={() => setShowNewCardModal(true)} disabled={isBusy || !canDesign} style={{ width: "100%" }}>
+          <button className="primary-button" onClick={() => { setShowNewCardModal(true); if (exams.length === 0) loadExams(); }} disabled={isBusy || !canDesign} style={{ width: "100%" }}>
             <Plus size={17} /> 新建答题卡
           </button>
         </div>
@@ -1393,7 +1415,7 @@ function App() {
         </div>
         <footer className="statusbar">{status}</footer>
       </section>
-      <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} />
+      <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
     </main>
   );
 }
