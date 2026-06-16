@@ -1,6 +1,6 @@
 import { getDatabase } from "../db";
 import Database from "better-sqlite3";
-import type { ExamOverview, QuestionAnalysisItem, StudentRankingItem } from "../../shared/types";
+import type { ClassScoreSummary, ExamOverview, QuestionAnalysisItem, ScoreSummary, ScoreTrendPoint, StudentRankingItem } from "../../shared/types";
 
 export interface ExportRow {
   className: string;
@@ -20,7 +20,12 @@ export interface ExportData {
 }
 
 function classFilter(classId?: number): { join: string; where: string; params: unknown[] } {
-  if (!classId) return { join: "", where: "", params: [] };
+  if (classId === undefined) return { join: "", where: "", params: [] };
+  if (classId === 0) return {
+    join: "",
+    where: "AND NOT EXISTS (SELECT 1 FROM class_students cs_scope WHERE cs_scope.student_id = ss.student_id)",
+    params: []
+  };
   return {
     join: "JOIN class_students cs ON cs.student_id = ss.student_id",
     where: "AND cs.class_id = ?",
@@ -29,12 +34,32 @@ function classFilter(classId?: number): { join: string; where: string; params: u
 }
 
 function classFilterQs(classId?: number): { join: string; where: string; params: unknown[] } {
-  if (!classId) return { join: "", where: "", params: [] };
+  if (classId === undefined) return { join: "", where: "", params: [] };
+  if (classId === 0) return {
+    join: "",
+    where: "AND NOT EXISTS (SELECT 1 FROM class_students cs_scope WHERE cs_scope.student_id = qs.student_id)",
+    params: []
+  };
   return {
     join: "JOIN class_students cs ON cs.student_id = qs.student_id",
     where: "AND cs.class_id = ?",
     params: [classId]
   };
+}
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  if (sorted.length === 1) return sorted[0];
+  const index = (sorted.length - 1) * p;
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
+  if (lower === upper) return sorted[lower];
+  const weight = index - lower;
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * weight;
 }
 
 export class AnalysisRepository {
@@ -46,7 +71,7 @@ export class AnalysisRepository {
 
   /** List classes that have students with scores for this exam */
   getExamClasses(examId: number): Array<{ classId: number; className: string }> {
-    return this.db.prepare(`
+    const classes = this.db.prepare(`
       SELECT DISTINCT cs.class_id as classId, c.name as className
       FROM student_scores ss
       JOIN class_students cs ON cs.student_id = ss.student_id
@@ -54,6 +79,15 @@ export class AnalysisRepository {
       WHERE ss.exam_id = ?
       ORDER BY c.sort_order, c.name
     `).all(examId) as Array<{ classId: number; className: string }>;
+
+    const unknown = this.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM student_scores ss
+      WHERE ss.exam_id = ?
+        AND NOT EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = ss.student_id)
+    `).get(examId) as { count: number };
+
+    return unknown.count > 0 ? [...classes, { classId: 0, className: "未知班级" }] : classes;
   }
 
   /** Get exam name for filename */
@@ -82,7 +116,8 @@ export class AnalysisRepository {
     if (!stats || stats.gradedCount === 0) {
       return {
         totalStudents: 0, gradedCount: 0, avgScore: 0, maxScore: 0, minScore: 0,
-        stdDev: 0, passRate: 0, excellentRate: 0, distribution: [], reviewCount: 0
+        stdDev: 0, passRate: 0, excellentRate: 0, distribution: [],
+        scoreSummary: null, overallScoreSummary: this.getScoreSummary(examId), classSummaries: this.getClassScoreSummaries(examId), reviewCount: 0
       };
     }
 
@@ -126,8 +161,119 @@ export class AnalysisRepository {
       passRate: Math.round((stats.passCount / stats.gradedCount) * 100),
       excellentRate: Math.round((stats.excellentCount / stats.gradedCount) * 100),
       distribution,
+      scoreSummary: this.getScoreSummary(examId, classId),
+      overallScoreSummary: this.getScoreSummary(examId),
+      classSummaries: this.getClassScoreSummaries(examId),
       reviewCount: reviewRow?.cnt ?? 0
     };
+  }
+
+  getClassScoreSummaries(examId: number): ClassScoreSummary[] {
+    const classes = this.getExamClasses(examId);
+    return classes.flatMap((item) => {
+      const summary = this.getScoreSummary(examId, item.classId);
+      return summary ? [{ ...item, summary }] : [];
+    });
+  }
+
+  getScoreSummary(examId: number, classId?: number): ScoreSummary | null {
+    const c = classFilter(classId);
+    const rows = this.db.prepare(`
+      SELECT ss.total_score as totalScore
+      FROM student_scores ss
+      ${c.join}
+      WHERE ss.exam_id = ? ${c.where}
+      ORDER BY ss.total_score ASC
+    `).all(examId, ...c.params) as Array<{ totalScore: number }>;
+
+    const scores = rows.map((row) => Number(row.totalScore)).filter((score) => Number.isFinite(score));
+    if (scores.length === 0) return null;
+
+    const sum = scores.reduce((total, score) => total + score, 0);
+    return {
+      min: round1(scores[0]),
+      q1: round1(percentile(scores, 0.25)),
+      median: round1(percentile(scores, 0.5)),
+      q3: round1(percentile(scores, 0.75)),
+      max: round1(scores[scores.length - 1]),
+      avg: round1(sum / scores.length),
+      count: scores.length
+    };
+  }
+
+  getScoreTrend(subject: string, classId?: number): ScoreTrendPoint[] {
+    const normalizedSubject = subject.trim();
+    if (!normalizedSubject) return [];
+
+    const gradeRows = this.db.prepare(`
+      SELECT
+        e.id as examId,
+        e.name as examName,
+        e.subject as subject,
+        COALESCE(e.start_time, e.end_time, e.created_at) as examTime,
+        ROUND(AVG(ss.total_score), 1) as gradeAvg,
+        COUNT(*) as gradeCount
+      FROM exams e
+      JOIN student_scores ss ON ss.exam_id = e.id
+      WHERE e.subject = ?
+      GROUP BY e.id
+      ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC, e.id ASC
+    `).all(normalizedSubject) as Array<{
+      examId: number;
+      examName: string;
+      subject: string;
+      examTime: string;
+      gradeAvg: number;
+      gradeCount: number;
+    }>;
+
+    if (classId === undefined) {
+      return gradeRows.map((row) => ({
+        examId: row.examId,
+        examName: row.examName,
+        subject: row.subject,
+        examTime: row.examTime,
+        gradeAvg: row.gradeAvg,
+        gradeCount: row.gradeCount
+      }));
+    }
+
+    const classRows = classId === 0 ? this.db.prepare(`
+      SELECT
+        e.id as examId,
+        ROUND(AVG(ss.total_score), 1) as classAvg,
+        COUNT(*) as classCount
+      FROM exams e
+      JOIN student_scores ss ON ss.exam_id = e.id
+      WHERE e.subject = ?
+        AND NOT EXISTS (SELECT 1 FROM class_students cs_scope WHERE cs_scope.student_id = ss.student_id)
+      GROUP BY e.id
+    `).all(normalizedSubject) as Array<{ examId: number; classAvg: number; classCount: number }> : this.db.prepare(`
+      SELECT
+        e.id as examId,
+        ROUND(AVG(ss.total_score), 1) as classAvg,
+        COUNT(*) as classCount
+      FROM exams e
+      JOIN student_scores ss ON ss.exam_id = e.id
+      JOIN class_students cs ON cs.student_id = ss.student_id
+      WHERE e.subject = ? AND cs.class_id = ?
+      GROUP BY e.id
+    `).all(normalizedSubject, classId) as Array<{ examId: number; classAvg: number; classCount: number }>;
+
+    const classByExam = new Map(classRows.map((row) => [row.examId, row]));
+    return gradeRows.map((row) => {
+      const classRow = classByExam.get(row.examId);
+      return {
+        examId: row.examId,
+        examName: row.examName,
+        subject: row.subject,
+        examTime: row.examTime,
+        gradeAvg: row.gradeAvg,
+        gradeCount: row.gradeCount,
+        classAvg: classRow?.classAvg ?? null,
+        classCount: classRow?.classCount ?? 0
+      };
+    });
   }
 
   getStudentRanking(examId: number, classId?: number): StudentRankingItem[] {
@@ -268,11 +414,15 @@ export class AnalysisRepository {
     }
 
     // Filter by classId if specified
-    const filtered = classId ? graded.filter((s) => s.class_id === classId) : graded;
+    const filtered = classId === undefined
+      ? graded
+      : classId === 0
+        ? graded.filter((s) => s.class_id == null)
+        : graded.filter((s) => s.class_id === classId);
 
     // Build export rows
     const students: ExportRow[] = filtered.map((s) => ({
-      className: s.class_name ?? "",
+      className: s.class_name ?? "未知班级",
       studentNumber: s.student_number ?? "",
       name: s.name ?? "",
       totalScore: s.total_score,
