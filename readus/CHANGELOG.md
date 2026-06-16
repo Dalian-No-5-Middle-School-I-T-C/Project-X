@@ -2,7 +2,7 @@
 
 ---
 
-## v1.1.5 (2026-6-16)
+## v1.1.5 (2026-06-16)
 
 ### Windows x64 / ia32 打包
 - 学生端、教师普通端、教师扫描端均支持 `x64` 与 `ia32` 打包；默认命令保持 `x64` 行为不变
@@ -48,6 +48,13 @@
 - 学生/教师/成绩导出全部统一为 .xlsx，fetch+blob 下载
 - 导出前安全警告；旧 CSV 端点 301 重定向
 
+### 赞助页面（Issue #11）
+- 账号菜单「支持项目」低调入口，顶栏不增加 Tab
+- `GET /api/sponsor` + `GET /api/sponsor/qr/:channelId` 预留收款码接口
+- JSON 配置 `server/data/sponsor.json` + 图片目录 `data/sponsor/qr/`
+- 无收款码时展示占位 UI；部署时放置 PNG 并更新配置即可启用
+- 详见 [`readus/SPONSOR-PAGE.md`](./SPONSOR-PAGE.md)
+
 ### Bug 修复
 - Express 5 `router.use()` 单回调限制 → 拆为两行独立调用
 - 导入/导出图标方向统一（导入=Download、导出=Upload）
@@ -68,6 +75,8 @@
 | `GET` | `/api/export/students` | 导出学生账密 .xlsx |
 | `GET` | `/api/export/teachers` | 导出教师账密 .xlsx |
 | `GET` | `/api/analysis/exams/:id/export-csv` | 成绩导出改为 .xlsx |
+| `GET` | `/api/sponsor` | 赞助页配置（各渠道收款码 URL） |
+| `GET` | `/api/sponsor/qr/:channelId` | 收款码图片 |
 
 ### 依赖变更
 - 新增 `xlsx` (SheetJS)

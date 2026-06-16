@@ -25,6 +25,7 @@ import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
 import { AccountManagement } from "./components/AccountManagement";
 import { StudentScores } from "./components/StudentScores";
+import { SponsorPage } from "./components/SponsorPage";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import type {
   AnswerCard,
@@ -268,6 +269,7 @@ function App() {
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [mode, setMode] = useState<AppMode>("design");
+  const previousModeRef = useRef<AppMode>("design");
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
   const [gradingExamId, setGradingExamId] = useState<string>("");
   const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
@@ -769,14 +771,22 @@ function App() {
         <header className="topbar">
           <div>
             <h1>
-              {mode === "scores" ? "我的成绩" : mode === "account" ? "账号管理" : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
+              {mode === "scores"
+                ? "我的成绩"
+                : mode === "account"
+                  ? "账号管理"
+                  : mode === "sponsor"
+                    ? "支持项目"
+                    : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
             </h1>
             <p>
               {mode === "scores"
                 ? "查看各场考试得分、排名与逐题明细"
                 : mode === "account"
                   ? "管理用户、班级与花名册"
-                  : card
+                  : mode === "sponsor"
+                    ? "感谢您的信任与支持"
+                    : card
                     ? `ID:${card.id} · ${card.sided === "single" ? "单面" : "双面"} · ${layout?.pages.length ?? 1} 页 · ${layout?.elements.length ?? 0} 个 · 预览页面仅供参考，以实际导出的 PDF 文件的样式为准`
                     : canDesign
                       ? "创建答题卡后开始编辑"
@@ -826,7 +836,12 @@ function App() {
               </button>
               )}
             </div>
-            <AccountMenu />
+            <AccountMenu
+              onOpenSponsor={() => {
+                previousModeRef.current = mode;
+                setMode("sponsor");
+              }}
+            />
           </div>
         </header>
 
@@ -1309,6 +1324,11 @@ function App() {
         <div className={`main-grid account-grid ${mode === "account" ? "" : "hidden-panel"}`}>
           <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
             <AccountManagement />
+          </section>
+        </div>
+        <div className={`main-grid sponsor-grid ${mode === "sponsor" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+            <SponsorPage onBack={() => setMode(previousModeRef.current)} />
           </section>
         </div>
         <footer className="statusbar">{status}</footer>
