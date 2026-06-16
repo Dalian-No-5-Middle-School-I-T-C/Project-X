@@ -7,11 +7,12 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
+    "predev": "node scripts/ensure-native-modules.cjs",
     "dev": "concurrently \"tsx watch src/apps/answer-card/server/index.ts\" \"vite --host 127.0.0.1\"",
     "build": "npm run typecheck && npm run build:client && npm run build:server",
     "build:client": "vite build",
     "build:server": "tsx scripts/build-server.ts",
-    "native:rebuild:node": "npm rebuild better-sqlite3",
+    "native:rebuild:node": "npm rebuild better-sqlite3 bcrypt",
     "native:rebuild:electron": "electron-rebuild -f -w better-sqlite3,bcrypt",
     "electron:dev": "npm run build && npm run native:rebuild:electron && electron .",
     "electron:pack": "npm run electron:pack:scanner",
