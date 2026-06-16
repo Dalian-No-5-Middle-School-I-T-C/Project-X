@@ -85,12 +85,7 @@ export function TeacherManagement() {
     if (selected) {
       try {
         const detail = await fetchJson<TeacherRecord>(`/api/teachers/${selected.id}`);
-        const idx = teachers.findIndex((t) => t.id === selected.id);
-        if (idx >= 0) {
-          const updated = [...teachers];
-          updated[idx] = detail;
-          setTeachers(updated);
-        }
+        setTeachers((prev) => prev.map((t) => (t.id === selected.id ? detail : t)));
       } catch {}
     }
   }
@@ -118,12 +113,16 @@ export function TeacherManagement() {
     setBusy(true);
     setError("");
     try {
-      await fetchJson(`/api/teachers/${selected.id}/classes`, {
+      const resp = await fetchJson<{ teacher: TeacherRecord }>(`/api/teachers/${selected.id}/classes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ classIds: [selectedClassId], subject: editSubject.trim() || null })
       });
-      await handleRefresh();
+      // 直接更新当前教师详情（关联班级即时可见，无需手动刷新）
+      if (resp.teacher) {
+        setTeachers((prev) => prev.map((t) => (t.id === selected.id ? resp.teacher! : t)));
+      }
+      setSelectedClassId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "关联失败");
     } finally {
@@ -135,8 +134,11 @@ export function TeacherManagement() {
     if (!selected) return;
     setBusy(true);
     try {
-      await fetchJson(`/api/teachers/${selected.id}/classes/${classId}`, { method: "DELETE" });
-      await handleRefresh();
+      const resp = await fetchJson<{ teacher: TeacherRecord }>(`/api/teachers/${selected.id}/classes/${classId}`, { method: "DELETE" });
+      // 直接更新当前教师详情（即时可见）
+      if (resp.teacher) {
+        setTeachers((prev) => prev.map((t) => (t.id === selected.id ? resp.teacher! : t)));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "解除失败");
     } finally {

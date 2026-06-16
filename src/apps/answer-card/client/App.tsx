@@ -273,6 +273,7 @@ function App() {
   const previousModeRef = useRef<AppMode>("design");
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
   const [gradingExamId, setGradingExamId] = useState<string>("");
+  const [cardOverride, setCardOverride] = useState(false);  // 阅卷时是否手动覆盖答题卡
   const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
   const [gradingProgress, setGradingProgress] = useState<GradingProgress>({ active: false, finished: 0, total: 0 });
   const [status, setStatus] = useState("准备就绪");
@@ -335,6 +336,13 @@ function App() {
     };
   }, []);
 
+  // 进入阅卷模式时预加载考试列表
+  useEffect(() => {
+    if (mode === "grading" && exams.length === 0) {
+      loadExams();
+    }
+  }, [mode, exams.length]);
+
   async function refreshCards(loadFirst = false) {
     const list = await fetchJson<CardSummary[]>("/api/cards");
     setCards(list);
@@ -359,7 +367,29 @@ function App() {
       });
       setCard(created);
       setSelectedBlockId(created.bodyBlocks[0]?.id ?? null);
-      setStatus(`已创建答题卡 「${created.title}」 (${created.id})`);
+
+      // 处理考试关联
+      let statusExtra = "";
+      if (formData.examAction === "create") {
+        const examName = formData.examName || formData.title;
+        await fetchJson("/api/exams", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: examName, cardId: created.id, subject: formData.subjectLabel })
+        });
+        statusExtra = "，已同步创建考试";
+        await loadExams();
+      } else if (formData.examAction === "link" && formData.linkExamId) {
+        await fetchJson(`/api/exams/${formData.linkExamId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cardId: created.id })
+        });
+        statusExtra = "，已关联到已有考试";
+        await loadExams();
+      }
+
+      setStatus(`已创建答题卡 「${created.title}」 (${created.id})${statusExtra}`);
       await refreshCards();
     } finally {
       setIsBusy(false);
@@ -725,7 +755,7 @@ function App() {
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
-          <button className="primary-button" onClick={() => setShowNewCardModal(true)} disabled={isBusy || !canDesign} style={{ width: "100%" }}>
+          <button className="primary-button" onClick={() => { setShowNewCardModal(true); if (exams.length === 0) loadExams(); }} disabled={isBusy || !canDesign} style={{ width: "100%" }}>
             <Plus size={17} /> 新建答题卡
           </button>
         </div>
@@ -985,24 +1015,21 @@ function App() {
                 <ClipboardCheck size={17} /> 阅卷设置
               </div>
               <label>
-                答题卡 ID
-                <select value={card?.id ?? ""} onChange={(event) => void loadCard(event.target.value)} disabled={isBusy || cards.length === 0}>
-                  <option value="" disabled>
-                    请选择答题卡
-                  </option>
-                  {cards.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.title} / {item.id}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
                 考试
                 <select
                   value={gradingExamId}
-                  onChange={(e) => setGradingExamId(e.target.value)}
-                  onFocus={() => { if (exams.length === 0) loadExams(); }}
+                  onChange={async (e) => {
+                    const examId = e.target.value;
+                    setGradingExamId(examId);
+                    setCardOverride(false);  // 切换考试时重置覆盖状态
+                    if (examId) {
+                      // 自动加载考试关联的答题卡
+                      const exam = exams.find((ex) => String(ex.id) === examId);
+                      if (exam?.card_id && exam.card_id !== card?.id) {
+                        await loadCard(exam.card_id);
+                      }
+                    }
+                  }}
                 >
                   <option value="">不关联考试</option>
                   {exams.map((exam) => (
@@ -1012,6 +1039,48 @@ function App() {
                   ))}
                 </select>
               </label>
+              {gradingExamId && card ? (
+                // 已选考试 → 只读展示关联答题卡，可手动覆盖
+                <div>
+                  <label style={{ marginBottom: 4 }}>关联答题卡</label>
+                  {cardOverride ? (
+                    <select
+                      value={card?.id ?? ""}
+                      onChange={(e) => { void loadCard(e.target.value); setCardOverride(false); }}
+                      disabled={isBusy}
+                    >
+                      {cards.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.title} / {item.id}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "var(--surface-soft)", borderRadius: 6 }}>
+                      <span style={{ fontSize: 13, flex: 1 }}>{card.title} / {card.id}</span>
+                      <button className="link-button" type="button" onClick={() => setCardOverride(true)} disabled={isBusy} style={{ fontSize: 12, padding: "2px 8px" }}>
+                        换答题卡
+                      </button>
+                    </div>
+                  )}
+                  <p className="hint" style={{ marginTop: 4 }}>答题卡已根据所选考试自动关联</p>
+                </div>
+              ) : (
+                // 未选考试 → 独立选择答题卡（裸阅卷场景）
+                <label>
+                  答题卡
+                  <select value={card?.id ?? ""} onChange={(event) => void loadCard(event.target.value)} disabled={isBusy || cards.length === 0}>
+                    <option value="" disabled>
+                      请选择答题卡
+                    </option>
+                    {cards.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.title} / {item.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <div className="split-actions">
                 <label className="upload-button">
                   <Upload size={16} /> 导入图片
@@ -1260,8 +1329,21 @@ function App() {
                 {showCreateExam && (
                   <div style={{ background: "var(--surface-soft)", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
                     <input value={newExamName} onChange={(e) => setNewExamName(e.target.value)} placeholder="考试名称" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
-                    <input value={newExamSubject} onChange={(e) => setNewExamSubject(e.target.value)} placeholder="科目（可选）" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
-                    <select value={newExamCardId || card?.id || ""} onChange={(e) => setNewExamCardId(e.target.value)} style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }}>
+                    <input value={newExamSubject} onChange={(e) => setNewExamSubject(e.target.value)} placeholder="科目（自动从答题卡继承）" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
+                    <select
+                      value={newExamCardId || card?.id || ""}
+                      onChange={(e) => {
+                        const selectedCardId = e.target.value;
+                        setNewExamCardId(selectedCardId);
+                        // 选择答题卡后自动回填考试名称和科目
+                        const selectedCard = cards.find((c) => c.id === selectedCardId);
+                        if (selectedCard) {
+                          if (!newExamName) setNewExamName(selectedCard.title);
+                          if (!newExamSubject) setNewExamSubject(selectedCard.subjectLabel || "");
+                        }
+                      }}
+                      style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }}
+                    >
                       <option value="" disabled>选择答题卡</option>
                       {cards.map((c) => (<option key={c.id} value={c.id}>{c.title}</option>))}
                     </select>
@@ -1357,7 +1439,7 @@ function App() {
         </div>
         <footer className="statusbar">{status}</footer>
       </section>
-      <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} />
+      <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
     </main>
   );
 }
