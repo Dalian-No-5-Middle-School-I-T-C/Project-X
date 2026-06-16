@@ -55,6 +55,7 @@ import {
 import { ScannerPanel } from "./components/ScannerPanel";
 import { AnalysisOverview } from "./components/AnalysisOverview";
 import { AnalysisDistribution } from "./components/AnalysisDistribution";
+import { AnalysisAiPanel } from "./components/AnalysisAiPanel";
 import { AnalysisRanking } from "./components/AnalysisRanking";
 import { AnalysisQuestions } from "./components/AnalysisQuestions";
 import { AnalysisTrend } from "./components/AnalysisTrend";
@@ -1219,6 +1220,7 @@ function App() {
                           selectedClassId={analysisClassId}
                         />
                       )}
+                      <AnalysisAiPanel examId={analysisExamId} classId={analysisClassId} />
                       <AnalysisRanking ranking={analysisRanking} />
                       <AnalysisQuestions questions={analysisQuestions} />
                     </>

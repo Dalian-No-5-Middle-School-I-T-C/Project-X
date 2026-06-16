@@ -295,6 +295,34 @@ function scannerEnabled(): boolean {
   return process.env.PROJECTX_VARIANT === "teacher-scanner" || !process.env.PROJECTX_VARIANT;
 }
 
+function llmClientUrl(pathname = ""): string {
+  const base = (process.env.LLMCLIENT_URL || "http://127.0.0.1:8766").replace(/\/+$/, "");
+  return `${base}${pathname.startsWith("/") ? pathname : `/${pathname}`}`;
+}
+
+function llmClientHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...(extra ?? {}) };
+  const internalKey = process.env.LLMCLIENT_INTERNAL_API_KEY;
+  if (internalKey && !headers.Authorization) {
+    headers.Authorization = `Bearer ${internalKey}`;
+  }
+  return headers;
+}
+
+async function fetchLlmClient(pathname: string, init?: RequestInit, timeoutMs = 5_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(llmClientUrl(pathname), {
+      ...init,
+      headers: llmClientHeaders(init?.headers ? Object.fromEntries(new Headers(init.headers).entries()) : undefined),
+      signal: controller.signal
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function createApp(): Promise<express.Express> {
   const app = express();
 
@@ -1040,6 +1068,100 @@ export async function createApp(): Promise<express.Express> {
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
       const questions = analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
       res.json(questions);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/analysis/ai/status", async (_req, res) => {
+    try {
+      const response = await fetchLlmClient("/health", { method: "GET" }, 2_500);
+      if (!response.ok) {
+        res.json({
+          available: false,
+          reason: `LLM service returned ${response.status}`,
+          defaultModel: null,
+          models: []
+        });
+        return;
+      }
+      const status = await response.json() as {
+        ok?: boolean;
+        dbExists?: boolean;
+        defaultModel?: string;
+        models?: Array<{ id: string; provider: string; label: string; available: boolean; thinking?: boolean }>;
+      };
+      const configuredModels = status.models ?? [];
+      const hasAvailableModel = configuredModels.some((model) => model.available);
+      res.json({
+        available: Boolean(status.ok && status.dbExists && hasAvailableModel),
+        reason: !status.dbExists
+          ? "LLM service is running, but Project-X database was not found."
+          : !hasAvailableModel
+            ? "LLM service is running, but no provider API key is configured."
+            : undefined,
+        defaultModel: status.defaultModel ?? null,
+        models: configuredModels
+      });
+    } catch (error) {
+      res.json({
+        available: false,
+        reason: error instanceof Error ? error.message : "LLM service is not reachable.",
+        defaultModel: null,
+        models: []
+      });
+    }
+  });
+
+  app.post("/api/analysis/exams/:examId/ai-analysis", async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isFinite(examId) || examId <= 0) {
+        res.status(400).json({ message: "Invalid exam id" });
+        return;
+      }
+
+      const analysisRepo = new AnalysisRepository();
+      const exam = analysisRepo.getExam(examId);
+      if (!exam) {
+        res.status(404).json({ message: "Exam not found" });
+        return;
+      }
+
+      const classIdValue = req.body?.classId;
+      const classId = classIdValue === undefined || classIdValue === null || classIdValue === ""
+        ? undefined
+        : Number(classIdValue);
+      if (classId !== undefined && !Number.isFinite(classId)) {
+        res.status(400).json({ message: "Invalid class id" });
+        return;
+      }
+
+      const response = await fetchLlmClient("/analysis/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          examId,
+          classId,
+          model: typeof req.body?.model === "string" ? req.body.model : undefined,
+          locale: "zh-CN"
+        })
+      }, 120_000);
+
+      if (!response.ok) {
+        let message = `LLM service returned ${response.status}`;
+        try {
+          const body = await response.json() as { detail?: string; message?: string };
+          message = body.detail || body.message || message;
+        } catch {
+          const text = await response.text().catch(() => "");
+          if (text) message = text;
+        }
+        res.status(response.status >= 400 && response.status < 500 ? response.status : 502).json({ message });
+        return;
+      }
+
+      res.json(await response.json());
     } catch (error) {
       next(error);
     }
