@@ -8,14 +8,14 @@ if /I "%ARCH%"=="x64" (
     set "PLATFORM=x64"
     set "OUT_ARCH=win-x64"
     set "VC_ARCH=x64"
-    set "TWAIN_DSM_DLL_DEFAULT=D:\twain-dsm-2.5.1\twain-dsm-2.5.1\Releases\dsm_020403\windows\64\TWAINDSM.dll"
+    set "OPENCV_DLL=D:\opencv4-13\opencv\build\x64\vc16\bin\opencv_world4130.dll"
 ) else if /I "%ARCH%"=="ia32" (
     set "PLATFORM=Win32"
     set "OUT_ARCH=win-ia32"
     set "VC_ARCH=x86"
-    set "TWAIN_DSM_DLL_DEFAULT=D:\twain-dsm-2.5.1\twain-dsm-2.5.1\Releases\dsm_020403\windows\32\TWAINDSM.dll"
+    set "OPENCV_DLL=D:\opencv4-13\32\opencv_install_win32_vs18\x86\vc18\bin\opencv_world4130.dll"
 ) else (
-    echo Usage: build-scanner-bridge.bat [x64^|ia32]
+    echo Usage: build-answer-card-recognizer.bat [x64^|ia32]
     exit /b 1
 )
 
@@ -23,7 +23,7 @@ set "SCRIPT_DIR=%~dp0"
 for %%i in ("%SCRIPT_DIR%..") do set "ROOT_DIR=%%~fi"
 
 echo ============================================
-echo  Project-X Scanner Bridge Build Script
+echo  Project-X Answer Card Recognizer Build Script
 echo ============================================
 echo Architecture: %ARCH% ^(%PLATFORM%^)
 echo.
@@ -86,14 +86,14 @@ if defined VCVARS (
     )
 )
 
-set "PROJ=%ROOT_DIR%\native\ScannerBridge\scanner-bridge\scanner-bridge.vcxproj"
+set "PROJ=%ROOT_DIR%\native\AnswerCardRecognizer\answer-card-recognizer\answer-card-recognizer.vcxproj"
 if not exist "%PROJ%" (
     echo [ERROR] Project file not found: %PROJ%
     exit /b 1
 )
 
-echo Target: scanner-bridge.vcxproj
-echo Configuration: Release ^| %PLATFORM% ^| Static CRT
+echo Target: answer-card-recognizer.vcxproj
+echo Configuration: Release ^| %PLATFORM%
 echo.
 
 call "%MSBUILD%" "%PROJ%" /p:Configuration=Release /p:Platform=%PLATFORM% /v:m /nologo
@@ -107,34 +107,35 @@ if %BUILD_RESULT% NEQ 0 (
     exit /b %BUILD_RESULT%
 )
 
-set "OUTPUT=%ROOT_DIR%\native\ScannerBridge\scanner-bridge\%PLATFORM%\Release\scanner-bridge.exe"
+set "OUTPUT=%ROOT_DIR%\native\AnswerCardRecognizer\answer-card-recognizer\%PLATFORM%\Release\answer-card-recognizer.exe"
 if not exist "%OUTPUT%" (
-    set "OUTPUT=%ROOT_DIR%\native\ScannerBridge\scanner-bridge\Release\scanner-bridge.exe"
+    set "OUTPUT=%ROOT_DIR%\native\AnswerCardRecognizer\%PLATFORM%\Release\answer-card-recognizer.exe"
+)
+if not exist "%OUTPUT%" (
+    set "OUTPUT=%ROOT_DIR%\native\AnswerCardRecognizer\answer-card-recognizer\Release\answer-card-recognizer.exe"
 )
 set "DEST=%ROOT_DIR%\resources\native\%OUT_ARCH%"
-set "TWAIN_DSM_DLL=%TWAIN_DSM_DLL%"
-if not defined TWAIN_DSM_DLL set "TWAIN_DSM_DLL=%TWAIN_DSM_DLL_DEFAULT%"
 
 if not exist "%OUTPUT%" (
-    echo [ERROR] Output exe not found: %OUTPUT%
+    echo [ERROR] Output exe not found for %PLATFORM%.
+    exit /b 1
+)
+
+if not exist "%OPENCV_DLL%" (
+    echo [ERROR] OpenCV runtime DLL not found: %OPENCV_DLL%
     exit /b 1
 )
 
 if not exist "%DEST%" mkdir "%DEST%"
-copy /Y "%OUTPUT%" "%DEST%\scanner-bridge.exe" >nul
+copy /Y "%OUTPUT%" "%DEST%\answer-card-recognizer.exe" >nul
 if %ERRORLEVEL% NEQ 0 (
-    echo [ERROR] Failed to copy scanner-bridge.exe to %DEST%.
+    echo [ERROR] Failed to copy answer-card-recognizer.exe to %DEST%.
     exit /b 1
 )
 
-if exist "%TWAIN_DSM_DLL%" (
-    copy /Y "%TWAIN_DSM_DLL%" "%DEST%\TWAINDSM.dll" >nul
-    if !ERRORLEVEL! NEQ 0 (
-        echo [ERROR] Failed to copy TWAINDSM.dll from: %TWAIN_DSM_DLL%
-        exit /b 1
-    )
-) else (
-    echo [ERROR] TWAINDSM.dll not found: %TWAIN_DSM_DLL%
+copy /Y "%OPENCV_DLL%" "%DEST%\opencv_world4130.dll" >nul
+if %ERRORLEVEL% NEQ 0 (
+    echo [ERROR] Failed to copy opencv_world4130.dll to %DEST%.
     exit /b 1
 )
 

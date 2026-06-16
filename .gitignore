@@ -34,6 +34,8 @@ native/**/*.obj
 native/**/*.tlog/
 resources/native/win-x64/*.dll
 resources/native/win-x64/*.exe
+resources/native/win-ia32/*.dll
+resources/native/win-ia32/*.exe
 scripts/image_processing/
 input/818619b500db2b0df1aa6d462872dfe6.jpg
 .workbuddy/

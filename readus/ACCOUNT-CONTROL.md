@@ -12,7 +12,7 @@
 
 ## 1. 背景与目标
 
-`ARCHITECTURE.md` 第 8 节指出：系统已有 `AuthService` + bcrypt、`users/roles` 表与默认 admin、
+`ARCHITECTURE.md` 第 8 节指出：系统已有 `AuthService` + bcryptjs、`users/roles` 表与默认 admin、
 `/api/auth/login` 与 Bearer Token 中间件，但 **认证未贯通**——业务接口完全开放，且缺少用户/班级管理、
 学生自助查分、密码修改、细粒度权限。README 的 v1.1 里程碑正是「用户权限管理、多班级分析」。
 
@@ -89,7 +89,7 @@ system:manage               系统维护（仅管理员）
 
 ## 4. 认证与会话（`AuthService` + 中间件）
 
-- **登录**：`identifier`（用户名/职工号/学号/`P`+学号）+ `password`；bcrypt 校验；签发随机 32 字节 hex token，有效期 **8 小时**，持久化到 `~/.projectx/tokens.json`。
+- **登录**：`identifier`（用户名/职工号/学号/`P`+学号）+ `password`；bcryptjs 校验 bcrypt 格式哈希；签发随机 32 字节 hex token，有效期 **8 小时**，持久化到 `~/.projectx/tokens.json`。
 - **学生密码**：默认密码为学号（允许 5 位）；学生自改密码仍要求 ≥ 6 位（`passwordPolicy.ts`）。
 - **会话**：`Authorization: Bearer <token>`；也支持 `?token=`（用于 SSE / PDF 等无法设请求头的场景）。
 - **修改密码**：校验原密码 → 写新哈希 → **吊销该用户全部会话**，强制重新登录。
@@ -201,7 +201,7 @@ npm run server
 ### 运行方式
 
 ```powershell
-npm install          # 首次需安装依赖（含 better-sqlite3 / bcrypt 原生编译）
+npm install          # 首次需安装依赖（better-sqlite3 为原生模块，bcryptjs 为纯 JS 依赖）
 npm run verify:auth
 ```
 

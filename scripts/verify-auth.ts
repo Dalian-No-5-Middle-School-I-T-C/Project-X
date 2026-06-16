@@ -2,7 +2,7 @@
  * 三级账号控制系统 —— 自动化验证脚本
  * ----------------------------------------------------------------
  * 运行方式：
- *   npm install            # 首次需安装依赖（better-sqlite3 / bcrypt）
+ *   npm install            # 首次需安装依赖（better-sqlite3 / bcryptjs）
  *   npm run verify:auth
  *
  * 该脚本会在临时数据库上端到端验证：

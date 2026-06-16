@@ -2,6 +2,21 @@
 
 ---
 
+## v1.1.5 (2026-06-16)
+
+### Windows x64 / ia32 打包
+- 学生端、教师普通端、教师扫描端均支持 `x64` 与 `ia32` 打包；默认命令保持 `x64` 行为不变
+- 新增 `electron:pack:*:ia32`、`electron:dist:*:ia32`、`electron:msi:*:ia32` 脚本
+- 新增 `npm run electron:msi:all`，一次生成三端 x64/ia32 共 6 个 MSI
+- 32 位原生资源统一放在 `resources/native/win-ia32/`，运行时按 `process.arch` 自动选择 `win-x64` 或 `win-ia32`
+- 32 位打包会先重建 Electron ia32 的 `better-sqlite3`，打包结束后恢复开发环境的 Node 原生模块
+
+### 依赖变更
+
+- 密码哈希依赖由原生 `bcrypt` 调整为纯 JS `bcryptjs`；Electron 原生重建范围收敛为 `better-sqlite3`
+
+---
+
 ## v1.1.0 (2026-06-14~15)
 
 ### 多端产品变体（学生端 / 教师普通端 / 教师扫描端）

@@ -210,6 +210,7 @@ Electron 主进程（`electron/main.cjs`）启动内嵌 Express 服务并加载 
 
 - 三端共用 `%APPDATA%\answer-card-designer` 数据目录
 - 变体配置：`src/shared/appVariant.ts`；打包脚本：`scripts/package-variant.ts`
+- 打包脚本支持 `x64` 与 `ia32`；`npm run electron:msi:all` 可一次生成三端双架构共 6 个 MSI
 - 学生端既限产品功能（只能看我的成绩），也限账号角色权限
 - 新增：`passwordPolicy.ts`（学生默认密码允许5位学号）
 
@@ -262,7 +263,7 @@ v1.1 当前
 |------|----------|------|
 | Token 存储 | 磁盘文件 `~/.projectx/tokens.json` | 服务器重启后 Token 存活（持久化 6 个月） |
 | 前端 Token | `localStorage` | 桌面单机场景可接受；改密/禁用时服务端吊销 |
-| 密码 | bcrypt 哈希 | 默认学生密码=学号，管理员应督促首次登录改密 |
+| 密码 | bcryptjs 哈希（bcrypt 格式兼容） | 默认学生密码=学号，管理员应督促首次登录改密 |
 | 管理员保护 | 至少保留 1 名 admin | 后端拒绝降级/禁用最后一名管理员 |
 | 排名计算 | 查询时即时计算 | 不依赖 `student_scores.rank` 是否落库 |
 
@@ -276,6 +277,7 @@ npm run typecheck      # TypeScript 严格模式
 npm run verify:auth    # 后端 RBAC 端到端（临时库，33 项）
 npm run build
 npm run electron:dev   # 桌面应用联调
+npm run electron:msi:all # 生成三端 x64/ia32 共 6 个 MSI
 ```
 
 启用完整业务鉴权：

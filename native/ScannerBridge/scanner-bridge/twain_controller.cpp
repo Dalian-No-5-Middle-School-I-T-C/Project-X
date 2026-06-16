@@ -1,13 +1,5 @@
-#ifndef TWH_CMP_MSC
-#pragma push_macro("_MSC_VER")
-#undef _MSC_VER
 #include <windows.h>
 #include <twain.h>
-#pragma pop_macro("_MSC_VER")
-#else
-#include <windows.h>
-#include <twain.h>
-#endif
 
 #include <gdiplus.h>
 #pragma comment(lib, "gdiplus.lib")
@@ -41,9 +33,14 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
         char envPath[MAX_PATH] = {};
         DWORD envLen = GetEnvironmentVariableA("TWAIN_DSM_DLL", envPath, static_cast<DWORD>(sizeof(envPath)));
         const char* envCandidate = (envLen > 0 && envLen < sizeof(envPath)) ? envPath : nullptr;
+#if defined(_WIN64)
+        const char* defaultDsmPath = "D:\\twain-dsm-2.5.1\\twain-dsm-2.5.1\\Releases\\dsm_020403\\windows\\64\\TWAINDSM.dll";
+#else
+        const char* defaultDsmPath = "D:\\twain-dsm-2.5.1\\twain-dsm-2.5.1\\Releases\\dsm_020403\\windows\\32\\TWAINDSM.dll";
+#endif
         const char* candidates[] = {
             envCandidate,
-            "D:\\twain-dsm-2.5.1\\twain-dsm-2.5.1\\Releases\\dsm_020403\\windows\\64\\TWAINDSM.dll",
+            defaultDsmPath,
             "TWAINDSM.dll",
             "twain_32.dll"
         };

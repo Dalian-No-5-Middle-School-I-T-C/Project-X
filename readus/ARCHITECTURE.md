@@ -273,7 +273,7 @@ sequenceDiagram
 | **AnswerCardRecognizer** | `native/AnswerCardRecognizer/` | OpenCV 4.13 + nlohmann/json | 定位校正、填涂检测、学号格、主观红笔分数格 |
 | **ScannerBridge** | `native/ScannerBridge/` | TWAIN + GDI+ | 驱动扫描仪（如柯达 i3000） |
 
-打包时复制到 `resources/native/win-x64/`，Electron 通过 `extraResources` 内嵌；Node 侧按多路径候选解析 exe 位置。
+打包时按架构复制到 `resources/native/win-x64/` 或 `resources/native/win-ia32/`，Electron 通过 `extraResources` 内嵌；Node 侧按 `process.arch` 与多路径候选解析 exe 位置。
 
 **集成方式：** 无 Node-API 绑定，全部采用 **CLI 子进程**，降低 Electron/Node 版本与原生模块的耦合，但增加进程启动开销。
 
@@ -283,7 +283,7 @@ sequenceDiagram
 
 已有模块：
 
-- `AuthService` + bcrypt 密码哈希
+- `AuthService` + bcryptjs 密码哈希（bcrypt 格式兼容）
 - `roles` / `users` 表与默认 admin
 - `/api/auth/login`、`Bearer token` 中间件
 
@@ -298,7 +298,7 @@ flowchart LR
     subgraph Build
         V[Vite] --> DC[dist/client]
         E[esbuild] --> DS[dist/server/index.mjs]
-        VS[Visual Studio] --> NAT[resources/native/win-x64]
+        VS[Visual Studio] --> NAT[resources/native/win-*]
     end
 
     subgraph Pack
@@ -314,9 +314,9 @@ flowchart LR
 ```
 
 - **前端：** Vite → `dist/client`
-- **后端：** esbuild 单文件 bundle（`packages: external`，保留 better-sqlite3/bcrypt 等原生依赖）→ `dist/server/index.mjs`，并复制 `schema.sql`
-- **桌面：** electron-builder，Windows x64，三端变体（学生/教师/扫描），按端裁剪 native 资源，共用数据目录
-- **原生 Node 模块：** 需对 Electron 单独 `electron-rebuild`（better-sqlite3、bcrypt）
+- **后端：** esbuild 单文件 bundle（`packages: external`，保留 better-sqlite3 原生依赖）→ `dist/server/index.mjs`，并复制 `schema.sql`
+- **桌面：** electron-builder，Windows x64 / ia32，三端变体（学生/教师/扫描），按端和架构裁剪 native 资源，共用数据目录
+- **原生 Node 模块：** 需对 Electron 单独 `electron-rebuild`（better-sqlite3）
 
 ---
 
@@ -331,7 +331,7 @@ flowchart LR
 
 **权衡 / 注意点：**
 
-1. **Windows 绑定** — TWAIN、Electron 打包、C++ 均为 Win-x64 导向
+1. **Windows 绑定** — TWAIN、Electron 打包、C++ 均面向 Windows 桌面环境；当前提供 x64 与 ia32 两套 native 资源
 2. **双存储** — 答题卡既在 SQLite 又在 `layouts/` JSON，需保持一致（保存路径已统一在 `saveCardWithLayout`）
 3. **单体 Express** — 路由集中在 `index.ts`（700+ 行），随功能增长可考虑按域拆 router
 4. **子进程识别** — 简单可靠，但高并发批量阅卷时进程开销明显
