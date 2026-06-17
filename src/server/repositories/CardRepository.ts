@@ -142,16 +142,16 @@ export class CardRepository {
    */
   private insertSubjectiveBlock(block: any, cardId: string): void {
     const stmt = this.db.prepare(`
-      INSERT INTO subjective_blocks (id, card_id, sort_order, title)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO subjective_blocks (id, card_id, sort_order, block_kind, title)
+      VALUES (?, ?, ?, ?, ?)
     `);
-    stmt.run(block.id, cardId, 0, block.title ?? "");
+    stmt.run(block.id, cardId, 0, block.blockKind ?? (block.title?.includes("填空") ? "fill_blank" : "answer"), block.title ?? "");
 
     // 插入主观题
     if (block.questions) {
       const qStmt = this.db.prepare(`
-        INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm, blanks_label_style, blanks_items_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const q of block.questions) {
         qStmt.run(
@@ -166,7 +166,9 @@ export class CardRepository {
           q.lineGrid?.lineSpacingMm ?? 8,
           q.blanks?.count,
           q.blanks?.widthMm,
-          q.blanks?.heightMm
+          q.blanks?.heightMm,
+          q.blanks?.labelStyle,
+          q.blanks?.items ? JSON.stringify(q.blanks.items) : undefined
         );
 
         // 插入图片
@@ -282,7 +284,15 @@ export class CardRepository {
           kind: q.kind,
           minHeightMm: q.min_height_mm,
           lineGrid: { enabled: q.line_grid_enabled === 1, lineSpacingMm: q.line_spacing_mm },
-          blanks: q.blanks_count ? { count: q.blanks_count, widthMm: q.blanks_width_mm, heightMm: q.blanks_height_mm } : undefined,
+          blanks: q.blanks_count
+            ? {
+                count: q.blanks_count,
+                widthMm: q.blanks_width_mm,
+                heightMm: q.blanks_height_mm,
+                labelStyle: q.blanks_label_style ?? undefined,
+                items: q.blanks_items_json ? JSON.parse(q.blanks_items_json) : undefined
+              }
+            : undefined,
           images: images.map((img: any) => ({
             assetId: img.asset_id,
             originalName: img.original_name,
@@ -296,6 +306,7 @@ export class CardRepository {
       card.bodyBlocks.push({
         id: b.id,
         type: "subjective",
+        blockKind: b.block_kind ?? (String(b.title ?? "").includes("填空") ? "fill_blank" : "answer"),
         title: b.title,
         questions: questionsWithImages
       } as any);

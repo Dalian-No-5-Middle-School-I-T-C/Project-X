@@ -81,6 +81,22 @@ export function initializeDatabase(): void {
     console.log("[DB] Migration: created objective_questions table");
   }
 
+  const subjectiveBlockCols = db.prepare("PRAGMA table_info(subjective_blocks)").all() as Array<{ name: string }>;
+  if (!subjectiveBlockCols.some((c) => c.name === "block_kind")) {
+    db.exec("ALTER TABLE subjective_blocks ADD COLUMN block_kind TEXT DEFAULT 'answer'");
+    console.log("[DB] Migration: added block_kind column to subjective_blocks");
+  }
+
+  const subjectiveQuestionCols = db.prepare("PRAGMA table_info(subjective_questions)").all() as Array<{ name: string }>;
+  if (!subjectiveQuestionCols.some((c) => c.name === "blanks_label_style")) {
+    db.exec("ALTER TABLE subjective_questions ADD COLUMN blanks_label_style TEXT");
+    console.log("[DB] Migration: added blanks_label_style column to subjective_questions");
+  }
+  if (!subjectiveQuestionCols.some((c) => c.name === "blanks_items_json")) {
+    db.exec("ALTER TABLE subjective_questions ADD COLUMN blanks_items_json TEXT");
+    console.log("[DB] Migration: added blanks_items_json column to subjective_questions");
+  }
+
   // v1.1.0 migrations: users + teacher_classes
   const userCols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (!userCols.some((c) => c.name === "subject")) {

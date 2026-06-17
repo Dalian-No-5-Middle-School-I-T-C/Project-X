@@ -143,6 +143,7 @@ CREATE TABLE IF NOT EXISTS subjective_blocks (
     id          TEXT PRIMARY KEY,
     card_id     TEXT NOT NULL REFERENCES answer_cards(id) ON DELETE CASCADE,
     sort_order  INTEGER DEFAULT 0,
+    block_kind  TEXT DEFAULT 'answer',           -- fill_blank / answer
     title       TEXT,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -161,6 +162,8 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     blanks_count     INTEGER,
     blanks_width_mm  REAL,
     blanks_height_mm REAL,
+    blanks_label_style TEXT,
+    blanks_items_json TEXT,
     sort_order       INTEGER DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );

@@ -75,8 +75,35 @@ function blankQuestion(number: number | string, score = 0, count = 1): Subjectiv
   };
 }
 
-function subjectiveBlock(title: string, questions: SubjectiveQuestion[]): SubjectiveBlock {
-  return { id: templateId("subj"), type: "subjective", title, questions };
+function answerBlankQuestion(number: number | string, score = 12, count = 4): SubjectiveQuestion {
+  return {
+    ...blankQuestion(number, score, count),
+    style: "manual_score_grid",
+    minHeightMm: 62,
+    blanks: {
+      count,
+      widthMm: 32,
+      heightMm: 6,
+      labelStyle: "arabic_parentheses",
+      items: Array.from({ length: count }, (_, index) => ({
+        label: `(${index + 1})`,
+        widthMm: 32,
+        heightMm: 6
+      }))
+    }
+  };
+}
+
+function subjectiveBlock(title: string, questions: SubjectiveQuestion[], blockKind?: SubjectiveBlock["blockKind"]): SubjectiveBlock {
+  return { id: templateId("subj"), type: "subjective", blockKind, title, questions };
+}
+
+function fillBlankBlock(title: string, questions: SubjectiveQuestion[]): SubjectiveBlock {
+  return subjectiveBlock(title, questions, "fill_blank");
+}
+
+function answerBlock(number: number | string, question: SubjectiveQuestion): SubjectiveBlock {
+  return subjectiveBlock("解答题", [{ ...question, number }], "answer");
 }
 
 function rangeQuestions(start: number, end: number, mode: ObjectiveMode, optionCount: number, score: number): ObjectiveQuestionConfig[] {
@@ -122,14 +149,14 @@ function chineseTemplate(options: SubjectTemplateOptions): BodyBlock[] {
     objectiveQuestion(15, "single", 4, 3)
   ];
   const subjectiveBlocks: BodyBlock[] = [
-    subjectiveBlock("填空题", [blankQuestion(3, 0, 1)]),
-    subjectiveBlock("解答题", [linedQuestion(4), linedQuestion(5)]),
-    subjectiveBlock("解答题", [linedQuestion(7), linedQuestion(8), linedQuestion(9)]),
-    subjectiveBlock("解答题", [linedQuestion("13.1", 4, 28), linedQuestion("13.2", 4, 28)]),
-    subjectiveBlock("解答题", [linedQuestion(14)]),
-    subjectiveBlock("解答题", [linedQuestion(16)]),
-    subjectiveBlock("填空题", [blankQuestion("17.1", 6, 2), blankQuestion("17.2", 0, 2), blankQuestion("17.3", 0, 2)]),
-    subjectiveBlock("语言文字运用", [linedQuestion(18), linedQuestion(19), linedQuestion(20), linedQuestion(21), linedQuestion(22)])
+    fillBlankBlock("填空题", [blankQuestion(3, 0, 1)]),
+    subjectiveBlock("解答题", [linedQuestion(4), linedQuestion(5)], "answer"),
+    subjectiveBlock("解答题", [linedQuestion(7), linedQuestion(8), linedQuestion(9)], "answer"),
+    subjectiveBlock("解答题", [linedQuestion("13.1", 4, 28), linedQuestion("13.2", 4, 28)], "answer"),
+    subjectiveBlock("解答题", [linedQuestion(14)], "answer"),
+    subjectiveBlock("解答题", [linedQuestion(16)], "answer"),
+    fillBlankBlock("填空题", [blankQuestion("17.1", 6, 2), blankQuestion("17.2", 0, 2), blankQuestion("17.3", 0, 2)]),
+    subjectiveBlock("语言文字运用", [linedQuestion(18), linedQuestion(19), linedQuestion(20), linedQuestion(21), linedQuestion(22)], "answer")
   ];
   if (options.chineseChoicePlacement === "inline") {
     return [
@@ -158,7 +185,7 @@ function englishTemplate(withListening: boolean): BodyBlock[] {
   ];
   return [
     objectiveBlock(withListening ? "客观题" : "客观题", questions),
-    subjectiveBlock("语法填空", Array.from({ length: 10 }, (_, index) => blankQuestion(56 + index, 1.5, 1)))
+    fillBlankBlock("语法填空", Array.from({ length: 10 }, (_, index) => blankQuestion(56 + index, 1.5, 1)))
   ];
 }
 
@@ -169,8 +196,8 @@ function mathTemplate(): BodyBlock[] {
   ];
   return [
     objectiveBlock("选择题", objective),
-    subjectiveBlock("填空题", [blankQuestion(12, 5, 1), blankQuestion(13, 5, 1), blankQuestion(14, 5, 1)]),
-    subjectiveBlock("解答题", [linedQuestion(15, 0, 72)])
+    fillBlankBlock("填空题", [blankQuestion(12, 5, 1), blankQuestion(13, 5, 1), blankQuestion(14, 5, 1)]),
+    answerBlock(15, linedQuestion(15, 0, 72))
   ];
 }
 
@@ -181,15 +208,20 @@ function physicsTemplate(): BodyBlock[] {
   ];
   return [
     objectiveBlock("选择题", objective),
-    subjectiveBlock("填空题", [blankQuestion(11, 0, 2), blankQuestion(12, 0, 2)]),
-    subjectiveBlock("解答题", [linedQuestion(13), linedQuestion(14), linedQuestion(15)])
+    fillBlankBlock("填空题", [blankQuestion(11, 0, 2), blankQuestion(12, 0, 2)]),
+    answerBlock(13, linedQuestion(13)),
+    answerBlock(14, linedQuestion(14)),
+    answerBlock(15, linedQuestion(15))
   ];
 }
 
 function chemistryTemplate(): BodyBlock[] {
   return [
     objectiveBlock("选择题", rangeQuestions(1, 15, "single", 4, 3)),
-    subjectiveBlock("填空题", [blankQuestion(16), blankQuestion(17), blankQuestion(18), blankQuestion(19)])
+    answerBlock(16, answerBlankQuestion(16)),
+    answerBlock(17, answerBlankQuestion(17)),
+    answerBlock(18, answerBlankQuestion(18)),
+    answerBlock(19, answerBlankQuestion(19))
   ];
 }
 
@@ -203,7 +235,11 @@ function biologyTemplate(): BodyBlock[] {
   ];
   return [
     objectiveBlock("选择题", objective),
-    subjectiveBlock("填空题", [blankQuestion(21), blankQuestion(22), blankQuestion(23), blankQuestion(24), blankQuestion(25)])
+    answerBlock(21, answerBlankQuestion(21)),
+    answerBlock(22, answerBlankQuestion(22)),
+    answerBlock(23, answerBlankQuestion(23)),
+    answerBlock(24, answerBlankQuestion(24)),
+    answerBlock(25, answerBlankQuestion(25))
   ];
 }
 

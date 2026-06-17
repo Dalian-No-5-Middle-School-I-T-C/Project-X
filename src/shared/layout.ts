@@ -32,6 +32,9 @@ type DensitySettings = {
   questionGap: number;
 };
 
+type BlankLineSpec = { label: string; widthMm: number; heightMm: number };
+type PlacedBlankLine = BlankLineSpec & { rect: Rect };
+
 const DENSITY: Record<ObjectiveDensity, DensitySettings> = {
   loose: { maxColumns: 4, rowHeight: 7.7, optionGap: 8.1, optionWidth: 5.1, optionHeight: 3.0, questionGap: 6.4 },
   normal: { maxColumns: 4, rowHeight: 6.7, optionGap: 7.4, optionWidth: 4.8, optionHeight: 2.8, questionGap: 5.6 },
@@ -46,6 +49,17 @@ const OBJECTIVE_ROW_MARKER_SIZE = 2.2;
 const OBJECTIVE_OPTION_TOP_OFFSET = 0.9;
 const OBJECTIVE_CONTENT_SIDE_INSET = 8.5;
 const OBJECTIVE_LABEL_TO_OPTION_GAP = 6.3;
+const OBJECTIVE_STANDARD_COLUMNS = 4;
+const OBJECTIVE_GRID_CELL_QUESTIONS = 5;
+const OBJECTIVE_WIDE_OPTION_THRESHOLD = 5;
+const OBJECTIVE_GRID_ROW_GAP = 1.5;
+
+type ObjectiveArrangementMode = "rows" | "grid";
+
+type ObjectiveRow =
+  | { type: "standard"; questions: ObjectiveQuestionDefinition[] }
+  | { type: "grid"; cells: ObjectiveQuestionDefinition[][] }
+  | { type: "wide"; question: ObjectiveQuestionDefinition };
 
 function rect(x: number, y: number, width: number, height: number): Rect {
   return { x: round(x), y: round(y), width: round(width), height: round(height) };
@@ -137,21 +151,136 @@ function titleHeight(): number {
   return 8;
 }
 
-function getObjectiveColumnsForQuestions(questions: ObjectiveQuestionDefinition[]): number {
-  const settings = OBJECTIVE_SETTINGS;
-  const maxOptionCount = Math.max(2, ...questions.map((question) => question.optionCount));
-  const minQuestionWidth = 8 + maxOptionCount * settings.optionGap + settings.questionGap;
-  const maxByWidth = Math.max(1, Math.floor((BODY_WIDTH - 8) / minQuestionWidth));
-  return Math.max(1, Math.min(settings.maxColumns, maxByWidth, questions.length));
+function objectiveArrangementMode(questionCount: number): ObjectiveArrangementMode {
+  return questionCount >= 15 ? "grid" : "rows";
 }
 
-function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[]): number {
-  return Math.ceil(questions.length / getObjectiveColumnsForQuestions(questions));
+function isWideObjectiveQuestion(question: ObjectiveQuestionDefinition): boolean {
+  return question.optionCount > OBJECTIVE_WIDE_OPTION_THRESHOLD;
 }
 
-function objectiveHeightForQuestions(questions: ObjectiveQuestionDefinition[]): number {
-  const rows = objectiveRowsForQuestions(questions);
-  return OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + (rows - 1) * OBJECTIVE_SETTINGS.rowHeight + OBJECTIVE_SETTINGS.optionHeight + OBJECTIVE_INNER_BOTTOM;
+function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mode: ObjectiveArrangementMode): ObjectiveRow[] {
+  const rows: ObjectiveRow[] = [];
+
+  if (mode === "rows") {
+    let standardRow: ObjectiveQuestionDefinition[] = [];
+    const flushStandardRow = () => {
+      if (standardRow.length > 0) {
+        rows.push({ type: "standard", questions: standardRow });
+        standardRow = [];
+      }
+    };
+
+    for (const question of questions) {
+      if (isWideObjectiveQuestion(question)) {
+        flushStandardRow();
+        rows.push({ type: "wide", question });
+        continue;
+      }
+
+      standardRow.push(question);
+      if (standardRow.length === OBJECTIVE_STANDARD_COLUMNS) {
+        flushStandardRow();
+      }
+    }
+    flushStandardRow();
+    return rows;
+  }
+
+  let gridCells: ObjectiveQuestionDefinition[][] = [[]];
+  const flushGridRow = () => {
+    const nonEmptyCells = gridCells.filter((cell) => cell.length > 0);
+    if (nonEmptyCells.length > 0) {
+      rows.push({ type: "grid", cells: nonEmptyCells });
+    }
+    gridCells = [[]];
+  };
+
+  for (const question of questions) {
+    if (isWideObjectiveQuestion(question)) {
+      flushGridRow();
+      rows.push({ type: "wide", question });
+      continue;
+    }
+
+    let currentCell = gridCells[gridCells.length - 1];
+    if (currentCell.length === OBJECTIVE_GRID_CELL_QUESTIONS) {
+      if (gridCells.length === OBJECTIVE_STANDARD_COLUMNS) {
+        flushGridRow();
+      } else {
+        gridCells.push([]);
+      }
+      currentCell = gridCells[gridCells.length - 1];
+    }
+
+    currentCell.push(question);
+  }
+  flushGridRow();
+  return rows;
+}
+
+function objectivePhysicalRowsForRows(rows: ObjectiveRow[]): number {
+  return rows.reduce((sum, row) => {
+    if (row.type === "grid") {
+      return sum + Math.max(...row.cells.map((cell) => cell.length));
+    }
+    return sum + 1;
+  }, 0);
+}
+
+function objectivePhysicalRowsForQuestions(questions: ObjectiveQuestionDefinition[], mode: ObjectiveArrangementMode): number {
+  return objectivePhysicalRowsForRows(objectiveRowsForQuestions(questions, mode));
+}
+
+function objectiveRowHeight(row: ObjectiveRow): number {
+  if (row.type === "grid") {
+    return Math.max(...row.cells.map((cell) => cell.length));
+  }
+  return 1;
+}
+
+function objectivePhysicalRowOffsets(rows: ObjectiveRow[], mode: ObjectiveArrangementMode): number[] {
+  const offsets: number[] = [];
+  let yOffset = 0;
+
+  rows.forEach((row, rowIndex) => {
+    const rowHeight = objectiveRowHeight(row);
+    for (let offset = 0; offset < rowHeight; offset += 1) {
+      offsets.push(round(yOffset + offset * OBJECTIVE_SETTINGS.rowHeight));
+    }
+    yOffset += rowHeight * OBJECTIVE_SETTINGS.rowHeight;
+    if (mode === "grid" && rowIndex < rows.length - 1) {
+      yOffset += OBJECTIVE_GRID_ROW_GAP;
+    }
+  });
+
+  return offsets;
+}
+
+function objectiveSegmentQuestionsForMaxRows(
+  questions: ObjectiveQuestionDefinition[],
+  mode: ObjectiveArrangementMode,
+  maxRows: number
+): ObjectiveQuestionDefinition[] {
+  let segment: ObjectiveQuestionDefinition[] = [];
+
+  for (const question of questions) {
+    const candidate = [...segment, question];
+    const candidateRows = objectivePhysicalRowsForQuestions(candidate, mode);
+    if (candidateRows > maxRows && segment.length > 0) {
+      return segment;
+    }
+    segment = candidate;
+  }
+
+  return segment.length > 0 ? segment : questions.slice(0, 1);
+}
+
+function objectiveHeightForQuestions(questions: ObjectiveQuestionDefinition[], mode: ObjectiveArrangementMode): number {
+  const rows = objectiveRowsForQuestions(questions, mode);
+  const rowOffsets = objectivePhysicalRowOffsets(rows, mode);
+  const contentHeight = rowOffsets.length > 0 ? rowOffsets[rowOffsets.length - 1] + OBJECTIVE_SETTINGS.optionHeight : 0;
+  return OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + contentHeight + OBJECTIVE_INNER_BOTTOM;
 }
 
 function objectiveMaxRowsForAvailableHeight(height: number): number {
@@ -165,21 +294,22 @@ function addObjectiveSegment(
   block: ObjectiveBlock,
   title: string,
   questions: ObjectiveQuestionDefinition[],
+  mode: ObjectiveArrangementMode,
   y: number
 ): number {
   const settings = OBJECTIVE_SETTINGS;
-  const columns = getObjectiveColumnsForQuestions(questions);
-  const rows = Math.ceil(questions.length / columns);
-  const blockHeight = objectiveHeightForQuestions(questions);
+  const objectiveRows = objectiveRowsForQuestions(questions, mode);
+  const rowOffsets = objectivePhysicalRowOffsets(objectiveRows, mode);
+  const blockHeight = objectiveHeightForQuestions(questions, mode);
   const blockRect = rect(MARGIN_X, y, BODY_WIDTH, blockHeight);
   const frameRect = rect(MARGIN_X, y + OBJECTIVE_FRAME_TOP, BODY_WIDTH, blockHeight - OBJECTIVE_FRAME_TOP);
   const itemAreaY = frameRect.y + OBJECTIVE_INNER_TOP;
   const contentStartX = frameRect.x + OBJECTIVE_CONTENT_SIDE_INSET;
   const contentWidth = frameRect.width - OBJECTIVE_CONTENT_SIDE_INSET * 2;
-  const columnWidth = contentWidth / columns;
-  const rowMarkers = Array.from({ length: rows }, (_, row) => {
+  const columnWidth = contentWidth / OBJECTIVE_STANDARD_COLUMNS;
+  const rowMarkers = rowOffsets.map((rowOffset, row) => {
     const markerY =
-      itemAreaY + row * settings.rowHeight + OBJECTIVE_OPTION_TOP_OFFSET + (settings.optionHeight - OBJECTIVE_ROW_MARKER_SIZE) / 2;
+      itemAreaY + rowOffset + OBJECTIVE_OPTION_TOP_OFFSET + (settings.optionHeight - OBJECTIVE_ROW_MARKER_SIZE) / 2;
     const left = rect(frameRect.x + 3.4, markerY, OBJECTIVE_ROW_MARKER_SIZE, OBJECTIVE_ROW_MARKER_SIZE);
     const right = rect(frameRect.x + frameRect.width - 5.6, markerY, OBJECTIVE_ROW_MARKER_SIZE, OBJECTIVE_ROW_MARKER_SIZE);
     page.elements.push({
@@ -211,19 +341,17 @@ function addObjectiveSegment(
     density: "compact"
   };
 
-  for (let offset = 0; offset < questions.length; offset += 1) {
-    const question = questions[offset];
+  const addObjectiveQuestion = (question: ObjectiveQuestionDefinition, column: number, physicalRow: number) => {
     const questionNumber = question.questionNumber;
-    const col = Math.floor(offset / rows);
-    const row = offset % rows;
-    const labelTextX = contentStartX + col * columnWidth;
+    const labelTextX = contentStartX + column * columnWidth;
     const labelX = labelTextX + 2.5;
-    const labelY = itemAreaY + row * settings.rowHeight + 2.9;
+    const rowOffset = rowOffsets[physicalRow] ?? physicalRow * settings.rowHeight;
+    const labelY = itemAreaY + rowOffset + 2.9;
     const optionStartX = labelTextX + OBJECTIVE_LABEL_TO_OPTION_GAP;
     const options = OPTIONS.slice(0, question.optionCount).map((label, optionIndex) => {
       const optionRect = rect(
         optionStartX + optionIndex * settings.optionGap,
-        itemAreaY + row * settings.rowHeight + OBJECTIVE_OPTION_TOP_OFFSET,
+        itemAreaY + rowOffset + OBJECTIVE_OPTION_TOP_OFFSET,
         settings.optionWidth,
         settings.optionHeight
       );
@@ -239,19 +367,40 @@ function addObjectiveSegment(
     });
 
     items.items.push({ questionNumber, options, labelX: round(labelX), labelY: round(labelY) });
+  };
+
+  let physicalRow = 0;
+  for (const objectiveRow of objectiveRows) {
+    if (objectiveRow.type === "wide") {
+      addObjectiveQuestion(objectiveRow.question, 0, physicalRow);
+      physicalRow += 1;
+      continue;
+    }
+
+    if (objectiveRow.type === "standard") {
+      objectiveRow.questions.forEach((question, column) => addObjectiveQuestion(question, column, physicalRow));
+      physicalRow += 1;
+      continue;
+    }
+
+    const rowHeight = Math.max(...objectiveRow.cells.map((cell) => cell.length));
+    objectiveRow.cells.forEach((cell, column) => {
+      cell.forEach((question, offset) => addObjectiveQuestion(question, column, physicalRow + offset));
+    });
+    physicalRow += rowHeight;
   }
 
   page.blocks.push(items);
   return y + blockHeight + 4;
 }
 
-function getScoreValues(score: number): number[] {
+function getScoreValues(score: number): Array<number | null> {
   if (score > 16) {
     const maxTens = Math.min(60, Math.floor(score / 10) * 10);
     const tens = Array.from({ length: Math.max(0, maxTens / 10) }, (_, index) => maxTens - index * 10).filter(
       (value) => value >= 10
     );
-    return [...tens, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0.5];
+    return [...tens, null, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 0.5];
   }
 
   const values: number[] = [];
@@ -269,12 +418,15 @@ const SCORE_CELL_WIDTH = 7.6;
 const SCORE_CELL_HEIGHT = 6;
 const SCORE_HEADER_HEIGHT = 10;
 const BLANK_BLOCK_INSET_X = 6;
-const BLANK_BLOCK_INSET_Y = 5;
-const BLANK_ITEM_GAP_X = 3;
+const BLANK_BLOCK_INSET_Y = 3;
+const BLANK_ITEM_GAP_X = 1.6;
 const BLANK_ITEM_ROW_HEIGHT = 13;
 const BLANK_NUMBER_WIDTH = 8;
-const BLANK_SCORE_HEADER_HEIGHT = 11;
+const BLANK_SCORE_HEADER_HEIGHT = 7;
 const BLANK_INNER_GAP_X = 2.4;
+const BLANK_MAX_COLUMNS = 5;
+const BLANK_MIN_LINE_WIDTH = 16;
+const BLANK_MAX_SHRINK_RATIO = 0.7;
 
 function addManualScoreCells(
   page: PageLayout,
@@ -282,77 +434,161 @@ function addManualScoreCells(
   question: SubjectiveQuestion,
   y: number,
   rightX: number
-): Array<{ score: number; rect: Rect }> {
+): Array<{ score: number | null; rect: Rect }> {
   const values = getScoreValues(question.score);
   const startX = rightX - values.length * SCORE_CELL_WIDTH - 2;
   return values.map((score, index) => {
     const scoreRect = rect(startX + index * SCORE_CELL_WIDTH, y, SCORE_CELL_WIDTH - 0.8, SCORE_CELL_HEIGHT);
-    page.elements.push({
-      id: `p${page.pageNumber}_score_${block.id}_${question.id}_${score}`,
-      type: "score_cell",
-      blockId: block.id,
-      questionId: question.id,
-      questionNumber: question.number,
-      score,
-      rect: scoreRect
-    });
+    if (score !== null) {
+      page.elements.push({
+        id: `p${page.pageNumber}_score_${block.id}_${question.id}_${score}`,
+        type: "score_cell",
+        blockId: block.id,
+        questionId: question.id,
+        questionNumber: question.number,
+        score,
+        rect: scoreRect
+      });
+    }
     return { score, rect: scoreRect };
   });
 }
 
+function blankQuestionCount(question: SubjectiveQuestion): number {
+  return Math.max(1, question.blanks?.items?.length ?? question.blanks?.count ?? 1);
+}
+
+function blankLineSpecs(question: SubjectiveQuestion): BlankLineSpec[] {
+  const fallbackWidth = question.blanks?.widthMm ?? 22;
+  const fallbackHeight = question.blanks?.heightMm ?? 6;
+  const items = question.blanks?.items;
+  if (items?.length) {
+    return items.map((item, index) => ({
+      label: item.label ?? formatBlankLabel(question.blanks?.labelStyle, index),
+      widthMm: item.widthMm || fallbackWidth,
+      heightMm: item.heightMm || fallbackHeight
+    }));
+  }
+
+  return Array.from({ length: blankQuestionCount(question) }, (_, index) => ({
+    label: formatBlankLabel(question.blanks?.labelStyle, index),
+    widthMm: fallbackWidth,
+    heightMm: fallbackHeight
+  }));
+}
+
 function blankQuestionLineWidth(question: SubjectiveQuestion): number {
-  return question.blanks?.widthMm ?? 22;
+  return Math.max(22, ...blankLineSpecs(question).map((item) => item.widthMm));
 }
 
 function blankQuestionLineHeight(question: SubjectiveQuestion): number {
-  return question.blanks?.heightMm ?? 6;
+  return Math.max(6, ...blankLineSpecs(question).map((item) => item.heightMm));
 }
 
-function blankQuestionCount(question: SubjectiveQuestion): number {
-  return Math.max(1, question.blanks?.count ?? 1);
+function blankMinimumLineWidth(question: SubjectiveQuestion): number {
+  return Math.max(BLANK_MIN_LINE_WIDTH, blankQuestionLineWidth(question) * BLANK_MAX_SHRINK_RATIO);
 }
 
 function blankLabelWidth(question: SubjectiveQuestion, index: number): number {
-  const label = formatBlankLabel(question.blanks?.labelStyle, index);
+  const label = blankLineSpecs(question)[index]?.label ?? "";
   return label ? label.length * 1.8 + 0.8 : 0;
 }
 
 function maxBlankLabelWidth(question: SubjectiveQuestion): number {
-  const blankCount = blankQuestionCount(question);
-  return Math.max(0, ...Array.from({ length: blankCount }, (_, index) => blankLabelWidth(question, index)));
+  return Math.max(0, ...blankLineSpecs(question).map((_, index) => blankLabelWidth(question, index)));
 }
 
-function blankQuestionItemWidth(question: SubjectiveQuestion, labelSlotWidth = maxBlankLabelWidth(question)): number {
+function blankColumnLineWidth(question: SubjectiveQuestion, columnW: number, labelSlotWidth: number): number {
   const blankCount = blankQuestionCount(question);
-  const blanksWidth = Array.from({ length: blankCount }, () => labelSlotWidth + blankQuestionLineWidth(question)).reduce(
-    (sum, width) => sum + width,
-    0
+  const labelWidth = labelSlotWidth * blankCount;
+  const availableLineWidth =
+    (columnW - BLANK_NUMBER_WIDTH - labelWidth - BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) - 2) / blankCount;
+  return Math.min(
+    blankQuestionLineWidth(question),
+    Math.max(blankMinimumLineWidth(question), availableLineWidth)
   );
-  return BLANK_NUMBER_WIDTH + blanksWidth + Math.max(0, blankCount - 1) * BLANK_INNER_GAP_X;
+}
+
+function blankQuestionFitsColumn(question: SubjectiveQuestion, columnW: number, labelSlotWidth: number): boolean {
+  const blankCount = blankQuestionCount(question);
+  const labelWidth = labelSlotWidth * blankCount;
+  const availableLineWidth =
+    (columnW - BLANK_NUMBER_WIDTH - labelWidth - BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) - 2) / blankCount;
+  return availableLineWidth >= blankMinimumLineWidth(question);
 }
 
 function blankBlockColumnCount(questions: SubjectiveQuestion[]): number {
   const labelSlotWidth = Math.max(0, ...questions.map(maxBlankLabelWidth));
-  const maxItemWidth = Math.max(...questions.map((question) => blankQuestionItemWidth(question, labelSlotWidth)));
   const usableW = BODY_WIDTH - BLANK_BLOCK_INSET_X * 2;
-  const columns = Math.floor((usableW + BLANK_ITEM_GAP_X) / (maxItemWidth + BLANK_ITEM_GAP_X));
-  return Math.max(1, Math.min(columns, questions.length));
+  const maxColumns = Math.min(BLANK_MAX_COLUMNS, questions.length);
+
+  for (let columns = maxColumns; columns >= 1; columns -= 1) {
+    const columnW = (usableW - BLANK_ITEM_GAP_X * (columns - 1)) / columns;
+    if (questions.every((question) => blankQuestionFitsColumn(question, columnW, labelSlotWidth))) {
+      return columns;
+    }
+  }
+
+  return 1;
 }
 
 function blankScoreQuestion(questions: SubjectiveQuestion[]): SubjectiveQuestion | undefined {
   return questions.find((question) => question.style === "manual_score_grid") ?? questions[0];
 }
 
+function answerBlankLabelWidth(spec: BlankLineSpec): number {
+  return spec.label ? spec.label.length * 1.8 + 0.8 : 0;
+}
+
+function layoutAnswerBlankLines(question: SubjectiveQuestion, contentRect: Rect): PlacedBlankLine[] {
+  const specs = blankLineSpecs(question);
+  const gapX = 6;
+  const gapY = 5;
+  const leftInset = 8;
+  const usableWidth = contentRect.width - leftInset - 6;
+  let x = contentRect.x + leftInset;
+  let y = contentRect.y + 13;
+  let rowHeight = 0;
+  const placed: PlacedBlankLine[] = [];
+
+  specs.forEach((spec) => {
+    const labelWidth = answerBlankLabelWidth(spec);
+    const itemWidth = labelWidth + spec.widthMm;
+    const rowHasItems = x > contentRect.x + leftInset;
+    if (rowHasItems && x + itemWidth > contentRect.x + leftInset + usableWidth) {
+      x = contentRect.x + leftInset;
+      y += rowHeight + gapY;
+      rowHeight = 0;
+    }
+
+    const blankX = x + labelWidth;
+    const blankRect = rect(blankX, y, spec.widthMm, spec.heightMm);
+    placed.push({ ...spec, rect: blankRect });
+    x = blankX + spec.widthMm + gapX;
+    rowHeight = Math.max(rowHeight, spec.heightMm);
+  });
+
+  return placed;
+}
+
+function answerBlankLinesHeight(question: SubjectiveQuestion): number {
+  const contentRect = rect(0, 0, BODY_WIDTH, 1);
+  const placed = layoutAnswerBlankLines(question, contentRect);
+  if (placed.length === 0) return 0;
+  const bottom = Math.max(...placed.map((item) => item.rect.y + item.rect.height));
+  return bottom + 8;
+}
+
 function subjectiveQuestionHeight(question: SubjectiveQuestion): number {
   const scoreHeader = question.style === "manual_score_grid" ? 11 : 0;
-  const blanksHeight = question.kind === "blank" ? (question.blanks?.heightMm ?? 6) + 8 : 0;
+  const blanksHeight = question.kind === "blank" ? answerBlankLinesHeight(question) : 0;
   const imageHeight = (question.images ?? []).reduce((sum, image) => sum + image.heightMm + 3, 0);
   return Math.max(question.minHeightMm, 18 + scoreHeader + blanksHeight + imageHeight);
 }
 
-function blankSubjectiveSegmentHeight(questions: SubjectiveQuestion[], blockTitle: string): number {
+function blankSubjectiveSegmentHeight(questions: SubjectiveQuestion[], blockTitle: string, includeScoreHeader = true): number {
   const titleH = blockTitle ? titleHeight() : 0;
-  const scoreHeader = blankScoreQuestion(questions) ? BLANK_SCORE_HEADER_HEIGHT : 0;
+  const scoreHeader = includeScoreHeader && blankScoreQuestion(questions) ? BLANK_SCORE_HEADER_HEIGHT : 0;
   const rows = Math.ceil(questions.length / blankBlockColumnCount(questions));
   return titleH + scoreHeader + BLANK_BLOCK_INSET_Y * 2 + rows * BLANK_ITEM_ROW_HEIGHT;
 }
@@ -376,9 +612,10 @@ function addSubjectiveQuestion(
     questionRect.width,
     questionRect.height - scoreHeaderH
   );
-  const scoreCells: Array<{ score: number; rect: Rect }> = [];
+  const scoreCells: Array<{ score: number | null; rect: Rect }> = [];
   const lineYs: number[] = [];
   const blanks: Rect[] = [];
+  const blankLabels: string[] = [];
   const images: Array<{ assetId: string; originalName?: string; rect: Rect }> = [];
 
   if (question.style === "manual_score_grid") {
@@ -393,17 +630,9 @@ function addSubjectiveQuestion(
   }
 
   if (question.kind === "blank") {
-    const blankCount = question.blanks?.count ?? 4;
-    const blankW = question.blanks?.widthMm ?? 28;
-    const blankH = question.blanks?.heightMm ?? 6;
-    const gap = 6;
-    const labelSlotWidth = maxBlankLabelWidth(question);
-    const perRow = Math.max(1, Math.floor((BODY_WIDTH - 14) / (blankW + gap + labelSlotWidth)));
-    for (let index = 0; index < blankCount; index += 1) {
-      const col = index % perRow;
-      const row = Math.floor(index / perRow);
-      blanks.push(rect(contentRect.x + 8 + labelSlotWidth + col * (blankW + gap + labelSlotWidth), contentRect.y + 13 + row * (blankH + 5), blankW, blankH));
-    }
+    const placedBlanks = layoutAnswerBlankLines(question, contentRect);
+    blanks.push(...placedBlanks.map((item) => item.rect));
+    blankLabels.push(...placedBlanks.map((item) => item.label));
   }
 
   let imageY = contentRect.y + 12;
@@ -454,6 +683,7 @@ function addSubjectiveQuestion(
         scoreCells,
         lineYs,
         blanks,
+        blankLabels,
         blankLabelStyle: question.blanks?.labelStyle,
         blankLabelSlotWidth: maxBlankLabelWidth(question),
         images
@@ -469,9 +699,10 @@ function addBlankSubjectiveSegment(
   block: SubjectiveBlock,
   questions: SubjectiveQuestion[],
   blockTitle: string,
+  includeScoreHeader: boolean,
   y: number
 ): number {
-  const height = blankSubjectiveSegmentHeight(questions, blockTitle);
+  const height = blankSubjectiveSegmentHeight(questions, blockTitle, includeScoreHeader);
   const titleH = blockTitle ? titleHeight() : 0;
   const blockRect = rect(MARGIN_X, y, BODY_WIDTH, height);
   const frameRect = rect(MARGIN_X, y + titleH, BODY_WIDTH, height - titleH);
@@ -479,8 +710,8 @@ function addBlankSubjectiveSegment(
   const columns = blankBlockColumnCount(questions);
   const itemAreaW = frameRect.width - BLANK_BLOCK_INSET_X * 2;
   const columnW = itemAreaW / columns;
-  const scoreQuestion = blankScoreQuestion(questions);
-  const scoreCellsByQuestionId = new Map<string, Array<{ score: number; rect: Rect }>>();
+  const scoreQuestion = includeScoreHeader ? blankScoreQuestion(questions) : undefined;
+  const scoreCellsByQuestionId = new Map<string, Array<{ score: number | null; rect: Rect }>>();
   const scoreHeader = scoreQuestion ? BLANK_SCORE_HEADER_HEIGHT : 0;
   const blankLabelSlotWidth = Math.max(0, ...questions.map(maxBlankLabelWidth));
 
@@ -495,14 +726,11 @@ function addBlankSubjectiveSegment(
     const question = questions[index];
     const col = index % columns;
     const row = Math.floor(index / columns);
-    const itemX = frameRect.x + BLANK_BLOCK_INSET_X + col * columnW;
+    const itemX = frameRect.x + BLANK_BLOCK_INSET_X + col * (columnW + BLANK_ITEM_GAP_X);
     const itemY = frameRect.y + scoreHeader + BLANK_BLOCK_INSET_Y + row * BLANK_ITEM_ROW_HEIGHT;
-    const blankCount = blankQuestionCount(question);
-    const labelWidth = blankLabelSlotWidth * blankCount;
-    const lineW = Math.min(
-      blankQuestionLineWidth(question),
-      Math.max(8, (columnW - BLANK_NUMBER_WIDTH - labelWidth - BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) - 2) / blankCount)
-    );
+    const specs = blankLineSpecs(question);
+    const blankCount = specs.length;
+    const lineW = blankColumnLineWidth(question, columnW, blankLabelSlotWidth);
     const lineH = blankQuestionLineHeight(question);
     let blankX = itemX + BLANK_NUMBER_WIDTH;
     const blanks: Rect[] = [];
@@ -527,13 +755,14 @@ function addBlankSubjectiveSegment(
       questionId: question.id,
       questionNumber: question.number,
       score: question.score,
-      style: question.id === scoreQuestion?.id ? "manual_score_grid" : question.style,
+      style: question.id === scoreQuestion?.id ? "manual_score_grid" : "plain_subjective",
       kind: question.kind,
       rect: questionRect,
       contentRect: questionRect,
       scoreCells: scoreCellsByQuestionId.get(question.id) ?? [],
       lineYs: [],
       blanks,
+      blankLabels: specs.map((item) => item.label),
       blankLabelStyle: question.blanks?.labelStyle,
       blankLabelSlotWidth,
       images: []
@@ -586,21 +815,34 @@ export function buildLayout(card: AnswerCard): LayoutDocument {
   for (const block of card.bodyBlocks) {
     if (block.type === "objective") {
       let remaining = objectiveQuestionDefinitions(block);
+      const arrangementMode = objectiveArrangementMode(remaining.length);
       let firstSegment = true;
 
       while (remaining.length > 0) {
-        const columns = getObjectiveColumnsForQuestions(remaining);
-        const maxRows = objectiveMaxRowsForAvailableHeight(availableHeight(y));
-        const maxCount = Math.max(1, columns * maxRows);
-        const segmentQuestions = remaining.slice(0, Math.min(remaining.length, maxCount));
-        const height = objectiveHeightForQuestions(segmentQuestions);
+        let maxRows = objectiveMaxRowsForAvailableHeight(availableHeight(y));
+        const nextObjectiveRow = objectiveRowsForQuestions(remaining, arrangementMode)[0];
+        const nextRowHeight = nextObjectiveRow ? objectivePhysicalRowsForRows([nextObjectiveRow]) : 1;
+        if (page.blocks.length > 0 && nextRowHeight > maxRows) {
+          newPage();
+          maxRows = objectiveMaxRowsForAvailableHeight(availableHeight(y));
+        }
+
+        const segmentQuestions = objectiveSegmentQuestionsForMaxRows(remaining, arrangementMode, maxRows);
+        const height = objectiveHeightForQuestions(segmentQuestions, arrangementMode);
 
         ensureSpace(height);
         if (height > availableHeight(y)) {
           warnings.push(`${block.title} 的题量较多，当前密度下单页空间不足，已尽量分页排版。`);
         }
 
-        y = addObjectiveSegment(page, block, firstSegment ? block.title : `${block.title}（续）`, segmentQuestions, y);
+        y = addObjectiveSegment(
+          page,
+          block,
+          firstSegment ? block.title : `${block.title}（续）`,
+          segmentQuestions,
+          arrangementMode,
+          y
+        );
         remaining = remaining.slice(segmentQuestions.length);
         firstSegment = false;
 
@@ -635,13 +877,20 @@ function layoutSubjectiveBlock(
   setY: (value: number) => void,
   getY: () => number
 ): void {
-  if (block.questions.length > 0 && block.questions.every((question) => question.kind === "blank")) {
+  const isFillBlankBlock =
+    block.blockKind === "fill_blank" ||
+    (!block.blockKind &&
+      !block.title.includes("解答") &&
+      block.questions.length > 0 &&
+      block.questions.every((question) => question.kind === "blank"));
+
+  if (isFillBlankBlock) {
     let remaining = [...block.questions];
     let firstSegment = true;
 
     while (remaining.length > 0) {
       const title = firstSegment ? block.title : `${block.title}（续）`;
-      const firstHeight = blankSubjectiveSegmentHeight([remaining[0]], title);
+      const firstHeight = blankSubjectiveSegmentHeight([remaining[0]], title, firstSegment);
 
       ensureSpace(firstHeight);
       if (firstHeight > availableHeight(getY()) && getPage().blocks.length > 0) {
@@ -652,14 +901,14 @@ function layoutSubjectiveBlock(
       let height = firstHeight;
       for (let index = 1; index <= remaining.length; index += 1) {
         const nextQuestions = remaining.slice(0, index);
-        const nextHeight = blankSubjectiveSegmentHeight(nextQuestions, title);
+        const nextHeight = blankSubjectiveSegmentHeight(nextQuestions, title, firstSegment);
         if (index > 1 && nextHeight > availableHeight(getY())) break;
         count = index;
         height = nextHeight;
       }
 
       const segmentQuestions = remaining.slice(0, Math.max(1, count));
-      const nextY = addBlankSubjectiveSegment(getPage(), block, segmentQuestions, title, getY());
+      const nextY = addBlankSubjectiveSegment(getPage(), block, segmentQuestions, title, firstSegment, getY());
       setY(nextY);
       remaining = remaining.slice(segmentQuestions.length);
       firstSegment = false;

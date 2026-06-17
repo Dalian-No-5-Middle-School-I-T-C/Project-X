@@ -2,8 +2,10 @@ export type ObjectiveMode = "single" | "multiple" | "indefinite";
 export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
 export type SubjectiveStyle = "manual_score_grid" | "plain_subjective";
 export type SubjectiveKind = "blank" | "lined_answer" | "plain_box";
+export type SubjectiveBlockKind = "fill_blank" | "answer";
 export type SubjectiveQuestionNumber = number | string;
 export type BlankLabelStyle = "none" | "arabic_parentheses" | "roman_parentheses";
+export type BlankItem = { label?: string; widthMm: number; heightMm: number };
 
 export type ObjectiveScoringRule =
   | {
@@ -68,7 +70,7 @@ export type SubjectiveQuestion = {
   score: number;
   style: SubjectiveStyle;
   kind: SubjectiveKind;
-  blanks?: { count: number; widthMm: number; heightMm: number; labelStyle?: BlankLabelStyle };
+  blanks?: { count: number; widthMm: number; heightMm: number; labelStyle?: BlankLabelStyle; items?: BlankItem[] };
   lineGrid?: { enabled: boolean; lineSpacingMm: number };
   images?: Array<{
     assetId: string;
@@ -83,6 +85,7 @@ export type SubjectiveQuestion = {
 export type SubjectiveBlock = {
   id: string;
   type: "subjective";
+  blockKind?: SubjectiveBlockKind;
   title: string;
   questions: SubjectiveQuestion[];
 };
@@ -144,9 +147,10 @@ export type SubjectiveRenderItem = {
   kind: SubjectiveKind;
   rect: Rect;
   contentRect: Rect;
-  scoreCells: Array<{ score: number; rect: Rect }>;
+  scoreCells: Array<{ score: number | null; rect: Rect }>;
   lineYs: number[];
   blanks: Rect[];
+  blankLabels?: string[];
   blankLabelStyle?: BlankLabelStyle;
   blankLabelSlotWidth?: number;
   images: Array<{ assetId: string; originalName?: string; rect: Rect }>;
