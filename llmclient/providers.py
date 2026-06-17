@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,23 +10,21 @@ from openai import OpenAI
 from llmclient.config import ModelConfig, env_value
 from llmclient.schemas import AiAnalysisReport, AnalysisRunResponse, REPORT_SCHEMA, ToolCallTrace, empty_report
 from llmclient.tools.registry import call_tool, gemini_function_declarations, openai_tools
+from llmclient.prompt import system
+
+SYSTEM_PROMPT = system
 
 
-SYSTEM_PROMPT = """You are Project-X's exam score analysis assistant.
-Analyze grade data by calling the provided tools. Do not invent data.
-Do not request or expose student names. Use Chinese for the final report.
-Return valid json matching this shape:
-{
-  "overallJudgement": "...",
-  "distributionInsight": "...",
-  "weakPoints": ["..."],
-  "reviewRisks": ["..."],
-  "teachingSuggestions": ["..."],
-  "nextActions": ["..."],
-  "questionActions": [{"questionNumber": "11", "reason": "...", "action": "..."}],
-  "caveats": ["..."]
-}
-"""
+class _GeminiNonTextWarningFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "there are non-text parts in the response" not in record.getMessage()
+
+
+def _quiet_gemini_non_text_warning() -> None:
+    for logger_name in ("google_genai.types", "google.genai.types"):
+        logger = logging.getLogger(logger_name)
+        if not any(isinstance(item, _GeminiNonTextWarningFilter) for item in logger.filters):
+            logger.addFilter(_GeminiNonTextWarningFilter())
 
 
 def _user_prompt(exam_id: int, class_id: int | None, locale: str) -> str:
@@ -33,6 +32,7 @@ def _user_prompt(exam_id: int, class_id: int | None, locale: str) -> str:
     return (
         f"Generate a structured score analysis report for examId={exam_id}, scope={scope}, locale={locale}. "
         "Call tools as needed before writing the final json report."
+        f"Current Date: {datetime.now().strftime('%Y-%m-%d')}. This is the REAL TIME NOW, NOT a simulated or past or future date."
     )
 
 
@@ -67,6 +67,28 @@ def _trace(name: str, arguments: dict[str, Any], result: dict[str, Any]) -> Tool
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _gemini_function_calls(response: Any) -> list[Any]:
+    calls: list[Any] = []
+    for candidate in getattr(response, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            function_call = getattr(part, "function_call", None)
+            if function_call is not None:
+                calls.append(function_call)
+    return calls
+
+
+def _gemini_text(response: Any) -> str:
+    texts: list[str] = []
+    for candidate in getattr(response, "candidates", None) or []:
+        content = getattr(candidate, "content", None)
+        for part in getattr(content, "parts", None) or []:
+            text = getattr(part, "text", None)
+            if text:
+                texts.append(text)
+    return "\n".join(texts)
 
 
 def run_openai_compatible_analysis(
@@ -163,6 +185,7 @@ def run_gemini_analysis(
     from google import genai
     from google.genai import types
 
+    _quiet_gemini_non_text_warning()
     client = genai.Client(api_key=env_value("GEMINI_API_KEY"))
     tools = types.Tool(function_declarations=gemini_function_declarations())
     config_kwargs: dict[str, Any] = {
@@ -185,10 +208,10 @@ def run_gemini_analysis(
 
     for _ in range(8):
         response = client.models.generate_content(model=model.id, contents=contents, config=config)
-        function_calls = list(getattr(response, "function_calls", None) or [])
+        function_calls = _gemini_function_calls(response)
         if not function_calls:
             try:
-                report = _parse_report(response.text or "{}")
+                report = _parse_report(_gemini_text(response) or "{}")
             except Exception as exc:
                 report = empty_report(f"AI report JSON parse failed: {exc}")
             return AnalysisRunResponse(generatedAt=_now_iso(), model=model.id, report=report, toolCalls=traces)
@@ -201,10 +224,12 @@ def run_gemini_analysis(
             result = call_tool(fc.name, arguments, exam_id, class_id)
             traces.append(_trace(fc.name, arguments, result))
             response_parts.append(
-                types.Part.from_function_response(
-                    name=fc.name,
-                    response=result,
-                    id=getattr(fc, "id", None),
+                types.Part(
+                    functionResponse=types.FunctionResponse(
+                        name=fc.name,
+                        response=result,
+                        id=getattr(fc, "id", None),
+                    ),
                 )
             )
         contents.append(types.Content(role="user", parts=response_parts))

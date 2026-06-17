@@ -2,6 +2,8 @@ import type { Request, Response, NextFunction } from "express";
 import { authService } from "../services/AuthService";
 import { permissionsForRole, roleHasPermission, type Permission } from "../auth/permissions";
 
+export const AUTH_COOKIE_NAME = "projectx_auth_token";
+
 // 扩展 Express Request 类型
 declare global {
   namespace Express {
@@ -18,10 +20,26 @@ declare global {
   }
 }
 
-function extractToken(req: Request): string | null {
+function tokenFromCookie(req: Request): string | null {
+  const rawCookie = req.headers.cookie;
+  if (!rawCookie) return null;
+  for (const part of rawCookie.split(";")) {
+    const [name, ...valueParts] = part.trim().split("=");
+    if (name === AUTH_COOKIE_NAME) {
+      return decodeURIComponent(valueParts.join("="));
+    }
+  }
+  return null;
+}
+
+export function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
     return authHeader.slice(7).trim();
+  }
+  const cookieToken = tokenFromCookie(req);
+  if (cookieToken) {
+    return cookieToken;
   }
   // 兼容查询参数（用于 SSE / PDF 等无法设置请求头的场景）
   const queryToken = req.query.token;

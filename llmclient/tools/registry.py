@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import inspect
 from typing import Any, Callable
 
 from llmclient.tools import grades
@@ -98,7 +100,21 @@ def openai_tools() -> list[dict[str, Any]]:
 
 
 def gemini_function_declarations() -> list[dict[str, Any]]:
-    return FUNCTION_DECLARATIONS
+    declarations = copy.deepcopy(FUNCTION_DECLARATIONS)
+    for declaration in declarations:
+        _strip_gemini_unsupported_schema_fields(declaration)
+    return declarations
+
+
+def _strip_gemini_unsupported_schema_fields(value: Any) -> None:
+    if isinstance(value, dict):
+        value.pop("additionalProperties", None)
+        value.pop("additional_properties", None)
+        for child in value.values():
+            _strip_gemini_unsupported_schema_fields(child)
+    elif isinstance(value, list):
+        for item in value:
+            _strip_gemini_unsupported_schema_fields(item)
 
 
 def call_tool(name: str, arguments: dict[str, Any], exam_id: int, class_id: int | None) -> dict[str, Any]:
@@ -119,6 +135,10 @@ def call_tool(name: str, arguments: dict[str, Any], exam_id: int, class_id: int 
         if int(requested_class) != int(class_id):
             return {"error": "tool classId must match the selected class"}
         safe_args["classId"] = class_id
+    else:
+        safe_args.pop("classId", None)
 
+    allowed_args = set(inspect.signature(handler).parameters)
+    safe_args = {key: value for key, value in safe_args.items() if key in allowed_args}
     return handler(**safe_args)
 

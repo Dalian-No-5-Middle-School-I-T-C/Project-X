@@ -4,7 +4,7 @@ import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { ensureDefaultAdmin, initializeDatabase } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
@@ -353,7 +353,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/export", exportRoutes);
   app.use("/api/scores", scoreRoutes);
   app.use("/api/sponsor", sponsorRoutes);
-  console.log("[Server] v1.1.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv");
+  console.log("[Server] v1.2.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
 
   // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
@@ -1073,6 +1073,14 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  app.get("/api/app/health", (_req, res) => {
+    res.json({
+      ok: true,
+      variant: process.env.PROJECTX_VARIANT ?? null,
+      scanner: process.env.PROJECTX_ENABLE_SCANNER === "1"
+    });
+  });
+
   app.get("/api/analysis/ai/status", async (_req, res) => {
     try {
       const response = await fetchLlmClient("/health", { method: "GET" }, 2_500);
@@ -1251,17 +1259,23 @@ export async function createApp(): Promise<express.Express> {
   return app;
 }
 
-export async function startServer(port = Number(process.env.PORT ?? 5174)): Promise<Server> {
+export type ProjectXServer = Server & { actualPort?: number; localUrl?: string };
+
+export async function startServer(port = Number(process.env.PORT ?? 5174)): Promise<ProjectXServer> {
   const app = await createApp();
 
   return new Promise((resolve, reject) => {
-    const server = app.listen(port, "127.0.0.1", () => {
+    const server = createServer(app);
+    server.once("error", reject);
+    server.once("listening", () => {
       const address = server.address();
       const actualPort = typeof address === "object" && address ? address.port : port;
+      (server as ProjectXServer).actualPort = actualPort;
+      (server as ProjectXServer).localUrl = `http://127.0.0.1:${actualPort}`;
       console.log(`Answer card designer API running at http://127.0.0.1:${actualPort}`);
-      resolve(server);
+      resolve(server as ProjectXServer);
     });
-    server.once("error", reject);
+    server.listen(port, "127.0.0.1");
   });
 }
 

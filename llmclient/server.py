@@ -59,7 +59,12 @@ def analysis_run(request: AnalysisRunRequest, _: None = Depends(require_internal
         raise HTTPException(status_code=400, detail=f"Missing {model.key_env} for model {model.id}")
     if not default_db_path().exists():
         raise HTTPException(status_code=400, detail=f"Project-X database not found: {default_db_path()}")
-    return run_analysis(model, request.examId, request.classId, request.locale)
+    try:
+        return run_analysis(model, request.examId, request.classId, request.locale)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"{model.provider} analysis failed: {exc}") from exc
 
 
 @app.get("/debug/config")
