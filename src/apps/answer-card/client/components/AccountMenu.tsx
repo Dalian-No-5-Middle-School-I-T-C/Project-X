@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Database, Download, Heart, KeyRound, LogOut, Upload, User } from "lucide-react";
+import { ChevronDown, Download, Heart, KeyRound, LogOut, Upload, User } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
-import { fetchJson } from "../auth/api";
+import { fetchJson, getAuthToken } from "../auth/api";
 import { ROLE_LABELS } from "../auth/types";
 
 export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
@@ -58,9 +58,9 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
 
   async function handleExportDb() {
     try {
-      const token = localStorage.getItem("auth_token") || "";
+      const token = getAuthToken();
       const resp = await fetch("/api/db/backup", {
-        headers: { Authorization: `Bearer ${token}` }
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ message: resp.statusText }));
@@ -84,12 +84,12 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
     setImportMsg("");
     setImportBusy(true);
     try {
-      const token = localStorage.getItem("auth_token") || "";
+      const token = getAuthToken();
       const formData = new FormData();
       formData.append("file", file);
       const resp = await fetch("/api/db/restore", {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: formData
       });
       const result = await resp.json();
