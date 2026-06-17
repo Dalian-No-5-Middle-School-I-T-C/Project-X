@@ -44,15 +44,17 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
   const response = await fetch(apiUrl(url), { ...options, headers });
   if (!response.ok) {
     let message = response.statusText;
+    let body: Record<string, unknown> | null = null;
     try {
-      const body = (await response.json()) as { message?: string };
-      if (body.message) message = body.message;
+      body = (await response.json()) as Record<string, unknown>;
+      if (typeof body.message === "string") message = body.message;
     } catch {
       const text = await response.text().catch(() => "");
       if (text) message = text;
     }
     const error = new Error(message) as Error & { status?: number };
     error.status = response.status;
+    if (body) Object.assign(error, body);
     if (response.status === 401 && !url.includes("/api/auth/login")) {
       notifyUnauthorized();
     }

@@ -18,7 +18,7 @@ interface ExamOption {
   id: number;
   name: string;
   subject?: string | null;
-  card_id?: string;
+  card_id?: string | null;
 }
 
 interface Props {

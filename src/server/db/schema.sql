@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS data_retention_policies (
 CREATE TABLE IF NOT EXISTS exams (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     name          TEXT NOT NULL,                -- 2026上学期期中考试
-    card_id       TEXT NOT NULL REFERENCES answer_cards(id),
+    card_id       TEXT REFERENCES answer_cards(id),
     grade_id      INTEGER REFERENCES grades(id),
     class_id      INTEGER REFERENCES classes(id),
     subject       TEXT,                        -- 物理 / 数学

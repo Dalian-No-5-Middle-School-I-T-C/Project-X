@@ -63,6 +63,45 @@ export function initializeDatabase(): void {
     console.log("[DB] Migration: added exam_date column to answer_cards");
   }
 
+  const examCols = db.prepare("PRAGMA table_info(exams)").all() as Array<{ name: string; notnull: number; dflt_value: unknown }>;
+  const examCardCol = examCols.find((c) => c.name === "card_id");
+  if (examCardCol?.notnull === 1) {
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN;
+      CREATE TABLE exams_new (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        name          TEXT NOT NULL,
+        card_id       TEXT REFERENCES answer_cards(id),
+        grade_id      INTEGER REFERENCES grades(id),
+        class_id      INTEGER REFERENCES classes(id),
+        subject       TEXT,
+        start_time    DATETIME,
+        end_time      DATETIME,
+        status        TEXT DEFAULT 'draft',
+        retention_policy_id INTEGER REFERENCES data_retention_policies(id),
+        created_by    INTEGER REFERENCES users(id),
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO exams_new (
+        id, name, card_id, grade_id, class_id, subject, start_time, end_time,
+        status, retention_policy_id, created_by, created_at, updated_at
+      )
+      SELECT
+        id, name, card_id, grade_id, class_id, subject, start_time, end_time,
+        status, retention_policy_id, created_by, created_at, updated_at
+      FROM exams;
+      DROP TABLE exams;
+      ALTER TABLE exams_new RENAME TO exams;
+      CREATE INDEX IF NOT EXISTS idx_exams_status ON exams(status);
+      CREATE INDEX IF NOT EXISTS idx_exams_grade ON exams(grade_id);
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+    console.log("[DB] Migration: made exams.card_id nullable");
+  }
+
   const hasObjectiveQuestions = db.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='objective_questions'").get() as { cnt: number };
   if (hasObjectiveQuestions.cnt === 0) {
     db.exec(`

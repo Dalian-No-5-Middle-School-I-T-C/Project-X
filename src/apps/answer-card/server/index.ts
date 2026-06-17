@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import { ensureDefaultAdmin, initializeDatabase } from "../../../server/db";
+import { ensureDefaultAdmin, getDatabase, initializeDatabase } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
@@ -112,6 +112,28 @@ async function prepareLayoutForCard(cardRepo: CardRepository, card: AnswerCard):
   cardRepo.updateLayoutData(card.id, layout);
   await writeLayoutDocument(card.id, layout);
   return layoutPath(card.id);
+}
+
+function requestFlag(value: unknown): boolean {
+  return value === true || boolField(value);
+}
+
+function deleteExamRows(db: ReturnType<typeof getDatabase>, examIds: number[]): void {
+  for (const examId of examIds) {
+    db.prepare("DELETE FROM question_scores WHERE exam_id = ?").run(examId);
+    db.prepare("DELETE FROM student_scores WHERE exam_id = ?").run(examId);
+    db.prepare("DELETE FROM scan_batches WHERE exam_id = ?").run(examId);
+    db.prepare("DELETE FROM exams WHERE id = ?").run(examId);
+  }
+}
+
+async function deleteCardFiles(cardId: string): Promise<void> {
+  const cardJsonPath = path.join(dataDir, "cards", `${cardId}.json`);
+  const layoutJsonPath = layoutPath(cardId);
+  const assetsPath = cardAssetsDir(cardId);
+  try { if (existsSync(cardJsonPath)) await rm(cardJsonPath); } catch {}
+  try { if (existsSync(layoutJsonPath)) await rm(layoutJsonPath); } catch {}
+  try { if (existsSync(assetsPath)) await rm(assetsPath, { recursive: true, force: true }); } catch {}
 }
 
 function parsePositiveNumber(value: unknown, fallback: number): number {
@@ -850,15 +872,42 @@ export async function createApp(): Promise<express.Express> {
       const examRepo = new ExamRepository();
       const exams = examRepo.listExams();
       const referenced = exams.filter((e: any) => e.card_id === cardId);
+      if (referenced.length > 0) {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const unlinkExams = requestFlag(body.unlinkExams);
+        const deleteReferencedExams = requestFlag(body.deleteReferencedExams);
+        if (!unlinkExams && !deleteReferencedExams) {
+          res.status(409).json({
+            message: `无法直接删除答题卡：已被 ${referenced.length} 个考试引用`,
+            referencedExamCount: referenced.length,
+            referencedExamNames: referenced.map((e: any) => e.name)
+          });
+          return;
+        }
+        const db = getDatabase();
+        db.transaction(() => {
+          if (deleteReferencedExams) {
+            deleteExamRows(db, referenced.map((e: any) => Number(e.id)));
+          } else {
+            db.prepare("UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ?").run(cardId);
+          }
+          cardRepo.deleteCard(cardId);
+        })();
+        await deleteCardFiles(cardId);
+        res.json({
+          ok: true,
+          deleted: true,
+          unlinkedExamCount: deleteReferencedExams ? 0 : referenced.length,
+          deletedExamCount: deleteReferencedExams ? referenced.length : 0,
+          referencedExamCount: referenced.length,
+          referencedExamNames: referenced.map((e: any) => e.name)
+        });
+        return;
+      }
       // 删除 SQLite 记录（外键 CASCADE 自动删子表）
       const deleted = cardRepo.deleteCard(cardId);
       // 删除 JSON 文件
-      const cardJsonPath = path.join(dataDir, "cards", `${cardId}.json`);
-      const layoutJsonPath = layoutPath(cardId);
-      const assetsPath = cardAssetsDir(cardId);
-      try { if (existsSync(cardJsonPath)) await rm(cardJsonPath); } catch {}
-      try { if (existsSync(layoutJsonPath)) await rm(layoutJsonPath); } catch {}
-      try { if (existsSync(assetsPath)) await rm(assetsPath, { recursive: true, force: true }); } catch {}
+      await deleteCardFiles(cardId);
       res.json({
         ok: true,
         deleted,
@@ -1008,16 +1057,31 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      const { getDatabase } = await import("../../../server/db");
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const deleteLinkedCard = requestFlag(body.deleteLinkedCard);
+      const linkedCardId = exam.card_id ? safeId(exam.card_id) : null;
+      if (deleteLinkedCard && linkedCardId) {
+        const referencedByOtherExams = examRepo.listExams().filter((item) => item.card_id === linkedCardId && item.id !== exam.id);
+        if (referencedByOtherExams.length > 0) {
+          res.status(409).json({
+            message: `无法同时删除答题卡：仍被 ${referencedByOtherExams.length} 个其它考试引用`,
+            referencedExamCount: referencedByOtherExams.length,
+            referencedExamNames: referencedByOtherExams.map((item) => item.name)
+          });
+          return;
+        }
+      }
       const db = getDatabase();
-      // Cascade: scores → students linked via scores, then exam itself
       db.transaction(() => {
-        db.prepare("DELETE FROM question_scores WHERE exam_id = ?").run(exam.id);
-        db.prepare("DELETE FROM student_scores WHERE exam_id = ?").run(exam.id);
-        db.prepare("DELETE FROM scan_batches WHERE exam_id = ?").run(exam.id);
-        db.prepare("DELETE FROM exams WHERE id = ?").run(exam.id);
+        deleteExamRows(db, [exam.id]);
+        if (deleteLinkedCard && linkedCardId) {
+          cardRepo.deleteCard(linkedCardId);
+        }
       })();
-      res.json({ message: "已删除" });
+      if (deleteLinkedCard && linkedCardId) {
+        await deleteCardFiles(linkedCardId);
+      }
+      res.json({ message: "已删除", deletedLinkedCard: Boolean(deleteLinkedCard && linkedCardId) });
     } catch (error) {
       next(error);
     }

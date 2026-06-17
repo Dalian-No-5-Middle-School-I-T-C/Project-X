@@ -80,6 +80,19 @@ const modeLabels: Record<ObjectiveMode, string> = {
   indefinite: "不定项"
 };
 
+type CardDeleteConflict = {
+  cardId: string;
+  cardTitle: string;
+  referencedExamCount: number;
+  referencedExamNames: string[];
+  deleteReferencedExams: boolean;
+};
+
+type ExamDeleteTarget = {
+  exams: ExamRecord[];
+  deleteLinkedCards: boolean;
+};
+
 const styleLabels: Record<SubjectiveStyle, string> = {
   manual_score_grid: "带顶部分数填涂区",
   plain_subjective: "纯主观题书写块"
@@ -353,6 +366,8 @@ function App() {
   const [selectedExamIds, setSelectedExamIds] = useState<Set<number>>(new Set());
   const [analysisTab, setAnalysisTab] = useState<"manage" | "view" | "trend">("view");
   const [showNewCardModal, setShowNewCardModal] = useState(false);
+  const [cardDeleteConflict, setCardDeleteConflict] = useState<CardDeleteConflict | null>(null);
+  const [examDeleteTarget, setExamDeleteTarget] = useState<ExamDeleteTarget | null>(null);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
@@ -486,23 +501,86 @@ function App() {
     }
   }
 
-  async function deleteCard(cardId: string) {
+  async function deleteCard(
+    cardId: string,
+    options: { unlinkExams?: boolean; deleteReferencedExams?: boolean } = {}
+  ): Promise<boolean> {
     setIsBusy(true);
     try {
       const result = await fetchJson<{ ok: boolean; referencedExamCount: number; referencedExamNames: string[] }>(
         `/api/cards/${cardId}`,
-        { method: "DELETE" }
+        {
+          method: "DELETE",
+          headers: Object.keys(options).length > 0 ? { "Content-Type": "application/json" } : undefined,
+          body: Object.keys(options).length > 0 ? JSON.stringify(options) : undefined
+        }
       );
-      if (result.referencedExamCount > 0) {
-        setStatus(`已删除答题卡（被 ${result.referencedExamCount} 个考试引用：${result.referencedExamNames.join("、")}）`);
-      } else {
-        setStatus("已删除答题卡");
-      }
+      setStatus(result.referencedExamCount > 0
+        ? `已删除答题卡，并处理 ${result.referencedExamCount} 个关联考试`
+        : "已删除答题卡");
       if (card?.id === cardId) {
         setCard(null);
         setSelectedBlockId(null);
       }
       await refreshCards();
+      await loadExams();
+      return true;
+    } catch (err) {
+      const error = err as Error & {
+        status?: number;
+        referencedExamCount?: number;
+        referencedExamNames?: string[];
+      };
+      if (error.status === 409 && typeof error.referencedExamCount === "number") {
+        const target = cards.find((item) => item.id === cardId);
+        setCardDeleteConflict({
+          cardId,
+          cardTitle: target?.title || cardId,
+          referencedExamCount: error.referencedExamCount,
+          referencedExamNames: Array.isArray(error.referencedExamNames) ? error.referencedExamNames : [],
+          deleteReferencedExams: false
+        });
+        const names = Array.isArray(error.referencedExamNames) && error.referencedExamNames.length > 0
+          ? `（${error.referencedExamNames.join("、")}）`
+          : "";
+        setStatus(`答题卡已被 ${error.referencedExamCount} 个考试引用${names}，请确认处理方式`);
+      } else {
+        setStatus(`删除失败：${error.message}`);
+      }
+      return false;
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function deleteExams(target: ExamDeleteTarget): Promise<boolean> {
+    setIsBusy(true);
+    try {
+      const linkedCardIds = Array.from(new Set(target.exams.map((exam) => exam.card_id).filter((id): id is string => Boolean(id))));
+      for (const exam of target.exams) {
+        await fetchJson(`/api/exams/${exam.id}`, { method: "DELETE" });
+      }
+      setSelectedExamIds(new Set());
+      if (analysisExamId && target.exams.some((exam) => exam.id === analysisExamId)) {
+        setAnalysisExamId(null);
+        setAnalysisOverview(null);
+        setAnalysisRanking([]);
+        setAnalysisQuestions([]);
+      }
+      await loadExams();
+      if (target.deleteLinkedCards) {
+        for (const linkedCardId of linkedCardIds) {
+          const deleted = await deleteCard(linkedCardId);
+          if (!deleted) return false;
+        }
+      }
+      setStatus(target.deleteLinkedCards
+        ? `已删除 ${target.exams.length} 个考试，并删除关联答题卡`
+        : target.exams.length > 1 ? `已删除 ${target.exams.length} 个考试` : "已删除考试");
+      return true;
+    } catch (err) {
+      setStatus(`删除考试失败：${err instanceof Error ? err.message : String(err)}`);
+      return false;
     } finally {
       setIsBusy(false);
     }
@@ -1372,13 +1450,14 @@ function App() {
                     <Plus size={16} /> 新建考试
                   </button>
                   {selectedExamIds.size > 0 && (
-                    <button className="ghost-button" style={{ color: "var(--brand)" }} onClick={async () => {
-                      if (!confirm(`删除选中的 ${selectedExamIds.size} 个考试？`)) return;
-                      for (const id of selectedExamIds) await fetchJson(`/api/exams/${id}`, { method: "DELETE" });
-                      setSelectedExamIds(new Set());
-                      if (analysisExamId && selectedExamIds.has(analysisExamId)) { setAnalysisExamId(null); setAnalysisOverview(null); setAnalysisRanking([]); setAnalysisQuestions([]); }
-                      loadExams();
-                    }}>
+                    <button
+                      className="ghost-button"
+                      style={{ color: "var(--brand)" }}
+                      onClick={() => setExamDeleteTarget({
+                        exams: exams.filter((exam) => selectedExamIds.has(exam.id)),
+                        deleteLinkedCards: false
+                      })}
+                    >
                       <Trash2 size={16} /> 删除选中 ({selectedExamIds.size})
                     </button>
                   )}
@@ -1456,7 +1535,7 @@ function App() {
                           </td>
                           <td style={{ padding: "8px 10px", fontWeight: 500 }}>{exam.name}</td>
                           <td style={{ padding: "8px 10px", color: "var(--muted)" }}>{exam.subject || "—"}</td>
-                          <td style={{ padding: "8px 10px", color: "var(--muted)", fontSize: 12 }}>{exam.card_id}</td>
+                          <td style={{ padding: "8px 10px", color: "var(--muted)", fontSize: 12 }}>{exam.card_id ?? "未关联"}</td>
                           <td style={{ padding: "8px 10px" }}>
                             <span style={{
                               padding: "1px 8px", borderRadius: 10, fontSize: 11,
@@ -1467,12 +1546,11 @@ function App() {
                             </span>
                           </td>
                           <td style={{ padding: "8px 10px" }}>
-                            <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }} onClick={async () => {
-                              if (!confirm(`删除「${exam.name}」？`)) return;
-                              await fetchJson(`/api/exams/${exam.id}`, { method: "DELETE" });
-                              if (analysisExamId === exam.id) { setAnalysisExamId(null); setAnalysisOverview(null); setAnalysisRanking([]); setAnalysisQuestions([]); }
-                              loadExams();
-                            }}>删除</button>
+                            <button
+                              className="ghost-button"
+                              style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
+                              onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}
+                            >删除</button>
                           </td>
                         </tr>
                       ))}
@@ -1501,6 +1579,95 @@ function App() {
         <footer className="statusbar">{status}</footer>
       </section>
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
+      {cardDeleteConflict && (
+        <div className="modal-backdrop" onClick={() => setCardDeleteConflict(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
+            <div className="modal-header">
+              <h2>确认删除答题卡</h2>
+              <button className="modal-close" type="button" onClick={() => setCardDeleteConflict(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ marginTop: 0 }}>
+                「{cardDeleteConflict.cardTitle}」已被 {cardDeleteConflict.referencedExamCount} 个考试引用。删除答题卡前需要先解除这些考试的关联。
+              </p>
+              {cardDeleteConflict.referencedExamNames.length > 0 && (
+                <ul style={{ margin: "8px 0 14px", paddingLeft: 20, color: "var(--muted)", fontSize: 13 }}>
+                  {cardDeleteConflict.referencedExamNames.map((name) => <li key={name}>{name}</li>)}
+                </ul>
+              )}
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={cardDeleteConflict.deleteReferencedExams}
+                  onChange={(event) => setCardDeleteConflict({ ...cardDeleteConflict, deleteReferencedExams: event.target.checked })}
+                  disabled={isBusy}
+                />
+                同时删除这些考试及其成绩/扫描数据
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="ghost-button" type="button" onClick={() => setCardDeleteConflict(null)} disabled={isBusy}>取消</button>
+              <button
+                className="primary-button"
+                type="button"
+                disabled={isBusy}
+                onClick={async () => {
+                  const target = cardDeleteConflict;
+                  const ok = await deleteCard(target.cardId, {
+                    unlinkExams: !target.deleteReferencedExams,
+                    deleteReferencedExams: target.deleteReferencedExams
+                  });
+                  if (ok) setCardDeleteConflict(null);
+                }}
+              >
+                {cardDeleteConflict.deleteReferencedExams ? "删除考试和答题卡" : "解绑考试并删除答题卡"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {examDeleteTarget && (
+        <div className="modal-backdrop" onClick={() => setExamDeleteTarget(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
+            <div className="modal-header">
+              <h2>确认删除考试</h2>
+              <button className="modal-close" type="button" onClick={() => setExamDeleteTarget(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ marginTop: 0 }}>
+                将删除 {examDeleteTarget.exams.length} 个考试，并解除它们与答题卡的关联。
+              </p>
+              <ul style={{ margin: "8px 0 14px", paddingLeft: 20, color: "var(--muted)", fontSize: 13 }}>
+                {examDeleteTarget.exams.map((exam) => <li key={exam.id}>{exam.name}</li>)}
+              </ul>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={examDeleteTarget.deleteLinkedCards}
+                  onChange={(event) => setExamDeleteTarget({ ...examDeleteTarget, deleteLinkedCards: event.target.checked })}
+                  disabled={isBusy || !examDeleteTarget.exams.some((exam) => exam.card_id)}
+                />
+                同时删除关联答题卡
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="ghost-button" type="button" onClick={() => setExamDeleteTarget(null)} disabled={isBusy}>取消</button>
+              <button
+                className="primary-button"
+                type="button"
+                disabled={isBusy}
+                onClick={async () => {
+                  const target = examDeleteTarget;
+                  const ok = await deleteExams(target);
+                  if (ok) setExamDeleteTarget(null);
+                }}
+              >
+                {examDeleteTarget.deleteLinkedCards ? "删除考试和答题卡" : "解绑答题卡并删除考试"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
