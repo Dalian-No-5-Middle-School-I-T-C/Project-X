@@ -80,6 +80,16 @@ def _score_summary(scores: list[float]) -> dict[str, Any]:
     }
 
 
+def _error_rate_level(rate: int | float) -> str:
+    if rate >= 70:
+        return "high"
+    if rate >= 50:
+        return "medium"
+    if rate >= 30:
+        return "low"
+    return "none"
+
+
 def get_exam_overview(examId: int, classId: int | None = None) -> dict[str, Any]:
     with connect_db() as conn:
         exam = conn.execute(
@@ -156,7 +166,8 @@ def get_question_analysis(examId: int, classId: int | None = None, limit: int = 
               MAX(qs.max_score) AS maxScore,
               COUNT(*) AS totalCount,
               SUM(CASE WHEN qs.score >= qs.max_score THEN 1 ELSE 0 END) AS correctCount,
-              SUM(CASE WHEN qs.score = 0 OR qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) AS reviewCount
+              SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) AS objectiveErrorCount,
+              SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) AS subjectiveLowScoreCount
             FROM question_scores qs
             {join}
             WHERE qs.exam_id = ? {where}
@@ -171,15 +182,20 @@ def get_question_analysis(examId: int, classId: int | None = None, limit: int = 
         max_score = float(row["maxScore"] or 0)
         avg_score = float(row["avgScore"] or 0)
         total = int(row["totalCount"] or 0)
+        is_objective = row["questionType"] == "objective"
+        error_count = int(row["objectiveErrorCount"] or 0) if is_objective else int(row["subjectiveLowScoreCount"] or 0)
+        error_rate = round(error_count / total * 100) if total > 0 else 0
         questions.append(
             {
                 "questionNumber": str(row["questionNumber"]),
-                "questionType": "objective" if row["questionType"] == "objective" else "subjective",
+                "questionType": "objective" if is_objective else "subjective",
                 "avgScore": _round1(avg_score),
                 "maxScore": _round1(max_score),
                 "scoreRate": round(avg_score / max_score * 100) if max_score > 0 else 0,
-                "correctRate": round(int(row["correctCount"] or 0) / total * 100) if total > 0 else None,
-                "reviewCount": int(row["reviewCount"] or 0),
+                "correctRate": round(int(row["correctCount"] or 0) / total * 100) if is_objective and total > 0 else None,
+                "errorCount": error_count,
+                "errorRate": error_rate,
+                "errorRateLevel": _error_rate_level(error_rate),
                 "totalCount": total,
             }
         )
@@ -214,30 +230,45 @@ def get_review_risks(examId: int, classId: int | None = None, limit: int = 12) -
             SELECT
               qs.question_number AS questionNumber,
               qs.score_type AS questionType,
-              COUNT(*) AS riskCount,
+              COUNT(*) AS totalCount,
+              SUM(CASE WHEN qs.score >= qs.max_score THEN 1 ELSE 0 END) AS correctCount,
+              SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) AS objectiveErrorCount,
+              SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) AS subjectiveLowScoreCount,
               ROUND(AVG(qs.score), 1) AS avgScore,
               MAX(qs.max_score) AS maxScore
             FROM question_scores qs
             {join}
-            WHERE qs.exam_id = ?
-              AND (qs.score = 0 OR qs.score < qs.max_score * 0.5)
-              {where}
+            WHERE qs.exam_id = ? {where}
             GROUP BY qs.question_number, qs.score_type
-            ORDER BY riskCount DESC, questionNumber ASC
+            HAVING CASE
+              WHEN qs.score_type = 'objective' THEN CAST(SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) AS REAL) / COUNT(*)
+              ELSE CAST(SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) AS REAL) / COUNT(*)
+            END >= 0.3
+            ORDER BY CASE
+              WHEN qs.score_type = 'objective' THEN CAST(SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) AS REAL) / COUNT(*)
+              ELSE CAST(SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) AS REAL) / COUNT(*)
+            END DESC, questionNumber ASC
             LIMIT ?
             """,
             [examId, *params, max(1, min(int(limit), 50))],
         ).fetchall()
-    return {
-        "risks": [
+    risks = []
+    for row in rows:
+        total = int(row["totalCount"] or 0)
+        is_objective = row["questionType"] == "objective"
+        error_count = int(row["objectiveErrorCount"] or 0) if is_objective else int(row["subjectiveLowScoreCount"] or 0)
+        error_rate = round(error_count / total * 100) if total > 0 else 0
+        risks.append(
             {
                 "questionNumber": str(row["questionNumber"]),
-                "questionType": "objective" if row["questionType"] == "objective" else "subjective",
-                "riskCount": int(row["riskCount"] or 0),
+                "questionType": "objective" if is_objective else "subjective",
+                "errorCount": error_count,
+                "totalCount": total,
+                "errorRate": error_rate,
+                "errorRateLevel": _error_rate_level(error_rate),
                 "avgScore": _round1(row["avgScore"]),
                 "maxScore": _round1(row["maxScore"]),
             }
-            for row in rows
-        ]
-    }
+        )
+    return {"risks": risks}
 

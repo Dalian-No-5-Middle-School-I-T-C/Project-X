@@ -1,7 +1,7 @@
 # Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.2.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.3.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,8 +13,8 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.2.0
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → AI 成绩分析 → 教师/学生/班级管理 → 账密批量导入导出
+> **当前版本**：v1.3.0
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → AI 成绩分析 → 教师/学生/班级管理 → 账密批量导入导出 → 数据库全量备份
 > **下个里程碑**：v2.0 — 成绩预测、跨班深度对比分析
 
 ---
@@ -39,18 +39,20 @@
 ### 答题卡设计
 
 - **答题卡管理**：新建（科目弹窗 + 考试名称 + 可选日期 + 同步创建/关联考试）、保存、读取、导出、导入、删除答题卡
+- **学科模板**：语文、英语、数学、物理、化学、生物可自动生成常用题块；英语可选择是否包含听力，语文可选择题统一卷首或按题号穿插
 - **确定性 ID**：基于科目 + 时间戳的 8 位纯数字 ID，导入时自动生成新 ID 防冲突
 - **导出/导入**：`.projectx-card.json` 格式，含标准答案 + 配图 base64 + 坐标布局，即插即用
 - **A4 标准版式**：含标题、六点定位标记、学生信息区、学号填涂区、题块、页码
 - **客观题设计**：
-  - 单选、多选、不定项，可配置选项数、题量、分值
-  - 标准答案录入，多选支持部分得分规则
+  - 单选、多选、不定项，可按题配置题号、题型、选项数、分值和标准答案
+  - 多选支持按选对项数、按正确答案总数分档、固定部分分等规则
 - **主观题设计**：
   - 带分数填涂区的手工给分样式（支持十位/个位/十分位）
-  - 纯书写块、填空题（阿拉伯/罗马数字序号）、横线格、空白大框
+  - 纯书写块、填空题（阿拉伯/罗马数字序号）、解答题内小空、横线格、空白大框
   - 支持图片插入、最小高度设置
 - **PDF 导出**：毫米级精确标准 A4 PDF，直接打印
 - **单/双面支持**：标记答题卡为单面或双面，扫描/阅卷时自动过滤背面
+- **删除保护**：答题卡被考试引用时先提示冲突，可选择解绑考试或连同考试一起删除
 - **坐标布局**：所有定位点、填涂框、作答区坐标精确到毫米
 
 ### 阅卷识别
@@ -75,13 +77,13 @@
 ### 成绩分析
 
 - **考试管理**：创建考试、关联答题卡（支持新建答题卡时同步创建/关联）、科目信息
-- **分析总览**：平均分、最高分、最低分、标准差、及格率、优秀率
+- **分析总览**：平均分、最高分、最低分、标准差、及格率、优秀率、错误率高题目低/中/高分档
 - **分数分布**：SVG 柱状图（0-59 / 60-69 / 70-79 / 80-89 / 90-100）
-- **学生排名**：学号、姓名、总分、客观分、主观分、待复核标记
-- **题目分析**：每题得分率、正确率排行，低分题红色高亮
+- **学生排名**：学号、姓名、总分、客观分、主观分、低分题占比分档
+- **题目分析**：每题得分率、正确率、错误/低分率排行，按 30% / 50% / 70% 分为低 / 中 / 高三档
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
 - **Excel (.xlsx) 成绩导出**：年级排名 / 班级排名两种模式，表头含班级、考号、姓名、成绩、双排名、客观/主观成绩、每题得分
-- **AI 成绩分析**：手动调用 `llmclient` Python 服务，基于白名单成绩工具生成总体判断、薄弱题、复核风险和教学建议
+- **AI 成绩分析**：手动调用 `llmclient` Python 服务，基于白名单成绩工具生成总体判断、薄弱题、错误率高题目和教学建议
 
 ### 账户与安全
 
@@ -109,12 +111,12 @@
 
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
 ```
-Project-X 学生端-1.2.0-x64.exe
-Project-X 教师端-1.2.0-x64.exe
-Project-X 教师扫描端-1.2.0-x64.exe
-Project-X 学生端-1.2.0-ia32.exe
-Project-X 教师端-1.2.0-ia32.exe
-Project-X 教师扫描端-1.2.0-ia32.exe
+Project-X 学生端-1.3.0-x64.exe
+Project-X 教师端-1.3.0-x64.exe
+Project-X 教师扫描端-1.3.0-x64.exe
+Project-X 学生端-1.3.0-ia32.exe
+Project-X 教师端-1.3.0-ia32.exe
+Project-X 教师扫描端-1.3.0-ia32.exe
 ```
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
@@ -234,6 +236,7 @@ npm run electron:msi                   # = electron:msi:scanner
 | `npm run electron:msi` | 生成扫描端 MSI |
 | `npm run electron:msi:all` | 一次生成三端 x64/ia32 共 6 个 MSI |
 | `npm run verify:auth` | 账号权限自动化验证（33 项用例） |
+| `npx tsx scripts/grading-rules-smoke.ts` | 客观题部分得分规则冒烟验证 |
 
 ---
 
@@ -252,7 +255,7 @@ npm run electron:msi                   # = electron:msi:scanner
 | [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.2.0 AI 成绩分析 + v1.1.x 多端/账号/打包增强） | 开发者 / 测试 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.3.0 学科模板/评分规则 + v1.2.0 AI 成绩分析 + v1.1.x 多端/账号/打包增强） | 开发者 / 测试 |
 
 ---
 
@@ -304,6 +307,7 @@ Project-X/
 │       ├── types.ts                     # 全部类型定义
 │       ├── grading.ts                   # 评分引擎
 │       ├── layout.ts                    # 答题卡坐标布局
+│       ├── cardTemplates.ts             # 学科默认答题卡模板
 │       ├── pinyin.ts                    # 科目名→拼音 key 转换
 │       ├── blankLabels.ts               # 填空序号格式化
 │       ├── defaultCard.ts               # 默认答题卡工厂 + ID 生成
@@ -313,6 +317,7 @@ Project-X/
 │   └── ScannerBridge/                   # C++ TWAIN 扫描仪桥接
 ├── scripts/
 │   ├── build-server.ts                  # esbuild 后端打包
+│   ├── grading-rules-smoke.ts           # 多选/不定项评分规则冒烟验证
 │   └── build-scanner-bridge.bat         # 扫描仪桥接一键编译
 ├── electron/
 │   └── main.cjs                         # Electron 主进程
@@ -349,8 +354,8 @@ Project-X/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET/POST` | `/api/cards` | 答题卡列表 / 创建（含 subject/title/examDate） |
-| `GET/PUT/DELETE` | `/api/cards/:id` | 答题卡详情 / 保存 / 删除 |
+| `GET/POST` | `/api/cards` | 答题卡列表 / 创建（含 subject/title/examDate/englishListening/chineseChoicePlacement） |
+| `GET/PUT/DELETE` | `/api/cards/:id` | 答题卡详情 / 保存 / 删除（引用考试时支持解绑或联删） |
 | `GET` | `/api/cards/:id/export` | 导出为 .projectx-card.json（含答案+配图+布局） |
 | `POST` | `/api/cards/import` | 导入答题卡 |
 | `GET` | `/api/cards/:id/layout` | 布局坐标 |
@@ -361,7 +366,7 @@ Project-X/
 | `GET/POST` | `/api/exams` | 考试列表 / 创建 |
 | `GET` | `/api/exams/:id` | 考试详情+成绩 |
 | `PATCH` | `/api/exams/:id` | 更新考试（cardId/name/subject） |
-| `DELETE` | `/api/exams/:id` | 删除考试 |
+| `DELETE` | `/api/exams/:id` | 删除考试（可选同时删除关联答题卡） |
 | `GET` | `/api/analysis/exams/:id/overview` | 考试总览统计 |
 | `GET` | `/api/analysis/exams/:id/students` | 学生排名 |
 | `GET` | `/api/analysis/exams/:id/questions` | 题目得分率 |

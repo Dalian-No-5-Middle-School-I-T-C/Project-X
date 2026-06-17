@@ -38,12 +38,20 @@ import type {
   ObjectiveBlock,
   ObjectiveMode,
   PageRenderBlock,
+  BlankItem,
   SubjectiveBlock,
+  SubjectiveBlockKind,
   SubjectiveKind,
   SubjectiveQuestion,
   SubjectiveStyle
 } from "../../../shared/types";
-import { normalizeObjectiveAnswerKey, objectiveQuestionNumbers, optionLabelsFor } from "../../../shared/grading";
+import {
+  normalizeObjectiveAnswerKey,
+  normalizeObjectiveQuestions,
+  objectiveQuestionDefinitions,
+  objectiveQuestionNumbers,
+  optionLabelsForQuestion
+} from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../shared/blankLabels";
@@ -72,6 +80,19 @@ const modeLabels: Record<ObjectiveMode, string> = {
   indefinite: "不定项"
 };
 
+type CardDeleteConflict = {
+  cardId: string;
+  cardTitle: string;
+  referencedExamCount: number;
+  referencedExamNames: string[];
+  deleteReferencedExams: boolean;
+};
+
+type ExamDeleteTarget = {
+  exams: ExamRecord[];
+  deleteLinkedCards: boolean;
+};
+
 const styleLabels: Record<SubjectiveStyle, string> = {
   manual_score_grid: "带顶部分数填涂区",
   plain_subjective: "纯主观题书写块"
@@ -88,6 +109,35 @@ const blankLabelStyleLabels: Record<BlankLabelStyle, string> = {
   arabic_parentheses: "(1)(2)",
   roman_parentheses: "(i)(ii)"
 };
+
+function subjectiveBlockKind(block: SubjectiveBlock): SubjectiveBlockKind {
+  if (block.blockKind) return block.blockKind;
+  if (block.title.includes("解答")) return "answer";
+  if (block.questions.length > 0 && block.questions.every((question) => question.kind === "blank")) return "fill_blank";
+  return "answer";
+}
+
+function subjectiveBlockKindLabel(block: SubjectiveBlock): string {
+  return subjectiveBlockKind(block) === "fill_blank" ? "填空题" : "解答题";
+}
+
+function answerBlankItems(question: SubjectiveQuestion): BlankItem[] {
+  const fallbackWidth = question.blanks?.widthMm ?? 32;
+  const fallbackHeight = question.blanks?.heightMm ?? 6;
+  if (question.blanks?.items?.length) {
+    return question.blanks.items.map((item) => ({
+      label: item.label ?? "",
+      widthMm: item.widthMm || fallbackWidth,
+      heightMm: item.heightMm || fallbackHeight
+    }));
+  }
+  const count = Math.max(1, question.blanks?.count ?? 4);
+  return Array.from({ length: count }, (_, index) => ({
+    label: formatBlankLabel(question.blanks?.labelStyle ?? "arabic_parentheses", index),
+    widthMm: fallbackWidth,
+    heightMm: fallbackHeight
+  }));
+}
 
 function cloneCard(card: AnswerCard): AnswerCard {
   return JSON.parse(JSON.stringify(card)) as AnswerCard;
@@ -200,7 +250,8 @@ function defaultSubjective(nextNumber: number): SubjectiveBlock {
   return {
     id: createBlockId("subj"),
     type: "subjective",
-    title: "主观题",
+    blockKind: "answer",
+    title: "解答题",
     questions: [
       {
         id: createBlockId("q"),
@@ -238,10 +289,29 @@ function defaultBlankBlock(nextNumber: number): SubjectiveBlock {
   return {
     id: createBlockId("subj"),
     type: "subjective",
+    blockKind: "fill_blank",
     title: "填空题",
     questions: Array.from({ length: 10 }, (_, index) =>
       defaultBlankQuestion(nextNumber + index, index === 0 ? 15 : 0, index === 0 ? "manual_score_grid" : "plain_subjective")
     )
+  };
+}
+
+function defaultAnswerBlankQuestion(nextNumber: number): SubjectiveQuestion {
+  return {
+    ...defaultBlankQuestion(nextNumber, 12, "manual_score_grid"),
+    minHeightMm: 62,
+    blanks: {
+      count: 4,
+      widthMm: 32,
+      heightMm: 6,
+      labelStyle: "arabic_parentheses",
+      items: Array.from({ length: 4 }, (_, index) => ({
+        label: `(${index + 1})`,
+        widthMm: 32,
+        heightMm: 6
+      }))
+    }
   };
 }
 
@@ -296,6 +366,8 @@ function App() {
   const [selectedExamIds, setSelectedExamIds] = useState<Set<number>>(new Set());
   const [analysisTab, setAnalysisTab] = useState<"manage" | "view" | "trend">("view");
   const [showNewCardModal, setShowNewCardModal] = useState(false);
+  const [cardDeleteConflict, setCardDeleteConflict] = useState<CardDeleteConflict | null>(null);
+  const [examDeleteTarget, setExamDeleteTarget] = useState<ExamDeleteTarget | null>(null);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
@@ -363,7 +435,9 @@ function App() {
           subject: formData.subject,
           subjectLabel: formData.subjectLabel,
           title: formData.title,
-          examDate: formData.examDate
+          examDate: formData.examDate,
+          englishListening: formData.englishListening,
+          chineseChoicePlacement: formData.chineseChoicePlacement
         })
       });
       setCard(created);
@@ -427,23 +501,86 @@ function App() {
     }
   }
 
-  async function deleteCard(cardId: string) {
+  async function deleteCard(
+    cardId: string,
+    options: { unlinkExams?: boolean; deleteReferencedExams?: boolean } = {}
+  ): Promise<boolean> {
     setIsBusy(true);
     try {
       const result = await fetchJson<{ ok: boolean; referencedExamCount: number; referencedExamNames: string[] }>(
         `/api/cards/${cardId}`,
-        { method: "DELETE" }
+        {
+          method: "DELETE",
+          headers: Object.keys(options).length > 0 ? { "Content-Type": "application/json" } : undefined,
+          body: Object.keys(options).length > 0 ? JSON.stringify(options) : undefined
+        }
       );
-      if (result.referencedExamCount > 0) {
-        setStatus(`已删除答题卡（被 ${result.referencedExamCount} 个考试引用：${result.referencedExamNames.join("、")}）`);
-      } else {
-        setStatus("已删除答题卡");
-      }
+      setStatus(result.referencedExamCount > 0
+        ? `已删除答题卡，并处理 ${result.referencedExamCount} 个关联考试`
+        : "已删除答题卡");
       if (card?.id === cardId) {
         setCard(null);
         setSelectedBlockId(null);
       }
       await refreshCards();
+      await loadExams();
+      return true;
+    } catch (err) {
+      const error = err as Error & {
+        status?: number;
+        referencedExamCount?: number;
+        referencedExamNames?: string[];
+      };
+      if (error.status === 409 && typeof error.referencedExamCount === "number") {
+        const target = cards.find((item) => item.id === cardId);
+        setCardDeleteConflict({
+          cardId,
+          cardTitle: target?.title || cardId,
+          referencedExamCount: error.referencedExamCount,
+          referencedExamNames: Array.isArray(error.referencedExamNames) ? error.referencedExamNames : [],
+          deleteReferencedExams: false
+        });
+        const names = Array.isArray(error.referencedExamNames) && error.referencedExamNames.length > 0
+          ? `（${error.referencedExamNames.join("、")}）`
+          : "";
+        setStatus(`答题卡已被 ${error.referencedExamCount} 个考试引用${names}，请确认处理方式`);
+      } else {
+        setStatus(`删除失败：${error.message}`);
+      }
+      return false;
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function deleteExams(target: ExamDeleteTarget): Promise<boolean> {
+    setIsBusy(true);
+    try {
+      const linkedCardIds = Array.from(new Set(target.exams.map((exam) => exam.card_id).filter((id): id is string => Boolean(id))));
+      for (const exam of target.exams) {
+        await fetchJson(`/api/exams/${exam.id}`, { method: "DELETE" });
+      }
+      setSelectedExamIds(new Set());
+      if (analysisExamId && target.exams.some((exam) => exam.id === analysisExamId)) {
+        setAnalysisExamId(null);
+        setAnalysisOverview(null);
+        setAnalysisRanking([]);
+        setAnalysisQuestions([]);
+      }
+      await loadExams();
+      if (target.deleteLinkedCards) {
+        for (const linkedCardId of linkedCardIds) {
+          const deleted = await deleteCard(linkedCardId);
+          if (!deleted) return false;
+        }
+      }
+      setStatus(target.deleteLinkedCards
+        ? `已删除 ${target.exams.length} 个考试，并删除关联答题卡`
+        : target.exams.length > 1 ? `已删除 ${target.exams.length} 个考试` : "已删除考试");
+      return true;
+    } catch (err) {
+      setStatus(`删除考试失败：${err instanceof Error ? err.message : String(err)}`);
+      return false;
     } finally {
       setIsBusy(false);
     }
@@ -752,7 +889,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.2.0</span>
+            <span>Project-X v1.3.0</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
@@ -939,7 +1076,7 @@ function App() {
                     {card.bodyBlocks.map((block, index) => (
                       <div key={block.id} className={`block-chip ${selectedBlockId === block.id ? "active" : ""}`}>
                         <button onClick={() => setSelectedBlockId(block.id)}>
-                          <strong>{block.type === "objective" ? "客观题" : "主观题"}</strong>
+                          <strong>{block.type === "objective" ? "客观题" : subjectiveBlockKindLabel(block)}</strong>
                           <span>{block.title}</span>
                         </button>
                         <div className="chip-actions">
@@ -967,7 +1104,7 @@ function App() {
                       <Plus size={16} /> 填空题块
                     </button>
                     <button className="ghost-button" onClick={addSubjectiveBlock}>
-                      <Plus size={16} /> 主观题块
+                      <Plus size={16} /> 解答题块
                     </button>
                   </div>
                 </section>
@@ -1154,7 +1291,7 @@ function App() {
                   </div>
                 </div>
               )}
-              <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
+      <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
             </section>
           </aside>
         </div>
@@ -1313,13 +1450,14 @@ function App() {
                     <Plus size={16} /> 新建考试
                   </button>
                   {selectedExamIds.size > 0 && (
-                    <button className="ghost-button" style={{ color: "var(--brand)" }} onClick={async () => {
-                      if (!confirm(`删除选中的 ${selectedExamIds.size} 个考试？`)) return;
-                      for (const id of selectedExamIds) await fetchJson(`/api/exams/${id}`, { method: "DELETE" });
-                      setSelectedExamIds(new Set());
-                      if (analysisExamId && selectedExamIds.has(analysisExamId)) { setAnalysisExamId(null); setAnalysisOverview(null); setAnalysisRanking([]); setAnalysisQuestions([]); }
-                      loadExams();
-                    }}>
+                    <button
+                      className="ghost-button"
+                      style={{ color: "var(--brand)" }}
+                      onClick={() => setExamDeleteTarget({
+                        exams: exams.filter((exam) => selectedExamIds.has(exam.id)),
+                        deleteLinkedCards: false
+                      })}
+                    >
                       <Trash2 size={16} /> 删除选中 ({selectedExamIds.size})
                     </button>
                   )}
@@ -1397,7 +1535,7 @@ function App() {
                           </td>
                           <td style={{ padding: "8px 10px", fontWeight: 500 }}>{exam.name}</td>
                           <td style={{ padding: "8px 10px", color: "var(--muted)" }}>{exam.subject || "—"}</td>
-                          <td style={{ padding: "8px 10px", color: "var(--muted)", fontSize: 12 }}>{exam.card_id}</td>
+                          <td style={{ padding: "8px 10px", color: "var(--muted)", fontSize: 12 }}>{exam.card_id ?? "未关联"}</td>
                           <td style={{ padding: "8px 10px" }}>
                             <span style={{
                               padding: "1px 8px", borderRadius: 10, fontSize: 11,
@@ -1408,12 +1546,11 @@ function App() {
                             </span>
                           </td>
                           <td style={{ padding: "8px 10px" }}>
-                            <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }} onClick={async () => {
-                              if (!confirm(`删除「${exam.name}」？`)) return;
-                              await fetchJson(`/api/exams/${exam.id}`, { method: "DELETE" });
-                              if (analysisExamId === exam.id) { setAnalysisExamId(null); setAnalysisOverview(null); setAnalysisRanking([]); setAnalysisQuestions([]); }
-                              loadExams();
-                            }}>删除</button>
+                            <button
+                              className="ghost-button"
+                              style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
+                              onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}
+                            >删除</button>
                           </td>
                         </tr>
                       ))}
@@ -1442,6 +1579,95 @@ function App() {
         <footer className="statusbar">{status}</footer>
       </section>
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
+      {cardDeleteConflict && (
+        <div className="modal-backdrop" onClick={() => setCardDeleteConflict(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
+            <div className="modal-header">
+              <h2>确认删除答题卡</h2>
+              <button className="modal-close" type="button" onClick={() => setCardDeleteConflict(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ marginTop: 0 }}>
+                「{cardDeleteConflict.cardTitle}」已被 {cardDeleteConflict.referencedExamCount} 个考试引用。删除答题卡前需要先解除这些考试的关联。
+              </p>
+              {cardDeleteConflict.referencedExamNames.length > 0 && (
+                <ul style={{ margin: "8px 0 14px", paddingLeft: 20, color: "var(--muted)", fontSize: 13 }}>
+                  {cardDeleteConflict.referencedExamNames.map((name) => <li key={name}>{name}</li>)}
+                </ul>
+              )}
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={cardDeleteConflict.deleteReferencedExams}
+                  onChange={(event) => setCardDeleteConflict({ ...cardDeleteConflict, deleteReferencedExams: event.target.checked })}
+                  disabled={isBusy}
+                />
+                同时删除这些考试及其成绩/扫描数据
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="ghost-button" type="button" onClick={() => setCardDeleteConflict(null)} disabled={isBusy}>取消</button>
+              <button
+                className="primary-button"
+                type="button"
+                disabled={isBusy}
+                onClick={async () => {
+                  const target = cardDeleteConflict;
+                  const ok = await deleteCard(target.cardId, {
+                    unlinkExams: !target.deleteReferencedExams,
+                    deleteReferencedExams: target.deleteReferencedExams
+                  });
+                  if (ok) setCardDeleteConflict(null);
+                }}
+              >
+                {cardDeleteConflict.deleteReferencedExams ? "删除考试和答题卡" : "解绑考试并删除答题卡"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {examDeleteTarget && (
+        <div className="modal-backdrop" onClick={() => setExamDeleteTarget(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
+            <div className="modal-header">
+              <h2>确认删除考试</h2>
+              <button className="modal-close" type="button" onClick={() => setExamDeleteTarget(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ marginTop: 0 }}>
+                将删除 {examDeleteTarget.exams.length} 个考试，并解除它们与答题卡的关联。
+              </p>
+              <ul style={{ margin: "8px 0 14px", paddingLeft: 20, color: "var(--muted)", fontSize: 13 }}>
+                {examDeleteTarget.exams.map((exam) => <li key={exam.id}>{exam.name}</li>)}
+              </ul>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
+                <input
+                  type="checkbox"
+                  checked={examDeleteTarget.deleteLinkedCards}
+                  onChange={(event) => setExamDeleteTarget({ ...examDeleteTarget, deleteLinkedCards: event.target.checked })}
+                  disabled={isBusy || !examDeleteTarget.exams.some((exam) => exam.card_id)}
+                />
+                同时删除关联答题卡
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="ghost-button" type="button" onClick={() => setExamDeleteTarget(null)} disabled={isBusy}>取消</button>
+              <button
+                className="primary-button"
+                type="button"
+                disabled={isBusy}
+                onClick={async () => {
+                  const target = examDeleteTarget;
+                  const ok = await deleteExams(target);
+                  if (ok) setExamDeleteTarget(null);
+                }}
+              >
+                {examDeleteTarget.deleteLinkedCards ? "删除考试和答题卡" : "解绑答题卡并删除考试"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -1556,30 +1782,113 @@ function GradingResults({
 
 function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange: (mutator: (block: BodyBlock) => void) => void }) {
   const questions = objectiveQuestionNumbers(block);
-  const options = optionLabelsFor(block);
+  const questionConfigs = objectiveQuestionDefinitions(block);
   const answerKey = normalizeObjectiveAnswerKey(block);
   const missingAnswerCount = questions.filter((questionNumber) => !answerKey[questionNumber]?.length).length;
 
   function toggleAnswer(questionNumber: number, option: string) {
     onChange((draft) => {
       const objective = draft as ObjectiveBlock;
-      objective.answerKey = normalizeObjectiveAnswerKey(objective);
-      const current = new Set(objective.answerKey[questionNumber] ?? []);
-      if (objective.mode === "single") {
-        objective.answerKey[questionNumber] = current.has(option) ? [] : [option];
+      objective.questions = normalizeObjectiveQuestions(objective);
+      const config = objective.questions.find((item) => item.questionNumber === questionNumber);
+      const current = new Set(config?.answerKey ?? objective.answerKey?.[questionNumber] ?? []);
+      if ((config?.mode ?? objective.mode) === "single") {
+        if (config) config.answerKey = current.has(option) ? [] : [option];
       } else {
         if (current.has(option)) {
           current.delete(option);
         } else {
           current.add(option);
         }
-        objective.answerKey[questionNumber] = Array.from(current).sort();
+        if (config) config.answerKey = Array.from(current).sort();
       }
-      if (objective.answerKey[questionNumber].length === 0) {
-        delete objective.answerKey[questionNumber];
+      if (config?.answerKey?.length === 0) {
+        delete config.answerKey;
       }
       objective.answerKey = normalizeObjectiveAnswerKey(objective);
     });
+  }
+
+  function updateQuestionConfig(questionNumber: number, mutator: (question: NonNullable<ObjectiveBlock["questions"]>[number]) => void) {
+    onChange((draft) => {
+      const objective = draft as ObjectiveBlock;
+      objective.questions = normalizeObjectiveQuestions(objective);
+      const question = objective.questions.find((item) => item.questionNumber === questionNumber);
+      if (!question) return;
+      mutator(question);
+      if (question.mode === "single" && question.answerKey && question.answerKey.length > 1) {
+        question.answerKey = [question.answerKey[0]];
+      }
+      objective.answerKey = normalizeObjectiveAnswerKey(objective);
+      const first = objective.questions[0];
+      objective.questionStart = first?.questionNumber ?? objective.questionStart;
+      objective.questionCount = objective.questions.length;
+    });
+  }
+
+  function defaultQuestionScoringRule() {
+    return {
+      type: "per_selected_count" as const,
+      partialScores: {},
+      wrongOrExtraScore: 0
+    };
+  }
+
+  function scoringRuleFor(question: (typeof questionConfigs)[number]) {
+    return question.scoringRule ?? defaultQuestionScoringRule();
+  }
+
+  function updateScoringRule(questionNumber: number, mutator: (rule: any) => any) {
+    updateQuestionConfig(questionNumber, (draft) => {
+      const current = draft.scoringRule ?? defaultQuestionScoringRule();
+      draft.scoringRule = mutator(JSON.parse(JSON.stringify(current)));
+    });
+  }
+
+  function setScoringRuleType(questionNumber: number, type: "per_selected_count" | "by_correct_count" | "fixed_partial") {
+    updateScoringRule(questionNumber, (rule) => {
+      const common = {
+        wrongOrExtraScore: Number(rule.wrongOrExtraScore ?? 0),
+        allowWrongOptions: rule.allowWrongOptions === true
+      };
+      if (type === "fixed_partial") return { type, partialScore: 0, ...common };
+      if (type === "by_correct_count") return { type, partialScoresByCorrectCount: {}, ...common };
+      return { type, partialScores: {}, ...common };
+    });
+  }
+
+  function updateWrongOrExtraScore(questionNumber: number, value: number) {
+    updateScoringRule(questionNumber, (rule) => ({ ...rule, wrongOrExtraScore: value }));
+  }
+
+  function updateAllowWrongOptions(questionNumber: number, checked: boolean) {
+    updateScoringRule(questionNumber, (rule) => ({ ...rule, allowWrongOptions: checked }));
+  }
+
+  function updateFixedPartialScore(questionNumber: number, value: number) {
+    updateScoringRule(questionNumber, (rule) => ({ ...rule, type: "fixed_partial", partialScore: value }));
+  }
+
+  function updatePerSelectedScore(questionNumber: number, selectedCount: number, value: number) {
+    updateScoringRule(questionNumber, (rule) => ({
+      ...rule,
+      type: "per_selected_count",
+      partialScores: { ...(rule.partialScores ?? {}), [selectedCount]: value }
+    }));
+  }
+
+  function updateByCorrectCountScore(questionNumber: number, correctCount: number, selectedCount: number, value: number) {
+    updateScoringRule(questionNumber, (rule) => ({
+      ...rule,
+      type: "by_correct_count",
+      partialScoresByCorrectCount: {
+        ...(rule.partialScoresByCorrectCount ?? {}),
+        [correctCount]: {
+          ...(rule.partialScoresByCorrectCount?.[correctCount] ?? {}),
+          [selectedCount]: value
+        }
+      }
+    }));
   }
 
   return (
@@ -1599,7 +1908,7 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
             <div className="answer-key-row" key={questionNumber}>
               <span>{questionNumber}</span>
               <div>
-                {options.map((option) => {
+                {optionLabelsForQuestion(block, questionNumber).map((option) => {
                   const active = answerKey[questionNumber]?.includes(option) ?? false;
                   return (
                     <button
@@ -1724,7 +2033,139 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
           />
         </label>
       </div>
-      <p className="hint">客观题使用固定紧凑排版，填涂框尺寸保持一致。</p>
+      <div className="answer-key-editor">
+        <div className="answer-key-title">
+          <strong>每题配置</strong>
+          <span>可混排单选、多选、不定项</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {questionConfigs.map((question) => (
+            <div className="question-editor" key={question.questionNumber} style={{ margin: 0 }}>
+              <div className="question-editor-title">
+                <strong>第 {question.questionNumber} 题</strong>
+              </div>
+              <div className="three-col">
+                <label>
+                  题号
+                  <input type="number" min={1} value={question.questionNumber} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.questionNumber = Number(event.target.value)))} />
+                </label>
+                <label>
+                  题型
+                  <select value={question.mode} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => { draft.mode = event.target.value as ObjectiveMode; if (draft.mode === "single") draft.scoringRule = undefined; })}>
+                    {Object.entries(modeLabels).map(([value, label]) => (<option key={value} value={value}>{label}</option>))}
+                  </select>
+                </label>
+                <label>
+                  选项数
+                  <input type="number" min={2} max={8} value={question.optionCount} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.optionCount = Number(event.target.value)))} />
+                </label>
+              </div>
+              <label>
+                分值
+                <input type="number" min={0} step={0.5} value={question.score} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.score = Number(event.target.value)))} />
+              </label>
+              {question.mode !== "single" && (
+                <>
+                  <div className="two-col">
+                    <label>
+                      少选计分方式
+                      <select
+                        value={scoringRuleFor(question).type}
+                        onChange={(event) =>
+                          setScoringRuleType(
+                            question.questionNumber,
+                            event.target.value as "per_selected_count" | "by_correct_count" | "fixed_partial"
+                          )
+                        }
+                      >
+                        <option value="per_selected_count">按选对项数给分</option>
+                        <option value="by_correct_count">按正确答案数量给分</option>
+                        <option value="fixed_partial">少选固定分</option>
+                      </select>
+                    </label>
+                    <label>
+                      错选/多选/不选得分
+                      <input
+                        type="number"
+                        step={0.5}
+                        value={(scoringRuleFor(question) as any).wrongOrExtraScore ?? 0}
+                        onChange={(event) => updateWrongOrExtraScore(question.questionNumber, Number(event.target.value))}
+                      />
+                    </label>
+                  </div>
+                  {scoringRuleFor(question).type === "fixed_partial" ? (
+                    <label>
+                      少选固定得分
+                      <input
+                        type="number"
+                        step={0.5}
+                        value={(scoringRuleFor(question) as any).partialScore ?? 0}
+                        onChange={(event) => updateFixedPartialScore(question.questionNumber, Number(event.target.value))}
+                      />
+                    </label>
+                  ) : scoringRuleFor(question).type === "by_correct_count" ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                        根据标准答案个数，设置少选时选对几项得几分
+                      </span>
+                      {Array.from({ length: Math.max(0, question.optionCount - 1) }, (_, index) => index + 2).map((correctCount) => (
+                        <div key={correctCount} style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 8, alignItems: "center" }}>
+                          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{correctCount} 个答案</span>
+                          <div className="three-col">
+                            {Array.from({ length: correctCount - 1 }, (_, index) => index + 1).map((selectedCount) => (
+                              <label key={selectedCount}>
+                                {selectedCount} 项对
+                                <input
+                                  type="number"
+                                  step={0.5}
+                                  value={(scoringRuleFor(question) as any).partialScoresByCorrectCount?.[correctCount]?.[selectedCount] ?? 0}
+                                  onChange={(event) =>
+                                    updateByCorrectCountScore(
+                                      question.questionNumber,
+                                      correctCount,
+                                      selectedCount,
+                                      Number(event.target.value)
+                                    )
+                                  }
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="three-col">
+                      {Array.from({ length: Math.max(1, question.optionCount - 1) }, (_, index) => index + 1).map((selectedCount) => (
+                        <label key={selectedCount}>
+                          选对 {selectedCount} 项
+                          <input
+                            type="number"
+                            step={0.5}
+                            value={(scoringRuleFor(question) as any).partialScores?.[selectedCount] ?? 0}
+                            onChange={(event) =>
+                              updatePerSelectedScore(question.questionNumber, selectedCount, Number(event.target.value))
+                            }
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={(scoringRuleFor(question) as any).allowWrongOptions === true}
+                      onChange={(event) => updateAllowWrongOptions(question.questionNumber, event.target.checked)}
+                    />
+                    错选但未超过正确答案数时，只按选对项给分
+                  </label>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+      <p className="hint">少于 15 题横向排列；15 题及以上按 5 题小组网格排列；超过 5 个选项的题目独占一行。</p>
     </>
   );
 }
@@ -1738,7 +2179,7 @@ function SubjectiveEditor({
   onChange: (mutator: (block: BodyBlock) => void) => void;
   onUpload: (blockId: string, questionId: string, file: File) => Promise<void>;
 }) {
-  const isBlankBlock = block.questions.length > 0 && block.questions.every((question) => question.kind === "blank");
+  const isFillBlankBlock = subjectiveBlockKind(block) === "fill_blank";
 
   function updateQuestion(questionId: string, mutator: (question: SubjectiveQuestion) => void) {
     onChange((draft) => {
@@ -1748,14 +2189,29 @@ function SubjectiveEditor({
     });
   }
 
+  function updateAnswerBlankItems(questionId: string, mutator: (items: BlankItem[]) => BlankItem[]) {
+    updateQuestion(questionId, (draft) => {
+      const items = mutator(answerBlankItems(draft));
+      const first = items[0] ?? { label: "(1)", widthMm: 32, heightMm: 6 };
+      draft.blanks = {
+        ...(draft.blanks ?? { labelStyle: "arabic_parentheses" }),
+        count: items.length,
+        widthMm: first.widthMm,
+        heightMm: first.heightMm,
+        labelStyle: draft.blanks?.labelStyle ?? "arabic_parentheses",
+        items
+      };
+    });
+  }
+
   return (
     <>
-      <div className="panel-title">主观题块</div>
+      <div className="panel-title">{isFillBlankBlock ? "填空题块" : "解答题块"}</div>
       <label>
         标题
         <input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
       </label>
-      {isBlankBlock && (
+      {isFillBlankBlock && (
         <label>
           填空题块满分
           <input
@@ -1785,7 +2241,7 @@ function SubjectiveEditor({
               onClick={() =>
                 onChange((draft) => {
                   if (draft.type !== "subjective") return;
-                  const isScoreQuestion = isBlankBlock && draft.questions[0]?.id === question.id;
+                  const isScoreQuestion = isFillBlankBlock && draft.questions[0]?.id === question.id;
                   const blockScore = draft.questions[0]?.score ?? 0;
                   draft.questions = draft.questions.filter((item) => item.id !== question.id);
                   if (isScoreQuestion && draft.questions[0]) {
@@ -1803,7 +2259,7 @@ function SubjectiveEditor({
               题号
               <input value={question.number} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.number = event.target.value))} />
             </label>
-            {isBlankBlock ? (
+            {isFillBlankBlock ? (
               <label>
                 横线宽(mm)
                 <input
@@ -1825,7 +2281,7 @@ function SubjectiveEditor({
               </label>
             )}
           </div>
-          {isBlankBlock ? (
+          {isFillBlankBlock ? (
             <div className="three-col">
               <label>
                 空数
@@ -1893,7 +2349,21 @@ function SubjectiveEditor({
               </label>
               <label>
                 作答区类型
-                <select value={question.kind} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.kind = event.target.value as SubjectiveKind))}>
+                <select
+                  value={question.kind}
+                  onChange={(event) =>
+                    updateQuestion(question.id, (draft) => {
+                      draft.kind = event.target.value as SubjectiveKind;
+                      if (draft.kind === "blank" && !draft.blanks?.items?.length) {
+                        draft.blanks = defaultAnswerBlankQuestion(numericQuestionValue(draft.number)).blanks;
+                      }
+                      if (draft.kind === "blank") {
+                        draft.style = "manual_score_grid";
+                        if (draft.score <= 0) draft.score = 12;
+                      }
+                    })
+                  }
+                >
                   {Object.entries(kindLabels).map(([value, label]) => (
                     <option key={value} value={value}>
                       {label}
@@ -1907,23 +2377,73 @@ function SubjectiveEditor({
               </label>
             </>
           )}
-          {question.kind === "blank" && !isBlankBlock && (
-            <div className="three-col">
-              <label>
-                空数
-                <input type="number" min={1} value={question.blanks?.count ?? 4} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.blanks = { ...(draft.blanks ?? { widthMm: 28, heightMm: 6 }), count: Number(event.target.value) }))} />
-              </label>
-              <label>
-                宽
-                <input type="number" min={8} value={question.blanks?.widthMm ?? 28} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.blanks = { ...(draft.blanks ?? { count: 4, heightMm: 6 }), widthMm: Number(event.target.value) }))} />
-              </label>
-              <label>
-                高
-                <input type="number" min={4} value={question.blanks?.heightMm ?? 6} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.blanks = { ...(draft.blanks ?? { count: 4, widthMm: 28 }), heightMm: Number(event.target.value) }))} />
-              </label>
+          {question.kind === "blank" && !isFillBlankBlock && (
+            <div className="blank-item-list">
+              {answerBlankItems(question).map((item, blankIndex) => (
+                <div className="blank-item-row" key={blankIndex}>
+                  <label>
+                    小题号
+                    <input
+                      value={item.label ?? ""}
+                      onChange={(event) =>
+                        updateAnswerBlankItems(question.id, (items) =>
+                          items.map((current, index) => (index === blankIndex ? { ...current, label: event.target.value } : current))
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    宽(mm)
+                    <input
+                      type="number"
+                      min={8}
+                      value={item.widthMm}
+                      onChange={(event) =>
+                        updateAnswerBlankItems(question.id, (items) =>
+                          items.map((current, index) => (index === blankIndex ? { ...current, widthMm: Number(event.target.value) } : current))
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    高(mm)
+                    <input
+                      type="number"
+                      min={4}
+                      value={item.heightMm}
+                      onChange={(event) =>
+                        updateAnswerBlankItems(question.id, (items) =>
+                          items.map((current, index) => (index === blankIndex ? { ...current, heightMm: Number(event.target.value) } : current))
+                        )
+                      }
+                    />
+                  </label>
+                  <button
+                    title="删除这个空"
+                    onClick={() => updateAnswerBlankItems(question.id, (items) => (items.length > 1 ? items.filter((_, index) => index !== blankIndex) : items))}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
+              ))}
+              <button
+                className="ghost-button"
+                onClick={() =>
+                  updateAnswerBlankItems(question.id, (items) => [
+                    ...items,
+                    {
+                      label: `(${items.length + 1})`,
+                      widthMm: items[items.length - 1]?.widthMm ?? 32,
+                      heightMm: items[items.length - 1]?.heightMm ?? 6
+                    }
+                  ])
+                }
+              >
+                <Plus size={16} /> 添加空
+              </button>
             </div>
           )}
-          {!isBlankBlock && (
+          {!isFillBlankBlock && (
             <>
               <label className="check-row">
                 <input
@@ -1966,18 +2486,20 @@ function SubjectiveEditor({
           )}
         </div>
       ))}
-      <button
-        className="ghost-button"
-        onClick={() =>
-          onChange((draft) => {
-            if (draft.type !== "subjective") return;
-            const next = Math.max(0, ...draft.questions.map((item) => numericQuestionValue(item.number))) + 1;
-            draft.questions.push(isBlankBlock ? defaultBlankQuestion(next) : defaultSubjective(next).questions[0]);
-          })
-        }
-      >
-        <Plus size={16} /> {isBlankBlock ? "添加填空题" : "添加主观小题"}
-      </button>
+      {isFillBlankBlock && (
+        <button
+          className="ghost-button"
+          onClick={() =>
+            onChange((draft) => {
+              if (draft.type !== "subjective") return;
+              const next = Math.max(0, ...draft.questions.map((item) => numericQuestionValue(item.number))) + 1;
+              draft.questions.push(defaultBlankQuestion(next));
+            })
+          }
+        >
+          <Plus size={16} /> 添加填空题
+        </button>
+      )}
     </>
   );
 }
@@ -2107,18 +2629,19 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
                     y2={question.scoreCells[0].rect.y + question.scoreCells[0].rect.height + 2}
                     stroke="#777"
                     strokeWidth="0.2"
-                    strokeDasharray="1.5 1.5"
                   />
                 </>
               ) : (
-                <line x1={question.rect.x} y1={question.contentRect.y} x2={question.rect.x + question.rect.width} y2={question.contentRect.y} stroke="#777" strokeWidth="0.2" strokeDasharray="1.5 1.5" />
+                <line x1={question.rect.x} y1={question.contentRect.y} x2={question.rect.x + question.rect.width} y2={question.contentRect.y} stroke="#777" strokeWidth="0.2" />
               )}
               {question.scoreCells.map((cell) => (
                 <g key={cell.score}>
                   <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" />
-                  <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + 4.2} textAnchor="middle" className="svg-tiny">
-                    {cell.score}
-                  </text>
+                  {cell.score !== null && (
+                    <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + 4.2} textAnchor="middle" className="svg-tiny">
+                      {cell.score}
+                    </text>
+                  )}
                 </g>
               ))}
             </>
@@ -2136,7 +2659,7 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
             <line key={lineY} x1={question.contentRect.x + 8} y1={lineY} x2={question.contentRect.x + question.contentRect.width - 6} y2={lineY} stroke="#888" strokeWidth="0.2" />
           ))}
           {question.blanks.map((blank, index) => {
-            const blankLabel = question.kind === "blank" ? formatBlankLabel(question.blankLabelStyle, index) : `${question.questionNumber}.${index + 1}`;
+            const blankLabel = question.blankLabels?.[index] ?? (question.kind === "blank" ? formatBlankLabel(question.blankLabelStyle, index) : `${question.questionNumber}.${index + 1}`);
             return (
               <g key={index}>
                 {blankLabel && (

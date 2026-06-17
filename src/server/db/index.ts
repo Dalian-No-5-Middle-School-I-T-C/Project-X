@@ -63,6 +63,79 @@ export function initializeDatabase(): void {
     console.log("[DB] Migration: added exam_date column to answer_cards");
   }
 
+  const examCols = db.prepare("PRAGMA table_info(exams)").all() as Array<{ name: string; notnull: number; dflt_value: unknown }>;
+  const examCardCol = examCols.find((c) => c.name === "card_id");
+  if (examCardCol?.notnull === 1) {
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      BEGIN;
+      CREATE TABLE exams_new (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        name          TEXT NOT NULL,
+        card_id       TEXT REFERENCES answer_cards(id),
+        grade_id      INTEGER REFERENCES grades(id),
+        class_id      INTEGER REFERENCES classes(id),
+        subject       TEXT,
+        start_time    DATETIME,
+        end_time      DATETIME,
+        status        TEXT DEFAULT 'draft',
+        retention_policy_id INTEGER REFERENCES data_retention_policies(id),
+        created_by    INTEGER REFERENCES users(id),
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO exams_new (
+        id, name, card_id, grade_id, class_id, subject, start_time, end_time,
+        status, retention_policy_id, created_by, created_at, updated_at
+      )
+      SELECT
+        id, name, card_id, grade_id, class_id, subject, start_time, end_time,
+        status, retention_policy_id, created_by, created_at, updated_at
+      FROM exams;
+      DROP TABLE exams;
+      ALTER TABLE exams_new RENAME TO exams;
+      CREATE INDEX IF NOT EXISTS idx_exams_status ON exams(status);
+      CREATE INDEX IF NOT EXISTS idx_exams_grade ON exams(grade_id);
+      COMMIT;
+      PRAGMA foreign_keys = ON;
+    `);
+    console.log("[DB] Migration: made exams.card_id nullable");
+  }
+
+  const hasObjectiveQuestions = db.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='objective_questions'").get() as { cnt: number };
+  if (hasObjectiveQuestions.cnt === 0) {
+    db.exec(`
+      CREATE TABLE objective_questions (
+        block_id        TEXT NOT NULL REFERENCES objective_blocks(id) ON DELETE CASCADE,
+        question_number INTEGER NOT NULL,
+        sort_order      INTEGER DEFAULT 0,
+        mode            TEXT NOT NULL,
+        option_count    INTEGER NOT NULL,
+        score           REAL NOT NULL,
+        scoring_rule_json TEXT,
+        PRIMARY KEY (block_id, question_number)
+      );
+      CREATE INDEX idx_objective_questions_block ON objective_questions(block_id);
+    `);
+    console.log("[DB] Migration: created objective_questions table");
+  }
+
+  const subjectiveBlockCols = db.prepare("PRAGMA table_info(subjective_blocks)").all() as Array<{ name: string }>;
+  if (!subjectiveBlockCols.some((c) => c.name === "block_kind")) {
+    db.exec("ALTER TABLE subjective_blocks ADD COLUMN block_kind TEXT DEFAULT 'answer'");
+    console.log("[DB] Migration: added block_kind column to subjective_blocks");
+  }
+
+  const subjectiveQuestionCols = db.prepare("PRAGMA table_info(subjective_questions)").all() as Array<{ name: string }>;
+  if (!subjectiveQuestionCols.some((c) => c.name === "blanks_label_style")) {
+    db.exec("ALTER TABLE subjective_questions ADD COLUMN blanks_label_style TEXT");
+    console.log("[DB] Migration: added blanks_label_style column to subjective_questions");
+  }
+  if (!subjectiveQuestionCols.some((c) => c.name === "blanks_items_json")) {
+    db.exec("ALTER TABLE subjective_questions ADD COLUMN blanks_items_json TEXT");
+    console.log("[DB] Migration: added blanks_items_json column to subjective_questions");
+  }
+
   // v1.1.0 migrations: users + teacher_classes
   const userCols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (!userCols.some((c) => c.name === "subject")) {

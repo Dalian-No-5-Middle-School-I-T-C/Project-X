@@ -82,12 +82,12 @@ FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
     },
     {
         "name": "get_review_risks",
-        "description": "Read questions with many zero or low-score review risks.",
+        "description": "Read questions whose objective error rate or subjective low-score rate is high enough for teaching attention.",
         "parameters": _params(
             {
                 "examId": {"type": "integer"},
                 "classId": {"type": "integer", "description": "Optional class id; use 0 for unknown class"},
-                "limit": {"type": "integer", "description": "Maximum number of risk items to return"},
+                "limit": {"type": "integer", "description": "Maximum number of high-error items to return"},
             },
             ["examId"],
         ),
