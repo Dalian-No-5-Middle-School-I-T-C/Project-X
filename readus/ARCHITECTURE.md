@@ -207,6 +207,8 @@ data/answer-card/
 定义完整领域模型：
 
 - `AnswerCard` / `BodyBlock`（客观题、主观题）
+- `ObjectiveQuestionConfig` / `ObjectiveScoringRule`（题级题型、选项数、分值、部分得分规则）
+- `SubjectiveBlockKind` / `BlankItem`（填空题块、解答题块、逐空尺寸与标签）
 - `LayoutDocument`（毫米级坐标）
 - 识别结果、判分结果、分析统计等 DTO
 
@@ -217,17 +219,34 @@ data/answer-card/
 - A4 210×297mm 坐标系
 - 六点定位标记、学号填涂格、客观选项框、主观书写区
 - 密度档位（loose/normal/compact/dense）
+- 支持非连续客观题号、同一题块内混合选项数/分值、填空题多列紧凑排版
 - 输出供 **PDF 渲染** 和 **C++ 识别** 共用
 
 ### 5.3 判分引擎 (`grading.ts`)
 
 TypeScript 实现，在 Node 侧运行：
 
+- `objectiveQuestionDefinitions` — 将旧题块字段和 v1.3 题级配置归一化为逐题定义
 - `gradeObjectiveRecognition` — 客观题对比标准答案（单选/多选/不定项、部分分）
+- `ObjectiveScoringRule` — 支持按选对项数、按正确答案总数分档、固定部分分三类规则
 - `gradeCombinedRecognition` — 客观 + 主观（红色分数格识别结果）
 - 低置信度阈值 `OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD = 0.12`，标记「待复核」
 
 **职责分离：** C++ 只做 **图像 → 填涂/分数识别**；TS 做 **业务判分规则**。
+
+### 5.4 学科模板 (`cardTemplates.ts`)
+
+v1.3.0 将常见学科答题卡结构沉淀为共享模板：
+
+| 科目 | 模板能力 |
+|------|----------|
+| 语文 | 选择题可统一卷首或按题号穿插；第 10 题支持 8 选多选与特殊部分分 |
+| 英语 | 可选择是否包含听力 1-20；阅读、七选五、完形和语法填空按常见题号生成 |
+| 数学 | 单选、多选、填空和解答题组合，多选按正确答案数量分档给分 |
+| 物理 | 单选、多选、填空和解答题组合，多选固定部分分 |
+| 化学/生物 | 选择题 + 带小空的解答题；生物不定项支持固定部分分 |
+
+模板只负责生成初始 `AnswerCard.bodyBlocks`，后续仍可在设计器中自由增删题块、修改答案和分值。
 
 ---
 
@@ -368,12 +387,12 @@ flowchart LR
     → C++ 识别 JSON
     → grading.ts 判分
     → 可选 examId → ExamRepository 落库
-    → CSV 导出
+    → Excel(.xlsx) 导出
 
 [分析模式]
   选择考试
     → AnalysisRepository 聚合
-    → 总览 / 分布图 / 排名 / 题目得分率
+    → 总览 / 分布图 / 排名 / 题目得分率 / AI 成绩分析
 ```
 
 ---
@@ -395,4 +414,4 @@ flowchart LR
 ---
 
 > 文档生成日期：2026-06-13  
-> 基于 Project-X v1.2.0 代码库分析
+> 基于 Project-X v1.3.0 代码库分析

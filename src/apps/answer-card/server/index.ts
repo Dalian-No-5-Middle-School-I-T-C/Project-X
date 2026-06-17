@@ -379,7 +379,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/export", exportRoutes);
   app.use("/api/scores", scoreRoutes);
   app.use("/api/sponsor", sponsorRoutes);
-  console.log("[Server] v1.2.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
+  console.log("[Server] v1.3.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
 
   // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
