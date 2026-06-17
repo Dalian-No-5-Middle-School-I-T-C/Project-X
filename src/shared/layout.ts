@@ -13,6 +13,7 @@ import type {
   SubjectiveQuestion
 } from "./types";
 import { formatBlankLabel } from "./blankLabels";
+import { objectiveQuestionDefinitions, type ObjectiveQuestionDefinition } from "./grading";
 
 const PAGE_WIDTH = 210;
 const PAGE_HEIGHT = 297;
@@ -136,19 +137,20 @@ function titleHeight(): number {
   return 8;
 }
 
-function getObjectiveColumns(block: ObjectiveBlock): number {
+function getObjectiveColumnsForQuestions(questions: ObjectiveQuestionDefinition[]): number {
   const settings = OBJECTIVE_SETTINGS;
-  const minQuestionWidth = 8 + block.optionCount * settings.optionGap + settings.questionGap;
+  const maxOptionCount = Math.max(2, ...questions.map((question) => question.optionCount));
+  const minQuestionWidth = 8 + maxOptionCount * settings.optionGap + settings.questionGap;
   const maxByWidth = Math.max(1, Math.floor((BODY_WIDTH - 8) / minQuestionWidth));
-  return Math.max(1, Math.min(settings.maxColumns, maxByWidth, block.questionCount));
+  return Math.max(1, Math.min(settings.maxColumns, maxByWidth, questions.length));
 }
 
-function objectiveRowsFor(block: ObjectiveBlock, count: number): number {
-  return Math.ceil(count / getObjectiveColumns(block));
+function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[]): number {
+  return Math.ceil(questions.length / getObjectiveColumnsForQuestions(questions));
 }
 
-function objectiveHeight(block: ObjectiveBlock, count = block.questionCount): number {
-  const rows = objectiveRowsFor(block, count);
+function objectiveHeightForQuestions(questions: ObjectiveQuestionDefinition[]): number {
+  const rows = objectiveRowsForQuestions(questions);
   return OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + (rows - 1) * OBJECTIVE_SETTINGS.rowHeight + OBJECTIVE_SETTINGS.optionHeight + OBJECTIVE_INNER_BOTTOM;
 }
 
@@ -162,14 +164,13 @@ function addObjectiveSegment(
   page: PageLayout,
   block: ObjectiveBlock,
   title: string,
-  questionStart: number,
-  count: number,
+  questions: ObjectiveQuestionDefinition[],
   y: number
 ): number {
   const settings = OBJECTIVE_SETTINGS;
-  const columns = getObjectiveColumns({ ...block, questionCount: count });
-  const rows = Math.ceil(count / columns);
-  const blockHeight = objectiveHeight(block, count);
+  const columns = getObjectiveColumnsForQuestions(questions);
+  const rows = Math.ceil(questions.length / columns);
+  const blockHeight = objectiveHeightForQuestions(questions);
   const blockRect = rect(MARGIN_X, y, BODY_WIDTH, blockHeight);
   const frameRect = rect(MARGIN_X, y + OBJECTIVE_FRAME_TOP, BODY_WIDTH, blockHeight - OBJECTIVE_FRAME_TOP);
   const itemAreaY = frameRect.y + OBJECTIVE_INNER_TOP;
@@ -210,15 +211,16 @@ function addObjectiveSegment(
     density: "compact"
   };
 
-  for (let offset = 0; offset < count; offset += 1) {
-    const questionNumber = questionStart + offset;
+  for (let offset = 0; offset < questions.length; offset += 1) {
+    const question = questions[offset];
+    const questionNumber = question.questionNumber;
     const col = Math.floor(offset / rows);
     const row = offset % rows;
     const labelTextX = contentStartX + col * columnWidth;
     const labelX = labelTextX + 2.5;
     const labelY = itemAreaY + row * settings.rowHeight + 2.9;
     const optionStartX = labelTextX + OBJECTIVE_LABEL_TO_OPTION_GAP;
-    const options = OPTIONS.slice(0, block.optionCount).map((label, optionIndex) => {
+    const options = OPTIONS.slice(0, question.optionCount).map((label, optionIndex) => {
       const optionRect = rect(
         optionStartX + optionIndex * settings.optionGap,
         itemAreaY + row * settings.rowHeight + OBJECTIVE_OPTION_TOP_OFFSET,
@@ -583,29 +585,26 @@ export function buildLayout(card: AnswerCard): LayoutDocument {
 
   for (const block of card.bodyBlocks) {
     if (block.type === "objective") {
-      let remaining = block.questionCount;
-      let start = block.questionStart;
+      let remaining = objectiveQuestionDefinitions(block);
       let firstSegment = true;
 
-      while (remaining > 0) {
-        const settings = OBJECTIVE_SETTINGS;
-        const columns = getObjectiveColumns({ ...block, questionCount: remaining });
+      while (remaining.length > 0) {
+        const columns = getObjectiveColumnsForQuestions(remaining);
         const maxRows = objectiveMaxRowsForAvailableHeight(availableHeight(y));
         const maxCount = Math.max(1, columns * maxRows);
-        const count = Math.min(remaining, maxCount);
-        const height = objectiveHeight({ ...block, questionCount: count }, count);
+        const segmentQuestions = remaining.slice(0, Math.min(remaining.length, maxCount));
+        const height = objectiveHeightForQuestions(segmentQuestions);
 
         ensureSpace(height);
         if (height > availableHeight(y)) {
           warnings.push(`${block.title} 的题量较多，当前密度下单页空间不足，已尽量分页排版。`);
         }
 
-        y = addObjectiveSegment(page, block, firstSegment ? block.title : `${block.title}（续）`, start, count, y);
-        remaining -= count;
-        start += count;
+        y = addObjectiveSegment(page, block, firstSegment ? block.title : `${block.title}（续）`, segmentQuestions, y);
+        remaining = remaining.slice(segmentQuestions.length);
         firstSegment = false;
 
-        if (remaining > 0) {
+        if (remaining.length > 0) {
           newPage();
         }
       }

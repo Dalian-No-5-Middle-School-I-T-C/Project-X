@@ -119,6 +119,17 @@ CREATE TABLE IF NOT EXISTS objective_answer_keys (
     PRIMARY KEY (block_id, question_number)
 );
 
+CREATE TABLE IF NOT EXISTS objective_questions (
+    block_id        TEXT NOT NULL REFERENCES objective_blocks(id) ON DELETE CASCADE,
+    question_number INTEGER NOT NULL,
+    sort_order      INTEGER DEFAULT 0,
+    mode            TEXT NOT NULL,
+    option_count    INTEGER NOT NULL,
+    score           REAL NOT NULL,
+    scoring_rule_json TEXT,
+    PRIMARY KEY (block_id, question_number)
+);
+
 -- 多选题部分得分规则
 CREATE TABLE IF NOT EXISTS objective_multiple_scoring (
     block_id       TEXT NOT NULL REFERENCES objective_blocks(id) ON DELETE CASCADE,
@@ -332,6 +343,7 @@ CREATE INDEX IF NOT EXISTS idx_teacher_classes_class ON teacher_classes(class_id
 CREATE INDEX IF NOT EXISTS idx_answer_cards_created_by ON answer_cards(created_by);
 CREATE INDEX IF NOT EXISTS idx_answer_cards_updated_at ON answer_cards(updated_at);
 CREATE INDEX IF NOT EXISTS idx_objective_blocks_card ON objective_blocks(card_id);
+CREATE INDEX IF NOT EXISTS idx_objective_questions_block ON objective_questions(block_id);
 CREATE INDEX IF NOT EXISTS idx_subjective_blocks_card ON subjective_blocks(card_id);
 CREATE INDEX IF NOT EXISTS idx_subjective_questions_block ON subjective_questions(block_id);
 CREATE INDEX IF NOT EXISTS idx_exams_status ON exams(status);

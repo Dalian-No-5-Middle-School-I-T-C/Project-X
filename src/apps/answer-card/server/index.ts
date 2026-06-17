@@ -22,7 +22,8 @@ import sponsorRoutes from "../../../server/routes/sponsor";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
-import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey } from "../../../shared/grading";
+import { applySubjectTemplate } from "../../../shared/cardTemplates";
+import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 import type {
   AnswerCard,
@@ -61,9 +62,12 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
     id: safeId(cardId),
     subjectLabel: (card as any).subjectLabel ?? card.subjectLabel ?? undefined,
     examDate: (card as any).examDate ?? card.examDate ?? undefined,
-    bodyBlocks: (card.bodyBlocks ?? []).map((block) =>
-      block.type === "objective" ? { ...block, answerKey: normalizeObjectiveAnswerKey(block) } : block
-    ),
+    bodyBlocks: (card.bodyBlocks ?? []).map((block) => {
+      if (block.type !== "objective") return block;
+      const answerKey = normalizeObjectiveAnswerKey(block);
+      const normalizedBlock = { ...block, answerKey };
+      return { ...normalizedBlock, questions: normalizeObjectiveQuestions(normalizedBlock) };
+    }),
     paper: { size: "A4", orientation: "portrait" },
     layoutVersion: 1,
     updatedAt: new Date().toISOString()
@@ -414,6 +418,8 @@ export async function createApp(): Promise<express.Express> {
       const title = (req.body?.title ?? "").trim();
       const subjectLabel = (req.body?.subjectLabel ?? "").trim();
       const examDate = (req.body?.examDate ?? "").trim() || undefined;
+      const englishListening = req.body?.englishListening !== false;
+      const chineseChoicePlacement = req.body?.chineseChoicePlacement === "inline" ? "inline" : "front";
       if (!subject) {
         res.status(400).json({ error: "科目（subject）为必填项" });
         return;
@@ -427,10 +433,11 @@ export async function createApp(): Promise<express.Express> {
       while (cardRepo.findById(id) && retry < 100) {
         id = generateCardId(subject + "_" + String(retry++));
       }
-      const card = createDefaultCard(id, subject);
+      let card = createDefaultCard(id, subject);
       card.title = title;
       card.subjectLabel = subjectLabel || undefined;
       card.examDate = examDate;
+      card = applySubjectTemplate(card, { englishListening, chineseChoicePlacement });
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
       res.status(201).json(saved);
     } catch (error) {

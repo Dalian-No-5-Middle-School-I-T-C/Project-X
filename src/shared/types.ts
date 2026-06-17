@@ -5,6 +5,35 @@ export type SubjectiveKind = "blank" | "lined_answer" | "plain_box";
 export type SubjectiveQuestionNumber = number | string;
 export type BlankLabelStyle = "none" | "arabic_parentheses" | "roman_parentheses";
 
+export type ObjectiveScoringRule =
+  | {
+      type: "per_selected_count";
+      partialScores: Record<number, number>;
+      wrongOrExtraScore?: number;
+      allowWrongOptions?: boolean;
+    }
+  | {
+      type: "by_correct_count";
+      partialScoresByCorrectCount: Record<number, Record<number, number>>;
+      wrongOrExtraScore?: number;
+      allowWrongOptions?: boolean;
+    }
+  | {
+      type: "fixed_partial";
+      partialScore: number;
+      wrongOrExtraScore?: number;
+      allowWrongOptions?: boolean;
+    };
+
+export type ObjectiveQuestionConfig = {
+  questionNumber: number;
+  mode?: ObjectiveMode;
+  optionCount?: number;
+  score?: number;
+  answerKey?: string[];
+  scoringRule?: ObjectiveScoringRule;
+};
+
 export type PaperSettings = {
   size: "A4";
   orientation: "portrait";
@@ -30,6 +59,7 @@ export type ObjectiveBlock = {
     partialScores: Record<number, number>;
     wrongOrExtraScore: number;
   };
+  questions?: ObjectiveQuestionConfig[];
 };
 
 export type SubjectiveQuestion = {

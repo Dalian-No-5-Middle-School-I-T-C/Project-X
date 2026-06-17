@@ -63,6 +63,24 @@ export function initializeDatabase(): void {
     console.log("[DB] Migration: added exam_date column to answer_cards");
   }
 
+  const hasObjectiveQuestions = db.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='objective_questions'").get() as { cnt: number };
+  if (hasObjectiveQuestions.cnt === 0) {
+    db.exec(`
+      CREATE TABLE objective_questions (
+        block_id        TEXT NOT NULL REFERENCES objective_blocks(id) ON DELETE CASCADE,
+        question_number INTEGER NOT NULL,
+        sort_order      INTEGER DEFAULT 0,
+        mode            TEXT NOT NULL,
+        option_count    INTEGER NOT NULL,
+        score           REAL NOT NULL,
+        scoring_rule_json TEXT,
+        PRIMARY KEY (block_id, question_number)
+      );
+      CREATE INDEX idx_objective_questions_block ON objective_questions(block_id);
+    `);
+    console.log("[DB] Migration: created objective_questions table");
+  }
+
   // v1.1.0 migrations: users + teacher_classes
   const userCols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (!userCols.some((c) => c.name === "subject")) {

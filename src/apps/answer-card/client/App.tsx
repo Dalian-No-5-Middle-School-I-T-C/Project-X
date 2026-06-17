@@ -43,7 +43,13 @@ import type {
   SubjectiveQuestion,
   SubjectiveStyle
 } from "../../../shared/types";
-import { normalizeObjectiveAnswerKey, objectiveQuestionNumbers, optionLabelsFor } from "../../../shared/grading";
+import {
+  normalizeObjectiveAnswerKey,
+  normalizeObjectiveQuestions,
+  objectiveQuestionDefinitions,
+  objectiveQuestionNumbers,
+  optionLabelsForQuestion
+} from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../shared/blankLabels";
@@ -363,7 +369,9 @@ function App() {
           subject: formData.subject,
           subjectLabel: formData.subjectLabel,
           title: formData.title,
-          examDate: formData.examDate
+          examDate: formData.examDate,
+          englishListening: formData.englishListening,
+          chineseChoicePlacement: formData.chineseChoicePlacement
         })
       });
       setCard(created);
@@ -1154,7 +1162,7 @@ function App() {
                   </div>
                 </div>
               )}
-              <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
+      <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
             </section>
           </aside>
         </div>
@@ -1556,30 +1564,113 @@ function GradingResults({
 
 function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange: (mutator: (block: BodyBlock) => void) => void }) {
   const questions = objectiveQuestionNumbers(block);
-  const options = optionLabelsFor(block);
+  const questionConfigs = objectiveQuestionDefinitions(block);
   const answerKey = normalizeObjectiveAnswerKey(block);
   const missingAnswerCount = questions.filter((questionNumber) => !answerKey[questionNumber]?.length).length;
 
   function toggleAnswer(questionNumber: number, option: string) {
     onChange((draft) => {
       const objective = draft as ObjectiveBlock;
-      objective.answerKey = normalizeObjectiveAnswerKey(objective);
-      const current = new Set(objective.answerKey[questionNumber] ?? []);
-      if (objective.mode === "single") {
-        objective.answerKey[questionNumber] = current.has(option) ? [] : [option];
+      objective.questions = normalizeObjectiveQuestions(objective);
+      const config = objective.questions.find((item) => item.questionNumber === questionNumber);
+      const current = new Set(config?.answerKey ?? objective.answerKey?.[questionNumber] ?? []);
+      if ((config?.mode ?? objective.mode) === "single") {
+        if (config) config.answerKey = current.has(option) ? [] : [option];
       } else {
         if (current.has(option)) {
           current.delete(option);
         } else {
           current.add(option);
         }
-        objective.answerKey[questionNumber] = Array.from(current).sort();
+        if (config) config.answerKey = Array.from(current).sort();
       }
-      if (objective.answerKey[questionNumber].length === 0) {
-        delete objective.answerKey[questionNumber];
+      if (config?.answerKey?.length === 0) {
+        delete config.answerKey;
       }
       objective.answerKey = normalizeObjectiveAnswerKey(objective);
     });
+  }
+
+  function updateQuestionConfig(questionNumber: number, mutator: (question: NonNullable<ObjectiveBlock["questions"]>[number]) => void) {
+    onChange((draft) => {
+      const objective = draft as ObjectiveBlock;
+      objective.questions = normalizeObjectiveQuestions(objective);
+      const question = objective.questions.find((item) => item.questionNumber === questionNumber);
+      if (!question) return;
+      mutator(question);
+      if (question.mode === "single" && question.answerKey && question.answerKey.length > 1) {
+        question.answerKey = [question.answerKey[0]];
+      }
+      objective.answerKey = normalizeObjectiveAnswerKey(objective);
+      const first = objective.questions[0];
+      objective.questionStart = first?.questionNumber ?? objective.questionStart;
+      objective.questionCount = objective.questions.length;
+    });
+  }
+
+  function defaultQuestionScoringRule() {
+    return {
+      type: "per_selected_count" as const,
+      partialScores: {},
+      wrongOrExtraScore: 0
+    };
+  }
+
+  function scoringRuleFor(question: (typeof questionConfigs)[number]) {
+    return question.scoringRule ?? defaultQuestionScoringRule();
+  }
+
+  function updateScoringRule(questionNumber: number, mutator: (rule: any) => any) {
+    updateQuestionConfig(questionNumber, (draft) => {
+      const current = draft.scoringRule ?? defaultQuestionScoringRule();
+      draft.scoringRule = mutator(JSON.parse(JSON.stringify(current)));
+    });
+  }
+
+  function setScoringRuleType(questionNumber: number, type: "per_selected_count" | "by_correct_count" | "fixed_partial") {
+    updateScoringRule(questionNumber, (rule) => {
+      const common = {
+        wrongOrExtraScore: Number(rule.wrongOrExtraScore ?? 0),
+        allowWrongOptions: rule.allowWrongOptions === true
+      };
+      if (type === "fixed_partial") return { type, partialScore: 0, ...common };
+      if (type === "by_correct_count") return { type, partialScoresByCorrectCount: {}, ...common };
+      return { type, partialScores: {}, ...common };
+    });
+  }
+
+  function updateWrongOrExtraScore(questionNumber: number, value: number) {
+    updateScoringRule(questionNumber, (rule) => ({ ...rule, wrongOrExtraScore: value }));
+  }
+
+  function updateAllowWrongOptions(questionNumber: number, checked: boolean) {
+    updateScoringRule(questionNumber, (rule) => ({ ...rule, allowWrongOptions: checked }));
+  }
+
+  function updateFixedPartialScore(questionNumber: number, value: number) {
+    updateScoringRule(questionNumber, (rule) => ({ ...rule, type: "fixed_partial", partialScore: value }));
+  }
+
+  function updatePerSelectedScore(questionNumber: number, selectedCount: number, value: number) {
+    updateScoringRule(questionNumber, (rule) => ({
+      ...rule,
+      type: "per_selected_count",
+      partialScores: { ...(rule.partialScores ?? {}), [selectedCount]: value }
+    }));
+  }
+
+  function updateByCorrectCountScore(questionNumber: number, correctCount: number, selectedCount: number, value: number) {
+    updateScoringRule(questionNumber, (rule) => ({
+      ...rule,
+      type: "by_correct_count",
+      partialScoresByCorrectCount: {
+        ...(rule.partialScoresByCorrectCount ?? {}),
+        [correctCount]: {
+          ...(rule.partialScoresByCorrectCount?.[correctCount] ?? {}),
+          [selectedCount]: value
+        }
+      }
+    }));
   }
 
   return (
@@ -1599,7 +1690,7 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
             <div className="answer-key-row" key={questionNumber}>
               <span>{questionNumber}</span>
               <div>
-                {options.map((option) => {
+                {optionLabelsForQuestion(block, questionNumber).map((option) => {
                   const active = answerKey[questionNumber]?.includes(option) ?? false;
                   return (
                     <button
@@ -1723,6 +1814,138 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
             }
           />
         </label>
+      </div>
+      <div className="answer-key-editor">
+        <div className="answer-key-title">
+          <strong>每题配置</strong>
+          <span>可混排单选、多选、不定项</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {questionConfigs.map((question) => (
+            <div className="question-editor" key={question.questionNumber} style={{ margin: 0 }}>
+              <div className="question-editor-title">
+                <strong>第 {question.questionNumber} 题</strong>
+              </div>
+              <div className="three-col">
+                <label>
+                  题号
+                  <input type="number" min={1} value={question.questionNumber} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.questionNumber = Number(event.target.value)))} />
+                </label>
+                <label>
+                  题型
+                  <select value={question.mode} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => { draft.mode = event.target.value as ObjectiveMode; if (draft.mode === "single") draft.scoringRule = undefined; })}>
+                    {Object.entries(modeLabels).map(([value, label]) => (<option key={value} value={value}>{label}</option>))}
+                  </select>
+                </label>
+                <label>
+                  选项数
+                  <input type="number" min={2} max={8} value={question.optionCount} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.optionCount = Number(event.target.value)))} />
+                </label>
+              </div>
+              <label>
+                分值
+                <input type="number" min={0} step={0.5} value={question.score} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.score = Number(event.target.value)))} />
+              </label>
+              {question.mode !== "single" && (
+                <>
+                  <div className="two-col">
+                    <label>
+                      少选计分方式
+                      <select
+                        value={scoringRuleFor(question).type}
+                        onChange={(event) =>
+                          setScoringRuleType(
+                            question.questionNumber,
+                            event.target.value as "per_selected_count" | "by_correct_count" | "fixed_partial"
+                          )
+                        }
+                      >
+                        <option value="per_selected_count">按选对项数给分</option>
+                        <option value="by_correct_count">按正确答案数量给分</option>
+                        <option value="fixed_partial">少选固定分</option>
+                      </select>
+                    </label>
+                    <label>
+                      错选/多选/不选得分
+                      <input
+                        type="number"
+                        step={0.5}
+                        value={(scoringRuleFor(question) as any).wrongOrExtraScore ?? 0}
+                        onChange={(event) => updateWrongOrExtraScore(question.questionNumber, Number(event.target.value))}
+                      />
+                    </label>
+                  </div>
+                  {scoringRuleFor(question).type === "fixed_partial" ? (
+                    <label>
+                      少选固定得分
+                      <input
+                        type="number"
+                        step={0.5}
+                        value={(scoringRuleFor(question) as any).partialScore ?? 0}
+                        onChange={(event) => updateFixedPartialScore(question.questionNumber, Number(event.target.value))}
+                      />
+                    </label>
+                  ) : scoringRuleFor(question).type === "by_correct_count" ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                        根据标准答案个数，设置少选时选对几项得几分
+                      </span>
+                      {Array.from({ length: Math.max(0, question.optionCount - 1) }, (_, index) => index + 2).map((correctCount) => (
+                        <div key={correctCount} style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 8, alignItems: "center" }}>
+                          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{correctCount} 个答案</span>
+                          <div className="three-col">
+                            {Array.from({ length: correctCount - 1 }, (_, index) => index + 1).map((selectedCount) => (
+                              <label key={selectedCount}>
+                                {selectedCount} 项对
+                                <input
+                                  type="number"
+                                  step={0.5}
+                                  value={(scoringRuleFor(question) as any).partialScoresByCorrectCount?.[correctCount]?.[selectedCount] ?? 0}
+                                  onChange={(event) =>
+                                    updateByCorrectCountScore(
+                                      question.questionNumber,
+                                      correctCount,
+                                      selectedCount,
+                                      Number(event.target.value)
+                                    )
+                                  }
+                                />
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="three-col">
+                      {Array.from({ length: Math.max(1, question.optionCount - 1) }, (_, index) => index + 1).map((selectedCount) => (
+                        <label key={selectedCount}>
+                          选对 {selectedCount} 项
+                          <input
+                            type="number"
+                            step={0.5}
+                            value={(scoringRuleFor(question) as any).partialScores?.[selectedCount] ?? 0}
+                            onChange={(event) =>
+                              updatePerSelectedScore(question.questionNumber, selectedCount, Number(event.target.value))
+                            }
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={(scoringRuleFor(question) as any).allowWrongOptions === true}
+                      onChange={(event) => updateAllowWrongOptions(question.questionNumber, event.target.checked)}
+                    />
+                    错选但未超过正确答案数时，只按选对项给分
+                  </label>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
       <p className="hint">客观题使用固定紧凑排版，填涂框尺寸保持一致。</p>
     </>
