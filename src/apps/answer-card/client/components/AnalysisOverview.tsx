@@ -21,7 +21,10 @@ export function AnalysisOverview({ overview }: Props) {
     { label: "及格率", value: `${overview.passRate}%` },
     { label: "优秀率", value: `${overview.excellentRate}%` },
     { label: "标准差", value: String(overview.stdDev) },
-    { label: "待复核", value: String(overview.reviewCount), sub: "题" }
+    { label: "错误率高于 30%", value: String(overview.highErrorQuestionCount), sub: "题" },
+    { label: "低错误率 30-49%", value: String(overview.errorRateBuckets.low), sub: "题" },
+    { label: "中错误率 50-69%", value: String(overview.errorRateBuckets.medium), sub: "题" },
+    { label: "高错误率 70%+", value: String(overview.errorRateBuckets.high), sub: "题" }
   ];
 
   return (

@@ -335,8 +335,11 @@ export type ExamOverview = {
   scoreSummary: ScoreSummary | null;
   overallScoreSummary: ScoreSummary | null;
   classSummaries: ClassScoreSummary[];
-  reviewCount: number;
+  highErrorQuestionCount: number;
+  errorRateBuckets: { low: number; medium: number; high: number };
 };
+
+export type ErrorRateLevel = "none" | "low" | "medium" | "high";
 
 export type StudentRankingItem = {
   rank: number;
@@ -345,7 +348,10 @@ export type StudentRankingItem = {
   totalScore: number;
   objectiveScore: number;
   subjectiveScore: number;
-  needReview: boolean;
+  lowScoreCount: number;
+  questionCount: number;
+  errorRate: number;
+  errorRateLevel: ErrorRateLevel;
 };
 
 export type QuestionAnalysisItem = {
@@ -355,7 +361,9 @@ export type QuestionAnalysisItem = {
   correctRate: number | null;
   avgScore: number;
   maxScore: number;
-  reviewCount: number;
+  errorCount: number;
+  errorRate: number;
+  errorRateLevel: ErrorRateLevel;
   totalCount: number;
 };
 

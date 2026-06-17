@@ -9,7 +9,8 @@
 - 新增 `llmclient` Python 中转服务，提供 `GET /health`、`GET /models`、`POST /analysis/run`
 - 支持 `gemini-3.1-flash-lite`、`gemini-3.5-flash`、`deepseek-v4-flash`、`deepseek-v4-pro`
 - Gemini 与 DeepSeek 默认开启 thinking；DeepSeek V4 thinking 请求保留 `reasoning_content` 续轮，但不返回前端展示
-- 新增成绩工具白名单：考试概览、分数分布、班级摘要、题目分析、排名分段、复核风险
+- 新增成绩工具白名单：考试概览、分数分布、班级摘要、题目分析、排名分段、错误率高题目
+- 成绩分析中的教学关注口径改为错误/低分率分档：30%-49% 低档、50%-69% 中档、70%+ 高档，避免把普通错题误标为复核风险
 - Node 新增 `/api/analysis/ai/status` 和 `/api/analysis/exams/:examId/ai-analysis`
 
 ### 桌面启动与本地服务

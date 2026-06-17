@@ -148,7 +148,7 @@ export function AnalysisAiPanel({ examId, classId = "" }: Props) {
           </div>
           <div className="ai-report-grid">
             {listBlock("薄弱点", analysis.report.weakPoints)}
-            {listBlock("复核风险", analysis.report.reviewRisks)}
+            {listBlock("错误率高", analysis.report.reviewRisks)}
             {listBlock("教学建议", analysis.report.teachingSuggestions)}
             {listBlock("下一步行动", analysis.report.nextActions)}
           </div>

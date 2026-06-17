@@ -78,7 +78,7 @@ GPT 模型走 OpenAI 兼容接口，使用 `OPENAI_API_KEY`，可通过 `OPENAI_
 | `get_class_summaries` | 读取各班成绩摘要 |
 | `get_question_analysis` | 读取低得分率题目 |
 | `get_rank_segments` | 读取匿名排名分段统计 |
-| `get_review_risks` | 读取低分和待复核风险题 |
+| `get_review_risks` | 读取错误率或低分率偏高题目，按低 / 中 / 高分档 |
 
 工具层会强制校验 `examId` 和当前班级筛选范围；模型传入多余参数时会被过滤，不会直接进入数据库层。
 
