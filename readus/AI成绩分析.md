@@ -58,8 +58,12 @@ Python 服务未启动、数据库路径不可访问、或当前 provider 没有
 | `gemini-3.5-flash` | Gemini | 开启，`thinking_level=high` |
 | `deepseek-v4-flash` | DeepSeek | 开启，`reasoning_effort=high` |
 | `deepseek-v4-pro` | DeepSeek | 开启，`reasoning_effort=high` |
+| `gpt-5.5` | OpenAI | 开启，`reasoning_effort=high` |
+| `gpt-5.4-mini` | OpenAI | 开启，`reasoning_effort=high` |
 
 DeepSeek V4 thinking 模式下，`temperature`、`top_p`、`presence_penalty`、`frequency_penalty` 不传入请求，避免配置项看似生效但实际被服务端忽略。工具调用多轮对话会保留 assistant 消息中的 `reasoning_content`，但不会返回前端展示。
+
+GPT 模型走 OpenAI 兼容接口，使用 `OPENAI_API_KEY`，可通过 `OPENAI_BASE_URL` 指向兼容服务；内置 GPT 模型默认同样传入 `reasoning_effort=high`。
 
 ---
 

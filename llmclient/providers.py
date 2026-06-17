@@ -115,10 +115,11 @@ def run_openai_compatible_analysis(
             "max_tokens": 4096,
             "stream": False,
         }
-        if model.provider == "deepseek" and model.thinking:
+        if model.provider in ("deepseek", "openai") and model.thinking:
             kwargs["reasoning_effort"] = model.reasoning_effort or "high"
+        if model.provider == "deepseek" and model.thinking:
             kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-        elif model.provider != "deepseek":
+        elif not model.thinking:
             kwargs["temperature"] = 0.7
 
         response = client.chat.completions.create(**kwargs)
