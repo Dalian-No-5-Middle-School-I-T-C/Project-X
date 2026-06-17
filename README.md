@@ -1,7 +1,7 @@
 # Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.1.5-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.2.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,8 +13,8 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.1.5  
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → 教师/学生/班级管理 → 账密批量导入导出  
+> **当前版本**：v1.2.0
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → AI 成绩分析 → 教师/学生/班级管理 → 账密批量导入导出
 > **下个里程碑**：v2.0 — 成绩预测、跨班深度对比分析
 
 ---
@@ -81,6 +81,7 @@
 - **题目分析**：每题得分率、正确率排行，低分题红色高亮
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
 - **Excel (.xlsx) 成绩导出**：年级排名 / 班级排名两种模式，表头含班级、考号、姓名、成绩、双排名、客观/主观成绩、每题得分
+- **AI 成绩分析**：手动调用 `llmclient` Python 服务，基于白名单成绩工具生成总体判断、薄弱题、复核风险和教学建议
 
 ### 账户与安全
 
@@ -108,12 +109,12 @@
 
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
 ```
-Project-X 学生端-1.1.5-x64.exe
-Project-X 教师端-1.1.5-x64.exe
-Project-X 教师扫描端-1.1.5-x64.exe
-Project-X 学生端-1.1.5-ia32.exe
-Project-X 教师端-1.1.5-ia32.exe
-Project-X 教师扫描端-1.1.5-ia32.exe
+Project-X 学生端-1.2.0-x64.exe
+Project-X 教师端-1.2.0-x64.exe
+Project-X 教师扫描端-1.2.0-x64.exe
+Project-X 学生端-1.2.0-ia32.exe
+Project-X 教师端-1.2.0-ia32.exe
+Project-X 教师扫描端-1.2.0-ia32.exe
 ```
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
@@ -165,6 +166,8 @@ npm run dev
 ```
 
 一条命令同时启动后端与前端。访问 `http://127.0.0.1:5173`，后端 API 默认端口 `5174`。
+
+AI 成绩分析依赖单独手动启动的 Python 中转服务；配置方式见 **[AI成绩分析.md](./readus/AI成绩分析.md)**。
 
 如需分终端调试，也可手动启动：
 
@@ -247,8 +250,9 @@ npm run electron:msi                   # = electron:msi:scanner
 | [ACCOUNT-CONTROL.md](./readus/ACCOUNT-CONTROL.md) | 账号控制系统 API、权限矩阵与启用方式 | 开发者 |
 | [ADMIN-GUIDE.md](./readus/ADMIN-GUIDE.md) | 管理员日常操作：教师/学生管理、导入导出、年级班级花名册 | 机房管理员 / 教务 |
 | [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
+| [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.0.x UX增强 + v1.1.0 批量导入/教师学生管理/赞助页面） | 开发者 / 测试 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.2.0 AI 成绩分析 + v1.1.x 多端/账号/打包增强） | 开发者 / 测试 |
 
 ---
 
@@ -276,6 +280,7 @@ Project-X/
 │   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板
 │   │   │       ├── AnalysisOverview.tsx   # 分析总览卡片
 │   │   │       ├── AnalysisDistribution.tsx # SVG 分数分布图
+│   │   │       ├── AnalysisAiPanel.tsx      # AI 成绩分析卡片
 │   │   │       ├── AnalysisRanking.tsx     # 学生排名表
 │   │   │       └── AnalysisQuestions.tsx   # 题目得分率排行
 │   │   └── server/                      # Express 后端
@@ -311,6 +316,7 @@ Project-X/
 │   └── build-scanner-bridge.bat         # 扫描仪桥接一键编译
 ├── electron/
 │   └── main.cjs                         # Electron 主进程
+├── llmclient/                            # Python AI 中转服务（FastAPI + provider SDK）
 ├── readus/                              # 项目文档（架构、账号、管理员手册、多端说明等）
 ├── data/                                # 运行时数据
 │   ├── answer-card/                     # 答题卡 JSON、扫描图片、资产

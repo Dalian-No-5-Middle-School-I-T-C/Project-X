@@ -1,9 +1,26 @@
 import express from "express";
 import { authService } from "../services/AuthService";
-import { getCurrentUserHandler, authMiddleware } from "../middleware/auth";
+import { AUTH_COOKIE_NAME, extractToken, getCurrentUserHandler, authMiddleware } from "../middleware/auth";
 import type { Request, Response } from "express";
 
 const router = express.Router();
+const PERSISTENT_TOKEN_COOKIE_MAX_AGE_MS = 180 * 24 * 60 * 60 * 1000;
+
+function setAuthCookie(res: Response, token: string, isPersistent: boolean): void {
+  res.cookie(AUTH_COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: "lax",
+    path: "/",
+    ...(isPersistent ? { maxAge: PERSISTENT_TOKEN_COOKIE_MAX_AGE_MS } : {})
+  });
+}
+
+function clearAuthCookie(res: Response): void {
+  res.clearCookie(AUTH_COOKIE_NAME, {
+    path: "/",
+    sameSite: "lax"
+  });
+}
 
 /**
  * POST /api/auth/login
@@ -27,6 +44,10 @@ router.post("/login", async (req: Request, res: Response) => {
       return;
     }
 
+    if (result.token) {
+      setAuthCookie(res, result.token, !!isPersistent);
+    }
+
     res.json({
       token: result.token,
       user: result.user,
@@ -44,11 +65,11 @@ router.post("/login", async (req: Request, res: Response) => {
  * 退出登录
  */
 router.post("/logout", (req: Request, res: Response) => {
-  const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith("Bearer ")) {
-    const token = authHeader.slice(7).trim();
+  const token = extractToken(req);
+  if (token) {
     authService.logout(token);
   }
+  clearAuthCookie(res);
   res.json({ message: "已退出登录" });
 });
 

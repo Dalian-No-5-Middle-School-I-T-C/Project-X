@@ -1,6 +1,6 @@
 # Project-X 管理员使用手册
 
-> **适用版本**: v1.1.5 及以上  
+> **适用版本**: v1.2.0 及以上
 > **适用角色**: 系统管理员（`admin`）  
 > **关联文档**: [`ACCOUNT-ARCHITECTURE.md`](./ACCOUNT-ARCHITECTURE.md) · [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md)
 
@@ -272,7 +272,19 @@
 
 在 **「分析」→「成绩分析」** 中选择考试后，若已建立班级花名册，左侧会出现 **「班级筛选」** 下拉框，可按班查看统计。
 
-### 8.3 阅卷时自动创建的学生
+### 8.3 AI 成绩分析
+
+v1.2.0 起，「成绩分析」页面会在「分数统计分布」之后显示 AI 成绩分析卡片。教师可手动选择模型并生成报告，报告会根据当前考试和当前班级筛选范围读取统计数据。
+
+AI 分析依赖单独启动的 Python `llmclient` 服务。如果按钮不可用，请先确认：
+
+1. Python 服务是否已启动：`py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766`。
+2. `llmclient/.env` 或系统环境变量中是否配置了对应模型的 API Key。
+3. `PROJECTX_DB_PATH` 是否指向当前 Electron 使用的 `%APPDATA%\answer-card-designer\data\projectx.db`。
+
+详细配置见 [`AI成绩分析.md`](./AI成绩分析.md)。
+
+### 8.4 阅卷时自动创建的学生
 
 阅卷过程中，若学号对应的学生尚不存在，系统可能自动创建 **占位学生账号**（无初始密码）。此类账号需由管理员在 **用户管理** 中 **重置密码** 后，学生方可登录查分。
 
@@ -315,6 +327,17 @@
 ### Q7：登录后过一段时间又要重新登录
 
 会话有效期为 **8 小时**；服务重启后所有会话也会失效。属于正常现象，重新登录即可。
+
+---
+
+### Q8：AI 成绩分析按钮不可用或生成失败？
+
+AI 分析不是 Electron 自动启动的内置服务，需要先手动启动 `llmclient` Python 服务。若前端显示服务不可用，按以下顺序排查：
+
+1. 访问 `http://127.0.0.1:8766/health`，确认 Python 服务在运行。
+2. 检查 `GEMINI_API_KEY`、`DEEPSEEK_API_KEY` 或 `OPENAI_API_KEY` 是否配置。
+3. 检查 `PROJECTX_DB_PATH` 是否指向 `%APPDATA%\answer-card-designer\data\projectx.db`。
+4. 若 Electron 启动日志提示 `5174` 不可用，v1.2.0 会自动切换随机端口；这不影响 AI 分析，前端仍通过同源 Node 接口转发。
 
 ---
 

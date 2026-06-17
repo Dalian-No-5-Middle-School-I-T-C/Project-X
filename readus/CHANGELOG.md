@@ -2,6 +2,27 @@
 
 ---
 
+## v1.2.0 (2026-06-17)
+
+### AI 成绩分析
+- 在「分析 → 成绩分析」中新增 AI 成绩分析卡片，位置位于「分数统计分布」之后、「学生排名」之前
+- 新增 `llmclient` Python 中转服务，提供 `GET /health`、`GET /models`、`POST /analysis/run`
+- 支持 `gemini-3.1-flash-lite`、`gemini-3.5-flash`、`deepseek-v4-flash`、`deepseek-v4-pro`
+- Gemini 与 DeepSeek 默认开启 thinking；DeepSeek V4 thinking 请求保留 `reasoning_content` 续轮，但不返回前端展示
+- 新增成绩工具白名单：考试概览、分数分布、班级摘要、题目分析、排名分段、复核风险
+- Node 新增 `/api/analysis/ai/status` 和 `/api/analysis/exams/:examId/ai-analysis`
+
+### 桌面启动与本地服务
+- Electron 本地 Express 启动改为等待真实 `listening` 事件后再返回，避免端口绑定失败时误判成功
+- `127.0.0.1:5174` 遇到 `EADDRINUSE` 或 `EACCES` 时自动 fallback 到随机端口
+- 新增 `/api/app/health`，Electron 通过真实 HTTP 探活后才加载窗口，避免空壳窗口
+
+### 文档
+- 新增 [`AI成绩分析.md`](./AI成绩分析.md)
+- README、管理员手册、架构文档、多端说明同步补充 AI 分析与本地端口探活说明
+
+---
+
 ## v1.1.5 (2026-06-16)
 
 ### UX 交互一致性改进

@@ -55,6 +55,7 @@ import {
 import { ScannerPanel } from "./components/ScannerPanel";
 import { AnalysisOverview } from "./components/AnalysisOverview";
 import { AnalysisDistribution } from "./components/AnalysisDistribution";
+import { AnalysisAiPanel } from "./components/AnalysisAiPanel";
 import { AnalysisRanking } from "./components/AnalysisRanking";
 import { AnalysisQuestions } from "./components/AnalysisQuestions";
 import { AnalysisTrend } from "./components/AnalysisTrend";
@@ -751,7 +752,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.1.0</span>
+            <span>Project-X v1.2.0</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
@@ -1288,6 +1289,7 @@ function App() {
                           selectedClassId={analysisClassId}
                         />
                       )}
+                      <AnalysisAiPanel examId={analysisExamId} classId={analysisClassId} />
                       <AnalysisRanking ranking={analysisRanking} />
                       <AnalysisQuestions questions={analysisQuestions} />
                     </>

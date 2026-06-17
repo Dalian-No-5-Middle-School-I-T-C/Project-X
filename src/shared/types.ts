@@ -371,3 +371,48 @@ export type ExamRecord = {
   status: string;
   created_at: string;
 };
+
+export type AiModelOption = {
+  id: string;
+  provider: string;
+  label: string;
+  available: boolean;
+  thinking?: boolean;
+};
+
+export type AiAnalysisStatus = {
+  available: boolean;
+  reason?: string;
+  defaultModel: string | null;
+  models: AiModelOption[];
+};
+
+export type AiAnalysisQuestionAction = {
+  questionNumber: string;
+  reason: string;
+  action: string;
+};
+
+export type AiAnalysisReport = {
+  overallJudgement: string;
+  distributionInsight: string;
+  weakPoints: string[];
+  reviewRisks: string[];
+  teachingSuggestions: string[];
+  nextActions: string[];
+  questionActions: AiAnalysisQuestionAction[];
+  caveats: string[];
+};
+
+export type AiAnalysisToolCall = {
+  name: string;
+  arguments: Record<string, unknown>;
+  summary: string;
+};
+
+export type AiAnalysisResponse = {
+  generatedAt: string;
+  model: string;
+  report: AiAnalysisReport;
+  toolCalls: AiAnalysisToolCall[];
+};

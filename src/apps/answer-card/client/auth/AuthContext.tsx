@@ -22,15 +22,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshUser = useCallback(async () => {
     const token = getAuthToken();
-    if (!token) {
-      setUser(null);
-      return;
-    }
     try {
       const me = await fetchJson<AuthUser>("/api/auth/me");
       setUser(me);
     } catch {
-      setAuthToken(null);
+      if (token) setAuthToken(null);
       setUser(null);
     }
   }, []);
