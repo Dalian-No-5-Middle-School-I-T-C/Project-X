@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, shell } = require("electron");
 const fs = require("node:fs");
+const http = require("node:http");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
@@ -79,18 +80,51 @@ async function startLocalServer() {
   try {
     server = await serverModule.startServer(preferredPort);
   } catch (error) {
-    if (error && error.code === "EADDRINUSE") {
-      console.warn(`[Electron] Port ${preferredPort} is already in use; falling back to a random port.`);
+    if (error && (error.code === "EADDRINUSE" || error.code === "EACCES")) {
+      console.warn(`[Electron] Port ${preferredPort} is unavailable (${error.code}); falling back to a random port.`);
       server = await serverModule.startServer(0);
     } else {
       throw error;
     }
   }
   const address = server.address();
-  if (!address || typeof address !== "object") {
-    throw new Error("Cannot determine local server port.");
+  const actualPort = Number(server.actualPort || (address && typeof address === "object" ? address.port : 0));
+  const localUrl = server.localUrl || (Number.isFinite(actualPort) && actualPort > 0 ? `http://127.0.0.1:${actualPort}` : "");
+  if (!localUrl) {
+    const addressText = address === null || address === undefined ? String(address) : JSON.stringify(address);
+    throw new Error(`Cannot determine local server port. listening=${Boolean(server.listening)} address=${addressText}`);
   }
-  return `http://127.0.0.1:${address.port}`;
+  await waitForLocalServer(localUrl);
+  return localUrl;
+}
+
+async function waitForLocalServer(baseUrl) {
+  const healthUrl = `${baseUrl}/api/app/health`;
+  let lastError;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      const statusCode = await requestLocalHealth(healthUrl);
+      if (statusCode >= 200 && statusCode < 300) return;
+      lastError = new Error(`Health check returned ${statusCode}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  throw new Error(`Local server did not respond at ${healthUrl}: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+}
+
+function requestLocalHealth(url) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, { timeout: 1000 }, (response) => {
+      response.resume();
+      response.on("end", () => resolve(response.statusCode || 0));
+    });
+    request.on("timeout", () => {
+      request.destroy(new Error("health check timed out"));
+    });
+    request.on("error", reject);
+  });
 }
 
 async function resolveStartUrl() {

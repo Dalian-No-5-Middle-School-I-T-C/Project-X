@@ -17,6 +17,11 @@ export function StudentManagement() {
   // 导入弹窗
   const [showImport, setShowImport] = useState(false);
 
+  // 新建学生弹窗
+  const [showNewStudent, setShowNewStudent] = useState(false);
+  const [newStudentName, setNewStudentName] = useState("");
+  const [newStudentNumber, setNewStudentNumber] = useState("");
+
   const loadGrades = useCallback(async () => {
     const data = await fetchJson<GradeRecord[]>("/api/classes/grades");
     setGrades(data);
@@ -103,6 +108,32 @@ export function StudentManagement() {
       .catch((err) => setError(err instanceof Error ? err.message : "导出失败"));
   }
 
+  async function handleCreateStudent() {
+    if (!newStudentName.trim() || !newStudentNumber.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      await fetchJson("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: newStudentNumber.trim(),
+          name: newStudentName.trim(),
+          role: "student",
+          student_number: newStudentNumber.trim()
+        })
+      });
+      setShowNewStudent(false);
+      setNewStudentName("");
+      setNewStudentNumber("");
+      await handleRefresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建学生失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="account-panel student-management">
       <div className="account-panel-header">
@@ -111,11 +142,14 @@ export function StudentManagement() {
           <button className="ghost-button" type="button" onClick={handleRefresh} disabled={busy}>
             <RefreshCw size={14} /> 刷新
           </button>
+          <button className="ghost-button" type="button" onClick={() => { setShowNewStudent(true); setNewStudentName(""); setNewStudentNumber(""); }} disabled={busy}>
+            <Plus size={14} /> 新建学生
+          </button>
           <button className="ghost-button" type="button" onClick={() => setShowImport(true)} disabled={busy}>
-            <Upload size={14} /> 导入学生
+            <Download size={14} /> 导入学生
           </button>
           <button className="primary-button" type="button" onClick={handleExport}>
-            <Download size={14} /> 导出学生账密
+            <Upload size={14} /> 导出学生账密
           </button>
         </div>
       </div>
@@ -195,6 +229,34 @@ export function StudentManagement() {
           onImport={handleImport}
           onClose={() => setShowImport(false)}
         />
+      )}
+
+      {/* ── 新建学生弹窗 ────────────────────────────────── */}
+      {showNewStudent && (
+        <div className="modal-backdrop" onClick={() => setShowNewStudent(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 400, maxWidth: "90vw" }}>
+            <div className="modal-header">
+              <h2>新建学生</h2>
+              <button className="modal-close" onClick={() => setShowNewStudent(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <label>
+                学号
+                <input value={newStudentNumber} onChange={(e) => setNewStudentNumber(e.target.value)} placeholder="学号（默认作为用户名和初始密码）" disabled={busy} />
+              </label>
+              <label>
+                姓名
+                <input value={newStudentName} onChange={(e) => setNewStudentName(e.target.value)} placeholder="学生姓名" disabled={busy} />
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="ghost-button" type="button" onClick={() => setShowNewStudent(false)}>取消</button>
+              <button className="primary-button" type="button" onClick={() => void handleCreateStudent()} disabled={busy || !newStudentName.trim() || !newStudentNumber.trim()}>
+                创建学生
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

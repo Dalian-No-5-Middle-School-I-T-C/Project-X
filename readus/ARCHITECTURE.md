@@ -1,6 +1,6 @@
 # Project-X 架构分析
 
-**Project-X（答题卡设计系统）** 是大连五中自研的本地优先智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 成绩分析** 全流程。架构上是 **Electron 桌面壳 + 内嵌 Express 后端 + React 前端 + C++ 原生子进程** 的组合。
+**Project-X（答题卡设计系统）** 是大连五中自研的本地优先智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 成绩分析 → AI 成绩分析** 全流程。架构上是 **Electron 桌面壳 + 内嵌 Express 后端 + React 前端 + C++ 原生子进程 + Python LLM 中转服务** 的组合。
 
 ---
 
@@ -141,11 +141,26 @@ type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
 | `/api/auth` | 登录 / 登出 / 当前用户 |
 | `/api/cards` | 答题卡 CRUD、布局、PDF、识别、判分 |
 | `/api/exams` | 考试管理 |
-| `/api/analysis` | 成绩统计与排名 |
+| `/api/analysis` | 成绩统计、排名、AI 分析转发 |
+| `/api/app/health` | Electron 本地服务健康检查 |
 | `/api/scanner` | TWAIN 扫描会话（SSE 进度） |
 | `/assets` | 答题卡资源图片 |
 
-### 4.2 Repository 模式
+### 4.2 AI 成绩分析链路
+
+v1.2.0 新增 AI 成绩分析，但模型调用不直接放在 Electron 主进程里。链路为：
+
+```text
+React AnalysisAiPanel
+  -> Express /api/analysis/ai/status
+  -> Express /api/analysis/exams/:examId/ai-analysis
+  -> llmclient FastAPI /analysis/run
+  -> Gemini / DeepSeek / OpenAI-compatible provider
+```
+
+`llmclient` 位于仓库根目录，使用 Python `FastAPI + uvicorn` 手动启动。Node 后端只负责探活、鉴权转发和把当前考试/班级范围传给 Python 服务。模型只能调用白名单成绩工具读取 `projectx.db`，不开放原始 SQL。
+
+### 4.3 Repository 模式
 
 `src/server/repositories/` 封装 SQLite 访问：
 
@@ -156,7 +171,7 @@ type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
 
 数据库连接在 `src/server/db/index.ts`，使用 **better-sqlite3 同步 API + WAL + 外键**。
 
-### 4.3 双数据库设计
+### 4.4 双数据库设计
 
 | 数据库 | 路径 | 用途 |
 |--------|------|------|
@@ -165,7 +180,7 @@ type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
 
 扫描子系统独立库，与主库解耦，便于扫描流水单独保留/清理（主库 schema 注释：扫描原始数据保留 30 天）。
 
-### 4.4 文件存储层
+### 4.5 文件存储层
 
 `storage.ts` 定义运行时文件布局：
 
@@ -369,6 +384,7 @@ flowchart LR
 |------|------|
 | **前端** | React 19 + TypeScript + Vite + Lucide React |
 | **后端** | Node.js + Express 5 + multer |
+| **AI 中转** | Python + FastAPI + OpenAI SDK + Google GenAI SDK |
 | **识别引擎** | C++ + OpenCV 4.13 + nlohmann/json（子进程调用） |
 | **扫描仪** | C++ TWAIN API + GDI+（子进程调用） |
 | **数据库** | SQLite via better-sqlite3（WAL + 外键约束） |
@@ -379,4 +395,4 @@ flowchart LR
 ---
 
 > 文档生成日期：2026-06-13  
-> 基于 Project-X v1.1.0 代码库分析
+> 基于 Project-X v1.2.0 代码库分析

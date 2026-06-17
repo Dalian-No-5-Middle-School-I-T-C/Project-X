@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Plus, RefreshCw, Trash2, Upload, UserMinus, UserPlus, X } from "lucide-react";
+import { Download, Plus, RefreshCw, Search, Trash2, Upload, UserMinus, UserPlus } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { getAuthToken } from "../auth/api";
 import type { ClassRecord, ClassStudent, GradeRecord, UserListItem, UsersListResponse } from "../auth/types";
@@ -93,10 +93,11 @@ export function ClassManagement() {
   const [importPreview, setImportPreview] = useState<Array<{ name: string; student_number: string; username: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // 新建学生弹窗状态
-  const [showNewStudentModal, setShowNewStudentModal] = useState(false);
+  // 快捷新建学生
   const [newStudentName, setNewStudentName] = useState("");
   const [newStudentNumber, setNewStudentNumber] = useState("");
+  // 标题栏新建学生弹窗
+  const [showNewStudentGlobal, setShowNewStudentGlobal] = useState(false);
 
   // v1.1: 批量导入（CSV/Excel）
   const [showCsvImport, setShowCsvImport] = useState(false);
@@ -391,7 +392,70 @@ export function ClassManagement() {
       .catch((err) => setError(err instanceof Error ? err.message : "导出失败"));
   }
 
-  // ── 新建学生 ───────────────────────────────────────────
+  // ── 快捷新建学生（输入+加号，与年级/班级交互一致） ──────
+  async function handleQuickCreateStudent() {
+    if (!selectedClassId || !newStudentName.trim() || !newStudentNumber.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      const created = await fetchJson<{ id: number }>("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: newStudentNumber.trim(),
+          name: newStudentName.trim(),
+          role: "student",
+          student_number: newStudentNumber.trim()
+        })
+      });
+
+      await fetchJson(`/api/classes/${selectedClassId}/students`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ studentId: created.id })
+      });
+
+      await loadRoster(selectedClassId);
+      if (selectedGradeId) await loadClasses(selectedGradeId);
+
+      setNewStudentName("");
+      setNewStudentNumber("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建学生失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── 新建学生（全局，无班级关联） ──────────────────────
+  async function handleGlobalCreateStudent() {
+    if (!newStudentName.trim() || !newStudentNumber.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      await fetchJson("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: newStudentNumber.trim(),
+          name: newStudentName.trim(),
+          role: "student",
+          student_number: newStudentNumber.trim()
+        })
+      });
+      await loadGrades();
+      if (selectedGradeId) await loadClasses(selectedGradeId);
+      if (selectedClassId) await loadRoster(selectedClassId);
+      setNewStudentName("");
+      setNewStudentNumber("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建学生失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // ── 新建学生（旧弹窗兼容，保留逻辑供标题栏使用） ──────────
   async function handleCreateStudent() {
     if (!selectedClassId || !newStudentName.trim() || !newStudentNumber.trim()) return;
     setBusy(true);
@@ -417,7 +481,6 @@ export function ClassManagement() {
       await loadRoster(selectedClassId);
       if (selectedGradeId) await loadClasses(selectedGradeId);
 
-      setShowNewStudentModal(false);
       setNewStudentName("");
       setNewStudentNumber("");
     } catch (err) {
@@ -434,6 +497,9 @@ export function ClassManagement() {
         <div style={{ display: "flex", gap: 8 }}>
           <button className="ghost-button" type="button" onClick={() => void loadGrades()} disabled={busy}>
             <RefreshCw size={16} /> 刷新
+          </button>
+          <button className="ghost-button" type="button" onClick={() => { setShowNewStudentGlobal(true); setNewStudentName(""); setNewStudentNumber(""); }} disabled={busy}>
+            <UserPlus size={16} /> 新建学生
           </button>
           <button className="ghost-button" type="button" onClick={() => setShowCsvImport(true)} disabled={busy}>
             <Download size={16} /> 导入学生
@@ -496,16 +562,17 @@ export function ClassManagement() {
           <div className="class-column-title">花名册</div>
           {selectedClassId ? (
             <>
+              {/* 搜索已有学生 */}
               <div className="class-add-row">
                 <input
-                  placeholder="搜索学生学号/姓名"
+                  placeholder="搜索已有学生学号/姓名"
                   value={studentSearch}
                   onChange={(e) => setStudentSearch(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && void searchStudents()}
                   disabled={busy}
                 />
-                <button className="ghost-button" type="button" onClick={() => setShowNewStudentModal(true)} title="新建学生">
-                  <UserPlus size={14} /> 新建
+                <button className="ghost-button" type="button" onClick={() => void searchStudents()} disabled={busy}>
+                  <Search size={14} />
                 </button>
               </div>
               {studentResults.length > 0 && (
@@ -517,6 +584,28 @@ export function ClassManagement() {
                   ))}
                 </div>
               )}
+              {/* 快捷新建学生（与年级/班级一致的输入+加号交互） */}
+              <div className="class-add-row">
+                <input
+                  placeholder="学号"
+                  value={newStudentNumber}
+                  onChange={(e) => setNewStudentNumber(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void handleCreateStudent()}
+                  disabled={busy}
+                  style={{ flex: 1 }}
+                />
+                <input
+                  placeholder="姓名"
+                  value={newStudentName}
+                  onChange={(e) => setNewStudentName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void handleCreateStudent()}
+                  disabled={busy}
+                  style={{ flex: 1 }}
+                />
+                <button className="primary-button" type="button" onClick={() => void handleCreateStudent()} disabled={busy || !newStudentName.trim() || !newStudentNumber.trim()}>
+                  <Plus size={14} />
+                </button>
+              </div>
               <div className="roster-list">
                 {roster.map((s) => (
                   <div key={s.student_id} className="roster-item">
@@ -536,34 +625,6 @@ export function ClassManagement() {
         </section>
       </div>
 
-      {/* ── 新建学生弹窗 ────────────────────────────────── */}
-      {showNewStudentModal && (
-        <div className="modal-backdrop" onClick={() => setShowNewStudentModal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 400, maxWidth: "90vw" }}>
-            <div className="modal-header">
-              <h2>新建学生</h2>
-              <button className="modal-close" onClick={() => setShowNewStudentModal(false)}><X size={18} /></button>
-            </div>
-            <div className="modal-body">
-              <label>
-                姓名
-                <input value={newStudentName} onChange={(e) => setNewStudentName(e.target.value)} placeholder="学生姓名" disabled={busy} />
-              </label>
-              <label>
-                学号
-                <input value={newStudentNumber} onChange={(e) => setNewStudentNumber(e.target.value)} placeholder="学号（默认作为用户名和初始密码）" disabled={busy} />
-              </label>
-            </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setShowNewStudentModal(false)}>取消</button>
-              <button className="primary-button" type="button" onClick={() => void handleCreateStudent()} disabled={busy || !newStudentName.trim() || !newStudentNumber.trim()}>
-                创建并加入班级
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ── v1.1 CSV/Excel 批量导入弹窗 ─────────────────── */}
       {showCsvImport && (
         <ImportModal
@@ -572,6 +633,34 @@ export function ClassManagement() {
           onImport={handleCsvImport}
           onClose={() => setShowCsvImport(false)}
         />
+      )}
+
+      {/* ── 全局新建学生弹窗（标题栏入口） ────────────────── */}
+      {showNewStudentGlobal && (
+        <div className="modal-backdrop" onClick={() => setShowNewStudentGlobal(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 400, maxWidth: "90vw" }}>
+            <div className="modal-header">
+              <h2>新建学生</h2>
+              <button className="modal-close" onClick={() => setShowNewStudentGlobal(false)}>✕</button>
+            </div>
+            <div className="modal-body">
+              <label>
+                学号
+                <input value={newStudentNumber} onChange={(e) => setNewStudentNumber(e.target.value)} placeholder="学号（默认作为用户名和初始密码）" disabled={busy} />
+              </label>
+              <label>
+                姓名
+                <input value={newStudentName} onChange={(e) => setNewStudentName(e.target.value)} placeholder="学生姓名" disabled={busy} />
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="ghost-button" type="button" onClick={() => setShowNewStudentGlobal(false)}>取消</button>
+              <button className="primary-button" type="button" onClick={() => void handleGlobalCreateStudent()} disabled={busy || !newStudentName.trim() || !newStudentNumber.trim()}>
+                创建学生
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
