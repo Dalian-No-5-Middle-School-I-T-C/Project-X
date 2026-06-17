@@ -279,7 +279,12 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
       className="modal-backdrop"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="modal-card" style={{ width: 440, maxWidth: "calc(100vw - 40px)" }}>
+      <div
+        className="modal-card"
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{ width: 440, maxWidth: "calc(100vw - 40px)" }}
+      >
         <div className="modal-header">
           <h2>新建答题卡</h2>
           <button className="modal-close" onClick={onClose}><X size={20} /></button>
