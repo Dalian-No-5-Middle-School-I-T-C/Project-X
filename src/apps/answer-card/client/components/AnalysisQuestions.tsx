@@ -4,6 +4,13 @@ interface Props {
   questions: QuestionAnalysisItem[];
 }
 
+function errorLevelText(level: QuestionAnalysisItem["errorRateLevel"]): string {
+  if (level === "high") return "高";
+  if (level === "medium") return "中";
+  if (level === "low") return "低";
+  return "正常";
+}
+
 export function AnalysisQuestions({ questions }: Props) {
   if (!questions || questions.length === 0) {
     return (
@@ -27,7 +34,8 @@ export function AnalysisQuestions({ questions }: Props) {
               <th style={{ padding: "8px 12px", textAlign: "right", width: 72 }}>正确率</th>
               <th style={{ padding: "8px 12px", textAlign: "right", width: 72 }}>平均分</th>
               <th style={{ padding: "8px 12px", textAlign: "right", width: 56 }}>满分</th>
-              <th style={{ padding: "8px 12px", textAlign: "right", width: 56 }}>待复核</th>
+              <th style={{ padding: "8px 12px", textAlign: "right", width: 92 }}>错误/低分率</th>
+              <th style={{ padding: "8px 12px", textAlign: "right", width: 64 }}>档位</th>
             </tr>
           </thead>
           <tbody>
@@ -60,11 +68,14 @@ export function AnalysisQuestions({ questions }: Props) {
                   <td style={{ padding: "8px 12px", textAlign: "right" }}>{q.avgScore}</td>
                   <td style={{ padding: "8px 12px", textAlign: "right" }}>{q.maxScore}</td>
                   <td style={{ padding: "8px 12px", textAlign: "right" }}>
-                    {q.reviewCount > 0 ? (
-                      <span className="rate-text-low">{q.reviewCount}</span>
-                    ) : (
-                      "0"
-                    )}
+                    <span className={q.errorRateLevel === "none" ? undefined : "rate-text-low"}>
+                      {q.errorRate}% ({q.errorCount}/{q.totalCount})
+                    </span>
+                  </td>
+                  <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                    <span className={`error-level-badge error-level-${q.errorRateLevel}`}>
+                      {errorLevelText(q.errorRateLevel)}
+                    </span>
                   </td>
                 </tr>
               );

@@ -1,6 +1,6 @@
 import { getDatabase } from "../db";
 import Database from "better-sqlite3";
-import type { ClassScoreSummary, ExamOverview, QuestionAnalysisItem, ScoreSummary, ScoreTrendPoint, StudentRankingItem } from "../../shared/types";
+import type { ClassScoreSummary, ErrorRateLevel, ExamOverview, QuestionAnalysisItem, ScoreSummary, ScoreTrendPoint, StudentRankingItem } from "../../shared/types";
 
 export interface ExportRow {
   className: string;
@@ -62,6 +62,26 @@ function percentile(sorted: number[], p: number): number {
   return sorted[lower] + (sorted[upper] - sorted[lower]) * weight;
 }
 
+function errorRateLevel(rate: number): ErrorRateLevel {
+  if (rate >= 70) return "high";
+  if (rate >= 50) return "medium";
+  if (rate >= 30) return "low";
+  return "none";
+}
+
+function emptyErrorRateBuckets(): { low: number; medium: number; high: number } {
+  return { low: 0, medium: 0, high: 0 };
+}
+
+function countErrorRateBuckets(questions: QuestionAnalysisItem[]): { low: number; medium: number; high: number } {
+  return questions.reduce((buckets, question) => {
+    if (question.errorRateLevel !== "none") {
+      buckets[question.errorRateLevel] += 1;
+    }
+    return buckets;
+  }, emptyErrorRateBuckets());
+}
+
 export class AnalysisRepository {
   private db: Database.Database;
 
@@ -117,7 +137,11 @@ export class AnalysisRepository {
       return {
         totalStudents: 0, gradedCount: 0, avgScore: 0, maxScore: 0, minScore: 0,
         stdDev: 0, passRate: 0, excellentRate: 0, distribution: [],
-        scoreSummary: null, overallScoreSummary: this.getScoreSummary(examId), classSummaries: this.getClassScoreSummaries(examId), reviewCount: 0
+        scoreSummary: null,
+        overallScoreSummary: this.getScoreSummary(examId),
+        classSummaries: this.getClassScoreSummaries(examId),
+        highErrorQuestionCount: 0,
+        errorRateBuckets: emptyErrorRateBuckets()
       };
     }
 
@@ -144,12 +168,8 @@ export class AnalysisRepository {
       return { ...r, count: row.cnt };
     });
 
-    const reviewRow = this.db.prepare(`
-      SELECT COUNT(*) as cnt FROM question_scores qs
-      ${classFilterQs(classId).join}
-      WHERE qs.exam_id = ? AND (qs.score = 0 OR qs.score < qs.max_score * 0.5)
-      ${classFilterQs(classId).where}
-    `).get(examId, ...classFilterQs(classId).params) as { cnt: number };
+    const questionAnalysis = this.getQuestionAnalysis(examId, classId);
+    const errorRateBuckets = countErrorRateBuckets(questionAnalysis);
 
     return {
       totalStudents: stats.gradedCount,
@@ -164,7 +184,8 @@ export class AnalysisRepository {
       scoreSummary: this.getScoreSummary(examId, classId),
       overallScoreSummary: this.getScoreSummary(examId),
       classSummaries: this.getClassScoreSummaries(examId),
-      reviewCount: reviewRow?.cnt ?? 0
+      highErrorQuestionCount: errorRateBuckets.low + errorRateBuckets.medium + errorRateBuckets.high,
+      errorRateBuckets
     };
   }
 
@@ -287,7 +308,9 @@ export class AnalysisRepository {
         ss.subjective_score,
         (SELECT COUNT(*) FROM question_scores qs
          WHERE qs.exam_id = ss.exam_id AND qs.student_id = ss.student_id
-         AND (qs.score = 0 OR qs.score < qs.max_score * 0.5)) as review_count
+         AND qs.score < qs.max_score * 0.5) as low_score_count,
+        (SELECT COUNT(*) FROM question_scores qs
+         WHERE qs.exam_id = ss.exam_id AND qs.student_id = ss.student_id) as question_count
       FROM student_scores ss
       JOIN users u ON u.id = ss.student_id
       ${c.join}
@@ -295,18 +318,26 @@ export class AnalysisRepository {
       ORDER BY ss.total_score DESC
     `).all(examId, ...c.params) as Array<{
       student_number: string; name: string; total_score: number;
-      objective_score: number; subjective_score: number; review_count: number;
+      objective_score: number; subjective_score: number; low_score_count: number; question_count: number;
     }>;
 
-    return rows.map((row, idx) => ({
-      rank: idx + 1,
-      studentNumber: row.student_number,
-      studentName: row.name,
-      totalScore: row.total_score,
-      objectiveScore: row.objective_score,
-      subjectiveScore: row.subjective_score,
-      needReview: row.review_count > 0
-    }));
+    return rows.map((row, idx) => {
+      const questionCount = row.question_count ?? 0;
+      const lowScoreCount = row.low_score_count ?? 0;
+      const errorRate = questionCount > 0 ? Math.round((lowScoreCount / questionCount) * 100) : 0;
+      return {
+        rank: idx + 1,
+        studentNumber: row.student_number,
+        studentName: row.name,
+        totalScore: row.total_score,
+        objectiveScore: row.objective_score,
+        subjectiveScore: row.subjective_score,
+        lowScoreCount,
+        questionCount,
+        errorRate,
+        errorRateLevel: errorRateLevel(errorRate)
+      };
+    });
   }
 
   getQuestionAnalysis(examId: number, classId?: number): QuestionAnalysisItem[] {
@@ -319,7 +350,8 @@ export class AnalysisRepository {
         MAX(qs.max_score) as maxScore,
         COUNT(*) as totalCount,
         SUM(CASE WHEN qs.score >= qs.max_score THEN 1 ELSE 0 END) as correctCount,
-        SUM(CASE WHEN qs.score = 0 OR qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) as reviewCount
+        SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) as objectiveErrorCount,
+        SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) as subjectiveLowScoreCount
       FROM question_scores qs
       ${c.join}
       WHERE qs.exam_id = ? ${c.where}
@@ -328,20 +360,27 @@ export class AnalysisRepository {
         CASE WHEN MAX(qs.max_score) > 0 THEN AVG(qs.score) / MAX(qs.max_score) ELSE 1 END ASC
     `).all(examId, ...c.params) as Array<{
       question_number: number; question_type: string; avgScore: number;
-      maxScore: number; totalCount: number; correctCount: number; reviewCount: number;
+      maxScore: number; totalCount: number; correctCount: number; objectiveErrorCount: number; subjectiveLowScoreCount: number;
     }>;
 
-    return rows.map((r) => ({
-      questionNumber: String(r.question_number),
-      questionType: r.question_type === "objective" ? "客观" : "主观",
-      scoreRate: r.maxScore > 0 ? Math.round((r.avgScore / r.maxScore) * 100) : 0,
-      correctRate: r.question_type === "objective" && r.totalCount > 0
-        ? Math.round((r.correctCount / r.totalCount) * 100) : null,
-      avgScore: r.avgScore,
-      maxScore: r.maxScore,
-      reviewCount: r.reviewCount,
-      totalCount: r.totalCount
-    }));
+    return rows.map((r) => {
+      const isObjective = r.question_type === "objective";
+      const errorCount = isObjective ? r.objectiveErrorCount : r.subjectiveLowScoreCount;
+      const errorRate = r.totalCount > 0 ? Math.round((errorCount / r.totalCount) * 100) : 0;
+      return {
+        questionNumber: String(r.question_number),
+        questionType: isObjective ? "客观" : "主观",
+        scoreRate: r.maxScore > 0 ? Math.round((r.avgScore / r.maxScore) * 100) : 0,
+        correctRate: isObjective && r.totalCount > 0
+          ? Math.round((r.correctCount / r.totalCount) * 100) : null,
+        avgScore: r.avgScore,
+        maxScore: r.maxScore,
+        errorCount,
+        errorRate,
+        errorRateLevel: errorRateLevel(errorRate),
+        totalCount: r.totalCount
+      };
+    });
   }
 
   /** Full data for CSV/XLS export — students + rankings + per-question scores */

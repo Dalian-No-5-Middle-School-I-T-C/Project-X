@@ -1,12 +1,14 @@
 # Project-X 三级账号控制系统技术说明
 
-> **版本**: v1.2.0（账号控制系统）
+> **版本**: v1.3.0（账号控制系统）
 > **作者**: Project-X
 > **日期**: 2026-06-14
 > **关联文档**: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`DATABASE.md`](./DATABASE.md)
 
 本文档说明本次为「答题卡设计系统」补齐的 **学生 / 教师 / 管理员 三级账号控制系统（RBAC）**：
 做了什么、怎么实现、接口如何调用、如何验证、以及如何启用。
+
+v1.3.0 的账号控制接口保持兼容；新增的答题卡模板、题级评分规则和考试/答题卡删除保护仍沿用现有 `card:*`、`exam:*`、`grade:*` 权限网关。
 
 ---
 
@@ -52,7 +54,7 @@
 | `src/apps/answer-card/server/index.ts` | 挂载 `optionalAuth` 与三个新路由；为业务路由加 RBAC 网关；预热权限缓存 |
 | `package.json` | 新增脚本 `verify:auth` |
 
-> **未改动数据库 schema**：`schema.sql` 已包含 `roles / users / grades / classes / class_students / student_scores / question_scores` 等全部所需表，本次完全复用，无需迁移。
+> **账号部分未单独改动数据库 schema**：账号控制复用 `roles / users / grades / classes / class_students / student_scores / question_scores` 等既有表。v1.3.0 另有答题卡题级配置相关迁移，详见 [`DATABASE.md`](./DATABASE.md)。
 
 ---
 

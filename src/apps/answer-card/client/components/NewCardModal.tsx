@@ -3,21 +3,22 @@ import { X, ChevronLeft, ChevronRight, Calendar } from "lucide-react";
 import { SUBJECT_OPTIONS, subjectToKey, isPredefinedSubject } from "../../../../shared/pinyin";
 
 export interface NewCardFormData {
-  subject: string;        // 拼音 key，如 wuli
-  subjectLabel: string;   // 中文名称，如 物理
-  title: string;          // 考试名称
-  examDate?: string;      // ISO 日期字符串，可选
-  // 考试关联（v1.1.5 新增）
+  subject: string;
+  subjectLabel: string;
+  title: string;
+  examDate?: string;
   examAction: "none" | "create" | "link";
-  examName?: string;      // examAction="create" 时使用，默认 = title
-  linkExamId?: number;    // examAction="link" 时使用
+  examName?: string;
+  linkExamId?: number;
+  englishListening?: boolean;
+  chineseChoicePlacement?: "front" | "inline";
 }
 
 interface ExamOption {
   id: number;
   name: string;
   subject?: string | null;
-  card_id?: string;
+  card_id?: string | null;
 }
 
 interface Props {
@@ -200,6 +201,8 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
   const [linkExamId, setLinkExamId] = useState<number | null>(null);
   const [examNameManual, setExamNameManual] = useState(false);  // 用户是否手动改过考试名
 
+  const [englishListening, setEnglishListening] = useState(true);
+  const [chineseChoicePlacement, setChineseChoicePlacement] = useState<"front" | "inline">("front");
   if (!open) return null;
 
   function handleSubjectSelect(label: string) {
@@ -240,7 +243,9 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
       examDate: examDate || undefined,
       examAction,
       examName: examAction === "create" ? examName.trim() || titleTrimmed : undefined,
-      linkExamId: examAction === "link" && linkExamId ? linkExamId : undefined
+      linkExamId: examAction === "link" && linkExamId ? linkExamId : undefined,
+      englishListening,
+      chineseChoicePlacement
     });
     // 重置状态
     setSubjectLabel("物理");
@@ -252,6 +257,8 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
     setExamName("");
     setLinkExamId(null);
     setExamNameManual(false);
+    setEnglishListening(true);
+    setChineseChoicePlacement("front");
     setError("");
   }
 
@@ -265,12 +272,19 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
     }
   }
 
+  const selectedSubjectKey = subjectToKey(showCustom ? customSubject.trim() : subjectLabel);
+
   return (
     <div
       className="modal-backdrop"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="modal-card" style={{ width: 440, maxWidth: "calc(100vw - 40px)" }}>
+      <div
+        className="modal-card"
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{ width: 440, maxWidth: "calc(100vw - 40px)" }}
+      >
         <div className="modal-header">
           <h2>新建答题卡</h2>
           <button className="modal-close" onClick={onClose}><X size={20} /></button>
@@ -305,6 +319,27 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
           </label>
 
           {/* 手动填写科目（选择"其他"时显示） */}
+          {(selectedSubjectKey === "yingyu" || selectedSubjectKey === "waiyu" || selectedSubjectKey === "yuwen") && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>模板选项</span>
+              {(selectedSubjectKey === "yingyu" || selectedSubjectKey === "waiyu") && (
+                <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                  <input type="checkbox" checked={englishListening} onChange={(event) => setEnglishListening(event.target.checked)} />
+                  英语模板包含听力题 1-20
+                </label>
+              )}
+              {selectedSubjectKey === "yuwen" && (
+                <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}>语文选择题位置</span>
+                  <select value={chineseChoicePlacement} onChange={(event) => setChineseChoicePlacement(event.target.value as "front" | "inline")}>
+                    <option value="front">统一放在卷首</option>
+                    <option value="inline">按原题号分散</option>
+                  </select>
+                </label>
+              )}
+            </div>
+          )}
+
           {showCustom && (
             <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>手动填写科目名称</span>

@@ -1,6 +1,7 @@
 import { getDatabase } from "../db";
 import Database from "better-sqlite3";
 import type { AnswerCard } from "../../shared/types";
+import { normalizeObjectiveQuestions } from "../../shared/grading";
 
 export interface CardSummary {
   id: string;
@@ -84,6 +85,8 @@ export class CardRepository {
    * 插入客观题块
    */
   private insertObjectiveBlock(block: any, cardId: string): void {
+    const questions = normalizeObjectiveQuestions(block);
+    const firstQuestion = questions[0];
     const stmt = this.db.prepare(`
       INSERT INTO objective_blocks (id, card_id, sort_order, title, question_start, question_count, option_count, mode, score_per_question, density, wrong_or_extra_score)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -91,34 +94,45 @@ export class CardRepository {
     stmt.run(
       block.id,
       cardId,
-      0, // sort_order
+      0,
       block.title ?? "",
-      block.questionStart ?? 1,
-      block.questionCount ?? 0,
-      block.optionCount ?? 4,
-      block.mode ?? "single",
-      block.scorePerQuestion ?? 0,
+      firstQuestion?.questionNumber ?? block.questionStart ?? 1,
+      questions.length || block.questionCount || 0,
+      firstQuestion?.optionCount ?? block.optionCount ?? 4,
+      firstQuestion?.mode ?? block.mode ?? "single",
+      firstQuestion?.score ?? block.scorePerQuestion ?? 0,
       block.density ?? "compact",
-      block.multipleScoring?.wrongOrExtraScore ?? 0
+      firstQuestion?.scoringRule?.wrongOrExtraScore ?? block.multipleScoring?.wrongOrExtraScore ?? 0
     );
 
-    // 插入答案键
-    if (block.answerKey) {
-      const keyStmt = this.db.prepare(
-        "INSERT OR REPLACE INTO objective_answer_keys (block_id, question_number, correct_options) VALUES (?, ?, ?)"
+    const keyStmt = this.db.prepare(
+      "INSERT OR REPLACE INTO objective_answer_keys (block_id, question_number, correct_options) VALUES (?, ?, ?)"
+    );
+    const questionStmt = this.db.prepare(
+      `INSERT OR REPLACE INTO objective_questions (block_id, question_number, sort_order, mode, option_count, score, scoring_rule_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    questions.forEach((question, index) => {
+      questionStmt.run(
+        block.id,
+        question.questionNumber,
+        index,
+        question.mode,
+        question.optionCount,
+        question.score,
+        question.scoringRule ? JSON.stringify(question.scoringRule) : null
       );
-      for (const [qNum, options] of Object.entries(block.answerKey)) {
-        keyStmt.run(block.id, Number(qNum), JSON.stringify(options));
+      if (question.answerKey && question.answerKey.length > 0) {
+        keyStmt.run(block.id, question.questionNumber, JSON.stringify(question.answerKey));
       }
-    }
+    });
 
-    // 插入多选题评分规则
     if (block.multipleScoring?.partialScores) {
       const scoreStmt = this.db.prepare(
         "INSERT OR REPLACE INTO objective_multiple_scoring (block_id, correct_count, score) VALUES (?, ?, ?)"
       );
-      for (const [count, score] of Object.entries(block.multipleScoring.partialScores)) {
-        scoreStmt.run(block.id, Number(count), score as number);
+      for (const [partialCount, score] of Object.entries(block.multipleScoring.partialScores)) {
+        scoreStmt.run(block.id, Number(partialCount), score as number);
       }
     }
   }
@@ -128,16 +142,16 @@ export class CardRepository {
    */
   private insertSubjectiveBlock(block: any, cardId: string): void {
     const stmt = this.db.prepare(`
-      INSERT INTO subjective_blocks (id, card_id, sort_order, title)
-      VALUES (?, ?, ?, ?)
+      INSERT INTO subjective_blocks (id, card_id, sort_order, block_kind, title)
+      VALUES (?, ?, ?, ?, ?)
     `);
-    stmt.run(block.id, cardId, 0, block.title ?? "");
+    stmt.run(block.id, cardId, 0, block.blockKind ?? (block.title?.includes("填空") ? "fill_blank" : "answer"), block.title ?? "");
 
     // 插入主观题
     if (block.questions) {
       const qStmt = this.db.prepare(`
-        INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm, blanks_label_style, blanks_items_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const q of block.questions) {
         qStmt.run(
@@ -152,7 +166,9 @@ export class CardRepository {
           q.lineGrid?.lineSpacingMm ?? 8,
           q.blanks?.count,
           q.blanks?.widthMm,
-          q.blanks?.heightMm
+          q.blanks?.heightMm,
+          q.blanks?.labelStyle,
+          q.blanks?.items ? JSON.stringify(q.blanks.items) : undefined
         );
 
         // 插入图片
@@ -223,7 +239,8 @@ export class CardRepository {
         partialScores[s.correct_count] = s.score;
       }
 
-      card.bodyBlocks.push({
+      const questionRows = this.db.prepare("SELECT * FROM objective_questions WHERE block_id = ? ORDER BY sort_order, question_number").all(b.id) as any[];
+      const block = {
         id: b.id,
         type: "objective",
         title: b.title,
@@ -237,8 +254,20 @@ export class CardRepository {
         multipleScoring: {
           partialScores,
           wrongOrExtraScore: b.wrong_or_extra_score
-        }
-      } as any);
+        },
+        questions: questionRows.length > 0
+          ? questionRows.map((q) => ({
+              questionNumber: q.question_number,
+              mode: q.mode,
+              optionCount: q.option_count,
+              score: q.score,
+              answerKey: answerKeys[q.question_number] ?? [],
+              scoringRule: q.scoring_rule_json ? JSON.parse(q.scoring_rule_json) : undefined
+            }))
+          : undefined
+      } as any;
+      block.questions ??= normalizeObjectiveQuestions(block);
+      card.bodyBlocks.push(block);
     }
 
     // 加载主观题块
@@ -255,7 +284,15 @@ export class CardRepository {
           kind: q.kind,
           minHeightMm: q.min_height_mm,
           lineGrid: { enabled: q.line_grid_enabled === 1, lineSpacingMm: q.line_spacing_mm },
-          blanks: q.blanks_count ? { count: q.blanks_count, widthMm: q.blanks_width_mm, heightMm: q.blanks_height_mm } : undefined,
+          blanks: q.blanks_count
+            ? {
+                count: q.blanks_count,
+                widthMm: q.blanks_width_mm,
+                heightMm: q.blanks_height_mm,
+                labelStyle: q.blanks_label_style ?? undefined,
+                items: q.blanks_items_json ? JSON.parse(q.blanks_items_json) : undefined
+              }
+            : undefined,
           images: images.map((img: any) => ({
             assetId: img.asset_id,
             originalName: img.original_name,
@@ -269,6 +306,7 @@ export class CardRepository {
       card.bodyBlocks.push({
         id: b.id,
         type: "subjective",
+        blockKind: b.block_kind ?? (String(b.title ?? "").includes("填空") ? "fill_blank" : "answer"),
         title: b.title,
         questions: questionsWithImages
       } as any);

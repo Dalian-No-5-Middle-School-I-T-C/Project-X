@@ -140,15 +140,16 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
     if (frameRect && question.kind === "blank" && firstScoreCell) {
       drawText(doc, "得分", frameRect.x + 4, firstScoreCell.rect.y + 1.2, 7);
       const dividerY = firstScoreCell.rect.y + firstScoreCell.rect.height + 2;
-      doc.moveTo(pt(frameRect.x), pt(dividerY)).lineTo(pt(frameRect.x + frameRect.width), pt(dividerY)).dash(2, { space: 2 }).stroke();
+      doc.moveTo(pt(frameRect.x), pt(dividerY)).lineTo(pt(frameRect.x + frameRect.width), pt(dividerY)).stroke();
     } else {
       const dividerY = question.contentRect.y;
-      doc.moveTo(pt(question.rect.x), pt(dividerY)).lineTo(pt(question.rect.x + question.rect.width), pt(dividerY)).dash(2, { space: 2 }).stroke();
+      doc.moveTo(pt(question.rect.x), pt(dividerY)).lineTo(pt(question.rect.x + question.rect.width), pt(dividerY)).stroke();
     }
-    doc.undash();
     question.scoreCells.forEach((cell) => {
       drawRect(doc, cell.rect, { stroke: "#222", lineWidth: 0.2 });
-      drawCenteredText(doc, String(cell.score), cell.rect.x, cell.rect.y + 1.2, cell.rect.width, 6);
+      if (cell.score !== null) {
+        drawCenteredText(doc, String(cell.score), cell.rect.x, cell.rect.y + 1.2, cell.rect.width, 6);
+      }
     });
   }
 
@@ -157,7 +158,7 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
   });
 
   question.blanks.forEach((blank, index) => {
-    const blankLabel = question.kind === "blank" ? formatBlankLabel(question.blankLabelStyle, index) : `${question.questionNumber}.${index + 1}`;
+    const blankLabel = question.blankLabels?.[index] ?? (question.kind === "blank" ? formatBlankLabel(question.blankLabelStyle, index) : `${question.questionNumber}.${index + 1}`);
     if (blankLabel) {
       const slotWidth = question.blankLabelSlotWidth ?? blankLabel.length * 1.8 + 0.8;
       drawText(doc, blankLabel, blank.x - slotWidth - 0.8, blank.y + blank.height - 2.35, 8, {

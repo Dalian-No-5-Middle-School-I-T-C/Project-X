@@ -2,8 +2,39 @@ export type ObjectiveMode = "single" | "multiple" | "indefinite";
 export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
 export type SubjectiveStyle = "manual_score_grid" | "plain_subjective";
 export type SubjectiveKind = "blank" | "lined_answer" | "plain_box";
+export type SubjectiveBlockKind = "fill_blank" | "answer";
 export type SubjectiveQuestionNumber = number | string;
 export type BlankLabelStyle = "none" | "arabic_parentheses" | "roman_parentheses";
+export type BlankItem = { label?: string; widthMm: number; heightMm: number };
+
+export type ObjectiveScoringRule =
+  | {
+      type: "per_selected_count";
+      partialScores: Record<number, number>;
+      wrongOrExtraScore?: number;
+      allowWrongOptions?: boolean;
+    }
+  | {
+      type: "by_correct_count";
+      partialScoresByCorrectCount: Record<number, Record<number, number>>;
+      wrongOrExtraScore?: number;
+      allowWrongOptions?: boolean;
+    }
+  | {
+      type: "fixed_partial";
+      partialScore: number;
+      wrongOrExtraScore?: number;
+      allowWrongOptions?: boolean;
+    };
+
+export type ObjectiveQuestionConfig = {
+  questionNumber: number;
+  mode?: ObjectiveMode;
+  optionCount?: number;
+  score?: number;
+  answerKey?: string[];
+  scoringRule?: ObjectiveScoringRule;
+};
 
 export type PaperSettings = {
   size: "A4";
@@ -30,6 +61,7 @@ export type ObjectiveBlock = {
     partialScores: Record<number, number>;
     wrongOrExtraScore: number;
   };
+  questions?: ObjectiveQuestionConfig[];
 };
 
 export type SubjectiveQuestion = {
@@ -38,7 +70,7 @@ export type SubjectiveQuestion = {
   score: number;
   style: SubjectiveStyle;
   kind: SubjectiveKind;
-  blanks?: { count: number; widthMm: number; heightMm: number; labelStyle?: BlankLabelStyle };
+  blanks?: { count: number; widthMm: number; heightMm: number; labelStyle?: BlankLabelStyle; items?: BlankItem[] };
   lineGrid?: { enabled: boolean; lineSpacingMm: number };
   images?: Array<{
     assetId: string;
@@ -53,6 +85,7 @@ export type SubjectiveQuestion = {
 export type SubjectiveBlock = {
   id: string;
   type: "subjective";
+  blockKind?: SubjectiveBlockKind;
   title: string;
   questions: SubjectiveQuestion[];
 };
@@ -114,9 +147,10 @@ export type SubjectiveRenderItem = {
   kind: SubjectiveKind;
   rect: Rect;
   contentRect: Rect;
-  scoreCells: Array<{ score: number; rect: Rect }>;
+  scoreCells: Array<{ score: number | null; rect: Rect }>;
   lineYs: number[];
   blanks: Rect[];
+  blankLabels?: string[];
   blankLabelStyle?: BlankLabelStyle;
   blankLabelSlotWidth?: number;
   images: Array<{ assetId: string; originalName?: string; rect: Rect }>;
@@ -335,8 +369,11 @@ export type ExamOverview = {
   scoreSummary: ScoreSummary | null;
   overallScoreSummary: ScoreSummary | null;
   classSummaries: ClassScoreSummary[];
-  reviewCount: number;
+  highErrorQuestionCount: number;
+  errorRateBuckets: { low: number; medium: number; high: number };
 };
+
+export type ErrorRateLevel = "none" | "low" | "medium" | "high";
 
 export type StudentRankingItem = {
   rank: number;
@@ -345,7 +382,10 @@ export type StudentRankingItem = {
   totalScore: number;
   objectiveScore: number;
   subjectiveScore: number;
-  needReview: boolean;
+  lowScoreCount: number;
+  questionCount: number;
+  errorRate: number;
+  errorRateLevel: ErrorRateLevel;
 };
 
 export type QuestionAnalysisItem = {
@@ -355,14 +395,16 @@ export type QuestionAnalysisItem = {
   correctRate: number | null;
   avgScore: number;
   maxScore: number;
-  reviewCount: number;
+  errorCount: number;
+  errorRate: number;
+  errorRateLevel: ErrorRateLevel;
   totalCount: number;
 };
 
 export type ExamRecord = {
   id: number;
   name: string;
-  card_id: string;
+  card_id: string | null;
   grade_id: number | null;
   class_id: number | null;
   subject: string | null;

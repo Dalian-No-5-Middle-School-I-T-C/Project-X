@@ -119,6 +119,17 @@ CREATE TABLE IF NOT EXISTS objective_answer_keys (
     PRIMARY KEY (block_id, question_number)
 );
 
+CREATE TABLE IF NOT EXISTS objective_questions (
+    block_id        TEXT NOT NULL REFERENCES objective_blocks(id) ON DELETE CASCADE,
+    question_number INTEGER NOT NULL,
+    sort_order      INTEGER DEFAULT 0,
+    mode            TEXT NOT NULL,
+    option_count    INTEGER NOT NULL,
+    score           REAL NOT NULL,
+    scoring_rule_json TEXT,
+    PRIMARY KEY (block_id, question_number)
+);
+
 -- 多选题部分得分规则
 CREATE TABLE IF NOT EXISTS objective_multiple_scoring (
     block_id       TEXT NOT NULL REFERENCES objective_blocks(id) ON DELETE CASCADE,
@@ -132,6 +143,7 @@ CREATE TABLE IF NOT EXISTS subjective_blocks (
     id          TEXT PRIMARY KEY,
     card_id     TEXT NOT NULL REFERENCES answer_cards(id) ON DELETE CASCADE,
     sort_order  INTEGER DEFAULT 0,
+    block_kind  TEXT DEFAULT 'answer',           -- fill_blank / answer
     title       TEXT,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -150,6 +162,8 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     blanks_count     INTEGER,
     blanks_width_mm  REAL,
     blanks_height_mm REAL,
+    blanks_label_style TEXT,
+    blanks_items_json TEXT,
     sort_order       INTEGER DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -196,7 +210,7 @@ CREATE TABLE IF NOT EXISTS data_retention_policies (
 CREATE TABLE IF NOT EXISTS exams (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     name          TEXT NOT NULL,                -- 2026上学期期中考试
-    card_id       TEXT NOT NULL REFERENCES answer_cards(id),
+    card_id       TEXT REFERENCES answer_cards(id),
     grade_id      INTEGER REFERENCES grades(id),
     class_id      INTEGER REFERENCES classes(id),
     subject       TEXT,                        -- 物理 / 数学
@@ -332,6 +346,7 @@ CREATE INDEX IF NOT EXISTS idx_teacher_classes_class ON teacher_classes(class_id
 CREATE INDEX IF NOT EXISTS idx_answer_cards_created_by ON answer_cards(created_by);
 CREATE INDEX IF NOT EXISTS idx_answer_cards_updated_at ON answer_cards(updated_at);
 CREATE INDEX IF NOT EXISTS idx_objective_blocks_card ON objective_blocks(card_id);
+CREATE INDEX IF NOT EXISTS idx_objective_questions_block ON objective_questions(block_id);
 CREATE INDEX IF NOT EXISTS idx_subjective_blocks_card ON subjective_blocks(card_id);
 CREATE INDEX IF NOT EXISTS idx_subjective_questions_block ON subjective_questions(block_id);
 CREATE INDEX IF NOT EXISTS idx_exams_status ON exams(status);

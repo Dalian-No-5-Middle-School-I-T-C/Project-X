@@ -4,7 +4,7 @@ import Database from "better-sqlite3";
 export interface ExamRecord {
   id: number;
   name: string;
-  card_id: string;
+  card_id: string | null;
   grade_id: number | null;
   class_id: number | null;
   subject: string | null;

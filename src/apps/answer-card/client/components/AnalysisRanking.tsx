@@ -1,8 +1,14 @@
-import { AlertTriangle } from "lucide-react";
 import type { StudentRankingItem } from "../../../../shared/types";
 
 interface Props {
   ranking: StudentRankingItem[];
+}
+
+function errorLevelText(level: StudentRankingItem["errorRateLevel"]): string {
+  if (level === "high") return "高";
+  if (level === "medium") return "中";
+  if (level === "low") return "低";
+  return "正常";
 }
 
 export function AnalysisRanking({ ranking }: Props) {
@@ -28,7 +34,7 @@ export function AnalysisRanking({ ranking }: Props) {
               <th className="score-col">总分</th>
               <th className="score-col">客观</th>
               <th className="score-col">主观</th>
-              <th className="review-col">复核</th>
+              <th className="review-col">低分题占比</th>
             </tr>
           </thead>
           <tbody>
@@ -41,9 +47,14 @@ export function AnalysisRanking({ ranking }: Props) {
                 <td className="score-col">{item.objectiveScore}</td>
                 <td className="score-col">{item.subjectiveScore}</td>
                 <td className="review-col">
-                  {item.needReview && (
-                    <span title="有待复核题">
-                      <AlertTriangle size={14} color="#d97706" />
+                  {item.errorRateLevel === "none" ? (
+                    <span style={{ color: "var(--muted)" }}>—</span>
+                  ) : (
+                    <span title={`${item.lowScoreCount}/${item.questionCount} 题低于半分，约 ${item.errorRate}%`}>
+                      <span className={`error-level-badge error-level-${item.errorRateLevel}`}>
+                        {errorLevelText(item.errorRateLevel)}
+                      </span>
+                      <span style={{ marginLeft: 6 }}>{item.errorRate}%</span>
                     </span>
                   )}
                 </td>

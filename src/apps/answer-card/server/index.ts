@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import { ensureDefaultAdmin, initializeDatabase } from "../../../server/db";
+import { ensureDefaultAdmin, getDatabase, initializeDatabase } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
@@ -22,7 +22,8 @@ import sponsorRoutes from "../../../server/routes/sponsor";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
-import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey } from "../../../shared/grading";
+import { applySubjectTemplate } from "../../../shared/cardTemplates";
+import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 import type {
   AnswerCard,
@@ -61,9 +62,12 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
     id: safeId(cardId),
     subjectLabel: (card as any).subjectLabel ?? card.subjectLabel ?? undefined,
     examDate: (card as any).examDate ?? card.examDate ?? undefined,
-    bodyBlocks: (card.bodyBlocks ?? []).map((block) =>
-      block.type === "objective" ? { ...block, answerKey: normalizeObjectiveAnswerKey(block) } : block
-    ),
+    bodyBlocks: (card.bodyBlocks ?? []).map((block) => {
+      if (block.type !== "objective") return block;
+      const answerKey = normalizeObjectiveAnswerKey(block);
+      const normalizedBlock = { ...block, answerKey };
+      return { ...normalizedBlock, questions: normalizeObjectiveQuestions(normalizedBlock) };
+    }),
     paper: { size: "A4", orientation: "portrait" },
     layoutVersion: 1,
     updatedAt: new Date().toISOString()
@@ -108,6 +112,28 @@ async function prepareLayoutForCard(cardRepo: CardRepository, card: AnswerCard):
   cardRepo.updateLayoutData(card.id, layout);
   await writeLayoutDocument(card.id, layout);
   return layoutPath(card.id);
+}
+
+function requestFlag(value: unknown): boolean {
+  return value === true || boolField(value);
+}
+
+function deleteExamRows(db: ReturnType<typeof getDatabase>, examIds: number[]): void {
+  for (const examId of examIds) {
+    db.prepare("DELETE FROM question_scores WHERE exam_id = ?").run(examId);
+    db.prepare("DELETE FROM student_scores WHERE exam_id = ?").run(examId);
+    db.prepare("DELETE FROM scan_batches WHERE exam_id = ?").run(examId);
+    db.prepare("DELETE FROM exams WHERE id = ?").run(examId);
+  }
+}
+
+async function deleteCardFiles(cardId: string): Promise<void> {
+  const cardJsonPath = path.join(dataDir, "cards", `${cardId}.json`);
+  const layoutJsonPath = layoutPath(cardId);
+  const assetsPath = cardAssetsDir(cardId);
+  try { if (existsSync(cardJsonPath)) await rm(cardJsonPath); } catch {}
+  try { if (existsSync(layoutJsonPath)) await rm(layoutJsonPath); } catch {}
+  try { if (existsSync(assetsPath)) await rm(assetsPath, { recursive: true, force: true }); } catch {}
 }
 
 function parsePositiveNumber(value: unknown, fallback: number): number {
@@ -353,7 +379,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/export", exportRoutes);
   app.use("/api/scores", scoreRoutes);
   app.use("/api/sponsor", sponsorRoutes);
-  console.log("[Server] v1.2.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
+  console.log("[Server] v1.3.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
 
   // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
@@ -414,6 +440,8 @@ export async function createApp(): Promise<express.Express> {
       const title = (req.body?.title ?? "").trim();
       const subjectLabel = (req.body?.subjectLabel ?? "").trim();
       const examDate = (req.body?.examDate ?? "").trim() || undefined;
+      const englishListening = req.body?.englishListening !== false;
+      const chineseChoicePlacement = req.body?.chineseChoicePlacement === "inline" ? "inline" : "front";
       if (!subject) {
         res.status(400).json({ error: "科目（subject）为必填项" });
         return;
@@ -427,10 +455,11 @@ export async function createApp(): Promise<express.Express> {
       while (cardRepo.findById(id) && retry < 100) {
         id = generateCardId(subject + "_" + String(retry++));
       }
-      const card = createDefaultCard(id, subject);
+      let card = createDefaultCard(id, subject);
       card.title = title;
       card.subjectLabel = subjectLabel || undefined;
       card.examDate = examDate;
+      card = applySubjectTemplate(card, { englishListening, chineseChoicePlacement });
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
       res.status(201).json(saved);
     } catch (error) {
@@ -843,15 +872,42 @@ export async function createApp(): Promise<express.Express> {
       const examRepo = new ExamRepository();
       const exams = examRepo.listExams();
       const referenced = exams.filter((e: any) => e.card_id === cardId);
+      if (referenced.length > 0) {
+        const body = (req.body ?? {}) as Record<string, unknown>;
+        const unlinkExams = requestFlag(body.unlinkExams);
+        const deleteReferencedExams = requestFlag(body.deleteReferencedExams);
+        if (!unlinkExams && !deleteReferencedExams) {
+          res.status(409).json({
+            message: `无法直接删除答题卡：已被 ${referenced.length} 个考试引用`,
+            referencedExamCount: referenced.length,
+            referencedExamNames: referenced.map((e: any) => e.name)
+          });
+          return;
+        }
+        const db = getDatabase();
+        db.transaction(() => {
+          if (deleteReferencedExams) {
+            deleteExamRows(db, referenced.map((e: any) => Number(e.id)));
+          } else {
+            db.prepare("UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ?").run(cardId);
+          }
+          cardRepo.deleteCard(cardId);
+        })();
+        await deleteCardFiles(cardId);
+        res.json({
+          ok: true,
+          deleted: true,
+          unlinkedExamCount: deleteReferencedExams ? 0 : referenced.length,
+          deletedExamCount: deleteReferencedExams ? referenced.length : 0,
+          referencedExamCount: referenced.length,
+          referencedExamNames: referenced.map((e: any) => e.name)
+        });
+        return;
+      }
       // 删除 SQLite 记录（外键 CASCADE 自动删子表）
       const deleted = cardRepo.deleteCard(cardId);
       // 删除 JSON 文件
-      const cardJsonPath = path.join(dataDir, "cards", `${cardId}.json`);
-      const layoutJsonPath = layoutPath(cardId);
-      const assetsPath = cardAssetsDir(cardId);
-      try { if (existsSync(cardJsonPath)) await rm(cardJsonPath); } catch {}
-      try { if (existsSync(layoutJsonPath)) await rm(layoutJsonPath); } catch {}
-      try { if (existsSync(assetsPath)) await rm(assetsPath, { recursive: true, force: true }); } catch {}
+      await deleteCardFiles(cardId);
       res.json({
         ok: true,
         deleted,
@@ -1001,16 +1057,31 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      const { getDatabase } = await import("../../../server/db");
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const deleteLinkedCard = requestFlag(body.deleteLinkedCard);
+      const linkedCardId = exam.card_id ? safeId(exam.card_id) : null;
+      if (deleteLinkedCard && linkedCardId) {
+        const referencedByOtherExams = examRepo.listExams().filter((item) => item.card_id === linkedCardId && item.id !== exam.id);
+        if (referencedByOtherExams.length > 0) {
+          res.status(409).json({
+            message: `无法同时删除答题卡：仍被 ${referencedByOtherExams.length} 个其它考试引用`,
+            referencedExamCount: referencedByOtherExams.length,
+            referencedExamNames: referencedByOtherExams.map((item) => item.name)
+          });
+          return;
+        }
+      }
       const db = getDatabase();
-      // Cascade: scores → students linked via scores, then exam itself
       db.transaction(() => {
-        db.prepare("DELETE FROM question_scores WHERE exam_id = ?").run(exam.id);
-        db.prepare("DELETE FROM student_scores WHERE exam_id = ?").run(exam.id);
-        db.prepare("DELETE FROM scan_batches WHERE exam_id = ?").run(exam.id);
-        db.prepare("DELETE FROM exams WHERE id = ?").run(exam.id);
+        deleteExamRows(db, [exam.id]);
+        if (deleteLinkedCard && linkedCardId) {
+          cardRepo.deleteCard(linkedCardId);
+        }
       })();
-      res.json({ message: "已删除" });
+      if (deleteLinkedCard && linkedCardId) {
+        await deleteCardFiles(linkedCardId);
+      }
+      res.json({ message: "已删除", deletedLinkedCard: Boolean(deleteLinkedCard && linkedCardId) });
     } catch (error) {
       next(error);
     }
