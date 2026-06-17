@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Heart, KeyRound, LogOut, User } from "lucide-react";
+import { ChevronDown, Download, Heart, KeyRound, LogOut, Upload, User } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
-import { fetchJson } from "../auth/api";
+import { fetchJson, getAuthToken } from "../auth/api";
 import { ROLE_LABELS } from "../auth/types";
 
 export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
-  const { user, logout } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
@@ -14,6 +15,8 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
+  const [importMsg, setImportMsg] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -50,6 +53,58 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
       setMessage(err instanceof Error ? err.message : "修改失败");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleExportDb() {
+    try {
+      const token = getAuthToken();
+      const resp = await fetch("/api/db/backup", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ message: resp.statusText }));
+        throw new Error(err.message || "导出失败");
+      }
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `ProjectX_backup_${new Date().toISOString().slice(0, 10)}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setImportMsg(err instanceof Error ? err.message : "导出失败");
+    }
+  }
+
+  async function handleImportDb(file: File) {
+    setImportMsg("");
+    setImportBusy(true);
+    try {
+      const token = getAuthToken();
+      const headers: Record<string, string> = {
+        "Content-Type": "application/zip"
+      };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const resp = await fetch("/api/db/restore", {
+        method: "POST",
+        headers,
+        body: file  // 原始二进制上传，绕过 FormData/multipart 的 corrupt 风险
+      });
+      const result = await resp.json();
+      if (!resp.ok) {
+        throw new Error(result.message || "导入失败");
+      }
+      setImportMsg(result.message || "数据已恢复！请手动重启应用以生效。");
+    } catch (err) {
+      setImportMsg(err instanceof Error ? err.message : "导入失败");
+    } finally {
+      setImportBusy(false);
+      // 重置 file input
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
 
@@ -109,6 +164,38 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
                 确认修改
               </button>
             </div>
+          )}
+          {/* 数据库导入导出 — 仅管理员可见 */}
+          {isAdmin && (
+            <>
+              <div className="account-menu-divider" />
+              <button type="button" className="account-menu-item" onClick={() => void handleExportDb()}>
+                <Download size={15} /> 导出数据
+              </button>
+              <button
+                type="button"
+                className="account-menu-item"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={importBusy}
+              >
+                <Upload size={15} /> {importBusy ? "导入中..." : "导入数据"}
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".zip"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleImportDb(file);
+                }}
+              />
+              {importMsg && (
+                <div style={{ padding: "6px 12px", fontSize: 12, color: importMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>
+                  {importMsg}
+                </div>
+              )}
+            </>
           )}
           {onOpenSponsor && (
             <button

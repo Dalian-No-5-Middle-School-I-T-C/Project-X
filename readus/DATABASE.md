@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.3.0
+> **版本**: v1.2.1
 > **技术栈**: SQLite + better-sqlite3 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
 
@@ -376,6 +376,10 @@ $env:PROJECTX_DB_PATH = "D:\\shared\\projectx.db"
 
 ### Q: 如何备份数据库？
 
+**方式一：程序内导出（推荐）**
+管理员登录后，点击右上角账号 →「导出数据」，系统会自动打包 ZIP（含 projectx.db + scanner.db + data/answer-card/ 目录）供下载。备份文件支持通过「导入数据」一键恢复。
+
+**方式二：手动复制**
 SQLite 数据库是单个文件，直接复制 `projectx.db` 即可备份：
 ```powershell
 copy data\projectx.db data\projectx_backup_20260101.db
@@ -433,20 +437,24 @@ src/server/
     ├── classes.ts             # 班级管理 API
     ├── scores.ts              # 成绩查询 API
     ├── teachers.ts            # 教师管理 API (v1.1)
-    └── export.ts              # 账密导出 API (v1.1)
+    ├── export.ts              # 账密导出 API (v1.1)
+    └── backup.ts              # 数据库全量备份/恢复 (v1.2.1)
+src/types/
+├── archiver.d.ts              # archiver v8 ESM 类型声明
+└── adm-zip.d.ts               # adm-zip 类型声明
+```
 ```
 
 ---
 
 ## 更新日志
 
-### v0.2.0 (2026-06-11)
-- 新增 SQLite 数据库模块
-- 新增用户与权限系统（管理员/教师/学生）
-- 新增考试管理与成绩统计表
-- 新增 30 天数据保留与自动清理机制
-- 答题卡数据从 JSON 文件迁移到数据库
-- 新增 Bearer Token 认证
+- **v1.2.1** (06-17) — 数据库全量备份/恢复（ZIP 导出导入），强制考试时间，UI 响应式三级断点，导入模板升级 .xlsx
+- **v1.2.0** (06-17) — AI 成绩分析，Electron 探活增强
+- **v1.1.5** (06-16) — 阅卷流程重构，多端打包 x86/x64
+- **v1.1.0** (06-14) — 教师/学生管理，CSV/Excel 批量导入导出
+- **v1.0.x** (06-14) — 答题卡管理，品牌化，登录持久化
+- **v0.2.0** (06-11) — SQLite 数据库模块，权限系统，成绩统计
 
 ### v1.3.0 (2026-06-17)
 - 新增 `objective_questions`，支持同一客观题块内按题配置题型、选项数、分值和评分规则

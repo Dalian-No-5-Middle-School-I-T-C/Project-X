@@ -75,17 +75,30 @@ async function startLocalServer() {
   process.env.ANSWER_CARD_CLIENT_DIST = clientDist;
   process.env.PROJECTX_DB_PATH = path.join(userDataDir, "data", "projectx.db");
 
-  const serverModule = await import(pathToFileURL(serverBundle).href);
-  const preferredPort = Number(process.env.PROJECTX_ELECTRON_PORT || 5174);
   try {
-    server = await serverModule.startServer(preferredPort);
-  } catch (error) {
-    if (error && (error.code === "EADDRINUSE" || error.code === "EACCES")) {
-      console.warn(`[Electron] Port ${preferredPort} is unavailable (${error.code}); falling back to a random port.`);
-      server = await serverModule.startServer(0);
-    } else {
-      throw error;
+    const serverModule = await import(pathToFileURL(serverBundle).href);
+    const preferredPort = Number(process.env.PROJECTX_ELECTRON_PORT || 5174);
+    try {
+      server = await serverModule.startServer(preferredPort);
+    } catch (error) {
+      if (error && (error.code === "EADDRINUSE" || error.code === "EACCES")) {
+        console.warn(`[Electron] Port ${preferredPort} is unavailable (${error.code}); falling back to a random port.`);
+        server = await serverModule.startServer(0);
+      } else {
+        throw error;
+      }
     }
+  } catch (importError) {
+    const msg = importError instanceof Error ? importError.message : String(importError);
+    console.error(`[Electron] Failed to load server bundle: ${msg}`);
+    if (msg.includes("better-sqlite3") || msg.includes("node_sqlite3") || msg.includes(".node")) {
+      throw new Error(
+        `后端原生模块加载失败，可能是本机架构（${process.arch}）与已编译模块不匹配。` +
+        `\n请运行 npm run rebuild:electron 重新编译原生模块后再启动。` +
+        `\n\n技术细节：${msg}`
+      );
+    }
+    throw new Error(`后端启动失败：${msg}`);
   }
   const address = server.address();
   const actualPort = Number(server.actualPort || (address && typeof address === "object" ? address.port : 0));
@@ -101,7 +114,7 @@ async function startLocalServer() {
 async function waitForLocalServer(baseUrl) {
   const healthUrl = `${baseUrl}/api/app/health`;
   let lastError;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
     try {
       const statusCode = await requestLocalHealth(healthUrl);
       if (statusCode >= 200 && statusCode < 300) return;
