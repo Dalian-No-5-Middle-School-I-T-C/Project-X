@@ -19,6 +19,7 @@ import teacherRoutes from "../../../server/routes/teachers";
 import exportRoutes from "../../../server/routes/export";
 import scoreRoutes from "../../../server/routes/scores";
 import sponsorRoutes from "../../../server/routes/sponsor";
+import backupRoutes from "../../../server/routes/backup";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
@@ -353,6 +354,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/export", exportRoutes);
   app.use("/api/scores", scoreRoutes);
   app.use("/api/sponsor", sponsorRoutes);
+  app.use("/api/db", backupRoutes);
   console.log("[Server] v1.2.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
 
   // 业务路由 RBAC 网关
@@ -413,13 +415,17 @@ export async function createApp(): Promise<express.Express> {
       const subject = (req.body?.subject ?? "").trim();
       const title = (req.body?.title ?? "").trim();
       const subjectLabel = (req.body?.subjectLabel ?? "").trim();
-      const examDate = (req.body?.examDate ?? "").trim() || undefined;
+      const examDate = (req.body?.examDate ?? "").trim();
       if (!subject) {
         res.status(400).json({ error: "科目（subject）为必填项" });
         return;
       }
       if (!title) {
         res.status(400).json({ error: "考试名称为必填项" });
+        return;
+      }
+      if (!examDate || !/^\d{4}-\d{2}-\d{2}$/.test(examDate)) {
+        res.status(400).json({ error: "考试时间为必填项，格式为 YYYY-MM-DD" });
         return;
       }
       let id = generateCardId(subject);

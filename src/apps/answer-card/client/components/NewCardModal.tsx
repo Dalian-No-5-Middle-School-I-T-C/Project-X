@@ -6,7 +6,7 @@ export interface NewCardFormData {
   subject: string;        // 拼音 key，如 wuli
   subjectLabel: string;   // 中文名称，如 物理
   title: string;          // 考试名称
-  examDate?: string;      // ISO 日期字符串，可选
+  examDate: string;       // ISO 日期字符串，必填
   // 考试关联（v1.1.5 新增）
   examAction: "none" | "create" | "link";
   examName?: string;      // examAction="create" 时使用，默认 = title
@@ -232,12 +232,16 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
       setError("请选择要关联的已有考试");
       return;
     }
+    if (!examDate.trim()) {
+      setError("请选择考试时间");
+      return;
+    }
     const key = subjectToKey(finalLabel);
     onCreate({
       subject: key,
       subjectLabel: finalLabel,
       title: titleTrimmed,
-      examDate: examDate || undefined,
+      examDate: examDate,
       examAction,
       examName: examAction === "create" ? examName.trim() || titleTrimmed : undefined,
       linkExamId: examAction === "link" && linkExamId ? linkExamId : undefined
@@ -331,9 +335,9 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
             />
           </label>
 
-          {/* 考试时间（可选） */}
+          {/* 考试时间（必填） */}
           <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>考试时间 <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 400 }}>（可选）</span></span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>考试时间 <span style={{ color: "var(--brand)" }}>*</span></span>
             <DatePicker value={examDate} onChange={setExamDate} />
           </label>
 
