@@ -1,30 +1,18 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { existsSync, mkdirSync } from "node:fs";
+import { raw as expressRaw } from "express";
+import { ZipArchive } from "archiver";
+import AdmZip from "adm-zip";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, copyFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import multer from "multer";
 import os from "node:os";
 import crypto from "node:crypto";
-import { createRequire } from "node:module";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
 import { closeDatabase, getDatabase } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
-
-const nodeRequire = createRequire(import.meta.url);
-// archiver 的 CJS 类型声明不兼容 ESM；使用 require 绕过
-const archiver: (format: string, options?: Record<string, unknown>) => {
-  pipe: (dest: NodeJS.WritableStream) => void;
-  file: (filePath: string, options: { name: string }) => void;
-  directory: (dirPath: string, prefix: string) => void;
-  finalize: () => Promise<void>;
-  on: (event: string, handler: (err?: Error) => void) => void;
-} = nodeRequire("archiver");
-// unzipper 无类型声明
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const unzipper: any = nodeRequire("unzipper");
 
 const router = Router();
 
@@ -32,11 +20,8 @@ const router = Router();
 router.use(authMiddleware);
 router.use(requirePermission(PERMISSIONS.USER_MANAGE));
 
-// 上传临时文件（用于导入）
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 512 * 1024 * 1024 }  // 512MB
-});
+// 导入使用 raw body（避免 multpart/form-data 解析 corrupt ZIP 二进制数据）
+const rawBodyParser = expressRaw({ type: "application/zip", limit: "512mb" });
 
 /**
  * 计算备份中包含的所有目录和文件大小
@@ -128,8 +113,8 @@ router.get("/backup", async (_req: Request, res: Response) => {
     // 4. 写入 metadata
     await writeFile(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
 
-    // 5. 创建 ZIP
-    const archive = archiver("zip", { zlib: { level: 6 } });
+    // 5. 创建 ZIP（archiver v8 ESM: new ZipArchive）
+    const archive = new ZipArchive({ zlib: { level: 6 } });
 
     archive.on("error", (err?: Error) => {
       console.error("[Backup] Archive error:", err?.message);
@@ -174,11 +159,18 @@ router.get("/backup", async (_req: Request, res: Response) => {
 
 /**
  * POST /api/db/restore
- * 导入 ZIP 恢复数据
+ * 导入 ZIP 恢复数据（raw binary upload，不走 multipart）
  */
-router.post("/restore", upload.single("file"), async (req: Request, res: Response) => {
-  if (!req.file) {
-    res.status(400).json({ message: "请上传 .zip 备份文件" });
+router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
+  const zipBuffer = req.body as Buffer;
+  if (!zipBuffer || !Buffer.isBuffer(zipBuffer) || zipBuffer.length === 0) {
+    res.status(400).json({ message: "请上传 .zip 备份文件（需以 application/zip Content-Type 发送）" });
+    return;
+  }
+
+  // 快速校验 ZIP 魔数
+  if (zipBuffer[0] !== 0x50 || zipBuffer[1] !== 0x4b) {
+    res.status(400).json({ message: "上传的文件不是有效的 ZIP 格式（缺少 PK 文件头）" });
     return;
   }
 
@@ -186,12 +178,8 @@ router.post("/restore", upload.single("file"), async (req: Request, res: Respons
   try {
     await mkdir(tmpDir, { recursive: true });
 
-    // 写入上传的 ZIP 到临时文件
-    const zipPath = path.join(tmpDir, "backup.zip");
-    await writeFile(zipPath, req.file.buffer);
-
-    // 解压 ZIP
-    await extractZip(zipPath, tmpDir);
+    // 使用 adm-zip 解压
+    extractZipFromBuffer(zipBuffer, tmpDir);
 
     // 验证 metadata
     const metadataPath = path.join(tmpDir, "metadata.json");
@@ -301,24 +289,23 @@ async function moveDir(src: string, dest: string): Promise<void> {
 }
 
 /**
- * 解压 ZIP 到目标目录
+ * 从 Buffer 解压 ZIP 到目标目录（使用 adm-zip，全内存操作，稳定可靠）
  */
-async function extractZip(zipPath: string, destDir: string): Promise<void> {
-  const directory = await unzipper.Open.file(zipPath);
-  for (const file of directory.files) {
+function extractZipFromBuffer(zipBuffer: Buffer, destDir: string): void {
+  const zip = new AdmZip(zipBuffer);
+  const entries = zip.getEntries();
+  for (const entry of entries) {
     // 安全检查：防止路径穿越攻击
-    const relativePath = path.normalize(file.path).replace(/^[\\/]+/, "");
+    const relativePath = path.normalize(entry.entryName).replace(/^[\\/]+/, "");
     const safePath = path.join(destDir, relativePath);
-    // 确保不逃逸到 destDir 之外
     if (!safePath.startsWith(path.resolve(destDir))) {
       continue;
     }
-    if (file.type === "Directory") {
+    if (entry.isDirectory) {
       mkdirSync(safePath, { recursive: true });
     } else {
       mkdirSync(path.dirname(safePath), { recursive: true });
-      const content = await file.buffer();
-      await writeFile(safePath, content);
+      writeFileSync(safePath, entry.getData());
     }
   }
 }

@@ -85,12 +85,14 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
     setImportBusy(true);
     try {
       const token = getAuthToken();
-      const formData = new FormData();
-      formData.append("file", file);
+      const headers: Record<string, string> = {
+        "Content-Type": "application/zip"
+      };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
       const resp = await fetch("/api/db/restore", {
         method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: formData
+        headers,
+        body: file  // 原始二进制上传，绕过 FormData/multipart 的 corrupt 风险
       });
       const result = await resp.json();
       if (!resp.ok) {
