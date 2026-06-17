@@ -67,6 +67,22 @@ MODEL_CATALOG: list[ModelConfig] = [
         reasoning_effort="high",
     ),
     ModelConfig(
+        id="gpt-5.4",
+        provider="openai",
+        label="GPT 5.4",
+        key_env="OPENAI_API_KEY",
+        thinking=True,
+        reasoning_effort="high",
+    ),
+    ModelConfig(
+        id="gpt-5.5-pro",
+        provider="openai",
+        label="GPT 5.5 Pro",
+        key_env="OPENAI_API_KEY",
+        thinking=True,
+        reasoning_effort="high",
+    ),
+    ModelConfig(
         id="gpt-5.4-mini",
         provider="openai",
         label="GPT 5.4 Mini",
