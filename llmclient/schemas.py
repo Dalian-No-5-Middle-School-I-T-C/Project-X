@@ -5,11 +5,18 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class ProviderOverride(BaseModel):
+    provider_type: str = ""
+    base_url: str = ""
+    api_key: str = ""
+
+
 class AnalysisRunRequest(BaseModel):
     examId: int
     classId: int | None = None
     model: str | None = None
     locale: str = "zh-CN"
+    providerOverride: ProviderOverride | None = None
 
 
 class AiAnalysisQuestionAction(BaseModel):

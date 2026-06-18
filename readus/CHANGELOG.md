@@ -2,6 +2,73 @@
 
 ---
 
+## v1.4.0 (2026-06-18)
+
+### 成绩查看大改造
+- 新增「考试选择页」：按学年、年级、学科三级筛选，卡片网格展示考试，含人数/均分/状态预览
+- 考试管理从分析子Tab独立为顶层「考试管理」Tab，位于设计右侧
+- 成绩查看页新增班级选择器（右上角），5个子Tab：概况、成绩、考试分析、AI分析、得分率
+- 概况Tab重写：信息卡片 + 分数段水平条形图 + 箱型图 + 上次考试对比条
+
+### 成绩表格增强
+- 成绩表格支持排序：全年级按校排，单班级按班排
+- 新增「名次变化」列：对比上次同科考试，↑进步/↓退步箭头 + 颜色
+- 新增「偏差值/Z值/百分位排名」三选一（账户设置切换）
+- 新增 API: `/api/analysis/exams/:id/score-table`
+
+### 赋分引擎
+- 新增三种赋分公式：等比例转换、线性公式(raw×0.7+30)、自定义表达式
+- 赋分科目自动识别：化学、生物、地理、政治
+- 赋分配置可在考试创建时和考后修改，实时批量重新计算
+- DB: `student_scores.assigned_score`, `exams.assigned_formula`
+
+### 导出系统扩展
+- 导出模板系统：4个自定义模板槽，每个模板可命名并保存列配置
+- 胶囊拖拽排序列：每列以胶囊形式展示，支持拖拽更换列序
+- 数据预览：导出前预览前3行真实数据
+- 侧表：可附加年级前N名参照表，N可手动输入，与主表间有空隙
+- A4竖版适配：超出1页时警告提示
+- 新增表: `export_templates`
+
+### 账户设置
+- 偏差值/Z值/百分位排名三选一
+- 复核置信度阈值滑块 (0~1)
+- DB: `users.score_display_mode`, `users.review_confidence_threshold`
+
+### 数据库迁移
+- student_scores 新增 assigned_score 列
+- exams 新增 assigned_formula 列
+- users 新增 score_display_mode, review_confidence_threshold 列
+- 新增 export_templates 表
+- 新增 ai_providers 表（多服务商配置）
+
+### AI 多服务商扩展
+- 支持 GPT / DeepSeek / 哈基米 / Gemini 四条AI分析线路，可自定义 Base URL
+- 账号设置新增「AI 服务商」管理：添加/编辑/删除服务商配置
+- AI 分析面板新增服务商下拉选择 + 模型输
+- 数据库：ai_providers 表 (name, provider_type, base_url, api_key, models)
+- API: GET/POST/PUT/DELETE /api/ai/providers
+
+### 班级对比增强
+- 考试分析Tab班级对比新增「对比基准班级」下拉，选择班级后显示均分差值
+- 班级按年级分组展示（optgroup），未分配年级自动归入「无年级」
+- 班级对比表支持行间均分差异着色（↑绿/↓红）
+
+### 成绩表格增强
+- 成绩表格新增「年级」列（通过 LEFT JOIN grades 获取）
+- 概况Tab新增「年级前五/后五」排名（按分数排序）
+- 概况Tab新增「进步前五/退步前五」排名（按名次变化排序）
+
+### UX 修复
+- 账号设置 Modal 使用 Portal 渲染到 body，修复 backdrop-filter 遮挡问题
+- Z值/班级下拉框垂直对齐统一（padding + flex 居中）
+- 考试管理表格样式统一为列表式（exam-list-table div 布局）
+- 子Tab 文字与标题栏左右对齐
+- 平均分卡片移除红色高亮框
+- 导出按钮文字横向排列（whiteSpace: nowrap）
+
+---
+
 ## v1.3.0 (2026-06-17)
 
 ### 学科答题卡模板

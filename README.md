@@ -1,7 +1,7 @@
 # Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.3.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.4.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -111,12 +111,12 @@
 
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
 ```
-Project-X 学生端-1.3.0-x64.exe
-Project-X 教师端-1.3.0-x64.exe
-Project-X 教师扫描端-1.3.0-x64.exe
-Project-X 学生端-1.3.0-ia32.exe
-Project-X 教师端-1.3.0-ia32.exe
-Project-X 教师扫描端-1.3.0-ia32.exe
+Project-X 学生端-1.4.0-x64.exe
+Project-X 教师端-1.4.0-x64.exe
+Project-X 教师扫描端-1.4.0-x64.exe
+Project-X 学生端-1.4.0-ia32.exe
+Project-X 教师端-1.4.0-ia32.exe
+Project-X 教师扫描端-1.4.0-ia32.exe
 ```
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。

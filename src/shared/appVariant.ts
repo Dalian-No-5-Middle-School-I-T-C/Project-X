@@ -1,4 +1,4 @@
-export type ProjectXAppMode = "design" | "grading" | "analysis" | "scores" | "account" | "sponsor";
+export type ProjectXAppMode = "design" | "exam-manage" | "grading" | "analysis" | "scores" | "account" | "sponsor";
 
 export type ProjectXVariant = "student" | "teacher" | "teacher-scanner";
 
@@ -40,7 +40,7 @@ export const PROJECTX_VARIANTS: Record<ProjectXVariant, ProjectXVariantConfig> =
     appId: "cn.projectx.teacher",
     userDataDir: "answer-card-designer",
     defaultMode: "design",
-    allowedModes: ["design", "grading", "analysis", "account"],
+    allowedModes: ["design", "exam-manage", "grading", "analysis", "account"],
     enableScanner: false,
     nativeResources: "recognizer"
   },
@@ -52,7 +52,7 @@ export const PROJECTX_VARIANTS: Record<ProjectXVariant, ProjectXVariantConfig> =
     appId: "cn.projectx.teacher-scanner",
     userDataDir: "answer-card-designer",
     defaultMode: "grading",
-    allowedModes: ["design", "grading", "analysis", "account"],
+    allowedModes: ["design", "exam-manage", "grading", "analysis", "account"],
     enableScanner: true,
     nativeResources: "scanner"
   }

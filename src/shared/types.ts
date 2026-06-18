@@ -353,6 +353,7 @@ export type ScoreTrendPoint = {
 export type ClassScoreSummary = {
   classId: number;
   className: string;
+  gradeName?: string;
   summary: ScoreSummary;
 };
 
@@ -411,6 +412,7 @@ export type ExamRecord = {
   start_time: string | null;
   end_time: string | null;
   status: string;
+  assigned_formula: string | null;
   created_at: string;
 };
 
@@ -422,11 +424,22 @@ export type AiModelOption = {
   thinking?: boolean;
 };
 
+export type AiProviderConfig = {
+  id: number;
+  name: string;
+  providerType: string;       // openai / deepseek / haqimi / gemini
+  baseUrl: string;
+  apiKey: string;
+  models: string[] | null;    // null=自动获取
+  isActive: boolean;
+};
+
 export type AiAnalysisStatus = {
   available: boolean;
   reason?: string;
   defaultModel: string | null;
   models: AiModelOption[];
+  providers: AiProviderConfig[];  // v1.4.0 多服务商
 };
 
 export type AiAnalysisQuestionAction = {
@@ -458,3 +471,122 @@ export type AiAnalysisResponse = {
   report: AiAnalysisReport;
   toolCalls: AiAnalysisToolCall[];
 };
+
+// ============================================================
+// v1.4.0 新增类型：成绩查看改造
+// ============================================================
+
+/** 赋分公式类型 */
+export type AssignedFormulaType = "proportional" | "linear" | "custom";
+
+/** 赋分公式参数 */
+export interface AssignedFormulaParams {
+  minIn?: number;
+  maxIn?: number;
+  minOut?: number;
+  maxOut?: number;
+  a?: number;          // linear: 系数
+  b?: number;          // linear: 常数
+  expression?: string; // custom: 表达式
+}
+
+/** 赋分公式配置 */
+export interface AssignedFormula {
+  type: AssignedFormulaType;
+  params: AssignedFormulaParams;
+  enabled: boolean;
+}
+
+/** 成绩显示模式 */
+export type ScoreDisplayMode = "deviation" | "zscore" | "percentile";
+
+/** 成绩表格行 */
+export interface ScoreTableRow {
+  rank: number;
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  classId: number | null;
+  gradeName?: string | null;
+  totalScore: number;
+  assignedScore: number | null;
+  gradeRank: number;
+  classRank: number;
+  rankChange: number | null;       // null=无上次考试
+  prevRank: number | null;
+  prevExamName: string | null;
+  displayValue: number | null;     // 偏差值/Z值/百分位
+  objectiveScore: number;
+  subjectiveScore: number;
+  needsReview: boolean;            // 需要复核
+}
+
+/** 成绩表响应 */
+export interface ScoreTableResponse {
+  examId: number;
+  examName: string;
+  subject: string;
+  examDate: string | null;
+  classId: number | undefined;
+  displayMode: ScoreDisplayMode;
+  hasAssignedScore: boolean;
+  rows: ScoreTableRow[];
+  totalCount: number;
+}
+
+/** 上次考试对比 */
+export interface PreviousExamComparison {
+  prevExamId: number | null;
+  prevExamName: string | null;
+  prevAvgScore: number | null;
+  prevPassRate: number | null;
+  avgScoreChange: number | null;
+  passRateChange: number | null;
+}
+
+/** 考试筛选列表项（考试选择页用） */
+export interface ExamFilterItem {
+  id: number;
+  name: string;
+  subject: string | null;
+  grade_id: number | null;
+  grade_name: string | null;
+  exam_date: string | null;
+  status: string;
+  graded_count: number;
+  avg_score: number;
+  has_assigned_score: number;
+}
+
+/** 导出列定义 */
+export interface ExportColumnMeta {
+  id: string;
+  label: string;
+  category: "basic" | "ranking" | "score" | "questions" | "other";
+}
+
+/** 导出模板（存入数据库） */
+export interface ExportTemplate {
+  id: number;
+  slot: number;
+  name: string;
+  columns: string[];
+  sideTableN: number;
+  gapCols: number;
+}
+
+/** 导出配置请求（传给后端） */
+export interface ExportConfigRequest {
+  examId: number;
+  classId?: number;
+  columns: string[];
+  sideTableN: number;
+  gapCols: number;
+}
+
+/** 用户设置 */
+export interface UserSettings {
+  scoreDisplayMode: ScoreDisplayMode;
+  reviewConfidenceThreshold: number;
+}

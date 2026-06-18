@@ -17,7 +17,7 @@ from llmclient.providers import run_analysis
 from llmclient.schemas import AnalysisRunRequest, AnalysisRunResponse
 
 
-app = FastAPI(title="Project-X LLM Client", version="0.1.0")
+app = FastAPI(title="Project-X LLM Client", version="0.2.0")
 
 
 def require_internal_key(authorization: str | None = Header(default=None)) -> None:
@@ -51,16 +51,37 @@ def models(_: None = Depends(require_internal_key)) -> dict[str, object]:
 
 @app.post("/analysis/run", response_model=AnalysisRunResponse)
 def analysis_run(request: AnalysisRunRequest, _: None = Depends(require_internal_key)) -> AnalysisRunResponse:
+    provider_override = request.providerOverride
     model_id = request.model or default_model_id()
-    model = find_model(model_id)
-    if model is None:
-        raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
-    if not env_value(model.key_env):
-        raise HTTPException(status_code=400, detail=f"Missing {model.key_env} for model {model.id}")
+
+    if provider_override and provider_override.api_key:
+        # Dynamic provider: use model name directly, create synthetic ModelConfig
+        from llmclient.config import ModelConfig
+        model = ModelConfig(
+            id=model_id,
+            provider=provider_override.provider_type or "openai",
+            label=f"{provider_override.provider_type}/{model_id}",
+            key_env="",  # not used — override provides the key
+            thinking=False,
+        )
+        provider_dict = {
+            "provider_type": provider_override.provider_type,
+            "base_url": provider_override.base_url,
+            "api_key": provider_override.api_key,
+        }
+    else:
+        model = find_model(model_id)
+        if model is None:
+            raise HTTPException(status_code=400, detail=f"Unknown model: {model_id}")
+        if not env_value(model.key_env):
+            raise HTTPException(status_code=400, detail=f"Missing {model.key_env} for model {model.id}")
+        provider_dict = None
+
     if not default_db_path().exists():
         raise HTTPException(status_code=400, detail=f"Project-X database not found: {default_db_path()}")
+
     try:
-        return run_analysis(model, request.examId, request.classId, request.locale)
+        return run_analysis(model, request.examId, request.classId, request.locale, provider_dict)
     except HTTPException:
         raise
     except Exception as exc:
@@ -74,4 +95,3 @@ def debug_config(_: None = Depends(require_internal_key)) -> dict[str, object]:
         "defaultModel": default_model_id(),
         "catalog": [model.model_dump(exclude={"key_env"}) for model in MODEL_CATALOG],
     }
-

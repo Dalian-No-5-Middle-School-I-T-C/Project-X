@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.2.1
+> **版本**: v1.4.0
 > **技术栈**: SQLite + better-sqlite3 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
 
@@ -461,6 +461,28 @@ src/types/
 - `subjective_blocks` 新增 `block_kind`；`subjective_questions` 新增 `blanks_label_style`、`blanks_items_json`
 - `exams.card_id` 迁移为可空，支持答题卡被引用时先解绑考试再删除
 - 删除答题卡/考试时增加冲突检测、解绑和联删分支，避免 SQLite 外键错误直接暴露给用户
+
+### v1.4.0 (2026-06-18)
+- `student_scores` 新增 `assigned_score`（赋分）
+- `exams` 新增 `assigned_formula`（赋分公式 JSON）
+- `users` 新增 `score_display_mode`（deviation/zscore/percentile）、`review_confidence_threshold`、`ai_api_key`
+- 新增 `export_templates` 表（导出模板，4 槽位）
+- 新增 `ai_providers` 表（AI 多服务商配置）
+
+#### `ai_providers` — AI 服务商配置
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `user_id` | INTEGER FK | 所属用户 |
+| `name` | TEXT | 自定义名称（如 "我的GPT"） |
+| `provider_type` | TEXT | openai / deepseek / haqimi / gemini |
+| `base_url` | TEXT | API 基础地址 |
+| `api_key` | TEXT | API 密钥 |
+| `models` | TEXT | JSON 模型列表，为空则自动获取 |
+| `is_active` | INTEGER | 0=禁用 1=启用 |
+
+每个教师可配置多个服务商，用于 AI 成绩分析的模型路由。
 
 ---
 
