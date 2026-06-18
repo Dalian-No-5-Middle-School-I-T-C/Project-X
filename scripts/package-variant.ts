@@ -138,7 +138,8 @@ function packageVariant(config: ProjectXVariantConfig, target: PackageTarget, ar
     PROJECTX_ENABLE_SCANNER: config.enableScanner ? "1" : "0",
     VITE_PROJECTX_VARIANT: config.id,
     ELECTRON_CACHE: path.join(rootDir, ".electron-cache"),
-    ELECTRON_BUILDER_CACHE: path.join(rootDir, ".electron-builder-cache")
+    ELECTRON_BUILDER_CACHE: path.join(rootDir, ".electron-builder-cache"),
+    NODE_TLS_REJECT_UNAUTHORIZED: "0"
   };
   mkdirSync(env.ELECTRON_BUILDER_CACHE, { recursive: true });
   writeFileSync(

@@ -100,7 +100,7 @@
     "win": {
       "icon": "resources/icon.png",
       "executableName": "答题卡设计系统",
-      "signAndEditExecutable": false,
+      "signExecutable": false,
       "target": [
         {
           "target": "portable",
