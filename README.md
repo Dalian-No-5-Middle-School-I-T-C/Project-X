@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.3.0
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → AI 成绩分析 → 教师/学生/班级管理 → 账密批量导入导出 → 数据库全量备份
-> **下个里程碑**：v2.0 — 成绩预测、跨班深度对比分析
+> **当前版本**：v1.4.0
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 成绩查看（概况/成绩/考试分析/AI分析）→ 赋分引擎 → 导出模板系统 → 教师/学生/班级管理 → 账密批量导入导出 → 数据库全量备份
+> **下个里程碑**：v1.5.0 — 成绩预测、跨班深度对比、知识点诊断
 
 ---
 
@@ -76,14 +76,17 @@
 
 ### 成绩分析
 
-- **考试管理**：创建考试、关联答题卡（支持新建答题卡时同步创建/关联）、科目信息
-- **分析总览**：平均分、最高分、最低分、标准差、及格率、优秀率、错误率高题目低/中/高分档
-- **分数分布**：SVG 柱状图（0-59 / 60-69 / 70-79 / 80-89 / 90-100）
-- **学生排名**：学号、姓名、总分、客观分、主观分、低分题占比分档
-- **题目分析**：每题得分率、正确率、错误/低分率排行，按 30% / 50% / 70% 分为低 / 中 / 高三档
+- **考试选择页**：按学年/年级/学科三级筛选，横向列表展示考试，含人数/均分/状态预览
+- **考试管理**：创建考试、关联答题卡（支持新建答题卡时同步创建/关联）、科目、赋分
+- **成绩查看页**：4 子Tab（概况 / 成绩 / 考试分析 / AI 分析），班级选择器 + 指标切换
+- **概况 Tab**：信息卡片（人数/均分/最高/最低/及格率/优秀率/标准差）+ 分数段水平条形图 + 箱型图 + 年级前五/后五 + 进步前五/退步前五（名次变化对比上次考试）
+- **成绩 Tab**：成绩表格含校排/班排/名次变化/偏差值/Z值/百分位，支持排序与搜索
+- **考试分析 Tab**：成绩分布 + 班级对比（下拉选择基准班级，均分差值着色）+ 题目得分率
+- **AI 分析 Tab**：支持 GPT / DeepSeek / 哈基米 / Gemini 多服务商，可自定义 Base URL
+- **赋分引擎**：等比例/线性/自定义表达式三种公式，化学/生物/地理/政治自动赋分
+- **导出系统**：胶囊拖拽排序列，4 个自定义模板槽，A4 竖版超页警告，侧表（年级前 N 名），Excel (.xlsx)
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
-- **Excel (.xlsx) 成绩导出**：年级排名 / 班级排名两种模式，表头含班级、考号、姓名、成绩、双排名、客观/主观成绩、每题得分
-- **AI 成绩分析**：手动调用 `llmclient` Python 服务，基于白名单成绩工具生成总体判断、薄弱题、错误率高题目和教学建议
+- **AI 成绩分析**：多服务商架构（GPT/DeepSeek/哈基米/Gemini），自定义 Base URL，白名单成绩工具生成结构化报告
 
 ### 账户与安全
 
@@ -268,12 +271,12 @@ Project-X/
 ├── src/
 │   ├── apps/answer-card/
 │   │   ├── client/                      # React 前端
-│   │   │   ├── App.tsx                  # 主应用（设计/阅卷/分析/成绩/账号五模式）
+│   │   │   ├── App.tsx                  # 主应用（设计/考试管理/阅卷/分析/成绩/账号六模式）
 │   │   │   ├── styles.css               # 全局样式
 │   │   │   └── components/              # 子组件
 │   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期+考试关联）
 │   │   │       ├── LoginPage.tsx            # 登录页（记住密码）
-│   │   │       ├── AccountMenu.tsx          # 账户下拉菜单（含支持项目入口）
+│   │   │       ├── AccountMenu.tsx          # 账户下拉菜单（含设置/支持项目入口/AI服务商管理）
 │   │   │       ├── SponsorPage.tsx          # 赞助/支持页面（收款码预留）
 │   │   │       ├── AccountManagement.tsx    # 教师/学生管理（双 Tab）
 │   │   │       ├── TeacherManagement.tsx    # 教师管理（科目/班级关联）
@@ -281,10 +284,14 @@ Project-X/
 │   │   │       ├── ImportModal.tsx          # 通用CSV/Excel导入弹窗
 │   │   │       ├── StudentScores.tsx        # 学生我的成绩
 │   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板
-│   │   │       ├── AnalysisOverview.tsx   # 分析总览卡片
-│   │   │       ├── AnalysisDistribution.tsx # SVG 分数分布图
-│   │   │       ├── AnalysisAiPanel.tsx      # AI 成绩分析卡片
-│   │   │       ├── AnalysisRanking.tsx     # 学生排名表
+│   │   │       ├── ExamSelectPage.tsx       # 考试选择页（学年/年级/学科筛选）
+│   │   │       ├── ScoreDetailPage.tsx      # 成绩查看页（概况/成绩/考试分析/AI分析）
+│   │   │       ├── AnalysisOverview.tsx     # 概况：信息卡片+分布图+排名
+│   │   │       ├── AnalysisDistribution.tsx # 箱型图/分数分布
+│   │   │       ├── AnalysisAiPanel.tsx      # AI 成绩分析（多服务商）
+│   │   │       ├── ScoreTable.tsx           # 成绩表格（排序/搜索/偏差值）
+│   │   │       ├── ExportModal.tsx          # 导出弹窗（胶囊拖拽/模板/A4适配）
+│   │   │       ├── AssignedFormulaModal.tsx # 赋分公式配置
 │   │   │       └── AnalysisQuestions.tsx   # 题目得分率排行
 │   │   └── server/                      # Express 后端
 │   │       ├── index.ts                 # 主路由（卡片CRUD/导入导出/识别/阅卷/考试/分析）
@@ -301,8 +308,8 @@ Project-X/
 │   │   │   ├── UserRepository.ts         # 用户管理
 │   │   │   └── AnalysisRepository.ts     # 分析查询
 │   │   ├── middleware/                   # 认证中间件
-│   │   ├── routes/                       # 认证/用户/赞助等路由
-│   │   └── services/                     # AuthService（登录/令牌持久化）
+│   │   ├── routes/                       # 认证/用户/赞助/AI服务商/导出等路由
+│   │   └── services/                     # AuthService / AssignedScoreService（赋分引擎）
 │   └── shared/                          # 前后端共享
 │       ├── types.ts                     # 全部类型定义
 │       ├── grading.ts                   # 评分引擎
@@ -388,6 +395,17 @@ Project-X/
 | `GET` | `/api/export/teachers` | 导出教师账密 Excel |
 | `GET` | `/api/sponsor` | 赞助页配置（各渠道收款码 URL） |
 | `GET` | `/api/sponsor/qr/:channelId` | 收款码图片 |
+| `GET/PUT/DELETE` | `/api/exams/:id/assigned-formula` | 赋分公式配置 |
+| `POST` | `/api/exams/:id/recalculate-assigned` | 批量重新计算赋分 |
+| `GET` | `/api/analysis/exams/:id/score-table` | 成绩表格数据（年排/班排/名次变化/偏差值/Z值/百分位） |
+| `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比 |
+| `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |
+| `POST` | `/api/export/exams/:id/scores` | 按列配置导出 Excel |
+| `GET` | `/api/export/columns` | 导出列元数据 |
+| `PATCH` | `/api/users/me/settings` | 更新用户设置（成绩指标/AI Key） |
+| `GET/POST/PUT/DELETE` | `/api/ai/providers` | AI 服务商配置管理 |
+| `GET` | `/api/db/backup` | 导出全量数据 ZIP |
+| `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |
 
 ---
 
