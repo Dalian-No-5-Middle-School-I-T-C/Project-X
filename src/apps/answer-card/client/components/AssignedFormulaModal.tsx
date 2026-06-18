@@ -39,11 +39,7 @@ export function AssignedFormulaModal({ examId, examName, subject, onClose, onSav
     }>(`/api/exams/${examId}/assigned-formula`)
       .then((data) => {
         setFormula(data.formula);
-        setIsAssignedSubject(data.isAssignedSubject);
         setPresets(data.presets);
-        if (!data.formula && data.isAssignedSubject) {
-          setFormula(data.presets[0]?.formula ?? null);
-        }
       })
       .catch(() => setMessage("加载赋分配置失败"))
       .finally(() => setLoading(false));
@@ -107,12 +103,6 @@ export function AssignedFormulaModal({ examId, examName, subject, onClose, onSav
         </div>
 
         <div className="modal-body" style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
-          {!isAssignedSubject && (
-            <div style={{ padding: "8px 12px", background: "#fef3c7", borderRadius: 8, fontSize: 13, color: "#92400e" }}>
-              当前科目 "{subject || "未知"}" 不在赋分科目范围内（化学/生物/地理/政治），但仍可手动启用。
-            </div>
-          )}
-
           {/* Presets */}
           <div>
             <label style={{ fontSize: 13, fontWeight: 500, marginBottom: 6, display: "block" }}>公式预设</label>
@@ -148,19 +138,6 @@ export function AssignedFormulaModal({ examId, examName, subject, onClose, onSav
 
           {formula?.enabled && (
             <>
-              {/* Formula type */}
-              <div>
-                <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 4 }}>公式类型</label>
-                <select
-                  value={formula.type}
-                  onChange={(e) => updateType(e.target.value as AssignedFormulaType)}
-                  style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 13, width: "100%" }}
-                >
-                  {Object.entries(FORMULA_LABELS).map(([k, v]) => (
-                    <option key={k} value={k}>{v}</option>
-                  ))}
-                </select>
-              </div>
 
               {/* Proportional params */}
               {formula.type === "proportional" && (

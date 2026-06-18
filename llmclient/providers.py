@@ -96,9 +96,19 @@ def run_openai_compatible_analysis(
     exam_id: int,
     class_id: int | None,
     locale: str,
+    provider_override: dict[str, str] | None = None,
 ) -> AnalysisRunResponse:
-    api_key = env_value("DEEPSEEK_API_KEY" if model.provider == "deepseek" else "OPENAI_API_KEY")
-    base_url = "https://api.deepseek.com" if model.provider == "deepseek" else (env_value("OPENAI_BASE_URL") or None)
+    # Use provider override if provided, else fall back to env vars
+    if provider_override:
+        api_key = provider_override["api_key"]
+        base_url = provider_override["base_url"].rstrip("/") if provider_override.get("base_url") else None
+    elif model.provider == "deepseek":
+        api_key = env_value("DEEPSEEK_API_KEY")
+        base_url = "https://api.deepseek.com"
+    else:
+        api_key = env_value("OPENAI_API_KEY")
+        base_url = env_value("OPENAI_BASE_URL") or None
+
     client = OpenAI(api_key=api_key, base_url=base_url)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -182,12 +192,14 @@ def run_gemini_analysis(
     exam_id: int,
     class_id: int | None,
     locale: str,
+    provider_override: dict[str, str] | None = None,
 ) -> AnalysisRunResponse:
     from google import genai
     from google.genai import types
 
     _quiet_gemini_non_text_warning()
-    client = genai.Client(api_key=env_value("GEMINI_API_KEY"))
+    api_key = provider_override["api_key"] if provider_override else env_value("GEMINI_API_KEY")
+    client = genai.Client(api_key=api_key)
     tools = types.Tool(function_declarations=gemini_function_declarations())
     config_kwargs: dict[str, Any] = {
         "tools": [tools],
@@ -243,8 +255,18 @@ def run_gemini_analysis(
     )
 
 
-def run_analysis(model: ModelConfig, exam_id: int, class_id: int | None, locale: str) -> AnalysisRunResponse:
-    if model.provider == "gemini":
+def run_analysis(
+    model: ModelConfig,
+    exam_id: int,
+    class_id: int | None,
+    locale: str,
+    provider_override: dict[str, str] | None = None,
+) -> AnalysisRunResponse:
+    # If provider_override is given, treat as OpenAI-compatible unless explicitly gemini
+    effective_provider = provider_override.get("provider_type", model.provider) if provider_override else model.provider
+
+    if effective_provider == "gemini" and not provider_override:
         return run_gemini_analysis(model, exam_id, class_id, locale)
-    return run_openai_compatible_analysis(model, exam_id, class_id, locale)
+    # All other providers (openai, deepseek, haqimi, custom) are OpenAI-compatible
+    return run_openai_compatible_analysis(model, exam_id, class_id, locale, provider_override)
 

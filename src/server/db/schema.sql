@@ -30,8 +30,9 @@ CREATE TABLE IF NOT EXISTS users (
     student_number   TEXT UNIQUE,            -- 学号/考号（仅学生有）
     subject          TEXT,                    -- 任教科目（仅教师）
     initial_password TEXT,                    -- 初始明文密码（导出账密用）
-    score_display_mode TEXT DEFAULT 'deviation',  -- deviation / zscore / percentile (v1.4.0)
+    score_display_mode TEXT DEFAULT 'zscore',  -- deviation / zscore / percentile (v1.4.0)
     review_confidence_threshold REAL DEFAULT 0.12, -- 复核置信度阈值 (v1.4.0)
+    ai_api_key       TEXT,                    -- AI API密钥 (v1.4.0)
     email            TEXT,
     phone            TEXT,
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
@@ -354,6 +355,24 @@ CREATE TABLE IF NOT EXISTS export_templates (
 );
 
 CREATE INDEX IF NOT EXISTS idx_export_templates_user ON export_templates(user_id, slot);
+
+-- ============================================================
+-- AI 服务商配置（v1.4.0 多服务商扩展）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ai_providers (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,              -- 用户命名，如 "学校GPT" / "本地哈基米"
+    provider_type   TEXT NOT NULL,              -- openai / deepseek / haqimi / gemini
+    base_url        TEXT NOT NULL,              -- API 基础地址
+    api_key         TEXT NOT NULL,              -- API Key
+    models          TEXT,                       -- JSON 模型列表，空=自动获取
+    is_active       INTEGER DEFAULT 1,
+    sort_order      INTEGER DEFAULT 0,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ai_providers_user ON ai_providers(user_id, provider_type);
 
 CREATE INDEX IF NOT EXISTS idx_users_student_number ON users(student_number);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role_id);

@@ -1214,60 +1214,52 @@ function App() {
             )}
 
             {exams.length > 0 && (
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead>
-                  <tr style={{ borderBottom: "2px solid var(--line)", textAlign: "left" }}>
-                    <th style={{ padding: "8px 10px", width: 40 }}>
-                      <input type="checkbox" onChange={(e) => {
-                        if (e.target.checked) setSelectedExamIds(new Set(exams.map(ex => ex.id)));
-                        else setSelectedExamIds(new Set());
-                      }} checked={selectedExamIds.size === exams.length && exams.length > 0} />
-                    </th>
-                    <th style={{ padding: "8px 10px" }}>考试名称</th>
-                    <th style={{ padding: "8px 10px", width: 120 }}>科目</th>
-                    <th style={{ padding: "8px 10px", width: 100 }}>答题卡</th>
-                    <th style={{ padding: "8px 10px", width: 80 }}>状态</th>
-                    <th style={{ padding: "8px 10px", width: 80 }}>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {exams.map((exam) => (
-                    <tr key={exam.id} style={{ borderBottom: "1px solid var(--line)" }}>
-                      <td style={{ padding: "8px 10px" }}>
-                        <input type="checkbox" checked={selectedExamIds.has(exam.id)} onChange={() => {
-                          const next = new Set(selectedExamIds);
-                          if (next.has(exam.id)) next.delete(exam.id); else next.add(exam.id);
-                          setSelectedExamIds(next);
-                        }} />
-                      </td>
-                      <td style={{ padding: "8px 10px", fontWeight: 500 }}>{exam.name}</td>
-                      <td style={{ padding: "8px 10px", color: "var(--muted)" }}>{exam.subject || "—"}</td>
-                      <td style={{ padding: "8px 10px", color: "var(--muted)", fontSize: 12 }}>{exam.card_id ?? "未关联"}</td>
-                      <td style={{ padding: "8px 10px" }}>
-                        <span style={{
-                          padding: "1px 8px", borderRadius: 10, fontSize: 11,
-                          background: exam.status === "closed" ? "#dcfce7" : exam.status === "grading" ? "#fef3c7" : "#f3f4f6",
-                          color: exam.status === "closed" ? "#166534" : exam.status === "grading" ? "#92400e" : "#6b7280"
-                        }}>
-                          {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
-                        </span>
-                      </td>
-                      <td style={{ padding: "8px 10px" }}>
-                        <button
-                          className="ghost-button"
-                          style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
-                          onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}
-                        >删除</button>
-                        <button
-                          className="ghost-button"
-                          style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px", marginLeft: 4 }}
-                          onClick={() => setAssignedFormulaExamId(exam.id)}
-                        >赋分</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div className="exam-list-table">
+                <div className="exam-list-head">
+                  <span style={{ width: 36, flexShrink: 0 }}>
+                    <input type="checkbox" onChange={(e) => {
+                      if (e.target.checked) setSelectedExamIds(new Set(exams.map(ex => ex.id)));
+                      else setSelectedExamIds(new Set());
+                    }} checked={selectedExamIds.size === exams.length && exams.length > 0} />
+                  </span>
+                  <span style={{ flex: 1, minWidth: 160 }}>考试名称</span>
+                  <span style={{ width: 80 }}>科目</span>
+                  <span style={{ width: 100 }}>答题卡</span>
+                  <span style={{ width: 70, textAlign: "center" }}>状态</span>
+                  <span style={{ width: 100, textAlign: "right" }}>操作</span>
+                </div>
+                {exams.map((exam) => (
+                  <div key={exam.id} className="exam-list-row" style={{ cursor: "default" }}>
+                    <span style={{ width: 36, flexShrink: 0 }}>
+                      <input type="checkbox" checked={selectedExamIds.has(exam.id)} onChange={() => {
+                        const next = new Set(selectedExamIds);
+                        if (next.has(exam.id)) next.delete(exam.id); else next.add(exam.id);
+                        setSelectedExamIds(next);
+                      }} />
+                    </span>
+                    <span style={{ flex: 1, minWidth: 160, fontWeight: 500 }}>{exam.name}</span>
+                    <span style={{ width: 80, color: "var(--muted)" }}>{exam.subject || "—"}</span>
+                    <span style={{ width: 100, color: "var(--muted)", fontSize: 12 }}>{exam.card_id ?? "未关联"}</span>
+                    <span style={{ width: 70, textAlign: "center" }}>
+                      <span className={`exam-list-badge exam-list-badge-${exam.status}`}>
+                        {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
+                      </span>
+                    </span>
+                    <span style={{ width: 100, textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button
+                        className="ghost-button"
+                        style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
+                        onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}
+                      >删除</button>
+                      <button
+                        className="ghost-button"
+                        style={{ fontSize: 12, color: "#1D9E75", padding: "2px 6px", marginLeft: 6 }}
+                        onClick={() => setAssignedFormulaExamId(exam.id)}
+                      >赋分</button>
+                    </span>
+                  </div>
+                ))}
+              </div>
             )}
           </section>
         </div>
@@ -1435,156 +1427,16 @@ function App() {
           </aside>
         </div>
         <div className={`main-grid analysis-grid ${mode === "analysis" ? "" : "hidden-panel"}`}>
-          {/* Sub-tabs */}
           <section className="preview-panel analysis-results-panel" style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column" }}>
-            {analysisTab !== "detail" && (
-            <div style={{ display: "flex", gap: 0, marginBottom: 12, borderBottom: "1px solid var(--line)", padding: "0 24px" }}>
-              <button
-                onClick={() => { setAnalysisTab("select"); loadExams(); }}
-                style={{
-                  padding: "8px 18px", border: "none", background: "none", cursor: "pointer",
-                  fontSize: 14, color: analysisTab === "select" ? "var(--brand)" : "var(--muted)",
-                  borderBottom: analysisTab === "select" ? "2px solid var(--brand)" : "2px solid transparent",
-                  fontWeight: analysisTab === "select" ? 600 : 400
-                }}
-              >
-                <Search size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
-                考试选择
-              </button>
-              <button
-                onClick={() => setAnalysisTab("view")}
-                style={{
-                  padding: "8px 18px", border: "none", background: "none", cursor: "pointer",
-                  fontSize: 14, color: analysisTab === "view" ? "var(--brand)" : "var(--muted)",
-                  borderBottom: analysisTab === "view" ? "2px solid var(--brand)" : "2px solid transparent",
-                  fontWeight: analysisTab === "view" ? 600 : 400
-                }}
-              >
-                <BarChart3 size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
-                成绩分析
-              </button>
-              <button
-                onClick={() => { setAnalysisTab("trend"); loadExams(); }}
-                style={{
-                  padding: "8px 18px", border: "none", background: "none", cursor: "pointer",
-                  fontSize: 14, color: analysisTab === "trend" ? "var(--brand)" : "var(--muted)",
-                  borderBottom: analysisTab === "trend" ? "2px solid var(--brand)" : "2px solid transparent",
-                  fontWeight: analysisTab === "trend" ? 600 : 400
-                }}
-              >
-                <BarChart3 size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
-                成绩变化
-              </button>
-            </div>
-            )}
 
-            {/* Tab: 考试选择 */}
-            {analysisTab === "select" && (
+            {/* 考试选择页 */}
+            {analysisTab !== "detail" && (
               <ExamSelectPage
-                onSelectExam={(examId) => {
-                  setSelectedAnalysisExamId(examId);
-                  setAnalysisTab("detail");
-                }}
+                onSelectExam={(examId) => { setSelectedAnalysisExamId(examId); setAnalysisTab("detail"); }}
               />
             )}
 
-            {/* Tab: 成绩分析 */}
-            {analysisTab === "view" && (
-              <div style={{ display: "grid", gridTemplateColumns: "268px minmax(0, 1fr)", minHeight: 0, flex: 1 }}>
-                <aside className="inspector" style={{ borderRight: "1px solid var(--line)", overflowY: "auto" }}>
-                  <section className="panel">
-                    <div className="panel-title">选择考试</div>
-                    {exams.length === 0 ? (
-                      <div className="empty-text" style={{ fontSize: 12 }}>暂无考试，请先创建</div>
-                    ) : (
-                      <div style={{ maxHeight: 400, overflowY: "auto" }}>
-                        {exams.map((exam) => (
-                          <div
-                            key={exam.id}
-                            className={`card-list-item ${analysisExamId === exam.id ? "active" : ""}`}
-                            style={{ cursor: "pointer", padding: "6px 8px" }}
-                            onClick={() => { setAnalysisClassId(""); loadAnalysis(exam.id); }}
-                          >
-                            <span style={{ fontSize: 13, fontWeight: analysisExamId === exam.id ? 600 : 400 }}>{exam.name}</span>
-                            {exam.subject && <small style={{ display: "block", color: "var(--muted)", fontSize: 11 }}>{exam.subject}</small>}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </section>
-                  {analysisClasses.length > 0 && (
-                    <section className="panel">
-                      <div className="panel-title">班级筛选</div>
-                      <select value={analysisClassId} onChange={(e) => { setAnalysisClassId(e.target.value); if (analysisExamId) loadAnalysis(analysisExamId, e.target.value || undefined); }} style={{ width: "100%", padding: "6px 8px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }}>
-                        <option value="">全部班级</option>
-                        {analysisClasses.map((c) => (<option key={c.classId} value={String(c.classId)}>{c.className}</option>))}
-                      </select>
-                    </section>
-                  )}
-                </aside>
-                <section style={{ overflowY: "auto", padding: 24 }}>
-                  {!analysisExamId ? (
-                    <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>从左侧选择一个考试查看分析。</div>
-                  ) : (
-                    <>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
-                        <BarChart3 size={18} style={{ color: "var(--brand)" }} />
-                        <strong style={{ fontSize: 17 }}>{exams.find(e => e.id === analysisExamId)?.name || "成绩分析"}</strong>
-                        <div style={{ marginLeft: "auto", position: "relative" }}>
-                          <button
-                            className="primary-button"
-                            style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 13 }}
-                            onClick={() => setShowExportMenu(!showExportMenu)}
-                          >
-                            <Download size={16} /> 导出 <ChevronDown size={14} />
-                          </button>
-                          {showExportMenu && (
-                            <div className="export-menu" style={{
-                              position: "absolute", right: 0, top: "100%", zIndex: 100, marginTop: 4,
-                              background: "#fff", border: "1px solid var(--line-strong)", borderRadius: 8,
-                              boxShadow: "0 4px 16px rgba(0,0,0,0.12)", padding: 4, minWidth: 180
-                            }}>
-                              <button onClick={() => downloadAnalysisCsv()} className="export-menu-btn">
-                                导出年级排名（全部班级）
-                              </button>
-                              <button
-                                onClick={() => downloadAnalysisCsv(analysisClassId || undefined)}
-                                disabled={!analysisClassId}
-                                className="export-menu-btn"
-                                title={!analysisClassId ? "请先在左侧选择班级" : ""}
-                              >
-                                导出班级排名（仅当前班）
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                      {/* Click outside to close menu */}
-                      {showExportMenu && (
-                        <div
-                          style={{ position: "fixed", inset: 0, zIndex: 99 }}
-                          onClick={() => setShowExportMenu(false)}
-                        />
-                      )}
-                      <AnalysisOverview overview={analysisOverview} />
-                      {analysisOverview?.scoreSummary && (
-                        <AnalysisDistribution
-                          summary={analysisOverview.scoreSummary}
-                          overallSummary={analysisOverview.overallScoreSummary}
-                          classSummaries={analysisOverview.classSummaries}
-                          selectedClassId={analysisClassId}
-                        />
-                      )}
-                      <AnalysisAiPanel examId={analysisExamId} classId={analysisClassId} />
-                      <AnalysisRanking ranking={analysisRanking} />
-                      <AnalysisQuestions questions={analysisQuestions} />
-                    </>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {/* Tab: 成绩详情 (v1.4.0 新版) */}
+            {/* 成绩详情页 (v1.4.0) */}
             {analysisTab === "detail" && selectedAnalysisExamId != null && (
               <ScoreDetailPage
                 examId={selectedAnalysisExamId}
@@ -1592,13 +1444,6 @@ function App() {
                 subject={exams.find((e) => e.id === selectedAnalysisExamId)?.subject ?? null}
                 onBack={() => { setSelectedAnalysisExamId(null); setAnalysisTab("select"); }}
               />
-            )}
-
-            {/* Tab: 考试管理 */}
-            {analysisTab === "trend" && (
-              <div style={{ overflowY: "auto", padding: 24, flex: 1 }}>
-                <AnalysisTrend exams={exams} />
-              </div>
             )}
           </section>
         </div>

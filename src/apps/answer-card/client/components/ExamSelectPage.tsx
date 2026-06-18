@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { Search, ChevronRight } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Search } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { ExamFilterItem } from "../../../../shared/types";
 
@@ -46,8 +46,6 @@ export function ExamSelectPage({ onSelectExam }: Props) {
       .finally(() => setLoading(false));
   }, [academicYear, gradeId, subject]);
 
-  const hasActiveFilters = academicYear || gradeId || subject;
-
   return (
     <div style={{ padding: "24px 32px", overflowY: "auto", flex: 1 }}>
       <div style={{ marginBottom: 24 }}>
@@ -55,137 +53,103 @@ export function ExamSelectPage({ onSelectExam }: Props) {
         <p style={{ fontSize: 13, color: "var(--muted)", margin: 0 }}>选择学年、年级和学科后查看考试</p>
       </div>
 
-      {/* Filter row */}
+      {/* Filter row - larger selects with proper alignment */}
       <div style={{
-        display: "flex", gap: 12, marginBottom: 28,
-        flexWrap: "wrap", alignItems: "center"
+        display: "flex", gap: 12, marginBottom: 24,
+        flexWrap: "wrap", alignItems: "flex-end"
       }}>
-        <div className="exam-filter-group">
-          <label style={{ fontSize: 12, color: "var(--muted)", display: "block", marginBottom: 4 }}>学年</label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <label style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1 }}>学年</label>
           <select
             value={academicYear}
             onChange={(e) => setAcademicYear(e.target.value)}
-            style={{
-              padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line-strong)",
-              fontSize: 14, minWidth: 160, background: "#fff", cursor: "pointer"
-            }}
+            className="exam-filter-select"
           >
             <option value="">全部学年</option>
-            {filters.academicYears.map((y) => (
-              <option key={y} value={y}>{y}</option>
-            ))}
+            {filters.academicYears.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </div>
 
-        <div className="exam-filter-group">
-          <label style={{ fontSize: 12, color: "var(--muted)", display: "block", marginBottom: 4 }}>年级</label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <label style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1 }}>年级</label>
           <select
             value={gradeId}
             onChange={(e) => setGradeId(e.target.value)}
-            style={{
-              padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line-strong)",
-              fontSize: 14, minWidth: 130, background: "#fff", cursor: "pointer"
-            }}
+            className="exam-filter-select"
           >
             <option value="">全部年级</option>
-            {grades.map((g) => (
-              <option key={g.id} value={String(g.id)}>{g.name}</option>
-            ))}
+            {grades.map((g) => <option key={g.id} value={String(g.id)}>{g.name}</option>)}
           </select>
         </div>
 
-        <div className="exam-filter-group">
-          <label style={{ fontSize: 12, color: "var(--muted)", display: "block", marginBottom: 4 }}>学科</label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <label style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1 }}>学科</label>
           <select
             value={subject}
             onChange={(e) => setSubject(e.target.value)}
-            style={{
-              padding: "10px 14px", borderRadius: 10, border: "1px solid var(--line-strong)",
-              fontSize: 14, minWidth: 130, background: "#fff", cursor: "pointer"
-            }}
+            className="exam-filter-select"
           >
             <option value="">全部学科</option>
-            {filters.subjects.map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
+            {filters.subjects.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
 
         {exams.length > 0 && (
-          <span style={{ marginLeft: 8, fontSize: 13, color: "var(--muted)", alignSelf: "flex-end", paddingBottom: 10 }}>
+          <span style={{ fontSize: 13, color: "var(--muted)", paddingBottom: 10, alignSelf: "flex-end" }}>
             共 {exams.length} 场考试
           </span>
         )}
       </div>
 
-      {/* Loading */}
       {loading && (
         <div style={{ textAlign: "center", padding: 60, color: "var(--muted)", fontSize: 14 }}>
           正在加载考试列表...
         </div>
       )}
 
-      {/* Empty state */}
       {!loading && exams.length === 0 && (
         <div style={{ textAlign: "center", padding: 60 }}>
-          <div style={{ fontSize: 48, marginBottom: 12, opacity: 0.3 }}>
-            <Search size={48} />
-          </div>
+          <Search size={48} style={{ opacity: 0.3, marginBottom: 12 }} />
           <p style={{ fontSize: 15, color: "var(--muted)", margin: 0 }}>
-            {hasActiveFilters ? "当前筛选条件下暂无考试" : "暂无考试，请在「考试管理」中创建"}
+            暂无考试，请在「考试管理」中创建
           </p>
         </div>
       )}
 
-      {/* Exam card grid */}
+      {/* Horizontal list rows (table style) */}
       {!loading && exams.length > 0 && (
-        <div className="exam-select-grid">
+        <div className="exam-list-table">
+          <div className="exam-list-head">
+            <span style={{ flex: 1, minWidth: 200 }}>考试名称</span>
+            <span style={{ width: 80 }}>科目</span>
+            <span style={{ width: 80 }}>年级</span>
+            <span style={{ width: 100 }}>日期</span>
+            <span style={{ width: 70, textAlign: "center" }}>已阅</span>
+            <span style={{ width: 70, textAlign: "center" }}>均分</span>
+            <span style={{ width: 80, textAlign: "center" }}>状态</span>
+          </div>
           {exams.map((exam) => (
             <div
               key={exam.id}
-              className="exam-select-card"
+              className="exam-list-row"
               onClick={() => onSelectExam(exam.id)}
               role="button"
               tabIndex={0}
               onKeyDown={(e) => { if (e.key === "Enter") onSelectExam(exam.id); }}
             >
-              <div className="exam-select-card-header">
-                <span className="exam-select-card-subject">
-                  {exam.subject || "综合"}
+              <span style={{ flex: 1, minWidth: 200, fontWeight: 500 }}>{exam.name}</span>
+              <span style={{ width: 80, color: "var(--muted)" }}>{exam.subject || "—"}</span>
+              <span style={{ width: 80, color: "var(--muted)" }}>{exam.grade_name || "—"}</span>
+              <span style={{ width: 100, color: "var(--muted)", fontSize: 12 }}>{exam.exam_date || "—"}</span>
+              <span style={{ width: 70, textAlign: "center", fontWeight: 500 }}>{exam.graded_count}</span>
+              <span style={{ width: 70, textAlign: "center", fontWeight: 500 }}>
+                {exam.graded_count > 0 ? exam.avg_score : "—"}
+              </span>
+              <span style={{ width: 80, textAlign: "center" }}>
+                <span className={`exam-list-badge exam-list-badge-${exam.status}`}>
+                  {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
                 </span>
-                {exam.exam_date && (
-                  <span className="exam-select-card-date">{exam.exam_date}</span>
-                )}
-              </div>
-              <div className="exam-select-card-title">{exam.name}</div>
-              {exam.grade_name && (
-                <div className="exam-select-card-grade">{exam.grade_name}</div>
-              )}
-              <div className="exam-select-card-stats">
-                <div className="exam-select-stat">
-                  <span className="exam-select-stat-value">{exam.graded_count}</span>
-                  <span className="exam-select-stat-label">已阅人数</span>
-                </div>
-                <div className="exam-select-stat">
-                  <span className="exam-select-stat-value">
-                    {exam.graded_count > 0 ? exam.avg_score : "—"}
-                  </span>
-                  <span className="exam-select-stat-label">平均分</span>
-                </div>
-                <div className="exam-select-stat">
-                  <span className="exam-select-stat-value" style={{
-                    padding: "1px 8px", borderRadius: 10, fontSize: 11,
-                    background: exam.status === "closed" ? "#dcfce7" : exam.status === "grading" ? "#fef3c7" : "#f3f4f6",
-                    color: exam.status === "closed" ? "#166534" : exam.status === "grading" ? "#92400e" : "#6b7280"
-                  }}>
-                    {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
-                  </span>
-                  <span className="exam-select-stat-label">状态</span>
-                </div>
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", marginTop: 8, color: "var(--brand)", fontSize: 13, fontWeight: 500 }}>
-                查看详情 <ChevronRight size={16} style={{ marginLeft: 2 }} />
-              </div>
+              </span>
             </div>
           ))}
         </div>

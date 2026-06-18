@@ -353,6 +353,7 @@ export type ScoreTrendPoint = {
 export type ClassScoreSummary = {
   classId: number;
   className: string;
+  gradeName?: string;
   summary: ScoreSummary;
 };
 
@@ -423,11 +424,22 @@ export type AiModelOption = {
   thinking?: boolean;
 };
 
+export type AiProviderConfig = {
+  id: number;
+  name: string;
+  providerType: string;       // openai / deepseek / haqimi / gemini
+  baseUrl: string;
+  apiKey: string;
+  models: string[] | null;    // null=自动获取
+  isActive: boolean;
+};
+
 export type AiAnalysisStatus = {
   available: boolean;
   reason?: string;
   defaultModel: string | null;
   models: AiModelOption[];
+  providers: AiProviderConfig[];  // v1.4.0 多服务商
 };
 
 export type AiAnalysisQuestionAction = {
@@ -496,6 +508,7 @@ export interface ScoreTableRow {
   studentName: string;
   className: string;
   classId: number | null;
+  gradeName?: string | null;
   totalScore: number;
   assignedScore: number | null;
   gradeRank: number;

@@ -14,9 +14,13 @@ router.use(authMiddleware);
 /** GET /api/export/templates — 获取当前用户的导出模板 */
 router.get("/templates", (req: Request, res: Response) => {
   const db = getDatabase();
-  const templates = db.prepare(
+  const rows = db.prepare(
     "SELECT id, slot, name, columns, side_table_n, gap_cols FROM export_templates WHERE user_id = ? ORDER BY slot"
-  ).all(req.user!.id) as ExportTemplate[];
+  ).all(req.user!.id) as Array<{ id: number; slot: number; name: string; columns: string; side_table_n: number; gap_cols: number }>;
+  const templates = rows.map((r) => ({
+    ...r,
+    columns: (() => { try { return JSON.parse(r.columns); } catch { return []; } })()
+  }));
   res.json(templates);
 });
 
@@ -103,7 +107,7 @@ router.post("/exams/:examId/scores", async (req: Request, res: Response) => {
       for (const col of columns) {
         switch (col) {
           case "studentNumber": exportRow["考号"] = row.studentNumber; headerMap["考号"] = "考号"; break;
-          case "grade": exportRow["年级"] = "-"; headerMap["年级"] = "年级"; break; // TODO: 从班级关联年级
+          case "grade": exportRow["年级"] = row.gradeName || "-"; headerMap["年级"] = "年级"; break;
           case "className": exportRow["班级"] = row.className; headerMap["班级"] = "班级"; break;
           case "studentName": exportRow["姓名"] = row.studentName; headerMap["姓名"] = "姓名"; break;
           case "totalScore": exportRow["原始分"] = row.totalScore; headerMap["原始分"] = "原始分"; break;

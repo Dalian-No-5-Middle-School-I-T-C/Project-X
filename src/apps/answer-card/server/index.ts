@@ -23,6 +23,7 @@ import scoreRoutes from "../../../server/routes/scores";
 import sponsorRoutes from "../../../server/routes/sponsor";
 import backupRoutes from "../../../server/routes/backup";
 import exportScoresRoutes from "../../../server/routes/export-scores";
+import aiProviderRoutes from "../../../server/routes/ai-providers";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
@@ -385,6 +386,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/scores", scoreRoutes);
   app.use("/api/sponsor", sponsorRoutes);
   app.use("/api/db", backupRoutes);
+  app.use("/api/ai/providers", aiProviderRoutes);
   console.log("[Server] v1.2.1 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
 
   // 业务路由 RBAC 网关
@@ -1228,11 +1230,12 @@ export async function createApp(): Promise<express.Express> {
     try {
       const db = getDatabase();
       const user = db.prepare(
-        "SELECT score_display_mode, review_confidence_threshold FROM users WHERE id = ?"
-      ).get(req.user!.id) as { score_display_mode: string; review_confidence_threshold: number } | undefined;
+        "SELECT score_display_mode, review_confidence_threshold, ai_api_key FROM users WHERE id = ?"
+      ).get(req.user!.id) as { score_display_mode: string; review_confidence_threshold: number; ai_api_key: string | null } | undefined;
       res.json({
-        scoreDisplayMode: user?.score_display_mode ?? "deviation",
-        reviewConfidenceThreshold: user?.review_confidence_threshold ?? 0.12
+        scoreDisplayMode: user?.score_display_mode ?? "zscore",
+        reviewConfidenceThreshold: user?.review_confidence_threshold ?? 0.12,
+        aiApiKey: user?.ai_api_key ?? ""
       });
     } catch (error) {
       next(error);
@@ -1241,7 +1244,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.patch("/api/users/me/settings", async (req, res, next) => {
     try {
-      const { scoreDisplayMode, reviewConfidenceThreshold } = req.body as Record<string, unknown>;
+      const { scoreDisplayMode, reviewConfidenceThreshold, aiApiKey } = req.body as Record<string, unknown>;
       const db = getDatabase();
       if (scoreDisplayMode && ["deviation", "zscore", "percentile"].includes(String(scoreDisplayMode))) {
         db.prepare("UPDATE users SET score_display_mode = ? WHERE id = ?")
@@ -1251,6 +1254,10 @@ export async function createApp(): Promise<express.Express> {
         const t = Math.max(0, Math.min(1, reviewConfidenceThreshold));
         db.prepare("UPDATE users SET review_confidence_threshold = ? WHERE id = ?")
           .run(t, req.user!.id);
+      }
+      if (aiApiKey !== undefined) {
+        db.prepare("UPDATE users SET ai_api_key = ? WHERE id = ?")
+          .run(typeof aiApiKey === "string" ? aiApiKey : null, req.user!.id);
       }
       res.json({ ok: true });
     } catch (error) {
@@ -1327,43 +1334,89 @@ export async function createApp(): Promise<express.Express> {
     });
   });
 
-  app.get("/api/analysis/ai/status", async (_req, res) => {
+  app.get("/api/analysis/ai/status", async (req, res) => {
     try {
+      // Fetch health status from llmclient
       const response = await fetchLlmClient("/health", { method: "GET" }, 2_500);
-      if (!response.ok) {
-        res.json({
-          available: false,
-          reason: `LLM service returned ${response.status}`,
-          defaultModel: null,
-          models: []
-        });
-        return;
+      const healthOk = response.ok;
+      let llmStatus: { ok?: boolean; dbExists?: boolean; defaultModel?: string; models?: Array<{ id: string; provider: string; label: string; available: boolean; thinking?: boolean }> } = {};
+      if (healthOk) {
+        llmStatus = await response.json() as any;
       }
-      const status = await response.json() as {
-        ok?: boolean;
-        dbExists?: boolean;
-        defaultModel?: string;
-        models?: Array<{ id: string; provider: string; label: string; available: boolean; thinking?: boolean }>;
-      };
-      const configuredModels = status.models ?? [];
+
+      // Fetch user's configured providers from DB
+      const db = getDatabase();
+      const providerRows = db.prepare(`
+        SELECT id, name, provider_type, base_url, api_key, models, is_active
+        FROM ai_providers
+        WHERE user_id = ? AND is_active = 1
+        ORDER BY sort_order, id
+      `).all((req as any).userId) as any[];
+
+      const userProviders = providerRows.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        providerType: p.provider_type,
+        baseUrl: p.base_url,
+        apiKey: p.api_key,
+        models: p.models ? JSON.parse(p.models) : null,
+        isActive: true
+      }));
+
+      const configuredModels = llmStatus.models ?? [];
       const hasAvailableModel = configuredModels.some((model) => model.available);
+      const hasUserProvider = userProviders.length > 0;
+
       res.json({
-        available: Boolean(status.ok && status.dbExists && hasAvailableModel),
-        reason: !status.dbExists
-          ? "LLM service is running, but Project-X database was not found."
-          : !hasAvailableModel
-            ? "LLM service is running, but no provider API key is configured."
-            : undefined,
-        defaultModel: status.defaultModel ?? null,
-        models: configuredModels
+        available: Boolean((healthOk && llmStatus.dbExists && hasAvailableModel) || hasUserProvider),
+        reason: !healthOk
+          ? `LLM service returned ${response.status}`
+          : !llmStatus.dbExists && !hasUserProvider
+            ? "LLM service is running, but Project-X database was not found."
+            : !hasAvailableModel && !hasUserProvider
+              ? "LLM service is running, but no provider API key is configured."
+              : undefined,
+        defaultModel: llmStatus.defaultModel ?? (hasUserProvider ? "auto" : null),
+        models: configuredModels,
+        providers: userProviders
       });
     } catch (error) {
-      res.json({
-        available: false,
-        reason: error instanceof Error ? error.message : "LLM service is not reachable.",
-        defaultModel: null,
-        models: []
-      });
+      // Even if llmclient is down, still return user providers if available
+      try {
+        const db = getDatabase();
+        const providerRows = db.prepare(`
+          SELECT id, name, provider_type, base_url, api_key, models, is_active
+          FROM ai_providers
+          WHERE user_id = ? AND is_active = 1
+          ORDER BY sort_order, id
+        `).all((req as any).userId) as any[];
+
+        const userProviders = providerRows.map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          providerType: p.provider_type,
+          baseUrl: p.base_url,
+          apiKey: p.api_key,
+          models: p.models ? JSON.parse(p.models) : null,
+          isActive: true
+        }));
+
+        res.json({
+          available: userProviders.length > 0,
+          reason: userProviders.length > 0 ? undefined : "LLM service is not reachable and no local providers configured.",
+          defaultModel: userProviders.length > 0 ? "auto" : null,
+          models: [],
+          providers: userProviders
+        });
+      } catch {
+        res.json({
+          available: false,
+          reason: error instanceof Error ? error.message : "LLM service is not reachable.",
+          defaultModel: null,
+          models: [],
+          providers: []
+        });
+      }
     }
   });
 
@@ -1391,6 +1444,23 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
 
+      // Build provider override from user config if provided
+      const providerId = req.body?.providerId ? Number(req.body.providerId) : undefined;
+      let providerOverride: Record<string, unknown> | undefined;
+      if (providerId && Number.isFinite(providerId)) {
+        const db = getDatabase();
+        const prov = db.prepare(
+          "SELECT * FROM ai_providers WHERE id = ? AND user_id = ?"
+        ).get(providerId, (req as any).userId) as any;
+        if (prov) {
+          providerOverride = {
+            provider_type: prov.provider_type,
+            base_url: prov.base_url,
+            api_key: prov.api_key
+          };
+        }
+      }
+
       const response = await fetchLlmClient("/analysis/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1398,7 +1468,8 @@ export async function createApp(): Promise<express.Express> {
           examId,
           classId,
           model: typeof req.body?.model === "string" ? req.body.model : undefined,
-          locale: "zh-CN"
+          locale: "zh-CN",
+          providerOverride: providerOverride ?? undefined
         })
       }, 120_000);
 

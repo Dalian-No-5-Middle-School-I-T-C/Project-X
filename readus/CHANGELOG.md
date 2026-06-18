@@ -40,6 +40,32 @@
 - exams 新增 assigned_formula 列
 - users 新增 score_display_mode, review_confidence_threshold 列
 - 新增 export_templates 表
+- 新增 ai_providers 表（多服务商配置）
+
+### AI 多服务商扩展
+- 支持 GPT / DeepSeek / 哈基米 / Gemini 四条AI分析线路，可自定义 Base URL
+- 账号设置新增「AI 服务商」管理：添加/编辑/删除服务商配置
+- AI 分析面板新增服务商下拉选择 + 模型输
+- 数据库：ai_providers 表 (name, provider_type, base_url, api_key, models)
+- API: GET/POST/PUT/DELETE /api/ai/providers
+
+### 班级对比增强
+- 考试分析Tab班级对比新增「对比基准班级」下拉，选择班级后显示均分差值
+- 班级按年级分组展示（optgroup），未分配年级自动归入「无年级」
+- 班级对比表支持行间均分差异着色（↑绿/↓红）
+
+### 成绩表格增强
+- 成绩表格新增「年级」列（通过 LEFT JOIN grades 获取）
+- 概况Tab新增「年级前五/后五」排名（按分数排序）
+- 概况Tab新增「进步前五/退步前五」排名（按名次变化排序）
+
+### UX 修复
+- 账号设置 Modal 使用 Portal 渲染到 body，修复 backdrop-filter 遮挡问题
+- Z值/班级下拉框垂直对齐统一（padding + flex 居中）
+- 考试管理表格样式统一为列表式（exam-list-table div 布局）
+- 子Tab 文字与标题栏左右对齐
+- 平均分卡片移除红色高亮框
+- 导出按钮文字横向排列（whiteSpace: nowrap）
 
 ---
 

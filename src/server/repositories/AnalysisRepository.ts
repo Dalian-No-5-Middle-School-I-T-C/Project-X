@@ -90,15 +90,16 @@ export class AnalysisRepository {
   }
 
   /** List classes that have students with scores for this exam */
-  getExamClasses(examId: number): Array<{ classId: number; className: string }> {
+  getExamClasses(examId: number): Array<{ classId: number; className: string; gradeName?: string }> {
     const classes = this.db.prepare(`
-      SELECT DISTINCT cs.class_id as classId, c.name as className
+      SELECT DISTINCT cs.class_id as classId, c.name as className, g.name as gradeName
       FROM student_scores ss
       JOIN class_students cs ON cs.student_id = ss.student_id
       JOIN classes c ON c.id = cs.class_id
+      LEFT JOIN grades g ON g.id = c.grade_id
       WHERE ss.exam_id = ?
-      ORDER BY c.sort_order, c.name
-    `).all(examId) as Array<{ classId: number; className: string }>;
+      ORDER BY g.sort_order, c.sort_order, c.name
+    `).all(examId) as Array<{ classId: number; className: string; gradeName: string | null }>;
 
     const unknown = this.db.prepare(`
       SELECT COUNT(*) as count
@@ -107,7 +108,8 @@ export class AnalysisRepository {
         AND NOT EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = ss.student_id)
     `).get(examId) as { count: number };
 
-    return unknown.count > 0 ? [...classes, { classId: 0, className: "未知班级" }] : classes;
+    const result = classes.map((c) => ({ ...c, gradeName: c.gradeName ?? undefined }));
+    return unknown.count > 0 ? [...result, { classId: 0, className: "未分配班级", gradeName: "无年级" }] : result;
   }
 
   /** Get exam name for filename */
@@ -117,18 +119,29 @@ export class AnalysisRepository {
 
   getExamOverview(examId: number, classId?: number): ExamOverview {
     const c = classFilter(classId);
+
+    // Get total max possible score for dynamic pass/excellent thresholds
+    const totalMax = this.db.prepare(`
+      SELECT SUM(max_score) as total FROM (
+        SELECT DISTINCT question_number, score_type, max_score FROM question_scores WHERE exam_id = ?
+      )
+    `).get(examId) as { total: number } | undefined;
+    const fullScore = totalMax?.total ?? 100;
+    const passLine = fullScore * 0.6;
+    const excellentLine = fullScore * 0.9;
+
     const stats = this.db.prepare(`
       SELECT
         COUNT(*) as gradedCount,
         ROUND(AVG(ss.total_score), 1) as avgScore,
         ROUND(MAX(ss.total_score), 1) as maxScore,
         ROUND(MIN(ss.total_score), 1) as minScore,
-        SUM(CASE WHEN ss.total_score >= 60 THEN 1 ELSE 0 END) as passCount,
-        SUM(CASE WHEN ss.total_score >= 85 THEN 1 ELSE 0 END) as excellentCount
+        SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as passCount,
+        SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellentCount
       FROM student_scores ss
       ${c.join}
       WHERE ss.exam_id = ? ${c.where}
-    `).get(examId, ...c.params) as {
+    `).get(passLine, excellentLine, examId, ...c.params) as {
       gradedCount: number; avgScore: number; maxScore: number; minScore: number;
       passCount: number; excellentCount: number;
     } | undefined;
@@ -498,6 +511,7 @@ export class AnalysisRepository {
       studentName: string;
       className: string;
       classId: number | null;
+      gradeName: string | null;
       totalScore: number;
       assignedScore: number | null;
       gradeRank: number;
@@ -527,17 +541,20 @@ export class AnalysisRepository {
       SELECT
         ss.student_id, u.student_number, u.name, ss.total_score,
         ss.objective_score, ss.subjective_score, ss.assigned_score,
-        c.name as class_name, c.id as class_id
+        c.name as class_name, c.id as class_id,
+        g.name as grade_name
       FROM student_scores ss
       JOIN users u ON u.id = ss.student_id
       LEFT JOIN class_students cs ON cs.student_id = ss.student_id
       LEFT JOIN classes c ON c.id = cs.class_id
+      LEFT JOIN grades g ON g.id = c.grade_id
       WHERE ss.exam_id = ?
       ORDER BY ss.total_score DESC
     `).all(examId) as Array<{
       student_id: number; student_number: string; name: string;
       total_score: number; objective_score: number; subjective_score: number;
       assigned_score: number | null; class_name: string | null; class_id: number | null;
+      grade_name: string | null;
     }>;
 
     if (allStudents.length === 0) {
@@ -624,6 +641,7 @@ export class AnalysisRepository {
         studentName: s.name,
         className: s.class_name ?? "未知班级",
         classId: s.class_id,
+        gradeName: s.grade_name ?? null,
         totalScore: s.total_score,
         assignedScore: s.assigned_score,
         gradeRank: s.gradeRank,

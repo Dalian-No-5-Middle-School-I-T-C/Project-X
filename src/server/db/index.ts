@@ -214,6 +214,10 @@ export function initializeDatabase(): void {
     db.exec("ALTER TABLE users ADD COLUMN review_confidence_threshold REAL DEFAULT 0.12");
     console.log("[DB] Migration (v1.4): added review_confidence_threshold column to users");
   }
+  if (!userColsV2.some((c) => c.name === "ai_api_key")) {
+    db.exec("ALTER TABLE users ADD COLUMN ai_api_key TEXT");
+    console.log("[DB] Migration (v1.4): added ai_api_key column to users");
+  }
 
   const hasExportTemplates = db.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='export_templates'").get() as { cnt: number };
   if (hasExportTemplates.cnt === 0) {
@@ -233,6 +237,28 @@ export function initializeDatabase(): void {
       CREATE INDEX idx_export_templates_user ON export_templates(user_id, slot);
     `);
     console.log("[DB] Migration (v1.4): created export_templates table");
+  }
+
+  // v1.4.0 多服务商：ai_providers 表
+  const hasAiProviders = db.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='ai_providers'").get() as { cnt: number };
+  if (hasAiProviders.cnt === 0) {
+    db.exec(`
+      CREATE TABLE ai_providers (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name            TEXT NOT NULL,
+        provider_type   TEXT NOT NULL,
+        base_url        TEXT NOT NULL,
+        api_key         TEXT NOT NULL,
+        models          TEXT,
+        is_active       INTEGER DEFAULT 1,
+        sort_order      INTEGER DEFAULT 0,
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX idx_ai_providers_user ON ai_providers(user_id, provider_type);
+    `);
+    console.log("[DB] Migration (v1.4): created ai_providers table");
   }
 }
 

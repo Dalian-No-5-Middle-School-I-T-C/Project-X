@@ -116,10 +116,19 @@ export class AssignedScoreService {
       SELECT
         MAX(total_score) as max,
         MIN(total_score) as min,
-        AVG(total_score) as avg,
-        SQRT(AVG((total_score - (SELECT AVG(total_score) FROM student_scores WHERE exam_id = ?)) * (total_score - (SELECT AVG(total_score) FROM student_scores WHERE exam_id = ?)))) as std
+        AVG(total_score) as avg
       FROM student_scores WHERE exam_id = ?
-    `).get(examId, examId) as { max: number; min: number; avg: number; std: number };
+    `).get(examId) as { max: number; min: number; avg: number };
+
+    // Compute std separately to avoid complex subquery
+    const scores = this.db.prepare(
+      "SELECT total_score FROM student_scores WHERE exam_id = ?"
+    ).all(examId) as Array<{ total_score: number }>;
+    const vals = scores.map((s) => s.total_score);
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    const variance = vals.reduce((sum, v) => sum + (v - mean) ** 2, 0) / vals.length;
+    const std = Math.sqrt(variance);
+    const stdStats = { max: stats.max, min: stats.min, avg: stats.avg, std };
 
     const students = this.db.prepare(
       "SELECT student_id, total_score FROM student_scores WHERE exam_id = ?"
@@ -138,7 +147,7 @@ export class AssignedScoreService {
           skipped++;
           continue;
         }
-        const assigned = this.calculateAssignedScore(s.total_score, formula, stats);
+        const assigned = this.calculateAssignedScore(s.total_score, formula, stdStats);
         updateStmt.run(assigned, examId, s.student_id);
         updated++;
       }

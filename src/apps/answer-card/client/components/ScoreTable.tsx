@@ -6,6 +6,7 @@ import type { ScoreTableRow, ScoreDisplayMode } from "../../../../shared/types";
 interface Props {
   examId: number;
   classId?: string;
+  displayMode?: ScoreDisplayMode;
 }
 
 type SortKey = "totalScore" | "gradeRank" | "classRank" | "displayValue" | "rankChange";
@@ -14,30 +15,23 @@ function formatScore(v: number): string {
   return Number.isInteger(v) ? String(v) : v.toFixed(1);
 }
 
-export function ScoreTable({ examId, classId }: Props) {
+function modeLabel(m: ScoreDisplayMode): string {
+  return m === "deviation" ? "偏差值" : m === "zscore" ? "Z值" : "百分位";
+}
+
+export function ScoreTable({ examId, classId, displayMode: propDisplayMode }: Props) {
   const [rows, setRows] = useState<ScoreTableRow[]>([]);
   const [examName, setExamName] = useState("");
   const [subject, setSubject] = useState<string | null>(null);
   const [hasAssigned, setHasAssigned] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
-  const [displayMode, setDisplayMode] = useState<ScoreDisplayMode>("deviation");
-  const [displayLabel, setDisplayLabel] = useState("偏差值");
+  const displayMode = propDisplayMode || "deviation";
+  const displayLabel = modeLabel(displayMode);
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("gradeRank");
   const [sortAsc, setSortAsc] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    // Load user display preference
-    fetchJson<{ scoreDisplayMode: ScoreDisplayMode }>("/api/users/me/settings")
-      .then((s) => {
-        const mode = s.scoreDisplayMode || "deviation";
-        setDisplayMode(mode);
-        setDisplayLabel(mode === "deviation" ? "偏差值" : mode === "zscore" ? "Z值" : "百分位");
-      })
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     setLoading(true);
@@ -138,7 +132,7 @@ export function ScoreTable({ examId, classId }: Props) {
               <th style={thStyle}>班级</th>
               <th style={thStyle}>
                 <button onClick={() => handleSort("totalScore")} style={thBtnStyle}>
-                  原始分 {renderSortArrow("totalScore")}
+                  {hasAssigned ? "原始分" : "成绩"} {renderSortArrow("totalScore")}
                 </button>
               </th>
               {hasAssigned && (
