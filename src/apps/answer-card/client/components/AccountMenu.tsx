@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Download, Heart, KeyRound, LogOut, Upload, User } from "lucide-react";
+import { ChevronDown, Download, Heart, KeyRound, LogOut, Settings, Upload, User } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson, getAuthToken } from "../auth/api";
 import { ROLE_LABELS } from "../auth/types";
@@ -17,6 +17,40 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
   const [busy, setBusy] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [importBusy, setImportBusy] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [displayMode, setDisplayMode] = useState("deviation");
+  const [reviewThreshold, setReviewThreshold] = useState(0.12);
+  const [settingsMsg, setSettingsMsg] = useState("");
+
+  useEffect(() => {
+    if (open && showSettings) {
+      // Load settings when opening
+      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number }>("/api/users/me/settings")
+        .then((s) => {
+          setDisplayMode(s.scoreDisplayMode || "deviation");
+          setReviewThreshold(s.reviewConfidenceThreshold ?? 0.12);
+        })
+        .catch(() => {});
+    }
+  }, [open, showSettings]);
+
+  async function saveSettings() {
+    setSettingsMsg("");
+    try {
+      await fetchJson("/api/users/me/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          scoreDisplayMode: displayMode,
+          reviewConfidenceThreshold: reviewThreshold
+        })
+      });
+      setSettingsMsg("已保存");
+      setTimeout(() => setSettingsMsg(""), 1500);
+    } catch (err) {
+      setSettingsMsg(err instanceof Error ? err.message : "保存失败");
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -162,6 +196,77 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
               {message && <p className={message.includes("已修改") ? "login-success" : "login-error"}>{message}</p>}
               <button className="primary-button" type="button" onClick={() => void handleChangePassword()} disabled={busy}>
                 确认修改
+              </button>
+            </div>
+          )}
+          <button
+            type="button"
+            className="account-menu-item"
+            onClick={() => { setShowSettings(!showSettings); setSettingsMsg(""); }}
+          >
+            <Settings size={15} /> 账号设置
+          </button>
+          {showSettings && (
+            <div className="account-settings-form">
+              <div className="account-settings-group">
+                <label className="account-settings-label">成绩指标显示</label>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      name="displayMode"
+                      value="deviation"
+                      checked={displayMode === "deviation"}
+                      onChange={() => setDisplayMode("deviation")}
+                    />
+                    标准偏差值 (50为基准)
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      name="displayMode"
+                      value="zscore"
+                      checked={displayMode === "zscore"}
+                      onChange={() => setDisplayMode("zscore")}
+                    />
+                    Z值 (0为基准)
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input
+                      type="radio"
+                      name="displayMode"
+                      value="percentile"
+                      checked={displayMode === "percentile"}
+                      onChange={() => setDisplayMode("percentile")}
+                    />
+                    百分位排名 (0~100)
+                  </label>
+                </div>
+              </div>
+              <div className="account-settings-group">
+                <label className="account-settings-label">
+                  复核置信度阈值: {reviewThreshold.toFixed(2)}
+                </label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={reviewThreshold}
+                  onChange={(e) => setReviewThreshold(Number(e.target.value))}
+                  style={{ width: "100%", marginTop: 4 }}
+                />
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                  低于此值的题目标记"需要复核"
+                </span>
+              </div>
+              {settingsMsg && (
+                <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>
+                  {settingsMsg}
+                </p>
+              )}
+              <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>
+                保存设置
               </button>
             </div>
           )}

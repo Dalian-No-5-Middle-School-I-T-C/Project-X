@@ -6,6 +6,7 @@ import {
   Camera,
   ChevronDown,
   ClipboardCheck,
+  ClipboardList,
   Download,
   FileDown,
   FolderOpen,
@@ -13,6 +14,7 @@ import {
   ListPlus,
   Plus,
   Save,
+  Search,
   SquarePen,
   Trash2,
   Upload,
@@ -27,6 +29,9 @@ import { AccountManagement } from "./components/AccountManagement";
 import { StudentScores } from "./components/StudentScores";
 import { SponsorPage } from "./components/SponsorPage";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
+import { ExamSelectPage } from "./components/ExamSelectPage";
+import { ScoreDetailPage } from "./components/ScoreDetailPage";
+import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -166,6 +171,7 @@ function defaultModeForUser(
     if (!variantConfig.allowedModes.includes(mode)) return false;
     if (mode === "scores") return hasPermission(PERMISSIONS.SCORE_READ);
     if (mode === "design") return hasPermission(PERMISSIONS.CARD_READ);
+    if (mode === "exam-manage") return hasPermission(PERMISSIONS.EXAM_WRITE);
     if (mode === "grading") return hasPermission(PERMISSIONS.GRADE_READ);
     if (mode === "analysis") return hasPermission(PERMISSIONS.EXAM_READ);
     if (mode === "account") return hasPermission(PERMISSIONS.USER_MANAGE);
@@ -364,10 +370,12 @@ function App() {
   const [newExamSubject, setNewExamSubject] = useState("");
   const [newExamCardId, setNewExamCardId] = useState("");
   const [selectedExamIds, setSelectedExamIds] = useState<Set<number>>(new Set());
-  const [analysisTab, setAnalysisTab] = useState<"manage" | "view" | "trend">("view");
+  const [analysisTab, setAnalysisTab] = useState<"select" | "view" | "trend" | "detail">("select");
+  const [selectedAnalysisExamId, setSelectedAnalysisExamId] = useState<number | null>(null);
   const [showNewCardModal, setShowNewCardModal] = useState(false);
   const [cardDeleteConflict, setCardDeleteConflict] = useState<CardDeleteConflict | null>(null);
   const [examDeleteTarget, setExamDeleteTarget] = useState<ExamDeleteTarget | null>(null);
+  const [assignedFormulaExamId, setAssignedFormulaExamId] = useState<number | null>(null);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
@@ -377,6 +385,7 @@ function App() {
   );
 
   const canDesign = variantAllows("design") && hasPermission(PERMISSIONS.CARD_READ);
+  const canManageExams = variantAllows("exam-manage") && hasPermission(PERMISSIONS.EXAM_WRITE);
   const canGrade = variantAllows("grading") && hasPermission(PERMISSIONS.GRADE_READ);
   const canAnalyze = variantAllows("analysis") && hasPermission(PERMISSIONS.EXAM_READ);
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
@@ -942,8 +951,10 @@ function App() {
             <h1>
               {mode === "scores"
                 ? "我的成绩"
-                : mode === "account"
-                  ? "账号管理"
+                : mode === "exam-manage"
+                  ? "考试管理"
+                  : mode === "account"
+                    ? "账号管理"
                   : mode === "sponsor"
                     ? "支持项目"
                     : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
@@ -951,7 +962,9 @@ function App() {
             <p>
               {mode === "scores"
                 ? "查看各场考试得分、排名与逐题明细"
-                : mode === "account"
+                : mode === "exam-manage"
+                  ? "创建、管理考试与阅卷批次"
+                  : mode === "account"
                   ? "管理用户、班级与花名册"
                   : mode === "sponsor"
                     ? "感谢您的信任与支持"
@@ -982,6 +995,11 @@ function App() {
               {canDesign && (
               <button className={mode === "design" ? "active" : ""} onClick={() => setMode("design")} type="button">
                 <SquarePen size={16} /> 设计
+              </button>
+              )}
+              {canManageExams && (
+              <button className={mode === "exam-manage" ? "active" : ""} onClick={() => { setMode("exam-manage"); loadExams(); }} type="button">
+                <ClipboardList size={16} /> 考试管理
               </button>
               )}
               {canGrade && (
@@ -1131,6 +1149,127 @@ function App() {
               <div className="empty-text">请新建或载入答题卡。</div>
             )}
           </aside>
+        </div>
+        <div className={`main-grid exam-manage-grid ${mode === "exam-manage" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel" style={{ gridColumn: "1 / -1", padding: 24, overflowY: "auto" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+              <strong style={{ fontSize: 16 }}>考试管理</strong>
+              <button className="primary-button" onClick={() => setShowCreateExam(!showCreateExam)}>
+                <Plus size={16} /> 新建考试
+              </button>
+              {selectedExamIds.size > 0 && (
+                <button
+                  className="ghost-button"
+                  style={{ color: "var(--brand)" }}
+                  onClick={() => setExamDeleteTarget({
+                    exams: exams.filter((exam) => selectedExamIds.has(exam.id)),
+                    deleteLinkedCards: false
+                  })}
+                >
+                  <Trash2 size={16} /> 删除选中 ({selectedExamIds.size})
+                </button>
+              )}
+              {exams.length > 0 && (
+                <span style={{ marginLeft: "auto", fontSize: 13, color: "var(--muted)" }}>共 {exams.length} 个考试</span>
+              )}
+            </div>
+
+            {showCreateExam && (
+              <div style={{ background: "var(--surface-soft)", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
+                <input value={newExamName} onChange={(e) => setNewExamName(e.target.value)} placeholder="考试名称" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
+                <input value={newExamSubject} onChange={(e) => setNewExamSubject(e.target.value)} placeholder="科目（自动从答题卡继承）" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
+                <select
+                  value={newExamCardId || card?.id || ""}
+                  onChange={(e) => {
+                    const selectedCardId = e.target.value;
+                    setNewExamCardId(selectedCardId);
+                    const selectedCard = cards.find((c) => c.id === selectedCardId);
+                    if (selectedCard) {
+                      if (!newExamName) setNewExamName(selectedCard.title);
+                      if (!newExamSubject) setNewExamSubject(selectedCard.subjectLabel || "");
+                    }
+                  }}
+                  style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }}
+                >
+                  <option value="" disabled>选择答题卡</option>
+                  {cards.map((c) => (<option key={c.id} value={c.id}>{c.title}</option>))}
+                </select>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button className="primary-button" onClick={async () => {
+                    const name = newExamName.trim();
+                    if (!name || !newExamCardId && !card?.id) { setStatus("请填写名称和选择答题卡"); return; }
+                    try {
+                      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId: newExamCardId || card?.id, subject: newExamSubject.trim() || undefined }) });
+                      setNewExamName(""); setNewExamSubject(""); setShowCreateExam(false);
+                      loadExams();
+                    } catch (err) { setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`); }
+                  }}>确认创建</button>
+                  <button className="ghost-button" onClick={() => setShowCreateExam(false)}>取消</button>
+                </div>
+              </div>
+            )}
+
+            {exams.length === 0 && !showCreateExam && (
+              <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>暂无考试，点击上方「新建考试」创建。</div>
+            )}
+
+            {exams.length > 0 && (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: "2px solid var(--line)", textAlign: "left" }}>
+                    <th style={{ padding: "8px 10px", width: 40 }}>
+                      <input type="checkbox" onChange={(e) => {
+                        if (e.target.checked) setSelectedExamIds(new Set(exams.map(ex => ex.id)));
+                        else setSelectedExamIds(new Set());
+                      }} checked={selectedExamIds.size === exams.length && exams.length > 0} />
+                    </th>
+                    <th style={{ padding: "8px 10px" }}>考试名称</th>
+                    <th style={{ padding: "8px 10px", width: 120 }}>科目</th>
+                    <th style={{ padding: "8px 10px", width: 100 }}>答题卡</th>
+                    <th style={{ padding: "8px 10px", width: 80 }}>状态</th>
+                    <th style={{ padding: "8px 10px", width: 80 }}>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {exams.map((exam) => (
+                    <tr key={exam.id} style={{ borderBottom: "1px solid var(--line)" }}>
+                      <td style={{ padding: "8px 10px" }}>
+                        <input type="checkbox" checked={selectedExamIds.has(exam.id)} onChange={() => {
+                          const next = new Set(selectedExamIds);
+                          if (next.has(exam.id)) next.delete(exam.id); else next.add(exam.id);
+                          setSelectedExamIds(next);
+                        }} />
+                      </td>
+                      <td style={{ padding: "8px 10px", fontWeight: 500 }}>{exam.name}</td>
+                      <td style={{ padding: "8px 10px", color: "var(--muted)" }}>{exam.subject || "—"}</td>
+                      <td style={{ padding: "8px 10px", color: "var(--muted)", fontSize: 12 }}>{exam.card_id ?? "未关联"}</td>
+                      <td style={{ padding: "8px 10px" }}>
+                        <span style={{
+                          padding: "1px 8px", borderRadius: 10, fontSize: 11,
+                          background: exam.status === "closed" ? "#dcfce7" : exam.status === "grading" ? "#fef3c7" : "#f3f4f6",
+                          color: exam.status === "closed" ? "#166534" : exam.status === "grading" ? "#92400e" : "#6b7280"
+                        }}>
+                          {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
+                        </span>
+                      </td>
+                      <td style={{ padding: "8px 10px" }}>
+                        <button
+                          className="ghost-button"
+                          style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
+                          onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}
+                        >删除</button>
+                        <button
+                          className="ghost-button"
+                          style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px", marginLeft: 4 }}
+                          onClick={() => setAssignedFormulaExamId(exam.id)}
+                        >赋分</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
         </div>
         <div className={`main-grid grading-grid ${mode === "grading" ? "" : "hidden-panel"}`}>
           <section className="preview-panel grading-results-panel">
@@ -1298,7 +1437,20 @@ function App() {
         <div className={`main-grid analysis-grid ${mode === "analysis" ? "" : "hidden-panel"}`}>
           {/* Sub-tabs */}
           <section className="preview-panel analysis-results-panel" style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column" }}>
+            {analysisTab !== "detail" && (
             <div style={{ display: "flex", gap: 0, marginBottom: 12, borderBottom: "1px solid var(--line)", padding: "0 24px" }}>
+              <button
+                onClick={() => { setAnalysisTab("select"); loadExams(); }}
+                style={{
+                  padding: "8px 18px", border: "none", background: "none", cursor: "pointer",
+                  fontSize: 14, color: analysisTab === "select" ? "var(--brand)" : "var(--muted)",
+                  borderBottom: analysisTab === "select" ? "2px solid var(--brand)" : "2px solid transparent",
+                  fontWeight: analysisTab === "select" ? 600 : 400
+                }}
+              >
+                <Search size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
+                考试选择
+              </button>
               <button
                 onClick={() => setAnalysisTab("view")}
                 style={{
@@ -1323,21 +1475,18 @@ function App() {
                 <BarChart3 size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
                 成绩变化
               </button>
-              {canWriteExam && (
-              <button
-                onClick={() => setAnalysisTab("manage")}
-                style={{
-                  padding: "8px 18px", border: "none", background: "none", cursor: "pointer",
-                  fontSize: 14, color: analysisTab === "manage" ? "var(--brand)" : "var(--muted)",
-                  borderBottom: analysisTab === "manage" ? "2px solid var(--brand)" : "2px solid transparent",
-                  fontWeight: analysisTab === "manage" ? 600 : 400
-                }}
-              >
-                <ListPlus size={15} style={{ verticalAlign: "middle", marginRight: 4 }} />
-                考试管理
-              </button>
-              )}
             </div>
+            )}
+
+            {/* Tab: 考试选择 */}
+            {analysisTab === "select" && (
+              <ExamSelectPage
+                onSelectExam={(examId) => {
+                  setSelectedAnalysisExamId(examId);
+                  setAnalysisTab("detail");
+                }}
+              />
+            )}
 
             {/* Tab: 成绩分析 */}
             {analysisTab === "view" && (
@@ -1435,128 +1584,20 @@ function App() {
               </div>
             )}
 
+            {/* Tab: 成绩详情 (v1.4.0 新版) */}
+            {analysisTab === "detail" && selectedAnalysisExamId != null && (
+              <ScoreDetailPage
+                examId={selectedAnalysisExamId}
+                examName={exams.find((e) => e.id === selectedAnalysisExamId)?.name ?? ""}
+                subject={exams.find((e) => e.id === selectedAnalysisExamId)?.subject ?? null}
+                onBack={() => { setSelectedAnalysisExamId(null); setAnalysisTab("select"); }}
+              />
+            )}
+
             {/* Tab: 考试管理 */}
             {analysisTab === "trend" && (
               <div style={{ overflowY: "auto", padding: 24, flex: 1 }}>
                 <AnalysisTrend exams={exams} />
-              </div>
-            )}
-
-            {canWriteExam && analysisTab === "manage" && (
-              <div style={{ padding: 24, flex: 1, overflowY: "auto" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-                  <strong style={{ fontSize: 16 }}>考试管理</strong>
-                  <button className="primary-button" onClick={() => setShowCreateExam(!showCreateExam)}>
-                    <Plus size={16} /> 新建考试
-                  </button>
-                  {selectedExamIds.size > 0 && (
-                    <button
-                      className="ghost-button"
-                      style={{ color: "var(--brand)" }}
-                      onClick={() => setExamDeleteTarget({
-                        exams: exams.filter((exam) => selectedExamIds.has(exam.id)),
-                        deleteLinkedCards: false
-                      })}
-                    >
-                      <Trash2 size={16} /> 删除选中 ({selectedExamIds.size})
-                    </button>
-                  )}
-                  {exams.length > 0 && (
-                    <span style={{ marginLeft: "auto", fontSize: 13, color: "var(--muted)" }}>共 {exams.length} 个考试</span>
-                  )}
-                </div>
-
-                {showCreateExam && (
-                  <div style={{ background: "var(--surface-soft)", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
-                    <input value={newExamName} onChange={(e) => setNewExamName(e.target.value)} placeholder="考试名称" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
-                    <input value={newExamSubject} onChange={(e) => setNewExamSubject(e.target.value)} placeholder="科目（自动从答题卡继承）" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
-                    <select
-                      value={newExamCardId || card?.id || ""}
-                      onChange={(e) => {
-                        const selectedCardId = e.target.value;
-                        setNewExamCardId(selectedCardId);
-                        // 选择答题卡后自动回填考试名称和科目
-                        const selectedCard = cards.find((c) => c.id === selectedCardId);
-                        if (selectedCard) {
-                          if (!newExamName) setNewExamName(selectedCard.title);
-                          if (!newExamSubject) setNewExamSubject(selectedCard.subjectLabel || "");
-                        }
-                      }}
-                      style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }}
-                    >
-                      <option value="" disabled>选择答题卡</option>
-                      {cards.map((c) => (<option key={c.id} value={c.id}>{c.title}</option>))}
-                    </select>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button className="primary-button" onClick={async () => {
-                        const name = newExamName.trim();
-                        if (!name || !newExamCardId && !card?.id) { setStatus("请填写名称和选择答题卡"); return; }
-                        try {
-                          await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId: newExamCardId || card?.id, subject: newExamSubject.trim() || undefined }) });
-                          setNewExamName(""); setNewExamSubject(""); setShowCreateExam(false);
-                          loadExams();
-                        } catch (err) { setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`); }
-                      }}>确认创建</button>
-                      <button className="ghost-button" onClick={() => setShowCreateExam(false)}>取消</button>
-                    </div>
-                  </div>
-                )}
-
-                {exams.length === 0 && !showCreateExam && (
-                  <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>暂无考试，点击上方「新建考试」创建。</div>
-                )}
-
-                {exams.length > 0 && (
-                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                    <thead>
-                      <tr style={{ borderBottom: "2px solid var(--line)", textAlign: "left" }}>
-                        <th style={{ padding: "8px 10px", width: 40 }}>
-                          <input type="checkbox" onChange={(e) => {
-                            if (e.target.checked) setSelectedExamIds(new Set(exams.map(ex => ex.id)));
-                            else setSelectedExamIds(new Set());
-                          }} checked={selectedExamIds.size === exams.length && exams.length > 0} />
-                        </th>
-                        <th style={{ padding: "8px 10px" }}>考试名称</th>
-                        <th style={{ padding: "8px 10px", width: 120 }}>科目</th>
-                        <th style={{ padding: "8px 10px", width: 100 }}>答题卡</th>
-                        <th style={{ padding: "8px 10px", width: 80 }}>状态</th>
-                        <th style={{ padding: "8px 10px", width: 80 }}>操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {exams.map((exam) => (
-                        <tr key={exam.id} style={{ borderBottom: "1px solid var(--line)" }}>
-                          <td style={{ padding: "8px 10px" }}>
-                            <input type="checkbox" checked={selectedExamIds.has(exam.id)} onChange={() => {
-                              const next = new Set(selectedExamIds);
-                              if (next.has(exam.id)) next.delete(exam.id); else next.add(exam.id);
-                              setSelectedExamIds(next);
-                            }} />
-                          </td>
-                          <td style={{ padding: "8px 10px", fontWeight: 500 }}>{exam.name}</td>
-                          <td style={{ padding: "8px 10px", color: "var(--muted)" }}>{exam.subject || "—"}</td>
-                          <td style={{ padding: "8px 10px", color: "var(--muted)", fontSize: 12 }}>{exam.card_id ?? "未关联"}</td>
-                          <td style={{ padding: "8px 10px" }}>
-                            <span style={{
-                              padding: "1px 8px", borderRadius: 10, fontSize: 11,
-                              background: exam.status === "closed" ? "#dcfce7" : exam.status === "grading" ? "#fef3c7" : "#f3f4f6",
-                              color: exam.status === "closed" ? "#166534" : exam.status === "grading" ? "#92400e" : "#6b7280"
-                            }}>
-                              {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
-                            </span>
-                          </td>
-                          <td style={{ padding: "8px 10px" }}>
-                            <button
-                              className="ghost-button"
-                              style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
-                              onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}
-                            >删除</button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
               </div>
             )}
           </section>
@@ -1667,6 +1708,15 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+      {assignedFormulaExamId != null && (
+        <AssignedFormulaModal
+          examId={assignedFormulaExamId}
+          examName={exams.find((e) => e.id === assignedFormulaExamId)?.name ?? ""}
+          subject={exams.find((e) => e.id === assignedFormulaExamId)?.subject ?? null}
+          onClose={() => setAssignedFormulaExamId(null)}
+          onSaved={() => loadExams()}
+        />
       )}
     </main>
   );

@@ -191,6 +191,49 @@ export function initializeDatabase(): void {
     insertPolicy.run(3, "期中期末", 0, 1, 0);
     console.log("[DB] Default retention policies inserted");
   }
+
+  // v1.4.0 migrations: assigned_score, assigned_formula, score_display_mode, review threshold, export_templates
+  const studentScoreCols = db.prepare("PRAGMA table_info(student_scores)").all() as Array<{ name: string }>;
+  if (!studentScoreCols.some((c) => c.name === "assigned_score")) {
+    db.exec("ALTER TABLE student_scores ADD COLUMN assigned_score REAL");
+    console.log("[DB] Migration (v1.4): added assigned_score column to student_scores");
+  }
+
+  const examColsV2 = db.prepare("PRAGMA table_info(exams)").all() as Array<{ name: string }>;
+  if (!examColsV2.some((c) => c.name === "assigned_formula")) {
+    db.exec("ALTER TABLE exams ADD COLUMN assigned_formula TEXT");
+    console.log("[DB] Migration (v1.4): added assigned_formula column to exams");
+  }
+
+  const userColsV2 = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+  if (!userColsV2.some((c) => c.name === "score_display_mode")) {
+    db.exec("ALTER TABLE users ADD COLUMN score_display_mode TEXT DEFAULT 'deviation'");
+    console.log("[DB] Migration (v1.4): added score_display_mode column to users");
+  }
+  if (!userColsV2.some((c) => c.name === "review_confidence_threshold")) {
+    db.exec("ALTER TABLE users ADD COLUMN review_confidence_threshold REAL DEFAULT 0.12");
+    console.log("[DB] Migration (v1.4): added review_confidence_threshold column to users");
+  }
+
+  const hasExportTemplates = db.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='export_templates'").get() as { cnt: number };
+  if (hasExportTemplates.cnt === 0) {
+    db.exec(`
+      CREATE TABLE export_templates (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        slot          INTEGER NOT NULL CHECK(slot BETWEEN 1 AND 4),
+        name          TEXT NOT NULL DEFAULT '未命名',
+        columns       TEXT NOT NULL,
+        side_table_n  INTEGER DEFAULT 0,
+        gap_cols      INTEGER DEFAULT 3,
+        created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, slot)
+      );
+      CREATE INDEX idx_export_templates_user ON export_templates(user_id, slot);
+    `);
+    console.log("[DB] Migration (v1.4): created export_templates table");
+  }
 }
 
 export async function hashPassword(password: string): Promise<string> {

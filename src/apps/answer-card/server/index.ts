@@ -12,6 +12,8 @@ import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
 import { AnalysisRepository } from "../../../server/repositories/AnalysisRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
+import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
+import type { AssignedFormula } from "../../../shared/types";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -20,6 +22,7 @@ import exportRoutes from "../../../server/routes/export";
 import scoreRoutes from "../../../server/routes/scores";
 import sponsorRoutes from "../../../server/routes/sponsor";
 import backupRoutes from "../../../server/routes/backup";
+import exportScoresRoutes from "../../../server/routes/export-scores";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
@@ -378,6 +381,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/classes", classRoutes);
   app.use("/api/teachers", teacherRoutes);
   app.use("/api/export", exportRoutes);
+  app.use("/api/export", exportScoresRoutes);
   app.use("/api/scores", scoreRoutes);
   app.use("/api/sponsor", sponsorRoutes);
   app.use("/api/db", backupRoutes);
@@ -1009,10 +1013,39 @@ export async function createApp(): Promise<express.Express> {
 
   // ── Exam API ──────────────────────────────────────────
 
-  app.get("/api/exams", async (_req, res, next) => {
+  app.get("/api/exams", async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
-      res.json(examRepo.listExams());
+      const { grade_id, subject, academic_year, selection } = req.query as Record<string, string>;
+
+      if (selection === "1") {
+        const exams = examRepo.listExamsForSelection({
+          grade_id: grade_id ? Number(grade_id) : undefined,
+          subject: subject || undefined,
+          academic_year: academic_year || undefined
+        });
+        res.json(exams);
+        return;
+      }
+
+      const exams = examRepo.listExams({
+        grade_id: grade_id ? Number(grade_id) : undefined,
+        subject: subject || undefined
+      });
+      res.json(exams);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 学年/科目列表（考试选择页用）
+  app.get("/api/exams/filters", async (_req, res, next) => {
+    try {
+      const examRepo = new ExamRepository();
+      res.json({
+        academicYears: examRepo.getAcademicYears(),
+        subjects: examRepo.getSubjects()
+      });
     } catch (error) {
       next(error);
     }
@@ -1164,12 +1197,123 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  // v1.4.0: 成绩表格数据（含排名变化、偏差值）
+  app.get("/api/analysis/exams/:examId/score-table", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const classId = req.query.classId ? Number(req.query.classId) : undefined;
+      const displayMode = (req.query.displayMode as string) || "deviation";
+      const data = analysisRepo.getScoreTableData(
+        Number(req.params.examId),
+        classId,
+        displayMode as "deviation" | "zscore" | "percentile"
+      );
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // v1.4.0: 上次考试对比
+  app.get("/api/analysis/exams/:examId/previous", async (_req, res, next) => {
+    try {
+      res.json({ message: "TODO: implement previous exam comparison" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // v1.4.0: 用户设置
+  app.get("/api/users/me/settings", async (req, res, next) => {
+    try {
+      const db = getDatabase();
+      const user = db.prepare(
+        "SELECT score_display_mode, review_confidence_threshold FROM users WHERE id = ?"
+      ).get(req.user!.id) as { score_display_mode: string; review_confidence_threshold: number } | undefined;
+      res.json({
+        scoreDisplayMode: user?.score_display_mode ?? "deviation",
+        reviewConfidenceThreshold: user?.review_confidence_threshold ?? 0.12
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/users/me/settings", async (req, res, next) => {
+    try {
+      const { scoreDisplayMode, reviewConfidenceThreshold } = req.body as Record<string, unknown>;
+      const db = getDatabase();
+      if (scoreDisplayMode && ["deviation", "zscore", "percentile"].includes(String(scoreDisplayMode))) {
+        db.prepare("UPDATE users SET score_display_mode = ? WHERE id = ?")
+          .run(String(scoreDisplayMode), req.user!.id);
+      }
+      if (typeof reviewConfidenceThreshold === "number") {
+        const t = Math.max(0, Math.min(1, reviewConfidenceThreshold));
+        db.prepare("UPDATE users SET review_confidence_threshold = ? WHERE id = ?")
+          .run(t, req.user!.id);
+      }
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/analysis/exams/:examId/questions", async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
       const questions = analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
       res.json(questions);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // v1.4.0: 赋分引擎 API
+  app.get("/api/exams/:examId/assigned-formula", async (req, res, next) => {
+    try {
+      const service = new AssignedScoreService();
+      const formula = service.getFormula(Number(req.params.examId));
+      const presets = AssignedScoreService.getFormulaPresets();
+      const exam = new ExamRepository().findExamById(Number(req.params.examId));
+      res.json({
+        formula,
+        isAssignedSubject: exam?.subject ? AssignedScoreService.isAssignedSubject(exam.subject) : false,
+        presets
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put("/api/exams/:examId/assigned-formula", async (req, res, next) => {
+    try {
+      const { formula, recalculate } = req.body as { formula: AssignedFormula | null; recalculate?: boolean };
+      const examId = Number(req.params.examId);
+      const service = new AssignedScoreService();
+
+      if (!formula || !formula.enabled) {
+        service.disableFormula(examId);
+        res.json({ ok: true, updated: 0 });
+        return;
+      }
+
+      service.saveFormula(examId, formula);
+      let result = { updated: 0, skipped: 0 };
+      if (recalculate !== false) {
+        result = service.recalculateAll(examId);
+      }
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/exams/:examId/recalculate-assigned", async (req, res, next) => {
+    try {
+      const service = new AssignedScoreService();
+      const result = service.recalculateAll(Number(req.params.examId));
+      res.json({ ok: true, ...result });
     } catch (error) {
       next(error);
     }
