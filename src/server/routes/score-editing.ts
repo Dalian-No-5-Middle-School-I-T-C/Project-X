@@ -21,6 +21,32 @@ import type { AnswerCard, ObjectiveBlock, ObjectiveRecognitionQuestion, Subjecti
 
 const router = express.Router();
 
+// ── 搜索考生（考号/姓名） ──────────────────────────
+router.get("/:examId/students/search", (req: Request, res: Response) => {
+  const examId = Number(req.params.examId);
+  const q = (req.query.q as string || "").trim();
+  if (!Number.isFinite(examId) || !q) {
+    res.status(400).json({ message: "非法参数" });
+    return;
+  }
+
+  const db = getDatabase();
+  const students = db.prepare(`
+    SELECT DISTINCT u.id, u.name, u.student_number
+    FROM student_scores ss
+    JOIN users u ON u.id = ss.student_id
+    WHERE ss.exam_id = ? AND (u.student_number = ? OR u.name LIKE ?)
+    ORDER BY u.student_number
+    LIMIT 20
+  `).all(examId, q, `%${q}%`) as Array<{ id: number; name: string; student_number: string | null }>;
+
+  res.json(students.map((s) => ({
+    id: s.id,
+    name: s.name,
+    studentNumber: s.student_number ?? ""
+  })));
+});
+
 // ── 获取某学生全部题目得分 + 答题卡图片路径 ──────────
 router.get("/:examId/student/:studentId/scores", (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
@@ -58,14 +84,20 @@ router.get("/:examId/student/:studentId/scores", (req: Request, res: Response) =
     ORDER BY question_number
   `).all(examId, studentId) as any[];
 
-  // Scan record images for this student
-  const scans = db.prepare(`
-    SELECT sr.id as recordId, sr.file_path, sr.file_name, sr.page_num
-    FROM scan_records sr
-    JOIN scan_batches sb ON sb.id = sr.batch_id
-    WHERE sb.exam_id = ? AND sr.student_id = ?
-    ORDER BY sr.id
-  `).all(examId, studentId) as any[];
+  // Scan record images for this student (scanner.db does not exist in projectx.db, use id-order as page)
+  const scans: Array<{ recordId: number; pageNum: number }> = [];
+  try {
+    const scanRows = db.prepare(`
+      SELECT sr.id as recordId
+      FROM scan_records sr
+      JOIN scan_batches sb ON sb.id = sr.batch_id
+      WHERE sb.exam_id = ? AND sr.student_id = ?
+      ORDER BY sr.id
+    `).all(examId, studentId) as Array<{ recordId: number }>;
+    scans.push(...scanRows.map((r, idx) => ({ recordId: r.recordId, pageNum: idx + 1 })));
+  } catch {
+    // scan_records may not have expected columns in all DB versions
+  }
 
   // Build card for question definitions
   const cardRepo = new CardRepository();
@@ -152,9 +184,9 @@ router.get("/:examId/student/:studentId/scores", (req: Request, res: Response) =
     } : null,
     questionScores: enrichedScores,
     recognition: Object.fromEntries(recognitionMap),
-    scans: scans.map((s: any) => ({
+    scans: scans.map((s) => ({
       recordId: s.recordId,
-      pageNum: s.page_num,
+      pageNum: s.pageNum,
     })),
     cardId
   });
@@ -176,7 +208,7 @@ router.put("/:examId/student/:studentId/scores", (req: Request, res: Response) =
   }
 
   const db = getDatabase();
-  const userId = (req as any).userId;
+  const userId = req.user!.id;
   const now = new Date().toISOString();
 
   const exam = db.prepare("SELECT card_id FROM exams WHERE id = ?").get(examId) as { card_id: string | null } | undefined;
@@ -301,7 +333,7 @@ router.put("/:examId/answers", (req: Request, res: Response) => {
   }
 
   const db = getDatabase();
-  const userId = (req as any).userId;
+  const userId = req.user!.id;
   const now = new Date().toISOString();
 
   const exam = db.prepare("SELECT card_id FROM exams WHERE id = ?").get(examId) as { card_id: string | null } | undefined;

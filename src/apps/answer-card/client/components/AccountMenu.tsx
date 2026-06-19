@@ -31,6 +31,7 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
   const [providerEditor, setProviderEditor] = useState<{ editing: boolean; id?: number; name: string; providerType: string; baseUrl: string; apiKey: string; models: string }>({
     editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: ""
   });
+  const [showHelpCard, setShowHelpCard] = useState(false);
 
   useEffect(() => {
     if (open && showSettings) {
@@ -319,7 +320,7 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
       {/* Settings modal — portal to body to escape backdrop-filter containing block */}
       {showSettings && createPortal(
         <div className="modal-overlay" onClick={() => setShowSettings(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 780, width: "94vw", maxHeight: "90vh", overflowY: "auto" }}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560, width: "92vw", maxHeight: "90vh", overflowY: "auto" }}>
             <div className="modal-header">
               <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>账号设置</h3>
               <button className="ghost-button" onClick={() => setShowSettings(false)}>
@@ -357,21 +358,62 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
 
               {/* ── AI 服务商管理 ── */}
               <div className="account-settings-group">
-                <div style={{ display: "flex", gap: 16 }}>
-                  {/* Left: provider list + form */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                      <label className="account-settings-label" style={{ margin: 0 }}>AI 服务商</label>
-                      <button
-                        className="ghost-button"
-                        style={{ fontSize: 12, color: "var(--brand)", padding: "2px 8px" }}
-                        onClick={() => { setShowAddProvider(true); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}
-                      >
-                        <Plus size={14} /> 添加
-                      </button>
-                    </div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <label className="account-settings-label" style={{ margin: 0 }}>AI 服务商</label>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <button
+                      onClick={() => setShowHelpCard(!showHelpCard)}
+                      style={{ border: "none", background: "none", cursor: "pointer", fontSize: 12, color: "var(--brand)", padding: 0, textDecoration: "underline" }}
+                    >
+                      如何填写？
+                    </button>
+                    <button
+                      className="ghost-button"
+                      style={{ fontSize: 12, color: "var(--brand)", padding: "2px 8px" }}
+                      onClick={() => { setShowAddProvider(true); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}
+                    >
+                      <Plus size={14} /> 添加
+                    </button>
+                  </div>
+                </div>
 
-                    {/* Provider list */}
+                {/* Help card */}
+                {showHelpCard && (
+                  <div style={{
+                    padding: "14px 16px", borderRadius: 8, marginBottom: 8,
+                    background: "var(--surface-tint)", border: "1px solid var(--brand-glow)",
+                    fontSize: 13, lineHeight: 1.7, color: "var(--text-secondary)"
+                  }}>
+                    <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, color: "var(--text-primary)" }}>AI 服务商配置指南</div>
+                    <div style={{ marginBottom: 8 }}>
+                      <strong>Base URL</strong> 填 API 端点地址，<em>不是</em>网站首页。末尾无需 /v1 自动补齐。
+                    </div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 8 }}>
+                      <thead>
+                        <tr style={{ borderBottom: "1px solid var(--line)" }}>
+                          <th style={{ textAlign: "left", padding: "4px 6px", fontSize: 12 }}>服务商</th>
+                          <th style={{ textAlign: "left", padding: "4px 6px", fontSize: 12 }}>Base URL 示例</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr><td style={{ padding: "4px 6px", fontWeight: 500 }}>GPT</td><td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 11 }}>https://api.openai.com</td></tr>
+                        <tr><td style={{ padding: "4px 6px", fontWeight: 500 }}>DeepSeek</td><td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 11 }}>https://api.deepseek.com</td></tr>
+                        <tr><td style={{ padding: "4px 6px", fontWeight: 500 }}>Gemini</td><td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 11 }}>https://generativelanguage.googleapis.com</td></tr>
+                        <tr><td style={{ padding: "4px 6px", fontWeight: 500 }}>Azure</td><td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 11 }}>https://xxx.openai.azure.com/openai</td></tr>
+                        <tr><td style={{ padding: "4px 6px", fontWeight: 500 }}>Ollama</td><td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 11 }}>http://localhost:11434</td></tr>
+                      </tbody>
+                    </table>
+                    <div style={{ marginBottom: 6 }}>
+                      <strong>模型列表</strong> 填逗号分隔，如 <span style={{ fontFamily: "monospace", fontSize: 12 }}>gpt-5.4,gpt-5.4-mini</span>，留空自动获取。
+                    </div>
+                    <div>
+                      <strong>使用前提</strong>：需要启动 Python llmclient。<br />
+                      <span style={{ fontFamily: "monospace", fontSize: 11, background: "var(--surface-soft)", padding: "2px 6px", borderRadius: 3 }}>py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Provider list */}
                     {aiProviders.length > 0 && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {aiProviders.map((p) => (
@@ -414,10 +456,9 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
                           onChange={(e) => setProviderEditor({ ...providerEditor, providerType: e.target.value })}
                           style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
                         >
-                          <option value="openai">GPT (OpenAI 兼容)</option>
-                          <option value="deepseek">DeepSeek</option>
-                          <option value="haqimi">哈基米 (自定义)</option>
-                          <option value="gemini">Gemini</option>
+                      <option value="openai">GPT (OpenAI 兼容)</option>
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="gemini">Gemini</option>
                         </select>
                         <div>
                           <input
@@ -468,10 +509,9 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
                           onChange={(e) => setProviderEditor({ ...providerEditor, providerType: e.target.value })}
                           style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
                         >
-                          <option value="openai">GPT (OpenAI 兼容)</option>
-                          <option value="deepseek">DeepSeek</option>
-                          <option value="haqimi">哈基米 (自定义)</option>
-                          <option value="gemini">Gemini</option>
+                      <option value="openai">GPT (OpenAI 兼容)</option>
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="gemini">Gemini</option>
                         </select>
                         <div>
                           <input
@@ -507,67 +547,6 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
                         </div>
                       </div>
                     )}
-                  </div>
-
-                  {/* Right: usage guide */}
-                  <div style={{
-                    width: 210, flexShrink: 0,
-                    padding: "10px 12px", borderRadius: 8,
-                    background: "var(--surface-tint)", border: "1px solid var(--line)",
-                    fontSize: 11, lineHeight: 1.6, color: "var(--text-secondary)",
-                    alignSelf: "flex-start"
-                  }}>
-                    <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: "var(--text-primary)" }}>如何填写？</div>
-                    <div style={{ marginBottom: 6 }}>
-                      <strong>Base URL</strong> 要填 API 端点地址，<em>不是</em>网站首页。<br />
-                      <span style={{ color: "var(--brand)" }}>末尾无需 /v1 也能自动补齐</span>。
-                    </div>
-                    <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 6 }}>
-                      <thead>
-                        <tr style={{ borderBottom: "1px solid var(--line)" }}>
-                          <th style={{ textAlign: "left", padding: "2px 4px", fontSize: 10 }}>服务商</th>
-                          <th style={{ textAlign: "left", padding: "2px 4px", fontSize: 10 }}>Base URL 示例</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr>
-                          <td style={{ padding: "2px 4px", fontWeight: 500 }}>GPT</td>
-                          <td style={{ padding: "2px 4px", fontFamily: "monospace", fontSize: 9, wordBreak: "break-all" }}>https://api.openai.com</td>
-                        </tr>
-                        <tr>
-                          <td style={{ padding: "2px 4px", fontWeight: 500 }}>DeepSeek</td>
-                          <td style={{ padding: "2px 4px", fontFamily: "monospace", fontSize: 9, wordBreak: "break-all" }}>https://api.deepseek.com</td>
-                        </tr>
-                        <tr>
-                          <td style={{ padding: "2px 4px", fontWeight: 500 }}>Azure</td>
-                          <td style={{ padding: "2px 4px", fontFamily: "monospace", fontSize: 9, wordBreak: "break-all" }}>https://xxx.openai.azure.com/openai</td>
-                        </tr>
-                        <tr>
-                          <td style={{ padding: "2px 4px", fontWeight: 500 }}>Ollama</td>
-                          <td style={{ padding: "2px 4px", fontFamily: "monospace", fontSize: 9, wordBreak: "break-all" }}>http://localhost:11434</td>
-                        </tr>
-                        <tr>
-                          <td style={{ padding: "2px 4px", fontWeight: 500 }}>其他</td>
-                          <td style={{ padding: "2px 4px", fontFamily: "monospace", fontSize: 9, wordBreak: "break-all" }}>https://your-api.com</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                    <div style={{ marginBottom: 6 }}>
-                      <strong>模型列表</strong> 填逗号分隔的名称，如<br />
-                      <span style={{ fontFamily: "monospace", fontSize: 10 }}>gpt-5.4,gpt-5.4-mini</span><br />
-                      留空则由系统自动获取可用模型。
-                    </div>
-                    <div style={{ marginBottom: 6 }}>
-                      <strong>类型选择</strong>：GPT/DeepSeek/哈基米 走 OpenAI 兼容协议；Gemini 走 Google API。
-                    </div>
-                    <div>
-                      <strong>使用前提</strong>：需要启动 Python llmclient 中转服务。<br />
-                      <span style={{ fontFamily: "monospace", fontSize: 10, background: "var(--surface-soft)", padding: "1px 4px", borderRadius: 3 }}>
-                        py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766
-                      </span>
-                    </div>
-                  </div>
-                </div>
               </div>
               {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
               <button className="primary-button" type="button" onClick={() => void saveSettings()}>保存设置</button>
