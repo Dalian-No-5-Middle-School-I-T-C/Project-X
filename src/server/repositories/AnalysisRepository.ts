@@ -51,6 +51,17 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+/** 按 10 分一段动态生成分数段，末段截止于满分 */
+function generateDistributionRanges(fullScore: number): Array<{ range: string; min: number; max: number }> {
+  const step = 10;
+  const ranges: Array<{ range: string; min: number; max: number }> = [];
+  for (let min = 0; min < fullScore; min += step) {
+    const max = Math.min(min + step - 1, fullScore);
+    ranges.push({ range: `${min}-${max}`, min, max });
+  }
+  return ranges;
+}
+
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0;
   if (sorted.length === 1) return sorted[0];
@@ -165,13 +176,7 @@ export class AnalysisRepository {
       WHERE ss.exam_id = ? ${c.where}
     `).get(stats.avgScore, stats.avgScore, examId, ...c.params) as { stdDev: number } | undefined;
 
-    const ranges = [
-      { range: "0-59", min: 0, max: 59 },
-      { range: "60-69", min: 60, max: 69 },
-      { range: "70-79", min: 70, max: 79 },
-      { range: "80-89", min: 80, max: 89 },
-      { range: "90-100", min: 90, max: 100 }
-    ];
+    const ranges = generateDistributionRanges(fullScore);
     const distribution = ranges.map((r) => {
       const row = this.db.prepare(`
         SELECT COUNT(*) as cnt FROM student_scores ss
