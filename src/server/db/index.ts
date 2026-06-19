@@ -149,6 +149,13 @@ export function initializeDatabase(): void {
     console.log("[DB] Migration: added blanks_items_json column to subjective_questions");
   }
 
+  // teacher_role migration
+  const userColsTmp = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+  if (!userColsTmp.some((c) => c.name === "teacher_role")) {
+    db.exec("ALTER TABLE users ADD COLUMN teacher_role TEXT DEFAULT NULL");
+    console.log("[DB] Migration: added teacher_role column to users");
+  }
+
   // v1.1.0 migrations: users + teacher_classes
   const userCols = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
   if (!userCols.some((c) => c.name === "subject")) {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Download, Link, Plus, RefreshCw, Search, Unlink, Upload } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { getAuthToken } from "../auth/api";
+import { TEACHER_ROLE_LABELS } from "../auth/types";
 import type { GradeRecord, ClassRecord, TeacherRecord, TeachersListResponse } from "../auth/types";
 import { ImportModal } from "./ImportModal";
 
@@ -19,6 +20,7 @@ export function TeacherManagement() {
   // 详情编辑
   const [editName, setEditName] = useState("");
   const [editSubject, setEditSubject] = useState("");
+  const [editTeacherRole, setEditTeacherRole] = useState("");
 
   // 关联班级
   const [grades, setGrades] = useState<GradeRecord[]>([]);
@@ -77,6 +79,7 @@ export function TeacherManagement() {
     if (selected) {
       setEditName(selected.name);
       setEditSubject(selected.subject ?? "");
+      setEditTeacherRole(selected.teacher_role ?? "");
     }
   }, [selected]);
 
@@ -98,7 +101,7 @@ export function TeacherManagement() {
       await fetchJson(`/api/teachers/${selected.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: editName.trim(), subject: editSubject.trim() || null })
+        body: JSON.stringify({ name: editName.trim(), subject: editSubject.trim() || null, teacher_role: editTeacherRole || null })
       });
       await handleRefresh();
     } catch (err) {
@@ -240,7 +243,7 @@ export function TeacherManagement() {
               <div key={t.id} className={`class-list-item ${selectedId === t.id ? "active" : ""}`}>
                 <button type="button" onClick={() => setSelectedId(t.id)}>
                   {t.name}
-                  <small>{t.subject || "未设科目"}</small>
+                  <small>{t.subject || "未设科目"}{t.teacher_role ? ` · ${TEACHER_ROLE_LABELS[t.teacher_role] ?? t.teacher_role}` : ""}</small>
                 </button>
               </div>
             ))}
@@ -271,6 +274,20 @@ export function TeacherManagement() {
                   >
                     <option value="">— 未设置 —</option>
                     {SUBJECTS.map((s) => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </label>
+                <label>
+                  教师角色
+                  <select
+                    value={editTeacherRole}
+                    onChange={(e) => setEditTeacherRole(e.target.value)}
+                    disabled={busy}
+                    style={{ width: "100%", padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line-strong)", fontSize: 13 }}
+                  >
+                    <option value="">普通教师（全权限）</option>
+                    <option value="subject_teacher">学科老师</option>
+                    <option value="head_teacher">班主任</option>
+                    <option value="grade_leader">学年主任</option>
                   </select>
                 </label>
                 <div style={{ display: "flex", gap: 8 }}>

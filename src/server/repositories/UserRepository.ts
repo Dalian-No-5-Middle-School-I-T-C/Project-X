@@ -14,6 +14,7 @@ export interface UserRecord {
   role_display_name?: string;
   student_number: string | null;
   subject: string | null;
+  teacher_role: string | null;
   initial_password: string | null;
   email: string | null;
   phone: string | null;
@@ -30,6 +31,7 @@ export interface CreateUserParams {
   role_id: number;
   student_number?: string;
   subject?: string;
+  teacher_role?: string;
   initial_password?: string;
   email?: string;
   phone?: string;
@@ -43,6 +45,7 @@ export interface UpdateUserParams {
   is_active?: number;
   student_number?: string;
   role_id?: number;
+  teacher_role?: string | null;
 }
 
 export interface BatchStudentInput {
@@ -111,8 +114,8 @@ export class UserRepository {
   async createUser(params: CreateUserParams): Promise<UserRecord> {
     const passwordHash = await hashPassword(params.password);
     const stmt = this.db.prepare(`
-      INSERT INTO users (username, password_hash, name, role_id, student_number, subject, initial_password, email, phone)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (username, password_hash, name, role_id, student_number, subject, teacher_role, initial_password, email, phone)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       params.username,
@@ -121,6 +124,7 @@ export class UserRepository {
       params.role_id,
       params.student_number ?? null,
       params.subject ?? null,
+      params.teacher_role ?? null,
       params.initial_password ?? null,
       params.email ?? null,
       params.phone ?? null
@@ -146,6 +150,7 @@ export class UserRepository {
     if (params.is_active !== undefined) { updates.push("is_active = ?"); values.push(params.is_active); }
     if (params.student_number !== undefined) { updates.push("student_number = ?"); values.push(params.student_number); }
     if (params.role_id !== undefined) { updates.push("role_id = ?"); values.push(params.role_id); }
+    if (params.teacher_role !== undefined) { updates.push("teacher_role = ?"); values.push(params.teacher_role); }
 
     updates.push("updated_at = CURRENT_TIMESTAMP");
     values.push(id);
@@ -441,13 +446,14 @@ export class UserRepository {
     return { ...teacher, classes };
   }
 
-  /** 更新教师（含任教科目） */
-  async updateTeacher(id: number, params: { name?: string; subject?: string; password?: string }): Promise<UserRecord | null> {
+  /** 更新教师（含任教科目和教师角色） */
+  async updateTeacher(id: number, params: { name?: string; subject?: string; password?: string; teacher_role?: string | null }): Promise<UserRecord | null> {
     const updates: string[] = [];
     const values: unknown[] = [];
 
     if (params.name !== undefined) { updates.push("name = ?"); values.push(params.name); }
     if (params.subject !== undefined) { updates.push("subject = ?"); values.push(params.subject); }
+    if (params.teacher_role !== undefined) { updates.push("teacher_role = ?"); values.push(params.teacher_role); }
     if (params.password !== undefined) {
       const hash = await hashPassword(params.password);
       updates.push("password_hash = ?"); values.push(hash);

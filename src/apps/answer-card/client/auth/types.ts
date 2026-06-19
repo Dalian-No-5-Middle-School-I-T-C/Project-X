@@ -6,6 +6,8 @@ export interface AuthUser {
   role_name: string;
   role_display_name?: string;
   student_number: string | null;
+  teacher_role?: string | null;
+  subject?: string | null;
   email?: string | null;
   last_login_at?: string | null;
   permissions: string[];
@@ -27,6 +29,7 @@ export interface UserListItem {
   role_display_name?: string;
   student_number: string | null;
   subject: string | null;
+  teacher_role?: string | null;
   initial_password: string | null;
   email: string | null;
   phone: string | null;
@@ -101,6 +104,12 @@ export const ROLE_LABELS: Record<string, string> = {
   student: "学生"
 };
 
+export const TEACHER_ROLE_LABELS: Record<string, string> = {
+  subject_teacher: "学科老师",
+  head_teacher: "班主任",
+  grade_leader: "学年主任"
+};
+
 export const PERMISSIONS = {
   CARD_READ: "card:read",
   CARD_WRITE: "card:write",
@@ -134,6 +143,7 @@ export interface TeacherRecord {
   role_name?: string;
   role_display_name?: string;
   subject: string | null;
+  teacher_role?: string | null;
   email: string | null;
   phone: string | null;
   created_at: string;

@@ -14,8 +14,8 @@
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
 > **当前版本**：v1.4.0
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 成绩查看（概况/成绩/考试分析/AI分析）→ 赋分引擎 → 导出模板系统 → 教师/学生/班级管理 → 账密批量导入导出 → 数据库全量备份
-> **下个里程碑**：v2.0.0 — 成绩预测、跨班深度对比、知识点诊断
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 成绩查看（概况/成绩/考试分析/AI分析）→ 赋分引擎 → 导出模板系统 → 教师/学生/班级管理 → 教师细分角色（学科老师/班主任/学年主任）→ 账密批量导入导出 → 数据库全量备份
+> **下个里程碑**：v1.5.0 — 成绩预测、跨班深度对比、知识点诊断
 
 ---
 
@@ -92,6 +92,11 @@
 ### 账户与安全
 
 - **RBAC 权限体系**：管理员、教师、学生三级角色，细粒度权限控制（设计/阅卷/分析/用户管理/成绩查看）
+- **教师细分角色**：管理员可为教师设置「学科老师」「班主任」「学年主任」三种细分角色，自动限制数据可见范围
+  - **学科老师**（`subject_teacher`）：只能查看本科目 + 自己所教班级的考试和成绩
+  - **班主任**（`head_teacher`）：只能查看本班级的全部科目考试和成绩（限同年级）
+  - **学年主任**（`grade_leader`）：全科目 + 全班级 + 全年级，不受限制
+  - 未设置细分角色的教师保持全权限（向后兼容）
 - **记住密码**：勾选后签发 180 天持久令牌，令牌存磁盘（`~/.projectx/tokens.json`），服务器/软件重启不丢失
 - **6 个月免登录**：本设备内打开即用，无需反复输入密码
 
@@ -253,7 +258,7 @@ npm run electron:msi                   # = electron:msi:scanner
 | [ARCHITECTURE.md](./readus/ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 | 开发者 |
 | [项目胶囊.md](./readus/项目胶囊.md) | 架构速查：目录、类型、API、约定的一页摘要 | 开发者 |
 | [DATABASE.md](./readus/DATABASE.md) | SQLite 表结构、Repository、认证与数据清理 | 开发者 / 运维 |
-| [ACCOUNT-ARCHITECTURE.md](./readus/ACCOUNT-ARCHITECTURE.md) | 三级账号 RBAC 全栈架构与 v1.0→v1.1 变更说明 | 开发者 |
+| [ACCOUNT-ARCHITECTURE.md](./readus/ACCOUNT-ARCHITECTURE.md) | 三级账号 RBAC 全栈架构、教师细分角色与 v1.0→v1.1 变更说明 | 开发者 |
 | [ACCOUNT-CONTROL.md](./readus/ACCOUNT-CONTROL.md) | 账号控制系统 API、权限矩阵与启用方式 | 开发者 |
 | [ADMIN-GUIDE.md](./readus/ADMIN-GUIDE.md) | 管理员日常操作：教师/学生管理、导入导出、年级班级花名册 | 机房管理员 / 教务 |
 | [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
@@ -388,7 +393,7 @@ Project-X/
 | `POST` | `/api/auth/login` | 登录（支持 isPersistent 6 月免登录） |
 | `GET` | `/api/auth/me` | 当前用户信息 |
 | `GET` | `/api/teachers` | 教师列表（按创建时间排序） |
-| `GET/PUT` | `/api/teachers/:id` | 教师详情 / 更新（姓名/科目） |
+| `GET/PUT` | `/api/teachers/:id` | 教师详情 / 更新（姓名/科目/教师角色） |
 | `POST` | `/api/teachers/:id/classes` | 教师关联班级 |
 | `DELETE` | `/api/teachers/:id/classes/:classId` | 教师解除班级关联 |
 | `POST` | `/api/users/import-csv` | 批量导入学生/教师（CSV/Excel） |

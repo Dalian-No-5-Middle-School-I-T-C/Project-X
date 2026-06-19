@@ -15,6 +15,8 @@ declare global {
         role_id: number;
         role_name: string;
         student_number: string | null;
+        teacher_role: string | null;
+        subject: string | null;
       };
     }
   }
@@ -58,7 +60,9 @@ function attachUser(req: Request, token: string): boolean {
     name: user.name,
     role_id: user.role_id,
     role_name: user.role_name ?? "unknown",
-    student_number: user.student_number ?? null
+    student_number: user.student_number ?? null,
+    teacher_role: (user as any).teacher_role ?? null,
+    subject: (user as any).subject ?? null
   };
   return true;
 }
@@ -152,6 +156,8 @@ export function getCurrentUserHandler(req: Request, res: Response): void {
     role_name: user.role_name,
     role_display_name: user.role_display_name,
     student_number: user.student_number,
+    teacher_role: (user as any).teacher_role ?? null,
+    subject: (user as any).subject ?? null,
     email: user.email,
     last_login_at: user.last_login_at,
     permissions: permissionsForRole(user.role_id)
