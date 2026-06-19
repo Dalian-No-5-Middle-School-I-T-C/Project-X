@@ -42,6 +42,7 @@ import type {
   LayoutDocument,
   ObjectiveBlock,
   ObjectiveMode,
+  ObjectiveOptionLayout,
   PageRenderBlock,
   BlankItem,
   SubjectiveBlock,
@@ -83,6 +84,11 @@ const modeLabels: Record<ObjectiveMode, string> = {
   single: "单选",
   multiple: "多选",
   indefinite: "不定项"
+};
+
+const optionLayoutLabels: Record<ObjectiveOptionLayout, string> = {
+  horizontal: "横向",
+  vertical: "竖向（4题一组）"
 };
 
 type CardDeleteConflict = {
@@ -244,6 +250,7 @@ function defaultObjective(start: number): ObjectiveBlock {
     mode: "single",
     scorePerQuestion: 5,
     density: "compact",
+    optionLayout: "horizontal",
     answerKey: {},
     multipleScoring: {
       partialScores: { 1: 2, 2: 4 },
@@ -1877,25 +1884,44 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
           <input type="number" min={0} step={0.5} value={block.scorePerQuestion} onChange={(event) => onChange((draft) => void ((draft as ObjectiveBlock).scorePerQuestion = Number(event.target.value)))} />
         </label>
       </div>
-      <label>
-        题型
-        <select
-          value={block.mode}
-          onChange={(event) =>
-            onChange((draft) => {
-              const objective = draft as ObjectiveBlock;
-              objective.mode = event.target.value as ObjectiveMode;
-              objective.answerKey = normalizeObjectiveAnswerKey(objective);
-            })
-          }
-        >
-          {Object.entries(modeLabels).map(([value, label]) => (
-            <option key={value} value={value}>
-              {label}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="two-col">
+        <label>
+          题型
+          <select
+            value={block.mode}
+            onChange={(event) =>
+              onChange((draft) => {
+                const objective = draft as ObjectiveBlock;
+                objective.mode = event.target.value as ObjectiveMode;
+                objective.answerKey = normalizeObjectiveAnswerKey(objective);
+              })
+            }
+          >
+            {Object.entries(modeLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          选项排列
+          <select
+            value={block.optionLayout ?? "horizontal"}
+            onChange={(event) =>
+              onChange((draft) => {
+                (draft as ObjectiveBlock).optionLayout = event.target.value as ObjectiveOptionLayout;
+              })
+            }
+          >
+            {Object.entries(optionLayoutLabels).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
       <div className="two-col">
         <label>
           少选1项得分
@@ -2060,7 +2086,7 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
           ))}
         </div>
       </div>
-      <p className="hint">少于 15 题横向排列；15 题及以上按 5 题小组网格排列；超过 5 个选项的题目独占一行。</p>
+      <p className="hint">横向模式少于 15 题按行排列、15 题及以上按 5 题小组网格排列；竖向模式按高考 AB 卡式 4 题一组纵向排布，每题选项仍保持横向小组选项。超过 5 个选项的题目独占一行。</p>
     </>
   );
 }
@@ -2481,13 +2507,13 @@ function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "obje
       ))}
       {block.items.map((item) => (
         <g key={item.questionNumber}>
-          <text x={item.labelX - 2.5} y={(item.options[0]?.rect.y ?? item.labelY) + (item.options[0]?.rect.height ?? 0) / 2 - 0.28} dominantBaseline="middle" className="svg-option-label">
+          <text x={item.labelX - 2.5} y={(item.options[0]?.rect.y ?? item.labelY) + (item.options[0]?.rect.height ?? 0) / 2} textAnchor="middle" dominantBaseline="central" className="svg-option-label">
             {item.questionNumber}
           </text>
           {item.options.map((option) => (
             <g key={option.label}>
               <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
-              <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2 - 0.28} textAnchor="middle" dominantBaseline="middle" className="svg-option-label">
+              <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2} textAnchor="middle" dominantBaseline="central" className="svg-option-label">
                 {option.label}
               </text>
             </g>

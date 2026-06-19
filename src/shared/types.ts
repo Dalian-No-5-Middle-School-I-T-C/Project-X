@@ -1,5 +1,6 @@
 export type ObjectiveMode = "single" | "multiple" | "indefinite";
 export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
+export type ObjectiveOptionLayout = "horizontal" | "vertical";
 export type SubjectiveStyle = "manual_score_grid" | "plain_subjective";
 export type SubjectiveKind = "blank" | "lined_answer" | "plain_box";
 export type SubjectiveBlockKind = "fill_blank" | "answer";
@@ -34,6 +35,7 @@ export type ObjectiveQuestionConfig = {
   score?: number;
   answerKey?: string[];
   scoringRule?: ObjectiveScoringRule;
+  optionLayout?: ObjectiveOptionLayout;
 };
 
 export type PaperSettings = {
@@ -56,6 +58,7 @@ export type ObjectiveBlock = {
   mode: ObjectiveMode;
   scorePerQuestion: number;
   density: ObjectiveDensity;
+  optionLayout?: ObjectiveOptionLayout;
   answerKey?: Record<number, string[]>;
   multipleScoring?: {
     partialScores: Record<number, number>;
