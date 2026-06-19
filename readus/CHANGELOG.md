@@ -2,6 +2,25 @@
 
 ---
 
+## v1.3.1 (2026-06-18)
+
+### 新增功能
+- 客观题块支持「选项排列：横向/竖向」整块设置，在客观题属性面板「题型」旁新增下拉框
+- 选择「竖向」时，每道题独占一行，A/B/C/D… 选项方框纵向堆叠成一列，题号在左；横向排列行为与旧版完全一致
+- 布局引擎、SVG 预览、PDF 导出共用同一套方框坐标，横竖两种方向下渲染一致
+
+### Bug 修复
+- 修复 PDF 导出后客观题选项字母（A/B/C/D）在方框内未垂直居中的问题：原先仅水平居中、垂直方向几乎贴框顶
+- 新增 `drawCenteredBoxText`，按字号行高与方框高度精确计算垂直居中位置，横向/竖向及各密度下均正确居中
+- 同步修正前端 SVG 预览中选项字母的居中偏移：去掉手调的 `-0.28mm`，改用 `dominantBaseline="central"` 配合方框几何中心，使预览与导出视觉一致
+
+### 开发者
+- `ObjectiveBlock`、`ObjectiveQuestionConfig` 新增可选字段 `optionLayout: "horizontal" | "vertical"`，缺省按 `"horizontal"`，旧答题卡 JSON 与数据库无需迁移
+- `ObjectiveQuestionDefinition` 同步增加 `optionLayout`，由 `normalizeQuestionConfig` 按块级 → 单题级 → 默认值顺序解析；评分逻辑不受影响
+- `layout.ts` 新增 `isVerticalQuestion` 判定，竖向题走「独占整行」路径并按选项数正确占用物理行高，分页与高度计算同步适配
+
+---
+
 ## v1.3.0 (2026-06-17)
 
 ### 学科答题卡模板

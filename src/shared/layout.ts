@@ -159,6 +159,14 @@ function isWideObjectiveQuestion(question: ObjectiveQuestionDefinition): boolean
   return question.optionCount > OBJECTIVE_WIDE_OPTION_THRESHOLD;
 }
 
+function isVerticalQuestion(question: ObjectiveQuestionDefinition): boolean {
+  return question.optionLayout === "vertical";
+}
+
+function isSoloRowQuestion(question: ObjectiveQuestionDefinition): boolean {
+  return isWideObjectiveQuestion(question) || isVerticalQuestion(question);
+}
+
 function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mode: ObjectiveArrangementMode): ObjectiveRow[] {
   const rows: ObjectiveRow[] = [];
 
@@ -172,7 +180,7 @@ function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mod
     };
 
     for (const question of questions) {
-      if (isWideObjectiveQuestion(question)) {
+      if (isSoloRowQuestion(question)) {
         flushStandardRow();
         rows.push({ type: "wide", question });
         continue;
@@ -197,7 +205,7 @@ function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mod
   };
 
   for (const question of questions) {
-    if (isWideObjectiveQuestion(question)) {
+    if (isSoloRowQuestion(question)) {
       flushGridRow();
       rows.push({ type: "wide", question });
       continue;
@@ -235,6 +243,15 @@ function objectivePhysicalRowsForQuestions(questions: ObjectiveQuestionDefinitio
 function objectiveRowHeight(row: ObjectiveRow): number {
   if (row.type === "grid") {
     return Math.max(...row.cells.map((cell) => cell.length));
+  }
+  if (row.type === "wide") {
+    const question = row.question;
+    if (isVerticalQuestion(question)) {
+      const settings = OBJECTIVE_SETTINGS;
+      const requiredHeight =
+        OBJECTIVE_OPTION_TOP_OFFSET + (question.optionCount - 1) * settings.optionGap + settings.optionHeight;
+      return Math.max(1, Math.ceil(requiredHeight / settings.rowHeight));
+    }
   }
   return 1;
 }
@@ -279,8 +296,26 @@ function objectiveSegmentQuestionsForMaxRows(
 function objectiveHeightForQuestions(questions: ObjectiveQuestionDefinition[], mode: ObjectiveArrangementMode): number {
   const rows = objectiveRowsForQuestions(questions, mode);
   const rowOffsets = objectivePhysicalRowOffsets(rows, mode);
-  const contentHeight = rowOffsets.length > 0 ? rowOffsets[rowOffsets.length - 1] + OBJECTIVE_SETTINGS.optionHeight : 0;
-  return OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + contentHeight + OBJECTIVE_INNER_BOTTOM;
+  if (rowOffsets.length === 0) {
+    return OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + OBJECTIVE_INNER_BOTTOM;
+  }
+  const settings = OBJECTIVE_SETTINGS;
+  let contentBottom = 0;
+  let physicalRow = 0;
+  for (const row of rows) {
+    const heightInRows = objectiveRowHeight(row);
+    if (row.type === "wide" && isVerticalQuestion(row.question)) {
+      const startY = rowOffsets[physicalRow] ?? physicalRow * settings.rowHeight;
+      const bottom =
+        startY + OBJECTIVE_OPTION_TOP_OFFSET + (row.question.optionCount - 1) * settings.optionGap + settings.optionHeight;
+      contentBottom = Math.max(contentBottom, bottom);
+    } else {
+      const lastOffset = rowOffsets[physicalRow + heightInRows - 1] ?? (physicalRow + heightInRows - 1) * settings.rowHeight;
+      contentBottom = Math.max(contentBottom, lastOffset + OBJECTIVE_OPTION_TOP_OFFSET + settings.optionHeight);
+    }
+    physicalRow += heightInRows;
+  }
+  return OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + contentBottom + OBJECTIVE_INNER_BOTTOM;
 }
 
 function objectiveMaxRowsForAvailableHeight(height: number): number {
@@ -348,13 +383,21 @@ function addObjectiveSegment(
     const rowOffset = rowOffsets[physicalRow] ?? physicalRow * settings.rowHeight;
     const labelY = itemAreaY + rowOffset + 2.9;
     const optionStartX = labelTextX + OBJECTIVE_LABEL_TO_OPTION_GAP;
+    const vertical = isVerticalQuestion(question);
     const options = OPTIONS.slice(0, question.optionCount).map((label, optionIndex) => {
-      const optionRect = rect(
-        optionStartX + optionIndex * settings.optionGap,
-        itemAreaY + rowOffset + OBJECTIVE_OPTION_TOP_OFFSET,
-        settings.optionWidth,
-        settings.optionHeight
-      );
+      const optionRect = vertical
+        ? rect(
+            optionStartX,
+            itemAreaY + rowOffset + OBJECTIVE_OPTION_TOP_OFFSET + optionIndex * settings.optionGap,
+            settings.optionWidth,
+            settings.optionHeight
+          )
+        : rect(
+            optionStartX + optionIndex * settings.optionGap,
+            itemAreaY + rowOffset + OBJECTIVE_OPTION_TOP_OFFSET,
+            settings.optionWidth,
+            settings.optionHeight
+          );
       page.elements.push({
         id: `p${page.pageNumber}_obj_${block.id}_${questionNumber}_${label}`,
         type: "objective_option",

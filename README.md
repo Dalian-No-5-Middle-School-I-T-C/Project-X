@@ -1,7 +1,7 @@
 # Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.3.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.3.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,7 +13,7 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.3.0
+> **当前版本**：v1.3.1
 > **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 成绩分析 → AI 成绩分析 → 教师/学生/班级管理 → 账密批量导入导出 → 数据库全量备份
 > **下个里程碑**：v2.0 — 成绩预测、跨班深度对比分析
 

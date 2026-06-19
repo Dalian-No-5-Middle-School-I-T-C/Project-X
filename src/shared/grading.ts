@@ -5,6 +5,7 @@ import type {
   ObjectiveBlock,
   ObjectiveGradingRow,
   ObjectiveMode,
+  ObjectiveOptionLayout,
   ObjectiveQuestionConfig,
   ObjectiveQuestionGrade,
   ObjectiveRecognitionQuestion,
@@ -28,6 +29,7 @@ export type ObjectiveQuestionDefinition = {
   score: number;
   answerKey?: string[];
   scoringRule?: ObjectiveScoringRule;
+  optionLayout: ObjectiveOptionLayout;
 };
 
 function normalizeOptions(options: string[] | undefined, optionCount?: number): string[] {
@@ -56,7 +58,8 @@ function normalizeQuestionConfig(block: ObjectiveBlock, config: ObjectiveQuestio
     optionCount: config.optionCount ?? block.optionCount,
     score: config.score ?? block.scorePerQuestion,
     answerKey: config.answerKey ?? block.answerKey?.[config.questionNumber],
-    scoringRule: config.scoringRule ?? legacyScoringRule(block)
+    scoringRule: config.scoringRule ?? legacyScoringRule(block),
+    optionLayout: config.optionLayout ?? block.optionLayout ?? "horizontal"
   };
 }
 
