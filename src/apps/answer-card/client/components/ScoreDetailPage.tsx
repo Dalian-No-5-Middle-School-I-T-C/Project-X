@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, BarChart3, ClipboardList, Download, FileText } from "lucide-react";
+import { AlertTriangle, ArrowLeft, BarChart3, ClipboardList, Download, FileText } from "lucide-react";
+import { useAuth } from "../auth/AuthContext";
 import { fetchJson } from "../auth/api";
 import type { ExamOverview, QuestionAnalysisItem, StudentRankingItem, ScoreDisplayMode, ScoreTableRow } from "../../../../shared/types";
 import { AnalysisOverview } from "./AnalysisOverview";
@@ -9,6 +10,7 @@ import { AnalysisQuestions } from "./AnalysisQuestions";
 import { AnalysisTrend } from "./AnalysisTrend";
 import { ScoreTable } from "./ScoreTable";
 import { ExportModal } from "./ExportModal";
+import { ScoreFixPage } from "./ScoreFixPage";
 
 interface ClassOption {
   id: number;
@@ -26,7 +28,10 @@ interface Props {
 type SubTab = "overview" | "scores" | "exam-analysis" | "ai";
 
 export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
+  const { user, isAdmin } = useAuth();
+  const isTeacher = user?.role_name === "teacher" || isAdmin;
   const [subTab, setSubTab] = useState<SubTab>("overview");
+  const [showFixPage, setShowFixPage] = useState(false);
   const [classId, setClassId] = useState("");
   const [showExport, setShowExport] = useState(false);
   const [classes, setClasses] = useState<ClassOption[]>([]);
@@ -151,6 +156,18 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const top5 = useMemo(() => ranking.slice(0, 5), [ranking]);
   const bottom5 = useMemo(() => ranking.slice(-5).reverse(), [ranking]);
 
+  // Render fix page overlay
+  if (showFixPage) {
+    return (
+      <ScoreFixPage
+        examId={examId}
+        examName={examName}
+        subject={subject}
+        onBack={() => setShowFixPage(false)}
+      />
+    );
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       {/* Header bar */}
@@ -242,7 +259,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
       {/* Sub-tab bar */}
       <div style={{
         display: "flex", gap: 0, borderBottom: "1px solid var(--line)",
-        padding: "0 24px", flexShrink: 0, background: "#fff"
+        padding: "0 24px", flexShrink: 0, background: "#fff", alignItems: "center"
       }}>
         {subTabConfigs.map(({ key, label, icon: Icon }, idx) => (
           <button
@@ -261,6 +278,18 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             {label}
           </button>
         ))}
+        {isTeacher && (
+          <button
+            style={{
+              marginLeft: "auto", padding: "4px 12px", border: "1px solid #E65100", borderRadius: 6,
+              background: "transparent", color: "#E65100", fontSize: 12, cursor: "pointer",
+              fontWeight: 500, display: "flex", alignItems: "center", gap: 4
+            }}
+            onClick={() => setShowFixPage(true)}
+          >
+            <AlertTriangle size={14} /> 分数有问题？
+          </button>
+        )}
       </div>
 
       {/* Content area */}

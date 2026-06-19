@@ -404,6 +404,16 @@ UPDATE users SET password_hash = '<new_hash>' WHERE username = 'admin';
 
 通过 `/api/users/import-csv` 使用批量导入 API 上传 CSV/Excel 文件，一行即可。参见 [ADMIN-GUIDE](./ADMIN-GUIDE.md) 第 4/5 节了解操作说明。
 
+### Q: 自定义 AI 服务商返回 404 怎么办？
+
+1. **检查 Base URL 格式**：确保填写的是 API 端点地址（如 `https://api.openai.com` 或 `https://api.deepseek.com`），而不是网站首页（如 `https://openai.com`）。系统会自动补齐 `/v1` 路径。
+2. **检查 Python llmclient 是否运行**：自定义服务商仍需通过 Python 中转服务。运行：
+   ```powershell
+   py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766
+   ```
+3. **检查 API Key**：确保密钥有效且有余额。
+4. **检查模型名称**：模型名需与提供商提供的一致。若不确定，可将模型列表留空，由系统自动获取。
+
 ### Q: 扫描图片存储在哪里？
 
 扫描图片默认存储在 `data/recognition/uploads/` 目录下。超过保留期后自动清理。
@@ -477,12 +487,25 @@ src/types/
 | `user_id` | INTEGER FK | 所属用户 |
 | `name` | TEXT | 自定义名称（如 "我的GPT"） |
 | `provider_type` | TEXT | openai / deepseek / haqimi / gemini |
-| `base_url` | TEXT | API 基础地址 |
+| `base_url` | TEXT | API 端点地址（保存时自动补齐 `/v1`） |
 | `api_key` | TEXT | API 密钥 |
 | `models` | TEXT | JSON 模型列表，为空则自动获取 |
 | `is_active` | INTEGER | 0=禁用 1=启用 |
 
 每个教师可配置多个服务商，用于 AI 成绩分析的模型路由。
+
+**Base URL 说明**：填写 API 端点地址而非网站首页。系统会自动补齐末尾的 `/v1` 路径。
+常见的 Base URL 示例：
+- **OpenAI**: `https://api.openai.com`（自动补为 `https://api.openai.com/v1`）
+- **DeepSeek**: `https://api.deepseek.com`（自动补为 `https://api.deepseek.com/v1`）
+- **Azure**: `https://xxx.openai.azure.com/openai`（含 `/openai` 部署前缀，不自动补 `/v1`）
+- **Ollama**: `http://localhost:11434`（自动补为 `http://localhost:11434/v1`）
+- **其他兼容**: `https://your-api-host.com`（自动补为 `https://your-api-host.com/v1`）
+
+> ⚠️ **使用前提**：自定义服务商仍需通过 Python llmclient 中转服务。请先启动：
+> ```powershell
+> py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766
+> ```
 
 ---
 
