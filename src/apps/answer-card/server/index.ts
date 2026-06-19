@@ -1603,7 +1603,7 @@ export async function createApp(): Promise<express.Express> {
         FROM ai_providers
         WHERE user_id = ? AND is_active = 1
         ORDER BY sort_order, id
-      `).all((req as any).userId) as any[];
+      `).all(req.user!.id) as any[];
 
       const userProviders = providerRows.map((p: any) => ({
         id: p.id,
@@ -1641,7 +1641,7 @@ export async function createApp(): Promise<express.Express> {
           FROM ai_providers
           WHERE user_id = ? AND is_active = 1
           ORDER BY sort_order, id
-        `).all((req as any).userId) as any[];
+        `).all(req.user!.id) as any[];
 
         const userProviders = providerRows.map((p: any) => ({
           id: p.id,
@@ -1703,7 +1703,7 @@ export async function createApp(): Promise<express.Express> {
         const db = getDatabase();
         const prov = db.prepare(
           "SELECT * FROM ai_providers WHERE id = ? AND user_id = ?"
-        ).get(providerId, (req as any).userId) as any;
+        ).get(providerId, req.user!.id) as any;
         if (prov) {
           providerOverride = {
             provider_type: prov.provider_type,

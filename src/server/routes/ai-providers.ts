@@ -7,7 +7,7 @@ import { getDatabase } from "../db";
  * AI 服务商配置管理
  * 挂载点：/api/ai/providers
  *
- * 每个用户可配置多个服务商（GPT / DeepSeek / 哈基米 / Gemini）
+ * 每个用户可配置多个服务商（GPT / DeepSeek / Gemini）
  * 支持自定义 base_url
  */
 const router = express.Router();
@@ -22,7 +22,7 @@ router.get("/", (req: Request, res: Response) => {
     FROM ai_providers
     WHERE user_id = ?
     ORDER BY sort_order, id
-  `).all((req as any).userId) as any[];
+  `).all(req.user!.id) as any[];
 
   res.json(providers.map((p: any) => ({
     id: p.id,
@@ -61,7 +61,7 @@ router.post("/", (req: Request, res: Response) => {
   const result = db.prepare(`
     INSERT INTO ai_providers (user_id, name, provider_type, base_url, api_key, models)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run((req as any).userId, name, providerType, normalizedUrl, apiKey, models ? JSON.stringify(models) : null);
+  `).run(req.user!.id, name, providerType, normalizedUrl, apiKey, models ? JSON.stringify(models) : null);
 
   res.status(201).json({ id: result.lastInsertRowid, baseUrl: normalizedUrl });
 });
@@ -73,7 +73,7 @@ router.put("/:id", (req: Request, res: Response) => {
 
   const provider = db.prepare(
     "SELECT * FROM ai_providers WHERE id = ? AND user_id = ?"
-  ).get(Number(req.params.id), (req as any).userId) as any;
+  ).get(Number(req.params.id), req.user!.id) as any;
 
   if (!provider) {
     res.status(404).json({ message: "服务商不存在" });
@@ -109,7 +109,7 @@ router.delete("/:id", (req: Request, res: Response) => {
   const db = getDatabase();
   const result = db.prepare(
     "DELETE FROM ai_providers WHERE id = ? AND user_id = ?"
-  ).run(Number(req.params.id), (req as any).userId);
+  ).run(Number(req.params.id), req.user!.id);
 
   if (result.changes === 0) {
     res.status(404).json({ message: "服务商不存在" });

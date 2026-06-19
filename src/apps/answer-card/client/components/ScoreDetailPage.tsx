@@ -259,7 +259,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
       {/* Sub-tab bar */}
       <div style={{
         display: "flex", gap: 0, borderBottom: "1px solid var(--line)",
-        padding: "0 24px", flexShrink: 0, background: "#fff"
+        padding: "0 24px", flexShrink: 0, background: "#fff", alignItems: "center"
       }}>
         {subTabConfigs.map(({ key, label, icon: Icon }, idx) => (
           <button
@@ -278,6 +278,18 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             {label}
           </button>
         ))}
+        {isTeacher && (
+          <button
+            style={{
+              marginLeft: "auto", padding: "4px 12px", border: "1px solid #E65100", borderRadius: 6,
+              background: "transparent", color: "#E65100", fontSize: 12, cursor: "pointer",
+              fontWeight: 500, display: "flex", alignItems: "center", gap: 4
+            }}
+            onClick={() => setShowFixPage(true)}
+          >
+            <AlertTriangle size={14} /> 分数有问题？
+          </button>
+        )}
       </div>
 
       {/* Content area */}
@@ -298,17 +310,6 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
         {/* 成绩 Tab */}
         {subTab === "scores" && (
           <div style={{ padding: 24 }}>
-            {isTeacher && (
-              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
-                <button
-                  className="ghost-button"
-                  style={{ fontSize: 12, color: "#E65100", border: "1px solid #E65100", borderRadius: 6, padding: "4px 12px" }}
-                  onClick={() => setShowFixPage(true)}
-                >
-                  <AlertTriangle size={14} /> 分数有问题？
-                </button>
-              </div>
-            )}
             <ScoreTable key={scoreTableKey} examId={examId} classId={classId || undefined} displayMode={displayMode} />
           </div>
         )}
