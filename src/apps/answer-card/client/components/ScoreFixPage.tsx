@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Pencil, Save, Search, X } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Pencil, Save, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import { fetchJson } from "../auth/api";
 
 interface Props {
@@ -20,7 +20,7 @@ interface StudentScore {
     manually_modified: number; modified_at: string | null;
   }>;
   recognition: Record<number, { selectedOptions: string[]; confidence: number }>;
-  scans: Array<{ recordId: number; pageNum: number }>;
+  scans: Array<{ recordId: number; fileName: string; pageNum: number }>;
   cardId: string;
 }
 
@@ -62,8 +62,9 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
   const [loadingAnswers, setLoadingAnswers] = useState(false);
 
   // Preview
-  const [showPreview, setShowPreview] = useState(false);
-  const [previewPages, setPreviewPages] = useState<Array<{ recordId: number; pageNum: number }>>([]);
+  const [previewPages, setPreviewPages] = useState<Array<{ recordId: number; fileName: string; pageNum: number }>>([]);
+  const [enlargeIdx, setEnlargeIdx] = useState(-1); // -1 = closed, >=0 = active page index
+  const [zoom, setZoomState] = useState(1);
 
   // Load answers when entering answer mode
   useEffect(() => {
@@ -297,17 +298,26 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
 
             {student && (
               <div style={{ display: "flex", gap: 20, flex: 1, minHeight: 0 }}>
-                {/* Left: card image */}
-                <div style={{ width: 340, flexShrink: 0, border: "1px solid var(--line)", borderRadius: 10, background: "#fff", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-                  <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500 }}>答题卡 — {student.student.name}</div>
-                  <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 8, padding: 20 }}>
+                {/* Left: card image — scrolls vertically */}
+                <div style={{ width: 360, flexShrink: 0, border: "1px solid var(--line)", borderRadius: 10, background: "#fff", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                  <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, flexShrink: 0 }}>答题卡 — {student.student.name}</div>
+                  <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
                     {previewPages.length > 0 ? (
-                      <>
-                        <div style={{ fontSize: 13 }}>{previewPages.length} 页</div>
-                        <button className="primary-button" style={{ fontSize: 12 }} onClick={() => setShowPreview(true)}>查看答题卡</button>
-                      </>
+                      previewPages.map((s, idx) => (
+                        <div key={idx} style={{ cursor: "zoom-in" }} onClick={() => setEnlargeIdx(idx)}>
+                          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
+                            第 {s.pageNum} 页
+                          </div>
+                          <img
+                            src={`/api/scanner/grading-image/${student.cardId}/${encodeURIComponent(s.fileName)}`}
+                            alt={`第${s.pageNum}页`}
+                            style={{ width: "100%", border: "1px solid var(--line-light)", borderRadius: 4 }}
+                            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                          />
+                        </div>
+                      ))
                     ) : (
-                      <div style={{ color: "var(--muted)", fontSize: 13 }}>暂无扫描</div>
+                      <div style={{ color: "var(--muted)", fontSize: 13, textAlign: "center", padding: 40 }}>暂无扫描图片</div>
                     )}
                   </div>
                 </div>
@@ -426,25 +436,65 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
         )}
       </div>
 
-      {/* Preview modal */}
-      {showPreview && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 99999, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setShowPreview(false)}>
-          <div onClick={(e) => e.stopPropagation()} style={{ maxWidth: "90vw", maxHeight: "90vh", overflowY: "auto", background: "#fff", borderRadius: 12, padding: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <div><h3 style={{ margin: 0, fontSize: 16 }}>答题卡 — {student?.student.name}</h3><span style={{ fontSize: 12, color: "var(--muted)" }}>{previewPages.length} 页</span></div>
-              <button onClick={() => setShowPreview(false)} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={20} /></button>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 16, alignItems: "center" }}>
-              {previewPages.map((s, idx) => (
-                <div key={idx}><div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>第 {s.pageNum} 页</div><img src={`/api/scanner/scan-image/${s.recordId}`} alt={`Page ${s.pageNum}`} style={{ maxWidth: "100%", maxHeight: "70vh", border: "1px solid var(--line)", borderRadius: 4 }} /></div>
-              ))}
+      {/* Enlarge image modal — inline fixed to avoid parent overflow:hidden clipping */}
+      {enlargeIdx >= 0 && (() => {
+        const cur = previewPages[enlargeIdx];
+        const hasPrev = enlargeIdx > 0;
+        const hasNext = enlargeIdx < previewPages.length - 1;
+        const zm = (delta: number) => setZoomState((z) => Math.min(3, Math.max(0.5, z + delta)));
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 999999, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setEnlargeIdx(-1)}>
+            <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1a", borderRadius: 14, width: "94vw", maxHeight: "94vh", display: "flex", flexDirection: "column" }}>
+              {/* Header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", color: "#fff", flexShrink: 0 }}>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>第 {cur.pageNum} 页 / 共 {previewPages.length} 页</span>
+                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                  <button onClick={() => zm(-0.25)} style={zmBtnStyle} title="缩小"><ZoomOut size={18} /></button>
+                  <button onClick={() => zm(0.25)} style={zmBtnStyle} title="放大"><ZoomIn size={18} /></button>
+                  <span style={{ fontSize: 12, minWidth: 40, textAlign: "center" }}>{Math.round(zoom * 100)}%</span>
+                  <button onClick={() => setEnlargeIdx(-1)} style={{ ...zmBtnStyle, marginLeft: 4 }}><X size={18} /></button>
+                </div>
+              </div>
+              {/* Image */}
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", overflow: "auto", position: "relative", padding: "0 48px" }}>
+                {hasPrev && (
+                  <button onClick={() => { setEnlargeIdx(enlargeIdx - 1); setZoomState(1); }} style={arrowBtnStyle("left")}>
+                    <ChevronLeft size={28} />
+                  </button>
+                )}
+                <img
+                  src={`/api/scanner/grading-image/${student!.cardId}/${encodeURIComponent(cur.fileName)}`}
+                  alt={`第${cur.pageNum}页`}
+                  style={{ maxWidth: `${zoom * 100}%`, maxHeight: `calc(94vh - 120px)`, objectFit: "contain", transition: "max-width 0.2s", transform: `scale(${zoom})`, transformOrigin: "center center" }}
+                />
+                {hasNext && (
+                  <button onClick={() => { setEnlargeIdx(enlargeIdx + 1); setZoomState(1); }} style={arrowBtnStyle("right")}>
+                    <ChevronRight size={28} />
+                  </button>
+                )}
+              </div>
+              {/* Thumbnails */}
+              <div style={{ display: "flex", justifyContent: "center", gap: 6, padding: "8px 16px 12px", overflowX: "auto", flexShrink: 0 }}>
+                {previewPages.map((s, idx) => (
+                  <button key={idx}
+                    onClick={() => { setEnlargeIdx(idx); setZoomState(1); }}
+                    style={{ padding: 0, border: idx === enlargeIdx ? "2px solid #fff" : "2px solid transparent", borderRadius: 4, cursor: "pointer", opacity: idx === enlargeIdx ? 1 : 0.5, background: "transparent" }}
+                  >
+                    <img src={`/api/scanner/grading-image/${student!.cardId}/${encodeURIComponent(s.fileName)}`} alt="" style={{ width: 40, height: 56, objectFit: "cover", borderRadius: 2 }} />
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
 
 const headerBtnStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 8, background: "#fff", cursor: "pointer", fontSize: 13 };
 const modeToggleStyle: React.CSSProperties = { padding: "6px 14px", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 500 };
+const zmBtnStyle: React.CSSProperties = { border: "none", background: "rgba(255,255,255,0.1)", borderRadius: 6, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff" };
+function arrowBtnStyle(side: "left" | "right"): React.CSSProperties {
+  return { position: "absolute", [side]: 4, top: "50%", transform: "translateY(-50%)", zIndex: 1, background: "rgba(255,255,255,0.12)", border: "none", borderRadius: "50%", width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff" };
+}
