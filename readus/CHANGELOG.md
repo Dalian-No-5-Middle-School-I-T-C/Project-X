@@ -2,11 +2,6 @@
 
 ## v1.4.0 (2026-06-18)
 
-### 已知 BUG (2026-06-19)
-- **扫描模块**：`[json.exception.type_error.302] type must be number, but is null` — layout JSON 主观题 scoreCells 含 null 值，C++ 解析崩溃。已修复 `layout.ts`/`normalizeCard`/`prepareLayoutForCard` 三层，旧卡需重新阅卷以触发 layout 重新生成。
-- **答题卡预览映射**：`file_path` 改为存 multer 实际路径后，新旧数据的映射关系尚未全面验证。旧阅卷数据 `file_path` 仍为原始文件名，预览返回空；新阅卷数据路径格式待确认。
-- **判分异常**：layout null 值导致 C++ 识别器崩溃，连带到评分/落库流程中断。已随布局修复一并解决。
-
 ### 缺陷修复 (2026-06-19)
 - 导入答题卡创建考试时科目存为拼音（如 wuli）→ 改为优先用 `subjectLabel`（中文名）
 - 新建考试默认状态从 `draft` 改为 `active`，避免阅卷后状态异常
