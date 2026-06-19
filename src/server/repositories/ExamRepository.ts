@@ -74,6 +74,13 @@ export class ExamRepository {
   }
 
   /**
+   * 根据名称查找考试（用于重名检查）
+   */
+  findExamByName(name: string): ExamRecord | null {
+    return this.db.prepare("SELECT * FROM exams WHERE name = ?").get(name) as ExamRecord | null;
+  }
+
+  /**
    * 列出考试（支持过滤）
    */
   listExams(filters?: {
