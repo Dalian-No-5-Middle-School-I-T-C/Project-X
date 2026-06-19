@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { fetchJson, setAuthToken, getAuthToken } from "./api";
-import { permissionGrants, type AuthUser, type LoginResponse } from "./types";
+import { permissionGrants, TEACHER_ROLE_LABELS, type AuthUser, type LoginResponse } from "./types";
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -12,6 +12,11 @@ interface AuthContextValue {
   isAdmin: boolean;
   isTeacher: boolean;
   isStudent: boolean;
+  teacherRole: string | null;
+  isSubjectTeacher: boolean;
+  isHeadTeacher: boolean;
+  isGradeLeader: boolean;
+  teacherRoleLabel: string;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -77,6 +82,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [user]
   );
 
+  const teacherRole = user?.role_name === "teacher" ? (user?.teacher_role ?? null) : null;
   const value = useMemo<AuthContextValue>(
     () => ({
       user,
@@ -87,9 +93,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasPermission,
       isAdmin: user?.role_name === "admin",
       isTeacher: user?.role_name === "teacher",
-      isStudent: user?.role_name === "student"
+      isStudent: user?.role_name === "student",
+      teacherRole,
+      isSubjectTeacher: teacherRole === "subject_teacher",
+      isHeadTeacher: teacherRole === "head_teacher",
+      isGradeLeader: teacherRole === "grade_leader",
+      teacherRoleLabel: teacherRole ? (TEACHER_ROLE_LABELS[teacherRole] ?? "") : ""
     }),
-    [user, loading, login, logout, refreshUser, hasPermission]
+    [user, loading, login, logout, refreshUser, hasPermission, teacherRole]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

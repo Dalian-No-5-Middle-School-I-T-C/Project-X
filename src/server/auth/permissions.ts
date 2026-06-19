@@ -45,6 +45,21 @@ export const ROLE_NAMES = {
   STUDENT: "student"
 } as const;
 
+/** 教师细分角色 */
+export const TEACHER_ROLES = {
+  SUBJECT_TEACHER: "subject_teacher",   // 学科老师：本学科+所教班级
+  HEAD_TEACHER: "head_teacher",         // 班主任：本班级+全科目
+  GRADE_LEADER: "grade_leader"          // 学年主任：全科目+全班级
+} as const;
+
+export type TeacherRole = (typeof TEACHER_ROLES)[keyof typeof TEACHER_ROLES];
+
+export const TEACHER_ROLE_LABELS: Record<string, string> = {
+  [TEACHER_ROLES.SUBJECT_TEACHER]: "学科老师",
+  [TEACHER_ROLES.HEAD_TEACHER]: "班主任",
+  [TEACHER_ROLES.GRADE_LEADER]: "学年主任"
+};
+
 /**
  * 角色 → 默认权限映射。
  * 这是写库的真实来源（roles.permissions 列由此初始化），

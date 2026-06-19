@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
     ai_api_key       TEXT,                    -- AI API密钥 (v1.4.0)
     email            TEXT,
     phone            TEXT,
+    teacher_role     TEXT,                    -- subject_teacher / head_teacher / grade_leader（仅教师）
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,

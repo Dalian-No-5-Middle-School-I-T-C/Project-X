@@ -82,6 +82,7 @@ export class ExamRepository {
     class_id?: number;
     subject?: string;
     created_by?: number;
+    examIds?: number[];  // 数据范围过滤
   }): ExamRecord[] {
     let sql = "SELECT * FROM exams WHERE 1=1";
     const params: unknown[] = [];
@@ -91,6 +92,10 @@ export class ExamRepository {
     if (filters?.class_id) { sql += " AND class_id = ?"; params.push(filters.class_id); }
     if (filters?.subject) { sql += " AND subject = ?"; params.push(filters.subject); }
     if (filters?.created_by) { sql += " AND created_by = ?"; params.push(filters.created_by); }
+    if (filters?.examIds && filters.examIds.length > 0) {
+      sql += ` AND id IN (${filters.examIds.map(() => "?").join(",")})`;
+      params.push(...filters.examIds);
+    }
 
     sql += " ORDER BY created_at DESC";
     return this.db.prepare(sql).all(...params) as ExamRecord[];
@@ -103,6 +108,7 @@ export class ExamRepository {
     grade_id?: number;
     subject?: string;
     academic_year?: string;  // 如 "2025-2026"
+    examIds?: number[];  // 数据范围过滤
   }): Array<{
     id: number; name: string; subject: string | null;
     grade_id: number | null; grade_name: string | null;
@@ -136,6 +142,10 @@ export class ExamRepository {
         (ac.exam_date IS NULL AND e.created_at >= ? AND e.created_at < ?)
       )`;
       params.push(`${startYear}-09-01`, `${startYear + 1}-08-01`, `${startYear}-09-01T00:00:00.000Z`, `${startYear + 1}-08-01T00:00:00.000Z`);
+    }
+    if (filters?.examIds && filters.examIds.length > 0) {
+      sql += ` AND e.id IN (${filters.examIds.map(() => "?").join(",")})`;
+      params.push(...filters.examIds);
     }
 
     sql += ` GROUP BY e.id ORDER BY COALESCE(ac.exam_date, e.created_at) DESC`;

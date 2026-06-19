@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { ChevronDown, Download, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson, getAuthToken } from "../auth/api";
-import { ROLE_LABELS } from "../auth/types";
+import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
 import type { AiProviderConfig } from "../../../../shared/types";
 
 export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
@@ -206,7 +206,7 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
       <button className="account-menu-trigger" type="button" onClick={() => setOpen(!open)}>
         <User size={16} />
         <span>{user.name}</span>
-        <small>{ROLE_LABELS[user.role_name] ?? user.role_name}</small>
+        <small>{TEACHER_ROLE_LABELS[user.teacher_role ?? ""] ?? ROLE_LABELS[user.role_name] ?? user.role_name}</small>
         <ChevronDown size={14} className={open ? "rotated" : ""} />
       </button>
       {open && (

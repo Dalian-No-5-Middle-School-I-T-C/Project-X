@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import { UserRepository } from "../repositories/UserRepository";
 import { ClassRepository } from "../repositories/ClassRepository";
 import { authMiddleware, requirePermission } from "../middleware/auth";
-import { PERMISSIONS, ROLE_IDS } from "../auth/permissions";
+import { PERMISSIONS, ROLE_IDS, TEACHER_ROLE_LABELS } from "../auth/permissions";
 
 /**
  * 教师管理 API（仅管理员）
@@ -42,7 +42,7 @@ router.get("/:id", (req: Request, res: Response) => {
   res.json(stripHash(teacher));
 });
 
-/** PUT /api/teachers/:id — 更新教师（姓名/科目） */
+/** PUT /api/teachers/:id — 更新教师（姓名/科目/教师角色） */
 router.put("/:id", async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
@@ -52,10 +52,17 @@ router.put("/:id", async (req: Request, res: Response) => {
       return;
     }
 
-    const { name, subject } = req.body ?? {};
-    const params: { name?: string; subject?: string } = {};
+    const { name, subject, teacher_role } = req.body ?? {};
+    const params: { name?: string; subject?: string; password?: string; teacher_role?: string } = {};
     if (name !== undefined) params.name = String(name);
     if (subject !== undefined) params.subject = String(subject);
+    if (teacher_role !== undefined) {
+      if (![null, undefined, "subject_teacher", "head_teacher", "grade_leader"].includes(teacher_role)) {
+        res.status(400).json({ message: "无效的教师角色" });
+        return;
+      }
+      params.teacher_role = teacher_role || null;
+    }
 
     await userRepo.updateTeacher(id, params);
     const updated = userRepo.findTeacherById(id);

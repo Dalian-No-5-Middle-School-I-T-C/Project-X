@@ -337,6 +337,81 @@ function makeGate(enforce: boolean, readPerm: string, writePerm: string) {
   };
 }
 
+/**
+ * 根据当前用户的教师角色和所教班级，返回可见的考试ID列表。
+ * - admin / grade_leader → 全部可见（返回 null）
+ * - head_teacher → 只看自己班级的考试（全科目，本年级）
+ * - subject_teacher → 只看自己教的科目 + 自己教的班级
+ * - 普通 teacher（无 teacher_role）→ 全部可见（向后兼容）
+ */
+function getVisibleExamIds(user: express.Request["user"]): number[] | null {
+  if (!user || user.role_name === "admin") return null;
+  if (user.role_name !== "teacher") return null;
+  if (!user.teacher_role) return null; // 普通教师向后兼容，全部可见
+
+  if (user.teacher_role === "grade_leader") return null; // 学年主任全可见
+
+  const db = getDatabase();
+
+  if (user.teacher_role === "head_teacher") {
+    // 班主任：只看自己班级的考试
+    const classIds = db.prepare(
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ?"
+    ).all(user.id).map((r: any) => r.class_id) as number[];
+    if (classIds.length === 0) return [];
+    const rows = db.prepare(
+      `SELECT DISTINCT e.id FROM exams e
+       JOIN classes c ON c.id = e.class_id
+       WHERE e.class_id IN (${classIds.map(() => "?").join(",")})`
+    ).all(...classIds) as Array<{ id: number }>;
+    return rows.map((r) => r.id);
+  }
+
+  if (user.teacher_role === "subject_teacher") {
+    // 学科老师：只看本科目+所教班级
+    if (!user.subject) return [];
+    const classIds = db.prepare(
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)"
+    ).all(user.id, user.subject).map((r: any) => r.class_id) as number[];
+    if (classIds.length === 0) return [];
+    const rows = db.prepare(
+      `SELECT DISTINCT e.id FROM exams e
+       WHERE e.subject = ? AND e.class_id IN (${classIds.map(() => "?").join(",")})`
+    ).all(user.subject, ...classIds) as Array<{ id: number }>;
+    return rows.map((r) => r.id);
+  }
+
+  return null;
+}
+
+/**
+ * 中间件：验证当前用户有权访问指定的 examId。
+ * 在 analysis / exams/:examId 路由之前使用。
+ *
+ * 如果 req.user 不存在（未登录/未强制鉴权），放行通过。
+ */
+function requireExamAccess(req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (!req.user) {
+    next(); // 未登录时放行（makeGate 已处理 auth 强制逻辑）
+    return;
+  }
+  const examId = Number(req.params.examId);
+  if (!examId) {
+    res.status(400).json({ message: "缺少 examId" });
+    return;
+  }
+  const visibleIds = getVisibleExamIds(req.user);
+  if (visibleIds === null) {
+    next(); // 全部可见
+    return;
+  }
+  if (visibleIds.includes(examId)) {
+    next();
+    return;
+  }
+  res.status(403).json({ message: "权限不足：无权访问此考试" });
+}
+
 function scannerEnabled(): boolean {
   if (process.env.PROJECTX_ENABLE_SCANNER === "1" || process.env.PROJECTX_ENABLE_SCANNER === "true") {
     return true;
@@ -1051,19 +1126,35 @@ export async function createApp(): Promise<express.Express> {
       const examRepo = new ExamRepository();
       const { grade_id, subject, academic_year, selection } = req.query as Record<string, string>;
 
+      // 数据范围过滤
+      const visibleIds = getVisibleExamIds(req.user);
+      const scopeFilter = visibleIds !== null ? { examIds: visibleIds } : {};
+
       if (selection === "1") {
+        // 如果可见列表为空且非 null，直接返回空数组
+        if (visibleIds !== null && visibleIds.length === 0) {
+          res.json([]);
+          return;
+        }
         const exams = examRepo.listExamsForSelection({
           grade_id: grade_id ? Number(grade_id) : undefined,
           subject: subject || undefined,
-          academic_year: academic_year || undefined
+          academic_year: academic_year || undefined,
+          ...scopeFilter
         });
         res.json(exams);
         return;
       }
 
+      // 如果可见列表为空且非 null，直接返回空数组
+      if (visibleIds !== null && visibleIds.length === 0) {
+        res.json([]);
+        return;
+      }
       const exams = examRepo.listExams({
         grade_id: grade_id ? Number(grade_id) : undefined,
-        subject: subject || undefined
+        subject: subject || undefined,
+        ...scopeFilter
       });
       res.json(exams);
     } catch (error) {
@@ -1106,7 +1197,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/exams/:examId", async (req, res, next) => {
+  app.get("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
       const exam = examRepo.findExamById(Number(req.params.examId));
@@ -1121,7 +1212,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.delete("/api/exams/:examId", async (req, res, next) => {
+  app.delete("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
       const exam = examRepo.findExamById(Number(req.params.examId));
@@ -1159,7 +1250,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.patch("/api/exams/:examId", async (req, res, next) => {
+  app.patch("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
       const exam = examRepo.findExamById(Number(req.params.examId));
@@ -1198,7 +1289,8 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/analysis/exams/:examId/classes", async (req, res, next) => {
+  // 以下分析端点需要 examId 访问权限验证
+  app.get("/api/analysis/exams/:examId/classes", requireExamAccess, async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
       const classes = analysisRepo.getExamClasses(Number(req.params.examId));
@@ -1208,7 +1300,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/analysis/exams/:examId/overview", async (req, res, next) => {
+  app.get("/api/analysis/exams/:examId/overview", requireExamAccess, async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -1219,7 +1311,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/analysis/exams/:examId/students", async (req, res, next) => {
+  app.get("/api/analysis/exams/:examId/students", requireExamAccess, async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -1231,7 +1323,7 @@ export async function createApp(): Promise<express.Express> {
   });
 
   // v1.4.0: 成绩表格数据（含排名变化、偏差值）
-  app.get("/api/analysis/exams/:examId/score-table", async (req, res, next) => {
+  app.get("/api/analysis/exams/:examId/score-table", requireExamAccess, async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -1248,7 +1340,7 @@ export async function createApp(): Promise<express.Express> {
   });
 
   // v1.4.0: 上次考试对比
-  app.get("/api/analysis/exams/:examId/previous", async (_req, res, next) => {
+  app.get("/api/analysis/exams/:examId/previous", requireExamAccess, async (_req, res, next) => {
     try {
       res.json({ message: "TODO: implement previous exam comparison" });
     } catch (error) {
@@ -1296,7 +1388,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/analysis/exams/:examId/questions", async (req, res, next) => {
+  app.get("/api/analysis/exams/:examId/questions", requireExamAccess, async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -1308,7 +1400,7 @@ export async function createApp(): Promise<express.Express> {
   });
 
   // v1.4.0: 赋分引擎 API
-  app.get("/api/exams/:examId/assigned-formula", async (req, res, next) => {
+  app.get("/api/exams/:examId/assigned-formula", requireExamAccess, async (req, res, next) => {
     try {
       const service = new AssignedScoreService();
       const formula = service.getFormula(Number(req.params.examId));
@@ -1324,7 +1416,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.put("/api/exams/:examId/assigned-formula", async (req, res, next) => {
+  app.put("/api/exams/:examId/assigned-formula", requireExamAccess, async (req, res, next) => {
     try {
       const { formula, recalculate } = req.body as { formula: AssignedFormula | null; recalculate?: boolean };
       const examId = Number(req.params.examId);
@@ -1347,7 +1439,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/exams/:examId/recalculate-assigned", async (req, res, next) => {
+  app.post("/api/exams/:examId/recalculate-assigned", requireExamAccess, async (req, res, next) => {
     try {
       const service = new AssignedScoreService();
       const result = service.recalculateAll(Number(req.params.examId));
@@ -1451,7 +1543,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/analysis/exams/:examId/ai-analysis", async (req, res, next) => {
+  app.post("/api/analysis/exams/:examId/ai-analysis", requireExamAccess, async (req, res, next) => {
     try {
       const examId = Number(req.params.examId);
       if (!Number.isFinite(examId) || examId <= 0) {
@@ -1523,7 +1615,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/analysis/exams/:examId/export-csv", async (req, res, next) => {
+  app.get("/api/analysis/exams/:examId/export-csv", requireExamAccess, async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
