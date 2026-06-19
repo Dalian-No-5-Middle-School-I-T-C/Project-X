@@ -5,23 +5,20 @@
 ### AI 服务商配置优化
 - 账号设置中 AI 服务商「如何填写？」改为独立卡片弹窗（createPortal），不再叠在设置上
 - 移除旧 AI API Key 输入框（已被 AI 服务商完全替代）
-- 账号设置中 AI 服务商「如何填写？」改为可展开卡片（点开显示示例表格）
 - Base URL 保存时自动补齐 `/v1` 路径
 - 哈基米合并为 Gemini，下拉选项简化为 GPT/DeepSeek/Gemini
 - 修复保存 Gemini 时报错 `NOT NULL constraint failed: ai_providers.user_id`
 - AI 分析接口错误信息中文化：区分连接失败/超时/404
 
-### 成绩修改功能
+### 成绩修改 + 逐题明细
 - 数据库新增 `answer_overrides` 表 + 成绩表新增手动修改追踪字段
-- API: `GET/PUT /api/exams/:examId/student/:studentId/scores`、`GET/PUT /api/exams/:examId/answers`、`GET /api/exams/:examId/students/search`
-- 前端: `ScoreFixPage`（双模式→搜索→逐题改分/答案编辑）
+- API: 学生搜索、逐题改分、修改答案批量重算、班级均分统计
+- `ScoreFixPage`: 双模式→搜索→逐题改分/答案编辑，内嵌答题卡（点击放大）
+- `StudentScoreDetail`: 点击成绩表行→子页面，逐题得分+班级均分率+答题卡
 - 成绩 Tab 栏右侧「分数有问题？」按钮（仅教师/管理员）
-- 改分界面左侧直接内嵌答题卡图片，点击放大（ZoomIn/ZoomOut + 缩略图导航）
-- 修改答案后自动调用评分引擎重算全部分数+排名
 
 ### 弹窗遮挡修复
-- `ScoreFixPage` 图片放大、`ScanPreviewModal`、`ImportCardModal` 全部改为 `createPortal` 挂载到 body
-- 修复弹窗被 topbar/statusbar 遮挡问题
+- `ScoreFixPage` 图片放大、`ScanPreviewModal`、`ImportCardModal`、`StudentScoreDetail` 全部 `createPortal`
 
 - API: 学生搜索、逐题改分、修改答案并批量重算分数
 - 前端: `ScoreFixPage`（双模式卡片选择→搜索学生→修改分数/答案）

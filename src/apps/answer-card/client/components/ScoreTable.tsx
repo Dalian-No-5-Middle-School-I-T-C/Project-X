@@ -8,6 +8,7 @@ interface Props {
   examId: number;
   classId?: string;
   displayMode?: ScoreDisplayMode;
+  onRowClick?: (studentId: number, studentName: string, studentNumber: string) => void;
 }
 
 type SortKey = "totalScore" | "gradeRank" | "classRank" | "displayValue" | "rankChange";
@@ -20,7 +21,7 @@ function modeLabel(m: ScoreDisplayMode): string {
   return m === "deviation" ? "偏差值" : m === "zscore" ? "Z值" : "百分位";
 }
 
-export function ScoreTable({ examId, classId, displayMode: propDisplayMode }: Props) {
+export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRowClick }: Props) {
   const [rows, setRows] = useState<ScoreTableRow[]>([]);
   const [examName, setExamName] = useState("");
   const [subject, setSubject] = useState<string | null>(null);
@@ -201,8 +202,10 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode }: Pr
           </thead>
           <tbody>
             {sorted.map((row, i) => (
-              <tr key={row.studentId} style={{ borderTop: "1px solid var(--line-light)", background: i % 2 === 0 ? "#fff" : "var(--bg-soft)" }}>
-                <td style={tdStyle}>{i + 1}</td>
+              <tr key={row.studentId}
+                style={{ borderTop: "1px solid var(--line-light)", background: i % 2 === 0 ? "#fff" : "var(--bg-soft)", cursor: onRowClick ? "pointer" : "default" }}
+                onClick={() => onRowClick?.(row.studentId, row.studentName, row.studentNumber)}
+              >  <td style={tdStyle}>{i + 1}</td>
                 <td style={tdStyle}>
                   <span style={{ fontWeight: 500 }}>{row.studentName}</span>
                   <span style={{ fontSize: 11, color: "var(--muted)", display: "block" }}>{row.studentNumber}</span>
