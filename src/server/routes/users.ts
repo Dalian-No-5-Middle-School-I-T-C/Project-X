@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import { UserRepository, type BatchStudentInput } from "../repositories/UserRepository";
 import { authService } from "../services/AuthService";
 import { authMiddleware, requirePermission } from "../middleware/auth";
-import { PERMISSIONS, ROLE_IDS, ROLE_NAMES } from "../auth/permissions";
+import { PERMISSIONS, ROLE_IDS, ROLE_NAMES, TEACHER_ROLE_LABELS } from "../auth/permissions";
 import { validateInitialPassword } from "../auth/passwordPolicy";
 
 /**
@@ -69,7 +69,7 @@ router.get("/:id", (req: Request, res: Response) => {
 /** POST /api/users — 创建用户（教师/学生/管理员） */
 router.post("/", async (req: Request, res: Response) => {
   try {
-    const { username, password, name, role, student_number, email, phone } = req.body ?? {};
+    const { username, password, name, role, student_number, email, phone, teacher_role } = req.body ?? {};
     if (!username || !name) {
       res.status(400).json({ message: "缺少用户名或姓名" });
       return;
@@ -92,6 +92,12 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
+    // 验证教师角色（仅教师有效）
+    if (roleId === ROLE_IDS.TEACHER && teacher_role && !["subject_teacher", "head_teacher", "grade_leader"].includes(teacher_role)) {
+      res.status(400).json({ message: "无效的教师角色" });
+      return;
+    }
+
     // 密码默认：学生用学号，教师/管理员需显式提供
     const finalPassword = password || (roleId === ROLE_IDS.STUDENT ? String(student_number) : "");
     const passwordError = validateInitialPassword({
@@ -110,6 +116,7 @@ router.post("/", async (req: Request, res: Response) => {
       name: String(name),
       role_id: roleId,
       student_number: student_number ? String(student_number) : undefined,
+      teacher_role: roleId === ROLE_IDS.TEACHER ? (teacher_role || undefined) : undefined,
       email: email ? String(email) : undefined,
       phone: phone ? String(phone) : undefined
     });
@@ -119,7 +126,7 @@ router.post("/", async (req: Request, res: Response) => {
   }
 });
 
-/** PUT /api/users/:id — 更新用户（姓名/邮箱/电话/角色/启用状态/学号） */
+/** PUT /api/users/:id — 更新用户（姓名/邮箱/电话/角色/启用状态/学号/教师角色） */
 router.put("/:id", async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
@@ -129,7 +136,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       return;
     }
 
-    const { name, email, phone, role, is_active, student_number } = req.body ?? {};
+    const { name, email, phone, role, is_active, student_number, teacher_role } = req.body ?? {};
     const params: Parameters<UserRepository["updateUser"]>[1] = {};
     if (name !== undefined) params.name = String(name);
     if (email !== undefined) params.email = String(email);
@@ -151,6 +158,13 @@ router.put("/:id", async (req: Request, res: Response) => {
         }
       }
       params.role_id = roleId;
+    }
+    if (teacher_role !== undefined) {
+      if (teacher_role && !["subject_teacher", "head_teacher", "grade_leader"].includes(teacher_role)) {
+        res.status(400).json({ message: "无效的教师角色" });
+        return;
+      }
+      params.teacher_role = teacher_role || null;
     }
 
     await userRepo.updateUser(id, params);

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Download, Plus, RefreshCw, Search, Trash2, UserCheck, UserX } from "lucide-react";
 import { fetchJson } from "../auth/api";
-import { ROLE_LABELS, roleCount, type UserListItem, type UsersListResponse } from "../auth/types";
+import { ROLE_LABELS, TEACHER_ROLE_LABELS, roleCount, type UserListItem, type UsersListResponse } from "../auth/types";
 
 const ROLE_OPTIONS = [
   { value: "", label: "全部角色" },
@@ -26,6 +26,7 @@ export function UserManagement() {
     password: "",
     name: "",
     role: "teacher",
+    teacher_role: "",
     student_number: "",
     email: "",
     phone: ""
@@ -72,13 +73,14 @@ export function UserManagement() {
           password: form.password || undefined,
           name: form.name.trim(),
           role: form.role,
+          teacher_role: form.role === "teacher" ? (form.teacher_role || undefined) : undefined,
           student_number: form.student_number.trim() || undefined,
           email: form.email.trim() || undefined,
           phone: form.phone.trim() || undefined
         })
       });
       setShowCreate(false);
-      setForm({ username: "", password: "", name: "", role: "teacher", student_number: "", email: "", phone: "" });
+      setForm({ username: "", password: "", name: "", role: "teacher", teacher_role: "", student_number: "", email: "", phone: "" });
       await loadUsers();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建失败");
@@ -206,11 +208,19 @@ export function UserManagement() {
         <div className="account-form-grid">
           <input placeholder="用户名" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
           <input placeholder="姓名" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-          <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
+          <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value, teacher_role: "" })}>
             <option value="teacher">教师</option>
             <option value="student">学生</option>
             <option value="admin">管理员</option>
           </select>
+          {form.role === "teacher" && (
+            <select value={form.teacher_role} onChange={(e) => setForm({ ...form, teacher_role: e.target.value })}>
+              <option value="">普通教师（全权限）</option>
+              <option value="subject_teacher">学科老师</option>
+              <option value="head_teacher">班主任</option>
+              <option value="grade_leader">学年主任</option>
+            </select>
+          )}
           <input placeholder="学号（学生必填）" value={form.student_number} onChange={(e) => setForm({ ...form, student_number: e.target.value })} />
           <input placeholder="初始密码（学生默认学号）" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
           <input placeholder="邮箱（可选）" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
@@ -244,6 +254,7 @@ export function UserManagement() {
               <th>用户名</th>
               <th>姓名</th>
               <th>角色</th>
+              <th>教师细分</th>
               <th>学号</th>
               <th>状态</th>
               <th>最后登录</th>
@@ -256,6 +267,7 @@ export function UserManagement() {
                 <td>{user.username}</td>
                 <td>{user.name}</td>
                 <td>{ROLE_LABELS[user.role_name ?? ""] ?? user.role_display_name ?? user.role_id}</td>
+                <td>{user.role_name === "teacher" ? (TEACHER_ROLE_LABELS[user.teacher_role ?? ""] ?? "普通") : "—"}</td>
                 <td>{user.student_number ?? "—"}</td>
                 <td>
                   <span className={`status-badge ${user.is_active ? "active" : "inactive"}`}>
@@ -280,7 +292,7 @@ export function UserManagement() {
               </tr>
             ))}
             {!busy && data?.users.length === 0 && (
-              <tr><td colSpan={7} className="empty-text" style={{ textAlign: "center", padding: 40 }}>暂无用户</td></tr>
+              <tr><td colSpan={8} className="empty-text" style={{ textAlign: "center", padding: 40 }}>暂无用户</td></tr>
             )}
           </tbody>
         </table>
