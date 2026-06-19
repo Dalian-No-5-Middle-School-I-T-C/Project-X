@@ -28,6 +28,7 @@ import { AccountMenu } from "./components/AccountMenu";
 import { AccountManagement } from "./components/AccountManagement";
 import { StudentScores } from "./components/StudentScores";
 import { SponsorPage } from "./components/SponsorPage";
+import { UserGuidePage } from "./components/UserGuidePage";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import { ExamSelectPage } from "./components/ExamSelectPage";
 import { ScoreDetailPage } from "./components/ScoreDetailPage";
@@ -1008,6 +1009,8 @@ function App() {
                     ? "账号管理"
                   : mode === "sponsor"
                     ? "支持项目"
+                    : mode === "guide"
+                      ? "使用说明"
                     : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
             </h1>
             <p>
@@ -1019,6 +1022,8 @@ function App() {
                   ? "管理用户、班级与花名册"
                   : mode === "sponsor"
                     ? "感谢您的信任与支持"
+                    : mode === "guide"
+                      ? "Project-X 操作指南与常见问题"
                     : card
                     ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
                     : canDesign
@@ -1078,6 +1083,10 @@ function App() {
               onOpenSponsor={() => {
                 previousModeRef.current = mode;
                 setMode("sponsor");
+              }}
+              onOpenGuide={() => {
+                previousModeRef.current = mode;
+                setMode("guide");
               }}
             />
           </div>
@@ -1511,6 +1520,11 @@ function App() {
         <div className={`main-grid sponsor-grid ${mode === "sponsor" ? "" : "hidden-panel"}`}>
           <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
             <SponsorPage onBack={() => setMode(previousModeRef.current)} />
+          </section>
+        </div>
+        <div className={`main-grid guide-grid ${mode === "guide" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+            <UserGuidePage onBack={() => setMode(previousModeRef.current)} />
           </section>
         </div>
         <footer className="statusbar">{status}</footer>

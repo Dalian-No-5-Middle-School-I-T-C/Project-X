@@ -3998,6 +3998,153 @@ input[type="checkbox"]:disabled {
   line-height: 1.6;
 }
 
+/* ── User Guide ─────────────────────────────────────── */
+.user-guide-page {
+  padding: 0 24px 32px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.user-guide-modal-overlay .user-guide-modal-card {
+  max-width: 860px;
+  width: 94vw;
+  max-height: 90vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.user-guide-modal-card .user-guide-page {
+  padding: 0 20px 24px;
+  flex: 1;
+  min-height: 0;
+}
+
+.user-guide-modal-card .account-panel-header {
+  padding: 0 0 12px;
+}
+
+.user-guide-content {
+  max-width: 760px;
+  margin: 0 auto;
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--text-secondary);
+}
+
+.user-guide-content h1,
+.user-guide-content h2,
+.user-guide-content h3 {
+  color: var(--text);
+  line-height: 1.35;
+  margin: 1.4em 0 0.6em;
+}
+
+.user-guide-content h1 {
+  font-size: 1.5rem;
+  margin-top: 0;
+}
+
+.user-guide-content h2 {
+  font-size: 1.15rem;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--line);
+}
+
+.user-guide-content h3 {
+  font-size: 1rem;
+}
+
+.user-guide-content p,
+.user-guide-content ul,
+.user-guide-content ol,
+.user-guide-content blockquote,
+.user-guide-content pre,
+.user-guide-content table {
+  margin: 0.75em 0;
+}
+
+.user-guide-content ul,
+.user-guide-content ol {
+  padding-left: 1.4em;
+}
+
+.user-guide-content li + li {
+  margin-top: 0.25em;
+}
+
+.user-guide-content blockquote {
+  padding: 0.6em 1em;
+  border-left: 3px solid var(--brand);
+  background: var(--surface-soft);
+  border-radius: 0 8px 8px 0;
+  color: var(--muted);
+}
+
+.user-guide-content code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  background: var(--surface-soft);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+.user-guide-content pre {
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-x: auto;
+}
+
+.user-guide-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.user-guide-content table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.user-guide-content th,
+.user-guide-content td {
+  border: 1px solid var(--line);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.user-guide-content th {
+  background: var(--surface-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.user-guide-content hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 1.5em 0;
+}
+
+.user-guide-content a {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+.user-guide-content a:hover {
+  text-decoration: underline;
+}
+
+.user-guide-content em {
+  color: var(--muted);
+}
+
+.login-guide-button {
+  margin-top: 4px;
+}
+
 /* ── Exam list table (v1.4.0) ────────────────────────── */
 
 .exam-filter-select {

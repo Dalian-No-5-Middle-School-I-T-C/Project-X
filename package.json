@@ -53,6 +53,8 @@
     "express": "^5.1.0",
     "multer": "^2.0.2",
     "pdfkit": "^0.17.2",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
