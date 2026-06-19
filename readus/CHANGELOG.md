@@ -2,6 +2,28 @@
 
 ## v1.4.0 (2026-06-18)
 
+### 缺陷修复 (2026-06-19)
+- 导入答题卡创建考试时科目存为拼音（如 wuli）→ 改为优先用 `subjectLabel`（中文名）
+- 新建考试默认状态从 `draft` 改为 `active`，避免阅卷后状态异常
+- 阅卷流程 `prepareLayoutForCard` 增加 `normalizeCard` 调用，旧卡阅卷自动修复 null 数值
+
+### 答题卡预览改造 (2026-06-19)
+- 答题卡预览从新窗口打开改为页内叠加弹窗：半透明背景蒙层(z-index:99999)，支持多页纵向滚动
+- 新建公共组件 `ScanPreviewModal.tsx`：PDF 风格预览，缩略图导航，PgUp/PgDn/ESC 快捷键
+- ScannerPanel 和设计模式阅卷结果均迁移到新组件，删除旧 `StudentDetailModal` 内联代码
+- 分析-成绩表格新增「答题卡」列：每行显示蓝色「预览」链接，点击弹出答题卡图片
+- 按学生过滤：API 通过 scan_records 插入顺序与上传文件时间排序对齐，只返回该学生的答题卡页
+- 新增 API: `GET /api/scanner/exam/:examId/student/:studentId/scans` + `GET /api/scanner/grading-image/:cardId/:fileName`
+- 修复: 原查 scanner.db（空库），现从 recognition/uploads/:cardId/ 读取实际文件
+- 修复: grading 持久化 file_path 改为存 multer 实际路径（新阅卷生效）
+- 单面答题卡不显示"正面/反面"标识
+
+### 导入答题卡模板增强 (2026-06-19)
+- 导入 `.projectx-card.json` 后弹出 `ImportCardModal` 确认卡片
+- 可修改：科目、考试名称、考试日期（内联日历选择器）
+- 考试关联三选一：不创建 / 创建考试（留空默认同答题卡名）/ 关联已有考试
+- 后端 import 端点支持 override 字段 + 自动创建/关联考试
+
 ### 成绩查看大改造
 - 新增「考试选择页」：按学年、年级、学科三级筛选，卡片网格展示考试，含人数/均分/状态预览
 - 考试管理从分析子Tab独立为顶层「考试管理」Tab，位于设计右侧

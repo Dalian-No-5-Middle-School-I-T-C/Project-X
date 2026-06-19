@@ -316,6 +316,14 @@ export class CardRepository {
   }
 
   /**
+   * 根据标题查找答题卡（用于重名检查）
+   */
+  findByTitle(title: string): { id: string; title: string } | null {
+    const row = this.db.prepare("SELECT id, title FROM answer_cards WHERE title = ?").get(title) as { id: string; title: string } | undefined;
+    return row ?? null;
+  }
+
+  /**
    * 删除答题卡
    */
   deleteCard(cardId: string): boolean {

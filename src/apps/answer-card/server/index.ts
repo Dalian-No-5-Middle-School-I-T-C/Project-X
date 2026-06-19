@@ -89,10 +89,23 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
     subjectLabel: (card as any).subjectLabel ?? card.subjectLabel ?? undefined,
     examDate: isValidExamDate(examDate) ? examDate : undefined,
     bodyBlocks: (card.bodyBlocks ?? []).map((block) => {
-      if (block.type !== "objective") return block;
-      const answerKey = normalizeObjectiveAnswerKey(block);
-      const normalizedBlock = { ...block, answerKey };
-      return { ...normalizedBlock, questions: normalizeObjectiveQuestions(normalizedBlock) };
+      if (block.type === "objective") {
+        const answerKey = normalizeObjectiveAnswerKey(block);
+        const normalizedBlock = { ...block, answerKey };
+        return { ...normalizedBlock, questions: normalizeObjectiveQuestions(normalizedBlock) };
+      }
+      // Sanitize subjective block: ensure all question scores are numbers
+      if (block.type === "subjective" && Array.isArray((block as any).questions)) {
+        return {
+          ...block,
+          questions: (block as any).questions.map((q: any) => ({
+            ...q,
+            score: typeof q.score === "number" ? q.score : 0,
+            minHeightMm: typeof q.minHeightMm === "number" ? q.minHeightMm : 68,
+          }))
+        };
+      }
+      return block;
     }),
     paper: { size: "A4", orientation: "portrait" },
     layoutVersion: 1,
@@ -134,10 +147,11 @@ async function saveCardWithLayout(cardRepo: CardRepository, card: AnswerCard, cr
 }
 
 async function prepareLayoutForCard(cardRepo: CardRepository, card: AnswerCard): Promise<string> {
-  const layout = buildLayout(card);
-  cardRepo.updateLayoutData(card.id, layout);
-  await writeLayoutDocument(card.id, layout);
-  return layoutPath(card.id);
+  const normalized = normalizeCard(card, card.id);
+  const layout = buildLayout(normalized);
+  cardRepo.updateLayoutData(normalized.id, layout);
+  await writeLayoutDocument(normalized.id, layout);
+  return layoutPath(normalized.id);
 }
 
 function requestFlag(value: unknown): boolean {
@@ -278,10 +292,10 @@ async function persistGradingResults(
         const stu = findStudent.get(row.studentId) as { id: number } | undefined;
         if (!stu) continue;
 
-        // Add scan record
+        // Add scan record (actualPath = multer file path for reliable preview)
         examRepo.addScanRecord({
           batch_id: batchId,
-          file_path: row.fileName,
+          file_path: (row as any).actualPath || row.fileName,
           file_name: row.fileName,
           student_number: row.studentId,
           student_id: stu.id
@@ -481,6 +495,10 @@ export async function createApp(): Promise<express.Express> {
       }
       if (!isValidExamDate(examDate)) {
         res.status(400).json({ error: `考试时间为必填项，需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
+        return;
+      }
+      if (cardRepo.findByTitle(title)) {
+        res.status(409).json({ error: `已存在同名答题卡「${title}」，请修改名称后重试` });
         return;
       }
       let id = generateCardId(subject);
@@ -690,7 +708,8 @@ export async function createApp(): Promise<express.Express> {
           })) as ObjectiveRecognitionResult;
           return {
             ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
-            previewUrl: gradingPreviewUrl(cardId, file.path)
+            previewUrl: gradingPreviewUrl(cardId, file.path),
+            actualPath: file.path
           };
         } catch (error) {
           const recognition: ObjectiveRecognitionResult = {
@@ -702,7 +721,8 @@ export async function createApp(): Promise<express.Express> {
           };
           return {
             ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
-            previewUrl: gradingPreviewUrl(cardId, file.path)
+            previewUrl: gradingPreviewUrl(cardId, file.path),
+            actualPath: file.path
           };
         } finally {
           finished++;
@@ -781,7 +801,8 @@ export async function createApp(): Promise<express.Express> {
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
           return {
             ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
-            previewUrl: gradingPreviewUrl(cardId, file.path)
+            previewUrl: gradingPreviewUrl(cardId, file.path),
+            actualPath: file.path
           };
         } catch (error) {
           const recognition: CombinedRecognitionResult = {
@@ -794,7 +815,8 @@ export async function createApp(): Promise<express.Express> {
           };
           return {
             ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
-            previewUrl: gradingPreviewUrl(cardId, file.path)
+            previewUrl: gradingPreviewUrl(cardId, file.path),
+            actualPath: file.path
           };
         } finally {
           finished++;
@@ -1001,7 +1023,12 @@ export async function createApp(): Promise<express.Express> {
   // POST: 导入答题卡
   app.post("/api/cards/import", async (req, res, next) => {
     try {
-      const imported = req.body as { format?: string; version?: number; card?: AnswerCard; layout?: unknown; assets?: Record<string, string> };
+      const imported = req.body as {
+        format?: string; version?: number;
+        card?: AnswerCard; layout?: unknown; assets?: Record<string, string>;
+        overrideTitle?: string; overrideSubject?: string; overrideSubjectLabel?: string; overrideExamDate?: string;
+        examAction?: "none" | "create" | "link"; examName?: string; linkExamId?: number;
+      };
       if (!imported || imported.format !== "projectx-card" || imported.version !== 1) {
         res.status(400).json({ message: "不支持的文件格式，请使用 .projectx-card.json 导出文件" });
         return;
@@ -1010,25 +1037,86 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "文件中缺少答题卡数据" });
         return;
       }
-      const importedExamDate = fieldValue(imported.card.examDate).trim();
+      // Apply overrides from import modal (deep clone to avoid reference issues)
+      const card = JSON.parse(JSON.stringify(imported.card)) as AnswerCard;
+      if (imported.overrideTitle) card.title = imported.overrideTitle;
+      if (imported.overrideSubject != null) card.subject = imported.overrideSubject;
+      if (imported.overrideSubjectLabel != null) card.subjectLabel = imported.overrideSubjectLabel;
+      if (imported.overrideExamDate) card.examDate = imported.overrideExamDate;
+
+      // Validate exam date
+      const importedExamDate = fieldValue(card.examDate).trim();
       if (importedExamDate && !isValidExamDate(importedExamDate)) {
         res.status(400).json({ message: `导入文件中的考试时间需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
         return;
       }
-      const subject = imported.card.subject ?? "";
+
+      // Sanitize null numeric values in blocks to avoid C++ JSON parse errors
+      if (card.bodyBlocks) {
+        for (const block of card.bodyBlocks) {
+          if (block.type === "subjective" && Array.isArray((block as any).questions)) {
+            for (const q of (block as any).questions) {
+              if (q.score == null) q.score = 0;
+              if (q.minHeightMm == null) q.minHeightMm = 68;
+              if (q.maxScore == null) q.maxScore = 0;
+            }
+          }
+          if (block.type === "objective") {
+            if ((block as any).scorePerQuestion == null) (block as any).scorePerQuestion = 0;
+            if (Array.isArray((block as any).questions)) {
+              for (const q of (block as any).questions) {
+                if (q.score == null) q.score = 0;
+              }
+            }
+          }
+        }
+      }
+
+      // Regenerate block IDs to avoid UNIQUE constraint conflicts
+      const { randomUUID } = await import("node:crypto");
+      const idMap = new Map<string, string>();
+      if (card.bodyBlocks) {
+        for (const block of card.bodyBlocks) {
+          const oldId = block.id;
+          const newBlockId = randomUUID();
+          idMap.set(oldId, newBlockId);
+          block.id = newBlockId;
+          // Regenerate sub-question IDs
+          if (block.type === "subjective" && Array.isArray((block as any).questions)) {
+            for (const q of (block as any).questions) {
+              const oldQid = q.id;
+              const newQid = randomUUID();
+              idMap.set(oldQid, newQid);
+              q.id = newQid;
+            }
+          }
+        }
+      }
+
+      // Check for duplicate title
+      const existingCard = cardRepo.findByTitle(card.title);
+      if (existingCard && existingCard.id !== card.id) {
+        res.status(409).json({ message: `已存在同名答题卡「${card.title}」（ID: ${existingCard.id}），请修改名称后重试` });
+        return;
+      }
+
+      const subject = card.subject ?? "";
       let newId = generateCardId(subject || "imported");
       let retry = 0;
+      const idConflict = cardRepo.findById(imported.card.id ?? "");
+      const conflictMsg = idConflict ? `原卡片ID ${imported.card.id} 已存在，已分配新ID ${newId}` : "";
       while (cardRepo.findById(newId) && retry < 100) {
         newId = generateCardId((subject || "imported") + "_" + String(retry++));
       }
-      const card = { ...imported.card, id: newId, updatedAt: new Date().toISOString() };
+      card.id = newId;
+      card.updatedAt = new Date().toISOString();
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
+
       // 导入 assets
       if (imported.assets && Object.keys(imported.assets).length > 0) {
         const assetsPath = cardAssetsDir(newId);
         await mkdir(assetsPath, { recursive: true });
         for (const [filename, base64] of Object.entries(imported.assets)) {
-          // 安全检查：仅允许安全的文件名
           const safeFilename = path.basename(filename);
           if (safeFilename && /^[a-zA-Z0-9_\-\.]+$/.test(safeFilename)) {
             try {
@@ -1038,7 +1126,38 @@ export async function createApp(): Promise<express.Express> {
           }
         }
       }
-      res.status(201).json(toCardSummary({ id: saved.id, title: saved.title, updatedAt: saved.updatedAt }));
+
+      // Handle exam action
+      let createdExamId: number | undefined;
+      let duplicateExamName: string | undefined;
+      if (imported.examAction === "create") {
+        const examRepo = new ExamRepository();
+        const examName = imported.examName || saved.title;
+        const existingExam = examRepo.findExamByName(examName);
+        if (existingExam) {
+          duplicateExamName = examName;
+        } else {
+          const exam = examRepo.createExam({
+            name: examName,
+            card_id: newId,
+            subject: saved.subjectLabel || saved.subject || undefined,
+            created_by: req.user?.id ?? undefined
+          });
+          createdExamId = exam.id;
+        }
+      } else if (imported.examAction === "link" && imported.linkExamId) {
+        const { getDatabase } = await import("../../../server/db");
+        const db = getDatabase();
+        db.prepare("UPDATE exams SET card_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+          .run(newId, imported.linkExamId);
+      }
+
+      res.status(201).json({
+        ...toCardSummary({ id: saved.id, title: saved.title, updatedAt: saved.updatedAt }),
+        createdExamId,
+        duplicateExamName: duplicateExamName || undefined,
+        idConflictMsg: conflictMsg || undefined
+      });
     } catch (error) {
       next(error);
     }
@@ -1092,6 +1211,11 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       const examRepo = new ExamRepository();
+      const existing = examRepo.findExamByName(String(name));
+      if (existing) {
+        res.status(409).json({ message: `已存在同名考试「${name}」（ID: ${existing.id}），请修改名称后重试` });
+        return;
+      }
       const exam = examRepo.createExam({
         name: String(name),
         card_id: String(cardId),
