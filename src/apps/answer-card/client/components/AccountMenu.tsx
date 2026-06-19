@@ -22,7 +22,6 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
   const [showSettings, setShowSettings] = useState(false);
   const [displayMode, setDisplayMode] = useState("zscore");
   const [reviewThreshold, setReviewThreshold] = useState(0.12);
-  const [aiApiKey, setAiApiKey] = useState("");
   const [settingsMsg, setSettingsMsg] = useState("");
 
   // Multi-provider AI management
@@ -35,11 +34,10 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
 
   useEffect(() => {
     if (open && showSettings) {
-      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; aiApiKey?: string }>("/api/users/me/settings")
+      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number }>("/api/users/me/settings")
         .then((s) => {
           setDisplayMode(s.scoreDisplayMode || "zscore");
           setReviewThreshold(s.reviewConfidenceThreshold ?? 0.12);
-          setAiApiKey(s.aiApiKey ?? "");
         })
         .catch(() => {});
       loadProviders();
@@ -55,7 +53,6 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
         body: JSON.stringify({
           scoreDisplayMode: displayMode,
           reviewConfidenceThreshold: reviewThreshold,
-          aiApiKey
         })
       });
       setSettingsMsg("已保存");
@@ -350,11 +347,6 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
                 <input type="range" min="0" max="1" step="0.01" value={reviewThreshold} onChange={(e) => setReviewThreshold(Number(e.target.value))} style={{ width: "100%", marginTop: 4 }} />
                 <span style={{ fontSize: 11, color: "var(--muted)" }}>低于此值的题目标记"需要复核"</span>
               </div>
-              <div className="account-settings-group">
-                <label className="account-settings-label">AI API Key (LLM服务)</label>
-                <input type="text" value={aiApiKey} onChange={(e) => setAiApiKey(e.target.value)} placeholder="sk-..." style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 13, fontFamily: "monospace" }} />
-                <span style={{ fontSize: 11, color: "var(--muted)" }}>用于AI分析功能，留空则使用默认配置</span>
-              </div>
 
               {/* ── AI 服务商管理 ── */}
               <div className="account-settings-group">
@@ -376,42 +368,6 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
                     </button>
                   </div>
                 </div>
-
-                {/* Help card */}
-                {showHelpCard && (
-                  <div style={{
-                    padding: "14px 16px", borderRadius: 8, marginBottom: 8,
-                    background: "var(--surface-tint)", border: "1px solid var(--brand-glow)",
-                    fontSize: 13, lineHeight: 1.7, color: "var(--text-secondary)"
-                  }}>
-                    <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, color: "var(--text-primary)" }}>AI 服务商配置指南</div>
-                    <div style={{ marginBottom: 8 }}>
-                      <strong>Base URL</strong> 填 API 端点地址，<em>不是</em>网站首页。末尾无需 /v1 自动补齐。
-                    </div>
-                    <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 8 }}>
-                      <thead>
-                        <tr style={{ borderBottom: "1px solid var(--line)" }}>
-                          <th style={{ textAlign: "left", padding: "4px 6px", fontSize: 12 }}>服务商</th>
-                          <th style={{ textAlign: "left", padding: "4px 6px", fontSize: 12 }}>Base URL 示例</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr><td style={{ padding: "4px 6px", fontWeight: 500 }}>GPT</td><td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 11 }}>https://api.openai.com</td></tr>
-                        <tr><td style={{ padding: "4px 6px", fontWeight: 500 }}>DeepSeek</td><td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 11 }}>https://api.deepseek.com</td></tr>
-                        <tr><td style={{ padding: "4px 6px", fontWeight: 500 }}>Gemini</td><td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 11 }}>https://generativelanguage.googleapis.com</td></tr>
-                        <tr><td style={{ padding: "4px 6px", fontWeight: 500 }}>Azure</td><td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 11 }}>https://xxx.openai.azure.com/openai</td></tr>
-                        <tr><td style={{ padding: "4px 6px", fontWeight: 500 }}>Ollama</td><td style={{ padding: "4px 6px", fontFamily: "monospace", fontSize: 11 }}>http://localhost:11434</td></tr>
-                      </tbody>
-                    </table>
-                    <div style={{ marginBottom: 6 }}>
-                      <strong>模型列表</strong> 填逗号分隔，如 <span style={{ fontFamily: "monospace", fontSize: 12 }}>gpt-5.4,gpt-5.4-mini</span>，留空自动获取。
-                    </div>
-                    <div>
-                      <strong>使用前提</strong>：需要启动 Python llmclient。<br />
-                      <span style={{ fontFamily: "monospace", fontSize: 11, background: "var(--surface-soft)", padding: "2px 6px", borderRadius: 3 }}>py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766</span>
-                    </div>
-                  </div>
-                )}
 
                 {/* Provider list */}
                     {aiProviders.length > 0 && (
@@ -550,6 +506,53 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
               </div>
               {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
               <button className="primary-button" type="button" onClick={() => void saveSettings()}>保存设置</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Help card modal — standalone overlay */}
+      {showHelpCard && createPortal(
+        <div className="modal-overlay" onClick={() => setShowHelpCard(false)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500, width: "90vw", maxHeight: "85vh", overflowY: "auto" }}>
+            <div className="modal-header">
+              <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>AI 服务商配置指南</h3>
+              <button className="ghost-button" onClick={() => setShowHelpCard(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div style={{ padding: "16px 20px", fontSize: 14, lineHeight: 1.8, color: "var(--text-secondary)" }}>
+              <div style={{ marginBottom: 12 }}>
+                <strong>Base URL</strong> 填 API 端点地址，<em>不是</em>网站首页。末尾无需 /v1 自动补齐。
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 12, fontSize: 13 }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid var(--line)", textAlign: "left" }}>
+                    <th style={{ padding: "6px 8px" }}>服务商</th>
+                    <th style={{ padding: "6px 8px" }}>Base URL 示例</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>GPT</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>https://api.openai.com</td></tr>
+                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>DeepSeek</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>https://api.deepseek.com</td></tr>
+                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>Gemini</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>https://generativelanguage.googleapis.com</td></tr>
+                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>Azure</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>https://xxx.openai.azure.com/openai</td></tr>
+                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>Ollama</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>http://localhost:11434</td></tr>
+                </tbody>
+              </table>
+              <div style={{ marginBottom: 8 }}>
+                <strong>模型列表</strong> 填逗号分隔，如 <span style={{ fontFamily: "monospace" }}>gpt-5.4,gpt-5.4-mini</span>，留空自动获取。
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <strong>类型说明</strong>：GPT / DeepSeek 走 OpenAI 兼容协议；Gemini 走 Google 原生 API。
+              </div>
+              <div>
+                <strong>使用前提</strong>：需要启动 Python llmclient 中转服务。<br />
+                <span style={{ fontFamily: "monospace", fontSize: 13, background: "var(--surface-soft)", padding: "3px 8px", borderRadius: 4, display: "inline-block", marginTop: 4 }}>
+                  py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766
+                </span>
+              </div>
             </div>
           </div>
         </div>,

@@ -84,17 +84,19 @@ router.get("/:examId/student/:studentId/scores", (req: Request, res: Response) =
     ORDER BY question_number
   `).all(examId, studentId) as any[];
 
-  // Scan record images for this student (scanner.db does not exist in projectx.db, use id-order as page)
-  const scans: Array<{ recordId: number; pageNum: number }> = [];
+  // Scan record images — return file_path for grading-image endpoint
+  const scans: Array<{ recordId: number; fileName: string; pageNum: number }> = [];
   try {
     const scanRows = db.prepare(`
-      SELECT sr.id as recordId
+      SELECT sr.id as recordId, sr.file_path as fileName
       FROM scan_records sr
       JOIN scan_batches sb ON sb.id = sr.batch_id
       WHERE sb.exam_id = ? AND sr.student_id = ?
       ORDER BY sr.id
-    `).all(examId, studentId) as Array<{ recordId: number }>;
-    scans.push(...scanRows.map((r, idx) => ({ recordId: r.recordId, pageNum: idx + 1 })));
+    `).all(examId, studentId) as Array<{ recordId: number; fileName: string | null }>;
+    scans.push(...scanRows.filter((r) => r.fileName).map((r, idx) => ({
+      recordId: r.recordId, fileName: r.fileName!, pageNum: idx + 1
+    })));
   } catch {
     // scan_records may not have expected columns in all DB versions
   }
@@ -148,14 +150,14 @@ router.get("/:examId/student/:studentId/scores", (req: Request, res: Response) =
     return { ...qs, ...(def ?? {}) };
   });
 
-  // Get recognition data
+  // Get recognition data (projectx.db scan_records has no page_num)
   const recognitionRows = db.prepare(`
-    SELECT sr.page_num, orr.question_number, orr.selected_options, orr.confidence
+    SELECT orr.question_number, orr.selected_options, orr.confidence
     FROM objective_recognitions orr
     JOIN scan_records sr ON sr.id = orr.record_id
     JOIN scan_batches sb ON sb.id = sr.batch_id
     WHERE sb.exam_id = ? AND sr.student_id = ?
-    ORDER BY sr.page_num, orr.question_number
+    ORDER BY orr.confidence DESC
   `).all(examId, studentId) as any[];
 
   const recognitionMap = new Map<number, { selectedOptions: string[]; confidence: number }>();
@@ -186,6 +188,7 @@ router.get("/:examId/student/:studentId/scores", (req: Request, res: Response) =
     recognition: Object.fromEntries(recognitionMap),
     scans: scans.map((s) => ({
       recordId: s.recordId,
+      fileName: s.fileName,
       pageNum: s.pageNum,
     })),
     cardId
