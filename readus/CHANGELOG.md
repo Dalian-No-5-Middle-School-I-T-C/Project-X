@@ -19,6 +19,13 @@
 
 ### 弹窗遮挡修复
 - `ScoreFixPage` 图片放大、`ScanPreviewModal`、`ImportCardModal`、`StudentScoreDetail` 全部 `createPortal`
+### 分数段动态化
+- 硬编码 0-59/60-69/... 改为按 10 分一段自动生成，末段截止满分
+- 0 人分段自动隐藏，颜色按位置（首段红/末段绿）
+
+### 弹窗遮挡修复
+- `ScoreFixPage` 图片放大、`ScanPreviewModal`、`ImportCardModal`、`StudentScoreDetail` 全部 `createPortal`
+- 修改答案后自动调用评分引擎重算全部分数+排名
 
 ## v1.4.0 (2026-06-18)
 
