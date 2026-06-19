@@ -197,7 +197,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             <option value="percentile">百分位</option>
           </select>
 
-          <label style={{ fontSize: 13, color: "var(--muted)", whiteSpace: "nowrap", display: "flex", alignItems: "center", height: 36 }}>班级:</label>
+          <label style={{ fontSize: 13, color: "var(--muted)", whiteSpace: "nowrap", lineHeight: "36px", display: "inline", margin: 0, fontWeight: 400 }}>班级:</label>
           <select
             value={classId}
             onChange={(e) => { setClassId(e.target.value); }}
