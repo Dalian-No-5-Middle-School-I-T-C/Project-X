@@ -310,6 +310,17 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
         {/* 成绩 Tab */}
         {subTab === "scores" && (
           <div style={{ padding: 24 }}>
+            {isTeacher && (
+              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+                <button
+                  className="ghost-button"
+                  style={{ fontSize: 12, color: "#E65100", border: "1px solid #E65100", borderRadius: 6, padding: "4px 12px" }}
+                  onClick={() => setShowFixPage(true)}
+                >
+                  <AlertTriangle size={14} /> 分数有问题？
+                </button>
+              </div>
+            )}
             <ScoreTable key={scoreTableKey} examId={examId} classId={classId || undefined} displayMode={displayMode} />
           </div>
         )}
