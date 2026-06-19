@@ -11,6 +11,7 @@ import { AnalysisTrend } from "./AnalysisTrend";
 import { ScoreTable } from "./ScoreTable";
 import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
+import { StudentScoreDetail } from "./StudentScoreDetail";
 
 interface ClassOption {
   id: number;
@@ -32,6 +33,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const isTeacher = user?.role_name === "teacher" || isAdmin;
   const [subTab, setSubTab] = useState<SubTab>("overview");
   const [showFixPage, setShowFixPage] = useState(false);
+  const [selectedStudent, setSelectedStudent] = useState<{ id: number; name: string; number: string } | null>(null);
   const [classId, setClassId] = useState("");
   const [showExport, setShowExport] = useState(false);
   const [classes, setClasses] = useState<ClassOption[]>([]);
@@ -164,6 +166,20 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
         examName={examName}
         subject={subject}
         onBack={() => setShowFixPage(false)}
+      />
+    );
+  }
+
+  // Render student detail overlay
+  if (selectedStudent) {
+    return (
+      <StudentScoreDetail
+        examId={examId}
+        studentId={selectedStudent.id}
+        studentName={selectedStudent.name}
+        studentNumber={selectedStudent.number}
+        examName={examName}
+        onBack={() => setSelectedStudent(null)}
       />
     );
   }
@@ -310,7 +326,8 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
         {/* 成绩 Tab */}
         {subTab === "scores" && (
           <div style={{ padding: 24 }}>
-            <ScoreTable key={scoreTableKey} examId={examId} classId={classId || undefined} displayMode={displayMode} />
+            <ScoreTable key={scoreTableKey} examId={examId} classId={classId || undefined} displayMode={displayMode}
+              onRowClick={(id, name, num) => setSelectedStudent({ id, name, number: num })} />
           </div>
         )}
 
