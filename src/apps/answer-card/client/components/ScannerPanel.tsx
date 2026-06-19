@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, useCallback } from "react";
-import { Camera, Play, Square, RefreshCw, AlertTriangle, Check, Loader, Eye, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Camera, Play, Square, RefreshCw, AlertTriangle, Check, Loader, Eye } from "lucide-react";
 import { authFetch, urlWithToken } from "../auth/api";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
+import { ScanPreviewModal } from "./ScanPreviewModal";
 
 interface ScannerPanelProps {
   cardId: string;
@@ -74,23 +75,6 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       eventSourceRef.current?.close();
     };
   }, []);
-
-  // Keyboard shortcuts for PDF modal
-  useEffect(() => {
-    if (!activeStudent) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setActiveStudent(null);
-      if (e.key === "PageDown" || e.key === "PageUp") {
-        e.preventDefault();
-        const container = document.getElementById("student-pdf-scroll");
-        if (container) {
-          container.scrollBy({ top: (e.key === "PageDown" ? 1 : -1) * container.clientHeight * 0.8, behavior: "smooth" });
-        }
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [activeStudent]);
 
   async function detectSources() {
     setState("detecting");
@@ -474,9 +458,19 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
       {/* ── PDF-Style Student Detail Modal ──────────────── */}
       {activeStudent && (
-        <StudentDetailModal
-          student={activeStudent}
-          imageUrl={imageUrl}
+        <ScanPreviewModal
+          title={`学号: ${activeStudent.studentId}`}
+          subtitle={`总分 ${activeStudent.totalScore} / ${activeStudent.maxScore} · 客观 ${activeStudent.objectiveScore} · 主观 ${activeStudent.subjectiveScore}${activeStudent.needsReviewCount > 0 ? ` · 待复核 ${activeStudent.needsReviewCount} 题` : ""}`}
+          pages={activeStudent.pages.map((p) => ({
+            recordId: p.recordId,
+            pageNum: p.pageNum,
+            side: p.side,
+            imageUrl: imageUrl(p.recordId),
+            objectiveScore: p.objectiveScore,
+            subjectiveScore: p.subjectiveScore,
+            totalScore: p.totalScore,
+            totalMaxScore: p.totalMaxScore
+          }))}
           onClose={() => setActiveStudent(null)}
         />
       )}
@@ -484,115 +478,4 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   );
 }
 
-// ── Student Detail Modal (PDF-style vertical scroll) ──
-
-function StudentDetailModal({
-  student,
-  imageUrl,
-  onClose
-}: {
-  student: StudentResult;
-  imageUrl: (recordId: string) => string;
-  onClose: () => void;
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const [activePageIndex, setActivePageIndex] = useState(0);
-
-  // Track which page is currently visible
-  const handleScroll = useCallback(() => {
-    const container = scrollRef.current;
-    if (!container) return;
-    const pageEls = container.querySelectorAll<HTMLElement>(".pdf-page-item");
-    let bestIdx = 0;
-    let bestDist = Infinity;
-    const midY = container.scrollTop + container.clientHeight / 2;
-    pageEls.forEach((el, idx) => {
-      const center = el.offsetTop + el.offsetHeight / 2;
-      const dist = Math.abs(center - midY);
-      if (dist < bestDist) { bestDist = dist; bestIdx = idx; }
-    });
-    setActivePageIndex(bestIdx);
-  }, []);
-
-  function scrollToPage(index: number) {
-    const container = scrollRef.current;
-    if (!container) return;
-    const el = container.querySelectorAll<HTMLElement>(".pdf-page-item")[index];
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-
-  return (
-    <div className="pdf-modal-backdrop" onClick={onClose}>
-      <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
-        {/* Top bar */}
-        <div className="pdf-modal-topbar">
-          <div className="pdf-modal-info">
-            <strong>学号: {student.studentId}</strong>
-            <span>总分 {student.totalScore} / {student.maxScore}</span>
-            <span>客观 {student.objectiveScore} · 主观 {student.subjectiveScore}</span>
-            {student.needsReviewCount > 0 && (
-              <span className="status-warn" style={{ fontSize: 12, padding: "1px 8px" }}>
-                待复核 {student.needsReviewCount} 题
-              </span>
-            )}
-          </div>
-          <button className="ghost-button" onClick={onClose} style={{ padding: "4px 10px" }}>
-            <X size={18} />
-          </button>
-        </div>
-
-        {/* PDF-style scrolling pages */}
-        <div
-          id="student-pdf-scroll"
-          className="pdf-modal-scroll"
-          ref={scrollRef}
-          onScroll={handleScroll}
-        >
-          {student.pages.map((page, idx) => (
-            <div key={page.recordId} className="pdf-page-item">
-              <div className="pdf-page-label">
-                <span>第 {page.pageNum} 页 · {page.side === "front" ? "正面" : "反面"}</span>
-                <span className="pdf-page-score">
-                  {page.totalScore}/{page.totalMaxScore}
-                  {" "}(客观 {page.objectiveScore} · 主观 {page.subjectiveScore})
-                </span>
-              </div>
-              <div className="pdf-page-image-wrapper">
-                <img
-                  src={imageUrl(page.recordId)}
-                  alt={`P${page.pageNum} ${page.side}`}
-                  className="pdf-page-image"
-                  loading={idx < 2 ? "eager" : "lazy"}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Bottom thumbnail navigation */}
-        <div className="pdf-modal-bottombar">
-          <span className="pdf-page-counter">
-            {activePageIndex + 1} / {student.pages.length}
-          </span>
-          <div className="pdf-thumbnail-strip">
-            {student.pages.map((page, idx) => (
-              <button
-                key={page.recordId}
-                className={`pdf-thumbnail ${idx === activePageIndex ? "active" : ""}`}
-                onClick={() => scrollToPage(idx)}
-                title={`P${page.pageNum} ${page.side === "front" ? "正面" : "反面"}`}
-              >
-                <img
-                  src={imageUrl(page.recordId)}
-                  alt={`P${page.pageNum}`}
-                  loading="lazy"
-                />
-                <span>P{page.pageNum}{page.side === "front" ? "正" : "反"}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+// Removed: StudentDetailModal — replaced by shared ScanPreviewModal

@@ -2904,7 +2904,7 @@ input[type="checkbox"]:disabled {
 .pdf-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 99999;
   background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(8px) saturate(120%);
   -webkit-backdrop-filter: blur(8px) saturate(120%);

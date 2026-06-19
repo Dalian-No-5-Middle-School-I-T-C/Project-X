@@ -14,13 +14,56 @@ import {
   listStudentGradingResults,
   type ScanRecordWithResult
 } from "../database/scan-store";
-import { safeId, readCard } from "../storage";
+import { safeId, readCard, dataDir } from "../storage";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { gradeSessionStudentResults, type CombinedStudentResult } from "../../../../shared/grading";
 
 export function createScannerRouter(): Router {
   const router = Router();
+
+  // Write scanner result to projectx.db for linked exams
+  async function persistScannerResultToMainDb(
+    cardId: string,
+    result: CombinedStudentResult
+  ): Promise<void> {
+    if (!result.studentId || result.studentId === "未识别") return;
+
+    const { getDatabase } = await import("../../../../server/db");
+    const mainDb = getDatabase();
+
+    // Find user by student_number
+    const user = mainDb.prepare("SELECT id FROM users WHERE student_number = ?").get(result.studentId) as { id: number } | undefined;
+    if (!user) return;
+
+    // Find exams linked to this card
+    const exams = mainDb.prepare("SELECT id FROM exams WHERE card_id = ? AND status != 'closed'").all(cardId) as Array<{ id: number }>;
+    if (exams.length === 0) return;
+
+    const insertScore = mainDb.prepare(`
+      INSERT OR REPLACE INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score, graded_at)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `);
+    const insertQs = mainDb.prepare(`
+      INSERT OR REPLACE INTO question_scores (exam_id, student_id, question_number, question_id, score, max_score, score_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const exam of exams) {
+      insertScore.run(exam.id, user.id, result.objectiveScore, result.subjectiveScore, result.totalScore);
+
+      // Write per-question scores from deduplicated results
+      for (const q of result.objectiveQuestions) {
+        insertQs.run(exam.id, user.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+      }
+      for (const sq of result.subjectiveQuestions) {
+        insertQs.run(exam.id, user.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective");
+      }
+
+      // Update exam status to 'grading' if still draft
+      mainDb.prepare("UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'draft'").run(exam.id);
+    }
+  }
 
   // Progress event emitters by sessionId (for WebSocket integration)
   const progressEmitters = new Map<string, Set<(event: ScanProgressEvent) => void>>();
@@ -200,6 +243,96 @@ export function createScannerRouter(): Router {
     }
   });
 
+  // ── Find Scans by Exam + Student (for ScoreTable preview) ──
+
+  router.get("/exam/:examId/student/:studentId/scans", async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      const studentId = Number(req.params.studentId);
+      if (!Number.isFinite(examId) || !Number.isFinite(studentId)) {
+        res.status(400).json({ message: "Invalid examId or studentId" });
+        return;
+      }
+
+      const { getDatabase } = await import("../../../../server/db");
+      const mainDb = getDatabase();
+
+      const exam = mainDb.prepare("SELECT card_id FROM exams WHERE id = ?").get(examId) as { card_id: string | null } | undefined;
+      if (!exam || !exam.card_id) {
+        res.json({ studentId, studentNumber: "", pages: [] });
+        return;
+      }
+
+      const cardId = exam.card_id;
+      const user = mainDb.prepare("SELECT student_number FROM users WHERE id = ?").get(studentId) as { student_number: string | null } | undefined;
+
+      // Query scan_records for this student in this exam
+      const records = mainDb.prepare(`
+        SELECT sr.id, sr.file_path, sr.file_name
+        FROM scan_records sr
+        JOIN scan_batches sb ON sr.batch_id = sb.id
+        WHERE sb.exam_id = ? AND sr.student_id = ?
+        ORDER BY sr.id
+      `).all(examId, studentId) as Array<{ id: number; file_path: string; file_name: string }>;
+
+      if (records.length === 0) {
+        res.json({ studentId, studentNumber: user?.student_number || "", pages: [] });
+        return;
+      }
+
+      // Try to resolve actual files
+      const pages: Array<{ recordId: string; pageNum: number; side: string; fileName: string }> = [];
+      const { existsSync: fsExists } = await import("node:fs");
+
+      for (const rec of records) {
+        // Check if file_path is an actual file (new data stores multer path)
+        if (rec.file_path && fsExists(rec.file_path)) {
+          const fileName = path.basename(rec.file_path);
+          pages.push({
+            recordId: String(rec.id),
+            pageNum: pages.length + 1,
+            side: "front",
+            fileName
+          });
+        }
+      }
+
+      res.json({
+        studentId,
+        studentNumber: user?.student_number || "",
+        cardId,
+        pages
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── Serve grading upload image ──
+  router.get("/grading-image/:cardId/:fileName", (req, res, next) => {
+    try {
+      const cardId = safeId(req.params.cardId);
+      const fileName = path.basename(req.params.fileName);
+      // Prevent directory traversal
+      if (fileName.includes("..") || fileName.includes("/") || fileName.includes("\\")) {
+        res.status(400).json({ message: "Invalid file name" });
+        return;
+      }
+      const targetPath = path.join(dataDir, "recognition", "uploads", cardId, fileName);
+      if (!existsSync(targetPath)) {
+        res.status(404).json({ message: "图片不存在" });
+        return;
+      }
+      const ext = path.extname(targetPath).toLowerCase();
+      const contentType = ext === ".png" ? "image/png" : "image/jpeg";
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Cache-Control", "private, max-age=3600");
+      res.sendFile(targetPath);
+    } catch (error) {
+      next(error);
+    }
+  });
+
   // ── Combined Student Results (Session-level) ─────────
 
   router.get("/session/:sessionId/results", async (req, res, next) => {
@@ -258,13 +391,18 @@ export function createScannerRouter(): Router {
           const combined = gradeSessionStudentResults(card, pages);
           results.push(combined);
 
-          // Cache the result
+          // Cache the result in scanner.db
           upsertStudentGradingResult({
             sessionId,
             studentId: combined.studentId,
             totalScore: combined.totalScore,
             maxScore: combined.totalMaxScore,
             pageCount: combined.pageCount
+          });
+
+          // Also persist to projectx.db for linked exams
+          persistScannerResultToMainDb(session.card_id, combined).catch((err) => {
+            console.error(`[Scanner] Main DB persist failed for ${combined.studentId}:`, err);
           });
         } catch (err) {
           console.error(`[Scanner] Combined grading failed for student ${group.studentId}:`, err);

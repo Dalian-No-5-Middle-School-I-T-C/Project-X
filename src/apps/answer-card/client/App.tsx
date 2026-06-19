@@ -67,6 +67,8 @@ import {
   type ProjectXVariantConfig
 } from "../../../shared/appVariant";
 import { ScannerPanel } from "./components/ScannerPanel";
+import { ScanPreviewModal, type ScanPage } from "./components/ScanPreviewModal";
+import { ImportCardModal, type ImportCardFormData } from "./components/ImportCardModal";
 import { AnalysisOverview } from "./components/AnalysisOverview";
 import { AnalysisDistribution } from "./components/AnalysisDistribution";
 import { AnalysisAiPanel } from "./components/AnalysisAiPanel";
@@ -373,6 +375,8 @@ function App() {
   const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
   const [exams, setExams] = useState<ExamRecord[]>([]);
   const [showCreateExam, setShowCreateExam] = useState(false);
+  const [showImportCardModal, setShowImportCardModal] = useState(false);
+  const [importCardData, setImportCardData] = useState<{ card?: { title?: string; subject?: string; subjectLabel?: string; examDate?: string } } | null>(null);
   const [newExamName, setNewExamName] = useState("");
   const [newExamSubject, setNewExamSubject] = useState("");
   const [newExamCardId, setNewExamCardId] = useState("");
@@ -463,13 +467,17 @@ function App() {
       let statusExtra = "";
       if (formData.examAction === "create") {
         const examName = formData.examName || formData.title;
-        await fetchJson("/api/exams", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: examName, cardId: created.id, subject: formData.subjectLabel })
-        });
-        statusExtra = "，已同步创建考试";
-        await loadExams();
+        try {
+          const examRes = await fetchJson<any>("/api/exams", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: examName, cardId: created.id, subject: formData.subjectLabel })
+          });
+          statusExtra = "，已同步创建考试";
+          await loadExams();
+        } catch (err: any) {
+          statusExtra = `，考试创建失败：${err?.message || "已存在同名考试"}`;
+        }
       } else if (formData.examAction === "link" && formData.linkExamId) {
         await fetchJson(`/api/exams/${formData.linkExamId}`, {
           method: "PATCH",
@@ -620,25 +628,61 @@ function App() {
       const file = input.files?.[0];
       if (!file) return;
       setIsBusy(true);
-      setStatus("正在导入答题卡...");
+      setStatus("正在读取答题卡...");
       try {
         const text = await file.text();
         const data = JSON.parse(text);
-        const result = await fetchJson<CardSummary>("/api/cards/import", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(data)
-        });
-        setStatus(`已导入答题卡：${result.title} (${result.id})`);
-        await refreshCards();
-        await loadCard(result.id);
+        if (!data || data.format !== "projectx-card" || !data.card) {
+          setStatus("不支持的文件格式，请使用 .projectx-card.json 导出文件");
+          setIsBusy(false);
+          return;
+        }
+        // Show import modal before sending to server
+        setImportCardData(data);
+        setShowImportCardModal(true);
       } catch (err) {
         setStatus(`导入失败：${err instanceof Error ? err.message : String(err)}`);
-      } finally {
         setIsBusy(false);
       }
     };
     input.click();
+  }
+
+  async function handleImportConfirm(formData: ImportCardFormData) {
+    if (!importCardData) return;
+    setShowImportCardModal(false);
+    setIsBusy(true);
+    setStatus("正在导入答题卡...");
+    try {
+      const body = {
+        ...importCardData,
+        overrideTitle: formData.title,
+        overrideSubject: formData.subject,
+        overrideSubjectLabel: formData.subjectLabel,
+        overrideExamDate: formData.examDate,
+        examAction: formData.examAction,
+        examName: formData.examName,
+        linkExamId: formData.linkExamId
+      };
+      const result = await fetchJson<CardSummary & { createdExamId?: number; duplicateExamName?: string; idConflictMsg?: string }>("/api/cards/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const msgs: string[] = [`已导入答题卡：${result.title} (${result.id})`];
+      if (result.idConflictMsg) msgs.push(result.idConflictMsg);
+      if (result.createdExamId) msgs.push(`已创建考试 #${result.createdExamId}`);
+      if (result.duplicateExamName) msgs.push(`考试「${result.duplicateExamName}」已存在，跳过创建`);
+      setStatus(msgs.join(" · "));
+      await refreshCards();
+      await loadExams();
+      await loadCard(result.id);
+    } catch (err) {
+      setStatus(`导入失败：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsBusy(false);
+      setImportCardData(null);
+    }
   }
 
   function updateCard(mutator: (draft: AnswerCard) => void) {
@@ -1472,6 +1516,16 @@ function App() {
         <footer className="statusbar">{status}</footer>
       </section>
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
+      <ImportCardModal
+        open={showImportCardModal && importCardData !== null}
+        initialTitle={importCardData?.card?.title ?? ""}
+        initialSubject={importCardData?.card?.subject ?? ""}
+        initialSubjectLabel={importCardData?.card?.subjectLabel ?? ""}
+        initialExamDate={importCardData?.card?.examDate ?? ""}
+        exams={exams.map(e => ({ id: e.id, name: e.name, subject: e.subject ?? null }))}
+        onConfirm={(data) => void handleImportConfirm(data)}
+        onClose={() => { setShowImportCardModal(false); setImportCardData(null); setIsBusy(false); }}
+      />
       {cardDeleteConflict && (
         <div className="modal-backdrop" onClick={() => setCardDeleteConflict(null)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
@@ -1594,6 +1648,21 @@ function GradingResults({
   const totalReview = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
   const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
 
+  // Preview modal state
+  const [previewPages, setPreviewPages] = useState<ScanPage[] | null>(null);
+  const [previewTitle, setPreviewTitle] = useState("");
+
+  function openGradingPreview(row: CombinedGradingRow) {
+    if (!row.previewUrl) return;
+    setPreviewTitle(`学号: ${row.studentId ?? "未识别"} · 文件: ${row.fileName}`);
+    setPreviewPages([{
+      recordId: row.fileName,
+      pageNum: 1,
+      side: "front",
+      imageUrl: urlWithToken(row.previewUrl)
+    }]);
+  }
+
   return (
     <div className="grading-results">
       <div className="grading-results-header">
@@ -1632,15 +1701,13 @@ function GradingResults({
               <span>{row.needsReviewCount}</span>
               <span>
                 {row.previewUrl ? (
-                  <a
+                  <button
                     className="score-preview-link"
-                    href={urlWithToken(row.previewUrl)}
-                    target="_blank"
-                    rel="noreferrer"
-                    onClick={(event) => event.stopPropagation()}
+                    onClick={(event) => { event.stopPropagation(); openGradingPreview(row); }}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--brand)", fontSize: 12, padding: 0, textDecoration: "underline", textUnderlineOffset: 2 }}
                   >
                     预览
-                  </a>
+                  </button>
                 ) : (
                   <span className="muted-cell">-</span>
                 )}
@@ -1678,6 +1745,14 @@ function GradingResults({
           </details>
         ))}
       </div>
+
+      {previewPages !== null && (
+        <ScanPreviewModal
+          title={previewTitle}
+          pages={previewPages}
+          onClose={() => setPreviewPages(null)}
+        />
+      )}
     </div>
   );
 }
