@@ -1,7 +1,7 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.4.5-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,8 +13,8 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.4.0
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 成绩查看（概况/成绩/考试分析/AI分析）→ 赋分引擎 → 导出模板系统 → 教师/学生/班级管理 → 教师细分角色（学科老师/班主任/学年主任）→ 账密批量导入导出 → 数据库全量备份
+> **当前版本**：v1.4.5
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 成绩查看（概况/成绩/考试分析/AI分析）→ 成绩修改（个别改分+批量改答案）→ 逐题得分明细 → 赋分引擎 → 导出模板系统 → 教师/学生/班级管理 → 教师细分角色（学科老师/班主任/学年主任）→ 账密批量导入导出 → 数据库全量备份 → 动态分数段分布
 > **下个里程碑**：v1.5.0 — 成绩预测、跨班深度对比、知识点诊断
 
 ---
@@ -79,15 +79,18 @@
 
 - **考试选择页**：按学年/年级/学科三级筛选，横向列表展示考试，含人数/均分/状态预览
 - **考试管理**：创建考试、关联答题卡（支持新建答题卡时同步创建/关联）、科目、赋分
-- **成绩查看页**：4 子Tab（概况 / 成绩 / 考试分析 / AI 分析），班级选择器 + 指标切换
-- **概况 Tab**：信息卡片（人数/均分/最高/最低/及格率/优秀率/标准差）+ 分数段水平条形图 + 箱型图 + 年级前五/后五 + 进步前五/退步前五（名次变化对比上次考试）
+- **成绩查看页**：4 子Tab（概况 / 成绩 / 考试分析 / AI 分析），班级选择器 + 指标切换 + 「分数有问题？」入口（教师/管理员）
+
+- **成绩修改**：支持个别改分（逐题下拉/输入）和批量修改答案（按钮组切换选项），修改后自动重算全部分数+排名；点击学生行进入逐题得分明细页（班级均分率 + 答题卡放大预览）
+
+- **概况 Tab**：信息卡片（人数/均分/最高/最低/及格率/优秀率/标准差）+ 分数段水平条形图（10 分一段，0 人段自动隐藏，首段红/末段绿）+ 箱型图 + 年级前五/后五 + 进步前五/退步前五
 - **成绩 Tab**：成绩表格含校排/班排/名次变化/偏差值/Z值/百分位，支持排序与搜索
 - **考试分析 Tab**：成绩分布 + 班级对比（下拉选择基准班级，均分差值着色）+ 题目得分率
-- **AI 分析 Tab**：支持 GPT / DeepSeek / 哈基米 / Gemini 多服务商，可自定义 Base URL
+- **AI 分析 Tab**：支持 GPT / DeepSeek / Gemini 多服务商，可自定义 Base URL，账号设置中「AI 服务商」集中管理
 - **赋分引擎**：等比例/线性/自定义表达式三种公式，化学/生物/地理/政治自动赋分
 - **导出系统**：胶囊拖拽排序列，4 个自定义模板槽，A4 竖版超页警告，侧表（年级前 N 名），Excel (.xlsx)
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
-- **AI 成绩分析**：多服务商架构（GPT/DeepSeek/哈基米/Gemini），自定义 Base URL，白名单成绩工具生成结构化报告
+- **AI 成绩分析**：多服务商架构（GPT/DeepSeek/Gemini），自定义 Base URL，白名单成绩工具生成结构化报告
 
 ### 账户与安全
 
@@ -264,7 +267,7 @@ npm run electron:msi                   # = electron:msi:scanner
 | [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.3.0 学科模板/评分规则 + v1.2.0 AI 成绩分析 + v1.1.x 多端/账号/打包增强） | 开发者 / 测试 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.4.5 成绩修改/动态分数段/弹窗修复 + v1.3.0 学科模板/评分规则 + v1.2.0 AI 成绩分析） | 开发者 / 测试 |
 
 ---
 
@@ -288,6 +291,10 @@ Project-X/
 │   │   │       ├── TeacherManagement.tsx    # 教师管理（科目/班级关联）
 │   │   │       ├── StudentManagement.tsx    # 学生管理（按班级+导入/导出）
 │   │   │       ├── ImportModal.tsx          # 通用CSV/Excel导入弹窗
+│   │   │       ├── ImportCardModal.tsx       # 导入答题卡确认弹窗（科目/考试/日期）
+│   │   │       ├── ScanPreviewModal.tsx      # PDF 式多页答题卡预览弹窗（缩放/PgUp/PgDn）
+│   │   │       ├── ScoreFixPage.tsx          # 成绩修改（个别改分 + 修改答案批量重算）
+│   │   │       ├── StudentScoreDetail.tsx    # 逐题得分明细（班级均分率 + 答题卡放大）
 │   │   │       ├── StudentScores.tsx        # 学生我的成绩
 │   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板
 │   │   │       ├── ExamSelectPage.tsx       # 考试选择页（学年/年级/学科筛选）
@@ -300,7 +307,7 @@ Project-X/
 │   │   │       ├── AssignedFormulaModal.tsx # 赋分公式配置
 │   │   │       └── AnalysisQuestions.tsx   # 题目得分率排行
 │   │   └── server/                      # Express 后端
-│   │       ├── index.ts                 # 主路由（卡片CRUD/导入导出/识别/阅卷/考试/分析）
+│   │       ├── index.ts                 # 主路由（卡片CRUD/导入导出/识别/阅卷/考试/分析/成绩修改）
 │   │       ├── recognition.ts           # C++ 识别引擎子进程管理
 │   │       ├── storage.ts               # 文件存储层
 │   │       ├── pdf.ts                   # PDF 生成（pdfkit）
@@ -314,7 +321,7 @@ Project-X/
 │   │   │   ├── UserRepository.ts         # 用户管理
 │   │   │   └── AnalysisRepository.ts     # 分析查询
 │   │   ├── middleware/                   # 认证中间件
-│   │   ├── routes/                       # 认证/用户/赞助/AI服务商/导出等路由
+│   │   ├── routes/                       # 认证/用户/赞助/AI服务商/成绩修改/导出等路由
 │   │   └── services/                     # AuthService / AssignedScoreService（赋分引擎）
 │   └── shared/                          # 前后端共享
 │       ├── types.ts                     # 全部类型定义
@@ -380,6 +387,11 @@ Project-X/
 | `GET` | `/api/exams/:id` | 考试详情+成绩 |
 | `PATCH` | `/api/exams/:id` | 更新考试（cardId/name/subject） |
 | `DELETE` | `/api/exams/:id` | 删除考试（可选同时删除关联答题卡） |
+| `GET` | `/api/exams/:examId/student/:studentId/scores` | 学生分数详情+班级均分 |
+| `PUT` | `/api/exams/:examId/student/:studentId/scores` | 逐题修改分数 |
+| `GET` | `/api/exams/:examId/answers` | 答题卡答案配置 |
+| `PUT` | `/api/exams/:examId/answers` | 修改答案并批量重算全部分数 |
+| `GET` | `/api/exams/:examId/students/search` | 搜索考生（?q=考号或姓名） |
 | `GET` | `/api/analysis/exams/:id/overview` | 考试总览统计 |
 | `GET` | `/api/analysis/exams/:id/students` | 学生排名 |
 | `GET` | `/api/analysis/exams/:id/questions` | 题目得分率 |
@@ -390,6 +402,8 @@ Project-X/
 | `GET` | `/api/scanner/progress/:id` | SSE 扫描进度 |
 | `GET` | `/api/scanner/session/:id/results` | 合并学生成绩（多页汇总） |
 | `GET` | `/api/scanner/scan-image/:recordId` | 扫描原图预览 |
+| `GET` | `/api/scanner/exam/:examId/student/:studentId/scans` | 按考试+学生查答题卡页 |
+| `GET` | `/api/scanner/grading-image/:cardId/:fileName` | 上传阅卷图片 |
 | `POST` | `/api/auth/login` | 登录（支持 isPersistent 6 月免登录） |
 | `GET` | `/api/auth/me` | 当前用户信息 |
 | `GET` | `/api/teachers` | 教师列表（按创建时间排序） |
@@ -408,7 +422,7 @@ Project-X/
 | `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |
 | `POST` | `/api/export/exams/:id/scores` | 按列配置导出 Excel |
 | `GET` | `/api/export/columns` | 导出列元数据 |
-| `PATCH` | `/api/users/me/settings` | 更新用户设置（成绩指标/AI Key） |
+| `PATCH` | `/api/users/me/settings` | 更新用户设置（成绩指标/复核阈值） |
 | `GET/POST/PUT/DELETE` | `/api/ai/providers` | AI 服务商配置管理 |
 | `GET` | `/api/db/backup` | 导出全量数据 ZIP |
 | `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |
