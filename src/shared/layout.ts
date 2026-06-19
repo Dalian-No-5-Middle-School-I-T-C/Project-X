@@ -465,21 +465,23 @@ function addManualScoreCells(
 ): Array<{ score: number | null; rect: Rect }> {
   const values = getScoreValues(question.score);
   const startX = rightX - values.length * SCORE_CELL_WIDTH - 2;
-  return values.map((score, index) => {
-    const scoreRect = rect(startX + index * SCORE_CELL_WIDTH, y, SCORE_CELL_WIDTH - 0.8, SCORE_CELL_HEIGHT);
-    if (score !== null) {
-      page.elements.push({
-        id: `p${page.pageNumber}_score_${block.id}_${question.id}_${score}`,
-        type: "score_cell",
-        blockId: block.id,
-        questionId: question.id,
-        questionNumber: question.number,
-        score,
-        rect: scoreRect
-      });
-    }
-    return { score, rect: scoreRect };
-  });
+  return values
+    .map((score, index) => {
+      const scoreRect = rect(startX + index * SCORE_CELL_WIDTH, y, SCORE_CELL_WIDTH - 0.8, SCORE_CELL_HEIGHT);
+      if (score !== null) {
+        page.elements.push({
+          id: `p${page.pageNumber}_score_${block.id}_${question.id}_${score}`,
+          type: "score_cell",
+          blockId: block.id,
+          questionId: question.id,
+          questionNumber: question.number,
+          score,
+          rect: scoreRect
+        });
+      }
+      return { score, rect: scoreRect } as { score: number | null; rect: Rect };
+    })
+    .filter((cell) => cell.score !== null) as Array<{ score: number; rect: Rect }>;
 }
 
 function blankQuestionCount(question: SubjectiveQuestion): number {

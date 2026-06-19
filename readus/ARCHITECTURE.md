@@ -110,8 +110,8 @@ type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
 | 模式 | 职责 | 主要组件 |
 |------|------|----------|
 | **design** | 编辑答题卡、预览、导出 PDF | 内联编辑器 + `buildLayout` 预览 |
-| **grading** | 上传/扫描图片、批量识别判分 | `ScannerPanel`、`GradingResults` |
-| **analysis** | 考试统计、排名、题目分析 | `AnalysisOverview`、`AnalysisDistribution`、`AnalysisRanking`、`AnalysisQuestions` |
+| **grading** | 上传/扫描图片、批量识别判分 | `ScannerPanel`、`GradingResults`、`ScanPreviewModal`（共享弹窗） |
+| **analysis** | 考试统计、排名、题目分析 | `AnalysisOverview`、`AnalysisDistribution`、`AnalysisRanking`、`AnalysisQuestions`、`ScoreTable`、`ScanPreviewModal`（预览列） |
 | **scores** | 学生查看个人成绩 | `StudentScores` |
 | **account** | 教师/学生管理 | `AccountManagement`、`TeacherManagement`、`ClassManagement` |
 

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Minus, Search } from "lucide-react";
-import { fetchJson } from "../auth/api";
+import { fetchJson, urlWithToken } from "../auth/api";
 import type { ScoreTableRow, ScoreDisplayMode } from "../../../../shared/types";
+import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 
 interface Props {
   examId: number;
@@ -32,6 +33,41 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode }: Pr
   const [sortAsc, setSortAsc] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
+  // Preview modal state
+  const [previewPages, setPreviewPages] = useState<ScanPage[] | null>(null);
+  const [previewTitle, setPreviewTitle] = useState("");
+  const [previewSubtitle, setPreviewSubtitle] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  async function openPreview(studentId: number, studentName: string, studentNumber: string) {
+    setPreviewTitle(`学号: ${studentNumber} · ${studentName}`);
+    setPreviewSubtitle("正在加载答题卡...");
+    setPreviewPages([]);
+    setPreviewLoading(true);
+    try {
+      const data = await fetchJson<{
+        pages: Array<{ recordId: string; pageNum: number; side: string; fileName: string }>;
+        cardId: string;
+      }>(`/api/scanner/exam/${examId}/student/${studentId}/scans`);
+      if (data.pages.length === 0) {
+        setPreviewSubtitle("暂无答题卡扫描记录（旧考试需重新阅卷）");
+      } else {
+        setPreviewSubtitle(`${data.pages.length} 页`);
+        const pages: ScanPage[] = data.pages.map((p) => ({
+          recordId: p.recordId,
+          pageNum: p.pageNum,
+          side: p.side,
+          imageUrl: urlWithToken(`/api/scanner/grading-image/${data.cardId}/${encodeURIComponent(p.fileName)}`)
+        }));
+        setPreviewPages(pages);
+      }
+    } catch (err) {
+      setPreviewSubtitle("加载答题卡失败");
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -160,6 +196,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode }: Pr
                   {displayLabel} {renderSortArrow("displayValue")}
                 </button>
               </th>
+              <th style={thStyle}>答题卡</th>
             </tr>
           </thead>
           <tbody>
@@ -183,11 +220,33 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode }: Pr
                 <td style={{ ...tdStyle, fontWeight: 500 }}>
                   {row.displayValue != null ? formatScore(row.displayValue) : "—"}
                 </td>
+                <td style={tdStyle}>
+                  <button
+                    onClick={() => void openPreview(row.studentId, row.studentName, row.studentNumber)}
+                    disabled={previewLoading}
+                    style={{
+                      background: "none", border: "none", cursor: "pointer",
+                      color: "var(--brand)", fontSize: 12, padding: 0,
+                      textDecoration: "underline", textUnderlineOffset: 2
+                    }}
+                  >
+                    预览
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {previewPages !== null && (
+        <ScanPreviewModal
+          title={previewTitle}
+          subtitle={previewSubtitle}
+          pages={previewPages}
+          onClose={() => setPreviewPages(null)}
+        />
+      )}
     </div>
   );
 }
