@@ -22,6 +22,9 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
   const [showSettings, setShowSettings] = useState(false);
   const [displayMode, setDisplayMode] = useState("zscore");
   const [reviewThreshold, setReviewThreshold] = useState(0.12);
+  const [bgOpacity, setBgOpacity] = useState(0);
+  const bgFileRef = useRef<HTMLInputElement | null>(null);
+  const [bgMsg, setBgMsg] = useState("");
   const [settingsMsg, setSettingsMsg] = useState("");
 
   // Multi-provider AI management
@@ -34,10 +37,11 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
 
   useEffect(() => {
     if (open && showSettings) {
-      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number }>("/api/users/me/settings")
+      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number }>("/api/users/me/settings")
         .then((s) => {
           setDisplayMode(s.scoreDisplayMode || "zscore");
           setReviewThreshold(s.reviewConfidenceThreshold ?? 0.12);
+          setBgOpacity(s.backgroundOpacity ?? 0);
         })
         .catch(() => {});
       loadProviders();
@@ -53,6 +57,7 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
         body: JSON.stringify({
           scoreDisplayMode: displayMode,
           reviewConfidenceThreshold: reviewThreshold,
+          backgroundOpacity: bgOpacity,
         })
       });
       setSettingsMsg("已保存");
@@ -60,6 +65,32 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
     } catch (err) {
       setSettingsMsg(err instanceof Error ? err.message : "保存失败");
     }
+  }
+
+  async function handleBgUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBgMsg("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const token = getAuthToken();
+      const res = await fetch("/api/users/me/background", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: form
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "上传失败" }));
+        throw new Error(err.error || "上传失败");
+      }
+      setBgMsg("上传成功，刷新后生效");
+      setTimeout(() => setBgMsg(""), 3000);
+    } catch (err) {
+      setBgMsg(err instanceof Error ? err.message : "上传失败");
+    }
+    // Reset input so same file can be re-uploaded
+    e.target.value = "";
   }
 
   // ── AI 服务商管理 ──────────────────────────────────
@@ -346,6 +377,31 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
                 <label className="account-settings-label">复核置信度阈值: {reviewThreshold.toFixed(2)}</label>
                 <input type="range" min="0" max="1" step="0.01" value={reviewThreshold} onChange={(e) => setReviewThreshold(Number(e.target.value))} style={{ width: "100%", marginTop: 4 }} />
                 <span style={{ fontSize: 11, color: "var(--muted)" }}>低于此值的题目标记"需要复核"</span>
+              </div>
+
+              {/* 背景图透明度 */}
+              <div className="account-settings-group">
+                <label className="account-settings-label" style={{ display: "flex", justifyContent: "space-between" }}>
+                  <span>背景图透明度</span>
+                  <span style={{ fontWeight: 400, color: "var(--muted)" }}>{Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}</span>
+                </label>
+                <input type="range" min="0" max="0.5" step="0.01" value={bgOpacity} onChange={(e) => { const v = Number(e.target.value); setBgOpacity(v); document.documentElement.style.setProperty("--bg-opacity", String(v)); if (v > 0) document.body.classList.add("has-bg-image"); else document.body.classList.remove("has-bg-image"); }} style={{ width: "100%", marginTop: 4 }} />
+                <span style={{ fontSize: 11, color: "var(--muted)" }}>0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
+                <div style={{ marginTop: 6, display: "flex", gap: 6, alignItems: "center" }}>
+                  <button
+                    className="ghost-button"
+                    style={{ fontSize: 11 }}
+                    onClick={() => bgFileRef.current?.click()}
+                  >上传背景图</button>
+                  <input
+                    ref={bgFileRef}
+                    type="file"
+                    accept="image/*"
+                    style={{ display: "none" }}
+                    onChange={handleBgUpload}
+                  />
+                  {bgMsg && <span style={{ fontSize: 11, color: bgMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{bgMsg}</span>}
+                </div>
               </div>
 
               {/* ── AI 服务商管理 ── */}

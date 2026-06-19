@@ -387,6 +387,7 @@ function App() {
   const [cardDeleteConflict, setCardDeleteConflict] = useState<CardDeleteConflict | null>(null);
   const [examDeleteTarget, setExamDeleteTarget] = useState<ExamDeleteTarget | null>(null);
   const [assignedFormulaExamId, setAssignedFormulaExamId] = useState<number | null>(null);
+  const [showBg, setShowBg] = useState(0); // opacity 0~1, 0=关闭
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
 
@@ -422,6 +423,28 @@ function App() {
     if (!user || (!canDesign && !canGrade)) return;
     void refreshCards(canDesign);
   }, [user?.id, canDesign, canGrade]);
+
+  // 加载用户设置（背景图等）
+  useEffect(() => {
+    if (!user) return;
+    fetchJson<{ backgroundOpacity: number }>("/api/users/me/settings")
+      .then((s) => setShowBg(s.backgroundOpacity ?? 0))
+      .catch(() => {});
+  }, [user?.id]);
+
+  // 背景图：body::after 半透明浮层 (pointer-events:none 不挡交互)
+  useEffect(() => {
+    if (showBg > 0) {
+      document.documentElement.style.setProperty("--bg-opacity", String(showBg));
+      document.body.classList.add("has-bg-image");
+    } else {
+      document.documentElement.style.setProperty("--bg-opacity", "0");
+      document.body.classList.remove("has-bg-image");
+    }
+    return () => {
+      document.body.classList.remove("has-bg-image");
+    };
+  }, [showBg]);
 
   useEffect(() => {
     return () => {
