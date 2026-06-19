@@ -22,6 +22,49 @@ import { gradeSessionStudentResults, type CombinedStudentResult } from "../../..
 export function createScannerRouter(): Router {
   const router = Router();
 
+  // Write scanner result to projectx.db for linked exams
+  async function persistScannerResultToMainDb(
+    cardId: string,
+    result: CombinedStudentResult
+  ): Promise<void> {
+    if (!result.studentId || result.studentId === "未识别") return;
+
+    const { getDatabase } = await import("../../../../server/db");
+    const mainDb = getDatabase();
+
+    // Find user by student_number
+    const user = mainDb.prepare("SELECT id FROM users WHERE student_number = ?").get(result.studentId) as { id: number } | undefined;
+    if (!user) return;
+
+    // Find exams linked to this card
+    const exams = mainDb.prepare("SELECT id FROM exams WHERE card_id = ? AND status != 'closed'").all(cardId) as Array<{ id: number }>;
+    if (exams.length === 0) return;
+
+    const insertScore = mainDb.prepare(`
+      INSERT OR REPLACE INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score, graded_at)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `);
+    const insertQs = mainDb.prepare(`
+      INSERT OR REPLACE INTO question_scores (exam_id, student_id, question_number, question_id, score, max_score, score_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const exam of exams) {
+      insertScore.run(exam.id, user.id, result.objectiveScore, result.subjectiveScore, result.totalScore);
+
+      // Write per-question scores from deduplicated results
+      for (const q of result.objectiveQuestions) {
+        insertQs.run(exam.id, user.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+      }
+      for (const sq of result.subjectiveQuestions) {
+        insertQs.run(exam.id, user.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective");
+      }
+
+      // Update exam status to 'grading' if still draft
+      mainDb.prepare("UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'draft'").run(exam.id);
+    }
+  }
+
   // Progress event emitters by sessionId (for WebSocket integration)
   const progressEmitters = new Map<string, Set<(event: ScanProgressEvent) => void>>();
 
@@ -348,13 +391,18 @@ export function createScannerRouter(): Router {
           const combined = gradeSessionStudentResults(card, pages);
           results.push(combined);
 
-          // Cache the result
+          // Cache the result in scanner.db
           upsertStudentGradingResult({
             sessionId,
             studentId: combined.studentId,
             totalScore: combined.totalScore,
             maxScore: combined.totalMaxScore,
             pageCount: combined.pageCount
+          });
+
+          // Also persist to projectx.db for linked exams
+          persistScannerResultToMainDb(session.card_id, combined).catch((err) => {
+            console.error(`[Scanner] Main DB persist failed for ${combined.studentId}:`, err);
           });
         } catch (err) {
           console.error(`[Scanner] Combined grading failed for student ${group.studentId}:`, err);

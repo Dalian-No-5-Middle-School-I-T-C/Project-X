@@ -1140,7 +1140,7 @@ export async function createApp(): Promise<express.Express> {
           const exam = examRepo.createExam({
             name: examName,
             card_id: newId,
-            subject: saved.subject || saved.subjectLabel || undefined,
+            subject: saved.subjectLabel || saved.subject || undefined,
             created_by: req.user?.id ?? undefined
           });
           createdExamId = exam.id;
