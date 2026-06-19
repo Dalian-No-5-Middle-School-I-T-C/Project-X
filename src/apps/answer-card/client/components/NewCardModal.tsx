@@ -3,11 +3,10 @@ import { X, ChevronLeft, ChevronRight, Calendar } from "lucide-react";
 import { SUBJECT_OPTIONS, subjectToKey, isPredefinedSubject } from "../../../../shared/pinyin";
 
 export interface NewCardFormData {
-  subject: string;        // 拼音 key，如 wuli
-  subjectLabel: string;   // 中文名称，如 物理
-  title: string;          // 考试名称
-  examDate: string;       // ISO 日期字符串，必填
-  // 考试关联（v1.1.5 新增）
+  subject: string;
+  subjectLabel: string;
+  title: string;
+  examDate: string;
   examAction: "none" | "create" | "link";
   examName?: string;
   linkExamId?: number;

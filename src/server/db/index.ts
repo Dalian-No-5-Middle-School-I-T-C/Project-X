@@ -112,12 +112,25 @@ export function initializeDatabase(): void {
         mode            TEXT NOT NULL,
         option_count    INTEGER NOT NULL,
         score           REAL NOT NULL,
+        option_layout   TEXT,
         scoring_rule_json TEXT,
         PRIMARY KEY (block_id, question_number)
       );
       CREATE INDEX idx_objective_questions_block ON objective_questions(block_id);
     `);
     console.log("[DB] Migration: created objective_questions table");
+  }
+
+  const objectiveBlockCols = db.prepare("PRAGMA table_info(objective_blocks)").all() as Array<{ name: string }>;
+  if (!objectiveBlockCols.some((c) => c.name === "option_layout")) {
+    db.exec("ALTER TABLE objective_blocks ADD COLUMN option_layout TEXT DEFAULT 'horizontal'");
+    console.log("[DB] Migration: added option_layout column to objective_blocks");
+  }
+
+  const objectiveQuestionCols = db.prepare("PRAGMA table_info(objective_questions)").all() as Array<{ name: string }>;
+  if (!objectiveQuestionCols.some((c) => c.name === "option_layout")) {
+    db.exec("ALTER TABLE objective_questions ADD COLUMN option_layout TEXT");
+    console.log("[DB] Migration: added option_layout column to objective_questions");
   }
 
   const subjectiveBlockCols = db.prepare("PRAGMA table_info(subjective_blocks)").all() as Array<{ name: string }>;

@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS objective_blocks (
     mode             TEXT NOT NULL,                -- single / multiple / indeterminate
     score_per_question REAL NOT NULL,
     density          TEXT DEFAULT 'compact',       -- loose / normal / compact / dense
+    option_layout    TEXT DEFAULT 'horizontal',    -- horizontal / vertical
     wrong_or_extra_score REAL DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -130,6 +131,7 @@ CREATE TABLE IF NOT EXISTS objective_questions (
     mode            TEXT NOT NULL,
     option_count    INTEGER NOT NULL,
     score           REAL NOT NULL,
+    option_layout   TEXT,
     scoring_rule_json TEXT,
     PRIMARY KEY (block_id, question_number)
 );
