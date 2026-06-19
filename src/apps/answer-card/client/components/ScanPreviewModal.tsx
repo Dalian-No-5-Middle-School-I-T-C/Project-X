@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 export interface ScanPage {
@@ -68,7 +69,7 @@ export function ScanPreviewModal({ title, subtitle, pages, onClose }: ScanPrevie
   const hasScores = pages.some((p) => p.totalScore != null);
   const hasSides = pages.some((p) => p.side !== "front");
 
-  return (
+  return createPortal(
     <div className="pdf-modal-backdrop" onClick={onClose}>
       <div className="pdf-modal" onClick={(e) => e.stopPropagation()}>
         {/* Top bar */}
@@ -136,6 +137,7 @@ export function ScanPreviewModal({ title, subtitle, pages, onClose }: ScanPrevie
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
