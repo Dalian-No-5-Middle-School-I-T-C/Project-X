@@ -12,6 +12,8 @@ import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
 import { AnalysisRepository } from "../../../server/repositories/AnalysisRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
+import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
+import type { AssignedFormula } from "../../../shared/types";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -20,6 +22,8 @@ import exportRoutes from "../../../server/routes/export";
 import scoreRoutes from "../../../server/routes/scores";
 import sponsorRoutes from "../../../server/routes/sponsor";
 import backupRoutes from "../../../server/routes/backup";
+import exportScoresRoutes from "../../../server/routes/export-scores";
+import aiProviderRoutes from "../../../server/routes/ai-providers";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
@@ -399,9 +403,11 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/classes", classRoutes);
   app.use("/api/teachers", teacherRoutes);
   app.use("/api/export", exportRoutes);
+  app.use("/api/export", exportScoresRoutes);
   app.use("/api/scores", scoreRoutes);
   app.use("/api/sponsor", sponsorRoutes);
   app.use("/api/db", backupRoutes);
+  app.use("/api/ai/providers", aiProviderRoutes);
   console.log("[Server] v1.2.1 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
 
   // 业务路由 RBAC 网关
@@ -1040,10 +1046,39 @@ export async function createApp(): Promise<express.Express> {
 
   // ── Exam API ──────────────────────────────────────────
 
-  app.get("/api/exams", async (_req, res, next) => {
+  app.get("/api/exams", async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
-      res.json(examRepo.listExams());
+      const { grade_id, subject, academic_year, selection } = req.query as Record<string, string>;
+
+      if (selection === "1") {
+        const exams = examRepo.listExamsForSelection({
+          grade_id: grade_id ? Number(grade_id) : undefined,
+          subject: subject || undefined,
+          academic_year: academic_year || undefined
+        });
+        res.json(exams);
+        return;
+      }
+
+      const exams = examRepo.listExams({
+        grade_id: grade_id ? Number(grade_id) : undefined,
+        subject: subject || undefined
+      });
+      res.json(exams);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // 学年/科目列表（考试选择页用）
+  app.get("/api/exams/filters", async (_req, res, next) => {
+    try {
+      const examRepo = new ExamRepository();
+      res.json({
+        academicYears: examRepo.getAcademicYears(),
+        subjects: examRepo.getSubjects()
+      });
     } catch (error) {
       next(error);
     }
@@ -1195,12 +1230,128 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  // v1.4.0: 成绩表格数据（含排名变化、偏差值）
+  app.get("/api/analysis/exams/:examId/score-table", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      const classId = req.query.classId ? Number(req.query.classId) : undefined;
+      const displayMode = (req.query.displayMode as string) || "deviation";
+      const data = analysisRepo.getScoreTableData(
+        Number(req.params.examId),
+        classId,
+        displayMode as "deviation" | "zscore" | "percentile"
+      );
+      res.json(data);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // v1.4.0: 上次考试对比
+  app.get("/api/analysis/exams/:examId/previous", async (_req, res, next) => {
+    try {
+      res.json({ message: "TODO: implement previous exam comparison" });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // v1.4.0: 用户设置
+  app.get("/api/users/me/settings", async (req, res, next) => {
+    try {
+      const db = getDatabase();
+      const user = db.prepare(
+        "SELECT score_display_mode, review_confidence_threshold, ai_api_key FROM users WHERE id = ?"
+      ).get(req.user!.id) as { score_display_mode: string; review_confidence_threshold: number; ai_api_key: string | null } | undefined;
+      res.json({
+        scoreDisplayMode: user?.score_display_mode ?? "zscore",
+        reviewConfidenceThreshold: user?.review_confidence_threshold ?? 0.12,
+        aiApiKey: user?.ai_api_key ?? ""
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.patch("/api/users/me/settings", async (req, res, next) => {
+    try {
+      const { scoreDisplayMode, reviewConfidenceThreshold, aiApiKey } = req.body as Record<string, unknown>;
+      const db = getDatabase();
+      if (scoreDisplayMode && ["deviation", "zscore", "percentile"].includes(String(scoreDisplayMode))) {
+        db.prepare("UPDATE users SET score_display_mode = ? WHERE id = ?")
+          .run(String(scoreDisplayMode), req.user!.id);
+      }
+      if (typeof reviewConfidenceThreshold === "number") {
+        const t = Math.max(0, Math.min(1, reviewConfidenceThreshold));
+        db.prepare("UPDATE users SET review_confidence_threshold = ? WHERE id = ?")
+          .run(t, req.user!.id);
+      }
+      if (aiApiKey !== undefined) {
+        db.prepare("UPDATE users SET ai_api_key = ? WHERE id = ?")
+          .run(typeof aiApiKey === "string" ? aiApiKey : null, req.user!.id);
+      }
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.get("/api/analysis/exams/:examId/questions", async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
       const questions = analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
       res.json(questions);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // v1.4.0: 赋分引擎 API
+  app.get("/api/exams/:examId/assigned-formula", async (req, res, next) => {
+    try {
+      const service = new AssignedScoreService();
+      const formula = service.getFormula(Number(req.params.examId));
+      const presets = AssignedScoreService.getFormulaPresets();
+      const exam = new ExamRepository().findExamById(Number(req.params.examId));
+      res.json({
+        formula,
+        isAssignedSubject: exam?.subject ? AssignedScoreService.isAssignedSubject(exam.subject) : false,
+        presets
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put("/api/exams/:examId/assigned-formula", async (req, res, next) => {
+    try {
+      const { formula, recalculate } = req.body as { formula: AssignedFormula | null; recalculate?: boolean };
+      const examId = Number(req.params.examId);
+      const service = new AssignedScoreService();
+
+      if (!formula || !formula.enabled) {
+        service.disableFormula(examId);
+        res.json({ ok: true, updated: 0 });
+        return;
+      }
+
+      service.saveFormula(examId, formula);
+      let result = { updated: 0, skipped: 0 };
+      if (recalculate !== false) {
+        result = service.recalculateAll(examId);
+      }
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/exams/:examId/recalculate-assigned", async (req, res, next) => {
+    try {
+      const service = new AssignedScoreService();
+      const result = service.recalculateAll(Number(req.params.examId));
+      res.json({ ok: true, ...result });
     } catch (error) {
       next(error);
     }
@@ -1214,43 +1365,89 @@ export async function createApp(): Promise<express.Express> {
     });
   });
 
-  app.get("/api/analysis/ai/status", async (_req, res) => {
+  app.get("/api/analysis/ai/status", async (req, res) => {
     try {
+      // Fetch health status from llmclient
       const response = await fetchLlmClient("/health", { method: "GET" }, 2_500);
-      if (!response.ok) {
-        res.json({
-          available: false,
-          reason: `LLM service returned ${response.status}`,
-          defaultModel: null,
-          models: []
-        });
-        return;
+      const healthOk = response.ok;
+      let llmStatus: { ok?: boolean; dbExists?: boolean; defaultModel?: string; models?: Array<{ id: string; provider: string; label: string; available: boolean; thinking?: boolean }> } = {};
+      if (healthOk) {
+        llmStatus = await response.json() as any;
       }
-      const status = await response.json() as {
-        ok?: boolean;
-        dbExists?: boolean;
-        defaultModel?: string;
-        models?: Array<{ id: string; provider: string; label: string; available: boolean; thinking?: boolean }>;
-      };
-      const configuredModels = status.models ?? [];
+
+      // Fetch user's configured providers from DB
+      const db = getDatabase();
+      const providerRows = db.prepare(`
+        SELECT id, name, provider_type, base_url, api_key, models, is_active
+        FROM ai_providers
+        WHERE user_id = ? AND is_active = 1
+        ORDER BY sort_order, id
+      `).all((req as any).userId) as any[];
+
+      const userProviders = providerRows.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        providerType: p.provider_type,
+        baseUrl: p.base_url,
+        apiKey: p.api_key,
+        models: p.models ? JSON.parse(p.models) : null,
+        isActive: true
+      }));
+
+      const configuredModels = llmStatus.models ?? [];
       const hasAvailableModel = configuredModels.some((model) => model.available);
+      const hasUserProvider = userProviders.length > 0;
+
       res.json({
-        available: Boolean(status.ok && status.dbExists && hasAvailableModel),
-        reason: !status.dbExists
-          ? "LLM service is running, but Project-X database was not found."
-          : !hasAvailableModel
-            ? "LLM service is running, but no provider API key is configured."
-            : undefined,
-        defaultModel: status.defaultModel ?? null,
-        models: configuredModels
+        available: Boolean((healthOk && llmStatus.dbExists && hasAvailableModel) || hasUserProvider),
+        reason: !healthOk
+          ? `LLM service returned ${response.status}`
+          : !llmStatus.dbExists && !hasUserProvider
+            ? "LLM service is running, but Project-X database was not found."
+            : !hasAvailableModel && !hasUserProvider
+              ? "LLM service is running, but no provider API key is configured."
+              : undefined,
+        defaultModel: llmStatus.defaultModel ?? (hasUserProvider ? "auto" : null),
+        models: configuredModels,
+        providers: userProviders
       });
     } catch (error) {
-      res.json({
-        available: false,
-        reason: error instanceof Error ? error.message : "LLM service is not reachable.",
-        defaultModel: null,
-        models: []
-      });
+      // Even if llmclient is down, still return user providers if available
+      try {
+        const db = getDatabase();
+        const providerRows = db.prepare(`
+          SELECT id, name, provider_type, base_url, api_key, models, is_active
+          FROM ai_providers
+          WHERE user_id = ? AND is_active = 1
+          ORDER BY sort_order, id
+        `).all((req as any).userId) as any[];
+
+        const userProviders = providerRows.map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          providerType: p.provider_type,
+          baseUrl: p.base_url,
+          apiKey: p.api_key,
+          models: p.models ? JSON.parse(p.models) : null,
+          isActive: true
+        }));
+
+        res.json({
+          available: userProviders.length > 0,
+          reason: userProviders.length > 0 ? undefined : "LLM service is not reachable and no local providers configured.",
+          defaultModel: userProviders.length > 0 ? "auto" : null,
+          models: [],
+          providers: userProviders
+        });
+      } catch {
+        res.json({
+          available: false,
+          reason: error instanceof Error ? error.message : "LLM service is not reachable.",
+          defaultModel: null,
+          models: [],
+          providers: []
+        });
+      }
     }
   });
 
@@ -1278,6 +1475,23 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
 
+      // Build provider override from user config if provided
+      const providerId = req.body?.providerId ? Number(req.body.providerId) : undefined;
+      let providerOverride: Record<string, unknown> | undefined;
+      if (providerId && Number.isFinite(providerId)) {
+        const db = getDatabase();
+        const prov = db.prepare(
+          "SELECT * FROM ai_providers WHERE id = ? AND user_id = ?"
+        ).get(providerId, (req as any).userId) as any;
+        if (prov) {
+          providerOverride = {
+            provider_type: prov.provider_type,
+            base_url: prov.base_url,
+            api_key: prov.api_key
+          };
+        }
+      }
+
       const response = await fetchLlmClient("/analysis/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1285,7 +1499,8 @@ export async function createApp(): Promise<express.Express> {
           examId,
           classId,
           model: typeof req.body?.model === "string" ? req.body.model : undefined,
-          locale: "zh-CN"
+          locale: "zh-CN",
+          providerOverride: providerOverride ?? undefined
         })
       }, 120_000);
 
