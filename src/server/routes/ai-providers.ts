@@ -35,6 +35,20 @@ router.get("/", (req: Request, res: Response) => {
   })));
 });
 
+function normalizeBaseUrl(url: string, providerType: string): string {
+  if (!url) return url;
+  let normalized = url.trim().replace(/\/+$/, ""); // strip trailing slashes
+
+  // Gemini doesn't use /v1 convention
+  if (providerType === "gemini") return normalized;
+
+  // OpenAI-compatible: auto-append /v1 if missing
+  if (!normalized.endsWith("/v1") && !normalized.includes("/openai/deployments")) {
+    normalized = normalized + "/v1";
+  }
+  return normalized;
+}
+
 // ── 创建服务商 ────────────────────────────────────
 router.post("/", (req: Request, res: Response) => {
   const { name, providerType, baseUrl, apiKey, models } = req.body ?? {};
@@ -42,13 +56,14 @@ router.post("/", (req: Request, res: Response) => {
     res.status(400).json({ message: "缺少必要参数: name, providerType, baseUrl, apiKey" });
     return;
   }
+  const normalizedUrl = normalizeBaseUrl(baseUrl, providerType);
   const db = getDatabase();
   const result = db.prepare(`
     INSERT INTO ai_providers (user_id, name, provider_type, base_url, api_key, models)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run((req as any).userId, name, providerType, baseUrl, apiKey, models ? JSON.stringify(models) : null);
+  `).run((req as any).userId, name, providerType, normalizedUrl, apiKey, models ? JSON.stringify(models) : null);
 
-  res.status(201).json({ id: result.lastInsertRowid });
+  res.status(201).json({ id: result.lastInsertRowid, baseUrl: normalizedUrl });
 });
 
 // ── 更新服务商 ────────────────────────────────────
@@ -65,6 +80,10 @@ router.put("/:id", (req: Request, res: Response) => {
     return;
   }
 
+  // Normalize base_url if provided, using the effective providerType
+  const effectiveType = providerType ?? provider.provider_type;
+  const normalizedUrl = baseUrl ? normalizeBaseUrl(baseUrl, effectiveType) : null;
+
   db.prepare(`
     UPDATE ai_providers SET
       name = COALESCE(?, name),
@@ -76,13 +95,13 @@ router.put("/:id", (req: Request, res: Response) => {
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `).run(
-    name ?? null, providerType ?? null, baseUrl ?? null,
+    name ?? null, providerType ?? null, normalizedUrl,
     apiKey ?? null, models ? JSON.stringify(models) : null,
     isActive !== undefined ? (isActive ? 1 : 0) : null,
     Number(req.params.id)
   );
 
-  res.json({ ok: true });
+  res.json({ ok: true, baseUrl: normalizedUrl });
 });
 
 // ── 删除服务商 ────────────────────────────────────

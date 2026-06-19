@@ -24,6 +24,7 @@ import sponsorRoutes from "../../../server/routes/sponsor";
 import backupRoutes from "../../../server/routes/backup";
 import exportScoresRoutes from "../../../server/routes/export-scores";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
+import scoreEditingRoutes from "../../../server/routes/score-editing";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
@@ -1238,6 +1239,10 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  // ── Score editing: mounted before exam routes to match
+  //     /api/exams/:examId/student/:studentId/scores before /api/exams/:examId
+  app.use("/api/exams", scoreEditingRoutes);
+
   // ── Exam API ──────────────────────────────────────────
 
   app.get("/api/exams", async (req, res, next) => {
@@ -1729,12 +1734,26 @@ export async function createApp(): Promise<express.Express> {
           const text = await response.text().catch(() => "");
           if (text) message = text;
         }
+        // Provide inline error translations for common cases
+        if (message.includes("404") && providerOverride) {
+          const urlHint = providerOverride.base_url ? ` (base_url: ${providerOverride.base_url})` : "";
+          message = `自定义服务商 API 返回 404${urlHint}。请检查 Base URL 是否正确 — 它应该是 API 端点地址，而非网站首页。确保 Python llmclient 已启动。`;
+        }
         res.status(response.status >= 400 && response.status < 500 ? response.status : 502).json({ message });
         return;
       }
 
       res.json(await response.json());
     } catch (error) {
+      // Catch fetch errors (e.g. llmclient not reachable)
+      if (error instanceof Error && error.name === "AbortError") {
+        res.status(504).json({ message: "AI 服务请求超时。请检查 llmclient 是否正常运行。" });
+        return;
+      }
+      if (error instanceof Error && (error.message.includes("fetch") || error.message.includes("ECONNREFUSED"))) {
+        res.status(503).json({ message: "无法连接到 Python llmclient 中转服务。请先启动：py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766" });
+        return;
+      }
       next(error);
     }
   });

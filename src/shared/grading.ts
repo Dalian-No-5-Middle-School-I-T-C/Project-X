@@ -73,7 +73,7 @@ export function objectiveQuestionDefinitions(block: ObjectiveBlock): ObjectiveQu
   });
 }
 
-function findObjectiveQuestion(
+export function findObjectiveQuestion(
   card: AnswerCard,
   questionNumber: number
 ): { block: ObjectiveBlock; definition: ObjectiveQuestionDefinition } | null {
