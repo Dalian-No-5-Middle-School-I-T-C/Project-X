@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight, Pencil, Save, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import { fetchJson } from "../auth/api";
 
@@ -442,7 +443,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
         const hasPrev = enlargeIdx > 0;
         const hasNext = enlargeIdx < previewPages.length - 1;
         const zm = (delta: number) => setZoomState((z) => Math.min(3, Math.max(0.5, z + delta)));
-        return (
+        return createPortal(
           <div style={{ position: "fixed", inset: 0, zIndex: 999999, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setEnlargeIdx(-1)}>
             <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1a", borderRadius: 14, width: "94vw", maxHeight: "94vh", display: "flex", flexDirection: "column" }}>
               {/* Header */}
@@ -485,7 +486,8 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                 ))}
               </div>
             </div>
-          </div>
+          </div>,
+          document.body
         );
       })()}
     </div>

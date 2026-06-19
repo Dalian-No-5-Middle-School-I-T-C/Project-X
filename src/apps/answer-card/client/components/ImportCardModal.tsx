@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { X, ChevronLeft, ChevronRight, Calendar } from "lucide-react";
 import { SUBJECT_OPTIONS, subjectToKey } from "../../../../shared/pinyin";
 
@@ -185,7 +186,7 @@ export function ImportCardModal({
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div className="pdf-modal-backdrop" onClick={onClose}>
       <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 480, maxWidth: "calc(100vw - 40px)", maxHeight: "90vh", overflowY: "auto" }}>
         <div className="modal-header">
@@ -283,6 +284,7 @@ export function ImportCardModal({
           <button className="primary-button" type="button" onClick={handleConfirm}>确认导入</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
