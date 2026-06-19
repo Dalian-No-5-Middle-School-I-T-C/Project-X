@@ -515,6 +515,27 @@ button {
   justify-content: center;
 }
 
+.autosave-status {
+  min-width: 84px;
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.autosave-saving,
+.autosave-dirty {
+  color: #8a5a00;
+}
+
+.autosave-saved {
+  color: #1d7f5f;
+}
+
+.autosave-error {
+  color: #b42318;
+}
+
 /* ── Mode Toggle ────────────────────────────────────── */
 .mode-toggle {
   display: inline-flex;
@@ -3932,6 +3953,59 @@ input[type="checkbox"]:disabled {
 }
 
 /* ── Sponsor Page ───────────────────────────────────── */
+.score-warning-modal {
+  width: 560px;
+  max-width: calc(100vw - 40px);
+}
+
+.score-warning-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid rgba(230, 169, 38, 0.45);
+  border-radius: 10px;
+  background: rgba(255, 247, 230, 0.8);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.score-warning-summary strong {
+  font-size: 15px;
+}
+
+.score-warning-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.score-warning-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  font-size: 13px;
+}
+
+.score-warning-list small,
+.score-warning-more {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.score-warning-more {
+  margin: 0;
+}
+
 .sponsor-page {
   padding: 24px;
   overflow-y: auto;
