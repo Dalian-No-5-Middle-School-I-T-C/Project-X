@@ -323,6 +323,9 @@ CREATE TABLE IF NOT EXISTS student_scores (
     rank            INTEGER,                  -- 排名
     percentile      REAL,                    -- 百分位
     graded_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    manually_modified INTEGER DEFAULT 0,       -- v1.4.1: 手动改分标记
+    modified_by     INTEGER REFERENCES users(id), -- v1.4.1
+    modified_at     DATETIME,                   -- v1.4.1
     UNIQUE(exam_id, student_id)
 );
 
@@ -337,8 +340,28 @@ CREATE TABLE IF NOT EXISTS question_scores (
     score           REAL,
     max_score       REAL,
     score_type      TEXT,                    -- objective / subjective
+    manually_modified INTEGER DEFAULT 0,       -- v1.4.1: 手动改分标记
+    modified_by     INTEGER REFERENCES users(id), -- v1.4.1
+    modified_at     DATETIME,                   -- v1.4.1
     UNIQUE(exam_id, student_id, question_number, score_type)
 );
+
+-- 成绩手动修改记录（v1.4.1）
+CREATE TABLE IF NOT EXISTS answer_overrides (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    exam_id         INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    card_id         TEXT NOT NULL,
+    question_number INTEGER,
+    question_id     TEXT,
+    block_id        TEXT,
+    score_type      TEXT NOT NULL,           -- objective / subjective
+    override_type   TEXT NOT NULL,           -- score / answer
+    old_value       TEXT,                    -- JSON
+    new_value       TEXT,                    -- JSON
+    created_by      INTEGER REFERENCES users(id),
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_answer_overrides_exam ON answer_overrides(exam_id);
 
 -- ============================================================
 -- 模块五：导出模板（v1.4.0）

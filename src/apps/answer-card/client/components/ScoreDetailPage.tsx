@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, BarChart3, ClipboardList, Download, FileText } from "lucide-react";
+import { AlertTriangle, ArrowLeft, BarChart3, ClipboardList, Download, FileText } from "lucide-react";
+import { useAuth } from "../auth/AuthContext";
 import { fetchJson } from "../auth/api";
 import type { ExamOverview, QuestionAnalysisItem, StudentRankingItem, ScoreDisplayMode, ScoreTableRow } from "../../../../shared/types";
 import { AnalysisOverview } from "./AnalysisOverview";
@@ -9,6 +10,7 @@ import { AnalysisQuestions } from "./AnalysisQuestions";
 import { AnalysisTrend } from "./AnalysisTrend";
 import { ScoreTable } from "./ScoreTable";
 import { ExportModal } from "./ExportModal";
+import { ScoreFixPage } from "./ScoreFixPage";
 
 interface ClassOption {
   id: number;
@@ -26,7 +28,10 @@ interface Props {
 type SubTab = "overview" | "scores" | "exam-analysis" | "ai";
 
 export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
+  const { user, isAdmin } = useAuth();
+  const isTeacher = user?.role_name === "teacher" || isAdmin;
   const [subTab, setSubTab] = useState<SubTab>("overview");
+  const [showFixPage, setShowFixPage] = useState(false);
   const [classId, setClassId] = useState("");
   const [showExport, setShowExport] = useState(false);
   const [classes, setClasses] = useState<ClassOption[]>([]);
@@ -150,6 +155,18 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   // Top/bottom 5 from ranking
   const top5 = useMemo(() => ranking.slice(0, 5), [ranking]);
   const bottom5 = useMemo(() => ranking.slice(-5).reverse(), [ranking]);
+
+  // Render fix page overlay
+  if (showFixPage) {
+    return (
+      <ScoreFixPage
+        examId={examId}
+        examName={examName}
+        subject={subject}
+        onBack={() => setShowFixPage(false)}
+      />
+    );
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -281,6 +298,17 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
         {/* 成绩 Tab */}
         {subTab === "scores" && (
           <div style={{ padding: 24 }}>
+            {isTeacher && (
+              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+                <button
+                  className="ghost-button"
+                  style={{ fontSize: 12, color: "#E65100", border: "1px solid #E65100", borderRadius: 6, padding: "4px 12px" }}
+                  onClick={() => setShowFixPage(true)}
+                >
+                  <AlertTriangle size={14} /> 分数有问题？
+                </button>
+              </div>
+            )}
             <ScoreTable key={scoreTableKey} examId={examId} classId={classId || undefined} displayMode={displayMode} />
           </div>
         )}

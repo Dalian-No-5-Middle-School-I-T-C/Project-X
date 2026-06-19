@@ -319,7 +319,7 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
       {/* Settings modal — portal to body to escape backdrop-filter containing block */}
       {showSettings && createPortal(
         <div className="modal-overlay" onClick={() => setShowSettings(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560, width: "92vw", maxHeight: "90vh", overflowY: "auto" }}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 780, width: "94vw", maxHeight: "90vh", overflowY: "auto" }}>
             <div className="modal-header">
               <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>账号设置</h3>
               <button className="ghost-button" onClick={() => setShowSettings(false)}>
@@ -357,133 +357,217 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
 
               {/* ── AI 服务商管理 ── */}
               <div className="account-settings-group">
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                  <label className="account-settings-label" style={{ margin: 0 }}>AI 服务商</label>
-                  <button
-                    className="ghost-button"
-                    style={{ fontSize: 12, color: "var(--brand)", padding: "2px 8px" }}
-                    onClick={() => { setShowAddProvider(true); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}
-                  >
-                    <Plus size={14} /> 添加
-                  </button>
-                </div>
+                <div style={{ display: "flex", gap: 16 }}>
+                  {/* Left: provider list + form */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                      <label className="account-settings-label" style={{ margin: 0 }}>AI 服务商</label>
+                      <button
+                        className="ghost-button"
+                        style={{ fontSize: 12, color: "var(--brand)", padding: "2px 8px" }}
+                        onClick={() => { setShowAddProvider(true); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}
+                      >
+                        <Plus size={14} /> 添加
+                      </button>
+                    </div>
 
-                {/* Provider list */}
-                {aiProviders.length > 0 && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    {aiProviders.map((p) => (
-                      <div key={p.id} style={{
-                        display: "flex", alignItems: "center", gap: 8,
-                        padding: "8px 10px", borderRadius: 8, background: "var(--surface-soft)",
-                        border: "1px solid var(--line)", fontSize: 12
-                      }}>
-                        <div style={{ flex: 1, overflow: "hidden" }}>
-                          <div style={{ fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
-                          <div style={{ color: "var(--muted)", fontSize: 11 }}>{p.providerType.toUpperCase()} · {p.baseUrl}</div>
-                        </div>
-                        <button className="ghost-button" style={{ fontSize: 11, padding: "2px 6px" }} onClick={() => {
-                          setProviderEditor({
-                            editing: true, id: p.id,
-                            name: p.name, providerType: p.providerType,
-                            baseUrl: p.baseUrl, apiKey: p.apiKey,
-                            models: p.models ? p.models.join(",") : ""
-                          });
-                        }}>编辑</button>
-                        <button className="ghost-button" style={{ fontSize: 11, color: "var(--brand)", padding: "2px 6px" }} onClick={() => void deleteProvider(p.id)}>
-                          <Trash2 size={12} />
-                        </button>
+                    {/* Provider list */}
+                    {aiProviders.length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {aiProviders.map((p) => (
+                          <div key={p.id} style={{
+                            display: "flex", alignItems: "center", gap: 8,
+                            padding: "8px 10px", borderRadius: 8, background: "var(--surface-soft)",
+                            border: "1px solid var(--line)", fontSize: 12
+                          }}>
+                            <div style={{ flex: 1, overflow: "hidden" }}>
+                              <div style={{ fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
+                              <div style={{ color: "var(--muted)", fontSize: 11 }}>{p.providerType.toUpperCase()} · {p.baseUrl}</div>
+                            </div>
+                            <button className="ghost-button" style={{ fontSize: 11, padding: "2px 6px" }} onClick={() => {
+                              setProviderEditor({
+                                editing: true, id: p.id,
+                                name: p.name, providerType: p.providerType,
+                                baseUrl: p.baseUrl, apiKey: p.apiKey,
+                                models: p.models ? p.models.join(",") : ""
+                              });
+                            }}>编辑</button>
+                            <button className="ghost-button" style={{ fontSize: 11, color: "var(--brand)", padding: "2px 6px" }} onClick={() => void deleteProvider(p.id)}>
+                              <Trash2 size={12} />
+                            </button>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                )}
+                    )}
 
-                {/* Provider add form */}
-                {showAddProvider && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "var(--surface-tint)", border: "1px solid var(--brand-glow)" }}>
-                    <input
-                      type="text" placeholder="服务商名称 (如 我的GPT)"
-                      value={providerEditor.name}
-                      onChange={(e) => setProviderEditor({ ...providerEditor, name: e.target.value })}
-                      style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
-                    />
-                    <select
-                      value={providerEditor.providerType}
-                      onChange={(e) => setProviderEditor({ ...providerEditor, providerType: e.target.value })}
-                      style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
-                    >
-                      <option value="openai">GPT (OpenAI 兼容)</option>
-                      <option value="deepseek">DeepSeek</option>
-                      <option value="haqimi">哈基米 (自定义)</option>
-                      <option value="gemini">Gemini</option>
-                    </select>
-                    <input
-                      type="text" placeholder="Base URL (如 https://api.openai.com/v1)"
-                      value={providerEditor.baseUrl}
-                      onChange={(e) => setProviderEditor({ ...providerEditor, baseUrl: e.target.value })}
-                      style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace" }}
-                    />
-                    <input
-                      type="password" placeholder="API Key"
-                      value={providerEditor.apiKey}
-                      onChange={(e) => setProviderEditor({ ...providerEditor, apiKey: e.target.value })}
-                      style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace" }}
-                    />
-                    <input
-                      type="text" placeholder="模型列表 (逗号分隔，如 gpt-5.4,gpt-5.4-mini)"
-                      value={providerEditor.models}
-                      onChange={(e) => setProviderEditor({ ...providerEditor, models: e.target.value })}
-                      style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
-                    />
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={() => void saveProvider()}>保存服务商</button>
-                      <button className="ghost-button" style={{ fontSize: 12 }} onClick={() => { setShowAddProvider(false); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}>取消</button>
+                    {/* Provider add form */}
+                    {showAddProvider && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "var(--surface-tint)", border: "1px solid var(--brand-glow)" }}>
+                        <input
+                          type="text" placeholder="服务商名称 (如 我的GPT)"
+                          value={providerEditor.name}
+                          onChange={(e) => setProviderEditor({ ...providerEditor, name: e.target.value })}
+                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
+                        />
+                        <select
+                          value={providerEditor.providerType}
+                          onChange={(e) => setProviderEditor({ ...providerEditor, providerType: e.target.value })}
+                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
+                        >
+                          <option value="openai">GPT (OpenAI 兼容)</option>
+                          <option value="deepseek">DeepSeek</option>
+                          <option value="haqimi">哈基米 (自定义)</option>
+                          <option value="gemini">Gemini</option>
+                        </select>
+                        <div>
+                          <input
+                            type="text" placeholder="Base URL (如 https://api.openai.com/v1)"
+                            value={providerEditor.baseUrl}
+                            onChange={(e) => setProviderEditor({ ...providerEditor, baseUrl: e.target.value })}
+                            style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace", width: "100%", boxSizing: "border-box" }}
+                          />
+                          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
+                            系统会自动补齐末尾的 /v1 路径
+                          </div>
+                        </div>
+                        <input
+                          type="password" placeholder="API Key"
+                          value={providerEditor.apiKey}
+                          onChange={(e) => setProviderEditor({ ...providerEditor, apiKey: e.target.value })}
+                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace" }}
+                        />
+                        <div>
+                          <input
+                            type="text" placeholder="模型列表 (逗号分隔，如 gpt-5.4,gpt-5.4-mini)"
+                            value={providerEditor.models}
+                            onChange={(e) => setProviderEditor({ ...providerEditor, models: e.target.value })}
+                            style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, width: "100%", boxSizing: "border-box" }}
+                          />
+                          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
+                            不填则使用"自动获取"，需模型名与供应商一致
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={() => void saveProvider()}>保存服务商</button>
+                          <button className="ghost-button" style={{ fontSize: 12 }} onClick={() => { setShowAddProvider(false); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}>取消</button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Edit form */}
+                    {providerEditor.editing && providerEditor.id !== undefined && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "var(--surface-tint)", border: "1px solid var(--brand-glow)" }}>
+                        <input
+                          type="text" placeholder="服务商名称"
+                          value={providerEditor.name}
+                          onChange={(e) => setProviderEditor({ ...providerEditor, name: e.target.value })}
+                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
+                        />
+                        <select
+                          value={providerEditor.providerType}
+                          onChange={(e) => setProviderEditor({ ...providerEditor, providerType: e.target.value })}
+                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
+                        >
+                          <option value="openai">GPT (OpenAI 兼容)</option>
+                          <option value="deepseek">DeepSeek</option>
+                          <option value="haqimi">哈基米 (自定义)</option>
+                          <option value="gemini">Gemini</option>
+                        </select>
+                        <div>
+                          <input
+                            type="text" placeholder="Base URL"
+                            value={providerEditor.baseUrl}
+                            onChange={(e) => setProviderEditor({ ...providerEditor, baseUrl: e.target.value })}
+                            style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace", width: "100%", boxSizing: "border-box" }}
+                          />
+                          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
+                            系统会自动补齐末尾的 /v1 路径
+                          </div>
+                        </div>
+                        <input
+                          type="password" placeholder="API Key"
+                          value={providerEditor.apiKey}
+                          onChange={(e) => setProviderEditor({ ...providerEditor, apiKey: e.target.value })}
+                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace" }}
+                        />
+                        <div>
+                          <input
+                            type="text" placeholder="模型列表 (逗号分隔)"
+                            value={providerEditor.models}
+                            onChange={(e) => setProviderEditor({ ...providerEditor, models: e.target.value })}
+                            style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, width: "100%", boxSizing: "border-box" }}
+                          />
+                          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
+                            不填则使用"自动获取"，需模型名与供应商一致
+                          </div>
+                        </div>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={() => void saveProvider()}>更新</button>
+                          <button className="ghost-button" style={{ fontSize: 12 }} onClick={() => { setShowAddProvider(false); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}>取消</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right: usage guide */}
+                  <div style={{
+                    width: 210, flexShrink: 0,
+                    padding: "10px 12px", borderRadius: 8,
+                    background: "var(--surface-tint)", border: "1px solid var(--line)",
+                    fontSize: 11, lineHeight: 1.6, color: "var(--text-secondary)",
+                    alignSelf: "flex-start"
+                  }}>
+                    <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 6, color: "var(--text-primary)" }}>如何填写？</div>
+                    <div style={{ marginBottom: 6 }}>
+                      <strong>Base URL</strong> 要填 API 端点地址，<em>不是</em>网站首页。<br />
+                      <span style={{ color: "var(--brand)" }}>末尾无需 /v1 也能自动补齐</span>。
+                    </div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 6 }}>
+                      <thead>
+                        <tr style={{ borderBottom: "1px solid var(--line)" }}>
+                          <th style={{ textAlign: "left", padding: "2px 4px", fontSize: 10 }}>服务商</th>
+                          <th style={{ textAlign: "left", padding: "2px 4px", fontSize: 10 }}>Base URL 示例</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td style={{ padding: "2px 4px", fontWeight: 500 }}>GPT</td>
+                          <td style={{ padding: "2px 4px", fontFamily: "monospace", fontSize: 9, wordBreak: "break-all" }}>https://api.openai.com</td>
+                        </tr>
+                        <tr>
+                          <td style={{ padding: "2px 4px", fontWeight: 500 }}>DeepSeek</td>
+                          <td style={{ padding: "2px 4px", fontFamily: "monospace", fontSize: 9, wordBreak: "break-all" }}>https://api.deepseek.com</td>
+                        </tr>
+                        <tr>
+                          <td style={{ padding: "2px 4px", fontWeight: 500 }}>Azure</td>
+                          <td style={{ padding: "2px 4px", fontFamily: "monospace", fontSize: 9, wordBreak: "break-all" }}>https://xxx.openai.azure.com/openai</td>
+                        </tr>
+                        <tr>
+                          <td style={{ padding: "2px 4px", fontWeight: 500 }}>Ollama</td>
+                          <td style={{ padding: "2px 4px", fontFamily: "monospace", fontSize: 9, wordBreak: "break-all" }}>http://localhost:11434</td>
+                        </tr>
+                        <tr>
+                          <td style={{ padding: "2px 4px", fontWeight: 500 }}>其他</td>
+                          <td style={{ padding: "2px 4px", fontFamily: "monospace", fontSize: 9, wordBreak: "break-all" }}>https://your-api.com</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                    <div style={{ marginBottom: 6 }}>
+                      <strong>模型列表</strong> 填逗号分隔的名称，如<br />
+                      <span style={{ fontFamily: "monospace", fontSize: 10 }}>gpt-5.4,gpt-5.4-mini</span><br />
+                      留空则由系统自动获取可用模型。
+                    </div>
+                    <div style={{ marginBottom: 6 }}>
+                      <strong>类型选择</strong>：GPT/DeepSeek/哈基米 走 OpenAI 兼容协议；Gemini 走 Google API。
+                    </div>
+                    <div>
+                      <strong>使用前提</strong>：需要启动 Python llmclient 中转服务。<br />
+                      <span style={{ fontFamily: "monospace", fontSize: 10, background: "var(--surface-soft)", padding: "1px 4px", borderRadius: 3 }}>
+                        py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766
+                      </span>
                     </div>
                   </div>
-                )}
-
-                {/* Edit form */}
-                {providerEditor.editing && providerEditor.id !== undefined && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "var(--surface-tint)", border: "1px solid var(--brand-glow)" }}>
-                    <input
-                      type="text" placeholder="服务商名称"
-                      value={providerEditor.name}
-                      onChange={(e) => setProviderEditor({ ...providerEditor, name: e.target.value })}
-                      style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
-                    />
-                    <select
-                      value={providerEditor.providerType}
-                      onChange={(e) => setProviderEditor({ ...providerEditor, providerType: e.target.value })}
-                      style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
-                    >
-                      <option value="openai">GPT (OpenAI 兼容)</option>
-                      <option value="deepseek">DeepSeek</option>
-                      <option value="haqimi">哈基米 (自定义)</option>
-                      <option value="gemini">Gemini</option>
-                    </select>
-                    <input
-                      type="text" placeholder="Base URL"
-                      value={providerEditor.baseUrl}
-                      onChange={(e) => setProviderEditor({ ...providerEditor, baseUrl: e.target.value })}
-                      style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace" }}
-                    />
-                    <input
-                      type="password" placeholder="API Key"
-                      value={providerEditor.apiKey}
-                      onChange={(e) => setProviderEditor({ ...providerEditor, apiKey: e.target.value })}
-                      style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace" }}
-                    />
-                    <input
-                      type="text" placeholder="模型列表 (逗号分隔)"
-                      value={providerEditor.models}
-                      onChange={(e) => setProviderEditor({ ...providerEditor, models: e.target.value })}
-                      style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
-                    />
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={() => void saveProvider()}>更新</button>
-                      <button className="ghost-button" style={{ fontSize: 12 }} onClick={() => { setShowAddProvider(false); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}>取消</button>
-                    </div>
-                  </div>
-                )}
+                </div>
               </div>
               {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
               <button className="primary-button" type="button" onClick={() => void saveSettings()}>保存设置</button>
