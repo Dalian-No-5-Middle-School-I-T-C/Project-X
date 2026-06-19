@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "description": "Local answer card designer and PDF exporter for Project-X.",
   "author": "Project-X",
   "private": true,
@@ -45,8 +45,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "adm-zip": "^0.5.17",
+    "archiver": "^8.0.0",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.10.0",
+    "expr-eval": "^2.0.2",
     "express": "^5.1.0",
     "multer": "^2.0.2",
     "pdfkit": "^0.17.2",

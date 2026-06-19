@@ -11,6 +11,10 @@ export interface CardSummary {
   created_by_name?: string;
 }
 
+function normalizeOptionLayout(value: unknown): "horizontal" | "vertical" {
+  return value === "vertical" ? "vertical" : "horizontal";
+}
+
 export class CardRepository {
   private db: Database.Database;
 
@@ -87,9 +91,10 @@ export class CardRepository {
   private insertObjectiveBlock(block: any, cardId: string): void {
     const questions = normalizeObjectiveQuestions(block);
     const firstQuestion = questions[0];
+    const blockOptionLayout = normalizeOptionLayout(block.optionLayout);
     const stmt = this.db.prepare(`
-      INSERT INTO objective_blocks (id, card_id, sort_order, title, question_start, question_count, option_count, mode, score_per_question, density, wrong_or_extra_score)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO objective_blocks (id, card_id, sort_order, title, question_start, question_count, option_count, mode, score_per_question, density, option_layout, wrong_or_extra_score)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       block.id,
@@ -102,6 +107,7 @@ export class CardRepository {
       firstQuestion?.mode ?? block.mode ?? "single",
       firstQuestion?.score ?? block.scorePerQuestion ?? 0,
       block.density ?? "compact",
+      blockOptionLayout,
       firstQuestion?.scoringRule?.wrongOrExtraScore ?? block.multipleScoring?.wrongOrExtraScore ?? 0
     );
 
@@ -109,8 +115,8 @@ export class CardRepository {
       "INSERT OR REPLACE INTO objective_answer_keys (block_id, question_number, correct_options) VALUES (?, ?, ?)"
     );
     const questionStmt = this.db.prepare(
-      `INSERT OR REPLACE INTO objective_questions (block_id, question_number, sort_order, mode, option_count, score, scoring_rule_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT OR REPLACE INTO objective_questions (block_id, question_number, sort_order, mode, option_count, score, option_layout, scoring_rule_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     );
     questions.forEach((question, index) => {
       questionStmt.run(
@@ -120,6 +126,7 @@ export class CardRepository {
         question.mode,
         question.optionCount,
         question.score,
+        normalizeOptionLayout(question.optionLayout ?? blockOptionLayout),
         question.scoringRule ? JSON.stringify(question.scoringRule) : null
       );
       if (question.answerKey && question.answerKey.length > 0) {
@@ -240,6 +247,7 @@ export class CardRepository {
       }
 
       const questionRows = this.db.prepare("SELECT * FROM objective_questions WHERE block_id = ? ORDER BY sort_order, question_number").all(b.id) as any[];
+      const blockOptionLayout = normalizeOptionLayout(b.option_layout);
       const block = {
         id: b.id,
         type: "objective",
@@ -250,6 +258,7 @@ export class CardRepository {
         mode: b.mode,
         scorePerQuestion: b.score_per_question,
         density: b.density,
+        optionLayout: blockOptionLayout,
         answerKey: answerKeys,
         multipleScoring: {
           partialScores,
@@ -261,6 +270,7 @@ export class CardRepository {
               mode: q.mode,
               optionCount: q.option_count,
               score: q.score,
+              optionLayout: normalizeOptionLayout(q.option_layout ?? blockOptionLayout),
               answerKey: answerKeys[q.question_number] ?? [],
               scoringRule: q.scoring_rule_json ? JSON.parse(q.scoring_rule_json) : undefined
             }))

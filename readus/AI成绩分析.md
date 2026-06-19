@@ -1,10 +1,10 @@
 # AI 成绩分析工具说明
 
-> **适用版本**: v1.2.0 及以上
+> **适用版本**: v1.4.0 及以上
 > **适用对象**: 教师、管理员、开发者 / 运维
 > **关联文档**: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`ADMIN-GUIDE.md`](./ADMIN-GUIDE.md) · [`多端使用说明.md`](./多端使用说明.md)
 
-Project-X v1.2.0 在「分析 → 成绩分析」中新增 AI 成绩分析卡片，位置在「分数统计分布」之后、「学生排名」之前。首版采用手动点击生成，不缓存、不落库、不做流式输出。
+Project-X v1.2.0 在「分析 → 成绩分析」中新增 AI 成绩分析卡片。v1.4.0 扩展为多服务商架构，支持 GPT、DeepSeek、哈基米、Gemini 四线路，并可自定义 Base URL。
 
 AI 报告只读取当前考试和当前班级筛选范围内的成绩统计数据，不允许模型执行任意 SQL，也不会把学生个人姓名作为分析素材返回给模型。
 
@@ -12,21 +12,32 @@ AI 报告只读取当前考试和当前班级筛选范围内的成绩统计数�
 
 ## 1. 使用方式
 
-1. 先启动 Python 中转服务：
+### A. 内置服务商（llmclient）
+
+先启动 Python 中转服务：
 
 ```powershell
 py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766
 ```
 
-2. 再启动 Electron 或 Web 开发环境。
-3. 进入「分析 → 成绩分析」，选择考试和班级筛选。
-4. 在 AI 成绩分析卡片中选择可用模型，点击「生成分析」。
+进入「分析 → 成绩分析」，选择「内置 LLM 服务」→ 下拉选择模型 → 点击「生成分析」。
 
 Python 服务未启动、数据库路径不可访问、或当前 provider 没有配置 API Key 时，前端会禁用生成按钮并显示原因。
 
+### B. 自定义服务商（v1.4.0 新增）
+
+无需 llmclient 配置环境变量，直接在账号设置中配置：
+
+1. 进入「账号设置」→「AI 服务商」→「添加」
+2. 选择类型：GPT（OpenAI兼容）/ DeepSeek / 哈基米（自定义）/ Gemini
+3. 填写 Base URL、API Key，可选填模型列表（逗号分隔，如 `gpt-5.4,gpt-5.4-mini`）
+4. 进入 AI 分析面板，选择你配置的服务商 → 输入模型名 → 生成分析
+
+服务商配置保存在 `ai_providers` 表中，每个教师可配置多个服务商。
+
 ---
 
-## 2. 环境变量
+## 2. 环境变量（内置服务商）
 
 `llmclient` 会优先读取 `llmclient/.env`，也支持系统环境变量。
 
@@ -46,11 +57,13 @@ Python 服务未启动、数据库路径不可访问、或当前 provider 没有
 %APPDATA%\answer-card-designer\data\projectx.db
 ```
 
+**自定义服务商不使用这些环境变量**，API Key 和 Base URL 由数据库 `ai_providers` 表管理。
+
 ---
 
 ## 3. 模型与思考模式
 
-当前内置模型：
+### 内置模型
 
 | 模型 | Provider | 默认思考 |
 |------|----------|----------|
@@ -61,9 +74,9 @@ Python 服务未启动、数据库路径不可访问、或当前 provider 没有
 | `gpt-5.5` | OpenAI | 开启，`reasoning_effort=high` |
 | `gpt-5.4-mini` | OpenAI | 开启，`reasoning_effort=high` |
 
-DeepSeek V4 thinking 模式下，`temperature`、`top_p`、`presence_penalty`、`frequency_penalty` 不传入请求，避免配置项看似生效但实际被服务端忽略。工具调用多轮对话会保留 assistant 消息中的 `reasoning_content`，但不会返回前端展示。
+### 自定义服务商模型
 
-GPT 模型走 OpenAI 兼容接口，使用 `OPENAI_API_KEY`，可通过 `OPENAI_BASE_URL` 指向兼容服务；内置 GPT 模型默认同样传入 `reasoning_effort=high`。
+自定义服务商走 OpenAI 兼容接口。在账号设置中配置模型列表（逗号分隔）后，AI 分析面板的模型输入框会提供 datalist 建议。未配置时手动输入模型名即可。
 
 ---
 
@@ -86,14 +99,23 @@ GPT 模型走 OpenAI 兼容接口，使用 `OPENAI_API_KEY`，可通过 `OPENAI_
 
 ## 5. Node / Electron 集成
 
-Node 后端新增两个接口：
+Node 后端新增接口：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/analysis/ai/status` | 探测 Python 服务、数据库路径和可用模型 |
-| `POST` | `/api/analysis/exams/:examId/ai-analysis` | 转发当前考试与班级范围，生成结构化 AI 报告 |
+| `GET` | `/api/analysis/ai/status` | 探测 Python 服务 + 用户自定义服务商 |
+| `POST` | `/api/analysis/exams/:examId/ai-analysis` | 转发当前考试，支持 providerId 参数 |
 
-Electron 主进程仍优先尝试 `127.0.0.1:5174` 启动本地 Express。若该端口被占用或被系统拒绝绑定（例如 `EADDRINUSE` / `EACCES`），会自动切换到随机端口，并通过 `/api/app/health` 做真实 HTTP 探活；只有本地接口可访问后才加载窗口，避免出现只有前端空壳、接口不可用的状态。
+### 自定义服务商 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/ai/providers` | 列表当前教师的所有服务商 |
+| `POST` | `/api/ai/providers` | 创建服务商 |
+| `PUT` | `/api/ai/providers/:id` | 更新服务商 |
+| `DELETE` | `/api/ai/providers/:id` | 删除服务商 |
+
+Electron 主进程仍优先尝试 `127.0.0.1:5174` 启动本地 Express。
 
 ---
 

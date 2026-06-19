@@ -90,15 +90,16 @@ export class AnalysisRepository {
   }
 
   /** List classes that have students with scores for this exam */
-  getExamClasses(examId: number): Array<{ classId: number; className: string }> {
+  getExamClasses(examId: number): Array<{ classId: number; className: string; gradeName?: string }> {
     const classes = this.db.prepare(`
-      SELECT DISTINCT cs.class_id as classId, c.name as className
+      SELECT DISTINCT cs.class_id as classId, c.name as className, g.name as gradeName
       FROM student_scores ss
       JOIN class_students cs ON cs.student_id = ss.student_id
       JOIN classes c ON c.id = cs.class_id
+      LEFT JOIN grades g ON g.id = c.grade_id
       WHERE ss.exam_id = ?
-      ORDER BY c.sort_order, c.name
-    `).all(examId) as Array<{ classId: number; className: string }>;
+      ORDER BY g.sort_order, c.sort_order, c.name
+    `).all(examId) as Array<{ classId: number; className: string; gradeName: string | null }>;
 
     const unknown = this.db.prepare(`
       SELECT COUNT(*) as count
@@ -107,7 +108,8 @@ export class AnalysisRepository {
         AND NOT EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = ss.student_id)
     `).get(examId) as { count: number };
 
-    return unknown.count > 0 ? [...classes, { classId: 0, className: "未知班级" }] : classes;
+    const result = classes.map((c) => ({ ...c, gradeName: c.gradeName ?? undefined }));
+    return unknown.count > 0 ? [...result, { classId: 0, className: "未分配班级", gradeName: "无年级" }] : result;
   }
 
   /** Get exam name for filename */
@@ -117,18 +119,29 @@ export class AnalysisRepository {
 
   getExamOverview(examId: number, classId?: number): ExamOverview {
     const c = classFilter(classId);
+
+    // Get total max possible score for dynamic pass/excellent thresholds
+    const totalMax = this.db.prepare(`
+      SELECT SUM(max_score) as total FROM (
+        SELECT DISTINCT question_number, score_type, max_score FROM question_scores WHERE exam_id = ?
+      )
+    `).get(examId) as { total: number } | undefined;
+    const fullScore = totalMax?.total ?? 100;
+    const passLine = fullScore * 0.6;
+    const excellentLine = fullScore * 0.9;
+
     const stats = this.db.prepare(`
       SELECT
         COUNT(*) as gradedCount,
         ROUND(AVG(ss.total_score), 1) as avgScore,
         ROUND(MAX(ss.total_score), 1) as maxScore,
         ROUND(MIN(ss.total_score), 1) as minScore,
-        SUM(CASE WHEN ss.total_score >= 60 THEN 1 ELSE 0 END) as passCount,
-        SUM(CASE WHEN ss.total_score >= 85 THEN 1 ELSE 0 END) as excellentCount
+        SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as passCount,
+        SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellentCount
       FROM student_scores ss
       ${c.join}
       WHERE ss.exam_id = ? ${c.where}
-    `).get(examId, ...c.params) as {
+    `).get(passLine, excellentLine, examId, ...c.params) as {
       gradedCount: number; avgScore: number; maxScore: number; minScore: number;
       passCount: number; excellentCount: number;
     } | undefined;
@@ -478,5 +491,184 @@ export class AnalysisRepository {
     }));
 
     return { students, questionHeaders };
+  }
+
+  /**
+   * v1.4.0: 获取成绩表格数据（含排名变化和偏差值）
+   */
+  getScoreTableData(
+    examId: number,
+    classId?: number,
+    displayMode: "deviation" | "zscore" | "percentile" = "deviation"
+  ): {
+    examName: string;
+    subject: string | null;
+    examDate: string | null;
+    hasAssignedScore: boolean;
+    rows: Array<{
+      studentId: number;
+      studentNumber: string;
+      studentName: string;
+      className: string;
+      classId: number | null;
+      gradeName: string | null;
+      totalScore: number;
+      assignedScore: number | null;
+      gradeRank: number;
+      classRank: number;
+      rankChange: number | null;
+      prevRank: number | null;
+      prevExamName: string | null;
+      displayValue: number | null;
+      objectiveScore: number;
+      subjectiveScore: number;
+    }>;
+    totalCount: number;
+  } {
+    // Exam info
+    const exam = this.db.prepare(
+      `SELECT e.name, e.subject, ac.exam_date, e.assigned_formula
+       FROM exams e LEFT JOIN answer_cards ac ON ac.id = e.card_id
+       WHERE e.id = ?`
+    ).get(examId) as { name: string; subject: string | null; exam_date: string | null; assigned_formula: string | null } | undefined;
+
+    if (!exam) throw new Error("考试不存在");
+
+    const hasAssigned = !!(exam.assigned_formula && exam.assigned_formula !== "");
+
+    // Get all students for grade ranking
+    const allStudents = this.db.prepare(`
+      SELECT
+        ss.student_id, u.student_number, u.name, ss.total_score,
+        ss.objective_score, ss.subjective_score, ss.assigned_score,
+        c.name as class_name, c.id as class_id,
+        g.name as grade_name
+      FROM student_scores ss
+      JOIN users u ON u.id = ss.student_id
+      LEFT JOIN class_students cs ON cs.student_id = ss.student_id
+      LEFT JOIN classes c ON c.id = cs.class_id
+      LEFT JOIN grades g ON g.id = c.grade_id
+      WHERE ss.exam_id = ?
+      ORDER BY ss.total_score DESC
+    `).all(examId) as Array<{
+      student_id: number; student_number: string; name: string;
+      total_score: number; objective_score: number; subjective_score: number;
+      assigned_score: number | null; class_name: string | null; class_id: number | null;
+      grade_name: string | null;
+    }>;
+
+    if (allStudents.length === 0) {
+      return {
+        examName: exam.name,
+        subject: exam.subject,
+        examDate: exam.exam_date,
+        hasAssignedScore: hasAssigned,
+        rows: [],
+        totalCount: 0
+      };
+    }
+
+    // Grade rank (already sorted DESC)
+    const gradeRanked = allStudents.map((s, i) => ({ ...s, gradeRank: i + 1 }));
+
+    // Class rank
+    const classGroups = new Map<string, typeof gradeRanked>();
+    for (const s of gradeRanked) {
+      const key = s.class_name ?? "__unassigned__";
+      if (!classGroups.has(key)) classGroups.set(key, []);
+      classGroups.get(key)!.push(s);
+    }
+    for (const group of classGroups.values()) {
+      group.forEach((s, i) => ((s as any).classRank = i + 1));
+    }
+
+    // Filter by class
+    let filtered = gradeRanked;
+    if (classId !== undefined) {
+      if (classId === 0) {
+        filtered = gradeRanked.filter((s) => s.class_id == null);
+      } else {
+        filtered = gradeRanked.filter((s) => s.class_id === classId);
+      }
+    }
+
+    // Mean and std for deviation / zscore
+    const scores = filtered.map((s) => s.total_score);
+    const mean = scores.reduce((a, b) => a + b, 0) / scores.length;
+    const variance = scores.reduce((sum, s) => sum + (s - mean) ** 2, 0) / scores.length;
+    const std = Math.sqrt(variance);
+
+    // Previous exam (same subject, same grade)
+    const prevExam = this.db.prepare(`
+      SELECT e.id, e.name
+      FROM exams e
+      LEFT JOIN answer_cards ac ON ac.id = e.card_id
+      WHERE e.subject = ? AND e.grade_id = (SELECT grade_id FROM exams WHERE id = ?)
+        AND e.id != ?
+        AND (ac.exam_date IS NULL OR ac.exam_date < (SELECT ac2.exam_date FROM exams e2 LEFT JOIN answer_cards ac2 ON ac2.id = e2.card_id WHERE e2.id = ?))
+      ORDER BY COALESCE(ac.exam_date, e.created_at) DESC
+      LIMIT 1
+    `).get(exam.subject, examId, examId, examId) as { id: number; name: string } | undefined;
+
+    // Previous exam rankings
+    let prevRankMap = new Map<number, number>();
+    if (prevExam) {
+      const prevStudents = this.db.prepare(`
+        SELECT student_id, total_score
+        FROM student_scores WHERE exam_id = ?
+        ORDER BY total_score DESC
+      `).all(prevExam.id) as Array<{ student_id: number; total_score: number }>;
+      prevStudents.forEach((s, i) => prevRankMap.set(s.student_id, i + 1));
+    }
+
+    // Build rows
+    const rows = filtered.map((s) => {
+      const prevRank = prevRankMap.get(s.student_id) ?? null;
+      const rankChange = prevRank != null ? prevRank - s.gradeRank : null;
+
+      let displayValue: number | null = null;
+      if (displayMode === "deviation") {
+        displayValue = std > 0 ? Math.round((50 + 10 * (s.total_score - mean) / std) * 10) / 10 : 50;
+      } else if (displayMode === "zscore") {
+        displayValue = std > 0 ? Math.round(((s.total_score - mean) / std) * 100) / 100 : 0;
+      } else if (displayMode === "percentile") {
+        displayValue = Math.round((1 - (s.gradeRank - 1) / allStudents.length) * 1000) / 10;
+      }
+
+      return {
+        studentId: s.student_id,
+        studentNumber: s.student_number,
+        studentName: s.name,
+        className: s.class_name ?? "未知班级",
+        classId: s.class_id,
+        gradeName: s.grade_name ?? null,
+        totalScore: s.total_score,
+        assignedScore: s.assigned_score,
+        gradeRank: s.gradeRank,
+        classRank: (s as any).classRank ?? 0,
+        rankChange,
+        prevRank,
+        prevExamName: prevExam?.name ?? null,
+        displayValue,
+        objectiveScore: s.objective_score,
+        subjectiveScore: s.subjective_score
+      };
+    });
+
+    // Sort: all grades by gradeRank, single class by classRank
+    if (classId !== undefined && classId !== 0) {
+      rows.sort((a, b) => a.classRank - b.classRank);
+    } else {
+      rows.sort((a, b) => a.gradeRank - b.gradeRank);
+    }
+
+    return {
+      examName: exam.name,
+      subject: exam.subject,
+      examDate: exam.exam_date,
+      hasAssignedScore: hasAssigned,
+      rows,
+      totalCount: rows.length
+    };
   }
 }

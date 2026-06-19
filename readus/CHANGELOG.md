@@ -1,5 +1,144 @@
 # Project-X CHANGELOG
 
+## v1.4.0 (2026-06-18)
+
+### 成绩查看大改造
+- 新增「考试选择页」：按学年、年级、学科三级筛选，卡片网格展示考试，含人数/均分/状态预览
+- 考试管理从分析子Tab独立为顶层「考试管理」Tab，位于设计右侧
+- 成绩查看页新增班级选择器（右上角），5个子Tab：概况、成绩、考试分析、AI分析、得分率
+- 概况Tab重写：信息卡片 + 分数段水平条形图 + 箱型图 + 上次考试对比条
+
+### 成绩表格增强
+- 成绩表格支持排序：全年级按校排，单班级按班排
+- 新增「名次变化」列：对比上次同科考试，↑进步/↓退步箭头 + 颜色
+- 新增「偏差值/Z值/百分位排名」三选一（账户设置切换）
+- 新增 API: `/api/analysis/exams/:id/score-table`
+
+### 赋分引擎
+- 新增三种赋分公式：等比例转换、线性公式(raw×0.7+30)、自定义表达式
+- 赋分科目自动识别：化学、生物、地理、政治
+- 赋分配置可在考试创建时和考后修改，实时批量重新计算
+- DB: `student_scores.assigned_score`, `exams.assigned_formula`
+
+### 导出系统扩展
+- 导出模板系统：4个自定义模板槽，每个模板可命名并保存列配置
+- 胶囊拖拽排序列：每列以胶囊形式展示，支持拖拽更换列序
+- 数据预览：导出前预览前3行真实数据
+- 侧表：可附加年级前N名参照表，N可手动输入，与主表间有空隙
+- A4竖版适配：超出1页时警告提示
+- 新增表: `export_templates`
+
+### 账户设置
+- 偏差值/Z值/百分位排名三选一
+- 复核置信度阈值滑块 (0~1)
+- DB: `users.score_display_mode`, `users.review_confidence_threshold`
+
+### 数据库迁移
+- student_scores 新增 assigned_score 列
+- exams 新增 assigned_formula 列
+- users 新增 score_display_mode, review_confidence_threshold 列
+- 新增 export_templates 表
+- 新增 ai_providers 表（多服务商配置）
+
+### AI 多服务商扩展
+- 支持 GPT / DeepSeek / 哈基米 / Gemini 四条AI分析线路，可自定义 Base URL
+- 账号设置新增「AI 服务商」管理：添加/编辑/删除服务商配置
+- AI 分析面板新增服务商下拉选择 + 模型输
+- 数据库：ai_providers 表 (name, provider_type, base_url, api_key, models)
+- API: GET/POST/PUT/DELETE /api/ai/providers
+
+### 班级对比增强
+- 考试分析Tab班级对比新增「对比基准班级」下拉，选择班级后显示均分差值
+- 班级按年级分组展示（optgroup），未分配年级自动归入「无年级」
+- 班级对比表支持行间均分差异着色（↑绿/↓红）
+
+### 成绩表格增强
+- 成绩表格新增「年级」列（通过 LEFT JOIN grades 获取）
+- 概况Tab新增「年级前五/后五」排名（按分数排序）
+- 概况Tab新增「进步前五/退步前五」排名（按名次变化排序）
+
+### UX 修复
+- 账号设置 Modal 使用 Portal 渲染到 body，修复 backdrop-filter 遮挡问题
+- Z值/班级下拉框垂直对齐统一（padding + flex 居中）
+- 考试管理表格样式统一为列表式（exam-list-table div 布局）
+- 子Tab 文字与标题栏左右对齐
+- 平均分卡片移除红色高亮框
+- 导出按钮文字横向排列（whiteSpace: nowrap）
+
+### Bug 修复
+- **答题卡竖向排列修复**：客观题「竖向（4题一组）」不再将每道题的 A/B/C/D 选项完全纵向堆叠并独占整行，改为高考 AB 卡式 4 题一组纵向排布，每题选项仍保持横向小组选项
+- **预览/PDF 坐标一致**：竖向模式继续由 `src/shared/layout.ts` 统一生成坐标，SVG 预览、PDF 导出和识别布局 JSON 共享同一排版结果
+- **答题卡创建日期校验**：移除新建弹窗中 `new Date()` 的宽松失焦解析，避免 `777-01-01` 被自动规范为 `0777-01-01`；前端、保存接口和导入接口均校验真实日期与年份范围
+
+### UX 交互一致性改进
+- 客观题属性面板中「选项排列」的竖向选项更新为「竖向（4题一组）」，底部提示同步说明 AB 卡式小组排布规则
+- 新建答题卡日期输入框在外部值变化时同步日历月份，非法手输日期失焦后回退到当前有效值，避免右侧预览/检查器显示异常年份
+
+### 开发者
+- `ObjectiveBlock`、`ObjectiveQuestionConfig` 新增可选字段 `optionLayout: "horizontal" | "vertical"`，缺省按 `"horizontal"`，旧答题卡 JSON 与数据库无需迁移
+- `ObjectiveQuestionDefinition` 同步增加 `optionLayout`，由 `normalizeQuestionConfig` 按块级 → 单题级 → 默认值顺序解析；评分逻辑不受影响
+- `layout.ts` 新增 `vertical-grid` 排列模式与 `isVerticalQuestion` 判定，竖向题走 4 题一组纵向排布路径
+
+---
+
+## v1.3.0 (2026-06-17)
+
+### 学科答题卡模板
+- 新增 `src/shared/cardTemplates.ts`，新建答题卡时可按科目自动生成语文、英语、数学、物理、化学、生物的常用题块结构
+- 英语模板支持在新建弹窗中选择是否包含听力题 1-20
+- 语文模板支持选择题统一置于卷首，或按原题号分散插入到主观题块之间
+- 化学、生物等模板内置"解答题中的小空"样式，减少手动搭建填空线的重复操作
+
+### 客观题题级配置与评分规则
+- 客观题块新增 `questions` 明细，可为同一题块内的每道题独立设置题号、题型、选项数、分值、标准答案和评分规则
+- 多选/不定项评分规则扩展为三类：按选对项数给分、按正确答案总数分档给分、固定部分分
+- 评分规则支持"允许夹杂错误选项但按选对项数给分"的特殊口径，用于语文等题型
+- 新增 `scripts/grading-rules-smoke.ts`，覆盖语文、数学、物理、生物典型部分得分规则
+
+### 填空题与版式
+- 主观题块新增 `blockKind`，区分"填空题"和"解答题"，避免仅靠标题猜测布局
+- 填空题支持每个空单独保存标签、宽度和高度，布局与 PDF 预览会显示对应空号
+- 布局引擎支持非连续客观题号、混合选项数和跨页续排，`layout.ts`、`pdf.ts`、前端 SVG 预览共用同一结构
+
+### 删除保护与数据一致性
+- 答题卡被考试引用时，直接删除会返回 409，并给出引用考试名称
+- 删除答题卡时可选择"解绑考试并删除答题卡"或"连同引用考试一起删除"
+- 删除考试时可选择仅删除考试并解除答题卡关联，或同时删除关联答题卡
+- `exams.card_id` 改为可空，支持先保留考试记录再解除答题卡引用
+
+### 数据库与文档
+- 新增 `objective_questions` 表，保存题级客观题配置和 `scoring_rule_json`
+- `subjective_blocks` 新增 `block_kind`，`subjective_questions` 新增 `blanks_label_style`、`blanks_items_json`
+- README、架构、数据库、管理员、多端、账号和项目胶囊文档同步到 v1.3.0
+
+---
+
+## v1.2.1 (2026-06-17)
+
+### Bug 修复
+
+- **Electron 后端启动增强**：探活重试从 20 次（3s）延长至 30 次（4.5s）；新增原生模块加载失败的明确错误诊断，区分 native 模块 ABI 不匹配错误
+- **低分辨率/DPI 缩放 UI 修复**：CSS 响应式设计改为三级断点（1300px / 1060px / 760px），解决 125%/150% DPI 缩放时侧栏与主内容区、检查器面板重叠问题；窄屏下侧栏宽度自适应收缩
+- **答题卡创建考试时间校验**：前端与后端均强制要求考试时间（YYYY-MM-DD），不再允许留空
+- **数据库导入导出多项热修复**：修复认证 token 键名不匹配（`auth_token` → `projectx_auth_token`）导致 401；修复 archiver v8 ESM API 变更（`archiver("zip")` → `new ZipArchive({})`）；修复 unzipper 流式解析 FILE_ENDED；最终改用 adm-zip 同步全内存解压 + express.raw() 直传二进制绕过 multipart/form-data corrupt 问题
+
+### 新功能
+
+- **数据库全量备份/恢复**：管理员可从账号菜单「导出数据」打包全部数据（projectx.db + scanner.db + data/answer-card/）为 ZIP 下载；支持通过「导入数据」上传 ZIP 恢复，恢复后建议重启应用
+- **答题卡创建记录教师信息**：`POST /api/cards` 现已将 `created_by`（创建答题卡的教师账号 ID）持久化写入 `answer_cards` 表，支持后续审计追溯
+- **导入模板升级为 Excel**：学生/教师导入的示例模板从纯文本 CSV 改为正式 .xlsx 文件（通过 SheetJS 生成）
+
+### 新增 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/db/backup` | 导出全量数据 ZIP（需管理员权限） |
+| `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库（raw binary, 需管理员权限） |
+
+### 依赖变更
+- 新增 `archiver` v8（ESM, ZIP 打包）、`adm-zip`（ZIP 解压）
+- 移除 `@types/archiver`（v8 ESM 无兼容类型），自建 `src/types/archiver.d.ts`、`src/types/adm-zip.d.ts`
+
 ---
 
 ## v1.2.0 (2026-06-17)

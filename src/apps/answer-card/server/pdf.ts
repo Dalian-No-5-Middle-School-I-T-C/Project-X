@@ -49,6 +49,26 @@ function drawCenteredText(doc: PDFKit.PDFDocument, text: string, x: number, y: n
   doc.font("regular").fontSize(size).fillColor("#111").text(text, pt(x), pt(y), { width: pt(width), align: "center" });
 }
 
+// 在给定方框内将文本水平且垂直居中。
+// pdfkit 的 text() 以文本块顶部为 Y 原点，行高约为字号 * 1.2，据此换算毫米后在框内垂直居中。
+function drawCenteredBoxText(
+  doc: PDFKit.PDFDocument,
+  text: string,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  size = 5.8
+) {
+  const textHeightMm = (size * 1.2 / 72) * 25.4;
+  const centeredY = y + (height - textHeightMm) / 2;
+  doc.font("regular").fontSize(size).fillColor("#111").text(text, pt(x), pt(centeredY), {
+    width: pt(width),
+    align: "center",
+    lineBreak: false
+  });
+}
+
 function drawHeader(doc: PDFKit.PDFDocument, page: PageLayout) {
   for (const marker of page.markers) {
     drawRect(doc, marker.rect, { fill: "#1f302c" });
@@ -105,11 +125,11 @@ function drawObjectiveBlock(doc: PDFKit.PDFDocument, block: Extract<PageRenderBl
 function drawObjectiveItem(doc: PDFKit.PDFDocument, item: ObjectiveRenderItem) {
   const firstOption = item.options[0];
   if (firstOption) {
-    drawText(doc, String(item.questionNumber), item.labelX - 2.5, firstOption.rect.y - 0.2, 7.2);
+    drawCenteredBoxText(doc, String(item.questionNumber), item.labelX - 2.5, firstOption.rect.y, 5, firstOption.rect.height, 7.2);
   }
   item.options.forEach((option) => {
     drawRect(doc, option.rect, { stroke: "#333", lineWidth: 0.15 });
-    drawCenteredText(doc, option.label, option.rect.x, option.rect.y + 0.05, option.rect.width, 5.8);
+    drawCenteredBoxText(doc, option.label, option.rect.x, option.rect.y, option.rect.width, option.rect.height, 5.8);
   });
 }
 

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { X, ChevronLeft, ChevronRight, Calendar } from "lucide-react";
 import { SUBJECT_OPTIONS, subjectToKey, isPredefinedSubject } from "../../../../shared/pinyin";
 
@@ -6,7 +6,7 @@ export interface NewCardFormData {
   subject: string;
   subjectLabel: string;
   title: string;
-  examDate?: string;
+  examDate: string;
   examAction: "none" | "create" | "link";
   examName?: string;
   linkExamId?: number;
@@ -31,12 +31,41 @@ interface Props {
 /**
  * 简易日历日期选择器（内联组件）
  */
+const EXAM_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+const MIN_EXAM_YEAR = 1900;
+const MAX_EXAM_YEAR = 2100;
+
+function isValidExamDate(value: string): boolean {
+  const match = EXAM_DATE_PATTERN.exec(value);
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < MIN_EXAM_YEAR || year > MAX_EXAM_YEAR || month < 1 || month > 12 || day < 1) {
+    return false;
+  }
+
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+}
+
 function DatePicker({ value, onChange }: { value?: string; onChange: (d: string) => void }) {
   const today = new Date();
-  const [viewYear, setViewYear] = useState(value ? Number(value.slice(0, 4)) : today.getFullYear());
-  const [viewMonth, setViewMonth] = useState(value ? Number(value.slice(5, 7)) - 1 : today.getMonth());
+  const initialValue = value && isValidExamDate(value) ? value : "";
+  const [viewYear, setViewYear] = useState(initialValue ? Number(initialValue.slice(0, 4)) : today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(initialValue ? Number(initialValue.slice(5, 7)) - 1 : today.getMonth());
   const [manual, setManual] = useState(value ?? "");
   const [showCalendar, setShowCalendar] = useState(false);
+
+  useEffect(() => {
+    const nextValue = value ?? "";
+    setManual(nextValue);
+    if (isValidExamDate(nextValue)) {
+      setViewYear(Number(nextValue.slice(0, 4)));
+      setViewMonth(Number(nextValue.slice(5, 7)) - 1);
+    }
+  }, [value]);
 
   const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
   const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay(); // 0=Sun
@@ -51,6 +80,7 @@ function DatePicker({ value, onChange }: { value?: string; onChange: (d: string)
     const mm = String(viewMonth + 1).padStart(2, "0");
     const dd = String(day).padStart(2, "0");
     const dateStr = `${yyyy}-${mm}-${dd}`;
+    if (!isValidExamDate(dateStr)) return;
     onChange(dateStr);
     setManual(dateStr);
     setShowCalendar(false);
@@ -58,7 +88,7 @@ function DatePicker({ value, onChange }: { value?: string; onChange: (d: string)
 
   function handleManualChange(text: string) {
     setManual(text);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    if (isValidExamDate(text)) {
       onChange(text);
     }
   }
@@ -71,17 +101,8 @@ function DatePicker({ value, onChange }: { value?: string; onChange: (d: string)
           value={manual}
           onChange={(e) => handleManualChange(e.target.value)}
           onBlur={() => {
-            if (manual && !/^\d{4}-\d{2}-\d{2}$/.test(manual)) {
-              // 尝试解析
-              const d = new Date(manual);
-              if (!isNaN(d.getTime())) {
-                const yyyy = String(d.getFullYear()).padStart(4, "0");
-                const mm = String(d.getMonth() + 1).padStart(2, "0");
-                const dd = String(d.getDate()).padStart(2, "0");
-                const fixed = `${yyyy}-${mm}-${dd}`;
-                setManual(fixed);
-                onChange(fixed);
-              }
+            if (manual && !isValidExamDate(manual)) {
+              setManual(value ?? "");
             }
           }}
           placeholder="YYYY-MM-DD（如 2026-06-14）"
@@ -235,12 +256,21 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
       setError("请选择要关联的已有考试");
       return;
     }
+    const normalizedExamDate = examDate.trim();
+    if (!normalizedExamDate) {
+      setError("请选择考试时间");
+      return;
+    }
+    if (!isValidExamDate(normalizedExamDate)) {
+      setError(`请输入 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效考试时间（YYYY-MM-DD）`);
+      return;
+    }
     const key = subjectToKey(finalLabel);
     onCreate({
       subject: key,
       subjectLabel: finalLabel,
       title: titleTrimmed,
-      examDate: examDate || undefined,
+      examDate: normalizedExamDate,
       examAction,
       examName: examAction === "create" ? examName.trim() || titleTrimmed : undefined,
       linkExamId: examAction === "link" && linkExamId ? linkExamId : undefined,
@@ -279,7 +309,12 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
       className="modal-backdrop"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="modal-card" style={{ width: 440, maxWidth: "calc(100vw - 40px)" }}>
+      <div
+        className="modal-card"
+        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{ width: 440, maxWidth: "calc(100vw - 40px)" }}
+      >
         <div className="modal-header">
           <h2>新建答题卡</h2>
           <button className="modal-close" onClick={onClose}><X size={20} /></button>
@@ -361,9 +396,9 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
             />
           </label>
 
-          {/* 考试时间（可选） */}
+          {/* 考试时间（必填） */}
           <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>考试时间 <span style={{ fontSize: 11, color: "var(--muted)", fontWeight: 400 }}>（可选）</span></span>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>考试时间 <span style={{ color: "var(--brand)" }}>*</span></span>
             <DatePicker value={examDate} onChange={setExamDate} />
           </label>
 

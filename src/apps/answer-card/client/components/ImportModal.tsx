@@ -48,13 +48,14 @@ export function ImportModal({ title, csvType, onImport, onClose }: ImportModalPr
     }
   }
 
-  function downloadTemplate() {
-    const template = csvType === "student" ? generateStudentTemplate() : generateTeacherTemplate();
-    const blob = new Blob(["\uFEFF" + template], { type: "text/csv;charset=utf-8" });
+  async function downloadTemplate() {
+    const blob = csvType === "student"
+      ? await generateStudentTemplate()
+      : await generateTeacherTemplate();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = csvType === "student" ? "student_template.csv" : "teacher_template.csv";
+    a.download = csvType === "student" ? "student_template.xlsx" : "teacher_template.xlsx";
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -107,8 +108,8 @@ export function ImportModal({ title, csvType, onImport, onClose }: ImportModalPr
             <button className="ghost-button" type="button" onClick={() => fileInputRef.current?.click()}>
               <Download size={16} /> 选择 CSV / Excel 文件
             </button>
-            <button className="ghost-button" type="button" onClick={downloadTemplate}>
-              <Download size={16} /> 下载模板
+            <button className="ghost-button" type="button" onClick={() => void downloadTemplate()}>
+              <Download size={16} /> 下载 Excel 模板
             </button>
           </div>
           <textarea

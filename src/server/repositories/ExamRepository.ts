@@ -11,6 +11,7 @@ export interface ExamRecord {
   start_time: string | null;
   end_time: string | null;
   status: string;
+  assigned_formula: string | null;
   retention_policy_id: number | null;
   created_by: number | null;
   created_at: string;
@@ -79,6 +80,7 @@ export class ExamRepository {
     status?: string;
     grade_id?: number;
     class_id?: number;
+    subject?: string;
     created_by?: number;
   }): ExamRecord[] {
     let sql = "SELECT * FROM exams WHERE 1=1";
@@ -87,10 +89,89 @@ export class ExamRepository {
     if (filters?.status) { sql += " AND status = ?"; params.push(filters.status); }
     if (filters?.grade_id) { sql += " AND grade_id = ?"; params.push(filters.grade_id); }
     if (filters?.class_id) { sql += " AND class_id = ?"; params.push(filters.class_id); }
+    if (filters?.subject) { sql += " AND subject = ?"; params.push(filters.subject); }
     if (filters?.created_by) { sql += " AND created_by = ?"; params.push(filters.created_by); }
 
     sql += " ORDER BY created_at DESC";
     return this.db.prepare(sql).all(...params) as ExamRecord[];
+  }
+
+  /**
+   * 列出考试（考试选择页用），返回统计信息
+   */
+  listExamsForSelection(filters?: {
+    grade_id?: number;
+    subject?: string;
+    academic_year?: string;  // 如 "2025-2026"
+  }): Array<{
+    id: number; name: string; subject: string | null;
+    grade_id: number | null; grade_name: string | null;
+    exam_date: string | null; status: string;
+    graded_count: number; avg_score: number;
+    has_assigned_score: number;
+  }> {
+    let sql = `
+      SELECT
+        e.id, e.name, e.subject, e.grade_id,
+        g.name as grade_name,
+        ac.exam_date,
+        e.status,
+        COUNT(ss.id) as graded_count,
+        ROUND(AVG(ss.total_score), 1) as avg_score,
+        CASE WHEN e.assigned_formula IS NOT NULL AND e.assigned_formula != '' THEN 1 ELSE 0 END as has_assigned_score
+      FROM exams e
+      LEFT JOIN answer_cards ac ON ac.id = e.card_id
+      LEFT JOIN grades g ON g.id = e.grade_id
+      LEFT JOIN student_scores ss ON ss.exam_id = e.id
+      WHERE 1=1
+    `;
+    const params: unknown[] = [];
+
+    if (filters?.grade_id) { sql += " AND e.grade_id = ?"; params.push(filters.grade_id); }
+    if (filters?.subject) { sql += " AND e.subject = ?"; params.push(filters.subject); }
+    if (filters?.academic_year) {
+      const [startYear] = filters.academic_year.split("-").map(Number);
+      sql += ` AND (
+        (ac.exam_date >= ? AND ac.exam_date < ?) OR
+        (ac.exam_date IS NULL AND e.created_at >= ? AND e.created_at < ?)
+      )`;
+      params.push(`${startYear}-09-01`, `${startYear + 1}-08-01`, `${startYear}-09-01T00:00:00.000Z`, `${startYear + 1}-08-01T00:00:00.000Z`);
+    }
+
+    sql += ` GROUP BY e.id ORDER BY COALESCE(ac.exam_date, e.created_at) DESC`;
+    return this.db.prepare(sql).all(...params) as any[];
+  }
+
+  /**
+   * 获取所有学年列表（用于选择器）
+   */
+  getAcademicYears(): string[] {
+    const rows = this.db.prepare(`
+      SELECT DISTINCT
+        COALESCE(ac.exam_date, e.created_at) as dt
+      FROM exams e
+      LEFT JOIN answer_cards ac ON ac.id = e.card_id
+    `).all() as Array<{ dt: string }>;
+
+    const years = new Set<string>();
+    for (const row of rows) {
+      if (!row.dt) continue;
+      const d = new Date(row.dt);
+      const month = d.getMonth() + 1; // JS month 0-indexed
+      const year = month >= 9 ? d.getFullYear() : d.getFullYear() - 1;
+      years.add(`${year}-${year + 1}`);
+    }
+    return Array.from(years).sort().reverse();
+  }
+
+  /**
+   * 获取所有科目列表（用于选择器）
+   */
+  getSubjects(): string[] {
+    const rows = this.db.prepare(
+      "SELECT DISTINCT subject FROM exams WHERE subject IS NOT NULL AND subject != '' ORDER BY subject"
+    ).all() as Array<{ subject: string }>;
+    return rows.map((r) => r.subject);
   }
 
   /**

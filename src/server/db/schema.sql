@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS users (
     student_number   TEXT UNIQUE,            -- 学号/考号（仅学生有）
     subject          TEXT,                    -- 任教科目（仅教师）
     initial_password TEXT,                    -- 初始明文密码（导出账密用）
+    score_display_mode TEXT DEFAULT 'zscore',  -- deviation / zscore / percentile (v1.4.0)
+    review_confidence_threshold REAL DEFAULT 0.12, -- 复核置信度阈值 (v1.4.0)
+    ai_api_key       TEXT,                    -- AI API密钥 (v1.4.0)
     email            TEXT,
     phone            TEXT,
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
@@ -107,6 +110,7 @@ CREATE TABLE IF NOT EXISTS objective_blocks (
     mode             TEXT NOT NULL,                -- single / multiple / indeterminate
     score_per_question REAL NOT NULL,
     density          TEXT DEFAULT 'compact',       -- loose / normal / compact / dense
+    option_layout    TEXT DEFAULT 'horizontal',    -- horizontal / vertical
     wrong_or_extra_score REAL DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -126,6 +130,7 @@ CREATE TABLE IF NOT EXISTS objective_questions (
     mode            TEXT NOT NULL,
     option_count    INTEGER NOT NULL,
     score           REAL NOT NULL,
+    option_layout   TEXT,
     scoring_rule_json TEXT,
     PRIMARY KEY (block_id, question_number)
 );
@@ -217,6 +222,7 @@ CREATE TABLE IF NOT EXISTS exams (
     start_time    DATETIME,
     end_time      DATETIME,
     status        TEXT DEFAULT 'draft',        -- draft / active / grading / closed
+    assigned_formula TEXT,                     -- JSON: 赋分公式配置 (v1.4.0)
     retention_policy_id INTEGER REFERENCES data_retention_policies(id),
     created_by    INTEGER REFERENCES users(id),
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -312,6 +318,7 @@ CREATE TABLE IF NOT EXISTS student_scores (
     objective_score REAL DEFAULT 0,
     subjective_score REAL DEFAULT 0,
     total_score     REAL,
+    assigned_score  REAL,                     -- 赋分（v1.4.0）
     rank            INTEGER,                  -- 排名
     percentile      REAL,                    -- 百分位
     graded_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -333,8 +340,41 @@ CREATE TABLE IF NOT EXISTS question_scores (
 );
 
 -- ============================================================
--- 索引
+-- 模块五：导出模板（v1.4.0）
 -- ============================================================
+
+CREATE TABLE IF NOT EXISTS export_templates (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    slot          INTEGER NOT NULL CHECK(slot BETWEEN 1 AND 4),
+    name          TEXT NOT NULL DEFAULT '未命名',
+    columns       TEXT NOT NULL,             -- JSON: 列ID数组，含顺序
+    side_table_n  INTEGER DEFAULT 0,         -- 0=不附加侧表, N=前N名
+    gap_cols      INTEGER DEFAULT 3,         -- 主表与侧表间隙列数
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, slot)
+);
+
+CREATE INDEX IF NOT EXISTS idx_export_templates_user ON export_templates(user_id, slot);
+
+-- ============================================================
+-- AI 服务商配置（v1.4.0 多服务商扩展）
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ai_providers (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,              -- 用户命名，如 "学校GPT" / "本地哈基米"
+    provider_type   TEXT NOT NULL,              -- openai / deepseek / haqimi / gemini
+    base_url        TEXT NOT NULL,              -- API 基础地址
+    api_key         TEXT NOT NULL,              -- API Key
+    models          TEXT,                       -- JSON 模型列表，空=自动获取
+    is_active       INTEGER DEFAULT 1,
+    sort_order      INTEGER DEFAULT 0,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ai_providers_user ON ai_providers(user_id, provider_type);
 
 CREATE INDEX IF NOT EXISTS idx_users_student_number ON users(student_number);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role_id);

@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.2.0
+> **版本**: v1.4.0
 > **技术栈**: SQLite + better-sqlite3 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
 
@@ -82,11 +82,10 @@ npm run server
 ├─────────────────┼─────────────────┼─────────────────────────┤
 │ users           │ answer_cards    │ exams                   │
 │ roles           │ objective_blocks│ scan_batches            │
-│ classes         │ subjective_...  │ scan_records            │
-│ grades          │ card_assets     │ objective_recognitions  │
-│ class_students  │                 │ objective_grades        │
+│ classes         │ objective_...   │ scan_records            │
+│ grades          │ subjective_...  │ objective_recognitions  │
+│ class_students  │ card_assets     │ objective_grades        │
 │ teacher_classes │                 │ subjective_grades       │
-│                 │                 │ subjective_grades       │
 ├─────────────────┴─────────────────┴─────────────────────────┤
 │                      成绩统计                                 │
 ├─────────────────────────────────────────────────────────────┤
@@ -162,12 +161,37 @@ npm run server
 |------|------|------|
 | `id` | TEXT PK | 8位数字字符串（如 `12345678`） |
 | `title` | TEXT | 答题卡标题 |
+| `subject` | TEXT | 科目拼音 key，如 `wuli` / `shuxue` |
+| `subject_label` | TEXT | 科目中文名 |
+| `exam_date` | TEXT | 考试日期，ISO `YYYY-MM-DD` |
+| `sided` | TEXT | `single` / `double` |
 | `layout_data` | TEXT | JSON：完整 LayoutDocument 坐标数据 |
 | `created_by` | INTEGER FK | 创建者用户ID |
 
-#### `objective_blocks` / `subjective_blocks` — 题块表
+#### `objective_blocks` / `objective_questions` — 客观题块与逐题配置
 
-存储客观题/主观题块的配置信息，支持单选、多选、不定项、填空、横线格等多种题型。
+`objective_blocks` 保留块级兼容字段；v1.3 起实际逐题配置优先保存在 `objective_questions`。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `block_id` | TEXT FK | 所属客观题块 |
+| `question_number` | INTEGER | 题号，可非连续 |
+| `sort_order` | INTEGER | 块内显示顺序 |
+| `mode` | TEXT | `single` / `multiple` / `indefinite` |
+| `option_count` | INTEGER | 本题选项数 |
+| `score` | REAL | 本题满分 |
+| `scoring_rule_json` | TEXT | JSON：多选/不定项部分得分规则 |
+
+#### `subjective_blocks` / `subjective_questions` — 主观题块与题目
+
+主观题块新增 `block_kind`，用于区分 `fill_blank`（填空题紧凑布局）与 `answer`（解答题布局）。
+
+`subjective_questions` 支持填空题的逐空配置：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `blanks_label_style` | TEXT | `none` / `arabic_parentheses` / `roman_parentheses` |
+| `blanks_items_json` | TEXT | JSON：每个空的标签、宽度、高度 |
 
 ### 模块三：考试与扫描
 
@@ -177,7 +201,7 @@ npm run server
 |------|------|------|
 | `id` | INTEGER PK | 自增主键 |
 | `name` | TEXT | 考试名称 |
-| `card_id` | TEXT FK | 使用的答题卡 |
+| `card_id` | TEXT FK NULL | 使用的答题卡；v1.3 起可为空，用于删除/解绑答题卡后保留考试记录 |
 | `status` | TEXT | draft/active/grading/closed |
 | `retention_policy_id` | INTEGER FK | 数据保留策略 |
 
@@ -229,6 +253,8 @@ PUT    /api/cards/:cardId            # 保存答题卡
 GET    /api/cards/:cardId/layout     # 获取布局坐标
 GET    /api/cards/:cardId/pdf        # 导出 PDF
 POST   /api/cards/:cardId/assets     # 上传图片资源
+DELETE /api/cards/:cardId            # 删除答题卡；可传 unlinkExams 或 deleteReferencedExams
+DELETE /api/exams/:examId            # 删除考试；可传 deleteLinkedCard
 ```
 
 ### 识别与阅卷接口
@@ -329,7 +355,7 @@ exam_archives 表：记录归档信息（路径、大小、归档时间）
 
 ### 数据流
 
-1. **答题卡设计** → 前端编辑 → 后端 `PUT /api/cards/:id` → 数据库 `answer_cards` + 题块表
+1. **答题卡设计** → 前端编辑 → 后端 `PUT /api/cards/:id` → 数据库 `answer_cards` + 题块表 + 题级配置
 2. **PDF 导出** → 后端 `GET /api/cards/:id/pdf` → 直接生成 PDF（不走数据库）
 3. **扫描识别** → 后端接收图片 → 调用 C++ 识别模块 → 保存结果到 `scan_records` + `objective_recognitions`
 4. **自动阅卷** → 对比 `objective_answer_keys` → 写入 `objective_grades` + `student_scores`
@@ -350,6 +376,10 @@ $env:PROJECTX_DB_PATH = "D:\\shared\\projectx.db"
 
 ### Q: 如何备份数据库？
 
+**方式一：程序内导出（推荐）**
+管理员登录后，点击右上角账号 →「导出数据」，系统会自动打包 ZIP（含 projectx.db + scanner.db + data/answer-card/ 目录）供下载。备份文件支持通过「导入数据」一键恢复。
+
+**方式二：手动复制**
 SQLite 数据库是单个文件，直接复制 `projectx.db` 即可备份：
 ```powershell
 copy data\projectx.db data\projectx_backup_20260101.db
@@ -407,20 +437,52 @@ src/server/
     ├── classes.ts             # 班级管理 API
     ├── scores.ts              # 成绩查询 API
     ├── teachers.ts            # 教师管理 API (v1.1)
-    └── export.ts              # 账密导出 API (v1.1)
+    ├── export.ts              # 账密导出 API (v1.1)
+    └── backup.ts              # 数据库全量备份/恢复 (v1.2.1)
+src/types/
+├── archiver.d.ts              # archiver v8 ESM 类型声明
+└── adm-zip.d.ts               # adm-zip 类型声明
+```
 ```
 
 ---
 
 ## 更新日志
 
-### v0.2.0 (2026-06-11)
-- 新增 SQLite 数据库模块
-- 新增用户与权限系统（管理员/教师/学生）
-- 新增考试管理与成绩统计表
-- 新增 30 天数据保留与自动清理机制
-- 答题卡数据从 JSON 文件迁移到数据库
-- 新增 Bearer Token 认证
+- **v1.2.1** (06-17) — 数据库全量备份/恢复（ZIP 导出导入），强制考试时间，UI 响应式三级断点，导入模板升级 .xlsx
+- **v1.2.0** (06-17) — AI 成绩分析，Electron 探活增强
+- **v1.1.5** (06-16) — 阅卷流程重构，多端打包 x86/x64
+- **v1.1.0** (06-14) — 教师/学生管理，CSV/Excel 批量导入导出
+- **v1.0.x** (06-14) — 答题卡管理，品牌化，登录持久化
+- **v0.2.0** (06-11) — SQLite 数据库模块，权限系统，成绩统计
+
+### v1.3.0 (2026-06-17)
+- 新增 `objective_questions`，支持同一客观题块内按题配置题型、选项数、分值和评分规则
+- `subjective_blocks` 新增 `block_kind`；`subjective_questions` 新增 `blanks_label_style`、`blanks_items_json`
+- `exams.card_id` 迁移为可空，支持答题卡被引用时先解绑考试再删除
+- 删除答题卡/考试时增加冲突检测、解绑和联删分支，避免 SQLite 外键错误直接暴露给用户
+
+### v1.4.0 (2026-06-18)
+- `student_scores` 新增 `assigned_score`（赋分）
+- `exams` 新增 `assigned_formula`（赋分公式 JSON）
+- `users` 新增 `score_display_mode`（deviation/zscore/percentile）、`review_confidence_threshold`、`ai_api_key`
+- 新增 `export_templates` 表（导出模板，4 槽位）
+- 新增 `ai_providers` 表（AI 多服务商配置）
+
+#### `ai_providers` — AI 服务商配置
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `user_id` | INTEGER FK | 所属用户 |
+| `name` | TEXT | 自定义名称（如 "我的GPT"） |
+| `provider_type` | TEXT | openai / deepseek / haqimi / gemini |
+| `base_url` | TEXT | API 基础地址 |
+| `api_key` | TEXT | API 密钥 |
+| `models` | TEXT | JSON 模型列表，为空则自动获取 |
+| `is_active` | INTEGER | 0=禁用 1=启用 |
+
+每个教师可配置多个服务商，用于 AI 成绩分析的模型路由。
 
 ---
 
