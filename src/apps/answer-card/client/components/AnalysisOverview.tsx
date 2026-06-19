@@ -26,7 +26,8 @@ export function AnalysisOverview({ overview, ranking, previousComparison, progre
     return <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>此考试暂无阅卷数据。</div>;
   }
 
-  const maxBarCount = Math.max(...overview.distribution.map((d) => d.count), 1);
+  const visibleDistribution = overview.distribution.filter((d) => d.count > 0);
+  const maxBarCount = Math.max(...visibleDistribution.map((d) => d.count), 1);
 
   return (
     <div>
@@ -93,14 +94,13 @@ export function AnalysisOverview({ overview, ranking, previousComparison, progre
       <div className="analysis-section" style={{ marginTop: 20 }}>
         <div className="panel-title">分数段分布</div>
         <div className="dist-bar-chart">
-          {overview.distribution.map((d) => {
+          {visibleDistribution.map((d, i) => {
             const pct = ((d.count / overview.gradedCount) * 100).toFixed(1);
             const barPct = (d.count / maxBarCount) * 100;
-            const isBelowPass = d.range === "0-59";
-            const isHigh = d.range === "90-100";
+            const lastIdx = visibleDistribution.length - 1;
             let barColor = "var(--brand)";
-            if (isBelowPass) barColor = "#E24B4A";
-            else if (isHigh) barColor = "#639922";
+            if (i === 0) barColor = "#E24B4A";      // 最低分段 → 红
+            else if (i === lastIdx) barColor = "#639922"; // 最高分段 → 绿
 
             return (
               <div key={d.range} className="dist-bar-row">

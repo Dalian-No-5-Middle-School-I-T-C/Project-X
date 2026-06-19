@@ -101,7 +101,24 @@ router.get("/:examId/student/:studentId/scores", (req: Request, res: Response) =
     // scan_records may not have expected columns in all DB versions
   }
 
-  // Build card for question definitions
+  // Class-level question averages
+  const classQuestionStats: Record<number, { avgScore: number; maxScore: number; count: number }> = {};
+  const classRow = db.prepare(`
+    SELECT cs.class_id FROM class_students cs WHERE cs.student_id = ?
+  `).get(studentId) as { class_id: number } | undefined;
+  if (classRow) {
+    const classAvgs = db.prepare(`
+      SELECT qs.question_number, qs.score_type, ROUND(AVG(qs.score), 1) as avgScore, MAX(qs.max_score) as maxScore, COUNT(*) as cnt
+      FROM question_scores qs
+      JOIN class_students cs ON cs.student_id = qs.student_id
+      WHERE qs.exam_id = ? AND cs.class_id = ?
+      GROUP BY qs.question_number, qs.score_type
+      ORDER BY qs.question_number
+    `).all(examId, classRow.class_id) as Array<{ question_number: number; score_type: string; avgScore: number; maxScore: number; cnt: number }>;
+    for (const row of classAvgs) {
+      classQuestionStats[row.question_number] = { avgScore: row.avgScore, maxScore: row.maxScore, count: row.cnt };
+    }
+  }
   const cardRepo = new CardRepository();
   const card = cardRepo.findById(cardId);
   if (!card) { res.status(404).json({ message: "答题卡数据不存在" }); return; }
@@ -191,6 +208,7 @@ router.get("/:examId/student/:studentId/scores", (req: Request, res: Response) =
       fileName: s.fileName,
       pageNum: s.pageNum,
     })),
+    classQuestionStats,
     cardId
   });
 });

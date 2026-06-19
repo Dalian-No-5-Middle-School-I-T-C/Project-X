@@ -225,6 +225,24 @@ npm run server
 #### `question_scores` — 各题得分明细
 
 记录每场考试每位学生每道题的得分，用于成绩分析和错题统计。
+v1.4.5 新增 `manually_modified`、`modified_by`、`modified_at` 字段追踪手动改分。
+
+#### `answer_overrides` — 成绩手动修改记录 (v1.4.5)
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `exam_id` | INTEGER FK | 所属考试 |
+| `card_id` | TEXT | 答题卡 ID |
+| `question_number` | INTEGER | 题号 |
+| `score_type` | TEXT | objective / subjective |
+| `override_type` | TEXT | score / answer |
+| `old_value` | TEXT | 旧值 JSON |
+| `new_value` | TEXT | 新值 JSON |
+| `created_by` | INTEGER FK | 操作教师 |
+| `created_at` | DATETIME | 操作时间 |
+
+记录每次手动改分或修改答案的操作轨迹，用于审计追溯。
 
 ---
 
