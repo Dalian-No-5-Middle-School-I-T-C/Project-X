@@ -83,7 +83,7 @@ const modeLabels: Record<ObjectiveMode, string> = {
 
 const optionLayoutLabels: Record<ObjectiveOptionLayout, string> = {
   horizontal: "横向",
-  vertical: "竖向"
+  vertical: "竖向（4题一组）"
 };
 
 type CardDeleteConflict = {
@@ -2191,7 +2191,7 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
           ))}
         </div>
       </div>
-      <p className="hint">少于 15 题横向排列；15 题及以上按 5 题小组网格排列；超过 5 个选项或选择「竖向」排列的题目独占一行。选项排列可选「横向」或「竖向」；竖向时选项纵向堆叠。</p>
+      <p className="hint">横向模式少于 15 题按行排列、15 题及以上按 5 题小组网格排列；竖向模式按高考 AB 卡式 4 题一组纵向排布，每题选项仍保持横向小组选项。超过 5 个选项的题目独占一行。</p>
     </>
   );
 }

@@ -51,10 +51,11 @@ const OBJECTIVE_CONTENT_SIDE_INSET = 8.5;
 const OBJECTIVE_LABEL_TO_OPTION_GAP = 6.3;
 const OBJECTIVE_STANDARD_COLUMNS = 4;
 const OBJECTIVE_GRID_CELL_QUESTIONS = 5;
+const OBJECTIVE_VERTICAL_GROUP_QUESTIONS = 4;
 const OBJECTIVE_WIDE_OPTION_THRESHOLD = 5;
 const OBJECTIVE_GRID_ROW_GAP = 1.5;
 
-type ObjectiveArrangementMode = "rows" | "grid";
+type ObjectiveArrangementMode = "rows" | "grid" | "vertical-grid";
 
 type ObjectiveRow =
   | { type: "standard"; questions: ObjectiveQuestionDefinition[] }
@@ -151,8 +152,11 @@ function titleHeight(): number {
   return 8;
 }
 
-function objectiveArrangementMode(questionCount: number): ObjectiveArrangementMode {
-  return questionCount >= 15 ? "grid" : "rows";
+function objectiveArrangementMode(questions: ObjectiveQuestionDefinition[]): ObjectiveArrangementMode {
+  if (questions.some(isVerticalQuestion)) {
+    return "vertical-grid";
+  }
+  return questions.length >= 15 ? "grid" : "rows";
 }
 
 function isWideObjectiveQuestion(question: ObjectiveQuestionDefinition): boolean {
@@ -164,7 +168,11 @@ function isVerticalQuestion(question: ObjectiveQuestionDefinition): boolean {
 }
 
 function isSoloRowQuestion(question: ObjectiveQuestionDefinition): boolean {
-  return isWideObjectiveQuestion(question) || isVerticalQuestion(question);
+  return isWideObjectiveQuestion(question);
+}
+
+function objectiveGridCellQuestions(mode: ObjectiveArrangementMode): number {
+  return mode === "vertical-grid" ? OBJECTIVE_VERTICAL_GROUP_QUESTIONS : OBJECTIVE_GRID_CELL_QUESTIONS;
 }
 
 function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mode: ObjectiveArrangementMode): ObjectiveRow[] {
@@ -195,6 +203,7 @@ function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mod
     return rows;
   }
 
+  const gridCellQuestions = objectiveGridCellQuestions(mode);
   let gridCells: ObjectiveQuestionDefinition[][] = [[]];
   const flushGridRow = () => {
     const nonEmptyCells = gridCells.filter((cell) => cell.length > 0);
@@ -212,7 +221,7 @@ function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mod
     }
 
     let currentCell = gridCells[gridCells.length - 1];
-    if (currentCell.length === OBJECTIVE_GRID_CELL_QUESTIONS) {
+    if (currentCell.length === gridCellQuestions) {
       if (gridCells.length === OBJECTIVE_STANDARD_COLUMNS) {
         flushGridRow();
       } else {
@@ -244,15 +253,6 @@ function objectiveRowHeight(row: ObjectiveRow): number {
   if (row.type === "grid") {
     return Math.max(...row.cells.map((cell) => cell.length));
   }
-  if (row.type === "wide") {
-    const question = row.question;
-    if (isVerticalQuestion(question)) {
-      const settings = OBJECTIVE_SETTINGS;
-      const requiredHeight =
-        OBJECTIVE_OPTION_TOP_OFFSET + (question.optionCount - 1) * settings.optionGap + settings.optionHeight;
-      return Math.max(1, Math.ceil(requiredHeight / settings.rowHeight));
-    }
-  }
   return 1;
 }
 
@@ -266,7 +266,7 @@ function objectivePhysicalRowOffsets(rows: ObjectiveRow[], mode: ObjectiveArrang
       offsets.push(round(yOffset + offset * OBJECTIVE_SETTINGS.rowHeight));
     }
     yOffset += rowHeight * OBJECTIVE_SETTINGS.rowHeight;
-    if (mode === "grid" && rowIndex < rows.length - 1) {
+    if (mode !== "rows" && rowIndex < rows.length - 1) {
       yOffset += OBJECTIVE_GRID_ROW_GAP;
     }
   });
@@ -304,15 +304,8 @@ function objectiveHeightForQuestions(questions: ObjectiveQuestionDefinition[], m
   let physicalRow = 0;
   for (const row of rows) {
     const heightInRows = objectiveRowHeight(row);
-    if (row.type === "wide" && isVerticalQuestion(row.question)) {
-      const startY = rowOffsets[physicalRow] ?? physicalRow * settings.rowHeight;
-      const bottom =
-        startY + OBJECTIVE_OPTION_TOP_OFFSET + (row.question.optionCount - 1) * settings.optionGap + settings.optionHeight;
-      contentBottom = Math.max(contentBottom, bottom);
-    } else {
-      const lastOffset = rowOffsets[physicalRow + heightInRows - 1] ?? (physicalRow + heightInRows - 1) * settings.rowHeight;
-      contentBottom = Math.max(contentBottom, lastOffset + OBJECTIVE_OPTION_TOP_OFFSET + settings.optionHeight);
-    }
+    const lastOffset = rowOffsets[physicalRow + heightInRows - 1] ?? (physicalRow + heightInRows - 1) * settings.rowHeight;
+    contentBottom = Math.max(contentBottom, lastOffset + OBJECTIVE_OPTION_TOP_OFFSET + settings.optionHeight);
     physicalRow += heightInRows;
   }
   return OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + contentBottom + OBJECTIVE_INNER_BOTTOM;
@@ -383,21 +376,13 @@ function addObjectiveSegment(
     const rowOffset = rowOffsets[physicalRow] ?? physicalRow * settings.rowHeight;
     const labelY = itemAreaY + rowOffset + 2.9;
     const optionStartX = labelTextX + OBJECTIVE_LABEL_TO_OPTION_GAP;
-    const vertical = isVerticalQuestion(question);
     const options = OPTIONS.slice(0, question.optionCount).map((label, optionIndex) => {
-      const optionRect = vertical
-        ? rect(
-            optionStartX,
-            itemAreaY + rowOffset + OBJECTIVE_OPTION_TOP_OFFSET + optionIndex * settings.optionGap,
-            settings.optionWidth,
-            settings.optionHeight
-          )
-        : rect(
-            optionStartX + optionIndex * settings.optionGap,
-            itemAreaY + rowOffset + OBJECTIVE_OPTION_TOP_OFFSET,
-            settings.optionWidth,
-            settings.optionHeight
-          );
+      const optionRect = rect(
+        optionStartX + optionIndex * settings.optionGap,
+        itemAreaY + rowOffset + OBJECTIVE_OPTION_TOP_OFFSET,
+        settings.optionWidth,
+        settings.optionHeight
+      );
       page.elements.push({
         id: `p${page.pageNumber}_obj_${block.id}_${questionNumber}_${label}`,
         type: "objective_option",
@@ -858,7 +843,7 @@ export function buildLayout(card: AnswerCard): LayoutDocument {
   for (const block of card.bodyBlocks) {
     if (block.type === "objective") {
       let remaining = objectiveQuestionDefinitions(block);
-      const arrangementMode = objectiveArrangementMode(remaining.length);
+      const arrangementMode = objectiveArrangementMode(remaining);
       let firstSegment = true;
 
       while (remaining.length > 0) {

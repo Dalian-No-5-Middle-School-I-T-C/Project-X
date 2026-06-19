@@ -57,12 +57,33 @@ function boolField(value: unknown): boolean {
   return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
+const EXAM_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+const MIN_EXAM_YEAR = 1900;
+const MAX_EXAM_YEAR = 2100;
+
+function isValidExamDate(value: string | undefined): boolean {
+  if (!value) return false;
+  const match = EXAM_DATE_PATTERN.exec(value);
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < MIN_EXAM_YEAR || year > MAX_EXAM_YEAR || month < 1 || month > 12 || day < 1) {
+    return false;
+  }
+
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+}
+
 function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
+  const examDate = fieldValue((card as any).examDate ?? card.examDate).trim();
   return {
     ...card,
     id: safeId(cardId),
     subjectLabel: (card as any).subjectLabel ?? card.subjectLabel ?? undefined,
-    examDate: (card as any).examDate ?? card.examDate ?? undefined,
+    examDate: isValidExamDate(examDate) ? examDate : undefined,
     bodyBlocks: (card.bodyBlocks ?? []).map((block) => {
       if (block.type !== "objective") return block;
       const answerKey = normalizeObjectiveAnswerKey(block);
@@ -452,8 +473,8 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ error: "考试名称为必填项" });
         return;
       }
-      if (!examDate || !/^\d{4}-\d{2}-\d{2}$/.test(examDate)) {
-        res.status(400).json({ error: "考试时间为必填项，格式为 YYYY-MM-DD" });
+      if (!isValidExamDate(examDate)) {
+        res.status(400).json({ error: `考试时间为必填项，需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
         return;
       }
       let id = generateCardId(subject);
@@ -488,6 +509,11 @@ export async function createApp(): Promise<express.Express> {
 
   app.put("/api/cards/:cardId", async (req, res, next) => {
     try {
+      const examDate = fieldValue((req.body as AnswerCard)?.examDate).trim();
+      if (examDate && !isValidExamDate(examDate)) {
+        res.status(400).json({ message: `考试时间需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
+        return;
+      }
       const card = normalizeCard(req.body as AnswerCard, paramValue(req.params.cardId));
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
       res.json(saved);
@@ -976,6 +1002,11 @@ export async function createApp(): Promise<express.Express> {
       }
       if (!imported.card) {
         res.status(400).json({ message: "文件中缺少答题卡数据" });
+        return;
+      }
+      const importedExamDate = fieldValue(imported.card.examDate).trim();
+      if (importedExamDate && !isValidExamDate(importedExamDate)) {
+        res.status(400).json({ message: `导入文件中的考试时间需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
         return;
       }
       const subject = imported.card.subject ?? "";
