@@ -28,6 +28,13 @@
   --shadow-brand: 0 4px 16px rgba(192, 15, 40, 0.25);
   --shadow-brand-lg: 0 8px 28px rgba(192, 15, 40, 0.30);
 
+  /* ── Undefined-but-referenced variables ─────────────── */
+  --text-primary: var(--text);
+  --bg-soft: rgba(0, 0, 0, 0.03);
+  --line-light: rgba(0, 0, 0, 0.04);
+
+  color-scheme: light;
+
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
   color: var(--text);
   background: var(--background);
@@ -55,6 +62,67 @@ body {
   background: radial-gradient(ellipse at 20% 50%, rgba(192, 15, 40, 0.04) 0%, transparent 50%),
               radial-gradient(ellipse at 80% 20%, rgba(192, 15, 40, 0.03) 0%, transparent 50%),
               var(--background);
+  transition: background 0.3s ease, color 0.3s ease;
+}
+
+/* ── Dark Theme ─────────────────────────────────────── */
+[data-theme="dark"] {
+  --brand: #E8354A;
+  --brand-light: #FF5C6E;
+  --brand-dark: #C00F28;
+  --brand-glow: rgba(232, 53, 74, 0.40);
+  --brand-soft: rgba(232, 53, 74, 0.12);
+  --brand-tint: rgba(232, 53, 74, 0.06);
+
+  --text: #E8E8E8;
+  --text-primary: #E8E8E8;
+  --text-secondary: #B0B0B0;
+  --muted: #6B6B6B;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.12);
+  --line-light: rgba(255, 255, 255, 0.04);
+  --surface: #1C1C1E;
+  --surface-raised: #2C2C2E;
+  --surface-soft: rgba(255, 255, 255, 0.06);
+  --bg-soft: rgba(255, 255, 255, 0.03);
+  --surface-glass: rgba(255, 255, 255, 0.08);
+  --surface-glass-hover: rgba(255, 255, 255, 0.12);
+  --surface-tint: rgba(232, 53, 74, 0.08);
+  --background: #0A0A0A;
+  --background-deep: #000000;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4), 0 2px 4px rgba(0,0,0,0.3);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.5), 0 4px 8px rgba(0,0,0,0.3);
+  --shadow-glass: 0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.06);
+  --shadow-brand: 0 4px 16px rgba(232, 53, 74, 0.35);
+  --shadow-brand-lg: 0 8px 28px rgba(232, 53, 74, 0.40);
+
+  color-scheme: dark;
+}
+
+[data-theme="dark"] .liquid-glass {
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .liquid-glass::before {
+  opacity: 0.08;
+}
+
+[data-theme="dark"] .mode-toggle {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .mode-toggle button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .topbar-actions .ghost-button {
+  color: var(--text-secondary);
+}
+
+[data-theme="dark"] .topbar-actions .ghost-button:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
 }
 
 button, input, select {
@@ -526,6 +594,38 @@ button {
 .autosave-saving,
 .autosave-dirty {
   color: #8a5a00;
+}
+
+/* ── 日间/夜间模式切换按钮 ────────────────────────── */
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+  flex-shrink: 0;
+}
+
+.theme-toggle:hover {
+  background: var(--brand-soft);
+  color: var(--brand);
+  transform: scale(1.08);
+}
+
+.theme-toggle:active {
+  transform: scale(0.92);
+}
+
+[data-theme="dark"] .theme-toggle:hover {
+  background: var(--brand-soft);
+  color: var(--brand-light);
 }
 
 .autosave-saved {
