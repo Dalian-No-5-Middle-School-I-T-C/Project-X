@@ -28,6 +28,7 @@ import { AccountMenu } from "./components/AccountMenu";
 import { AccountManagement } from "./components/AccountManagement";
 import { StudentScores } from "./components/StudentScores";
 import { SponsorPage } from "./components/SponsorPage";
+import { UserGuidePage } from "./components/UserGuidePage";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import { ExamSelectPage } from "./components/ExamSelectPage";
 import { ScoreDetailPage } from "./components/ScoreDetailPage";
@@ -58,6 +59,10 @@ import {
   objectiveQuestionNumbers,
   optionLabelsForQuestion
 } from "../../../shared/grading";
+import {
+  validateCardScores,
+  type CardScoreValidationResult
+} from "../../../shared/cardScoreValidation";
 import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../shared/blankLabels";
@@ -104,6 +109,13 @@ type CardDeleteConflict = {
 type ExamDeleteTarget = {
   exams: ExamRecord[];
   deleteLinkedCards: boolean;
+};
+
+type AutoSaveState = "idle" | "dirty" | "saving" | "saved" | "error";
+
+type PdfWarningState = {
+  validation: CardScoreValidationResult;
+  pdfUrl: string;
 };
 
 const styleLabels: Record<SubjectiveStyle, string> = {
@@ -357,6 +369,10 @@ function App() {
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [mode, setMode] = useState<AppMode>("design");
   const previousModeRef = useRef<AppMode>("design");
+  const latestCardRef = useRef<AnswerCard | null>(null);
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const editRevisionRef = useRef(0);
+  const savedRevisionRef = useRef(0);
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
   const [gradingExamId, setGradingExamId] = useState<string>("");
   const [cardOverride, setCardOverride] = useState(false);  // 阅卷时是否手动覆盖答题卡
@@ -364,6 +380,7 @@ function App() {
   const [gradingProgress, setGradingProgress] = useState<GradingProgress>({ active: false, finished: 0, total: 0 });
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
+  const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>("idle");
   const gradingProgressSourceRef = useRef<EventSource | null>(null);
   const [showScanner, setShowScanner] = useState(false);
   const [analysisExamId, setAnalysisExamId] = useState<number | null>(null);
@@ -388,8 +405,19 @@ function App() {
   const [examDeleteTarget, setExamDeleteTarget] = useState<ExamDeleteTarget | null>(null);
   const [assignedFormulaExamId, setAssignedFormulaExamId] = useState<number | null>(null);
   const [showBg, setShowBg] = useState(0); // opacity 0~1, 0=关闭
+  const [pdfWarning, setPdfWarning] = useState<PdfWarningState | null>(null);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
+  const autoSaveLabel =
+    autoSaveState === "dirty"
+      ? "有未保存更改"
+      : autoSaveState === "saving"
+        ? "正在自动保存"
+        : autoSaveState === "saved"
+          ? "已自动保存"
+          : autoSaveState === "error"
+            ? "自动保存失败"
+            : "";
 
   const variantAllows = useCallback(
     (modeName: AppMode) => appVariant.allowedModes.includes(modeName),
@@ -408,10 +436,32 @@ function App() {
   const showScoresTab = canViewScores;
 
   useEffect(() => {
+    latestCardRef.current = card;
+  }, [card]);
+
+  useEffect(() => {
     if (user) {
       setMode(defaultModeForUser(hasPermission, appVariant));
     }
   }, [user?.id, hasPermission, appVariant]);
+
+  useEffect(() => {
+    const flushOnHide = () => {
+      if (document.visibilityState === "hidden") {
+        saveCurrentCardBestEffort();
+      }
+    };
+    const flushOnPageHide = () => saveCurrentCardBestEffort();
+    window.addEventListener("pagehide", flushOnPageHide);
+    document.addEventListener("visibilitychange", flushOnHide);
+    window.addEventListener("beforeunload", flushOnPageHide);
+    return () => {
+      clearAutoSaveTimer();
+      window.removeEventListener("pagehide", flushOnPageHide);
+      document.removeEventListener("visibilitychange", flushOnHide);
+      window.removeEventListener("beforeunload", flushOnPageHide);
+    };
+  }, []);
 
   useEffect(() => {
     if (!canUseScanner && showScanner) {
@@ -459,6 +509,108 @@ function App() {
     }
   }, [mode, exams.length]);
 
+  function clearAutoSaveTimer() {
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+  }
+
+  function acceptSavedCard(nextCard: AnswerCard | null, state: AutoSaveState = "idle") {
+    clearAutoSaveTimer();
+    editRevisionRef.current += 1;
+    savedRevisionRef.current = editRevisionRef.current;
+    latestCardRef.current = nextCard;
+    setCard(nextCard);
+    setAutoSaveState(nextCard ? state : "idle");
+  }
+
+  function scheduleAutoSave() {
+    clearAutoSaveTimer();
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      void flushPendingCardSave("auto");
+    }, 1200);
+  }
+
+  async function persistCardSnapshot(
+    snapshot: AnswerCard,
+    revision: number,
+    source: "auto" | "manual" | "switch" | "pdf" = "manual"
+  ): Promise<AnswerCard> {
+    setAutoSaveState("saving");
+    if (source !== "auto") {
+      setIsBusy(true);
+      setStatus(source === "pdf" ? "正在保存并检查分值..." : "正在保存答题卡...");
+    }
+    try {
+      const saved = await fetchJson<AnswerCard>(`/api/cards/${snapshot.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(snapshot)
+      });
+
+      const stillCurrent = latestCardRef.current?.id === snapshot.id;
+      const noNewerEdits = editRevisionRef.current === revision;
+      if (stillCurrent && noNewerEdits) {
+        latestCardRef.current = saved;
+        savedRevisionRef.current = revision;
+        setCard(saved);
+        setAutoSaveState("saved");
+      } else if (stillCurrent) {
+        scheduleAutoSave();
+      }
+
+      try {
+        await refreshCards();
+      } catch {
+        // Saving succeeded; a stale sidebar timestamp is less important than preserving edits.
+      }
+
+      if (source === "auto") setStatus("已自动保存");
+      else if (source === "pdf") setStatus("已保存，正在检查分值");
+      else if (source === "switch") setStatus("已保存当前答题卡");
+      else setStatus("已保存，并生成坐标布局数据");
+      return saved;
+    } catch (err) {
+      setAutoSaveState("error");
+      const message = err instanceof Error ? err.message : String(err);
+      setStatus(source === "auto" ? `自动保存失败：${message}` : `保存失败：${message}`);
+      throw err;
+    } finally {
+      if (source !== "auto") setIsBusy(false);
+    }
+  }
+
+  async function flushPendingCardSave(
+    source: "auto" | "manual" | "switch" | "pdf" = "manual",
+    force = false
+  ): Promise<AnswerCard | null> {
+    clearAutoSaveTimer();
+    const snapshot = latestCardRef.current;
+    if (!snapshot) return null;
+    const revision = editRevisionRef.current;
+    if (!force && revision === savedRevisionRef.current) return snapshot;
+    return persistCardSnapshot(cloneCard(snapshot), revision, source);
+  }
+
+  function saveCurrentCardBestEffort() {
+    const snapshot = latestCardRef.current;
+    if (!snapshot || editRevisionRef.current === savedRevisionRef.current) return;
+    clearAutoSaveTimer();
+    const revision = editRevisionRef.current;
+    void authFetch(`/api/cards/${snapshot.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(snapshot),
+      keepalive: true
+    }).then((response) => {
+      if (response.ok && editRevisionRef.current === revision) {
+        savedRevisionRef.current = revision;
+        setAutoSaveState("saved");
+      }
+    }).catch(() => undefined);
+  }
+
   async function refreshCards(loadFirst = false) {
     const list = await fetchJson<CardSummary[]>("/api/cards");
     setCards(list);
@@ -469,6 +621,11 @@ function App() {
 
   async function createCard(formData: NewCardFormData) {
     setShowNewCardModal(false);
+    try {
+      await flushPendingCardSave("switch");
+    } catch {
+      return;
+    }
     setIsBusy(true);
     try {
       const created = await fetchJson<AnswerCard>("/api/cards", {
@@ -483,7 +640,7 @@ function App() {
           chineseChoicePlacement: formData.chineseChoicePlacement
         })
       });
-      setCard(created);
+      acceptSavedCard(created, "saved");
       setSelectedBlockId(created.bodyBlocks[0]?.id ?? null);
 
       // 处理考试关联
@@ -519,10 +676,23 @@ function App() {
   }
 
   async function loadCard(id: string) {
+    if (latestCardRef.current?.id === id) {
+      try {
+        await flushPendingCardSave("switch");
+      } catch {
+        // Status is set by the shared save path.
+      }
+      return;
+    }
+    try {
+      await flushPendingCardSave("switch");
+    } catch {
+      return;
+    }
     setIsBusy(true);
     try {
       const loaded = await fetchJson<AnswerCard>(`/api/cards/${id}`);
-      setCard(loaded);
+      acceptSavedCard(loaded, "saved");
       setSelectedBlockId(loaded.bodyBlocks[0]?.id ?? null);
       setGradingResult(null);
       setStatus(`已载入 ${loaded.title}`);
@@ -533,18 +703,10 @@ function App() {
 
   async function saveCard() {
     if (!card) return;
-    setIsBusy(true);
     try {
-      const saved = await fetchJson<AnswerCard>(`/api/cards/${card.id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(card)
-      });
-      setCard(saved);
-      setStatus("已保存，并生成坐标布局数据");
-      await refreshCards();
-    } finally {
-      setIsBusy(false);
+      await flushPendingCardSave("manual", true);
+    } catch {
+      // Status is set by the shared save path.
     }
   }
 
@@ -566,7 +728,7 @@ function App() {
         ? `已删除答题卡，并处理 ${result.referencedExamCount} 个关联考试`
         : "已删除答题卡");
       if (card?.id === cardId) {
-        setCard(null);
+        acceptSavedCard(null);
         setSelectedBlockId(null);
       }
       await refreshCards();
@@ -643,6 +805,38 @@ function App() {
     setStatus("正在导出答题卡...");
   }
 
+  function openPdf(pdfUrl: string) {
+    const opened = window.open(pdfUrl, "_blank", "noopener,noreferrer");
+    if (!opened) {
+      const a = document.createElement("a");
+      a.href = pdfUrl;
+      a.target = "_blank";
+      a.rel = "noreferrer";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+  }
+
+  async function exportPdfForCurrentCard() {
+    let savedCard: AnswerCard | null = null;
+    try {
+      savedCard = await flushPendingCardSave("pdf");
+    } catch {
+      return;
+    }
+    if (!savedCard) return;
+    const validation = validateCardScores(savedCard);
+    const pdfUrl = urlWithToken(`/api/cards/${savedCard.id}/pdf?v=${encodeURIComponent(savedCard.updatedAt)}`);
+    if (validation.issues.length > 0) {
+      setPdfWarning({ validation, pdfUrl });
+      setStatus(`分值检查发现 ${validation.issues.length} 个提示，请确认后导出`);
+      return;
+    }
+    openPdf(pdfUrl);
+    setStatus("正在打开 PDF...");
+  }
+
   async function importCard() {
     const input = document.createElement("input");
     input.type = "file";
@@ -712,7 +906,11 @@ function App() {
     if (!card) return;
     const draft = cloneCard(card);
     mutator(draft);
+    editRevisionRef.current += 1;
+    latestCardRef.current = draft;
     setCard(draft);
+    setAutoSaveState("dirty");
+    scheduleAutoSave();
   }
 
   function updateBlock(blockId: string, mutator: (block: BodyBlock) => void) {
@@ -720,6 +918,22 @@ function App() {
       const block = draft.bodyBlocks.find((item) => item.id === blockId);
       if (block) mutator(block);
     });
+  }
+
+  async function switchMode(nextMode: AppMode, afterSwitch?: () => void | Promise<void>) {
+    if (mode === "design" && nextMode !== "design") {
+      try {
+        await flushPendingCardSave("switch");
+      } catch {
+        return;
+      }
+    }
+    setMode(nextMode);
+    try {
+      await afterSwitch?.();
+    } catch (err) {
+      setStatus(`加载失败：${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   function moveBlock(blockId: string, direction: -1 | 1) {
@@ -1031,6 +1245,8 @@ function App() {
                     ? "账号管理"
                   : mode === "sponsor"
                     ? "支持项目"
+                    : mode === "guide"
+                      ? "使用说明"
                     : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
             </h1>
             <p>
@@ -1042,6 +1258,8 @@ function App() {
                   ? "管理用户、班级与花名册"
                   : mode === "sponsor"
                     ? "感谢您的信任与支持"
+                    : mode === "guide"
+                      ? "Project-X 操作指南与常见问题"
                     : card
                     ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
                     : canDesign
@@ -1055,52 +1273,63 @@ function App() {
                 <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
                   坐标JSON
                 </a>
-                <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/pdf?v=${encodeURIComponent(card.updatedAt)}`)} target="_blank" rel="noreferrer">
+                <button className="ghost-button" type="button" onClick={() => void exportPdfForCurrentCard()} disabled={isBusy}>
                   <FileDown size={17} /> PDF
-                </a>
+                </button>
                 <button className="primary-button" onClick={() => void saveCard()} disabled={isBusy}>
                   <Save size={17} /> 保存
                 </button>
+                {autoSaveLabel && (
+                  <span className={`autosave-status autosave-${autoSaveState}`}>
+                    {autoSaveLabel}
+                  </span>
+                )}
               </>
             )}
           </div>
           <div className="topbar-actions">
             <div className="mode-toggle" role="tablist" aria-label="工作模式">
               {canDesign && (
-              <button className={mode === "design" ? "active" : ""} onClick={() => setMode("design")} type="button">
+              <button className={mode === "design" ? "active" : ""} onClick={() => void switchMode("design")} type="button">
                 <SquarePen size={16} /> 设计
               </button>
               )}
               {canManageExams && (
-              <button className={mode === "exam-manage" ? "active" : ""} onClick={() => { setMode("exam-manage"); loadExams(); }} type="button">
+              <button className={mode === "exam-manage" ? "active" : ""} onClick={() => void switchMode("exam-manage", loadExams)} type="button">
                 <ClipboardList size={16} /> 考试管理
               </button>
               )}
               {canGrade && (
-              <button className={mode === "grading" ? "active" : ""} onClick={() => setMode("grading")} type="button">
+              <button className={mode === "grading" ? "active" : ""} onClick={() => void switchMode("grading")} type="button">
                 <ClipboardCheck size={16} /> 阅卷
               </button>
               )}
               {canAnalyze && (
-              <button className={mode === "analysis" ? "active" : ""} onClick={() => { setMode("analysis"); loadExams(); }} type="button">
+              <button className={mode === "analysis" ? "active" : ""} onClick={() => void switchMode("analysis", loadExams)} type="button">
                 <BarChart3 size={16} /> 分析
               </button>
               )}
               {showScoresTab && (
-              <button className={mode === "scores" ? "active" : ""} onClick={() => setMode("scores")} type="button">
+              <button className={mode === "scores" ? "active" : ""} onClick={() => void switchMode("scores")} type="button">
                 <BarChart3 size={16} /> 我的成绩
               </button>
               )}
               {canManageAccounts && (
-              <button className={mode === "account" ? "active" : ""} onClick={() => setMode("account")} type="button">
+              <button className={mode === "account" ? "active" : ""} onClick={() => void switchMode("account")} type="button">
                 <Users size={16} /> 账号
               </button>
               )}
             </div>
             <AccountMenu
               onOpenSponsor={() => {
+                const previous = mode;
+                void switchMode("sponsor", () => {
+                  previousModeRef.current = previous;
+                });
+              }}
+              onOpenGuide={() => {
                 previousModeRef.current = mode;
-                setMode("sponsor");
+                setMode("guide");
               }}
             />
           </div>
@@ -1536,6 +1765,11 @@ function App() {
             <SponsorPage onBack={() => setMode(previousModeRef.current)} />
           </section>
         </div>
+        <div className={`main-grid guide-grid ${mode === "guide" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+            <UserGuidePage onBack={() => setMode(previousModeRef.current)} />
+          </section>
+        </div>
         <footer className="statusbar">{status}</footer>
       </section>
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
@@ -1549,6 +1783,59 @@ function App() {
         onConfirm={(data) => void handleImportConfirm(data)}
         onClose={() => { setShowImportCardModal(false); setImportCardData(null); setIsBusy(false); }}
       />
+      {pdfWarning && (
+        <div className="modal-backdrop" onClick={() => setPdfWarning(null)}>
+          <div className="modal-card score-warning-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>PDF 导出前分值检查</h2>
+              <button className="modal-close" type="button" onClick={() => setPdfWarning(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <div className="score-warning-summary">
+                <strong>当前总分：{pdfWarning.validation.totalScore} 分</strong>
+                <span>
+                  客观题 {pdfWarning.validation.objectiveScore} 分 / 主观题 {pdfWarning.validation.subjectiveScore} 分
+                </span>
+                <span>
+                  {pdfWarning.validation.flexibleTotalSubject
+                    ? "语文、英语或外语科目不检查 100/150 总分规则"
+                    : `期望总分：${pdfWarning.validation.expectedTotals.join(" 或 ")} 分`}
+                </span>
+              </div>
+              <ul className="score-warning-list">
+                {pdfWarning.validation.issues.slice(0, 12).map((issue, index) => (
+                  <li key={`${issue.kind}_${index}`}>
+                    <span>{issue.message}</span>
+                    {issue.questionRefs?.length ? <small>涉及：{issue.questionRefs.join("、")}</small> : null}
+                  </li>
+                ))}
+              </ul>
+              {pdfWarning.validation.issues.length > 12 && (
+                <p className="score-warning-more">
+                  还有 {pdfWarning.validation.issues.length - 12} 条提示，建议先返回检查题块设置。
+                </p>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="ghost-button" type="button" onClick={() => setPdfWarning(null)}>
+                返回修改
+              </button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={() => {
+                  const targetUrl = pdfWarning.pdfUrl;
+                  setPdfWarning(null);
+                  openPdf(targetUrl);
+                  setStatus("已确认分值提示，正在打开 PDF...");
+                }}
+              >
+                仍然导出
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {cardDeleteConflict && (
         <div className="modal-backdrop" onClick={() => setCardDeleteConflict(null)}>
           <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>

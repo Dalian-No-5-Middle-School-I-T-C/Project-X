@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Download, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X } from "lucide-react";
+import { ChevronDown, Download, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson, getAuthToken } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
 import type { AiProviderConfig } from "../../../../shared/types";
 
-export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
+export function AccountMenu({
+  onOpenSponsor,
+  onOpenGuide
+}: {
+  onOpenSponsor?: () => void;
+  onOpenGuide?: () => void;
+}) {
   const { user, logout, isAdmin } = useAuth();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -325,6 +331,18 @@ export function AccountMenu({ onOpenSponsor }: { onOpenSponsor?: () => void }) {
                 </div>
               )}
             </>
+          )}
+          {onOpenGuide && (
+            <button
+              type="button"
+              className="account-menu-item"
+              onClick={() => {
+                setOpen(false);
+                onOpenGuide();
+              }}
+            >
+              <BookOpen size={15} /> 使用说明
+            </button>
           )}
           {onOpenSponsor && (
             <button
