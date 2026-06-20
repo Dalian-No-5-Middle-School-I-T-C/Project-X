@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "1.4.0",
+  "version": "1.4.6",
   "description": "Local answer card designer and PDF exporter for Project-X.",
   "author": "Project-X",
   "private": true,
@@ -53,6 +53,8 @@
     "express": "^5.1.0",
     "multer": "^2.0.2",
     "pdfkit": "^0.17.2",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

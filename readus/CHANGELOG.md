@@ -1,5 +1,53 @@
 # Project-X CHANGELOG
 
+## v1.4.6 (2026-06-20)
+
+### 日间/夜间模式
+- 新增主题切换按钮：位于顶部栏右侧，☀️/🌙 SVG 图标即按钮，点击即时切换
+- 完整深色色板：品牌色、中性色阶、阴影、毛玻璃效果全部适配暗色背景
+- `data-theme="dark"` 属性挂载 html，`color-scheme` 同步，系统表单元素自动暗色
+- 设置持久化：localStorage 保存选择，刷新后保持
+
+### Bug 修复
+- **答题卡放大控件无效**：`width` 百分比在 flex 容器中仍被约束 → 改用 `transform: scale()` 缩放图片
+- **背景图被遮挡（四次修复）**：`body::before{z:-1}` → `body.style.background` → `insertBefore+#root z-index` → 最终 `body::after` 浮层覆盖（内容面板 15+ 处 `background:#fff` 把视口填满，背景放哪层都没用，必须浮在最上面用半透明穿透）
+- **背景图透明度可调**：checkbox 开/关 → range 滑块 0%~50%，滑块拖动即时生效无需保存
+- **上传自定义背景图**：设置面板新增上传按钮，`POST /api/users/me/background`，存储到 `data/answer-card/backgrounds/`
+- **手动改分后赋分自动重算**：`recomputeRankings()` 末尾追加 `AssignedScoreService.recalculateAll()`
+
+### 数据库 & API
+- 新增 `users.background_opacity REAL DEFAULT 0`（旧 `show_background` 列自动迁移）
+- `GET /api/app/background` 优先返回用户自定义背景
+- `POST /api/users/me/background` multipart 上传（5MB, image/*）
+- settings API 新增 `backgroundOpacity` 字段
+
+## v1.4.5 (2026-06-19)
+
+### AI 服务商配置优化
+- 账号设置中 AI 服务商「如何填写？」改为独立卡片弹窗（createPortal），不再叠在设置上
+- 移除旧 AI API Key 输入框（已被 AI 服务商完全替代）
+- Base URL 保存时自动补齐 `/v1` 路径
+- 哈基米合并为 Gemini，下拉选项简化为 GPT/DeepSeek/Gemini
+- 修复保存 Gemini 时报错 `NOT NULL constraint failed: ai_providers.user_id`
+- AI 分析接口错误信息中文化：区分连接失败/超时/404
+
+### 成绩修改 + 逐题明细
+- 数据库新增 `answer_overrides` 表 + 成绩表新增手动修改追踪字段
+- API: 学生搜索、逐题改分、修改答案批量重算、班级均分统计
+- `ScoreFixPage`: 双模式→搜索→逐题改分/答案编辑，内嵌答题卡（点击放大）
+- `StudentScoreDetail`: 点击成绩表行→子页面，逐题得分+班级均分率+答题卡
+- 成绩 Tab 栏右侧「分数有问题？」按钮（仅教师/管理员）
+
+### 弹窗遮挡修复
+- `ScoreFixPage` 图片放大、`ScanPreviewModal`、`ImportCardModal`、`StudentScoreDetail` 全部 `createPortal`
+### 分数段动态化
+- 硬编码 0-59/60-69/... 改为按 10 分一段自动生成，末段截止满分
+- 0 人分段自动隐藏，颜色按位置（首段红/末段绿）
+
+### 弹窗遮挡修复
+- `ScoreFixPage` 图片放大、`ScanPreviewModal`、`ImportCardModal`、`StudentScoreDetail` 全部 `createPortal`
+- 修改答案后自动调用评分引擎重算全部分数+排名
+
 ## v1.4.0 (2026-06-18)
 
 ### 缺陷修复 (2026-06-19)

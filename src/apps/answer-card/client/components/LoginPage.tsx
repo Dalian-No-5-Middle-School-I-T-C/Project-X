@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { LogIn, Shield } from "lucide-react";
+import { BookOpen, LogIn, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
+import { UserGuideModal } from "./UserGuideModal";
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -9,6 +10,7 @@ export function LoginPage() {
   const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -74,8 +76,17 @@ export function LoginPage() {
           <button className="primary-button wide-button" type="submit" disabled={busy}>
             <LogIn size={17} /> {busy ? "登录中..." : "登录"}
           </button>
+          <button
+            className="ghost-button wide-button login-guide-button"
+            type="button"
+            onClick={() => setShowGuide(true)}
+            disabled={busy}
+          >
+            <BookOpen size={16} /> 使用说明
+          </button>
         </form>
       </div>
+      <UserGuideModal open={showGuide} onClose={() => setShowGuide(false)} />
     </div>
   );
 }

@@ -660,7 +660,7 @@ function initMobileTabBar() {
       { id:'studentAnalysis', icon:'💡', label:'分析' }
     ];
   }
-  bar.innerHTML = items.map(it => '<div class="tab-item" data-section="'+it.id+'" onclick="showSection(''+it.id+'')"><span class="tab-icon">'+it.icon+'</span><span>'+it.label+'</span></div>').join('');
+  bar.innerHTML = items.map(it => '<div class="tab-item" data-section="'+it.id+'" onclick="showSection(\''+it.id+'\')"><span class="tab-icon">'+it.icon+'</span><span>'+it.label+'</span></div>').join('');
   updateMobileTabActive(document.querySelector('.sidebar-item.active')?.dataset.section || items[0].id);
 }
 function updateMobileTabActive(sectionId) {
@@ -709,7 +709,7 @@ function initSidebar() {
       { id:'studentAnalysis', icon:'ὐD', label:'成绩分析' }
     ];
   }
-  nav.innerHTML = items.map(it => '<div class="sidebar-item px-6 py-3 flex items-center gap-3 text-sm font-medium text-slate-600" onclick="showSection(''+it.id+'')" data-section="'+it.id+'"><span class="text-lg">'+it.icon+'</span><span>'+it.label+'</span></div>').join('');
+  nav.innerHTML = items.map(it => '<div class="sidebar-item px-6 py-3 flex items-center gap-3 text-sm font-medium text-slate-600" onclick="showSection(\''+it.id+'\')" data-section="'+it.id+'"><span class="text-lg">'+it.icon+'</span><span>'+it.label+'</span></div>').join('');
 }
 
 async function initExamFilter() {
@@ -739,7 +739,7 @@ async function showSection(sectionId) {
     else if (sectionId === 'studentTrend') await renderStudentTrend();
     else if (sectionId === 'studentAnalysis') await renderStudentAnalysis();
   } catch (e) {
-    content.innerHTML = '<div class="text-center text-red-500 p-8">加载失败: ' + e.message + '<br><button onclick="showSection(''+sectionId+'')" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">重试</button></div>';
+    content.innerHTML = '<div class="text-center text-red-500 p-8">加载失败: ' + e.message + '<br><button onclick="showSection(\''+sectionId+'\')" class="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm">重试</button></div>';
     console.error(e);
   } finally {
     showLoading(false);
@@ -908,7 +908,7 @@ function renderStudentRow(stu, exam) {
       const color = score >= s.maxScore * 0.8 ? 'text-emerald-600' : score >= s.maxScore * 0.6 ? 'text-slate-700' : 'text-amber-600';
       return '<td class="px-4 py-4 ' + color + ' font-medium">' + score + '</td>';
     }).join('') +
-    '<td class="px-6 py-4"><button onclick="showStudentDetail('' + stu.studentId + '')" class="text-blue-600 hover:text-blue-800 text-sm font-medium">详情</button></td>' +
+    '<td class="px-6 py-4"><button onclick="showStudentDetail(\'' + stu.studentId + '\')" class="text-blue-600 hover:text-blue-800 text-sm font-medium">详情</button></td>' +
   '</tr>';
 }
 

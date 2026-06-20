@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -131,6 +131,34 @@ function electronBuilderConfig(config: ProjectXVariantConfig, target: PackageTar
   return builderConfig;
 }
 
+function findPythonForNodeGyp(): string | undefined {
+  // 1. Respect existing env vars that node-gyp checks
+  if (process.env.NODE_GYP_FORCE_PYTHON) return process.env.NODE_GYP_FORCE_PYTHON;
+  if (process.env.PYTHON && existsSync(process.env.PYTHON)) return process.env.PYTHON;
+
+  // 2. Search managed Python in WorkBuddy environment
+  if (process.platform === "win32") {
+    const chromiumEnv = "C:\\ProgramData\\WorkBuddy\\chromium-env";
+    if (existsSync(chromiumEnv)) {
+      for (const sessionDir of readdirSync(chromiumEnv)) {
+        const p = path.join(
+          chromiumEnv, sessionDir,
+          ".workbuddy", "binaries", "python", "versions"
+        );
+        if (existsSync(p)) {
+          for (const versionDir of readdirSync(p)) {
+            const exe = path.join(p, versionDir, "python.exe");
+            if (existsSync(exe)) return exe;
+          }
+        }
+      }
+    }
+  }
+
+  // 3. Fall through — node-gyp will try its own search (PATH, py.exe, etc.)
+  return undefined;
+}
+
 function packageVariant(config: ProjectXVariantConfig, target: PackageTarget, arch: PackageArch): void {
   const env = {
     ...process.env,
@@ -140,6 +168,12 @@ function packageVariant(config: ProjectXVariantConfig, target: PackageTarget, ar
     ELECTRON_CACHE: path.join(rootDir, ".electron-cache"),
     ELECTRON_BUILDER_CACHE: path.join(rootDir, ".electron-builder-cache")
   };
+  // node-gyp needs Python to rebuild better-sqlite3 for Electron
+  const pythonPath = findPythonForNodeGyp();
+  if (pythonPath) {
+    env.PYTHON = pythonPath;
+    console.log(`[Project-X] Using Python: ${pythonPath}`);
+  }
   mkdirSync(env.ELECTRON_BUILDER_CACHE, { recursive: true });
   writeFileSync(
     path.join(env.ELECTRON_BUILDER_CACHE, "package.json"),

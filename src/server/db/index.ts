@@ -280,6 +280,72 @@ export function initializeDatabase(): void {
     `);
     console.log("[DB] Migration (v1.4): created ai_providers table");
   }
+
+  // v1.4.1 migrations: grade modification tracking (2026-06-19)
+  // Add manual modification columns to student_scores
+  const ssCols = db.prepare("PRAGMA table_info(student_scores)").all() as Array<{ name: string }>;
+  if (!ssCols.some((c) => c.name === "manually_modified")) {
+    db.exec("ALTER TABLE student_scores ADD COLUMN manually_modified INTEGER DEFAULT 0");
+    console.log("[DB] Migration (v1.4.1): added manually_modified to student_scores");
+  }
+  if (!ssCols.some((c) => c.name === "modified_by")) {
+    db.exec("ALTER TABLE student_scores ADD COLUMN modified_by INTEGER REFERENCES users(id)");
+  }
+  if (!ssCols.some((c) => c.name === "modified_at")) {
+    db.exec("ALTER TABLE student_scores ADD COLUMN modified_at DATETIME");
+  }
+
+  // Add manual modification columns to question_scores
+  const qsCols = db.prepare("PRAGMA table_info(question_scores)").all() as Array<{ name: string }>;
+  if (!qsCols.some((c) => c.name === "manually_modified")) {
+    db.exec("ALTER TABLE question_scores ADD COLUMN manually_modified INTEGER DEFAULT 0");
+    console.log("[DB] Migration (v1.4.1): added manually_modified to question_scores");
+  }
+  if (!qsCols.some((c) => c.name === "modified_by")) {
+    db.exec("ALTER TABLE question_scores ADD COLUMN modified_by INTEGER REFERENCES users(id)");
+  }
+  if (!qsCols.some((c) => c.name === "modified_at")) {
+    db.exec("ALTER TABLE question_scores ADD COLUMN modified_at DATETIME");
+  }
+
+  // answer_overrides table tracks all manual grade/answer changes
+  const hasAnswerOverrides = db.prepare(
+    "SELECT COUNT(*) as cnt FROM sqlite_master WHERE type='table' AND name='answer_overrides'"
+  ).get() as { cnt: number };
+  if (hasAnswerOverrides.cnt === 0) {
+    db.exec(`
+      CREATE TABLE answer_overrides (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        exam_id         INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+        card_id         TEXT NOT NULL,
+        question_number INTEGER,
+        question_id     TEXT,
+        block_id        TEXT,
+        score_type      TEXT NOT NULL,           -- objective / subjective
+        override_type   TEXT NOT NULL,           -- score / answer
+        old_value       TEXT,                    -- JSON
+        new_value       TEXT,                    -- JSON
+        created_by      INTEGER REFERENCES users(id),
+        created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS idx_answer_overrides_exam ON answer_overrides(exam_id);
+    `);
+    console.log("[DB] Migration (v1.4.1): created answer_overrides table");
+  }
+
+  // v1.5.0 migrations: background_opacity column on users (replaces show_background)
+  const userColsV3 = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+  if (!userColsV3.some((c) => c.name === "background_opacity")) {
+    // If old show_background column exists, migrate its value
+    if (userColsV3.some((c) => c.name === "show_background")) {
+      db.exec("ALTER TABLE users ADD COLUMN background_opacity REAL DEFAULT 0");
+      db.exec("UPDATE users SET background_opacity = CASE WHEN show_background = 1 THEN 0.12 ELSE 0 END");
+      console.log("[DB] Migration (v1.5): added background_opacity column (migrated from show_background)");
+    } else {
+      db.exec("ALTER TABLE users ADD COLUMN background_opacity REAL DEFAULT 0");
+      console.log("[DB] Migration (v1.5): added background_opacity column to users");
+    }
+  }
 }
 
 export async function hashPassword(password: string): Promise<string> {
