@@ -190,14 +190,14 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
       <div style={{
         display: "flex", alignItems: "center", gap: 12,
         padding: "12px 24px", borderBottom: "1px solid var(--line)",
-        background: "#fff", flexShrink: 0
+        background: "var(--surface)", flexShrink: 0
       }}>
         <button
           onClick={onBack}
           style={{
             display: "flex", alignItems: "center", gap: 4,
             padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 8,
-            background: "#fff", cursor: "pointer", fontSize: 13, color: "var(--text-primary)"
+            background: "var(--surface)", cursor: "pointer", fontSize: 13, color: "var(--text-primary)"
           }}
         >
           <ArrowLeft size={16} /> 返回
@@ -222,7 +222,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                 body: JSON.stringify({ scoreDisplayMode: mode })
               }).catch(() => {});
             }}
-            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--line-strong)", fontSize: 13, background: "#fff", cursor: "pointer", height: 36, boxSizing: "border-box" }}
+            style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--line-strong)", fontSize: 13, background: "var(--surface)", cursor: "pointer", height: 36, boxSizing: "border-box" }}
             title="成绩指标显示"
           >
             <option value="deviation">偏差值</option>
@@ -236,7 +236,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             onChange={(e) => { setClassId(e.target.value); }}
             style={{
               padding: "6px 12px", borderRadius: 8, border: "1px solid var(--line-strong)",
-              fontSize: 13, background: "#fff", cursor: "pointer", minWidth: 130, height: 36, boxSizing: "border-box"
+              fontSize: 13, background: "var(--surface)", cursor: "pointer", minWidth: 130, height: 36, boxSizing: "border-box"
             }}
           >
             <option value="">全部班级</option>
@@ -275,7 +275,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
       {/* Sub-tab bar */}
       <div style={{
         display: "flex", gap: 0, borderBottom: "1px solid var(--line)",
-        padding: "0 24px", flexShrink: 0, background: "#fff", alignItems: "center"
+        padding: "0 24px", flexShrink: 0, background: "var(--surface)", alignItems: "center"
       }}>
         {subTabConfigs.map(({ key, label, icon: Icon }, idx) => (
           <button
@@ -351,7 +351,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                   <select
                     value={comparisonClassId}
                     onChange={(e) => setComparisonClassId(e.target.value)}
-                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, background: "#fff", cursor: "pointer" }}
+                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, background: "var(--surface)", cursor: "pointer" }}
                   >
                     <option value="">全部班级</option>
                     {(() => {
@@ -384,7 +384,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                     <div key={grade} style={{ marginBottom: 12 }}>
                       <div style={{ fontSize: 13, fontWeight: 600, color: "var(--brand)", marginBottom: 6, padding: "0 4px" }}>{grade}</div>
                       <div style={{ overflowX: "auto" }}>
-                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, border: "1px solid var(--line)", borderRadius: 8, background: "#fff" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)" }}>
                           <thead>
                             <tr style={{ background: "var(--surface-tint)", borderBottom: "2px solid var(--line)" }}>
                               <th style={thS}>班级</th>
@@ -405,7 +405,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                                   key={cs.classId}
                                   style={{
                                     borderTop: i > 0 ? "1px solid var(--line-light)" : "none",
-                                    background: isBaseline ? "var(--brand-soft)" : i % 2 === 0 ? "#fff" : "var(--bg-soft)"
+                                    background: isBaseline ? "var(--brand-soft)" : i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)"
                                   }}
                                 >
                                   <td style={{ ...tdS, fontWeight: isBaseline ? 600 : 400 }}>{cs.className}{isBaseline ? " ·基准" : ""}</td>

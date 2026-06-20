@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Download, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen } from "lucide-react";
+import { ChevronDown, Download, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson, getAuthToken } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
@@ -40,6 +40,7 @@ export function AccountMenu({
     editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: ""
   });
   const [showHelpCard, setShowHelpCard] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"grading" | "client" | "ai">("grading");
 
   useEffect(() => {
     if (open && showSettings) {
@@ -111,8 +112,12 @@ export function AccountMenu({
 
   async function saveProvider() {
     const { editing, id, name, providerType, baseUrl, apiKey, models } = providerEditor;
-    if (!name || !providerType || !baseUrl || !apiKey) {
+    if (!name || !providerType || !apiKey) {
       setSettingsMsg("请填写完整信息");
+      return;
+    }
+    if (providerType !== "gemini" && !baseUrl) {
+      setSettingsMsg("请填写 Base URL");
       return;
     }
     try {
@@ -366,107 +371,94 @@ export function AccountMenu({
       {/* Settings modal — portal to body to escape backdrop-filter containing block */}
       {showSettings && createPortal(
         <div className="modal-overlay" onClick={() => setShowSettings(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560, width: "92vw", maxHeight: "90vh", overflowY: "auto" }}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640, width: "92vw", maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
             <div className="modal-header">
               <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>账号设置</h3>
               <button className="ghost-button" onClick={() => setShowSettings(false)}>
                 <X size={18} />
               </button>
             </div>
-            <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 14 }}>
-              <div className="account-settings-group">
-                <label className="account-settings-label">成绩指标显示</label>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                    <input type="radio" name="displayMode" value="deviation" checked={displayMode === "deviation"} onChange={() => setDisplayMode("deviation")} />
-                    标准偏差值 (50为基准)
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                    <input type="radio" name="displayMode" value="zscore" checked={displayMode === "zscore"} onChange={() => setDisplayMode("zscore")} />
-                    Z值 (0为基准)
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                    <input type="radio" name="displayMode" value="percentile" checked={displayMode === "percentile"} onChange={() => setDisplayMode("percentile")} />
-                    百分位排名 (0~100)
-                  </label>
-                </div>
+            <div className="account-settings-layout">
+              <div className="account-settings-nav">
+                <button className={`account-settings-nav-item ${settingsTab === "grading" ? "active" : ""}`} onClick={() => setSettingsTab("grading")}>
+                  <Gauge size={15} /> 阅卷设置
+                </button>
+                <button className={`account-settings-nav-item ${settingsTab === "client" ? "active" : ""}`} onClick={() => setSettingsTab("client")}>
+                  <Monitor size={15} /> 客户端设置
+                </button>
+                <button className={`account-settings-nav-item ${settingsTab === "ai" ? "active" : ""}`} onClick={() => setSettingsTab("ai")}>
+                  <BrainCircuit size={15} /> AI 设置
+                </button>
               </div>
-              <div className="account-settings-group">
-                <label className="account-settings-label">复核置信度阈值: {reviewThreshold.toFixed(2)}</label>
-                <input type="range" min="0" max="1" step="0.01" value={reviewThreshold} onChange={(e) => setReviewThreshold(Number(e.target.value))} style={{ width: "100%", marginTop: 4 }} />
-                <span style={{ fontSize: 11, color: "var(--muted)" }}>低于此值的题目标记"需要复核"</span>
-              </div>
+              <div className="account-settings-content">
+                {settingsTab === "grading" && (
+                  <>
+                    <h4>成绩指标显示</h4>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                        <input type="radio" name="displayMode" value="deviation" checked={displayMode === "deviation"} onChange={() => setDisplayMode("deviation")} />
+                        标准偏差值 (50为基准)
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                        <input type="radio" name="displayMode" value="zscore" checked={displayMode === "zscore"} onChange={() => setDisplayMode("zscore")} />
+                        Z值 (0为基准)
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                        <input type="radio" name="displayMode" value="percentile" checked={displayMode === "percentile"} onChange={() => setDisplayMode("percentile")} />
+                        百分位排名 (0~100)
+                      </label>
+                    </div>
+                    <h4 style={{ marginTop: 8 }}>复核置信度阈值: {reviewThreshold.toFixed(2)}</h4>
+                    <input type="range" min="0" max="1" step="0.01" value={reviewThreshold} onChange={(e) => setReviewThreshold(Number(e.target.value))} style={{ width: "100%", marginTop: 2 }} />
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>低于此值的题目标记"需要复核"</span>
+                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                    <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>保存设置</button>
+                  </>
+                )}
 
-              {/* 背景图透明度 */}
-              <div className="account-settings-group">
-                <label className="account-settings-label" style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span>背景图透明度</span>
-                  <span style={{ fontWeight: 400, color: "var(--muted)" }}>{Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}</span>
-                </label>
-                <input type="range" min="0" max="0.5" step="0.01" value={bgOpacity} onChange={(e) => { const v = Number(e.target.value); setBgOpacity(v); document.documentElement.style.setProperty("--bg-opacity", String(v)); if (v > 0) document.body.classList.add("has-bg-image"); else document.body.classList.remove("has-bg-image"); }} style={{ width: "100%", marginTop: 4 }} />
-                <span style={{ fontSize: 11, color: "var(--muted)" }}>0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
-                <div style={{ marginTop: 6, display: "flex", gap: 6, alignItems: "center" }}>
-                  <button
-                    className="ghost-button"
-                    style={{ fontSize: 11 }}
-                    onClick={() => bgFileRef.current?.click()}
-                  >上传背景图</button>
-                  <input
-                    ref={bgFileRef}
-                    type="file"
-                    accept="image/*"
-                    style={{ display: "none" }}
-                    onChange={handleBgUpload}
-                  />
-                  {bgMsg && <span style={{ fontSize: 11, color: bgMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{bgMsg}</span>}
-                </div>
-              </div>
+                {settingsTab === "client" && (
+                  <>
+                    <h4>背景图透明度</h4>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
+                      <span style={{ color: "var(--muted)" }}>{Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}</span>
+                    </div>
+                    <input type="range" min="0" max="0.5" step="0.01" value={bgOpacity} onChange={(e) => { const v = Number(e.target.value); setBgOpacity(v); document.documentElement.style.setProperty("--bg-opacity", String(v)); if (v > 0) document.body.classList.add("has-bg-image"); else document.body.classList.remove("has-bg-image"); }} style={{ width: "100%", marginTop: 4 }} />
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
+                    <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center" }}>
+                      <button className="ghost-button" style={{ fontSize: 11 }} onClick={() => bgFileRef.current?.click()}>上传背景图</button>
+                      <input ref={bgFileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleBgUpload} />
+                      {bgMsg && <span style={{ fontSize: 11, color: bgMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{bgMsg}</span>}
+                    </div>
+                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                    <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>保存设置</button>
+                  </>
+                )}
 
-              {/* ── AI 服务商管理 ── */}
-              <div className="account-settings-group">
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                  <label className="account-settings-label" style={{ margin: 0 }}>AI 服务商</label>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <button
-                      onClick={() => setShowHelpCard(!showHelpCard)}
-                      style={{ border: "none", background: "none", cursor: "pointer", fontSize: 12, color: "var(--brand)", padding: 0, textDecoration: "underline" }}
-                    >
-                      如何填写？
-                    </button>
-                    <button
-                      className="ghost-button"
-                      style={{ fontSize: 12, color: "var(--brand)", padding: "2px 8px" }}
-                      onClick={() => { setShowAddProvider(true); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}
-                    >
-                      <Plus size={14} /> 添加
-                    </button>
-                  </div>
-                </div>
+                {settingsTab === "ai" && (
+                  <>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+                      <h4 style={{ margin: 0 }}>AI 服务商</h4>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <button onClick={() => setShowHelpCard(!showHelpCard)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 12, color: "var(--brand)", padding: 0, textDecoration: "underline" }}>
+                          如何填写？
+                        </button>
+                        <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 8px" }} onClick={() => { setShowAddProvider(true); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}>
+                          <Plus size={14} /> 添加
+                        </button>
+                      </div>
+                    </div>
 
-                {/* Provider list */}
+                    {/* Provider list */}
                     {aiProviders.length > 0 && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                         {aiProviders.map((p) => (
-                          <div key={p.id} style={{
-                            display: "flex", alignItems: "center", gap: 8,
-                            padding: "8px 10px", borderRadius: 8, background: "var(--surface-soft)",
-                            border: "1px solid var(--line)", fontSize: 12
-                          }}>
+                          <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, background: "var(--surface-soft)", border: "1px solid var(--line)", fontSize: 12 }}>
                             <div style={{ flex: 1, overflow: "hidden" }}>
                               <div style={{ fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
-                              <div style={{ color: "var(--muted)", fontSize: 11 }}>{p.providerType.toUpperCase()} · {p.baseUrl}</div>
+                              <div style={{ color: "var(--muted)", fontSize: 11 }}>{p.providerType.toUpperCase()}{p.baseUrl ? ` · ${p.baseUrl}` : ""}</div>
                             </div>
-                            <button className="ghost-button" style={{ fontSize: 11, padding: "2px 6px" }} onClick={() => {
-                              setProviderEditor({
-                                editing: true, id: p.id,
-                                name: p.name, providerType: p.providerType,
-                                baseUrl: p.baseUrl, apiKey: p.apiKey,
-                                models: p.models ? p.models.join(",") : ""
-                              });
-                            }}>编辑</button>
-                            <button className="ghost-button" style={{ fontSize: 11, color: "var(--brand)", padding: "2px 6px" }} onClick={() => void deleteProvider(p.id)}>
-                              <Trash2 size={12} />
-                            </button>
+                            <button className="ghost-button" style={{ fontSize: 11, padding: "2px 6px" }} onClick={() => { setProviderEditor({ editing: true, id: p.id, name: p.name, providerType: p.providerType, baseUrl: p.baseUrl, apiKey: p.apiKey, models: p.models ? p.models.join(",") : "" }); }}>编辑</button>
+                            <button className="ghost-button" style={{ fontSize: 11, color: "var(--brand)", padding: "2px 6px" }} onClick={() => void deleteProvider(p.id)}><Trash2 size={12} /></button>
                           </div>
                         ))}
                       </div>
@@ -490,9 +482,10 @@ export function AccountMenu({
                       <option value="deepseek">DeepSeek</option>
                       <option value="gemini">Gemini</option>
                         </select>
+                        {providerEditor.providerType !== "gemini" && (
                         <div>
                           <input
-                            type="text" placeholder="Base URL (如 https://api.openai.com/v1)"
+                            type="text" placeholder="Base URL (如 https://api.openai.com)"
                             value={providerEditor.baseUrl}
                             onChange={(e) => setProviderEditor({ ...providerEditor, baseUrl: e.target.value })}
                             style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace", width: "100%", boxSizing: "border-box" }}
@@ -501,6 +494,12 @@ export function AccountMenu({
                             系统会自动补齐末尾的 /v1 路径
                           </div>
                         </div>
+                        )}
+                        {providerEditor.providerType === "gemini" && (
+                          <div style={{ fontSize: 11, color: "var(--muted)", padding: "4px 0" }}>
+                            Gemini 使用 Google 原生 SDK，无需填写 Base URL
+                          </div>
+                        )}
                         <input
                           type="password" placeholder="API Key"
                           value={providerEditor.apiKey}
@@ -543,6 +542,7 @@ export function AccountMenu({
                       <option value="deepseek">DeepSeek</option>
                       <option value="gemini">Gemini</option>
                         </select>
+                        {providerEditor.providerType !== "gemini" && (
                         <div>
                           <input
                             type="text" placeholder="Base URL"
@@ -554,6 +554,12 @@ export function AccountMenu({
                             系统会自动补齐末尾的 /v1 路径
                           </div>
                         </div>
+                        )}
+                        {providerEditor.providerType === "gemini" && (
+                          <div style={{ fontSize: 11, color: "var(--muted)", padding: "4px 0" }}>
+                            Gemini 使用 Google 原生 SDK，无需填写 Base URL
+                          </div>
+                        )}
                         <input
                           type="password" placeholder="API Key"
                           value={providerEditor.apiKey}
@@ -577,9 +583,10 @@ export function AccountMenu({
                         </div>
                       </div>
                     )}
+                    {settingsMsg && settingsTab === "ai" && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                  </>
+                )}
               </div>
-              {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
-              <button className="primary-button" type="button" onClick={() => void saveSettings()}>保存设置</button>
             </div>
           </div>
         </div>,
@@ -598,7 +605,7 @@ export function AccountMenu({
             </div>
             <div style={{ padding: "16px 20px", fontSize: 14, lineHeight: 1.8, color: "var(--text-secondary)" }}>
               <div style={{ marginBottom: 12 }}>
-                <strong>Base URL</strong> 填 API 端点地址，<em>不是</em>网站首页。末尾无需 /v1 自动补齐。
+                <strong>Base URL</strong> 填 API 端点地址，<em>不是</em>网站首页。末尾无需 /v1 自动补齐。<strong>Gemini 无需填写 Base URL</strong>（使用 Google 原生 SDK，仅需 API Key）。
               </div>
               <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 12, fontSize: 13 }}>
                 <thead>
@@ -610,7 +617,7 @@ export function AccountMenu({
                 <tbody>
                   <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>GPT</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>https://api.openai.com</td></tr>
                   <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>DeepSeek</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>https://api.deepseek.com</td></tr>
-                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>Gemini</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>https://generativelanguage.googleapis.com</td></tr>
+                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>Gemini</td><td style={{ padding: "6px 8px", fontSize: 12, color: "var(--muted)" }}>无需填写（Google 原生 SDK）</td></tr>
                   <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>Azure</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>https://xxx.openai.azure.com/openai</td></tr>
                   <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>Ollama</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>http://localhost:11434</td></tr>
                 </tbody>
@@ -619,7 +626,10 @@ export function AccountMenu({
                 <strong>模型列表</strong> 填逗号分隔，如 <span style={{ fontFamily: "monospace" }}>gpt-5.4,gpt-5.4-mini</span>，留空自动获取。
               </div>
               <div style={{ marginBottom: 8 }}>
-                <strong>类型说明</strong>：GPT / DeepSeek 走 OpenAI 兼容协议；Gemini 走 Google 原生 API。
+                <strong>类型说明</strong>：GPT / DeepSeek 走 OpenAI 兼容协议；<strong>Gemini 走 Google 原生 GenAI SDK</strong>（不兼容 OpenAI 协议，仅需 API Key）。
+              </div>
+              <div style={{ marginBottom: 8, padding: "8px 12px", borderRadius: 8, background: "var(--surface-tint)", border: "1px solid var(--line)" }}>
+                <strong>Gemini API Key 获取</strong>：前往 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" style={{ color: "var(--brand)" }}>Google AI Studio</a> 创建 API Key，粘贴到上方 API Key 栏即可，<em>无需</em>填写 Base URL。
               </div>
               <div>
                 <strong>使用前提</strong>：需要启动 Python llmclient 中转服务。<br />

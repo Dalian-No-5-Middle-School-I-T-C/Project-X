@@ -511,6 +511,32 @@ function App() {
     };
   }, []);
 
+  // 全局 ESC 返回上一级 (v1.4.7)
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      // 检查是否有输入框聚焦，跳过（让用户正常退出输入）
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      // 检查是否有 modal overlay 打开（modal 自行处理 ESC）
+      if (document.querySelector(".modal-overlay")) return;
+
+      // 成绩分析 detail → 返回考试选择
+      if (mode === "analysis" && analysisTab === "detail") {
+        setSelectedAnalysisExamId(null);
+        setAnalysisTab("select");
+        return;
+      }
+      // 赞助/使用说明 → 返回上一模式
+      if (mode === "sponsor" || mode === "guide") {
+        setMode(previousModeRef.current);
+        return;
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mode, analysisTab]);
+
   // 进入阅卷模式时预加载考试列表
   useEffect(() => {
     if (mode === "grading" && exams.length === 0) {
@@ -915,11 +941,42 @@ function App() {
     if (!card) return;
     const draft = cloneCard(card);
     mutator(draft);
+    // v1.4.7: 自动为题块生成序号标题
+    autoNameBlocks(draft);
     editRevisionRef.current += 1;
     latestCardRef.current = draft;
     setCard(draft);
     setAutoSaveState("dirty");
     scheduleAutoSave();
+  }
+
+  /** 根据题块顺序和类型自动生成标题，如 "一. 单选"、"二. 多选"、"三. 填空题" */
+  function autoNameBlocks(draft: AnswerCard) {
+    const chineseNumbers = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
+    const modeName: Record<string, string> = {
+      single: "单选", multiple: "多选", indeterminate: "不定项"
+    };
+    let index = 0;
+    for (const block of draft.bodyBlocks) {
+      if (block.type === "objective") {
+        const obj = block as ObjectiveBlock;
+        const title = modeName[obj.mode] ?? "客观题";
+        const prefix = chineseNumbers[index] ?? String(index + 1);
+        // 仅当标题为空或为旧默认值时才自动命名
+        if (!block.title || block.title === "客观题块" || /^(?:客观题块|主观题块|填空题块)$/.test(block.title)) {
+          block.title = `${prefix}. ${title}`;
+        }
+      } else if (block.type === "subjective") {
+        const sub = block as SubjectiveBlock;
+        const isFillBlank = sub.questions.length > 0 && sub.questions[0]?.style === "manual_score_grid" && sub.questions.every((q) => q.kind === "blank");
+        const title = isFillBlank ? "填空题" : "解答题";
+        const prefix = chineseNumbers[index] ?? String(index + 1);
+        if (!block.title || block.title === "主观题块" || block.title === "填空题块" || /^(?:客观题块|主观题块|填空题块)$/.test(block.title)) {
+          block.title = `${prefix}. ${title}`;
+        }
+      }
+      index++;
+    }
   }
 
   function updateBlock(blockId: string, mutator: (block: BodyBlock) => void) {
@@ -2106,6 +2163,7 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
   const questionConfigs = objectiveQuestionDefinitions(block);
   const answerKey = normalizeObjectiveAnswerKey(block);
   const missingAnswerCount = questions.filter((questionNumber) => !answerKey[questionNumber]?.length).length;
+  const [showPerQuestion, setShowPerQuestion] = useState(false);  // v1.4.7: 默认折叠每题配置
 
   function toggleAnswer(questionNumber: number, option: string) {
     onChange((draft) => {
@@ -2293,6 +2351,11 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
               onChange((draft) => {
                 const objective = draft as ObjectiveBlock;
                 objective.optionCount = Number(event.target.value);
+                // v1.4.7: 同步到逐题配置
+                objective.questions = normalizeObjectiveQuestions(objective);
+                for (const q of objective.questions) {
+                  q.optionCount = objective.optionCount;
+                }
                 objective.answerKey = normalizeObjectiveAnswerKey(objective);
               })
             }
@@ -2312,6 +2375,14 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
               onChange((draft) => {
                 const objective = draft as ObjectiveBlock;
                 objective.mode = event.target.value as ObjectiveMode;
+                // v1.4.7: 同步块级题型到所有逐题配置
+                objective.questions = normalizeObjectiveQuestions(objective);
+                for (const q of objective.questions) {
+                  q.mode = objective.mode;
+                  if (objective.mode !== "multiple" && objective.mode !== "indeterminate") {
+                    delete q.scoringRule;
+                  }
+                }
                 objective.answerKey = normalizeObjectiveAnswerKey(objective);
               })
             }
@@ -2373,6 +2444,12 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
           />
         </label>
       </div>
+      <div style={{ marginTop: 8 }}>
+        <button className="ghost-button" type="button" onClick={() => setShowPerQuestion(!showPerQuestion)} style={{ fontSize: 12 }}>
+          {showPerQuestion ? "▲ 收起每题配置" : "▼ 展开每题配置"}
+        </button>
+      </div>
+      {showPerQuestion && (
       <div className="answer-key-editor">
         <div className="answer-key-title">
           <strong>每题配置</strong>
@@ -2505,6 +2582,7 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
           ))}
         </div>
       </div>
+      )}
       <p className="hint">横向模式少于 15 题按行排列、15 题及以上按 5 题小组网格排列；竖向模式按高考 AB 卡式 4 题一组纵向排布，每题选项仍保持横向小组选项。超过 5 个选项的题目独占一行。</p>
     </>
   );
@@ -2849,7 +2927,7 @@ function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocumen
     <div className="pages">
       {layout.pages.map((page) => (
         <svg className="page" key={page.pageNumber} viewBox="0 0 210 297" role="img" aria-label={`第${page.pageNumber}页预览`}>
-          <rect x="0" y="0" width="210" height="297" fill="#fff" />
+          <rect x="0" y="0" width="210" height="297" style={{ fill: "var(--surface)" }} />
           {page.markers.map((marker) => (
             <rect key={marker.role} {...marker.rect} fill="#20342f" />
           ))}
@@ -2857,7 +2935,7 @@ function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocumen
             ID:{page.header.id}
           </text>
           {page.header.codeBoxes.map((box, index) => (
-            <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" />
+            <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" style={index !== 0 && index !== page.header.codeBoxes.length - 1 ? { fill: "var(--surface)" } : undefined} />
           ))}
           {page.header.title && (
             <text x="105" y={page.header.titleY} textAnchor="middle" className="svg-title">
@@ -2901,7 +2979,7 @@ function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][nu
       <line x1={separatorX} y1={area.digitRect.y + 7} x2={separatorX} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
       {area.digitCells.map((cell) => (
         <g key={`${cell.digitIndex}_${cell.digit}`}>
-          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
+          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "var(--surface)" }} />
           <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
             {cell.digit}
           </text>
@@ -2931,7 +3009,7 @@ function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "obje
           </text>
           {item.options.map((option) => (
             <g key={option.label}>
-              <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
+              <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "var(--surface)" }} />
               <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2} textAnchor="middle" dominantBaseline="central" className="svg-option-label">
                 {option.label}
               </text>
@@ -2976,7 +3054,7 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
               )}
               {question.scoreCells.map((cell) => (
                 <g key={cell.score}>
-                  <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" />
+                  <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" style={{ fill: "var(--surface)" }} />
                   {cell.score !== null && (
                     <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + 4.2} textAnchor="middle" className="svg-tiny">
                       {cell.score}

@@ -584,16 +584,24 @@ button {
 }
 
 .autosave-status {
+  display: inline-flex;
+  align-items: center;
   min-width: 84px;
+  padding: 2px 10px;
+  border-radius: 12px;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
   color: var(--muted);
   white-space: nowrap;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
 }
 
 .autosave-saving,
 .autosave-dirty {
   color: #8a5a00;
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.25);
 }
 
 /* ── 日间/夜间模式切换按钮 ────────────────────────── */
@@ -3707,6 +3715,8 @@ input[type="checkbox"]:disabled {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  max-height: calc(100vh - 200px);
+  overflow: hidden;
 }
 
 .class-column-title {
@@ -4392,4 +4402,224 @@ body.has-bg-image::after {
   pointer-events: none;
   background: url(/api/app/background) center / cover no-repeat fixed;
   opacity: var(--bg-opacity, 0);
+}
+
+/* ── 暗色模式覆盖 (v1.4.7) ────────────────────────────── */
+
+[data-theme="dark"] {
+  /* 微调变量 -- surface 稍微提亮 */
+  --surface: #1E1E24;
+  --surface-raised: #2A2A30;
+}
+
+/* 输入框 / 下拉 / 文本域 */
+[data-theme="dark"] input:not([type="checkbox"]):not([type="radio"]),
+[data-theme="dark"] select,
+[data-theme="dark"] textarea {
+  background: var(--surface-raised);
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+[data-theme="dark"] input:not([type="checkbox"]):not([type="radio"]):hover,
+[data-theme="dark"] select:hover {
+  background: var(--surface);
+}
+[data-theme="dark"] input:not([type="checkbox"]):not([type="radio"]):focus,
+[data-theme="dark"] select:focus {
+  background: var(--surface);
+}
+
+/* 复选框 */
+[data-theme="dark"] input[type="checkbox"] {
+  background: var(--surface-raised);
+  border-color: var(--line-strong);
+}
+
+/* 模态卡片 */
+[data-theme="dark"] .modal-card {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+[data-theme="dark"] .modal-close:hover {
+  background: var(--surface-raised);
+}
+
+/* 账号菜单下拉 */
+[data-theme="dark"] .account-menu-dropdown {
+  background: var(--surface-raised);
+  border-color: var(--line);
+}
+[data-theme="dark"] .account-menu-info {
+  color: var(--text);
+}
+[data-theme="dark"] .account-menu-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+[data-theme="dark"] .account-menu-divider {
+  border-color: var(--line);
+}
+[data-theme="dark"] .account-password-form {
+  background: var(--surface);
+}
+
+/* 编辑面板 */
+[data-theme="dark"] .question-editor,
+[data-theme="dark"] .answer-key-editor,
+[data-theme="dark"] .overview-info-card,
+[data-theme="dark"] .exam-select-card,
+[data-theme="dark"] .ai-report-block,
+[data-theme="dark"] .ai-question-actions,
+[data-theme="dark"] .pdf-page-image-wrapper {
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* SVG 答题卡预览页 */
+[data-theme="dark"] .page {
+  background: var(--surface);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* 侧栏 */
+[data-theme="dark"] .sidebar {
+  background: linear-gradient(180deg, rgba(30, 30, 36, 0.95) 0%, rgba(30, 30, 36, 0.98) 100%);
+}
+
+/* Capsule 标签 */
+[data-theme="dark"] .capsule {
+  background: var(--surface-raised);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+/* 考试列表/分析表格 */
+[data-theme="dark"] .exam-list-table,
+[data-theme="dark"] .analysis-ranking-table-wrap {
+  background: var(--surface);
+  border-color: var(--line);
+}
+
+/* 筛选下拉 / 趋势控件下拉 / AI 控件下拉 */
+[data-theme="dark"] .exam-filter-select,
+[data-theme="dark"] .ai-analysis-controls select,
+[data-theme="dark"] .trend-controls select {
+  background: var(--surface-raised);
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+/* Badge 状态色 */
+[data-theme="dark"] .exam-list-badge-closed { background: rgba(34, 197, 94, 0.16); color: #6EE7B7; }
+[data-theme="dark"] .exam-list-badge-grading { background: rgba(251, 191, 36, 0.16); color: #FCD34D; }
+[data-theme="dark"] .exam-list-badge-draft { background: rgba(255, 255, 255, 0.06); color: #9CA3AF; }
+
+/* Ghost button */
+[data-theme="dark"] .ghost-button {
+  color: var(--text-secondary);
+}
+[data-theme="dark"] .ghost-button:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+/* Tab 激活 */
+[data-theme="dark"] .tab-button.active {
+  background: var(--surface-raised);
+}
+
+/* 评分表格 */
+[data-theme="dark"] .score-row:nth-child(even) {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* 背景图暗色遮罩 */
+[data-theme="dark"] body.has-bg-image::after {
+  filter: brightness(0.45) saturate(0.65);
+}
+
+/* mode-toggle 按钮激活态 */
+[data-theme="dark"] .mode-toggle button.active {
+  box-shadow: 0 2px 8px rgba(232, 53, 74, 0.35);
+}
+
+/* 设计器 inspector / block-chip 暗色 */
+[data-theme="dark"] .inspector {
+  background: rgba(30, 30, 36, 0.85);
+}
+[data-theme="dark"] .block-chip {
+  background: rgba(255, 255, 255, 0.06);
+}
+[data-theme="dark"] .block-chip:hover {
+  background: rgba(255, 255, 255, 0.10);
+}
+[data-theme="dark"] .class-column,
+[data-theme="dark"] .account-table-wrap {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+/* ── 账号设置布局 (v1.4.7) ────────────────────────────── */
+
+.account-settings-layout {
+  display: flex;
+  gap: 0;
+  min-height: 380px;
+}
+
+.account-settings-nav {
+  width: 148px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--line);
+  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.account-settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  border-left: 3px solid transparent;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.account-settings-nav-item:hover {
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--text);
+}
+
+[data-theme="dark"] .account-settings-nav-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.account-settings-nav-item.active {
+  color: var(--brand);
+  background: var(--brand-tint);
+  border-left-color: var(--brand);
+}
+
+.account-settings-content {
+  flex: 1;
+  padding: 12px 20px;
+  overflow-y: auto;
+  max-height: 460px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.account-settings-content h4 {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
 }

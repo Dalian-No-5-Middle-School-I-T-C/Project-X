@@ -144,7 +144,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
     <div>
       {/* Toolbar */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: "1px solid var(--line)", borderRadius: 8, padding: "4px 10px", flex: 1, minWidth: 200, maxWidth: 320 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "4px 10px", flex: 1, minWidth: 200, maxWidth: 320 }}>
           <Search size={14} style={{ color: "var(--muted)", flexShrink: 0 }} />
           <input
             type="text"
@@ -160,7 +160,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
       </div>
 
       {/* Table */}
-      <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 10, background: "#fff" }}>
+      <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: "var(--surface-tint)", borderBottom: "2px solid var(--line)" }}>
@@ -203,7 +203,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
           <tbody>
             {sorted.map((row, i) => (
               <tr key={row.studentId}
-                style={{ borderTop: "1px solid var(--line-light)", background: i % 2 === 0 ? "#fff" : "var(--bg-soft)", cursor: onRowClick ? "pointer" : "default" }}
+                style={{ borderTop: "1px solid var(--line-light)", background: i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)", cursor: onRowClick ? "pointer" : "default" }}
                 onClick={() => onRowClick?.(row.studentId, row.studentName, row.studentNumber)}
               >  <td style={tdStyle}>{i + 1}</td>
                 <td style={tdStyle}>

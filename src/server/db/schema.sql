@@ -389,9 +389,9 @@ CREATE INDEX IF NOT EXISTS idx_export_templates_user ON export_templates(user_id
 CREATE TABLE IF NOT EXISTS ai_providers (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name            TEXT NOT NULL,              -- 用户命名，如 "学校GPT" / "本地哈基米"
-    provider_type   TEXT NOT NULL,              -- openai / deepseek / haqimi / gemini
-    base_url        TEXT NOT NULL,              -- API 基础地址
+    name            TEXT NOT NULL,              -- 用户命名，如 "我的GPT" / "Gemini 学生"
+    provider_type   TEXT NOT NULL,              -- openai / deepseek / gemini
+    base_url        TEXT NOT NULL DEFAULT '',   -- API 基础地址 (Gemini 留空)
     api_key         TEXT NOT NULL,              -- API Key
     models          TEXT,                       -- JSON 模型列表，空=自动获取
     is_active       INTEGER DEFAULT 1,

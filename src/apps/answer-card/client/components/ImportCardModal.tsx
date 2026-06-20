@@ -72,7 +72,7 @@ function DatePicker({ value, onChange }: { value?: string; onChange: (d: string)
           placeholder="YYYY-MM-DD"
           style={{
             width: 130, padding: "6px 10px", borderRadius: 8,
-            border: "1px solid var(--line-strong)", fontSize: 13, background: "#fff"
+            border: "1px solid var(--line-strong)", fontSize: 13, background: "var(--surface)"
           }}
         />
         <button
@@ -86,7 +86,7 @@ function DatePicker({ value, onChange }: { value?: string; onChange: (d: string)
       {showCalendar && (
         <div style={{
           position: "absolute", top: "100%", left: 0, zIndex: 100,
-          background: "#fff", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+          background: "var(--surface)", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
           border: "1px solid var(--line)", padding: 10, width: 240, marginTop: 4
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -200,7 +200,7 @@ export function ImportCardModal({
             <select
               value={subjectLabel}
               onChange={handleSubjectChange}
-              style={{ width: "100%", padding: "6px 10px", borderRadius: 8, border: `1px solid ${errors.subject ? "#A32D2D" : "var(--line-strong)"}`, fontSize: 13, background: "#fff" }}
+              style={{ width: "100%", padding: "6px 10px", borderRadius: 8, border: `1px solid ${errors.subject ? "#A32D2D" : "var(--line-strong)"}`, fontSize: 13, background: "var(--surface)" }}
             >
               <option value="">请选择科目</option>
               {SUBJECT_OPTIONS.map((opt) => (
@@ -218,7 +218,7 @@ export function ImportCardModal({
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               placeholder="如：2026上学期期中物理"
-              style={{ width: "100%", padding: "6px 10px", borderRadius: 8, border: `1px solid ${errors.title ? "#A32D2D" : "var(--line-strong)"}`, fontSize: 13, background: "#fff", boxSizing: "border-box" }}
+              style={{ width: "100%", padding: "6px 10px", borderRadius: 8, border: `1px solid ${errors.title ? "#A32D2D" : "var(--line-strong)"}`, fontSize: 13, background: "var(--surface)", boxSizing: "border-box" }}
             />
             {errors.title && <span style={{ color: "#A32D2D", fontSize: 11 }}>{errors.title}</span>}
           </label>
@@ -257,7 +257,7 @@ export function ImportCardModal({
                   value={examName}
                   onChange={(e) => setExamName(e.target.value)}
                   placeholder={`留空则默认「${title.trim() || "同答题卡名称"}」`}
-                  style={{ width: "100%", padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line-strong)", fontSize: 13, background: "#fff", boxSizing: "border-box" }}
+                  style={{ width: "100%", padding: "6px 10px", borderRadius: 8, border: "1px solid var(--line-strong)", fontSize: 13, background: "var(--surface)", boxSizing: "border-box" }}
                 />
               </div>
             )}
@@ -267,7 +267,7 @@ export function ImportCardModal({
                 <select
                   value={linkExamId ?? ""}
                   onChange={(e) => setLinkExamId(e.target.value ? Number(e.target.value) : undefined)}
-                  style={{ width: "100%", padding: "6px 10px", borderRadius: 8, border: `1px solid ${errors.linkExamId ? "#A32D2D" : "var(--line-strong)"}`, fontSize: 13, background: "#fff" }}
+                  style={{ width: "100%", padding: "6px 10px", borderRadius: 8, border: `1px solid ${errors.linkExamId ? "#A32D2D" : "var(--line-strong)"}`, fontSize: 13, background: "var(--surface)" }}
                 >
                   <option value="">选择已有考试...</option>
                   {exams.map((exam) => (

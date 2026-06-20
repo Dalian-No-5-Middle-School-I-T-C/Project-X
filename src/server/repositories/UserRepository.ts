@@ -556,8 +556,8 @@ export class UserRepository {
     const dataRows = rows.slice(1).filter((r) => r.some((c) => c.trim()));
 
     // 检测 CSV 类型
-    const isStudent = header.some((h) => /年级|grade/.test(h)) || header.some((h) => /班级|class/.test(h));
-    const isTeacher = header.some((h) => /科目|subject/.test(h)) && !header.some((h) => /班级|class|年级|grade/.test(h));
+    const isStudent = header.some((h) => /班级|class/.test(h));
+    const isTeacher = header.some((h) => /科目|subject/.test(h)) && !isStudent;
 
     if (isStudent) {
       const gradeIdx = header.findIndex((h) => /年级|grade/.test(h));
@@ -565,21 +565,42 @@ export class UserRepository {
       const numberIdx = header.findIndex((h) => /学号|student_number|考号/.test(h));
       const nameIdx = header.findIndex((h) => /姓名|name/.test(h));
 
-      if (gradeIdx < 0 || classIdx < 0 || numberIdx < 0 || nameIdx < 0) {
-        result.students.errors.push({ row: header, message: "表头不完整，需含：年级,班级,学号,姓名" });
+      if (classIdx < 0 || numberIdx < 0 || nameIdx < 0) {
+        result.students.errors.push({ row: header, message: "表头不完整，需含：班级(几年几班),学号,姓名" });
         return result;
       }
+
+      // v1.4.7: 若没有独立的年级列，从班级列解析年级
+      const hasSeparateGrade = gradeIdx >= 0;
+      const parseGradeFromClass = (className: string): string => {
+        const m = className.match(/^(?:高|初|小?)([一二三四五六]+)/);
+        if (m) {
+          const prefix = className.startsWith("初") ? "初中" : className.startsWith("小") ? "小学" : "";
+          if (prefix) return prefix + m[0].replace(/^[初小]/, "");
+          return m[0];
+        }
+        return className;
+      };
 
       let currentGradeName = "";
       let currentClassName = "";
 
       for (const row of dataRows) {
         try {
-          const rawGradeName = (row[gradeIdx] ?? "").trim();
           const rawClassName = (row[classIdx] ?? "").trim();
-          if (rawGradeName && rawGradeName !== currentGradeName) {
-            currentGradeName = rawGradeName;
-            if (!rawClassName) currentClassName = "";
+          let rawGradeName: string;
+          if (hasSeparateGrade) {
+            rawGradeName = (row[gradeIdx] ?? "").trim();
+            if (rawGradeName && rawGradeName !== currentGradeName) {
+              currentGradeName = rawGradeName;
+              if (!rawClassName) currentClassName = "";
+            }
+          } else {
+            // 从班级列解析年级
+            rawGradeName = parseGradeFromClass(rawClassName);
+            if (rawGradeName && rawGradeName !== currentGradeName) {
+              currentGradeName = rawGradeName;
+            }
           }
           if (rawClassName) currentClassName = rawClassName;
 
@@ -712,7 +733,7 @@ export class UserRepository {
         }
       }
     } else {
-      result.students.errors.push({ row: header, message: "无法识别 CSV 类型（学生需含年级/班级列，教师需含科目列）" });
+      result.students.errors.push({ row: header, message: "无法识别 CSV 类型（学生需含班级列(几年几班)，教师需含科目列）" });
     }
 
     return result;

@@ -47,14 +47,13 @@ export function detectAndParse(text: string): ParsedCsvResult {
   }
 
   const header = rows[0].map((c) => c.toLowerCase().replace(/[_\s]+/g, ""));
-  const hasGrade = header.some((h) => /年级|grade/.test(h));
   const hasClass = header.some((h) => /班级|class/.test(h));
   const hasSubject = header.some((h) => /科目|subject/.test(h));
 
-  if (hasGrade || hasClass) {
+  if (hasClass) {
     return { type: "student", header: rows[0], rows: rows.slice(1) };
   }
-  if (hasSubject && !hasGrade && !hasClass) {
+  if (hasSubject && !hasClass) {
     return { type: "teacher", header: rows[0], rows: rows.slice(1) };
   }
   return { type: "unknown", header: rows[0], rows: rows.slice(1), error: "无法识别 CSV 类型" };
@@ -104,12 +103,12 @@ export async function generateStudentTemplate(): Promise<Blob> {
   const XLSX = await import("xlsx");
   const wb = XLSX.utils.book_new();
   const data = [
-    { "年级": "高一", "班级": "高一1班", "学号": "24101", "姓名": "张三" },
-    { "年级": "高一", "班级": "高一1班", "学号": "24102", "姓名": "李四" }
+    { "班级": "高一1班", "学号": "24101", "姓名": "张三" },
+    { "班级": "高一2班", "学号": "24201", "姓名": "李四" }
   ];
   const ws = XLSX.utils.json_to_sheet(data);
   ws["!cols"] = [
-    { wch: 8 }, { wch: 14 }, { wch: 14 }, { wch: 10 }
+    { wch: 14 }, { wch: 14 }, { wch: 10 }
   ];
   XLSX.utils.book_append_sheet(wb, ws, "学生导入模板");
   const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });

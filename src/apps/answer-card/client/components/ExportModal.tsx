@@ -230,7 +230,7 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
           {/* Preview with real data */}
           <div>
             <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 4 }}>数据预览</label>
-            <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12, background: "#fff" }}>
+            <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12, background: "var(--surface)" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", whiteSpace: "nowrap" }}>
                 <thead>
                   <tr style={{ background: "var(--surface-tint)", borderBottom: "1px solid var(--line)" }}>
@@ -285,7 +285,7 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
                       display: "flex", alignItems: "center", gap: 8, cursor: t ? "pointer" : "default",
                       padding: "6px 10px", borderRadius: 8,
                       border: isActive ? "2px solid var(--brand)" : "1px solid var(--line)",
-                      background: isActive ? "var(--surface-tint)" : "#fff",
+                      background: isActive ? "var(--surface-tint)" : "var(--surface)",
                       transition: "border 0.15s"
                     }}
                   >
