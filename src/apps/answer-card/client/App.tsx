@@ -409,6 +409,9 @@ function App() {
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     return (localStorage.getItem("projectx-theme") as "light" | "dark") || "light";
   });
+  const [darkModeEnabled, setDarkModeEnabled] = useState(() => {
+    return localStorage.getItem("projectx-darkmode-enabled") === "true";
+  });
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
   const autoSaveLabel =
@@ -501,9 +504,11 @@ function App() {
 
   // 日间/夜间模式切换
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
+    const effectiveTheme = darkModeEnabled ? theme : "light";
+    document.documentElement.setAttribute("data-theme", effectiveTheme);
     localStorage.setItem("projectx-theme", theme);
-  }, [theme]);
+    localStorage.setItem("projectx-darkmode-enabled", String(darkModeEnabled));
+  }, [theme, darkModeEnabled]);
 
   useEffect(() => {
     return () => {
@@ -553,6 +558,7 @@ function App() {
 
   function acceptSavedCard(nextCard: AnswerCard | null, state: AutoSaveState = "idle") {
     clearAutoSaveTimer();
+    if (nextCard) autoNameBlocks(nextCard);
     editRevisionRef.current += 1;
     savedRevisionRef.current = editRevisionRef.current;
     latestCardRef.current = nextCard;
@@ -587,6 +593,7 @@ function App() {
       const stillCurrent = latestCardRef.current?.id === snapshot.id;
       const noNewerEdits = editRevisionRef.current === revision;
       if (stillCurrent && noNewerEdits) {
+        autoNameBlocks(saved);
         latestCardRef.current = saved;
         savedRevisionRef.current = revision;
         setCard(saved);
@@ -950,9 +957,16 @@ function App() {
     scheduleAutoSave();
   }
 
-  /** 根据题块顺序和类型自动生成标题，如 "一. 单选"、"二. 多选"、"三. 填空题" */
+  /** 根据题块顺序和类型自动生成标题，如 "一. 单选（10题 50分）" */
   function autoNameBlocks(draft: AnswerCard) {
-    const chineseNumbers = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "十一", "十二"];
+    const digits = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+    const tens = ["", "十", "二十", "三十", "四十", "五十", "六十", "七十", "八十", "九十"];
+    function toChinese(n: number): string {
+      if (n < 1 || n > 100) return String(n);
+      if (n < 10) return digits[n];
+      if (n < 20) return `十${n === 10 ? "" : digits[n % 10]}`;
+      return `${tens[Math.floor(n / 10)]}${n % 10 === 0 ? "" : digits[n % 10]}`;
+    }
     const modeName: Record<string, string> = {
       single: "单选", multiple: "多选", indeterminate: "不定项"
     };
@@ -960,20 +974,19 @@ function App() {
     for (const block of draft.bodyBlocks) {
       if (block.type === "objective") {
         const obj = block as ObjectiveBlock;
-        const title = modeName[obj.mode] ?? "客观题";
-        const prefix = chineseNumbers[index] ?? String(index + 1);
-        // 仅当标题为空或为旧默认值时才自动命名
-        if (!block.title || block.title === "客观题块" || /^(?:客观题块|主观题块|填空题块)$/.test(block.title)) {
-          block.title = `${prefix}. ${title}`;
-        }
+        const typeName = modeName[obj.mode] ?? "客观题";
+        const prefix = toChinese(index + 1);
+        const count = obj.questionCount ?? 0;
+        const total = count * (obj.scorePerQuestion ?? 0);
+        block.title = `${prefix}、${typeName}（${count}题 ${total}分）`;
       } else if (block.type === "subjective") {
         const sub = block as SubjectiveBlock;
         const isFillBlank = sub.questions.length > 0 && sub.questions[0]?.style === "manual_score_grid" && sub.questions.every((q) => q.kind === "blank");
-        const title = isFillBlank ? "填空题" : "解答题";
-        const prefix = chineseNumbers[index] ?? String(index + 1);
-        if (!block.title || block.title === "主观题块" || block.title === "填空题块" || /^(?:客观题块|主观题块|填空题块)$/.test(block.title)) {
-          block.title = `${prefix}. ${title}`;
-        }
+        const typeName = isFillBlank ? "填空题" : "解答题";
+        const prefix = toChinese(index + 1);
+        const count = sub.questions.length;
+        const total = sub.questions.reduce((sum, q) => sum + (q.score || 0), 0);
+        block.title = `${prefix}、${typeName}（${count}题 ${total}分）`;
       }
       index++;
     }
@@ -1386,6 +1399,7 @@ function App() {
               </button>
               )}
             </div>
+            {darkModeEnabled && (
             <button
               className="theme-toggle"
               type="button"
@@ -1411,7 +1425,10 @@ function App() {
                 </svg>
               )}
             </button>
+            )}
             <AccountMenu
+              darkModeEnabled={darkModeEnabled}
+              setDarkModeEnabled={setDarkModeEnabled}
               onOpenSponsor={() => {
                 const previous = mode;
                 void switchMode("sponsor", () => {
