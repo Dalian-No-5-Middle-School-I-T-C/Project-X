@@ -1895,11 +1895,20 @@ export async function createApp(): Promise<express.Express> {
               res.setHeader("Content-Type", `${type}; charset=utf-8`);
             }
           }
+          // 防止浏览器缓存前端文件，确保更新后立即可见
+          if (ext === ".html" || ext === ".js" || ext === ".mjs" || ext === ".css") {
+            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+            res.setHeader("Pragma", "no-cache");
+            res.setHeader("Expires", "0");
+          }
         }
       })
     );
     app.get("/{*splat}", (_req, res) => {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
       res.sendFile(path.join(clientDist, "index.html"));
     });
   }

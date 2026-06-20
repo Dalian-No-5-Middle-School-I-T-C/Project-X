@@ -1,0 +1,20 @@
+# Auto detect text files and handle line endings
+* text=auto
+
+# Shell scripts should always use LF line endings
+*.sh text eol=lf
+
+# Batch files should always use CRLF line endings
+*.bat text eol=crlf
+
+# Binary files
+*.exe binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.db binary
+*.sqlite binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary
+*.node binary
