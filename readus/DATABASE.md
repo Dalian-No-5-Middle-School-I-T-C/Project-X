@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.4.0
+> **版本**: v1.4.7
 > **技术栈**: SQLite + better-sqlite3 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
 
@@ -504,21 +504,21 @@ src/types/
 | `id` | INTEGER PK | 自增主键 |
 | `user_id` | INTEGER FK | 所属用户 |
 | `name` | TEXT | 自定义名称（如 "我的GPT"） |
-| `provider_type` | TEXT | openai / deepseek / haqimi / gemini |
-| `base_url` | TEXT | API 端点地址（保存时自动补齐 `/v1`） |
+| `provider_type` | TEXT | openai / deepseek / gemini |
+| `base_url` | TEXT | API 端点地址（Gemini 留空，其余自动补齐 `/v1`） |
 | `api_key` | TEXT | API 密钥 |
 | `models` | TEXT | JSON 模型列表，为空则自动获取 |
 | `is_active` | INTEGER | 0=禁用 1=启用 |
 
 每个教师可配置多个服务商，用于 AI 成绩分析的模型路由。
 
-**Base URL 说明**：填写 API 端点地址而非网站首页。系统会自动补齐末尾的 `/v1` 路径。
+**Base URL 说明**：填写 API 端点地址而非网站首页。GPT/DeepSeek 等 OpenAI 兼容协议会自动补齐 `/v1`；**Gemini 无需填写 Base URL**（使用 Google 原生 GenAI SDK，仅需 API Key）。
 常见的 Base URL 示例：
 - **OpenAI**: `https://api.openai.com`（自动补为 `https://api.openai.com/v1`）
 - **DeepSeek**: `https://api.deepseek.com`（自动补为 `https://api.deepseek.com/v1`）
+- **Gemini**: 无需填写（Google 原生 SDK）
 - **Azure**: `https://xxx.openai.azure.com/openai`（含 `/openai` 部署前缀，不自动补 `/v1`）
 - **Ollama**: `http://localhost:11434`（自动补为 `http://localhost:11434/v1`）
-- **其他兼容**: `https://your-api-host.com`（自动补为 `https://your-api-host.com/v1`）
 
 > ⚠️ **使用前提**：自定义服务商仍需通过 Python llmclient 中转服务。请先启动：
 > ```powershell
