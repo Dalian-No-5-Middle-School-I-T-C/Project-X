@@ -2,6 +2,12 @@
 
 ## v1.4.6 (2026-06-20)
 
+### 日间/夜间模式
+- 新增主题切换按钮：位于顶部栏右侧，☀️/🌙 SVG 图标即按钮，点击即时切换
+- 完整深色色板：品牌色、中性色阶、阴影、毛玻璃效果全部适配暗色背景
+- `data-theme="dark"` 属性挂载 html，`color-scheme` 同步，系统表单元素自动暗色
+- 设置持久化：localStorage 保存选择，刷新后保持
+
 ### Bug 修复
 - **答题卡放大控件无效**：`width` 百分比在 flex 容器中仍被约束 → 改用 `transform: scale()` 缩放图片
 - **背景图被遮挡（四次修复）**：`body::before{z:-1}` → `body.style.background` → `insertBefore+#root z-index` → 最终 `body::after` 浮层覆盖（内容面板 15+ 处 `background:#fff` 把视口填满，背景放哪层都没用，必须浮在最上面用半透明穿透）
