@@ -34,6 +34,52 @@ https://plaintiff-spears-weapon-mining.trycloudflare.com/Grade-Analysis-System-m
 | Node.js (tsx) | Project-X 后端服务 | `127.0.0.1:5174` |
 | cloudflared | Cloudflare Quick Tunnel | 公网 HTTPS |
 
+## 从 GitHub 同步更新（一键拉取最新代码）
+
+如果你从 GitHub 仓库推送了新代码，服务器上可以一键同步更新。
+
+### 一键更新（推荐，Git Bash）
+
+在项目目录中打开 **Git Bash**，然后执行：
+
+```bash
+bash update.sh
+```
+
+这个脚本会自动完成：
+1. 保存本地修改（如缓存头配置）
+2. 从 GitHub 拉取最新代码
+3. 恢复本地修改（如有冲突会提示）
+4. 同步前端文件到 `dist/client/`
+5. 重启后端服务
+
+**更新完成后**，刷新浏览器即可看到最新版本。
+
+### 手动更新
+
+```bash
+cd /c/Users/Administrator/Desktop/Project-X-main
+
+# 1. 保存本地修改
+git stash
+
+# 2. 拉取最新代码
+git pull origin main
+
+# 3. 恢复本地修改
+git stash pop
+
+# 4. 同步前端文件到 dist/client
+cp Grade-Analysis-System-mobile.html dist/client/Grade-Analysis-System-mobile.html
+cp Grade-Analysis-System-mobile.html dist/client/index.html
+
+# 5. 重启后端（先停止旧进程，再启动新进程）
+kill <旧后端PID>
+bash start-server.sh
+```
+
+---
+
 ## 重启服务
 
 如果服务意外停止，请按以下步骤重启：
