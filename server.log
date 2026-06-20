@@ -1,0 +1,27 @@
+[DB] Connected to: C:\Users\Administrator\Desktop\Project-X-main\data\projectx.db
+[Auth] 从磁盘加载了 7 个有效 token
+[Server] 正在初始化数据库...
+[Cleanup] 定时清理已注册，每 24 小时执行一次，保留期 30 天
+[Cleanup] 开始清理 30 天前的数据（截止：2026/5/21）
+[Cleanup] 找到 0 条过期扫描记录
+[Cleanup] 完成：清除 0 条文件记录，0 条识别记录，0 个文件
+[Server] 数据库初始化完成
+[Server] RBAC 鉴权强制模式: 关闭（仅解析身份）
+[Server] v1.2.1 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai
+node:net:2008
+    const ex = new UVExceptionWithHostPort(err, 'listen', address, port);
+               ^
+
+Error: listen EADDRINUSE: address already in use 127.0.0.1:5174
+    at Server.setupListenHandle [as _listen2] (node:net:2008:16)
+    at listenInCluster (node:net:2065:12)
+    at node:net:2274:7
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '127.0.0.1',
+  port: 5174
+}
+
+Node.js v24.15.0

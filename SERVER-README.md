@@ -6,9 +6,9 @@
 
 ## 公网访问地址
 
-- **前端页面**: https://essays-squad-heroes-mpg.trycloudflare.com
-- **后端 API**: https://essays-squad-heroes-mpg.trycloudflare.com/api/...
-- **健康检查**: https://essays-squad-heroes-mpg.trycloudflare.com/api/app/health
+- **前端页面**: https://plaintiff-spears-weapon-mining.trycloudflare.com
+- **后端 API**: https://plaintiff-spears-weapon-mining.trycloudflare.com/api/...
+- **健康检查**: https://plaintiff-spears-weapon-mining.trycloudflare.com/api/app/health
 
 ## 默认账号
 
@@ -21,7 +21,7 @@
 ### 浏览器直接访问
 在浏览器中打开：
 ```
-https://essays-squad-heroes-mpg.trycloudflare.com/Grade-Analysis-System-mobile.html?api_base=https://essays-squad-heroes-mpg.trycloudflare.com
+https://plaintiff-spears-weapon-mining.trycloudflare.com/Grade-Analysis-System-mobile.html?api_base=https://plaintiff-spears-weapon-mining.trycloudflare.com
 ```
 
 ### 微信小程序接入
@@ -34,25 +34,59 @@ https://essays-squad-heroes-mpg.trycloudflare.com/Grade-Analysis-System-mobile.h
 | Node.js (tsx) | Project-X 后端服务 | `127.0.0.1:5174` |
 | cloudflared | Cloudflare Quick Tunnel | 公网 HTTPS |
 
-## 重启服务
+## 从 GitHub 同步更新（一键拉取最新代码）
 
-如果服务意外停止，请按以下步骤重启：
+如果你从 GitHub 仓库推送了新代码，服务器上可以一键同步更新。
 
-### 方式 1：一键启动（推荐，Git Bash）
+### 一键更新（推荐，Git Bash）
 
 在项目目录中打开 **Git Bash**，然后执行：
 
 ```bash
+bash update.sh
+```
+
+这个脚本会自动完成：
+1. 保存本地修改（如缓存头配置）
+2. 从 GitHub 拉取最新代码
+3. 恢复本地修改（如有冲突会提示）
+4. 同步前端文件到 `dist/client/`
+5. 重启后端服务
+
+**更新完成后**，刷新浏览器即可看到最新版本。
+
+### 手动更新
+
+```bash
+cd /c/Users/Administrator/Desktop/Project-X-main
+
+# 1. 保存本地修改
+git stash
+
+# 2. 拉取最新代码
+git pull origin main
+
+# 3. 恢复本地修改
+git stash pop
+
+# 4. 同步前端文件到 dist/client
+cp Grade-Analysis-System-mobile.html dist/client/Grade-Analysis-System-mobile.html
+cp Grade-Analysis-System-mobile.html dist/client/index.html
+
+# 5. 重启后端（先停止旧进程，再启动新进程）
+kill <旧后端PID>
 bash start-server.sh
 ```
 
-这会同时启动后端和 Cloudflare Tunnel，并显示进程 PID 和公网 URL。
+---
 
-### 方式 2：一键启动（Windows 双击）
+## 重启服务
 
-双击运行项目目录中的 `start-server.bat` 文件。
+如果服务意外停止，请按以下步骤重启：
 
-> 注意：如果双击后窗口闪退，可能是路径或权限问题，请改用方式 1（Git Bash）。
+### 方式 1：一键启动（推荐）
+
+双击运行项目目录中的 `start-server.bat` 文件，会自动启动后端和隧道。
 
 ### 方式 2：手动启动
 
