@@ -198,7 +198,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
               </div>
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", overflow: "auto", position: "relative", padding: "0 48px" }}>
                 {hasPrev && <button onClick={() => { setEnlargeIdx(enlargeIdx - 1); setZoomState(1); }} style={arrowBtn("left")}><ChevronLeft size={28} /></button>}
-                <img src={`/api/scanner/grading-image/${data.cardId}/${encodeURIComponent(cur.fileName)}`} alt="" style={{ maxWidth: `${zoom * 100}%`, maxHeight: "calc(94vh - 120px)", objectFit: "contain", transition: "max-width 0.2s" }} />
+                <img src={`/api/scanner/grading-image/${data.cardId}/${encodeURIComponent(cur.fileName)}`} alt="" style={{ maxWidth: "100%", maxHeight: "calc(94vh - 120px)", objectFit: "contain", transform: `scale(${zoom})`, transformOrigin: "center center", transition: "transform 0.2s" }} />
                 {hasNext && <button onClick={() => { setEnlargeIdx(enlargeIdx + 1); setZoomState(1); }} style={arrowBtn("right")}><ChevronRight size={28} /></button>}
               </div>
               <div style={{ display: "flex", justifyContent: "center", gap: 6, padding: "8px 16px 12px", overflowX: "auto", flexShrink: 0 }}>

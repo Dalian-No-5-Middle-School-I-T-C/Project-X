@@ -332,6 +332,20 @@ export function initializeDatabase(): void {
     `);
     console.log("[DB] Migration (v1.4.1): created answer_overrides table");
   }
+
+  // v1.5.0 migrations: background_opacity column on users (replaces show_background)
+  const userColsV3 = db.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>;
+  if (!userColsV3.some((c) => c.name === "background_opacity")) {
+    // If old show_background column exists, migrate its value
+    if (userColsV3.some((c) => c.name === "show_background")) {
+      db.exec("ALTER TABLE users ADD COLUMN background_opacity REAL DEFAULT 0");
+      db.exec("UPDATE users SET background_opacity = CASE WHEN show_background = 1 THEN 0.12 ELSE 0 END");
+      console.log("[DB] Migration (v1.5): added background_opacity column (migrated from show_background)");
+    } else {
+      db.exec("ALTER TABLE users ADD COLUMN background_opacity REAL DEFAULT 0");
+      console.log("[DB] Migration (v1.5): added background_opacity column to users");
+    }
+  }
 }
 
 export async function hashPassword(password: string): Promise<string> {

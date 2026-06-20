@@ -4280,3 +4280,16 @@ input[type="checkbox"]:disabled {
 .exam-list-badge-closed { background: #dcfce7; color: #166534; }
 .exam-list-badge-grading { background: #fef3c7; color: #92400e; }
 .exam-list-badge-draft { background: #f3f4f6; color: #6b7280; }
+
+/* ── 背景图 (v1.4.6) ──────────────────────────────── */
+/* body::after 半透明浮层，pointer-events:none 不挡交互 */
+
+body.has-bg-image::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 999998;
+  pointer-events: none;
+  background: url(/api/app/background) center / cover no-repeat fixed;
+  opacity: var(--bg-opacity, 0);
+}

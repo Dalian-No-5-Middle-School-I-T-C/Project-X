@@ -1,5 +1,20 @@
 # Project-X CHANGELOG
 
+## v1.4.6 (2026-06-20)
+
+### Bug 修复
+- **答题卡放大控件无效**：`width` 百分比在 flex 容器中仍被约束 → 改用 `transform: scale()` 缩放图片
+- **背景图被遮挡（四次修复）**：`body::before{z:-1}` → `body.style.background` → `insertBefore+#root z-index` → 最终 `body::after` 浮层覆盖（内容面板 15+ 处 `background:#fff` 把视口填满，背景放哪层都没用，必须浮在最上面用半透明穿透）
+- **背景图透明度可调**：checkbox 开/关 → range 滑块 0%~50%，滑块拖动即时生效无需保存
+- **上传自定义背景图**：设置面板新增上传按钮，`POST /api/users/me/background`，存储到 `data/answer-card/backgrounds/`
+- **手动改分后赋分自动重算**：`recomputeRankings()` 末尾追加 `AssignedScoreService.recalculateAll()`
+
+### 数据库 & API
+- 新增 `users.background_opacity REAL DEFAULT 0`（旧 `show_background` 列自动迁移）
+- `GET /api/app/background` 优先返回用户自定义背景
+- `POST /api/users/me/background` multipart 上传（5MB, image/*）
+- settings API 新增 `backgroundOpacity` 字段
+
 ## v1.4.5 (2026-06-19)
 
 ### AI 服务商配置优化

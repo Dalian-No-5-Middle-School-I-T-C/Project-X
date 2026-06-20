@@ -13,6 +13,7 @@ import express from "express";
 import type { Request, Response } from "express";
 import { getDatabase } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
+import { AssignedScoreService } from "../services/AssignedScoreService";
 import {
   objectiveQuestionDefinitions,
   gradeObjectiveQuestion,
@@ -497,6 +498,14 @@ function recomputeRankings(db: ReturnType<typeof getDatabase>, examId: number) {
     const percentile = n > 1 ? Math.round((1 - i / n) * 1000) / 10 : 100;
     updateRank.run(rank, percentile, s.id);
   });
+
+  // 自动重算赋分
+  try {
+    const assignedService = new AssignedScoreService();
+    assignedService.recalculateAll(examId);
+  } catch (_) {
+    // 无赋分配置或重算失败，静默跳过
+  }
 }
 
 export default router;

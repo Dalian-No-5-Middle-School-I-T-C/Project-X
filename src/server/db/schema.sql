@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS users (
     score_display_mode TEXT DEFAULT 'zscore',  -- deviation / zscore / percentile (v1.4.0)
     review_confidence_threshold REAL DEFAULT 0.12, -- 复核置信度阈值 (v1.4.0)
     ai_api_key       TEXT,                    -- AI API密钥 (v1.4.0)
+    background_opacity REAL DEFAULT 0,          -- 背景图透明度 0~1, 0=关闭 (v1.5.0)
     email            TEXT,
     phone            TEXT,
     teacher_role     TEXT,                    -- subject_teacher / head_teacher / grade_leader（仅教师）

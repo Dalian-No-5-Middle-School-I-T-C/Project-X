@@ -3,7 +3,7 @@ import multer from "multer";
 import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { ensureDefaultAdmin, getDatabase, initializeDatabase } from "../../../server/db";
@@ -1482,12 +1482,13 @@ export async function createApp(): Promise<express.Express> {
     try {
       const db = getDatabase();
       const user = db.prepare(
-        "SELECT score_display_mode, review_confidence_threshold, ai_api_key FROM users WHERE id = ?"
-      ).get(req.user!.id) as { score_display_mode: string; review_confidence_threshold: number; ai_api_key: string | null } | undefined;
+        "SELECT score_display_mode, review_confidence_threshold, ai_api_key, background_opacity FROM users WHERE id = ?"
+      ).get(req.user!.id) as { score_display_mode: string; review_confidence_threshold: number; ai_api_key: string | null; background_opacity: number | null } | undefined;
       res.json({
         scoreDisplayMode: user?.score_display_mode ?? "zscore",
         reviewConfidenceThreshold: user?.review_confidence_threshold ?? 0.12,
-        aiApiKey: user?.ai_api_key ?? ""
+        aiApiKey: user?.ai_api_key ?? "",
+        backgroundOpacity: user?.background_opacity ?? 0
       });
     } catch (error) {
       next(error);
@@ -1496,7 +1497,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.patch("/api/users/me/settings", async (req, res, next) => {
     try {
-      const { scoreDisplayMode, reviewConfidenceThreshold, aiApiKey } = req.body as Record<string, unknown>;
+      const { scoreDisplayMode, reviewConfidenceThreshold, aiApiKey, backgroundOpacity } = req.body as Record<string, unknown>;
       const db = getDatabase();
       if (scoreDisplayMode && ["deviation", "zscore", "percentile"].includes(String(scoreDisplayMode))) {
         db.prepare("UPDATE users SET score_display_mode = ? WHERE id = ?")
@@ -1510,6 +1511,11 @@ export async function createApp(): Promise<express.Express> {
       if (aiApiKey !== undefined) {
         db.prepare("UPDATE users SET ai_api_key = ? WHERE id = ?")
           .run(typeof aiApiKey === "string" ? aiApiKey : null, req.user!.id);
+      }
+      if (typeof backgroundOpacity === "number") {
+        const o = Math.max(0, Math.min(1, backgroundOpacity));
+        db.prepare("UPDATE users SET background_opacity = ? WHERE id = ?")
+          .run(o, req.user!.id);
       }
       res.json({ ok: true });
     } catch (error) {
@@ -1584,6 +1590,70 @@ export async function createApp(): Promise<express.Express> {
       variant: process.env.PROJECTX_VARIANT ?? null,
       scanner: process.env.PROJECTX_ENABLE_SCANNER === "1"
     });
+  });
+
+  // v1.4.6: 背景图
+  const backgroundsDir = path.join(dataDir, "backgrounds");
+
+  app.get("/api/app/background", optionalAuth, (req, res) => {
+    // 用户自定义背景优先
+    if (req.user) {
+      const customBg = path.join(backgroundsDir, `${req.user.id}.jpg`);
+      if (existsSync(customBg)) {
+        res.setHeader("Cache-Control", "no-cache");
+        res.sendFile(customBg);
+        return;
+      }
+    }
+    // 默认背景
+    const bgPath = path.join(rootDir, "resources", "background.jpg");
+    if (existsSync(bgPath)) {
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      res.sendFile(bgPath);
+    } else {
+      res.status(404).json({ error: "background image not found" });
+    }
+  });
+
+  // 上传自定义背景图
+  const bgUpload = multer({
+    storage: multer.diskStorage({
+      destination: async (_req, _file, cb) => {
+        await mkdir(backgroundsDir, { recursive: true });
+        cb(null, backgroundsDir);
+      },
+      filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
+        cb(null, `upload_${Date.now()}${ext}`);
+      }
+    }),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      if (file.mimetype.startsWith("image/")) {
+        cb(null, true);
+      } else {
+        cb(new Error("仅支持图片文件"));
+      }
+    }
+  });
+
+  app.post("/api/users/me/background", bgUpload.single("file"), async (req, res, next) => {
+    try {
+      if (!req.user) {
+        res.status(401).json({ error: "请先登录" });
+        return;
+      }
+      if (!req.file) {
+        res.status(400).json({ error: "请选择图片文件" });
+        return;
+      }
+      // 重命名为 user_${userId}.jpg，覆盖旧背景
+      const target = path.join(backgroundsDir, `${req.user.id}.jpg`);
+      await rename(req.file.path, target);
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.get("/api/analysis/ai/status", async (req, res) => {
