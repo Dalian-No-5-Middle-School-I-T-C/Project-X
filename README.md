@@ -444,7 +444,13 @@ Project-X/
 > 感谢所有为 Project-X 提供测试反馈、文档建议和代码贡献的同学与老师！
 
 ---
-
+##看板娘
+<img width="1254" height="1254" alt="82210f7b5cb77968108b5aa81a3b2191" src="https://github.com/user-attachments/assets/34c2c9b5-a373-48cf-b605-5a66faecc7b8" />
+<img width="1070" height="1470" alt="31c82194dfda46f5a99ea69efd19eb45" src="https://github.com/user-attachments/assets/c73fd099-d40f-4dd2-8e1a-57982522b326" />
+<img width="1254" height="1254" alt="9884f7ad4fb44e7d82c66620f1eb43a5" src="https://github.com/user-attachments/assets/e4e05802-68d4-486b-8c32-da3abf754f14" />
+<img width="1122" height="1402" alt="aea2da6d3469351758d4d3d9dc56f9b0" src="https://github.com/user-attachments/assets/4680cf8c-c7af-454e-a082-cdbf41afd025" />
+<img width="3344" height="1882" alt="27dacd5f25f0f04ed397bf22a3cdc441" src="https://github.com/user-attachments/assets/3bf17d59-5867-4e97-beda-c3630617c7c9" />
+<img width="1054" height="1492" alt="1e26fe449f38c89316b12e8cfc78db07" src="https://github.com/user-attachments/assets/d7e0d091-a18a-4786-9ef8-7b76bc2213d2" />
 ## 开源协议
 
 本项目采用 GPL-3.0 license 开源协议。
