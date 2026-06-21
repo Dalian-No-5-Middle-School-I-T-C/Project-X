@@ -12,6 +12,12 @@
 -- ============================================================
 
 -- 角色表
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS roles (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL UNIQUE,       -- admin / teacher / student
@@ -94,7 +100,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     student_number_digits INTEGER DEFAULT 5,
     sided           TEXT DEFAULT 'single',              -- single / double
     layout_version   INTEGER DEFAULT 1,
-    layout_data      TEXT,                                -- JSON: LayoutDocument 完整坐标
+    layout_data      TEXT,                                -- Deprecated: legacy cached LayoutDocument; generated from card tables on demand
     created_by       INTEGER REFERENCES users(id),
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
