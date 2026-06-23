@@ -198,11 +198,30 @@ router.delete("/:groupId", (req: Request, res: Response) => {
   try {
     const db = getDatabase();
     const groupId = Number(req.params.groupId);
-    const existing = db.prepare("SELECT id FROM exam_groups WHERE id = ?").get(groupId);
+    const deleteExams = req.query.deleteExams === "1";
+
+    const existing = db.prepare("SELECT id, name FROM exam_groups WHERE id = ?").get(groupId) as { id: number; name: string } | undefined;
     if (!existing) { res.status(404).json({ message: "大考不存在" }); return; }
 
+    // Count associated exams
+    const memberExams = db.prepare(`
+      SELECT e.id, e.name FROM exam_group_members egm
+      JOIN exams e ON e.id = egm.exam_id
+      WHERE egm.group_id = ?
+    `).all(groupId) as Array<{ id: number; name: string }>;
+
+    // If deleting exams too, delete them (with cascade to scores etc.)
+    if (deleteExams && memberExams.length > 0) {
+      const deleteStmt = db.prepare("DELETE FROM exams WHERE id = ?");
+      for (const exam of memberExams) {
+        deleteStmt.run(exam.id);
+      }
+    }
+
+    // Delete the group (cascade deletes members)
     db.prepare("DELETE FROM exam_groups WHERE id = ?").run(groupId);
-    res.json({ ok: true, message: "大考已删除" });
+
+    res.json({ ok: true, deletedExams: deleteExams ? memberExams.length : 0, message: "大考已删除" });
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "删除大考失败" });
   }

@@ -115,6 +115,13 @@ type ExamDeleteTarget = {
   deleteLinkedCards: boolean;
 };
 
+type GroupDeleteTarget = {
+  groupId: number;
+  groupName: string;
+  memberCount: number;
+  deleteExams: boolean;
+};
+
 type AutoSaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
 type PdfWarningState = {
@@ -414,6 +421,7 @@ function App() {
   const [showNewCardModal, setShowNewCardModal] = useState(false);
   const [cardDeleteConflict, setCardDeleteConflict] = useState<CardDeleteConflict | null>(null);
   const [examDeleteTarget, setExamDeleteTarget] = useState<ExamDeleteTarget | null>(null);
+  const [groupDeleteTarget, setGroupDeleteTarget] = useState<GroupDeleteTarget | null>(null);
   const [assignedFormulaExamId, setAssignedFormulaExamId] = useState<number | null>(null);
   const [showBg, setShowBg] = useState(0); // opacity 0~1, 0=关闭
   const [pdfWarning, setPdfWarning] = useState<PdfWarningState | null>(null);
@@ -1746,12 +1754,12 @@ function App() {
                     </span>
                     <span style={{ width: 100, textAlign: "right", whiteSpace: "nowrap" }}>
                       <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
-                        onClick={async () => {
-                          if (confirm(`确定要删除大考「${group.name}」吗？不会删除关联的考试。`)) {
-                            await authFetch(`/api/exam-groups/${group.id}`, { method: "DELETE" });
-                            loadExamGroups();
-                          }
-                        }}>删除</button>
+                        onClick={() => setGroupDeleteTarget({
+                          groupId: group.id,
+                          groupName: group.name,
+                          memberCount: group.member_count,
+                          deleteExams: false
+                        })}>删除</button>
                     </span>
                   </div>
                 ))}
@@ -2123,6 +2131,68 @@ function App() {
                 }}
               >
                 {examDeleteTarget.deleteLinkedCards ? "删除考试和答题卡" : "解绑答题卡并删除考试"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {groupDeleteTarget && (
+        <div className="modal-backdrop" onClick={() => setGroupDeleteTarget(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
+            <div className="modal-header">
+              <h2>确认删除大考</h2>
+              <button className="modal-close" type="button" onClick={() => setGroupDeleteTarget(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ marginTop: 0 }}>
+                将删除大考「<strong>{groupDeleteTarget.groupName}</strong>」。
+                该大考关联了 <strong>{groupDeleteTarget.memberCount}</strong> 场考试。
+              </p>
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={groupDeleteTarget.deleteExams}
+                  onChange={(event) => setGroupDeleteTarget({ ...groupDeleteTarget, deleteExams: event.target.checked })}
+                  disabled={isBusy}
+                  style={{ marginTop: 2 }}
+                />
+                <span>
+                  <strong>同时删除这 {groupDeleteTarget.memberCount} 场关联考试</strong>
+                  <br />
+                  <span style={{ color: "var(--muted)", fontSize: 11 }}>
+                    ⚠ 考试的成绩、扫描数据将被永久删除，不可恢复
+                  </span>
+                </span>
+              </label>
+              {!groupDeleteTarget.deleteExams && (
+                <p style={{ fontSize: 12, color: "var(--muted)", marginBottom: 0, marginTop: 8 }}>
+                  取消勾选则仅删除大考组，关联的考试保留不变。
+                </p>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="ghost-button" type="button" onClick={() => setGroupDeleteTarget(null)} disabled={isBusy}>取消</button>
+              <button
+                className="primary-button"
+                type="button"
+                disabled={isBusy}
+                style={{ background: "var(--brand)" }}
+                onClick={async () => {
+                  const target = groupDeleteTarget;
+                  try {
+                    const qs = target.deleteExams ? "?deleteExams=1" : "";
+                    const res = await authFetch(`/api/exam-groups/${target.groupId}${qs}`, { method: "DELETE" });
+                    if (res.ok) {
+                      setGroupDeleteTarget(null);
+                      loadExamGroups();
+                      if (target.deleteExams) loadExams();
+                    }
+                  } catch (err) {
+                    setStatus(`删除失败: ${err instanceof Error ? err.message : String(err)}`);
+                  }
+                }}
+              >
+                {groupDeleteTarget.deleteExams ? `删除大考和 ${groupDeleteTarget.memberCount} 场考试` : "仅删除大考"}
               </button>
             </div>
           </div>
