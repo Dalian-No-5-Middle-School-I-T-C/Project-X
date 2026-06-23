@@ -60,6 +60,7 @@ export function CrossExamTotalPage({ onBack }: Props) {
   const [result, setResult] = useState<CrossExamTotalResponse | null>(null);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
+  const [savingGroup, setSavingGroup] = useState(false);
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -79,11 +80,15 @@ export function CrossExamTotalPage({ onBack }: Props) {
       .catch(() => setExams([]));
   }, [academicYear, gradeId, subject]);
 
-  async function loadGroups() {
+  async function loadGroups(preferredGroupId?: string) {
     try {
       const data = await fetchJson<CrossExamGroup[]>("/api/analysis/cross-exam/groups");
       setGroups(data);
-      if (!selectedGroupId && data.length > 0) setSelectedGroupId(String(data[0].id));
+      if (preferredGroupId) {
+        setSelectedGroupId(preferredGroupId);
+      } else if (!selectedGroupId && data.length > 0) {
+        setSelectedGroupId(String(data[0].id));
+      }
     } catch {
       setGroups([]);
     }
@@ -120,6 +125,8 @@ export function CrossExamTotalPage({ onBack }: Props) {
       setMessage("没有可保存的考试。");
       return;
     }
+    setSavingGroup(true);
+    setMessage("正在保存考试组...");
     try {
       const group = await fetchJson<CrossExamGroup>("/api/analysis/cross-exam/groups", {
         method: "POST",
@@ -129,10 +136,12 @@ export function CrossExamTotalPage({ onBack }: Props) {
       setGroupName("");
       setSelectedGroupId(String(group.id));
       setMode("group");
-      await loadGroups();
+      await loadGroups(String(group.id));
       setMessage(`已保存考试组：${group.name}`);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "保存考试组失败");
+    } finally {
+      setSavingGroup(false);
     }
   }
 
@@ -207,7 +216,7 @@ export function CrossExamTotalPage({ onBack }: Props) {
               <label style={labelStyle}><span>开始日期</span><input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="exam-filter-select" /></label>
               <label style={labelStyle}><span>结束日期</span><input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="exam-filter-select" /></label>
               <button className="primary-button" disabled={loading} onClick={() => runTotal({ mode: "week", startDate, endDate })}>统计这一周</button>
-              <button className="ghost-button" disabled={!weekResultExamIds.length} onClick={() => saveGroup("week", weekResultExamIds, `${startDate}至${endDate}考试组`)}>保存为考试组</button>
+              <button className="ghost-button" disabled={!weekResultExamIds.length || savingGroup} onClick={() => saveGroup("week", weekResultExamIds, `${startDate}至${endDate}考试组`)}>{savingGroup ? "正在保存..." : "保存为考试组"}</button>
             </div>
           )}
 
@@ -220,7 +229,7 @@ export function CrossExamTotalPage({ onBack }: Props) {
                 style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line-strong)", background: "var(--surface)", minWidth: 220 }}
               />
               <button className="primary-button" disabled={loading || selectedIds.length === 0} onClick={() => runTotal({ mode: "selected", examIds: selectedIds })}>统计选中考试</button>
-              <button className="ghost-button" disabled={selectedIds.length === 0} onClick={() => saveGroup("manual", selectedIds, `手动考试组-${new Date().toISOString().slice(0, 10)}`)}>合并为考试组</button>
+              <button className="ghost-button" disabled={selectedIds.length === 0 || savingGroup} onClick={() => saveGroup("manual", selectedIds, `手动考试组-${new Date().toISOString().slice(0, 10)}`)}>{savingGroup ? "正在保存..." : "合并为考试组"}</button>
               <span style={{ color: "var(--muted)", fontSize: 13 }}>已选 {selectedIds.length} 场</span>
             </div>
           )}
