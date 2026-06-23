@@ -562,6 +562,94 @@ export interface ExamFilterItem {
   has_assigned_score: number;
 }
 
+export type CrossExamTotalMode = "week" | "selected" | "group";
+export type CrossExamAttendanceMode = "all" | "full";
+
+export interface CrossExamGroup {
+  id: number;
+  name: string;
+  source: "manual" | "week";
+  startDate: string | null;
+  endDate: string | null;
+  examIds: number[];
+  exams: ExamFilterItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrossExamTotalRequest {
+  mode: CrossExamTotalMode;
+  examIds?: number[];
+  groupId?: number;
+  startDate?: string;
+  endDate?: string;
+  gradeId?: number;
+  classId?: number;
+  subject?: string;
+  attendanceMode?: CrossExamAttendanceMode;
+}
+
+export interface CrossExamTotalExam {
+  id: number;
+  name: string;
+  subject: string | null;
+  gradeName: string | null;
+  examDate: string | null;
+  fullScore: number;
+  gradedCount: number;
+  avgScore: number | null;
+}
+
+export interface CrossExamScoreCell {
+  examId: number;
+  score: number | null;
+  absent: boolean;
+}
+
+export interface CrossExamTotalRow {
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  classId: number | null;
+  gradeName: string | null;
+  totalScore: number;
+  totalFullScore: number;
+  scoreRate: number | null;
+  attendedCount: number;
+  absentCount: number;
+  gradeRank: number;
+  classRank: number;
+  scores: CrossExamScoreCell[];
+}
+
+export interface CrossExamClassSummary {
+  classId: number | null;
+  className: string;
+  gradeName: string | null;
+  count: number;
+  avgScore: number;
+  maxScore: number;
+  minScore: number;
+}
+
+export interface CrossExamTotalResponse {
+  mode: CrossExamTotalMode;
+  group: CrossExamGroup | null;
+  exams: CrossExamTotalExam[];
+  rows: CrossExamTotalRow[];
+  classSummaries: CrossExamClassSummary[];
+  summary: {
+    examCount: number;
+    studentCount: number;
+    totalFullScore: number;
+    avgTotalScore: number;
+    maxTotalScore: number;
+    minTotalScore: number;
+    fullAttendanceCount: number;
+  };
+}
+
 /** 导出列定义 */
 export interface ExportColumnMeta {
   id: string;

@@ -231,6 +231,25 @@ CREATE TABLE IF NOT EXISTS exams (
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 跨考试组（用于一周考试包 / 手动合并考试）
+CREATE TABLE IF NOT EXISTS exam_groups (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT NOT NULL,
+    source        TEXT DEFAULT 'manual',        -- manual / week
+    start_date    TEXT,
+    end_date      TEXT,
+    created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS exam_group_items (
+    group_id      INTEGER NOT NULL REFERENCES exam_groups(id) ON DELETE CASCADE,
+    exam_id       INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    sort_order    INTEGER DEFAULT 0,
+    PRIMARY KEY (group_id, exam_id)
+);
+
 -- 考试归档记录
 CREATE TABLE IF NOT EXISTS exam_archives (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Search } from "lucide-react";
+import { Layers, Search } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { ExamFilterItem } from "../../../../shared/types";
 
 interface Props {
   onSelectExam: (examId: number) => void;
+  onOpenCrossExam?: () => void;
 }
 
 interface FilterOptions {
@@ -12,7 +13,7 @@ interface FilterOptions {
   subjects: string[];
 }
 
-export function ExamSelectPage({ onSelectExam }: Props) {
+export function ExamSelectPage({ onSelectExam, onOpenCrossExam }: Props) {
   const [filters, setFilters] = useState<FilterOptions>({ academicYears: [], subjects: [] });
   const [academicYear, setAcademicYear] = useState("");
   const [gradeId, setGradeId] = useState("");
@@ -52,6 +53,18 @@ export function ExamSelectPage({ onSelectExam }: Props) {
         <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0, marginBottom: 4 }}>考试选择</h2>
         <p style={{ fontSize: 13, color: "var(--muted)", margin: 0 }}>选择学年、年级和学科后查看考试</p>
       </div>
+
+      {onOpenCrossExam && (
+        <div className="analysis-section" style={{ marginBottom: 20, display: "flex", alignItems: "center", gap: 14, justifyContent: "space-between" }}>
+          <div>
+            <div className="panel-title" style={{ marginBottom: 4 }}>跨考试总成绩</div>
+            <div style={{ fontSize: 13, color: "var(--muted)" }}>按日期自动打包一周考试，或把选中的考试合并为考试组统计总分排名。</div>
+          </div>
+          <button className="primary-button" onClick={onOpenCrossExam}>
+            <Layers size={16} /> 打开跨考试统计
+          </button>
+        </div>
+      )}
 
       {/* Filter row - larger selects with proper alignment */}
       <div style={{

@@ -1,6 +1,23 @@
 import { getDatabase } from "../db";
 import Database from "better-sqlite3";
-import type { ClassScoreSummary, ErrorRateLevel, ExamOverview, QuestionAnalysisItem, ScoreSummary, ScoreTrendPoint, StudentRankingItem } from "../../shared/types";
+import type {
+  ClassScoreSummary,
+  CrossExamAttendanceMode,
+  CrossExamClassSummary,
+  CrossExamGroup,
+  CrossExamTotalExam,
+  CrossExamTotalMode,
+  CrossExamTotalRequest,
+  CrossExamTotalResponse,
+  CrossExamTotalRow,
+  ErrorRateLevel,
+  ExamFilterItem,
+  ExamOverview,
+  QuestionAnalysisItem,
+  ScoreSummary,
+  ScoreTrendPoint,
+  StudentRankingItem
+} from "../../shared/types";
 
 export interface ExportRow {
   className: string;
@@ -93,6 +110,34 @@ function countErrorRateBuckets(questions: QuestionAnalysisItem[]): { low: number
   }, emptyErrorRateBuckets());
 }
 
+function placeholders(values: unknown[]): string {
+  return values.map(() => "?").join(",");
+}
+
+function normalizeExamIds(examIds: Array<number | string | null | undefined> | undefined): number[] {
+  const seen = new Set<number>();
+  const result: number[] = [];
+  for (const raw of examIds ?? []) {
+    const id = Number(raw);
+    if (Number.isInteger(id) && id > 0 && !seen.has(id)) {
+      seen.add(id);
+      result.push(id);
+    }
+  }
+  return result;
+}
+
+function dateOnly(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return String(value).slice(0, 10);
+}
+
+function addDays(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00.000Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 export class AnalysisRepository {
   private db: Database.Database;
 
@@ -126,6 +171,233 @@ export class AnalysisRepository {
   /** Get exam name for filename */
   getExam(examId: number): { name: string } | undefined {
     return this.db.prepare("SELECT name FROM exams WHERE id = ?").get(examId) as { name: string } | undefined;
+  }
+
+  getExamFilterItemsByIds(examIds: number[]): ExamFilterItem[] {
+    const ids = normalizeExamIds(examIds);
+    if (ids.length === 0) return [];
+    return this.db.prepare(`
+      SELECT
+        e.id,
+        e.name,
+        e.subject,
+        e.grade_id,
+        g.name as grade_name,
+        date(COALESCE(ac.exam_date, e.created_at)) as exam_date,
+        e.status,
+        COUNT(ss.id) as graded_count,
+        ROUND(AVG(ss.total_score), 1) as avg_score,
+        CASE WHEN e.assigned_formula IS NOT NULL AND e.assigned_formula != '' THEN 1 ELSE 0 END as has_assigned_score
+      FROM exams e
+      LEFT JOIN answer_cards ac ON ac.id = e.card_id
+      LEFT JOIN grades g ON g.id = e.grade_id
+      LEFT JOIN student_scores ss ON ss.exam_id = e.id
+      WHERE e.id IN (${placeholders(ids)})
+      GROUP BY e.id
+      ORDER BY date(COALESCE(ac.exam_date, e.created_at)) ASC, e.id ASC
+    `).all(...ids) as ExamFilterItem[];
+  }
+
+  listExamGroups(createdBy?: number): CrossExamGroup[] {
+    const rows = createdBy == null
+      ? this.db.prepare("SELECT * FROM exam_groups ORDER BY updated_at DESC, id DESC").all()
+      : this.db.prepare("SELECT * FROM exam_groups WHERE created_by = ? ORDER BY updated_at DESC, id DESC").all(createdBy);
+    return (rows as Array<{
+      id: number; name: string; source: "manual" | "week"; start_date: string | null; end_date: string | null;
+      created_at: string; updated_at: string;
+    }>).map((row) => this.hydrateExamGroup(row));
+  }
+
+  getExamGroup(groupId: number): CrossExamGroup | null {
+    const row = this.db.prepare("SELECT * FROM exam_groups WHERE id = ?").get(groupId) as {
+      id: number; name: string; source: "manual" | "week"; start_date: string | null; end_date: string | null;
+      created_at: string; updated_at: string;
+    } | undefined;
+    return row ? this.hydrateExamGroup(row) : null;
+  }
+
+  createExamGroup(params: {
+    name: string;
+    examIds: number[];
+    source?: "manual" | "week";
+    startDate?: string | null;
+    endDate?: string | null;
+    createdBy?: number | null;
+  }): CrossExamGroup {
+    const examIds = normalizeExamIds(params.examIds);
+    if (examIds.length === 0) throw new Error("考试组至少需要一场考试");
+    const tx = this.db.transaction(() => {
+      const info = this.db.prepare(`
+        INSERT INTO exam_groups (name, source, start_date, end_date, created_by)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        params.name.trim(),
+        params.source ?? "manual",
+        params.startDate ?? null,
+        params.endDate ?? null,
+        params.createdBy ?? null
+      );
+      const groupId = Number(info.lastInsertRowid);
+      const insertItem = this.db.prepare(`
+        INSERT INTO exam_group_items (group_id, exam_id, sort_order)
+        VALUES (?, ?, ?)
+      `);
+      examIds.forEach((examId, index) => insertItem.run(groupId, examId, index));
+      return groupId;
+    });
+    return this.getExamGroup(tx())!;
+  }
+
+  deleteExamGroup(groupId: number, userId: number, isAdmin: boolean): boolean {
+    const row = this.db.prepare("SELECT created_by FROM exam_groups WHERE id = ?").get(groupId) as { created_by: number | null } | undefined;
+    if (!row) return false;
+    if (!isAdmin && row.created_by !== userId) return false;
+    this.db.prepare("DELETE FROM exam_groups WHERE id = ?").run(groupId);
+    return true;
+  }
+
+  getExamIdsForDatePackage(params: {
+    startDate?: string;
+    endDate?: string;
+    gradeId?: number;
+    subject?: string;
+    visibleExamIds?: number[] | null;
+  }): number[] {
+    const endDate = params.endDate || new Date().toISOString().slice(0, 10);
+    const startDate = params.startDate || addDays(endDate, -6);
+    if (params.visibleExamIds && params.visibleExamIds.length === 0) return [];
+
+    let sql = `
+      SELECT e.id
+      FROM exams e
+      LEFT JOIN answer_cards ac ON ac.id = e.card_id
+      WHERE date(COALESCE(ac.exam_date, e.created_at)) >= date(?)
+        AND date(COALESCE(ac.exam_date, e.created_at)) <= date(?)
+    `;
+    const queryParams: unknown[] = [startDate, endDate];
+    if (params.gradeId) {
+      sql += " AND e.grade_id = ?";
+      queryParams.push(params.gradeId);
+    }
+    if (params.subject) {
+      sql += " AND e.subject = ?";
+      queryParams.push(params.subject);
+    }
+    if (params.visibleExamIds) {
+      sql += ` AND e.id IN (${placeholders(params.visibleExamIds)})`;
+      queryParams.push(...params.visibleExamIds);
+    }
+    sql += " ORDER BY date(COALESCE(ac.exam_date, e.created_at)) ASC, e.id ASC";
+    return (this.db.prepare(sql).all(...queryParams) as Array<{ id: number }>).map((row) => row.id);
+  }
+
+  getCrossExamTotal(
+    request: CrossExamTotalRequest,
+    options?: { visibleExamIds?: number[] | null }
+  ): CrossExamTotalResponse {
+    const mode: CrossExamTotalMode = request.mode;
+    const group = mode === "group" && request.groupId ? this.getExamGroup(request.groupId) : null;
+    let examIds = mode === "week"
+      ? this.getExamIdsForDatePackage({
+        startDate: request.startDate,
+        endDate: request.endDate,
+        gradeId: request.gradeId,
+        subject: request.subject,
+        visibleExamIds: options?.visibleExamIds
+      })
+      : mode === "group"
+        ? group?.examIds ?? []
+        : normalizeExamIds(request.examIds);
+
+    if (options?.visibleExamIds) {
+      const visible = new Set(options.visibleExamIds);
+      examIds = examIds.filter((id) => visible.has(id));
+    }
+    examIds = normalizeExamIds(examIds);
+
+    if (examIds.length === 0) {
+      return this.emptyCrossExamTotal(mode, group);
+    }
+
+    const exams = this.getCrossExamTotalExams(examIds);
+    const examOrder = new Map(exams.map((exam, index) => [exam.id, index]));
+    const totalFullScore = round1(exams.reduce((sum, exam) => sum + exam.fullScore, 0));
+    const scores = this.getCrossExamScoreRows(examIds, request.gradeId, request.classId);
+    const byStudent = new Map<number, CrossExamTotalRow>();
+
+    for (const score of scores) {
+      const existing = byStudent.get(score.student_id);
+      const row = existing ?? {
+        studentId: score.student_id,
+        studentNumber: score.student_number ?? "",
+        studentName: score.name ?? "",
+        className: score.class_name ?? "未知班级",
+        classId: score.class_id,
+        gradeName: score.grade_name,
+        totalScore: 0,
+        totalFullScore,
+        scoreRate: null,
+        attendedCount: 0,
+        absentCount: 0,
+        gradeRank: 0,
+        classRank: 0,
+        scores: exams.map((exam) => ({ examId: exam.id, score: null, absent: true }))
+      };
+      const index = examOrder.get(score.exam_id);
+      if (index != null) {
+        const value = Number(score.total_score);
+        row.scores[index] = { examId: score.exam_id, score: round1(value), absent: false };
+      }
+      byStudent.set(score.student_id, row);
+    }
+
+    let rows = Array.from(byStudent.values()).map((row) => {
+      const attendedScores = row.scores.filter((cell) => !cell.absent && cell.score != null);
+      const totalScore = round1(attendedScores.reduce((sum, cell) => sum + Number(cell.score), 0));
+      const attendedCount = attendedScores.length;
+      const absentCount = exams.length - attendedCount;
+      return {
+        ...row,
+        totalScore,
+        attendedCount,
+        absentCount,
+        scoreRate: totalFullScore > 0 ? round1((totalScore / totalFullScore) * 100) : null
+      };
+    });
+
+    const attendanceMode: CrossExamAttendanceMode = request.attendanceMode ?? "all";
+    if (attendanceMode === "full") {
+      rows = rows.filter((row) => row.absentCount === 0);
+    }
+
+    rows.sort((a, b) => b.totalScore - a.totalScore || a.studentNumber.localeCompare(b.studentNumber));
+    rows.forEach((row, index) => {
+      row.gradeRank = index + 1;
+    });
+
+    const byClass = new Map<string, CrossExamTotalRow[]>();
+    for (const row of rows) {
+      const key = row.classId == null ? "__unknown__" : String(row.classId);
+      if (!byClass.has(key)) byClass.set(key, []);
+      byClass.get(key)!.push(row);
+    }
+    for (const classRows of byClass.values()) {
+      classRows
+        .sort((a, b) => b.totalScore - a.totalScore || a.studentNumber.localeCompare(b.studentNumber))
+        .forEach((row, index) => {
+          row.classRank = index + 1;
+        });
+    }
+    rows.sort((a, b) => a.gradeRank - b.gradeRank);
+
+    return {
+      mode,
+      group,
+      exams,
+      rows,
+      classSummaries: this.buildCrossExamClassSummaries(rows),
+      summary: this.buildCrossExamSummary(rows, exams.length, totalFullScore)
+    };
   }
 
   getExamOverview(examId: number, classId?: number): ExamOverview {
@@ -675,5 +947,229 @@ export class AnalysisRepository {
       rows,
       totalCount: rows.length
     };
+  }
+
+  private hydrateExamGroup(row: {
+    id: number;
+    name: string;
+    source: "manual" | "week";
+    start_date: string | null;
+    end_date: string | null;
+    created_at: string;
+    updated_at: string;
+  }): CrossExamGroup {
+    const items = this.db.prepare(`
+      SELECT exam_id FROM exam_group_items
+      WHERE group_id = ?
+      ORDER BY sort_order ASC, exam_id ASC
+    `).all(row.id) as Array<{ exam_id: number }>;
+    const examIds = items.map((item) => item.exam_id);
+    return {
+      id: row.id,
+      name: row.name,
+      source: row.source,
+      startDate: row.start_date,
+      endDate: row.end_date,
+      examIds,
+      exams: this.getExamFilterItemsByIds(examIds),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  private emptyCrossExamTotal(mode: CrossExamTotalMode, group: CrossExamGroup | null): CrossExamTotalResponse {
+    return {
+      mode,
+      group,
+      exams: [],
+      rows: [],
+      classSummaries: [],
+      summary: {
+        examCount: 0,
+        studentCount: 0,
+        totalFullScore: 0,
+        avgTotalScore: 0,
+        maxTotalScore: 0,
+        minTotalScore: 0,
+        fullAttendanceCount: 0
+      }
+    };
+  }
+
+  private getCrossExamTotalExams(examIds: number[]): CrossExamTotalExam[] {
+    const fullScores = this.getExamFullScoreMap(examIds);
+    const rows = this.db.prepare(`
+      SELECT
+        e.id,
+        e.name,
+        e.subject,
+        g.name as gradeName,
+        date(COALESCE(ac.exam_date, e.created_at)) as examDate,
+        COUNT(ss.id) as gradedCount,
+        ROUND(AVG(ss.total_score), 1) as avgScore
+      FROM exams e
+      LEFT JOIN answer_cards ac ON ac.id = e.card_id
+      LEFT JOIN grades g ON g.id = e.grade_id
+      LEFT JOIN student_scores ss ON ss.exam_id = e.id
+      WHERE e.id IN (${placeholders(examIds)})
+      GROUP BY e.id
+      ORDER BY date(COALESCE(ac.exam_date, e.created_at)) ASC, e.id ASC
+    `).all(...examIds) as Array<{
+      id: number;
+      name: string;
+      subject: string | null;
+      gradeName: string | null;
+      examDate: string | null;
+      gradedCount: number;
+      avgScore: number | null;
+    }>;
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      subject: row.subject,
+      gradeName: row.gradeName,
+      examDate: dateOnly(row.examDate),
+      fullScore: round1(fullScores.get(row.id) ?? 0),
+      gradedCount: row.gradedCount,
+      avgScore: row.avgScore
+    }));
+  }
+
+  private getExamFullScoreMap(examIds: number[]): Map<number, number> {
+    const result = new Map<number, number>();
+    const questionRows = this.db.prepare(`
+      SELECT exam_id, SUM(max_score) as fullScore
+      FROM (
+        SELECT exam_id, question_number, score_type, MAX(max_score) as max_score
+        FROM question_scores
+        WHERE exam_id IN (${placeholders(examIds)})
+        GROUP BY exam_id, question_number, score_type
+      )
+      GROUP BY exam_id
+    `).all(...examIds) as Array<{ exam_id: number; fullScore: number | null }>;
+    for (const row of questionRows) {
+      if (row.fullScore != null && row.fullScore > 0) result.set(row.exam_id, Number(row.fullScore));
+    }
+
+    const missing = examIds.filter((examId) => !result.has(examId));
+    if (missing.length > 0) {
+      const fallbackRows = this.db.prepare(`
+        SELECT exam_id, MAX(total_score) as fullScore
+        FROM student_scores
+        WHERE exam_id IN (${placeholders(missing)})
+        GROUP BY exam_id
+      `).all(...missing) as Array<{ exam_id: number; fullScore: number | null }>;
+      for (const row of fallbackRows) {
+        result.set(row.exam_id, Number(row.fullScore ?? 0));
+      }
+    }
+
+    for (const examId of examIds) {
+      if (!result.has(examId)) result.set(examId, 0);
+    }
+    return result;
+  }
+
+  private getCrossExamScoreRows(examIds: number[], gradeId?: number, classId?: number): Array<{
+    exam_id: number;
+    student_id: number;
+    student_number: string | null;
+    name: string | null;
+    class_id: number | null;
+    class_name: string | null;
+    grade_name: string | null;
+    total_score: number;
+  }> {
+    let sql = `
+      SELECT
+        ss.exam_id,
+        ss.student_id,
+        u.student_number,
+        u.name,
+        c.id as class_id,
+        c.name as class_name,
+        g.name as grade_name,
+        ss.total_score
+      FROM student_scores ss
+      JOIN users u ON u.id = ss.student_id
+      LEFT JOIN class_students cs ON cs.student_id = ss.student_id
+      LEFT JOIN classes c ON c.id = cs.class_id
+      LEFT JOIN grades g ON g.id = c.grade_id
+      WHERE ss.exam_id IN (${placeholders(examIds)})
+    `;
+    const params: unknown[] = [...examIds];
+    if (classId !== undefined) {
+      if (classId === 0) {
+        sql += " AND c.id IS NULL";
+      } else {
+        sql += " AND c.id = ?";
+        params.push(classId);
+      }
+    } else if (gradeId) {
+      sql += " AND g.id = ?";
+      params.push(gradeId);
+    }
+    sql += " ORDER BY ss.exam_id ASC, ss.total_score DESC";
+    return this.db.prepare(sql).all(...params) as Array<{
+      exam_id: number;
+      student_id: number;
+      student_number: string | null;
+      name: string | null;
+      class_id: number | null;
+      class_name: string | null;
+      grade_name: string | null;
+      total_score: number;
+    }>;
+  }
+
+  private buildCrossExamSummary(rows: CrossExamTotalRow[], examCount: number, totalFullScore: number): CrossExamTotalResponse["summary"] {
+    if (rows.length === 0) {
+      return {
+        examCount,
+        studentCount: 0,
+        totalFullScore,
+        avgTotalScore: 0,
+        maxTotalScore: 0,
+        minTotalScore: 0,
+        fullAttendanceCount: 0
+      };
+    }
+    const totals = rows.map((row) => row.totalScore);
+    const sum = totals.reduce((acc, score) => acc + score, 0);
+    return {
+      examCount,
+      studentCount: rows.length,
+      totalFullScore,
+      avgTotalScore: round1(sum / rows.length),
+      maxTotalScore: round1(Math.max(...totals)),
+      minTotalScore: round1(Math.min(...totals)),
+      fullAttendanceCount: rows.filter((row) => row.absentCount === 0).length
+    };
+  }
+
+  private buildCrossExamClassSummaries(rows: CrossExamTotalRow[]): CrossExamClassSummary[] {
+    const groups = new Map<string, CrossExamTotalRow[]>();
+    for (const row of rows) {
+      const key = row.classId == null ? "__unknown__" : String(row.classId);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(row);
+    }
+    return Array.from(groups.values())
+      .map((classRows) => {
+        const first = classRows[0];
+        const totals = classRows.map((row) => row.totalScore);
+        const sum = totals.reduce((acc, score) => acc + score, 0);
+        return {
+          classId: first.classId,
+          className: first.className,
+          gradeName: first.gradeName,
+          count: classRows.length,
+          avgScore: round1(sum / classRows.length),
+          maxScore: round1(Math.max(...totals)),
+          minScore: round1(Math.min(...totals))
+        };
+      })
+      .sort((a, b) => (a.gradeName ?? "").localeCompare(b.gradeName ?? "") || a.className.localeCompare(b.className));
   }
 }
