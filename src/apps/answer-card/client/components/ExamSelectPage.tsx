@@ -33,7 +33,7 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
   }, []);
 
   useEffect(() => {
-    fetchJson<Array<{ id: number; name: string }>>("/api/grades")
+    fetchJson<Array<{ id: number; name: string }>>("/api/classes/grades")
       .then(setGrades)
       .catch(() => setGrades([]));
   }, []);
@@ -68,32 +68,24 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
 
   return (
     <div style={{ padding: "24px 32px", overflowY: "auto", flex: 1 }}>
-      <div style={{ marginBottom: 20 }}>
-        <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0, marginBottom: 4 }}>考试选择</h2>
-        <p style={{ fontSize: 13, color: "var(--muted)", margin: 0 }}>选择单科考试或大考合集查看成绩</p>
-      </div>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 20 }}>
+        <div>
+          <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0, marginBottom: 4 }}>考试选择</h2>
+          <p style={{ fontSize: 13, color: "var(--muted)", margin: 0 }}>选择单科考试或大考合集查看成绩</p>
+        </div>
 
-      {/* Mode toggle */}
-      <div style={{ display: "flex", gap: 0, marginBottom: 18, borderBottom: "2px solid var(--border)" }}>
-        <button onClick={() => setMode("single")} style={{
-          padding: "8px 20px", border: "none", background: "none",
-          borderBottom: mode === "single" ? "2px solid var(--primary)" : "2px solid transparent",
-          marginBottom: -2, cursor: "pointer",
-          color: mode === "single" ? "var(--primary)" : "var(--muted)",
-          fontWeight: mode === "single" ? 600 : 400, fontSize: 14
-        }}>
-          单科考试
-        </button>
-        <button onClick={() => setMode("group")} style={{
-          padding: "8px 20px", border: "none", background: "none",
-          borderBottom: mode === "group" ? "2px solid var(--primary)" : "2px solid transparent",
-          marginBottom: -2, cursor: "pointer",
-          color: mode === "group" ? "var(--primary)" : "var(--muted)",
-          fontWeight: mode === "group" ? 600 : 400, fontSize: 14,
-          display: "flex", alignItems: "center", gap: 6
-        }}>
-          <Layers size={15} /> 大考
-        </button>
+        {/* Mode toggle — right side, same height as title */}
+        <div style={{ display: "flex", gap: 0, border: "1.5px solid var(--brand)", borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
+          <button onClick={() => setMode("single")} style={{
+            padding: "5px 14px", border: "none", background: mode === "single" ? "var(--brand)" : "var(--surface)",
+            color: mode === "single" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: mode === "single" ? 600 : 400
+          }}>单科考试</button>
+          <button onClick={() => setMode("group")} style={{
+            padding: "5px 14px", border: "none", background: mode === "group" ? "var(--brand)" : "var(--surface)",
+            color: mode === "group" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: mode === "group" ? 600 : 400,
+            display: "flex", alignItems: "center", gap: 4
+          }}><Layers size={13} /> 大考</button>
+        </div>
       </div>
 
       {/* Filter row */}

@@ -30,6 +30,13 @@ export function GroupExportModal({ groupId, onClose }: Props) {
       .finally(() => setLoading(false));
   }, [groupId]);
 
+  // ESC to close
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   function toggleSubject(examId: number) {
     setSubjectExamIds((prev) =>
       prev.includes(examId) ? prev.filter((id) => id !== examId) : [...prev, examId]

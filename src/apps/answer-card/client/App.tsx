@@ -1585,18 +1585,6 @@ function App() {
           <section className="preview-panel" style={{ gridColumn: "1 / -1", padding: 24, overflowY: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
               <strong style={{ fontSize: 16 }}>考试管理</strong>
-              {/* Single/Group toggle */}
-              <div style={{ display: "flex", gap: 0, border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
-                <button onClick={() => setExamManageMode("single")} style={{
-                  padding: "5px 14px", border: "none", background: examManageMode === "single" ? "var(--primary)" : "var(--surface)",
-                  color: examManageMode === "single" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "single" ? 600 : 400
-                }}>单科考试</button>
-                <button onClick={() => { setExamManageMode("group"); loadExamGroups(); }} style={{
-                  padding: "5px 14px", border: "none", background: examManageMode === "group" ? "var(--primary)" : "var(--surface)",
-                  color: examManageMode === "group" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "group" ? 600 : 400,
-                  display: "flex", alignItems: "center", gap: 4
-                }}><Layers size={13} /> 大考</button>
-              </div>
               {examManageMode === "single" ? (
                 <button className="primary-button" onClick={() => setShowCreateExam(!showCreateExam)}>
                   <Plus size={16} /> 新建考试
@@ -1619,10 +1607,22 @@ function App() {
                 </button>
               )}
               {(examManageMode === "single" ? exams.length : examGroups.length) > 0 && (
-                <span style={{ marginLeft: "auto", fontSize: 13, color: "var(--muted)" }}>
+                <span style={{ fontSize: 13, color: "var(--muted)" }}>
                   共 {examManageMode === "single" ? exams.length : examGroups.length} {examManageMode === "single" ? "个考试" : "个大考"}
                 </span>
               )}
+              {/* Single/Group toggle — right side */}
+              <div style={{ display: "flex", gap: 0, border: "1px solid var(--brand)", borderRadius: 6, overflow: "hidden", marginLeft: "auto" }}>
+                <button onClick={() => setExamManageMode("single")} style={{
+                  padding: "5px 14px", border: "none", background: examManageMode === "single" ? "var(--brand)" : "var(--surface)",
+                  color: examManageMode === "single" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "single" ? 600 : 400
+                }}>单科考试</button>
+                <button onClick={() => { setExamManageMode("group"); loadExamGroups(); }} style={{
+                  padding: "5px 14px", border: "none", background: examManageMode === "group" ? "var(--brand)" : "var(--surface)",
+                  color: examManageMode === "group" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "group" ? 600 : 400,
+                  display: "flex", alignItems: "center", gap: 4
+                }}><Layers size={13} /> 大考</button>
+              </div>
             </div>
 
             {examManageMode === "single" && showCreateExam && (

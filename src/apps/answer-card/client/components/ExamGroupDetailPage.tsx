@@ -35,6 +35,13 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
       .catch(() => setClasses([]));
   }, []);
 
+  // ESC to go back
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onBack(); }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onBack]);
+
   useEffect(() => {
     loadOverview();
     loadRankings();
