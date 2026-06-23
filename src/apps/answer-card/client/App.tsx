@@ -2404,7 +2404,7 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
                 objective.questions = normalizeObjectiveQuestions(objective);
                 for (const q of objective.questions) {
                   q.mode = objective.mode;
-                  if (objective.mode !== "multiple" && objective.mode !== "indeterminate") {
+                  if (objective.mode !== "multiple" && objective.mode !== "indefinite") {
                     delete q.scoringRule;
                   }
                 }
