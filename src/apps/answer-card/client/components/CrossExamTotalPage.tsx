@@ -137,7 +137,8 @@ export function CrossExamTotalPage({ onBack }: Props) {
       setSelectedGroupId(String(group.id));
       setMode("group");
       await loadGroups(String(group.id));
-      setMessage(`已保存考试组：${group.name}`);
+      await runTotal({ mode: "group", groupId: group.id });
+      setMessage(`已保存并统计考试组：${group.name}`);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "保存考试组失败");
     } finally {
@@ -228,8 +229,8 @@ export function CrossExamTotalPage({ onBack }: Props) {
                 placeholder="考试组名称（可选）"
                 style={{ padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line-strong)", background: "var(--surface)", minWidth: 220 }}
               />
-              <button className="primary-button" disabled={loading || selectedIds.length === 0} onClick={() => runTotal({ mode: "selected", examIds: selectedIds })}>统计选中考试</button>
-              <button className="ghost-button" disabled={selectedIds.length === 0 || savingGroup} onClick={() => saveGroup("manual", selectedIds, `手动考试组-${new Date().toISOString().slice(0, 10)}`)}>{savingGroup ? "正在保存..." : "合并为考试组"}</button>
+              <button className="primary-button" disabled={selectedIds.length === 0 || savingGroup} onClick={() => saveGroup("manual", selectedIds, `手动考试组-${new Date().toISOString().slice(0, 10)}`)}>{savingGroup ? "正在保存..." : "合并为考试组并统计"}</button>
+              <button className="ghost-button" disabled={loading || selectedIds.length === 0} onClick={() => runTotal({ mode: "selected", examIds: selectedIds })}>仅统计选中考试</button>
               <span style={{ color: "var(--muted)", fontSize: 13 }}>已选 {selectedIds.length} 场</span>
             </div>
           )}
