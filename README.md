@@ -344,7 +344,7 @@ Project-X/
 ├── llmclient/                            # Python AI 中转服务（FastAPI + provider SDK）
 ├── readus/                              # 项目文档（架构、账号、管理员手册、多端说明等）
 ├── data/                                # 运行时数据
-│   ├── answer-card/                     # 答题卡 JSON、扫描图片、资产
+│   ├── answer-card/                     # 派生布局 JSON、扫描图片、资产
 │   ├── sponsor/qr/                      # 收款码图片（部署时放置，不进 git）
 │   └── projectx.db                      # 主数据库（用户/卡片/考试/成绩）
 ├── dist/                                # 构建产物
@@ -376,9 +376,9 @@ Project-X/
 |------|------|------|
 | `GET/POST` | `/api/cards` | 答题卡列表 / 创建（含 subject/title/examDate/englishListening/chineseChoicePlacement） |
 | `GET/PUT/DELETE` | `/api/cards/:id` | 答题卡详情 / 保存 / 删除（引用考试时支持解绑或联删） |
-| `GET` | `/api/cards/:id/export` | 导出为 .projectx-card.json（含答案+配图+布局） |
+| `GET` | `/api/cards/:id/export` | 导出为 .projectx-card.json（含答案+配图+实时生成布局） |
 | `POST` | `/api/cards/import` | 导入答题卡 |
-| `GET` | `/api/cards/:id/layout` | 布局坐标 |
+| `GET` | `/api/cards/:id/layout` | 实时生成布局坐标 |
 | `GET` | `/api/cards/:id/pdf` | 导出 PDF |
 | `POST` | `/api/cards/:id/recognition` | 单张识别（客观+主观） |
 | `POST` | `/api/cards/:id/grading` | 批量识别判分（支持 examId 落库） |
