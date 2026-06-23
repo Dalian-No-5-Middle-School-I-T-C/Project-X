@@ -6,6 +6,7 @@ import type { ExamFilterItem, ExamGroupFilterItem } from "../../../../shared/typ
 interface Props {
   onSelectExam: (examId: number) => void;
   onSelectGroup?: (groupId: number) => void;
+  onOpenCrossExam?: () => void;
 }
 
 interface FilterOptions {
@@ -15,7 +16,7 @@ interface FilterOptions {
 
 type ViewMode = "single" | "group";
 
-export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
+export function ExamSelectPage({ onSelectExam, onSelectGroup, onOpenCrossExam }: Props) {
   const [mode, setMode] = useState<ViewMode>("single");
   const [filters, setFilters] = useState<FilterOptions>({ academicYears: [], subjects: [] });
   const [academicYear, setAcademicYear] = useState("");
@@ -75,16 +76,23 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
         </div>
 
         {/* Mode toggle — right side, same height as title */}
-        <div style={{ display: "flex", gap: 0, border: "1.5px solid var(--brand)", borderRadius: 6, overflow: "hidden", flexShrink: 0 }}>
-          <button onClick={() => setMode("single")} style={{
-            padding: "5px 14px", border: "none", background: mode === "single" ? "var(--brand)" : "var(--surface)",
-            color: mode === "single" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: mode === "single" ? 600 : 400
-          }}>单科考试</button>
-          <button onClick={() => setMode("group")} style={{
-            padding: "5px 14px", border: "none", background: mode === "group" ? "var(--brand)" : "var(--surface)",
-            color: mode === "group" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: mode === "group" ? 600 : 400,
-            display: "flex", alignItems: "center", gap: 4
-          }}><Layers size={13} /> 大考</button>
+        <div style={{ display: "flex", gap: 6, flexShrink: 0, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 0, border: "1.5px solid var(--brand)", borderRadius: 6, overflow: "hidden" }}>
+            <button onClick={() => setMode("single")} style={{
+              padding: "5px 14px", border: "none", background: mode === "single" ? "var(--brand)" : "var(--surface)",
+              color: mode === "single" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: mode === "single" ? 600 : 400
+            }}>单科考试</button>
+            <button onClick={() => setMode("group")} style={{
+              padding: "5px 14px", border: "none", background: mode === "group" ? "var(--brand)" : "var(--surface)",
+              color: mode === "group" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: mode === "group" ? 600 : 400,
+              display: "flex", alignItems: "center", gap: 4
+            }}><Layers size={13} /> 大考</button>
+          </div>
+          {onOpenCrossExam && (
+            <button className="primary-button" onClick={onOpenCrossExam} style={{ fontSize: 12, padding: "5px 12px", display: "flex", alignItems: "center", gap: 4 }}>
+              <Layers size={13} /> 跨考总分
+            </button>
+          )}
         </div>
       </div>
 
@@ -205,14 +213,14 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
       {mode === "group" && !loading && groupExams.length > 0 && (
         <div className="exam-list-table">
           <div className="exam-list-head">
-            <span style={{ flex: 1, minWidth: 200 }}>大考名称</span>
+            <span style={{ flex: 1, minWidth: 180 }}>大考名称</span>
             <span style={{ width: 80 }}>标签</span>
             <span style={{ width: 80 }}>年级</span>
             <span style={{ width: 60, textAlign: "center" }}>含考试数</span>
             <span style={{ width: 80, textAlign: "center" }}>有无成绩</span>
             <span style={{ width: 100 }}>创建日期</span>
           </div>
-          {groupExams.map((group) => (
+          {groupExams.map((group: any) => (
             <div
               key={group.id}
               className="exam-list-row"
@@ -222,7 +230,7 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
               onKeyDown={(e) => { if (e.key === "Enter") onSelectGroup?.(group.id); }}
               style={{ cursor: "pointer" }}
             >
-              <span style={{ flex: 1, minWidth: 200, fontWeight: 500 }}>{group.name}</span>
+              <span style={{ flex: 1, minWidth: 180, fontWeight: 500 }}>{group.name}</span>
               <span style={{ width: 80 }}>
                 <span style={{
                   display: "inline-block", padding: "2px 8px", borderRadius: 10,

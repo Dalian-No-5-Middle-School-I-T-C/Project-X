@@ -38,6 +38,7 @@ import type {
   CombinedGradingBatchResult,
   CombinedGradingRow,
   CombinedRecognitionResult,
+  CrossExamTotalRequest,
   LayoutDocument,
   ObjectiveGradingBatchResult,
   ObjectiveRecognitionResult
@@ -425,6 +426,36 @@ function requireExamAccess(req: express.Request, res: express.Response, next: ex
     return;
   }
   res.status(403).json({ message: "权限不足：无权访问此考试" });
+}
+
+function numberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<number>();
+  const result: number[] = [];
+  for (const item of value) {
+    const id = Number(item);
+    if (Number.isInteger(id) && id > 0 && !seen.has(id)) {
+      seen.add(id);
+      result.push(id);
+    }
+  }
+  return result;
+}
+
+function optionalPositiveNumber(value: unknown): number | undefined {
+  if (value == null || value === "") return undefined;
+  const num = Number(value);
+  return Number.isInteger(num) && num >= 0 ? num : undefined;
+}
+
+function validateExamIdsAccess(req: express.Request, res: express.Response, examIds: number[]): boolean {
+  const visibleIds = getVisibleExamIds(req.user);
+  if (visibleIds === null) return true;
+  const visible = new Set(visibleIds);
+  const denied = examIds.filter((examId) => !visible.has(examId));
+  if (denied.length === 0) return true;
+  res.status(403).json({ message: "权限不足：考试组包含不可访问的考试" });
+  return false;
 }
 
 function scannerEnabled(): boolean {
@@ -1413,6 +1444,120 @@ export async function createApp(): Promise<express.Express> {
       const analysisRepo = new AnalysisRepository();
       const trend = analysisRepo.getScoreTrend(subject, classId);
       res.json(trend);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/analysis/cross-exam/groups", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      res.json(analysisRepo.listExamGroups(req.user?.id));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/analysis/cross-exam/groups", async (req, res, next) => {
+    try {
+      const { name, examIds, source, startDate, endDate } = req.body as {
+        name?: string;
+        examIds?: unknown[];
+        source?: "manual" | "week";
+        startDate?: string;
+        endDate?: string;
+      };
+      const normalizedExamIds = numberArray(examIds);
+      if (!name?.trim()) {
+        res.status(400).json({ message: "请输入考试组名称" });
+        return;
+      }
+      if (normalizedExamIds.length === 0) {
+        res.status(400).json({ message: "请选择至少一场考试" });
+        return;
+      }
+      if (!validateExamIdsAccess(req, res, normalizedExamIds)) return;
+
+      const analysisRepo = new AnalysisRepository();
+      const group = analysisRepo.createExamGroup({
+        name,
+        examIds: normalizedExamIds,
+        source: source === "week" ? "week" : "manual",
+        startDate,
+        endDate,
+        createdBy: req.user?.id ?? null
+      });
+      res.status(201).json(group);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/analysis/cross-exam/groups/:groupId", async (req, res, next) => {
+    try {
+      const groupId = Number(req.params.groupId);
+      if (!Number.isInteger(groupId) || groupId <= 0) {
+        res.status(400).json({ message: "无效的考试组 ID" });
+        return;
+      }
+      const analysisRepo = new AnalysisRepository();
+      const ok = analysisRepo.deleteExamGroup(groupId, req.user?.id ?? 0, req.user?.role_name === "admin");
+      if (!ok) {
+        res.status(404).json({ message: "考试组不存在或无权删除" });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/analysis/cross-exam/total", async (req, res, next) => {
+    try {
+      const body = req.body as CrossExamTotalRequest;
+      const mode = body.mode;
+      if (mode !== "week" && mode !== "selected" && mode !== "group") {
+        res.status(400).json({ message: "统计模式无效" });
+        return;
+      }
+
+      const analysisRepo = new AnalysisRepository();
+      let requestedExamIds: number[] = [];
+      if (mode === "selected") {
+        requestedExamIds = numberArray(body.examIds);
+        if (requestedExamIds.length === 0) {
+          res.status(400).json({ message: "请选择至少一场考试" });
+          return;
+        }
+      } else if (mode === "group") {
+        const groupId = optionalPositiveNumber(body.groupId);
+        if (!groupId) {
+          res.status(400).json({ message: "请选择考试组" });
+          return;
+        }
+        const group = analysisRepo.getExamGroup(groupId);
+        if (!group) {
+          res.status(404).json({ message: "考试组不存在" });
+          return;
+        }
+        requestedExamIds = group.examIds;
+      }
+
+      if (requestedExamIds.length > 0 && !validateExamIdsAccess(req, res, requestedExamIds)) return;
+      const data = analysisRepo.getCrossExamTotal({
+        mode,
+        groupId: optionalPositiveNumber(body.groupId),
+        examIds: requestedExamIds.length > 0 ? requestedExamIds : undefined,
+        startDate: body.startDate,
+        endDate: body.endDate,
+        gradeId: optionalPositiveNumber(body.gradeId),
+        classId: optionalPositiveNumber(body.classId),
+        subject: typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : undefined,
+        attendanceMode: body.attendanceMode === "full" ? "full" : "all"
+      }, {
+        visibleExamIds: getVisibleExamIds(req.user)
+      });
+      res.json(data);
     } catch (error) {
       next(error);
     }
