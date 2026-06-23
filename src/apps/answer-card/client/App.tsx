@@ -1266,7 +1266,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.4.5</span>
+            <span>Project-X v1.4.8</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>

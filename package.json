@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "1.4.7",
+  "version": "1.4.8",
   "description": "Local answer card designer and PDF exporter for Project-X.",
   "author": "Project-X",
   "private": true,
@@ -42,7 +42,8 @@
     "electron:msi:all": "tsx scripts/package-variant.ts all msi",
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "release:7z": "tsx scripts/release-7z.ts"
   },
   "dependencies": {
     "adm-zip": "^0.5.17",

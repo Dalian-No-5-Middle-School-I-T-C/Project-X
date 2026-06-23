@@ -124,7 +124,7 @@ function electronBuilderConfig(config: ProjectXVariantConfig, target: PackageTar
     }
   };
 
-  if (arch === "x64") {
+  if (arch === "x64" && process.platform === "win32") {
     builderConfig.electronDist = "node_modules/electron/dist";
   }
 
@@ -196,7 +196,7 @@ function packageVariant(config: ProjectXVariantConfig, target: PackageTarget, ar
 
   const builderBin = path.join(rootDir, "node_modules", ".bin", command("electron-builder"));
   const builderArgs = target === "dir"
-    ? ["--config", configPath, "--dir", `--${arch}`]
+    ? ["--config", configPath, "--win", "--dir", `--${arch}`]
     : ["--config", configPath, "--win", target, `--${arch}`];
   try {
     run(electronRebuildBin, rebuildArgs, env);
