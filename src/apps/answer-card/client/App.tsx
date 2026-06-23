@@ -32,6 +32,7 @@ import { UserGuidePage } from "./components/UserGuidePage";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import { ExamSelectPage } from "./components/ExamSelectPage";
 import { ScoreDetailPage } from "./components/ScoreDetailPage";
+import { CrossExamTotalPage } from "./components/CrossExamTotalPage";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import type {
   AnswerCard,
@@ -398,7 +399,7 @@ function App() {
   const [newExamSubject, setNewExamSubject] = useState("");
   const [newExamCardId, setNewExamCardId] = useState("");
   const [selectedExamIds, setSelectedExamIds] = useState<Set<number>>(new Set());
-  const [analysisTab, setAnalysisTab] = useState<"select" | "view" | "trend" | "detail">("select");
+  const [analysisTab, setAnalysisTab] = useState<"select" | "view" | "trend" | "detail" | "cross">("select");
   const [selectedAnalysisExamId, setSelectedAnalysisExamId] = useState<number | null>(null);
   const [showNewCardModal, setShowNewCardModal] = useState(false);
   const [cardDeleteConflict, setCardDeleteConflict] = useState<CardDeleteConflict | null>(null);
@@ -526,8 +527,8 @@ function App() {
       // 检查是否有 modal overlay 打开（modal 自行处理 ESC）
       if (document.querySelector(".modal-overlay")) return;
 
-      // 成绩分析 detail → 返回考试选择
-      if (mode === "analysis" && analysisTab === "detail") {
+      // 成绩分析子页 → 返回考试选择
+      if (mode === "analysis" && analysisTab !== "select") {
         setSelectedAnalysisExamId(null);
         setAnalysisTab("select");
         return;
@@ -1841,9 +1842,16 @@ function App() {
           <section className="preview-panel analysis-results-panel" style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column" }}>
 
             {/* 考试选择页 */}
-            {analysisTab !== "detail" && (
+            {analysisTab === "select" && (
               <ExamSelectPage
                 onSelectExam={(examId) => { setSelectedAnalysisExamId(examId); setAnalysisTab("detail"); }}
+                onOpenCrossExam={() => { setSelectedAnalysisExamId(null); setAnalysisTab("cross"); }}
+              />
+            )}
+
+            {analysisTab === "cross" && (
+              <CrossExamTotalPage
+                onBack={() => { setSelectedAnalysisExamId(null); setAnalysisTab("select"); }}
               />
             )}
 
@@ -2396,7 +2404,7 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
                 objective.questions = normalizeObjectiveQuestions(objective);
                 for (const q of objective.questions) {
                   q.mode = objective.mode;
-                  if (objective.mode !== "multiple" && objective.mode !== "indeterminate") {
+                  if (objective.mode !== "multiple" && objective.mode !== "indefinite") {
                     delete q.scoringRule;
                   }
                 }
