@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.4.7
+> **版本**: v1.4.8
 > **技术栈**: SQLite + better-sqlite3 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
 
@@ -244,8 +244,37 @@ v1.4.5 新增 `manually_modified`、`modified_by`、`modified_at` 字段追踪�
 
 记录每次手动改分或修改答案的操作轨迹，用于审计追溯。
 
----
+### 模块五：大考组 (v1.4.8)
 
+#### `exam_groups` — 大考组表
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `name` | TEXT | 大考名称（如"2026高考摸底大考"） |
+| `description` | TEXT | 可选描述 |
+| `grade_id` | INTEGER FK | 关联年级 |
+| `tag` | TEXT | 标签：月考/期中/期末/模考/统考 |
+| `status` | TEXT | active / archived |
+| `is_official` | INTEGER | 是否官方统考 0/1 |
+| `total_score_mode` | TEXT | raw / assigned（总分按原始分还是赋分算） |
+| `only_full_participants` | INTEGER | 仅统计全科参加的学生 0/1 |
+| `created_by` | INTEGER FK | 创建者用户ID |
+| `created_at` | DATETIME | 创建时间 |
+| `updated_at` | DATETIME | 更新时间 |
+
+#### `exam_group_members` — 大考组成员考试关联表
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `group_id` | INTEGER FK | 所属大考组，级联删除 |
+| `exam_id` | INTEGER FK | 关联考试ID，级联删除 |
+| `sort_order` | INTEGER | 排序（语数英物化生等） |
+| `created_at` | DATETIME | 关联创建时间 |
+| UNIQUE(group_id, exam_id) | — | 同一大考同一考试不重复关联 |
+
+---
 ## API 接口
 
 ### 认证接口
@@ -480,6 +509,7 @@ src/types/
 
 ## 更新日志
 
+- **v1.4.8** (06-23) — 大考组功能：`exam_groups` + `exam_group_members` 表，支持多科合集分析、跨科排名、ZIP 导出
 - **v1.2.1** (06-17) — 数据库全量备份/恢复（ZIP 导出导入），强制考试时间，UI 响应式三级断点，导入模板升级 .xlsx
 - **v1.2.0** (06-17) — AI 成绩分析，Electron 探活增强
 - **v1.1.5** (06-16) — 阅卷流程重构，多端打包 x86/x64

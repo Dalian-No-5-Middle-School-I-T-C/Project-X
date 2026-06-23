@@ -390,6 +390,38 @@ CREATE TABLE IF NOT EXISTS export_templates (
 CREATE INDEX IF NOT EXISTS idx_export_templates_user ON export_templates(user_id, slot);
 
 -- ============================================================
+-- 模块六：大考组（v1.4.8）
+-- ============================================================
+
+-- 大考组（考试合集，如"2026高考摸底大考"包含语数英物化生）
+CREATE TABLE IF NOT EXISTS exam_groups (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,                    -- "2026高考摸底大考"
+    description     TEXT,                             -- 可选描述
+    grade_id        INTEGER REFERENCES grades(id),   -- 年级
+    tag             TEXT,                             -- 标签：月考/期中/期末/模考/统考
+    status          TEXT DEFAULT 'active',            -- active / archived
+    is_official     INTEGER DEFAULT 0,                -- 是否官方统考
+    total_score_mode TEXT DEFAULT 'raw',              -- raw / assigned（总分按原始分还是赋分算）
+    only_full_participants INTEGER DEFAULT 0,        -- 仅统计全科参加的学生
+    created_by      INTEGER REFERENCES users(id),
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 大考组成员考试关联
+CREATE TABLE IF NOT EXISTS exam_group_members (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id        INTEGER NOT NULL REFERENCES exam_groups(id) ON DELETE CASCADE,
+    exam_id         INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    sort_order      INTEGER DEFAULT 0,               -- 排序（语数英物化生等）
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(group_id, exam_id)
+);
+CREATE INDEX IF NOT EXISTS idx_exam_group_members_group ON exam_group_members(group_id);
+CREATE INDEX IF NOT EXISTS idx_exam_group_members_exam ON exam_group_members(exam_id);
+
+-- ============================================================
 -- AI 服务商配置（v1.4.0 多服务商扩展）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS ai_providers (

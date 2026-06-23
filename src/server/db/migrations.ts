@@ -245,6 +245,44 @@ const MIGRATIONS: Migration[] = [
         db.exec("UPDATE users SET background_opacity = CASE WHEN show_background = 1 THEN 0.12 ELSE 0 END");
       }
     }
+  },
+  {
+    version: 8,
+    name: "exam-groups",
+    up(db) {
+      if (!hasTable(db, "exam_groups")) {
+        db.exec(`
+          CREATE TABLE exam_groups (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            name            TEXT NOT NULL,
+            description     TEXT,
+            grade_id        INTEGER REFERENCES grades(id),
+            tag             TEXT,
+            status          TEXT DEFAULT 'active',
+            is_official     INTEGER DEFAULT 0,
+            total_score_mode TEXT DEFAULT 'raw',
+            only_full_participants INTEGER DEFAULT 0,
+            created_by      INTEGER REFERENCES users(id),
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+      }
+      if (!hasTable(db, "exam_group_members")) {
+        db.exec(`
+          CREATE TABLE exam_group_members (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id        INTEGER NOT NULL REFERENCES exam_groups(id) ON DELETE CASCADE,
+            exam_id         INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            sort_order      INTEGER DEFAULT 0,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(group_id, exam_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_exam_group_members_group ON exam_group_members(group_id);
+          CREATE INDEX IF NOT EXISTS idx_exam_group_members_exam ON exam_group_members(exam_id);
+        `);
+      }
+    }
   }
 ];
 

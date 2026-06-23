@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Search } from "lucide-react";
+import { Layers, Search } from "lucide-react";
 import { fetchJson } from "../auth/api";
-import type { ExamFilterItem } from "../../../../shared/types";
+import type { ExamFilterItem, ExamGroupFilterItem } from "../../../../shared/types";
 
 interface Props {
   onSelectExam: (examId: number) => void;
+  onSelectGroup?: (groupId: number) => void;
 }
 
 interface FilterOptions {
@@ -12,12 +13,16 @@ interface FilterOptions {
   subjects: string[];
 }
 
-export function ExamSelectPage({ onSelectExam }: Props) {
+type ViewMode = "single" | "group";
+
+export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
+  const [mode, setMode] = useState<ViewMode>("single");
   const [filters, setFilters] = useState<FilterOptions>({ academicYears: [], subjects: [] });
   const [academicYear, setAcademicYear] = useState("");
   const [gradeId, setGradeId] = useState("");
   const [subject, setSubject] = useState("");
   const [exams, setExams] = useState<ExamFilterItem[]>([]);
+  const [groupExams, setGroupExams] = useState<ExamGroupFilterItem[]>([]);
   const [grades, setGrades] = useState<Array<{ id: number; name: string }>>([]);
   const [loading, setLoading] = useState(true);
 
@@ -33,7 +38,9 @@ export function ExamSelectPage({ onSelectExam }: Props) {
       .catch(() => setGrades([]));
   }, []);
 
+  // Load single exams
   useEffect(() => {
+    if (mode !== "single") return;
     setLoading(true);
     const params = new URLSearchParams({ selection: "1" });
     if (academicYear) params.set("academic_year", academicYear);
@@ -44,16 +51,52 @@ export function ExamSelectPage({ onSelectExam }: Props) {
       .then(setExams)
       .catch(() => setExams([]))
       .finally(() => setLoading(false));
-  }, [academicYear, gradeId, subject]);
+  }, [mode, academicYear, gradeId, subject]);
+
+  // Load exam groups
+  useEffect(() => {
+    if (mode !== "group") return;
+    setLoading(true);
+    const params = new URLSearchParams();
+    if (gradeId) params.set("grade_id", gradeId);
+
+    fetchJson<ExamGroupFilterItem[]>(`/api/exam-groups?${params.toString()}`)
+      .then(setGroupExams)
+      .catch(() => setGroupExams([]))
+      .finally(() => setLoading(false));
+  }, [mode, gradeId]);
 
   return (
     <div style={{ padding: "24px 32px", overflowY: "auto", flex: 1 }}>
-      <div style={{ marginBottom: 24 }}>
+      <div style={{ marginBottom: 20 }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, margin: 0, marginBottom: 4 }}>考试选择</h2>
-        <p style={{ fontSize: 13, color: "var(--muted)", margin: 0 }}>选择学年、年级和学科后查看考试</p>
+        <p style={{ fontSize: 13, color: "var(--muted)", margin: 0 }}>选择单科考试或大考合集查看成绩</p>
       </div>
 
-      {/* Filter row - larger selects with proper alignment */}
+      {/* Mode toggle */}
+      <div style={{ display: "flex", gap: 0, marginBottom: 18, borderBottom: "2px solid var(--border)" }}>
+        <button onClick={() => setMode("single")} style={{
+          padding: "8px 20px", border: "none", background: "none",
+          borderBottom: mode === "single" ? "2px solid var(--primary)" : "2px solid transparent",
+          marginBottom: -2, cursor: "pointer",
+          color: mode === "single" ? "var(--primary)" : "var(--muted)",
+          fontWeight: mode === "single" ? 600 : 400, fontSize: 14
+        }}>
+          单科考试
+        </button>
+        <button onClick={() => setMode("group")} style={{
+          padding: "8px 20px", border: "none", background: "none",
+          borderBottom: mode === "group" ? "2px solid var(--primary)" : "2px solid transparent",
+          marginBottom: -2, cursor: "pointer",
+          color: mode === "group" ? "var(--primary)" : "var(--muted)",
+          fontWeight: mode === "group" ? 600 : 400, fontSize: 14,
+          display: "flex", alignItems: "center", gap: 6
+        }}>
+          <Layers size={15} /> 大考
+        </button>
+      </div>
+
+      {/* Filter row */}
       <div style={{
         display: "flex", gap: 12, marginBottom: 24,
         flexWrap: "wrap", alignItems: "flex-end"
@@ -82,32 +125,35 @@ export function ExamSelectPage({ onSelectExam }: Props) {
           </select>
         </div>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <label style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1 }}>学科</label>
-          <select
-            value={subject}
-            onChange={(e) => setSubject(e.target.value)}
-            className="exam-filter-select"
-          >
-            <option value="">全部学科</option>
-            {filters.subjects.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-        </div>
+        {mode === "single" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <label style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1 }}>学科</label>
+            <select
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              className="exam-filter-select"
+            >
+              <option value="">全部学科</option>
+              {filters.subjects.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+        )}
 
-        {exams.length > 0 && (
+        {((mode === "single" && exams.length > 0) || (mode === "group" && groupExams.length > 0)) && (
           <span style={{ fontSize: 13, color: "var(--muted)", paddingBottom: 10, alignSelf: "flex-end" }}>
-            共 {exams.length} 场考试
+            共 {mode === "single" ? exams.length : groupExams.length} {mode === "single" ? "场考试" : "个大考"}
           </span>
         )}
       </div>
 
       {loading && (
         <div style={{ textAlign: "center", padding: 60, color: "var(--muted)", fontSize: 14 }}>
-          正在加载考试列表...
+          正在加载...
         </div>
       )}
 
-      {!loading && exams.length === 0 && (
+      {/* Single exam list */}
+      {mode === "single" && !loading && exams.length === 0 && (
         <div style={{ textAlign: "center", padding: 60 }}>
           <Search size={48} style={{ opacity: 0.3, marginBottom: 12 }} />
           <p style={{ fontSize: 15, color: "var(--muted)", margin: 0 }}>
@@ -116,8 +162,7 @@ export function ExamSelectPage({ onSelectExam }: Props) {
         </div>
       )}
 
-      {/* Horizontal list rows (table style) */}
-      {!loading && exams.length > 0 && (
+      {mode === "single" && !loading && exams.length > 0 && (
         <div className="exam-list-table">
           <div className="exam-list-head">
             <span style={{ flex: 1, minWidth: 200 }}>考试名称</span>
@@ -149,6 +194,61 @@ export function ExamSelectPage({ onSelectExam }: Props) {
                 <span className={`exam-list-badge exam-list-badge-${exam.status}`}>
                   {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
                 </span>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Exam group list */}
+      {mode === "group" && !loading && groupExams.length === 0 && (
+        <div style={{ textAlign: "center", padding: 60 }}>
+          <Layers size={48} style={{ opacity: 0.3, marginBottom: 12 }} />
+          <p style={{ fontSize: 15, color: "var(--muted)", margin: 0 }}>
+            暂无大考，请在「考试管理」中创建大考
+          </p>
+        </div>
+      )}
+
+      {mode === "group" && !loading && groupExams.length > 0 && (
+        <div className="exam-list-table">
+          <div className="exam-list-head">
+            <span style={{ flex: 1, minWidth: 200 }}>大考名称</span>
+            <span style={{ width: 80 }}>标签</span>
+            <span style={{ width: 80 }}>年级</span>
+            <span style={{ width: 60, textAlign: "center" }}>含考试数</span>
+            <span style={{ width: 80, textAlign: "center" }}>有无成绩</span>
+            <span style={{ width: 100 }}>创建日期</span>
+          </div>
+          {groupExams.map((group) => (
+            <div
+              key={group.id}
+              className="exam-list-row"
+              onClick={() => onSelectGroup?.(group.id)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => { if (e.key === "Enter") onSelectGroup?.(group.id); }}
+              style={{ cursor: "pointer" }}
+            >
+              <span style={{ flex: 1, minWidth: 200, fontWeight: 500 }}>{group.name}</span>
+              <span style={{ width: 80 }}>
+                <span style={{
+                  display: "inline-block", padding: "2px 8px", borderRadius: 10,
+                  fontSize: 11, background: group.tag ? "var(--primary)" : "var(--bg-secondary)",
+                  color: group.tag ? "#fff" : "var(--muted)"
+                }}>
+                  {group.tag || "—"}
+                </span>
+              </span>
+              <span style={{ width: 80, color: "var(--muted)" }}>{group.grade_name || "—"}</span>
+              <span style={{ width: 60, textAlign: "center", fontWeight: 500 }}>{group.member_count}</span>
+              <span style={{ width: 80, textAlign: "center" }}>
+                <span className={`exam-list-badge ${group.has_results ? "exam-list-badge-closed" : "exam-list-badge-draft"}`}>
+                  {group.has_results ? "有成绩" : "无成绩"}
+                </span>
+              </span>
+              <span style={{ width: 100, color: "var(--muted)", fontSize: 12 }}>
+                {group.created_at ? group.created_at.slice(0, 10) : "—"}
               </span>
             </div>
           ))}

@@ -1,5 +1,59 @@
 # Project-X CHANGELOG
 
+## v1.4.8 (2026-06-23)
+
+### 大考（Exam Group）功能
+
+- **大考组 CRUD**：支持创建「大考合集」将多场单科考试组织为一个逻辑大考（如"2026高考摸底大考"包含语数英物化生）
+- **关联考试管理**：创建时可选择关联已有考试，创建后也可增删成员考试，支持拖拽排序
+- **大考内新建考试**：可直接在大考合集中快速创建新考试并自动关联
+- **大考分析视图**：概览 Tab 展示各科参数卡片网格（人数/均分/最高/最低/标准差/及格率/优秀率），成绩 Tab 提供跨科横向排名表
+- **跨科排名**：按总分排名显示校排/班排，每科单独显示原始分/赋分/校排/班排，支持班级筛选和「仅全科参加」开关
+- **总分模式**：可按原始分或赋分计算总分排名
+- **大考标签**：支持月考/期中/期末/模考/统考标签分类
+- **考试选择页大考入口**：新增「单科考试」/「大考」分类切换
+- **考试管理页大考入口**：考试管理 Tab 新增单科/大考模式切换，支持大考列表管理
+
+#### 数据库
+- 新增 `exam_groups` 表（name, description, grade_id, tag, status, is_official, total_score_mode, only_full_participants）
+- 新增 `exam_group_members` 表（group_id, exam_id, sort_order）
+- Migration v8 幂等创建
+
+#### API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/exam-groups` | 大考列表 |
+| `POST` | `/api/exam-groups` | 创建大考 + 关联考试 |
+| `GET` | `/api/exam-groups/:groupId` | 大考详情含成员列表 |
+| `PUT` | `/api/exam-groups/:groupId` | 更新大考信息 |
+| `DELETE` | `/api/exam-groups/:groupId` | 删除大考（级联，不删考试） |
+| `POST` | `/api/exam-groups/:groupId/exams` | 批量关联考试 |
+| `DELETE` | `/api/exam-groups/:groupId/exams/:examId` | 移除关联 |
+| `PUT` | `/api/exam-groups/:groupId/exams/sort` | 批量更新排序 |
+| `GET` | `/api/exam-groups/:groupId/overview` | 大考概览（各科参数） |
+| `GET` | `/api/exam-groups/:groupId/rankings` | 跨科总分排名 |
+| `POST` | `/api/exam-groups/:groupId/export` | 导出 ZIP（总览+各科小分） |
+
+### 导出增强
+
+- **单科导出新增可选胶囊**：`客观题小分` 和 `主观题小分`，可选加入导出列
+- 客观题小分：拉展该科所有客观题得分（Q1/Q2/...），含每题满分标注
+- 主观题小分：拉展该科所有主观题得分（S1/S2/...），含每题满分标注
+- 胶囊颜色分类：基础(蓝)/分数(绿)/排名(橙)/题目(紫)
+- **大考导出（ZIP）**：总览表（跨科排名+各科原始分/年排/班排）+ 各科详细小分 Excel 文件
+- 导出可选：是否包含客观题小分、主观题小分、选择导出哪些科目
+
+### 前端组件
+- `CreateExamGroupModal`：创建/编辑大考弹窗，含考试搜索选择器
+- `ExamGroupDetailPage`：大考分析视图（概览+成绩 Tab）
+- `GroupExportModal`：大考 ZIP 导出配置弹窗
+- `ExamSelectPage` 更新：新增单科/大考分类切换
+- `ExportModal` 更新：新增客观题小分/主观题小分胶囊列
+- `App.tsx` 集成：大考创建模态框、大考分析视图、考试管理双模式
+
+### 版本
+- v1.4.7 → v1.4.8
+
 ## v1.4.7 (2026-06-20)
 
 ### 暗色模式全面修复
