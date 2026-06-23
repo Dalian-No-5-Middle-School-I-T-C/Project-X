@@ -51,6 +51,15 @@
 - `ExportModal` 更新：新增客观题小分/主观题小分胶囊列
 - `App.tsx` 集成：大考创建模态框、大考分析视图、考试管理双模式
 
+### 跨考试总分分析（合并自 main）
+
+- **CrossExamTotalPage**：三种模式（按周自动打包 / 手动选考试 / 选择已存大考组）计算跨考总分排名
+- 按日期范围自动关联一周内的考试，快速生成一周考试包总分
+- 支持仅全科参加、仅部分参加等出席模式筛选
+- 考试选择页新增「跨考总分」快捷入口
+- API: `GET/POST/DELETE /api/analysis/cross-exam/groups`, `POST /api/analysis/cross-exam/total`
+- DB: `exam_groups` 表新增 `source`/`start_date`/`end_date` 字段兼容两种用途
+
 ### 版本
 - v1.4.7 → v1.4.8
 

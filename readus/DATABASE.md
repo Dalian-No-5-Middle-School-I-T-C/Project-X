@@ -246,13 +246,18 @@ v1.4.5 新增 `manually_modified`、`modified_by`、`modified_at` 字段追踪�
 
 ### 模块五：大考组 (v1.4.8)
 
-#### `exam_groups` — 大考组表
+#### `exam_groups` — 大考组表 (v1.4.8)
+
+将大考合集和跨考试总分统计两种用途统一为一张表。
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | INTEGER PK | 自增主键 |
 | `name` | TEXT | 大考名称（如"2026高考摸底大考"） |
 | `description` | TEXT | 可选描述 |
+| `source` | TEXT | 来源：manual（手动创建）/ week（按周自动生成） |
+| `start_date` | TEXT | 起始日期（跨考试统计用） |
+| `end_date` | TEXT | 截止日期（跨考试统计用） |
 | `grade_id` | INTEGER FK | 关联年级 |
 | `tag` | TEXT | 标签：月考/期中/期末/模考/统考 |
 | `status` | TEXT | active / archived |
