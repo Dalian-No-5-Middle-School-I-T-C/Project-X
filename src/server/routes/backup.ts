@@ -11,7 +11,7 @@ import crypto from "node:crypto";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { closeDatabase, getDatabase } from "../db";
+import { closeDatabase, getDatabase, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
 
 const router = Router();
@@ -27,19 +27,15 @@ const rawBodyParser = expressRaw({ type: "application/zip", limit: "512mb" });
  * 计算备份中包含的所有目录和文件大小
  */
 function getDataDir(): string {
-  const envDir = process.env.ANSWER_CARD_DATA_DIR;
-  if (envDir) return path.resolve(envDir);
-  return path.join(process.cwd(), "data", "answer-card");
+  return resolveAnswerCardDataDir();
 }
 
 function getProjectXDbPath(): string {
-  const envPath = process.env.PROJECTX_DB_PATH;
-  if (envPath) return path.resolve(envPath);
-  return path.join(process.cwd(), "data", "projectx.db");
+  return resolveProjectDbPath();
 }
 
 function getScannerDbPath(): string {
-  return path.join(getDataDir(), "scanner.db");
+  return resolveScannerDbPath();
 }
 
 /**

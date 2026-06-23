@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.4.0
+> **版本**: v1.4.7
 > **技术栈**: SQLite + better-sqlite3 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
 
@@ -165,7 +165,7 @@ npm run server
 | `subject_label` | TEXT | 科目中文名 |
 | `exam_date` | TEXT | 考试日期，ISO `YYYY-MM-DD` |
 | `sided` | TEXT | `single` / `double` |
-| `layout_data` | TEXT | JSON：完整 LayoutDocument 坐标数据 |
+| `layout_data` | TEXT | 兼容遗留列；运行时不再读写，布局由 `buildLayout(card)` 按需生成 |
 | `created_by` | INTEGER FK | 创建者用户ID |
 
 #### `objective_blocks` / `objective_questions` — 客观题块与逐题配置
@@ -395,7 +395,7 @@ $env:PROJECTX_DB_PATH = "D:\\shared\\projectx.db"
 ### Q: 如何备份数据库？
 
 **方式一：程序内导出（推荐）**
-管理员登录后，点击右上角账号 →「导出数据」，系统会自动打包 ZIP（含 projectx.db + scanner.db + data/answer-card/ 目录）供下载。备份文件支持通过「导入数据」一键恢复。
+管理员登录后，点击右上角账号 →「导出数据」，系统会自动打包 ZIP（含 projectx.db、可选 scanner.db、data/answer-card/ 目录）供下载。当前运行时若没有 legacy scanner.db 属于正常状态，备份文件仍支持通过「导入数据」一键恢复。
 
 **方式二：手动复制**
 SQLite 数据库是单个文件，直接复制 `projectx.db` 即可备份：
@@ -443,8 +443,11 @@ UPDATE users SET password_hash = '<new_hash>' WHERE username = 'admin';
 ```
 src/server/
 ├── db/
-│   ├── schema.sql           # 完整建表 SQL
-│   ├── index.ts             # 数据库连接、初始化、密码哈希
+│   ├── schema.sql           # 完整建表 SQL 快照
+│   ├── index.ts             # 数据库连接、初始化编排、密码哈希
+│   ├── paths.ts             # projectx.db / answer-card 数据目录 / scanner.db 路径解析
+│   ├── migrations.ts        # 版本化幂等迁移（schema_migrations）
+│   ├── seeds.ts             # 默认角色与保留策略
 │   └── cleanup.ts           # 数据清理脚本 + 定时任务
 ├── repositories/
 │   ├── UserRepository.ts      # 用户 CRUD + 批量导入 + 导出
@@ -504,21 +507,21 @@ src/types/
 | `id` | INTEGER PK | 自增主键 |
 | `user_id` | INTEGER FK | 所属用户 |
 | `name` | TEXT | 自定义名称（如 "我的GPT"） |
-| `provider_type` | TEXT | openai / deepseek / haqimi / gemini |
-| `base_url` | TEXT | API 端点地址（保存时自动补齐 `/v1`） |
+| `provider_type` | TEXT | openai / deepseek / gemini |
+| `base_url` | TEXT | API 端点地址（Gemini 留空，其余自动补齐 `/v1`） |
 | `api_key` | TEXT | API 密钥 |
 | `models` | TEXT | JSON 模型列表，为空则自动获取 |
 | `is_active` | INTEGER | 0=禁用 1=启用 |
 
 每个教师可配置多个服务商，用于 AI 成绩分析的模型路由。
 
-**Base URL 说明**：填写 API 端点地址而非网站首页。系统会自动补齐末尾的 `/v1` 路径。
+**Base URL 说明**：填写 API 端点地址而非网站首页。GPT/DeepSeek 等 OpenAI 兼容协议会自动补齐 `/v1`；**Gemini 无需填写 Base URL**（使用 Google 原生 GenAI SDK，仅需 API Key）。
 常见的 Base URL 示例：
 - **OpenAI**: `https://api.openai.com`（自动补为 `https://api.openai.com/v1`）
 - **DeepSeek**: `https://api.deepseek.com`（自动补为 `https://api.deepseek.com/v1`）
+- **Gemini**: 无需填写（Google 原生 SDK）
 - **Azure**: `https://xxx.openai.azure.com/openai`（含 `/openai` 部署前缀，不自动补 `/v1`）
 - **Ollama**: `http://localhost:11434`（自动补为 `http://localhost:11434/v1`）
-- **其他兼容**: `https://your-api-host.com`（自动补为 `https://your-api-host.com/v1`）
 
 > ⚠️ **使用前提**：自定义服务商仍需通过 Python llmclient 中转服务。请先启动：
 > ```powershell

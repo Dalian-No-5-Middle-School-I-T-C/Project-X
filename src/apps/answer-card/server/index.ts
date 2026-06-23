@@ -138,10 +138,10 @@ async function saveCardWithLayout(cardRepo: CardRepository, card: AnswerCard, cr
   const exists = cardRepo.findById(normalized.id);
 
   if (exists) {
-    cardRepo.updateCard(normalized, layout);
+    cardRepo.updateCard(normalized);
   } else {
     cardRepo.createCard(normalized, createdBy);
-    cardRepo.updateCard(normalized, layout);
+    cardRepo.updateCard(normalized);
   }
 
   await writeLayoutDocument(normalized.id, layout);
@@ -151,7 +151,6 @@ async function saveCardWithLayout(cardRepo: CardRepository, card: AnswerCard, cr
 async function prepareLayoutForCard(cardRepo: CardRepository, card: AnswerCard): Promise<string> {
   const normalized = normalizeCard(card, card.id);
   const layout = buildLayout(normalized);
-  cardRepo.updateLayoutData(normalized.id, layout);
   await writeLayoutDocument(normalized.id, layout);
   return layoutPath(normalized.id);
 }
@@ -661,7 +660,6 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       const layout = buildLayout(card);
-      cardRepo.updateLayoutData(card.id, layout);
       await writeLayoutDocument(card.id, layout);
       res.json(layout);
     } catch (error) {
@@ -1095,7 +1093,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "答题卡不存在" });
         return;
       }
-      const layout = cardRepo.getLayoutData(cardId);
+      const layout = buildLayout(card);
       // 收集 assets base64
       const assetsMap: Record<string, string> = {};
       const assetsPath = cardAssetsDir(cardId);

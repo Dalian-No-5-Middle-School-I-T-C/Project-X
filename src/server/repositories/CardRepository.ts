@@ -27,8 +27,8 @@ export class CardRepository {
    */
   createCard(card: AnswerCard, createdBy?: number): void {
     const stmt = this.db.prepare(`
-      INSERT INTO answer_cards (id, title, subject, subject_label, exam_date, paper_size, orientation, student_fields, student_number_digits, sided, layout_version, layout_data, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO answer_cards (id, title, subject, subject_label, exam_date, paper_size, orientation, student_fields, student_number_digits, sided, layout_version, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       card.id,
@@ -42,7 +42,6 @@ export class CardRepository {
       card.studentInfo?.studentNumberDigits ?? 5,
       card.sided ?? "double",
       card.layoutVersion ?? 1,
-      null,
       createdBy ?? null
     );
   }
@@ -50,10 +49,10 @@ export class CardRepository {
   /**
    * 更新答题卡记录
    */
-  updateCard(card: AnswerCard, layoutData?: unknown): void {
+  updateCard(card: AnswerCard): void {
     const stmt = this.db.prepare(`
       UPDATE answer_cards
-      SET title = ?, subject = ?, subject_label = ?, exam_date = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, layout_data = ?, updated_at = CURRENT_TIMESTAMP
+      SET title = ?, subject = ?, subject_label = ?, exam_date = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `);
     stmt.run(
@@ -65,7 +64,6 @@ export class CardRepository {
       card.studentInfo?.studentNumberDigits ?? 5,
       card.sided ?? "double",
       card.layoutVersion ?? 1,
-      layoutData ? JSON.stringify(layoutData) : null,
       card.id
     );
 
@@ -340,22 +338,5 @@ export class CardRepository {
     const stmt = this.db.prepare("DELETE FROM answer_cards WHERE id = ?");
     const result = stmt.run(cardId);
     return result.changes > 0;
-  }
-
-  /**
-   * 更新 layout_data
-   */
-  updateLayoutData(cardId: string, layoutData: unknown): void {
-    this.db.prepare("UPDATE answer_cards SET layout_data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-      .run(JSON.stringify(layoutData), cardId);
-  }
-
-  /**
-   * 获取 layout_data
-   */
-  getLayoutData(cardId: string): unknown | null {
-    const row = this.db.prepare("SELECT layout_data FROM answer_cards WHERE id = ?").get(cardId) as { layout_data: string | null } | undefined;
-    if (!row || !row.layout_data) return null;
-    return JSON.parse(row.layout_data);
   }
 }

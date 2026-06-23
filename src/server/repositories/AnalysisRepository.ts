@@ -165,7 +165,7 @@ export class AnalysisRepository {
     `).get(examId) as { count: number };
 
     const result = classes.map((c) => ({ ...c, gradeName: c.gradeName ?? undefined }));
-    return unknown.count > 0 ? [...result, { classId: 0, className: "未分配班级", gradeName: "无年级" }] : result;
+    return unknown.count > 0 ? [...result, { classId: 0, className: "未知班级", gradeName: "无年级" }] : result;
   }
 
   /** Get exam name for filename */

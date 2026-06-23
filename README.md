@@ -14,7 +14,7 @@
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
 > **当前版本**：v1.4.7
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 成绩查看（概况/成绩/考试分析/AI分析）→ 成绩修改（个别改分+批量改答案）→ 逐题得分明细 → 赋分引擎 → 导出模板系统 → 教师/学生/班级管理 → 教师细分角色（学科老师/班主任/学年主任）→ 账密批量导入导出 → 数据库全量备份 → 动态分数段分布
+> **核心能力**：答题卡设计（题块自动命名+分数统计）→ PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 成绩查看（概况/成绩/考试分析/AI分析）→ 成绩修改（个别改分+批量改答案）→ 逐题得分明细 → 赋分引擎 → 导出模板系统 → 教师/学生/班级管理（班级列自动解析年级）→ 多服务商 AI 分析（GPT/DeepSeek/Gemini）→ 账号设置三栏重构 → 暗色主题（实验性）
 > **下个里程碑**：v1.5.0 — 成绩预测、跨班深度对比、知识点诊断
 
 ---
@@ -86,11 +86,11 @@
 - **概况 Tab**：信息卡片（人数/均分/最高/最低/及格率/优秀率/标准差）+ 分数段水平条形图（10 分一段，0 人段自动隐藏，首段红/末段绿）+ 箱型图 + 年级前五/后五 + 进步前五/退步前五
 - **成绩 Tab**：成绩表格含校排/班排/名次变化/偏差值/Z值/百分位，支持排序与搜索
 - **考试分析 Tab**：成绩分布 + 班级对比（下拉选择基准班级，均分差值着色）+ 题目得分率
-- **AI 分析 Tab**：支持 GPT / DeepSeek / Gemini 多服务商，可自定义 Base URL，账号设置中「AI 服务商」集中管理
+- **AI 分析 Tab**：支持 GPT / DeepSeek / Gemini 多服务商，Gemini 使用 Google 原生 SDK 无需 Base URL，账号设置中「AI 服务商」集中管理
 - **赋分引擎**：等比例/线性/自定义表达式三种公式，化学/生物/地理/政治自动赋分
 - **导出系统**：胶囊拖拽排序列，4 个自定义模板槽，A4 竖版超页警告，侧表（年级前 N 名），Excel (.xlsx)
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
-- **AI 成绩分析**：多服务商架构（GPT/DeepSeek/Gemini），自定义 Base URL，白名单成绩工具生成结构化报告
+- **AI 成绩分析**：多服务商架构（GPT/DeepSeek/Gemini，Gemini 走 Google 原生 SDK），白名单成绩工具生成结构化报告
 
 ### 账户与安全
 
@@ -344,7 +344,7 @@ Project-X/
 ├── llmclient/                            # Python AI 中转服务（FastAPI + provider SDK）
 ├── readus/                              # 项目文档（架构、账号、管理员手册、多端说明等）
 ├── data/                                # 运行时数据
-│   ├── answer-card/                     # 答题卡 JSON、扫描图片、资产
+│   ├── answer-card/                     # 派生布局 JSON、扫描图片、资产
 │   ├── sponsor/qr/                      # 收款码图片（部署时放置，不进 git）
 │   └── projectx.db                      # 主数据库（用户/卡片/考试/成绩）
 ├── dist/                                # 构建产物
@@ -376,9 +376,9 @@ Project-X/
 |------|------|------|
 | `GET/POST` | `/api/cards` | 答题卡列表 / 创建（含 subject/title/examDate/englishListening/chineseChoicePlacement） |
 | `GET/PUT/DELETE` | `/api/cards/:id` | 答题卡详情 / 保存 / 删除（引用考试时支持解绑或联删） |
-| `GET` | `/api/cards/:id/export` | 导出为 .projectx-card.json（含答案+配图+布局） |
+| `GET` | `/api/cards/:id/export` | 导出为 .projectx-card.json（含答案+配图+实时生成布局） |
 | `POST` | `/api/cards/import` | 导入答题卡 |
-| `GET` | `/api/cards/:id/layout` | 布局坐标 |
+| `GET` | `/api/cards/:id/layout` | 实时生成布局坐标 |
 | `GET` | `/api/cards/:id/pdf` | 导出 PDF |
 | `POST` | `/api/cards/:id/recognition` | 单张识别（客观+主观） |
 | `POST` | `/api/cards/:id/grading` | 批量识别判分（支持 examId 落库） |
@@ -422,7 +422,9 @@ Project-X/
 | `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |
 | `POST` | `/api/export/exams/:id/scores` | 按列配置导出 Excel |
 | `GET` | `/api/export/columns` | 导出列元数据 |
-| `PATCH` | `/api/users/me/settings` | 更新用户设置（成绩指标/复核阈值） |
+| `PATCH` | `/api/users/me/settings` | 更新用户设置（成绩指标/复核阈值/背景图透明度） |
+| `POST` | `/api/users/me/background` | 上传自定义背景图 |
+| `GET` | `/api/app/background` | 获取背景图文件（优先用户自定义） |
 | `GET/POST/PUT/DELETE` | `/api/ai/providers` | AI 服务商配置管理 |
 | `GET` | `/api/db/backup` | 导出全量数据 ZIP |
 | `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |

@@ -17,10 +17,9 @@ export function findCardForLayout(cardId: string, cardRepo = new CardRepository(
 
 export async function prepareCardLayout(
   card: AnswerCard,
-  cardRepo = new CardRepository()
+  _cardRepo?: CardRepository
 ): Promise<PreparedCardLayout> {
   const layout = buildLayout(card);
-  cardRepo.updateLayoutData(card.id, layout);
 
   const targetPath = layoutPath(card.id);
   await mkdir(path.dirname(targetPath), { recursive: true });
