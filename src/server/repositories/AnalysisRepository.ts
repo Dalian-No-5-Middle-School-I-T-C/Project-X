@@ -916,7 +916,7 @@ export class AnalysisRepository {
         FROM student_scores WHERE exam_id = ?
         ORDER BY total_score DESC
       `).all(prevExam.id) as Array<{ student_id: number; total_score: number }>;
-      prevStudents.forEach((s, i) => prevRankMap.set(s.student_id, i + 1));
+      denseRank(prevStudents, (r) => r.total_score, (r, rank) => prevRankMap.set(r.student_id, rank));
     }
 
     // Build rows

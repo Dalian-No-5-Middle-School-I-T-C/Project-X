@@ -307,7 +307,6 @@ Project-X/
 │   │   │       ├── CreateExamGroupModal.tsx  # 大考创建/编辑弹窗（关联考试+内联新建考试）
 │   │   │       ├── ExamGroupDetailPage.tsx   # 大考分析视图（概览+跨科排名表）
 │   │   │       ├── GroupExportModal.tsx      # 大考 ZIP 导出配置
-│   │   │       ├── CrossExamTotalPage.tsx    # 跨考试总分统计（已内联至 ExamSelectPage）
 │   │   │       ├── AnalysisOverview.tsx     # 概况：信息卡片+分布图+排名
 │   │   │       ├── AnalysisDistribution.tsx # 箱型图/分数分布
 │   │   │       ├── AnalysisAiPanel.tsx      # AI 成绩分析（多服务商）

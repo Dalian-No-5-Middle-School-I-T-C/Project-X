@@ -58,6 +58,9 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
   const [crossLoading, setCrossLoading] = useState(false);
   const [crossMessage, setCrossMessage] = useState("");
   const [savingGroup, setSavingGroup] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deleteCount, setDeleteCount] = useState(0);
+  const [deleteGroupName, setDeleteGroupName] = useState("");
   // Week preview: exams within date range
   const weekPreviewExams = useMemo(() =>
     exams.filter((e) => e.exam_date && e.exam_date >= startDate && e.exam_date <= endDate),
@@ -172,8 +175,17 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
       setSelectedGroupId("");
       setCrossResult(null);
       await loadCrossGroups();
+      setShowDeleteConfirm(false);
       setCrossMessage("考试组已删除。");
     } catch (err) { setCrossMessage(err instanceof Error ? err.message : "删除失败"); }
+  }
+
+  function confirmDeleteCrossGroup() {
+    if (!selectedGroupId) return;
+    const group = crossGroups.find((g) => String(g.id) === selectedGroupId);
+    setDeleteGroupName(group?.name ?? "");
+    setDeleteCount(group?.examIds.length ?? 0);
+    setShowDeleteConfirm(true);
   }
 
   const selectedIds = useMemo(() => Array.from(selectedExamIds), [selectedExamIds]);
@@ -387,7 +399,40 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
                   </select>
                 </FilterCol>
                 <button className="primary-button" disabled={crossLoading || !selectedGroupId} onClick={() => runCrossTotal({ mode: "group", groupId: Number(selectedGroupId) })} style={{ height: 34 }}>统计</button>
-                <button className="ghost-button" disabled={!selectedGroupId} onClick={deleteCrossGroup}><Trash2 size={15} /> 删除</button>
+                <button className="ghost-button" disabled={!selectedGroupId} onClick={confirmDeleteCrossGroup}><Trash2 size={15} /> 删除</button>
+              </div>
+            )}
+
+            {/* Delete confirm modal */}
+            {showDeleteConfirm && (
+              <div style={{
+                position: "fixed", inset: 0, zIndex: 100001,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: "rgba(0,0,0,0.45)"
+              }} onClick={() => setShowDeleteConfirm(false)}>
+                <div style={{
+                  background: "#fff", borderRadius: 12, width: 420, maxWidth: "94vw",
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.18)", padding: 24
+                }} onClick={(e) => e.stopPropagation()}>
+                  <h3 style={{ margin: "0 0 12px", fontSize: 17 }}>确认删除考试组</h3>
+                  <p style={{ margin: 0, fontSize: 14 }}>
+                    将删除「<strong>{deleteGroupName}</strong>」。
+                    该组关联了 <strong>{deleteCount}</strong> 场考试（考试本身不受影响）。
+                  </p>
+                  <p style={{ fontSize: 12, color: "#999", margin: "12px 0 0" }}>
+                    关联的考试仍可用于其他大考合集。
+                  </p>
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+                    <button onClick={() => setShowDeleteConfirm(false)} style={{
+                      background: "#f3f4f6", color: "#333", border: "1px solid #d1d5db",
+                      borderRadius: 6, padding: "8px 20px", fontSize: 13, cursor: "pointer"
+                    }}>取消</button>
+                    <button onClick={deleteCrossGroup} style={{
+                      background: "#dc2626", color: "#fff", border: "none",
+                      borderRadius: 6, padding: "8px 20px", fontSize: 13, cursor: "pointer", fontWeight: 500
+                    }}>确认删除</button>
+                  </div>
+                </div>
               </div>
             )}
 
