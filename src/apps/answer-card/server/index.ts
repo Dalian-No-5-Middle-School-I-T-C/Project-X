@@ -1463,7 +1463,7 @@ export async function createApp(): Promise<express.Express> {
       const { name, examIds, source, startDate, endDate } = req.body as {
         name?: string;
         examIds?: unknown[];
-        source?: "manual" | "week";
+        source?: "cross-manual" | "week";
         startDate?: string;
         endDate?: string;
       };
@@ -1482,7 +1482,7 @@ export async function createApp(): Promise<express.Express> {
       const group = analysisRepo.createExamGroup({
         name,
         examIds: normalizedExamIds,
-        source: source === "week" ? "week" : "manual",
+        source: source === "week" ? "week" : "cross-manual",
         startDate,
         endDate,
         createdBy: req.user?.id ?? null

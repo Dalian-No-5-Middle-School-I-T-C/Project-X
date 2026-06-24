@@ -150,29 +150,6 @@ function createAiProvidersIfMissing(db: Database.Database): void {
   `);
 }
 
-function createExamGroupsIfMissing(db: Database.Database): void {
-  if (hasTable(db, "exam_groups")) return;
-  db.exec(`
-    CREATE TABLE exam_groups (
-      id            INTEGER PRIMARY KEY AUTOINCREMENT,
-      name          TEXT NOT NULL,
-      source        TEXT DEFAULT 'manual',
-      start_date    TEXT,
-      end_date      TEXT,
-      created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
-      created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE exam_group_items (
-      group_id      INTEGER NOT NULL REFERENCES exam_groups(id) ON DELETE CASCADE,
-      exam_id       INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
-      sort_order    INTEGER DEFAULT 0,
-      PRIMARY KEY (group_id, exam_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_exam_groups_user ON exam_groups(created_by, updated_at);
-    CREATE INDEX IF NOT EXISTS idx_exam_group_items_exam ON exam_group_items(exam_id);
-  `);
-}
 
 function createAnswerOverridesIfMissing(db: Database.Database): void {
   if (hasTable(db, "answer_overrides")) return;

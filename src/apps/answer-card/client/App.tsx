@@ -33,7 +33,6 @@ import { UserGuidePage } from "./components/UserGuidePage";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import { ExamSelectPage } from "./components/ExamSelectPage";
 import { ScoreDetailPage } from "./components/ScoreDetailPage";
-import { CrossExamTotalPage } from "./components/CrossExamTotalPage";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
 import { ExamGroupDetailPage } from "./components/ExamGroupDetailPage";
@@ -417,7 +416,7 @@ function App() {
   const [showCreateGroup, setShowCreateGroup] = useState(false);
   const [analysisGroupId, setAnalysisGroupId] = useState<number | null>(null);
   const [showGroupExport, setShowGroupExport] = useState(false);
-  const [analysisTab, setAnalysisTab] = useState<"select" | "view" | "trend" | "detail" | "cross">("select");
+  const [analysisTab, setAnalysisTab] = useState<"select" | "view" | "trend" | "detail">("select");
   const [selectedAnalysisExamId, setSelectedAnalysisExamId] = useState<number | null>(null);
   const [showNewCardModal, setShowNewCardModal] = useState(false);
   const [cardDeleteConflict, setCardDeleteConflict] = useState<CardDeleteConflict | null>(null);
@@ -526,7 +525,7 @@ function App() {
   useEffect(() => {
     const effectiveTheme = darkModeEnabled ? theme : "light";
     document.documentElement.setAttribute("data-theme", effectiveTheme);
-    localStorage.setItem("projectx-theme", theme);
+    localStorage.setItem("projectx-theme", effectiveTheme);
     localStorage.setItem("projectx-darkmode-enabled", String(darkModeEnabled));
   }, [theme, darkModeEnabled]);
 
@@ -1939,7 +1938,6 @@ function App() {
               <ExamSelectPage
                 onSelectExam={(examId) => { setSelectedAnalysisExamId(examId); setAnalysisTab("detail"); }}
                 onSelectGroup={(groupId) => { setAnalysisGroupId(groupId); }}
-                onOpenCrossExam={() => { setSelectedAnalysisExamId(null); setAnalysisTab("cross"); }}
               />
             )}
 
@@ -1949,13 +1947,6 @@ function App() {
                 groupId={analysisGroupId}
                 onBack={() => setAnalysisGroupId(null)}
                 onExport={() => setShowGroupExport(true)}
-              />
-            )}
-
-            {/* 跨考试总分分析 (main) */}
-            {analysisTab === "cross" && (
-              <CrossExamTotalPage
-                onBack={() => { setSelectedAnalysisExamId(null); setAnalysisTab("select"); }}
               />
             )}
 

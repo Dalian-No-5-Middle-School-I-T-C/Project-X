@@ -127,7 +127,7 @@ export class ExamRepository {
       SELECT
         e.id, e.name, e.subject, e.grade_id,
         g.name as grade_name,
-        ac.exam_date,
+        COALESCE(ac.exam_date, date(e.created_at)) as exam_date,
         e.status,
         COUNT(ss.id) as graded_count,
         ROUND(AVG(ss.total_score), 1) as avg_score,

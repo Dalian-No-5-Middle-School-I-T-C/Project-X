@@ -191,18 +191,18 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
       background: "rgba(0,0,0,0.45)"
     }} onClick={onClose}>
       <div style={{
-        background: "#fff", borderRadius: 12,
+        background: "var(--surface)", borderRadius: 12,
         width: 580, maxWidth: "94vw", maxHeight: "85vh", overflow: "auto",
-        boxShadow: "0 8px 32px rgba(0,0,0,0.18)", padding: 24,
-        color: "#333"
+        boxShadow: "var(--shadow-lg)", padding: 24,
+        color: "var(--text-primary)"
       }} onClick={(e) => e.stopPropagation()}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: "#333" }}>
+          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: "var(--text-primary)" }}>
             {isEdit ? "编辑大考" : "创建大考"}
           </h3>
           <button onClick={onClose} style={{
             background: "none", border: "none", cursor: "pointer",
-            padding: 4, borderRadius: 6, color: "#999"
+            padding: 4, borderRadius: 6, color: "var(--muted)"
           }}><X size={18} /></button>
         </div>
 
@@ -357,16 +357,16 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
                       <div key={exam.id} style={{
                         display: "flex", justifyContent: "space-between", alignItems: "center",
                         padding: "6px 8px", borderRadius: 6,
-                        background: alreadyAdded ? "#fef3c7" : "#fff",
+                        background: alreadyAdded ? "#fef3c7" : "var(--surface)",
                         opacity: alreadyAdded ? 0.6 : 1,
                         cursor: alreadyAdded ? "default" : "pointer",
                         fontSize: 13
                       }} onClick={() => !alreadyAdded && addExamFromPicker(exam)}>
                         <div style={{ display: "flex", gap: 8 }}>
                           <span style={{ fontWeight: 500 }}>{exam.name}</span>
-                          <span style={{ color: "#999" }}>{exam.subject || "—"}</span>
+                          <span style={{ color: "var(--muted)" }}>{exam.subject || "—"}</span>
                         </div>
-                        <span style={{ fontSize: 11, color: "#999" }}>
+                        <span style={{ fontSize: 11, color: "var(--muted)" }}>
                           {alreadyAdded ? "已添加" : exam.graded_count > 0 ? `${exam.graded_count}人 均${exam.avg_score}` : "未阅卷"}
                         </span>
                       </div>
@@ -429,17 +429,17 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
   );
 }
 
-// Shared styles (hardcoded colors for consistent visibility)
+// Shared styles
 const inputStyle: React.CSSProperties = {
-  padding: "8px 10px", borderRadius: 6, border: "1px solid #d1d5db",
+  padding: "8px 10px", borderRadius: 6, border: "1px solid var(--line-strong)",
   fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box",
-  background: "#fff", color: "#333"
+  background: "var(--surface)", color: "var(--text-primary)"
 };
 
 const selectStyle: React.CSSProperties = {
-  padding: "8px 10px", borderRadius: 6, border: "1px solid #d1d5db",
+  padding: "8px 10px", borderRadius: 6, border: "1px solid var(--line-strong)",
   fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box",
-  background: "#fff", color: "#333"
+  background: "var(--surface)", color: "var(--text-primary)"
 };
 
 const primaryBtnStyle: React.CSSProperties = {
