@@ -113,7 +113,7 @@ export function GroupExportModal({ groupId, onClose }: Props) {
         ) : (
           <>
             {/* Overview section */}
-            <div style={{ marginBottom: 16, padding: 12, borderRadius: 8, background: "var(--bg-secondary)", border: "1px solid var(--border)" }}>
+            <div style={{ marginBottom: 16, padding: 12, borderRadius: 8, background: "var(--surface-raised)", border: "1px solid var(--line-strong)" }}>
               <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
                 <input type="checkbox" checked={includeOverview} onChange={(e) => setIncludeOverview(e.target.checked)}
                   style={{ marginTop: 2 }} />
@@ -131,7 +131,7 @@ export function GroupExportModal({ groupId, onClose }: Props) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <div style={{ fontSize: 14, fontWeight: 600 }}>各科详细小分</div>
                 <button onClick={handleSelectAll} style={{
-                  background: "none", border: "none", color: "var(--primary)",
+                  background: "none", border: "none", color: "var(--brand)",
                   cursor: "pointer", fontSize: 12
                 }}>
                   {selectAll ? "取消全选" : "全选"}
@@ -142,9 +142,9 @@ export function GroupExportModal({ groupId, onClose }: Props) {
                   <label key={m.examId} style={{
                     display: "flex", alignItems: "center", gap: 6,
                     padding: "6px 12px", borderRadius: 8,
-                    border: subjectExamIds.includes(m.examId) ? "2px solid var(--primary)" : "1px solid var(--border)",
+                    border: subjectExamIds.includes(m.examId) ? "2px solid var(--brand)" : "1px solid var(--line-strong)",
                     cursor: "pointer", fontSize: 13,
-                    background: subjectExamIds.includes(m.examId) ? "var(--bg-accent)" : undefined,
+                    background: subjectExamIds.includes(m.examId) ? "var(--brand-soft)" : undefined,
                     fontWeight: subjectExamIds.includes(m.examId) ? 500 : 400
                   }}>
                     <input type="checkbox" checked={subjectExamIds.includes(m.examId)}
@@ -173,7 +173,7 @@ export function GroupExportModal({ groupId, onClose }: Props) {
             {/* Info */}
             <div style={{
               fontSize: 12, color: "var(--muted)", marginBottom: 16,
-              padding: "8px 12px", borderRadius: 6, background: "var(--bg-secondary)"
+              padding: "8px 12px", borderRadius: 6, background: "var(--surface-raised)"
             }}>
               导出为 ZIP 压缩包，含{includeOverview ? "总览表 + " : ""}{subjectExamIds.length} 科详细小分
             </div>
@@ -195,12 +195,12 @@ export function GroupExportModal({ groupId, onClose }: Props) {
 }
 
 const primaryBtnStyle: React.CSSProperties = {
-  background: "var(--primary)", color: "#fff", border: "none",
+  background: "var(--brand)", color: "var(--surface)", border: "none",
   borderRadius: 6, padding: "8px 20px", fontSize: 13, cursor: "pointer",
   fontWeight: 500, display: "flex", alignItems: "center", gap: 6
 };
 
 const secondaryBtnStyle: React.CSSProperties = {
-  background: "var(--bg-secondary)", color: "var(--text)", border: "1px solid var(--border)",
+  background: "var(--surface-raised)", color: "var(--text)", border: "1px solid var(--line-strong)",
   borderRadius: 6, padding: "8px 20px", fontSize: 13, cursor: "pointer"
 };
