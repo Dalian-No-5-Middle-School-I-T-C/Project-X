@@ -51,7 +51,7 @@ router.get("/", (req: Request, res: Response) => {
               WHERE egm.group_id = eg.id) as has_results
       FROM exam_groups eg
       LEFT JOIN grades g ON g.id = eg.grade_id
-      WHERE 1=1
+      WHERE eg.source IS NULL OR eg.source = 'manual'
     `;
     if (req.query.grade_id) { sql += " AND eg.grade_id = ?"; params.push(req.query.grade_id); }
     if (req.query.status) { sql += " AND eg.status = ?"; params.push(req.query.status); }

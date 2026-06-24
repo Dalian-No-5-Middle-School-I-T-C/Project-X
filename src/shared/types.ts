@@ -568,7 +568,7 @@ export type CrossExamAttendanceMode = "all" | "full";
 export interface CrossExamGroup {
   id: number;
   name: string;
-  source: "manual" | "week";
+  source: "cross-manual" | "week";
   startDate: string | null;
   endDate: string | null;
   examIds: number[];

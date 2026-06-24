@@ -201,17 +201,17 @@ export class AnalysisRepository {
 
   listExamGroups(createdBy?: number): CrossExamGroup[] {
     const rows = createdBy == null
-      ? this.db.prepare("SELECT * FROM exam_groups ORDER BY updated_at DESC, id DESC").all()
-      : this.db.prepare("SELECT * FROM exam_groups WHERE created_by = ? ORDER BY updated_at DESC, id DESC").all(createdBy);
+      ? this.db.prepare("SELECT * FROM exam_groups WHERE source IN ('cross-manual', 'week') ORDER BY updated_at DESC, id DESC").all()
+      : this.db.prepare("SELECT * FROM exam_groups WHERE created_by = ? AND source IN ('cross-manual', 'week') ORDER BY updated_at DESC, id DESC").all(createdBy);
     return (rows as Array<{
-      id: number; name: string; source: "manual" | "week"; start_date: string | null; end_date: string | null;
+      id: number; name: string; source: "cross-manual" | "week"; start_date: string | null; end_date: string | null;
       created_at: string; updated_at: string;
     }>).map((row) => this.hydrateExamGroup(row));
   }
 
   getExamGroup(groupId: number): CrossExamGroup | null {
     const row = this.db.prepare("SELECT * FROM exam_groups WHERE id = ?").get(groupId) as {
-      id: number; name: string; source: "manual" | "week"; start_date: string | null; end_date: string | null;
+      id: number; name: string; source: "cross-manual" | "week"; start_date: string | null; end_date: string | null;
       created_at: string; updated_at: string;
     } | undefined;
     return row ? this.hydrateExamGroup(row) : null;
@@ -220,7 +220,7 @@ export class AnalysisRepository {
   createExamGroup(params: {
     name: string;
     examIds: number[];
-    source?: "manual" | "week";
+    source?: "cross-manual" | "week";
     startDate?: string | null;
     endDate?: string | null;
     createdBy?: number | null;
@@ -952,7 +952,7 @@ export class AnalysisRepository {
   private hydrateExamGroup(row: {
     id: number;
     name: string;
-    source: "manual" | "week";
+    source: "cross-manual" | "week";
     start_date: string | null;
     end_date: string | null;
     created_at: string;

@@ -146,7 +146,7 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
     } finally { setCrossLoading(false); }
   }
 
-  async function saveCrossGroup(source: "manual" | "week", examIds: number[], fallbackName: string) {
+  async function saveCrossGroup(source: "cross-manual" | "week", examIds: number[], fallbackName: string) {
     const name = groupName.trim() || fallbackName;
     if (examIds.length === 0) { setCrossMessage("没有可保存的考试。"); return; }
     setSavingGroup(true);
@@ -354,7 +354,7 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
               <div style={{ marginBottom: 16 }}>
                 <div style={{ display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap" }}>
                   <input value={groupName} onChange={(e) => setGroupName(e.target.value)} placeholder="考试组名称（可选）" style={inputStyle} />
-                  <button className="primary-button" disabled={selectedIds.length === 0 || savingGroup} onClick={() => saveCrossGroup("manual", selectedIds, `手动组-${today()}`)} style={{ height: 34 }}>{savingGroup ? "保存中..." : "合并保存并统计"}</button>
+                  <button className="primary-button" disabled={selectedIds.length === 0 || savingGroup} onClick={() => saveCrossGroup("cross-manual", selectedIds, `手动组-${today()}`)} style={{ height: 34 }}>{savingGroup ? "保存中..." : "合并保存并统计"}</button>
                   <button className="ghost-button" disabled={crossLoading || selectedIds.length === 0} onClick={() => runCrossTotal({ mode: "selected", examIds: selectedIds })}>仅统计</button>
                   <span style={{ color: "var(--muted)", fontSize: 13, paddingBottom: 6 }}>已选 {selectedIds.length} 场</span>
                 </div>
