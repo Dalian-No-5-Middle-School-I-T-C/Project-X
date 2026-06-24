@@ -118,7 +118,7 @@ function createExportTemplatesIfMissing(db: Database.Database): void {
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       slot          INTEGER NOT NULL CHECK(slot BETWEEN 1 AND 4),
-      name          TEXT NOT NULL DEFAULT 'Untitled',
+      name          TEXT NOT NULL DEFAULT '未命名',
       columns       TEXT NOT NULL,
       side_table_n  INTEGER DEFAULT 0,
       gap_cols      INTEGER DEFAULT 3,
@@ -239,7 +239,7 @@ const MIGRATIONS: Migration[] = [
     up(db) {
       addColumnIfMissing(db, "student_scores", "assigned_score", "REAL");
       addColumnIfMissing(db, "exams", "assigned_formula", "TEXT");
-      addColumnIfMissing(db, "users", "score_display_mode", "TEXT DEFAULT 'deviation'");
+      addColumnIfMissing(db, "users", "score_display_mode", "TEXT DEFAULT 'zscore'");
       addColumnIfMissing(db, "users", "review_confidence_threshold", "REAL DEFAULT 0.12");
       addColumnIfMissing(db, "users", "ai_api_key", "TEXT");
       createExportTemplatesIfMissing(db);

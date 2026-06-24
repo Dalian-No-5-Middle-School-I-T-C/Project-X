@@ -271,7 +271,7 @@ async function persistGradingResults(
 
   const insertQs = db.prepare(`
     INSERT OR REPLACE INTO question_scores
-      (exam_id, student_id, question_number, block_id, score, max_score, score_type)
+      (exam_id, student_id, question_number, question_id, score, max_score, score_type)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
 
@@ -311,7 +311,7 @@ async function persistGradingResults(
           insertQs.run(examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
         }
         for (const sq of row.subjectiveQuestions ?? []) {
-          insertQs.run(examId, stu.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective");
+          insertQs.run(examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
         }
         persisted++;
       } catch (err) {

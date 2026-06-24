@@ -239,7 +239,7 @@ export class AnalysisRepository {
       );
       const groupId = Number(info.lastInsertRowid);
       const insertItem = this.db.prepare(`
-        INSERT INTO exam_group_items (group_id, exam_id, sort_order)
+        INSERT INTO exam_group_members (group_id, exam_id, sort_order)
         VALUES (?, ?, ?)
       `);
       examIds.forEach((examId, index) => insertItem.run(groupId, examId, index));
@@ -959,7 +959,7 @@ export class AnalysisRepository {
     updated_at: string;
   }): CrossExamGroup {
     const items = this.db.prepare(`
-      SELECT exam_id FROM exam_group_items
+      SELECT exam_id FROM exam_group_members
       WHERE group_id = ?
       ORDER BY sort_order ASC, exam_id ASC
     `).all(row.id) as Array<{ exam_id: number }>;
