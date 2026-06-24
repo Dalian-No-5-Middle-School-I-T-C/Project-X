@@ -14,7 +14,7 @@
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
 > **当前版本**：v1.5.0
-> **核心能力**：答题卡设计（题块自动命名+分数统计）→ PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 成绩查看（概况/成绩/考试分析/AI分析）→ 成绩修改（个别改分+批量改答案）→ 逐题得分明细 → 赋分引擎 → 导出模板系统 → 教师/学生/班级管理（班级列自动解析年级）→ 多服务商 AI 分析（GPT/DeepSeek/Gemini）→ 账号设置三栏重构 → 暗色主题（实验性）
+> **核心能力**：答题卡设计（题块自动命名+分数统计）→ PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 大考组（跨科合集分析+跨科排名+ZIP导出）→ 跨考试总分统计（按周打包/手动选择，内联在考试选择页）→ 成绩查看（概况/成绩/考试分析/AI分析）→ 成绩修改（个别改分+批量改答案）→ 逐题得分明细 → 赋分引擎 → 导出模板系统（胶囊拖拽+客观题/主观题小分可选列）→ 教师/学生/班级管理 → 多服务商 AI 分析（GPT/DeepSeek/Gemini）→ 并列排名（同分同排）→ 暗色主题（实验性）
 > **下个里程碑**：v2.0.0 — 成绩预测、跨班深度对比、知识点诊断
 
 ---
@@ -77,7 +77,12 @@
 
 ### 成绩分析
 
-- **考试选择页**：按学年/年级/学科三级筛选，横向列表展示考试，含人数/均分/状态预览
+- **考试选择页**：三选一切换 [单科 | 大考 | 跨考]，单科按学年/年级/学科筛选，大考展示合集列表，跨考嵌入按周打包/选定考试/已存组三种分析模式
+- **大考组管理**：创建大考合集（如"2026高考摸底大考"含语数英物化生），关联已有考试或直接在合集中新建考试，支持拖拽排序和删除确认（可选级联删除关联考试）
+- **大考分析**：概览 Tab 各科参数卡片网格，成绩 Tab 横向跨科排名表（校排/班排/分数，赋分科目同行显示赋分），支持班级筛选和「仅全科参加」开关
+- **跨考试总分**：按日期自动打包一周考试、手动选择考试合并、或读取已保存考试组，一键计算跨考试总分排名，预览该周考试列表
+- **并列排名**：全系统排名统一为同分并列（1, 2, 2, 4, 5...），覆盖跨考、大考、单科、导出等所有场景
+- **导出增强**：单科导出可选「客观题小分」「主观题小分」胶囊列；大考导出为 ZIP（总览表含跨科排名 + 各科详细小分 Excel）
 - **考试管理**：创建考试、关联答题卡（支持新建答题卡时同步创建/关联）、科目、赋分
 - **成绩查看页**：4 子Tab（概况 / 成绩 / 考试分析 / AI 分析），班级选择器 + 指标切换 + 「分数有问题？」入口（教师/管理员）
 
@@ -267,7 +272,7 @@ npm run electron:msi                   # = electron:msi:scanner
 | [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.4.7 暗色修复/设置重构/Gemini修复 + v1.4.6 成绩修改/背景图 + v1.3.0 学科模板/评分规则） | 开发者 / 测试 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.5.0 大考组+跨考内联+并列排名 + v1.4.7 暗色修复 + v1.3.0 学科模板） | 开发者 / 测试 |
 
 ---
 
@@ -297,8 +302,12 @@ Project-X/
 │   │   │       ├── StudentScoreDetail.tsx    # 逐题得分明细（班级均分率 + 答题卡放大）
 │   │   │       ├── StudentScores.tsx        # 学生我的成绩
 │   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板
-│   │   │       ├── ExamSelectPage.tsx       # 考试选择页（学年/年级/学科筛选）
+│   │   │       ├── ExamSelectPage.tsx       # 考试选择页（单科/大考/跨考 三选一，内联跨考分析）
 │   │   │       ├── ScoreDetailPage.tsx      # 成绩查看页（概况/成绩/考试分析/AI分析）
+│   │   │       ├── CreateExamGroupModal.tsx  # 大考创建/编辑弹窗（关联考试+内联新建考试）
+│   │   │       ├── ExamGroupDetailPage.tsx   # 大考分析视图（概览+跨科排名表）
+│   │   │       ├── GroupExportModal.tsx      # 大考 ZIP 导出配置
+│   │   │       ├── CrossExamTotalPage.tsx    # 跨考试总分统计（已内联至 ExamSelectPage）
 │   │   │       ├── AnalysisOverview.tsx     # 概况：信息卡片+分布图+排名
 │   │   │       ├── AnalysisDistribution.tsx # 箱型图/分数分布
 │   │   │       ├── AnalysisAiPanel.tsx      # AI 成绩分析（多服务商）
@@ -321,7 +330,7 @@ Project-X/
 │   │   │   ├── UserRepository.ts         # 用户管理
 │   │   │   └── AnalysisRepository.ts     # 分析查询
 │   │   ├── middleware/                   # 认证中间件
-│   │   ├── routes/                       # 认证/用户/赞助/AI服务商/成绩修改/导出等路由
+│   │   ├── routes/                       # 认证/用户/赞助/AI服务商/成绩修改/导出/大考组/跨考等路由
 │   │   └── services/                     # AuthService / AssignedScoreService（赋分引擎）
 │   └── shared/                          # 前后端共享
 │       ├── types.ts                     # 全部类型定义
@@ -417,6 +426,16 @@ Project-X/
 | `GET` | `/api/sponsor/qr/:channelId` | 收款码图片 |
 | `GET/PUT/DELETE` | `/api/exams/:id/assigned-formula` | 赋分公式配置 |
 | `POST` | `/api/exams/:id/recalculate-assigned` | 批量重新计算赋分 |
+| `GET/POST` | `/api/exam-groups` | 大考组列表 / 创建 |
+| `GET/PUT/DELETE` | `/api/exam-groups/:id` | 大考组详情 / 更新 / 删除（?deleteExams=1 级联删考试） |
+| `POST` | `/api/exam-groups/:id/exams` | 关联考试至大考组 |
+| `DELETE` | `/api/exam-groups/:id/exams/:examId` | 移除关联 |
+| `GET` | `/api/exam-groups/:id/overview` | 大考概览（各科参数） |
+| `GET` | `/api/exam-groups/:id/rankings` | 大考跨科排名（?classId=&fullOnly=1） |
+| `POST` | `/api/exam-groups/:id/export` | 大考 ZIP 导出（总览+各科小分） |
+| `POST` | `/api/analysis/cross-exam/total` | 跨考试总分统计 |
+| `GET/POST` | `/api/analysis/cross-exam/groups` | 跨考组列表 / 创建 |
+| `DELETE` | `/api/analysis/cross-exam/groups/:id` | 删除跨考组 |
 | `GET` | `/api/analysis/exams/:id/score-table` | 成绩表格数据（年排/班排/名次变化/偏差值/Z值/百分位） |
 | `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比 |
 | `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |

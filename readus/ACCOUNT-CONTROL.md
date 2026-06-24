@@ -1,6 +1,6 @@
 # Project-X 三级账号控制系统技术说明
 
-> **版本**: v1.4.7
+> **版本**: v1.5.0
 > **作者**: Project-X
 > **日期**: 2026-06-14
 > **关联文档**: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`DATABASE.md`](./DATABASE.md)

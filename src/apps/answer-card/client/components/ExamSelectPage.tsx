@@ -309,17 +309,30 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
                   <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>
                     本周预览（{weekPreviewExams.length} 场考试）：
                   </div>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {weekPreviewExams.length === 0 ? (
-                      <span style={{ fontSize: 12, color: "var(--muted)" }}>该日期范围内暂无考试</span>
-                    ) : (
-                      weekPreviewExams.map((exam) => (
-                        <span key={exam.id} style={{ padding: "3px 8px", borderRadius: 999, background: "var(--bg-secondary)", border: "1px solid var(--border)", fontSize: 11, whiteSpace: "nowrap" }}>
-                          {exam.exam_date} · {exam.name} · {exam.subject}
-                        </span>
-                      ))
-                    )}
-                  </div>
+                  {weekPreviewExams.length === 0 ? (
+                    <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>该日期范围内暂无考试</div>
+                  ) : (
+                    <div className="exam-list-table" style={{ maxHeight: 200, overflow: "auto" }}>
+                      <div className="exam-list-head">
+                        <span style={{ flex: 1, minWidth: 180 }}>考试名称</span>
+                        <span style={{ width: 80 }}>科目</span>
+                        <span style={{ width: 90 }}>年级</span>
+                        <span style={{ width: 100 }}>日期</span>
+                        <span style={{ width: 70, textAlign: "center" }}>已阅</span>
+                        <span style={{ width: 70, textAlign: "center" }}>均分</span>
+                      </div>
+                      {weekPreviewExams.map((exam) => (
+                        <div key={exam.id} className="exam-list-row">
+                          <span style={{ flex: 1, minWidth: 180, fontWeight: 500 }}>{exam.name}</span>
+                          <span style={{ width: 80, color: "var(--muted)" }}>{exam.subject || "—"}</span>
+                          <span style={{ width: 90, color: "var(--muted)" }}>{exam.grade_name || "—"}</span>
+                          <span style={{ width: 100, color: "var(--muted)", fontSize: 12 }}>{exam.exam_date || "—"}</span>
+                          <span style={{ width: 70, textAlign: "center" }}>{exam.graded_count}</span>
+                          <span style={{ width: 70, textAlign: "center" }}>{exam.graded_count > 0 ? exam.avg_score : "—"}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
