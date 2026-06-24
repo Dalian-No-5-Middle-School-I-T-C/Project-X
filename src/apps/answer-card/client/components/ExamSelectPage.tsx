@@ -419,7 +419,7 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
                     将删除「<strong>{deleteGroupName}</strong>」。
                     该组关联了 <strong>{deleteCount}</strong> 场考试（考试本身不受影响）。
                   </p>
-                  <p style={{ fontSize: 12, color: "#999", margin: "12px 0 0" }}>
+                  <p style={{ fontSize: 12, color: "var(--muted, #999)", margin: "12px 0 0" }}>
                     关联的考试仍可用于其他大考合集。
                   </p>
                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
