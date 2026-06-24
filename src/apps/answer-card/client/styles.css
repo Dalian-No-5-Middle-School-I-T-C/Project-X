@@ -142,6 +142,7 @@ button {
   box-shadow: var(--shadow-glass), 0 0 0 1px rgba(0,0,0,0.03);
   position: relative;
   overflow: hidden;
+  will-change: backdrop-filter;
 }
 
 .liquid-glass::before {
@@ -253,6 +254,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  contain: paint layout style;
   position: relative;
   z-index: 10;
 }
@@ -326,7 +328,7 @@ button {
   white-space: nowrap;
   font-weight: 600;
   font-size: 13.5px;
-  transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
   position: relative;
   overflow: hidden;
 }
@@ -420,7 +422,7 @@ button {
   padding: 12px 14px;
   text-align: left;
   box-shadow: var(--shadow-sm);
-  transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
   position: relative;
   overflow: hidden;
 }
@@ -507,7 +509,7 @@ button {
   border-radius: 6px;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
 }
 
 .card-list-actions button:hover {
@@ -669,7 +671,7 @@ button {
   color: var(--muted);
   font-weight: 600;
   font-size: 13px;
-  transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
   position: relative;
   overflow: hidden;
 }
@@ -794,7 +796,7 @@ button {
   padding: 18px;
   margin-bottom: 16px;
   box-shadow: var(--shadow-sm);
-  transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
   position: relative;
   overflow: hidden;
 }
@@ -973,7 +975,7 @@ input[type="checkbox"]:disabled {
   background: rgba(255, 255, 255, 0.55);
   backdrop-filter: blur(8px) saturate(120%);
   -webkit-backdrop-filter: blur(8px) saturate(120%);
-  transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
   position: relative;
   overflow: hidden;
 }
@@ -1030,7 +1032,7 @@ input[type="checkbox"]:disabled {
   background: rgba(255, 255, 255, 0.6);
   border-radius: 8px;
   color: var(--text-secondary);
-  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
   backdrop-filter: blur(4px) saturate(120%);
   -webkit-backdrop-filter: blur(4px) saturate(120%);
 }
@@ -1060,7 +1062,7 @@ input[type="checkbox"]:disabled {
   background: rgba(255, 255, 255, 0.45);
   backdrop-filter: blur(8px) saturate(120%);
   -webkit-backdrop-filter: blur(8px) saturate(120%);
-  transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
 }
 
 .question-editor:hover {
@@ -1108,7 +1110,7 @@ input[type="checkbox"]:disabled {
   cursor: pointer;
   font-weight: 600;
   font-size: 13px;
-  transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
   backdrop-filter: blur(4px) saturate(120%);
   -webkit-backdrop-filter: blur(4px) saturate(120%);
   position: relative;
@@ -1168,7 +1170,7 @@ input[type="checkbox"]:disabled {
   -webkit-backdrop-filter: blur(8px) saturate(120%);
   padding: 14px;
   margin: 6px 0 14px;
-  transition: all 0.3s ease;
+  transition: background 0.3s, color 0.3s, box-shadow 0.3s;
 }
 
 .answer-key-editor:hover {
@@ -1233,7 +1235,7 @@ input[type="checkbox"]:disabled {
   color: var(--text-secondary);
   font-weight: 700;
   font-size: 12px;
-  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
   backdrop-filter: blur(4px) saturate(120%);
   -webkit-backdrop-filter: blur(4px) saturate(120%);
 }
@@ -1303,7 +1305,7 @@ input[type="checkbox"]:disabled {
   backdrop-filter: blur(12px) saturate(140%);
   -webkit-backdrop-filter: blur(12px) saturate(140%);
   box-shadow: var(--shadow-md);
-  transition: all 0.3s ease;
+  transition: background 0.3s, color 0.3s, box-shadow 0.3s;
 }
 
 .score-table:hover {
@@ -1344,7 +1346,7 @@ input[type="checkbox"]:disabled {
   padding: 0 16px;
   cursor: pointer;
   list-style: none;
-  transition: all 0.2s ease;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
 }
 
 .score-row summary::-webkit-details-marker {
@@ -1362,7 +1364,7 @@ input[type="checkbox"]:disabled {
   color: var(--brand);
   font-weight: 700;
   text-decoration: none;
-  transition: all 0.2s ease;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
   position: relative;
 }
 
@@ -1400,7 +1402,7 @@ input[type="checkbox"]:disabled {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.01em;
-  transition: all 0.2s ease;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
 }
 
 .status-ok {
@@ -1450,7 +1452,7 @@ input[type="checkbox"]:disabled {
   background: rgba(255, 255, 255, 0.7);
   padding: 6px 10px;
   font-size: 12px;
-  transition: all 0.2s ease;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
   backdrop-filter: blur(4px) saturate(120%);
   -webkit-backdrop-filter: blur(4px) saturate(120%);
 }
@@ -1490,7 +1492,7 @@ input[type="checkbox"]:disabled {
   -webkit-backdrop-filter: blur(8px) saturate(120%);
   padding: 12px;
   margin-top: 12px;
-  transition: all 0.3s ease;
+  transition: background 0.3s, color 0.3s, box-shadow 0.3s;
 }
 
 .file-queue:hover {
@@ -1530,7 +1532,7 @@ input[type="checkbox"]:disabled {
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 500;
-  transition: all 0.2s ease;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
 }
 
 .queued-files span:hover {
@@ -1795,7 +1797,7 @@ input[type="checkbox"]:disabled {
   font-size: 14px;
   color: var(--muted);
   font-weight: 500;
-  transition: all 0.3s ease;
+  transition: background 0.3s, color 0.3s, box-shadow 0.3s;
 }
 
 .scanner-error {
@@ -1840,7 +1842,7 @@ input[type="checkbox"]:disabled {
   border: 1px solid var(--line);
   border-radius: 10px;
   min-width: 64px;
-  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
   backdrop-filter: blur(4px) saturate(120%);
   -webkit-backdrop-filter: blur(4px) saturate(120%);
 }
@@ -1878,7 +1880,7 @@ input[type="checkbox"]:disabled {
   font-weight: 700;
   padding: 2px 8px;
   border-radius: 6px;
-  transition: all 0.2s ease;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
 }
 
 .thumb-student.has-id {
@@ -1987,7 +1989,7 @@ input[type="checkbox"]:disabled {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
   position: relative;
   overflow: hidden;
 }
@@ -2155,7 +2157,7 @@ input[type="checkbox"]:disabled {
   border-radius: 12px;
   padding: 18px 16px;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -2978,7 +2980,7 @@ input[type="checkbox"]:disabled {
   backdrop-filter: blur(8px) saturate(120%);
   -webkit-backdrop-filter: blur(8px) saturate(120%);
   box-shadow: var(--shadow-sm);
-  transition: all 0.3s ease;
+  transition: background 0.3s, color 0.3s, box-shadow 0.3s;
 }
 
 .student-results-table:hover {
@@ -3155,7 +3157,7 @@ input[type="checkbox"]:disabled {
   overflow: hidden;
   display: flex;
   justify-content: center;
-  transition: all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
 }
 
 .pdf-page-image-wrapper:hover {
@@ -3208,7 +3210,7 @@ input[type="checkbox"]:disabled {
   background: rgba(255, 255, 255, 0.7);
   cursor: pointer;
   flex-shrink: 0;
-  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
   overflow: hidden;
   backdrop-filter: blur(4px) saturate(120%);
   -webkit-backdrop-filter: blur(4px) saturate(120%);
@@ -3939,7 +3941,7 @@ input[type="checkbox"]:disabled {
   color: var(--text);
   white-space: nowrap;
   font-weight: 500;
-  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  transition: background 0.2s, color 0.2s, border-color 0.2s, box-shadow 0.2s;
 }
 
 .export-menu-btn:hover:not(:disabled) {
@@ -4040,7 +4042,7 @@ input[type="checkbox"]:disabled {
   border-radius: 10px;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.2s;
+  transition: background 0.2s, color 0.2s;
 }
 
 .modal-close:hover {
