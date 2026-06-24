@@ -273,7 +273,55 @@ const MIGRATIONS: Migration[] = [
   {
     version: 8,
     name: "exam-groups",
-    up: createExamGroupsIfMissing
+    up(db) {
+      if (!hasTable(db, "exam_groups")) {
+        db.exec(`
+          CREATE TABLE exam_groups (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            name            TEXT NOT NULL,
+            description     TEXT,
+            source          TEXT DEFAULT 'manual',
+            start_date      TEXT,
+            end_date        TEXT,
+            grade_id        INTEGER REFERENCES grades(id),
+            tag             TEXT,
+            status          TEXT DEFAULT 'active',
+            is_official     INTEGER DEFAULT 0,
+            total_score_mode TEXT DEFAULT 'raw',
+            only_full_participants INTEGER DEFAULT 0,
+            created_by      INTEGER REFERENCES users(id),
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+      } else {
+        // Ensure all columns exist (compat with main's simpler version)
+        addColumnIfMissing(db, "exam_groups", "description", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "source", "TEXT DEFAULT 'manual'");
+        addColumnIfMissing(db, "exam_groups", "start_date", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "end_date", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "grade_id", "INTEGER REFERENCES grades(id)");
+        addColumnIfMissing(db, "exam_groups", "tag", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "status", "TEXT DEFAULT 'active'");
+        addColumnIfMissing(db, "exam_groups", "is_official", "INTEGER DEFAULT 0");
+        addColumnIfMissing(db, "exam_groups", "total_score_mode", "TEXT DEFAULT 'raw'");
+        addColumnIfMissing(db, "exam_groups", "only_full_participants", "INTEGER DEFAULT 0");
+      }
+      if (!hasTable(db, "exam_group_members")) {
+        db.exec(`
+          CREATE TABLE exam_group_members (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id        INTEGER NOT NULL REFERENCES exam_groups(id) ON DELETE CASCADE,
+            exam_id         INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            sort_order      INTEGER DEFAULT 0,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(group_id, exam_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_exam_group_members_group ON exam_group_members(group_id);
+          CREATE INDEX IF NOT EXISTS idx_exam_group_members_exam ON exam_group_members(exam_id);
+        `);
+      }
+    }
   }
 ];
 

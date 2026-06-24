@@ -23,6 +23,7 @@ import scoreRoutes from "../../../server/routes/scores";
 import sponsorRoutes from "../../../server/routes/sponsor";
 import backupRoutes from "../../../server/routes/backup";
 import exportScoresRoutes from "../../../server/routes/export-scores";
+import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
 import { optionalAuth } from "../../../server/middleware/auth";
@@ -524,6 +525,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/teachers", teacherRoutes);
   app.use("/api/export", exportRoutes);
   app.use("/api/export", exportScoresRoutes);
+  app.use("/api/exam-groups", examGroupRoutes);
   app.use("/api/scores", scoreRoutes);
   app.use("/api/sponsor", sponsorRoutes);
   app.use("/api/db", backupRoutes);
