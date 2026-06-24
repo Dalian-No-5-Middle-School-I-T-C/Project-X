@@ -121,17 +121,22 @@
 
 #### 方式一：便携版 EXE（推荐临时使用）
 
-前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
+前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 下载 **便携版 EXE（开箱即用，无需安装）**：
+
 ```
-Project-X 学生端-1.4.8-x64.exe
-Project-X 教师端-1.4.8-x64.exe
-Project-X 教师扫描端-1.4.8-x64.exe
-Project-X 学生端-1.4.8-ia32.exe
-Project-X 教师端-1.4.8-ia32.exe
-Project-X 教师扫描端-1.4.8-ia32.exe
+Project-X-学生端-1.4.8-x64.exe    # 学生查看成绩
+Project-X-教师端-1.4.8-x64.exe    # 教师设计/阅卷/分析/账号
 ```
 
-> 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
+> 64 位 Windows 直接双击运行即可。首次启动会自动初始化本机数据库，默认账号 `admin` / `admin123`。学生端仅查看成绩；教师端含答题卡设计、阅卷判分、成绩分析、大考合集等完整功能。
+
+如需 32 位或其它变体，见下方开发打包说明：
+
+```
+Project-X 学生端-1.4.8-ia32.exe
+Project-X 教师端-1.4.8-ia32.exe
+Project-X 教师扫描端-1.4.8-x64.exe
+```
 
 #### 方式二：MSI 安装包（推荐机房部署）
 
@@ -209,6 +214,9 @@ npm run electron:pack:scanner          # 教师扫描端目录包
 
 # 生成 GitHub Release 用的 7z（与 v1.4.5 相同命名：student{version}.7z / teacher.7z / teacher-scanner{version}.7z）
 npm run release:7z
+
+# 生成教师/学生便携 EXE（开箱即用，推荐发布）
+npm run release:portable
 
 npm run electron:dist:student          # 学生端便携 EXE
 npm run electron:dist:teacher          # 教师端便携 EXE

@@ -43,7 +43,8 @@
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
     "typecheck": "tsc --noEmit",
-    "release:7z": "tsx scripts/release-7z.ts"
+    "release:7z": "tsx scripts/release-7z.ts",
+    "release:portable": "tsx scripts/release-portable.ts"
   },
   "dependencies": {
     "adm-zip": "^0.5.17",
