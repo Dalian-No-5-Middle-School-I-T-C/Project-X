@@ -411,8 +411,8 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
                 background: "rgba(0,0,0,0.45)"
               }} onClick={() => setShowDeleteConfirm(false)}>
                 <div style={{
-                  background: "#fff", borderRadius: 12, width: 420, maxWidth: "94vw",
-                  boxShadow: "0 8px 32px rgba(0,0,0,0.18)", padding: 24
+                  background: "var(--surface, #fff)", borderRadius: 12, width: 420, maxWidth: "94vw",
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.18)", padding: 24, color: "var(--text, #333)"
                 }} onClick={(e) => e.stopPropagation()}>
                   <h3 style={{ margin: "0 0 12px", fontSize: 17 }}>确认删除考试组</h3>
                   <p style={{ margin: 0, fontSize: 14 }}>
@@ -424,7 +424,7 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
                   </p>
                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
                     <button onClick={() => setShowDeleteConfirm(false)} style={{
-                      background: "#f3f4f6", color: "#333", border: "1px solid #d1d5db",
+                      background: "var(--bg-secondary, #f3f4f6)", color: "var(--text, #333)", border: "1px solid var(--border, #d1d5db)",
                       borderRadius: 6, padding: "8px 20px", fontSize: 13, cursor: "pointer"
                     }}>取消</button>
                     <button onClick={deleteCrossGroup} style={{

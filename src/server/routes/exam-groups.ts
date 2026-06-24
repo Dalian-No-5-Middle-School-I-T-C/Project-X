@@ -4,32 +4,10 @@ import { authMiddleware } from "../middleware/auth";
 import { getDatabase } from "../db";
 import { ZipArchive } from "archiver";
 import XLSX from "xlsx";
+import { competitionRank } from "../../shared/ranking";
 
 const router = express.Router();
 router.use(authMiddleware);
-
-// ── Helpers ──
-
-/** Dense ranking: same score = same rank (1,2,2,4,5...) */
-function denseRank<T>(
-  rows: T[],
-  score: (row: T) => number,
-  setRank: (row: T, rank: number) => void
-): void {
-  let prevScore: number | null = null;
-  let prevRank = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const s = score(rows[i]);
-    if (prevScore !== null && s === prevScore) {
-      setRank(rows[i], prevRank);
-    } else {
-      const rank = i + 1;
-      setRank(rows[i], rank);
-      prevRank = rank;
-    }
-    prevScore = s;
-  }
-}
 
 // ── Helper types ──
 
@@ -509,7 +487,7 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
       examRanks[examId] = rankMap;
 
       // Grade rank — dense ranking
-      denseRank(rankRows, (r) => r.total_score, (r, rank) => {
+      competitionRank(rankRows, (r) => r.total_score, (r, rank) => {
         rankMap.set(r.student_id, { gradeRank: rank, classRank: 0 });
       });
 
@@ -521,7 +499,7 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
         classGroups.get(key)!.push({ student_id: r.student_id, total_score: r.total_score });
       }
       for (const cg of classGroups.values()) {
-        denseRank(cg, (r) => r.total_score, (r, rank) => {
+        competitionRank(cg, (r) => r.total_score, (r, rank) => {
           const entry = rankMap.get(r.student_id);
           if (entry) entry.classRank = rank;
         });
@@ -585,7 +563,7 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
     rows.sort((a, b) => sortScore(b) - sortScore(a));
 
     // Grade rank — dense ranking
-    denseRank(rows, sortScore, (r: any, rank: number) => { r.totalGradeRank = rank; });
+    competitionRank(rows, sortScore, (r: any, rank: number) => { r.totalGradeRank = rank; });
 
     // Class rank
     const classGroups2 = new Map<string, any[]>();
@@ -595,7 +573,7 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
       classGroups2.get(key)!.push(r);
     }
     for (const cg of classGroups2.values()) {
-      denseRank(cg, sortScore, (r: any, rank: number) => { r.totalClassRank = rank; });
+      competitionRank(cg, sortScore, (r: any, rank: number) => { r.totalClassRank = rank; });
     }
 
     // Filter by class
@@ -722,7 +700,7 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
       overviewRows.sort((a, b) => (b["总分"] as number) - (a["总分"] as number));
 
       // Fill ranks — dense ranking
-      denseRank(overviewRows, (r) => r["总分"] as number, (r, rank) => { r["总分年排"] = rank; });
+      competitionRank(overviewRows, (r) => r["总分"] as number, (r, rank) => { r["总分年排"] = rank; });
       const cgMap = new Map<string, typeof overviewRows>();
       for (const r of overviewRows) {
         const key = r["班级"] as string;
@@ -730,7 +708,7 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
         cgMap.get(key)!.push(r);
       }
       for (const cg of cgMap.values()) {
-        denseRank(cg, (r) => r["总分"] as number, (r, rank) => { r["总分班排"] = rank; });
+        competitionRank(cg, (r) => r["总分"] as number, (r, rank) => { r["总分班排"] = rank; });
       }
 
       // Fill per-subject ranks
@@ -742,7 +720,7 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
 
         const sorted = [...overviewRows].sort((a, b) => (b[rawKey] as number || 0) - (a[rawKey] as number || 0));
         const withScore = sorted.filter((r) => r[rawKey] !== "");
-        denseRank(withScore, (r) => r[rawKey] as number, (r, rank) => { r[grKey] = rank; });
+        competitionRank(withScore, (r) => r[rawKey] as number, (r, rank) => { r[grKey] = rank; });
 
         const classSorted = new Map<string, typeof withScore>();
         for (const r of withScore) {
@@ -751,7 +729,7 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
           classSorted.get(key)!.push(r);
         }
         for (const cs of classSorted.values()) {
-          denseRank(cs, (r) => r[rawKey] as number, (r, rank) => { r[crKey] = rank; });
+          competitionRank(cs, (r) => r[rawKey] as number, (r, rank) => { r[crKey] = rank; });
         }
       }
 
@@ -797,7 +775,7 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
 
       // Build grade rank — dense ranking
       const gradeRankMap = new Map<number, number>();
-      denseRank(scoreRows, (r) => r.total_score, (r, rank) => { gradeRankMap.set(r.student_id, rank); });
+      competitionRank(scoreRows, (r) => r.total_score, (r, rank) => { gradeRankMap.set(r.student_id, rank); });
 
       // Class rank — dense ranking within each class
       const classSorted = db.prepare(`
@@ -816,7 +794,7 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
         cGroups.get(key)!.push({ student_id: cs.student_id, total_score: cs.total_score });
       }
       for (const cg of cGroups.values()) {
-        denseRank(cg, (r) => r.total_score, (r, rank) => { classRankMap.set(r.student_id, rank); });
+        competitionRank(cg, (r) => r.total_score, (r, rank) => { classRankMap.set(r.student_id, rank); });
       }
 
       // Per-student map of question scores

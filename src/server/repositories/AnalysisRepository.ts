@@ -1,5 +1,6 @@
 import { getDatabase } from "../db";
 import Database from "better-sqlite3";
+import { competitionRank } from "../../shared/ranking";
 import type {
   ClassScoreSummary,
   CrossExamAttendanceMode,
@@ -66,28 +67,6 @@ function classFilterQs(classId?: number): { join: string; where: string; params:
 
 function round1(value: number): number {
   return Math.round(value * 10) / 10;
-}
-
-/** Assign dense ranks (1,2,2,4,5...) by a score extractor.
- *  Assumes rows are already sorted DESC by score. */
-function denseRank<T>(
-  rows: T[],
-  score: (row: T) => number,
-  setRank: (row: T, rank: number) => void
-): void {
-  let prevScore: number | null = null;
-  let prevRank = 0;
-  for (let i = 0; i < rows.length; i++) {
-    const s = score(rows[i]);
-    if (prevScore !== null && s === prevScore) {
-      setRank(rows[i], prevRank);
-    } else {
-      const rank = i + 1;
-      setRank(rows[i], rank);
-      prevRank = rank;
-    }
-    prevScore = s;
-  }
 }
 
 /** 按 10 分一段动态生成分数段，末段截止于满分 */
@@ -261,7 +240,7 @@ export class AnalysisRepository {
       );
       const groupId = Number(info.lastInsertRowid);
       const insertItem = this.db.prepare(`
-        INSERT INTO exam_group_items (group_id, exam_id, sort_order)
+        INSERT INTO exam_group_members (group_id, exam_id, sort_order)
         VALUES (?, ?, ?)
       `);
       examIds.forEach((examId, index) => insertItem.run(groupId, examId, index));
@@ -393,7 +372,7 @@ export class AnalysisRepository {
     }
 
     rows.sort((a, b) => b.totalScore - a.totalScore || a.studentNumber.localeCompare(b.studentNumber));
-    denseRank(rows, (r) => r.totalScore, (r, rank) => { r.gradeRank = rank; });
+    competitionRank(rows, (r) => r.totalScore, (r, rank) => { r.gradeRank = rank; });
 
     const byClass = new Map<string, CrossExamTotalRow[]>();
     for (const row of rows) {
@@ -403,7 +382,7 @@ export class AnalysisRepository {
     }
     for (const classRows of byClass.values()) {
       classRows.sort((a, b) => b.totalScore - a.totalScore || a.studentNumber.localeCompare(b.studentNumber));
-      denseRank(classRows, (r) => r.totalScore, (r, rank) => { r.classRank = rank; });
+      competitionRank(classRows, (r) => r.totalScore, (r, rank) => { r.classRank = rank; });
     }
     rows.sort((a, b) => a.gradeRank - b.gradeRank);
 
@@ -645,7 +624,7 @@ export class AnalysisRepository {
         errorRateLevel: errorRateLevel(errorRate)
       };
     });
-    denseRank(items, (r) => r.totalScore, (r, rank) => { r.rank = rank; });
+    competitionRank(items, (r) => r.totalScore, (r, rank) => { r.rank = rank; });
     return items;
   }
 
@@ -748,7 +727,7 @@ export class AnalysisRepository {
     const graded: RankedRow[] = allStudents.map((s) => ({
       ...s, gradeRank: 0, classRank: ""
     }));
-    denseRank(graded, (r) => r.total_score, (r, rank) => { r.gradeRank = rank; });
+    competitionRank(graded, (r) => r.total_score, (r, rank) => { r.gradeRank = rank; });
 
     // Class rank: group by class, sort each group by total DESC
     const classGroups = new Map<string, RankedRow[]>();
@@ -759,7 +738,7 @@ export class AnalysisRepository {
     }
     for (const group of classGroups.values()) {
       // already sorted by total_score DESC from the original query — dense ranking
-      denseRank(group, (r) => r.total_score, (r, rank) => { r.classRank = rank; });
+      competitionRank(group, (r) => r.total_score, (r, rank) => { r.classRank = rank; });
     }
 
     // Filter by classId if specified
@@ -867,7 +846,7 @@ export class AnalysisRepository {
 
     // Grade rank (already sorted DESC) — dense ranking
     const gradeRanked = allStudents.map((s) => ({ ...s, gradeRank: 0, classRank: 0 }));
-    denseRank(gradeRanked, (r) => r.total_score, (r, rank) => { r.gradeRank = rank; });
+    competitionRank(gradeRanked, (r) => r.total_score, (r, rank) => { r.gradeRank = rank; });
 
     // Class rank
     const classGroups = new Map<string, typeof gradeRanked>();
@@ -877,7 +856,7 @@ export class AnalysisRepository {
       classGroups.get(key)!.push(s);
     }
     for (const group of classGroups.values()) {
-      denseRank(group, (r: any) => r.total_score, (r: any, rank: number) => { r.classRank = rank; });
+      competitionRank(group, (r: any) => r.total_score, (r: any, rank: number) => { r.classRank = rank; });
     }
 
     // Filter by class
@@ -916,7 +895,7 @@ export class AnalysisRepository {
         FROM student_scores WHERE exam_id = ?
         ORDER BY total_score DESC
       `).all(prevExam.id) as Array<{ student_id: number; total_score: number }>;
-      denseRank(prevStudents, (r) => r.total_score, (r, rank) => prevRankMap.set(r.student_id, rank));
+      competitionRank(prevStudents, (r) => r.total_score, (r, rank) => prevRankMap.set(r.student_id, rank));
     }
 
     // Build rows
@@ -980,7 +959,7 @@ export class AnalysisRepository {
     updated_at: string;
   }): CrossExamGroup {
     const items = this.db.prepare(`
-      SELECT exam_id FROM exam_group_items
+      SELECT exam_id FROM exam_group_members
       WHERE group_id = ?
       ORDER BY sort_order ASC, exam_id ASC
     `).all(row.id) as Array<{ exam_id: number }>;
