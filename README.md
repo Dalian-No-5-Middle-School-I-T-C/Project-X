@@ -333,6 +333,7 @@ Project-X/
 │   │   └── services/                     # AuthService / AssignedScoreService（赋分引擎）
 │   └── shared/                          # 前后端共享
 │       ├── types.ts                     # 全部类型定义
+│       ├── ranking.ts                   # 竞赛排名工具函数（competitionRank）
 │       ├── grading.ts                   # 评分引擎
 │       ├── layout.ts                    # 答题卡坐标布局
 │       ├── cardTemplates.ts             # 学科默认答题卡模板

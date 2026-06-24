@@ -248,14 +248,20 @@ v1.4.5 新增 `manually_modified`、`modified_by`、`modified_at` 字段追踪�
 
 #### `exam_groups` — 大考组表 (v1.5.0)
 
-将大考合集和跨考试总分统计两种用途统一为一张表。
+将大考合集和跨考试总分统计两种用途统一为一张表，通过 `source` 列区分：
+
+| `source` 值 | 用途 | 列表 API |
+|-----------|------|---------|
+| `NULL` 或 `'manual'` | 大考组（含题块/标签/年级/排名等） | `GET /api/exam-groups` |
+| `'cross-manual'` | 跨考手动组（选定考试合并） | `GET /api/analysis/cross-exam/groups` |
+| `'week'` | 跨考周包（按日期打包） | `GET /api/analysis/cross-exam/groups` |
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | INTEGER PK | 自增主键 |
 | `name` | TEXT | 大考名称（如"2026高考摸底大考"） |
 | `description` | TEXT | 可选描述 |
-| `source` | TEXT | 来源：manual（手动创建）/ week（按周自动生成） |
+| `source` | TEXT | 区分大考/跨考：NULL 或 'manual'=大考, 'cross-manual'=跨考手动, 'week'=跨考周包 |
 | `start_date` | TEXT | 起始日期（跨考试统计用） |
 | `end_date` | TEXT | 截止日期（跨考试统计用） |
 | `grade_id` | INTEGER FK | 关联年级 |
