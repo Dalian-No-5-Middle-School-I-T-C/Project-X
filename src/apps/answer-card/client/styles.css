@@ -32,6 +32,11 @@
   --text-primary: var(--text);
   --bg-soft: rgba(0, 0, 0, 0.03);
   --line-light: rgba(0, 0, 0, 0.04);
+  /* v1.4.8 new component variables */
+  --primary: var(--brand);
+  --bg-secondary: var(--surface-raised);
+  --bg-accent: var(--brand-soft);
+  --border: var(--line-strong);
 
   color-scheme: light;
 

@@ -525,7 +525,7 @@ function App() {
   useEffect(() => {
     const effectiveTheme = darkModeEnabled ? theme : "light";
     document.documentElement.setAttribute("data-theme", effectiveTheme);
-    localStorage.setItem("projectx-theme", theme);
+    localStorage.setItem("projectx-theme", effectiveTheme);
     localStorage.setItem("projectx-darkmode-enabled", String(darkModeEnabled));
   }, [theme, darkModeEnabled]);
 
