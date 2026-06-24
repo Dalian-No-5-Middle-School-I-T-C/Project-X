@@ -42,6 +42,7 @@
     "electron:msi:all": "tsx scripts/package-variant.ts all msi",
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
+    "seed:demo": "tsx scripts/seed-demo-exams.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
