@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.4.8
+> **版本**: v1.5.0
 > **技术栈**: SQLite + better-sqlite3 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
 
@@ -244,18 +244,24 @@ v1.4.5 新增 `manually_modified`、`modified_by`、`modified_at` 字段追踪�
 
 记录每次手动改分或修改答案的操作轨迹，用于审计追溯。
 
-### 模块五：大考组 (v1.4.8)
+### 模块五：大考组 (v1.5.0)
 
-#### `exam_groups` — 大考组表 (v1.4.8)
+#### `exam_groups` — 大考组表 (v1.5.0)
 
-将大考合集和跨考试总分统计两种用途统一为一张表。
+将大考合集和跨考试总分统计两种用途统一为一张表，通过 `source` 列区分：
+
+| `source` 值 | 用途 | 列表 API |
+|-----------|------|---------|
+| `NULL` 或 `'manual'` | 大考组（含题块/标签/年级/排名等） | `GET /api/exam-groups` |
+| `'cross-manual'` | 跨考手动组（选定考试合并） | `GET /api/analysis/cross-exam/groups` |
+| `'week'` | 跨考周包（按日期打包） | `GET /api/analysis/cross-exam/groups` |
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | `id` | INTEGER PK | 自增主键 |
 | `name` | TEXT | 大考名称（如"2026高考摸底大考"） |
 | `description` | TEXT | 可选描述 |
-| `source` | TEXT | 来源：manual（手动创建）/ week（按周自动生成） |
+| `source` | TEXT | 区分大考/跨考：NULL 或 'manual'=大考, 'cross-manual'=跨考手动, 'week'=跨考周包 |
 | `start_date` | TEXT | 起始日期（跨考试统计用） |
 | `end_date` | TEXT | 截止日期（跨考试统计用） |
 | `grade_id` | INTEGER FK | 关联年级 |
@@ -514,7 +520,7 @@ src/types/
 
 ## 更新日志
 
-- **v1.4.8** (06-23) — 大考组功能：`exam_groups` + `exam_group_members` 表，支持多科合集分析、跨科排名、ZIP 导出
+- **v1.5.0** (06-24) — 大考组功能：`exam_groups` + `exam_group_members` 表（含 source/start_date/end_date 跨考字段），支持多科合集分析、跨科排名、ZIP 导出、跨考内联、并列排名
 - **v1.2.1** (06-17) — 数据库全量备份/恢复（ZIP 导出导入），强制考试时间，UI 响应式三级断点，导入模板升级 .xlsx
 - **v1.2.0** (06-17) — AI 成绩分析，Electron 探活增强
 - **v1.1.5** (06-16) — 阅卷流程重构，多端打包 x86/x64

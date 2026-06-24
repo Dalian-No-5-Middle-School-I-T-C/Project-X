@@ -1,6 +1,21 @@
 # Project-X CHANGELOG
 
-## v1.4.8 (2026-06-23)
+## v1.5.0 (2026-06-24) — 稳定版
+
+### 跨考入口 & 排名修复
+- **三选一紧凑切换**：考试选择页右上角 toggle 改为 [单科 | 大考 | 跨考]，跨考不再单独占一个按钮
+- **跨考内联化**：跨考试总分统计直接嵌入 ExamSelectPage，不再跳出独立页面，无需「返回」操作
+- **按周预览**：跨考「按日期打包」模式新增实时考试预览，切换日期即刻看到该周包含哪些考试
+- **日期/按钮对齐**：跨考面板日期输入框与统计按钮统一基线对齐
+- **全局并列排名修复**：所有排名从顺序排名改为同分并列排名（1,2,2,4,5...），覆盖跨考总分、大考排名、单科排名、导出表格等全部场景
+- **competitionRank 提取**：排名工具函数从 `denseRank` 重命名为 `competitionRank`（更准确），提取到 `src/shared/ranking.ts` 避免 AnalysisRepository 与 exam-groups 代码重复
+- **表名统一**：AnalysisRepository 从 `exam_group_items` 改为 `exam_group_members`，消除迁移后新装环境表缺失导致的跨考功能不可用
+- **列表隔离**：按 `source` 列隔离大考列表（`NULL`/`'manual'`）与跨考已存组列表（`'cross-manual'`/`'week'`），避免互相泄漏
+- **删除确认**：跨考已存组删除增加确认弹窗（显示关联考试数），考试管理大考删除支持级联考试选项
+- **周预览口径对齐**：前端周预览日期取值与后端 `COALESCE(exam_date, created_at)` 对齐，无答题卡日期考试不再遗漏
+- **名次变化修复**：上次考试排名（preRankMap）改用并列排名，消除同分场景下名次变化计算偏差
+- **死代码清理**：删除已内联但未删除的 CrossExamTotalPage.tsx (424行) 和 migrations.ts 中未调用的 createExamGroupsIfMissing
+- **暗色主题**：跨考删除确认弹窗改用 CSS 变量，暗色模式下不再白框刺眼
 
 ### 大考（Exam Group）功能
 
@@ -61,7 +76,7 @@
 - DB: `exam_groups` 表新增 `source`/`start_date`/`end_date` 字段兼容两种用途
 
 ### 版本
-- v1.4.7 → v1.4.8
+- v1.4.7 → v1.5.0
 
 ## v1.4.7 (2026-06-20)
 

@@ -1,6 +1,6 @@
 # Project-X 管理员使用手册
 
-> **适用版本**: v1.4.8 及以上
+> **适用版本**: v1.5.0 及以上
 > **适用角色**: 系统管理员（`admin`）  
 > **关联文档**: [`ACCOUNT-ARCHITECTURE.md`](./ACCOUNT-ARCHITECTURE.md) · [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md)
 

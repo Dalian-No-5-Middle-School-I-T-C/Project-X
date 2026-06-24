@@ -1,5 +1,6 @@
 import { getDatabase } from "../db";
 import Database from "better-sqlite3";
+import { competitionRank } from "../../shared/ranking";
 import type {
   ClassScoreSummary,
   CrossExamAttendanceMode,
@@ -200,17 +201,17 @@ export class AnalysisRepository {
 
   listExamGroups(createdBy?: number): CrossExamGroup[] {
     const rows = createdBy == null
-      ? this.db.prepare("SELECT * FROM exam_groups ORDER BY updated_at DESC, id DESC").all()
-      : this.db.prepare("SELECT * FROM exam_groups WHERE created_by = ? ORDER BY updated_at DESC, id DESC").all(createdBy);
+      ? this.db.prepare("SELECT * FROM exam_groups WHERE source IN ('cross-manual', 'week') ORDER BY updated_at DESC, id DESC").all()
+      : this.db.prepare("SELECT * FROM exam_groups WHERE created_by = ? AND source IN ('cross-manual', 'week') ORDER BY updated_at DESC, id DESC").all(createdBy);
     return (rows as Array<{
-      id: number; name: string; source: "manual" | "week"; start_date: string | null; end_date: string | null;
+      id: number; name: string; source: "cross-manual" | "week"; start_date: string | null; end_date: string | null;
       created_at: string; updated_at: string;
     }>).map((row) => this.hydrateExamGroup(row));
   }
 
   getExamGroup(groupId: number): CrossExamGroup | null {
     const row = this.db.prepare("SELECT * FROM exam_groups WHERE id = ?").get(groupId) as {
-      id: number; name: string; source: "manual" | "week"; start_date: string | null; end_date: string | null;
+      id: number; name: string; source: "cross-manual" | "week"; start_date: string | null; end_date: string | null;
       created_at: string; updated_at: string;
     } | undefined;
     return row ? this.hydrateExamGroup(row) : null;
@@ -219,7 +220,7 @@ export class AnalysisRepository {
   createExamGroup(params: {
     name: string;
     examIds: number[];
-    source?: "manual" | "week";
+    source?: "cross-manual" | "week";
     startDate?: string | null;
     endDate?: string | null;
     createdBy?: number | null;
@@ -239,7 +240,7 @@ export class AnalysisRepository {
       );
       const groupId = Number(info.lastInsertRowid);
       const insertItem = this.db.prepare(`
-        INSERT INTO exam_group_items (group_id, exam_id, sort_order)
+        INSERT INTO exam_group_members (group_id, exam_id, sort_order)
         VALUES (?, ?, ?)
       `);
       examIds.forEach((examId, index) => insertItem.run(groupId, examId, index));
@@ -371,9 +372,7 @@ export class AnalysisRepository {
     }
 
     rows.sort((a, b) => b.totalScore - a.totalScore || a.studentNumber.localeCompare(b.studentNumber));
-    rows.forEach((row, index) => {
-      row.gradeRank = index + 1;
-    });
+    competitionRank(rows, (r) => r.totalScore, (r, rank) => { r.gradeRank = rank; });
 
     const byClass = new Map<string, CrossExamTotalRow[]>();
     for (const row of rows) {
@@ -382,11 +381,8 @@ export class AnalysisRepository {
       byClass.get(key)!.push(row);
     }
     for (const classRows of byClass.values()) {
-      classRows
-        .sort((a, b) => b.totalScore - a.totalScore || a.studentNumber.localeCompare(b.studentNumber))
-        .forEach((row, index) => {
-          row.classRank = index + 1;
-        });
+      classRows.sort((a, b) => b.totalScore - a.totalScore || a.studentNumber.localeCompare(b.studentNumber));
+      competitionRank(classRows, (r) => r.totalScore, (r, rank) => { r.classRank = rank; });
     }
     rows.sort((a, b) => a.gradeRank - b.gradeRank);
 
@@ -611,12 +607,12 @@ export class AnalysisRepository {
       objective_score: number; subjective_score: number; low_score_count: number; question_count: number;
     }>;
 
-    return rows.map((row, idx) => {
+    const items = rows.map((row, idx) => {
       const questionCount = row.question_count ?? 0;
       const lowScoreCount = row.low_score_count ?? 0;
       const errorRate = questionCount > 0 ? Math.round((lowScoreCount / questionCount) * 100) : 0;
       return {
-        rank: idx + 1,
+        rank: 0,
         studentNumber: row.student_number,
         studentName: row.name,
         totalScore: row.total_score,
@@ -628,6 +624,8 @@ export class AnalysisRepository {
         errorRateLevel: errorRateLevel(errorRate)
       };
     });
+    competitionRank(items, (r) => r.totalScore, (r, rank) => { r.rank = rank; });
+    return items;
   }
 
   getQuestionAnalysis(examId: number, classId?: number): QuestionAnalysisItem[] {
@@ -724,11 +722,12 @@ export class AnalysisRepository {
       qsLookup.get(qs.student_id)!.set(qs.question_number, qs.score);
     }
 
-    // Grade rank (already DESC by total_score)
+    // Grade rank (already DESC by total_score) — dense ranking (same score, same rank)
     type RankedRow = StudentRow & { gradeRank: number; classRank: number | "" };
-    const graded: RankedRow[] = allStudents.map((s, i) => ({
-      ...s, gradeRank: i + 1, classRank: ""
+    const graded: RankedRow[] = allStudents.map((s) => ({
+      ...s, gradeRank: 0, classRank: ""
     }));
+    competitionRank(graded, (r) => r.total_score, (r, rank) => { r.gradeRank = rank; });
 
     // Class rank: group by class, sort each group by total DESC
     const classGroups = new Map<string, RankedRow[]>();
@@ -738,8 +737,8 @@ export class AnalysisRepository {
       classGroups.get(key)!.push(s);
     }
     for (const group of classGroups.values()) {
-      // already sorted by total_score DESC from the original query
-      group.forEach((s, i) => (s.classRank = i + 1));
+      // already sorted by total_score DESC from the original query — dense ranking
+      competitionRank(group, (r) => r.total_score, (r, rank) => { r.classRank = rank; });
     }
 
     // Filter by classId if specified
@@ -845,8 +844,9 @@ export class AnalysisRepository {
       };
     }
 
-    // Grade rank (already sorted DESC)
-    const gradeRanked = allStudents.map((s, i) => ({ ...s, gradeRank: i + 1 }));
+    // Grade rank (already sorted DESC) — dense ranking
+    const gradeRanked = allStudents.map((s) => ({ ...s, gradeRank: 0, classRank: 0 }));
+    competitionRank(gradeRanked, (r) => r.total_score, (r, rank) => { r.gradeRank = rank; });
 
     // Class rank
     const classGroups = new Map<string, typeof gradeRanked>();
@@ -856,7 +856,7 @@ export class AnalysisRepository {
       classGroups.get(key)!.push(s);
     }
     for (const group of classGroups.values()) {
-      group.forEach((s, i) => ((s as any).classRank = i + 1));
+      competitionRank(group, (r: any) => r.total_score, (r: any, rank: number) => { r.classRank = rank; });
     }
 
     // Filter by class
@@ -895,7 +895,7 @@ export class AnalysisRepository {
         FROM student_scores WHERE exam_id = ?
         ORDER BY total_score DESC
       `).all(prevExam.id) as Array<{ student_id: number; total_score: number }>;
-      prevStudents.forEach((s, i) => prevRankMap.set(s.student_id, i + 1));
+      competitionRank(prevStudents, (r) => r.total_score, (r, rank) => prevRankMap.set(r.student_id, rank));
     }
 
     // Build rows
@@ -952,14 +952,14 @@ export class AnalysisRepository {
   private hydrateExamGroup(row: {
     id: number;
     name: string;
-    source: "manual" | "week";
+    source: "cross-manual" | "week";
     start_date: string | null;
     end_date: string | null;
     created_at: string;
     updated_at: string;
   }): CrossExamGroup {
     const items = this.db.prepare(`
-      SELECT exam_id FROM exam_group_items
+      SELECT exam_id FROM exam_group_members
       WHERE group_id = ?
       ORDER BY sort_order ASC, exam_id ASC
     `).all(row.id) as Array<{ exam_id: number }>;

@@ -4,6 +4,7 @@ import { authMiddleware } from "../middleware/auth";
 import { getDatabase } from "../db";
 import { ZipArchive } from "archiver";
 import XLSX from "xlsx";
+import { competitionRank } from "../../shared/ranking";
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -50,7 +51,7 @@ router.get("/", (req: Request, res: Response) => {
               WHERE egm.group_id = eg.id) as has_results
       FROM exam_groups eg
       LEFT JOIN grades g ON g.id = eg.grade_id
-      WHERE 1=1
+      WHERE eg.source IS NULL OR eg.source = 'manual'
     `;
     if (req.query.grade_id) { sql += " AND eg.grade_id = ?"; params.push(req.query.grade_id); }
     if (req.query.status) { sql += " AND eg.status = ?"; params.push(req.query.status); }
@@ -473,36 +474,34 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
     const examRanks: Record<number, Map<number, { gradeRank: number; classRank: number }>> = {};
     for (const examId of memberIds) {
       const rankRows = db.prepare(`
-        SELECT ss.student_id, c.name as class_name, c.id as class_id
+        SELECT ss.student_id, ss.total_score, c.name as class_name, c.id as class_id
         FROM student_scores ss
         JOIN users u ON u.id = ss.student_id
         LEFT JOIN class_students cs ON cs.student_id = ss.student_id
         LEFT JOIN classes c ON c.id = cs.class_id
         WHERE ss.exam_id = ?
         ORDER BY ss.total_score DESC
-      `).all(examId) as Array<{ student_id: number; class_name: string | null; class_id: number | null }>;
+      `).all(examId) as Array<{ student_id: number; total_score: number; class_name: string | null; class_id: number | null }>;
 
       const rankMap = new Map<number, { gradeRank: number; classRank: number }>();
       examRanks[examId] = rankMap;
 
-      // Grade rank
-      rankRows.forEach((r, i) => {
-        if (!rankMap.has(r.student_id)) {
-          rankMap.set(r.student_id, { gradeRank: i + 1, classRank: 0 });
-        }
+      // Grade rank — dense ranking
+      competitionRank(rankRows, (r) => r.total_score, (r, rank) => {
+        rankMap.set(r.student_id, { gradeRank: rank, classRank: 0 });
       });
 
-      // Class rank by group
-      const classGroups = new Map<string, Array<{ student_id: number; idx: number }>>();
-      rankRows.forEach((r, idx) => {
+      // Class rank by group — dense ranking within each class
+      const classGroups = new Map<string, Array<{ student_id: number; total_score: number }>>();
+      for (const r of rankRows) {
         const key = r.class_name || "__unassigned__";
         if (!classGroups.has(key)) classGroups.set(key, []);
-        classGroups.get(key)!.push({ student_id: r.student_id, idx });
-      });
+        classGroups.get(key)!.push({ student_id: r.student_id, total_score: r.total_score });
+      }
       for (const cg of classGroups.values()) {
-        cg.forEach((item, ci) => {
-          const entry = rankMap.get(item.student_id);
-          if (entry) entry.classRank = ci + 1;
+        competitionRank(cg, (r) => r.total_score, (r, rank) => {
+          const entry = rankMap.get(r.student_id);
+          if (entry) entry.classRank = rank;
         });
       }
     }
@@ -563,8 +562,8 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
     const sortScore = useAssigned ? (r: typeof rows[0]) => r.totalAssignedScore : (r: typeof rows[0]) => r.totalRawScore;
     rows.sort((a, b) => sortScore(b) - sortScore(a));
 
-    // Grade rank
-    rows.forEach((r: any, i: number) => { r.totalGradeRank = i + 1; });
+    // Grade rank — dense ranking
+    competitionRank(rows, sortScore, (r: any, rank: number) => { r.totalGradeRank = rank; });
 
     // Class rank
     const classGroups2 = new Map<string, any[]>();
@@ -574,7 +573,7 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
       classGroups2.get(key)!.push(r);
     }
     for (const cg of classGroups2.values()) {
-      cg.forEach((r: any, ci: number) => { r.totalClassRank = ci + 1; });
+      competitionRank(cg, sortScore, (r: any, rank: number) => { r.totalClassRank = rank; });
     }
 
     // Filter by class
@@ -700,8 +699,8 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
       // Sort by total descending
       overviewRows.sort((a, b) => (b["总分"] as number) - (a["总分"] as number));
 
-      // Fill ranks
-      overviewRows.forEach((r, i) => { r["总分年排"] = i + 1; });
+      // Fill ranks — dense ranking
+      competitionRank(overviewRows, (r) => r["总分"] as number, (r, rank) => { r["总分年排"] = rank; });
       const cgMap = new Map<string, typeof overviewRows>();
       for (const r of overviewRows) {
         const key = r["班级"] as string;
@@ -709,7 +708,7 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
         cgMap.get(key)!.push(r);
       }
       for (const cg of cgMap.values()) {
-        cg.forEach((r, ci) => { r["总分班排"] = ci + 1; });
+        competitionRank(cg, (r) => r["总分"] as number, (r, rank) => { r["总分班排"] = rank; });
       }
 
       // Fill per-subject ranks
@@ -720,16 +719,17 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
         const crKey = `${sub}班排`;
 
         const sorted = [...overviewRows].sort((a, b) => (b[rawKey] as number || 0) - (a[rawKey] as number || 0));
-        sorted.forEach((r, i) => { if (r[rawKey] !== "") r[grKey] = i + 1; });
+        const withScore = sorted.filter((r) => r[rawKey] !== "");
+        competitionRank(withScore, (r) => r[rawKey] as number, (r, rank) => { r[grKey] = rank; });
 
-        const classSorted = new Map<string, typeof sorted>();
-        for (const r of sorted) {
+        const classSorted = new Map<string, typeof withScore>();
+        for (const r of withScore) {
           const key = r["班级"] as string;
           if (!classSorted.has(key)) classSorted.set(key, []);
           classSorted.get(key)!.push(r);
         }
         for (const cs of classSorted.values()) {
-          cs.forEach((r, ci) => { if (r[rawKey] !== "") r[crKey] = ci + 1; });
+          competitionRank(cs, (r) => r[rawKey] as number, (r, rank) => { r[crKey] = rank; });
         }
       }
 
@@ -773,28 +773,28 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
         objective_score: number; subjective_score: number;
       }>;
 
-      // Build grade rank
+      // Build grade rank — dense ranking
       const gradeRankMap = new Map<number, number>();
-      scoreRows.forEach((sr, i) => gradeRankMap.set(sr.student_id, i + 1));
+      competitionRank(scoreRows, (r) => r.total_score, (r, rank) => { gradeRankMap.set(r.student_id, rank); });
 
-      // Class rank
+      // Class rank — dense ranking within each class
       const classSorted = db.prepare(`
-        SELECT ss.student_id, c.name as class_name
+        SELECT ss.student_id, ss.total_score, c.name as class_name
         FROM student_scores ss
         LEFT JOIN class_students cs ON cs.student_id = ss.student_id
         LEFT JOIN classes c ON c.id = cs.class_id
         WHERE ss.exam_id = ?
         ORDER BY ss.total_score DESC
-      `).all(m.exam_id) as Array<{ student_id: number; class_name: string | null }>;
+      `).all(m.exam_id) as Array<{ student_id: number; total_score: number; class_name: string | null }>;
       const classRankMap = new Map<number, number>();
-      const cGroups = new Map<string, Array<number>>();
+      const cGroups = new Map<string, Array<{ student_id: number; total_score: number }>>();
       for (const cs of classSorted) {
         const key = cs.class_name || "__unassigned__";
         if (!cGroups.has(key)) cGroups.set(key, []);
-        cGroups.get(key)!.push(cs.student_id);
+        cGroups.get(key)!.push({ student_id: cs.student_id, total_score: cs.total_score });
       }
       for (const cg of cGroups.values()) {
-        cg.forEach((sid, ci) => classRankMap.set(sid, ci + 1));
+        competitionRank(cg, (r) => r.total_score, (r, rank) => { classRankMap.set(r.student_id, rank); });
       }
 
       // Per-student map of question scores
