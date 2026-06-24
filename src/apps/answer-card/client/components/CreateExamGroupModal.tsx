@@ -443,7 +443,7 @@ const selectStyle: React.CSSProperties = {
 };
 
 const primaryBtnStyle: React.CSSProperties = {
-  background: "var(--brand)", color: "var(--surface)", border: "none",
+  background: "var(--brand)", color: "#fff", border: "none",
   borderRadius: 6, padding: "8px 20px", fontSize: 13, cursor: "pointer",
   fontWeight: 500
 };
