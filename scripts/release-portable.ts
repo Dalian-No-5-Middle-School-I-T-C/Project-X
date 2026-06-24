@@ -12,8 +12,8 @@ const version = packageJson.version;
 const arch = "x64";
 
 const variants: Array<{ id: ReleaseVariant; productName: string; uploadName: string }> = [
-  { id: "student", productName: "Project-X 学生端", uploadName: `Project-X-学生端-${version}-${arch}.exe` },
-  { id: "teacher", productName: "Project-X 教师端", uploadName: `Project-X-教师端-${version}-${arch}.exe` }
+  { id: "student", productName: "Project-X 学生端", uploadName: `Project-X-student-${version}-${arch}.exe` },
+  { id: "teacher", productName: "Project-X 教师端", uploadName: `Project-X-teacher-${version}-${arch}.exe` }
 ];
 
 function command(name: string): string {

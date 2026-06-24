@@ -124,8 +124,8 @@
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 下载 **便携版 EXE（开箱即用，无需安装）**：
 
 ```
-Project-X-学生端-1.4.8-x64.exe    # 学生查看成绩
-Project-X-教师端-1.4.8-x64.exe    # 教师设计/阅卷/分析/账号
+Project-X-student-1.4.8-x64.exe    # 学生查看成绩
+Project-X-teacher-1.4.8-x64.exe    # 教师设计/阅卷/分析/账号
 ```
 
 > 64 位 Windows 直接双击运行即可。首次启动会自动初始化本机数据库，默认账号 `admin` / `admin123`。学生端仅查看成绩；教师端含答题卡设计、阅卷判分、成绩分析、大考合集等完整功能。
