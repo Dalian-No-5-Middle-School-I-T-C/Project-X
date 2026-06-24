@@ -68,6 +68,28 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+/** Assign dense ranks (1,2,2,4,5...) by a score extractor.
+ *  Assumes rows are already sorted DESC by score. */
+function denseRank<T>(
+  rows: T[],
+  score: (row: T) => number,
+  setRank: (row: T, rank: number) => void
+): void {
+  let prevScore: number | null = null;
+  let prevRank = 0;
+  for (let i = 0; i < rows.length; i++) {
+    const s = score(rows[i]);
+    if (prevScore !== null && s === prevScore) {
+      setRank(rows[i], prevRank);
+    } else {
+      const rank = i + 1;
+      setRank(rows[i], rank);
+      prevRank = rank;
+    }
+    prevScore = s;
+  }
+}
+
 /** 按 10 分一段动态生成分数段，末段截止于满分 */
 function generateDistributionRanges(fullScore: number): Array<{ range: string; min: number; max: number }> {
   const step = 10;
@@ -371,9 +393,7 @@ export class AnalysisRepository {
     }
 
     rows.sort((a, b) => b.totalScore - a.totalScore || a.studentNumber.localeCompare(b.studentNumber));
-    rows.forEach((row, index) => {
-      row.gradeRank = index + 1;
-    });
+    denseRank(rows, (r) => r.totalScore, (r, rank) => { r.gradeRank = rank; });
 
     const byClass = new Map<string, CrossExamTotalRow[]>();
     for (const row of rows) {
@@ -382,11 +402,8 @@ export class AnalysisRepository {
       byClass.get(key)!.push(row);
     }
     for (const classRows of byClass.values()) {
-      classRows
-        .sort((a, b) => b.totalScore - a.totalScore || a.studentNumber.localeCompare(b.studentNumber))
-        .forEach((row, index) => {
-          row.classRank = index + 1;
-        });
+      classRows.sort((a, b) => b.totalScore - a.totalScore || a.studentNumber.localeCompare(b.studentNumber));
+      denseRank(classRows, (r) => r.totalScore, (r, rank) => { r.classRank = rank; });
     }
     rows.sort((a, b) => a.gradeRank - b.gradeRank);
 
@@ -611,12 +628,12 @@ export class AnalysisRepository {
       objective_score: number; subjective_score: number; low_score_count: number; question_count: number;
     }>;
 
-    return rows.map((row, idx) => {
+    const items = rows.map((row, idx) => {
       const questionCount = row.question_count ?? 0;
       const lowScoreCount = row.low_score_count ?? 0;
       const errorRate = questionCount > 0 ? Math.round((lowScoreCount / questionCount) * 100) : 0;
       return {
-        rank: idx + 1,
+        rank: 0,
         studentNumber: row.student_number,
         studentName: row.name,
         totalScore: row.total_score,
@@ -628,6 +645,8 @@ export class AnalysisRepository {
         errorRateLevel: errorRateLevel(errorRate)
       };
     });
+    denseRank(items, (r) => r.totalScore, (r, rank) => { r.rank = rank; });
+    return items;
   }
 
   getQuestionAnalysis(examId: number, classId?: number): QuestionAnalysisItem[] {
@@ -724,11 +743,12 @@ export class AnalysisRepository {
       qsLookup.get(qs.student_id)!.set(qs.question_number, qs.score);
     }
 
-    // Grade rank (already DESC by total_score)
+    // Grade rank (already DESC by total_score) — dense ranking (same score, same rank)
     type RankedRow = StudentRow & { gradeRank: number; classRank: number | "" };
-    const graded: RankedRow[] = allStudents.map((s, i) => ({
-      ...s, gradeRank: i + 1, classRank: ""
+    const graded: RankedRow[] = allStudents.map((s) => ({
+      ...s, gradeRank: 0, classRank: ""
     }));
+    denseRank(graded, (r) => r.total_score, (r, rank) => { r.gradeRank = rank; });
 
     // Class rank: group by class, sort each group by total DESC
     const classGroups = new Map<string, RankedRow[]>();
@@ -738,8 +758,8 @@ export class AnalysisRepository {
       classGroups.get(key)!.push(s);
     }
     for (const group of classGroups.values()) {
-      // already sorted by total_score DESC from the original query
-      group.forEach((s, i) => (s.classRank = i + 1));
+      // already sorted by total_score DESC from the original query — dense ranking
+      denseRank(group, (r) => r.total_score, (r, rank) => { r.classRank = rank; });
     }
 
     // Filter by classId if specified
@@ -845,8 +865,9 @@ export class AnalysisRepository {
       };
     }
 
-    // Grade rank (already sorted DESC)
-    const gradeRanked = allStudents.map((s, i) => ({ ...s, gradeRank: i + 1 }));
+    // Grade rank (already sorted DESC) — dense ranking
+    const gradeRanked = allStudents.map((s) => ({ ...s, gradeRank: 0, classRank: 0 }));
+    denseRank(gradeRanked, (r) => r.total_score, (r, rank) => { r.gradeRank = rank; });
 
     // Class rank
     const classGroups = new Map<string, typeof gradeRanked>();
@@ -856,7 +877,7 @@ export class AnalysisRepository {
       classGroups.get(key)!.push(s);
     }
     for (const group of classGroups.values()) {
-      group.forEach((s, i) => ((s as any).classRank = i + 1));
+      denseRank(group, (r: any) => r.total_score, (r: any, rank: number) => { r.classRank = rank; });
     }
 
     // Filter by class
