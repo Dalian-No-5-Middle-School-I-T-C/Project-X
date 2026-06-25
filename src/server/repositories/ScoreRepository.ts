@@ -1,5 +1,6 @@
 import { getDatabase } from "../db";
 import Database from "better-sqlite3";
+import type { StudentTrendPoint } from "../../shared/types";
 
 export interface StudentExamScore {
   exam_id: number;
@@ -84,6 +85,56 @@ export class ScoreRepository {
         ORDER BY score_type ASC, question_number ASC
       `)
       .all(studentId, examId) as StudentQuestionScore[];
+  }
+
+  /**
+   * 获取某学生的成绩趋势数据（含班级/年级均分对比）。
+   */
+  getStudentTrendData(studentId: number): StudentTrendPoint[] {
+    const rows = this.db
+      .prepare(`
+        SELECT
+          ss.exam_id AS examId,
+          e.name AS examName,
+          e.subject,
+          COALESCE(e.start_time, e.end_time, e.created_at) AS examTime,
+          ss.total_score AS totalScore,
+          ROUND(
+            (SELECT AVG(s2.total_score) FROM student_scores s2
+             WHERE s2.exam_id = ss.exam_id
+               AND cs.class_id IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM class_students cs2
+                 WHERE cs2.student_id = s2.student_id AND cs2.class_id = cs.class_id
+               )),
+            1
+          ) AS classAvg,
+          ROUND(
+            (SELECT AVG(s3.total_score) FROM student_scores s3 WHERE s3.exam_id = ss.exam_id),
+            1
+          ) AS gradeAvg,
+          (SELECT COUNT(*) FROM student_scores s4 WHERE s4.exam_id = ss.exam_id) AS classSize,
+          (
+            SELECT COUNT(*) + 1 FROM student_scores s5
+            WHERE s5.exam_id = ss.exam_id AND s5.total_score > ss.total_score
+          ) AS rank
+        FROM student_scores ss
+        JOIN exams e ON e.id = ss.exam_id
+        LEFT JOIN (
+          SELECT student_id, MIN(class_id) AS class_id FROM class_students GROUP BY student_id
+        ) cs ON cs.student_id = ss.student_id
+        WHERE ss.student_id = ?
+        ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC
+      `)
+      .all(studentId) as Array<Omit<StudentTrendPoint, "percentile">>;
+
+    return rows.map((r) => ({
+      ...r,
+      percentile:
+        r.classSize > 1 && r.rank != null
+          ? Math.round(((r.classSize - r.rank) / (r.classSize - 1)) * 1000) / 10
+          : null as unknown as number
+    })) as StudentTrendPoint[];
   }
 
   /**

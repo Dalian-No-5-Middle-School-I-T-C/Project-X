@@ -4685,3 +4685,320 @@ body.has-bg-image::after {
   font-size: 14px;
   font-weight: 600;
 }
+
+/* ── 学生端新功能样式 ── */
+
+/* Overview cards */
+.student-overview-cards {
+  display: flex;
+  gap: 10px;
+  padding: 12px 0;
+  flex-wrap: wrap;
+}
+.student-stat-card {
+  flex: 1;
+  min-width: 100px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.student-stat-value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.student-stat-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.student-stat-card.highlight {
+  border-color: var(--success);
+  background: color-mix(in srgb, var(--success) 8%, transparent);
+}
+.student-stat-card.warn {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+}
+.student-stat-card.highlight .student-stat-value { color: var(--success); }
+.student-stat-card.warn .student-stat-value { color: var(--danger); }
+
+/* Tab navigation */
+.student-tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--line-strong);
+  margin-bottom: 12px;
+}
+.student-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  background: none;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+  margin-bottom: -1px;
+}
+.student-tab:hover {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+.student-tab.active {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+}
+.student-tab-content {
+  min-height: 200px;
+}
+
+/* Chart section */
+.student-chart-section {
+  padding: 0;
+}
+.student-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.student-chart-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+.student-subject-filters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.student-subject-tag {
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--line-strong);
+  background: none;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  transition: all 0.15s;
+}
+.student-subject-tag:hover {
+  border-color: var(--text-secondary);
+}
+.student-subject-tag.active {
+  font-weight: 500;
+}
+.student-chart-toggles {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.chart-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.chart-toggle input {
+  margin: 0;
+}
+.student-chart-canvas {
+  height: 320px;
+  padding: 10px 0;
+  position: relative;
+}
+.student-chart-canvas.radar {
+  height: 360px;
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+/* Subject comparison */
+.student-subject-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+.weak-subject-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-weight: 500;
+  font-size: 12px;
+}
+.student-subject-table {
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  overflow: hidden;
+  margin-top: 12px;
+}
+.student-subject-table-head,
+.student-subject-table-row {
+  display: grid;
+  grid-template-columns: 1fr 80px 80px 80px 70px 60px;
+  padding: 8px 12px;
+  font-size: 12px;
+  align-items: center;
+}
+.student-subject-table-head {
+  background: var(--surface);
+  font-weight: 500;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--line-strong);
+}
+.student-subject-table-row {
+  border-bottom: 1px solid var(--line-tertiary);
+}
+.student-subject-table-row:last-child {
+  border-bottom: none;
+}
+.student-subject-table-row.weak {
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+.student-subject-table-row .subject-name {
+  font-weight: 500;
+}
+.gap-negative { color: var(--danger); }
+.gap-positive { color: var(--success); }
+.trend-up { color: var(--success); }
+.trend-down { color: var(--danger); }
+.trend-stable { color: var(--text-secondary); }
+
+/* AI section */
+.student-ai-provider-section {
+  margin-bottom: 12px;
+}
+.student-ai-mode-select {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+.student-ai-selectors {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.student-ai-selectors select {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  font-size: 13px;
+  background: var(--surface);
+  height: 36px;
+}
+.student-ai-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 6px;
+}
+.student-ai-form {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.student-ai-form-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.student-ai-form-row select,
+.student-ai-form-row input {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  font-size: 13px;
+  background: var(--surface);
+  height: 36px;
+  box-sizing: border-box;
+}
+.student-ai-form-row input[type="password"] {
+  font-family: inherit;
+}
+.student-ai-form-row .primary-button {
+  white-space: nowrap;
+}
+.student-ai-provider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.student-ai-provider-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line-tertiary);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.student-ai-provider-item .ai-provider-models {
+  flex: 1;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+/* Inline AI analysis for exam detail */
+.ai-exam-inline {
+  margin: 8px 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ai-exam-inline .ghost-button {
+  justify-content: flex-start;
+}
+.ai-inline-error {
+  font-size: 11px;
+  color: var(--danger);
+}
+.ai-exam-inline-result {
+  background: color-mix(in srgb, var(--brand) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--brand) 20%, transparent);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.ai-exam-inline-result p {
+  margin: 0 0 4px;
+}
+.ai-exam-weak, .ai-exam-suggest {
+  margin-top: 2px;
+}
+.ai-exam-weak span, .ai-exam-suggest span {
+  font-weight: 500;
+}
+
+/* Ensure chart.js canvas respects container */
+.student-chart-canvas canvas {
+  max-height: 100% !important;
+  max-width: 100% !important;
+}
