@@ -75,6 +75,20 @@
 - API: `GET/POST/DELETE /api/analysis/cross-exam/groups`, `POST /api/analysis/cross-exam/total`
 - DB: `exam_groups` 表新增 `source`/`start_date`/`end_date` 字段兼容两种用途
 
+### 备案合规
+- **ICP 备案信息**：登录页底部新增备案号展示（辽ICP备2026013340号 + 辽公网安备21020402001085号），`BeianFooter.tsx` 组件含工信部/公安备案双链接
+
+### 性能优化
+- **毛玻璃性能修复**：大量 `backdrop-filter: blur()` 改为 `opacity` 叠加，消除滚动/切换页面时的明显卡顿感（#115）
+
+### Bug 修复
+- **暗色主题残余硬编码**：CreateExamGroupModal、GroupExportModal 内联白色背景改为 CSS 变量，修复暗色模式下弹窗白块（#113）
+
+### 开发者工具
+- **Demo 测试数据集**：新增 `testdata/demo-exams/`，含可导入备份 ZIP、CSV 片段、种子脚本和验证脚本，覆盖单科/大考/跨考/并列排名/缺考/名次变化/小分导出等全场景（#116）
+
+### 教师角色细化
+- **组长/科任/班主任严格区分**：后端数据范围过滤逻辑完善，真正实现 `subject_teacher`（本科目本班）、`head_teacher`（本班全科）、`grade_leader`（全年全科）三级隔离；修复相关数据库查询值名问题（#114）
 ### 版本
 - v1.4.7 → v1.5.0
 
