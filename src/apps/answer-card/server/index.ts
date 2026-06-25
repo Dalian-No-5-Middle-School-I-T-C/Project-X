@@ -11,6 +11,7 @@ import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
 import { AnalysisRepository } from "../../../server/repositories/AnalysisRepository";
+import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
 import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
 import type { AssignedFormula } from "../../../shared/types";
@@ -416,6 +417,18 @@ function requireExamAccess(req: express.Request, res: express.Response, next: ex
     res.status(400).json({ message: "缺少 examId" });
     return;
   }
+
+  // 学生只能访问自己有成绩的考试
+  if (req.user.role_name === "student") {
+    const scoreRepo = new ScoreRepository();
+    if (scoreRepo.hasScore(req.user.id, examId)) {
+      next();
+      return;
+    }
+    res.status(403).json({ message: "权限不足：你未参加该考试" });
+    return;
+  }
+
   const visibleIds = getVisibleExamIds(req.user);
   if (visibleIds === null) {
     next(); // 全部可见

@@ -4,8 +4,7 @@ import { ScoreRepository } from "../repositories/ScoreRepository";
 import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS } from "../auth/permissions";
-import { getDatabase } from "../db";
-import type { SubjectWeaknessItem, StudentTrendPoint, AiAnalysisResponse } from "../../shared/types";
+import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
 
 /**
  * 成绩查询 API
@@ -99,32 +98,12 @@ router.get("/me/subject-comparison", (req: Request, res: Response) => {
 
 // ── 学生个人 AI 整体分析 ──
 
-const LLM_CLIENT_BASE = process.env.LLM_CLIENT_URL || "http://127.0.0.1:8766";
-const LLM_INTERNAL_KEY = process.env.LLM_INTERNAL_KEY || "";
-
-/** POST /api/scores/me/ai-analysis — 学生整体成绩 AI 分析 */
+/** POST /api/scores/me/ai-analysis — 学生整体成绩分析 */
 router.post("/me/ai-analysis", async (req: Request, res: Response) => {
   const trends = scoreRepo.getStudentTrendData(req.user!.id);
   if (trends.length === 0) {
     res.status(400).json({ message: "暂无成绩数据可分析" });
     return;
-  }
-
-  // Build provider override from user config if provided
-  const providerId = req.body?.providerId ? Number(req.body.providerId) : undefined;
-  let providerOverride: Record<string, unknown> | undefined;
-  if (providerId && Number.isFinite(providerId)) {
-    const db = getDatabase();
-    const prov = db.prepare(
-      "SELECT * FROM ai_providers WHERE id = ? AND user_id = ?"
-    ).get(providerId, req.user!.id) as Record<string, unknown> | undefined;
-    if (prov) {
-      providerOverride = {
-        provider_type: prov.provider_type,
-        base_url: prov.base_url,
-        api_key: prov.api_key
-      };
-    }
   }
 
   // Build student overview data
@@ -136,65 +115,76 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
   }
 
   const subjectSummaries = Array.from(bySubject.entries()).map(([subject, points]) => {
-    const avg = Math.round(points.reduce((s, p) => s + p.totalScore, 0) / points.length * 10) / 10;
+    const scores = points.map((p) => p.totalScore);
+    const avg = Math.round(scores.reduce((s, p) => s + p, 0) / points.length * 10) / 10;
     const classAvg = Math.round(points.reduce((s, p) => s + p.classAvg, 0) / points.length * 10) / 10;
-    return { subject, examCount: points.length, avgScore: avg, avgClassAvg: classAvg, gap: Math.round((avg - classAvg) * 10) / 10 };
+    const gap = Math.round((avg - classAvg) * 10) / 10;
+    const best = Math.max(...scores);
+    const worst = Math.min(...scores);
+    const sorted = [...points].sort((a, b) => a.examTime.localeCompare(b.examTime));
+    let trend: "up" | "down" | "stable" = "stable";
+    if (sorted.length >= 2) {
+      const last = sorted[sorted.length - 1].totalScore;
+      const prev = sorted[sorted.length - 2].totalScore;
+      if (last - prev > 3) trend = "up";
+      else if (prev - last > 3) trend = "down";
+    }
+    return { subject, examCount: points.length, avgScore: avg, avgClassAvg: classAvg, gapToClass: gap, bestScore: best, worstScore: worst, trend };
   });
 
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
-    const response = await fetch(`${LLM_CLIENT_BASE}/analysis/run`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(LLM_INTERNAL_KEY ? { Authorization: `Bearer ${LLM_INTERNAL_KEY}` } : {}),
-      },
-      body: JSON.stringify({
-        examId: 0,
-        studentId: req.user!.id,
-        studentName: req.user!.name,
-        locale: "zh-CN",
-        model: typeof req.body?.model === "string" ? req.body.model : undefined,
-        providerOverride: providerOverride ?? undefined,
-        studentAnalysis: true,
-        subjectSummaries,
-        totalExams: trends.length,
-        recentExams: trends.slice(-5).map((t) => ({
-          name: t.examName,
-          subject: t.subject,
-          score: t.totalScore,
-          classAvg: t.classAvg,
-          gradeAvg: t.gradeAvg,
-          rank: t.rank,
-          percentile: t.percentile,
-        })),
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+  // Sort by weakness (lowest gap first)
+  subjectSummaries.sort((a, b) => a.gapToClass - b.gapToClass);
+  const weakSubject = subjectSummaries.length > 0 ? subjectSummaries[0].subject : null;
 
-    if (!response.ok) {
-      let message = `LLM service returned ${response.status}`;
-      try {
-        const body = await response.json() as { detail?: string; message?: string };
-        message = body.detail || body.message || message;
-      } catch {
-        const text = await response.text().catch(() => "");
-        if (text) message = text;
-      }
-      res.status(response.status >= 400 && response.status < 500 ? response.status : 502).json({ message });
-      return;
-    }
+  // Build analysis text from the data (no LLM call — llmclient doesn't support student-scoped analysis yet)
+  const strongSubjects = subjectSummaries.filter((s) => s.gapToClass > 0).map((s) => s.subject);
+  const weakSubjects = subjectSummaries.filter((s) => s.gapToClass < 0).map((s) => `${s.subject}（低于均分 ${Math.abs(s.gapToClass)} 分）`);
+  const improvingSubjects = subjectSummaries.filter((s) => s.trend === "up").map((s) => s.subject);
+  const decliningSubjects = subjectSummaries.filter((s) => s.trend === "down").map((s) => s.subject);
 
-    res.json(await response.json());
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      res.status(504).json({ message: "AI 服务请求超时。" });
-      return;
-    }
-    res.status(503).json({ message: `无法连接 AI 服务: ${error instanceof Error ? error.message : String(error)}` });
+  const weakPoints: string[] = [];
+  const suggestions: string[] = [];
+  const caveats: string[] = [];
+
+  if (weakSubjects.length > 0) {
+    weakPoints.push(`薄弱学科：${weakSubjects.join("、")}。建议在这些科目上投入更多复习时间。`);
+    suggestions.push(`重点提升 ${weakSubjects[0].split("（")[0]}，可针对性做专项练习。`);
   }
+  if (decliningSubjects.length > 0) {
+    weakPoints.push(`成绩下滑学科：${decliningSubjects.join("、")}。最近一次考试分数有所下降，需要关注。`);
+    suggestions.push(`回顾 ${decliningSubjects.join("、")} 近期错题，分析失分原因。`);
+  }
+  if (strongSubjects.length > 0) {
+    suggestions.push(`保持 ${strongSubjects.join("、")} 的优势，继续巩固练习。`);
+  }
+  if (subjectSummaries.length > 0) {
+    const avgAll = Math.round(subjectSummaries.reduce((s, x) => s + x.avgScore, 0) / subjectSummaries.length * 10) / 10;
+    const avgGap = Math.round(subjectSummaries.reduce((s, x) => s + x.gapToClass, 0) / subjectSummaries.length * 10) / 10;
+    const overall = avgGap >= 0
+      ? `整体表现良好，各科平均 ${avgAll} 分，高于班级均分 ${avgGap} 分。`
+      : `整体需要加油，各科平均 ${avgAll} 分，低于班级均分 ${Math.abs(avgGap)} 分。`;
+    caveats.push(overall);
+  }
+  caveats.push(`共参与 ${trends.length} 场考试，涵盖 ${subjectSummaries.length} 个学科。`);
+  caveats.push("本报告为系统基于成绩数据自动生成，仅供参考。若需更深入的分析，请配置个人 AI 服务商 API Key 后使用。");
+
+  res.json({
+    generatedAt: new Date().toISOString(),
+    model: "server-side-v1",
+    report: {
+      overallJudgement: weakSubject
+        ? `需重点关注 ${weakSubject}，这是当前最薄弱学科`
+        : "各科成绩较为均衡",
+      distributionInsight: `基于最近 ${trends.length} 场考试的成绩数据统计。`,
+      weakPoints,
+      reviewRisks: [],
+      teachingSuggestions: suggestions,
+      nextActions: [],
+      questionActions: [],
+      caveats,
+    },
+    toolCalls: [],
+  });
 });
 
 // ── 教师/管理员代查 ──────────────────────────────────────
