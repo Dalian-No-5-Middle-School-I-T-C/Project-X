@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { BookOpen, LogIn, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
+import { BeianFooter } from "./BeianFooter";
 import { UserGuideModal } from "./UserGuideModal";
 
 export function LoginPage() {
@@ -86,6 +87,7 @@ export function LoginPage() {
           </button>
         </form>
       </div>
+      <BeianFooter className="login-beian-footer" />
       <UserGuideModal open={showGuide} onClose={() => setShowGuide(false)} />
     </div>
   );
