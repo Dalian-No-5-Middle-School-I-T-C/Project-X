@@ -1,6 +1,6 @@
 # 赞助页面说明
 
-> **适用版本**: v1.3.0 及以上
+> **适用版本**: v1.5.0 及以上
 > **关联 Issue**: [#11 赞助页面](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/issues/11)  
 > **关联文档**: [`CHANGELOG.md`](./CHANGELOG.md) · [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 

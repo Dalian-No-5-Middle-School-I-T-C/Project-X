@@ -265,8 +265,8 @@ def run_analysis(
     # If provider_override is given, treat as OpenAI-compatible unless explicitly gemini
     effective_provider = provider_override.get("provider_type", model.provider) if provider_override else model.provider
 
-    if effective_provider == "gemini" and not provider_override:
-        return run_gemini_analysis(model, exam_id, class_id, locale)
-    # All other providers (openai, deepseek, haqimi, custom) are OpenAI-compatible
+    if effective_provider == "gemini":
+        return run_gemini_analysis(model, exam_id, class_id, locale, provider_override)
+    # All other providers (openai, deepseek, custom) are OpenAI-compatible
     return run_openai_compatible_analysis(model, exam_id, class_id, locale, provider_override)
 

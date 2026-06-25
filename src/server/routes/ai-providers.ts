@@ -52,11 +52,12 @@ function normalizeBaseUrl(url: string, providerType: string): string {
 // ── 创建服务商 ────────────────────────────────────
 router.post("/", (req: Request, res: Response) => {
   const { name, providerType, baseUrl, apiKey, models } = req.body ?? {};
-  if (!name || !providerType || !baseUrl || !apiKey) {
-    res.status(400).json({ message: "缺少必要参数: name, providerType, baseUrl, apiKey" });
+  const needsBaseUrl = providerType !== "gemini";
+  if (!name || !providerType || !apiKey || (needsBaseUrl && !baseUrl)) {
+    res.status(400).json({ message: needsBaseUrl ? "缺少必要参数: name, providerType, baseUrl, apiKey" : "缺少必要参数: name, providerType, apiKey (Gemini 无需 Base URL)" });
     return;
   }
-  const normalizedUrl = normalizeBaseUrl(baseUrl, providerType);
+  const normalizedUrl = needsBaseUrl ? normalizeBaseUrl(baseUrl, providerType) : "";
   const db = getDatabase();
   const result = db.prepare(`
     INSERT INTO ai_providers (user_id, name, provider_type, base_url, api_key, models)

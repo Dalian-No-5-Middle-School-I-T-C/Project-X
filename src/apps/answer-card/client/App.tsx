@@ -11,6 +11,7 @@ import {
   FileDown,
   FolderOpen,
   ImagePlus,
+  Layers,
   ListPlus,
   Plus,
   Save,
@@ -33,6 +34,9 @@ import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import { ExamSelectPage } from "./components/ExamSelectPage";
 import { ScoreDetailPage } from "./components/ScoreDetailPage";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
+import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
+import { ExamGroupDetailPage } from "./components/ExamGroupDetailPage";
+import { GroupExportModal } from "./components/GroupExportModal";
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -109,6 +113,13 @@ type CardDeleteConflict = {
 type ExamDeleteTarget = {
   exams: ExamRecord[];
   deleteLinkedCards: boolean;
+};
+
+type GroupDeleteTarget = {
+  groupId: number;
+  groupName: string;
+  memberCount: number;
+  deleteExams: boolean;
 };
 
 type AutoSaveState = "idle" | "dirty" | "saving" | "saved" | "error";
@@ -391,6 +402,8 @@ function App() {
   const [analysisRanking, setAnalysisRanking] = useState<StudentRankingItem[]>([]);
   const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
   const [exams, setExams] = useState<ExamRecord[]>([]);
+  // Exam groups
+  const [examGroups, setExamGroups] = useState<Array<{ id: number; name: string; tag: string | null; grade_name: string | null; member_count: number; has_results: number; created_at: string }>>([]);
   const [showCreateExam, setShowCreateExam] = useState(false);
   const [showImportCardModal, setShowImportCardModal] = useState(false);
   const [importCardData, setImportCardData] = useState<{ card?: { title?: string; subject?: string; subjectLabel?: string; examDate?: string } } | null>(null);
@@ -398,16 +411,25 @@ function App() {
   const [newExamSubject, setNewExamSubject] = useState("");
   const [newExamCardId, setNewExamCardId] = useState("");
   const [selectedExamIds, setSelectedExamIds] = useState<Set<number>>(new Set());
+  // Exam groups
+  const [examManageMode, setExamManageMode] = useState<"single" | "group">("single");
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [analysisGroupId, setAnalysisGroupId] = useState<number | null>(null);
+  const [showGroupExport, setShowGroupExport] = useState(false);
   const [analysisTab, setAnalysisTab] = useState<"select" | "view" | "trend" | "detail">("select");
   const [selectedAnalysisExamId, setSelectedAnalysisExamId] = useState<number | null>(null);
   const [showNewCardModal, setShowNewCardModal] = useState(false);
   const [cardDeleteConflict, setCardDeleteConflict] = useState<CardDeleteConflict | null>(null);
   const [examDeleteTarget, setExamDeleteTarget] = useState<ExamDeleteTarget | null>(null);
+  const [groupDeleteTarget, setGroupDeleteTarget] = useState<GroupDeleteTarget | null>(null);
   const [assignedFormulaExamId, setAssignedFormulaExamId] = useState<number | null>(null);
   const [showBg, setShowBg] = useState(0); // opacity 0~1, 0=关闭
   const [pdfWarning, setPdfWarning] = useState<PdfWarningState | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     return (localStorage.getItem("projectx-theme") as "light" | "dark") || "light";
+  });
+  const [darkModeEnabled, setDarkModeEnabled] = useState(() => {
+    return localStorage.getItem("projectx-darkmode-enabled") === "true";
   });
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
@@ -501,15 +523,43 @@ function App() {
 
   // 日间/夜间模式切换
   useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("projectx-theme", theme);
-  }, [theme]);
+    const effectiveTheme = darkModeEnabled ? theme : "light";
+    document.documentElement.setAttribute("data-theme", effectiveTheme);
+    localStorage.setItem("projectx-theme", effectiveTheme);
+    localStorage.setItem("projectx-darkmode-enabled", String(darkModeEnabled));
+  }, [theme, darkModeEnabled]);
 
   useEffect(() => {
     return () => {
       gradingProgressSourceRef.current?.close();
     };
   }, []);
+
+  // 全局 ESC 返回上一级 (v1.4.7)
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key !== "Escape") return;
+      // 检查是否有输入框聚焦，跳过（让用户正常退出输入）
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      // 检查是否有 modal overlay 打开（modal 自行处理 ESC）
+      if (document.querySelector(".modal-overlay")) return;
+
+      // 成绩分析子页 → 返回考试选择
+      if (mode === "analysis" && analysisTab !== "select") {
+        setSelectedAnalysisExamId(null);
+        setAnalysisTab("select");
+        return;
+      }
+      // 赞助/使用说明 → 返回上一模式
+      if (mode === "sponsor" || mode === "guide") {
+        setMode(previousModeRef.current);
+        return;
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mode, analysisTab]);
 
   // 进入阅卷模式时预加载考试列表
   useEffect(() => {
@@ -527,6 +577,7 @@ function App() {
 
   function acceptSavedCard(nextCard: AnswerCard | null, state: AutoSaveState = "idle") {
     clearAutoSaveTimer();
+    if (nextCard) autoNameBlocks(nextCard);
     editRevisionRef.current += 1;
     savedRevisionRef.current = editRevisionRef.current;
     latestCardRef.current = nextCard;
@@ -561,6 +612,7 @@ function App() {
       const stillCurrent = latestCardRef.current?.id === snapshot.id;
       const noNewerEdits = editRevisionRef.current === revision;
       if (stillCurrent && noNewerEdits) {
+        autoNameBlocks(saved);
         latestCardRef.current = saved;
         savedRevisionRef.current = revision;
         setCard(saved);
@@ -915,11 +967,48 @@ function App() {
     if (!card) return;
     const draft = cloneCard(card);
     mutator(draft);
+    // v1.4.7: 自动为题块生成序号标题
+    autoNameBlocks(draft);
     editRevisionRef.current += 1;
     latestCardRef.current = draft;
     setCard(draft);
     setAutoSaveState("dirty");
     scheduleAutoSave();
+  }
+
+  /** 根据题块顺序和类型自动生成标题，如 "一. 单选（10题 50分）" */
+  function autoNameBlocks(draft: AnswerCard) {
+    const digits = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+    const tens = ["", "十", "二十", "三十", "四十", "五十", "六十", "七十", "八十", "九十"];
+    function toChinese(n: number): string {
+      if (n < 1 || n > 100) return String(n);
+      if (n < 10) return digits[n];
+      if (n < 20) return `十${n === 10 ? "" : digits[n % 10]}`;
+      return `${tens[Math.floor(n / 10)]}${n % 10 === 0 ? "" : digits[n % 10]}`;
+    }
+    const modeName: Record<string, string> = {
+      single: "单选", multiple: "多选", indeterminate: "不定项"
+    };
+    let index = 0;
+    for (const block of draft.bodyBlocks) {
+      if (block.type === "objective") {
+        const obj = block as ObjectiveBlock;
+        const typeName = modeName[obj.mode] ?? "客观题";
+        const prefix = toChinese(index + 1);
+        const count = obj.questionCount ?? 0;
+        const total = count * (obj.scorePerQuestion ?? 0);
+        block.title = `${prefix}、${typeName}（${count}题 ${total}分）`;
+      } else if (block.type === "subjective") {
+        const sub = block as SubjectiveBlock;
+        const isFillBlank = sub.questions.length > 0 && sub.questions[0]?.style === "manual_score_grid" && sub.questions.every((q) => q.kind === "blank");
+        const typeName = isFillBlank ? "填空题" : "解答题";
+        const prefix = toChinese(index + 1);
+        const count = sub.questions.length;
+        const total = sub.questions.reduce((sum, q) => sum + (q.score || 0), 0);
+        block.title = `${prefix}、${typeName}（${count}题 ${total}分）`;
+      }
+      index++;
+    }
   }
 
   function updateBlock(blockId: string, mutator: (block: BodyBlock) => void) {
@@ -1126,6 +1215,15 @@ function App() {
     }
   }
 
+  async function loadExamGroups() {
+    try {
+      const data = await fetchJson<Array<{ id: number; name: string; tag: string | null; grade_name: string | null; member_count: number; has_results: number; created_at: string }>>("/api/exam-groups");
+      setExamGroups(data);
+    } catch {
+      setExamGroups([]);
+    }
+  }
+
   async function loadAnalysis(examId: number, classId?: string) {
     setAnalysisExamId(examId);
     const cidParam = classId ? `?classId=${classId}` : "";
@@ -1304,7 +1402,7 @@ function App() {
               </button>
               )}
               {canManageExams && (
-              <button className={mode === "exam-manage" ? "active" : ""} onClick={() => void switchMode("exam-manage", loadExams)} type="button">
+              <button className={mode === "exam-manage" ? "active" : ""} onClick={() => void switchMode("exam-manage", async () => { await loadExams(); await loadExamGroups(); })} type="button">
                 <ClipboardList size={16} /> 考试管理
               </button>
               )}
@@ -1329,6 +1427,7 @@ function App() {
               </button>
               )}
             </div>
+            {darkModeEnabled && (
             <button
               className="theme-toggle"
               type="button"
@@ -1354,7 +1453,10 @@ function App() {
                 </svg>
               )}
             </button>
+            )}
             <AccountMenu
+              darkModeEnabled={darkModeEnabled}
+              setDarkModeEnabled={setDarkModeEnabled}
               onOpenSponsor={() => {
                 const previous = mode;
                 void switchMode("sponsor", () => {
@@ -1489,12 +1591,18 @@ function App() {
         </div>
         <div className={`main-grid exam-manage-grid ${mode === "exam-manage" ? "" : "hidden-panel"}`}>
           <section className="preview-panel" style={{ gridColumn: "1 / -1", padding: 24, overflowY: "auto" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
               <strong style={{ fontSize: 16 }}>考试管理</strong>
-              <button className="primary-button" onClick={() => setShowCreateExam(!showCreateExam)}>
-                <Plus size={16} /> 新建考试
-              </button>
-              {selectedExamIds.size > 0 && (
+              {examManageMode === "single" ? (
+                <button className="primary-button" onClick={() => setShowCreateExam(!showCreateExam)}>
+                  <Plus size={16} /> 新建考试
+                </button>
+              ) : (
+                <button className="primary-button" onClick={() => setShowCreateGroup(true)}>
+                  <Plus size={16} /> 新建大考
+                </button>
+              )}
+              {examManageMode === "single" && selectedExamIds.size > 0 && (
                 <button
                   className="ghost-button"
                   style={{ color: "var(--brand)" }}
@@ -1506,12 +1614,26 @@ function App() {
                   <Trash2 size={16} /> 删除选中 ({selectedExamIds.size})
                 </button>
               )}
-              {exams.length > 0 && (
-                <span style={{ marginLeft: "auto", fontSize: 13, color: "var(--muted)" }}>共 {exams.length} 个考试</span>
+              {(examManageMode === "single" ? exams.length : examGroups.length) > 0 && (
+                <span style={{ fontSize: 13, color: "var(--muted)" }}>
+                  共 {examManageMode === "single" ? exams.length : examGroups.length} {examManageMode === "single" ? "个考试" : "个大考"}
+                </span>
               )}
+              {/* Single/Group toggle — right side */}
+              <div style={{ display: "flex", gap: 0, border: "1px solid var(--brand)", borderRadius: 6, overflow: "hidden", marginLeft: "auto" }}>
+                <button onClick={() => setExamManageMode("single")} style={{
+                  padding: "5px 14px", border: "none", background: examManageMode === "single" ? "var(--brand)" : "var(--surface)",
+                  color: examManageMode === "single" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "single" ? 600 : 400
+                }}>单科考试</button>
+                <button onClick={() => { setExamManageMode("group"); loadExamGroups(); }} style={{
+                  padding: "5px 14px", border: "none", background: examManageMode === "group" ? "var(--brand)" : "var(--surface)",
+                  color: examManageMode === "group" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "group" ? 600 : 400,
+                  display: "flex", alignItems: "center", gap: 4
+                }}><Layers size={13} /> 大考</button>
+              </div>
             </div>
 
-            {showCreateExam && (
+            {examManageMode === "single" && showCreateExam && (
               <div style={{ background: "var(--surface-soft)", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
                 <input value={newExamName} onChange={(e) => setNewExamName(e.target.value)} placeholder="考试名称" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
                 <input value={newExamSubject} onChange={(e) => setNewExamSubject(e.target.value)} placeholder="科目（自动从答题卡继承）" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
@@ -1546,11 +1668,11 @@ function App() {
               </div>
             )}
 
-            {exams.length === 0 && !showCreateExam && (
+            {examManageMode === "single" && exams.length === 0 && !showCreateExam && (
               <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>暂无考试，点击上方「新建考试」创建。</div>
             )}
 
-            {exams.length > 0 && (
+            {examManageMode === "single" && exams.length > 0 && (
               <div className="exam-list-table">
                 <div className="exam-list-head">
                   <span style={{ width: 36, flexShrink: 0 }}>
@@ -1593,6 +1715,51 @@ function App() {
                         style={{ fontSize: 12, color: "#1D9E75", padding: "2px 6px", marginLeft: 6 }}
                         onClick={() => setAssignedFormulaExamId(exam.id)}
                       >赋分</button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Exam group list */}
+            {examManageMode === "group" && examGroups.length === 0 && (
+              <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>暂无大考，点击上方「新建大考」创建。</div>
+            )}
+            {examManageMode === "group" && examGroups.length > 0 && (
+              <div className="exam-list-table">
+                <div className="exam-list-head">
+                  <span style={{ flex: 1, minWidth: 180 }}>大考名称</span>
+                  <span style={{ width: 80 }}>标签</span>
+                  <span style={{ width: 80 }}>年级</span>
+                  <span style={{ width: 80, textAlign: "center" }}>含考试数</span>
+                  <span style={{ width: 80, textAlign: "center" }}>有无成绩</span>
+                  <span style={{ width: 100, textAlign: "right" }}>操作</span>
+                </div>
+                {examGroups.map((group: any) => (
+                  <div key={group.id} className="exam-list-row" style={{ cursor: "default" }}>
+                    <span style={{ flex: 1, minWidth: 180, fontWeight: 500 }}>{group.name}</span>
+                    <span style={{ width: 80 }}>
+                      <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11,
+                        background: group.tag ? "var(--primary)" : "var(--bg-secondary)",
+                        color: group.tag ? "#fff" : "var(--muted)" }}>
+                        {group.tag || "—"}
+                      </span>
+                    </span>
+                    <span style={{ width: 80, color: "var(--muted)" }}>{group.grade_name || "—"}</span>
+                    <span style={{ width: 80, textAlign: "center", fontWeight: 500 }}>{group.member_count}</span>
+                    <span style={{ width: 80, textAlign: "center" }}>
+                      <span className={`exam-list-badge ${group.has_results ? "exam-list-badge-closed" : "exam-list-badge-draft"}`}>
+                        {group.has_results ? "有成绩" : "无成绩"}
+                      </span>
+                    </span>
+                    <span style={{ width: 100, textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
+                        onClick={() => setGroupDeleteTarget({
+                          groupId: group.id,
+                          groupName: group.name,
+                          memberCount: group.member_count,
+                          deleteExams: false
+                        })}>删除</button>
                     </span>
                   </div>
                 ))}
@@ -1767,14 +1934,24 @@ function App() {
           <section className="preview-panel analysis-results-panel" style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column" }}>
 
             {/* 考试选择页 */}
-            {analysisTab !== "detail" && (
+            {analysisTab === "select" && analysisGroupId == null && (
               <ExamSelectPage
                 onSelectExam={(examId) => { setSelectedAnalysisExamId(examId); setAnalysisTab("detail"); }}
+                onSelectGroup={(groupId) => { setAnalysisGroupId(groupId); }}
+              />
+            )}
+
+            {/* 大考详情页 */}
+            {analysisGroupId != null && (
+              <ExamGroupDetailPage
+                groupId={analysisGroupId}
+                onBack={() => setAnalysisGroupId(null)}
+                onExport={() => setShowGroupExport(true)}
               />
             )}
 
             {/* 成绩详情页 (v1.4.0) */}
-            {analysisTab === "detail" && selectedAnalysisExamId != null && (
+            {analysisTab === "detail" && selectedAnalysisExamId != null && analysisGroupId == null && (
               <ScoreDetailPage
                 examId={selectedAnalysisExamId}
                 examName={exams.find((e) => e.id === selectedAnalysisExamId)?.name ?? ""}
@@ -1959,6 +2136,68 @@ function App() {
           </div>
         </div>
       )}
+      {groupDeleteTarget && (
+        <div className="modal-backdrop" onClick={() => setGroupDeleteTarget(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
+            <div className="modal-header">
+              <h2>确认删除大考</h2>
+              <button className="modal-close" type="button" onClick={() => setGroupDeleteTarget(null)}>×</button>
+            </div>
+            <div className="modal-body">
+              <p style={{ marginTop: 0 }}>
+                将删除大考「<strong>{groupDeleteTarget.groupName}</strong>」。
+                该大考关联了 <strong>{groupDeleteTarget.memberCount}</strong> 场考试。
+              </p>
+              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13, cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={groupDeleteTarget.deleteExams}
+                  onChange={(event) => setGroupDeleteTarget({ ...groupDeleteTarget, deleteExams: event.target.checked })}
+                  disabled={isBusy}
+                  style={{ marginTop: 2 }}
+                />
+                <span>
+                  <strong>同时删除这 {groupDeleteTarget.memberCount} 场关联考试</strong>
+                  <br />
+                  <span style={{ color: "var(--muted)", fontSize: 11 }}>
+                    ⚠ 考试的成绩、扫描数据将被永久删除，不可恢复
+                  </span>
+                </span>
+              </label>
+              {!groupDeleteTarget.deleteExams && (
+                <p style={{ fontSize: 12, color: "var(--muted)", marginBottom: 0, marginTop: 8 }}>
+                  取消勾选则仅删除大考组，关联的考试保留不变。
+                </p>
+              )}
+            </div>
+            <div className="modal-footer">
+              <button className="ghost-button" type="button" onClick={() => setGroupDeleteTarget(null)} disabled={isBusy}>取消</button>
+              <button
+                className="primary-button"
+                type="button"
+                disabled={isBusy}
+                style={{ background: "var(--brand)" }}
+                onClick={async () => {
+                  const target = groupDeleteTarget;
+                  try {
+                    const qs = target.deleteExams ? "?deleteExams=1" : "";
+                    const res = await authFetch(`/api/exam-groups/${target.groupId}${qs}`, { method: "DELETE" });
+                    if (res.ok) {
+                      setGroupDeleteTarget(null);
+                      loadExamGroups();
+                      if (target.deleteExams) loadExams();
+                    }
+                  } catch (err) {
+                    setStatus(`删除失败: ${err instanceof Error ? err.message : String(err)}`);
+                  }
+                }}
+              >
+                {groupDeleteTarget.deleteExams ? `删除大考和 ${groupDeleteTarget.memberCount} 场考试` : "仅删除大考"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {assignedFormulaExamId != null && (
         <AssignedFormulaModal
           examId={assignedFormulaExamId}
@@ -1966,6 +2205,18 @@ function App() {
           subject={exams.find((e) => e.id === assignedFormulaExamId)?.subject ?? null}
           onClose={() => setAssignedFormulaExamId(null)}
           onSaved={() => loadExams()}
+        />
+      )}
+      {showCreateGroup && (
+        <CreateExamGroupModal
+          onClose={() => setShowCreateGroup(false)}
+          onCreated={() => { setShowCreateGroup(false); loadExamGroups(); }}
+        />
+      )}
+      {showGroupExport && analysisGroupId != null && (
+        <GroupExportModal
+          groupId={analysisGroupId}
+          onClose={() => setShowGroupExport(false)}
         />
       )}
     </main>
@@ -2106,6 +2357,7 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
   const questionConfigs = objectiveQuestionDefinitions(block);
   const answerKey = normalizeObjectiveAnswerKey(block);
   const missingAnswerCount = questions.filter((questionNumber) => !answerKey[questionNumber]?.length).length;
+  const [showPerQuestion, setShowPerQuestion] = useState(false);  // v1.4.7: 默认折叠每题配置
 
   function toggleAnswer(questionNumber: number, option: string) {
     onChange((draft) => {
@@ -2293,6 +2545,11 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
               onChange((draft) => {
                 const objective = draft as ObjectiveBlock;
                 objective.optionCount = Number(event.target.value);
+                // v1.4.7: 同步到逐题配置
+                objective.questions = normalizeObjectiveQuestions(objective);
+                for (const q of objective.questions) {
+                  q.optionCount = objective.optionCount;
+                }
                 objective.answerKey = normalizeObjectiveAnswerKey(objective);
               })
             }
@@ -2312,6 +2569,14 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
               onChange((draft) => {
                 const objective = draft as ObjectiveBlock;
                 objective.mode = event.target.value as ObjectiveMode;
+                // v1.4.7: 同步块级题型到所有逐题配置
+                objective.questions = normalizeObjectiveQuestions(objective);
+                for (const q of objective.questions) {
+                  q.mode = objective.mode;
+                  if (objective.mode !== "multiple" && objective.mode !== "indefinite") {
+                    delete q.scoringRule;
+                  }
+                }
                 objective.answerKey = normalizeObjectiveAnswerKey(objective);
               })
             }
@@ -2373,6 +2638,12 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
           />
         </label>
       </div>
+      <div style={{ marginTop: 8 }}>
+        <button className="ghost-button" type="button" onClick={() => setShowPerQuestion(!showPerQuestion)} style={{ fontSize: 12 }}>
+          {showPerQuestion ? "▲ 收起每题配置" : "▼ 展开每题配置"}
+        </button>
+      </div>
+      {showPerQuestion && (
       <div className="answer-key-editor">
         <div className="answer-key-title">
           <strong>每题配置</strong>
@@ -2505,6 +2776,7 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
           ))}
         </div>
       </div>
+      )}
       <p className="hint">横向模式少于 15 题按行排列、15 题及以上按 5 题小组网格排列；竖向模式按高考 AB 卡式 4 题一组纵向排布，每题选项仍保持横向小组选项。超过 5 个选项的题目独占一行。</p>
     </>
   );
@@ -2849,7 +3121,7 @@ function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocumen
     <div className="pages">
       {layout.pages.map((page) => (
         <svg className="page" key={page.pageNumber} viewBox="0 0 210 297" role="img" aria-label={`第${page.pageNumber}页预览`}>
-          <rect x="0" y="0" width="210" height="297" fill="#fff" />
+          <rect x="0" y="0" width="210" height="297" style={{ fill: "var(--surface)" }} />
           {page.markers.map((marker) => (
             <rect key={marker.role} {...marker.rect} fill="#20342f" />
           ))}
@@ -2857,7 +3129,7 @@ function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocumen
             ID:{page.header.id}
           </text>
           {page.header.codeBoxes.map((box, index) => (
-            <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" />
+            <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" style={index !== 0 && index !== page.header.codeBoxes.length - 1 ? { fill: "var(--surface)" } : undefined} />
           ))}
           {page.header.title && (
             <text x="105" y={page.header.titleY} textAnchor="middle" className="svg-title">
@@ -2901,7 +3173,7 @@ function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][nu
       <line x1={separatorX} y1={area.digitRect.y + 7} x2={separatorX} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
       {area.digitCells.map((cell) => (
         <g key={`${cell.digitIndex}_${cell.digit}`}>
-          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
+          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "var(--surface)" }} />
           <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
             {cell.digit}
           </text>
@@ -2931,7 +3203,7 @@ function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "obje
           </text>
           {item.options.map((option) => (
             <g key={option.label}>
-              <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
+              <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "var(--surface)" }} />
               <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2} textAnchor="middle" dominantBaseline="central" className="svg-option-label">
                 {option.label}
               </text>
@@ -2976,7 +3248,7 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
               )}
               {question.scoreCells.map((cell) => (
                 <g key={cell.score}>
-                  <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" />
+                  <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" style={{ fill: "var(--surface)" }} />
                   {cell.score !== null && (
                     <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + 4.2} textAnchor="middle" className="svg-tiny">
                       {cell.score}

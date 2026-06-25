@@ -1,0 +1,70 @@
+{
+  "name": "projectx-demo-exams",
+  "version": "1.0.0",
+  "description": "演示考试数据集 — 覆盖单科/大考/跨考/并列排名/缺考/导出等测试场景",
+  "compatibleWith": ["v1.4.8", "v1.5.0"],
+  "prefix": "演示-",
+  "accounts": {
+    "admin": { "identifier": "admin", "password": "admin123" },
+    "teacher": { "identifier": "demo-teacher", "password": "teacher123" },
+    "students": {
+      "range": "20260101-20260116",
+      "passwordRule": "与学号相同"
+    }
+  },
+  "organization": {
+    "grade": "高一(演示)",
+    "classes": ["演示1班", "演示2班"],
+    "studentsPerClass": 8
+  },
+  "exams": {
+    "weekRange": { "start": "2026-06-16", "end": "2026-06-22", "count": 6 },
+    "outsideWeek": ["演示-历史"],
+    "total": 7
+  },
+  "groups": {
+    "examGroup": "演示-2026高考摸底大考",
+    "crossExamGroup": "演示-第25周考试包"
+  },
+  "testScenarios": [
+    {
+      "id": "tie-rank-math",
+      "feature": "并列排名",
+      "steps": "分析 → 单科 → 演示-数学 → 成绩",
+      "expect": "4 人 128 分；v1.5.0+ 年排均为 6，v1.4.8 为顺序排名"
+    },
+    {
+      "id": "absent-chem-bio",
+      "feature": "缺考",
+      "expect": "化学缺周杰(20260108)；生物缺沈婷(20260116)"
+    },
+    {
+      "id": "cross-week",
+      "feature": "跨考按周",
+      "steps": "分析 → 跨考 → 按日期打包 2026-06-16~22",
+      "expect": "6 场考试，16 人；仅全勤 14 人"
+    },
+    {
+      "id": "exam-group",
+      "feature": "大考合集",
+      "steps": "分析 → 大考 → 演示-2026高考摸底大考",
+      "expect": "6 科概览 + 跨科排名表"
+    },
+    {
+      "id": "cross-saved-group",
+      "feature": "跨考已存组",
+      "steps": "分析 → 跨考 → 已存组 → 演示-第25周考试包",
+      "expect": "6 场考试统计"
+    },
+    {
+      "id": "rank-change",
+      "feature": "名次变化",
+      "expect": "演示-数学月考 vs 演示-数学，可查看 rankChange"
+    },
+    {
+      "id": "question-export",
+      "feature": "客观题小分导出",
+      "expect": "演示-数学含 Q1~Q5 客观题小分"
+    }
+  ]
+}

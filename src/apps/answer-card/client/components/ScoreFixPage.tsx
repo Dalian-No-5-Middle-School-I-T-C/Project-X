@@ -201,7 +201,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
   if (!fixMode) {
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 24px", borderBottom: "1px solid var(--line)", background: "#fff", flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 24px", borderBottom: "1px solid var(--line)", background: "var(--surface)", flexShrink: 0 }}>
           <button onClick={onBack} style={headerBtnStyle}><ArrowLeft size={16} /> 返回成绩</button>
           <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>成绩修改 — {examName}</h2>
         </div>
@@ -210,7 +210,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
             onClick={() => setFixMode("score")}
             style={{
               width: 240, height: 160, borderRadius: 16, border: "2px solid var(--line)",
-              background: "#fff", cursor: "pointer",
+              background: "var(--surface)", cursor: "pointer",
               display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12,
               transition: "border-color 0.2s, box-shadow 0.2s"
             }}
@@ -227,7 +227,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
             onClick={() => setFixMode("answer")}
             style={{
               width: 240, height: 160, borderRadius: 16, border: "2px solid var(--line)",
-              background: "#fff", cursor: "pointer",
+              background: "var(--surface)", cursor: "pointer",
               display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12,
               transition: "border-color 0.2s, box-shadow 0.2s"
             }}
@@ -248,14 +248,14 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 24px", borderBottom: "1px solid var(--line)", background: "#fff", flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 24px", borderBottom: "1px solid var(--line)", background: "var(--surface)", flexShrink: 0 }}>
         <button onClick={() => { if (student) { setStudent(null); setHits([]); setSearch(""); setSearchMsg(""); setScoreEdits({}); } else if (fixMode === "answer") { setFixMode(null); } else { setFixMode(null); } }} style={headerBtnStyle}><ArrowLeft size={16} /></button>
         <div style={{ flex: 1 }}>
           <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>成绩修改 — {examName}</h2>
         </div>
         <div style={{ display: "flex", borderRadius: 8, border: "1px solid var(--line)", overflow: "hidden" }}>
-          <button onClick={() => { setFixMode("score"); setStudent(null); setHits([]); setSearch(""); }} style={{ ...modeToggleStyle, background: fixMode === "score" ? "var(--brand)" : "#fff", color: fixMode === "score" ? "#fff" : "var(--text-primary)" }}>个别改分</button>
-          <button onClick={() => setFixMode("answer")} style={{ ...modeToggleStyle, background: fixMode === "answer" ? "var(--brand)" : "#fff", color: fixMode === "answer" ? "#fff" : "var(--text-primary)" }}>修改答案</button>
+          <button onClick={() => { setFixMode("score"); setStudent(null); setHits([]); setSearch(""); }} style={{ ...modeToggleStyle, background: fixMode === "score" ? "var(--brand)" : "var(--surface)", color: fixMode === "score" ? "#fff" : "var(--text-primary)" }}>个别改分</button>
+          <button onClick={() => setFixMode("answer")} style={{ ...modeToggleStyle, background: fixMode === "answer" ? "var(--brand)" : "var(--surface)", color: fixMode === "answer" ? "#fff" : "var(--text-primary)" }}>修改答案</button>
         </div>
       </div>
 
@@ -265,7 +265,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
         {fixMode === "score" && (
           <>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 12px", flex: 1, maxWidth: 360 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 12px", flex: 1, maxWidth: 360 }}>
                 <Search size={14} style={{ color: "var(--muted)", flexShrink: 0 }} />
                 <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={handleKeyDown}
                   placeholder="输入考号或姓名搜索..."
@@ -284,9 +284,9 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                 {hits.map((h) => (
                   <button key={h.id}
                     onClick={() => loadStudent(h.id, h.name, h.studentNumber)}
-                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 14px", borderRadius: 8, border: "1px solid var(--line)", background: "#fff", cursor: "pointer", textAlign: "left", fontSize: 13 }}
+                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 14px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--surface)", cursor: "pointer", textAlign: "left", fontSize: 13 }}
                     onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--surface-tint)"; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "#fff"; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--surface)"; }}
                   >
                     <span style={{ fontWeight: 500 }}>{h.name}</span>
                     <span style={{ color: "var(--muted)", fontSize: 12 }}>考号 {h.studentNumber}</span>
@@ -300,7 +300,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
             {student && (
               <div style={{ display: "flex", gap: 20, flex: 1, minHeight: 0 }}>
                 {/* Left: card image — scrolls vertically */}
-                <div style={{ width: 360, flexShrink: 0, border: "1px solid var(--line)", borderRadius: 10, background: "#fff", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+                <div style={{ width: 360, flexShrink: 0, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
                   <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, flexShrink: 0 }}>答题卡 — {student.student.name}</div>
                   <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
                     {previewPages.length > 0 ? (
@@ -324,7 +324,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                 </div>
 
                 {/* Right: scores */}
-                <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 10, background: "#fff" }}>
+                <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
                   <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span>{student.student.name} · {student.student.studentNumber}
                       {student.totalScore?.manuallyModified && <span style={{ color: "var(--brand)", fontSize: 11, marginLeft: 8 }}>(已手动修改)</span>}
@@ -358,7 +358,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                           const cur = getScoreEdit(qs.question_number, qs.score_type, qs.score);
                           const modified = `${qs.question_number}_${qs.score_type}` in scoreEdits;
                           return (
-                            <tr key={i} style={{ borderTop: "1px solid var(--line-light)", background: modified ? "var(--surface-tint)" : (i % 2 === 0 ? "#fff" : "var(--bg-soft)") }}>
+                            <tr key={i} style={{ borderTop: "1px solid var(--line-light)", background: modified ? "var(--surface-tint)" : (i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)") }}>
                               <td style={{ padding: "6px 8px", fontWeight: 500 }}>{qs.question_number}</td>
                               <td style={{ padding: "6px 8px", fontSize: 11, color: "var(--muted)" }}>{isObj ? (qs.mode === "multiple" ? "多选" : qs.mode === "indeterminate" ? "不定" : "单选") : "解答"}</td>
                               <td style={{ padding: "6px 8px" }}><span style={{ fontWeight: qs.manually_modified ? 600 : undefined, color: modified ? "var(--brand)" : undefined }}>{cur}</span>/{qs.max_score}</td>
@@ -392,7 +392,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
 
         {/* ============== ANSWER MODE ============== */}
         {fixMode === "answer" && (
-          <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 10, background: "#fff" }}>
+          <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
             <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span>标准答案编辑</span>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -420,7 +420,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                               const sel = cur.includes(opt);
                               return (
                                 <button key={opt} onClick={() => { if (!(String(q.questionNumber) in answerEdits)) initFromCard(q.questionNumber, q.answerKey ?? []); toggleOption(q.questionNumber, opt, isMulti); }}
-                                  style={{ width: 36, height: 36, borderRadius: 6, border: `2px solid ${sel ? "var(--brand)" : "var(--line)"}`, background: sel ? "var(--brand)" : "#fff", color: sel ? "#fff" : "var(--text-primary)", fontWeight: 600, cursor: "pointer", fontSize: 14 }}>{opt}</button>
+                                  style={{ width: 36, height: 36, borderRadius: 6, border: `2px solid ${sel ? "var(--brand)" : "var(--line)"}`, background: sel ? "var(--brand)" : "var(--surface)", color: sel ? "#fff" : "var(--text-primary)", fontWeight: 600, cursor: "pointer", fontSize: 14 }}>{opt}</button>
                               );
                             })}
                           </div>
@@ -494,7 +494,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
   );
 }
 
-const headerBtnStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 8, background: "#fff", cursor: "pointer", fontSize: 13 };
+const headerBtnStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)", cursor: "pointer", fontSize: 13 };
 const modeToggleStyle: React.CSSProperties = { padding: "6px 14px", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 500 };
 const zmBtnStyle: React.CSSProperties = { border: "none", background: "rgba(255,255,255,0.1)", borderRadius: 6, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff" };
 function arrowBtnStyle(side: "left" | "right"): React.CSSProperties {

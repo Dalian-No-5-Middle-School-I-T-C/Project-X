@@ -12,6 +12,12 @@
 -- ============================================================
 
 -- 角色表
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS roles (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL UNIQUE,       -- admin / teacher / student
@@ -94,7 +100,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     student_number_digits INTEGER DEFAULT 5,
     sided           TEXT DEFAULT 'single',              -- single / double
     layout_version   INTEGER DEFAULT 1,
-    layout_data      TEXT,                                -- JSON: LayoutDocument 完整坐标
+    layout_data      TEXT,                                -- Deprecated: legacy cached LayoutDocument; generated from card tables on demand
     created_by       INTEGER REFERENCES users(id),
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -230,6 +236,36 @@ CREATE TABLE IF NOT EXISTS exams (
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 跨考试组（用于一周考试包 / 手动合并考试 / 大考合集）
+CREATE TABLE IF NOT EXISTS exam_groups (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    name            TEXT NOT NULL,
+    description     TEXT,
+    source          TEXT DEFAULT 'manual',        -- manual / week
+    start_date      TEXT,
+    end_date        TEXT,
+    grade_id        INTEGER REFERENCES grades(id),
+    tag             TEXT,                         -- 月考/期中/期末/模考/统考
+    status          TEXT DEFAULT 'active',
+    is_official     INTEGER DEFAULT 0,
+    total_score_mode TEXT DEFAULT 'raw',          -- raw / assigned
+    only_full_participants INTEGER DEFAULT 0,
+    created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS exam_group_members (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id        INTEGER NOT NULL REFERENCES exam_groups(id) ON DELETE CASCADE,
+    exam_id         INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    sort_order      INTEGER DEFAULT 0,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(group_id, exam_id)
+);
+CREATE INDEX IF NOT EXISTS idx_exam_group_members_group ON exam_group_members(group_id);
+CREATE INDEX IF NOT EXISTS idx_exam_group_members_exam ON exam_group_members(exam_id);
 
 -- 考试归档记录
 CREATE TABLE IF NOT EXISTS exam_archives (
@@ -389,9 +425,9 @@ CREATE INDEX IF NOT EXISTS idx_export_templates_user ON export_templates(user_id
 CREATE TABLE IF NOT EXISTS ai_providers (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    name            TEXT NOT NULL,              -- 用户命名，如 "学校GPT" / "本地哈基米"
-    provider_type   TEXT NOT NULL,              -- openai / deepseek / haqimi / gemini
-    base_url        TEXT NOT NULL,              -- API 基础地址
+    name            TEXT NOT NULL,              -- 用户命名，如 "我的GPT" / "Gemini 学生"
+    provider_type   TEXT NOT NULL,              -- openai / deepseek / gemini
+    base_url        TEXT NOT NULL DEFAULT '',   -- API 基础地址 (Gemini 留空)
     api_key         TEXT NOT NULL,              -- API Key
     models          TEXT,                       -- JSON 模型列表，空=自动获取
     is_active       INTEGER DEFAULT 1,

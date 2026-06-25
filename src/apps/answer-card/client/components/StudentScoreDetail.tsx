@@ -64,7 +64,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 24px", borderBottom: "1px solid var(--line)", background: "#fff", flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 24px", borderBottom: "1px solid var(--line)", background: "var(--surface)", flexShrink: 0 }}>
         <button onClick={onBack} style={backBtn}>
           <ArrowLeft size={16} /> 返回成绩表
         </button>
@@ -85,7 +85,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
       <div style={{ flex: 1, overflowY: "auto", padding: 24, display: "flex", gap: 20, minHeight: 0 }}>
         {/* Left: scores */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ border: "1px solid var(--line)", borderRadius: 10, background: "#fff", overflow: "hidden", marginBottom: 16 }}>
+          <div style={{ border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)", overflow: "hidden", marginBottom: 16 }}>
             <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--line)", fontSize: 13, fontWeight: 500 }}>逐题得分</div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -101,7 +101,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
                     const perfect = q.score >= q.max_score;
                     const zero = q.score === 0;
                     return (
-                      <tr key={i} style={{ borderTop: "1px solid var(--line-light)", background: q.manually_modified ? "var(--surface-tint)" : i % 2 === 0 ? "#fff" : "var(--bg-soft)" }}>
+                      <tr key={i} style={{ borderTop: "1px solid var(--line-light)", background: q.manually_modified ? "var(--surface-tint)" : i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)" }}>
                         <td style={s_td}>{q.question_number}</td>
                         <td style={{ ...s_td, fontSize: 11, color: "var(--muted)" }}>
                           {q.score_type === "objective" ? (q.mode === "multiple" ? "多选" : "单选") : "解答"}
@@ -132,7 +132,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
 
           {/* Class rate bars */}
           <div style={{ display: "flex", gap: 12 }}>
-            <div style={{ flex: 1, padding: 12, border: "1px solid var(--line)", borderRadius: 10, background: "#fff" }}>
+            <div style={{ flex: 1, padding: 12, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
               <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>
                 选择题 <strong>班级均分率 {classObjRate}%</strong> ({objScores.length}题)
               </div>
@@ -141,7 +141,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
               </div>
             </div>
             {subjScores.length > 0 && (
-              <div style={{ flex: 1, padding: 12, border: "1px solid var(--line)", borderRadius: 10, background: "#fff" }}>
+              <div style={{ flex: 1, padding: 12, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
                 <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>
                   解答题 <strong>班级均分率 {classSubjRate}%</strong> ({subjScores.length}题)
                 </div>
@@ -154,7 +154,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
         </div>
 
         {/* Right: card images */}
-        <div style={{ width: 340, flexShrink: 0, border: "1px solid var(--line)", borderRadius: 10, background: "#fff", display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 140px)" }}>
+        <div style={{ width: 340, flexShrink: 0, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)", display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 140px)" }}>
           <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, flexShrink: 0 }}>答题卡</div>
           <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
             {data.scans.length > 0 ? (
@@ -218,7 +218,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
   );
 }
 
-const backBtn: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 8, background: "#fff", cursor: "pointer", fontSize: 13 };
+const backBtn: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)", cursor: "pointer", fontSize: 13 };
 const s_th: React.CSSProperties = { padding: "6px 10px", fontWeight: 600 };
 const s_td: React.CSSProperties = { padding: "6px 10px" };
 const zmBtn: React.CSSProperties = { border: "none", background: "rgba(255,255,255,0.1)", borderRadius: 6, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff" };

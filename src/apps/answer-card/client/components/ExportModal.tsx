@@ -29,7 +29,8 @@ const COL_WIDTHS: Record<string, number> = {
   studentNumber: 14, grade: 8, className: 8, studentName: 8,
   totalScore: 7, assignedScore: 7, objectiveScore: 7, subjectiveScore: 7,
   gradeRank: 5, classRank: 5, rankChange: 10, displayValue: 10,
-  needsReview: 6, confidence: 7
+  needsReview: 6, confidence: 7,
+  objectiveSubScores: 7, subjectiveSubScores: 7
 };
 const SIDE_COL_WIDTHS = [5, 8, 7]; // 年排, 班级, 分数
 
@@ -75,6 +76,8 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
     { id: "rankChange", label: "名次变化", category: "ranking" },
     { id: "displayValue", label: "偏差值/Z值", category: "other" },
     { id: "needsReview", label: "需要复核", category: "other" },
+    { id: "objectiveSubScores", label: "客观题小分", category: "questions" },
+    { id: "subjectiveSubScores", label: "主观题小分", category: "questions" },
   ];
 
   useEffect(() => {
@@ -164,6 +167,15 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
     const v = row[key];
     return v != null ? String(v) : "—";
   }
+  function getCategoryColor(category: string): string {
+    switch (category) {
+      case "basic": return "var(--primary)";
+      case "score": return "#059669";
+      case "ranking": return "#d97706";
+      case "questions": return "#7c3aed";
+      default: return "var(--muted)";
+    }
+  }
 
   const totalWidth = computeTotalWidth(selected, sideN, gapCols);
   const overA4 = totalWidth > A4_MAX_CHARS;
@@ -192,6 +204,7 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
                 <div
                   key={colId}
                   className={`capsule${dragItem.current === i ? " capsule-dragging" : ""}`}
+                  style={{ borderColor: getCategoryColor(COLUMN_DEFS.find((c) => c.id === colId)?.category ?? "other") }}
                   draggable
                   onDragStart={() => handleDragStart(i)}
                   onDragOver={(e) => handleDragOver(e, i)}
@@ -212,7 +225,8 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
             <label style={{ fontSize: 12, color: "var(--muted)", display: "block", marginBottom: 4 }}>可选列</label>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
               {unselected.map((c) => (
-                <button key={c.id} className="capsule capsule-add" onClick={() => addColumn(c.id)}>
+                <button key={c.id} className="capsule capsule-add" onClick={() => addColumn(c.id)}
+                  style={{ borderColor: getCategoryColor(c.category), color: getCategoryColor(c.category) }}>
                   <Plus size={11} /> {c.label}
                 </button>
               ))}
@@ -230,7 +244,7 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
           {/* Preview with real data */}
           <div>
             <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 4 }}>数据预览</label>
-            <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12, background: "#fff" }}>
+            <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12, background: "var(--surface)" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", whiteSpace: "nowrap" }}>
                 <thead>
                   <tr style={{ background: "var(--surface-tint)", borderBottom: "1px solid var(--line)" }}>
@@ -285,7 +299,7 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
                       display: "flex", alignItems: "center", gap: 8, cursor: t ? "pointer" : "default",
                       padding: "6px 10px", borderRadius: 8,
                       border: isActive ? "2px solid var(--brand)" : "1px solid var(--line)",
-                      background: isActive ? "var(--surface-tint)" : "#fff",
+                      background: isActive ? "var(--surface-tint)" : "var(--surface)",
                       transition: "border 0.15s"
                     }}
                   >

@@ -23,6 +23,7 @@ import scoreRoutes from "../../../server/routes/scores";
 import sponsorRoutes from "../../../server/routes/sponsor";
 import backupRoutes from "../../../server/routes/backup";
 import exportScoresRoutes from "../../../server/routes/export-scores";
+import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
 import { optionalAuth } from "../../../server/middleware/auth";
@@ -37,6 +38,7 @@ import type {
   CombinedGradingBatchResult,
   CombinedGradingRow,
   CombinedRecognitionResult,
+  CrossExamTotalRequest,
   LayoutDocument,
   ObjectiveGradingBatchResult,
   ObjectiveRecognitionResult
@@ -137,10 +139,10 @@ async function saveCardWithLayout(cardRepo: CardRepository, card: AnswerCard, cr
   const exists = cardRepo.findById(normalized.id);
 
   if (exists) {
-    cardRepo.updateCard(normalized, layout);
+    cardRepo.updateCard(normalized);
   } else {
     cardRepo.createCard(normalized, createdBy);
-    cardRepo.updateCard(normalized, layout);
+    cardRepo.updateCard(normalized);
   }
 
   await writeLayoutDocument(normalized.id, layout);
@@ -150,7 +152,6 @@ async function saveCardWithLayout(cardRepo: CardRepository, card: AnswerCard, cr
 async function prepareLayoutForCard(cardRepo: CardRepository, card: AnswerCard): Promise<string> {
   const normalized = normalizeCard(card, card.id);
   const layout = buildLayout(normalized);
-  cardRepo.updateLayoutData(normalized.id, layout);
   await writeLayoutDocument(normalized.id, layout);
   return layoutPath(normalized.id);
 }
@@ -270,7 +271,7 @@ async function persistGradingResults(
 
   const insertQs = db.prepare(`
     INSERT OR REPLACE INTO question_scores
-      (exam_id, student_id, question_number, block_id, score, max_score, score_type)
+      (exam_id, student_id, question_number, question_id, score, max_score, score_type)
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
 
@@ -310,7 +311,7 @@ async function persistGradingResults(
           insertQs.run(examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
         }
         for (const sq of row.subjectiveQuestions ?? []) {
-          insertQs.run(examId, stu.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective");
+          insertQs.run(examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
         }
         persisted++;
       } catch (err) {
@@ -427,6 +428,36 @@ function requireExamAccess(req: express.Request, res: express.Response, next: ex
   res.status(403).json({ message: "权限不足：无权访问此考试" });
 }
 
+function numberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<number>();
+  const result: number[] = [];
+  for (const item of value) {
+    const id = Number(item);
+    if (Number.isInteger(id) && id > 0 && !seen.has(id)) {
+      seen.add(id);
+      result.push(id);
+    }
+  }
+  return result;
+}
+
+function optionalPositiveNumber(value: unknown): number | undefined {
+  if (value == null || value === "") return undefined;
+  const num = Number(value);
+  return Number.isInteger(num) && num >= 0 ? num : undefined;
+}
+
+function validateExamIdsAccess(req: express.Request, res: express.Response, examIds: number[]): boolean {
+  const visibleIds = getVisibleExamIds(req.user);
+  if (visibleIds === null) return true;
+  const visible = new Set(visibleIds);
+  const denied = examIds.filter((examId) => !visible.has(examId));
+  if (denied.length === 0) return true;
+  res.status(403).json({ message: "权限不足：考试组包含不可访问的考试" });
+  return false;
+}
+
 function scannerEnabled(): boolean {
   if (process.env.PROJECTX_ENABLE_SCANNER === "1" || process.env.PROJECTX_ENABLE_SCANNER === "true") {
     return true;
@@ -494,6 +525,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/teachers", teacherRoutes);
   app.use("/api/export", exportRoutes);
   app.use("/api/export", exportScoresRoutes);
+  app.use("/api/exam-groups", examGroupRoutes);
   app.use("/api/scores", scoreRoutes);
   app.use("/api/sponsor", sponsorRoutes);
   app.use("/api/db", backupRoutes);
@@ -630,7 +662,6 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       const layout = buildLayout(card);
-      cardRepo.updateLayoutData(card.id, layout);
       await writeLayoutDocument(card.id, layout);
       res.json(layout);
     } catch (error) {
@@ -1064,7 +1095,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "答题卡不存在" });
         return;
       }
-      const layout = cardRepo.getLayoutData(cardId);
+      const layout = buildLayout(card);
       // 收集 assets base64
       const assetsMap: Record<string, string> = {};
       const assetsPath = cardAssetsDir(cardId);
@@ -1413,6 +1444,120 @@ export async function createApp(): Promise<express.Express> {
       const analysisRepo = new AnalysisRepository();
       const trend = analysisRepo.getScoreTrend(subject, classId);
       res.json(trend);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/analysis/cross-exam/groups", async (req, res, next) => {
+    try {
+      const analysisRepo = new AnalysisRepository();
+      res.json(analysisRepo.listExamGroups(req.user?.id));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/analysis/cross-exam/groups", async (req, res, next) => {
+    try {
+      const { name, examIds, source, startDate, endDate } = req.body as {
+        name?: string;
+        examIds?: unknown[];
+        source?: "cross-manual" | "week";
+        startDate?: string;
+        endDate?: string;
+      };
+      const normalizedExamIds = numberArray(examIds);
+      if (!name?.trim()) {
+        res.status(400).json({ message: "请输入考试组名称" });
+        return;
+      }
+      if (normalizedExamIds.length === 0) {
+        res.status(400).json({ message: "请选择至少一场考试" });
+        return;
+      }
+      if (!validateExamIdsAccess(req, res, normalizedExamIds)) return;
+
+      const analysisRepo = new AnalysisRepository();
+      const group = analysisRepo.createExamGroup({
+        name,
+        examIds: normalizedExamIds,
+        source: source === "week" ? "week" : "cross-manual",
+        startDate,
+        endDate,
+        createdBy: req.user?.id ?? null
+      });
+      res.status(201).json(group);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.delete("/api/analysis/cross-exam/groups/:groupId", async (req, res, next) => {
+    try {
+      const groupId = Number(req.params.groupId);
+      if (!Number.isInteger(groupId) || groupId <= 0) {
+        res.status(400).json({ message: "无效的考试组 ID" });
+        return;
+      }
+      const analysisRepo = new AnalysisRepository();
+      const ok = analysisRepo.deleteExamGroup(groupId, req.user?.id ?? 0, req.user?.role_name === "admin");
+      if (!ok) {
+        res.status(404).json({ message: "考试组不存在或无权删除" });
+        return;
+      }
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.post("/api/analysis/cross-exam/total", async (req, res, next) => {
+    try {
+      const body = req.body as CrossExamTotalRequest;
+      const mode = body.mode;
+      if (mode !== "week" && mode !== "selected" && mode !== "group") {
+        res.status(400).json({ message: "统计模式无效" });
+        return;
+      }
+
+      const analysisRepo = new AnalysisRepository();
+      let requestedExamIds: number[] = [];
+      if (mode === "selected") {
+        requestedExamIds = numberArray(body.examIds);
+        if (requestedExamIds.length === 0) {
+          res.status(400).json({ message: "请选择至少一场考试" });
+          return;
+        }
+      } else if (mode === "group") {
+        const groupId = optionalPositiveNumber(body.groupId);
+        if (!groupId) {
+          res.status(400).json({ message: "请选择考试组" });
+          return;
+        }
+        const group = analysisRepo.getExamGroup(groupId);
+        if (!group) {
+          res.status(404).json({ message: "考试组不存在" });
+          return;
+        }
+        requestedExamIds = group.examIds;
+      }
+
+      if (requestedExamIds.length > 0 && !validateExamIdsAccess(req, res, requestedExamIds)) return;
+      const data = analysisRepo.getCrossExamTotal({
+        mode,
+        groupId: optionalPositiveNumber(body.groupId),
+        examIds: requestedExamIds.length > 0 ? requestedExamIds : undefined,
+        startDate: body.startDate,
+        endDate: body.endDate,
+        gradeId: optionalPositiveNumber(body.gradeId),
+        classId: optionalPositiveNumber(body.classId),
+        subject: typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : undefined,
+        attendanceMode: body.attendanceMode === "full" ? "full" : "all"
+      }, {
+        visibleExamIds: getVisibleExamIds(req.user)
+      });
+      res.json(data);
     } catch (error) {
       next(error);
     }
@@ -1895,11 +2040,20 @@ export async function createApp(): Promise<express.Express> {
               res.setHeader("Content-Type", `${type}; charset=utf-8`);
             }
           }
+          // 防止浏览器缓存前端文件，确保更新后立即可见
+          if (ext === ".html" || ext === ".js" || ext === ".mjs" || ext === ".css") {
+            res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+            res.setHeader("Pragma", "no-cache");
+            res.setHeader("Expires", "0");
+          }
         }
       })
     );
     app.get("/{*splat}", (_req, res) => {
       res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+      res.setHeader("Pragma", "no-cache");
+      res.setHeader("Expires", "0");
       res.sendFile(path.join(clientDist, "index.html"));
     });
   }

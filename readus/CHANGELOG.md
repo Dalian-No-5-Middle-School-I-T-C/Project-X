@@ -1,6 +1,139 @@
 # Project-X CHANGELOG
 
-## v1.4.6 (2026-06-20)
+## v1.5.0 (2026-06-24) — 稳定版
+
+### 跨考入口 & 排名修复
+- **三选一紧凑切换**：考试选择页右上角 toggle 改为 [单科 | 大考 | 跨考]，跨考不再单独占一个按钮
+- **跨考内联化**：跨考试总分统计直接嵌入 ExamSelectPage，不再跳出独立页面，无需「返回」操作
+- **按周预览**：跨考「按日期打包」模式新增实时考试预览，切换日期即刻看到该周包含哪些考试
+- **日期/按钮对齐**：跨考面板日期输入框与统计按钮统一基线对齐
+- **全局并列排名修复**：所有排名从顺序排名改为同分并列排名（1,2,2,4,5...），覆盖跨考总分、大考排名、单科排名、导出表格等全部场景
+- **competitionRank 提取**：排名工具函数从 `denseRank` 重命名为 `competitionRank`（更准确），提取到 `src/shared/ranking.ts` 避免 AnalysisRepository 与 exam-groups 代码重复
+- **表名统一**：AnalysisRepository 从 `exam_group_items` 改为 `exam_group_members`，消除迁移后新装环境表缺失导致的跨考功能不可用
+- **列表隔离**：按 `source` 列隔离大考列表（`NULL`/`'manual'`）与跨考已存组列表（`'cross-manual'`/`'week'`），避免互相泄漏
+- **删除确认**：跨考已存组删除增加确认弹窗（显示关联考试数），考试管理大考删除支持级联考试选项
+- **周预览口径对齐**：前端周预览日期取值与后端 `COALESCE(exam_date, created_at)` 对齐，无答题卡日期考试不再遗漏
+- **名次变化修复**：上次考试排名（preRankMap）改用并列排名，消除同分场景下名次变化计算偏差
+- **死代码清理**：删除已内联但未删除的 CrossExamTotalPage.tsx (424行) 和 migrations.ts 中未调用的 createExamGroupsIfMissing
+- **暗色主题**：跨考删除确认弹窗改用 CSS 变量，暗色模式下不再白框刺眼
+
+### 大考（Exam Group）功能
+
+- **大考组 CRUD**：支持创建「大考合集」将多场单科考试组织为一个逻辑大考（如"2026高考摸底大考"包含语数英物化生）
+- **关联考试管理**：创建时可选择关联已有考试，创建后也可增删成员考试，支持拖拽排序
+- **大考内新建考试**：可直接在大考合集中快速创建新考试并自动关联
+- **大考分析视图**：概览 Tab 展示各科参数卡片网格（人数/均分/最高/最低/标准差/及格率/优秀率），成绩 Tab 提供跨科横向排名表
+- **跨科排名**：按总分排名显示校排/班排，每科单独显示原始分/赋分/校排/班排，支持班级筛选和「仅全科参加」开关
+- **总分模式**：可按原始分或赋分计算总分排名
+- **大考标签**：支持月考/期中/期末/模考/统考标签分类
+- **考试选择页大考入口**：新增「单科考试」/「大考」分类切换
+- **考试管理页大考入口**：考试管理 Tab 新增单科/大考模式切换，支持大考列表管理
+
+#### 数据库
+- 新增 `exam_groups` 表（name, description, grade_id, tag, status, is_official, total_score_mode, only_full_participants）
+- 新增 `exam_group_members` 表（group_id, exam_id, sort_order）
+- Migration v8 幂等创建
+
+#### API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/exam-groups` | 大考列表 |
+| `POST` | `/api/exam-groups` | 创建大考 + 关联考试 |
+| `GET` | `/api/exam-groups/:groupId` | 大考详情含成员列表 |
+| `PUT` | `/api/exam-groups/:groupId` | 更新大考信息 |
+| `DELETE` | `/api/exam-groups/:groupId` | 删除大考（级联，不删考试） |
+| `POST` | `/api/exam-groups/:groupId/exams` | 批量关联考试 |
+| `DELETE` | `/api/exam-groups/:groupId/exams/:examId` | 移除关联 |
+| `PUT` | `/api/exam-groups/:groupId/exams/sort` | 批量更新排序 |
+| `GET` | `/api/exam-groups/:groupId/overview` | 大考概览（各科参数） |
+| `GET` | `/api/exam-groups/:groupId/rankings` | 跨科总分排名 |
+| `POST` | `/api/exam-groups/:groupId/export` | 导出 ZIP（总览+各科小分） |
+
+### 导出增强
+
+- **单科导出新增可选胶囊**：`客观题小分` 和 `主观题小分`，可选加入导出列
+- 客观题小分：拉展该科所有客观题得分（Q1/Q2/...），含每题满分标注
+- 主观题小分：拉展该科所有主观题得分（S1/S2/...），含每题满分标注
+- 胶囊颜色分类：基础(蓝)/分数(绿)/排名(橙)/题目(紫)
+- **大考导出（ZIP）**：总览表（跨科排名+各科原始分/年排/班排）+ 各科详细小分 Excel 文件
+- 导出可选：是否包含客观题小分、主观题小分、选择导出哪些科目
+
+### 前端组件
+- `CreateExamGroupModal`：创建/编辑大考弹窗，含考试搜索选择器
+- `ExamGroupDetailPage`：大考分析视图（概览+成绩 Tab）
+- `GroupExportModal`：大考 ZIP 导出配置弹窗
+- `ExamSelectPage` 更新：新增单科/大考分类切换
+- `ExportModal` 更新：新增客观题小分/主观题小分胶囊列
+- `App.tsx` 集成：大考创建模态框、大考分析视图、考试管理双模式
+
+### 跨考试总分分析（合并自 main）
+
+- **CrossExamTotalPage**：三种模式（按周自动打包 / 手动选考试 / 选择已存大考组）计算跨考总分排名
+- 按日期范围自动关联一周内的考试，快速生成一周考试包总分
+- 支持仅全科参加、仅部分参加等出席模式筛选
+- 考试选择页新增「跨考总分」快捷入口
+- API: `GET/POST/DELETE /api/analysis/cross-exam/groups`, `POST /api/analysis/cross-exam/total`
+- DB: `exam_groups` 表新增 `source`/`start_date`/`end_date` 字段兼容两种用途
+
+### 版本
+- v1.4.7 → v1.5.0
+
+## v1.4.7 (2026-06-20)
+
+### 教师细分角色（权限数据范围）
+
+- **教师三种细分角色**：管理员可在「教师管理」中设置三种角色，登录后自动限定数据可见范围
+  - **学科老师**（`subject_teacher`）：仅限本学科本人所教班级的考试与成绩
+  - **班主任**（`head_teacher`）：仅限所管班级全部科目考试与成绩（限本年级）
+  - **学年主任**（`grade_leader`）：全年级全科目，不受限制
+  - 未设置细分角色的教师保持原全权限，向后兼容
+- **后端数据范围过滤**：所有 `/api/exams`、`/api/analysis/exams/:id/*`、`/api/exams/:id` 端点自动根据 `teacher_role` 过滤可见考试
+- **数据库**：`users` 表新增 `teacher_role TEXT` 列；自动 migration
+- **管理员 UI**：用户管理列表新增「教师细分」列；新建/编辑表单增加角色下拉；教师管理面板增加角色选择
+
+### 暗色模式全面修复
+- 15 处硬编码 `background: #fff` 改为 CSS 变量 `var(--surface)`
+- 所有 TSX 组件内联 `#fff` 背景统一替换为 `var(--surface)`
+- 表单元素（input/select/textarea/checkbox）暗色适配
+- 模态卡片、面板、编辑区暗色适配
+- SVG 答题卡预览页暗色适配（CSS 变量 + style 双保险）
+- 侧栏渐变、badge 标签、下拉菜单暗色适配
+- 背景图在暗色模式下叠加 `brightness(0.45)` 遮罩
+- 追加 ~90 行 `[data-theme="dark"]` 集中覆盖规则
+
+### 账号设置重构
+- 左侧分类导航栏：阅卷设置 / 客户端设置 / AI 设置
+- 选中项品牌色高亮 + 左边框指示
+- 右侧内容面板按 Tab 切换，独立保存按钮
+- 默认展开"阅卷设置"
+
+### Gemini SDK 完整修复
+- `providers.py`: 修复用户配置 Gemini 时走错 OpenAI 路径的致命 Bug
+- `ai-providers.ts`: Gemini 不再强制要求 Base URL
+- 前端 Gemini 选中时隐藏 Base URL 输入框，显示提示文案
+- "如何填写？"帮助卡片更新：Gemini 标注为"无需填写"
+- 新增 Google AI Studio 获取 API Key 指引
+
+### Bug 修复
+- **Markdown 链接解码错误**：`UserGuidePage.tsx` 处理本地 .md 相对链接，阻止 Electron file:// 协议下的乱码
+- **学生导入去年级列**：CSV 模板从 `年级,班级,学号,姓名` → `班级,学号,姓名`，后端自动从"几年几班"解析年级
+- **学生管理滚动容器**：年级/班级/花名册三栏添加 `max-height` 内滚动，不再拉伸整个页面
+- **ESC 全局退出**：ESC 关闭成绩分析 detail / 赞助页 / 使用说明页，聚焦输入框时跳过
+- **自动保存提示圆角容器**：`.autosave-status` 改为圆角 pill 样式
+
+### 答题卡设计增强
+- **题块自动命名**："一、单选（10题 50分）"实时生成，`toChinese(n)` 算法支持 1-100，增删块/改题型/改题数/改分值时自动刷新
+- **块级编辑同步**：修改块级题型/选项数时自动同步到所有逐题配置
+- **每题配置默认折叠**：按需展开/收起，减少设计器面板高度
+
+### 夜间模式开关
+- 账号设置 → 客户端设置 → 新增「夜间模式（实验性）」复选框
+- 默认不启用，标注"⚠ 实验性功能，存在严重视觉问题"
+- 不启用时顶部栏隐藏主题切换按钮
+- localStorage 持久化存储
+
+### 版本
+- v1.4.6 → v1.4.7
 
 ### 日间/夜间模式
 - 新增主题切换按钮：位于顶部栏右侧，☀️/🌙 SVG 图标即按钮，点击即时切换
