@@ -36,8 +36,15 @@
 - **新路由认证缺失**：`POST /api/scores/me/ai-analysis` 移入 `scores.ts` 路由器，自动享受 `authMiddleware` 保护
 - **SQL 列不存在导致 500**：`ScoreRepository.getStudentTrendData()` 引用了 `class_students.is_active` 列，该列不存在；修复为移除虚假列引用、`JOIN` 改为 `LEFT JOIN` 子查询处理多班级、学生无班级时 classAvg 返回 NULL
 - **学生可越权访问教师分析接口**：`getVisibleExamIds()` 对学生返回 `null`（全部可见），导致学生可调用任意考试的 AI 分析接口。修复：`requireExamAccess` 中增加学生分支，仅放行 `hasScore()` 为 true 的考试
+- **学生通过 hasScore 可越权删除考试/查看全班数据**：`requireExamAccess` 的学生分支对所有方法（GET/DELETE/...）通行。修复：学生分支仅允许 `POST /.../ai-analysis`，其余方法返回 403
+- **AI 单场分析按钮在 auth 强制模式下永久 403**：`POST /api/analysis/exams/:examId/ai-analysis` 经过 `analysisGate` 要求 `grade:read`，学生只有 `score:read`。修复：新增 `POST /api/scores/me/exams/:examId/ai-analysis`（挂载在 scores router 下，无 analysisGate），前端 `AiAnalysisForExam` 改为调用该端点
 - **整体 AI 分析后端对接错误**：`POST /api/scores/me/ai-analysis` 原设计向 llmclient 发送 `examId: 0` + `studentAnalysis: true`，但 llmclient 仅支持 exam-scoped 请求。修复为直接用服务端已有的趋势数据生成文本分析报告，不再调用 llmclient；待 llmclient 支持学生分析后可切换回
 - 清理未使用的 import
+
+### 新增后端 API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/scores/me/exams/:examId/ai-analysis` | 学生单场考试 AI 分析（绕过教师端 RBAC gate） |
 
 ### 版本
 - v1.5.0 → v1.5.1

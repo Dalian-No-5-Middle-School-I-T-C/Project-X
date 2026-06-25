@@ -96,6 +96,64 @@ router.get("/me/subject-comparison", (req: Request, res: Response) => {
   });
 });
 
+// ── 学生每场考试 AI 分析 ──
+
+const LLM_CLIENT_BASE = process.env.LLM_CLIENT_URL || "http://127.0.0.1:8766";
+const LLM_INTERNAL_KEY = process.env.LLM_INTERNAL_KEY || "";
+
+/** POST /api/scores/me/exams/:examId/ai-analysis — 学生单场考试 AI 分析（绕过教师端 analysisGate） */
+router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response) => {
+  const examId = Number(req.params.examId);
+  if (!Number.isFinite(examId) || examId <= 0) {
+    res.status(400).json({ message: "无效的考试 ID" });
+    return;
+  }
+  if (!scoreRepo.hasScore(req.user!.id, examId)) {
+    res.status(403).json({ message: "你未参加该考试" });
+    return;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 120_000);
+    const response = await fetch(`${LLM_CLIENT_BASE}/analysis/run`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(LLM_INTERNAL_KEY ? { Authorization: `Bearer ${LLM_INTERNAL_KEY}` } : {}),
+      },
+      body: JSON.stringify({
+        examId,
+        model: typeof req.body?.model === "string" ? req.body.model : undefined,
+        locale: "zh-CN",
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      let message = `LLM service returned ${response.status}`;
+      try {
+        const body = await response.json() as { detail?: string; message?: string };
+        message = body.detail || body.message || message;
+      } catch {
+        const text = await response.text().catch(() => "");
+        if (text) message = text;
+      }
+      res.status(response.status >= 400 && response.status < 500 ? response.status : 502).json({ message });
+      return;
+    }
+
+    res.json(await response.json());
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      res.status(504).json({ message: "AI 服务请求超时。" });
+      return;
+    }
+    res.status(503).json({ message: `AI 服务不可用: ${error instanceof Error ? error.message : String(error)}` });
+  }
+});
+
 // ── 学生个人 AI 整体分析 ──
 
 /** POST /api/scores/me/ai-analysis — 学生整体成绩分析 */

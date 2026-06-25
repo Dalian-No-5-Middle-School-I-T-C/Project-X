@@ -418,8 +418,13 @@ function requireExamAccess(req: express.Request, res: express.Response, next: ex
     return;
   }
 
-  // 学生只能访问自己有成绩的考试
+  // 学生仅允许访问 AI 分析端点（且仅限自己有成绩的考试）
+  // 其他所有 exam 端点（删除、导出CSV、排名等）对学生拒绝
   if (req.user.role_name === "student") {
+    if (req.method !== "POST" || !req.originalUrl.includes("/ai-analysis")) {
+      res.status(403).json({ message: "权限不足" });
+      return;
+    }
     const scoreRepo = new ScoreRepository();
     if (scoreRepo.hasScore(req.user.id, examId)) {
       next();

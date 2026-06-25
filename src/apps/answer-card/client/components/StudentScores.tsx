@@ -238,7 +238,7 @@ function AiAnalysisForExam({ examId, examName }: { examId: number; examName: str
     setGenerating(true);
     setError("");
     try {
-      const res = await fetchJson<AiAnalysisResponse>(`/api/analysis/exams/${examId}/ai-analysis`, {
+      const res = await fetchJson<AiAnalysisResponse>(`/api/scores/me/exams/${examId}/ai-analysis`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
