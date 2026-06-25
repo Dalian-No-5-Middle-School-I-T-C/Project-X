@@ -101,8 +101,12 @@ export class ScoreRepository {
           ss.total_score AS totalScore,
           ROUND(
             (SELECT AVG(s2.total_score) FROM student_scores s2
-             JOIN class_students cs2 ON cs2.student_id = s2.student_id AND cs2.is_active = 1
-             WHERE s2.exam_id = ss.exam_id AND cs2.class_id = cs.class_id),
+             WHERE s2.exam_id = ss.exam_id
+               AND cs.class_id IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM class_students cs2
+                 WHERE cs2.student_id = s2.student_id AND cs2.class_id = cs.class_id
+               )),
             1
           ) AS classAvg,
           ROUND(
@@ -116,7 +120,9 @@ export class ScoreRepository {
           ) AS rank
         FROM student_scores ss
         JOIN exams e ON e.id = ss.exam_id
-        JOIN class_students cs ON cs.student_id = ss.student_id AND cs.is_active = 1
+        LEFT JOIN (
+          SELECT student_id, MIN(class_id) AS class_id FROM class_students GROUP BY student_id
+        ) cs ON cs.student_id = ss.student_id
         WHERE ss.student_id = ?
         ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC
       `)
