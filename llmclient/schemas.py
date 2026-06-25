@@ -11,12 +11,36 @@ class ProviderOverride(BaseModel):
     api_key: str = ""
 
 
+class StudentSubjectSummary(BaseModel):
+    subject: str
+    examCount: int
+    avgScore: float
+    avgClassAvg: float
+    gap: float
+
+
+class StudentRecentExam(BaseModel):
+    name: str
+    subject: str
+    score: float
+    classAvg: float
+    gradeAvg: float
+    rank: int
+    percentile: float | None = None
+
+
 class AnalysisRunRequest(BaseModel):
     examId: int
     classId: int | None = None
     model: str | None = None
     locale: str = "zh-CN"
     providerOverride: ProviderOverride | None = None
+    studentAnalysis: bool = False
+    studentId: int | None = None
+    studentName: str | None = None
+    subjectSummaries: list[StudentSubjectSummary] = Field(default_factory=list)
+    totalExams: int = 0
+    recentExams: list[StudentRecentExam] = Field(default_factory=list)
 
 
 class AiAnalysisQuestionAction(BaseModel):

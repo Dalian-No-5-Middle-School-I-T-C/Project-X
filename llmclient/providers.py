@@ -8,11 +8,12 @@ from typing import Any
 from openai import OpenAI
 
 from llmclient.config import ModelConfig, env_value
-from llmclient.schemas import AiAnalysisReport, AnalysisRunResponse, REPORT_SCHEMA, ToolCallTrace, empty_report
+from llmclient.schemas import AiAnalysisReport, AnalysisRunRequest, AnalysisRunResponse, REPORT_SCHEMA, ToolCallTrace, empty_report
 from llmclient.tools.registry import call_tool, gemini_function_declarations, openai_tools
-from llmclient.prompt import system
+from llmclient.prompt import student_system, system
 
 SYSTEM_PROMPT = system
+STUDENT_SYSTEM_PROMPT = student_system
 
 
 class _GeminiNonTextWarningFilter(logging.Filter):
@@ -34,6 +35,35 @@ def _user_prompt(exam_id: int, class_id: int | None, locale: str) -> str:
         "Call tools as needed before writing the final json report."
         f"Current Date: {datetime.now().strftime('%Y-%m-%d')}. This is the REAL TIME NOW, NOT a simulated or past or future date."
     )
+
+
+def _student_user_prompt(request: AnalysisRunRequest) -> str:
+    payload = {
+        "studentId": request.studentId,
+        "studentName": request.studentName,
+        "totalExams": request.totalExams,
+        "subjectSummaries": [item.model_dump() for item in request.subjectSummaries],
+        "recentExams": [item.model_dump() for item in request.recentExams],
+        "locale": request.locale,
+    }
+    return (
+        "Generate a personal study analysis report for this student using ONLY the JSON below. "
+        "Do not call tools.\n\n"
+        f"{json.dumps(payload, ensure_ascii=False)}"
+    )
+
+
+def _resolve_openai_client(model: ModelConfig, provider_override: dict[str, str] | None) -> OpenAI:
+    if provider_override:
+        api_key = provider_override["api_key"]
+        base_url = provider_override["base_url"].rstrip("/") if provider_override.get("base_url") else None
+    elif model.provider == "deepseek":
+        api_key = env_value("DEEPSEEK_API_KEY")
+        base_url = "https://api.deepseek.com"
+    else:
+        api_key = env_value("OPENAI_API_KEY")
+        base_url = env_value("OPENAI_BASE_URL") or None
+    return OpenAI(api_key=api_key, base_url=base_url)
 
 
 def _parse_report(text: str) -> AiAnalysisReport:
@@ -98,18 +128,7 @@ def run_openai_compatible_analysis(
     locale: str,
     provider_override: dict[str, str] | None = None,
 ) -> AnalysisRunResponse:
-    # Use provider override if provided, else fall back to env vars
-    if provider_override:
-        api_key = provider_override["api_key"]
-        base_url = provider_override["base_url"].rstrip("/") if provider_override.get("base_url") else None
-    elif model.provider == "deepseek":
-        api_key = env_value("DEEPSEEK_API_KEY")
-        base_url = "https://api.deepseek.com"
-    else:
-        api_key = env_value("OPENAI_API_KEY")
-        base_url = env_value("OPENAI_BASE_URL") or None
-
-    client = OpenAI(api_key=api_key, base_url=base_url)
+    client = _resolve_openai_client(model, provider_override)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": _user_prompt(exam_id, class_id, locale)},
@@ -187,6 +206,93 @@ def run_openai_compatible_analysis(
     )
 
 
+def run_openai_compatible_student_analysis(
+    model: ModelConfig,
+    request: AnalysisRunRequest,
+    provider_override: dict[str, str] | None = None,
+) -> AnalysisRunResponse:
+    client = _resolve_openai_client(model, provider_override)
+    kwargs: dict[str, Any] = {
+        "model": model.id,
+        "messages": [
+            {"role": "system", "content": STUDENT_SYSTEM_PROMPT},
+            {"role": "user", "content": _student_user_prompt(request)},
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 4096,
+        "stream": False,
+    }
+    if model.provider in ("deepseek", "openai") and model.thinking:
+        kwargs["reasoning_effort"] = model.reasoning_effort or "high"
+    if model.provider == "deepseek" and model.thinking:
+        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+    elif not model.thinking:
+        kwargs["temperature"] = 0.7
+
+    response = client.chat.completions.create(**kwargs)
+    content = response.choices[0].message.content or "{}"
+    try:
+        report = _parse_report(content)
+    except Exception as exc:
+        report = empty_report(f"AI report JSON parse failed: {exc}")
+    return AnalysisRunResponse(generatedAt=_now_iso(), model=model.id, report=report, toolCalls=[])
+
+
+def run_gemini_student_analysis(
+    model: ModelConfig,
+    request: AnalysisRunRequest,
+    provider_override: dict[str, str] | None = None,
+) -> AnalysisRunResponse:
+    from google import genai
+    from google.genai import types
+
+    _quiet_gemini_non_text_warning()
+    api_key = provider_override["api_key"] if provider_override else env_value("GEMINI_API_KEY")
+    client = genai.Client(api_key=api_key)
+    config_kwargs: dict[str, Any] = {
+        "system_instruction": STUDENT_SYSTEM_PROMPT,
+        "response_mime_type": "application/json",
+        "response_json_schema": REPORT_SCHEMA,
+    }
+    if model.thinking:
+        config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="high")
+    config = types.GenerateContentConfig(**config_kwargs)
+    response = client.models.generate_content(
+        model=model.id,
+        contents=[
+            types.Content(
+                role="user",
+                parts=[types.Part(text=_student_user_prompt(request))],
+            )
+        ],
+        config=config,
+    )
+    try:
+        report = _parse_report(_gemini_text(response) or "{}")
+    except Exception as exc:
+        report = empty_report(f"AI report JSON parse failed: {exc}")
+    return AnalysisRunResponse(generatedAt=_now_iso(), model=model.id, report=report, toolCalls=[])
+
+
+def run_student_analysis(
+    model: ModelConfig,
+    request: AnalysisRunRequest,
+    provider_override: dict[str, str] | None = None,
+) -> AnalysisRunResponse:
+    if not request.subjectSummaries and not request.recentExams:
+        return AnalysisRunResponse(
+            generatedAt=_now_iso(),
+            model=model.id,
+            report=empty_report("No student score data was provided for analysis."),
+            toolCalls=[],
+        )
+
+    effective_provider = provider_override.get("provider_type", model.provider) if provider_override else model.provider
+    if effective_provider == "gemini":
+        return run_gemini_student_analysis(model, request, provider_override)
+    return run_openai_compatible_student_analysis(model, request, provider_override)
+
+
 def run_gemini_analysis(
     model: ModelConfig,
     exam_id: int,
@@ -261,7 +367,11 @@ def run_analysis(
     class_id: int | None,
     locale: str,
     provider_override: dict[str, str] | None = None,
+    request: AnalysisRunRequest | None = None,
 ) -> AnalysisRunResponse:
+    if request is not None and request.studentAnalysis:
+        return run_student_analysis(model, request, provider_override)
+
     # If provider_override is given, treat as OpenAI-compatible unless explicitly gemini
     effective_provider = provider_override.get("provider_type", model.provider) if provider_override else model.provider
 

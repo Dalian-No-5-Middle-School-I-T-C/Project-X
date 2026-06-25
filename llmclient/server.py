@@ -77,11 +77,18 @@ def analysis_run(request: AnalysisRunRequest, _: None = Depends(require_internal
             raise HTTPException(status_code=400, detail=f"Missing {model.key_env} for model {model.id}")
         provider_dict = None
 
-    if not default_db_path().exists():
+    if not default_db_path().exists() and not request.studentAnalysis:
         raise HTTPException(status_code=400, detail=f"Project-X database not found: {default_db_path()}")
 
     try:
-        return run_analysis(model, request.examId, request.classId, request.locale, provider_dict)
+        return run_analysis(
+            model,
+            request.examId,
+            request.classId,
+            request.locale,
+            provider_dict,
+            request,
+        )
     except HTTPException:
         raise
     except Exception as exc:

@@ -5,7 +5,7 @@ import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS } from "../auth/permissions";
 import { getDatabase } from "../db";
-import type { SubjectWeaknessItem, StudentTrendPoint, AiAnalysisResponse } from "../../shared/types";
+import type { SubjectWeaknessItem, StudentTrendPoint, AiAnalysisResponse, AiAnalysisStatus } from "../../shared/types";
 
 /**
  * 成绩查询 API
@@ -14,6 +14,7 @@ import type { SubjectWeaknessItem, StudentTrendPoint, AiAnalysisResponse } from 
  * - /me*              ：任何已登录用户查询自己的成绩（学生自助查分核心）
  * - /me/trends        ：带班级/年级均分对比的趋势数据
  * - /me/subject-comparison ：学科横向对比（含薄弱学科标注）
+ * - /me/ai-status     ：学生端 AI 服务可用性探测
  * - /me/ai-analysis   ：学生个人 AI 整体分析
  * - /students/*       ：教师/管理员代查（要求 grade:read 权限）
  */
@@ -99,8 +100,90 @@ router.get("/me/subject-comparison", (req: Request, res: Response) => {
 
 // ── 学生个人 AI 整体分析 ──
 
-const LLM_CLIENT_BASE = process.env.LLM_CLIENT_URL || "http://127.0.0.1:8766";
-const LLM_INTERNAL_KEY = process.env.LLM_INTERNAL_KEY || "";
+const LLM_CLIENT_BASE = process.env.LLM_CLIENT_URL || process.env.LLMCLIENT_URL || "http://127.0.0.1:8766";
+const LLM_INTERNAL_KEY = process.env.LLM_INTERNAL_KEY || process.env.LLMCLIENT_INTERNAL_API_KEY || "";
+
+async function buildStudentAiStatus(userId: number): Promise<AiAnalysisStatus> {
+  const llmHeaders: Record<string, string> = {};
+  if (LLM_INTERNAL_KEY) llmHeaders.Authorization = `Bearer ${LLM_INTERNAL_KEY}`;
+
+  let healthOk = false;
+  let llmStatus: {
+    ok?: boolean;
+    dbExists?: boolean;
+    defaultModel?: string;
+    models?: Array<{ id: string; provider: string; label: string; available: boolean; thinking?: boolean }>;
+  } = {};
+
+  try {
+    const response = await fetch(`${LLM_CLIENT_BASE}/health`, { headers: llmHeaders });
+    healthOk = response.ok;
+    if (healthOk) {
+      llmStatus = await response.json() as typeof llmStatus;
+    }
+  } catch {
+    healthOk = false;
+  }
+
+  const db = getDatabase();
+  const providerRows = db.prepare(`
+    SELECT id, name, provider_type, base_url, api_key, models, is_active
+    FROM ai_providers
+    WHERE user_id = ? AND is_active = 1
+    ORDER BY sort_order, id
+  `).all(userId) as Array<{
+    id: number;
+    name: string;
+    provider_type: string;
+    base_url: string;
+    api_key: string;
+    models: string | null;
+    is_active: number;
+  }>;
+
+  const userProviders = providerRows.map((p) => ({
+    id: p.id,
+    name: p.name,
+    providerType: p.provider_type,
+    baseUrl: p.base_url,
+    apiKey: p.api_key,
+    models: p.models ? JSON.parse(p.models) as string[] : null,
+    isActive: true
+  }));
+
+  const configuredModels = llmStatus.models ?? [];
+  const hasAvailableModel = configuredModels.some((model) => model.available);
+  const hasUserProvider = userProviders.length > 0;
+
+  return {
+    available: Boolean((healthOk && llmStatus.dbExists && hasAvailableModel) || hasUserProvider),
+    reason: !healthOk
+      ? "LLM service is not reachable."
+      : !llmStatus.dbExists && !hasUserProvider
+        ? "LLM service is running, but Project-X database was not found."
+        : !hasAvailableModel && !hasUserProvider
+          ? "LLM service is running, but no provider API key is configured."
+          : undefined,
+    defaultModel: llmStatus.defaultModel ?? (hasUserProvider ? "auto" : null),
+    models: configuredModels,
+    providers: userProviders
+  };
+}
+
+/** GET /api/scores/me/ai-status — 学生端 AI 服务可用性（无需 grade:read） */
+router.get("/me/ai-status", async (req: Request, res: Response) => {
+  try {
+    res.json(await buildStudentAiStatus(req.user!.id));
+  } catch (error) {
+    res.status(500).json({
+      available: false,
+      reason: error instanceof Error ? error.message : "Failed to load AI status",
+      defaultModel: null,
+      models: [],
+      providers: []
+    });
+  }
+});
 
 /** POST /api/scores/me/ai-analysis — 学生整体成绩 AI 分析 */
 router.post("/me/ai-analysis", async (req: Request, res: Response) => {

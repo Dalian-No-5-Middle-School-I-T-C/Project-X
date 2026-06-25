@@ -56,7 +56,7 @@ export function StudentAiPanel() {
     try {
       // Fetch both status and user providers
       const [nextStatus, userProv] = await Promise.all([
-        fetchJson<AiAnalysisStatus>("/api/analysis/ai/status"),
+        fetchJson<AiAnalysisStatus>("/api/scores/me/ai-status"),
         fetchJson<AiProviderConfig[]>("/api/ai/providers"),
       ]);
       setStatus(nextStatus);
