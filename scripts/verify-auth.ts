@@ -213,9 +213,18 @@ async function main(): Promise<void> {
   ok(myScores[0].rank === 1 && myScores[0].class_size === 2, "即时排名计算正确（第1/共2）");
   ok(!scoreRepo.hasScore(student.id, examId + 999), "不存在的考试返回无成绩");
 
+  classRepo.addStudents(klass.id, [student.id]);
+  let studentTrends: ReturnType<ScoreRepository["getStudentTrendData"]> = [];
+  try {
+    studentTrends = scoreRepo.getStudentTrendData(student.id);
+    ok(true, "getStudentTrendData executes without SQL errors");
+  } catch (err) {
+    ok(false, `getStudentTrendData executes without SQL errors (${err instanceof Error ? err.message : err})`);
+  }
+  ok(studentTrends.some((t) => t.examId === examId && t.totalScore === 90), "getStudentTrendData includes scored exams");
+
   // ── 6.1 成绩分析趋势与统计 ─────────────────────────────
   section("6.1 Score analysis trend and summary");
-  classRepo.addStudents(klass.id, [student.id]);
   const extraA = await userRepo.createUser({
     username: "20260010",
     password: "20260010",

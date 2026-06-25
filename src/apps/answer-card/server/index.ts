@@ -11,6 +11,7 @@ import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
 import { AnalysisRepository } from "../../../server/repositories/AnalysisRepository";
+import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
 import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
 import type { AssignedFormula } from "../../../shared/types";
@@ -27,7 +28,7 @@ import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
 import { optionalAuth } from "../../../server/middleware/auth";
-import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
+import { loadRolePermissions, roleHasPermission, PERMISSIONS, ROLE_NAMES } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
@@ -414,6 +415,15 @@ function requireExamAccess(req: express.Request, res: express.Response, next: ex
   const examId = Number(req.params.examId);
   if (!examId) {
     res.status(400).json({ message: "缺少 examId" });
+    return;
+  }
+  if (req.user.role_name === ROLE_NAMES.STUDENT) {
+    const scoreRepo = new ScoreRepository();
+    if (!scoreRepo.hasScore(req.user.id, examId)) {
+      res.status(403).json({ message: "权限不足：无权访问此考试" });
+      return;
+    }
+    next();
     return;
   }
   const visibleIds = getVisibleExamIds(req.user);

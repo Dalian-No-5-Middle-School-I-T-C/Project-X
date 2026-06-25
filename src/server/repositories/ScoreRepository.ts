@@ -101,22 +101,34 @@ export class ScoreRepository {
           ss.total_score AS totalScore,
           ROUND(
             (SELECT AVG(s2.total_score) FROM student_scores s2
-             JOIN class_students cs2 ON cs2.student_id = s2.student_id AND cs2.is_active = 1
-             WHERE s2.exam_id = ss.exam_id AND cs2.class_id = cs.class_id),
+             JOIN class_students cs2 ON cs2.student_id = s2.student_id
+             JOIN users u2 ON u2.id = s2.student_id AND u2.is_active = 1
+             WHERE s2.exam_id = ss.exam_id AND cs2.class_id = primary_class.class_id),
             1
           ) AS classAvg,
           ROUND(
             (SELECT AVG(s3.total_score) FROM student_scores s3 WHERE s3.exam_id = ss.exam_id),
             1
           ) AS gradeAvg,
-          (SELECT COUNT(*) FROM student_scores s4 WHERE s4.exam_id = ss.exam_id) AS classSize,
+          (
+            SELECT COUNT(*) FROM student_scores s4
+            JOIN class_students cs4 ON cs4.student_id = s4.student_id
+            JOIN users u4 ON u4.id = s4.student_id AND u4.is_active = 1
+            WHERE s4.exam_id = ss.exam_id AND cs4.class_id = primary_class.class_id
+          ) AS classSize,
           (
             SELECT COUNT(*) + 1 FROM student_scores s5
-            WHERE s5.exam_id = ss.exam_id AND s5.total_score > ss.total_score
+            JOIN class_students cs5 ON cs5.student_id = s5.student_id
+            WHERE s5.exam_id = ss.exam_id AND cs5.class_id = primary_class.class_id
+              AND s5.total_score > ss.total_score
           ) AS rank
         FROM student_scores ss
         JOIN exams e ON e.id = ss.exam_id
-        JOIN class_students cs ON cs.student_id = ss.student_id AND cs.is_active = 1
+        LEFT JOIN (
+          SELECT student_id, MIN(class_id) AS class_id
+          FROM class_students
+          GROUP BY student_id
+        ) primary_class ON primary_class.student_id = ss.student_id
         WHERE ss.student_id = ?
         ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC
       `)
