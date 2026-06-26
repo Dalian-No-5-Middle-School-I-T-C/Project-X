@@ -90,11 +90,11 @@ export class AuthService {
    */
   async login(identifier: string, password: string, isPersistent = false): Promise<LoginResult> {
     // 查找用户（支持 username 或 student_number 或 email）
-    let user = this.userRepo.findByUsername(identifier);
+    let user = await this.userRepo.findByUsername(identifier);
 
     if (!user && /^\d+$/.test(identifier)) {
       // 纯数字，尝试学号
-      user = this.userRepo.findByStudentNumber(identifier);
+      user = await this.userRepo.findByStudentNumber(identifier);
     }
 
     if (!user) {
@@ -117,7 +117,7 @@ export class AuthService {
     }
 
     // 更新最后登录时间
-    this.userRepo.updateLastLogin(user.id);
+    await this.userRepo.updateLastLogin(user.id);
 
     // 生成 token
     const token = randomBytes(32).toString("hex");
@@ -202,11 +202,11 @@ export class AuthService {
   /**
    * 根据 token 获取用户
    */
-  getUserByToken(token: string): Omit<UserRecord, "password_hash"> | null {
+  async getUserByToken(token: string): Promise<Omit<UserRecord, "password_hash"> | null> {
     const record = this.verifyToken(token);
     if (!record) return null;
 
-    const user = this.userRepo.findById(record.userId);
+    const user = await this.userRepo.findById(record.userId);
     if (!user) return null;
 
     const { password_hash, ...safeUser } = user;

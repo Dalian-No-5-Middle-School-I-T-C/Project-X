@@ -99,7 +99,7 @@ router.post("/exams/:examId/scores", async (req: Request, res: Response) => {
 
     const db = getDatabase();
     const analysisRepo = new AnalysisRepository();
-    const { rows, examName, hasAssignedScore } = analysisRepo.getScoreTableData(examId, classId);
+    const { rows, examName, hasAssignedScore } = await analysisRepo.getScoreTableData(examId, classId);
 
     // Determine if we need sub-scores
     const needObjSub = columns.includes("objectiveSubScores");

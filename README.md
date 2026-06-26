@@ -1,10 +1,10 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.5.0-blue.svg" alt="Version">
-  <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/version-1.5.2-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20MySQL-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
-  <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20Electron-9cf.svg" alt="Tech Stack">
+  <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20MySQL%20%7C%20Electron-9cf.svg" alt="Tech Stack">
 </p>
 
 ## 项目简介
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.5.0
-> **核心能力**：答题卡设计（题块自动命名+分数统计）→ PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 大考组（跨科合集分析+跨科排名+ZIP导出）→ 跨考试总分统计（按周打包/手动选择，内联在考试选择页）→ 成绩查看（概况/成绩/考试分析/AI分析）→ 成绩修改（个别改分+批量改答案）→ 逐题得分明细 → 赋分引擎 → 导出模板系统（胶囊拖拽+客观题/主观题小分可选列）→ 教师/学生/班级管理 → 多服务商 AI 分析（GPT/DeepSeek/Gemini）→ 并列排名（同分同排）→ 暗色主题（实验性）
-> **下个里程碑**：v2.0.0 — 成绩预测、跨班深度对比、知识点诊断
+> **当前版本**：v1.5.2
+> **核心能力**：答题卡设计（题块自动命名+分数统计）→ PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 大考组（跨科合集分析+跨科排名+ZIP导出）→ 跨考试总分统计（按周打包/手动选择，内联在考试选择页）→ 成绩查看（概况/成绩/考试分析/AI分析）→ 成绩修改（个别改分+批量改答案）→ 逐题得分明细 → 赋分引擎 → 导出模板系统（胶囊拖拽+客观题/主观题小分可选列）→ 教师/学生/班级管理 → 教师细分角色（学科老师/班主任/学年主任，数据范围隔离）→ 多服务商 AI 分析（GPT/DeepSeek/Gemini）→ 并列排名（同分同排）→ 暗色主题 → **MySQL 双后端架构（SQLite/MySQL 环境变量切换，为 B/S 服务端化奠基）**
+> **下个里程碑**：v1.6.0 — 服务器部署、性能深度优化
 
 ---
 
@@ -128,12 +128,12 @@
 
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
 ```
-Project-X 学生端-1.5.0-x64.exe
-Project-X 教师端-1.5.0-x64.exe
-Project-X 教师扫描端-1.5.0-x64.exe
-Project-X 学生端-1.5.0-ia32.exe
-Project-X 教师端-1.5.0-ia32.exe
-Project-X 教师扫描端-1.5.0-ia32.exe
+Project-X 学生端-1.5.2-x64.exe
+Project-X 教师端-1.5.2-x64.exe
+Project-X 教师扫描端-1.5.2-x64.exe
+Project-X 学生端-1.5.2-ia32.exe
+Project-X 教师端-1.5.2-ia32.exe
+Project-X 教师扫描端-1.5.2-ia32.exe
 ```
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
@@ -177,6 +177,28 @@ npm install --ignore-scripts
 > ```powershell
 > npm rebuild better-sqlite3
 > ```
+
+#### 数据库模式
+
+Project-X v1.5.2 支持双数据库后端，通过环境变量切换：
+
+| 模式 | 说明 | 何时使用 |
+|------|------|---------|
+| **SQLite**（默认） | 本地文件 `%APPDATA%\answer-card-designer\data\projectx.db` | 单机桌面端、开发调试 |
+| **MySQL** | 连接池，集中管理 | 多台电脑共享数据、B/S 服务端部署 |
+
+```powershell
+# SQLite 模式（默认，无需任何配置）
+npm run dev
+
+# MySQL 模式
+$env:PROJECTX_MYSQL_HOST     = "127.0.0.1"
+$env:PROJECTX_MYSQL_USER     = "projectx"
+$env:PROJECTX_MYSQL_PASSWORD = "projectx"
+npm run dev
+```
+
+> MySQL 首次启动时自动执行 `schema.mysql.sql` 建表。详见 [`readus/CHANGELOG.md`](./readus/CHANGELOG.md#v152-2026-06-26--数据库双后端架构)。
 
 #### 开发模式
 
@@ -272,7 +294,7 @@ npm run electron:msi                   # = electron:msi:scanner
 | [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.5.0 大考组+跨考内联+并列排名 + v1.4.7 暗色修复 + v1.3.0 学科模板） | 开发者 / 测试 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.5.2 双后端架构 + v1.5.1 学生端 + v1.5.0 大考组） | 全体 |
 
 ---
 

@@ -23,38 +23,38 @@ const userRepo = new UserRepository();
 router.use(authMiddleware);
 
 /** GET /api/scores/me — 当前登录用户（学生）的全部考试成绩 */
-router.get("/me", (req: Request, res: Response) => {
-  const scores = scoreRepo.getStudentScores(req.user!.id);
+router.get("/me", async (req: Request, res: Response) => {
+  const scores = await scoreRepo.getStudentScores(req.user!.id);
   res.json({ studentId: req.user!.id, name: req.user!.name, scores });
 });
 
 /** GET /api/scores/me/exams/:examId — 当前用户某场考试的逐题明细 */
-router.get("/me/exams/:examId", (req: Request, res: Response) => {
+router.get("/me/exams/:examId", async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
-  if (!scoreRepo.hasScore(req.user!.id, examId)) {
+  if (!(await scoreRepo.hasScore(req.user!.id, examId))) {
     res.status(404).json({ message: "未找到你在该场考试的成绩" });
     return;
   }
   res.json({
     examId,
-    questions: scoreRepo.getStudentQuestionScores(req.user!.id, examId)
+    questions: await scoreRepo.getStudentQuestionScores(req.user!.id, examId)
   });
 });
 
 /** GET /api/scores/me/trends — 当前用户的成绩趋势数据（含班级/年级均分） */
-router.get("/me/trends", (req: Request, res: Response) => {
+router.get("/me/trends", async (req: Request, res: Response) => {
   const subject = typeof req.query.subject === "string" ? req.query.subject : undefined;
   const limit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : undefined;
-  let trends: StudentTrendPoint[] = scoreRepo.getStudentTrendData(req.user!.id);
+  let trends: StudentTrendPoint[] = await scoreRepo.getStudentTrendData(req.user!.id);
   if (subject) trends = trends.filter((t) => t.subject === subject);
   if (limit && limit > 0) trends = trends.slice(-limit);
   res.json(trends);
 });
 
 /** GET /api/scores/me/subject-comparison — 学科横向对比（薄弱分析） */
-router.get("/me/subject-comparison", (req: Request, res: Response) => {
+router.get("/me/subject-comparison", async (req: Request, res: Response) => {
   const limit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 0;
-  const trends: StudentTrendPoint[] = scoreRepo.getStudentTrendData(req.user!.id);
+  const trends: StudentTrendPoint[] = await scoreRepo.getStudentTrendData(req.user!.id);
 
   // 按学科分组聚合
   const bySubject = new Map<string, StudentTrendPoint[]>();
@@ -108,7 +108,7 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
     res.status(400).json({ message: "无效的考试 ID" });
     return;
   }
-  if (!scoreRepo.hasScore(req.user!.id, examId)) {
+  if (!(await scoreRepo.hasScore(req.user!.id, examId))) {
     res.status(403).json({ message: "你未参加该考试" });
     return;
   }
@@ -158,7 +158,7 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
 
 /** POST /api/scores/me/ai-analysis — 学生整体成绩分析 */
 router.post("/me/ai-analysis", async (req: Request, res: Response) => {
-  const trends = scoreRepo.getStudentTrendData(req.user!.id);
+  const trends = await scoreRepo.getStudentTrendData(req.user!.id);
   if (trends.length === 0) {
     res.status(400).json({ message: "暂无成绩数据可分析" });
     return;
@@ -250,9 +250,9 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
 const canQueryOthers = requirePermission(PERMISSIONS.GRADE_READ);
 
 /** GET /api/scores/students/:studentId — 代查某学生全部成绩 */
-router.get("/students/:studentId", canQueryOthers, (req: Request, res: Response) => {
+router.get("/students/:studentId", canQueryOthers, async (req: Request, res: Response) => {
   const studentId = Number(req.params.studentId);
-  const student = userRepo.findByIdIncludingInactive(studentId);
+  const student = await userRepo.findByIdIncludingInactive(studentId);
   if (!student || student.role_id !== ROLE_IDS.STUDENT) {
     res.status(404).json({ message: "学生不存在" });
     return;
@@ -261,18 +261,18 @@ router.get("/students/:studentId", canQueryOthers, (req: Request, res: Response)
     studentId,
     name: student.name,
     student_number: student.student_number,
-    scores: scoreRepo.getStudentScores(studentId)
+    scores: await scoreRepo.getStudentScores(studentId)
   });
 });
 
 /** GET /api/scores/students/:studentId/exams/:examId — 代查逐题明细 */
-router.get("/students/:studentId/exams/:examId", canQueryOthers, (req: Request, res: Response) => {
+router.get("/students/:studentId/exams/:examId", canQueryOthers, async (req: Request, res: Response) => {
   const studentId = Number(req.params.studentId);
   const examId = Number(req.params.examId);
   res.json({
     studentId,
     examId,
-    questions: scoreRepo.getStudentQuestionScores(studentId, examId)
+    questions: await scoreRepo.getStudentQuestionScores(studentId, examId)
   });
 });
 

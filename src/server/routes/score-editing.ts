@@ -23,7 +23,7 @@ import type { AnswerCard, ObjectiveBlock, ObjectiveRecognitionQuestion, Subjecti
 const router = express.Router();
 
 // ── 搜索考生（考号/姓名） ──────────────────────────
-router.get("/:examId/students/search", (req: Request, res: Response) => {
+router.get("/:examId/students/search", async  (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   const q = (req.query.q as string || "").trim();
   if (!Number.isFinite(examId) || !q) {
@@ -49,7 +49,7 @@ router.get("/:examId/students/search", (req: Request, res: Response) => {
 });
 
 // ── 获取某学生全部题目得分 + 答题卡图片路径 ──────────
-router.get("/:examId/student/:studentId/scores", (req: Request, res: Response) => {
+router.get("/:examId/student/:studentId/scores", async  (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   const studentId = Number(req.params.studentId);
   if (!Number.isFinite(examId) || !Number.isFinite(studentId)) {
@@ -121,7 +121,7 @@ router.get("/:examId/student/:studentId/scores", (req: Request, res: Response) =
     }
   }
   const cardRepo = new CardRepository();
-  const card = cardRepo.findById(cardId);
+  const card = await cardRepo.findById(cardId);
   if (!card) { res.status(404).json({ message: "答题卡数据不存在" }); return; }
 
   // Build question definition lookup from card
@@ -215,7 +215,7 @@ router.get("/:examId/student/:studentId/scores", (req: Request, res: Response) =
 });
 
 // ── 逐题修改分数 ──────────────────────────────────
-router.put("/:examId/student/:studentId/scores", (req: Request, res: Response) => {
+router.put("/:examId/student/:studentId/scores", async  (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   const studentId = Number(req.params.studentId);
   if (!Number.isFinite(examId) || !Number.isFinite(studentId)) {
@@ -288,7 +288,7 @@ router.put("/:examId/student/:studentId/scores", (req: Request, res: Response) =
 });
 
 // ── 获取考试的答题卡答案配置 ──────────────────────
-router.get("/:examId/answers", (req: Request, res: Response) => {
+router.get("/:examId/answers", async  (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   if (!Number.isFinite(examId)) {
     res.status(400).json({ message: "非法考试 ID" });
@@ -303,7 +303,7 @@ router.get("/:examId/answers", (req: Request, res: Response) => {
   if (!exam.card_id) { res.status(404).json({ message: "此考试未关联答题卡" }); return; }
 
   const cardRepo = new CardRepository();
-  const card = cardRepo.findById(exam.card_id);
+  const card = await cardRepo.findById(exam.card_id);
   if (!card) { res.status(404).json({ message: "答题卡数据不存在" }); return; }
 
   const questions: Array<Record<string, unknown>> = [];
@@ -341,7 +341,7 @@ router.get("/:examId/answers", (req: Request, res: Response) => {
 });
 
 // ── 修改答案并自动重算所有学生分数 ────────────────
-router.put("/:examId/answers", (req: Request, res: Response) => {
+router.put("/:examId/answers", async  (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   if (!Number.isFinite(examId)) {
     res.status(400).json({ message: "非法考试 ID" });
@@ -362,7 +362,7 @@ router.put("/:examId/answers", (req: Request, res: Response) => {
   if (!exam || !exam.card_id) { res.status(404).json({ message: "考试不存在或未关联答题卡" }); return; }
 
   const cardRepo = new CardRepository();
-  const card = cardRepo.findById(exam.card_id);
+  const card = await cardRepo.findById(exam.card_id);
   if (!card) { res.status(404).json({ message: "答题卡数据不存在" }); return; }
 
   // Record old values before modifying
