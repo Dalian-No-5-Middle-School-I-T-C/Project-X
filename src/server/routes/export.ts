@@ -17,9 +17,9 @@ router.use(authMiddleware);
 router.use(requirePermission(PERMISSIONS.USER_MANAGE));
 
 /** GET /api/export/students — 导出学生账密 Excel */
-router.get("/students", (_req: Request, res: Response) => {
+router.get("/students", async (_req: Request, res: Response) => {
   try {
-    const rows = userRepo.listAllStudentsForExport();
+    const rows = await userRepo.listAllStudentsForExport();
     const data = rows.map((r) => ({
       "年级": r.grade_name,
       "班级": r.class_name,
@@ -46,9 +46,9 @@ router.get("/students", (_req: Request, res: Response) => {
 });
 
 /** GET /api/export/teachers — 导出教师账密 Excel */
-router.get("/teachers", (_req: Request, res: Response) => {
+router.get("/teachers", async (_req: Request, res: Response) => {
   try {
-    const teachers = userRepo.listAllTeachersForExport();
+    const teachers = await userRepo.listAllTeachersForExport();
     const data = teachers.map((t) => ({
       "科目": t.subject ?? "",
       "姓名": t.name,
@@ -73,12 +73,12 @@ router.get("/teachers", (_req: Request, res: Response) => {
 });
 
 /** GET /api/export/students.csv — 重定向到 .xlsx（兼容旧 URL） */
-router.get("/students.csv", (req: Request, res: Response) => {
+router.get("/students.csv", async (req: Request, res: Response) => {
   res.redirect(301, "/api/export/students");
 });
 
 /** GET /api/export/teachers.csv — 重定向到 .xlsx（兼容旧 URL） */
-router.get("/teachers.csv", (req: Request, res: Response) => {
+router.get("/teachers.csv", async (req: Request, res: Response) => {
   res.redirect(301, "/api/export/teachers");
 });
 

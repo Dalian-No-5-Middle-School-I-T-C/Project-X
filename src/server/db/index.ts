@@ -80,3 +80,7 @@ export async function ensureDefaultAdmin(): Promise<void> {
 
 export { runMigrations };
 export { resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath } from "./paths";
+
+// ── MySQL 异步适配器（供逐步迁移使用）──────────────────
+export { getMysqlDb, initMysqlSchema } from "./mysql";
+export type { DbAdapter } from "./mysql";
