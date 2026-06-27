@@ -169,14 +169,14 @@ React AnalysisAiPanel
 - `AnalysisRepository` — 聚合统计查询
 - `UserRepository` — 用户与角色
 
-数据库连接在 `src/server/db/index.ts`，使用 **better-sqlite3 同步 API + WAL + 外键**。
+数据库入口在 `src/server/db/`：`index.ts` 负责连接与初始化编排，`paths.ts` 统一解析 `projectx.db`、`data/answer-card/` 和 legacy `scanner.db` 路径，`migrations.ts` 通过 `schema_migrations` 记录版本化幂等迁移。底层继续使用 **better-sqlite3 同步 API + WAL + 外键**。
 
 ### 4.4 双数据库设计
 
 | 数据库 | 路径 | 用途 |
 |--------|------|------|
 | **projectx.db** | `PROJECTX_DB_PATH` | 用户、角色、答题卡、考试、成绩、班级 |
-| **scanner.db** | `data/answer-card/scanner.db` | 扫描会话、逐页记录、识别结果快照 |
+| **scanner.db** | `data/answer-card/scanner.db` | legacy 扫描会话缓存；文件不存在时视为正常 |
 
 扫描子系统独立库，与主库解耦，便于扫描流水单独保留/清理（主库 schema 注释：扫描原始数据保留 30 天）。
 
@@ -194,7 +194,7 @@ data/answer-card/
 └── scanner.db
 ```
 
-答题卡保存时会 **同时写 DB + 布局 JSON 文件**，识别引擎只读 JSON 布局文件路径。
+答题卡结构保存到 SQLite 的结构化表；`layouts/` 下的 LayoutDocument JSON 是按需由 `buildLayout(card)` 生成的派生产物，识别引擎只读取最新生成的布局文件路径。
 
 ---
 
@@ -366,7 +366,7 @@ flowchart LR
 **权衡 / 注意点：**
 
 1. **Windows 绑定** — TWAIN、Electron 打包、C++ 均面向 Windows 桌面环境；当前提供 x64 与 ia32 两套 native 资源
-2. **双存储** — 答题卡既在 SQLite 又在 `layouts/` JSON，需保持一致（保存路径已统一在 `saveCardWithLayout`）
+2. **派生布局** — SQLite 保存答题卡结构，`layouts/` JSON 由 `buildLayout(card)` 按需刷新；`answer_cards.layout_data` 仅为兼容遗留列
 3. **单体 Express** — 路由集中在 `index.ts`（700+ 行），随功能增长可考虑按域拆 router
 4. **子进程识别** — 简单可靠，但高并发批量阅卷时进程开销明显
 5. **Auth 完全贯通** — v1.1 具备登录门禁、角色化 UI 和基于权限的 API 访问
@@ -379,7 +379,7 @@ flowchart LR
 [设计模式]
   用户编辑 AnswerCard
     → buildLayout() 生成 LayoutDocument
-    → CardRepository + layouts/*.json
+    → CardRepository 结构化落库 + buildLayout() 派生 layouts/*.json
     → pdfkit 导出 A4 PDF
 
 [阅卷模式]
@@ -414,4 +414,4 @@ flowchart LR
 ---
 
 > 文档生成日期：2026-06-13  
-> 基于 Project-X v1.3.0 代码库分析
+> 基于 Project-X v1.5.0 代码库分析

@@ -1,6 +1,6 @@
 # Project-X 账号管理系统技术架构与版本说明
 
-> **版本**: v1.3.0
+> **版本**: v1.5.0
 > **日期**: 2026-06-17
 > **关联文档**: [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md)（后端 API 详述）· [`ARCHITECTURE.md`](./ARCHITECTURE.md)（系统总览）· [`ADMIN-GUIDE.md`](./ADMIN-GUIDE.md)（管理员手册）
 

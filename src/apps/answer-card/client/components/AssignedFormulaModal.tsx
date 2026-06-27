@@ -117,7 +117,7 @@ export function AssignedFormulaModal({ examId, examName, subject, onClose, onSav
                     fontSize: 12,
                     border: `1px solid ${formula?.type === p.formula.type ? "var(--brand)" : "var(--line)"}`,
                     borderRadius: 8,
-                    background: formula?.type === p.formula.type ? "var(--surface-tint)" : "#fff"
+                    background: formula?.type === p.formula.type ? "var(--surface-tint)" : "var(--surface)"
                   }}
                 >
                   {p.name}

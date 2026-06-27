@@ -4,7 +4,7 @@
 > **适用对象**: 教师、管理员、开发者 / 运维
 > **关联文档**: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`ADMIN-GUIDE.md`](./ADMIN-GUIDE.md) · [`多端使用说明.md`](./多端使用说明.md)
 
-Project-X v1.2.0 在「分析 → 成绩分析」中新增 AI 成绩分析卡片。v1.4.0 扩展为多服务商架构，支持 GPT、DeepSeek、哈基米、Gemini 四线路，并可自定义 Base URL。
+Project-X v1.2.0 在「分析 → 成绩分析」中新增 AI 成绩分析卡片。v1.4.0 扩展为多服务商架构，支持 GPT、DeepSeek、Gemini 三线路。v1.4.7 修复 Gemini 自定义服务商路由 Bug，Gemini 使用 Google 原生 GenAI SDK（不需 Base URL）。
 
 AI 报告只读取当前考试和当前班级筛选范围内的成绩统计数据，不允许模型执行任意 SQL，也不会把学生个人姓名作为分析素材返回给模型。
 
@@ -29,8 +29,9 @@ Python 服务未启动、数据库路径不可访问、或当前 provider 没有
 无需 llmclient 配置环境变量，直接在账号设置中配置：
 
 1. 进入「账号设置」→「AI 服务商」→「添加」
-2. 选择类型：GPT（OpenAI兼容）/ DeepSeek / 哈基米（自定义）/ Gemini
-3. 填写 Base URL、API Key，可选填模型列表（逗号分隔，如 `gpt-5.4,gpt-5.4-mini`）
+2. 选择类型：GPT（OpenAI兼容）/ DeepSeek / Gemini
+3. 填写 Base URL（GPT/DeepSeek 必填；**Gemini 无需填写 Base URL**，仅需 API Key）
+   Gemini 使用 Google 原生 GenAI SDK，可通过 <a href="https://aistudio.google.com/apikey" target="_blank">Google AI Studio</a> 免费获取 API Key
 4. 进入 AI 分析面板，选择你配置的服务商 → 输入模型名 → 生成分析
 
 服务商配置保存在 `ai_providers` 表中，每个教师可配置多个服务商。

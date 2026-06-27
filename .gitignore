@@ -17,6 +17,8 @@ release/
 *.env
 *.pdf
 test*
+!testdata/
+!testdata/**
 __pycache__/
 *.pyc
 *.pyo

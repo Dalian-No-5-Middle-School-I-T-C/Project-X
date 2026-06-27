@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.4.0
+> **版本**: v1.5.0
 > **技术栈**: SQLite + better-sqlite3 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
 
@@ -165,7 +165,7 @@ npm run server
 | `subject_label` | TEXT | 科目中文名 |
 | `exam_date` | TEXT | 考试日期，ISO `YYYY-MM-DD` |
 | `sided` | TEXT | `single` / `double` |
-| `layout_data` | TEXT | JSON：完整 LayoutDocument 坐标数据 |
+| `layout_data` | TEXT | 兼容遗留列；运行时不再读写，布局由 `buildLayout(card)` 按需生成 |
 | `created_by` | INTEGER FK | 创建者用户ID |
 
 #### `objective_blocks` / `objective_questions` — 客观题块与逐题配置
@@ -244,8 +244,48 @@ v1.4.5 新增 `manually_modified`、`modified_by`、`modified_at` 字段追踪�
 
 记录每次手动改分或修改答案的操作轨迹，用于审计追溯。
 
----
+### 模块五：大考组 (v1.5.0)
 
+#### `exam_groups` — 大考组表 (v1.5.0)
+
+将大考合集和跨考试总分统计两种用途统一为一张表，通过 `source` 列区分：
+
+| `source` 值 | 用途 | 列表 API |
+|-----------|------|---------|
+| `NULL` 或 `'manual'` | 大考组（含题块/标签/年级/排名等） | `GET /api/exam-groups` |
+| `'cross-manual'` | 跨考手动组（选定考试合并） | `GET /api/analysis/cross-exam/groups` |
+| `'week'` | 跨考周包（按日期打包） | `GET /api/analysis/cross-exam/groups` |
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `name` | TEXT | 大考名称（如"2026高考摸底大考"） |
+| `description` | TEXT | 可选描述 |
+| `source` | TEXT | 区分大考/跨考：NULL 或 'manual'=大考, 'cross-manual'=跨考手动, 'week'=跨考周包 |
+| `start_date` | TEXT | 起始日期（跨考试统计用） |
+| `end_date` | TEXT | 截止日期（跨考试统计用） |
+| `grade_id` | INTEGER FK | 关联年级 |
+| `tag` | TEXT | 标签：月考/期中/期末/模考/统考 |
+| `status` | TEXT | active / archived |
+| `is_official` | INTEGER | 是否官方统考 0/1 |
+| `total_score_mode` | TEXT | raw / assigned（总分按原始分还是赋分算） |
+| `only_full_participants` | INTEGER | 仅统计全科参加的学生 0/1 |
+| `created_by` | INTEGER FK | 创建者用户ID |
+| `created_at` | DATETIME | 创建时间 |
+| `updated_at` | DATETIME | 更新时间 |
+
+#### `exam_group_members` — 大考组成员考试关联表
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `group_id` | INTEGER FK | 所属大考组，级联删除 |
+| `exam_id` | INTEGER FK | 关联考试ID，级联删除 |
+| `sort_order` | INTEGER | 排序（语数英物化生等） |
+| `created_at` | DATETIME | 关联创建时间 |
+| UNIQUE(group_id, exam_id) | — | 同一大考同一考试不重复关联 |
+
+---
 ## API 接口
 
 ### 认证接口
@@ -395,7 +435,7 @@ $env:PROJECTX_DB_PATH = "D:\\shared\\projectx.db"
 ### Q: 如何备份数据库？
 
 **方式一：程序内导出（推荐）**
-管理员登录后，点击右上角账号 →「导出数据」，系统会自动打包 ZIP（含 projectx.db + scanner.db + data/answer-card/ 目录）供下载。备份文件支持通过「导入数据」一键恢复。
+管理员登录后，点击右上角账号 →「导出数据」，系统会自动打包 ZIP（含 projectx.db、可选 scanner.db、data/answer-card/ 目录）供下载。当前运行时若没有 legacy scanner.db 属于正常状态，备份文件仍支持通过「导入数据」一键恢复。
 
 **方式二：手动复制**
 SQLite 数据库是单个文件，直接复制 `projectx.db` 即可备份：
@@ -443,8 +483,11 @@ UPDATE users SET password_hash = '<new_hash>' WHERE username = 'admin';
 ```
 src/server/
 ├── db/
-│   ├── schema.sql           # 完整建表 SQL
-│   ├── index.ts             # 数据库连接、初始化、密码哈希
+│   ├── schema.sql           # 完整建表 SQL 快照
+│   ├── index.ts             # 数据库连接、初始化编排、密码哈希
+│   ├── paths.ts             # projectx.db / answer-card 数据目录 / scanner.db 路径解析
+│   ├── migrations.ts        # 版本化幂等迁移（schema_migrations）
+│   ├── seeds.ts             # 默认角色与保留策略
 │   └── cleanup.ts           # 数据清理脚本 + 定时任务
 ├── repositories/
 │   ├── UserRepository.ts      # 用户 CRUD + 批量导入 + 导出
@@ -477,6 +520,7 @@ src/types/
 
 ## 更新日志
 
+- **v1.5.0** (06-24) — 大考组功能：`exam_groups` + `exam_group_members` 表（含 source/start_date/end_date 跨考字段），支持多科合集分析、跨科排名、ZIP 导出、跨考内联、并列排名
 - **v1.2.1** (06-17) — 数据库全量备份/恢复（ZIP 导出导入），强制考试时间，UI 响应式三级断点，导入模板升级 .xlsx
 - **v1.2.0** (06-17) — AI 成绩分析，Electron 探活增强
 - **v1.1.5** (06-16) — 阅卷流程重构，多端打包 x86/x64
@@ -504,21 +548,21 @@ src/types/
 | `id` | INTEGER PK | 自增主键 |
 | `user_id` | INTEGER FK | 所属用户 |
 | `name` | TEXT | 自定义名称（如 "我的GPT"） |
-| `provider_type` | TEXT | openai / deepseek / haqimi / gemini |
-| `base_url` | TEXT | API 端点地址（保存时自动补齐 `/v1`） |
+| `provider_type` | TEXT | openai / deepseek / gemini |
+| `base_url` | TEXT | API 端点地址（Gemini 留空，其余自动补齐 `/v1`） |
 | `api_key` | TEXT | API 密钥 |
 | `models` | TEXT | JSON 模型列表，为空则自动获取 |
 | `is_active` | INTEGER | 0=禁用 1=启用 |
 
 每个教师可配置多个服务商，用于 AI 成绩分析的模型路由。
 
-**Base URL 说明**：填写 API 端点地址而非网站首页。系统会自动补齐末尾的 `/v1` 路径。
+**Base URL 说明**：填写 API 端点地址而非网站首页。GPT/DeepSeek 等 OpenAI 兼容协议会自动补齐 `/v1`；**Gemini 无需填写 Base URL**（使用 Google 原生 GenAI SDK，仅需 API Key）。
 常见的 Base URL 示例：
 - **OpenAI**: `https://api.openai.com`（自动补为 `https://api.openai.com/v1`）
 - **DeepSeek**: `https://api.deepseek.com`（自动补为 `https://api.deepseek.com/v1`）
+- **Gemini**: 无需填写（Google 原生 SDK）
 - **Azure**: `https://xxx.openai.azure.com/openai`（含 `/openai` 部署前缀，不自动补 `/v1`）
 - **Ollama**: `http://localhost:11434`（自动补为 `http://localhost:11434/v1`）
-- **其他兼容**: `https://your-api-host.com`（自动补为 `https://your-api-host.com/v1`）
 
 > ⚠️ **使用前提**：自定义服务商仍需通过 Python llmclient 中转服务。请先启动：
 > ```powershell

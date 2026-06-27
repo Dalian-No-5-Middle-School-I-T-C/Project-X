@@ -1,5 +1,5 @@
-import { getDatabase } from "../db";
-import Database from "better-sqlite3";
+import { getMysqlDb } from "../db";
+import type { DbAdapter } from "../db";
 
 export interface GradeRecord {
   id: number;
@@ -31,35 +31,30 @@ export interface ClassStudent {
  * 管理员通过 /api/classes 维护组织结构，教师/分析模块按 grade_id / class_id 过滤成绩。
  */
 export class ClassRepository {
-  private db: Database.Database;
+  private db: DbAdapter;
 
   constructor() {
-    this.db = getDatabase();
+    this.db = getMysqlDb();
   }
 
   // ── 年级 ──────────────────────────────────────────────
 
-  listGrades(): GradeRecord[] {
-    return this.db
-      .prepare("SELECT * FROM grades ORDER BY sort_order ASC, id ASC")
-      .all() as GradeRecord[];
+  async listGrades(): Promise<GradeRecord[]> {
+    return await this.db.all("SELECT * FROM grades ORDER BY sort_order ASC, id ASC");
   }
 
-  createGrade(name: string, sortOrder = 0): GradeRecord {
-    const result = this.db
-      .prepare("INSERT INTO grades (name, sort_order) VALUES (?, ?)")
-      .run(name, sortOrder);
-    return this.db.prepare("SELECT * FROM grades WHERE id = ?").get(result.lastInsertRowid as number) as GradeRecord;
+  async createGrade(name: string, sortOrder = 0): Promise<GradeRecord> {
+    const result = await this.db.run("INSERT INTO grades (name, sort_order) VALUES (?, ?)", name, sortOrder);
+    return (await this.db.get("SELECT * FROM grades WHERE id = ?", result.lastInsertRowid))!;
   }
 
-  deleteGrade(id: number): void {
-    // 外键 ON DELETE CASCADE 会级联删除班级与花名册
-    this.db.prepare("DELETE FROM grades WHERE id = ?").run(id);
+  async deleteGrade(id: number): Promise<void> {
+    await this.db.run("DELETE FROM grades WHERE id = ?", id);
   }
 
   // ── 班级 ──────────────────────────────────────────────
 
-  listClasses(gradeId?: number): ClassRecord[] {
+  async listClasses(gradeId?: number): Promise<ClassRecord[]> {
     let sql = `
       SELECT c.*, g.name as grade_name,
         (SELECT COUNT(*) FROM class_students cs WHERE cs.class_id = c.id) as student_count
@@ -72,129 +67,93 @@ export class ClassRepository {
       params.push(gradeId);
     }
     sql += " ORDER BY g.sort_order ASC, c.sort_order ASC, c.id ASC";
-    return this.db.prepare(sql).all(...params) as ClassRecord[];
+    return await this.db.all(sql, ...params);
   }
 
-  findClassById(id: number): ClassRecord | null {
-    const row = this.db
-      .prepare(`
-        SELECT c.*, g.name as grade_name
-        FROM classes c JOIN grades g ON g.id = c.grade_id
-        WHERE c.id = ?
-      `)
-      .get(id) as ClassRecord | undefined;
-    return row ?? null;
+  async findClassById(id: number): Promise<ClassRecord | null> {
+    return await this.db.get(`
+      SELECT c.*, g.name as grade_name
+      FROM classes c JOIN grades g ON g.id = c.grade_id
+      WHERE c.id = ?
+    `, id);
   }
 
-  createClass(gradeId: number, name: string, sortOrder = 0): ClassRecord {
-    const result = this.db
-      .prepare("INSERT INTO classes (grade_id, name, sort_order) VALUES (?, ?, ?)")
-      .run(gradeId, name, sortOrder);
-    return this.findClassById(result.lastInsertRowid as number)!;
+  async createClass(gradeId: number, name: string, sortOrder = 0): Promise<ClassRecord> {
+    const result = await this.db.run("INSERT INTO classes (grade_id, name, sort_order) VALUES (?, ?, ?)", gradeId, name, sortOrder);
+    return (await this.findClassById(result.lastInsertRowid))!;
   }
 
-  deleteClass(id: number): void {
-    this.db.prepare("DELETE FROM classes WHERE id = ?").run(id);
+  async deleteClass(id: number): Promise<void> {
+    await this.db.run("DELETE FROM classes WHERE id = ?", id);
   }
 
   // ── 花名册 ────────────────────────────────────────────
 
-  listStudents(classId: number): ClassStudent[] {
-    return this.db
-      .prepare(`
-        SELECT cs.student_id, u.username, u.name, u.student_number, cs.joined_at
-        FROM class_students cs
-        JOIN users u ON u.id = cs.student_id
-        WHERE cs.class_id = ? AND u.is_active = 1
-        ORDER BY u.student_number ASC, u.id ASC
-      `)
-      .all(classId) as ClassStudent[];
+  async listStudents(classId: number): Promise<ClassStudent[]> {
+    return await this.db.all(`
+      SELECT cs.student_id, u.username, u.name, u.student_number, cs.joined_at
+      FROM class_students cs
+      JOIN users u ON u.id = cs.student_id
+      WHERE cs.class_id = ? AND u.is_active = 1
+      ORDER BY u.student_number ASC, u.id ASC
+    `, classId);
   }
 
-  /** 将学生加入班级（幂等） */
-  addStudent(classId: number, studentId: number): void {
-    this.db
-      .prepare("INSERT OR IGNORE INTO class_students (class_id, student_id) VALUES (?, ?)")
-      .run(classId, studentId);
+  async addStudent(classId: number, studentId: number): Promise<void> {
+    await this.db.run("INSERT IGNORE INTO class_students (class_id, student_id) VALUES (?, ?)", classId, studentId);
   }
 
-  /** 批量加入学生（事务） */
-  addStudents(classId: number, studentIds: number[]): number {
-    const insert = this.db.prepare(
-      "INSERT OR IGNORE INTO class_students (class_id, student_id) VALUES (?, ?)"
-    );
+  async addStudents(classId: number, studentIds: number[]): Promise<number> {
     let added = 0;
-    const tx = this.db.transaction(() => {
+    await this.db.transaction(async (tx) => {
       for (const sid of studentIds) {
-        const r = insert.run(classId, sid);
+        const r = await tx.run("INSERT IGNORE INTO class_students (class_id, student_id) VALUES (?, ?)", classId, sid);
         added += r.changes;
       }
     });
-    tx();
     return added;
   }
 
-  removeStudent(classId: number, studentId: number): void {
-    this.db
-      .prepare("DELETE FROM class_students WHERE class_id = ? AND student_id = ?")
-      .run(classId, studentId);
+  async removeStudent(classId: number, studentId: number): Promise<void> {
+    await this.db.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", classId, studentId);
   }
 
-  /** 判断某学生是否属于某班级（教师权限校验用） */
-  isStudentInClass(classId: number, studentId: number): boolean {
-    const row = this.db
-      .prepare("SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ? LIMIT 1")
-      .get(classId, studentId);
+  async isStudentInClass(classId: number, studentId: number): Promise<boolean> {
+    const row = await this.db.get("SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ? LIMIT 1", classId, studentId);
     return Boolean(row);
   }
 
-  // ──────────────────────────────────────────────────────────
-  // v1.1.0: 教师-班级关联
-  // ──────────────────────────────────────────────────────────
+  // ── v1.1.0: 教师-班级关联 ─────────────────────────────
 
-  /** 教师关联班级 */
-  addTeacherToClass(teacherId: number, classId: number, subject?: string): void {
-    this.db.prepare(
-      "INSERT OR IGNORE INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, ?)"
-    ).run(teacherId, classId, subject ?? null);
+  async addTeacherToClass(teacherId: number, classId: number, subject?: string): Promise<void> {
+    await this.db.run("INSERT IGNORE INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, ?)", teacherId, classId, subject ?? null);
   }
 
-  /** 教师解除班级关联 */
-  removeTeacherFromClass(teacherId: number, classId: number): void {
-    this.db.prepare(
-      "DELETE FROM teacher_classes WHERE teacher_id = ? AND class_id = ?"
-    ).run(teacherId, classId);
+  async removeTeacherFromClass(teacherId: number, classId: number): Promise<void> {
+    await this.db.run("DELETE FROM teacher_classes WHERE teacher_id = ? AND class_id = ?", teacherId, classId);
   }
 
-  /** 获取教师关联的班级列表 */
-  listTeacherClasses(teacherId: number): Array<{
-    class_id: number;
-    class_name: string;
-    grade_name: string;
-    subject: string | null;
-  }> {
-    return this.db.prepare(`
+  async listTeacherClasses(teacherId: number): Promise<Array<{
+    class_id: number; class_name: string; grade_name: string; subject: string | null;
+  }>> {
+    return await this.db.all(`
       SELECT tc.class_id, c.name as class_name, g.name as grade_name, tc.subject
       FROM teacher_classes tc
       JOIN classes c ON c.id = tc.class_id
       JOIN grades g ON g.id = c.grade_id
       WHERE tc.teacher_id = ?
       ORDER BY g.sort_order ASC, c.sort_order ASC
-    `).all(teacherId) as any[];
+    `, teacherId);
   }
 
-  /** 列出所有班级（含年级名，供前端下拉用） */
-  listAllClassesWithGrade(): Array<{
-    class_id: number;
-    class_name: string;
-    grade_id: number;
-    grade_name: string;
-  }> {
-    return this.db.prepare(`
+  async listAllClassesWithGrade(): Promise<Array<{
+    class_id: number; class_name: string; grade_id: number; grade_name: string;
+  }>> {
+    return await this.db.all(`
       SELECT c.id as class_id, c.name as class_name, g.id as grade_id, g.name as grade_name
       FROM classes c
       JOIN grades g ON g.id = c.grade_id
       ORDER BY g.sort_order ASC, c.sort_order ASC
-    `).all() as any[];
+    `);
   }
 }

@@ -38,32 +38,32 @@ function resolveRoleId(role: unknown): number | null {
 }
 
 /** GET /api/users — 用户列表（分页/搜索/按角色/含禁用） */
-router.get("/", (req: Request, res: Response) => {
+router.get("/", async (req: Request, res: Response) => {
   const page = req.query.page ? Number(req.query.page) : 1;
   const pageSize = req.query.pageSize ? Number(req.query.pageSize) : 20;
   const roleName = typeof req.query.role === "string" ? req.query.role : undefined;
   const keyword = typeof req.query.keyword === "string" ? req.query.keyword : undefined;
   const includeInactive = req.query.includeInactive === "1" || req.query.includeInactive === "true";
 
-  const { users, total } = userRepo.adminListUsers({ page, pageSize, roleName, keyword, includeInactive });
+  const { users, total } = await userRepo.adminListUsers({ page, pageSize, roleName, keyword, includeInactive });
   res.json({
     users: users.map(stripHash),
     total,
     page,
     pageSize,
-    roleSummary: userRepo.countByRole()
+    roleSummary: await userRepo.countByRole()
   });
 });
 
 /** GET /api/users/:id — 用户详情（含班级） */
-router.get("/:id", (req: Request, res: Response) => {
+router.get("/:id", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  const user = userRepo.findByIdIncludingInactive(id);
+  const user = await userRepo.findByIdIncludingInactive(id);
   if (!user) {
     res.status(404).json({ message: "用户不存在" });
     return;
   }
-  res.json({ ...stripHash(user), classes: userRepo.getUserClasses(id) });
+  res.json({ ...stripHash(user), classes: await userRepo.getUserClasses(id) });
 });
 
 /** POST /api/users — 创建用户（教师/学生/管理员） */
@@ -79,7 +79,7 @@ router.post("/", async (req: Request, res: Response) => {
       res.status(400).json({ message: "无效的角色，需为 admin/teacher/student" });
       return;
     }
-    if (userRepo.usernameExists(String(username))) {
+    if (await userRepo.usernameExists(String(username))) {
       res.status(409).json({ message: "用户名已存在" });
       return;
     }
@@ -87,7 +87,7 @@ router.post("/", async (req: Request, res: Response) => {
       res.status(400).json({ message: "学生账号必须提供学号" });
       return;
     }
-    if (student_number && userRepo.studentNumberExists(String(student_number))) {
+    if (student_number && await userRepo.studentNumberExists(String(student_number))) {
       res.status(409).json({ message: "学号已存在" });
       return;
     }
@@ -110,7 +110,7 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
-    const created = await userRepo.createUser({
+    const created = await await userRepo.createUser({
       username: String(username),
       password: String(finalPassword),
       name: String(name),
@@ -130,7 +130,7 @@ router.post("/", async (req: Request, res: Response) => {
 router.put("/:id", async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const existing = userRepo.findByIdIncludingInactive(id);
+    const existing = await userRepo.findByIdIncludingInactive(id);
     if (!existing) {
       res.status(404).json({ message: "用户不存在" });
       return;
@@ -151,7 +151,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       }
       // 防止把最后一个管理员降级
       if (existing.role_id === ROLE_IDS.ADMIN && roleId !== ROLE_IDS.ADMIN) {
-        const admins = userRepo.adminListUsers({ roleName: ROLE_NAMES.ADMIN, pageSize: 1000 });
+        const admins = await userRepo.adminListUsers({ roleName: ROLE_NAMES.ADMIN, pageSize: 1000 });
         if (admins.total <= 1) {
           res.status(400).json({ message: "系统至少需保留一名管理员，无法降级" });
           return;
@@ -167,10 +167,11 @@ router.put("/:id", async (req: Request, res: Response) => {
       params.teacher_role = teacher_role || null;
     }
 
-    await userRepo.updateUser(id, params);
+    await await userRepo.updateUser(id, params);
     // 禁用账号时吊销其会话
     if (params.is_active === 0) authService.revokeUserTokens(id);
-    res.json(stripHash(userRepo.findByIdIncludingInactive(id)!));
+    const updated = await userRepo.findByIdIncludingInactive(id);
+    res.json(updated ? stripHash(updated) : null);
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "更新失败" });
   }
@@ -180,7 +181,7 @@ router.put("/:id", async (req: Request, res: Response) => {
 router.post("/:id/reset-password", async (req: Request, res: Response) => {
   try {
     const id = Number(req.params.id);
-    const existing = userRepo.findByIdIncludingInactive(id);
+    const existing = await userRepo.findByIdIncludingInactive(id);
     if (!existing) {
       res.status(404).json({ message: "用户不存在" });
       return;
@@ -196,7 +197,7 @@ router.post("/:id/reset-password", async (req: Request, res: Response) => {
       res.status(400).json({ message: passwordError });
       return;
     }
-    await userRepo.updateUser(id, { password });
+    await await userRepo.updateUser(id, { password });
     authService.revokeUserTokens(id);
     res.json({ message: "密码已重置" });
   } catch (error) {
@@ -205,34 +206,34 @@ router.post("/:id/reset-password", async (req: Request, res: Response) => {
 });
 
 /** DELETE /api/users/:id — 禁用账号（软删除） */
-router.delete("/:id", (req: Request, res: Response) => {
+router.delete("/:id", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  const existing = userRepo.findByIdIncludingInactive(id);
+  const existing = await userRepo.findByIdIncludingInactive(id);
   if (!existing) {
     res.status(404).json({ message: "用户不存在" });
     return;
   }
   if (existing.role_id === ROLE_IDS.ADMIN) {
-    const admins = userRepo.adminListUsers({ roleName: ROLE_NAMES.ADMIN, pageSize: 1000 });
+    const admins = await userRepo.adminListUsers({ roleName: ROLE_NAMES.ADMIN, pageSize: 1000 });
     if (admins.total <= 1) {
       res.status(400).json({ message: "系统至少需保留一名管理员，无法禁用" });
       return;
     }
   }
-  userRepo.deactivateUser(id);
+  await userRepo.deactivateUser(id);
   authService.revokeUserTokens(id);
   res.json({ message: "账号已禁用" });
 });
 
 /** POST /api/users/:id/reactivate — 重新启用账号 */
-router.post("/:id/reactivate", (req: Request, res: Response) => {
+router.post("/:id/reactivate", async (req: Request, res: Response) => {
   const id = Number(req.params.id);
-  const existing = userRepo.findByIdIncludingInactive(id);
+  const existing = await userRepo.findByIdIncludingInactive(id);
   if (!existing) {
     res.status(404).json({ message: "用户不存在" });
     return;
   }
-  userRepo.reactivateUser(id);
+  await userRepo.reactivateUser(id);
   res.json({ message: "账号已启用" });
 });
 
@@ -250,7 +251,7 @@ router.post("/import-students", async (req: Request, res: Response) => {
       student_number: String(s.student_number ?? ""),
       password: s.password ? String(s.password) : undefined
     }));
-    const result = await userRepo.batchCreateStudents(rows);
+    const result = await await userRepo.batchCreateStudents(rows);
     res.json(result);
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
@@ -296,7 +297,7 @@ router.post("/import-csv", async (req: Request, res: Response) => {
     };
 
     const rows = lines.map(parseCsvLine);
-    const result = await userRepo.batchImportFromCsv(rows);
+    const result = await await userRepo.batchImportFromCsv(rows);
     res.json(result);
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });

@@ -24,7 +24,7 @@ export function AnalysisQuestions({ questions }: Props) {
   return (
     <div className="analysis-section">
       <div className="panel-title">题目得分率排行</div>
-      <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 8, background: "#fff", boxShadow: "var(--shadow-sm)" }}>
+      <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)", boxShadow: "var(--shadow-sm)" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ background: "var(--surface-tint)", color: "var(--brand)", fontSize: 12, fontWeight: 600 }}>

@@ -1,10 +1,10 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.4.6-blue.svg" alt="Version">
-  <img src="https://img.shields.io/badge/platform-Windows-green.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/version-1.5.2-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20MySQL-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
-  <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20Electron-9cf.svg" alt="Tech Stack">
+  <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20MySQL%20%7C%20Electron-9cf.svg" alt="Tech Stack">
 </p>
 
 ## 项目简介
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.4.5
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 成绩查看（概况/成绩/考试分析/AI分析）→ 成绩修改（个别改分+批量改答案）→ 逐题得分明细 → 赋分引擎 → 导出模板系统 → 教师/学生/班级管理 → 教师细分角色（学科老师/班主任/学年主任）→ 账密批量导入导出 → 数据库全量备份 → 动态分数段分布
-> **下个里程碑**：v1.5.0 — 成绩预测、跨班深度对比、知识点诊断
+> **当前版本**：v1.5.2
+> **核心能力**：答题卡设计（题块自动命名+分数统计）→ PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 大考组（跨科合集分析+跨科排名+ZIP导出）→ 跨考试总分统计（按周打包/手动选择，内联在考试选择页）→ 成绩查看（概况/成绩/考试分析/AI分析）→ 成绩修改（个别改分+批量改答案）→ 逐题得分明细 → 赋分引擎 → 导出模板系统（胶囊拖拽+客观题/主观题小分可选列）→ 教师/学生/班级管理 → 教师细分角色（学科老师/班主任/学年主任，数据范围隔离）→ 多服务商 AI 分析（GPT/DeepSeek/Gemini）→ 并列排名（同分同排）→ 暗色主题 → **MySQL 双后端架构（SQLite/MySQL 环境变量切换，为 B/S 服务端化奠基）**
+> **下个里程碑**：v1.6.0 — 服务器部署、性能深度优化
 
 ---
 
@@ -77,7 +77,12 @@
 
 ### 成绩分析
 
-- **考试选择页**：按学年/年级/学科三级筛选，横向列表展示考试，含人数/均分/状态预览
+- **考试选择页**：三选一切换 [单科 | 大考 | 跨考]，单科按学年/年级/学科筛选，大考展示合集列表，跨考嵌入按周打包/选定考试/已存组三种分析模式
+- **大考组管理**：创建大考合集（如"2026高考摸底大考"含语数英物化生），关联已有考试或直接在合集中新建考试，支持拖拽排序和删除确认（可选级联删除关联考试）
+- **大考分析**：概览 Tab 各科参数卡片网格，成绩 Tab 横向跨科排名表（校排/班排/分数，赋分科目同行显示赋分），支持班级筛选和「仅全科参加」开关
+- **跨考试总分**：按日期自动打包一周考试、手动选择考试合并、或读取已保存考试组，一键计算跨考试总分排名，预览该周考试列表
+- **并列排名**：全系统排名统一为同分并列（1, 2, 2, 4, 5...），覆盖跨考、大考、单科、导出等所有场景
+- **导出增强**：单科导出可选「客观题小分」「主观题小分」胶囊列；大考导出为 ZIP（总览表含跨科排名 + 各科详细小分 Excel）
 - **考试管理**：创建考试、关联答题卡（支持新建答题卡时同步创建/关联）、科目、赋分
 - **成绩查看页**：4 子Tab（概况 / 成绩 / 考试分析 / AI 分析），班级选择器 + 指标切换 + 「分数有问题？」入口（教师/管理员）
 
@@ -86,11 +91,11 @@
 - **概况 Tab**：信息卡片（人数/均分/最高/最低/及格率/优秀率/标准差）+ 分数段水平条形图（10 分一段，0 人段自动隐藏，首段红/末段绿）+ 箱型图 + 年级前五/后五 + 进步前五/退步前五
 - **成绩 Tab**：成绩表格含校排/班排/名次变化/偏差值/Z值/百分位，支持排序与搜索
 - **考试分析 Tab**：成绩分布 + 班级对比（下拉选择基准班级，均分差值着色）+ 题目得分率
-- **AI 分析 Tab**：支持 GPT / DeepSeek / Gemini 多服务商，可自定义 Base URL，账号设置中「AI 服务商」集中管理
+- **AI 分析 Tab**：支持 GPT / DeepSeek / Gemini 多服务商，Gemini 使用 Google 原生 SDK 无需 Base URL，账号设置中「AI 服务商」集中管理
 - **赋分引擎**：等比例/线性/自定义表达式三种公式，化学/生物/地理/政治自动赋分
 - **导出系统**：胶囊拖拽排序列，4 个自定义模板槽，A4 竖版超页警告，侧表（年级前 N 名），Excel (.xlsx)
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
-- **AI 成绩分析**：多服务商架构（GPT/DeepSeek/Gemini），自定义 Base URL，白名单成绩工具生成结构化报告
+- **AI 成绩分析**：多服务商架构（GPT/DeepSeek/Gemini，Gemini 走 Google 原生 SDK），白名单成绩工具生成结构化报告
 
 ### 账户与安全
 
@@ -123,12 +128,12 @@
 
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
 ```
-Project-X 学生端-1.4.0-x64.exe
-Project-X 教师端-1.4.0-x64.exe
-Project-X 教师扫描端-1.4.0-x64.exe
-Project-X 学生端-1.4.0-ia32.exe
-Project-X 教师端-1.4.0-ia32.exe
-Project-X 教师扫描端-1.4.0-ia32.exe
+Project-X 学生端-1.5.2-x64.exe
+Project-X 教师端-1.5.2-x64.exe
+Project-X 教师扫描端-1.5.2-x64.exe
+Project-X 学生端-1.5.2-ia32.exe
+Project-X 教师端-1.5.2-ia32.exe
+Project-X 教师扫描端-1.5.2-ia32.exe
 ```
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
@@ -172,6 +177,28 @@ npm install --ignore-scripts
 > ```powershell
 > npm rebuild better-sqlite3
 > ```
+
+#### 数据库模式
+
+Project-X v1.5.2 支持双数据库后端，通过环境变量切换：
+
+| 模式 | 说明 | 何时使用 |
+|------|------|---------|
+| **SQLite**（默认） | 本地文件 `%APPDATA%\answer-card-designer\data\projectx.db` | 单机桌面端、开发调试 |
+| **MySQL** | 连接池，集中管理 | 多台电脑共享数据、B/S 服务端部署 |
+
+```powershell
+# SQLite 模式（默认，无需任何配置）
+npm run dev
+
+# MySQL 模式
+$env:PROJECTX_MYSQL_HOST     = "127.0.0.1"
+$env:PROJECTX_MYSQL_USER     = "projectx"
+$env:PROJECTX_MYSQL_PASSWORD = "projectx"
+npm run dev
+```
+
+> MySQL 首次启动时自动执行 `schema.mysql.sql` 建表。详见 [`readus/CHANGELOG.md`](./readus/CHANGELOG.md#v152-2026-06-26--数据库双后端架构)。
 
 #### 开发模式
 
@@ -267,7 +294,7 @@ npm run electron:msi                   # = electron:msi:scanner
 | [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.4.5 成绩修改/动态分数段/弹窗修复 + v1.3.0 学科模板/评分规则 + v1.2.0 AI 成绩分析） | 开发者 / 测试 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.5.2 双后端架构 + v1.5.1 学生端 + v1.5.0 大考组） | 全体 |
 
 ---
 
@@ -297,8 +324,11 @@ Project-X/
 │   │   │       ├── StudentScoreDetail.tsx    # 逐题得分明细（班级均分率 + 答题卡放大）
 │   │   │       ├── StudentScores.tsx        # 学生我的成绩
 │   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板
-│   │   │       ├── ExamSelectPage.tsx       # 考试选择页（学年/年级/学科筛选）
+│   │   │       ├── ExamSelectPage.tsx       # 考试选择页（单科/大考/跨考 三选一，内联跨考分析）
 │   │   │       ├── ScoreDetailPage.tsx      # 成绩查看页（概况/成绩/考试分析/AI分析）
+│   │   │       ├── CreateExamGroupModal.tsx  # 大考创建/编辑弹窗（关联考试+内联新建考试）
+│   │   │       ├── ExamGroupDetailPage.tsx   # 大考分析视图（概览+跨科排名表）
+│   │   │       ├── GroupExportModal.tsx      # 大考 ZIP 导出配置
 │   │   │       ├── AnalysisOverview.tsx     # 概况：信息卡片+分布图+排名
 │   │   │       ├── AnalysisDistribution.tsx # 箱型图/分数分布
 │   │   │       ├── AnalysisAiPanel.tsx      # AI 成绩分析（多服务商）
@@ -321,10 +351,11 @@ Project-X/
 │   │   │   ├── UserRepository.ts         # 用户管理
 │   │   │   └── AnalysisRepository.ts     # 分析查询
 │   │   ├── middleware/                   # 认证中间件
-│   │   ├── routes/                       # 认证/用户/赞助/AI服务商/成绩修改/导出等路由
+│   │   ├── routes/                       # 认证/用户/赞助/AI服务商/成绩修改/导出/大考组/跨考等路由
 │   │   └── services/                     # AuthService / AssignedScoreService（赋分引擎）
 │   └── shared/                          # 前后端共享
 │       ├── types.ts                     # 全部类型定义
+│       ├── ranking.ts                   # 竞赛排名工具函数（competitionRank）
 │       ├── grading.ts                   # 评分引擎
 │       ├── layout.ts                    # 答题卡坐标布局
 │       ├── cardTemplates.ts             # 学科默认答题卡模板
@@ -344,7 +375,7 @@ Project-X/
 ├── llmclient/                            # Python AI 中转服务（FastAPI + provider SDK）
 ├── readus/                              # 项目文档（架构、账号、管理员手册、多端说明等）
 ├── data/                                # 运行时数据
-│   ├── answer-card/                     # 答题卡 JSON、扫描图片、资产
+│   ├── answer-card/                     # 派生布局 JSON、扫描图片、资产
 │   ├── sponsor/qr/                      # 收款码图片（部署时放置，不进 git）
 │   └── projectx.db                      # 主数据库（用户/卡片/考试/成绩）
 ├── dist/                                # 构建产物
@@ -376,9 +407,9 @@ Project-X/
 |------|------|------|
 | `GET/POST` | `/api/cards` | 答题卡列表 / 创建（含 subject/title/examDate/englishListening/chineseChoicePlacement） |
 | `GET/PUT/DELETE` | `/api/cards/:id` | 答题卡详情 / 保存 / 删除（引用考试时支持解绑或联删） |
-| `GET` | `/api/cards/:id/export` | 导出为 .projectx-card.json（含答案+配图+布局） |
+| `GET` | `/api/cards/:id/export` | 导出为 .projectx-card.json（含答案+配图+实时生成布局） |
 | `POST` | `/api/cards/import` | 导入答题卡 |
-| `GET` | `/api/cards/:id/layout` | 布局坐标 |
+| `GET` | `/api/cards/:id/layout` | 实时生成布局坐标 |
 | `GET` | `/api/cards/:id/pdf` | 导出 PDF |
 | `POST` | `/api/cards/:id/recognition` | 单张识别（客观+主观） |
 | `POST` | `/api/cards/:id/grading` | 批量识别判分（支持 examId 落库） |
@@ -417,12 +448,24 @@ Project-X/
 | `GET` | `/api/sponsor/qr/:channelId` | 收款码图片 |
 | `GET/PUT/DELETE` | `/api/exams/:id/assigned-formula` | 赋分公式配置 |
 | `POST` | `/api/exams/:id/recalculate-assigned` | 批量重新计算赋分 |
+| `GET/POST` | `/api/exam-groups` | 大考组列表 / 创建 |
+| `GET/PUT/DELETE` | `/api/exam-groups/:id` | 大考组详情 / 更新 / 删除（?deleteExams=1 级联删考试） |
+| `POST` | `/api/exam-groups/:id/exams` | 关联考试至大考组 |
+| `DELETE` | `/api/exam-groups/:id/exams/:examId` | 移除关联 |
+| `GET` | `/api/exam-groups/:id/overview` | 大考概览（各科参数） |
+| `GET` | `/api/exam-groups/:id/rankings` | 大考跨科排名（?classId=&fullOnly=1） |
+| `POST` | `/api/exam-groups/:id/export` | 大考 ZIP 导出（总览+各科小分） |
+| `POST` | `/api/analysis/cross-exam/total` | 跨考试总分统计 |
+| `GET/POST` | `/api/analysis/cross-exam/groups` | 跨考组列表 / 创建 |
+| `DELETE` | `/api/analysis/cross-exam/groups/:id` | 删除跨考组 |
 | `GET` | `/api/analysis/exams/:id/score-table` | 成绩表格数据（年排/班排/名次变化/偏差值/Z值/百分位） |
 | `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比 |
 | `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |
 | `POST` | `/api/export/exams/:id/scores` | 按列配置导出 Excel |
 | `GET` | `/api/export/columns` | 导出列元数据 |
-| `PATCH` | `/api/users/me/settings` | 更新用户设置（成绩指标/复核阈值） |
+| `PATCH` | `/api/users/me/settings` | 更新用户设置（成绩指标/复核阈值/背景图透明度） |
+| `POST` | `/api/users/me/background` | 上传自定义背景图 |
+| `GET` | `/api/app/background` | 获取背景图文件（优先用户自定义） |
 | `GET/POST/PUT/DELETE` | `/api/ai/providers` | AI 服务商配置管理 |
 | `GET` | `/api/db/backup` | 导出全量数据 ZIP |
 | `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |
@@ -444,7 +487,13 @@ Project-X/
 > 感谢所有为 Project-X 提供测试反馈、文档建议和代码贡献的同学与老师！
 
 ---
-
+##看板娘
+<img width="1254" height="1254" alt="82210f7b5cb77968108b5aa81a3b2191" src="https://github.com/user-attachments/assets/34c2c9b5-a373-48cf-b605-5a66faecc7b8" />
+<img width="1070" height="1470" alt="31c82194dfda46f5a99ea69efd19eb45" src="https://github.com/user-attachments/assets/c73fd099-d40f-4dd2-8e1a-57982522b326" />
+<img width="1254" height="1254" alt="9884f7ad4fb44e7d82c66620f1eb43a5" src="https://github.com/user-attachments/assets/e4e05802-68d4-486b-8c32-da3abf754f14" />
+<img width="1122" height="1402" alt="aea2da6d3469351758d4d3d9dc56f9b0" src="https://github.com/user-attachments/assets/4680cf8c-c7af-454e-a082-cdbf41afd025" />
+<img width="3344" height="1882" alt="27dacd5f25f0f04ed397bf22a3cdc441" src="https://github.com/user-attachments/assets/3bf17d59-5867-4e97-beda-c3630617c7c9" />
+<img width="1054" height="1492" alt="1e26fe449f38c89316b12e8cfc78db07" src="https://github.com/user-attachments/assets/d7e0d091-a18a-4786-9ef8-7b76bc2213d2" />
 ## 开源协议
 
 本项目采用 GPL-3.0 license 开源协议。

@@ -353,6 +353,39 @@ export type ScoreTrendPoint = {
   classCount?: number;
 };
 
+/** 学生个人趋势数据点（含班级/年级均分对比） */
+export type StudentTrendPoint = {
+  examId: number;
+  examName: string;
+  subject: string;
+  examTime: string;
+  totalScore: number;
+  classAvg: number;
+  gradeAvg: number;
+  classSize: number;
+  rank: number;
+  percentile: number;
+};
+
+/** 学科薄弱分析结果 */
+export type SubjectWeaknessItem = {
+  subject: string;
+  examCount: number;
+  avgScore: number;
+  avgClassAvg: number;
+  gapToClass: number;
+  bestScore: number;
+  worstScore: number;
+  trend: "up" | "down" | "stable";
+};
+
+/** 学生个人 AI 分析请求 */
+export type StudentAiAnalysisRequest = {
+  examId?: number;     // 不传则表示整体分析
+  model: string;
+  providerId?: number;
+};
+
 export type ClassScoreSummary = {
   classId: number;
   className: string;
@@ -562,6 +595,94 @@ export interface ExamFilterItem {
   has_assigned_score: number;
 }
 
+export type CrossExamTotalMode = "week" | "selected" | "group";
+export type CrossExamAttendanceMode = "all" | "full";
+
+export interface CrossExamGroup {
+  id: number;
+  name: string;
+  source: "cross-manual" | "week";
+  startDate: string | null;
+  endDate: string | null;
+  examIds: number[];
+  exams: ExamFilterItem[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CrossExamTotalRequest {
+  mode: CrossExamTotalMode;
+  examIds?: number[];
+  groupId?: number;
+  startDate?: string;
+  endDate?: string;
+  gradeId?: number;
+  classId?: number;
+  subject?: string;
+  attendanceMode?: CrossExamAttendanceMode;
+}
+
+export interface CrossExamTotalExam {
+  id: number;
+  name: string;
+  subject: string | null;
+  gradeName: string | null;
+  examDate: string | null;
+  fullScore: number;
+  gradedCount: number;
+  avgScore: number | null;
+}
+
+export interface CrossExamScoreCell {
+  examId: number;
+  score: number | null;
+  absent: boolean;
+}
+
+export interface CrossExamTotalRow {
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  classId: number | null;
+  gradeName: string | null;
+  totalScore: number;
+  totalFullScore: number;
+  scoreRate: number | null;
+  attendedCount: number;
+  absentCount: number;
+  gradeRank: number;
+  classRank: number;
+  scores: CrossExamScoreCell[];
+}
+
+export interface CrossExamClassSummary {
+  classId: number | null;
+  className: string;
+  gradeName: string | null;
+  count: number;
+  avgScore: number;
+  maxScore: number;
+  minScore: number;
+}
+
+export interface CrossExamTotalResponse {
+  mode: CrossExamTotalMode;
+  group: CrossExamGroup | null;
+  exams: CrossExamTotalExam[];
+  rows: CrossExamTotalRow[];
+  classSummaries: CrossExamClassSummary[];
+  summary: {
+    examCount: number;
+    studentCount: number;
+    totalFullScore: number;
+    avgTotalScore: number;
+    maxTotalScore: number;
+    minTotalScore: number;
+    fullAttendanceCount: number;
+  };
+}
+
 /** 导出列定义 */
 export interface ExportColumnMeta {
   id: string;
@@ -586,6 +707,141 @@ export interface ExportConfigRequest {
   columns: string[];
   sideTableN: number;
   gapCols: number;
+}
+
+// ============================================================
+// v1.4.8 新增类型：大考组
+// ============================================================
+
+/** 大考组 */
+export interface ExamGroup {
+  id: number;
+  name: string;
+  description: string | null;
+  grade_id: number | null;
+  grade_name?: string | null;
+  tag: string | null;
+  status: "active" | "archived";
+  is_official: number;
+  total_score_mode: "raw" | "assigned";
+  only_full_participants: number;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 大考组成员（含汇总信息） */
+export interface ExamGroupMember {
+  id: number;
+  examId: number;
+  examName: string;
+  subject: string | null;
+  sortOrder: number;
+  examDate: string | null;
+  status: string;
+  gradedCount: number;
+  avgScore: number;
+  hasAssignedScore: number;
+}
+
+/** 大考组详情 */
+export interface ExamGroupDetail extends ExamGroup {
+  members: ExamGroupMember[];
+}
+
+/** 大考创建/更新请求 */
+export interface ExamGroupRequest {
+  name: string;
+  description?: string;
+  grade_id?: number | null;
+  tag?: string;
+  is_official?: number;
+  total_score_mode?: "raw" | "assigned";
+  only_full_participants?: number;
+  examIds?: number[];
+}
+
+/** 大考概览 - 各科参数 */
+export interface GroupSubjectSummary {
+  examId: number;
+  examName: string;
+  subject: string;
+  gradedCount: number;
+  avgScore: number;
+  maxScore: number;
+  minScore: number;
+  stdDev: number;
+  passRate: number;
+  excellentRate: number;
+  fullScore: number;
+  hasAssignedScore: boolean;
+}
+
+/** 大考概览 */
+export interface GroupOverview {
+  groupId: number;
+  groupName: string;
+  totalParticipants: number;
+  fullParticipants: number;
+  subjects: GroupSubjectSummary[];
+}
+
+/** 大考排名行 - 每科成绩 */
+export interface GroupSubjectScore {
+  examId: number;
+  subject: string;
+  totalScore: number;
+  assignedScore: number | null;
+  gradeRank: number;
+  classRank: number;
+  objectiveScore: number;
+  subjectiveScore: number;
+}
+
+/** 大考排名行 */
+export interface GroupRankingRow {
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  classId: number | null;
+  gradeName: string | null;
+  totalRawScore: number;       // 原始分总分
+  totalAssignedScore: number;  // 赋分总分
+  totalGradeRank: number;
+  totalClassRank: number;
+  subjectCount: number;        // 参加了多少科
+  isFullParticipant: boolean;  // 是否全科参加
+  subjects: GroupSubjectScore[];
+}
+
+/** 大考排名响应 */
+export interface GroupRankingResponse {
+  groupId: number;
+  groupName: string;
+  totalStudents: number;
+  displayColumns: string[];    // 科目顺序
+  rows: GroupRankingRow[];
+}
+
+/** 大考筛选列表项 */
+export interface ExamGroupFilterItem {
+  id: number;
+  name: string;
+  description: string | null;
+  tag: string | null;
+  grade_id: number | null;
+  grade_name: string | null;
+  status: string;
+  member_count: number;
+  has_results: number;
+  created_at: string;
+}
+
+/** 单科导出增强字段 */
+export interface ExamSubScoreExport {
+  objectiveSubScores: Array<{ questionNumber: number; score: number; maxScore: number }>;
+  subjectiveSubScores: Array<{ questionNumber: number; score: number; maxScore: number }>;
 }
 
 /** 用户设置 */

@@ -2,12 +2,12 @@ import Database from "better-sqlite3";
 import path from "node:path";
 import { mkdirSync } from "node:fs";
 import { applyMigrations } from "./schema";
-import { dataDir } from "../storage";
+import { resolveScannerDbPath } from "../../../../server/db";
 
 let db: Database.Database | null = null;
 
 export function getDbPath(): string {
-  return path.join(dataDir, "scanner.db");
+  return resolveScannerDbPath();
 }
 
 export function getDb(): Database.Database {

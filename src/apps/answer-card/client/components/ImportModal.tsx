@@ -75,15 +75,15 @@ export function ImportModal({ title, csvType, onImport, onClose }: ImportModalPr
   }
 
   const hint = csvType === "student"
-    ? "格式：年级,班级,学号,姓名（可含表头）。账号自动生成 P+学号，密码=账号。"
+    ? "格式：班级(几年几班),学号,姓名（可含表头）。账号自动生成 P+学号，密码=账号。"
     : "格式：科目,姓名（可含表头）。账号自动生成 T+6位随机数，密码为6位随机数字。";
 
   const placeholder = csvType === "student"
-    ? "年级,班级,学号,姓名\n高一,高一1班,24101,张三\n高一,高一1班,24102,李四"
+    ? "班级,学号,姓名\n高一1班,24101,张三\n高一2班,24201,李四"
     : "科目,姓名\n物理,王建国\n数学,李芳";
 
   const previewCols = csvType === "student"
-    ? ["年级", "班级", "学号", "姓名"]
+    ? ["班级", "学号", "姓名"]
     : ["科目", "姓名"];
 
   return (

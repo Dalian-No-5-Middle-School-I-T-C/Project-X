@@ -191,7 +191,7 @@ export function StudentManagement() {
           <div className="class-column-title">花名册</div>
           {selectedClassId ? (
             <>
-              <div className="account-table-wrap" style={{ maxHeight: "calc(100vh - 280px)", overflow: "auto" }}>
+              <div className="account-table-wrap" style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
                 <table className="account-table">
                   <thead>
                     <tr>

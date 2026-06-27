@@ -1,6 +1,247 @@
 # Project-X CHANGELOG
 
-## v1.4.6 (2026-06-20)
+## v1.5.2 (2026-06-26) — 数据库双后端架构
+
+### SQLite → MySQL 双后端迁移
+
+本项目从单机桌面端向 B/S 服务端架构演进的第一步：所有 Repository / Service / Route / Middleware 已全面异步化，支持通过环境变量切换 SQLite 或 MySQL 后端。
+
+- **双后端适配器**（`db/mysql.ts`）：统一 `DbAdapter` 异步接口——`get()` / `all()` / `run()` / `exec()` / `transaction()`
+  - MySQL 模式：`mysql2` 连接池（连接数上限 20）、事务通过 `PoolConnection` 实现
+  - SQLite 模式：内部 better-sqlite3 同步调用，对外暴露 async 接口，**完全兼容原有行为**
+  - 环境变量控制：不设 `PROJECTX_MYSQL_HOST` → 自动回退 SQLite，零配置零影响
+- **新增 `db/schema.mysql.sql`**：完整 MySQL 建表脚本，InnoDB 引擎、utf8mb4、AUTO_INCREMENT、外键约束、30+ 索引，与 SQLite schema 一一对应
+- **6 个 Repository 全量异步化**：
+  - `UserRepository`（39 方法）、`AnalysisRepository`（34 方法）、`CardRepository`（22 方法）、`ClassRepository`（17 方法）、`ExamRepository`（15 方法）、`ScoreRepository`（4 方法）
+  - SQL 从 `db.prepare().get()` 迁移为 `await db.get()`，事务从 sync callback 迁移为 async `db.transaction(async (tx) => {...})`
+  - `INSERT OR REPLACE` 在 MySQL 端自动转换为 `ON DUPLICATE KEY UPDATE`（adapter 内透明处理）
+- **6 个 Route 文件异步化**：`classes.ts`、`scores.ts`、`teachers.ts`、`users.ts`、`export.ts`、`score-editing.ts`——Express handler 全部改为 `async (req, res)`，内部调用 `await repo.xxx()`
+- **2 个 Service 异步化**：`AuthService.ts`（`getUserByToken`、`login` 等核心方法）、`AssignedScoreService.ts`（赋分公式管理）
+- **1 个 Middleware 异步化**：`middleware/auth.ts`——`attachUser()`、`authMiddleware()`、`getCurrentUserHandler()`、`optionalAuth()` 全部改为 async
+- **App Server 局部迁移**：`app server/index.ts` 中全部 Repository 调用加 `await`，3 处 `db.transaction()` 拆为顺序 async 调���，`card-layout.ts` 中 `findCardForLayout` → async
+- **Scanner DB 保持 SQLite**：`scan-store.ts`（19 处 `.prepare()`）和 grading pipeline 中的 `INSERT OR REPLACE` 保持 SQLite 原样，扫描流水线独立运行
+
+### 依赖
+- 新增 `mysql2: ^3.14.0`
+- 保留 `better-sqlite3: ^12.11.1`（SQLite 回退 + scanner.db）
+
+### 前端性能优化
+
+- **`transition: all` 替换**：~30 处全局 `transition: all 0.3s` 替换为精确属性列表（`background`、`color`、`border-color`、`box-shadow`），消除 backdrop-filter 无效重算，减少帧间重排开销
+- **毛玻璃 GPU 优化**：`.liquid-glass` 和 `.liquid-glass-strong` 增加 `will-change: backdrop-filter`，让浏览器预分配 GPU 资源；`.sidebar` 增加 `contain: paint layout style`，隔离渲染区域
+- **CSS 变量别名**：新增 `--primary: var(--brand)`、`--bg-secondary: var(--surface-raised)`、`--bg-accent: var(--brand-soft)`、`--border: var(--line-strong)`，解决多个组件引用未定义变量导致的暗色模式渲染异常
+
+### Bug 修复
+
+| 修复项 | 文件 | 说明 |
+|--------|------|------|
+| 表名不一 | `AnalysisRepository.ts` ×2 | `exam_group_items` → `exam_group_members`（与 schema v8 对齐） |
+| 列名错位 | `app server/index.ts` | 主观题 `question_id` 误写入 `block_id` 列 → INSERT 列宣言改为 `question_id` |
+| 默认值不一致 | `migrations.ts` ×2 | `score_display_mode`: `'deviation'` → `'zscore'`；`export_templates.name`: `'Untitled'` → `'未命名'` |
+| localStorage 写错值 | `App.tsx:529` | 关闭夜间模式后仍写入 `"dark"` → 改为写入 `effectiveTheme` |
+| 组件白色硬编码 | `CreateExamGroupModal.tsx` ×4、`GroupExportModal.tsx` ×2 | `#fff` 背景改为 `var(--surface)`，品牌按钮色改为 `var(--brand)` |
+| 合并冲突冗余 | `CreateExamGroupModal.tsx`、`GroupExportModal.tsx` | 清除 `<<<<<<<`/`>>>>>>>` git 冲突标记 |
+
+### 版本
+- v1.5.1 → v1.5.2
+
+## v1.5.1 (2026-06-25) — 学生端升级
+
+### 学生端全面升级
+
+- **个人成绩趋势分析（纵向）**：新增折线图展示学生各科历次考试成绩变化趋势，支持多学科同时对比、班级均分/年级均分参照线开关。使用 Chart.js 渲染，学科标签可交互筛选
+- **学科横向对比（薄弱学科识别）**：雷达图 + 详情表格，聚合本学期全部考试数据，按各科平均分与班级均分差距自动标注薄弱学科。支持趋势方向（进步/退步/稳定）图标标识
+- **AI 个人分析**：两种模式
+  - **单场分析**：在成绩列表展开某场考试后，点击「AI 分析」按钮调用教师端现有 AI 接口
+  - **整体分析**：综合学生全部考试成绩，生成个性化学习建议和薄弱点分析
+- **学生自配 AI 服务商**：复用已有 `ai_providers` 系统，学生可在 AI 分析 Tab 中自行填写 API Key 和模型配置（支持 DeepSeek / OpenAI 兼容 / Gemini），费用由学生个人承担
+- **综合仪表盘 UI**：从单一成绩列表重构为混合式布局——顶部统计概览卡片（考试数/平均分/学科数/最佳/待提升），Tab 导航切换四个功能模块
+
+### 新增后端 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/scores/me/trends` | 学生成绩趋势数据（含班级/年级均分） |
+| `GET` | `/api/scores/me/subject-comparison` | 学科横向对比分析（含薄弱学科标注） |
+| `POST` | `/api/scores/me/ai-analysis` | 学生个人 AI 整体分析 |
+
+### 新增类型
+- `StudentTrendPoint`：趋势数据点（总分、班级均分、年级均分、排名、百分位）
+- `SubjectWeaknessItem`：学科薄弱分析结果（考试次数、平均分、班级均分差距、趋势方向）
+- `StudentAiAnalysisRequest`：学生 AI 分析请求
+
+### 数据库
+- 无新增表，复用已有 `ai_providers` 表
+
+### 依赖
+- 新增 `chart.js` + `react-chartjs-2`
+
+### Bug 修复
+- **折线图数据对齐**：不同学科的考试名不一致时，之前按数组索引对齐导致数据点错位，现改为按考试名映射到共享 labels
+- **新路由认证缺失**：`POST /api/scores/me/ai-analysis` 移入 `scores.ts` 路由器，自动享受 `authMiddleware` 保护
+- **SQL 列不存在导致 500**：`ScoreRepository.getStudentTrendData()` 引用了 `class_students.is_active` 列，该列不存在；修复为移除虚假列引用、`JOIN` 改为 `LEFT JOIN` 子查询处理多班级、学生无班级时 classAvg 返回 NULL
+- **学生可越权访问教师分析接口**：`getVisibleExamIds()` 对学生返回 `null`（全部可见），导致学生可调用任意考试的 AI 分析接口。修复：`requireExamAccess` 中增加学生分支，仅放行 `hasScore()` 为 true 的考试
+- **学生通过 hasScore 可越权删除考试/查看全班数据**：`requireExamAccess` 的学生分支对所有方法（GET/DELETE/...）通行。修复：学生分支仅允许 `POST /.../ai-analysis`，其余方法返回 403
+- **AI 单场分析按钮在 auth 强制模式下永久 403**：`POST /api/analysis/exams/:examId/ai-analysis` 经过 `analysisGate` 要求 `grade:read`，学生只有 `score:read`。修复：新增 `POST /api/scores/me/exams/:examId/ai-analysis`（挂载在 scores router 下，无 analysisGate），前端 `AiAnalysisForExam` 改为调用该端点
+- **整体 AI 分析后端对接错误**：`POST /api/scores/me/ai-analysis` 原设计向 llmclient 发送 `examId: 0` + `studentAnalysis: true`，但 llmclient 仅支持 exam-scoped 请求。修复为直接用服务端已有的趋势数据生成文本分析报告，不再调用 llmclient；待 llmclient 支持学生分析后可切换回
+- 清理未使用的 import
+
+### 新增后端 API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/scores/me/exams/:examId/ai-analysis` | 学生单场考试 AI 分析（绕过教师端 RBAC gate） |
+
+### 版本
+- v1.5.0 → v1.5.1
+
+## v1.5.0 (2026-06-24) — 稳定版
+
+### 跨考入口 & 排名修复
+- **三选一紧凑切换**：考试选择页右上角 toggle 改为 [单科 | 大考 | 跨考]，跨考不再单独占一个按钮
+- **跨考内联化**：跨考试总分统计直接嵌入 ExamSelectPage，不再跳出独立页面，无需「返回」操作
+- **按周预览**：跨考「按日期打包」模式新增实时考试预览，切换日期即刻看到该周包含哪些考试
+- **日期/按钮对齐**：跨考面板日期输入框与统计按钮统一基线对齐
+- **全局并列排名修复**：所有排名从顺序排名改为同分并列排名（1,2,2,4,5...），覆盖跨考总分、大考排名、单科排名、导出表格等全部场景
+- **competitionRank 提取**：排名工具函数从 `denseRank` 重命名为 `competitionRank`（更准确），提取到 `src/shared/ranking.ts` 避免 AnalysisRepository 与 exam-groups 代码重复
+- **表名统一**：AnalysisRepository 从 `exam_group_items` 改为 `exam_group_members`，消除迁移后新装环境表缺失导致的跨考功能不可用
+- **列表隔离**：按 `source` 列隔离大考列表（`NULL`/`'manual'`）与跨考已存组列表（`'cross-manual'`/`'week'`），避免互相泄漏
+- **删除确认**：跨考已存组删除增加确认弹窗（显示关联考试数），考试管理大考删除支持级联考试选项
+- **周预览口径对齐**：前端周预览日期取值与后端 `COALESCE(exam_date, created_at)` 对齐，无答题卡日期考试不再遗漏
+- **名次变化修复**：上次考试排名（preRankMap）改用并列排名，消除同分场景下名次变化计算偏差
+- **死代码清理**：删除已内联但未删除的 CrossExamTotalPage.tsx (424行) 和 migrations.ts 中未调用的 createExamGroupsIfMissing
+- **暗色主题**：跨考删除确认弹窗改用 CSS 变量，暗色模式下不再白框刺眼
+
+### 大考（Exam Group）功能
+
+- **大考组 CRUD**：支持创建「大考合集」将多场单科考试组织为一个逻辑大考（如"2026高考摸底大考"包含语数英物化生）
+- **关联考试管理**：创建时可选择关联已有考试，创建后也可增删成员考试，支持拖拽排序
+- **大考内新建考试**：可直接在大考合集中快速创建新考试并自动关联
+- **大考分析视图**：概览 Tab 展示各科参数卡片网格（人数/均分/最高/最低/标准差/及格率/优秀率），成绩 Tab 提供跨科横向排名表
+- **跨科排名**：按总分排名显示校排/班排，每科单独显示原始分/赋分/校排/班排，支持班级筛选和「仅全科参加」开关
+- **总分模式**：可按原始分或赋分计算总分排名
+- **大考标签**：支持月考/期中/期末/模考/统考标签分类
+- **考试选择页大考入口**：新增「单科考试」/「大考」分类切换
+- **考试管理页大考入口**：考试管理 Tab 新增单科/大考模式切换，支持大考列表管理
+
+#### 数据库
+- 新增 `exam_groups` 表（name, description, grade_id, tag, status, is_official, total_score_mode, only_full_participants）
+- 新增 `exam_group_members` 表（group_id, exam_id, sort_order）
+- Migration v8 幂等创建
+
+#### API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/exam-groups` | 大考列表 |
+| `POST` | `/api/exam-groups` | 创建大考 + 关联考试 |
+| `GET` | `/api/exam-groups/:groupId` | 大考详情含成员列表 |
+| `PUT` | `/api/exam-groups/:groupId` | 更新大考信息 |
+| `DELETE` | `/api/exam-groups/:groupId` | 删除大考（级联，不删考试） |
+| `POST` | `/api/exam-groups/:groupId/exams` | 批量关联考试 |
+| `DELETE` | `/api/exam-groups/:groupId/exams/:examId` | 移除关联 |
+| `PUT` | `/api/exam-groups/:groupId/exams/sort` | 批量更新排序 |
+| `GET` | `/api/exam-groups/:groupId/overview` | 大考概览（各科参数） |
+| `GET` | `/api/exam-groups/:groupId/rankings` | 跨科总分排名 |
+| `POST` | `/api/exam-groups/:groupId/export` | 导出 ZIP（总览+各科小分） |
+
+### 导出增强
+
+- **单科导出新增可选胶囊**：`客观题小分` 和 `主观题小分`，可选加入导出列
+- 客观题小分：拉展该科所有客观题得分（Q1/Q2/...），含每题满分标注
+- 主观题小分：拉展该科所有主观题得分（S1/S2/...），含每题满分标注
+- 胶囊颜色分类：基础(蓝)/分数(绿)/排名(橙)/题目(紫)
+- **大考导出（ZIP）**：总览表（跨科排名+各科原始分/年排/班排）+ 各科详细小分 Excel 文件
+- 导出可选：是否包含客观题小分、主观题小分、选择导出哪些科目
+
+### 前端组件
+- `CreateExamGroupModal`：创建/编辑大考弹窗，含考试搜索选择器
+- `ExamGroupDetailPage`：大考分析视图（概览+成绩 Tab）
+- `GroupExportModal`：大考 ZIP 导出配置弹窗
+- `ExamSelectPage` 更新：新增单科/大考分类切换
+- `ExportModal` 更新：新增客观题小分/主观题小分胶囊列
+- `App.tsx` 集成：大考创建模态框、大考分析视图、考试管理双模式
+
+### 跨考试总分分析（合并自 main）
+
+- **CrossExamTotalPage**：三种模式（按周自动打包 / 手动选考试 / 选择已存大考组）计算跨考总分排名
+- 按日期范围自动关联一周内的考试，快速生成一周考试包总分
+- 支持仅全科参加、仅部分参加等出席模式筛选
+- 考试选择页新增「跨考总分」快捷入口
+- API: `GET/POST/DELETE /api/analysis/cross-exam/groups`, `POST /api/analysis/cross-exam/total`
+- DB: `exam_groups` 表新增 `source`/`start_date`/`end_date` 字段兼容两种用途
+
+### 备案合规
+- **ICP 备案信息**：登录页底部新增备案号展示（辽ICP备2026013340号 + 辽公网安备21020402001085号），`BeianFooter.tsx` 组件含工信部/公安备案双链接
+
+### 性能优化
+- **毛玻璃性能修复**：大量 `backdrop-filter: blur()` 改为 `opacity` 叠加，消除滚动/切换页面时的明显卡顿感（#115）
+
+### Bug 修复
+- **暗色主题残余硬编码**：CreateExamGroupModal、GroupExportModal 内联白色背景改为 CSS 变量，修复暗色模式下弹窗白块（#113）
+
+### 开发者工具
+- **Demo 测试数据集**：新增 `testdata/demo-exams/`，含可导入备份 ZIP、CSV 片段、种子脚本和验证脚本，覆盖单科/大考/跨考/并列排名/缺考/名次变化/小分导出等全场景（#116）
+
+### 教师角色细化
+- **组长/科任/班主任严格区分**：后端数据范围过滤逻辑完善，真正实现 `subject_teacher`（本科目本班）、`head_teacher`（本班全科）、`grade_leader`（全年全科）三级隔离；修复相关数据库查询值名问题（#114）
+### 版本
+- v1.4.7 → v1.5.0
+
+## v1.4.7 (2026-06-20)
+
+### 教师细分角色（权限数据范围）
+
+- **教师三种细分角色**：管理员可在「教师管理」中设置三种角色，登录后自动限定数据可见范围
+  - **学科老师**（`subject_teacher`）：仅限本学科本人所教班级的考试与成绩
+  - **班主任**（`head_teacher`）：仅限所管班级全部科目考试与成绩（限本年级）
+  - **学年主任**（`grade_leader`）：全年级全科目，不受限制
+  - 未设置细分角色的教师保持原全权限，向后兼容
+- **后端数据范围过滤**：所有 `/api/exams`、`/api/analysis/exams/:id/*`、`/api/exams/:id` 端点自动根据 `teacher_role` 过滤可见考试
+- **数据库**：`users` 表新增 `teacher_role TEXT` 列；自动 migration
+- **管理员 UI**：用户管理列表新增「教师细分」列；新建/编辑表单增加角色下拉；教师管理面板增加角色选择
+
+### 暗色模式全面修复
+- 15 处硬编码 `background: #fff` 改为 CSS 变量 `var(--surface)`
+- 所有 TSX 组件内联 `#fff` 背景统一替换为 `var(--surface)`
+- 表单元素（input/select/textarea/checkbox）暗色适配
+- 模态卡片、面板、编辑区暗色适配
+- SVG 答题卡预览页暗色适配（CSS 变量 + style 双保险）
+- 侧栏渐变、badge 标签、下拉菜单暗色适配
+- 背景图在暗色模式下叠加 `brightness(0.45)` 遮罩
+- 追加 ~90 行 `[data-theme="dark"]` 集中覆盖规则
+
+### 账号设置重构
+- 左侧分类导航栏：阅卷设置 / 客户端设置 / AI 设置
+- 选中项品牌色高亮 + 左边框指示
+- 右侧内容面板按 Tab 切换，独立保存按钮
+- 默认展开"阅卷设置"
+
+### Gemini SDK 完整修复
+- `providers.py`: 修复用户配置 Gemini 时走错 OpenAI 路径的致命 Bug
+- `ai-providers.ts`: Gemini 不再强制要求 Base URL
+- 前端 Gemini 选中时隐藏 Base URL 输入框，显示提示文案
+- "如何填写？"帮助卡片更新：Gemini 标注为"无需填写"
+- 新增 Google AI Studio 获取 API Key 指引
+
+### Bug 修复
+- **Markdown 链接解码错误**：`UserGuidePage.tsx` 处理本地 .md 相对链接，阻止 Electron file:// 协议下的乱码
+- **学生导入去年级列**：CSV 模板从 `年级,班级,学号,姓名` → `班级,学号,姓名`，后端自动从"几年几班"解析年级
+- **学生管理滚动容器**：年级/班级/花名册三栏添加 `max-height` 内滚动，不再拉伸整个页面
+- **ESC 全局退出**：ESC 关闭成绩分析 detail / 赞助页 / 使用说明页，聚焦输入框时跳过
+- **自动保存提示圆角容器**：`.autosave-status` 改为圆角 pill 样式
+
+### 答题卡设计增强
+- **题块自动命名**："一、单选（10题 50分）"实时生成，`toChinese(n)` 算法支持 1-100，增删块/改题型/改题数/改分值时自动刷新
+- **块级编辑同步**：修改块级题型/选项数时自动同步到所有逐题配置
+- **每题配置默认折叠**：按需展开/收起，减少设计器面板高度
+
+### 夜间模式开关
+- 账号设置 → 客户端设置 → 新增「夜间模式（实验性）」复选框
+- 默认不启用，标注"⚠ 实验性功能，存在严重视觉问题"
+- 不启用时顶部栏隐藏主题切换按钮
+- localStorage 持久化存储
+
+### 版本
+- v1.4.6 → v1.4.7
 
 ### 日间/夜间模式
 - 新增主题切换按钮：位于顶部栏右侧，☀️/🌙 SVG 图标即按钮，点击即时切换

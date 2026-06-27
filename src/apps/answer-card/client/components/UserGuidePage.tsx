@@ -20,7 +20,19 @@ export function UserGuidePage({ onBack, embedded }: { onBack?: () => void; embed
         </div>
       )}
       <article className="user-guide-content markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{userGuideMarkdown}</ReactMarkdown>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            a: ({ href, children, ...props }) => {
+              if (href && !href.startsWith("http") && !href.startsWith("mailto:")) {
+                return <span className="guide-link-disabled" title={href} {...props}>{children}</span>;
+              }
+              return <a href={href} target="_blank" rel="noreferrer" {...props}>{children}</a>;
+            }
+          }}
+        >
+          {userGuideMarkdown}
+        </ReactMarkdown>
       </article>
     </div>
   );

@@ -4,7 +4,7 @@ import { authMiddleware } from "../middleware/auth";
 import { getDatabase } from "../db";
 import XLSX from "xlsx";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
-import type { ExportTemplate, ExportConfigRequest } from "../../shared/types";
+import type { ExportTemplate, ExportConfigRequest, ScoreTableRow } from "../../shared/types";
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -76,7 +76,9 @@ const ALL_COLUMNS: Record<string, { label: string; category: string }> = {
   rankChange: { label: "名次变化", category: "ranking" },
   displayValue: { label: "偏差值/Z值", category: "other" },
   needsReview: { label: "需要复核", category: "other" },
-  confidence: { label: "置信度", category: "other" }
+  confidence: { label: "置信度", category: "other" },
+  objectiveSubScores: { label: "客观题小分", category: "questions" },
+  subjectiveSubScores: { label: "主观题小分", category: "questions" }
 };
 
 /** GET /api/export/columns — 获取可用列定义 */
@@ -95,55 +97,145 @@ router.post("/exams/:examId/scores", async (req: Request, res: Response) => {
       return;
     }
 
+    const db = getDatabase();
     const analysisRepo = new AnalysisRepository();
-    const { rows, examName, hasAssignedScore } = analysisRepo.getScoreTableData(examId, classId);
+    const { rows, examName, hasAssignedScore } = await analysisRepo.getScoreTableData(examId, classId) as {
+      rows: ScoreTableRow[];
+      examName: string;
+      hasAssignedScore: boolean;
+    };
 
-    // Map to export rows
-    const headerMap: Record<string, string> = {};
+    // Determine if we need sub-scores
+    const needObjSub = columns.includes("objectiveSubScores");
+    const needSubjSub = columns.includes("subjectiveSubScores");
+
+    // Fetch question definitions and scores if needed
+    let objQuestionDefs: Array<{ questionNumber: number; maxScore: number }> = [];
+    let subQuestionDefs: Array<{ questionNumber: number; maxScore: number }> = [];
+    let subScoreMap: Map<number, Map<number, number>> = new Map(); // studentId -> questionNumber -> score
+
+    if (needObjSub || needSubjSub) {
+      const allQs = db.prepare(`
+        SELECT question_number as questionNumber, score_type, MAX(max_score) as maxScore
+        FROM question_scores WHERE exam_id = ?
+        GROUP BY question_number, score_type
+        ORDER BY question_number
+      `).all(examId) as Array<{ questionNumber: number; score_type: string; maxScore: number }>;
+
+      objQuestionDefs = allQs.filter((q) => q.score_type === "objective");
+      subQuestionDefs = allQs.filter((q) => q.score_type === "subjective");
+
+      // Fetch all sub-scores
+      const allSubScores = db.prepare(`
+        SELECT student_id as studentId, question_number as questionNumber, score
+        FROM question_scores WHERE exam_id = ?
+      `).all(examId) as Array<{ studentId: number; questionNumber: number; score: number }>;
+
+      for (const s of allSubScores) {
+        if (!subScoreMap.has(s.studentId)) subScoreMap.set(s.studentId, new Map());
+        subScoreMap.get(s.studentId)!.set(s.questionNumber, s.score);
+      }
+    }
+
+    // Build headers dynamically
+    const baseCols = columns.filter((c) => c !== "objectiveSubScores" && c !== "subjectiveSubScores");
+    const headers: string[] = [];
+
+    for (const col of baseCols) {
+      switch (col) {
+        case "studentNumber": headers.push("考号"); break;
+        case "grade": headers.push("年级"); break;
+        case "className": headers.push("班级"); break;
+        case "studentName": headers.push("姓名"); break;
+        case "totalScore": headers.push("原始分"); break;
+        case "assignedScore": if (hasAssignedScore) headers.push("赋分"); break;
+        case "objectiveScore": headers.push("客观分"); break;
+        case "subjectiveScore": headers.push("主观分"); break;
+        case "gradeRank": headers.push("年排"); break;
+        case "classRank": headers.push("班排"); break;
+        case "rankChange": headers.push("名次变化"); break;
+        case "displayValue": headers.push("偏差值/Z值"); break;
+        case "needsReview": headers.push("需要复核"); break;
+        case "confidence": headers.push("置信度"); break;
+      }
+    }
+
+    // Add sub-score headers
+    if (needObjSub) {
+      objQuestionDefs.forEach((q) => headers.push(`客观Q${q.questionNumber}(${q.maxScore}分)`));
+    }
+    if (needSubjSub) {
+      subQuestionDefs.forEach((q) => headers.push(`主观Q${q.questionNumber}(${q.maxScore}分)`));
+    }
+
+    // Build data rows
     const data: Record<string, string | number | null>[] = [];
 
     for (const row of rows) {
       const exportRow: Record<string, string | number | null> = {};
-      for (const col of columns) {
+
+      for (const col of baseCols) {
         switch (col) {
-          case "studentNumber": exportRow["考号"] = row.studentNumber; headerMap["考号"] = "考号"; break;
-          case "grade": exportRow["年级"] = row.gradeName || "-"; headerMap["年级"] = "年级"; break;
-          case "className": exportRow["班级"] = row.className; headerMap["班级"] = "班级"; break;
-          case "studentName": exportRow["姓名"] = row.studentName; headerMap["姓名"] = "姓名"; break;
-          case "totalScore": exportRow["原始分"] = row.totalScore; headerMap["原始分"] = "原始分"; break;
-          case "assignedScore": if (hasAssignedScore) { exportRow["赋分"] = row.assignedScore; headerMap["赋分"] = "赋分"; }; break;
-          case "objectiveScore": exportRow["客观分"] = row.objectiveScore; headerMap["客观分"] = "客观分"; break;
-          case "subjectiveScore": exportRow["主观分"] = row.subjectiveScore; headerMap["主观分"] = "主观分"; break;
-          case "gradeRank": exportRow["年排"] = row.gradeRank; headerMap["年排"] = "年排"; break;
-          case "classRank": exportRow["班排"] = row.classRank; headerMap["班排"] = "班排"; break;
+          case "studentNumber": exportRow["考号"] = row.studentNumber; break;
+          case "grade": exportRow["年级"] = row.gradeName || "-"; break;
+          case "className": exportRow["班级"] = row.className; break;
+          case "studentName": exportRow["姓名"] = row.studentName; break;
+          case "totalScore": exportRow["原始分"] = row.totalScore; break;
+          case "assignedScore": if (hasAssignedScore) exportRow["赋分"] = row.assignedScore; break;
+          case "objectiveScore": exportRow["客观分"] = row.objectiveScore; break;
+          case "subjectiveScore": exportRow["主观分"] = row.subjectiveScore; break;
+          case "gradeRank": exportRow["年排"] = row.gradeRank; break;
+          case "classRank": exportRow["班排"] = row.classRank; break;
           case "rankChange": {
             const ch = row.rankChange;
             exportRow["名次变化"] = ch == null ? "-" : (ch > 0 ? `↑+${ch}` : ch < 0 ? `↓${ch}` : "0");
-            headerMap["名次变化"] = "名次变化";
             break;
           }
-          case "displayValue": exportRow["偏差值/Z值"] = row.displayValue; headerMap["偏差值/Z值"] = "偏差值/Z值"; break;
-          case "needsReview": exportRow["需要复核"] = ""; headerMap["需要复核"] = "需要复核"; break;
+          case "displayValue": exportRow["偏差值/Z值"] = row.displayValue; break;
+          case "needsReview": exportRow["需要复核"] = ""; break;
+          case "confidence": exportRow["置信度"] = null; break;
         }
       }
+
+      // Add sub-scores
+      if (needObjSub) {
+        const scoreMap = subScoreMap.get(row.studentId);
+        objQuestionDefs.forEach((q) => {
+          const key = `客观Q${q.questionNumber}(${q.maxScore}分)`;
+          exportRow[key] = scoreMap?.get(q.questionNumber) ?? "";
+        });
+      }
+      if (needSubjSub) {
+        const scoreMap = subScoreMap.get(row.studentId);
+        subQuestionDefs.forEach((q) => {
+          const key = `主观Q${q.questionNumber}(${q.maxScore}分)`;
+          exportRow[key] = scoreMap?.get(q.questionNumber) ?? "";
+        });
+      }
+
       data.push(exportRow);
     }
 
     const wb = XLSX.utils.book_new();
 
     // Main sheet
-    const ws = XLSX.utils.json_to_sheet(data);
+    const ws = XLSX.utils.json_to_sheet(data, { header: headers });
 
-    // Set column widths (approximate for A4)
-    const colWidths: number[] = columns.map((col) => {
-      const wMap: Record<string, number> = {
-        studentNumber: 14, grade: 8, className: 10, studentName: 10,
-        totalScore: 8, assignedScore: 8, objectiveScore: 8, subjectiveScore: 8,
-        gradeRank: 6, classRank: 6, rankChange: 10, displayValue: 12,
-        needsReview: 8, confidence: 8
-      };
-      return wMap[col] ?? 10;
-    });
+    // Set column widths
+    const colWidths: number[] = [];
+    for (const h of headers) {
+      if (h.startsWith("客观Q") || h.startsWith("主观Q")) {
+        colWidths.push(8);
+      } else {
+        const wMap: Record<string, number> = {
+          "考号": 14, "年级": 8, "班级": 10, "姓名": 10,
+          "原始分": 8, "赋分": 8, "客观分": 8, "主观分": 8,
+          "年排": 6, "班排": 6, "名次变化": 10, "偏差值/Z值": 12,
+          "需要复核": 8, "置信度": 8
+        };
+        colWidths.push(wMap[h] ?? 10);
+      }
+    }
     ws["!cols"] = colWidths.map((w) => ({ wch: w }));
 
     // Side table (top N)
@@ -160,20 +252,18 @@ router.post("/exams/:examId/scores", async (req: Request, res: Response) => {
       const originCol = mainCols + gap;
 
       XLSX.utils.sheet_add_json(ws, sideData, { origin: { r: 0, c: originCol } });
-      // Set side table column widths
       const sideWidths = [6, 10, 8];
       for (let i = 0; i < sideWidths.length; i++) {
         if (!ws["!cols"]) ws["!cols"] = [];
         ws["!cols"][originCol + i] = { wch: sideWidths[i] };
       }
 
-      // Side table title
       XLSX.utils.sheet_add_json(ws, [{ "": `年级前${sideTableN}名` }], { origin: { r: 0, c: originCol }, skipHeader: true });
     }
 
     XLSX.utils.book_append_sheet(wb, ws, "成绩表");
 
-    const fileName = `${examName.replace(/[\/:*?"<>|]/g, "_")}_成绩表.xlsx`;
+    const fileName = `${examName.replace(/[\\/:*?"<>|]/g, "_")}_成绩表.xlsx`;
     const buf = Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }));
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(fileName)}`);
