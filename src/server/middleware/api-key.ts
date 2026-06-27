@@ -33,7 +33,7 @@ export function apiKeyAuth(options: ApiKeyAuthOptions = {}) {
       const db = await getMysqlDb();
       const row = await db.get<{ id: number; name: string; scope: string; is_active: number }>(
         "SELECT id, name, scope, is_active FROM api_keys WHERE api_key = ?",
-        [apiKey]
+        apiKey
       );
 
       if (!row) {

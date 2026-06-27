@@ -1,4 +1,4 @@
-import { getMysqlDb } from "../db";
+import { buildInsertIgnore, getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 
 export interface GradeRecord {
@@ -100,14 +100,16 @@ export class ClassRepository {
   }
 
   async addStudent(classId: number, studentId: number): Promise<void> {
-    await this.db.run("INSERT IGNORE INTO class_students (class_id, student_id) VALUES (?, ?)", classId, studentId);
+    const sql = buildInsertIgnore(this.db.dialect, "class_students", ["class_id", "student_id"]);
+    await this.db.run(sql, classId, studentId);
   }
 
   async addStudents(classId: number, studentIds: number[]): Promise<number> {
     let added = 0;
     await this.db.transaction(async (tx) => {
+      const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
       for (const sid of studentIds) {
-        const r = await tx.run("INSERT IGNORE INTO class_students (class_id, student_id) VALUES (?, ?)", classId, sid);
+        const r = await tx.run(sql, classId, sid);
         added += r.changes;
       }
     });
@@ -126,7 +128,8 @@ export class ClassRepository {
   // ── v1.1.0: 教师-班级关联 ─────────────────────────────
 
   async addTeacherToClass(teacherId: number, classId: number, subject?: string): Promise<void> {
-    await this.db.run("INSERT IGNORE INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, ?)", teacherId, classId, subject ?? null);
+    const sql = buildInsertIgnore(this.db.dialect, "teacher_classes", ["teacher_id", "class_id", "subject"]);
+    await this.db.run(sql, teacherId, classId, subject ?? null);
   }
 
   async removeTeacherFromClass(teacherId: number, classId: number): Promise<void> {

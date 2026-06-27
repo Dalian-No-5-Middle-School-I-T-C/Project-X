@@ -117,17 +117,15 @@ export function buildUpsertSQL(
   }
 }
 
-/**
- * 构建跨方言 INSERT IGNORE 语句
- * SQLite + MariaDB 都原生支持，此函数仅做统一封装
- */
+/** 构建跨方言 INSERT IGNORE 语句（SQLite: OR IGNORE，MariaDB: IGNORE） */
 export function buildInsertIgnore(
-  _dialect: "sqlite" | "mariadb",
+  dialect: "sqlite" | "mariadb",
   table: string,
   cols: string[]
 ): string {
   const placeholders = cols.map(() => "?").join(", ");
-  return `INSERT IGNORE INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`;
+  const verb = dialect === "sqlite" ? "INSERT OR IGNORE" : "INSERT IGNORE";
+  return `${verb} INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`;
 }
 
 // ── SQLite Adapter ─────────────────────────────────────

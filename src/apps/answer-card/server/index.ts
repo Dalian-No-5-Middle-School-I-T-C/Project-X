@@ -247,22 +247,21 @@ async function persistGradingResults(
   createdBy?: number
 ): Promise<void> {
   const { ExamRepository } = await import("../../../server/repositories/ExamRepository");
-  const { getMysqlDb, hashPassword } = await import("../../../server/db");
+  const { getMysqlDb, hashPassword, buildInsertIgnore } = await import("../../../server/db");
 
   const examRepo = new ExamRepository();
   const db = getMysqlDb();
 
   const examId = Number(examIdParam);
-  const exam = await await examRepo.findExamById(examId);
+  const exam = await examRepo.findExamById(examId);
   if (!exam) return;
 
   await examRepo.updateStatus(examId, "grading");
   const batchId = await examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
 
-  const ensureStudentSql = `
-    INSERT IGNORE INTO users (username, password_hash, name, role_id, student_number)
-    VALUES (?, ?, ?, 3, ?)
-  `;
+  const ensureStudentSql = buildInsertIgnore(db.dialect, "users", [
+    "username", "password_hash", "name", "role_id", "student_number",
+  ]);
   const updateBlankStudentPasswordSql = `
     UPDATE users
     SET password_hash = ?, updated_at = CURRENT_TIMESTAMP

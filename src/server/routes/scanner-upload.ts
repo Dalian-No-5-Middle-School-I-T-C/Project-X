@@ -16,25 +16,21 @@ import path from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import crypto from "node:crypto";
 import { apiKeyAuth } from "../middleware/api-key";
-import { optionalAuth } from "../middleware/auth";
+import { authMiddleware } from "../middleware/auth";
 import { getMysqlDb } from "../db";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 const router = Router();
 
-// v1.6.0: 双鉴权 — API Key 优先，无 Key 时回退 JWT
-// 单独使用 optionalAuth（不验证）配合 apiKeyAuth（主动校验）
-// 逻辑：先尝试 X-Api-Key，有则校验；没有则走 optionalAuth 挂载用户
+// v1.6.0: 双鉴权 — API Key 优先，无 Key 时强制 JWT
 async function dualAuth(req: Request, res: Response, next: NextFunction) {
   const apiKey = req.headers["x-api-key"] as string | undefined;
   if (apiKey) {
-    // 有 API Key → 走 apiKey 验证
     const keyMw = apiKeyAuth({ scope: "scanner" });
     await keyMw(req, res, next);
   } else {
-    // 无 API Key → 尝试 JWT token
-    await optionalAuth(req, res, next);
+    await authMiddleware(req, res, next);
   }
 }
 
@@ -66,16 +62,14 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
     await db.run(
       `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
-      [
-        sessionId,
-        String(cardId),
-        name || `扫描_${new Date().toISOString().slice(0, 10)}`,
-        dpi || 300,
-        1,            // duplex
-        "gray",       // color_mode
-        paperSize || "A4",
-        pageCount || 0,
-      ]
+      sessionId,
+      String(cardId),
+      name || `扫描_${new Date().toISOString().slice(0, 10)}`,
+      dpi || 300,
+      1,
+      "gray",
+      paperSize || "A4",
+      pageCount || 0,
     );
 
     // 给每页生成上传 token（简单防篡改）
@@ -121,7 +115,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
     const db = await getMysqlDb();
 
     // 验证 session
-    const session = await db.get("SELECT id FROM twain_scan_sessions WHERE id = ?", [sessionId]);
+    const session = await db.get("SELECT id FROM twain_scan_sessions WHERE id = ?", sessionId);
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
       return;
@@ -154,33 +148,51 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     const { sessionId } = req.params;
     const db = await getMysqlDb();
 
-    const session = await db.get("SELECT id, page_count FROM twain_scan_sessions WHERE id = ?", [sessionId]);
+    const session = await db.get<{ id: string; page_count: number }>(
+      "SELECT id, page_count FROM twain_scan_sessions WHERE id = ?",
+      sessionId
+    );
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
       return;
     }
 
-    // 统计上传进度
     const uploaded = await db.get<{ cnt: number }>(
       "SELECT COUNT(*) as cnt FROM twain_scan_records WHERE session_id = ? AND ocr_status = 'uploaded'",
-      [sessionId]
+      sessionId
     );
     const total = await db.get<{ cnt: number }>(
       "SELECT COUNT(*) as cnt FROM twain_scan_records WHERE session_id = ?",
-      [sessionId]
+      sessionId
     );
 
-    // 标记会话完成
+    const uploadedCount = Number(uploaded?.cnt ?? 0);
+    const totalCount = Number(total?.cnt ?? 0);
+    if (uploadedCount < totalCount) {
+      await db.run(
+        "UPDATE twain_scan_sessions SET status = 'incomplete', page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        uploadedCount,
+        sessionId
+      );
+      res.status(400).json({
+        message: `扫描未完成：仅 ${uploadedCount}/${totalCount} 页已上传`,
+        pagesUploaded: uploadedCount,
+        pagesTotal: totalCount,
+      });
+      return;
+    }
+
     await db.run(
       "UPDATE twain_scan_sessions SET status = 'completed', page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [uploaded?.cnt ?? 0, sessionId]
+      uploadedCount,
+      sessionId
     );
 
     res.json({
       ok: true,
-      message: `扫描完成：${uploaded?.cnt ?? 0}/${total?.cnt ?? 0} 页已上传，等待服务端识别`,
-      pagesUploaded: uploaded?.cnt ?? 0,
-      pagesTotal: total?.cnt ?? 0,
+      message: `扫描完成：${uploadedCount}/${totalCount} 页已上传，等待服务端识别`,
+      pagesUploaded: uploadedCount,
+      pagesTotal: totalCount,
     });
   } catch (err: any) {
     res.status(500).json({ message: err.message });
