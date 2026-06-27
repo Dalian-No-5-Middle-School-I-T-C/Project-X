@@ -80,20 +80,27 @@ export async function ensureDefaultAdmin(): Promise<void> {
   if (dialect === "mariadb") {
     const db = getMysqlDb();
     const existing = await db.get("SELECT id FROM users WHERE username = ?", "admin");
-    if (existing) return;
+    if (existing) {
+      await ensureDefaultApiKey(db);
+      return;
+    }
     const passwordHash = await hashPassword("admin123");
     await db.run(
       "INSERT IGNORE INTO users (username, password_hash, name, role_id, is_active) VALUES (?, ?, ?, ?, ?)",
       "admin", passwordHash, "系统管理员", 1, 1
     );
     console.log("[DB] Default admin created: username=admin, password=admin123");
+    await ensureDefaultApiKey(db);
     return;
   }
 
   // SQLite 模式
   const db = getDatabase();
   const existing = db.prepare("SELECT id FROM users WHERE username = ?").get("admin");
-  if (existing) return;
+  if (existing) {
+    await ensureDefaultApiKeySqlite(db);
+    return;
+  }
 
   const passwordHash = await hashPassword("admin123");
   db.prepare(
@@ -102,6 +109,25 @@ export async function ensureDefaultAdmin(): Promise<void> {
   ).run("admin", passwordHash, "系统管理员", 1, 1);
   console.log("[DB] Default admin created: username=admin, password=admin123");
   console.log("[DB] 请登录后立即修改默认密码");
+  await ensureDefaultApiKeySqlite(db);
+}
+
+// v1.6.0: 确保至少有一条扫描用的 API Key
+async function ensureDefaultApiKey(db: any): Promise<void> {
+  const existing = await db.get("SELECT id FROM api_keys WHERE scope = 'scanner' AND is_active = 1 LIMIT 1");
+  if (existing) return;
+  const key = `sk-${require("node:crypto").randomBytes(16).toString("hex")}`;
+  await db.run("INSERT INTO api_keys (name, api_key, scope) VALUES (?, ?, ?)", "默认扫描端密钥", key, "scanner");
+  console.log(`[DB] Default scanner API key created: ${key}`);
+}
+
+function ensureDefaultApiKeySqlite(db: any): Promise<void> {
+  const existing = db.prepare("SELECT id FROM api_keys WHERE scope = 'scanner' AND is_active = 1 LIMIT 1").get();
+  if (existing) return Promise.resolve();
+  const key = `sk-${require("node:crypto").randomBytes(16).toString("hex")}`;
+  db.prepare("INSERT INTO api_keys (name, api_key, scope) VALUES (?, ?, ?)").run("默认扫描端密钥", key, "scanner");
+  console.log(`[DB] Default scanner API key created: ${key}`);
+  return Promise.resolve();
 }
 
 export { runMigrations };

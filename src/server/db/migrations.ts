@@ -407,6 +407,29 @@ const MIGRATIONS: Migration[] = [
       // Migrate old scanner.db data if it exists (one-time)
       // Handled separately by migrate-to-mariadb.ts
     }
+  },
+  {
+    version: 11,
+    name: "api-keys",
+    up(db) {
+      if (!hasTable(db, "api_keys")) {
+        db.exec(`
+          CREATE TABLE api_keys (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            name         TEXT NOT NULL,
+            api_key      TEXT NOT NULL UNIQUE,
+            scope        TEXT NOT NULL DEFAULT 'scanner',
+            is_active    INTEGER DEFAULT 1,
+            created_by   INTEGER REFERENCES users(id),
+            created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+      }
+      // v1.6.0: 为 twain_scan_records 添加 uploaded 字段
+      if (hasTable(db, "twain_scan_records") && !hasColumn(db, "twain_scan_records", "uploaded")) {
+        db.exec("ALTER TABLE twain_scan_records ADD COLUMN uploaded INTEGER DEFAULT 0");
+      }
+    }
   }
 ];
 

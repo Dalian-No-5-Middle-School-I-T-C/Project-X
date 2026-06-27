@@ -677,4 +677,24 @@ src/types/
 
 ---
 
+### v1.6.0 新增
+
+#### `api_keys` — API 密钥
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `name` | TEXT NOT NULL | 密钥名称（如 "扫描端1号"） |
+| `api_key` | TEXT UNIQUE NOT NULL | 密钥值（sk- + 32位hex） |
+| `scope` | TEXT DEFAULT 'scanner' | scanner / full |
+| `is_active` | INTEGER DEFAULT 1 | 0=停用 1=启用 |
+| `created_by` | INTEGER FK | 创建者 |
+| `created_at` | DATETIME | |
+
+`ensureDefaultAdmin()` 启动时自动生成一条默认 scanner key。管理员可通过 `GET/POST/PUT/DELETE /api/admin/api-keys` 管理。
+
+`twain_scan_records` 新增 `uploaded INTEGER DEFAULT 0` 列，用于追踪远程上传状态。
+
+---
+
 _由五中人，为五中人，服务五中教学。_

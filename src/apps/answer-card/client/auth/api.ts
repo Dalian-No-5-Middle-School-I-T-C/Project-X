@@ -1,13 +1,23 @@
 const TOKEN_KEY = "projectx_auth_token";
-const API_BASE = (import.meta.env.VITE_PROJECTX_API_BASE ?? "").replace(/\/+$/, "");
+
+// v1.6.0: API 基础地址支持运行时配置
+// 优先级: localStorage > VITE_PROJECTX_API_BASE > 空（相对路径）
+function getApiBase(): string {
+  try {
+    const stored = localStorage.getItem("projectx_server_url");
+    if (stored) return stored.replace(/\/+$/, "");
+  } catch { /* ignore */ }
+  return (import.meta.env.VITE_PROJECTX_API_BASE ?? "").replace(/\/+$/, "");
+}
 
 let authToken: string | null = null;
 
 export function apiUrl(url: string): string {
-  if (!API_BASE || /^[a-z][a-z0-9+.-]*:/i.test(url)) {
+  const base = getApiBase();
+  if (!base || /^[a-z][a-z0-9+.-]*:/i.test(url)) {
     return url;
   }
-  return url.startsWith("/") ? `${API_BASE}${url}` : `${API_BASE}/${url}`;
+  return url.startsWith("/") ? `${base}${url}` : `${base}/${url}`;
 }
 
 export function getAuthToken(): string | null {
@@ -37,9 +47,14 @@ function notifyUnauthorized(): void {
 
 export async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const token = getAuthToken();
+  // v1.6.0: 同时支持 Api-Key header
+  const storedApiKey = (() => { try { return localStorage.getItem("projectx_api_key"); } catch { return null; } })();
   const headers = new Headers(options?.headers);
   if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (storedApiKey && !headers.has("X-Api-Key")) {
+    headers.set("X-Api-Key", storedApiKey);
   }
   const response = await fetch(apiUrl(url), { ...options, headers });
   if (!response.ok) {
@@ -66,9 +81,13 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
 
 export function authFetch(url: string, options?: RequestInit): Promise<Response> {
   const token = getAuthToken();
+  const storedApiKey = (() => { try { return localStorage.getItem("projectx_api_key"); } catch { return null; } })();
   const headers = new Headers(options?.headers);
   if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (storedApiKey && !headers.has("X-Api-Key")) {
+    headers.set("X-Api-Key", storedApiKey);
   }
   return fetch(apiUrl(url), { ...options, headers });
 }

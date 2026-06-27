@@ -1,7 +1,7 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.5.5-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.6.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.5.5
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 大考组 → 成绩分析 → 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → 并列排名 → 暗色主题 → **MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署（Ubuntu 打包 + 一键建库 + 数据迁移 + Docker）**
-> **下个里程碑**：v1.6.0 — WEB 端化（教师端/学生端纯 WEB、扫描端独立上传）
+> **当前版本**：v1.6.0
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 大考组 → 成绩分析 → 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → **客户端拆分（扫描端独立 + 双模上传 + 教师/学生 WEB + API Key 认证 + 运行时身份切换）**
+> **下个里程碑**：v1.7.0 — 知识点诊断 + 成绩预测 + 跨班深度对比
 
 ---
 
@@ -128,12 +128,12 @@
 
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
 ```
-Project-X 学生端-1.5.5-x64.exe
-Project-X 教师端-1.5.5-x64.exe
-Project-X 教师扫描端-1.5.5-x64.exe
-Project-X 学生端-1.5.5-ia32.exe
-Project-X 教师端-1.5.5-ia32.exe
-Project-X 教师扫描端-1.5.5-ia32.exe
+Project-X 学生端-1.6.0-x64.exe
+Project-X 教师端-1.6.0-x64.exe
+Project-X 教师扫描端-1.6.0-x64.exe
+Project-X 学生端-1.6.0-ia32.exe
+Project-X 教师端-1.6.0-ia32.exe
+Project-X 教师扫描端-1.6.0-ia32.exe
 ```
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
@@ -294,7 +294,7 @@ npm run electron:msi                   # = electron:msi:scanner
 | [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.5.5 MariaDB 双模部署） | 全体 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.6.0 客户端拆分） | 全体 |
 
 ---
 
@@ -307,12 +307,12 @@ Project-X/
 ├── src/
 │   ├── apps/answer-card/
 │   │   ├── client/                      # React 前端
-│   │   │   ├── App.tsx                  # 主应用（设计/考试管理/阅卷/分析/成绩/账号六模式）
+│   │   │   ├── App.tsx                  # 主应用（v1.6.0: 运行时 persona + 编译时 variant）
 │   │   │   ├── styles.css               # 全局样式
 │   │   │   └── components/              # 子组件
 │   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期+考试关联）
-│   │   │       ├── LoginPage.tsx            # 登录页（记住密码）
-│   │   │       ├── AccountMenu.tsx          # 账户下拉菜单（含设置/支持项目入口/AI服务商管理）
+│   │   │       ├── LoginPage.tsx            # 登录页（v1.6.0: 远端服务器配置+测试连接）
+│   │   │       ├── AccountMenu.tsx          # 账户下拉菜单（v1.6.0: 管理员身份切换）
 │   │   │       ├── SponsorPage.tsx          # 赞助/支持页面（收款码预留）
 │   │   │       ├── AccountManagement.tsx    # 教师/学生管理（双 Tab）
 │   │   │       ├── TeacherManagement.tsx    # 教师管理（科目/班级关联）
@@ -323,7 +323,7 @@ Project-X/
 │   │   │       ├── ScoreFixPage.tsx          # 成绩修改（个别改分 + 修改答案批量重算）
 │   │   │       ├── StudentScoreDetail.tsx    # 逐题得分明细（班级均分率 + 答题卡放大）
 │   │   │       ├── StudentScores.tsx        # 学生我的成绩
-│   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板
+│   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板（v1.6.0: 本地/远程双模）
 │   │   │       ├── ExamSelectPage.tsx       # 考试选择页（单科/大考/跨考 三选一，内联跨考分析）
 │   │   │       ├── ScoreDetailPage.tsx      # 成绩查看页（概况/成绩/考试分析/AI分析）
 │   │   │       ├── CreateExamGroupModal.tsx  # 大考创建/编辑弹窗（关联考试+内联新建考试）
@@ -351,8 +351,8 @@ Project-X/
 │   │   │   ├── ExamRepository.ts         # 考试 CRUD
 │   │   │   ├── UserRepository.ts         # 用户管理
 │   │   │   └── AnalysisRepository.ts     # 分析查询
-│   │   ├── middleware/                   # 认证中间件
-│   │   ├── routes/                       # 认证/用户/赞助/AI服务商/成绩修改/导出/大考组/跨考等路由
+│   │   ├── middleware/                   # 认证中间件（含 v1.6.0 api-key 认证）
+│   │   ├── routes/                       # 认证/用户/赞助/AI服务商/成绩修改/导出/大考组/跨考/API Key/扫描上传等路由
 │   │   └── services/                     # AuthService / AssignedScoreService（赋分引擎）
 │   └── shared/                          # 前后端共享
 │       ├── types.ts                     # 全部类型定义
@@ -363,7 +363,7 @@ Project-X/
 │       ├── pinyin.ts                    # 科目名→拼音 key 转换
 │       ├── blankLabels.ts               # 填空序号格式化
 │       ├── defaultCard.ts               # 默认答题卡工厂 + ID 生成
-│       └── appVariant.ts                # 多端变体定义（学生/教师/扫描端）
+│       └── appVariant.ts                # 多端变体定义（v1.6.0: 运行时 persona 覆盖编译时 variant）
 ├── native/
 │   ├── AnswerCardRecognizer/            # C++ 识别引擎（OpenCV）
 │   └── ScannerBridge/                   # C++ TWAIN 扫描仪桥接
@@ -475,6 +475,11 @@ Project-X/
 | `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |
 | `GET` | `/api/app/health` | 健康检查（含 `db.dialect` + `latencyMs`） |
 | `GET/PATCH` | `/api/app/db-config` | 数据库配置读取/修改（管理员） |
+| `POST` | `/api/scanner/sessions` | 创建扫描上传会话（API Key + JWT 双鉴权） |
+| `POST` | `/api/scanner/sessions/:id/pages` | 上传扫描页（multipart） |
+| `POST` | `/api/scanner/sessions/:id/complete` | 标记扫描完成 |
+| `GET` | `/api/scanner/sessions/:id/status` | 查询扫描状态 |
+| `GET/PO/PT/DEL` | `/api/admin/api-keys` | API Key 管理（管理员） |
 
 ---
 

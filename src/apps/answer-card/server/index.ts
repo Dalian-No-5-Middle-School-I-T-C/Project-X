@@ -27,6 +27,8 @@ import exportScoresRoutes from "../../../server/routes/export-scores";
 import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
+import apiKeysRoutes from "../../../server/routes/api-keys";
+import scannerUploadRoutes from "../../../server/routes/scanner-upload";
 import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
 import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
@@ -549,6 +551,8 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/scores", scoreRoutes);
   app.use("/api/sponsor", sponsorRoutes);
   app.use("/api/db", backupRoutes);
+  app.use("/api/admin/api-keys", apiKeysRoutes);
+  app.use("/api/scanner", scannerUploadRoutes);
   app.use("/api/ai/providers", aiProviderRoutes);
 
   // ── 应用配置（管理员） ──────────────────────────────────

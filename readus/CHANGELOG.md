@@ -1,8 +1,113 @@
 # Project-X CHANGELOG
 
-## v1.5.5 (2026-06-27) — MariaDB 双模 + 服务器部署就绪
+## v1.6.0 (2026-06-27) — 客户端拆分 + 运行时身份切换
 
-### 从 MySQL 到 MariaDB 10.11 LTS
+### 架构：从单体 Electron 到独立客户端
+
+教师扫描端、教师端、学生端各自独立，统一通过 HTTP API 通信。
+
+```
+v1.5.5:  单一 Electron 进程（设计+扫描+阅卷 全在一起）
+v1.6.0:  扫描端(Electron) ←→ 服务端(API) ←→ 教师端(WEB) / 学生端(WEB)
+```
+
+### 运行时 Persona（AuthContext 扩展）
+
+- **管理员可在账户下拉菜单切换身份视图**：扫描端 / 教师端(学科老师/班主任/学年主任) / 学生端
+- 切换即时生效，无需重启
+- persona 存 localStorage，登录恢复
+- 教师/学生固定身份，不可切换
+
+**文件**：`AuthContext.tsx`（新增 type `AppPersona` / `TeacherRoleOverride` / `setPersona` / `availablePersonas`）
+**文件**：`AccountMenu.tsx`（新增「查看身份」区域，仅管理员可见）
+
+### 登录页：远端配置 + 本地模式
+
+- 新增折叠面板「服务器连接（可选）」：输入服务器地址、API Key、测试连接
+- 不填 = 纯本地模式（所有数据存本地 SQLite）
+- 填了 = 教师/学生功能走远程 API
+- 服务器地址和 API Key 存 localStorage
+- `api.ts` 中 `getApiBase()` 改为运行时读取 localStorage
+
+**文件**：`LoginPage.tsx`（重构，新增 Globe + 连接测试）
+**文件**：`api.ts`（`API_BASE` 常量 → `getApiBase()` 函数，同时自动附带 X-Api-Key 头）
+
+### API Key 认证体系
+
+**新建表**（migration v11）：
+
+```sql
+CREATE TABLE api_keys (
+  id, name, api_key UNIQUE, scope DEFAULT 'scanner', is_active, created_by, created_at
+);
+```
+
+- `ensureDefaultAdmin()` 时自动生成一条 scanner key
+- 管理 API：`GET/POST/PUT/DELETE /api/admin/api-keys`
+- 中间件：`src/server/middleware/api-key.ts`（从 `X-Api-Key` header 校验）
+- scope `scanner` 的 key 仅能访问 `/api/scanner/*`
+
+### 扫描上传端点
+
+**文件**：`src/server/routes/scanner-upload.ts`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/scanner/sessions` | 创建扫描会话 |
+| `POST` | `/api/scanner/sessions/:id/pages` | 上传扫描页（multipart） |
+| `POST` | `/api/scanner/sessions/:id/complete` | 标记完成 |
+| `GET` | `/api/scanner/sessions/:id/status` | 查询状态 |
+
+双鉴权：`apiKeyAuth`（高优先级）+ `authMiddleware`（低优先级，任一通过即可）
+
+### ScannerPanel：本地/远程双模
+
+- 新增「本地存储」←→「上传服务器」切换按钮
+- 本地模式：行为不变，扫描结果存本地 SQLite
+- 远程模式：扫描完成后自动逐页上传到服务端
+- 上传进度实时显示（上传中/完成/失败状态）
+- 模式选择存 localStorage（`projectx_scanner_mode`）
+
+**文件**：`ScannerPanel.tsx`（新增 `Upload`/`Database` 图标，`scannerMode` 状态，`uploadToRemote()` 函数，上传状态指示器）
+**文件**：`twain_scan_records` 表新增 `uploaded INTEGER DEFAULT 0` 字段
+
+### App.tsx 运行时 Variant
+
+- `appVariant` 从 compile-time `import.meta.env.VITE_PROJECTX_VARIANT` → runtime `useAuth().persona`
+- `hasNativeScanner` 通过 `navigator.userAgent` 检测 Electron 环境
+- 扫描 TAB 可见性 = persona 允许 + grading 权限 + 本地有扫描硬件
+- WEB 模式（浏览器）自动隐藏扫描 Tab
+
+### 数据库
+
+- 新增 `api_keys` 表（v11 migration）
+- `twain_scan_records` 新增 `uploaded` 列
+- 两份 schema 同步更新：`schema.sql` + `schema.mariadb.sql`
+
+### 端口默认值改为 443
+
+所有默认 MariaDB 端口 3306 → 443（适配仅开放 22/80/443 的防火墙场景）
+
+### 版本号
+
+- `package.json` 1.5.5 → 1.6.0
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `src/server/middleware/api-key.ts` | API Key 认证中间件 |
+| `src/server/routes/api-keys.ts` | API Key 管理路由 |
+| `src/server/routes/scanner-upload.ts` | 扫描上传路由 |
+
+### 架构决策
+
+- 客户端视图身份从编译时改为运行时，管理员可动态切换
+- API Key 模式用于无用户登录的扫描客户端，与 JWT 互补
+- 扫描端本地 SQLite 保留，用作离线缓存和断网重试缓冲
+- 最终部署：服务端跑 MariaDB，各客户端通过 HTTP API 通信
+
+---
 
 原 v1.5.2 引入的 MySQL 双后端方案存在致命缺陷：`ON DUPLICATE KEY UPDATE` 在底层 SQLite 适配器中无法执行（SQLite 不支持此语法），依赖"DELETE-then-INSERT"才侥幸不报错。本次彻底重写整个数据访问层。
 

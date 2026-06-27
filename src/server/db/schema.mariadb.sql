@@ -54,6 +54,18 @@ CREATE TABLE IF NOT EXISTS users (
     FOREIGN KEY (role_id) REFERENCES roles(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- API 密钥表 (v1.6.0) — 供扫描客户端等服务端组件使用
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+    name         VARCHAR(100) NOT NULL,
+    api_key      VARCHAR(64) NOT NULL UNIQUE,
+    scope        VARCHAR(20) NOT NULL DEFAULT 'scanner',
+    is_active    TINYINT DEFAULT 1,
+    created_by   INT,
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS grades (
     id           INT AUTO_INCREMENT PRIMARY KEY,
     name         VARCHAR(50) NOT NULL,
@@ -411,6 +423,7 @@ CREATE TABLE IF NOT EXISTS twain_scan_records (
     ocr_status      VARCHAR(20) NOT NULL DEFAULT 'pending',
     scan_quality    DOUBLE,
     ocr_error       TEXT,
+    uploaded        TINYINT DEFAULT 0,   -- v1.6.0: 是否已上传到远端
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     recognized_at   DATETIME,
     FOREIGN KEY (session_id) REFERENCES twain_scan_sessions(id) ON DELETE CASCADE
