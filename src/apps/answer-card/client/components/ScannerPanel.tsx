@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Camera, Play, Square, RefreshCw, AlertTriangle, Check, Loader, Eye } from "lucide-react";
+import { Camera, Play, Square, RefreshCw, AlertTriangle, Check, Loader, Eye, Upload, Database } from "lucide-react";
 import { authFetch, urlWithToken } from "../auth/api";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 import { ScanPreviewModal } from "./ScanPreviewModal";
@@ -67,6 +67,18 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [studentResults, setStudentResults] = useState<StudentResult[]>([]);
   const [activeStudent, setActiveStudent] = useState<StudentResult | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+
+  // v1.6.0: 扫描模式 — 本地存储 或 上传服务器
+  const [scannerMode, setScannerMode] = useState<"local" | "remote">(() => {
+    try { return (localStorage.getItem("projectx_scanner_mode") as "local" | "remote") || "local"; } catch { return "local"; }
+  });
+  const [uploadState, setUploadState] = useState<"" | "uploading" | "done" | "error">("");
+  const [uploadMsg, setUploadMsg] = useState("");
+
+  function setMode(m: "local" | "remote") {
+    setScannerMode(m);
+    try { localStorage.setItem("projectx_scanner_mode", m); } catch { /* ignore */ }
+  }
 
   // Detect sources on mount
   useEffect(() => {
@@ -148,6 +160,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           onScansComplete?.(sid, pages.length);
           // Fetch combined results after scan completes
           fetchCombinedResults(sid);
+          // v1.6.0: 远程模式下自动上传
+          if (scannerMode === "remote") {
+            setTimeout(() => void uploadToRemote(), 500);
+          }
           break;
       }
     };
@@ -166,6 +182,63 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       }
     } catch (err) {
       console.error("Failed to fetch combined results:", err);
+    }
+  }
+
+  // v1.6.0: 上传扫描结果到远程服务器
+  async function uploadToRemote() {
+    if (!sessionId || scannerMode !== "remote") return;
+    setUploadState("uploading");
+    setUploadMsg("正在上传到服务器...");
+
+    try {
+      // Step 1: 创建远程扫描会话
+      const createRes = await authFetch("/api/scanner/upload/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cardId,
+          name: `扫描_${cardId}_${new Date().toISOString().slice(0, 10)}`,
+          dpi, paperSize, pageCount: pages.length,
+        }),
+      });
+      if (!createRes.ok) throw new Error("创建远程会话失败");
+      const { sessionId: remoteSessionId, uploadTokens } = await createRes.json() as { sessionId: string; uploadTokens: string[] };
+
+      // Step 2: 逐页上传图片
+      for (let i = 0; i < pages.length; i++) {
+        const page = pages[i];
+        const token = uploadTokens[i];
+        setUploadMsg(`正在上传第 ${page.pageNum} 页 (${i + 1}/${pages.length})...`);
+
+        // 获取本地图片并上传
+        const imageRes = await authFetch(`/api/scanner/scan-image/${page.recordId}`);
+        if (!imageRes.ok) continue;
+        const blob = await imageRes.blob();
+
+        const form = new FormData();
+        form.append("image", blob, `page_${page.pageNum}.jpg`);
+        form.append("token", token);
+        form.append("pageNum", String(page.pageNum));
+        form.append("side", page.side);
+
+        const uploadRes = await authFetch(`/api/scanner/upload/sessions/${remoteSessionId}/pages`, {
+          method: "POST",
+          body: form,
+        });
+        if (!uploadRes.ok) {
+          console.error(`Page ${page.pageNum} upload failed`);
+        }
+      }
+
+      // Step 3: 标记完成
+      await authFetch(`/api/scanner/upload/sessions/${remoteSessionId}/complete`, { method: "POST" });
+
+      setUploadState("done");
+      setUploadMsg(`上传完成！${pages.length} 页已提交到服务器`);
+    } catch (err) {
+      setUploadState("error");
+      setUploadMsg(err instanceof Error ? err.message : "上传失败");
     }
   }
 
@@ -323,6 +396,28 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             双面扫描
           </label>
 
+          {/* ── v1.6.0: 扫描存储模式切换 ── */}
+          <div className="scanner-mode-switch" style={{ display: "flex", gap: 4, marginTop: 6, background: "var(--surface-soft)", borderRadius: 6, padding: 3 }}>
+            <button
+              type="button"
+              className={scannerMode === "local" ? "primary-button" : "ghost-button"}
+              style={{ flex: 1, fontSize: 12, padding: "4px 8px" }}
+              onClick={() => setMode("local")}
+              title="扫描结果存入本地 SQLite"
+            >
+              <Database size={13} style={{ marginRight: 4 }} />本地存储
+            </button>
+            <button
+              type="button"
+              className={scannerMode === "remote" ? "primary-button" : "ghost-button"}
+              style={{ flex: 1, fontSize: 12, padding: "4px 8px" }}
+              onClick={() => setMode("remote")}
+              title="扫描结果上传到远端服务器"
+            >
+              <Upload size={13} style={{ marginRight: 4 }} />上传服务器
+            </button>
+          </div>
+
           <label className="check-row">
             <input
               type="checkbox"
@@ -336,7 +431,14 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             <Play size={17} /> 开始扫描
           </button>
 
-          <p className="hint">将答题卡放入扫描仪进纸器，点击开始扫描。扫描完成后自动识别学号和答案。</p>
+          {/* 上传状态指示 */}
+          {uploadState && (
+            <div style={{ fontSize: 12, padding: "6px 8px", borderRadius: 4, marginTop: 4, background: uploadState === "done" ? "#e8f5e9" : uploadState === "error" ? "#ffebee" : "#e3f2fd", color: uploadState === "done" ? "#2E7D32" : uploadState === "error" ? "var(--brand)" : "#1565C0" }}>
+              {uploadState === "uploading" && <><Loader size={12} className="spinning" style={{ marginRight: 4 }} /> {uploadMsg}</>}
+              {uploadState === "done" && <><Check size={12} style={{ marginRight: 4 }} /> {uploadMsg}</>}
+              {uploadState === "error" && <><AlertTriangle size={12} style={{ marginRight: 4 }} /> {uploadMsg}</>}
+            </div>
+          )}          <p className="hint">将答题卡放入扫描仪进纸器，点击开始扫描。扫描完成后自动识别学号和答案。</p>
         </div>
       )}
 

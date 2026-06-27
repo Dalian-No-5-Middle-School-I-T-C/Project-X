@@ -49,6 +49,17 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- API 密钥表 (v1.6.0) — 供扫描客户端等服务端组件使用
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,              -- 密钥名称（如 "扫描端1号"）
+    api_key      TEXT NOT NULL UNIQUE,       -- 密钥值（sk-xxx）
+    scope        TEXT NOT NULL DEFAULT 'scanner',  -- scanner / full
+    is_active    INTEGER DEFAULT 1,          -- 0=停用 1=启用
+    created_by   INTEGER REFERENCES users(id),
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 年级表
 CREATE TABLE IF NOT EXISTS grades (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -374,8 +385,9 @@ CREATE TABLE IF NOT EXISTS twain_scan_records (
     side            TEXT NOT NULL DEFAULT 'front',
     ocr_status      TEXT NOT NULL DEFAULT 'pending',
     scan_quality    REAL,
-    ocr_error       TEXT,
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            ocr_error       TEXT,
+            uploaded        INTEGER DEFAULT 0,   -- v1.6.0: 是否已上传到远端
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     recognized_at   DATETIME
 );
 

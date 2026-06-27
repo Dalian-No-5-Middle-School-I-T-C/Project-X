@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Database, Download, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit } from "lucide-react";
+import { ChevronDown, Database, Download, Eye, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson, getAuthToken } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
@@ -17,7 +17,7 @@ export function AccountMenu({
   darkModeEnabled: boolean;
   setDarkModeEnabled: (enabled: boolean) => void;
 }) {
-  const { user, logout, isAdmin } = useAuth();
+  const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona } = useAuth();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -352,6 +352,47 @@ export function AccountMenu({
                 确认修改
               </button>
             </div>
+          )}
+          {/* ── v1.6.0: 管理员身份切换 ── */}
+          {canSwitchPersona && (
+            <>
+              <div className="account-menu-divider" />
+              <div style={{ padding: "8px 12px 4px" }}>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  <Eye size={12} style={{ verticalAlign: -1, marginRight: 4 }} />
+                  查看身份
+                </div>
+                {availablePersonas.map((p) => {
+                  const labels: Record<string, string> = { "teacher-scanner": "扫描端（全功能）", "teacher": "教师端", "student": "学生端（预览）" };
+                  return (
+                    <label key={p} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", cursor: "pointer", fontSize: 13 }}>
+                      <input
+                        type="radio"
+                        name="persona"
+                        value={p}
+                        checked={persona === p}
+                        onChange={() => setPersona(p)}
+                      />
+                      {labels[p] ?? p}
+                    </label>
+                  );
+                })}
+                {persona === "teacher" && (
+                  <div style={{ marginLeft: 22, marginTop: 2 }}>
+                    <select
+                      value={teacherRoleOverride ?? ""}
+                      onChange={(e) => setTeacherRoleOverride((e.target.value || null) as any)}
+                      style={{ fontSize: 12, padding: "2px 4px", borderRadius: 4, border: "1px solid var(--line)", background: "var(--surface)", color: "var(--text)" }}
+                    >
+                      <option value="">教师角色（实际）</option>
+                      <option value="subject_teacher">学科老师</option>
+                      <option value="head_teacher">班主任</option>
+                      <option value="grade_leader">学年主任</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+            </>
           )}
           <button
             type="button"
