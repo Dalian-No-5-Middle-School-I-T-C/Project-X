@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { runMigrations } from "./migrations";
 import { resolveProjectDbPath } from "./paths";
 import { seedDefaultData } from "./seeds";
-import { detectDialect, getMysqlDb, initMariadbSchema } from "./mysql";
+import { detectDialect, getMysqlDb, initMariadbSchema, buildInsertIgnore } from "./mysql";
 import type { DbAdapter } from "./mysql";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -86,10 +86,10 @@ export async function ensureDefaultAdmin(): Promise<void> {
       return;
     }
     const passwordHash = await hashPassword("admin123");
-    await db.run(
-      "INSERT IGNORE INTO users (username, password_hash, name, role_id, is_active) VALUES (?, ?, ?, ?, ?)",
-      "admin", passwordHash, "系统管理员", 1, 1
-    );
+    const insertAdminSql = buildInsertIgnore("mariadb", "users", [
+      "username", "password_hash", "name", "role_id", "is_active",
+    ]);
+    await db.run(insertAdminSql, "admin", passwordHash, "系统管理员", 1, 1);
     console.log("[DB] Default admin created: username=admin, password=admin123");
     await ensureDefaultApiKey(db);
     return;

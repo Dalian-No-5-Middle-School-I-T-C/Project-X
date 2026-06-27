@@ -24,6 +24,13 @@ import path from "node:path";
 // 必须在导入任何 db 模块前设置数据库路径（getDatabase 在模块求值期读取该变量）
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-verify-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
+// 验证脚本固定使用临时 SQLite，避免 cloud.env 中的 MariaDB 变量干扰
+delete process.env.PROJECTX_MARIADB_HOST;
+delete process.env.PROJECTX_MARIADB_PORT;
+delete process.env.PROJECTX_MARIADB_USER;
+delete process.env.PROJECTX_MARIADB_PASSWORD;
+delete process.env.PROJECTX_MARIADB_DATABASE;
+delete process.env.PROJECTX_MYSQL_HOST;
 
 let passed = 0;
 let failed = 0;
@@ -153,7 +160,7 @@ async function main(): Promise<void> {
   // 改密 + 会话吊销
   const changed = await auth.changePassword(student.id, "20260001", "newpass123");
   ok(changed.success, "学生修改密码成功");
-  ok(auth.getUserByToken(stuLogin.token!) === null, "改密后旧会话被吊销");
+  ok((await auth.getUserByToken(stuLogin.token!)) === null, "改密后旧会话被吊销");
   const reLogin = await auth.login("20260001", "newpass123");
   ok(reLogin.success, "用新密码重新登录成功");
 
@@ -274,7 +281,7 @@ async function main(): Promise<void> {
   const trendClasses = await analysisRepo.getExamClasses(trendExam1);
   ok(trendClasses.some((item) => item.classId === 0 && item.className === "未知班级"), "exam class list includes unknown class");
   ok((await analysisRepo.getScoreTrend("")).length === 0, "empty subject returns empty trend");
-  ok(await analysisRepo.getScoreSummary(examId + 999) === null, "score summary returns null without scores");
+  ok((await analysisRepo.getScoreSummary(examId + 999)) === null, "score summary returns null without scores");
 
   const evenSummary = await analysisRepo.getScoreSummary(summaryEvenExam);
   ok(

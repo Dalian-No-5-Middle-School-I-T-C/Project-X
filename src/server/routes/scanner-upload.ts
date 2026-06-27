@@ -16,7 +16,7 @@ import path from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import crypto from "node:crypto";
 import { apiKeyAuth } from "../middleware/api-key";
-import { optionalAuth, authMiddleware } from "../middleware/auth";
+import { authMiddleware } from "../middleware/auth";
 import { getMysqlDb } from "../db";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -28,7 +28,6 @@ const router = Router();
 async function dualAuth(req: Request, res: Response, next: NextFunction) {
   const apiKey = req.headers["x-api-key"] as string | undefined;
   if (apiKey) {
-    // 有 API Key → 走 apiKey 验证
     const keyMw = apiKeyAuth({ scope: "scanner" });
     await keyMw(req, res, next);
   } else {
@@ -151,13 +150,15 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     const { sessionId } = req.params;
     const db = await getMysqlDb();
 
-    const session = await db.get("SELECT id, page_count FROM twain_scan_sessions WHERE id = ?", sessionId);
+    const session = await db.get<{ id: string; page_count: number }>(
+      "SELECT id, page_count FROM twain_scan_sessions WHERE id = ?",
+      sessionId
+    );
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
       return;
     }
 
-    // 统计上传进度
     const uploaded = await db.get<{ cnt: number }>(
       "SELECT COUNT(*) as cnt FROM twain_scan_records WHERE session_id = ? AND ocr_status = 'uploaded'",
       sessionId
@@ -167,8 +168,8 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       sessionId
     );
 
-    const uploadedCount = uploaded?.cnt ?? 0;
-    const totalCount = total?.cnt ?? 0;
+    const uploadedCount = Number(uploaded?.cnt ?? 0);
+    const totalCount = Number(total?.cnt ?? 0);
 
     // v1.6.0: 检查完整性 — 未全部上传完成时阻止标记 completed
     const complete = uploadedCount >= totalCount && totalCount > 0;
@@ -208,7 +209,7 @@ router.get("/sessions/:sessionId/status", dualAuth, async (req: Request, res: Re
 
     const session = await db.get<any>(
       `SELECT id, card_id, name, status, page_count, created_at, updated_at FROM twain_scan_sessions WHERE id = ?`,
-      [sessionId]
+      sessionId
     );
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
@@ -217,7 +218,7 @@ router.get("/sessions/:sessionId/status", dualAuth, async (req: Request, res: Re
 
     const records = await db.all<any>(
       `SELECT id, page_num, side, ocr_status, scan_quality FROM twain_scan_records WHERE session_id = ? ORDER BY page_num`,
-      [sessionId]
+      sessionId
     );
 
     res.json({

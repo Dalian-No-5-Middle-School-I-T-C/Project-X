@@ -104,8 +104,6 @@ export function buildUpsertSQL(
 }
 
 /**
- * 构建跨方言 INSERT IGNORE 语句
-/**
  * 跨方言 INSERT … ON CONFLICT 忽略
  * SQLite: INSERT OR IGNORE, MariaDB: INSERT IGNORE
  */
