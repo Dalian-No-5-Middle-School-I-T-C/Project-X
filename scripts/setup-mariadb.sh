@@ -78,10 +78,10 @@ echo -e "${GREEN}✅ 用户 ${APP_USER} 已创建${NC}"
 # ── 5. 授权 ─────────────────────────────────────
 echo ""
 echo "🔑 授权 ${APP_USER} 对 ${APP_DB} 的读写权限..."
-sudo $MYSQL_CMD -e "GRANT SELECT, INSERT, UPDATE, DELETE ON \`${APP_DB}\`.* TO '${APP_USER}'@'127.0.0.1';" 2>/dev/null || \
-    $MYSQL_CMD -u root -e "GRANT SELECT, INSERT, UPDATE, DELETE ON \`${APP_DB}\`.* TO '${APP_USER}'@'127.0.0.1';"
-sudo $MYSQL_CMD -e "GRANT SELECT, INSERT, UPDATE, DELETE ON \`${APP_DB}\`.* TO '${APP_USER}'@'localhost';" 2>/dev/null || \
-    $MYSQL_CMD -u root -e "GRANT SELECT, INSERT, UPDATE, DELETE ON \`${APP_DB}\`.* TO '${APP_USER}'@'localhost';"
+sudo $MYSQL_CMD -e "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON \`${APP_DB}\`.* TO '${APP_USER}'@'127.0.0.1';" 2>/dev/null || \
+    $MYSQL_CMD -u root -e "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON \`${APP_DB}\`.* TO '${APP_USER}'@'127.0.0.1';"
+sudo $MYSQL_CMD -e "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON \`${APP_DB}\`.* TO '${APP_USER}'@'localhost';" 2>/dev/null || \
+    $MYSQL_CMD -u root -e "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, ALTER, INDEX, REFERENCES ON \`${APP_DB}\`.* TO '${APP_USER}'@'localhost';"
 sudo $MYSQL_CMD -e "FLUSH PRIVILEGES;" 2>/dev/null || \
     $MYSQL_CMD -u root -e "FLUSH PRIVILEGES;"
 
@@ -100,8 +100,8 @@ if [ ! -f "$SCHEMA_PATH" ]; then
     exit 1
 fi
 
-# 过滤掉 CREATE DATABASE / USE 语句（已在上面执行过）
-grep -v 'CREATE DATABASE\|^USE ' "$SCHEMA_PATH" | \
+# 过滤掉 CREATE DATABASE 整块与 USE 语句（已在上面执行过）
+awk 'BEGIN{skip=0} /^CREATE DATABASE/{skip=1; next} skip && /;/{skip=0; next} skip{next} /^USE /{next} {print}' "$SCHEMA_PATH" | \
     sudo $MYSQL_CMD "${APP_DB}" 2>/dev/null || \
     $MYSQL_CMD -u root "${APP_DB}"
 

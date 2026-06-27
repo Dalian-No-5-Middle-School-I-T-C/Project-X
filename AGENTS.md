@@ -6,7 +6,19 @@
 Project-X (答题卡设计系统 / "Intelligent Exam Paper Management System"): an answer-card designer, OMR grading, and grade-analysis platform. The core, runnable-on-Linux product is a single Node app:
 - **Express API backend** (`src/apps/answer-card/server/index.ts`) on port `5174`.
 - **Vite + React frontend** on port `5173` (proxies `/api` and `/assets` to `5174`, see `vite.config.ts`).
-- **Embedded SQLite** at `data/projectx.db` (auto-created on first run; gitignored via `data/*`).
+- **Embedded SQLite** at `data/projectx.db` (auto-created on first run; gitignored via `data/*`), **or remote MariaDB 10.11** when `PROJECTX_MARIADB_HOST` / `config.yml` `database.mode: remote` is set (branch `1.6.0beta_双端数据库`).
+
+### Install note
+Use `npm install --ignore-scripts` (avoids Electron download issues), then `npm rebuild better-sqlite3` to compile the native SQLite binding for the current Node.
+
+### MariaDB (dual-database mode, optional)
+For testing remote DB on Linux cloud desktop:
+```bash
+sudo apt install -y mariadb-server mariadb-client
+bash scripts/ensure-mariadb.sh
+MARIADB_APP_PASSWORD='your_password' sudo -E bash scripts/setup-mariadb.sh
+```
+Then `set -a && source cloud.env && set +a` (see `cloud.env.example`) before `npm run dev`. Health check reports `db.dialect: "mariadb"`. Backup/restore in MariaDB mode needs `mariadb-client` (`mysqldump`).
 
 ### Running (dev)
 - `npm run dev` starts backend + frontend together (via `concurrently`). The `predev` hook (`scripts/ensure-native-modules.cjs`) auto-rebuilds `better-sqlite3` if its binary is missing/mismatched, so `npm run dev` self-heals native module issues.
@@ -27,6 +39,3 @@ README states Node 24+ for dev, but the project runs fine on the Node 22 LTS ava
 - **C++ native modules** — `native/AnswerCardRecognizer` (OpenCV OMR) and `native/ScannerBridge` (TWAIN scanner). Their build scripts are Windows `.bat` files with hardcoded paths (VS2022 + OpenCV 4.13) and the scanner needs physical hardware. The app runs without them; OMR scoring / direct-scan features just won't be exercisable on Linux.
 - **Electron packaging** (`electron:*` scripts) is Windows-targeted; `npm install --ignore-scripts` skips the Electron binary download, which is fine for web dev.
 - **Python LLM service** (`llmclient/`, FastAPI on port `8766`) is optional, only for built-in AI grade analysis, and requires external LLM API keys (`llmclient/.env`). Start with `uvicorn llmclient.server:app --host 127.0.0.1 --port 8766` only if testing AI analysis.
-
-### Install note
-Use `npm install --ignore-scripts` (avoids Electron download issues), then `npm rebuild better-sqlite3` to compile the native SQLite binding for the current Node.
