@@ -71,9 +71,9 @@ function createRuntimePackageJson() {
     version: packageJson.version,
     private: true,
     type: "module",
-    description: "Project-X Ubuntu 24 web server package without Electron dependencies.",
+    description: "Project-X Ubuntu 24 web server package. Supports local SQLite and remote MariaDB 10.11.",
     scripts: {
-      start: "PROJECTX_AUTH_ENFORCE=${PROJECTX_AUTH_ENFORCE:-1} PROJECTX_VARIANT=${PROJECTX_VARIANT:-teacher} PROJECTX_ENABLE_SCANNER=${PROJECTX_ENABLE_SCANNER:-0} node dist/server/index.mjs"
+      start: "PROJECTX_AUTH_ENFORCE=${PROJECTX_AUTH_ENFORCE:-1} PROJECTX_VARIANT=${PROJECTX_VARIANT:-teacher} PROJECTX_ENABLE_SCANNER=${PROJECTX_ENABLE_SCANNER:-0} PROJECTX_MARIADB_HOST=${PROJECTX_MARIADB_HOST:-} PROJECTX_MARIADB_PORT=${PROJECTX_MARIADB_PORT:-3306} PROJECTX_MARIADB_USER=${PROJECTX_MARIADB_USER:-} PROJECTX_MARIADB_PASSWORD=${PROJECTX_MARIADB_PASSWORD:-} PROJECTX_MARIADB_DATABASE=${PROJECTX_MARIADB_DATABASE:-projectx} node dist/server/index.mjs"
     },
     engines: {
       node: ">=22"
@@ -93,6 +93,13 @@ export PROJECTX_AUTH_ENFORCE="\${PROJECTX_AUTH_ENFORCE:-1}"
 export PROJECTX_VARIANT="\${PROJECTX_VARIANT:-teacher}"
 export PROJECTX_ENABLE_SCANNER="\${PROJECTX_ENABLE_SCANNER:-0}"
 
+# MariaDB (remote mode) — leave empty for local SQLite
+export PROJECTX_MARIADB_HOST="\${PROJECTX_MARIADB_HOST:-}"
+export PROJECTX_MARIADB_PORT="\${PROJECTX_MARIADB_PORT:-3306}"
+export PROJECTX_MARIADB_USER="\${PROJECTX_MARIADB_USER:-}"
+export PROJECTX_MARIADB_PASSWORD="\${PROJECTX_MARIADB_PASSWORD:-}"
+export PROJECTX_MARIADB_DATABASE="\${PROJECTX_MARIADB_DATABASE:-projectx}"
+
 exec node dist/server/index.mjs
 `;
 }
@@ -100,16 +107,17 @@ exec node dist/server/index.mjs
 function createDeployReadme() {
   return `# Project-X Ubuntu 24 Web Server Package
 
-This is the browser-accessible web server package. It includes dist/client for the browser UI and dist/server for the API/static server. It does not include Electron, electron-builder, Windows scanner bridge binaries, or Windows native resources.
+This is the browser-accessible web server package. It supports **local SQLite** (default, zero setup) and **remote MariaDB 10.11 LTS** (32-bit/64-bit compatible) for production multi-user deployments.
 
 ## Contents
 
-- dist/client/: browser UI served by the Node app.
-- dist/server/index.mjs: Node entry point for API and static page hosting.
-- dist/server/schema.sql: SQLite initialization schema.
-- resources/background.jpg: runtime resource used by the background API.
-- package.json: production runtime dependencies only.
-- start.sh: Ubuntu 24 startup script.
+- dist/client/: browser UI
+- dist/server/index.mjs: Node API + static server
+- dist/server/schema.sql: SQLite schema
+- dist/server/schema.mariadb.sql: MariaDB 10.11 schema
+- resources/background.jpg: background image resource
+- systemd/project-x-server.service: systemd unit file
+- start.sh: startup script
 
 ## Ubuntu 24 Prerequisites
 
@@ -118,9 +126,9 @@ sudo apt update
 sudo apt install -y nodejs npm build-essential python3 make g++
 \`\`\`
 
-Node.js 22 LTS or newer is recommended. better-sqlite3 is installed on the Ubuntu host for the local ABI.
+Node.js 22 LTS or newer recommended. better-sqlite3 auto-compiles on the host.
 
-## Install And Start
+## Quick Start (local SQLite)
 
 \`\`\`bash
 unzip project-x-server-ubuntu24-${packageJson.version}.zip
@@ -130,27 +138,49 @@ chmod +x start.sh
 ./start.sh
 \`\`\`
 
-The service listens on http://127.0.0.1:5174 by default. Point Nginx to this port for the whole site: / serves the browser UI and /api serves the API.
+Service listens on http://127.0.0.1:5174.
 
-Default environment:
+## MariaDB Setup (remote mode)
 
-- PROJECTX_AUTH_ENFORCE=1
-- PROJECTX_VARIANT=teacher
-- PROJECTX_ENABLE_SCANNER=0
-
-Optional data paths:
+MariaDB 10.11 LTS supports both 32-bit and 64-bit Ubuntu 24.
 
 \`\`\`bash
-export PROJECTX_DB_PATH=/var/lib/project-x/projectx.db
-export ANSWER_CARD_DATA_DIR=/var/lib/project-x/answer-card
+sudo apt install -y mariadb-server
+sudo mysql_secure_installation
+sudo mysql -e "CREATE DATABASE projectx DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+sudo mysql -e "CREATE USER 'projectx_app'@'127.0.0.1' IDENTIFIED BY 'your_password'"
+sudo mysql -e "GRANT SELECT, INSERT, UPDATE, DELETE ON projectx.* TO 'projectx_app'@'127.0.0.1'"
+sudo mysql -e "FLUSH PRIVILEGES"
+\`\`\`
+
+Then start with MariaDB env vars:
+
+\`\`\`bash
+export PROJECTX_MARIADB_HOST=127.0.0.1
+export PROJECTX_MARIADB_USER=projectx_app
+export PROJECTX_MARIADB_PASSWORD=your_password
 ./start.sh
 \`\`\`
 
-Health check:
+## Nginx Reverse Proxy
+
+Point Nginx to port 5174: / serves the browser UI and /api serves the API.
+
+## Systemd Service
+
+\`\`\`bash
+sudo cp systemd/project-x-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now project-x-server
+\`\`\`
+
+## Health Check
 
 \`\`\`bash
 curl http://127.0.0.1:5174/api/app/health
 \`\`\`
+
+Returns \`{"ok":true,"dialect":"sqlite"|"mariadb"}\`.
 `;
 }
 
@@ -166,6 +196,11 @@ Environment=PORT=5174
 Environment=PROJECTX_AUTH_ENFORCE=1
 Environment=PROJECTX_VARIANT=teacher
 Environment=PROJECTX_ENABLE_SCANNER=0
+Environment=PROJECTX_MARIADB_HOST=
+Environment=PROJECTX_MARIADB_PORT=3306
+Environment=PROJECTX_MARIADB_USER=
+Environment=PROJECTX_MARIADB_PASSWORD=
+Environment=PROJECTX_MARIADB_DATABASE=projectx
 Environment=PROJECTX_DB_PATH=/var/lib/project-x/projectx.db
 Environment=ANSWER_CARD_DATA_DIR=/var/lib/project-x/answer-card
 ExecStart=/usr/bin/node /opt/project-x-server/dist/server/index.mjs

@@ -2,6 +2,8 @@ import mariadb from "mysql2/promise";
 import type { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from "mysql2/promise";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { getDatabase } from "./index";
 
 // ── 模式检测 ───────────────────────────────────────────
 // 优先级：环境变量 > config.yml > 默认 SQLite
@@ -136,7 +138,6 @@ class SqliteAdapter implements DbAdapter {
   private db: any; // better-sqlite3 Database, 懒加载避免循环引用
 
   constructor() {
-    const { getDatabase } = require("./index");
     this.db = getDatabase();
   }
 
@@ -325,9 +326,6 @@ export async function healthCheck(): Promise<{ ok: boolean; dialect: string; lat
 }
 
 // ── MariaDB Schema 初始化 ──────────────────────────────
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 export async function initMariadbSchema(): Promise<void> {
   const dialect = detectDialect();

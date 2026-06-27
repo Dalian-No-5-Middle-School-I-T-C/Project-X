@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import { ensureDefaultAdmin, getMysqlDb, initializeDatabase, initMariadbSchema, type DbAdapter } from "../../../server/db";
+import { ensureDefaultAdmin, getMysqlDb, initializeDatabase, initMariadbSchema, healthCheck, type DbAdapter } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
@@ -518,6 +518,8 @@ export async function createApp(): Promise<express.Express> {
 
   console.log("[Server] 正在初始化数据库...");
   initializeDatabase();
+  // 确保连接池在使用前已创建（MariaDB 模式下 initMariadbSchema / ensureDefaultAdmin 依赖）
+  getMysqlDb();
   await initMariadbSchema();
   await ensureDefaultAdmin();
   await initPermissionCache();
@@ -1791,11 +1793,13 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/app/health", (_req, res) => {
+  app.get("/api/app/health", async (_req, res) => {
+    const hc = await healthCheck();
     res.json({
-      ok: true,
+      ok: hc.ok,
       variant: process.env.PROJECTX_VARIANT ?? null,
-      scanner: process.env.PROJECTX_ENABLE_SCANNER === "1"
+      scanner: process.env.PROJECTX_ENABLE_SCANNER === "1",
+      db: { dialect: hc.dialect, latencyMs: hc.latencyMs, error: hc.error }
     });
   });
 
