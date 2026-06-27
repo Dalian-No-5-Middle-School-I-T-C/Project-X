@@ -85,7 +85,7 @@
 
 ### 版本号更新
 
-- `package.json` → 1.6.0, README badges, DATABASE.md 新增部署迁移章节
+- `package.json` → 1.5.5, README badges, DATABASE.md 新增部署迁移章节
 
 ### 架构决策
 
