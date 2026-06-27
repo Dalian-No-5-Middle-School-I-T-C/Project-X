@@ -1,5 +1,6 @@
 import { getDatabase } from "./index";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { rmSync } from "node:fs";
 
 /**
@@ -150,7 +151,11 @@ export function manualCleanup(retainDays?: number): CleanupResult {
 }
 
 // 命令行直接执行（ESM 兼容写法）
-const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
+const isMain =
+  invokedPath !== "" &&
+  /^cleanup\.(?:ts|js|mjs)$/.test(path.basename(invokedPath)) &&
+  import.meta.url === pathToFileURL(invokedPath).href;
 if (isMain) {
   const args = process.argv.slice(2);
   const days = args.length > 0 ? parseInt(args[0]) : 30;
