@@ -167,7 +167,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [user]
   );
   const canSwitchPersona = useMemo(
-    () => user?.role_name === "admin",
+    // v1.6.0: 扫描端打包禁用身份切换（编译时决定）
+    () => user?.role_name === "admin" && import.meta.env.VITE_PROJECTX_VARIANT !== "teacher-scanner",
     [user]
   );
 
