@@ -42,10 +42,7 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
   const [error, setError] = useState("");
 
   // Inline new exam creation
-  const [showInlineCreate, setShowInlineCreate] = useState(false);
-  const [inlineExamName, setInlineExamName] = useState("");
-  const [inlineExamSubject, setInlineExamSubject] = useState("");
-  const [inlineCreating, setInlineCreating] = useState(false);
+  const [error, setError] = useState("");
 
   const isEdit = !!existingGroup;
 
@@ -140,43 +137,6 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
   }
 
   // Inline exam creation
-  async function createInlineExam() {
-    if (!inlineExamName.trim()) { setError("考试名称不能为空"); return; }
-    setInlineCreating(true);
-    setError("");
-    try {
-      const res = await authFetch("/api/exams", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: inlineExamName.trim(),
-          subject: inlineExamSubject.trim() || undefined
-        })
-      });
-      const data = await res.json();
-      const newExamId = data.id || data.examId;
-      // Add to selected
-      addExamFromPicker({
-        id: newExamId,
-        name: inlineExamName.trim(),
-        subject: inlineExamSubject || null,
-        grade_id: null, grade_name: null,
-        exam_date: null, status: "draft",
-        graded_count: 0, avg_score: 0,
-        has_assigned_score: 0
-      });
-      // Refresh picker
-      setInlineExamName("");
-      setInlineExamSubject("");
-      setShowInlineCreate(false);
-      loadPickerExams();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "创建考试失败");
-    } finally {
-      setInlineCreating(false);
-    }
-  }
-
   const tags = ["", "月考", "期中", "期末", "模考", "统考"];
   const allSubjects = ["语文","数学","英语","物理","化学","生物","政治","历史","地理"];
 
@@ -272,13 +232,6 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
               </span>
             </div>
             <div style={{ display: "flex", gap: 6 }}>
-              <button onClick={() => setShowInlineCreate(!showInlineCreate)} style={{
-                background: "none", border: "1px solid #dc2626", borderRadius: 6,
-                padding: "4px 10px", fontSize: 12, cursor: "pointer",
-                color: "#dc2626", display: "flex", alignItems: "center", gap: 4
-              }}>
-                <Plus size={13} /> 新建考试
-              </button>
               <button onClick={() => setShowPicker(!showPicker)} style={{
                 background: "#dc2626", color: "#fff", border: "none",
                 borderRadius: 6, padding: "4px 12px", fontSize: 12, cursor: "pointer",
@@ -288,38 +241,6 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
               </button>
             </div>
           </div>
-
-          {/* Inline create */}
-          {showInlineCreate && (
-            <div style={{
-              border: "1px solid #e2e8f0", borderRadius: 8,
-              padding: 10, marginBottom: 8, display: "flex", gap: 8, alignItems: "flex-end"
-            }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 11, color: "#999", marginBottom: 2 }}>考试名称</div>
-                <input value={inlineExamName} onChange={(e) => setInlineExamName(e.target.value)}
-                  placeholder="如：2026高考摸底-语文"
-                  style={{ ...inputStyle, fontSize: 12 }} />
-              </div>
-              <div style={{ width: 100 }}>
-                <div style={{ fontSize: 11, color: "#999", marginBottom: 2 }}>科目</div>
-                <select value={inlineExamSubject} onChange={(e) => setInlineExamSubject(e.target.value)}
-                  style={{ ...selectStyle, fontSize: 12 }}>
-                  <option value="">选择</option>
-                  {allSubjects.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <button onClick={createInlineExam} disabled={inlineCreating} style={{
-                background: "#dc2626", color: "#fff", border: "none",
-                borderRadius: 6, padding: "6px 12px", fontSize: 12, cursor: "pointer",
-                whiteSpace: "nowrap"
-              }}>{inlineCreating ? "创建中..." : "确定"}</button>
-              <button onClick={() => setShowInlineCreate(false)} style={{
-                background: "none", border: "none", cursor: "pointer", padding: "6px 4px",
-                color: "#999", fontSize: 13
-              }}>×</button>
-            </div>
-          )}
 
           {/* Picker panel */}
           {showPicker && (
@@ -347,7 +268,7 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
                 </div>
               ) : filteredPicker.length === 0 ? (
                 <div style={{ textAlign: "center", padding: 16, color: "#999", fontSize: 13 }}>
-                  {pickerExams.length === 0 ? "暂无可用考试，请先新建考试" : "没有匹配的考试"}
+                  {pickerExams.length === 0 ? "暂无可用考试" : "没有匹配的考试"}
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -404,7 +325,7 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
             ))}
             {selectedExams.length === 0 && (
               <div style={{ textAlign: "center", padding: 20, color: "#999", fontSize: 13, border: "1px dashed #e2e8f0", borderRadius: 8 }}>
-                点击上方「新建考试」创建一个考试，或「关联已有考试」从列表选择
+              点击上方「关联已有考试」从列表选择
               </div>
             )}
           </div>
