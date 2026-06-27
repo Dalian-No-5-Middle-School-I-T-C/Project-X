@@ -1,1 +1,14 @@
-{}
+# Project-X 配置文件
+# 修改后需重启服务生效
+
+# 数据库配置
+database:
+  # 模式: local(本地SQLite) / remote(远程MariaDB)
+  mode: local
+  # 远程数据库（mode为remote时生效）
+  remote:
+    host: ""
+    port: 3306
+    database: projectx
+    user: projectx_app
+    password: ""

@@ -29,39 +29,40 @@ export function createScannerRouter(): Router {
   ): Promise<void> {
     if (!result.studentId || result.studentId === "未识别") return;
 
-    const { getDatabase } = await import("../../../../server/db");
-    const mainDb = getDatabase();
+    const { getMysqlDb } = await import("../../../../server/db");
+    const db = getMysqlDb();
 
     // Find user by student_number
-    const user = mainDb.prepare("SELECT id FROM users WHERE student_number = ?").get(result.studentId) as { id: number } | undefined;
+    const user = await db.get("SELECT id FROM users WHERE student_number = ?", result.studentId) as { id: number } | undefined;
     if (!user) return;
 
     // Find exams linked to this card
-    const exams = mainDb.prepare("SELECT id FROM exams WHERE card_id = ? AND status != 'closed'").all(cardId) as Array<{ id: number }>;
+    const exams = await db.all("SELECT id FROM exams WHERE card_id = ? AND status != 'closed'", cardId) as Array<{ id: number }>;
     if (exams.length === 0) return;
 
-    const insertScore = mainDb.prepare(`
-      INSERT OR REPLACE INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score, graded_at)
-      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `);
-    const insertQs = mainDb.prepare(`
-      INSERT OR REPLACE INTO question_scores (exam_id, student_id, question_number, question_id, score, max_score, score_type)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-
     for (const exam of exams) {
-      insertScore.run(exam.id, user.id, result.objectiveScore, result.subjectiveScore, result.totalScore);
+      await db.run(
+        "REPLACE INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score, graded_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        exam.id, user.id, result.objectiveScore, result.subjectiveScore, result.totalScore
+      );
 
-      // Write per-question scores from deduplicated results
       for (const q of result.objectiveQuestions) {
-        insertQs.run(exam.id, user.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+        await db.run(
+          "REPLACE INTO question_scores (exam_id, student_id, question_number, question_id, score, max_score, score_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          exam.id, user.id, q.questionNumber, "", q.score, q.maxScore, "objective"
+        );
       }
       for (const sq of result.subjectiveQuestions) {
-        insertQs.run(exam.id, user.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective");
+        await db.run(
+          "REPLACE INTO question_scores (exam_id, student_id, question_number, question_id, score, max_score, score_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          exam.id, user.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective"
+        );
       }
 
-      // Update exam status to 'grading' if still draft
-      mainDb.prepare("UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'draft'").run(exam.id);
+      await db.run(
+        "UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'draft'",
+        exam.id
+      );
     }
   }
 
@@ -254,26 +255,26 @@ export function createScannerRouter(): Router {
         return;
       }
 
-      const { getDatabase } = await import("../../../../server/db");
-      const mainDb = getDatabase();
+      const { getMysqlDb } = await import("../../../../server/db");
+      const db = getMysqlDb();
 
-      const exam = mainDb.prepare("SELECT card_id FROM exams WHERE id = ?").get(examId) as { card_id: string | null } | undefined;
+      const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
       if (!exam || !exam.card_id) {
         res.json({ studentId, studentNumber: "", pages: [] });
         return;
       }
 
       const cardId = exam.card_id;
-      const user = mainDb.prepare("SELECT student_number FROM users WHERE id = ?").get(studentId) as { student_number: string | null } | undefined;
+      const user = await db.get("SELECT student_number FROM users WHERE id = ?", studentId) as { student_number: string | null } | undefined;
 
       // Query scan_records for this student in this exam
-      const records = mainDb.prepare(`
+      const records = await db.all(`
         SELECT sr.id, sr.file_path, sr.file_name
         FROM scan_records sr
         JOIN scan_batches sb ON sr.batch_id = sb.id
         WHERE sb.exam_id = ? AND sr.student_id = ?
         ORDER BY sr.id
-      `).all(examId, studentId) as Array<{ id: number; file_path: string; file_name: string }>;
+      `, examId, studentId) as Array<{ id: number; file_path: string; file_name: string }>;
 
       if (records.length === 0) {
         res.json({ studentId, studentNumber: user?.student_number || "", pages: [] });

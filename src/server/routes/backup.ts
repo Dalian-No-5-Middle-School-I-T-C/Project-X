@@ -11,7 +11,7 @@ import crypto from "node:crypto";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { closeDatabase, getDatabase, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath } from "../db";
+import { closeDatabase, getDatabase, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
 
 const router = Router();
@@ -43,6 +43,13 @@ function getScannerDbPath(): string {
  * 导出所有数据为 ZIP 下载
  */
 router.get("/backup", async (_req: Request, res: Response) => {
+  const dialect = detectDialect();
+  if (dialect === "mariadb") {
+    // MariaDB 备份将在 Phase 2 通过 mysqldump 实现
+    res.status(501).json({ message: "MariaDB 模式下备份功能尚未实现，请使用 mysqldump 命令行工具手动备份" });
+    return;
+  }
+
   const tmpDir = path.join(os.tmpdir(), `projectx-backup-${crypto.randomUUID()}`);
   const zipFile = path.join(os.tmpdir(), `projectx-backup-${Date.now()}.zip`);
 
@@ -158,6 +165,12 @@ router.get("/backup", async (_req: Request, res: Response) => {
  * 导入 ZIP 恢复数据（raw binary upload，不走 multipart）
  */
 router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
+  const dialect = detectDialect();
+  if (dialect === "mariadb") {
+    res.status(501).json({ message: "MariaDB 模式下恢复功能尚未实现，请使用 mysql 命令行工具手动恢复" });
+    return;
+  }
+
   const zipBuffer = req.body as Buffer;
   if (!zipBuffer || !Buffer.isBuffer(zipBuffer) || zipBuffer.length === 0) {
     res.status(400).json({ message: "请上传 .zip 备份文件（需以 application/zip Content-Type 发送）" });

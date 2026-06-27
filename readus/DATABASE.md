@@ -1,7 +1,7 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.5.0
-> **技术栈**: SQLite + better-sqlite3 + bcryptjs
+> **版本**: v1.6.0
+> **技术栈**: SQLite (本地) / MariaDB 10.11 (远程) + better-sqlite3 + mysql2 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
 
 ---
