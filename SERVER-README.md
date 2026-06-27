@@ -164,13 +164,16 @@ https://projectx.your-domain.com
 
 - **Node.js 版本**: v24.15.0 (kimi-desktop 内置)
 - **后端框架**: Express + TypeScript (tsx)
-- **数据库**: SQLite (better-sqlite3)
+- **数据库**: SQLite (better-sqlite3, 本地模式) / MariaDB 10.11 LTS (mysql2, 远程模式)
 - **隧道工具**: Cloudflare Tunnel (cloudflared)
 - **本地端口**: 5174
 
-## 数据库位置
+## 数据库
 
-`C:\Users\Administrator\Desktop\Project-X-main\data\projectx.db`
+- **本地模式**（默认）：`data/projectx.db`（SQLite 单文件）
+- **远程模式**：设置 `PROJECTX_MARIADB_HOST` 环境变量连接 MariaDB 10.11 服务器
+  - 详见 `readus/DATABASE.md` — 完整安装/配置/迁移指引
+  - 详见 `scripts/package-server-ubuntu.cjs` — 服务器部署打包
 
 ## 常见问题
 

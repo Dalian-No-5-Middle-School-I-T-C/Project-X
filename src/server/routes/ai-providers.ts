@@ -1,7 +1,7 @@
 import express from "express";
 import type { Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
-import { getDatabase } from "../db";
+import { getMysqlDb } from "../db";
 
 /**
  * AI 服务商配置管理
@@ -15,14 +15,14 @@ const router = express.Router();
 router.use(authMiddleware);
 
 // ── 列表用户的所有服务商 ──────────────────────────
-router.get("/", (req: Request, res: Response) => {
-  const db = getDatabase();
-  const providers = db.prepare(`
+router.get("/", async (req: Request, res: Response) => {
+  const db = getMysqlDb();
+  const providers = await db.all(`
     SELECT id, name, provider_type, base_url, api_key, models, is_active, sort_order
     FROM ai_providers
     WHERE user_id = ?
     ORDER BY sort_order, id
-  `).all(req.user!.id) as any[];
+  `, req.user!.id) as any[];
 
   res.json(providers.map((p: any) => ({
     id: p.id,
@@ -37,12 +37,10 @@ router.get("/", (req: Request, res: Response) => {
 
 function normalizeBaseUrl(url: string, providerType: string): string {
   if (!url) return url;
-  let normalized = url.trim().replace(/\/+$/, ""); // strip trailing slashes
+  let normalized = url.trim().replace(/\/+$/, "");
 
-  // Gemini doesn't use /v1 convention
   if (providerType === "gemini") return normalized;
 
-  // OpenAI-compatible: auto-append /v1 if missing
   if (!normalized.endsWith("/v1") && !normalized.includes("/openai/deployments")) {
     normalized = normalized + "/v1";
   }
@@ -50,7 +48,7 @@ function normalizeBaseUrl(url: string, providerType: string): string {
 }
 
 // ── 创建服务商 ────────────────────────────────────
-router.post("/", (req: Request, res: Response) => {
+router.post("/", async (req: Request, res: Response) => {
   const { name, providerType, baseUrl, apiKey, models } = req.body ?? {};
   const needsBaseUrl = providerType !== "gemini";
   if (!name || !providerType || !apiKey || (needsBaseUrl && !baseUrl)) {
@@ -58,34 +56,34 @@ router.post("/", (req: Request, res: Response) => {
     return;
   }
   const normalizedUrl = needsBaseUrl ? normalizeBaseUrl(baseUrl, providerType) : "";
-  const db = getDatabase();
-  const result = db.prepare(`
+  const db = getMysqlDb();
+  const result = await db.run(`
     INSERT INTO ai_providers (user_id, name, provider_type, base_url, api_key, models)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(req.user!.id, name, providerType, normalizedUrl, apiKey, models ? JSON.stringify(models) : null);
+  `, req.user!.id, name, providerType, normalizedUrl, apiKey, models ? JSON.stringify(models) : null);
 
   res.status(201).json({ id: result.lastInsertRowid, baseUrl: normalizedUrl });
 });
 
 // ── 更新服务商 ────────────────────────────────────
-router.put("/:id", (req: Request, res: Response) => {
+router.put("/:id", async (req: Request, res: Response) => {
   const { name, providerType, baseUrl, apiKey, models, isActive } = req.body ?? {};
-  const db = getDatabase();
+  const db = getMysqlDb();
 
-  const provider = db.prepare(
-    "SELECT * FROM ai_providers WHERE id = ? AND user_id = ?"
-  ).get(Number(req.params.id), req.user!.id) as any;
+  const provider = await db.get(
+    "SELECT * FROM ai_providers WHERE id = ? AND user_id = ?",
+    Number(req.params.id), req.user!.id
+  ) as any;
 
   if (!provider) {
     res.status(404).json({ message: "服务商不存在" });
     return;
   }
 
-  // Normalize base_url if provided, using the effective providerType
   const effectiveType = providerType ?? provider.provider_type;
   const normalizedUrl = baseUrl ? normalizeBaseUrl(baseUrl, effectiveType) : null;
 
-  db.prepare(`
+  await db.run(`
     UPDATE ai_providers SET
       name = COALESCE(?, name),
       provider_type = COALESCE(?, provider_type),
@@ -95,7 +93,7 @@ router.put("/:id", (req: Request, res: Response) => {
       is_active = COALESCE(?, is_active),
       updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
-  `).run(
+  `,
     name ?? null, providerType ?? null, normalizedUrl,
     apiKey ?? null, models ? JSON.stringify(models) : null,
     isActive !== undefined ? (isActive ? 1 : 0) : null,
@@ -106,11 +104,12 @@ router.put("/:id", (req: Request, res: Response) => {
 });
 
 // ── 删除服务商 ────────────────────────────────────
-router.delete("/:id", (req: Request, res: Response) => {
-  const db = getDatabase();
-  const result = db.prepare(
-    "DELETE FROM ai_providers WHERE id = ? AND user_id = ?"
-  ).run(Number(req.params.id), req.user!.id);
+router.delete("/:id", async (req: Request, res: Response) => {
+  const db = getMysqlDb();
+  const result = await db.run(
+    "DELETE FROM ai_providers WHERE id = ? AND user_id = ?",
+    Number(req.params.id), req.user!.id
+  );
 
   if (result.changes === 0) {
     res.status(404).json({ message: "服务商不存在" });

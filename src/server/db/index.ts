@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { runMigrations } from "./migrations";
 import { resolveProjectDbPath } from "./paths";
 import { seedDefaultData } from "./seeds";
+import { detectDialect, getMysqlDb, initMariadbSchema } from "./mysql";
+import type { DbAdapter } from "./mysql";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,6 +40,17 @@ export function closeDatabase(): void {
 }
 
 export function initializeDatabase(): void {
+  const dialect = detectDialect();
+
+  if (dialect === "mariadb") {
+    // MariaDB 模式：schema 在 getMysqlDb() → MariadbAdapter 构造时通过 initMariadbSchema 初始化
+    // seed 数据由 schema.mariadb.sql 中的 INSERT IGNORE 处理
+    // 确保默认管理员
+    console.log("[DB] MariaDB mode: schema seeded via schema.mariadb.sql");
+    return;
+  }
+
+  // SQLite 模式
   const db = getDatabase();
   const schema = readFileSync(schemaPath(), "utf8");
 
@@ -62,11 +75,25 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 }
 
 export async function ensureDefaultAdmin(): Promise<void> {
-  const db = getDatabase();
-  const existing = db.prepare("SELECT id FROM users WHERE username = ?").get("admin");
-  if (existing) {
+  const dialect = detectDialect();
+
+  if (dialect === "mariadb") {
+    const db = getMysqlDb();
+    const existing = await db.get("SELECT id FROM users WHERE username = ?", "admin");
+    if (existing) return;
+    const passwordHash = await hashPassword("admin123");
+    await db.run(
+      "INSERT IGNORE INTO users (username, password_hash, name, role_id, is_active) VALUES (?, ?, ?, ?, ?)",
+      "admin", passwordHash, "系统管理员", 1, 1
+    );
+    console.log("[DB] Default admin created: username=admin, password=admin123");
     return;
   }
+
+  // SQLite 模式
+  const db = getDatabase();
+  const existing = db.prepare("SELECT id FROM users WHERE username = ?").get("admin");
+  if (existing) return;
 
   const passwordHash = await hashPassword("admin123");
   db.prepare(
@@ -80,6 +107,15 @@ export async function ensureDefaultAdmin(): Promise<void> {
 export { runMigrations };
 export { resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath } from "./paths";
 
-// ── MySQL 异步适配器（供逐步迁移使用）──────────────────
-export { getMysqlDb, initMysqlSchema } from "./mysql";
+// ── 跨方言 DB 适配器 ──────────────────────────────────
+export {
+  getMysqlDb,
+  initMariadbSchema,
+  initMariadbSchema as initMysqlSchema,
+  detectDialect,
+  buildUpsertSQL,
+  buildInsertIgnore,
+  healthCheck,
+  resetAdapter,
+} from "./mysql";
 export type { DbAdapter } from "./mysql";

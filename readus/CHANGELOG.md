@@ -1,5 +1,90 @@
 # Project-X CHANGELOG
 
+## v1.6.0 (2026-06-27) — Phase 1: 数据访问层统一 + MariaDB 双模就绪
+
+### 从 MySQL 到 MariaDB 10.11 LTS
+
+原 v1.5.2 引入的 MySQL 双后端方案存在致命缺陷：`ON DUPLICATE KEY UPDATE` 在底层 SQLite 适配器中无法执行（SQLite 不支持此语法），依赖"DELETE-then-INSERT"才侥幸不报错。本次彻底重写整个数据访问层。
+
+### 数据库层重写 (`src/server/db/`)
+
+- **`schema.mariadb.sql`** — 全新 MariaDB 10.11 LTS 完整建表 SQL，含 38 张表 + 45+ 索引：
+  - Scanner 4 表合并（`twain_scan_sessions` / `twain_scan_records` / `twain_recognition_results` / `twain_student_grading_results`）
+  - v9 迁移新增表/列：`knowledge_points` 表、`answer_cards` 原卷字段（`has_original_paper` 等）、`users` 原卷偏好
+  - 新字段：`scan_records.image_uploaded`（原图上传标记）
+  - MariaDB 兼容：`VARCHAR` PK 替代 TEXT PK、`TINYINT` 替代 INTEGER 布尔值、\`rank\` 反引号
+  - 引擎 InnoDB、字符集 utf8mb4、外键级联删除、初始种子数据
+
+- **`mysql.ts` 重写** — 改名 `MariadbAdapter`，新增：
+  - `DbAdapter.dialect` 属性（`"sqlite" | "mariadb"`）
+  - `buildUpsertSQL()` / `buildInsertIgnore()` 跨方言 SQL 生成工具
+  - `detectDialect()`：环境变量 > config.yml > 兜底 SQLite
+  - MariaDB 连接池增强：`connectTimeout:5000`、`enableKeepAlive:true`、`maxIdle:10`、`idleTimeout:60000`
+  - `healthCheck()` 数据库连通性检测
+  - **MariaDB 模式断连不降级到 SQLite**（关键安全策略）
+
+- **`config.ts`** — YAML 配置读写工具（免外部依赖），支持 `config.yml` 解析/合并/写回
+
+- **`schema.sql` 修复**：
+  - `answer_cards.sided` 默认值 `'single'` → `'double'`（修复长期存在的默认值不一致 Bug）
+  - 新增 twain_* 4 表 + 6 个索引
+
+- **v10 迁移** — `twain_scan_sessions/records/recognition_results/student_grading_results` 自动建表
+
+### 消除 `getDatabase()` 直接调用（~50 处 → 0）
+
+所有路由/服务/清理任务统一走 `getMysqlDb()` 异步 `DbAdapter`：
+
+| 文件 | 变更 |
+|------|------|
+| `ai-providers.ts` | 4 处 → async `db.all/get/run()` |
+| `export-scores.ts` | 4 处 → async + `buildUpsertSQL()` |
+| `score-editing.ts` | 12 处 → async + 事务改为 `await db.transaction(async tx => {...})` |
+| `exam-groups.ts` | 11 处 → async + `buildInsertIgnore()` |
+| `AssignedScoreService.ts` | 全类 → async，`recalculateAll()` 使用 `db.transaction()` |
+| `AuthService.ts` | 2 处 → async |
+| `permissions.ts` | `initPermissionCache()` 异步预加载，启动时调用 |
+| `cleanup.ts` | 全异步，`setInterval` 内 `.catch()` |
+| `backup.ts` | MariaDB 模式暂返回 501（Phase 2 通过 mysqldump 实现） |
+| `server/index.ts` | ~15 处 + `initMariadbSchema()` + 启动序列重排 |
+
+### Scanner DB 合并到主库
+
+- Scanner 原先独立的 `scanner.db` 4 张表全部合并到主库，命名加 `twain_` 前缀
+- `scan-store.ts` 19 个函数全异步化，统一走 `getMysqlDb()`
+- `scanner-service.ts` / `scanner/index.ts` 调用方全部加 `await`
+- `scanner/index.ts` 中 `persistScannerResultToMainDb()` 改为 async `getMysqlDb()` + `REPLACE INTO`
+
+### 用户设置：数据存储
+
+- **API**: `GET /api/app/db-config`（读取）+ `PATCH /api/app/db-config`（写入，管理员权限）
+- **前端**: AccountMenu 新增「数据存储」Tab（仅管理员可见）
+  - 本地 SQLite / 远程 MariaDB 单选切换
+  - MariaDB 连接表单：主机、端口、数据库名、用户名、密码
+  - 密码已设置时显示"(已设置，留空不修改)"提示
+  - 保存后显示"需重启服务器方可生效"
+  - 当前远程功能提示"尚未完全启用"
+
+### 服务器打包增强
+
+- `build-server.ts`：构建时同步复制 `schema.mariadb.sql`
+- `package-server-ubuntu.cjs`：新增 MariaDB 环境变量、systemd 模板含 MariaDB 配置、部署文档含 MariaDB 安装/配置指引
+
+### 文档
+
+- `DATABASE.md` 重写：双模架构说明、本地/远程对比表、MariaDB 安装配置
+- `ARCHITECTURE.md`：更新技术栈描述
+- `config.yml`：数据库配置模板（mode/remote/...）
+
+### 架构决策
+
+- 本地模式 = SQLite（零依赖，单机/开发/离线）
+- 远端模式 = MariaDB 10.11 LTS（32位/64位兼容）
+- 数据库配置存 `config.yml`，管理员界面写入，重启生效
+- 最终目标：数据库全在服务端，扫描端/教师端/学生端都是客户端
+
+---
+
 ## v1.5.2 (2026-06-26) — 数据库双后端架构
 
 ### SQLite → MySQL 双后端迁移

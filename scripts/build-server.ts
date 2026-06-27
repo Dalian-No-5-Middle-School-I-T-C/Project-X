@@ -15,3 +15,6 @@ await build({
 
 await mkdir("dist/server", { recursive: true });
 await copyFile("src/server/db/schema.sql", "dist/server/schema.sql");
+await copyFile("src/server/db/schema.mariadb.sql", "dist/server/schema.mariadb.sql");
+
+console.log("[build:server] schema.sql + schema.mariadb.sql copied");

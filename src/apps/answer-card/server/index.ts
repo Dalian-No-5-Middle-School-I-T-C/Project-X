@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
-import { ensureDefaultAdmin, getDatabase, initializeDatabase } from "../../../server/db";
+import { ensureDefaultAdmin, getMysqlDb, initializeDatabase, initMariadbSchema, healthCheck, type DbAdapter } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
@@ -27,8 +27,8 @@ import exportScoresRoutes from "../../../server/routes/export-scores";
 import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
-import { optionalAuth } from "../../../server/middleware/auth";
-import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
+import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
+import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
@@ -161,12 +161,12 @@ function requestFlag(value: unknown): boolean {
   return value === true || boolField(value);
 }
 
-function deleteExamRows(db: ReturnType<typeof getDatabase>, examIds: number[]): void {
+async function deleteExamRows(db: DbAdapter, examIds: number[]): Promise<void> {
   for (const examId of examIds) {
-    db.prepare("DELETE FROM question_scores WHERE exam_id = ?").run(examId);
-    db.prepare("DELETE FROM student_scores WHERE exam_id = ?").run(examId);
-    db.prepare("DELETE FROM scan_batches WHERE exam_id = ?").run(examId);
-    db.prepare("DELETE FROM exams WHERE id = ?").run(examId);
+    await db.run("DELETE FROM question_scores WHERE exam_id = ?", examId);
+    await db.run("DELETE FROM student_scores WHERE exam_id = ?", examId);
+    await db.run("DELETE FROM scan_batches WHERE exam_id = ?", examId);
+    await db.run("DELETE FROM exams WHERE id = ?", examId);
   }
 }
 
@@ -245,10 +245,10 @@ async function persistGradingResults(
   createdBy?: number
 ): Promise<void> {
   const { ExamRepository } = await import("../../../server/repositories/ExamRepository");
-  const { getDatabase, hashPassword } = await import("../../../server/db");
+  const { getMysqlDb, hashPassword } = await import("../../../server/db");
 
   const examRepo = new ExamRepository();
-  const db = getDatabase();
+  const db = getMysqlDb();
 
   const examId = Number(examIdParam);
   const exam = await await examRepo.findExamById(examId);
@@ -257,24 +257,24 @@ async function persistGradingResults(
   await examRepo.updateStatus(examId, "grading");
   const batchId = await examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
 
-  const ensureStudent = db.prepare(`
-    INSERT OR IGNORE INTO users (username, password_hash, name, role_id, student_number)
+  const ensureStudentSql = `
+    INSERT IGNORE INTO users (username, password_hash, name, role_id, student_number)
     VALUES (?, ?, ?, 3, ?)
-  `);
-  const updateBlankStudentPassword = db.prepare(`
+  `;
+  const updateBlankStudentPasswordSql = `
     UPDATE users
     SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
     WHERE student_number = ? AND role_id = 3 AND password_hash = ''
-  `);
-  const findStudent = db.prepare(`
+  `;
+  const findStudentSql = `
     SELECT id FROM users WHERE student_number = ? AND role_id = 3 LIMIT 1
-  `);
+  `;
 
-  const insertQs = db.prepare(`
-    INSERT OR REPLACE INTO question_scores
+  const insertQsSql = `
+    REPLACE INTO question_scores
       (exam_id, student_id, question_number, question_id, score, max_score, score_type)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
+  `;
 
   let persisted = 0;
   const studentPasswordHashes = new Map<string, string>();
@@ -288,9 +288,9 @@ async function persistGradingResults(
     if (!row.studentId) continue;
     try {
       const studentPasswordHash = studentPasswordHashes.get(row.studentId) ?? "";
-      ensureStudent.run(row.studentId, studentPasswordHash, row.studentId, row.studentId);
-      updateBlankStudentPassword.run(studentPasswordHash, row.studentId);
-      const stu = findStudent.get(row.studentId) as { id: number } | undefined;
+      await db.run(ensureStudentSql, row.studentId, studentPasswordHash, row.studentId, row.studentId);
+      await db.run(updateBlankStudentPasswordSql, studentPasswordHash, row.studentId);
+      const stu = await db.get(findStudentSql, row.studentId) as { id: number } | undefined;
       if (!stu) continue;
 
       await examRepo.addScanRecord({
@@ -304,10 +304,10 @@ async function persistGradingResults(
       await examRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
 
       for (const q of row.questions) {
-        insertQs.run(examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+        await db.run(insertQsSql, examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
       }
       for (const sq of row.subjectiveQuestions ?? []) {
-        insertQs.run(examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
+        await db.run(insertQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
       }
       persisted++;
     } catch (err) {
@@ -354,40 +354,46 @@ function makeGate(enforce: boolean, readPerm: string, writePerm: string) {
  * - subject_teacher → 只看自己教的科目 + 自己教的班级
  * - 普通 teacher（无 teacher_role）→ 全部可见（向后兼容）
  */
-function getVisibleExamIds(user: express.Request["user"]): number[] | null {
+async function getVisibleExamIds(user: express.Request["user"]): Promise<number[] | null> {
   if (!user || user.role_name === "admin") return null;
   if (user.role_name !== "teacher") return null;
   if (!user.teacher_role) return null; // 普通教师向后兼容，全部可见
 
   if (user.teacher_role === "grade_leader") return null; // 学年主任全可见
 
-  const db = getDatabase();
+  const db = getMysqlDb();
 
   if (user.teacher_role === "head_teacher") {
     // 班主任：只看自己班级的考试
-    const classIds = db.prepare(
-      "SELECT class_id FROM teacher_classes WHERE teacher_id = ?"
-    ).all(user.id).map((r: any) => r.class_id) as number[];
+    const teacherClasses = await db.all(
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ?",
+      user.id
+    ) as Array<{ class_id: number }>;
+    const classIds = teacherClasses.map((r) => r.class_id);
     if (classIds.length === 0) return [];
-    const rows = db.prepare(
+    const rows = await db.all(
       `SELECT DISTINCT e.id FROM exams e
        JOIN classes c ON c.id = e.class_id
-       WHERE e.class_id IN (${classIds.map(() => "?").join(",")})`
-    ).all(...classIds) as Array<{ id: number }>;
+       WHERE e.class_id IN (${classIds.map(() => "?").join(",")})`,
+      ...classIds
+    ) as Array<{ id: number }>;
     return rows.map((r) => r.id);
   }
 
   if (user.teacher_role === "subject_teacher") {
     // 学科老师：只看本科目+所教班级
     if (!user.subject) return [];
-    const classIds = db.prepare(
-      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)"
-    ).all(user.id, user.subject).map((r: any) => r.class_id) as number[];
+    const teacherClasses = await db.all(
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
+      user.id, user.subject
+    ) as Array<{ class_id: number }>;
+    const classIds = teacherClasses.map((r) => r.class_id);
     if (classIds.length === 0) return [];
-    const rows = db.prepare(
+    const rows = await db.all(
       `SELECT DISTINCT e.id FROM exams e
-       WHERE e.subject = ? AND e.class_id IN (${classIds.map(() => "?").join(",")})`
-    ).all(user.subject, ...classIds) as Array<{ id: number }>;
+       WHERE e.subject = ? AND e.class_id IN (${classIds.map(() => "?").join(",")})`,
+      user.subject, ...classIds
+    ) as Array<{ id: number }>;
     return rows.map((r) => r.id);
   }
 
@@ -427,7 +433,7 @@ async function requireExamAccess(req: express.Request, res: express.Response, ne
     return;
   }
 
-  const visibleIds = getVisibleExamIds(req.user);
+  const visibleIds = await getVisibleExamIds(req.user);
   if (visibleIds === null) {
     next(); // 全部可见
     return;
@@ -459,8 +465,8 @@ function optionalPositiveNumber(value: unknown): number | undefined {
   return Number.isInteger(num) && num >= 0 ? num : undefined;
 }
 
-function validateExamIdsAccess(req: express.Request, res: express.Response, examIds: number[]): boolean {
-  const visibleIds = getVisibleExamIds(req.user);
+async function validateExamIdsAccess(req: express.Request, res: express.Response, examIds: number[]): Promise<boolean> {
+  const visibleIds = await getVisibleExamIds(req.user);
   if (visibleIds === null) return true;
   const visible = new Set(visibleIds);
   const denied = examIds.filter((examId) => !visible.has(examId));
@@ -512,8 +518,11 @@ export async function createApp(): Promise<express.Express> {
 
   console.log("[Server] 正在初始化数据库...");
   initializeDatabase();
+  // 确保连接池在使用前已创建（MariaDB 模式下 initMariadbSchema / ensureDefaultAdmin 依赖）
+  getMysqlDb();
+  await initMariadbSchema();
   await ensureDefaultAdmin();
-  loadRolePermissions(true); // 预热角色权限缓存
+  await initPermissionCache();
   const cleanupTimer = scheduleCleanup(24, 30);
   cleanupTimer.unref();
   await ensureDataDirs();
@@ -541,7 +550,54 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/sponsor", sponsorRoutes);
   app.use("/api/db", backupRoutes);
   app.use("/api/ai/providers", aiProviderRoutes);
-  console.log("[Server] v1.2.1 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
+
+  // ── 应用配置（管理员） ──────────────────────────────────
+  app.get("/api/app/db-config", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), async (req: Request, res: Response) => {
+    try {
+      const { readDbConfig } = await import("../../../server/db/config");
+      const config = readDbConfig();
+      // 脱敏：不返回密码明文
+      res.json({
+        mode: config.mode,
+        remote: config.remote ? {
+          host: config.remote.host,
+          port: config.remote.port ?? 3306,
+          database: config.remote.database ?? "projectx",
+          user: config.remote.user ?? "",
+          hasPassword: !!(config.remote.password),
+        } : null,
+      });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  app.patch("/api/app/db-config", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), async (req: Request, res: Response) => {
+    try {
+      const { mode, remote } = req.body ?? {};
+      if (mode !== "local" && mode !== "remote") {
+        res.status(400).json({ message: "mode 必须为 local 或 remote" });
+        return;
+      }
+      const { writeDbConfig } = await import("../../../server/db/config");
+      writeDbConfig({
+        mode,
+        remote: remote ? {
+          host: remote.host ?? "",
+          port: remote.port ?? 3306,
+          database: remote.database ?? "projectx",
+          user: remote.user ?? "",
+          password: remote.password ?? "",
+        } : undefined,
+      });
+      res.json({
+        ok: true,
+        message: mode === "remote"
+          ? "数据库配置已保存为远程模式。请重启服务器以使新设置生效。"
+          : "数据库配置已保存为本地模式。请重启服务器以使新设置生效。"
+      });
+    } catch (err: any) { res.status(500).json({ message: err.message }); }
+  });
+
+  console.log("[Server] v1.6.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
 
   // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
@@ -1062,11 +1118,11 @@ export async function createApp(): Promise<express.Express> {
           });
           return;
         }
-        const db = getDatabase();
+        const db = getMysqlDb();
         if (deleteReferencedExams) {
-          deleteExamRows(db, referenced.map((e: any) => Number(e.id)));
+          await deleteExamRows(db, referenced.map((e: any) => Number(e.id)));
         } else {
-          db.prepare("UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ?").run(cardId);
+          await db.run("UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ?", cardId);
         }
         await cardRepo.deleteCard(cardId);
         await deleteCardFiles(cardId);
@@ -1262,10 +1318,10 @@ export async function createApp(): Promise<express.Express> {
           createdExamId = exam.id;
         }
       } else if (imported.examAction === "link" && imported.linkExamId) {
-        const { getDatabase } = await import("../../../server/db");
-        const db = getDatabase();
-        db.prepare("UPDATE exams SET card_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-          .run(newId, imported.linkExamId);
+        const { getMysqlDb } = await import("../../../server/db");
+        const db = getMysqlDb();
+        await db.run("UPDATE exams SET card_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          newId, imported.linkExamId);
       }
 
       res.status(201).json({
@@ -1291,7 +1347,7 @@ export async function createApp(): Promise<express.Express> {
       const { grade_id, subject, academic_year, selection } = req.query as Record<string, string>;
 
       // 数据范围过滤
-      const visibleIds = getVisibleExamIds(req.user);
+      const visibleIds = await getVisibleExamIds(req.user);
       const scopeFilter = visibleIds !== null ? { examIds: visibleIds } : {};
 
       if (selection === "1") {
@@ -1392,7 +1448,7 @@ export async function createApp(): Promise<express.Express> {
       const body = (req.body ?? {}) as Record<string, unknown>;
       const deleteLinkedCard = requestFlag(body.deleteLinkedCard);
       const linkedCardId = exam.card_id ? safeId(exam.card_id) : null;
-      const db = getDatabase();
+      const db = getMysqlDb();
       if (deleteLinkedCard && linkedCardId) {
         const referencedByOtherExams = (await examRepo.listExams()).filter((item) => item.card_id === linkedCardId && item.id !== exam.id);
         if (referencedByOtherExams.length > 0) {
@@ -1404,7 +1460,7 @@ export async function createApp(): Promise<express.Express> {
           return;
         }
       }
-      deleteExamRows(db, [exam.id]);
+      await deleteExamRows(db, [exam.id]);
       if (deleteLinkedCard && linkedCardId) {
         await cardRepo.deleteCard(linkedCardId);
       }
@@ -1430,11 +1486,11 @@ export async function createApp(): Promise<express.Express> {
       if (cardId !== undefined) updates.card_id = String(cardId);
       if (name !== undefined) updates.name = String(name);
       if (subject !== undefined) updates.subject = String(subject);
-      const { getDatabase } = await import("../../../server/db");
-      const db = getDatabase();
+      const { getMysqlDb } = await import("../../../server/db");
+      const db = getMysqlDb();
       const setClauses = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
       const values = Object.values(updates);
-      db.prepare(`UPDATE exams SET ${setClauses} WHERE id = ?`).run(...values, exam.id);
+      await db.run(`UPDATE exams SET ${setClauses} WHERE id = ?`, ...values, exam.id);
       const updated = await examRepo.findExamById(exam.id);
       res.json(updated);
     } catch (error) {
@@ -1483,7 +1539,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "请选择至少一场考试" });
         return;
       }
-      if (!validateExamIdsAccess(req, res, normalizedExamIds)) return;
+      if (!await validateExamIdsAccess(req, res, normalizedExamIds)) return;
 
       const analysisRepo = new AnalysisRepository();
       const group = await analysisRepo.createExamGroup({
@@ -1550,7 +1606,7 @@ export async function createApp(): Promise<express.Express> {
         requestedExamIds = group.examIds;
       }
 
-      if (requestedExamIds.length > 0 && !validateExamIdsAccess(req, res, requestedExamIds)) return;
+      if (requestedExamIds.length > 0 && !await validateExamIdsAccess(req, res, requestedExamIds)) return;
       const data = await analysisRepo.getCrossExamTotal({
         mode,
         groupId: optionalPositiveNumber(body.groupId),
@@ -1562,7 +1618,7 @@ export async function createApp(): Promise<express.Express> {
         subject: typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : undefined,
         attendanceMode: body.attendanceMode === "full" ? "full" : "all"
       }, {
-        visibleExamIds: getVisibleExamIds(req.user)
+        visibleExamIds: await getVisibleExamIds(req.user)
       });
       res.json(data);
     } catch (error) {
@@ -1632,10 +1688,11 @@ export async function createApp(): Promise<express.Express> {
   // v1.4.0: 用户设置
   app.get("/api/users/me/settings", async (req, res, next) => {
     try {
-      const db = getDatabase();
-      const user = db.prepare(
-        "SELECT score_display_mode, review_confidence_threshold, ai_api_key, background_opacity FROM users WHERE id = ?"
-      ).get(req.user!.id) as { score_display_mode: string; review_confidence_threshold: number; ai_api_key: string | null; background_opacity: number | null } | undefined;
+      const db = getMysqlDb();
+      const user = await db.get(
+        "SELECT score_display_mode, review_confidence_threshold, ai_api_key, background_opacity FROM users WHERE id = ?",
+        req.user!.id
+      ) as { score_display_mode: string; review_confidence_threshold: number; ai_api_key: string | null; background_opacity: number | null } | undefined;
       res.json({
         scoreDisplayMode: user?.score_display_mode ?? "zscore",
         reviewConfidenceThreshold: user?.review_confidence_threshold ?? 0.12,
@@ -1650,24 +1707,24 @@ export async function createApp(): Promise<express.Express> {
   app.patch("/api/users/me/settings", async (req, res, next) => {
     try {
       const { scoreDisplayMode, reviewConfidenceThreshold, aiApiKey, backgroundOpacity } = req.body as Record<string, unknown>;
-      const db = getDatabase();
+      const db = getMysqlDb();
       if (scoreDisplayMode && ["deviation", "zscore", "percentile"].includes(String(scoreDisplayMode))) {
-        db.prepare("UPDATE users SET score_display_mode = ? WHERE id = ?")
-          .run(String(scoreDisplayMode), req.user!.id);
+        await db.run("UPDATE users SET score_display_mode = ? WHERE id = ?",
+          String(scoreDisplayMode), req.user!.id);
       }
       if (typeof reviewConfidenceThreshold === "number") {
         const t = Math.max(0, Math.min(1, reviewConfidenceThreshold));
-        db.prepare("UPDATE users SET review_confidence_threshold = ? WHERE id = ?")
-          .run(t, req.user!.id);
+        await db.run("UPDATE users SET review_confidence_threshold = ? WHERE id = ?",
+          t, req.user!.id);
       }
       if (aiApiKey !== undefined) {
-        db.prepare("UPDATE users SET ai_api_key = ? WHERE id = ?")
-          .run(typeof aiApiKey === "string" ? aiApiKey : null, req.user!.id);
+        await db.run("UPDATE users SET ai_api_key = ? WHERE id = ?",
+          typeof aiApiKey === "string" ? aiApiKey : null, req.user!.id);
       }
       if (typeof backgroundOpacity === "number") {
         const o = Math.max(0, Math.min(1, backgroundOpacity));
-        db.prepare("UPDATE users SET background_opacity = ? WHERE id = ?")
-          .run(o, req.user!.id);
+        await db.run("UPDATE users SET background_opacity = ? WHERE id = ?",
+          o, req.user!.id);
       }
       res.json({ ok: true });
     } catch (error) {
@@ -1736,11 +1793,13 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/app/health", (_req, res) => {
+  app.get("/api/app/health", async (_req, res) => {
+    const hc = await healthCheck();
     res.json({
-      ok: true,
+      ok: hc.ok,
       variant: process.env.PROJECTX_VARIANT ?? null,
-      scanner: process.env.PROJECTX_ENABLE_SCANNER === "1"
+      scanner: process.env.PROJECTX_ENABLE_SCANNER === "1",
+      db: { dialect: hc.dialect, latencyMs: hc.latencyMs, error: hc.error }
     });
   });
 
@@ -1819,13 +1878,13 @@ export async function createApp(): Promise<express.Express> {
       }
 
       // Fetch user's configured providers from DB
-      const db = getDatabase();
-      const providerRows = db.prepare(`
+      const db = getMysqlDb();
+      const providerRows = await db.all(`
         SELECT id, name, provider_type, base_url, api_key, models, is_active
         FROM ai_providers
         WHERE user_id = ? AND is_active = 1
         ORDER BY sort_order, id
-      `).all(req.user!.id) as any[];
+      `, req.user!.id) as any[];
 
       const userProviders = providerRows.map((p: any) => ({
         id: p.id,
@@ -1857,13 +1916,13 @@ export async function createApp(): Promise<express.Express> {
     } catch (error) {
       // Even if llmclient is down, still return user providers if available
       try {
-        const db = getDatabase();
-        const providerRows = db.prepare(`
+        const db = getMysqlDb();
+        const providerRows = await db.all(`
           SELECT id, name, provider_type, base_url, api_key, models, is_active
           FROM ai_providers
           WHERE user_id = ? AND is_active = 1
           ORDER BY sort_order, id
-        `).all(req.user!.id) as any[];
+        `, req.user!.id) as any[];
 
         const userProviders = providerRows.map((p: any) => ({
           id: p.id,
@@ -1922,10 +1981,11 @@ export async function createApp(): Promise<express.Express> {
       const providerId = req.body?.providerId ? Number(req.body.providerId) : undefined;
       let providerOverride: Record<string, unknown> | undefined;
       if (providerId && Number.isFinite(providerId)) {
-        const db = getDatabase();
-        const prov = db.prepare(
-          "SELECT * FROM ai_providers WHERE id = ? AND user_id = ?"
-        ).get(providerId, req.user!.id) as any;
+        const db = getMysqlDb();
+        const prov = await db.get(
+          "SELECT * FROM ai_providers WHERE id = ? AND user_id = ?",
+          providerId, req.user!.id
+        ) as any;
         if (prov) {
           providerOverride = {
             provider_type: prov.provider_type,

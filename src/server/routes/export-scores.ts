@@ -1,7 +1,7 @@
 import express from "express";
 import type { Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
-import { getDatabase } from "../db";
+import { getMysqlDb, buildUpsertSQL } from "../db";
 import XLSX from "xlsx";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import type { ExportTemplate, ExportConfigRequest, ScoreTableRow } from "../../shared/types";
@@ -12,11 +12,12 @@ router.use(authMiddleware);
 // ── 模板 CRUD ──────────────────────────────────────────
 
 /** GET /api/export/templates — 获取当前用户的导出模板 */
-router.get("/templates", (req: Request, res: Response) => {
-  const db = getDatabase();
-  const rows = db.prepare(
-    "SELECT id, slot, name, columns, side_table_n, gap_cols FROM export_templates WHERE user_id = ? ORDER BY slot"
-  ).all(req.user!.id) as Array<{ id: number; slot: number; name: string; columns: string; side_table_n: number; gap_cols: number }>;
+router.get("/templates", async (req: Request, res: Response) => {
+  const db = getMysqlDb();
+  const rows = await db.all(
+    "SELECT id, slot, name, columns, side_table_n, gap_cols FROM export_templates WHERE user_id = ? ORDER BY slot",
+    req.user!.id
+  ) as Array<{ id: number; slot: number; name: string; columns: string; side_table_n: number; gap_cols: number }>;
   const templates = rows.map((r) => ({
     ...r,
     columns: (() => { try { return JSON.parse(r.columns); } catch { return []; } })()
@@ -25,8 +26,8 @@ router.get("/templates", (req: Request, res: Response) => {
 });
 
 /** PUT /api/export/templates/:slot — 保存/更新模板 */
-router.put("/templates/:slot", (req: Request, res: Response) => {
-  const db = getDatabase();
+router.put("/templates/:slot", async (req: Request, res: Response) => {
+  const db = getMysqlDb();
   const slot = Number(req.params.slot);
   if (slot < 1 || slot > 4) { res.status(400).json({ message: "槽位须为 1-4" }); return; }
 
@@ -34,14 +35,9 @@ router.put("/templates/:slot", (req: Request, res: Response) => {
     name?: string; columns?: string[]; sideTableN?: number; gapCols?: number;
   };
 
-  db.prepare(`
-    INSERT INTO export_templates (user_id, slot, name, columns, side_table_n, gap_cols)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(user_id, slot) DO UPDATE SET
-      name = excluded.name, columns = excluded.columns,
-      side_table_n = excluded.side_table_n, gap_cols = excluded.gap_cols,
-      updated_at = CURRENT_TIMESTAMP
-  `).run(
+  const insertCols = ["user_id", "slot", "name", "columns", "side_table_n", "gap_cols"];
+  const sql = buildUpsertSQL(db.dialect, "export_templates", insertCols, ["user_id", "slot"]);
+  await db.run(sql,
     req.user!.id, slot,
     name ?? "未命名",
     JSON.stringify(columns ?? []),
@@ -52,11 +48,11 @@ router.put("/templates/:slot", (req: Request, res: Response) => {
 });
 
 /** DELETE /api/export/templates/:slot — 删除模板 */
-router.delete("/templates/:slot", (req: Request, res: Response) => {
-  const db = getDatabase();
+router.delete("/templates/:slot", async (req: Request, res: Response) => {
+  const db = getMysqlDb();
   const slot = Number(req.params.slot);
-  db.prepare("DELETE FROM export_templates WHERE user_id = ? AND slot = ?")
-    .run(req.user!.id, slot);
+  await db.run("DELETE FROM export_templates WHERE user_id = ? AND slot = ?",
+    req.user!.id, slot);
   res.json({ ok: true });
 });
 
@@ -97,7 +93,7 @@ router.post("/exams/:examId/scores", async (req: Request, res: Response) => {
       return;
     }
 
-    const db = getDatabase();
+    const db = getMysqlDb();
     const analysisRepo = new AnalysisRepository();
     const { rows, examName, hasAssignedScore } = await analysisRepo.getScoreTableData(examId, classId) as {
       rows: ScoreTableRow[];
@@ -112,24 +108,23 @@ router.post("/exams/:examId/scores", async (req: Request, res: Response) => {
     // Fetch question definitions and scores if needed
     let objQuestionDefs: Array<{ questionNumber: number; maxScore: number }> = [];
     let subQuestionDefs: Array<{ questionNumber: number; maxScore: number }> = [];
-    let subScoreMap: Map<number, Map<number, number>> = new Map(); // studentId -> questionNumber -> score
+    let subScoreMap: Map<number, Map<number, number>> = new Map();
 
     if (needObjSub || needSubjSub) {
-      const allQs = db.prepare(`
+      const allQs = await db.all(`
         SELECT question_number as questionNumber, score_type, MAX(max_score) as maxScore
         FROM question_scores WHERE exam_id = ?
         GROUP BY question_number, score_type
         ORDER BY question_number
-      `).all(examId) as Array<{ questionNumber: number; score_type: string; maxScore: number }>;
+      `, examId) as Array<{ questionNumber: number; score_type: string; maxScore: number }>;
 
       objQuestionDefs = allQs.filter((q) => q.score_type === "objective");
       subQuestionDefs = allQs.filter((q) => q.score_type === "subjective");
 
-      // Fetch all sub-scores
-      const allSubScores = db.prepare(`
+      const allSubScores = await db.all(`
         SELECT student_id as studentId, question_number as questionNumber, score
         FROM question_scores WHERE exam_id = ?
-      `).all(examId) as Array<{ studentId: number; questionNumber: number; score: number }>;
+      `, examId) as Array<{ studentId: number; questionNumber: number; score: number }>;
 
       for (const s of allSubScores) {
         if (!subScoreMap.has(s.studentId)) subScoreMap.set(s.studentId, new Map());

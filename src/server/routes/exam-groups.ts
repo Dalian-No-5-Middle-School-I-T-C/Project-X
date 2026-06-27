@@ -1,7 +1,8 @@
 import express from "express";
 import type { Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
-import { getDatabase } from "../db";
+import { getMysqlDb, buildInsertIgnore } from "../db";
+import type { DbAdapter } from "../db";
 import { ZipArchive } from "archiver";
 import XLSX from "xlsx";
 import { competitionRank } from "../../shared/ranking";
@@ -38,9 +39,9 @@ interface QuestionScoreRow {
 
 // ── GET /api/exam-groups ── list all groups (with optional filters) ──
 
-router.get("/", (req: Request, res: Response) => {
+router.get("/", async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const params: unknown[] = [];
     let sql = `
       SELECT eg.*,
@@ -57,7 +58,7 @@ router.get("/", (req: Request, res: Response) => {
     if (req.query.status) { sql += " AND eg.status = ?"; params.push(req.query.status); }
     sql += " ORDER BY eg.created_at DESC";
 
-    const rows = db.prepare(sql).all(...params) as any[];
+    const rows = await db.all(sql, ...params) as any[];
     const result = rows.map((r) => ({
       id: r.id, name: r.name, description: r.description,
       tag: r.tag, grade_id: r.grade_id, grade_name: r.grade_name || null,
@@ -74,9 +75,9 @@ router.get("/", (req: Request, res: Response) => {
 
 // ── POST /api/exam-groups ── create exam group ──
 
-router.post("/", (req: Request, res: Response) => {
+router.post("/", async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const { name, description, grade_id, tag, is_official, total_score_mode, only_full_participants, examIds }
       = req.body as {
         name: string; description?: string; grade_id?: number | null; tag?: string;
@@ -89,25 +90,21 @@ router.post("/", (req: Request, res: Response) => {
       return;
     }
 
-    const result = db.prepare(`
+    const result = await db.run(`
       INSERT INTO exam_groups (name, description, grade_id, tag, status, is_official, total_score_mode, only_full_participants, created_by)
       VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
-    `).run(
-      name.trim(), description ?? null, grade_id ?? null, tag ?? null,
+    `, name.trim(), description ?? null, grade_id ?? null, tag ?? null,
       is_official ?? 0, total_score_mode ?? "raw", only_full_participants ?? 0,
-      req.user!.id
-    );
+      req.user!.id);
 
     const groupId = result.lastInsertRowid as number;
 
     // Associate exams if provided
     if (examIds && examIds.length > 0) {
-      const insert = db.prepare(
-        "INSERT OR IGNORE INTO exam_group_members (group_id, exam_id, sort_order) VALUES (?, ?, ?)"
-      );
-      examIds.forEach((examId, idx) => {
-        insert.run(groupId, examId, idx);
-      });
+      const insertSql = buildInsertIgnore(db.dialect, "exam_group_members", ["group_id", "exam_id", "sort_order"]);
+      for (const [idx, examId] of examIds.entries()) {
+        await db.run(insertSql, groupId, examId, idx);
+      }
     }
 
     res.status(201).json({ id: groupId, message: "大考创建成功" });
@@ -118,20 +115,20 @@ router.post("/", (req: Request, res: Response) => {
 
 // ── GET /api/exam-groups/:groupId ── get group detail ──
 
-router.get("/:groupId", (req: Request, res: Response) => {
+router.get("/:groupId", async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
 
-    const group = db.prepare(`
+    const group = await db.get(`
       SELECT eg.*, g.name as grade_name
       FROM exam_groups eg LEFT JOIN grades g ON g.id = eg.grade_id
       WHERE eg.id = ?
-    `).get(groupId) as any;
+    `, groupId) as any;
 
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
 
-    const members = db.prepare(`
+    const members = await db.all(`
       SELECT egm.id, egm.exam_id, egm.sort_order,
              e.name as exam_name, e.subject, ac.exam_date, e.status, e.assigned_formula,
              COUNT(ss.id) as graded_count,
@@ -142,7 +139,7 @@ router.get("/:groupId", (req: Request, res: Response) => {
       LEFT JOIN student_scores ss ON ss.exam_id = e.id
       GROUP BY egm.id
       ORDER BY egm.sort_order, egm.id
-    `).all(groupId) as any[];
+    `, groupId) as any[];
 
     res.json({
       id: group.id, name: group.name, description: group.description,
@@ -165,11 +162,11 @@ router.get("/:groupId", (req: Request, res: Response) => {
 
 // ── PUT /api/exam-groups/:groupId ── update group ──
 
-router.put("/:groupId", (req: Request, res: Response) => {
+router.put("/:groupId", async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
-    const existing = db.prepare("SELECT id FROM exam_groups WHERE id = ?").get(groupId);
+    const existing = await db.get("SELECT id FROM exam_groups WHERE id = ?", groupId);
     if (!existing) { res.status(404).json({ message: "大考不存在" }); return; }
 
     const { name, description, grade_id, tag, is_official, total_score_mode, only_full_participants } = req.body;
@@ -184,8 +181,7 @@ router.put("/:groupId", (req: Request, res: Response) => {
     if (total_score_mode !== undefined) { sets.push("total_score_mode = ?"); vals.push(total_score_mode); }
     if (only_full_participants !== undefined) { sets.push("only_full_participants = ?"); vals.push(only_full_participants); }
 
-    db.prepare(`UPDATE exam_groups SET ${sets.join(", ")} WHERE id = ?`)
-      .run(...vals, groupId);
+    await db.run(`UPDATE exam_groups SET ${sets.join(", ")} WHERE id = ?`, ...vals, groupId);
 
     res.json({ ok: true, message: "大考更新成功" });
   } catch (error) {
@@ -195,32 +191,31 @@ router.put("/:groupId", (req: Request, res: Response) => {
 
 // ── DELETE /api/exam-groups/:groupId ── delete group ──
 
-router.delete("/:groupId", (req: Request, res: Response) => {
+router.delete("/:groupId", async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
     const deleteExams = req.query.deleteExams === "1";
 
-    const existing = db.prepare("SELECT id, name FROM exam_groups WHERE id = ?").get(groupId) as { id: number; name: string } | undefined;
+    const existing = await db.get("SELECT id, name FROM exam_groups WHERE id = ?", groupId) as { id: number; name: string } | undefined;
     if (!existing) { res.status(404).json({ message: "大考不存在" }); return; }
 
     // Count associated exams
-    const memberExams = db.prepare(`
+    const memberExams = await db.all(`
       SELECT e.id, e.name FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
       WHERE egm.group_id = ?
-    `).all(groupId) as Array<{ id: number; name: string }>;
+    `, groupId) as Array<{ id: number; name: string }>;
 
     // If deleting exams too, delete them (with cascade to scores etc.)
     if (deleteExams && memberExams.length > 0) {
-      const deleteStmt = db.prepare("DELETE FROM exams WHERE id = ?");
       for (const exam of memberExams) {
-        deleteStmt.run(exam.id);
+        await db.run("DELETE FROM exams WHERE id = ?", exam.id);
       }
     }
 
     // Delete the group (cascade deletes members)
-    db.prepare("DELETE FROM exam_groups WHERE id = ?").run(groupId);
+    await db.run("DELETE FROM exam_groups WHERE id = ?", groupId);
 
     res.json({ ok: true, deletedExams: deleteExams ? memberExams.length : 0, message: "大考已删除" });
   } catch (error) {
@@ -230,9 +225,9 @@ router.delete("/:groupId", (req: Request, res: Response) => {
 
 // ── POST /api/exam-groups/:groupId/exams ── associate exams ──
 
-router.post("/:groupId/exams", (req: Request, res: Response) => {
+router.post("/:groupId/exams", async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
     const { examIds } = req.body as { examIds?: number[] };
 
@@ -242,18 +237,16 @@ router.post("/:groupId/exams", (req: Request, res: Response) => {
     }
 
     // Get current max sort_order
-    const maxOrder = db.prepare(
-      "SELECT MAX(sort_order) as m FROM exam_group_members WHERE group_id = ?"
-    ).get(groupId) as { m: number | null };
+    const maxOrder = await db.get(
+      "SELECT MAX(sort_order) as m FROM exam_group_members WHERE group_id = ?", groupId
+    ) as { m: number | null };
     let nextOrder = (maxOrder?.m ?? -1) + 1;
 
-    const insert = db.prepare(
-      "INSERT OR IGNORE INTO exam_group_members (group_id, exam_id, sort_order) VALUES (?, ?, ?)"
-    );
+    const insertSql = buildInsertIgnore(db.dialect, "exam_group_members", ["group_id", "exam_id", "sort_order"]);
 
     const added: number[] = [];
     for (const examId of examIds) {
-      const result = insert.run(groupId, examId, nextOrder);
+      const result = await db.run(insertSql, groupId, examId, nextOrder);
       if (result.changes > 0) { added.push(examId); nextOrder++; }
     }
 
@@ -265,13 +258,15 @@ router.post("/:groupId/exams", (req: Request, res: Response) => {
 
 // ── DELETE /api/exam-groups/:groupId/exams/:examId ── remove exam ──
 
-router.delete("/:groupId/exams/:examId", (req: Request, res: Response) => {
+router.delete("/:groupId/exams/:examId", async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
     const examId = Number(req.params.examId);
-    db.prepare("DELETE FROM exam_group_members WHERE group_id = ? AND exam_id = ?")
-      .run(groupId, examId);
+    await db.run(
+      "DELETE FROM exam_group_members WHERE group_id = ? AND exam_id = ?",
+      groupId, examId
+    );
     res.json({ ok: true, message: "已移除考试关联" });
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "移除考试失败" });
@@ -280,18 +275,18 @@ router.delete("/:groupId/exams/:examId", (req: Request, res: Response) => {
 
 // ── PUT /api/exam-groups/:groupId/exams/sort ── update sort order ──
 
-router.put("/:groupId/exams/sort", (req: Request, res: Response) => {
+router.put("/:groupId/exams/sort", async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
     const items = req.body as { examId: number; sortOrder: number }[];
     if (!Array.isArray(items)) { res.status(400).json({ message: "请求格式错误" }); return; }
 
-    const stmt = db.prepare(
-      "UPDATE exam_group_members SET sort_order = ? WHERE group_id = ? AND exam_id = ?"
-    );
     for (const item of items) {
-      stmt.run(item.sortOrder, groupId, item.examId);
+      await db.run(
+        "UPDATE exam_group_members SET sort_order = ? WHERE group_id = ? AND exam_id = ?",
+        item.sortOrder, groupId, item.examId
+      );
     }
     res.json({ ok: true });
   } catch (error) {
@@ -301,15 +296,15 @@ router.put("/:groupId/exams/sort", (req: Request, res: Response) => {
 
 // ── GET /api/exam-groups/:groupId/overview ── group overview ──
 
-router.get("/:groupId/overview", (req: Request, res: Response) => {
+router.get("/:groupId/overview", async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
 
-    const group = db.prepare("SELECT name FROM exam_groups WHERE id = ?").get(groupId) as { name: string } | undefined;
+    const group = await db.get("SELECT name FROM exam_groups WHERE id = ?", groupId) as { name: string } | undefined;
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
 
-    const members = db.prepare(`
+    const members = await db.all(`
       SELECT e.id as exam_id, e.name as exam_name, e.subject,
              e.assigned_formula,
              COUNT(ss.id) as graded_count,
@@ -322,32 +317,33 @@ router.get("/:groupId/overview", (req: Request, res: Response) => {
       WHERE egm.group_id = ?
       GROUP BY e.id
       ORDER BY egm.sort_order, egm.id
-    `).all(groupId) as any[];
+    `, groupId) as any[];
 
     // Calculate full score and std for each subject
-    const subjects = members.map((m) => {
-      const fullScoreRow = db.prepare(`
+    const subjects = [];
+    for (const m of members) {
+      const fullScoreRow = await db.get(`
         SELECT SUM(max_score) as total FROM (
           SELECT DISTINCT question_number, score_type, max_score FROM question_scores WHERE exam_id = ?
         )
-      `).get(m.exam_id) as { total: number } | undefined;
+      `, m.exam_id) as { total: number } | undefined;
       const fullScore = fullScoreRow?.total ?? 100;
 
-      const stdRow = db.prepare(`
+      const stdRow = await db.get(`
         SELECT ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as std
         FROM student_scores ss WHERE ss.exam_id = ?
-      `).get(m.avg_score, m.avg_score, m.exam_id) as { std: number } | undefined;
+      `, m.avg_score, m.avg_score, m.exam_id) as { std: number } | undefined;
 
       const passLine = fullScore * 0.6;
       const excellentLine = fullScore * 0.9;
-      const passRow = db.prepare(`
+      const passRow = await db.get(`
         SELECT
           SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as pass_count,
           SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellent_count
         FROM student_scores ss WHERE ss.exam_id = ?
-      `).get(passLine, excellentLine, m.exam_id) as { pass_count: number; excellent_count: number } | undefined;
+      `, passLine, excellentLine, m.exam_id) as { pass_count: number; excellent_count: number } | undefined;
 
-      return {
+      subjects.push({
         examId: m.exam_id,
         examName: m.exam_name,
         subject: m.subject || "",
@@ -360,19 +356,19 @@ router.get("/:groupId/overview", (req: Request, res: Response) => {
         excellentRate: m.graded_count > 0 ? Math.round((passRow?.excellent_count || 0) / m.graded_count * 100) : 0,
         fullScore,
         hasAssignedScore: !!(m.assigned_formula && m.assigned_formula !== "")
-      };
-    });
+      });
+    }
 
     // Total participants
-    const totalRow = db.prepare(`
+    const totalRow = await db.get(`
       SELECT COUNT(DISTINCT s.student_id) as cnt FROM (
         SELECT ss.student_id FROM exam_group_members egm
         JOIN student_scores ss ON ss.exam_id = egm.exam_id
         WHERE egm.group_id = ?
       ) s
-    `).get(groupId) as { cnt: number };
+    `, groupId) as { cnt: number };
 
-    const fullRow = db.prepare(`
+    const fullRow = await db.get(`
       SELECT COUNT(*) as cnt FROM (
         SELECT ss.student_id, COUNT(DISTINCT egm.exam_id) as exam_count
         FROM exam_group_members egm
@@ -381,7 +377,7 @@ router.get("/:groupId/overview", (req: Request, res: Response) => {
         GROUP BY ss.student_id
         HAVING exam_count = (SELECT COUNT(*) FROM exam_group_members WHERE group_id = ?)
       )
-    `).get(groupId, groupId) as { cnt: number } | undefined;
+    `, groupId, groupId) as { cnt: number } | undefined;
 
     res.json({
       groupId, groupName: group.name,
@@ -396,26 +392,26 @@ router.get("/:groupId/overview", (req: Request, res: Response) => {
 
 // ── GET /api/exam-groups/:groupId/rankings ── group rankings ──
 
-router.get("/:groupId/rankings", (req: Request, res: Response) => {
+router.get("/:groupId/rankings", async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
     const fullOnly = req.query.fullOnly === "1";
 
-    const group = db.prepare(`
+    const group = await db.get(`
       SELECT name, total_score_mode, only_full_participants
       FROM exam_groups WHERE id = ?
-    `).get(groupId) as { name: string; total_score_mode: string; only_full_participants: number } | undefined;
+    `, groupId) as { name: string; total_score_mode: string; only_full_participants: number } | undefined;
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
 
-    const members = db.prepare(`
+    const members = await db.all(`
       SELECT egm.exam_id, e.subject, e.assigned_formula, egm.sort_order
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
       WHERE egm.group_id = ?
       ORDER BY egm.sort_order, egm.id
-    `).all(groupId) as Array<{ exam_id: number; subject: string | null; assigned_formula: string | null; sort_order: number }>;
+    `, groupId) as Array<{ exam_id: number; subject: string | null; assigned_formula: string | null; sort_order: number }>;
 
     if (members.length === 0) {
       res.json({ groupId, groupName: group.name, totalStudents: 0, displayColumns: [], rows: [] });
@@ -426,7 +422,7 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
     const memberIds = members.map((m) => m.exam_id);
 
     // Get all scores for all member exams
-    const allScores = db.prepare(`
+    const allScores = await db.all(`
       SELECT
         ss.student_id, ss.exam_id, ss.total_score, ss.assigned_score,
         ss.objective_score, ss.subjective_score,
@@ -439,7 +435,7 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
       LEFT JOIN classes c ON c.id = cs.class_id
       LEFT JOIN grades g ON g.id = c.grade_id
       WHERE ss.exam_id IN (${memberIds.map(() => "?").join(",")})
-    `).all(...memberIds) as Array<{
+    `, ...memberIds) as Array<{
       student_id: number; exam_id: number; total_score: number; assigned_score: number | null;
       objective_score: number; subjective_score: number;
       student_number: string; name: string;
@@ -473,7 +469,7 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
     // Get rankings per exam for grade and class rank
     const examRanks: Record<number, Map<number, { gradeRank: number; classRank: number }>> = {};
     for (const examId of memberIds) {
-      const rankRows = db.prepare(`
+      const rankRows = await db.all(`
         SELECT ss.student_id, ss.total_score, c.name as class_name, c.id as class_id
         FROM student_scores ss
         JOIN users u ON u.id = ss.student_id
@@ -481,7 +477,7 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
         LEFT JOIN classes c ON c.id = cs.class_id
         WHERE ss.exam_id = ?
         ORDER BY ss.total_score DESC
-      `).all(examId) as Array<{ student_id: number; total_score: number; class_name: string | null; class_id: number | null }>;
+      `, examId) as Array<{ student_id: number; total_score: number; class_name: string | null; class_id: number | null }>;
 
       const rankMap = new Map<number, { gradeRank: number; classRank: number }>();
       examRanks[examId] = rankMap;
@@ -603,7 +599,7 @@ router.get("/:groupId/rankings", (req: Request, res: Response) => {
 
 router.post("/:groupId/export", async (req: Request, res: Response) => {
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
     const { includeOverview = true, subjectExamIds = [], includeObjectiveSub = true, includeSubjectiveSub = true }
       = req.body as {
@@ -611,19 +607,19 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
         includeObjectiveSub?: boolean; includeSubjectiveSub?: boolean;
       };
 
-    const group = db.prepare(`
+    const group = await db.get(`
       SELECT eg.name, eg.total_score_mode
       FROM exam_groups eg WHERE eg.id = ?
-    `).get(groupId) as { name: string; total_score_mode: string } | undefined;
+    `, groupId) as { name: string; total_score_mode: string } | undefined;
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
 
-    const members = db.prepare(`
+    const members = await db.all(`
       SELECT egm.exam_id, e.name as exam_name, e.subject as subject, egm.sort_order
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
       WHERE egm.group_id = ?
       ORDER BY egm.sort_order, egm.id
-    `).all(groupId) as Array<{ exam_id: number; exam_name: string; subject: string | null; sort_order: number }>;
+    `, groupId) as Array<{ exam_id: number; exam_name: string; subject: string | null; sort_order: number }>;
 
     if (members.length === 0) {
       res.status(400).json({ message: "大考中没有关联考试" });
@@ -641,7 +637,7 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
     // ── 1. Overview sheet ──
     if (includeOverview) {
       const memberIds = members.map((m) => m.exam_id);
-      const allScores = db.prepare(`
+      const allScores = await db.all(`
         SELECT
           ss.student_id, ss.exam_id, ss.total_score, ss.assigned_score,
           u.student_number, u.name,
@@ -651,7 +647,7 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
         LEFT JOIN class_students cs ON cs.student_id = ss.student_id
         LEFT JOIN classes c ON c.id = cs.class_id
         WHERE ss.exam_id IN (${memberIds.map(() => "?").join(",")})
-      `).all(...memberIds) as Array<{
+      `, ...memberIds) as Array<{
         student_id: number; exam_id: number; total_score: number; assigned_score: number | null;
         student_number: string; name: string; class_name: string | null;
       }>;
@@ -747,7 +743,7 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
 
     for (const m of exportExams) {
       // Get question scores
-      const qsRows = db.prepare(`
+      const qsRows = await db.all(`
         SELECT qs.student_id, qs.question_number, qs.score, qs.max_score, qs.score_type,
                u.student_number, u.name, c.name as class_name
         FROM question_scores qs
@@ -756,19 +752,19 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
         LEFT JOIN classes c ON c.id = cs.class_id
         WHERE qs.exam_id = ?
         ORDER BY u.student_number, qs.question_number
-      `).all(m.exam_id) as Array<{
+      `, m.exam_id) as Array<{
         student_id: number; question_number: number; score: number;
         max_score: number; score_type: string;
         student_number: string; name: string; class_name: string | null;
       }>;
 
       // Get total scores for ranking
-      const scoreRows = db.prepare(`
+      const scoreRows = await db.all(`
         SELECT ss.student_id, ss.total_score, ss.assigned_score,
                ss.objective_score, ss.subjective_score
         FROM student_scores ss WHERE ss.exam_id = ?
         ORDER BY ss.total_score DESC
-      `).all(m.exam_id) as Array<{
+      `, m.exam_id) as Array<{
         student_id: number; total_score: number; assigned_score: number | null;
         objective_score: number; subjective_score: number;
       }>;
@@ -778,14 +774,14 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
       competitionRank(scoreRows, (r) => r.total_score, (r, rank) => { gradeRankMap.set(r.student_id, rank); });
 
       // Class rank — dense ranking within each class
-      const classSorted = db.prepare(`
+      const classSorted = await db.all(`
         SELECT ss.student_id, ss.total_score, c.name as class_name
         FROM student_scores ss
         LEFT JOIN class_students cs ON cs.student_id = ss.student_id
         LEFT JOIN classes c ON c.id = cs.class_id
         WHERE ss.exam_id = ?
         ORDER BY ss.total_score DESC
-      `).all(m.exam_id) as Array<{ student_id: number; total_score: number; class_name: string | null }>;
+      `, m.exam_id) as Array<{ student_id: number; total_score: number; class_name: string | null }>;
       const classRankMap = new Map<number, number>();
       const cGroups = new Map<string, Array<{ student_id: number; total_score: number }>>();
       for (const cs of classSorted) {
@@ -807,12 +803,12 @@ router.post("/:groupId/export", async (req: Request, res: Response) => {
       }
 
       // Determine question list
-      const qList = db.prepare(`
+      const qList = await db.all(`
         SELECT question_number, score_type, MAX(max_score) as max_score
         FROM question_scores WHERE exam_id = ?
         GROUP BY question_number, score_type
         ORDER BY question_number
-      `).all(m.exam_id) as Array<{ question_number: number; score_type: string; max_score: number }>;
+      `, m.exam_id) as Array<{ question_number: number; score_type: string; max_score: number }>;
 
       const objQuestions = qList.filter((q) => q.score_type === "objective");
       const subQuestions = qList.filter((q) => q.score_type === "subjective");

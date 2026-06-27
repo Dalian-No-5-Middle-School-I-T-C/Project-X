@@ -1,21 +1,90 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.5.0
-> **技术栈**: SQLite + better-sqlite3 + bcryptjs
-> **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力
+> **版本**: v1.6.0
+> **技术栈**: SQLite (本地) / MariaDB 10.11 LTS (远程) + better-sqlite3 + mysql2 + bcryptjs
+> **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力，支持本地单机部署和远程服务器部署
 
 ---
 
 ## 目录
 
+- [两种数据库模式](#两种数据库模式)
 - [快速开始](#快速开始)
 - [数据库架构](#数据库架构)
 - [表结构说明](#表结构说明)
 - [API 接口](#api-接口)
 - [认证与授权](#认证与授权)
 - [数据保留与清理](#数据保留与清理)
+- [数据库迁移](#数据库迁移)
 - [与其他模块的连接](#与其他模块的连接)
 - [常见问题](#常见问题)
+
+---
+
+## 两种数据库模式
+
+| 特性 | 本地 SQLite | 远程 MariaDB |
+|------|------------|-------------|
+| **适用场景** | 单机部署、离线考试、开发测试 | 多用户生产环境、集中管理 |
+| **安装依赖** | 零依赖（better-sqlite3 自动编译） | 需安装 MariaDB 10.11 服务端 |
+| **并发写入** | 低（单写入锁，WAL 模式优化） | 高（行级锁、MVCC） |
+| **32位兼容** | 是 | 是（MariaDB 10.11 LTS） |
+| **切换方式** | 默认模式 | 环境变量 `PROJECTX_MARIADB_HOST` 或 `config.yml` |
+| **连接方式** | 本地文件直接读写 | TCP 3306（mysql2 连接池） |
+
+### 架构图
+
+```
+本地模式（开发/单机/离线）          远程模式（生产/多用户）
+┌──────────────────────┐          ┌──────────────────────┐
+│    Electron/Node     │          │   Express 服务端      │
+│  Express + React     │          │                      │
+│         │            │          │         │            │
+│    ┌────▼────┐       │          │    ┌────▼────┐       │
+│    │ SQLite   │       │          │    │ MariaDB  │       │
+│    │ 单文件    │       │          │    │ 10.11    │       │
+│    └─────────┘       │          │    └─────────┘       │
+└──────────────────────┘          └──────────────────────┘
+  零依赖，解压即用                   需要安装 MariaDB 服务端
+```
+
+### 数据库访问层：DbAdapter
+
+所有业务代码通过 `DbAdapter` 接口访问数据库，**不感知底层是 SQLite 还是 MariaDB**。切换只需改环境变量或 `config.yml`，代码零改动。
+
+```typescript
+// 所有 Repository / Service / Route 统一使用：
+import { getMysqlDb } from "../db";
+const db = getMysqlDb();         // 返回 DbAdapter
+const user = await db.get("SELECT * FROM users WHERE id = ?", 1);
+```
+
+`DbAdapter` 接口方法：
+
+| 方法 | 说明 | SQLite | MariaDB |
+|------|------|--------|---------|
+| `get(sql, ...params)` | 查询单行 | better-sqlite3 `prepare().get()` | mysql2 `execute()` |
+| `all(sql, ...params)` | 查询多行 | better-sqlite3 `prepare().all()` | mysql2 `execute()` |
+| `run(sql, ...params)` | 执行写操作 | better-sqlite3 `prepare().run()` | mysql2 `execute()` |
+| `exec(sql)` | 执行原始 SQL | better-sqlite3 `exec()` | mysql2 `execute()` |
+| `transaction(fn)` | 事务 | sync BEGIN/COMMIT | PoolConnection |
+| `dialect` | 方言标识 | `"sqlite"` | `"mariadb"` |
+
+跨方言 SQL 工具：
+- `buildUpsertSQL()` — 生成跨平台 UPSERT 语句
+- `buildInsertIgnore()` — 生成跨平台 INSERT IGNORE 语句
+- `REPLACE INTO` — SQLite + MariaDB 都原生支持
+
+### MariaDB 环境变量
+
+```bash
+# 全部可选，未设置则走 config.yml 或兜底 SQLite
+export PROJECTX_MARIADB_HOST=192.168.1.50
+export PROJECTX_MARIADB_PORT=3306
+export PROJECTX_MARIADB_USER=projectx_app
+export PROJECTX_MARIADB_PASSWORD=your_password
+export PROJECTX_MARIADB_DATABASE=projectx
+```
 
 ---
 
@@ -520,7 +589,8 @@ src/types/
 
 ## 更新日志
 
-- **v1.5.0** (06-24) — 大考组功能：`exam_groups` + `exam_group_members` 表（含 source/start_date/end_date 跨考字段），支持多科合集分析、跨科排名、ZIP 导出、跨考内联、并列排名
+- **v1.6.0** (06-27) — MariaDB 10.11 LTS 双模就绪：`DbAdapter` 重写 + `schema.mariadb.sql` + Scanner DB 合并 + 50+ 处 async 迁移 + `config.yml` 用户设置界面 + 服务器打包增强
+- **v1.5.0** (06-24) — 大考组功能：`exam_groups` + `exam_group_members` 表
 - **v1.2.1** (06-17) — 数据库全量备份/恢复（ZIP 导出导入），强制考试时间，UI 响应式三级断点，导入模板升级 .xlsx
 - **v1.2.0** (06-17) — AI 成绩分析，Electron 探活增强
 - **v1.1.5** (06-16) — 阅卷流程重构，多端打包 x86/x64
