@@ -11,8 +11,8 @@ export type PreparedCardLayout = {
   layoutPath: string;
 };
 
-export function findCardForLayout(cardId: string, cardRepo = new CardRepository()): AnswerCard | null {
-  return cardRepo.findById(cardId);
+export async function findCardForLayout(cardId: string, cardRepo = new CardRepository()): Promise<AnswerCard | null> {
+  return await cardRepo.findById(cardId);
 }
 
 export async function prepareCardLayout(
@@ -32,7 +32,7 @@ export async function prepareCardLayoutById(
   cardId: string,
   cardRepo = new CardRepository()
 ): Promise<PreparedCardLayout | null> {
-  const card = findCardForLayout(cardId, cardRepo);
+  const card = await findCardForLayout(cardId, cardRepo);
   if (!card) return null;
   return prepareCardLayout(card, cardRepo);
 }

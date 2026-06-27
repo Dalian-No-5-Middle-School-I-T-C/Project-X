@@ -27,6 +27,7 @@ import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
 import { AccountManagement } from "./components/AccountManagement";
+import { BeianFooter } from "./components/BeianFooter";
 import { StudentScores } from "./components/StudentScores";
 import { SponsorPage } from "./components/SponsorPage";
 import { UserGuidePage } from "./components/UserGuidePage";
@@ -1277,6 +1278,7 @@ function App() {
     return (
       <div className="login-shell">
         <p className="empty-text">正在加载...</p>
+        <BeianFooter className="login-beian-footer" />
       </div>
     );
   }
@@ -1293,7 +1295,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.4.5</span>
+            <span>Project-X v1.5.0</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
@@ -1981,7 +1983,10 @@ function App() {
             <UserGuidePage onBack={() => setMode(previousModeRef.current)} />
           </section>
         </div>
-        <footer className="statusbar">{status}</footer>
+        <footer className="statusbar">
+          <span className="statusbar-message">{status}</span>
+          <BeianFooter className="statusbar-beian" />
+        </footer>
       </section>
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
       <ImportCardModal

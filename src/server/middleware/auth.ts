@@ -51,8 +51,8 @@ export function extractToken(req: Request): string | null {
   return null;
 }
 
-function attachUser(req: Request, token: string): boolean {
-  const user = authService.getUserByToken(token);
+async function attachUser(req: Request, token: string): Promise<boolean> {
+  const user = await authService.getUserByToken(token);
   if (!user) return false;
   req.user = {
     id: user.id,
@@ -71,13 +71,13 @@ function attachUser(req: Request, token: string): boolean {
  * 强制认证中间件：必须携带有效 Bearer Token。
  * 用法：router.use(authMiddleware) 或在单条路由前挂载。
  */
-export function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = extractToken(req);
   if (!token) {
     res.status(401).json({ message: "未提供认证令牌" });
     return;
   }
-  if (!attachUser(req, token)) {
+  if (!(await attachUser(req, token))) {
     res.status(401).json({ message: "认证令牌无效或已过期" });
     return;
   }
@@ -88,10 +88,10 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
  * 可选认证中间件：有 token 则解析挂载用户，无 token 也放行。
  * 用于在“未强制登录”阶段仍然记录 created_by / 区分匿名访问。
  */
-export function optionalAuth(req: Request, _res: Response, next: NextFunction): void {
+export async function optionalAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
   const token = extractToken(req);
   if (token) {
-    attachUser(req, token);
+    await attachUser(req, token);
   }
   next();
 }
@@ -136,13 +136,13 @@ export function requirePermission(permission: Permission | string) {
  * 获取当前用户信息的处理器（GET /api/auth/me）。
  * 额外回传该角色的权限列表，供前端做菜单/按钮级 UI 控制。
  */
-export function getCurrentUserHandler(req: Request, res: Response): void {
+export async function getCurrentUserHandler(req: Request, res: Response): Promise<void> {
   const token = extractToken(req);
   if (!token) {
     res.status(401).json({ message: "未认证" });
     return;
   }
-  const user = authService.getUserByToken(token);
+  const user = await authService.getUserByToken(token);
   if (!user) {
     res.status(401).json({ message: "认证令牌无效或已过期" });
     return;

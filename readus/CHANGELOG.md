@@ -1,5 +1,99 @@
 # Project-X CHANGELOG
 
+## v1.5.2 (2026-06-26) — 数据库双后端架构
+
+### SQLite → MySQL 双后端迁移
+
+本项目从单机桌面端向 B/S 服务端架构演进的第一步：所有 Repository / Service / Route / Middleware 已全面异步化，支持通过环境变量切换 SQLite 或 MySQL 后端。
+
+- **双后端适配器**（`db/mysql.ts`）：统一 `DbAdapter` 异步接口——`get()` / `all()` / `run()` / `exec()` / `transaction()`
+  - MySQL 模式：`mysql2` 连接池（连接数上限 20）、事务通过 `PoolConnection` 实现
+  - SQLite 模式：内部 better-sqlite3 同步调用，对外暴露 async 接口，**完全兼容原有行为**
+  - 环境变量控制：不设 `PROJECTX_MYSQL_HOST` → 自动回退 SQLite，零配置零影响
+- **新增 `db/schema.mysql.sql`**：完整 MySQL 建表脚本，InnoDB 引擎、utf8mb4、AUTO_INCREMENT、外键约束、30+ 索引，与 SQLite schema 一一对应
+- **6 个 Repository 全量异步化**：
+  - `UserRepository`（39 方法）、`AnalysisRepository`（34 方法）、`CardRepository`（22 方法）、`ClassRepository`（17 方法）、`ExamRepository`（15 方法）、`ScoreRepository`（4 方法）
+  - SQL 从 `db.prepare().get()` 迁移为 `await db.get()`，事务从 sync callback 迁移为 async `db.transaction(async (tx) => {...})`
+  - `INSERT OR REPLACE` 在 MySQL 端自动转换为 `ON DUPLICATE KEY UPDATE`（adapter 内透明处理）
+- **6 个 Route 文件异步化**：`classes.ts`、`scores.ts`、`teachers.ts`、`users.ts`、`export.ts`、`score-editing.ts`——Express handler 全部改为 `async (req, res)`，内部调用 `await repo.xxx()`
+- **2 个 Service 异步化**：`AuthService.ts`（`getUserByToken`、`login` 等核心方法）、`AssignedScoreService.ts`（赋分公式管理）
+- **1 个 Middleware 异步化**：`middleware/auth.ts`——`attachUser()`、`authMiddleware()`、`getCurrentUserHandler()`、`optionalAuth()` 全部改为 async
+- **App Server 局部迁移**：`app server/index.ts` 中全部 Repository 调用加 `await`，3 处 `db.transaction()` 拆为顺序 async 调���，`card-layout.ts` 中 `findCardForLayout` → async
+- **Scanner DB 保持 SQLite**：`scan-store.ts`（19 处 `.prepare()`）和 grading pipeline 中的 `INSERT OR REPLACE` 保持 SQLite 原样，扫描流水线独立运行
+
+### 依赖
+- 新增 `mysql2: ^3.14.0`
+- 保留 `better-sqlite3: ^12.11.1`（SQLite 回退 + scanner.db）
+
+### 前端性能优化
+
+- **`transition: all` 替换**：~30 处全局 `transition: all 0.3s` 替换为精确属性列表（`background`、`color`、`border-color`、`box-shadow`），消除 backdrop-filter 无效重算，减少帧间重排开销
+- **毛玻璃 GPU 优化**：`.liquid-glass` 和 `.liquid-glass-strong` 增加 `will-change: backdrop-filter`，让浏览器预分配 GPU 资源；`.sidebar` 增加 `contain: paint layout style`，隔离渲染区域
+- **CSS 变量别名**：新增 `--primary: var(--brand)`、`--bg-secondary: var(--surface-raised)`、`--bg-accent: var(--brand-soft)`、`--border: var(--line-strong)`，解决多个组件引用未定义变量导致的暗色模式渲染异常
+
+### Bug 修复
+
+| 修复项 | 文件 | 说明 |
+|--------|------|------|
+| 表名不一 | `AnalysisRepository.ts` ×2 | `exam_group_items` → `exam_group_members`（与 schema v8 对齐） |
+| 列名错位 | `app server/index.ts` | 主观题 `question_id` 误写入 `block_id` 列 → INSERT 列宣言改为 `question_id` |
+| 默认值不一致 | `migrations.ts` ×2 | `score_display_mode`: `'deviation'` → `'zscore'`；`export_templates.name`: `'Untitled'` → `'未命名'` |
+| localStorage 写错值 | `App.tsx:529` | 关闭夜间模式后仍写入 `"dark"` → 改为写入 `effectiveTheme` |
+| 组件白色硬编码 | `CreateExamGroupModal.tsx` ×4、`GroupExportModal.tsx` ×2 | `#fff` 背景改为 `var(--surface)`，品牌按钮色改为 `var(--brand)` |
+| 合并冲突冗余 | `CreateExamGroupModal.tsx`、`GroupExportModal.tsx` | 清除 `<<<<<<<`/`>>>>>>>` git 冲突标记 |
+
+### 版本
+- v1.5.1 → v1.5.2
+
+## v1.5.1 (2026-06-25) — 学生端升级
+
+### 学生端全面升级
+
+- **个人成绩趋势分析（纵向）**：新增折线图展示学生各科历次考试成绩变化趋势，支持多学科同时对比、班级均分/年级均分参照线开关。使用 Chart.js 渲染，学科标签可交互筛选
+- **学科横向对比（薄弱学科识别）**：雷达图 + 详情表格，聚合本学期全部考试数据，按各科平均分与班级均分差距自动标注薄弱学科。支持趋势方向（进步/退步/稳定）图标标识
+- **AI 个人分析**：两种模式
+  - **单场分析**：在成绩列表展开某场考试后，点击「AI 分析」按钮调用教师端现有 AI 接口
+  - **整体分析**：综合学生全部考试成绩，生成个性化学习建议和薄弱点分析
+- **学生自配 AI 服务商**：复用已有 `ai_providers` 系统，学生可在 AI 分析 Tab 中自行填写 API Key 和模型配置（支持 DeepSeek / OpenAI 兼容 / Gemini），费用由学生个人承担
+- **综合仪表盘 UI**：从单一成绩列表重构为混合式布局——顶部统计概览卡片（考试数/平均分/学科数/最佳/待提升），Tab 导航切换四个功能模块
+
+### 新增后端 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/scores/me/trends` | 学生成绩趋势数据（含班级/年级均分） |
+| `GET` | `/api/scores/me/subject-comparison` | 学科横向对比分析（含薄弱学科标注） |
+| `POST` | `/api/scores/me/ai-analysis` | 学生个人 AI 整体分析 |
+
+### 新增类型
+- `StudentTrendPoint`：趋势数据点（总分、班级均分、年级均分、排名、百分位）
+- `SubjectWeaknessItem`：学科薄弱分析结果（考试次数、平均分、班级均分差距、趋势方向）
+- `StudentAiAnalysisRequest`：学生 AI 分析请求
+
+### 数据库
+- 无新增表，复用已有 `ai_providers` 表
+
+### 依赖
+- 新增 `chart.js` + `react-chartjs-2`
+
+### Bug 修复
+- **折线图数据对齐**：不同学科的考试名不一致时，之前按数组索引对齐导致数据点错位，现改为按考试名映射到共享 labels
+- **新路由认证缺失**：`POST /api/scores/me/ai-analysis` 移入 `scores.ts` 路由器，自动享受 `authMiddleware` 保护
+- **SQL 列不存在导致 500**：`ScoreRepository.getStudentTrendData()` 引用了 `class_students.is_active` 列，该列不存在；修复为移除虚假列引用、`JOIN` 改为 `LEFT JOIN` 子查询处理多班级、学生无班级时 classAvg 返回 NULL
+- **学生可越权访问教师分析接口**：`getVisibleExamIds()` 对学生返回 `null`（全部可见），导致学生可调用任意考试的 AI 分析接口。修复：`requireExamAccess` 中增加学生分支，仅放行 `hasScore()` 为 true 的考试
+- **学生通过 hasScore 可越权删除考试/查看全班数据**：`requireExamAccess` 的学生分支对所有方法（GET/DELETE/...）通行。修复：学生分支仅允许 `POST /.../ai-analysis`，其余方法返回 403
+- **AI 单场分析按钮在 auth 强制模式下永久 403**：`POST /api/analysis/exams/:examId/ai-analysis` 经过 `analysisGate` 要求 `grade:read`，学生只有 `score:read`。修复：新增 `POST /api/scores/me/exams/:examId/ai-analysis`（挂载在 scores router 下，无 analysisGate），前端 `AiAnalysisForExam` 改为调用该端点
+- **整体 AI 分析后端对接错误**：`POST /api/scores/me/ai-analysis` 原设计向 llmclient 发送 `examId: 0` + `studentAnalysis: true`，但 llmclient 仅支持 exam-scoped 请求。修复为直接用服务端已有的趋势数据生成文本分析报告，不再调用 llmclient；待 llmclient 支持学生分析后可切换回
+- 清理未使用的 import
+
+### 新增后端 API
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/scores/me/exams/:examId/ai-analysis` | 学生单场考试 AI 分析（绕过教师端 RBAC gate） |
+
+### 版本
+- v1.5.0 → v1.5.1
+
 ## v1.5.0 (2026-06-24) — 稳定版
 
 ### 跨考入口 & 排名修复
@@ -75,6 +169,20 @@
 - API: `GET/POST/DELETE /api/analysis/cross-exam/groups`, `POST /api/analysis/cross-exam/total`
 - DB: `exam_groups` 表新增 `source`/`start_date`/`end_date` 字段兼容两种用途
 
+### 备案合规
+- **ICP 备案信息**：登录页底部新增备案号展示（辽ICP备2026013340号 + 辽公网安备21020402001085号），`BeianFooter.tsx` 组件含工信部/公安备案双链接
+
+### 性能优化
+- **毛玻璃性能修复**：大量 `backdrop-filter: blur()` 改为 `opacity` 叠加，消除滚动/切换页面时的明显卡顿感（#115）
+
+### Bug 修复
+- **暗色主题残余硬编码**：CreateExamGroupModal、GroupExportModal 内联白色背景改为 CSS 变量，修复暗色模式下弹窗白块（#113）
+
+### 开发者工具
+- **Demo 测试数据集**：新增 `testdata/demo-exams/`，含可导入备份 ZIP、CSV 片段、种子脚本和验证脚本，覆盖单科/大考/跨考/并列排名/缺考/名次变化/小分导出等全场景（#116）
+
+### 教师角色细化
+- **组长/科任/班主任严格区分**：后端数据范围过滤逻辑完善，真正实现 `subject_teacher`（本科目本班）、`head_teacher`（本班全科）、`grade_leader`（全年全科）三级隔离；修复相关数据库查询值名问题（#114）
 ### 版本
 - v1.4.7 → v1.5.0
 

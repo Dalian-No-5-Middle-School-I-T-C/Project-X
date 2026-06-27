@@ -11,6 +11,7 @@ import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
 import { AnalysisRepository } from "../../../server/repositories/AnalysisRepository";
+import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
 import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
 import type { AssignedFormula } from "../../../shared/types";
@@ -136,13 +137,13 @@ async function writeLayoutDocument(cardId: string, layout: LayoutDocument): Prom
 async function saveCardWithLayout(cardRepo: CardRepository, card: AnswerCard, createdBy?: number): Promise<AnswerCard> {
   const normalized = normalizeCard(card, card.id);
   const layout = buildLayout(normalized);
-  const exists = cardRepo.findById(normalized.id);
+  const exists = await cardRepo.findById(normalized.id);
 
   if (exists) {
-    cardRepo.updateCard(normalized);
+    await cardRepo.updateCard(normalized);
   } else {
-    cardRepo.createCard(normalized, createdBy);
-    cardRepo.updateCard(normalized);
+    await cardRepo.createCard(normalized, createdBy);
+    await cardRepo.updateCard(normalized);
   }
 
   await writeLayoutDocument(normalized.id, layout);
@@ -250,11 +251,11 @@ async function persistGradingResults(
   const db = getDatabase();
 
   const examId = Number(examIdParam);
-  const exam = examRepo.findExamById(examId);
+  const exam = await await examRepo.findExamById(examId);
   if (!exam) return;
 
-  examRepo.updateStatus(examId, "grading");
-  const batchId = examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
+  await examRepo.updateStatus(examId, "grading");
+  const batchId = await examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
 
   const ensureStudent = db.prepare(`
     INSERT OR IGNORE INTO users (username, password_hash, name, role_id, student_number)
@@ -283,46 +284,39 @@ async function persistGradingResults(
     }
   }
 
-  const persistTx = db.transaction(() => {
-    for (const row of rows) {
-      if (!row.studentId) continue;
-      try {
-        // Synchronous: ensure student exists
-        const studentPasswordHash = studentPasswordHashes.get(row.studentId) ?? "";
-        ensureStudent.run(row.studentId, studentPasswordHash, row.studentId, row.studentId);
-        updateBlankStudentPassword.run(studentPasswordHash, row.studentId);
-        const stu = findStudent.get(row.studentId) as { id: number } | undefined;
-        if (!stu) continue;
+  for (const row of rows) {
+    if (!row.studentId) continue;
+    try {
+      const studentPasswordHash = studentPasswordHashes.get(row.studentId) ?? "";
+      ensureStudent.run(row.studentId, studentPasswordHash, row.studentId, row.studentId);
+      updateBlankStudentPassword.run(studentPasswordHash, row.studentId);
+      const stu = findStudent.get(row.studentId) as { id: number } | undefined;
+      if (!stu) continue;
 
-        // Add scan record (actualPath = multer file path for reliable preview)
-        examRepo.addScanRecord({
-          batch_id: batchId,
-          file_path: (row as any).actualPath || row.fileName,
-          file_name: row.fileName,
-          student_number: row.studentId,
-          student_id: stu.id
-        });
+      await examRepo.addScanRecord({
+        batch_id: batchId,
+        file_path: (row as any).actualPath || row.fileName,
+        file_name: row.fileName,
+        student_number: row.studentId,
+        student_id: stu.id
+      });
 
-        // Save total score
-        examRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
+      await examRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
 
-        // Save per-question scores
-        for (const q of row.questions) {
-          insertQs.run(examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
-        }
-        for (const sq of row.subjectiveQuestions ?? []) {
-          insertQs.run(examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
-        }
-        persisted++;
-      } catch (err) {
-        console.error(`[Grading] Failed to persist row for ${row.studentId}:`, err);
+      for (const q of row.questions) {
+        insertQs.run(examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
       }
+      for (const sq of row.subjectiveQuestions ?? []) {
+        insertQs.run(examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
+      }
+      persisted++;
+    } catch (err) {
+      console.error(`[Grading] Failed to persist row for ${row.studentId}:`, err);
     }
-  });
+  }
 
-  persistTx();
-  examRepo.finishBatch(batchId);
-  examRepo.updateStatus(examId, "closed");
+  await examRepo.finishBatch(batchId);
+  await examRepo.updateStatus(examId, "closed");
   console.log(`[Grading] Persisted ${persisted} student scores to exam ${examId}`);
 }
 
@@ -406,7 +400,7 @@ function getVisibleExamIds(user: express.Request["user"]): number[] | null {
  *
  * 如果 req.user 不存在（未登录/未强制鉴权），放行通过。
  */
-function requireExamAccess(req: express.Request, res: express.Response, next: express.NextFunction): void {
+async function requireExamAccess(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
   if (!req.user) {
     next(); // 未登录时放行（makeGate 已处理 auth 强制逻辑）
     return;
@@ -416,6 +410,23 @@ function requireExamAccess(req: express.Request, res: express.Response, next: ex
     res.status(400).json({ message: "缺少 examId" });
     return;
   }
+
+  // 学生仅允许访问 AI 分析端点（且仅限自己有成绩的考试）
+  // 其他所有 exam 端点（删除、导出CSV、排名等）对学生拒绝
+  if (req.user.role_name === "student") {
+    if (req.method !== "POST" || !req.originalUrl.includes("/ai-analysis")) {
+      res.status(403).json({ message: "权限不足" });
+      return;
+    }
+    const scoreRepo = new ScoreRepository();
+    if (await scoreRepo.hasScore(req.user.id, examId)) {
+      next();
+      return;
+    }
+    res.status(403).json({ message: "权限不足：你未参加该考试" });
+    return;
+  }
+
   const visibleIds = getVisibleExamIds(req.user);
   if (visibleIds === null) {
     next(); // 全部可见
@@ -579,7 +590,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/cards", async (_req, res, next) => {
     try {
-      res.json(cardRepo.listCards().map(toCardSummary));
+      res.json((await cardRepo.listCards()).map(toCardSummary));
     } catch (error) {
       next(error);
     }
@@ -605,13 +616,13 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ error: `考试时间为必填项，需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
         return;
       }
-      if (cardRepo.findByTitle(title)) {
+      if (await cardRepo.findByTitle(title)) {
         res.status(409).json({ error: `已存在同名答题卡「${title}」，请修改名称后重试` });
         return;
       }
       let id = generateCardId(subject);
       let retry = 0;
-      while (cardRepo.findById(id) && retry < 100) {
+      while (await cardRepo.findById(id) && retry < 100) {
         id = generateCardId(subject + "_" + String(retry++));
       }
       let card = createDefaultCard(id, subject);
@@ -628,7 +639,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/cards/:cardId", async (req, res, next) => {
     try {
-      const card = cardRepo.findById(safeId(paramValue(req.params.cardId)));
+      const card = await cardRepo.findById(safeId(paramValue(req.params.cardId)));
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -656,7 +667,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/cards/:cardId/layout", async (req, res, next) => {
     try {
-      const card = cardRepo.findById(safeId(paramValue(req.params.cardId)));
+      const card = await cardRepo.findById(safeId(paramValue(req.params.cardId)));
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -672,7 +683,7 @@ export async function createApp(): Promise<express.Express> {
   app.post("/api/cards/:cardId/recognition/objective", recognitionUpload.single("file"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
-      const card = cardRepo.findById(cardId);
+      const card = await cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -706,7 +717,7 @@ export async function createApp(): Promise<express.Express> {
   app.post("/api/cards/:cardId/recognition", recognitionUpload.single("file"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
-      const card = cardRepo.findById(cardId);
+      const card = await cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -778,7 +789,7 @@ export async function createApp(): Promise<express.Express> {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       progressId = safeId(fieldValue(req.body.progressId));
-      const card = cardRepo.findById(cardId);
+      const card = await cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -868,7 +879,7 @@ export async function createApp(): Promise<express.Express> {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       progressId = safeId(fieldValue(req.body.progressId));
-      const card = cardRepo.findById(cardId);
+      const card = await cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -983,7 +994,7 @@ export async function createApp(): Promise<express.Express> {
   app.post("/api/cards/:cardId/assets", upload.single("file"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
-      const card = cardRepo.findById(cardId);
+      const card = await cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -1004,7 +1015,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/cards/:cardId/pdf", async (req, res, next) => {
     try {
-      const card = cardRepo.findById(safeId(paramValue(req.params.cardId)));
+      const card = await cardRepo.findById(safeId(paramValue(req.params.cardId)));
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -1030,14 +1041,14 @@ export async function createApp(): Promise<express.Express> {
   app.delete("/api/cards/:cardId", async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
-      const card = cardRepo.findById(cardId);
+      const card = await cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
       }
       // 检查是否被考试引用
       const examRepo = new ExamRepository();
-      const exams = examRepo.listExams();
+      const exams = await examRepo.listExams();
       const referenced = exams.filter((e: any) => e.card_id === cardId);
       if (referenced.length > 0) {
         const body = (req.body ?? {}) as Record<string, unknown>;
@@ -1052,14 +1063,12 @@ export async function createApp(): Promise<express.Express> {
           return;
         }
         const db = getDatabase();
-        db.transaction(() => {
-          if (deleteReferencedExams) {
-            deleteExamRows(db, referenced.map((e: any) => Number(e.id)));
-          } else {
-            db.prepare("UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ?").run(cardId);
-          }
-          cardRepo.deleteCard(cardId);
-        })();
+        if (deleteReferencedExams) {
+          deleteExamRows(db, referenced.map((e: any) => Number(e.id)));
+        } else {
+          db.prepare("UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ?").run(cardId);
+        }
+        await cardRepo.deleteCard(cardId);
         await deleteCardFiles(cardId);
         res.json({
           ok: true,
@@ -1072,7 +1081,7 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       // 删除 SQLite 记录（外键 CASCADE 自动删子表）
-      const deleted = cardRepo.deleteCard(cardId);
+      const deleted = await cardRepo.deleteCard(cardId);
       // 删除 JSON 文件
       await deleteCardFiles(cardId);
       res.json({
@@ -1090,7 +1099,7 @@ export async function createApp(): Promise<express.Express> {
   app.get("/api/cards/:cardId/export", async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
-      const card = cardRepo.findById(cardId);
+      const card = await cardRepo.findById(cardId);
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
         return;
@@ -1201,7 +1210,7 @@ export async function createApp(): Promise<express.Express> {
       }
 
       // Check for duplicate title
-      const existingCard = cardRepo.findByTitle(card.title);
+      const existingCard = await cardRepo.findByTitle(card.title);
       if (existingCard && existingCard.id !== card.id) {
         res.status(409).json({ message: `已存在同名答题卡「${card.title}」（ID: ${existingCard.id}），请修改名称后重试` });
         return;
@@ -1210,9 +1219,9 @@ export async function createApp(): Promise<express.Express> {
       const subject = card.subject ?? "";
       let newId = generateCardId(subject || "imported");
       let retry = 0;
-      const idConflict = cardRepo.findById(imported.card.id ?? "");
+      const idConflict = await cardRepo.findById(imported.card.id ?? "");
       const conflictMsg = idConflict ? `原卡片ID ${imported.card.id} 已存在，已分配新ID ${newId}` : "";
-      while (cardRepo.findById(newId) && retry < 100) {
+      while (await cardRepo.findById(newId) && retry < 100) {
         newId = generateCardId((subject || "imported") + "_" + String(retry++));
       }
       card.id = newId;
@@ -1240,11 +1249,11 @@ export async function createApp(): Promise<express.Express> {
       if (imported.examAction === "create") {
         const examRepo = new ExamRepository();
         const examName = imported.examName || saved.title;
-        const existingExam = examRepo.findExamByName(examName);
+        const existingExam = await examRepo.findExamByName(examName);
         if (existingExam) {
           duplicateExamName = examName;
         } else {
-          const exam = examRepo.createExam({
+          const exam = await examRepo.createExam({
             name: examName,
             card_id: newId,
             subject: saved.subjectLabel || saved.subject || undefined,
@@ -1291,7 +1300,7 @@ export async function createApp(): Promise<express.Express> {
           res.json([]);
           return;
         }
-        const exams = examRepo.listExamsForSelection({
+        const exams = await examRepo.listExamsForSelection({
           grade_id: grade_id ? Number(grade_id) : undefined,
           subject: subject || undefined,
           academic_year: academic_year || undefined,
@@ -1322,8 +1331,8 @@ export async function createApp(): Promise<express.Express> {
     try {
       const examRepo = new ExamRepository();
       res.json({
-        academicYears: examRepo.getAcademicYears(),
-        subjects: examRepo.getSubjects()
+        academicYears: await examRepo.getAcademicYears(),
+        subjects: await examRepo.getSubjects()
       });
     } catch (error) {
       next(error);
@@ -1338,12 +1347,12 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       const examRepo = new ExamRepository();
-      const existing = examRepo.findExamByName(String(name));
+      const existing = await examRepo.findExamByName(String(name));
       if (existing) {
         res.status(409).json({ message: `已存在同名考试「${name}」（ID: ${existing.id}），请修改名称后重试` });
         return;
       }
-      const exam = examRepo.createExam({
+      const exam = await examRepo.createExam({
         name: String(name),
         card_id: String(cardId),
         grade_id: gradeId ? Number(gradeId) : undefined,
@@ -1360,12 +1369,12 @@ export async function createApp(): Promise<express.Express> {
   app.get("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
-      const exam = examRepo.findExamById(Number(req.params.examId));
+      const exam = await examRepo.findExamById(Number(req.params.examId));
       if (!exam) {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      const results = examRepo.getExamResults(exam.id);
+      const results = await examRepo.getExamResults(exam.id);
       res.json({ ...exam, results });
     } catch (error) {
       next(error);
@@ -1375,7 +1384,7 @@ export async function createApp(): Promise<express.Express> {
   app.delete("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
-      const exam = examRepo.findExamById(Number(req.params.examId));
+      const exam = await examRepo.findExamById(Number(req.params.examId));
       if (!exam) {
         res.status(404).json({ message: "考试不存在" });
         return;
@@ -1383,8 +1392,9 @@ export async function createApp(): Promise<express.Express> {
       const body = (req.body ?? {}) as Record<string, unknown>;
       const deleteLinkedCard = requestFlag(body.deleteLinkedCard);
       const linkedCardId = exam.card_id ? safeId(exam.card_id) : null;
+      const db = getDatabase();
       if (deleteLinkedCard && linkedCardId) {
-        const referencedByOtherExams = examRepo.listExams().filter((item) => item.card_id === linkedCardId && item.id !== exam.id);
+        const referencedByOtherExams = (await examRepo.listExams()).filter((item) => item.card_id === linkedCardId && item.id !== exam.id);
         if (referencedByOtherExams.length > 0) {
           res.status(409).json({
             message: `无法同时删除答题卡：仍被 ${referencedByOtherExams.length} 个其它考试引用`,
@@ -1394,13 +1404,10 @@ export async function createApp(): Promise<express.Express> {
           return;
         }
       }
-      const db = getDatabase();
-      db.transaction(() => {
-        deleteExamRows(db, [exam.id]);
-        if (deleteLinkedCard && linkedCardId) {
-          cardRepo.deleteCard(linkedCardId);
-        }
-      })();
+      deleteExamRows(db, [exam.id]);
+      if (deleteLinkedCard && linkedCardId) {
+        await cardRepo.deleteCard(linkedCardId);
+      }
       if (deleteLinkedCard && linkedCardId) {
         await deleteCardFiles(linkedCardId);
       }
@@ -1413,7 +1420,7 @@ export async function createApp(): Promise<express.Express> {
   app.patch("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
-      const exam = examRepo.findExamById(Number(req.params.examId));
+      const exam = await examRepo.findExamById(Number(req.params.examId));
       if (!exam) {
         res.status(404).json({ message: "考试不存在" });
         return;
@@ -1428,7 +1435,7 @@ export async function createApp(): Promise<express.Express> {
       const setClauses = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
       const values = Object.values(updates);
       db.prepare(`UPDATE exams SET ${setClauses} WHERE id = ?`).run(...values, exam.id);
-      const updated = examRepo.findExamById(exam.id);
+      const updated = await examRepo.findExamById(exam.id);
       res.json(updated);
     } catch (error) {
       next(error);
@@ -1442,7 +1449,7 @@ export async function createApp(): Promise<express.Express> {
       const subject = typeof req.query.subject === "string" ? req.query.subject : "";
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
       const analysisRepo = new AnalysisRepository();
-      const trend = analysisRepo.getScoreTrend(subject, classId);
+      const trend = await analysisRepo.getScoreTrend(subject, classId);
       res.json(trend);
     } catch (error) {
       next(error);
@@ -1452,7 +1459,7 @@ export async function createApp(): Promise<express.Express> {
   app.get("/api/analysis/cross-exam/groups", async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
-      res.json(analysisRepo.listExamGroups(req.user?.id));
+      res.json(await analysisRepo.listExamGroups(req.user?.id));
     } catch (error) {
       next(error);
     }
@@ -1479,7 +1486,7 @@ export async function createApp(): Promise<express.Express> {
       if (!validateExamIdsAccess(req, res, normalizedExamIds)) return;
 
       const analysisRepo = new AnalysisRepository();
-      const group = analysisRepo.createExamGroup({
+      const group = await analysisRepo.createExamGroup({
         name,
         examIds: normalizedExamIds,
         source: source === "week" ? "week" : "cross-manual",
@@ -1501,7 +1508,7 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       const analysisRepo = new AnalysisRepository();
-      const ok = analysisRepo.deleteExamGroup(groupId, req.user?.id ?? 0, req.user?.role_name === "admin");
+      const ok = await analysisRepo.deleteExamGroup(groupId, req.user?.id ?? 0, req.user?.role_name === "admin");
       if (!ok) {
         res.status(404).json({ message: "考试组不存在或无权删除" });
         return;
@@ -1535,7 +1542,7 @@ export async function createApp(): Promise<express.Express> {
           res.status(400).json({ message: "请选择考试组" });
           return;
         }
-        const group = analysisRepo.getExamGroup(groupId);
+        const group = await analysisRepo.getExamGroup(groupId);
         if (!group) {
           res.status(404).json({ message: "考试组不存在" });
           return;
@@ -1544,7 +1551,7 @@ export async function createApp(): Promise<express.Express> {
       }
 
       if (requestedExamIds.length > 0 && !validateExamIdsAccess(req, res, requestedExamIds)) return;
-      const data = analysisRepo.getCrossExamTotal({
+      const data = await analysisRepo.getCrossExamTotal({
         mode,
         groupId: optionalPositiveNumber(body.groupId),
         examIds: requestedExamIds.length > 0 ? requestedExamIds : undefined,
@@ -1567,7 +1574,7 @@ export async function createApp(): Promise<express.Express> {
   app.get("/api/analysis/exams/:examId/classes", requireExamAccess, async (req, res, next) => {
     try {
       const analysisRepo = new AnalysisRepository();
-      const classes = analysisRepo.getExamClasses(Number(req.params.examId));
+      const classes = await analysisRepo.getExamClasses(Number(req.params.examId));
       res.json(classes);
     } catch (error) {
       next(error);
@@ -1578,7 +1585,7 @@ export async function createApp(): Promise<express.Express> {
     try {
       const analysisRepo = new AnalysisRepository();
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
-      const overview = analysisRepo.getExamOverview(Number(req.params.examId), classId);
+      const overview = await analysisRepo.getExamOverview(Number(req.params.examId), classId);
       res.json(overview);
     } catch (error) {
       next(error);
@@ -1589,7 +1596,7 @@ export async function createApp(): Promise<express.Express> {
     try {
       const analysisRepo = new AnalysisRepository();
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
-      const ranking = analysisRepo.getStudentRanking(Number(req.params.examId), classId);
+      const ranking = await analysisRepo.getStudentRanking(Number(req.params.examId), classId);
       res.json(ranking);
     } catch (error) {
       next(error);
@@ -1602,7 +1609,7 @@ export async function createApp(): Promise<express.Express> {
       const analysisRepo = new AnalysisRepository();
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
       const displayMode = (req.query.displayMode as string) || "deviation";
-      const data = analysisRepo.getScoreTableData(
+      const data = await analysisRepo.getScoreTableData(
         Number(req.params.examId),
         classId,
         displayMode as "deviation" | "zscore" | "percentile"
@@ -1672,7 +1679,7 @@ export async function createApp(): Promise<express.Express> {
     try {
       const analysisRepo = new AnalysisRepository();
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
-      const questions = analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
+      const questions = await analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
       res.json(questions);
     } catch (error) {
       next(error);
@@ -1685,7 +1692,7 @@ export async function createApp(): Promise<express.Express> {
       const service = new AssignedScoreService();
       const formula = service.getFormula(Number(req.params.examId));
       const presets = AssignedScoreService.getFormulaPresets();
-      const exam = new ExamRepository().findExamById(Number(req.params.examId));
+      const exam = await new ExamRepository().findExamById(Number(req.params.examId));
       res.json({
         formula,
         isAssignedSubject: exam?.subject ? AssignedScoreService.isAssignedSubject(exam.subject) : false,
@@ -1896,7 +1903,7 @@ export async function createApp(): Promise<express.Express> {
       }
 
       const analysisRepo = new AnalysisRepository();
-      const exam = analysisRepo.getExam(examId);
+      const exam = await analysisRepo.getExam(examId);
       if (!exam) {
         res.status(404).json({ message: "Exam not found" });
         return;
@@ -1979,7 +1986,7 @@ export async function createApp(): Promise<express.Express> {
       const classId = req.query.classId ? Number(req.query.classId) : undefined;
       const examId = Number(req.params.examId);
 
-      const { students, questionHeaders } = analysisRepo.getExportData(examId, classId);
+      const { students, questionHeaders } = await analysisRepo.getExportData(examId, classId);
 
       // Build data rows
       const header = ["班级", "考号", "姓名", "成绩", "班级排名", "年级排名", "客观题", "主观题", ...questionHeaders];
@@ -2007,7 +2014,7 @@ export async function createApp(): Promise<express.Express> {
       const buf = Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }));
 
       // Get exam name for the filename
-      const exam = analysisRepo.getExam(examId);
+      const exam = await analysisRepo.getExam(examId);
       const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.xlsx`;
 
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

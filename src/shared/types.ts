@@ -353,6 +353,39 @@ export type ScoreTrendPoint = {
   classCount?: number;
 };
 
+/** 学生个人趋势数据点（含班级/年级均分对比） */
+export type StudentTrendPoint = {
+  examId: number;
+  examName: string;
+  subject: string;
+  examTime: string;
+  totalScore: number;
+  classAvg: number;
+  gradeAvg: number;
+  classSize: number;
+  rank: number;
+  percentile: number;
+};
+
+/** 学科薄弱分析结果 */
+export type SubjectWeaknessItem = {
+  subject: string;
+  examCount: number;
+  avgScore: number;
+  avgClassAvg: number;
+  gapToClass: number;
+  bestScore: number;
+  worstScore: number;
+  trend: "up" | "down" | "stable";
+};
+
+/** 学生个人 AI 分析请求 */
+export type StudentAiAnalysisRequest = {
+  examId?: number;     // 不传则表示整体分析
+  model: string;
+  providerId?: number;
+};
+
 export type ClassScoreSummary = {
   classId: number;
   className: string;
