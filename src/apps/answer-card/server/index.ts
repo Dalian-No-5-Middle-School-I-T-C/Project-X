@@ -535,6 +535,14 @@ export async function createApp(): Promise<express.Express> {
   console.log(`[Server] RBAC 鉴权强制模式: ${enforceAuth ? "开启" : "关闭（仅解析身份）"}`);
 
   app.use(express.json({ limit: "8mb" }));
+  // v1.6.0: CORS — 允许 WEB 客户端跨域访问（教师/学生在浏览器使用 HTTP API）
+  app.use((_req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key");
+    if (_req.method === "OPTIONS") { res.status(204).end(); return; }
+    next();
+  });
   app.use("/assets", express.static(assetsDir));
 
   // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
@@ -552,7 +560,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/sponsor", sponsorRoutes);
   app.use("/api/db", backupRoutes);
   app.use("/api/admin/api-keys", apiKeysRoutes);
-  app.use("/api/scanner", scannerUploadRoutes);
+  app.use("/api/scanner/upload", scannerUploadRoutes);
   app.use("/api/ai/providers", aiProviderRoutes);
 
   // ── 应用配置（管理员） ──────────────────────────────────

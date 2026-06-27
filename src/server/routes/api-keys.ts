@@ -71,8 +71,11 @@ router.post("/", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), asy
       [name.trim(), apiKey, scope || "scanner", (req as any).user?.id ?? null]
     );
 
+    // 通过 api_key 反查 id（兼容 SQLite 和 MariaDB）
+    const inserted = await db.get<{ id: number }>("SELECT id FROM api_keys WHERE api_key = ?", [apiKey]);
+
     res.status(201).json({
-      id: (await db.get<{ id: number }>("SELECT last_insert_rowid() as id"))?.id,
+      id: inserted?.id,
       name: name.trim(),
       api_key: apiKey,
       scope: scope || "scanner",

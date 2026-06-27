@@ -475,10 +475,10 @@ Project-X/
 | `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |
 | `GET` | `/api/app/health` | 健康检查（含 `db.dialect` + `latencyMs`） |
 | `GET/PATCH` | `/api/app/db-config` | 数据库配置读取/修改（管理员） |
-| `POST` | `/api/scanner/sessions` | 创建扫描上传会话（API Key + JWT 双鉴权） |
-| `POST` | `/api/scanner/sessions/:id/pages` | 上传扫描页（multipart） |
-| `POST` | `/api/scanner/sessions/:id/complete` | 标记扫描完成 |
-| `GET` | `/api/scanner/sessions/:id/status` | 查询扫描状态 |
+| `POST`            | `/api/scanner/upload/sessions`              | 创建扫描上传会话（API Key + JWT 双鉴权） |
+| `POST`            | `/api/scanner/upload/sessions/:id/pages`   | 上传扫描页（multipart） |
+| `POST`            | `/api/scanner/upload/sessions/:id/complete` | 标记扫描完成 |
+| `GET`             | `/api/scanner/upload/sessions/:id/status`   | 查询扫描状态 |
 | `GET/PO/PT/DEL` | `/api/admin/api-keys` | API Key 管理（管理员） |
 
 ---

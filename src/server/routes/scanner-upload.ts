@@ -10,22 +10,32 @@
  * GET  /api/scanner/sessions/:id/status   — 查询状态
  */
 
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import multer from "multer";
 import path from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import crypto from "node:crypto";
 import { apiKeyAuth } from "../middleware/api-key";
-import { authMiddleware } from "../middleware/auth";
+import { optionalAuth } from "../middleware/auth";
 import { getMysqlDb } from "../db";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 const router = Router();
 
-// 双鉴权：API Key 或 JWT
-function dualAuth() {
-  return [apiKeyAuth({ scope: "scanner" }), authMiddleware];
+// v1.6.0: 双鉴权 — API Key 优先，无 Key 时回退 JWT
+// 单独使用 optionalAuth（不验证）配合 apiKeyAuth（主动校验）
+// 逻辑：先尝试 X-Api-Key，有则校验；没有则走 optionalAuth 挂载用户
+async function dualAuth(req: Request, res: Response, next: NextFunction) {
+  const apiKey = req.headers["x-api-key"] as string | undefined;
+  if (apiKey) {
+    // 有 API Key → 走 apiKey 验证
+    const keyMw = apiKeyAuth({ scope: "scanner" });
+    await keyMw(req, res, next);
+  } else {
+    // 无 API Key → 尝试 JWT token
+    await optionalAuth(req, res, next);
+  }
 }
 
 // 生成唯一 ID
@@ -42,7 +52,7 @@ function scannerUploadDir(): string {
 }
 
 // ── POST /api/scanner/sessions ────────────────────────
-router.post("/sessions", dualAuth(), async (req: Request, res: Response) => {
+router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
   try {
     const { cardId, examId, name, dpi, paperSize, pageCount } = req.body ?? {};
     if (!cardId) {
@@ -92,7 +102,7 @@ router.post("/sessions", dualAuth(), async (req: Request, res: Response) => {
 });
 
 // ── POST /api/scanner/sessions/:sessionId/pages ─────────
-router.post("/sessions/:sessionId/pages", dualAuth(), upload.single("image"), async (req: Request, res: Response) => {
+router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
     const token = (req.body?.token ?? req.query?.token) as string;
@@ -139,7 +149,7 @@ router.post("/sessions/:sessionId/pages", dualAuth(), upload.single("image"), as
 });
 
 // ── POST /api/scanner/sessions/:sessionId/complete ──────
-router.post("/sessions/:sessionId/complete", dualAuth(), async (req: Request, res: Response) => {
+router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
     const db = await getMysqlDb();
@@ -178,7 +188,7 @@ router.post("/sessions/:sessionId/complete", dualAuth(), async (req: Request, re
 });
 
 // ── GET /api/scanner/sessions/:sessionId/status ────────
-router.get("/sessions/:sessionId/status", dualAuth(), async (req: Request, res: Response) => {
+router.get("/sessions/:sessionId/status", dualAuth, async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
     const db = await getMysqlDb();

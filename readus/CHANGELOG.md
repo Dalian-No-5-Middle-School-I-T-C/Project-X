@@ -53,10 +53,10 @@ CREATE TABLE api_keys (
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/scanner/sessions` | 创建扫描会话 |
-| `POST` | `/api/scanner/sessions/:id/pages` | 上传扫描页（multipart） |
-| `POST` | `/api/scanner/sessions/:id/complete` | 标记完成 |
-| `GET` | `/api/scanner/sessions/:id/status` | 查询状态 |
+| `POST` | `/api/scanner/upload/sessions` | 创建扫描会话 |
+| `POST` | `/api/scanner/upload/sessions/:id/pages` | 上传扫描页（multipart） |
+| `POST` | `/api/scanner/upload/sessions/:id/complete` | 标记完成 |
+| `GET` | `/api/scanner/upload/sessions/:id/status` | 查询状态 |
 
 双鉴权：`apiKeyAuth`（高优先级）+ `authMiddleware`（低优先级，任一通过即可）
 

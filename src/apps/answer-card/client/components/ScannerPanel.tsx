@@ -193,7 +193,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
     try {
       // Step 1: 创建远程扫描会话
-      const createRes = await authFetch("/api/scanner/sessions", {
+      const createRes = await authFetch("/api/scanner/upload/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -203,7 +203,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         }),
       });
       if (!createRes.ok) throw new Error("创建远程会话失败");
-      const { uploadTokens } = await createRes.json() as { sessionId: string; uploadTokens: string[] };
+      const { sessionId: remoteSessionId, uploadTokens } = await createRes.json() as { sessionId: string; uploadTokens: string[] };
 
       // Step 2: 逐页上传图片
       for (let i = 0; i < pages.length; i++) {
@@ -222,7 +222,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         form.append("pageNum", String(page.pageNum));
         form.append("side", page.side);
 
-        const uploadRes = await authFetch(`/api/scanner/sessions/${sessionId}/pages`, {
+        const uploadRes = await authFetch(`/api/scanner/upload/sessions/${remoteSessionId}/pages`, {
           method: "POST",
           body: form,
         });
@@ -232,7 +232,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       }
 
       // Step 3: 标记完成
-      await authFetch(`/api/scanner/sessions/${sessionId}/complete`, { method: "POST" });
+      await authFetch(`/api/scanner/upload/sessions/${remoteSessionId}/complete`, { method: "POST" });
 
       setUploadState("done");
       setUploadMsg(`上传完成！${pages.length} 页已提交到服务器`);
