@@ -180,25 +180,25 @@ npm install --ignore-scripts
 
 #### 数据库模式
 
-Project-X v1.5.5 支持双数据库模式，通过环境变量或 `config.yml` 切换：
+Project-X v1.5.5 支持双数据库模式，通过环境变量或系统设置界面（管理员 → 账号设置 → 数据存储）切换：
 
-| 模式 | 说明 | 何时使用 |
-|------|------|---------|
-| **SQLite**（默认） | 本地文件 `%APPDATA%\answer-card-designer\data\projectx.db` | 单机桌面端、开发调试 |
-| **MySQL** | 连接池，集中管理 | 多台电脑共享数据、B/S 服务端部署 |
+| 模式 | 后端 | 说明 |
+|------|------|------|
+| **本地 SQLite**（默认） | `data/projectx.db` | 零依赖，单机/离线/开发测试 |
+| **远程 MariaDB** | MariaDB 10.11 LTS 服务端 | 生产环境多用户部署，支持 32 位 |
 
 ```powershell
 # SQLite 模式（默认，无需任何配置）
 npm run dev
 
-# MySQL 模式
-$env:PROJECTX_MYSQL_HOST     = "127.0.0.1"
-$env:PROJECTX_MYSQL_USER     = "projectx"
-$env:PROJECTX_MYSQL_PASSWORD = "projectx"
+# MariaDB 模式
+$env:PROJECTX_MARIADB_HOST     = "127.0.0.1"
+$env:PROJECTX_MARIADB_USER     = "projectx_app"
+$env:PROJECTX_MARIADB_PASSWORD = "your_password"
 npm run dev
 ```
 
-> MySQL 首次启动时自动执行 `schema.mysql.sql` 建表。详见 [`readus/CHANGELOG.md`](./readus/CHANGELOG.md#v152-2026-06-26--数据库双后端架构)。
+> 首次连接 MariaDB 时自动执行 `schema.mariadb.sql` 建表。现有 SQLite 数据可用 `npx tsx scripts/migrate-to-mariadb.ts` 迁移到 MariaDB。
 
 #### 开发模式
 
@@ -344,7 +344,8 @@ Project-X/
 │   │       ├── database/                # 扫描记录 SQLite
 │   │       └── scanner/                 # TWAIN 扫描仪子系统
 │   ├── server/                          # 共享服务模块
-│   │   ├── db/                          # 主数据库（projectx.db）
+│   │   ├── db/                          # 主数据库（projectx.db / MariaDB）
+│   │   ├── mysql.ts                 # DbAdapter 统一接口 + SQLite / MariadbAdapter（v1.5.5）
 │   │   ├── repositories/                # 数据访问层
 │   │   │   ├── CardRepository.ts         # 答题卡 CRUD
 │   │   │   ├── ExamRepository.ts         # 考试 CRUD
@@ -368,6 +369,8 @@ Project-X/
 │   └── ScannerBridge/                   # C++ TWAIN 扫描仪桥接
 ├── scripts/
 │   ├── build-server.ts                  # esbuild 后端打包
+│   ├── migrate-to-mariadb.ts            # SQLite → MariaDB 数据迁移（v1.5.5）
+│   ├── setup-mariadb.sh                 # Ubuntu/Debian 一键建库建表（v1.5.5）
 │   ├── grading-rules-smoke.ts           # 多选/不定项评分规则冒烟验证
 │   └── build-scanner-bridge.bat         # 扫描仪桥接一键编译
 ├── electron/
@@ -394,7 +397,8 @@ Project-X/
 | **后端** | Node.js + Express 5 + multer |
 | **识别引擎** | C++ + OpenCV 4.13 + nlohmann/json（子进程调用） |
 | **扫描仪** | C++ TWAIN API + GDI+（子进程调用） |
-| **数据库** | SQLite via better-sqlite3（WAL + 外键约束） |
+| **数据库** | SQLite via better-sqlite3（本地模式）/ MariaDB 10.11 via mysql2（远程模式，32位兼容） |
+| **跨方言层** | DbAdapter 统一接口 + buildUpsertSQL + buildInsertIgnore |
 | **PDF** | pdfkit（毫米级精确排版） |
 | **桌面** | Electron 39 + electron-builder + WiX Toolset |
 | **构建** | Vite（前端）+ esbuild（后端） |
@@ -467,8 +471,10 @@ Project-X/
 | `POST` | `/api/users/me/background` | 上传自定义背景图 |
 | `GET` | `/api/app/background` | 获取背景图文件（优先用户自定义） |
 | `GET/POST/PUT/DELETE` | `/api/ai/providers` | AI 服务商配置管理 |
-| `GET` | `/api/db/backup` | 导出全量数据 ZIP |
+| `GET` | `/api/db/backup` | 导出全量数据 ZIP（SQLite: VACUUM / MariaDB: mysqldump） |
 | `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |
+| `GET` | `/api/app/health` | 健康检查（含 `db.dialect` + `latencyMs`） |
+| `GET/PATCH` | `/api/app/db-config` | 数据库配置读取/修改（管理员） |
 
 ---
 
