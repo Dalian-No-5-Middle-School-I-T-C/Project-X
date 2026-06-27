@@ -82,7 +82,7 @@ export async function runScanSession(
 
       onProgress({
         sessionId, type: "page_done",
-        pageNum: page.page, side: page.side,
+        recordId: record.id, pageNum: page.page, side: page.side,
         totalPages: filteredPages.length
       });
     }
@@ -180,7 +180,7 @@ export async function runOcrOnSession(
 
       onProgress({
         sessionId, type: "ocr_page_done",
-        pageNum: record.page_num, side: record.side,
+        recordId: record.id, pageNum: record.page_num, side: record.side,
         studentId, studentConf
       });
     } catch (error) {

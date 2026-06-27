@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import bcrypt from "bcryptjs";
 import { mkdirSync, readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runMigrations } from "./migrations";
@@ -116,7 +117,7 @@ export async function ensureDefaultAdmin(): Promise<void> {
 async function ensureDefaultApiKey(db: any): Promise<void> {
   const existing = await db.get("SELECT id FROM api_keys WHERE scope = 'scanner' AND is_active = 1 LIMIT 1");
   if (existing) return;
-  const key = `sk-${require("node:crypto").randomBytes(16).toString("hex")}`;
+  const key = `sk-${randomBytes(16).toString("hex")}`;
   await db.run("INSERT INTO api_keys (name, api_key, scope) VALUES (?, ?, ?)", "默认扫描端密钥", key, "scanner");
   console.log(`[DB] Default scanner API key created: ${key}`);
 }
@@ -124,7 +125,7 @@ async function ensureDefaultApiKey(db: any): Promise<void> {
 function ensureDefaultApiKeySqlite(db: any): Promise<void> {
   const existing = db.prepare("SELECT id FROM api_keys WHERE scope = 'scanner' AND is_active = 1 LIMIT 1").get();
   if (existing) return Promise.resolve();
-  const key = `sk-${require("node:crypto").randomBytes(16).toString("hex")}`;
+  const key = `sk-${randomBytes(16).toString("hex")}`;
   db.prepare("INSERT INTO api_keys (name, api_key, scope) VALUES (?, ?, ?)").run("默认扫描端密钥", key, "scanner");
   console.log(`[DB] Default scanner API key created: ${key}`);
   return Promise.resolve();

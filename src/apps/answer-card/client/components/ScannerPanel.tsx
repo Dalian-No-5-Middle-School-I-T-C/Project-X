@@ -20,6 +20,7 @@ type ScannerState =
   | "error";
 
 interface ScanPage {
+  recordId: string;
   pageNum: number;
   side: string;
   studentId: string | null;
@@ -127,6 +128,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           setPages((prev) => [
             ...prev,
             {
+              recordId: data.recordId ?? "",
               pageNum: data.pageNum || 0,
               side: data.side || "front",
               studentId: null,

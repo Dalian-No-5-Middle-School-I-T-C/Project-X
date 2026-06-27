@@ -230,7 +230,7 @@ function createMariadbPool(): Pool {
   pool.on("connection", () => {
     // 连接建立
   });
-  pool.on("error", (err) => {
+  (pool as any).on("error", (err: Error) => {
     console.error("[MariaDB] Pool error:", err.message);
   });
 
@@ -346,13 +346,16 @@ export async function initMariadbSchema(): Promise<void> {
   const conn = await pool.getConnection();
   try {
     const statements = schema
+      .split("\n")
+      .filter(line => !line.trim().startsWith("--"))
+      .join("\n")
       .split(";")
       .map(s => s.trim())
-      .filter(s => s.length > 0 && !s.startsWith("--") && !s.startsWith("USE ") && !s.startsWith("CREATE DATABASE"));
+      .filter(s => s.length > 0 && !s.startsWith("USE ") && !s.startsWith("CREATE DATABASE"));
     for (const stmt of statements) {
       try { await conn.execute(stmt); }
       catch (err: any) {
-        if (!err.message?.includes("already exists")) throw err;
+        if (err.code !== "ER_DUP_KEYNAME" && !err.message?.includes("already exists")) throw err;
       }
     }
     console.log("[MariaDB] Schema initialized");

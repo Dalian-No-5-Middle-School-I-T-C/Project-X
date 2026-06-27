@@ -129,13 +129,13 @@ export function createScannerRouter(): Router {
 
   router.get("/scan/:sessionId", async (req, res, next) => {
     try {
-      const session = getSession(safeId(req.params.sessionId));
+      const session = await getSession(safeId(req.params.sessionId));
       if (!session) {
         res.status(404).json({ message: "扫描会话不存在" });
         return;
       }
 
-      const records = listScanRecords(session.id);
+      const records = await listScanRecords(session.id);
       res.json({
         session,
         records: records.map((r) => ({
@@ -158,7 +158,7 @@ export function createScannerRouter(): Router {
 
   router.get("/sessions/:cardId", async (req, res, next) => {
     try {
-      const sessions = listSessions(safeId(req.params.cardId));
+      const sessions = await listSessions(safeId(req.params.cardId));
       res.json(sessions);
     } catch (error) {
       next(error);
@@ -170,12 +170,12 @@ export function createScannerRouter(): Router {
   router.delete("/scan/:sessionId", async (req, res, next) => {
     try {
       const id = safeId(req.params.sessionId);
-      const session = getSession(id);
+      const session = await getSession(id);
       if (!session) {
         res.status(404).json({ message: "扫描会话不存在" });
         return;
       }
-      deleteSession(id);
+      await deleteSession(id);
       res.json({ message: "已删除" });
     } catch (error) {
       next(error);
@@ -186,7 +186,7 @@ export function createScannerRouter(): Router {
 
   router.get("/record/:recordId", async (req, res, next) => {
     try {
-      const record = getScanRecordWithResult(safeId(req.params.recordId));
+      const record = await getScanRecordWithResult(safeId(req.params.recordId));
       if (!record) {
         res.status(404).json({ message: "扫描记录不存在" });
         return;
@@ -207,7 +207,7 @@ export function createScannerRouter(): Router {
         res.status(404).json({ message: "扫描记录不存在" });
         return;
       }
-      deleteScanRecord(id);
+      await deleteScanRecord(id);
       res.json({ message: "已删除" });
     } catch (error) {
       next(error);
@@ -339,14 +339,14 @@ export function createScannerRouter(): Router {
   router.get("/session/:sessionId/results", async (req, res, next) => {
     try {
       const sessionId = safeId(req.params.sessionId);
-      const session = getSession(sessionId);
+      const session = await getSession(sessionId);
       if (!session) {
         res.status(404).json({ message: "扫描会话不存在" });
         return;
       }
 
       // Check cached results first
-      const cached = listStudentGradingResults(sessionId);
+      const cached = await listStudentGradingResults(sessionId);
       if (cached.length > 0) {
         res.json(cached.map((r) => ({
           studentId: r.student_id,
@@ -366,7 +366,7 @@ export function createScannerRouter(): Router {
         return;
       }
 
-      const groups = listScanRecordsGroupedByStudent(sessionId);
+      const groups = await listScanRecordsGroupedByStudent(sessionId);
       const results: CombinedStudentResult[] = [];
 
       for (const group of groups) {
@@ -439,7 +439,7 @@ export function createScannerRouter(): Router {
 
   router.get("/scan-image/:recordId", async (req, res, next) => {
     try {
-      const record = getScanRecordWithResult(safeId(req.params.recordId));
+      const record = await getScanRecordWithResult(safeId(req.params.recordId));
       if (!record || !record.image_path) {
         res.status(404).json({ message: "扫描记录不存在" });
         return;

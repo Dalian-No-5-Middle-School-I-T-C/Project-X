@@ -564,7 +564,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/ai/providers", aiProviderRoutes);
 
   // ── 应用配置（管理员） ──────────────────────────────────
-  app.get("/api/app/db-config", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), async (req: Request, res: Response) => {
+  app.get("/api/app/db-config", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), async (req: express.Request, res: express.Response) => {
     try {
       const { readDbConfig } = await import("../../../server/db/config");
       const config = readDbConfig();
@@ -582,7 +582,7 @@ export async function createApp(): Promise<express.Express> {
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
-  app.patch("/api/app/db-config", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), async (req: Request, res: Response) => {
+  app.patch("/api/app/db-config", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), async (req: express.Request, res: express.Response) => {
     try {
       const { mode, remote } = req.body ?? {};
       if (mode !== "local" && mode !== "remote") {
@@ -1779,15 +1779,15 @@ export async function createApp(): Promise<express.Express> {
       const service = new AssignedScoreService();
 
       if (!formula || !formula.enabled) {
-        service.disableFormula(examId);
+        await service.disableFormula(examId);
         res.json({ ok: true, updated: 0 });
         return;
       }
 
-      service.saveFormula(examId, formula);
+      await service.saveFormula(examId, formula);
       let result = { updated: 0, skipped: 0 };
       if (recalculate !== false) {
-        result = service.recalculateAll(examId);
+        result = await service.recalculateAll(examId);
       }
       res.json({ ok: true, ...result });
     } catch (error) {
@@ -1798,7 +1798,7 @@ export async function createApp(): Promise<express.Express> {
   app.post("/api/exams/:examId/recalculate-assigned", requireExamAccess, async (req, res, next) => {
     try {
       const service = new AssignedScoreService();
-      const result = service.recalculateAll(Number(req.params.examId));
+      const result = await service.recalculateAll(Number(req.params.examId));
       res.json({ ok: true, ...result });
     } catch (error) {
       next(error);

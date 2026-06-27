@@ -465,10 +465,10 @@ function App() {
   );
 
   // 扫描 TAB：需要 variant 允许扫描 + grading 权限 + 本地有扫描硬件
-  const canScanner = appVariant.enableScanner && canGrade && hasNativeScanner;
   const canDesign = variantAllows("design") && hasPermission(PERMISSIONS.CARD_READ);
   const canManageExams = variantAllows("exam-manage") && hasPermission(PERMISSIONS.EXAM_WRITE);
   const canGrade = variantAllows("grading") && hasPermission(PERMISSIONS.GRADE_READ);
+  const canScanner = appVariant.enableScanner && canGrade && hasNativeScanner;
   const canAnalyze = variantAllows("analysis") && hasPermission(PERMISSIONS.EXAM_READ);
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
