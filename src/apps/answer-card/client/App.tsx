@@ -265,6 +265,10 @@ function downloadCsv(rows: CombinedGradingRow[], cardId: string) {
   URL.revokeObjectURL(url);
 }
 
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function defaultObjective(start: number): ObjectiveBlock {
   return {
     id: createBlockId("obj"),
@@ -674,7 +678,7 @@ function App() {
   }
 
   async function refreshCards(loadFirst = false) {
-    const list = await fetchJson<CardSummary[]>("/api/cards");
+    const list = asArray<CardSummary>(await fetchJson<CardSummary[]>("/api/cards"));
     setCards(list);
     if (loadFirst && list.length > 0) {
       await loadCard(list[0].id);
@@ -1210,7 +1214,7 @@ function App() {
   async function loadExams() {
     try {
       const data = await fetchJson<ExamRecord[]>("/api/exams");
-      setExams(data);
+      setExams(asArray<ExamRecord>(data));
     } catch {
       setExams([]);
     }
@@ -1219,7 +1223,7 @@ function App() {
   async function loadExamGroups() {
     try {
       const data = await fetchJson<Array<{ id: number; name: string; tag: string | null; grade_name: string | null; member_count: number; has_results: number; created_at: string }>>("/api/exam-groups");
-      setExamGroups(data);
+      setExamGroups(asArray<{ id: number; name: string; tag: string | null; grade_name: string | null; member_count: number; has_results: number; created_at: string }>(data));
     } catch {
       setExamGroups([]);
     }

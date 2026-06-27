@@ -1315,7 +1315,7 @@ export async function createApp(): Promise<express.Express> {
         res.json([]);
         return;
       }
-      const exams = examRepo.listExams({
+      const exams = await examRepo.listExams({
         grade_id: grade_id ? Number(grade_id) : undefined,
         subject: subject || undefined,
         ...scopeFilter

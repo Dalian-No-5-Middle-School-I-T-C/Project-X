@@ -39,13 +39,12 @@ export function closeDatabase(): void {
 
 export function initializeDatabase(): void {
   const db = getDatabase();
-  const hasTables = db.prepare("SELECT COUNT(*) as cnt FROM sqlite_master WHERE type = 'table'").get() as { cnt: number };
+  const schema = readFileSync(schemaPath(), "utf8");
 
-  if (hasTables.cnt === 0) {
-    const schema = readFileSync(schemaPath(), "utf8");
-    db.exec(schema);
-    console.log("[DB] Schema created successfully");
-  }
+  // Always run the idempotent base schema so partially initialized deployments
+  // recover missing core tables before cleanup jobs and migrations touch them.
+  db.exec(schema);
+  console.log("[DB] Schema checked successfully");
 
   runMigrations(db);
   seedDefaultData(db);
