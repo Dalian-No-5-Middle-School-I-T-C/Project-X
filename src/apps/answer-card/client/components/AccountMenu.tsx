@@ -18,6 +18,8 @@ export function AccountMenu({
   setDarkModeEnabled: (enabled: boolean) => void;
 }) {
   const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona } = useAuth();
+  // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
+  const isElectron = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
   const menuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -362,7 +364,7 @@ export function AccountMenu({
                   <Eye size={12} style={{ verticalAlign: -1, marginRight: 4 }} />
                   查看身份
                 </div>
-                {availablePersonas.map((p) => {
+                {availablePersonas.filter(p => isElectron || p !== "teacher-scanner").map((p) => {
                   const labels: Record<string, string> = { "teacher-scanner": "扫描端（全功能）", "teacher": "教师端", "student": "学生端（预览）" };
                   return (
                     <label key={p} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", cursor: "pointer", fontSize: 13 }}>
@@ -485,7 +487,7 @@ export function AccountMenu({
                 <button className={`account-settings-nav-item ${settingsTab === "ai" ? "active" : ""}`} onClick={() => setSettingsTab("ai")}>
                   <BrainCircuit size={15} /> AI 设置
                 </button>
-                {isAdmin && (
+                {isAdmin && isElectron && (
                   <button className={`account-settings-nav-item ${settingsTab === "db" ? "active" : ""}`} onClick={() => setSettingsTab("db")}>
                     <Database size={15} /> 数据存储
                   </button>
