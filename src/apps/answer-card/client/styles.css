@@ -5002,3 +5002,386 @@ body.has-bg-image::after {
   max-height: 100% !important;
   max-width: 100% !important;
 }
+
+/* ══════════════════════════════════════════════════════
+   成绩天梯系统
+   ══════════════════════════════════════════════════════ */
+
+/* ── 容器 ── */
+.ladder-container {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 2px;
+}
+
+/* ── 范围选择器 ── */
+.ladder-scope-selector {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--background-deep);
+  border-radius: 10px;
+}
+
+.ladder-scope-btn {
+  flex: 1;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ladder-scope-btn:hover {
+  color: var(--text);
+  background: var(--surface-soft);
+}
+
+.ladder-scope-btn.active {
+  background: var(--surface);
+  color: var(--brand);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── 次级选择器 ── */
+.ladder-sub-selector {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ladder-select {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.ladder-select:focus {
+  border-color: var(--brand);
+}
+
+/* ── 统计栏 ── */
+.ladder-stats {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  background: var(--surface);
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+
+.ladder-stat-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.ladder-stat-value {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.ladder-stat-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── 阶梯榜单 ── */
+.ladder-leaderboard {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* ── 单行 ── */
+.ladder-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px 10px 52px;
+  margin-bottom: 2px;
+  background: var(--surface);
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  transition: background 0.2s;
+}
+
+.ladder-row:hover {
+  background: var(--surface-raised);
+}
+
+/* 前三名特殊背景 */
+.ladder-row.ladder-row-top-1 {
+  background: linear-gradient(135deg, rgba(255, 215, 0, 0.08), rgba(255, 165, 0, 0.04));
+  border-color: rgba(255, 215, 0, 0.3);
+}
+.ladder-row.ladder-row-top-2 {
+  background: linear-gradient(135deg, rgba(192, 192, 192, 0.08), rgba(169, 169, 169, 0.04));
+  border-color: rgba(192, 192, 192, 0.3);
+}
+.ladder-row.ladder-row-top-3 {
+  background: linear-gradient(135deg, rgba(205, 133, 63, 0.08), rgba(184, 115, 51, 0.04));
+  border-color: rgba(205, 133, 63, 0.3);
+}
+
+/* ── 左侧阶梯连接线 ── */
+.ladder-connector {
+  position: absolute;
+  left: 24px;
+  top: 50%;
+  bottom: -50%;
+  width: 2px;
+  background: var(--line-strong);
+  pointer-events: none;
+}
+
+.ladder-row:last-child .ladder-connector {
+  display: none;
+}
+
+.ladder-row.ladder-row-top-1 .ladder-connector {
+  background: linear-gradient(to bottom, #FFD700, #FFA500);
+}
+.ladder-row.ladder-row-top-2 .ladder-connector {
+  background: linear-gradient(to bottom, #C0C0C0, #A0A0A0);
+}
+.ladder-row.ladder-row-top-3 .ladder-connector {
+  background: linear-gradient(to bottom, #CD853F, #A0522D);
+}
+
+/* ── 排名徽章 ── */
+.ladder-rank-badge {
+  position: absolute;
+  left: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--line-strong);
+  background: var(--surface);
+  z-index: 1;
+}
+
+.ladder-rank-num {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.ladder-row-top-1 .ladder-rank-badge,
+.ladder-row-top-2 .ladder-rank-badge,
+.ladder-row-top-3 .ladder-rank-badge {
+  border: none;
+}
+
+/* ── 主体信息 ── */
+.ladder-row-body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ladder-row-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.ladder-student-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ladder-student-class {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ladder-row-right {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.ladder-score {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.ladder-score-unit {
+  font-size: 11px;
+  color: var(--muted);
+  margin-right: 8px;
+}
+
+.ladder-row-extra {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+}
+
+/* ── 趋势指示 ── */
+.ladder-trend {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ladder-trend-up {
+  color: var(--success);
+}
+
+.ladder-trend-down {
+  color: var(--danger);
+}
+
+.ladder-trend-same {
+  color: var(--muted);
+}
+
+.ladder-trend-new {
+  color: var(--brand);
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--brand-soft);
+}
+
+/* ── 班级排名 ── */
+.ladder-class-rank {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+/* ── 进度条 ── */
+.ladder-progress {
+  margin-top: 6px;
+  height: 3px;
+  background: var(--background-deep);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.ladder-progress-fill {
+  height: 100%;
+  background: var(--brand);
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+
+.ladder-progress-fill.ladder-progress-top-1 {
+  background: linear-gradient(90deg, #FFD700, #FFA500);
+}
+.ladder-progress-fill.ladder-progress-top-2 {
+  background: linear-gradient(90deg, #C0C0C0, #A0A0A0);
+}
+.ladder-progress-fill.ladder-progress-top-3 {
+  background: linear-gradient(90deg, #CD853F, #A0522D);
+}
+
+/* ── 科目小标签 ── */
+.ladder-subjects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.ladder-subject-chip {
+  font-size: 10px;
+  padding: 2px 6px;
+  background: var(--brand-soft);
+  color: var(--brand);
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+/* ── 暗色主题适配 ── */
+[data-theme="dark"] .ladder-row.ladder-row-top-1 {
+  background: linear-gradient(135deg, rgba(255, 215, 0, 0.12), rgba(255, 165, 0, 0.06));
+}
+[data-theme="dark"] .ladder-row.ladder-row-top-2 {
+  background: linear-gradient(135deg, rgba(192, 192, 192, 0.12), rgba(169, 169, 169, 0.06));
+}
+[data-theme="dark"] .ladder-row.ladder-row-top-3 {
+  background: linear-gradient(135deg, rgba(205, 133, 63, 0.12), rgba(184, 115, 51, 0.06));
+}
+
+/* ── 管理员开关栏 ── */
+.ladder-admin-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--brand-soft);
+  border: 1px solid var(--brand);
+  border-radius: 8px;
+}
+
+.ladder-admin-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--brand);
+}
+
+.ladder-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--brand);
+  border-radius: 6px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.ladder-toggle-btn:hover {
+  opacity: 0.85;
+}
+
+.ladder-toggle-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ladder-toggle-btn.ladder-toggle-off {
+  background: var(--surface);
+  color: var(--brand);
+}
