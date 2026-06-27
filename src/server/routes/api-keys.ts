@@ -99,7 +99,7 @@ router.put("/:id", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), a
     const db = await getMysqlDb();
     const result = await db.run(
       "UPDATE api_keys SET is_active = ? WHERE id = ?",
-      [is_active ? 1 : 0, id]
+      is_active ? 1 : 0, id
     );
 
     if (!(result as any)?.changes) {

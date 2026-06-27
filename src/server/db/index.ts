@@ -44,10 +44,10 @@ export function initializeDatabase(): void {
   const dialect = detectDialect();
 
   if (dialect === "mariadb") {
-    // MariaDB 模式：schema 在 getMysqlDb() → MariadbAdapter 构造时通过 initMariadbSchema 初始化
-    // seed 数据由 schema.mariadb.sql 中的 INSERT IGNORE 处理
-    // 确保默认管理员
+    // v1.6.0: MariaDB 增量迁移机制 — 检测并执行缺失的 schema_migrations
     console.log("[DB] MariaDB mode: schema seeded via schema.mariadb.sql");
+    // initMariadbSchema() 在 getMysqlDb() 首次调用时自动执行
+    // ensureDefaultAdmin() 在外部调用，自动生成 API Key
     return;
   }
 
@@ -137,6 +137,8 @@ export { resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath } 
 // ── 跨方言 DB 适配器 ──────────────────────────────────
 export {
   getMysqlDb,
+  getMariadbConfig,
+  runMariadbMigrations,
   initMariadbSchema,
   initMariadbSchema as initMysqlSchema,
   detectDialect,

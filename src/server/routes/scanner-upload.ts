@@ -24,12 +24,14 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 const router = Router();
 
 // v1.6.0: 双鉴权 — API Key 优先，无 Key 时强制 JWT
+// 逻辑：先 X-Api-Key，有则校验；没有则 authMiddleware 校验 JWT（无 token → 401）
 async function dualAuth(req: Request, res: Response, next: NextFunction) {
   const apiKey = req.headers["x-api-key"] as string | undefined;
   if (apiKey) {
     const keyMw = apiKeyAuth({ scope: "scanner" });
     await keyMw(req, res, next);
   } else {
+    // 无 API Key → 强制 JWT 认证（无 token 直接 401）
     await authMiddleware(req, res, next);
   }
 }
@@ -50,7 +52,7 @@ function scannerUploadDir(): string {
 // ── POST /api/scanner/sessions ────────────────────────
 router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
   try {
-    const { cardId, examId, name, dpi, paperSize, pageCount } = req.body ?? {};
+    const { cardId, name, dpi, paperSize, pageCount } = req.body ?? {};
     if (!cardId) {
       res.status(400).json({ message: "cardId 必填" });
       return;
@@ -66,8 +68,8 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
       String(cardId),
       name || `扫描_${new Date().toISOString().slice(0, 10)}`,
       dpi || 300,
-      1,
-      "gray",
+      1,            // duplex
+      "gray",       // color_mode
       paperSize || "A4",
       pageCount || 0,
     );
@@ -81,7 +83,7 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
       await db.run(
         `INSERT INTO twain_scan_records (id, session_id, card_id, image_path, page_num, side, ocr_status)
          VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
-        [token, sessionId, String(cardId), `pending:${token}`, i + 1, i === 0 ? "front" : "back"]
+        token, sessionId, String(cardId), `pending:${token}`, i + 1, i === 0 ? "front" : "back"
       );
     }
 
@@ -132,7 +134,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
       await db.run(
         `UPDATE twain_scan_records SET image_path = ?, page_num = ?, side = ?, ocr_status = 'uploaded'
          WHERE id = ? AND session_id = ?`,
-        [filePath, pageNum, side, token, sessionId]
+        filePath, pageNum, side, token, sessionId
       );
     }
 
@@ -168,29 +170,29 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
 
     const uploadedCount = Number(uploaded?.cnt ?? 0);
     const totalCount = Number(total?.cnt ?? 0);
-    if (uploadedCount < totalCount) {
-      await db.run(
-        "UPDATE twain_scan_sessions SET status = 'incomplete', page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        uploadedCount,
-        sessionId
-      );
+
+    // v1.6.0: 检查完整性 — 未全部上传完成时阻止标记 completed
+    const complete = uploadedCount >= totalCount && totalCount > 0;
+    const status = complete ? "completed" : "incomplete";
+
+    await db.run(
+      "UPDATE twain_scan_sessions SET status = ?, page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      status, uploadedCount, sessionId
+    );
+
+    if (!complete) {
       res.status(400).json({
-        message: `扫描未完成：仅 ${uploadedCount}/${totalCount} 页已上传`,
+        ok: false,
+        message: `上传未完成：${uploadedCount}/${totalCount} 页已上传，请补传缺失页面后再提交`,
         pagesUploaded: uploadedCount,
         pagesTotal: totalCount,
       });
       return;
     }
 
-    await db.run(
-      "UPDATE twain_scan_sessions SET status = 'completed', page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      uploadedCount,
-      sessionId
-    );
-
     res.json({
       ok: true,
-      message: `扫描完成：${uploadedCount}/${totalCount} 页已上传，等待服务端识别`,
+      message: `扫描完成：${uploadedCount}/${totalCount} 页全部上传，等待服务端识别`,
       pagesUploaded: uploadedCount,
       pagesTotal: totalCount,
     });
@@ -207,7 +209,7 @@ router.get("/sessions/:sessionId/status", dualAuth, async (req: Request, res: Re
 
     const session = await db.get<any>(
       `SELECT id, card_id, name, status, page_count, created_at, updated_at FROM twain_scan_sessions WHERE id = ?`,
-      [sessionId]
+      sessionId
     );
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
@@ -216,7 +218,7 @@ router.get("/sessions/:sessionId/status", dualAuth, async (req: Request, res: Re
 
     const records = await db.all<any>(
       `SELECT id, page_num, side, ocr_status, scan_quality FROM twain_scan_records WHERE session_id = ? ORDER BY page_num`,
-      [sessionId]
+      sessionId
     );
 
     res.json({

@@ -168,6 +168,7 @@ async function main(): Promise<void> {
   const adminSummary = (await userRepo.countByRole()).find((r: any) => r.role_name === "admin");
   ok(adminSummary?.count === 1, "当前仅 1 名管理员（路由层将阻止其降级/禁用）");
 
+  // 禁用与启用
   await userRepo.deactivateUser(teacher.id);
   ok(!(await userRepo.findByUsername("t1001")), "禁用后普通查询不可见");
   ok((await userRepo.findByIdIncludingInactive(teacher.id))?.is_active === 0, "管理员仍可见禁用账号");

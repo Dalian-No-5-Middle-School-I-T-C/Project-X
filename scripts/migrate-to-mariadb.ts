@@ -95,6 +95,7 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string }> = [
   // 配置
   { table: "export_templates", primaryKey: "id" },
   { table: "ai_providers", primaryKey: "id" },
+  { table: "api_keys", primaryKey: "id" },     // v1.6.0
 ];
 
 // ── 主流程 ─────────────────────────────────────────
