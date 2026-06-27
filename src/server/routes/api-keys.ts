@@ -68,7 +68,7 @@ router.post("/", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), asy
 
     await db.run(
       "INSERT INTO api_keys (name, api_key, scope, created_by) VALUES (?, ?, ?, ?)",
-      [name.trim(), apiKey, scope || "scanner", (req as any).user?.id ?? null]
+      name.trim(), apiKey, scope || "scanner", (req as any).user?.id ?? null
     );
 
     // 通过 api_key 反查 id（兼容 SQLite 和 MariaDB）
@@ -100,7 +100,7 @@ router.put("/:id", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), a
     const db = await getMysqlDb();
     const result = await db.run(
       "UPDATE api_keys SET is_active = ? WHERE id = ?",
-      [is_active ? 1 : 0, id]
+      is_active ? 1 : 0, id
     );
 
     if (!(result as any)?.changes) {
@@ -120,7 +120,7 @@ router.delete("/:id", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE)
     const id = Number(req.params.id);
     const db = await getMysqlDb();
 
-    const result = await db.run("DELETE FROM api_keys WHERE id = ?", [id]);
+    const result = await db.run("DELETE FROM api_keys WHERE id = ?", id);
 
     if (!(result as any)?.changes) {
       res.status(404).json({ message: "Key 不存在" });

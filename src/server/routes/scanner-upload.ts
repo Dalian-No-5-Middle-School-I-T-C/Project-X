@@ -66,16 +66,14 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
     await db.run(
       `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, status)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
-      [
-        sessionId,
-        String(cardId),
-        name || `扫描_${new Date().toISOString().slice(0, 10)}`,
-        dpi || 300,
-        1,            // duplex
-        "gray",       // color_mode
-        paperSize || "A4",
-        pageCount || 0,
-      ]
+      sessionId,
+      String(cardId),
+      name || `扫描_${new Date().toISOString().slice(0, 10)}`,
+      dpi || 300,
+      1,            // duplex
+      "gray",       // color_mode
+      paperSize || "A4",
+      pageCount || 0,
     );
 
     // 给每页生成上传 token（简单防篡改）
@@ -87,7 +85,7 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
       await db.run(
         `INSERT INTO twain_scan_records (id, session_id, card_id, image_path, page_num, side, ocr_status)
          VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
-        [token, sessionId, String(cardId), `pending:${token}`, i + 1, i === 0 ? "front" : "back"]
+        token, sessionId, String(cardId), `pending:${token}`, i + 1, i === 0 ? "front" : "back"
       );
     }
 
@@ -121,7 +119,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
     const db = await getMysqlDb();
 
     // 验证 session
-    const session = await db.get("SELECT id FROM twain_scan_sessions WHERE id = ?", [sessionId]);
+    const session = await db.get("SELECT id FROM twain_scan_sessions WHERE id = ?", sessionId);
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
       return;
@@ -138,7 +136,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
       await db.run(
         `UPDATE twain_scan_records SET image_path = ?, page_num = ?, side = ?, ocr_status = 'uploaded'
          WHERE id = ? AND session_id = ?`,
-        [filePath, pageNum, side, token, sessionId]
+        filePath, pageNum, side, token, sessionId
       );
     }
 
@@ -154,7 +152,7 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     const { sessionId } = req.params;
     const db = await getMysqlDb();
 
-    const session = await db.get("SELECT id, page_count FROM twain_scan_sessions WHERE id = ?", [sessionId]);
+    const session = await db.get("SELECT id, page_count FROM twain_scan_sessions WHERE id = ?", sessionId);
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
       return;
@@ -163,17 +161,17 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     // 统计上传进度
     const uploaded = await db.get<{ cnt: number }>(
       "SELECT COUNT(*) as cnt FROM twain_scan_records WHERE session_id = ? AND ocr_status = 'uploaded'",
-      [sessionId]
+      sessionId
     );
     const total = await db.get<{ cnt: number }>(
       "SELECT COUNT(*) as cnt FROM twain_scan_records WHERE session_id = ?",
-      [sessionId]
+      sessionId
     );
 
     // 标记会话完成
     await db.run(
       "UPDATE twain_scan_sessions SET status = 'completed', page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      [uploaded?.cnt ?? 0, sessionId]
+      uploaded?.cnt ?? 0, sessionId
     );
 
     res.json({

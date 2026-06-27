@@ -253,7 +253,7 @@ async function persistGradingResults(
   const db = getMysqlDb();
 
   const examId = Number(examIdParam);
-  const exam = await await examRepo.findExamById(examId);
+  const exam = await examRepo.findExamById(examId);
   if (!exam) return;
 
   await examRepo.updateStatus(examId, "grading");

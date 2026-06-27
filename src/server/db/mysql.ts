@@ -4,41 +4,27 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDatabase } from "./index";
+import { readDbConfig } from "./config";
 
 // ── 模式检测 ───────────────────────────────────────────
 // 优先级：环境变量 > config.yml > 默认 SQLite
 
+// v1.6.0: 统一使用 config.ts 解析 config.yml（消除正则/缩进两套解析不一致）
 function readConfigDbMode(): { mode: string; remote?: any } | null {
-  const configPath = path.join(process.cwd(), "config.yml");
-  if (!existsSync(configPath)) return null;
-  try {
-    const raw = readFileSync(configPath, "utf8");
-    // 简单解析：找 database: 段下的字段
-    const modeMatch = raw.match(/^\s*mode:\s*(.+)$/m);
-    const mode = modeMatch ? modeMatch[1].trim() : "local";
-    if (mode !== "remote") return { mode };
-
-    const hostMatch = raw.match(/^\s*host:\s*"?(.+?)"?\s*$/m);
-    if (!hostMatch || !hostMatch[1].trim()) return { mode };
-
-    const portMatch = raw.match(/^\s*port:\s*(\d+)\s*$/m);
-    const dbMatch = raw.match(/^\s*database:\s*"?(.+?)"?\s*$/m);
-    const userMatch = raw.match(/^\s*user:\s*"?(.+?)"?\s*$/m);
-    const passMatch = raw.match(/^\s*password:\s*"?(.*?)"?\s*$/m);
-
+  const cfg = readDbConfig();
+  if (cfg.mode === "remote" && cfg.remote?.host) {
     return {
       mode: "remote",
       remote: {
-        host: hostMatch[1].trim(),
-        port: portMatch ? parseInt(portMatch[1], 10) : 3306,
-        database: dbMatch ? dbMatch[1].trim() : "projectx",
-        user: userMatch ? userMatch[1].trim() : "projectx_app",
-        password: passMatch ? passMatch[1].trim() : "",
+        host: cfg.remote.host,
+        port: cfg.remote.port ?? 443,
+        database: cfg.remote.database ?? "projectx",
+        user: cfg.remote.user ?? "projectx_app",
+        password: cfg.remote.password ?? "",
       }
     };
-  } catch {
-    return null;
   }
+  return { mode: cfg.mode || "local" };
 }
 
 let _detectedDialect: "sqlite" | "mariadb" | null = null;
@@ -359,6 +345,8 @@ export async function initMariadbSchema(): Promise<void> {
       }
     }
     console.log("[MariaDB] Schema initialized");
+    // v1.6.0: 跑增量迁移（处理 v1.7+ 新增的列/表）
+    await runMariadbMigrations(conn);
   } finally {
     conn.release();
   }
@@ -366,3 +354,59 @@ export async function initMariadbSchema(): Promise<void> {
 
 // 保持旧名称兼容
 export { initMariadbSchema as initMysqlSchema };
+
+/**
+ * v1.6.0 — MariaDB 增量迁移
+ * 对比 schema_migrations 表与 MIGRATION_VERSIONS，执行缺失的 ALTER TABLE
+ * 确保生产库不会因新增列/表而需要整库重建
+ */
+export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Pool): Promise<void> {
+  // 确保 schema_migrations 表存在
+  await conn.execute(`CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    INT PRIMARY KEY,
+    name       VARCHAR(100) NOT NULL,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  const [rows] = await conn.execute("SELECT version FROM schema_migrations") as [RowDataPacket[], any];
+  const applied = new Set(rows.map((r: any) => r.version));
+
+  // 迁移定义：version → { name, sql }
+  // 只包含 ALTER TABLE 和 CREATE TABLE（不含完整 schema）
+  // 新增迁移在此追加
+  const mariadbMigrations: Array<{ version: number; name: string; sqls: string[] }> = [
+    {
+      version: 11,
+      name: "api-keys",
+      sqls: [
+        `CREATE TABLE IF NOT EXISTS api_keys (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(100) NOT NULL,
+          api_key VARCHAR(64) NOT NULL UNIQUE,
+          scope VARCHAR(20) NOT NULL DEFAULT 'scanner',
+          is_active TINYINT DEFAULT 1,
+          created_by INT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      ]
+    },
+    // v1.7+ 在此追加新版本...
+  ];
+
+  for (const m of mariadbMigrations) {
+    if (applied.has(m.version)) continue;
+    for (const sql of m.sqls) {
+      try { await conn.execute(sql); }
+      catch (err: any) {
+        // 忽略已存在的列/表
+        if (err.code === "ER_DUP_FIELDNAME" || err.code === "ER_DUP_KEYNAME"
+          || err.message?.includes("already exists")) continue;
+        throw err;
+      }
+    }
+    await conn.execute("INSERT INTO schema_migrations (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)", [m.version, m.name]);
+    console.log(`[MariaDB] Migration ${m.version}: ${m.name}`);
+  }
+}
+export { getMariadbConfig };

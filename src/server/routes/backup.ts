@@ -11,7 +11,7 @@ import crypto from "node:crypto";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { closeDatabase, getDatabase, getMysqlDb, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect } from "../db";
+import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -284,12 +284,13 @@ async function backupMariadb(res: Response): Promise<void> {
       return;
     }
 
-    // 读取 MariaDB 配置（优先环境变量，其次 config.yml）
-    const host = process.env.PROJECTX_MARIADB_HOST || "127.0.0.1";
-    const port = process.env.PROJECTX_MARIADB_PORT || "3306";
-    const user = process.env.PROJECTX_MARIADB_USER || "projectx";
-    const password = process.env.PROJECTX_MARIADB_PASSWORD || "";
-    const database = process.env.PROJECTX_MARIADB_DATABASE || "projectx";
+    // v1.6.0: 统一使用 getMariadbConfig() 读取配置（环境变量 > config.yml）
+    const cfg = getMariadbConfig();
+    const host = cfg?.host || "127.0.0.1";
+    const port = String(cfg?.port || 443);
+    const user = cfg?.user || "projectx_app";
+    const password = cfg?.password || "";
+    const database = cfg?.database || "projectx";
 
     // 构建 mysqldump 命令
     const dumpFile = path.join(tmpDir, "dump.sql");
@@ -379,11 +380,12 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
     }
 
     // 读取配置
-    const host = process.env.PROJECTX_MARIADB_HOST || "127.0.0.1";
-    const port = process.env.PROJECTX_MARIADB_PORT || "3306";
-    const user = process.env.PROJECTX_MARIADB_USER || "projectx";
-    const password = process.env.PROJECTX_MARIADB_PASSWORD || "";
-    const database = process.env.PROJECTX_MARIADB_DATABASE || "projectx";
+    const cfg = getMariadbConfig();
+    const host = cfg?.host || "127.0.0.1";
+    const port = String(cfg?.port || 443);
+    const user = cfg?.user || "projectx_app";
+    const password = cfg?.password || "";
+    const database = cfg?.database || "projectx";
 
     const args = [`--host=${host}`, `--port=${port}`, `--user=${user}`, `--database=${database}`];
     if (password) args.push(`--password=${password}`);
