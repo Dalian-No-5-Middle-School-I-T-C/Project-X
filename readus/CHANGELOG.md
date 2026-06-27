@@ -1,6 +1,6 @@
 # Project-X CHANGELOG
 
-## v1.6.0 (2026-06-27) — Phase 1: 数据访问层统一 + MariaDB 双模就绪
+## v1.5.5 (2026-06-27) — MariaDB 双模 + 服务器部署就绪
 
 ### 从 MySQL 到 MariaDB 10.11 LTS
 
@@ -45,7 +45,7 @@
 | `AuthService.ts` | 2 处 → async |
 | `permissions.ts` | `initPermissionCache()` 异步预加载，启动时调用 |
 | `cleanup.ts` | 全异步，`setInterval` 内 `.catch()` |
-| `backup.ts` | MariaDB 模式暂返回 501（Phase 2 通过 mysqldump 实现） |
+| `backup.ts | MariaDB 分支通过 mysqldump 备份恢复
 | `server/index.ts` | ~15 处 + `initMariadbSchema()` + 启动序列重排 |
 
 ### Scanner DB 合并到主库
@@ -75,6 +75,17 @@
 - `DATABASE.md` 重写：双模架构说明、本地/远程对比表、MariaDB 安装配置
 - `ARCHITECTURE.md`：更新技术栈描述
 - `config.yml`：数据库配置模板（mode/remote/...）
+
+### Phase 2: 服务器部署工具链
+
+- **`scripts/migrate-to-mariadb.ts`** — SQLite → MariaDB 全量数据迁移
+- **`scripts/setup-mariadb.sh`** — Ubuntu/Debian 一键建库建表
+- **备份/恢复** — backup.ts MariaDB 分支通过 mysqldump 实现
+- **P0 修复** — initMariadbSchema 空指针、ON DUPLICATE KEY 残留、health 端点增强
+
+### 版本号更新
+
+- `package.json` → 1.6.0, README badges, DATABASE.md 新增部署迁移章节
 
 ### 架构决策
 

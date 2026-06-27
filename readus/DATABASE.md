@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.6.0
+> **版本**: v1.5.5
 > **技术栈**: SQLite (本地) / MariaDB 10.11 LTS (远程) + better-sqlite3 + mysql2 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力，支持本地单机部署和远程服务器部署
 
@@ -490,6 +490,42 @@ exam_archives 表：记录归档信息（路径、大小、归档时间）
 
 ---
 
+## 数据库迁移 (SQLite → MariaDB)
+
+### 一键建库
+
+```bash
+sudo bash scripts/setup-mariadb.sh
+```
+
+自动完成：安装 MariaDB 服务端 → 创建 projectx 数据库 → 运行建表 SQL → 创建应用账户并授权 → 输出环境变量配置。
+
+### 迁移现有数据
+
+```bash
+# 预览模式（仅检查，不写入）
+npx tsx scripts/migrate-to-mariadb.ts --dry-run
+
+# 正式迁移
+npx tsx scripts/migrate-to-mariadb.ts
+```
+
+按外键拓扑排序逐表迁移，每表写入后验证行数一致性。
+
+### 备份与恢复（MariaDB 模式）
+
+管理员登录后在「账号菜单 → 导出数据」：
+- 导出：通过 mysqldump 导出完整 SQL → ZIP 下载
+- 导入：上传 ZIP 文件自动恢复
+
+需要服务器上安装 `mariadb-client`：
+
+```bash
+sudo apt install -y mariadb-client
+```
+
+---
+
 ## 常见问题
 
 ### Q: 数据库文件放在哪里？
@@ -589,7 +625,7 @@ src/types/
 
 ## 更新日志
 
-- **v1.6.0** (06-27) — MariaDB 10.11 LTS 双模就绪：`DbAdapter` 重写 + `schema.mariadb.sql` + Scanner DB 合并 + 50+ 处 async 迁移 + `config.yml` 用户设置界面 + 服务器打包增强
+- **v1.5.5** (06-27) — MariaDB 10.11 LTS 双模就绪：DbAdapter 重写 + schema.mariadb.sql + 迁移工具 + 一键建库 + 备份恢复 + 用户设置界面
 - **v1.5.0** (06-24) — 大考组功能：`exam_groups` + `exam_group_members` 表
 - **v1.2.1** (06-17) — 数据库全量备份/恢复（ZIP 导出导入），强制考试时间，UI 响应式三级断点，导入模板升级 .xlsx
 - **v1.2.0** (06-17) — AI 成绩分析，Electron 探活增强
