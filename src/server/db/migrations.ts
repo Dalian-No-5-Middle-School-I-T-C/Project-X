@@ -302,8 +302,6 @@ const MIGRATIONS: Migration[] = [
   },
   {
     // 性能优化：为成绩分析高频查询补充复合索引。
-    // student_scores / question_scores 在排名、统计、概览等接口中
-    // 按 exam_id 过滤并按 total_score / score 排序，复合索引可避免全表扫描。
     // CREATE INDEX IF NOT EXISTS 保证幂等，旧库重跑安全。
     version: 9,
     name: "analysis-performance-indexes",
@@ -320,6 +318,21 @@ const MIGRATIONS: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_exams_grade_class
           ON exams(grade_id, class_id);
       `);
+    }
+  },
+  {
+    version: 10,
+    name: "system-settings",
+    up(db) {
+      if (hasTable(db, "system_settings")) return;
+      db.exec(`
+        CREATE TABLE system_settings (
+          key   TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+      `);
+      db.prepare("INSERT INTO system_settings (key, value) VALUES (?, ?)")
+        .run("ladder_enabled", "1");
     }
   }
 ];
