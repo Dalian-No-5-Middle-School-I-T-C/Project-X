@@ -32,13 +32,33 @@ const TOKEN_EXPIRE_MS = 8 * 60 * 60 * 1000; // 8小时
 const PERSISTENT_TOKEN_EXPIRE_MS = 180 * 24 * 60 * 60 * 1000; // 6个月
 
 export class AuthService {
-  private userRepo: UserRepository;
+  private userRepo?: UserRepository;
   private tokenStore = new Map<string, TokenRecord>();
   private saveScheduled = false;
+  private initialized = false;
 
   constructor() {
+    // 轻量构造——不要在这里做 IO/DB 操作
+  }
+
+  /**
+   * 显式初始化：在保证环境（DB 文件 / env）就绪后调用。
+   * 可多次调用（幂等）。
+   */
+  async init(): Promise<void> {
+    if (this.initialized) return;
+    // 创建依赖（UserRepository 会间接触发 DB 适配器）
     this.userRepo = new UserRepository();
+    // 从磁盘加载持久化 tokens（保持原有同步行为）
     this.loadTokens();
+    this.initialized = true;
+  }
+
+  /** 确保已初始化（否则给出友好错误） */
+  private ensureInitialized(): void {
+    if (!this.initialized || !this.userRepo) {
+      throw new Error("AuthService 未初始化：请在使用前调用 authService.init()");
+    }
   }
 
   /** 从磁盘加载持久化 tokens */
@@ -89,12 +109,13 @@ export class AuthService {
    * 支持用户名（学号/职工号）或邮箱登录
    */
   async login(identifier: string, password: string, isPersistent = false): Promise<LoginResult> {
+    this.ensureInitialized();
     // 查找用户（支持 username 或 student_number 或 email）
-    let user = await this.userRepo.findByUsername(identifier);
+    let user = await this.userRepo!.findByUsername(identifier);
 
     if (!user && /^\d+$/.test(identifier)) {
       // 纯数字，尝试学号
-      user = await this.userRepo.findByStudentNumber(identifier);
+      user = await this.userRepo!.findByStudentNumber(identifier);
     }
 
     if (!user) {
@@ -117,7 +138,7 @@ export class AuthService {
     }
 
     // 更新最后登录时间
-    await this.userRepo.updateLastLogin(user.id);
+    await this.userRepo!.updateLastLogin(user.id);
 
     // 生成 token
     const token = randomBytes(32).toString("hex");
@@ -203,10 +224,11 @@ export class AuthService {
    * 根据 token 获取用户
    */
   async getUserByToken(token: string): Promise<Omit<UserRecord, "password_hash"> | null> {
+    this.ensureInitialized();
     const record = this.verifyToken(token);
     if (!record) return null;
 
-    const user = await this.userRepo.findById(record.userId);
+    const user = await this.userRepo!.findById(record.userId);
     if (!user) return null;
 
     const { password_hash, ...safeUser } = user;

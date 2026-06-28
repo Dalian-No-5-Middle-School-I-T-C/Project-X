@@ -77,7 +77,7 @@ async function main(): Promise<void> {
   const { initializeDatabase, ensureDefaultAdmin, getDatabase, closeDatabase } = await import(
     "../src/server/db/index"
   );
-  const { AuthService } = await import("../src/server/services/AuthService");
+  const { authService } = await import("../src/server/services/AuthService");
   const { UserRepository } = await import("../src/server/repositories/UserRepository");
   const { ClassRepository } = await import("../src/server/repositories/ClassRepository");
   const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
@@ -91,6 +91,10 @@ async function main(): Promise<void> {
   initializeDatabase();
   await ensureDefaultAdmin();
   loadRolePermissions(true);
+
+  // 显式初始化 authService（必须在 DB 准备好之后）
+  await authService.init();
+
   const db = getDatabase();
   const roleCount = (db.prepare("SELECT COUNT(*) c FROM roles").get() as { c: number }).c;
   ok(roleCount === 3, `内置 3 个角色（实际 ${roleCount}）`);
@@ -109,7 +113,7 @@ async function main(): Promise<void> {
 
   // ── 3. 登录 / Token / 改密 ────────────────────────────
   section("3. 登录 / Token / 修改密码");
-  const auth = new AuthService();
+  const auth = authService;
   const badLogin = await auth.login("admin", "wrong-password");
   ok(!badLogin.success, "错误密码登录被拒绝");
   const adminLogin = await auth.login("admin", "admin123");
@@ -138,7 +142,7 @@ async function main(): Promise<void> {
     student_number: "20260001"
   });
   ok(student.role_name === "student", "创建学生账号成功");
-
+  
   const stuLogin = await auth.login("20260001", "20260001");
   ok(stuLogin.success, "学生用学号登录成功");
 
