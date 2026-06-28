@@ -1,4 +1,4 @@
-import { getMysqlDb } from "../db";
+import { getMysqlDb, buildInsertIgnore } from "../db";
 import type { DbAdapter } from "../db";
 import { hashPassword, verifyPassword } from "../db";
 import { validateInitialPassword } from "../auth/passwordPolicy";
@@ -276,7 +276,8 @@ export class UserRepository {
               let cls = await tx.get("SELECT id FROM classes WHERE grade_id = ? AND name = ?", grade.id, className) as { id: number } | null;
               if (!cls) { const cr = await tx.run("INSERT INTO classes (grade_id, name) VALUES (?, ?)", grade.id, className); cls = { id: cr.lastInsertRowid }; }
               await tx.run("UPDATE users SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND role_id = 3", studentName, existingStudent.id);
-              await tx.run("INSERT IGNORE INTO class_students (class_id, student_id) VALUES (?, ?)", cls.id, existingStudent.id);
+              const linkSql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
+              await tx.run(linkSql, cls.id, existingStudent.id);
             });
             result.students.linked++; continue;
           }
@@ -290,7 +291,8 @@ export class UserRepository {
             let cls = await tx.get("SELECT id FROM classes WHERE grade_id = ? AND name = ?", grade.id, className) as { id: number } | null;
             if (!cls) { const cr = await tx.run("INSERT INTO classes (grade_id, name) VALUES (?, ?)", grade.id, className); cls = { id: cr.lastInsertRowid }; }
             const ins = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", username, hash, studentName, studentNumber, password);
-            await tx.run("INSERT IGNORE INTO class_students (class_id, student_id) VALUES (?, ?)", cls.id, ins.lastInsertRowid);
+            const linkSql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
+            await tx.run(linkSql, cls.id, ins.lastInsertRowid);
           });
           result.students.created++;
         } catch (err) { result.students.errors.push({ row, message: err instanceof Error ? err.message : String(err) }); }

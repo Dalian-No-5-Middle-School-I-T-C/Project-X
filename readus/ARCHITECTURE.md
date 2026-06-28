@@ -1,33 +1,63 @@
 # Project-X 架构分析
 
-**Project-X（答题卡设计系统）** 是大连五中自研的本地优先智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 成绩分析 → AI 成绩分析** 全流程。架构上是 **Electron 桌面壳 + 内嵌 Express 后端 + React 前端 + C++ 原生子进程 + Python LLM 中转服务** 的组合。
+**Project-X（答题卡设计系统）** 是大连五中自研的智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 成绩分析 → AI 成绩分析** 全流程。架构上支持 **本地 SQLite 单机模式** 和 **远程 MariaDB 服务器模式**，通过统一的 `DbAdapter` 接口无缝切换。
+
+> v1.6.0 起，扫描端/教师端/学生端各自独立，统一通过 HTTP API 通信。扫描端保留本地 SQLite 作为离线缓存和断网重试缓冲。
+
+技术栈：**Electron 桌面壳 + Express 后端 + React 前端 + C++ 原生子进程 + Python LLM 中转服务**。
 
 ---
 
 ## 1. 总体架构
 
-系统采用 **单体本地应用** 模式：Electron 启动后在本机拉起 Node 服务，浏览器窗口加载同一进程内的静态前端，所有数据与识别均在本地完成。
+### v1.6.0+ 客户端拆分架构
 
 ```mermaid
 flowchart TB
-    subgraph Desktop["Electron 桌面层"]
-        EM[electron/main.cjs]
-        BW[BrowserWindow]
+    subgraph Scanner["扫描端 (Electron)"]
+        SCAN_UI["ScannerPanel<br/>本地/远程双模"]
+        TWAIN["TWAIN C++ Bridge"]
+        SCAN_SQLITE[("本地 SQLite<br/>缓存+断网缓冲")]
     end
 
-    subgraph Node["Node.js 服务层"]
-        EX[Express 5 API]
-        REPO[Repository 数据访问]
-        REC[recognition.ts 子进程管理]
-        SCN[scanner 子系统]
-        PDF[pdf.ts PDF 生成]
+    subgraph Teacher["教师端 (Browser)"]
+        T_UI["WEB UI<br/>http://服务器IP:5174"]
     end
 
-    subgraph Shared["共享领域层 src/shared"]
-        TYPES[types.ts]
-        LAYOUT[layout.ts 坐标布局]
-        GRADE[grading.ts 判分引擎]
+    subgraph Student["学生端 (Browser)"]
+        S_UI["WEB UI<br/>http://服务器IP:5174"]
     end
+
+    subgraph Server["服务端 (Node.js)"]
+        EX["Express 5 API"]
+        REPO["Repository 数据访问"]
+        REC["recognition.ts"]
+        SCAN_API["扫描上传 API"]
+        APIKEY["API Key Auth"]
+        DB_ADAPTER["DbAdapter"]
+    end
+
+    subgraph DB["数据库"]
+        SQLITE[("SQLite<br/>本地模式")]
+        MARIA[("MariaDB<br/>远程模式")]
+    end
+
+    SCAN_UI -->|"HTTP POST (X-Api-Key)"| SCAN_API
+    T_UI -->|"HTTP (JWT)"| EX
+    S_UI -->|"HTTP (JWT)"| EX
+    SCAN_SQLITE --> SCAN_UI
+
+    EX --> APIKEY
+    EX --> REPO
+    EX --> REC
+    APIKEY --> SCAN_API
+    SCAN_API --> REPO
+    REPO --> DB_ADAPTER
+    DB_ADAPTER --> SQLITE
+    DB_ADAPTER --> MARIA
+```
+
+> 兼容模式（本地运行）：Electron 内同时运行 ScannerPanel + Express Server，数据全在本地。配置详见 [DATABASE.md](./DATABASE.md)。
 
     subgraph Native["C++ 原生层"]
         OCR[answer-card-recognizer.exe<br/>OpenCV 识别]

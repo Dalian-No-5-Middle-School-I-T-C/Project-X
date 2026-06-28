@@ -49,6 +49,17 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- API 密钥表 (v1.6.0) — 供扫描客户端等服务端组件使用
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,              -- 密钥名称（如 "扫描端1号"）
+    api_key      TEXT NOT NULL UNIQUE,       -- 密钥值（sk-xxx）
+    scope        TEXT NOT NULL DEFAULT 'scanner',  -- scanner / full
+    is_active    INTEGER DEFAULT 1,          -- 0=停用 1=启用
+    created_by   INTEGER REFERENCES users(id),
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 年级表
 CREATE TABLE IF NOT EXISTS grades (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,7 +109,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     orientation      TEXT DEFAULT 'portrait',
     student_fields   TEXT,                                -- JSON: ["姓名","班级"]
     student_number_digits INTEGER DEFAULT 5,
-    sided           TEXT DEFAULT 'single',              -- single / double
+    sided           TEXT DEFAULT 'double',              -- single / double
     layout_version   INTEGER DEFAULT 1,
     layout_data      TEXT,                                -- Deprecated: legacy cached LayoutDocument; generated from card tables on demand
     created_by       INTEGER REFERENCES users(id),
@@ -345,6 +356,73 @@ CREATE TABLE IF NOT EXISTS subjective_grades (
 );
 
 -- ============================================================
+-- TWAIN 扫描仪表（v1.6.0 从 scanner.db 合并）
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS twain_scan_sessions (
+    id          TEXT PRIMARY KEY,
+    card_id     TEXT NOT NULL,
+    name        TEXT NOT NULL DEFAULT '',
+    dpi         INTEGER NOT NULL DEFAULT 300,
+    duplex      INTEGER NOT NULL DEFAULT 1,
+    color_mode  TEXT NOT NULL DEFAULT 'gray',
+    paper_size  TEXT NOT NULL DEFAULT 'A4',
+    page_count  INTEGER NOT NULL DEFAULT 0,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    error_msg   TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS twain_scan_records (
+    id              TEXT PRIMARY KEY,
+    session_id      TEXT NOT NULL REFERENCES twain_scan_sessions(id) ON DELETE CASCADE,
+    card_id         TEXT NOT NULL,
+    student_id      TEXT,
+    student_conf    REAL,
+    image_path      TEXT NOT NULL,
+    page_num        INTEGER NOT NULL DEFAULT 1,
+    side            TEXT NOT NULL DEFAULT 'front',
+    ocr_status      TEXT NOT NULL DEFAULT 'pending',
+    scan_quality    REAL,
+            ocr_error       TEXT,
+            uploaded        INTEGER DEFAULT 0,   -- v1.6.0: 是否已上传到远端
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    recognized_at   DATETIME
+);
+
+CREATE TABLE IF NOT EXISTS twain_recognition_results (
+    id              TEXT PRIMARY KEY,
+    scan_record_id  TEXT UNIQUE NOT NULL REFERENCES twain_scan_records(id) ON DELETE CASCADE,
+    objective_json  TEXT,
+    subjective_json TEXT,
+    total_score     REAL,
+    max_score       REAL,
+    grade_status    TEXT NOT NULL DEFAULT 'pending',
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS twain_student_grading_results (
+    session_id    TEXT NOT NULL,
+    student_id    TEXT NOT NULL,
+    objective_json  TEXT,
+    subjective_json TEXT,
+    total_score   REAL,
+    max_score     REAL,
+    page_count    INTEGER NOT NULL DEFAULT 1,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, student_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_twain_sessions_card ON twain_scan_sessions(card_id);
+CREATE INDEX IF NOT EXISTS idx_twain_records_session ON twain_scan_records(session_id);
+CREATE INDEX IF NOT EXISTS idx_twain_records_card ON twain_scan_records(card_id);
+CREATE INDEX IF NOT EXISTS idx_twain_records_student ON twain_scan_records(student_id);
+CREATE INDEX IF NOT EXISTS idx_twain_recognition_scan ON twain_recognition_results(scan_record_id);
+CREATE INDEX IF NOT EXISTS idx_twain_sgr_session ON twain_student_grading_results(session_id);
+CREATE INDEX IF NOT EXISTS idx_twain_sgr_student ON twain_student_grading_results(student_id);
+
+-- ============================================================
 -- 模块四：成绩统计
 -- ============================================================
 
@@ -461,7 +539,13 @@ CREATE INDEX IF NOT EXISTS idx_objective_grades_record ON objective_grades(recor
 CREATE INDEX IF NOT EXISTS idx_subjective_grades_record ON subjective_grades(record_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_student ON student_scores(student_id);
+-- 性能：成绩分析（排名/统计/概览）按 exam_id 过滤并按 total_score / assigned_score 排序
+CREATE INDEX IF NOT EXISTS idx_student_scores_exam_total ON student_scores(exam_id, total_score);
+CREATE INDEX IF NOT EXISTS idx_student_scores_exam_assigned ON student_scores(exam_id, assigned_score);
+CREATE INDEX IF NOT EXISTS idx_student_scores_exam_student ON student_scores(exam_id, student_id);
 CREATE INDEX IF NOT EXISTS idx_question_scores_exam_student ON question_scores(exam_id, student_id);
+CREATE INDEX IF NOT EXISTS idx_question_scores_exam_type ON question_scores(exam_id, score_type);
+CREATE INDEX IF NOT EXISTS idx_exams_grade_class ON exams(grade_id, class_id);
 
 -- ============================================================
 -- 初始数据

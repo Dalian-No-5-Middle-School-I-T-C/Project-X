@@ -2,22 +2,16 @@ import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { dataDir } from "../storage";
 import {
-  createSession,
-  createScanRecord,
-  getScanRecord,
-  listScanRecords,
-  updateScanOcrResult,
-  updateScanQuality,
-  updateSessionStatus,
-  incrementPageCount,
-  upsertRecognitionResult
+  createSession, createScanRecord, getScanRecord, listScanRecords,
+  updateScanOcrResult, updateScanQuality, updateSessionStatus,
+  incrementPageCount, upsertRecognitionResult
 } from "../database/scan-store";
 import type { ScanProgressEvent, ScanSessionConfig } from "./scanner-types";
 import { listSources, scan } from "./twain-bridge";
 import { recognizeAnswerCard } from "../recognition";
-import { readLayout, layoutPath, readCard } from "../storage";
+import { readLayout, readCard } from "../storage";
 import { gradeCombinedRecognition } from "../../../../shared/grading";
-import type { AnswerCard, CombinedRecognitionResult } from "../../../../shared/types";
+import type { CombinedRecognitionResult } from "../../../../shared/types";
 
 export { listSources };
 
@@ -32,7 +26,7 @@ export async function runScanSession(
   config: ScanSessionConfig,
   onProgress: ProgressHandler
 ): Promise<string> {
-  const session = createSession(config.cardId, config.sessionName, {
+  const session = await createSession(config.cardId, config.sessionName, {
     dpi: config.dpi,
     duplex: config.duplex,
     colorMode: config.colorMode,
@@ -44,11 +38,9 @@ export async function runScanSession(
   await mkdir(outputDir, { recursive: true });
 
   try {
-    // Update status
-    updateSessionStatus(sessionId, "scanning");
+    await updateSessionStatus(sessionId, "scanning");
     onProgress({ sessionId, type: "scanning", message: "正在连接扫描仪..." });
 
-    // Execute scan via TWAIN bridge
     const filePrefix = `session_${sessionId}`;
     const scanConfig = {
       sourceName: config.sourceName,
@@ -62,14 +54,12 @@ export async function runScanSession(
       showUi: config.showUi
     };
 
-    // Run scan with progress
     const result = await scan(scanConfig);
 
     if (!result.pages || result.pages.length === 0) {
       throw new Error(result.message || "扫描未产生任何页面");
     }
 
-    // Read card to check if single-sided → discard back sides
     const card = await readCard(config.cardId);
     const isSingleSided = card?.sided === "single";
     const filteredPages = isSingleSided
@@ -80,24 +70,19 @@ export async function runScanSession(
       throw new Error("扫描结果中没有任何正面页面");
     }
 
-    // Create scan records for each page (filtered for single-sided cards)
     const recordIds: string[] = [];
     for (const page of filteredPages) {
-      const record = createScanRecord({
-        sessionId,
-        cardId: config.cardId,
-        imagePath: page.path,
-        pageNum: page.page,
+      const record = await createScanRecord({
+        sessionId, cardId: config.cardId,
+        imagePath: page.path, pageNum: page.page,
         side: page.side as "front" | "back"
       });
       recordIds.push(record.id);
-      incrementPageCount(sessionId);
+      await incrementPageCount(sessionId);
 
       onProgress({
-        sessionId,
-        type: "page_done",
-        pageNum: page.page,
-        side: page.side,
+        sessionId, type: "page_done",
+        recordId: record.id, pageNum: page.page, side: page.side,
         totalPages: filteredPages.length
       });
     }
@@ -105,34 +90,29 @@ export async function runScanSession(
     if (isSingleSided && result.pages.length > filteredPages.length) {
       const skipped = result.pages.length - filteredPages.length;
       onProgress({
-        sessionId,
-        type: "scanning",
+        sessionId, type: "scanning",
         message: `（单面答题卡：已跳过 ${skipped} 张背面）`
       });
     }
 
-    updateSessionStatus(sessionId, "completed");
+    await updateSessionStatus(sessionId, "completed");
 
-    // Auto-trigger OCR recognition
     onProgress({
-      sessionId,
-      type: "ocr_start",
-      message: "正在识别答题卡...",
-      totalPages: recordIds.length
+      sessionId, type: "ocr_start",
+      message: "正在识别答题卡...", totalPages: recordIds.length
     });
 
     await runOcrOnSession(sessionId, config.cardId, onProgress);
 
     onProgress({
-      sessionId,
-      type: "done",
+      sessionId, type: "done",
       message: `扫描完成，共 ${recordIds.length} 张`
     });
 
     return sessionId;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    updateSessionStatus(sessionId, "error", msg);
+    await updateSessionStatus(sessionId, "error", msg);
     onProgress({ sessionId, type: "error", message: msg });
     throw error;
   }
@@ -144,10 +124,8 @@ export async function runOcrOnSession(
   cardId: string,
   onProgress: ProgressHandler
 ): Promise<void> {
-  const records = listScanRecords(sessionId);
-  const layoutJsonPath = layoutPath(cardId);
+  const records = await listScanRecords(sessionId);
 
-  // Ensure layout exists and read card for sided info
   await readLayout(cardId);
   const card = await readCard(cardId);
   const isSingleSided = card?.sided === "single";
@@ -155,7 +133,6 @@ export async function runOcrOnSession(
   for (const record of records) {
     if (!record.image_path) continue;
 
-    // Compute layout page number
     const layoutPage = isSingleSided
       ? record.page_num
       : (record.page_num - 1) * 2 + (record.side === "front" ? 1 : 2);
@@ -163,30 +140,22 @@ export async function runOcrOnSession(
     try {
       const recognition = (await recognizeAnswerCard({
         imagePath: record.image_path,
-        layoutPath: layoutJsonPath,
+        layoutPath: (await import("../storage")).layoutPath(cardId),
         pageNumber: layoutPage,
         dpi: 300
       })) as CombinedRecognitionResult;
 
-      // Extract student ID
       const studentId = recognition.studentId?.value ?? null;
       const studentConf = recognition.studentId?.status === "ok" ? 0.9 : 0.0;
       const ocrStatus = recognition.status === "ok" ? "done" : recognition.status === "failed" ? "failed" : "review";
 
-      // Update scan record with OCR results
-      updateScanOcrResult(
-        record.id,
-        studentId,
-        studentConf,
-        ocrStatus as "done" | "failed" | "review",
-        recognition.message
-      );
+      await updateScanOcrResult(record.id, studentId, studentConf,
+        ocrStatus as "done" | "failed" | "review", recognition.message);
 
-      // Store recognition results + grading
       if (card) {
         try {
           const graded = gradeCombinedRecognition(card, record.image_path, recognition);
-          upsertRecognitionResult({
+          await upsertRecognitionResult({
             scanRecordId: record.id,
             objectiveJson: JSON.stringify(recognition.questions),
             subjectiveJson: JSON.stringify(recognition.subjectiveQuestions ?? []),
@@ -196,7 +165,7 @@ export async function runOcrOnSession(
           });
         } catch (gradeError) {
           console.error(`[Scanner] Grading failed for record ${record.id}:`, gradeError);
-          upsertRecognitionResult({
+          await upsertRecognitionResult({
             scanRecordId: record.id,
             objectiveJson: JSON.stringify(recognition.questions),
             subjectiveJson: JSON.stringify(recognition.subjectiveQuestions ?? []),
@@ -205,30 +174,23 @@ export async function runOcrOnSession(
         }
       }
 
-      // Update quality if available
       if (recognition.quality?.overallScore !== undefined) {
-        updateScanQuality(record.id, recognition.quality.overallScore as number);
+        await updateScanQuality(record.id, recognition.quality.overallScore as number);
       }
 
       onProgress({
-        sessionId,
-        type: "ocr_page_done",
-        pageNum: record.page_num,
-        side: record.side,
-        studentId,
-        studentConf
+        sessionId, type: "ocr_page_done",
+        recordId: record.id, pageNum: record.page_num, side: record.side,
+        studentId, studentConf
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
-      updateScanOcrResult(record.id, null, null, "failed", msg);
+      await updateScanOcrResult(record.id, null, null, "failed", msg);
 
       onProgress({
-        sessionId,
-        type: "ocr_page_done",
-        pageNum: record.page_num,
-        side: record.side,
-        studentId: null,
-        message: msg
+        sessionId, type: "ocr_page_done",
+        pageNum: record.page_num, side: record.side,
+        studentId: null, message: msg
       });
     }
   }

@@ -1,73 +1,208 @@
 # Project-X CHANGELOG
 
-## v1.5.2 (2026-06-26) — 数据库双后端 & 成绩天梯
+## v1.6.0 (2026-06-27) — 客户端拆分 + 运行时身份切换
 
-### 成绩天梯系统（学生端新增 Tab）
+### 架构：从单体 Electron 到独立客户端
 
-在「我的成绩」页面新增「成绩天梯」Tab，以阶梯榜单形式展示年级前十名排名。
+教师扫描端、教师端、学生端各自独立，统一通过 HTTP API 通信。
 
-- **前十名阶梯榜单**：纯 CSS 阶梯连接线纵轴 + 圆形排名徽章，前三名金银铜特殊样式（皇冠/奖牌/奖杯图标 + 渐变背景）
-- **三种排名范围**：
-  - 单场考试：基于已有 `AnalysisRepository.getScoreTableData()` 复用 `competitionRank` 并列排名
-  - 大考组：多科汇总总分排名，含各科小标签
-  - 跨考累计：多场考试总分汇总排名
-- **趋势指示**：排名变化绿箭头（上升）/ 红箭头（下降）/ 灰色持平 / 蓝色 NEW
-- **分数进度条**：每条右侧展示相对第一名的百分比进度条
-- **个性化统计栏**：参与人数 / 我的排名 / 我的总分 / 当前榜单
-- **空状态三级处理**：配置加载中 → 请选择考试 → 该范围暂无数据
+```
+v1.5.5:  单一 Electron 进程（设计+扫描+阅卷 全在一起）
+v1.6.0:  扫描端(Electron) ←→ 服务端(API) ←→ 教师端(WEB) / 学生端(WEB)
+```
 
-### 管理员天梯开关
+### 运行时 Persona（AuthContext 扩展）
 
-管理员可随时控制天梯功能的开闭状态。
+- **管理员可在账户下拉菜单切换身份视图**：扫描端 / 教师端(学科老师/班主任/学年主任) / 学生端
+- 切换即时生效，无需重启
+- persona 存 localStorage，登录恢复
+- 教师/学生固定身份，不可切换
 
-- **系统级开关**：新增 `system_settings` 表（migration v9），键值对存储，默认 `ladder_enabled = "1"`
-- **API 端点**：`GET /api/ladder/config`（公开）+ `PUT /api/ladder/config`（仅 admin）
-- **管理员特权**：天梯关闭时管理员仍可正常预览榜单，界面显示红色警告条「已关闭（仅管理员可见）」
-- **普通用户**：天梯关闭时看到「暂未开放」提示
-- **后端校验**：所有数据端点天梯关闭时返回 403（管理员除外）
+**文件**：`AuthContext.tsx`（新增 type `AppPersona` / `TeacherRoleOverride` / `setPersona` / `availablePersonas`）
+**文件**：`AccountMenu.tsx`（新增「查看身份」区域，仅管理员可见）
 
-### 新增后端 API
+### 登录页：远端配置 + 本地模式
+
+- 新增折叠面板「服务器连接（可选）」：输入服务器地址、API Key、测试连接
+- 不填 = 纯本地模式（所有数据存本地 SQLite）
+- 填了 = 教师/学生功能走远程 API
+- 服务器地址和 API Key 存 localStorage
+- `api.ts` 中 `getApiBase()` 改为运行时读取 localStorage
+
+**文件**：`LoginPage.tsx`（重构，新增 Globe + 连接测试）
+**文件**：`api.ts`（`API_BASE` 常量 → `getApiBase()` 函数，同时自动附带 X-Api-Key 头）
+
+### API Key 认证体系
+
+**新建表**（migration v11）：
+
+```sql
+CREATE TABLE api_keys (
+  id, name, api_key UNIQUE, scope DEFAULT 'scanner', is_active, created_by, created_at
+);
+```
+
+- `ensureDefaultAdmin()` 时自动生成一条 scanner key
+- 管理 API：`GET/POST/PUT/DELETE /api/admin/api-keys`
+- 中间件：`src/server/middleware/api-key.ts`（从 `X-Api-Key` header 校验）
+- scope `scanner` 的 key 仅能访问 `/api/scanner/*`
+
+### 扫描上传端点
+
+**文件**：`src/server/routes/scanner-upload.ts`
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/ladder/exams/:examId` | 单场考试年级前十名 |
-| `GET` | `/api/ladder/exam-groups/:groupId` | 大考组年级前十名 |
-| `GET` | `/api/ladder/cross-exam` | 跨考累计年级前十名 |
-| `GET` | `/api/ladder/config` | 获取天梯开关状态 |
-| `PUT` | `/api/ladder/config` | 管理员设置天梯开关 |
+| `POST` | `/api/scanner/upload/sessions` | 创建扫描会话 |
+| `POST` | `/api/scanner/upload/sessions/:id/pages` | 上传扫描页（multipart） |
+| `POST` | `/api/scanner/upload/sessions/:id/complete` | 标记完成 |
+| `GET` | `/api/scanner/upload/sessions/:id/status` | 查询状态 |
 
+双鉴权：`apiKeyAuth`（高优先级）+ `authMiddleware`（低优先级，任一通过即可）
+
+### ScannerPanel：本地/远程双模
+
+- 新增「本地存储」←→「上传服务器」切换按钮
+- 本地模式：行为不变，扫描结果存本地 SQLite
+- 远程模式：扫描完成后自动逐页上传到服务端
+- 上传进度实时显示（上传中/完成/失败状态）
+- 模式选择存 localStorage（`projectx_scanner_mode`）
+
+**文件**：`ScannerPanel.tsx`（新增 `Upload`/`Database` 图标，`scannerMode` 状态，`uploadToRemote()` 函数，上传状态指示器）
+**文件**：`twain_scan_records` 表新增 `uploaded INTEGER DEFAULT 0` 字段
+
+### App.tsx 运行时 Variant
+
+- `appVariant` 从 compile-time `import.meta.env.VITE_PROJECTX_VARIANT` → runtime `useAuth().persona`
+- `hasNativeScanner` 通过 `navigator.userAgent` 检测 Electron 环境
+- 扫描 TAB 可见性 = persona 允许 + grading 权限 + 本地有扫描硬件
+- WEB 模式（浏览器）自动隐藏扫描 Tab
+
+### 数据库
+
+- 新增 `api_keys` 表（v11 migration）
+- `twain_scan_records` 新增 `uploaded` 列
+- 两份 schema 同步更新：`schema.sql` + `schema.mariadb.sql`
+
+### 端口默认值改为 443
+
+所有默认 MariaDB 端口 3306 → 443（适配仅开放 22/80/443 的防火墙场景）
+
+### 版本号
+
+- `package.json` 1.5.5 → 1.6.0
+
+## v1.5.5 (2026-06-27)数据库重构
 ### 新增文件
 
 | 文件 | 说明 |
 |------|------|
-| `src/server/services/LadderService.ts` | 天梯数据转换层（排名趋势/百分位/LadderRow 映射） |
-| `src/server/routes/ladder.ts` | 天梯 API 路由（5 个端点 + 开关校验） |
-| `.../components/GradeLadder.tsx` | 天梯主容器（范围选择 + 统计栏 + 管理员开关） |
-| `.../components/LadderLeaderboard.tsx` | 前十榜单渲染容器 |
-| `.../components/LadderRowItem.tsx` | 单行条目（排名徽章 + 趋势 + 进度条） |
+| `src/server/middleware/api-key.ts` | API Key 认证中间件 |
+| `src/server/routes/api-keys.ts` | API Key 管理路由 |
+| `src/server/routes/scanner-upload.ts` | 扫描上传路由 |
 
-### 修改文件
+### 架构决策
 
-| 文件 | 改动 |
+- 客户端视图身份从编译时改为运行时，管理员可动态切换
+- API Key 模式用于无用户登录的扫描客户端，与 JWT 互补
+- 扫描端本地 SQLite 保留，用作离线缓存和断网重试缓冲
+- 最终部署：服务端跑 MariaDB，各客户端通过 HTTP API 通信
+
+---
+
+原 v1.5.2 引入的 MySQL 双后端方案存在致命缺陷：`ON DUPLICATE KEY UPDATE` 在底层 SQLite 适配器中无法执行（SQLite 不支持此语法），依赖"DELETE-then-INSERT"才侥幸不报错。本次彻底重写整个数据访问层。
+
+### 数据库层重写 (`src/server/db/`)
+
+- **`schema.mariadb.sql`** — 全新 MariaDB 10.11 LTS 完整建表 SQL，含 38 张表 + 45+ 索引：
+  - Scanner 4 表合并（`twain_scan_sessions` / `twain_scan_records` / `twain_recognition_results` / `twain_student_grading_results`）
+  - v9 迁移新增表/列：`knowledge_points` 表、`answer_cards` 原卷字段（`has_original_paper` 等）、`users` 原卷偏好
+  - 新字段：`scan_records.image_uploaded`（原图上传标记）
+  - MariaDB 兼容：`VARCHAR` PK 替代 TEXT PK、`TINYINT` 替代 INTEGER 布尔值、\`rank\` 反引号
+  - 引擎 InnoDB、字符集 utf8mb4、外键级联删除、初始种子数据
+
+- **`mysql.ts` 重写** — 改名 `MariadbAdapter`，新增：
+  - `DbAdapter.dialect` 属性（`"sqlite" | "mariadb"`）
+  - `buildUpsertSQL()` / `buildInsertIgnore()` 跨方言 SQL 生成工具
+  - `detectDialect()`：环境变量 > config.yml > 兜底 SQLite
+  - MariaDB 连接池增强：`connectTimeout:5000`、`enableKeepAlive:true`、`maxIdle:10`、`idleTimeout:60000`
+  - `healthCheck()` 数据库连通性检测
+  - **MariaDB 模式断连不降级到 SQLite**（关键安全策略）
+
+- **`config.ts`** — YAML 配置读写工具（免外部依赖），支持 `config.yml` 解析/合并/写回
+
+- **`schema.sql` 修复**：
+  - `answer_cards.sided` 默认值 `'single'` → `'double'`（修复长期存在的默认值不一致 Bug）
+  - 新增 twain_* 4 表 + 6 个索引
+
+- **v10 迁移** — `twain_scan_sessions/records/recognition_results/student_grading_results` 自动建表
+
+### 消除 `getDatabase()` 直接调用（~50 处 → 0）
+
+所有路由/服务/清理任务统一走 `getMysqlDb()` 异步 `DbAdapter`：
+
+| 文件 | 变更 |
 |------|------|
-| `src/shared/types.ts` | 新增 `RankTrend`、`LadderRow`、`LadderResponse` 类型 |
-| `src/server/db/migrations.ts` | Migration v9：`system_settings` 表 |
-| `src/apps/answer-card/server/index.ts` | 注册 `/api/ladder` 路由 |
-| `.../components/StudentScores.tsx` | TabId 扩展 + 天梯 Tab 入口 |
-| `.../styles.css` | +250 行天梯样式（阶梯连接线/排名徽章/趋势/进度条/管理员开关/暗色主题） |
+| `ai-providers.ts` | 4 处 → async `db.all/get/run()` |
+| `export-scores.ts` | 4 处 → async + `buildUpsertSQL()` |
+| `score-editing.ts` | 12 处 → async + 事务改为 `await db.transaction(async tx => {...})` |
+| `exam-groups.ts` | 11 处 → async + `buildInsertIgnore()` |
+| `AssignedScoreService.ts` | 全类 → async，`recalculateAll()` 使用 `db.transaction()` |
+| `AuthService.ts` | 2 处 → async |
+| `permissions.ts` | `initPermissionCache()` 异步预加载，启动时调用 |
+| `cleanup.ts` | 全异步，`setInterval` 内 `.catch()` |
+| `backup.ts | MariaDB 分支通过 mysqldump 备份恢复
+| `server/index.ts` | ~15 处 + `initMariadbSchema()` + 启动序列重排 |
 
-### 数据库
+### Scanner DB 合并到主库
 
-- 新增 `system_settings` 表（`key TEXT PK, value TEXT NOT NULL`），默认写入 `ladder_enabled = "1"`
+- Scanner 原先独立的 `scanner.db` 4 张表全部合并到主库，命名加 `twain_` 前缀
+- `scan-store.ts` 19 个函数全异步化，统一走 `getMysqlDb()`
+- `scanner-service.ts` / `scanner/index.ts` 调用方全部加 `await`
+- `scanner/index.ts` 中 `persistScannerResultToMainDb()` 改为 async `getMysqlDb()` + `REPLACE INTO`
 
-### Bug 审计与修复
+### 用户设置：数据存储
 
-| 修复项 | 文件 | 说明 |
-|--------|------|------|
-| `||` → `??` 零分吞值 | `LadderService.ts` ×2 | `totalAssignedScore \|\| totalRawScore` 在得分为 0 时错误降级，改为 `??` |
-| 死代码清理 | `LadderService.ts` | 删除路由中从未调用的 `fromGroupRankingRows`、薄包装 `assignRank`、冗余 `TOP_N` 常量、未使用的 `GroupRankingRow`/`LadderResponse` import |
-| 同分排序非确定性 | `LadderService.ts` | `fromCrossExamRows` 排序新增学号 tiebreaker |
-| 范围切换残留 | `GradeLadder.tsx` | 切换 scope 时清空旧 `data`/`error` |
+- **API**: `GET /api/app/db-config`（读取）+ `PATCH /api/app/db-config`（写入，管理员权限）
+- **前端**: AccountMenu 新增「数据存储」Tab（仅管理员可见）
+  - 本地 SQLite / 远程 MariaDB 单选切换
+  - MariaDB 连接表单：主机、端口、数据库名、用户名、密码
+  - 密码已设置时显示"(已设置，留空不修改)"提示
+  - 保存后显示"需重启服务器方可生效"
+  - 当前远程功能提示"尚未完全启用"
+
+### 服务器打包增强
+
+- `build-server.ts`：构建时同步复制 `schema.mariadb.sql`
+- `package-server-ubuntu.cjs`：新增 MariaDB 环境变量、systemd 模板含 MariaDB 配置、部署文档含 MariaDB 安装/配置指引
+
+### 文档
+
+- `DATABASE.md` 重写：双模架构说明、本地/远程对比表、MariaDB 安装配置
+- `ARCHITECTURE.md`：更新技术栈描述
+- `config.yml`：数据库配置模板（mode/remote/...）
+
+### Phase 2: 服务器部署工具链
+
+- **`scripts/migrate-to-mariadb.ts`** — SQLite → MariaDB 全量数据迁移
+- **`scripts/setup-mariadb.sh`** — Ubuntu/Debian 一键建库建表
+- **备份/恢复** — backup.ts MariaDB 分支通过 mysqldump 实现
+- **P0 修复** — initMariadbSchema 空指针、ON DUPLICATE KEY 残留、health 端点增强
+
+### 版本号更新
+
+- `package.json` → 1.5.5, README badges, DATABASE.md 新增部署迁移章节
+
+### 架构决策
+
+- 本地模式 = SQLite（零依赖，单机/开发/离线）
+- 远端模式 = MariaDB 10.11 LTS（32位/64位兼容）
+- 数据库配置存 `config.yml`，管理员界面写入，重启生效
+- 最终目标：数据库全在服务端，扫描端/教师端/学生端都是客户端
+
+---
+
+## v1.5.2 (2026-06-26) — 数据库双后端架构
 
 ### SQLite → MySQL 双后端迁移
 

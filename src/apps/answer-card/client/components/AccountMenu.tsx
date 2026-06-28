@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Download, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit } from "lucide-react";
+import { ChevronDown, Database, Download, Eye, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson, getAuthToken } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
@@ -17,7 +17,9 @@ export function AccountMenu({
   darkModeEnabled: boolean;
   setDarkModeEnabled: (enabled: boolean) => void;
 }) {
-  const { user, logout, isAdmin } = useAuth();
+  const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona } = useAuth();
+  // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
+  const isElectron = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
   const menuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -44,7 +46,18 @@ export function AccountMenu({
     editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: ""
   });
   const [showHelpCard, setShowHelpCard] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"grading" | "client" | "ai">("grading");
+  const [settingsTab, setSettingsTab] = useState<"grading" | "client" | "ai" | "db">("grading");
+
+  // ── 数据存储设置（管理员） ──────────────────────────
+  const [dbMode, setDbMode] = useState<"local" | "remote">("local");
+  const [dbHost, setDbHost] = useState("");
+  const [dbPort, setDbPort] = useState(3306);
+  const [dbDatabase, setDbDatabase] = useState("projectx");
+  const [dbUser, setDbUser] = useState("");
+  const [dbPassword, setDbPassword] = useState("");
+  const [dbHasPassword, setDbHasPassword] = useState(false);
+  const [dbMsg, setDbMsg] = useState("");
+  const [dbLoading, setDbLoading] = useState(false);
 
   useEffect(() => {
     if (open && showSettings) {
@@ -56,8 +69,48 @@ export function AccountMenu({
         })
         .catch(() => {});
       loadProviders();
+      loadDbConfig();
     }
   }, [open, showSettings]);
+
+  async function loadDbConfig() {
+    if (!isAdmin) return;
+    try {
+      const c = await fetchJson<{ mode: string; remote: { host: string; port: number; database: string; user: string; hasPassword: boolean } | null }>("/api/app/db-config");
+      setDbMode((c.mode as "local" | "remote") || "local");
+      if (c.remote) {
+        setDbHost(c.remote.host);
+        setDbPort(c.remote.port);
+        setDbDatabase(c.remote.database);
+        setDbUser(c.remote.user);
+        setDbHasPassword(c.remote.hasPassword);
+      }
+    } catch { /* non-admin or API not available */ }
+  }
+
+  async function saveDbConfig() {
+    setDbMsg("");
+    setDbLoading(true);
+    try {
+      const body: any = { mode: dbMode };
+      if (dbMode === "remote") {
+        body.remote = {
+          host: dbHost, port: dbPort, database: dbDatabase,
+          user: dbUser, password: dbPassword || undefined,
+        };
+      }
+      const res = await fetchJson<{ ok: boolean; message: string }>("/api/app/db-config", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      setDbMsg(res.message || "已保存。请重启服务器生效。");
+    } catch (err: any) {
+      setDbMsg(err.message || "保存失败");
+    } finally {
+      setDbLoading(false);
+    }
+  }
 
   async function saveSettings() {
     setSettingsMsg("");
@@ -302,6 +355,47 @@ export function AccountMenu({
               </button>
             </div>
           )}
+          {/* ── v1.6.0: 管理员身份切换 ── */}
+          {canSwitchPersona && (
+            <>
+              <div className="account-menu-divider" />
+              <div style={{ padding: "8px 12px 4px" }}>
+                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  <Eye size={12} style={{ verticalAlign: -1, marginRight: 4 }} />
+                  查看身份
+                </div>
+                {availablePersonas.filter(p => isElectron || p !== "teacher-scanner").map((p) => {
+                  const labels: Record<string, string> = { "teacher-scanner": "扫描端（全功能）", "teacher": "教师端", "student": "学生端（预览）" };
+                  return (
+                    <label key={p} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", cursor: "pointer", fontSize: 13 }}>
+                      <input
+                        type="radio"
+                        name="persona"
+                        value={p}
+                        checked={persona === p}
+                        onChange={() => setPersona(p)}
+                      />
+                      {labels[p] ?? p}
+                    </label>
+                  );
+                })}
+                {persona === "teacher" && (
+                  <div style={{ marginLeft: 22, marginTop: 2 }}>
+                    <select
+                      value={teacherRoleOverride ?? ""}
+                      onChange={(e) => setTeacherRoleOverride((e.target.value || null) as any)}
+                      style={{ fontSize: 12, padding: "2px 4px", borderRadius: 4, border: "1px solid var(--line)", background: "var(--surface)", color: "var(--text)" }}
+                    >
+                      <option value="">教师角色（实际）</option>
+                      <option value="subject_teacher">学科老师</option>
+                      <option value="head_teacher">班主任</option>
+                      <option value="grade_leader">学年主任</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
           <button
             type="button"
             className="account-menu-item"
@@ -393,6 +487,11 @@ export function AccountMenu({
                 <button className={`account-settings-nav-item ${settingsTab === "ai" ? "active" : ""}`} onClick={() => setSettingsTab("ai")}>
                   <BrainCircuit size={15} /> AI 设置
                 </button>
+                {isAdmin && isElectron && (
+                  <button className={`account-settings-nav-item ${settingsTab === "db" ? "active" : ""}`} onClick={() => setSettingsTab("db")}>
+                    <Database size={15} /> 数据存储
+                  </button>
+                )}
               </div>
               <div className="account-settings-content">
                 {settingsTab === "grading" && (
@@ -597,6 +696,73 @@ export function AccountMenu({
                       </div>
                     )}
                     {settingsMsg && settingsTab === "ai" && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                  </>
+                )}
+
+                {settingsTab === "db" && (
+                  <>
+                    <h4>数据存储设置</h4>
+                    <p style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 12px 0" }}>
+                      本地模式使用 SQLite 单文件数据库，无需额外安装。远程模式连接 MariaDB 服务器。
+                    </p>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                        <input type="radio" name="dbMode" value="local" checked={dbMode === "local"}
+                          onChange={() => setDbMode("local")} />
+                        本地数据库（SQLite，当前设备）
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
+                        <input type="radio" name="dbMode" value="remote" checked={dbMode === "remote"}
+                          onChange={() => setDbMode("remote")} />
+                        远程服务器（MariaDB）
+                      </label>
+                    </div>
+
+                    {dbMode === "remote" && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "var(--surface-tint)", border: "1px solid var(--brand-glow)" }}>
+                        <label style={{ fontSize: 12 }}>
+                          服务器地址
+                          <input type="text" value={dbHost} onChange={(e) => setDbHost(e.target.value)}
+                            placeholder="192.168.1.50" style={{ width: "100%", marginTop: 2, padding: "4px 6px", fontSize: 12, borderRadius: 4, border: "1px solid var(--line)" }} />
+                        </label>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <label style={{ fontSize: 12, flex: 1 }}>
+                            端口
+                            <input type="number" value={dbPort} onChange={(e) => setDbPort(Number(e.target.value))}
+                              style={{ width: "100%", marginTop: 2, padding: "4px 6px", fontSize: 12, borderRadius: 4, border: "1px solid var(--line)" }} />
+                          </label>
+                          <label style={{ fontSize: 12, flex: 1 }}>
+                            数据库名
+                            <input type="text" value={dbDatabase} onChange={(e) => setDbDatabase(e.target.value)}
+                              style={{ width: "100%", marginTop: 2, padding: "4px 6px", fontSize: 12, borderRadius: 4, border: "1px solid var(--line)" }} />
+                          </label>
+                        </div>
+                        <label style={{ fontSize: 12 }}>
+                          用户名
+                          <input type="text" value={dbUser} onChange={(e) => setDbUser(e.target.value)}
+                            placeholder="projectx_app" style={{ width: "100%", marginTop: 2, padding: "4px 6px", fontSize: 12, borderRadius: 4, border: "1px solid var(--line)" }} />
+                        </label>
+                        <label style={{ fontSize: 12 }}>
+                          密码 {dbHasPassword && <span style={{ color: "var(--muted)", fontSize: 11 }}>(已设置，留空不修改)</span>}
+                          <input type="password" value={dbPassword} onChange={(e) => setDbPassword(e.target.value)}
+                            placeholder={dbHasPassword ? "••••••" : "输入密码"} style={{ width: "100%", marginTop: 2, padding: "4px 6px", fontSize: 12, borderRadius: 4, border: "1px solid var(--line)" }} />
+                        </label>
+                      </div>
+                    )}
+
+                    {dbMode === "remote" && !dbHost.trim() && (
+                      <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 0 0" }}>
+                        ⚠ 远程服务器功能尚未完全启用。当前版本仅可在本地模式下使用。
+                      </p>
+                    )}
+
+                    {dbMsg && <p style={{ fontSize: 12, margin: "8px 0 0", color: dbMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{dbMsg}</p>}
+                    <button className="primary-button" type="button" onClick={() => { saveDbConfig(); }} disabled={dbLoading} style={{ marginTop: 8 }}>
+                      {dbLoading ? "保存中..." : "保存数据存储设置"}
+                    </button>
+                    <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 0" }}>
+                      修改数据存储模式后需重启服务器方可生效。
+                    </p>
                   </>
                 )}
               </div>
