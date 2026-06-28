@@ -41,15 +41,6 @@ export function closeDatabase(): void {
 }
 
 export function initializeDatabase(): void {
-<<<<<<< HEAD
-  const db = getDatabase();
-  const schema = readFileSync(schemaPath(), "utf8");
-
-  // Always run the idempotent base schema so partially initialized deployments
-  // recover missing core tables before cleanup jobs and migrations touch them.
-  db.exec(schema);
-  console.log("[DB] Schema checked successfully");
-=======
   const dialect = detectDialect();
 
   if (dialect === "mariadb") {
@@ -59,7 +50,6 @@ export function initializeDatabase(): void {
     // ensureDefaultAdmin() 在外部调用，自动生成 API Key
     return;
   }
->>>>>>> b1ac78210777fb697a37248af724053c81fe7c2b
 
   // SQLite 模式
   const db = getDatabase();
