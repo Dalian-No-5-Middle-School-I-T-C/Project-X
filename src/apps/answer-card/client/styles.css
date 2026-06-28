@@ -5468,8 +5468,8 @@ body.has-bg-image::after {
   border-color: rgba(255, 255, 255, 0.08);
 }
 [data-theme="dark"] .card-list-item:hover {
-  background: rgba(22, 27, 34, 0.75);
-  border-color: rgba(217, 64, 64, 0.12);
+  background: rgba(217, 64, 64, 0.08);
+  border-color: rgba(217, 64, 64, 0.2);
 }
 [data-theme="dark"] .card-list-item.active {
   background: linear-gradient(180deg, rgba(22,27,34,0.9) 0%, rgba(33,38,45,0.8) 100%);
@@ -5806,7 +5806,7 @@ body.has-bg-image::after {
   color: var(--brand);
 }
 [data-theme="dark"] .topbar p {
-  color: var(--text-secondary);
+  color: var(--text);
 }
 [data-theme="dark"] .card-list-item small {
   color: var(--text-secondary);
@@ -6103,7 +6103,7 @@ body.has-bg-image::after {
   color: var(--brand);
 }
 [data-theme="dark"] .topbar p {
-  color: var(--text-secondary);
+  color: var(--text);
 }
 [data-theme="dark"] .card-list-item small {
   color: var(--text-secondary);
@@ -6400,7 +6400,7 @@ body.has-bg-image::after {
   color: var(--brand);
 }
 [data-theme="dark"] .topbar p {
-  color: var(--text-secondary);
+  color: var(--text);
 }
 [data-theme="dark"] .card-list-item small {
   color: var(--text-secondary);
@@ -6697,7 +6697,7 @@ body.has-bg-image::after {
   color: var(--brand);
 }
 [data-theme="dark"] .topbar p {
-  color: var(--text-secondary);
+  color: var(--text);
 }
 [data-theme="dark"] .card-list-item small {
   color: var(--text-secondary);
