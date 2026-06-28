@@ -11,7 +11,7 @@
 import express from "express";
 import type { Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
-import { getDatabase } from "../db";
+import { getMysqlDb } from "../db";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { LadderService } from "../services/LadderService";
 import { competitionRank } from "../../shared/ranking";
@@ -22,15 +22,15 @@ router.use(authMiddleware);
 
 // ── 天梯开关 ──
 
-function isLadderEnabled(): boolean {
-  const db = getDatabase();
-  const row = db.prepare("SELECT value FROM system_settings WHERE key = ?").get("ladder_enabled") as { value: string } | undefined;
-  return row?.value === "1";
+async function isLadderEnabled(): Promise<boolean> {
+  const db = getMysqlDb();
+  const row = await db.get<{ value: string }>("SELECT value FROM system_settings WHERE `key` = ?", "ladder_enabled");
+  return row ? row.value === "1" : true;
 }
 
 /** 检查天梯是否开放，管理员始终可以预览 */
-function checkLadderOpen(req: Request, res: Response): boolean {
-  if (isLadderEnabled()) return true;
+async function checkLadderOpen(req: Request, res: Response): Promise<boolean> {
+  if (await isLadderEnabled()) return true;
   if (req.user?.role_name === "admin") return true;
   res.status(403).json({ message: "成绩天梯暂未开放" });
   return false;
@@ -38,13 +38,13 @@ function checkLadderOpen(req: Request, res: Response): boolean {
 
 // ── GET /api/ladder/config ──
 
-router.get("/config", (_req: Request, res: Response) => {
-  res.json({ enabled: isLadderEnabled() });
+router.get("/config", async (_req: Request, res: Response) => {
+  res.json({ enabled: await isLadderEnabled() });
 });
 
 // ── PUT /api/ladder/config (admin only) ──
 
-router.put("/config", (req: Request, res: Response) => {
+router.put("/config", async (req: Request, res: Response) => {
   if (req.user!.role_name !== "admin") {
     res.status(403).json({ message: "仅管理员可修改天梯开关" });
     return;
@@ -56,9 +56,8 @@ router.put("/config", (req: Request, res: Response) => {
     return;
   }
 
-  const db = getDatabase();
-  db.prepare("INSERT OR REPLACE INTO system_settings (key, value) VALUES (?, ?)")
-    .run("ladder_enabled", enabled ? "1" : "0");
+  const db = getMysqlDb();
+  await db.run("REPLACE INTO system_settings (`key`, value) VALUES (?, ?)", "ladder_enabled", enabled ? "1" : "0");
 
   res.json({ enabled });
 });
@@ -66,7 +65,7 @@ router.put("/config", (req: Request, res: Response) => {
 // ── GET /api/ladder/exams/:examId ──
 
 router.get("/exams/:examId", async (req: Request, res: Response) => {
-  if (!checkLadderOpen(req, res)) return;
+  if (!(await checkLadderOpen(req, res))) return;
   try {
     const examId = Number(req.params.examId);
     if (!Number.isFinite(examId)) {
@@ -113,29 +112,33 @@ router.get("/exams/:examId", async (req: Request, res: Response) => {
 
 // ── GET /api/ladder/exam-groups/:groupId ──
 
-router.get("/exam-groups/:groupId", (req: Request, res: Response) => {
-  if (!checkLadderOpen(req, res)) return;
+router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
+  if (!(await checkLadderOpen(req, res))) return;
   try {
-    const db = getDatabase();
+    const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
+    if (!Number.isFinite(groupId)) {
+      res.status(400).json({ message: "无效的考试组 ID" });
+      return;
+    }
 
-    const group = db
-      .prepare(`SELECT name, total_score_mode FROM exam_groups WHERE id = ?`)
-      .get(groupId) as { name: string; total_score_mode: string } | undefined;
+    const group = await db.get<{ name: string; total_score_mode: string }>(
+      `SELECT name, total_score_mode FROM exam_groups WHERE id = ?`,
+      groupId,
+    );
     if (!group) {
       res.status(404).json({ message: "大考不存在" });
       return;
     }
 
-    const members = db
-      .prepare(
-        `SELECT egm.exam_id, e.subject
+    const members = await db.all<{ exam_id: number; subject: string | null }>(
+      `SELECT egm.exam_id, e.subject
          FROM exam_group_members egm
          JOIN exams e ON e.id = egm.exam_id
          WHERE egm.group_id = ?
          ORDER BY egm.sort_order, egm.id`,
-      )
-      .all(groupId) as Array<{ exam_id: number; subject: string | null }>;
+      groupId,
+    );
 
     if (members.length === 0) {
       const resp: LadderResponse = {
@@ -152,9 +155,18 @@ router.get("/exam-groups/:groupId", (req: Request, res: Response) => {
 
     const memberIds = members.map((m) => m.exam_id);
 
-    const allScores = db
-      .prepare(
-        `SELECT ss.student_id, ss.exam_id, ss.total_score, ss.assigned_score,
+    const allScores = await db.all<{
+      student_id: number;
+      exam_id: number;
+      total_score: number;
+      assigned_score: number | null;
+      student_number: string;
+      name: string;
+      class_name: string | null;
+      class_id: number | null;
+      grade_name: string | null;
+    }>(
+      `SELECT ss.student_id, ss.exam_id, ss.total_score, ss.assigned_score,
                 u.student_number, u.name,
                 c.name as class_name, c.id as class_id,
                 g.name as grade_name
@@ -164,18 +176,8 @@ router.get("/exam-groups/:groupId", (req: Request, res: Response) => {
          LEFT JOIN classes c ON c.id = cs.class_id
          LEFT JOIN grades g ON g.id = c.grade_id
          WHERE ss.exam_id IN (${memberIds.map(() => "?").join(",")})`,
-      )
-      .all(...memberIds) as Array<{
-        student_id: number;
-        exam_id: number;
-        total_score: number;
-        assigned_score: number | null;
-        student_number: string;
-        name: string;
-        class_name: string | null;
-        class_id: number | null;
-        grade_name: string | null;
-      }>;
+      ...memberIds,
+    );
 
     const studentMap = new Map<
       number,
@@ -290,7 +292,7 @@ router.get("/exam-groups/:groupId", (req: Request, res: Response) => {
 // ── GET /api/ladder/cross-exam ──
 
 router.get("/cross-exam", async (req: Request, res: Response) => {
-  if (!checkLadderOpen(req, res)) return;
+  if (!(await checkLadderOpen(req, res))) return;
   try {
     const { mode, examIds, groupId, startDate, endDate } = req.query;
 

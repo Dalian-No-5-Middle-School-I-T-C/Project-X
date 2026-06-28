@@ -536,6 +536,16 @@ CREATE TABLE IF NOT EXISTS export_templates (
 -- AI 服务商配置
 -- ============================================================
 
+-- ============================================================
+-- System settings
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS system_settings (
+    `key`      VARCHAR(100) PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS ai_providers (
     id              INT AUTO_INCREMENT PRIMARY KEY,
     user_id         INT NOT NULL,
@@ -608,3 +618,6 @@ INSERT IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive,
     (1, '周测', 30, 1, 0),
     (2, '月考', 90, 1, 0),
     (3, '期中期末', 0, 1, 0);
+
+INSERT IGNORE INTO system_settings (`key`, value) VALUES
+    ('ladder_enabled', '1');

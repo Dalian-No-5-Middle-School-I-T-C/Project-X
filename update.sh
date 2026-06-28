@@ -169,17 +169,17 @@ fi
 # ── Step 5: 构建前端 (仅 dev 模式，不需要完整 build) ────────
 step "5/6  同步前端文件"
 
-# 检查 dist/client 是否存在且有内容
-if [ -d "dist/client" ] && [ -f "dist/client/index.html" ]; then
-  info "dist/client 已存在，跳过前端构建"
+# 检查 dist/web 是否存在且有内容
+if [ -d "dist/web" ] && [ -f "dist/web/index.html" ]; then
+  info "dist/web 已存在，跳过前端构建"
 elif [ -f "Grade-Analysis-System-mobile.html" ]; then
   # 旧版兼容：用单独的 HTML 作为前端
   warn "使用 Grade-Analysis-System-mobile.html 作为前端 (旧版模式)"
-  mkdir -p dist/client
-  cp Grade-Analysis-System-mobile.html dist/client/index.html
+  mkdir -p dist/web
+  cp Grade-Analysis-System-mobile.html dist/web/index.html
   info "前端文件已同步"
 else
-  warn "dist/client 不存在且无独立 HTML，请先运行 npm run build:client"
+  warn "dist/web 不存在且无独立 HTML，请先运行 npm run build:web"
   warn "后端仍会启动，但前端页面可能不可用。"
 fi
 

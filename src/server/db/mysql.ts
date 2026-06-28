@@ -394,6 +394,18 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       ]
     },
+    {
+      version: 12,
+      name: "system-settings",
+      sqls: [
+        `CREATE TABLE IF NOT EXISTS system_settings (
+          \`key\` VARCHAR(100) PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `INSERT IGNORE INTO system_settings (\`key\`, value) VALUES ('ladder_enabled', '1')`,
+      ]
+    },
     // v1.7+ 在此追加新版本...
   ];
 

@@ -74,7 +74,7 @@ server {
 
 ### 3.2 同域部署（推荐）
 
-把 `Grade-Analysis-System-mobile.html` 放到 Project-X 的 `dist/client` 目录中，或直接放到 Nginx 的静态目录：
+把 `Grade-Analysis-System-mobile.html` 放到 Project-X 的 `dist/web` 目录中，或直接放到 Nginx 的静态目录：
 
 ```bash
 # 假设 Nginx 根目录为 /var/www/project-x

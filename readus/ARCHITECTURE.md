@@ -1,10 +1,13 @@
 # Project-X 架构分析
 
-**Project-X（答题卡设计系统）** 是大连五中自研的智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 成绩分析 → AI 成绩分析** 全流程。架构上支持 **本地 SQLite 单机模式** 和 **远程 MariaDB 服务器模式**，通过统一的 `DbAdapter` 接口无缝切换。
+**Project-X（答题卡设计阅卷系统）** 是大连五中自研的智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 成绩分析 → AI 成绩分析** 全流程。架构上支持 **本地 SQLite 单机模式** 和 **远程 MariaDB 服务器模式**，通过统一的 `DbAdapter` 接口无缝切换。
 
-> v1.6.0 起，扫描端/教师端/学生端各自独立，统一通过 HTTP API 通信。扫描端保留本地 SQLite 作为离线缓存和断网重试缓冲。
+> v1.6.1 起，代码库拆分为两个构建目标：
+> - **Web 构建** (`dist/web/`)：教师 + 学生页面，无扫描代码，部署到服务器
+> - **Scanner 构建** (`dist/scanner/`)：仅 ScannerPanel，打包进 Electron 桌面端
+> - 教师/学生 Electron 端已废弃，统一使用浏览器访问 Web 端
 
-技术栈：**Electron 桌面壳 + Express 后端 + React 前端 + C++ 原生子进程 + Python LLM 中转服务**。
+技术栈：**Electron 桌面壳（扫描端）+ Express 后端 + React 前端 + C++ 原生子进程 + Python LLM 中转服务**。
 
 ---
 
@@ -90,22 +93,19 @@ flowchart TB
 | 模式 | 前端 | 后端 | 数据目录 |
 |------|------|------|----------|
 | 开发 `npm run dev` | Vite :5173（代理 `/api`） | tsx :5174 | 项目根 `data/` |
-| 生产 / Electron | `dist/client` 静态资源 | `dist/server/index.mjs` | `%AppData%/.../userData/data/` |
+| Web 部署 | `dist/web` 静态资源 | `dist/server/index.mjs` | `data/` 或自定义 |
+| Electron 扫描端 | `dist/scanner` 静态资源 | `dist/server/index.mjs` | `%AppData%/answer-card-designer/` |
 
 Electron 主进程通过环境变量注入路径：
 
 ```javascript
-// electron/main.cjs
+// electron/main.cjs — v1.6.1: Scanner only
 async function startLocalServer() {
-  const appRoot = getAppRoot();
   const serverBundle = path.join(appRoot, "dist", "server", "index.mjs");
-  const clientDist = path.join(appRoot, "dist", "client");
-  const userDataDir = app.getPath("userData");
-  const dataDir = path.join(userDataDir, "data", "answer-card");
+  const clientDist = path.join(appRoot, "dist", "scanner");
 
-  process.env.ANSWER_CARD_DATA_DIR = dataDir;
+  process.env.PROJECTX_ENABLE_SCANNER = "1";
   process.env.ANSWER_CARD_CLIENT_DIST = clientDist;
-  process.env.PROJECTX_DB_PATH = path.join(userDataDir, "data", "projectx.db");
   // ...
 }
 ```
@@ -140,7 +140,7 @@ type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
 | 模式 | 职责 | 主要组件 |
 |------|------|----------|
 | **design** | 编辑答题卡、预览、导出 PDF | 内联编辑器 + `buildLayout` 预览 |
-| **grading** | 上传/扫描图片、批量识别判分 | `ScannerPanel`、`GradingResults`、`ScanPreviewModal`（共享弹窗） |
+| **grading** | 上传图片、批量识别判分 | `GradingResults`、`ScanPreviewModal`（共享弹窗） |
 | **analysis** | 考试统计、排名、题目分析 | `AnalysisOverview`、`AnalysisDistribution`、`AnalysisRanking`、`AnalysisQuestions`、`ScoreTable`、`ScanPreviewModal`（预览列） |
 | **scores** | 学生查看个人成绩 | `StudentScores` |
 | **account** | 教师/学生管理 | `AccountManagement`、`TeacherManagement`、`ClassManagement` |
@@ -162,7 +162,7 @@ type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
 
 1. 初始化 `projectx.db`、默认管理员、定时清理
 2. 挂载 REST 路由
-3. 生产环境托管 `dist/client`（SPA fallback）
+3. 生产环境托管 `dist/web`（SPA fallback）
 
 **API 域划分：**
 
@@ -328,6 +328,53 @@ sequenceDiagram
 
 扫描进度通过 **Server-Sent Events (SSE)** 推送，前端实时显示缩略图与状态。
 
+### 6.3 远端扫描上传 (v1.6.0)
+
+扫描端 Electron 支持**本地 / 远程双模**，在 ScannerPanel 界面切换。远程模式下扫描完成后自动上传到远端服务器：
+
+```mermaid
+sequenceDiagram
+    participant Scanner as ScannerPanel
+    participant Local as 本地 Express
+    participant Remote as 远端 Express
+    participant DB as 远端 SQLite/MariaDB
+
+    Scanner->>Local: GET /api/scanner/scan-image/:recordId
+    Local-->>Scanner: 本地扫描图片 blob
+    Scanner->>Remote: POST /api/scanner/upload/sessions (API Key)
+    Remote-->>Scanner: sessionId + uploadTokens
+    loop 每页
+        Scanner->>Remote: POST /sessions/:id/pages (multipart 图片)
+        Remote->>DB: 写入 twain_scan_records
+    end
+    Scanner->>Remote: POST /sessions/:id/complete
+    Remote->>DB: 标记 completed → 后台识别判分
+```
+
+**鉴权**：双鉴权 — 先查 `X-Api-Key`（管理员在账号设置中生成扫描专用 Key），无 Key 时降级 JWT token。
+
+**表**：`twain_scan_sessions` + `twain_scan_records`（schema.sql 含完整 DDL）。
+
+### 6.4 扫描端 UI 结构 (v1.6.1)
+
+扫描端采用**双屏路由**：答题卡选择 → 扫描工作台。
+
+```mermaid
+flowchart LR
+    Login[LoginPage] --> Select[CardSelectPage]
+    Select --> |点击答题卡| Workspace[ScannerWorkspace]
+    Workspace --> |返回| Select
+
+    Select -->|单科Tab| CardList[答题卡表格<br/>搜索+学科筛选]
+    Select -->|大考Tab| GroupList[大考组表格<br/>展开下辖考试]
+    
+    Workspace --> Scanner[ScannerPanel<br/>TWAIN直扫]
+    Workspace --> Import[文件导入阅卷<br/>目录+图片→判分]
+```
+
+- **CardSelectPage**：对齐 ExamSelectPage 风格，搜索框 + 学科筛选 + 表格列表；大考 Tab 展开显示下辖考试
+- **ScannerWorkspace**：左区 ScannerPanel（TWAIN 扫描），右区扫描设置 + 文件/目录导入阅卷（复用 GradingResults）
+
 ---
 
 ## 7. C++ 原生层
@@ -360,26 +407,31 @@ v1.1 中所有用户强制登录，具有基于角色的 UI（管理员/教师/�
 ```mermaid
 flowchart LR
     subgraph Build
-        V[Vite] --> DC[dist/client]
+        VW[Vite --mode web] --> DW[dist/web]
+        VS[Vite --mode scanner] --> DSc[dist/scanner]
         E[esbuild] --> DS[dist/server/index.mjs]
-        VS[Visual Studio] --> NAT[resources/native/win-*]
+        VSB[Visual Studio] --> NAT[resources/native/win-*]
     end
 
-    subgraph Pack
+    subgraph Deploy
+        Server[Web Server]
         EB[electron-builder]
-        EB --> S[学生端 EXE/MSI]
-        EB --> T[教师端 EXE/MSI]
-        EB --> TS[教师扫描端 EXE/MSI]
+        EB --> ScannerEXE[答题卡扫描端 EXE/MSI]
+        Server --> TeacherUI[教师/学生浏览器]
     end
 
-    DC --> EB
+    DW --> Server
+    DW --> EB
+    DSc --> EB
+    DS --> Server
     DS --> EB
     NAT --> EB
 ```
 
-- **前端：** Vite → `dist/client`
+- **前端（Web）：** Vite --mode web → `dist/web`
+- **前端（Scanner）：** Vite --mode scanner → `dist/scanner`
 - **后端：** esbuild 单文件 bundle（`packages: external`，保留 better-sqlite3 原生依赖）→ `dist/server/index.mjs`，并复制 `schema.sql`
-- **桌面：** electron-builder，Windows x64 / ia32，三端变体（学生/教师/扫描），按端和架构裁剪 native 资源，共用数据目录
+- **桌面：** electron-builder，Windows x64 / ia32，仅扫描端变体，携带 native 资源
 - **原生 Node 模块：** 需对 Electron 单独 `electron-rebuild`（better-sqlite3）
 
 ---

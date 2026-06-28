@@ -29,6 +29,7 @@ import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
 import apiKeysRoutes from "../../../server/routes/api-keys";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
+import ladderRoutes from "../../../server/routes/ladder";
 import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
 import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
@@ -377,6 +378,11 @@ export async function createApp(): Promise<express.Express> {
   });
   app.use("/assets", express.static(assetsDir));
 
+  app.get("/api/app/health", async (_req, res) => {
+    const db = await healthCheck();
+    res.status(db.ok ? 200 : 503).json({ ok: db.ok, db });
+  });
+
   // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
   app.use("/api", optionalAuth);
 
@@ -394,6 +400,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/admin/api-keys", apiKeysRoutes);
   app.use("/api/scanner/upload", scannerUploadRoutes);
   app.use("/api/ai/providers", aiProviderRoutes);
+  app.use("/api/ladder", ladderRoutes);
 
   // ── 应用配置（管理员） ──────────────────────────────────
   app.get("/api/app/db-config", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), async (req: express.Request, res: express.Response) => {
@@ -441,7 +448,17 @@ export async function createApp(): Promise<express.Express> {
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
-  console.log("[Server] v1.6.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
+  // ── 健康检查 ──
+  app.get("/api/app/health", async (_req, res) => {
+    try {
+      const health = await healthCheck();
+      res.json(health);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: String(err) });
+    }
+  });
+
+  console.log("[Server] v1.6.1 routes mounted");
 
   // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
@@ -1368,9 +1385,13 @@ export async function createApp(): Promise<express.Express> {
     });
   }
 
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ code: ApiError.NOT_FOUND, message: "API route not found" });
+  });
+
   const clientDist = process.env.ANSWER_CARD_CLIENT_DIST
     ? path.resolve(process.env.ANSWER_CARD_CLIENT_DIST)
-    : path.join(rootDir, "dist", "client");
+    : path.join(rootDir, "dist", "web");
   if (existsSync(clientDist)) {
     app.use(
       express.static(clientDist, {
