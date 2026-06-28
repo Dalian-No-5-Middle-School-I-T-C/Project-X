@@ -50,7 +50,7 @@ bash update.sh
 1. 保存本地修改（如缓存头配置）
 2. 从 GitHub 拉取最新代码
 3. 恢复本地修改（如有冲突会提示）
-4. 同步前端文件到 `dist/client/`
+4. 同步前端文件到 `dist/web/`
 5. 重启后端服务
 
 **更新完成后**，刷新浏览器即可看到最新版本。
@@ -69,9 +69,9 @@ git pull origin main
 # 3. 恢复本地修改
 git stash pop
 
-# 4. 同步前端文件到 dist/client
-cp Grade-Analysis-System-mobile.html dist/client/Grade-Analysis-System-mobile.html
-cp Grade-Analysis-System-mobile.html dist/client/index.html
+# 4. 同步前端文件到 dist/web
+cp Grade-Analysis-System-mobile.html dist/web/Grade-Analysis-System-mobile.html
+cp Grade-Analysis-System-mobile.html dist/web/index.html
 
 # 5. 重启后端（先停止旧进程，再启动新进程）
 kill <旧后端PID>

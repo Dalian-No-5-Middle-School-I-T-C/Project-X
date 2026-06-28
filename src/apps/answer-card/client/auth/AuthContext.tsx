@@ -12,7 +12,13 @@ const TEACHER_ROLE_OVERRIDE_KEY = "projectx_teacher_role_override";
 function loadPersona(): AppPersona | null {
   try {
     const v = localStorage.getItem(PERSONA_STORAGE_KEY);
-    if (v === "student" || v === "teacher" || v === "teacher-scanner") return v;
+    if (v === "student" || v === "teacher" || v === "teacher-scanner") {
+      // Web build: teacher-scanner is not a valid persona anymore
+      if (import.meta.env.VITE_BUILD_TARGET !== "scanner" && v === "teacher-scanner") {
+        return null; // Fall back to default
+      }
+      return v;
+    }
   } catch { /* ignore */ }
   return null;
 }
@@ -38,17 +44,23 @@ function saveTeacherRoleOverride(r: TeacherRoleOverride): void {
 
 function defaultPersonaForUser(user: AuthUser): AppPersona {
   if (user.role_name === "admin") {
-    // 管理员可任意切换，默认全功能扫描端
-    return loadPersona() ?? "teacher-scanner";
+    // Web build: default to teacher persona
+    // Scanner build: always teacher-scanner
+    return loadPersona() ?? (import.meta.env.VITE_BUILD_TARGET === "scanner" ? "teacher-scanner" : "teacher");
   }
   if (user.role_name === "student") return "student";
-  // 教师：如果有扫描硬件，默认扫描端；否则普通教师端
+  // Teacher: default to teacher persona (no scanner in web mode)
   return loadPersona() ?? "teacher";
 }
 
 function availablePersonasForUser(user: AuthUser): AppPersona[] {
   if (user.role_name === "admin") {
-    return ["teacher-scanner", "teacher", "student"];
+    // Web build: admin can switch between teacher and student
+    // Scanner build: admin is always teacher-scanner
+    if (import.meta.env.VITE_BUILD_TARGET === "scanner") {
+      return ["teacher-scanner"];
+    }
+    return ["teacher", "student"];
   }
   if (user.role_name === "student") return ["student"];
   return ["teacher"];
@@ -167,8 +179,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [user]
   );
   const canSwitchPersona = useMemo(
-    // v1.6.0: 扫描端打包禁用身份切换（编译时决定）
-    () => user?.role_name === "admin" && import.meta.env.VITE_PROJECTX_VARIANT !== "teacher-scanner",
+    // Web mode: admin can switch personas. Scanner mode: persona is fixed.
+    () => user?.role_name === "admin" && import.meta.env.VITE_BUILD_TARGET !== "scanner",
     [user]
   );
 

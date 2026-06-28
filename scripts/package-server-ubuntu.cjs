@@ -73,7 +73,7 @@ function createRuntimePackageJson() {
     type: "module",
     description: "Project-X Ubuntu 24 web server package. Supports local SQLite and remote MariaDB 10.11 without Electron dependencies.",
     scripts: {
-      start: "PROJECTX_AUTH_ENFORCE=${PROJECTX_AUTH_ENFORCE:-1} PROJECTX_VARIANT=${PROJECTX_VARIANT:-teacher} PROJECTX_ENABLE_SCANNER=${PROJECTX_ENABLE_SCANNER:-0} PROJECTX_MARIADB_HOST=${PROJECTX_MARIADB_HOST:-} PROJECTX_MARIADB_PORT=${PROJECTX_MARIADB_PORT:-3306} PROJECTX_MARIADB_USER=${PROJECTX_MARIADB_USER:-} PROJECTX_MARIADB_PASSWORD=${PROJECTX_MARIADB_PASSWORD:-} PROJECTX_MARIADB_DATABASE=${PROJECTX_MARIADB_DATABASE:-projectx} node dist/server/index.mjs"
+      start: "PROJECTX_AUTH_ENFORCE=${PROJECTX_AUTH_ENFORCE:-1} PROJECTX_ENABLE_SCANNER=${PROJECTX_ENABLE_SCANNER:-0} PROJECTX_MARIADB_HOST=${PROJECTX_MARIADB_HOST:-} PROJECTX_MARIADB_PORT=${PROJECTX_MARIADB_PORT:-3306} PROJECTX_MARIADB_USER=${PROJECTX_MARIADB_USER:-} PROJECTX_MARIADB_PASSWORD=${PROJECTX_MARIADB_PASSWORD:-} PROJECTX_MARIADB_DATABASE=${PROJECTX_MARIADB_DATABASE:-projectx} node dist/server/index.mjs"
     },
     engines: {
       node: ">=22"
@@ -90,7 +90,6 @@ cd "$(dirname "$0")"
 
 export PORT="\${PORT:-5174}"
 export PROJECTX_AUTH_ENFORCE="\${PROJECTX_AUTH_ENFORCE:-1}"
-export PROJECTX_VARIANT="\${PROJECTX_VARIANT:-teacher}"
 export PROJECTX_ENABLE_SCANNER="\${PROJECTX_ENABLE_SCANNER:-0}"
 
 # MariaDB remote mode. Leave empty for local SQLite.
@@ -107,11 +106,11 @@ exec node dist/server/index.mjs
 function createDeployReadme() {
   return `# Project-X Ubuntu 24 Web Server Package
 
-This is the browser-accessible web server package. It includes dist/client for the browser UI and dist/server for the API/static server, and supports local SQLite by default plus remote MariaDB 10.11 LTS for production multi-user deployments. It does not include Electron, electron-builder, Windows scanner bridge binaries, or Windows native resources.
+This is the browser-accessible web server package. It includes dist/web for the browser UI and dist/server for the API/static server, and supports local SQLite by default plus remote MariaDB 10.11 LTS for production multi-user deployments. It does not include Electron, electron-builder, Windows scanner bridge binaries, or Windows native resources.
 
 ## Contents
 
-- dist/client/: browser UI served by the Node app.
+- dist/web/: browser UI served by the Node app.
 - dist/server/index.mjs: Node API + static server.
 - dist/server/schema.sql: SQLite initialization schema.
 - dist/server/schema.mariadb.sql: MariaDB 10.11 schema.
@@ -144,7 +143,6 @@ The service listens on http://127.0.0.1:5174 by default. Point Nginx to this por
 Default environment:
 
 - PROJECTX_AUTH_ENFORCE=1
-- PROJECTX_VARIANT=teacher
 - PROJECTX_ENABLE_SCANNER=0
 
 Optional SQLite data paths:
@@ -207,7 +205,6 @@ Type=simple
 WorkingDirectory=/opt/project-x-server
 Environment=PORT=5174
 Environment=PROJECTX_AUTH_ENFORCE=1
-Environment=PROJECTX_VARIANT=teacher
 Environment=PROJECTX_ENABLE_SCANNER=0
 Environment=PROJECTX_MARIADB_HOST=
 Environment=PROJECTX_MARIADB_PORT=3306
@@ -235,8 +232,8 @@ assertInsideRoot(outputRoot);
 assertInsideRoot(packageDir);
 assertInsideRoot(zipPath);
 
-if (!existsSync(path.join(rootDir, "dist", "client", "index.html"))) {
-  throw new Error("Missing dist/client/index.html. Run npm run build:client before packaging.");
+if (!existsSync(path.join(rootDir, "dist", "web", "index.html"))) {
+  throw new Error("Missing dist/web/index.html. Run npm run build:web before packaging.");
 }
 if (!existsSync(path.join(rootDir, "dist", "server", "index.mjs"))) {
   throw new Error("Missing dist/server/index.mjs. Run npm run build:server before packaging.");
@@ -251,7 +248,7 @@ if (!existsSync(path.join(rootDir, "dist", "server", "schema.mariadb.sql"))) {
 rmSync(outputRoot, { recursive: true, force: true });
 mkdirSync(packageDir, { recursive: true });
 
-copyDirectoryIfExists(path.join(rootDir, "dist", "client"), path.join(packageDir, "dist", "client"));
+copyDirectoryIfExists(path.join(rootDir, "dist", "web"), path.join(packageDir, "dist", "web"));
 copyDirectoryIfExists(path.join(rootDir, "dist", "server"), path.join(packageDir, "dist", "server"));
 copyFileIfExists(path.join(rootDir, "resources", "background.jpg"), path.join(packageDir, "resources", "background.jpg"));
 mkdirSync(path.join(packageDir, "data", "answer-card"), { recursive: true });
