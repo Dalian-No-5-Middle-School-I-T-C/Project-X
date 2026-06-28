@@ -3166,7 +3166,7 @@ function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocumen
     <div className="pages">
       {layout.pages.map((page) => (
         <svg className="page" key={page.pageNumber} viewBox="0 0 210 297" role="img" aria-label={`第${page.pageNumber}页预览`}>
-          <rect x="0" y="0" width="210" height="297" style={{ fill: "var(--surface)" }} />
+          <rect x="0" y="0" width="210" height="297" style={{ fill: "#fff" }} />
           {page.markers.map((marker) => (
             <rect key={marker.role} {...marker.rect} fill="#20342f" />
           ))}
@@ -3174,7 +3174,7 @@ function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocumen
             ID:{page.header.id}
           </text>
           {page.header.codeBoxes.map((box, index) => (
-            <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" style={index !== 0 && index !== page.header.codeBoxes.length - 1 ? { fill: "var(--surface)" } : undefined} />
+            <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" style={index !== 0 && index !== page.header.codeBoxes.length - 1 ? { fill: "#fff" } : undefined} />
           ))}
           {page.header.title && (
             <text x="105" y={page.header.titleY} textAnchor="middle" className="svg-title">
@@ -3218,7 +3218,7 @@ function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][nu
       <line x1={separatorX} y1={area.digitRect.y + 7} x2={separatorX} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
       {area.digitCells.map((cell) => (
         <g key={`${cell.digitIndex}_${cell.digit}`}>
-          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "var(--surface)" }} />
+          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
           <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
             {cell.digit}
           </text>
@@ -3248,7 +3248,7 @@ function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "obje
           </text>
           {item.options.map((option) => (
             <g key={option.label}>
-              <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "var(--surface)" }} />
+              <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
               <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2} textAnchor="middle" dominantBaseline="central" className="svg-option-label">
                 {option.label}
               </text>
@@ -3293,7 +3293,7 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
               )}
               {question.scoreCells.map((cell) => (
                 <g key={cell.score}>
-                  <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" style={{ fill: "var(--surface)" }} />
+                  <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" style={{ fill: "#fff" }} />
                   {cell.score !== null && (
                     <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + 4.2} textAnchor="middle" className="svg-tiny">
                       {cell.score}

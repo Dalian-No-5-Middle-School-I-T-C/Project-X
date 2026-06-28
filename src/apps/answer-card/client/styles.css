@@ -126,7 +126,8 @@ body {
 }
 
 [data-theme="dark"] .mode-toggle {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(22, 27, 34, 0.7);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 [data-theme="dark"] .mode-toggle button:hover {
@@ -140,6 +141,24 @@ body {
 [data-theme="dark"] .topbar-actions .ghost-button:hover {
   background: rgba(255, 255, 255, 0.06);
   color: var(--text);
+}
+
+/* ── Topbar dark adaptation ── */
+[data-theme="dark"] .topbar {
+  background: rgba(22, 27, 34, 0.75);
+}
+[data-theme="dark"] .topbar:hover {
+  background: rgba(22, 27, 34, 0.85);
+}
+
+/* ── Preview panel dark: glow uses brand-soft, card stays white (paper) ── */
+[data-theme="dark"] .preview-panel::before {
+  background: radial-gradient(ellipse at 30% 70%, var(--brand-tint) 0%, transparent 50%);
+}
+
+/* ── Inspector dark: use surface instead of hardcoded light bg ── */
+[data-theme="dark"] .inspector {
+  background: rgba(22, 27, 34, 0.85);
 }
 
 button, input, select {
