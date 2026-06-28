@@ -421,7 +421,17 @@ export async function createApp(): Promise<express.Express> {
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
-  console.log("[Server] v1.6.0 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
+  // ── 健康检查 ──
+  app.get("/api/app/health", async (_req, res) => {
+    try {
+      const health = await healthCheck();
+      res.json(health);
+    } catch (err) {
+      res.status(500).json({ ok: false, error: String(err) });
+    }
+  });
+
+  console.log("[Server] v1.6.1 routes mounted");
 
   // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
