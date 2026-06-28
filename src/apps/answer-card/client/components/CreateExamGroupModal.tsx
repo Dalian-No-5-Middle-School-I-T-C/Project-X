@@ -41,9 +41,6 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
 
-  // Inline new exam creation
-  const [error, setError] = useState("");
-
   const isEdit = !!existingGroup;
 
   useEffect(() => {
