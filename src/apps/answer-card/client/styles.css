@@ -71,47 +71,44 @@ body {
 }
 
 /* ── Dark Theme ─────────────────────────────────────── */
-
 [data-theme="dark"] body {
-  background: radial-gradient(ellipse at 20% 50%, rgba(192, 15, 40, 0.04) 0%, transparent 50%),
-              radial-gradient(ellipse at 80% 20%, rgba(192, 15, 40, 0.03) 0%, transparent 50%),
+  background: radial-gradient(ellipse at 20% 50%, rgba(192, 57, 43, 0.04) 0%, transparent 50%),
+              radial-gradient(ellipse at 80% 20%, rgba(192, 57, 43, 0.03) 0%, transparent 50%),
               var(--background);
 }
 
 [data-theme="dark"] {
-  /* ── Brand (low-brightness red — visible but not harsh) ── */
-  --brand: #D94040;
-  --brand-light: #F06060;
-  --brand-dark: #B03030;
-  --brand-glow: rgba(217, 64, 64, 0.25);
-  --brand-soft: rgba(217, 64, 64, 0.12);
-  --brand-tint: rgba(217, 64, 64, 0.06);
+  /* ── Brand (暗红色 - 无高光，沉稳克制) ── */
+  --brand: #C0392B;
+  --brand-light: #D44637;
+  --brand-dark: #96281B;
+  --brand-glow: rgba(192, 57, 43, 0.20);
+  --brand-soft: rgba(192, 57, 43, 0.10);
+  --brand-tint: rgba(192, 57, 43, 0.05);
 
-  /* ── Neutral (bright text, deep surfaces) ── */
-  --text: #EAEAEA;
-  --text-primary: #EAEAEA;
-  --text-secondary: #A0A0A0;
-  --muted: #888888;
+  /* ── Neutral Scale (GitHub-dark-inspired) ─────────────── */
+  --text: #E6EDF3;
+  --text-primary: #E6EDF3;
+  --text-secondary: #8B949E;
+  --muted: #6E7681;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.12);
-  --line-light: rgba(255, 255, 255, 0.05);
+  --line-light: rgba(255, 255, 255, 0.04);
   --surface: #161B22;
   --surface-raised: #21262D;
   --surface-soft: rgba(255, 255, 255, 0.04);
   --bg-soft: rgba(255, 255, 255, 0.04);
   --surface-glass: rgba(255, 255, 255, 0.06);
   --surface-glass-hover: rgba(255, 255, 255, 0.10);
-  --surface-tint: rgba(217, 64, 64, 0.06);
+  --surface-tint: rgba(192, 57, 43, 0.05);
   --background: #0D1117;
   --background-deep: #010409;
-
-  /* ── Shadows ── */
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.5);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.6), 0 1px 2px rgba(0,0,0,0.4);
-  --shadow-lg: 0 12px 40px rgba(0,0,0,0.7), 0 4px 8px rgba(0,0,0,0.5);
-  --shadow-glass: 0 8px 32px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.04);
-  --shadow-brand: 0 4px 16px rgba(192, 15, 40, 0.35);
-  --shadow-brand-lg: 0 8px 28px rgba(192, 15, 40, 0.40);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.5), 0 2px 4px rgba(0,0,0,0.3);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.6), 0 4px 8px rgba(0,0,0,0.4);
+  --shadow-glass: 0 8px 32px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06);
+  --shadow-brand: 0 2px 8px rgba(192, 57, 43, 0.15);
+  --shadow-brand-lg: 0 4px 16px rgba(192, 57, 43, 0.18);
 
   color-scheme: dark;
 }
@@ -4555,6 +4552,47 @@ body.has-bg-image::after {
   background: var(--surface);
 }
 
+/* 账号菜单触发按钮 */
+[data-theme="dark"] .account-menu-trigger {
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  border-color: var(--line-strong);
+}
+[data-theme="dark"] .account-menu-trigger:hover {
+  color: var(--brand);
+  border-color: rgba(192, 57, 43, 0.25);
+}
+
+/* 账号管理面板 */
+[data-theme="dark"] .account-form-grid,
+[data-theme="dark"] .account-import-box,
+[data-theme="dark"] .class-column,
+[data-theme="dark"] .score-card {
+  background: var(--surface);
+}
+[data-theme="dark"] .account-search {
+  background: var(--surface-raised);
+  border-color: var(--line-strong);
+}
+[data-theme="dark"] .class-list-item,
+[data-theme="dark"] .roster-item,
+[data-theme="dark"] .student-search-item {
+  background: var(--surface-raised);
+  color: var(--text);
+  border-color: var(--line);
+}
+[data-theme="dark"] .class-list-item:hover,
+[data-theme="dark"] .roster-item:hover,
+[data-theme="dark"] .student-search-item:hover {
+  background: var(--surface);
+  border-color: rgba(192, 57, 43, 0.20);
+}
+
+/* 账号设置导航 */
+[data-theme="dark"] .account-settings-nav {
+  border-color: var(--line);
+}
+
 /* 编辑面板 */
 [data-theme="dark"] .question-editor,
 [data-theme="dark"] .answer-key-editor,
@@ -4636,6 +4674,19 @@ body.has-bg-image::after {
   box-shadow: var(--shadow-brand);
 }
 
+/* 暗色模式下按钮 — 移除高光，hover 不加亮 */
+[data-theme="dark"] .primary-button::after,
+[data-theme="dark"] .mode-toggle button.active::after {
+  background: none;
+}
+[data-theme="dark"] .primary-button:hover:not(:disabled) {
+  filter: none;
+  box-shadow: var(--shadow-brand-lg);
+}
+[data-theme="dark"] .answer-key-row button.active::after {
+  background: none;
+}
+
 /* 设计器 inspector / block-chip 暗色 */
 [data-theme="dark"] .inspector {
   background: rgba(22, 27, 34, 0.85);
@@ -4646,46 +4697,8 @@ body.has-bg-image::after {
 [data-theme="dark"] .block-chip:hover {
   background: rgba(255, 255, 255, 0.10);
 }
-[data-theme="dark"] .class-column,
 [data-theme="dark"] .account-table-wrap {
   background: rgba(255, 255, 255, 0.05);
-}
-
-/* 账号菜单触发按钮 (来自 #139) */
-[data-theme="dark"] .account-menu-trigger {
-  background: var(--surface-raised);
-  color: var(--text-secondary);
-  border-color: var(--line-strong);
-}
-[data-theme="dark"] .account-menu-trigger:hover {
-  color: var(--brand);
-  border-color: var(--brand-soft);
-}
-
-/* 班级/学生列表项 */
-[data-theme="dark"] .class-list-item,
-[data-theme="dark"] .roster-item,
-[data-theme="dark"] .student-search-item {
-  background: var(--surface-raised);
-  color: var(--text);
-  border-color: var(--line);
-}
-[data-theme="dark"] .class-list-item:hover,
-[data-theme="dark"] .roster-item:hover,
-[data-theme="dark"] .student-search-item:hover {
-  background: var(--surface);
-  border-color: rgba(192, 15, 40, 0.15);
-}
-
-/* 暗色按钮移除高光伪元素 */
-[data-theme="dark"] .primary-button::after,
-[data-theme="dark"] .mode-toggle button.active::after,
-[data-theme="dark"] .answer-key-row button.active::after {
-  background: none;
-}
-[data-theme="dark"] .primary-button:hover:not(:disabled) {
-  filter: none;
-  box-shadow: var(--shadow-brand-lg);
 }
 
 /* ── 账号设置布局 (v1.4.7) ────────────────────────────── */
@@ -4730,19 +4743,6 @@ body.has-bg-image::after {
 
 [data-theme="dark"] .account-settings-nav-item:hover {
   background: rgba(255, 255, 255, 0.04);
-}
-[data-theme="dark"] .account-settings-nav {
-  border-color: var(--line);
-}
-[data-theme="dark"] .account-form-grid,
-[data-theme="dark"] .account-import-box,
-[data-theme="dark"] .class-column,
-[data-theme="dark"] .score-card {
-  background: var(--surface);
-}
-[data-theme="dark"] .account-search {
-  background: var(--surface-raised);
-  border-color: var(--line-strong);
 }
 
 .account-settings-nav-item.active {
