@@ -71,41 +71,51 @@ body {
 }
 
 /* ── Dark Theme ─────────────────────────────────────── */
-[data-theme="dark"] {
-  /* ── Brand (slightly desaturated for dark bg comfort) ── */
-  --brand: #F05060;
-  --brand-light: #FF7080;
-  --brand-dark: #D03040;
-  --brand-glow: rgba(240, 80, 96, 0.30);
-  --brand-soft: rgba(240, 80, 96, 0.12);
-  --brand-tint: rgba(240, 80, 96, 0.06);
 
-  /* ── Neutral Scale (GitHub-dark-inspired) ─────────────── */
-  --text: #E6EDF3;
-  --text-primary: #E6EDF3;
+[data-theme="dark"] body {
+  background: radial-gradient(ellipse at 20% 50%, rgba(247, 120, 102, 0.04) 0%, transparent 50%),
+              radial-gradient(ellipse at 80% 20%, rgba(247, 120, 102, 0.03) 0%, transparent 50%),
+              var(--background);
+}
+
+[data-theme="dark"] {
+  /* ── Brand (muted coral — soft on eyes, keeps school red identity) ── */
+  --brand: #F77866;
+  --brand-light: #FF9B8C;
+  --brand-dark: #D45A4A;
+  --brand-glow: rgba(247, 120, 102, 0.25);
+  --brand-soft: rgba(247, 120, 102, 0.10);
+  --brand-tint: rgba(247, 120, 102, 0.05);
+
+  /* ── Neutral (GitHub Dark inspired, blue-tinted grays) ── */
+  --text: #C9D1D9;
+  --text-primary: #C9D1D9;
   --text-secondary: #8B949E;
-  --muted: #6E7681;
+  --muted: #484F58;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.12);
-  --line-light: rgba(255, 255, 255, 0.04);
+  --line-light: rgba(255, 255, 255, 0.05);
   --surface: #161B22;
   --surface-raised: #21262D;
   --surface-soft: rgba(255, 255, 255, 0.04);
   --bg-soft: rgba(255, 255, 255, 0.04);
   --surface-glass: rgba(255, 255, 255, 0.06);
   --surface-glass-hover: rgba(255, 255, 255, 0.10);
-  --surface-tint: rgba(240, 80, 96, 0.06);
+  --surface-tint: rgba(247, 120, 102, 0.06);
   --background: #0D1117;
   --background-deep: #010409;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.3);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.5), 0 2px 4px rgba(0,0,0,0.3);
-  --shadow-lg: 0 12px 40px rgba(0,0,0,0.6), 0 4px 8px rgba(0,0,0,0.4);
-  --shadow-glass: 0 8px 32px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.06);
-  --shadow-brand: 0 4px 16px rgba(240, 80, 96, 0.30);
-  --shadow-brand-lg: 0 8px 28px rgba(240, 80, 96, 0.35);
+
+  /* ── Shadows (deeper for dark bg depth) ── */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.5);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.6), 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-lg: 0 12px 40px rgba(0,0,0,0.7), 0 4px 8px rgba(0,0,0,0.5);
+  --shadow-glass: 0 8px 32px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.04);
+  --shadow-brand: 0 4px 16px rgba(247, 120, 102, 0.25);
+  --shadow-brand-lg: 0 8px 28px rgba(247, 120, 102, 0.30);
 
   color-scheme: dark;
 }
+
 
 [data-theme="dark"] .liquid-glass {
   border-color: rgba(255, 255, 255, 0.08);
