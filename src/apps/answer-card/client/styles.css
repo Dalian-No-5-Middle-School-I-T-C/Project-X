@@ -1724,7 +1724,8 @@ input[type="checkbox"]:disabled {
 
 .svg-footer {
   font-size: 3px;
-  fill: #555;
+  fill: #111;
+  font-weight: 600;
 }
 
 /* ── Responsive ─────────────────────────────────────── */
@@ -6875,4 +6876,48 @@ body.has-bg-image::after {
 }
 [data-theme="dark"] .blank-preview {
   color: var(--text-secondary);
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   Dark Mode Fine-tuning Fixes (2026-06-27)
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Card SVG text: always dark on white paper ──
+   The answer card is physical white paper; text must stay dark
+   regardless of app theme. Override all previous light-gray SVG rules. */
+[data-theme="dark"] .svg-title,
+[data-theme="dark"] .svg-section,
+[data-theme="dark"] .svg-label,
+[data-theme="dark"] .svg-small,
+[data-theme="dark"] .svg-tiny,
+[data-theme="dark"] .svg-option-label,
+[data-theme="dark"] .svg-blank-label,
+[data-theme="dark"] .svg-footer {
+  fill: #111 !important;
+}
+
+/* ── Topbar button text: bright white, not muted gray ──
+   The settings / logout button in top-right must be clearly readable. */
+[data-theme="dark"] .topbar-actions .ghost-button {
+  color: var(--text) !important;
+  background: rgba(22, 27, 34, 0.6);
+}
+
+/* ── Topbar button hover: subtle lightening, no dark flash ──
+   Previous hover used rgba(33,38,45,0.85) which looked like a black blob.
+   Use a subtle white overlay instead. */
+[data-theme="dark"] .topbar-actions .ghost-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08) !important;
+  border-color: rgba(217, 64, 64, 0.2) !important;
+  color: var(--text) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+/* ── Global ghost-button hover: consistent subtle effect ──
+   Apply the same subtle hover to all ghost buttons in dark mode. */
+[data-theme="dark"] .ghost-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: var(--text) !important;
 }
