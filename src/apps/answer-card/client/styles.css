@@ -73,25 +73,25 @@ body {
 /* ── Dark Theme ─────────────────────────────────────── */
 
 [data-theme="dark"] body {
-  background: radial-gradient(ellipse at 20% 50%, rgba(247, 120, 102, 0.04) 0%, transparent 50%),
-              radial-gradient(ellipse at 80% 20%, rgba(247, 120, 102, 0.03) 0%, transparent 50%),
+  background: radial-gradient(ellipse at 20% 50%, rgba(192, 15, 40, 0.04) 0%, transparent 50%),
+              radial-gradient(ellipse at 80% 20%, rgba(192, 15, 40, 0.03) 0%, transparent 50%),
               var(--background);
 }
 
 [data-theme="dark"] {
-  /* ── Brand (muted coral — soft on eyes, keeps school red identity) ── */
-  --brand: #F77866;
-  --brand-light: #FF9B8C;
-  --brand-dark: #D45A4A;
-  --brand-glow: rgba(247, 120, 102, 0.25);
-  --brand-soft: rgba(247, 120, 102, 0.10);
-  --brand-tint: rgba(247, 120, 102, 0.05);
+  /* ── Brand (low-brightness red — visible but not harsh) ── */
+  --brand: #D94040;
+  --brand-light: #F06060;
+  --brand-dark: #B03030;
+  --brand-glow: rgba(217, 64, 64, 0.25);
+  --brand-soft: rgba(217, 64, 64, 0.12);
+  --brand-tint: rgba(217, 64, 64, 0.06);
 
-  /* ── Neutral (GitHub Dark inspired, blue-tinted grays) ── */
-  --text: #C9D1D9;
-  --text-primary: #C9D1D9;
-  --text-secondary: #8B949E;
-  --muted: #484F58;
+  /* ── Neutral (bright text, deep surfaces) ── */
+  --text: #EAEAEA;
+  --text-primary: #EAEAEA;
+  --text-secondary: #A0A0A0;
+  --muted: #6A6A6A;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.12);
   --line-light: rgba(255, 255, 255, 0.05);
@@ -101,17 +101,17 @@ body {
   --bg-soft: rgba(255, 255, 255, 0.04);
   --surface-glass: rgba(255, 255, 255, 0.06);
   --surface-glass-hover: rgba(255, 255, 255, 0.10);
-  --surface-tint: rgba(247, 120, 102, 0.06);
+  --surface-tint: rgba(217, 64, 64, 0.06);
   --background: #0D1117;
   --background-deep: #010409;
 
-  /* ── Shadows (deeper for dark bg depth) ── */
+  /* ── Shadows ── */
   --shadow-sm: 0 1px 2px rgba(0,0,0,0.5);
   --shadow-md: 0 4px 12px rgba(0,0,0,0.6), 0 1px 2px rgba(0,0,0,0.4);
   --shadow-lg: 0 12px 40px rgba(0,0,0,0.7), 0 4px 8px rgba(0,0,0,0.5);
   --shadow-glass: 0 8px 32px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.04);
-  --shadow-brand: 0 4px 16px rgba(247, 120, 102, 0.25);
-  --shadow-brand-lg: 0 8px 28px rgba(247, 120, 102, 0.30);
+  --shadow-brand: 0 4px 16px rgba(192, 15, 40, 0.35);
+  --shadow-brand-lg: 0 8px 28px rgba(192, 15, 40, 0.40);
 
   color-scheme: dark;
 }
@@ -811,7 +811,7 @@ button {
 .page {
   width: min(100%, 760px);
   aspect-ratio: 210 / 297;
-  background: #fff;
+  background: var(--surface);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.10), 0 4px 12px rgba(0, 0, 0, 0.06);
   border-radius: 2px;
   transition: transform 0.4s cubic-bezier(0.25, 0.46, 0.45, 0.94), box-shadow 0.4s ease;
