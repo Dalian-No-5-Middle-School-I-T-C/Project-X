@@ -157,20 +157,20 @@ export class ExamRepository {
 
   async saveRecognition(recordId: number, blockId: string, questionNumber: number, selectedOptions: string[], confidence?: number): Promise<void> {
     await this.db.run(
-      "INSERT INTO objective_recognitions (record_id, block_id, question_number, selected_options, confidence) VALUES (?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE selected_options=VALUES(selected_options), confidence=VALUES(confidence)",
+      "REPLACE INTO objective_recognitions (record_id, block_id, question_number, selected_options, confidence) VALUES (?, ?, ?, ?, ?)",
       recordId, blockId, questionNumber, JSON.stringify(selectedOptions), confidence ?? null);
   }
 
   async saveObjectiveGrade(recordId: number, questionNumber: number, blockId: string, score: number, maxScore: number, isCorrect: number): Promise<void> {
     await this.db.run(
-      "INSERT INTO objective_grades (record_id, question_number, block_id, score, max_score, is_correct) VALUES (?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE score=VALUES(score), max_score=VALUES(max_score), is_correct=VALUES(is_correct)",
+      "REPLACE INTO objective_grades (record_id, question_number, block_id, score, max_score, is_correct) VALUES (?, ?, ?, ?, ?, ?)",
       recordId, questionNumber, blockId, score, maxScore, isCorrect);
   }
 
   async saveStudentScore(examId: number, studentId: number, objectiveScore: number, subjectiveScore: number): Promise<void> {
     const total = objectiveScore + subjectiveScore;
     await this.db.run(
-      "INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score, graded_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON DUPLICATE KEY UPDATE objective_score=VALUES(objective_score), subjective_score=VALUES(subjective_score), total_score=VALUES(total_score), graded_at=CURRENT_TIMESTAMP",
+      "REPLACE INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score, graded_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
       examId, studentId, objectiveScore, subjectiveScore, total);
   }
 

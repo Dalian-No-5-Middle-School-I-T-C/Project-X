@@ -1,9 +1,8 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
   BarChart3,
-  Camera,
   ChevronDown,
   ClipboardCheck,
   ClipboardList,
@@ -76,7 +75,6 @@ import {
   type ProjectXAppMode,
   type ProjectXVariantConfig
 } from "../../../shared/appVariant";
-import { ScannerPanel } from "./components/ScannerPanel";
 import { ScanPreviewModal, type ScanPage } from "./components/ScanPreviewModal";
 import { ImportCardModal, type ImportCardFormData } from "./components/ImportCardModal";
 import { AnalysisOverview } from "./components/AnalysisOverview";
@@ -375,10 +373,11 @@ function findNextQuestionNumber(card: AnswerCard): number {
 }
 
 function App() {
-  const { user, loading, hasPermission } = useAuth();
+  const { user, loading, hasPermission, persona, teacherRoleOverride } = useAuth();
+  // v1.6.0: 运行时 persona 替换 compile-time VITE_PROJECTX_VARIANT
   const appVariant = useMemo(
-    () => getProjectXVariantConfig(import.meta.env.VITE_PROJECTX_VARIANT),
-    []
+    () => getProjectXVariantConfig(persona),
+    [persona]
   );
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
@@ -398,7 +397,8 @@ function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>("idle");
   const gradingProgressSourceRef = useRef<EventSource | null>(null);
-  const [showScanner, setShowScanner] = useState(false);
+  // Note: Scanner has been split into a separate build (ScannerApp.tsx).
+  // Web mode never renders ScannerPanel; the "扫描仪录入" button is removed.
   const [analysisExamId, setAnalysisExamId] = useState<number | null>(null);
   const [analysisClassId, setAnalysisClassId] = useState<string>("");
   const [analysisClasses, setAnalysisClasses] = useState<Array<{ classId: number; className: string }>>([]);
@@ -454,6 +454,7 @@ function App() {
     [appVariant]
   );
 
+  // 扫描 TAB：需要 variant 允许扫描 + grading 权限 + 本地有扫描硬件
   const canDesign = variantAllows("design") && hasPermission(PERMISSIONS.CARD_READ);
   const canManageExams = variantAllows("exam-manage") && hasPermission(PERMISSIONS.EXAM_WRITE);
   const canGrade = variantAllows("grading") && hasPermission(PERMISSIONS.GRADE_READ);
@@ -461,7 +462,6 @@ function App() {
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
   const canManageAccounts = variantAllows("account") && hasPermission(PERMISSIONS.USER_MANAGE);
-  const canUseScanner = appVariant.enableScanner && canGrade;
   const showCardSidebar = mode === "design" && canDesign;
   const showScoresTab = canViewScores;
 
@@ -492,12 +492,6 @@ function App() {
       window.removeEventListener("beforeunload", flushOnPageHide);
     };
   }, []);
-
-  useEffect(() => {
-    if (!canUseScanner && showScanner) {
-      setShowScanner(false);
-    }
-  }, [canUseScanner, showScanner]);
 
   useEffect(() => {
     if (!user || (!canDesign && !canGrade)) return;
@@ -1299,7 +1293,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.5.0</span>
+            <span>Project-X v1.6.1</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
@@ -1662,9 +1656,34 @@ function App() {
                 <div style={{ display: "flex", gap: 6 }}>
                   <button className="primary-button" onClick={async () => {
                     const name = newExamName.trim();
-                    if (!name || !newExamCardId && !card?.id) { setStatus("请填写名称和选择答题卡"); return; }
+                    if (!name) { setStatus("请填写考试名称"); return; }
                     try {
-                      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId: newExamCardId || card?.id, subject: newExamSubject.trim() || undefined }) });
+                      let cardId = newExamCardId || card?.id;
+                      // 方案 B：如果没有选择答题卡，先自动创建一张最简答题卡
+                      if (!cardId) {
+                        const subjectPinyinMap: Record<string, string> = {
+                          "语文": "yuwen", "数学": "shuxue", "英语": "yingyu", "外语": "yingyu",
+                          "物理": "wuli", "化学": "huaxue", "生物": "shengwu",
+                          "政治": "zhengzhi", "历史": "lishi", "地理": "dili"
+                        };
+                        const subjectVal = newExamSubject.trim();
+                        const subjectPinyin = subjectPinyinMap[subjectVal] || subjectVal || "custom";
+                        const today = new Date().toISOString().split("T")[0];
+                        const cardRes = await fetchJson<any>("/api/cards", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            subject: subjectPinyin,
+                            title: name,
+                            subjectLabel: subjectVal || undefined,
+                            examDate: today,
+                            englishListening: false,
+                            chineseChoicePlacement: "front"
+                          })
+                        });
+                        cardId = cardRes.id;
+                      }
+                      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId, subject: newExamSubject.trim() || undefined }) });
                       setNewExamName(""); setNewExamSubject(""); setShowCreateExam(false);
                       loadExams();
                     } catch (err) { setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`); }
@@ -1775,17 +1794,7 @@ function App() {
         </div>
         <div className={`main-grid grading-grid ${mode === "grading" ? "" : "hidden-panel"}`}>
           <section className="preview-panel grading-results-panel">
-            {showScanner && card ? (
-              <ScannerPanel
-                cardId={card.id}
-                onScansComplete={(sessionId, pageCount) => {
-                  setStatus(`扫描完成：${pageCount} 张，学号已识别并存入数据库`);
-                }}
-                onClose={() => setShowScanner(false)}
-              />
-            ) : (
-              <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
-            )}
+            <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
           </section>
 
           <aside className="inspector">
@@ -1887,16 +1896,6 @@ function App() {
                   />
                 </label>
               </div>
-              {canUseScanner && (
-              <button
-                className="primary-button wide-button"
-                style={{ marginTop: 8 }}
-                onClick={() => setShowScanner(true)}
-                disabled={!card || isBusy}
-              >
-                <Camera size={17} /> 扫描仪录入
-              </button>
-              )}
               <div className="file-queue">
                 <div>
                   <strong>{gradingFiles.length}</strong>

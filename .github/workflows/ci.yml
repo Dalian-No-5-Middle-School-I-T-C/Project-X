@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  typecheck-and-test:
+    name: Typecheck & Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Rebuild native module (better-sqlite3)
+        run: npm rebuild better-sqlite3
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Auth / RBAC test suite
+        run: npm run verify:auth
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    needs: typecheck-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+
+      - name: Rebuild native module
+        run: npm rebuild better-sqlite3
+
+      - name: Build
+        run: npm run build

@@ -29,39 +29,40 @@ export function createScannerRouter(): Router {
   ): Promise<void> {
     if (!result.studentId || result.studentId === "未识别") return;
 
-    const { getDatabase } = await import("../../../../server/db");
-    const mainDb = getDatabase();
+    const { getMysqlDb } = await import("../../../../server/db");
+    const db = getMysqlDb();
 
     // Find user by student_number
-    const user = mainDb.prepare("SELECT id FROM users WHERE student_number = ?").get(result.studentId) as { id: number } | undefined;
+    const user = await db.get("SELECT id FROM users WHERE student_number = ?", result.studentId) as { id: number } | undefined;
     if (!user) return;
 
     // Find exams linked to this card
-    const exams = mainDb.prepare("SELECT id FROM exams WHERE card_id = ? AND status != 'closed'").all(cardId) as Array<{ id: number }>;
+    const exams = await db.all("SELECT id FROM exams WHERE card_id = ? AND status != 'closed'", cardId) as Array<{ id: number }>;
     if (exams.length === 0) return;
 
-    const insertScore = mainDb.prepare(`
-      INSERT OR REPLACE INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score, graded_at)
-      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `);
-    const insertQs = mainDb.prepare(`
-      INSERT OR REPLACE INTO question_scores (exam_id, student_id, question_number, question_id, score, max_score, score_type)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-
     for (const exam of exams) {
-      insertScore.run(exam.id, user.id, result.objectiveScore, result.subjectiveScore, result.totalScore);
+      await db.run(
+        "REPLACE INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score, graded_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+        exam.id, user.id, result.objectiveScore, result.subjectiveScore, result.totalScore
+      );
 
-      // Write per-question scores from deduplicated results
       for (const q of result.objectiveQuestions) {
-        insertQs.run(exam.id, user.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+        await db.run(
+          "REPLACE INTO question_scores (exam_id, student_id, question_number, question_id, score, max_score, score_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          exam.id, user.id, q.questionNumber, "", q.score, q.maxScore, "objective"
+        );
       }
       for (const sq of result.subjectiveQuestions) {
-        insertQs.run(exam.id, user.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective");
+        await db.run(
+          "REPLACE INTO question_scores (exam_id, student_id, question_number, question_id, score, max_score, score_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          exam.id, user.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective"
+        );
       }
 
-      // Update exam status to 'grading' if still draft
-      mainDb.prepare("UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'draft'").run(exam.id);
+      await db.run(
+        "UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'draft'",
+        exam.id
+      );
     }
   }
 
@@ -128,13 +129,13 @@ export function createScannerRouter(): Router {
 
   router.get("/scan/:sessionId", async (req, res, next) => {
     try {
-      const session = getSession(safeId(req.params.sessionId));
+      const session = await getSession(safeId(req.params.sessionId));
       if (!session) {
         res.status(404).json({ message: "扫描会话不存在" });
         return;
       }
 
-      const records = listScanRecords(session.id);
+      const records = await listScanRecords(session.id);
       res.json({
         session,
         records: records.map((r) => ({
@@ -157,7 +158,7 @@ export function createScannerRouter(): Router {
 
   router.get("/sessions/:cardId", async (req, res, next) => {
     try {
-      const sessions = listSessions(safeId(req.params.cardId));
+      const sessions = await listSessions(safeId(req.params.cardId));
       res.json(sessions);
     } catch (error) {
       next(error);
@@ -169,12 +170,12 @@ export function createScannerRouter(): Router {
   router.delete("/scan/:sessionId", async (req, res, next) => {
     try {
       const id = safeId(req.params.sessionId);
-      const session = getSession(id);
+      const session = await getSession(id);
       if (!session) {
         res.status(404).json({ message: "扫描会话不存在" });
         return;
       }
-      deleteSession(id);
+      await deleteSession(id);
       res.json({ message: "已删除" });
     } catch (error) {
       next(error);
@@ -185,7 +186,7 @@ export function createScannerRouter(): Router {
 
   router.get("/record/:recordId", async (req, res, next) => {
     try {
-      const record = getScanRecordWithResult(safeId(req.params.recordId));
+      const record = await getScanRecordWithResult(safeId(req.params.recordId));
       if (!record) {
         res.status(404).json({ message: "扫描记录不存在" });
         return;
@@ -206,7 +207,7 @@ export function createScannerRouter(): Router {
         res.status(404).json({ message: "扫描记录不存在" });
         return;
       }
-      deleteScanRecord(id);
+      await deleteScanRecord(id);
       res.json({ message: "已删除" });
     } catch (error) {
       next(error);
@@ -254,26 +255,26 @@ export function createScannerRouter(): Router {
         return;
       }
 
-      const { getDatabase } = await import("../../../../server/db");
-      const mainDb = getDatabase();
+      const { getMysqlDb } = await import("../../../../server/db");
+      const db = getMysqlDb();
 
-      const exam = mainDb.prepare("SELECT card_id FROM exams WHERE id = ?").get(examId) as { card_id: string | null } | undefined;
+      const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
       if (!exam || !exam.card_id) {
         res.json({ studentId, studentNumber: "", pages: [] });
         return;
       }
 
       const cardId = exam.card_id;
-      const user = mainDb.prepare("SELECT student_number FROM users WHERE id = ?").get(studentId) as { student_number: string | null } | undefined;
+      const user = await db.get("SELECT student_number FROM users WHERE id = ?", studentId) as { student_number: string | null } | undefined;
 
       // Query scan_records for this student in this exam
-      const records = mainDb.prepare(`
+      const records = await db.all(`
         SELECT sr.id, sr.file_path, sr.file_name
         FROM scan_records sr
         JOIN scan_batches sb ON sr.batch_id = sb.id
         WHERE sb.exam_id = ? AND sr.student_id = ?
         ORDER BY sr.id
-      `).all(examId, studentId) as Array<{ id: number; file_path: string; file_name: string }>;
+      `, examId, studentId) as Array<{ id: number; file_path: string; file_name: string }>;
 
       if (records.length === 0) {
         res.json({ studentId, studentNumber: user?.student_number || "", pages: [] });
@@ -338,14 +339,14 @@ export function createScannerRouter(): Router {
   router.get("/session/:sessionId/results", async (req, res, next) => {
     try {
       const sessionId = safeId(req.params.sessionId);
-      const session = getSession(sessionId);
+      const session = await getSession(sessionId);
       if (!session) {
         res.status(404).json({ message: "扫描会话不存在" });
         return;
       }
 
       // Check cached results first
-      const cached = listStudentGradingResults(sessionId);
+      const cached = await listStudentGradingResults(sessionId);
       if (cached.length > 0) {
         res.json(cached.map((r) => ({
           studentId: r.student_id,
@@ -365,7 +366,7 @@ export function createScannerRouter(): Router {
         return;
       }
 
-      const groups = listScanRecordsGroupedByStudent(sessionId);
+      const groups = await listScanRecordsGroupedByStudent(sessionId);
       const results: CombinedStudentResult[] = [];
 
       for (const group of groups) {
@@ -438,7 +439,7 @@ export function createScannerRouter(): Router {
 
   router.get("/scan-image/:recordId", async (req, res, next) => {
     try {
-      const record = getScanRecordWithResult(safeId(req.params.recordId));
+      const record = await getScanRecordWithResult(safeId(req.params.recordId));
       if (!record || !record.image_path) {
         res.status(404).json({ message: "扫描记录不存在" });
         return;

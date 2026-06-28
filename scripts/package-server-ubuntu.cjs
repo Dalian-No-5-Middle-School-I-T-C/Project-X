@@ -23,7 +23,8 @@ const runtimeDependencies = [
   "multer",
   "mysql2",
   "pdfkit",
-  "xlsx"
+  "xlsx",
+  "zod"
 ];
 
 const outputRoot = path.join(rootDir, "release", "server-ubuntu24");
@@ -71,9 +72,9 @@ function createRuntimePackageJson() {
     version: packageJson.version,
     private: true,
     type: "module",
-    description: "Project-X Ubuntu 24 web server package without Electron dependencies.",
+    description: "Project-X Ubuntu 24 web server package. Supports local SQLite and remote MariaDB 10.11 without Electron dependencies.",
     scripts: {
-      start: "PROJECTX_AUTH_ENFORCE=${PROJECTX_AUTH_ENFORCE:-1} PROJECTX_VARIANT=${PROJECTX_VARIANT:-teacher} PROJECTX_ENABLE_SCANNER=${PROJECTX_ENABLE_SCANNER:-0} node dist/server/index.mjs"
+      start: "PROJECTX_AUTH_ENFORCE=${PROJECTX_AUTH_ENFORCE:-1} PROJECTX_ENABLE_SCANNER=${PROJECTX_ENABLE_SCANNER:-0} PROJECTX_MARIADB_HOST=${PROJECTX_MARIADB_HOST:-} PROJECTX_MARIADB_PORT=${PROJECTX_MARIADB_PORT:-3306} PROJECTX_MARIADB_USER=${PROJECTX_MARIADB_USER:-} PROJECTX_MARIADB_PASSWORD=${PROJECTX_MARIADB_PASSWORD:-} PROJECTX_MARIADB_DATABASE=${PROJECTX_MARIADB_DATABASE:-projectx} node dist/server/index.mjs"
     },
     engines: {
       node: ">=22"
@@ -90,8 +91,14 @@ cd "$(dirname "$0")"
 
 export PORT="\${PORT:-5174}"
 export PROJECTX_AUTH_ENFORCE="\${PROJECTX_AUTH_ENFORCE:-1}"
-export PROJECTX_VARIANT="\${PROJECTX_VARIANT:-teacher}"
 export PROJECTX_ENABLE_SCANNER="\${PROJECTX_ENABLE_SCANNER:-0}"
+
+# MariaDB remote mode. Leave empty for local SQLite.
+export PROJECTX_MARIADB_HOST="\${PROJECTX_MARIADB_HOST:-}"
+export PROJECTX_MARIADB_PORT="\${PROJECTX_MARIADB_PORT:-3306}"
+export PROJECTX_MARIADB_USER="\${PROJECTX_MARIADB_USER:-}"
+export PROJECTX_MARIADB_PASSWORD="\${PROJECTX_MARIADB_PASSWORD:-}"
+export PROJECTX_MARIADB_DATABASE="\${PROJECTX_MARIADB_DATABASE:-projectx}"
 
 exec node dist/server/index.mjs
 `;
@@ -100,15 +107,17 @@ exec node dist/server/index.mjs
 function createDeployReadme() {
   return `# Project-X Ubuntu 24 Web Server Package
 
-This is the browser-accessible web server package. It includes dist/client for the browser UI and dist/server for the API/static server. It does not include Electron, electron-builder, Windows scanner bridge binaries, or Windows native resources.
+This is the browser-accessible web server package. It includes dist/web for the browser UI and dist/server for the API/static server, and supports local SQLite by default plus remote MariaDB 10.11 LTS for production multi-user deployments. It does not include Electron, electron-builder, Windows scanner bridge binaries, or Windows native resources.
 
 ## Contents
 
-- dist/client/: browser UI served by the Node app.
-- dist/server/index.mjs: Node entry point for API and static page hosting.
+- dist/web/: browser UI served by the Node app.
+- dist/server/index.mjs: Node API + static server.
 - dist/server/schema.sql: SQLite initialization schema.
+- dist/server/schema.mariadb.sql: MariaDB 10.11 schema.
 - resources/background.jpg: runtime resource used by the background API.
 - package.json: production runtime dependencies only.
+- systemd/project-x-server.service: systemd unit file.
 - start.sh: Ubuntu 24 startup script.
 
 ## Ubuntu 24 Prerequisites
@@ -120,7 +129,7 @@ sudo apt install -y nodejs npm build-essential python3 make g++
 
 Node.js 22 LTS or newer is recommended. better-sqlite3 is installed on the Ubuntu host for the local ABI.
 
-## Install And Start
+## Quick Start (local SQLite)
 
 \`\`\`bash
 unzip project-x-server-ubuntu24-${packageJson.version}.zip
@@ -135,10 +144,9 @@ The service listens on http://127.0.0.1:5174 by default. Point Nginx to this por
 Default environment:
 
 - PROJECTX_AUTH_ENFORCE=1
-- PROJECTX_VARIANT=teacher
 - PROJECTX_ENABLE_SCANNER=0
 
-Optional data paths:
+Optional SQLite data paths:
 
 \`\`\`bash
 export PROJECTX_DB_PATH=/var/lib/project-x/projectx.db
@@ -146,11 +154,45 @@ export ANSWER_CARD_DATA_DIR=/var/lib/project-x/answer-card
 ./start.sh
 \`\`\`
 
-Health check:
+## MariaDB Setup (remote mode)
+
+MariaDB 10.11 LTS supports both 32-bit and 64-bit Ubuntu 24.
+
+\`\`\`bash
+sudo apt install -y mariadb-server
+sudo mysql_secure_installation
+sudo mysql -e "CREATE DATABASE projectx DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+sudo mysql -e "CREATE USER 'projectx_app'@'127.0.0.1' IDENTIFIED BY 'your_password'"
+sudo mysql -e "GRANT SELECT, INSERT, UPDATE, DELETE ON projectx.* TO 'projectx_app'@'127.0.0.1'"
+sudo mysql -e "FLUSH PRIVILEGES"
+\`\`\`
+
+Then start with MariaDB env vars:
+
+\`\`\`bash
+export PROJECTX_MARIADB_HOST=127.0.0.1
+export PROJECTX_MARIADB_USER=projectx_app
+export PROJECTX_MARIADB_PASSWORD=your_password
+./start.sh
+\`\`\`
+
+## Systemd Service
+
+\`\`\`bash
+sudo mkdir -p /opt/project-x-server /var/lib/project-x/answer-card
+sudo cp -a . /opt/project-x-server/
+sudo cp systemd/project-x-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now project-x-server
+\`\`\`
+
+## Health Check
 
 \`\`\`bash
 curl http://127.0.0.1:5174/api/app/health
 \`\`\`
+
+Returns \`{"ok":true,"dialect":"sqlite"|"mariadb"}\`.
 `;
 }
 
@@ -164,8 +206,12 @@ Type=simple
 WorkingDirectory=/opt/project-x-server
 Environment=PORT=5174
 Environment=PROJECTX_AUTH_ENFORCE=1
-Environment=PROJECTX_VARIANT=teacher
 Environment=PROJECTX_ENABLE_SCANNER=0
+Environment=PROJECTX_MARIADB_HOST=
+Environment=PROJECTX_MARIADB_PORT=3306
+Environment=PROJECTX_MARIADB_USER=
+Environment=PROJECTX_MARIADB_PASSWORD=
+Environment=PROJECTX_MARIADB_DATABASE=projectx
 Environment=PROJECTX_DB_PATH=/var/lib/project-x/projectx.db
 Environment=ANSWER_CARD_DATA_DIR=/var/lib/project-x/answer-card
 ExecStart=/usr/bin/node /opt/project-x-server/dist/server/index.mjs
@@ -187,8 +233,8 @@ assertInsideRoot(outputRoot);
 assertInsideRoot(packageDir);
 assertInsideRoot(zipPath);
 
-if (!existsSync(path.join(rootDir, "dist", "client", "index.html"))) {
-  throw new Error("Missing dist/client/index.html. Run npm run build:client before packaging.");
+if (!existsSync(path.join(rootDir, "dist", "web", "index.html"))) {
+  throw new Error("Missing dist/web/index.html. Run npm run build:web before packaging.");
 }
 if (!existsSync(path.join(rootDir, "dist", "server", "index.mjs"))) {
   throw new Error("Missing dist/server/index.mjs. Run npm run build:server before packaging.");
@@ -196,11 +242,14 @@ if (!existsSync(path.join(rootDir, "dist", "server", "index.mjs"))) {
 if (!existsSync(path.join(rootDir, "dist", "server", "schema.sql"))) {
   throw new Error("Missing dist/server/schema.sql. Run npm run build:server before packaging.");
 }
+if (!existsSync(path.join(rootDir, "dist", "server", "schema.mariadb.sql"))) {
+  throw new Error("Missing dist/server/schema.mariadb.sql. Run npm run build:server before packaging.");
+}
 
 rmSync(outputRoot, { recursive: true, force: true });
 mkdirSync(packageDir, { recursive: true });
 
-copyDirectoryIfExists(path.join(rootDir, "dist", "client"), path.join(packageDir, "dist", "client"));
+copyDirectoryIfExists(path.join(rootDir, "dist", "web"), path.join(packageDir, "dist", "web"));
 copyDirectoryIfExists(path.join(rootDir, "dist", "server"), path.join(packageDir, "dist", "server"));
 copyFileIfExists(path.join(rootDir, "resources", "background.jpg"), path.join(packageDir, "resources", "background.jpg"));
 mkdirSync(path.join(packageDir, "data", "answer-card"), { recursive: true });

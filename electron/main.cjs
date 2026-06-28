@@ -4,73 +4,32 @@ const http = require("node:http");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
+// ── v1.6.1: Electron now only packages the scanner build.
+// Teacher/student features are deployed via the web build (dist/web/).
+// Single variant: scanner-only, always enabled.
+
 let server;
 let mainWindow;
 
-const DEFAULT_VARIANT = "teacher-scanner";
-const VARIANTS = {
-  student: {
-    id: "student",
-    productName: "Project-X 学生端",
-    userDataDir: "answer-card-designer",
-    enableScanner: false
-  },
-  teacher: {
-    id: "teacher",
-    productName: "Project-X 教师端",
-    userDataDir: "answer-card-designer",
-    enableScanner: false
-  },
-  "teacher-scanner": {
-    id: "teacher-scanner",
-    productName: "Project-X 教师扫描端",
-    userDataDir: "answer-card-designer",
-    enableScanner: true
-  }
-};
-
-function normalizeVariant(value) {
-  return value === "student" || value === "teacher" || value === "teacher-scanner"
-    ? value
-    : DEFAULT_VARIANT;
-}
+const PRODUCT_NAME = "Project-X 答题卡扫描端";
 
 function getAppRoot() {
   return app.getAppPath();
 }
 
-function readPackagedVariant() {
-  try {
-    const packageJsonPath = path.join(getAppRoot(), "package.json");
-    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-    return packageJson.projectxVariant;
-  } catch {
-    return undefined;
-  }
-}
-
-function getVariantConfig() {
-  const variant = normalizeVariant(process.env.PROJECTX_VARIANT || readPackagedVariant());
-  return VARIANTS[variant];
-}
-
-const variantConfig = getVariantConfig();
-
 function configureAppIdentity() {
-  app.setName(variantConfig.productName);
-  app.setPath("userData", path.join(app.getPath("appData"), variantConfig.userDataDir));
+  app.setName(PRODUCT_NAME);
+  app.setPath("userData", path.join(app.getPath("appData"), "answer-card-designer"));
 }
-
 
 async function startLocalServer() {
   const appRoot = getAppRoot();
   const serverBundle = path.join(appRoot, "dist", "server", "index.mjs");
-  const clientDist = path.join(appRoot, "dist", "client");
+  const clientDist = path.join(appRoot, "dist", "scanner");
   const userDataDir = app.getPath("userData");
   const dataDir = path.join(userDataDir, "data", "answer-card");
 
-  process.env.PROJECTX_VARIANT = variantConfig.id;
-  process.env.PROJECTX_ENABLE_SCANNER = variantConfig.enableScanner ? "1" : "0";
+  process.env.PROJECTX_ENABLE_SCANNER = "1";
   process.env.ANSWER_CARD_DATA_DIR = dataDir;
   process.env.ANSWER_CARD_CLIENT_DIST = clientDist;
   process.env.PROJECTX_DB_PATH = path.join(userDataDir, "data", "projectx.db");
@@ -160,7 +119,7 @@ async function createWindow() {
     height: 900,
     minWidth: 1120,
     minHeight: 720,
-    title: variantConfig.productName,
+    title: PRODUCT_NAME,
     backgroundColor: "#eef2ef",
     autoHideMenuBar: true,
     webPreferences: {

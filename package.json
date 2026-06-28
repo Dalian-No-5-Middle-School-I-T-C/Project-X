@@ -1,7 +1,7 @@
 {
   "name": "answer-card-designer",
-  "version": "1.5.1",
-  "description": "Local answer card designer and PDF exporter for Project-X.",
+  "version": "1.6.1",
+  "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
   "type": "module",
@@ -9,38 +9,25 @@
   "scripts": {
     "predev": "node scripts/ensure-native-modules.cjs",
     "dev": "concurrently \"tsx watch src/apps/answer-card/server/index.ts\" \"vite --host 127.0.0.1\"",
-    "build": "npm run typecheck && npm run build:client && npm run build:server",
-    "build:client": "vite build",
+    "build": "npm run typecheck && npm run build:web && npm run build:server",
+    "build:web": "vite build --mode web",
+    "build:scanner": "vite build --mode scanner",
+    "build:web:full": "npm run typecheck && npm run build:web && npm run build:server",
+    "build:scanner:full": "npm run typecheck && npm run build:scanner && npm run build:server",
     "build:server": "tsx scripts/build-server.ts",
-    "package:server:ubuntu24": "npm run build:client && npm run build:server && node scripts/package-server-ubuntu.cjs",
+    "package:server:ubuntu24": "npm run build:web && npm run build:server && node scripts/package-server-ubuntu.cjs",
     "native:rebuild:node": "npm rebuild better-sqlite3",
     "native:rebuild:electron": "electron-rebuild -f -w better-sqlite3",
     "native:rebuild:electron:ia32": "electron-rebuild -f -a ia32 -w better-sqlite3",
     "native:build:x64": "scripts\\build-answer-card-recognizer.bat x64 && scripts\\build-scanner-bridge.bat x64",
     "native:build:ia32": "scripts\\build-answer-card-recognizer.bat ia32 && scripts\\build-scanner-bridge.bat ia32",
-    "electron:dev": "npm run build && npm run native:rebuild:electron && electron .",
-    "electron:pack": "npm run electron:pack:scanner",
-    "electron:dist": "npm run electron:dist:scanner",
-    "electron:msi": "npm run electron:msi:scanner",
-    "electron:pack:student": "tsx scripts/package-variant.ts student dir",
-    "electron:pack:teacher": "tsx scripts/package-variant.ts teacher dir",
-    "electron:pack:scanner": "tsx scripts/package-variant.ts teacher-scanner dir",
-    "electron:pack:student:ia32": "tsx scripts/package-variant.ts student dir ia32",
-    "electron:pack:teacher:ia32": "tsx scripts/package-variant.ts teacher dir ia32",
-    "electron:pack:scanner:ia32": "tsx scripts/package-variant.ts teacher-scanner dir ia32",
-    "electron:dist:student": "tsx scripts/package-variant.ts student portable",
-    "electron:dist:teacher": "tsx scripts/package-variant.ts teacher portable",
-    "electron:dist:scanner": "tsx scripts/package-variant.ts teacher-scanner portable",
-    "electron:dist:student:ia32": "tsx scripts/package-variant.ts student portable ia32",
-    "electron:dist:teacher:ia32": "tsx scripts/package-variant.ts teacher portable ia32",
-    "electron:dist:scanner:ia32": "tsx scripts/package-variant.ts teacher-scanner portable ia32",
-    "electron:msi:student": "tsx scripts/package-variant.ts student msi",
-    "electron:msi:teacher": "tsx scripts/package-variant.ts teacher msi",
-    "electron:msi:scanner": "tsx scripts/package-variant.ts teacher-scanner msi",
-    "electron:msi:student:ia32": "tsx scripts/package-variant.ts student msi ia32",
-    "electron:msi:teacher:ia32": "tsx scripts/package-variant.ts teacher msi ia32",
-    "electron:msi:scanner:ia32": "tsx scripts/package-variant.ts teacher-scanner msi ia32",
-    "electron:msi:all": "tsx scripts/package-variant.ts all msi",
+    "electron:dev": "npm run build:scanner:full && npm run native:rebuild:electron && electron .",
+    "electron:pack": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --dir --x64",
+    "electron:pack:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && electron-builder --dir --ia32",
+    "electron:dist": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --win portable --x64",
+    "electron:dist:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && electron-builder --win portable --ia32",
+    "electron:msi": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --win msi --x64",
+    "electron:msi:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && electron-builder --win msi --ia32",
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
     "typecheck": "tsc --noEmit"
@@ -59,7 +46,8 @@
     "react-chartjs-2": "^5.3.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
@@ -83,13 +71,13 @@
   },
   "build": {
     "appId": "cn.projectx.answer-card-designer",
-    "productName": "答题卡设计系统",
+    "productName": "答题卡扫描端",
     "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "release"
     },
     "files": [
-      "dist/client/**/*",
+      "dist/scanner/**/*",
       "dist/server/**/*",
       "electron/**/*",
       "package.json"
@@ -101,12 +89,19 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "resources/native/win-ia32",
+        "to": "native/win-ia32",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "asar": true,
     "win": {
       "icon": "resources/icon.png",
-      "executableName": "答题卡设计系统",
+      "executableName": "答题卡扫描端",
       "signAndEditExecutable": false,
       "target": [
         {
@@ -116,11 +111,11 @@
           ]
         }
       ],
-      "artifactName": "答题卡设计系统-${version}-${arch}.${ext}"
+      "artifactName": "答题卡扫描端-${version}-${arch}.${ext}"
     },
     "msi": {
-      "artifactName": "答题卡设计系统-${version}-${arch}.${ext}",
-      "shortcutName": "答题卡设计系统",
+      "artifactName": "答题卡扫描端-${version}-${arch}.${ext}",
+      "shortcutName": "答题卡扫描端",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "perMachine": false

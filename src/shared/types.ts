@@ -849,3 +849,44 @@ export interface UserSettings {
   scoreDisplayMode: ScoreDisplayMode;
   reviewConfidenceThreshold: number;
 }
+
+// ── 成绩天梯系统 ──
+
+/** 排名趋势方向 */
+export type RankTrend = "up" | "down" | "same" | "new";
+
+/** 天梯单行（前十名榜单条目） */
+export interface LadderRow {
+  rank: number;
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  classId: number | null;
+  gradeName: string | null;
+  totalScore: number;
+  assignedScore?: number | null;
+  classRank: number;
+  rankTrend: RankTrend;
+  rankChange: number | null;        // 正=进步，负=退步，null=无对比
+  prevRank: number | null;
+  percentile: number;
+  /** 大考组/跨考场景的科目明细 */
+  subjectScores?: Array<{
+    examId?: number;
+    examName: string;
+    subject: string;
+    score: number;
+    rank: number;
+  }>;
+}
+
+/** 天梯 API 响应 */
+export interface LadderResponse {
+  scope: "single" | "group" | "cross";
+  scopeName: string;
+  studentCount: number;
+  myRank: number | null;            // 当前学生在全量中的排名
+  myScore: number | null;           // 当前学生的总分
+  rows: LadderRow[];                // 前十名
+}
