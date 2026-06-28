@@ -29,6 +29,7 @@ import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
+import { ApiError } from "../../../server/api-error";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
@@ -48,6 +49,7 @@ import { createPdf } from "./pdf";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
 import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
+import { assertImageFile } from "./validate-upload";
 
 function paramValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] : value ?? "";
@@ -568,7 +570,14 @@ export async function createApp(): Promise<express.Express> {
         cb(null, name);
       }
     }),
-    limits: { fileSize: 12 * 1024 * 1024 }
+    limits: { fileSize: 12 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      if (file.mimetype.startsWith("image/")) {
+        cb(null, true);
+      } else {
+        cb(new Error("仅支持图片文件"));
+      }
+    }
   });
 
   const recognitionUpload = multer({
@@ -1003,6 +1012,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "没有收到图片文件" });
         return;
       }
+      if (!await assertImageFile(req.file.path, res)) return;
       res.status(201).json({
         assetId: req.file.filename,
         originalName: req.file.originalname,
@@ -1799,6 +1809,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ error: "请选择图片文件" });
         return;
       }
+      if (!await assertImageFile(req.file.path, res)) return;
       // 重命名为 user_${userId}.jpg，覆盖旧背景
       const target = path.join(backgroundsDir, `${req.user.id}.jpg`);
       await rename(req.file.path, target);
@@ -1898,14 +1909,14 @@ export async function createApp(): Promise<express.Express> {
     try {
       const examId = Number(req.params.examId);
       if (!Number.isFinite(examId) || examId <= 0) {
-        res.status(400).json({ message: "Invalid exam id" });
+        res.status(400).json({ code: ApiError.INVALID_VALUE, message: "无效的考试 ID" });
         return;
       }
 
       const analysisRepo = new AnalysisRepository();
       const exam = await analysisRepo.getExam(examId);
       if (!exam) {
-        res.status(404).json({ message: "Exam not found" });
+        res.status(404).json({ code: ApiError.NOT_FOUND, message: "考试不存在" });
         return;
       }
 
@@ -1914,7 +1925,7 @@ export async function createApp(): Promise<express.Express> {
         ? undefined
         : Number(classIdValue);
       if (classId !== undefined && !Number.isFinite(classId)) {
-        res.status(400).json({ message: "Invalid class id" });
+        res.status(400).json({ code: ApiError.INVALID_VALUE, message: "无效的班级 ID" });
         return;
       }
 
@@ -1948,7 +1959,7 @@ export async function createApp(): Promise<express.Express> {
       }, 120_000);
 
       if (!response.ok) {
-        let message = `LLM service returned ${response.status}`;
+        let message = `AI 服务返回 ${response.status}`;
         try {
           const body = await response.json() as { detail?: string; message?: string };
           message = body.detail || body.message || message;
@@ -1961,7 +1972,8 @@ export async function createApp(): Promise<express.Express> {
           const urlHint = providerOverride.base_url ? ` (base_url: ${providerOverride.base_url})` : "";
           message = `自定义服务商 API 返回 404${urlHint}。请检查 Base URL 是否正确 — 它应该是 API 端点地址，而非网站首页。确保 Python llmclient 已启动。`;
         }
-        res.status(response.status >= 400 && response.status < 500 ? response.status : 502).json({ message });
+        res.status(response.status >= 400 && response.status < 500 ? response.status : 502)
+          .json({ code: ApiError.AI_SERVICE_ERROR, message });
         return;
       }
 
@@ -1969,11 +1981,11 @@ export async function createApp(): Promise<express.Express> {
     } catch (error) {
       // Catch fetch errors (e.g. llmclient not reachable)
       if (error instanceof Error && error.name === "AbortError") {
-        res.status(504).json({ message: "AI 服务请求超时。请检查 llmclient 是否正常运行。" });
+        res.status(504).json({ code: ApiError.AI_SERVICE_TIMEOUT, message: "AI 服务请求超时。请检查 llmclient 是否正常运行。" });
         return;
       }
       if (error instanceof Error && (error.message.includes("fetch") || error.message.includes("ECONNREFUSED"))) {
-        res.status(503).json({ message: "无法连接到 Python llmclient 中转服务。请先启动：py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766" });
+        res.status(503).json({ code: ApiError.AI_SERVICE_UNREACHABLE, message: "无法连接到 Python llmclient 中转服务。请先启动：py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766" });
         return;
       }
       next(error);
@@ -2067,7 +2079,8 @@ export async function createApp(): Promise<express.Express> {
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(error);
-    res.status(500).json({ message: error instanceof Error ? error.message : "服务器错误" });
+    const message = error instanceof Error ? error.message : "服务器内部错误";
+    res.status(500).json({ code: ApiError.INTERNAL, message });
   });
 
   return app;

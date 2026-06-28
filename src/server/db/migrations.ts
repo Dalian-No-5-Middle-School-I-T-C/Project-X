@@ -299,6 +299,28 @@ const MIGRATIONS: Migration[] = [
         `);
       }
     }
+  },
+  {
+    // 性能优化：为成绩分析高频查询补充复合索引。
+    // student_scores / question_scores 在排名、统计、概览等接口中
+    // 按 exam_id 过滤并按 total_score / score 排序，复合索引可避免全表扫描。
+    // CREATE INDEX IF NOT EXISTS 保证幂等，旧库重跑安全。
+    version: 9,
+    name: "analysis-performance-indexes",
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_total
+          ON student_scores(exam_id, total_score);
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_assigned
+          ON student_scores(exam_id, assigned_score);
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_student
+          ON student_scores(exam_id, student_id);
+        CREATE INDEX IF NOT EXISTS idx_question_scores_exam_type
+          ON question_scores(exam_id, score_type);
+        CREATE INDEX IF NOT EXISTS idx_exams_grade_class
+          ON exams(grade_id, class_id);
+      `);
+    }
   }
 ];
 
