@@ -65,41 +65,9 @@ import analysisRoutes from "./routes/analysis";
 import { CreateCardSchema, CreateExamSchema, UpdateUserSettingsSchema, validateBody } from "./validation";
 import { ApiError } from "../../../server/api-error";import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
 
-function paramValue(value: string | string[] | undefined): string {
-  return Array.isArray(value) ? value[0] : value ?? "";
-}
 
-function fieldValue(value: unknown): string {
-  if (Array.isArray(value)) {
-    return String(value[0] ?? "");
-  }
-  return typeof value === "string" ? value : value == null ? "" : String(value);
-}
 
-function boolField(value: unknown): boolean {
-  const normalized = fieldValue(value).trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes";
-}
 
-const EXAM_DATE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
-const MIN_EXAM_YEAR = 1900;
-const MAX_EXAM_YEAR = 2100;
-
-function isValidExamDate(value: string | undefined): boolean {
-  if (!value) return false;
-  const match = EXAM_DATE_PATTERN.exec(value);
-  if (!match) return false;
-
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (year < MIN_EXAM_YEAR || year > MAX_EXAM_YEAR || month < 1 || month > 12 || day < 1) {
-    return false;
-  }
-
-  const date = new Date(year, month - 1, day);
-  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
-}
 
 function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
   const examDate = fieldValue((card as any).examDate ?? card.examDate).trim();
@@ -173,32 +141,9 @@ async function prepareLayoutForCard(cardRepo: CardRepository, card: AnswerCard):
   return layoutPath(normalized.id);
 }
 
-function requestFlag(value: unknown): boolean {
-  return value === true || boolField(value);
-}
 
-async function deleteExamRows(db: DbAdapter, examIds: number[]): Promise<void> {
-  for (const examId of examIds) {
-    await db.run("DELETE FROM question_scores WHERE exam_id = ?", examId);
-    await db.run("DELETE FROM student_scores WHERE exam_id = ?", examId);
-    await db.run("DELETE FROM scan_batches WHERE exam_id = ?", examId);
-    await db.run("DELETE FROM exams WHERE id = ?", examId);
-  }
-}
 
-async function deleteCardFiles(cardId: string): Promise<void> {
-  const cardJsonPath = path.join(dataDir, "cards", `${cardId}.json`);
-  const layoutJsonPath = layoutPath(cardId);
-  const assetsPath = cardAssetsDir(cardId);
-  try { if (existsSync(cardJsonPath)) await rm(cardJsonPath); } catch {}
-  try { if (existsSync(layoutJsonPath)) await rm(layoutJsonPath); } catch {}
-  try { if (existsSync(assetsPath)) await rm(assetsPath, { recursive: true, force: true }); } catch {}
-}
 
-function parsePositiveNumber(value: unknown, fallback: number): number {
-  const parsed = Number(fieldValue(value) || String(fallback));
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
 
 function gradingPreviewUrl(cardId: string, imagePath?: string): string | undefined {
   if (!imagePath) return undefined;
@@ -343,24 +288,6 @@ async function persistGradingResults(
  *  - 开启（=1/true）：未登录返回 401，权限不足返回 403。
  * GET/HEAD 走 readPerm，写操作走 writePerm。
  */
-function makeGate(enforce: boolean, readPerm: string, writePerm: string) {
-  return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
-    if (!enforce) {
-      next();
-      return;
-    }
-    if (!req.user) {
-      res.status(401).json({ message: "未提供认证令牌" });
-      return;
-    }
-    const required = req.method === "GET" || req.method === "HEAD" ? readPerm : writePerm;
-    if (!roleHasPermission(req.user.role_id, required)) {
-      res.status(403).json({ message: `权限不足：缺少 ${required}` });
-      return;
-    }
-    next();
-  };
-}
 
 /**
  * 根据当前用户的教师角色和所教班级，返回可见的考试ID列表。
@@ -369,51 +296,6 @@ function makeGate(enforce: boolean, readPerm: string, writePerm: string) {
  * - subject_teacher → 只看自己教的科目 + 自己教的班级
  * - 普通 teacher（无 teacher_role）→ 全部可见（向后兼容）
  */
-async function getVisibleExamIds(user: express.Request["user"]): Promise<number[] | null> {
-  if (!user || user.role_name === "admin") return null;
-  if (user.role_name !== "teacher") return null;
-  if (!user.teacher_role) return null; // 普通教师向后兼容，全部可见
-
-  if (user.teacher_role === "grade_leader") return null; // 学年主任全可见
-
-  const db = getMysqlDb();
-
-  if (user.teacher_role === "head_teacher") {
-    // 班主任：只看自己班级的考试
-    const teacherClasses = await db.all(
-      "SELECT class_id FROM teacher_classes WHERE teacher_id = ?",
-      user.id
-    ) as Array<{ class_id: number }>;
-    const classIds = teacherClasses.map((r) => r.class_id);
-    if (classIds.length === 0) return [];
-    const rows = await db.all(
-      `SELECT DISTINCT e.id FROM exams e
-       JOIN classes c ON c.id = e.class_id
-       WHERE e.class_id IN (${classIds.map(() => "?").join(",")})`,
-      ...classIds
-    ) as Array<{ id: number }>;
-    return rows.map((r) => r.id);
-  }
-
-  if (user.teacher_role === "subject_teacher") {
-    // 学科老师：只看本科目+所教班级
-    if (!user.subject) return [];
-    const teacherClasses = await db.all(
-      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
-      user.id, user.subject
-    ) as Array<{ class_id: number }>;
-    const classIds = teacherClasses.map((r) => r.class_id);
-    if (classIds.length === 0) return [];
-    const rows = await db.all(
-      `SELECT DISTINCT e.id FROM exams e
-       WHERE e.subject = ? AND e.class_id IN (${classIds.map(() => "?").join(",")})`,
-      user.subject, ...classIds
-    ) as Array<{ id: number }>;
-    return rows.map((r) => r.id);
-  }
-
-  return null;
-}
 
 /**
  * 中间件：验证当前用户有权访问指定的 examId。
@@ -421,74 +303,9 @@ async function getVisibleExamIds(user: express.Request["user"]): Promise<number[
  *
  * 如果 req.user 不存在（未登录/未强制鉴权），放行通过。
  */
-async function requireExamAccess(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
-  if (!req.user) {
-    next(); // 未登录时放行（makeGate 已处理 auth 强制逻辑）
-    return;
-  }
-  const examId = Number(req.params.examId);
-  if (!examId) {
-    res.status(400).json({ message: "缺少 examId" });
-    return;
-  }
 
-  // 学生仅允许访问 AI 分析端点（且仅限自己有成绩的考试）
-  // 其他所有 exam 端点（删除、导出CSV、排名等）对学生拒绝
-  if (req.user.role_name === "student") {
-    if (req.method !== "POST" || !req.originalUrl.includes("/ai-analysis")) {
-      res.status(403).json({ message: "权限不足" });
-      return;
-    }
-    const scoreRepo = new ScoreRepository();
-    if (await scoreRepo.hasScore(req.user.id, examId)) {
-      next();
-      return;
-    }
-    res.status(403).json({ message: "权限不足：你未参加该考试" });
-    return;
-  }
 
-  const visibleIds = await getVisibleExamIds(req.user);
-  if (visibleIds === null) {
-    next(); // 全部可见
-    return;
-  }
-  if (visibleIds.includes(examId)) {
-    next();
-    return;
-  }
-  res.status(403).json({ message: "权限不足：无权访问此考试" });
-}
 
-function numberArray(value: unknown): number[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<number>();
-  const result: number[] = [];
-  for (const item of value) {
-    const id = Number(item);
-    if (Number.isInteger(id) && id > 0 && !seen.has(id)) {
-      seen.add(id);
-      result.push(id);
-    }
-  }
-  return result;
-}
-
-function optionalPositiveNumber(value: unknown): number | undefined {
-  if (value == null || value === "") return undefined;
-  const num = Number(value);
-  return Number.isInteger(num) && num >= 0 ? num : undefined;
-}
-
-async function validateExamIdsAccess(req: express.Request, res: express.Response, examIds: number[]): Promise<boolean> {
-  const visibleIds = await getVisibleExamIds(req.user);
-  if (visibleIds === null) return true;
-  const visible = new Set(visibleIds);
-  const denied = examIds.filter((examId) => !visible.has(examId));
-  if (denied.length === 0) return true;
-  res.status(403).json({ message: "权限不足：考试组包含不可访问的考试" });
-  return false;
-}
 
 function scannerEnabled(): boolean {
   if (process.env.PROJECTX_ENABLE_SCANNER === "1" || process.env.PROJECTX_ENABLE_SCANNER === "true") {
@@ -500,33 +317,8 @@ function scannerEnabled(): boolean {
   return process.env.PROJECTX_VARIANT === "teacher-scanner" || !process.env.PROJECTX_VARIANT;
 }
 
-function llmClientUrl(pathname = ""): string {
-  const base = (process.env.LLMCLIENT_URL || "http://127.0.0.1:8766").replace(/\/+$/, "");
-  return `${base}${pathname.startsWith("/") ? pathname : `/${pathname}`}`;
-}
 
-function llmClientHeaders(extra?: Record<string, string>): Record<string, string> {
-  const headers: Record<string, string> = { ...(extra ?? {}) };
-  const internalKey = process.env.LLMCLIENT_INTERNAL_API_KEY;
-  if (internalKey && !headers.Authorization) {
-    headers.Authorization = `Bearer ${internalKey}`;
-  }
-  return headers;
-}
 
-async function fetchLlmClient(pathname: string, init?: RequestInit, timeoutMs = 5_000): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(llmClientUrl(pathname), {
-      ...init,
-      headers: llmClientHeaders(init?.headers ? Object.fromEntries(new Headers(init.headers).entries()) : undefined),
-      signal: controller.signal
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 export async function createApp(): Promise<express.Express> {
   const app = express();

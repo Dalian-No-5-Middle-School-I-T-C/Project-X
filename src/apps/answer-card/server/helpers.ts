@@ -7,7 +7,7 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import type Database from "better-sqlite3";
+import type { DbAdapter } from "../../../server/db/mysql";
 import { assetsDir, cardAssetsDir, dataDir, layoutPath, safeId } from "./storage";
 
 export function paramValue(value: string | string[] | undefined): string {
@@ -73,12 +73,12 @@ export function parsePositiveNumber(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-export function deleteExamRows(db: Database.Database, examIds: number[]): void {
+export async function deleteExamRows(db: DbAdapter, examIds: number[]): Promise<void> {
   for (const examId of examIds) {
-    db.prepare("DELETE FROM question_scores WHERE exam_id = ?").run(examId);
-    db.prepare("DELETE FROM student_scores WHERE exam_id = ?").run(examId);
-    db.prepare("DELETE FROM scan_batches WHERE exam_id = ?").run(examId);
-    db.prepare("DELETE FROM exams WHERE id = ?").run(examId);
+    await db.run("DELETE FROM question_scores WHERE exam_id = ?", examId);
+    await db.run("DELETE FROM student_scores WHERE exam_id = ?", examId);
+    await db.run("DELETE FROM scan_batches WHERE exam_id = ?", examId);
+    await db.run("DELETE FROM exams WHERE id = ?", examId);
   }
 }
 
