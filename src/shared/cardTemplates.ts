@@ -215,6 +215,40 @@ function physicsTemplate(): BodyBlock[] {
   ];
 }
 
+// ── 辽宁新高考 政治/历史/地理 (3+1+2 模式，满分 100 分) ──
+
+/** 政治：选择题 16×3=48 + 主观题 4 题 52 分 */
+function zhengzhiTemplate(): BodyBlock[] {
+  return [
+    objectiveBlock("选择题", rangeQuestions(1, 16, "single", 4, 3)),
+    answerBlock(17, linedQuestion(17, 12, 72)),
+    answerBlock(18, linedQuestion(18, 13, 78)),
+    answerBlock(19, linedQuestion(19, 13, 78)),
+    answerBlock(20, linedQuestion(20, 14, 84))
+  ];
+}
+
+/** 历史：选择题 16×3=48 + 主观题 4 题 52 分 */
+function lishiTemplate(): BodyBlock[] {
+  return [
+    objectiveBlock("选择题", rangeQuestions(1, 16, "single", 4, 3)),
+    answerBlock(17, linedQuestion(17, 12, 72)),
+    answerBlock(18, linedQuestion(18, 14, 84)),
+    answerBlock(19, linedQuestion(19, 12, 72)),
+    answerBlock(20, linedQuestion(20, 14, 84))
+  ];
+}
+
+/** 地理：选择题 16×3=48 + 主观题 3 题 52 分 */
+function diliTemplate(): BodyBlock[] {
+  return [
+    objectiveBlock("选择题", rangeQuestions(1, 16, "single", 4, 3)),
+    answerBlock(17, linedQuestion(17, 16, 96)),
+    answerBlock(18, linedQuestion(18, 18, 108)),
+    answerBlock(19, linedQuestion(19, 18, 108))
+  ];
+}
+
 function chemistryTemplate(): BodyBlock[] {
   return [
     objectiveBlock("选择题", rangeQuestions(1, 15, "single", 4, 3)),
@@ -252,5 +286,8 @@ export function applySubjectTemplate(card: AnswerCard, options: SubjectTemplateO
   if (subject === "wuli") bodyBlocks = physicsTemplate();
   if (subject === "huaxue") bodyBlocks = chemistryTemplate();
   if (subject === "shengwu") bodyBlocks = biologyTemplate();
+  if (subject === "zhengzhi") bodyBlocks = zhengzhiTemplate();
+  if (subject === "lishi") bodyBlocks = lishiTemplate();
+  if (subject === "dili") bodyBlocks = diliTemplate();
   return bodyBlocks ? { ...card, bodyBlocks } : card;
 }
