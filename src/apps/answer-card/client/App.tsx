@@ -379,15 +379,6 @@ function App() {
     () => getProjectXVariantConfig(persona),
     [persona]
   );
-  // 检测是否在 Electron 环境且有扫描硬件
-  const [hasNativeScanner, setHasNativeScanner] = useState(false);
-  useEffect(() => {
-    if (typeof navigator !== "undefined") {
-      const isElectron = navigator.userAgent.includes("Electron");
-      // 扫描硬件仅在 Electron + teacher-scanner persona 时可用
-      setHasNativeScanner(isElectron && persona === "teacher-scanner");
-    }
-  }, [persona]);
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
@@ -467,7 +458,6 @@ function App() {
   const canDesign = variantAllows("design") && hasPermission(PERMISSIONS.CARD_READ);
   const canManageExams = variantAllows("exam-manage") && hasPermission(PERMISSIONS.EXAM_WRITE);
   const canGrade = variantAllows("grading") && hasPermission(PERMISSIONS.GRADE_READ);
-  const canScanner = appVariant.enableScanner && canGrade && hasNativeScanner;
   const canAnalyze = variantAllows("analysis") && hasPermission(PERMISSIONS.EXAM_READ);
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
