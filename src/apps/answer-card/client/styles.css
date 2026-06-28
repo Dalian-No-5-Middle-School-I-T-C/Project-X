@@ -4651,6 +4651,43 @@ body.has-bg-image::after {
   background: rgba(255, 255, 255, 0.05);
 }
 
+/* 账号菜单触发按钮 (来自 #139) */
+[data-theme="dark"] .account-menu-trigger {
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  border-color: var(--line-strong);
+}
+[data-theme="dark"] .account-menu-trigger:hover {
+  color: var(--brand);
+  border-color: var(--brand-soft);
+}
+
+/* 班级/学生列表项 */
+[data-theme="dark"] .class-list-item,
+[data-theme="dark"] .roster-item,
+[data-theme="dark"] .student-search-item {
+  background: var(--surface-raised);
+  color: var(--text);
+  border-color: var(--line);
+}
+[data-theme="dark"] .class-list-item:hover,
+[data-theme="dark"] .roster-item:hover,
+[data-theme="dark"] .student-search-item:hover {
+  background: var(--surface);
+  border-color: rgba(192, 15, 40, 0.15);
+}
+
+/* 暗色按钮移除高光伪元素 */
+[data-theme="dark"] .primary-button::after,
+[data-theme="dark"] .mode-toggle button.active::after,
+[data-theme="dark"] .answer-key-row button.active::after {
+  background: none;
+}
+[data-theme="dark"] .primary-button:hover:not(:disabled) {
+  filter: none;
+  box-shadow: var(--shadow-brand-lg);
+}
+
 /* ── 账号设置布局 (v1.4.7) ────────────────────────────── */
 
 .account-settings-layout {
@@ -4693,6 +4730,19 @@ body.has-bg-image::after {
 
 [data-theme="dark"] .account-settings-nav-item:hover {
   background: rgba(255, 255, 255, 0.04);
+}
+[data-theme="dark"] .account-settings-nav {
+  border-color: var(--line);
+}
+[data-theme="dark"] .account-form-grid,
+[data-theme="dark"] .account-import-box,
+[data-theme="dark"] .class-column,
+[data-theme="dark"] .score-card {
+  background: var(--surface);
+}
+[data-theme="dark"] .account-search {
+  background: var(--surface-raised);
+  border-color: var(--line-strong);
 }
 
 .account-settings-nav-item.active {
