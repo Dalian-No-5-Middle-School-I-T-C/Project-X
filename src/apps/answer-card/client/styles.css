@@ -91,7 +91,7 @@ body {
   --text: #EAEAEA;
   --text-primary: #EAEAEA;
   --text-secondary: #A0A0A0;
-  --muted: #6A6A6A;
+  --muted: #888888;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.12);
   --line-light: rgba(255, 255, 255, 0.05);
@@ -130,8 +130,12 @@ body {
   border-color: rgba(255, 255, 255, 0.08);
 }
 
+[data-theme="dark"] .mode-toggle button {
+  color: var(--text-secondary);
+}
 [data-theme="dark"] .mode-toggle button:hover {
   background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
 }
 
 [data-theme="dark"] .topbar-actions .ghost-button {
