@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { BarChart3, BrainCircuit, ChevronDown, LineChart, Radar, RefreshCw, Sparkles } from "lucide-react";
+import { BarChart3, BrainCircuit, ChevronDown, LineChart, Radar, RefreshCw, Sparkles, TrendingUp } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { StudentExamScore, StudentQuestionScore } from "../auth/types";
 import type { StudentTrendPoint, AiAnalysisResponse } from "../../../../shared/types";
 import { StudentTrendChart } from "./StudentTrendChart";
 import { StudentSubjectRadar } from "./StudentSubjectRadar";
 import { StudentAiPanel } from "./StudentAiPanel";
+import { GradeLadder } from "./GradeLadder";
 
 interface ScoresResponse {
   studentId: number;
@@ -18,13 +19,14 @@ interface ExamDetailResponse {
   questions: StudentQuestionScore[];
 }
 
-type TabId = "list" | "trend" | "subjects" | "ai";
+type TabId = "list" | "trend" | "subjects" | "ai" | "ladder";
 
 const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: "list", label: "成绩列表", icon: <BarChart3 size={16} /> },
   { id: "trend", label: "趋势分析", icon: <LineChart size={16} /> },
   { id: "subjects", label: "学科对比", icon: <Radar size={16} /> },
   { id: "ai", label: "AI 分析", icon: <Sparkles size={16} /> },
+  { id: "ladder", label: "成绩天梯", icon: <TrendingUp size={16} /> },
 ];
 
 export function StudentScores() {
@@ -217,6 +219,7 @@ export function StudentScores() {
         {activeTab === "trend" && <StudentTrendChart trends={trends} />}
         {activeTab === "subjects" && <StudentSubjectRadar />}
         {activeTab === "ai" && <StudentAiPanel />}
+        {activeTab === "ladder" && <GradeLadder />}
       </div>
     </div>
   );

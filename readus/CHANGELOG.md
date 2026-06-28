@@ -1,6 +1,73 @@
 # Project-X CHANGELOG
 
-## v1.5.2 (2026-06-26) — 数据库双后端架构
+## v1.5.2 (2026-06-26) — 数据库双后端 & 成绩天梯
+
+### 成绩天梯系统（学生端新增 Tab）
+
+在「我的成绩」页面新增「成绩天梯」Tab，以阶梯榜单形式展示年级前十名排名。
+
+- **前十名阶梯榜单**：纯 CSS 阶梯连接线纵轴 + 圆形排名徽章，前三名金银铜特殊样式（皇冠/奖牌/奖杯图标 + 渐变背景）
+- **三种排名范围**：
+  - 单场考试：基于已有 `AnalysisRepository.getScoreTableData()` 复用 `competitionRank` 并列排名
+  - 大考组：多科汇总总分排名，含各科小标签
+  - 跨考累计：多场考试总分汇总排名
+- **趋势指示**：排名变化绿箭头（上升）/ 红箭头（下降）/ 灰色持平 / 蓝色 NEW
+- **分数进度条**：每条右侧展示相对第一名的百分比进度条
+- **个性化统计栏**：参与人数 / 我的排名 / 我的总分 / 当前榜单
+- **空状态三级处理**：配置加载中 → 请选择考试 → 该范围暂无数据
+
+### 管理员天梯开关
+
+管理员可随时控制天梯功能的开闭状态。
+
+- **系统级开关**：新增 `system_settings` 表（migration v9），键值对存储，默认 `ladder_enabled = "1"`
+- **API 端点**：`GET /api/ladder/config`（公开）+ `PUT /api/ladder/config`（仅 admin）
+- **管理员特权**：天梯关闭时管理员仍可正常预览榜单，界面显示红色警告条「已关闭（仅管理员可见）」
+- **普通用户**：天梯关闭时看到「暂未开放」提示
+- **后端校验**：所有数据端点天梯关闭时返回 403（管理员除外）
+
+### 新增后端 API
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/ladder/exams/:examId` | 单场考试年级前十名 |
+| `GET` | `/api/ladder/exam-groups/:groupId` | 大考组年级前十名 |
+| `GET` | `/api/ladder/cross-exam` | 跨考累计年级前十名 |
+| `GET` | `/api/ladder/config` | 获取天梯开关状态 |
+| `PUT` | `/api/ladder/config` | 管理员设置天梯开关 |
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `src/server/services/LadderService.ts` | 天梯数据转换层（排名趋势/百分位/LadderRow 映射） |
+| `src/server/routes/ladder.ts` | 天梯 API 路由（5 个端点 + 开关校验） |
+| `.../components/GradeLadder.tsx` | 天梯主容器（范围选择 + 统计栏 + 管理员开关） |
+| `.../components/LadderLeaderboard.tsx` | 前十榜单渲染容器 |
+| `.../components/LadderRowItem.tsx` | 单行条目（排名徽章 + 趋势 + 进度条） |
+
+### 修改文件
+
+| 文件 | 改动 |
+|------|------|
+| `src/shared/types.ts` | 新增 `RankTrend`、`LadderRow`、`LadderResponse` 类型 |
+| `src/server/db/migrations.ts` | Migration v9：`system_settings` 表 |
+| `src/apps/answer-card/server/index.ts` | 注册 `/api/ladder` 路由 |
+| `.../components/StudentScores.tsx` | TabId 扩展 + 天梯 Tab 入口 |
+| `.../styles.css` | +250 行天梯样式（阶梯连接线/排名徽章/趋势/进度条/管理员开关/暗色主题） |
+
+### 数据库
+
+- 新增 `system_settings` 表（`key TEXT PK, value TEXT NOT NULL`），默认写入 `ladder_enabled = "1"`
+
+### Bug 审计与修复
+
+| 修复项 | 文件 | 说明 |
+|--------|------|------|
+| `||` → `??` 零分吞值 | `LadderService.ts` ×2 | `totalAssignedScore \|\| totalRawScore` 在得分为 0 时错误降级，改为 `??` |
+| 死代码清理 | `LadderService.ts` | 删除路由中从未调用的 `fromGroupRankingRows`、薄包装 `assignRank`、冗余 `TOP_N` 常量、未使用的 `GroupRankingRow`/`LadderResponse` import |
+| 同分排序非确定性 | `LadderService.ts` | `fromCrossExamRows` 排序新增学号 tiebreaker |
+| 范围切换残留 | `GradeLadder.tsx` | 切换 scope 时清空旧 `data`/`error` |
 
 ### SQLite → MySQL 双后端迁移
 

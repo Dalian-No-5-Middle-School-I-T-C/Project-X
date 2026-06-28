@@ -299,6 +299,22 @@ const MIGRATIONS: Migration[] = [
         `);
       }
     }
+  },
+  {
+    version: 9,
+    name: "system-settings",
+    up(db) {
+      if (hasTable(db, "system_settings")) return;
+      db.exec(`
+        CREATE TABLE system_settings (
+          key   TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+      `);
+      // 默认：天梯开启
+      db.prepare("INSERT INTO system_settings (key, value) VALUES (?, ?)")
+        .run("ladder_enabled", "1");
+    }
   }
 ];
 

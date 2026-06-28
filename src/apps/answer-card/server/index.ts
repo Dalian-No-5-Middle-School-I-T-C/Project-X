@@ -27,6 +27,7 @@ import exportScoresRoutes from "../../../server/routes/export-scores";
 import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
+import ladderRoutes from "../../../server/routes/ladder";
 import { optionalAuth } from "../../../server/middleware/auth";
 import { loadRolePermissions, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
@@ -541,6 +542,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/sponsor", sponsorRoutes);
   app.use("/api/db", backupRoutes);
   app.use("/api/ai/providers", aiProviderRoutes);
+app.use("/api/ladder", ladderRoutes);
   console.log("[Server] v1.2.1 routes mounted: /api/teachers, /api/export, /api/users/import-csv, /api/analysis/ai");
 
   // 业务路由 RBAC 网关
