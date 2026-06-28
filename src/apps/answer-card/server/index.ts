@@ -61,6 +61,7 @@ import {
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
+import { CreateCardSchema, CreateExamSchema, UpdateUserSettingsSchema, validateBody } from "./validation";
 
 function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
   const examDate = fieldValue((card as any).examDate ?? card.examDate).trim();
@@ -376,7 +377,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards", async (req, res, next) => {
+  app.post("/api/cards", validateBody(CreateCardSchema), async (req, res, next) => {
     try {
       const subject = (req.body?.subject ?? "").trim();
       const title = (req.body?.title ?? "").trim();
@@ -1120,7 +1121,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/exams", async (req, res, next) => {
+  app.post("/api/exams", validateBody(CreateExamSchema), async (req, res, next) => {
     try {
       const { name, cardId, gradeId, classId, subject } = req.body as Record<string, unknown>;
       if (!name || !cardId) {
@@ -1252,7 +1253,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.patch("/api/users/me/settings", async (req, res, next) => {
+  app.patch("/api/users/me/settings", validateBody(UpdateUserSettingsSchema), async (req, res, next) => {
     try {
       const { scoreDisplayMode, reviewConfidenceThreshold, aiApiKey, backgroundOpacity } = req.body as Record<string, unknown>;
       const db = getDatabase();
