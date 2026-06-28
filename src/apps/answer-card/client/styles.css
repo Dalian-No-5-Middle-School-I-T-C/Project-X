@@ -139,7 +139,7 @@ body {
 }
 
 [data-theme="dark"] .topbar-actions .ghost-button {
-  color: var(--text-secondary);
+  color: var(--text);
 }
 
 [data-theme="dark"] .topbar-actions .ghost-button:hover {
@@ -4569,6 +4569,7 @@ body.has-bg-image::after {
 /* SVG 答题卡预览页 */
 [data-theme="dark"] .page {
   background: var(--surface);
+  color: #333;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
@@ -5928,7 +5929,7 @@ body.has-bg-image::after {
   filter: brightness(0.8);
 }
 [data-theme="dark"] .topbar-actions .ghost-button {
-  color: var(--text-secondary);
+  color: var(--text);
 }
 [data-theme="dark"] .topbar-actions .ghost-button:hover {
   color: var(--text);
@@ -5973,8 +5974,9 @@ body.has-bg-image::after {
   background: transparent;
 }
 [data-theme="dark"] .page {
-  background: var(--surface);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
+  background: #fafafa;
+  color: #333;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 [data-theme="dark"] .page:hover {
   box-shadow: 0 20px 56px rgba(0, 0, 0, 0.4), 0 6px 16px rgba(0, 0, 0, 0.3);
@@ -6224,7 +6226,7 @@ body.has-bg-image::after {
   filter: brightness(0.8);
 }
 [data-theme="dark"] .topbar-actions .ghost-button {
-  color: var(--text-secondary);
+  color: var(--text);
 }
 [data-theme="dark"] .topbar-actions .ghost-button:hover {
   color: var(--text);
@@ -6269,8 +6271,9 @@ body.has-bg-image::after {
   background: transparent;
 }
 [data-theme="dark"] .page {
-  background: var(--surface);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
+  background: #fafafa;
+  color: #333;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 [data-theme="dark"] .page:hover {
   box-shadow: 0 20px 56px rgba(0, 0, 0, 0.4), 0 6px 16px rgba(0, 0, 0, 0.3);
@@ -6520,7 +6523,7 @@ body.has-bg-image::after {
   filter: brightness(0.8);
 }
 [data-theme="dark"] .topbar-actions .ghost-button {
-  color: var(--text-secondary);
+  color: var(--text);
 }
 [data-theme="dark"] .topbar-actions .ghost-button:hover {
   color: var(--text);
@@ -6565,8 +6568,9 @@ body.has-bg-image::after {
   background: transparent;
 }
 [data-theme="dark"] .page {
-  background: var(--surface);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
+  background: #fafafa;
+  color: #333;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 [data-theme="dark"] .page:hover {
   box-shadow: 0 20px 56px rgba(0, 0, 0, 0.4), 0 6px 16px rgba(0, 0, 0, 0.3);
@@ -6816,7 +6820,7 @@ body.has-bg-image::after {
   filter: brightness(0.8);
 }
 [data-theme="dark"] .topbar-actions .ghost-button {
-  color: var(--text-secondary);
+  color: var(--text);
 }
 [data-theme="dark"] .topbar-actions .ghost-button:hover {
   color: var(--text);
@@ -6862,8 +6866,9 @@ body.has-bg-image::after {
 }
 
 [data-theme="dark"] .page {
-  background: var(--surface);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
+  background: #fafafa;
+  color: #333;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 [data-theme="dark"] .page:hover {
   box-shadow: 0 20px 56px rgba(0, 0, 0, 0.4), 0 6px 16px rgba(0, 0, 0, 0.3);
