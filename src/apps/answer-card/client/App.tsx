@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -1673,9 +1673,34 @@ function App() {
                 <div style={{ display: "flex", gap: 6 }}>
                   <button className="primary-button" onClick={async () => {
                     const name = newExamName.trim();
-                    if (!name || !newExamCardId && !card?.id) { setStatus("请填写名称和选择答题卡"); return; }
+                    if (!name) { setStatus("请填写考试名称"); return; }
                     try {
-                      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId: newExamCardId || card?.id, subject: newExamSubject.trim() || undefined }) });
+                      let cardId = newExamCardId || card?.id;
+                      // 方案 B：如果没有选择答题卡，先自动创建一张最简答题卡
+                      if (!cardId) {
+                        const subjectPinyinMap: Record<string, string> = {
+                          "语文": "yuwen", "数学": "shuxue", "英语": "yingyu", "外语": "yingyu",
+                          "物理": "wuli", "化学": "huaxue", "生物": "shengwu",
+                          "政治": "zhengzhi", "历史": "lishi", "地理": "dili"
+                        };
+                        const subjectVal = newExamSubject.trim();
+                        const subjectPinyin = subjectPinyinMap[subjectVal] || subjectVal || "custom";
+                        const today = new Date().toISOString().split("T")[0];
+                        const cardRes = await fetchJson<any>("/api/cards", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            subject: subjectPinyin,
+                            title: name,
+                            subjectLabel: subjectVal || undefined,
+                            examDate: today,
+                            englishListening: false,
+                            chineseChoicePlacement: "front"
+                          })
+                        });
+                        cardId = cardRes.id;
+                      }
+                      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId, subject: newExamSubject.trim() || undefined }) });
                       setNewExamName(""); setNewExamSubject(""); setShowCreateExam(false);
                       loadExams();
                     } catch (err) { setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`); }

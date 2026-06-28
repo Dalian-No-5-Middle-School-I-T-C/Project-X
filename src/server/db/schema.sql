@@ -539,7 +539,13 @@ CREATE INDEX IF NOT EXISTS idx_objective_grades_record ON objective_grades(recor
 CREATE INDEX IF NOT EXISTS idx_subjective_grades_record ON subjective_grades(record_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_student ON student_scores(student_id);
+-- 性能：成绩分析（排名/统计/概览）按 exam_id 过滤并按 total_score / assigned_score 排序
+CREATE INDEX IF NOT EXISTS idx_student_scores_exam_total ON student_scores(exam_id, total_score);
+CREATE INDEX IF NOT EXISTS idx_student_scores_exam_assigned ON student_scores(exam_id, assigned_score);
+CREATE INDEX IF NOT EXISTS idx_student_scores_exam_student ON student_scores(exam_id, student_id);
 CREATE INDEX IF NOT EXISTS idx_question_scores_exam_student ON question_scores(exam_id, student_id);
+CREATE INDEX IF NOT EXISTS idx_question_scores_exam_type ON question_scores(exam_id, score_type);
+CREATE INDEX IF NOT EXISTS idx_exams_grade_class ON exams(grade_id, class_id);
 
 -- ============================================================
 -- 初始数据

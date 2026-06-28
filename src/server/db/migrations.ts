@@ -430,6 +430,40 @@ const MIGRATIONS: Migration[] = [
         db.exec("ALTER TABLE twain_scan_records ADD COLUMN uploaded INTEGER DEFAULT 0");
       }
     }
+  },
+  {
+    // 性能优化：成绩分析高频查询复合索引 (CREATE INDEX IF NOT EXISTS 幂等)
+    version: 12,
+    name: "analysis-performance-indexes",
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_total
+          ON student_scores(exam_id, total_score);
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_assigned
+          ON student_scores(exam_id, assigned_score);
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_student
+          ON student_scores(exam_id, student_id);
+        CREATE INDEX IF NOT EXISTS idx_question_scores_exam_type
+          ON question_scores(exam_id, score_type);
+        CREATE INDEX IF NOT EXISTS idx_exams_grade_class
+          ON exams(grade_id, class_id);
+      `);
+    }
+  },
+  {
+    version: 13,
+    name: "system-settings",
+    up(db) {
+      if (hasTable(db, "system_settings")) return;
+      db.exec(`
+        CREATE TABLE system_settings (
+          key   TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+      `);
+      db.prepare("INSERT INTO system_settings (key, value) VALUES (?, ?)")
+        .run("ladder_enabled", "1");
+    }
   }
 ];
 
