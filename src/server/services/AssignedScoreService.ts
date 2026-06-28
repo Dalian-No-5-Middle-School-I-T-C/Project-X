@@ -1,5 +1,6 @@
 import { Parser } from "expr-eval";
-import { getDatabase } from "../db";
+import { getMysqlDb } from "../db";
+import type { DbAdapter } from "../db";
 import type { AssignedFormula, AssignedFormulaType } from "../../shared/types";
 
 /**
@@ -19,16 +20,21 @@ export const ASSIGNED_SCORE_SUBJECTS = ["化学", "生物", "地理", "政治"];
  *    可用变量: raw, max, min, avg, std
  */
 export class AssignedScoreService {
-  private db = getDatabase();
+  private db: DbAdapter;
   private parser = new Parser();
+
+  constructor() {
+    this.db = getMysqlDb();
+  }
 
   /**
    * 获取考试的赋分公式配置
    */
-  getFormula(examId: number): AssignedFormula | null {
-    const exam = this.db.prepare(
-      "SELECT assigned_formula FROM exams WHERE id = ?"
-    ).get(examId) as { assigned_formula: string | null } | undefined;
+  async getFormula(examId: number): Promise<AssignedFormula | null> {
+    const exam = await this.db.get(
+      "SELECT assigned_formula FROM exams WHERE id = ?",
+      examId
+    ) as { assigned_formula: string | null } | undefined;
 
     if (!exam?.assigned_formula) return null;
     try {
@@ -41,18 +47,22 @@ export class AssignedScoreService {
   /**
    * 保存赋分公式配置
    */
-  saveFormula(examId: number, formula: AssignedFormula): void {
-    this.db.prepare("UPDATE exams SET assigned_formula = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-      .run(JSON.stringify(formula), examId);
+  async saveFormula(examId: number, formula: AssignedFormula): Promise<void> {
+    await this.db.run(
+      "UPDATE exams SET assigned_formula = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      JSON.stringify(formula), examId
+    );
   }
 
   /**
    * 删除赋分公式（禁用赋分）
    */
-  disableFormula(examId: number): void {
-    this.db.prepare("UPDATE exams SET assigned_formula = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
-      .run(examId);
-    this.db.prepare("UPDATE student_scores SET assigned_score = NULL WHERE exam_id = ?").run(examId);
+  async disableFormula(examId: number): Promise<void> {
+    await this.db.run(
+      "UPDATE exams SET assigned_formula = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      examId
+    );
+    await this.db.run("UPDATE student_scores SET assigned_score = NULL WHERE exam_id = ?", examId);
   }
 
   /**
@@ -70,7 +80,6 @@ export class AssignedScoreService {
         const { minIn = 0, maxIn = 100, minOut = 30, maxOut = 100 } = formula.params;
         const span = (maxIn - minIn) || 1;
         const result = minOut + ((rawScore - minIn) / span) * (maxOut - minOut);
-        // 钳制到合理范围 [minOut-10, maxOut+10]
         return Math.round(Math.max(minOut - 10, Math.min(maxOut + 10, result)) * 10) / 10;
       }
       case "linear": {
@@ -83,11 +92,8 @@ export class AssignedScoreService {
         try {
           const expr = this.parser.parse(formula.params.expression);
           const result = expr.evaluate({
-            raw: rawScore,
-            max: stats.max,
-            min: stats.min,
-            avg: stats.avg,
-            std: stats.std
+            raw: rawScore, max: stats.max, min: stats.min,
+            avg: stats.avg, std: stats.std
           });
           if (typeof result === "number" && Number.isFinite(result)) {
             return Math.round(result * 10) / 10;
@@ -105,55 +111,54 @@ export class AssignedScoreService {
   /**
    * 对整场考试执行赋分重算
    */
-  recalculateAll(examId: number): { updated: number; skipped: number } {
-    const formula = this.getFormula(examId);
+  async recalculateAll(examId: number): Promise<{ updated: number; skipped: number }> {
+    const formula = await this.getFormula(examId);
     if (!formula || !formula.enabled) {
       return { updated: 0, skipped: 0 };
     }
 
-    // 获取统计数据
-    const stats = this.db.prepare(`
+    const stats = await this.db.get(`
       SELECT
         MAX(total_score) as max,
         MIN(total_score) as min,
         AVG(total_score) as avg
       FROM student_scores WHERE exam_id = ?
-    `).get(examId) as { max: number; min: number; avg: number };
+    `, examId) as { max: number; min: number; avg: number };
 
-    // Compute std separately to avoid complex subquery
-    const scores = this.db.prepare(
-      "SELECT total_score FROM student_scores WHERE exam_id = ?"
-    ).all(examId) as Array<{ total_score: number }>;
+    const scores = await this.db.all(
+      "SELECT total_score FROM student_scores WHERE exam_id = ?",
+      examId
+    ) as Array<{ total_score: number }>;
+
     const vals = scores.map((s) => s.total_score);
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
     const variance = vals.reduce((sum, v) => sum + (v - mean) ** 2, 0) / vals.length;
     const std = Math.sqrt(variance);
     const stdStats = { max: stats.max, min: stats.min, avg: stats.avg, std };
 
-    const students = this.db.prepare(
-      "SELECT student_id, total_score FROM student_scores WHERE exam_id = ?"
-    ).all(examId) as Array<{ student_id: number; total_score: number }>;
-
-    const updateStmt = this.db.prepare(
-      "UPDATE student_scores SET assigned_score = ? WHERE exam_id = ? AND student_id = ?"
-    );
+    const students = await this.db.all(
+      "SELECT student_id, total_score FROM student_scores WHERE exam_id = ?",
+      examId
+    ) as Array<{ student_id: number; total_score: number }>;
 
     let updated = 0;
     let skipped = 0;
 
-    const tx = this.db.transaction(() => {
+    await this.db.transaction(async (tx) => {
       for (const s of students) {
         if (s.total_score == null) {
           skipped++;
           continue;
         }
         const assigned = this.calculateAssignedScore(s.total_score, formula, stdStats);
-        updateStmt.run(assigned, examId, s.student_id);
+        await tx.run(
+          "UPDATE student_scores SET assigned_score = ? WHERE exam_id = ? AND student_id = ?",
+          assigned, examId, s.student_id
+        );
         updated++;
       }
     });
 
-    tx();
     return { updated, skipped };
   }
 
@@ -173,8 +178,7 @@ export class AssignedScoreService {
         id: "proportional-default",
         name: "等比例转换 (新高考常用)",
         formula: {
-          type: "proportional",
-          enabled: true,
+          type: "proportional", enabled: true,
           params: { minIn: 0, maxIn: 100, minOut: 30, maxOut: 100 }
         }
       },
@@ -182,8 +186,7 @@ export class AssignedScoreService {
         id: "linear-070",
         name: "线性公式 (原始分×0.7+30)",
         formula: {
-          type: "linear",
-          enabled: true,
+          type: "linear", enabled: true,
           params: { a: 0.7, b: 30 }
         }
       },
@@ -191,8 +194,7 @@ export class AssignedScoreService {
         id: "custom-starter",
         name: "自定义 (可编辑表达式)",
         formula: {
-          type: "custom",
-          enabled: true,
+          type: "custom", enabled: true,
           params: { expression: "raw * 0.7 + 30" }
         }
       }

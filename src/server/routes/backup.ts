@@ -11,8 +11,12 @@ import crypto from "node:crypto";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { closeDatabase, getDatabase, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath } from "../db";
+import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 const router = Router();
 
@@ -43,6 +47,12 @@ function getScannerDbPath(): string {
  * 导出所有数据为 ZIP 下载
  */
 router.get("/backup", async (_req: Request, res: Response) => {
+  const dialect = detectDialect();
+  if (dialect === "mariadb") {
+    await backupMariadb(res);
+    return;
+  }
+
   const tmpDir = path.join(os.tmpdir(), `projectx-backup-${crypto.randomUUID()}`);
   const zipFile = path.join(os.tmpdir(), `projectx-backup-${Date.now()}.zip`);
 
@@ -158,6 +168,12 @@ router.get("/backup", async (_req: Request, res: Response) => {
  * 导入 ZIP 恢复数据（raw binary upload，不走 multipart）
  */
 router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
+  const dialect = detectDialect();
+  if (dialect === "mariadb") {
+    await restoreMariadb(req, res);
+    return;
+  }
+
   const zipBuffer = req.body as Buffer;
   if (!zipBuffer || !Buffer.isBuffer(zipBuffer) || zipBuffer.length === 0) {
     res.status(400).json({ message: "请上传 .zip 备份文件（需以 application/zip Content-Type 发送）" });
@@ -249,6 +265,162 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
     res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
   }
 });
+
+/**
+ * MariaDB 备份 — 通过 mysqldump 导出 SQL → gzip → ZIP
+ */
+async function backupMariadb(res: Response): Promise<void> {
+  const tmpDir = path.join(os.tmpdir(), `projectx-backup-${crypto.randomUUID()}`);
+
+  try {
+    await mkdir(tmpDir, { recursive: true });
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+
+    // 从 adapter 获取 MariaDB 连接配置
+    const db = getMysqlDb();
+    const health = await (await import("../db")).healthCheck();
+    if (!health.ok) {
+      res.status(500).json({ message: `数据库连接失败: ${health.error}` });
+      return;
+    }
+
+    // v1.6.0: 统一使用 getMariadbConfig() 读取配置（环境变量 > config.yml）
+    const cfg = getMariadbConfig();
+    const host = cfg?.host || "127.0.0.1";
+    const port = String(cfg?.port || 443);
+    const user = cfg?.user || "projectx_app";
+    const password = cfg?.password || "";
+    const database = cfg?.database || "projectx";
+
+    // 构建 mysqldump 命令
+    const dumpFile = path.join(tmpDir, "dump.sql");
+    const args = [
+      `--host=${host}`, `--port=${port}`, `--user=${user}`,
+      `--databases`, database,
+      `--result-file=${dumpFile}`,
+      "--add-drop-database", "--add-drop-table",
+      "--routines", "--triggers", "--events",
+      "--single-transaction", "--quick",
+      "--default-character-set=utf8mb4"
+    ];
+
+    if (password) {
+      args.push(`--password=${password}`);
+    }
+
+    try {
+      await execFileAsync("mysqldump", args, { timeout: 300_000 });
+    } catch (err: any) {
+      // 也尝试 mariadb-dump
+      console.warn("[Backup] mysqldump failed, trying mariadb-dump:", err.message);
+      try {
+        await execFileAsync("mariadb-dump", args, { timeout: 300_000 });
+      } catch (err2: any) {
+        res.status(500).json({ message: `mysqldump 执行失败: ${err2.message}。请确保已安装 MariaDB 客户端工具。` });
+        return;
+      }
+    }
+
+    const fstat = await stat(dumpFile);
+    console.log(`[Backup] MariaDB dump: ${(fstat.size / 1024 / 1024).toFixed(1)} MB`);
+
+    // 元数据
+    const metadata = {
+      version: 2,
+      format: "projectx-backup-mariadb",
+      generatedAt: new Date().toISOString(),
+      files: [{ name: "dump.sql", size: fstat.size }]
+    };
+    await writeFile(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
+
+    // 创建 ZIP 响应
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''ProjectX_backup_${timestamp}.zip`);
+
+    const archive = new ZipArchive({ zlib: { level: 6 } });
+    archive.on("error", (err?: Error) => { console.error("[Backup] Archive error:", err?.message); });
+    archive.pipe(res);
+    archive.file(path.join(tmpDir, "metadata.json"), { name: "metadata.json" });
+    archive.file(dumpFile, { name: "dump.sql" });
+    await archive.finalize();
+
+    cleanupDir(tmpDir).catch(() => {});
+  } catch (error) {
+    console.error("[Backup] MariaDB export failed:", error);
+    cleanupDir(tmpDir).catch(() => {});
+    if (!res.headersSent) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "导出失败" });
+    }
+  }
+}
+
+/**
+ * MariaDB 恢复 — 上传 ZIP 含 dump.sql → mysql 导入
+ */
+async function restoreMariadb(req: Request, res: Response): Promise<void> {
+  const zipBuffer = req.body as Buffer;
+  if (!zipBuffer || !Buffer.isBuffer(zipBuffer) || zipBuffer.length === 0) {
+    res.status(400).json({ message: "请上传 .zip 备份文件" });
+    return;
+  }
+  if (zipBuffer[0] !== 0x50 || zipBuffer[1] !== 0x4b) {
+    res.status(400).json({ message: "不是有效的 ZIP 格式" });
+    return;
+  }
+
+  const tmpDir = path.join(os.tmpdir(), `projectx-restore-${crypto.randomUUID()}`);
+  try {
+    await mkdir(tmpDir, { recursive: true });
+    extractZipFromBuffer(zipBuffer, tmpDir);
+
+    const dumpFile = path.join(tmpDir, "dump.sql");
+    if (!existsSync(dumpFile)) {
+      res.status(400).json({ message: "备份文件中未找到 dump.sql" });
+      return;
+    }
+
+    // 读取配置
+    const cfg = getMariadbConfig();
+    const host = cfg?.host || "127.0.0.1";
+    const port = String(cfg?.port || 443);
+    const user = cfg?.user || "projectx_app";
+    const password = cfg?.password || "";
+    const database = cfg?.database || "projectx";
+
+    const args = [`--host=${host}`, `--port=${port}`, `--user=${user}`, `--database=${database}`];
+    if (password) args.push(`--password=${password}`);
+
+    const dumpContent = await import("node:fs").then(fs => fs.promises.readFile(dumpFile, "utf8"));
+
+    // 使用 mysql 客户端导入
+    const { execFile } = await import("node:child_process");
+    const { promisify } = await import("node:util");
+    const execAsync = promisify(execFile);
+
+    try {
+      // 将 dump.sql 通过 stdin 传给 mysql
+      const { exec } = await import("node:child_process");
+      const cmd = `mysql --host=${host} --port=${port} --user=${user} ${password ? `--password=${password}` : ""} ${database}`;
+      await new Promise<void>((resolve, reject) => {
+        const child = exec(cmd, { maxBuffer: 512 * 1024 * 1024 }, (err) => {
+          if (err) reject(err); else resolve();
+        });
+        child.stdin!.write(dumpContent);
+        child.stdin!.end();
+      });
+
+      await cleanupDir(tmpDir);
+      res.json({ ok: true, message: "数据已恢复！请重启服务器以使更改完全生效。" });
+    } catch (err: any) {
+      await cleanupDir(tmpDir).catch(() => {});
+      res.status(500).json({ message: `mysql 导入失败: ${err.message}` });
+    }
+  } catch (error) {
+    console.error("[Restore] MariaDB import failed:", error);
+    await cleanupDir(tmpDir).catch(() => {});
+    res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
+  }
+}
 
 /**
  * 递归复制目录

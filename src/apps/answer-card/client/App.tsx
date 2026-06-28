@@ -375,11 +375,21 @@ function findNextQuestionNumber(card: AnswerCard): number {
 }
 
 function App() {
-  const { user, loading, hasPermission } = useAuth();
+  const { user, loading, hasPermission, persona, teacherRoleOverride } = useAuth();
+  // v1.6.0: 运行时 persona 替换 compile-time VITE_PROJECTX_VARIANT
   const appVariant = useMemo(
-    () => getProjectXVariantConfig(import.meta.env.VITE_PROJECTX_VARIANT),
-    []
+    () => getProjectXVariantConfig(persona),
+    [persona]
   );
+  // 检测是否在 Electron 环境且有扫描硬件
+  const [hasNativeScanner, setHasNativeScanner] = useState(false);
+  useEffect(() => {
+    if (typeof navigator !== "undefined") {
+      const isElectron = navigator.userAgent.includes("Electron");
+      // 扫描硬件仅在 Electron + teacher-scanner persona 时可用
+      setHasNativeScanner(isElectron && persona === "teacher-scanner");
+    }
+  }, [persona]);
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
@@ -454,14 +464,15 @@ function App() {
     [appVariant]
   );
 
+  // 扫描 TAB：需要 variant 允许扫描 + grading 权限 + 本地有扫描硬件
   const canDesign = variantAllows("design") && hasPermission(PERMISSIONS.CARD_READ);
   const canManageExams = variantAllows("exam-manage") && hasPermission(PERMISSIONS.EXAM_WRITE);
   const canGrade = variantAllows("grading") && hasPermission(PERMISSIONS.GRADE_READ);
+  const canScanner = appVariant.enableScanner && canGrade && hasNativeScanner;
   const canAnalyze = variantAllows("analysis") && hasPermission(PERMISSIONS.EXAM_READ);
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
   const canManageAccounts = variantAllows("account") && hasPermission(PERMISSIONS.USER_MANAGE);
-  const canUseScanner = appVariant.enableScanner && canGrade;
   const showCardSidebar = mode === "design" && canDesign;
   const showScoresTab = canViewScores;
 
@@ -494,10 +505,10 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!canUseScanner && showScanner) {
+    if (!canScanner && showScanner) {
       setShowScanner(false);
     }
-  }, [canUseScanner, showScanner]);
+  }, [canScanner, showScanner]);
 
   useEffect(() => {
     if (!user || (!canDesign && !canGrade)) return;
@@ -1299,7 +1310,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.5.0</span>
+            <span>Project-X v1.6.0</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
@@ -1912,7 +1923,7 @@ function App() {
                   />
                 </label>
               </div>
-              {canUseScanner && (
+              {canScanner && (
               <button
                 className="primary-button wide-button"
                 style={{ marginTop: 8 }}

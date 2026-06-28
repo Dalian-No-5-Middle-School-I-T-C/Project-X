@@ -301,9 +301,139 @@ const MIGRATIONS: Migration[] = [
     }
   },
   {
-    // 性能优化：为成绩分析高频查询补充复合索引。
-    // CREATE INDEX IF NOT EXISTS 保证幂等，旧库重跑安全。
     version: 9,
+    name: "original-paper-and-knowledge-points",
+    up(db) {
+      // answer_cards 新增原卷相关列
+      addColumnIfMissing(db, "answer_cards", "has_original_paper", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "answer_cards", "original_paper_filename", "TEXT");
+      addColumnIfMissing(db, "answer_cards", "original_paper_path", "TEXT");
+      addColumnIfMissing(db, "answer_cards", "question_range", "TEXT");
+      addColumnIfMissing(db, "answer_cards", "extra_notes", "TEXT");
+      addColumnIfMissing(db, "answer_cards", "knowledge_points_text", "TEXT");
+
+      // users 新增教师个人设置
+      addColumnIfMissing(db, "users", "require_original_paper", "INTEGER DEFAULT 1");
+      addColumnIfMissing(db, "users", "highlight_missing_paper", "INTEGER DEFAULT 1");
+
+      // 新建知识点字典表（与成绩联动）
+      if (!hasTable(db, "knowledge_points")) {
+        db.exec(`
+          CREATE TABLE knowledge_points (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            card_id         TEXT NOT NULL REFERENCES answer_cards(id) ON DELETE CASCADE,
+            question_number INTEGER NOT NULL,
+            point_text      TEXT NOT NULL,
+            category        TEXT,
+            sort_order      INTEGER DEFAULT 0,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(card_id, question_number, point_text)
+          );
+          CREATE INDEX IF NOT EXISTS idx_kp_card ON knowledge_points(card_id);
+          CREATE INDEX IF NOT EXISTS idx_kp_card_question ON knowledge_points(card_id, question_number);
+        `);
+      }
+    }
+  },
+  {
+    version: 10,
+    name: "twain-scan-tables",
+    up(db) {
+      if (!hasTable(db, "twain_scan_sessions")) {
+        db.exec(`
+          CREATE TABLE twain_scan_sessions (
+            id          TEXT PRIMARY KEY,
+            card_id     TEXT NOT NULL,
+            name        TEXT NOT NULL DEFAULT '',
+            dpi         INTEGER NOT NULL DEFAULT 300,
+            duplex      INTEGER NOT NULL DEFAULT 1,
+            color_mode  TEXT NOT NULL DEFAULT 'gray',
+            paper_size  TEXT NOT NULL DEFAULT 'A4',
+            page_count  INTEGER NOT NULL DEFAULT 0,
+            status      TEXT NOT NULL DEFAULT 'pending',
+            error_msg   TEXT,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE TABLE twain_scan_records (
+            id              TEXT PRIMARY KEY,
+            session_id      TEXT NOT NULL REFERENCES twain_scan_sessions(id) ON DELETE CASCADE,
+            card_id         TEXT NOT NULL,
+            student_id      TEXT,
+            student_conf    REAL,
+            image_path      TEXT NOT NULL,
+            page_num        INTEGER NOT NULL DEFAULT 1,
+            side            TEXT NOT NULL DEFAULT 'front',
+            ocr_status      TEXT NOT NULL DEFAULT 'pending',
+            scan_quality    REAL,
+            ocr_error       TEXT,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+            recognized_at   DATETIME
+          );
+
+          CREATE TABLE twain_recognition_results (
+            id              TEXT PRIMARY KEY,
+            scan_record_id  TEXT UNIQUE NOT NULL REFERENCES twain_scan_records(id) ON DELETE CASCADE,
+            objective_json  TEXT,
+            subjective_json TEXT,
+            total_score     REAL,
+            max_score       REAL,
+            grade_status    TEXT NOT NULL DEFAULT 'pending',
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+
+          CREATE TABLE twain_student_grading_results (
+            session_id    TEXT NOT NULL,
+            student_id    TEXT NOT NULL,
+            objective_json  TEXT,
+            subjective_json TEXT,
+            total_score   REAL,
+            max_score     REAL,
+            page_count    INTEGER NOT NULL DEFAULT 1,
+            created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (session_id, student_id)
+          );
+
+          CREATE INDEX IF NOT EXISTS idx_twain_sessions_card ON twain_scan_sessions(card_id);
+          CREATE INDEX IF NOT EXISTS idx_twain_records_session ON twain_scan_records(session_id);
+          CREATE INDEX IF NOT EXISTS idx_twain_records_card ON twain_scan_records(card_id);
+          CREATE INDEX IF NOT EXISTS idx_twain_records_student ON twain_scan_records(student_id);
+          CREATE INDEX IF NOT EXISTS idx_twain_recognition_scan ON twain_recognition_results(scan_record_id);
+          CREATE INDEX IF NOT EXISTS idx_twain_sgr_session ON twain_student_grading_results(session_id);
+          CREATE INDEX IF NOT EXISTS idx_twain_sgr_student ON twain_student_grading_results(student_id);
+        `);
+      }
+      // Migrate old scanner.db data if it exists (one-time)
+      // Handled separately by migrate-to-mariadb.ts
+    }
+  },
+  {
+    version: 11,
+    name: "api-keys",
+    up(db) {
+      if (!hasTable(db, "api_keys")) {
+        db.exec(`
+          CREATE TABLE api_keys (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            name         TEXT NOT NULL,
+            api_key      TEXT NOT NULL UNIQUE,
+            scope        TEXT NOT NULL DEFAULT 'scanner',
+            is_active    INTEGER DEFAULT 1,
+            created_by   INTEGER REFERENCES users(id),
+            created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+      }
+      // v1.6.0: 为 twain_scan_records 添加 uploaded 字段
+      if (hasTable(db, "twain_scan_records") && !hasColumn(db, "twain_scan_records", "uploaded")) {
+        db.exec("ALTER TABLE twain_scan_records ADD COLUMN uploaded INTEGER DEFAULT 0");
+      }
+    }
+  },
+  {
+    // 性能优化：成绩分析高频查询复合索引 (CREATE INDEX IF NOT EXISTS 幂等)
+    version: 12,
     name: "analysis-performance-indexes",
     up(db) {
       db.exec(`
@@ -321,7 +451,7 @@ const MIGRATIONS: Migration[] = [
     }
   },
   {
-    version: 10,
+    version: 13,
     name: "system-settings",
     up(db) {
       if (hasTable(db, "system_settings")) return;

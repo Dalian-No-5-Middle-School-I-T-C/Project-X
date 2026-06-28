@@ -24,6 +24,13 @@ import path from "node:path";
 // 必须在导入任何 db 模块前设置数据库路径（getDatabase 在模块求值期读取该变量）
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-verify-"));
 process.env.PROJECTX_DB_PATH = path.join(tmpDir, "verify.db");
+// 验证脚本固定使用临时 SQLite，避免 cloud.env 中的 MariaDB 变量干扰
+delete process.env.PROJECTX_MARIADB_HOST;
+delete process.env.PROJECTX_MARIADB_PORT;
+delete process.env.PROJECTX_MARIADB_USER;
+delete process.env.PROJECTX_MARIADB_PASSWORD;
+delete process.env.PROJECTX_MARIADB_DATABASE;
+delete process.env.PROJECTX_MYSQL_HOST;
 
 let passed = 0;
 let failed = 0;
@@ -115,7 +122,7 @@ async function main(): Promise<void> {
   const adminLogin = await auth.login("admin", "admin123");
   ok(adminLogin.success && Boolean(adminLogin.token), "管理员正确密码登录成功");
   ok(JSON.stringify(adminLogin.permissions) === JSON.stringify(["*"]), "登录响应携带权限 ['*']");
-  const sessionUser = auth.getUserByToken(adminLogin.token!);
+  const sessionUser = await auth.getUserByToken(adminLogin.token!);
   ok(sessionUser?.username === "admin", "Token 可换取当前用户");
 
   const userRepo = new UserRepository();
@@ -153,36 +160,36 @@ async function main(): Promise<void> {
   // 改密 + 会话吊销
   const changed = await auth.changePassword(student.id, "20260001", "newpass123");
   ok(changed.success, "学生修改密码成功");
-  ok(auth.getUserByToken(stuLogin.token!) === null, "改密后旧会话被吊销");
+  ok((await auth.getUserByToken(stuLogin.token!)) === null, "改密后旧会话被吊销");
   const reLogin = await auth.login("20260001", "newpass123");
   ok(reLogin.success, "用新密码重新登录成功");
 
   // 最后一名管理员保护（在 repo 层用 countByRole 模拟路由判断）
-  const adminSummary = userRepo.countByRole().find((r: any) => r.role_name === "admin");
+  const adminSummary = (await userRepo.countByRole()).find((r: any) => r.role_name === "admin");
   ok(adminSummary?.count === 1, "当前仅 1 名管理员（路由层将阻止其降级/禁用）");
 
   // 禁用与启用
-  userRepo.deactivateUser(teacher.id);
-  ok(!userRepo.findByUsername("t1001"), "禁用后普通查询不可见");
-  ok(userRepo.findByIdIncludingInactive(teacher.id)?.is_active === 0, "管理员仍可见禁用账号");
-  userRepo.reactivateUser(teacher.id);
-  ok(userRepo.findByUsername("t1001")?.is_active === 1, "重新启用成功");
+  await userRepo.deactivateUser(teacher.id);
+  ok(!(await userRepo.findByUsername("t1001")), "禁用后普通查询不可见");
+  ok((await userRepo.findByIdIncludingInactive(teacher.id))?.is_active === 0, "管理员仍可见禁用账号");
+  await userRepo.reactivateUser(teacher.id);
+  ok((await userRepo.findByUsername("t1001"))?.is_active === 1, "重新启用成功");
 
   // ── 5. 班级 / 花名册 ──────────────────────────────────
   section("5. 年级 / 班级 / 花名册");
   const classRepo = new ClassRepository();
-  const grade = classRepo.createGrade("高一", 1);
-  const klass = classRepo.createClass(grade.id, "1班", 1);
+  const grade = await classRepo.createGrade("高一", 1);
+  const klass = await classRepo.createClass(grade.id, "1班", 1);
   ok(klass.grade_name === "高一", "创建年级与班级成功");
   const studentIds = (db.prepare("SELECT id FROM users WHERE role_id = 3").all() as Array<{ id: number }>).map(
     (r) => r.id
   );
-  const added = classRepo.addStudents(klass.id, studentIds);
+  const added = await classRepo.addStudents(klass.id, studentIds);
   ok(added === studentIds.length, `花名册添加 ${added} 名学生`);
-  ok(classRepo.listStudents(klass.id).length === studentIds.length, "花名册查询数量正确");
-  ok(classRepo.isStudentInClass(klass.id, student.id), "学生归属判定正确");
-  classRepo.removeStudent(klass.id, student.id);
-  ok(!classRepo.isStudentInClass(klass.id, student.id), "移除学生成功");
+  ok((await classRepo.listStudents(klass.id)).length === studentIds.length, "花名册查询数量正确");
+  ok(await classRepo.isStudentInClass(klass.id, student.id), "学生归属判定正确");
+  await classRepo.removeStudent(klass.id, student.id);
+  ok(!(await classRepo.isStudentInClass(klass.id, student.id)), "移除学生成功");
 
   // ── 6. 学生自助查分 ───────────────────────────────────
   section("6. 学生自助查分");
@@ -208,14 +215,14 @@ async function main(): Promise<void> {
   ).run(examId, otherStudent.id, 50, 20, 70);
 
   const scoreRepo = new ScoreRepository();
-  const myScores = scoreRepo.getStudentScores(student.id);
+  const myScores = await scoreRepo.getStudentScores(student.id);
   ok(myScores.length === 1 && myScores[0].total_score === 90, "学生仅查到自己的成绩");
   ok(myScores[0].rank === 1 && myScores[0].class_size === 2, "即时排名计算正确（第1/共2）");
-  ok(!scoreRepo.hasScore(student.id, examId + 999), "不存在的考试返回无成绩");
+  ok(!(await scoreRepo.hasScore(student.id, examId + 999)), "不存在的考试返回无成绩");
 
   // ── 6.1 成绩分析趋势与统计 ─────────────────────────────
   section("6.1 Score analysis trend and summary");
-  classRepo.addStudents(klass.id, [student.id]);
+  await classRepo.addStudents(klass.id, [student.id]);
   const extraA = await userRepo.createUser({
     username: "20260010",
     password: "20260010",
@@ -264,31 +271,31 @@ async function main(): Promise<void> {
   insertScore.run(summaryOddExam, extraA.id, 90, 0, 90);
 
   const analysisRepo = new AnalysisRepository();
-  const trend = analysisRepo.getScoreTrend("TrendPhysics");
+  const trend = await analysisRepo.getScoreTrend("TrendPhysics");
   ok(trend.length === 2 && trend[0].examName === "Trend 1" && trend[1].examName === "Trend 2", "single-subject trend is ordered by exam time");
   ok(trend[0].gradeAvg === 70 && trend[1].gradeAvg === 80, "single-subject grade averages are correct");
-  const classTrend = analysisRepo.getScoreTrend("TrendPhysics", klass.id);
+  const classTrend = await analysisRepo.getScoreTrend("TrendPhysics", klass.id);
   ok(classTrend[0].classAvg === 80 && classTrend[0].classCount === 1, "single-subject class average filter is correct");
-  const unknownTrend = analysisRepo.getScoreTrend("TrendPhysics", 0);
+  const unknownTrend = await analysisRepo.getScoreTrend("TrendPhysics", 0);
   ok(unknownTrend[0].classAvg === 60 && unknownTrend[0].classCount === 1, "single-subject unknown class average filter is correct");
-  const trendClasses = analysisRepo.getExamClasses(trendExam1);
+  const trendClasses = await analysisRepo.getExamClasses(trendExam1);
   ok(trendClasses.some((item) => item.classId === 0 && item.className === "未知班级"), "exam class list includes unknown class");
-  ok(analysisRepo.getScoreTrend("").length === 0, "empty subject returns empty trend");
-  ok(analysisRepo.getScoreSummary(examId + 999) === null, "score summary returns null without scores");
+  ok((await analysisRepo.getScoreTrend("")).length === 0, "empty subject returns empty trend");
+  ok((await analysisRepo.getScoreSummary(examId + 999)) === null, "score summary returns null without scores");
 
-  const evenSummary = analysisRepo.getScoreSummary(summaryEvenExam);
+  const evenSummary = await analysisRepo.getScoreSummary(summaryEvenExam);
   ok(
     evenSummary?.min === 60 && evenSummary.q1 === 67.5 && evenSummary.median === 75 && evenSummary.q3 === 82.5 && evenSummary.max === 90 && evenSummary.avg === 75,
     "even-sized score summary is correct"
   );
-  const oddSummary = analysisRepo.getScoreSummary(summaryOddExam);
+  const oddSummary = await analysisRepo.getScoreSummary(summaryOddExam);
   ok(
     oddSummary?.min === 50 && oddSummary.q1 === 60 && oddSummary.median === 70 && oddSummary.q3 === 80 && oddSummary.max === 90 && oddSummary.avg === 70,
     "odd-sized score summary is correct"
   );
-  const overviewWithSummary = analysisRepo.getExamOverview(summaryEvenExam);
+  const overviewWithSummary = await analysisRepo.getExamOverview(summaryEvenExam);
   ok(overviewWithSummary.scoreSummary?.median === 75, "exam overview includes score summary");
-  const selectedClassOverview = analysisRepo.getExamOverview(trendExam1, klass.id);
+  const selectedClassOverview = await analysisRepo.getExamOverview(trendExam1, klass.id);
   ok(selectedClassOverview.scoreSummary?.avg === 80 && selectedClassOverview.overallScoreSummary?.avg === 70, "selected class overview keeps overall summary separate");
 
   section("7. 中间件 requirePermission / requireRole");

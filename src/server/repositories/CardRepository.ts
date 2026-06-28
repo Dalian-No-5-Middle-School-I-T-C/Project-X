@@ -69,7 +69,7 @@ export class CardRepository {
       const question = questions[i];
       await this.db.run(
         `INSERT INTO objective_questions (block_id, question_number, sort_order, mode, option_count, score, option_layout, scoring_rule_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE mode=VALUES(mode), option_count=VALUES(option_count), score=VALUES(score), option_layout=VALUES(option_layout), scoring_rule_json=VALUES(scoring_rule_json)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) -- note: upsert handled by DELETE-then-INSERT in updateCard()`,
         block.id, question.questionNumber, i, question.mode, question.optionCount, question.score,
         normalizeOptionLayout(question.optionLayout ?? blockOptionLayout),
         question.scoringRule ? JSON.stringify(question.scoringRule) : null
@@ -77,7 +77,7 @@ export class CardRepository {
       if (question.answerKey && question.answerKey.length > 0) {
         await this.db.run(
           `INSERT INTO objective_answer_keys (block_id, question_number, correct_options)
-           VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE correct_options=VALUES(correct_options)`,
+           VALUES (?, ?, ?) -- note: upsert handled by DELETE-then-INSERT`,
           block.id, question.questionNumber, JSON.stringify(question.answerKey)
         );
       }
@@ -87,7 +87,7 @@ export class CardRepository {
       for (const [partialCount, score] of Object.entries(block.multipleScoring.partialScores)) {
         await this.db.run(
           `INSERT INTO objective_multiple_scoring (block_id, correct_count, score)
-           VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE score=VALUES(score)`,
+           VALUES (?, ?, ?) -- note: upsert handled by DELETE-then-INSERT`,
           block.id, Number(partialCount), score as number
         );
       }
