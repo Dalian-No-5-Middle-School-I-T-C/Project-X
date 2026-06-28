@@ -11,6 +11,7 @@
  * a 400 response on failure so the route handler receives typed data.
  */
 import { z } from "zod";
+import type { ZodIssue } from "zod";
 import type { Request, Response, NextFunction } from "express";
 
 // ── Shared atoms ─────────────────────────────────────────
@@ -96,7 +97,7 @@ export function validateBody(schema: z.ZodObject<any>) {
       res.status(400).json({
         code: "INVALID_VALUE",
         message: "请求参数校验失败",
-        errors: result.error.issues.map((issue) => ({
+        errors: result.error.issues.map((issue: ZodIssue) => ({
           path: issue.path.join("."),
           message: issue.message,
         })),

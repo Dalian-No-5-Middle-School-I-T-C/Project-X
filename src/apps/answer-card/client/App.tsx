@@ -3,7 +3,6 @@ import {
   ArrowDown,
   ArrowUp,
   BarChart3,
-  Camera,
   ChevronDown,
   ClipboardCheck,
   ClipboardList,
@@ -76,7 +75,6 @@ import {
   type ProjectXAppMode,
   type ProjectXVariantConfig
 } from "../../../shared/appVariant";
-import { ScannerPanel } from "./components/ScannerPanel";
 import { ScanPreviewModal, type ScanPage } from "./components/ScanPreviewModal";
 import { ImportCardModal, type ImportCardFormData } from "./components/ImportCardModal";
 import { AnalysisOverview } from "./components/AnalysisOverview";
@@ -381,15 +379,6 @@ function App() {
     () => getProjectXVariantConfig(persona),
     [persona]
   );
-  // 检测是否在 Electron 环境且有扫描硬件
-  const [hasNativeScanner, setHasNativeScanner] = useState(false);
-  useEffect(() => {
-    if (typeof navigator !== "undefined") {
-      const isElectron = navigator.userAgent.includes("Electron");
-      // 扫描硬件仅在 Electron + teacher-scanner persona 时可用
-      setHasNativeScanner(isElectron && persona === "teacher-scanner");
-    }
-  }, [persona]);
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
@@ -408,7 +397,8 @@ function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>("idle");
   const gradingProgressSourceRef = useRef<EventSource | null>(null);
-  const [showScanner, setShowScanner] = useState(false);
+  // Note: Scanner has been split into a separate build (ScannerApp.tsx).
+  // Web mode never renders ScannerPanel; the "扫描仪录入" button is removed.
   const [analysisExamId, setAnalysisExamId] = useState<number | null>(null);
   const [analysisClassId, setAnalysisClassId] = useState<string>("");
   const [analysisClasses, setAnalysisClasses] = useState<Array<{ classId: number; className: string }>>([]);
@@ -468,7 +458,6 @@ function App() {
   const canDesign = variantAllows("design") && hasPermission(PERMISSIONS.CARD_READ);
   const canManageExams = variantAllows("exam-manage") && hasPermission(PERMISSIONS.EXAM_WRITE);
   const canGrade = variantAllows("grading") && hasPermission(PERMISSIONS.GRADE_READ);
-  const canScanner = appVariant.enableScanner && canGrade && hasNativeScanner;
   const canAnalyze = variantAllows("analysis") && hasPermission(PERMISSIONS.EXAM_READ);
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
@@ -503,12 +492,6 @@ function App() {
       window.removeEventListener("beforeunload", flushOnPageHide);
     };
   }, []);
-
-  useEffect(() => {
-    if (!canScanner && showScanner) {
-      setShowScanner(false);
-    }
-  }, [canScanner, showScanner]);
 
   useEffect(() => {
     if (!user || (!canDesign && !canGrade)) return;
@@ -1310,7 +1293,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.6.0</span>
+            <span>Project-X v1.6.1</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
@@ -1811,17 +1794,7 @@ function App() {
         </div>
         <div className={`main-grid grading-grid ${mode === "grading" ? "" : "hidden-panel"}`}>
           <section className="preview-panel grading-results-panel">
-            {showScanner && card ? (
-              <ScannerPanel
-                cardId={card.id}
-                onScansComplete={(sessionId, pageCount) => {
-                  setStatus(`扫描完成：${pageCount} 张，学号已识别并存入数据库`);
-                }}
-                onClose={() => setShowScanner(false)}
-              />
-            ) : (
-              <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
-            )}
+            <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
           </section>
 
           <aside className="inspector">
@@ -1923,16 +1896,6 @@ function App() {
                   />
                 </label>
               </div>
-              {canScanner && (
-              <button
-                className="primary-button wide-button"
-                style={{ marginTop: 8 }}
-                onClick={() => setShowScanner(true)}
-                disabled={!card || isBusy}
-              >
-                <Camera size={17} /> 扫描仪录入
-              </button>
-              )}
               <div className="file-queue">
                 <div>
                   <strong>{gradingFiles.length}</strong>

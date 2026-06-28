@@ -1,5 +1,67 @@
 # Project-X CHANGELOG
 
+## v1.6.1 (2026-06-28) — Web/Scanner 构建分离
+
+### 构建拆分
+
+代码库拆分为两个独立的 Vite 构建目标：
+
+```
+v1.6.0:  dist/client/ (全在一起)
+v1.6.1:  dist/web/ (教师+学生) + dist/scanner/ (扫描端)
+```
+
+- **Web 构建** (`vite build --mode web` → `dist/web/`)：教师 + 学生页面，**不含 ScannerPanel 代码**，部署到服务器
+- **Scanner 构建** (`vite build --mode scanner` → `dist/scanner/`)：仅 ScannerPanel，打包进 Electron 桌面端
+- **入口文件**：`index.html` (Web) / `index-scanner.html` (Scanner)，各含独立 `main.tsx` / `main-scanner.tsx`
+- **ScannerApp.tsx**：新建独立扫描端组件，含答题卡选择 + 扫描面板 + 结果预览，无设计/分析/账号等 Tab
+- **App.tsx**：移除 ScannerPanel 导入和使用（web 模式不需要）
+
+### 扫描端重构：答题卡选择 + 工作台
+
+- **双屏路由**：`CardSelectPage`（选卡）→ `ScannerWorkspace`（扫描）
+- **CardSelectPage.tsx**：对齐 ExamSelectPage 风格
+  - 单科/大考双 Tab 切换
+  - 搜索框（按 ID 或名称搜索）
+  - 学科下拉筛选
+  - 表格列表（答题卡名称 / 科目 / 日期）
+  - 大考 Tab：展开显示下辖考试列表，点击选择对应答题卡
+- **ScannerWorkspace.tsx**：扫描工作台
+  - TWAIN 扫描仪直扫（复用 ScannerPanel）
+  - 文件/目录导入阅卷（复用 grading API，含 GradingResults 展示）
+  - 顶栏返回按钮
+
+### 学生端 Bug 修复
+
+- **成绩天梯无法显示**：`/api/ladder/*` 路由已定义但未在 `server/index.ts` 中 mount，所有请求落入 SPA fallback 返回 HTML
+  - 修复：添加 `import ladderRoutes` 并 `app.use("/api/ladder", ladderRoutes)`
+- **跨考累计 JSON 报错**：同上根因，修复后天梯三种维度（单科/大考/跨考）均可正常查询
+
+### 废弃：学生端 / 教师端 Electron 打包
+
+- 删除 `electron:pack:student`、`:teacher` 以及所有 ia32 变体脚本
+- 教师/学生功能统一通过 Web 构建访问，Electron 只保留扫描端
+- 删除 `scripts/package-variant.ts` 引用（文件保留但不再使用）
+- 删除 `VITE_PROJECTX_VARIANT` 编译时变量，改用 `VITE_BUILD_TARGET`
+
+### Electron 精简
+
+- `electron/main.cjs`：移除 variant 体系，固定为扫描端
+- 只加载 `dist/scanner/`，固定 `PROJECTX_ENABLE_SCANNER=1`
+- 包名改为「答题卡扫描端」
+
+### 后端适配
+
+- 默认客户端目录从 `dist/client` 改为 `dist/web`
+- Ubuntu 服务器打包脚本同步更新
+- 移除 `PROJECTX_VARIANT` 配置项
+
+### Persona 简化
+
+- 管理员在 Web 端可切换「教师」/「学生」身份
+- 移除「教师扫描端」persona（扫描端独立使用，无需切换）
+- `AuthContext.tsx` 使用 `VITE_BUILD_TARGET` 判断 persona 可用性
+
 ## v1.6.0 (2026-06-27) — 客户端拆分 + 运行时身份切换
 
 ### 架构：从单体 Electron 到独立客户端
