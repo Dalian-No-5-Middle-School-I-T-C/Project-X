@@ -6,7 +6,7 @@
  * Dependencies: helpers, middleware, llm-client, repos, db.
  */
 import express from "express";
-import { getDatabase } from "../../../../server/db";
+import { getMysqlDb } from "../../../../server/db";
 import { AnalysisRepository } from "../../../../server/repositories/AnalysisRepository";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
@@ -15,6 +15,44 @@ import { fetchLlmClient } from "../llm-client";
 import type { CrossExamTotalRequest } from "../../../../shared/types";
 
 const router = express.Router();
+
+type AiProviderRow = {
+  id: number;
+  name: string;
+  provider_type: string;
+  base_url: string;
+  api_key: string;
+  models: string | null;
+  is_active: number | boolean;
+};
+
+function mapAiProvider(p: AiProviderRow) {
+  return {
+    id: p.id,
+    name: p.name,
+    providerType: p.provider_type,
+    baseUrl: p.base_url,
+    apiKey: p.api_key,
+    models: p.models ? JSON.parse(p.models) : null,
+    isActive: Boolean(p.is_active)
+  };
+}
+
+async function getActiveAiProviders(userId: number) {
+  const db = getMysqlDb();
+  const providerRows = await db.all<AiProviderRow>(`
+    SELECT id, name, provider_type, base_url, api_key, models, is_active
+    FROM ai_providers
+    WHERE user_id = ? AND is_active = 1
+    ORDER BY sort_order, id
+  `, userId);
+  return providerRows.map(mapAiProvider);
+}
+
+async function getAiProviderForUser(providerId: number, userId: number) {
+  const db = getMysqlDb();
+  return db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND user_id = ?", providerId, userId);
+}
 
 // ── Trends ──────────────────────────────────────────────
 
@@ -228,23 +266,7 @@ router.get("/ai/status", async (req, res) => {
       llmStatus = await response.json() as any;
     }
 
-    const db = getDatabase();
-    const providerRows = db.prepare(`
-      SELECT id, name, provider_type, base_url, api_key, models, is_active
-      FROM ai_providers
-      WHERE user_id = ? AND is_active = 1
-      ORDER BY sort_order, id
-    `).all(req.user!.id) as any[];
-
-    const userProviders = providerRows.map((p: any) => ({
-      id: p.id,
-      name: p.name,
-      providerType: p.provider_type,
-      baseUrl: p.base_url,
-      apiKey: p.api_key,
-      models: p.models ? JSON.parse(p.models) : null,
-      isActive: true
-    }));
+    const userProviders = await getActiveAiProviders(req.user!.id);
 
     const configuredModels = llmStatus.models ?? [];
     const hasAvailableModel = configuredModels.some((model) => model.available);
@@ -265,23 +287,7 @@ router.get("/ai/status", async (req, res) => {
     });
   } catch (error) {
     try {
-      const db = getDatabase();
-      const providerRows = db.prepare(`
-        SELECT id, name, provider_type, base_url, api_key, models, is_active
-        FROM ai_providers
-        WHERE user_id = ? AND is_active = 1
-        ORDER BY sort_order, id
-      `).all(req.user!.id) as any[];
-
-      const userProviders = providerRows.map((p: any) => ({
-        id: p.id,
-        name: p.name,
-        providerType: p.provider_type,
-        baseUrl: p.base_url,
-        apiKey: p.api_key,
-        models: p.models ? JSON.parse(p.models) : null,
-        isActive: true
-      }));
+      const userProviders = await getActiveAiProviders(req.user!.id);
 
       res.json({
         available: userProviders.length > 0,
@@ -329,10 +335,7 @@ router.post("/exams/:examId/ai-analysis", requireExamAccess, async (req, res, ne
     const providerId = req.body?.providerId ? Number(req.body.providerId) : undefined;
     let providerOverride: Record<string, unknown> | undefined;
     if (providerId && Number.isFinite(providerId)) {
-      const db = getDatabase();
-      const prov = db.prepare(
-        "SELECT * FROM ai_providers WHERE id = ? AND user_id = ?"
-      ).get(providerId, req.user!.id) as any;
+      const prov = await getAiProviderForUser(providerId, req.user!.id);
       if (prov) {
         providerOverride = {
           provider_type: prov.provider_type,

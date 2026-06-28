@@ -23,7 +23,8 @@ const runtimeDependencies = [
   "multer",
   "mysql2",
   "pdfkit",
-  "xlsx"
+  "xlsx",
+  "zod"
 ];
 
 const outputRoot = path.join(rootDir, "release", "server-ubuntu24");

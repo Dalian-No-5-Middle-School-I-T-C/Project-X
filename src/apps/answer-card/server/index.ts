@@ -351,6 +351,11 @@ export async function createApp(): Promise<express.Express> {
   });
   app.use("/assets", express.static(assetsDir));
 
+  app.get("/api/app/health", async (_req, res) => {
+    const db = await healthCheck();
+    res.status(db.ok ? 200 : 503).json({ ok: db.ok, db });
+  });
+
   // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
   app.use("/api", optionalAuth);
 
@@ -1342,6 +1347,10 @@ export async function createApp(): Promise<express.Express> {
       res.status(404).json({ message: "Scanner is disabled in this Project-X package." });
     });
   }
+
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ code: ApiError.NOT_FOUND, message: "API route not found" });
+  });
 
   const clientDist = process.env.ANSWER_CARD_CLIENT_DIST
     ? path.resolve(process.env.ANSWER_CARD_CLIENT_DIST)
