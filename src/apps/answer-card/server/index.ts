@@ -200,6 +200,28 @@ function emitGradingProgress(event: GradingProgressEvent): void {
   }
 }
 
+/**
+ * Auto-backup projectx.db when an exam is closed.
+ * Copies the WAL checkpointed DB to data/backups/ with a timestamp.
+ * Fire-and-forget — errors are logged but never thrown to the caller.
+ */
+async function autoBackupOnExamClose(examId: number): Promise<void> {
+  const backupDir = path.join(dataDir, "backups");
+  await mkdir(backupDir, { recursive: true });
+  const ts = new Date().toISOString().replace(/[:.]/g, "-");
+  const src = path.join(dataDir, "..", "projectx.db");
+  const dst = path.join(backupDir, `projectx_exam${examId}_${ts}.db`);
+  try {
+    const { copyFile } = await import("node:fs/promises");
+    if (existsSync(src)) {
+      await copyFile(src, dst);
+      console.log(`[AutoBackup] exam ${examId} → ${path.basename(dst)}`);
+    }
+  } catch (err) {
+    console.error(`[AutoBackup] Copy failed for exam ${examId}:`, err);
+  }
+}
+
 /** Background persistence: save grading results to database without blocking response */
 async function persistGradingResults(
   examIdParam: string,
@@ -279,6 +301,11 @@ async function persistGradingResults(
   await examRepo.finishBatch(batchId);
   await examRepo.updateStatus(examId, "closed");
   console.log(`[Grading] Persisted ${persisted} student scores to exam ${examId}`);
+
+  // Auto-backup DB after exam closes (non-blocking)
+  autoBackupOnExamClose(examId).catch((e) =>
+    console.error("[AutoBackup] Failed:", e)
+  );
 }
 
 /**
