@@ -296,6 +296,47 @@ export type SubjectiveRecognitionQuestion = {
 
 export type CombinedRecognitionResult = ObjectiveRecognitionResult & {
   subjectiveQuestions: SubjectiveRecognitionQuestion[];
+  blockCrops?: RecognitionBlockCrop[];
+};
+
+export type RecognitionBlockCrop = {
+  blockId: string;
+  blockTitle: string;
+  blockType: "objective" | "subjective" | string;
+  pageNumber: number;
+  segmentIndex: number;
+  questionNumbers: Array<number | string>;
+  rect: Rect;
+  path: string;
+  widthPx: number;
+  heightPx: number;
+  dpi: number;
+};
+
+export type AnswerBlockCropSourceType = "scan_record" | "twain_scan_record";
+
+export type AnswerBlockCrop = {
+  id: string;
+  cardId: string;
+  examId?: number | null;
+  studentId?: number | null;
+  studentNumber?: string | null;
+  sourceType: AnswerBlockCropSourceType;
+  sourceRecordId: string;
+  blockId: string;
+  blockTitle: string;
+  blockType: "objective" | "subjective" | string;
+  pageNumber: number;
+  segmentIndex: number;
+  questionNumbers: Array<number | string>;
+  rect: Rect;
+  imageUrl: string;
+  widthPx: number;
+  heightPx: number;
+  dpi: number;
+  status?: string;
+  score?: number | null;
+  maxScore?: number | null;
 };
 
 export type SubjectiveQuestionGradeStatus = "ok" | "invalid" | "missing_score_grid";

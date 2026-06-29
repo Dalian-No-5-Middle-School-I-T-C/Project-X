@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight, X, ZoomIn, ZoomOut } from "lucide-react";
 import { createPortal } from "react-dom";
 import { fetchJson } from "../auth/api";
+import type { AnswerBlockCrop } from "../../../../shared/types";
 
 interface Props {
   examId: number;
@@ -25,6 +26,7 @@ interface StudentScore {
   }>;
   classQuestionStats: Record<number, ClassQStat>;
   scans: Array<{ recordId: number; fileName: string; pageNum: number }>;
+  answerBlocks: AnswerBlockCrop[];
   cardId: string;
 }
 
@@ -34,6 +36,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
   const [error, setError] = useState("");
   const [enlargeIdx, setEnlargeIdx] = useState(-1);
   const [zoom, setZoomState] = useState(1);
+  const [activeImageId, setActiveImageId] = useState("");
 
   useEffect(() => {
     setLoading(true);
@@ -60,6 +63,25 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
   if (loading) return <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>加载中...</div>;
   if (error) return <div style={{ padding: 40, textAlign: "center", color: "var(--brand)" }}>{error}</div>;
   if (!data) return null;
+
+  const answerBlocks = data.answerBlocks ?? [];
+  const imageItems = answerBlocks.length > 0
+    ? answerBlocks.map((block) => ({
+        id: block.id,
+        title: `${block.blockTitle || "大题"} · 第 ${block.pageNumber} 页`,
+        subtitle: `题号 ${block.questionNumbers.join(", ")}${block.score != null && block.maxScore != null ? ` · ${block.score}/${block.maxScore}` : ""}`,
+        imageUrl: block.imageUrl
+      }))
+    : data.scans.map((scan) => ({
+        id: String(scan.recordId),
+        title: `第 ${scan.pageNum} 页`,
+        subtitle: "整页答题卡",
+        imageUrl: `/api/scanner/grading-image/${data.cardId}/${encodeURIComponent(scan.fileName)}`
+      }));
+
+  function blockForQuestion(questionNumber: number): AnswerBlockCrop | undefined {
+    return answerBlocks.find((block) => block.questionNumbers.some((item) => String(item) === String(questionNumber)));
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -101,7 +123,18 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
                     const perfect = q.score >= q.max_score;
                     const zero = q.score === 0;
                     return (
-                      <tr key={i} style={{ borderTop: "1px solid var(--line-light)", background: q.manually_modified ? "var(--surface-tint)" : i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)" }}>
+                      <tr
+                        key={i}
+                        onClick={() => {
+                          const block = blockForQuestion(q.question_number);
+                          if (block) setActiveImageId(block.id);
+                        }}
+                        style={{
+                          borderTop: "1px solid var(--line-light)",
+                          background: q.manually_modified ? "var(--surface-tint)" : i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)",
+                          cursor: answerBlocks.length > 0 ? "pointer" : "default"
+                        }}
+                      >
                         <td style={s_td}>{q.question_number}</td>
                         <td style={{ ...s_td, fontSize: 11, color: "var(--muted)" }}>
                           {q.score_type === "objective" ? (q.mode === "multiple" ? "多选" : "单选") : "解答"}
@@ -155,20 +188,22 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
 
         {/* Right: card images */}
         <div style={{ width: 340, flexShrink: 0, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)", display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 140px)" }}>
-          <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, flexShrink: 0 }}>答题卡</div>
+          <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, flexShrink: 0 }}>
+            {answerBlocks.length > 0 ? "大题作答图片" : "答题卡"}
+          </div>
           <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-            {data.scans.length > 0 ? (
-              data.scans.map((s, idx) => (
+            {imageItems.length > 0 ? (
+              imageItems.map((item, idx) => (
                 <button key={idx}
-                  onClick={() => setEnlargeIdx(idx)}
+                  onClick={() => { setActiveImageId(item.id); setEnlargeIdx(idx); }}
                   style={{
                     display: "block", width: "100%", border: "none", background: "transparent",
                     cursor: "zoom-in", padding: 0, textAlign: "left", margin: 0
                   }}
                 >
-                  <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>第 {s.pageNum} 页（点击放大）</div>
-                  <img src={`/api/scanner/grading-image/${data.cardId}/${encodeURIComponent(s.fileName)}`} alt={`第${s.pageNum}页`}
-                    style={{ width: "100%", border: "1px solid var(--line-light)", borderRadius: 4, display: "block" }}
+                  <div style={{ fontSize: 11, color: item.id === activeImageId ? "var(--brand)" : "var(--muted)", marginBottom: 4 }}>{item.title} · {item.subtitle}</div>
+                  <img src={item.imageUrl} alt={item.title}
+                    style={{ width: "100%", border: `1px solid ${item.id === activeImageId ? "var(--brand)" : "var(--line-light)"}`, borderRadius: 4, display: "block" }}
                     onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
                 </button>
               ))
@@ -181,14 +216,14 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
 
       {/* Enlarge modal */}
       {enlargeIdx >= 0 && (() => {
-        const cur = data.scans[enlargeIdx];
+        const cur = imageItems[enlargeIdx];
         const hasPrev = enlargeIdx > 0;
-        const hasNext = enlargeIdx < data.scans.length - 1;
+        const hasNext = enlargeIdx < imageItems.length - 1;
         return createPortal(
           <div style={{ position: "fixed", inset: 0, zIndex: 999999, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setEnlargeIdx(-1)}>
             <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1a", borderRadius: 14, width: "94vw", maxHeight: "94vh", display: "flex", flexDirection: "column" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", color: "#fff", flexShrink: 0 }}>
-                <span style={{ fontSize: 14, fontWeight: 500 }}>第 {cur.pageNum} 页 / 共 {data.scans.length} 页</span>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>{cur.title} / 共 {imageItems.length} 张</span>
                 <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                   <button onClick={() => zm(-0.25)} style={zmBtn} title="缩小"><ZoomOut size={18} /></button>
                   <button onClick={() => zm(0.25)} style={zmBtn} title="放大"><ZoomIn size={18} /></button>
@@ -198,14 +233,14 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
               </div>
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", overflow: "auto", position: "relative", padding: "0 48px" }}>
                 {hasPrev && <button onClick={() => { setEnlargeIdx(enlargeIdx - 1); setZoomState(1); }} style={arrowBtn("left")}><ChevronLeft size={28} /></button>}
-                <img src={`/api/scanner/grading-image/${data.cardId}/${encodeURIComponent(cur.fileName)}`} alt="" style={{ maxWidth: "100%", maxHeight: "calc(94vh - 120px)", objectFit: "contain", transform: `scale(${zoom})`, transformOrigin: "center center", transition: "transform 0.2s" }} />
+                <img src={cur.imageUrl} alt="" style={{ maxWidth: "100%", maxHeight: "calc(94vh - 120px)", objectFit: "contain", transform: `scale(${zoom})`, transformOrigin: "center center", transition: "transform 0.2s" }} />
                 {hasNext && <button onClick={() => { setEnlargeIdx(enlargeIdx + 1); setZoomState(1); }} style={arrowBtn("right")}><ChevronRight size={28} /></button>}
               </div>
               <div style={{ display: "flex", justifyContent: "center", gap: 6, padding: "8px 16px 12px", overflowX: "auto", flexShrink: 0 }}>
-                {data.scans.map((s, idx) => (
+                {imageItems.map((item, idx) => (
                   <button key={idx} onClick={() => { setEnlargeIdx(idx); setZoomState(1); }}
                     style={{ padding: 0, border: idx === enlargeIdx ? "2px solid #fff" : "2px solid transparent", borderRadius: 4, cursor: "pointer", opacity: idx === enlargeIdx ? 1 : 0.5, background: "transparent" }}>
-                    <img src={`/api/scanner/grading-image/${data.cardId}/${encodeURIComponent(s.fileName)}`} alt="" style={{ width: 40, height: 56, objectFit: "cover", borderRadius: 2 }} />
+                    <img src={item.imageUrl} alt="" style={{ width: 40, height: 56, objectFit: "cover", borderRadius: 2 }} />
                   </button>
                 ))}
               </div>

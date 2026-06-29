@@ -9,6 +9,7 @@ export type RecognitionRequest = {
   pageNumber: number;
   dpi: number;
   debugDir?: string;
+  cropsDir?: string;
 };
 
 export type RecognitionResult = Record<string, unknown>;
@@ -65,6 +66,9 @@ export async function recognizeObjectiveAnswers(request: RecognitionRequest): Pr
   ];
   if (request.debugDir) {
     args.push("--debug-dir", request.debugDir);
+  }
+  if (request.cropsDir) {
+    args.push("--crops-dir", request.cropsDir);
   }
 
   return new Promise((resolve, reject) => {
@@ -126,6 +130,9 @@ export async function recognizeAnswerCard(request: RecognitionRequest): Promise<
   ];
   if (request.debugDir) {
     args.push("--debug-dir", request.debugDir);
+  }
+  if (request.cropsDir) {
+    args.push("--crops-dir", request.cropsDir);
   }
 
   return new Promise((resolve, reject) => {

@@ -218,6 +218,72 @@ static std::vector<StudentDigit> student_digits_from_page(const json& page_data)
     return digits;
 }
 
+static std::vector<LayoutBlockCrop> block_crops_from_page(const json& page_data) {
+    std::vector<LayoutBlockCrop> crops;
+    if (!page_data.contains("blocks") || !page_data.at("blocks").is_array()) {
+        return crops;
+    }
+
+    for (const auto& block : page_data.at("blocks")) {
+        if (!block.is_object()) {
+            continue;
+        }
+        const std::string block_id = block.value("blockId", "");
+        const std::string block_type = block.value("type", "");
+        if (block_id.empty() || block_type.empty()) {
+            continue;
+        }
+
+        std::vector<std::string> question_numbers;
+        if (block_type == "objective" && block.contains("items") && block.at("items").is_array()) {
+            for (const auto& item : block.at("items")) {
+                if (!item.is_object() || !item.contains("questionNumber")) {
+                    continue;
+                }
+                const std::string number = question_number_from_json(item.at("questionNumber"));
+                if (!number.empty()) {
+                    question_numbers.push_back(number);
+                }
+            }
+        } else if (block_type == "subjective" && block.contains("questions") && block.at("questions").is_array()) {
+            for (const auto& question : block.at("questions")) {
+                if (!question.is_object() || !question.contains("questionNumber")) {
+                    continue;
+                }
+                const std::string number = question_number_from_json(question.at("questionNumber"));
+                if (!number.empty()) {
+                    question_numbers.push_back(number);
+                }
+            }
+        }
+
+        if (question_numbers.empty()) {
+            continue;
+        }
+        const json* rect_value = nullptr;
+        if (block.contains("frameRect") && block.at("frameRect").is_object()) {
+            rect_value = &block.at("frameRect");
+        } else if (block.contains("rect") && block.at("rect").is_object()) {
+            rect_value = &block.at("rect");
+        }
+        if (!rect_value) {
+            continue;
+        }
+
+        std::sort(question_numbers.begin(), question_numbers.end());
+        question_numbers.erase(std::unique(question_numbers.begin(), question_numbers.end()), question_numbers.end());
+        crops.push_back(LayoutBlockCrop{
+            block_id,
+            block.value("title", ""),
+            block_type,
+            rect_from_json(*rect_value),
+            question_numbers,
+        });
+    }
+
+    return crops;
+}
+
 LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_number) {
     if (!std::filesystem::exists(layout_path)) {
         throw std::runtime_error("Layout JSON not found: " + path_to_utf8(layout_path));
@@ -297,6 +363,7 @@ LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_n
         objective_options_from_page(*page_data),
         student_digits_from_page(*page_data),
         subjective_score_cells_from_page(*page_data),
+        block_crops_from_page(*page_data),
     };
 }
 

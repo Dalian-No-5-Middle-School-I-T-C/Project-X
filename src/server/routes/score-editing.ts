@@ -15,6 +15,7 @@ import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
 import { AssignedScoreService } from "../services/AssignedScoreService";
+import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 import {
   objectiveQuestionDefinitions,
   gradeObjectiveQuestion,
@@ -177,6 +178,8 @@ router.get("/:examId/student/:studentId/scores", async (req: Request, res: Respo
     }
   }
 
+  const answerBlocks = await listAnswerBlockCropsForStudent(examId, studentId, db);
+
   res.json({
     student: { id: student.id, name: student.name, studentNumber: student.student_number ?? "" },
     totalScore: totalRow ? {
@@ -187,6 +190,7 @@ router.get("/:examId/student/:studentId/scores", async (req: Request, res: Respo
     questionScores: enrichedScores,
     recognition: Object.fromEntries(recognitionMap),
     scans: scans.map((s) => ({ recordId: s.recordId, fileName: s.fileName, pageNum: s.pageNum })),
+    answerBlocks,
     classQuestionStats,
     cardId
   });
