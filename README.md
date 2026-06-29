@@ -1,7 +1,7 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.6.2-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.6.3-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,7 +13,7 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.6.2
+> **当前版本**：v1.6.3
 > **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 考试管理 → 大考组 → 成绩分析 → 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → **Web/Scanner 构建分离（教师学生 WEB 端独立部署 + 扫描端 Electron 桌面端）**
 > **下个里程碑**：v1.7.0 — 知识点诊断 + 成绩预测 + 跨班深度对比
 
@@ -141,13 +141,13 @@
 
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
 ```
-答题卡扫描端-1.6.2-x64.exe
-答题卡扫描端-1.6.2-ia32.exe
+答题卡扫描端-1.6.3-x64.exe
+答题卡扫描端-1.6.3-ia32.exe
 ```
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。扫描端含 TWAIN 直扫 + 答题卡选择 + 结果预览。教师/学生功能请通过浏览器访问服务器部署的 Web 端。
 
-> v1.6.2 起，`ia32` 包会下载/使用真正的 32 位 Electron 运行时，并重建 32 位 `better-sqlite3`；打包后可用 PE 架构检查确认 exe 为 x86。
+> v1.6.3 起，`ia32` 包会下载/使用真正的 32 位 Electron 运行时，并重建 32 位 `better-sqlite3`；打包后可用 PE 架构检查确认 exe 为 x86。
 
 #### 方式二：MSI 安装包（推荐机房部署）
 
@@ -315,7 +315,7 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | [多端使用说明.md](./readus/多端使用说明.md) | Web 端 / 扫描端的功能差异、共用数据目录、账号登录与构建部署 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.6.2 大题切块与扫描端打包修复） | 全体 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.6.3 暗色主题完善与登录页隔离） | 全体 |
 
 ---
 
@@ -333,7 +333,8 @@ Project-X/
 │   │   │   ├── styles.css               # 全局样式
 │   │   │   └── components/              # 子组件
 │   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期+考试关联）
-│   │   │       ├── LoginPage.tsx            # 登录页（v1.6.0: 远端服务器配置+测试连接）
+│   │   │       ├── LoginPage.tsx            # Web 端登录页（v1.6.3: 仅用户名密码，不含扫描功能）
+│   │   │       ├── LoginPageScanner.tsx       # 扫描端登录页（v1.6.3: 含远端服务器配置+API Key）
 │   │   │       ├── AccountMenu.tsx          # 账户下拉菜单（v1.6.0: 管理员身份切换）
 │   │   │       ├── SponsorPage.tsx          # 赞助/支持页面（收款码预留）
 │   │   │       ├── AccountManagement.tsx    # 教师/学生管理（双 Tab）

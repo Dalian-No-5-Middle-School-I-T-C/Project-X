@@ -455,16 +455,17 @@ export async function createApp(): Promise<express.Express> {
   app.patch("/api/users/me/settings", authMiddleware, validateBody(UpdateUserSettingsSchema), async (_req, res, next) => {
     try {
       const userId = (_req as any).user.userId ?? (_req as any).user.id;
-      const userRepo = new UserRepository();
-      const updates: Record<string, unknown> = {};
-      if ((_req as any).validatedBody.scoreDisplayMode !== undefined)
-        updates.score_display_mode = (_req as any).validatedBody.scoreDisplayMode;
-      if ((_req as any).validatedBody.reviewConfidenceThreshold !== undefined)
-        updates.review_confidence_threshold = (_req as any).validatedBody.reviewConfidenceThreshold;
-      if ((_req as any).validatedBody.backgroundOpacity !== undefined)
-        updates.background_opacity = (_req as any).validatedBody.backgroundOpacity;
-      if (Object.keys(updates).length > 0) {
-        await userRepo.updateUser(userId, updates);
+      const body = (_req as any).validatedBody;
+      const setClauses: string[] = [];
+      const values: unknown[] = [];
+      if (body.scoreDisplayMode !== undefined) { setClauses.push("score_display_mode = ?"); values.push(body.scoreDisplayMode); }
+      if (body.reviewConfidenceThreshold !== undefined) { setClauses.push("review_confidence_threshold = ?"); values.push(body.reviewConfidenceThreshold); }
+      if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
+      if (setClauses.length > 0) {
+        setClauses.push("updated_at = CURRENT_TIMESTAMP");
+        values.push(userId);
+        const db = getMysqlDb();
+        await db.run(`UPDATE users SET ${setClauses.join(", ")} WHERE id = ?`, ...values);
       }
       res.json({ message: "已保存" });
     } catch (err) { next(err); }
