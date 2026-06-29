@@ -12,6 +12,7 @@ import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
 import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../middleware";
 import { fetchLlmClient } from "../llm-client";
+import { CreateExamGroupSchema, validateBody } from "../validation";
 import type { CrossExamTotalRequest } from "../../../../shared/types";
 
 const router = express.Router();
@@ -79,7 +80,7 @@ router.get("/cross-exam/groups", async (req, res, next) => {
   }
 });
 
-router.post("/cross-exam/groups", async (req, res, next) => {
+router.post("/cross-exam/groups", validateBody(CreateExamGroupSchema), async (req, res, next) => {
   try {
     const { name, examIds, source, startDate, endDate } = req.body as {
       name?: string;
