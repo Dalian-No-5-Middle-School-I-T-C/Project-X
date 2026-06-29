@@ -14,11 +14,13 @@ export const dataDir = process.env.ANSWER_CARD_DATA_DIR
 export const cardsDir = path.join(dataDir, "cards");
 export const assetsDir = path.join(dataDir, "assets");
 export const layoutsDir = path.join(dataDir, "layouts");
+export const blockCropsDir = path.join(dataDir, "recognition", "crops");
 
 export async function ensureDataDirs(): Promise<void> {
   await mkdir(cardsDir, { recursive: true });
   await mkdir(assetsDir, { recursive: true });
   await mkdir(layoutsDir, { recursive: true });
+  await mkdir(blockCropsDir, { recursive: true });
 }
 
 export function cardPath(cardId: string): string {

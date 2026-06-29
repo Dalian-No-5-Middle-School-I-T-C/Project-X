@@ -46,6 +46,14 @@ struct SubjectiveScoreCell {
     Rect rect;
 };
 
+struct LayoutBlockCrop {
+    std::string block_id;
+    std::string block_title;
+    std::string block_type;
+    Rect rect;
+    std::vector<std::string> question_numbers;
+};
+
 struct LayoutPage {
     std::string card_id;
     int page_number = 1;
@@ -55,6 +63,7 @@ struct LayoutPage {
     std::vector<ObjectiveOption> objective_options;
     std::vector<StudentDigit> student_digits;
     std::vector<SubjectiveScoreCell> subjective_score_cells;
+    std::vector<LayoutBlockCrop> block_crops;
 };
 
 LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_number);

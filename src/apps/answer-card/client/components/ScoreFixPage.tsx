@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, ChevronLeft, ChevronRight, Pencil, Save, Search, X, ZoomIn, ZoomOut } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import type { AnswerBlockCrop } from "../../../../shared/types";
 
 interface Props {
   examId: number;
@@ -22,6 +23,7 @@ interface StudentScore {
   }>;
   recognition: Record<number, { selectedOptions: string[]; confidence: number }>;
   scans: Array<{ recordId: number; fileName: string; pageNum: number }>;
+  answerBlocks: AnswerBlockCrop[];
   cardId: string;
 }
 
@@ -66,6 +68,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
   const [previewPages, setPreviewPages] = useState<Array<{ recordId: number; fileName: string; pageNum: number }>>([]);
   const [enlargeIdx, setEnlargeIdx] = useState(-1); // -1 = closed, >=0 = active page index
   const [zoom, setZoomState] = useState(1);
+  const [activeImageId, setActiveImageId] = useState("");
 
   // Load answers when entering answer mode
   useEffect(() => {
@@ -107,12 +110,15 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
     setLoadingStudent(true);
     setSearchMsg("");
     setScoreEdits({});
+    setEnlargeIdx(-1);
+    setZoomState(1);
     try {
       const data = await fetchJson<StudentScore>(`/api/exams/${examId}/student/${sid}/scores`);
       // Ensure student info matches the hit
       data.student = { id: sid, name: sname, studentNumber: snum };
       setStudent(data);
       setPreviewPages(data.scans);
+      setActiveImageId(data.answerBlocks?.[0]?.id ?? "");
     } catch (err) {
       setSearchMsg(err instanceof Error ? err.message : "加载失败");
     } finally {
@@ -196,6 +202,26 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
   }
 
   // ======== RENDER ========
+
+  const scorePreviewItems = student
+    ? (student.answerBlocks?.length > 0
+        ? student.answerBlocks.map((block) => ({
+            id: block.id,
+            title: `${block.blockTitle || "大题"} · 第 ${block.pageNumber} 页`,
+            subtitle: `题号 ${block.questionNumbers.join(", ")}${block.score != null && block.maxScore != null ? ` · ${block.score}/${block.maxScore}` : ""}`,
+            imageUrl: block.imageUrl
+          }))
+        : previewPages.map((page) => ({
+            id: String(page.recordId),
+            title: `第 ${page.pageNum} 页`,
+            subtitle: "整页答题卡",
+            imageUrl: `/api/scanner/grading-image/${student.cardId}/${encodeURIComponent(page.fileName)}`
+          })))
+    : [];
+
+  function scoreBlockForQuestion(questionNumber: number): AnswerBlockCrop | undefined {
+    return student?.answerBlocks?.find((block) => block.questionNumbers.some((item) => String(item) === String(questionNumber)));
+  }
 
   // Mode selection screen
   if (!fixMode) {
@@ -303,16 +329,16 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                 <div style={{ width: 360, flexShrink: 0, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
                   <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, flexShrink: 0 }}>答题卡 — {student.student.name}</div>
                   <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-                    {previewPages.length > 0 ? (
-                      previewPages.map((s, idx) => (
-                        <div key={idx} style={{ cursor: "zoom-in" }} onClick={() => setEnlargeIdx(idx)}>
+                    {scorePreviewItems.length > 0 ? (
+                      scorePreviewItems.map((item, idx) => (
+                        <div key={idx} style={{ cursor: "zoom-in" }} onClick={() => { setActiveImageId(item.id); setEnlargeIdx(idx); }}>
                           <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
-                            第 {s.pageNum} 页
+                            {item.title} · {item.subtitle}
                           </div>
                           <img
-                            src={`/api/scanner/grading-image/${student.cardId}/${encodeURIComponent(s.fileName)}`}
-                            alt={`第${s.pageNum}页`}
-                            style={{ width: "100%", border: "1px solid var(--line-light)", borderRadius: 4 }}
+                            src={item.imageUrl}
+                            alt={item.title}
+                            style={{ width: "100%", border: `1px solid ${item.id === activeImageId ? "var(--brand)" : "var(--line-light)"}`, borderRadius: 4 }}
                             onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
                           />
                         </div>
@@ -358,7 +384,18 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                           const cur = getScoreEdit(qs.question_number, qs.score_type, qs.score);
                           const modified = `${qs.question_number}_${qs.score_type}` in scoreEdits;
                           return (
-                            <tr key={i} style={{ borderTop: "1px solid var(--line-light)", background: modified ? "var(--surface-tint)" : (i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)") }}>
+                            <tr
+                              key={i}
+                              onClick={() => {
+                                const block = scoreBlockForQuestion(qs.question_number);
+                                if (block) setActiveImageId(block.id);
+                              }}
+                              style={{
+                                borderTop: "1px solid var(--line-light)",
+                                background: modified ? "var(--surface-tint)" : (i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)"),
+                                cursor: student.answerBlocks?.length > 0 ? "pointer" : "default"
+                              }}
+                            >
                               <td style={{ padding: "6px 8px", fontWeight: 500 }}>{qs.question_number}</td>
                               <td style={{ padding: "6px 8px", fontSize: 11, color: "var(--muted)" }}>{isObj ? (qs.mode === "multiple" ? "多选" : qs.mode === "indeterminate" ? "不定" : "单选") : "解答"}</td>
                               <td style={{ padding: "6px 8px" }}><span style={{ fontWeight: qs.manually_modified ? 600 : undefined, color: modified ? "var(--brand)" : undefined }}>{cur}</span>/{qs.max_score}</td>
@@ -439,16 +476,16 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
 
       {/* Enlarge image modal — inline fixed to avoid parent overflow:hidden clipping */}
       {enlargeIdx >= 0 && (() => {
-        const cur = previewPages[enlargeIdx];
+        const cur = scorePreviewItems[enlargeIdx];
         const hasPrev = enlargeIdx > 0;
-        const hasNext = enlargeIdx < previewPages.length - 1;
+        const hasNext = enlargeIdx < scorePreviewItems.length - 1;
         const zm = (delta: number) => setZoomState((z) => Math.min(3, Math.max(0.5, z + delta)));
         return createPortal(
           <div style={{ position: "fixed", inset: 0, zIndex: 999999, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setEnlargeIdx(-1)}>
             <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1a", borderRadius: 14, width: "94vw", maxHeight: "94vh", display: "flex", flexDirection: "column" }}>
               {/* Header */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", color: "#fff", flexShrink: 0 }}>
-                <span style={{ fontSize: 14, fontWeight: 500 }}>第 {cur.pageNum} 页 / 共 {previewPages.length} 页</span>
+                <span style={{ fontSize: 14, fontWeight: 500 }}>{cur.title} / 共 {scorePreviewItems.length} 张</span>
                 <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
                   <button onClick={() => zm(-0.25)} style={zmBtnStyle} title="缩小"><ZoomOut size={18} /></button>
                   <button onClick={() => zm(0.25)} style={zmBtnStyle} title="放大"><ZoomIn size={18} /></button>
@@ -464,8 +501,8 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                   </button>
                 )}
                 <img
-                  src={`/api/scanner/grading-image/${student!.cardId}/${encodeURIComponent(cur.fileName)}`}
-                  alt={`第${cur.pageNum}页`}
+                  src={cur.imageUrl}
+                  alt={cur.title}
                   style={{ maxWidth: `${zoom * 100}%`, maxHeight: `calc(94vh - 120px)`, objectFit: "contain", transition: "max-width 0.2s", transform: `scale(${zoom})`, transformOrigin: "center center" }}
                 />
                 {hasNext && (
@@ -476,12 +513,12 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
               </div>
               {/* Thumbnails */}
               <div style={{ display: "flex", justifyContent: "center", gap: 6, padding: "8px 16px 12px", overflowX: "auto", flexShrink: 0 }}>
-                {previewPages.map((s, idx) => (
+                {scorePreviewItems.map((item, idx) => (
                   <button key={idx}
                     onClick={() => { setEnlargeIdx(idx); setZoomState(1); }}
                     style={{ padding: 0, border: idx === enlargeIdx ? "2px solid #fff" : "2px solid transparent", borderRadius: 4, cursor: "pointer", opacity: idx === enlargeIdx ? 1 : 0.5, background: "transparent" }}
                   >
-                    <img src={`/api/scanner/grading-image/${student!.cardId}/${encodeURIComponent(s.fileName)}`} alt="" style={{ width: 40, height: 56, objectFit: "cover", borderRadius: 2 }} />
+                    <img src={item.imageUrl} alt="" style={{ width: 40, height: 56, objectFit: "cover", borderRadius: 2 }} />
                   </button>
                 ))}
               </div>

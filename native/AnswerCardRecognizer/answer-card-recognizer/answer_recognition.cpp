@@ -5,6 +5,7 @@
 #include "vision_utils.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -26,6 +27,7 @@ constexpr double MIN_RED_RATIO = 0.012;
 constexpr double MIN_LINE_EXTENT_RATIO = 0.52;
 constexpr double MAX_LINE_MEAN_ERROR_RATIO = 0.075;
 constexpr double MAX_LINE_MAX_ERROR_RATIO = 0.22;
+constexpr double BLOCK_CROP_PADDING_MM = 2.5;
 
 struct ScoreCellSample {
     SubjectiveScoreCell cell;
@@ -43,6 +45,33 @@ json rect_to_json(const Rect& rect) {
         {"width", round_to(rect.width, 3)},
         {"height", round_to(rect.height, 3)},
     };
+}
+
+std::string safe_crop_token(const std::string& value) {
+    std::string output;
+    for (const unsigned char ch : value) {
+        if (std::isalnum(ch) || ch == '-' || ch == '_') {
+            output.push_back(static_cast<char>(ch));
+        }
+    }
+    return output.empty() ? "block" : output;
+}
+
+Rect clamp_padded_rect(const Rect& rect, double width_mm, double height_mm) {
+    const double left = std::max(0.0, rect.x - BLOCK_CROP_PADDING_MM);
+    const double top = std::max(0.0, rect.y - BLOCK_CROP_PADDING_MM);
+    const double right = std::min(width_mm, rect.x + rect.width + BLOCK_CROP_PADDING_MM);
+    const double bottom = std::min(height_mm, rect.y + rect.height + BLOCK_CROP_PADDING_MM);
+    return Rect{left, top, std::max(0.0, right - left), std::max(0.0, bottom - top)};
+}
+
+std::tuple<int, int, int, int> rect_to_crop_bounds(const Rect& rect, int dpi, int image_width, int image_height) {
+    const double scale = static_cast<double>(dpi) / 25.4;
+    const int left = std::max(0, std::min(image_width - 1, static_cast<int>(std::floor(rect.x * scale))));
+    const int top = std::max(0, std::min(image_height - 1, static_cast<int>(std::floor(rect.y * scale))));
+    const int right = std::max(left + 1, std::min(image_width, static_cast<int>(std::ceil((rect.x + rect.width) * scale))));
+    const int bottom = std::max(top + 1, std::min(image_height, static_cast<int>(std::ceil((rect.y + rect.height) * scale))));
+    return {left, top, right, bottom};
 }
 
 std::tuple<int, int, int, int> rect_to_bounds(const Rect& rect, int dpi, int image_width, int image_height, double margin_ratio) {
@@ -586,6 +615,50 @@ json quality_payload(const std::vector<MarkerCandidate>& candidates, const std::
     };
 }
 
+json build_block_crops(const cv::Mat& warped, const LayoutPage& layout_page, int output_dpi, const std::filesystem::path& crops_dir) {
+    json crops = json::array();
+    if (crops_dir.empty() || warped.empty()) {
+        return crops;
+    }
+
+    for (size_t index = 0; index < layout_page.block_crops.size(); ++index) {
+        const auto& spec = layout_page.block_crops[index];
+        const Rect crop_rect = clamp_padded_rect(spec.rect, layout_page.width_mm, layout_page.height_mm);
+        if (crop_rect.width <= 0 || crop_rect.height <= 0) {
+            continue;
+        }
+        const auto [left, top, right, bottom] = rect_to_crop_bounds(crop_rect, output_dpi, warped.cols, warped.rows);
+        const cv::Mat crop = warped(cv::Rect(left, top, right - left, bottom - top)).clone();
+        const std::string file_name =
+            "p" + std::to_string(layout_page.page_number) +
+            "_s" + std::to_string(index + 1) +
+            "_" + safe_crop_token(spec.block_id) + ".png";
+        const std::filesystem::path crop_path = crops_dir / file_name;
+
+        try {
+            write_image(crop_path, crop);
+        } catch (...) {
+            continue;
+        }
+
+        crops.push_back({
+            {"blockId", spec.block_id},
+            {"blockTitle", spec.block_title},
+            {"blockType", spec.block_type},
+            {"pageNumber", layout_page.page_number},
+            {"segmentIndex", static_cast<int>(index + 1)},
+            {"questionNumbers", spec.question_numbers},
+            {"rect", rect_to_json(crop_rect)},
+            {"path", path_to_utf8(crop_path)},
+            {"widthPx", crop.cols},
+            {"heightPx", crop.rows},
+            {"dpi", output_dpi},
+        });
+    }
+
+    return crops;
+}
+
 json failed_result(const std::string& message, const std::filesystem::path& image_path, const std::filesystem::path& layout_path, int page_number, const json& quality = json::object()) {
     return {
         {"status", "failed"},
@@ -648,7 +721,8 @@ json recognize_objective_answers(
     int page_number,
     int output_dpi,
     bool debug,
-    const std::filesystem::path& debug_dir
+    const std::filesystem::path& debug_dir,
+    const std::filesystem::path& crops_dir
 ) {
     try {
         const LayoutPage layout_page = load_layout_page(layout_path, page_number);
@@ -716,6 +790,9 @@ json recognize_objective_answers(
             {"questions", build_questions(option_results)},
             {"subjectiveQuestions", build_subjective_questions(score_cell_results)},
         };
+        if (!crops_dir.empty()) {
+            result["blockCrops"] = build_block_crops(warped, layout_page, output_dpi, crops_dir);
+        }
         if (message) {
             result["message"] = *message;
         }

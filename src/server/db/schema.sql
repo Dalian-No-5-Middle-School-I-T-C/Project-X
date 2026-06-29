@@ -359,6 +359,30 @@ CREATE TABLE IF NOT EXISTS subjective_grades (
 -- TWAIN 扫描仪表（v1.6.0 从 scanner.db 合并）
 -- ============================================================
 
+CREATE TABLE IF NOT EXISTS answer_block_crops (
+    id               TEXT PRIMARY KEY,
+    card_id          TEXT NOT NULL,
+    exam_id          INTEGER REFERENCES exams(id) ON DELETE CASCADE,
+    student_id       INTEGER REFERENCES users(id),
+    student_number   TEXT,
+    source_type      TEXT NOT NULL,
+    source_record_id TEXT NOT NULL,
+    block_id         TEXT NOT NULL,
+    block_title      TEXT,
+    block_type       TEXT NOT NULL,
+    page_number      INTEGER NOT NULL,
+    segment_index    INTEGER NOT NULL,
+    question_numbers TEXT NOT NULL,
+    rect_json        TEXT NOT NULL,
+    image_path       TEXT NOT NULL,
+    width_px         INTEGER NOT NULL,
+    height_px        INTEGER NOT NULL,
+    dpi              INTEGER NOT NULL,
+    status           TEXT DEFAULT 'ready',
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(source_type, source_record_id, block_id, page_number, segment_index)
+);
+
 CREATE TABLE IF NOT EXISTS twain_scan_sessions (
     id          TEXT PRIMARY KEY,
     card_id     TEXT NOT NULL,
@@ -537,6 +561,9 @@ CREATE INDEX IF NOT EXISTS idx_objective_recognitions_record ON objective_recogn
 CREATE INDEX IF NOT EXISTS idx_objective_recognitions_expires ON objective_recognitions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_objective_grades_record ON objective_grades(record_id);
 CREATE INDEX IF NOT EXISTS idx_subjective_grades_record ON subjective_grades(record_id);
+CREATE INDEX IF NOT EXISTS idx_answer_block_crops_exam_student ON answer_block_crops(exam_id, student_id);
+CREATE INDEX IF NOT EXISTS idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
+CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_student ON student_scores(student_id);
 -- 性能：成绩分析（排名/统计/概览）按 exam_id 过滤并按 total_score / assigned_score 排序

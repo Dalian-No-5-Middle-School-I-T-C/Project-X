@@ -1,5 +1,29 @@
 # Project-X CHANGELOG
 
+## v1.6.2 (2026-06-29) — 大题切块与扫描端打包修复
+
+### 大题作答图片切块
+
+- native `answer-card-recognizer` 新增 `--crops-dir <dir>`，识别成功后复用 marker 匹配与透视校正结果，在 warped A4 图上按 `layout.pages[].blocks[]` 裁剪大题图片。
+- 裁剪区域优先使用 `frameRect`，没有时退回 `rect`，默认扩展 2.5mm padding，并 clamp 到页面范围内；同一大题跨页时生成多张续页图片，不做跨页拼接。
+- 识别 JSON 新增 `blockCrops` manifest，包含 `blockId/blockTitle/blockType/pageNumber/segmentIndex/questionNumbers/rect/path/widthPx/heightPx/dpi`。
+- 服务端新增 `AnswerBlockCropService` 与 `answer_block_crops` 表，统一索引普通阅卷 `scan_records` 与扫描仪 `twain_scan_records`。
+- 批量阅卷在 `ExamRepository.addScanRecord()` 返回记录 ID 后持久化切块；扫描仪 OCR 以 `twain_scan_record` 为 source 写入切块。
+- 学生成绩详情与教师个别改分页新增“大题作答图片”区域，点击题目可按 `questionNumbers` 定位到对应大题块；缺少切块时沿用整页答题卡预览。
+- 新增 `GET /api/answer-block-crops/:cropId/image`，并预留 `GET /api/review/exams/:examId/block-crops` 供网上阅卷队列读取题块、学生、分数和状态。
+
+### 扫描端打包修复
+
+- 修复 Electron 扫描端启动时报 `ENOENT, dist\scanner\index.html not found in app.asar`：scanner 构建完成后将 `index-scanner.html` 规范化为 `dist/scanner/index.html`。
+- 移除未使用的 `localtunnel` 运行依赖，消除 electron-builder 的 `localtunnel@undefined` 依赖路径警告。
+- x64 打包脚本继续通过 `-c.electronDist=node_modules/electron/dist` 复用本机 Electron；ia32 打包不再复用 x64 Electron，改为下载/使用真正的 32 位 Electron 运行时。
+- 已验证 `release/win-unpacked/答题卡扫描端.exe` 为 x64，`release/win-ia32-unpacked/答题卡扫描端.exe` 与 ia32 `better_sqlite3.node` 为 x86。
+- ia32 Electron 打包后建议执行 `npm run native:rebuild:node` 恢复开发环境 Node 版 `better-sqlite3`。
+
+### 版本号
+
+- `package.json` / `package-lock.json` 更新为 1.6.2，README 发布文件名同步更新。
+
 ## v1.6.1 (2026-06-28) — Web/Scanner 构建分离
 
 ### 构建拆分

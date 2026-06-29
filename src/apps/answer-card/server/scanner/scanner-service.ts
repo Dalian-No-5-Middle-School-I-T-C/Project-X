@@ -12,11 +12,19 @@ import { recognizeAnswerCard } from "../recognition";
 import { readLayout, readCard } from "../storage";
 import { gradeCombinedRecognition } from "../../../../shared/grading";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
+import { getMysqlDb } from "../../../../server/db";
+import { persistAnswerBlockCrops } from "../../../../server/services/AnswerBlockCropService";
 
 export { listSources };
 
 export function scansDir(cardId: string): string {
   return path.join(dataDir, "scans", cardId);
+}
+
+async function createRecognitionCropTempDir(cardId: string, recordId: string): Promise<string> {
+  const dir = path.join(dataDir, "recognition", "crop-temp", cardId, recordId);
+  await mkdir(dir, { recursive: true });
+  return dir;
 }
 
 export type ProgressHandler = (event: ScanProgressEvent) => void;
@@ -142,7 +150,8 @@ export async function runOcrOnSession(
         imagePath: record.image_path,
         layoutPath: (await import("../storage")).layoutPath(cardId),
         pageNumber: layoutPage,
-        dpi: 300
+        dpi: 300,
+        cropsDir: await createRecognitionCropTempDir(cardId, record.id)
       })) as CombinedRecognitionResult;
 
       const studentId = recognition.studentId?.value ?? null;
@@ -172,6 +181,18 @@ export async function runOcrOnSession(
             gradeStatus: "pending"
           });
         }
+      }
+
+      try {
+        await persistAnswerBlockCrops({
+          cardId,
+          studentNumber: studentId,
+          sourceType: "twain_scan_record",
+          sourceRecordId: record.id,
+          crops: recognition.blockCrops ?? []
+        }, getMysqlDb());
+      } catch (cropError) {
+        console.error(`[Scanner] Block crop persistence failed for record ${record.id}:`, cropError);
       }
 
       if (recognition.quality?.overallScore !== undefined) {

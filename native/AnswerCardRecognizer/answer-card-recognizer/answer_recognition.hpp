@@ -10,6 +10,7 @@ nlohmann::json recognize_objective_answers(
     int page_number,
     int output_dpi,
     bool debug,
-    const std::filesystem::path& debug_dir
+    const std::filesystem::path& debug_dir,
+    const std::filesystem::path& crops_dir = {}
 );
 

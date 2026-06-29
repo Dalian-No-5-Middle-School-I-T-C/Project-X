@@ -30,6 +30,11 @@ import scoreEditingRoutes from "../../../server/routes/score-editing";
 import apiKeysRoutes from "../../../server/routes/api-keys";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
 import ladderRoutes from "../../../server/routes/ladder";
+import {
+  getAnswerBlockCropFile,
+  listReviewBlockCrops,
+  persistAnswerBlockCrops
+} from "../../../server/services/AnswerBlockCropService";
 import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
 import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
@@ -151,6 +156,18 @@ function gradingPreviewUrl(cardId: string, imagePath?: string): string | undefin
   return `/api/cards/${encodeURIComponent(cardId)}/grading/preview/${encodeURIComponent(path.basename(imagePath))}`;
 }
 
+async function createRecognitionCropTempDir(cardId: string): Promise<string> {
+  const dir = path.join(
+    dataDir,
+    "recognition",
+    "crop-temp",
+    safeId(cardId),
+    `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  );
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
 type GradingProgressEvent = {
   type: "start" | "progress" | "done" | "error";
   batchId: string;
@@ -167,6 +184,27 @@ function recognitionConcurrency(): number {
     return Math.max(1, Math.floor(configured));
   }
   return Math.min(4, Math.max(2, Math.floor(cpus().length / 2)));
+}
+
+function answerBlockCropGate(enforce: boolean) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+    if (!enforce) {
+      next();
+      return;
+    }
+    if (!req.user) {
+      res.status(401).json({ message: "未登录" });
+      return;
+    }
+    const canReadGrades = roleHasPermission(req.user.role_id, PERMISSIONS.GRADE_READ);
+    const canReadOwnScores = (req.method === "GET" || req.method === "HEAD") &&
+      roleHasPermission(req.user.role_id, PERMISSIONS.SCORE_READ);
+    if (!canReadGrades && !canReadOwnScores) {
+      res.status(403).json({ message: "权限不足" });
+      return;
+    }
+    next();
+  };
 }
 
 async function mapWithConcurrency<T, R>(
@@ -276,13 +314,22 @@ async function persistGradingResults(
       const stu = await db.get(findStudentSql, row.studentId) as { id: number } | undefined;
       if (!stu) continue;
 
-      await examRepo.addScanRecord({
+      const recordId = await examRepo.addScanRecord({
         batch_id: batchId,
         file_path: (row as any).actualPath || row.fileName,
         file_name: row.fileName,
         student_number: row.studentId,
         student_id: stu.id
       });
+      await persistAnswerBlockCrops({
+        cardId: row.recognition.cardId ?? String(exam.card_id ?? ""),
+        examId,
+        studentId: stu.id,
+        studentNumber: row.studentId,
+        sourceType: "scan_record",
+        sourceRecordId: recordId,
+        crops: row.recognition.blockCrops ?? []
+      }, db);
 
       await examRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
 
@@ -465,9 +512,12 @@ export async function createApp(): Promise<express.Express> {
   const examGate = makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_WRITE);
   const analysisGate = makeGate(enforceAuth, PERMISSIONS.GRADE_READ, PERMISSIONS.GRADE_READ);
   const scannerGate = makeGate(enforceAuth, PERMISSIONS.GRADE_WRITE, PERMISSIONS.GRADE_WRITE);
+  const cropGate = answerBlockCropGate(enforceAuth);
   app.use("/api/cards", cardGate);
   app.use("/api/exams", examGate);
   app.use("/api/analysis", analysisGate, analysisRoutes);
+  app.use("/api/answer-block-crops", cropGate);
+  app.use("/api/review", analysisGate);
 
   const cardRepo = new CardRepository();
 
@@ -834,11 +884,13 @@ export async function createApp(): Promise<express.Express> {
 
       const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file) => {
         try {
+          const cropsDir = await createRecognitionCropTempDir(cardId);
           const recognition = (await recognizeAnswerCard({
             imagePath: file.path,
             layoutPath: currentLayoutPath,
             pageNumber,
-            dpi
+            dpi,
+            cropsDir
           })) as CombinedRecognitionResult;
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
           return {
@@ -910,6 +962,57 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       res.sendFile(targetPath);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/answer-block-crops/:cropId/image", async (req, res, next) => {
+    try {
+      const cropId = safeId(paramValue(req.params.cropId));
+      const cropRow = await getMysqlDb().get(
+        "SELECT image_path, student_id FROM answer_block_crops WHERE id = ?",
+        cropId
+      ) as { image_path: string; student_id: number | null } | undefined;
+      const targetPath = cropRow?.image_path ?? await getAnswerBlockCropFile(cropId);
+      if (!cropRow || !targetPath || !existsSync(targetPath)) {
+        res.status(404).json({ message: "作答切块图片不存在" });
+        return;
+      }
+      if (
+        enforceAuth &&
+        req.user &&
+        roleHasPermission(req.user.role_id, PERMISSIONS.SCORE_READ) &&
+        !roleHasPermission(req.user.role_id, PERMISSIONS.GRADE_READ) &&
+        cropRow.student_id !== req.user.id
+      ) {
+        res.status(403).json({ message: "权限不足" });
+        return;
+      }
+      res.setHeader("Content-Type", "image/png");
+      res.sendFile(targetPath);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.get("/api/review/exams/:examId/block-crops", requireExamAccess, async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isFinite(examId)) {
+        res.status(400).json({ message: "Invalid examId" });
+        return;
+      }
+      const blockId = typeof req.query.blockId === "string" ? req.query.blockId.trim() : "";
+      const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
+      const classId = optionalPositiveNumber(req.query.classId);
+      const crops = await listReviewBlockCrops({
+        examId,
+        blockId: blockId || undefined,
+        classId: classId ?? undefined,
+        status: status || undefined
+      });
+      res.json({ examId, rows: crops });
     } catch (error) {
       next(error);
     }
