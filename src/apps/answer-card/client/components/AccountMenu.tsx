@@ -8,14 +8,10 @@ import type { AiProviderConfig } from "../../../../shared/types";
 
 export function AccountMenu({
   onOpenSponsor,
-  onOpenGuide,
-  darkModeEnabled,
-  setDarkModeEnabled
+  onOpenGuide
 }: {
   onOpenSponsor?: () => void;
   onOpenGuide?: () => void;
-  darkModeEnabled: boolean;
-  setDarkModeEnabled: (enabled: boolean) => void;
 }) {
   const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona } = useAuth();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
@@ -521,16 +517,7 @@ export function AccountMenu({
 
                 {settingsTab === "client" && (
                   <>
-                    <h4>夜间模式（实验性）</h4>
-                    <label style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13, cursor: "pointer", userSelect: "none" }}>
-                      <input type="checkbox" checked={darkModeEnabled} onChange={(e) => { setDarkModeEnabled(e.target.checked); }} />
-                      启用夜间模式
-                    </label>
-                    <span style={{ fontSize: 11, color: "var(--brand-light)", marginTop: -4, paddingLeft: 27 }}>
-                      ⚠ 实验性功能，存在严重视觉问题
-                    </span>
-
-                    <h4 style={{ marginTop: 8 }}>背景图透明度</h4>
+                    <h4>背景图透明度</h4>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
                       <span style={{ color: "var(--muted)" }}>{Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}</span>
                     </div>

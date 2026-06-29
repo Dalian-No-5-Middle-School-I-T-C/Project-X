@@ -435,6 +435,41 @@ export async function createApp(): Promise<express.Express> {
 
   // 认证与账号控制系统路由
   app.use("/api/auth", authRoutes);
+
+  // ── 用户自身设置（无需管理员权限） ──
+  // GET  /api/users/me/settings — 读取当前用户设置
+  // PATCH /api/users/me/settings — 更新当前用户设置
+  app.get("/api/users/me/settings", authMiddleware, async (_req, res, next) => {
+    try {
+      const userId = (_req as any).user.userId ?? (_req as any).user.id;
+      const userRepo = new UserRepository();
+      const user = await userRepo.findById(userId);
+      if (!user) { res.status(404).json({ message: "用户不存在" }); return; }
+      res.json({
+        scoreDisplayMode: (user as any).score_display_mode ?? "zscore",
+        reviewConfidenceThreshold: (user as any).review_confidence_threshold ?? 0.12,
+        backgroundOpacity: (user as any).background_opacity ?? 0,
+      });
+    } catch (err) { next(err); }
+  });
+  app.patch("/api/users/me/settings", authMiddleware, validateBody(UpdateUserSettingsSchema), async (_req, res, next) => {
+    try {
+      const userId = (_req as any).user.userId ?? (_req as any).user.id;
+      const userRepo = new UserRepository();
+      const updates: Record<string, unknown> = {};
+      if ((_req as any).validatedBody.scoreDisplayMode !== undefined)
+        updates.score_display_mode = (_req as any).validatedBody.scoreDisplayMode;
+      if ((_req as any).validatedBody.reviewConfidenceThreshold !== undefined)
+        updates.review_confidence_threshold = (_req as any).validatedBody.reviewConfidenceThreshold;
+      if ((_req as any).validatedBody.backgroundOpacity !== undefined)
+        updates.background_opacity = (_req as any).validatedBody.backgroundOpacity;
+      if (Object.keys(updates).length > 0) {
+        await userRepo.updateUser(userId, updates);
+      }
+      res.json({ message: "已保存" });
+    } catch (err) { next(err); }
+  });
+
   app.use("/api/users", userRoutes);
   app.use("/api/classes", classRoutes);
   app.use("/api/teachers", teacherRoutes);
