@@ -384,11 +384,40 @@ DELETE /api/cards/:cardId            # 删除答题卡；可传 unlinkExams 或 
 DELETE /api/exams/:examId            # 删除考试；可传 deleteLinkedCard
 ```
 
+### 大题作答图片切块 (v1.6.2)
+
+`answer_block_crops` 记录识别后按大题裁剪出的作答图片，供学生成绩详情、教师个别改分和后续网上阅卷队列读取。
+
+| 字段 | 说明 |
+|---|---|
+| `id` | 切块记录 ID |
+| `card_id` | 答题卡 ID |
+| `exam_id` | 考试 ID，可为空 |
+| `student_id` / `student_number` | 学生索引信息 |
+| `source_type` | `scan_record` 或 `twain_scan_record` |
+| `source_record_id` | 普通阅卷或扫描仪 OCR 的源记录 ID |
+| `block_id` / `block_title` / `block_type` | layout block 元数据 |
+| `page_number` / `segment_index` | 页码与同一大题的续页序号 |
+| `question_numbers_json` | 大题覆盖的小题号数组 |
+| `rect_json` | 裁剪矩形，单位为 layout 坐标 |
+| `file_path` | 归档后的 PNG 路径 |
+| `width_px` / `height_px` / `dpi` | 输出图片尺寸与 DPI |
+
+文件归档位置：
+
+```text
+data/answer-card/recognition/crops/{cardId}/{sourceType}_{sourceRecordId}/
+```
+
+索引建议围绕 `exam_id`、`student_id`、`source_type/source_record_id`、`block_id` 建立，方便按考试/学生/题块读取。
+
 ### 识别与阅卷接口
 
 ```
 POST /api/cards/:cardId/recognition/objective   # 单张客观题识别
 POST /api/cards/:cardId/grading/objective       # 批量客观题阅卷
+GET  /api/answer-block-crops/:cropId/image        # 读取大题作答切块图片
+GET  /api/review/exams/:examId/block-crops       # 预留网上阅卷题块队列
 Body: multipart/form-data, files[]
 ```
 

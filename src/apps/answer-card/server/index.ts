@@ -435,6 +435,42 @@ export async function createApp(): Promise<express.Express> {
 
   // 认证与账号控制系统路由
   app.use("/api/auth", authRoutes);
+
+  // ── 用户自身设置（无需管理员权限） ──
+  // GET  /api/users/me/settings — 读取当前用户设置
+  // PATCH /api/users/me/settings — 更新当前用户设置
+  app.get("/api/users/me/settings", authMiddleware, async (_req, res, next) => {
+    try {
+      const userId = (_req as any).user.userId ?? (_req as any).user.id;
+      const userRepo = new UserRepository();
+      const user = await userRepo.findById(userId);
+      if (!user) { res.status(404).json({ message: "用户不存在" }); return; }
+      res.json({
+        scoreDisplayMode: (user as any).score_display_mode ?? "zscore",
+        reviewConfidenceThreshold: (user as any).review_confidence_threshold ?? 0.12,
+        backgroundOpacity: (user as any).background_opacity ?? 0,
+      });
+    } catch (err) { next(err); }
+  });
+  app.patch("/api/users/me/settings", authMiddleware, validateBody(UpdateUserSettingsSchema), async (_req, res, next) => {
+    try {
+      const userId = (_req as any).user.userId ?? (_req as any).user.id;
+      const body = (_req as any).validatedBody;
+      const setClauses: string[] = [];
+      const values: unknown[] = [];
+      if (body.scoreDisplayMode !== undefined) { setClauses.push("score_display_mode = ?"); values.push(body.scoreDisplayMode); }
+      if (body.reviewConfidenceThreshold !== undefined) { setClauses.push("review_confidence_threshold = ?"); values.push(body.reviewConfidenceThreshold); }
+      if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
+      if (setClauses.length > 0) {
+        setClauses.push("updated_at = CURRENT_TIMESTAMP");
+        values.push(userId);
+        const db = getMysqlDb();
+        await db.run(`UPDATE users SET ${setClauses.join(", ")} WHERE id = ?`, ...values);
+      }
+      res.json({ message: "已保存" });
+    } catch (err) { next(err); }
+  });
+
   app.use("/api/users", userRoutes);
   app.use("/api/classes", classRoutes);
   app.use("/api/teachers", teacherRoutes);

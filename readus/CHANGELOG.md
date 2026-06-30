@@ -1,5 +1,78 @@
 # Project-X CHANGELOG
 
+## v1.6.3 (2026-06-29) — 暗色主题完善与登录页隔离
+
+### 暗色模式按钮修正
+
+暗色模式下按钮颜色从与亮色一致的亮粉红修正为沉稳暗红色，移除高光效果。
+
+- `[data-theme="dark"]` Brand 色板：
+  - `--brand`: `#F05060` → `#C0392B`（深暗红）
+  - `--brand-light`: `#FF7080` → `#D44637`
+  - `--brand-dark`: `#D03040` → `#96281B`
+  - `--brand-glow / --brand-soft / --brand-tint`：对应调暗
+  - `--shadow-brand / --shadow-brand-lg`：减弱发光（opacity 从 0.30/0.35 降至 0.15/0.18）
+- 移除按钮高光：
+  - `.primary-button::after` → `background: none`
+  - `.mode-toggle button.active::after` → `background: none`
+  - `.answer-key-row button.active::after` → `background: none`
+- `.primary-button:hover:not(:disabled)` 不再 `filter: brightness(1.05)`
+
+### 账号区域暗色背景适配
+
+暗色模式下账号菜单和账号管理面板的背景从灰色残余修正为深色。
+
+- `.account-menu-trigger`：暗色下 `background: var(--surface-raised)`（原 `rgba(255,255,255,0.65)` 在暗色下显示为灰白块）
+- `.account-form-grid / .account-import-box / .class-column / .score-card`：暗色下 `background: var(--surface)`
+- `.account-search`：暗色下 `background: var(--surface-raised)`
+- `.class-list-item / .roster-item / .student-search-item`：暗色下适配背景、文字和 hover 边框色
+
+### Web / Scanner 登录页隔离
+
+Web 教师/学生端登录页错误地包含了扫描端的「服务器连接」和「API Key」输入框。
+
+- **`LoginPage.tsx`**：恢复为老版本，仅含用户名 + 密码 + 记住我 + 使用说明，用于 Web 端
+- **`LoginPageScanner.tsx`**（新建）：含远端服务器配置（URL + API Key + 测试连接），标题改为「答题卡扫描端」，仅扫描端使用
+- **`ScannerApp.tsx`**：登录页改为 `import { LoginPageScanner }`
+
+### 删除夜间模式可控开关
+
+夜间模式已工作稳定，无需再通过账号设置中的「实验性」复选框来隐藏主题切换按钮。
+
+- **App.tsx**：删除 `darkModeEnabled` state 与 `{darkModeEnabled && (...)}` 条件包裹，主题切换按钮常驻 Tab 栏
+- **AccountMenu.tsx**：删除 `darkModeEnabled` / `setDarkModeEnabled` props，删除「夜间模式（实验性）」复选框和 ⚠ 警告文字
+- `theme` useEffect 简化：直接 `setAttribute("data-theme", theme)`
+
+### Bug 修复
+
+- **保存设置报 「API route not found」**：`PATCH /api/users/me/settings` 路由在服务端缺失，现已添加 `GET`/`PATCH` 两个处理函数，使用 `UpdateUserSettingsSchema` 校验，直接更新 users 表
+- **新建答题卡后列表不刷新**：`createCard` 中 `refreshCards()` 移到 `finally` 块确保总被执行，同时给 `examAction === "link"` 路径加 try-catch 防止关联失败中断刷新
+- 与 main 分支的 `styles.css` 合并冲突已自动解决
+
+## v1.6.2 (2026-06-29) — 大题切块与扫描端打包修复
+
+### 大题作答图片切块
+
+- native `answer-card-recognizer` 新增 `--crops-dir <dir>`，识别成功后复用 marker 匹配与透视校正结果，在 warped A4 图上按 `layout.pages[].blocks[]` 裁剪大题图片。
+- 裁剪区域优先使用 `frameRect`，没有时退回 `rect`，默认扩展 2.5mm padding，并 clamp 到页面范围内；同一大题跨页时生成多张续页图片，不做跨页拼接。
+- 识别 JSON 新增 `blockCrops` manifest，包含 `blockId/blockTitle/blockType/pageNumber/segmentIndex/questionNumbers/rect/path/widthPx/heightPx/dpi`。
+- 服务端新增 `AnswerBlockCropService` 与 `answer_block_crops` 表，统一索引普通阅卷 `scan_records` 与扫描仪 `twain_scan_records`。
+- 批量阅卷在 `ExamRepository.addScanRecord()` 返回记录 ID 后持久化切块；扫描仪 OCR 以 `twain_scan_record` 为 source 写入切块。
+- 学生成绩详情与教师个别改分页新增“大题作答图片”区域，点击题目可按 `questionNumbers` 定位到对应大题块；缺少切块时沿用整页答题卡预览。
+- 新增 `GET /api/answer-block-crops/:cropId/image`，并预留 `GET /api/review/exams/:examId/block-crops` 供网上阅卷队列读取题块、学生、分数和状态。
+
+### 扫描端打包修复
+
+- 修复 Electron 扫描端启动时报 `ENOENT, dist\scanner\index.html not found in app.asar`：scanner 构建完成后将 `index-scanner.html` 规范化为 `dist/scanner/index.html`。
+- 移除未使用的 `localtunnel` 运行依赖，消除 electron-builder 的 `localtunnel@undefined` 依赖路径警告。
+- x64 打包脚本继续通过 `-c.electronDist=node_modules/electron/dist` 复用本机 Electron；ia32 打包不再复用 x64 Electron，改为下载/使用真正的 32 位 Electron 运行时。
+- 已验证 `release/win-unpacked/答题卡扫描端.exe` 为 x64，`release/win-ia32-unpacked/答题卡扫描端.exe` 与 ia32 `better_sqlite3.node` 为 x86。
+- ia32 Electron 打包后建议执行 `npm run native:rebuild:node` 恢复开发环境 Node 版 `better-sqlite3`。
+
+### 版本号
+
+- `package.json` / `package-lock.json` 更新为 1.6.2，README 发布文件名同步更新。
+
 ## v1.6.1 (2026-06-28) — Web/Scanner 构建分离
 
 ### 构建拆分

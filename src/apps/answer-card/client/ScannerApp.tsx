@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "./auth/AuthContext";
 import { fetchJson, setAuthToken } from "./auth/api";
-import { LoginPage } from "./components/LoginPage";
+import { LoginPageScanner } from "./components/LoginPageScanner";
 import { CardSelectPage } from "./components/CardSelectPage";
 import { ScannerWorkspace } from "./components/ScannerWorkspace";
 import type { CardSummary } from "../../../shared/types";
@@ -31,7 +31,7 @@ export function ScannerApp() {
   }
 
   if (!user) {
-    return <LoginPage />;
+    return <LoginPageScanner />;
   }
 
   if (page === "workspace" && selectedCardId) {
