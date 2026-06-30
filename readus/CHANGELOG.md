@@ -36,7 +36,7 @@
 ### 工程清理
 
 - 删除废弃的 `scripts/package-variant.ts`（v1.6.1 已废弃教师/学生 Electron 打包）。
-- `verify:auth` 新增上一场考试对比用例；修复 `findPreviousExam` 后全部 53 项通过。
+- `verify:auth` 新增上一场考试对比与网上阅卷用例；全部 **54** 项通过。
 - 演示数据 manifest / verify 脚本更新至 v1.7.0 场景。
 
 ## v1.6.3 (2026-06-29) — 暗色主题完善与登录页隔离
