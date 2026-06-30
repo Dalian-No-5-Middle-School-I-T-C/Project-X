@@ -339,6 +339,40 @@ export type AnswerBlockCrop = {
   maxScore?: number | null;
 };
 
+/** 网上阅卷题块汇总 */
+export type ReviewBlockSummary = {
+  blockId: string;
+  blockTitle: string;
+  blockType: string;
+  totalCount: number;
+  pendingCount: number;
+  reviewedCount: number;
+};
+
+/** 网上阅卷队列项（含学生姓名） */
+export type ReviewBlockCropItem = AnswerBlockCrop & {
+  studentName?: string | null;
+};
+
+export type ReviewBlockCropsResponse = {
+  examId: number;
+  rows: ReviewBlockCropItem[];
+};
+
+export type ReviewSubmitScoreInput = {
+  questionNumber: number;
+  scoreType: "objective" | "subjective" | string;
+  score: number;
+  maxScore?: number;
+};
+
+export type ReviewSubmitResult = {
+  ok: true;
+  cropId: string;
+  status: string;
+  totalScore: number;
+};
+
 export type SubjectiveQuestionGradeStatus = "ok" | "invalid" | "missing_score_grid";
 
 export type SubjectiveQuestionGrade = {

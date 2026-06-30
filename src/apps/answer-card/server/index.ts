@@ -27,12 +27,12 @@ import exportScoresRoutes from "../../../server/routes/export-scores";
 import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
+import reviewRoutes from "../../../server/routes/review";
 import apiKeysRoutes from "../../../server/routes/api-keys";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
 import ladderRoutes from "../../../server/routes/ladder";
 import {
   getAnswerBlockCropFile,
-  listReviewBlockCrops,
   persistAnswerBlockCrops
 } from "../../../server/services/AnswerBlockCropService";
 import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
@@ -553,7 +553,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/exams", examGate);
   app.use("/api/analysis", analysisGate, analysisRoutes);
   app.use("/api/answer-block-crops", cropGate);
-  app.use("/api/review", analysisGate);
+  app.use("/api/review", analysisGate, reviewRoutes);
 
   const cardRepo = new CardRepository();
 
@@ -1032,27 +1032,6 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/review/exams/:examId/block-crops", requireExamAccess, async (req, res, next) => {
-    try {
-      const examId = Number(req.params.examId);
-      if (!Number.isFinite(examId)) {
-        res.status(400).json({ message: "Invalid examId" });
-        return;
-      }
-      const blockId = typeof req.query.blockId === "string" ? req.query.blockId.trim() : "";
-      const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
-      const classId = optionalPositiveNumber(req.query.classId);
-      const crops = await listReviewBlockCrops({
-        examId,
-        blockId: blockId || undefined,
-        classId: classId ?? undefined,
-        status: status || undefined
-      });
-      res.json({ examId, rows: crops });
-    } catch (error) {
-      next(error);
-    }
-  });
 
   app.post("/api/cards/:cardId/assets", upload.single("file"), async (req, res, next) => {
     try {

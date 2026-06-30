@@ -469,7 +469,9 @@ Project-X/
 | `GET` | `/api/scanner/exam/:examId/student/:studentId/scans` | 按考试+学生查答题卡页 |
 | `GET` | `/api/scanner/grading-image/:cardId/:fileName` | 上传阅卷图片 |
 | `GET` | `/api/answer-block-crops/:cropId/image` | 读取大题作答切块图片 |
-| `GET` | `/api/review/exams/:examId/block-crops` | 预留网上阅卷题块队列读取接口 |
+| `GET` | `/api/review/exams/:id/blocks` | 网上阅卷题块汇总（待阅/已阅数量） |
+| `GET` | `/api/review/exams/:id/block-crops` | 网上阅卷队列（大题切块 + 学生信息） |
+| `POST` | `/api/review/exams/:id/block-crops/:cropId/submit` | 提交题块阅卷分数并标记状态 |
 | `POST` | `/api/auth/login` | 登录（支持 isPersistent 6 月免登录） |
 | `GET` | `/api/auth/me` | 当前用户信息 |
 | `GET` | `/api/teachers` | 教师列表（按创建时间排序） |
