@@ -32,6 +32,10 @@
     "verify:auth": "tsx scripts/verify-auth.ts",
     "typecheck": "tsc --noEmit"
   },
+  "browserslist": [
+    "iOS >= 15",
+    "Safari >= 15"
+  ],
   "dependencies": {
     "adm-zip": "^0.5.17",
     "archiver": "^8.0.0",

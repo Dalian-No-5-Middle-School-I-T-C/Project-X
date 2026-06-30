@@ -1,9 +1,11 @@
 /// <reference types="vite/client" />
 
+import "./polyfills";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { AuthProvider } from "./auth/AuthContext";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import "./styles.css";
 
 // This is the web mode entry point (teacher + student, no scanner panel).
@@ -11,8 +13,10 @@ import "./styles.css";
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <AuthProvider>
-      <App />
-    </AuthProvider>
+    <ErrorBoundary>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </ErrorBoundary>
   </React.StrictMode>
 );

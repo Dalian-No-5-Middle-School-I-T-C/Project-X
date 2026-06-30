@@ -4,6 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** Web SPA: iOS 15 / Safari 15+ (see browserslist in package.json). */
+const WEB_BUILD_TARGET = ["es2020", "safari15"] as const;
+
 // Two build targets:
 //   vite build --mode web     -> dist/web/ (teacher + student, no scanner)
 //   vite build --mode scanner -> dist/scanner/ (ScannerPanel only, for Electron)
@@ -45,6 +48,7 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: isScanner ? scannerOutDir : "dist/web",
+      target: isScanner ? undefined : [...WEB_BUILD_TARGET],
       rollupOptions: {
         input: path.resolve(
           __dirname,
