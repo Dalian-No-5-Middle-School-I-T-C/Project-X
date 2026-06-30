@@ -1,5 +1,19 @@
 # Project-X CHANGELOG
 
+## v1.7.1 (2026-06-30) — 网上阅卷能力补全
+
+### 网上阅卷队列
+
+- 新增 `GET /api/review/exams/:examId/blocks`：按大题块汇总待阅/已阅数量。
+- 增强 `GET /api/review/exams/:examId/block-crops`：返回学生姓名，供阅卷队列展示。
+- 新增 `POST /api/review/exams/:examId/block-crops/:cropId/submit`：提交题块分数、更新切块状态、重算总分与排名。
+- 新增 `ReviewService`：题块汇总、分数 upsert、排名重算。
+- 教师成绩详情页新增 **网上阅卷** Tab（`OnlineReviewPanel`）：左侧题块列表 + 右侧切块图片与逐题打分。
+
+### 状态流转
+
+- 切块默认 `ready`（待阅）→ 提交后 `reviewed`；可标记 `disputed`（争议）。
+
 ## v1.7.0 (2026-06-30) — 成绩分析补全与学生学期对比
 
 ### 成绩分析补全

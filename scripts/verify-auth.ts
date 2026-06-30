@@ -302,6 +302,9 @@ async function main(): Promise<void> {
   ok(prevComparison.prevExamId === trendExam1 && prevComparison.prevExamName === "Trend 1", "previous exam comparison resolves prior exam");
   ok(prevComparison.avgScoreChange === 10 && prevComparison.passRateChange === 0, "previous exam comparison computes deltas");
 
+  const { listReviewBlocks } = await import("../src/server/services/ReviewService");
+  ok((await listReviewBlocks(trendExam1)).length === 0, "review block list empty without crops");
+
   section("7. 中间件 requirePermission / requireRole");
   const adminUser = { id: adminRow.id, role_id: ROLE_IDS.ADMIN, role_name: "admin" };
   const teacherUser = { id: teacher.id, role_id: ROLE_IDS.TEACHER, role_name: "teacher" };
