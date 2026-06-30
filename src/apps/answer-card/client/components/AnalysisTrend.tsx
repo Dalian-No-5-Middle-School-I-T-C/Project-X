@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ExamRecord, ScoreTrendPoint } from "../../../../shared/types";
+import type { ScoreTrendPoint } from "../../../../shared/types";
 import { fetchJson } from "../auth/api";
 
 interface ClassOption {
@@ -9,7 +9,7 @@ interface ClassOption {
 }
 
 interface Props {
-  exams: ExamRecord[];
+  exams: Array<{ subject?: string | null }>;
 }
 
 function formatScore(value: number): string {

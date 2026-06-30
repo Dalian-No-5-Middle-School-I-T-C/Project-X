@@ -7,7 +7,6 @@ import { AnalysisOverview } from "./AnalysisOverview";
 import { AnalysisDistribution } from "./AnalysisDistribution";
 import { AnalysisAiPanel } from "./AnalysisAiPanel";
 import { AnalysisQuestions } from "./AnalysisQuestions";
-import { AnalysisTrend } from "./AnalysisTrend";
 import { ScoreTable } from "./ScoreTable";
 import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
@@ -339,6 +338,8 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
               <AnalysisOverview
                 overview={overview}
                 ranking={ranking}
+                selectedClassId={classId}
+                onClassSelect={setClassId}
                 previousComparison={previousComparison ?? undefined}
                 progressTop5={progressTop5}
                 declineTop5={declineTop5}
@@ -368,6 +369,8 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                 summary={overview.scoreSummary}
                 overallSummary={overview.overallScoreSummary}
                 classSummaries={overview.classSummaries}
+                selectedClassId={classId}
+                onClassSelect={setClassId}
               />
             )}
 

@@ -2755,10 +2755,74 @@ input[type="checkbox"]:disabled {
 .boxplot-card,
 .trend-panel {
   border: 1px solid var(--line);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.72);
+  border-radius: 10px;
+  background: var(--surface);
   box-shadow: var(--shadow-sm);
-  padding: 14px;
+  padding: 16px;
+}
+
+.boxplot-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.boxplot-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.boxplot-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+
+.boxplot-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.boxplot-legend i {
+  display: inline-block;
+  border-radius: 999px;
+}
+
+.boxplot-legend-whisker {
+  width: 2px;
+  height: 14px;
+  background: #64748b;
+}
+
+.boxplot-legend-box {
+  width: 16px;
+  height: 12px;
+  border: 2px solid #64748b;
+  background: rgba(100, 116, 139, 0.2);
+  border-radius: 3px;
+}
+
+.boxplot-legend-median {
+  width: 18px;
+  height: 3px;
+  background: #334155;
+}
+
+.boxplot-legend-mean {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #c0392b;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px #c0392b;
 }
 
 .boxplot-scroll {
@@ -2785,36 +2849,37 @@ input[type="checkbox"]:disabled {
 .boxplot-whisker,
 .boxplot-tick,
 .trend-axis {
-  stroke: #8a9994;
-  stroke-width: 1.4;
+  stroke: #64748b;
+  stroke-width: 1.6;
 }
 
 .boxplot-grid-line,
 .boxplot-mean-guide {
-  stroke: rgba(138, 153, 148, 0.28);
+  stroke: rgba(100, 116, 139, 0.32);
   stroke-width: 1;
 }
 
 .boxplot-box {
-  fill: rgba(138, 153, 148, 0.16);
-  stroke: #8a9994;
-  stroke-width: 1.6;
+  fill: rgba(100, 116, 139, 0.22);
+  stroke: #64748b;
+  stroke-width: 1.8;
 }
 
 .boxplot-box-active {
-  fill: rgba(192, 15, 40, 0.15);
+  fill: rgba(192, 57, 43, 0.2);
   stroke: var(--brand);
-}
-
-.boxplot-median {
-  stroke: #66746f;
   stroke-width: 2.2;
 }
 
+.boxplot-median {
+  stroke: #334155;
+  stroke-width: 2.6;
+}
+
 .boxplot-mean {
-  fill: #66746f;
+  fill: #c0392b;
   stroke: #fff;
-  stroke-width: 2;
+  stroke-width: 2.2;
 }
 
 .boxplot-active-stroke {
@@ -2832,18 +2897,19 @@ input[type="checkbox"]:disabled {
 .trend-axis-label,
 .trend-point-label,
 .trend-exam-label {
-  fill: var(--muted);
-  font-size: 11px;
+  fill: var(--text-secondary);
+  font-size: 12px;
 }
 
-.boxplot-mean-label {
-  fill: #23574d;
-  font-weight: 700;
+.boxplot-axis-label {
+  font-weight: 600;
+  fill: var(--text);
 }
 
 .boxplot-class-label {
   font-weight: 700;
   font-size: 12px;
+  fill: var(--text);
 }
 
 .boxplot-class-label.active {
@@ -2851,7 +2917,24 @@ input[type="checkbox"]:disabled {
 }
 
 .boxplot-count-label {
-  font-size: 10px;
+  font-size: 11px;
+  fill: var(--muted);
+}
+
+.boxplot-group-clickable {
+  cursor: pointer;
+}
+
+.boxplot-group-clickable:focus-visible .boxplot-hit-area {
+  outline: none;
+}
+
+.boxplot-group-clickable:hover .boxplot-box:not(.boxplot-box-active) {
+  fill: rgba(100, 116, 139, 0.32);
+}
+
+.boxplot-group-active .boxplot-class-label {
+  font-size: 13px;
 }
 
 .boxplot-summary-grid {
@@ -2864,12 +2947,17 @@ input[type="checkbox"]:disabled {
 .boxplot-summary-item {
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 8px;
-  background: rgba(255, 255, 255, 0.64);
+  padding: 10px 8px;
+  background: var(--bg-soft);
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+}
+
+.boxplot-summary-item-highlight {
+  background: var(--brand-soft);
+  border-color: rgba(192, 57, 43, 0.22);
 }
 
 .boxplot-summary-item span {
@@ -6183,6 +6271,102 @@ body.has-bg-image::after {
 }
 [data-theme="dark"] .beian-icon {
   filter: brightness(0.85);
+}
+
+/* 分数统计箱线图暗色适配 */
+[data-theme="dark"] .boxplot-card,
+[data-theme="dark"] .trend-panel {
+  background: var(--surface);
+  border-color: var(--line-strong);
+}
+
+[data-theme="dark"] .boxplot-box {
+  fill: rgba(156, 163, 175, 0.18);
+  stroke: #9CA3AF;
+}
+
+[data-theme="dark"] .boxplot-box-active {
+  fill: rgba(192, 57, 43, 0.28);
+  stroke: var(--brand-light);
+}
+
+[data-theme="dark"] .boxplot-whisker,
+[data-theme="dark"] .boxplot-axis,
+[data-theme="dark"] .boxplot-tick {
+  stroke: #9CA3AF;
+}
+
+[data-theme="dark"] .boxplot-grid-line {
+  stroke: rgba(156, 163, 175, 0.22);
+}
+
+[data-theme="dark"] .boxplot-median {
+  stroke: #E6EDF3;
+}
+
+[data-theme="dark"] .boxplot-mean {
+  fill: var(--brand-light);
+  stroke: #161B22;
+}
+
+[data-theme="dark"] .boxplot-axis-label,
+[data-theme="dark"] .boxplot-class-label {
+  fill: var(--text);
+}
+
+[data-theme="dark"] .boxplot-class-label.active {
+  fill: var(--brand-light);
+}
+
+[data-theme="dark"] .boxplot-count-label {
+  fill: var(--text-secondary);
+}
+
+[data-theme="dark"] .boxplot-summary-item {
+  background: var(--surface-raised);
+  border-color: var(--line-strong);
+}
+
+[data-theme="dark"] .boxplot-summary-item-highlight {
+  background: var(--brand-soft);
+  border-color: rgba(192, 57, 43, 0.35);
+}
+
+[data-theme="dark"] .boxplot-legend-whisker {
+  background: #9CA3AF;
+}
+
+[data-theme="dark"] .boxplot-legend-box {
+  border-color: #9CA3AF;
+  background: rgba(156, 163, 175, 0.15);
+}
+
+[data-theme="dark"] .boxplot-legend-median {
+  background: #E6EDF3;
+}
+
+[data-theme="dark"] .boxplot-legend-mean {
+  background: var(--brand-light);
+  border-color: #161B22;
+  box-shadow: 0 0 0 1px var(--brand-light);
+}
+
+[data-theme="dark"] .dist-bar-track {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .trend-controls select {
+  background: var(--surface-raised);
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+[data-theme="dark"] .trend-legend-class {
+  background: #4ade80;
+}
+
+[data-theme="dark"] .trend-point-label-class {
+  fill: #86efac;
 }
 
 /* 网上阅卷暗色适配 */
