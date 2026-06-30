@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   ok(cross.summary?.examCount === 6, `跨考按周 6 场`);
   ok(cross.summary?.studentCount === 16, `跨考 16 人`);
 
-  const math = exams.find((e: { subject: string }) => e.subject === "数学" && e.name.includes("数学月考") === false);
+  const math = exams.find((e: { subject: string; name: string }) => e.subject === "数学" && !e.name.includes("月考"));
   if (math) {
     const table = await fetch(`${BASE}/api/analysis/exams/${math.id}/score-table`, { headers }).then((r) => r.json());
     const t128 = table.rows.filter((r: { totalScore: number }) => r.totalScore === 128);
@@ -63,6 +63,9 @@ async function main(): Promise<void> {
     } else {
       console.log(`  ⚠ 顺序排名 ${ranks.join(",")} (v1.4.8 main；v1.5.0 应为同排)`);
     }
+
+    const prev = await fetch(`${BASE}/api/analysis/exams/${math.id}/previous`, { headers }).then((r) => r.json());
+    ok(prev.prevExamName != null, `上次考试对比: ${prev.prevExamName ?? "无"}`);
   }
 
   const groups = await fetch(`${BASE}/api/exam-groups`, { headers }).then((r) => r.json());
@@ -81,12 +84,6 @@ async function main(): Promise<void> {
   const semester = await fetch(`${BASE}/api/scores/me/semester-comparison`, { headers: { Authorization: `Bearer ${stuToken}` } }).then((r) => r.json());
   ok(semester.current?.examCount >= 1, `学期对比: 本学期 ${semester.current?.examCount ?? 0} 场考试`);
   ok(Array.isArray(semester.current?.subjects) && semester.current.subjects.length >= 1, "学期对比含学科汇总");
-
-  const mathMonth = exams.find((e: { name: string }) => e.name.includes("数学月考"));
-  if (mathMonth) {
-    const prev = await fetch(`${BASE}/api/analysis/exams/${mathMonth.id}/previous`, { headers }).then((r) => r.json());
-    ok(prev.prevExamName != null, `上次考试对比: ${prev.prevExamName ?? "无"}`);
-  }
 
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed > 0 ? 1 : 0);
