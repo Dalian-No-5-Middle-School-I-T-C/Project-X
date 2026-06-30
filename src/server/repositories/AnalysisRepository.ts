@@ -6,7 +6,7 @@ import type {
   CrossExamGroup, CrossExamTotalExam, CrossExamTotalMode,
   CrossExamTotalRequest, CrossExamTotalResponse, CrossExamTotalRow,
   ErrorRateLevel, ExamFilterItem, ExamOverview, QuestionAnalysisItem,
-  ScoreSummary, ScoreTrendPoint, StudentRankingItem
+  PreviousExamComparison, ScoreSummary, ScoreTrendPoint, StudentRankingItem
 } from "../../shared/types";
 
 export interface ExportRow {
@@ -200,6 +200,62 @@ export class AnalysisRepository {
     return { min: round1(scores[0]), q1: round1(percentile(scores, 0.25)), median: round1(percentile(scores, 0.5)), q3: round1(percentile(scores, 0.75)), max: round1(scores[scores.length - 1]), avg: round1(sum / scores.length), count: scores.length };
   }
 
+  async findPreviousExam(examId: number): Promise<{ id: number; name: string } | null> {
+    const row = await this.db.get(
+      `SELECT e.id, e.name
+       FROM exams e
+       LEFT JOIN answer_cards ac ON ac.id = e.card_id
+       CROSS JOIN exams current_exam
+       LEFT JOIN answer_cards current_card ON current_card.id = current_exam.card_id
+       WHERE current_exam.id = ?
+         AND e.subject = current_exam.subject
+         AND IFNULL(e.grade_id, -1) = IFNULL(current_exam.grade_id, -1)
+         AND e.id != current_exam.id
+         AND COALESCE(ac.exam_date, e.start_time, e.end_time, e.created_at)
+             < COALESCE(current_card.exam_date, current_exam.start_time, current_exam.end_time, current_exam.created_at)
+       ORDER BY COALESCE(ac.exam_date, e.start_time, e.end_time, e.created_at) DESC
+       LIMIT 1`,
+      examId
+    ) as { id: number; name: string } | undefined;
+    return row ?? null;
+  }
+
+  async getPreviousExamComparison(examId: number, classId?: number): Promise<PreviousExamComparison> {
+    const empty: PreviousExamComparison = {
+      prevExamId: null,
+      prevExamName: null,
+      prevAvgScore: null,
+      prevPassRate: null,
+      avgScoreChange: null,
+      passRateChange: null
+    };
+    const prevExam = await this.findPreviousExam(examId);
+    if (!prevExam) return empty;
+
+    const [current, previous] = await Promise.all([
+      this.getExamOverview(examId, classId),
+      this.getExamOverview(prevExam.id, classId)
+    ]);
+    if (current.gradedCount === 0 || previous.gradedCount === 0) {
+      return {
+        ...empty,
+        prevExamId: prevExam.id,
+        prevExamName: prevExam.name,
+        prevAvgScore: previous.gradedCount > 0 ? previous.avgScore : null,
+        prevPassRate: previous.gradedCount > 0 ? previous.passRate : null
+      };
+    }
+
+    return {
+      prevExamId: prevExam.id,
+      prevExamName: prevExam.name,
+      prevAvgScore: previous.avgScore,
+      prevPassRate: previous.passRate,
+      avgScoreChange: round1(current.avgScore - previous.avgScore),
+      passRateChange: current.passRate - previous.passRate
+    };
+  }
+
   async getScoreTrend(subject: string, classId?: number): Promise<ScoreTrendPoint[]> {
     const s = subject.trim(); if (!s) return [];
     const gradeRows = await this.db.all(`SELECT e.id as examId, e.name as examName, e.subject as subject, COALESCE(e.start_time, e.end_time, e.created_at) as examTime, ROUND(AVG(ss.total_score), 1) as gradeAvg, COUNT(*) as gradeCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id WHERE e.subject = ? GROUP BY e.id ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC, e.id ASC`, s) as any[];
@@ -264,7 +320,7 @@ export class AnalysisRepository {
     const mean = scores.reduce((a: number, b: number) => a + b, 0) / scores.length;
     const variance = scores.reduce((a: number, b: number) => a + (b - mean) ** 2, 0) / scores.length;
     const std = Math.sqrt(variance);
-    const prevExam = await this.db.get(`SELECT e.id, e.name FROM exams e LEFT JOIN answer_cards ac ON ac.id = e.card_id WHERE e.subject = ? AND e.grade_id = (SELECT grade_id FROM exams WHERE id = ?) AND e.id != ? AND (ac.exam_date IS NULL OR ac.exam_date < (SELECT ac2.exam_date FROM exams e2 LEFT JOIN answer_cards ac2 ON ac2.id = e2.card_id WHERE e2.id = ?)) ORDER BY COALESCE(ac.exam_date, e.created_at) DESC LIMIT 1`, exam.subject, examId, examId, examId) as any;
+    const prevExam = await this.findPreviousExam(examId);
     let prevRankMap = new Map<number, number>();
     if (prevExam) {
       const prevStudents = await this.db.all(`SELECT student_id, total_score FROM student_scores WHERE exam_id = ? ORDER BY total_score DESC`, prevExam.id) as any[];

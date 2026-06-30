@@ -1,5 +1,30 @@
 # Project-X CHANGELOG
 
+## v1.7.0 (2026-06-30) — 成绩分析补全与学生学期对比
+
+### 成绩分析补全
+
+- 实现 `GET /api/analysis/exams/:examId/previous`：对比上一场同科目考试，返回均分/及格率变化。
+- 修复 `findPreviousExam`：`grade_id` 为 NULL 时正确匹配；日期回退使用 `exam_date → start_time → created_at`。
+- 教师成绩详情「概况」Tab 展示上次考试对比条（均分变化、及格率变化）。
+
+### 学生端分析增强
+
+- 新增 `GET /api/scores/me/semester-comparison`：按学年学期（8月~1月为第一学期，2月~7月为第二学期）汇总成绩。
+- 学生「我的成绩」新增 **学期对比** Tab：本学期 vs 上学期均分、学科进步/退步标签、各学科明细表。
+- 新增 `StudentSemesterComparison.tsx` 组件。
+
+### iOS 15 Safari 兼容（基于 #cursor/ios15-compat-9033）
+
+- Vite legacy 插件 + `polyfills.ts`：支持旧版 iPhone Safari 访问 Web 端。
+- 新增 `ErrorBoundary.tsx` 防止单组件错误导致整页白屏。
+
+### 工程清理
+
+- 删除废弃的 `scripts/package-variant.ts`（v1.6.1 已废弃教师/学生 Electron 打包）。
+- `verify:auth` 新增上一场考试对比用例；修复 `findPreviousExam` 后全部 53 项通过。
+- 演示数据 manifest / verify 脚本更新至 v1.7.0 场景。
+
 ## v1.6.3 (2026-06-29) — 暗色主题完善与登录页隔离
 
 ### 暗色模式按钮修正
@@ -114,7 +139,7 @@ v1.6.1:  dist/web/ (教师+学生) + dist/scanner/ (扫描端)
 
 - 删除 `electron:pack:student`、`:teacher` 以及所有 ia32 变体脚本
 - 教师/学生功能统一通过 Web 构建访问，Electron 只保留扫描端
-- 删除 `scripts/package-variant.ts` 引用（文件保留但不再使用）
+- 删除 `scripts/package-variant.ts` 引用（v1.7.0 已删除该文件）
 - 删除 `VITE_PROJECTX_VARIANT` 编译时变量，改用 `VITE_BUILD_TARGET`
 
 ### Electron 精简

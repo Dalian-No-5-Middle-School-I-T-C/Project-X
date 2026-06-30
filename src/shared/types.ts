@@ -622,6 +622,34 @@ export interface PreviousExamComparison {
   passRateChange: number | null;
 }
 
+/** 学期内学科汇总 */
+export interface SemesterSubjectSummary {
+  subject: string;
+  examCount: number;
+  avgScore: number;
+  bestScore: number;
+  avgClassGap: number;
+}
+
+/** 单个学期成绩汇总 */
+export interface SemesterSummary {
+  label: string;
+  startDate: string;
+  endDate: string;
+  examCount: number;
+  avgScore: number;
+  subjects: SemesterSubjectSummary[];
+}
+
+/** 学生本学期 vs 上学期对比 */
+export interface StudentSemesterComparison {
+  current: SemesterSummary | null;
+  previous: SemesterSummary | null;
+  avgScoreChange: number | null;
+  improvedSubjects: string[];
+  declinedSubjects: string[];
+}
+
 /** 考试筛选列表项（考试选择页用） */
 export interface ExamFilterItem {
   id: number;

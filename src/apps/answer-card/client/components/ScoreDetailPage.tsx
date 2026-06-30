@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ArrowLeft, BarChart3, ClipboardList, Download, FileText } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson } from "../auth/api";
-import type { ExamOverview, QuestionAnalysisItem, StudentRankingItem, ScoreDisplayMode, ScoreTableRow } from "../../../../shared/types";
+import type { ExamOverview, PreviousExamComparison, QuestionAnalysisItem, StudentRankingItem, ScoreDisplayMode, ScoreTableRow } from "../../../../shared/types";
 import { AnalysisOverview } from "./AnalysisOverview";
 import { AnalysisDistribution } from "./AnalysisDistribution";
 import { AnalysisAiPanel } from "./AnalysisAiPanel";
@@ -45,6 +45,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const [loading, setLoading] = useState(true);
   const [progressTop5, setProgressTop5] = useState<Array<{ studentName: string; studentNumber?: string; rankChange: number }>>([]);
   const [declineTop5, setDeclineTop5] = useState<Array<{ studentName: string; studentNumber?: string; rankChange: number }>>([]);
+  const [previousComparison, setPreviousComparison] = useState<PreviousExamComparison | null>(null);
   const [comparisonClassId, setComparisonClassId] = useState("");
 
   useEffect(() => {
@@ -68,6 +69,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
     loadQuestions();
     loadRanking();
     loadProgressRankings();
+    loadPreviousComparison();
   }, [examId, classId]);
 
   // Refresh score table when display mode changes
@@ -131,6 +133,19 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
     } catch {
       setProgressTop5([]);
       setDeclineTop5([]);
+    }
+  }
+
+  async function loadPreviousComparison() {
+    try {
+      const params = new URLSearchParams();
+      if (classId) params.set("classId", classId);
+      const data = await fetchJson<PreviousExamComparison>(
+        `/api/analysis/exams/${examId}/previous?${params.toString()}`
+      );
+      setPreviousComparison(data);
+    } catch {
+      setPreviousComparison(null);
     }
   }
 
@@ -314,7 +329,13 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
         {subTab === "overview" && (
           <div style={{ padding: 24 }}>
             {overview ? (
-              <AnalysisOverview overview={overview} ranking={ranking} progressTop5={progressTop5} declineTop5={declineTop5} />
+              <AnalysisOverview
+                overview={overview}
+                ranking={ranking}
+                previousComparison={previousComparison ?? undefined}
+                progressTop5={progressTop5}
+                declineTop5={declineTop5}
+              />
             ) : (
               <div style={{ textAlign: "center", padding: 40, color: "var(--muted)" }}>
                 {loading ? "正在加载..." : "暂无数据"}

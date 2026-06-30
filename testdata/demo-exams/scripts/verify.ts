@@ -78,6 +78,16 @@ async function main(): Promise<void> {
   const scores = await fetch(`${BASE}/api/scores/me`, { headers: { Authorization: `Bearer ${stuToken}` } }).then((r) => r.json());
   ok(scores.scores?.length >= 7, `学生成绩 >= 7 科`);
 
+  const semester = await fetch(`${BASE}/api/scores/me/semester-comparison`, { headers: { Authorization: `Bearer ${stuToken}` } }).then((r) => r.json());
+  ok(semester.current?.examCount >= 1, `学期对比: 本学期 ${semester.current?.examCount ?? 0} 场考试`);
+  ok(Array.isArray(semester.current?.subjects) && semester.current.subjects.length >= 1, "学期对比含学科汇总");
+
+  const mathMonth = exams.find((e: { name: string }) => e.name.includes("数学月考"));
+  if (mathMonth) {
+    const prev = await fetch(`${BASE}/api/analysis/exams/${mathMonth.id}/previous`, { headers }).then((r) => r.json());
+    ok(prev.prevExamName != null, `上次考试对比: ${prev.prevExamName ?? "无"}`);
+  }
+
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed > 0 ? 1 : 0);
 }

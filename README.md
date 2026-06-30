@@ -1,7 +1,7 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.6.3-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.7.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.6.3
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 考试管理 → 大考组 → 成绩分析 → 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → **Web/Scanner 构建分离（教师学生 WEB 端独立部署 + 扫描端 Electron 桌面端）**
-> **下个里程碑**：v1.7.0 — 知识点诊断 + 成绩预测 + 跨班深度对比
+> **当前版本**：v1.7.0
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 考试管理 → 大考组 → 成绩分析（含上次考试对比）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → 并列排名 → 暗色主题 → **学生学期成绩对比** → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → **Web/Scanner 构建分离** → **iOS 15 Safari Web 兼容**
+> **下个里程碑**：v1.7.x — 知识点诊断 + 成绩预测 + 跨班深度对比
 
 ---
 
@@ -116,7 +116,7 @@
 
 ### 学生功能
 
-- **我的成绩**：查看各科考试成绩、排名趋势图、学科雷达图
+- **我的成绩**：查看各科考试成绩、排名趋势图、学科雷达图、**本学期 vs 上学期对比**
 - **成绩天梯**：年级前十名榜单（单场考试 / 大考组 / 跨考累计三种维度），管理员可开关
 - **AI 成绩分析**：学生个人成绩 AI 分析报告
 
@@ -315,7 +315,7 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | [多端使用说明.md](./readus/多端使用说明.md) | Web 端 / 扫描端的功能差异、共用数据目录、账号登录与构建部署 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.6.3 暗色主题完善与登录页隔离） | 全体 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.7.0 成绩分析补全与学生学期对比） | 全体 |
 
 ---
 
@@ -494,7 +494,8 @@ Project-X/
 | `GET/POST` | `/api/analysis/cross-exam/groups` | 跨考组列表 / 创建 |
 | `DELETE` | `/api/analysis/cross-exam/groups/:id` | 删除跨考组 |
 | `GET` | `/api/analysis/exams/:id/score-table` | 成绩表格数据（年排/班排/名次变化/偏差值/Z值/百分位） |
-| `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比 |
+| `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比（均分/及格率变化） |
+| `GET` | `/api/scores/me/semester-comparison` | 学生本学期 vs 上学期成绩对比 |
 | `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |
 | `POST` | `/api/export/exams/:id/scores` | 按列配置导出 Excel |
 | `GET` | `/api/export/columns` | 导出列元数据 |
