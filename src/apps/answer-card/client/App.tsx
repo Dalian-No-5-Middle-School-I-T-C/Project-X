@@ -431,7 +431,11 @@ function App() {
   const [showBg, setShowBg] = useState(0); // opacity 0~1, 0=关闭
   const [pdfWarning, setPdfWarning] = useState<PdfWarningState | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
-    return (localStorage.getItem("projectx-theme") as "light" | "dark") || "light";
+    try {
+      return (localStorage.getItem("projectx-theme") as "light" | "dark") || "light";
+    } catch {
+      return "light";
+    }
   });
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
@@ -520,7 +524,11 @@ function App() {
   // 日间/夜间模式切换
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
-    localStorage.setItem("projectx-theme", theme);
+    try {
+      localStorage.setItem("projectx-theme", theme);
+    } catch {
+      /* private browsing / storage disabled */
+    }
   }, [theme]);
 
   useEffect(() => {
