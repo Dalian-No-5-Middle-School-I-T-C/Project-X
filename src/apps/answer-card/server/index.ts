@@ -455,7 +455,7 @@ export async function createApp(): Promise<express.Express> {
   app.patch("/api/users/me/settings", authMiddleware, validateBody(UpdateUserSettingsSchema), async (_req, res, next) => {
     try {
       const userId = (_req as any).user.userId ?? (_req as any).user.id;
-      const body = (_req as any).validatedBody;
+      const body = (_req as any).body as Record<string, unknown>;
       const setClauses: string[] = [];
       const values: unknown[] = [];
       if (body.scoreDisplayMode !== undefined) { setClauses.push("score_display_mode = ?"); values.push(body.scoreDisplayMode); }
@@ -469,6 +469,66 @@ export async function createApp(): Promise<express.Express> {
       }
       res.json({ message: "已保存" });
     } catch (err) { next(err); }
+  });
+
+  // v1.4.6: 背景图 — GET 返回背景图，POST 上传自定义背景
+  const backgroundsDir = path.join(dataDir, "backgrounds");
+
+  app.get("/api/app/background", optionalAuth, (req, res) => {
+    // 用户自定义背景优先
+    if ((req as any).user) {
+      const customBg = path.join(backgroundsDir, `${(req as any).user.id}.jpg`);
+      if (existsSync(customBg)) {
+        res.setHeader("Cache-Control", "no-cache");
+        res.sendFile(customBg);
+        return;
+      }
+    }
+    // 默认背景
+    const bgPath = path.join(rootDir, "resources", "background.jpg");
+    if (existsSync(bgPath)) {
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      res.sendFile(bgPath);
+    } else {
+      res.status(404).json({ error: "background image not found" });
+    }
+  });
+
+  // 上传自定义背景图
+  const bgUpload = multer({
+    storage: multer.diskStorage({
+      destination: async (_req, _file, cb) => {
+        await mkdir(backgroundsDir, { recursive: true });
+        cb(null, backgroundsDir);
+      },
+      filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
+        cb(null, `upload_${Date.now()}${ext}`);
+      }
+    }),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      if (file.mimetype.startsWith("image/")) {
+        cb(null, true);
+      } else {
+        cb(new Error("仅支持图片文件"));
+      }
+    }
+  });
+
+  app.post("/api/users/me/background", authMiddleware, bgUpload.single("file"), async (req, res, next) => {
+    try {
+      if (!req.file) {
+        res.status(400).json({ error: "请选择图片文件" });
+        return;
+      }
+      // 重命名为 user_${userId}.jpg，覆盖旧背景
+      const target = path.join(backgroundsDir, `${(req as any).user.id}.jpg`);
+      await rename(req.file.path, target);
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.use("/api/users", userRoutes);

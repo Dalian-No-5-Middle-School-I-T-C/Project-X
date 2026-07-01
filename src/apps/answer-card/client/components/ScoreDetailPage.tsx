@@ -54,7 +54,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
       .catch(() => setClasses([]));
 
     fetchJson<{ scoreDisplayMode: ScoreDisplayMode }>("/api/users/me/settings")
-      .then((s) => setDisplayMode(s.scoreDisplayMode || "deviation"))
+      .then((s) => { if (s) setDisplayMode(s.scoreDisplayMode || "deviation"); })
       .catch(() => {});
   }, []);
 

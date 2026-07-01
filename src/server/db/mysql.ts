@@ -407,6 +407,22 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       ]
     },
     // v1.7+ 在此追加新版本...
+    {
+      version: 15,
+      name: "exam-groups-columns",
+      sqls: [
+        `ALTER TABLE exam_groups ADD COLUMN description TEXT`,
+        `ALTER TABLE exam_groups ADD COLUMN source VARCHAR(50) DEFAULT 'manual'`,
+        `ALTER TABLE exam_groups ADD COLUMN start_date VARCHAR(20)`,
+        `ALTER TABLE exam_groups ADD COLUMN end_date VARCHAR(20)`,
+        `ALTER TABLE exam_groups ADD COLUMN grade_id INT`,
+        `ALTER TABLE exam_groups ADD COLUMN tag VARCHAR(50)`,
+        `ALTER TABLE exam_groups ADD COLUMN status VARCHAR(20) DEFAULT 'active'`,
+        `ALTER TABLE exam_groups ADD COLUMN is_official TINYINT DEFAULT 0`,
+        `ALTER TABLE exam_groups ADD COLUMN total_score_mode VARCHAR(20) DEFAULT 'raw'`,
+        `ALTER TABLE exam_groups ADD COLUMN only_full_participants TINYINT DEFAULT 0`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

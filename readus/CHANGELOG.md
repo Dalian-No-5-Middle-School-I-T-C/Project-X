@@ -29,6 +29,13 @@
 - **成绩变化曲线**：分析页考试列表下方恢复 `AnalysisTrend`（重构后曾丢失未渲染）。
 - **演示校验脚本**：修正上次考试对比用例（应对「演示-数学」而非「数学月考」发起请求）。
 
+### 合并 main（v1.6.4 / v1.6.5）
+
+- **背景图 API**：恢复 `GET /api/app/background` 与 `POST /api/users/me/background`。
+- **设置保存崩溃**：`PATCH /api/users/me/settings` 改为读取 `req.body`（非 `validatedBody`）。
+- **exam_groups 列补齐**：SQLite / MariaDB 新增 migration v15，补齐 `source` 等缺失列。
+- **前端防御性加固**：`ScoreDetailPage`、`AccountMenu`、`App` 对设置返回值增加 null-safe guard。
+
 ## v1.7.0 (2026-06-30) — 成绩分析补全与学生学期对比
 
 ### 成绩分析补全
@@ -43,7 +50,7 @@
 - 学生「我的成绩」新增 **学期对比** Tab：本学期 vs 上学期均分、学科进步/退步标签、各学科明细表。
 - 新增 `StudentSemesterComparison.tsx` 组件。
 
-### iOS 15 Safari 兼容（基于 #cursor/ios15-compat-9033）
+### iOS 15 Safari 兼容（基于 #141）
 
 - Vite legacy 插件 + `polyfills.ts`：支持旧版 iPhone Safari 访问 Web 端。
 - 新增 `ErrorBoundary.tsx` 防止单组件错误导致整页白屏。
@@ -53,6 +60,31 @@
 - 删除废弃的 `scripts/package-variant.ts`（v1.6.1 已废弃教师/学生 Electron 打包）。
 - `verify:auth` 新增上一场考试对比与网上阅卷用例；全部 **54** 项通过。
 - 演示数据 manifest / verify 脚本更新至 v1.7.0 场景。
+
+## v1.6.5 (2026-07-01) — iOS 15 Safari 兼容与错误边界 (#141)
+
+### Web SPA 兼容性
+
+- **iOS 15 / Safari 15 降级编译**：Vite web 构建目标设为 `es2020 + safari15`（`vite.config.ts`），搭配 `package.json` 中 `browserslist: "iOS >= 15, Safari >= 15"`，确保产出 JS 在 iOS 15 Safari 上可解析运行。
+- **Runtime polyfills**：新增 `src/apps/answer-card/client/polyfills.ts`，在 `main.tsx` 最顶部加载，补丁 `Object.hasOwn` 和 `structuredClone`（iOS 15.0-15.3 缺失这两个 API）。
+- **无痕浏览 localStorage 容错**：`App.tsx` 中主题读写的 `localStorage.getItem/setItem` 包裹 `try/catch`，避免 iOS Safari 隐私模式下抛出 `SecurityError` 导致白屏。
+
+### ErrorBoundary
+
+- **新增 `ErrorBoundary.tsx`**：React class 组件包裹 `<AuthProvider>` + `<App />`。任意组件渲染异常时展示「页面加载失败」恢复界面，含错误信息和「刷新页面」按钮，替代原有空白页。
+
+### 依赖清理
+
+- `package-lock.json` 轻量化：移除 `@electron/windows-sign`、`electron-winstaller`、`postject` 等不必要 peer 依赖，标记 `@types/node` / `@types/react` / `csstype` / `react` 等为 `devDependencies`。
+
+## v1.6.4 (2026-07-01) — 背景图恢复与设置保存崩溃修复
+
+### Bug 修复
+
+- **背景图不显示**：`GET /api/app/background` 和 `POST /api/users/me/background` 路由在 v1.6.0 数据库重构中被意外删除，导致 CSS `body.has-bg-image::after` 请求 404 JSON 而非图片数据。现已恢复两个路由。
+- **保存设置时服务端崩溃**：`PATCH /api/users/me/settings` 在 v1.6.3 修复时写入了 bug — handler 从 `(_req as any).validatedBody` 读取请求体，但 `validateBody` 中间件将校验后数据写入 `req.body`（而非 `validatedBody`），导致 `body` 始终为 `undefined`，访问 `body.scoreDisplayMode` 时报 `TypeError: Cannot read properties of undefined`。成绩详情页切换显示模式（偏差值/Z值/百分位）或账号设置保存时均会触发此崩溃。**修复**：改为读取 `(_req as any).body`。
+- **SQLite / MariaDB `no such column: source`**：老数据库（v1.6.0 初期创建的）`exam_groups` 表缺少 `source`、`description`、`start_date` 等列（schema 已更新含这些列，但 `CREATE TABLE IF NOT EXISTS` 不会重建已存在的表；migration v8 若在列补齐逻辑加入前已被标记为"已应用"则跳过补齐）。双数据库均新增 migration v15（SQLite: `migrations.ts` + MariaDB: `mysql.ts`）确保所有缺失列在启动时补齐。
+- **前端防御性加固**：`ScoreDetailPage.tsx`、`AccountMenu.tsx`、`App.tsx` 中对 `/api/users/me/settings` 返回值的访问增加了 null-safe guard。
 
 ## v1.6.3 (2026-06-29) — 暗色主题完善与登录页隔离
 
