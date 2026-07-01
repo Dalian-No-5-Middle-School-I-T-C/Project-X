@@ -1,5 +1,14 @@
 # Project-X CHANGELOG
 
+## v1.6.4 (2026-07-01) — 背景图恢复与设置保存崩溃修复
+
+### Bug 修复
+
+- **背景图不显示**：`GET /api/app/background` 和 `POST /api/users/me/background` 路由在 v1.6.0 数据库重构中被意外删除，导致 CSS `body.has-bg-image::after` 请求 404 JSON 而非图片数据。现已恢复两个路由。
+- **保存设置时服务端崩溃**：`PATCH /api/users/me/settings` 在 v1.6.3 修复时写入了 bug — handler 从 `(_req as any).validatedBody` 读取请求体，但 `validateBody` 中间件将校验后数据写入 `req.body`（而非 `validatedBody`），导致 `body` 始终为 `undefined`，访问 `body.scoreDisplayMode` 时报 `TypeError: Cannot read properties of undefined`。成绩详情页切换显示模式（偏差值/Z值/百分位）或账号设置保存时均会触发此崩溃。**修复**：改为读取 `(_req as any).body`。
+- **SQLite / MariaDB `no such column: source`**：老数据库（v1.6.0 初期创建的）`exam_groups` 表缺少 `source`、`description`、`start_date` 等列（schema 已更新含这些列，但 `CREATE TABLE IF NOT EXISTS` 不会重建已存在的表；migration v8 若在列补齐逻辑加入前已被标记为"已应用"则跳过补齐）。双数据库均新增 migration v15（SQLite: `migrations.ts` + MariaDB: `mysql.ts`）确保所有缺失列在启动时补齐。
+- **前端防御性加固**：`ScoreDetailPage.tsx`、`AccountMenu.tsx`、`App.tsx` 中对 `/api/users/me/settings` 返回值的访问增加了 null-safe guard。
+
 ## v1.6.3 (2026-06-29) — 暗色主题完善与登录页隔离
 
 ### 暗色模式按钮修正

@@ -59,6 +59,7 @@ export function AccountMenu({
     if (open && showSettings) {
       fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number }>("/api/users/me/settings")
         .then((s) => {
+          if (!s || typeof s !== "object") return;
           setDisplayMode(s.scoreDisplayMode || "zscore");
           setReviewThreshold(s.reviewConfidenceThreshold ?? 0.12);
           setBgOpacity(s.backgroundOpacity ?? 0);

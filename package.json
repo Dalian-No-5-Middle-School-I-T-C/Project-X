@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,

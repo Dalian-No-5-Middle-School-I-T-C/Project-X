@@ -499,7 +499,7 @@ function App() {
   useEffect(() => {
     if (!user) return;
     fetchJson<{ backgroundOpacity: number }>("/api/users/me/settings")
-      .then((s) => setShowBg(s.backgroundOpacity ?? 0))
+      .then((s) => { if (s) setShowBg(s.backgroundOpacity ?? 0); })
       .catch(() => {});
   }, [user?.id]);
 
