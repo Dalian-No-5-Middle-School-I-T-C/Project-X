@@ -1592,6 +1592,9 @@ export async function createApp(): Promise<express.Express> {
     ? path.resolve(process.env.ANSWER_CARD_CLIENT_DIST)
     : path.join(rootDir, "dist", "web");
   if (existsSync(clientDist)) {
+    app.get(["/demo", "/demo/"], (_req, res) => {
+      res.redirect(302, "/demo/index.html");
+    });
     app.use(
       express.static(clientDist, {
         setHeaders: (res, filePath) => {

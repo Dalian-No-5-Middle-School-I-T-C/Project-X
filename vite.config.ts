@@ -24,6 +24,17 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       {
+        name: "projectx-demo-static",
+        configureServer(server) {
+          server.middlewares.use((req, _res, next) => {
+            if (req.url === "/demo" || req.url === "/demo/") {
+              req.url = "/demo/index.html";
+            }
+            next();
+          });
+        }
+      },
+      {
         name: "projectx-scanner-index-html",
         closeBundle() {
           if (!isScanner) return;

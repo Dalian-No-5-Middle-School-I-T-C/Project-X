@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { BookOpen, LogIn, Shield } from "lucide-react";
+import { isOfflineDemoLogin, getOfflineDemoUrl } from "../../../../shared/offlineDemo";
 import { useAuth } from "../auth/AuthContext";
 import { BeianFooter } from "./BeianFooter";
 import { UserGuideModal } from "./UserGuideModal";
@@ -18,6 +19,10 @@ export function LoginPage() {
     setError("");
     if (!identifier.trim() || !password) {
       setError("请输入用户名和密码");
+      return;
+    }
+    if (isOfflineDemoLogin(identifier.trim(), password)) {
+      window.location.href = getOfflineDemoUrl();
       return;
     }
     setBusy(true);
@@ -85,6 +90,9 @@ export function LoginPage() {
           >
             <BookOpen size={16} /> 使用说明
           </button>
+          <p className="login-demo-hint">
+            离线演示：账号 <code>offline-demo</code>，密码 <code>offline-demo</code>
+          </p>
         </form>
       </div>
       <BeianFooter className="login-beian-footer" />

@@ -4424,6 +4424,22 @@ input[type="checkbox"]:disabled {
   margin-top: 4px;
 }
 
+.login-demo-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  line-height: 1.5;
+}
+
+.login-demo-hint code {
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface-2, #f1f5f9);
+  color: var(--text, #334155);
+}
+
 /* ── Exam list table (v1.4.0) ────────────────────────── */
 
 .exam-filter-select {

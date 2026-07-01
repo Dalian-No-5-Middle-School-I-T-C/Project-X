@@ -1,0 +1,42 @@
+body { font-family: 'Noto Sans SC', sans-serif; background: #f1f5f9; }
+.glass { background: rgba(255,255,255,0.95); backdrop-filter: blur(10px); }
+.card-hover { transition: all 0.25s ease; }
+.card-hover:hover { transform: translateY(-2px); box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); }
+.fade-in { animation: fadeIn 0.35s ease-out; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+.rank-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; padding: 0 6px; border-radius: 999px; font-weight: 700; font-size: 0.8rem; }
+.rank-1 { background: #fef3c7; color: #b45309; }
+.rank-2 { background: #f3f4f6; color: #4b5563; }
+.rank-3 { background: #ffedd5; color: #9a3412; }
+.rank-other { background: #f8fafc; color: #64748b; }
+.rank-tie { box-shadow: inset 0 0 0 2px #f59e0b; }
+.sidebar-item { transition: all 0.2s; cursor: pointer; }
+.sidebar-item:hover, .sidebar-item.active { background: #eff6ff; color: #2563eb; border-right: 3px solid #2563eb; }
+.api-badge { font-size: 0.7rem; padding: 2px 10px; border-radius: 999px; font-weight: 600; }
+.api-demo { background: #fef3c7; color: #92400e; }
+.absent-badge { background: #fee2e2; color: #b91c1c; font-size: 0.7rem; padding: 2px 8px; border-radius: 999px; }
+.scenario-card { border-left: 4px solid #3b82f6; }
+.data-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+.data-table th, .data-table td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #e2e8f0; text-align: left; }
+.data-table th { background: #f8fafc; font-weight: 600; color: #475569; }
+.data-table tr:hover td { background: #f8fafc; }
+.mobile-tab-bar { display: none; }
+@media (max-width: 768px) {
+  body { padding-bottom: 72px; }
+  .sidebar { display: none !important; }
+  .ml-64 { margin-left: 0 !important; }
+  header { padding: 12px 16px !important; }
+  main { padding: 16px !important; }
+  .mobile-tab-bar {
+    display: flex; position: fixed; bottom: 0; left: 0; right: 0;
+    background: white; border-top: 1px solid #e2e8f0; z-index: 50;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .mobile-tab-bar .tab-item {
+    flex: 1; display: flex; flex-direction: column; align-items: center;
+    padding: 8px 0 12px; font-size: 0.65rem; color: #64748b; gap: 2px;
+  }
+  .mobile-tab-bar .tab-item.active { color: #2563eb; }
+  .mobile-tab-bar .tab-icon { font-size: 1.2rem; }
+  .data-table { display: block; overflow-x: auto; white-space: nowrap; }
+}
