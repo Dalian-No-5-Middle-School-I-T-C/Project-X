@@ -1,5 +1,21 @@
 # Project-X CHANGELOG
 
+## v1.6.5 (2026-07-01) — iOS 15 Safari 兼容与错误边界 (#141)
+
+### Web SPA 兼容性
+
+- **iOS 15 / Safari 15 降级编译**：Vite web 构建目标设为 `es2020 + safari15`（`vite.config.ts`），搭配 `package.json` 中 `browserslist: "iOS >= 15, Safari >= 15"`，确保产出 JS 在 iOS 15 Safari 上可解析运行。
+- **Runtime polyfills**：新增 `src/apps/answer-card/client/polyfills.ts`，在 `main.tsx` 最顶部加载，补丁 `Object.hasOwn` 和 `structuredClone`（iOS 15.0-15.3 缺失这两个 API）。
+- **无痕浏览 localStorage 容错**：`App.tsx` 中主题读写的 `localStorage.getItem/setItem` 包裹 `try/catch`，避免 iOS Safari 隐私模式下抛出 `SecurityError` 导致白屏。
+
+### ErrorBoundary
+
+- **新增 `ErrorBoundary.tsx`**：React class 组件包裹 `<AuthProvider>` + `<App />`。任意组件渲染异常时展示「页面加载失败」恢复界面，含错误信息和「刷新页面」按钮，替代原有空白页。
+
+### 依赖清理
+
+- `package-lock.json` 轻量化：移除 `@electron/windows-sign`、`electron-winstaller`、`postject` 等不必要 peer 依赖，标记 `@types/node` / `@types/react` / `csstype` / `react` 等为 `devDependencies`。
+
 ## v1.6.4 (2026-07-01) — 背景图恢复与设置保存崩溃修复
 
 ### Bug 修复
