@@ -1,0 +1,5 @@
+# Project-X 代码所有者
+# 将下方占位用户名替换为团队真实 GitHub 账号或 Team（格式：@org/team-name）
+# 启用后可在 ruleset 中打开 require_code_owner_review
+
+* @Dalian-No-5-Middle-School-I-T-C/Project-X-maintainers
