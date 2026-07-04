@@ -69,7 +69,6 @@ import {
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
-import cardKnowledgeRoutes from "./routes/card-knowledge";
 import { paperRoutes } from "./routes/paper-routes";
 import { CreateCardSchema, CreateExamSchema, UpdateUserSettingsSchema, validateBody } from "./validation";
 import { ApiError } from "../../../server/api-error";import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
@@ -618,7 +617,6 @@ export async function createApp(): Promise<express.Express> {
   const scannerGate = makeGate(enforceAuth, PERMISSIONS.GRADE_WRITE, PERMISSIONS.GRADE_WRITE);
   const cropGate = answerBlockCropGate(enforceAuth);
   app.use("/api/cards", cardGate);
-  app.use("/api/cards/:cardId", cardKnowledgeRoutes);
   app.use("/api/exams", examGate);
   app.use("/api/analysis", analysisGate, analysisRoutes);
   app.use("/api/answer-block-crops", cropGate);

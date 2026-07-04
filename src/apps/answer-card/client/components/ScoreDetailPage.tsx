@@ -26,12 +26,13 @@ interface Props {
   examName: string;
   subject: string | null;
   cardId?: string;
+  exams?: Array<{ subject?: string | null }>;
   onBack: () => void;
 }
 
 type SubTab = "overview" | "scores" | "exam-analysis" | "review" | "ai" | "knowledge";
 
-export function ScoreDetailPage({ examId, examName, subject, cardId, onBack }: Props) {
+export function ScoreDetailPage({ examId, examName, subject, cardId, exams, onBack }: Props) {
   const { user, isAdmin } = useAuth();
   const isTeacher = user?.role_name === "teacher" || isAdmin;
   const [subTab, setSubTab] = useState<SubTab>("overview");
@@ -378,7 +379,7 @@ export function ScoreDetailPage({ examId, examName, subject, cardId, onBack }: P
             )}
 
             {/* 成绩变化曲线 — 各次考试的趋势对比 */}
-            <AnalysisTrend exams={[]} initialSubject={subject ?? ""} initialClassId={classId} />
+            <AnalysisTrend exams={exams || []} initialSubject={subject ?? ""} initialClassId={classId} />
 
             {/* 班级对比 */}
             {overview?.classSummaries && overview.classSummaries.length > 0 && (
