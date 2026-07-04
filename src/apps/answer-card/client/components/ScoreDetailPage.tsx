@@ -12,7 +12,6 @@ import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
 import { OnlineReviewPanel } from "./OnlineReviewPanel";
-import { KnowledgePointEditor } from "./KnowledgePointEditor";
 import { AnalysisTrend } from "./AnalysisTrend";
 
 interface ClassOption {
@@ -507,16 +506,6 @@ export function ScoreDetailPage({ examId, examName, subject, cardId, exams, onBa
               <AnalysisQuestions questions={questions} />
             </div>
 
-            {/* 知识点标注 */}
-            {cardId ? (
-              <div className="analysis-section" style={{ marginTop: 16 }}>
-                <KnowledgePointEditor cardId={cardId} />
-              </div>
-            ) : (
-              <div className="analysis-section" style={{ padding: 24, textAlign: "center", color: "var(--muted)", background: "var(--bg-soft)", borderRadius: 10, border: "1px dashed var(--line-strong)", fontSize: 13 }}>
-                该考试未关联答题卡，无法标注知识点。
-              </div>
-            )}
           </div>
         )}
 
