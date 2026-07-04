@@ -448,8 +448,8 @@ router.get("/exams/:examId/export-csv", requireExamAccess, async (req, res, next
 // GET /api/analysis/knowledge-points/:examId — 按知识点聚合全班得分率
 router.get("/knowledge-points/:examId", requireExamAccess, async (req, res, next) => {
   try {
-    const examId = parseInt(req.params.examId, 10);
-    const classId = req.query.classId ? parseInt(req.query.classId as string, 10) : undefined;
+    const examId = parseInt(String(req.params.examId), 10);
+    const classId = req.query.classId ? parseInt(String(req.query.classId), 10) : undefined;
 
     const repo = new KnowledgePointRepository();
     const weaknesses = await repo.getWeaknessesForExam(examId, classId);
@@ -462,8 +462,8 @@ router.get("/knowledge-points/:examId", requireExamAccess, async (req, res, next
 // GET /api/analysis/knowledge-points/:examId/students/:studentId — 单个学生知识点弱项
 router.get("/knowledge-points/:examId/students/:studentId", requireExamAccess, async (req, res, next) => {
   try {
-    const examId = parseInt(req.params.examId, 10);
-    const studentId = parseInt(req.params.studentId, 10);
+    const examId = parseInt(String(req.params.examId), 10);
+    const studentId = parseInt(String(req.params.studentId), 10);
 
     const repo = new KnowledgePointRepository();
     const weaknesses = await repo.getWeaknessesForStudent(examId, studentId);

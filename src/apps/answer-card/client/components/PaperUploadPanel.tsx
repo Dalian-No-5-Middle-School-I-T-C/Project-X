@@ -71,7 +71,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
 
       const data = await res.json();
       setFilename(data.filename);
-      props.onUploaded?.();
+      onUploaded?.();
     } catch (err: any) {
       setUploadError(err.message || "上传失败");
     } finally {
