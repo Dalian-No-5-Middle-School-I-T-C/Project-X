@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Database, Download, Eye, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit } from "lucide-react";
+import { ChevronDown, Database, Download, Eye, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson, getAuthToken } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
@@ -8,10 +8,12 @@ import type { AiProviderConfig } from "../../../../shared/types";
 
 export function AccountMenu({
   onOpenSponsor,
-  onOpenGuide
+  onOpenGuide,
+  onOpenPermissions,
 }: {
   onOpenSponsor?: () => void;
   onOpenGuide?: () => void;
+  onOpenPermissions?: () => void;
 }) {
   const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona } = useAuth();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
@@ -454,6 +456,18 @@ export function AccountMenu({
               }}
             >
               <Heart size={15} /> 支持项目
+            </button>
+          )}
+          {onOpenPermissions && user.role_name === "admin" && (
+            <button
+              type="button"
+              className="account-menu-item"
+              onClick={() => {
+                setOpen(false);
+                onOpenPermissions();
+              }}
+            >
+              <Shield size={15} /> 权限管理
             </button>
           )}
           <button type="button" className="account-menu-item danger" onClick={() => void logout()}>
