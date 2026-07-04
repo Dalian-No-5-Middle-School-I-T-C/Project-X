@@ -1973,6 +1973,7 @@ function App() {
                 examId={selectedAnalysisExamId}
                 examName={exams.find((e) => e.id === selectedAnalysisExamId)?.name ?? ""}
                 subject={exams.find((e) => e.id === selectedAnalysisExamId)?.subject ?? null}
+                cardId={exams.find((e) => e.id === selectedAnalysisExamId)?.card_id ?? undefined}
                 onBack={() => { setSelectedAnalysisExamId(null); setAnalysisTab("select"); }}
               />
             )}

@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { FileUp, Brain, Plus, Trash2, Save, RefreshCw, X, Download, Eye } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import { getChaptersForSubject } from "./chapterPresets";
 
 interface KnowledgePoint {
   id?: number;
@@ -28,6 +29,7 @@ export function KnowledgePointEditor({ cardId, onSaved }: Props) {
   const [msg, setMsg] = useState("");
   const [hasPaper, setHasPaper] = useState(false);
   const [paperFilename, setPaperFilename] = useState("");
+  const [subjectLabel, setSubjectLabel] = useState("");
   const [aiResult, setAiResult] = useState<KnowledgePoint[] | null>(null);
 
   // New point form
@@ -44,6 +46,7 @@ export function KnowledgePointEditor({ cardId, onSaved }: Props) {
       const card = await fetchJson<any>(`/api/cards/${cardId}`);
       setHasPaper(card.has_original_paper === 1);
       setPaperFilename(card.original_paper_filename || "");
+      setSubjectLabel(card.subjectLabel || card.subject_label || "");
     } catch (e) {
       setError(e instanceof Error ? e.message : "加载失败");
     } finally {
@@ -179,7 +182,13 @@ export function KnowledgePointEditor({ cardId, onSaved }: Props) {
       {/* Manual add */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
         <input placeholder="题号" value={newQn} onChange={(e) => setNewQn(e.target.value)} style={{ width: 60, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--line-strong)", fontSize: 13 }} />
-        <input placeholder="章节" value={newCat} onChange={(e) => setNewCat(e.target.value)} style={{ width: 120, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--line-strong)", fontSize: 13 }} />
+        <input placeholder="章节" value={newCat} onChange={(e) => setNewCat(e.target.value)}
+          list="chapter-list" style={{ width: 140, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--line-strong)", fontSize: 13 }} />
+        <datalist id="chapter-list">
+          {getChaptersForSubject(subjectLabel).map((ch) => (
+            <option key={ch} value={ch} />
+          ))}
+        </datalist>
         <input placeholder="知识点" value={newPt} onChange={(e) => setNewPt(e.target.value)} style={{ width: 180, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--line-strong)", fontSize: 13 }} />
         <button className="ghost-button" onClick={addPoint} style={{ fontSize: 13 }}><Plus size={14} /> 添加</button>
       </div>
