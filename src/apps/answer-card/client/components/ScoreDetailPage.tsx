@@ -13,6 +13,7 @@ import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
 import { OnlineReviewPanel } from "./OnlineReviewPanel";
 import { KnowledgePointEditor } from "./KnowledgePointEditor";
+import { AnalysisTrend } from "./AnalysisTrend";
 
 interface ClassOption {
   id: number;
@@ -375,6 +376,9 @@ export function ScoreDetailPage({ examId, examName, subject, cardId, onBack }: P
                 onClassSelect={setClassId}
               />
             )}
+
+            {/* 成绩变化曲线 — 各次考试的趋势对比 */}
+            <AnalysisTrend exams={[]} initialSubject={subject ?? ""} initialClassId={classId} />
 
             {/* 班级对比 */}
             {overview?.classSummaries && overview.classSummaries.length > 0 && (
