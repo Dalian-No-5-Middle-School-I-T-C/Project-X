@@ -15,6 +15,23 @@ ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarEle
 const BRAND_COLORS = ["#C00F28", "#E8354A", "#FF6B7A", "#FFB3BC", "#FDE8EC"];
 const CHART_COLORS = ["#C00F28", "#3B82F6", "#10B981", "#F59E0B", "#8B5CF6", "#EC4899", "#6366F1", "#14B8A6"];
 
+/** Chart.js uses Canvas API — resolve CSS variables to actual values */
+function resolveColor(input: string): string {
+  if (input.startsWith("var(") && typeof document !== "undefined") {
+    const varName = input.slice(4, -1).trim();
+    const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+    return value || "#C00F28";
+  }
+  return input;
+}
+
+/** Append alpha to a hex color (e.g. "#C00F28" + "20" → "#C00F2820") */
+function withAlpha(color: string, alpha: string): string {
+  const resolved = resolveColor(color);
+  if (resolved.startsWith("#") && resolved.length === 7) return resolved + alpha;
+  return resolved; // can't add alpha to named/rgb colors safely, just return solid
+}
+
 const CHART_BASE = {
   responsive: true,
   maintainAspectRatio: false,
@@ -85,18 +102,21 @@ interface TrendData {
 export function TrendLine({ data, height = 220, reverseY = false }: { data: TrendData; height?: number; reverseY?: boolean }) {
   const chartData = {
     labels: data.labels,
-    datasets: data.datasets.map((ds, i) => ({
-      label: ds.label,
-      data: ds.data,
-      borderColor: ds.color || CHART_COLORS[i % CHART_COLORS.length],
-      backgroundColor: (ds.color || CHART_COLORS[i % CHART_COLORS.length]) + "15",
-      borderWidth: 2,
-      borderDash: ds.dashed ? [4, 3] : undefined,
-      fill: true,
-      tension: 0.4,
-      pointRadius: 4,
-      pointHoverRadius: 6,
-    })),
+    datasets: data.datasets.map((ds, i) => {
+      const c = resolveColor(ds.color || CHART_COLORS[i % CHART_COLORS.length]);
+      return {
+        label: ds.label,
+        data: ds.data,
+        borderColor: c,
+        backgroundColor: withAlpha(c, "15"),
+        borderWidth: 2,
+        borderDash: ds.dashed ? [4, 3] : undefined,
+        fill: true,
+        tension: 0.4,
+        pointRadius: 4,
+        pointHoverRadius: 6,
+      };
+    }),
   };
   return (
     <div style={{ height }}>

@@ -142,7 +142,7 @@ export function StudentScores() {
                   datasets: [{
                     label: "总分",
                     data: sorted.map((s) => s.total_score),
-                    color: "var(--brand)",
+                    color: "#C00F28",
                   }],
                 }}
                 height={180}
