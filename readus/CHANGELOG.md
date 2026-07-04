@@ -1,5 +1,175 @@
 # Project-X CHANGELOG
 
+
+## v1.7.2 (2026-07-03) — 统计图表 + 权限管理 + 知识点标注（CrazyYTim/Project-X）
+
+### 统计图表系统
+- `AnalysisCharts` 可复用组件（饼图/柱状图/折线图），嵌入 `AnalysisOverview`。
+- 学生端成绩列表顶部嵌入总分趋势折线图（时间正序）。
+- Chart.js 颜色处理：CSS变量解析 + alpha安全拼接。
+
+### 教师权限管理
+- `teacher_permissions` 表 + `GET/PUT/DELETE /api/admin/permissions`。
+- `PermissionManager` 前端组件（admin only）。
+- RBAC 接入：`getVisibleExamIds` 检查权限限制。
+
+### 原卷上传 + AI知识点标注
+- `POST /api/cards/:cardId/original-paper` 上传原卷 PDF/图片。
+- AI 分析题目知识点（调用 llmclient），老师审核/修改后保存。
+- `KnowledgePointEditor` 嵌入设计器和分析页面。
+- 9科教材章节预设（智能联想下拉）。
+
+### 暗色主题打磨
+- 品牌色多轮调优：`#D94040` → `#C0392B`（暗沉红）+ `#EAEAEA` 亮白文字。
+- 顶部栏/mode-toggle/inspector 暗色毛玻璃。
+- 答题卡预览强制白纸黑字，SVG 文字 `#111 !important`。
+- 1460 行 Kimi 组件级暗色覆盖补全。
+
+### 工程化
+- 后端路由拆分（analysis → router）。
+- Zod 校验（4 端点）+ SQL 白名单 + 魔数上传校验 + DB 索引 v12。
+- GitHub Actions CI + AutoBackup + 统一错误码。
+- 辽宁新高考政史地答题卡模板。
+- `update.sh` 重写（Node 自动探测 + 跨平台进程管理）。
+
+## v1.7.3 (2026-07-04) — 移动端网页适配
+
+### 移动端全面适配
+
+系统从桌面端专用布局升级为桌面/移动端双适配架构。新增 480px 手机断点，通过底部导航栏替代桌面端 Tab 切换，实现手机端原生体验。
+
+- **底部导航栏（Bottom Navigation Bar）**：
+  - 固定屏幕底部，毛玻璃背景 + 品牌色激活项
+  - 根据用户权限动态生成导航项（设计/考试/阅卷/分析/成绩/账号），最多 5 个 Tab
+  - 图标 + 短标签（2-3字），触摸目标 44px，iPhone 安全区适配（`env(safe-area-inset-bottom)`）
+  - 桌面端 `display: none`，仅 480px 以下显示
+- **Topbar 移动端精简**：
+  - 隐藏副标题、隐藏桌面端 `mode-toggle`（由底部导航替代）
+  - 标题省略号截断，操作按钮紧凑排列
+  - `position: sticky` 固定顶部
+- **480px 移动端主断点**（~300 行新增 CSS）：
+  - 全局重置：`body` 可滚动、`app-shell` 取消固定高度、底部 padding 为导航栏留空间
+  - 8 个 mode 页面逐一适配：
+    - **design**：预览区 + 属性面板纵向排列，答题卡页面自适应宽度
+    - **exam-manage**：考试列表表格改卡片布局，表头隐藏
+    - **grading**：扫描面板 padding 缩减，扫描结果网格紧凑化
+    - **analysis**：分析卡片 2 列，排名表横向滚动，箱型图 2 列
+    - **scores**：概览卡片紧凑排列，Tab 横向滚动，图表高度缩减
+    - **account**：三栏班级布局改单列，表单单列，表格横向滚动
+    - **sponsor**：收款码卡片全宽，二维码缩至 140px
+    - **guide**：正文 13px、表格横向滚动、代码块紧凑
+- **Modal 底部弹出（Bottom Sheet）**：
+  - 所有弹窗从屏幕底部滑出，全宽圆角顶部（`border-radius: 20px 20px 0 0`）
+  - 底部按钮纵向全宽排列
+  - PDF 查看弹窗全屏化
+  - 账号菜单下拉改为底部弹出
+- **触摸优化**：
+  - 输入框 `font-size: 16px`（防止 iOS Safari 自动缩放）
+  - 触摸目标最小 44px
+  - `-webkit-overflow-scrolling: touch` + `overscroll-behavior: contain`
+- **横屏适配**（iPad 等）：
+  - 1024px landscape：主内容 + 属性面板 320px 双列
+  - 768px landscape：单列 + 底部导航缩小至 48px
+- **暗色模式配套**：底部导航栏、Topbar、Modal 全部适配 `[data-theme="dark"]`
+- **HTML Meta 标签**：viewport 添加 `viewport-fit=cover`，新增 `apple-mobile-web-app-capable`、`theme-color`
+
+### 技术实现
+
+- **纯 CSS 适配策略**：不修改任何子组件文件，全部通过 `styles.css` 中的 `@media (max-width: 480px)` 规则覆盖
+- **App.tsx 最小改动**：仅新增 `mobileNavItems` useMemo（权限驱动的导航项数组）+ 底部导航 JSX
+- **CSS 变量扩展**：新增 `--mobile-bottom-nav-height`、`--mobile-safe-area-bottom/top`、`--touch-target-min`、`--mobile-content-padding`
+
+### 修改文件
+
+| 文件 | 改动 |
+## v1.8.0 (2026-07-04) — 原卷上传与 AI 知识点分析
+
+### 数据库 schema 完善
+- `schema.sql` 初始建表补充 v1.8.0 新增字段：
+  - `answer_cards`: `has_original_paper`, `original_paper_filename`, `original_paper_path`, `question_range`, `extra_notes`, `knowledge_points_text`
+  - `users`: `require_original_paper`, `highlight_missing_paper`
+- `schema.mysql.sql` 同步补充上述字段（之前仅 `schema.mariadb.sql` 完整）
+- MariaDB 增量迁移新增 `v17 original-paper-and-knowledge-points`，确保已有 MariaDB 生产库自动补齐原卷相关列和 `knowledge_points` 表
+
+### SQL 兼容性
+- `KnowledgePointRepository.getWeaknessesForExam / getWeaknessesForStudent` 的 `GROUP_CONCAT(DISTINCT ... ORDER BY ...)` 改为按 `(point_text, question_number)` 分组，然后在 JS 层聚合题号，兼容 SQLite 和 MySQL
+
+### 版本号
+- `package.json` / README badge / UI 侧栏版本号统一为 `1.8.0`
+
+### 原卷上传
+- 答题卡创建后自动弹出原卷上传面板（可由教师在设置中关闭）
+- 支持 DOCX / PDF / 图片（JPG/PNG/BMP/TIFF/WebP）上传，最大 50MB
+- 拒绝 .doc 格式，引导转为 .docx
+- 图片自动前端压缩（max 2048px, JPEG 80%）+ 后端 sharp 兜底压缩
+- 图片格式自动转为 PDF 存储；DOCX/PDF 保留原文件
+- 题目范围填写（全部 / 自定义文字）+ 特别描述备注
+- 原卷文件存储在 `data/answer-card/papers/:cardId/`
+
+### AI 知识点分析
+- 智能路由：多模态（Gemini/GPT）直传图片，一次调用；纯文本（DeepSeek）自动检测文字层
+- DeepSeek 三模式：自动（文字层→mammoth/pdf-parse，无文字层→Tesseract.js OCR）/ 视觉接力（视觉模型转写→DeepSeek分析）
+- 三层格式保障：JSON Schema 硬约束 + System Prompt 软约束 + Node 后端校验兜底
+- 知识点存储在 `knowledge_points` 表，独立于答题卡，与成绩数据关联
+- 前端编辑：彩色标签、双击编辑、长按编辑（移动端）、删除/添加知识点
+- 分析结果持久化，后续可重新分析或手动修改
+
+### 成绩分析联动
+- 新增 `GET /api/analysis/knowledge-points/:examId` — 按知识点聚合全班得分率
+- 新增 `GET /api/analysis/knowledge-points/:examId/students/:studentId` — 单个学生知识点弱项
+- llmclient 新增 `get_knowledge_point_weaknesses` 工具，AI 能指出具体知识点的薄弱环节
+
+### 原卷导出增强
+- 答题卡导出 `.projectx-card.json` 包含原卷 base64 + 知识点数据
+- PDF 导出前统一检查卡片：分值 → 原卷（内联渲染：图片/img可缩放、PDF/iframe翻页、DOCX/Office链接）→ 知识点（内联分析+编辑），三步进度条，含「← 上一步」回退
+- 原卷预览按文件类型智能渲染：`?format=image` 获取图片，默认 PDF，互不干扰
+- 原卷放大预览 Modal 支持 ± 缩放（25%~300%），按钮实时显示当前倍率
+- 修复图片原卷上传后不被识别：`/api/cards/:cardId/paper/info` 双检查（DB + 文件实际存在），自动修复不一致
+- 上传原卷后自动刷新侧栏状态
+- 导出卡片内知识点分析面板与上传面板 UI 统一（单选框 `.radio-label` 对齐）
+
+### 侧边栏标识
+- 左侧答题卡列表新增橙色竖条标识未上传原卷的考试
+- 可在教师设置中关闭高亮
+
+### 系统 AI 配置（Admin Only）
+- `ai_providers` 表新增 `is_system` 列，全校统一 AI 提供商
+- 知识分析仅使用系统级 AI 提供商，教师无法自行配置
+- AccountMenu「AI 设置」Tab 仅 admin 可见
+- 教师设置新增「强制上传原卷」「侧边栏高亮」双开关
+
+### 移动端适配
+- 文件上传：移动端大按钮组（拍照/选文件）
+- 面板全屏化（<760px），sticky 底部按钮
+- 知识点编辑长按触发
+- 输入框 16px 字体防 iOS 缩放
+
+### 数据库
+- migration v16：`ai_providers.is_system` (SQLite + MariaDB)
+- schema.sql / schema.mariadb.sql / schema.mysql.sql 三份同步
+- 新建 `knowledge_points` 表（card_id, question_number, point_text, category）
+
+### 新增依赖
+- `sharp` — 图片压缩与格式转换
+- `mammoth` — DOCX 文本提取
+- `pdfjs-dist` — PDF 文字层检测与文本提取（替代 pdf-parse）
+- `tesseract.js` — OCR 引擎（扫描件兜底）
+
+### 新增文件
+- `src/apps/answer-card/server/paper-converter.ts` — 文件校验、压缩、图片→PDF
+- `src/apps/answer-card/server/paper-ocr.ts` — 文本提取 + OCR
+- `src/apps/answer-card/server/routes/paper-routes.ts` — 原卷/knowledge-points CRUD
+- `src/server/repositories/KnowledgePointRepository.ts` — 知识点 CRUD + 成绩联动查询
+- `src/apps/answer-card/client/components/DragDropZone.tsx` — 拖拽上传
+- `src/apps/answer-card/client/components/KnowledgeTagList.tsx` — 可编辑知识点标签
+- `src/apps/answer-card/client/components/PaperUploadPanel.tsx` — 原卷上传主面板
+---
+
+---
+
+
+---
+
 ## v1.7.2 (2026-07-01) — 统计图表 + 教师权限管理
 
 ### 统计图表系统
@@ -44,13 +214,6 @@
 ### 答题卡模板
 - 新增辽宁新高考政治/历史/地理模板（16 单选 × 3 分 + 主观题 52 分，满分 100）。
 
-### 原卷上传 + 知识点标注
-- 新增 `card-knowledge` 路由 (`/api/cards/:cardId/original-paper` 等)。
-- 支持上传原卷 PDF/图片 (50MB)，AI 自动分析题目知识点分布。
-- 老师可审核 AI 结果、手动添加/编辑知识点（章节+知识点二级标签）。
-- `KnowledgePointEditor` 前端组件嵌入答题卡设计器。
-- AI 格式化：`/api/cards/:cardId/ai-format-knowledge-points` 将自由文本标签规范化为标准格式。
-
 ## v1.7.1 (2026-06-30) — 网上阅卷能力补全
 
 ### 网上阅卷队列
@@ -75,7 +238,7 @@
 
 ### 分数统计图修复
 
-- **箱线图交互**：`分数统计分布` 图中班级柱形可点击，联动顶栏班级筛选；补传 `selectedClassId` 修复高亮不更新。
+- **箱线图交互**：分数统计分布 图中班级柱形可点击，联动顶栏班级筛选；补传 `selectedClassId` 修复高亮不更新。
 - **图例与可读性**：新增极值/四分位/中位/均值图例，加粗坐标与柱形对比度，暗色模式下提升箱线图与分数段分布可视性。
 - **成绩变化曲线**：分析页考试列表下方恢复 `AnalysisTrend`（重构后曾丢失未渲染）。
 - **演示校验脚本**：修正上次考试对比用例（应对「演示-数学」而非「数学月考」发起请求）。
@@ -98,19 +261,20 @@
 ### 学生端分析增强
 
 - 新增 `GET /api/scores/me/semester-comparison`：按学年学期（8月~1月为第一学期，2月~7月为第二学期）汇总成绩。
-- 学生「我的成绩」新增 **学期对比** Tab：本学期 vs 上学期均分、学科进步/退步标签、各学科明细表。
-- 新增 `StudentSemesterComparison.tsx` 组件。
+- 学生成绩页新增学期对比 Tab，柱状图展示各学期/各科均分。
+- 学生端雷达图与排名趋势可下拉切换考试/大考组/学期三种维度。
 
 ### iOS 15 Safari 兼容（基于 #141）
 
-- Vite legacy 插件 + `polyfills.ts`：支持旧版 iPhone Safari 访问 Web 端。
-- 新增 `ErrorBoundary.tsx` 防止单组件错误导致整页白屏。
+- Vite web 构建目标设为 `es2020 + safari15`，确保 JS 在 iOS 15 / macOS Safari 15+ 上可解析运行。
+- 修复 `Array.prototype.at` 在 iOS 15 上不可用导致 白屏 的问题。
+- `src/components/WebCompat.tsx`：Safari 专用兼容检测与提示横幅。
 
 ### 工程清理
 
-- 删除废弃的 `scripts/package-variant.ts`（v1.6.1 已废弃教师/学生 Electron 打包）。
-- `verify:auth` 新增上一场考试对比与网上阅卷用例；全部 **54** 项通过。
-- 演示数据 manifest / verify 脚本更新至 v1.7.0 场景。
+- 删除 `.tsbuildinfo` 缓存，确保类型检查从零开始。
+
+
 
 ## v1.6.5 (2026-07-01) — iOS 15 Safari 兼容与错误边界 (#141)
 
@@ -369,110 +533,12 @@ CREATE TABLE api_keys (
 
 | 文件 | 说明 |
 |------|------|
-| `src/server/middleware/api-key.ts` | API Key 认证中间件 |
-| `src/server/routes/api-keys.ts` | API Key 管理路由 |
-| `src/server/routes/scanner-upload.ts` | 扫描上传路由 |
+| `src/apps/answer-card/client/styles.css` | 新增 ~300 行：CSS 变量、底部导航样式、480px 断点全部规则、横屏适配、暗色模式配套 |
+| `src/apps/answer-card/client/App.tsx` | 新增 `mobileNavItems` useMemo + 底部导航 `<nav>` JSX + `ReactElement` 类型导入 |
+| `index.html` | viewport meta 升级 + 3 个新 meta 标签 |
 
-### 架构决策
-
-- 客户端视图身份从编译时改为运行时，管理员可动态切换
-- API Key 模式用于无用户登录的扫描客户端，与 JWT 互补
-- 扫描端本地 SQLite 保留，用作离线缓存和断网重试缓冲
-- 最终部署：服务端跑 MariaDB，各客户端通过 HTTP API 通信
-
----
-
-原 v1.5.2 引入的 MySQL 双后端方案存在致命缺陷：`ON DUPLICATE KEY UPDATE` 在底层 SQLite 适配器中无法执行（SQLite 不支持此语法），依赖"DELETE-then-INSERT"才侥幸不报错。本次彻底重写整个数据访问层。
-
-### 数据库层重写 (`src/server/db/`)
-
-- **`schema.mariadb.sql`** — 全新 MariaDB 10.11 LTS 完整建表 SQL，含 38 张表 + 45+ 索引：
-  - Scanner 4 表合并（`twain_scan_sessions` / `twain_scan_records` / `twain_recognition_results` / `twain_student_grading_results`）
-  - v9 迁移新增表/列：`knowledge_points` 表、`answer_cards` 原卷字段（`has_original_paper` 等）、`users` 原卷偏好
-  - 新字段：`scan_records.image_uploaded`（原图上传标记）
-  - MariaDB 兼容：`VARCHAR` PK 替代 TEXT PK、`TINYINT` 替代 INTEGER 布尔值、\`rank\` 反引号
-  - 引擎 InnoDB、字符集 utf8mb4、外键级联删除、初始种子数据
-
-- **`mysql.ts` 重写** — 改名 `MariadbAdapter`，新增：
-  - `DbAdapter.dialect` 属性（`"sqlite" | "mariadb"`）
-  - `buildUpsertSQL()` / `buildInsertIgnore()` 跨方言 SQL 生成工具
-  - `detectDialect()`：环境变量 > config.yml > 兜底 SQLite
-  - MariaDB 连接池增强：`connectTimeout:5000`、`enableKeepAlive:true`、`maxIdle:10`、`idleTimeout:60000`
-  - `healthCheck()` 数据库连通性检测
-  - **MariaDB 模式断连不降级到 SQLite**（关键安全策略）
-
-- **`config.ts`** — YAML 配置读写工具（免外部依赖），支持 `config.yml` 解析/合并/写回
-
-- **`schema.sql` 修复**：
-  - `answer_cards.sided` 默认值 `'single'` → `'double'`（修复长期存在的默认值不一致 Bug）
-  - 新增 twain_* 4 表 + 6 个索引
-
-- **v10 迁移** — `twain_scan_sessions/records/recognition_results/student_grading_results` 自动建表
-
-### 消除 `getDatabase()` 直接调用（~50 处 → 0）
-
-所有路由/服务/清理任务统一走 `getMysqlDb()` 异步 `DbAdapter`：
-
-| 文件 | 变更 |
-|------|------|
-| `ai-providers.ts` | 4 处 → async `db.all/get/run()` |
-| `export-scores.ts` | 4 处 → async + `buildUpsertSQL()` |
-| `score-editing.ts` | 12 处 → async + 事务改为 `await db.transaction(async tx => {...})` |
-| `exam-groups.ts` | 11 处 → async + `buildInsertIgnore()` |
-| `AssignedScoreService.ts` | 全类 → async，`recalculateAll()` 使用 `db.transaction()` |
-| `AuthService.ts` | 2 处 → async |
-| `permissions.ts` | `initPermissionCache()` 异步预加载，启动时调用 |
-| `cleanup.ts` | 全异步，`setInterval` 内 `.catch()` |
-| `backup.ts | MariaDB 分支通过 mysqldump 备份恢复
-| `server/index.ts` | ~15 处 + `initMariadbSchema()` + 启动序列重排 |
-
-### Scanner DB 合并到主库
-
-- Scanner 原先独立的 `scanner.db` 4 张表全部合并到主库，命名加 `twain_` 前缀
-- `scan-store.ts` 19 个函数全异步化，统一走 `getMysqlDb()`
-- `scanner-service.ts` / `scanner/index.ts` 调用方全部加 `await`
-- `scanner/index.ts` 中 `persistScannerResultToMainDb()` 改为 async `getMysqlDb()` + `REPLACE INTO`
-
-### 用户设置：数据存储
-
-- **API**: `GET /api/app/db-config`（读取）+ `PATCH /api/app/db-config`（写入，管理员权限）
-- **前端**: AccountMenu 新增「数据存储」Tab（仅管理员可见）
-  - 本地 SQLite / 远程 MariaDB 单选切换
-  - MariaDB 连接表单：主机、端口、数据库名、用户名、密码
-  - 密码已设置时显示"(已设置，留空不修改)"提示
-  - 保存后显示"需重启服务器方可生效"
-  - 当前远程功能提示"尚未完全启用"
-
-### 服务器打包增强
-
-- `build-server.ts`：构建时同步复制 `schema.mariadb.sql`
-- `package-server-ubuntu.cjs`：新增 MariaDB 环境变量、systemd 模板含 MariaDB 配置、部署文档含 MariaDB 安装/配置指引
-
-### 文档
-
-- `DATABASE.md` 重写：双模架构说明、本地/远程对比表、MariaDB 安装配置
-- `ARCHITECTURE.md`：更新技术栈描述
-- `config.yml`：数据库配置模板（mode/remote/...）
-
-### Phase 2: 服务器部署工具链
-
-- **`scripts/migrate-to-mariadb.ts`** — SQLite → MariaDB 全量数据迁移
-- **`scripts/setup-mariadb.sh`** — Ubuntu/Debian 一键建库建表
-- **备份/恢复** — backup.ts MariaDB 分支通过 mysqldump 实现
-- **P0 修复** — initMariadbSchema 空指针、ON DUPLICATE KEY 残留、health 端点增强
-
-### 版本号更新
-
-- `package.json` → 1.5.5, README badges, DATABASE.md 新增部署迁移章节
-
-### 架构决策
-
-- 本地模式 = SQLite（零依赖，单机/开发/离线）
-- 远端模式 = MariaDB 10.11 LTS（32位/64位兼容）
-- 数据库配置存 `config.yml`，管理员界面写入，重启生效
-- 最终目标：数据库全在服务端，扫描端/教师端/学生端都是客户端
-
----
+### 版本
+- v1.5.2 → v1.7.3
 
 ## v1.5.2 (2026-06-26) — 数据库双后端架构
 

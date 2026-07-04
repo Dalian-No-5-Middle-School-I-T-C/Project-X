@@ -33,6 +33,8 @@ export function AccountMenu({
   const [displayMode, setDisplayMode] = useState("zscore");
   const [reviewThreshold, setReviewThreshold] = useState(0.12);
   const [bgOpacity, setBgOpacity] = useState(0);
+  const [requireOriginalPaper, setRequireOriginalPaper] = useState(true);
+  const [highlightMissingPaper, setHighlightMissingPaper] = useState(true);
   const bgFileRef = useRef<HTMLInputElement | null>(null);
   const [bgMsg, setBgMsg] = useState("");
   const [settingsMsg, setSettingsMsg] = useState("");
@@ -59,12 +61,14 @@ export function AccountMenu({
 
   useEffect(() => {
     if (open && showSettings) {
-      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number }>("/api/users/me/settings")
+      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; requireOriginalPaper?: number; highlightMissingPaper?: number }>("/api/users/me/settings")
         .then((s) => {
           if (!s || typeof s !== "object") return;
           setDisplayMode(s.scoreDisplayMode || "zscore");
           setReviewThreshold(s.reviewConfidenceThreshold ?? 0.12);
           setBgOpacity(s.backgroundOpacity ?? 0);
+          setRequireOriginalPaper(s.requireOriginalPaper !== 0);
+          setHighlightMissingPaper(s.highlightMissingPaper !== 0);
         })
         .catch(() => {});
       loadProviders();
@@ -121,6 +125,8 @@ export function AccountMenu({
           scoreDisplayMode: displayMode,
           reviewConfidenceThreshold: reviewThreshold,
           backgroundOpacity: bgOpacity,
+          requireOriginalPaper: requireOriginalPaper,
+          highlightMissingPaper: highlightMissingPaper,
         })
       });
       setSettingsMsg("已保存");
@@ -525,6 +531,24 @@ export function AccountMenu({
                     <h4 style={{ marginTop: 8 }}>复核置信度阈值: {reviewThreshold.toFixed(2)}</h4>
                     <input type="range" min="0" max="1" step="0.01" value={reviewThreshold} onChange={(e) => setReviewThreshold(Number(e.target.value))} style={{ width: "100%", marginTop: 2 }} />
                     <span style={{ fontSize: 11, color: "var(--muted)" }}>低于此值的题目标记"需要复核"</span>
+
+                    {/* v1.8.0: 原卷设置 */}
+                    <h4 style={{ marginTop: 16 }}>原卷上传设置</h4>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                      <input type="checkbox" checked={requireOriginalPaper} onChange={(e) => setRequireOriginalPaper(e.target.checked)} />
+                      <span>强制要求上传原卷</span>
+                    </label>
+                    <span style={{ fontSize: 11, color: "var(--muted)", display: "block", marginLeft: 24, marginBottom: 8 }}>
+                      创建答题卡后必须上传原卷才能导出
+                    </span>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                      <input type="checkbox" checked={highlightMissingPaper} onChange={(e) => setHighlightMissingPaper(e.target.checked)} />
+                      <span>侧边栏高亮未上传原卷</span>
+                    </label>
+                    <span style={{ fontSize: 11, color: "var(--muted)", display: "block", marginLeft: 24 }}>
+                      左侧列表用颜色标记缺少原卷的考试
+                    </span>
+
                     {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
                     <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>保存设置</button>
                   </>
