@@ -1,4 +1,5 @@
-import { getDb } from "./index";
+import { getMysqlDb, buildUpsertSQL } from "../../../../server/db";
+import type { DbAdapter } from "../../../../server/db";
 import { randomUUID } from "node:crypto";
 
 // ── Types ──────────────────────────────────────────────
@@ -49,206 +50,6 @@ export interface ScanRecordWithResult extends ScanRecord {
   recognition: RecognitionResultRow | null;
 }
 
-// ── Session CRUD ───────────────────────────────────────
-
-export function createSession(
-  cardId: string,
-  name: string,
-  config: { dpi?: number; duplex?: boolean; colorMode?: string; paperSize?: string } = {}
-): ScanSession {
-  const db = getDb();
-  const id = generateId();
-  const stmt = db.prepare(`
-    INSERT INTO scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
-  `);
-  stmt.run(
-    id,
-    cardId,
-    name,
-    config.dpi ?? 300,
-    config.duplex ? 1 : 0,
-    config.colorMode ?? "gray",
-    config.paperSize ?? "A4"
-  );
-  return getSession(id)!;
-}
-
-export function getSession(id: string): ScanSession | undefined {
-  const db = getDb();
-  return db.prepare("SELECT * FROM scan_sessions WHERE id = ?").get(id) as ScanSession | undefined;
-}
-
-export function listSessions(cardId?: string): ScanSession[] {
-  const db = getDb();
-  if (cardId) {
-    return db.prepare("SELECT * FROM scan_sessions WHERE card_id = ? ORDER BY created_at DESC").all(cardId) as ScanSession[];
-  }
-  return db.prepare("SELECT * FROM scan_sessions ORDER BY created_at DESC").all() as ScanSession[];
-}
-
-export function updateSessionStatus(id: string, status: ScanSession["status"], errorMsg?: string): void {
-  const db = getDb();
-  db.prepare(`
-    UPDATE scan_sessions
-    SET status = ?, error_msg = ?, updated_at = datetime('now')
-    WHERE id = ?
-  `).run(status, errorMsg ?? null, id);
-}
-
-export function incrementPageCount(id: string): void {
-  const db = getDb();
-  db.prepare(`
-    UPDATE scan_sessions
-    SET page_count = page_count + 1, updated_at = datetime('now')
-    WHERE id = ?
-  `).run(id);
-}
-
-export function deleteSession(id: string): void {
-  const db = getDb();
-  db.prepare("DELETE FROM scan_sessions WHERE id = ?").run(id);
-}
-
-// ── Scan Record CRUD ───────────────────────────────────
-
-export function createScanRecord(params: {
-  sessionId: string;
-  cardId: string;
-  imagePath: string;
-  pageNum: number;
-  side?: "front" | "back";
-}): ScanRecord {
-  const db = getDb();
-  const id = generateId();
-  const stmt = db.prepare(`
-    INSERT INTO scan_records (id, session_id, card_id, image_path, page_num, side, ocr_status)
-    VALUES (?, ?, ?, ?, ?, ?, 'pending')
-  `);
-  stmt.run(id, params.sessionId, params.cardId, params.imagePath, params.pageNum, params.side ?? "front");
-  return getScanRecord(id)!;
-}
-
-export function getScanRecord(id: string): ScanRecord | undefined {
-  const db = getDb();
-  return db.prepare("SELECT * FROM scan_records WHERE id = ?").get(id) as ScanRecord | undefined;
-}
-
-export function getScanRecordWithResult(id: string): ScanRecordWithResult | undefined {
-  const db = getDb();
-  const record = db.prepare("SELECT * FROM scan_records WHERE id = ?").get(id) as ScanRecord | undefined;
-  if (!record) return undefined;
-  const recognition = db
-    .prepare("SELECT * FROM recognition_results WHERE scan_record_id = ?")
-    .get(id) as RecognitionResultRow | undefined;
-  return { ...record, recognition: recognition ?? null };
-}
-
-export function listScanRecords(sessionId: string): ScanRecord[] {
-  const db = getDb();
-  return db
-    .prepare("SELECT * FROM scan_records WHERE session_id = ? ORDER BY page_num, side")
-    .all(sessionId) as ScanRecord[];
-}
-
-export function listScanRecordsByCard(cardId: string): ScanRecord[] {
-  const db = getDb();
-  return db
-    .prepare("SELECT * FROM scan_records WHERE card_id = ? ORDER BY created_at DESC")
-    .all(cardId) as ScanRecord[];
-}
-
-export function updateScanOcrResult(
-  id: string,
-  studentId: string | null,
-  studentConf: number | null,
-  status: ScanRecord["ocr_status"],
-  error?: string
-): void {
-  const db = getDb();
-  db.prepare(`
-    UPDATE scan_records
-    SET student_id = ?,
-        student_conf = ?,
-        ocr_status = ?,
-        ocr_error = ?,
-        recognized_at = datetime('now')
-    WHERE id = ?
-  `).run(studentId, studentConf, status, error ?? null, id);
-}
-
-export function updateScanQuality(id: string, quality: number): void {
-  const db = getDb();
-  db.prepare("UPDATE scan_records SET scan_quality = ? WHERE id = ?").run(quality, id);
-}
-
-export function deleteScanRecord(id: string): void {
-  const db = getDb();
-  db.prepare("DELETE FROM scan_records WHERE id = ?").run(id);
-}
-
-// ── Recognition Result CRUD ────────────────────────────
-
-export function upsertRecognitionResult(params: {
-  scanRecordId: string;
-  objectiveJson?: string | null;
-  subjectiveJson?: string | null;
-  totalScore?: number | null;
-  maxScore?: number | null;
-  gradeStatus?: string;
-}): RecognitionResultRow {
-  const db = getDb();
-  const existing = db
-    .prepare("SELECT id FROM recognition_results WHERE scan_record_id = ?")
-    .get(params.scanRecordId) as { id: string } | undefined;
-
-  if (existing) {
-    const stmt = db.prepare(`
-      UPDATE recognition_results
-      SET objective_json = COALESCE(?, objective_json),
-          subjective_json = COALESCE(?, subjective_json),
-          total_score = COALESCE(?, total_score),
-          max_score = COALESCE(?, max_score),
-          grade_status = COALESCE(?, grade_status)
-      WHERE scan_record_id = ?
-    `);
-    stmt.run(
-      params.objectiveJson ?? null,
-      params.subjectiveJson ?? null,
-      params.totalScore ?? null,
-      params.maxScore ?? null,
-      params.gradeStatus ?? null,
-      params.scanRecordId
-    );
-  } else {
-    const id = generateId();
-    const stmt = db.prepare(`
-      INSERT INTO recognition_results (id, scan_record_id, objective_json, subjective_json, total_score, max_score, grade_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    stmt.run(
-      id,
-      params.scanRecordId,
-      params.objectiveJson ?? null,
-      params.subjectiveJson ?? null,
-      params.totalScore ?? null,
-      params.maxScore ?? null,
-      params.gradeStatus ?? "pending"
-    );
-  }
-
-  return db
-    .prepare("SELECT * FROM recognition_results WHERE scan_record_id = ?")
-    .get(params.scanRecordId) as RecognitionResultRow;
-}
-
-export function deleteRecognitionResult(scanRecordId: string): void {
-  const db = getDb();
-  db.prepare("DELETE FROM recognition_results WHERE scan_record_id = ?").run(scanRecordId);
-}
-
-// ── Student Grading Results (combined across pages) ────
-
 export interface StudentGradingResultRow {
   session_id: string;
   student_id: string;
@@ -260,8 +61,190 @@ export interface StudentGradingResultRow {
   created_at: string;
 }
 
+// ── Internal ───────────────────────────────────────────
+
+function db(): DbAdapter {
+  return getMysqlDb();
+}
+
+function generateId(): string {
+  return randomUUID();
+}
+
+// ── Session CRUD ──────────────────────────────────────
+
+export async function createSession(
+  cardId: string,
+  name: string,
+  config: { dpi?: number; duplex?: boolean; colorMode?: string; paperSize?: string } = {}
+): Promise<ScanSession> {
+  const id = generateId();
+  await db().run(`
+    INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+  `, id, cardId, name, config.dpi ?? 300, config.duplex ? 1 : 0,
+    config.colorMode ?? "gray", config.paperSize ?? "A4");
+  return (await getSession(id))!;
+}
+
+export async function getSession(id: string): Promise<ScanSession | undefined> {
+  return await db().get("SELECT * FROM twain_scan_sessions WHERE id = ?", id) as ScanSession | undefined;
+}
+
+export async function listSessions(cardId?: string): Promise<ScanSession[]> {
+  if (cardId) {
+    return await db().all(
+      "SELECT * FROM twain_scan_sessions WHERE card_id = ? ORDER BY created_at DESC",
+      cardId
+    ) as ScanSession[];
+  }
+  return await db().all("SELECT * FROM twain_scan_sessions ORDER BY created_at DESC") as ScanSession[];
+}
+
+export async function updateSessionStatus(
+  id: string, status: ScanSession["status"], errorMsg?: string
+): Promise<void> {
+  await db().run(
+    "UPDATE twain_scan_sessions SET status = ?, error_msg = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    status, errorMsg ?? null, id
+  );
+}
+
+export async function incrementPageCount(id: string): Promise<void> {
+  await db().run(
+    "UPDATE twain_scan_sessions SET page_count = page_count + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    id
+  );
+}
+
+export async function deleteSession(id: string): Promise<void> {
+  await db().run("DELETE FROM twain_scan_sessions WHERE id = ?", id);
+}
+
+// ── Scan Record CRUD ───────────────────────────────────
+
+export async function createScanRecord(params: {
+  sessionId: string;
+  cardId: string;
+  imagePath: string;
+  pageNum: number;
+  side?: "front" | "back";
+}): Promise<ScanRecord> {
+  const id = generateId();
+  await db().run(`
+    INSERT INTO twain_scan_records (id, session_id, card_id, image_path, page_num, side, ocr_status)
+    VALUES (?, ?, ?, ?, ?, ?, 'pending')
+  `, id, params.sessionId, params.cardId, params.imagePath, params.pageNum, params.side ?? "front");
+  return (await getScanRecord(id))!;
+}
+
+export async function getScanRecord(id: string): Promise<ScanRecord | undefined> {
+  return await db().get("SELECT * FROM twain_scan_records WHERE id = ?", id) as ScanRecord | undefined;
+}
+
+export async function getScanRecordWithResult(id: string): Promise<ScanRecordWithResult | undefined> {
+  const record = await db().get("SELECT * FROM twain_scan_records WHERE id = ?", id) as ScanRecord | undefined;
+  if (!record) return undefined;
+  const recognition = await db().get(
+    "SELECT * FROM twain_recognition_results WHERE scan_record_id = ?",
+    id
+  ) as RecognitionResultRow | undefined;
+  return { ...record, recognition: recognition ?? null };
+}
+
+export async function listScanRecords(sessionId: string): Promise<ScanRecord[]> {
+  return await db().all(
+    "SELECT * FROM twain_scan_records WHERE session_id = ? ORDER BY page_num, side",
+    sessionId
+  ) as ScanRecord[];
+}
+
+export async function listScanRecordsByCard(cardId: string): Promise<ScanRecord[]> {
+  return await db().all(
+    "SELECT * FROM twain_scan_records WHERE card_id = ? ORDER BY created_at DESC",
+    cardId
+  ) as ScanRecord[];
+}
+
+export async function updateScanOcrResult(
+  id: string,
+  studentId: string | null,
+  studentConf: number | null,
+  status: ScanRecord["ocr_status"],
+  error?: string
+): Promise<void> {
+  await db().run(`
+    UPDATE twain_scan_records
+    SET student_id = ?, student_conf = ?, ocr_status = ?, ocr_error = ?, recognized_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `, studentId, studentConf, status, error ?? null, id);
+}
+
+export async function updateScanQuality(id: string, quality: number): Promise<void> {
+  await db().run("UPDATE twain_scan_records SET scan_quality = ? WHERE id = ?", quality, id);
+}
+
+export async function deleteScanRecord(id: string): Promise<void> {
+  await db().run("DELETE FROM twain_scan_records WHERE id = ?", id);
+}
+
+// ── Recognition Result CRUD ────────────────────────────
+
+export async function upsertRecognitionResult(params: {
+  scanRecordId: string;
+  objectiveJson?: string | null;
+  subjectiveJson?: string | null;
+  totalScore?: number | null;
+  maxScore?: number | null;
+  gradeStatus?: string;
+}): Promise<RecognitionResultRow> {
+  const d = db();
+  const existing = await d.get(
+    "SELECT id FROM twain_recognition_results WHERE scan_record_id = ?",
+    params.scanRecordId
+  ) as { id: string } | undefined;
+
+  if (existing) {
+    await d.run(`
+      UPDATE twain_recognition_results
+      SET objective_json = COALESCE(?, objective_json),
+          subjective_json = COALESCE(?, subjective_json),
+          total_score = COALESCE(?, total_score),
+          max_score = COALESCE(?, max_score),
+          grade_status = COALESCE(?, grade_status)
+      WHERE scan_record_id = ?
+    `, params.objectiveJson ?? null, params.subjectiveJson ?? null,
+      params.totalScore ?? null, params.maxScore ?? null,
+      params.gradeStatus ?? null, params.scanRecordId);
+  } else {
+    const id = generateId();
+    await d.run(`
+      INSERT INTO twain_recognition_results (id, scan_record_id, objective_json, subjective_json, total_score, max_score, grade_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, id, params.scanRecordId,
+      params.objectiveJson ?? null, params.subjectiveJson ?? null,
+      params.totalScore ?? null, params.maxScore ?? null,
+      params.gradeStatus ?? "pending");
+  }
+
+  return await d.get(
+    "SELECT * FROM twain_recognition_results WHERE scan_record_id = ?",
+    params.scanRecordId
+  ) as RecognitionResultRow;
+}
+
+export async function deleteRecognitionResult(scanRecordId: string): Promise<void> {
+  await db().run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", scanRecordId);
+}
+
+// ── Student Grading Results (combined across pages) ────
+
+const SGR_UPSERT_COLS = ["session_id", "student_id", "objective_json", "subjective_json", "total_score", "max_score", "page_count"];
+const SGR_CONFLICT_COLS = ["session_id", "student_id"];
+const SGR_UPDATE_COLS = ["objective_json", "subjective_json", "total_score", "max_score", "page_count"];
+
 /** Upsert a combined student grading result */
-export function upsertStudentGradingResult(params: {
+export async function upsertStudentGradingResult(params: {
   sessionId: string;
   studentId: string;
   objectiveJson?: string | null;
@@ -269,55 +252,44 @@ export function upsertStudentGradingResult(params: {
   totalScore?: number | null;
   maxScore?: number | null;
   pageCount?: number;
-}): void {
-  const db = getDb();
-  const stmt = db.prepare(`
-    INSERT INTO student_grading_results (session_id, student_id, objective_json, subjective_json, total_score, max_score, page_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (session_id, student_id) DO UPDATE SET
-      objective_json = COALESCE(excluded.objective_json, objective_json),
-      subjective_json = COALESCE(excluded.subjective_json, subjective_json),
-      total_score = COALESCE(excluded.total_score, total_score),
-      max_score = COALESCE(excluded.max_score, max_score),
-      page_count = COALESCE(excluded.page_count, page_count),
-      created_at = datetime('now')
-  `);
-  stmt.run(
-    params.sessionId,
-    params.studentId,
-    params.objectiveJson ?? null,
-    params.subjectiveJson ?? null,
-    params.totalScore ?? null,
-    params.maxScore ?? null,
+}): Promise<void> {
+  const d = db();
+  const sql = buildUpsertSQL(d.dialect, "twain_student_grading_results", SGR_UPSERT_COLS, SGR_CONFLICT_COLS, SGR_UPDATE_COLS);
+  await d.run(sql,
+    params.sessionId, params.studentId,
+    params.objectiveJson ?? null, params.subjectiveJson ?? null,
+    params.totalScore ?? null, params.maxScore ?? null,
     params.pageCount ?? 1
   );
 }
 
 /** Get combined student grading results for a session */
-export function listStudentGradingResults(sessionId: string): StudentGradingResultRow[] {
-  const db = getDb();
-  return db
-    .prepare("SELECT * FROM student_grading_results WHERE session_id = ? ORDER BY student_id")
-    .all(sessionId) as StudentGradingResultRow[];
+export async function listStudentGradingResults(sessionId: string): Promise<StudentGradingResultRow[]> {
+  return await db().all(
+    "SELECT * FROM twain_student_grading_results WHERE session_id = ? ORDER BY student_id",
+    sessionId
+  ) as StudentGradingResultRow[];
 }
 
 /** Get scan records for a session grouped by student_id (for combined grading) */
-export function listScanRecordsGroupedByStudent(sessionId: string): Array<{
+export async function listScanRecordsGroupedByStudent(sessionId: string): Promise<Array<{
   studentId: string;
   records: ScanRecordWithResult[];
-}> {
-  const db = getDb();
-  const records = db
-    .prepare("SELECT * FROM scan_records WHERE session_id = ? ORDER BY student_id, page_num, side")
-    .all(sessionId) as ScanRecord[];
+}>> {
+  const d = db();
+  const records = await d.all(
+    "SELECT * FROM twain_scan_records WHERE session_id = ? ORDER BY student_id, page_num, side",
+    sessionId
+  ) as ScanRecord[];
 
   const grouped = new Map<string, ScanRecordWithResult[]>();
   for (const record of records) {
     const key = record.student_id ?? "__unrecognized__";
     if (!grouped.has(key)) grouped.set(key, []);
-    const recognition = db
-      .prepare("SELECT * FROM recognition_results WHERE scan_record_id = ?")
-      .get(record.id) as RecognitionResultRow | undefined;
+    const recognition = await d.get(
+      "SELECT * FROM twain_recognition_results WHERE scan_record_id = ?",
+      record.id
+    ) as RecognitionResultRow | undefined;
     grouped.get(key)!.push({ ...record, recognition: recognition ?? null });
   }
 
@@ -327,33 +299,31 @@ export function listScanRecordsGroupedByStudent(sessionId: string): Array<{
 // ── Bulk Operations ────────────────────────────────────
 
 /** Get all scan records for a card with their student IDs, images, and recognition results */
-export function listScansForCard(cardId: string): Array<{
+export async function listScansForCard(cardId: string): Promise<Array<{
   record: ScanRecord;
   recognition: RecognitionResultRow | null;
-}> {
-  const db = getDb();
-  const records = db
-    .prepare("SELECT * FROM scan_records WHERE card_id = ? ORDER BY page_num, side")
-    .all(cardId) as ScanRecord[];
+}>> {
+  const d = db();
+  const records = await d.all(
+    "SELECT * FROM twain_scan_records WHERE card_id = ? ORDER BY page_num, side",
+    cardId
+  ) as ScanRecord[];
 
-  return records.map((record) => {
-    const recognition = db
-      .prepare("SELECT * FROM recognition_results WHERE scan_record_id = ?")
-      .get(record.id) as RecognitionResultRow | undefined;
-    return { record, recognition: recognition ?? null };
-  });
+  const results: Array<{ record: ScanRecord; recognition: RecognitionResultRow | null }> = [];
+  for (const record of records) {
+    const recognition = await d.get(
+      "SELECT * FROM twain_recognition_results WHERE scan_record_id = ?",
+      record.id
+    ) as RecognitionResultRow | undefined;
+    results.push({ record, recognition: recognition ?? null });
+  }
+  return results;
 }
 
 /** Search scan records by student ID */
-export function findScansByStudentId(cardId: string, studentId: string): ScanRecord[] {
-  const db = getDb();
-  return db
-    .prepare("SELECT * FROM scan_records WHERE card_id = ? AND student_id = ? ORDER BY created_at DESC")
-    .all(cardId, studentId) as ScanRecord[];
-}
-
-// ── Helpers ────────────────────────────────────────────
-
-function generateId(): string {
-  return randomUUID();
+export async function findScansByStudentId(cardId: string, studentId: string): Promise<ScanRecord[]> {
+  return await db().all(
+    "SELECT * FROM twain_scan_records WHERE card_id = ? AND student_id = ? ORDER BY created_at DESC",
+    cardId, studentId
+  ) as ScanRecord[];
 }

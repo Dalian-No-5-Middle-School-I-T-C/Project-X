@@ -1,33 +1,66 @@
 # Project-X 架构分析
 
-**Project-X（答题卡设计系统）** 是大连五中自研的本地优先智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 成绩分析 → AI 成绩分析** 全流程。架构上是 **Electron 桌面壳 + 内嵌 Express 后端 + React 前端 + C++ 原生子进程 + Python LLM 中转服务** 的组合。
+**Project-X（答题卡设计阅卷系统）** 是大连五中自研的智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 成绩分析 → AI 成绩分析** 全流程。架构上支持 **本地 SQLite 单机模式** 和 **远程 MariaDB 服务器模式**，通过统一的 `DbAdapter` 接口无缝切换。
+
+> v1.6.1 起，代码库拆分为两个构建目标；v1.6.2 起识别结果可产出大题作答图片切块：
+> - **Web 构建** (`dist/web/`)：教师 + 学生页面，无扫描代码，部署到服务器
+> - **Scanner 构建** (`dist/scanner/`)：仅 ScannerPanel，打包进 Electron 桌面端
+> - 教师/学生 Electron 端已废弃，统一使用浏览器访问 Web 端
+
+技术栈：**Electron 桌面壳（扫描端）+ Express 后端 + React 前端 + C++ 原生子进程 + Python LLM 中转服务**。
 
 ---
 
 ## 1. 总体架构
 
-系统采用 **单体本地应用** 模式：Electron 启动后在本机拉起 Node 服务，浏览器窗口加载同一进程内的静态前端，所有数据与识别均在本地完成。
+### v1.6.0+ 客户端拆分架构
 
 ```mermaid
 flowchart TB
-    subgraph Desktop["Electron 桌面层"]
-        EM[electron/main.cjs]
-        BW[BrowserWindow]
+    subgraph Scanner["扫描端 (Electron)"]
+        SCAN_UI["ScannerPanel<br/>本地/远程双模"]
+        TWAIN["TWAIN C++ Bridge"]
+        SCAN_SQLITE[("本地 SQLite<br/>缓存+断网缓冲")]
     end
 
-    subgraph Node["Node.js 服务层"]
-        EX[Express 5 API]
-        REPO[Repository 数据访问]
-        REC[recognition.ts 子进程管理]
-        SCN[scanner 子系统]
-        PDF[pdf.ts PDF 生成]
+    subgraph Teacher["教师端 (Browser)"]
+        T_UI["WEB UI<br/>http://服务器IP:5174"]
     end
 
-    subgraph Shared["共享领域层 src/shared"]
-        TYPES[types.ts]
-        LAYOUT[layout.ts 坐标布局]
-        GRADE[grading.ts 判分引擎]
+    subgraph Student["学生端 (Browser)"]
+        S_UI["WEB UI<br/>http://服务器IP:5174"]
     end
+
+    subgraph Server["服务端 (Node.js)"]
+        EX["Express 5 API"]
+        REPO["Repository 数据访问"]
+        REC["recognition.ts"]
+        SCAN_API["扫描上传 API"]
+        APIKEY["API Key Auth"]
+        DB_ADAPTER["DbAdapter"]
+    end
+
+    subgraph DB["数据库"]
+        SQLITE[("SQLite<br/>本地模式")]
+        MARIA[("MariaDB<br/>远程模式")]
+    end
+
+    SCAN_UI -->|"HTTP POST (X-Api-Key)"| SCAN_API
+    T_UI -->|"HTTP (JWT)"| EX
+    S_UI -->|"HTTP (JWT)"| EX
+    SCAN_SQLITE --> SCAN_UI
+
+    EX --> APIKEY
+    EX --> REPO
+    EX --> REC
+    APIKEY --> SCAN_API
+    SCAN_API --> REPO
+    REPO --> DB_ADAPTER
+    DB_ADAPTER --> SQLITE
+    DB_ADAPTER --> MARIA
+```
+
+> 兼容模式（本地运行）：Electron 内同时运行 ScannerPanel + Express Server，数据全在本地。配置详见 [DATABASE.md](./DATABASE.md)。
 
     subgraph Native["C++ 原生层"]
         OCR[answer-card-recognizer.exe<br/>OpenCV 识别]
@@ -60,22 +93,19 @@ flowchart TB
 | 模式 | 前端 | 后端 | 数据目录 |
 |------|------|------|----------|
 | 开发 `npm run dev` | Vite :5173（代理 `/api`） | tsx :5174 | 项目根 `data/` |
-| 生产 / Electron | `dist/client` 静态资源 | `dist/server/index.mjs` | `%AppData%/.../userData/data/` |
+| Web 部署 | `dist/web` 静态资源 | `dist/server/index.mjs` | `data/` 或自定义 |
+| Electron 扫描端 | `dist/scanner` 静态资源 | `dist/server/index.mjs` | `%AppData%/answer-card-designer/` |
 
 Electron 主进程通过环境变量注入路径：
 
 ```javascript
-// electron/main.cjs
+// electron/main.cjs — v1.6.1: Scanner only
 async function startLocalServer() {
-  const appRoot = getAppRoot();
   const serverBundle = path.join(appRoot, "dist", "server", "index.mjs");
-  const clientDist = path.join(appRoot, "dist", "client");
-  const userDataDir = app.getPath("userData");
-  const dataDir = path.join(userDataDir, "data", "answer-card");
+  const clientDist = path.join(appRoot, "dist", "scanner");
 
-  process.env.ANSWER_CARD_DATA_DIR = dataDir;
+  process.env.PROJECTX_ENABLE_SCANNER = "1";
   process.env.ANSWER_CARD_CLIENT_DIST = clientDist;
-  process.env.PROJECTX_DB_PATH = path.join(userDataDir, "data", "projectx.db");
   // ...
 }
 ```
@@ -110,7 +140,7 @@ type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
 | 模式 | 职责 | 主要组件 |
 |------|------|----------|
 | **design** | 编辑答题卡、预览、导出 PDF | 内联编辑器 + `buildLayout` 预览 |
-| **grading** | 上传/扫描图片、批量识别判分 | `ScannerPanel`、`GradingResults`、`ScanPreviewModal`（共享弹窗） |
+| **grading** | 上传图片、批量识别判分 | `GradingResults`、`ScanPreviewModal`（共享弹窗） |
 | **analysis** | 考试统计、排名、题目分析 | `AnalysisOverview`、`AnalysisDistribution`、`AnalysisRanking`、`AnalysisQuestions`、`ScoreTable`、`ScanPreviewModal`（预览列） |
 | **scores** | 学生查看个人成绩 | `StudentScores` |
 | **account** | 教师/学生管理 | `AccountManagement`、`TeacherManagement`、`ClassManagement` |
@@ -132,7 +162,7 @@ type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
 
 1. 初始化 `projectx.db`、默认管理员、定时清理
 2. 挂载 REST 路由
-3. 生产环境托管 `dist/client`（SPA fallback）
+3. 生产环境托管 `dist/web`（SPA fallback）
 
 **API 域划分：**
 
@@ -298,6 +328,90 @@ sequenceDiagram
 
 扫描进度通过 **Server-Sent Events (SSE)** 推送，前端实时显示缩略图与状态。
 
+### 6.3 远端扫描上传 (v1.6.0)
+
+扫描端 Electron 支持**本地 / 远程双模**，在 ScannerPanel 界面切换。远程模式下扫描完成后自动上传到远端服务器：
+
+```mermaid
+sequenceDiagram
+    participant Scanner as ScannerPanel
+    participant Local as 本地 Express
+    participant Remote as 远端 Express
+    participant DB as 远端 SQLite/MariaDB
+
+    Scanner->>Local: GET /api/scanner/scan-image/:recordId
+    Local-->>Scanner: 本地扫描图片 blob
+    Scanner->>Remote: POST /api/scanner/upload/sessions (API Key)
+    Remote-->>Scanner: sessionId + uploadTokens
+    loop 每页
+        Scanner->>Remote: POST /sessions/:id/pages (multipart 图片)
+        Remote->>DB: 写入 twain_scan_records
+    end
+    Scanner->>Remote: POST /sessions/:id/complete
+    Remote->>DB: 标记 completed → 后台识别判分
+```
+
+**鉴权**：双鉴权 — 先查 `X-Api-Key`（管理员在账号设置中生成扫描专用 Key），无 Key 时降级 JWT token。
+
+**表**：`twain_scan_sessions` + `twain_scan_records`（schema.sql 含完整 DDL）。
+
+### 6.4 扫描端 UI 结构 (v1.6.1)
+
+> v1.6.2 补充：学生成绩详情和教师个别改分页默认使用“大题作答图片”视图；没有切块时回退到整页答题卡预览。
+
+扫描端采用**双屏路由**：答题卡选择 → 扫描工作台。
+
+```mermaid
+flowchart LR
+    Login[LoginPage] --> Select[CardSelectPage]
+    Select --> |点击答题卡| Workspace[ScannerWorkspace]
+    Workspace --> |返回| Select
+
+    Select -->|单科Tab| CardList[答题卡表格<br/>搜索+学科筛选]
+    Select -->|大考Tab| GroupList[大考组表格<br/>展开下辖考试]
+    
+    Workspace --> Scanner[ScannerPanel<br/>TWAIN直扫]
+    Workspace --> Import[文件导入阅卷<br/>目录+图片→判分]
+```
+
+- **CardSelectPage**：对齐 ExamSelectPage 风格，搜索框 + 学科筛选 + 表格列表；大考 Tab 展开显示下辖考试
+- **ScannerWorkspace**：左区 ScannerPanel（TWAIN 扫描），右区扫描设置 + 文件/目录导入阅卷（复用 GradingResults）
+
+### 6.5 大题作答图片切块 (v1.6.2)
+
+大题切块发生在识别成功之后，复用 native 识别器已经完成的定位点匹配和透视校正结果，保证切块坐标与判分坐标一致。
+
+```mermaid
+sequenceDiagram
+    participant API as Express recognition/grading
+    participant OCR as answer-card-recognizer.exe
+    participant Crop as AnswerBlockCropService
+    participant DB as projectx.db
+    participant UI as StudentScoreDetail/ScoreFixPage
+
+    API->>OCR: --image --layout --dpi --crops-dir <tmp>
+    OCR-->>API: recognition JSON + blockCrops manifest
+    API->>Crop: move temp crops to recognition/crops/...
+    Crop->>DB: insert answer_block_crops
+    UI->>API: GET score detail / block-crops
+    UI->>API: GET /api/answer-block-crops/:cropId/image
+```
+
+裁剪规则：
+
+- 以 `layout.pages[].blocks[]` 为切块来源，裁剪大题级 block，不做小题裁剪。
+- 矩形优先使用 `frameRect`，没有时使用 `rect`，默认向外扩展 2.5mm padding，并 clamp 到页面范围。
+- 同一大题跨页时按页生成多个 segment，不跨页拼接。
+- 单面卡过滤背面后不会生成背面切块。
+- native 识别器不可用或识别失败时，不阻断原成绩流程，只是不产生切块。
+
+数据落点：
+
+- 临时裁剪图由 native 写入 `--crops-dir`。
+- 服务端归档到 `data/answer-card/recognition/crops/{cardId}/{sourceType}_{sourceRecordId}/`。
+- `answer_block_crops` 通过 `source_type/source_record_id` 统一关联普通阅卷 `scan_records` 和扫描仪 `twain_scan_records`。
+- `CombinedRecognitionResult.blockCrops` 为本次识别的临时 manifest；落库后前端读取的是持久化 `AnswerBlockCrop`。
+
 ---
 
 ## 7. C++ 原生层
@@ -330,26 +444,33 @@ v1.1 中所有用户强制登录，具有基于角色的 UI（管理员/教师/�
 ```mermaid
 flowchart LR
     subgraph Build
-        V[Vite] --> DC[dist/client]
+        VW[Vite --mode web] --> DW[dist/web]
+        VS[Vite --mode scanner] --> DSc[dist/scanner]
         E[esbuild] --> DS[dist/server/index.mjs]
-        VS[Visual Studio] --> NAT[resources/native/win-*]
+        VSB[Visual Studio] --> NAT[resources/native/win-*]
     end
 
-    subgraph Pack
+    subgraph Deploy
+        Server[Web Server]
         EB[electron-builder]
-        EB --> S[学生端 EXE/MSI]
-        EB --> T[教师端 EXE/MSI]
-        EB --> TS[教师扫描端 EXE/MSI]
+        EB --> ScannerEXE[答题卡扫描端 EXE/MSI]
+        Server --> TeacherUI[教师/学生浏览器]
     end
 
-    DC --> EB
+    DW --> Server
+    DW --> EB
+    DSc --> EB
+    DS --> Server
     DS --> EB
     NAT --> EB
 ```
 
-- **前端：** Vite → `dist/client`
+- **前端（Web）：** Vite --mode web → `dist/web`
+- **前端（Scanner）：** Vite --mode scanner → `dist/scanner`
+- **扫描端入口：** v1.6.2 构建结束后将 `index-scanner.html` 规范化为 `dist/scanner/index.html`，与 Express SPA fallback 保持一致。
 - **后端：** esbuild 单文件 bundle（`packages: external`，保留 better-sqlite3 原生依赖）→ `dist/server/index.mjs`，并复制 `schema.sql`
-- **桌面：** electron-builder，Windows x64 / ia32，三端变体（学生/教师/扫描），按端和架构裁剪 native 资源，共用数据目录
+- **桌面：** electron-builder，Windows x64 / ia32，仅扫描端变体，携带 native 资源
+- **32 位打包：** ia32 不复用 `node_modules/electron/dist` 中的 x64 Electron，需获取真正 32 位 Electron；打包后确认 exe 与 `better_sqlite3.node` 均为 x86。
 - **原生 Node 模块：** 需对 Electron 单独 `electron-rebuild`（better-sqlite3）
 
 ---

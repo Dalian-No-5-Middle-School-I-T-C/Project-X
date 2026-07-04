@@ -3,7 +3,6 @@ import {
   ArrowDown,
   ArrowUp,
   BarChart3,
-  Camera,
   ChevronDown,
   ClipboardCheck,
   ClipboardList,
@@ -31,6 +30,7 @@ import { BeianFooter } from "./components/BeianFooter";
 import { StudentScores } from "./components/StudentScores";
 import { SponsorPage } from "./components/SponsorPage";
 import { UserGuidePage } from "./components/UserGuidePage";
+import { PermissionManager } from "./components/PermissionManager";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import { ExamSelectPage } from "./components/ExamSelectPage";
 import { ScoreDetailPage } from "./components/ScoreDetailPage";
@@ -76,7 +76,6 @@ import {
   type ProjectXAppMode,
   type ProjectXVariantConfig
 } from "../../../shared/appVariant";
-import { ScannerPanel } from "./components/ScannerPanel";
 import { ScanPreviewModal, type ScanPage } from "./components/ScanPreviewModal";
 import { ImportCardModal, type ImportCardFormData } from "./components/ImportCardModal";
 import { AnalysisOverview } from "./components/AnalysisOverview";
@@ -375,10 +374,11 @@ function findNextQuestionNumber(card: AnswerCard): number {
 }
 
 function App() {
-  const { user, loading, hasPermission } = useAuth();
+  const { user, loading, hasPermission, persona, teacherRoleOverride } = useAuth();
+  // v1.6.0: 运行时 persona 替换 compile-time VITE_PROJECTX_VARIANT
   const appVariant = useMemo(
-    () => getProjectXVariantConfig(import.meta.env.VITE_PROJECTX_VARIANT),
-    []
+    () => getProjectXVariantConfig(persona),
+    [persona]
   );
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
@@ -398,7 +398,8 @@ function App() {
   const [isBusy, setIsBusy] = useState(false);
   const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>("idle");
   const gradingProgressSourceRef = useRef<EventSource | null>(null);
-  const [showScanner, setShowScanner] = useState(false);
+  // Note: Scanner has been split into a separate build (ScannerApp.tsx).
+  // Web mode never renders ScannerPanel; the "扫描仪录入" button is removed.
   const [analysisExamId, setAnalysisExamId] = useState<number | null>(null);
   const [analysisClassId, setAnalysisClassId] = useState<string>("");
   const [analysisClasses, setAnalysisClasses] = useState<Array<{ classId: number; className: string }>>([]);
@@ -431,10 +432,11 @@ function App() {
   const [showBg, setShowBg] = useState(0); // opacity 0~1, 0=关闭
   const [pdfWarning, setPdfWarning] = useState<PdfWarningState | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
-    return (localStorage.getItem("projectx-theme") as "light" | "dark") || "light";
-  });
-  const [darkModeEnabled, setDarkModeEnabled] = useState(() => {
-    return localStorage.getItem("projectx-darkmode-enabled") === "true";
+    try {
+      return (localStorage.getItem("projectx-theme") as "light" | "dark") || "light";
+    } catch {
+      return "light";
+    }
   });
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
@@ -454,6 +456,7 @@ function App() {
     [appVariant]
   );
 
+  // 扫描 TAB：需要 variant 允许扫描 + grading 权限 + 本地有扫描硬件
   const canDesign = variantAllows("design") && hasPermission(PERMISSIONS.CARD_READ);
   const canManageExams = variantAllows("exam-manage") && hasPermission(PERMISSIONS.EXAM_WRITE);
   const canGrade = variantAllows("grading") && hasPermission(PERMISSIONS.GRADE_READ);
@@ -461,7 +464,6 @@ function App() {
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
   const canManageAccounts = variantAllows("account") && hasPermission(PERMISSIONS.USER_MANAGE);
-  const canUseScanner = appVariant.enableScanner && canGrade;
   const showCardSidebar = mode === "design" && canDesign;
   const showScoresTab = canViewScores;
 
@@ -526,12 +528,6 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!canUseScanner && showScanner) {
-      setShowScanner(false);
-    }
-  }, [canUseScanner, showScanner]);
-
-  useEffect(() => {
     if (!user || (!canDesign && !canGrade)) return;
     void refreshCards(canDesign);
   }, [user?.id, canDesign, canGrade]);
@@ -540,7 +536,7 @@ function App() {
   useEffect(() => {
     if (!user) return;
     fetchJson<{ backgroundOpacity: number }>("/api/users/me/settings")
-      .then((s) => setShowBg(s.backgroundOpacity ?? 0))
+      .then((s) => { if (s) setShowBg(s.backgroundOpacity ?? 0); })
       .catch(() => {});
   }, [user?.id]);
 
@@ -560,11 +556,13 @@ function App() {
 
   // 日间/夜间模式切换
   useEffect(() => {
-    const effectiveTheme = darkModeEnabled ? theme : "light";
-    document.documentElement.setAttribute("data-theme", effectiveTheme);
-    localStorage.setItem("projectx-theme", effectiveTheme);
-    localStorage.setItem("projectx-darkmode-enabled", String(darkModeEnabled));
-  }, [theme, darkModeEnabled]);
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem("projectx-theme", theme);
+    } catch {
+      /* private browsing / storage disabled */
+    }
+  }, [theme]);
 
   useEffect(() => {
     return () => {
@@ -589,7 +587,7 @@ function App() {
         return;
       }
       // 赞助/使用说明 → 返回上一模式
-      if (mode === "sponsor" || mode === "guide") {
+      if (mode === "sponsor" || mode === "guide" || mode === "permissions") {
         setMode(previousModeRef.current);
         return;
       }
@@ -722,6 +720,8 @@ function App() {
     try {
       await flushPendingCardSave("switch");
     } catch {
+      // 保存当前卡失败，刷新列表后退出（避免侧栏状态不一致）
+      await refreshCards();
       return;
     }
     setIsBusy(true);
@@ -746,7 +746,7 @@ function App() {
       if (formData.examAction === "create") {
         const examName = formData.examName || formData.title;
         try {
-          const examRes = await fetchJson<any>("/api/exams", {
+          await fetchJson<any>("/api/exams", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name: examName, cardId: created.id, subject: formData.subjectLabel })
@@ -757,18 +757,22 @@ function App() {
           statusExtra = `，考试创建失败：${err?.message || "已存在同名考试"}`;
         }
       } else if (formData.examAction === "link" && formData.linkExamId) {
-        await fetchJson(`/api/exams/${formData.linkExamId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cardId: created.id })
-        });
-        statusExtra = "，已关联到已有考试";
-        await loadExams();
+        try {
+          await fetchJson(`/api/exams/${formData.linkExamId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cardId: created.id })
+          });
+          statusExtra = "，已关联到已有考试";
+          await loadExams();
+        } catch (err: any) {
+          statusExtra = `，关联考试失败：${err?.message || "考试不存在"}`;
+        }
       }
 
       setStatus(`已创建答题卡 「${created.title}」 (${created.id})${statusExtra}`);
-      await refreshCards();
     } finally {
+      await refreshCards();
       setIsBusy(false);
     }
   }
@@ -1465,7 +1469,6 @@ function App() {
               </button>
               )}
             </div>
-            {darkModeEnabled && (
             <button
               className="theme-toggle"
               type="button"
@@ -1491,10 +1494,7 @@ function App() {
                 </svg>
               )}
             </button>
-            )}
             <AccountMenu
-              darkModeEnabled={darkModeEnabled}
-              setDarkModeEnabled={setDarkModeEnabled}
               onOpenSponsor={() => {
                 const previous = mode;
                 void switchMode("sponsor", () => {
@@ -1504,6 +1504,10 @@ function App() {
               onOpenGuide={() => {
                 previousModeRef.current = mode;
                 setMode("guide");
+              }}
+              onOpenPermissions={() => {
+                previousModeRef.current = mode;
+                setMode("permissions");
               }}
             />
           </div>
@@ -1694,9 +1698,34 @@ function App() {
                 <div style={{ display: "flex", gap: 6 }}>
                   <button className="primary-button" onClick={async () => {
                     const name = newExamName.trim();
-                    if (!name || !newExamCardId && !card?.id) { setStatus("请填写名称和选择答题卡"); return; }
+                    if (!name) { setStatus("请填写考试名称"); return; }
                     try {
-                      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId: newExamCardId || card?.id, subject: newExamSubject.trim() || undefined }) });
+                      let cardId = newExamCardId || card?.id;
+                      // 方案 B：如果没有选择答题卡，先自动创建一张最简答题卡
+                      if (!cardId) {
+                        const subjectPinyinMap: Record<string, string> = {
+                          "语文": "yuwen", "数学": "shuxue", "英语": "yingyu", "外语": "yingyu",
+                          "物理": "wuli", "化学": "huaxue", "生物": "shengwu",
+                          "政治": "zhengzhi", "历史": "lishi", "地理": "dili"
+                        };
+                        const subjectVal = newExamSubject.trim();
+                        const subjectPinyin = subjectPinyinMap[subjectVal] || subjectVal || "custom";
+                        const today = new Date().toISOString().split("T")[0];
+                        const cardRes = await fetchJson<any>("/api/cards", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            subject: subjectPinyin,
+                            title: name,
+                            subjectLabel: subjectVal || undefined,
+                            examDate: today,
+                            englishListening: false,
+                            chineseChoicePlacement: "front"
+                          })
+                        });
+                        cardId = cardRes.id;
+                      }
+                      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId, subject: newExamSubject.trim() || undefined }) });
                       setNewExamName(""); setNewExamSubject(""); setShowCreateExam(false);
                       loadExams();
                     } catch (err) { setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`); }
@@ -1807,17 +1836,7 @@ function App() {
         </div>
         <div className={`main-grid grading-grid ${mode === "grading" ? "" : "hidden-panel"}`}>
           <section className="preview-panel grading-results-panel">
-            {showScanner && card ? (
-              <ScannerPanel
-                cardId={card.id}
-                onScansComplete={(sessionId, pageCount) => {
-                  setStatus(`扫描完成：${pageCount} 张，学号已识别并存入数据库`);
-                }}
-                onClose={() => setShowScanner(false)}
-              />
-            ) : (
-              <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
-            )}
+            <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
           </section>
 
           <aside className="inspector">
@@ -1919,16 +1938,6 @@ function App() {
                   />
                 </label>
               </div>
-              {canUseScanner && (
-              <button
-                className="primary-button wide-button"
-                style={{ marginTop: 8 }}
-                onClick={() => setShowScanner(true)}
-                disabled={!card || isBusy}
-              >
-                <Camera size={17} /> 扫描仪录入
-              </button>
-              )}
               <div className="file-queue">
                 <div>
                   <strong>{gradingFiles.length}</strong>
@@ -2012,6 +2021,11 @@ function App() {
         <div className={`main-grid sponsor-grid ${mode === "sponsor" ? "" : "hidden-panel"}`}>
           <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
             <SponsorPage onBack={() => setMode(previousModeRef.current)} />
+          </section>
+        </div>
+        <div className={`main-grid permissions-grid ${mode === "permissions" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+            <PermissionManager onBack={() => setMode(previousModeRef.current)} />
           </section>
         </div>
         <div className={`main-grid guide-grid ${mode === "guide" ? "" : "hidden-panel"}`}>
@@ -3183,7 +3197,7 @@ function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocumen
     <div className="pages">
       {layout.pages.map((page) => (
         <svg className="page" key={page.pageNumber} viewBox="0 0 210 297" role="img" aria-label={`第${page.pageNumber}页预览`}>
-          <rect x="0" y="0" width="210" height="297" style={{ fill: "var(--surface)" }} />
+          <rect x="0" y="0" width="210" height="297" style={{ fill: "#fff" }} />
           {page.markers.map((marker) => (
             <rect key={marker.role} {...marker.rect} fill="#20342f" />
           ))}
@@ -3191,7 +3205,7 @@ function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocumen
             ID:{page.header.id}
           </text>
           {page.header.codeBoxes.map((box, index) => (
-            <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" style={index !== 0 && index !== page.header.codeBoxes.length - 1 ? { fill: "var(--surface)" } : undefined} />
+            <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" style={index !== 0 && index !== page.header.codeBoxes.length - 1 ? { fill: "#fff" } : undefined} />
           ))}
           {page.header.title && (
             <text x="105" y={page.header.titleY} textAnchor="middle" className="svg-title">
@@ -3235,7 +3249,7 @@ function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][nu
       <line x1={separatorX} y1={area.digitRect.y + 7} x2={separatorX} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
       {area.digitCells.map((cell) => (
         <g key={`${cell.digitIndex}_${cell.digit}`}>
-          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "var(--surface)" }} />
+          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
           <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
             {cell.digit}
           </text>
@@ -3265,7 +3279,7 @@ function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "obje
           </text>
           {item.options.map((option) => (
             <g key={option.label}>
-              <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "var(--surface)" }} />
+              <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
               <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2} textAnchor="middle" dominantBaseline="central" className="svg-option-label">
                 {option.label}
               </text>
@@ -3310,7 +3324,7 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
               )}
               {question.scoreCells.map((cell) => (
                 <g key={cell.score}>
-                  <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" style={{ fill: "var(--surface)" }} />
+                  <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" style={{ fill: "#fff" }} />
                   {cell.score !== null && (
                     <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + 4.2} textAnchor="middle" className="svg-tiny">
                       {cell.score}

@@ -1,10 +1,10 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.5.2-blue.svg" alt="Version">
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20MySQL-green.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/version-1.7.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
-  <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20MySQL%20%7C%20Electron-9cf.svg" alt="Tech Stack">
+  <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
 </p>
 
 ## 项目简介
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.5.2
-> **核心能力**：答题卡设计（题块自动命名+分数统计）→ PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 大考组（跨科合集分析+跨科排名+ZIP导出）→ 跨考试总分统计（按周打包/手动选择，内联在考试选择页）→ 成绩查看（概况/成绩/考试分析/AI分析）→ 成绩修改（个别改分+批量改答案）→ 逐题得分明细 → 赋分引擎 → 导出模板系统（胶囊拖拽+客观题/主观题小分可选列）→ 教师/学生/班级管理 → 教师细分角色（学科老师/班主任/学年主任，数据范围隔离）→ 多服务商 AI 分析（GPT/DeepSeek/Gemini）→ 并列排名（同分同排）→ 暗色主题 → **MySQL 双后端架构（SQLite/MySQL 环境变量切换，为 B/S 服务端化奠基）**
-> **下个里程碑**：v1.6.0 — 服务器部署、性能深度优化
+> **当前版本**：v1.7.1
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → **网上阅卷队列** → 考试管理 → 大考组 → 成绩分析（含上次考试对比）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → 并列排名 → 暗色主题 → **学生学期成绩对比** → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → **Web/Scanner 构建分离** → **iOS 15 Safari Web 兼容**
+> **下个里程碑**：v1.7.x — 知识点诊断 + 成绩预测 + 跨班深度对比
 
 ---
 
@@ -64,12 +64,18 @@
   - 学号：数字填涂网格识别
 - **多页合并评分**：双面卡 / 多页卡自动合并正反面成绩，去重汇总总分
 - **PDF 式详情预览**：按学生聚合展示所有页面，纵向滚动翻阅，缩略图导航
+- **大题作答图片切块**：识别成功后按 `layout.pages[].blocks[]` 的大题框裁剪作答图片，跨页大题按页生成续页图片；学生成绩详情与教师个别改分页优先展示大题切块，仍保留整页预览。
 - **低置信度标记**：置信度偏低的题目自动标"待复核"
 - **Excel (.xlsx) 导出**：点击导出按钮下载，Excel 直接打开
 
 ### 扫描仪直扫
 
 - **柯达 i3000 支持**：通过 C++ TWAIN 原生桥直接驱动高速扫描仪
+- **双屏流程**：答题卡选择页（单科/大考双Tab）→ 扫描工作台（直扫 + 导入阅卷）
+- **本地/远程双模**：本地直接识别存 SQLite；远程模式下扫描完成自动上传到远端服务器
+- **远端上传**：三步流程（创建会话 → 逐页上传图片 → 标记完成），API Key 鉴权
+- **切块资产同步**：扫描仪 OCR 与普通批量阅卷都会落库 `answer_block_crops`；远程上传模式预留切块 manifest/文件接收能力，服务端可复用扫描端生成的大题图片。
+- **文件导入阅卷**：扫描端也支持导入目录或单张图片进行识别的判分
 - **单面过滤**：单面答题卡自动跳过背面扫描结果，避免无效数据
 - **实时进度**：SSE 推送扫描进度 + 逐页缩略图预览
 - **自动识别评分**：扫描完成自动调用识别引擎提取考号、判分
@@ -108,12 +114,19 @@
 - **记住密码**：勾选后签发 180 天持久令牌，令牌存磁盘（`~/.projectx/tokens.json`），服务器/软件重启不丢失
 - **6 个月免登录**：本设备内打开即用，无需反复输入密码
 
+### 学生功能
+
+- **我的成绩**：查看各科考试成绩、排名趋势图、学科雷达图、**本学期 vs 上学期对比**
+- **成绩天梯**：年级前十名榜单（单场考试 / 大考组 / 跨考累计三种维度），管理员可开关
+- **AI 成绩分析**：学生个人成绩 AI 分析报告
+
 ### 桌面应用
 
-- **Windows 桌面端**：三端产品（学生端 / 教师普通端 / 教师扫描端），便携版 EXE + MSI 安装包
-- **Electron 原生打包**：按端裁剪（学生端不打包 C++ 识别/扫描资源，教师普通端仅打包识别引擎，扫描端全量）
-- **x64 / ia32 双架构**：三端均支持 64 位与 32 位 Windows 包；32 位原生资源位于 `resources/native/win-ia32/`
-- **三端共用数据**：`%APPDATA%\answer-card-designer\`（管理员端建账号→学生端直接登录）
+- **Windows 扫描端**：Electron 桌面端，仅含扫描面板（TWAIN 直扫 + 答题卡选择 + 结果预览），便携版 EXE + MSI 安装包
+- **Web 端自理**：教师/学生功能通过浏览器访问 Web 部署地址，不再打包 Electron 教师/学生端
+- **x64 / ia32 双架构**：扫描端均支持 64 位与 32 位 Windows 包；32 位原生资源位于 `resources/native/win-ia32/`
+- **打包入口修复**：扫描端构建最终产物统一提供 `dist/scanner/index.html`，Electron 运行时与服务端 SPA fallback 使用同一入口；ia32 包不再复用 x64 Electron 运行时。
+- **数据共用**：`%APPDATA%\answer-card-designer\`（管理员 Web 端建账号→扫描端/学生 Web 端直接使用）
 - **支持项目**：账号菜单低调入口，JSON 配置驱动的收款码预留接口（详见 [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md)）
 
 > 多端详细说明见 [`readus/多端使用说明.md`](./readus/多端使用说明.md)
@@ -128,15 +141,13 @@
 
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
 ```
-Project-X 学生端-1.5.2-x64.exe
-Project-X 教师端-1.5.2-x64.exe
-Project-X 教师扫描端-1.5.2-x64.exe
-Project-X 学生端-1.5.2-ia32.exe
-Project-X 教师端-1.5.2-ia32.exe
-Project-X 教师扫描端-1.5.2-ia32.exe
+答题卡扫描端-1.6.3-x64.exe
+答题卡扫描端-1.6.3-ia32.exe
 ```
 
-> 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。学生端仅查看成绩；教师端支持设计/阅卷/分析/账号；扫描端全功能含扫描仪直扫。
+> 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。扫描端含 TWAIN 直扫 + 答题卡选择 + 结果预览。教师/学生功能请通过浏览器访问服务器部署的 Web 端。
+
+> v1.6.3 起，`ia32` 包会下载/使用真正的 32 位 Electron 运行时，并重建 32 位 `better-sqlite3`；打包后可用 PE 架构检查确认 exe 为 x86。
 
 #### 方式二：MSI 安装包（推荐机房部署）
 
@@ -180,25 +191,25 @@ npm install --ignore-scripts
 
 #### 数据库模式
 
-Project-X v1.5.2 支持双数据库后端，通过环境变量切换：
+Project-X v1.5.5 支持双数据库模式，通过环境变量或系统设置界面（管理员 → 账号设置 → 数据存储）切换：
 
-| 模式 | 说明 | 何时使用 |
-|------|------|---------|
-| **SQLite**（默认） | 本地文件 `%APPDATA%\answer-card-designer\data\projectx.db` | 单机桌面端、开发调试 |
-| **MySQL** | 连接池，集中管理 | 多台电脑共享数据、B/S 服务端部署 |
+| 模式 | 后端 | 说明 |
+|------|------|------|
+| **本地 SQLite**（默认） | `data/projectx.db` | 零依赖，单机/离线/开发测试 |
+| **远程 MariaDB** | MariaDB 10.11 LTS 服务端 | 生产环境多用户部署，支持 32 位 |
 
 ```powershell
 # SQLite 模式（默认，无需任何配置）
 npm run dev
 
-# MySQL 模式
-$env:PROJECTX_MYSQL_HOST     = "127.0.0.1"
-$env:PROJECTX_MYSQL_USER     = "projectx"
-$env:PROJECTX_MYSQL_PASSWORD = "projectx"
+# MariaDB 模式
+$env:PROJECTX_MARIADB_HOST     = "127.0.0.1"
+$env:PROJECTX_MARIADB_USER     = "projectx_app"
+$env:PROJECTX_MARIADB_PASSWORD = "your_password"
 npm run dev
 ```
 
-> MySQL 首次启动时自动执行 `schema.mysql.sql` 建表。详见 [`readus/CHANGELOG.md`](./readus/CHANGELOG.md#v152-2026-06-26--数据库双后端架构)。
+> 首次连接 MariaDB 时自动执行 `schema.mariadb.sql` 建表。现有 SQLite 数据可用 `npx tsx scripts/migrate-to-mariadb.ts` 迁移到 MariaDB。
 
 #### 开发模式
 
@@ -206,7 +217,23 @@ npm run dev
 npm run dev
 ```
 
-一条命令同时启动后端与前端。访问 `http://127.0.0.1:5173`，后端 API 默认端口 `5174`。
+一条命令同时启动后端与前端。Vite dev server 在 `http://127.0.0.1:5173`，后端 API 在 `http://127.0.0.1:5174`。
+
+开发时查看两端页面：
+
+| 端 | 访问地址 | 页面内容 |
+|----|---------|---------|
+| **Web 端** | `http://127.0.0.1:5173/` | 教师 + 学生完整功能（设计/阅卷/分析/账号） |
+| **扫描端** | `http://127.0.0.1:5173/index-scanner.html` | 答题卡选择 + ScannerPanel 扫描面板 |
+
+两个入口共用同一个 Vite dev server 和后端 API，无需额外配置。
+
+> **扫描功能调试**：开发环境下后端扫描路由默认关闭。如需连接真实扫描仪调试，启动时加环境变量：
+> ```powershell
+> $env:PROJECTX_ENABLE_SCANNER = "1"
+> npm run dev
+> ```
+> 不连扫描仪也可以访问 `index-scanner.html` 调试 UI（答题卡列表、按钮交互等均可正常渲染）。
 
 AI 成绩分析依赖单独手动启动的 Python 中转服务；配置方式见 **[AI成绩分析.md](./readus/AI成绩分析.md)**。
 
@@ -223,40 +250,31 @@ npx vite --port 5173
 #### 打包发布
 
 ```powershell
-npm run build                          # 构建前后端
+# Web 端构建（部署服务器）
+npm run build:web:full                # 构建 dist/web/ + dist/server/
+
+# 扫描端构建
+npm run build:scanner:full             # 构建 dist/scanner/ + dist/server/
 
 # 如需重新构建 C++ 原生组件，先按目标架构生成 native 资源
 npm run native:build:x64               # 输出到 resources/native/win-x64
 npm run native:build:ia32              # 输出到 resources/native/win-ia32
 
-# 三端分别打包（顺序执行，勿并行）
-npm run electron:pack:student          # 学生端目录包
-npm run electron:pack:teacher          # 教师普通端目录包
-npm run electron:pack:scanner          # 教师扫描端目录包
+# 扫描端打包（仅此一端）
+npm run electron:pack                  # 扫描端目录包 (x64)
+npm run electron:pack:ia32             # 扫描端目录包 (ia32)
 
-npm run electron:dist:student          # 学生端便携 EXE
-npm run electron:dist:teacher          # 教师端便携 EXE
-npm run electron:dist:scanner          # 教师扫描端便携 EXE
+npm run electron:dist                  # 扫描端便携 EXE (x64)
+npm run electron:dist:ia32             # 扫描端便携 EXE (ia32)
 
-# 32 位便携 EXE
-npm run electron:dist:student:ia32
-npm run electron:dist:teacher:ia32
-npm run electron:dist:scanner:ia32
-
-# MSI 安装包
-npm run electron:msi:student           # 学生端 x64 MSI
-npm run electron:msi:teacher           # 教师端 x64 MSI
-npm run electron:msi:scanner           # 教师扫描端 x64 MSI
-npm run electron:msi:student:ia32      # 学生端 32 位 MSI
-npm run electron:msi:teacher:ia32      # 教师端 32 位 MSI
-npm run electron:msi:scanner:ia32      # 教师扫描端 32 位 MSI
-npm run electron:msi:all               # 一次生成三端 x64/ia32 共 6 个 MSI
-
-# 默认命令仍指向扫描端（完整功能包）
-npm run electron:pack                  # = electron:pack:scanner
-npm run electron:dist                  # = electron:dist:scanner
-npm run electron:msi                   # = electron:msi:scanner
+npm run electron:msi                   # 扫描端 x64 MSI
+npm run electron:msi:ia32              # 扫描端 32 位 MSI
 ```
+
+> 维护提示：`vite build --mode scanner` 日志中仍会显示 `index-scanner.html`，构建完成后会自动重命名为 `dist/scanner/index.html`。这是为了让 Electron 内置 Express 的 SPA fallback 能稳定读取同一个入口文件。
+
+
+Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 
 多端打包和使用方式见 **[多端使用说明.md](./readus/多端使用说明.md)**。
 
@@ -265,15 +283,18 @@ npm run electron:msi                   # = electron:msi:scanner
 | 命令 | 说明 |
 |------|------|
 | `npx tsc --noEmit` | TypeScript 类型检查 |
-| `npm run build` | 构建前端 + 后端 |
+| `npm run typecheck` | 类型检查（别名） |
+| `npm run build` | 构建 Web 端 + 后端 |
+| `npm run build:scanner:full` | 构建扫描端 + 后端 |
 | `npm run dev` | Web 开发模式 |
-| `npm run electron:dev` | 构建后启动 Electron |
-| `npm run electron:dist` | 生成扫描端便携 EXE |
-| `npm run electron:dist:student` | 生成学生端便携 EXE |
-| `npm run electron:dist:teacher` | 生成教师端便携 EXE |
-| `npm run electron:dist:scanner:ia32` | 生成 32 位教师扫描端便携 EXE |
-| `npm run electron:msi` | 生成扫描端 MSI |
-| `npm run electron:msi:all` | 一次生成三端 x64/ia32 共 6 个 MSI |
+| `npm run electron:dev` | 构建扫描端并启动 Electron |
+| `npm run electron:pack` | 生成扫描端目录包 (x64) |
+| `npm run electron:pack:ia32` | 生成扫描端目录包 (ia32) |
+| `npm run native:rebuild:node` | 32 位 Electron 打包后恢复本机 Node 版 `better-sqlite3` |
+| `npm run electron:dist` | 生成扫描端便携 EXE (x64) |
+| `npm run electron:dist:ia32` | 生成扫描端便携 EXE (ia32) |
+| `npm run electron:msi` | 生成扫描端 MSI (x64) |
+| `npm run electron:msi:ia32` | 生成扫描端 MSI (ia32) |
 | `npm run verify:auth` | 账号权限自动化验证（33 项用例） |
 | `npx tsx scripts/grading-rules-smoke.ts` | 客观题部分得分规则冒烟验证 |
 
@@ -291,10 +312,10 @@ npm run electron:msi                   # = electron:msi:scanner
 | [ACCOUNT-ARCHITECTURE.md](./readus/ACCOUNT-ARCHITECTURE.md) | 三级账号 RBAC 全栈架构、教师细分角色与 v1.0→v1.1 变更说明 | 开发者 |
 | [ACCOUNT-CONTROL.md](./readus/ACCOUNT-CONTROL.md) | 账号控制系统 API、权限矩阵与启用方式 | 开发者 |
 | [ADMIN-GUIDE.md](./readus/ADMIN-GUIDE.md) | 管理员日常操作：教师/学生管理、导入导出、年级班级花名册 | 机房管理员 / 教务 |
-| [多端使用说明.md](./readus/多端使用说明.md) | 学生端、教师端、教师扫描端的功能差异、共用数据目录、账号登录与打包检查 | 管理员 / 教师 / 打包维护 |
+| [多端使用说明.md](./readus/多端使用说明.md) | Web 端 / 扫描端的功能差异、共用数据目录、账号登录与构建部署 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.5.2 双后端架构 + v1.5.1 学生端 + v1.5.0 大考组） | 全体 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.7.1 网上阅卷 + v1.7.0 成绩分析与学生学期对比） | 全体 |
 
 ---
 
@@ -307,12 +328,14 @@ Project-X/
 ├── src/
 │   ├── apps/answer-card/
 │   │   ├── client/                      # React 前端
-│   │   │   ├── App.tsx                  # 主应用（设计/考试管理/阅卷/分析/成绩/账号六模式）
+│   │   │   ├── App.tsx                  # 主应用（Web 端，不含扫描面板）
+│   │   │   ├── ScannerApp.tsx            # 扫描端双屏容器（v1.6.1：选卡↔工作台）
 │   │   │   ├── styles.css               # 全局样式
 │   │   │   └── components/              # 子组件
 │   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期+考试关联）
-│   │   │       ├── LoginPage.tsx            # 登录页（记住密码）
-│   │   │       ├── AccountMenu.tsx          # 账户下拉菜单（含设置/支持项目入口/AI服务商管理）
+│   │   │       ├── LoginPage.tsx            # Web 端登录页（v1.6.3: 仅用户名密码，不含扫描功能）
+│   │   │       ├── LoginPageScanner.tsx       # 扫描端登录页（v1.6.3: 含远端服务器配置+API Key）
+│   │   │       ├── AccountMenu.tsx          # 账户下拉菜单（v1.6.0: 管理员身份切换）
 │   │   │       ├── SponsorPage.tsx          # 赞助/支持页面（收款码预留）
 │   │   │       ├── AccountManagement.tsx    # 教师/学生管理（双 Tab）
 │   │   │       ├── TeacherManagement.tsx    # 教师管理（科目/班级关联）
@@ -320,10 +343,12 @@ Project-X/
 │   │   │       ├── ImportModal.tsx          # 通用CSV/Excel导入弹窗
 │   │   │       ├── ImportCardModal.tsx       # 导入答题卡确认弹窗（科目/考试/日期）
 │   │   │       ├── ScanPreviewModal.tsx      # PDF 式多页答题卡预览弹窗（缩放/PgUp/PgDn）
-│   │   │       ├── ScoreFixPage.tsx          # 成绩修改（个别改分 + 修改答案批量重算）
-│   │   │       ├── StudentScoreDetail.tsx    # 逐题得分明细（班级均分率 + 答题卡放大）
+│   │   │       ├── ScoreFixPage.tsx          # 成绩修改 + 大题作答图片定位
+│   │   │       ├── StudentScoreDetail.tsx    # 逐题得分明细 + 大题作答图片（按题号定位切块）
 │   │   │       ├── StudentScores.tsx        # 学生我的成绩
-│   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板
+│   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板（v1.6.0: 本地/远程双模）
+│   │   │       ├── CardSelectPage.tsx        # 答题卡选择页（v1.6.1: 单科/大考双Tab）
+│   │   │       ├── ScannerWorkspace.tsx      # 扫描工作台（v1.6.1: 直扫+导入阅卷）
 │   │   │       ├── ExamSelectPage.tsx       # 考试选择页（单科/大考/跨考 三选一，内联跨考分析）
 │   │   │       ├── ScoreDetailPage.tsx      # 成绩查看页（概况/成绩/考试分析/AI分析）
 │   │   │       ├── CreateExamGroupModal.tsx  # 大考创建/编辑弹窗（关联考试+内联新建考试）
@@ -338,20 +363,22 @@ Project-X/
 │   │   │       └── AnalysisQuestions.tsx   # 题目得分率排行
 │   │   └── server/                      # Express 后端
 │   │       ├── index.ts                 # 主路由（卡片CRUD/导入导出/识别/阅卷/考试/分析/成绩修改）
+│   │       ├── services/AnswerBlockCropService.ts # 大题切块文件归档与数据库索引
 │   │       ├── recognition.ts           # C++ 识别引擎子进程管理
 │   │       ├── storage.ts               # 文件存储层
 │   │       ├── pdf.ts                   # PDF 生成（pdfkit）
 │   │       ├── database/                # 扫描记录 SQLite
 │   │       └── scanner/                 # TWAIN 扫描仪子系统
 │   ├── server/                          # 共享服务模块
-│   │   ├── db/                          # 主数据库（projectx.db）
+│   │   ├── db/                          # 主数据库（projectx.db / MariaDB）
+│   │   ├── mysql.ts                 # DbAdapter 统一接口 + SQLite / MariadbAdapter（v1.5.5）
 │   │   ├── repositories/                # 数据访问层
 │   │   │   ├── CardRepository.ts         # 答题卡 CRUD
 │   │   │   ├── ExamRepository.ts         # 考试 CRUD
 │   │   │   ├── UserRepository.ts         # 用户管理
 │   │   │   └── AnalysisRepository.ts     # 分析查询
-│   │   ├── middleware/                   # 认证中间件
-│   │   ├── routes/                       # 认证/用户/赞助/AI服务商/成绩修改/导出/大考组/跨考等路由
+│   │   ├── middleware/                   # 认证中间件（含 v1.6.0 api-key 认证）
+│   │   ├── routes/                       # 认证/用户/赞助/AI服务商/成绩修改/导出/大考组/跨考/API Key/扫描上传等路由
 │   │   └── services/                     # AuthService / AssignedScoreService（赋分引擎）
 │   └── shared/                          # 前后端共享
 │       ├── types.ts                     # 全部类型定义
@@ -362,12 +389,14 @@ Project-X/
 │       ├── pinyin.ts                    # 科目名→拼音 key 转换
 │       ├── blankLabels.ts               # 填空序号格式化
 │       ├── defaultCard.ts               # 默认答题卡工厂 + ID 生成
-│       └── appVariant.ts                # 多端变体定义（学生/教师/扫描端）
+│       └── appVariant.ts                # 多端变体定义（v1.6.1: 运行时 persona）
 ├── native/
 │   ├── AnswerCardRecognizer/            # C++ 识别引擎（OpenCV）
 │   └── ScannerBridge/                   # C++ TWAIN 扫描仪桥接
 ├── scripts/
 │   ├── build-server.ts                  # esbuild 后端打包
+│   ├── migrate-to-mariadb.ts            # SQLite → MariaDB 数据迁移（v1.5.5）
+│   ├── setup-mariadb.sh                 # Ubuntu/Debian 一键建库建表（v1.5.5）
 │   ├── grading-rules-smoke.ts           # 多选/不定项评分规则冒烟验证
 │   └── build-scanner-bridge.bat         # 扫描仪桥接一键编译
 ├── electron/
@@ -379,6 +408,9 @@ Project-X/
 │   ├── sponsor/qr/                      # 收款码图片（部署时放置，不进 git）
 │   └── projectx.db                      # 主数据库（用户/卡片/考试/成绩）
 ├── dist/                                # 构建产物
+│   ├── web/                              # Web 端（教师+学生，无扫描代码）
+│   ├── scanner/                          # 扫描端（ScannerPanel only）
+│   └── server/                           # 后端 API
 ├── resources/native/win-x64/            # 64 位原生模块打包目录
 ├── resources/native/win-ia32/           # 32 位原生模块打包目录
 └── release/                             # Electron 打包输出
@@ -394,7 +426,8 @@ Project-X/
 | **后端** | Node.js + Express 5 + multer |
 | **识别引擎** | C++ + OpenCV 4.13 + nlohmann/json（子进程调用） |
 | **扫描仪** | C++ TWAIN API + GDI+（子进程调用） |
-| **数据库** | SQLite via better-sqlite3（WAL + 外键约束） |
+| **数据库** | SQLite via better-sqlite3（本地模式）/ MariaDB 10.11 via mysql2（远程模式，32位兼容） |
+| **跨方言层** | DbAdapter 统一接口 + buildUpsertSQL + buildInsertIgnore |
 | **PDF** | pdfkit（毫米级精确排版） |
 | **桌面** | Electron 39 + electron-builder + WiX Toolset |
 | **构建** | Vite（前端）+ esbuild（后端） |
@@ -435,6 +468,10 @@ Project-X/
 | `GET` | `/api/scanner/scan-image/:recordId` | 扫描原图预览 |
 | `GET` | `/api/scanner/exam/:examId/student/:studentId/scans` | 按考试+学生查答题卡页 |
 | `GET` | `/api/scanner/grading-image/:cardId/:fileName` | 上传阅卷图片 |
+| `GET` | `/api/answer-block-crops/:cropId/image` | 读取大题作答切块图片 |
+| `GET` | `/api/review/exams/:id/blocks` | 网上阅卷题块汇总（待阅/已阅数量） |
+| `GET` | `/api/review/exams/:id/block-crops` | 网上阅卷队列（大题切块 + 学生信息） |
+| `POST` | `/api/review/exams/:id/block-crops/:cropId/submit` | 提交题块阅卷分数并标记状态 |
 | `POST` | `/api/auth/login` | 登录（支持 isPersistent 6 月免登录） |
 | `GET` | `/api/auth/me` | 当前用户信息 |
 | `GET` | `/api/teachers` | 教师列表（按创建时间排序） |
@@ -459,7 +496,8 @@ Project-X/
 | `GET/POST` | `/api/analysis/cross-exam/groups` | 跨考组列表 / 创建 |
 | `DELETE` | `/api/analysis/cross-exam/groups/:id` | 删除跨考组 |
 | `GET` | `/api/analysis/exams/:id/score-table` | 成绩表格数据（年排/班排/名次变化/偏差值/Z值/百分位） |
-| `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比 |
+| `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比（均分/及格率变化） |
+| `GET` | `/api/scores/me/semester-comparison` | 学生本学期 vs 上学期成绩对比 |
 | `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |
 | `POST` | `/api/export/exams/:id/scores` | 按列配置导出 Excel |
 | `GET` | `/api/export/columns` | 导出列元数据 |
@@ -467,8 +505,20 @@ Project-X/
 | `POST` | `/api/users/me/background` | 上传自定义背景图 |
 | `GET` | `/api/app/background` | 获取背景图文件（优先用户自定义） |
 | `GET/POST/PUT/DELETE` | `/api/ai/providers` | AI 服务商配置管理 |
-| `GET` | `/api/db/backup` | 导出全量数据 ZIP |
+| `GET` | `/api/db/backup` | 导出全量数据 ZIP（SQLite: VACUUM / MariaDB: mysqldump） |
 | `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |
+| `GET` | `/api/app/health` | 健康检查（含 `db.dialect` + `latencyMs`） |
+| `GET/PATCH` | `/api/app/db-config` | 数据库配置读取/修改（管理员） |
+| `POST`            | `/api/scanner/upload/sessions`              | 创建扫描上传会话（API Key + JWT 双鉴权） |
+| `POST`            | `/api/scanner/upload/sessions/:id/pages`   | 上传扫描页（multipart） |
+| `POST`            | `/api/scanner/upload/sessions/:id/complete` | 标记扫描完成 |
+| `GET`             | `/api/scanner/upload/sessions/:id/status`   | 查询扫描状态 |
+| `GET/POST/PUT/DELETE` | `/api/admin/api-keys` | API Key 管理（管理员） |
+| `GET` | `/api/ladder/config` | 天梯开关状态 |
+| `PUT` | `/api/ladder/config` | 管理员设置天梯开关 |
+| `GET` | `/api/ladder/exams/:id` | 单场考试天梯数据 |
+| `GET` | `/api/ladder/exam-groups/:id` | 大考组天梯数据 |
+| `GET` | `/api/ladder/cross-exam` | 跨考累计天梯数据（?mode=week\|selected\|group） |
 
 ---
 

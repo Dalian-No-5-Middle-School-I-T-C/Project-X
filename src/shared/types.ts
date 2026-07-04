@@ -296,6 +296,81 @@ export type SubjectiveRecognitionQuestion = {
 
 export type CombinedRecognitionResult = ObjectiveRecognitionResult & {
   subjectiveQuestions: SubjectiveRecognitionQuestion[];
+  blockCrops?: RecognitionBlockCrop[];
+};
+
+export type RecognitionBlockCrop = {
+  blockId: string;
+  blockTitle: string;
+  blockType: "objective" | "subjective" | string;
+  pageNumber: number;
+  segmentIndex: number;
+  questionNumbers: Array<number | string>;
+  rect: Rect;
+  path: string;
+  widthPx: number;
+  heightPx: number;
+  dpi: number;
+};
+
+export type AnswerBlockCropSourceType = "scan_record" | "twain_scan_record";
+
+export type AnswerBlockCrop = {
+  id: string;
+  cardId: string;
+  examId?: number | null;
+  studentId?: number | null;
+  studentNumber?: string | null;
+  sourceType: AnswerBlockCropSourceType;
+  sourceRecordId: string;
+  blockId: string;
+  blockTitle: string;
+  blockType: "objective" | "subjective" | string;
+  pageNumber: number;
+  segmentIndex: number;
+  questionNumbers: Array<number | string>;
+  rect: Rect;
+  imageUrl: string;
+  widthPx: number;
+  heightPx: number;
+  dpi: number;
+  status?: string;
+  score?: number | null;
+  maxScore?: number | null;
+};
+
+/** 网上阅卷题块汇总 */
+export type ReviewBlockSummary = {
+  blockId: string;
+  blockTitle: string;
+  blockType: string;
+  totalCount: number;
+  pendingCount: number;
+  reviewedCount: number;
+};
+
+/** 网上阅卷队列项（含学生姓名） */
+export type ReviewBlockCropItem = AnswerBlockCrop & {
+  studentName?: string | null;
+};
+
+export type ReviewBlockCropsResponse = {
+  examId: number;
+  rows: ReviewBlockCropItem[];
+};
+
+export type ReviewSubmitScoreInput = {
+  questionNumber: number;
+  scoreType: "objective" | "subjective" | string;
+  score: number;
+  maxScore?: number;
+};
+
+export type ReviewSubmitResult = {
+  ok: true;
+  cropId: string;
+  status: string;
+  totalScore: number;
 };
 
 export type SubjectiveQuestionGradeStatus = "ok" | "invalid" | "missing_score_grid";
@@ -581,6 +656,34 @@ export interface PreviousExamComparison {
   passRateChange: number | null;
 }
 
+/** 学期内学科汇总 */
+export interface SemesterSubjectSummary {
+  subject: string;
+  examCount: number;
+  avgScore: number;
+  bestScore: number;
+  avgClassGap: number;
+}
+
+/** 单个学期成绩汇总 */
+export interface SemesterSummary {
+  label: string;
+  startDate: string;
+  endDate: string;
+  examCount: number;
+  avgScore: number;
+  subjects: SemesterSubjectSummary[];
+}
+
+/** 学生本学期 vs 上学期对比 */
+export interface StudentSemesterComparison {
+  current: SemesterSummary | null;
+  previous: SemesterSummary | null;
+  avgScoreChange: number | null;
+  improvedSubjects: string[];
+  declinedSubjects: string[];
+}
+
 /** 考试筛选列表项（考试选择页用） */
 export interface ExamFilterItem {
   id: number;
@@ -848,4 +951,45 @@ export interface ExamSubScoreExport {
 export interface UserSettings {
   scoreDisplayMode: ScoreDisplayMode;
   reviewConfidenceThreshold: number;
+}
+
+// ── 成绩天梯系统 ──
+
+/** 排名趋势方向 */
+export type RankTrend = "up" | "down" | "same" | "new";
+
+/** 天梯单行（前十名榜单条目） */
+export interface LadderRow {
+  rank: number;
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  classId: number | null;
+  gradeName: string | null;
+  totalScore: number;
+  assignedScore?: number | null;
+  classRank: number;
+  rankTrend: RankTrend;
+  rankChange: number | null;        // 正=进步，负=退步，null=无对比
+  prevRank: number | null;
+  percentile: number;
+  /** 大考组/跨考场景的科目明细 */
+  subjectScores?: Array<{
+    examId?: number;
+    examName: string;
+    subject: string;
+    score: number;
+    rank: number;
+  }>;
+}
+
+/** 天梯 API 响应 */
+export interface LadderResponse {
+  scope: "single" | "group" | "cross";
+  scopeName: string;
+  studentCount: number;
+  myRank: number | null;            // 当前学生在全量中的排名
+  myScore: number | null;           // 当前学生的总分
+  rows: LadderRow[];                // 前十名
 }

@@ -1,4 +1,4 @@
-import { getDatabase } from "../db";
+import { getMysqlDb } from "../db";
 
 /**
  * 三级账号权限模型
@@ -47,9 +47,9 @@ export const ROLE_NAMES = {
 
 /** 教师细分角色 */
 export const TEACHER_ROLES = {
-  SUBJECT_TEACHER: "subject_teacher",   // 学科老师：本学科+所教班级
-  HEAD_TEACHER: "head_teacher",         // 班主任：本班级+全科目
-  GRADE_LEADER: "grade_leader"          // 学年主任：全科目+全班级
+  SUBJECT_TEACHER: "subject_teacher",
+  HEAD_TEACHER: "head_teacher",
+  GRADE_LEADER: "grade_leader"
 } as const;
 
 export type TeacherRole = (typeof TEACHER_ROLES)[keyof typeof TEACHER_ROLES];
@@ -62,8 +62,6 @@ export const TEACHER_ROLE_LABELS: Record<string, string> = {
 
 /**
  * 角色 → 默认权限映射。
- * 这是写库的真实来源（roles.permissions 列由此初始化），
- * 同时作为运行期权限缓存缺失时的兜底。
  */
 export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
   admin: ["*"],
@@ -78,19 +76,16 @@ export const DEFAULT_ROLE_PERMISSIONS: Record<string, string[]> = {
   student: [PERMISSIONS.SCORE_READ]
 };
 
-/** 角色权限缓存（角色权限极少变更，进程内缓存即可） */
+/** 角色权限缓存（进程内，启动时从 DB 加载，之后纯内存读取） */
 let permissionCache: Map<number, Set<string>> | null = null;
 
 /**
- * 加载/刷新角色权限缓存。
- * 直接读取 roles.permissions（JSON 数组字符串）。
+ * 启动时初始化权限缓存（异步，从 DB 加载）。
+ * 必须在服务器开始接受请求前调用。
  */
-export function loadRolePermissions(forceReload = false): Map<number, Set<string>> {
-  if (permissionCache && !forceReload) {
-    return permissionCache;
-  }
-  const db = getDatabase();
-  const rows = db.prepare("SELECT id, name, permissions FROM roles").all() as Array<{
+export async function initPermissionCache(): Promise<void> {
+  const db = getMysqlDb();
+  const rows = await db.all("SELECT id, name, permissions FROM roles") as Array<{
     id: number;
     name: string;
     permissions: string | null;
@@ -113,7 +108,23 @@ export function loadRolePermissions(forceReload = false): Map<number, Set<string
     map.set(row.id, new Set(perms));
   }
   permissionCache = map;
-  return map;
+  console.log("[Perms] Cache loaded:", rows.length, "roles");
+}
+
+/**
+ * 加载角色权限缓存（同步，进程内内存读取）。
+ * 调用前须确保 initPermissionCache() 已执行。
+ */
+export function loadRolePermissions(forceReload = false): Map<number, Set<string>> {
+  if (!permissionCache || forceReload) {
+    // Fallback: use defaults if cache not yet loaded
+    const map = new Map<number, Set<string>>();
+    map.set(1, new Set(["*"]));
+    map.set(2, new Set(DEFAULT_ROLE_PERMISSIONS.teacher));
+    map.set(3, new Set(DEFAULT_ROLE_PERMISSIONS.student));
+    return map;
+  }
+  return permissionCache;
 }
 
 /** 角色变更后调用，清空缓存。 */

@@ -1,5 +1,5 @@
 import { UserRepository, type UserRecord } from "../repositories/UserRepository";
-import { verifyPassword, hashPassword, getDatabase } from "../db";
+import { verifyPassword, hashPassword, getMysqlDb } from "../db";
 import { permissionsForRole } from "../auth/permissions";
 import { validateUserChosenPassword } from "../auth/passwordPolicy";
 import { randomBytes } from "node:crypto";
@@ -105,8 +105,8 @@ export class AuthService {
     let valid = false;
     if (!user.password_hash && user.role_name === "student" && user.student_number && password === user.student_number) {
       const newHash = await hashPassword(user.student_number);
-      const db = getDatabase();
-      db.prepare("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newHash, user.id);
+      const db = getMysqlDb();
+      await db.run("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", newHash, user.id);
       user.password_hash = newHash;
       valid = true;
     } else {
@@ -145,8 +145,8 @@ export class AuthService {
     const passwordError = validateUserChosenPassword(newPassword);
     if (passwordError) return { success: false, message: passwordError };
 
-    const db = getDatabase();
-    const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(userId) as
+    const db = getMysqlDb();
+    const row = await db.get("SELECT password_hash FROM users WHERE id = ?", userId) as
       | { password_hash: string }
       | undefined;
     if (!row) {
@@ -162,7 +162,7 @@ export class AuthService {
     }
 
     const newHash = await hashPassword(newPassword);
-    db.prepare("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(newHash, userId);
+    await db.run("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", newHash, userId);
 
     // 安全起见：改密后吊销该用户的所有其它会话
     this.revokeUserTokens(userId);

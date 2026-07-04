@@ -64,7 +64,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       params.teacher_role = teacher_role || null;
     }
 
-    await await userRepo.updateTeacher(id, params);
+    await userRepo.updateTeacher(id, params);
     const updated = await userRepo.findTeacherById(id);
     res.json(updated ? stripHash(updated) : null);
   } catch (error) {

@@ -1,6 +1,6 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
-import type { StudentTrendPoint } from "../../shared/types";
+import type { StudentTrendPoint, StudentSemesterComparison, SemesterSummary } from "../../shared/types";
 
 export interface StudentExamScore {
   exam_id: number;
@@ -115,6 +115,101 @@ export class ScoreRepository {
           ? Math.round(((r.classSize - r.rank) / (r.classSize - 1)) * 1000) / 10
           : null as unknown as number
     })) as StudentTrendPoint[];
+  }
+
+  private buildSemesterSummary(label: string, points: StudentTrendPoint[]): SemesterSummary {
+    const dates = points.map((p) => p.examTime.slice(0, 10)).sort();
+    const scores = points.map((p) => p.totalScore);
+    const bySubject = new Map<string, StudentTrendPoint[]>();
+    for (const point of points) {
+      if (!point.subject) continue;
+      if (!bySubject.has(point.subject)) bySubject.set(point.subject, []);
+      bySubject.get(point.subject)!.push(point);
+    }
+
+    return {
+      label,
+      startDate: dates[0] ?? "",
+      endDate: dates[dates.length - 1] ?? "",
+      examCount: points.length,
+      avgScore: Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 10) / 10,
+      subjects: Array.from(bySubject.entries())
+        .map(([subject, subjectPoints]) => {
+          const subjectScores = subjectPoints.map((p) => p.totalScore);
+          const avgScore = Math.round((subjectScores.reduce((sum, score) => sum + score, 0) / subjectScores.length) * 10) / 10;
+          const avgClassGap = Math.round(
+            (subjectPoints.reduce((sum, point) => sum + (point.totalScore - point.classAvg), 0) / subjectPoints.length) * 10
+          ) / 10;
+          return {
+            subject,
+            examCount: subjectPoints.length,
+            avgScore,
+            bestScore: Math.max(...subjectScores),
+            avgClassGap
+          };
+        })
+        .sort((a, b) => a.subject.localeCompare(b.subject, "zh"))
+    };
+  }
+
+  async getStudentSemesterComparison(studentId: number): Promise<StudentSemesterComparison> {
+    const trends = await this.getStudentTrendData(studentId);
+    if (trends.length === 0) {
+      return {
+        current: null,
+        previous: null,
+        avgScoreChange: null,
+        improvedSubjects: [],
+        declinedSubjects: []
+      };
+    }
+
+    const grouped = new Map<string, { label: string; order: number; points: StudentTrendPoint[] }>();
+    for (const point of trends) {
+      const date = point.examTime.slice(0, 10);
+      const month = Number(date.slice(5, 7));
+      const year = Number(date.slice(0, 4));
+      const academicStartYear = month >= 8 ? year : year - 1;
+      const semesterNum = month >= 8 || month <= 1 ? 1 : 2;
+      const key = `${academicStartYear}-${semesterNum}`;
+      const label = `${academicStartYear}-${academicStartYear + 1} 第${semesterNum === 1 ? "一" : "二"}学期`;
+      const order = academicStartYear * 10 + semesterNum;
+      if (!grouped.has(key)) grouped.set(key, { label, order, points: [] });
+      grouped.get(key)!.points.push(point);
+    }
+
+    const semesters = Array.from(grouped.values()).sort((a, b) => a.order - b.order);
+    const currentEntry = semesters[semesters.length - 1];
+    const previousEntry = semesters.length >= 2 ? semesters[semesters.length - 2] : null;
+    const current = this.buildSemesterSummary(currentEntry.label, currentEntry.points);
+    const previous = previousEntry
+      ? this.buildSemesterSummary(previousEntry.label, previousEntry.points)
+      : null;
+
+    const avgScoreChange = previous
+      ? Math.round((current.avgScore - previous.avgScore) * 10) / 10
+      : null;
+
+    const improvedSubjects: string[] = [];
+    const declinedSubjects: string[] = [];
+    if (previous) {
+      const prevBySubject = new Map(previous.subjects.map((item) => [item.subject, item.avgScore]));
+      for (const subject of current.subjects) {
+        const prevAvg = prevBySubject.get(subject.subject);
+        if (prevAvg == null) continue;
+        const delta = Math.round((subject.avgScore - prevAvg) * 10) / 10;
+        if (delta >= 3) improvedSubjects.push(subject.subject);
+        else if (delta <= -3) declinedSubjects.push(subject.subject);
+      }
+    }
+
+    return {
+      current,
+      previous,
+      avgScoreChange,
+      improvedSubjects,
+      declinedSubjects
+    };
   }
 
   async hasScore(studentId: number, examId: number): Promise<boolean> {

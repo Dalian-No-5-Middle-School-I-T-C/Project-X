@@ -3,8 +3,12 @@
 ## Cursor Cloud specific instructions
 
 ### What this repo is
-Project-X (答题卡设计系统 / "Intelligent Exam Paper Management System"): an answer-card designer, OMR grading, and grade-analysis platform. The core, runnable-on-Linux product is a single Node app:
-- **Express API backend** (`src/apps/answer-card/server/index.ts`) on port `5174`.
+Project-X (答题卡设计阅卷系统): an answer-card designer, OMR grading, and grade-analysis platform.
+
+**v1.6.1: Split into two build targets:**
+- **Web build** (`dist/web/`): Teacher + student pages. No scanner code. Deploy to server.
+- **Scanner build** (`dist/scanner/`): ScannerPanel only. Packaged into Electron desktop app.
+- **Express API backend** (`src/apps/answer-card/server/index.ts`) on port `5174` — shared by both.
 - **Vite + React frontend** on port `5173` (proxies `/api` and `/assets` to `5174`, see `vite.config.ts`).
 - **Embedded SQLite** at `data/projectx.db` (auto-created on first run; gitignored via `data/*`).
 
@@ -17,8 +21,10 @@ Project-X (答题卡设计系统 / "Intelligent Exam Paper Management System"): 
 ### Lint / test / build (standard commands live in `package.json`)
 - "Lint" = typecheck only (no ESLint configured): `npm run typecheck` (`tsc --noEmit`).
 - Tests: `npm run verify:auth` (auth/RBAC suite) and `npx tsx scripts/grading-rules-smoke.ts` (grading smoke).
-  - NOTE: `verify:auth` currently has **one pre-existing failing case** (`exam class list includes unknown class`) that is unrelated to environment setup — the rest pass. Treat the harness as working.
-- Build: `npm run build` (typecheck + `vite build` → `dist/client` + esbuild bundle → `dist/server`).
+  - NOTE: `verify:auth` 全部 53 项通过（含上一场考试对比与未知班级班级列表）。
+- Build:
+  - `npm run build` → typecheck + `vite build --mode web` → `dist/web/` + esbuild bundle → `dist/server/`
+  - `npm run build:scanner:full` → typecheck + `vite build --mode scanner` → `dist/scanner/` + esbuild bundle → `dist/server/`
 
 ### Node version
 README states Node 24+ for dev, but the project runs fine on the Node 22 LTS available in this environment (Express 5 / React 19 / Vite 7 / better-sqlite3 12 all work). No need to install Node 24 just to run/test the web product.

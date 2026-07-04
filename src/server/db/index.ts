@@ -1,11 +1,14 @@
 import Database from "better-sqlite3";
 import bcrypt from "bcryptjs";
 import { mkdirSync, readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runMigrations } from "./migrations";
 import { resolveProjectDbPath } from "./paths";
 import { seedDefaultData } from "./seeds";
+import { detectDialect, getMysqlDb, initMariadbSchema, buildInsertIgnore } from "./mysql";
+import type { DbAdapter } from "./mysql";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -38,6 +41,17 @@ export function closeDatabase(): void {
 }
 
 export function initializeDatabase(): void {
+  const dialect = detectDialect();
+
+  if (dialect === "mariadb") {
+    // v1.6.0: MariaDB 增量迁移机制 — 检测并执行缺失的 schema_migrations
+    console.log("[DB] MariaDB mode: schema seeded via schema.mariadb.sql");
+    // initMariadbSchema() 在 getMysqlDb() 首次调用时自动执行
+    // ensureDefaultAdmin() 在外部调用，自动生成 API Key
+    return;
+  }
+
+  // SQLite 模式
   const db = getDatabase();
   const schema = readFileSync(schemaPath(), "utf8");
 
@@ -62,9 +76,30 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 }
 
 export async function ensureDefaultAdmin(): Promise<void> {
+  const dialect = detectDialect();
+
+  if (dialect === "mariadb") {
+    const db = getMysqlDb();
+    const existing = await db.get("SELECT id FROM users WHERE username = ?", "admin");
+    if (existing) {
+      await ensureDefaultApiKey(db);
+      return;
+    }
+    const passwordHash = await hashPassword("admin123");
+    const insertAdminSql = buildInsertIgnore("mariadb", "users", [
+      "username", "password_hash", "name", "role_id", "is_active",
+    ]);
+    await db.run(insertAdminSql, "admin", passwordHash, "系统管理员", 1, 1);
+    console.log("[DB] Default admin created: username=admin, password=admin123");
+    await ensureDefaultApiKey(db);
+    return;
+  }
+
+  // SQLite 模式
   const db = getDatabase();
   const existing = db.prepare("SELECT id FROM users WHERE username = ?").get("admin");
   if (existing) {
+    await ensureDefaultApiKeySqlite(db);
     return;
   }
 
@@ -75,11 +110,41 @@ export async function ensureDefaultAdmin(): Promise<void> {
   ).run("admin", passwordHash, "系统管理员", 1, 1);
   console.log("[DB] Default admin created: username=admin, password=admin123");
   console.log("[DB] 请登录后立即修改默认密码");
+  await ensureDefaultApiKeySqlite(db);
+}
+
+// v1.6.0: 确保至少有一条扫描用的 API Key
+async function ensureDefaultApiKey(db: any): Promise<void> {
+  const existing = await db.get("SELECT id FROM api_keys WHERE scope = 'scanner' AND is_active = 1 LIMIT 1");
+  if (existing) return;
+  const key = `sk-${randomBytes(16).toString("hex")}`;
+  await db.run("INSERT INTO api_keys (name, api_key, scope) VALUES (?, ?, ?)", "默认扫描端密钥", key, "scanner");
+  console.log(`[DB] Default scanner API key created: ${key}`);
+}
+
+function ensureDefaultApiKeySqlite(db: any): Promise<void> {
+  const existing = db.prepare("SELECT id FROM api_keys WHERE scope = 'scanner' AND is_active = 1 LIMIT 1").get();
+  if (existing) return Promise.resolve();
+  const key = `sk-${randomBytes(16).toString("hex")}`;
+  db.prepare("INSERT INTO api_keys (name, api_key, scope) VALUES (?, ?, ?)").run("默认扫描端密钥", key, "scanner");
+  console.log(`[DB] Default scanner API key created: ${key}`);
+  return Promise.resolve();
 }
 
 export { runMigrations };
 export { resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath } from "./paths";
 
-// ── MySQL 异步适配器（供逐步迁移使用）──────────────────
-export { getMysqlDb, initMysqlSchema } from "./mysql";
+// ── 跨方言 DB 适配器 ──────────────────────────────────
+export {
+  getMysqlDb,
+  getMariadbConfig,
+  runMariadbMigrations,
+  initMariadbSchema,
+  initMariadbSchema as initMysqlSchema,
+  detectDialect,
+  buildUpsertSQL,
+  buildInsertIgnore,
+  healthCheck,
+  resetAdapter,
+} from "./mysql";
 export type { DbAdapter } from "./mysql";
