@@ -12,7 +12,6 @@ import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
 import { OnlineReviewPanel } from "./OnlineReviewPanel";
-import { AnalysisTrend } from "./AnalysisTrend";
 
 interface ClassOption {
   id: number;
@@ -24,14 +23,12 @@ interface Props {
   examId: number;
   examName: string;
   subject: string | null;
-  cardId?: string;
-  exams?: Array<{ subject?: string | null }>;
   onBack: () => void;
 }
 
-type SubTab = "overview" | "scores" | "exam-analysis" | "review" | "ai" | "knowledge";
+type SubTab = "overview" | "scores" | "exam-analysis" | "review" | "ai";
 
-export function ScoreDetailPage({ examId, examName, subject, cardId, exams, onBack }: Props) {
+export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const { user, isAdmin } = useAuth();
   const isTeacher = user?.role_name === "teacher" || isAdmin;
   const [subTab, setSubTab] = useState<SubTab>("overview");
@@ -377,9 +374,6 @@ export function ScoreDetailPage({ examId, examName, subject, cardId, exams, onBa
               />
             )}
 
-            {/* 成绩变化曲线 — 各次考试的趋势对比 */}
-            <AnalysisTrend exams={exams || []} initialSubject={subject ?? ""} initialClassId={classId} />
-
             {/* 班级对比 */}
             {overview?.classSummaries && overview.classSummaries.length > 0 && (
               <div className="analysis-section">
@@ -506,6 +500,10 @@ export function ScoreDetailPage({ examId, examName, subject, cardId, exams, onBa
               <AnalysisQuestions questions={questions} />
             </div>
 
+            {/* 预留：知识点分析 */}
+            <div className="analysis-section" style={{ padding: 24, textAlign: "center", color: "var(--muted)", background: "var(--bg-soft)", borderRadius: 10, border: "1px dashed var(--line-strong)", fontSize: 13 }}>
+              知识点分析模块预留 — 未来将展示每道题对应的知识点、得分率与薄弱环节
+            </div>
           </div>
         )}
 
