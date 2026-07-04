@@ -44,6 +44,13 @@
 ### 答题卡模板
 - 新增辽宁新高考政治/历史/地理模板（16 单选 × 3 分 + 主观题 52 分，满分 100）。
 
+### 原卷上传 + 知识点标注
+- 新增 `card-knowledge` 路由 (`/api/cards/:cardId/original-paper` 等)。
+- 支持上传原卷 PDF/图片 (50MB)，AI 自动分析题目知识点分布。
+- 老师可审核 AI 结果、手动添加/编辑知识点（章节+知识点二级标签）。
+- `KnowledgePointEditor` 前端组件嵌入答题卡设计器。
+- AI 格式化：`/api/cards/:cardId/ai-format-knowledge-points` 将自由文本标签规范化为标准格式。
+
 ## v1.7.1 (2026-06-30) — 网上阅卷能力补全
 
 ### 网上阅卷队列
