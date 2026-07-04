@@ -236,10 +236,16 @@ router.get("/exams/:examId/score-table", requireExamAccess, async (req, res, nex
   }
 });
 
-// v1.4.0: previous exam comparison (TODO)
-router.get("/exams/:examId/previous", requireExamAccess, async (_req, res, next) => {
+// v1.7.0: previous exam comparison
+router.get("/exams/:examId/previous", requireExamAccess, async (req, res, next) => {
   try {
-    res.json({ message: "TODO: implement previous exam comparison" });
+    const analysisRepo = new AnalysisRepository();
+    const classId = req.query.classId ? Number(req.query.classId) : undefined;
+    const comparison = await analysisRepo.getPreviousExamComparison(
+      Number(req.params.examId),
+      classId
+    );
+    res.json(comparison);
   } catch (error) {
     next(error);
   }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { BarChart3, BrainCircuit, ChevronDown, LineChart, Radar, RefreshCw, Sparkles, TrendingUp } from "lucide-react";
+import { BarChart3, BrainCircuit, CalendarRange, ChevronDown, LineChart, Radar, RefreshCw, Sparkles, TrendingUp } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { StudentExamScore, StudentQuestionScore } from "../auth/types";
 import type { StudentTrendPoint, AiAnalysisResponse } from "../../../../shared/types";
@@ -7,6 +7,7 @@ import { StudentTrendChart } from "./StudentTrendChart";
 import { StudentSubjectRadar } from "./StudentSubjectRadar";
 import { StudentAiPanel } from "./StudentAiPanel";
 import { GradeLadder } from "./GradeLadder";
+import { StudentSemesterComparison } from "./StudentSemesterComparison";
 
 interface ScoresResponse {
   studentId: number;
@@ -19,12 +20,13 @@ interface ExamDetailResponse {
   questions: StudentQuestionScore[];
 }
 
-type TabId = "list" | "trend" | "subjects" | "ai" | "ladder";
+type TabId = "list" | "trend" | "subjects" | "semester" | "ai" | "ladder";
 
 const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: "list", label: "成绩列表", icon: <BarChart3 size={16} /> },
   { id: "trend", label: "趋势分析", icon: <LineChart size={16} /> },
   { id: "subjects", label: "学科对比", icon: <Radar size={16} /> },
+  { id: "semester", label: "学期对比", icon: <CalendarRange size={16} /> },
   { id: "ai", label: "AI 分析", icon: <Sparkles size={16} /> },
   { id: "ladder", label: "成绩天梯", icon: <TrendingUp size={16} /> },
 ];
@@ -218,6 +220,7 @@ export function StudentScores() {
         {activeTab === "list" && renderScoreList()}
         {activeTab === "trend" && <StudentTrendChart trends={trends} />}
         {activeTab === "subjects" && <StudentSubjectRadar />}
+        {activeTab === "semester" && <StudentSemesterComparison />}
         {activeTab === "ai" && <StudentAiPanel />}
         {activeTab === "ladder" && <GradeLadder />}
       </div>
