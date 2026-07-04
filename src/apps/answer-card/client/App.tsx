@@ -84,6 +84,7 @@ import { AnalysisAiPanel } from "./components/AnalysisAiPanel";
 import { AnalysisRanking } from "./components/AnalysisRanking";
 import { AnalysisQuestions } from "./components/AnalysisQuestions";
 import { AnalysisTrend } from "./components/AnalysisTrend";
+import { KnowledgePointEditor } from "./components/KnowledgePointEditor";
 import type {
   ExamOverview,
   ExamRecord,
@@ -1593,6 +1594,7 @@ function App() {
                     ))}
                   </section>
                 ) : null}
+                <KnowledgePointEditor cardId={card.id} />
               </>
             ) : (
               <div className="empty-text">请新建或载入答题卡。</div>
