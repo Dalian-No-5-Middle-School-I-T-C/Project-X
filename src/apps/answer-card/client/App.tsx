@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -539,6 +539,38 @@ function App() {
   const canManageAccounts = variantAllows("account") && hasPermission(PERMISSIONS.USER_MANAGE);
   const showCardSidebar = mode === "design" && canDesign;
   const showScoresTab = canViewScores;
+
+  // ── 移动端底部导航配置 ──
+  const mobileNavItems = useMemo(() => {
+    type NavItem = {
+      id: AppMode;
+      icon: ReactElement;
+      label: string;
+      shortLabel: string;
+      onEnter?: () => void | Promise<void>;
+    };
+    const items: NavItem[] = [];
+    if (canDesign) {
+      items.push({ id: "design", icon: <SquarePen size={22} />, label: "答题卡设计", shortLabel: "设计" });
+    }
+    if (canManageExams) {
+      items.push({ id: "exam-manage", icon: <ClipboardList size={22} />, label: "考试管理", shortLabel: "考试", onEnter: async () => { await loadExams(); await loadExamGroups(); } });
+    }
+    if (canGrade) {
+      items.push({ id: "grading", icon: <ClipboardCheck size={22} />, label: "阅卷批改", shortLabel: "阅卷" });
+    }
+    if (canAnalyze) {
+      items.push({ id: "analysis", icon: <BarChart3 size={22} />, label: "成绩分析", shortLabel: "分析", onEnter: loadExams });
+    }
+    if (showScoresTab) {
+      items.push({ id: "scores", icon: <BarChart3 size={22} />, label: "我的成绩", shortLabel: "成绩" });
+    }
+    if (canManageAccounts) {
+      items.push({ id: "account", icon: <Users size={22} />, label: "账号管理", shortLabel: "账号" });
+    }
+    // 移动端最多5个Tab
+    return items.slice(0, 5);
+  }, [canDesign, canManageExams, canGrade, canAnalyze, showScoresTab, canManageAccounts, loadExams, loadExamGroups]);
 
   useEffect(() => {
     latestCardRef.current = card;
@@ -1443,7 +1475,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.8.0</span>
+            <span>Project-X v1.7.3</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
@@ -2152,6 +2184,27 @@ function App() {
           <BeianFooter className="statusbar-beian" />
         </footer>
       </section>
+
+      {/* ── 移动端底部导航栏 ── */}
+      <nav className="bottom-nav" aria-label="主导航">
+        <div className="bottom-nav-inner">
+          {mobileNavItems.map((m) => (
+            <button
+              key={m.id}
+              className={`bottom-nav-item ${mode === m.id ? "active" : ""}`}
+              onClick={() => void switchMode(m.id, m.onEnter)}
+              type="button"
+              title={m.label}
+              aria-label={m.label}
+              aria-current={mode === m.id ? "page" : undefined}
+            >
+              {m.icon}
+              <span>{m.shortLabel}</span>
+            </button>
+          ))}
+        </div>
+      </nav>
+
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
       {paperPanelCardId && (
         <PaperUploadPanel
