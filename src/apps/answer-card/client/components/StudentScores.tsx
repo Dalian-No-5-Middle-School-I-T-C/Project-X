@@ -131,22 +131,25 @@ export function StudentScores() {
         )}
 
         <div className="scores-list">
-          {data?.scores && data.scores.length >= 2 && (
+          {data?.scores && data.scores.length >= 2 && (() => {
+            const sorted = [...data.scores].reverse();
+            return (
             <div className="score-card" style={{ padding: 16 }}>
               <div className="panel-title" style={{ marginBottom: 8 }}>成绩趋势</div>
               <TrendLine
                 data={{
-                  labels: data.scores.map((s) => s.exam_name),
+                  labels: sorted.map((s) => s.exam_name),
                   datasets: [{
                     label: "总分",
-                    data: data.scores.map((s) => s.total_score),
+                    data: sorted.map((s) => s.total_score),
                     color: "var(--brand)",
                   }],
                 }}
                 height={180}
               />
             </div>
-          )}
+            );
+          })()}
           {data?.scores.map((score) => (
             <div key={score.exam_id} className="score-card">
               <button type="button" className="score-card-header" onClick={() => void toggleExamDetail(score.exam_id)}>
