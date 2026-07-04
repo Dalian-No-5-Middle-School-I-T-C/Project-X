@@ -68,6 +68,7 @@ import {
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
+import { paperRoutes } from "./routes/paper-routes";
 import { CreateCardSchema, CreateExamSchema, UpdateUserSettingsSchema, validateBody } from "./validation";
 import { ApiError } from "../../../server/api-error";import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
 
@@ -449,6 +450,8 @@ export async function createApp(): Promise<express.Express> {
         scoreDisplayMode: (user as any).score_display_mode ?? "zscore",
         reviewConfidenceThreshold: (user as any).review_confidence_threshold ?? 0.12,
         backgroundOpacity: (user as any).background_opacity ?? 0,
+        requireOriginalPaper: (user as any).require_original_paper ?? 1,
+        highlightMissingPaper: (user as any).highlight_missing_paper ?? 1,
       });
     } catch (err) { next(err); }
   });
@@ -461,6 +464,8 @@ export async function createApp(): Promise<express.Express> {
       if (body.scoreDisplayMode !== undefined) { setClauses.push("score_display_mode = ?"); values.push(body.scoreDisplayMode); }
       if (body.reviewConfidenceThreshold !== undefined) { setClauses.push("review_confidence_threshold = ?"); values.push(body.reviewConfidenceThreshold); }
       if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
+      if (body.requireOriginalPaper !== undefined) { setClauses.push("require_original_paper = ?"); values.push(body.requireOriginalPaper ? 1 : 0); }
+      if (body.highlightMissingPaper !== undefined) { setClauses.push("highlight_missing_paper = ?"); values.push(body.highlightMissingPaper ? 1 : 0); }
       if (setClauses.length > 0) {
         setClauses.push("updated_at = CURRENT_TIMESTAMP");
         values.push(userId);
@@ -614,6 +619,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/analysis", analysisGate, analysisRoutes);
   app.use("/api/answer-block-crops", cropGate);
   app.use("/api/review", analysisGate);
+  app.use(paperRoutes());
 
   const cardRepo = new CardRepository();
 

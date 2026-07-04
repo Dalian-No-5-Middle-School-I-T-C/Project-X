@@ -1,5 +1,74 @@
 # Project-X CHANGELOG
 
+## v1.7.0 (2026-07-04) — 原卷上传与 AI 知识点分析
+
+### 原卷上传
+- 答题卡创建后自动弹出原卷上传面板（可由教师在设置中关闭）
+- 支持 DOCX / PDF / 图片（JPG/PNG/BMP/TIFF/WebP）上传，最大 50MB
+- 拒绝 .doc 格式，引导转为 .docx
+- 图片自动前端压缩（max 2048px, JPEG 80%）+ 后端 sharp 兜底压缩
+- 图片格式自动转为 PDF 存储；DOCX/PDF 保留原文件
+- 题目范围填写（全部 / 自定义文字）+ 特别描述备注
+- 原卷文件存储在 `data/answer-card/papers/:cardId/`
+
+### AI 知识点分析
+- 智能路由：多模态（Gemini/GPT）直传图片，一次调用；纯文本（DeepSeek）自动检测文字层
+- DeepSeek 三模式：自动（文字层→mammoth/pdf-parse，无文字层→Tesseract.js OCR）/ 视觉接力（视觉模型转写→DeepSeek分析）
+- 三层格式保障：JSON Schema 硬约束 + System Prompt 软约束 + Node 后端校验兜底
+- 知识点存储在 `knowledge_points` 表，独立于答题卡，与成绩数据关联
+- 前端编辑：彩色标签、双击编辑、长按编辑（移动端）、删除/添加知识点
+- 分析结果持久化，后续可重新分析或手动修改
+
+### 成绩分析联动
+- 新增 `GET /api/analysis/knowledge-points/:examId` — 按知识点聚合全班得分率
+- 新增 `GET /api/analysis/knowledge-points/:examId/students/:studentId` — 单个学生知识点弱项
+- llmclient 新增 `get_knowledge_point_weaknesses` 工具，AI 能指出具体知识点的薄弱环节
+
+### 原卷导出增强
+- 答题卡导出 `.projectx-card.json` 包含原卷 base64 + 知识点数据
+- PDF 导出前统一检查卡片：分值 → 原卷（内联渲染：图片/img可缩放、PDF/iframe翻页、DOCX/Office链接）→ 知识点（内联分析+编辑），三步进度条，含「← 上一步」回退
+- 原卷预览按文件类型智能渲染：`?format=image` 获取图片，默认 PDF，互不干扰
+- 原卷放大预览 Modal 支持 ± 缩放（25%~300%），按钮实时显示当前倍率
+- 修复图片原卷上传后不被识别：`/api/cards/:cardId/paper/info` 双检查（DB + 文件实际存在），自动修复不一致
+- 上传原卷后自动刷新侧栏状态
+- 导出卡片内知识点分析面板与上传面板 UI 统一（单选框 `.radio-label` 对齐）
+
+### 侧边栏标识
+- 左侧答题卡列表新增橙色竖条标识未上传原卷的考试
+- 可在教师设置中关闭高亮
+
+### 系统 AI 配置（Admin Only）
+- `ai_providers` 表新增 `is_system` 列，全校统一 AI 提供商
+- 知识分析仅使用系统级 AI 提供商，教师无法自行配置
+- AccountMenu「AI 设置」Tab 仅 admin 可见
+- 教师设置新增「强制上传原卷」「侧边栏高亮」双开关
+
+### 移动端适配
+- 文件上传：移动端大按钮组（拍照/选文件）
+- 面板全屏化（<760px），sticky 底部按钮
+- 知识点编辑长按触发
+- 输入框 16px 字体防 iOS 缩放
+
+### 数据库
+- migration v16：`ai_providers.is_system` (SQLite + MariaDB)
+- schema.sql / schema.mariadb.sql / schema.mysql.sql 三份同步
+- 新建 `knowledge_points` 表（card_id, question_number, point_text, category）
+
+### 新增依赖
+- `sharp` — 图片压缩与格式转换
+- `mammoth` — DOCX 文本提取
+- `pdfjs-dist` — PDF 文字层检测与文本提取（替代 pdf-parse）
+- `tesseract.js` — OCR 引擎（扫描件兜底）
+
+### 新增文件
+- `src/apps/answer-card/server/paper-converter.ts` — 文件校验、压缩、图片→PDF
+- `src/apps/answer-card/server/paper-ocr.ts` — 文本提取 + OCR
+- `src/apps/answer-card/server/routes/paper-routes.ts` — 原卷/knowledge-points CRUD
+- `src/server/repositories/KnowledgePointRepository.ts` — 知识点 CRUD + 成绩联动查询
+- `src/apps/answer-card/client/components/DragDropZone.tsx` — 拖拽上传
+- `src/apps/answer-card/client/components/KnowledgeTagList.tsx` — 可编辑知识点标签
+- `src/apps/answer-card/client/components/PaperUploadPanel.tsx` — 原卷上传主面板
+
 ## v1.6.5 (2026-07-01) — iOS 15 Safari 兼容与错误边界 (#141)
 
 ### Web SPA 兼容性

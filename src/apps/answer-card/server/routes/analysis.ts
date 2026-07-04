@@ -8,6 +8,7 @@
 import express from "express";
 import { getMysqlDb } from "../../../../server/db";
 import { AnalysisRepository } from "../../../../server/repositories/AnalysisRepository";
+import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
 import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../middleware";
@@ -429,6 +430,38 @@ router.get("/exams/:examId/export-csv", requireExamAccess, async (req, res, next
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
     res.send(buf);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================================
+// 知识点分析端点 (v1.7.0)
+// ============================================================
+
+// GET /api/analysis/knowledge-points/:examId — 按知识点聚合全班得分率
+router.get("/knowledge-points/:examId", requireExamAccess, async (req, res, next) => {
+  try {
+    const examId = parseInt(req.params.examId, 10);
+    const classId = req.query.classId ? parseInt(req.query.classId as string, 10) : undefined;
+
+    const repo = new KnowledgePointRepository();
+    const weaknesses = await repo.getWeaknessesForExam(examId, classId);
+    res.json({ weaknesses });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/analysis/knowledge-points/:examId/students/:studentId — 单个学生知识点弱项
+router.get("/knowledge-points/:examId/students/:studentId", requireExamAccess, async (req, res, next) => {
+  try {
+    const examId = parseInt(req.params.examId, 10);
+    const studentId = parseInt(req.params.studentId, 10);
+
+    const repo = new KnowledgePointRepository();
+    const weaknesses = await repo.getWeaknessesForStudent(examId, studentId);
+    res.json({ weaknesses });
   } catch (error) {
     next(error);
   }

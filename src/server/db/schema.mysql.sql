@@ -208,6 +208,22 @@ CREATE TABLE IF NOT EXISTS card_assets (
     FOREIGN KEY (card_id) REFERENCES answer_cards(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+-- 知识点字典（与成绩分析联动，v1.7.0）
+CREATE TABLE IF NOT EXISTS knowledge_points (
+    id              INT AUTO_INCREMENT PRIMARY KEY,
+    card_id         VARCHAR(20) NOT NULL,
+    question_number INT NOT NULL,
+    point_text      VARCHAR(50) NOT NULL,
+    category        VARCHAR(50),
+    sort_order      INT DEFAULT 0,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_card_question_point (card_id, question_number, point_text),
+    FOREIGN KEY (card_id) REFERENCES answer_cards(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE INDEX idx_kp_card ON knowledge_points(card_id);
+CREATE INDEX idx_kp_card_question ON knowledge_points(card_id, question_number);
+
 -- ============================================================
 -- 模块三：考试与扫描
 -- ============================================================
@@ -469,6 +485,7 @@ CREATE TABLE IF NOT EXISTS ai_providers (
     base_url        VARCHAR(500) NOT NULL DEFAULT '',
     api_key         VARCHAR(500) NOT NULL,
     models          TEXT,
+    is_system       TINYINT DEFAULT 0,           -- v1.7.0: 1=系统级(全校统一), 0=个人
     is_active       TINYINT DEFAULT 1,
     sort_order      INT DEFAULT 0,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,

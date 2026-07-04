@@ -7,8 +7,11 @@ export interface CardSummary {
   id: string;
   title: string;
   subject?: string;
+  subject_label?: string;
   updated_at: string;
   created_by_name?: string;
+  has_original_paper?: boolean;
+  original_paper_filename?: string;
 }
 
 function normalizeOptionLayout(value: unknown): "horizontal" | "vertical" {
@@ -126,7 +129,8 @@ export class CardRepository {
 
   async listCards(): Promise<CardSummary[]> {
     return await this.db.all(`
-      SELECT c.id, c.title, c.subject, c.subject_label, c.updated_at, u.name as created_by_name
+      SELECT c.id, c.title, c.subject, c.subject_label, c.updated_at, u.name as created_by_name,
+             c.has_original_paper, c.original_paper_filename
       FROM answer_cards c LEFT JOIN users u ON u.id = c.created_by
       ORDER BY c.updated_at DESC
     `);

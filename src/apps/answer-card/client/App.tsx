@@ -15,6 +15,8 @@ import {
   Plus,
   Save,
   Search,
+  BookOpen,
+  FileUp,
   SquarePen,
   Trash2,
   Upload,
@@ -31,6 +33,7 @@ import { StudentScores } from "./components/StudentScores";
 import { SponsorPage } from "./components/SponsorPage";
 import { UserGuidePage } from "./components/UserGuidePage";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
+import { PaperUploadPanel } from "./components/PaperUploadPanel";
 import { ExamSelectPage } from "./components/ExamSelectPage";
 import { ScoreDetailPage } from "./components/ScoreDetailPage";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
@@ -126,6 +129,11 @@ type AutoSaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 type PdfWarningState = {
   validation: CardScoreValidationResult;
   pdfUrl: string;
+  step: "score" | "paper" | "knowledge";  // 当前步骤
+  paperInfo?: { hasPaper: boolean; filename?: string; mimeType?: string };
+  knowledgeReady?: boolean;   // 知识点是否已分析
+  knowledgePoints?: Array<{ question_number: number; points: string[] }>;  // 知识点列表
+  cardId?: string;
 };
 
 const styleLabels: Record<SubjectiveStyle, string> = {
@@ -372,6 +380,67 @@ function findNextQuestionNumber(card: AnswerCard): number {
   return max + 1;
 }
 
+/** v1.7.0 — 导出检查卡片内的知识点分析小面板 */
+function KnowledgeAnalysisInline({ cardId, onDone }: { cardId: string; onDone: (points: Array<{ question_number: number; points: string[] }>) => void }) {
+  const [questionRange, setQuestionRange] = useState("全部");
+  const [customRange, setCustomRange] = useState("");
+  const [extraNotes, setExtraNotes] = useState("");
+  const [analyzing, setAnalyzing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleAnalyze = async () => {
+    setAnalyzing(true);
+    setError(null);
+    const range = questionRange === "all" ? "全部" : customRange.trim();
+    if (!range) { setError("请输入题目范围"); setAnalyzing(false); return; }
+
+    try {
+      const res = await fetchJson<{ knowledgePoints?: Array<{ questionNumber: number; points: string[] }>; mode?: string; message?: string }>(
+        `/api/cards/${cardId}/knowledge-points/analyze`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ questionRange: range, extraNotes: extraNotes.trim() }) }
+      );
+      if (res.message && (!res.knowledgePoints || res.knowledgePoints.length === 0)) {
+        setError(res.message); setAnalyzing(false); return;
+      }
+      const pts = (res.knowledgePoints || []).map(k => ({ question_number: k.questionNumber || (k as any).question_number, points: k.points }));
+      // Auto-save
+      await fetchJson(`/api/cards/${cardId}/knowledge-points`, {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ points: pts.flatMap(p => p.points.map(pt => ({ question_number: p.question_number, point_text: pt }))) })
+      }).catch(() => {});
+      onDone(pts);
+    } catch (e: any) {
+      setError(e?.message || "AI 服务暂时不可用，请检查 llmclient 是否启动");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  return (
+    <div>
+      <h4 style={{ margin: "0 0 8px", fontSize: 14 }}>题目范围 *</h4>
+      <label className="radio-label">
+        <input type="radio" name="kpRange" checked={questionRange === "all"} onChange={() => setQuestionRange("all")} />
+        全部题目
+      </label>
+      <label className="radio-label">
+        <input type="radio" name="kpRange" checked={questionRange === "custom"} onChange={() => setQuestionRange("custom")} />
+        自定义范围
+      </label>
+      {questionRange === "custom" && (
+        <input type="text" className="text-input" placeholder="如：第1-15题、选择题"
+          value={customRange} onChange={(e) => setCustomRange(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+      )}
+      <textarea className="textarea-input" placeholder="特别描述（可选）" value={extraNotes} onChange={(e) => setExtraNotes(e.target.value)} rows={2} style={{ width: "100%", marginBottom: 8 }} />
+      {error && <p className="field-error" style={{ marginBottom: 8 }}>{error}</p>}
+      <button className="primary-button" type="button" onClick={handleAnalyze} disabled={analyzing}>
+        {analyzing ? "分析中..." : "🤖 开始分析"}
+      </button>
+      {analyzing && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>正在调用 AI 分析，约需 10-30 秒...</p>}
+    </div>
+  );
+}
+
 function App() {
   const { user, loading, hasPermission, persona, teacherRoleOverride } = useAuth();
   // v1.6.0: 运行时 persona 替换 compile-time VITE_PROJECTX_VARIANT
@@ -424,12 +493,16 @@ function App() {
   const [analysisTab, setAnalysisTab] = useState<"select" | "view" | "trend" | "detail">("select");
   const [selectedAnalysisExamId, setSelectedAnalysisExamId] = useState<number | null>(null);
   const [showNewCardModal, setShowNewCardModal] = useState(false);
+  const [showPaperPanel, setShowPaperPanel] = useState(false);
+  const [paperPanelCardId, setPaperPanelCardId] = useState<string | null>(null);
   const [cardDeleteConflict, setCardDeleteConflict] = useState<CardDeleteConflict | null>(null);
   const [examDeleteTarget, setExamDeleteTarget] = useState<ExamDeleteTarget | null>(null);
   const [groupDeleteTarget, setGroupDeleteTarget] = useState<GroupDeleteTarget | null>(null);
   const [assignedFormulaExamId, setAssignedFormulaExamId] = useState<number | null>(null);
   const [showBg, setShowBg] = useState(0); // opacity 0~1, 0=关闭
-  const [pdfWarning, setPdfWarning] = useState<PdfWarningState | null>(null);
+  const [paperPreviewOpen, setPaperPreviewOpen] = useState<string | null>(null);
+  const [paperZoom, setPaperZoom] = useState(1);
+  const [exportCheck, setExportCheck] = useState<PdfWarningState | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
     try {
       return (localStorage.getItem("projectx-theme") as "light" | "dark") || "light";
@@ -738,6 +811,13 @@ function App() {
       }
 
       setStatus(`已创建答题卡 「${created.title}」 (${created.id})${statusExtra}`);
+
+      // v1.7.0: 自动弹出原卷上传面板
+      const userSettings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch(() => ({}));
+      if (userSettings.requireOriginalPaper !== 0) {
+        setPaperPanelCardId(created.id);
+        setShowPaperPanel(true);
+      }
     } finally {
       await refreshCards();
       setIsBusy(false);
@@ -865,6 +945,19 @@ function App() {
   }
 
   async function exportCard(cardId: string) {
+    // v1.7.0: 检查原卷是否上传
+    try {
+      const cardInfo = await fetchJson<{ has_original_paper?: number }>(`/api/cards/${cardId}/paper/info`);
+      const settings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch(() => ({}));
+      if (settings.requireOriginalPaper !== 0 && !cardInfo?.has_original_paper) {
+        if (confirm("此答题卡尚未上传原卷，根据当前设置不允许导出。是否现在上传原卷？")) {
+          setPaperPanelCardId(cardId);
+          setShowPaperPanel(true);
+        }
+        return;
+      }
+    } catch { /* fall through */ }
+
     const a = document.createElement("a");
     a.href = urlWithToken(`/api/cards/${cardId}/export`);
     a.download = `答题卡_${cardId}.projectx-card.json`;
@@ -887,6 +980,50 @@ function App() {
     }
   }
 
+  async function showExportCheck(savedCard: AnswerCard, pdfUrl: string) {
+    const settings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch(() => ({}));
+    let paperInfo: { hasPaper: boolean; filename?: string; mimeType?: string } = { hasPaper: false };
+    let knowledgeReady = false;
+    let knowledgePoints: Array<{ question_number: number; points: string[] }> = [];
+
+    if (settings.requireOriginalPaper !== 0) {
+      try {
+        const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string }>(`/api/cards/${savedCard.id}/paper/info`);
+        paperInfo = { hasPaper: !!info?.has_original_paper, filename: info?.filename, mimeType: info?.mime_type };
+        // 检查知识点
+        if (info?.has_original_paper) {
+          try {
+            const kp = await fetchJson<{ points?: Array<{ question_number: number; points: string[] }> }>(`/api/cards/${savedCard.id}/knowledge-points`);
+            if (kp?.points && kp.points.length > 0) {
+              knowledgeReady = true;
+              knowledgePoints = kp.points;
+            }
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+    }
+
+    setExportCheck({
+      validation: createEmptyValidation(),
+      pdfUrl,
+      step: "paper",
+      paperInfo,
+      knowledgeReady,
+      knowledgePoints,
+      cardId: savedCard.id,
+    });
+  }
+
+  function createEmptyValidation(): CardScoreValidationResult {
+    return { totalScore: 0, objectiveScore: 0, subjectiveScore: 0, expectedTotals: [], flexibleTotalSubject: false, issues: [] };
+  }
+
+  function doFinalPdfExport(pdfUrl: string) {
+    setExportCheck(null);
+    openPdf(pdfUrl);
+    setStatus("正在打开 PDF...");
+  }
+
   async function exportPdfForCurrentCard() {
     let savedCard: AnswerCard | null = null;
     try {
@@ -895,15 +1032,18 @@ function App() {
       return;
     }
     if (!savedCard) return;
+
     const validation = validateCardScores(savedCard);
     const pdfUrl = urlWithToken(`/api/cards/${savedCard.id}/pdf?v=${encodeURIComponent(savedCard.updatedAt)}`);
+
     if (validation.issues.length > 0) {
-      setPdfWarning({ validation, pdfUrl });
-      setStatus(`分值检查发现 ${validation.issues.length} 个提示，请确认后导出`);
+      // Step 1: 显示分值检查
+      setExportCheck({ validation, pdfUrl, step: "score", cardId: savedCard.id });
       return;
     }
-    openPdf(pdfUrl);
-    setStatus("正在打开 PDF...");
+
+    // 分值无问题 → 直接进原卷检查
+    await showExportCheck(savedCard, pdfUrl);
   }
 
   async function importCard() {
@@ -1302,7 +1442,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.6.1</span>
+            <span>Project-X v1.7.0</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
@@ -1315,6 +1455,9 @@ function App() {
             <div
               key={item.id}
               className={`card-list-item ${card?.id === item.id ? "active" : ""}`}
+              style={{
+                borderLeft: (item as any).has_original_paper ? "3px solid transparent" : "3px solid var(--warn, #f59e0b)"
+              }}
             >
               <button
                 className="card-list-main"
@@ -1324,6 +1467,9 @@ function App() {
                 <small>{item.subjectLabel ? `${item.subjectLabel} · ` : ""}ID:{item.id}</small>
               </button>
               <div className="card-list-actions">
+                <button title="上传原卷" onClick={(e) => { e.stopPropagation(); setPaperPanelCardId(item.id); setShowPaperPanel(true); }}>
+                  <FileUp size={14} />
+                </button>
                 <button title="导出" onClick={(e) => { e.stopPropagation(); void exportCard(item.id); }}>
                   <Download size={14} />
                 </button>
@@ -1997,6 +2143,14 @@ function App() {
         </footer>
       </section>
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
+      {paperPanelCardId && (
+        <PaperUploadPanel
+          cardId={paperPanelCardId}
+          open={showPaperPanel}
+          onClose={() => setShowPaperPanel(false)}
+          onUploaded={() => void refreshCards()}
+        />
+      )}
       <ImportCardModal
         open={showImportCardModal && importCardData !== null}
         initialTitle={importCardData?.card?.title ?? ""}
@@ -2007,55 +2161,179 @@ function App() {
         onConfirm={(data) => void handleImportConfirm(data)}
         onClose={() => { setShowImportCardModal(false); setImportCardData(null); setIsBusy(false); }}
       />
-      {pdfWarning && (
-        <div className="modal-backdrop" onClick={() => setPdfWarning(null)}>
-          <div className="modal-card score-warning-modal" onClick={(e) => e.stopPropagation()}>
+      {exportCheck && (
+        <div className="modal-backdrop" onClick={() => setExportCheck(null)}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 560, maxWidth: "calc(100vw - 40px)", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
             <div className="modal-header">
-              <h2>PDF 导出前分值检查</h2>
-              <button className="modal-close" type="button" onClick={() => setPdfWarning(null)}>×</button>
+              <h2>导出检查</h2>
+              <button className="modal-close" type="button" onClick={() => setExportCheck(null)}>×</button>
             </div>
-            <div className="modal-body">
-              <div className="score-warning-summary">
-                <strong>当前总分：{pdfWarning.validation.totalScore} 分</strong>
-                <span>
-                  客观题 {pdfWarning.validation.objectiveScore} 分 / 主观题 {pdfWarning.validation.subjectiveScore} 分
-                </span>
-                <span>
-                  {pdfWarning.validation.flexibleTotalSubject
-                    ? "语文、英语或外语科目不检查 100/150 总分规则"
-                    : `期望总分：${pdfWarning.validation.expectedTotals.join(" 或 ")} 分`}
-                </span>
-              </div>
-              <ul className="score-warning-list">
-                {pdfWarning.validation.issues.slice(0, 12).map((issue, index) => (
-                  <li key={`${issue.kind}_${index}`}>
-                    <span>{issue.message}</span>
-                    {issue.questionRefs?.length ? <small>涉及：{issue.questionRefs.join("、")}</small> : null}
-                  </li>
-                ))}
-              </ul>
-              {pdfWarning.validation.issues.length > 12 && (
-                <p className="score-warning-more">
-                  还有 {pdfWarning.validation.issues.length - 12} 条提示，建议先返回检查题块设置。
-                </p>
+
+            {/* 进度条 */}
+            <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--line-soft)", flexWrap: "wrap", fontSize: 13 }}>
+              <span style={{ color: "var(--success, #10b981)", fontWeight: 600 }}>✓ 分值</span><span style={{ color: "var(--muted)" }}>→</span>
+              <span style={{ color: exportCheck.step === "paper" ? "var(--brand)" : exportCheck.paperInfo?.hasPaper ? "var(--success, #10b981)" : "var(--muted)", fontWeight: exportCheck.step === "paper" ? 600 : 400 }}>
+                {exportCheck.step === "paper" ? "▶ 原卷" : exportCheck.paperInfo?.hasPaper ? "✓ 原卷" : "○ 原卷"}
+              </span><span style={{ color: "var(--muted)" }}>→</span>
+              <span style={{ color: exportCheck.step === "knowledge" ? "var(--brand)" : exportCheck.knowledgeReady ? "var(--success, #10b981)" : "var(--muted)", fontWeight: exportCheck.step === "knowledge" ? 600 : 400 }}>
+                {exportCheck.step === "knowledge" ? "▶ 知识点" : exportCheck.knowledgeReady ? "✓ 知识点" : "○ 知识点"}
+              </span><span style={{ color: "var(--muted)" }}>→</span>
+              <span style={{ color: "var(--muted)" }}>○ 导出</span>
+            </div>
+
+            <div style={{ overflow: "auto", flex: 1, padding: "8px 0" }}>
+              {/* Step 1: 分值检查 */}
+              {exportCheck.step === "score" && exportCheck.validation.issues.length > 0 && (
+                <div>
+                  <div className="score-warning-summary">
+                    <strong>当前总分：{exportCheck.validation.totalScore} 分</strong>
+                    <span>客观题 {exportCheck.validation.objectiveScore} 分 / 主观题 {exportCheck.validation.subjectiveScore} 分</span>
+                    <span>{exportCheck.validation.flexibleTotalSubject ? "语文、英语或外语科目不检查 100/150 总分规则" : `期望总分：${exportCheck.validation.expectedTotals.join(" 或 ")} 分`}</span>
+                  </div>
+                  <ul className="score-warning-list">
+                    {exportCheck.validation.issues.slice(0, 6).map((issue, i) => (
+                      <li key={`s_${i}`}><span>{issue.message}</span>{issue.questionRefs?.length ? <small> 涉及：{issue.questionRefs.join("、")}</small> : null}</li>
+                    ))}
+                  </ul>
+                  {exportCheck.validation.issues.length > 6 && <p className="score-warning-more">还有 {exportCheck.validation.issues.length - 6} 条提示</p>}
+                </div>
+              )}
+
+              {/* Step 2: 原卷检查 */}
+              {exportCheck.step === "paper" && (
+                <div>
+                  {exportCheck.paperInfo?.hasPaper ? (
+                    <div>
+                      <p style={{ marginBottom: 6, fontSize: 13 }}>✅ 已上传：<strong>{exportCheck.paperInfo.filename}</strong></p>
+                      {/* PDF → iframe, 图片 → img, DOCX → 文字 */}
+                      {exportCheck.paperInfo.mimeType?.startsWith("image/") ? (
+                        <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, overflow: "hidden", cursor: "pointer", background: "var(--surface-raised)" }}
+                          onClick={() => { if (exportCheck.cardId) setPaperPreviewOpen(exportCheck.cardId); }} title="点击放大">
+                          <img src={urlWithToken(`/api/cards/${exportCheck.cardId}/paper?format=image`)} alt="原卷"
+                            style={{ maxWidth: "100%", maxHeight: 240, objectFit: "contain", display: "block", margin: "0 auto" }}
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                          <p style={{ textAlign: "center", padding: "4px 0 8px", color: "var(--muted)", fontSize: 12 }}>点击放大查看</p>
+                        </div>
+                      ) : exportCheck.paperInfo.mimeType === "application/pdf" ? (
+                        <iframe src={urlWithToken(`/api/cards/${exportCheck.cardId}/paper`)} style={{ width: "100%", height: 380, border: "1px solid var(--line-soft)", borderRadius: 6 }} title="原卷PDF" />
+                      ) : (
+                        <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, padding: 16, textAlign: "center", background: "var(--surface-raised)" }}>
+                          <p style={{ margin: 0, fontWeight: 600 }}>{exportCheck.paperInfo.filename}</p>
+                          <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--muted)" }}>DOCX 文件不支持内联预览</p>
+                          <a href={urlWithToken(`/api/cards/${exportCheck.cardId}/paper`)} target="_blank" style={{ fontSize: 12, marginTop: 4, display: "inline-block" }}>在 Office 中打开</a>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ background: "var(--brand-soft)", borderRadius: 6, padding: 16, textAlign: "center" }}>
+                      <p style={{ color: "var(--brand)", fontWeight: 600, margin: "0 0 8px" }}>⚠ 尚未上传原卷</p>
+                      <button className="primary-button" type="button" onClick={() => {
+                        setExportCheck(null);
+                        if (exportCheck.cardId) { setPaperPanelCardId(exportCheck.cardId); setShowPaperPanel(true); }
+                      }}>📤 立即上传原卷</button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Step 3: 知识点分析 */}
+              {exportCheck.step === "knowledge" && (
+                <div>
+                  {exportCheck.knowledgeReady && exportCheck.knowledgePoints?.length ? (
+                    <div>
+                      <p style={{ marginBottom: 6, fontSize: 13 }}>✅ 已分析 {exportCheck.knowledgePoints.length} 道题：</p>
+                      <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--line-soft)", borderRadius: 6, padding: 8, background: "var(--surface-raised)" }}>
+                        {exportCheck.knowledgePoints.map((q) => (
+                          <div key={q.question_number} style={{ marginBottom: 4, fontSize: 13, lineHeight: 1.8 }}>
+                            <strong style={{ color: "var(--muted)" }}>第{q.question_number}题：</strong>
+                            {q.points.map((p, i) => (
+                              <span key={i} style={{ display: "inline-block", padding: "1px 8px", borderRadius: 10, margin: "1px 2px", background: "#3b82f6", color: "#fff", fontSize: 12 }}>{p}</span>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                      <button className="ghost-button" type="button" onClick={() => {
+                        if (exportCheck.cardId) { setPaperPanelCardId(exportCheck.cardId); setShowPaperPanel(true); }
+                      }} style={{ marginTop: 8 }}>编辑或重新分析</button>
+                    </div>
+                  ) : (
+                    <KnowledgeAnalysisInline cardId={exportCheck.cardId!}
+                      onDone={(points) => {
+                        setExportCheck({ ...exportCheck, knowledgeReady: true, knowledgePoints: points });
+                      }} />
+                  )}
+                </div>
               )}
             </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setPdfWarning(null)}>
-                返回修改
-              </button>
-              <button
-                className="primary-button"
-                type="button"
-                onClick={() => {
-                  const targetUrl = pdfWarning.pdfUrl;
-                  setPdfWarning(null);
-                  openPdf(targetUrl);
-                  setStatus("已确认分值提示，正在打开 PDF...");
-                }}
-              >
-                仍然导出
-              </button>
+
+            {/* 底部按钮 */}
+            <div style={{ borderTop: "1px solid var(--line-soft)", padding: "12px 0 0", display: "flex", justifyContent: "space-between", gap: 8, flexShrink: 0 }}>
+              <div>
+                {exportCheck.step !== "score" && (
+                  <button className="ghost-button" type="button" onClick={() => {
+                    const prev = exportCheck.step === "paper" ? "score" : "paper";
+                    setExportCheck({ ...exportCheck, step: prev as "score" | "paper" });
+                  }}>← 上一步</button>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+              <button className="ghost-button" type="button" onClick={() => setExportCheck(null)}>取消</button>
+              {exportCheck.step === "score" && (
+                <button className="primary-button" type="button" onClick={async () => {
+                  const cardId = exportCheck.cardId;
+                  if (cardId) {
+                    const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string }>(`/api/cards/${cardId}/paper/info`).catch(() => ({}));
+                    setExportCheck({
+                      ...exportCheck, step: "paper",
+                      paperInfo: { hasPaper: !!(info as any)?.has_original_paper, filename: (info as any)?.filename, mimeType: (info as any)?.mime_type }
+                    });
+                  } else { setExportCheck({ ...exportCheck, step: "paper" }); }
+                }}>
+                  确认分值 → 原卷检查
+                </button>
+              )}
+              {exportCheck.step === "paper" && (
+                <>
+                  {!exportCheck.paperInfo?.hasPaper && (
+                    <button className="ghost-button" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
+                      跳过 → 知识点检查
+                    </button>
+                  )}
+                  <button className="primary-button" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
+                    原卷 OK → 知识点检查
+                  </button>
+                </>
+              )}
+              {exportCheck.step === "knowledge" && exportCheck.knowledgeReady && (
+                <button className="primary-button" type="button" onClick={() => doFinalPdfExport(exportCheck.pdfUrl)}>
+                  ✅ 确认导出 PDF
+                </button>
+              )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {paperPreviewOpen && (
+        <div className="modal-backdrop" onClick={() => { setPaperPreviewOpen(null); setPaperZoom(1); }}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: "90vw", maxWidth: 900, maxHeight: "90vh", overflow: "auto", padding: 0 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-soft)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <h3 style={{ margin: 0, fontSize: 16 }}>原卷预览</h3>
+              </div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button className="ghost-button" type="button" onClick={() => setPaperZoom(z => Math.max(0.25, z - 0.25))} title="缩小">−</button>
+                <button className="ghost-button" type="button" onClick={() => setPaperZoom(1)} title="重置">{Math.round(paperZoom * 100)}%</button>
+                <button className="ghost-button" type="button" onClick={() => setPaperZoom(z => Math.min(3, z + 0.25))} title="放大">+</button>
+                <button className="modal-close" type="button" onClick={() => { setPaperPreviewOpen(null); setPaperZoom(1); }}>✕</button>
+              </div>
+            </div>
+            <div style={{ padding: 16, textAlign: "center", overflow: "auto" }}>
+              <img
+                src={urlWithToken(`/api/cards/${paperPreviewOpen}/paper?format=image`)}
+                alt="原卷"
+                style={{ maxWidth: `${paperZoom * 100}%`, maxHeight: `${paperZoom * 75}vh`, objectFit: "contain", transition: "max-width 0.15s, max-height 0.15s" }}
+              />
             </div>
           </div>
         </div>

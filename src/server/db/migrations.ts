@@ -524,6 +524,14 @@ const MIGRATIONS: Migration[] = [
         addColumnIfMissing(db, "exam_groups", "only_full_participants", "INTEGER DEFAULT 0");
       }
     }
+  },
+  {
+    version: 16,
+    name: "system-ai-provider",
+    up(db) {
+      // ai_providers 新增 is_system 标记（v1.7.0 系统级 AI 配置）
+      addColumnIfMissing(db, "ai_providers", "is_system", "INTEGER DEFAULT 0");
+    }
   }
 ];
 
