@@ -83,6 +83,31 @@
 - `src/apps/answer-card/client/components/PaperUploadPanel.tsx` — 原卷上传主面板
 ---
 
+---
+
+## v1.7.2 (2026-06-30) — 统计图表与教师权限管理
+
+### 统计图表
+
+- 新增 `AnalysisCharts.tsx`：成绩分布柱状图 + 学生趋势折线图（Chart.js）
+- 学生端嵌入成绩趋势折线图，实时展示历次考试成绩变化
+- 修复学生端折线图时间顺序排列问题
+- 修复 Chart.js 颜色 CSS 变量解析与 alpha 安全拼接
+- `AnalysisOverview.tsx` 增强：集成统计图表回传 `selectedClassId`
+
+### 教师权限管理
+
+- 新增 `PermissionManager.tsx`：教师权限管理面板（Admin Only）
+- 新增 `/api/admin/permissions` 路由：查询/更新教师细粒度权限
+- 新增 `teacher_permissions` 表：teacher_id + grade_id 联合唯一，支持按年级独立配置查看成绩/图表/学生名单
+- `App.tsx` 集成 PermissionManager，admin 可见
+- `AccountMenu.tsx`：教师细分角色 UI 增强
+- `middleware.ts`：权限中间件升级，接入 PermissionManager 细粒度校验
+
+### 工程
+
+- `appVariant.ts` 扩展 `ProjectXAppMode` 类型，支持新权限模式
+
 ## v1.7.1 (2026-06-30) — 网上阅卷能力补全
 
 ### 网上阅卷队列
