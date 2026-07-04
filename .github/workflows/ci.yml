@@ -28,6 +28,12 @@ jobs:
       - name: Install esbuild platform binary
         run: npm rebuild esbuild
 
+      - name: Install rollup platform binary
+        run: npm rebuild rollup
+
+      - name: Install sharp platform binary
+        run: npm rebuild sharp
+
       - name: Rebuild native module (better-sqlite3)
         run: npm rebuild better-sqlite3
 
@@ -54,6 +60,12 @@ jobs:
 
       - name: Install esbuild platform binary
         run: npm rebuild esbuild
+
+      - name: Install rollup platform binary
+        run: npm rebuild rollup
+
+      - name: Install sharp platform binary
+        run: npm rebuild sharp
 
       - name: Rebuild native module
         run: npm rebuild better-sqlite3
