@@ -85,28 +85,52 @@
 
 ---
 
-## v1.7.2 (2026-06-30) — 统计图表与教师权限管理
 
-### 统计图表
+---
 
-- 新增 `AnalysisCharts.tsx`：成绩分布柱状图 + 学生趋势折线图（Chart.js）
-- 学生端嵌入成绩趋势折线图，实时展示历次考试成绩变化
-- 修复学生端折线图时间顺序排列问题
-- 修复 Chart.js 颜色 CSS 变量解析与 alpha 安全拼接
-- `AnalysisOverview.tsx` 增强：集成统计图表回传 `selectedClassId`
+## v1.7.2 (2026-07-01) — 统计图表 + 教师权限管理
 
-### 教师权限管理
+### 统计图表系统
+- 新增 `AnalysisCharts` 可复用图表组件：`ScoreDoughnut`（饼图）、`ComparisonBar`（柱状图）、`TrendLine`（折线图）。
+- `AnalysisOverview` 嵌入「图表可视化」区域：分数段分布饼图 + 关键指标面板。
+- 学生端 `StudentScores` 成绩列表顶部嵌入总分趋势折线图（≥2 场考试显示，时间正序排列）。
+- Chart.js 颜色处理：新增 `resolveColor()` CSS 变量解析 + `withAlpha()` 安全 alpha 拼接，避免 Canvas API 下 `var(--brand)15` 非法颜色。
 
-- 新增 `PermissionManager.tsx`：教师权限管理面板（Admin Only）
-- 新增 `/api/admin/permissions` 路由：查询/更新教师细粒度权限
-- 新增 `teacher_permissions` 表：teacher_id + grade_id 联合唯一，支持按年级独立配置查看成绩/图表/学生名单
-- `App.tsx` 集成 PermissionManager，admin 可见
-- `AccountMenu.tsx`：教师细分角色 UI 增强
-- `middleware.ts`：权限中间件升级，接入 PermissionManager 细粒度校验
+### 教师权限管理系统
+- 新增 `teacher_permissions` 表（v16 migration）：`teacher_id`/`grade_id` + `can_view_scores`/`can_view_charts`/`can_view_students` 三个开关。
+- 新增 `GET/PUT/DELETE /api/admin/permissions` 路由（admin-only）。
+- 新增 `PermissionManager` 前端组件：管理员可视化管理各教师/年级的查看权限。
+- RBAC 集成：`getVisibleExamIds` 检查 `teacher_permissions` 表，关闭权限的教师看不到受限年级的全部数据。
+- `AccountMenu` 新增「权限管理」入口（仅 admin 可见）。
 
-### 工程
+### 暗色主题持续打磨
+- 品牌色调优：珊瑚红 `#F77866` → 低亮红 `#D94040` → 最终 `#C0392B` 暗沉红（Tim 版）。
+- 文字亮度：`#C9D1D9` → `#EAEAEA`（亮白），`--muted` → `#888888`。
+- 顶部栏 `rgba(22,27,34,0.75)` 暗色毛玻璃，mode-toggle 容器可见暗底。
+- 答题卡预览强制白纸黑字（`.page` `#fafafa` + `color:#333`）。
+- SVG 文字全系列 `fill:#111 !important`。
+- 侧边栏 hover：黑遮罩 → 品牌红微光 `rgba(217,64,64,0.08)`。
+- 按钮 hover：黑块 → 微光白 `rgba(255,255,255,0.08)`。
+- Kimi 补全 1460 行组件级暗色覆盖（`.panel`/`.block-chip`/`.answer-key-editor` 等）。
 
-- `appVariant.ts` 扩展 `ProjectXAppMode` 类型，支持新权限模式
+### Bug 修复
+- `CreateExamGroupModal`：修复重复 `error`/`setError` 声明导致 tsc 编译失败。
+- 学生端趋势图：修复 `/api/scores/me` 返回 DESC 排序导致折线图时间倒序（改为 `[...data].reverse()`）。
+- Chart.js 颜色：修复 `var(--brand)15` 拼接为非法 Canvas 颜色。
+- `update.sh` 重写：Node 自动探测 + 分支安全 + 跨平台进程管理。
+
+### 工程化改进
+- 后端路由拆分：14 条分析路由提取为 `routes/analysis.ts` + 3 个共享模块。
+- Zod 请求校验：`POST /api/cards`、`POST /api/exams`、`PATCH /api/users/me/settings`、`POST /api/analysis/cross-exam/groups`。
+- 文件上传魔数校验（PNG/JPEG/BMP/TIFF）+ MIME 预过滤。
+- DB 性能索引 v12：`student_scores` 复合索引 + `question_scores` 复合索引。
+- SQL 动态 UPDATE 白名单校验。
+- 统一错误码 `ApiError` 枚举 + 中文提示。
+- GitHub Actions CI 工作流（typecheck + test + build）。
+- `AutoBackup`：考试关闭后自动拷贝 DB 到 `data/backups/`。
+
+### 答题卡模板
+- 新增辽宁新高考政治/历史/地理模板（16 单选 × 3 分 + 主观题 52 分，满分 100）。
 
 ## v1.7.1 (2026-06-30) — 网上阅卷能力补全
 
