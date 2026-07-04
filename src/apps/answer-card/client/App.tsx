@@ -813,7 +813,7 @@ function App() {
       setStatus(`已创建答题卡 「${created.title}」 (${created.id})${statusExtra}`);
 
       // v1.7.0: 自动弹出原卷上传面板
-      const userSettings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch(() => ({}));
+      const userSettings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch((): { requireOriginalPaper?: number } => ({}));
       if (userSettings.requireOriginalPaper !== 0) {
         setPaperPanelCardId(created.id);
         setShowPaperPanel(true);
@@ -948,7 +948,7 @@ function App() {
     // v1.7.0: 检查原卷是否上传
     try {
       const cardInfo = await fetchJson<{ has_original_paper?: number }>(`/api/cards/${cardId}/paper/info`);
-      const settings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch(() => ({}));
+      const settings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch((): { requireOriginalPaper?: number } => ({}));
       if (settings.requireOriginalPaper !== 0 && !cardInfo?.has_original_paper) {
         if (confirm("此答题卡尚未上传原卷，根据当前设置不允许导出。是否现在上传原卷？")) {
           setPaperPanelCardId(cardId);
@@ -981,7 +981,7 @@ function App() {
   }
 
   async function showExportCheck(savedCard: AnswerCard, pdfUrl: string) {
-    const settings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch(() => ({}));
+    const settings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch((): { requireOriginalPaper?: number } => ({}));
     let paperInfo: { hasPaper: boolean; filename?: string; mimeType?: string } = { hasPaper: false };
     let knowledgeReady = false;
     let knowledgePoints: Array<{ question_number: number; points: string[] }> = [];
@@ -2282,7 +2282,7 @@ function App() {
                 <button className="primary-button" type="button" onClick={async () => {
                   const cardId = exportCheck.cardId;
                   if (cardId) {
-                    const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string }>(`/api/cards/${cardId}/paper/info`).catch(() => ({}));
+                    const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string }>(`/api/cards/${cardId}/paper/info`).catch((): { has_original_paper?: number; filename?: string; mime_type?: string } => ({}));
                     setExportCheck({
                       ...exportCheck, step: "paper",
                       paperInfo: { hasPaper: !!(info as any)?.has_original_paper, filename: (info as any)?.filename, mimeType: (info as any)?.mime_type }

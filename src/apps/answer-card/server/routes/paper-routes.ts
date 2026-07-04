@@ -20,7 +20,11 @@ const paperUpload = multer({
   limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const err = validatePaperFile(file.originalname, 50 * 1024 * 1024);
-    cb(err ? new Error(err) : null, true);
+    if (err) {
+      cb(new Error(err));
+    } else {
+      cb(null, true);
+    }
   },
 });
 
@@ -30,7 +34,7 @@ export function paperRoutes(): Router {
   // POST /api/cards/:cardId/paper — 上传原卷
   router.post("/api/cards/:cardId/paper", paperUpload.single("file"), async (req: Request, res: Response) => {
     try {
-      const { cardId } = req.params;
+      const cardId = String(req.params.cardId);
       const file = req.file;
       if (!file) {
         res.status(400).json({ error: "未选择文件" });
@@ -80,7 +84,7 @@ export function paperRoutes(): Router {
   // ?info=type 返回 { mimeType, filename } JSON（前端判断渲染方式）
   router.get("/api/cards/:cardId/paper", async (req: Request, res: Response) => {
     try {
-      const { cardId } = req.params;
+      const cardId = String(req.params.cardId);
       const dir = paperDir(cardId);
 
       // ?info=type — 只返回文件类型信息，不返回文件
@@ -142,7 +146,7 @@ export function paperRoutes(): Router {
   // DELETE /api/cards/:cardId/paper — 删除原卷
   router.delete("/api/cards/:cardId/paper", async (req: Request, res: Response) => {
     try {
-      const { cardId } = req.params;
+      const cardId = String(req.params.cardId);
       const dir = paperDir(cardId);
 
       // 删除文件
@@ -170,7 +174,7 @@ export function paperRoutes(): Router {
   // GET /api/cards/:cardId/paper/info — 获取原卷状态（支持 DB+文件双检查）
   router.get("/api/cards/:cardId/paper/info", async (req: Request, res: Response) => {
     try {
-      const { cardId } = req.params;
+      const cardId = String(req.params.cardId);
       const dir = paperDir(cardId);
 
       // 检查文件实际是否存在（兼容 DB 未同步/旧数据）
@@ -223,7 +227,7 @@ export function paperRoutes(): Router {
   // PUT /api/cards/:cardId/paper/info — 保存题目范围 + 特别描述
   router.put("/api/cards/:cardId/paper/info", async (req: Request, res: Response) => {
     try {
-      const { cardId } = req.params;
+      const cardId = String(req.params.cardId);
       const { questionRange, extraNotes } = req.body as {
         questionRange?: string;
         extraNotes?: string;
@@ -250,7 +254,7 @@ export function paperRoutes(): Router {
   // POST /api/cards/:cardId/knowledge-points/analyze — AI 分析
   router.post("/api/cards/:cardId/knowledge-points/analyze", async (req: Request, res: Response) => {
     try {
-      const { cardId } = req.params;
+      const cardId = String(req.params.cardId);
       const { questionRange, extraNotes } = req.body as {
         questionRange?: string;
         extraNotes?: string;
@@ -371,7 +375,7 @@ export function paperRoutes(): Router {
   // GET /api/cards/:cardId/knowledge-points — 获取已保存知识点
   router.get("/api/cards/:cardId/knowledge-points", async (req: Request, res: Response) => {
     try {
-      const { cardId } = req.params;
+      const cardId = String(req.params.cardId);
       const repo = new KnowledgePointRepository();
       const points = await repo.findByCardIdGrouped(cardId);
       res.json({ points });
@@ -384,7 +388,7 @@ export function paperRoutes(): Router {
   // PUT /api/cards/:cardId/knowledge-points — 保存教师编辑后的知识点
   router.put("/api/cards/:cardId/knowledge-points", async (req: Request, res: Response) => {
     try {
-      const { cardId } = req.params;
+      const cardId = String(req.params.cardId);
       const { points } = req.body as {
         points: Array<{ question_number: number; point_text: string; category?: string }>;
       };
