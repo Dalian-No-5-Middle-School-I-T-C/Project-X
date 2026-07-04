@@ -216,6 +216,20 @@ CREATE TABLE IF NOT EXISTS card_assets (
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 知识点字典（与成绩分析联动，v1.7.0）
+CREATE TABLE IF NOT EXISTS knowledge_points (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id         TEXT NOT NULL REFERENCES answer_cards(id) ON DELETE CASCADE,
+    question_number INTEGER NOT NULL,
+    point_text      TEXT NOT NULL,
+    category        TEXT,
+    sort_order      INTEGER DEFAULT 0,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(card_id, question_number, point_text)
+);
+CREATE INDEX IF NOT EXISTS idx_kp_card ON knowledge_points(card_id);
+CREATE INDEX IF NOT EXISTS idx_kp_card_question ON knowledge_points(card_id, question_number);
+
 -- ============================================================
 -- 模块三：考试与扫描
 -- ============================================================
@@ -532,6 +546,7 @@ CREATE TABLE IF NOT EXISTS ai_providers (
     base_url        TEXT NOT NULL DEFAULT '',   -- API 基础地址 (Gemini 留空)
     api_key         TEXT NOT NULL,              -- API Key
     models          TEXT,                       -- JSON 模型列表，空=自动获取
+    is_system       INTEGER DEFAULT 0,          -- v1.7.0: 1=系统级(全校统一), 0=个人
     is_active       INTEGER DEFAULT 1,
     sort_order      INTEGER DEFAULT 0,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,

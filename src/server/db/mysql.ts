@@ -423,6 +423,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE exam_groups ADD COLUMN only_full_participants TINYINT DEFAULT 0`,
       ]
     },
+    {
+      version: 16,
+      name: "system-ai-provider",
+      sqls: [
+        `ALTER TABLE ai_providers ADD COLUMN is_system TINYINT DEFAULT 0`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

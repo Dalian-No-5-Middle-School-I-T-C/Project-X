@@ -272,3 +272,48 @@ def get_review_risks(examId: int, classId: int | None = None, limit: int = 12) -
         )
     return {"risks": risks}
 
+
+def get_knowledge_point_weaknesses(exam_id: int, class_id: int | None = None) -> dict[str, object]:
+    """获取按知识点聚合的得分率排名（弱→强），v1.7.0."""
+    db = _connect()
+    try:
+        sql = (
+            "SELECT kp.point_text, "
+            "ROUND(AVG(qs.score * 100.0 / NULLIF(qs.max_score, 0)), 1) AS avg_rate, "
+            "COUNT(DISTINCT qs.student_id) AS student_count, "
+            "COUNT(DISTINCT qs.question_number) AS question_count "
+            "FROM question_scores qs "
+            "JOIN exams e ON qs.exam_id = e.id "
+            "JOIN knowledge_points kp ON kp.card_id = e.card_id AND kp.question_number = qs.question_number "
+            "WHERE qs.exam_id = ?"
+        )
+        params: list[object] = [exam_id]
+        if class_id is not None:
+            sql += " AND qs.student_id IN (SELECT student_id FROM class_students WHERE class_id = ?)"
+            params.append(class_id)
+        sql += " GROUP BY kp.point_text ORDER BY avg_rate ASC LIMIT 20"
+
+        rows = db.execute(sql, params).fetchall()
+        weaknesses = []
+        for row in rows:
+            weaknesses.append({
+                "point": row["point_text"],
+                "avgRate": float(row["avg_rate"] or 0),
+                "studentCount": int(row["student_count"]),
+                "questionCount": int(row["question_count"]),
+            })
+
+        weak = [w for w in weaknesses if w["avgRate"] < 60]
+        moderate = [w for w in weaknesses if 60 <= w["avgRate"] < 80]
+        return {
+            "weaknesses": weaknesses,
+            "summary": {
+                "total": len(weaknesses),
+                "weakCount": len(weak),
+                "moderateCount": len(moderate),
+                "weakestPoints": [w["point"] for w in weak[:5]],
+            }
+        }
+    finally:
+        db.close()
+
