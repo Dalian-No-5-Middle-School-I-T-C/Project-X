@@ -27,9 +27,14 @@ import exportScoresRoutes from "../../../server/routes/export-scores";
 import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
+import reviewRoutes from "../../../server/routes/review";
 import apiKeysRoutes from "../../../server/routes/api-keys";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
 import ladderRoutes from "../../../server/routes/ladder";
+import {
+  getAnswerBlockCropFile,
+  persistAnswerBlockCrops
+} from "../../../server/services/AnswerBlockCropService";
 import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
 import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
@@ -151,6 +156,18 @@ function gradingPreviewUrl(cardId: string, imagePath?: string): string | undefin
   return `/api/cards/${encodeURIComponent(cardId)}/grading/preview/${encodeURIComponent(path.basename(imagePath))}`;
 }
 
+async function createRecognitionCropTempDir(cardId: string): Promise<string> {
+  const dir = path.join(
+    dataDir,
+    "recognition",
+    "crop-temp",
+    safeId(cardId),
+    `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  );
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
 type GradingProgressEvent = {
   type: "start" | "progress" | "done" | "error";
   batchId: string;
@@ -167,6 +184,27 @@ function recognitionConcurrency(): number {
     return Math.max(1, Math.floor(configured));
   }
   return Math.min(4, Math.max(2, Math.floor(cpus().length / 2)));
+}
+
+function answerBlockCropGate(enforce: boolean) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+    if (!enforce) {
+      next();
+      return;
+    }
+    if (!req.user) {
+      res.status(401).json({ message: "未登录" });
+      return;
+    }
+    const canReadGrades = roleHasPermission(req.user.role_id, PERMISSIONS.GRADE_READ);
+    const canReadOwnScores = (req.method === "GET" || req.method === "HEAD") &&
+      roleHasPermission(req.user.role_id, PERMISSIONS.SCORE_READ);
+    if (!canReadGrades && !canReadOwnScores) {
+      res.status(403).json({ message: "权限不足" });
+      return;
+    }
+    next();
+  };
 }
 
 async function mapWithConcurrency<T, R>(
@@ -276,13 +314,22 @@ async function persistGradingResults(
       const stu = await db.get(findStudentSql, row.studentId) as { id: number } | undefined;
       if (!stu) continue;
 
-      await examRepo.addScanRecord({
+      const recordId = await examRepo.addScanRecord({
         batch_id: batchId,
         file_path: (row as any).actualPath || row.fileName,
         file_name: row.fileName,
         student_number: row.studentId,
         student_id: stu.id
       });
+      await persistAnswerBlockCrops({
+        cardId: row.recognition.cardId ?? String(exam.card_id ?? ""),
+        examId,
+        studentId: stu.id,
+        studentNumber: row.studentId,
+        sourceType: "scan_record",
+        sourceRecordId: recordId,
+        crops: row.recognition.blockCrops ?? []
+      }, db);
 
       await examRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
 
@@ -388,6 +435,102 @@ export async function createApp(): Promise<express.Express> {
 
   // 认证与账号控制系统路由
   app.use("/api/auth", authRoutes);
+
+  // ── 用户自身设置（无需管理员权限） ──
+  // GET  /api/users/me/settings — 读取当前用户设置
+  // PATCH /api/users/me/settings — 更新当前用户设置
+  app.get("/api/users/me/settings", authMiddleware, async (_req, res, next) => {
+    try {
+      const userId = (_req as any).user.userId ?? (_req as any).user.id;
+      const userRepo = new UserRepository();
+      const user = await userRepo.findById(userId);
+      if (!user) { res.status(404).json({ message: "用户不存在" }); return; }
+      res.json({
+        scoreDisplayMode: (user as any).score_display_mode ?? "zscore",
+        reviewConfidenceThreshold: (user as any).review_confidence_threshold ?? 0.12,
+        backgroundOpacity: (user as any).background_opacity ?? 0,
+      });
+    } catch (err) { next(err); }
+  });
+  app.patch("/api/users/me/settings", authMiddleware, validateBody(UpdateUserSettingsSchema), async (_req, res, next) => {
+    try {
+      const userId = (_req as any).user.userId ?? (_req as any).user.id;
+      const body = (_req as any).body as Record<string, unknown>;
+      const setClauses: string[] = [];
+      const values: unknown[] = [];
+      if (body.scoreDisplayMode !== undefined) { setClauses.push("score_display_mode = ?"); values.push(body.scoreDisplayMode); }
+      if (body.reviewConfidenceThreshold !== undefined) { setClauses.push("review_confidence_threshold = ?"); values.push(body.reviewConfidenceThreshold); }
+      if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
+      if (setClauses.length > 0) {
+        setClauses.push("updated_at = CURRENT_TIMESTAMP");
+        values.push(userId);
+        const db = getMysqlDb();
+        await db.run(`UPDATE users SET ${setClauses.join(", ")} WHERE id = ?`, ...values);
+      }
+      res.json({ message: "已保存" });
+    } catch (err) { next(err); }
+  });
+
+  // v1.4.6: 背景图 — GET 返回背景图，POST 上传自定义背景
+  const backgroundsDir = path.join(dataDir, "backgrounds");
+
+  app.get("/api/app/background", optionalAuth, (req, res) => {
+    // 用户自定义背景优先
+    if ((req as any).user) {
+      const customBg = path.join(backgroundsDir, `${(req as any).user.id}.jpg`);
+      if (existsSync(customBg)) {
+        res.setHeader("Cache-Control", "no-cache");
+        res.sendFile(customBg);
+        return;
+      }
+    }
+    // 默认背景
+    const bgPath = path.join(rootDir, "resources", "background.jpg");
+    if (existsSync(bgPath)) {
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      res.sendFile(bgPath);
+    } else {
+      res.status(404).json({ error: "background image not found" });
+    }
+  });
+
+  // 上传自定义背景图
+  const bgUpload = multer({
+    storage: multer.diskStorage({
+      destination: async (_req, _file, cb) => {
+        await mkdir(backgroundsDir, { recursive: true });
+        cb(null, backgroundsDir);
+      },
+      filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
+        cb(null, `upload_${Date.now()}${ext}`);
+      }
+    }),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      if (file.mimetype.startsWith("image/")) {
+        cb(null, true);
+      } else {
+        cb(new Error("仅支持图片文件"));
+      }
+    }
+  });
+
+  app.post("/api/users/me/background", authMiddleware, bgUpload.single("file"), async (req, res, next) => {
+    try {
+      if (!req.file) {
+        res.status(400).json({ error: "请选择图片文件" });
+        return;
+      }
+      // 重命名为 user_${userId}.jpg，覆盖旧背景
+      const target = path.join(backgroundsDir, `${(req as any).user.id}.jpg`);
+      await rename(req.file.path, target);
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   app.use("/api/users", userRoutes);
   app.use("/api/classes", classRoutes);
   app.use("/api/teachers", teacherRoutes);
@@ -465,9 +608,12 @@ export async function createApp(): Promise<express.Express> {
   const examGate = makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_WRITE);
   const analysisGate = makeGate(enforceAuth, PERMISSIONS.GRADE_READ, PERMISSIONS.GRADE_READ);
   const scannerGate = makeGate(enforceAuth, PERMISSIONS.GRADE_WRITE, PERMISSIONS.GRADE_WRITE);
+  const cropGate = answerBlockCropGate(enforceAuth);
   app.use("/api/cards", cardGate);
   app.use("/api/exams", examGate);
   app.use("/api/analysis", analysisGate, analysisRoutes);
+  app.use("/api/answer-block-crops", cropGate);
+  app.use("/api/review", analysisGate, reviewRoutes);
 
   const cardRepo = new CardRepository();
 
@@ -834,11 +980,13 @@ export async function createApp(): Promise<express.Express> {
 
       const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file) => {
         try {
+          const cropsDir = await createRecognitionCropTempDir(cardId);
           const recognition = (await recognizeAnswerCard({
             imagePath: file.path,
             layoutPath: currentLayoutPath,
             pageNumber,
-            dpi
+            dpi,
+            cropsDir
           })) as CombinedRecognitionResult;
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
           return {
@@ -914,6 +1062,36 @@ export async function createApp(): Promise<express.Express> {
       next(error);
     }
   });
+
+  app.get("/api/answer-block-crops/:cropId/image", async (req, res, next) => {
+    try {
+      const cropId = safeId(paramValue(req.params.cropId));
+      const cropRow = await getMysqlDb().get(
+        "SELECT image_path, student_id FROM answer_block_crops WHERE id = ?",
+        cropId
+      ) as { image_path: string; student_id: number | null } | undefined;
+      const targetPath = cropRow?.image_path ?? await getAnswerBlockCropFile(cropId);
+      if (!cropRow || !targetPath || !existsSync(targetPath)) {
+        res.status(404).json({ message: "作答切块图片不存在" });
+        return;
+      }
+      if (
+        enforceAuth &&
+        req.user &&
+        roleHasPermission(req.user.role_id, PERMISSIONS.SCORE_READ) &&
+        !roleHasPermission(req.user.role_id, PERMISSIONS.GRADE_READ) &&
+        cropRow.student_id !== req.user.id
+      ) {
+        res.status(403).json({ message: "权限不足" });
+        return;
+      }
+      res.setHeader("Content-Type", "image/png");
+      res.sendFile(targetPath);
+    } catch (error) {
+      next(error);
+    }
+  });
+
 
   app.post("/api/cards/:cardId/assets", upload.single("file"), async (req, res, next) => {
     try {

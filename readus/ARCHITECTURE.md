@@ -2,7 +2,7 @@
 
 **Project-X（答题卡设计阅卷系统）** 是大连五中自研的智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 成绩分析 → AI 成绩分析** 全流程。架构上支持 **本地 SQLite 单机模式** 和 **远程 MariaDB 服务器模式**，通过统一的 `DbAdapter` 接口无缝切换。
 
-> v1.6.1 起，代码库拆分为两个构建目标：
+> v1.6.1 起，代码库拆分为两个构建目标；v1.6.2 起识别结果可产出大题作答图片切块：
 > - **Web 构建** (`dist/web/`)：教师 + 学生页面，无扫描代码，部署到服务器
 > - **Scanner 构建** (`dist/scanner/`)：仅 ScannerPanel，打包进 Electron 桌面端
 > - 教师/学生 Electron 端已废弃，统一使用浏览器访问 Web 端
@@ -357,6 +357,8 @@ sequenceDiagram
 
 ### 6.4 扫描端 UI 结构 (v1.6.1)
 
+> v1.6.2 补充：学生成绩详情和教师个别改分页默认使用“大题作答图片”视图；没有切块时回退到整页答题卡预览。
+
 扫描端采用**双屏路由**：答题卡选择 → 扫描工作台。
 
 ```mermaid
@@ -374,6 +376,41 @@ flowchart LR
 
 - **CardSelectPage**：对齐 ExamSelectPage 风格，搜索框 + 学科筛选 + 表格列表；大考 Tab 展开显示下辖考试
 - **ScannerWorkspace**：左区 ScannerPanel（TWAIN 扫描），右区扫描设置 + 文件/目录导入阅卷（复用 GradingResults）
+
+### 6.5 大题作答图片切块 (v1.6.2)
+
+大题切块发生在识别成功之后，复用 native 识别器已经完成的定位点匹配和透视校正结果，保证切块坐标与判分坐标一致。
+
+```mermaid
+sequenceDiagram
+    participant API as Express recognition/grading
+    participant OCR as answer-card-recognizer.exe
+    participant Crop as AnswerBlockCropService
+    participant DB as projectx.db
+    participant UI as StudentScoreDetail/ScoreFixPage
+
+    API->>OCR: --image --layout --dpi --crops-dir <tmp>
+    OCR-->>API: recognition JSON + blockCrops manifest
+    API->>Crop: move temp crops to recognition/crops/...
+    Crop->>DB: insert answer_block_crops
+    UI->>API: GET score detail / block-crops
+    UI->>API: GET /api/answer-block-crops/:cropId/image
+```
+
+裁剪规则：
+
+- 以 `layout.pages[].blocks[]` 为切块来源，裁剪大题级 block，不做小题裁剪。
+- 矩形优先使用 `frameRect`，没有时使用 `rect`，默认向外扩展 2.5mm padding，并 clamp 到页面范围。
+- 同一大题跨页时按页生成多个 segment，不跨页拼接。
+- 单面卡过滤背面后不会生成背面切块。
+- native 识别器不可用或识别失败时，不阻断原成绩流程，只是不产生切块。
+
+数据落点：
+
+- 临时裁剪图由 native 写入 `--crops-dir`。
+- 服务端归档到 `data/answer-card/recognition/crops/{cardId}/{sourceType}_{sourceRecordId}/`。
+- `answer_block_crops` 通过 `source_type/source_record_id` 统一关联普通阅卷 `scan_records` 和扫描仪 `twain_scan_records`。
+- `CombinedRecognitionResult.blockCrops` 为本次识别的临时 manifest；落库后前端读取的是持久化 `AnswerBlockCrop`。
 
 ---
 
@@ -430,8 +467,10 @@ flowchart LR
 
 - **前端（Web）：** Vite --mode web → `dist/web`
 - **前端（Scanner）：** Vite --mode scanner → `dist/scanner`
+- **扫描端入口：** v1.6.2 构建结束后将 `index-scanner.html` 规范化为 `dist/scanner/index.html`，与 Express SPA fallback 保持一致。
 - **后端：** esbuild 单文件 bundle（`packages: external`，保留 better-sqlite3 原生依赖）→ `dist/server/index.mjs`，并复制 `schema.sql`
 - **桌面：** electron-builder，Windows x64 / ia32，仅扫描端变体，携带 native 资源
+- **32 位打包：** ia32 不复用 `node_modules/electron/dist` 中的 x64 Electron，需获取真正 32 位 Electron；打包后确认 exe 与 `better_sqlite3.node` 均为 x86。
 - **原生 Node 模块：** 需对 Electron 单独 `electron-rebuild`（better-sqlite3）
 
 ---

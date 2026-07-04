@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "1.6.1",
+  "version": "1.7.1",
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
@@ -22,16 +22,20 @@
     "native:build:x64": "scripts\\build-answer-card-recognizer.bat x64 && scripts\\build-scanner-bridge.bat x64",
     "native:build:ia32": "scripts\\build-answer-card-recognizer.bat ia32 && scripts\\build-scanner-bridge.bat ia32",
     "electron:dev": "npm run build:scanner:full && npm run native:rebuild:electron && electron .",
-    "electron:pack": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --dir --x64",
+    "electron:pack": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --dir --x64 -c.electronDist=node_modules/electron/dist",
     "electron:pack:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && electron-builder --dir --ia32",
-    "electron:dist": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --win portable --x64",
+    "electron:dist": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --win portable --x64 -c.electronDist=node_modules/electron/dist",
     "electron:dist:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && electron-builder --win portable --ia32",
-    "electron:msi": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --win msi --x64",
+    "electron:msi": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --win msi --x64 -c.electronDist=node_modules/electron/dist",
     "electron:msi:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && electron-builder --win msi --ia32",
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
     "typecheck": "tsc --noEmit"
   },
+  "browserslist": [
+    "iOS >= 15",
+    "Safari >= 15"
+  ],
   "dependencies": {
     "adm-zip": "^0.5.17",
     "archiver": "^8.0.0",
@@ -40,7 +44,6 @@
     "chart.js": "^4.5.1",
     "expr-eval": "^2.0.2",
     "express": "^5.1.0",
-    "localtunnel": "^2.0.2",
     "multer": "^2.0.2",
     "mysql2": "^3.22.5",
     "pdfkit": "^0.17.2",
@@ -73,7 +76,6 @@
   "build": {
     "appId": "cn.projectx.answer-card-designer",
     "productName": "答题卡扫描端",
-    "electronDist": "node_modules/electron/dist",
     "directories": {
       "output": "release"
     },

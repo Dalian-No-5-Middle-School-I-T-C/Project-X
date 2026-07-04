@@ -211,8 +211,8 @@ Electron 主进程（`electron/main.cjs`）启动内嵌 Express 服务并加载 
 | 教师扫描端 | `teacher-scanner` | 阅卷 | design/grading/analysis/account | 全部（识别+扫描） |
 
 - 三端共用 `%APPDATA%\answer-card-designer` 数据目录
-- 变体配置：`src/shared/appVariant.ts`；打包脚本：`scripts/package-variant.ts`
-- 打包脚本支持 `x64` 与 `ia32`；`npm run electron:msi:all` 可一次生成三端双架构共 6 个 MSI
+- 变体配置：`src/shared/appVariant.ts`（v1.6.1 起由 `VITE_BUILD_TARGET` 替代编译时变体）
+- 扫描端打包：`npm run electron:dist` / `electron:msi`（仅扫描端，x64/ia32）
 - 学生端既限产品功能（只能看我的成绩），也限账号角色权限
 - 新增：`passwordPolicy.ts`（学生默认密码允许5位学号）
 

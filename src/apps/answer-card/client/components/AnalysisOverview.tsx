@@ -4,6 +4,8 @@ import { AnalysisDistribution } from "./AnalysisDistribution";
 interface Props {
   overview: ExamOverview | null;
   ranking?: StudentRankingItem[];
+  selectedClassId?: string;
+  onClassSelect?: (classId: string) => void;
   previousComparison?: {
     prevExamName: string | null;
     avgScoreChange: number | null;
@@ -17,7 +19,15 @@ function formatScore(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-export function AnalysisOverview({ overview, ranking, previousComparison, progressTop5, declineTop5 }: Props) {
+export function AnalysisOverview({
+  overview,
+  ranking,
+  selectedClassId = "",
+  onClassSelect,
+  previousComparison,
+  progressTop5,
+  declineTop5
+}: Props) {
   if (!overview) {
     return <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>暂无数据，请先完成阅卷。</div>;
   }
@@ -128,6 +138,8 @@ export function AnalysisOverview({ overview, ranking, previousComparison, progre
           summary={overview.scoreSummary}
           overallSummary={overview.overallScoreSummary}
           classSummaries={overview.classSummaries}
+          selectedClassId={selectedClassId}
+          onClassSelect={onClassSelect}
         />
       )}
 

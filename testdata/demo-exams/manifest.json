@@ -1,8 +1,8 @@
 {
   "name": "projectx-demo-exams",
-  "version": "1.0.0",
-  "description": "演示考试数据集 — 覆盖单科/大考/跨考/并列排名/缺考/导出等测试场景",
-  "compatibleWith": ["v1.4.8", "v1.5.0"],
+  "version": "1.1.0",
+  "description": "演示考试数据集 — 覆盖单科/大考/跨考/并列排名/缺考/导出/名次变化/学期对比等测试场景",
+  "compatibleWith": ["v1.6.3", "v1.7.0"],
   "prefix": "演示-",
   "accounts": {
     "admin": { "identifier": "admin", "password": "admin123" },
@@ -20,7 +20,7 @@
   "exams": {
     "weekRange": { "start": "2026-06-16", "end": "2026-06-22", "count": 6 },
     "outsideWeek": ["演示-历史"],
-    "total": 7
+    "total": 8
   },
   "groups": {
     "examGroup": "演示-2026高考摸底大考",
@@ -31,7 +31,7 @@
       "id": "tie-rank-math",
       "feature": "并列排名",
       "steps": "分析 → 单科 → 演示-数学 → 成绩",
-      "expect": "4 人 128 分；v1.5.0+ 年排均为 6，v1.4.8 为顺序排名"
+      "expect": "4 人 128 分；年排均为 6（同分并列）"
     },
     {
       "id": "absent-chem-bio",
@@ -60,6 +60,18 @@
       "id": "rank-change",
       "feature": "名次变化",
       "expect": "演示-数学月考 vs 演示-数学，可查看 rankChange"
+    },
+    {
+      "id": "previous-exam",
+      "feature": "上次考试对比",
+      "steps": "分析 → 演示-数学 → 概况",
+      "expect": "对比演示-数学月考，显示均分/及格率变化"
+    },
+    {
+      "id": "semester-comparison",
+      "feature": "学生学期对比",
+      "steps": "学生登录 → 我的成绩 → 学期对比",
+      "expect": "本学期各学科均分及与上学期对比"
     },
     {
       "id": "question-export",

@@ -396,6 +396,32 @@ CREATE TABLE IF NOT EXISTS subjective_grades (
 -- TWAIN 扫描仪表（从 scanner.db 合并）
 -- ============================================================
 
+CREATE TABLE IF NOT EXISTS answer_block_crops (
+    id               VARCHAR(64) PRIMARY KEY,
+    card_id          VARCHAR(36) NOT NULL,
+    exam_id          INT,
+    student_id       INT,
+    student_number   VARCHAR(64),
+    source_type      VARCHAR(32) NOT NULL,
+    source_record_id VARCHAR(64) NOT NULL,
+    block_id         VARCHAR(36) NOT NULL,
+    block_title      VARCHAR(255),
+    block_type       VARCHAR(32) NOT NULL,
+    page_number      INT NOT NULL,
+    segment_index    INT NOT NULL,
+    question_numbers JSON NOT NULL,
+    rect_json        JSON NOT NULL,
+    image_path       TEXT NOT NULL,
+    width_px         INT NOT NULL,
+    height_px        INT NOT NULL,
+    dpi              INT NOT NULL,
+    status           VARCHAR(32) DEFAULT 'ready',
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_answer_block_crop_source (source_type, source_record_id, block_id, page_number, segment_index),
+    FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+    FOREIGN KEY (student_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS twain_scan_sessions (
     id          VARCHAR(36) PRIMARY KEY,
     card_id     VARCHAR(20) NOT NULL,
@@ -591,6 +617,9 @@ CREATE INDEX IF NOT EXISTS idx_objective_recognitions_record ON objective_recogn
 CREATE INDEX IF NOT EXISTS idx_objective_recognitions_expires ON objective_recognitions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_objective_grades_record ON objective_grades(record_id);
 CREATE INDEX IF NOT EXISTS idx_subjective_grades_record ON subjective_grades(record_id);
+CREATE INDEX IF NOT EXISTS idx_answer_block_crops_exam_student ON answer_block_crops(exam_id, student_id);
+CREATE INDEX IF NOT EXISTS idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
+CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_student ON student_scores(student_id);
 CREATE INDEX IF NOT EXISTS idx_question_scores_exam_student ON question_scores(exam_id, student_id);

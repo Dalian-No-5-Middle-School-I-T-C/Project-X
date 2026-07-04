@@ -51,6 +51,12 @@ router.get("/me/trends", async (req: Request, res: Response) => {
   res.json(trends);
 });
 
+/** GET /api/scores/me/semester-comparison — 本学期 vs 上学期历史成绩对比 */
+router.get("/me/semester-comparison", async (req: Request, res: Response) => {
+  const comparison = await scoreRepo.getStudentSemesterComparison(req.user!.id);
+  res.json(comparison);
+});
+
 /** GET /api/scores/me/subject-comparison — 学科横向对比（薄弱分析） */
 router.get("/me/subject-comparison", async (req: Request, res: Response) => {
   const limit = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : 0;

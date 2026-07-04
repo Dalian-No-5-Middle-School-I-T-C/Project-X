@@ -1,7 +1,7 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.6.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.7.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.6.1
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 考试管理 → 大考组 → 成绩分析 → 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → **Web/Scanner 构建分离（教师学生 WEB 端独立部署 + 扫描端 Electron 桌面端）**
-> **下个里程碑**：v1.7.0 — 知识点诊断 + 成绩预测 + 跨班深度对比
+> **当前版本**：v1.7.1
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → **网上阅卷队列** → 考试管理 → 大考组 → 成绩分析（含上次考试对比）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → 并列排名 → 暗色主题 → **学生学期成绩对比** → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → **Web/Scanner 构建分离** → **iOS 15 Safari Web 兼容**
+> **下个里程碑**：v1.7.x — 知识点诊断 + 成绩预测 + 跨班深度对比
 
 ---
 
@@ -64,6 +64,7 @@
   - 学号：数字填涂网格识别
 - **多页合并评分**：双面卡 / 多页卡自动合并正反面成绩，去重汇总总分
 - **PDF 式详情预览**：按学生聚合展示所有页面，纵向滚动翻阅，缩略图导航
+- **大题作答图片切块**：识别成功后按 `layout.pages[].blocks[]` 的大题框裁剪作答图片，跨页大题按页生成续页图片；学生成绩详情与教师个别改分页优先展示大题切块，仍保留整页预览。
 - **低置信度标记**：置信度偏低的题目自动标"待复核"
 - **Excel (.xlsx) 导出**：点击导出按钮下载，Excel 直接打开
 
@@ -73,6 +74,7 @@
 - **双屏流程**：答题卡选择页（单科/大考双Tab）→ 扫描工作台（直扫 + 导入阅卷）
 - **本地/远程双模**：本地直接识别存 SQLite；远程模式下扫描完成自动上传到远端服务器
 - **远端上传**：三步流程（创建会话 → 逐页上传图片 → 标记完成），API Key 鉴权
+- **切块资产同步**：扫描仪 OCR 与普通批量阅卷都会落库 `answer_block_crops`；远程上传模式预留切块 manifest/文件接收能力，服务端可复用扫描端生成的大题图片。
 - **文件导入阅卷**：扫描端也支持导入目录或单张图片进行识别的判分
 - **单面过滤**：单面答题卡自动跳过背面扫描结果，避免无效数据
 - **实时进度**：SSE 推送扫描进度 + 逐页缩略图预览
@@ -114,7 +116,7 @@
 
 ### 学生功能
 
-- **我的成绩**：查看各科考试成绩、排名趋势图、学科雷达图
+- **我的成绩**：查看各科考试成绩、排名趋势图、学科雷达图、**本学期 vs 上学期对比**
 - **成绩天梯**：年级前十名榜单（单场考试 / 大考组 / 跨考累计三种维度），管理员可开关
 - **AI 成绩分析**：学生个人成绩 AI 分析报告
 
@@ -123,6 +125,7 @@
 - **Windows 扫描端**：Electron 桌面端，仅含扫描面板（TWAIN 直扫 + 答题卡选择 + 结果预览），便携版 EXE + MSI 安装包
 - **Web 端自理**：教师/学生功能通过浏览器访问 Web 部署地址，不再打包 Electron 教师/学生端
 - **x64 / ia32 双架构**：扫描端均支持 64 位与 32 位 Windows 包；32 位原生资源位于 `resources/native/win-ia32/`
+- **打包入口修复**：扫描端构建最终产物统一提供 `dist/scanner/index.html`，Electron 运行时与服务端 SPA fallback 使用同一入口；ia32 包不再复用 x64 Electron 运行时。
 - **数据共用**：`%APPDATA%\answer-card-designer\`（管理员 Web 端建账号→扫描端/学生 Web 端直接使用）
 - **支持项目**：账号菜单低调入口，JSON 配置驱动的收款码预留接口（详见 [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md)）
 
@@ -138,11 +141,13 @@
 
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
 ```
-答题卡扫描端-1.6.1-x64.exe
-答题卡扫描端-1.6.1-ia32.exe
+答题卡扫描端-1.6.3-x64.exe
+答题卡扫描端-1.6.3-ia32.exe
 ```
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。扫描端含 TWAIN 直扫 + 答题卡选择 + 结果预览。教师/学生功能请通过浏览器访问服务器部署的 Web 端。
+
+> v1.6.3 起，`ia32` 包会下载/使用真正的 32 位 Electron 运行时，并重建 32 位 `better-sqlite3`；打包后可用 PE 架构检查确认 exe 为 x86。
 
 #### 方式二：MSI 安装包（推荐机房部署）
 
@@ -266,6 +271,9 @@ npm run electron:msi                   # 扫描端 x64 MSI
 npm run electron:msi:ia32              # 扫描端 32 位 MSI
 ```
 
+> 维护提示：`vite build --mode scanner` 日志中仍会显示 `index-scanner.html`，构建完成后会自动重命名为 `dist/scanner/index.html`。这是为了让 Electron 内置 Express 的 SPA fallback 能稳定读取同一个入口文件。
+
+
 Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 
 多端打包和使用方式见 **[多端使用说明.md](./readus/多端使用说明.md)**。
@@ -282,6 +290,7 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | `npm run electron:dev` | 构建扫描端并启动 Electron |
 | `npm run electron:pack` | 生成扫描端目录包 (x64) |
 | `npm run electron:pack:ia32` | 生成扫描端目录包 (ia32) |
+| `npm run native:rebuild:node` | 32 位 Electron 打包后恢复本机 Node 版 `better-sqlite3` |
 | `npm run electron:dist` | 生成扫描端便携 EXE (x64) |
 | `npm run electron:dist:ia32` | 生成扫描端便携 EXE (ia32) |
 | `npm run electron:msi` | 生成扫描端 MSI (x64) |
@@ -306,7 +315,7 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | [多端使用说明.md](./readus/多端使用说明.md) | Web 端 / 扫描端的功能差异、共用数据目录、账号登录与构建部署 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.6.1 Web/Scanner 构建分离） | 全体 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.7.1 网上阅卷 + v1.7.0 成绩分析与学生学期对比） | 全体 |
 
 ---
 
@@ -324,7 +333,8 @@ Project-X/
 │   │   │   ├── styles.css               # 全局样式
 │   │   │   └── components/              # 子组件
 │   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期+考试关联）
-│   │   │       ├── LoginPage.tsx            # 登录页（v1.6.0: 远端服务器配置+测试连接）
+│   │   │       ├── LoginPage.tsx            # Web 端登录页（v1.6.3: 仅用户名密码，不含扫描功能）
+│   │   │       ├── LoginPageScanner.tsx       # 扫描端登录页（v1.6.3: 含远端服务器配置+API Key）
 │   │   │       ├── AccountMenu.tsx          # 账户下拉菜单（v1.6.0: 管理员身份切换）
 │   │   │       ├── SponsorPage.tsx          # 赞助/支持页面（收款码预留）
 │   │   │       ├── AccountManagement.tsx    # 教师/学生管理（双 Tab）
@@ -333,8 +343,8 @@ Project-X/
 │   │   │       ├── ImportModal.tsx          # 通用CSV/Excel导入弹窗
 │   │   │       ├── ImportCardModal.tsx       # 导入答题卡确认弹窗（科目/考试/日期）
 │   │   │       ├── ScanPreviewModal.tsx      # PDF 式多页答题卡预览弹窗（缩放/PgUp/PgDn）
-│   │   │       ├── ScoreFixPage.tsx          # 成绩修改（个别改分 + 修改答案批量重算）
-│   │   │       ├── StudentScoreDetail.tsx    # 逐题得分明细（班级均分率 + 答题卡放大）
+│   │   │       ├── ScoreFixPage.tsx          # 成绩修改 + 大题作答图片定位
+│   │   │       ├── StudentScoreDetail.tsx    # 逐题得分明细 + 大题作答图片（按题号定位切块）
 │   │   │       ├── StudentScores.tsx        # 学生我的成绩
 │   │   │       ├── ScannerPanel.tsx         # 扫描仪控制面板（v1.6.0: 本地/远程双模）
 │   │   │       ├── CardSelectPage.tsx        # 答题卡选择页（v1.6.1: 单科/大考双Tab）
@@ -353,6 +363,7 @@ Project-X/
 │   │   │       └── AnalysisQuestions.tsx   # 题目得分率排行
 │   │   └── server/                      # Express 后端
 │   │       ├── index.ts                 # 主路由（卡片CRUD/导入导出/识别/阅卷/考试/分析/成绩修改）
+│   │       ├── services/AnswerBlockCropService.ts # 大题切块文件归档与数据库索引
 │   │       ├── recognition.ts           # C++ 识别引擎子进程管理
 │   │       ├── storage.ts               # 文件存储层
 │   │       ├── pdf.ts                   # PDF 生成（pdfkit）
@@ -457,6 +468,10 @@ Project-X/
 | `GET` | `/api/scanner/scan-image/:recordId` | 扫描原图预览 |
 | `GET` | `/api/scanner/exam/:examId/student/:studentId/scans` | 按考试+学生查答题卡页 |
 | `GET` | `/api/scanner/grading-image/:cardId/:fileName` | 上传阅卷图片 |
+| `GET` | `/api/answer-block-crops/:cropId/image` | 读取大题作答切块图片 |
+| `GET` | `/api/review/exams/:id/blocks` | 网上阅卷题块汇总（待阅/已阅数量） |
+| `GET` | `/api/review/exams/:id/block-crops` | 网上阅卷队列（大题切块 + 学生信息） |
+| `POST` | `/api/review/exams/:id/block-crops/:cropId/submit` | 提交题块阅卷分数并标记状态 |
 | `POST` | `/api/auth/login` | 登录（支持 isPersistent 6 月免登录） |
 | `GET` | `/api/auth/me` | 当前用户信息 |
 | `GET` | `/api/teachers` | 教师列表（按创建时间排序） |
@@ -481,7 +496,8 @@ Project-X/
 | `GET/POST` | `/api/analysis/cross-exam/groups` | 跨考组列表 / 创建 |
 | `DELETE` | `/api/analysis/cross-exam/groups/:id` | 删除跨考组 |
 | `GET` | `/api/analysis/exams/:id/score-table` | 成绩表格数据（年排/班排/名次变化/偏差值/Z值/百分位） |
-| `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比 |
+| `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比（均分/及格率变化） |
+| `GET` | `/api/scores/me/semester-comparison` | 学生本学期 vs 上学期成绩对比 |
 | `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |
 | `POST` | `/api/export/exams/:id/scores` | 按列配置导出 Excel |
 | `GET` | `/api/export/columns` | 导出列元数据 |

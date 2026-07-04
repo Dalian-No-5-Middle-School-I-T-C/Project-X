@@ -18,6 +18,8 @@ import crypto from "node:crypto";
 import { apiKeyAuth } from "../middleware/api-key";
 import { authMiddleware } from "../middleware/auth";
 import { getMysqlDb } from "../db";
+import { persistAnswerBlockCrops } from "../services/AnswerBlockCropService";
+import type { RecognitionBlockCrop } from "../../shared/types";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -145,6 +147,50 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
 });
 
 // ── POST /api/scanner/sessions/:sessionId/complete ──────
+router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array("crops"), async (req: Request, res: Response) => {
+  try {
+    const sessionId = String(req.params.sessionId);
+    const recordId = String(req.params.recordId);
+    const db = await getMysqlDb();
+    const record = await db.get<any>(
+      "SELECT id, card_id, student_id FROM twain_scan_records WHERE id = ? AND session_id = ?",
+      recordId,
+      sessionId
+    );
+    if (!record) {
+      res.status(404).json({ message: "扫描页不存在" });
+      return;
+    }
+
+    const manifestRaw = typeof req.body?.manifest === "string" ? req.body.manifest : "[]";
+    const manifest = JSON.parse(manifestRaw) as Array<RecognitionBlockCrop & { fileName?: string }>;
+    const files = Array.isArray(req.files) ? req.files as Express.Multer.File[] : [];
+    const tempDir = path.join(scannerUploadDir(), "crops-temp", sessionId, recordId);
+    if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
+
+    const crops = manifest.map((crop, index) => {
+      const file = crop.fileName
+        ? files.find((item) => item.originalname === crop.fileName)
+        : files[index];
+      if (!file) return null;
+      const targetPath = path.join(tempDir, `${index}_${path.basename(file.originalname || "crop.png")}`);
+      writeFileSync(targetPath, file.buffer);
+      return { ...crop, path: targetPath };
+    }).filter((crop): crop is RecognitionBlockCrop => Boolean(crop));
+
+    const saved = await persistAnswerBlockCrops({
+      cardId: String(record.card_id),
+      studentNumber: record.student_id ?? null,
+      sourceType: "twain_scan_record",
+      sourceRecordId: recordId,
+      crops
+    }, db);
+
+    res.json({ ok: true, count: saved.length, crops: saved });
+  } catch (err: any) {
+    res.status(500).json({ message: err.message });
+  }
+});
 router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;

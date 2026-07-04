@@ -1,5 +1,164 @@
 # Project-X CHANGELOG
 
+## v1.7.1 (2026-06-30) — 网上阅卷能力补全
+
+### 网上阅卷队列
+
+- 新增 `GET /api/review/exams/:examId/blocks`：按大题块汇总待阅/已阅数量。
+- 增强 `GET /api/review/exams/:examId/block-crops`：返回学生姓名，供阅卷队列展示。
+- 新增 `POST /api/review/exams/:examId/block-crops/:cropId/submit`：提交题块分数、更新切块状态、重算总分与排名。
+- 新增 `ReviewService`：题块汇总、分数 upsert、排名重算。
+- 教师成绩详情页新增 **网上阅卷** Tab（`OnlineReviewPanel`）：左侧题块列表 + 右侧切块图片与逐题打分。
+
+### 状态流转
+
+- 切块默认 `ready`（待阅）→ 提交后 `reviewed`；可标记 `disputed`（争议）。
+
+### 暗色模式视觉升级
+
+- **答题卡预览**：暗色 UI 下 `.page` 保持白纸黑字（`#ffffff` 背景 + `color-scheme: only light`），不再继承深色表面色。
+- **SVG 文字**：将全局浅色 `fill: #EAEAEA` 改为仅作用于 `.page` 内的 `#111` 黑字，修复预览文字几乎不可见的问题。
+- **对比度**：`--text-secondary` / `--muted` 调亮，次要文字在暗色背景下更易读。
+- **网上阅卷**：`OnlineReviewPanel` 侧栏、题块列表、图片区与打分输入框暗色适配。
+- **工程清理**：删除 `styles.css` 末尾约 1000 行重复的暗色规则块。
+
+### 分数统计图修复
+
+- **箱线图交互**：`分数统计分布` 图中班级柱形可点击，联动顶栏班级筛选；补传 `selectedClassId` 修复高亮不更新。
+- **图例与可读性**：新增极值/四分位/中位/均值图例，加粗坐标与柱形对比度，暗色模式下提升箱线图与分数段分布可视性。
+- **成绩变化曲线**：分析页考试列表下方恢复 `AnalysisTrend`（重构后曾丢失未渲染）。
+- **演示校验脚本**：修正上次考试对比用例（应对「演示-数学」而非「数学月考」发起请求）。
+
+### 合并 main（v1.6.4 / v1.6.5）
+
+- **背景图 API**：恢复 `GET /api/app/background` 与 `POST /api/users/me/background`。
+- **设置保存崩溃**：`PATCH /api/users/me/settings` 改为读取 `req.body`（非 `validatedBody`）。
+- **exam_groups 列补齐**：SQLite / MariaDB 新增 migration v15，补齐 `source` 等缺失列。
+- **前端防御性加固**：`ScoreDetailPage`、`AccountMenu`、`App` 对设置返回值增加 null-safe guard。
+
+## v1.7.0 (2026-06-30) — 成绩分析补全与学生学期对比
+
+### 成绩分析补全
+
+- 实现 `GET /api/analysis/exams/:examId/previous`：对比上一场同科目考试，返回均分/及格率变化。
+- 修复 `findPreviousExam`：`grade_id` 为 NULL 时正确匹配；日期回退使用 `exam_date → start_time → created_at`。
+- 教师成绩详情「概况」Tab 展示上次考试对比条（均分变化、及格率变化）。
+
+### 学生端分析增强
+
+- 新增 `GET /api/scores/me/semester-comparison`：按学年学期（8月~1月为第一学期，2月~7月为第二学期）汇总成绩。
+- 学生「我的成绩」新增 **学期对比** Tab：本学期 vs 上学期均分、学科进步/退步标签、各学科明细表。
+- 新增 `StudentSemesterComparison.tsx` 组件。
+
+### iOS 15 Safari 兼容（基于 #141）
+
+- Vite legacy 插件 + `polyfills.ts`：支持旧版 iPhone Safari 访问 Web 端。
+- 新增 `ErrorBoundary.tsx` 防止单组件错误导致整页白屏。
+
+### 工程清理
+
+- 删除废弃的 `scripts/package-variant.ts`（v1.6.1 已废弃教师/学生 Electron 打包）。
+- `verify:auth` 新增上一场考试对比与网上阅卷用例；全部 **54** 项通过。
+- 演示数据 manifest / verify 脚本更新至 v1.7.0 场景。
+
+## v1.6.5 (2026-07-01) — iOS 15 Safari 兼容与错误边界 (#141)
+
+### Web SPA 兼容性
+
+- **iOS 15 / Safari 15 降级编译**：Vite web 构建目标设为 `es2020 + safari15`（`vite.config.ts`），搭配 `package.json` 中 `browserslist: "iOS >= 15, Safari >= 15"`，确保产出 JS 在 iOS 15 Safari 上可解析运行。
+- **Runtime polyfills**：新增 `src/apps/answer-card/client/polyfills.ts`，在 `main.tsx` 最顶部加载，补丁 `Object.hasOwn` 和 `structuredClone`（iOS 15.0-15.3 缺失这两个 API）。
+- **无痕浏览 localStorage 容错**：`App.tsx` 中主题读写的 `localStorage.getItem/setItem` 包裹 `try/catch`，避免 iOS Safari 隐私模式下抛出 `SecurityError` 导致白屏。
+
+### ErrorBoundary
+
+- **新增 `ErrorBoundary.tsx`**：React class 组件包裹 `<AuthProvider>` + `<App />`。任意组件渲染异常时展示「页面加载失败」恢复界面，含错误信息和「刷新页面」按钮，替代原有空白页。
+
+### 依赖清理
+
+- `package-lock.json` 轻量化：移除 `@electron/windows-sign`、`electron-winstaller`、`postject` 等不必要 peer 依赖，标记 `@types/node` / `@types/react` / `csstype` / `react` 等为 `devDependencies`。
+
+## v1.6.4 (2026-07-01) — 背景图恢复与设置保存崩溃修复
+
+### Bug 修复
+
+- **背景图不显示**：`GET /api/app/background` 和 `POST /api/users/me/background` 路由在 v1.6.0 数据库重构中被意外删除，导致 CSS `body.has-bg-image::after` 请求 404 JSON 而非图片数据。现已恢复两个路由。
+- **保存设置时服务端崩溃**：`PATCH /api/users/me/settings` 在 v1.6.3 修复时写入了 bug — handler 从 `(_req as any).validatedBody` 读取请求体，但 `validateBody` 中间件将校验后数据写入 `req.body`（而非 `validatedBody`），导致 `body` 始终为 `undefined`，访问 `body.scoreDisplayMode` 时报 `TypeError: Cannot read properties of undefined`。成绩详情页切换显示模式（偏差值/Z值/百分位）或账号设置保存时均会触发此崩溃。**修复**：改为读取 `(_req as any).body`。
+- **SQLite / MariaDB `no such column: source`**：老数据库（v1.6.0 初期创建的）`exam_groups` 表缺少 `source`、`description`、`start_date` 等列（schema 已更新含这些列，但 `CREATE TABLE IF NOT EXISTS` 不会重建已存在的表；migration v8 若在列补齐逻辑加入前已被标记为"已应用"则跳过补齐）。双数据库均新增 migration v15（SQLite: `migrations.ts` + MariaDB: `mysql.ts`）确保所有缺失列在启动时补齐。
+- **前端防御性加固**：`ScoreDetailPage.tsx`、`AccountMenu.tsx`、`App.tsx` 中对 `/api/users/me/settings` 返回值的访问增加了 null-safe guard。
+
+## v1.6.3 (2026-06-29) — 暗色主题完善与登录页隔离
+
+### 暗色模式按钮修正
+
+暗色模式下按钮颜色从与亮色一致的亮粉红修正为沉稳暗红色，移除高光效果。
+
+- `[data-theme="dark"]` Brand 色板：
+  - `--brand`: `#F05060` → `#C0392B`（深暗红）
+  - `--brand-light`: `#FF7080` → `#D44637`
+  - `--brand-dark`: `#D03040` → `#96281B`
+  - `--brand-glow / --brand-soft / --brand-tint`：对应调暗
+  - `--shadow-brand / --shadow-brand-lg`：减弱发光（opacity 从 0.30/0.35 降至 0.15/0.18）
+- 移除按钮高光：
+  - `.primary-button::after` → `background: none`
+  - `.mode-toggle button.active::after` → `background: none`
+  - `.answer-key-row button.active::after` → `background: none`
+- `.primary-button:hover:not(:disabled)` 不再 `filter: brightness(1.05)`
+
+### 账号区域暗色背景适配
+
+暗色模式下账号菜单和账号管理面板的背景从灰色残余修正为深色。
+
+- `.account-menu-trigger`：暗色下 `background: var(--surface-raised)`（原 `rgba(255,255,255,0.65)` 在暗色下显示为灰白块）
+- `.account-form-grid / .account-import-box / .class-column / .score-card`：暗色下 `background: var(--surface)`
+- `.account-search`：暗色下 `background: var(--surface-raised)`
+- `.class-list-item / .roster-item / .student-search-item`：暗色下适配背景、文字和 hover 边框色
+
+### Web / Scanner 登录页隔离
+
+Web 教师/学生端登录页错误地包含了扫描端的「服务器连接」和「API Key」输入框。
+
+- **`LoginPage.tsx`**：恢复为老版本，仅含用户名 + 密码 + 记住我 + 使用说明，用于 Web 端
+- **`LoginPageScanner.tsx`**（新建）：含远端服务器配置（URL + API Key + 测试连接），标题改为「答题卡扫描端」，仅扫描端使用
+- **`ScannerApp.tsx`**：登录页改为 `import { LoginPageScanner }`
+
+### 删除夜间模式可控开关
+
+夜间模式已工作稳定，无需再通过账号设置中的「实验性」复选框来隐藏主题切换按钮。
+
+- **App.tsx**：删除 `darkModeEnabled` state 与 `{darkModeEnabled && (...)}` 条件包裹，主题切换按钮常驻 Tab 栏
+- **AccountMenu.tsx**：删除 `darkModeEnabled` / `setDarkModeEnabled` props，删除「夜间模式（实验性）」复选框和 ⚠ 警告文字
+- `theme` useEffect 简化：直接 `setAttribute("data-theme", theme)`
+
+### Bug 修复
+
+- **保存设置报 「API route not found」**：`PATCH /api/users/me/settings` 路由在服务端缺失，现已添加 `GET`/`PATCH` 两个处理函数，使用 `UpdateUserSettingsSchema` 校验，直接更新 users 表
+- **新建答题卡后列表不刷新**：`createCard` 中 `refreshCards()` 移到 `finally` 块确保总被执行，同时给 `examAction === "link"` 路径加 try-catch 防止关联失败中断刷新
+- 与 main 分支的 `styles.css` 合并冲突已自动解决
+
+## v1.6.2 (2026-06-29) — 大题切块与扫描端打包修复
+
+### 大题作答图片切块
+
+- native `answer-card-recognizer` 新增 `--crops-dir <dir>`，识别成功后复用 marker 匹配与透视校正结果，在 warped A4 图上按 `layout.pages[].blocks[]` 裁剪大题图片。
+- 裁剪区域优先使用 `frameRect`，没有时退回 `rect`，默认扩展 2.5mm padding，并 clamp 到页面范围内；同一大题跨页时生成多张续页图片，不做跨页拼接。
+- 识别 JSON 新增 `blockCrops` manifest，包含 `blockId/blockTitle/blockType/pageNumber/segmentIndex/questionNumbers/rect/path/widthPx/heightPx/dpi`。
+- 服务端新增 `AnswerBlockCropService` 与 `answer_block_crops` 表，统一索引普通阅卷 `scan_records` 与扫描仪 `twain_scan_records`。
+- 批量阅卷在 `ExamRepository.addScanRecord()` 返回记录 ID 后持久化切块；扫描仪 OCR 以 `twain_scan_record` 为 source 写入切块。
+- 学生成绩详情与教师个别改分页新增“大题作答图片”区域，点击题目可按 `questionNumbers` 定位到对应大题块；缺少切块时沿用整页答题卡预览。
+- 新增 `GET /api/answer-block-crops/:cropId/image`，并预留 `GET /api/review/exams/:examId/block-crops` 供网上阅卷队列读取题块、学生、分数和状态。
+
+### 扫描端打包修复
+
+- 修复 Electron 扫描端启动时报 `ENOENT, dist\scanner\index.html not found in app.asar`：scanner 构建完成后将 `index-scanner.html` 规范化为 `dist/scanner/index.html`。
+- 移除未使用的 `localtunnel` 运行依赖，消除 electron-builder 的 `localtunnel@undefined` 依赖路径警告。
+- x64 打包脚本继续通过 `-c.electronDist=node_modules/electron/dist` 复用本机 Electron；ia32 打包不再复用 x64 Electron，改为下载/使用真正的 32 位 Electron 运行时。
+- 已验证 `release/win-unpacked/答题卡扫描端.exe` 为 x64，`release/win-ia32-unpacked/答题卡扫描端.exe` 与 ia32 `better_sqlite3.node` 为 x86。
+- ia32 Electron 打包后建议执行 `npm run native:rebuild:node` 恢复开发环境 Node 版 `better-sqlite3`。
+
+### 版本号
+
+- `package.json` / `package-lock.json` 更新为 1.6.2，README 发布文件名同步更新。
+
 ## v1.6.1 (2026-06-28) — Web/Scanner 构建分离
 
 ### 构建拆分
@@ -41,7 +200,7 @@ v1.6.1:  dist/web/ (教师+学生) + dist/scanner/ (扫描端)
 
 - 删除 `electron:pack:student`、`:teacher` 以及所有 ia32 变体脚本
 - 教师/学生功能统一通过 Web 构建访问，Electron 只保留扫描端
-- 删除 `scripts/package-variant.ts` 引用（文件保留但不再使用）
+- 删除 `scripts/package-variant.ts` 引用（v1.7.0 已删除该文件）
 - 删除 `VITE_PROJECTX_VARIANT` 编译时变量，改用 `VITE_BUILD_TARGET`
 
 ### Electron 精简

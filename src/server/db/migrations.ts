@@ -464,6 +464,66 @@ const MIGRATIONS: Migration[] = [
       db.prepare("INSERT INTO system_settings (key, value) VALUES (?, ?)")
         .run("ladder_enabled", "1");
     }
+  },
+  {
+    version: 14,
+    name: "answer-block-crops",
+    up(db) {
+      if (!hasTable(db, "answer_block_crops")) {
+        db.exec(`
+          CREATE TABLE answer_block_crops (
+            id               TEXT PRIMARY KEY,
+            card_id          TEXT NOT NULL,
+            exam_id          INTEGER REFERENCES exams(id) ON DELETE CASCADE,
+            student_id       INTEGER REFERENCES users(id),
+            student_number   TEXT,
+            source_type      TEXT NOT NULL,
+            source_record_id TEXT NOT NULL,
+            block_id         TEXT NOT NULL,
+            block_title      TEXT,
+            block_type       TEXT NOT NULL,
+            page_number      INTEGER NOT NULL,
+            segment_index    INTEGER NOT NULL,
+            question_numbers TEXT NOT NULL,
+            rect_json        TEXT NOT NULL,
+            image_path       TEXT NOT NULL,
+            width_px         INTEGER NOT NULL,
+            height_px        INTEGER NOT NULL,
+            dpi              INTEGER NOT NULL,
+            status           TEXT DEFAULT 'ready',
+            created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(source_type, source_record_id, block_id, page_number, segment_index)
+          );
+        `);
+      }
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_answer_block_crops_exam_student
+          ON answer_block_crops(exam_id, student_id);
+        CREATE INDEX IF NOT EXISTS idx_answer_block_crops_source
+          ON answer_block_crops(source_type, source_record_id);
+        CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block
+          ON answer_block_crops(card_id, block_id);
+      `);
+    }
+  },
+  {
+    version: 15,
+    name: "exam-groups-source-fix",
+    up(db) {
+      // 修复：老数据库 exam_groups 表缺少 source 等列（migration v8 早期版本未包含这些列）
+      if (hasTable(db, "exam_groups")) {
+        addColumnIfMissing(db, "exam_groups", "description", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "source", "TEXT DEFAULT 'manual'");
+        addColumnIfMissing(db, "exam_groups", "start_date", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "end_date", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "grade_id", "INTEGER REFERENCES grades(id)");
+        addColumnIfMissing(db, "exam_groups", "tag", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "status", "TEXT DEFAULT 'active'");
+        addColumnIfMissing(db, "exam_groups", "is_official", "INTEGER DEFAULT 0");
+        addColumnIfMissing(db, "exam_groups", "total_score_mode", "TEXT DEFAULT 'raw'");
+        addColumnIfMissing(db, "exam_groups", "only_full_participants", "INTEGER DEFAULT 0");
+      }
+    }
   }
 ];
 

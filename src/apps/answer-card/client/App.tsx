@@ -431,10 +431,11 @@ function App() {
   const [showBg, setShowBg] = useState(0); // opacity 0~1, 0=关闭
   const [pdfWarning, setPdfWarning] = useState<PdfWarningState | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
-    return (localStorage.getItem("projectx-theme") as "light" | "dark") || "light";
-  });
-  const [darkModeEnabled, setDarkModeEnabled] = useState(() => {
-    return localStorage.getItem("projectx-darkmode-enabled") === "true";
+    try {
+      return (localStorage.getItem("projectx-theme") as "light" | "dark") || "light";
+    } catch {
+      return "light";
+    }
   });
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
@@ -502,7 +503,7 @@ function App() {
   useEffect(() => {
     if (!user) return;
     fetchJson<{ backgroundOpacity: number }>("/api/users/me/settings")
-      .then((s) => setShowBg(s.backgroundOpacity ?? 0))
+      .then((s) => { if (s) setShowBg(s.backgroundOpacity ?? 0); })
       .catch(() => {});
   }, [user?.id]);
 
@@ -522,11 +523,13 @@ function App() {
 
   // 日间/夜间模式切换
   useEffect(() => {
-    const effectiveTheme = darkModeEnabled ? theme : "light";
-    document.documentElement.setAttribute("data-theme", effectiveTheme);
-    localStorage.setItem("projectx-theme", effectiveTheme);
-    localStorage.setItem("projectx-darkmode-enabled", String(darkModeEnabled));
-  }, [theme, darkModeEnabled]);
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem("projectx-theme", theme);
+    } catch {
+      /* private browsing / storage disabled */
+    }
+  }, [theme]);
 
   useEffect(() => {
     return () => {
@@ -684,6 +687,8 @@ function App() {
     try {
       await flushPendingCardSave("switch");
     } catch {
+      // 保存当前卡失败，刷新列表后退出（避免侧栏状态不一致）
+      await refreshCards();
       return;
     }
     setIsBusy(true);
@@ -708,7 +713,7 @@ function App() {
       if (formData.examAction === "create") {
         const examName = formData.examName || formData.title;
         try {
-          const examRes = await fetchJson<any>("/api/exams", {
+          await fetchJson<any>("/api/exams", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ name: examName, cardId: created.id, subject: formData.subjectLabel })
@@ -719,18 +724,22 @@ function App() {
           statusExtra = `，考试创建失败：${err?.message || "已存在同名考试"}`;
         }
       } else if (formData.examAction === "link" && formData.linkExamId) {
-        await fetchJson(`/api/exams/${formData.linkExamId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cardId: created.id })
-        });
-        statusExtra = "，已关联到已有考试";
-        await loadExams();
+        try {
+          await fetchJson(`/api/exams/${formData.linkExamId}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cardId: created.id })
+          });
+          statusExtra = "，已关联到已有考试";
+          await loadExams();
+        } catch (err: any) {
+          statusExtra = `，关联考试失败：${err?.message || "考试不存在"}`;
+        }
       }
 
       setStatus(`已创建答题卡 「${created.title}」 (${created.id})${statusExtra}`);
-      await refreshCards();
     } finally {
+      await refreshCards();
       setIsBusy(false);
     }
   }
@@ -1427,7 +1436,6 @@ function App() {
               </button>
               )}
             </div>
-            {darkModeEnabled && (
             <button
               className="theme-toggle"
               type="button"
@@ -1453,10 +1461,7 @@ function App() {
                 </svg>
               )}
             </button>
-            )}
             <AccountMenu
-              darkModeEnabled={darkModeEnabled}
-              setDarkModeEnabled={setDarkModeEnabled}
               onOpenSponsor={() => {
                 const previous = mode;
                 void switchMode("sponsor", () => {
