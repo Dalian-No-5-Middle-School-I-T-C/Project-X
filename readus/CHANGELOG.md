@@ -1,5 +1,55 @@
 # Project-X CHANGELOG
 
+## v1.7.3 (2026-07-04) — 移动端网页适配
+
+### 移动端全面适配
+
+系统从桌面端专用布局升级为桌面/移动端双适配架构。新增 480px 手机断点，通过底部导航栏替代桌面端 Tab 切换，实现手机端原生体验。
+
+- **底部导航栏（Bottom Navigation Bar）**：
+  - 固定屏幕底部，毛玻璃背景 + 品牌色激活项
+  - 根据用户权限动态生成导航项（设计/考试/阅卷/分析/成绩/账号），最多 5 个 Tab
+  - 图标 + 短标签（2-3字），触摸目标 44px，iPhone 安全区适配（`env(safe-area-inset-bottom)`）
+  - 桌面端 `display: none`，仅 480px 以下显示
+- **Topbar 移动端精简**：
+  - 隐藏副标题、隐藏桌面端 `mode-toggle`（由底部导航替代）
+  - 标题省略号截断，操作按钮紧凑排列
+  - `position: sticky` 固定顶部
+- **480px 移动端主断点**（~300 行新增 CSS）：
+  - 全局重置：`body` 可滚动、`app-shell` 取消固定高度、底部 padding 为导航栏留空间
+  - 8 个 mode 页面逐一适配：
+    - **design**：预览区 + 属性面板纵向排列，答题卡页面自适应宽度
+    - **exam-manage**：考试列表表格改卡片布局，表头隐藏
+    - **grading**：扫描面板 padding 缩减，扫描结果网格紧凑化
+    - **analysis**：分析卡片 2 列，排名表横向滚动，箱型图 2 列
+    - **scores**：概览卡片紧凑排列，Tab 横向滚动，图表高度缩减
+    - **account**：三栏班级布局改单列，表单单列，表格横向滚动
+    - **sponsor**：收款码卡片全宽，二维码缩至 140px
+    - **guide**：正文 13px、表格横向滚动、代码块紧凑
+- **Modal 底部弹出（Bottom Sheet）**：
+  - 所有弹窗从屏幕底部滑出，全宽圆角顶部（`border-radius: 20px 20px 0 0`）
+  - 底部按钮纵向全宽排列
+  - PDF 查看弹窗全屏化
+  - 账号菜单下拉改为底部弹出
+- **触摸优化**：
+  - 输入框 `font-size: 16px`（防止 iOS Safari 自动缩放）
+  - 触摸目标最小 44px
+  - `-webkit-overflow-scrolling: touch` + `overscroll-behavior: contain`
+- **横屏适配**（iPad 等）：
+  - 1024px landscape：主内容 + 属性面板 320px 双列
+  - 768px landscape：单列 + 底部导航缩小至 48px
+- **暗色模式配套**：底部导航栏、Topbar、Modal 全部适配 `[data-theme="dark"]`
+- **HTML Meta 标签**：viewport 添加 `viewport-fit=cover`，新增 `apple-mobile-web-app-capable`、`theme-color`
+
+### 技术实现
+
+- **纯 CSS 适配策略**：不修改任何子组件文件，全部通过 `styles.css` 中的 `@media (max-width: 480px)` 规则覆盖
+- **App.tsx 最小改动**：仅新增 `mobileNavItems` useMemo（权限驱动的导航项数组）+ 底部导航 JSX
+- **CSS 变量扩展**：新增 `--mobile-bottom-nav-height`、`--mobile-safe-area-bottom/top`、`--touch-target-min`、`--mobile-content-padding`
+
+### 修改文件
+
+| 文件 | 改动 |
 ## v1.8.0 (2026-07-04) — 原卷上传与 AI 知识点分析
 
 ### 数据库 schema 完善
@@ -451,110 +501,12 @@ CREATE TABLE api_keys (
 
 | 文件 | 说明 |
 |------|------|
-| `src/server/middleware/api-key.ts` | API Key 认证中间件 |
-| `src/server/routes/api-keys.ts` | API Key 管理路由 |
-| `src/server/routes/scanner-upload.ts` | 扫描上传路由 |
+| `src/apps/answer-card/client/styles.css` | 新增 ~300 行：CSS 变量、底部导航样式、480px 断点全部规则、横屏适配、暗色模式配套 |
+| `src/apps/answer-card/client/App.tsx` | 新增 `mobileNavItems` useMemo + 底部导航 `<nav>` JSX + `ReactElement` 类型导入 |
+| `index.html` | viewport meta 升级 + 3 个新 meta 标签 |
 
-### 架构决策
-
-- 客户端视图身份从编译时改为运行时，管理员可动态切换
-- API Key 模式用于无用户登录的扫描客户端，与 JWT 互补
-- 扫描端本地 SQLite 保留，用作离线缓存和断网重试缓冲
-- 最终部署：服务端跑 MariaDB，各客户端通过 HTTP API 通信
-
----
-
-原 v1.5.2 引入的 MySQL 双后端方案存在致命缺陷：`ON DUPLICATE KEY UPDATE` 在底层 SQLite 适配器中无法执行（SQLite 不支持此语法），依赖"DELETE-then-INSERT"才侥幸不报错。本次彻底重写整个数据访问层。
-
-### 数据库层重写 (`src/server/db/`)
-
-- **`schema.mariadb.sql`** — 全新 MariaDB 10.11 LTS 完整建表 SQL，含 38 张表 + 45+ 索引：
-  - Scanner 4 表合并（`twain_scan_sessions` / `twain_scan_records` / `twain_recognition_results` / `twain_student_grading_results`）
-  - v9 迁移新增表/列：`knowledge_points` 表、`answer_cards` 原卷字段（`has_original_paper` 等）、`users` 原卷偏好
-  - 新字段：`scan_records.image_uploaded`（原图上传标记）
-  - MariaDB 兼容：`VARCHAR` PK 替代 TEXT PK、`TINYINT` 替代 INTEGER 布尔值、\`rank\` 反引号
-  - 引擎 InnoDB、字符集 utf8mb4、外键级联删除、初始种子数据
-
-- **`mysql.ts` 重写** — 改名 `MariadbAdapter`，新增：
-  - `DbAdapter.dialect` 属性（`"sqlite" | "mariadb"`）
-  - `buildUpsertSQL()` / `buildInsertIgnore()` 跨方言 SQL 生成工具
-  - `detectDialect()`：环境变量 > config.yml > 兜底 SQLite
-  - MariaDB 连接池增强：`connectTimeout:5000`、`enableKeepAlive:true`、`maxIdle:10`、`idleTimeout:60000`
-  - `healthCheck()` 数据库连通性检测
-  - **MariaDB 模式断连不降级到 SQLite**（关键安全策略）
-
-- **`config.ts`** — YAML 配置读写工具（免外部依赖），支持 `config.yml` 解析/合并/写回
-
-- **`schema.sql` 修复**：
-  - `answer_cards.sided` 默认值 `'single'` → `'double'`（修复长期存在的默认值不一致 Bug）
-  - 新增 twain_* 4 表 + 6 个索引
-
-- **v10 迁移** — `twain_scan_sessions/records/recognition_results/student_grading_results` 自动建表
-
-### 消除 `getDatabase()` 直接调用（~50 处 → 0）
-
-所有路由/服务/清理任务统一走 `getMysqlDb()` 异步 `DbAdapter`：
-
-| 文件 | 变更 |
-|------|------|
-| `ai-providers.ts` | 4 处 → async `db.all/get/run()` |
-| `export-scores.ts` | 4 处 → async + `buildUpsertSQL()` |
-| `score-editing.ts` | 12 处 → async + 事务改为 `await db.transaction(async tx => {...})` |
-| `exam-groups.ts` | 11 处 → async + `buildInsertIgnore()` |
-| `AssignedScoreService.ts` | 全类 → async，`recalculateAll()` 使用 `db.transaction()` |
-| `AuthService.ts` | 2 处 → async |
-| `permissions.ts` | `initPermissionCache()` 异步预加载，启动时调用 |
-| `cleanup.ts` | 全异步，`setInterval` 内 `.catch()` |
-| `backup.ts | MariaDB 分支通过 mysqldump 备份恢复
-| `server/index.ts` | ~15 处 + `initMariadbSchema()` + 启动序列重排 |
-
-### Scanner DB 合并到主库
-
-- Scanner 原先独立的 `scanner.db` 4 张表全部合并到主库，命名加 `twain_` 前缀
-- `scan-store.ts` 19 个函数全异步化，统一走 `getMysqlDb()`
-- `scanner-service.ts` / `scanner/index.ts` 调用方全部加 `await`
-- `scanner/index.ts` 中 `persistScannerResultToMainDb()` 改为 async `getMysqlDb()` + `REPLACE INTO`
-
-### 用户设置：数据存储
-
-- **API**: `GET /api/app/db-config`（读取）+ `PATCH /api/app/db-config`（写入，管理员权限）
-- **前端**: AccountMenu 新增「数据存储」Tab（仅管理员可见）
-  - 本地 SQLite / 远程 MariaDB 单选切换
-  - MariaDB 连接表单：主机、端口、数据库名、用户名、密码
-  - 密码已设置时显示"(已设置，留空不修改)"提示
-  - 保存后显示"需重启服务器方可生效"
-  - 当前远程功能提示"尚未完全启用"
-
-### 服务器打包增强
-
-- `build-server.ts`：构建时同步复制 `schema.mariadb.sql`
-- `package-server-ubuntu.cjs`：新增 MariaDB 环境变量、systemd 模板含 MariaDB 配置、部署文档含 MariaDB 安装/配置指引
-
-### 文档
-
-- `DATABASE.md` 重写：双模架构说明、本地/远程对比表、MariaDB 安装配置
-- `ARCHITECTURE.md`：更新技术栈描述
-- `config.yml`：数据库配置模板（mode/remote/...）
-
-### Phase 2: 服务器部署工具链
-
-- **`scripts/migrate-to-mariadb.ts`** — SQLite → MariaDB 全量数据迁移
-- **`scripts/setup-mariadb.sh`** — Ubuntu/Debian 一键建库建表
-- **备份/恢复** — backup.ts MariaDB 分支通过 mysqldump 实现
-- **P0 修复** — initMariadbSchema 空指针、ON DUPLICATE KEY 残留、health 端点增强
-
-### 版本号更新
-
-- `package.json` → 1.5.5, README badges, DATABASE.md 新增部署迁移章节
-
-### 架构决策
-
-- 本地模式 = SQLite（零依赖，单机/开发/离线）
-- 远端模式 = MariaDB 10.11 LTS（32位/64位兼容）
-- 数据库配置存 `config.yml`，管理员界面写入，重启生效
-- 最终目标：数据库全在服务端，扫描端/教师端/学生端都是客户端
-
----
+### 版本
+- v1.5.2 → v1.7.3
 
 ## v1.5.2 (2026-06-26) — 数据库双后端架构
 
