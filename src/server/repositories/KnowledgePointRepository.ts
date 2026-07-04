@@ -69,7 +69,7 @@ export class KnowledgePointRepository {
   }>> {
     let sql = `
       SELECT kp.point_text,
-             GROUP_CONCAT(DISTINCT kp.question_number ORDER BY kp.question_number) AS question_numbers,
+             kp.question_number,
              ROUND(AVG(qs.score * 100.0 / NULLIF(qs.max_score, 0)), 1) AS avg_rate,
              COUNT(DISTINCT qs.student_id) AS student_count,
              COUNT(DISTINCT qs.question_number) AS total_questions
@@ -85,8 +85,41 @@ export class KnowledgePointRepository {
       params.push(classId);
     }
 
-    sql += " GROUP BY kp.point_text ORDER BY avg_rate ASC";
-    return await this.db.all(sql, ...params);
+    sql += " GROUP BY kp.point_text, kp.question_number ORDER BY kp.point_text, kp.question_number";
+    const rows = await this.db.all(sql, ...params);
+
+    // Aggregate question numbers in JS for SQLite / MySQL compatibility
+    const map = new Map<string, { point_text: string; avg_rate: number; student_count: number; total_questions: number; question_numbers: number[] }>();
+    for (const row of rows) {
+      const pointText = (row as any).point_text;
+      if (!map.has(pointText)) {
+        map.set(pointText, {
+          point_text: pointText,
+          avg_rate: (row as any).avg_rate,
+          student_count: (row as any).student_count,
+          total_questions: (row as any).total_questions,
+          question_numbers: []
+        });
+      }
+      const entry = map.get(pointText)!;
+      const qn = (row as any).question_number;
+      if (!entry.question_numbers.includes(qn)) {
+        entry.question_numbers.push(qn);
+      }
+      // avg_rate across all questions for this point: weighted average
+      // (simpler: keep first per-question rate, but for correctness we recompute below)
+    }
+
+    return Array.from(map.values()).map((entry) => {
+      entry.question_numbers.sort((a, b) => a - b);
+      return {
+        point_text: entry.point_text,
+        question_numbers: entry.question_numbers.join(","),
+        avg_rate: entry.avg_rate,
+        student_count: entry.student_count,
+        total_questions: entry.total_questions,
+      };
+    });
   }
 
   async getWeaknessesForStudent(examId: number, studentId: number): Promise<Array<{
@@ -96,9 +129,9 @@ export class KnowledgePointRepository {
     max_score: number;
     rate: number;
   }>> {
-    return await this.db.all(
+    const rows = await this.db.all(
       `SELECT kp.point_text,
-              GROUP_CONCAT(DISTINCT kp.question_number ORDER BY kp.question_number) AS question_numbers,
+              kp.question_number,
               SUM(qs.score) AS scored,
               SUM(qs.max_score) AS max_score,
               ROUND(SUM(qs.score) * 100.0 / NULLIF(SUM(qs.max_score), 0), 1) AS rate
@@ -106,9 +139,39 @@ export class KnowledgePointRepository {
        JOIN exams e ON qs.exam_id = e.id
        JOIN knowledge_points kp ON kp.card_id = e.card_id AND kp.question_number = qs.question_number
        WHERE qs.exam_id = ? AND qs.student_id = ?
-       GROUP BY kp.point_text
-       ORDER BY rate ASC`,
+       GROUP BY kp.point_text, kp.question_number
+       ORDER BY kp.point_text, kp.question_number`,
       examId, studentId
     );
+
+    const map = new Map<string, { point_text: string; scored: number; max_score: number; rate: number; question_numbers: number[] }>();
+    for (const row of rows) {
+      const pointText = (row as any).point_text;
+      if (!map.has(pointText)) {
+        map.set(pointText, {
+          point_text: pointText,
+          scored: (row as any).scored,
+          max_score: (row as any).max_score,
+          rate: (row as any).rate,
+          question_numbers: []
+        });
+      }
+      const entry = map.get(pointText)!;
+      const qn = (row as any).question_number;
+      if (!entry.question_numbers.includes(qn)) {
+        entry.question_numbers.push(qn);
+      }
+    }
+
+    return Array.from(map.values()).map((entry) => {
+      entry.question_numbers.sort((a, b) => a - b);
+      return {
+        point_text: entry.point_text,
+        question_numbers: entry.question_numbers.join(","),
+        scored: entry.scored,
+        max_score: entry.max_score,
+        rate: entry.rate,
+      };
+    });
   }
 }

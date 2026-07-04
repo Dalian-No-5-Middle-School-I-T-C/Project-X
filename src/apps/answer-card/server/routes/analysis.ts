@@ -442,7 +442,7 @@ router.get("/exams/:examId/export-csv", requireExamAccess, async (req, res, next
 });
 
 // ============================================================
-// 知识点分析端点 (v1.7.0)
+// 知识点分析端点 (v1.8.0)
 // ============================================================
 
 // GET /api/analysis/knowledge-points/:examId — 按知识点聚合全班得分率

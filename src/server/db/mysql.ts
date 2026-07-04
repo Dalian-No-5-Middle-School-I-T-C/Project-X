@@ -424,10 +424,30 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       ]
     },
     {
-      version: 16,
-      name: "system-ai-provider",
+      version: 17,
+      name: "original-paper-and-knowledge-points",
       sqls: [
-        `ALTER TABLE ai_providers ADD COLUMN is_system TINYINT DEFAULT 0`,
+        `ALTER TABLE answer_cards ADD COLUMN has_original_paper TINYINT DEFAULT 0`,
+        `ALTER TABLE answer_cards ADD COLUMN original_paper_filename VARCHAR(255)`,
+        `ALTER TABLE answer_cards ADD COLUMN original_paper_path VARCHAR(500)`,
+        `ALTER TABLE answer_cards ADD COLUMN question_range TEXT`,
+        `ALTER TABLE answer_cards ADD COLUMN extra_notes TEXT`,
+        `ALTER TABLE answer_cards ADD COLUMN knowledge_points_text TEXT`,
+        `ALTER TABLE users ADD COLUMN require_original_paper TINYINT DEFAULT 1`,
+        `ALTER TABLE users ADD COLUMN highlight_missing_paper TINYINT DEFAULT 1`,
+        `CREATE TABLE IF NOT EXISTS knowledge_points (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          card_id VARCHAR(20) NOT NULL,
+          question_number INT NOT NULL,
+          point_text VARCHAR(50) NOT NULL,
+          category VARCHAR(50),
+          sort_order INT DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uk_card_question_point (card_id, question_number, point_text),
+          FOREIGN KEY (card_id) REFERENCES answer_cards(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_kp_card ON knowledge_points(card_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_kp_card_question ON knowledge_points(card_id, question_number)`,
       ]
     },
   ];

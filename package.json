@@ -1,3 +1,131 @@
 {
   "name": "answer-card-designer",
   "version": "1.8.0",
+  "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
+  "author": "Project-X",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "predev": "node scripts/ensure-native-modules.cjs",
+    "dev": "concurrently \"tsx watch src/apps/answer-card/server/index.ts\" \"vite --host 127.0.0.1\"",
+    "build": "npm run typecheck && npm run build:web && npm run build:server",
+    "build:web": "vite build --mode web",
+    "build:scanner": "vite build --mode scanner",
+    "build:web:full": "npm run typecheck && npm run build:web && npm run build:server",
+    "build:scanner:full": "npm run typecheck && npm run build:scanner && npm run build:server",
+    "build:server": "tsx scripts/build-server.ts",
+    "package:server:ubuntu24": "npm run build:web && npm run build:server && node scripts/package-server-ubuntu.cjs",
+    "native:rebuild:node": "npm rebuild better-sqlite3",
+    "native:rebuild:electron": "electron-rebuild -f -w better-sqlite3",
+    "native:rebuild:electron:ia32": "electron-rebuild -f -a ia32 -w better-sqlite3",
+    "native:build:x64": "scripts\\build-answer-card-recognizer.bat x64 && scripts\\build-scanner-bridge.bat x64",
+    "native:build:ia32": "scripts\\build-answer-card-recognizer.bat ia32 && scripts\\build-scanner-bridge.bat ia32",
+    "electron:dev": "npm run build:scanner:full && npm run native:rebuild:electron && electron .",
+    "electron:pack": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --dir --x64 -c.electronDist=node_modules/electron/dist",
+    "electron:pack:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && electron-builder --dir --ia32",
+    "electron:dist": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --win portable --x64 -c.electronDist=node_modules/electron/dist",
+    "electron:dist:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && electron-builder --win portable --ia32",
+    "electron:msi": "npm run build:scanner:full && npm run native:rebuild:electron && electron-builder --win msi --x64 -c.electronDist=node_modules/electron/dist",
+    "electron:msi:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && electron-builder --win msi --ia32",
+    "server": "tsx src/apps/answer-card/server/index.ts",
+    "verify:auth": "tsx scripts/verify-auth.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "browserslist": [
+    "iOS >= 15",
+    "Safari >= 15"
+  ],
+  "dependencies": {
+    "adm-zip": "^0.5.17",
+    "archiver": "^8.0.0",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.11.1",
+    "chart.js": "^4.5.1",
+    "expr-eval": "^2.0.2",
+    "express": "^5.1.0",
+    "mammoth": "^1.12.0",
+    "multer": "^2.0.2",
+    "mysql2": "^3.22.5",
+    "pdfjs-dist": "^4.10.38",
+    "pdfkit": "^0.17.2",
+    "react-chartjs-2": "^5.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "sharp": "^0.35.3",
+    "tesseract.js": "^7.0.0",
+    "xlsx": "^0.18.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.3",
+    "@types/multer": "^2.0.0",
+    "@types/node": "^24.3.0",
+    "@types/pdfkit": "^0.17.3",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "electron": "^39.8.10",
+    "electron-builder": "^26.0.12",
+    "esbuild": "^0.27.7",
+    "lucide-react": "^0.468.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.3"
+  },
+  "build": {
+    "appId": "cn.projectx.answer-card-designer",
+    "productName": "答题卡扫描端",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/scanner/**/*",
+      "dist/server/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/native/win-x64",
+        "to": "native/win-x64",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/native/win-ia32",
+        "to": "native/win-ia32",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asar": true,
+    "win": {
+      "icon": "resources/icon.png",
+      "executableName": "答题卡扫描端",
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "答题卡扫描端-${version}-${arch}.${ext}"
+    },
+    "msi": {
+      "artifactName": "答题卡扫描端-${version}-${arch}.${ext}",
+      "shortcutName": "答题卡扫描端",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "perMachine": false
+    }
+  }
+}

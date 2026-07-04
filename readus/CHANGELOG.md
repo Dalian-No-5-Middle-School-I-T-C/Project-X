@@ -1,5 +1,6 @@
 # Project-X CHANGELOG
 
+<<<<<<< HEAD
 ## v1.7.1 (2026-06-30) — 网上阅卷能力补全
 
 ### 网上阅卷队列
@@ -72,6 +73,22 @@
 
 ### SQL 兼容性
 -  的  改为按  分组，然后在 JS 层聚合题号，兼容 SQLite 和 MySQL
+=======
+## v1.8.0 (2026-07-04) — 原卷上传与 AI 知识点分析
+
+### 数据库 schema 完善
+- `schema.sql` 初始建表补充 v1.8.0 新增字段：
+  - `answer_cards`: `has_original_paper`, `original_paper_filename`, `original_paper_path`, `question_range`, `extra_notes`, `knowledge_points_text`
+  - `users`: `require_original_paper`, `highlight_missing_paper`
+- `schema.mysql.sql` 同步补充上述字段（之前仅 `schema.mariadb.sql` 完整）
+- MariaDB 增量迁移新增 `v17 original-paper-and-knowledge-points`，确保已有 MariaDB 生产库自动补齐原卷相关列和 `knowledge_points` 表
+
+### SQL 兼容性
+- `KnowledgePointRepository.getWeaknessesForExam / getWeaknessesForStudent` 的 `GROUP_CONCAT(DISTINCT ... ORDER BY ...)` 改为按 `(point_text, question_number)` 分组，然后在 JS 层聚合题号，兼容 SQLite 和 MySQL
+
+### 版本号
+- `package.json` / README badge / UI 侧栏版本号统一为 `1.8.0`
+>>>>>>> ac0a782 (fix bugs)
 
 ### 原卷上传
 - 答题卡创建后自动弹出原卷上传面板（可由教师在设置中关闭）

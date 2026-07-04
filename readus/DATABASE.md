@@ -688,9 +688,9 @@ src/types/
 | `api_key` | TEXT | API 密钥 |
 | `models` | TEXT | JSON 模型列表，为空则自动获取 |
 | `is_active` | INTEGER | 0=禁用 1=启用 |
-| `is_system` | INTEGER | v1.7.0: 0=个人 1=系统级（全校统一） |
+| `is_system` | INTEGER | v1.8.0: 0=个人 1=系统级（全校统一） |
 
-每个教师可配置多个服务商，用于 AI 成绩分析的模型路由。v1.7.0 新增 `is_system=1` 的系统级提供商，由管理员统一配置，用于知识点分析。
+每个教师可配置多个服务商，用于 AI 成绩分析的模型路由。v1.8.0 新增 `is_system=1` 的系统级提供商，由管理员统一配置，用于知识点分析。
 
 **Base URL 说明**：填写 API 端点地址而非网站首页。GPT/DeepSeek 等 OpenAI 兼容协议会自动补齐 `/v1`；**Gemini 无需填写 Base URL**（使用 Google 原生 GenAI SDK，仅需 API Key）。
 常见的 Base URL 示例：
@@ -727,7 +727,7 @@ src/types/
 
 ---
 
-### v1.7.0 新增
+### v1.8.0 新增
 
 #### `knowledge_points` — 知识点字典
 

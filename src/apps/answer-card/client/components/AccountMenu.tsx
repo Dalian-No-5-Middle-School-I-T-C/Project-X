@@ -518,7 +518,7 @@ export function AccountMenu({
                     <input type="range" min="0" max="1" step="0.01" value={reviewThreshold} onChange={(e) => setReviewThreshold(Number(e.target.value))} style={{ width: "100%", marginTop: 2 }} />
                     <span style={{ fontSize: 11, color: "var(--muted)" }}>低于此值的题目标记"需要复核"</span>
 
-                    {/* v1.7.0: 原卷设置 */}
+                    {/* v1.8.0: 原卷设置 */}
                     <h4 style={{ marginTop: 16 }}>原卷上传设置</h4>
                     <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
                       <input type="checkbox" checked={requireOriginalPaper} onChange={(e) => setRequireOriginalPaper(e.target.checked)} />

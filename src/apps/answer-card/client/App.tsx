@@ -380,7 +380,7 @@ function findNextQuestionNumber(card: AnswerCard): number {
   return max + 1;
 }
 
-/** v1.7.0 — 导出检查卡片内的知识点分析小面板 */
+/** v1.8.0 — 导出检查卡片内的知识点分析小面板 */
 function KnowledgeAnalysisInline({ cardId, onDone }: { cardId: string; onDone: (points: Array<{ question_number: number; points: string[] }>) => void }) {
   const [questionRange, setQuestionRange] = useState("全部");
   const [customRange, setCustomRange] = useState("");
@@ -812,7 +812,7 @@ function App() {
 
       setStatus(`已创建答题卡 「${created.title}」 (${created.id})${statusExtra}`);
 
-      // v1.7.0: 自动弹出原卷上传面板
+      // v1.8.0: 自动弹出原卷上传面板
       const userSettings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch((): { requireOriginalPaper?: number } => ({}));
       if (userSettings.requireOriginalPaper !== 0) {
         setPaperPanelCardId(created.id);
@@ -945,7 +945,7 @@ function App() {
   }
 
   async function exportCard(cardId: string) {
-    // v1.7.0: 检查原卷是否上传
+    // v1.8.0: 检查原卷是否上传
     try {
       const cardInfo = await fetchJson<{ has_original_paper?: number }>(`/api/cards/${cardId}/paper/info`);
       const settings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch((): { requireOriginalPaper?: number } => ({}));
@@ -1442,7 +1442,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.7.0</span>
+            <span>Project-X v1.8.0</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
