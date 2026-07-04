@@ -1,79 +1,5 @@
 # Project-X CHANGELOG
 
-<<<<<<< HEAD
-## v1.7.1 (2026-06-30) — 网上阅卷能力补全
-
-### 网上阅卷队列
-
-- 新增 `GET /api/review/exams/:examId/blocks`：按大题块汇总待阅/已阅数量。
-- 增强 `GET /api/review/exams/:examId/block-crops`：返回学生姓名，供阅卷队列展示。
-- 新增 `POST /api/review/exams/:examId/block-crops/:cropId/submit`：提交题块分数、更新切块状态、重算总分与排名。
-- 新增 `ReviewService`：题块汇总、分数 upsert、排名重算。
-- 教师成绩详情页新增 **网上阅卷** Tab（`OnlineReviewPanel`）：左侧题块列表 + 右侧切块图片与逐题打分。
-
-### 状态流转
-
-- 切块默认 `ready`（待阅）→ 提交后 `reviewed`；可标记 `disputed`（争议）。
-
-### 暗色模式视觉升级
-
-- **答题卡预览**：暗色 UI 下 `.page` 保持白纸黑字（`#ffffff` 背景 + `color-scheme: only light`），不再继承深色表面色。
-- **SVG 文字**：将全局浅色 `fill: #EAEAEA` 改为仅作用于 `.page` 内的 `#111` 黑字，修复预览文字几乎不可见的问题。
-- **对比度**：`--text-secondary` / `--muted` 调亮，次要文字在暗色背景下更易读。
-- **网上阅卷**：`OnlineReviewPanel` 侧栏、题块列表、图片区与打分输入框暗色适配。
-- **工程清理**：删除 `styles.css` 末尾约 1000 行重复的暗色规则块。
-
-### 分数统计图修复
-
-- **箱线图交互**：`分数统计分布` 图中班级柱形可点击，联动顶栏班级筛选；补传 `selectedClassId` 修复高亮不更新。
-- **图例与可读性**：新增极值/四分位/中位/均值图例，加粗坐标与柱形对比度，暗色模式下提升箱线图与分数段分布可视性。
-- **成绩变化曲线**：分析页考试列表下方恢复 `AnalysisTrend`（重构后曾丢失未渲染）。
-- **演示校验脚本**：修正上次考试对比用例（应对「演示-数学」而非「数学月考」发起请求）。
-
-### 合并 main（v1.6.4 / v1.6.5）
-
-- **背景图 API**：恢复 `GET /api/app/background` 与 `POST /api/users/me/background`。
-- **设置保存崩溃**：`PATCH /api/users/me/settings` 改为读取 `req.body`（非 `validatedBody`）。
-- **exam_groups 列补齐**：SQLite / MariaDB 新增 migration v15，补齐 `source` 等缺失列。
-- **前端防御性加固**：`ScoreDetailPage`、`AccountMenu`、`App` 对设置返回值增加 null-safe guard。
-
-## v1.7.0 (2026-06-30) — 成绩分析补全与学生学期对比
-
-### 成绩分析补全
-
-- 实现 `GET /api/analysis/exams/:examId/previous`：对比上一场同科目考试，返回均分/及格率变化。
-- 修复 `findPreviousExam`：`grade_id` 为 NULL 时正确匹配；日期回退使用 `exam_date → start_time → created_at`。
-- 教师成绩详情「概况」Tab 展示上次考试对比条（均分变化、及格率变化）。
-
-### 学生端分析增强
-
-- 新增 `GET /api/scores/me/semester-comparison`：按学年学期（8月~1月为第一学期，2月~7月为第二学期）汇总成绩。
-- 学生「我的成绩」新增 **学期对比** Tab：本学期 vs 上学期均分、学科进步/退步标签、各学科明细表。
-- 新增 `StudentSemesterComparison.tsx` 组件。
-
-### iOS 15 Safari 兼容（基于 #141）
-
-- Vite legacy 插件 + `polyfills.ts`：支持旧版 iPhone Safari 访问 Web 端。
-- 新增 `ErrorBoundary.tsx` 防止单组件错误导致整页白屏。
-
-### 工程清理
-
-- 删除废弃的 `scripts/package-variant.ts`（v1.6.1 已废弃教师/学生 Electron 打包）。
-- `verify:auth` 新增上一场考试对比与网上阅卷用例；全部 **54** 项通过。
-- 演示数据 manifest / verify 脚本更新至 v1.7.0 场景。
-
-## v1.8.0 (2026-07-04) — 原卷上传与 AI 知识点分析
-
-### 数据库 schema 完善
--  初始建表补充 v1.8.0 新增字段：
-  - : , , , , , 
-  - : , 
--  同步补充上述字段（之前仅  完整）
-- MariaDB 增量迁移新增 ，确保已有 MariaDB 生产库自动补齐原卷相关列和  表
-
-### SQL 兼容性
--  的  改为按  分组，然后在 JS 层聚合题号，兼容 SQLite 和 MySQL
-=======
 ## v1.8.0 (2026-07-04) — 原卷上传与 AI 知识点分析
 
 ### 数据库 schema 完善
@@ -88,7 +14,6 @@
 
 ### 版本号
 - `package.json` / README badge / UI 侧栏版本号统一为 `1.8.0`
->>>>>>> ac0a782 (fix bugs)
 
 ### 原卷上传
 - 答题卡创建后自动弹出原卷上传面板（可由教师在设置中关闭）
@@ -156,6 +81,68 @@
 - `src/apps/answer-card/client/components/DragDropZone.tsx` — 拖拽上传
 - `src/apps/answer-card/client/components/KnowledgeTagList.tsx` — 可编辑知识点标签
 - `src/apps/answer-card/client/components/PaperUploadPanel.tsx` — 原卷上传主面板
+---
+
+## v1.7.1 (2026-06-30) — 网上阅卷能力补全
+
+### 网上阅卷队列
+
+- 新增 `GET /api/review/exams/:examId/blocks`：按大题块汇总待阅/已阅数量。
+- 增强 `GET /api/review/exams/:examId/block-crops`：返回学生姓名，供阅卷队列展示。
+- 新增 `POST /api/review/exams/:examId/block-crops/:cropId/submit`：提交题块分数、更新切块状态、重算总分与排名。
+- 新增 `ReviewService`：题块汇总、分数 upsert、排名重算。
+- 教师成绩详情页新增 **网上阅卷** Tab（`OnlineReviewPanel`）：左侧题块列表 + 右侧切块图片与逐题打分。
+
+### 状态流转
+
+- 切块默认 `ready`（待阅）→ 提交后 `reviewed`；可标记 `disputed`（争议）。
+
+### 暗色模式视觉升级
+
+- **答题卡预览**：暗色 UI 下 `.page` 保持白纸黑字（`#ffffff` 背景 + `color-scheme: only light`），不再继承深色表面色。
+- **SVG 文字**：将全局浅色 `fill: #EAEAEA` 改为仅作用于 `.page` 内的 `#111` 黑字，修复预览文字几乎不可见的问题。
+- **对比度**：`--text-secondary` / `--muted` 调亮，次要文字在暗色背景下更易读。
+- **网上阅卷**：`OnlineReviewPanel` 侧栏、题块列表、图片区与打分输入框暗色适配。
+- **工程清理**：删除 `styles.css` 末尾约 1000 行重复的暗色规则块。
+
+### 分数统计图修复
+
+- **箱线图交互**：分数统计分布 图中班级柱形可点击，联动顶栏班级筛选；补传 `selectedClassId` 修复高亮不更新。
+- **图例与可读性**：新增极值/四分位/中位/均值图例，加粗坐标与柱形对比度，暗色模式下提升箱线图与分数段分布可视性。
+- **成绩变化曲线**：分析页考试列表下方恢复 `AnalysisTrend`（重构后曾丢失未渲染）。
+- **演示校验脚本**：修正上次考试对比用例（应对「演示-数学」而非「数学月考」发起请求）。
+
+### 合并 main（v1.6.4 / v1.6.5）
+
+- **背景图 API**：恢复 `GET /api/app/background` 与 `POST /api/users/me/background`。
+- **设置保存崩溃**：`PATCH /api/users/me/settings` 改为读取 `req.body`（非 `validatedBody`）。
+- **exam_groups 列补齐**：SQLite / MariaDB 新增 migration v15，补齐 `source` 等缺失列。
+- **前端防御性加固**：`ScoreDetailPage`、`AccountMenu`、`App` 对设置返回值增加 null-safe guard。
+
+## v1.7.0 (2026-06-30) — 成绩分析补全与学生学期对比
+
+### 成绩分析补全
+
+- 实现 `GET /api/analysis/exams/:examId/previous`：对比上一场同科目考试，返回均分/及格率变化。
+- 修复 `findPreviousExam`：`grade_id` 为 NULL 时正确匹配；日期回退使用 `exam_date → start_time → created_at`。
+- 教师成绩详情「概况」Tab 展示上次考试对比条（均分变化、及格率变化）。
+
+### 学生端分析增强
+
+- 新增 `GET /api/scores/me/semester-comparison`：按学年学期（8月~1月为第一学期，2月~7月为第二学期）汇总成绩。
+- 学生成绩页新增学期对比 Tab，柱状图展示各学期/各科均分。
+- 学生端雷达图与排名趋势可下拉切换考试/大考组/学期三种维度。
+
+### iOS 15 Safari 兼容（基于 #141）
+
+- Vite web 构建目标设为 `es2020 + safari15`，确保 JS 在 iOS 15 / macOS Safari 15+ 上可解析运行。
+- 修复 `Array.prototype.at` 在 iOS 15 上不可用导致 白屏 的问题。
+- `src/components/WebCompat.tsx`：Safari 专用兼容检测与提示横幅。
+
+### 工程清理
+
+- 删除 `.tsbuildinfo` 缓存，确保类型检查从零开始。
+
 
 
 ## v1.6.5 (2026-07-01) — iOS 15 Safari 兼容与错误边界 (#141)
