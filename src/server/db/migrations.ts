@@ -546,6 +546,14 @@ const MIGRATIONS: Migration[] = [
         `);
       }
     }
+  },
+  {
+    version: 17,
+    name: "system-ai-provider",
+    up(db) {
+      // ai_providers 新增 is_system 标记（v1.8.0 系统级 AI 配置）
+      addColumnIfMissing(db, "ai_providers", "is_system", "INTEGER DEFAULT 0");
+    }
   }
 ];
 

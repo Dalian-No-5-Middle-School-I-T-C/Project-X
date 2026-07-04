@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS users (
     email            TEXT,
     phone            TEXT,
     teacher_role     TEXT,                    -- subject_teacher / head_teacher / grade_leader（仅教师）
+    require_original_paper INTEGER DEFAULT 1, -- v1.8.0: 教师是否强制要求上传原卷
+    highlight_missing_paper INTEGER DEFAULT 1, -- v1.8.0: 侧边栏高亮未上传原卷的考试
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -112,6 +114,12 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     sided           TEXT DEFAULT 'double',              -- single / double
     layout_version   INTEGER DEFAULT 1,
     layout_data      TEXT,                                -- Deprecated: legacy cached LayoutDocument; generated from card tables on demand
+    has_original_paper INTEGER DEFAULT 0,                  -- v1.8.0: 是否已上传原卷
+    original_paper_filename TEXT,                          -- v1.8.0: 原卷文件名
+    original_paper_path TEXT,                              -- v1.8.0: 原卷相对路径
+    question_range   TEXT,                                 -- v1.8.0: 题目范围
+    extra_notes      TEXT,                                 -- v1.8.0: 教师特别描述
+    knowledge_points_text TEXT,                            -- v1.8.0: 知识点纯文本备份
     created_by       INTEGER REFERENCES users(id),
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -215,6 +223,20 @@ CREATE TABLE IF NOT EXISTS card_assets (
     mime_type       TEXT,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 知识点字典（与成绩分析联动，v1.8.0）
+CREATE TABLE IF NOT EXISTS knowledge_points (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id         TEXT NOT NULL REFERENCES answer_cards(id) ON DELETE CASCADE,
+    question_number INTEGER NOT NULL,
+    point_text      TEXT NOT NULL,
+    category        TEXT,
+    sort_order      INTEGER DEFAULT 0,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(card_id, question_number, point_text)
+);
+CREATE INDEX IF NOT EXISTS idx_kp_card ON knowledge_points(card_id);
+CREATE INDEX IF NOT EXISTS idx_kp_card_question ON knowledge_points(card_id, question_number);
 
 -- ============================================================
 -- 模块三：考试与扫描
@@ -532,6 +554,7 @@ CREATE TABLE IF NOT EXISTS ai_providers (
     base_url        TEXT NOT NULL DEFAULT '',   -- API 基础地址 (Gemini 留空)
     api_key         TEXT NOT NULL,              -- API Key
     models          TEXT,                       -- JSON 模型列表，空=自动获取
+    is_system       INTEGER DEFAULT 0,          -- v1.8.0: 1=系统级(全校统一), 0=个人
     is_active       INTEGER DEFAULT 1,
     sort_order      INTEGER DEFAULT 0,
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,

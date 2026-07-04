@@ -15,12 +15,14 @@ export const cardsDir = path.join(dataDir, "cards");
 export const assetsDir = path.join(dataDir, "assets");
 export const layoutsDir = path.join(dataDir, "layouts");
 export const blockCropsDir = path.join(dataDir, "recognition", "crops");
+export const papersDir = path.join(dataDir, "papers");
 
 export async function ensureDataDirs(): Promise<void> {
   await mkdir(cardsDir, { recursive: true });
   await mkdir(assetsDir, { recursive: true });
   await mkdir(layoutsDir, { recursive: true });
   await mkdir(blockCropsDir, { recursive: true });
+  await mkdir(papersDir, { recursive: true });
 }
 
 export function cardPath(cardId: string): string {
@@ -37,6 +39,14 @@ export function cardAssetsDir(cardId: string): string {
 
 export function safeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
+export function paperDir(cardId: string): string {
+  return path.join(papersDir, safeId(cardId));
+}
+
+export async function ensurePaperDir(cardId: string): Promise<void> {
+  await mkdir(paperDir(cardId), { recursive: true });
 }
 
 export async function createCard(): Promise<AnswerCard> {
