@@ -570,7 +570,7 @@ function App() {
     }
     // 移动端最多5个Tab
     return items.slice(0, 5);
-  }, [canDesign, canManageExams, canGrade, canAnalyze, showScoresTab, canManageAccounts]);
+  }, [canDesign, canManageExams, canGrade, canAnalyze, showScoresTab, canManageAccounts, loadExams, loadExamGroups]);
 
   useEffect(() => {
     latestCardRef.current = card;

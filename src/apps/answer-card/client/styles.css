@@ -5809,6 +5809,7 @@ body.has-bg-image::after {
     bottom: 0;
     left: 0;
     right: 0;
+    z-index: 101;
     border-radius: 16px 16px 0 0;
     min-width: 0;
     max-height: 60vh;
@@ -5860,7 +5861,7 @@ body.has-bg-image::after {
     grid-template-columns: 1fr;
   }
   .bottom-nav {
-    height: 48px;
+    height: 48px !important;
   }
   .bottom-nav-item {
     font-size: 9px;
@@ -5884,7 +5885,7 @@ body.has-bg-image::after {
     color: var(--brand-light);
   }
   [data-theme="dark"] .topbar {
-    background: rgba(28, 28, 30, 0.8);
+    background: color-mix(in srgb, var(--surface) 80%, transparent);
   }
   [data-theme="dark"] .modal-card {
     background: var(--surface);
