@@ -1,5 +1,37 @@
 # Project-X CHANGELOG
 
+
+## v1.7.2 (2026-07-03) — 统计图表 + 权限管理 + 知识点标注（CrazyYTim/Project-X）
+
+### 统计图表系统
+- `AnalysisCharts` 可复用组件（饼图/柱状图/折线图），嵌入 `AnalysisOverview`。
+- 学生端成绩列表顶部嵌入总分趋势折线图（时间正序）。
+- Chart.js 颜色处理：CSS变量解析 + alpha安全拼接。
+
+### 教师权限管理
+- `teacher_permissions` 表 + `GET/PUT/DELETE /api/admin/permissions`。
+- `PermissionManager` 前端组件（admin only）。
+- RBAC 接入：`getVisibleExamIds` 检查权限限制。
+
+### 原卷上传 + AI知识点标注
+- `POST /api/cards/:cardId/original-paper` 上传原卷 PDF/图片。
+- AI 分析题目知识点（调用 llmclient），老师审核/修改后保存。
+- `KnowledgePointEditor` 嵌入设计器和分析页面。
+- 9科教材章节预设（智能联想下拉）。
+
+### 暗色主题打磨
+- 品牌色多轮调优：`#D94040` → `#C0392B`（暗沉红）+ `#EAEAEA` 亮白文字。
+- 顶部栏/mode-toggle/inspector 暗色毛玻璃。
+- 答题卡预览强制白纸黑字，SVG 文字 `#111 !important`。
+- 1460 行 Kimi 组件级暗色覆盖补全。
+
+### 工程化
+- 后端路由拆分（analysis → router）。
+- Zod 校验（4 端点）+ SQL 白名单 + 魔数上传校验 + DB 索引 v12。
+- GitHub Actions CI + AutoBackup + 统一错误码。
+- 辽宁新高考政史地答题卡模板。
+- `update.sh` 重写（Node 自动探测 + 跨平台进程管理）。
+
 ## v1.7.3 (2026-07-04) — 移动端网页适配
 
 ### 移动端全面适配
