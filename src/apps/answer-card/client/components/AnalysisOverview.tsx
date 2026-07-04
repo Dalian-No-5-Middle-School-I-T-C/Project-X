@@ -1,5 +1,6 @@
 import type { ExamOverview, StudentRankingItem } from "../../../../shared/types";
 import { AnalysisDistribution } from "./AnalysisDistribution";
+import { ScoreDoughnut } from "./AnalysisCharts";
 
 interface Props {
   overview: ExamOverview | null;
@@ -200,6 +201,40 @@ export function AnalysisOverview({
           )}
         </div>
       </div>
+
+      {/* Section 5: Chart visualization */}
+      {overview.distribution && overview.distribution.length > 0 && (
+        <div className="analysis-section" style={{ marginTop: 20 }}>
+          <div className="panel-title">图表可视化</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div className="overview-info-card" style={{ padding: 16 }}>
+              <ScoreDoughnut
+                data={{
+                  labels: overview.distribution.map((d) => d.range),
+                  values: overview.distribution.map((d) => d.count),
+                }}
+                height={200}
+              />
+            </div>
+            <div className="overview-info-card" style={{ padding: 16 }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "10px 0", fontSize: 13 }}>
+                {[
+                  { label: "标准差", value: formatScore(overview.stdDev) },
+                  { label: "及格率", value: overview.passRate + "%" },
+                  { label: "优秀率", value: overview.excellentRate + "%" },
+                  { label: "最高分", value: formatScore(overview.maxScore) },
+                  { label: "最低分", value: formatScore(overview.minScore) },
+                ].map((item) => (
+                  <div key={item.label} style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "var(--text-secondary)" }}>{item.label}</span>
+                    <span style={{ fontWeight: 600 }}>{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
