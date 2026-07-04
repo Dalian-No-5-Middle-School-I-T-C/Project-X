@@ -10,8 +10,6 @@ interface ClassOption {
 
 interface Props {
   exams: Array<{ subject?: string | null }>;
-  initialSubject?: string;
-  initialClassId?: string;
 }
 
 function formatScore(value: number): string {
@@ -22,36 +20,31 @@ function buildPath(points: Array<{ x: number; y: number }>): string {
   return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
 }
 
-export function AnalysisTrend({ exams, initialSubject, initialClassId }: Props) {
+export function AnalysisTrend({ exams }: Props) {
   const subjects = useMemo(() => {
     const seen = new Set<string>();
     const result: string[] = [];
     for (const exam of exams) {
-      const s = exam.subject?.trim();
-      if (s && !seen.has(s)) {
-        seen.add(s);
-        result.push(s);
+      const subject = exam.subject?.trim();
+      if (subject && !seen.has(subject)) {
+        seen.add(subject);
+        result.push(subject);
       }
     }
-    if (initialSubject && !seen.has(initialSubject)) result.push(initialSubject);
     return result;
-  }, [exams, initialSubject]);
+  }, [exams]);
 
-  const [subject, setSubject] = useState(initialSubject || "");
-  const [classId, setClassId] = useState(initialClassId || "");
+  const [subject, setSubject] = useState("");
+  const [classId, setClassId] = useState("");
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [trend, setTrend] = useState<ScoreTrendPoint[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (initialSubject && subjects.includes(initialSubject)) setSubject(initialSubject);
-    else if (!subject && subjects.length > 0) setSubject(subjects[0]);
-  }, [initialSubject, subjects]);
-
-  useEffect(() => {
-    if (initialClassId !== undefined) setClassId(initialClassId);
-  }, [initialClassId]);
+    if (!subject && subjects.length > 0) setSubject(subjects[0]);
+    if (subject && subjects.length > 0 && !subjects.includes(subject)) setSubject(subjects[0]);
+  }, [subject, subjects]);
 
   useEffect(() => {
     fetchJson<ClassOption[]>("/api/classes")
