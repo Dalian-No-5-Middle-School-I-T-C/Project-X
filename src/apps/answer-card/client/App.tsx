@@ -32,6 +32,7 @@ import { BeianFooter } from "./components/BeianFooter";
 import { StudentScores } from "./components/StudentScores";
 import { SponsorPage } from "./components/SponsorPage";
 import { UserGuidePage } from "./components/UserGuidePage";
+import { PermissionManager } from "./components/PermissionManager";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import { PaperUploadPanel } from "./components/PaperUploadPanel";
 import { ExamSelectPage } from "./components/ExamSelectPage";
@@ -627,7 +628,7 @@ function App() {
         return;
       }
       // 赞助/使用说明 → 返回上一模式
-      if (mode === "sponsor" || mode === "guide") {
+      if (mode === "sponsor" || mode === "guide" || mode === "permissions") {
         setMode(previousModeRef.current);
         return;
       }
@@ -1618,6 +1619,10 @@ function App() {
                 previousModeRef.current = mode;
                 setMode("guide");
               }}
+              onOpenPermissions={() => {
+                previousModeRef.current = mode;
+                setMode("permissions");
+              }}
             />
           </div>
         </header>
@@ -2130,6 +2135,11 @@ function App() {
         <div className={`main-grid sponsor-grid ${mode === "sponsor" ? "" : "hidden-panel"}`}>
           <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
             <SponsorPage onBack={() => setMode(previousModeRef.current)} />
+          </section>
+        </div>
+        <div className={`main-grid permissions-grid ${mode === "permissions" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+            <PermissionManager onBack={() => setMode(previousModeRef.current)} />
           </section>
         </div>
         <div className={`main-grid guide-grid ${mode === "guide" ? "" : "hidden-panel"}`}>

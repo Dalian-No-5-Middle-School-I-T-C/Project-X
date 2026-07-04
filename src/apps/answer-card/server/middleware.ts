@@ -82,7 +82,35 @@ export function getVisibleExamIds(user: express.Request["user"]): number[] | nul
     return rows.map((r) => r.id);
   }
 
+  // Check teacher_permissions for additional restrictions
+  if (user.role_name === "teacher") {
+    const db = getDatabase();
+    if (hasTable(db, "teacher_permissions")) {
+      const restrictions = db.prepare(
+        "SELECT grade_id, can_view_scores FROM teacher_permissions WHERE teacher_id = ? AND can_view_scores = 0"
+      ).all(user.id) as Array<{ grade_id: number | null }>;
+      // If any restriction forbids all grades (grade_id = null), deny everything
+      if (restrictions.some((r) => r.grade_id === null)) return [];
+      // Filter out exams from restricted grades
+      if (restrictions.length > 0) {
+        const restrictedGrades = restrictions.map((r) => r.grade_id).filter(Boolean) as number[];
+        const db = getDatabase();
+        return (db.prepare(
+          `SELECT DISTINCT e.id FROM exams e
+           JOIN classes c ON c.id = e.class_id
+           WHERE e.grade_id NOT IN (${restrictedGrades.map(() => "?").join(",")})`
+        ).all(...restrictedGrades) as Array<{ id: number }>).map((r) => r.id);
+      }
+    }
+  }
+
   return null;
+}
+
+function hasTable(db: ReturnType<typeof getDatabase>, table: string): boolean {
+  try {
+    return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1").get(table);
+  } catch { return false; }
 }
 
 /**

@@ -28,6 +28,7 @@ import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
 import reviewRoutes from "../../../server/routes/review";
+import adminPermissionsRoutes from "../../../server/routes/admin-permissions";
 import apiKeysRoutes from "../../../server/routes/api-keys";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
 import ladderRoutes from "../../../server/routes/ladder";
@@ -546,6 +547,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/sponsor", sponsorRoutes);
   app.use("/api/db", backupRoutes);
   app.use("/api/admin/api-keys", apiKeysRoutes);
+  app.use("/api/admin/permissions", adminPermissionsRoutes);
   app.use("/api/scanner/upload", scannerUploadRoutes);
   app.use("/api/ai/providers", aiProviderRoutes);
   app.use("/api/ladder", ladderRoutes);
