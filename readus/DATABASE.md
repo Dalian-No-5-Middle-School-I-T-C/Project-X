@@ -688,8 +688,9 @@ src/types/
 | `api_key` | TEXT | API 密钥 |
 | `models` | TEXT | JSON 模型列表，为空则自动获取 |
 | `is_active` | INTEGER | 0=禁用 1=启用 |
+| `is_system` | INTEGER | v1.8.0: 0=个人 1=系统级（全校统一） |
 
-每个教师可配置多个服务商，用于 AI 成绩分析的模型路由。
+每个教师可配置多个服务商，用于 AI 成绩分析的模型路由。v1.8.0 新增 `is_system=1` 的系统级提供商，由管理员统一配置，用于知识点分析。
 
 **Base URL 说明**：填写 API 端点地址而非网站首页。GPT/DeepSeek 等 OpenAI 兼容协议会自动补齐 `/v1`；**Gemini 无需填写 Base URL**（使用 Google 原生 GenAI SDK，仅需 API Key）。
 常见的 Base URL 示例：
@@ -723,6 +724,65 @@ src/types/
 `ensureDefaultAdmin()` 启动时自动生成一条默认 scanner key。管理员可通过 `GET/POST/PUT/DELETE /api/admin/api-keys` 管理。
 
 `twain_scan_records` 新增 `uploaded INTEGER DEFAULT 0` 列，用于追踪远程上传状态。
+
+---
+
+### v1.8.0 新增
+
+#### `knowledge_points` — 知识点字典
+
+与成绩分析联动。通过 `card_id → exams.card_id → question_scores.exam_id` + `question_number` 关联。
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `card_id` | TEXT FK | 答题卡 ID |
+| `question_number` | INTEGER | 题号 |
+| `point_text` | TEXT | 知识点文字（≤10 字） |
+| `category` | TEXT | 分类标签 |
+| `sort_order` | INTEGER | 排序 |
+
+**UNIQUE**: `(card_id, question_number, point_text)`
+
+**成绩分析关联查询**：
+```sql
+-- 班级知识点弱项（得分率从低到高）
+SELECT kp.point_text,
+       ROUND(AVG(qs.score * 100.0 / NULLIF(qs.max_score, 0)), 1) AS avg_rate
+FROM question_scores qs
+JOIN exams e ON qs.exam_id = e.id
+JOIN knowledge_points kp ON kp.card_id = e.card_id
+  AND kp.question_number = qs.question_number
+WHERE qs.exam_id = ?
+GROUP BY kp.point_text
+ORDER BY avg_rate ASC;
+```
+
+#### `ai_providers.is_system` — 系统级 AI 标记
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `is_system` | INTEGER DEFAULT 0 | 1=系统级（全校统一），0=个人 |
+
+系统级提供商由管理员配置，用于知识点分析；个人提供商用于成绩分析等已有功能。
+
+#### `answer_cards` 新增列
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `has_original_paper` | INTEGER DEFAULT 0 | 是否已上传原卷 |
+| `original_paper_filename` | TEXT | 原始文件名 |
+| `original_paper_path` | TEXT | 文件相对路径 |
+| `question_range` | TEXT | 题目范围 |
+| `extra_notes` | TEXT | 教师特别描述 |
+| `knowledge_points_text` | TEXT | 知识点纯文本备份 |
+
+#### `users` 新增列
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `require_original_paper` | INTEGER DEFAULT 1 | 强制上传原卷开关 |
+| `highlight_missing_paper` | INTEGER DEFAULT 1 | 侧边栏高亮开关 |
 
 ---
 

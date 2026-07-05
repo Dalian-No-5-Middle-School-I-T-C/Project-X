@@ -35,6 +35,7 @@ Before writing the final JSON, call tools as needed. For a normal exam analysis,
 - get_score_distribution: score bands and distribution shape.
 - get_question_analysis: weakest questions by score rate.
 - get_review_risks: questions whose objective error rate or subjective low-score rate is high enough for teaching attention.
+- get_knowledge_point_weaknesses: knowledge-point-level weakness analysis (v1.7.0). Call when data exists.
 - get_rank_segments: top/middle/bottom segment comparison.
 - get_class_summaries: only when analyzing all classes or when class comparison is useful.
 
@@ -160,7 +161,8 @@ Mention whether the distribution is concentrated, skewed, differentiated, or lim
 ## weakPoints
 
 2-5 items when possible.
-Each item must be a concrete weakness tied to a question, question type, scoreRate, average/maxScore, or a score segment.
+Each item must be a concrete weakness tied to a question, question type, scoreRate, average/maxScore, or a knowledge point.
+If knowledge point weaknesses are available (get_knowledge_point_weaknesses), prioritize naming specific knowledge points with their score rates (e.g., "勾股定理得分率仅62%").
 Do not list an objective question as a weak point if its scoreRate is high and only a few students scored zero.
 For objective questions with high scoreRate, write them as "个别错题回看" only if necessary, not as class-wide weakness.
 

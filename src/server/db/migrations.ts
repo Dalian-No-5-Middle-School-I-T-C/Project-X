@@ -505,6 +505,55 @@ const MIGRATIONS: Migration[] = [
           ON answer_block_crops(card_id, block_id);
       `);
     }
+  },
+  {
+    version: 15,
+    name: "exam-groups-source-fix",
+    up(db) {
+      // 修复：老数据库 exam_groups 表缺少 source 等列（migration v8 早期版本未包含这些列）
+      if (hasTable(db, "exam_groups")) {
+        addColumnIfMissing(db, "exam_groups", "description", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "source", "TEXT DEFAULT 'manual'");
+        addColumnIfMissing(db, "exam_groups", "start_date", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "end_date", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "grade_id", "INTEGER REFERENCES grades(id)");
+        addColumnIfMissing(db, "exam_groups", "tag", "TEXT");
+        addColumnIfMissing(db, "exam_groups", "status", "TEXT DEFAULT 'active'");
+        addColumnIfMissing(db, "exam_groups", "is_official", "INTEGER DEFAULT 0");
+        addColumnIfMissing(db, "exam_groups", "total_score_mode", "TEXT DEFAULT 'raw'");
+        addColumnIfMissing(db, "exam_groups", "only_full_participants", "INTEGER DEFAULT 0");
+      }
+    }
+  },
+  {
+    version: 16,
+    name: "teacher-permissions",
+    up(db) {
+      if (!hasTable(db, "teacher_permissions")) {
+        db.exec(`
+          CREATE TABLE teacher_permissions (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            grade_id           INTEGER REFERENCES grades(id),
+            can_view_scores    INTEGER DEFAULT 1,
+            can_view_charts    INTEGER DEFAULT 1,
+            can_view_students  INTEGER DEFAULT 1,
+            created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(teacher_id, grade_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_tp_teacher ON teacher_permissions(teacher_id);
+        `);
+      }
+    }
+  },
+  {
+    version: 17,
+    name: "system-ai-provider",
+    up(db) {
+      // ai_providers 新增 is_system 标记（v1.8.0 系统级 AI 配置）
+      addColumnIfMissing(db, "ai_providers", "is_system", "INTEGER DEFAULT 0");
+    }
   }
 ];
 

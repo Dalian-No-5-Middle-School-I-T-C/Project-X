@@ -27,12 +27,13 @@ import exportScoresRoutes from "../../../server/routes/export-scores";
 import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
+import reviewRoutes from "../../../server/routes/review";
+import adminPermissionsRoutes from "../../../server/routes/admin-permissions";
 import apiKeysRoutes from "../../../server/routes/api-keys";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
 import ladderRoutes from "../../../server/routes/ladder";
 import {
   getAnswerBlockCropFile,
-  listReviewBlockCrops,
   persistAnswerBlockCrops
 } from "../../../server/services/AnswerBlockCropService";
 import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
@@ -68,6 +69,7 @@ import {
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
+import { paperRoutes } from "./routes/paper-routes";
 import { CreateCardSchema, CreateExamSchema, UpdateUserSettingsSchema, validateBody } from "./validation";
 import { ApiError } from "../../../server/api-error";import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
 
@@ -449,18 +451,22 @@ export async function createApp(): Promise<express.Express> {
         scoreDisplayMode: (user as any).score_display_mode ?? "zscore",
         reviewConfidenceThreshold: (user as any).review_confidence_threshold ?? 0.12,
         backgroundOpacity: (user as any).background_opacity ?? 0,
+        requireOriginalPaper: (user as any).require_original_paper ?? 1,
+        highlightMissingPaper: (user as any).highlight_missing_paper ?? 1,
       });
     } catch (err) { next(err); }
   });
   app.patch("/api/users/me/settings", authMiddleware, validateBody(UpdateUserSettingsSchema), async (_req, res, next) => {
     try {
       const userId = (_req as any).user.userId ?? (_req as any).user.id;
-      const body = (_req as any).validatedBody;
+      const body = (_req as any).body as Record<string, unknown>;
       const setClauses: string[] = [];
       const values: unknown[] = [];
       if (body.scoreDisplayMode !== undefined) { setClauses.push("score_display_mode = ?"); values.push(body.scoreDisplayMode); }
       if (body.reviewConfidenceThreshold !== undefined) { setClauses.push("review_confidence_threshold = ?"); values.push(body.reviewConfidenceThreshold); }
       if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
+      if (body.requireOriginalPaper !== undefined) { setClauses.push("require_original_paper = ?"); values.push(body.requireOriginalPaper ? 1 : 0); }
+      if (body.highlightMissingPaper !== undefined) { setClauses.push("highlight_missing_paper = ?"); values.push(body.highlightMissingPaper ? 1 : 0); }
       if (setClauses.length > 0) {
         setClauses.push("updated_at = CURRENT_TIMESTAMP");
         values.push(userId);
@@ -469,6 +475,66 @@ export async function createApp(): Promise<express.Express> {
       }
       res.json({ message: "已保存" });
     } catch (err) { next(err); }
+  });
+
+  // v1.4.6: 背景图 — GET 返回背景图，POST 上传自定义背景
+  const backgroundsDir = path.join(dataDir, "backgrounds");
+
+  app.get("/api/app/background", optionalAuth, (req, res) => {
+    // 用户自定义背景优先
+    if ((req as any).user) {
+      const customBg = path.join(backgroundsDir, `${(req as any).user.id}.jpg`);
+      if (existsSync(customBg)) {
+        res.setHeader("Cache-Control", "no-cache");
+        res.sendFile(customBg);
+        return;
+      }
+    }
+    // 默认背景
+    const bgPath = path.join(rootDir, "resources", "background.jpg");
+    if (existsSync(bgPath)) {
+      res.setHeader("Cache-Control", "public, max-age=86400");
+      res.sendFile(bgPath);
+    } else {
+      res.status(404).json({ error: "background image not found" });
+    }
+  });
+
+  // 上传自定义背景图
+  const bgUpload = multer({
+    storage: multer.diskStorage({
+      destination: async (_req, _file, cb) => {
+        await mkdir(backgroundsDir, { recursive: true });
+        cb(null, backgroundsDir);
+      },
+      filename: (_req, file, cb) => {
+        const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
+        cb(null, `upload_${Date.now()}${ext}`);
+      }
+    }),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (_req, file, cb) => {
+      if (file.mimetype.startsWith("image/")) {
+        cb(null, true);
+      } else {
+        cb(new Error("仅支持图片文件"));
+      }
+    }
+  });
+
+  app.post("/api/users/me/background", authMiddleware, bgUpload.single("file"), async (req, res, next) => {
+    try {
+      if (!req.file) {
+        res.status(400).json({ error: "请选择图片文件" });
+        return;
+      }
+      // 重命名为 user_${userId}.jpg，覆盖旧背景
+      const target = path.join(backgroundsDir, `${(req as any).user.id}.jpg`);
+      await rename(req.file.path, target);
+      res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
   });
 
   app.use("/api/users", userRoutes);
@@ -481,6 +547,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/sponsor", sponsorRoutes);
   app.use("/api/db", backupRoutes);
   app.use("/api/admin/api-keys", apiKeysRoutes);
+  app.use("/api/admin/permissions", adminPermissionsRoutes);
   app.use("/api/scanner/upload", scannerUploadRoutes);
   app.use("/api/ai/providers", aiProviderRoutes);
   app.use("/api/ladder", ladderRoutes);
@@ -553,7 +620,8 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/exams", examGate);
   app.use("/api/analysis", analysisGate, analysisRoutes);
   app.use("/api/answer-block-crops", cropGate);
-  app.use("/api/review", analysisGate);
+  app.use("/api/review", analysisGate, reviewRoutes);
+  app.use(paperRoutes());
 
   const cardRepo = new CardRepository();
 
@@ -1032,27 +1100,6 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.get("/api/review/exams/:examId/block-crops", requireExamAccess, async (req, res, next) => {
-    try {
-      const examId = Number(req.params.examId);
-      if (!Number.isFinite(examId)) {
-        res.status(400).json({ message: "Invalid examId" });
-        return;
-      }
-      const blockId = typeof req.query.blockId === "string" ? req.query.blockId.trim() : "";
-      const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
-      const classId = optionalPositiveNumber(req.query.classId);
-      const crops = await listReviewBlockCrops({
-        examId,
-        blockId: blockId || undefined,
-        classId: classId ?? undefined,
-        status: status || undefined
-      });
-      res.json({ examId, rows: crops });
-    } catch (error) {
-      next(error);
-    }
-  });
 
   app.post("/api/cards/:cardId/assets", upload.single("file"), async (req, res, next) => {
     try {
