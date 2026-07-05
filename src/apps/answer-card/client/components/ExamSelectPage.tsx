@@ -17,6 +17,7 @@ interface FilterOptions { academicYears: string[]; subjects: string[]; }
 interface Props {
   onSelectExam: (examId: number) => void;
   onSelectGroup?: (groupId: number) => void;
+  refreshKey?: number;
 }
 
 type MainMode = "single" | "group" | "cross";
@@ -32,7 +33,7 @@ function formatScore(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
-export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
+export function ExamSelectPage({ onSelectExam, onSelectGroup, refreshKey = 0 }: Props) {
   const [mainMode, setMainMode] = useState<MainMode>("single");
   const [crossMode, setCrossMode] = useState<CrossMode>("week");
   const [filters, setFilters] = useState<FilterOptions>({ academicYears: [], subjects: [] });
@@ -100,7 +101,7 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
         .then(setGroupExams).catch(() => setGroupExams([]))
         .finally(() => setLoading(false));
     }
-  }, [mainMode, academicYear, gradeId, subject]);
+  }, [mainMode, academicYear, gradeId, subject, refreshKey]);
 
   // Load exams for cross-exam picker / week preview
   useEffect(() => {
@@ -112,7 +113,7 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup }: Props) {
     fetchJson<ExamFilterItem[]>(`/api/exams?${params.toString()}`)
       .then(setExams).catch(() => setExams([]))
       .finally(() => setLoading(false));
-  }, [mainMode, gradeId, subject, crossMode]);
+  }, [mainMode, gradeId, subject, crossMode, refreshKey]);
 
   // ── Cross-exam functions ──
   async function loadCrossGroups(preferredGroupId?: string) {

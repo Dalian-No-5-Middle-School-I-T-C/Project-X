@@ -86,7 +86,7 @@ export class ExamRepository {
   }>> {
     let sql = `SELECT e.id, e.name, e.subject, e.grade_id, g.name as grade_name,
         COALESCE(ac.exam_date, date(e.created_at)) as exam_date, e.status,
-        COUNT(ss.id) as graded_count, ROUND(AVG(ss.total_score), 1) as avg_score,
+        COUNT(ss.exam_id) as graded_count, ROUND(AVG(ss.total_score), 1) as avg_score,
         CASE WHEN e.assigned_formula IS NOT NULL AND e.assigned_formula != '' THEN 1 ELSE 0 END as has_assigned_score
       FROM exams e
       LEFT JOIN answer_cards ac ON ac.id = e.card_id

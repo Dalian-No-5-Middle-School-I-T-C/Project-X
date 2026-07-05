@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import PDFDocument from "pdfkit";
 import type {
@@ -15,9 +15,99 @@ import { formatBlankLabel } from "../../../shared/blankLabels";
 import { cardAssetsDir } from "./storage";
 
 const MM_TO_PT = 72 / 25.4;
-const fontRegular = "C:\\Windows\\Fonts\\msyh.ttc";
-const fontRegularPostscriptName = "MicrosoftYaHei";
-const fontFallback = "C:\\Windows\\Fonts\\simhei.ttf";
+const REGISTERED_FONT_NAME = "regular";
+const BUILTIN_FALLBACK_FONT = "Helvetica";
+const regularFonts = new WeakMap<PDFKit.PDFDocument, string>();
+
+type FontCandidate = {
+  filePath: string;
+  postscriptName?: string;
+};
+
+const bundledFontCandidates: FontCandidate[] = [
+  { filePath: "C:\\Windows\\Fonts\\msyh.ttc", postscriptName: "MicrosoftYaHei" },
+  { filePath: "C:\\Windows\\Fonts\\simhei.ttf" },
+  { filePath: "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", postscriptName: "NotoSansCJKsc-Regular" },
+  { filePath: "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf" },
+  { filePath: "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", postscriptName: "NotoSansCJKsc-Regular" },
+  { filePath: "/usr/share/fonts/truetype/noto/NotoSansCJKsc-Regular.otf" },
+  { filePath: "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc" },
+  { filePath: "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc" },
+  { filePath: "/usr/share/fonts/truetype/arphic/uming.ttc" },
+  { filePath: "/System/Library/Fonts/PingFang.ttc", postscriptName: "PingFangSC-Regular" },
+  { filePath: "/Library/Fonts/Arial Unicode.ttf" },
+  { filePath: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" }
+];
+
+function envFontCandidates(): FontCandidate[] {
+  const fontPath = process.env.PROJECTX_PDF_FONT_PATH ?? process.env.ANSWER_CARD_PDF_FONT_PATH;
+  if (!fontPath) return [];
+  return fontPath.split(path.delimiter).filter(Boolean).map((filePath) => ({
+    filePath,
+    postscriptName: process.env.PROJECTX_PDF_FONT_POSTSCRIPT_NAME ?? process.env.ANSWER_CARD_PDF_FONT_POSTSCRIPT_NAME
+  }));
+}
+
+function discoverSystemFontCandidates(): FontCandidate[] {
+  const fontDirs = [
+    "/usr/share/fonts/opentype/noto",
+    "/usr/share/fonts/truetype/noto",
+    "/usr/share/fonts/truetype/wqy",
+    "/usr/share/fonts/truetype/arphic",
+    "C:\\Windows\\Fonts",
+    "/System/Library/Fonts",
+    "/Library/Fonts"
+  ];
+  const preferredNames = [/noto.*cjk.*sc.*regular/i, /noto.*sans.*cjk.*regular/i, /source.*han.*sans.*sc.*regular/i, /wqy.*microhei/i, /wqy.*zenhei/i, /simhei/i, /msyh/i, /pingfang/i, /dejavusans/i];
+  const candidates: FontCandidate[] = [];
+
+  for (const dir of fontDirs) {
+    if (!existsSync(dir)) continue;
+    let filenames: string[];
+    try {
+      filenames = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const pattern of preferredNames) {
+      const filename = filenames.find((name) => pattern.test(name) && /\.(ttf|ttc|otf)$/i.test(name));
+      if (filename) candidates.push({ filePath: path.join(dir, filename) });
+    }
+  }
+
+  return candidates;
+}
+
+function setupRegularFont(doc: PDFKit.PDFDocument): void {
+  const candidates = [...envFontCandidates(), ...bundledFontCandidates, ...discoverSystemFontCandidates()];
+  const tried = new Set<string>();
+
+  for (const candidate of candidates) {
+    if (!existsSync(candidate.filePath)) continue;
+    const cacheKey = `${candidate.filePath}\0${candidate.postscriptName ?? ""}`;
+    if (tried.has(cacheKey)) continue;
+    tried.add(cacheKey);
+
+    try {
+      if (candidate.postscriptName) {
+        doc.registerFont(REGISTERED_FONT_NAME, candidate.filePath, candidate.postscriptName);
+      } else {
+        doc.registerFont(REGISTERED_FONT_NAME, candidate.filePath);
+      }
+      regularFonts.set(doc, REGISTERED_FONT_NAME);
+      return;
+    } catch (error) {
+      console.warn(`[Project-X] PDF font registration failed: ${candidate.filePath}`, error);
+    }
+  }
+
+  console.warn("[Project-X] No CJK-capable PDF font was found. Falling back to Helvetica; Chinese text may not render correctly.");
+  regularFonts.set(doc, BUILTIN_FALLBACK_FONT);
+}
+
+function regularFont(doc: PDFKit.PDFDocument): string {
+  return regularFonts.get(doc) ?? BUILTIN_FALLBACK_FONT;
+}
 
 function pt(mm: number): number {
   return mm * MM_TO_PT;
@@ -42,11 +132,11 @@ function drawText(
   size = 9,
   options: PDFKit.Mixins.TextOptions = {}
 ) {
-  doc.font("regular").fontSize(size).fillColor("#111").text(text, pt(x), pt(y), options);
+  doc.font(regularFont(doc)).fontSize(size).fillColor("#111").text(text, pt(x), pt(y), options);
 }
 
 function drawCenteredText(doc: PDFKit.PDFDocument, text: string, x: number, y: number, width: number, size = 9) {
-  doc.font("regular").fontSize(size).fillColor("#111").text(text, pt(x), pt(y), { width: pt(width), align: "center" });
+  doc.font(regularFont(doc)).fontSize(size).fillColor("#111").text(text, pt(x), pt(y), { width: pt(width), align: "center" });
 }
 
 // 在给定方框内将文本水平且垂直居中。
@@ -62,7 +152,7 @@ function drawCenteredBoxText(
 ) {
   const textHeightMm = (size * 1.2 / 72) * 25.4;
   const centeredY = y + (height - textHeightMm) / 2;
-  doc.font("regular").fontSize(size).fillColor("#111").text(text, pt(x), pt(centeredY), {
+  doc.font(regularFont(doc)).fontSize(size).fillColor("#111").text(text, pt(x), pt(centeredY), {
     width: pt(width),
     align: "center",
     lineBreak: false
@@ -80,7 +170,7 @@ function drawHeader(doc: PDFKit.PDFDocument, page: PageLayout) {
   });
 
   if (page.header.title && page.header.titleX && page.header.titleY) {
-    doc.font("regular").fontSize(15).fillColor("#111").text(page.header.title, pt(35), pt(page.header.titleY - 4), {
+    doc.font(regularFont(doc)).fontSize(15).fillColor("#111").text(page.header.title, pt(35), pt(page.header.titleY - 4), {
       width: pt(140),
       align: "center"
     });
@@ -220,11 +310,7 @@ export function createPdf(card: AnswerCard): PDFKit.PDFDocument {
     }
   });
 
-  if (existsSync(fontRegular)) {
-    doc.registerFont("regular", fontRegular, fontRegularPostscriptName);
-  } else {
-    doc.registerFont("regular", fontFallback);
-  }
+  setupRegularFont(doc);
 
   layout.pages.forEach((page) => {
     doc.addPage();

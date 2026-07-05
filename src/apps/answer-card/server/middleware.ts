@@ -6,7 +6,7 @@
  * can import and reuse them.
  */
 import type express from "express";
-import { getDatabase } from "../../../server/db";
+import { getMysqlDb, type DbAdapter } from "../../../server/db";
 import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 
@@ -47,59 +47,75 @@ export function makeGate(enforce: boolean, readPerm: string, writePerm: string) 
  * - subject_teacher → own subject + classes
  * - plain teacher (no teacher_role) → null (back-compat)
  */
-export function getVisibleExamIds(user: express.Request["user"]): number[] | null {
+export async function getVisibleExamIds(user: express.Request["user"]): Promise<number[] | null> {
   if (!user || user.role_name === "admin") return null;
   if (user.role_name !== "teacher") return null;
   if (!user.teacher_role) return null; // plain teacher: all visible (back-compat)
 
   if (user.teacher_role === "grade_leader") return null;
 
-  const db = getDatabase();
+  const db = getMysqlDb();
 
   if (user.teacher_role === "head_teacher") {
-    const classIds = db.prepare(
-      "SELECT class_id FROM teacher_classes WHERE teacher_id = ?"
-    ).all(user.id).map((r: any) => r.class_id) as number[];
-    if (classIds.length === 0) return [];
-    const rows = db.prepare(
+    const classRows = await db.all<{ class_id: number }>(
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ?",
+      user.id
+    );
+    const classIds = classRows.map((r) => r.class_id);
+    if (classIds.length === 0) {
+      const ownRows = await db.all<{ id: number }>("SELECT DISTINCT id FROM exams WHERE created_by = ?", user.id);
+      return ownRows.map((r) => r.id);
+    }
+    const rows = await db.all<{ id: number }>(
       `SELECT DISTINCT e.id FROM exams e
-       JOIN classes c ON c.id = e.class_id
-       WHERE e.class_id IN (${classIds.map(() => "?").join(",")})`
-    ).all(...classIds) as Array<{ id: number }>;
+       WHERE e.created_by = ? OR e.class_id IN (${classIds.map(() => "?").join(",")})`,
+      user.id,
+      ...classIds
+    );
     return rows.map((r) => r.id);
   }
 
   if (user.teacher_role === "subject_teacher") {
     if (!user.subject) return [];
-    const classIds = db.prepare(
-      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)"
-    ).all(user.id, user.subject).map((r: any) => r.class_id) as number[];
-    if (classIds.length === 0) return [];
-    const rows = db.prepare(
+    const classRows = await db.all<{ class_id: number }>(
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
+      user.id,
+      user.subject
+    );
+    const classIds = classRows.map((r) => r.class_id);
+    if (classIds.length === 0) {
+      const ownRows = await db.all<{ id: number }>("SELECT DISTINCT id FROM exams WHERE created_by = ?", user.id);
+      return ownRows.map((r) => r.id);
+    }
+    const rows = await db.all<{ id: number }>(
       `SELECT DISTINCT e.id FROM exams e
-       WHERE e.subject = ? AND e.class_id IN (${classIds.map(() => "?").join(",")})`
-    ).all(user.subject, ...classIds) as Array<{ id: number }>;
+       WHERE e.created_by = ? OR (e.subject = ? AND e.class_id IN (${classIds.map(() => "?").join(",")}))`,
+      user.id,
+      user.subject,
+      ...classIds
+    );
     return rows.map((r) => r.id);
   }
 
   // Check teacher_permissions for additional restrictions
   if (user.role_name === "teacher") {
-    const db = getDatabase();
-    if (hasTable(db, "teacher_permissions")) {
-      const restrictions = db.prepare(
-        "SELECT grade_id, can_view_scores FROM teacher_permissions WHERE teacher_id = ? AND can_view_scores = 0"
-      ).all(user.id) as Array<{ grade_id: number | null }>;
+    if (await hasTable(db, "teacher_permissions")) {
+      const restrictions = await db.all<{ grade_id: number | null }>(
+        "SELECT grade_id, can_view_scores FROM teacher_permissions WHERE teacher_id = ? AND can_view_scores = 0",
+        user.id
+      );
       // If any restriction forbids all grades (grade_id = null), deny everything
       if (restrictions.some((r) => r.grade_id === null)) return [];
       // Filter out exams from restricted grades
       if (restrictions.length > 0) {
         const restrictedGrades = restrictions.map((r) => r.grade_id).filter(Boolean) as number[];
-        const db = getDatabase();
-        return (db.prepare(
+        const rows = await db.all<{ id: number }>(
           `SELECT DISTINCT e.id FROM exams e
            JOIN classes c ON c.id = e.class_id
-           WHERE e.grade_id NOT IN (${restrictedGrades.map(() => "?").join(",")})`
-        ).all(...restrictedGrades) as Array<{ id: number }>).map((r) => r.id);
+           WHERE e.grade_id NOT IN (${restrictedGrades.map(() => "?").join(",")})`,
+          ...restrictedGrades
+        );
+        return rows.map((r) => r.id);
       }
     }
   }
@@ -107,9 +123,9 @@ export function getVisibleExamIds(user: express.Request["user"]): number[] | nul
   return null;
 }
 
-function hasTable(db: ReturnType<typeof getDatabase>, table: string): boolean {
+async function hasTable(db: DbAdapter, table: string): Promise<boolean> {
   try {
-    return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1").get(table);
+    return !!(await db.get(`SELECT 1 FROM ${table} LIMIT 1`));
   } catch { return false; }
 }
 
@@ -143,7 +159,7 @@ export async function requireExamAccess(req: express.Request, res: express.Respo
     return;
   }
 
-  const visibleIds = getVisibleExamIds(req.user);
+  const visibleIds = await getVisibleExamIds(req.user);
   if (visibleIds === null) {
     next();
     return;
@@ -155,8 +171,8 @@ export async function requireExamAccess(req: express.Request, res: express.Respo
   res.status(403).json({ message: "权限不足：无权访问此考试" });
 }
 
-export function validateExamIdsAccess(req: express.Request, res: express.Response, examIds: number[]): boolean {
-  const visibleIds = getVisibleExamIds(req.user);
+export async function validateExamIdsAccess(req: express.Request, res: express.Response, examIds: number[]): Promise<boolean> {
+  const visibleIds = await getVisibleExamIds(req.user);
   if (visibleIds === null) return true;
   const visible = new Set(visibleIds);
   const denied = examIds.filter((examId) => !visible.has(examId));
