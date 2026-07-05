@@ -548,7 +548,7 @@ const MIGRATIONS: Migration[] = [
     }
   },
   {
-    version: 17,
+    version: 18,
     name: "system-ai-provider",
     up(db) {
       // ai_providers 新增 is_system 标记（v1.8.0 系统级 AI 配置）

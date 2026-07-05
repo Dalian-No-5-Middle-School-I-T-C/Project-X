@@ -12,6 +12,8 @@ from llmclient.config import (
     env_value,
     find_model,
     llmclient_api_key,
+    mariadb_config,
+    mariadb_configured,
 )
 from llmclient.providers import run_analysis
 from llmclient.schemas import AnalysisRunRequest, AnalysisRunResponse
@@ -37,8 +39,29 @@ def require_internal_key(authorization: str | None = Header(default=None)) -> No
 def health() -> dict[str, object]:
     db_path = default_db_path()
     models = configured_models()
+    db_ok = False
+    if mariadb_configured():
+        try:
+            from llmclient.tools.grades import connect_db
+
+            with connect_db() as conn:
+                row = conn.execute("SELECT 1 AS ok").fetchone()
+            db_ok = bool(row and row["ok"] == 1)
+        except Exception:
+            db_ok = False
+        db_config = mariadb_config()
+        return {
+            "ok": True,
+            "dbDialect": "mariadb",
+            "dbHost": db_config["host"],
+            "dbName": db_config["database"],
+            "dbExists": db_ok,
+            "defaultModel": default_model_id(),
+            "models": models,
+        }
     return {
         "ok": True,
+        "dbDialect": "sqlite",
         "dbPath": str(db_path),
         "dbExists": Path(db_path).exists(),
         "defaultModel": default_model_id(),
@@ -82,7 +105,7 @@ def analysis_run(request: AnalysisRunRequest, _: None = Depends(require_internal
             raise HTTPException(status_code=400, detail=f"Missing {model.key_env} for model {model.id}")
         provider_dict = None
 
-    if not default_db_path().exists():
+    if not mariadb_configured() and not default_db_path().exists():
         raise HTTPException(status_code=400, detail=f"Project-X database not found: {default_db_path()}")
 
     try:
@@ -111,6 +134,24 @@ def knowledge_points(
     extra_notes = request.get("extraNotes", "")
     files = request.get("files", [])
     paper_text = request.get("paperText", "")
+    provider_override = request.get("providerOverride")
+    model_id = request.get("model") or default_model_id()
+
+    if provider_override and provider_override.get("api_key"):
+        from llmclient.config import ModelConfig
+
+        provider_type = provider_override.get("provider_type") or "openai"
+        if provider_type not in {"gemini", "deepseek", "openai"}:
+            provider_type = "openai"
+        model = ModelConfig(
+            id=model_id,
+            provider=provider_type,
+            label=f"{provider_type}/{model_id}",
+            key_env="",
+            thinking=False,
+        )
+    else:
+        model = find_model(model_id) or MODEL_CATALOG[0]
 
     # Get primary provider
     provider_id = request.get("providerId")
@@ -122,11 +163,12 @@ def knowledge_points(
     if mode == "direct":
         try:
             result = run_direct_multimodal(
-                model=find_model(default_model_id()) or MODEL_CATALOG[0],
+                model=model,
                 files=files,
                 subject=subject,
                 question_range=question_range,
                 extra_notes=extra_notes,
+                provider_override=provider_override,
             )
             return result
         except Exception as exc:
@@ -139,11 +181,12 @@ def knowledge_points(
         try:
             result = run_ocr_enhanced(
                 vision_model=find_model("gemini-3.1-flash-lite") or MODEL_CATALOG[0],
-                reasoning_model=find_model(default_model_id()) or MODEL_CATALOG[0],
+                reasoning_model=model,
                 files=files,
                 subject=subject,
                 question_range=question_range,
                 extra_notes=extra_notes,
+                reasoning_provider_override=provider_override,
             )
             return result
         except Exception as exc:
@@ -154,11 +197,12 @@ def knowledge_points(
         raise HTTPException(status_code=400, detail="paperText required for text mode")
     try:
         result = run_text_only(
-            model=find_model(default_model_id()) or MODEL_CATALOG[0],
+            model=model,
             paper_text=paper_text[:32000],
             subject=subject,
             question_range=question_range,
             extra_notes=extra_notes,
+            provider_override=provider_override,
         )
         return result
     except Exception as exc:
