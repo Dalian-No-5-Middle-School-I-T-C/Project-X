@@ -387,22 +387,19 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
     const password = cfg?.password || "";
     const database = cfg?.database || "projectx";
 
-    const args = [`--host=${host}`, `--port=${port}`, `--user=${user}`, `--database=${database}`];
+    const args = [`--host=${host}`, `--port=${port}`, `--user=${user}`];
     if (password) args.push(`--password=${password}`);
+    args.push(database);
 
     const dumpContent = await import("node:fs").then(fs => fs.promises.readFile(dumpFile, "utf8"));
 
     // 使用 mysql 客户端导入
     const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const execAsync = promisify(execFile);
 
     try {
-      // 将 dump.sql 通过 stdin 传给 mysql
-      const { exec } = await import("node:child_process");
-      const cmd = `mysql --host=${host} --port=${port} --user=${user} ${password ? `--password=${password}` : ""} ${database}`;
+      // 将 dump.sql 通过 stdin 传给 mysql（使用参数数组，避免 shell 命令注入）
       await new Promise<void>((resolve, reject) => {
-        const child = exec(cmd, { maxBuffer: 512 * 1024 * 1024 }, (err) => {
+        const child = execFile("mysql", args, { maxBuffer: 512 * 1024 * 1024 }, (err) => {
           if (err) reject(err); else resolve();
         });
         child.stdin!.write(dumpContent);
@@ -465,8 +462,11 @@ function extractZipFromBuffer(zipBuffer: Buffer, destDir: string): void {
   for (const entry of entries) {
     // 安全检查：防止路径穿越攻击
     const relativePath = path.normalize(entry.entryName).replace(/^[\\/]+/, "");
-    const safePath = path.join(destDir, relativePath);
-    if (!safePath.startsWith(path.resolve(destDir))) {
+    const resolvedDest = path.resolve(destDir);
+    const safePath = path.join(resolvedDest, relativePath);
+    const rel = path.relative(resolvedDest, safePath);
+    // 拒绝解析到目标目录之外的条目（防止前缀绕过，如 destDir-evil）
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
       continue;
     }
     if (entry.isDirectory) {

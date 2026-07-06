@@ -105,7 +105,13 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
     const { sessionId } = req.params;
     const token = (req.body?.token ?? req.query?.token) as string;
     const pageNum = Number(req.body?.pageNum ?? 1);
-    const side = (req.body?.side as string) || "front";
+    const rawSide = (req.body?.side as string) || "front";
+    // 白名单校验，防止 side 参数触发路径遍历
+    const side = rawSide === "back" ? "back" : "front";
+    if (!Number.isInteger(pageNum) || pageNum < 1 || pageNum > 999) {
+      res.status(400).json({ message: "无效的页码" });
+      return;
+    }
 
     if (!req.file) {
       res.status(400).json({ message: "未上传图片" });
@@ -125,9 +131,11 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
       return;
     }
 
-    // 保存图片
-    const ext = path.extname(req.file.originalname) || ".jpg";
-    const fileName = `${sessionId}_p${String(pageNum).padStart(2, "0")}_${side}${ext}`;
+    // 保存图片（对扩展名做白名单，session id 用 basename 兜底，避免路径遍历）
+    const rawExt = path.extname(req.file.originalname).toLowerCase();
+    const ext = [".jpg", ".jpeg", ".png", ".webp", ".bmp"].includes(rawExt) ? rawExt : ".jpg";
+    const safeSessionId = path.basename(String(sessionId));
+    const fileName = `${safeSessionId}_p${String(pageNum).padStart(2, "0")}_${side}${ext}`;
     const filePath = path.join(scannerUploadDir(), fileName);
     writeFileSync(filePath, req.file.buffer);
 
