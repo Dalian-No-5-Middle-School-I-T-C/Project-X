@@ -40,6 +40,18 @@
 > 清理等）多属**产品策略决定**或**大范围重构**，改动会影响既有部署行为或超出本轮安全修复
 > 范围，暂未在本轮处理，保留在下方清单供后续分批推进。
 
+### 回归测试结果（2026-07-06）
+
+| 测试项 | 结果 |
+| --- | --- |
+| `npm run typecheck` | ✅ 通过 |
+| `npm run verify:auth` | ✅ 54 通过 / 0 失败 |
+| `npx tsx scripts/grading-rules-smoke.ts` | ✅ 通过（9 用例） |
+| `npx tsx scripts/bugfix-verification.ts` | ✅ 14 断言通过 |
+| `npx tsx scripts/ranking-integration-check.ts` | ✅ 5 断言通过（真实 SQLite） |
+| `npm run build` | ✅ dist/web + dist/server 构建成功 |
+| GUI 冒烟（http://127.0.0.1:5173/） | ✅ admin 登录、设计/考试/阅卷/分析四页正常渲染 |
+
 ---
 
 ## 总览
