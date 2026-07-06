@@ -57,7 +57,7 @@ function extractStudents(rows: string[][]): Array<{ name: string; student_number
     for (let i = 0; i < first.length; i++) {
       const c = first[i].toLowerCase();
       if (/姓名|name/.test(c)) nameIdx = i;
-      if (/学号|student_number|学号/.test(c)) numberIdx = i;
+      if (/学号|student_number/.test(c)) numberIdx = i;
       if (/用户名|username/.test(c)) usernameIdx = i;
     }
   }

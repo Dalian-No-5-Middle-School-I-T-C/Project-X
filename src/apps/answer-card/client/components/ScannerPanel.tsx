@@ -68,11 +68,16 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [studentResults, setStudentResults] = useState<StudentResult[]>([]);
   const [activeStudent, setActiveStudent] = useState<StudentResult | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  // 用 ref 追踪最新值，避免 SSE onmessage / setTimeout 闭包捕获到过期的 state
+  const pagesRef = useRef<ScanPage[]>([]);
+  const sessionIdRef = useRef("");
+  const uploadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // v1.6.0: 扫描模式 — 本地存储 或 上传服务器
   const [scannerMode, setScannerMode] = useState<"local" | "remote">(() => {
     try { return (localStorage.getItem("projectx_scanner_mode") as "local" | "remote") || "local"; } catch { return "local"; }
   });
+  const scannerModeRef = useRef(scannerMode);
   const [uploadState, setUploadState] = useState<"" | "uploading" | "done" | "error">("");
   const [uploadMsg, setUploadMsg] = useState("");
 
@@ -81,11 +86,17 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     try { localStorage.setItem("projectx_scanner_mode", m); } catch { /* ignore */ }
   }
 
+  // 保持 ref 与 state 同步
+  useEffect(() => { pagesRef.current = pages; }, [pages]);
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
+  useEffect(() => { scannerModeRef.current = scannerMode; }, [scannerMode]);
+
   // Detect sources on mount
   useEffect(() => {
     detectSources();
     return () => {
       eventSourceRef.current?.close();
+      if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
     };
   }, []);
 
@@ -117,7 +128,13 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     eventSourceRef.current = es;
 
     es.onmessage = (event) => {
-      const data: ScanProgressEvent = JSON.parse(event.data);
+      let data: ScanProgressEvent;
+      try {
+        data = JSON.parse(event.data) as ScanProgressEvent;
+      } catch {
+        // 忽略非 JSON 消息（如心跳），避免抛出未捕获异常中断 SSE
+        return;
+      }
 
       switch (data.type) {
         case "scanning":
@@ -159,12 +176,14 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           break;
         case "done":
           setState("done");
-          onScansComplete?.(sid, pages.length);
+          // 通过 ref 读取最新页数，避免闭包捕获扫描开始时的空数组
+          onScansComplete?.(sid, pagesRef.current.length);
           // Fetch combined results after scan completes
           fetchCombinedResults(sid);
           // v1.6.0: 远程模式下自动上传
-          if (scannerMode === "remote") {
-            setTimeout(() => void uploadToRemote(), 500);
+          if (scannerModeRef.current === "remote") {
+            if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
+            uploadTimerRef.current = setTimeout(() => void uploadToRemote(), 500);
           }
           break;
       }
@@ -172,6 +191,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
     es.onerror = () => {
       es.close();
+      setState("error");
+      setErrorMessage("与扫描服务的连接中断，请重试");
     };
   }
 
@@ -189,7 +210,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
   // v1.6.0: 上传扫描结果到远程服务器
   async function uploadToRemote() {
-    if (!sessionId || scannerMode !== "remote") return;
+    // 使用 ref 读取最新值，避免闭包捕获扫描开始时的空 pages / 空 sessionId
+    const currentPages = pagesRef.current;
+    if (!sessionIdRef.current || scannerModeRef.current !== "remote") return;
     setUploadState("uploading");
     setUploadMsg("正在上传到服务器...");
 
@@ -201,17 +224,17 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         body: JSON.stringify({
           cardId,
           name: `扫描_${cardId}_${new Date().toISOString().slice(0, 10)}`,
-          dpi, paperSize, pageCount: pages.length,
+          dpi, paperSize, pageCount: currentPages.length,
         }),
       });
       if (!createRes.ok) throw new Error("创建远程会话失败");
       const { sessionId: remoteSessionId, uploadTokens } = await createRes.json() as { sessionId: string; uploadTokens: string[] };
 
       // Step 2: 逐页上传图片
-      for (let i = 0; i < pages.length; i++) {
-        const page = pages[i];
+      for (let i = 0; i < currentPages.length; i++) {
+        const page = currentPages[i];
         const token = uploadTokens[i];
-        setUploadMsg(`正在上传第 ${page.pageNum} 页 (${i + 1}/${pages.length})...`);
+        setUploadMsg(`正在上传第 ${page.pageNum} 页 (${i + 1}/${currentPages.length})...`);
 
         // 获取本地图片并上传
         const imageRes = await authFetch(`/api/scanner/scan-image/${page.recordId}`);
@@ -237,7 +260,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       await authFetch(`/api/scanner/upload/sessions/${remoteSessionId}/complete`, { method: "POST" });
 
       setUploadState("done");
-      setUploadMsg(`上传完成！${pages.length} 页已提交到服务器`);
+      setUploadMsg(`上传完成！${currentPages.length} 页已提交到服务器`);
     } catch (err) {
       setUploadState("error");
       setUploadMsg(err instanceof Error ? err.message : "上传失败");
