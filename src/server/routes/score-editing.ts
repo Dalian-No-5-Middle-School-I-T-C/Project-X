@@ -12,10 +12,9 @@
 import express from "express";
 import type { Request, Response } from "express";
 import { getMysqlDb, buildUpsertSQL } from "../db";
-import type { DbAdapter } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
-import { AssignedScoreService } from "../services/AssignedScoreService";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
+import { recomputeExamRankings, roundScore } from "../services/rankingUpdate";
 import {
   objectiveQuestionDefinitions,
   gradeObjectiveQuestion,
@@ -250,7 +249,9 @@ router.put("/:examId/student/:studentId/scores", async (req: Request, res: Respo
       if (s.score_type === "objective") totalObjective += s.score;
       else totalSubjective += s.score;
     }
-    const newTotal = totalObjective + totalSubjective;
+    totalObjective = roundScore(totalObjective);
+    totalSubjective = roundScore(totalSubjective);
+    const newTotal = roundScore(totalObjective + totalSubjective);
 
     await tx.run(`
       UPDATE student_scores SET objective_score = ?, subjective_score = ?, total_score = ?,
@@ -259,7 +260,7 @@ router.put("/:examId/student/:studentId/scores", async (req: Request, res: Respo
     `, totalObjective, totalSubjective, newTotal, userId, now, examId, studentId);
   });
 
-  await recomputeRankings(db, examId);
+  await recomputeExamRankings(db, examId);
   res.json({ ok: true });
 });
 
@@ -418,46 +419,20 @@ router.put("/:examId/answers", async (req: Request, res: Response) => {
         examId, studentId
       ) as { total: number };
 
-      const totalScore = totalObj + subjScore.total;
+      const roundedObj = roundScore(totalObj);
+      const totalScore = roundScore(roundedObj + Number(subjScore.total ?? 0));
       await tx.run(`
         UPDATE student_scores SET objective_score = ?, total_score = ?,
           manually_modified = 1, modified_by = ?, modified_at = ?
         WHERE exam_id = ? AND student_id = ?
-      `, totalObj, totalScore, userId, now, examId, studentId);
+      `, roundedObj, totalScore, userId, now, examId, studentId);
 
       updatedCount++;
     }
   });
 
-  await recomputeRankings(db, examId);
+  await recomputeExamRankings(db, examId);
   res.json({ ok: true, updatedCount, modifiedAnswers: Object.keys(answerUpdates).length });
 });
-
-// ── 重算排名 ──────────────────────────────────────
-async function recomputeRankings(db: DbAdapter, examId: number) {
-  const allStudents = await db.all(`
-    SELECT id, total_score FROM student_scores WHERE exam_id = ? ORDER BY total_score DESC
-  `, examId) as Array<{ id: number; total_score: number }>;
-
-  if (allStudents.length === 0) return;
-
-  const n = allStudents.length;
-
-  for (let i = 0; i < allStudents.length; i++) {
-    const rank = i + 1;
-    const percentile = n > 1 ? Math.round((1 - i / n) * 1000) / 10 : 100;
-    await db.run(
-      "UPDATE student_scores SET `rank` = ?, percentile = ? WHERE id = ?",
-      rank, percentile, allStudents[i].id
-    );
-  }
-
-  try {
-    const assignedService = new AssignedScoreService();
-    await assignedService.recalculateAll(examId);
-  } catch (_) {
-    // 无赋分配置或重算失败，静默跳过
-  }
-}
 
 export default router;

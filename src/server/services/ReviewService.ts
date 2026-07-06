@@ -1,7 +1,7 @@
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
-import { AssignedScoreService } from "./AssignedScoreService";
+import { recomputeExamRankings, roundScore } from "./rankingUpdate";
 import {
   listReviewBlockCrops
 } from "./AnswerBlockCropService";
@@ -43,7 +43,9 @@ async function recomputeStudentTotals(
     if (row.score_type === "objective") totalObjective += Number(row.score ?? 0);
     else totalSubjective += Number(row.score ?? 0);
   }
-  const newTotal = totalObjective + totalSubjective;
+  totalObjective = roundScore(totalObjective);
+  totalSubjective = roundScore(totalSubjective);
+  const newTotal = roundScore(totalObjective + totalSubjective);
 
   await tx.run(
     `UPDATE student_scores
@@ -60,33 +62,6 @@ async function recomputeStudentTotals(
   );
 
   return newTotal;
-}
-
-async function recomputeRankings(db: DbAdapter, examId: number): Promise<void> {
-  const allStudents = await db.all(
-    "SELECT id, total_score FROM student_scores WHERE exam_id = ? ORDER BY total_score DESC",
-    examId
-  ) as Array<{ id: number; total_score: number }>;
-  if (allStudents.length === 0) return;
-
-  const n = allStudents.length;
-  for (let i = 0; i < allStudents.length; i += 1) {
-    const rank = i + 1;
-    const percentile = n > 1 ? Math.round((1 - i / n) * 1000) / 10 : 100;
-    await db.run(
-      "UPDATE student_scores SET `rank` = ?, percentile = ? WHERE id = ?",
-      rank,
-      percentile,
-      allStudents[i].id
-    );
-  }
-
-  try {
-    const assignedService = new AssignedScoreService();
-    await assignedService.recalculateAll(examId);
-  } catch {
-    // optional assigned score
-  }
 }
 
 export async function listReviewBlocks(examId: number, db: DbAdapter = getMysqlDb()): Promise<ReviewBlockSummary[]> {
@@ -228,7 +203,7 @@ export async function submitReviewCropScores(params: {
     );
   });
 
-  await recomputeRankings(db, params.examId);
+  await recomputeExamRankings(db, params.examId);
 
   return {
     ok: true,
