@@ -1,5 +1,37 @@
 # Project-X CHANGELOG
 
+## v1.8.1 (2026-07-06) — Ubuntu 生产环境与 AI 知识点分析热修
+
+### Ubuntu PDF 导出
+- 修复服务端 PDF 生成硬编码 Windows 字体路径的问题：不再固定读取 `C:\Windows\Fonts\simhei.ttf` / `msyh.ttc`，改为按环境变量、常见 Linux/Windows/macOS CJK 字体路径和系统字体目录自动发现字体。
+- Ubuntu 部署包文档与依赖补充 `fonts-noto-cjk`，并支持 `PROJECTX_PDF_FONT_PATH` / `PROJECTX_PDF_FONT_POSTSCRIPT_NAME` 覆盖字体。
+- 字体缺失时降级到 PDFKit 内置字体，避免服务器直接抛 `ENOENT` 导致导出失败。
+
+### 同步创建考试与考试选择页
+- 修复 MariaDB 部署下考试可见性仍读取 SQLite adapter 的问题，`getVisibleExamIds` 统一走 `getMysqlDb()`，并补齐异步访问链路。
+- 班主任/任课教师可见范围补充“自己创建的考试”，避免同步创建但尚未分配班级/教师时创建者看不到考试。
+- 修复考试选择页组件被隐藏保留状态时不会随 `App.loadExams()` 刷新的问题，新增刷新 key 触发重新拉取 `/api/exams?selection=1`。
+- 修复旧表结构兼容问题：考试选择/分析/考试组统计不再依赖可能缺失的 `student_scores.id`，统一按 `COUNT(ss.exam_id)` 统计已阅人数。
+
+### 线上版本与 Ubuntu 包
+- 侧栏标题版本号不再硬编码，改为由 Vite 从 `package.json` 注入 `import.meta.env.VITE_APP_VERSION`。
+- Ubuntu 包启动脚本与 systemd 模板显式指向当前包内 `dist/web`，避免服务已切到新目录但 `ANSWER_CARD_CLIENT_DIST` 仍指向旧前端资源。
+- Ubuntu 服务包 runtime dependencies 补齐 `mammoth`、`pdfjs-dist`、`sharp`、`tesseract.js` 等服务端运行时依赖，避免原卷/知识点功能在生产包中缺模块。
+
+### Python llmclient 生产部署
+- 新增 Python `llmclient` sidecar 的生产部署形态：代码位于 `/opt/project-x-llmclient`，配置位于 `/etc/project-x/llmclient.env`，systemd 服务为 `project-x-llmclient.service`，仅监听 `127.0.0.1:8766`。
+- 主 Node 服务通过 `LLMCLIENT_URL` 与 `LLMCLIENT_INTERNAL_API_KEY` 调用 sidecar；`/models` 等接口在设置内部 key 后拒绝未授权访问。
+- `llmclient` 新增 MariaDB 读取支持：检测到 `PROJECTX_MARIADB_HOST` / `PROJECTX_MYSQL_HOST` 时使用 MariaDB 连接读取真实线上成绩库，保留 SQLite 开发模式。
+- `llmclient/requirements.txt` 新增 `PyMySQL`，用于 MariaDB 生产连接。
+
+### AI 知识点分析
+- 修复旧 MariaDB `ai_providers` 表缺少 `is_system` 时知识点分析直接 500 的问题；MariaDB 增量迁移新增 `v18 system-ai-provider`，补齐 `ai_providers.is_system`。
+- 修复 `system_settings.key` 在 MariaDB 中未加反引号导致的 SQL 语法错误。
+- 原卷/知识点路由中的更新时间写法统一为 `CURRENT_TIMESTAMP`，兼容 SQLite 与 MariaDB。
+- 知识点分析的 AI 提供商选择改为：优先系统级 AI 服务商，其次当前用户个人服务商，最后回退到 `/etc/project-x/llmclient.env` 中的默认模型配置。
+- Node → Python 的知识点分析请求会传递 `providerOverride`，Python 侧按传入的 provider/base_url/api_key/model 执行，不再只依赖环境变量默认模型。
+- Python sidecar 返回错误时，Node 不再吞成空结果或泛泛 500，而是把具体 `detail/message/error` 透传给前端，方便定位 Key、Base URL、OCR/文本提取等配置问题。
+
 ## v1.7.3 (2026-07-04) — 移动端网页适配
 
 ### 移动端全面适配
