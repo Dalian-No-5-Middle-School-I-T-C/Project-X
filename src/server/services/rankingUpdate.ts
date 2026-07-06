@@ -42,7 +42,7 @@ export async function recomputeExamRankings(db: DbAdapter, examId: number): Prom
   const ranks = new Map<number, number>();
   competitionRank(
     allStudents,
-    (row) => Number(row.total_score ?? 0),
+    (row) => roundScore(Number(row.total_score ?? 0)),
     (row, rank) => ranks.set(row.id, rank)
   );
 

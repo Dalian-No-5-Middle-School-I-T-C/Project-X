@@ -287,7 +287,7 @@ async function backupMariadb(res: Response): Promise<void> {
     // v1.6.0: 统一使用 getMariadbConfig() 读取配置（环境变量 > config.yml）
     const cfg = getMariadbConfig();
     const host = cfg?.host || "127.0.0.1";
-    const port = String(cfg?.port || 443);
+    const port = String(cfg?.port || 3306);
     const user = cfg?.user || "projectx_app";
     const password = cfg?.password || "";
     const database = cfg?.database || "projectx";
@@ -382,7 +382,7 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
     // 读取配置
     const cfg = getMariadbConfig();
     const host = cfg?.host || "127.0.0.1";
-    const port = String(cfg?.port || 443);
+    const port = String(cfg?.port || 3306);
     const user = cfg?.user || "projectx_app";
     const password = cfg?.password || "";
     const database = cfg?.database || "projectx";

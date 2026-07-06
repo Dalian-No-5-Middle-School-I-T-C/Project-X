@@ -131,7 +131,7 @@ router.get("/:groupId", async (req: Request, res: Response) => {
     const members = await db.all(`
       SELECT egm.id, egm.exam_id, egm.sort_order,
              e.name as exam_name, e.subject, ac.exam_date, e.status, e.assigned_formula,
-             COUNT(ss.id) as graded_count,
+             COUNT(ss.exam_id) as graded_count,
              ROUND(AVG(ss.total_score), 1) as avg_score
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
@@ -307,7 +307,7 @@ router.get("/:groupId/overview", async (req: Request, res: Response) => {
     const members = await db.all(`
       SELECT e.id as exam_id, e.name as exam_name, e.subject,
              e.assigned_formula,
-             COUNT(ss.id) as graded_count,
+             COUNT(ss.exam_id) as graded_count,
              ROUND(AVG(ss.total_score), 1) as avg_score,
              ROUND(MAX(ss.total_score), 1) as max_score,
              ROUND(MIN(ss.total_score), 1) as min_score
