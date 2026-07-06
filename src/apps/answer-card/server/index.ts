@@ -40,7 +40,7 @@ import { optionalAuth, authMiddleware, requirePermission } from "../../../server
 import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
-import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
+import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 import type {
   AnswerCard,
@@ -76,6 +76,28 @@ import { ApiError } from "../../../server/api-error";import { assetsDir, cardAss
 
 
 
+
+/**
+ * 解析当前请求用户配置的客观题复核置信度阈值。
+ * 未登录或读取失败时回落到默认阈值。
+ */
+async function resolveConfidenceThreshold(req: express.Request): Promise<number> {
+  const userId = req.user?.id;
+  if (!userId) return OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD;
+  try {
+    const row = await getMysqlDb().get(
+      "SELECT review_confidence_threshold AS t FROM users WHERE id = ?",
+      userId
+    ) as { t: number | null } | undefined;
+    const value = row?.t;
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1) {
+      return value;
+    }
+  } catch {
+    // 读取失败时使用默认阈值
+  }
+  return OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD;
+}
 
 function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
   const examDate = fieldValue((card as any).examDate ?? card.examDate).trim();
@@ -888,6 +910,7 @@ export async function createApp(): Promise<express.Express> {
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
+      const confidenceThreshold = await resolveConfidenceThreshold(req);
 
       let finished = 0;
       if (progressId) {
@@ -903,7 +926,7 @@ export async function createApp(): Promise<express.Express> {
             dpi
           })) as ObjectiveRecognitionResult;
           return {
-            ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
+            ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
@@ -916,7 +939,7 @@ export async function createApp(): Promise<express.Express> {
             questions: []
           };
           return {
-            ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
+            ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
@@ -978,6 +1001,7 @@ export async function createApp(): Promise<express.Express> {
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
+      const confidenceThreshold = await resolveConfidenceThreshold(req);
 
       const examIdParam = fieldValue(req.body.examId);
 
@@ -998,7 +1022,7 @@ export async function createApp(): Promise<express.Express> {
           })) as CombinedRecognitionResult;
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
           return {
-            ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
+            ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
@@ -1012,7 +1036,7 @@ export async function createApp(): Promise<express.Express> {
             subjectiveQuestions: []
           };
           return {
-            ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
+            ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
