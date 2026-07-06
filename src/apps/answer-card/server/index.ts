@@ -40,7 +40,7 @@ import { optionalAuth, authMiddleware, requirePermission } from "../../../server
 import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
-import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions, OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD } from "../../../shared/grading";
+import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
 import type {
   AnswerCard,
@@ -82,21 +82,8 @@ import { ApiError } from "../../../server/api-error";import { assetsDir, cardAss
  * 未登录或读取失败时回落到默认阈值。
  */
 async function resolveConfidenceThreshold(req: express.Request): Promise<number> {
-  const userId = req.user?.id;
-  if (!userId) return OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD;
-  try {
-    const row = await getMysqlDb().get(
-      "SELECT review_confidence_threshold AS t FROM users WHERE id = ?",
-      userId
-    ) as { t: number | null } | undefined;
-    const value = row?.t;
-    if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1) {
-      return value;
-    }
-  } catch {
-    // 读取失败时使用默认阈值
-  }
-  return OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD;
+  const { resolveReviewConfidenceThreshold } = await import("../../../server/services/userSettings");
+  return resolveReviewConfidenceThreshold(req.user?.id);
 }
 
 function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {

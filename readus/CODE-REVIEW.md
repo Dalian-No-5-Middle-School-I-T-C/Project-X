@@ -35,6 +35,14 @@
 | L-S2 | ✅ 已修复 | `generateTeacherUsername` 改为异步并检查存在性 |
 | L-F8 | ✅ 已修复 | `ClassManagement` CSV 表头正则去重 |
 | L-L4 | ✅ 已修复 | `englishTemplate` 移除两分支相同的无意义三元 |
+| H-S4 | ✅ 已修复 | `saveStudentScore` 改用 `ON CONFLICT DO UPDATE`，保留 rank/percentile/manually_modified |
+| H-S1 | ✅ 已修复 | 成绩修改 PUT 路由增加 `requireExamAccess` |
+| H-S11 | ✅ 已修复 | `getVisibleExamIds` 改用 `getMysqlDb()` 异步适配器（MariaDB 模式正确） |
+| M-L4 (display) | ✅ 已修复 | `AnalysisRepository` 百分位显示模式改用 `rankPercentile` 公式 A |
+| backup 默认端口 | ✅ 已修复 | MariaDB 备份/恢复默认端口 `3306`（原误为 `443`） |
+| ScannerPanel sessionId | ✅ 已修复 | `startScan` 同步写入 `sessionIdRef`，避免远程上传静默跳过 |
+| score-editing answers | ✅ 已修复 | 持久化答题卡答案、`subjective_score` 同步、复核阈值传入 |
+| PR161 COUNT | ✅ 已修复 | `COUNT(ss.exam_id)` 替代 `COUNT(ss.id)`，修复 JOIN 重复计数 |
 
 > 其余条目（如 C-S2/C-S3 鉴权默认策略、H-S7 默认密码、性能/虚拟化、a11y、大量 `any`
 > 清理等）多属**产品策略决定**或**大范围重构**，改动会影响既有部署行为或超出本轮安全修复
@@ -51,6 +59,10 @@
 | `npx tsx scripts/ranking-integration-check.ts` | ✅ 5 断言通过（真实 SQLite） |
 | `npm run build` | ✅ dist/web + dist/server 构建成功 |
 | GUI 冒烟（http://127.0.0.1:5173/） | ✅ admin 登录、设计/考试/阅卷/分析四页正常渲染 |
+
+### 第二轮修复（2026-07-06 续）
+
+对照 PR161 分支与 debug 审查，补充修复 H-S4、H-S1、H-S11、M-L4 显示层、backup 默认端口、ScannerPanel `sessionIdRef`、score-editing 答案持久化等项。全部回归测试仍通过。
 
 ---
 

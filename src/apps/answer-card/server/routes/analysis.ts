@@ -99,7 +99,7 @@ router.post("/cross-exam/groups", validateBody(CreateExamGroupSchema), async (re
       res.status(400).json({ message: "请选择至少一场考试" });
       return;
     }
-    if (!validateExamIdsAccess(req, res, normalizedExamIds)) return;
+    if (!(await validateExamIdsAccess(req, res, normalizedExamIds))) return;
 
     const analysisRepo = new AnalysisRepository();
     const group = await analysisRepo.createExamGroup({
@@ -166,7 +166,7 @@ router.post("/cross-exam/total", async (req, res, next) => {
       requestedExamIds = group.examIds;
     }
 
-    if (requestedExamIds.length > 0 && !validateExamIdsAccess(req, res, requestedExamIds)) return;
+    if (requestedExamIds.length > 0 && !(await validateExamIdsAccess(req, res, requestedExamIds))) return;
     const data = await analysisRepo.getCrossExamTotal({
       mode,
       groupId: optionalPositiveNumber(body.groupId),
@@ -178,7 +178,7 @@ router.post("/cross-exam/total", async (req, res, next) => {
       subject: typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : undefined,
       attendanceMode: body.attendanceMode === "full" ? "full" : "all"
     }, {
-      visibleExamIds: getVisibleExamIds(req.user)
+      visibleExamIds: await getVisibleExamIds(req.user)
     });
     res.json(data);
   } catch (error) {

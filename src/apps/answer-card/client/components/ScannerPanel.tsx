@@ -273,6 +273,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setState("scanning");
     setErrorMessage("");
     setPages([]);
+    pagesRef.current = [];
     setStudentResults([]);
 
     try {
@@ -298,6 +299,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       }
 
       const data = await res.json();
+      sessionIdRef.current = data.sessionId;
       setSessionId(data.sessionId);
       listenProgress(data.sessionId);
     } catch (err) {
@@ -316,7 +318,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     eventSourceRef.current?.close();
     setState("idle");
     setSessionId("");
+    sessionIdRef.current = "";
     setPages([]);
+    pagesRef.current = [];
     setStudentResults([]);
     setActiveStudent(null);
     setProgressMessage("");

@@ -45,6 +45,16 @@
 - `npm run build` ✓
 - GUI 冒烟：登录、设计/考试/阅卷/分析四页正常渲染
 
+### 第二轮修复（对照 PR161 + debug 审查）
+- **H-S4**：`ExamRepository` / 扫描器持久化改用 `ON CONFLICT DO UPDATE`，重扫保留 rank/percentile/手动改分
+- **H-S1**：成绩修改 PUT 路由增加 `requireExamAccess`
+- **H-S11**：`getVisibleExamIds` 异步化 + `getMysqlDb()`，MariaDB 模式考试可见性正确
+- **M-L4 显示层**：`AnalysisRepository` 百分位显示统一公式 A
+- **backup**：MariaDB 默认端口 `3306`（原误 `443`）
+- **ScannerPanel**：`sessionIdRef` 在 `startScan` 同步赋值
+- **score-editing**：答案 `updateCard` 持久化、同步 `subjective_score`、传入复核阈值
+- **PR161**：`COUNT(ss.exam_id)` 修复 JOIN 重复计数
+
 ### 修改文件
 
 | 文件 | 改动 |
@@ -65,6 +75,12 @@
 | `scripts/bugfix-verification.ts` | **新增** 回归测试 |
 | `scripts/ranking-integration-check.ts` | **新增** 排名集成测试 |
 | `readus/CODE-REVIEW.md` | **新增** 代码审查报告 + 修复状态 |
+| `src/server/services/userSettings.ts` | **新增** 共享复核阈值读取 |
+| `src/server/repositories/ExamRepository.ts` | H-S4 upsert + COUNT 修复 |
+| `src/apps/answer-card/server/middleware.ts` | H-S11 异步 getMysqlDb |
+| `src/apps/answer-card/server/scanner/index.ts` | H-S4 扫描持久化 upsert |
+| `src/server/repositories/AnalysisRepository.ts` | M-L4 百分位显示 + COUNT |
+| `src/server/routes/exam-groups.ts` | COUNT(ss.exam_id) |
 
 ---
 
