@@ -56,6 +56,7 @@ import type {
 import { createPdf } from "./pdf";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
+import { makeScannerAuth } from "../../../server/middleware/scanner-auth";
 
 import { assertImageFile } from "./validate-upload";
 import {
@@ -623,7 +624,7 @@ export async function createApp(): Promise<express.Express> {
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
   const examGate = makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_WRITE);
   const analysisGate = makeGate(enforceAuth, PERMISSIONS.GRADE_READ, PERMISSIONS.GRADE_READ);
-  const scannerGate = makeGate(enforceAuth, PERMISSIONS.GRADE_WRITE, PERMISSIONS.GRADE_WRITE);
+  const scannerAuth = makeScannerAuth(enforceAuth);
   const cropGate = answerBlockCropGate(enforceAuth);
   app.use("/api/cards", cardGate);
   app.use("/api/exams", examGate);
@@ -1575,7 +1576,7 @@ export async function createApp(): Promise<express.Express> {
 
 
   if (scannerEnabled()) {
-    app.use("/api/scanner", scannerGate, createScannerRouter());
+    app.use("/api/scanner", scannerAuth, createScannerRouter());
   } else {
     app.use("/api/scanner", (_req, res) => {
       res.status(404).json({ message: "Scanner is disabled in this Project-X package." });

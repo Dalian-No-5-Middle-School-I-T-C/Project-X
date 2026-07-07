@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Database, Download, Eye, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
-import { fetchJson, getAuthToken } from "../auth/api";
+import { fetchJson, authFetch } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
 import type { AiProviderConfig } from "../../../../shared/types";
 
@@ -143,10 +143,8 @@ export function AccountMenu({
     try {
       const form = new FormData();
       form.append("file", file);
-      const token = getAuthToken();
-      const res = await fetch("/api/users/me/background", {
+      const res = await authFetch("/api/users/me/background", {
         method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: form
       });
       if (!res.ok) {
@@ -253,10 +251,7 @@ export function AccountMenu({
 
   async function handleExportDb() {
     try {
-      const token = getAuthToken();
-      const resp = await fetch("/api/db/backup", {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const resp = await authFetch("/api/db/backup");
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ message: resp.statusText }));
         throw new Error(err.message || "导出失败");
@@ -279,15 +274,10 @@ export function AccountMenu({
     setImportMsg("");
     setImportBusy(true);
     try {
-      const token = getAuthToken();
-      const headers: Record<string, string> = {
-        "Content-Type": "application/zip"
-      };
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      const resp = await fetch("/api/db/restore", {
+      const resp = await authFetch("/api/db/restore", {
         method: "POST",
-        headers,
-        body: file  // 原始二进制上传，绕过 FormData/multipart 的 corrupt 风险
+        headers: { "Content-Type": "application/zip" },
+        body: file
       });
       const result = await resp.json();
       if (!resp.ok) {

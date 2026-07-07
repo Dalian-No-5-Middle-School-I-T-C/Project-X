@@ -10,13 +10,12 @@
  * GET  /api/scanner/sessions/:id/status   — 查询状态
  */
 
-import { Router, type Request, type Response, type NextFunction } from "express";
+import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import path from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import crypto from "node:crypto";
-import { apiKeyAuth } from "../middleware/api-key";
-import { authMiddleware } from "../middleware/auth";
+import { dualAuth } from "../middleware/scanner-auth";
 import { getMysqlDb } from "../db";
 import { persistAnswerBlockCrops } from "../services/AnswerBlockCropService";
 import type { RecognitionBlockCrop } from "../../shared/types";
@@ -25,18 +24,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 
 const router = Router();
 
-// v1.6.0: 双鉴权 — API Key 优先，无 Key 时强制 JWT
-// 逻辑：先 X-Api-Key，有则校验；没有则 authMiddleware 校验 JWT（无 token → 401）
-async function dualAuth(req: Request, res: Response, next: NextFunction) {
-  const apiKey = req.headers["x-api-key"] as string | undefined;
-  if (apiKey) {
-    const keyMw = apiKeyAuth({ scope: "scanner" });
-    await keyMw(req, res, next);
-  } else {
-    // 无 API Key → 强制 JWT 认证（无 token 直接 401）
-    await authMiddleware(req, res, next);
-  }
-}
+// v1.6.0: 双鉴权 — API Key 优先，无 Key 时强制 JWT（见 scanner-auth.ts）
 
 // 生成唯一 ID
 function genId(): string {

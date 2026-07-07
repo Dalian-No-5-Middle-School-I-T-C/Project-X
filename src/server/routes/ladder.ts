@@ -15,6 +15,7 @@ import { getMysqlDb } from "../db";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { LadderService } from "../services/LadderService";
 import { competitionRank } from "../../shared/ranking";
+import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../../apps/answer-card/server/middleware";
 import type { LadderResponse } from "../../shared/types";
 
 const router = express.Router();
@@ -64,7 +65,7 @@ router.put("/config", async (req: Request, res: Response) => {
 
 // ── GET /api/ladder/exams/:examId ──
 
-router.get("/exams/:examId", async (req: Request, res: Response) => {
+router.get("/exams/:examId", requireExamAccess, async (req: Request, res: Response) => {
   if (!(await checkLadderOpen(req, res))) return;
   try {
     const examId = Number(req.params.examId);
@@ -154,6 +155,7 @@ router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
     }
 
     const memberIds = members.map((m) => m.exam_id);
+    if (!(await validateExamIdsAccess(req, res, memberIds))) return;
 
     const allScores = await db.all<{
       student_id: number;
@@ -310,7 +312,26 @@ router.get("/cross-exam", async (req: Request, res: Response) => {
     if (endDate) request.endDate = String(endDate);
 
     const analysisRepo = new AnalysisRepository();
-    const crossExamData = await analysisRepo.getCrossExamTotal(request);
+    let requestedExamIds: number[] = [];
+    if (request.mode === "selected") {
+      requestedExamIds = request.examIds ?? [];
+      if (requestedExamIds.length === 0) {
+        res.status(400).json({ message: "请选择至少一场考试" });
+        return;
+      }
+    } else if (request.mode === "group" && request.groupId) {
+      const group = await analysisRepo.getExamGroup(request.groupId);
+      if (!group) {
+        res.status(404).json({ message: "考试组不存在" });
+        return;
+      }
+      requestedExamIds = group.examIds;
+    }
+    if (requestedExamIds.length > 0 && !(await validateExamIdsAccess(req, res, requestedExamIds))) return;
+
+    const crossExamData = await analysisRepo.getCrossExamTotal(request, {
+      visibleExamIds: await getVisibleExamIds(req.user),
+    });
 
     if (!crossExamData || crossExamData.rows.length === 0) {
       const resp: LadderResponse = {

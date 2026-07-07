@@ -26,7 +26,7 @@ import type { AnswerCard, ObjectiveRecognitionQuestion } from "../../shared/type
 const router = express.Router();
 
 // ── 搜索考生（考号/姓名） ──────────────────────────
-router.get("/:examId/students/search", async (req: Request, res: Response) => {
+router.get("/:examId/students/search", requireExamAccess, async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   const q = (req.query.q as string || "").trim();
   if (!Number.isFinite(examId) || !q) {
@@ -52,7 +52,7 @@ router.get("/:examId/students/search", async (req: Request, res: Response) => {
 });
 
 // ── 获取某学生全部题目得分 + 答题卡图片路径 ──────────
-router.get("/:examId/student/:studentId/scores", async (req: Request, res: Response) => {
+router.get("/:examId/student/:studentId/scores", requireExamAccess, async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   const studentId = Number(req.params.studentId);
   if (!Number.isFinite(examId) || !Number.isFinite(studentId)) {
@@ -267,7 +267,7 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
 });
 
 // ── 获取考试的答题卡答案配置 ──────────────────────
-router.get("/:examId/answers", async (req: Request, res: Response) => {
+router.get("/:examId/answers", requireExamAccess, async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   if (!Number.isFinite(examId)) {
     res.status(400).json({ message: "非法考试 ID" });

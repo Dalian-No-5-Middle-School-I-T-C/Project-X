@@ -12,6 +12,7 @@ import { KnowledgePointRepository } from "../../../../server/repositories/Knowle
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
 import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../middleware";
+import { maskApiKey } from "../../../../server/utils/maskApiKey";
 import { fetchLlmClient } from "../llm-client";
 import { CreateExamGroupSchema, validateBody } from "../validation";
 import type { CrossExamTotalRequest } from "../../../../shared/types";
@@ -34,7 +35,7 @@ function mapAiProvider(p: AiProviderRow) {
     name: p.name,
     providerType: p.provider_type,
     baseUrl: p.base_url,
-    apiKey: p.api_key,
+    apiKey: maskApiKey(p.api_key),
     models: p.models ? JSON.parse(p.models) : null,
     isActive: Boolean(p.is_active)
   };

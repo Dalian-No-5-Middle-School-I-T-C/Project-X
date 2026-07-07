@@ -43,6 +43,12 @@
 | ScannerPanel sessionId | ✅ 已修复 | `startScan` 同步写入 `sessionIdRef`，避免远程上传静默跳过 |
 | score-editing answers | ✅ 已修复 | 持久化答题卡答案、`subjective_score` 同步、复核阈值传入 |
 | PR161 COUNT | ✅ 已修复 | `COUNT(ss.exam_id)` 替代 `COUNT(ss.id)`，修复 JOIN 重复计数 |
+| H-S2 | ✅ 已修复 | 成绩导出增加 `requireExamAccess` + `GRADE_READ` |
+| H-S3 | ✅ 已修复 | AI 服务商 API Key 脱敏返回（`maskApiKey`） |
+| H-S10 | ✅ 已修复 | 主 `/api/scanner` 路由改用 `makeScannerAuth`（API Key 或 JWT+写权限） |
+| H-S13 / M-S13 | ✅ 已修复 | 天梯路由增加考试访问校验与 `visibleExamIds` 过滤 |
+| H-S1 (GET) | ✅ 已修复 | 成绩编辑 GET 路由补 `requireExamAccess` |
+| H-F3 | ✅ 已修复 | 导出/备份等原生 `fetch` 统一为 `authFetch` |
 
 > 其余条目（如 C-S2/C-S3 鉴权默认策略、H-S7 默认密码、性能/虚拟化、a11y、大量 `any`
 > 清理等）多属**产品策略决定**或**大范围重构**，改动会影响既有部署行为或超出本轮安全修复

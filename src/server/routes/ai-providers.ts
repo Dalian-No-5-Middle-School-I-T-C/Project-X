@@ -2,6 +2,7 @@ import express from "express";
 import type { Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
 import { getMysqlDb } from "../db";
+import { maskApiKey } from "../utils/maskApiKey";
 
 /**
  * AI 服务商配置管理
@@ -29,7 +30,7 @@ router.get("/", async (req: Request, res: Response) => {
     name: p.name,
     providerType: p.provider_type,
     baseUrl: p.base_url,
-    apiKey: p.api_key,
+    apiKey: maskApiKey(p.api_key),
     models: p.models ? JSON.parse(p.models) : null,
     isActive: !!(p.is_active)
   })));

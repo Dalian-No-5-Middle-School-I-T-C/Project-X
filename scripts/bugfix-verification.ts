@@ -9,6 +9,7 @@ import {
 } from "../src/shared/grading";
 import { competitionRank } from "../src/shared/ranking";
 import { rankPercentile, roundScore } from "../src/server/services/rankingUpdate";
+import { maskApiKey } from "../src/server/utils/maskApiKey";
 import type {
   AnswerCard,
   CombinedRecognitionResult,
@@ -160,6 +161,12 @@ const testCard = card([q1]);
 // ── H-L3: 浮点舍入 ──────────────────────────────────
 {
   check("H-L3 roundScore 消除浮点误差", roundScore(85.1 + 0.2) === 85.3);
+}
+
+// ── H-S3: API Key 脱敏 ───────────────────────────────
+{
+  check("H-S3 maskApiKey 保留末 4 位", maskApiKey("sk-abcdef1234567890") === "••••••••7890");
+  check("H-S3 maskApiKey 空值", maskApiKey("") === "");
 }
 
 console.log(`bugfix-verification ok (${passed} checks passed)`);
