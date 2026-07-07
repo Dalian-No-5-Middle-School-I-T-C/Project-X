@@ -230,7 +230,8 @@ export function gradeObjectiveQuestion(
 export function gradeObjectiveRecognition(
   card: AnswerCard,
   fileName: string,
-  recognition: ObjectiveRecognitionResult
+  recognition: ObjectiveRecognitionResult,
+  confidenceThreshold = OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD
 ): ObjectiveGradingRow {
   const questionMap = new Map(recognition.questions.map((question) => [question.questionNumber, question]));
   const grades: ObjectiveQuestionGrade[] = [];
@@ -243,7 +244,7 @@ export function gradeObjectiveRecognition(
         selectedOptions: [],
         confidence: 0
       };
-      grades.push(gradeObjectiveQuestion(card, recognized));
+      grades.push(gradeObjectiveQuestion(card, recognized, confidenceThreshold));
     }
   }
 
@@ -304,7 +305,7 @@ export function gradeSubjectiveRecognition(
   return {
     questionId: recognition.questionId,
     questionNumber: recognition.questionNumber,
-    score: Math.min(recognition.score, maxScore),
+    score: Math.max(0, Math.min(recognition.score, maxScore)),
     maxScore,
     status,
     needsReview,
@@ -318,9 +319,10 @@ export function gradeSubjectiveRecognition(
 export function gradeCombinedRecognition(
   card: AnswerCard,
   fileName: string,
-  recognition: CombinedRecognitionResult
+  recognition: CombinedRecognitionResult,
+  confidenceThreshold = OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD
 ): CombinedGradingRow {
-  const objectiveRow = gradeObjectiveRecognition(card, fileName, recognition);
+  const objectiveRow = gradeObjectiveRecognition(card, fileName, recognition, confidenceThreshold);
 
   const subjectiveQuestions: SubjectiveQuestionGrade[] = (recognition.subjectiveQuestions ?? []).map((sq) =>
     gradeSubjectiveRecognition(card, sq)
@@ -376,6 +378,44 @@ export interface CombinedStudentResult {
   subjectiveQuestions: SubjectiveQuestionGrade[];
 }
 
+/** 客观题跨页择优：missing_key 最差，其次比分数，同分比置信度（非复核优先）。 */
+function isBetterObjective(candidate: ObjectiveQuestionGrade, existing: ObjectiveQuestionGrade): boolean {
+  const candMissing = candidate.status === "missing_key";
+  const existMissing = existing.status === "missing_key";
+  if (existMissing !== candMissing) return existMissing; // 用有答案的替换 missing_key
+  if (candMissing) return false;
+  if (candidate.score !== existing.score) return candidate.score > existing.score;
+  // 同分：优先保留不需要复核（置信度更高）的结果
+  if (existing.needsReview !== candidate.needsReview) return existing.needsReview;
+  return false;
+}
+
+/** 主观题跨页择优：missing_score_grid 最差，其次比分数，同分比是否需复核。 */
+function isBetterSubjective(candidate: SubjectiveQuestionGrade, existing: SubjectiveQuestionGrade): boolean {
+  const candMissing = candidate.status === "missing_score_grid";
+  const existMissing = existing.status === "missing_score_grid";
+  if (existMissing !== candMissing) return existMissing;
+  if (candMissing) return false;
+  if (candidate.score !== existing.score) return candidate.score > existing.score;
+  if (existing.needsReview !== candidate.needsReview) return existing.needsReview;
+  return false;
+}
+
+/** 跨页择优选取学号：优先取 status === "ok" 的识别结果。 */
+function pickStudentId(
+  pages: Array<{ recognition: CombinedRecognitionResult }>
+): string {
+  for (const page of pages) {
+    const sid = page.recognition.studentId;
+    if (sid?.status === "ok" && sid.value) return sid.value;
+  }
+  for (const page of pages) {
+    const value = page.recognition.studentId?.value;
+    if (value) return value;
+  }
+  return "未识别";
+}
+
 /**
  * Combine grading results from multiple pages/sides for the same student.
  * Deduplicates questions across pages (prefers non-missing_key results, then higher score).
@@ -389,27 +429,29 @@ export function gradeSessionStudentResults(
     imagePath: string;
     recognition: CombinedRecognitionResult;
     ocrStatus: string;
-  }>
+  }>,
+  confidenceThreshold = OBJECTIVE_REVIEW_CONFIDENCE_THRESHOLD
 ): CombinedStudentResult {
   const objQMap = new Map<number, ObjectiveQuestionGrade>();
   const subjQMap = new Map<string, SubjectiveQuestionGrade>();
 
   const pageResults: PageGradingResult[] = pages.map((page) => {
-    const row = gradeCombinedRecognition(card, page.imagePath, page.recognition);
+    const row = gradeCombinedRecognition(card, page.imagePath, page.recognition, confidenceThreshold);
 
-    // Deduplicate across pages — prefer better results (non-missing_key, higher score)
+    // Deduplicate across pages — prefer better results:
+    // 1) 有标准答案的优先于 missing_key
+    // 2) 高分优先
+    // 3) 同分时高置信度（非 needsReview）优先，避免低置信度首页"锁死"复核标记
     for (const q of row.questions) {
       const existing = objQMap.get(q.questionNumber);
-      if (!existing || (existing.status === "missing_key" && q.status !== "missing_key") ||
-          (existing.score < q.score && q.status !== "missing_key")) {
+      if (!existing || isBetterObjective(q, existing)) {
         objQMap.set(q.questionNumber, q);
       }
     }
     for (const sq of row.subjectiveQuestions) {
       const key = String(sq.questionId) || String(sq.questionNumber);
       const existing = subjQMap.get(key);
-      if (!existing || (existing.status === "missing_score_grid" && sq.status !== "missing_score_grid") ||
-          (existing.score < sq.score && sq.status !== "missing_score_grid")) {
+      if (!existing || isBetterSubjective(sq, existing)) {
         subjQMap.set(key, sq);
       }
     }
@@ -444,7 +486,7 @@ export function gradeSessionStudentResults(
                             allSubjectiveQuestions.filter((q) => q.needsReview).length;
 
   return {
-    studentId: pages[0]?.recognition.studentId?.value ?? "未识别",
+    studentId: pickStudentId(pages),
     pages: pageResults,
     totalScore,
     totalMaxScore,

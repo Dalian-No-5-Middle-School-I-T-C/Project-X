@@ -17,6 +17,7 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "get_question_analysis": grades.get_question_analysis,
     "get_rank_segments": grades.get_rank_segments,
     "get_review_risks": grades.get_review_risks,
+    "get_knowledge_point_weaknesses": grades.get_knowledge_point_weaknesses,
 }
 
 
@@ -88,6 +89,17 @@ FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
                 "examId": {"type": "integer"},
                 "classId": {"type": "integer", "description": "Optional class id; use 0 for unknown class"},
                 "limit": {"type": "integer", "description": "Maximum number of high-error items to return"},
+            },
+            ["examId"],
+        ),
+    },
+    {
+        "name": "get_knowledge_point_weaknesses",
+        "description": "Get exam weaknesses aggregated by knowledge points, sorted by weakest first (v1.7.0). Returns avg rate per knowledge point with student count.",
+        "parameters": _params(
+            {
+                "examId": {"type": "integer"},
+                "classId": {"type": "integer", "description": "Optional class id; use 0 for unknown class"},
             },
             ["examId"],
         ),

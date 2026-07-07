@@ -21,7 +21,7 @@ Project-X (答题卡设计阅卷系统): an answer-card designer, OMR grading, a
 ### Lint / test / build (standard commands live in `package.json`)
 - "Lint" = typecheck only (no ESLint configured): `npm run typecheck` (`tsc --noEmit`).
 - Tests: `npm run verify:auth` (auth/RBAC suite) and `npx tsx scripts/grading-rules-smoke.ts` (grading smoke).
-  - NOTE: `verify:auth` currently has **one pre-existing failing case** (`exam class list includes unknown class`) that is unrelated to environment setup — the rest pass. Treat the harness as working.
+  - NOTE: `verify:auth` 全部 53 项通过（含上一场考试对比与未知班级班级列表）。
 - Build:
   - `npm run build` → typecheck + `vite build --mode web` → `dist/web/` + esbuild bundle → `dist/server/`
   - `npm run build:scanner:full` → typecheck + `vite build --mode scanner` → `dist/scanner/` + esbuild bundle → `dist/server/`

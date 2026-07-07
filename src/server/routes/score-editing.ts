@@ -12,10 +12,11 @@
 import express from "express";
 import type { Request, Response } from "express";
 import { getMysqlDb, buildUpsertSQL } from "../db";
-import type { DbAdapter } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
-import { AssignedScoreService } from "../services/AssignedScoreService";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
+import { recomputeExamRankings, roundScore } from "../services/rankingUpdate";
+import { resolveReviewConfidenceThreshold } from "../services/userSettings";
+import { requireExamAccess } from "../../apps/answer-card/server/middleware";
 import {
   objectiveQuestionDefinitions,
   gradeObjectiveQuestion,
@@ -197,7 +198,7 @@ router.get("/:examId/student/:studentId/scores", async (req: Request, res: Respo
 });
 
 // ── 逐题修改分数 ──────────────────────────────────
-router.put("/:examId/student/:studentId/scores", async (req: Request, res: Response) => {
+router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   const studentId = Number(req.params.studentId);
   if (!Number.isFinite(examId) || !Number.isFinite(studentId)) {
@@ -250,7 +251,9 @@ router.put("/:examId/student/:studentId/scores", async (req: Request, res: Respo
       if (s.score_type === "objective") totalObjective += s.score;
       else totalSubjective += s.score;
     }
-    const newTotal = totalObjective + totalSubjective;
+    totalObjective = roundScore(totalObjective);
+    totalSubjective = roundScore(totalSubjective);
+    const newTotal = roundScore(totalObjective + totalSubjective);
 
     await tx.run(`
       UPDATE student_scores SET objective_score = ?, subjective_score = ?, total_score = ?,
@@ -259,7 +262,7 @@ router.put("/:examId/student/:studentId/scores", async (req: Request, res: Respo
     `, totalObjective, totalSubjective, newTotal, userId, now, examId, studentId);
   });
 
-  await recomputeRankings(db, examId);
+  await recomputeExamRankings(db, examId);
   res.json({ ok: true });
 });
 
@@ -304,7 +307,7 @@ router.get("/:examId/answers", async (req: Request, res: Response) => {
 });
 
 // ── 修改答案并自动重算所有学生分数 ────────────────
-router.put("/:examId/answers", async (req: Request, res: Response) => {
+router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   if (!Number.isFinite(examId)) {
     res.status(400).json({ message: "非法考试 ID" });
@@ -353,8 +356,11 @@ router.put("/:examId/answers", async (req: Request, res: Response) => {
     }
   }
 
+  await cardRepo.updateCard(card);
+
   const students = await db.all("SELECT student_id FROM student_scores WHERE exam_id = ?", examId) as Array<{ student_id: number }>;
   let updatedCount = 0;
+  const confidenceThreshold = await resolveReviewConfidenceThreshold(req.user?.id);
 
   // Build cross-platform upsert SQL for question_scores
   const upsertCols = ["exam_id", "student_id", "question_number", "question_id", "block_id", "score", "max_score", "score_type", "manually_modified", "modified_by", "modified_at"];
@@ -402,7 +408,7 @@ router.put("/:examId/answers", async (req: Request, res: Response) => {
             questionNumber: def.questionNumber,
             selectedOptions: rec?.selectedOptions ?? [],
             confidence: rec?.confidence ?? 0,
-          } as ObjectiveRecognitionQuestion);
+          } as ObjectiveRecognitionQuestion, confidenceThreshold);
 
           await tx.run(upsertSQL,
             examId, studentId, def.questionNumber, null, block.id,
@@ -418,46 +424,21 @@ router.put("/:examId/answers", async (req: Request, res: Response) => {
         examId, studentId
       ) as { total: number };
 
-      const totalScore = totalObj + subjScore.total;
+      const roundedObj = roundScore(totalObj);
+      const roundedSubj = roundScore(Number(subjScore.total ?? 0));
+      const totalScore = roundScore(roundedObj + roundedSubj);
       await tx.run(`
-        UPDATE student_scores SET objective_score = ?, total_score = ?,
+        UPDATE student_scores SET objective_score = ?, subjective_score = ?, total_score = ?,
           manually_modified = 1, modified_by = ?, modified_at = ?
         WHERE exam_id = ? AND student_id = ?
-      `, totalObj, totalScore, userId, now, examId, studentId);
+      `, roundedObj, roundedSubj, totalScore, userId, now, examId, studentId);
 
       updatedCount++;
     }
   });
 
-  await recomputeRankings(db, examId);
+  await recomputeExamRankings(db, examId);
   res.json({ ok: true, updatedCount, modifiedAnswers: Object.keys(answerUpdates).length });
 });
-
-// ── 重算排名 ──────────────────────────────────────
-async function recomputeRankings(db: DbAdapter, examId: number) {
-  const allStudents = await db.all(`
-    SELECT id, total_score FROM student_scores WHERE exam_id = ? ORDER BY total_score DESC
-  `, examId) as Array<{ id: number; total_score: number }>;
-
-  if (allStudents.length === 0) return;
-
-  const n = allStudents.length;
-
-  for (let i = 0; i < allStudents.length; i++) {
-    const rank = i + 1;
-    const percentile = n > 1 ? Math.round((1 - i / n) * 1000) / 10 : 100;
-    await db.run(
-      "UPDATE student_scores SET `rank` = ?, percentile = ? WHERE id = ?",
-      rank, percentile, allStudents[i].id
-    );
-  }
-
-  try {
-    const assignedService = new AssignedScoreService();
-    await assignedService.recalculateAll(examId);
-  } catch (_) {
-    // 无赋分配置或重算失败，静默跳过
-  }
-}
 
 export default router;

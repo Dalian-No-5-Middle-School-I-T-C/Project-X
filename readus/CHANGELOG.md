@@ -1,5 +1,344 @@
 # Project-X CHANGELOG
 
+## v1.8.1 (2026-07-07) — 代码审查修复 + 离线演示整合
+
+合并 PR162（v1.8.1 bug 修复）与离线静态演示页，冲突已解决；离线演示百分位/排名与主站 `rankingUpdate.ts` 对齐。
+
+### 离线静态演示（/demo/）
+- 主站登录 `offline-demo` / `offline-demo` 跳转纯静态页，无需后端
+- 单科成绩新增**班级筛选**与**百分位列**（公式 A，与 PR162 一致）
+- 名次变化页展示百分位对比
+- 新增 `scripts/demo-static-verification.ts` 与 CI 校验步骤
+- 构建链路：`npm run build:demo-static` → `public/demo/demo-data.json`
+
+## v1.8.1 (2026-07-06) — 代码审查 bug 修复与一致性收敛
+
+基于 PR161 代码审查报告（`readus/CODE-REVIEW.md`），修复安全漏洞、崩溃 bug、排名/百分位不一致及若干前端问题。
+
+### 安全修复
+- **MariaDB 恢复命令注入（C-S1）**：`backup.ts` restore 改用 `execFile` 参数数组 + stdin，消除 shell 注入
+- **扫描上传路径遍历（H-S12）**：`side` 白名单、`sessionId` basename 兜底、扩展名白名单
+- **ZIP 解压前缀绕过（M-S18）**：路径检查改用 `path.relative`，防止 `destDir-evil` 类前缀攻击
+
+### 数据一致性
+- **排名算法统一（H-L2）**：`score-editing.ts` 与 `ReviewService.ts` 两份重复 `recomputeRankings` 收敛为共享模块 `rankingUpdate.ts`，改用 `competitionRank`（同分并列）
+- **百分位公式统一（M-L4）**：写入 DB 时统一使用公式 A `(total - rank) / (total - 1) * 100`（末名 0）
+- **分数舍入（H-L3）**：成绩编辑/复核路径 `total_score` 统一 `roundScore`（3 位小数）
+
+### 阅卷逻辑
+- **复核置信度阈值生效（H-L1）**：Web 阅卷链路读取用户 `reviewConfidenceThreshold` 并传入 `gradeObjectiveQuestion`
+- **主观题负分裁剪（M-L6）**：`Math.max(0, Math.min(score, maxScore))`
+- **多页阅卷择优（M-L2/M-L3）**：跨页去重纳入置信度；学号优先取 `status=ok` 的识别结果
+
+### 前端修复
+- **GradingResults 崩溃（C-F1）**：`useState` 移到早返回之前，修复 Hook 数量变化崩溃
+- **ScannerPanel 闭包陷阱（C-F2/C-F3）**：用 ref 追踪 `pages`/`sessionId`/`scannerMode`，修复 done 回传页数 0 与远程上传空循环
+- **网上阅卷前进（H-F2）**：「保存并下一份」真正前进到下一份
+- **SSE 健壮性（H-F5/M-F4）**：`JSON.parse` 加 try/catch；扫描 SSE 断连反馈错误状态
+- **图片压缩内存泄漏（H-F6）**：`URL.revokeObjectURL` 释放 blob URL
+
+### 小修复
+- `generateTeacherUsername` 异步检查存在性，避免用户名碰撞（L-S2）
+- `englishTemplate` 移除无意义三元（L-L4）
+- `ClassManagement` CSV 表头正则去重（L-F8）
+
+### 测试与文档
+- 新增 `readus/CODE-REVIEW.md`（含修复状态总表）
+- 新增 `scripts/bugfix-verification.ts`（14 项单元断言）
+- 新增 `scripts/ranking-integration-check.ts`（真实 SQLite 排名集成测试）
+
+### 回归验证
+- `npm run typecheck` ✓
+- `npm run verify:auth` — 54 通过 / 0 失败
+- `npx tsx scripts/grading-rules-smoke.ts` ✓
+- `npx tsx scripts/bugfix-verification.ts` — 14 通过
+- `npx tsx scripts/ranking-integration-check.ts` ✓
+- `npm run build` ✓
+- GUI 冒烟：登录、设计/考试/阅卷/分析四页正常渲染
+
+### 第二轮修复（对照 PR161 + debug 审查）
+- **H-S4**：`ExamRepository` / 扫描器持久化改用 `ON CONFLICT DO UPDATE`，重扫保留 rank/percentile/手动改分
+- **H-S1**：成绩修改 PUT 路由增加 `requireExamAccess`
+- **H-S11**：`getVisibleExamIds` 异步化 + `getMysqlDb()`，MariaDB 模式考试可见性正确
+- **M-L4 显示层**：`AnalysisRepository` 百分位显示统一公式 A
+- **backup**：MariaDB 默认端口 `3306`（原误 `443`）
+- **ScannerPanel**：`sessionIdRef` 在 `startScan` 同步赋值
+- **score-editing**：答案 `updateCard` 持久化、同步 `subjective_score`、传入复核阈值
+- **PR161**：`COUNT(ss.exam_id)` 修复 JOIN 重复计数
+
+### 修改文件
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/server/routes/backup.ts` | execFile 防注入、ZIP 路径检查 |
+| `src/server/routes/scanner-upload.ts` | side/ext/sessionId 安全校验 |
+| `src/server/services/rankingUpdate.ts` | **新增** 统一排名/百分位重算 |
+| `src/server/routes/score-editing.ts` | 使用共享排名模块 + roundScore |
+| `src/server/services/ReviewService.ts` | 同上 |
+| `src/shared/grading.ts` | 阈值参数、跨页择优、主观分裁剪 |
+| `src/apps/answer-card/server/index.ts` | 读取用户复核阈值传入阅卷 |
+| `src/apps/answer-card/client/App.tsx` | GradingResults Hook 修复、SSE try/catch |
+| `src/apps/answer-card/client/components/ScannerPanel.tsx` | ref 闭包修复 |
+| `src/apps/answer-card/client/components/OnlineReviewPanel.tsx` | 保存并下一份前进 |
+| `src/apps/answer-card/client/components/PaperUploadPanel.tsx` | objectURL 释放 |
+| `src/server/repositories/UserRepository.ts` | 教师用户名生成重试 |
+| `src/shared/cardTemplates.ts` | 移除冗余三元 |
+| `scripts/bugfix-verification.ts` | **新增** 回归测试 |
+| `scripts/ranking-integration-check.ts` | **新增** 排名集成测试 |
+| `readus/CODE-REVIEW.md` | **新增** 代码审查报告 + 修复状态 |
+| `src/server/services/userSettings.ts` | **新增** 共享复核阈值读取 |
+| `src/server/repositories/ExamRepository.ts` | H-S4 upsert + COUNT 修复 |
+| `src/apps/answer-card/server/middleware.ts` | H-S11 异步 getMysqlDb |
+| `src/apps/answer-card/server/scanner/index.ts` | H-S4 扫描持久化 upsert |
+| `src/server/repositories/AnalysisRepository.ts` | M-L4 百分位显示 + COUNT |
+| `src/server/routes/exam-groups.ts` | COUNT(ss.exam_id) |
+
+---
+
+## v1.7.3 (2026-07-04) — 移动端网页适配
+
+### 移动端全面适配
+
+系统从桌面端专用布局升级为桌面/移动端双适配架构。新增 480px 手机断点，通过底部导航栏替代桌面端 Tab 切换，实现手机端原生体验。
+
+- **底部导航栏（Bottom Navigation Bar）**：
+  - 固定屏幕底部，毛玻璃背景 + 品牌色激活项
+  - 根据用户权限动态生成导航项（设计/考试/阅卷/分析/成绩/账号），最多 5 个 Tab
+  - 图标 + 短标签（2-3字），触摸目标 44px，iPhone 安全区适配（`env(safe-area-inset-bottom)`）
+  - 桌面端 `display: none`，仅 480px 以下显示
+- **Topbar 移动端精简**：
+  - 隐藏副标题、隐藏桌面端 `mode-toggle`（由底部导航替代）
+  - 标题省略号截断，操作按钮紧凑排列
+  - `position: sticky` 固定顶部
+- **480px 移动端主断点**（~300 行新增 CSS）：
+  - 全局重置：`body` 可滚动、`app-shell` 取消固定高度、底部 padding 为导航栏留空间
+  - 8 个 mode 页面逐一适配：
+    - **design**：预览区 + 属性面板纵向排列，答题卡页面自适应宽度
+    - **exam-manage**：考试列表表格改卡片布局，表头隐藏
+    - **grading**：扫描面板 padding 缩减，扫描结果网格紧凑化
+    - **analysis**：分析卡片 2 列，排名表横向滚动，箱型图 2 列
+    - **scores**：概览卡片紧凑排列，Tab 横向滚动，图表高度缩减
+    - **account**：三栏班级布局改单列，表单单列，表格横向滚动
+    - **sponsor**：收款码卡片全宽，二维码缩至 140px
+    - **guide**：正文 13px、表格横向滚动、代码块紧凑
+- **Modal 底部弹出（Bottom Sheet）**：
+  - 所有弹窗从屏幕底部滑出，全宽圆角顶部（`border-radius: 20px 20px 0 0`）
+  - 底部按钮纵向全宽排列
+  - PDF 查看弹窗全屏化
+  - 账号菜单下拉改为底部弹出
+- **触摸优化**：
+  - 输入框 `font-size: 16px`（防止 iOS Safari 自动缩放）
+  - 触摸目标最小 44px
+  - `-webkit-overflow-scrolling: touch` + `overscroll-behavior: contain`
+- **横屏适配**（iPad 等）：
+  - 1024px landscape：主内容 + 属性面板 320px 双列
+  - 768px landscape：单列 + 底部导航缩小至 48px
+- **暗色模式配套**：底部导航栏、Topbar、Modal 全部适配 `[data-theme="dark"]`
+- **HTML Meta 标签**：viewport 添加 `viewport-fit=cover`，新增 `apple-mobile-web-app-capable`、`theme-color`
+
+### 技术实现
+
+- **纯 CSS 适配策略**：不修改任何子组件文件，全部通过 `styles.css` 中的 `@media (max-width: 480px)` 规则覆盖
+- **App.tsx 最小改动**：仅新增 `mobileNavItems` useMemo（权限驱动的导航项数组）+ 底部导航 JSX
+- **CSS 变量扩展**：新增 `--mobile-bottom-nav-height`、`--mobile-safe-area-bottom/top`、`--touch-target-min`、`--mobile-content-padding`
+
+### 修改文件
+
+| 文件 | 改动 |
+## v1.8.0 (2026-07-04) — 原卷上传与 AI 知识点分析
+
+### 数据库 schema 完善
+- `schema.sql` 初始建表补充 v1.8.0 新增字段：
+  - `answer_cards`: `has_original_paper`, `original_paper_filename`, `original_paper_path`, `question_range`, `extra_notes`, `knowledge_points_text`
+  - `users`: `require_original_paper`, `highlight_missing_paper`
+- `schema.mysql.sql` 同步补充上述字段（之前仅 `schema.mariadb.sql` 完整）
+- MariaDB 增量迁移新增 `v17 original-paper-and-knowledge-points`，确保已有 MariaDB 生产库自动补齐原卷相关列和 `knowledge_points` 表
+
+### SQL 兼容性
+- `KnowledgePointRepository.getWeaknessesForExam / getWeaknessesForStudent` 的 `GROUP_CONCAT(DISTINCT ... ORDER BY ...)` 改为按 `(point_text, question_number)` 分组，然后在 JS 层聚合题号，兼容 SQLite 和 MySQL
+
+### 版本号
+- `package.json` / README badge / UI 侧栏版本号统一为 `1.8.0`
+
+### 原卷上传
+- 答题卡创建后自动弹出原卷上传面板（可由教师在设置中关闭）
+- 支持 DOCX / PDF / 图片（JPG/PNG/BMP/TIFF/WebP）上传，最大 50MB
+- 拒绝 .doc 格式，引导转为 .docx
+- 图片自动前端压缩（max 2048px, JPEG 80%）+ 后端 sharp 兜底压缩
+- 图片格式自动转为 PDF 存储；DOCX/PDF 保留原文件
+- 题目范围填写（全部 / 自定义文字）+ 特别描述备注
+- 原卷文件存储在 `data/answer-card/papers/:cardId/`
+
+### AI 知识点分析
+- 智能路由：多模态（Gemini/GPT）直传图片，一次调用；纯文本（DeepSeek）自动检测文字层
+- DeepSeek 三模式：自动（文字层→mammoth/pdf-parse，无文字层→Tesseract.js OCR）/ 视觉接力（视觉模型转写→DeepSeek分析）
+- 三层格式保障：JSON Schema 硬约束 + System Prompt 软约束 + Node 后端校验兜底
+- 知识点存储在 `knowledge_points` 表，独立于答题卡，与成绩数据关联
+- 前端编辑：彩色标签、双击编辑、长按编辑（移动端）、删除/添加知识点
+- 分析结果持久化，后续可重新分析或手动修改
+
+### 成绩分析联动
+- 新增 `GET /api/analysis/knowledge-points/:examId` — 按知识点聚合全班得分率
+- 新增 `GET /api/analysis/knowledge-points/:examId/students/:studentId` — 单个学生知识点弱项
+- llmclient 新增 `get_knowledge_point_weaknesses` 工具，AI 能指出具体知识点的薄弱环节
+
+### 原卷导出增强
+- 答题卡导出 `.projectx-card.json` 包含原卷 base64 + 知识点数据
+- PDF 导出前统一检查卡片：分值 → 原卷（内联渲染：图片/img可缩放、PDF/iframe翻页、DOCX/Office链接）→ 知识点（内联分析+编辑），三步进度条，含「← 上一步」回退
+- 原卷预览按文件类型智能渲染：`?format=image` 获取图片，默认 PDF，互不干扰
+- 原卷放大预览 Modal 支持 ± 缩放（25%~300%），按钮实时显示当前倍率
+- 修复图片原卷上传后不被识别：`/api/cards/:cardId/paper/info` 双检查（DB + 文件实际存在），自动修复不一致
+- 上传原卷后自动刷新侧栏状态
+- 导出卡片内知识点分析面板与上传面板 UI 统一（单选框 `.radio-label` 对齐）
+
+### 侧边栏标识
+- 左侧答题卡列表新增橙色竖条标识未上传原卷的考试
+- 可在教师设置中关闭高亮
+
+### 系统 AI 配置（Admin Only）
+- `ai_providers` 表新增 `is_system` 列，全校统一 AI 提供商
+- 知识分析仅使用系统级 AI 提供商，教师无法自行配置
+- AccountMenu「AI 设置」Tab 仅 admin 可见
+- 教师设置新增「强制上传原卷」「侧边栏高亮」双开关
+
+### 移动端适配
+- 文件上传：移动端大按钮组（拍照/选文件）
+- 面板全屏化（<760px），sticky 底部按钮
+- 知识点编辑长按触发
+- 输入框 16px 字体防 iOS 缩放
+
+### 数据库
+- migration v16：`ai_providers.is_system` (SQLite + MariaDB)
+- schema.sql / schema.mariadb.sql / schema.mysql.sql 三份同步
+- 新建 `knowledge_points` 表（card_id, question_number, point_text, category）
+
+### 新增依赖
+- `sharp` — 图片压缩与格式转换
+- `mammoth` — DOCX 文本提取
+- `pdfjs-dist` — PDF 文字层检测与文本提取（替代 pdf-parse）
+- `tesseract.js` — OCR 引擎（扫描件兜底）
+
+### 新增文件
+- `src/apps/answer-card/server/paper-converter.ts` — 文件校验、压缩、图片→PDF
+- `src/apps/answer-card/server/paper-ocr.ts` — 文本提取 + OCR
+- `src/apps/answer-card/server/routes/paper-routes.ts` — 原卷/knowledge-points CRUD
+- `src/server/repositories/KnowledgePointRepository.ts` — 知识点 CRUD + 成绩联动查询
+- `src/apps/answer-card/client/components/DragDropZone.tsx` — 拖拽上传
+- `src/apps/answer-card/client/components/KnowledgeTagList.tsx` — 可编辑知识点标签
+- `src/apps/answer-card/client/components/PaperUploadPanel.tsx` — 原卷上传主面板
+---
+
+---
+
+
+---
+
+## v1.7.2 (2026-07-01) — 统计图表 + 教师权限管理
+
+### 统计图表系统
+- 新增 `AnalysisCharts` 可复用图表组件：`ScoreDoughnut`（饼图）、`ComparisonBar`（柱状图）、`TrendLine`（折线图）。
+- `AnalysisOverview` 嵌入「图表可视化」区域：分数段分布饼图 + 关键指标面板。
+- 学生端 `StudentScores` 成绩列表顶部嵌入总分趋势折线图（≥2 场考试显示，时间正序排列）。
+- Chart.js 颜色处理：新增 `resolveColor()` CSS 变量解析 + `withAlpha()` 安全 alpha 拼接，避免 Canvas API 下 `var(--brand)15` 非法颜色。
+
+### 教师权限管理系统
+- 新增 `teacher_permissions` 表（v16 migration）：`teacher_id`/`grade_id` + `can_view_scores`/`can_view_charts`/`can_view_students` 三个开关。
+- 新增 `GET/PUT/DELETE /api/admin/permissions` 路由（admin-only）。
+- 新增 `PermissionManager` 前端组件：管理员可视化管理各教师/年级的查看权限。
+- RBAC 集成：`getVisibleExamIds` 检查 `teacher_permissions` 表，关闭权限的教师看不到受限年级的全部数据。
+- `AccountMenu` 新增「权限管理」入口（仅 admin 可见）。
+
+### 暗色主题持续打磨
+- 品牌色调优：珊瑚红 `#F77866` → 低亮红 `#D94040` → 最终 `#C0392B` 暗沉红（Tim 版）。
+- 文字亮度：`#C9D1D9` → `#EAEAEA`（亮白），`--muted` → `#888888`。
+- 顶部栏 `rgba(22,27,34,0.75)` 暗色毛玻璃，mode-toggle 容器可见暗底。
+- 答题卡预览强制白纸黑字（`.page` `#fafafa` + `color:#333`）。
+- SVG 文字全系列 `fill:#111 !important`。
+- 侧边栏 hover：黑遮罩 → 品牌红微光 `rgba(217,64,64,0.08)`。
+- 按钮 hover：黑块 → 微光白 `rgba(255,255,255,0.08)`。
+- Kimi 补全 1460 行组件级暗色覆盖（`.panel`/`.block-chip`/`.answer-key-editor` 等）。
+
+### Bug 修复
+- `CreateExamGroupModal`：修复重复 `error`/`setError` 声明导致 tsc 编译失败。
+- 学生端趋势图：修复 `/api/scores/me` 返回 DESC 排序导致折线图时间倒序（改为 `[...data].reverse()`）。
+- Chart.js 颜色：修复 `var(--brand)15` 拼接为非法 Canvas 颜色。
+- `update.sh` 重写：Node 自动探测 + 分支安全 + 跨平台进程管理。
+
+### 工程化改进
+- 后端路由拆分：14 条分析路由提取为 `routes/analysis.ts` + 3 个共享模块。
+- Zod 请求校验：`POST /api/cards`、`POST /api/exams`、`PATCH /api/users/me/settings`、`POST /api/analysis/cross-exam/groups`。
+- 文件上传魔数校验（PNG/JPEG/BMP/TIFF）+ MIME 预过滤。
+- DB 性能索引 v12：`student_scores` 复合索引 + `question_scores` 复合索引。
+- SQL 动态 UPDATE 白名单校验。
+- 统一错误码 `ApiError` 枚举 + 中文提示。
+- GitHub Actions CI 工作流（typecheck + test + build）。
+- `AutoBackup`：考试关闭后自动拷贝 DB 到 `data/backups/`。
+
+### 答题卡模板
+- 新增辽宁新高考政治/历史/地理模板（16 单选 × 3 分 + 主观题 52 分，满分 100）。
+
+## v1.7.1 (2026-06-30) — 网上阅卷能力补全
+
+### 网上阅卷队列
+
+- 新增 `GET /api/review/exams/:examId/blocks`：按大题块汇总待阅/已阅数量。
+- 增强 `GET /api/review/exams/:examId/block-crops`：返回学生姓名，供阅卷队列展示。
+- 新增 `POST /api/review/exams/:examId/block-crops/:cropId/submit`：提交题块分数、更新切块状态、重算总分与排名。
+- 新增 `ReviewService`：题块汇总、分数 upsert、排名重算。
+- 教师成绩详情页新增 **网上阅卷** Tab（`OnlineReviewPanel`）：左侧题块列表 + 右侧切块图片与逐题打分。
+
+### 状态流转
+
+- 切块默认 `ready`（待阅）→ 提交后 `reviewed`；可标记 `disputed`（争议）。
+
+### 暗色模式视觉升级
+
+- **答题卡预览**：暗色 UI 下 `.page` 保持白纸黑字（`#ffffff` 背景 + `color-scheme: only light`），不再继承深色表面色。
+- **SVG 文字**：将全局浅色 `fill: #EAEAEA` 改为仅作用于 `.page` 内的 `#111` 黑字，修复预览文字几乎不可见的问题。
+- **对比度**：`--text-secondary` / `--muted` 调亮，次要文字在暗色背景下更易读。
+- **网上阅卷**：`OnlineReviewPanel` 侧栏、题块列表、图片区与打分输入框暗色适配。
+- **工程清理**：删除 `styles.css` 末尾约 1000 行重复的暗色规则块。
+
+### 分数统计图修复
+
+- **箱线图交互**：分数统计分布 图中班级柱形可点击，联动顶栏班级筛选；补传 `selectedClassId` 修复高亮不更新。
+- **图例与可读性**：新增极值/四分位/中位/均值图例，加粗坐标与柱形对比度，暗色模式下提升箱线图与分数段分布可视性。
+- **成绩变化曲线**：分析页考试列表下方恢复 `AnalysisTrend`（重构后曾丢失未渲染）。
+- **演示校验脚本**：修正上次考试对比用例（应对「演示-数学」而非「数学月考」发起请求）。
+
+### 合并 main（v1.6.4 / v1.6.5）
+
+- **背景图 API**：恢复 `GET /api/app/background` 与 `POST /api/users/me/background`。
+- **设置保存崩溃**：`PATCH /api/users/me/settings` 改为读取 `req.body`（非 `validatedBody`）。
+- **exam_groups 列补齐**：SQLite / MariaDB 新增 migration v15，补齐 `source` 等缺失列。
+- **前端防御性加固**：`ScoreDetailPage`、`AccountMenu`、`App` 对设置返回值增加 null-safe guard。
+
+## v1.7.0 (2026-06-30) — 成绩分析补全与学生学期对比
+
+### 成绩分析补全
+
+- 实现 `GET /api/analysis/exams/:examId/previous`：对比上一场同科目考试，返回均分/及格率变化。
+- 修复 `findPreviousExam`：`grade_id` 为 NULL 时正确匹配；日期回退使用 `exam_date → start_time → created_at`。
+- 教师成绩详情「概况」Tab 展示上次考试对比条（均分变化、及格率变化）。
+
+### 学生端分析增强
+
+- 新增 `GET /api/scores/me/semester-comparison`：按学年学期（8月~1月为第一学期，2月~7月为第二学期）汇总成绩。
+- 学生成绩页新增学期对比 Tab，柱状图展示各学期/各科均分。
+- 学生端雷达图与排名趋势可下拉切换考试/大考组/学期三种维度。
+
+### iOS 15 Safari 兼容（基于 #141）
+
+- Vite web 构建目标设为 `es2020 + safari15`，确保 JS 在 iOS 15 / macOS Safari 15+ 上可解析运行。
+- 修复 `Array.prototype.at` 在 iOS 15 上不可用导致 白屏 的问题。
+- `src/components/WebCompat.tsx`：Safari 专用兼容检测与提示横幅。
+
+### 工程清理
+
+- 删除 `.tsbuildinfo` 缓存，确保类型检查从零开始。
+
+
+
 ## v1.6.5 (2026-07-01) — iOS 15 Safari 兼容与错误边界 (#141)
 
 ### Web SPA 兼容性
@@ -139,7 +478,7 @@ v1.6.1:  dist/web/ (教师+学生) + dist/scanner/ (扫描端)
 
 - 删除 `electron:pack:student`、`:teacher` 以及所有 ia32 变体脚本
 - 教师/学生功能统一通过 Web 构建访问，Electron 只保留扫描端
-- 删除 `scripts/package-variant.ts` 引用（文件保留但不再使用）
+- 删除 `scripts/package-variant.ts` 引用（v1.7.0 已删除该文件）
 - 删除 `VITE_PROJECTX_VARIANT` 编译时变量，改用 `VITE_BUILD_TARGET`
 
 ### Electron 精简
@@ -257,110 +596,12 @@ CREATE TABLE api_keys (
 
 | 文件 | 说明 |
 |------|------|
-| `src/server/middleware/api-key.ts` | API Key 认证中间件 |
-| `src/server/routes/api-keys.ts` | API Key 管理路由 |
-| `src/server/routes/scanner-upload.ts` | 扫描上传路由 |
+| `src/apps/answer-card/client/styles.css` | 新增 ~300 行：CSS 变量、底部导航样式、480px 断点全部规则、横屏适配、暗色模式配套 |
+| `src/apps/answer-card/client/App.tsx` | 新增 `mobileNavItems` useMemo + 底部导航 `<nav>` JSX + `ReactElement` 类型导入 |
+| `index.html` | viewport meta 升级 + 3 个新 meta 标签 |
 
-### 架构决策
-
-- 客户端视图身份从编译时改为运行时，管理员可动态切换
-- API Key 模式用于无用户登录的扫描客户端，与 JWT 互补
-- 扫描端本地 SQLite 保留，用作离线缓存和断网重试缓冲
-- 最终部署：服务端跑 MariaDB，各客户端通过 HTTP API 通信
-
----
-
-原 v1.5.2 引入的 MySQL 双后端方案存在致命缺陷：`ON DUPLICATE KEY UPDATE` 在底层 SQLite 适配器中无法执行（SQLite 不支持此语法），依赖"DELETE-then-INSERT"才侥幸不报错。本次彻底重写整个数据访问层。
-
-### 数据库层重写 (`src/server/db/`)
-
-- **`schema.mariadb.sql`** — 全新 MariaDB 10.11 LTS 完整建表 SQL，含 38 张表 + 45+ 索引：
-  - Scanner 4 表合并（`twain_scan_sessions` / `twain_scan_records` / `twain_recognition_results` / `twain_student_grading_results`）
-  - v9 迁移新增表/列：`knowledge_points` 表、`answer_cards` 原卷字段（`has_original_paper` 等）、`users` 原卷偏好
-  - 新字段：`scan_records.image_uploaded`（原图上传标记）
-  - MariaDB 兼容：`VARCHAR` PK 替代 TEXT PK、`TINYINT` 替代 INTEGER 布尔值、\`rank\` 反引号
-  - 引擎 InnoDB、字符集 utf8mb4、外键级联删除、初始种子数据
-
-- **`mysql.ts` 重写** — 改名 `MariadbAdapter`，新增：
-  - `DbAdapter.dialect` 属性（`"sqlite" | "mariadb"`）
-  - `buildUpsertSQL()` / `buildInsertIgnore()` 跨方言 SQL 生成工具
-  - `detectDialect()`：环境变量 > config.yml > 兜底 SQLite
-  - MariaDB 连接池增强：`connectTimeout:5000`、`enableKeepAlive:true`、`maxIdle:10`、`idleTimeout:60000`
-  - `healthCheck()` 数据库连通性检测
-  - **MariaDB 模式断连不降级到 SQLite**（关键安全策略）
-
-- **`config.ts`** — YAML 配置读写工具（免外部依赖），支持 `config.yml` 解析/合并/写回
-
-- **`schema.sql` 修复**：
-  - `answer_cards.sided` 默认值 `'single'` → `'double'`（修复长期存在的默认值不一致 Bug）
-  - 新增 twain_* 4 表 + 6 个索引
-
-- **v10 迁移** — `twain_scan_sessions/records/recognition_results/student_grading_results` 自动建表
-
-### 消除 `getDatabase()` 直接调用（~50 处 → 0）
-
-所有路由/服务/清理任务统一走 `getMysqlDb()` 异步 `DbAdapter`：
-
-| 文件 | 变更 |
-|------|------|
-| `ai-providers.ts` | 4 处 → async `db.all/get/run()` |
-| `export-scores.ts` | 4 处 → async + `buildUpsertSQL()` |
-| `score-editing.ts` | 12 处 → async + 事务改为 `await db.transaction(async tx => {...})` |
-| `exam-groups.ts` | 11 处 → async + `buildInsertIgnore()` |
-| `AssignedScoreService.ts` | 全类 → async，`recalculateAll()` 使用 `db.transaction()` |
-| `AuthService.ts` | 2 处 → async |
-| `permissions.ts` | `initPermissionCache()` 异步预加载，启动时调用 |
-| `cleanup.ts` | 全异步，`setInterval` 内 `.catch()` |
-| `backup.ts | MariaDB 分支通过 mysqldump 备份恢复
-| `server/index.ts` | ~15 处 + `initMariadbSchema()` + 启动序列重排 |
-
-### Scanner DB 合并到主库
-
-- Scanner 原先独立的 `scanner.db` 4 张表全部合并到主库，命名加 `twain_` 前缀
-- `scan-store.ts` 19 个函数全异步化，统一走 `getMysqlDb()`
-- `scanner-service.ts` / `scanner/index.ts` 调用方全部加 `await`
-- `scanner/index.ts` 中 `persistScannerResultToMainDb()` 改为 async `getMysqlDb()` + `REPLACE INTO`
-
-### 用户设置：数据存储
-
-- **API**: `GET /api/app/db-config`（读取）+ `PATCH /api/app/db-config`（写入，管理员权限）
-- **前端**: AccountMenu 新增「数据存储」Tab（仅管理员可见）
-  - 本地 SQLite / 远程 MariaDB 单选切换
-  - MariaDB 连接表单：主机、端口、数据库名、用户名、密码
-  - 密码已设置时显示"(已设置，留空不修改)"提示
-  - 保存后显示"需重启服务器方可生效"
-  - 当前远程功能提示"尚未完全启用"
-
-### 服务器打包增强
-
-- `build-server.ts`：构建时同步复制 `schema.mariadb.sql`
-- `package-server-ubuntu.cjs`：新增 MariaDB 环境变量、systemd 模板含 MariaDB 配置、部署文档含 MariaDB 安装/配置指引
-
-### 文档
-
-- `DATABASE.md` 重写：双模架构说明、本地/远程对比表、MariaDB 安装配置
-- `ARCHITECTURE.md`：更新技术栈描述
-- `config.yml`：数据库配置模板（mode/remote/...）
-
-### Phase 2: 服务器部署工具链
-
-- **`scripts/migrate-to-mariadb.ts`** — SQLite → MariaDB 全量数据迁移
-- **`scripts/setup-mariadb.sh`** — Ubuntu/Debian 一键建库建表
-- **备份/恢复** — backup.ts MariaDB 分支通过 mysqldump 实现
-- **P0 修复** — initMariadbSchema 空指针、ON DUPLICATE KEY 残留、health 端点增强
-
-### 版本号更新
-
-- `package.json` → 1.5.5, README badges, DATABASE.md 新增部署迁移章节
-
-### 架构决策
-
-- 本地模式 = SQLite（零依赖，单机/开发/离线）
-- 远端模式 = MariaDB 10.11 LTS（32位/64位兼容）
-- 数据库配置存 `config.yml`，管理员界面写入，重启生效
-- 最终目标：数据库全在服务端，扫描端/教师端/学生端都是客户端
-
----
+### 版本
+- v1.5.2 → v1.7.3
 
 ## v1.5.2 (2026-06-26) — 数据库双后端架构
 

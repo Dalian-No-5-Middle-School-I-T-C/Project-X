@@ -8,6 +8,7 @@
 import express from "express";
 import { getMysqlDb } from "../../../../server/db";
 import { AnalysisRepository } from "../../../../server/repositories/AnalysisRepository";
+import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
 import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../middleware";
@@ -98,7 +99,7 @@ router.post("/cross-exam/groups", validateBody(CreateExamGroupSchema), async (re
       res.status(400).json({ message: "请选择至少一场考试" });
       return;
     }
-    if (!validateExamIdsAccess(req, res, normalizedExamIds)) return;
+    if (!(await validateExamIdsAccess(req, res, normalizedExamIds))) return;
 
     const analysisRepo = new AnalysisRepository();
     const group = await analysisRepo.createExamGroup({
@@ -165,7 +166,7 @@ router.post("/cross-exam/total", async (req, res, next) => {
       requestedExamIds = group.examIds;
     }
 
-    if (requestedExamIds.length > 0 && !validateExamIdsAccess(req, res, requestedExamIds)) return;
+    if (requestedExamIds.length > 0 && !(await validateExamIdsAccess(req, res, requestedExamIds))) return;
     const data = await analysisRepo.getCrossExamTotal({
       mode,
       groupId: optionalPositiveNumber(body.groupId),
@@ -177,7 +178,7 @@ router.post("/cross-exam/total", async (req, res, next) => {
       subject: typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : undefined,
       attendanceMode: body.attendanceMode === "full" ? "full" : "all"
     }, {
-      visibleExamIds: getVisibleExamIds(req.user)
+      visibleExamIds: await getVisibleExamIds(req.user)
     });
     res.json(data);
   } catch (error) {
@@ -236,10 +237,16 @@ router.get("/exams/:examId/score-table", requireExamAccess, async (req, res, nex
   }
 });
 
-// v1.4.0: previous exam comparison (TODO)
-router.get("/exams/:examId/previous", requireExamAccess, async (_req, res, next) => {
+// v1.7.0: previous exam comparison
+router.get("/exams/:examId/previous", requireExamAccess, async (req, res, next) => {
   try {
-    res.json({ message: "TODO: implement previous exam comparison" });
+    const analysisRepo = new AnalysisRepository();
+    const classId = req.query.classId ? Number(req.query.classId) : undefined;
+    const comparison = await analysisRepo.getPreviousExamComparison(
+      Number(req.params.examId),
+      classId
+    );
+    res.json(comparison);
   } catch (error) {
     next(error);
   }
@@ -429,6 +436,38 @@ router.get("/exams/:examId/export-csv", requireExamAccess, async (req, res, next
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
     res.send(buf);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ============================================================
+// 知识点分析端点 (v1.8.0)
+// ============================================================
+
+// GET /api/analysis/knowledge-points/:examId — 按知识点聚合全班得分率
+router.get("/knowledge-points/:examId", requireExamAccess, async (req, res, next) => {
+  try {
+    const examId = parseInt(String(req.params.examId), 10);
+    const classId = req.query.classId ? parseInt(String(req.query.classId), 10) : undefined;
+
+    const repo = new KnowledgePointRepository();
+    const weaknesses = await repo.getWeaknessesForExam(examId, classId);
+    res.json({ weaknesses });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// GET /api/analysis/knowledge-points/:examId/students/:studentId — 单个学生知识点弱项
+router.get("/knowledge-points/:examId/students/:studentId", requireExamAccess, async (req, res, next) => {
+  try {
+    const examId = parseInt(String(req.params.examId), 10);
+    const studentId = parseInt(String(req.params.studentId), 10);
+
+    const repo = new KnowledgePointRepository();
+    const weaknesses = await repo.getWeaknessesForStudent(examId, studentId);
+    res.json({ weaknesses });
   } catch (error) {
     next(error);
   }

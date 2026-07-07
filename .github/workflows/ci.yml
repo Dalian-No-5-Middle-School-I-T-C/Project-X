@@ -25,6 +25,9 @@ jobs:
       - name: Install dependencies
         run: npm install --ignore-scripts
 
+      - name: Install Linux platform binaries (npm bug #4828)
+        run: npm install --no-save --ignore-scripts @rollup/rollup-linux-x64-gnu @esbuild/linux-x64
+
       - name: Rebuild native module (better-sqlite3)
         run: npm rebuild better-sqlite3
 
@@ -33,6 +36,15 @@ jobs:
 
       - name: Auth / RBAC test suite
         run: npm run verify:auth
+
+      - name: Bugfix regression tests
+        run: npx tsx scripts/bugfix-verification.ts
+
+      - name: Ranking integration check
+        run: npx tsx scripts/ranking-integration-check.ts
+
+      - name: Offline demo static data check
+        run: npm run build:demo-static && npm run verify:demo-static
 
   build:
     name: Build
@@ -48,6 +60,9 @@ jobs:
 
       - name: Install dependencies
         run: npm install --ignore-scripts
+
+      - name: Install Linux platform binaries (npm bug #4828)
+        run: npm install --no-save --ignore-scripts @rollup/rollup-linux-x64-gnu @esbuild/linux-x64
 
       - name: Rebuild native module
         run: npm rebuild better-sqlite3

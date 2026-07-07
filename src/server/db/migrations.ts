@@ -524,6 +524,36 @@ const MIGRATIONS: Migration[] = [
         addColumnIfMissing(db, "exam_groups", "only_full_participants", "INTEGER DEFAULT 0");
       }
     }
+  },
+  {
+    version: 16,
+    name: "teacher-permissions",
+    up(db) {
+      if (!hasTable(db, "teacher_permissions")) {
+        db.exec(`
+          CREATE TABLE teacher_permissions (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            grade_id           INTEGER REFERENCES grades(id),
+            can_view_scores    INTEGER DEFAULT 1,
+            can_view_charts    INTEGER DEFAULT 1,
+            can_view_students  INTEGER DEFAULT 1,
+            created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(teacher_id, grade_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_tp_teacher ON teacher_permissions(teacher_id);
+        `);
+      }
+    }
+  },
+  {
+    version: 17,
+    name: "system-ai-provider",
+    up(db) {
+      // ai_providers 新增 is_system 标记（v1.8.0 系统级 AI 配置）
+      addColumnIfMissing(db, "ai_providers", "is_system", "INTEGER DEFAULT 0");
+    }
   }
 ];
 

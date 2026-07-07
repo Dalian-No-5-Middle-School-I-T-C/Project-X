@@ -141,7 +141,13 @@ export const TEST_SCENARIOS = [
     id: "tie-rank-math",
     feature: "并列排名",
     steps: "单科 → 演示-数学 → 成绩",
-    expect: "4 人 128 分并列，年排均为 6"
+    expect: "4 人 128 分并列，年排均为 6（competitionRank）"
+  },
+  {
+    id: "percentile-formula-a",
+    feature: "百分位公式 A",
+    steps: "单科 → 演示-数学 → 百分位列",
+    expect: "与主站 rankingUpdate 一致：(total - rank) / (total - 1) × 100，末名 0"
   },
   {
     id: "absent-chem-bio",

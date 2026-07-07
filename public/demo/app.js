@@ -140,6 +140,13 @@ function getScore(exam, studentNo) {
   return v === undefined ? null : v;
 }
 
+/** 与 src/server/services/rankingUpdate.ts 公式 A 一致 */
+function rankPercentile(rank, total) {
+  if (total <= 1) return 100;
+  const raw = ((total - rank) / (total - 1)) * 100;
+  return Math.max(0, Math.round(raw * 10) / 10);
+}
+
 function computeRanks(exam, className) {
   let students = DATA.students;
   if (className) students = students.filter((s) => s.className === className);
@@ -158,11 +165,16 @@ function computeRanks(exam, className) {
     for (let k = i; k < j; k++) rankMap.set(present[k].studentNo, { rank, tieSize: j - i });
     i = j;
   }
-  return rows.map((r) => ({
-    ...r,
-    rank: r.absent ? null : rankMap.get(r.studentNo)?.rank ?? null,
-    tieSize: r.absent ? 0 : rankMap.get(r.studentNo)?.tieSize ?? 1
-  }));
+  const presentCount = present.length;
+  return rows.map((r) => {
+    const rank = r.absent ? null : rankMap.get(r.studentNo)?.rank ?? null;
+    return {
+      ...r,
+      rank,
+      tieSize: r.absent ? 0 : rankMap.get(r.studentNo)?.tieSize ?? 1,
+      percentile: rank === null ? null : rankPercentile(rank, presentCount)
+    };
+  });
 }
 
 function rankBadge(rank, tieSize) {
@@ -235,34 +247,42 @@ function renderSingle() {
   const options = DATA.exams
     .map((e) => `<option value="${e.cardId}" ${e.cardId === defaultExam.cardId ? "selected" : ""}>${e.name}</option>`)
     .join("");
+  const classOptions = [
+    `<option value="">全部班级</option>`,
+    ...DATA.classes.map((c) => `<option value="${c}">${c}</option>`)
+  ].join("");
   document.getElementById("mainContent").innerHTML = `<div class="fade-in space-y-4">
     <div class="flex flex-wrap gap-3 items-center">
       <label class="text-sm font-medium">选择考试</label>
       <select id="examSelect" class="px-3 py-2 rounded-lg border border-slate-300">${options}</select>
+      <label class="text-sm font-medium">班级</label>
+      <select id="classSelect" class="px-3 py-2 rounded-lg border border-slate-300">${classOptions}</select>
     </div>
     <div id="singleTable"></div>
   </div>`;
   const sel = document.getElementById("examSelect");
-  const render = () => renderSingleTable(sel.value);
+  const classSel = document.getElementById("classSelect");
+  const render = () => renderSingleTable(sel.value, classSel.value || null);
   sel.addEventListener("change", render);
+  classSel.addEventListener("change", render);
   render();
 }
 
-function renderSingleTable(cardId) {
+function renderSingleTable(cardId, className) {
   const exam = getExam(cardId);
-  const rows = computeRanks(exam);
-  const avg =
-    rows.filter((r) => !r.absent).reduce((a, r) => a + r.score, 0) /
-    Math.max(1, rows.filter((r) => !r.absent).length);
+  const rows = computeRanks(exam, className);
+  const present = rows.filter((r) => !r.absent);
+  const avg = present.reduce((a, r) => a + r.score, 0) / Math.max(1, present.length);
+  const scope = className ? `${className} · ` : "年级 · ";
   const tieNote =
-    exam.name === "演示-数学"
-      ? '<p class="text-sm text-amber-700 bg-amber-50 rounded-lg p-3 mb-3">测试点：李华、王芳、吴敏、郑涛 四人 128 分并列，年排均为 <strong>第 6 名</strong>（橙框为并列）。</p>'
+    exam.name === "演示-数学" && !className
+      ? '<p class="text-sm text-amber-700 bg-amber-50 rounded-lg p-3 mb-3">测试点：李华、王芳、吴敏、郑涛 四人 128 分并列，年排均为 <strong>第 6 名</strong>（橙框为并列）；百分位按公式 A 与主站一致。</p>'
       : "";
   document.getElementById("singleTable").innerHTML = `${tieNote}
-    <p class="text-sm text-slate-500 mb-3">平均分 ${avg.toFixed(1)} · 参考 ${rows.filter((r) => !r.absent).length} 人 · 缺考 ${rows.filter((r) => r.absent).length} 人</p>
+    <p class="text-sm text-slate-500 mb-3">${scope}平均分 ${avg.toFixed(1)} · 参考 ${present.length} 人 · 缺考 ${rows.filter((r) => r.absent).length} 人</p>
     <div class="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
       <table class="data-table">
-        <thead><tr><th>年排</th><th>姓名</th><th>学号</th><th>班级</th><th>分数</th></tr></thead>
+        <thead><tr><th>年排</th><th>百分位</th><th>姓名</th><th>学号</th><th>班级</th><th>分数</th></tr></thead>
         <tbody>
           ${rows
             .sort((a, b) => {
@@ -273,6 +293,7 @@ function renderSingleTable(cardId) {
               (r) =>
                 `<tr>
                   <td>${rankBadge(r.rank, r.tieSize)}</td>
+                  <td>${r.percentile === null ? "—" : `${r.percentile}%`}</td>
                   <td>${r.name}</td><td>${r.studentNo}</td><td>${r.className}</td>
                   <td>${r.absent ? '<span class="text-red-500">缺考</span>' : r.score}</td>
                 </tr>`
@@ -494,17 +515,17 @@ function renderRankChange() {
     }
   }
   document.getElementById("mainContent").innerHTML = `<div class="fade-in space-y-6">
-    <p class="text-sm text-slate-600">对比 <strong>演示-数学月考</strong> 与 <strong>演示-数学</strong> 的年级排名变化。</p>
+    <p class="text-sm text-slate-600">对比 <strong>演示-数学月考</strong> 与 <strong>演示-数学</strong> 的年级排名变化（百分位公式 A）。</p>
     <div class="grid md:grid-cols-3 gap-4">
       <div class="bg-white rounded-xl p-5 border border-slate-100 text-center">
         <div class="text-sm text-slate-500">月考排名</div>
         <div class="text-3xl font-bold mt-2">${priorRank?.rank ?? "—"}</div>
-        <div class="text-sm text-slate-400 mt-1">${priorScore} 分</div>
+        <div class="text-sm text-slate-400 mt-1">${priorScore} 分 · 百分位 ${priorRank?.percentile ?? "—"}${priorRank?.percentile != null ? "%" : ""}</div>
       </div>
       <div class="bg-white rounded-xl p-5 border border-slate-100 text-center">
         <div class="text-sm text-slate-500">本次排名</div>
         <div class="text-3xl font-bold mt-2">${currRank?.rank ?? "—"}</div>
-        <div class="text-sm text-slate-400 mt-1">${currScore} 分</div>
+        <div class="text-sm text-slate-400 mt-1">${currScore} 分 · 百分位 ${currRank?.percentile ?? "—"}${currRank?.percentile != null ? "%" : ""}</div>
       </div>
       <div class="bg-white rounded-xl p-5 border border-slate-100 text-center">
         <div class="text-sm text-slate-500">名次变化</div>

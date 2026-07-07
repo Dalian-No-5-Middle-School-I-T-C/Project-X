@@ -1,7 +1,7 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.6.3-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.8.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.6.3
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 考试管理 → 大考组 → 成绩分析 → 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → **Web/Scanner 构建分离（教师学生 WEB 端独立部署 + 扫描端 Electron 桌面端）**
-> **下个里程碑**：v1.7.0 — 知识点诊断 + 成绩预测 + 跨班深度对比
+> **当前版本**：v1.8.0
+> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 网上阅卷队列 → 考试管理 → 大考组 → 成绩分析（含上次考试对比、学生学期成绩对比）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → AI 知识点分析 → 知识点弱项诊断 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → Web/Scanner 构建分离 → iOS 15 Safari Web 兼容 → 原卷上传
+> **下个里程碑**：v1.9.0 — 成绩预测 + 跨班深度对比
 
 ---
 
@@ -102,6 +102,12 @@
 - **导出系统**：胶囊拖拽排序列，4 个自定义模板槽，A4 竖版超页警告，侧表（年级前 N 名），Excel (.xlsx)
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
 - **AI 成绩分析**：多服务商架构（GPT/DeepSeek/Gemini，Gemini 走 Google 原生 SDK），白名单成绩工具生成结构化报告
+- **原卷上传**（v1.8.0）：答题卡创建后自动引导上传原卷（DOCX/PDF/图片），前端 Canvas 压缩 + 后端 sharp 压缩，最大 50MB
+- **AI 知识点分析**（v1.8.0）：AI 自动分析每道题的知识点，支持多模态直传（Gemini/GPT 看图）和 OCR 增强（视觉模型转写 → 推理模型分析），结果以彩色标签呈现，教师可双击编辑
+- **知识点弱项诊断**（v1.8.0）：成绩分析 AI 可通过知识点维度诊断班级薄弱环节，按得分率排序，"勾股定理得分率 62%" 级别精准定位
+- **系统 AI 配置**（v1.8.0）：AI 提供商改为管理员统一配置（`ai_providers.is_system=1`），教师无需了解 API，账号设置仅 admin 可见
+- **导出检查**（v1.8.0）：PDF 导出前三步检查卡片——分值验证 → 原卷预览（按文件类型内联渲染：图片/img+缩放、PDF/iframe、DOCX/Office链接）→ 知识点分析（内联 AI 分析+编辑），三步含「← 上一步」回退，全部 ✓ 方可导出，侧栏橙色标识未上传原卷的考试
+- **原卷预览**（v1.8.0）：放大 Modal 支持 ± 缩放（25%~300%），按钮实时显示当前倍率，`?format=image` 参数避免图片/PDF格式冲突
 
 ### 账户与安全
 
@@ -116,7 +122,7 @@
 
 ### 学生功能
 
-- **我的成绩**：查看各科考试成绩、排名趋势图、学科雷达图
+- **我的成绩**：查看各科考试成绩、排名趋势图、学科雷达图、**本学期 vs 上学期对比**
 - **成绩天梯**：年级前十名榜单（单场考试 / 大考组 / 跨考累计三种维度），管理员可开关
 - **AI 成绩分析**：学生个人成绩 AI 分析报告
 
@@ -315,7 +321,10 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | [多端使用说明.md](./readus/多端使用说明.md) | Web 端 / 扫描端的功能差异、共用数据目录、账号登录与构建部署 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.6.3 暗色主题完善与登录页隔离） | 全体 |
+<<<<<<< HEAD
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.8.0 原卷上传与 AI 知识点分析 + v1.7.2 统计图表与教师权限） | 全体 |
+=======
+>>>>>>> ac0a782 (fix bugs)
 
 ---
 
@@ -361,16 +370,26 @@ Project-X/
 │   │   │       ├── ExportModal.tsx          # 导出弹窗（胶囊拖拽/模板/A4适配）
 │   │   │       ├── AssignedFormulaModal.tsx # 赋分公式配置
 │   │   │       └── AnalysisQuestions.tsx   # 题目得分率排行
+│   │   │       ├── DragDropZone.tsx          # 通用拖拽上传组件（v1.8.0）
+│   │   │       ├── KnowledgeTagList.tsx      # 可编辑知识点彩色标签（v1.8.0）
+│   │   │       ├── PaperUploadPanel.tsx      # 原卷上传与AI分析面板（v1.8.0）
 │   │   └── server/                      # Express 后端
 │   │       ├── index.ts                 # 主路由（卡片CRUD/导入导出/识别/阅卷/考试/分析/成绩修改）
 │   │       ├── services/AnswerBlockCropService.ts # 大题切块文件归档与数据库索引
 │   │       ├── recognition.ts           # C++ 识别引擎子进程管理
 │   │       ├── storage.ts               # 文件存储层
 │   │       ├── pdf.ts                   # PDF 生成（pdfkit）
+│   │       ├── paper-converter.ts         # 文件校验、图片压缩、格式转换（v1.8.0）
+│   │       ├── paper-ocr.ts               # 文本提取（mammoth/pdf-parse）+ OCR（Tesseract.js）（v1.8.0）
+│   │       ├── routes/
+│   │       │   ├── analysis.ts            # 成绩分析路由（含知识点弱项端点）
+│   │       │   └── paper-routes.ts        # 原卷上传与知识点CRUD路由（v1.8.0）
 │   │       ├── database/                # 扫描记录 SQLite
 │   │       └── scanner/                 # TWAIN 扫描仪子系统
 │   ├── server/                          # 共享服务模块
 │   │   ├── db/                          # 主数据库（projectx.db / MariaDB）
+│   │   ├── repositories/
+│   │   │   └── KnowledgePointRepository.ts # 知识点 CRUD + 成绩联动查询（v1.8.0）
 │   │   ├── mysql.ts                 # DbAdapter 统一接口 + SQLite / MariadbAdapter（v1.5.5）
 │   │   ├── repositories/                # 数据访问层
 │   │   │   ├── CardRepository.ts         # 答题卡 CRUD
@@ -469,7 +488,9 @@ Project-X/
 | `GET` | `/api/scanner/exam/:examId/student/:studentId/scans` | 按考试+学生查答题卡页 |
 | `GET` | `/api/scanner/grading-image/:cardId/:fileName` | 上传阅卷图片 |
 | `GET` | `/api/answer-block-crops/:cropId/image` | 读取大题作答切块图片 |
-| `GET` | `/api/review/exams/:examId/block-crops` | 预留网上阅卷题块队列读取接口 |
+| `GET` | `/api/review/exams/:id/blocks` | 网上阅卷题块汇总（待阅/已阅数量） |
+| `GET` | `/api/review/exams/:id/block-crops` | 网上阅卷队列（大题切块 + 学生信息） |
+| `POST` | `/api/review/exams/:id/block-crops/:cropId/submit` | 提交题块阅卷分数并标记状态 |
 | `POST` | `/api/auth/login` | 登录（支持 isPersistent 6 月免登录） |
 | `GET` | `/api/auth/me` | 当前用户信息 |
 | `GET` | `/api/teachers` | 教师列表（按创建时间排序） |
@@ -494,7 +515,8 @@ Project-X/
 | `GET/POST` | `/api/analysis/cross-exam/groups` | 跨考组列表 / 创建 |
 | `DELETE` | `/api/analysis/cross-exam/groups/:id` | 删除跨考组 |
 | `GET` | `/api/analysis/exams/:id/score-table` | 成绩表格数据（年排/班排/名次变化/偏差值/Z值/百分位） |
-| `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比 |
+| `GET` | `/api/analysis/exams/:id/previous` | 上次同科考试对比（均分/及格率变化） |
+| `GET` | `/api/scores/me/semester-comparison` | 学生本学期 vs 上学期成绩对比 |
 | `GET/PUT/DELETE` | `/api/export/templates/:slot` | 导出模板 CRUD |
 | `POST` | `/api/export/exams/:id/scores` | 按列配置导出 Excel |
 | `GET` | `/api/export/columns` | 导出列元数据 |

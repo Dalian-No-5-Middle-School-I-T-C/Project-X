@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowLeft, BarChart3, ClipboardList, Download, FileText } from "lucide-react";
+import { AlertTriangle, ArrowLeft, BarChart3, ClipboardCheck, ClipboardList, Download, FileText } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson } from "../auth/api";
-import type { ExamOverview, QuestionAnalysisItem, StudentRankingItem, ScoreDisplayMode, ScoreTableRow } from "../../../../shared/types";
+import type { ExamOverview, PreviousExamComparison, QuestionAnalysisItem, StudentRankingItem, ScoreDisplayMode, ScoreTableRow } from "../../../../shared/types";
 import { AnalysisOverview } from "./AnalysisOverview";
 import { AnalysisDistribution } from "./AnalysisDistribution";
 import { AnalysisAiPanel } from "./AnalysisAiPanel";
 import { AnalysisQuestions } from "./AnalysisQuestions";
-import { AnalysisTrend } from "./AnalysisTrend";
 import { ScoreTable } from "./ScoreTable";
 import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
+import { OnlineReviewPanel } from "./OnlineReviewPanel";
+import { AnalysisTrend } from "./AnalysisTrend";
 
 interface ClassOption {
   id: number;
@@ -26,7 +27,7 @@ interface Props {
   onBack: () => void;
 }
 
-type SubTab = "overview" | "scores" | "exam-analysis" | "ai";
+type SubTab = "overview" | "scores" | "exam-analysis" | "review" | "ai";
 
 export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const { user, isAdmin } = useAuth();
@@ -45,6 +46,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const [loading, setLoading] = useState(true);
   const [progressTop5, setProgressTop5] = useState<Array<{ studentName: string; studentNumber?: string; rankChange: number }>>([]);
   const [declineTop5, setDeclineTop5] = useState<Array<{ studentName: string; studentNumber?: string; rankChange: number }>>([]);
+  const [previousComparison, setPreviousComparison] = useState<PreviousExamComparison | null>(null);
   const [comparisonClassId, setComparisonClassId] = useState("");
 
   useEffect(() => {
@@ -68,6 +70,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
     loadQuestions();
     loadRanking();
     loadProgressRankings();
+    loadPreviousComparison();
   }, [examId, classId]);
 
   // Refresh score table when display mode changes
@@ -134,6 +137,19 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
     }
   }
 
+  async function loadPreviousComparison() {
+    try {
+      const params = new URLSearchParams();
+      if (classId) params.set("classId", classId);
+      const data = await fetchJson<PreviousExamComparison>(
+        `/api/analysis/exams/${examId}/previous?${params.toString()}`
+      );
+      setPreviousComparison(data);
+    } catch {
+      setPreviousComparison(null);
+    }
+  }
+
   async function loadQuestions() {
     try {
       const params = new URLSearchParams();
@@ -147,12 +163,18 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
     }
   }
 
-  const subTabConfigs = useMemo(() => [
-    { key: "overview" as SubTab, label: "概况", icon: FileText },
-    { key: "scores" as SubTab, label: "成绩", icon: FileText },
-    { key: "exam-analysis" as SubTab, label: "考试分析", icon: BarChart3 },
-    { key: "ai" as SubTab, label: "AI分析", icon: ClipboardList },
-  ], []);
+  const subTabConfigs = useMemo(() => {
+    const tabs = [
+      { key: "overview" as SubTab, label: "概况", icon: FileText },
+      { key: "scores" as SubTab, label: "成绩", icon: FileText },
+      { key: "exam-analysis" as SubTab, label: "考试分析", icon: BarChart3 },
+    ];
+    if (isTeacher) {
+      tabs.push({ key: "review" as SubTab, label: "网上阅卷", icon: ClipboardCheck });
+    }
+    tabs.push({ key: "ai" as SubTab, label: "AI分析", icon: ClipboardList });
+    return tabs;
+  }, [isTeacher]);
 
   // Top/bottom 5 from ranking
   const top5 = useMemo(() => ranking.slice(0, 5), [ranking]);
@@ -314,10 +336,23 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
         {subTab === "overview" && (
           <div style={{ padding: 24 }}>
             {overview ? (
-              <AnalysisOverview overview={overview} ranking={ranking} progressTop5={progressTop5} declineTop5={declineTop5} />
+              <AnalysisOverview
+                overview={overview}
+                ranking={ranking}
+                selectedClassId={classId}
+                onClassSelect={setClassId}
+                previousComparison={previousComparison ?? undefined}
+                progressTop5={progressTop5}
+                declineTop5={declineTop5}
+              />
             ) : (
               <div style={{ textAlign: "center", padding: 40, color: "var(--muted)" }}>
                 {loading ? "正在加载..." : "暂无数据"}
+              </div>
+            )}
+            {overview && subject && (
+              <div style={{ marginTop: 24 }}>
+                <AnalysisTrend exams={[{ subject }]} initialSubject={subject} initialClassId={classId || undefined} />
               </div>
             )}
           </div>
@@ -340,6 +375,8 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                 summary={overview.scoreSummary}
                 overallSummary={overview.overallScoreSummary}
                 classSummaries={overview.classSummaries}
+                selectedClassId={classId}
+                onClassSelect={setClassId}
               />
             )}
 
@@ -473,6 +510,13 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             <div className="analysis-section" style={{ padding: 24, textAlign: "center", color: "var(--muted)", background: "var(--bg-soft)", borderRadius: 10, border: "1px dashed var(--line-strong)", fontSize: 13 }}>
               知识点分析模块预留 — 未来将展示每道题对应的知识点、得分率与薄弱环节
             </div>
+          </div>
+        )}
+
+        {/* 网上阅卷 Tab */}
+        {subTab === "review" && isTeacher && (
+          <div style={{ padding: 24, height: "100%" }}>
+            <OnlineReviewPanel examId={examId} examName={examName} classId={classId || undefined} />
           </div>
         )}
 
