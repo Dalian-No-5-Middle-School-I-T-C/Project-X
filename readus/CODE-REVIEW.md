@@ -61,14 +61,14 @@
 | `npm run typecheck` | ✅ 通过 |
 | `npm run verify:auth` | ✅ 54 通过 / 0 失败 |
 | `npx tsx scripts/grading-rules-smoke.ts` | ✅ 通过（9 用例） |
-| `npx tsx scripts/bugfix-verification.ts` | ✅ 14 断言通过 |
+| `npx tsx scripts/bugfix-verification.ts` | ✅ 16 断言通过 |
 | `npx tsx scripts/ranking-integration-check.ts` | ✅ 5 断言通过（真实 SQLite） |
 | `npm run build` | ✅ dist/web + dist/server 构建成功 |
 | GUI 冒烟（http://127.0.0.1:5173/） | ✅ admin 登录、设计/考试/阅卷/分析四页正常渲染 |
 
-### 第二轮修复（2026-07-06 续）
+### 第三轮修复（2026-07-07）
 
-对照 PR161 分支与 debug 审查，补充修复 H-S4、H-S1、H-S11、M-L4 显示层、backup 默认端口、ScannerPanel `sessionIdRef`、score-editing 答案持久化等项。全部回归测试仍通过。
+补充 H-S2、H-S3、H-S10、H-S13、H-S1 GET、H-F3 等权限/安全/远程 API 配置项。全部回归测试仍通过。
 
 ---
 
