@@ -6,6 +6,13 @@ import { fetchJson, authFetch } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
 import type { AiProviderConfig } from "../../../../shared/types";
 
+/** 判断是否为服务端脱敏后的 API Key（编辑时不应回传写库） */
+function isMaskedApiKey(key: string): boolean {
+  if (!key) return false;
+  if (key === "••••") return true;
+  return key.startsWith("••••••••") && key.length === 12;
+}
+
 export function AccountMenu({
   onOpenSponsor,
   onOpenGuide,
@@ -172,7 +179,8 @@ export function AccountMenu({
 
   async function saveProvider() {
     const { editing, id, name, providerType, baseUrl, apiKey, models } = providerEditor;
-    if (!name || !providerType || !apiKey) {
+    const masked = isMaskedApiKey(apiKey);
+    if (!name || !providerType || (!editing && !apiKey)) {
       setSettingsMsg("请填写完整信息");
       return;
     }
@@ -181,10 +189,14 @@ export function AccountMenu({
       return;
     }
     try {
-      const body: any = {
-        name, providerType, baseUrl, apiKey,
+      const body: Record<string, unknown> = {
+        name, providerType, baseUrl,
         models: models.trim() ? models.split(",").map((m) => m.trim()).filter(Boolean) : null
       };
+      // 编辑时若 Key 未改动（仍为脱敏占位符），不传 apiKey 以免覆盖真实值
+      if (!editing || !masked) {
+        body.apiKey = apiKey;
+      }
       if (editing && id) {
         await fetchJson(`/api/ai/providers/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       } else {

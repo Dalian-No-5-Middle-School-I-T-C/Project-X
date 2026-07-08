@@ -9,7 +9,7 @@ import {
 } from "../src/shared/grading";
 import { competitionRank } from "../src/shared/ranking";
 import { rankPercentile, roundScore } from "../src/server/services/rankingUpdate";
-import { maskApiKey } from "../src/server/utils/maskApiKey";
+import { maskApiKey, isMaskedApiKey } from "../src/server/utils/maskApiKey";
 import type {
   AnswerCard,
   CombinedRecognitionResult,
@@ -167,6 +167,8 @@ const testCard = card([q1]);
 {
   check("H-S3 maskApiKey 保留末 4 位", maskApiKey("sk-abcdef1234567890") === "••••••••7890");
   check("H-S3 maskApiKey 空值", maskApiKey("") === "");
+  check("H-S3 isMaskedApiKey 识别脱敏值", isMaskedApiKey("••••••••7890") === true);
+  check("H-S3 isMaskedApiKey 真实 Key 非脱敏", isMaskedApiKey("sk-abcdef1234567890") === false);
 }
 
 console.log(`bugfix-verification ok (${passed} checks passed)`);

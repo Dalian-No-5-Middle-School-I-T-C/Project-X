@@ -9,7 +9,7 @@ import { PERMISSIONS } from "../auth/permissions";
 
 const gradeWrite = requirePermission(PERMISSIONS.GRADE_WRITE);
 
-/** API Key 优先；无 Key 时走 JWT（须已登录） */
+/** API Key 优先；无 Key 时走 JWT + GRADE_WRITE（须已登录且有写权限） */
 export async function dualAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
   const apiKey = req.headers["x-api-key"] as string | undefined;
   if (apiKey) {
@@ -17,7 +17,14 @@ export async function dualAuth(req: Request, res: Response, next: NextFunction):
     await keyMw(req, res, next);
     return;
   }
-  await authMiddleware(req, res, next);
+  await authMiddleware(req, res, (err?: unknown) => {
+    if (err) {
+      next(err as Error);
+      return;
+    }
+    if (res.headersSent) return;
+    gradeWrite(req, res, next);
+  });
 }
 
 /**
