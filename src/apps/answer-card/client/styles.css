@@ -96,8 +96,8 @@ body {
   /* ── Neutral Scale (GitHub-dark-inspired) ─────────────── */
   --text: #E6EDF3;
   --text-primary: #E6EDF3;
-  --text-secondary: #9CA3AF;
-  --muted: #7D8590;
+  --text-secondary: #8B949E;
+  --muted: #6E7681;
   --line: rgba(255, 255, 255, 0.08);
   --line-strong: rgba(255, 255, 255, 0.12);
   --line-light: rgba(255, 255, 255, 0.04);
@@ -135,11 +135,17 @@ body {
 }
 
 [data-theme="dark"] .mode-toggle button {
+  background: var(--surface-raised);
   color: var(--text-secondary);
 }
 [data-theme="dark"] .mode-toggle button:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--surface);
   color: var(--text);
+}
+[data-theme="dark"] .mode-toggle button.active {
+  background: linear-gradient(180deg, var(--brand-light) 0%, var(--brand) 100%);
+  color: #fff;
+  box-shadow: var(--shadow-brand);
 }
 
 [data-theme="dark"] .topbar-actions .ghost-button {
@@ -4669,6 +4675,44 @@ body.has-bg-image::after {
   background: var(--surface-raised);
 }
 
+/* 答题卡列表项 */
+[data-theme="dark"] .card-list-item {
+  background: var(--surface-raised);
+  border-color: var(--line);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="dark"] .card-list-item:hover {
+  background: var(--surface);
+  border-color: rgba(192, 57, 43, 0.25);
+}
+[data-theme="dark"] .card-list-item.active {
+  background: linear-gradient(180deg, rgba(192, 57, 43, 0.12) 0%, rgba(192, 57, 43, 0.05) 100%);
+  border-color: rgba(192, 57, 43, 0.35);
+  box-shadow: var(--shadow-brand);
+}
+[data-theme="dark"] .card-list-actions button {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--text-secondary);
+}
+[data-theme="dark"] .card-list-actions button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(192, 57, 43, 0.25);
+  color: var(--brand);
+}
+
+/* 状态栏 */
+[data-theme="dark"] .statusbar {
+  background: var(--surface-raised);
+  border-color: var(--line);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="dark"] .statusbar:hover {
+  background: var(--surface);
+}
+
 /* 账号菜单下拉 */
 [data-theme="dark"] .account-menu-dropdown {
   background: var(--surface-raised);
@@ -4740,27 +4784,132 @@ body.has-bg-image::after {
   color: var(--text);
 }
 
-/* SVG 答题卡预览页 — 暗色模式下保持白纸印刷效果 */
-[data-theme="dark"] .preview-panel {
-  background: linear-gradient(180deg, #080c12 0%, #0d1117 45%, #010409 100%);
+/* AI 分析面板 */
+[data-theme="dark"] .ai-analysis-panel {
+  background: var(--surface);
+  border-color: var(--line);
 }
-[data-theme="dark"] .pages {
-  background: transparent;
+[data-theme="dark"] .icon-button {
+  background: var(--surface-raised);
+  border-color: var(--line-strong);
+  color: var(--text-secondary);
 }
+[data-theme="dark"] .icon-button:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: rgba(192, 57, 43, 0.25);
+  color: var(--brand);
+}
+[data-theme="dark"] .ai-status-warning {
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(251, 191, 36, 0.25);
+  color: #FCD34D;
+}
+[data-theme="dark"] .ai-report-summary {
+  background: var(--surface-tint);
+  border-color: rgba(192, 57, 43, 0.15);
+}
+[data-theme="dark"] .ai-report-summary span {
+  color: var(--muted);
+}
+[data-theme="dark"] .ai-question-action em {
+  color: var(--muted);
+}
+[data-theme="dark"] .ai-caveats span,
+[data-theme="dark"] .ai-tool-trace span {
+  background: var(--surface-raised);
+  border-color: var(--line);
+  color: var(--text-secondary);
+}
+
+/* 成绩分析页内联 AI 结果 */
+[data-theme="dark"] .ai-exam-inline-result {
+  background: rgba(192, 57, 43, 0.08);
+  border-color: rgba(192, 57, 43, 0.22);
+  color: var(--text);
+}
+
+/* 文件队列 */
+[data-theme="dark"] .file-queue {
+  background: var(--surface-raised);
+  border-color: var(--line);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="dark"] .file-queue:hover {
+  border-color: rgba(192, 57, 43, 0.15);
+}
+[data-theme="dark"] .file-queue strong {
+  color: var(--brand);
+}
+[data-theme="dark"] .file-queue .ghost-button {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--text-secondary);
+}
+[data-theme="dark"] .file-queue .ghost-button:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(192, 57, 43, 0.25);
+  color: var(--brand);
+}
+[data-theme="dark"] .queued-files span {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--text-secondary);
+}
+[data-theme="dark"] .queued-files span:hover {
+  border-color: rgba(192, 57, 43, 0.25);
+}
+
+/* 成绩表 / 阅卷结果 */
+[data-theme="dark"] .score-table {
+  background: var(--surface-raised);
+  border-color: var(--line);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="dark"] .score-table-head {
+  background: var(--surface);
+  color: var(--text-secondary);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="dark"] .score-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+[data-theme="dark"] .question-grade-list {
+  background: var(--surface);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="dark"] .question-grade {
+  background: var(--surface-raised);
+  border-color: var(--line-strong);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="dark"] .question-grade:hover {
+  border-color: rgba(192, 57, 43, 0.2);
+}
+[data-theme="dark"] .question-grade.needs-review {
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(251, 191, 36, 0.25);
+}
+[data-theme="dark"] .status-ok {
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.25);
+  color: #6EE7B7;
+}
+[data-theme="dark"] .status-warn {
+  background: rgba(251, 191, 36, 0.12);
+  border-color: rgba(251, 191, 36, 0.25);
+  color: #FCD34D;
+}
+
+/* SVG 答题卡预览页 */
 [data-theme="dark"] .page {
-  background: #ffffff;
-  color: #111111;
-  color-scheme: only light;
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.14),
-    0 2px 6px rgba(0, 0, 0, 0.28),
-    0 24px 64px rgba(0, 0, 0, 0.58);
-}
-[data-theme="dark"] .page:hover {
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.18),
-    0 4px 10px rgba(0, 0, 0, 0.32),
-    0 28px 72px rgba(0, 0, 0, 0.62);
+  background: var(--surface);
+  color: #333;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 /* 侧栏 */
@@ -4796,12 +4945,41 @@ body.has-bg-image::after {
 [data-theme="dark"] .exam-list-badge-grading { background: rgba(251, 191, 36, 0.16); color: #FCD34D; }
 [data-theme="dark"] .exam-list-badge-draft { background: rgba(255, 255, 255, 0.06); color: #9CA3AF; }
 
-/* Ghost button */
+/* Ghost button — 暗色下覆写亮色透明背景，避免灰底灰字 */
 [data-theme="dark"] .ghost-button {
+  background: var(--surface-raised);
   color: var(--text-secondary);
+  border-color: var(--line-strong);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 [data-theme="dark"] .ghost-button:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+  border-color: rgba(192, 57, 43, 0.25);
+}
+
+/* 上传按钮 — 暗色下与背景区分 */
+[data-theme="dark"] .upload-button {
+  background: var(--surface-raised);
+  border-color: rgba(192, 57, 43, 0.35);
+  color: var(--brand);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="dark"] .upload-button:hover {
+  background: rgba(192, 57, 43, 0.08);
+  border-color: var(--brand);
+}
+
+/* 分值检查汇总卡片 — 暗色下去掉亮色黄底 */
+[data-theme="dark"] .score-warning-summary {
+  background: rgba(251, 191, 36, 0.08);
+  border-color: rgba(251, 191, 36, 0.25);
+  color: var(--text);
+}
+[data-theme="dark"] .score-warning-summary strong,
+[data-theme="dark"] .score-warning-summary span {
   color: var(--text);
 }
 
@@ -4820,11 +4998,6 @@ body.has-bg-image::after {
   filter: brightness(0.45) saturate(0.65);
 }
 
-/* mode-toggle 按钮激活态 */
-[data-theme="dark"] .mode-toggle button.active {
-  box-shadow: var(--shadow-brand);
-}
-
 /* 暗色模式下按钮 — 移除高光，hover 不加亮 */
 [data-theme="dark"] .primary-button::after,
 [data-theme="dark"] .mode-toggle button.active::after {
@@ -4834,8 +5007,36 @@ body.has-bg-image::after {
   filter: none;
   box-shadow: var(--shadow-brand-lg);
 }
+/* 答案键行按钮 */
+[data-theme="dark"] .answer-key-row button {
+  background: var(--surface-raised);
+  border-color: var(--line-strong);
+  color: var(--text-secondary);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="dark"] .answer-key-row button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(192, 57, 43, 0.25);
+  color: var(--brand);
+}
+[data-theme="dark"] .answer-key-row button.active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
 [data-theme="dark"] .answer-key-row button.active::after {
   background: none;
+}
+
+/* 通用面板 — 暗色下覆写亮色半透明背景，避免灰底灰字 */
+[data-theme="dark"] .panel {
+  background: var(--surface);
+  border-color: var(--line);
+}
+[data-theme="dark"] .panel:hover {
+  background: var(--surface-raised);
+  border-color: rgba(192, 57, 43, 0.15);
 }
 
 /* 设计器 inspector / block-chip 暗色 */
@@ -4843,10 +5044,33 @@ body.has-bg-image::after {
   background: rgba(22, 27, 34, 0.85);
 }
 [data-theme="dark"] .block-chip {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--surface-raised);
+  border-color: var(--line);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 [data-theme="dark"] .block-chip:hover {
-  background: rgba(255, 255, 255, 0.10);
+  background: var(--surface);
+  border-color: rgba(192, 57, 43, 0.25);
+}
+[data-theme="dark"] .block-chip.active {
+  background: linear-gradient(180deg, rgba(192, 57, 43, 0.12) 0%, rgba(192, 57, 43, 0.05) 100%);
+  border-color: rgba(192, 57, 43, 0.35);
+  box-shadow: var(--shadow-brand);
+}
+[data-theme="dark"] .chip-actions button,
+[data-theme="dark"] .question-editor-title button {
+  background: var(--surface);
+  border-color: var(--line-strong);
+  color: var(--text-secondary);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme="dark"] .chip-actions button:hover:not(:disabled),
+[data-theme="dark"] .question-editor-title button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(192, 57, 43, 0.25);
+  color: var(--brand);
 }
 [data-theme="dark"] .account-table-wrap {
   background: rgba(255, 255, 255, 0.05);
