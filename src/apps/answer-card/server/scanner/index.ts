@@ -29,8 +29,25 @@ export function createScannerRouter(): Router {
   ): Promise<void> {
     if (!result.studentId || result.studentId === "未识别") return;
 
-    const { getMysqlDb } = await import("../../../../server/db");
+    const { getMysqlDb, buildUpsertSQL } = await import("../../../../server/db");
+    const { roundScore } = await import("../../../../server/services/rankingUpdate");
     const db = getMysqlDb();
+
+    const scoreUpsertSQL = buildUpsertSQL(
+      db.dialect,
+      "student_scores",
+      ["exam_id", "student_id", "objective_score", "subjective_score", "total_score", "graded_at"],
+      ["exam_id", "student_id"],
+      ["objective_score", "subjective_score", "total_score", "graded_at"]
+    );
+    const questionUpsertSQL = buildUpsertSQL(
+      db.dialect,
+      "question_scores",
+      ["exam_id", "student_id", "question_number", "question_id", "score", "max_score", "score_type"],
+      ["exam_id", "student_id", "question_number", "score_type"],
+      ["question_id", "score", "max_score"]
+    );
+    const gradedAt = new Date().toISOString();
 
     // Find user by student_number
     const user = await db.get("SELECT id FROM users WHERE student_number = ?", result.studentId) as { id: number } | undefined;
@@ -41,20 +58,20 @@ export function createScannerRouter(): Router {
     if (exams.length === 0) return;
 
     for (const exam of exams) {
-      await db.run(
-        "REPLACE INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score, graded_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-        exam.id, user.id, result.objectiveScore, result.subjectiveScore, result.totalScore
-      );
+      const obj = roundScore(result.objectiveScore);
+      const subj = roundScore(result.subjectiveScore);
+      const total = roundScore(result.totalScore);
+      await db.run(scoreUpsertSQL, exam.id, user.id, obj, subj, total, gradedAt);
 
       for (const q of result.objectiveQuestions) {
         await db.run(
-          "REPLACE INTO question_scores (exam_id, student_id, question_number, question_id, score, max_score, score_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          questionUpsertSQL,
           exam.id, user.id, q.questionNumber, "", q.score, q.maxScore, "objective"
         );
       }
       for (const sq of result.subjectiveQuestions) {
         await db.run(
-          "REPLACE INTO question_scores (exam_id, student_id, question_number, question_id, score, max_score, score_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          questionUpsertSQL,
           exam.id, user.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective"
         );
       }

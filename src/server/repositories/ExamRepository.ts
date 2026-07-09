@@ -1,5 +1,6 @@
-import { getMysqlDb } from "../db";
+import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
+import { roundScore } from "../services/rankingUpdate";
 
 export interface ExamRecord {
   id: number;
@@ -86,7 +87,7 @@ export class ExamRepository {
   }>> {
     let sql = `SELECT e.id, e.name, e.subject, e.grade_id, g.name as grade_name,
         COALESCE(ac.exam_date, date(e.created_at)) as exam_date, e.status,
-        COUNT(ss.id) as graded_count, ROUND(AVG(ss.total_score), 1) as avg_score,
+        COUNT(ss.exam_id) as graded_count, ROUND(AVG(ss.total_score), 1) as avg_score,
         CASE WHEN e.assigned_formula IS NOT NULL AND e.assigned_formula != '' THEN 1 ELSE 0 END as has_assigned_score
       FROM exams e
       LEFT JOIN answer_cards ac ON ac.id = e.card_id
@@ -168,10 +169,19 @@ export class ExamRepository {
   }
 
   async saveStudentScore(examId: number, studentId: number, objectiveScore: number, subjectiveScore: number): Promise<void> {
-    const total = objectiveScore + subjectiveScore;
-    await this.db.run(
-      "REPLACE INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score, graded_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-      examId, studentId, objectiveScore, subjectiveScore, total);
+    const obj = roundScore(objectiveScore);
+    const subj = roundScore(subjectiveScore);
+    const total = roundScore(obj + subj);
+    const gradedAt = new Date().toISOString();
+    const upsertSQL = buildUpsertSQL(
+      this.db.dialect,
+      "student_scores",
+      ["exam_id", "student_id", "objective_score", "subjective_score", "total_score", "graded_at"],
+      ["exam_id", "student_id"],
+      ["objective_score", "subjective_score", "total_score", "graded_at"]
+    );
+    // ON CONFLICT 仅更新分数列，保留 rank/percentile/assigned_score/manually_modified 等
+    await this.db.run(upsertSQL, examId, studentId, obj, subj, total, gradedAt);
   }
 
   async getExamResults(examId: number): Promise<Array<{

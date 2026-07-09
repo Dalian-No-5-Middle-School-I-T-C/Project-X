@@ -2,9 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Database, Download, Eye, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
-import { fetchJson, getAuthToken } from "../auth/api";
+import { fetchJson, authFetch } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
 import type { AiProviderConfig } from "../../../../shared/types";
+
+/** 判断是否为服务端脱敏后的 API Key（编辑时不应回传写库） */
+function isMaskedApiKey(key: string): boolean {
+  if (!key) return false;
+  if (key === "••••") return true;
+  return key.startsWith("••••••••") && key.length === 12;
+}
 
 export function AccountMenu({
   onOpenSponsor,
@@ -143,10 +150,8 @@ export function AccountMenu({
     try {
       const form = new FormData();
       form.append("file", file);
-      const token = getAuthToken();
-      const res = await fetch("/api/users/me/background", {
+      const res = await authFetch("/api/users/me/background", {
         method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: form
       });
       if (!res.ok) {
@@ -174,7 +179,8 @@ export function AccountMenu({
 
   async function saveProvider() {
     const { editing, id, name, providerType, baseUrl, apiKey, models } = providerEditor;
-    if (!name || !providerType || !apiKey) {
+    const masked = isMaskedApiKey(apiKey);
+    if (!name || !providerType || (!editing && !apiKey)) {
       setSettingsMsg("请填写完整信息");
       return;
     }
@@ -183,10 +189,14 @@ export function AccountMenu({
       return;
     }
     try {
-      const body: any = {
-        name, providerType, baseUrl, apiKey,
+      const body: Record<string, unknown> = {
+        name, providerType, baseUrl,
         models: models.trim() ? models.split(",").map((m) => m.trim()).filter(Boolean) : null
       };
+      // 编辑时若 Key 未改动（仍为脱敏占位符），不传 apiKey 以免覆盖真实值
+      if (!editing || !masked) {
+        body.apiKey = apiKey;
+      }
       if (editing && id) {
         await fetchJson(`/api/ai/providers/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       } else {
@@ -253,10 +263,7 @@ export function AccountMenu({
 
   async function handleExportDb() {
     try {
-      const token = getAuthToken();
-      const resp = await fetch("/api/db/backup", {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const resp = await authFetch("/api/db/backup");
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ message: resp.statusText }));
         throw new Error(err.message || "导出失败");
@@ -279,15 +286,10 @@ export function AccountMenu({
     setImportMsg("");
     setImportBusy(true);
     try {
-      const token = getAuthToken();
-      const headers: Record<string, string> = {
-        "Content-Type": "application/zip"
-      };
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      const resp = await fetch("/api/db/restore", {
+      const resp = await authFetch("/api/db/restore", {
         method: "POST",
-        headers,
-        body: file  // 原始二进制上传，绕过 FormData/multipart 的 corrupt 风险
+        headers: { "Content-Type": "application/zip" },
+        body: file
       });
       const result = await resp.json();
       if (!resp.ok) {

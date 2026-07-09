@@ -1,5 +1,89 @@
 # Project-X CHANGELOG
 
+## v1.8.1 (2026-07-06) — 代码审查 bug 修复与一致性收敛
+
+基于 PR161 代码审查报告（`readus/CODE-REVIEW.md`），修复安全漏洞、崩溃 bug、排名/百分位不一致及若干前端问题。
+
+### 安全修复
+- **MariaDB 恢复命令注入（C-S1）**：`backup.ts` restore 改用 `execFile` 参数数组 + stdin，消除 shell 注入
+- **扫描上传路径遍历（H-S12）**：`side` 白名单、`sessionId` basename 兜底、扩展名白名单
+- **ZIP 解压前缀绕过（M-S18）**：路径检查改用 `path.relative`，防止 `destDir-evil` 类前缀攻击
+
+### 数据一致性
+- **排名算法统一（H-L2）**：`score-editing.ts` 与 `ReviewService.ts` 两份重复 `recomputeRankings` 收敛为共享模块 `rankingUpdate.ts`，改用 `competitionRank`（同分并列）
+- **百分位公式统一（M-L4）**：写入 DB 时统一使用公式 A `(total - rank) / (total - 1) * 100`（末名 0）
+- **分数舍入（H-L3）**：成绩编辑/复核路径 `total_score` 统一 `roundScore`（3 位小数）
+
+### 阅卷逻辑
+- **复核置信度阈值生效（H-L1）**：Web 阅卷链路读取用户 `reviewConfidenceThreshold` 并传入 `gradeObjectiveQuestion`
+- **主观题负分裁剪（M-L6）**：`Math.max(0, Math.min(score, maxScore))`
+- **多页阅卷择优（M-L2/M-L3）**：跨页去重纳入置信度；学号优先取 `status=ok` 的识别结果
+
+### 前端修复
+- **GradingResults 崩溃（C-F1）**：`useState` 移到早返回之前，修复 Hook 数量变化崩溃
+- **ScannerPanel 闭包陷阱（C-F2/C-F3）**：用 ref 追踪 `pages`/`sessionId`/`scannerMode`，修复 done 回传页数 0 与远程上传空循环
+- **网上阅卷前进（H-F2）**：「保存并下一份」真正前进到下一份
+- **SSE 健壮性（H-F5/M-F4）**：`JSON.parse` 加 try/catch；扫描 SSE 断连反馈错误状态
+- **图片压缩内存泄漏（H-F6）**：`URL.revokeObjectURL` 释放 blob URL
+
+### 小修复
+- `generateTeacherUsername` 异步检查存在性，避免用户名碰撞（L-S2）
+- `englishTemplate` 移除无意义三元（L-L4）
+- `ClassManagement` CSV 表头正则去重（L-F8）
+
+### 测试与文档
+- 新增 `readus/CODE-REVIEW.md`（含修复状态总表）
+- 新增 `scripts/bugfix-verification.ts`（14 项单元断言）
+- 新增 `scripts/ranking-integration-check.ts`（真实 SQLite 排名集成测试）
+
+### 回归验证
+- `npm run typecheck` ✓
+- `npm run verify:auth` — 54 通过 / 0 失败
+- `npx tsx scripts/grading-rules-smoke.ts` ✓
+- `npx tsx scripts/bugfix-verification.ts` — 14 通过
+- `npx tsx scripts/ranking-integration-check.ts` ✓
+- `npm run build` ✓
+- GUI 冒烟：登录、设计/考试/阅卷/分析四页正常渲染
+
+### 第二轮修复（对照 PR161 + debug 审查）
+- **H-S4**：`ExamRepository` / 扫描器持久化改用 `ON CONFLICT DO UPDATE`，重扫保留 rank/percentile/手动改分
+- **H-S1**：成绩修改 PUT 路由增加 `requireExamAccess`
+- **H-S11**：`getVisibleExamIds` 异步化 + `getMysqlDb()`，MariaDB 模式考试可见性正确
+- **M-L4 显示层**：`AnalysisRepository` 百分位显示统一公式 A
+- **backup**：MariaDB 默认端口 `3306`（原误 `443`）
+- **ScannerPanel**：`sessionIdRef` 在 `startScan` 同步赋值
+- **score-editing**：答案 `updateCard` 持久化、同步 `subjective_score`、传入复核阈值
+- **PR161**：`COUNT(ss.exam_id)` 修复 JOIN 重复计数
+
+### 修改文件
+
+| 文件 | 改动 |
+| --- | --- |
+| `src/server/routes/backup.ts` | execFile 防注入、ZIP 路径检查 |
+| `src/server/routes/scanner-upload.ts` | side/ext/sessionId 安全校验 |
+| `src/server/services/rankingUpdate.ts` | **新增** 统一排名/百分位重算 |
+| `src/server/routes/score-editing.ts` | 使用共享排名模块 + roundScore |
+| `src/server/services/ReviewService.ts` | 同上 |
+| `src/shared/grading.ts` | 阈值参数、跨页择优、主观分裁剪 |
+| `src/apps/answer-card/server/index.ts` | 读取用户复核阈值传入阅卷 |
+| `src/apps/answer-card/client/App.tsx` | GradingResults Hook 修复、SSE try/catch |
+| `src/apps/answer-card/client/components/ScannerPanel.tsx` | ref 闭包修复 |
+| `src/apps/answer-card/client/components/OnlineReviewPanel.tsx` | 保存并下一份前进 |
+| `src/apps/answer-card/client/components/PaperUploadPanel.tsx` | objectURL 释放 |
+| `src/server/repositories/UserRepository.ts` | 教师用户名生成重试 |
+| `src/shared/cardTemplates.ts` | 移除冗余三元 |
+| `scripts/bugfix-verification.ts` | **新增** 回归测试 |
+| `scripts/ranking-integration-check.ts` | **新增** 排名集成测试 |
+| `readus/CODE-REVIEW.md` | **新增** 代码审查报告 + 修复状态 |
+| `src/server/services/userSettings.ts` | **新增** 共享复核阈值读取 |
+| `src/server/repositories/ExamRepository.ts` | H-S4 upsert + COUNT 修复 |
+| `src/apps/answer-card/server/middleware.ts` | H-S11 异步 getMysqlDb |
+| `src/apps/answer-card/server/scanner/index.ts` | H-S4 扫描持久化 upsert |
+| `src/server/repositories/AnalysisRepository.ts` | M-L4 百分位显示 + COUNT |
+| `src/server/routes/exam-groups.ts` | COUNT(ss.exam_id) |
+
+---
+
 ## v1.7.3 (2026-07-04) — 移动端网页适配
 
 ### 移动端全面适配

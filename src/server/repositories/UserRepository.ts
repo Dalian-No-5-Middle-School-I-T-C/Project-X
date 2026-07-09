@@ -158,11 +158,12 @@ export class UserRepository {
     return result;
   }
 
-  generateTeacherUsername(): string {
+  async generateTeacherUsername(): Promise<string> {
     for (let attempt = 0; attempt < 10; attempt++) {
       const username = `T${crypto.randomInt(100000, 1000000)}`;
-      return username;
+      if (!(await this.usernameExists(username))) return username;
     }
+    // 兜底：附加时间戳降低碰撞概率
     return `T${Date.now().toString(36).slice(-6)}${crypto.randomInt(0, 1000)}`;
   }
 
@@ -305,7 +306,7 @@ export class UserRepository {
         try {
           const subject = (row[subjectIdx] ?? "").trim(), teacherName = (row[nameIdx] ?? "").trim();
           if (!subject || !teacherName) { result.teachers.errors.push({ row, message: "缺少科目或姓名" }); continue; }
-          const username = this.generateTeacherUsername(), password = this.generateTeacherPassword();
+          const username = await this.generateTeacherUsername(), password = this.generateTeacherPassword();
           await this.db.run("INSERT INTO users (username, password_hash, name, role_id, subject, initial_password) VALUES (?, ?, ?, 2, ?, ?)", username, await hashPassword(password), teacherName, subject, password);
           result.teachers.created++;
         } catch (err) { result.teachers.errors.push({ row, message: err instanceof Error ? err.message : String(err) }); }
