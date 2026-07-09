@@ -3,12 +3,15 @@ import type { DbAdapter } from "../db";
 import { competitionRank } from "../../shared/ranking";
 import { rankPercentile } from "../services/rankingUpdate";
 import type {
-  ClassScoreSummary, CrossExamAttendanceMode, CrossExamClassSummary,
+  ClassDeepCompareItem, ClassCompareKnowledgeMatrixRow, ClassCompareQuestionMatrixRow,
+  ClassKnowledgeWeakness, ClassScoreSummary, CrossClassDeepCompareResponse,
+  CrossExamAttendanceMode, CrossExamClassSummary,
   CrossExamGroup, CrossExamTotalExam, CrossExamTotalMode,
   CrossExamTotalRequest, CrossExamTotalResponse, CrossExamTotalRow,
   ErrorRateLevel, ExamFilterItem, ExamOverview, QuestionAnalysisItem,
   PreviousExamComparison, ScoreSummary, ScoreTrendPoint, StudentRankingItem
 } from "../../shared/types";
+import { KnowledgePointRepository } from "./KnowledgePointRepository";
 
 export interface ExportRow {
   className: string; studentNumber: string; name: string; totalScore: number;
@@ -282,6 +285,154 @@ export class AnalysisRepository {
     return rows.map((r: any) => {
       const isObj = r.question_type === "objective", errCnt = isObj ? r.objectiveErrorCount : r.subjectiveLowScoreCount, errRate = r.totalCount > 0 ? Math.round((errCnt / r.totalCount) * 100) : 0;
       return { questionNumber: String(r.question_number), questionType: isObj ? "客观" : "主观", scoreRate: r.maxScore > 0 ? Math.round((r.avgScore / r.maxScore) * 100) : 0, correctRate: isObj && r.totalCount > 0 ? Math.round((r.correctCount / r.totalCount) * 100) : null, avgScore: r.avgScore, maxScore: r.maxScore, errorCount: errCnt, errorRate: errRate, errorRateLevel: errorRateLevel(errRate), totalCount: r.totalCount };
+    });
+  }
+
+  /**
+   * 跨班深度对比：按班级汇总概况 / 分数段 / 题目得分率 / 知识点弱项，并生成矩阵。
+   * classIds 为空时对比本场考试全部有成绩班级；允许 classId=0（未知班级）。
+   */
+  async getCrossClassDeepCompare(
+    examId: number,
+    classIds?: number[],
+    options?: { baselineClassId?: number | null; includeQuestions?: boolean; includeKnowledge?: boolean }
+  ): Promise<CrossClassDeepCompareResponse> {
+    const exam = await this.db.get("SELECT name FROM exams WHERE id = ?", examId) as { name: string } | undefined;
+    if (!exam) throw new Error("考试不存在");
+
+    const allClasses = await this.getExamClasses(examId);
+    const requested = classIds && classIds.length > 0
+      ? classIds.filter((id, i, arr) => Number.isInteger(id) && id >= 0 && arr.indexOf(id) === i)
+      : allClasses.map((c) => c.classId);
+    const classMeta = new Map(allClasses.map((c) => [c.classId, c]));
+    const selected = requested
+      .map((id) => classMeta.get(id) ?? (id === 0 ? { classId: 0, className: "未知班级", gradeName: "无年级" } : null))
+      .filter((c): c is { classId: number; className: string; gradeName?: string } => c != null);
+
+    const includeQuestions = options?.includeQuestions !== false;
+    const includeKnowledge = options?.includeKnowledge !== false;
+    const kpRepo = includeKnowledge ? new KnowledgePointRepository() : null;
+
+    const classes: ClassDeepCompareItem[] = [];
+    for (const meta of selected) {
+      const overview = await this.getExamOverview(examId, meta.classId);
+      const questions = includeQuestions ? await this.getQuestionAnalysis(examId, meta.classId) : [];
+      let knowledgeWeaknesses: ClassKnowledgeWeakness[] = [];
+      if (kpRepo) {
+        const weaknesses = await kpRepo.getWeaknessesForExam(examId, meta.classId);
+        knowledgeWeaknesses = weaknesses.map((w) => ({
+          pointText: w.point_text,
+          questionNumbers: w.question_numbers,
+          avgRate: w.avg_rate,
+          studentCount: w.student_count,
+          totalQuestions: w.total_questions
+        }));
+      }
+      classes.push({
+        classId: meta.classId,
+        className: meta.className,
+        gradeName: meta.gradeName,
+        gradedCount: overview.gradedCount,
+        avgScore: overview.avgScore,
+        maxScore: overview.maxScore,
+        minScore: overview.minScore,
+        stdDev: overview.stdDev,
+        passRate: overview.passRate,
+        excellentRate: overview.excellentRate,
+        scoreSummary: overview.scoreSummary,
+        distribution: overview.distribution,
+        questions,
+        knowledgeWeaknesses
+      });
+    }
+
+    classes.sort((a, b) =>
+      (a.gradeName ?? "").localeCompare(b.gradeName ?? "", "zh") ||
+      a.className.localeCompare(b.className, "zh")
+    );
+
+    const questionMatrix = this.buildQuestionMatrix(classes);
+    const knowledgeMatrix = this.buildKnowledgeMatrix(classes);
+    const baselineClassId = options?.baselineClassId != null && classes.some((c) => c.classId === options.baselineClassId)
+      ? options.baselineClassId
+      : null;
+
+    return {
+      examId,
+      examName: exam.name,
+      baselineClassId,
+      classes,
+      questionMatrix,
+      knowledgeMatrix
+    };
+  }
+
+  private buildQuestionMatrix(classes: ClassDeepCompareItem[]): ClassCompareQuestionMatrixRow[] {
+    const order: string[] = [];
+    const meta = new Map<string, { questionType: string; maxScore: number }>();
+    for (const cls of classes) {
+      for (const q of cls.questions) {
+        if (!meta.has(q.questionNumber)) {
+          order.push(q.questionNumber);
+          meta.set(q.questionNumber, { questionType: q.questionType, maxScore: q.maxScore });
+        }
+      }
+    }
+    order.sort((a, b) => {
+      const na = Number(a), nb = Number(b);
+      if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+      return a.localeCompare(b, "zh");
+    });
+    return order.map((questionNumber) => {
+      const info = meta.get(questionNumber)!;
+      const byClass: ClassCompareQuestionMatrixRow["byClass"] = {};
+      for (const cls of classes) {
+        const q = cls.questions.find((item) => item.questionNumber === questionNumber);
+        if (q) {
+          byClass[String(cls.classId)] = {
+            scoreRate: q.scoreRate,
+            avgScore: q.avgScore,
+            errorRate: q.errorRate
+          };
+        }
+      }
+      return {
+        questionNumber,
+        questionType: info.questionType,
+        maxScore: info.maxScore,
+        byClass
+      };
+    });
+  }
+
+  private buildKnowledgeMatrix(classes: ClassDeepCompareItem[]): ClassCompareKnowledgeMatrixRow[] {
+    const order: string[] = [];
+    const meta = new Map<string, string>();
+    for (const cls of classes) {
+      for (const k of cls.knowledgeWeaknesses) {
+        if (!meta.has(k.pointText)) {
+          order.push(k.pointText);
+          meta.set(k.pointText, k.questionNumbers);
+        }
+      }
+    }
+    order.sort((a, b) => a.localeCompare(b, "zh"));
+    return order.map((pointText) => {
+      const byClass: ClassCompareKnowledgeMatrixRow["byClass"] = {};
+      for (const cls of classes) {
+        const k = cls.knowledgeWeaknesses.find((item) => item.pointText === pointText);
+        if (k) {
+          byClass[String(cls.classId)] = {
+            avgRate: k.avgRate,
+            studentCount: k.studentCount
+          };
+        }
+      }
+      return {
+        pointText,
+        questionNumbers: meta.get(pointText) ?? "",
+        byClass
+      };
     });
   }
 

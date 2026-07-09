@@ -80,7 +80,9 @@ export class KnowledgePointRepository {
     `;
     const params: any[] = [examId];
 
-    if (classId) {
+    if (classId === 0) {
+      sql += " AND NOT EXISTS (SELECT 1 FROM class_students cs_scope WHERE cs_scope.student_id = qs.student_id)";
+    } else if (classId != null && classId > 0) {
       sql += " AND qs.student_id IN (SELECT student_id FROM class_students WHERE class_id = ?)";
       params.push(classId);
     }

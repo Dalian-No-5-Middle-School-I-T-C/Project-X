@@ -13,6 +13,7 @@ import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
 import { OnlineReviewPanel } from "./OnlineReviewPanel";
 import { AnalysisTrend } from "./AnalysisTrend";
+import { AnalysisClassCompare } from "./AnalysisClassCompare";
 
 interface ClassOption {
   id: number;
@@ -47,7 +48,6 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const [progressTop5, setProgressTop5] = useState<Array<{ studentName: string; studentNumber?: string; rankChange: number }>>([]);
   const [declineTop5, setDeclineTop5] = useState<Array<{ studentName: string; studentNumber?: string; rankChange: number }>>([]);
   const [previousComparison, setPreviousComparison] = useState<PreviousExamComparison | null>(null);
-  const [comparisonClassId, setComparisonClassId] = useState("");
 
   useEffect(() => {
     fetchJson<ClassOption[]>("/api/classes")
@@ -380,104 +380,15 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
               />
             )}
 
-            {/* 班级对比 */}
-            {overview?.classSummaries && overview.classSummaries.length > 0 && (
-              <div className="analysis-section">
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-                  <div className="panel-title" style={{ margin: 0 }}>班级对比</div>
-                  <select
-                    value={comparisonClassId}
-                    onChange={(e) => setComparisonClassId(e.target.value)}
-                    style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, background: "var(--surface)", cursor: "pointer" }}
-                  >
-                    <option value="">全部班级</option>
-                    {(() => {
-                      const allFlattened: Array<{ gradeName: string; className: string; classId: number }> = [];
-                      for (const cs of overview.classSummaries) {
-                        allFlattened.push({ gradeName: cs.gradeName || "无年级", className: cs.className, classId: cs.classId });
-                      }
-                      return allFlattened.map((c) => (
-                        <option key={c.classId} value={String(c.classId)}>
-                          {c.gradeName} — {c.className}
-                        </option>
-                      ));
-                    })()}
-                  </select>
-                </div>
-                {(() => {
-                  // Group class summaries by grade
-                  const byGrade = new Map<string, typeof overview.classSummaries>();
-                  for (const cs of overview.classSummaries) {
-                    const grade = cs.gradeName || "无年级";
-                    if (!byGrade.has(grade)) byGrade.set(grade, []);
-                    byGrade.get(grade)!.push(cs);
-                  }
-
-                  // Compute baseline stats for comparison
-                  const compId = comparisonClassId ? Number(comparisonClassId) : 0;
-                  const baseline = compId > 0 ? overview.classSummaries.find((cs) => cs.classId === compId) : null;
-
-                  return Array.from(byGrade.entries()).map(([grade, classList]) => (
-                    <div key={grade} style={{ marginBottom: 12 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: "var(--brand)", marginBottom: 6, padding: "0 4px" }}>{grade}</div>
-                      <div style={{ overflowX: "auto" }}>
-                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)" }}>
-                          <thead>
-                            <tr style={{ background: "var(--surface-tint)", borderBottom: "2px solid var(--line)" }}>
-                              <th style={thS}>班级</th>
-                              <th style={thS}>人数</th>
-                              <th style={thS}>均分</th>
-                              {baseline && <th style={thS}>vs {baseline.className}</th>}
-                              <th style={thS}>最高</th>
-                              <th style={thS}>最低</th>
-                              <th style={thS}>中位</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {classList.map((cs, i) => {
-                              const isBaseline = baseline && cs.classId === baseline.classId;
-                              const avgDiff = baseline ? Math.round((cs.summary.avg - baseline.summary.avg) * 10) / 10 : null;
-                              return (
-                                <tr
-                                  key={cs.classId}
-                                  style={{
-                                    borderTop: i > 0 ? "1px solid var(--line-light)" : "none",
-                                    background: isBaseline ? "var(--brand-soft)" : i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)"
-                                  }}
-                                >
-                                  <td style={{ ...tdS, fontWeight: isBaseline ? 600 : 400 }}>{cs.className}{isBaseline ? " ·基准" : ""}</td>
-                                  <td style={tdS}>{cs.summary.count}</td>
-                                  <td style={{ ...tdS, fontWeight: isBaseline ? 600 : 400 }}>{cs.summary.avg}</td>
-                                  {baseline && (
-                                    <td style={{
-                                      ...tdS,
-                                      fontWeight: 500,
-                                      color: avgDiff == null || avgDiff === 0 ? "var(--muted)" : avgDiff > 0 ? "#3B6D11" : "#A32D2D"
-                                    }}>
-                                      {isBaseline ? "—" : avgDiff != null ? (avgDiff > 0 ? `↑+${avgDiff}` : `↓${avgDiff}`) : "—"}
-                                    </td>
-                                  )}
-                                  <td style={tdS}>{cs.summary.max}</td>
-                                  <td style={tdS}>{cs.summary.min}</td>
-                                  <td style={tdS}>{cs.summary.median}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  ));
-                })()}
-              </div>
-            )}
+            {/* 跨班深度对比 */}
+            <AnalysisClassCompare examId={examId} />
 
             {/* 前五 / 后五 */}
             {ranking.length > 0 && (
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
                 <div className="analysis-section">
                   <div className="panel-title">年级前五</div>
-                  {top5.map((r, i) => (
+                  {top5.map((r) => (
                     <div key={r.studentName} style={{ display: "flex", gap: 12, padding: "4px 0", fontSize: 13 }}>
                       <span style={{ fontWeight: 600, color: "var(--brand)", minWidth: 24 }}>#{r.rank}</span>
                       <span>{r.studentName}</span>
@@ -488,7 +399,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                 </div>
                 <div className="analysis-section">
                   <div className="panel-title">年级后五</div>
-                  {bottom5.map((r, i) => (
+                  {bottom5.map((r) => (
                     <div key={r.studentName} style={{ display: "flex", gap: 12, padding: "4px 0", fontSize: 13 }}>
                       <span style={{ fontWeight: 600, color: "#A32D2D", minWidth: 24 }}>#{r.rank}</span>
                       <span>{r.studentName}</span>
@@ -500,15 +411,10 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
               </div>
             )}
 
-            {/* 题目得分率 */}
+            {/* 题目得分率（当前筛选班级） */}
             <div className="analysis-section">
-              <div className="panel-title">题目得分率</div>
+              <div className="panel-title">题目得分率{classId ? "（当前班级）" : "（全年级）"}</div>
               <AnalysisQuestions questions={questions} />
-            </div>
-
-            {/* 预留：知识点分析 */}
-            <div className="analysis-section" style={{ padding: 24, textAlign: "center", color: "var(--muted)", background: "var(--bg-soft)", borderRadius: 10, border: "1px dashed var(--line-strong)", fontSize: 13 }}>
-              知识点分析模块预留 — 未来将展示每道题对应的知识点、得分率与薄弱环节
             </div>
           </div>
         )}
@@ -539,6 +445,3 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
     </div>
   );
 }
-
-const thS: React.CSSProperties = { padding: "8px 12px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" };
-const tdS: React.CSSProperties = { padding: "6px 12px", fontSize: 13 };

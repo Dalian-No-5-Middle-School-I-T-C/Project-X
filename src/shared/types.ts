@@ -513,6 +513,58 @@ export type QuestionAnalysisItem = {
   totalCount: number;
 };
 
+/** 跨班深度对比 — 单班知识点弱项 */
+export type ClassKnowledgeWeakness = {
+  pointText: string;
+  questionNumbers: string;
+  avgRate: number;
+  studentCount: number;
+  totalQuestions: number;
+};
+
+/** 跨班深度对比 — 单班汇总 */
+export type ClassDeepCompareItem = {
+  classId: number;
+  className: string;
+  gradeName?: string;
+  gradedCount: number;
+  avgScore: number;
+  maxScore: number;
+  minScore: number;
+  stdDev: number;
+  passRate: number;
+  excellentRate: number;
+  scoreSummary: ScoreSummary | null;
+  distribution: Array<{ range: string; min: number; max: number; count: number }>;
+  questions: QuestionAnalysisItem[];
+  knowledgeWeaknesses: ClassKnowledgeWeakness[];
+};
+
+/** 跨班深度对比 — 题目得分率矩阵行 */
+export type ClassCompareQuestionMatrixRow = {
+  questionNumber: string;
+  questionType: string;
+  maxScore: number;
+  byClass: Record<string, { scoreRate: number; avgScore: number; errorRate: number }>;
+};
+
+/** 跨班深度对比 — 知识点得分率矩阵行 */
+export type ClassCompareKnowledgeMatrixRow = {
+  pointText: string;
+  questionNumbers: string;
+  byClass: Record<string, { avgRate: number; studentCount: number }>;
+};
+
+/** 跨班深度对比响应 */
+export type CrossClassDeepCompareResponse = {
+  examId: number;
+  examName: string;
+  baselineClassId: number | null;
+  classes: ClassDeepCompareItem[];
+  questionMatrix: ClassCompareQuestionMatrixRow[];
+  knowledgeMatrix: ClassCompareKnowledgeMatrixRow[];
+};
+
 export type ExamRecord = {
   id: number;
   name: string;

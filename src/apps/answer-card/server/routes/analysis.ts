@@ -264,6 +264,50 @@ router.get("/exams/:examId/questions", requireExamAccess, async (req, res, next)
   }
 });
 
+// v1.9.0: 跨班深度对比（概况 / 题目矩阵 / 知识点矩阵）
+router.get("/exams/:examId/class-compare", requireExamAccess, async (req, res, next) => {
+  try {
+    const examId = Number(req.params.examId);
+    if (!Number.isInteger(examId) || examId <= 0) {
+      res.status(400).json({ code: ApiError.INVALID_VALUE, message: "无效的考试 ID" });
+      return;
+    }
+
+    const rawClassIds = typeof req.query.classIds === "string"
+      ? req.query.classIds.split(",").map((s) => s.trim()).filter(Boolean)
+      : Array.isArray(req.query.classIds)
+        ? req.query.classIds.map(String)
+        : [];
+    const classIds = rawClassIds
+      .map((v) => Number(v))
+      .filter((id) => Number.isInteger(id) && id >= 0);
+
+    const baselineRaw = req.query.baselineClassId;
+    const baselineClassId = baselineRaw === undefined || baselineRaw === ""
+      ? null
+      : Number(baselineRaw);
+    if (baselineClassId != null && (!Number.isInteger(baselineClassId) || baselineClassId < 0)) {
+      res.status(400).json({ code: ApiError.INVALID_VALUE, message: "无效的基准班级 ID" });
+      return;
+    }
+
+    const includeRaw = typeof req.query.include === "string" ? req.query.include : "questions,knowledge,distribution";
+    const includeSet = new Set(includeRaw.split(",").map((s) => s.trim()).filter(Boolean));
+    const includeQuestions = includeSet.size === 0 || includeSet.has("questions") || includeSet.has("all");
+    const includeKnowledge = includeSet.size === 0 || includeSet.has("knowledge") || includeSet.has("all");
+
+    const analysisRepo = new AnalysisRepository();
+    const result = await analysisRepo.getCrossClassDeepCompare(
+      examId,
+      classIds.length > 0 ? classIds : undefined,
+      { baselineClassId, includeQuestions, includeKnowledge }
+    );
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ── AI ──────────────────────────────────────────────────
 
 router.get("/ai/status", async (req, res) => {
