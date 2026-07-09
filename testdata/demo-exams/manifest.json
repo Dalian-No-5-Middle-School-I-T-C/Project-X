@@ -77,6 +77,12 @@
       "id": "question-export",
       "feature": "客观题小分导出",
       "expect": "演示-数学含 Q1~Q5 客观题小分"
+    },
+    {
+      "id": "class-compare",
+      "feature": "跨班深度对比",
+      "steps": "离线演示 → 跨班对比 → 演示-数学",
+      "expect": "两班均分/及格率/题目得分率矩阵/知识点弱项可对比"
     }
   ]
 }

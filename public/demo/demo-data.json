@@ -1,5 +1,5 @@
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "grade": "高一(演示)",
   "classes": [
     "演示1班",
@@ -763,6 +763,30 @@
       "88000006"
     ]
   },
+  "knowledgePoints": {
+    "88000002": [
+      {
+        "pointText": "函数与导数",
+        "questionNumbers": [
+          1,
+          2
+        ]
+      },
+      {
+        "pointText": "立体几何",
+        "questionNumbers": [
+          3,
+          4
+        ]
+      },
+      {
+        "pointText": "概率统计",
+        "questionNumbers": [
+          5
+        ]
+      }
+    ]
+  },
   "testScenarios": [
     {
       "id": "tie-rank-math",
@@ -808,6 +832,12 @@
       "id": "question-export",
       "feature": "客观题小分",
       "expect": "演示-数学含 Q1~Q5 客观题小分"
+    },
+    {
+      "id": "class-compare",
+      "feature": "跨班深度对比",
+      "steps": "教师端 → 跨班对比 → 演示-数学",
+      "expect": "两班均分/及格率/题目得分率矩阵/知识点弱项可对比；支持基准班级差值"
     }
   ],
   "accounts": {
@@ -819,6 +849,11 @@
     "students": {
       "passwordRule": "与学号相同",
       "range": "20260101-20260116"
+    },
+    "offlineDemo": {
+      "identifier": "offline-demo",
+      "password": "offline-demo",
+      "path": "/demo/"
     }
   }
 }

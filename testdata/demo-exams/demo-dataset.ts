@@ -136,6 +136,13 @@ export const CROSS_EXAM_GROUP = {
   examCardIds: WEEK_EXAM_CARD_IDS
 };
 
+/** 演示-数学知识点（对齐主站跨班深度对比 / class-compare） */
+export const MATH_KNOWLEDGE_POINTS = [
+  { pointText: "函数与导数", questionNumbers: [1, 2] },
+  { pointText: "立体几何", questionNumbers: [3, 4] },
+  { pointText: "概率统计", questionNumbers: [5] }
+] as const;
+
 export const TEST_SCENARIOS = [
   {
     id: "tie-rank-math",
@@ -181,6 +188,12 @@ export const TEST_SCENARIOS = [
     id: "question-export",
     feature: "客观题小分",
     expect: "演示-数学含 Q1~Q5 客观题小分"
+  },
+  {
+    id: "class-compare",
+    feature: "跨班深度对比",
+    steps: "教师端 → 跨班对比 → 演示-数学",
+    expect: "两班均分/及格率/题目得分率矩阵/知识点弱项可对比；支持基准班级差值"
   }
 ] as const;
 
@@ -212,17 +225,24 @@ export function buildStaticDemoPayload() {
   }));
 
   return {
-    version: "1.0.0",
+    version: "1.1.0",
     grade: GRADE_NAME,
     classes: [...CLASS_NAMES],
     students,
     exams,
     examGroup: EXAM_GROUP,
     crossExamGroup: CROSS_EXAM_GROUP,
+    knowledgePoints: {
+      "88000002": MATH_KNOWLEDGE_POINTS.map((k) => ({
+        pointText: k.pointText,
+        questionNumbers: [...k.questionNumbers]
+      }))
+    },
     testScenarios: TEST_SCENARIOS,
     accounts: {
       teacher: { identifier: "demo-teacher", password: "teacher123", name: "演示教师" },
-      students: { passwordRule: "与学号相同", range: "20260101-20260116" }
+      students: { passwordRule: "与学号相同", range: "20260101-20260116" },
+      offlineDemo: { identifier: "offline-demo", password: "offline-demo", path: "/demo/" }
     }
   };
 }
