@@ -298,6 +298,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
 async function compressImageFile(file: File): Promise<File> {
   return new Promise((resolve, reject) => {
     const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
     img.onload = () => {
       const maxDim = 2048;
       let w = img.width;
@@ -312,6 +313,7 @@ async function compressImageFile(file: File): Promise<File> {
       canvas.height = h;
       const ctx = canvas.getContext("2d")!;
       ctx.drawImage(img, 0, 0, w, h);
+      URL.revokeObjectURL(objectUrl);
       canvas.toBlob(
         (blob) => {
           if (blob) resolve(new File([blob], file.name.replace(/\.[^.]+$/, ".jpg"), { type: "image/jpeg" }));
@@ -321,7 +323,10 @@ async function compressImageFile(file: File): Promise<File> {
         0.8
       );
     };
-    img.onerror = () => reject(new Error("图片加载失败"));
-    img.src = URL.createObjectURL(file);
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error("图片加载失败"));
+    };
+    img.src = objectUrl;
   });
 }

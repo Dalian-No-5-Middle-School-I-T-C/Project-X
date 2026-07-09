@@ -154,11 +154,14 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
       const refreshed = await fetchJson<ReviewBlockCropsResponse>(
         `/api/review/exams/${examId}/block-crops?${params.toString()}`
       );
+      const removed = refreshed.rows.length < queue.length;
       setQueue(refreshed.rows);
       setIndex((value) => {
         if (refreshed.rows.length === 0) return 0;
-        if (advance) return Math.min(value, refreshed.rows.length - 1);
-        return Math.min(value, refreshed.rows.length - 1);
+        // 列表因当前项被复核而缩短时，原索引已自动指向下一份；
+        // 否则（如"全部"筛选下当前项仍在）需显式 +1 才能前进。
+        const target = advance && !removed ? value + 1 : value;
+        return Math.max(0, Math.min(target, refreshed.rows.length - 1));
       });
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");
