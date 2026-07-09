@@ -10,6 +10,8 @@ interface ClassOption {
 
 interface Props {
   exams: Array<{ subject?: string | null }>;
+  initialSubject?: string;
+  initialClassId?: string;
 }
 
 function formatScore(value: number): string {
@@ -20,7 +22,7 @@ function buildPath(points: Array<{ x: number; y: number }>): string {
   return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
 }
 
-export function AnalysisTrend({ exams }: Props) {
+export function AnalysisTrend({ exams, initialSubject, initialClassId }: Props) {
   const subjects = useMemo(() => {
     const seen = new Set<string>();
     const result: string[] = [];
@@ -34,17 +36,22 @@ export function AnalysisTrend({ exams }: Props) {
     return result;
   }, [exams]);
 
-  const [subject, setSubject] = useState("");
-  const [classId, setClassId] = useState("");
+  const [subject, setSubject] = useState(initialSubject || "");
+  const [classId, setClassId] = useState(initialClassId || "");
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [trend, setTrend] = useState<ScoreTrendPoint[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!subject && subjects.length > 0) setSubject(subjects[0]);
+    if (initialSubject && subjects.includes(initialSubject)) setSubject(initialSubject);
+    else if (!subject && subjects.length > 0) setSubject(subjects[0]);
     if (subject && subjects.length > 0 && !subjects.includes(subject)) setSubject(subjects[0]);
-  }, [subject, subjects]);
+  }, [initialSubject, subject, subjects]);
+
+  useEffect(() => {
+    if (initialClassId !== undefined) setClassId(initialClassId);
+  }, [initialClassId]);
 
   useEffect(() => {
     fetchJson<ClassOption[]>("/api/classes")
