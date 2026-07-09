@@ -1,3 +1,10 @@
+import {
+  clearOfflineDemoSession,
+  isOfflineDemoToken,
+  markOfflineDemoSession
+} from "../../../../shared/offlineDemo";
+import { tryHandleOfflineDemoRequest } from "../../../../shared/offlineDemoApi";
+
 const TOKEN_KEY = "projectx_auth_token";
 
 // v1.6.0: API 基础地址支持运行时配置
@@ -11,6 +18,10 @@ function getApiBase(): string {
 }
 
 let authToken: string | null = null;
+
+function isOfflineDemoActive(): boolean {
+  return isOfflineDemoToken(getAuthToken());
+}
 
 export function apiUrl(url: string): string {
   const base = getApiBase();
@@ -33,8 +44,14 @@ export function getAuthToken(): string | null {
 export function setAuthToken(token: string | null): void {
   authToken = token;
   try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
+    if (token) {
+      localStorage.setItem(TOKEN_KEY, token);
+      if (isOfflineDemoToken(token)) markOfflineDemoSession();
+      else clearOfflineDemoSession();
+    } else {
+      localStorage.removeItem(TOKEN_KEY);
+      clearOfflineDemoSession();
+    }
   } catch {
     // ignore storage errors
   }
@@ -46,6 +63,15 @@ function notifyUnauthorized(): void {
 }
 
 export async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
+  if (isOfflineDemoActive()) {
+    try {
+      return tryHandleOfflineDemoRequest(url, options) as T;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      throw error;
+    }
+  }
+
   const token = getAuthToken();
   // v1.6.0: 同时支持 Api-Key header
   const storedApiKey = (() => { try { return localStorage.getItem("projectx_api_key"); } catch { return null; } })();

@@ -443,7 +443,7 @@ function KnowledgeAnalysisInline({ cardId, onDone }: { cardId: string; onDone: (
 }
 
 function App() {
-  const { user, loading, hasPermission, persona, teacherRoleOverride } = useAuth();
+  const { user, loading, hasPermission, persona, teacherRoleOverride, isOfflineDemo } = useAuth();
   // v1.6.0: 运行时 persona 替换 compile-time VITE_PROJECTX_VARIANT
   const appVariant = useMemo(
     () => getProjectXVariantConfig(persona),
@@ -578,9 +578,15 @@ function App() {
 
   useEffect(() => {
     if (user) {
+      // Offline demo: jump straight into analysis with seeded exams
+      if (isOfflineDemo && appVariant.allowedModes.includes("analysis") && hasPermission(PERMISSIONS.EXAM_READ)) {
+        setMode("analysis");
+        void loadExams();
+        return;
+      }
       setMode(defaultModeForUser(hasPermission, appVariant));
     }
-  }, [user?.id, hasPermission, appVariant]);
+  }, [user?.id, hasPermission, appVariant, isOfflineDemo]);
 
   useEffect(() => {
     const flushOnHide = () => {
@@ -1646,6 +1652,23 @@ function App() {
                 </svg>
               )}
             </button>
+            {isOfflineDemo && (
+              <span
+                title="当前为离线演示：使用内置测试数据，退出账号即可返回登录"
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: "#92400e",
+                  background: "#fef3c7",
+                  border: "1px solid #f59e0b",
+                  borderRadius: 999,
+                  padding: "4px 10px",
+                  whiteSpace: "nowrap"
+                }}
+              >
+                离线演示
+              </span>
+            )}
             <AccountMenu
               onOpenSponsor={() => {
                 const previous = mode;

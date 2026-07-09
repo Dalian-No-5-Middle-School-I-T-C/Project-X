@@ -50,11 +50,20 @@ export default defineConfig(({ mode }) => {
       // Compile-time constant so Vite can tree-shake scanner code from web builds
       "import.meta.env.VITE_BUILD_TARGET": JSON.stringify(buildTarget)
     },
+    resolve: {
+      alias: {
+        // Allow SPA offline demo to import the shared demo dataset
+        "@demo-data": path.resolve(__dirname, "testdata/demo-exams/demo-dataset.ts")
+      }
+    },
     server: {
       port: 5173,
       proxy: {
         "/api": "http://127.0.0.1:5174",
         "/assets": "http://127.0.0.1:5174"
+      },
+      fs: {
+        allow: [__dirname]
       }
     },
     build: {

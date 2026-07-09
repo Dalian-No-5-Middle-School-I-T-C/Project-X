@@ -1,5 +1,5 @@
 /**
- * 校验 public/demo/demo-data.json 与 demo-dataset 一致，并验证百分位公式 A + 跨班对比数据。
+ * 校验离线演示：demo-data.json 与 dataset 一致，百分位公式 A，以及 SPA 演示入口文件存在。
  * 运行：npx tsx scripts/demo-static-verification.ts
  */
 import fs from "node:fs";
@@ -11,7 +11,9 @@ import { competitionRank } from "../src/shared/ranking.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const jsonPath = path.join(__dirname, "..", "public", "demo", "demo-data.json");
-const appJsPath = path.join(__dirname, "..", "public", "demo", "app.js");
+const demoIndex = path.join(__dirname, "..", "public", "demo", "index.html");
+const offlineApi = path.join(__dirname, "..", "src", "shared", "offlineDemoApi.ts");
+const loginPage = path.join(__dirname, "..", "src", "apps", "answer-card", "client", "components", "LoginPage.tsx");
 
 let passed = 0;
 function check(name: string, cond: boolean): void {
@@ -21,13 +23,12 @@ function check(name: string, cond: boolean): void {
 
 const expected = buildStaticDemoPayload();
 const onDisk = JSON.parse(fs.readFileSync(jsonPath, "utf8")) as typeof expected;
-const appJs = fs.readFileSync(appJsPath, "utf8");
 
 check("student count", onDisk.students.length === expected.students.length);
 check("exam count", onDisk.exams.length === expected.exams.length);
 check("test scenario count", onDisk.testScenarios.length === expected.testScenarios.length);
 check("version bumped", onDisk.version === "1.1.0");
-check("offline demo account documented", !!(onDisk.accounts as any).offlineDemo);
+check("offline demo account documented", !!(onDisk.accounts as { offlineDemo?: unknown }).offlineDemo);
 
 const math = onDisk.exams.find((e) => e.name === "演示-数学");
 if (!math) throw new Error("missing 演示-数学 exam");
@@ -54,19 +55,20 @@ for (const row of tie128) {
 check("last place percentile is 0", rankPercentile(n, n) === 0);
 check("first place percentile is 100", rankPercentile(1, n) === 100);
 
-// 跨班深度对比数据
-const kp = (onDisk as any).knowledgePoints?.["88000002"];
+const kp = (onDisk as { knowledgePoints?: Record<string, unknown[]> }).knowledgePoints?.["88000002"];
 check("math knowledge points present", Array.isArray(kp) && kp.length === 3);
 check(
   "class-compare scenario listed",
   onDisk.testScenarios.some((s) => s.id === "class-compare")
 );
-check("demo app has classCompare nav", appJs.includes('id: "classCompare"'));
-check("demo app has renderClassCompare", appJs.includes("function renderClassCompare"));
-check("exam group uses competition tieSize", appJs.includes("tieSizeMap.get(r.studentNo)"));
-check("questions pad missing cells", appJs.includes("p ? `${p.score}/${p.max}` : \"—\"") || appJs.includes("p ? `${p.score}/${p.max}` : \"—\""));
 
-// 两班均有成绩，且 1 班均分应高于 2 班（演示数据设计）
+// SPA-integrated demo
+check("offlineDemoApi exists", fs.existsSync(offlineApi));
+check("demo index redirects to SPA", fs.readFileSync(demoIndex, "utf8").includes("返回主站登录"));
+const loginSrc = fs.readFileSync(loginPage, "utf8");
+check("LoginPage uses AuthContext login (no hard redirect)", !loginSrc.includes("getOfflineDemoUrl"));
+check("LoginPage keeps offline-demo hint", loginSrc.includes("offline-demo"));
+
 const class1 = onDisk.students.filter((s) => s.className === "演示1班");
 const class2 = onDisk.students.filter((s) => s.className === "演示2班");
 const avg = (list: typeof class1) => {

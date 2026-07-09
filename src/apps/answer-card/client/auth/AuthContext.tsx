@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { fetchJson, setAuthToken, getAuthToken } from "./api";
 import { permissionGrants, TEACHER_ROLE_LABELS, type AuthUser, type LoginResponse } from "./types";
+import { isOfflineDemoLogin, clearOfflineDemoSession, isOfflineDemoToken } from "../../../../shared/offlineDemo";
+import { createOfflineDemoLoginResponse } from "../../../../shared/offlineDemoApi";
 
 // ── v1.6.0: 运行时 Persona（视图身份） ──────────────────────
 export type AppPersona = "student" | "teacher" | "teacher-scanner";
@@ -76,6 +78,7 @@ interface AuthContextValue {
   isAdmin: boolean;
   isTeacher: boolean;
   isStudent: boolean;
+  isOfflineDemo: boolean;
   teacherRole: string | null;
   isSubjectTeacher: boolean;
   isHeadTeacher: boolean;
@@ -121,6 +124,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [refreshUser]);
 
   const login = useCallback(async (identifier: string, password: string, isPersistent?: boolean) => {
+    // Offline demo: enter SPA with mock data (same UI / operation logic)
+    if (isOfflineDemoLogin(identifier, password)) {
+      const result = createOfflineDemoLoginResponse();
+      setAuthToken(result.token);
+      const nextUser: AuthUser = {
+        ...result.user,
+        role_name: result.user.role_name ?? "teacher",
+        permissions: result.permissions ?? result.user.permissions ?? []
+      };
+      setUser(nextUser);
+      setPersonaState("teacher");
+      return;
+    }
+
     const result = await fetchJson<LoginResponse>("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -151,6 +168,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // ignore logout errors
     }
+    clearOfflineDemoSession();
     setAuthToken(null);
     setUser(null);
   }, []);
@@ -195,6 +213,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAdmin: user?.role_name === "admin",
       isTeacher: user?.role_name === "teacher",
       isStudent: user?.role_name === "student",
+      isOfflineDemo: isOfflineDemoToken(getAuthToken()) || user?.username === "offline-demo",
       teacherRole,
       isSubjectTeacher: teacherRole === "subject_teacher",
       isHeadTeacher: teacherRole === "head_teacher",
