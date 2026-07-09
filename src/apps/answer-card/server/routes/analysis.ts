@@ -12,6 +12,7 @@ import { KnowledgePointRepository } from "../../../../server/repositories/Knowle
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
 import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../middleware";
+import { maskApiKey } from "../../../../server/utils/maskApiKey";
 import { fetchLlmClient } from "../llm-client";
 import { CreateExamGroupSchema, validateBody } from "../validation";
 import type { CrossExamTotalRequest } from "../../../../shared/types";
@@ -34,7 +35,7 @@ function mapAiProvider(p: AiProviderRow) {
     name: p.name,
     providerType: p.provider_type,
     baseUrl: p.base_url,
-    apiKey: p.api_key,
+    apiKey: maskApiKey(p.api_key),
     models: p.models ? JSON.parse(p.models) : null,
     isActive: Boolean(p.is_active)
   };
@@ -99,7 +100,7 @@ router.post("/cross-exam/groups", validateBody(CreateExamGroupSchema), async (re
       res.status(400).json({ message: "请选择至少一场考试" });
       return;
     }
-    if (!validateExamIdsAccess(req, res, normalizedExamIds)) return;
+    if (!(await validateExamIdsAccess(req, res, normalizedExamIds))) return;
 
     const analysisRepo = new AnalysisRepository();
     const group = await analysisRepo.createExamGroup({
@@ -166,7 +167,7 @@ router.post("/cross-exam/total", async (req, res, next) => {
       requestedExamIds = group.examIds;
     }
 
-    if (requestedExamIds.length > 0 && !validateExamIdsAccess(req, res, requestedExamIds)) return;
+    if (requestedExamIds.length > 0 && !(await validateExamIdsAccess(req, res, requestedExamIds))) return;
     const data = await analysisRepo.getCrossExamTotal({
       mode,
       groupId: optionalPositiveNumber(body.groupId),
@@ -178,7 +179,7 @@ router.post("/cross-exam/total", async (req, res, next) => {
       subject: typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : undefined,
       attendanceMode: body.attendanceMode === "full" ? "full" : "all"
     }, {
-      visibleExamIds: getVisibleExamIds(req.user)
+      visibleExamIds: await getVisibleExamIds(req.user)
     });
     res.json(data);
   } catch (error) {

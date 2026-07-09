@@ -1,6 +1,8 @@
 import express from "express";
 import type { Request, Response } from "express";
-import { authMiddleware } from "../middleware/auth";
+import { authMiddleware, requirePermission } from "../middleware/auth";
+import { requireExamAccess } from "../../apps/answer-card/server/middleware";
+import { PERMISSIONS } from "../auth/permissions";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import XLSX from "xlsx";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
@@ -83,7 +85,11 @@ router.get("/columns", (_req: Request, res: Response) => {
 });
 
 /** POST /api/export/exams/:examId/scores — 按配置导出 Excel */
-router.post("/exams/:examId/scores", async (req: Request, res: Response) => {
+router.post(
+  "/exams/:examId/scores",
+  requireExamAccess,
+  requirePermission(PERMISSIONS.GRADE_READ),
+  async (req: Request, res: Response) => {
   try {
     const examId = Number(req.params.examId);
     const { columns, classId, sideTableN, gapCols } = req.body as ExportConfigRequest;
