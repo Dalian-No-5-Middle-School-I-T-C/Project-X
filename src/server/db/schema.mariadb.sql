@@ -101,6 +101,23 @@ CREATE TABLE IF NOT EXISTS teacher_classes (
     FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- 教师数据可见性权限 (v16)
+CREATE TABLE IF NOT EXISTS teacher_permissions (
+    id                 INT AUTO_INCREMENT PRIMARY KEY,
+    teacher_id         INT NOT NULL,
+    grade_id           INT,
+    can_view_scores    TINYINT DEFAULT 1,
+    can_view_charts    TINYINT DEFAULT 1,
+    can_view_students  TINYINT DEFAULT 1,
+    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (grade_id) REFERENCES grades(id) ON DELETE SET NULL,
+    UNIQUE KEY uk_teacher_grade (teacher_id, grade_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE INDEX IF NOT EXISTS idx_tp_teacher ON teacher_permissions(teacher_id);
+
 -- ============================================================
 -- 模块二：答题卡设计
 -- ============================================================

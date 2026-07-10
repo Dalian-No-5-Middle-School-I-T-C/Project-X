@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Download, Link, Plus, RefreshCw, Search, Unlink, Upload } from "lucide-react";
-import { fetchJson } from "../auth/api";
-import { getAuthToken } from "../auth/api";
+import { fetchJson, authFetch } from "../auth/api";
 import { TEACHER_ROLE_LABELS } from "../auth/types";
 import type { GradeRecord, ClassRecord, TeacherRecord, TeachersListResponse } from "../auth/types";
 import { ImportModal } from "./ImportModal";
@@ -160,8 +159,7 @@ export function TeacherManagement() {
 
   function handleExport() {
     if (!confirm("导出文件将包含教师明文密码，请妥善保管！\n确定要下载吗？")) return;
-    const token = getAuthToken();
-    fetch("/api/export/teachers", { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    authFetch("/api/export/teachers")
       .then(async (res) => {
         if (!res.ok) throw new Error(await res.text());
         const blob = await res.blob();

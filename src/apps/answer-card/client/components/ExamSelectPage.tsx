@@ -9,7 +9,6 @@ import type {
   ExamFilterItem,
   ExamGroupFilterItem
 } from "../../../../shared/types";
-import { AnalysisTrend } from "./AnalysisTrend";
 
 interface ClassOption { id: number; name: string; grade_name?: string; }
 interface FilterOptions { academicYears: string[]; subjects: string[]; }
@@ -263,12 +262,6 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup, refreshKey = 0 }: 
           <div style={{ textAlign: "center", padding: 60 }}><Search size={48} style={{ opacity: 0.3, marginBottom: 12 }} /><p style={{ fontSize: 15, color: "var(--muted)", margin: 0 }}>暂无考试，请在「考试管理」中创建</p></div>
         )}
         {mainMode === "single" && !loading && exams.length > 0 && <ExamListTable exams={exams} onSelect={onSelectExam} />}
-
-        {mainMode === "single" && !loading && exams.length > 0 && (
-          <div style={{ marginTop: 28 }}>
-            <AnalysisTrend exams={exams} />
-          </div>
-        )}
 
         {/* ── Exam group list ── */}
         {mainMode === "group" && !loading && groupExams.length === 0 && (

@@ -1,6 +1,7 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { competitionRank } from "../../shared/ranking";
+import { rankPercentile } from "../services/rankingUpdate";
 import type {
   ClassScoreSummary, CrossExamAttendanceMode, CrossExamClassSummary,
   CrossExamGroup, CrossExamTotalExam, CrossExamTotalMode,
@@ -332,7 +333,7 @@ export class AnalysisRepository {
       let dv: number | null = null;
       if (displayMode === "deviation") dv = std > 0 ? Math.round((50 + 10 * (s.total_score - mean) / std) * 10) / 10 : 50;
       else if (displayMode === "zscore") dv = std > 0 ? Math.round(((s.total_score - mean) / std) * 100) / 100 : 0;
-      else if (displayMode === "percentile") dv = Math.round((1 - (s.gradeRank - 1) / allStudents.length) * 1000) / 10;
+      else if (displayMode === "percentile") dv = rankPercentile(s.gradeRank, allStudents.length);
       return { studentId: s.student_id, studentNumber: s.student_number, studentName: s.name, className: s.class_name ?? "未知班级", classId: s.class_id, gradeName: s.grade_name ?? null, totalScore: s.total_score, assignedScore: s.assigned_score, gradeRank: s.gradeRank, classRank: s.classRank ?? 0, rankChange, prevRank, prevExamName: prevExam?.name ?? null, displayValue: dv, objectiveScore: s.objective_score, subjectiveScore: s.subjective_score };
     });
     if (classId !== undefined && classId !== 0) rows.sort((a, b) => a.classRank - b.classRank);

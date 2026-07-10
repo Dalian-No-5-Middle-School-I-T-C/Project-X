@@ -7,6 +7,70 @@
 
 ---
 
+## 修复状态（本轮）
+
+本轮针对报告中**明确、可验证且低风险**的 bug / 冲突点进行了修复与重构，并新增
+`scripts/bugfix-verification.ts` 回归测试（14 项断言全部通过）。回归校验命令：
+`npm run typecheck`、`npm run verify:auth`（54 通过）、`npx tsx scripts/grading-rules-smoke.ts`、
+`npx tsx scripts/bugfix-verification.ts`。
+
+| 条目 | 状态 | 说明 |
+| --- | --- | --- |
+| C-S1 | ✅ 已修复 | restore 改用 `execFile` 参数数组 + stdin，消除命令注入 |
+| H-S12 | ✅ 已修复 | 扫描上传 `side` 白名单、扩展名白名单、`sessionId` basename 兜底 |
+| M-S18 | ✅ 已修复 | ZIP 解压路径检查改用 `path.relative`，防前缀绕过 |
+| H-L1 | ✅ 已修复 | 用户 `reviewConfidenceThreshold` 现已传入 Web 阅卷评分链路 |
+| H-L2 / L-L11 | ✅ 已修复 | 两份重复 `recomputeRankings` 收敛为共享实现，改用 `competitionRank` |
+| M-L4 | ✅ 已修复 | 排名重算统一百分位公式 A（末名 0，下限裁剪） |
+| H-L3 | ✅ 已修复 | 成绩编辑/复核 total_score 统一 `roundScore` |
+| M-L6 | ✅ 已修复 | 主观题分数增加下限裁剪 `Math.max(0, ...)` |
+| M-L3 | ✅ 已修复 | 多页阅卷学号跨页择优取 `status=ok` 结果 |
+| M-L2 | ✅ 已修复 | 跨页题目去重纳入置信度，避免复核标记被首页锁死 |
+| C-F1 | ✅ 已修复 | `GradingResults` 的 `useState` 移到早返回之前 |
+| C-F2 / C-F3 | ✅ 已修复 | `ScannerPanel` 用 ref 追踪 pages/sessionId/scannerMode |
+| H-F2 | ✅ 已修复 | 网上阅卷"保存并下一份"真正前进 |
+| H-F5 | ✅ 已修复 | SSE `onmessage` 的 `JSON.parse` 加 try/catch（ScannerPanel + App） |
+| H-F6 | ✅ 已修复 | 图片压缩释放 `objectURL`，修复内存泄漏 |
+| M-F4 | ✅ 已修复 | 扫描 SSE `onerror` 反馈错误状态 |
+| L-S2 | ✅ 已修复 | `generateTeacherUsername` 改为异步并检查存在性 |
+| L-F8 | ✅ 已修复 | `ClassManagement` CSV 表头正则去重 |
+| L-L4 | ✅ 已修复 | `englishTemplate` 移除两分支相同的无意义三元 |
+| H-S4 | ✅ 已修复 | `saveStudentScore` 改用 `ON CONFLICT DO UPDATE`，保留 rank/percentile/manually_modified |
+| H-S1 | ✅ 已修复 | 成绩修改 PUT 路由增加 `requireExamAccess` |
+| H-S11 | ✅ 已修复 | `getVisibleExamIds` 改用 `getMysqlDb()` 异步适配器（MariaDB 模式正确） |
+| M-L4 (display) | ✅ 已修复 | `AnalysisRepository` 百分位显示模式改用 `rankPercentile` 公式 A |
+| backup 默认端口 | ✅ 已修复 | MariaDB 备份/恢复默认端口 `3306`（原误为 `443`） |
+| ScannerPanel sessionId | ✅ 已修复 | `startScan` 同步写入 `sessionIdRef`，避免远程上传静默跳过 |
+| score-editing answers | ✅ 已修复 | 持久化答题卡答案、`subjective_score` 同步、复核阈值传入 |
+| PR161 COUNT | ✅ 已修复 | `COUNT(ss.exam_id)` 替代 `COUNT(ss.id)`，修复 JOIN 重复计数 |
+| H-S2 | ✅ 已修复 | 成绩导出增加 `requireExamAccess` + `GRADE_READ` |
+| H-S3 | ✅ 已修复 | AI 服务商 API Key 脱敏返回（`maskApiKey`） |
+| H-S10 | ✅ 已修复 | 主 `/api/scanner` 路由改用 `makeScannerAuth`（API Key 或 JWT+写权限） |
+| H-S13 / M-S13 | ✅ 已修复 | 天梯路由增加考试访问校验与 `visibleExamIds` 过滤 |
+| H-S1 (GET) | ✅ 已修复 | 成绩编辑 GET 路由补 `requireExamAccess` |
+| H-F3 | ✅ 已修复 | 导出/备份等原生 `fetch` 统一为 `authFetch` |
+
+> 其余条目（如 C-S2/C-S3 鉴权默认策略、H-S7 默认密码、性能/虚拟化、a11y、大量 `any`
+> 清理等）多属**产品策略决定**或**大范围重构**，改动会影响既有部署行为或超出本轮安全修复
+> 范围，暂未在本轮处理，保留在下方清单供后续分批推进。
+
+### 回归测试结果（2026-07-06）
+
+| 测试项 | 结果 |
+| --- | --- |
+| `npm run typecheck` | ✅ 通过 |
+| `npm run verify:auth` | ✅ 54 通过 / 0 失败 |
+| `npx tsx scripts/grading-rules-smoke.ts` | ✅ 通过（9 用例） |
+| `npx tsx scripts/bugfix-verification.ts` | ✅ 16 断言通过 |
+| `npx tsx scripts/ranking-integration-check.ts` | ✅ 5 断言通过（真实 SQLite） |
+| `npm run build` | ✅ dist/web + dist/server 构建成功 |
+| GUI 冒烟（http://127.0.0.1:5173/） | ✅ admin 登录、设计/考试/阅卷/分析四页正常渲染 |
+
+### 第三轮修复（2026-07-07）
+
+补充 H-S2、H-S3、H-S10、H-S13、H-S1 GET、H-F3 等权限/安全/远程 API 配置项。全部回归测试仍通过。
+
+---
 ## 总览
 
 | 维度 | Critical | High | Medium | Low | 合计 |

@@ -12,6 +12,7 @@ import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
 import { OnlineReviewPanel } from "./OnlineReviewPanel";
+import { AnalysisTrend } from "./AnalysisTrend";
 
 interface ClassOption {
   id: number;
@@ -347,6 +348,11 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             ) : (
               <div style={{ textAlign: "center", padding: 40, color: "var(--muted)" }}>
                 {loading ? "正在加载..." : "暂无数据"}
+              </div>
+            )}
+            {overview && subject && (
+              <div style={{ marginTop: 24 }}>
+                <AnalysisTrend exams={[{ subject }]} initialSubject={subject} initialClassId={classId || undefined} />
               </div>
             )}
           </div>

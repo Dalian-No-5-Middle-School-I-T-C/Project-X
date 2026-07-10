@@ -56,6 +56,7 @@ import type {
 import { createPdf } from "./pdf";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
+import { makeScannerAuth } from "../../../server/middleware/scanner-auth";
 
 import { assertImageFile } from "./validate-upload";
 import {
@@ -76,6 +77,15 @@ import { ApiError } from "../../../server/api-error";import { assetsDir, cardAss
 
 
 
+
+/**
+ * 解析当前请求用户配置的客观题复核置信度阈值。
+ * 未登录或读取失败时回落到默认阈值。
+ */
+async function resolveConfidenceThreshold(req: express.Request): Promise<number> {
+  const { resolveReviewConfidenceThreshold } = await import("../../../server/services/userSettings");
+  return resolveReviewConfidenceThreshold(req.user?.id);
+}
 
 function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
   const examDate = fieldValue((card as any).examDate ?? card.examDate).trim();
@@ -614,7 +624,7 @@ export async function createApp(): Promise<express.Express> {
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
   const examGate = makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_WRITE);
   const analysisGate = makeGate(enforceAuth, PERMISSIONS.GRADE_READ, PERMISSIONS.GRADE_READ);
-  const scannerGate = makeGate(enforceAuth, PERMISSIONS.GRADE_WRITE, PERMISSIONS.GRADE_WRITE);
+  const scannerAuth = makeScannerAuth(enforceAuth);
   const cropGate = answerBlockCropGate(enforceAuth);
   app.use("/api/cards", cardGate);
   app.use("/api/exams", examGate);
@@ -888,6 +898,7 @@ export async function createApp(): Promise<express.Express> {
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
+      const confidenceThreshold = await resolveConfidenceThreshold(req);
 
       let finished = 0;
       if (progressId) {
@@ -903,7 +914,7 @@ export async function createApp(): Promise<express.Express> {
             dpi
           })) as ObjectiveRecognitionResult;
           return {
-            ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
+            ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
@@ -916,7 +927,7 @@ export async function createApp(): Promise<express.Express> {
             questions: []
           };
           return {
-            ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition),
+            ...gradeObjectiveRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
@@ -978,6 +989,7 @@ export async function createApp(): Promise<express.Express> {
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
       const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
+      const confidenceThreshold = await resolveConfidenceThreshold(req);
 
       const examIdParam = fieldValue(req.body.examId);
 
@@ -998,7 +1010,7 @@ export async function createApp(): Promise<express.Express> {
           })) as CombinedRecognitionResult;
           recognition.subjectiveQuestions = recognition.subjectiveQuestions ?? [];
           return {
-            ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
+            ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
@@ -1012,7 +1024,7 @@ export async function createApp(): Promise<express.Express> {
             subjectiveQuestions: []
           };
           return {
-            ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition),
+            ...gradeCombinedRecognition(card, file.originalname || path.basename(file.path), recognition, confidenceThreshold),
             previewUrl: gradingPreviewUrl(cardId, file.path),
             actualPath: file.path
           };
@@ -1564,7 +1576,7 @@ export async function createApp(): Promise<express.Express> {
 
 
   if (scannerEnabled()) {
-    app.use("/api/scanner", scannerGate, createScannerRouter());
+    app.use("/api/scanner", scannerAuth, createScannerRouter());
   } else {
     app.use("/api/scanner", (_req, res) => {
       res.status(404).json({ message: "Scanner is disabled in this Project-X package." });

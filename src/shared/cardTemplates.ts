@@ -184,7 +184,7 @@ function englishTemplate(withListening: boolean): BodyBlock[] {
     ...rangeQuestions(41, 55, "single", 4, 1)
   ];
   return [
-    objectiveBlock(withListening ? "客观题" : "客观题", questions),
+    objectiveBlock("客观题", questions),
     fillBlankBlock("语法填空", Array.from({ length: 10 }, (_, index) => blankQuestion(56 + index, 1.5, 1)))
   ];
 }

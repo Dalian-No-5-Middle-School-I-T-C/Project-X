@@ -43,8 +43,8 @@ export function makeGate(enforce: boolean, readPerm: string, writePerm: string) 
 /**
  * Returns the set of exam IDs visible to the current teacher.
  * - admin / grade_leader → null (all visible)
- * - head_teacher → own classes only
- * - subject_teacher → own subject + classes
+ * - head_teacher → own classes + created exams
+ * - subject_teacher → own subject + classes + created exams
  * - plain teacher (no teacher_role) → null (back-compat)
  */
 export async function getVisibleExamIds(user: express.Request["user"]): Promise<number[] | null> {
@@ -106,7 +106,6 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
       );
       // If any restriction forbids all grades (grade_id = null), deny everything
       if (restrictions.some((r) => r.grade_id === null)) return [];
-      // Filter out exams from restricted grades
       if (restrictions.length > 0) {
         const restrictedGrades = restrictions.map((r) => r.grade_id).filter(Boolean) as number[];
         const rows = await db.all<{ id: number }>(
@@ -126,7 +125,9 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
 async function hasTable(db: DbAdapter, table: string): Promise<boolean> {
   try {
     return !!(await db.get(`SELECT 1 FROM ${table} LIMIT 1`));
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -144,7 +145,6 @@ export async function requireExamAccess(req: express.Request, res: express.Respo
     return;
   }
 
-  // Students may only access the AI-analysis endpoint
   if (req.user.role_name === "student") {
     if (req.method !== "POST" || !req.originalUrl.includes("/ai-analysis")) {
       res.status(403).json({ message: "权限不足" });

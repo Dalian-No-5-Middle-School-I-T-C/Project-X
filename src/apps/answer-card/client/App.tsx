@@ -1338,7 +1338,13 @@ function App() {
     gradingProgressSourceRef.current = es;
 
     es.onmessage = (event) => {
-      const data = JSON.parse(event.data) as GradingProgressEvent;
+      let data: GradingProgressEvent;
+      try {
+        data = JSON.parse(event.data) as GradingProgressEvent;
+      } catch {
+        // 忽略非 JSON 消息（如心跳），避免抛出未捕获异常
+        return;
+      }
       setGradingProgress({
         active: data.type !== "error",
         finished: data.finished,
@@ -2588,20 +2594,7 @@ function GradingResults({
   result: CombinedGradingBatchResult | null;
   onDownloadCsv: () => void;
 }) {
-  if (!result) {
-    return (
-      <div className="grading-empty">
-        <ClipboardCheck size={36} />
-        <h2>等待阅卷</h2>
-        <p>选择答题卡，导入答题卡图片或图片目录后开始识别。</p>
-      </div>
-    );
-  }
-
-  const totalReview = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
-  const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
-
-  // Preview modal state
+  // Hooks 必须在任何早返回之前调用，避免 result 由 null 变为非空时 Hook 数量变化导致崩溃
   const [previewPages, setPreviewPages] = useState<ScanPage[] | null>(null);
   const [previewTitle, setPreviewTitle] = useState("");
 
@@ -2615,6 +2608,19 @@ function GradingResults({
       imageUrl: urlWithToken(row.previewUrl)
     }]);
   }
+
+  if (!result) {
+    return (
+      <div className="grading-empty">
+        <ClipboardCheck size={36} />
+        <h2>等待阅卷</h2>
+        <p>选择答题卡，导入答题卡图片或图片目录后开始识别。</p>
+      </div>
+    );
+  }
+
+  const totalReview = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
+  const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
 
   return (
     <div className="grading-results">

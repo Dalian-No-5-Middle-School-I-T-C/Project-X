@@ -1,87 +1,148 @@
 # Project-X CHANGELOG
 
-## v1.8.1 (2026-07-06) — Ubuntu 生产环境与 AI 知识点分析热修
+## v1.8.2 (2026-07-09) — 暗色模式全面修复
 
-### Ubuntu PDF 导出
-- 修复服务端 PDF 生成硬编码 Windows 字体路径的问题：不再固定读取 `C:\Windows\Fonts\simhei.ttf` / `msyh.ttc`，改为按环境变量、常见 Linux/Windows/macOS CJK 字体路径和系统字体目录自动发现字体。
-- Ubuntu 部署包文档与依赖补充 `fonts-noto-cjk`，并支持 `PROJECTX_PDF_FONT_PATH` / `PROJECTX_PDF_FONT_POSTSCRIPT_NAME` 覆盖字体。
-- 字体缺失时降级到 PDFKit 内置字体，避免服务器直接抛 `ENOENT` 导致导出失败。
+基于 v1.6.3 暗色模式基线进行系统性修复，解决 v1.7.0+ 新增组件在暗色下的灰底灰字、可读性差、与背景融为一体等问题。
 
-### 同步创建考试与考试选择页
-- 修复 MariaDB 部署下考试可见性仍读取 SQLite adapter 的问题，`getVisibleExamIds` 统一走 `getMysqlDb()`，并补齐异步访问链路。
-- 班主任/任课教师可见范围补充“自己创建的考试”，避免同步创建但尚未分配班级/教师时创建者看不到考试。
-- 修复考试选择页组件被隐藏保留状态时不会随 `App.loadExams()` 刷新的问题，新增刷新 key 触发重新拉取 `/api/exams?selection=1`。
-- 修复旧表结构兼容问题：考试选择/分析/考试组统计不再依赖可能缺失的 `student_scores.id`，统一按 `COUNT(ss.exam_id)` 统计已阅人数。
+### 问题根因
+- v1.6.3 暗色模式已稳定（GitHub Dark 风格，#C0392B / #E6EDF3 / #161B22），但组件级暗色覆盖不完整
+- v1.7.0/v1.8.0 大量新增组件使用 `var(--brand)` / `var(--text)` 等变量，但未覆写背景色
+- 亮色模式下 `rgba(255,255,255,0.55~0.78)` 半透明毛玻璃在暗色底上呈现灰色、文字难以阅读
 
-### 线上版本与 Ubuntu 包
-- 侧栏标题版本号不再硬编码，改为由 Vite 从 `package.json` 注入 `import.meta.env.VITE_APP_VERSION`。
-- Ubuntu 包启动脚本与 systemd 模板显式指向当前包内 `dist/web`，避免服务已切到新目录但 `ANSWER_CARD_CLIENT_DIST` 仍指向旧前端资源。
-- Ubuntu 服务包 runtime dependencies 补齐 `mammoth`、`pdfjs-dist`、`sharp`、`tesseract.js` 等服务端运行时依赖，避免原卷/知识点功能在生产包中缺模块。
+### 修复方案
+**统一原则**：所有亮色半透明/毛玻璃背景在暗色下覆写为 `var(--surface)` / `var(--surface-raised)`，移除 `backdrop-filter`，添加清晰 `var(--line)` / `var(--line-strong)` 边框。
 
-### Python llmclient 生产部署
-- 新增 Python `llmclient` sidecar 的生产部署形态：代码位于 `/opt/project-x-llmclient`，配置位于 `/etc/project-x/llmclient.env`，systemd 服务为 `project-x-llmclient.service`，仅监听 `127.0.0.1:8766`。
-- 主 Node 服务通过 `LLMCLIENT_URL` 与 `LLMCLIENT_INTERNAL_API_KEY` 调用 sidecar；`/models` 等接口在设置内部 key 后拒绝未授权访问。
-- `llmclient` 新增 MariaDB 读取支持：检测到 `PROJECTX_MARIADB_HOST` / `PROJECTX_MYSQL_HOST` 时使用 MariaDB 连接读取真实线上成绩库，保留 SQLite 开发模式。
-- `llmclient/requirements.txt` 新增 `PyMySQL`，用于 MariaDB 生产连接。
+#### 核心变量（保持 v1.6.3 不变）
+| 变量 | 暗色值 |
+|------|--------|
+| `--brand` | `#C0392B` |
+| `--text` | `#E6EDF3` |
+| `--surface` | `#161B22` |
+| `--surface-raised` | `#21262D` |
+| `--background` | `#0D1117` |
 
-### AI 知识点分析
-- 修复旧 MariaDB `ai_providers` 表缺少 `is_system` 时知识点分析直接 500 的问题；MariaDB 增量迁移新增 `v18 system-ai-provider`，补齐 `ai_providers.is_system`。
-- 修复 `system_settings.key` 在 MariaDB 中未加反引号导致的 SQL 语法错误。
-- 原卷/知识点路由中的更新时间写法统一为 `CURRENT_TIMESTAMP`，兼容 SQLite 与 MariaDB。
-- 知识点分析的 AI 提供商选择改为：优先系统级 AI 服务商，其次当前用户个人服务商，最后回退到 `/etc/project-x/llmclient.env` 中的默认模型配置。
-- Node → Python 的知识点分析请求会传递 `providerOverride`，Python 侧按传入的 provider/base_url/api_key/model 执行，不再只依赖环境变量默认模型。
-- Python sidecar 返回错误时，Node 不再吞成空结果或泛泛 500，而是把具体 `detail/message/error` 透传给前端，方便定位 Key、Base URL、OCR/文本提取等配置问题。
+#### 修复的组件（`styles.css` ~250 行新增暗色覆盖）
+- **通用按钮** `.ghost-button` / `.primary-button`：背景 `var(--surface-raised)` + 边框，hover 品牌色
+- **通用面板** `.panel`：背景 `var(--surface)`，hover `var(--surface-raised)` + 品牌色边框
+- **答题卡列表** `.card-list-item` / `.card-list-actions button`：移除半透明白，激活态品牌红渐变
+- **底部状态栏** `.statusbar`：背景 `var(--surface-raised)`
+- **顶部导航** `.mode-toggle button`：未激活用 `var(--surface-raised)` 与背景区分，激活保留红渐变
+- **题块卡片** `.block-chip`：背景 `var(--surface-raised)`，hover/active 品牌红渐变
+- **题块操作按钮** `.chip-actions button` / `.question-editor-title button`：背景 `var(--surface)`
+- **上传按钮** `.upload-button`：背景 `var(--surface-raised)` + 品牌色虚线边框
+- **答案键按钮** `.answer-key-row button`：背景 `var(--surface-raised)`，激活态品牌红
+- **分值检查** `.score-warning-summary`：去掉亮色黄底，改为深色品牌黄调
 
-## v1.7.3 (2026-07-04) — 移动端网页适配
+#### 阅卷表格暗色适配
+- `.score-table` / `.score-table-head` / `.question-grade-list` / `.question-grade`：覆写半透明白背景
+- `.question-grade.needs-review`：深色黄调
+- `.status-ok`：深色绿 `#6EE7B7`，`.status-warn`：深色黄 `#FCD34D`
+- `.file-queue` / `.queued-files span`：覆写半透明白，移除 backdrop-filter
 
-### 移动端全面适配
+#### AI 分析面板暗色适配
+- `.ai-analysis-panel`：背景 `var(--surface)`
+- `.icon-button`：背景 `var(--surface-raised)`，hover 品牌色
+- `.ai-status-warning`：深色黄调 + `#FCD34D` 文字
+- `.ai-report-summary` / `.ai-caveats span` / `.ai-tool-trace span`：深色背景
+- `.ai-question-action em`：`var(--muted)` 文字色
 
-系统从桌面端专用布局升级为桌面/移动端双适配架构。新增 480px 手机断点，通过底部导航栏替代桌面端 Tab 切换，实现手机端原生体验。
+### 修改文件
+| 文件 | 改动 |
+| --- | --- |
+| `src/apps/answer-card/client/styles.css` | 暗色覆盖段新增 ~250 行组件级暗色适配 |
 
-- **底部导航栏（Bottom Navigation Bar）**：
-  - 固定屏幕底部，毛玻璃背景 + 品牌色激活项
-  - 根据用户权限动态生成导航项（设计/考试/阅卷/分析/成绩/账号），最多 5 个 Tab
-  - 图标 + 短标签（2-3字），触摸目标 44px，iPhone 安全区适配（`env(safe-area-inset-bottom)`）
-  - 桌面端 `display: none`，仅 480px 以下显示
-- **Topbar 移动端精简**：
-  - 隐藏副标题、隐藏桌面端 `mode-toggle`（由底部导航替代）
-  - 标题省略号截断，操作按钮紧凑排列
-  - `position: sticky` 固定顶部
-- **480px 移动端主断点**（~300 行新增 CSS）：
-  - 全局重置：`body` 可滚动、`app-shell` 取消固定高度、底部 padding 为导航栏留空间
-  - 8 个 mode 页面逐一适配：
-    - **design**：预览区 + 属性面板纵向排列，答题卡页面自适应宽度
-    - **exam-manage**：考试列表表格改卡片布局，表头隐藏
-    - **grading**：扫描面板 padding 缩减，扫描结果网格紧凑化
-    - **analysis**：分析卡片 2 列，排名表横向滚动，箱型图 2 列
-    - **scores**：概览卡片紧凑排列，Tab 横向滚动，图表高度缩减
-    - **account**：三栏班级布局改单列，表单单列，表格横向滚动
-    - **sponsor**：收款码卡片全宽，二维码缩至 140px
-    - **guide**：正文 13px、表格横向滚动、代码块紧凑
-- **Modal 底部弹出（Bottom Sheet）**：
-  - 所有弹窗从屏幕底部滑出，全宽圆角顶部（`border-radius: 20px 20px 0 0`）
-  - 底部按钮纵向全宽排列
-  - PDF 查看弹窗全屏化
-  - 账号菜单下拉改为底部弹出
-- **触摸优化**：
-  - 输入框 `font-size: 16px`（防止 iOS Safari 自动缩放）
-  - 触摸目标最小 44px
-  - `-webkit-overflow-scrolling: touch` + `overscroll-behavior: contain`
-- **横屏适配**（iPad 等）：
-  - 1024px landscape：主内容 + 属性面板 320px 双列
-  - 768px landscape：单列 + 底部导航缩小至 48px
-- **暗色模式配套**：底部导航栏、Topbar、Modal 全部适配 `[data-theme="dark"]`
-- **HTML Meta 标签**：viewport 添加 `viewport-fit=cover`，新增 `apple-mobile-web-app-capable`、`theme-color`
+---
 
-### 技术实现
+## v1.8.1 (2026-07-06) — 代码审查 bug 修复与一致性收敛
 
-- **纯 CSS 适配策略**：不修改任何子组件文件，全部通过 `styles.css` 中的 `@media (max-width: 480px)` 规则覆盖
-- **App.tsx 最小改动**：仅新增 `mobileNavItems` useMemo（权限驱动的导航项数组）+ 底部导航 JSX
-- **CSS 变量扩展**：新增 `--mobile-bottom-nav-height`、`--mobile-safe-area-bottom/top`、`--touch-target-min`、`--mobile-content-padding`
+基于 PR161 代码审查报告（`readus/CODE-REVIEW.md`），修复安全漏洞、崩溃 bug、排名/百分位不一致及若干前端问题。
+
+### 安全修复
+- **MariaDB 恢复命令注入（C-S1）**：`backup.ts` restore 改用 `execFile` 参数数组 + stdin，消除 shell 注入
+- **扫描上传路径遍历（H-S12）**：`side` 白名单、`sessionId` basename 兜底、扩展名白名单
+- **ZIP 解压前缀绕过（M-S18）**：路径检查改用 `path.relative`，防止 `destDir-evil` 类前缀攻击
+
+### 数据一致性
+- **排名算法统一（H-L2）**：`score-editing.ts` 与 `ReviewService.ts` 两份重复 `recomputeRankings` 收敛为共享模块 `rankingUpdate.ts`，改用 `competitionRank`（同分并列）
+- **百分位公式统一（M-L4）**：写入 DB 时统一使用公式 A `(total - rank) / (total - 1) * 100`（末名 0）
+- **分数舍入（H-L3）**：成绩编辑/复核路径 `total_score` 统一 `roundScore`（3 位小数）
+
+### 阅卷逻辑
+- **复核置信度阈值生效（H-L1）**：Web 阅卷链路读取用户 `reviewConfidenceThreshold` 并传入 `gradeObjectiveQuestion`
+- **主观题负分裁剪（M-L6）**：`Math.max(0, Math.min(score, maxScore))`
+- **多页阅卷择优（M-L2/M-L3）**：跨页去重纳入置信度；学号优先取 `status=ok` 的识别结果
+
+### 前端修复
+- **GradingResults 崩溃（C-F1）**：`useState` 移到早返回之前，修复 Hook 数量变化崩溃
+- **ScannerPanel 闭包陷阱（C-F2/C-F3）**：用 ref 追踪 `pages`/`sessionId`/`scannerMode`，修复 done 回传页数 0 与远程上传空循环
+- **网上阅卷前进（H-F2）**：「保存并下一份」真正前进到下一份
+- **SSE 健壮性（H-F5/M-F4）**：`JSON.parse` 加 try/catch；扫描 SSE 断连反馈错误状态
+- **图片压缩内存泄漏（H-F6）**：`URL.revokeObjectURL` 释放 blob URL
+
+### 小修复
+- `generateTeacherUsername` 异步检查存在性，避免用户名碰撞（L-S2）
+- `englishTemplate` 移除无意义三元（L-L4）
+- `ClassManagement` CSV 表头正则去重（L-F8）
+
+### 测试与文档
+- 新增 `readus/CODE-REVIEW.md`（含修复状态总表）
+- 新增 `scripts/bugfix-verification.ts`（14 项单元断言）
+- 新增 `scripts/ranking-integration-check.ts`（真实 SQLite 排名集成测试）
+
+### 回归验证
+- `npm run typecheck` ✓
+- `npm run verify:auth` — 54 通过 / 0 失败
+- `npx tsx scripts/grading-rules-smoke.ts` ✓
+- `npx tsx scripts/bugfix-verification.ts` — 14 通过
+- `npx tsx scripts/ranking-integration-check.ts` ✓
+- `npm run build` ✓
+- GUI 冒烟：登录、设计/考试/阅卷/分析四页正常渲染
+
+### 第二轮修复（对照 PR161 + debug 审查）
+- **H-S4**：`ExamRepository` / 扫描器持久化改用 `ON CONFLICT DO UPDATE`，重扫保留 rank/percentile/手动改分
+- **H-S1**：成绩修改 PUT 路由增加 `requireExamAccess`
+- **H-S11**：`getVisibleExamIds` 异步化 + `getMysqlDb()`，MariaDB 模式考试可见性正确
+- **M-L4 显示层**：`AnalysisRepository` 百分位显示统一公式 A
+- **backup**：MariaDB 默认端口 `3306`（原误 `443`）
+- **ScannerPanel**：`sessionIdRef` 在 `startScan` 同步赋值
+- **score-editing**：答案 `updateCard` 持久化、同步 `subjective_score`、传入复核阈值
+- **PR161**：`COUNT(ss.exam_id)` 修复 JOIN 重复计数
 
 ### 修改文件
 
 | 文件 | 改动 |
+| --- | --- |
+| `src/server/routes/backup.ts` | execFile 防注入、ZIP 路径检查 |
+| `src/server/routes/scanner-upload.ts` | side/ext/sessionId 安全校验 |
+| `src/server/services/rankingUpdate.ts` | **新增** 统一排名/百分位重算 |
+| `src/server/routes/score-editing.ts` | 使用共享排名模块 + roundScore |
+| `src/server/services/ReviewService.ts` | 同上 |
+| `src/shared/grading.ts` | 阈值参数、跨页择优、主观分裁剪 |
+| `src/apps/answer-card/server/index.ts` | 读取用户复核阈值传入阅卷 |
+| `src/apps/answer-card/client/App.tsx` | GradingResults Hook 修复、SSE try/catch |
+| `src/apps/answer-card/client/components/ScannerPanel.tsx` | ref 闭包修复 |
+| `src/apps/answer-card/client/components/OnlineReviewPanel.tsx` | 保存并下一份前进 |
+| `src/apps/answer-card/client/components/PaperUploadPanel.tsx` | objectURL 释放 |
+| `src/server/repositories/UserRepository.ts` | 教师用户名生成重试 |
+| `src/shared/cardTemplates.ts` | 移除冗余三元 |
+| `scripts/bugfix-verification.ts` | **新增** 回归测试 |
+| `scripts/ranking-integration-check.ts` | **新增** 排名集成测试 |
+| `readus/CODE-REVIEW.md` | **新增** 代码审查报告 + 修复状态 |
+| `src/server/services/userSettings.ts` | **新增** 共享复核阈值读取 |
+| `src/server/repositories/ExamRepository.ts` | H-S4 upsert + COUNT 修复 |
+| `src/apps/answer-card/server/middleware.ts` | H-S11 异步 getMysqlDb |
+| `src/apps/answer-card/server/scanner/index.ts` | H-S4 扫描持久化 upsert |
+| `src/server/repositories/AnalysisRepository.ts` | M-L4 百分位显示 + COUNT |
+| `src/server/routes/exam-groups.ts` | COUNT(ss.exam_id) |
+
+### Ubuntu 生产环境与 AI 知识点分析热修
+- PDF 导出按环境变量、常见 Linux/Windows/macOS CJK 字体路径和系统字体目录自动发现字体；缺失时降级到 PDFKit 内置字体，并支持 `PROJECTX_PDF_FONT_PATH` / `PROJECTX_PDF_FONT_POSTSCRIPT_NAME` 覆盖。
+- MariaDB 考试可见性统一走 `getMysqlDb()`；考试选择、分析和考试组统计不再依赖可能缺失的 `student_scores.id`，统一使用 `COUNT(ss.exam_id)`。
+- Ubuntu 包启动脚本和 systemd 模板显式使用包内 `dist/web`，并补齐 `mammoth`、`pdfjs-dist`、`sharp`、`tesseract.js` 等服务端依赖。
+- 新增 `llmclient` Python sidecar 生产部署与 MariaDB 读取支持；知识点分析优先使用系统级服务商，失败时将具体错误透传到前端。
+
+---
+
 ## v1.8.0 (2026-07-04) — 原卷上传与 AI 知识点分析
 
 ### 数据库 schema 完善
@@ -169,6 +230,58 @@
 
 
 ---
+
+## v1.7.3 (2026-07-04) — 移动端网页适配
+
+### 移动端全面适配
+
+系统从桌面端专用布局升级为桌面/移动端双适配架构。新增 480px 手机断点，通过底部导航栏替代桌面端 Tab 切换，实现手机端原生体验。
+
+- **底部导航栏（Bottom Navigation Bar）**：
+  - 固定屏幕底部，毛玻璃背景 + 品牌色激活项
+  - 根据用户权限动态生成导航项（设计/考试/阅卷/分析/成绩/账号），最多 5 个 Tab
+  - 图标 + 短标签（2-3字），触摸目标 44px，iPhone 安全区适配（`env(safe-area-inset-bottom)`）
+  - 桌面端 `display: none`，仅 480px 以下显示
+- **Topbar 移动端精简**：
+  - 隐藏副标题、隐藏桌面端 `mode-toggle`（由底部导航替代）
+  - 标题省略号截断，操作按钮紧凑排列
+  - `position: sticky` 固定顶部
+- **480px 移动端主断点**（~300 行新增 CSS）：
+  - 全局重置：`body` 可滚动、`app-shell` 取消固定高度、底部 padding 为导航栏留空间
+  - 8 个 mode 页面逐一适配：
+    - **design**：预览区 + 属性面板纵向排列，答题卡页面自适应宽度
+    - **exam-manage**：考试列表表格改卡片布局，表头隐藏
+    - **grading**：扫描面板 padding 缩减，扫描结果网格紧凑化
+    - **analysis**：分析卡片 2 列，排名表横向滚动，箱型图 2 列
+    - **scores**：概览卡片紧凑排列，Tab 横向滚动，图表高度缩减
+    - **account**：三栏班级布局改单列，表单单列，表格横向滚动
+    - **sponsor**：收款码卡片全宽，二维码缩至 140px
+    - **guide**：正文 13px、表格横向滚动、代码块紧凑
+- **Modal 底部弹出（Bottom Sheet）**：
+  - 所有弹窗从屏幕底部滑出，全宽圆角顶部（`border-radius: 20px 20px 0 0`）
+  - 底部按钮纵向全宽排列
+  - PDF 查看弹窗全屏化
+  - 账号菜单下拉改为底部弹出
+- **触摸优化**：
+  - 输入框 `font-size: 16px`（防止 iOS Safari 自动缩放）
+  - 触摸目标最小 44px
+  - `-webkit-overflow-scrolling: touch` + `overscroll-behavior: contain`
+- **横屏适配**（iPad 等）：
+  - 1024px landscape：主内容 + 属性面板 320px 双列
+  - 768px landscape：单列 + 底部导航缩小至 48px
+- **暗色模式配套**：底部导航栏、Topbar、Modal 全部适配 `[data-theme="dark"]`
+- **HTML Meta 标签**：viewport 添加 `viewport-fit=cover`，新增 `apple-mobile-web-app-capable`、`theme-color`
+
+### 技术实现
+
+- **纯 CSS 适配策略**：不修改任何子组件文件，全部通过 `styles.css` 中的 `@media (max-width: 480px)` 规则覆盖
+- **App.tsx 最小改动**：仅新增 `mobileNavItems` useMemo（权限驱动的导航项数组）+ 底部导航 JSX
+- **CSS 变量扩展**：新增 `--mobile-bottom-nav-height`、`--mobile-safe-area-bottom/top`、`--touch-target-min`、`--mobile-content-padding`
+
+### 修改文件
+
+| 文件 | 改动 |
+
 
 ## v1.7.2 (2026-07-01) — 统计图表 + 教师权限管理
 

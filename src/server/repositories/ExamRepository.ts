@@ -1,5 +1,6 @@
-import { getMysqlDb } from "../db";
+import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
+import { roundScore } from "../services/rankingUpdate";
 
 export interface ExamRecord {
   id: number;
@@ -168,10 +169,19 @@ export class ExamRepository {
   }
 
   async saveStudentScore(examId: number, studentId: number, objectiveScore: number, subjectiveScore: number): Promise<void> {
-    const total = objectiveScore + subjectiveScore;
-    await this.db.run(
-      "REPLACE INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score, graded_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)",
-      examId, studentId, objectiveScore, subjectiveScore, total);
+    const obj = roundScore(objectiveScore);
+    const subj = roundScore(subjectiveScore);
+    const total = roundScore(obj + subj);
+    const gradedAt = new Date().toISOString();
+    const upsertSQL = buildUpsertSQL(
+      this.db.dialect,
+      "student_scores",
+      ["exam_id", "student_id", "objective_score", "subjective_score", "total_score", "graded_at"],
+      ["exam_id", "student_id"],
+      ["objective_score", "subjective_score", "total_score", "graded_at"]
+    );
+    // ON CONFLICT 仅更新分数列，保留 rank/percentile/assigned_score/manually_modified 等
+    await this.db.run(upsertSQL, examId, studentId, obj, subj, total, gradedAt);
   }
 
   async getExamResults(examId: number): Promise<Array<{

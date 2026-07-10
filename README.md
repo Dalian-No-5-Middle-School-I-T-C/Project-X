@@ -321,10 +321,7 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | [多端使用说明.md](./readus/多端使用说明.md) | Web 端 / 扫描端的功能差异、共用数据目录、账号登录与构建部署 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-<<<<<<< HEAD
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.8.0 原卷上传与 AI 知识点分析 + v1.7.2 统计图表与教师权限） | 全体 |
-=======
->>>>>>> ac0a782 (fix bugs)
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录 | 全体 |
 
 ---
 
