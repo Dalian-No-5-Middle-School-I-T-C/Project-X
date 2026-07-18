@@ -105,6 +105,20 @@ def default_db_path() -> Path:
     return (REPO_DIR / "data" / "projectx.db").resolve()
 
 
+def mariadb_configured() -> bool:
+    return bool(env_value("PROJECTX_MARIADB_HOST") or env_value("PROJECTX_MYSQL_HOST"))
+
+
+def mariadb_config() -> dict[str, object]:
+    return {
+        "host": env_value("PROJECTX_MARIADB_HOST") or env_value("PROJECTX_MYSQL_HOST") or "127.0.0.1",
+        "port": int(env_value("PROJECTX_MARIADB_PORT") or env_value("PROJECTX_MYSQL_PORT") or "3306"),
+        "user": env_value("PROJECTX_MARIADB_USER") or env_value("PROJECTX_MYSQL_USER") or "projectx",
+        "password": env_value("PROJECTX_MARIADB_PASSWORD") or env_value("PROJECTX_MYSQL_PASSWORD") or "projectx",
+        "database": env_value("PROJECTX_MARIADB_DATABASE") or env_value("PROJECTX_MYSQL_DATABASE") or "projectx",
+    }
+
+
 def llmclient_api_key() -> str:
     return env_value("LLMCLIENT_INTERNAL_API_KEY")
 

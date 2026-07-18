@@ -168,6 +168,7 @@ router.post("/cross-exam/total", async (req, res, next) => {
     }
 
     if (requestedExamIds.length > 0 && !(await validateExamIdsAccess(req, res, requestedExamIds))) return;
+    const visibleExamIds = await getVisibleExamIds(req.user);
     const data = await analysisRepo.getCrossExamTotal({
       mode,
       groupId: optionalPositiveNumber(body.groupId),
@@ -179,7 +180,7 @@ router.post("/cross-exam/total", async (req, res, next) => {
       subject: typeof body.subject === "string" && body.subject.trim() ? body.subject.trim() : undefined,
       attendanceMode: body.attendanceMode === "full" ? "full" : "all"
     }, {
-      visibleExamIds: await getVisibleExamIds(req.user)
+      visibleExamIds
     });
     res.json(data);
   } catch (error) {

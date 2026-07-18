@@ -470,6 +470,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `CREATE INDEX IF NOT EXISTS idx_kp_card_question ON knowledge_points(card_id, question_number)`,
       ]
     },
+    {
+      version: 18,
+      name: "system-ai-provider",
+      sqls: [
+        `ALTER TABLE ai_providers ADD COLUMN is_system TINYINT DEFAULT 0`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

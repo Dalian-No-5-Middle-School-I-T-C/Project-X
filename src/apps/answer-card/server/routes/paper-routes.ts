@@ -15,6 +15,19 @@ import type { Request, Response } from "express";
 import { readFile } from "node:fs/promises";
 import { llmClientUrl, llmClientHeaders } from "../llm-client";
 
+type AiProviderRow = {
+  id: number;
+  user_id?: number;
+  name: string;
+  provider_type: string;
+  base_url: string;
+  api_key: string;
+  models: string | null;
+  is_active: number;
+  sort_order: number;
+  is_system?: number;
+};
+
 const paperUpload = multer({
   dest: path.resolve(process.cwd(), "data", "answer-card", "papers", "_tmp"),
   limits: { fileSize: 50 * 1024 * 1024 },
@@ -27,6 +40,79 @@ const paperUpload = multer({
     }
   },
 });
+
+function firstConfiguredModel(models: string | null | undefined): string | undefined {
+  if (!models) return undefined;
+  try {
+    const parsed = JSON.parse(models);
+    if (Array.isArray(parsed)) {
+      const first = parsed[0];
+      if (typeof first === "string") return first;
+      if (first && typeof first === "object" && typeof first.id === "string") return first.id;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+async function getKnowledgePointProvider(db: ReturnType<typeof getMysqlDb>, userId?: number): Promise<{
+  providerId: number;
+  providerType: string;
+  model?: string;
+  providerOverride?: Record<string, string>;
+} | null> {
+  const systemProvider = await db.get<AiProviderRow>(
+    "SELECT * FROM ai_providers WHERE is_system = 1 AND is_active = 1 ORDER BY sort_order, id LIMIT 1"
+  );
+  const provider = systemProvider ?? (userId
+    ? await db.get<AiProviderRow>(
+      "SELECT * FROM ai_providers WHERE user_id = ? AND is_active = 1 ORDER BY sort_order, id LIMIT 1",
+      userId
+    )
+    : null);
+
+  if (provider) {
+    return {
+      providerId: provider.id,
+      providerType: provider.provider_type,
+      model: firstConfiguredModel(provider.models),
+      providerOverride: {
+        provider_type: provider.provider_type,
+        base_url: provider.base_url || "",
+        api_key: provider.api_key,
+      },
+    };
+  }
+
+  const response = await fetch(llmClientUrl("/health"), {
+    method: "GET",
+    headers: llmClientHeaders(),
+    signal: AbortSignal.timeout(2500),
+  });
+  if (!response.ok) return null;
+  const status = await response.json() as {
+    defaultModel?: string;
+    models?: Array<{ id: string; provider: string; available: boolean }>;
+  };
+  const model = status.models?.find((item) => item.id === status.defaultModel)
+    ?? status.models?.find((item) => item.available);
+  if (!model?.available) return null;
+  return {
+    providerId: 0,
+    providerType: model.provider,
+    model: model.id,
+  };
+}
+
+async function readKnowledgePointResponse(resp: globalThis.Response): Promise<any[]> {
+  const data = await resp.json().catch(() => ({} as any));
+  if (!resp.ok) {
+    const detail = data?.detail || data?.message || data?.error || `LLM 服务返回 ${resp.status}`;
+    throw new Error(String(detail));
+  }
+  return data.knowledgePoints || [];
+}
 
 export function paperRoutes(): Router {
   const router = Router();
@@ -64,7 +150,7 @@ export function paperRoutes(): Router {
       const db = getMysqlDb();
       const relPath = path.relative(path.resolve(process.cwd(), "data", "answer-card"), originalPath);
       await db.run(
-        "UPDATE answer_cards SET has_original_paper = 1, original_paper_filename = ?, original_paper_path = ?, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE answer_cards SET has_original_paper = 1, original_paper_filename = ?, original_paper_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         file.originalname, relPath, cardId
       );
 
@@ -160,7 +246,7 @@ export function paperRoutes(): Router {
       // 更新数据库标记
       const db = getMysqlDb();
       await db.run(
-        "UPDATE answer_cards SET has_original_paper = 0, original_paper_filename = NULL, original_paper_path = NULL, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE answer_cards SET has_original_paper = 0, original_paper_filename = NULL, original_paper_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         cardId
       );
 
@@ -240,7 +326,7 @@ export function paperRoutes(): Router {
 
       const db = getMysqlDb();
       await db.run(
-        "UPDATE answer_cards SET question_range = ?, extra_notes = ?, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE answer_cards SET question_range = ?, extra_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         questionRange.trim(), extraNotes?.trim() || null, cardId
       );
 
@@ -262,19 +348,17 @@ export function paperRoutes(): Router {
 
       // 1. 获取系统 AI 配置
       const db = getMysqlDb();
-      const sysProvider = await db.get(
-        "SELECT * FROM ai_providers WHERE is_system = 1 AND is_active = 1 ORDER BY sort_order LIMIT 1"
-      );
+      const provider = await getKnowledgePointProvider(db, req.user?.id);
 
-      if (!sysProvider) {
-        res.status(400).json({ error: "SYSTEM_AI_NOT_CONFIGURED", message: "管理员尚未配置系统 AI 服务，请联系管理员" });
+      if (!provider) {
+        res.status(400).json({ error: "AI_NOT_CONFIGURED", message: "未配置可用 AI 服务。请配置系统/个人 AI 服务商，或在 llmclient.env 中填写可用模型 Key" });
         return;
       }
 
       // 2. 判断提供商类型 → 选择分析模式
       const range = questionRange || "全部";
       const notes = extraNotes || "";
-      const isMultimodal = sysProvider.provider_type === "gemini" || sysProvider.provider_type === "openai";
+      const isMultimodal = provider.providerType === "gemini" || provider.providerType === "openai";
 
       // 3. 获取答题卡科目
       const cardRow = await db.get("SELECT subject_label FROM answer_cards WHERE id = ?", cardId);
@@ -297,17 +381,17 @@ export function paperRoutes(): Router {
           method: "POST",
           headers: { ...llmClientHeaders(), "Content-Type": "application/json" },
           body: JSON.stringify({
-            mode, providerId: sysProvider.id, subject, questionRange: range, extraNotes: notes, files,
+            mode, providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
+            subject, questionRange: range, extraNotes: notes, files,
           }),
           signal: AbortSignal.timeout(60000),
         });
 
-        const data = await resp.json();
-        knowledgePoints = data.knowledgePoints || [];
+        knowledgePoints = await readKnowledgePointResponse(resp);
       } else {
         // 纯文本提供商：读配置 → 自动/OCR增强
         const textModeRow = await db.get(
-          "SELECT value FROM system_settings WHERE key = ?",
+          "SELECT value FROM system_settings WHERE `key` = ?",
           "ai_knowledge_points_text_mode"
         );
         const textMode = textModeRow?.value || "auto";
@@ -316,7 +400,7 @@ export function paperRoutes(): Router {
           // OCR 增强
           mode = "ocr";
           const ocrRow = await db.get(
-            "SELECT value FROM system_settings WHERE key = ?",
+            "SELECT value FROM system_settings WHERE `key` = ?",
             "ai_knowledge_points_ocr_provider_id"
           );
           const ocrProviderId = ocrRow?.value;
@@ -330,14 +414,14 @@ export function paperRoutes(): Router {
             method: "POST",
             headers: { ...llmClientHeaders(), "Content-Type": "application/json" },
             body: JSON.stringify({
-              mode, providerId: sysProvider.id, ocrProviderId: Number(ocrProviderId),
+              mode, providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
+              ocrProviderId: Number(ocrProviderId),
               subject, questionRange: range, extraNotes: notes, files,
             }),
             signal: AbortSignal.timeout(120000),
           });
 
-          const data = await resp.json();
-          knowledgePoints = data.knowledgePoints || [];
+          knowledgePoints = await readKnowledgePointResponse(resp);
         } else {
           // 自动模式
           mode = "auto";
@@ -354,14 +438,14 @@ export function paperRoutes(): Router {
             method: "POST",
             headers: { ...llmClientHeaders(), "Content-Type": "application/json" },
             body: JSON.stringify({
-              mode: "text", providerId: sysProvider.id, subject,
+              mode: "text", providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
+              subject,
               questionRange: range, extraNotes: notes, paperText: extracted.text,
             }),
             signal: AbortSignal.timeout(60000),
           });
 
-          const data = await resp.json();
-          knowledgePoints = data.knowledgePoints || [];
+          knowledgePoints = await readKnowledgePointResponse(resp);
         }
       }
 
@@ -407,7 +491,7 @@ export function paperRoutes(): Router {
         .join("\n");
       const db = getMysqlDb();
       await db.run(
-        "UPDATE answer_cards SET knowledge_points_text = ?, updated_at = datetime('now') WHERE id = ?",
+        "UPDATE answer_cards SET knowledge_points_text = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         textBackup, cardId
       );
 

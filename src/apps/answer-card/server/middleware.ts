@@ -104,6 +104,7 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
         "SELECT grade_id, can_view_scores FROM teacher_permissions WHERE teacher_id = ? AND can_view_scores = 0",
         user.id
       );
+      // If any restriction forbids all grades (grade_id = null), deny everything
       if (restrictions.some((r) => r.grade_id === null)) return [];
       if (restrictions.length > 0) {
         const restrictedGrades = restrictions.map((r) => r.grade_id).filter(Boolean) as number[];
@@ -122,7 +123,6 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
 }
 
 async function hasTable(db: DbAdapter, table: string): Promise<boolean> {
-  // table 为硬编码常量，非用户输入
   try {
     return !!(await db.get(`SELECT 1 FROM ${table} LIMIT 1`));
   } catch {

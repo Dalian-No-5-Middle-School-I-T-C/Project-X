@@ -477,6 +477,7 @@ function App() {
   const [analysisRanking, setAnalysisRanking] = useState<StudentRankingItem[]>([]);
   const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
   const [exams, setExams] = useState<ExamRecord[]>([]);
+  const [examListRefreshKey, setExamListRefreshKey] = useState(0);
   // Exam groups
   const [examGroups, setExamGroups] = useState<Array<{ id: number; name: string; tag: string | null; grade_name: string | null; member_count: number; has_results: number; created_at: string }>>([]);
   const [showCreateExam, setShowCreateExam] = useState(false);
@@ -1399,6 +1400,8 @@ function App() {
       setExams(asArray<ExamRecord>(data));
     } catch {
       setExams([]);
+    } finally {
+      setExamListRefreshKey((value) => value + 1);
     }
   }
 
@@ -1481,7 +1484,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.8.2</span>
+            <span>Project-X v{import.meta.env.VITE_APP_VERSION}</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
@@ -2135,6 +2138,7 @@ function App() {
             {/* 考试选择页 */}
             {analysisTab === "select" && analysisGroupId == null && (
               <ExamSelectPage
+                refreshKey={examListRefreshKey}
                 onSelectExam={(examId) => { setSelectedAnalysisExamId(examId); setAnalysisTab("detail"); }}
                 onSelectGroup={(groupId) => { setAnalysisGroupId(groupId); }}
               />
