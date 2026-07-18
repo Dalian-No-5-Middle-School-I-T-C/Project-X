@@ -1,5 +1,58 @@
 # Project-X CHANGELOG
 
+## v1.8.2 (2026-07-09) — 暗色模式全面修复
+
+基于 v1.6.3 暗色模式基线进行系统性修复，解决 v1.7.0+ 新增组件在暗色下的灰底灰字、可读性差、与背景融为一体等问题。
+
+### 问题根因
+- v1.6.3 暗色模式已稳定（GitHub Dark 风格，#C0392B / #E6EDF3 / #161B22），但组件级暗色覆盖不完整
+- v1.7.0/v1.8.0 大量新增组件使用 `var(--brand)` / `var(--text)` 等变量，但未覆写背景色
+- 亮色模式下 `rgba(255,255,255,0.55~0.78)` 半透明毛玻璃在暗色底上呈现灰色、文字难以阅读
+
+### 修复方案
+**统一原则**：所有亮色半透明/毛玻璃背景在暗色下覆写为 `var(--surface)` / `var(--surface-raised)`，移除 `backdrop-filter`，添加清晰 `var(--line)` / `var(--line-strong)` 边框。
+
+#### 核心变量（保持 v1.6.3 不变）
+| 变量 | 暗色值 |
+|------|--------|
+| `--brand` | `#C0392B` |
+| `--text` | `#E6EDF3` |
+| `--surface` | `#161B22` |
+| `--surface-raised` | `#21262D` |
+| `--background` | `#0D1117` |
+
+#### 修复的组件（`styles.css` ~250 行新增暗色覆盖）
+- **通用按钮** `.ghost-button` / `.primary-button`：背景 `var(--surface-raised)` + 边框，hover 品牌色
+- **通用面板** `.panel`：背景 `var(--surface)`，hover `var(--surface-raised)` + 品牌色边框
+- **答题卡列表** `.card-list-item` / `.card-list-actions button`：移除半透明白，激活态品牌红渐变
+- **底部状态栏** `.statusbar`：背景 `var(--surface-raised)`
+- **顶部导航** `.mode-toggle button`：未激活用 `var(--surface-raised)` 与背景区分，激活保留红渐变
+- **题块卡片** `.block-chip`：背景 `var(--surface-raised)`，hover/active 品牌红渐变
+- **题块操作按钮** `.chip-actions button` / `.question-editor-title button`：背景 `var(--surface)`
+- **上传按钮** `.upload-button`：背景 `var(--surface-raised)` + 品牌色虚线边框
+- **答案键按钮** `.answer-key-row button`：背景 `var(--surface-raised)`，激活态品牌红
+- **分值检查** `.score-warning-summary`：去掉亮色黄底，改为深色品牌黄调
+
+#### 阅卷表格暗色适配
+- `.score-table` / `.score-table-head` / `.question-grade-list` / `.question-grade`：覆写半透明白背景
+- `.question-grade.needs-review`：深色黄调
+- `.status-ok`：深色绿 `#6EE7B7`，`.status-warn`：深色黄 `#FCD34D`
+- `.file-queue` / `.queued-files span`：覆写半透明白，移除 backdrop-filter
+
+#### AI 分析面板暗色适配
+- `.ai-analysis-panel`：背景 `var(--surface)`
+- `.icon-button`：背景 `var(--surface-raised)`，hover 品牌色
+- `.ai-status-warning`：深色黄调 + `#FCD34D` 文字
+- `.ai-report-summary` / `.ai-caveats span` / `.ai-tool-trace span`：深色背景
+- `.ai-question-action em`：`var(--muted)` 文字色
+
+### 修改文件
+| 文件 | 改动 |
+| --- | --- |
+| `src/apps/answer-card/client/styles.css` | 暗色覆盖段新增 ~250 行组件级暗色适配 |
+
+---
+
 ## v1.8.1 (2026-07-06) — 代码审查 bug 修复与一致性收敛
 
 基于 PR161 代码审查报告（`readus/CODE-REVIEW.md`），修复安全漏洞、崩溃 bug、排名/百分位不一致及若干前端问题。
@@ -84,56 +137,6 @@
 
 ---
 
-## v1.7.3 (2026-07-04) — 移动端网页适配
-
-### 移动端全面适配
-
-系统从桌面端专用布局升级为桌面/移动端双适配架构。新增 480px 手机断点，通过底部导航栏替代桌面端 Tab 切换，实现手机端原生体验。
-
-- **底部导航栏（Bottom Navigation Bar）**：
-  - 固定屏幕底部，毛玻璃背景 + 品牌色激活项
-  - 根据用户权限动态生成导航项（设计/考试/阅卷/分析/成绩/账号），最多 5 个 Tab
-  - 图标 + 短标签（2-3字），触摸目标 44px，iPhone 安全区适配（`env(safe-area-inset-bottom)`）
-  - 桌面端 `display: none`，仅 480px 以下显示
-- **Topbar 移动端精简**：
-  - 隐藏副标题、隐藏桌面端 `mode-toggle`（由底部导航替代）
-  - 标题省略号截断，操作按钮紧凑排列
-  - `position: sticky` 固定顶部
-- **480px 移动端主断点**（~300 行新增 CSS）：
-  - 全局重置：`body` 可滚动、`app-shell` 取消固定高度、底部 padding 为导航栏留空间
-  - 8 个 mode 页面逐一适配：
-    - **design**：预览区 + 属性面板纵向排列，答题卡页面自适应宽度
-    - **exam-manage**：考试列表表格改卡片布局，表头隐藏
-    - **grading**：扫描面板 padding 缩减，扫描结果网格紧凑化
-    - **analysis**：分析卡片 2 列，排名表横向滚动，箱型图 2 列
-    - **scores**：概览卡片紧凑排列，Tab 横向滚动，图表高度缩减
-    - **account**：三栏班级布局改单列，表单单列，表格横向滚动
-    - **sponsor**：收款码卡片全宽，二维码缩至 140px
-    - **guide**：正文 13px、表格横向滚动、代码块紧凑
-- **Modal 底部弹出（Bottom Sheet）**：
-  - 所有弹窗从屏幕底部滑出，全宽圆角顶部（`border-radius: 20px 20px 0 0`）
-  - 底部按钮纵向全宽排列
-  - PDF 查看弹窗全屏化
-  - 账号菜单下拉改为底部弹出
-- **触摸优化**：
-  - 输入框 `font-size: 16px`（防止 iOS Safari 自动缩放）
-  - 触摸目标最小 44px
-  - `-webkit-overflow-scrolling: touch` + `overscroll-behavior: contain`
-- **横屏适配**（iPad 等）：
-  - 1024px landscape：主内容 + 属性面板 320px 双列
-  - 768px landscape：单列 + 底部导航缩小至 48px
-- **暗色模式配套**：底部导航栏、Topbar、Modal 全部适配 `[data-theme="dark"]`
-- **HTML Meta 标签**：viewport 添加 `viewport-fit=cover`，新增 `apple-mobile-web-app-capable`、`theme-color`
-
-### 技术实现
-
-- **纯 CSS 适配策略**：不修改任何子组件文件，全部通过 `styles.css` 中的 `@media (max-width: 480px)` 规则覆盖
-- **App.tsx 最小改动**：仅新增 `mobileNavItems` useMemo（权限驱动的导航项数组）+ 底部导航 JSX
-- **CSS 变量扩展**：新增 `--mobile-bottom-nav-height`、`--mobile-safe-area-bottom/top`、`--touch-target-min`、`--mobile-content-padding`
-
-### 修改文件
-
-| 文件 | 改动 |
 ## v1.8.0 (2026-07-04) — 原卷上传与 AI 知识点分析
 
 ### 数据库 schema 完善
@@ -221,6 +224,58 @@
 
 
 ---
+
+## v1.7.3 (2026-07-04) — 移动端网页适配
+
+### 移动端全面适配
+
+系统从桌面端专用布局升级为桌面/移动端双适配架构。新增 480px 手机断点，通过底部导航栏替代桌面端 Tab 切换，实现手机端原生体验。
+
+- **底部导航栏（Bottom Navigation Bar）**：
+  - 固定屏幕底部，毛玻璃背景 + 品牌色激活项
+  - 根据用户权限动态生成导航项（设计/考试/阅卷/分析/成绩/账号），最多 5 个 Tab
+  - 图标 + 短标签（2-3字），触摸目标 44px，iPhone 安全区适配（`env(safe-area-inset-bottom)`）
+  - 桌面端 `display: none`，仅 480px 以下显示
+- **Topbar 移动端精简**：
+  - 隐藏副标题、隐藏桌面端 `mode-toggle`（由底部导航替代）
+  - 标题省略号截断，操作按钮紧凑排列
+  - `position: sticky` 固定顶部
+- **480px 移动端主断点**（~300 行新增 CSS）：
+  - 全局重置：`body` 可滚动、`app-shell` 取消固定高度、底部 padding 为导航栏留空间
+  - 8 个 mode 页面逐一适配：
+    - **design**：预览区 + 属性面板纵向排列，答题卡页面自适应宽度
+    - **exam-manage**：考试列表表格改卡片布局，表头隐藏
+    - **grading**：扫描面板 padding 缩减，扫描结果网格紧凑化
+    - **analysis**：分析卡片 2 列，排名表横向滚动，箱型图 2 列
+    - **scores**：概览卡片紧凑排列，Tab 横向滚动，图表高度缩减
+    - **account**：三栏班级布局改单列，表单单列，表格横向滚动
+    - **sponsor**：收款码卡片全宽，二维码缩至 140px
+    - **guide**：正文 13px、表格横向滚动、代码块紧凑
+- **Modal 底部弹出（Bottom Sheet）**：
+  - 所有弹窗从屏幕底部滑出，全宽圆角顶部（`border-radius: 20px 20px 0 0`）
+  - 底部按钮纵向全宽排列
+  - PDF 查看弹窗全屏化
+  - 账号菜单下拉改为底部弹出
+- **触摸优化**：
+  - 输入框 `font-size: 16px`（防止 iOS Safari 自动缩放）
+  - 触摸目标最小 44px
+  - `-webkit-overflow-scrolling: touch` + `overscroll-behavior: contain`
+- **横屏适配**（iPad 等）：
+  - 1024px landscape：主内容 + 属性面板 320px 双列
+  - 768px landscape：单列 + 底部导航缩小至 48px
+- **暗色模式配套**：底部导航栏、Topbar、Modal 全部适配 `[data-theme="dark"]`
+- **HTML Meta 标签**：viewport 添加 `viewport-fit=cover`，新增 `apple-mobile-web-app-capable`、`theme-color`
+
+### 技术实现
+
+- **纯 CSS 适配策略**：不修改任何子组件文件，全部通过 `styles.css` 中的 `@media (max-width: 480px)` 规则覆盖
+- **App.tsx 最小改动**：仅新增 `mobileNavItems` useMemo（权限驱动的导航项数组）+ 底部导航 JSX
+- **CSS 变量扩展**：新增 `--mobile-bottom-nav-height`、`--mobile-safe-area-bottom/top`、`--touch-target-min`、`--mobile-content-padding`
+
+### 修改文件
+
+| 文件 | 改动 |
+
 
 ## v1.7.2 (2026-07-01) — 统计图表 + 教师权限管理
 
