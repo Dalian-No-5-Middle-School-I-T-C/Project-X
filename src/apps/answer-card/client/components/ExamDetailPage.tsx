@@ -51,7 +51,11 @@ export function ExamDetailPage({
 
   return (
     <div style={{ padding: 24 }}>
-      {/* v1.9.0: 返回按钮由全局 topbar 提供 */}
+      {/* 返回考试列表 */}
+      <button onClick={onBackToList} style={{ height: 36, padding: "0 14px", fontSize: 13, border: "1px solid var(--color-border-primary)", borderRadius: 6, background: "var(--color-background-secondary)", cursor: "pointer", marginBottom: 16, display: "inline-flex", alignItems: "center", gap: 4 }}>
+        ← 返回考试列表
+      </button>
+
       {/* Tab 栏 */}
       <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--color-border-primary)", marginBottom: 24 }}>
         {visibleTabs.map((tab) => (

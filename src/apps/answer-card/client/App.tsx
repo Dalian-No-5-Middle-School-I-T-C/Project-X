@@ -1561,7 +1561,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>
-              {mode === "scores"
+              {mode === "home" ? "首页" : mode === "scores"
                 ? "我的成绩"
                 : mode === "exam-manage"
                   ? "考试管理"
@@ -1574,7 +1574,7 @@ function App() {
                     : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
             </h1>
             <p>
-              {mode === "scores"
+              {mode === "home" ? `欢迎，${user?.name ?? ""}` : mode === "scores"
                 ? "查看各场考试得分、排名与逐题明细"
                 : mode === "exam-manage"
                   ? "创建、管理考试与阅卷批次"
@@ -1592,6 +1592,9 @@ function App() {
             </p>
           </div>
           <div className="topbar-actions-left">
+            {!showTabBar && mode !== "home" && (
+              <button onClick={() => switchMode("home")} style={{ height: 44, padding: "0 16px", fontSize: 14, fontWeight: 500, border: "1px solid var(--color-border-primary)", borderRadius: 8, background: "var(--color-background-secondary)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>← 返回首页</button>
+            )}
             {card && canDesign && mode === "design" && (
               <>
                 <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
@@ -1612,7 +1615,10 @@ function App() {
             )}
           </div>
           <div className="topbar-actions">
-            <div className="mode-toggle" role="tablist" aria-label="工作模式">
+            <div className="mode-toggle" role="tablist" aria-label="工作模式" style={showTabBar ? undefined : { display: "none" }}>
+              <button className={mode === "home" ? "active" : ""} onClick={() => void switchMode("home")} type="button">
+                <Home size={16} /> 首页
+              </button>
               {canDesign && (
               <button className={mode === "design" ? "active" : ""} onClick={() => void switchMode("design")} type="button">
                 <SquarePen size={16} /> 设计
@@ -1682,6 +1688,15 @@ function App() {
             />
           </div>
         </header>
+
+        {/* v1.9.0: 首页仪表盘 */}
+        <div className={`main-grid home-grid ${mode === "home" ? "" : "hidden-panel"}`}>
+          <section style={{ gridColumn: "1 / -1", padding: 0 }}>
+            <HomePage userName={user?.name ?? ""} userRole={user?.role_name ?? ""} teacherRole={user?.teacher_role ?? null}
+              onNavigate={(m) => switchMode(m as AppMode)}
+              onEnterExam={(id) => { switchMode("exam-manage"); setSelectedExamId(id); }} />
+          </section>
+        </div>
 
         <div className={`main-grid ${mode === "design" ? "" : "hidden-panel"}`}>
           <section className="preview-panel">
@@ -1838,6 +1853,11 @@ function App() {
           </aside>
         </div>
         <div className={`main-grid exam-manage-grid ${mode === "exam-manage" ? "" : "hidden-panel"}`}>
+          {selectedExamId ? (
+            <section style={{ gridColumn: "1 / -1", padding: 0 }}>
+              <ExamDetailPage examId={selectedExamId} teacherId={user?.id ?? 0} teacherRole={user?.teacher_role ?? null} userRole={user?.role_name ?? ""} onBackToList={() => setSelectedExamId(null)} onBackHome={() => switchMode("home")} onStartReview={(exId, bId) => setGradingPanel({ examId: exId, blockId: bId })} />
+            </section>
+          ) : (
           <section className="preview-panel" style={{ gridColumn: "1 / -1", padding: 24, overflowY: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
               <strong style={{ fontSize: 16 }}>考试管理</strong>
@@ -1978,16 +1998,12 @@ function App() {
                       </span>
                     </span>
                     <span style={{ width: 100, textAlign: "right", whiteSpace: "nowrap" }}>
-                      <button
-                        className="ghost-button"
-                        style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
-                        onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}
-                      >删除</button>
-                      <button
-                        className="ghost-button"
-                        style={{ fontSize: 12, color: "#1D9E75", padding: "2px 6px", marginLeft: 6 }}
-                        onClick={() => setAssignedFormulaExamId(exam.id)}
-                      >赋分</button>
+                      <button className="ghost-button" style={{ fontSize: 12, color: "#3C3489", padding: "2px 6px" }}
+                        onClick={() => setSelectedExamId(exam.id)}>网阅</button>
+                      <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px", marginLeft: 4 }}
+                        onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</button>
+                      <button className="ghost-button" style={{ fontSize: 12, color: "#1D9E75", padding: "2px 6px", marginLeft: 4 }}
+                        onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</button>
                     </span>
                   </div>
                 ))}
@@ -2039,6 +2055,7 @@ function App() {
               </div>
             )}
           </section>
+          )}
         </div>
         <div className="main-grid grading-grid hidden-panel">
           <section className="preview-panel grading-results-panel">
@@ -2240,6 +2257,11 @@ function App() {
             <UserGuidePage onBack={() => setMode(previousModeRef.current)} />
           </section>
         </div>
+        {gradingPanel && (
+          <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "var(--color-background-primary)" }}>
+            <GradePanel examId={gradingPanel.examId} blockId={gradingPanel.blockId} teacherId={user?.id ?? 0} onBack={() => setGradingPanel(null)} />
+          </div>
+        )}
         <footer className="statusbar">
           <span className="statusbar-message">{status}</span>
           <BeianFooter className="statusbar-beian" />
@@ -2247,6 +2269,7 @@ function App() {
       </section>
 
       {/* ── 移动端底部导航栏 ── */}
+      {showTabBar && (
       <nav className="bottom-nav" aria-label="主导航">
         <div className="bottom-nav-inner">
           {mobileNavItems.map((m) => (
@@ -2265,6 +2288,7 @@ function App() {
           ))}
         </div>
       </nav>
+      )}
 
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
       {paperPanelCardId && (
