@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS users (
     require_original_paper TINYINT DEFAULT 1,
     highlight_missing_paper TINYINT DEFAULT 1,
     is_active        TINYINT DEFAULT 1,
+    show_tab_bar     TINYINT DEFAULT 0,             -- v1.9.0: 底部导航栏开关
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -286,6 +287,8 @@ CREATE TABLE IF NOT EXISTS exams (
     status        VARCHAR(20) DEFAULT 'draft',
     assigned_formula TEXT,
     retention_policy_id INT,
+    review_mode    INT DEFAULT 1,           -- v1.9.0: 1=1P 2=2P 3=3P
+    review_enabled TINYINT DEFAULT 0,       -- v1.9.0: 网阅开关
     created_by    INT,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -433,10 +436,18 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     height_px        INT NOT NULL,
     dpi              INT NOT NULL,
     status           VARCHAR(32) DEFAULT 'ready',
+    reviewer_id      INT,                           -- v1.9.0: 审阅人
+    reviewed_at      DATETIME,                      -- v1.9.0: 审阅时间
+    review_round     INT DEFAULT 1,                 -- v1.9.0: 第几轮审阅
+    final_score      DOUBLE,                        -- v1.9.0: 最终分
+    final_score_by   INT,                           -- v1.9.0: 最终分判定人
+    score_breakdown  LONGTEXT,                      -- v1.9.0: 各轮评分明细 JSON
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uniq_answer_block_crop_source (source_type, source_record_id, block_id, page_number, segment_index),
     FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
-    FOREIGN KEY (student_id) REFERENCES users(id)
+    FOREIGN KEY (student_id) REFERENCES users(id),
+    FOREIGN KEY (reviewer_id)   REFERENCES users(id),
+    FOREIGN KEY (final_score_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS twain_scan_sessions (
@@ -604,6 +615,68 @@ CREATE TABLE IF NOT EXISTS ai_providers (
     updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ============================================================
+-- v1.9.0 网上阅卷系统重构 — 新增表
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS review_assignments (
+    id                   INT AUTO_INCREMENT PRIMARY KEY,
+    exam_id              INT NOT NULL,
+    block_id             VARCHAR(36) NOT NULL,
+    teacher_id           INT NOT NULL,
+    student_count        INT DEFAULT 0,
+    assigned_student_ids LONGTEXT,
+    created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_ra_exam_block_teacher (exam_id, block_id, teacher_id),
+    FOREIGN KEY (exam_id)    REFERENCES exams(id) ON DELETE CASCADE,
+    FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX IF NOT EXISTS idx_ra_exam_block ON review_assignments(exam_id, block_id);
+CREATE INDEX IF NOT EXISTS idx_ra_teacher ON review_assignments(teacher_id);
+
+CREATE TABLE IF NOT EXISTS review_sessions (
+    id            INT AUTO_INCREMENT PRIMARY KEY,
+    teacher_id    INT NOT NULL,
+    exam_id       INT NOT NULL,
+    block_id      VARCHAR(36) NOT NULL,
+    current_index INT DEFAULT 0,
+    position_json LONGTEXT,
+    draft_scores  LONGTEXT,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_rs_teacher_exam_block (teacher_id, exam_id, block_id),
+    FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (exam_id)    REFERENCES exams(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX IF NOT EXISTS idx_rs_teacher ON review_sessions(teacher_id);
+
+CREATE TABLE IF NOT EXISTS review_annotations (
+    id          VARCHAR(64) PRIMARY KEY,
+    crop_id     VARCHAR(64) NOT NULL,
+    reviewer_id INT NOT NULL,
+    type        VARCHAR(16) NOT NULL,
+    data_json   LONGTEXT NOT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (crop_id)     REFERENCES answer_block_crops(id) ON DELETE CASCADE,
+    FOREIGN KEY (reviewer_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX IF NOT EXISTS idx_rannot_crop ON review_annotations(crop_id);
+
+CREATE TABLE IF NOT EXISTS block_grading_config (
+    id                 INT AUTO_INCREMENT PRIMARY KEY,
+    exam_id            INT NOT NULL,
+    block_id           VARCHAR(36) NOT NULL,
+    dispute_threshold  DOUBLE DEFAULT 2,
+    rounding           VARCHAR(16) DEFAULT 'ceil',
+    arbitrator_id      INT,
+    review_mode        INT DEFAULT 1,
+    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_bgc_exam_block (exam_id, block_id),
+    FOREIGN KEY (exam_id)       REFERENCES exams(id) ON DELETE CASCADE,
+    FOREIGN KEY (arbitrator_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX IF NOT EXISTS idx_bgc_exam ON block_grading_config(exam_id);
 
 -- ============================================================
 -- 索引

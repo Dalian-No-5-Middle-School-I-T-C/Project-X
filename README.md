@@ -1,7 +1,7 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.8.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.9.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.8.0
-> **核心能力**：答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 网上阅卷队列 → 考试管理 → 大考组 → 成绩分析（含上次考试对比、学生学期成绩对比）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → AI 知识点分析 → 知识点弱项诊断 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → Web/Scanner 构建分离 → iOS 15 Safari Web 兼容 → 原卷上传
-> **下个里程碑**：v1.9.0 — 成绩预测 + 跨班深度对比
+> **当前版本**：v1.9.0
+> **核心能力**：Home 仪表盘（快捷入口 + 模块卡片）→ 答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 网上阅卷队列（2P/3P 多评 + 争议仲裁 + 断点续批 + PAD 优先 UI）→ 考试管理 → 大考组 → 成绩分析（含上次考试对比、学生学期成绩对比）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → AI 知识点分析 → 知识点弱项诊断 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → Web/Scanner 构建分离 → iOS 15 Safari Web 兼容 → 原卷上传
+> **下个里程碑**：v2.0.0 — TBD
 
 ---
 
@@ -488,6 +488,21 @@ Project-X/
 | `GET` | `/api/review/exams/:id/blocks` | 网上阅卷题块汇总（待阅/已阅数量） |
 | `GET` | `/api/review/exams/:id/block-crops` | 网上阅卷队列（大题切块 + 学生信息） |
 | `POST` | `/api/review/exams/:id/block-crops/:cropId/submit` | 提交题块阅卷分数并标记状态 |
+| `GET` | `/api/review/exams/:id/trace` | 阅卷溯源（每学生每轮评分详情） |  ← v1.9.0 |
+| `GET` | `/api/review-assign/exams/:id/blocks/:bid` | 题块分配列表 |  ← v1.9.0 |
+| `POST` | `/api/review-assign/exams/:id/blocks/:bid` | 创建/重新分配阅卷任务 |  ← v1.9.0 |
+| `GET` | `/api/review-session/exams/:id/blocks/:bid` | 读取阅卷会话（断点续批） |  ← v1.9.0 |
+| `PUT` | `/api/review-session/exams/:id/blocks/:bid` | 保存阅卷会话 |  ← v1.9.0 |
+| `GET` | `/api/review-arbitration/exams/:id/disputes` | 争议列表 |  ← v1.9.0 |
+| `POST` | `/api/review-arbitration/crops/:cid/resolve` | 提交仲裁最终分 |  ← v1.9.0 |
+| `GET` | `/api/block-grading-config/exams/:id` | 题块网阅设置列表 |  ← v1.9.0 |
+| `POST` | `/api/block-grading-config/exams/:id/batch` | 批量更新题块设置 |  ← v1.9.0 |
+| `GET` | `/api/dashboard` | 首页仪表盘数据 |  ← v1.9.0 |
+| `GET` | `/api/review/my-exams` | 教师待阅考试列表 |  ← v1.9.0 |
+| `GET` | `/api/review-annotations?cropId=` | 读取切块批注 |  ← v1.9.0 |
+| `POST` | `/api/review-annotations` | 保存批注 |  ← v1.9.0 |
+| `DELETE` | `/api/review-annotations/:id` | 删除批注 |  ← v1.9.0 |
+| `GET` | `/api/review-assign/exams/:id/eligible-teachers` | 可分配教师列表（同科同年级） |  ← v1.9.0 |
 | `POST` | `/api/auth/login` | 登录（支持 isPersistent 6 月免登录） |
 | `GET` | `/api/auth/me` | 当前用户信息 |
 | `GET` | `/api/teachers` | 教师列表（按创建时间排序） |

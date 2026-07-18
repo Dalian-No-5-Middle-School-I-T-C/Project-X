@@ -28,6 +28,12 @@ import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
 import reviewRoutes from "../../../server/routes/review";
+import reviewAssignRoutes from "../../../server/routes/review-assign";
+import reviewSessionRoutes from "../../../server/routes/review-session";
+import reviewArbitrationRoutes from "../../../server/routes/review-arbitration";
+import reviewAnnotationsRoutes from "../../../server/routes/review-annotations";
+import blockGradingConfigRoutes from "../../../server/routes/block-grading-config";
+import dashboardRoutes from "../../../server/routes/dashboard";
 import adminPermissionsRoutes from "../../../server/routes/admin-permissions";
 import apiKeysRoutes from "../../../server/routes/api-keys";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
@@ -478,6 +484,7 @@ export async function createApp(): Promise<express.Express> {
       if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
       if (body.requireOriginalPaper !== undefined) { setClauses.push("require_original_paper = ?"); values.push(body.requireOriginalPaper ? 1 : 0); }
       if (body.highlightMissingPaper !== undefined) { setClauses.push("highlight_missing_paper = ?"); values.push(body.highlightMissingPaper ? 1 : 0); }
+      if (body.showTabBar !== undefined) { setClauses.push("show_tab_bar = ?"); values.push(body.showTabBar ? 1 : 0); }
       if (setClauses.length > 0) {
         setClauses.push("updated_at = CURRENT_TIMESTAMP");
         values.push(userId);
@@ -632,6 +639,12 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/analysis", analysisGate, analysisRoutes);
   app.use("/api/answer-block-crops", cropGate);
   app.use("/api/review", analysisGate, reviewRoutes);
+  app.use("/api/review-assign", analysisGate, reviewAssignRoutes);
+  app.use("/api/review-session", analysisGate, reviewSessionRoutes);
+  app.use("/api/review-arbitration", analysisGate, reviewArbitrationRoutes);
+  app.use("/api/review-annotations", analysisGate, reviewAnnotationsRoutes);
+  app.use("/api/block-grading-config", analysisGate, blockGradingConfigRoutes);
+  app.use("/api/dashboard", dashboardRoutes);
   app.use(paperRoutes());
 
   const cardRepo = new CardRepository();

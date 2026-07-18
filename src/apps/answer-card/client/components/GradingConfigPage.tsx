@@ -1,0 +1,204 @@
+import React, { useState, useEffect, useCallback } from "react";
+import { fetchJson } from "../auth/api";
+import type { BlockGradingConfig, ArbitratorCandidate } from "../../../../shared/types";
+
+interface Props {
+  examId: number;
+}
+
+export function GradingConfigPage({ examId }: Props) {
+  const [blocks, setBlocks] = useState<Array<{ blockId: string; blockTitle: string }>>([]);
+  const [configs, setConfigs] = useState<Record<string, BlockGradingConfig>>({});
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [showBatch, setShowBatch] = useState(false);
+  const [batchThreshold, setBatchThreshold] = useState("");
+  const [batchRounding, setBatchRounding] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [arbitrators, setArbitrators] = useState<ArbitratorCandidate[]>([]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      // 获取题块
+      const blockRes = await fetchJson<{ ok: boolean; data: any[] }>(
+        `/api/review/exams/${examId}/blocks`
+      );
+      if (blockRes.ok) {
+        setBlocks(blockRes.data.map((b: any) => ({ blockId: b.blockId, blockTitle: b.blockTitle || b.blockId })));
+
+        // 获取配置
+        const configRes = await fetchJson<{ ok: boolean; data: BlockGradingConfig[] }>(
+          `/api/block-grading-config/exams/${examId}`
+        );
+        if (configRes.ok) {
+          const map: Record<string, BlockGradingConfig> = {};
+          for (const c of configRes.data) map[c.blockId] = c;
+          setConfigs(map);
+        }
+      }
+    } catch { /* silent */ }
+    setLoading(false);
+  }, [examId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const toggleSelect = (blockId: string) => {
+    const next = new Set(selected);
+    if (next.has(blockId)) next.delete(blockId);
+    else next.add(blockId);
+    setSelected(next);
+  };
+
+  const selectAll = () => {
+    if (selected.size === blocks.length) setSelected(new Set());
+    else setSelected(new Set(blocks.map((b) => b.blockId)));
+  };
+
+  const handleBatchApply = async () => {
+    const blockIds = Array.from(selected);
+    if (blockIds.length === 0) return;
+
+    const body: any = { blockIds };
+    if (batchThreshold) body.disputeThreshold = Number(batchThreshold);
+    if (batchRounding) body.rounding = batchRounding;
+
+    await fetchJson(`/api/block-grading-config/exams/${examId}/batch`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+
+    setShowBatch(false);
+    setBatchThreshold("");
+    setBatchRounding("");
+    load();
+  };
+
+  if (loading) return <div style={{ padding: 24 }}>加载中...</div>;
+
+  return (
+    <div style={{ padding: 24 }}>
+      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 8 }}>网阅设置</div>
+      <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 16 }}>
+        配置各题块的分差阈值、取整方式和仲裁人。选中多题后可使用批量调整。
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <button onClick={selectAll} style={smallBtnStyle}>
+          {selected.size === blocks.length ? "取消全选" : "全选"}
+        </button>
+        <button
+          onClick={() => setShowBatch(true)}
+          disabled={selected.size === 0}
+          style={{ ...smallBtnStyle, background: selected.size > 0 ? "#3C3489" : undefined, color: selected.size > 0 ? "#fff" : undefined }}
+        >
+          调整选中 ({selected.size})
+        </button>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {blocks.map((block) => {
+          const config = configs[block.blockId];
+          return (
+            <div key={block.blockId} style={{
+              display: "flex",
+              alignItems: "center",
+              padding: "10px 14px",
+              background: selected.has(block.blockId) ? "#EEEDFE" : "var(--color-background-secondary)",
+              borderRadius: 8,
+              border: selected.has(block.blockId) ? "1px solid #AFA9EC" : "0.5px solid var(--color-border-tertiary)",
+              gap: 12,
+            }}>
+              <input
+                type="checkbox"
+                checked={selected.has(block.blockId)}
+                onChange={() => toggleSelect(block.blockId)}
+                style={{ width: 18, height: 18 }}
+              />
+              <div style={{ flex: 1, fontSize: 14 }}>{block.blockTitle}</div>
+              <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+                阈值: {config?.disputeThreshold ?? "—"} ·
+                取整: {config?.rounding === "ceil" ? "↑" : config?.rounding === "half" ? "0.5" : config?.rounding === "none" ? "—" : config?.rounding ?? "—"} ·
+                仲裁: {config?.arbitratorId ? `教师${config.arbitratorId}` : "未指定"}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 批量调整弹窗 */}
+      {showBatch && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(0,0,0,0.3)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 1000,
+        }}>
+          <div style={{
+            background: "var(--color-background-primary)",
+            borderRadius: 12,
+            padding: 24,
+            minWidth: 300,
+          }}>
+            <div style={{ fontWeight: 500, marginBottom: 16 }}>调整 {selected.size} 道题的设置</div>
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 13 }}>分差阈值</label>
+              <select value={batchThreshold} onChange={(e) => setBatchThreshold(e.target.value)} style={selectStyle}>
+                <option value="">不修改</option>
+                <option value="1">1 分</option>
+                <option value="2">2 分</option>
+                <option value="3">3 分</option>
+                <option value="5">5 分</option>
+                <option value="10">10 分</option>
+              </select>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 13 }}>取整方式</label>
+              <select value={batchRounding} onChange={(e) => setBatchRounding(e.target.value)} style={selectStyle}>
+                <option value="">不修改</option>
+                <option value="ceil">向上取整</option>
+                <option value="floor">向下取整</option>
+                <option value="round">四舍五入</option>
+                <option value="half">保留 0.5</option>
+                <option value="none">保留小数</option>
+              </select>
+            </div>
+
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 16 }}>
+              将覆盖: {Array.from(selected).map((id) => blocks.find((b) => b.blockId === id)?.blockTitle ?? id).join(", ")}
+            </div>
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setShowBatch(false)} style={smallBtnStyle}>取消</button>
+              <button onClick={handleBatchApply} style={{ ...smallBtnStyle, background: "#3C3489", color: "#fff" }}>
+                确认修改
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const smallBtnStyle: React.CSSProperties = {
+  padding: "6px 14px",
+  fontSize: 13,
+  borderRadius: 6,
+  border: "0.5px solid var(--color-border-primary)",
+  background: "var(--color-background-secondary)",
+  cursor: "pointer",
+};
+
+const selectStyle: React.CSSProperties = {
+  display: "block",
+  width: "100%",
+  marginTop: 4,
+  padding: "8px",
+  border: "1px solid var(--color-border-primary)",
+  borderRadius: 6,
+  fontSize: 13,
+  background: "var(--color-background-secondary)",
+};
