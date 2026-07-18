@@ -10,6 +10,7 @@ export interface AuthUser {
   subject?: string | null;
   email?: string | null;
   last_login_at?: string | null;
+  show_tab_bar?: number;          // v1.9.0: 0=隐藏 1=显示
   permissions: string[];
 }
 

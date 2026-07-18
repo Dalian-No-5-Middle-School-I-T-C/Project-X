@@ -17,6 +17,7 @@ import {
   Search,
   BookOpen,
   FileUp,
+  Home,
   SquarePen,
   Trash2,
   Upload,
@@ -41,6 +42,9 @@ import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
 import { ExamGroupDetailPage } from "./components/ExamGroupDetailPage";
 import { GroupExportModal } from "./components/GroupExportModal";
+import { HomePage } from "./components/HomePage";
+import { GradePanel } from "./components/GradePanel";
+import { ExamDetailPage } from "./components/ExamDetailPage";
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -208,10 +212,10 @@ function defaultModeForUser(
 ): AppMode {
   const canOpenMode = (mode: AppMode): boolean => {
     if (!variantConfig.allowedModes.includes(mode)) return false;
+    if (mode === "home") return true;
     if (mode === "scores") return hasPermission(PERMISSIONS.SCORE_READ);
     if (mode === "design") return hasPermission(PERMISSIONS.CARD_READ);
     if (mode === "exam-manage") return hasPermission(PERMISSIONS.EXAM_WRITE);
-    if (mode === "grading") return hasPermission(PERMISSIONS.GRADE_READ);
     if (mode === "analysis") return hasPermission(PERMISSIONS.EXAM_READ);
     if (mode === "account") return hasPermission(PERMISSIONS.USER_MANAGE);
     return false;
@@ -452,8 +456,12 @@ function App() {
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
-  const [mode, setMode] = useState<AppMode>("design");
-  const previousModeRef = useRef<AppMode>("design");
+  const [mode, setMode] = useState<AppMode>("home");
+  const modeInitialized = useRef(false);
+  const showTabBar = (user as any)?.show_tab_bar === 1;
+  const [selectedExamId, setSelectedExamId] = useState<number | null>(null);
+  const [gradingPanel, setGradingPanel] = useState<{ examId: number; blockId: string } | null>(null);
+  const previousModeRef = useRef<AppMode>("home");
   const latestCardRef = useRef<AnswerCard | null>(null);
   const autoSaveTimerRef = useRef<number | null>(null);
   const editRevisionRef = useRef(0);
@@ -532,7 +540,7 @@ function App() {
   // 扫描 TAB：需要 variant 允许扫描 + grading 权限 + 本地有扫描硬件
   const canDesign = variantAllows("design") && hasPermission(PERMISSIONS.CARD_READ);
   const canManageExams = variantAllows("exam-manage") && hasPermission(PERMISSIONS.EXAM_WRITE);
-  const canGrade = variantAllows("grading") && hasPermission(PERMISSIONS.GRADE_READ);
+  const canGrade = hasPermission(PERMISSIONS.GRADE_READ);
   const canAnalyze = variantAllows("analysis") && hasPermission(PERMISSIONS.EXAM_READ);
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
@@ -550,14 +558,12 @@ function App() {
       onEnter?: () => void | Promise<void>;
     };
     const items: NavItem[] = [];
+    items.push({ id: "home", icon: <Home size={22} />, label: "首页", shortLabel: "首页" });
     if (canDesign) {
       items.push({ id: "design", icon: <SquarePen size={22} />, label: "答题卡设计", shortLabel: "设计" });
     }
     if (canManageExams) {
       items.push({ id: "exam-manage", icon: <ClipboardList size={22} />, label: "考试管理", shortLabel: "考试", onEnter: async () => { await loadExams(); await loadExamGroups(); } });
-    }
-    if (canGrade) {
-      items.push({ id: "grading", icon: <ClipboardCheck size={22} />, label: "阅卷批改", shortLabel: "阅卷" });
     }
     if (canAnalyze) {
       items.push({ id: "analysis", icon: <BarChart3 size={22} />, label: "成绩分析", shortLabel: "分析", onEnter: loadExams });
@@ -577,9 +583,8 @@ function App() {
   }, [card]);
 
   useEffect(() => {
-    if (user) {
-      setMode(defaultModeForUser(hasPermission, appVariant));
-    }
+    if (user && !modeInitialized.current) { modeInitialized.current = true;
+      setMode(defaultModeForUser(hasPermission, appVariant)); }
   }, [user?.id, hasPermission, appVariant]);
 
   useEffect(() => {
@@ -671,7 +676,7 @@ function App() {
 
   // 进入阅卷模式时预加载考试列表
   useEffect(() => {
-    if (mode === "grading" && exams.length === 0) {
+    if (mode === "exam-manage" && exams.length === 0) {
       loadExams();
     }
   }, [mode, exams.length]);
@@ -1600,11 +1605,6 @@ function App() {
                 <ClipboardList size={16} /> 考试管理
               </button>
               )}
-              {canGrade && (
-              <button className={mode === "grading" ? "active" : ""} onClick={() => void switchMode("grading")} type="button">
-                <ClipboardCheck size={16} /> 阅卷
-              </button>
-              )}
               {canAnalyze && (
               <button className={mode === "analysis" ? "active" : ""} onClick={() => void switchMode("analysis", loadExams)} type="button">
                 <BarChart3 size={16} /> 分析
@@ -1986,7 +1986,7 @@ function App() {
             )}
           </section>
         </div>
-        <div className={`main-grid grading-grid ${mode === "grading" ? "" : "hidden-panel"}`}>
+        <div className="main-grid grading-grid hidden-panel">
           <section className="preview-panel grading-results-panel">
             <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
           </section>

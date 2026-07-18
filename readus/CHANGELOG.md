@@ -1,5 +1,79 @@
 # Project-X CHANGELOG
 
+## v1.9.0 (2026-07-18) — 网上阅卷系统全面重构
+
+### 概述
+网上阅卷系统从独立模块重构为考试管理的核心子功能，新增 Home 仪表盘、任务分配引擎、2P/3P 多评机制、争议仲裁、PAD 优先阅卷 UI、批注系统和断点续批能力。
+
+### 架构变更
+- **Home 仪表盘**：登录后进入图形化首页，显示模块卡片（答题卡设计/考试管理/成绩分析/账号管理）+ 快捷入口
+- **考试管理重构**：考试列表阅卷中黄底置顶 + 分割线；考试详情 5 个 Tab（阅卷/分配/争议/溯源/设置）
+- **移除独立阅卷模式**：`grading` 模式删除，网阅嵌入考试管理；新增 `home` 模式
+- **返回按钮**：各子页面左上 52px 大返回按钮；底部 Tab 栏默认可关闭（`show_tab_bar` 用户设置）
+
+### 阅卷任务分配引擎
+- 年级组长/管理员为每个题块指定教师 + 份数，系统随机分配（Fisher-Yates + djb2 hash seed）
+- 教师进入考试后可自选已分配的题块，进度条显示待批/总数
+- 仲裁人下拉：同科同年级教师，分配教师优先置顶（标记"批卷教师"）
+- 仲裁人冲突自动跳过（仲裁人已是该卷评审人之一 → 保留争议池）
+
+### 2P/3P 多评系统
+- 考试级 `review_mode`：1P（单评）/ 2P（双评）/ 3P（三评）
+- 2P：两教师独立打分，分差 ≤ 阈值取平均，> 阈值进入争议
+- 3P：三教师独立打分，三评一致取平均，两评接近取两评平均排除异常，三评分散进入争议
+- 默认分差阈值：作文 3 分 / ≥10 分题 2 分 / <10 分题 1 分；可逐题块覆盖
+- 默认取整：非作文 ceil 向上取整，作文 half 保留到 0.5；可逐题块覆盖（5 种取整方式：ceil/floot/round/half/none）
+- 仲裁：最终分以仲裁人判定为准；无指定仲裁人 → 搁置争议池
+- **Tab 栏开关**：用户可在「客户端设置」开启/关闭底部导航栏，关闭后各页面使用"← 返回首页"按钮导航。设置即时生效（调用 refreshUser）
+- **首页默认**：登录后直接进入 Home 仪表盘，不再进答题卡设计器
+
+### 新阅卷 UI（PAD 优先）
+- 左侧：作答切块图片（滚轮缩放 / 按钮旋转 90° / 手写批注 / 文字批注）
+- 右侧：大按钮打分面板，60px+ 触控目标。满分 <10 则为个位+0.5 两列，≥10 则为十位+个位+0.5 三列
+- 工具栏：上一份/下一份、缩放百分比、旋转、批注模式切换
+- Enter 保存并下一份、← → 翻页、鼠标滚轮缩放
+- 打字批注叠加层（桌面端） / Canvas 手写笔 + palm rejection（移动端/PAD）
+- 保存后自动翻页，全部批完自动提示"已完成"
+
+### 断点续批
+- 退出时自动保存当前批改位置和未提交草稿分数
+- 重新进入时弹窗提示"上次批到 N/M 份，是否继续？"
+- 草稿分数自动回填，已提交分数不回滚
+- `review_sessions` 表持久化
+
+### 数据库新增 (v18 迁移)
+- `review_assignments` — 阅卷任务分配
+- `review_sessions` — 断点续批会话
+- `review_annotations` — 批注存储
+- `block_grading_config` — 逐题块网阅设置（阈值/取整/仲裁人）
+- `answer_block_crops` 加列：reviewer_id, reviewed_at, review_round, final_score, final_score_by, score_breakdown
+- `users` 加列：show_tab_bar
+- `exams` 加列：review_mode, review_enabled
+
+### 类型新增
+- `SubjectiveBlockKind` + `"essay"`（作文标签，预留）
+- 18 个新类型：ReviewMode, RoundingMode, BlockGradingConfig, ReviewAssignment, ReviewSession, ReviewAnnotation, ReviewTraceItem, DisputeItem, DashboardData, TeacherBlockAssignment, ExamReviewSettings, ArbitratorCandidate 等
+
+### 修复
+- 移除 App.tsx 中所有 `grading` 模式引用
+- Express 5 `req.params` 类型安全修复（`String(req.params.x ?? "")`）
+- 双数据库迁移双轨制（SQLite 用 `hasTable`/`addColumnIfMissing`，MariaDB 用 `try/catch` + `sqls[]`）
+- 并发 CAS 检测：`submitReviewCropScores` 用 `WHERE review_round = ?` 防止后写覆盖先写
+- 批注 API：新增 `GET/POST/DELETE /api/review-annotations`，批注可正常保存和读取
+- 待阅数据：`ExamManagementPage` 通过 `/api/review/my-exams` 获取真实待阅数量
+- `BlockSelectPage` 通过批量查询 `answer_block_crops` 获取实际已批数量
+- `ReviewAssignPage` 完整重写：教师下拉（同科同年级）+ 题块选择 + 随机分配按钮
+- `GradePanel` PAD/移动端响应式布局：≤900px 自动切换上下分栏
+- 批注模式自动检测：触摸设备默认手写，桌面端默认文字批注
+- 登录默认进入 Home 仪表盘（修复 `canOpenMode("home")` 缺失导致回退到 design）
+- Tab 栏开关保存后即时生效（`refreshUser()` + `modeInitialized` ref 防止重置回首页）
+- 返回首页按钮：Tab 栏关闭时所有子页面顶部栏显示"← 返回首页"（44px）
+- Tab 栏包含首页：桌面模式栏和移动端导航均含"首页"首选项
+- 学生端批注查看：新增 `CropImageViewer` 组件，学生在成绩详情可看到教师批注
+- 快捷入口始终可见：无阅卷任务时显示"最新考试"（fallback 到最新创建的考试），无考试时显示"考试管理"引导卡片
+- Dashboard 最新扫描考试使用 `answer_block_crops.created_at` 作为排序依据
+- 作文取整方式新增 `half`（保留到 0.5）：`Math.round(v * 2) / 2`，作文默认从 `none` 改为 `half`
+
 ## v1.8.2 (2026-07-09) — 暗色模式全面修复
 
 基于 v1.6.3 暗色模式基线进行系统性修复，解决 v1.7.0+ 新增组件在暗色下的灰底灰字、可读性差、与背景融为一体等问题。

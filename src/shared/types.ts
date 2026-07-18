@@ -3,7 +3,7 @@ export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
 export type ObjectiveOptionLayout = "horizontal" | "vertical";
 export type SubjectiveStyle = "manual_score_grid" | "plain_subjective";
 export type SubjectiveKind = "blank" | "lined_answer" | "plain_box";
-export type SubjectiveBlockKind = "fill_blank" | "answer";
+export type SubjectiveBlockKind = "fill_blank" | "answer" | "essay";
 export type SubjectiveQuestionNumber = number | string;
 export type BlankLabelStyle = "none" | "arabic_parentheses" | "roman_parentheses";
 export type BlankItem = { label?: string; widthMm: number; heightMm: number };
@@ -371,6 +371,10 @@ export type ReviewSubmitResult = {
   cropId: string;
   status: string;
   totalScore: number;
+  disputed?: boolean;
+  disputeReason?: string;
+  reviewRound?: number;
+  finalScore?: number | null;
 };
 
 export type SubjectiveQuestionGradeStatus = "ok" | "invalid" | "missing_score_grid";
@@ -992,4 +996,165 @@ export interface LadderResponse {
   myRank: number | null;            // 当前学生在全量中的排名
   myScore: number | null;           // 当前学生的总分
   rows: LadderRow[];                // 前十名
+}
+
+// ============================================================
+// v1.9.0 新增类型：网上阅卷系统重构
+// ============================================================
+
+/** 阅卷模式 */
+export type ReviewMode = 1 | 2 | 3;
+
+/** 分数取整方式 */
+export type RoundingMode = "none" | "ceil" | "floor" | "round" | "half";
+
+/** 题块级阅卷设置 */
+export interface BlockGradingConfig {
+  id: number;
+  examId: number;
+  blockId: string;
+  disputeThreshold: number;
+  rounding: RoundingMode;
+  arbitratorId: number | null;
+  reviewMode: ReviewMode;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 阅卷任务分配 */
+export interface ReviewAssignment {
+  id: number;
+  examId: number;
+  blockId: string;
+  teacherId: number;
+  teacherName?: string;
+  studentCount: number;
+  assignedStudentIds: number[];
+  createdAt: string;
+}
+
+/** 阅卷会话（断点续批） */
+export interface ReviewSession {
+  id: number;
+  teacherId: number;
+  examId: number;
+  blockId: string;
+  currentIndex: number;
+  positionJson: Record<string, unknown> | null;
+  draftScores: Record<number, number> | null;
+  updatedAt: string;
+}
+
+/** 阅卷批注 */
+export interface ReviewAnnotation {
+  id: string;
+  cropId: string;
+  reviewerId: number;
+  reviewerName?: string;
+  type: "text" | "drawing";
+  dataJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+/** 阅卷溯源 - 单轮评分 */
+export interface ReviewRoundDetail {
+  round: number;
+  reviewerId: number;
+  reviewerName: string;
+  score: number;
+  reviewedAt: string;
+}
+
+/** 阅卷溯源 - 学生一条记录 */
+export interface ReviewTraceItem {
+  cropId: string;
+  studentId: number;
+  studentName: string;
+  studentNumber: string;
+  blockTitle: string;
+  rounds: ReviewRoundDetail[];
+  finalScore: number | null;
+  resolvedBy: string | null;
+  status: string;
+}
+
+/** 争议卷条目 */
+export interface DisputeItem {
+  cropId: string;
+  studentId: number;
+  studentName: string;
+  studentNumber: string;
+  blockId: string;
+  blockTitle: string;
+  scores: Array<{ reviewerName: string; score: number }>;
+  scoreDiff: number;
+  threshold: number;
+  status: "pending" | "arbitrated" | "shelved";
+  arbitratorName: string | null;
+}
+
+/** 考试阅卷设置 */
+export interface ExamReviewSettings {
+  reviewMode: ReviewMode;
+  enabled: boolean;
+}
+
+/** 教师可选题块 */
+export interface TeacherBlockAssignment {
+  blockId: string;
+  blockTitle: string;
+  blockType: string;
+  totalCount: number;
+  assignedToMe: number;
+  remainingForMe: number;
+  isSelected: boolean;
+  questions: Array<{ number: number; score: number }>;
+}
+
+/** 首页仪表盘数据 */
+export interface DashboardData {
+  hasUnfinishedGrading: boolean;
+  unfinishedTask: {
+    examId: number;
+    examName: string;
+    blockTitle: string;
+    progress: { done: number; total: number };
+  } | null;
+  latestScanExam: {
+    examId: number;
+    examName: string;
+    subject: string;
+    scannedAt: string;
+  } | null;
+  stats: {
+    totalExams: number;
+    activeGradingExams: number;
+    completedExams: number;
+  };
+}
+
+/** 仲裁人候选项 */
+export interface ArbitratorCandidate {
+  id: number;
+  name: string;
+  subject: string | null;
+  isAssignedTeacher: boolean;
+}
+
+/** 批量配置更新请求 */
+export interface BatchGradingConfigUpdate {
+  examId: number;
+  blockIds: string[];
+  disputeThreshold?: number;
+  rounding?: RoundingMode;
+  arbitratorId?: number | null;
+}
+
+/** 阅卷进度统计 */
+export interface ReviewProgress {
+  blockId: string;
+  blockTitle: string;
+  total: number;
+  done: number;
+  percentage: number;
 }

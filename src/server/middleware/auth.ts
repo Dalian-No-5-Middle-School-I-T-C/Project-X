@@ -160,6 +160,7 @@ export async function getCurrentUserHandler(req: Request, res: Response): Promis
     subject: (user as any).subject ?? null,
     email: user.email,
     last_login_at: user.last_login_at,
+    show_tab_bar: (user as any).show_tab_bar ?? 0,
     permissions: permissionsForRole(user.role_id)
   });
 }
