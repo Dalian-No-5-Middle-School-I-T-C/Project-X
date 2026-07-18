@@ -170,8 +170,9 @@ function drawHeader(doc: PDFKit.PDFDocument, page: PageLayout) {
   });
 
   if (page.header.title && page.header.titleX && page.header.titleY) {
-    doc.font(regularFont(doc)).fontSize(15).fillColor("#111").text(page.header.title, pt(35), pt(page.header.titleY - 4), {
-      width: pt(140),
+    const titleWidth = Math.max(40, page.panels[0]?.rect.width ?? page.width - 70);
+    doc.font(regularFont(doc)).fontSize(15).fillColor("#111").text(page.header.title, pt(page.header.titleX - titleWidth / 2), pt(page.header.titleY - 4), {
+      width: pt(titleWidth),
       align: "center"
     });
   }
@@ -238,18 +239,19 @@ function drawSubjectiveBlock(
 }
 
 function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, question: SubjectiveRenderItem, frameRect?: Rect) {
+  const isV2 = card.layoutVersion === 2;
   if (question.kind !== "blank") {
     drawRect(doc, question.rect, { stroke: "#222", lineWidth: 0.25 });
-    drawText(doc, `${question.questionNumber}.（${question.score}分）`, question.rect.x + 2, question.contentRect.y + 2, 8);
+    drawText(doc, `${question.questionNumber}.（${question.score}分）`, question.rect.x + 2, isV2 ? question.rect.y + 1.2 : question.contentRect.y + 2, 8);
   } else {
     drawText(doc, String(question.questionNumber), question.contentRect.x + 3, question.contentRect.y + 3.2, 8);
   }
 
-  if (question.style === "manual_score_grid") {
+  if (question.style === "manual_score_grid" && (!isV2 || question.scoreCells.length > 0)) {
     const firstScoreCell = question.scoreCells[0];
     if (frameRect && question.kind === "blank" && firstScoreCell) {
-      drawText(doc, "得分", frameRect.x + 4, firstScoreCell.rect.y + 1.2, 7);
-      const dividerY = firstScoreCell.rect.y + firstScoreCell.rect.height + 2;
+      drawText(doc, "得分", frameRect.x + 4, firstScoreCell.rect.y + (isV2 ? 0.55 : 1.2), 7);
+      const dividerY = isV2 ? frameRect.y + 6 : firstScoreCell.rect.y + firstScoreCell.rect.height + 2;
       doc.moveTo(pt(frameRect.x), pt(dividerY)).lineTo(pt(frameRect.x + frameRect.width), pt(dividerY)).stroke();
     } else {
       const dividerY = question.contentRect.y;
@@ -258,7 +260,7 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
     question.scoreCells.forEach((cell) => {
       drawRect(doc, cell.rect, { stroke: "#222", lineWidth: 0.2 });
       if (cell.score !== null) {
-        drawCenteredText(doc, String(cell.score), cell.rect.x, cell.rect.y + 1.2, cell.rect.width, 6);
+        drawCenteredText(doc, String(cell.score), cell.rect.x, cell.rect.y + (isV2 ? 0.55 : 1.2), cell.rect.width, 6);
       }
     });
   }
@@ -294,8 +296,8 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
   });
 }
 
-function drawFooter(doc: PDFKit.PDFDocument, pageNumber: number, totalPages: number) {
-  drawCenteredText(doc, `第${pageNumber}页/共${totalPages}页`, 0, 282, 210, 9);
+function drawFooter(doc: PDFKit.PDFDocument, page: PageLayout, totalPages: number) {
+  drawCenteredText(doc, `第${page.pageNumber}页/共${totalPages}页`, 0, page.height - 15, page.width, 9);
 }
 
 export function createPdf(card: AnswerCard): PDFKit.PDFDocument {
@@ -313,7 +315,7 @@ export function createPdf(card: AnswerCard): PDFKit.PDFDocument {
   setupRegularFont(doc);
 
   layout.pages.forEach((page) => {
-    doc.addPage();
+    doc.addPage({ size: [pt(page.width), pt(page.height)], margin: 0 });
     drawHeader(doc, page);
     drawStudentArea(doc, page);
 
@@ -322,7 +324,7 @@ export function createPdf(card: AnswerCard): PDFKit.PDFDocument {
       if (block.type === "subjective") drawSubjectiveBlock(doc, card, block);
     });
 
-    drawFooter(doc, page.pageNumber, layout.pages.length);
+    drawFooter(doc, page, layout.pages.length);
   });
 
   return doc;

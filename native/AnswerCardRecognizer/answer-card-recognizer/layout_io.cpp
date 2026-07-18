@@ -367,7 +367,7 @@ LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_n
     };
 }
 
-std::pair<int, int> a4_pixel_size(double width_mm, double height_mm, int dpi) {
+std::pair<int, int> layout_pixel_size(double width_mm, double height_mm, int dpi) {
     if (dpi <= 0) {
         throw std::runtime_error("DPI must be positive");
     }
