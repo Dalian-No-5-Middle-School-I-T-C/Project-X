@@ -3,45 +3,75 @@
 ## v1.9.0 (2026-07-18) — 网上阅卷系统全面重构
 
 ### 概述
-网上阅卷系统从独立模块重构为考试管理的核心子功能，新增 Home 仪表盘、任务分配引擎、2P/3P 多评机制、争议仲裁、PAD 优先阅卷 UI、批注系统和断点续批能力。
+网上阅卷系统从独立模块重构为考试管理的核心子功能，新增 Home 仪表盘、任务分配引擎、2P/3P 多评机制、争议仲裁、PAD 优先阅卷 UI、批注系统（文字+手写）和断点续批能力。累计新建 30+ 文件，修改 15+ 文件。
+
+---
 
 ### 架构变更
-- **Home 仪表盘**：登录后进入图形化首页，显示模块卡片（答题卡设计/考试管理/成绩分析/账号管理）+ 快捷入口
-- **考试管理重构**：考试列表阅卷中黄底置顶 + 分割线；考试详情 5 个 Tab（阅卷/分配/争议/溯源/设置）
-- **移除独立阅卷模式**：`grading` 模式删除，网阅嵌入考试管理；新增 `home` 模式
-- **返回按钮**：各子页面左上 52px 大返回按钮；底部 Tab 栏默认可关闭（`show_tab_bar` 用户设置）
+- **Home 仪表盘**：登录后进入图形化首页，模块卡片（答题卡设计 / 考试管理 / 成绩分析 / 账号管理）+ 快捷入口（继续阅卷 / 最新考试 / 考试管理引导卡片，始终可见）
+- **考试管理重构**：保留原有新建/删除/赋分等功能；每条考试新增「网阅」按钮进入 ExamDetailPage（5 个 Tab：阅卷 / 阅卷分配 / 争议管理 / 阅卷溯源 / 网阅设置）
+- **移除了独立阅卷模式**：`grading` mode 删除；新增 `home` mode
+- **Tab 栏可开关**：`show_tab_bar` 用户设置，默认关闭。关闭后各页面顶部栏显示"← 返回首页"按钮（44px），开启后桌面模式栏和底栏均含「首页」首选项。设置即时生效
+- **登录默认首页**：不再进答题卡设计器
+
+---
 
 ### 阅卷任务分配引擎
-- 年级组长/管理员为每个题块指定教师 + 份数，系统随机分配（Fisher-Yates + djb2 hash seed）
-- 教师进入考试后可自选已分配的题块，进度条显示待批/总数
-- 仲裁人下拉：同科同年级教师，分配教师优先置顶（标记"批卷教师"）
-- 仲裁人冲突自动跳过（仲裁人已是该卷评审人之一 → 保留争议池）
+- 年级组长/管理员为每个题块指定教师 + 份数，系统随机分配（Fisher-Yates + djb2 hash seed，确定性可重现）
+- 教师进入考试后可自选已分配的题块，进度条显示实际待批/总数
+- 仲裁人下拉：同科同年级教师列表，已分配本题块的教师置顶（标记"批卷教师"），冲突自动跳过
+- `ReviewAssignPage` 完整界面：教师下拉选择 + 份数分配 + "🎲 随机分配"按钮
+
+---
 
 ### 2P/3P 多评系统
-- 考试级 `review_mode`：1P（单评）/ 2P（双评）/ 3P（三评）
-- 2P：两教师独立打分，分差 ≤ 阈值取平均，> 阈值进入争议
-- 3P：三教师独立打分，三评一致取平均，两评接近取两评平均排除异常，三评分散进入争议
-- 默认分差阈值：作文 3 分 / ≥10 分题 2 分 / <10 分题 1 分；可逐题块覆盖
-- 默认取整：非作文 ceil 向上取整，作文 half 保留到 0.5；可逐题块覆盖（5 种取整方式：ceil/floot/round/half/none）
-- 仲裁：最终分以仲裁人判定为准；无指定仲裁人 → 搁置争议池
-- **Tab 栏开关**：用户可在「客户端设置」开启/关闭底部导航栏，关闭后各页面使用"← 返回首页"按钮导航。设置即时生效（调用 refreshUser）
-- **首页默认**：登录后直接进入 Home 仪表盘，不再进答题卡设计器
+- 考试级 `review_mode`：1P / 2P / 3P
+- 2P：两教师独立打分 → 分差 ≤ 阈值取平均 → 分差 > 阈值进入争议
+- 3P：三教师独立打分 → 一致取平均；两评接近取接近分平均（排除异常分）；三评分散进入争议
+- 默认分差阈值：作文 3 分 / ≥10 分题 2 分 / <10 分题 1 分（可逐题块覆盖）
+- 取整方式 5 种：`ceil` 向上 / `floor` 向下 / `round` 四舍五入 / `half` 保留 0.5 / `none` 保留小数。非作文默认 `ceil`，作文默认 `half`
+- 仲裁：最终分以仲裁人判定为准；无指定仲裁人 → 搁置争议池待年级组长处理
+
+---
 
 ### 新阅卷 UI（PAD 优先）
-- 左侧：作答切块图片（滚轮缩放 / 按钮旋转 90° / 手写批注 / 文字批注）
-- 右侧：大按钮打分面板，60px+ 触控目标。满分 <10 则为个位+0.5 两列，≥10 则为十位+个位+0.5 三列
-- 工具栏：上一份/下一份、缩放百分比、旋转、批注模式切换
-- Enter 保存并下一份、← → 翻页、鼠标滚轮缩放
-- 打字批注叠加层（桌面端） / Canvas 手写笔 + palm rejection（移动端/PAD）
-- 保存后自动翻页，全部批完自动提示"已完成"
+- **布局**：左图右分（≤900px 自动上下分栏）
+- **图片操作**：滚轮缩放（25%~400%）、按钮旋转 90° CW/CCW
+- **打分面板**：大按钮（56px+ 触控目标），根据满分自动生成列：<10 分 = 个位 + 0.5，≥10 分 = 十位 + 个位 + 0.5
+- **工具栏**：上一份/下一份、缩放百分比、旋转、批注模式切换
+- **快捷键**：Enter = 保存并下一份，← → = 翻页，滚轮 = 缩放
+
+---
+
+### 批注系统
+- **文字批注（桌面端）**：点击答题卡 → 弹出输入框 → 半透明红色浮层叠加
+- **手写批注（PAD/移动端）**：Canvas 渲染，PointerEvent 笔触追踪，palm rejection（忽略大面积触摸），笔迹保存为 JSON 路径数据
+- **自动模式检测**：触摸设备默认手写，桌面端默认文字批注
+- **API**：`GET/POST/DELETE /api/review-annotations`，批注可正常保存和读取
+- **学生端可见**：新增 `CropImageViewer` 组件，学生在成绩详情可看到教师批注浮层
+
+---
 
 ### 断点续批
-- 退出时自动保存当前批改位置和未提交草稿分数
-- 重新进入时弹窗提示"上次批到 N/M 份，是否继续？"
-- 草稿分数自动回填，已提交分数不回滚
-- `review_sessions` 表持久化
+- `review_sessions` 表持久化：当前批改位置 + 缩放/平移状态 + 未提交草稿分数
+- 退出时自动保存，重新进入时恢复。草稿自动回填，已提交分数不回滚
 
-### 数据库新增 (v18 迁移)
+---
+
+### 争议管理与仲裁
+- 争议自动检测：分差超阈值 → 自动交给指定仲裁人（冲突跳过 → 搁置争议池）
+- 争议管理 Tab：年级组长/管理员查看搁置争议列表，手动判分或指派仲裁人
+- 仲裁人冲突检测：若指定仲裁人已是该卷评审人 → 保留争议池，待人工处理
+
+---
+
+### 阅卷溯源
+- `answer_block_crops` 追踪字段：`reviewer_id`、`reviewed_at`、`review_round`、`final_score`、`final_score_by`、`score_breakdown`
+- 溯源 Tab：表格展示每学生每轮评审人+分数+状态
+
+---
+
+### 数据库新增 (v18 迁移，双库双轨)
 - `review_assignments` — 阅卷任务分配
 - `review_sessions` — 断点续批会话
 - `review_annotations` — 批注存储
@@ -51,28 +81,27 @@
 - `exams` 加列：review_mode, review_enabled
 
 ### 类型新增
-- `SubjectiveBlockKind` + `"essay"`（作文标签，预留）
-- 18 个新类型：ReviewMode, RoundingMode, BlockGradingConfig, ReviewAssignment, ReviewSession, ReviewAnnotation, ReviewTraceItem, DisputeItem, DashboardData, TeacherBlockAssignment, ExamReviewSettings, ArbitratorCandidate 等
+- `SubjectiveBlockKind` + `"essay"`（作文标签，预留给语文/英语作文）
+- 18+ 个新类型：ReviewMode, RoundingMode, BlockGradingConfig, ReviewAssignment, ReviewSession, ReviewAnnotation, ReviewTraceItem, DisputeItem, DashboardData, TeacherBlockAssignment, ExamReviewSettings, ArbitratorCandidate, BatchGradingConfigUpdate, ReviewProgress, ReviewRoundDetail, DisputeCheckResult
+
+### API 新增
+| 端点 | 说明 |
+|------|------|
+| `GET /api/dashboard` | 首页仪表盘数据 |
+| `GET /api/review/my-exams` | 教师待阅考试列表 |
+| `GET /api/review/exams/:id/trace` | 阅卷溯源 |
+| `GET/POST /api/review-assign/...` | 任务分配 CRUD |
+| `GET/PUT/DELETE /api/review-session/...` | 断点续批会话 |
+| `GET /api/review-arbitration/...` | 争议列表 + 仲裁人候选 + 仲裁裁决 |
+| `GET/PUT/POST /api/block-grading-config/...` | 题块网阅设置 + 批量覆盖 |
+| `GET/POST/DELETE /api/review-annotations` | 批注 CRUD |
 
 ### 修复
-- 移除 App.tsx 中所有 `grading` 模式引用
+- 并发 CAS 检测：`submitReviewCropScores` 用 `WHERE review_round = ?` 防止后写覆盖先写，冲突时前端提示
 - Express 5 `req.params` 类型安全修复（`String(req.params.x ?? "")`）
 - 双数据库迁移双轨制（SQLite 用 `hasTable`/`addColumnIfMissing`，MariaDB 用 `try/catch` + `sqls[]`）
-- 并发 CAS 检测：`submitReviewCropScores` 用 `WHERE review_round = ?` 防止后写覆盖先写
-- 批注 API：新增 `GET/POST/DELETE /api/review-annotations`，批注可正常保存和读取
-- 待阅数据：`ExamManagementPage` 通过 `/api/review/my-exams` 获取真实待阅数量
-- `BlockSelectPage` 通过批量查询 `answer_block_crops` 获取实际已批数量
-- `ReviewAssignPage` 完整重写：教师下拉（同科同年级）+ 题块选择 + 随机分配按钮
-- `GradePanel` PAD/移动端响应式布局：≤900px 自动切换上下分栏
-- 批注模式自动检测：触摸设备默认手写，桌面端默认文字批注
-- 登录默认进入 Home 仪表盘（修复 `canOpenMode("home")` 缺失导致回退到 design）
-- Tab 栏开关保存后即时生效（`refreshUser()` + `modeInitialized` ref 防止重置回首页）
-- 返回首页按钮：Tab 栏关闭时所有子页面顶部栏显示"← 返回首页"（44px）
-- Tab 栏包含首页：桌面模式栏和移动端导航均含"首页"首选项
-- 学生端批注查看：新增 `CropImageViewer` 组件，学生在成绩详情可看到教师批注
-- 快捷入口始终可见：无阅卷任务时显示"最新考试"（fallback 到最新创建的考试），无考试时显示"考试管理"引导卡片
-- Dashboard 最新扫描考试使用 `answer_block_crops.created_at` 作为排序依据
-- 作文取整方式新增 `half`（保留到 0.5）：`Math.round(v * 2) / 2`，作文默认从 `none` 改为 `half`
+- 成绩分析页移除旧的「网上阅卷」Tab（网阅统一在考试管理入口）
+- 快捷入口无数据时不空白，fallback 到最新考试或考试管理引导卡片
 
 ## v1.8.2 (2026-07-09) — 暗色模式全面修复
 
