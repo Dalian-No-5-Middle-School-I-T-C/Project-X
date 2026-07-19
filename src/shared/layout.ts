@@ -1,6 +1,7 @@
 import type {
   AnswerCard,
   BodyBlock,
+  EssayGridConfig,
   LayoutDocument,
   LayoutElement,
   ObjectiveBlock,
@@ -37,7 +38,7 @@ type DensitySettings = {
   questionGap: number;
 };
 
-type BlankLineSpec = { label: string; widthMm: number; heightMm: number };
+type BlankLineSpec = { label: string; widthMm: number; heightMm: number; rightAnnotation?: string };
 type PlacedBlankLine = BlankLineSpec & { rect: Rect };
 
 const DENSITY: Record<ObjectiveDensity, DensitySettings> = {
@@ -492,6 +493,13 @@ const BLANK_INNER_GAP_X = 2.4;
 const BLANK_MAX_COLUMNS = 5;
 const BLANK_MIN_LINE_WIDTH = 16;
 const BLANK_MAX_SHRINK_RATIO = 0.7;
+const ESSAY_DEFAULT_CELL_MM = 7;
+const ESSAY_DEFAULT_LINE_COLOR = "#222";
+const ESSAY_DEFAULT_LINE_WIDTH = 0.15;
+const ESSAY_TITLE_HEIGHT = 7;
+const ESSAY_GRID_INSET_X = 4;
+const ESSAY_GRID_INSET_TOP = 2;
+const ESSAY_PANEL_GAP = A3_PANEL_GAP;
 
 function addManualScoreCells(
   page: PageLayout,
@@ -537,7 +545,8 @@ function blankLineSpecs(question: SubjectiveQuestion): BlankLineSpec[] {
     return items.map((item, index) => ({
       label: item.label ?? formatBlankLabel(question.blanks?.labelStyle, index),
       widthMm: item.widthMm || fallbackWidth,
-      heightMm: item.heightMm || fallbackHeight
+      heightMm: item.heightMm || fallbackHeight,
+      rightAnnotation: item.rightAnnotation
     }));
   }
 
@@ -693,21 +702,31 @@ function addSubjectiveQuestion(
   const lineYs: number[] = [];
   const blanks: Rect[] = [];
   const blankLabels: string[] = [];
+  const blankRightAnnotations: string[] = [];
   const images: Array<{ assetId: string; originalName?: string; rect: Rect }> = [];
 
-  if (question.style === "manual_score_grid") {
+  if (question.style === "manual_score_grid" && question.scoreGrid?.enabled !== false) {
     scoreCells.push(...addManualScoreCells(page, block, question, questionRect.y + (IS_LAYOUT_V2 ? 1 : 1.6), MARGIN_X + BODY_WIDTH));
   }
 
   if (question.kind === "lined_answer" && question.lineGrid?.enabled) {
     const lineSpacing = question.lineGrid.lineSpacingMm || 8;
+    const fixedCount = question.lineGrid.fixedLineCount;
     const hasV2ScoreHeader = IS_LAYOUT_V2 && question.style === "manual_score_grid" && scoreCells.length > 0;
     const firstLineY = IS_LAYOUT_V2
       ? questionRect.y + (hasV2ScoreHeader ? 14 : 10)
       : contentRect.y + 12;
     const lineBottom = IS_LAYOUT_V2 ? questionRect.y + questionRect.height - 4 : contentRect.y + contentRect.height - 5;
-    for (let lineY = firstLineY; IS_LAYOUT_V2 ? lineY <= lineBottom : lineY < lineBottom; lineY += lineSpacing) {
-      lineYs.push(round(lineY));
+
+    if (fixedCount && fixedCount > 0) {
+      for (let i = 0; i < Math.min(fixedCount, 30); i++) {
+        const lineY = firstLineY + i * lineSpacing;
+        if (lineY <= lineBottom + 0.5) lineYs.push(round(lineY));
+      }
+    } else {
+      for (let lineY = firstLineY; IS_LAYOUT_V2 ? lineY <= lineBottom : lineY < lineBottom; lineY += lineSpacing) {
+        lineYs.push(round(lineY));
+      }
     }
   }
 
@@ -715,6 +734,7 @@ function addSubjectiveQuestion(
     const placedBlanks = layoutAnswerBlankLines(question, contentRect);
     blanks.push(...placedBlanks.map((item) => item.rect));
     blankLabels.push(...placedBlanks.map((item) => item.label));
+    blankRightAnnotations.push(...placedBlanks.map((item) => item.rightAnnotation || ""));
   }
 
   let imageY = contentRect.y + 12;
@@ -771,8 +791,11 @@ function addSubjectiveQuestion(
         contentRect,
         scoreCells,
         lineYs,
+        lineGrid: question.lineGrid,
+        scoreGrid: question.scoreGrid,
         blanks,
         blankLabels,
+        blankRightAnnotations,
         blankLabelStyle: question.blanks?.labelStyle,
         blankLabelSlotWidth: maxBlankLabelWidth(question),
         images
@@ -804,7 +827,7 @@ function addBlankSubjectiveSegment(
   const scoreHeader = scoreQuestion ? (IS_LAYOUT_V2 ? V2_SCORE_HEADER_HEIGHT : V1_BLANK_SCORE_HEADER_HEIGHT) : 0;
   const blankLabelSlotWidth = Math.max(0, ...questions.map(maxBlankLabelWidth));
 
-  if (scoreQuestion) {
+  if (scoreQuestion && scoreQuestion.scoreGrid?.enabled !== false) {
     scoreCellsByQuestionId.set(
       scoreQuestion.id,
       addManualScoreCells(page, block, scoreQuestion, frameRect.y + 1.6, frameRect.x + frameRect.width)
@@ -850,8 +873,11 @@ function addBlankSubjectiveSegment(
       contentRect: questionRect,
       scoreCells: scoreCellsByQuestionId.get(question.id) ?? [],
       lineYs: [],
+      lineGrid: question.lineGrid,
+      scoreGrid: question.scoreGrid,
       blanks,
       blankLabels: specs.map((item) => item.label),
+      blankRightAnnotations: specs.map((item) => item.rightAnnotation || ""),
       blankLabelStyle: question.blanks?.labelStyle,
       blankLabelSlotWidth,
       images: []
@@ -975,6 +1001,138 @@ export function buildLayout(card: AnswerCard): LayoutDocument {
   };
 }
 
+/* ── Essay Grid Layout ─────────────────────────────── */
+
+function layoutEssayBlock(
+  block: SubjectiveBlock,
+  ensureSpace: (height: number) => void,
+  newPage: () => void,
+  getPage: () => PageLayout,
+  setY: (value: number) => void,
+  getY: () => number
+): void {
+  const question = block.questions[0];
+  if (!question) return;
+
+  const grid: EssayGridConfig = question.essayGrid ?? {
+    columns: 0, rows: 0, cellWidthMm: ESSAY_DEFAULT_CELL_MM,
+    cellHeightMm: ESSAY_DEFAULT_CELL_MM, targetChars: 600,
+    showTitle: true, lineColor: ESSAY_DEFAULT_LINE_COLOR,
+    lineWidthMm: ESSAY_DEFAULT_LINE_WIDTH,
+  };
+  const cellW = grid.cellWidthMm || ESSAY_DEFAULT_CELL_MM;
+  const cellH = grid.cellHeightMm || ESSAY_DEFAULT_CELL_MM;
+  const lineColor = grid.lineColor || ESSAY_DEFAULT_LINE_COLOR;
+  const lineW = grid.lineWidthMm ?? ESSAY_DEFAULT_LINE_WIDTH;
+  const showTitle = grid.showTitle !== false;
+
+  // 每栏可用宽度
+  const panelW = BODY_WIDTH;
+  const panelInsetX = ESSAY_GRID_INSET_X;
+  const usableW = panelW - panelInsetX * 2;
+  // 自动计算列数
+  const columns = grid.columns > 0 ? grid.columns : Math.floor(usableW / cellW);
+  // 单栏网格总宽
+  const gridW = columns * cellW;
+  // 网格居中偏移（栏内居中）
+  const gridOffsetX = (panelW - gridW) / 2;
+
+  // 题号标题高度
+  const titleH = showTitle ? ESSAY_TITLE_HEIGHT + 2 : 0;
+
+  // 逐面板渲染
+  const panelCount = IS_A3 ? 3 : 1;
+  let startY = getY();
+
+  // A3 三栏：X 坐标偏移
+  const panelStarts: number[] = [];
+  for (let p = 0; p < panelCount; p++) {
+    if (IS_A3) {
+      panelStarts.push(p * (panelW + ESSAY_PANEL_GAP) + OUTER_MARGIN_X);
+    } else {
+      panelStarts.push(MARGIN_X);
+    }
+  }
+
+  // 为所有面板渲染网格（同页上并排排列）
+  let firstPage = true;
+  const totalTargetChars = grid.targetChars;
+
+  // 计算所需总行数
+  const totalColumns = columns * panelCount;  // 所有栏的总列数
+  const targetRows = grid.rows > 0 ? grid.rows : Math.ceil(totalTargetChars / totalColumns);
+
+  // 计算每页能放的行数
+  let remainingRows = targetRows;
+  let rowsLaid = 0;
+
+  while (remainingRows > 0) {
+    const page = getPage();
+    const availableH = availableHeight(startY) - titleH - ESSAY_GRID_INSET_TOP - 4;
+    const rowsThisPage = Math.min(remainingRows, Math.floor(availableH / cellH));
+
+    if (rowsThisPage <= 0) {
+      // 当前页放不下任何行，换页
+      newPage();
+      startY = nextPageY();
+      // 第二页不再显示标题
+      // firstPage remains true (it's still used for marking)
+      continue;
+    }
+
+    ensureSpace(titleH + ESSAY_GRID_INSET_TOP + rowsThisPage * cellH + 4);
+
+    // 渲染各栏网格
+    for (let p = 0; p < panelCount; p++) {
+      const panelStartX = panelStarts[p];
+
+      // 题号（只第一页显示）
+      if (showTitle && firstPage) {
+        const titleX = panelStartX + panelInsetX;
+        const titleY = startY;
+        const blockData: PageRenderBlock = {
+          type: "subjective",
+          blockId: block.id,
+          title: block.title,
+          rect: rect(panelStartX, titleY, panelW, titleH + ESSAY_GRID_INSET_TOP + 2),
+          questions: [],
+          panelIndex: p,
+        };
+        page.blocks.push(blockData);
+      }
+
+      const gridStartY = startY + (showTitle && firstPage ? titleH + 2 : ESSAY_GRID_INSET_TOP);
+
+      // 渲染每个格子
+      for (let row = 0; row < rowsThisPage; row++) {
+        for (let col = 0; col < columns; col++) {
+          const cellX = panelStartX + gridOffsetX + col * cellW;
+          const cellY = gridStartY + row * cellH;
+          page.elements.push({
+            id: `essay_p${p}_r${rowsLaid + row}_c${col}`,
+            type: "subjective_box",
+            rect: rect(cellX, cellY, cellW, cellH),
+            blockId: block.id,
+            questionId: question.id,
+            questionNumber: question.number,
+          } as LayoutElement);
+        }
+      }
+    }
+
+    rowsLaid += rowsThisPage;
+    remainingRows -= rowsThisPage;
+    const newY = startY + (showTitle && firstPage ? titleH + 2 : ESSAY_GRID_INSET_TOP) + rowsThisPage * cellH + 4;
+    setY(newY);
+
+    if (remainingRows > 0) {
+      newPage();
+      startY = nextPageY();
+    }
+    firstPage = false;
+  }
+}
+
 function layoutSubjectiveBlock(
   block: SubjectiveBlock,
   ensureSpace: (height: number) => void,
@@ -990,6 +1148,13 @@ function layoutSubjectiveBlock(
       }
     }
   }
+  const isEssayBlock = block.blockKind === "essay";
+
+  if (isEssayBlock) {
+    layoutEssayBlock(block, ensureSpace, newPage, getPage, setY, getY);
+    return;
+  }
+
   const isFillBlankBlock =
     block.blockKind === "fill_blank" ||
     (!block.blockKind &&

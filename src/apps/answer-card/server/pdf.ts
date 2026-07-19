@@ -8,6 +8,7 @@ import type {
   PageLayout,
   PageRenderBlock,
   Rect,
+  SubjectiveBlock,
   SubjectiveRenderItem
 } from "../../../shared/types";
 import { buildLayout } from "../../../shared/layout";
@@ -229,6 +230,15 @@ function drawSubjectiveBlock(
   card: AnswerCard,
   block: Extract<PageRenderBlock, { type: "subjective" }>
 ) {
+  // 作文块专用渲染
+  const originalBlock = card.bodyBlocks.find(b => b.id === block.blockId);
+  const isEssay = originalBlock?.type === "subjective" && originalBlock.blockKind === "essay";
+
+  if (isEssay) {
+    drawEssayGrid(doc, originalBlock, block);
+    return;
+  }
+
   if (block.title) {
     drawText(doc, block.title, block.rect.x, block.rect.y - 0.5, 10);
   }
@@ -236,6 +246,49 @@ function drawSubjectiveBlock(
     drawRect(doc, block.frameRect, { stroke: "#222", lineWidth: 0.25 });
   }
   block.questions.forEach((question) => drawSubjectiveQuestion(doc, card, question, block.frameRect));
+}
+
+function drawEssayGrid(
+  doc: PDFKit.PDFDocument,
+  originalBlock: SubjectiveBlock,
+  block: Extract<PageRenderBlock, { type: "subjective" }>
+) {
+  const q = originalBlock.questions[0];
+  const g = q?.essayGrid;
+  if (!g) return;
+
+  const cellW = g.cellWidthMm || 7;
+  const cellH = g.cellHeightMm || 7;
+  const lineColor = g.lineColor || "#222";
+  const lineW = g.lineWidthMm ?? 0.15;
+  const showTitle = g.showTitle !== false;
+  const insetX = 4;
+
+  const bodyW = block.rect.width;
+  const usableW = bodyW - insetX * 2;
+  const columns = g.columns > 0 ? g.columns : Math.floor(usableW / cellW);
+  const gridW = columns * cellW;
+  const offsetX = block.rect.x + (bodyW - gridW) / 2;
+
+  const gridH = block.rect.height - (showTitle ? 9 : 0);
+  const rows = Math.floor(gridH / cellH);
+  const startY = block.rect.y + (showTitle ? 9 : 2);
+
+  // 标题
+  if (showTitle) {
+    drawText(doc, `${block.title}（${q?.score ?? 0}分）`, block.rect.x + insetX, block.rect.y + 1.5, 9);
+  }
+
+  // 格子
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < columns; col++) {
+      const cx = offsetX + col * cellW;
+      const cy = startY + row * cellH;
+      drawRect(doc, { x: cx, y: cy, width: cellW, height: cellH }, {
+        stroke: lineColor, lineWidth: lineW, fill: "#fff"
+      });
+    }
+  }
 }
 
 function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, question: SubjectiveRenderItem, frameRect?: Rect) {
@@ -248,25 +301,45 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
   }
 
   if (question.style === "manual_score_grid" && (!isV2 || question.scoreCells.length > 0)) {
+    const sg = question.scoreGrid;
+    const sc = sg?.strokeColor ?? "#999";
+    const sw = sg?.strokeWidthMm ?? 0.15;
+    const fc = sg?.fillColor ?? "#fff";
+    const fs = sg?.fontSize ? pt(sg.fontSize) : 6;
+    const dc = sg?.dividerColor ?? "#ccc";
+    const dw = sg?.dividerWidthMm ?? 0.1;
+    const showL = sg?.showLabel !== false;
+
     const firstScoreCell = question.scoreCells[0];
     if (frameRect && question.kind === "blank" && firstScoreCell) {
-      drawText(doc, "得分", frameRect.x + 4, firstScoreCell.rect.y + (isV2 ? 0.55 : 1.2), 7);
+      if (showL) drawText(doc, "得分", frameRect.x + 4, firstScoreCell.rect.y + (isV2 ? 0.55 : 1.2), 7);
       const dividerY = isV2 ? frameRect.y + 6 : firstScoreCell.rect.y + firstScoreCell.rect.height + 2;
-      doc.moveTo(pt(frameRect.x), pt(dividerY)).lineTo(pt(frameRect.x + frameRect.width), pt(dividerY)).stroke();
+      doc.lineWidth(pt(dw));
+      doc.moveTo(pt(frameRect.x), pt(dividerY)).lineTo(pt(frameRect.x + frameRect.width), pt(dividerY)).stroke(dc);
     } else {
       const dividerY = question.contentRect.y;
-      doc.moveTo(pt(question.rect.x), pt(dividerY)).lineTo(pt(question.rect.x + question.rect.width), pt(dividerY)).stroke();
+      doc.lineWidth(pt(dw));
+      doc.moveTo(pt(question.rect.x), pt(dividerY)).lineTo(pt(question.rect.x + question.rect.width), pt(dividerY)).stroke(dc);
     }
     question.scoreCells.forEach((cell) => {
-      drawRect(doc, cell.rect, { stroke: "#222", lineWidth: 0.2 });
+      drawRect(doc, cell.rect, { stroke: sc, lineWidth: sw, fill: fc });
       if (cell.score !== null) {
-        drawCenteredText(doc, String(cell.score), cell.rect.x, cell.rect.y + (isV2 ? 0.55 : 1.2), cell.rect.width, 6);
+        drawCenteredText(doc, String(cell.score), cell.rect.x, cell.rect.y + (isV2 ? 0.55 : 1.2), cell.rect.width, fs);
       }
     });
   }
 
+  const lcfg = question.lineGrid;
+  const lcolor = lcfg?.lineColor ?? "#222";
+  const lwidthMm = lcfg?.lineWidthMm ?? 0.15;
+  const linsetL = lcfg?.insetLeftMm ?? 8;
+  const linsetR = lcfg?.insetRightMm ?? 6;
+
   question.lineYs.forEach((lineY) => {
-    doc.moveTo(pt(question.contentRect.x + 8), pt(lineY)).lineTo(pt(question.contentRect.x + question.contentRect.width - 6), pt(lineY)).stroke("#777");
+    doc.lineWidth(pt(lwidthMm));
+    doc.moveTo(pt(question.contentRect.x + linsetL), pt(lineY))
+       .lineTo(pt(question.contentRect.x + question.contentRect.width - linsetR), pt(lineY))
+       .stroke(lcolor);
   });
 
   question.blanks.forEach((blank, index) => {
@@ -279,6 +352,10 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
       });
     }
     doc.moveTo(pt(blank.x), pt(blank.y + blank.height)).lineTo(pt(blank.x + blank.width), pt(blank.y + blank.height)).stroke();
+    const anno = question.blankRightAnnotations?.[index];
+    if (anno) {
+      drawText(doc, anno, blank.x + blank.width + 1.2, blank.y + blank.height - 2.35, 7);
+    }
   });
 
   question.images.forEach((image) => {

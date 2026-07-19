@@ -60,6 +60,7 @@ import type {
   BlankItem,
   SubjectiveBlock,
   SubjectiveBlockKind,
+  EssayGridConfig,
   SubjectiveKind,
   SubjectiveQuestion,
   SubjectiveStyle
@@ -166,12 +167,16 @@ const blankLabelStyleLabels: Record<BlankLabelStyle, string> = {
 function subjectiveBlockKind(block: SubjectiveBlock): SubjectiveBlockKind {
   if (block.blockKind) return block.blockKind;
   if (block.title.includes("解答")) return "answer";
+  if (block.title.includes("作文")) return "essay";
   if (block.questions.length > 0 && block.questions.every((question) => question.kind === "blank")) return "fill_blank";
   return "answer";
 }
 
 function subjectiveBlockKindLabel(block: SubjectiveBlock): string {
-  return subjectiveBlockKind(block) === "fill_blank" ? "填空题" : "解答题";
+  const kind = subjectiveBlockKind(block);
+  if (kind === "fill_blank") return "填空题";
+  if (kind === "essay") return "作文题";
+  return "解答题";
 }
 
 function answerBlankItems(question: SubjectiveQuestion): BlankItem[] {
@@ -321,10 +326,11 @@ function defaultSubjective(nextNumber: number): SubjectiveBlock {
         number: nextNumber,
         score: 12,
         style: "manual_score_grid",
-        kind: "plain_box",
-        lineGrid: { enabled: false, lineSpacingMm: 8 },
+        kind: "lined_answer",
+        lineGrid: { enabled: true, lineSpacingMm: 8, fixedLineCount: 5, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
+        scoreGrid: { enabled: true, strokeColor: "#999", strokeWidthMm: 0.15, fillColor: "#fff", fontSize: 2.8, dividerColor: "#ccc", dividerWidthMm: 0.1, showLabel: true },
         images: [],
-        minHeightMm: 62
+        minHeightMm: 54   // 14 + 5×8
       }
     ]
   };
@@ -342,7 +348,7 @@ function defaultBlankQuestion(
     style,
     kind: "blank",
     blanks: { count: 1, widthMm: 22, heightMm: 6, labelStyle: "none" },
-    lineGrid: { enabled: false, lineSpacingMm: 8 },
+    lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
     images: [],
     minHeightMm: 14
   };
@@ -357,6 +363,35 @@ function defaultBlankBlock(nextNumber: number): SubjectiveBlock {
     questions: Array.from({ length: 10 }, (_, index) =>
       defaultBlankQuestion(nextNumber + index, index === 0 ? 15 : 0, index === 0 ? "manual_score_grid" : "plain_subjective")
     )
+  };
+}
+
+function defaultEssayBlock(nextNumber: number): SubjectiveBlock {
+  return {
+    id: createBlockId("subj"),
+    type: "subjective",
+    blockKind: "essay",
+    title: "作文",
+    questions: [{
+      id: createBlockId("q"),
+      number: nextNumber,
+      score: 60,
+      style: "manual_score_grid",
+      kind: "plain_box",
+      lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
+      images: [],
+      minHeightMm: 280,
+      essayGrid: {
+        columns: 0,
+        rows: 0,
+        cellWidthMm: 7,
+        cellHeightMm: 7,
+        targetChars: 600,
+        showTitle: true,
+        lineColor: "#222",
+        lineWidthMm: 0.15,
+      },
+    }],
   };
 }
 
@@ -1285,6 +1320,15 @@ function App() {
     setSelectedBlockId(block.id);
   }
 
+  function addEssayBlock() {
+    if (!card) return;
+    const block = defaultEssayBlock(findNextQuestionNumber(card));
+    updateCard((draft) => {
+      draft.bodyBlocks.push(block);
+    });
+    setSelectedBlockId(block.id);
+  }
+
   async function uploadImage(blockId: string, questionId: string, file: File) {
     if (!card) return;
     const form = new FormData();
@@ -1824,6 +1868,9 @@ function App() {
                     </button>
                     <button className="ghost-button" onClick={addSubjectiveBlock}>
                       <Plus size={16} /> 解答题块
+                    </button>
+                    <button className="ghost-button" onClick={addEssayBlock}>
+                      <Plus size={16} /> 作文块
                     </button>
                   </div>
                 </section>
@@ -3237,6 +3284,7 @@ function SubjectiveEditor({
   onUpload: (blockId: string, questionId: string, file: File) => Promise<void>;
 }) {
   const isFillBlankBlock = subjectiveBlockKind(block) === "fill_blank";
+  const isEssayBlock = subjectiveBlockKind(block) === "essay";
 
   function updateQuestion(questionId: string, mutator: (question: SubjectiveQuestion) => void) {
     onChange((draft) => {
@@ -3263,7 +3311,7 @@ function SubjectiveEditor({
 
   return (
     <>
-      <div className="panel-title">{isFillBlankBlock ? "填空题块" : "解答题块"}</div>
+      <div className="panel-title">{isFillBlankBlock ? "填空题块" : isEssayBlock ? "作文块" : "解答题块"}</div>
       <label>
         标题
         <input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
@@ -3412,6 +3460,56 @@ function SubjectiveEditor({
                   ))}
                 </select>
               </label>
+              {question.style === "manual_score_grid" && (
+                <div style={{ borderLeft: "1px solid var(--line)", paddingLeft: 8, margin: "4px 0" }}>
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={question.scoreGrid?.enabled !== false}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        draft.scoreGrid = {
+                          enabled: event.target.checked,
+                          strokeColor: draft.scoreGrid?.strokeColor ?? "#999",
+                          strokeWidthMm: draft.scoreGrid?.strokeWidthMm ?? 0.15,
+                          fillColor: draft.scoreGrid?.fillColor ?? "#fff",
+                          fontSize: draft.scoreGrid?.fontSize ?? 2.8,
+                          dividerColor: draft.scoreGrid?.dividerColor ?? "#ccc",
+                          dividerWidthMm: draft.scoreGrid?.dividerWidthMm ?? 0.1,
+                          showLabel: draft.scoreGrid?.showLabel !== false,
+                        };
+                      })}
+                    />
+                    显示得分填涂格
+                  </label>
+                  {question.scoreGrid?.enabled !== false && (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
+                      <label>
+                        格线色
+                        <input type="color" value={question.scoreGrid?.strokeColor ?? "#999"}
+                          onChange={(e) => updateQuestion(question.id, (draft) => {
+                            if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, strokeColor: e.target.value };
+                          })}
+                          style={{ padding: 1, height: 24, width: "100%" }} />
+                      </label>
+                      <label>
+                        分隔线
+                        <input type="color" value={question.scoreGrid?.dividerColor ?? "#ccc"}
+                          onChange={(e) => updateQuestion(question.id, (draft) => {
+                            if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, dividerColor: e.target.value };
+                          })}
+                          style={{ padding: 1, height: 24, width: "100%" }} />
+                      </label>
+                      <label className="check-row" style={{ gridColumn: "1 / -1" }}>
+                        <input type="checkbox" checked={question.scoreGrid?.showLabel !== false}
+                          onChange={(e) => updateQuestion(question.id, (draft) => {
+                            if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, showLabel: e.target.checked };
+                          })} />
+                        显示"得分"标签
+                      </label>
+                    </div>
+                  )}
+                </div>
+              )}
               <label>
                 作答区类型
                 <select
@@ -3476,6 +3574,18 @@ function SubjectiveEditor({
                     />
                   </label>
                   <label>
+                    右侧批注
+                    <input
+                      value={item.rightAnnotation ?? ""}
+                      placeholder="如：填＞或＜"
+                      onChange={(event) =>
+                        updateAnswerBlankItems(question.id, (items) =>
+                          items.map((current, index) => (index === blankIndex ? { ...current, rightAnnotation: event.target.value || undefined } : current))
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
                     宽(mm)
                     <input
                       type="number"
@@ -3532,27 +3642,98 @@ function SubjectiveEditor({
                 <input
                   type="checkbox"
                   checked={question.lineGrid?.enabled ?? false}
-                  onChange={(event) => updateQuestion(question.id, (draft) => void (draft.lineGrid = { ...(draft.lineGrid ?? { lineSpacingMm: 8 }), enabled: event.target.checked }))}
+                  onChange={(event) => updateQuestion(question.id, (draft) => {
+                    const wasOn = draft.lineGrid?.enabled;
+                    const enabled = event.target.checked;
+                    draft.lineGrid = {
+                      lineSpacingMm: draft.lineGrid?.lineSpacingMm ?? 8,
+                      lineColor: (draft.lineGrid as any)?.lineColor ?? "#222",
+                      lineWidthMm: (draft.lineGrid as any)?.lineWidthMm ?? 0.15,
+                      insetLeftMm: (draft.lineGrid as any)?.insetLeftMm ?? 8,
+                      insetRightMm: (draft.lineGrid as any)?.insetRightMm ?? 6,
+                      enabled,
+                    };
+                    if (!wasOn && enabled) {
+                      draft.kind = "lined_answer";
+                      draft.lineGrid = { ...draft.lineGrid, fixedLineCount: answerLineCount(draft) };
+                      draft.minHeightMm = heightForAnswerLines(draft.lineGrid.fixedLineCount!, draft.lineGrid.lineSpacingMm);
+                    }
+                  })}
                 />
-                使用横线格
+                启用横线格
               </label>
-              <label>
-                横线间距(mm)
-                <input
-                  type="number"
-                  min={5}
-                  max={16}
-                  value={question.lineGrid?.lineSpacingMm ?? 8}
-                  onChange={(event) =>
-                    updateQuestion(question.id, (draft) => {
-                      const lines = layoutVersion === 2 && draft.kind === "lined_answer" ? answerLineCount(draft) : null;
-                      const spacing = Number(event.target.value);
-                      draft.lineGrid = { ...(draft.lineGrid ?? { enabled: true }), lineSpacingMm: spacing };
-                      if (lines !== null) draft.minHeightMm = heightForAnswerLines(lines, spacing);
-                    })
-                  }
-                />
-              </label>
+              {question.lineGrid?.enabled && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  <label>
+                    行数
+                    <input
+                      type="number" min={1} max={30}
+                      value={question.lineGrid.fixedLineCount ?? answerLineCount(question)}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (!draft.lineGrid) return;
+                        const count = Math.max(1, Math.min(30, Number(event.target.value) || 1));
+                        draft.lineGrid = { ...draft.lineGrid, fixedLineCount: count };
+                        draft.minHeightMm = heightForAnswerLines(count, draft.lineGrid.lineSpacingMm);
+                      })}
+                    />
+                  </label>
+                  <label>
+                    间距 (mm)
+                    <input
+                      type="number" min={5} max={16} step={1}
+                      value={question.lineGrid.lineSpacingMm ?? 8}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (!draft.lineGrid) return;
+                        const sp = Number(event.target.value) || 8;
+                        draft.lineGrid = { ...draft.lineGrid, lineSpacingMm: sp };
+                        const count = draft.lineGrid.fixedLineCount;
+                        if (count) draft.minHeightMm = heightForAnswerLines(count, sp);
+                      })}
+                    />
+                  </label>
+                  <label>
+                    颜色
+                    <input
+                      type="color"
+                      value={question.lineGrid.lineColor ?? "#222"}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineColor: event.target.value };
+                      })}
+                      style={{ padding: 2, height: 28, width: "100%" }}
+                    />
+                  </label>
+                  <label>
+                    线宽 (mm)
+                    <input
+                      type="number" min={0.05} max={0.5} step={0.05}
+                      value={question.lineGrid.lineWidthMm ?? 0.15}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineWidthMm: Number(event.target.value) || 0.15 };
+                      })}
+                    />
+                  </label>
+                  <label>
+                    左边距 (mm)
+                    <input
+                      type="number" min={0} max={20}
+                      value={question.lineGrid.insetLeftMm ?? 8}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, insetLeftMm: Number(event.target.value) ?? 8 };
+                      })}
+                    />
+                  </label>
+                  <label>
+                    右边距 (mm)
+                    <input
+                      type="number" min={0} max={20}
+                      value={question.lineGrid.insetRightMm ?? 6}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, insetRightMm: Number(event.target.value) ?? 6 };
+                      })}
+                    />
+                  </label>
+                </div>
+              )}
               <label className="upload-button">
                 <ImagePlus size={16} /> 插入图片
                 <input
@@ -3589,6 +3770,61 @@ function SubjectiveEditor({
         >
           <Plus size={16} /> 添加填空题
         </button>
+      )}
+      {isEssayBlock && (
+        <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+          <label>
+            目标字数
+            <input
+              type="number"
+              value={block.questions[0]?.essayGrid?.targetChars ?? 600}
+              min={100} max={2000} step={50}
+              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                draft.essayGrid.targetChars = Number(event.target.value) || 600;
+              })}
+            />
+          </label>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            <label>
+              格子宽 (mm)
+              <input
+                type="number"
+                value={block.questions[0]?.essayGrid?.cellWidthMm ?? 7}
+                min={4} max={12} step={0.5}
+                onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                  draft.essayGrid.cellWidthMm = Number(event.target.value) || 7;
+                })}
+              />
+            </label>
+            <label>
+              格子高 (mm)
+              <input
+                type="number"
+                value={block.questions[0]?.essayGrid?.cellHeightMm ?? 7}
+                min={4} max={12} step={0.5}
+                onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                  draft.essayGrid.cellHeightMm = Number(event.target.value) || 7;
+                })}
+              />
+            </label>
+          </div>
+          <label>
+            <input
+              type="checkbox"
+              checked={block.questions[0]?.essayGrid?.showTitle !== false}
+              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                draft.essayGrid.showTitle = event.target.checked;
+              })}
+            /> 显示"题：（000）"标题
+          </label>
+          <div style={{ fontSize: 11, color: "var(--muted)" }}>
+            系统将自动计算每栏列数和行数。A3 三栏模式生效时网格均分到三栏。
+          </div>
+        </div>
       )}
     </>
   );
@@ -3787,6 +4023,62 @@ function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "obje
 
 function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageRenderBlock, { type: "subjective" }> }) {
   const isV2 = card.layoutVersion === 2;
+
+  // 作文块专用渲染
+  const originalBlock = card.bodyBlocks.find(b => b.id === block.blockId);
+  const isEssay = originalBlock?.type === "subjective" && originalBlock.blockKind === "essay";
+
+  if (isEssay) {
+    const q = originalBlock && originalBlock.type === "subjective" ? originalBlock.questions[0] : null;
+    const g = q?.essayGrid;
+    if (!g) return null;
+    const cellW = g.cellWidthMm || 7;
+    const cellH = g.cellHeightMm || 7;
+    const lineColor = g.lineColor || "#222";
+    const lineW = g.lineWidthMm ?? 0.15;
+    const showTitle = g.showTitle !== false;
+
+    // 计算栏宽和列数
+    const bodyW = block.rect.width;
+    const insetX = 4;
+    const usableW = bodyW - insetX * 2;
+    const columns = g.columns > 0 ? g.columns : Math.floor(usableW / cellW);
+    const gridW = columns * cellW;
+    const offsetX = block.rect.x + (bodyW - gridW) / 2;
+
+    // 高度内能放的行数
+    const gridH = block.rect.height - (showTitle ? 9 : 0);
+    const rows = Math.floor(gridH / cellH);
+    const startY = block.rect.y + (showTitle ? 9 : 2);
+
+    return (
+      <g>
+        {showTitle && block.title && (
+          <>
+            <text x={block.rect.x + insetX} y={block.rect.y + 5} className="svg-section">{block.title}（{q?.score}分）</text>
+            <text x={block.rect.x + insetX + 64} y={block.rect.y + 5} className="svg-tiny" fill="#888">
+              题：（{String(q?.number ?? 1).padStart(3, "0")}）
+            </text>
+          </>
+        )}
+        {[...Array(rows)].map((_, row) =>
+          [...Array(columns)].map((_, col) => (
+            <rect
+              key={`${row}_${col}`}
+              x={offsetX + col * cellW}
+              y={startY + row * cellH}
+              width={cellW}
+              height={cellH}
+              fill="#fff"
+              stroke={lineColor}
+              strokeWidth={lineW}
+            />
+          ))
+        )}
+      </g>
+    );
+  }
+
   return (
     <g>
       {block.title && (
@@ -3799,35 +4091,51 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
         <g key={question.questionId}>
           {!block.frameRect && <rect {...question.rect} fill="none" stroke="#222" strokeWidth="0.25" />}
           {question.style === "manual_score_grid" && (!isV2 || question.scoreCells.length > 0) && (
+            (() => {
+              const sg = question.scoreGrid;
+              const sc = sg?.strokeColor ?? "#999";
+              const sw = sg?.strokeWidthMm ?? 0.15;
+              const fc = sg?.fillColor ?? "#fff";
+              const fs = sg?.fontSize ?? 2.8;
+              const dc = sg?.dividerColor ?? "#ccc";
+              const dw = sg?.dividerWidthMm ?? 0.1;
+              const showL = sg?.showLabel !== false;
+              return (
             <>
               {block.frameRect && question.kind === "blank" && question.scoreCells.length > 0 ? (
                 <>
-                  <text x={block.frameRect.x + 4} y={question.scoreCells[0].rect.y + (isV2 ? 3 : 4.2)} className="svg-tiny">
-                    得分
-                  </text>
+                  {showL && (
+                    <text x={block.frameRect.x + 4} y={question.scoreCells[0].rect.y + (isV2 ? 3 : 4.2)} className="svg-tiny">
+                      得分
+                    </text>
+                  )}
                   <line
                     x1={block.frameRect.x}
                     y1={isV2 ? block.frameRect.y + 6 : question.scoreCells[0].rect.y + question.scoreCells[0].rect.height + 2}
                     x2={block.frameRect.x + block.frameRect.width}
                     y2={isV2 ? block.frameRect.y + 6 : question.scoreCells[0].rect.y + question.scoreCells[0].rect.height + 2}
-                    stroke="#777"
-                    strokeWidth="0.2"
+                    stroke={dc}
+                    strokeWidth={dw}
                   />
                 </>
               ) : (
-                <line x1={question.rect.x} y1={question.contentRect.y} x2={question.rect.x + question.rect.width} y2={question.contentRect.y} stroke="#777" strokeWidth="0.2" />
+                <line x1={question.rect.x} y1={question.contentRect.y} x2={question.rect.x + question.rect.width} y2={question.contentRect.y} stroke={dc} strokeWidth={dw} />
               )}
               {question.scoreCells.map((cell) => (
                 <g key={cell.score}>
-                  <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" style={{ fill: "#fff" }} />
+                  <rect x={cell.rect.x} y={cell.rect.y} width={cell.rect.width} height={cell.rect.height}
+                    fill={fc} stroke={sc} strokeWidth={sw} style={{ fill: fc }} />
                   {cell.score !== null && (
-                    <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + (isV2 ? 3 : 4.2)} textAnchor="middle" className="svg-tiny">
+                    <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + (isV2 ? 3 : 4.2)} textAnchor="middle"
+                      fontSize={fs} fill="#333">
                       {cell.score}
                     </text>
                   )}
                 </g>
               ))}
             </>
+              );
+            })()
           )}
           {question.kind === "blank" ? (
             <text x={question.contentRect.x + 3} y={question.contentRect.y + 7.2} className="svg-tiny">
@@ -3838,9 +4146,18 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
               {question.questionNumber}.（{question.score}分）
             </text>
           )}
-          {question.lineYs.map((lineY) => (
-            <line key={lineY} x1={question.contentRect.x + 8} y1={lineY} x2={question.contentRect.x + question.contentRect.width - 6} y2={lineY} stroke="#888" strokeWidth="0.2" />
-          ))}
+          {question.lineYs.map((lineY) => {
+            const cfg = question.lineGrid;
+            const color = cfg?.lineColor ?? "#222";
+            const width = cfg?.lineWidthMm ?? 0.15;
+            const insetL = cfg?.insetLeftMm ?? 8;
+            const insetR = cfg?.insetRightMm ?? 6;
+            return (
+              <line key={lineY} x1={question.contentRect.x + insetL} y1={lineY}
+                    x2={question.contentRect.x + question.contentRect.width - insetR} y2={lineY}
+                    stroke={color} strokeWidth={width} />
+            );
+          })}
           {question.blanks.map((blank, index) => {
             const blankLabel = question.blankLabels?.[index] ?? (question.kind === "blank" ? formatBlankLabel(question.blankLabelStyle, index) : `${question.questionNumber}.${index + 1}`);
             return (
@@ -3851,6 +4168,12 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
                   </text>
                 )}
                 <line x1={blank.x} y1={blank.y + blank.height} x2={blank.x + blank.width} y2={blank.y + blank.height} stroke="#333" strokeWidth="0.25" />
+                {question.blankRightAnnotations?.[index] && (
+                  <text x={blank.x + blank.width + 1.2} y={blank.y + blank.height} dominantBaseline="middle"
+                    fontSize="3" fill="#888">
+                    {question.blankRightAnnotations[index]}
+                  </text>
+                )}
               </g>
             );
           })}
