@@ -37,29 +37,31 @@ export class CardRepository {
   }
 
   async updateCard(card: AnswerCard): Promise<void> {
-    await this.db.run(
-      `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      card.title, card.subject ?? null, (card as any).subjectLabel ?? null, (card as any).examDate ?? null,
-      JSON.stringify(card.studentInfo?.fields ?? []), card.studentInfo?.studentNumberDigits ?? 5,
-      card.sided ?? "double", card.layoutVersion ?? 1, card.id
-    );
+    await this.db.transaction(async (tx) => {
+      await tx.run(
+        `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        card.title, card.subject ?? null, (card as any).subjectLabel ?? null, (card as any).examDate ?? null,
+        JSON.stringify(card.studentInfo?.fields ?? []), card.studentInfo?.studentNumberDigits ?? 5,
+        card.sided ?? "double", card.layoutVersion ?? 1, card.id
+      );
 
-    await this.db.run("DELETE FROM objective_blocks WHERE card_id = ?", card.id);
-    await this.db.run("DELETE FROM subjective_blocks WHERE card_id = ?", card.id);
+      await tx.run("DELETE FROM objective_blocks WHERE card_id = ?", card.id);
+      await tx.run("DELETE FROM subjective_blocks WHERE card_id = ?", card.id);
 
-    if (card.bodyBlocks) {
-      for (const block of card.bodyBlocks) {
-        if (block.type === "objective") await this.insertObjectiveBlock(block as any, card.id);
-        else if (block.type === "subjective") await this.insertSubjectiveBlock(block as any, card.id);
+      if (card.bodyBlocks) {
+        for (const block of card.bodyBlocks) {
+          if (block.type === "objective") await this.insertObjectiveBlock(block as any, card.id, tx);
+          else if (block.type === "subjective") await this.insertSubjectiveBlock(block as any, card.id, tx);
+        }
       }
-    }
+    });
   }
 
-  private async insertObjectiveBlock(block: any, cardId: string): Promise<void> {
+  private async insertObjectiveBlock(block: any, cardId: string, tx: DbAdapter): Promise<void> {
     const questions = normalizeObjectiveQuestions(block);
     const firstQuestion = questions[0];
     const blockOptionLayout = normalizeOptionLayout(block.optionLayout);
-    await this.db.run(
+    await tx.run(
       `INSERT INTO objective_blocks (id, card_id, sort_order, title, question_start, question_count, option_count, mode, score_per_question, density, option_layout, wrong_or_extra_score)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       block.id, cardId, 0, block.title ?? "", firstQuestion?.questionNumber ?? block.questionStart ?? 1,
@@ -70,7 +72,7 @@ export class CardRepository {
 
     for (let i = 0; i < questions.length; i++) {
       const question = questions[i];
-      await this.db.run(
+      await tx.run(
         `INSERT INTO objective_questions (block_id, question_number, sort_order, mode, option_count, score, option_layout, scoring_rule_json)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?) -- note: upsert handled by DELETE-then-INSERT in updateCard()`,
         block.id, question.questionNumber, i, question.mode, question.optionCount, question.score,
@@ -78,7 +80,7 @@ export class CardRepository {
         question.scoringRule ? JSON.stringify(question.scoringRule) : null
       );
       if (question.answerKey && question.answerKey.length > 0) {
-        await this.db.run(
+        await tx.run(
           `INSERT INTO objective_answer_keys (block_id, question_number, correct_options)
            VALUES (?, ?, ?) -- note: upsert handled by DELETE-then-INSERT`,
           block.id, question.questionNumber, JSON.stringify(question.answerKey)
@@ -88,7 +90,7 @@ export class CardRepository {
 
     if (block.multipleScoring?.partialScores) {
       for (const [partialCount, score] of Object.entries(block.multipleScoring.partialScores)) {
-        await this.db.run(
+        await tx.run(
           `INSERT INTO objective_multiple_scoring (block_id, correct_count, score)
            VALUES (?, ?, ?) -- note: upsert handled by DELETE-then-INSERT`,
           block.id, Number(partialCount), score as number
@@ -97,15 +99,15 @@ export class CardRepository {
     }
   }
 
-  private async insertSubjectiveBlock(block: any, cardId: string): Promise<void> {
-    await this.db.run(
+  private async insertSubjectiveBlock(block: any, cardId: string, tx: DbAdapter): Promise<void> {
+    await tx.run(
       `INSERT INTO subjective_blocks (id, card_id, sort_order, block_kind, title) VALUES (?, ?, ?, ?, ?)`,
       block.id, cardId, 0, block.blockKind ?? (block.title?.includes("填空") ? "fill_blank" : "answer"), block.title ?? ""
     );
 
     if (block.questions) {
       for (const q of block.questions) {
-        await this.db.run(
+        await tx.run(
           `INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm, blanks_label_style, blanks_items_json)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           q.id, block.id, q.number, q.score, q.style ?? "manual_score_grid", q.kind ?? "plain_box",
@@ -116,7 +118,7 @@ export class CardRepository {
 
         if (q.images) {
           for (const img of q.images) {
-            await this.db.run(
+            await tx.run(
               `INSERT INTO subjective_question_images (question_id, asset_id, original_name, width_mm, height_mm, align)
                VALUES (?, ?, ?, ?, ?, ?)`,
               q.id, img.assetId, img.originalName, img.widthMm, img.heightMm, img.align ?? "left"

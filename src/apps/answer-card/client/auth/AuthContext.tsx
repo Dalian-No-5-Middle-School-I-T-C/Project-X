@@ -69,7 +69,7 @@ function availablePersonasForUser(user: AuthUser): AppPersona[] {
 interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
-  login: (identifier: string, password: string, isPersistent?: boolean) => Promise<void>;
+  login: (identifier: string, password: string, isPersistent?: boolean) => Promise<string | undefined>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   hasPermission: (perm: string) => boolean;
@@ -120,7 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, [refreshUser]);
 
-  const login = useCallback(async (identifier: string, password: string, isPersistent?: boolean) => {
+  const login = useCallback(async (identifier: string, password: string, isPersistent?: boolean): Promise<string | undefined> => {
     const result = await fetchJson<LoginResponse>("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -137,6 +137,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (nextUser.role_name === "admin") {
       setTeacherRoleOverrideState(loadTeacherRoleOverride());
     }
+    // H-S7: admin 仍使用默认密码时弹窗警告（延迟弹出让登录跳转先完成）
+    if (result.warning) {
+      window.setTimeout(() => window.alert(`⚠️ 安全警告\n\n${result.warning}`), 200);
+    }
+    return result.warning;
   }, []);
 
   useEffect(() => {
