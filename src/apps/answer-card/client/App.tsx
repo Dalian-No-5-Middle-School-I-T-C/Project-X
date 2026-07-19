@@ -348,7 +348,7 @@ function defaultBlankQuestion(
     style,
     kind: "blank",
     blanks: { count: 1, widthMm: 22, heightMm: 6, labelStyle: "none" },
-    lineGrid: { enabled: false, lineSpacingMm: 8 },
+    lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
     images: [],
     minHeightMm: 14
   };
@@ -378,7 +378,7 @@ function defaultEssayBlock(nextNumber: number): SubjectiveBlock {
       score: 60,
       style: "manual_score_grid",
       kind: "plain_box",
-      lineGrid: { enabled: false, lineSpacingMm: 8 },
+      lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
       images: [],
       minHeightMm: 280,
       essayGrid: {

@@ -1,5 +1,65 @@
 # Project-X CHANGELOG
 
+## v1.9.1 (2026-07-19) — 答题卡设计器全面增强
+
+### 作文块（essay block）
+
+新增作文格答题卡设计功能，支持 A3 三栏标准作文纸渲染。
+
+- **类型 `EssayGridConfig`**：columns / rows / cellWidthMm / cellHeightMm / targetChars / showTitle / lineColor / lineWidthMm（8 字段）
+- **布局引擎**（`layout.ts`）：`layoutEssayBlock()` 函数生成 A3 三栏网格，支持跨页续排
+- **设计器 UI**：新增「作文块」按钮 + inspector 面板（目标字数、格子尺寸、题号开关）
+- **SVG 预览**：实时渲染作文格，「题：（000）」题号
+- **PDF 导出**：完整格子网输出，黑色 `#222` 0.15mm 细线
+- **语文模板**：`essayBlock()` 默认 60 分 / 600 字
+
+### 解答题横格划线增强
+
+`lineGrid` 字段从 2 字段扩展为完整的 `LineGridConfig`（7 字段）。
+
+- **新增可配置项**：`lineColor`（默认 `#222`）、`lineWidthMm`（默认 0.15）、`fixedLineCount`（固定行数，自动算高度）、`insetLeftMm` / `insetRightMm`（边距）
+- **默认启用**：新建解答题 `kind: "lined_answer"` + 5 行横线，无需手动勾选
+- **inspector 面板**：行数 / 间距 / 颜色 / 线宽 / 边距均可调，自动联动高度
+- **SVG / PDF 渲染**：全部参数可配置，不再硬编码 `#888` / `#777`
+
+### 得分划线栏美化
+
+新增 `ScoreGridConfig`（8 字段），保持格子外框尺寸不变，优化内部视觉。
+
+- **新增可配置项**：`enabled`（独立开关）、`strokeColor`（默认 `#999`）、`dividerColor`（默认 `#ccc`）、`dividerWidthMm`（默认 0.1）、`fontSize`（默认 2.8，原 2.2）、`showLabel`（"得分"标签开关）
+- **SVG / PDF**：颜色和字号均从配置读取，不再硬编码
+- **inspector**：格线色 / 分隔线 / "得分"标签独立控制
+
+### 填空右侧批注
+
+`BlankItem` 新增 `rightAnnotation?: string` 字段，支持在填空横线右侧添加批注文字。
+
+- **类型扩展**：`BlankItem.rightAnnotation` + `SubjectiveRenderItem.blankRightAnnotations`
+- **inspector**：空白项列表新增「右侧批注」输入框（如 `(填＞或＜）`）
+- **SVG**：灰色 `#888` 3px 文字，横线右侧 1.2mm
+- **PDF**：对应位置绘制批注文字
+
+### 移动端底部导航更新
+
+- 新增 `home` 模式到 `mobileNavItems`（首页首选项），移除已删除的 `grading` 模式
+
+### 修改文件清单
+
+| 文件 | 改动 | 内容 |
+|------|------|------|
+| `src/shared/types.ts` | +50 行 | `EssayGridConfig` / `LineGridConfig` / `ScoreGridConfig` / `BlankItem.rightAnnotation` / `PageRenderBlock.panelIndex` |
+| `src/shared/layout.ts` | +130 行 | `layoutEssayBlock()` + lineGrid 固定行数 + scoreGrid 开关 |
+| `src/apps/answer-card/client/App.tsx` | +380 行 | 作文块按钮+inspector+SVG + 横线枪inspector+SVG + 得分栏inspector+SVG + 填空批注 |
+| `src/apps/answer-card/server/pdf.ts` | +90 行 | `drawEssayGrid()` + lineGrid 可配置 + scoreGrid 可配置 + 填空批注 |
+| `src/shared/cardTemplates.ts` | +50 行 | `essayBlock()` + `linedQuestion()` 新格式 + 语文模板集成 |
+
+**总计**：+700 行新增代码，0 个删除，0 个新依赖。
+
+### 版本
+- v1.9.0 → v1.9.1
+
+---
+
 ## v1.9.0 (2026-07-18) — 网上阅卷系统全面重构
 
 ### 概述

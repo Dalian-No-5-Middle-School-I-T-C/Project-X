@@ -88,24 +88,24 @@ export type SubjectiveQuestion = {
 };
 
 export type ScoreGridConfig = {
-  enabled: boolean;           // 是否显示得分格，默认 true
-  strokeColor: string;        // 格线色，默认 "#999"
-  strokeWidthMm: number;      // 格线宽 mm，默认 0.15
-  fillColor: string;          // 填充色，默认 "#fff"
-  fontSize: number;           // 数字大小 (SVG mm)，默认 2.8
-  dividerColor: string;       // 分隔线色，默认 "#ccc"
-  dividerWidthMm: number;     // 分隔线宽 mm，默认 0.1
-  showLabel: boolean;         // 是否显示"得分"标签，默认 true
+  enabled: boolean;             // 是否显示得分格，默认 true
+  strokeColor?: string;         // 格线色，默认 "#999"
+  strokeWidthMm?: number;       // 格线宽 mm，默认 0.15
+  fillColor?: string;           // 填充色，默认 "#fff"
+  fontSize?: number;            // 数字大小 (SVG mm)，默认 2.8
+  dividerColor?: string;        // 分隔线色，默认 "#ccc"
+  dividerWidthMm?: number;      // 分隔线宽 mm，默认 0.1
+  showLabel?: boolean;          // 是否显示"得分"标签，默认 true
 };
 
 export type LineGridConfig = {
   enabled: boolean;
   lineSpacingMm: number;     // 线间距 mm
   fixedLineCount?: number;   // 固定行数（设置后自动算高度）
-  lineColor: string;         // 线色，默认 "#222"
-  lineWidthMm: number;       // 线宽 mm，默认 0.15
-  insetLeftMm: number;       // 左边距 mm，默认 8
-  insetRightMm: number;      // 右边距 mm，默认 6
+  lineColor?: string;        // 线色，默认 "#222"
+  lineWidthMm?: number;      // 线宽 mm，默认 0.15
+  insetLeftMm?: number;      // 左边距 mm，默认 8
+  insetRightMm?: number;     // 右边距 mm，默认 6
 };
 
 export type EssayGridConfig = {
