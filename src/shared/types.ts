@@ -6,7 +6,7 @@ export type SubjectiveKind = "blank" | "lined_answer" | "plain_box";
 export type SubjectiveBlockKind = "fill_blank" | "answer" | "essay";
 export type SubjectiveQuestionNumber = number | string;
 export type BlankLabelStyle = "none" | "arabic_parentheses" | "roman_parentheses";
-export type BlankItem = { label?: string; widthMm: number; heightMm: number };
+export type BlankItem = { label?: string; widthMm: number; heightMm: number; rightAnnotation?: string };
 
 export type ObjectiveScoringRule =
   | {
@@ -74,7 +74,9 @@ export type SubjectiveQuestion = {
   style: SubjectiveStyle;
   kind: SubjectiveKind;
   blanks?: { count: number; widthMm: number; heightMm: number; labelStyle?: BlankLabelStyle; items?: BlankItem[] };
-  lineGrid?: { enabled: boolean; lineSpacingMm: number };
+  lineGrid?: LineGridConfig;
+  essayGrid?: EssayGridConfig;
+  scoreGrid?: ScoreGridConfig;
   images?: Array<{
     assetId: string;
     originalName?: string;
@@ -83,6 +85,38 @@ export type SubjectiveQuestion = {
     align: "left" | "center" | "right";
   }>;
   minHeightMm: number;
+};
+
+export type ScoreGridConfig = {
+  enabled: boolean;           // 是否显示得分格，默认 true
+  strokeColor: string;        // 格线色，默认 "#999"
+  strokeWidthMm: number;      // 格线宽 mm，默认 0.15
+  fillColor: string;          // 填充色，默认 "#fff"
+  fontSize: number;           // 数字大小 (SVG mm)，默认 2.8
+  dividerColor: string;       // 分隔线色，默认 "#ccc"
+  dividerWidthMm: number;     // 分隔线宽 mm，默认 0.1
+  showLabel: boolean;         // 是否显示"得分"标签，默认 true
+};
+
+export type LineGridConfig = {
+  enabled: boolean;
+  lineSpacingMm: number;     // 线间距 mm
+  fixedLineCount?: number;   // 固定行数（设置后自动算高度）
+  lineColor: string;         // 线色，默认 "#222"
+  lineWidthMm: number;       // 线宽 mm，默认 0.15
+  insetLeftMm: number;       // 左边距 mm，默认 8
+  insetRightMm: number;      // 右边距 mm，默认 6
+};
+
+export type EssayGridConfig = {
+  columns: number;          // 每栏格数（0=自动）
+  rows: number;             // 目标行数（0=按高度自动）
+  cellWidthMm: number;      // 格子宽度，默认 7
+  cellHeightMm: number;     // 格子高度，默认 7
+  targetChars: number;      // 目标字数，默认 600
+  showTitle: boolean;       // 显示"题：（000）"
+  lineColor: string;        // 线色，默认 "#222"
+  lineWidthMm: number;      // 线宽，默认 0.15
 };
 
 export type SubjectiveBlock = {
@@ -152,8 +186,11 @@ export type SubjectiveRenderItem = {
   contentRect: Rect;
   scoreCells: Array<{ score: number | null; rect: Rect }>;
   lineYs: number[];
+  lineGrid?: LineGridConfig;
+  scoreGrid?: ScoreGridConfig;
   blanks: Rect[];
   blankLabels?: string[];
+  blankRightAnnotations?: string[];
   blankLabelStyle?: BlankLabelStyle;
   blankLabelSlotWidth?: number;
   images: Array<{ assetId: string; originalName?: string; rect: Rect }>;
@@ -177,6 +214,7 @@ export type PageRenderBlock =
       rect: Rect;
       frameRect?: Rect;
       questions: SubjectiveRenderItem[];
+      panelIndex?: number;
     };
 
 export type StudentAreaLayout = {
