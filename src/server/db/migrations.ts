@@ -556,7 +556,7 @@ const MIGRATIONS: Migration[] = [
     }
   },
   {
-    version: 18,
+    version: 19,
     name: "online-review-v2",
     up(db) {
       // 1. review_assignments — 阅卷任务分配

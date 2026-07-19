@@ -19,6 +19,8 @@ export interface LoginResponse {
   user: Omit<AuthUser, "permissions"> & { permissions?: string[] };
   permissions: string[];
   message?: string;
+  /** 安全警告（如 admin 仍使用默认密码），前端应弹窗提示 */
+  warning?: string;
 }
 
 export interface UserListItem {

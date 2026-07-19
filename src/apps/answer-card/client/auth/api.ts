@@ -70,6 +70,8 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
     const error = new Error(message) as Error & { status?: number };
     error.status = response.status;
     if (body) Object.assign(error, body);
+    // P1-3: 全局记录 API 错误，即使调用方 .catch(() => {}) 也不会完全吞掉
+    console.warn(`[API] ${options?.method ?? "GET"} ${url} 失败 (${response.status}): ${message}`);
     if (response.status === 401 && !url.includes("/api/auth/login")) {
       notifyUnauthorized();
     }

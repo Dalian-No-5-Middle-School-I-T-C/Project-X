@@ -90,7 +90,7 @@ export async function ensureDefaultAdmin(): Promise<void> {
       "username", "password_hash", "name", "role_id", "is_active",
     ]);
     await db.run(insertAdminSql, "admin", passwordHash, "系统管理员", 1, 1);
-    console.log("[DB] Default admin created: username=admin, password=admin123");
+    console.warn("[SECURITY WARNING] Default admin created: username=admin, password=admin123. Please change it immediately after first login.");
     await ensureDefaultApiKey(db);
     return;
   }
@@ -108,7 +108,7 @@ export async function ensureDefaultAdmin(): Promise<void> {
     `INSERT INTO users (username, password_hash, name, role_id, is_active)
      VALUES (?, ?, ?, ?, ?)`
   ).run("admin", passwordHash, "系统管理员", 1, 1);
-  console.log("[DB] Default admin created: username=admin, password=admin123");
+  console.warn("[SECURITY WARNING] Default admin created: username=admin, password=admin123. Please change it immediately after first login.");
   console.log("[DB] 请登录后立即修改默认密码");
   await ensureDefaultApiKeySqlite(db);
 }

@@ -72,7 +72,7 @@ import {
 } from "./helpers";
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
-  validateExamIdsAccess
+  validateExamIdsAccess, setAuthEnforced
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
@@ -324,44 +324,53 @@ async function persistGradingResults(
     }
   }
 
+  const failedStudents: Array<{ studentId: string; error: string }> = [];
   for (const row of rows) {
     if (!row.studentId) continue;
     try {
       const studentPasswordHash = studentPasswordHashes.get(row.studentId) ?? "";
-      await db.run(ensureStudentSql, row.studentId, studentPasswordHash, row.studentId, row.studentId);
-      await db.run(updateBlankStudentPasswordSql, studentPasswordHash, row.studentId);
-      const stu = await db.get(findStudentSql, row.studentId) as { id: number } | undefined;
-      if (!stu) continue;
+      const studentId = row.studentId;  // 闭包外提取，确保类型收窄（闭包内 row.studentId 会变回 string|null）
+      // P0-6 (H-S5): 每个学生用事务包裹，中途失败回滚避免残留半成品数据
+      await db.transaction(async (tx) => {
+        await tx.run(ensureStudentSql, studentId, studentPasswordHash, studentId, studentId);
+        await tx.run(updateBlankStudentPasswordSql, studentPasswordHash, studentId);
+        const stu = await tx.get(findStudentSql, studentId) as { id: number } | undefined;
+        if (!stu) return;
 
-      const recordId = await examRepo.addScanRecord({
-        batch_id: batchId,
-        file_path: (row as any).actualPath || row.fileName,
-        file_name: row.fileName,
-        student_number: row.studentId,
-        student_id: stu.id
+        const recordId = await examRepo.addScanRecord({
+          batch_id: batchId,
+          file_path: (row as any).actualPath || row.fileName,
+          file_name: row.fileName,
+          student_number: studentId,
+          student_id: stu.id
+        });
+        await persistAnswerBlockCrops({
+          cardId: row.recognition.cardId ?? String(exam.card_id ?? ""),
+          examId,
+          studentId: stu.id,
+          studentNumber: studentId,
+          sourceType: "scan_record",
+          sourceRecordId: recordId,
+          crops: row.recognition.blockCrops ?? []
+        }, tx);
+
+        await examRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
+
+        for (const q of row.questions) {
+          await tx.run(insertQsSql, examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+        }
+        for (const sq of row.subjectiveQuestions ?? []) {
+          await tx.run(insertQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
+        }
+        persisted++;
       });
-      await persistAnswerBlockCrops({
-        cardId: row.recognition.cardId ?? String(exam.card_id ?? ""),
-        examId,
-        studentId: stu.id,
-        studentNumber: row.studentId,
-        sourceType: "scan_record",
-        sourceRecordId: recordId,
-        crops: row.recognition.blockCrops ?? []
-      }, db);
-
-      await examRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
-
-      for (const q of row.questions) {
-        await db.run(insertQsSql, examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
-      }
-      for (const sq of row.subjectiveQuestions ?? []) {
-        await db.run(insertQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
-      }
-      persisted++;
     } catch (err) {
       console.error(`[Grading] Failed to persist row for ${row.studentId}:`, err);
+      failedStudents.push({ studentId: row.studentId, error: String(err) });
     }
+  }
+  if (failedStudents.length > 0) {
+    console.warn(`[Grading] ${failedStudents.length} students failed to persist: ${failedStudents.map(f => f.studentId).join(", ")}`);
   }
 
   await examRepo.finishBatch(batchId);
@@ -429,17 +438,27 @@ export async function createApp(): Promise<express.Express> {
   await ensureDataDirs();
   console.log("[Server] 数据库初始化完成");
 
+  // P0-4 (C-S2): 鉴权默认开启，仅显式设置 0/false 才关闭（向后兼容开发环境）
   const enforceAuth =
-    process.env.PROJECTX_AUTH_ENFORCE === "1" || process.env.PROJECTX_AUTH_ENFORCE === "true";
+    process.env.PROJECTX_AUTH_ENFORCE !== "0" && process.env.PROJECTX_AUTH_ENFORCE !== "false";
   console.log(`[Server] RBAC 鉴权强制模式: ${enforceAuth ? "开启" : "关闭（仅解析身份）"}`);
+  // P0-5 (C-S3): 同步鉴权状态到 middleware 模块，供 requireExamAccess 使用
+  setAuthEnforced(enforceAuth);
 
   app.use(express.json({ limit: "8mb" }));
-  // v1.6.0: CORS — 允许 WEB 客户端跨域访问（教师/学生在浏览器使用 HTTP API）
-  app.use((_req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+  // P1-2 (M-S1): CORS — 从环境变量读取允许的 origin 白名单，不再使用通配符 *
+  const allowedOrigins = (process.env.PROJECTX_CORS_ORIGIN ?? "http://127.0.0.1:5173,http://localhost:5173")
+    .split(",").map(s => s.trim()).filter(Boolean);
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key");
-    if (_req.method === "OPTIONS") { res.status(204).end(); return; }
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    if (req.method === "OPTIONS") { res.status(204).end(); return; }
     next();
   });
   app.use("/assets", express.static(assetsDir));
@@ -460,7 +479,7 @@ export async function createApp(): Promise<express.Express> {
   // PATCH /api/users/me/settings — 更新当前用户设置
   app.get("/api/users/me/settings", authMiddleware, async (_req, res, next) => {
     try {
-      const userId = (_req as any).user.userId ?? (_req as any).user.id;
+      const userId = _req.user!.id;
       const userRepo = new UserRepository();
       const user = await userRepo.findById(userId);
       if (!user) { res.status(404).json({ message: "用户不存在" }); return; }
@@ -475,8 +494,8 @@ export async function createApp(): Promise<express.Express> {
   });
   app.patch("/api/users/me/settings", authMiddleware, validateBody(UpdateUserSettingsSchema), async (_req, res, next) => {
     try {
-      const userId = (_req as any).user.userId ?? (_req as any).user.id;
-      const body = (_req as any).body as Record<string, unknown>;
+      const userId = _req.user!.id;
+      const body = _req.body as Record<string, unknown>;
       const setClauses: string[] = [];
       const values: unknown[] = [];
       if (body.scoreDisplayMode !== undefined) { setClauses.push("score_display_mode = ?"); values.push(body.scoreDisplayMode); }
@@ -500,8 +519,8 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/app/background", optionalAuth, (req, res) => {
     // 用户自定义背景优先
-    if ((req as any).user) {
-      const customBg = path.join(backgroundsDir, `${(req as any).user.id}.jpg`);
+    if (req.user) {
+      const customBg = path.join(backgroundsDir, `${req.user?.id}.jpg`);
       if (existsSync(customBg)) {
         res.setHeader("Cache-Control", "no-cache");
         res.sendFile(customBg);
@@ -547,7 +566,7 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       // 重命名为 user_${userId}.jpg，覆盖旧背景
-      const target = path.join(backgroundsDir, `${(req as any).user.id}.jpg`);
+      const target = path.join(backgroundsDir, `${req.user?.id}.jpg`);
       await rename(req.file.path, target);
       res.json({ ok: true });
     } catch (error) {
@@ -1244,6 +1263,7 @@ export async function createApp(): Promise<express.Express> {
       const layout = buildLayout(card);
       // 收集 assets base64
       const assetsMap: Record<string, string> = {};
+      const failedAssets: string[] = [];
       const assetsPath = cardAssetsDir(cardId);
       if (existsSync(assetsPath)) {
         const { readdir } = await import("node:fs/promises");
@@ -1252,7 +1272,10 @@ export async function createApp(): Promise<express.Express> {
           try {
             const data = await readFile(path.join(assetsPath, file));
             assetsMap[file] = data.toString("base64");
-          } catch {}
+          } catch (err) {
+            console.warn(`[Export Card] 读取资源失败 ${file}:`, err);
+            failedAssets.push(file);
+          }
         }
       }
       res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -1266,7 +1289,8 @@ export async function createApp(): Promise<express.Express> {
         exportedAt: new Date().toISOString(),
         card,
         layout,
-        assets: assetsMap
+        assets: assetsMap,
+        ...(failedAssets.length > 0 ? { warnings: { failedAssets } } : {})
       });
     } catch (error) {
       next(error);
@@ -1366,6 +1390,7 @@ export async function createApp(): Promise<express.Express> {
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
 
       // 导入 assets
+      const failedImports: string[] = [];
       if (imported.assets && Object.keys(imported.assets).length > 0) {
         const assetsPath = cardAssetsDir(newId);
         await mkdir(assetsPath, { recursive: true });
@@ -1374,8 +1399,12 @@ export async function createApp(): Promise<express.Express> {
           if (safeFilename && /^[a-zA-Z0-9_\-\.]+$/.test(safeFilename)) {
             try {
               const buffer = Buffer.from(base64, "base64");
+              if (buffer.length === 0) throw new Error("空数据");
               await writeFile(path.join(assetsPath, safeFilename), buffer);
-            } catch {}
+            } catch (err) {
+              console.warn(`[Import Card] 写入资源失败 ${safeFilename}:`, err);
+              failedImports.push(safeFilename);
+            }
           }
         }
       }
@@ -1409,7 +1438,8 @@ export async function createApp(): Promise<express.Express> {
         ...toCardSummary({ id: saved.id, title: saved.title, updatedAt: saved.updatedAt }),
         createdExamId,
         duplicateExamName: duplicateExamName || undefined,
-        idConflictMsg: conflictMsg || undefined
+        idConflictMsg: conflictMsg || undefined,
+        ...(failedImports.length > 0 ? { warnings: { failedImports } } : {})
       });
     } catch (error) {
       next(error);
