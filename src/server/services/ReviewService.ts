@@ -5,13 +5,9 @@ import { recomputeExamRankings, roundScore } from "./rankingUpdate";
 import {
   listReviewBlockCrops
 } from "./AnswerBlockCropService";
-import {
-  checkDisputeOnSubmit,
-  computeMultiReviewResult
-} from "./ArbitrationService";
+import { computeMultiReviewResult } from "./ArbitrationService";
 import { getBlockConfig } from "./BlockGradingConfigService";
 import type {
-  BlockGradingConfig,
   ReviewBlockCropItem,
   ReviewBlockSummary,
   ReviewSubmitResult,
@@ -169,38 +165,6 @@ export async function submitReviewCropScores(params: {
   const config = await getBlockConfig(params.examId, crop.block_id ?? "", blockType, maxBlockScore, db);
   const reviewMode = config.reviewMode;
 
-  // 读取已有评分数据
-  const existingCrop = await db.get(
-    "SELECT review_round, score_breakdown, status FROM answer_block_crops WHERE id = ?",
-    params.cropId
-  ) as { review_round: number; score_breakdown: string | null; status: string } | undefined;
-
-  let existingScores: Array<{ round: number; reviewerId: number; score: number; reviewedAt: string }> = [];
-  if (existingCrop?.score_breakdown) {
-    try { existingScores = JSON.parse(existingCrop.score_breakdown); } catch { /* ignore */ }
-  }
-
-  // P0-4: 检查 reviewMode 限制 — 已完成的轮次不能超限
-  if (existingScores.length >= reviewMode) {
-    throw new Error(`该题块已达到 ${reviewMode} 评上限，无法继续提交`);
-  }
-
-  // P1-5: 检查同一评审人是否已提交过
-  const reviewerIds = new Set(existingScores.map((b) => b.reviewerId));
-  if (reviewerIds.has(params.userId)) {
-    throw new Error("您已对该题块评分，请勿重复提交");
-  }
-
-  // 检查当前用户是否为仲裁人（仲裁人不应参与初评）
-  if (config.arbitratorId != null && config.arbitratorId === params.userId) {
-    throw new Error("您是该题块的仲裁人，不能参与初评");
-  }
-
-  // P1-11 补充: 提前检查仲裁人冲突，仲裁人不能也是评审人
-  if (config.arbitratorId != null && reviewerIds.has(config.arbitratorId)) {
-    throw new Error("该题块的仲裁人已参与评分，需要更换仲裁人");
-  }
-
   const now = new Date().toISOString();
   const upsertCols = [
     "exam_id", "student_id", "question_number", "question_id", "block_id",
@@ -210,66 +174,71 @@ export async function submitReviewCropScores(params: {
   const updateCols = ["score", "max_score", "manually_modified", "modified_by", "modified_at", "block_id"];
   const upsertSQL = buildUpsertSQL(db.dialect, "question_scores", upsertCols, conflictCols, updateCols);
 
+  const submittedScores = params.scores.map((item) => {
+    const maxScore = item.maxScore ?? maxScoreByQuestion.get(item.questionNumber) ?? item.score;
+    return { ...item, maxScore, score: Math.max(0, Math.min(maxScore, item.score)) };
+  });
   let totalScore = 0;
-  let finalReviewRound = (existingCrop?.review_round ?? 0) + 1;
-  let scoreBreakdown: Array<{ round: number; reviewerId: number; score: number; reviewedAt: string }> = [...existingScores];
+  let finalReviewRound = 0;
+  let scoreBreakdown: Array<{ round: number; reviewerId: number; score: number; reviewedAt: string; questionScores: Record<string, number> }> = [];
   let disputed = false;
   let disputeReason = "";
   let finalScore: number | null = null;
-  let arbitratorId: number | null = null;
 
   // P0-2: 争议检测 + 状态更新全部在事务内执行
   await db.transaction(async (tx) => {
-    // 再次从数据库读取 CAS 版本号（事务内最新值）
+    // 评分历史必须在事务内读取和追加；事务外快照会在并发提交时覆盖另一位教师的记录。
     const freshCrop = await tx.get(
-      "SELECT review_round FROM answer_block_crops WHERE id = ?",
+      "SELECT review_round, score_breakdown FROM answer_block_crops WHERE id = ?",
       params.cropId
-    ) as { review_round: number } | undefined;
+    ) as { review_round: number; score_breakdown: string | null } | undefined;
     const currentRound = freshCrop?.review_round ?? 0;
+    if (!freshCrop) throw new Error("作答切块不存在");
+    try { scoreBreakdown = freshCrop.score_breakdown ? JSON.parse(freshCrop.score_breakdown) : []; } catch { scoreBreakdown = []; }
 
-    // 检查是否仍可提交（防止并发，review_round 可能被另一个事务修改）
-    if (currentRound >= reviewMode) {
+    if (scoreBreakdown.length >= reviewMode || currentRound >= reviewMode) {
       throw new Error("该题块已达到评分上限，请刷新后重试");
     }
+    const reviewerIds = new Set(scoreBreakdown.map((b) => b.reviewerId));
+    if (reviewerIds.has(params.userId)) throw new Error("您已对该题块评分，请勿重复提交");
+    if (config.arbitratorId != null && config.arbitratorId === params.userId) throw new Error("您是该题块的仲裁人，不能参与初评");
+    if (config.arbitratorId != null && reviewerIds.has(config.arbitratorId)) throw new Error("该题块的仲裁人已参与评分，需要更换仲裁人");
 
-    // 计算本轮总分
-    for (const item of params.scores) {
-      const maxScore = item.maxScore ?? maxScoreByQuestion.get(item.questionNumber) ?? item.score;
-      const clampedScore = Math.max(0, Math.min(maxScore, item.score));
-      totalScore += clampedScore;
-      await tx.run(
-        upsertSQL,
-        params.examId,
-        crop.student_id,
-        item.questionNumber,
-        null,
-        crop.block_id,
-        clampedScore,
-        maxScore,
-        item.scoreType,
-        1,
-        params.userId,
-        now
-      );
-      await tx.run(
-        `INSERT INTO answer_overrides (exam_id, card_id, question_number, score_type, override_type, old_value, new_value, created_by, created_at)
-         VALUES (?, ?, ?, ?, 'review_score', NULL, ?, ?, ?)`,
-        params.examId,
-        exam.card_id,
-        item.questionNumber,
-        item.scoreType,
-        JSON.stringify(clampedScore),
-        params.userId,
-        now
-      );
-    }
+    totalScore = submittedScores.reduce((sum, item) => sum + item.score, 0);
+    finalReviewRound = currentRound + 1;
+    const questionScores = Object.fromEntries(submittedScores.map((item) => [String(item.questionNumber), item.score]));
 
-    // 记录本轮评审
-    scoreBreakdown.push({ round: finalReviewRound, reviewerId: params.userId, score: totalScore, reviewedAt: now });
+    scoreBreakdown.push({ round: finalReviewRound, reviewerId: params.userId, score: totalScore, reviewedAt: now, questionScores });
 
-    // 如果所有轮次完成，计算最终分；否则暂不写入 student_scores/question_scores
+    // 仅在所有轮次完成且无争议后才写正式分数，避免最后一评的分数提前影响排名。
     if (scoreBreakdown.length >= reviewMode) {
-      totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!, params.userId, now);
+      const allScores = scoreBreakdown.map((b) => b.score);
+      const disputeResult = computeMultiReviewResult(allScores, config.disputeThreshold, config.rounding);
+      disputed = disputeResult.disputed;
+      disputeReason = disputeResult.reason;
+      if (!disputed) {
+        finalScore = disputeResult.finalScore;
+        const resolvedQuestionScores: Array<{ item: typeof submittedScores[number]; score: number }> = [];
+        for (const item of submittedScores) {
+          const values = scoreBreakdown.map((round) => round.questionScores?.[String(item.questionNumber)]).filter((v): v is number => typeof v === "number");
+          if (values.length !== scoreBreakdown.length) throw new Error("历史评审缺少逐题分数，无法安全合并，请转仲裁处理");
+          const resolved = computeMultiReviewResult(values, config.disputeThreshold, config.rounding);
+          if (resolved.disputed || resolved.finalScore == null) {
+            disputed = true;
+            disputeReason = `第${item.questionNumber}题${resolved.reason}`;
+            finalScore = null;
+            break;
+          }
+          resolvedQuestionScores.push({ item, score: resolved.finalScore });
+        }
+        // Do not persist a partial set if a later question is disputed.
+        if (!disputed) {
+          for (const resolved of resolvedQuestionScores) {
+            await tx.run(upsertSQL, params.examId, crop.student_id, resolved.item.questionNumber, null, crop.block_id, resolved.score, resolved.item.maxScore, resolved.item.scoreType, 1, params.userId, now);
+          }
+        }
+        if (!disputed) totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!, params.userId, now);
+      }
     }
 
     // 确定下一状态
@@ -296,35 +265,10 @@ export async function submitReviewCropScores(params: {
       throw new Error("该切块已被其他老师批阅，请刷新后重试");
     }
 
-    // P0-2: 争议检测在事务内执行
     if (scoreBreakdown.length >= reviewMode) {
-      const allScores = scoreBreakdown.map((b) => b.score);
-      const disputeResult = computeMultiReviewResult(allScores, config.disputeThreshold, config.rounding);
-
-      if (disputeResult.disputed) {
-        disputed = true;
-        disputeReason = disputeResult.reason;
-
-        // 确定仲裁人（须未参与过评审）
-        if (config.arbitratorId != null) {
-          const allReviewerIds = new Set(scoreBreakdown.map((b) => b.reviewerId));
-          if (!allReviewerIds.has(config.arbitratorId)) {
-            arbitratorId = config.arbitratorId;
-          }
-        }
-
-        // 更新切块状态为争议
-        await tx.run(
-          "UPDATE answer_block_crops SET status = ? WHERE id = ?",
-          "disputed",
-          params.cropId
-        );
-      } else {
-        finalScore = disputeResult.finalScore;
-      }
-
-      // 记录最终分（如有）
-      if (finalScore != null) {
+      if (disputed) {
+        await tx.run("UPDATE answer_block_crops SET status = ? WHERE id = ?", "disputed", params.cropId);
+      } else if (finalScore != null) {
         await tx.run(
           "UPDATE answer_block_crops SET final_score = ?, status = ? WHERE id = ?",
           finalScore,
