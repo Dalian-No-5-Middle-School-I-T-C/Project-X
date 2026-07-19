@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "1.8.2",
+  "version": "1.9.0",
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
@@ -45,6 +45,7 @@
     "chart.js": "^4.5.1",
     "expr-eval": "^2.0.2",
     "express": "^5.1.0",
+    "express-rate-limit": "^8.6.0",
     "mammoth": "^1.12.0",
     "multer": "^2.0.2",
     "mysql2": "^3.22.5",

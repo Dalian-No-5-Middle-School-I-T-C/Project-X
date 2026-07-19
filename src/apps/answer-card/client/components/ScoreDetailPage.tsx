@@ -11,7 +11,6 @@ import { ScoreTable } from "./ScoreTable";
 import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
-import { OnlineReviewPanel } from "./OnlineReviewPanel";
 import { AnalysisTrend } from "./AnalysisTrend";
 
 interface ClassOption {
@@ -27,7 +26,7 @@ interface Props {
   onBack: () => void;
 }
 
-type SubTab = "overview" | "scores" | "exam-analysis" | "review" | "ai";
+type SubTab = "overview" | "scores" | "exam-analysis" | "ai";
 
 export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const { user, isAdmin } = useAuth();
@@ -169,9 +168,6 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
       { key: "scores" as SubTab, label: "成绩", icon: FileText },
       { key: "exam-analysis" as SubTab, label: "考试分析", icon: BarChart3 },
     ];
-    if (isTeacher) {
-      tabs.push({ key: "review" as SubTab, label: "网上阅卷", icon: ClipboardCheck });
-    }
     tabs.push({ key: "ai" as SubTab, label: "AI分析", icon: ClipboardList });
     return tabs;
   }, [isTeacher]);
@@ -510,13 +506,6 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             <div className="analysis-section" style={{ padding: 24, textAlign: "center", color: "var(--muted)", background: "var(--bg-soft)", borderRadius: 10, border: "1px dashed var(--line-strong)", fontSize: 13 }}>
               知识点分析模块预留 — 未来将展示每道题对应的知识点、得分率与薄弱环节
             </div>
-          </div>
-        )}
-
-        {/* 网上阅卷 Tab */}
-        {subTab === "review" && isTeacher && (
-          <div style={{ padding: 24, height: "100%" }}>
-            <OnlineReviewPanel examId={examId} examName={examName} classId={classId || undefined} />
           </div>
         )}
 

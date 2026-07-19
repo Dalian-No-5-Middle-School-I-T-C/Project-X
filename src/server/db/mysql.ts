@@ -477,6 +477,90 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE ai_providers ADD COLUMN is_system TINYINT DEFAULT 0`,
       ]
     },
+    {
+      version: 19,
+      name: "online-review-v2",
+      sqls: [
+        // 1. review_assignments
+        `CREATE TABLE IF NOT EXISTS review_assignments (
+          id                   INT AUTO_INCREMENT PRIMARY KEY,
+          exam_id              INT NOT NULL,
+          block_id             VARCHAR(36) NOT NULL,
+          teacher_id           INT NOT NULL,
+          student_count        INT DEFAULT 0,
+          assigned_student_ids LONGTEXT,
+          created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uk_ra_exam_block_teacher (exam_id, block_id, teacher_id),
+          FOREIGN KEY (exam_id)    REFERENCES exams(id) ON DELETE CASCADE,
+          FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_ra_exam_block ON review_assignments(exam_id, block_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_ra_teacher ON review_assignments(teacher_id)`,
+
+        // 2. review_sessions
+        `CREATE TABLE IF NOT EXISTS review_sessions (
+          id            INT AUTO_INCREMENT PRIMARY KEY,
+          teacher_id    INT NOT NULL,
+          exam_id       INT NOT NULL,
+          block_id      VARCHAR(36) NOT NULL,
+          current_index INT DEFAULT 0,
+          position_json LONGTEXT,
+          draft_scores  LONGTEXT,
+          updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uk_rs_teacher_exam_block (teacher_id, exam_id, block_id),
+          FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (exam_id)    REFERENCES exams(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_rs_teacher ON review_sessions(teacher_id)`,
+
+        // 3. review_annotations
+        `CREATE TABLE IF NOT EXISTS review_annotations (
+          id          VARCHAR(64) PRIMARY KEY,
+          crop_id     VARCHAR(64) NOT NULL,
+          reviewer_id INT NOT NULL,
+          type        VARCHAR(16) NOT NULL,
+          data_json   LONGTEXT NOT NULL,
+          created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (crop_id)     REFERENCES answer_block_crops(id) ON DELETE CASCADE,
+          FOREIGN KEY (reviewer_id) REFERENCES users(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_rannot_crop ON review_annotations(crop_id)`,
+
+        // 4. block_grading_config
+        `CREATE TABLE IF NOT EXISTS block_grading_config (
+          id                 INT AUTO_INCREMENT PRIMARY KEY,
+          exam_id            INT NOT NULL,
+          block_id           VARCHAR(36) NOT NULL,
+          dispute_threshold  DOUBLE DEFAULT 2,
+          rounding           VARCHAR(16) DEFAULT 'ceil',
+          arbitrator_id      INT,
+          review_mode        INT DEFAULT 1,
+          created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uk_bgc_exam_block (exam_id, block_id),
+          FOREIGN KEY (exam_id)       REFERENCES exams(id) ON DELETE CASCADE,
+          FOREIGN KEY (arbitrator_id) REFERENCES users(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_bgc_exam ON block_grading_config(exam_id)`,
+
+        // 5. answer_block_crops 加列
+        `ALTER TABLE answer_block_crops ADD COLUMN reviewer_id     INT`,
+        `ALTER TABLE answer_block_crops ADD COLUMN reviewed_at     DATETIME`,
+        `ALTER TABLE answer_block_crops ADD COLUMN review_round    INT DEFAULT 1`,
+        `ALTER TABLE answer_block_crops ADD COLUMN final_score     DOUBLE`,
+        `ALTER TABLE answer_block_crops ADD COLUMN final_score_by  INT`,
+        `ALTER TABLE answer_block_crops ADD COLUMN score_breakdown LONGTEXT`,
+        `ALTER TABLE answer_block_crops ADD FOREIGN KEY fk_abc_reviewer  (reviewer_id)    REFERENCES users(id)`,
+        `ALTER TABLE answer_block_crops ADD FOREIGN KEY fk_abc_final_by  (final_score_by) REFERENCES users(id)`,
+
+        // 6. users 加列
+        `ALTER TABLE users ADD COLUMN show_tab_bar TINYINT DEFAULT 0`,
+
+        // 7. exams 加列
+        `ALTER TABLE exams ADD COLUMN review_mode    INT DEFAULT 1`,
+        `ALTER TABLE exams ADD COLUMN review_enabled TINYINT DEFAULT 0`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

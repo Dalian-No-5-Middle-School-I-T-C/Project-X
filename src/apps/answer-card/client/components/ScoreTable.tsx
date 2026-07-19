@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Minus, Search } from "lucide-react";
-import { fetchJson, urlWithToken } from "../auth/api";
+import { fetchJson, mediaUrl } from "../auth/api";
 import type { ScoreTableRow, ScoreDisplayMode } from "../../../../shared/types";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 
@@ -59,7 +59,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
           recordId: p.recordId,
           pageNum: p.pageNum,
           side: p.side,
-          imageUrl: urlWithToken(`/api/scanner/grading-image/${data.cardId}/${encodeURIComponent(p.fileName)}`)
+          imageUrl: mediaUrl(`/api/scanner/grading-image/${data.cardId}/${encodeURIComponent(p.fileName)}`)
         }));
         setPreviewPages(pages);
       }
