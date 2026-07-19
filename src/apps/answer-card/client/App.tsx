@@ -60,7 +60,6 @@ import type {
   BlankItem,
   SubjectiveBlock,
   SubjectiveBlockKind,
-  EssayGridConfig,
   SubjectiveKind,
   SubjectiveQuestion,
   SubjectiveStyle
@@ -3638,6 +3637,8 @@ function SubjectiveEditor({
           )}
           {!isFillBlankBlock && (
             <>
+              {question.kind !== "blank" && (
+                <>
               <label className="check-row">
                 <input
                   type="checkbox"
@@ -3664,6 +3665,19 @@ function SubjectiveEditor({
               </label>
               {question.lineGrid?.enabled && (
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  <label style={{ gridColumn: "1 / -1" }}>
+                    线型
+                    <select
+                      value={question.lineGrid.lineStyle ?? "solid"}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineStyle: event.target.value as "solid" | "dashed" | "dotted" };
+                      })}
+                    >
+                      <option value="solid">实线</option>
+                      <option value="dashed">虚线</option>
+                      <option value="dotted">点线</option>
+                    </select>
+                  </label>
                   <label>
                     行数
                     <input
@@ -3733,6 +3747,8 @@ function SubjectiveEditor({
                     />
                   </label>
                 </div>
+              )}
+                </>
               )}
               <label className="upload-button">
                 <ImagePlus size={16} /> 插入图片
@@ -4047,7 +4063,7 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
     const offsetX = block.rect.x + (bodyW - gridW) / 2;
 
     // 高度内能放的行数
-    const gridH = block.rect.height - (showTitle ? 9 : 0);
+    const gridH = block.rect.height - (showTitle ? 9 : 2);
     const rows = Math.floor(gridH / cellH);
     const startY = block.rect.y + (showTitle ? 9 : 2);
 
@@ -4152,10 +4168,11 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
             const width = cfg?.lineWidthMm ?? 0.15;
             const insetL = cfg?.insetLeftMm ?? 8;
             const insetR = cfg?.insetRightMm ?? 6;
+            const dash = cfg?.lineStyle === "dashed" ? "1.2,0.8" : cfg?.lineStyle === "dotted" ? "0.3,0.7" : undefined;
             return (
               <line key={lineY} x1={question.contentRect.x + insetL} y1={lineY}
                     x2={question.contentRect.x + question.contentRect.width - insetR} y2={lineY}
-                    stroke={color} strokeWidth={width} />
+                    stroke={color} strokeWidth={width} strokeDasharray={dash} strokeLinecap={cfg?.lineStyle === "dotted" ? "round" : undefined} />
             );
           })}
           {question.blanks.map((blank, index) => {

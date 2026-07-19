@@ -270,7 +270,7 @@ function drawEssayGrid(
   const gridW = columns * cellW;
   const offsetX = block.rect.x + (bodyW - gridW) / 2;
 
-  const gridH = block.rect.height - (showTitle ? 9 : 0);
+  const gridH = block.rect.height - (showTitle ? 9 : 2);
   const rows = Math.floor(gridH / cellH);
   const startY = block.rect.y + (showTitle ? 9 : 2);
 
@@ -334,6 +334,13 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
   const lwidthMm = lcfg?.lineWidthMm ?? 0.15;
   const linsetL = lcfg?.insetLeftMm ?? 8;
   const linsetR = lcfg?.insetRightMm ?? 6;
+  const lstyle = lcfg?.lineStyle;
+  if (lstyle === "dashed") {
+    doc.dash(pt(1.2), { space: pt(0.8) });
+  } else if (lstyle === "dotted") {
+    doc.dash(pt(0.3), { space: pt(0.7) });
+    doc.lineCap("round");
+  }
 
   question.lineYs.forEach((lineY) => {
     doc.lineWidth(pt(lwidthMm));
@@ -341,6 +348,11 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
        .lineTo(pt(question.contentRect.x + question.contentRect.width - linsetR), pt(lineY))
        .stroke(lcolor);
   });
+
+  if (lstyle === "dashed" || lstyle === "dotted") {
+    doc.undash();
+    doc.lineCap("butt");
+  }
 
   question.blanks.forEach((blank, index) => {
     const blankLabel = question.blankLabels?.[index] ?? (question.kind === "blank" ? formatBlankLabel(question.blankLabelStyle, index) : `${question.questionNumber}.${index + 1}`);

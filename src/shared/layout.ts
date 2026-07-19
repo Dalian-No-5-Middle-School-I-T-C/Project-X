@@ -496,9 +496,7 @@ const BLANK_MAX_SHRINK_RATIO = 0.7;
 const ESSAY_DEFAULT_CELL_MM = 7;
 const ESSAY_DEFAULT_LINE_COLOR = "#222";
 const ESSAY_DEFAULT_LINE_WIDTH = 0.15;
-const ESSAY_TITLE_HEIGHT = 7;
 const ESSAY_GRID_INSET_X = 4;
-const ESSAY_GRID_INSET_TOP = 2;
 const ESSAY_PANEL_GAP = A3_PANEL_GAP;
 
 function addManualScoreCells(
@@ -1005,7 +1003,7 @@ export function buildLayout(card: AnswerCard): LayoutDocument {
 
 function layoutEssayBlock(
   block: SubjectiveBlock,
-  ensureSpace: (height: number) => void,
+  _ensureSpace: (height: number) => void,
   newPage: () => void,
   getPage: () => PageLayout,
   setY: (value: number) => void,
@@ -1022,114 +1020,68 @@ function layoutEssayBlock(
   };
   const cellW = grid.cellWidthMm || ESSAY_DEFAULT_CELL_MM;
   const cellH = grid.cellHeightMm || ESSAY_DEFAULT_CELL_MM;
-  const lineColor = grid.lineColor || ESSAY_DEFAULT_LINE_COLOR;
-  const lineW = grid.lineWidthMm ?? ESSAY_DEFAULT_LINE_WIDTH;
   const showTitle = grid.showTitle !== false;
 
-  // 每栏可用宽度
+  // 渲染器（客户端 SubjectiveSvg / 服务器 drawEssayGrid）按 block.rect 计算行列：
+  //   标题区高度 = showTitle ? 9 : 2，网格从 rect.y + 该高度起，行数 = floor((rect.height - 标题区) / cellH)
+  // 因此每块高度须覆盖「标题区 + rowsThisPage*cellH」，格子才能被正确画出。
+  const gridTop = showTitle ? 9 : 2;
+  const bottomPad = 2;
+
+  // 每栏可用宽度与列数（栏内居中）
   const panelW = BODY_WIDTH;
   const panelInsetX = ESSAY_GRID_INSET_X;
   const usableW = panelW - panelInsetX * 2;
-  // 自动计算列数
-  const columns = grid.columns > 0 ? grid.columns : Math.floor(usableW / cellW);
-  // 单栏网格总宽
-  const gridW = columns * cellW;
-  // 网格居中偏移（栏内居中）
-  const gridOffsetX = (panelW - gridW) / 2;
+  const columns = grid.columns > 0 ? grid.columns : Math.max(1, Math.floor(usableW / cellW));
 
-  // 题号标题高度
-  const titleH = showTitle ? ESSAY_TITLE_HEIGHT + 2 : 0;
-
-  // 逐面板渲染
+  // 逐栏 X 起点：A3 三栏并排，A4 单栏
   const panelCount = IS_A3 ? 3 : 1;
-  let startY = getY();
-
-  // A3 三栏：X 坐标偏移
   const panelStarts: number[] = [];
   for (let p = 0; p < panelCount; p++) {
-    if (IS_A3) {
-      panelStarts.push(p * (panelW + ESSAY_PANEL_GAP) + OUTER_MARGIN_X);
-    } else {
-      panelStarts.push(MARGIN_X);
-    }
+    panelStarts.push(IS_A3 ? p * (panelW + ESSAY_PANEL_GAP) + OUTER_MARGIN_X : MARGIN_X);
   }
 
-  // 为所有面板渲染网格（同页上并排排列）
-  let firstPage = true;
-  const totalTargetChars = grid.targetChars;
+  // 总行数：按所有栏的总列数折算目标字数
+  const totalColumns = columns * panelCount;
+  const targetRows = grid.rows > 0 ? grid.rows : Math.ceil((grid.targetChars || 600) / totalColumns);
 
-  // 计算所需总行数
-  const totalColumns = columns * panelCount;  // 所有栏的总列数
-  const targetRows = grid.rows > 0 ? grid.rows : Math.ceil(totalTargetChars / totalColumns);
-
-  // 计算每页能放的行数
   let remainingRows = targetRows;
-  let rowsLaid = 0;
+  let startY = getY();
 
   while (remainingRows > 0) {
     const page = getPage();
-    const availableH = availableHeight(startY) - titleH - ESSAY_GRID_INSET_TOP - 4;
-    const rowsThisPage = Math.min(remainingRows, Math.floor(availableH / cellH));
+    const availableH = availableHeight(startY) - gridTop - 4;
+    const rowsThisPage = Math.min(remainingRows, Math.max(0, Math.floor(availableH / cellH)));
 
     if (rowsThisPage <= 0) {
-      // 当前页放不下任何行，换页
+      // 当前位置放不下任何一行，整块移到新页/新栏
       newPage();
       startY = nextPageY();
-      // 第二页不再显示标题
-      // firstPage remains true (it's still used for marking)
       continue;
     }
 
-    ensureSpace(titleH + ESSAY_GRID_INSET_TOP + rowsThisPage * cellH + 4);
+    const blockHeight = gridTop + rowsThisPage * cellH + bottomPad;
 
-    // 渲染各栏网格
+    // 为每栏各推一个覆盖「标题区 + 整片网格」的 subjective 块，渲染器据此画出格子。
+    // （不再把单个格子存为 page.elements —— 两端渲染层从未遍历 elements，会导致作文格不显示。）
     for (let p = 0; p < panelCount; p++) {
-      const panelStartX = panelStarts[p];
-
-      // 题号（只第一页显示）
-      if (showTitle && firstPage) {
-        const titleX = panelStartX + panelInsetX;
-        const titleY = startY;
-        const blockData: PageRenderBlock = {
-          type: "subjective",
-          blockId: block.id,
-          title: block.title,
-          rect: rect(panelStartX, titleY, panelW, titleH + ESSAY_GRID_INSET_TOP + 2),
-          questions: [],
-          panelIndex: p,
-        };
-        page.blocks.push(blockData);
-      }
-
-      const gridStartY = startY + (showTitle && firstPage ? titleH + 2 : ESSAY_GRID_INSET_TOP);
-
-      // 渲染每个格子
-      for (let row = 0; row < rowsThisPage; row++) {
-        for (let col = 0; col < columns; col++) {
-          const cellX = panelStartX + gridOffsetX + col * cellW;
-          const cellY = gridStartY + row * cellH;
-          page.elements.push({
-            id: `essay_p${p}_r${rowsLaid + row}_c${col}`,
-            type: "subjective_box",
-            rect: rect(cellX, cellY, cellW, cellH),
-            blockId: block.id,
-            questionId: question.id,
-            questionNumber: question.number,
-          } as LayoutElement);
-        }
-      }
+      page.blocks.push({
+        type: "subjective",
+        blockId: block.id,
+        title: block.title,
+        rect: rect(panelStarts[p], startY, panelW, blockHeight),
+        questions: [],
+        panelIndex: p,
+      });
     }
 
-    rowsLaid += rowsThisPage;
     remainingRows -= rowsThisPage;
-    const newY = startY + (showTitle && firstPage ? titleH + 2 : ESSAY_GRID_INSET_TOP) + rowsThisPage * cellH + 4;
-    setY(newY);
+    setY(startY + blockHeight + 4);
 
     if (remainingRows > 0) {
       newPage();
       startY = nextPageY();
     }
-    firstPage = false;
   }
 }
 
