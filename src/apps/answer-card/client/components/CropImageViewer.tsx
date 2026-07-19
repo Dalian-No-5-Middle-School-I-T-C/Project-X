@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { urlWithToken, fetchJson } from "../auth/api";
+import { mediaUrl, fetchJson } from "../auth/api";
 import type { ReviewAnnotation } from "../../../../shared/types";
 
 interface Props {
@@ -19,12 +19,12 @@ export function CropImageViewer({ cropId, imageUrl, widthPx = 800, heightPx = 60
   }, [cropId]);
 
   if (annotations.length === 0) {
-    return <img src={urlWithToken(imageUrl)} alt="作答切块" style={{ maxWidth: "100%", display: "block" }} />;
+    return <img src={mediaUrl(imageUrl)} alt="作答切块" style={{ maxWidth: "100%", display: "block" }} />;
   }
 
   return (
     <div style={{ position: "relative", display: "inline-block", maxWidth: "100%" }}>
-      <img src={urlWithToken(imageUrl)} alt="作答切块" style={{ maxWidth: "100%", display: "block" }} />
+      <img src={mediaUrl(imageUrl)} alt="作答切块" style={{ maxWidth: "100%", display: "block" }} />
       {annotations.map((ann) => (
         <div
           key={ann.id}

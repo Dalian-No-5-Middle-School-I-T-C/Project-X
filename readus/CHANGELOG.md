@@ -103,6 +103,40 @@
 - 成绩分析页移除旧的「网上阅卷」Tab（网阅统一在考试管理入口）
 - 快捷入口无数据时不空白，fallback 到最新考试或考试管理引导卡片
 
+### v1.9.0 系统审查与安全修复 (2026-07-19)
+
+基于全面代码审查（14 个文件、45 个问题），修复 4 个致命 bug + 10 个严重 bug。
+
+#### 致命修复（4 项）
+- **P0-1 文件 I/O 在 DB 事务内** (`cleanup.ts`)：文件删除移到事务外，避免事务回滚导致数据不一致
+- **P0-2 争议状态更新在事务外** (`ReviewService.ts`)：争议检测 + 状态写入全部移入事务内
+- **P0-3 仲裁无 CAS 并发保护** (`review-arbitration.ts`)：CAS 乐观锁 `WHERE review_round = ? AND status = 'disputed'` + 事务统一化
+- **P0-4 reviewMode 从未强制** (`ReviewService.ts`)：提交前检查 `已完成轮次 >= reviewMode`，防止无限提交
+
+#### 严重修复（10 项）
+- **P1-5 重复提交检测**：同一评审人不可对同一题块二次提交（从 `score_breakdown` 解析）
+- **P1-6 偏差值统计错误** (`AnalysisRepository.ts`)：🇯🇵 偏差值 / Z 值的均值与标准差改用全体考生数据，不再按班级筛选
+- **P1-7 假性标记** (`score-editing.ts`)：分数未变时不设 `manually_modified = 1`
+- **P1-8 排名事务一致性** (`score-editing.ts` 两处)：排名重算从事务外移到事务内
+- **P1-9 仲裁 max_score=0** (`review-arbitration.ts`)：从已有 question_scores 读取正确的 max_score
+- **P1-10 仲裁 score_type 硬编码** (`review-arbitration.ts`)：从已有 question_scores 读取正确的 score_type
+- **P1-11 评审人查询不可靠** (`ArbitrationService.ts`)：改用 score_breakdown JSON 解析，不再单查 reviewer_id
+- **P1-12 通用化争议检测** (`ArbitrationService.ts`)：`computeMultiReviewResult` 支持 4+ 次评审，聚类判断替代硬编码 3P
+- **P1-14 Token 暴露**：新增 `mediaUrl()`，同源图片/iframe 依靠 httpOnly cookie 认证，不再在 URL 中暴露 JWT
+- **仲裁人冲突检查** (`ReviewService.ts`)：仲裁人已参与评审时提前抛出明确错误
+
+#### 修改文件
+| 文件 | 改动 |
+|------|------|
+| `src/server/db/cleanup.ts` | 文件 IO 移出事务 |
+| `src/server/services/ReviewService.ts` | reviewMode 强制 + 争议事务内 + 重复/仲裁检查 |
+| `src/server/routes/review-arbitration.ts` | CAS 保护 + 事务统一 + max_score/score_type 修复 |
+| `src/server/routes/score-editing.ts` | manually_modified 条件 + 排名事务内 (2 处) |
+| `src/server/services/ArbitrationService.ts` | 通用化争议检测 + 评审人检查修复 |
+| `src/server/repositories/AnalysisRepository.ts` | 偏差值全体数据 |
+| `src/apps/answer-card/client/auth/api.ts` | mediaUrl() 新增 |
+| 前端 6 组件 | 图片 URL 改用 mediaUrl (cookie 认证) |
+
 ## v1.8.2 (2026-07-09) — 暗色模式全面修复
 
 基于 v1.6.3 暗色模式基线进行系统性修复，解决 v1.7.0+ 新增组件在暗色下的灰底灰字、可读性差、与背景融为一体等问题。

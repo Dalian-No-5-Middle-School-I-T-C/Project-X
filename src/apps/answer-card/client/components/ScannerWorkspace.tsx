@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ArrowLeft, Camera, ClipboardCheck, Download, FolderOpen, ImagePlus } from "lucide-react";
-import { fetchJson, urlWithToken } from "../auth/api";
+import { fetchJson, mediaUrl } from "../auth/api";
 import { ScannerPanel } from "./ScannerPanel";
 import type { CombinedGradingBatchResult, CombinedGradingRow } from "../../../../shared/types";
 
@@ -324,7 +324,7 @@ function GradingResultsInline({
                     className="score-preview-link"
                     onClick={(event) => {
                       event.stopPropagation();
-                      const url = urlWithToken(row.previewUrl!);
+                      const url = mediaUrl(row.previewUrl!);
                       window.open(url, "_blank");
                     }}
                     style={{ background: "none", border: "none", cursor: "pointer", color: "var(--brand)", fontSize: 12, padding: 0, textDecoration: "underline", textUnderlineOffset: 2 }}
