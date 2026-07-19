@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw, RotateCcw, PenLine, Save } from "lucide-react";
-import { fetchJson, urlWithToken } from "../auth/api";
+import { fetchJson, mediaUrl } from "../auth/api";
 import { ScorePad } from "./ScorePad";
 import { AnnotationOverlay } from "./AnnotationOverlay";
 import type { ReviewBlockCropItem, ReviewAnnotation, ReviewSubmitResult } from "../../../../shared/types";
@@ -299,7 +299,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
                 transition: "transform 0.2s",
               }}>
                 <img
-                  src={urlWithToken(current.imageUrl)}
+                  src={mediaUrl(current.imageUrl)}
                   alt={current.blockTitle || "作答切块"}
                   style={{
                     maxWidth: "100%",

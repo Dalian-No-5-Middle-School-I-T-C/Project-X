@@ -24,7 +24,7 @@ import {
   Users
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
-import { apiUrl, authFetch, fetchJson, urlWithToken } from "./auth/api";
+import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "./auth/api";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
@@ -2306,13 +2306,13 @@ function App() {
                       {exportCheck.paperInfo.mimeType?.startsWith("image/") ? (
                         <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, overflow: "hidden", cursor: "pointer", background: "var(--surface-raised)" }}
                           onClick={() => { if (exportCheck.cardId) setPaperPreviewOpen(exportCheck.cardId); }} title="点击放大">
-                          <img src={urlWithToken(`/api/cards/${exportCheck.cardId}/paper?format=image`)} alt="原卷"
+                          <img src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper?format=image`)} alt="原卷"
                             style={{ maxWidth: "100%", maxHeight: 240, objectFit: "contain", display: "block", margin: "0 auto" }}
                             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                           <p style={{ textAlign: "center", padding: "4px 0 8px", color: "var(--muted)", fontSize: 12 }}>点击放大查看</p>
                         </div>
                       ) : exportCheck.paperInfo.mimeType === "application/pdf" ? (
-                        <iframe src={urlWithToken(`/api/cards/${exportCheck.cardId}/paper`)} style={{ width: "100%", height: 380, border: "1px solid var(--line-soft)", borderRadius: 6 }} title="原卷PDF" />
+                        <iframe src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper`)} style={{ width: "100%", height: 380, border: "1px solid var(--line-soft)", borderRadius: 6 }} title="原卷PDF" />
                       ) : (
                         <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, padding: 16, textAlign: "center", background: "var(--surface-raised)" }}>
                           <p style={{ margin: 0, fontWeight: 600 }}>{exportCheck.paperInfo.filename}</p>
@@ -2427,7 +2427,7 @@ function App() {
             </div>
             <div style={{ padding: 16, textAlign: "center", overflow: "auto" }}>
               <img
-                src={urlWithToken(`/api/cards/${paperPreviewOpen}/paper?format=image`)}
+                src={mediaUrl(`/api/cards/${paperPreviewOpen}/paper?format=image`)}
                 alt="原卷"
                 style={{ maxWidth: `${paperZoom * 100}%`, maxHeight: `${paperZoom * 75}vh`, objectFit: "contain", transition: "max-width 0.15s, max-height 0.15s" }}
               />

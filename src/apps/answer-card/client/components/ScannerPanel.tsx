@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Camera, Play, Square, RefreshCw, AlertTriangle, Check, Loader, Eye, Upload, Database } from "lucide-react";
-import { authFetch, urlWithToken } from "../auth/api";
+import { authFetch, mediaUrl, urlWithToken } from "../auth/api";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 import { ScanPreviewModal } from "./ScanPreviewModal";
 
@@ -329,7 +329,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }
 
   function imageUrl(recordId: string): string {
-    return urlWithToken(`/api/scanner/scan-image/${recordId}`);
+    return mediaUrl(`/api/scanner/scan-image/${recordId}`);
   }
 
   return (

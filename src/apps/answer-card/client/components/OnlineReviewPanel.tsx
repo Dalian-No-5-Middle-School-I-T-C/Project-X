@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, Loader2, RefreshCw
 } from "lucide-react";
-import { fetchJson, urlWithToken } from "../auth/api";
+import { fetchJson, mediaUrl } from "../auth/api";
 import type {
   ReviewBlockCropItem,
   ReviewBlockCropsResponse,
@@ -247,7 +247,7 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
               </div>
               <div className="online-review-image-wrap">
                 <img
-                  src={urlWithToken(current.imageUrl)}
+                  src={mediaUrl(current.imageUrl)}
                   alt={current.blockTitle}
                   className="online-review-image"
                 />

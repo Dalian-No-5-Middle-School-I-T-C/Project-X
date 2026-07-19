@@ -102,3 +102,14 @@ export function urlWithToken(url: string): string {
   const sep = resolved.includes("?") ? "&" : "?";
   return `${resolved}${sep}token=${encodeURIComponent(token)}`;
 }
+
+/** P1-14: 媒体资源URL（图片、PDF iframe等）。
+ *  同源请求依靠 httpOnly cookie 认证，不暴露 token 在 URL 中；
+ *  跨源请求（远端 API 模式）才追加 ?token=。 */
+export function mediaUrl(url: string): string {
+  const base = getApiBase();
+  // 同源：cookies 自动发送，不需要 token
+  if (!base) return apiUrl(url);
+  // 跨源：需要 token query param
+  return urlWithToken(url);
+}

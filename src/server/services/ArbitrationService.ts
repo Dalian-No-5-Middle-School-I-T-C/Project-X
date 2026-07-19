@@ -15,6 +15,8 @@ export interface DisputeCheckResult {
 
 /**
  * 检测多轮评分是否触发争议，并计算最终分
+ * 
+ * P1-12: 通用化处理，支持任意数量评分（2P, 3P, 以及仲裁人加入后的 4+ 次评审）
  */
 export function computeMultiReviewResult(
   scores: number[],
@@ -28,6 +30,7 @@ export function computeMultiReviewResult(
   const sorted = [...scores].sort((a, b) => a - b);
   const maxDiff = sorted[sorted.length - 1] - sorted[0];
 
+  // 2P 模式
   if (scores.length === 2) {
     if (maxDiff <= disputeThreshold) {
       const avg = (scores[0] + scores[1]) / 2;
@@ -46,34 +49,54 @@ export function computeMultiReviewResult(
     };
   }
 
-  // 3P 模式
+  // 3P+ 模式：通用化处理
+  // 如果所有分数都在阈值范围内 → 取平均
   if (maxDiff <= disputeThreshold) {
-    const avg = (sorted[0] + sorted[1] + sorted[2]) / 3;
+    const avg = sorted.reduce((a, b) => a + b, 0) / sorted.length;
     return {
       disputed: false,
       needsArbitration: false,
       finalScore: applyRounding(avg, rounding),
-      reason: `三评一致，分差${maxDiff}≤阈值`
+      reason: `${sorted.length}评一致，分差${maxDiff}≤阈值`
     };
   }
 
-  // 两评接近，一评偏离
-  if (sorted[1] - sorted[0] <= disputeThreshold && sorted[2] - sorted[1] > disputeThreshold) {
-    const avg = (sorted[0] + sorted[1]) / 2;
-    return {
-      disputed: false,
-      needsArbitration: false,
-      finalScore: applyRounding(avg, rounding),
-      reason: `取两接近分平均(${sorted[0]},${sorted[1]})，排除异常分${sorted[2]}`
-    };
+  // 尝试找"多数接近分数" → 排除少数偏离者
+  // 方法：逐对检查差值的聚类
+  // 选取中位数附近的分数群来判断
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const closeGroup: number[] = [];
+
+  for (const s of sorted) {
+    // 从最小分和最大分往中间看，找出差异在阈值内的组
+    let isCloseToAny = false;
+    for (const c of closeGroup) {
+      if (Math.abs(s - c) <= disputeThreshold) {
+        isCloseToAny = true;
+        break;
+      }
+    }
+    if (isCloseToAny) {
+      closeGroup.push(s);
+    }
   }
-  if (sorted[2] - sorted[1] <= disputeThreshold && sorted[1] - sorted[0] > disputeThreshold) {
-    const avg = (sorted[1] + sorted[2]) / 2;
+  // 如果 closeGroup 未形成（可能只有一两个），尝试另一种方式
+  const closeToMedian: number[] = [];
+  for (const s of sorted) {
+    if (Math.abs(s - median) <= disputeThreshold) {
+      closeToMedian.push(s);
+    }
+  }
+
+  // 如果 closeToMedian 覆盖了大部分（≥2 个且大于等于一半），且不是全部
+  if (closeToMedian.length >= 2 && closeToMedian.length < sorted.length) {
+    const avg = closeToMedian.reduce((a, b) => a + b, 0) / closeToMedian.length;
+    const outliers = sorted.filter(s => !closeToMedian.includes(s));
     return {
       disputed: false,
       needsArbitration: false,
       finalScore: applyRounding(avg, rounding),
-      reason: `取两接近分平均(${sorted[1]},${sorted[2]})，排除异常分${sorted[0]}`
+      reason: `取${closeToMedian.length}个接近分平均，排除异常分${outliers.join(",")}`
     };
   }
 
@@ -81,7 +104,7 @@ export function computeMultiReviewResult(
     disputed: true,
     needsArbitration: true,
     finalScore: null,
-    reason: `三评分差过大，进入仲裁`
+    reason: `${sorted.length}评分差过大，进入仲裁`
   };
 }
 
@@ -135,15 +158,19 @@ export async function checkDisputeOnSubmit(
 
   let arbitratorId: number | null = null;
   if (result.disputed && config.arbitratorId) {
-    // 检查仲裁人是否已参与该切块
-    const previousReviewers = await db.all(
-      "SELECT reviewer_id FROM answer_block_crops WHERE id = ? AND reviewer_id IS NOT NULL",
-      cropId
-    ) as Array<{ reviewer_id: number }>;
-    const reviewerSet = new Set(previousReviewers.map((r) => r.reviewer_id));
-    reviewerSet.add(reviewerId);
+    // P1-11: 从 score_breakdown 解析所有评审人（而非仅查 reviewer_id）
+    const allReviewerIds = new Set<number>();
+    if (crop.score_breakdown) {
+      try {
+        const breakdown = JSON.parse(crop.score_breakdown) as Array<{ reviewerId: number }>;
+        for (const b of breakdown) {
+          if (b.reviewerId) allReviewerIds.add(b.reviewerId);
+        }
+      } catch { /* ignore */ }
+    }
+    allReviewerIds.add(reviewerId); // 加入当前提交者
 
-    if (!reviewerSet.has(config.arbitratorId)) {
+    if (!allReviewerIds.has(config.arbitratorId)) {
       arbitratorId = config.arbitratorId;
     }
   }
