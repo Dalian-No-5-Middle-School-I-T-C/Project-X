@@ -5,10 +5,11 @@
 import { Router } from "express";
 import { requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { requireExamAccess } from "../../apps/answer-card/server/middleware";
+import { requireExamAccess, getVisibleExamIds } from "../../apps/answer-card/server/middleware";
 import { getDisputes, getEligibleArbitrators } from "../services/ArbitrationService";
 import { getMysqlDb } from "../db";
 import { recomputeExamRankings } from "../services/rankingUpdate";
+import { getBlockConfig } from "../services/BlockGradingConfigService";
 
 const router = Router();
 
@@ -58,7 +59,7 @@ router.post(
       const db = getMysqlDb();
       const cropId = String(req.params.cropId ?? "");
       const { score } = req.body;
-      const userId = (req as any).user?.id;
+      const userId = req.user!.id;
 
       if (score == null || !Number.isFinite(Number(score))) {
         return res.status(400).json({ ok: false, error: "score 必填" });
@@ -73,6 +74,30 @@ router.post(
           cropId
         ) as any;
         if (!crop) throw new Error("切块不存在");
+
+        // cropId 路由没有 examId 参数，必须在此补上考试可见性校验，避免跨考试仲裁。
+        const visibleExamIds = await getVisibleExamIds(req.user);
+        if (visibleExamIds !== null && !visibleExamIds.includes(Number(crop.exam_id))) {
+          throw new Error("权限不足：无权访问此考试");
+        }
+
+        const config = await getBlockConfig(
+          Number(crop.exam_id), String(crop.block_id ?? ""), String(crop.block_type ?? "subjective"), 0, tx
+        );
+        if (config.arbitratorId == null) throw new Error("该题块未指定仲裁人，不能直接仲裁");
+        if (config.arbitratorId !== userId) throw new Error("仅指定仲裁人可以提交最终分");
+
+        const questionNumbers = JSON.parse(crop.question_numbers ?? "[]");
+        if (questionNumbers.length !== 1) {
+          throw new Error("多小题题块必须使用逐题仲裁；当前接口不接受单一总分以避免写入错误成绩");
+        }
+        const questionMax = await tx.get(
+          "SELECT max_score FROM question_scores WHERE exam_id = ? AND question_number = ? LIMIT 1",
+          crop.exam_id, questionNumbers[0]
+        ) as { max_score: number } | undefined;
+        if (questionMax && Number(score) > Number(questionMax.max_score)) {
+          throw new Error(`仲裁分不得超过题目满分 ${questionMax.max_score}`);
+        }
 
         // CAS 保护: 使用 status + review_round 作为乐观锁
         const currentReviewRound = crop.review_round ?? 0;
@@ -112,7 +137,6 @@ router.post(
         }
 
         // 同时写入 question_scores（使用正确的 max_score）
-        const questionNumbers = JSON.parse(crop.question_numbers ?? "[]");
         for (const qNum of questionNumbers) {
           // P1-9: 查找该题目在该考试的 max_score
           const existingQs = await tx.get(
@@ -124,13 +148,14 @@ router.post(
           const maxScore = existingQs?.max_score ?? Number(score);
           const scoreType = existingQs?.score_type ?? "subjective";
 
+          const resolvedScore = Math.max(0, Math.min(maxScore, Number(score)));
           await tx.run(
             `INSERT OR REPLACE INTO question_scores (exam_id, student_id, question_number, score, max_score, score_type, manually_modified, modified_by, modified_at)
              VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
             crop.exam_id,
             crop.student_id,
             qNum,
-            Number(score),
+            resolvedScore,
             maxScore,
             scoreType,
             userId,
