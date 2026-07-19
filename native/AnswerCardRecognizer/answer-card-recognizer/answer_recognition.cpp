@@ -730,9 +730,70 @@ json recognize_objective_answers(
             return failed_result("Layout page has no recognizable answer or score cells.", image_path, layout_path, page_number);
         }
 
-        cv::Mat image = read_image(image_path);
-        auto [candidates, binary] = find_marker_candidates(image);
-        std::vector<MarkerMatch> matches = match_markers(candidates, image.size(), layout_page, output_dpi);
+        cv::Mat source_image = read_image(image_path);
+        cv::Mat image = source_image;
+        std::vector<MarkerCandidate> candidates;
+        std::vector<MarkerMatch> matches;
+        cv::Mat homography;
+        std::vector<double> reprojection_errors;
+        std::vector<int> inliers;
+        int rotation_degrees = 0;
+
+        const bool try_orientation = layout_page.width_mm > 300.0 && layout_page.width_mm > layout_page.height_mm;
+        const std::vector<int> rotations = try_orientation
+            ? std::vector<int>{0, 90, 180, 270}
+            : std::vector<int>{0};
+        double best_score = std::numeric_limits<double>::infinity();
+        bool found_orientation = false;
+
+        for (const int rotation : rotations) {
+            cv::Mat candidate_image;
+            if (rotation == 90) {
+                cv::rotate(source_image, candidate_image, cv::ROTATE_90_CLOCKWISE);
+            } else if (rotation == 180) {
+                cv::rotate(source_image, candidate_image, cv::ROTATE_180);
+            } else if (rotation == 270) {
+                cv::rotate(source_image, candidate_image, cv::ROTATE_90_COUNTERCLOCKWISE);
+            } else {
+                candidate_image = source_image;
+            }
+
+            try {
+                auto [orientation_candidates, binary] = find_marker_candidates(candidate_image);
+                auto orientation_matches = match_markers(orientation_candidates, candidate_image.size(), layout_page, output_dpi);
+                if (orientation_matches.size() < 4) {
+                    continue;
+                }
+                auto [orientation_homography, orientation_errors, orientation_inliers] = estimate_homography(orientation_matches);
+                const double marker_cost = std::accumulate(
+                    orientation_matches.begin(), orientation_matches.end(), 0.0,
+                    [](double sum, const MarkerMatch& match) { return sum + match.cost; }
+                );
+                const double reprojection_cost = orientation_errors.empty()
+                    ? 100.0
+                    : std::accumulate(orientation_errors.begin(), orientation_errors.end(), 0.0) / orientation_errors.size();
+                const double score =
+                    static_cast<double>(REQUIRED_MARKER_ROLES.size() - orientation_matches.size()) * 1000.0 +
+                    marker_cost * 10.0 + reprojection_cost;
+                if (score < best_score) {
+                    best_score = score;
+                    found_orientation = true;
+                    rotation_degrees = rotation;
+                    image = candidate_image.clone();
+                    candidates = std::move(orientation_candidates);
+                    matches = std::move(orientation_matches);
+                    homography = orientation_homography.clone();
+                    reprojection_errors = std::move(orientation_errors);
+                    inliers = std::move(orientation_inliers);
+                }
+            } catch (const std::exception&) {
+                continue;
+            }
+        }
+
+        if (!found_orientation) {
+            throw std::runtime_error("Unable to find enough layout markers in any supported orientation");
+        }
 
    //     if (matches.size() == 6) {
 			//invert_correct(matches);
@@ -749,10 +810,10 @@ json recognize_objective_answers(
             }
         }
 
-        const auto [homography, reprojection_errors, inliers] = estimate_homography(matches);
-        const json quality = quality_payload(candidates, matches, missing_roles, reprojection_errors, inliers);
+        json quality = quality_payload(candidates, matches, missing_roles, reprojection_errors, inliers);
+        quality["rotationDegrees"] = rotation_degrees;
 
-        const auto output_size = a4_pixel_size(layout_page.width_mm, layout_page.height_mm, output_dpi);
+        const auto output_size = layout_pixel_size(layout_page.width_mm, layout_page.height_mm, output_dpi);
         cv::Mat warped = warp_to_layout(image, homography, output_size);
 
         std::vector<std::pair<ObjectiveOption, json>> option_results;
@@ -770,10 +831,12 @@ json recognize_objective_answers(
             student_digit_results.emplace_back(digit, sample_student_digit(warped, digit, output_dpi));
         }
 
-        const json student_id = build_student_id(student_digit_results);
+        const json student_id = layout_page.student_digits.empty()
+            ? json{{"status", "not_present"}, {"value", nullptr}, {"source", "not_present"}}
+            : build_student_id(student_digit_results);
         std::string status = missing_roles.empty() ? "ok" : "partial";
         std::optional<std::string> message;
-        if (student_id.at("status").get<std::string>() != "ok") {
+        if (!layout_page.student_digits.empty() && student_id.at("status").get<std::string>() != "ok") {
             status = "failed";
             message = "Student ID recognition failed.";
         }

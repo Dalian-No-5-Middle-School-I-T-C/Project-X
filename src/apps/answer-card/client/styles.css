@@ -816,15 +816,78 @@ button {
 .pages {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 24px;
   position: relative;
   z-index: 1;
+  min-width: 100%;
+}
+
+.preview-shell {
+  width: 100%;
+  min-width: 100%;
+}
+
+.preview-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  width: max-content;
+  max-width: 100%;
+  margin: 0 auto 16px;
+  padding: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(12px) saturate(140%);
+}
+
+.preview-toolbar button {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.preview-toolbar button:hover:not(:disabled),
+.preview-toolbar button.active {
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.preview-toolbar button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.preview-toolbar output {
+  min-width: 48px;
+  text-align: center;
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.preview-toolbar-separator {
+  width: 1px;
+  height: 20px;
+  margin: 0 3px;
+  background: var(--line);
 }
 
 .page {
-  width: min(100%, 760px);
-  aspect-ratio: 210 / 297;
+  max-width: none;
+  margin-inline: auto;
+  flex: none;
   background: var(--surface);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.10), 0 4px 12px rgba(0, 0, 0, 0.06);
   border-radius: 2px;
@@ -844,6 +907,38 @@ button {
   color: var(--muted);
   font-size: 15px;
   font-weight: 500;
+}
+
+.layout-version-banner {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 14px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--brand) 28%, var(--line));
+  border-radius: 10px;
+  background: var(--brand-tint);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.layout-version-banner strong {
+  color: var(--brand);
+  font-size: 13px;
+}
+
+.layout-version-banner .ghost-button {
+  width: 100%;
+}
+
+.inline-warning {
+  margin: 4px 0 10px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: color-mix(in srgb, #f59e0b 12%, transparent);
+  color: #9a5b00;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 /* ── Inspector ────────────────────────────────────────── */

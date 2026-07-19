@@ -39,8 +39,8 @@ export type ObjectiveQuestionConfig = {
 };
 
 export type PaperSettings = {
-  size: "A4";
-  orientation: "portrait";
+  size: "A4" | "A3";
+  orientation: "portrait" | "landscape";
 };
 
 export type StudentInfoSettings = {
@@ -105,7 +105,7 @@ export type AnswerCard = {
   studentInfo: StudentInfoSettings;
   bodyBlocks: BodyBlock[];
   sided: "single" | "double";
-  layoutVersion: 1;
+  layoutVersion: 1 | 2;
   updatedAt: string;
 };
 
@@ -200,6 +200,11 @@ export type PageLayout = {
     titleY?: number;
   };
   studentArea?: StudentAreaLayout;
+  panels: Array<{
+    index: number;
+    role: "single" | "left" | "middle" | "right";
+    rect: Rect;
+  }>;
   blocks: PageRenderBlock[];
   elements: LayoutElement[];
 };
@@ -230,6 +235,7 @@ export type ObjectiveRecognitionResult = {
   studentId?: {
     status: "ok" | "failed" | string;
     value: string | null;
+    source?: "recognized" | "inherited" | "not_present";
     digits?: unknown[];
     failures?: unknown[];
   };

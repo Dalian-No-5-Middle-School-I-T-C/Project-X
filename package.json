@@ -30,6 +30,7 @@
     "electron:msi:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && electron-builder --win msi --ia32",
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
+    "verify:a3": "tsx scripts/verify-a3.ts",
     "typecheck": "tsc --noEmit"
   },
   "browserslist": [

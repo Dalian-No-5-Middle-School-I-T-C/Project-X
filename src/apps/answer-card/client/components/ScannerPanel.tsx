@@ -3,6 +3,7 @@ import { Camera, Play, Square, RefreshCw, AlertTriangle, Check, Loader, Eye, Upl
 import { authFetch, urlWithToken } from "../auth/api";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 import { ScanPreviewModal } from "./ScanPreviewModal";
+import type { AnswerCard } from "../../../../shared/types";
 
 interface ScannerPanelProps {
   cardId: string;
@@ -90,6 +91,21 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   useEffect(() => { pagesRef.current = pages; }, [pages]);
   useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
   useEffect(() => { scannerModeRef.current = scannerMode; }, [scannerMode]);
+
+  useEffect(() => {
+    let active = true;
+    void authFetch(`/api/cards/${cardId}`)
+      .then(async (response) => {
+        if (!response.ok) return;
+        const card = await response.json() as AnswerCard;
+        if (active) {
+          setPaperSize(card.paper?.size === "A3" ? "A3" : "A4");
+          setDuplex(card.sided === "double");
+        }
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [cardId]);
 
   // Detect sources on mount
   useEffect(() => {

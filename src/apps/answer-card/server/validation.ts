@@ -29,6 +29,7 @@ export const CreateCardSchema = z.object({
     .min(1, "考试时间为必填项"),
   englishListening: z.boolean().optional().default(true),
   chineseChoicePlacement: z.enum(["inline", "front"]).optional().default("front"),
+  paperSize: z.enum(["A4", "A3"]).optional().default("A4"),
 });
 export type CreateCardInput = z.infer<typeof CreateCardSchema>;
 

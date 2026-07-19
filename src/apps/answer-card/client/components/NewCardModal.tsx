@@ -12,6 +12,7 @@ export interface NewCardFormData {
   linkExamId?: number;
   englishListening?: boolean;
   chineseChoicePlacement?: "front" | "inline";
+  paperSize: "A4" | "A3";
 }
 
 interface ExamOption {
@@ -224,6 +225,7 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
 
   const [englishListening, setEnglishListening] = useState(true);
   const [chineseChoicePlacement, setChineseChoicePlacement] = useState<"front" | "inline">("front");
+  const [paperSize, setPaperSize] = useState<"A4" | "A3">("A4");
   if (!open) return null;
 
   function handleSubjectSelect(label: string) {
@@ -275,7 +277,8 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
       examName: examAction === "create" ? examName.trim() || titleTrimmed : undefined,
       linkExamId: examAction === "link" && linkExamId ? linkExamId : undefined,
       englishListening,
-      chineseChoicePlacement
+      chineseChoicePlacement,
+      paperSize
     });
     // 重置状态
     setSubjectLabel("物理");
@@ -289,6 +292,7 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
     setExamNameManual(false);
     setEnglishListening(true);
     setChineseChoicePlacement("front");
+    setPaperSize("A4");
     setError("");
   }
 
@@ -381,6 +385,15 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
               {customSubject.trim() && <span style={{ fontSize: 11, color: "var(--muted)" }}>拼音 key: {subjectToKey(customSubject.trim()) || "—"}</span>}
             </label>
           )}
+
+          {/* 答题卡纸型 */}
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)" }}>答题卡纸型</span>
+            <select value={paperSize} onChange={(event) => setPaperSize(event.target.value as "A4" | "A3")}>
+              <option value="A4">A4 纵向（210 × 297 mm）</option>
+              <option value="A3">A3 横向三版（420 × 297 mm）</option>
+            </select>
+          </label>
 
           {/* 考试名称 */}
           <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
