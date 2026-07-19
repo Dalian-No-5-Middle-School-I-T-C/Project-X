@@ -71,7 +71,6 @@
 补充 H-S2、H-S3、H-S10、H-S13、H-S1 GET、H-F3 等权限/安全/远程 API 配置项。全部回归测试仍通过。
 
 ---
-
 ## 总览
 
 | 维度 | Critical | High | Medium | Low | 合计 |

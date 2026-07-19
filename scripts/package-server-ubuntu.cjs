@@ -20,9 +20,13 @@ const runtimeDependencies = [
   "better-sqlite3",
   "expr-eval",
   "express",
+  "mammoth",
   "multer",
   "mysql2",
+  "pdfjs-dist",
   "pdfkit",
+  "sharp",
+  "tesseract.js",
   "xlsx",
   "zod"
 ];
@@ -99,6 +103,7 @@ export PROJECTX_MARIADB_PORT="\${PROJECTX_MARIADB_PORT:-3306}"
 export PROJECTX_MARIADB_USER="\${PROJECTX_MARIADB_USER:-}"
 export PROJECTX_MARIADB_PASSWORD="\${PROJECTX_MARIADB_PASSWORD:-}"
 export PROJECTX_MARIADB_DATABASE="\${PROJECTX_MARIADB_DATABASE:-projectx}"
+export ANSWER_CARD_CLIENT_DIST="\${ANSWER_CARD_CLIENT_DIST:-$(pwd)/dist/web}"
 
 exec node dist/server/index.mjs
 `;
@@ -124,7 +129,7 @@ This is the browser-accessible web server package. It includes dist/web for the 
 
 \`\`\`bash
 sudo apt update
-sudo apt install -y nodejs npm build-essential python3 make g++
+sudo apt install -y nodejs npm build-essential python3 make g++ fonts-noto-cjk
 \`\`\`
 
 Node.js 22 LTS or newer is recommended. better-sqlite3 is installed on the Ubuntu host for the local ABI.
@@ -151,6 +156,14 @@ Optional SQLite data paths:
 \`\`\`bash
 export PROJECTX_DB_PATH=/var/lib/project-x/projectx.db
 export ANSWER_CARD_DATA_DIR=/var/lib/project-x/answer-card
+./start.sh
+\`\`\`
+
+Optional PDF font override:
+
+\`\`\`bash
+export PROJECTX_PDF_FONT_PATH=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+export PROJECTX_PDF_FONT_POSTSCRIPT_NAME=NotoSansCJKsc-Regular
 ./start.sh
 \`\`\`
 
@@ -214,6 +227,7 @@ Environment=PROJECTX_MARIADB_PASSWORD=
 Environment=PROJECTX_MARIADB_DATABASE=projectx
 Environment=PROJECTX_DB_PATH=/var/lib/project-x/projectx.db
 Environment=ANSWER_CARD_DATA_DIR=/var/lib/project-x/answer-card
+Environment=ANSWER_CARD_CLIENT_DIST=/opt/project-x-server/dist/web
 ExecStart=/usr/bin/node /opt/project-x-server/dist/server/index.mjs
 Restart=always
 RestartSec=5

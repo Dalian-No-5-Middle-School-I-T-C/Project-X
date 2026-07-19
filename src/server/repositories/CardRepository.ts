@@ -38,8 +38,9 @@ export class CardRepository {
 
   async updateCard(card: AnswerCard): Promise<void> {
     await this.db.run(
-      `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, paper_size = ?, orientation = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       card.title, card.subject ?? null, (card as any).subjectLabel ?? null, (card as any).examDate ?? null,
+      card.paper?.size ?? "A4", card.paper?.orientation ?? "portrait",
       JSON.stringify(card.studentInfo?.fields ?? []), card.studentInfo?.studentNumberDigits ?? 5,
       card.sided ?? "double", card.layoutVersion ?? 1, card.id
     );
@@ -147,7 +148,7 @@ export class CardRepository {
       paper: { size: cardRow.paper_size, orientation: cardRow.orientation },
       studentInfo: { fields: JSON.parse(cardRow.student_fields ?? "[]"), studentNumberDigits: cardRow.student_number_digits },
       bodyBlocks: [], sided: (cardRow.sided as "single" | "double") ?? "double",
-      layoutVersion: cardRow.layout_version, updatedAt: cardRow.updated_at
+      layoutVersion: cardRow.layout_version === 2 ? 2 : 1, updatedAt: cardRow.updated_at
     };
 
     const objBlocks = await this.db.all("SELECT * FROM objective_blocks WHERE card_id = ? ORDER BY sort_order", cardId);

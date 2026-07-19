@@ -19,21 +19,21 @@ export function generateCardId(subject: string): string {
   return String(num);
 }
 
-export function createDefaultCard(id: string, subject?: string): AnswerCard {
+export function createDefaultCard(id: string, subject?: string, paperSize: "A4" | "A3" = "A4"): AnswerCard {
   const now = new Date().toISOString();
 
   return {
     id,
     title: "",
     subject: subject ?? undefined,
-    paper: { size: "A4", orientation: "portrait" },
+    paper: { size: paperSize, orientation: paperSize === "A3" ? "landscape" : "portrait" },
     studentInfo: {
       fields: ["姓名", "班级"],
       studentNumberDigits: 5
     },
     bodyBlocks: [],
     sided: "single",
-    layoutVersion: 1,
+    layoutVersion: 2,
     updatedAt: now
   };
 }

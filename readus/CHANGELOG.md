@@ -135,6 +135,12 @@
 | `src/server/repositories/AnalysisRepository.ts` | M-L4 百分位显示 + COUNT |
 | `src/server/routes/exam-groups.ts` | COUNT(ss.exam_id) |
 
+### Ubuntu 生产环境与 AI 知识点分析热修
+- PDF 导出按环境变量、常见 Linux/Windows/macOS CJK 字体路径和系统字体目录自动发现字体；缺失时降级到 PDFKit 内置字体，并支持 `PROJECTX_PDF_FONT_PATH` / `PROJECTX_PDF_FONT_POSTSCRIPT_NAME` 覆盖。
+- MariaDB 考试可见性统一走 `getMysqlDb()`；考试选择、分析和考试组统计不再依赖可能缺失的 `student_scores.id`，统一使用 `COUNT(ss.exam_id)`。
+- Ubuntu 包启动脚本和 systemd 模板显式使用包内 `dist/web`，并补齐 `mammoth`、`pdfjs-dist`、`sharp`、`tesseract.js` 等服务端依赖。
+- 新增 `llmclient` Python sidecar 生产部署与 MariaDB 读取支持；知识点分析优先使用系统级服务商，失败时将具体错误透传到前端。
+
 ---
 
 ## v1.8.0 (2026-07-04) — 原卷上传与 AI 知识点分析

@@ -6,10 +6,49 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from llmclient.config import default_db_path
+from llmclient.config import default_db_path, mariadb_config, mariadb_configured
 
 
-def connect_db(db_path: Path | None = None) -> sqlite3.Connection:
+class QueryResult:
+    def __init__(self, rows: list[dict[str, Any]]):
+        self._rows = rows
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._rows
+
+    def fetchone(self) -> dict[str, Any] | None:
+        return self._rows[0] if self._rows else None
+
+
+class MariaDbConnection:
+    def __init__(self) -> None:
+        import pymysql
+
+        self._conn = pymysql.connect(
+            **mariadb_config(),
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=True,
+        )
+
+    def execute(self, sql: str, params: list[Any] | tuple[Any, ...] | None = None) -> QueryResult:
+        with self._conn.cursor() as cursor:
+            cursor.execute(sql.replace("?", "%s"), params or [])
+            return QueryResult(list(cursor.fetchall()))
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self) -> "MariaDbConnection":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+def connect_db(db_path: Path | None = None) -> sqlite3.Connection | MariaDbConnection:
+    if db_path is None and mariadb_configured():
+        return MariaDbConnection()
     target = db_path or default_db_path()
     conn = sqlite3.connect(str(target))
     conn.row_factory = sqlite3.Row

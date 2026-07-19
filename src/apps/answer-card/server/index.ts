@@ -89,6 +89,7 @@ async function resolveConfidenceThreshold(req: express.Request): Promise<number>
 
 function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
   const examDate = fieldValue((card as any).examDate ?? card.examDate).trim();
+  const paperSize = card.paper?.size === "A3" ? "A3" : "A4";
   return {
     ...card,
     id: safeId(cardId),
@@ -113,8 +114,8 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
       }
       return block;
     }),
-    paper: { size: "A4", orientation: "portrait" },
-    layoutVersion: 1,
+    paper: { size: paperSize, orientation: paperSize === "A3" ? "landscape" : "portrait" },
+    layoutVersion: card.layoutVersion === 2 ? 2 : 1,
     updatedAt: new Date().toISOString()
   };
 }
@@ -692,6 +693,7 @@ export async function createApp(): Promise<express.Express> {
       const examDate = (req.body?.examDate ?? "").trim();
       const englishListening = req.body?.englishListening !== false;
       const chineseChoicePlacement = req.body?.chineseChoicePlacement === "inline" ? "inline" : "front";
+      const paperSize = req.body?.paperSize === "A3" ? "A3" : "A4";
       if (!subject) {
         res.status(400).json({ error: "科目（subject）为必填项" });
         return;
@@ -713,7 +715,7 @@ export async function createApp(): Promise<express.Express> {
       while (await cardRepo.findById(id) && retry < 100) {
         id = generateCardId(subject + "_" + String(retry++));
       }
-      let card = createDefaultCard(id, subject);
+      let card = createDefaultCard(id, subject, paperSize);
       card.title = title;
       card.subjectLabel = subjectLabel || undefined;
       card.examDate = examDate;

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import PDFDocument from "pdfkit";
 import type {
@@ -15,9 +15,99 @@ import { formatBlankLabel } from "../../../shared/blankLabels";
 import { cardAssetsDir } from "./storage";
 
 const MM_TO_PT = 72 / 25.4;
-const fontRegular = "C:\\Windows\\Fonts\\msyh.ttc";
-const fontRegularPostscriptName = "MicrosoftYaHei";
-const fontFallback = "C:\\Windows\\Fonts\\simhei.ttf";
+const REGISTERED_FONT_NAME = "regular";
+const BUILTIN_FALLBACK_FONT = "Helvetica";
+const regularFonts = new WeakMap<PDFKit.PDFDocument, string>();
+
+type FontCandidate = {
+  filePath: string;
+  postscriptName?: string;
+};
+
+const bundledFontCandidates: FontCandidate[] = [
+  { filePath: "C:\\Windows\\Fonts\\msyh.ttc", postscriptName: "MicrosoftYaHei" },
+  { filePath: "C:\\Windows\\Fonts\\simhei.ttf" },
+  { filePath: "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", postscriptName: "NotoSansCJKsc-Regular" },
+  { filePath: "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf" },
+  { filePath: "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", postscriptName: "NotoSansCJKsc-Regular" },
+  { filePath: "/usr/share/fonts/truetype/noto/NotoSansCJKsc-Regular.otf" },
+  { filePath: "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc" },
+  { filePath: "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc" },
+  { filePath: "/usr/share/fonts/truetype/arphic/uming.ttc" },
+  { filePath: "/System/Library/Fonts/PingFang.ttc", postscriptName: "PingFangSC-Regular" },
+  { filePath: "/Library/Fonts/Arial Unicode.ttf" },
+  { filePath: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" }
+];
+
+function envFontCandidates(): FontCandidate[] {
+  const fontPath = process.env.PROJECTX_PDF_FONT_PATH ?? process.env.ANSWER_CARD_PDF_FONT_PATH;
+  if (!fontPath) return [];
+  return fontPath.split(path.delimiter).filter(Boolean).map((filePath) => ({
+    filePath,
+    postscriptName: process.env.PROJECTX_PDF_FONT_POSTSCRIPT_NAME ?? process.env.ANSWER_CARD_PDF_FONT_POSTSCRIPT_NAME
+  }));
+}
+
+function discoverSystemFontCandidates(): FontCandidate[] {
+  const fontDirs = [
+    "/usr/share/fonts/opentype/noto",
+    "/usr/share/fonts/truetype/noto",
+    "/usr/share/fonts/truetype/wqy",
+    "/usr/share/fonts/truetype/arphic",
+    "C:\\Windows\\Fonts",
+    "/System/Library/Fonts",
+    "/Library/Fonts"
+  ];
+  const preferredNames = [/noto.*cjk.*sc.*regular/i, /noto.*sans.*cjk.*regular/i, /source.*han.*sans.*sc.*regular/i, /wqy.*microhei/i, /wqy.*zenhei/i, /simhei/i, /msyh/i, /pingfang/i, /dejavusans/i];
+  const candidates: FontCandidate[] = [];
+
+  for (const dir of fontDirs) {
+    if (!existsSync(dir)) continue;
+    let filenames: string[];
+    try {
+      filenames = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const pattern of preferredNames) {
+      const filename = filenames.find((name) => pattern.test(name) && /\.(ttf|ttc|otf)$/i.test(name));
+      if (filename) candidates.push({ filePath: path.join(dir, filename) });
+    }
+  }
+
+  return candidates;
+}
+
+function setupRegularFont(doc: PDFKit.PDFDocument): void {
+  const candidates = [...envFontCandidates(), ...bundledFontCandidates, ...discoverSystemFontCandidates()];
+  const tried = new Set<string>();
+
+  for (const candidate of candidates) {
+    if (!existsSync(candidate.filePath)) continue;
+    const cacheKey = `${candidate.filePath}\0${candidate.postscriptName ?? ""}`;
+    if (tried.has(cacheKey)) continue;
+    tried.add(cacheKey);
+
+    try {
+      if (candidate.postscriptName) {
+        doc.registerFont(REGISTERED_FONT_NAME, candidate.filePath, candidate.postscriptName);
+      } else {
+        doc.registerFont(REGISTERED_FONT_NAME, candidate.filePath);
+      }
+      regularFonts.set(doc, REGISTERED_FONT_NAME);
+      return;
+    } catch (error) {
+      console.warn(`[Project-X] PDF font registration failed: ${candidate.filePath}`, error);
+    }
+  }
+
+  console.warn("[Project-X] No CJK-capable PDF font was found. Falling back to Helvetica; Chinese text may not render correctly.");
+  regularFonts.set(doc, BUILTIN_FALLBACK_FONT);
+}
+
+function regularFont(doc: PDFKit.PDFDocument): string {
+  return regularFonts.get(doc) ?? BUILTIN_FALLBACK_FONT;
+}
 
 function pt(mm: number): number {
   return mm * MM_TO_PT;
@@ -42,11 +132,11 @@ function drawText(
   size = 9,
   options: PDFKit.Mixins.TextOptions = {}
 ) {
-  doc.font("regular").fontSize(size).fillColor("#111").text(text, pt(x), pt(y), options);
+  doc.font(regularFont(doc)).fontSize(size).fillColor("#111").text(text, pt(x), pt(y), options);
 }
 
 function drawCenteredText(doc: PDFKit.PDFDocument, text: string, x: number, y: number, width: number, size = 9) {
-  doc.font("regular").fontSize(size).fillColor("#111").text(text, pt(x), pt(y), { width: pt(width), align: "center" });
+  doc.font(regularFont(doc)).fontSize(size).fillColor("#111").text(text, pt(x), pt(y), { width: pt(width), align: "center" });
 }
 
 // 在给定方框内将文本水平且垂直居中。
@@ -62,7 +152,7 @@ function drawCenteredBoxText(
 ) {
   const textHeightMm = (size * 1.2 / 72) * 25.4;
   const centeredY = y + (height - textHeightMm) / 2;
-  doc.font("regular").fontSize(size).fillColor("#111").text(text, pt(x), pt(centeredY), {
+  doc.font(regularFont(doc)).fontSize(size).fillColor("#111").text(text, pt(x), pt(centeredY), {
     width: pt(width),
     align: "center",
     lineBreak: false
@@ -80,8 +170,9 @@ function drawHeader(doc: PDFKit.PDFDocument, page: PageLayout) {
   });
 
   if (page.header.title && page.header.titleX && page.header.titleY) {
-    doc.font("regular").fontSize(15).fillColor("#111").text(page.header.title, pt(35), pt(page.header.titleY - 4), {
-      width: pt(140),
+    const titleWidth = Math.max(40, page.panels[0]?.rect.width ?? page.width - 70);
+    doc.font(regularFont(doc)).fontSize(15).fillColor("#111").text(page.header.title, pt(page.header.titleX - titleWidth / 2), pt(page.header.titleY - 4), {
+      width: pt(titleWidth),
       align: "center"
     });
   }
@@ -148,18 +239,19 @@ function drawSubjectiveBlock(
 }
 
 function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, question: SubjectiveRenderItem, frameRect?: Rect) {
+  const isV2 = card.layoutVersion === 2;
   if (question.kind !== "blank") {
     drawRect(doc, question.rect, { stroke: "#222", lineWidth: 0.25 });
-    drawText(doc, `${question.questionNumber}.（${question.score}分）`, question.rect.x + 2, question.contentRect.y + 2, 8);
+    drawText(doc, `${question.questionNumber}.（${question.score}分）`, question.rect.x + 2, isV2 ? question.rect.y + 1.2 : question.contentRect.y + 2, 8);
   } else {
     drawText(doc, String(question.questionNumber), question.contentRect.x + 3, question.contentRect.y + 3.2, 8);
   }
 
-  if (question.style === "manual_score_grid") {
+  if (question.style === "manual_score_grid" && (!isV2 || question.scoreCells.length > 0)) {
     const firstScoreCell = question.scoreCells[0];
     if (frameRect && question.kind === "blank" && firstScoreCell) {
-      drawText(doc, "得分", frameRect.x + 4, firstScoreCell.rect.y + 1.2, 7);
-      const dividerY = firstScoreCell.rect.y + firstScoreCell.rect.height + 2;
+      drawText(doc, "得分", frameRect.x + 4, firstScoreCell.rect.y + (isV2 ? 0.55 : 1.2), 7);
+      const dividerY = isV2 ? frameRect.y + 6 : firstScoreCell.rect.y + firstScoreCell.rect.height + 2;
       doc.moveTo(pt(frameRect.x), pt(dividerY)).lineTo(pt(frameRect.x + frameRect.width), pt(dividerY)).stroke();
     } else {
       const dividerY = question.contentRect.y;
@@ -168,7 +260,7 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
     question.scoreCells.forEach((cell) => {
       drawRect(doc, cell.rect, { stroke: "#222", lineWidth: 0.2 });
       if (cell.score !== null) {
-        drawCenteredText(doc, String(cell.score), cell.rect.x, cell.rect.y + 1.2, cell.rect.width, 6);
+        drawCenteredText(doc, String(cell.score), cell.rect.x, cell.rect.y + (isV2 ? 0.55 : 1.2), cell.rect.width, 6);
       }
     });
   }
@@ -204,8 +296,8 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
   });
 }
 
-function drawFooter(doc: PDFKit.PDFDocument, pageNumber: number, totalPages: number) {
-  drawCenteredText(doc, `第${pageNumber}页/共${totalPages}页`, 0, 282, 210, 9);
+function drawFooter(doc: PDFKit.PDFDocument, page: PageLayout, totalPages: number) {
+  drawCenteredText(doc, `第${page.pageNumber}页/共${totalPages}页`, 0, page.height - 15, page.width, 9);
 }
 
 export function createPdf(card: AnswerCard): PDFKit.PDFDocument {
@@ -220,14 +312,10 @@ export function createPdf(card: AnswerCard): PDFKit.PDFDocument {
     }
   });
 
-  if (existsSync(fontRegular)) {
-    doc.registerFont("regular", fontRegular, fontRegularPostscriptName);
-  } else {
-    doc.registerFont("regular", fontFallback);
-  }
+  setupRegularFont(doc);
 
   layout.pages.forEach((page) => {
-    doc.addPage();
+    doc.addPage({ size: [pt(page.width), pt(page.height)], margin: 0 });
     drawHeader(doc, page);
     drawStudentArea(doc, page);
 
@@ -236,7 +324,7 @@ export function createPdf(card: AnswerCard): PDFKit.PDFDocument {
       if (block.type === "subjective") drawSubjectiveBlock(doc, card, block);
     });
 
-    drawFooter(doc, page.pageNumber, layout.pages.length);
+    drawFooter(doc, page, layout.pages.length);
   });
 
   return doc;
