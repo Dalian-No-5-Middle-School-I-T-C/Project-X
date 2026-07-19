@@ -1,6 +1,7 @@
 import type {
   AnswerCard,
   BodyBlock,
+  LineGridConfig,
   ObjectiveBlock,
   ObjectiveMode,
   ObjectiveQuestionConfig,
@@ -73,7 +74,7 @@ function blankQuestion(number: number | string, score = 0, count = 1): Subjectiv
     style: score > 0 ? "manual_score_grid" : "plain_subjective",
     kind: "blank",
     blanks: { count, widthMm: 24, heightMm: 6, labelStyle: "none" },
-    lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 } as LineGridConfig,
+    lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
     images: [],
     minHeightMm: 14
   };
@@ -122,7 +123,7 @@ function essayBlock(number: number | string, score = 60, targetChars = 600): Sub
       score,
       style: "manual_score_grid",
       kind: "plain_box",
-      lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 } as LineGridConfig,
+      lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
       images: [],
       minHeightMm: 280,
       essayGrid: {
