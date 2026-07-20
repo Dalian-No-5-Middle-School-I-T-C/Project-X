@@ -222,6 +222,7 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     blanks_items_json TEXT,
     line_grid_json   TEXT,
     essay_grid_json  TEXT,
+    score_grid_json  TEXT,
     sort_order       INT DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (block_id) REFERENCES subjective_blocks(id) ON DELETE CASCADE
@@ -716,6 +717,13 @@ CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block ON answer_block_crops(ca
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_student ON student_scores(student_id);
 CREATE INDEX IF NOT EXISTS idx_question_scores_exam_student ON question_scores(exam_id, student_id);
+-- 性能：成绩分析（排名/统计/概览）按 exam_id 过滤并按 total_score / assigned_score 排序
+-- 对齐 SQLite v12 "analysis-performance-indexes" (PR133 版本号漂移导致原本缺失)
+CREATE INDEX IF NOT EXISTS idx_student_scores_exam_total ON student_scores(exam_id, total_score);
+CREATE INDEX IF NOT EXISTS idx_student_scores_exam_assigned ON student_scores(exam_id, assigned_score);
+CREATE INDEX IF NOT EXISTS idx_student_scores_exam_student ON student_scores(exam_id, student_id);
+CREATE INDEX IF NOT EXISTS idx_question_scores_exam_type ON question_scores(exam_id, score_type);
+CREATE INDEX IF NOT EXISTS idx_exams_grade_class ON exams(grade_id, class_id);
 CREATE INDEX IF NOT EXISTS idx_answer_overrides_exam ON answer_overrides(exam_id);
 CREATE INDEX IF NOT EXISTS idx_export_templates_user ON export_templates(user_id, slot);
 CREATE INDEX IF NOT EXISTS idx_ai_providers_user ON ai_providers(user_id, provider_type);
