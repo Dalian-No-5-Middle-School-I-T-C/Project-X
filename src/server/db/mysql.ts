@@ -561,6 +561,14 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE exams ADD COLUMN review_enabled TINYINT DEFAULT 0`,
       ]
     },
+    {
+      version: 20,
+      name: "subjective-grid-json",
+      sqls: [
+        `ALTER TABLE subjective_questions ADD COLUMN line_grid_json TEXT`,
+        `ALTER TABLE subjective_questions ADD COLUMN essay_grid_json TEXT`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

@@ -266,7 +266,7 @@ function drawEssayGrid(
 
   const bodyW = block.rect.width;
   const usableW = bodyW - insetX * 2;
-  const columns = g.columns > 0 ? g.columns : Math.floor(usableW / cellW);
+  const columns = g.columns > 0 ? g.columns : Math.max(1, Math.floor(usableW / cellW));
   const gridW = columns * cellW;
   const offsetX = block.rect.x + (bodyW - gridW) / 2;
 
@@ -363,7 +363,8 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
         align: "right"
       });
     }
-    doc.moveTo(pt(blank.x), pt(blank.y + blank.height)).lineTo(pt(blank.x + blank.width), pt(blank.y + blank.height)).stroke();
+    doc.lineWidth(pt(0.25));
+    doc.moveTo(pt(blank.x), pt(blank.y + blank.height)).lineTo(pt(blank.x + blank.width), pt(blank.y + blank.height)).stroke("#333");
     const anno = question.blankRightAnnotations?.[index];
     if (anno) {
       drawText(doc, anno, blank.x + blank.width + 1.2, blank.y + blank.height - 2.35, 7);

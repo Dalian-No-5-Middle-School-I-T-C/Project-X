@@ -644,6 +644,14 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, "exams", "review_mode",    "INTEGER DEFAULT 1");
       addColumnIfMissing(db, "exams", "review_enabled", "INTEGER DEFAULT 0");
     }
+  },
+  {
+    version: 20,
+    name: "subjective-grid-json",
+    up(db) {
+      addColumnIfMissing(db, "subjective_questions", "line_grid_json", "TEXT");
+      addColumnIfMissing(db, "subjective_questions", "essay_grid_json", "TEXT");
+    }
   }
 ];
 

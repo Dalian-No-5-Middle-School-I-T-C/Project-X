@@ -201,6 +201,8 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     blanks_height_mm DOUBLE,
     blanks_label_style VARCHAR(50),
     blanks_items_json TEXT,
+    line_grid_json   TEXT,
+    essay_grid_json  TEXT,
     sort_order       INT DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (block_id) REFERENCES subjective_blocks(id) ON DELETE CASCADE
