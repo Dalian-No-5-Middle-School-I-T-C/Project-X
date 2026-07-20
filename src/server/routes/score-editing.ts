@@ -227,10 +227,12 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
       ) as { id: number; score: number; max_score: number } | undefined;
 
       if (existing) {
+        // P1-7: 分数未变时不标记 manually_modified
+        const scoreChanged = existing.score !== u.score;
         await tx.run(
-          `UPDATE question_scores SET score = ?, manually_modified = 1, modified_by = ?, modified_at = ?
+          `UPDATE question_scores SET score = ?, manually_modified = ?, modified_by = ?, modified_at = ?
            WHERE exam_id = ? AND student_id = ? AND question_number = ? AND score_type = ?`,
-          u.score, userId, now, examId, studentId, u.questionNumber, u.scoreType
+          u.score, scoreChanged ? 1 : 0, userId, now, examId, studentId, u.questionNumber, u.scoreType
         );
         await tx.run(
           `INSERT INTO answer_overrides (exam_id, card_id, question_number, score_type, override_type, old_value, new_value, created_by, created_at)
@@ -260,9 +262,11 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
         manually_modified = 1, modified_by = ?, modified_at = ?
       WHERE exam_id = ? AND student_id = ?
     `, totalObjective, totalSubjective, newTotal, userId, now, examId, studentId);
+
+    // P1-8: 排名重算在事务内执行，确保数据一致性
+    await recomputeExamRankings(tx, examId);
   });
 
-  await recomputeExamRankings(db, examId);
   res.json({ ok: true });
 });
 
@@ -379,6 +383,7 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
     }
 
     for (const { student_id: studentId } of students) {
+      // ... (same recognition processing)
       const recognitionRows = await tx.all(`
         SELECT orr.question_number, orr.selected_options, orr.confidence
         FROM objective_recognitions orr
@@ -435,9 +440,11 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
 
       updatedCount++;
     }
+
+    // P1-8: 排名重算在事务内执行
+    await recomputeExamRankings(tx, examId);
   });
 
-  await recomputeExamRankings(db, examId);
   res.json({ ok: true, updatedCount, modifiedAnswers: Object.keys(answerUpdates).length });
 });
 
