@@ -21,8 +21,8 @@ function normalizeOptionLayout(value: unknown): "horizontal" | "vertical" {
 export class CardRepository {
   private db: DbAdapter;
 
-  constructor() {
-    this.db = getMysqlDb();
+  constructor(db?: DbAdapter) {
+    this.db = db ?? getMysqlDb();
   }
 
   async createCard(card: AnswerCard, createdBy?: number): Promise<void> {
@@ -107,22 +107,28 @@ export class CardRepository {
     );
 
     if (block.questions) {
-      for (const q of block.questions) {
+      for (let qi = 0; qi < block.questions.length; qi++) {
+        const q = block.questions[qi];
         await tx.run(
-          `INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm, blanks_label_style, blanks_items_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm, blanks_label_style, blanks_items_json, line_grid_json, essay_grid_json, score_grid_json, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           q.id, block.id, q.number, q.score, q.style ?? "manual_score_grid", q.kind ?? "plain_box",
           q.minHeightMm ?? 68, q.lineGrid?.enabled ? 1 : 0, q.lineGrid?.lineSpacingMm ?? 8,
           q.blanks?.count, q.blanks?.widthMm, q.blanks?.heightMm, q.blanks?.labelStyle,
-          q.blanks?.items ? JSON.stringify(q.blanks.items) : undefined
+          q.blanks?.items ? JSON.stringify(q.blanks.items) : undefined,
+          q.lineGrid ? JSON.stringify(q.lineGrid) : undefined,
+          q.essayGrid ? JSON.stringify(q.essayGrid) : undefined,
+          q.scoreGrid ? JSON.stringify(q.scoreGrid) : undefined,
+          qi
         );
 
         if (q.images) {
-          for (const img of q.images) {
+          for (let ii = 0; ii < q.images.length; ii++) {
+            const img = q.images[ii];
             await tx.run(
-              `INSERT INTO subjective_question_images (question_id, asset_id, original_name, width_mm, height_mm, align)
-               VALUES (?, ?, ?, ?, ?, ?)`,
-              q.id, img.assetId, img.originalName, img.widthMm, img.heightMm, img.align ?? "left"
+              `INSERT INTO subjective_question_images (question_id, asset_id, original_name, width_mm, height_mm, align, sort_order)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              q.id, img.assetId, img.originalName, img.widthMm, img.heightMm, img.align ?? "left", ii
             );
           }
         }
@@ -183,12 +189,24 @@ export class CardRepository {
 
     const subBlocks = await this.db.all("SELECT * FROM subjective_blocks WHERE card_id = ? ORDER BY sort_order", cardId);
     for (const b of subBlocks) {
-      const questions = await this.db.all("SELECT * FROM subjective_questions WHERE block_id = ? ORDER BY sort_order", b.id);
+      const questions = await this.db.all("SELECT * FROM subjective_questions WHERE block_id = ? ORDER BY sort_order, number", b.id);
       const questionsWithImages = await Promise.all(questions.map(async (q: any) => {
-        const images = await this.db.all("SELECT * FROM subjective_question_images WHERE question_id = ? ORDER BY sort_order", q.id);
+        const images = await this.db.all("SELECT * FROM subjective_question_images WHERE question_id = ? ORDER BY sort_order, id", q.id);
+        let lineGrid = { enabled: q.line_grid_enabled === 1, lineSpacingMm: q.line_spacing_mm };
+        if (q.line_grid_json) {
+          try { lineGrid = { ...lineGrid, ...JSON.parse(q.line_grid_json) }; } catch { /* keep fallback */ }
+        }
+        let essayGrid: unknown;
+        if (q.essay_grid_json) {
+          try { essayGrid = JSON.parse(q.essay_grid_json); } catch { essayGrid = undefined; }
+        }
+        let scoreGrid: unknown;
+        if (q.score_grid_json) {
+          try { scoreGrid = JSON.parse(q.score_grid_json); } catch { scoreGrid = undefined; }
+        }
         return {
           id: q.id, number: q.number, score: q.score, style: q.style, kind: q.kind,
-          minHeightMm: q.min_height_mm, lineGrid: { enabled: q.line_grid_enabled === 1, lineSpacingMm: q.line_spacing_mm },
+          minHeightMm: q.min_height_mm, lineGrid, essayGrid, scoreGrid,
           blanks: q.blanks_count ? { count: q.blanks_count, widthMm: q.blanks_width_mm, heightMm: q.blanks_height_mm, labelStyle: q.blanks_label_style ?? undefined, items: q.blanks_items_json ? JSON.parse(q.blanks_items_json) : undefined } : undefined,
           images: images.map((img: any) => ({ assetId: img.asset_id, originalName: img.original_name, widthMm: img.width_mm, heightMm: img.height_mm, align: img.align }))
         };

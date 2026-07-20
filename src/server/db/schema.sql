@@ -197,6 +197,9 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     blanks_height_mm REAL,
     blanks_label_style TEXT,
     blanks_items_json TEXT,
+    line_grid_json   TEXT,
+    essay_grid_json  TEXT,
+    score_grid_json  TEXT,
     sort_order       INTEGER DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );

@@ -106,6 +106,7 @@ export type LineGridConfig = {
   lineWidthMm?: number;      // 线宽 mm，默认 0.15
   insetLeftMm?: number;      // 左边距 mm，默认 8
   insetRightMm?: number;     // 右边距 mm，默认 6
+  lineStyle?: "solid" | "dashed" | "dotted"; // 线型，默认 "solid"
 };
 
 export type EssayGridConfig = {

@@ -644,6 +644,41 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, "exams", "review_mode",    "INTEGER DEFAULT 1");
       addColumnIfMissing(db, "exams", "review_enabled", "INTEGER DEFAULT 0");
     }
+  },
+  {
+    version: 20,
+    name: "subjective-grid-json",
+    up(db) {
+      addColumnIfMissing(db, "subjective_questions", "line_grid_json", "TEXT");
+      addColumnIfMissing(db, "subjective_questions", "essay_grid_json", "TEXT");
+    }
+  },
+  {
+    version: 21,
+    name: "subjective-score-grid-json",
+    up(db) {
+      addColumnIfMissing(db, "subjective_questions", "score_grid_json", "TEXT");
+    }
+  },
+  // v22: 性能复合索引对齐 — 幂等空操作 (SQLite v12 已创建,这里保持与 MariaDB v22 版本号一致)
+  // 注: SQLite v17 被跳过是 PR133 合并时的有意设计 — v9 已等价覆盖 "original-paper-and-knowledge-points"
+  {
+    version: 22,
+    name: "analysis-performance-indexes-parity",
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_total
+          ON student_scores(exam_id, total_score);
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_assigned
+          ON student_scores(exam_id, assigned_score);
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_student
+          ON student_scores(exam_id, student_id);
+        CREATE INDEX IF NOT EXISTS idx_question_scores_exam_type
+          ON question_scores(exam_id, score_type);
+        CREATE INDEX IF NOT EXISTS idx_exams_grade_class
+          ON exams(grade_id, class_id);
+      `);
+    }
   }
 ];
 

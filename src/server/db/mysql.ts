@@ -561,6 +561,32 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE exams ADD COLUMN review_enabled TINYINT DEFAULT 0`,
       ]
     },
+    {
+      version: 20,
+      name: "subjective-grid-json",
+      sqls: [
+        `ALTER TABLE subjective_questions ADD COLUMN line_grid_json TEXT`,
+        `ALTER TABLE subjective_questions ADD COLUMN essay_grid_json TEXT`,
+      ]
+    },
+    {
+      version: 21,
+      name: "subjective-score-grid-json",
+      sqls: [
+        `ALTER TABLE subjective_questions ADD COLUMN score_grid_json TEXT`,
+      ]
+    },
+    {
+      version: 22,
+      name: "analysis-performance-indexes-parity",
+      sqls: [
+        `CREATE INDEX IF NOT EXISTS idx_student_scores_exam_total ON student_scores(exam_id, total_score)`,
+        `CREATE INDEX IF NOT EXISTS idx_student_scores_exam_assigned ON student_scores(exam_id, assigned_score)`,
+        `CREATE INDEX IF NOT EXISTS idx_student_scores_exam_student ON student_scores(exam_id, student_id)`,
+        `CREATE INDEX IF NOT EXISTS idx_question_scores_exam_type ON question_scores(exam_id, score_type)`,
+        `CREATE INDEX IF NOT EXISTS idx_exams_grade_class ON exams(grade_id, class_id)`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

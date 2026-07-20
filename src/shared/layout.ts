@@ -496,10 +496,10 @@ const BLANK_MAX_SHRINK_RATIO = 0.7;
 const ESSAY_DEFAULT_CELL_MM = 7;
 const ESSAY_DEFAULT_LINE_COLOR = "#222";
 const ESSAY_DEFAULT_LINE_WIDTH = 0.15;
-const ESSAY_TITLE_HEIGHT = 7;
 const ESSAY_GRID_INSET_X = 4;
-const ESSAY_GRID_INSET_TOP = 2;
-const ESSAY_PANEL_GAP = A3_PANEL_GAP;
+const ESSAY_MAX_EMPTY_ADVANCES = 12;
+const BLANK_ANNO_CHAR_WIDTH = 1.6;
+const BLANK_ANNO_GAP = 1.2;
 
 function addManualScoreCells(
   page: PageLayout,
@@ -557,6 +557,11 @@ function blankLineSpecs(question: SubjectiveQuestion): BlankLineSpec[] {
   }));
 }
 
+function blankAnnotationWidth(text?: string): number {
+  if (!text) return 0;
+  return text.length * BLANK_ANNO_CHAR_WIDTH + BLANK_ANNO_GAP;
+}
+
 function blankQuestionLineWidth(question: SubjectiveQuestion): number {
   return Math.max(22, ...blankLineSpecs(question).map((item) => item.widthMm));
 }
@@ -579,10 +584,12 @@ function maxBlankLabelWidth(question: SubjectiveQuestion): number {
 }
 
 function blankColumnLineWidth(question: SubjectiveQuestion, columnW: number, labelSlotWidth: number): number {
-  const blankCount = blankQuestionCount(question);
+  const specs = blankLineSpecs(question);
+  const blankCount = specs.length;
   const labelWidth = labelSlotWidth * blankCount;
+  const annoWidth = specs.reduce((sum, spec) => sum + blankAnnotationWidth(spec.rightAnnotation), 0);
   const availableLineWidth =
-    (columnW - BLANK_NUMBER_WIDTH - labelWidth - BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) - 2) / blankCount;
+    (columnW - BLANK_NUMBER_WIDTH - labelWidth - annoWidth - BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) - 2) / blankCount;
   return Math.min(
     blankQuestionLineWidth(question),
     Math.max(blankMinimumLineWidth(question), availableLineWidth)
@@ -590,10 +597,12 @@ function blankColumnLineWidth(question: SubjectiveQuestion, columnW: number, lab
 }
 
 function blankQuestionFitsColumn(question: SubjectiveQuestion, columnW: number, labelSlotWidth: number): boolean {
-  const blankCount = blankQuestionCount(question);
+  const specs = blankLineSpecs(question);
+  const blankCount = specs.length;
   const labelWidth = labelSlotWidth * blankCount;
+  const annoWidth = specs.reduce((sum, spec) => sum + blankAnnotationWidth(spec.rightAnnotation), 0);
   const availableLineWidth =
-    (columnW - BLANK_NUMBER_WIDTH - labelWidth - BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) - 2) / blankCount;
+    (columnW - BLANK_NUMBER_WIDTH - labelWidth - annoWidth - BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) - 2) / blankCount;
   return availableLineWidth >= blankMinimumLineWidth(question);
 }
 
@@ -636,7 +645,8 @@ function layoutAnswerBlankLines(question: SubjectiveQuestion, contentRect: Rect)
 
   specs.forEach((spec) => {
     const labelWidth = answerBlankLabelWidth(spec);
-    const itemWidth = labelWidth + spec.widthMm;
+    const annoWidth = blankAnnotationWidth(spec.rightAnnotation);
+    const itemWidth = labelWidth + spec.widthMm + annoWidth;
     const rowHasItems = x > contentRect.x + leftInset;
     if (rowHasItems && x + itemWidth > contentRect.x + leftInset + usableWidth) {
       x = contentRect.x + leftInset;
@@ -647,7 +657,7 @@ function layoutAnswerBlankLines(question: SubjectiveQuestion, contentRect: Rect)
     const blankX = x + labelWidth;
     const blankRect = rect(blankX, y, spec.widthMm, spec.heightMm);
     placed.push({ ...spec, rect: blankRect });
-    x = blankX + spec.widthMm + gapX;
+    x = blankX + spec.widthMm + annoWidth + gapX;
     rowHeight = Math.max(rowHeight, spec.heightMm);
   });
 
@@ -849,7 +859,7 @@ function addBlankSubjectiveSegment(
     for (let blankIndex = 0; blankIndex < blankCount; blankIndex += 1) {
       blankX += blankLabelSlotWidth;
       blanks.push(rect(blankX, itemY + 2, lineW, lineH));
-      blankX += lineW + BLANK_INNER_GAP_X;
+      blankX += lineW + blankAnnotationWidth(specs[blankIndex]?.rightAnnotation) + BLANK_INNER_GAP_X;
     }
     const questionRect = rect(itemX, itemY, Math.min(columnW - 1, blankX - itemX - BLANK_INNER_GAP_X + 1), BLANK_ITEM_ROW_HEIGHT);
 
@@ -1005,7 +1015,7 @@ export function buildLayout(card: AnswerCard): LayoutDocument {
 
 function layoutEssayBlock(
   block: SubjectiveBlock,
-  ensureSpace: (height: number) => void,
+  _ensureSpace: (height: number) => void,
   newPage: () => void,
   getPage: () => PageLayout,
   setY: (value: number) => void,
@@ -1020,116 +1030,80 @@ function layoutEssayBlock(
     showTitle: true, lineColor: ESSAY_DEFAULT_LINE_COLOR,
     lineWidthMm: ESSAY_DEFAULT_LINE_WIDTH,
   };
-  const cellW = grid.cellWidthMm || ESSAY_DEFAULT_CELL_MM;
-  const cellH = grid.cellHeightMm || ESSAY_DEFAULT_CELL_MM;
-  const lineColor = grid.lineColor || ESSAY_DEFAULT_LINE_COLOR;
-  const lineW = grid.lineWidthMm ?? ESSAY_DEFAULT_LINE_WIDTH;
+  const cellW = Math.max(1, grid.cellWidthMm || ESSAY_DEFAULT_CELL_MM);
+  const cellH = Math.max(1, grid.cellHeightMm || ESSAY_DEFAULT_CELL_MM);
   const showTitle = grid.showTitle !== false;
 
-  // 每栏可用宽度
+  // 每面板独立算列数（栏内居中）；A4 单面板。
   const panelW = BODY_WIDTH;
   const panelInsetX = ESSAY_GRID_INSET_X;
   const usableW = panelW - panelInsetX * 2;
-  // 自动计算列数
-  const columns = grid.columns > 0 ? grid.columns : Math.floor(usableW / cellW);
-  // 单栏网格总宽
-  const gridW = columns * cellW;
-  // 网格居中偏移（栏内居中）
-  const gridOffsetX = (panelW - gridW) / 2;
+  const columns = grid.columns > 0 ? grid.columns : Math.max(1, Math.floor(usableW / cellW));
 
-  // 题号标题高度
-  const titleH = showTitle ? ESSAY_TITLE_HEIGHT + 2 : 0;
-
-  // 逐面板渲染
+  // 逐面板 X 起点：A3 三栏并排，A4 单栏（模块级 A3_PANEL_GAP / OUTER_MARGIN_X 已定义）
   const panelCount = IS_A3 ? 3 : 1;
-  let startY = getY();
-
-  // A3 三栏：X 坐标偏移
   const panelStarts: number[] = [];
   for (let p = 0; p < panelCount; p++) {
-    if (IS_A3) {
-      panelStarts.push(p * (panelW + ESSAY_PANEL_GAP) + OUTER_MARGIN_X);
-    } else {
-      panelStarts.push(MARGIN_X);
-    }
+    panelStarts.push(IS_A3 ? p * (panelW + A3_PANEL_GAP) + OUTER_MARGIN_X : MARGIN_X);
   }
 
-  // 为所有面板渲染网格（同页上并排排列）
-  let firstPage = true;
-  const totalTargetChars = grid.targetChars;
+  // 渲染器（客户端 SubjectiveSvg / 服务器 drawEssayGrid）按 block.rect 计算行列：
+  //   标题区高度 = showTitle ? 9 : 2，网格从 rect.y + 该高度起，行数 = floor((rect.height - 标题区) / cellH)
+  // 因此每块高度须覆盖「标题区 + rows*cellH + bottomPad」，格子才能被正确画出。
+  const gridTop = showTitle ? 9 : 2;
+  const bottomPad = 2;
 
-  // 计算所需总行数
-  const totalColumns = columns * panelCount;  // 所有栏的总列数
-  const targetRows = grid.rows > 0 ? grid.rows : Math.ceil(totalTargetChars / totalColumns);
+  // 目标总行数：按整页总列数（columns * panelCount）折算目标字数，使 A3 三栏并排铺满。
+  const totalColumns = columns * panelCount;
+  const targetRows = grid.rows > 0
+    ? grid.rows
+    : Math.ceil((grid.targetChars || 600) / totalColumns);
 
-  // 计算每页能放的行数
   let remainingRows = targetRows;
-  let rowsLaid = 0;
+  let emptyAdvances = 0;
 
   while (remainingRows > 0) {
-    const page = getPage();
-    const availableH = availableHeight(startY) - titleH - ESSAY_GRID_INSET_TOP - 4;
-    const rowsThisPage = Math.min(remainingRows, Math.floor(availableH / cellH));
+    const startY = getY();
+    const availableH = availableHeight(startY) - gridTop - bottomPad - 4;
+    const rowsThisPanel = Math.min(
+      Math.floor(availableH / cellH),
+      Math.ceil(remainingRows / panelCount)
+    );
+    const safeRowsThisPanel = Math.max(0, rowsThisPanel);
 
-    if (rowsThisPage <= 0) {
-      // 当前页放不下任何行，换页
+    if (safeRowsThisPanel <= 0) {
+      emptyAdvances += 1;
+      if (emptyAdvances > ESSAY_MAX_EMPTY_ADVANCES) {
+        ACTIVE_WARNINGS.push(`${block.title} 格子过高，当前版面无法继续排版作文格。`);
+        break;
+      }
       newPage();
-      startY = nextPageY();
-      // 第二页不再显示标题
-      // firstPage remains true (it's still used for marking)
       continue;
     }
 
-    ensureSpace(titleH + ESSAY_GRID_INSET_TOP + rowsThisPage * cellH + 4);
-
-    // 渲染各栏网格
+    emptyAdvances = 0;
+    const blockHeight = gridTop + safeRowsThisPanel * cellH + bottomPad;
+    const page = getPage();
+    // 同一页的多个面板用不同 X 起点推块，互不重叠；行数按单面板高度计算。
     for (let p = 0; p < panelCount; p++) {
-      const panelStartX = panelStarts[p];
-
-      // 题号（只第一页显示）
-      if (showTitle && firstPage) {
-        const titleX = panelStartX + panelInsetX;
-        const titleY = startY;
-        const blockData: PageRenderBlock = {
-          type: "subjective",
-          blockId: block.id,
-          title: block.title,
-          rect: rect(panelStartX, titleY, panelW, titleH + ESSAY_GRID_INSET_TOP + 2),
-          questions: [],
-          panelIndex: p,
-        };
-        page.blocks.push(blockData);
-      }
-
-      const gridStartY = startY + (showTitle && firstPage ? titleH + 2 : ESSAY_GRID_INSET_TOP);
-
-      // 渲染每个格子
-      for (let row = 0; row < rowsThisPage; row++) {
-        for (let col = 0; col < columns; col++) {
-          const cellX = panelStartX + gridOffsetX + col * cellW;
-          const cellY = gridStartY + row * cellH;
-          page.elements.push({
-            id: `essay_p${p}_r${rowsLaid + row}_c${col}`,
-            type: "subjective_box",
-            rect: rect(cellX, cellY, cellW, cellH),
-            blockId: block.id,
-            questionId: question.id,
-            questionNumber: question.number,
-          } as LayoutElement);
-        }
-      }
+      page.blocks.push({
+        type: "subjective",
+        blockId: block.id,
+        title: block.title,
+        rect: rect(panelStarts[p], startY, panelW, blockHeight),
+        questions: [],
+      });
     }
 
-    rowsLaid += rowsThisPage;
+    const rowsThisPage = safeRowsThisPanel * panelCount;
     remainingRows -= rowsThisPage;
-    const newY = startY + (showTitle && firstPage ? titleH + 2 : ESSAY_GRID_INSET_TOP) + rowsThisPage * cellH + 4;
-    setY(newY);
+    setY(startY + blockHeight + 4);
 
     if (remainingRows > 0) {
-      newPage();
-      startY = nextPageY();
+      // newPage() 每次只前进一个面板；本迭代已写满当前页全部面板，
+      // 需前进 panelCount 个面板（即切到下一物理页的面板 0），否则会在同页叠字。
+      for (let p = 0; p < panelCount; p++) newPage();
     }
-    firstPage = false;
   }
 }
 
