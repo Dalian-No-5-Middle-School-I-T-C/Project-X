@@ -1,5 +1,201 @@
 # Project-X CHANGELOG
 
+## v1.9.1 (2026-07-19) — 答题卡设计器全面增强
+
+### 作文块（essay block）
+
+新增作文格答题卡设计功能，支持 A3 三栏标准作文纸渲染。
+
+- **类型 `EssayGridConfig`**：columns / rows / cellWidthMm / cellHeightMm / targetChars / showTitle / lineColor / lineWidthMm（8 字段）
+- **布局引擎**（`layout.ts`）：`layoutEssayBlock()` 函数生成 A3 三栏网格，支持跨页续排
+- **设计器 UI**：新增「作文块」按钮 + inspector 面板（目标字数、格子尺寸、题号开关）
+- **SVG 预览**：实时渲染作文格，「题：（000）」题号
+- **PDF 导出**：完整格子网输出，黑色 `#222` 0.15mm 细线
+- **语文模板**：`essayBlock()` 默认 60 分 / 600 字
+
+### 解答题横格划线增强
+
+`lineGrid` 字段从 2 字段扩展为完整的 `LineGridConfig`（7 字段）。
+
+- **新增可配置项**：`lineColor`（默认 `#222`）、`lineWidthMm`（默认 0.15）、`fixedLineCount`（固定行数，自动算高度）、`insetLeftMm` / `insetRightMm`（边距）
+- **默认启用**：新建解答题 `kind: "lined_answer"` + 5 行横线，无需手动勾选
+- **inspector 面板**：行数 / 间距 / 颜色 / 线宽 / 边距均可调，自动联动高度
+- **SVG / PDF 渲染**：全部参数可配置，不再硬编码 `#888` / `#777`
+
+### 得分划线栏美化
+
+新增 `ScoreGridConfig`（8 字段），保持格子外框尺寸不变，优化内部视觉。
+
+- **新增可配置项**：`enabled`（独立开关）、`strokeColor`（默认 `#999`）、`dividerColor`（默认 `#ccc`）、`dividerWidthMm`（默认 0.1）、`fontSize`（默认 2.8，原 2.2）、`showLabel`（"得分"标签开关）
+- **SVG / PDF**：颜色和字号均从配置读取，不再硬编码
+- **inspector**：格线色 / 分隔线 / "得分"标签独立控制
+
+### 填空右侧批注
+
+`BlankItem` 新增 `rightAnnotation?: string` 字段，支持在填空横线右侧添加批注文字。
+
+- **类型扩展**：`BlankItem.rightAnnotation` + `SubjectiveRenderItem.blankRightAnnotations`
+- **inspector**：空白项列表新增「右侧批注」输入框（如 `(填＞或＜）`）
+- **SVG**：灰色 `#888` 3px 文字，横线右侧 1.2mm
+- **PDF**：对应位置绘制批注文字
+
+### 移动端底部导航更新
+
+- 新增 `home` 模式到 `mobileNavItems`（首页首选项），移除已删除的 `grading` 模式
+
+### 修改文件清单
+
+| 文件 | 改动 | 内容 |
+|------|------|------|
+| `src/shared/types.ts` | +50 行 | `EssayGridConfig` / `LineGridConfig` / `ScoreGridConfig` / `BlankItem.rightAnnotation` / `PageRenderBlock.panelIndex` |
+| `src/shared/layout.ts` | +130 行 | `layoutEssayBlock()` + lineGrid 固定行数 + scoreGrid 开关 |
+| `src/apps/answer-card/client/App.tsx` | +380 行 | 作文块按钮+inspector+SVG + 横线枪inspector+SVG + 得分栏inspector+SVG + 填空批注 |
+| `src/apps/answer-card/server/pdf.ts` | +90 行 | `drawEssayGrid()` + lineGrid 可配置 + scoreGrid 可配置 + 填空批注 |
+| `src/shared/cardTemplates.ts` | +50 行 | `essayBlock()` + `linedQuestion()` 新格式 + 语文模板集成 |
+
+**总计**：+700 行新增代码，0 个删除，0 个新依赖。
+
+### 版本
+- v1.9.0 → v1.9.1
+
+---
+
+## v1.9.0 (2026-07-18) — 网上阅卷系统全面重构
+
+### 概述
+网上阅卷系统从独立模块重构为考试管理的核心子功能，新增 Home 仪表盘、任务分配引擎、2P/3P 多评机制、争议仲裁、PAD 优先阅卷 UI、批注系统（文字+手写）和断点续批能力。累计新建 30+ 文件，修改 15+ 文件。
+
+---
+
+### 架构变更
+- **Home 仪表盘**：登录后进入图形化首页，模块卡片（答题卡设计 / 考试管理 / 成绩分析 / 账号管理）+ 快捷入口（继续阅卷 / 最新考试 / 考试管理引导卡片，始终可见）
+- **考试管理重构**：保留原有新建/删除/赋分等功能；每条考试新增「网阅」按钮进入 ExamDetailPage（5 个 Tab：阅卷 / 阅卷分配 / 争议管理 / 阅卷溯源 / 网阅设置）
+- **移除了独立阅卷模式**：`grading` mode 删除；新增 `home` mode
+- **Tab 栏可开关**：`show_tab_bar` 用户设置，默认关闭。关闭后各页面顶部栏显示"← 返回首页"按钮（44px），开启后桌面模式栏和底栏均含「首页」首选项。设置即时生效
+- **登录默认首页**：不再进答题卡设计器
+
+---
+
+### 阅卷任务分配引擎
+- 年级组长/管理员为每个题块指定教师 + 份数，系统随机分配（Fisher-Yates + djb2 hash seed，确定性可重现）
+- 教师进入考试后可自选已分配的题块，进度条显示实际待批/总数
+- 仲裁人下拉：同科同年级教师列表，已分配本题块的教师置顶（标记"批卷教师"），冲突自动跳过
+- `ReviewAssignPage` 完整界面：教师下拉选择 + 份数分配 + "🎲 随机分配"按钮
+
+---
+
+### 2P/3P 多评系统
+- 考试级 `review_mode`：1P / 2P / 3P
+- 2P：两教师独立打分 → 分差 ≤ 阈值取平均 → 分差 > 阈值进入争议
+- 3P：三教师独立打分 → 一致取平均；两评接近取接近分平均（排除异常分）；三评分散进入争议
+- 默认分差阈值：作文 3 分 / ≥10 分题 2 分 / <10 分题 1 分（可逐题块覆盖）
+- 取整方式 5 种：`ceil` 向上 / `floor` 向下 / `round` 四舍五入 / `half` 保留 0.5 / `none` 保留小数。非作文默认 `ceil`，作文默认 `half`
+- 仲裁：最终分以仲裁人判定为准；无指定仲裁人 → 搁置争议池待年级组长处理
+
+---
+
+### 新阅卷 UI（PAD 优先）
+- **布局**：左图右分（≤900px 自动上下分栏）
+- **图片操作**：滚轮缩放（25%~400%）、按钮旋转 90° CW/CCW
+- **打分面板**：大按钮（56px+ 触控目标），根据满分自动生成列：<10 分 = 个位 + 0.5，≥10 分 = 十位 + 个位 + 0.5
+- **工具栏**：上一份/下一份、缩放百分比、旋转、批注模式切换
+- **快捷键**：Enter = 保存并下一份，← → = 翻页，滚轮 = 缩放
+
+---
+
+### 批注系统
+- **文字批注（桌面端）**：点击答题卡 → 弹出输入框 → 半透明红色浮层叠加
+- **手写批注（PAD/移动端）**：Canvas 渲染，PointerEvent 笔触追踪，palm rejection（忽略大面积触摸），笔迹保存为 JSON 路径数据
+- **自动模式检测**：触摸设备默认手写，桌面端默认文字批注
+- **API**：`GET/POST/DELETE /api/review-annotations`，批注可正常保存和读取
+- **学生端可见**：新增 `CropImageViewer` 组件，学生在成绩详情可看到教师批注浮层
+
+---
+
+### 断点续批
+- `review_sessions` 表持久化：当前批改位置 + 缩放/平移状态 + 未提交草稿分数
+- 退出时自动保存，重新进入时恢复。草稿自动回填，已提交分数不回滚
+
+---
+
+### 争议管理与仲裁
+- 争议自动检测：分差超阈值 → 自动交给指定仲裁人（冲突跳过 → 搁置争议池）
+- 争议管理 Tab：年级组长/管理员查看搁置争议列表，手动判分或指派仲裁人
+- 仲裁人冲突检测：若指定仲裁人已是该卷评审人 → 保留争议池，待人工处理
+
+---
+
+### 阅卷溯源
+- `answer_block_crops` 追踪字段：`reviewer_id`、`reviewed_at`、`review_round`、`final_score`、`final_score_by`、`score_breakdown`
+- 溯源 Tab：表格展示每学生每轮评审人+分数+状态
+
+---
+
+### 数据库新增 (v18 迁移，双库双轨)
+- `review_assignments` — 阅卷任务分配
+- `review_sessions` — 断点续批会话
+- `review_annotations` — 批注存储
+- `block_grading_config` — 逐题块网阅设置（阈值/取整/仲裁人）
+- `answer_block_crops` 加列：reviewer_id, reviewed_at, review_round, final_score, final_score_by, score_breakdown
+- `users` 加列：show_tab_bar
+- `exams` 加列：review_mode, review_enabled
+
+### 类型新增
+- `SubjectiveBlockKind` + `"essay"`（作文标签，预留给语文/英语作文）
+- 18+ 个新类型：ReviewMode, RoundingMode, BlockGradingConfig, ReviewAssignment, ReviewSession, ReviewAnnotation, ReviewTraceItem, DisputeItem, DashboardData, TeacherBlockAssignment, ExamReviewSettings, ArbitratorCandidate, BatchGradingConfigUpdate, ReviewProgress, ReviewRoundDetail, DisputeCheckResult
+
+### API 新增
+| 端点 | 说明 |
+|------|------|
+| `GET /api/dashboard` | 首页仪表盘数据 |
+| `GET /api/review/my-exams` | 教师待阅考试列表 |
+| `GET /api/review/exams/:id/trace` | 阅卷溯源 |
+| `GET/POST /api/review-assign/...` | 任务分配 CRUD |
+| `GET/PUT/DELETE /api/review-session/...` | 断点续批会话 |
+| `GET /api/review-arbitration/...` | 争议列表 + 仲裁人候选 + 仲裁裁决 |
+| `GET/PUT/POST /api/block-grading-config/...` | 题块网阅设置 + 批量覆盖 |
+| `GET/POST/DELETE /api/review-annotations` | 批注 CRUD |
+
+### 修复
+- 并发 CAS 检测：`submitReviewCropScores` 用 `WHERE review_round = ?` 防止后写覆盖先写，冲突时前端提示
+- Express 5 `req.params` 类型安全修复（`String(req.params.x ?? "")`）
+- 双数据库迁移双轨制（SQLite 用 `hasTable`/`addColumnIfMissing`，MariaDB 用 `try/catch` + `sqls[]`）
+- 成绩分析页移除旧的「网上阅卷」Tab（网阅统一在考试管理入口）
+- 快捷入口无数据时不空白，fallback 到最新考试或考试管理引导卡片
+
+### 大型二次修复
+基于全面代码审查（14 个文件、45 个问题），修复 4 个致命 bug + 10 个严重 bug。
+
+#### 致命修复（4 项）
+- **P0-1 文件 I/O 在 DB 事务内** (`cleanup.ts`)：文件删除移到事务外，避免事务回滚导致数据不一致
+- **P0-2 争议状态更新在事务外** (`ReviewService.ts`)：争议检测 + 状态写入全部移入事务内
+- **P0-3 仲裁无 CAS 并发保护** (`review-arbitration.ts`)：CAS 乐观锁 `WHERE review_round = ? AND status = 'disputed'` + 事务统一化
+- **P0-4 reviewMode 从未强制** (`ReviewService.ts`)：提交前检查 `已完成轮次 >= reviewMode`，防止无限提交
+
+#### 严重修复（10 项）
+- **P1-5 重复提交检测**：同一评审人不可对同一题块二次提交（从 `score_breakdown` 解析）
+- **P1-6 偏差值统计错误** (`AnalysisRepository.ts`)：🇯🇵 偏差值 / Z 值的均值与标准差改用全体考生数据，不再按班级筛选
+- **P1-7 假性标记** (`score-editing.ts`)：分数未变时不设 `manually_modified = 1`
+- **P1-8 排名事务一致性** (`score-editing.ts` 两处)：排名重算从事务外移到事务内
+- **P1-9 仲裁 max_score=0** (`review-arbitration.ts`)：从已有 question_scores 读取正确的 max_score
+- **P1-10 仲裁 score_type 硬编码** (`review-arbitration.ts`)：从已有 question_scores 读取正确的 score_type
+- **P1-11 评审人查询不可靠** (`ArbitrationService.ts`)：改用 score_breakdown JSON 解析，不再单查 reviewer_id
+- **P1-12 通用化争议检测** (`ArbitrationService.ts`)：`computeMultiReviewResult` 支持 4+ 次评审，聚类判断替代硬编码 3P
+- **P1-14 Token 暴露**：新增 `mediaUrl()`，同源图片/iframe 依靠 httpOnly cookie 认证，不再在 URL 中暴露 JWT
+- **仲裁人冲突检查** (`ReviewService.ts`)：仲裁人已参与评审时提前抛出明确错误
+
+#### 修改文件
+| 文件 | 改动 |
+|------|------|
+| `src/server/db/cleanup.ts` | 文件 IO 移出事务 |
+| `src/server/services/ReviewService.ts` | reviewMode 强制 + 争议事务内 + 重复/仲裁检查 |
+| `src/server/routes/review-arbitration.ts` | CAS 保护 + 事务统一 + max_score/score_type 修复 |
+| `src/server/routes/score-editing.ts` | manually_modified 条件 + 排名事务内 (2 处) |
+| `src/server/services/ArbitrationService.ts` | 通用化争议检测 + 评审人检查修复 |
+| `src/server/repositories/AnalysisRepository.ts` | 偏差值全体数据 |
+| `src/apps/answer-card/client/auth/api.ts` | mediaUrl() 新增 |
+| 前端 6 组件 | 图片 URL 改用 mediaUrl (cookie 认证) |
+
 ## v1.8.2 (2026-07-09) — 暗色模式全面修复
 
 基于 v1.6.3 暗色模式基线进行系统性修复，解决 v1.7.0+ 新增组件在暗色下的灰底灰字、可读性差、与背景融为一体等问题。

@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.5.5
+> **版本**: v1.9.0
 > **技术栈**: SQLite (本地) / MariaDB 10.11 LTS (远程) + better-sqlite3 + mysql2 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力，支持本地单机部署和远程服务器部署
 
@@ -411,6 +411,44 @@ data/answer-card/recognition/crops/{cardId}/{sourceType}_{sourceRecordId}/
 
 索引建议围绕 `exam_id`、`student_id`、`source_type/source_record_id`、`block_id` 建立，方便按考试/学生/题块读取。
 
+### v1.9.0 新增表
+
+**`review_assignments`** — 阅卷任务分配。年级组长指定每个题块由哪些教师批多少份。
+| 字段 | 说明 |
+|---|---|
+| `exam_id / block_id / teacher_id` | 联合唯一键 |
+| `student_count` | 分配给该教师的份数 |
+| `assigned_student_ids` | JSON 数组，具体分配的学生 ID |
+
+**`review_sessions`** — 断点续批会话。教师退出后下次继续。
+| 字段 | 说明 |
+|---|---|
+| `teacher_id / exam_id / block_id` | 联合唯一键 |
+| `current_index` | 当前批到第几份 |
+| `position_json` | 图片缩放/平移状态 |
+| `draft_scores` | JSON 未提交的草稿分数 |
+
+**`review_annotations`** — 阅卷批注（文字或手写）。
+| 字段 | 说明 |
+|---|---|
+| `crop_id` | 关联的切块记录 |
+| `type` | text 或 drawing |
+| `data_json` | 文字内容或画笔路径数据 |
+
+**`block_grading_config`** — 逐题块网阅设置。
+| 字段 | 说明 |
+|---|---|
+| `exam_id / block_id` | 联合唯一键 |
+| `dispute_threshold` | 分差阈值 |
+| `rounding` | 取整方式（ceil/floor/round/none） |
+| `arbitrator_id` | 指定仲裁教师 |
+| `review_mode` | 审批模式（1=1P, 2=2P, 3=3P） |
+
+### v1.9.0 修改表
+- `answer_block_crops` + `reviewer_id`, `reviewed_at`, `review_round`, `final_score`, `final_score_by`, `score_breakdown`
+- `users` + `show_tab_bar`（底部导航栏开关）
+- `exams` + `review_mode`（1P/2P/3P）+ `review_enabled`（网阅开关）
+
 ### 识别与阅卷接口
 
 ```
@@ -743,6 +781,69 @@ src/types/
 | `sort_order` | INTEGER | 排序 |
 
 **UNIQUE**: `(card_id, question_number, point_text)`
+
+---
+
+### v1.9.0 新增
+
+#### `review_assignments` — 阅卷任务分配
+
+年级组长为每个题块指定教师和批改份数，系统随机分配学生。
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `exam_id` | INTEGER FK | 考试 ID |
+| `block_id` | TEXT | 题块 ID |
+| `teacher_id` | INTEGER FK | 教师 ID |
+| `student_count` | INTEGER | 分配份数 |
+| `assigned_student_ids` | TEXT(JSON) | 学生 ID 数组 |
+
+**UNIQUE**: `(exam_id, block_id, teacher_id)`
+
+#### `review_sessions` — 断点续批
+
+教师退出后保存批改进度和未提交草稿。
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `teacher_id` | INTEGER FK | 教师 ID |
+| `exam_id` | INTEGER FK | 考试 ID |
+| `block_id` | TEXT | 题块 ID |
+| `current_index` | INTEGER | 当前批到第几份 |
+| `position_json` | TEXT(JSON) | 缩放/平移状态 |
+| `draft_scores` | TEXT(JSON) | 未提交草稿 `{cropId: score}` |
+
+**UNIQUE**: `(teacher_id, exam_id, block_id)`
+
+#### `review_annotations` — 阅卷批注
+
+文字或手写批注，叠加在学生答题卡上。
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `id` | TEXT PK | UUID |
+| `crop_id` | TEXT FK | 切块 ID |
+| `reviewer_id` | INTEGER FK | 批注教师 |
+| `type` | TEXT | text / drawing |
+| `data_json` | TEXT(JSON) | 文字内容/画笔路径 |
+
+#### `block_grading_config` — 逐题块网阅设置
+
+分差阈值、取整方式、仲裁人。
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `id` | INTEGER PK | 自增主键 |
+| `exam_id` | INTEGER FK | 考试 ID |
+| `block_id` | TEXT | 题块 ID |
+| `dispute_threshold` | REAL | 分差阈值 |
+| `rounding` | TEXT | ceil/floor/round/none |
+| `arbitrator_id` | INTEGER FK | 仲裁教师 |
+| `review_mode` | INTEGER | 1=1P, 2=2P, 3=3P |
+
+**UNIQUE**: `(exam_id, block_id)`
 
 **成绩分析关联查询**：
 ```sql

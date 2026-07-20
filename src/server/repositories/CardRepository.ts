@@ -21,8 +21,8 @@ function normalizeOptionLayout(value: unknown): "horizontal" | "vertical" {
 export class CardRepository {
   private db: DbAdapter;
 
-  constructor() {
-    this.db = getMysqlDb();
+  constructor(db?: DbAdapter) {
+    this.db = db ?? getMysqlDb();
   }
 
   async createCard(card: AnswerCard, createdBy?: number): Promise<void> {
@@ -37,30 +37,32 @@ export class CardRepository {
   }
 
   async updateCard(card: AnswerCard): Promise<void> {
-    await this.db.run(
-      `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, paper_size = ?, orientation = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-      card.title, card.subject ?? null, (card as any).subjectLabel ?? null, (card as any).examDate ?? null,
-      card.paper?.size ?? "A4", card.paper?.orientation ?? "portrait",
-      JSON.stringify(card.studentInfo?.fields ?? []), card.studentInfo?.studentNumberDigits ?? 5,
-      card.sided ?? "double", card.layoutVersion ?? 1, card.id
-    );
+    await this.db.transaction(async (tx) => {
+      await tx.run(
+        `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, paper_size = ?, orientation = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        card.title, card.subject ?? null, (card as any).subjectLabel ?? null, (card as any).examDate ?? null,
+        card.paper?.size ?? "A4", card.paper?.orientation ?? "portrait",
+        JSON.stringify(card.studentInfo?.fields ?? []), card.studentInfo?.studentNumberDigits ?? 5,
+        card.sided ?? "double", card.layoutVersion ?? 1, card.id
+      );
 
-    await this.db.run("DELETE FROM objective_blocks WHERE card_id = ?", card.id);
-    await this.db.run("DELETE FROM subjective_blocks WHERE card_id = ?", card.id);
+      await tx.run("DELETE FROM objective_blocks WHERE card_id = ?", card.id);
+      await tx.run("DELETE FROM subjective_blocks WHERE card_id = ?", card.id);
 
-    if (card.bodyBlocks) {
-      for (const block of card.bodyBlocks) {
-        if (block.type === "objective") await this.insertObjectiveBlock(block as any, card.id);
-        else if (block.type === "subjective") await this.insertSubjectiveBlock(block as any, card.id);
+      if (card.bodyBlocks) {
+        for (const block of card.bodyBlocks) {
+          if (block.type === "objective") await this.insertObjectiveBlock(block as any, card.id, tx);
+          else if (block.type === "subjective") await this.insertSubjectiveBlock(block as any, card.id, tx);
+        }
       }
-    }
+    });
   }
 
-  private async insertObjectiveBlock(block: any, cardId: string): Promise<void> {
+  private async insertObjectiveBlock(block: any, cardId: string, tx: DbAdapter): Promise<void> {
     const questions = normalizeObjectiveQuestions(block);
     const firstQuestion = questions[0];
     const blockOptionLayout = normalizeOptionLayout(block.optionLayout);
-    await this.db.run(
+    await tx.run(
       `INSERT INTO objective_blocks (id, card_id, sort_order, title, question_start, question_count, option_count, mode, score_per_question, density, option_layout, wrong_or_extra_score)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       block.id, cardId, 0, block.title ?? "", firstQuestion?.questionNumber ?? block.questionStart ?? 1,
@@ -71,7 +73,7 @@ export class CardRepository {
 
     for (let i = 0; i < questions.length; i++) {
       const question = questions[i];
-      await this.db.run(
+      await tx.run(
         `INSERT INTO objective_questions (block_id, question_number, sort_order, mode, option_count, score, option_layout, scoring_rule_json)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?) -- note: upsert handled by DELETE-then-INSERT in updateCard()`,
         block.id, question.questionNumber, i, question.mode, question.optionCount, question.score,
@@ -79,7 +81,7 @@ export class CardRepository {
         question.scoringRule ? JSON.stringify(question.scoringRule) : null
       );
       if (question.answerKey && question.answerKey.length > 0) {
-        await this.db.run(
+        await tx.run(
           `INSERT INTO objective_answer_keys (block_id, question_number, correct_options)
            VALUES (?, ?, ?) -- note: upsert handled by DELETE-then-INSERT`,
           block.id, question.questionNumber, JSON.stringify(question.answerKey)
@@ -89,7 +91,7 @@ export class CardRepository {
 
     if (block.multipleScoring?.partialScores) {
       for (const [partialCount, score] of Object.entries(block.multipleScoring.partialScores)) {
-        await this.db.run(
+        await tx.run(
           `INSERT INTO objective_multiple_scoring (block_id, correct_count, score)
            VALUES (?, ?, ?) -- note: upsert handled by DELETE-then-INSERT`,
           block.id, Number(partialCount), score as number
@@ -98,29 +100,35 @@ export class CardRepository {
     }
   }
 
-  private async insertSubjectiveBlock(block: any, cardId: string): Promise<void> {
-    await this.db.run(
+  private async insertSubjectiveBlock(block: any, cardId: string, tx: DbAdapter): Promise<void> {
+    await tx.run(
       `INSERT INTO subjective_blocks (id, card_id, sort_order, block_kind, title) VALUES (?, ?, ?, ?, ?)`,
       block.id, cardId, 0, block.blockKind ?? (block.title?.includes("填空") ? "fill_blank" : "answer"), block.title ?? ""
     );
 
     if (block.questions) {
-      for (const q of block.questions) {
-        await this.db.run(
-          `INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm, blanks_label_style, blanks_items_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      for (let qi = 0; qi < block.questions.length; qi++) {
+        const q = block.questions[qi];
+        await tx.run(
+          `INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm, blanks_label_style, blanks_items_json, line_grid_json, essay_grid_json, score_grid_json, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           q.id, block.id, q.number, q.score, q.style ?? "manual_score_grid", q.kind ?? "plain_box",
           q.minHeightMm ?? 68, q.lineGrid?.enabled ? 1 : 0, q.lineGrid?.lineSpacingMm ?? 8,
           q.blanks?.count, q.blanks?.widthMm, q.blanks?.heightMm, q.blanks?.labelStyle,
-          q.blanks?.items ? JSON.stringify(q.blanks.items) : undefined
+          q.blanks?.items ? JSON.stringify(q.blanks.items) : undefined,
+          q.lineGrid ? JSON.stringify(q.lineGrid) : undefined,
+          q.essayGrid ? JSON.stringify(q.essayGrid) : undefined,
+          q.scoreGrid ? JSON.stringify(q.scoreGrid) : undefined,
+          qi
         );
 
         if (q.images) {
-          for (const img of q.images) {
-            await this.db.run(
-              `INSERT INTO subjective_question_images (question_id, asset_id, original_name, width_mm, height_mm, align)
-               VALUES (?, ?, ?, ?, ?, ?)`,
-              q.id, img.assetId, img.originalName, img.widthMm, img.heightMm, img.align ?? "left"
+          for (let ii = 0; ii < q.images.length; ii++) {
+            const img = q.images[ii];
+            await tx.run(
+              `INSERT INTO subjective_question_images (question_id, asset_id, original_name, width_mm, height_mm, align, sort_order)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              q.id, img.assetId, img.originalName, img.widthMm, img.heightMm, img.align ?? "left", ii
             );
           }
         }
@@ -181,12 +189,24 @@ export class CardRepository {
 
     const subBlocks = await this.db.all("SELECT * FROM subjective_blocks WHERE card_id = ? ORDER BY sort_order", cardId);
     for (const b of subBlocks) {
-      const questions = await this.db.all("SELECT * FROM subjective_questions WHERE block_id = ? ORDER BY sort_order", b.id);
+      const questions = await this.db.all("SELECT * FROM subjective_questions WHERE block_id = ? ORDER BY sort_order, number", b.id);
       const questionsWithImages = await Promise.all(questions.map(async (q: any) => {
-        const images = await this.db.all("SELECT * FROM subjective_question_images WHERE question_id = ? ORDER BY sort_order", q.id);
+        const images = await this.db.all("SELECT * FROM subjective_question_images WHERE question_id = ? ORDER BY sort_order, id", q.id);
+        let lineGrid = { enabled: q.line_grid_enabled === 1, lineSpacingMm: q.line_spacing_mm };
+        if (q.line_grid_json) {
+          try { lineGrid = { ...lineGrid, ...JSON.parse(q.line_grid_json) }; } catch { /* keep fallback */ }
+        }
+        let essayGrid: unknown;
+        if (q.essay_grid_json) {
+          try { essayGrid = JSON.parse(q.essay_grid_json); } catch { essayGrid = undefined; }
+        }
+        let scoreGrid: unknown;
+        if (q.score_grid_json) {
+          try { scoreGrid = JSON.parse(q.score_grid_json); } catch { scoreGrid = undefined; }
+        }
         return {
           id: q.id, number: q.number, score: q.score, style: q.style, kind: q.kind,
-          minHeightMm: q.min_height_mm, lineGrid: { enabled: q.line_grid_enabled === 1, lineSpacingMm: q.line_spacing_mm },
+          minHeightMm: q.min_height_mm, lineGrid, essayGrid, scoreGrid,
           blanks: q.blanks_count ? { count: q.blanks_count, widthMm: q.blanks_width_mm, heightMm: q.blanks_height_mm, labelStyle: q.blanks_label_style ?? undefined, items: q.blanks_items_json ? JSON.parse(q.blanks_items_json) : undefined } : undefined,
           images: images.map((img: any) => ({ assetId: img.asset_id, originalName: img.original_name, widthMm: img.width_mm, heightMm: img.height_mm, align: img.align }))
         };

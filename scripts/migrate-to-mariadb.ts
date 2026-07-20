@@ -39,6 +39,15 @@ const DRY_RUN = process.argv.includes("--dry-run");
 const skipArg = process.argv.find(a => a.startsWith("--skip-tables="));
 const SKIP_TABLES = new Set(skipArg ? skipArg.split("=")[1].split(",").map(s => s.trim()) : []);
 
+// SQLite → MariaDB 迁移版本号映射
+// PR133 合并导致两侧版本号不一致: SQLite v9 = MariaDB v17 (同名 "original-paper-and-knowledge-points")
+// 这里在迁移 schema_migrations 记录时做语义对齐,避免 MariaDB 侧重复执行或名称被错误覆盖
+const VERSION_MAP: Record<number, number> = {
+  9: 17,   // original-paper-and-knowledge-points: SQLite v9 = MariaDB v17
+};
+// SQLite 专属版本 (MariaDB 由 schema.mariadb.sql 覆盖,无需复制 schema_migrations 记录)
+const SQLITE_ONLY_VERSIONS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
+
 // ── 外键拓扑排序 ──────────────────────────────────
 
 const MIGRATION_ORDER: Array<{ table: string; primaryKey: string }> = [
@@ -182,6 +191,12 @@ async function main() {
         if (rows.length === 0) break;
 
         for (const row of rows) {
+          // schema_migrations 表做版本号映射,对齐 PR133 导致的 SQLite/MariaDB 版本号不一致
+          if (table === "schema_migrations") {
+            const ver = row.version as number;
+            if (SQLITE_ONLY_VERSIONS.has(ver)) continue;        // SQLite 专属版本跳过
+            row.version = VERSION_MAP[ver] ?? ver;              // 映射到 MariaDB 等价版本
+          }
           const columns = Object.keys(row);
           const values = Object.values(row);
           const placeholders = columns.map(() => "?").join(", ");

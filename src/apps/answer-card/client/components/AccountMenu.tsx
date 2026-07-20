@@ -22,7 +22,7 @@ export function AccountMenu({
   onOpenGuide?: () => void;
   onOpenPermissions?: () => void;
 }) {
-  const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona } = useAuth();
+  const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona, refreshUser } = useAuth();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
   const isElectron = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -54,6 +54,8 @@ export function AccountMenu({
   });
   const [showHelpCard, setShowHelpCard] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"grading" | "client" | "ai" | "db">("grading");
+  // v1.9.0: Tab 栏开关
+  const [showTabBar, setShowTabBar] = useState(false);
 
   // ── 数据存储设置（管理员） ──────────────────────────
   const [dbMode, setDbMode] = useState<"local" | "remote">("local");
@@ -68,7 +70,7 @@ export function AccountMenu({
 
   useEffect(() => {
     if (open && showSettings) {
-      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; requireOriginalPaper?: number; highlightMissingPaper?: number }>("/api/users/me/settings")
+      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; requireOriginalPaper?: number; highlightMissingPaper?: number; showTabBar?: number }>("/api/users/me/settings")
         .then((s) => {
           if (!s || typeof s !== "object") return;
           setDisplayMode(s.scoreDisplayMode || "zscore");
@@ -76,6 +78,7 @@ export function AccountMenu({
           setBgOpacity(s.backgroundOpacity ?? 0);
           setRequireOriginalPaper(s.requireOriginalPaper !== 0);
           setHighlightMissingPaper(s.highlightMissingPaper !== 0);
+          setShowTabBar(s.showTabBar === 1);
         })
         .catch(() => {});
       loadProviders();
@@ -134,9 +137,12 @@ export function AccountMenu({
           backgroundOpacity: bgOpacity,
           requireOriginalPaper: requireOriginalPaper,
           highlightMissingPaper: highlightMissingPaper,
+          showTabBar: showTabBar,
         })
       });
       setSettingsMsg("已保存");
+      // v1.9.0: 刷新用户状态使 Tab 栏开关即时生效
+      await refreshUser();
       setTimeout(() => setSettingsMsg(""), 1500);
     } catch (err) {
       setSettingsMsg(err instanceof Error ? err.message : "保存失败");
@@ -558,7 +564,16 @@ export function AccountMenu({
 
                 {settingsTab === "client" && (
                   <>
-                    <h4>背景图透明度</h4>
+                    <h4>底部导航栏</h4>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 12 }}>
+                      <input type="checkbox" checked={showTabBar} onChange={(e) => setShowTabBar(e.target.checked)} />
+                      显示底部 Tab 导航栏
+                    </label>
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                      关闭后各页面使用"← 返回首页"按钮导航，更简洁
+                    </span>
+
+                    <h4 style={{ marginTop: 16 }}>背景图透明度</h4>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
                       <span style={{ color: "var(--muted)" }}>{Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}</span>
                     </div>

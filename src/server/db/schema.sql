@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS users (
     require_original_paper INTEGER DEFAULT 1, -- v1.8.0: 教师是否强制要求上传原卷
     highlight_missing_paper INTEGER DEFAULT 1, -- v1.8.0: 侧边栏高亮未上传原卷的考试
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
+    show_tab_bar     INTEGER DEFAULT 0,      -- v1.9.0: 0=隐藏底部导航 1=显示
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -196,6 +197,9 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     blanks_height_mm REAL,
     blanks_label_style TEXT,
     blanks_items_json TEXT,
+    line_grid_json   TEXT,
+    essay_grid_json  TEXT,
+    score_grid_json  TEXT,
     sort_order       INTEGER DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -265,6 +269,8 @@ CREATE TABLE IF NOT EXISTS exams (
     status        TEXT DEFAULT 'draft',        -- draft / active / grading / closed
     assigned_formula TEXT,                     -- JSON: 赋分公式配置 (v1.4.0)
     retention_policy_id INTEGER REFERENCES data_retention_policies(id),
+    review_mode    INTEGER DEFAULT 1,            -- v1.9.0: 1=1P 2=2P 3=3P
+    review_enabled INTEGER DEFAULT 0,            -- v1.9.0: 0=未开启网阅 1=已开启
     created_by    INTEGER REFERENCES users(id),
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -401,6 +407,12 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     height_px        INTEGER NOT NULL,
     dpi              INTEGER NOT NULL,
     status           TEXT DEFAULT 'ready',
+    reviewer_id      INTEGER REFERENCES users(id),
+    reviewed_at      DATETIME,
+    review_round     INTEGER DEFAULT 1,
+    final_score      REAL,
+    final_score_by   INTEGER REFERENCES users(id),
+    score_breakdown  TEXT,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(source_type, source_record_id, block_id, page_number, segment_index)
 );
@@ -561,6 +573,64 @@ CREATE TABLE IF NOT EXISTS ai_providers (
     updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_ai_providers_user ON ai_providers(user_id, provider_type);
+
+-- ============================================================
+-- v1.9.0 网上阅卷系统重构 — 新增表
+-- ============================================================
+
+-- 阅卷任务分配
+CREATE TABLE IF NOT EXISTS review_assignments (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    exam_id              INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    block_id             TEXT NOT NULL,
+    teacher_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    student_count        INTEGER DEFAULT 0,
+    assigned_student_ids TEXT,
+    created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(exam_id, block_id, teacher_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ra_exam_block ON review_assignments(exam_id, block_id);
+CREATE INDEX IF NOT EXISTS idx_ra_teacher ON review_assignments(teacher_id);
+
+-- 阅卷会话（断点续批）
+CREATE TABLE IF NOT EXISTS review_sessions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    teacher_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    exam_id       INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    block_id      TEXT NOT NULL,
+    current_index INTEGER DEFAULT 0,
+    position_json TEXT,
+    draft_scores  TEXT,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(teacher_id, exam_id, block_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rs_teacher ON review_sessions(teacher_id);
+
+-- 阅卷批注
+CREATE TABLE IF NOT EXISTS review_annotations (
+    id          TEXT PRIMARY KEY,
+    crop_id     TEXT NOT NULL REFERENCES answer_block_crops(id) ON DELETE CASCADE,
+    reviewer_id INTEGER NOT NULL REFERENCES users(id),
+    type        TEXT NOT NULL CHECK(type IN ('text', 'drawing')),
+    data_json   TEXT NOT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_rannot_crop ON review_annotations(crop_id);
+
+-- 逐题块网阅设置
+CREATE TABLE IF NOT EXISTS block_grading_config (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    exam_id            INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    block_id           TEXT NOT NULL,
+    dispute_threshold  REAL DEFAULT 2,
+    rounding           TEXT DEFAULT 'ceil',
+    arbitrator_id      INTEGER REFERENCES users(id),
+    review_mode        INTEGER DEFAULT 1,
+    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(exam_id, block_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bgc_exam ON block_grading_config(exam_id);
 
 CREATE INDEX IF NOT EXISTS idx_users_student_number ON users(student_number);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role_id);

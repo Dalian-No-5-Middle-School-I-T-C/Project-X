@@ -43,6 +43,9 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
   console.log(`[Cleanup] 开始清理 ${retainDays} 天前的数据（截止：${cutoffDate.toLocaleDateString()}）`);
 
   try {
+    // 步骤 1 和 3-5 在事务内执行（纯数据库操作）
+    const filePathsToDelete: string[] = [];
+
     await db.transaction(async (tx) => {
       // 1. 查找过期的扫描记录
       const expiredRecords = await tx.all(
@@ -53,24 +56,14 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
 
       console.log(`[Cleanup] 找到 ${expiredRecords.length} 条过期扫描记录`);
 
-      // 2. 删除原始图片文件
+      // 收集需要删除的文件路径（稍后在事务外删除）
       for (const record of expiredRecords) {
         if (record.file_path) {
-          try {
-            const fullPath = path.isAbsolute(record.file_path)
-              ? record.file_path
-              : path.resolve(process.cwd(), record.file_path);
-            rmSync(fullPath, { force: true });
-            result.filesDeleted++;
-          } catch (error) {
-            const msg = `删除文件失败 ${record.file_path}: ${error instanceof Error ? error.message : String(error)}`;
-            result.errors.push(msg);
-            console.warn(`[Cleanup] ${msg}`);
-          }
+          filePathsToDelete.push(record.file_path);
         }
       }
 
-      // 3. 删除过期的识别结果（先删子表）
+      // 2. 删除过期的识别结果（先删子表）
       const deletedRecognitions = await tx.run(
         `DELETE FROM objective_recognitions
          WHERE record_id IN (
@@ -80,7 +73,7 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
       );
       result.recognitionRecordsDeleted = deletedRecognitions.changes;
 
-      // 4. 清除过期扫描记录的文件路径（保留成绩相关数据）
+      // 3. 清除过期扫描记录的文件路径（保留成绩相关数据）
       const clearedFiles = await tx.run(
         `UPDATE scan_records
          SET file_path = NULL, status = 'expired'
@@ -89,7 +82,7 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
       );
       result.scanRecordsDeleted = clearedFiles.changes;
 
-      // 5. 检查超过90天的归档记录
+      // 4. 检查超过90天的归档记录
       const archivedExpired = await tx.get(
         `SELECT COUNT(*) as cnt FROM exam_archives
          WHERE is_deleted = 0 AND archived_at < ?`,
@@ -100,6 +93,21 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
         console.log(`[Cleanup] 有 ${archivedExpired.cnt} 条归档记录超过保留期，建议手动审查后删除`);
       }
     });
+
+    // 步骤 2: 在事务外删除文件（DB 事务已提交，文件删除失败不影响数据一致性）
+    for (const filePath of filePathsToDelete) {
+      try {
+        const fullPath = path.isAbsolute(filePath)
+          ? filePath
+          : path.resolve(process.cwd(), filePath);
+        rmSync(fullPath, { force: true });
+        result.filesDeleted++;
+      } catch (error) {
+        const msg = `删除文件失败 ${filePath}: ${error instanceof Error ? error.message : String(error)}`;
+        result.errors.push(msg);
+        console.warn(`[Cleanup] ${msg}`);
+      }
+    }
 
     console.log(`[Cleanup] 完成：清除 ${result.scanRecordsDeleted} 条文件记录，${result.recognitionRecordsDeleted} 条识别记录，${result.filesDeleted} 个文件`);
   } catch (error) {

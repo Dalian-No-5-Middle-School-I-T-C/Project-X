@@ -2,7 +2,7 @@ import { UserRepository, type UserRecord } from "../repositories/UserRepository"
 import { verifyPassword, hashPassword, getMysqlDb } from "../db";
 import { permissionsForRole } from "../auth/permissions";
 import { validateUserChosenPassword } from "../auth/passwordPolicy";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,6 +13,8 @@ export interface LoginResult {
   token?: string;
   permissions?: string[];
   message?: string;
+  /** 安全警告（如 admin 仍使用默认密码），前端应弹窗提示 */
+  warning?: string;
 }
 
 export interface ChangePasswordResult {
@@ -31,6 +33,12 @@ const TOKEN_STORE_PATH = join(TOKEN_STORE_DIR, "tokens.json");
 const TOKEN_EXPIRE_MS = 8 * 60 * 60 * 1000; // 8小时
 const PERSISTENT_TOKEN_EXPIRE_MS = 180 * 24 * 60 * 60 * 1000; // 6个月
 
+// P2-1 (M-S3): token 不再明文存储，只存 SHA-256 哈希
+// 验证时对传入 token 哈希后比对，磁盘文件 tokens.json 也只存哈希
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
 export class AuthService {
   private userRepo: UserRepository;
   private tokenStore = new Map<string, TokenRecord>();
@@ -39,6 +47,9 @@ export class AuthService {
   constructor() {
     this.userRepo = new UserRepository();
     this.loadTokens();
+    // L-S5: 每小时自动清理过期 token，避免 tokenStore 无限增长
+    const cleanupTimer = setInterval(() => this.cleanupExpiredTokens(), 60 * 60 * 1000);
+    cleanupTimer.unref();  // 不阻止进程退出
   }
 
   /** 从磁盘加载持久化 tokens */
@@ -122,8 +133,17 @@ export class AuthService {
     // 生成 token
     const token = randomBytes(32).toString("hex");
     const expiresAt = Date.now() + (isPersistent ? PERSISTENT_TOKEN_EXPIRE_MS : TOKEN_EXPIRE_MS);
-    this.tokenStore.set(token, { userId: user.id, expiresAt });
+    this.tokenStore.set(hashToken(token), { userId: user.id, expiresAt });
     this.scheduleSave();
+
+    // 检测 admin 是否仍使用默认密码（H-S7 安全警告）
+    let warning: string | undefined;
+    if (user.username === "admin" && user.password_hash) {
+      const isDefault = await verifyPassword("admin123", user.password_hash);
+      if (isDefault) {
+        warning = "默认管理员密码未修改，请尽快前往账号设置修改密码";
+      }
+    }
 
     // 清除敏感信息
     const { password_hash, ...safeUser } = user;
@@ -133,7 +153,8 @@ export class AuthService {
       user: safeUser,
       token,
       permissions: permissionsForRole(user.role_id),
-      message: "登录成功"
+      message: "登录成功",
+      ...(warning ? { warning } : {})
     };
   }
 
@@ -153,12 +174,13 @@ export class AuthService {
       return { success: false, message: "用户不存在" };
     }
 
-    // 默认管理员首次创建时 password_hash 为占位（学生自动建账场景），允许空原密码
-    if (row.password_hash) {
-      const valid = await verifyPassword(oldPassword, row.password_hash);
-      if (!valid) {
-        return { success: false, message: "原密码错误" };
-      }
+    // 严格校验：空 hash 视为异常状态（正常流程下 admin/学生建账都会设置 hash，空 hash 仅出现在 legacy/手动篡改场景）
+    if (!row.password_hash) {
+      return { success: false, message: "账户密码状态异常，请联系管理员重置" };
+    }
+    const valid = await verifyPassword(oldPassword, row.password_hash);
+    if (!valid) {
+      return { success: false, message: "原密码错误" };
     }
 
     const newHash = await hashPassword(newPassword);
@@ -187,11 +209,11 @@ export class AuthService {
    * 验证 token
    */
   verifyToken(token: string): { userId: number } | null {
-    const record = this.tokenStore.get(token);
+    const record = this.tokenStore.get(hashToken(token));
     if (!record) return null;
 
     if (Date.now() > record.expiresAt) {
-      this.tokenStore.delete(token);
+      this.tokenStore.delete(hashToken(token));
       this.scheduleSave();
       return null;
     }
@@ -217,7 +239,7 @@ export class AuthService {
    * 退出登录
    */
   logout(token: string): void {
-    if (this.tokenStore.delete(token)) {
+    if (this.tokenStore.delete(hashToken(token))) {
       this.scheduleSave();
     }
   }
