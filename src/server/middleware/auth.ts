@@ -4,6 +4,12 @@ import { permissionsForRole, roleHasPermission, type Permission } from "../auth/
 
 export const AUTH_COOKIE_NAME = "projectx_auth_token";
 
+// 与 server/index.ts 的 createApp 保持一致：是否强制鉴权。
+// 关闭时 authMiddleware 退化为 optionalAuth（无 token 也放行），
+// 使“未登录即可使用”的兼容模式在 authMiddleware 保护下的路由上也生效。
+const ENFORCE_AUTH =
+  process.env.PROJECTX_AUTH_ENFORCE === "1" || process.env.PROJECTX_AUTH_ENFORCE === "true";
+
 // 扩展 Express Request 类型
 declare global {
   namespace Express {
@@ -74,6 +80,12 @@ async function attachUser(req: Request, token: string): Promise<boolean> {
 export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = extractToken(req);
   if (!token) {
+    // 未强制鉴权模式下（与 optionalAuth / makeGate 一致）：无 token 也放行，
+    // 保持“未登录即可使用”的兼容；开启强制模式时必须有有效令牌。
+    if (!ENFORCE_AUTH) {
+      next();
+      return;
+    }
     res.status(401).json({ message: "未提供认证令牌" });
     return;
   }

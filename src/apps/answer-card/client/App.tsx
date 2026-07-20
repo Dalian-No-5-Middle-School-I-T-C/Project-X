@@ -1,4 +1,6 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { NavLink, useBlocker, useLocation, useNavigate } from "react-router-dom";
+import { MODE_PATH, pathToMode } from "./modeRoutes";
 import {
   ArrowDown,
   ArrowUp,
@@ -7,6 +9,7 @@ import {
   ClipboardCheck,
   ClipboardList,
   Download,
+  ExternalLink,
   FileDown,
   FolderOpen,
   ImagePlus,
@@ -509,8 +512,23 @@ function App() {
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
-  const [mode, setMode] = useState<AppMode>("home");
+  const [mode, setMode] = useState<AppMode>(pathToMode(window.location.pathname) ?? "home");
+  const navigate = useNavigate();
+  const location = useLocation();
   const modeInitialized = useRef(false);
+  // URL ↔ mode 同步（Phase 2 网页化）：深链/刷新/浏览器前进后退均保持当前页
+  useEffect(() => {
+    const m = pathToMode(location.pathname);
+    if (m) setMode(m);
+  }, [location.pathname]);
+
+  // 阶段 2.5：离开「设计」页且存在未保存更改时，拦截导航并弹确认（需数据路由支持）
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      mode === "design" &&
+      autoSaveState === "dirty" &&
+      currentLocation.pathname !== nextLocation.pathname
+  );
   const showTabBar = (user as any)?.show_tab_bar === 1;
   const [selectedExamId, setSelectedExamId] = useState<number | null>(null);
   const [gradingPanel, setGradingPanel] = useState<{ examId: number; blockId: string } | null>(null);
@@ -718,9 +736,9 @@ function App() {
         setAnalysisTab("select");
         return;
       }
-      // 赞助/使用说明 → 返回上一模式
+      // 赞助/使用说明 → 返回上一模式（同步 URL）
       if (mode === "sponsor" || mode === "guide" || mode === "permissions") {
-        setMode(previousModeRef.current);
+        navigate(MODE_PATH[previousModeRef.current] ?? "/home");
         return;
       }
     }
@@ -1268,6 +1286,7 @@ function App() {
       }
     }
     setMode(nextMode);
+    navigate(MODE_PATH[nextMode]);
     try {
       await afterSwitch?.();
     } catch (err) {
@@ -1664,35 +1683,43 @@ function App() {
           </div>
           <div className="topbar-actions">
             <div className="mode-toggle" role="tablist" aria-label="工作模式" style={showTabBar ? undefined : { display: "none" }}>
-              <button className={mode === "home" ? "active" : ""} onClick={() => void switchMode("home")} type="button">
+              <NavLink to={MODE_PATH.home} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("home"); }} type="button">
                 <Home size={16} /> 首页
-              </button>
+              </NavLink>
               {canDesign && (
-              <button className={mode === "design" ? "active" : ""} onClick={() => void switchMode("design")} type="button">
+              <NavLink to={MODE_PATH.design} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("design"); }} type="button">
                 <SquarePen size={16} /> 设计
-              </button>
+              </NavLink>
               )}
               {canManageExams && (
-              <button className={mode === "exam-manage" ? "active" : ""} onClick={() => void switchMode("exam-manage", async () => { await loadExams(); await loadExamGroups(); })} type="button">
+              <NavLink to={MODE_PATH["exam-manage"]} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("exam-manage", async () => { await loadExams(); await loadExamGroups(); }); }} type="button">
                 <ClipboardList size={16} /> 考试管理
-              </button>
+              </NavLink>
               )}
               {canAnalyze && (
-              <button className={mode === "analysis" ? "active" : ""} onClick={() => void switchMode("analysis", loadExams)} type="button">
+              <NavLink to={MODE_PATH.analysis} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("analysis", loadExams); }} type="button">
                 <BarChart3 size={16} /> 分析
-              </button>
+              </NavLink>
               )}
               {showScoresTab && (
-              <button className={mode === "scores" ? "active" : ""} onClick={() => void switchMode("scores")} type="button">
+              <NavLink to={MODE_PATH.scores} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("scores"); }} type="button">
                 <BarChart3 size={16} /> 我的成绩
-              </button>
+              </NavLink>
               )}
               {canManageAccounts && (
-              <button className={mode === "account" ? "active" : ""} onClick={() => void switchMode("account")} type="button">
+              <NavLink to={MODE_PATH.account} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("account"); }} type="button">
                 <Users size={16} /> 账号
-              </button>
+              </NavLink>
               )}
             </div>
+            <button
+              className="new-window-btn"
+              type="button"
+              title="在新窗口打开当前功能"
+              onClick={() => window.open(window.location.origin + MODE_PATH[mode], "_blank", "noopener")}
+            >
+              <ExternalLink size={16} />
+            </button>
             <button
               className="theme-toggle"
               type="button"
@@ -2295,17 +2322,17 @@ function App() {
         </div>
         <div className={`main-grid sponsor-grid ${mode === "sponsor" ? "" : "hidden-panel"}`}>
           <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-            <SponsorPage onBack={() => setMode(previousModeRef.current)} />
+            <SponsorPage onBack={() => navigate(MODE_PATH[previousModeRef.current] ?? "/home")} />
           </section>
         </div>
         <div className={`main-grid permissions-grid ${mode === "permissions" ? "" : "hidden-panel"}`}>
           <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-            <PermissionManager onBack={() => setMode(previousModeRef.current)} />
+            <PermissionManager onBack={() => navigate(MODE_PATH[previousModeRef.current] ?? "/home")} />
           </section>
         </div>
         <div className={`main-grid guide-grid ${mode === "guide" ? "" : "hidden-panel"}`}>
           <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-            <UserGuidePage onBack={() => setMode(previousModeRef.current)} />
+            <UserGuidePage onBack={() => navigate(MODE_PATH[previousModeRef.current] ?? "/home")} />
           </section>
         </div>
         {gradingPanel && (
@@ -2708,6 +2735,20 @@ function App() {
           groupId={analysisGroupId}
           onClose={() => setShowGroupExport(false)}
         />
+      )}
+      {blocker.state === "blocked" && (
+        <div className="modal-overlay" onClick={() => blocker.reset?.()}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 8px" }}>未保存的更改</h3>
+            <p style={{ margin: "0 0 16px", color: "var(--muted)" }}>
+              答题卡设计页有未保存的修改，离开将丢失。确定离开吗？
+            </p>
+            <div className="modal-footer" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button className="ghost-button" type="button" onClick={() => blocker.reset?.()}>留在此页</button>
+              <button className="primary-button" type="button" onClick={() => blocker.proceed?.()}>离开</button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

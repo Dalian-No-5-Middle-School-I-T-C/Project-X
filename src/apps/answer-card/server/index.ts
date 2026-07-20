@@ -15,6 +15,7 @@ import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
 import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
 import type { AssignedFormula } from "../../../shared/types";
+import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -451,6 +452,27 @@ export async function createApp(): Promise<express.Express> {
   // P0-5 (C-S3): 同步鉴权状态到 middleware 模块，供 requireExamAccess 使用
   setAuthEnforced(enforceAuth);
 
+  // ── Express 5 异步错误处理（防请求挂死）──
+  // Express 5 不再自动捕获 async handler 抛出的异常；这里在注册层
+  // 统一包裹所有 app.get/post/put/delete/patch/use 调用（含已挂载的
+  // Router），使任意未捕获的 rejection 都被转发到全局错误中间件，
+  // 返回 500 JSON 而非让请求永久挂起。
+  {
+    const methods = ["get", "post", "put", "delete", "patch", "use"] as const;
+    for (const m of methods) {
+      const original = (app as any)[m].bind(app);
+      (app as any)[m] = (pathOrHandler: unknown, ...handlers: unknown[]) => {
+        const args = [pathOrHandler, ...handlers].map((h: unknown) => {
+          if (typeof h !== "function") return h; // 路径字符串 / Router 选项等
+          if ((h as any).length === 4) return h; // 错误处理中间件保持原样
+          if ((h as any).stack) return wrapRouter(h as any); // Router 实例 → 递归包裹
+          return asyncHandler(h as any); // 普通处理器 / 中间件
+        });
+        return original(...args);
+      };
+    }
+  }
+
   app.use(express.json({ limit: "8mb" }));
   // P1-2 (M-S1): CORS — 从环境变量读取允许的 origin 白名单，不再使用通配符 *
   const allowedOrigins = (process.env.PROJECTX_CORS_ORIGIN ?? "http://127.0.0.1:5173,http://localhost:5173")
@@ -639,16 +661,6 @@ export async function createApp(): Promise<express.Express> {
           : "数据库配置已保存为本地模式。请重启服务器以使新设置生效。"
       });
     } catch (err: any) { res.status(500).json({ message: err.message }); }
-  });
-
-  // ── 健康检查 ──
-  app.get("/api/app/health", async (_req, res) => {
-    try {
-      const health = await healthCheck();
-      res.json(health);
-    } catch (err) {
-      res.status(500).json({ ok: false, error: String(err) });
-    }
   });
 
   console.log("[Server] v1.6.1 routes mounted");
@@ -1619,6 +1631,52 @@ export async function createApp(): Promise<express.Express> {
     } catch (error) {
       next(error);
     }
+  });
+
+  // ── 赋分公式（P0 修复：此前前端 AssignedFormulaModal 调用后端无对应路由 → 404） ──
+  app.get("/api/exams/:examId/assigned-formula", requireExamAccess, async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isFinite(examId)) {
+        res.status(400).json({ message: "非法考试 ID" });
+        return;
+      }
+      const examRepo = new ExamRepository();
+      const exam = await examRepo.findExamById(examId);
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      const svc = new AssignedScoreService();
+      res.json({
+        formula: await svc.getFormula(examId),
+        isAssignedSubject: exam.subject ? AssignedScoreService.isAssignedSubject(exam.subject) : false,
+        presets: AssignedScoreService.getFormulaPresets()
+      });
+    } catch (err) { next(err); }
+  });
+
+  app.put("/api/exams/:examId/assigned-formula", requireExamAccess, async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isFinite(examId)) {
+        res.status(400).json({ message: "非法考试 ID" });
+        return;
+      }
+      const body = (req.body ?? {}) as { formula?: AssignedFormula; recalculate?: boolean };
+      if (!body.formula || typeof body.formula !== "object") {
+        res.status(400).json({ message: "缺少 formula" });
+        return;
+      }
+      const svc = new AssignedScoreService();
+      await svc.saveFormula(examId, body.formula);
+      let updated: number | undefined;
+      if (body.recalculate) {
+        const result = await svc.recalculateAll(examId);
+        updated = result.updated;
+      }
+      res.json({ ok: true, updated });
+    } catch (err) { next(err); }
   });
 
   app.delete("/api/exams/:examId", requireExamAccess, async (req, res, next) => {

@@ -38,6 +38,17 @@
   --bg-accent: var(--brand-soft);
   --border: var(--line-strong);
 
+  /* ── 语义色令牌（替代散落的 #2E7D32 / #E65100 / #1565C0） ── */
+  --success: #2E7D32;
+  --warning: #E65100;
+  --info: #1565C0;
+
+  /* ── z-index 阶梯（统一令牌，杜绝 99999/999998 魔法数） ── */
+  --z-dropdown: 900;
+  --z-modal: 1000;
+  --z-toast: 1100;
+  --z-lightbox: 1200;
+
   /* ── Mobile Layout Variables ───────────────────────── */
   --mobile-bottom-nav-height: 64px;
   --mobile-safe-area-bottom: env(safe-area-inset-bottom, 0px);
@@ -779,6 +790,140 @@ button {
   border-radius: inherit;
   background: linear-gradient(180deg, rgba(255,255,255,0.2) 0%, transparent 50%);
   pointer-events: none;
+}
+
+/* NavLink 模式（路由版分段器）与 button 共享视觉 */
+.mode-toggle a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 13px;
+  text-decoration: none;
+  transition: background 0.3s, color 0.3s, border-color 0.3s, box-shadow 0.3s;
+  position: relative;
+  overflow: hidden;
+}
+.mode-toggle a:hover {
+  color: var(--text-secondary);
+  background: rgba(0,0,0,0.03);
+}
+.mode-toggle a.active {
+  background: linear-gradient(180deg, var(--brand-light) 0%, var(--brand) 100%);
+  color: #fff;
+  box-shadow: var(--shadow-brand), 0 0 0 1px rgba(0,0,0,0.04);
+  text-shadow: 0 1px 1px rgba(0,0,0,0.1);
+}
+
+/* ── Form Inputs（统一令牌：radius 10 / 高 38 / 令牌边框） ── */
+.text-input,
+.textarea-input {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13.5px;
+  font-family: inherit;
+  padding: 0 12px;
+  height: 38px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.textarea-input {
+  height: auto;
+  padding: 10px 12px;
+  resize: vertical;
+  line-height: 1.5;
+}
+.text-input:focus,
+.textarea-input:focus {
+  outline: 0;
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px var(--brand-glow);
+}
+
+/* ── Spinner / Loading ── */
+.spinner {
+  display: inline-block;
+  border: 3px solid var(--brand-soft);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+.loading-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: var(--background);
+  color: var(--text-secondary);
+  z-index: var(--z-modal);
+}
+.loading-screen p {
+  margin: 0;
+  font-size: 14px;
+}
+.loading-spinner {
+  width: 42px;
+  height: 42px;
+  border: 4px solid var(--brand-soft);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.loading-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+/* ── Small button variant ── */
+.btn-sm {
+  min-height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  border-radius: 8px;
+}
+
+/* ── Card / Data table 基础令牌 ── */
+.card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  padding: 16px;
+  box-shadow: var(--shadow-sm);
+}
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.data-table th,
+.data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+.data-table thead th {
+  color: var(--text-secondary);
+  font-weight: 600;
+  background: var(--surface-raised);
 }
 
 /* ── Main Grid ──────────────────────────────────────── */
@@ -2470,7 +2615,7 @@ input[type="checkbox"]:disabled {
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
+  z-index: var(--z-modal);
 }
 
 .modal-card {
@@ -3357,7 +3502,7 @@ input[type="checkbox"]:disabled {
 .pdf-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 99999;
+  z-index: var(--z-lightbox);
   background: rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(8px) saturate(120%);
   -webkit-backdrop-filter: blur(8px) saturate(120%);
@@ -4729,7 +4874,7 @@ body.has-bg-image::after {
   content: "";
   position: fixed;
   inset: 0;
-  z-index: 999998;
+  z-index: var(--z-lightbox);
   pointer-events: none;
   background: url(/api/app/background) center / cover no-repeat fixed;
   opacity: var(--bg-opacity, 0);
