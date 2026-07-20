@@ -61,6 +61,42 @@ export const UpdateExamSchema = z.object({
 });
 export type UpdateExamInput = z.infer<typeof UpdateExamSchema>;
 
+const FiniteNumberSchema = z.number().finite("参数必须是有限数值");
+
+export const AssignedFormulaSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("proportional"),
+    enabled: z.boolean(),
+    params: z.object({
+      minIn: FiniteNumberSchema.optional(),
+      maxIn: FiniteNumberSchema.optional(),
+      minOut: FiniteNumberSchema.optional(),
+      maxOut: FiniteNumberSchema.optional(),
+    }),
+  }),
+  z.object({
+    type: z.literal("linear"),
+    enabled: z.boolean(),
+    params: z.object({
+      a: FiniteNumberSchema.optional(),
+      b: FiniteNumberSchema.optional(),
+    }),
+  }),
+  z.object({
+    type: z.literal("custom"),
+    enabled: z.boolean(),
+    params: z.object({
+      expression: z.string().max(500, "自定义表达式不能超过 500 个字符").optional(),
+    }),
+  }),
+]);
+
+export const UpdateAssignedFormulaSchema = z.object({
+  formula: AssignedFormulaSchema.nullable(),
+  recalculate: z.boolean().optional().default(false),
+});
+export type UpdateAssignedFormulaInput = z.infer<typeof UpdateAssignedFormulaSchema>;
+
 // ── Cross-exam group schema ──────────────────────────────
 
 export const CreateExamGroupSchema = z.object({
