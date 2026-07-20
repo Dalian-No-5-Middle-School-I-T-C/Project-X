@@ -71,7 +71,13 @@ import {
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
 import { paperRoutes } from "./routes/paper-routes";
-import { CreateCardSchema, CreateExamSchema, UpdateUserSettingsSchema, validateBody } from "./validation";
+import {
+  CreateCardSchema,
+  CreateExamSchema,
+  UpdateAssignedFormulaSchema,
+  UpdateUserSettingsSchema,
+  validateBody
+} from "./validation";
 import { ApiError } from "../../../server/api-error";import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
 
 
@@ -1489,6 +1495,73 @@ export async function createApp(): Promise<express.Express> {
       next(error);
     }
   });
+
+  app.get("/api/exams/:examId/assigned-formula", requireExamAccess, async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "examId 必须为正整数" });
+        return;
+      }
+
+      const examRepo = new ExamRepository();
+      const exam = await examRepo.findExamById(examId);
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+
+      const assignedScoreService = new AssignedScoreService();
+      res.json({
+        formula: await assignedScoreService.getFormula(examId),
+        isAssignedSubject: AssignedScoreService.isAssignedSubject(exam.subject ?? ""),
+        presets: AssignedScoreService.getFormulaPresets()
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  app.put(
+    "/api/exams/:examId/assigned-formula",
+    requireExamAccess,
+    validateBody(UpdateAssignedFormulaSchema),
+    async (req, res, next) => {
+      try {
+        const examId = Number(req.params.examId);
+        if (!Number.isInteger(examId) || examId <= 0) {
+          res.status(400).json({ message: "examId 必须为正整数" });
+          return;
+        }
+
+        const examRepo = new ExamRepository();
+        if (!(await examRepo.findExamById(examId))) {
+          res.status(404).json({ message: "考试不存在" });
+          return;
+        }
+
+        const { formula, recalculate } = req.body as {
+          formula: AssignedFormula | null;
+          recalculate: boolean;
+        };
+        const assignedScoreService = new AssignedScoreService();
+
+        if (!formula?.enabled) {
+          await assignedScoreService.disableFormula(examId);
+          res.json({ ok: true, updated: 0, skipped: 0 });
+          return;
+        }
+
+        await assignedScoreService.saveFormula(examId, formula);
+        const result = recalculate
+          ? await assignedScoreService.recalculateAll(examId)
+          : { updated: 0, skipped: 0 };
+        res.json({ ok: true, ...result });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
 
   app.get("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
     try {
