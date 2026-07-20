@@ -70,6 +70,8 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
     const error = new Error(message) as Error & { status?: number };
     error.status = response.status;
     if (body) Object.assign(error, body);
+    // P1-3: 全局记录 API 错误，即使调用方 .catch(() => {}) 也不会完全吞掉
+    console.warn(`[API] ${options?.method ?? "GET"} ${url} 失败 (${response.status}): ${message}`);
     if (response.status === 401 && !url.includes("/api/auth/login")) {
       notifyUnauthorized();
     }
@@ -99,4 +101,15 @@ export function urlWithToken(url: string): string {
   if (!token) return resolved;
   const sep = resolved.includes("?") ? "&" : "?";
   return `${resolved}${sep}token=${encodeURIComponent(token)}`;
+}
+
+/** P1-14: 媒体资源URL（图片、PDF iframe等）。
+ *  同源请求依靠 httpOnly cookie 认证，不暴露 token 在 URL 中；
+ *  跨源请求（远端 API 模式）才追加 ?token=。 */
+export function mediaUrl(url: string): string {
+  const base = getApiBase();
+  // 同源：cookies 自动发送，不需要 token
+  if (!base) return apiUrl(url);
+  // 跨源：需要 token query param
+  return urlWithToken(url);
 }

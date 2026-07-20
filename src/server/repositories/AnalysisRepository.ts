@@ -317,10 +317,11 @@ export class AnalysisRepository {
     let filtered = gradeRanked;
     if (classId === 0) filtered = gradeRanked.filter((s: any) => s.class_id == null);
     else if (classId !== undefined) filtered = gradeRanked.filter((s: any) => s.class_id === classId);
-    const scores = filtered.map((s: any) => s.total_score);
-    const mean = scores.reduce((a: number, b: number) => a + b, 0) / scores.length;
-    const variance = scores.reduce((a: number, b: number) => a + (b - mean) ** 2, 0) / scores.length;
-    const std = Math.sqrt(variance);
+    // P1-6: 偏差值/Z值的均值与标准差应基于全体考生，而非筛选后的班级
+    const allScores = gradeRanked.map((s: any) => s.total_score);
+    const populationMean = allScores.reduce((a: number, b: number) => a + b, 0) / allScores.length;
+    const populationVariance = allScores.reduce((a: number, b: number) => a + (b - populationMean) ** 2, 0) / allScores.length;
+    const populationStd = Math.sqrt(populationVariance);
     const prevExam = await this.findPreviousExam(examId);
     let prevRankMap = new Map<number, number>();
     if (prevExam) {
@@ -331,8 +332,8 @@ export class AnalysisRepository {
       const prevRank = prevRankMap.get(s.student_id) ?? null;
       const rankChange = prevRank != null ? prevRank - s.gradeRank : null;
       let dv: number | null = null;
-      if (displayMode === "deviation") dv = std > 0 ? Math.round((50 + 10 * (s.total_score - mean) / std) * 10) / 10 : 50;
-      else if (displayMode === "zscore") dv = std > 0 ? Math.round(((s.total_score - mean) / std) * 100) / 100 : 0;
+      if (displayMode === "deviation") dv = populationStd > 0 ? Math.round((50 + 10 * (s.total_score - populationMean) / populationStd) * 10) / 10 : 50;
+      else if (displayMode === "zscore") dv = populationStd > 0 ? Math.round(((s.total_score - populationMean) / populationStd) * 100) / 100 : 0;
       else if (displayMode === "percentile") dv = rankPercentile(s.gradeRank, allStudents.length);
       return { studentId: s.student_id, studentNumber: s.student_number, studentName: s.name, className: s.class_name ?? "未知班级", classId: s.class_id, gradeName: s.grade_name ?? null, totalScore: s.total_score, assignedScore: s.assigned_score, gradeRank: s.gradeRank, classRank: s.classRank ?? 0, rankChange, prevRank, prevExamName: prevExam?.name ?? null, displayValue: dv, objectiveScore: s.objective_score, subjectiveScore: s.subjective_score };
     });
