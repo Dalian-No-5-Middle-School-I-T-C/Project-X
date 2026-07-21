@@ -1,46 +1,13 @@
-// DesignPage — 阶段 2.3 从 App.tsx 抽出的「答题卡设计」页面。
-// 仅承载原 design grid 的 JSX 与本地派生状态（selectedBlock）；
-// 编辑器组件（CardPreview/ObjectiveEditor/SubjectiveEditor）与全部处理函数由 App 通过 props 传入，
-// 函数引用原样传递，行为与原内联实现完全一致。
-import type { ComponentType } from "react";
+// DesignPage — 从 App.tsx 抽出的「答题卡设计」页面（B2：改由 useWorkspace 消费共享状态）。
+// 编辑器组件（CardPreview/ObjectiveEditor/SubjectiveEditor）直接由 DesignEditors 导入；
+// 不再由 App 透传 props，行为与抽离前完全一致。
 import { SquarePen, ListPlus, ArrowUp, ArrowDown, Plus, Trash2 } from "lucide-react";
-import type {
-  AnswerCard,
-  LayoutDocument,
-  BodyBlock,
-  ObjectiveBlock,
-  SubjectiveBlock
-} from "../../../../shared/types";
+import { useWorkspace } from "../WorkspaceContext";
+import { CardPreview, ObjectiveEditor, SubjectiveEditor } from "./DesignEditors";
 
-export interface DesignPageProps {
-  active: boolean;
-  card: AnswerCard | null;
-  layout: LayoutDocument | null;
-  selectedBlockId: string | null;
-  setSelectedBlockId: (id: string | null) => void;
-  updateCard: (mutator: (draft: AnswerCard) => void) => void;
-  updateBlock: (blockId: string, mutator: (block: BodyBlock) => void) => void;
-  moveBlock: (blockId: string, direction: -1 | 1) => void;
-  removeBlock: (blockId: string) => void;
-  addObjectiveBlock: (afterIndex?: number) => void;
-  addSubjectiveBlock: () => void;
-  addBlankBlock: () => void;
-  addEssayBlock: () => void;
-  uploadImage: (blockId: string, questionId: string, file: File) => Promise<void>;
-  subjectiveBlockKindLabel: (block: SubjectiveBlock) => string;
-  CardPreview: ComponentType<{ card: AnswerCard; layout: LayoutDocument }>;
-  ObjectiveEditor: ComponentType<{ block: ObjectiveBlock; onChange: (mutator: (block: BodyBlock) => void) => void }>;
-  SubjectiveEditor: ComponentType<{
-    block: SubjectiveBlock;
-    layoutVersion: 1 | 2;
-    onChange: (mutator: (block: BodyBlock) => void) => void;
-    onUpload: (blockId: string, questionId: string, file: File) => Promise<void>;
-  }>;
-}
-
-export function DesignPage(props: DesignPageProps) {
+export function DesignPage() {
   const {
-    active,
+    mode,
     card,
     layout,
     selectedBlockId,
@@ -55,11 +22,9 @@ export function DesignPage(props: DesignPageProps) {
     addEssayBlock,
     uploadImage,
     subjectiveBlockKindLabel,
-    CardPreview,
-    ObjectiveEditor,
-    SubjectiveEditor
-  } = props;
+  } = useWorkspace();
 
+  const active = mode === "design";
   const selectedBlock = card ? (card.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null) : null;
 
   return (

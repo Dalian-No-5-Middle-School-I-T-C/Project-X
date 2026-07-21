@@ -11,7 +11,7 @@
 - **鉴权语义不统一（P1）**：`authMiddleware` 现读 `PROJECTX_AUTH_ENFORCE`（与 `makeGate` 一致）；默认开启，关闭且无 token 时放行（保留「无登录可用」兼容），开启时要求有效令牌。
 - **其他小修**：删除 `index.ts` 重复的 `/api/app/health`（保留一处并加 try/catch）；`backup.ts` 的 `VACUUM INTO '[object Object]'` 增加单引号转义（防 Windows 用户名含单引号导致的语法错误/注入）；`score-editing.ts` 对 `scores` 数组元素与 answers 题号键做校验（非法即 400）。
 
-### 阶段 1：前端风格统一（设计令牌 + 组件库 + 硬编码色收敛）
+### 阶段 1：前端统一（设计令牌 + 组件库 + 硬编码色收敛）
 
 > 审计发现：存在完整设计系统（`styles.css` 6601 行 / 829 个类 + 暗色主题），但 84% 组件在写内联 `style`（1015 处内联 / 206 处硬编码色），同一语义多种硬编码色（成功绿 `#2E7D32`×15 等）。根因是「基类已写好、后续开发全 inline」。本阶段以「回流」为主。
 
@@ -26,6 +26,12 @@
 - **启动台模式（每功能新开界面）**：首页所有模块卡（设计 / 考试管理 / 分析 / 账号）改为 `onOpenNewTab`，点击在**新前台标签**打开该功能 URL，首页保留为常驻启动台；子页面「← 返回首页」按钮仅在关闭顶栏导航（紧凑模式 `!showTabBar`）时显示，避免与顶栏「首页」NavLink 重复；删除冗余的顶栏「在新窗口打开当前功能」按钮。
 - **未保存离开确认**：`useBlocker` 拦截离开 `/design` 时的未保存改动，弹确认 Modal。
 - **页面组件抽取（props 透传范式，零行为风险）**：`pages/DesignPage.tsx`（答题卡设计）、`pages/ExamManagePage.tsx`（考试管理）、`pages/GradingPage.tsx`（阅卷面板，原 `grading-grid` 为常驻隐藏的状态容器，实际阅卷 UI 由 `GradePanel` 弹层承载）从 `App.tsx` 巨石抽出；`WorkspaceContext.tsx` 声明 `WorkspaceValue` 类型骨架（含 `addEssayBlock`），为后续 `useWorkspace()` 全量接线铺路；三个编辑器（`CardPreview` / `ObjectiveEditor` / `SubjectiveEditor`）与全部 handler 以 props 原样传入，函数引用不变 → 交互行为完全一致。
+
+### 阶段 2 续：领域模型抽取 + 状态外置 + 真实路由化（tsc + web 构建均 EXIT 0）
+
+- **领域模型抽取（B1，解环瘦身）**：把设计器相关的纯函数从 `App.tsx` 收编到 `client/cardModel.ts`（`modeLabels` / `optionLayoutLabels` / `styleLabels` / `kindLabels` / `blankLabelStyleLabels` / `subjectiveBlockKind` / `subjectiveBlockKindLabel` / `answerBlankItems` / `cloneCard` / `answerText` / `defaultObjective` / `defaultSubjective` / `defaultBlankBlock` / `defaultEssayBlock` / `defaultAnswerBlankQuestion` / `answerLineCount` / `heightForAnswerLines` / `numericQuestionValue` / `findNextQuestionNumber` / `defaultBlankQuestion` 等 20+ helper，以及 `PreviewMode` / `PREVIEW_SETTINGS_KEY` / `PREVIEW_MIN_PERCENT` / `PREVIEW_MAX_PERCENT` 预览设置常量）；把三个编辑器及其 SVG 预览从 `App.tsx` 抽到 `client/pages/DesignEditors.tsx`（`ObjectiveEditor` / `SubjectiveEditor` / `CardPreview` / `StudentAreaSvg` / `ObjectiveSvg` / `SubjectiveSvg`）。`App.tsx` 体积由 ~3700 行降为 ~2290 行，仅保留状态与 handlers。
+- **状态外置（B2，全量接线 WorkspaceProvider）**：`WorkspaceContext.tsx` 的 `WorkspaceValue` 由骨架升级为完整值对象（~119 字段，含 `selectedExamId` / `setSelectedExamId` / `onStartReview`，`subjectiveBlockKindLabel` 收敛为 `(SubjectiveBlock) => string`，`PdfWarningState.validation` 对齐为 `CardScoreValidationResult`），`App.tsx` 用 `<WorkspaceProvider value={workspace}>` 包裹整个 `<main>` 壳层；`pages/DesignPage.tsx` / `pages/ExamManagePage.tsx` 改为 `useWorkspace()` 消费共享状态（`teacherId` / `teacherRole` / `userRole` 由 `user` 派生），去掉逐层 props 透传；`DesignPage` 直接从 `./DesignEditors` 导入编辑器，`App.tsx` 删除对 DesignEditors 的失效 import。`GradingPage` 按计划仍保留 props 范式（未切 `useWorkspace()`）。
+- **真实路由化（C，阶段 2 收官）**：`App.tsx` 由「`mode` 状态 + CSS `hidden-panel` 全挂载切换」改为由 URL 真实驱动渲染——`<Routes>` 路由表：`/home`(默认) 、`/design/*` 、`/exam-manage` 、`/grading` 、`/analysis` 、`/scores` 、`/account` 、`/sponsor` 、`/permissions` 、`/guide` ，`*` → `<Navigate to="/home" />` ；`gradingPanel` 浮层与 statusbar 保持在 `<Routes>` 之外。`mode` 状态早已由登录初始化 effect 与 URL 实时同步，顶栏标题 / `showCardSidebar` / `useBlocker` 等全部自动正确（拆而不改行为）。回归点修复：账号菜单 `onOpenGuide` / `onOpenPermissions` 原先只 `setMode` 不 `navigate`，路由化后 URL 不变会导致页面不切换，已改为先 `previousModeRef.current = mode` 再 `switchMode(x)`，与 `onOpenSponsor` 一致。
 
 ### 新增依赖
 `react-router-dom` v7、`express-rate-limit`（登录限速，阶段 0 已用）。
@@ -43,17 +49,35 @@
 | `src/apps/answer-card/client/components/ui/*` | 1 | Button/Modal/SegmentedControl/Input/Panel/Table/Spinner/LoadingScreen |
 | `src/apps/answer-card/client/main.tsx` | 2 | createBrowserRouter |
 | `src/apps/answer-card/client/modeRoutes.ts` | 2 | 新增路由映射 |
-| `src/apps/answer-card/client/App.tsx` | 2 | URL 驱动 + NavLink + 抽 DesignPage/ExamManagePage/GradingPage |
-| `src/apps/answer-card/client/pages/DesignPage.tsx` / `ExamManagePage.tsx` / `GradingPage.tsx` | 2 | 新增页面组件 |
-| `src/apps/answer-card/client/WorkspaceContext.tsx` | 2 | WorkspaceValue 骨架 |
+| `src/apps/answer-card/client/App.tsx` | 2 / 2续 | URL 驱动 + NavLink + 抽 DesignPage/ExamManagePage/GradingPage；2续：cardModel 导入 + WorkspaceProvider 包裹 + 真实 `<Routes>` + guide/permissions 导航修复 |
+| `src/apps/answer-card/client/cardModel.ts` | 2续(B1) | 新增：收编 20+ 设计 helper + PreviewMode/PREVIEW_* 预览常量 |
+| `src/apps/answer-card/client/pages/DesignEditors.tsx` | 2续(B1) | 新增：ObjectiveEditor/SubjectiveEditor/CardPreview/StudentAreaSvg/ObjectiveSvg/SubjectiveSvg |
+| `src/apps/answer-card/client/pages/DesignPage.tsx` / `ExamManagePage.tsx` | 2 / 2续(B2) | 新增页面组件；2续：改 `useWorkspace()` 消费，去掉 props 透传 |
+| `src/apps/answer-card/client/pages/GradingPage.tsx` | 2 | 新增页面组件（props 范式，未切 useWorkspace） |
+| `src/apps/answer-card/client/WorkspaceContext.tsx` | 2 / 2续(B2) | WorkspaceValue 骨架 → 完整值对象（~119 字段） |
 | `src/apps/answer-card/client/components/HomePage.tsx` | 2 | 模块卡全部单开新标签 |
+| `src/apps/answer-card/server/validation.ts` | 3 | `UpdateUserSettingsSchema` 补 requireOriginalPaper/highlightMissingPaper/showTabBar |
+| `readus/ARCHITECTURE.md` | 3 | 前端架构重写（路由化/页面抽取/设计令牌/UI 组件库）+ v1.9.2 摘要 |
+| `readus/DATABASE.md` | 3 | 版本号 v1.9.0 → v1.9.2 |
+| `readus/KNOWN-ISSUES.md` | 3 | 审查版本号 + 最后更新日期 |
+| `README.md` | 3 | CHANGELOG 描述更新 |
 
 ### 验证
-- `npx tsc --noEmit` → EXIT 0
-- `npx vite build --mode web` → 1919 模块通过
-- SPA 深链：`/` `/design` `/exam-manage` `/analysis` `/scores` `/account` 均 HTTP 200 且含 `<div id="root">`
+- `npx tsc --noEmit` → EXIT 0（阶段 3 修复后仍通过）
+- `npx vite build --mode web` → 1919 模块通过（阶段 3 修复后仍通过）
+- SPA 深链（vite preview 实测）：`/` `/design` `/exam-manage` `/analysis` `/scores` `/account` `/sponsor` `/guide` `/permissions` 及未知路径 `/totally-unknown` 均 HTTP 200（SPA fallback 正常），`<Routes>` 由 URL 真实驱动渲染。
+- B1/B2/C 收尾验证：`npx tsc --noEmit` 与 `npx vite build --mode web` 在 cardModel/DesignEditors 抽取、WorkspaceProvider 全量接线、真实 `<Routes>` 路由化后均 EXIT 0（`/api/app/background` 构建期未解析为良性提示，chunk >500kB 为既有告警，均非错误）。
 - 阶段 0 四项修复经 `.workbuddy/plans/SMOKE-2026-07-20.md` 运行时验证通过（赋分公式复活、async→500、鉴权统一、score-editing 校验）
-- ⚠️ 无浏览器运行时 QA：抽取页（设计 / 考试管理 / 阅卷）需本地 `npm run dev` 实点冒烟（设计页新建/插题块/上移下移/保存/PDF/作文块；考试管理新建/单科⇄大考/网阅/赋分/删除）。
+- 阶段 3 经全量代码审查：Grep 确认 assigned-formula 路由无重复、settings schema 字段与前端的 payload 对齐、文档版本号全部同步
+- ⚠️ 无浏览器运行时 QA：抽取页（设计 / 考试管理 / 阅卷）需本地 `npm run dev` 实点冒烟。
+
+### 阶段 3：发布后验证修复（2026-07-21 下午）
+
+以上三阶段完成后经全量代码审查 + `tsc --noEmit` + `vite build --mode web` 验证，发现并修复 3 项回归问题：
+
+- **🔴 assigned-formula 路由双重注册（P0，合并冲突残留）**：`index.ts` 中 `GET/PUT /api/exams/:examId/assigned-formula` 各出现两次（1554+1637、1581+1659），第二组为死代码（Express 只匹配第一组）。根因为合并时两版实现均被保留。已删除 1636–1680 行重复块，保留第一组。
+- **🔴 保存用户设置静默失败（P0，Zod schema 滞后）**：`validation.ts` 的 `UpdateUserSettingsSchema` 仅定义 4 字段（scoreDisplayMode / reviewConfidenceThreshold / aiApiKey / backgroundOpacity），但前端 `AccountMenu.saveSettings()` 发送 6 字段（多了 requireOriginalPaper / highlightMissingPaper / showTabBar）。Zod `z.object()` 默认**静默剥离未知键**，`validateBody` 又以 `req.body = result.data` 覆盖原始 body → PATCH handler 收到的 req.body 缺失后三字段 → UPDATE 跳过 → 设置从未写入数据库、前端却显示"已保存"。根因为火箭在 7/4（加 requireOriginalPaper+highlightMissingPaper）和 7/19（加 showTabBar）两次往前端扩展字段时均忘记同步更新 schema。已补全 `requireOriginalPaper` / `highlightMissingPaper` / `showTabBar`（`z.coerce.boolean().optional()`）。
+- **🟡 架构/数据库/已知问题文档版本滞后（P1/P2）**：`ARCHITECTURE.md` 仅描述到 v1.9.0，缺失路由化/页面抽取/设计令牌/UI 组件库等 v1.9.2 关键变更；`DATABASE.md` 与 `KNOWN-ISSUES.md` 版本标记停留在 v1.9.0；`README.md` CHANGELOG 描述仍写"v1.9.0 网上阅卷重构"。已全部同步更新到 v1.9.2，`ARCHITECTURE.md` 前端架构章节重写。
 
 ---
 

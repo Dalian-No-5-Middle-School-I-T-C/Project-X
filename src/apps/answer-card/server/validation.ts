@@ -117,6 +117,9 @@ export const UpdateUserSettingsSchema = z.object({
   reviewConfidenceThreshold: z.number().min(0).max(1).optional(),
   aiApiKey: z.string().nullable().optional(),
   backgroundOpacity: z.number().min(0).max(1).optional(),
+  requireOriginalPaper: z.coerce.boolean().optional(),
+  highlightMissingPaper: z.coerce.boolean().optional(),
+  showTabBar: z.coerce.boolean().optional(),
 });
 export type UpdateUserSettingsInput = z.infer<typeof UpdateUserSettingsSchema>;
 

@@ -1,82 +1,49 @@
-// ExamManagePage — 从 App.tsx 抽出的「考试管理」页面（props 透传范式，行为不变）。
-// 与 DesignPage 保持一致：所有状态/handler 由 App 通过 props 传入，组件本身不持有状态。
-import React from "react";
-import type { Dispatch, SetStateAction } from "react";
+// ExamManagePage — 从 App.tsx 抽出的「考试管理」页面（B2：改由 useWorkspace 消费共享状态）。
+// 不再由 App 透传 props，行为与抽离前完全一致。
 import { Plus, Trash2, Layers } from "lucide-react";
 import { fetchJson } from "../auth/api";
-import type { AnswerCard, CardSummary, ExamRecord } from "../../../../shared/types";
-import type { AppMode, ExamDeleteTarget, ExamGroupSummary, GroupDeleteTarget } from "../WorkspaceContext";
+import { useWorkspace } from "../WorkspaceContext";
 import { ExamDetailPage } from "../components/ExamDetailPage";
 
-interface Props {
-  active: boolean;
-  selectedExamId: number | null;
-  setSelectedExamId: Dispatch<SetStateAction<number | null>>;
-  examManageMode: "single" | "group";
-  setExamManageMode: Dispatch<SetStateAction<"single" | "group">>;
-  showCreateExam: boolean;
-  setShowCreateExam: Dispatch<SetStateAction<boolean>>;
-  showCreateGroup: boolean;
-  setShowCreateGroup: Dispatch<SetStateAction<boolean>>;
-  selectedExamIds: Set<number>;
-  setSelectedExamIds: Dispatch<SetStateAction<Set<number>>>;
-  newExamName: string;
-  setNewExamName: Dispatch<SetStateAction<string>>;
-  newExamSubject: string;
-  setNewExamSubject: Dispatch<SetStateAction<string>>;
-  newExamCardId: string;
-  setNewExamCardId: Dispatch<SetStateAction<string>>;
-  exams: ExamRecord[];
-  examGroups: ExamGroupSummary[];
-  loadExams: () => Promise<void>;
-  loadExamGroups: () => Promise<void>;
-  setExamDeleteTarget: Dispatch<SetStateAction<ExamDeleteTarget | null>>;
-  setGroupDeleteTarget: Dispatch<SetStateAction<GroupDeleteTarget | null>>;
-  setAssignedFormulaExamId: Dispatch<SetStateAction<number | null>>;
-  cards: CardSummary[];
-  card: AnswerCard | null;
-  setStatus: Dispatch<SetStateAction<string>>;
-  switchMode: (nextMode: AppMode, afterSwitch?: () => void | Promise<void>) => void;
-  teacherId: number;
-  teacherRole: string | null;
-  userRole: string;
-  onStartReview: (examId: number, blockId: string) => void;
-}
+export function ExamManagePage() {
+  const {
+    user,
+    mode,
+    selectedExamId,
+    setSelectedExamId,
+    examManageMode,
+    setExamManageMode,
+    showCreateExam,
+    setShowCreateExam,
+    showCreateGroup,
+    setShowCreateGroup,
+    selectedExamIds,
+    setSelectedExamIds,
+    newExamName,
+    setNewExamName,
+    newExamSubject,
+    setNewExamSubject,
+    newExamCardId,
+    setNewExamCardId,
+    exams,
+    examGroups,
+    loadExams,
+    loadExamGroups,
+    setExamDeleteTarget,
+    setGroupDeleteTarget,
+    setAssignedFormulaExamId,
+    cards,
+    card,
+    setStatus,
+    switchMode,
+    onStartReview,
+  } = useWorkspace();
 
-export function ExamManagePage({
-  active,
-  selectedExamId,
-  setSelectedExamId,
-  examManageMode,
-  setExamManageMode,
-  showCreateExam,
-  setShowCreateExam,
-  showCreateGroup,
-  setShowCreateGroup,
-  selectedExamIds,
-  setSelectedExamIds,
-  newExamName,
-  setNewExamName,
-  newExamSubject,
-  setNewExamSubject,
-  newExamCardId,
-  setNewExamCardId,
-  exams,
-  examGroups,
-  loadExams,
-  loadExamGroups,
-  setExamDeleteTarget,
-  setGroupDeleteTarget,
-  setAssignedFormulaExamId,
-  cards,
-  card,
-  setStatus,
-  switchMode,
-  teacherId,
-  teacherRole,
-  userRole,
-  onStartReview,
-}: Props) {
+  const active = mode === "exam-manage";
+  const teacherId = user?.id ?? 0;
+  const teacherRole = user?.teacher_role ?? null;
+  const userRole = user?.role_name ?? "";
+
   return (
     <div className={`main-grid exam-manage-grid ${active ? "" : "hidden-panel"}`}>
       {selectedExamId ? (

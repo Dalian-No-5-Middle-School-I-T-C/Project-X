@@ -13,8 +13,10 @@ import type {
   QuestionAnalysisItem,
   StudentRankingItem,
   LayoutDocument,
-  BodyBlock
+  BodyBlock,
+  SubjectiveBlock
 } from "../../../shared/types";
+import type { CardScoreValidationResult } from "../../../shared/cardScoreValidation";
 import type { ProjectXAppMode, ProjectXVariantConfig } from "../../../shared/appVariant";
 import type { useAuth } from "./auth/AuthContext";
 import type { NewCardFormData } from "./components/NewCardModal";
@@ -55,7 +57,7 @@ export type GroupDeleteTarget = {
 };
 
 export type PdfWarningState = {
-  validation: unknown;
+  validation: CardScoreValidationResult;
   pdfUrl: string;
   step: "score" | "paper" | "knowledge";
   paperInfo?: { hasPaper: boolean; filename?: string; mimeType?: string };
@@ -99,7 +101,7 @@ export type WorkspaceValue = {
   addBlankBlock: () => void;
   addEssayBlock: () => void;
   uploadImage: (blockId: string, questionId: string, file: File) => Promise<void>;
-  subjectiveBlockKindLabel: (block: BodyBlock) => string;
+  subjectiveBlockKindLabel: (block: SubjectiveBlock) => string;
   loadCard: (id: string) => Promise<void>;
   createCard: (formData: NewCardFormData) => Promise<void>;
   saveCard: () => Promise<void>;
@@ -150,6 +152,8 @@ export type WorkspaceValue = {
   setShowCreateGroup: Dispatch<SetStateAction<boolean>>;
   selectedExamIds: Set<number>;
   setSelectedExamIds: Dispatch<SetStateAction<Set<number>>>;
+  selectedExamId: number | null;
+  setSelectedExamId: Dispatch<SetStateAction<number | null>>;
   newExamName: string;
   setNewExamName: Dispatch<SetStateAction<string>>;
   newExamSubject: string;
@@ -162,6 +166,8 @@ export type WorkspaceValue = {
   setExamDeleteTarget: Dispatch<SetStateAction<ExamDeleteTarget | null>>;
   setGroupDeleteTarget: Dispatch<SetStateAction<GroupDeleteTarget | null>>;
   setAssignedFormulaExamId: Dispatch<SetStateAction<number | null>>;
+  /** 从考试详情启动阅卷弹层 */
+  onStartReview: (examId: number, blockId: string) => void;
 
   // ── 成绩分析 ──
   analysisTab: "select" | "view" | "trend" | "detail";
