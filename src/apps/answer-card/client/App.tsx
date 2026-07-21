@@ -1,5 +1,8 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { NavLink, useBlocker, useLocation, useNavigate } from "react-router-dom";
+import { DesignPage } from "./pages/DesignPage";
+import { ExamManagePage } from "./pages/ExamManagePage";
+import { GradingPage } from "./pages/GradingPage";
 import { MODE_PATH, pathToMode } from "./modeRoutes";
 import {
   ArrowDown,
@@ -9,7 +12,6 @@ import {
   ClipboardCheck,
   ClipboardList,
   Download,
-  ExternalLink,
   FileDown,
   FolderOpen,
   ImagePlus,
@@ -655,8 +657,13 @@ function App() {
   }, [card]);
 
   useEffect(() => {
-    if (user && !modeInitialized.current) { modeInitialized.current = true;
-      setMode(defaultModeForUser(hasPermission, appVariant)); }
+    if (user && !modeInitialized.current) {
+      modeInitialized.current = true;
+      // 尊重深链/新标签带来的 URL：地址栏已是某功能路径则用之，否则回退默认首页。
+      // 否则点“答题卡设计”打开的 /design 新标签会被强行改回 home（已修复的 BUG）。
+      const fromUrl = pathToMode(window.location.pathname);
+      setMode(fromUrl ?? defaultModeForUser(hasPermission, appVariant));
+    }
   }, [user?.id, hasPermission, appVariant]);
 
   useEffect(() => {
@@ -1713,14 +1720,6 @@ function App() {
               )}
             </div>
             <button
-              className="new-window-btn"
-              type="button"
-              title="在新窗口打开当前功能"
-              onClick={() => window.open(window.location.origin + MODE_PATH[mode], "_blank", "noopener")}
-            >
-              <ExternalLink size={16} />
-            </button>
-            <button
               className="theme-toggle"
               type="button"
               onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
@@ -1769,515 +1768,88 @@ function App() {
           <section style={{ gridColumn: "1 / -1", padding: 0 }}>
             <HomePage userName={user?.name ?? ""} userRole={user?.role_name ?? ""} teacherRole={user?.teacher_role ?? null}
               onNavigate={(m) => switchMode(m as AppMode)}
+              onOpenNewTab={(m) => {
+                const path = MODE_PATH[m as AppMode] ?? "/design";
+                window.open(window.location.origin + path, "_blank", "noopener");
+              }}
               onEnterExam={(id) => { switchMode("exam-manage"); setSelectedExamId(id); }} />
           </section>
         </div>
 
-        <div className={`main-grid ${mode === "design" ? "" : "hidden-panel"}`}>
-          <section className="preview-panel">
-            {card && layout ? <CardPreview card={card} layout={layout} /> : <div className="blank-preview">选择或新建答题卡</div>}
-          </section>
-
-          <aside className="inspector">
-            {card ? (
-              <>
-                <section className="panel">
-                  <div className="panel-title">
-                    <SquarePen size={17} /> 基本信息
-                  </div>
-                  <label>
-                    标题
-                    <input value={card.title} onChange={(event) => updateCard((draft) => void (draft.title = event.target.value))} />
-                  </label>
-                  {card.subjectLabel && (
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", fontSize: 13, color: "var(--text-secondary)" }}>
-                      <span>科目</span>
-                      <span style={{ fontWeight: 600, color: "var(--text)" }}>{card.subjectLabel}</span>
-                    </div>
-                  )}
-                  {card.examDate && (
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", fontSize: 13, color: "var(--text-secondary)" }}>
-                      <span>考试时间</span>
-                      <span style={{ fontWeight: 600, color: "var(--text)" }}>{card.examDate}</span>
-                    </div>
-                  )}
-                  <label>
-                    答题卡纸型
-                    <select
-                      value={card.paper?.size ?? "A4"}
-                      onChange={(event) =>
-                        updateCard((draft) => {
-                          const size = event.target.value as "A4" | "A3";
-                          draft.paper = { size, orientation: size === "A3" ? "landscape" : "portrait" };
-                        })
-                      }
-                    >
-                      <option value="A4">A4 纵向</option>
-                      <option value="A3">A3 横向三版</option>
-                    </select>
-                  </label>
-                  {card.layoutVersion !== 2 && (
-                    <div className="layout-version-banner" role="note">
-                      <strong>当前使用 V1 兼容排版</strong>
-                      <span>旧打印件仍按原分数格坐标识别。升级后将使用紧凑分数区和更大的作答空间。</span>
-                      <button
-                        className="ghost-button"
-                        type="button"
-                        onClick={() => {
-                          if (!confirm("升级到 V2 后，已经打印的旧答题卡不能再按此卡片的新坐标识别。确认升级并立即重排吗？")) return;
-                          updateCard((draft) => void (draft.layoutVersion = 2));
-                        }}
-                      >
-                        升级到紧凑排版 V2
-                      </button>
-                    </div>
-                  )}
-                  <label>
-                    学号位数
-                    <input
-                      type="number"
-                      min={1}
-                      max={12}
-                      value={card.studentInfo.studentNumberDigits}
-                      onChange={(event) =>
-                        updateCard((draft) => void (draft.studentInfo.studentNumberDigits = Number(event.target.value)))
-                      }
-                    />
-                  </label>
-                  <label>
-                    答题卡面
-                    <select
-                      value={card.sided ?? "double"}
-                      onChange={(event) =>
-                        updateCard((draft) => void (draft.sided = event.target.value as "single" | "double"))
-                      }
-                    >
-                      <option value="single">单面（仅正面有题）</option>
-                      <option value="double">双面（正反面均有题）</option>
-                    </select>
-                  </label>
-                </section>
-
-                <section className="panel">
-                  <div className="panel-title">
-                    <ListPlus size={17} /> 正文题块
-                  </div>
-                  <div className="block-list">
-                    {card.bodyBlocks.map((block, index) => (
-                      <div key={block.id} className={`block-chip ${selectedBlockId === block.id ? "active" : ""}`}>
-                        <button onClick={() => setSelectedBlockId(block.id)}>
-                          <strong>{block.type === "objective" ? "客观题" : subjectiveBlockKindLabel(block)}</strong>
-                          <span>{block.title}</span>
-                        </button>
-                        <div className="chip-actions">
-                          <button title="上移" onClick={() => moveBlock(block.id, -1)} disabled={index === 0}>
-                            <ArrowUp size={15} />
-                          </button>
-                          <button title="下移" onClick={() => moveBlock(block.id, 1)} disabled={index === card.bodyBlocks.length - 1}>
-                            <ArrowDown size={15} />
-                          </button>
-                          <button title="在后面插入客观题" onClick={() => addObjectiveBlock(index)}>
-                            <Plus size={15} />
-                          </button>
-                          <button title="删除" onClick={() => removeBlock(block.id)}>
-                            <Trash2 size={15} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="split-actions">
-                    <button className="ghost-button" onClick={() => addObjectiveBlock()}>
-                      <Plus size={16} /> 客观题块
-                    </button>
-                    <button className="ghost-button" onClick={addBlankBlock}>
-                      <Plus size={16} /> 填空题块
-                    </button>
-                    <button className="ghost-button" onClick={addSubjectiveBlock}>
-                      <Plus size={16} /> 解答题块
-                    </button>
-                    <button className="ghost-button" onClick={addEssayBlock}>
-                      <Plus size={16} /> 作文块
-                    </button>
-                  </div>
-                </section>
-
-                {selectedBlock && (
-                  <section className="panel">
-                    {selectedBlock.type === "objective" ? (
-                      <ObjectiveEditor block={selectedBlock} onChange={(mutator) => updateBlock(selectedBlock.id, mutator)} />
-                    ) : (
-                      <SubjectiveEditor
-                        block={selectedBlock}
-                        layoutVersion={card.layoutVersion}
-                        onChange={(mutator) => updateBlock(selectedBlock.id, mutator)}
-                        onUpload={uploadImage}
-                      />
-                    )}
-                  </section>
-                )}
-
-                {layout?.warnings.length ? (
-                  <section className="panel warning-panel">
-                    {layout.warnings.map((warning) => (
-                      <p key={warning}>{warning}</p>
-                    ))}
-                  </section>
-                ) : null}
-              </>
-            ) : (
-              <div className="empty-text">请新建或载入答题卡。</div>
-            )}
-          </aside>
-        </div>
-        <div className={`main-grid exam-manage-grid ${mode === "exam-manage" ? "" : "hidden-panel"}`}>
-          {selectedExamId ? (
-            <section style={{ gridColumn: "1 / -1", padding: 0 }}>
-              <ExamDetailPage examId={selectedExamId} teacherId={user?.id ?? 0} teacherRole={user?.teacher_role ?? null} userRole={user?.role_name ?? ""} onBackToList={() => setSelectedExamId(null)} onBackHome={() => switchMode("home")} onStartReview={(exId, bId) => setGradingPanel({ examId: exId, blockId: bId })} />
-            </section>
-          ) : (
-          <section className="preview-panel" style={{ gridColumn: "1 / -1", padding: 24, overflowY: "auto" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-              <strong style={{ fontSize: 16 }}>考试管理</strong>
-              {examManageMode === "single" ? (
-                <button className="primary-button" onClick={() => setShowCreateExam(!showCreateExam)}>
-                  <Plus size={16} /> 新建考试
-                </button>
-              ) : (
-                <button className="primary-button" onClick={() => setShowCreateGroup(true)}>
-                  <Plus size={16} /> 新建大考
-                </button>
-              )}
-              {examManageMode === "single" && selectedExamIds.size > 0 && (
-                <button
-                  className="ghost-button"
-                  style={{ color: "var(--brand)" }}
-                  onClick={() => setExamDeleteTarget({
-                    exams: exams.filter((exam) => selectedExamIds.has(exam.id)),
-                    deleteLinkedCards: false
-                  })}
-                >
-                  <Trash2 size={16} /> 删除选中 ({selectedExamIds.size})
-                </button>
-              )}
-              {(examManageMode === "single" ? exams.length : examGroups.length) > 0 && (
-                <span style={{ fontSize: 13, color: "var(--muted)" }}>
-                  共 {examManageMode === "single" ? exams.length : examGroups.length} {examManageMode === "single" ? "个考试" : "个大考"}
-                </span>
-              )}
-              {/* Single/Group toggle — right side */}
-              <div style={{ display: "flex", gap: 0, border: "1px solid var(--brand)", borderRadius: 6, overflow: "hidden", marginLeft: "auto" }}>
-                <button onClick={() => setExamManageMode("single")} style={{
-                  padding: "5px 14px", border: "none", background: examManageMode === "single" ? "var(--brand)" : "var(--surface)",
-                  color: examManageMode === "single" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "single" ? 600 : 400
-                }}>单科考试</button>
-                <button onClick={() => { setExamManageMode("group"); loadExamGroups(); }} style={{
-                  padding: "5px 14px", border: "none", background: examManageMode === "group" ? "var(--brand)" : "var(--surface)",
-                  color: examManageMode === "group" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "group" ? 600 : 400,
-                  display: "flex", alignItems: "center", gap: 4
-                }}><Layers size={13} /> 大考</button>
-              </div>
-            </div>
-
-            {examManageMode === "single" && showCreateExam && (
-              <div style={{ background: "var(--surface-soft)", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
-                <input value={newExamName} onChange={(e) => setNewExamName(e.target.value)} placeholder="考试名称" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
-                <input value={newExamSubject} onChange={(e) => setNewExamSubject(e.target.value)} placeholder="科目（自动从答题卡继承）" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
-                <select
-                  value={newExamCardId || card?.id || ""}
-                  onChange={(e) => {
-                    const selectedCardId = e.target.value;
-                    setNewExamCardId(selectedCardId);
-                    const selectedCard = cards.find((c) => c.id === selectedCardId);
-                    if (selectedCard) {
-                      if (!newExamName) setNewExamName(selectedCard.title);
-                      if (!newExamSubject) setNewExamSubject(selectedCard.subjectLabel || "");
-                    }
-                  }}
-                  style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }}
-                >
-                  <option value="" disabled>选择答题卡</option>
-                  {cards.map((c) => (<option key={c.id} value={c.id}>{c.title}</option>))}
-                </select>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button className="primary-button" onClick={async () => {
-                    const name = newExamName.trim();
-                    if (!name) { setStatus("请填写考试名称"); return; }
-                    try {
-                      let cardId = newExamCardId || card?.id;
-                      // 方案 B：如果没有选择答题卡，先自动创建一张最简答题卡
-                      if (!cardId) {
-                        const subjectPinyinMap: Record<string, string> = {
-                          "语文": "yuwen", "数学": "shuxue", "英语": "yingyu", "外语": "yingyu",
-                          "物理": "wuli", "化学": "huaxue", "生物": "shengwu",
-                          "政治": "zhengzhi", "历史": "lishi", "地理": "dili"
-                        };
-                        const subjectVal = newExamSubject.trim();
-                        const subjectPinyin = subjectPinyinMap[subjectVal] || subjectVal || "custom";
-                        const today = new Date().toISOString().split("T")[0];
-                        const cardRes = await fetchJson<any>("/api/cards", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            subject: subjectPinyin,
-                            title: name,
-                            subjectLabel: subjectVal || undefined,
-                            examDate: today,
-                            englishListening: false,
-                            chineseChoicePlacement: "front"
-                          })
-                        });
-                        cardId = cardRes.id;
-                      }
-                      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId, subject: newExamSubject.trim() || undefined }) });
-                      setNewExamName(""); setNewExamSubject(""); setShowCreateExam(false);
-                      loadExams();
-                    } catch (err) { setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`); }
-                  }}>确认创建</button>
-                  <button className="ghost-button" onClick={() => setShowCreateExam(false)}>取消</button>
-                </div>
-              </div>
-            )}
-
-            {examManageMode === "single" && exams.length === 0 && !showCreateExam && (
-              <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>暂无考试，点击上方「新建考试」创建。</div>
-            )}
-
-            {examManageMode === "single" && exams.length > 0 && (
-              <div className="exam-list-table">
-                <div className="exam-list-head">
-                  <span style={{ width: 36, flexShrink: 0 }}>
-                    <input type="checkbox" onChange={(e) => {
-                      if (e.target.checked) setSelectedExamIds(new Set(exams.map(ex => ex.id)));
-                      else setSelectedExamIds(new Set());
-                    }} checked={selectedExamIds.size === exams.length && exams.length > 0} />
-                  </span>
-                  <span style={{ flex: 1, minWidth: 160 }}>考试名称</span>
-                  <span style={{ width: 80 }}>科目</span>
-                  <span style={{ width: 100 }}>答题卡</span>
-                  <span style={{ width: 70, textAlign: "center" }}>状态</span>
-                  <span style={{ width: 100, textAlign: "right" }}>操作</span>
-                </div>
-                {exams.map((exam) => (
-                  <div key={exam.id} className="exam-list-row" style={{ cursor: "default" }}>
-                    <span style={{ width: 36, flexShrink: 0 }}>
-                      <input type="checkbox" checked={selectedExamIds.has(exam.id)} onChange={() => {
-                        const next = new Set(selectedExamIds);
-                        if (next.has(exam.id)) next.delete(exam.id); else next.add(exam.id);
-                        setSelectedExamIds(next);
-                      }} />
-                    </span>
-                    <span style={{ flex: 1, minWidth: 160, fontWeight: 500 }}>{exam.name}</span>
-                    <span style={{ width: 80, color: "var(--muted)" }}>{exam.subject || "—"}</span>
-                    <span style={{ width: 100, color: "var(--muted)", fontSize: 12 }}>{exam.card_id ?? "未关联"}</span>
-                    <span style={{ width: 70, textAlign: "center" }}>
-                      <span className={`exam-list-badge exam-list-badge-${exam.status}`}>
-                        {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
-                      </span>
-                    </span>
-                    <span style={{ width: 100, textAlign: "right", whiteSpace: "nowrap" }}>
-                      <button className="ghost-button" style={{ fontSize: 12, color: "#3C3489", padding: "2px 6px" }}
-                        onClick={() => setSelectedExamId(exam.id)}>网阅</button>
-                      <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px", marginLeft: 4 }}
-                        onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</button>
-                      <button className="ghost-button" style={{ fontSize: 12, color: "#1D9E75", padding: "2px 6px", marginLeft: 4 }}
-                        onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Exam group list */}
-            {examManageMode === "group" && examGroups.length === 0 && (
-              <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>暂无大考，点击上方「新建大考」创建。</div>
-            )}
-            {examManageMode === "group" && examGroups.length > 0 && (
-              <div className="exam-list-table">
-                <div className="exam-list-head">
-                  <span style={{ flex: 1, minWidth: 180 }}>大考名称</span>
-                  <span style={{ width: 80 }}>标签</span>
-                  <span style={{ width: 80 }}>年级</span>
-                  <span style={{ width: 80, textAlign: "center" }}>含考试数</span>
-                  <span style={{ width: 80, textAlign: "center" }}>有无成绩</span>
-                  <span style={{ width: 100, textAlign: "right" }}>操作</span>
-                </div>
-                {examGroups.map((group: any) => (
-                  <div key={group.id} className="exam-list-row" style={{ cursor: "default" }}>
-                    <span style={{ flex: 1, minWidth: 180, fontWeight: 500 }}>{group.name}</span>
-                    <span style={{ width: 80 }}>
-                      <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11,
-                        background: group.tag ? "var(--primary)" : "var(--bg-secondary)",
-                        color: group.tag ? "#fff" : "var(--muted)" }}>
-                        {group.tag || "—"}
-                      </span>
-                    </span>
-                    <span style={{ width: 80, color: "var(--muted)" }}>{group.grade_name || "—"}</span>
-                    <span style={{ width: 80, textAlign: "center", fontWeight: 500 }}>{group.member_count}</span>
-                    <span style={{ width: 80, textAlign: "center" }}>
-                      <span className={`exam-list-badge ${group.has_results ? "exam-list-badge-closed" : "exam-list-badge-draft"}`}>
-                        {group.has_results ? "有成绩" : "无成绩"}
-                      </span>
-                    </span>
-                    <span style={{ width: 100, textAlign: "right", whiteSpace: "nowrap" }}>
-                      <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
-                        onClick={() => setGroupDeleteTarget({
-                          groupId: group.id,
-                          groupName: group.name,
-                          memberCount: group.member_count,
-                          deleteExams: false
-                        })}>删除</button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-          )}
-        </div>
-        <div className="main-grid grading-grid hidden-panel">
-          <section className="preview-panel grading-results-panel">
-            <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
-          </section>
-
-          <aside className="inspector">
-            <section className="panel">
-              <div className="panel-title">
-                <ClipboardCheck size={17} /> 阅卷设置
-              </div>
-              <label>
-                考试
-                <select
-                  value={gradingExamId}
-                  onChange={async (e) => {
-                    const examId = e.target.value;
-                    setGradingExamId(examId);
-                    setCardOverride(false);  // 切换考试时重置覆盖状态
-                    if (examId) {
-                      // 自动加载考试关联的答题卡
-                      const exam = exams.find((ex) => String(ex.id) === examId);
-                      if (exam?.card_id && exam.card_id !== card?.id) {
-                        await loadCard(exam.card_id);
-                      }
-                    }
-                  }}
-                >
-                  <option value="">不关联考试</option>
-                  {exams.map((exam) => (
-                    <option key={exam.id} value={String(exam.id)}>
-                      {exam.name} {exam.subject ? `(${exam.subject})` : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {gradingExamId && card ? (
-                // 已选考试 → 只读展示关联答题卡，可手动覆盖
-                <div>
-                  <label style={{ marginBottom: 4 }}>关联答题卡</label>
-                  {cardOverride ? (
-                    <select
-                      value={card?.id ?? ""}
-                      onChange={(e) => { void loadCard(e.target.value); setCardOverride(false); }}
-                      disabled={isBusy}
-                    >
-                      {cards.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.title} / {item.id}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "var(--surface-soft)", borderRadius: 6 }}>
-                      <span style={{ fontSize: 13, flex: 1 }}>{card.title} / {card.id}</span>
-                      <button className="link-button" type="button" onClick={() => setCardOverride(true)} disabled={isBusy} style={{ fontSize: 12, padding: "2px 8px" }}>
-                        换答题卡
-                      </button>
-                    </div>
-                  )}
-                  <p className="hint" style={{ marginTop: 4 }}>答题卡已根据所选考试自动关联</p>
-                </div>
-              ) : (
-                // 未选考试 → 独立选择答题卡（裸阅卷场景）
-                <label>
-                  答题卡
-                  <select value={card?.id ?? ""} onChange={(event) => void loadCard(event.target.value)} disabled={isBusy || cards.length === 0}>
-                    <option value="" disabled>
-                      请选择答题卡
-                    </option>
-                    {cards.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.title} / {item.id}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-              <div className="split-actions">
-                <label className="upload-button">
-                  <Upload size={16} /> 导入图片
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    onChange={(event) => {
-                      addGradingFiles(event.target.files);
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                </label>
-                <label className="upload-button">
-                  <FolderOpen size={16} /> 导入目录
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    {...directoryInputProps}
-                    onChange={(event) => {
-                      addGradingFiles(event.target.files);
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                </label>
-              </div>
-              <div className="file-queue">
-                <div>
-                  <strong>{gradingFiles.length}</strong>
-                  <span>张待阅卷图片</span>
-                </div>
-                <button className="ghost-button" type="button" onClick={() => setGradingFiles([])} disabled={gradingFiles.length === 0 || isBusy}>
-                  清空
-                </button>
-              </div>
-              {gradingFiles.length > 0 && (
-                <div className="queued-files">
-                  {gradingFiles.slice(0, 8).map((file) => (
-                    <span key={`${file.name}_${file.size}_${file.lastModified}`}>{file.webkitRelativePath || file.name}</span>
-                  ))}
-                  {gradingFiles.length > 8 && <span>还有 {gradingFiles.length - 8} 张...</span>}
-                </div>
-              )}
-              <button className="primary-button wide-button" onClick={() => void gradeAnswerCardFiles()} disabled={!card || gradingFiles.length === 0 || isBusy}>
-                <ClipboardCheck size={17} /> 开始识别并判分
-              </button>
-              {gradingProgress.active && (
-                <div className="grading-progress">
-                  <div className="grading-progress-text">
-                    识别答题卡，已识别 {gradingProgress.finished}/{gradingProgress.total} 张
-                  </div>
-                  <div className="grading-progress-track">
-                    <div
-                      className="grading-progress-fill"
-                      style={{
-                        width: `${gradingProgress.total > 0 ? Math.min(100, (gradingProgress.finished / gradingProgress.total) * 100) : 0}%`
-                      }}
-                    />
-                  </div>
-                </div>
-              )}
-      <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
-            </section>
-          </aside>
-        </div>
+        <DesignPage
+          active={mode === "design"}
+          card={card}
+          layout={layout}
+          selectedBlockId={selectedBlockId}
+          setSelectedBlockId={setSelectedBlockId}
+          updateCard={updateCard}
+          updateBlock={updateBlock}
+          moveBlock={moveBlock}
+          removeBlock={removeBlock}
+          addObjectiveBlock={addObjectiveBlock}
+          addSubjectiveBlock={addSubjectiveBlock}
+          addBlankBlock={addBlankBlock}
+          addEssayBlock={addEssayBlock}
+          uploadImage={uploadImage}
+          subjectiveBlockKindLabel={subjectiveBlockKindLabel}
+          CardPreview={CardPreview}
+          ObjectiveEditor={ObjectiveEditor}
+          SubjectiveEditor={SubjectiveEditor}
+        />
+        <ExamManagePage
+          active={mode === "exam-manage"}
+          selectedExamId={selectedExamId}
+          setSelectedExamId={setSelectedExamId}
+          examManageMode={examManageMode}
+          setExamManageMode={setExamManageMode}
+          showCreateExam={showCreateExam}
+          setShowCreateExam={setShowCreateExam}
+          showCreateGroup={showCreateGroup}
+          setShowCreateGroup={setShowCreateGroup}
+          selectedExamIds={selectedExamIds}
+          setSelectedExamIds={setSelectedExamIds}
+          newExamName={newExamName}
+          setNewExamName={setNewExamName}
+          newExamSubject={newExamSubject}
+          setNewExamSubject={setNewExamSubject}
+          newExamCardId={newExamCardId}
+          setNewExamCardId={setNewExamCardId}
+          exams={exams}
+          examGroups={examGroups}
+          loadExams={loadExams}
+          loadExamGroups={loadExamGroups}
+          setExamDeleteTarget={setExamDeleteTarget}
+          setGroupDeleteTarget={setGroupDeleteTarget}
+          setAssignedFormulaExamId={setAssignedFormulaExamId}
+          cards={cards}
+          card={card}
+          setStatus={setStatus}
+          switchMode={switchMode}
+          teacherId={user?.id ?? 0}
+          teacherRole={user?.teacher_role ?? null}
+          userRole={user?.role_name ?? ""}
+          onStartReview={(exId, bId) => setGradingPanel({ examId: exId, blockId: bId })}
+        />
+        {/* 常驻隐藏的状态容器：实际阅卷 UI 由 GradePanel 弹层承载，保持原 hidden-panel 行为 */}
+        <GradingPage
+          active={false}
+          resultsNode={<GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />}
+          gradingExamId={gradingExamId}
+          setGradingExamId={setGradingExamId}
+          setCardOverride={setCardOverride}
+          cardOverride={cardOverride}
+          exams={exams}
+          card={card}
+          loadCard={loadCard}
+          cards={cards}
+          isBusy={isBusy}
+          directoryInputProps={directoryInputProps}
+          addGradingFiles={addGradingFiles}
+          gradingFiles={gradingFiles}
+          setGradingFiles={setGradingFiles}
+          gradeAnswerCardFiles={gradeAnswerCardFiles}
+          gradingProgress={gradingProgress}
+        />
         <div className={`main-grid analysis-grid ${mode === "analysis" ? "" : "hidden-panel"}`}>
           <section className="preview-panel analysis-results-panel" style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column" }}>
 

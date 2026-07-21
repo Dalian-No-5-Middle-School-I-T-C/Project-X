@@ -97,6 +97,7 @@ export type WorkspaceValue = {
   addObjectiveBlock: (afterIndex?: number) => void;
   addSubjectiveBlock: () => void;
   addBlankBlock: () => void;
+  addEssayBlock: () => void;
   uploadImage: (blockId: string, questionId: string, file: File) => Promise<void>;
   subjectiveBlockKindLabel: (block: BodyBlock) => string;
   loadCard: (id: string) => Promise<void>;

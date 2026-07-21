@@ -570,7 +570,7 @@ export function AccountMenu({
                       显示底部 Tab 导航栏
                     </label>
                     <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                      关闭后各页面使用"← 返回首页"按钮导航，更简洁
+                      顶部导航栏「首页」可随时返回，建议保持开启
                     </span>
 
                     <h4 style={{ marginTop: 16 }}>背景图透明度</h4>

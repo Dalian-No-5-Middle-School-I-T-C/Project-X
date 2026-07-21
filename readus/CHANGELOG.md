@@ -1,5 +1,62 @@
 # Project-X CHANGELOG
 
+## v1.9.2 (2026-07-21) — 网页化改造 / 启动台模式 + 前端风格统一 + BUG 修复
+
+本版本是「审计 → 修复 → 统一 → 网页化」一揽子改造，分三阶段落地（前情见 `readus/AUDIT-2026-07-20.md` / `PLAN-2026-07-20.md` / `SMOKE-2026-07-20.md`）。
+
+### 阶段 0：BUG 修复（运行时已验证，见 SMOKE-2026-07-20.md）
+
+- **赋分公式路由缺失（P0，功能性 404）**：前端 `AssignedFormulaModal` 调用 `GET/PUT /api/exams/:examId/assigned-formula`，后端从未注册该路由。新增路由（`requireExamAccess` 保护），经 `AssignedScoreService` 暴露。SMOKE 实测：GET 返回 `{formula,isAssignedSubject,presets}`，PUT 保存生效，不再 404。
+- **Express 5 async 未捕获拒绝（P1，防请求挂死）**：新增 `server/lib/asyncHandler.ts` + `wrapRouter`，`createApp()` 内对全部 router/handler 统一包裹；async handler 抛错 → 转发错误中间件返回 500 JSON，不再永久转圈。
+- **鉴权语义不统一（P1）**：`authMiddleware` 现读 `PROJECTX_AUTH_ENFORCE`（与 `makeGate` 一致）；默认开启，关闭且无 token 时放行（保留「无登录可用」兼容），开启时要求有效令牌。
+- **其他小修**：删除 `index.ts` 重复的 `/api/app/health`（保留一处并加 try/catch）；`backup.ts` 的 `VACUUM INTO '[object Object]'` 增加单引号转义（防 Windows 用户名含单引号导致的语法错误/注入）；`score-editing.ts` 对 `scores` 数组元素与 answers 题号键做校验（非法即 400）。
+
+### 阶段 1：前端风格统一（设计令牌 + 组件库 + 硬编码色收敛）
+
+> 审计发现：存在完整设计系统（`styles.css` 6601 行 / 829 个类 + 暗色主题），但 84% 组件在写内联 `style`（1015 处内联 / 206 处硬编码色），同一语义多种硬编码色（成功绿 `#2E7D32`×15 等）。根因是「基类已写好、后续开发全 inline」。本阶段以「回流」为主。
+
+- **设计令牌 / 组件库地基**：新建 `client/theme.ts` 镜像 `styles.css` 的 `:root` 变量为 TS 对象（供 JS 侧图表/状态点引用，杜绝「同文件混用 `var(--brand)` 与 `#2E7D32`」）；`styles.css` 新增语义色 `--success:#2E7D32; --warning:#E65100; --info:#1565C0` + `--z-*` z-index 阶梯（`--z-modal:1000` / `--z-toast:1100` / `--z-lightbox:1200` / `--z-dropdown:900`），为收敛 `100→100000→999999` 的 z-index 通胀打底；补全 ScannerApp 缺失的 `.loading-screen` / `.loading-spinner` 等类（修复扫描端加载屏无样式）。
+- **共享 UI 组件库** `components/ui/*`：`Button` / `Modal`(Portal + 统一层级) / `SegmentedControl` / `Input` / `Panel` / `Table` / `Spinner` / `LoadingScreen`，封装 5 种模态实现 + 4 套分段控件 + 裸 `<table>` 等不一致。
+- **重复硬编码色收敛（批 1）**：全仓散落的「成功绿」 `#2E7D32`（15 处）统一替换为 `var(--success)`（AccountMenu / AssignedFormulaModal / LoginPageScanner / ScannerPanel / StudentScoreDetail / ScoreFixPage 共 6 文件，`replace_all` 完成），消除同一语义多种硬编码色。
+
+### 阶段 2：网页化改造 / 启动台模式（每功能独立 URL）
+
+- **URL 路由化**：引入 `react-router-dom` v7，`main.tsx` 改用 `createBrowserRouter`（数据路由，`useBlocker` 方可生效）；新增 `modeRoutes.ts`（`MODE_PATH` 模式↔路径映射 + `pathToMode()`）；`mode` 改为 URL 驱动（初始从 `pathToMode(location.pathname)` 派生，地址栏↔mode 双向同步）；顶栏改为 6 个 `<NavLink>`（首页 / 设计 / 考试管理 / 分析 / 我的成绩 / 账号）。
+- **根因修复（关键）**：登录初始化 effect 原先无条件 `setMode(defaultModeForUser)`（=home），会把深链 / 新标签打回 home → 打开 `/design` 新标签仍显示 home、「新窗口打开」看似无效。改为「地址栏已是功能路径则尊重之，否则回退默认首页」。
+- **启动台模式（每功能新开界面）**：首页所有模块卡（设计 / 考试管理 / 分析 / 账号）改为 `onOpenNewTab`，点击在**新前台标签**打开该功能 URL，首页保留为常驻启动台；子页面「← 返回首页」按钮仅在关闭顶栏导航（紧凑模式 `!showTabBar`）时显示，避免与顶栏「首页」NavLink 重复；删除冗余的顶栏「在新窗口打开当前功能」按钮。
+- **未保存离开确认**：`useBlocker` 拦截离开 `/design` 时的未保存改动，弹确认 Modal。
+- **页面组件抽取（props 透传范式，零行为风险）**：`pages/DesignPage.tsx`（答题卡设计）、`pages/ExamManagePage.tsx`（考试管理）、`pages/GradingPage.tsx`（阅卷面板，原 `grading-grid` 为常驻隐藏的状态容器，实际阅卷 UI 由 `GradePanel` 弹层承载）从 `App.tsx` 巨石抽出；`WorkspaceContext.tsx` 声明 `WorkspaceValue` 类型骨架（含 `addEssayBlock`），为后续 `useWorkspace()` 全量接线铺路；三个编辑器（`CardPreview` / `ObjectiveEditor` / `SubjectiveEditor`）与全部 handler 以 props 原样传入，函数引用不变 → 交互行为完全一致。
+
+### 新增依赖
+`react-router-dom` v7、`express-rate-limit`（登录限速，阶段 0 已用）。
+
+### 修改文件清单（节选）
+
+| 文件 | 阶段 | 内容 |
+|------|------|------|
+| `src/apps/answer-card/server/index.ts` | 0 | assigned-formula 路由 + async 包装 + 删重复 health |
+| `src/server/lib/asyncHandler.ts` | 0 | 新增 async 错误包装 |
+| `src/server/middleware/auth.ts` | 0 | 鉴权读 enforceAuth |
+| `src/server/routes/backup.ts` / `score-editing.ts` | 0 | 单引号转义 / 入参校验 |
+| `src/apps/answer-card/client/theme.ts` | 1 | 新增令牌镜像 |
+| `src/apps/answer-card/client/styles.css` | 1 | `--success/--warning/--info` + `--z-*` + 补 loading 类 |
+| `src/apps/answer-card/client/components/ui/*` | 1 | Button/Modal/SegmentedControl/Input/Panel/Table/Spinner/LoadingScreen |
+| `src/apps/answer-card/client/main.tsx` | 2 | createBrowserRouter |
+| `src/apps/answer-card/client/modeRoutes.ts` | 2 | 新增路由映射 |
+| `src/apps/answer-card/client/App.tsx` | 2 | URL 驱动 + NavLink + 抽 DesignPage/ExamManagePage/GradingPage |
+| `src/apps/answer-card/client/pages/DesignPage.tsx` / `ExamManagePage.tsx` / `GradingPage.tsx` | 2 | 新增页面组件 |
+| `src/apps/answer-card/client/WorkspaceContext.tsx` | 2 | WorkspaceValue 骨架 |
+| `src/apps/answer-card/client/components/HomePage.tsx` | 2 | 模块卡全部单开新标签 |
+
+### 验证
+- `npx tsc --noEmit` → EXIT 0
+- `npx vite build --mode web` → 1919 模块通过
+- SPA 深链：`/` `/design` `/exam-manage` `/analysis` `/scores` `/account` 均 HTTP 200 且含 `<div id="root">`
+- 阶段 0 四项修复经 `SMOKE-2026-07-20.md` 运行时验证通过（赋分公式复活、async→500、鉴权统一、score-editing 校验）
+- ⚠️ 无浏览器运行时 QA：抽取页（设计 / 考试管理 / 阅卷）需本地 `npm run dev` 实点冒烟（设计页新建/插题块/上移下移/保存/PDF/作文块；考试管理新建/单科⇄大考/网阅/赋分/删除）。
+
+---
+
 ## v1.9.1 (2026-07-19) — 答题卡设计器全面增强
 
 ### 作文块（essay block）
@@ -54,6 +111,7 @@
 | `src/shared/cardTemplates.ts` | +50 行 | `essayBlock()` + `linedQuestion()` 新格式 + 语文模板集成 |
 
 **总计**：+700 行新增代码，0 个删除，0 个新依赖。
+
 
 ### 版本
 - v1.9.0 → v1.9.1
