@@ -112,14 +112,29 @@ export type CreateExamGroupInput = z.infer<typeof CreateExamGroupSchema>;
 
 // ── User settings schema ─────────────────────────────────
 
+/**
+ * 灵活布尔解析：兼容 JSON 布尔、数字 0/1、以及字符串。
+ * 关键：不能用 z.coerce.boolean() —— 它会对任何非空字符串（含 "false"/"0"）
+ * 返回 true，从而把"关闭"误翻转成"开启"。这里显式枚举真假集合后再落入
+ * 严格布尔校验，杜绝该逆翻风险。
+ */
+const flexibleBoolean = z.preprocess(
+  (v) => {
+    if (v === "true" || v === true || v === 1) return true;
+    if (v === "false" || v === false || v === 0) return false;
+    return v;
+  },
+  z.boolean(),
+);
+
 export const UpdateUserSettingsSchema = z.object({
   scoreDisplayMode: z.enum(["deviation", "zscore", "percentile"]).optional(),
   reviewConfidenceThreshold: z.number().min(0).max(1).optional(),
   aiApiKey: z.string().nullable().optional(),
   backgroundOpacity: z.number().min(0).max(1).optional(),
-  requireOriginalPaper: z.coerce.boolean().optional(),
-  highlightMissingPaper: z.coerce.boolean().optional(),
-  showTabBar: z.coerce.boolean().optional(),
+  requireOriginalPaper: flexibleBoolean.optional(),
+  highlightMissingPaper: flexibleBoolean.optional(),
+  showTabBar: flexibleBoolean.optional(),
 });
 export type UpdateUserSettingsInput = z.infer<typeof UpdateUserSettingsSchema>;
 

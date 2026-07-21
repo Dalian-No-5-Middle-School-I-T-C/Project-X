@@ -19,6 +19,8 @@ export const MODE_PATH: Record<ProjectXAppMode, string> = {
 
 /** 由当前 pathname 推断 mode；无法识别时返回 null（调用方回退到 design）。 */
 export function pathToMode(pathname: string): ProjectXAppMode | null {
+  // 根路径直接视作首页，避免首渲染依赖调用方 ?? 兜底产生的冗余状态/闪烁。
+  if (pathname === "/" || pathname === "") return "home";
   const entry = (Object.entries(MODE_PATH) as [ProjectXAppMode, string][]).find(
     ([, p]) => pathname === p || pathname.startsWith(p + "/")
   );

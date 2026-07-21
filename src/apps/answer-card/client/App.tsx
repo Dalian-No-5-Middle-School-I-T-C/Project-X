@@ -2,7 +2,6 @@
 import { NavLink, Route, Routes, Navigate, useBlocker, useLocation, useNavigate } from "react-router-dom";
 import { DesignPage } from "./pages/DesignPage";
 import { ExamManagePage } from "./pages/ExamManagePage";
-import { GradingPage } from "./pages/GradingPage";
 import { MODE_PATH, pathToMode } from "./modeRoutes";
 import { WorkspaceProvider, type WorkspaceValue } from "./WorkspaceContext";
 import {
@@ -474,7 +473,7 @@ function App() {
     }
     // 移动端最多5个Tab
     return items.slice(0, 5);
-  }, [canDesign, canManageExams, canGrade, canAnalyze, showScoresTab, canManageAccounts, loadExams, loadExamGroups]);
+  }, [canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, loadExams, loadExamGroups]);
 
   useEffect(() => {
     latestCardRef.current = card;
@@ -1640,31 +1639,31 @@ function App() {
           </div>
           <div className="topbar-actions">
             <div className="mode-toggle" role="tablist" aria-label="工作模式" style={showTabBar ? undefined : { display: "none" }}>
-              <NavLink to={MODE_PATH.home} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("home"); }} type="button">
+              <NavLink to={MODE_PATH.home} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("home"); }}>
                 <Home size={16} /> 首页
               </NavLink>
               {canDesign && (
-              <NavLink to={MODE_PATH.design} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("design"); }} type="button">
+              <NavLink to={MODE_PATH.design} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("design"); }}>
                 <SquarePen size={16} /> 设计
               </NavLink>
               )}
               {canManageExams && (
-              <NavLink to={MODE_PATH["exam-manage"]} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("exam-manage", async () => { await loadExams(); await loadExamGroups(); }); }} type="button">
+              <NavLink to={MODE_PATH["exam-manage"]} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("exam-manage", async () => { await loadExams(); await loadExamGroups(); }); }}>
                 <ClipboardList size={16} /> 考试管理
               </NavLink>
               )}
               {canAnalyze && (
-              <NavLink to={MODE_PATH.analysis} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("analysis", loadExams); }} type="button">
+              <NavLink to={MODE_PATH.analysis} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("analysis", loadExams); }}>
                 <BarChart3 size={16} /> 分析
               </NavLink>
               )}
               {showScoresTab && (
-              <NavLink to={MODE_PATH.scores} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("scores"); }} type="button">
+              <NavLink to={MODE_PATH.scores} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("scores"); }}>
                 <BarChart3 size={16} /> 我的成绩
               </NavLink>
               )}
               {canManageAccounts && (
-              <NavLink to={MODE_PATH.account} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("account"); }} type="button">
+              <NavLink to={MODE_PATH.account} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("account"); }}>
                 <Users size={16} /> 账号
               </NavLink>
               )}
@@ -1726,6 +1725,9 @@ function App() {
                     teacherRole={user?.teacher_role ?? null}
                     onNavigate={(m) => switchMode(m as AppMode)}
                     onOpenNewTab={(m) => {
+                      // 经确认：首页任意模块卡片均在新标签打开（而非只对「答题卡设计」），
+                      // 配合网页化深链 / 刷新保持当前页的设计。如有回归到分模块差异化的需求，
+                      // 应在此按 m 过滤，仅 design 走新标签、其余回退 onNavigate。
                       const path = MODE_PATH[m as AppMode] ?? "/design";
                       window.open(window.location.origin + path, "_blank", "noopener");
                     }}
@@ -1737,30 +1739,6 @@ function App() {
           />
           <Route path="/design/*" element={<DesignPage />} />
           <Route path="/exam-manage" element={<ExamManagePage />} />
-          <Route
-            path="/grading"
-            element={
-              <GradingPage
-                active={false}
-                resultsNode={<GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />}
-                gradingExamId={gradingExamId}
-                setGradingExamId={setGradingExamId}
-                setCardOverride={setCardOverride}
-                cardOverride={cardOverride}
-                exams={exams}
-                card={card}
-                loadCard={loadCard}
-                cards={cards}
-                isBusy={isBusy}
-                directoryInputProps={directoryInputProps}
-                addGradingFiles={addGradingFiles}
-                gradingFiles={gradingFiles}
-                setGradingFiles={setGradingFiles}
-                gradeAnswerCardFiles={gradeAnswerCardFiles}
-                gradingProgress={gradingProgress}
-              />
-            }
-          />
           <Route
             path="/analysis"
             element={
@@ -2254,7 +2232,15 @@ function App() {
             </p>
             <div className="modal-footer" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
               <button className="ghost-button" type="button" onClick={() => blocker.reset?.()}>留在此页</button>
-              <button className="primary-button" type="button" onClick={() => blocker.proceed?.()}>离开</button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={async () => {
+                  // 与 switchMode 行为对齐：离开前先尽力落盘，避免静默丢弃
+                  // dirty 的答题卡编辑；落盘失败也不拦截 —— 用户已明确选择离开。
+                  try { await flushPendingCardSave("switch"); } catch { /* 忽略落盘失败，仍然离开 */ }
+                  blocker.proceed?.();
+                }}>离开</button>
             </div>
           </div>
         </div>

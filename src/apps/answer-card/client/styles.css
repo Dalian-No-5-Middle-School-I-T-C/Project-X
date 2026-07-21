@@ -47,7 +47,7 @@
   --z-dropdown: 900;
   --z-modal: 1000;
   --z-toast: 1100;
-  --z-lightbox: 1200;
+  --z-lightbox: 9999;
 
   /* ── Mobile Layout Variables ───────────────────────── */
   --mobile-bottom-nav-height: 64px;
