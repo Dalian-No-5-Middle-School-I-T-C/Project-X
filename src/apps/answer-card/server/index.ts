@@ -1633,52 +1633,6 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  // ── 赋分公式（P0 修复：此前前端 AssignedFormulaModal 调用后端无对应路由 → 404） ──
-  app.get("/api/exams/:examId/assigned-formula", requireExamAccess, async (req, res, next) => {
-    try {
-      const examId = Number(req.params.examId);
-      if (!Number.isFinite(examId)) {
-        res.status(400).json({ message: "非法考试 ID" });
-        return;
-      }
-      const examRepo = new ExamRepository();
-      const exam = await examRepo.findExamById(examId);
-      if (!exam) {
-        res.status(404).json({ message: "考试不存在" });
-        return;
-      }
-      const svc = new AssignedScoreService();
-      res.json({
-        formula: await svc.getFormula(examId),
-        isAssignedSubject: exam.subject ? AssignedScoreService.isAssignedSubject(exam.subject) : false,
-        presets: AssignedScoreService.getFormulaPresets()
-      });
-    } catch (err) { next(err); }
-  });
-
-  app.put("/api/exams/:examId/assigned-formula", requireExamAccess, async (req, res, next) => {
-    try {
-      const examId = Number(req.params.examId);
-      if (!Number.isFinite(examId)) {
-        res.status(400).json({ message: "非法考试 ID" });
-        return;
-      }
-      const body = (req.body ?? {}) as { formula?: AssignedFormula; recalculate?: boolean };
-      if (!body.formula || typeof body.formula !== "object") {
-        res.status(400).json({ message: "缺少 formula" });
-        return;
-      }
-      const svc = new AssignedScoreService();
-      await svc.saveFormula(examId, body.formula);
-      let updated: number | undefined;
-      if (body.recalculate) {
-        const result = await svc.recalculateAll(examId);
-        updated = result.updated;
-      }
-      res.json({ ok: true, updated });
-    } catch (err) { next(err); }
-  });
-
   app.delete("/api/exams/:examId", requireExamAccess, async (req, res, next) => {
     try {
       const examRepo = new ExamRepository();
