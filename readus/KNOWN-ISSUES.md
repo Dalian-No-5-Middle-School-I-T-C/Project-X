@@ -94,7 +94,7 @@
 
 ## 其他已知问题
 
-- **express-rate-limit** 包未安装（`tsc --noEmit` 报错），auth.ts 的登录限流中间件未生效
+- ~~**express-rate-limit** 包未安装（auth.ts 登录限流中间件未生效）~~ **已修复（v1.9.2）**：`express-rate-limit@^8.6.0` 已安装，`src/server/routes/auth.ts` 已 `import rateLimit` 并启用登录限速中间件。
 - 系统无端到端测试，所有验证依赖手动回归
 - 扫描仪原生桥接模块 (`native/ScannerBridge`) 仅 Windows 可用，无 Linux/macOS 适配
 

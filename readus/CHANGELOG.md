@@ -2,9 +2,9 @@
 
 ## v1.9.2 (2026-07-21) — 网页化改造 / 启动台模式 + 前端风格统一 + BUG 修复
 
-本版本是「审计 → 修复 → 统一 → 网页化」一揽子改造，分三阶段落地（前情见 `readus/AUDIT-2026-07-20.md` / `PLAN-2026-07-20.md` / `SMOKE-2026-07-20.md`）。
+本版本是「审计 → 修复 → 统一 → 网页化」一揽子改造，分三阶段落地（前情见内部工作文档 `.workbuddy/plans/AUDIT-2026-07-20.md` / `PLAN-2026-07-20.md` / `SMOKE-2026-07-20.md`，不进仓库）。
 
-### 阶段 0：BUG 修复（运行时已验证，见 SMOKE-2026-07-20.md）
+### 阶段 0：BUG 修复（运行时已验证，见 `.workbuddy/plans/SMOKE-2026-07-20.md`）
 
 - **赋分公式路由缺失（P0，功能性 404）**：前端 `AssignedFormulaModal` 调用 `GET/PUT /api/exams/:examId/assigned-formula`，后端从未注册该路由。新增路由（`requireExamAccess` 保护），经 `AssignedScoreService` 暴露。SMOKE 实测：GET 返回 `{formula,isAssignedSubject,presets}`，PUT 保存生效，不再 404。
 - **Express 5 async 未捕获拒绝（P1，防请求挂死）**：新增 `server/lib/asyncHandler.ts` + `wrapRouter`，`createApp()` 内对全部 router/handler 统一包裹；async handler 抛错 → 转发错误中间件返回 500 JSON，不再永久转圈。
@@ -52,7 +52,7 @@
 - `npx tsc --noEmit` → EXIT 0
 - `npx vite build --mode web` → 1919 模块通过
 - SPA 深链：`/` `/design` `/exam-manage` `/analysis` `/scores` `/account` 均 HTTP 200 且含 `<div id="root">`
-- 阶段 0 四项修复经 `SMOKE-2026-07-20.md` 运行时验证通过（赋分公式复活、async→500、鉴权统一、score-editing 校验）
+- 阶段 0 四项修复经 `.workbuddy/plans/SMOKE-2026-07-20.md` 运行时验证通过（赋分公式复活、async→500、鉴权统一、score-editing 校验）
 - ⚠️ 无浏览器运行时 QA：抽取页（设计 / 考试管理 / 阅卷）需本地 `npm run dev` 实点冒烟（设计页新建/插题块/上移下移/保存/PDF/作文块；考试管理新建/单科⇄大考/网阅/赋分/删除）。
 
 ---
