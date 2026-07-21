@@ -87,6 +87,20 @@ CREATE TABLE IF NOT EXISTS teacher_classes (
     FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS teacher_permissions (
+    id                 INT AUTO_INCREMENT PRIMARY KEY,
+    teacher_id         INT NOT NULL,
+    grade_id           INT,
+    can_view_scores    TINYINT DEFAULT 1,
+    can_view_charts    TINYINT DEFAULT 1,
+    can_view_students  TINYINT DEFAULT 1,
+    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (grade_id) REFERENCES grades(id) ON DELETE SET NULL,
+    UNIQUE KEY uk_teacher_grade (teacher_id, grade_id)
+) ENGINE=InnoDB;
+
 -- ============================================================
 -- 模块二：答题卡设计
 -- ============================================================
@@ -187,6 +201,9 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     blanks_height_mm DOUBLE,
     blanks_label_style VARCHAR(50),
     blanks_items_json TEXT,
+    line_grid_json   TEXT,
+    essay_grid_json  TEXT,
+    score_grid_json  TEXT,
     sort_order       INT DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (block_id) REFERENCES subjective_blocks(id) ON DELETE CASCADE

@@ -1,15 +1,19 @@
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
-import { AssignedScoreService } from "./AssignedScoreService";
+import { recomputeExamRankings, roundScore } from "./rankingUpdate";
 import {
   listReviewBlockCrops
 } from "./AnswerBlockCropService";
+import { computeMultiReviewResult } from "./ArbitrationService";
+import { getBlockConfig } from "./BlockGradingConfigService";
 import type {
   ReviewBlockCropItem,
   ReviewBlockSummary,
   ReviewSubmitResult,
-  ReviewSubmitScoreInput
+  ReviewSubmitScoreInput,
+  ReviewTraceItem,
+  ReviewRoundDetail
 } from "../../shared/types";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
 
@@ -21,6 +25,7 @@ type CropRow = {
   student_number: string | null;
   block_id: string;
   block_title: string | null;
+  block_type: string | null;
   status: string | null;
 };
 
@@ -43,7 +48,9 @@ async function recomputeStudentTotals(
     if (row.score_type === "objective") totalObjective += Number(row.score ?? 0);
     else totalSubjective += Number(row.score ?? 0);
   }
-  const newTotal = totalObjective + totalSubjective;
+  totalObjective = roundScore(totalObjective);
+  totalSubjective = roundScore(totalSubjective);
+  const newTotal = roundScore(totalObjective + totalSubjective);
 
   await tx.run(
     `UPDATE student_scores
@@ -60,33 +67,6 @@ async function recomputeStudentTotals(
   );
 
   return newTotal;
-}
-
-async function recomputeRankings(db: DbAdapter, examId: number): Promise<void> {
-  const allStudents = await db.all(
-    "SELECT id, total_score FROM student_scores WHERE exam_id = ? ORDER BY total_score DESC",
-    examId
-  ) as Array<{ id: number; total_score: number }>;
-  if (allStudents.length === 0) return;
-
-  const n = allStudents.length;
-  for (let i = 0; i < allStudents.length; i += 1) {
-    const rank = i + 1;
-    const percentile = n > 1 ? Math.round((1 - i / n) * 1000) / 10 : 100;
-    await db.run(
-      "UPDATE student_scores SET `rank` = ?, percentile = ? WHERE id = ?",
-      rank,
-      percentile,
-      allStudents[i].id
-    );
-  }
-
-  try {
-    const assignedService = new AssignedScoreService();
-    await assignedService.recalculateAll(examId);
-  } catch {
-    // optional assigned score
-  }
 }
 
 export async function listReviewBlocks(examId: number, db: DbAdapter = getMysqlDb()): Promise<ReviewBlockSummary[]> {
@@ -164,6 +144,9 @@ export async function submitReviewCropScores(params: {
   const card = await cardRepo.findById(exam.card_id);
   if (!card) throw new Error("答题卡不存在");
 
+  // 读取评分配置（含 reviewMode）
+  const blockType = crop.block_type ?? "subjective";
+  let maxBlockScore = 0;
   const maxScoreByQuestion = new Map<number, number>();
   for (const block of card.bodyBlocks) {
     if (block.type === "objective") {
@@ -177,9 +160,12 @@ export async function submitReviewCropScores(params: {
       }
     }
   }
+  maxBlockScore = Array.from(maxScoreByQuestion.values()).reduce((a, b) => a + b, 0);
+
+  const config = await getBlockConfig(params.examId, crop.block_id ?? "", blockType, maxBlockScore, db);
+  const reviewMode = config.reviewMode;
 
   const now = new Date().toISOString();
-  const nextStatus = params.status ?? "reviewed";
   const upsertCols = [
     "exam_id", "student_id", "question_number", "question_id", "block_id",
     "score", "max_score", "score_type", "manually_modified", "modified_by", "modified_at"
@@ -188,52 +174,189 @@ export async function submitReviewCropScores(params: {
   const updateCols = ["score", "max_score", "manually_modified", "modified_by", "modified_at", "block_id"];
   const upsertSQL = buildUpsertSQL(db.dialect, "question_scores", upsertCols, conflictCols, updateCols);
 
+  const submittedScores = params.scores.map((item) => {
+    const maxScore = item.maxScore ?? maxScoreByQuestion.get(item.questionNumber) ?? item.score;
+    return { ...item, maxScore, score: Math.max(0, Math.min(maxScore, item.score)) };
+  });
   let totalScore = 0;
+  let finalReviewRound = 0;
+  let scoreBreakdown: Array<{ round: number; reviewerId: number; score: number; reviewedAt: string; questionScores: Record<string, number> }> = [];
+  let disputed = false;
+  let disputeReason = "";
+  let finalScore: number | null = null;
+
+  // P0-2: 争议检测 + 状态更新全部在事务内执行
   await db.transaction(async (tx) => {
-    for (const item of params.scores) {
-      const maxScore = item.maxScore ?? maxScoreByQuestion.get(item.questionNumber) ?? item.score;
-      const clampedScore = Math.max(0, Math.min(maxScore, item.score));
-      await tx.run(
-        upsertSQL,
-        params.examId,
-        crop.student_id,
-        item.questionNumber,
-        null,
-        crop.block_id,
-        clampedScore,
-        maxScore,
-        item.scoreType,
-        1,
-        params.userId,
-        now
-      );
-      await tx.run(
-        `INSERT INTO answer_overrides (exam_id, card_id, question_number, score_type, override_type, old_value, new_value, created_by, created_at)
-         VALUES (?, ?, ?, ?, 'review_score', NULL, ?, ?, ?)`,
-        params.examId,
-        exam.card_id,
-        item.questionNumber,
-        item.scoreType,
-        JSON.stringify(clampedScore),
-        params.userId,
-        now
-      );
+    // 评分历史必须在事务内读取和追加；事务外快照会在并发提交时覆盖另一位教师的记录。
+    const freshCrop = await tx.get(
+      "SELECT review_round, score_breakdown FROM answer_block_crops WHERE id = ?",
+      params.cropId
+    ) as { review_round: number; score_breakdown: string | null } | undefined;
+    const currentRound = freshCrop?.review_round ?? 0;
+    if (!freshCrop) throw new Error("作答切块不存在");
+    try { scoreBreakdown = freshCrop.score_breakdown ? JSON.parse(freshCrop.score_breakdown) : []; } catch { scoreBreakdown = []; }
+
+    if (scoreBreakdown.length >= reviewMode || currentRound >= reviewMode) {
+      throw new Error("该题块已达到评分上限，请刷新后重试");
+    }
+    const reviewerIds = new Set(scoreBreakdown.map((b) => b.reviewerId));
+    if (reviewerIds.has(params.userId)) throw new Error("您已对该题块评分，请勿重复提交");
+    if (config.arbitratorId != null && config.arbitratorId === params.userId) throw new Error("您是该题块的仲裁人，不能参与初评");
+    if (config.arbitratorId != null && reviewerIds.has(config.arbitratorId)) throw new Error("该题块的仲裁人已参与评分，需要更换仲裁人");
+
+    totalScore = submittedScores.reduce((sum, item) => sum + item.score, 0);
+    finalReviewRound = currentRound + 1;
+    const questionScores = Object.fromEntries(submittedScores.map((item) => [String(item.questionNumber), item.score]));
+
+    scoreBreakdown.push({ round: finalReviewRound, reviewerId: params.userId, score: totalScore, reviewedAt: now, questionScores });
+
+    // 仅在所有轮次完成且无争议后才写正式分数，避免最后一评的分数提前影响排名。
+    if (scoreBreakdown.length >= reviewMode) {
+      const allScores = scoreBreakdown.map((b) => b.score);
+      const disputeResult = computeMultiReviewResult(allScores, config.disputeThreshold, config.rounding);
+      disputed = disputeResult.disputed;
+      disputeReason = disputeResult.reason;
+      if (!disputed) {
+        finalScore = disputeResult.finalScore;
+        const resolvedQuestionScores: Array<{ item: typeof submittedScores[number]; score: number }> = [];
+        for (const item of submittedScores) {
+          const values = scoreBreakdown.map((round) => round.questionScores?.[String(item.questionNumber)]).filter((v): v is number => typeof v === "number");
+          if (values.length !== scoreBreakdown.length) throw new Error("历史评审缺少逐题分数，无法安全合并，请转仲裁处理");
+          const resolved = computeMultiReviewResult(values, config.disputeThreshold, config.rounding);
+          if (resolved.disputed || resolved.finalScore == null) {
+            disputed = true;
+            disputeReason = `第${item.questionNumber}题${resolved.reason}`;
+            finalScore = null;
+            break;
+          }
+          resolvedQuestionScores.push({ item, score: resolved.finalScore });
+        }
+        // Do not persist a partial set if a later question is disputed.
+        if (!disputed) {
+          for (const resolved of resolvedQuestionScores) {
+            await tx.run(upsertSQL, params.examId, crop.student_id, resolved.item.questionNumber, null, crop.block_id, resolved.score, resolved.item.maxScore, resolved.item.scoreType, 1, params.userId, now);
+          }
+        }
+        if (!disputed) totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!, params.userId, now);
+      }
     }
 
-    totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!, params.userId, now);
-    await tx.run(
-      "UPDATE answer_block_crops SET status = ? WHERE id = ?",
+    // 确定下一状态
+    const nextStatus = scoreBreakdown.length >= reviewMode
+      ? (params.status ?? "reviewed")
+      : "pending";
+
+    // CAS 更新 — 防止并发覆盖
+    const result = await tx.run(
+      `UPDATE answer_block_crops
+       SET status = ?, reviewer_id = ?, reviewed_at = ?, review_round = ?,
+           score_breakdown = ?
+       WHERE id = ? AND review_round = ?`,
       nextStatus,
-      params.cropId
+      params.userId,
+      now,
+      finalReviewRound,
+      JSON.stringify(scoreBreakdown),
+      params.cropId,
+      currentRound
     );
+
+    if (result.changes === 0) {
+      throw new Error("该切块已被其他老师批阅，请刷新后重试");
+    }
+
+    if (scoreBreakdown.length >= reviewMode) {
+      if (disputed) {
+        await tx.run("UPDATE answer_block_crops SET status = ? WHERE id = ?", "disputed", params.cropId);
+      } else if (finalScore != null) {
+        await tx.run(
+          "UPDATE answer_block_crops SET final_score = ?, status = ? WHERE id = ?",
+          finalScore,
+          "reviewed",
+          params.cropId
+        );
+      }
+    }
   });
 
-  await recomputeRankings(db, params.examId);
+  // 排名重算在事务外（调用方应处理失败）
+  await recomputeExamRankings(db, params.examId);
 
   return {
     ok: true,
     cropId: params.cropId,
-    status: nextStatus,
-    totalScore
+    status: disputed ? "disputed" : (scoreBreakdown.length >= reviewMode ? "reviewed" : "pending"),
+    totalScore,
+    disputed,
+    disputeReason,
+    reviewRound: finalReviewRound,
+    finalScore
   };
+}
+
+/** 获取阅卷溯源数据 */
+export async function getReviewTrace(
+  examId: number,
+  blockId: string | undefined,
+  db: DbAdapter = getMysqlDb()
+): Promise<ReviewTraceItem[]> {
+  let query = `
+    SELECT abc.id AS crop_id, abc.student_id, u.name AS student_name,
+           u.student_number, abc.block_title, abc.status,
+           abc.score_breakdown, abc.final_score,
+           arb.name AS resolved_by
+    FROM answer_block_crops abc
+    JOIN users u ON u.id = abc.student_id
+    LEFT JOIN users arb ON arb.id = abc.final_score_by
+    WHERE abc.exam_id = ?
+  `;
+  const params: unknown[] = [examId];
+
+  if (blockId) {
+    query += " AND abc.block_id = ?";
+    params.push(blockId);
+  }
+
+  query += " ORDER BY u.student_number, abc.block_id";
+  const rows = await db.all(query, ...params) as Array<{
+    crop_id: string;
+    student_id: number;
+    student_name: string;
+    student_number: string | null;
+    block_title: string | null;
+    status: string;
+    score_breakdown: string | null;
+    final_score: number | null;
+    resolved_by: string | null;
+  }>;
+
+  return rows.map((row) => {
+    let rounds: ReviewRoundDetail[] = [];
+    if (row.score_breakdown) {
+      try {
+        const breakdown = JSON.parse(row.score_breakdown) as Array<{
+          round: number; reviewerId: number; score: number; reviewedAt: string;
+        }>;
+        rounds = breakdown.map((b) => ({
+          round: b.round,
+          reviewerId: b.reviewerId,
+          reviewerName: `教师${b.reviewerId}`,
+          score: b.score,
+          reviewedAt: b.reviewedAt
+        }));
+      } catch { /* ignore */ }
+    }
+
+    return {
+      cropId: row.crop_id,
+      studentId: row.student_id,
+      studentName: row.student_name,
+      studentNumber: row.student_number ?? "",
+      blockTitle: row.block_title ?? "",
+      rounds,
+      finalScore: row.final_score,
+      resolvedBy: row.resolved_by,
+      status: row.status
+    };
+  });
 }

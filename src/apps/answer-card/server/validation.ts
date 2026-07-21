@@ -29,6 +29,7 @@ export const CreateCardSchema = z.object({
     .min(1, "考试时间为必填项"),
   englishListening: z.boolean().optional().default(true),
   chineseChoicePlacement: z.enum(["inline", "front"]).optional().default("front"),
+  paperSize: z.enum(["A4", "A3"]).optional().default("A4"),
 });
 export type CreateCardInput = z.infer<typeof CreateCardSchema>;
 
@@ -59,6 +60,42 @@ export const UpdateExamSchema = z.object({
   subject: z.string().optional(),
 });
 export type UpdateExamInput = z.infer<typeof UpdateExamSchema>;
+
+const FiniteNumberSchema = z.number().finite("参数必须是有限数值");
+
+export const AssignedFormulaSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("proportional"),
+    enabled: z.boolean(),
+    params: z.object({
+      minIn: FiniteNumberSchema.optional(),
+      maxIn: FiniteNumberSchema.optional(),
+      minOut: FiniteNumberSchema.optional(),
+      maxOut: FiniteNumberSchema.optional(),
+    }),
+  }),
+  z.object({
+    type: z.literal("linear"),
+    enabled: z.boolean(),
+    params: z.object({
+      a: FiniteNumberSchema.optional(),
+      b: FiniteNumberSchema.optional(),
+    }),
+  }),
+  z.object({
+    type: z.literal("custom"),
+    enabled: z.boolean(),
+    params: z.object({
+      expression: z.string().max(500, "自定义表达式不能超过 500 个字符").optional(),
+    }),
+  }),
+]);
+
+export const UpdateAssignedFormulaSchema = z.object({
+  formula: AssignedFormulaSchema.nullable(),
+  recalculate: z.boolean().optional().default(false),
+});
+export type UpdateAssignedFormulaInput = z.infer<typeof UpdateAssignedFormulaSchema>;
 
 // ── Cross-exam group schema ──────────────────────────────
 

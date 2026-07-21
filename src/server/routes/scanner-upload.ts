@@ -10,13 +10,12 @@
  * GET  /api/scanner/sessions/:id/status   — 查询状态
  */
 
-import { Router, type Request, type Response, type NextFunction } from "express";
+import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import path from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import crypto from "node:crypto";
-import { apiKeyAuth } from "../middleware/api-key";
-import { authMiddleware } from "../middleware/auth";
+import { dualAuth } from "../middleware/scanner-auth";
 import { getMysqlDb } from "../db";
 import { persistAnswerBlockCrops } from "../services/AnswerBlockCropService";
 import type { RecognitionBlockCrop } from "../../shared/types";
@@ -25,18 +24,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 
 
 const router = Router();
 
-// v1.6.0: 双鉴权 — API Key 优先，无 Key 时强制 JWT
-// 逻辑：先 X-Api-Key，有则校验；没有则 authMiddleware 校验 JWT（无 token → 401）
-async function dualAuth(req: Request, res: Response, next: NextFunction) {
-  const apiKey = req.headers["x-api-key"] as string | undefined;
-  if (apiKey) {
-    const keyMw = apiKeyAuth({ scope: "scanner" });
-    await keyMw(req, res, next);
-  } else {
-    // 无 API Key → 强制 JWT 认证（无 token 直接 401）
-    await authMiddleware(req, res, next);
-  }
-}
+// v1.6.0: 双鉴权 — API Key 优先，无 Key 时强制 JWT（见 scanner-auth.ts）
 
 // 生成唯一 ID
 function genId(): string {
@@ -105,7 +93,13 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
     const { sessionId } = req.params;
     const token = (req.body?.token ?? req.query?.token) as string;
     const pageNum = Number(req.body?.pageNum ?? 1);
-    const side = (req.body?.side as string) || "front";
+    const rawSide = (req.body?.side as string) || "front";
+    // 白名单校验，防止 side 参数触发路径遍历
+    const side = rawSide === "back" ? "back" : "front";
+    if (!Number.isInteger(pageNum) || pageNum < 1 || pageNum > 999) {
+      res.status(400).json({ message: "无效的页码" });
+      return;
+    }
 
     if (!req.file) {
       res.status(400).json({ message: "未上传图片" });
@@ -125,9 +119,11 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
       return;
     }
 
-    // 保存图片
-    const ext = path.extname(req.file.originalname) || ".jpg";
-    const fileName = `${sessionId}_p${String(pageNum).padStart(2, "0")}_${side}${ext}`;
+    // 保存图片（对扩展名做白名单，session id 用 basename 兜底，避免路径遍历）
+    const rawExt = path.extname(req.file.originalname).toLowerCase();
+    const ext = [".jpg", ".jpeg", ".png", ".webp", ".bmp"].includes(rawExt) ? rawExt : ".jpg";
+    const safeSessionId = path.basename(String(sessionId));
+    const fileName = `${safeSessionId}_p${String(pageNum).padStart(2, "0")}_${side}${ext}`;
     const filePath = path.join(scannerUploadDir(), fileName);
     writeFileSync(filePath, req.file.buffer);
 

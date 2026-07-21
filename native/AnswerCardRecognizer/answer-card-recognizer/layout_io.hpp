@@ -67,6 +67,6 @@ struct LayoutPage {
 };
 
 LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_number);
-std::pair<int, int> a4_pixel_size(double width_mm, double height_mm, int dpi);
+std::pair<int, int> layout_pixel_size(double width_mm, double height_mm, int dpi);
 std::map<std::string, std::pair<double, double>> marker_centers_px(const LayoutPage& page, int dpi);
 

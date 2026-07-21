@@ -100,8 +100,10 @@ export async function saveCard(card: AnswerCard): Promise<AnswerCard> {
     bodyBlocks: card.bodyBlocks.map((block) =>
       block.type === "objective" ? { ...block, answerKey: normalizeObjectiveAnswerKey(block) } : block
     ),
-    paper: { size: "A4", orientation: "portrait" },
-    layoutVersion: 1,
+    paper: card.paper?.size === "A3"
+      ? { size: "A3", orientation: "landscape" }
+      : { size: "A4", orientation: "portrait" },
+    layoutVersion: card.layoutVersion === 2 ? 2 : 1,
     updatedAt: new Date().toISOString()
   };
   await writeFile(cardPath(normalized.id), JSON.stringify(normalized, null, 2), "utf8");

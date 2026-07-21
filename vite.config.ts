@@ -14,6 +14,9 @@ const WEB_BUILD_TARGET = ["es2020", "safari15"] as const;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const packageJson = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "package.json"), "utf8")
+) as { version?: string };
 
 export default defineConfig(({ mode }) => {
   const isScanner = mode === "scanner";
@@ -37,7 +40,8 @@ export default defineConfig(({ mode }) => {
     ],
     define: {
       // Compile-time constant so Vite can tree-shake scanner code from web builds
-      "import.meta.env.VITE_BUILD_TARGET": JSON.stringify(buildTarget)
+      "import.meta.env.VITE_BUILD_TARGET": JSON.stringify(buildTarget),
+      "import.meta.env.VITE_APP_VERSION": JSON.stringify(packageJson.version ?? "0.0.0")
     },
     server: {
       port: 5173,

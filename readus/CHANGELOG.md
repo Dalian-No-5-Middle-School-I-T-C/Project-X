@@ -1,55 +1,344 @@
 # Project-X CHANGELOG
 
-## v1.7.3 (2026-07-04) — 移动端网页适配
+## v1.9.1 (2026-07-19) — 答题卡设计器全面增强
 
-### 移动端全面适配
+### 作文块（essay block）
 
-系统从桌面端专用布局升级为桌面/移动端双适配架构。新增 480px 手机断点，通过底部导航栏替代桌面端 Tab 切换，实现手机端原生体验。
+新增作文格答题卡设计功能，支持 A3 三栏标准作文纸渲染。
 
-- **底部导航栏（Bottom Navigation Bar）**：
-  - 固定屏幕底部，毛玻璃背景 + 品牌色激活项
-  - 根据用户权限动态生成导航项（设计/考试/阅卷/分析/成绩/账号），最多 5 个 Tab
-  - 图标 + 短标签（2-3字），触摸目标 44px，iPhone 安全区适配（`env(safe-area-inset-bottom)`）
-  - 桌面端 `display: none`，仅 480px 以下显示
-- **Topbar 移动端精简**：
-  - 隐藏副标题、隐藏桌面端 `mode-toggle`（由底部导航替代）
-  - 标题省略号截断，操作按钮紧凑排列
-  - `position: sticky` 固定顶部
-- **480px 移动端主断点**（~300 行新增 CSS）：
-  - 全局重置：`body` 可滚动、`app-shell` 取消固定高度、底部 padding 为导航栏留空间
-  - 8 个 mode 页面逐一适配：
-    - **design**：预览区 + 属性面板纵向排列，答题卡页面自适应宽度
-    - **exam-manage**：考试列表表格改卡片布局，表头隐藏
-    - **grading**：扫描面板 padding 缩减，扫描结果网格紧凑化
-    - **analysis**：分析卡片 2 列，排名表横向滚动，箱型图 2 列
-    - **scores**：概览卡片紧凑排列，Tab 横向滚动，图表高度缩减
-    - **account**：三栏班级布局改单列，表单单列，表格横向滚动
-    - **sponsor**：收款码卡片全宽，二维码缩至 140px
-    - **guide**：正文 13px、表格横向滚动、代码块紧凑
-- **Modal 底部弹出（Bottom Sheet）**：
-  - 所有弹窗从屏幕底部滑出，全宽圆角顶部（`border-radius: 20px 20px 0 0`）
-  - 底部按钮纵向全宽排列
-  - PDF 查看弹窗全屏化
-  - 账号菜单下拉改为底部弹出
-- **触摸优化**：
-  - 输入框 `font-size: 16px`（防止 iOS Safari 自动缩放）
-  - 触摸目标最小 44px
-  - `-webkit-overflow-scrolling: touch` + `overscroll-behavior: contain`
-- **横屏适配**（iPad 等）：
-  - 1024px landscape：主内容 + 属性面板 320px 双列
-  - 768px landscape：单列 + 底部导航缩小至 48px
-- **暗色模式配套**：底部导航栏、Topbar、Modal 全部适配 `[data-theme="dark"]`
-- **HTML Meta 标签**：viewport 添加 `viewport-fit=cover`，新增 `apple-mobile-web-app-capable`、`theme-color`
+- **类型 `EssayGridConfig`**：columns / rows / cellWidthMm / cellHeightMm / targetChars / showTitle / lineColor / lineWidthMm（8 字段）
+- **布局引擎**（`layout.ts`）：`layoutEssayBlock()` 函数生成 A3 三栏网格，支持跨页续排
+- **设计器 UI**：新增「作文块」按钮 + inspector 面板（目标字数、格子尺寸、题号开关）
+- **SVG 预览**：实时渲染作文格，「题：（000）」题号
+- **PDF 导出**：完整格子网输出，黑色 `#222` 0.15mm 细线
+- **语文模板**：`essayBlock()` 默认 60 分 / 600 字
 
-### 技术实现
+### 解答题横格划线增强
 
-- **纯 CSS 适配策略**：不修改任何子组件文件，全部通过 `styles.css` 中的 `@media (max-width: 480px)` 规则覆盖
-- **App.tsx 最小改动**：仅新增 `mobileNavItems` useMemo（权限驱动的导航项数组）+ 底部导航 JSX
-- **CSS 变量扩展**：新增 `--mobile-bottom-nav-height`、`--mobile-safe-area-bottom/top`、`--touch-target-min`、`--mobile-content-padding`
+`lineGrid` 字段从 2 字段扩展为完整的 `LineGridConfig`（7 字段）。
+
+- **新增可配置项**：`lineColor`（默认 `#222`）、`lineWidthMm`（默认 0.15）、`fixedLineCount`（固定行数，自动算高度）、`insetLeftMm` / `insetRightMm`（边距）
+- **默认启用**：新建解答题 `kind: "lined_answer"` + 5 行横线，无需手动勾选
+- **inspector 面板**：行数 / 间距 / 颜色 / 线宽 / 边距均可调，自动联动高度
+- **SVG / PDF 渲染**：全部参数可配置，不再硬编码 `#888` / `#777`
+
+### 得分划线栏美化
+
+新增 `ScoreGridConfig`（8 字段），保持格子外框尺寸不变，优化内部视觉。
+
+- **新增可配置项**：`enabled`（独立开关）、`strokeColor`（默认 `#999`）、`dividerColor`（默认 `#ccc`）、`dividerWidthMm`（默认 0.1）、`fontSize`（默认 2.8，原 2.2）、`showLabel`（"得分"标签开关）
+- **SVG / PDF**：颜色和字号均从配置读取，不再硬编码
+- **inspector**：格线色 / 分隔线 / "得分"标签独立控制
+
+### 填空右侧批注
+
+`BlankItem` 新增 `rightAnnotation?: string` 字段，支持在填空横线右侧添加批注文字。
+
+- **类型扩展**：`BlankItem.rightAnnotation` + `SubjectiveRenderItem.blankRightAnnotations`
+- **inspector**：空白项列表新增「右侧批注」输入框（如 `(填＞或＜）`）
+- **SVG**：灰色 `#888` 3px 文字，横线右侧 1.2mm
+- **PDF**：对应位置绘制批注文字
+
+### 移动端底部导航更新
+
+- 新增 `home` 模式到 `mobileNavItems`（首页首选项），移除已删除的 `grading` 模式
+
+### 修改文件清单
+
+| 文件 | 改动 | 内容 |
+|------|------|------|
+| `src/shared/types.ts` | +50 行 | `EssayGridConfig` / `LineGridConfig` / `ScoreGridConfig` / `BlankItem.rightAnnotation` / `PageRenderBlock.panelIndex` |
+| `src/shared/layout.ts` | +130 行 | `layoutEssayBlock()` + lineGrid 固定行数 + scoreGrid 开关 |
+| `src/apps/answer-card/client/App.tsx` | +380 行 | 作文块按钮+inspector+SVG + 横线枪inspector+SVG + 得分栏inspector+SVG + 填空批注 |
+| `src/apps/answer-card/server/pdf.ts` | +90 行 | `drawEssayGrid()` + lineGrid 可配置 + scoreGrid 可配置 + 填空批注 |
+| `src/shared/cardTemplates.ts` | +50 行 | `essayBlock()` + `linedQuestion()` 新格式 + 语文模板集成 |
+
+**总计**：+700 行新增代码，0 个删除，0 个新依赖。
+
+### 版本
+- v1.9.0 → v1.9.1
+
+---
+
+## v1.9.0 (2026-07-18) — 网上阅卷系统全面重构
+
+### 概述
+网上阅卷系统从独立模块重构为考试管理的核心子功能，新增 Home 仪表盘、任务分配引擎、2P/3P 多评机制、争议仲裁、PAD 优先阅卷 UI、批注系统（文字+手写）和断点续批能力。累计新建 30+ 文件，修改 15+ 文件。
+
+---
+
+### 架构变更
+- **Home 仪表盘**：登录后进入图形化首页，模块卡片（答题卡设计 / 考试管理 / 成绩分析 / 账号管理）+ 快捷入口（继续阅卷 / 最新考试 / 考试管理引导卡片，始终可见）
+- **考试管理重构**：保留原有新建/删除/赋分等功能；每条考试新增「网阅」按钮进入 ExamDetailPage（5 个 Tab：阅卷 / 阅卷分配 / 争议管理 / 阅卷溯源 / 网阅设置）
+- **移除了独立阅卷模式**：`grading` mode 删除；新增 `home` mode
+- **Tab 栏可开关**：`show_tab_bar` 用户设置，默认关闭。关闭后各页面顶部栏显示"← 返回首页"按钮（44px），开启后桌面模式栏和底栏均含「首页」首选项。设置即时生效
+- **登录默认首页**：不再进答题卡设计器
+
+---
+
+### 阅卷任务分配引擎
+- 年级组长/管理员为每个题块指定教师 + 份数，系统随机分配（Fisher-Yates + djb2 hash seed，确定性可重现）
+- 教师进入考试后可自选已分配的题块，进度条显示实际待批/总数
+- 仲裁人下拉：同科同年级教师列表，已分配本题块的教师置顶（标记"批卷教师"），冲突自动跳过
+- `ReviewAssignPage` 完整界面：教师下拉选择 + 份数分配 + "🎲 随机分配"按钮
+
+---
+
+### 2P/3P 多评系统
+- 考试级 `review_mode`：1P / 2P / 3P
+- 2P：两教师独立打分 → 分差 ≤ 阈值取平均 → 分差 > 阈值进入争议
+- 3P：三教师独立打分 → 一致取平均；两评接近取接近分平均（排除异常分）；三评分散进入争议
+- 默认分差阈值：作文 3 分 / ≥10 分题 2 分 / <10 分题 1 分（可逐题块覆盖）
+- 取整方式 5 种：`ceil` 向上 / `floor` 向下 / `round` 四舍五入 / `half` 保留 0.5 / `none` 保留小数。非作文默认 `ceil`，作文默认 `half`
+- 仲裁：最终分以仲裁人判定为准；无指定仲裁人 → 搁置争议池待年级组长处理
+
+---
+
+### 新阅卷 UI（PAD 优先）
+- **布局**：左图右分（≤900px 自动上下分栏）
+- **图片操作**：滚轮缩放（25%~400%）、按钮旋转 90° CW/CCW
+- **打分面板**：大按钮（56px+ 触控目标），根据满分自动生成列：<10 分 = 个位 + 0.5，≥10 分 = 十位 + 个位 + 0.5
+- **工具栏**：上一份/下一份、缩放百分比、旋转、批注模式切换
+- **快捷键**：Enter = 保存并下一份，← → = 翻页，滚轮 = 缩放
+
+---
+
+### 批注系统
+- **文字批注（桌面端）**：点击答题卡 → 弹出输入框 → 半透明红色浮层叠加
+- **手写批注（PAD/移动端）**：Canvas 渲染，PointerEvent 笔触追踪，palm rejection（忽略大面积触摸），笔迹保存为 JSON 路径数据
+- **自动模式检测**：触摸设备默认手写，桌面端默认文字批注
+- **API**：`GET/POST/DELETE /api/review-annotations`，批注可正常保存和读取
+- **学生端可见**：新增 `CropImageViewer` 组件，学生在成绩详情可看到教师批注浮层
+
+---
+
+### 断点续批
+- `review_sessions` 表持久化：当前批改位置 + 缩放/平移状态 + 未提交草稿分数
+- 退出时自动保存，重新进入时恢复。草稿自动回填，已提交分数不回滚
+
+---
+
+### 争议管理与仲裁
+- 争议自动检测：分差超阈值 → 自动交给指定仲裁人（冲突跳过 → 搁置争议池）
+- 争议管理 Tab：年级组长/管理员查看搁置争议列表，手动判分或指派仲裁人
+- 仲裁人冲突检测：若指定仲裁人已是该卷评审人 → 保留争议池，待人工处理
+
+---
+
+### 阅卷溯源
+- `answer_block_crops` 追踪字段：`reviewer_id`、`reviewed_at`、`review_round`、`final_score`、`final_score_by`、`score_breakdown`
+- 溯源 Tab：表格展示每学生每轮评审人+分数+状态
+
+---
+
+### 数据库新增 (v18 迁移，双库双轨)
+- `review_assignments` — 阅卷任务分配
+- `review_sessions` — 断点续批会话
+- `review_annotations` — 批注存储
+- `block_grading_config` — 逐题块网阅设置（阈值/取整/仲裁人）
+- `answer_block_crops` 加列：reviewer_id, reviewed_at, review_round, final_score, final_score_by, score_breakdown
+- `users` 加列：show_tab_bar
+- `exams` 加列：review_mode, review_enabled
+
+### 类型新增
+- `SubjectiveBlockKind` + `"essay"`（作文标签，预留给语文/英语作文）
+- 18+ 个新类型：ReviewMode, RoundingMode, BlockGradingConfig, ReviewAssignment, ReviewSession, ReviewAnnotation, ReviewTraceItem, DisputeItem, DashboardData, TeacherBlockAssignment, ExamReviewSettings, ArbitratorCandidate, BatchGradingConfigUpdate, ReviewProgress, ReviewRoundDetail, DisputeCheckResult
+
+### API 新增
+| 端点 | 说明 |
+|------|------|
+| `GET /api/dashboard` | 首页仪表盘数据 |
+| `GET /api/review/my-exams` | 教师待阅考试列表 |
+| `GET /api/review/exams/:id/trace` | 阅卷溯源 |
+| `GET/POST /api/review-assign/...` | 任务分配 CRUD |
+| `GET/PUT/DELETE /api/review-session/...` | 断点续批会话 |
+| `GET /api/review-arbitration/...` | 争议列表 + 仲裁人候选 + 仲裁裁决 |
+| `GET/PUT/POST /api/block-grading-config/...` | 题块网阅设置 + 批量覆盖 |
+| `GET/POST/DELETE /api/review-annotations` | 批注 CRUD |
+
+### 修复
+- 并发 CAS 检测：`submitReviewCropScores` 用 `WHERE review_round = ?` 防止后写覆盖先写，冲突时前端提示
+- Express 5 `req.params` 类型安全修复（`String(req.params.x ?? "")`）
+- 双数据库迁移双轨制（SQLite 用 `hasTable`/`addColumnIfMissing`，MariaDB 用 `try/catch` + `sqls[]`）
+- 成绩分析页移除旧的「网上阅卷」Tab（网阅统一在考试管理入口）
+- 快捷入口无数据时不空白，fallback 到最新考试或考试管理引导卡片
+
+### 大型二次修复
+基于全面代码审查（14 个文件、45 个问题），修复 4 个致命 bug + 10 个严重 bug。
+
+#### 致命修复（4 项）
+- **P0-1 文件 I/O 在 DB 事务内** (`cleanup.ts`)：文件删除移到事务外，避免事务回滚导致数据不一致
+- **P0-2 争议状态更新在事务外** (`ReviewService.ts`)：争议检测 + 状态写入全部移入事务内
+- **P0-3 仲裁无 CAS 并发保护** (`review-arbitration.ts`)：CAS 乐观锁 `WHERE review_round = ? AND status = 'disputed'` + 事务统一化
+- **P0-4 reviewMode 从未强制** (`ReviewService.ts`)：提交前检查 `已完成轮次 >= reviewMode`，防止无限提交
+
+#### 严重修复（10 项）
+- **P1-5 重复提交检测**：同一评审人不可对同一题块二次提交（从 `score_breakdown` 解析）
+- **P1-6 偏差值统计错误** (`AnalysisRepository.ts`)：🇯🇵 偏差值 / Z 值的均值与标准差改用全体考生数据，不再按班级筛选
+- **P1-7 假性标记** (`score-editing.ts`)：分数未变时不设 `manually_modified = 1`
+- **P1-8 排名事务一致性** (`score-editing.ts` 两处)：排名重算从事务外移到事务内
+- **P1-9 仲裁 max_score=0** (`review-arbitration.ts`)：从已有 question_scores 读取正确的 max_score
+- **P1-10 仲裁 score_type 硬编码** (`review-arbitration.ts`)：从已有 question_scores 读取正确的 score_type
+- **P1-11 评审人查询不可靠** (`ArbitrationService.ts`)：改用 score_breakdown JSON 解析，不再单查 reviewer_id
+- **P1-12 通用化争议检测** (`ArbitrationService.ts`)：`computeMultiReviewResult` 支持 4+ 次评审，聚类判断替代硬编码 3P
+- **P1-14 Token 暴露**：新增 `mediaUrl()`，同源图片/iframe 依靠 httpOnly cookie 认证，不再在 URL 中暴露 JWT
+- **仲裁人冲突检查** (`ReviewService.ts`)：仲裁人已参与评审时提前抛出明确错误
+
+#### 修改文件
+| 文件 | 改动 |
+|------|------|
+| `src/server/db/cleanup.ts` | 文件 IO 移出事务 |
+| `src/server/services/ReviewService.ts` | reviewMode 强制 + 争议事务内 + 重复/仲裁检查 |
+| `src/server/routes/review-arbitration.ts` | CAS 保护 + 事务统一 + max_score/score_type 修复 |
+| `src/server/routes/score-editing.ts` | manually_modified 条件 + 排名事务内 (2 处) |
+| `src/server/services/ArbitrationService.ts` | 通用化争议检测 + 评审人检查修复 |
+| `src/server/repositories/AnalysisRepository.ts` | 偏差值全体数据 |
+| `src/apps/answer-card/client/auth/api.ts` | mediaUrl() 新增 |
+| 前端 6 组件 | 图片 URL 改用 mediaUrl (cookie 认证) |
+
+## v1.8.2 (2026-07-09) — 暗色模式全面修复
+
+基于 v1.6.3 暗色模式基线进行系统性修复，解决 v1.7.0+ 新增组件在暗色下的灰底灰字、可读性差、与背景融为一体等问题。
+
+### 问题根因
+- v1.6.3 暗色模式已稳定（GitHub Dark 风格，#C0392B / #E6EDF3 / #161B22），但组件级暗色覆盖不完整
+- v1.7.0/v1.8.0 大量新增组件使用 `var(--brand)` / `var(--text)` 等变量，但未覆写背景色
+- 亮色模式下 `rgba(255,255,255,0.55~0.78)` 半透明毛玻璃在暗色底上呈现灰色、文字难以阅读
+
+### 修复方案
+**统一原则**：所有亮色半透明/毛玻璃背景在暗色下覆写为 `var(--surface)` / `var(--surface-raised)`，移除 `backdrop-filter`，添加清晰 `var(--line)` / `var(--line-strong)` 边框。
+
+#### 核心变量（保持 v1.6.3 不变）
+| 变量 | 暗色值 |
+|------|--------|
+| `--brand` | `#C0392B` |
+| `--text` | `#E6EDF3` |
+| `--surface` | `#161B22` |
+| `--surface-raised` | `#21262D` |
+| `--background` | `#0D1117` |
+
+#### 修复的组件（`styles.css` ~250 行新增暗色覆盖）
+- **通用按钮** `.ghost-button` / `.primary-button`：背景 `var(--surface-raised)` + 边框，hover 品牌色
+- **通用面板** `.panel`：背景 `var(--surface)`，hover `var(--surface-raised)` + 品牌色边框
+- **答题卡列表** `.card-list-item` / `.card-list-actions button`：移除半透明白，激活态品牌红渐变
+- **底部状态栏** `.statusbar`：背景 `var(--surface-raised)`
+- **顶部导航** `.mode-toggle button`：未激活用 `var(--surface-raised)` 与背景区分，激活保留红渐变
+- **题块卡片** `.block-chip`：背景 `var(--surface-raised)`，hover/active 品牌红渐变
+- **题块操作按钮** `.chip-actions button` / `.question-editor-title button`：背景 `var(--surface)`
+- **上传按钮** `.upload-button`：背景 `var(--surface-raised)` + 品牌色虚线边框
+- **答案键按钮** `.answer-key-row button`：背景 `var(--surface-raised)`，激活态品牌红
+- **分值检查** `.score-warning-summary`：去掉亮色黄底，改为深色品牌黄调
+
+#### 阅卷表格暗色适配
+- `.score-table` / `.score-table-head` / `.question-grade-list` / `.question-grade`：覆写半透明白背景
+- `.question-grade.needs-review`：深色黄调
+- `.status-ok`：深色绿 `#6EE7B7`，`.status-warn`：深色黄 `#FCD34D`
+- `.file-queue` / `.queued-files span`：覆写半透明白，移除 backdrop-filter
+
+#### AI 分析面板暗色适配
+- `.ai-analysis-panel`：背景 `var(--surface)`
+- `.icon-button`：背景 `var(--surface-raised)`，hover 品牌色
+- `.ai-status-warning`：深色黄调 + `#FCD34D` 文字
+- `.ai-report-summary` / `.ai-caveats span` / `.ai-tool-trace span`：深色背景
+- `.ai-question-action em`：`var(--muted)` 文字色
+
+### 修改文件
+| 文件 | 改动 |
+| --- | --- |
+| `src/apps/answer-card/client/styles.css` | 暗色覆盖段新增 ~250 行组件级暗色适配 |
+
+---
+
+## v1.8.1 (2026-07-06) — 代码审查 bug 修复与一致性收敛
+
+基于 PR161 代码审查报告（`readus/CODE-REVIEW.md`），修复安全漏洞、崩溃 bug、排名/百分位不一致及若干前端问题。
+
+### 安全修复
+- **MariaDB 恢复命令注入（C-S1）**：`backup.ts` restore 改用 `execFile` 参数数组 + stdin，消除 shell 注入
+- **扫描上传路径遍历（H-S12）**：`side` 白名单、`sessionId` basename 兜底、扩展名白名单
+- **ZIP 解压前缀绕过（M-S18）**：路径检查改用 `path.relative`，防止 `destDir-evil` 类前缀攻击
+
+### 数据一致性
+- **排名算法统一（H-L2）**：`score-editing.ts` 与 `ReviewService.ts` 两份重复 `recomputeRankings` 收敛为共享模块 `rankingUpdate.ts`，改用 `competitionRank`（同分并列）
+- **百分位公式统一（M-L4）**：写入 DB 时统一使用公式 A `(total - rank) / (total - 1) * 100`（末名 0）
+- **分数舍入（H-L3）**：成绩编辑/复核路径 `total_score` 统一 `roundScore`（3 位小数）
+
+### 阅卷逻辑
+- **复核置信度阈值生效（H-L1）**：Web 阅卷链路读取用户 `reviewConfidenceThreshold` 并传入 `gradeObjectiveQuestion`
+- **主观题负分裁剪（M-L6）**：`Math.max(0, Math.min(score, maxScore))`
+- **多页阅卷择优（M-L2/M-L3）**：跨页去重纳入置信度；学号优先取 `status=ok` 的识别结果
+
+### 前端修复
+- **GradingResults 崩溃（C-F1）**：`useState` 移到早返回之前，修复 Hook 数量变化崩溃
+- **ScannerPanel 闭包陷阱（C-F2/C-F3）**：用 ref 追踪 `pages`/`sessionId`/`scannerMode`，修复 done 回传页数 0 与远程上传空循环
+- **网上阅卷前进（H-F2）**：「保存并下一份」真正前进到下一份
+- **SSE 健壮性（H-F5/M-F4）**：`JSON.parse` 加 try/catch；扫描 SSE 断连反馈错误状态
+- **图片压缩内存泄漏（H-F6）**：`URL.revokeObjectURL` 释放 blob URL
+
+### 小修复
+- `generateTeacherUsername` 异步检查存在性，避免用户名碰撞（L-S2）
+- `englishTemplate` 移除无意义三元（L-L4）
+- `ClassManagement` CSV 表头正则去重（L-F8）
+
+### 测试与文档
+- 新增 `readus/CODE-REVIEW.md`（含修复状态总表）
+- 新增 `scripts/bugfix-verification.ts`（14 项单元断言）
+- 新增 `scripts/ranking-integration-check.ts`（真实 SQLite 排名集成测试）
+
+### 回归验证
+- `npm run typecheck` ✓
+- `npm run verify:auth` — 54 通过 / 0 失败
+- `npx tsx scripts/grading-rules-smoke.ts` ✓
+- `npx tsx scripts/bugfix-verification.ts` — 14 通过
+- `npx tsx scripts/ranking-integration-check.ts` ✓
+- `npm run build` ✓
+- GUI 冒烟：登录、设计/考试/阅卷/分析四页正常渲染
+
+### 第二轮修复（对照 PR161 + debug 审查）
+- **H-S4**：`ExamRepository` / 扫描器持久化改用 `ON CONFLICT DO UPDATE`，重扫保留 rank/percentile/手动改分
+- **H-S1**：成绩修改 PUT 路由增加 `requireExamAccess`
+- **H-S11**：`getVisibleExamIds` 异步化 + `getMysqlDb()`，MariaDB 模式考试可见性正确
+- **M-L4 显示层**：`AnalysisRepository` 百分位显示统一公式 A
+- **backup**：MariaDB 默认端口 `3306`（原误 `443`）
+- **ScannerPanel**：`sessionIdRef` 在 `startScan` 同步赋值
+- **score-editing**：答案 `updateCard` 持久化、同步 `subjective_score`、传入复核阈值
+- **PR161**：`COUNT(ss.exam_id)` 修复 JOIN 重复计数
 
 ### 修改文件
 
 | 文件 | 改动 |
+| --- | --- |
+| `src/server/routes/backup.ts` | execFile 防注入、ZIP 路径检查 |
+| `src/server/routes/scanner-upload.ts` | side/ext/sessionId 安全校验 |
+| `src/server/services/rankingUpdate.ts` | **新增** 统一排名/百分位重算 |
+| `src/server/routes/score-editing.ts` | 使用共享排名模块 + roundScore |
+| `src/server/services/ReviewService.ts` | 同上 |
+| `src/shared/grading.ts` | 阈值参数、跨页择优、主观分裁剪 |
+| `src/apps/answer-card/server/index.ts` | 读取用户复核阈值传入阅卷 |
+| `src/apps/answer-card/client/App.tsx` | GradingResults Hook 修复、SSE try/catch |
+| `src/apps/answer-card/client/components/ScannerPanel.tsx` | ref 闭包修复 |
+| `src/apps/answer-card/client/components/OnlineReviewPanel.tsx` | 保存并下一份前进 |
+| `src/apps/answer-card/client/components/PaperUploadPanel.tsx` | objectURL 释放 |
+| `src/server/repositories/UserRepository.ts` | 教师用户名生成重试 |
+| `src/shared/cardTemplates.ts` | 移除冗余三元 |
+| `scripts/bugfix-verification.ts` | **新增** 回归测试 |
+| `scripts/ranking-integration-check.ts` | **新增** 排名集成测试 |
+| `readus/CODE-REVIEW.md` | **新增** 代码审查报告 + 修复状态 |
+| `src/server/services/userSettings.ts` | **新增** 共享复核阈值读取 |
+| `src/server/repositories/ExamRepository.ts` | H-S4 upsert + COUNT 修复 |
+| `src/apps/answer-card/server/middleware.ts` | H-S11 异步 getMysqlDb |
+| `src/apps/answer-card/server/scanner/index.ts` | H-S4 扫描持久化 upsert |
+| `src/server/repositories/AnalysisRepository.ts` | M-L4 百分位显示 + COUNT |
+| `src/server/routes/exam-groups.ts` | COUNT(ss.exam_id) |
+
+### Ubuntu 生产环境与 AI 知识点分析热修
+- PDF 导出按环境变量、常见 Linux/Windows/macOS CJK 字体路径和系统字体目录自动发现字体；缺失时降级到 PDFKit 内置字体，并支持 `PROJECTX_PDF_FONT_PATH` / `PROJECTX_PDF_FONT_POSTSCRIPT_NAME` 覆盖。
+- MariaDB 考试可见性统一走 `getMysqlDb()`；考试选择、分析和考试组统计不再依赖可能缺失的 `student_scores.id`，统一使用 `COUNT(ss.exam_id)`。
+- Ubuntu 包启动脚本和 systemd 模板显式使用包内 `dist/web`，并补齐 `mammoth`、`pdfjs-dist`、`sharp`、`tesseract.js` 等服务端依赖。
+- 新增 `llmclient` Python sidecar 生产部署与 MariaDB 读取支持；知识点分析优先使用系统级服务商，失败时将具体错误透传到前端。
+
+---
+
 ## v1.8.0 (2026-07-04) — 原卷上传与 AI 知识点分析
 
 ### 数据库 schema 完善
@@ -137,6 +426,58 @@
 
 
 ---
+
+## v1.7.3 (2026-07-04) — 移动端网页适配
+
+### 移动端全面适配
+
+系统从桌面端专用布局升级为桌面/移动端双适配架构。新增 480px 手机断点，通过底部导航栏替代桌面端 Tab 切换，实现手机端原生体验。
+
+- **底部导航栏（Bottom Navigation Bar）**：
+  - 固定屏幕底部，毛玻璃背景 + 品牌色激活项
+  - 根据用户权限动态生成导航项（设计/考试/阅卷/分析/成绩/账号），最多 5 个 Tab
+  - 图标 + 短标签（2-3字），触摸目标 44px，iPhone 安全区适配（`env(safe-area-inset-bottom)`）
+  - 桌面端 `display: none`，仅 480px 以下显示
+- **Topbar 移动端精简**：
+  - 隐藏副标题、隐藏桌面端 `mode-toggle`（由底部导航替代）
+  - 标题省略号截断，操作按钮紧凑排列
+  - `position: sticky` 固定顶部
+- **480px 移动端主断点**（~300 行新增 CSS）：
+  - 全局重置：`body` 可滚动、`app-shell` 取消固定高度、底部 padding 为导航栏留空间
+  - 8 个 mode 页面逐一适配：
+    - **design**：预览区 + 属性面板纵向排列，答题卡页面自适应宽度
+    - **exam-manage**：考试列表表格改卡片布局，表头隐藏
+    - **grading**：扫描面板 padding 缩减，扫描结果网格紧凑化
+    - **analysis**：分析卡片 2 列，排名表横向滚动，箱型图 2 列
+    - **scores**：概览卡片紧凑排列，Tab 横向滚动，图表高度缩减
+    - **account**：三栏班级布局改单列，表单单列，表格横向滚动
+    - **sponsor**：收款码卡片全宽，二维码缩至 140px
+    - **guide**：正文 13px、表格横向滚动、代码块紧凑
+- **Modal 底部弹出（Bottom Sheet）**：
+  - 所有弹窗从屏幕底部滑出，全宽圆角顶部（`border-radius: 20px 20px 0 0`）
+  - 底部按钮纵向全宽排列
+  - PDF 查看弹窗全屏化
+  - 账号菜单下拉改为底部弹出
+- **触摸优化**：
+  - 输入框 `font-size: 16px`（防止 iOS Safari 自动缩放）
+  - 触摸目标最小 44px
+  - `-webkit-overflow-scrolling: touch` + `overscroll-behavior: contain`
+- **横屏适配**（iPad 等）：
+  - 1024px landscape：主内容 + 属性面板 320px 双列
+  - 768px landscape：单列 + 底部导航缩小至 48px
+- **暗色模式配套**：底部导航栏、Topbar、Modal 全部适配 `[data-theme="dark"]`
+- **HTML Meta 标签**：viewport 添加 `viewport-fit=cover`，新增 `apple-mobile-web-app-capable`、`theme-color`
+
+### 技术实现
+
+- **纯 CSS 适配策略**：不修改任何子组件文件，全部通过 `styles.css` 中的 `@media (max-width: 480px)` 规则覆盖
+- **App.tsx 最小改动**：仅新增 `mobileNavItems` useMemo（权限驱动的导航项数组）+ 底部导航 JSX
+- **CSS 变量扩展**：新增 `--mobile-bottom-nav-height`、`--mobile-safe-area-bottom/top`、`--touch-target-min`、`--mobile-content-padding`
+
+### 修改文件
+
+| 文件 | 改动 |
+
 
 ## v1.7.2 (2026-07-01) — 统计图表 + 教师权限管理
 

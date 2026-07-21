@@ -2,18 +2,18 @@ import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { dataDir } from "../storage";
 import {
-  createSession, createScanRecord, getScanRecord, listScanRecords,
+  createSession, createScanRecord, getSession, listScanRecords,
   updateScanOcrResult, updateScanQuality, updateSessionStatus,
   incrementPageCount, upsertRecognitionResult
 } from "../database/scan-store";
 import type { ScanProgressEvent, ScanSessionConfig } from "./scanner-types";
 import { listSources, scan } from "./twain-bridge";
 import { recognizeAnswerCard } from "../recognition";
-import { readLayout, readCard } from "../storage";
 import { gradeCombinedRecognition } from "../../../../shared/grading";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { getMysqlDb } from "../../../../server/db";
 import { persistAnswerBlockCrops } from "../../../../server/services/AnswerBlockCropService";
+import { prepareCardLayoutById } from "../card-layout";
 
 export { listSources };
 
@@ -29,11 +29,38 @@ async function createRecognitionCropTempDir(cardId: string, recordId: string): P
 
 export type ProgressHandler = (event: ScanProgressEvent) => void;
 
+export type ScanPageMapping = {
+  groupIndex: number;
+  layoutPage: number;
+  unusedSide: boolean;
+};
+
+export function mapScanPageToLayout(
+  physicalPage: number,
+  side: "front" | "back",
+  layoutPageCount: number,
+  sided: "single" | "double"
+): ScanPageMapping {
+  const sidesPerSheet = sided === "single" ? 1 : 2;
+  const sheetsPerStudent = Math.max(1, Math.ceil(layoutPageCount / sidesPerSheet));
+  const sheetIndex = Math.max(0, physicalPage - 1);
+  const groupIndex = Math.floor(sheetIndex / sheetsPerStudent);
+  const sheetWithinGroup = sheetIndex % sheetsPerStudent;
+  const sideOffset = sidesPerSheet === 1 || side === "front" ? 1 : 2;
+  const layoutPage = sheetWithinGroup * sidesPerSheet + sideOffset;
+  return { groupIndex, layoutPage, unusedSide: layoutPage > layoutPageCount };
+}
+
 /** Full scan + OCR workflow */
 export async function runScanSession(
   config: ScanSessionConfig,
   onProgress: ProgressHandler
 ): Promise<string> {
+  const prepared = await prepareCardLayoutById(config.cardId);
+  if (!prepared) {
+    throw new Error("答题卡不存在，无法开始扫描");
+  }
+  const card = prepared.card;
   const session = await createSession(config.cardId, config.sessionName, {
     dpi: config.dpi,
     duplex: config.duplex,
@@ -68,8 +95,7 @@ export async function runScanSession(
       throw new Error(result.message || "扫描未产生任何页面");
     }
 
-    const card = await readCard(config.cardId);
-    const isSingleSided = card?.sided === "single";
+    const isSingleSided = card.sided === "single";
     const filteredPages = isSingleSided
       ? result.pages.filter((page) => page.side === "front")
       : result.pages;
@@ -133,29 +159,58 @@ export async function runOcrOnSession(
   onProgress: ProgressHandler
 ): Promise<void> {
   const records = await listScanRecords(sessionId);
-
-  await readLayout(cardId);
-  const card = await readCard(cardId);
-  const isSingleSided = card?.sided === "single";
+  const prepared = await prepareCardLayoutById(cardId);
+  if (!prepared) {
+    throw new Error("答题卡不存在，无法识别扫描结果");
+  }
+  const { card, layout, layoutPath: currentLayoutPath } = prepared;
+  const session = await getSession(sessionId);
+  const isSingleSided = card.sided === "single";
+  const studentIdsByGroup = new Map<number, string>();
 
   for (const record of records) {
     if (!record.image_path) continue;
+    const { groupIndex, layoutPage, unusedSide } = mapScanPageToLayout(
+      record.page_num,
+      record.side,
+      layout.pages.length,
+      card.sided
+    );
 
-    const layoutPage = isSingleSided
-      ? record.page_num
-      : (record.page_num - 1) * 2 + (record.side === "front" ? 1 : 2);
+    if (unusedSide) {
+      await updateScanOcrResult(record.id, studentIdsByGroup.get(groupIndex) ?? null, null, "done", "已跳过未使用的空白背面");
+      onProgress({
+        sessionId,
+        type: "ocr_page_done",
+        recordId: record.id,
+        pageNum: record.page_num,
+        side: record.side,
+        studentId: studentIdsByGroup.get(groupIndex) ?? null,
+        message: "已跳过未使用的空白背面"
+      });
+      continue;
+    }
 
     try {
       const recognition = (await recognizeAnswerCard({
         imagePath: record.image_path,
-        layoutPath: (await import("../storage")).layoutPath(cardId),
+        layoutPath: currentLayoutPath,
         pageNumber: layoutPage,
-        dpi: 300,
+        dpi: session?.dpi || 300,
         cropsDir: await createRecognitionCropTempDir(cardId, record.id)
       })) as CombinedRecognitionResult;
 
-      const studentId = recognition.studentId?.value ?? null;
-      const studentConf = recognition.studentId?.status === "ok" ? 0.9 : 0.0;
+      const recognizedStudentId = recognition.studentId?.status === "ok" ? recognition.studentId.value : null;
+      if (recognizedStudentId) {
+        studentIdsByGroup.set(groupIndex, recognizedStudentId);
+      }
+      const inheritedStudentId = studentIdsByGroup.get(groupIndex) ?? null;
+      const studentId = recognizedStudentId ?? inheritedStudentId;
+      const inherited = !recognizedStudentId && Boolean(inheritedStudentId);
+      if (inherited) {
+        recognition.studentId = { status: "inherited", value: inheritedStudentId, source: "inherited" };
+      }
+      const studentConf = recognizedStudentId ? 0.9 : inherited ? 0.9 : 0.0;
       const ocrStatus = recognition.status === "ok" ? "done" : recognition.status === "failed" ? "failed" : "review";
 
       await updateScanOcrResult(record.id, studentId, studentConf,

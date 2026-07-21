@@ -17,13 +17,14 @@ import {
   Search,
   BookOpen,
   FileUp,
+  Home,
   SquarePen,
   Trash2,
   Upload,
   Users
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
-import { apiUrl, authFetch, fetchJson, urlWithToken } from "./auth/api";
+import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "./auth/api";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
@@ -41,6 +42,9 @@ import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
 import { ExamGroupDetailPage } from "./components/ExamGroupDetailPage";
 import { GroupExportModal } from "./components/GroupExportModal";
+import { HomePage } from "./components/HomePage";
+import { GradePanel } from "./components/GradePanel";
+import { ExamDetailPage } from "./components/ExamDetailPage";
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -126,6 +130,11 @@ type GroupDeleteTarget = {
 };
 
 type AutoSaveState = "idle" | "dirty" | "saving" | "saved" | "error";
+type PreviewMode = "fit-width" | "fit-page" | "fit-panel" | "custom";
+
+const PREVIEW_SETTINGS_KEY = "projectx-card-preview-settings-v1";
+const PREVIEW_MIN_PERCENT = 50;
+const PREVIEW_MAX_PERCENT = 400;
 
 type PdfWarningState = {
   validation: CardScoreValidationResult;
@@ -138,7 +147,7 @@ type PdfWarningState = {
 };
 
 const styleLabels: Record<SubjectiveStyle, string> = {
-  manual_score_grid: "带顶部分数填涂区",
+  manual_score_grid: "带分数填涂区",
   plain_subjective: "纯主观题书写块"
 };
 
@@ -157,12 +166,16 @@ const blankLabelStyleLabels: Record<BlankLabelStyle, string> = {
 function subjectiveBlockKind(block: SubjectiveBlock): SubjectiveBlockKind {
   if (block.blockKind) return block.blockKind;
   if (block.title.includes("解答")) return "answer";
+  if (block.title.includes("作文")) return "essay";
   if (block.questions.length > 0 && block.questions.every((question) => question.kind === "blank")) return "fill_blank";
   return "answer";
 }
 
 function subjectiveBlockKindLabel(block: SubjectiveBlock): string {
-  return subjectiveBlockKind(block) === "fill_blank" ? "填空题" : "解答题";
+  const kind = subjectiveBlockKind(block);
+  if (kind === "fill_blank") return "填空题";
+  if (kind === "essay") return "作文题";
+  return "解答题";
 }
 
 function answerBlankItems(question: SubjectiveQuestion): BlankItem[] {
@@ -172,7 +185,8 @@ function answerBlankItems(question: SubjectiveQuestion): BlankItem[] {
     return question.blanks.items.map((item) => ({
       label: item.label ?? "",
       widthMm: item.widthMm || fallbackWidth,
-      heightMm: item.heightMm || fallbackHeight
+      heightMm: item.heightMm || fallbackHeight,
+      rightAnnotation: item.rightAnnotation
     }));
   }
   const count = Math.max(1, question.blanks?.count ?? 4);
@@ -208,10 +222,10 @@ function defaultModeForUser(
 ): AppMode {
   const canOpenMode = (mode: AppMode): boolean => {
     if (!variantConfig.allowedModes.includes(mode)) return false;
+    if (mode === "home") return true;
     if (mode === "scores") return hasPermission(PERMISSIONS.SCORE_READ);
     if (mode === "design") return hasPermission(PERMISSIONS.CARD_READ);
     if (mode === "exam-manage") return hasPermission(PERMISSIONS.EXAM_WRITE);
-    if (mode === "grading") return hasPermission(PERMISSIONS.GRADE_READ);
     if (mode === "analysis") return hasPermission(PERMISSIONS.EXAM_READ);
     if (mode === "account") return hasPermission(PERMISSIONS.USER_MANAGE);
     return false;
@@ -260,7 +274,11 @@ function downloadCsv(rows: CombinedGradingRow[], cardId: string) {
       row.message ?? ""
     ])
   ];
-  const csv = lines.map((line) => line.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(",")).join("\n");
+  // L-S13: CSV 公式注入防御 — 对以 =, +, -, @, TAB, CR 开头的单元格加前缀单引号
+  const csv = lines.map((line) => line.map((cell) => {
+    const safe = /^[=+\-@\t\r]/.test(cell) ? `'${cell}` : cell;
+    return `"${safe.replace(/"/g, '""')}"`;
+  }).join(",")).join("\n");
   const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -308,10 +326,11 @@ function defaultSubjective(nextNumber: number): SubjectiveBlock {
         number: nextNumber,
         score: 12,
         style: "manual_score_grid",
-        kind: "plain_box",
-        lineGrid: { enabled: false, lineSpacingMm: 8 },
+        kind: "lined_answer",
+        lineGrid: { enabled: true, lineSpacingMm: 8, fixedLineCount: 5, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
+        scoreGrid: { enabled: true, strokeColor: "#999", strokeWidthMm: 0.15, fillColor: "#fff", fontSize: 2.8, dividerColor: "#ccc", dividerWidthMm: 0.1, showLabel: true },
         images: [],
-        minHeightMm: 62
+        minHeightMm: 54   // 14 + 5×8
       }
     ]
   };
@@ -329,7 +348,7 @@ function defaultBlankQuestion(
     style,
     kind: "blank",
     blanks: { count: 1, widthMm: 22, heightMm: 6, labelStyle: "none" },
-    lineGrid: { enabled: false, lineSpacingMm: 8 },
+    lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
     images: [],
     minHeightMm: 14
   };
@@ -344,6 +363,35 @@ function defaultBlankBlock(nextNumber: number): SubjectiveBlock {
     questions: Array.from({ length: 10 }, (_, index) =>
       defaultBlankQuestion(nextNumber + index, index === 0 ? 15 : 0, index === 0 ? "manual_score_grid" : "plain_subjective")
     )
+  };
+}
+
+function defaultEssayBlock(nextNumber: number): SubjectiveBlock {
+  return {
+    id: createBlockId("subj"),
+    type: "subjective",
+    blockKind: "essay",
+    title: "作文",
+    questions: [{
+      id: createBlockId("q"),
+      number: nextNumber,
+      score: 60,
+      style: "manual_score_grid",
+      kind: "plain_box",
+      lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
+      images: [],
+      minHeightMm: 280,
+      essayGrid: {
+        columns: 0,
+        rows: 0,
+        cellWidthMm: 7,
+        cellHeightMm: 7,
+        targetChars: 600,
+        showTitle: true,
+        lineColor: "#222",
+        lineWidthMm: 0.15,
+      },
+    }],
   };
 }
 
@@ -363,6 +411,15 @@ function defaultAnswerBlankQuestion(nextNumber: number): SubjectiveQuestion {
       }))
     }
   };
+}
+
+function answerLineCount(question: SubjectiveQuestion): number {
+  const spacing = Math.max(5, question.lineGrid?.lineSpacingMm ?? 8);
+  return Math.max(1, Math.min(20, Math.ceil((question.minHeightMm - 14) / spacing)));
+}
+
+function heightForAnswerLines(lineCount: number, spacing: number): number {
+  return 14 + Math.max(1, Math.min(20, lineCount)) * Math.max(5, spacing);
 }
 
 function numericQuestionValue(value: string | number): number {
@@ -452,8 +509,12 @@ function App() {
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
-  const [mode, setMode] = useState<AppMode>("design");
-  const previousModeRef = useRef<AppMode>("design");
+  const [mode, setMode] = useState<AppMode>("home");
+  const modeInitialized = useRef(false);
+  const showTabBar = (user as any)?.show_tab_bar === 1;
+  const [selectedExamId, setSelectedExamId] = useState<number | null>(null);
+  const [gradingPanel, setGradingPanel] = useState<{ examId: number; blockId: string } | null>(null);
+  const previousModeRef = useRef<AppMode>("home");
   const latestCardRef = useRef<AnswerCard | null>(null);
   const autoSaveTimerRef = useRef<number | null>(null);
   const editRevisionRef = useRef(0);
@@ -477,6 +538,7 @@ function App() {
   const [analysisRanking, setAnalysisRanking] = useState<StudentRankingItem[]>([]);
   const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
   const [exams, setExams] = useState<ExamRecord[]>([]);
+  const [examListRefreshKey, setExamListRefreshKey] = useState(0);
   // Exam groups
   const [examGroups, setExamGroups] = useState<Array<{ id: number; name: string; tag: string | null; grade_name: string | null; member_count: number; has_results: number; created_at: string }>>([]);
   const [showCreateExam, setShowCreateExam] = useState(false);
@@ -532,7 +594,7 @@ function App() {
   // 扫描 TAB：需要 variant 允许扫描 + grading 权限 + 本地有扫描硬件
   const canDesign = variantAllows("design") && hasPermission(PERMISSIONS.CARD_READ);
   const canManageExams = variantAllows("exam-manage") && hasPermission(PERMISSIONS.EXAM_WRITE);
-  const canGrade = variantAllows("grading") && hasPermission(PERMISSIONS.GRADE_READ);
+  const canGrade = hasPermission(PERMISSIONS.GRADE_READ);
   const canAnalyze = variantAllows("analysis") && hasPermission(PERMISSIONS.EXAM_READ);
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
@@ -550,14 +612,12 @@ function App() {
       onEnter?: () => void | Promise<void>;
     };
     const items: NavItem[] = [];
+    items.push({ id: "home", icon: <Home size={22} />, label: "首页", shortLabel: "首页" });
     if (canDesign) {
       items.push({ id: "design", icon: <SquarePen size={22} />, label: "答题卡设计", shortLabel: "设计" });
     }
     if (canManageExams) {
       items.push({ id: "exam-manage", icon: <ClipboardList size={22} />, label: "考试管理", shortLabel: "考试", onEnter: async () => { await loadExams(); await loadExamGroups(); } });
-    }
-    if (canGrade) {
-      items.push({ id: "grading", icon: <ClipboardCheck size={22} />, label: "阅卷批改", shortLabel: "阅卷" });
     }
     if (canAnalyze) {
       items.push({ id: "analysis", icon: <BarChart3 size={22} />, label: "成绩分析", shortLabel: "分析", onEnter: loadExams });
@@ -577,9 +637,8 @@ function App() {
   }, [card]);
 
   useEffect(() => {
-    if (user) {
-      setMode(defaultModeForUser(hasPermission, appVariant));
-    }
+    if (user && !modeInitialized.current) { modeInitialized.current = true;
+      setMode(defaultModeForUser(hasPermission, appVariant)); }
   }, [user?.id, hasPermission, appVariant]);
 
   useEffect(() => {
@@ -671,7 +730,7 @@ function App() {
 
   // 进入阅卷模式时预加载考试列表
   useEffect(() => {
-    if (mode === "grading" && exams.length === 0) {
+    if (mode === "exam-manage" && exams.length === 0) {
       loadExams();
     }
   }, [mode, exams.length]);
@@ -808,7 +867,8 @@ function App() {
           title: formData.title,
           examDate: formData.examDate,
           englishListening: formData.englishListening,
-          chineseChoicePlacement: formData.chineseChoicePlacement
+          chineseChoicePlacement: formData.chineseChoicePlacement,
+          paperSize: formData.paperSize
         })
       });
       acceptSavedCard(created, "saved");
@@ -1260,6 +1320,15 @@ function App() {
     setSelectedBlockId(block.id);
   }
 
+  function addEssayBlock() {
+    if (!card) return;
+    const block = defaultEssayBlock(findNextQuestionNumber(card));
+    updateCard((draft) => {
+      draft.bodyBlocks.push(block);
+    });
+    setSelectedBlockId(block.id);
+  }
+
   async function uploadImage(blockId: string, questionId: string, file: File) {
     if (!card) return;
     const form = new FormData();
@@ -1337,7 +1406,13 @@ function App() {
     gradingProgressSourceRef.current = es;
 
     es.onmessage = (event) => {
-      const data = JSON.parse(event.data) as GradingProgressEvent;
+      let data: GradingProgressEvent;
+      try {
+        data = JSON.parse(event.data) as GradingProgressEvent;
+      } catch {
+        // 忽略非 JSON 消息（如心跳），避免抛出未捕获异常
+        return;
+      }
       setGradingProgress({
         active: data.type !== "error",
         finished: data.finished,
@@ -1393,6 +1468,8 @@ function App() {
       setExams(asArray<ExamRecord>(data));
     } catch {
       setExams([]);
+    } finally {
+      setExamListRefreshKey((value) => value + 1);
     }
   }
 
@@ -1475,7 +1552,7 @@ function App() {
           <img src="/icon.png" alt="" className="brand-icon" />
           <div>
             <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v1.7.3</span>
+            <span>Project-X v{import.meta.env.VITE_APP_VERSION}</span>
           </div>
         </div>
         <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
@@ -1532,7 +1609,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>
-              {mode === "scores"
+              {mode === "home" ? "首页" : mode === "scores"
                 ? "我的成绩"
                 : mode === "exam-manage"
                   ? "考试管理"
@@ -1545,7 +1622,7 @@ function App() {
                     : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
             </h1>
             <p>
-              {mode === "scores"
+              {mode === "home" ? `欢迎，${user?.name ?? ""}` : mode === "scores"
                 ? "查看各场考试得分、排名与逐题明细"
                 : mode === "exam-manage"
                   ? "创建、管理考试与阅卷批次"
@@ -1563,6 +1640,9 @@ function App() {
             </p>
           </div>
           <div className="topbar-actions-left">
+            {!showTabBar && mode !== "home" && (
+              <button onClick={() => switchMode("home")} style={{ height: 44, padding: "0 16px", fontSize: 14, fontWeight: 500, border: "1px solid var(--color-border-primary)", borderRadius: 8, background: "var(--color-background-secondary)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>← 返回首页</button>
+            )}
             {card && canDesign && mode === "design" && (
               <>
                 <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
@@ -1583,7 +1663,10 @@ function App() {
             )}
           </div>
           <div className="topbar-actions">
-            <div className="mode-toggle" role="tablist" aria-label="工作模式">
+            <div className="mode-toggle" role="tablist" aria-label="工作模式" style={showTabBar ? undefined : { display: "none" }}>
+              <button className={mode === "home" ? "active" : ""} onClick={() => void switchMode("home")} type="button">
+                <Home size={16} /> 首页
+              </button>
               {canDesign && (
               <button className={mode === "design" ? "active" : ""} onClick={() => void switchMode("design")} type="button">
                 <SquarePen size={16} /> 设计
@@ -1592,11 +1675,6 @@ function App() {
               {canManageExams && (
               <button className={mode === "exam-manage" ? "active" : ""} onClick={() => void switchMode("exam-manage", async () => { await loadExams(); await loadExamGroups(); })} type="button">
                 <ClipboardList size={16} /> 考试管理
-              </button>
-              )}
-              {canGrade && (
-              <button className={mode === "grading" ? "active" : ""} onClick={() => void switchMode("grading")} type="button">
-                <ClipboardCheck size={16} /> 阅卷
               </button>
               )}
               {canAnalyze && (
@@ -1659,6 +1737,15 @@ function App() {
           </div>
         </header>
 
+        {/* v1.9.0: 首页仪表盘 */}
+        <div className={`main-grid home-grid ${mode === "home" ? "" : "hidden-panel"}`}>
+          <section style={{ gridColumn: "1 / -1", padding: 0 }}>
+            <HomePage userName={user?.name ?? ""} userRole={user?.role_name ?? ""} teacherRole={user?.teacher_role ?? null}
+              onNavigate={(m) => switchMode(m as AppMode)}
+              onEnterExam={(id) => { switchMode("exam-manage"); setSelectedExamId(id); }} />
+          </section>
+        </div>
+
         <div className={`main-grid ${mode === "design" ? "" : "hidden-panel"}`}>
           <section className="preview-panel">
             {card && layout ? <CardPreview card={card} layout={layout} /> : <div className="blank-preview">选择或新建答题卡</div>}
@@ -1685,6 +1772,37 @@ function App() {
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", fontSize: 13, color: "var(--text-secondary)" }}>
                       <span>考试时间</span>
                       <span style={{ fontWeight: 600, color: "var(--text)" }}>{card.examDate}</span>
+                    </div>
+                  )}
+                  <label>
+                    答题卡纸型
+                    <select
+                      value={card.paper?.size ?? "A4"}
+                      onChange={(event) =>
+                        updateCard((draft) => {
+                          const size = event.target.value as "A4" | "A3";
+                          draft.paper = { size, orientation: size === "A3" ? "landscape" : "portrait" };
+                        })
+                      }
+                    >
+                      <option value="A4">A4 纵向</option>
+                      <option value="A3">A3 横向三版</option>
+                    </select>
+                  </label>
+                  {card.layoutVersion !== 2 && (
+                    <div className="layout-version-banner" role="note">
+                      <strong>当前使用 V1 兼容排版</strong>
+                      <span>旧打印件仍按原分数格坐标识别。升级后将使用紧凑分数区和更大的作答空间。</span>
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={() => {
+                          if (!confirm("升级到 V2 后，已经打印的旧答题卡不能再按此卡片的新坐标识别。确认升级并立即重排吗？")) return;
+                          updateCard((draft) => void (draft.layoutVersion = 2));
+                        }}
+                      >
+                        升级到紧凑排版 V2
+                      </button>
                     </div>
                   )}
                   <label>
@@ -1751,6 +1869,9 @@ function App() {
                     <button className="ghost-button" onClick={addSubjectiveBlock}>
                       <Plus size={16} /> 解答题块
                     </button>
+                    <button className="ghost-button" onClick={addEssayBlock}>
+                      <Plus size={16} /> 作文块
+                    </button>
                   </div>
                 </section>
 
@@ -1759,7 +1880,12 @@ function App() {
                     {selectedBlock.type === "objective" ? (
                       <ObjectiveEditor block={selectedBlock} onChange={(mutator) => updateBlock(selectedBlock.id, mutator)} />
                     ) : (
-                      <SubjectiveEditor block={selectedBlock} onChange={(mutator) => updateBlock(selectedBlock.id, mutator)} onUpload={uploadImage} />
+                      <SubjectiveEditor
+                        block={selectedBlock}
+                        layoutVersion={card.layoutVersion}
+                        onChange={(mutator) => updateBlock(selectedBlock.id, mutator)}
+                        onUpload={uploadImage}
+                      />
                     )}
                   </section>
                 )}
@@ -1778,6 +1904,11 @@ function App() {
           </aside>
         </div>
         <div className={`main-grid exam-manage-grid ${mode === "exam-manage" ? "" : "hidden-panel"}`}>
+          {selectedExamId ? (
+            <section style={{ gridColumn: "1 / -1", padding: 0 }}>
+              <ExamDetailPage examId={selectedExamId} teacherId={user?.id ?? 0} teacherRole={user?.teacher_role ?? null} userRole={user?.role_name ?? ""} onBackToList={() => setSelectedExamId(null)} onBackHome={() => switchMode("home")} onStartReview={(exId, bId) => setGradingPanel({ examId: exId, blockId: bId })} />
+            </section>
+          ) : (
           <section className="preview-panel" style={{ gridColumn: "1 / -1", padding: 24, overflowY: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
               <strong style={{ fontSize: 16 }}>考试管理</strong>
@@ -1918,16 +2049,12 @@ function App() {
                       </span>
                     </span>
                     <span style={{ width: 100, textAlign: "right", whiteSpace: "nowrap" }}>
-                      <button
-                        className="ghost-button"
-                        style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
-                        onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}
-                      >删除</button>
-                      <button
-                        className="ghost-button"
-                        style={{ fontSize: 12, color: "#1D9E75", padding: "2px 6px", marginLeft: 6 }}
-                        onClick={() => setAssignedFormulaExamId(exam.id)}
-                      >赋分</button>
+                      <button className="ghost-button" style={{ fontSize: 12, color: "#3C3489", padding: "2px 6px" }}
+                        onClick={() => setSelectedExamId(exam.id)}>网阅</button>
+                      <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px", marginLeft: 4 }}
+                        onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</button>
+                      <button className="ghost-button" style={{ fontSize: 12, color: "#1D9E75", padding: "2px 6px", marginLeft: 4 }}
+                        onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</button>
                     </span>
                   </div>
                 ))}
@@ -1979,8 +2106,9 @@ function App() {
               </div>
             )}
           </section>
+          )}
         </div>
-        <div className={`main-grid grading-grid ${mode === "grading" ? "" : "hidden-panel"}`}>
+        <div className="main-grid grading-grid hidden-panel">
           <section className="preview-panel grading-results-panel">
             <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
           </section>
@@ -2129,6 +2257,7 @@ function App() {
             {/* 考试选择页 */}
             {analysisTab === "select" && analysisGroupId == null && (
               <ExamSelectPage
+                refreshKey={examListRefreshKey}
                 onSelectExam={(examId) => { setSelectedAnalysisExamId(examId); setAnalysisTab("detail"); }}
                 onSelectGroup={(groupId) => { setAnalysisGroupId(groupId); }}
               />
@@ -2179,6 +2308,11 @@ function App() {
             <UserGuidePage onBack={() => setMode(previousModeRef.current)} />
           </section>
         </div>
+        {gradingPanel && (
+          <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "var(--color-background-primary)" }}>
+            <GradePanel examId={gradingPanel.examId} blockId={gradingPanel.blockId} teacherId={user?.id ?? 0} onBack={() => setGradingPanel(null)} />
+          </div>
+        )}
         <footer className="statusbar">
           <span className="statusbar-message">{status}</span>
           <BeianFooter className="statusbar-beian" />
@@ -2186,6 +2320,7 @@ function App() {
       </section>
 
       {/* ── 移动端底部导航栏 ── */}
+      {showTabBar && (
       <nav className="bottom-nav" aria-label="主导航">
         <div className="bottom-nav-inner">
           {mobileNavItems.map((m) => (
@@ -2204,6 +2339,7 @@ function App() {
           ))}
         </div>
       </nav>
+      )}
 
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
       {paperPanelCardId && (
@@ -2272,13 +2408,13 @@ function App() {
                       {exportCheck.paperInfo.mimeType?.startsWith("image/") ? (
                         <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, overflow: "hidden", cursor: "pointer", background: "var(--surface-raised)" }}
                           onClick={() => { if (exportCheck.cardId) setPaperPreviewOpen(exportCheck.cardId); }} title="点击放大">
-                          <img src={urlWithToken(`/api/cards/${exportCheck.cardId}/paper?format=image`)} alt="原卷"
+                          <img src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper?format=image`)} alt="原卷"
                             style={{ maxWidth: "100%", maxHeight: 240, objectFit: "contain", display: "block", margin: "0 auto" }}
                             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                           <p style={{ textAlign: "center", padding: "4px 0 8px", color: "var(--muted)", fontSize: 12 }}>点击放大查看</p>
                         </div>
                       ) : exportCheck.paperInfo.mimeType === "application/pdf" ? (
-                        <iframe src={urlWithToken(`/api/cards/${exportCheck.cardId}/paper`)} style={{ width: "100%", height: 380, border: "1px solid var(--line-soft)", borderRadius: 6 }} title="原卷PDF" />
+                        <iframe src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper`)} style={{ width: "100%", height: 380, border: "1px solid var(--line-soft)", borderRadius: 6 }} title="原卷PDF" />
                       ) : (
                         <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, padding: 16, textAlign: "center", background: "var(--surface-raised)" }}>
                           <p style={{ margin: 0, fontWeight: 600 }}>{exportCheck.paperInfo.filename}</p>
@@ -2393,7 +2529,7 @@ function App() {
             </div>
             <div style={{ padding: 16, textAlign: "center", overflow: "auto" }}>
               <img
-                src={urlWithToken(`/api/cards/${paperPreviewOpen}/paper?format=image`)}
+                src={mediaUrl(`/api/cards/${paperPreviewOpen}/paper?format=image`)}
                 alt="原卷"
                 style={{ maxWidth: `${paperZoom * 100}%`, maxHeight: `${paperZoom * 75}vh`, objectFit: "contain", transition: "max-width 0.15s, max-height 0.15s" }}
               />
@@ -2584,20 +2720,7 @@ function GradingResults({
   result: CombinedGradingBatchResult | null;
   onDownloadCsv: () => void;
 }) {
-  if (!result) {
-    return (
-      <div className="grading-empty">
-        <ClipboardCheck size={36} />
-        <h2>等待阅卷</h2>
-        <p>选择答题卡，导入答题卡图片或图片目录后开始识别。</p>
-      </div>
-    );
-  }
-
-  const totalReview = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
-  const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
-
-  // Preview modal state
+  // Hooks 必须在任何早返回之前调用，避免 result 由 null 变为非空时 Hook 数量变化导致崩溃
   const [previewPages, setPreviewPages] = useState<ScanPage[] | null>(null);
   const [previewTitle, setPreviewTitle] = useState("");
 
@@ -2611,6 +2734,19 @@ function GradingResults({
       imageUrl: urlWithToken(row.previewUrl)
     }]);
   }
+
+  if (!result) {
+    return (
+      <div className="grading-empty">
+        <ClipboardCheck size={36} />
+        <h2>等待阅卷</h2>
+        <p>选择答题卡，导入答题卡图片或图片目录后开始识别。</p>
+      </div>
+    );
+  }
+
+  const totalReview = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
+  const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
 
   return (
     <div className="grading-results">
@@ -3138,14 +3274,17 @@ function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange:
 
 function SubjectiveEditor({
   block,
+  layoutVersion,
   onChange,
   onUpload
 }: {
   block: SubjectiveBlock;
+  layoutVersion: 1 | 2;
   onChange: (mutator: (block: BodyBlock) => void) => void;
   onUpload: (blockId: string, questionId: string, file: File) => Promise<void>;
 }) {
   const isFillBlankBlock = subjectiveBlockKind(block) === "fill_blank";
+  const isEssayBlock = subjectiveBlockKind(block) === "essay";
 
   function updateQuestion(questionId: string, mutator: (question: SubjectiveQuestion) => void) {
     onChange((draft) => {
@@ -3172,31 +3311,36 @@ function SubjectiveEditor({
 
   return (
     <>
-      <div className="panel-title">{isFillBlankBlock ? "填空题块" : "解答题块"}</div>
+      <div className="panel-title">{isFillBlankBlock ? "填空题块" : isEssayBlock ? "作文块" : "解答题块"}</div>
       <label>
         标题
         <input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
       </label>
       {isFillBlankBlock && (
-        <label>
-          填空题块满分
-          <input
-            type="number"
-            min={0}
-            max={60}
-            step={0.5}
-            value={block.questions[0]?.score ?? 0}
-            onChange={(event) =>
-              onChange((draft) => {
-                if (draft.type !== "subjective") return;
-                const scoreQuestion = draft.questions[0];
-                if (!scoreQuestion) return;
-                scoreQuestion.score = Number(event.target.value);
-                scoreQuestion.style = "manual_score_grid";
-              })
-            }
-          />
-        </label>
+        <>
+          <label>
+            填空题块满分
+            <input
+              type="number"
+              min={0}
+              max={60}
+              step={0.5}
+              value={block.questions[0]?.score ?? 0}
+              onChange={(event) =>
+                onChange((draft) => {
+                  if (draft.type !== "subjective") return;
+                  const scoreQuestion = draft.questions[0];
+                  if (!scoreQuestion) return;
+                  scoreQuestion.score = Number(event.target.value);
+                  scoreQuestion.style = "manual_score_grid";
+                })
+              }
+            />
+          </label>
+          {layoutVersion === 2 && (block.questions[0]?.score ?? 0) <= 0 && (
+            <p className="inline-warning">满分为 0，V2 不会生成分数填涂格。请先设置满分。</p>
+          )}
+        </>
       )}
       {block.questions.map((question) => (
         <div className="question-editor" key={question.id}>
@@ -3220,6 +3364,9 @@ function SubjectiveEditor({
               <Trash2 size={15} />
             </button>
           </div>
+          {layoutVersion === 2 && !isFillBlankBlock && question.style === "manual_score_grid" && question.score <= 0 && (
+            <p className="inline-warning">分值为 0，V2 已隐藏 0/0.5 分数格；设置正分后会自动显示。</p>
+          )}
           <div className="two-col">
             <label>
               题号
@@ -3248,6 +3395,7 @@ function SubjectiveEditor({
             )}
           </div>
           {isFillBlankBlock ? (
+            <>
             <div className="three-col">
               <label>
                 空数
@@ -3257,10 +3405,20 @@ function SubjectiveEditor({
                   max={8}
                   value={question.blanks?.count ?? 1}
                   onChange={(event) =>
-                    updateQuestion(
-                      question.id,
-                      (draft) => void (draft.blanks = { ...(draft.blanks ?? { widthMm: 22, heightMm: 6, labelStyle: "none" }), count: Number(event.target.value) })
-                    )
+                    updateQuestion(question.id, (draft) => {
+                      const count = Math.max(1, Math.min(8, Number(event.target.value) || 1));
+                      const widthMm = draft.blanks?.widthMm ?? 22;
+                      const heightMm = draft.blanks?.heightMm ?? 6;
+                      const labelStyle = draft.blanks?.labelStyle ?? "none";
+                      const prev = draft.blanks?.items ?? [];
+                      const items = Array.from({ length: count }, (_, index) => ({
+                        label: prev[index]?.label,
+                        widthMm: prev[index]?.widthMm ?? widthMm,
+                        heightMm: prev[index]?.heightMm ?? heightMm,
+                        rightAnnotation: prev[index]?.rightAnnotation
+                      }));
+                      draft.blanks = { count, widthMm, heightMm, labelStyle, items };
+                    })
                   }
                 />
               </label>
@@ -3301,6 +3459,27 @@ function SubjectiveEditor({
                 </select>
               </label>
             </div>
+            <div className="blank-item-list">
+              {answerBlankItems(question).map((item, blankIndex) => (
+                <div className="blank-item-row" key={blankIndex}>
+                  <label>
+                    空{blankIndex + 1} 右侧批注
+                    <input
+                      value={item.rightAnnotation ?? ""}
+                      placeholder="如：填＞或＜"
+                      onChange={(event) =>
+                        updateAnswerBlankItems(question.id, (items) =>
+                          items.map((current, index) =>
+                            index === blankIndex ? { ...current, rightAnnotation: event.target.value || undefined } : current
+                          )
+                        )
+                      }
+                    />
+                  </label>
+                </div>
+              ))}
+            </div>
+            </>
           ) : (
             <>
               <label>
@@ -3313,6 +3492,56 @@ function SubjectiveEditor({
                   ))}
                 </select>
               </label>
+              {question.style === "manual_score_grid" && (
+                <div style={{ borderLeft: "1px solid var(--line)", paddingLeft: 8, margin: "4px 0" }}>
+                  <label className="check-row">
+                    <input
+                      type="checkbox"
+                      checked={question.scoreGrid?.enabled !== false}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        draft.scoreGrid = {
+                          enabled: event.target.checked,
+                          strokeColor: draft.scoreGrid?.strokeColor ?? "#999",
+                          strokeWidthMm: draft.scoreGrid?.strokeWidthMm ?? 0.15,
+                          fillColor: draft.scoreGrid?.fillColor ?? "#fff",
+                          fontSize: draft.scoreGrid?.fontSize ?? 2.8,
+                          dividerColor: draft.scoreGrid?.dividerColor ?? "#ccc",
+                          dividerWidthMm: draft.scoreGrid?.dividerWidthMm ?? 0.1,
+                          showLabel: draft.scoreGrid?.showLabel !== false,
+                        };
+                      })}
+                    />
+                    显示得分填涂格
+                  </label>
+                  {question.scoreGrid?.enabled !== false && (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
+                      <label>
+                        格线色
+                        <input type="color" value={question.scoreGrid?.strokeColor ?? "#999"}
+                          onChange={(e) => updateQuestion(question.id, (draft) => {
+                            if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, strokeColor: e.target.value };
+                          })}
+                          style={{ padding: 1, height: 24, width: "100%" }} />
+                      </label>
+                      <label>
+                        分隔线
+                        <input type="color" value={question.scoreGrid?.dividerColor ?? "#ccc"}
+                          onChange={(e) => updateQuestion(question.id, (draft) => {
+                            if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, dividerColor: e.target.value };
+                          })}
+                          style={{ padding: 1, height: 24, width: "100%" }} />
+                      </label>
+                      <label className="check-row" style={{ gridColumn: "1 / -1" }}>
+                        <input type="checkbox" checked={question.scoreGrid?.showLabel !== false}
+                          onChange={(e) => updateQuestion(question.id, (draft) => {
+                            if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, showLabel: e.target.checked };
+                          })} />
+                        显示"得分"标签
+                      </label>
+                    </div>
+                  )}
+                </div>
+              )}
               <label>
                 作答区类型
                 <select
@@ -3337,10 +3566,28 @@ function SubjectiveEditor({
                   ))}
                 </select>
               </label>
-              <label>
-                最小高度(mm)
-                <input type="number" min={24} max={220} value={question.minHeightMm} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.minHeightMm = Number(event.target.value)))} />
-              </label>
+              {layoutVersion === 2 && question.kind === "lined_answer" && question.lineGrid?.enabled ? (
+                <label>
+                  作答行数
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    value={answerLineCount(question)}
+                    onChange={(event) =>
+                      updateQuestion(question.id, (draft) => {
+                        const spacing = draft.lineGrid?.lineSpacingMm ?? 8;
+                        draft.minHeightMm = heightForAnswerLines(Number(event.target.value), spacing);
+                      })
+                    }
+                  />
+                </label>
+              ) : (
+                <label>
+                  最小高度(mm)
+                  <input type="number" min={24} max={220} value={question.minHeightMm} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.minHeightMm = Number(event.target.value)))} />
+                </label>
+              )}
             </>
           )}
           {question.kind === "blank" && !isFillBlankBlock && (
@@ -3354,6 +3601,18 @@ function SubjectiveEditor({
                       onChange={(event) =>
                         updateAnswerBlankItems(question.id, (items) =>
                           items.map((current, index) => (index === blankIndex ? { ...current, label: event.target.value } : current))
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    右侧批注
+                    <input
+                      value={item.rightAnnotation ?? ""}
+                      placeholder="如：填＞或＜"
+                      onChange={(event) =>
+                        updateAnswerBlankItems(question.id, (items) =>
+                          items.map((current, index) => (index === blankIndex ? { ...current, rightAnnotation: event.target.value || undefined } : current))
                         )
                       }
                     />
@@ -3411,24 +3670,121 @@ function SubjectiveEditor({
           )}
           {!isFillBlankBlock && (
             <>
+              {question.kind !== "blank" && (
+                <>
               <label className="check-row">
                 <input
                   type="checkbox"
                   checked={question.lineGrid?.enabled ?? false}
-                  onChange={(event) => updateQuestion(question.id, (draft) => void (draft.lineGrid = { ...(draft.lineGrid ?? { lineSpacingMm: 8 }), enabled: event.target.checked }))}
+                  onChange={(event) => updateQuestion(question.id, (draft) => {
+                    const wasOn = draft.lineGrid?.enabled;
+                    const enabled = event.target.checked;
+                    draft.lineGrid = {
+                      lineSpacingMm: draft.lineGrid?.lineSpacingMm ?? 8,
+                      lineColor: draft.lineGrid?.lineColor ?? "#222",
+                      lineWidthMm: draft.lineGrid?.lineWidthMm ?? 0.15,
+                      insetLeftMm: draft.lineGrid?.insetLeftMm ?? 8,
+                      insetRightMm: draft.lineGrid?.insetRightMm ?? 6,
+                      lineStyle: draft.lineGrid?.lineStyle ?? "solid",
+                      fixedLineCount: draft.lineGrid?.fixedLineCount,
+                      enabled,
+                    };
+                    if (!wasOn && enabled) {
+                      draft.kind = "lined_answer";
+                      draft.lineGrid = { ...draft.lineGrid, fixedLineCount: answerLineCount(draft) };
+                      draft.minHeightMm = heightForAnswerLines(draft.lineGrid.fixedLineCount!, draft.lineGrid.lineSpacingMm);
+                    }
+                  })}
                 />
-                使用横线格
+                启用横线格
               </label>
-              <label>
-                横线间距(mm)
-                <input
-                  type="number"
-                  min={5}
-                  max={16}
-                  value={question.lineGrid?.lineSpacingMm ?? 8}
-                  onChange={(event) => updateQuestion(question.id, (draft) => void (draft.lineGrid = { ...(draft.lineGrid ?? { enabled: true }), lineSpacingMm: Number(event.target.value) }))}
-                />
-              </label>
+              {question.lineGrid?.enabled && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  <label style={{ gridColumn: "1 / -1" }}>
+                    线型
+                    <select
+                      value={question.lineGrid.lineStyle ?? "solid"}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineStyle: event.target.value as "solid" | "dashed" | "dotted" };
+                      })}
+                    >
+                      <option value="solid">实线</option>
+                      <option value="dashed">虚线</option>
+                      <option value="dotted">点线</option>
+                    </select>
+                  </label>
+                  <label>
+                    行数
+                    <input
+                      type="number" min={1} max={30}
+                      value={question.lineGrid.fixedLineCount ?? answerLineCount(question)}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (!draft.lineGrid) return;
+                        const count = Math.max(1, Math.min(30, Number(event.target.value) || 1));
+                        draft.lineGrid = { ...draft.lineGrid, fixedLineCount: count };
+                        draft.minHeightMm = heightForAnswerLines(count, draft.lineGrid.lineSpacingMm);
+                      })}
+                    />
+                  </label>
+                  <label>
+                    间距 (mm)
+                    <input
+                      type="number" min={5} max={16} step={1}
+                      value={question.lineGrid.lineSpacingMm ?? 8}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (!draft.lineGrid) return;
+                        const sp = Number(event.target.value) || 8;
+                        draft.lineGrid = { ...draft.lineGrid, lineSpacingMm: sp };
+                        const count = draft.lineGrid.fixedLineCount;
+                        if (count) draft.minHeightMm = heightForAnswerLines(count, sp);
+                      })}
+                    />
+                  </label>
+                  <label>
+                    颜色
+                    <input
+                      type="color"
+                      value={question.lineGrid.lineColor ?? "#222"}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineColor: event.target.value };
+                      })}
+                      style={{ padding: 2, height: 28, width: "100%" }}
+                    />
+                  </label>
+                  <label>
+                    线宽 (mm)
+                    <input
+                      type="number" min={0.05} max={0.5} step={0.05}
+                      value={question.lineGrid.lineWidthMm ?? 0.15}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineWidthMm: Number(event.target.value) || 0.15 };
+                      })}
+                    />
+                  </label>
+                  <label>
+                    左边距 (mm)
+                    <input
+                      type="number" min={0} max={20}
+                      value={question.lineGrid.insetLeftMm ?? 8}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, insetLeftMm: Number(event.target.value) ?? 8 };
+                      })}
+                    />
+                  </label>
+                  <label>
+                    右边距 (mm)
+                    <input
+                      type="number" min={0} max={20}
+                      value={question.lineGrid.insetRightMm ?? 6}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, insetRightMm: Number(event.target.value) ?? 6 };
+                      })}
+                    />
+                  </label>
+                </div>
+              )}
+                </>
+              )}
               <label className="upload-button">
                 <ImagePlus size={16} /> 插入图片
                 <input
@@ -3466,39 +3822,186 @@ function SubjectiveEditor({
           <Plus size={16} /> 添加填空题
         </button>
       )}
+      {isEssayBlock && (
+        <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+          <label>
+            目标字数
+            <input
+              type="number"
+              value={block.questions[0]?.essayGrid?.targetChars ?? 600}
+              min={100} max={2000} step={50}
+              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                draft.essayGrid.targetChars = Number(event.target.value) || 600;
+              })}
+            />
+          </label>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            <label>
+              格子宽 (mm)
+              <input
+                type="number"
+                value={block.questions[0]?.essayGrid?.cellWidthMm ?? 7}
+                min={4} max={12} step={0.5}
+                onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                  draft.essayGrid.cellWidthMm = Number(event.target.value) || 7;
+                })}
+              />
+            </label>
+            <label>
+              格子高 (mm)
+              <input
+                type="number"
+                value={block.questions[0]?.essayGrid?.cellHeightMm ?? 7}
+                min={4} max={12} step={0.5}
+                onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                  draft.essayGrid.cellHeightMm = Number(event.target.value) || 7;
+                })}
+              />
+            </label>
+          </div>
+          <label>
+            <input
+              type="checkbox"
+              checked={block.questions[0]?.essayGrid?.showTitle !== false}
+              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                draft.essayGrid.showTitle = event.target.checked;
+              })}
+            /> 显示"题：（000）"标题
+          </label>
+          <div style={{ fontSize: 11, color: "var(--muted)" }}>
+            系统将自动计算每栏列数和行数。A3 三栏模式生效时网格均分到三栏。
+          </div>
+        </div>
+      )}
     </>
   );
 }
 
 function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocument }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState({ width: 760, height: 560 });
+  const [{ mode, customPercent }, setPreviewSettings] = useState<{ mode: PreviewMode; customPercent: number }>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(PREVIEW_SETTINGS_KEY) ?? "null") as { mode?: string; customPercent?: number } | null;
+      const validModes: PreviewMode[] = ["fit-width", "fit-page", "fit-panel", "custom"];
+      const savedMode = validModes.includes(saved?.mode as PreviewMode) ? saved?.mode as PreviewMode : "fit-width";
+      const savedPercent = Number(saved?.customPercent);
+      return {
+        mode: savedMode,
+        customPercent: Number.isFinite(savedPercent)
+          ? Math.max(PREVIEW_MIN_PERCENT, Math.min(PREVIEW_MAX_PERCENT, savedPercent))
+          : 100
+      };
+    } catch {
+      return { mode: "fit-width", customPercent: 100 };
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PREVIEW_SETTINGS_KEY, JSON.stringify({ mode, customPercent }));
+    } catch {}
+  }, [mode, customPercent]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    const parent = root?.parentElement;
+    if (!root || !parent) return;
+    const measure = () => {
+      const style = getComputedStyle(parent);
+      const verticalPadding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
+      setViewport({
+        width: Math.max(1, root.clientWidth),
+        height: Math.max(1, parent.clientHeight - verticalPadding - (toolbarRef.current?.offsetHeight ?? 0) - 16)
+      });
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(parent);
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, []);
+
+  const firstPage = layout.pages[0];
+  const paperRatio = firstPage ? firstPage.width / firstPage.height : 1;
+  const panelRatio = firstPage?.panels[0]?.rect.width
+    ? firstPage.width / firstPage.panels[0].rect.width
+    : 1;
+  const fitPagePercent = Math.max(
+    PREVIEW_MIN_PERCENT,
+    Math.min(100, viewport.height * paperRatio / viewport.width * 100)
+  );
+  const effectivePercent = Math.max(
+    PREVIEW_MIN_PERCENT,
+    Math.min(
+      PREVIEW_MAX_PERCENT,
+      mode === "fit-page"
+        ? fitPagePercent
+        : mode === "fit-panel"
+          ? panelRatio * 100
+          : mode === "custom"
+            ? customPercent
+            : 100
+    )
+  );
+  const pageWidth = viewport.width * effectivePercent / 100;
+
+  const changeZoom = (delta: number) => {
+    const next = Math.max(PREVIEW_MIN_PERCENT, Math.min(PREVIEW_MAX_PERCENT, Math.round(effectivePercent / 10) * 10 + delta));
+    setPreviewSettings({ mode: "custom", customPercent: next });
+  };
+
   return (
-    <div className="pages">
-      {layout.pages.map((page) => (
-        <svg className="page" key={page.pageNumber} viewBox="0 0 210 297" role="img" aria-label={`第${page.pageNumber}页预览`}>
-          <rect x="0" y="0" width="210" height="297" style={{ fill: "#fff" }} />
-          {page.markers.map((marker) => (
-            <rect key={marker.role} {...marker.rect} fill="#20342f" />
-          ))}
-          <text x={page.header.idTextX} y={page.header.idTextY} className="svg-small">
-            ID:{page.header.id}
-          </text>
-          {page.header.codeBoxes.map((box, index) => (
-            <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" style={index !== 0 && index !== page.header.codeBoxes.length - 1 ? { fill: "#fff" } : undefined} />
-          ))}
-          {page.header.title && (
-            <text x="105" y={page.header.titleY} textAnchor="middle" className="svg-title">
-              {page.header.title}
+    <div className="preview-shell" ref={rootRef}>
+      <div className="preview-toolbar" ref={toolbarRef} aria-label="预览缩放工具栏">
+        <button type="button" className={mode === "fit-width" ? "active" : ""} onClick={() => setPreviewSettings({ mode: "fit-width", customPercent })}>适合宽度</button>
+        <button type="button" className={mode === "fit-page" ? "active" : ""} onClick={() => setPreviewSettings({ mode: "fit-page", customPercent })}>适合页面</button>
+        <button type="button" className={mode === "fit-panel" ? "active" : ""} onClick={() => setPreviewSettings({ mode: "fit-panel", customPercent })}>适合单版</button>
+        <span className="preview-toolbar-separator" />
+        <button type="button" aria-label="缩小预览" onClick={() => changeZoom(-10)} disabled={effectivePercent <= PREVIEW_MIN_PERCENT}>−</button>
+        <output aria-label="当前缩放比例">{Math.round(effectivePercent)}%</output>
+        <button type="button" aria-label="放大预览" onClick={() => changeZoom(10)} disabled={effectivePercent >= PREVIEW_MAX_PERCENT}>＋</button>
+      </div>
+      <div className="pages">
+        {layout.pages.map((page) => (
+          <svg
+            className="page"
+            key={page.pageNumber}
+            viewBox={`0 0 ${page.width} ${page.height}`}
+            style={{ aspectRatio: `${page.width} / ${page.height}`, width: `${pageWidth}px` }}
+            role="img"
+            aria-label={`第${page.pageNumber}页预览`}
+          >
+            <rect x="0" y="0" width={page.width} height={page.height} style={{ fill: "#fff" }} />
+            {page.markers.map((marker) => (
+              <rect key={marker.role} {...marker.rect} fill="#20342f" />
+            ))}
+            <text x={page.header.idTextX} y={page.header.idTextY} className="svg-small">
+              ID:{page.header.id}
             </text>
-          )}
-          {page.studentArea && <StudentAreaSvg area={page.studentArea} />}
-          {page.blocks.map((block, index) =>
-            block.type === "objective" ? <ObjectiveSvg block={block} key={`${block.blockId}_${index}`} /> : <SubjectiveSvg card={card} block={block} key={`${block.blockId}_${index}`} />
-          )}
-          <text x="105" y="284" textAnchor="middle" className="svg-footer">
-            第{page.pageNumber}页/共{layout.pages.length}页
-          </text>
-        </svg>
-      ))}
+            {page.header.codeBoxes.map((box, index) => (
+              <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" style={index !== 0 && index !== page.header.codeBoxes.length - 1 ? { fill: "#fff" } : undefined} />
+            ))}
+            {page.header.title && (
+              <text x={page.header.titleX} y={page.header.titleY} textAnchor="middle" className="svg-title">
+                {page.header.title}
+              </text>
+            )}
+            {page.studentArea && <StudentAreaSvg area={page.studentArea} />}
+            {page.blocks.map((block, index) =>
+              block.type === "objective" ? <ObjectiveSvg block={block} key={`${block.blockId}_${index}`} /> : <SubjectiveSvg card={card} block={block} key={`${block.blockId}_${index}`} />
+            )}
+            <text x={page.width / 2} y={page.height - 13} textAnchor="middle" className="svg-footer">
+              第{page.pageNumber}页/共{layout.pages.length}页
+            </text>
+          </svg>
+        ))}
+      </div>
     </div>
   );
 }
@@ -3570,6 +4073,63 @@ function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "obje
 }
 
 function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageRenderBlock, { type: "subjective" }> }) {
+  const isV2 = card.layoutVersion === 2;
+
+  // 作文块专用渲染
+  const originalBlock = card.bodyBlocks.find(b => b.id === block.blockId);
+  const isEssay = originalBlock?.type === "subjective" && originalBlock.blockKind === "essay";
+
+  if (isEssay) {
+    const q = originalBlock && originalBlock.type === "subjective" ? originalBlock.questions[0] : null;
+    const g = q?.essayGrid;
+    if (!g) return null;
+    const cellW = g.cellWidthMm || 7;
+    const cellH = g.cellHeightMm || 7;
+    const lineColor = g.lineColor || "#222";
+    const lineW = g.lineWidthMm ?? 0.15;
+    const showTitle = g.showTitle !== false;
+
+    // 计算栏宽和列数
+    const bodyW = block.rect.width;
+    const insetX = 4;
+    const usableW = bodyW - insetX * 2;
+    const columns = g.columns > 0 ? g.columns : Math.max(1, Math.floor(usableW / cellW));
+    const gridW = columns * cellW;
+    const offsetX = block.rect.x + (bodyW - gridW) / 2;
+
+    // 高度内能放的行数
+    const gridH = block.rect.height - (showTitle ? 9 : 2);
+    const rows = Math.floor(gridH / cellH);
+    const startY = block.rect.y + (showTitle ? 9 : 2);
+
+    return (
+      <g>
+        {showTitle && block.title && (
+          <>
+            <text x={block.rect.x + insetX} y={block.rect.y + 5} className="svg-section">{block.title}（{q?.score}分）</text>
+            <text x={block.rect.x + insetX + 64} y={block.rect.y + 5} className="svg-tiny" fill="#888">
+              题：（{String(q?.number ?? 1).padStart(3, "0")}）
+            </text>
+          </>
+        )}
+        {[...Array(rows)].map((_, row) =>
+          [...Array(columns)].map((_, col) => (
+            <rect
+              key={`${row}_${col}`}
+              x={offsetX + col * cellW}
+              y={startY + row * cellH}
+              width={cellW}
+              height={cellH}
+              fill="#fff"
+              stroke={lineColor}
+              strokeWidth={lineW}
+            />
+          ))
+        )}
+      </g>
+    );
+  }
+
   return (
     <g>
       {block.title && (
@@ -3581,49 +4141,75 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
       {block.questions.map((question) => (
         <g key={question.questionId}>
           {!block.frameRect && <rect {...question.rect} fill="none" stroke="#222" strokeWidth="0.25" />}
-          {question.style === "manual_score_grid" && (
+          {question.style === "manual_score_grid" && (!isV2 || question.scoreCells.length > 0) && (
+            (() => {
+              const sg = question.scoreGrid;
+              const sc = sg?.strokeColor ?? "#999";
+              const sw = sg?.strokeWidthMm ?? 0.15;
+              const fc = sg?.fillColor ?? "#fff";
+              const fs = sg?.fontSize ?? 2.8;
+              const dc = sg?.dividerColor ?? "#ccc";
+              const dw = sg?.dividerWidthMm ?? 0.1;
+              const showL = sg?.showLabel !== false;
+              return (
             <>
               {block.frameRect && question.kind === "blank" && question.scoreCells.length > 0 ? (
                 <>
-                  <text x={block.frameRect.x + 4} y={question.scoreCells[0].rect.y + 4.2} className="svg-tiny">
-                    得分
-                  </text>
+                  {showL && (
+                    <text x={block.frameRect.x + 4} y={question.scoreCells[0].rect.y + (isV2 ? 3 : 4.2)} className="svg-tiny">
+                      得分
+                    </text>
+                  )}
                   <line
                     x1={block.frameRect.x}
-                    y1={question.scoreCells[0].rect.y + question.scoreCells[0].rect.height + 2}
+                    y1={isV2 ? block.frameRect.y + 6 : question.scoreCells[0].rect.y + question.scoreCells[0].rect.height + 2}
                     x2={block.frameRect.x + block.frameRect.width}
-                    y2={question.scoreCells[0].rect.y + question.scoreCells[0].rect.height + 2}
-                    stroke="#777"
-                    strokeWidth="0.2"
+                    y2={isV2 ? block.frameRect.y + 6 : question.scoreCells[0].rect.y + question.scoreCells[0].rect.height + 2}
+                    stroke={dc}
+                    strokeWidth={dw}
                   />
                 </>
               ) : (
-                <line x1={question.rect.x} y1={question.contentRect.y} x2={question.rect.x + question.rect.width} y2={question.contentRect.y} stroke="#777" strokeWidth="0.2" />
+                <line x1={question.rect.x} y1={question.contentRect.y} x2={question.rect.x + question.rect.width} y2={question.contentRect.y} stroke={dc} strokeWidth={dw} />
               )}
               {question.scoreCells.map((cell) => (
                 <g key={cell.score}>
-                  <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" style={{ fill: "#fff" }} />
+                  <rect x={cell.rect.x} y={cell.rect.y} width={cell.rect.width} height={cell.rect.height}
+                    fill={fc} stroke={sc} strokeWidth={sw} style={{ fill: fc }} />
                   {cell.score !== null && (
-                    <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + 4.2} textAnchor="middle" className="svg-tiny">
+                    <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + (isV2 ? 3 : 4.2)} textAnchor="middle"
+                      fontSize={fs} fill="#333">
                       {cell.score}
                     </text>
                   )}
                 </g>
               ))}
             </>
+              );
+            })()
           )}
           {question.kind === "blank" ? (
             <text x={question.contentRect.x + 3} y={question.contentRect.y + 7.2} className="svg-tiny">
               {question.questionNumber}
             </text>
           ) : (
-            <text x={question.rect.x + 2} y={question.contentRect.y + 6} className="svg-tiny">
+            <text x={question.rect.x + 2} y={isV2 ? question.rect.y + 4.3 : question.contentRect.y + 6} className="svg-tiny">
               {question.questionNumber}.（{question.score}分）
             </text>
           )}
-          {question.lineYs.map((lineY) => (
-            <line key={lineY} x1={question.contentRect.x + 8} y1={lineY} x2={question.contentRect.x + question.contentRect.width - 6} y2={lineY} stroke="#888" strokeWidth="0.2" />
-          ))}
+          {question.lineYs.map((lineY) => {
+            const cfg = question.lineGrid;
+            const color = cfg?.lineColor ?? "#222";
+            const width = cfg?.lineWidthMm ?? 0.15;
+            const insetL = cfg?.insetLeftMm ?? 8;
+            const insetR = cfg?.insetRightMm ?? 6;
+            const dash = cfg?.lineStyle === "dashed" ? "1.2,0.8" : cfg?.lineStyle === "dotted" ? "0.3,0.7" : undefined;
+            return (
+              <line key={lineY} x1={question.contentRect.x + insetL} y1={lineY}
+                    x2={question.contentRect.x + question.contentRect.width - insetR} y2={lineY}
+                    stroke={color} strokeWidth={width} strokeDasharray={dash} strokeLinecap={cfg?.lineStyle === "dotted" ? "round" : undefined} />
+            );
+          })}
           {question.blanks.map((blank, index) => {
             const blankLabel = question.blankLabels?.[index] ?? (question.kind === "blank" ? formatBlankLabel(question.blankLabelStyle, index) : `${question.questionNumber}.${index + 1}`);
             return (
@@ -3634,6 +4220,12 @@ function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageR
                   </text>
                 )}
                 <line x1={blank.x} y1={blank.y + blank.height} x2={blank.x + blank.width} y2={blank.y + blank.height} stroke="#333" strokeWidth="0.25" />
+                {question.blankRightAnnotations?.[index] && (
+                  <text x={blank.x + blank.width + 1.2} y={blank.y + blank.height} dominantBaseline="middle"
+                    fontSize="3" fill="#888">
+                    {question.blankRightAnnotations[index]}
+                  </text>
+                )}
               </g>
             );
           })}

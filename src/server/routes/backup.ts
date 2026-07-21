@@ -92,7 +92,9 @@ router.get("/backup", async (_req: Request, res: Response) => {
       // scanner.db 使用独立连接，先关闭再复制
       try {
         closeDb();
-      } catch {}
+      } catch (err) {
+        console.warn("[Backup] 关闭 scanner DB 失败，继续备份（文件可能不一致）:", err);
+      }
       await copyFile(scannerDbPath, scannerBak);
       const fstat = await stat(scannerBak);
       metadata.files.push({ name: "scanner.db", size: fstat.size });
@@ -153,10 +155,10 @@ router.get("/backup", async (_req: Request, res: Response) => {
     await archive.finalize();
 
     // 清理临时文件
-    cleanupDir(tmpDir).catch(() => {});
+    cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
   } catch (error) {
     console.error("[Backup] Export failed:", error);
-    cleanupDir(tmpDir).catch(() => {});
+    cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     if (!res.headersSent) {
       res.status(500).json({ message: error instanceof Error ? error.message : "导出失败" });
     }
@@ -223,13 +225,18 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
       await copyFile(scannerDbPath, scannerDbPath + `.bak.${backupSuffix}`);
     }
 
-    // 2. 关闭数据库连接
+    // 2. 关闭数据库连接（关键路径：主 DB 关闭失败必须中止，否则后续 copyFile 会读到锁定/不一致的 DB）
     try {
       closeDatabase();  // 主 DB
-    } catch (e) { console.warn("[Restore] closeDatabase:", e); }
+    } catch (e) {
+      console.error("[Restore] closeDatabase 失败，中止恢复:", e);
+      throw new Error(`关闭主数据库失败，无法安全恢复: ${e instanceof Error ? e.message : e}`);
+    }
     try {
-      closeDb();  // scanner DB
-    } catch (e) { console.warn("[Restore] closeDb:", e); }
+      closeDb();  // scanner DB（非核心，失败仅 warn 继续）
+    } catch (e) {
+      console.warn("[Restore] 关闭 scanner DB 失败（继续恢复）:", e);
+    }
 
     // 3. 替换文件
     await copyFile(projectxBak, projectxDbPath);
@@ -261,7 +268,7 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("[Restore] Import failed:", error);
-    await cleanupDir(tmpDir).catch(() => {});
+    await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
   }
 });
@@ -287,7 +294,7 @@ async function backupMariadb(res: Response): Promise<void> {
     // v1.6.0: 统一使用 getMariadbConfig() 读取配置（环境变量 > config.yml）
     const cfg = getMariadbConfig();
     const host = cfg?.host || "127.0.0.1";
-    const port = String(cfg?.port || 443);
+    const port = String(cfg?.port || 3306);
     const user = cfg?.user || "projectx_app";
     const password = cfg?.password || "";
     const database = cfg?.database || "projectx";
@@ -344,10 +351,10 @@ async function backupMariadb(res: Response): Promise<void> {
     archive.file(dumpFile, { name: "dump.sql" });
     await archive.finalize();
 
-    cleanupDir(tmpDir).catch(() => {});
+    cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
   } catch (error) {
     console.error("[Backup] MariaDB export failed:", error);
-    cleanupDir(tmpDir).catch(() => {});
+    cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     if (!res.headersSent) {
       res.status(500).json({ message: error instanceof Error ? error.message : "导出失败" });
     }
@@ -382,27 +389,24 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
     // 读取配置
     const cfg = getMariadbConfig();
     const host = cfg?.host || "127.0.0.1";
-    const port = String(cfg?.port || 443);
+    const port = String(cfg?.port || 3306);
     const user = cfg?.user || "projectx_app";
     const password = cfg?.password || "";
     const database = cfg?.database || "projectx";
 
-    const args = [`--host=${host}`, `--port=${port}`, `--user=${user}`, `--database=${database}`];
+    const args = [`--host=${host}`, `--port=${port}`, `--user=${user}`];
     if (password) args.push(`--password=${password}`);
+    args.push(database);
 
     const dumpContent = await import("node:fs").then(fs => fs.promises.readFile(dumpFile, "utf8"));
 
     // 使用 mysql 客户端导入
     const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const execAsync = promisify(execFile);
 
     try {
-      // 将 dump.sql 通过 stdin 传给 mysql
-      const { exec } = await import("node:child_process");
-      const cmd = `mysql --host=${host} --port=${port} --user=${user} ${password ? `--password=${password}` : ""} ${database}`;
+      // 将 dump.sql 通过 stdin 传给 mysql（使用参数数组，避免 shell 命令注入）
       await new Promise<void>((resolve, reject) => {
-        const child = exec(cmd, { maxBuffer: 512 * 1024 * 1024 }, (err) => {
+        const child = execFile("mysql", args, { maxBuffer: 512 * 1024 * 1024 }, (err) => {
           if (err) reject(err); else resolve();
         });
         child.stdin!.write(dumpContent);
@@ -412,12 +416,12 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
       await cleanupDir(tmpDir);
       res.json({ ok: true, message: "数据已恢复！请重启服务器以使更改完全生效。" });
     } catch (err: any) {
-      await cleanupDir(tmpDir).catch(() => {});
+      await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
       res.status(500).json({ message: `mysql 导入失败: ${err.message}` });
     }
   } catch (error) {
     console.error("[Restore] MariaDB import failed:", error);
-    await cleanupDir(tmpDir).catch(() => {});
+    await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
   }
 }
@@ -451,8 +455,10 @@ async function moveDir(src: string, dest: string): Promise<void> {
   try {
     await copyDirectory(src, dest, () => true);
     await rm(src, { recursive: true, force: true });
-  } catch {
-    // 如果重命名失败，保留原目录
+  } catch (err) {
+    // 移动失败：保留原目录，但向上抛错让调用方感知（恢复流程中 moveDir 失败应中止）
+    console.warn(`[Backup] moveDir 失败 (src=${src}, dest=${dest}):`, err);
+    throw err;
   }
 }
 
@@ -465,8 +471,11 @@ function extractZipFromBuffer(zipBuffer: Buffer, destDir: string): void {
   for (const entry of entries) {
     // 安全检查：防止路径穿越攻击
     const relativePath = path.normalize(entry.entryName).replace(/^[\\/]+/, "");
-    const safePath = path.join(destDir, relativePath);
-    if (!safePath.startsWith(path.resolve(destDir))) {
+    const resolvedDest = path.resolve(destDir);
+    const safePath = path.join(resolvedDest, relativePath);
+    const rel = path.relative(resolvedDest, safePath);
+    // 拒绝解析到目标目录之外的条目（防止前缀绕过，如 destDir-evil）
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
       continue;
     }
     if (entry.isDirectory) {
@@ -484,8 +493,8 @@ function extractZipFromBuffer(zipBuffer: Buffer, destDir: string): void {
 async function cleanupDir(dirPath: string): Promise<void> {
   try {
     await rm(dirPath, { recursive: true, force: true });
-  } catch {
-    // 忽略清理错误
+  } catch (err) {
+    console.warn(`[Backup] 清理临时目录失败 (${dirPath}):`, err);
   }
 }
 

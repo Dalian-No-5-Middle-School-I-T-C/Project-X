@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, Plus, RefreshCw, Search, Trash2, Upload, UserMinus, UserPlus } from "lucide-react";
-import { fetchJson } from "../auth/api";
-import { getAuthToken } from "../auth/api";
+import { fetchJson, authFetch } from "../auth/api";
 import type { ClassRecord, ClassStudent, GradeRecord, UserListItem, UsersListResponse } from "../auth/types";
 import { ImportModal } from "./ImportModal";
 
@@ -57,7 +56,7 @@ function extractStudents(rows: string[][]): Array<{ name: string; student_number
     for (let i = 0; i < first.length; i++) {
       const c = first[i].toLowerCase();
       if (/姓名|name/.test(c)) nameIdx = i;
-      if (/学号|student_number|学号/.test(c)) numberIdx = i;
+      if (/学号|student_number/.test(c)) numberIdx = i;
       if (/用户名|username/.test(c)) usernameIdx = i;
     }
   }
@@ -375,8 +374,7 @@ export function ClassManagement() {
 
   function handleExportStudents() {
     if (!confirm("导出文件将包含学生明文密码，请妥善保管！\n确定要下载吗？")) return;
-    const token = getAuthToken();
-    fetch("/api/export/students", { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    authFetch("/api/export/students")
       .then(async (res) => {
         if (!res.ok) throw new Error(await res.text());
         const blob = await res.blob();

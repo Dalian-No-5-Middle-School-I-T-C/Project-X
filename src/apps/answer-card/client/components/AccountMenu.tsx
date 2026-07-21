@@ -2,9 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, Database, Download, Eye, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
-import { fetchJson, getAuthToken } from "../auth/api";
+import { fetchJson, authFetch } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
 import type { AiProviderConfig } from "../../../../shared/types";
+
+/** 判断是否为服务端脱敏后的 API Key（编辑时不应回传写库） */
+function isMaskedApiKey(key: string): boolean {
+  if (!key) return false;
+  if (key === "••••") return true;
+  return key.startsWith("••••••••") && key.length === 12;
+}
 
 export function AccountMenu({
   onOpenSponsor,
@@ -15,7 +22,7 @@ export function AccountMenu({
   onOpenGuide?: () => void;
   onOpenPermissions?: () => void;
 }) {
-  const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona } = useAuth();
+  const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona, refreshUser } = useAuth();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
   const isElectron = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -47,6 +54,8 @@ export function AccountMenu({
   });
   const [showHelpCard, setShowHelpCard] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"grading" | "client" | "ai" | "db">("grading");
+  // v1.9.0: Tab 栏开关
+  const [showTabBar, setShowTabBar] = useState(false);
 
   // ── 数据存储设置（管理员） ──────────────────────────
   const [dbMode, setDbMode] = useState<"local" | "remote">("local");
@@ -61,7 +70,7 @@ export function AccountMenu({
 
   useEffect(() => {
     if (open && showSettings) {
-      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; requireOriginalPaper?: number; highlightMissingPaper?: number }>("/api/users/me/settings")
+      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; requireOriginalPaper?: number; highlightMissingPaper?: number; showTabBar?: number }>("/api/users/me/settings")
         .then((s) => {
           if (!s || typeof s !== "object") return;
           setDisplayMode(s.scoreDisplayMode || "zscore");
@@ -69,6 +78,7 @@ export function AccountMenu({
           setBgOpacity(s.backgroundOpacity ?? 0);
           setRequireOriginalPaper(s.requireOriginalPaper !== 0);
           setHighlightMissingPaper(s.highlightMissingPaper !== 0);
+          setShowTabBar(s.showTabBar === 1);
         })
         .catch(() => {});
       loadProviders();
@@ -127,9 +137,12 @@ export function AccountMenu({
           backgroundOpacity: bgOpacity,
           requireOriginalPaper: requireOriginalPaper,
           highlightMissingPaper: highlightMissingPaper,
+          showTabBar: showTabBar,
         })
       });
       setSettingsMsg("已保存");
+      // v1.9.0: 刷新用户状态使 Tab 栏开关即时生效
+      await refreshUser();
       setTimeout(() => setSettingsMsg(""), 1500);
     } catch (err) {
       setSettingsMsg(err instanceof Error ? err.message : "保存失败");
@@ -143,10 +156,8 @@ export function AccountMenu({
     try {
       const form = new FormData();
       form.append("file", file);
-      const token = getAuthToken();
-      const res = await fetch("/api/users/me/background", {
+      const res = await authFetch("/api/users/me/background", {
         method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: form
       });
       if (!res.ok) {
@@ -174,7 +185,8 @@ export function AccountMenu({
 
   async function saveProvider() {
     const { editing, id, name, providerType, baseUrl, apiKey, models } = providerEditor;
-    if (!name || !providerType || !apiKey) {
+    const masked = isMaskedApiKey(apiKey);
+    if (!name || !providerType || (!editing && !apiKey)) {
       setSettingsMsg("请填写完整信息");
       return;
     }
@@ -183,10 +195,14 @@ export function AccountMenu({
       return;
     }
     try {
-      const body: any = {
-        name, providerType, baseUrl, apiKey,
+      const body: Record<string, unknown> = {
+        name, providerType, baseUrl,
         models: models.trim() ? models.split(",").map((m) => m.trim()).filter(Boolean) : null
       };
+      // 编辑时若 Key 未改动（仍为脱敏占位符），不传 apiKey 以免覆盖真实值
+      if (!editing || !masked) {
+        body.apiKey = apiKey;
+      }
       if (editing && id) {
         await fetchJson(`/api/ai/providers/${id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       } else {
@@ -253,10 +269,7 @@ export function AccountMenu({
 
   async function handleExportDb() {
     try {
-      const token = getAuthToken();
-      const resp = await fetch("/api/db/backup", {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
+      const resp = await authFetch("/api/db/backup");
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ message: resp.statusText }));
         throw new Error(err.message || "导出失败");
@@ -279,15 +292,10 @@ export function AccountMenu({
     setImportMsg("");
     setImportBusy(true);
     try {
-      const token = getAuthToken();
-      const headers: Record<string, string> = {
-        "Content-Type": "application/zip"
-      };
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      const resp = await fetch("/api/db/restore", {
+      const resp = await authFetch("/api/db/restore", {
         method: "POST",
-        headers,
-        body: file  // 原始二进制上传，绕过 FormData/multipart 的 corrupt 风险
+        headers: { "Content-Type": "application/zip" },
+        body: file
       });
       const result = await resp.json();
       if (!resp.ok) {
@@ -556,7 +564,16 @@ export function AccountMenu({
 
                 {settingsTab === "client" && (
                   <>
-                    <h4>背景图透明度</h4>
+                    <h4>底部导航栏</h4>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 12 }}>
+                      <input type="checkbox" checked={showTabBar} onChange={(e) => setShowTabBar(e.target.checked)} />
+                      显示底部 Tab 导航栏
+                    </label>
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                      关闭后各页面使用"← 返回首页"按钮导航，更简洁
+                    </span>
+
+                    <h4 style={{ marginTop: 16 }}>背景图透明度</h4>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
                       <span style={{ color: "var(--muted)" }}>{Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}</span>
                     </div>

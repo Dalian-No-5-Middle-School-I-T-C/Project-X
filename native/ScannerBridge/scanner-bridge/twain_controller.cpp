@@ -278,7 +278,15 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     if (config.duplex) {
         setDuplex(true);
     }
-    setPaperSize(config.paperSize);
+    if (!setPaperSize(config.paperSize)) {
+        result.errorMessage = config.paperSize == "A3"
+            ? "Scanner does not support native A3 paper size"
+            : "Scanner rejected requested paper size: " + config.paperSize;
+        disableSource();
+        closeSource();
+        closeDSM();
+        return result;
+    }
     enableADF();
     
     // 5. Enable source (shows scanner UI or goes to ready state)

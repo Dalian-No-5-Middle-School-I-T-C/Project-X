@@ -49,4 +49,6 @@ Project-X/
 ignored/
 cloudflared.exe
 .codex/
-
+ignored/
+.codex*/
+.codex/

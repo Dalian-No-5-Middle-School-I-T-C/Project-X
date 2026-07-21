@@ -2,6 +2,7 @@ import express from "express";
 import type { Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
 import { getMysqlDb } from "../db";
+import { isMaskedApiKey, maskApiKey } from "../utils/maskApiKey";
 
 /**
  * AI 服务商配置管理
@@ -29,7 +30,7 @@ router.get("/", async (req: Request, res: Response) => {
     name: p.name,
     providerType: p.provider_type,
     baseUrl: p.base_url,
-    apiKey: p.api_key,
+    apiKey: maskApiKey(p.api_key),
     models: p.models ? JSON.parse(p.models) : null,
     isActive: !!(p.is_active)
   })));
@@ -82,6 +83,8 @@ router.put("/:id", async (req: Request, res: Response) => {
 
   const effectiveType = providerType ?? provider.provider_type;
   const normalizedUrl = baseUrl ? normalizeBaseUrl(baseUrl, effectiveType) : null;
+  // 脱敏值（••••••••xxxx）是 GET 返回的占位符，PUT 时不应覆盖真实 Key
+  const effectiveApiKey = apiKey && !isMaskedApiKey(apiKey) ? apiKey : null;
 
   await db.run(`
     UPDATE ai_providers SET
@@ -95,7 +98,7 @@ router.put("/:id", async (req: Request, res: Response) => {
     WHERE id = ?
   `,
     name ?? null, providerType ?? null, normalizedUrl,
-    apiKey ?? null, models ? JSON.stringify(models) : null,
+    effectiveApiKey, models ? JSON.stringify(models) : null,
     isActive !== undefined ? (isActive ? 1 : 0) : null,
     Number(req.params.id)
   );

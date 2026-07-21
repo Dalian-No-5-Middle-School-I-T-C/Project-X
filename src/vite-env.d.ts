@@ -5,3 +5,7 @@ declare module "*.md?raw" {
   export default content;
 }
 
+interface ImportMetaEnv {
+  readonly VITE_APP_VERSION: string;
+}
+

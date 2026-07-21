@@ -4,7 +4,7 @@
  * PUT  /api/admin/permissions — update a teacher's permissions
  */
 import { Router } from "express";
-import { getDatabase } from "../db";
+import { getMysqlDb, type DbAdapter } from "../db";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
 
@@ -12,17 +12,49 @@ const router = Router();
 router.use(authMiddleware);
 router.use(requirePermission(PERMISSIONS.USER_MANAGE));
 
+/** 显式 upsert：避免 UNIQUE(teacher_id, grade_id) 在 grade_id=NULL 时无法命中冲突行 */
+async function upsertTeacherPermission(
+  db: DbAdapter,
+  params: {
+    teacher_id: number;
+    grade_id: number | null;
+    can_view_scores: boolean;
+    can_view_charts: boolean;
+    can_view_students: boolean;
+    updated_at: string;
+  },
+): Promise<void> {
+  const { teacher_id, grade_id, can_view_scores, can_view_charts, can_view_students, updated_at } = params;
+  const existing = grade_id == null
+    ? await db.get<{ id: number }>("SELECT id FROM teacher_permissions WHERE teacher_id = ? AND grade_id IS NULL", teacher_id)
+    : await db.get<{ id: number }>("SELECT id FROM teacher_permissions WHERE teacher_id = ? AND grade_id = ?", teacher_id, grade_id);
+
+  const flags = [can_view_scores ? 1 : 0, can_view_charts ? 1 : 0, can_view_students ? 1 : 0];
+  if (existing) {
+    await db.run(
+      `UPDATE teacher_permissions SET can_view_scores = ?, can_view_charts = ?, can_view_students = ?, updated_at = ? WHERE id = ?`,
+      ...flags, updated_at, existing.id,
+    );
+  } else {
+    await db.run(
+      `INSERT INTO teacher_permissions (teacher_id, grade_id, can_view_scores, can_view_charts, can_view_students, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      teacher_id, grade_id, ...flags, updated_at,
+    );
+  }
+}
+
 // ── List ────────────────────────────────────────────────
-router.get("/", (_req, res) => {
+router.get("/", async (_req, res) => {
   try {
-    const db = getDatabase();
-    const rows = db.prepare(`
+    const db = getMysqlDb();
+    const rows = await db.all(`
       SELECT tp.*, u.name as teacher_name, u.teacher_role, g.name as grade_name
       FROM teacher_permissions tp
       JOIN users u ON u.id = tp.teacher_id
       LEFT JOIN grades g ON g.id = tp.grade_id
       ORDER BY u.name, g.sort_order
-    `).all();
+    `);
     res.json(rows);
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "加载失败" });
@@ -30,29 +62,23 @@ router.get("/", (_req, res) => {
 });
 
 // ── Upsert (create or update) ───────────────────────────
-router.put("/", (req, res) => {
+router.put("/", async (req, res) => {
   try {
     const { teacher_id, grade_id, can_view_scores, can_view_charts, can_view_students } = req.body;
     if (!teacher_id) {
       res.status(400).json({ message: "缺少 teacher_id" });
       return;
     }
-    const db = getDatabase();
-    db.prepare(`
-      INSERT INTO teacher_permissions (teacher_id, grade_id, can_view_scores, can_view_charts, can_view_students, updated_at)
-      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(teacher_id, grade_id) DO UPDATE SET
-        can_view_scores = excluded.can_view_scores,
-        can_view_charts = excluded.can_view_charts,
-        can_view_students = excluded.can_view_students,
-        updated_at = CURRENT_TIMESTAMP
-    `).run(
+    const db = getMysqlDb();
+    const updatedAt = new Date().toISOString();
+    await upsertTeacherPermission(db, {
       teacher_id,
-      grade_id ?? null,
-      can_view_scores ? 1 : 0,
-      can_view_charts ? 1 : 0,
-      can_view_students ? 1 : 0,
-    );
+      grade_id: grade_id ?? null,
+      can_view_scores: !!can_view_scores,
+      can_view_charts: !!can_view_charts,
+      can_view_students: !!can_view_students,
+      updated_at: updatedAt,
+    });
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "保存失败" });
@@ -60,9 +86,10 @@ router.put("/", (req, res) => {
 });
 
 // ── Delete ──────────────────────────────────────────────
-router.delete("/:id", (req, res) => {
+router.delete("/:id", async (req, res) => {
   try {
-    getDatabase().prepare("DELETE FROM teacher_permissions WHERE id = ?").run(Number(req.params.id));
+    const db = getMysqlDb();
+    await db.run("DELETE FROM teacher_permissions WHERE id = ?", Number(req.params.id));
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "删除失败" });
