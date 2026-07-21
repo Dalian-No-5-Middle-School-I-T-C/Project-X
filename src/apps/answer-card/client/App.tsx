@@ -2,7 +2,6 @@
 import { NavLink, Route, Routes, Navigate, useBlocker, useLocation, useNavigate } from "react-router-dom";
 import { DesignPage } from "./pages/DesignPage";
 import { ExamManagePage } from "./pages/ExamManagePage";
-import { GradingPage } from "./pages/GradingPage";
 import { MODE_PATH, pathToMode } from "./modeRoutes";
 import { WorkspaceProvider, type WorkspaceValue } from "./WorkspaceContext";
 import {
@@ -1737,30 +1736,6 @@ function App() {
           />
           <Route path="/design/*" element={<DesignPage />} />
           <Route path="/exam-manage" element={<ExamManagePage />} />
-          <Route
-            path="/grading"
-            element={
-              <GradingPage
-                active={false}
-                resultsNode={<GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />}
-                gradingExamId={gradingExamId}
-                setGradingExamId={setGradingExamId}
-                setCardOverride={setCardOverride}
-                cardOverride={cardOverride}
-                exams={exams}
-                card={card}
-                loadCard={loadCard}
-                cards={cards}
-                isBusy={isBusy}
-                directoryInputProps={directoryInputProps}
-                addGradingFiles={addGradingFiles}
-                gradingFiles={gradingFiles}
-                setGradingFiles={setGradingFiles}
-                gradeAnswerCardFiles={gradeAnswerCardFiles}
-                gradingProgress={gradingProgress}
-              />
-            }
-          />
           <Route
             path="/analysis"
             element={

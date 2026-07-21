@@ -16,6 +16,7 @@ import { UserRepository } from "../../../server/repositories/UserRepository";
 import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
 import type { AssignedFormula } from "../../../shared/types";
 import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
+import { resolveEnforceAuth } from "../../../server/auth/enforce";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -445,9 +446,9 @@ export async function createApp(): Promise<express.Express> {
   await ensureDataDirs();
   console.log("[Server] 数据库初始化完成");
 
-  // P0-4 (C-S2): 鉴权默认开启，仅显式设置 0/false 才关闭（向后兼容开发环境）
-  const enforceAuth =
-    process.env.PROJECTX_AUTH_ENFORCE !== "0" && process.env.PROJECTX_AUTH_ENFORCE !== "false";
+  // P0-4 (C-S2): 鉴权默认开启，仅显式设置 0/false 才关闭（向后兼容开发环境）。
+  // 判定统一委托给 resolveEnforceAuth()（server/auth/enforce.ts）作为唯一真相源。
+  const enforceAuth = resolveEnforceAuth();
   console.log(`[Server] RBAC 鉴权强制模式: ${enforceAuth ? "开启" : "关闭（仅解析身份）"}`);
   // P0-5 (C-S3): 同步鉴权状态到 middleware 模块，供 requireExamAccess 使用
   setAuthEnforced(enforceAuth);

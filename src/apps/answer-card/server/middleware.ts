@@ -9,10 +9,11 @@ import type express from "express";
 import { getMysqlDb, type DbAdapter } from "../../../server/db";
 import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
+import { resolveEnforceAuth } from "../../../server/auth/enforce";
 
 // P0-5 (C-S3): 模块级鉴权状态，由 createApp 初始化时设置
 // enforceAuth=true 时 requireExamAccess 无用户返回 401；false 时保持向后兼容放行
-let authEnforced = false;
+let authEnforced = resolveEnforceAuth();
 export function setAuthEnforced(v: boolean): void { authEnforced = v; }
 
 // ── Gate factory ──────────────────────────────────────────
