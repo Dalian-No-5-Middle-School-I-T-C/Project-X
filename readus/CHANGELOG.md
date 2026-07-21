@@ -57,6 +57,7 @@
 | `src/apps/answer-card/client/WorkspaceContext.tsx` | 2 / 2续(B2) | WorkspaceValue 骨架 → 完整值对象（~119 字段） |
 | `src/apps/answer-card/client/components/HomePage.tsx` | 2 | 模块卡全部单开新标签 |
 | `src/apps/answer-card/server/validation.ts` | 3 | `UpdateUserSettingsSchema` 补 requireOriginalPaper/highlightMissingPaper/showTabBar |
+| `src/apps/answer-card/server/index.ts` | 3 | GET settings 补 showTabBar 返回 + 删重复 assigned-formula 路由 |
 | `readus/ARCHITECTURE.md` | 3 | 前端架构重写（路由化/页面抽取/设计令牌/UI 组件库）+ v1.9.2 摘要 |
 | `readus/DATABASE.md` | 3 | 版本号 v1.9.0 → v1.9.2 |
 | `readus/KNOWN-ISSUES.md` | 3 | 审查版本号 + 最后更新日期 |
@@ -68,7 +69,7 @@
 - SPA 深链（vite preview 实测）：`/` `/design` `/exam-manage` `/analysis` `/scores` `/account` `/sponsor` `/guide` `/permissions` 及未知路径 `/totally-unknown` 均 HTTP 200（SPA fallback 正常），`<Routes>` 由 URL 真实驱动渲染。
 - B1/B2/C 收尾验证：`npx tsc --noEmit` 与 `npx vite build --mode web` 在 cardModel/DesignEditors 抽取、WorkspaceProvider 全量接线、真实 `<Routes>` 路由化后均 EXIT 0（`/api/app/background` 构建期未解析为良性提示，chunk >500kB 为既有告警，均非错误）。
 - 阶段 0 四项修复经 `.workbuddy/plans/SMOKE-2026-07-20.md` 运行时验证通过（赋分公式复活、async→500、鉴权统一、score-editing 校验）
-- 阶段 3 经全量代码审查：Grep 确认 assigned-formula 路由无重复、settings schema 字段与前端的 payload 对齐、文档版本号全部同步
+- 阶段 3 经全量代码审查：Grep 确认 assigned-formula 路由无重复、settings schema 字段与前端的 payload 对齐、GET/PUT settings 两端字段一致、文档版本号全部同步
 - ⚠️ 无浏览器运行时 QA：抽取页（设计 / 考试管理 / 阅卷）需本地 `npm run dev` 实点冒烟。
 
 ### 阶段 3：发布后验证修复（2026-07-21 下午）
@@ -78,6 +79,7 @@
 - **🔴 assigned-formula 路由双重注册（P0，合并冲突残留）**：`index.ts` 中 `GET/PUT /api/exams/:examId/assigned-formula` 各出现两次（1554+1637、1581+1659），第二组为死代码（Express 只匹配第一组）。根因为合并时两版实现均被保留。已删除 1636–1680 行重复块，保留第一组。
 - **🔴 保存用户设置静默失败（P0，Zod schema 滞后）**：`validation.ts` 的 `UpdateUserSettingsSchema` 仅定义 4 字段（scoreDisplayMode / reviewConfidenceThreshold / aiApiKey / backgroundOpacity），但前端 `AccountMenu.saveSettings()` 发送 6 字段（多了 requireOriginalPaper / highlightMissingPaper / showTabBar）。Zod `z.object()` 默认**静默剥离未知键**，`validateBody` 又以 `req.body = result.data` 覆盖原始 body → PATCH handler 收到的 req.body 缺失后三字段 → UPDATE 跳过 → 设置从未写入数据库、前端却显示"已保存"。根因为火箭在 7/4（加 requireOriginalPaper+highlightMissingPaper）和 7/19（加 showTabBar）两次往前端扩展字段时均忘记同步更新 schema。已补全 `requireOriginalPaper` / `highlightMissingPaper` / `showTabBar`（`z.coerce.boolean().optional()`）。
 - **🟡 架构/数据库/已知问题文档版本滞后（P1/P2）**：`ARCHITECTURE.md` 仅描述到 v1.9.0，缺失路由化/页面抽取/设计令牌/UI 组件库等 v1.9.2 关键变更；`DATABASE.md` 与 `KNOWN-ISSUES.md` 版本标记停留在 v1.9.0；`README.md` CHANGELOG 描述仍写"v1.9.0 网上阅卷重构"。已全部同步更新到 v1.9.2，`ARCHITECTURE.md` 前端架构章节重写。
+- **🔴 GET settings 缺失 showTabBar（P1，与上一项同源）**：`GET /api/users/me/settings` 未返回 `showTabBar` 字段，但前端 `AccountMenu` 的 `setShowTabBar(s.showTabBar === 1)` 依赖该字段，导致设置面板的「显示底部 Tab 导航栏」开关永远加载为关闭状态（`undefined === 1` → `false`），与数据库实际值不一致。PATCH 端已能正确写入，但读取端漏了。根因同上：火箭 7/19 加 `showTabBar` 时只改了 PATCH handler 和前端 saveSettings，忘记同步改 GET handler。已补 `showTabBar: (user as any).show_tab_bar ?? 0`。
 
 ---
 

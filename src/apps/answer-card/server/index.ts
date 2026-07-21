@@ -517,6 +517,7 @@ export async function createApp(): Promise<express.Express> {
         backgroundOpacity: (user as any).background_opacity ?? 0,
         requireOriginalPaper: (user as any).require_original_paper ?? 1,
         highlightMissingPaper: (user as any).highlight_missing_paper ?? 1,
+        showTabBar: (user as any).show_tab_bar ?? 0,
       });
     } catch (err) { next(err); }
   });
