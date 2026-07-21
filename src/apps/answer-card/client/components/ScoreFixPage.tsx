@@ -356,7 +356,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
                       {student.totalScore?.manuallyModified && <span style={{ color: "var(--brand)", fontSize: 11, marginLeft: 8 }}>(已手动修改)</span>}
                     </span>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      {saveMsg && <span style={{ fontSize: 11, color: saveMsg.includes("成功") ? "#2E7D32" : "var(--brand)" }}>{saveMsg}</span>}
+                      {saveMsg && <span style={{ fontSize: 11, color: saveMsg.includes("成功") ? "var(--success)" : "var(--brand)" }}>{saveMsg}</span>}
                       <button className="primary-button" style={{ fontSize: 12 }} onClick={saveScoreEdits} disabled={saving || Object.keys(scoreEdits).length === 0}>
                         <Save size={12} /> {saving ? "保存..." : "保存修改"}
                       </button>
@@ -433,7 +433,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
             <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span>标准答案编辑</span>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                {saveMsg && <span style={{ fontSize: 11, color: saveMsg.includes("成功") ? "#2E7D32" : "var(--brand)" }}>{saveMsg}</span>}
+                {saveMsg && <span style={{ fontSize: 11, color: saveMsg.includes("成功") ? "var(--success)" : "var(--brand)" }}>{saveMsg}</span>}
                 <button className="primary-button" style={{ fontSize: 12 }} onClick={saveAnswerEdits} disabled={saving || Object.keys(answerEdits).length === 0}>
                   <Save size={12} /> {saving ? "重算中..." : "保存并重算"}
                 </button>

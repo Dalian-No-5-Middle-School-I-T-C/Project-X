@@ -1,7 +1,8 @@
 # 已知问题 (Known Issues)
 
-> 基于 v1.9.0 全面代码审查（2026-07-19），以下为已识别但尚未修复的中等问题和设计缺陷。
+> 基于 v1.9.2 全面代码审查（2026-07-19），以下为已识别但尚未修复的中等问题和设计缺陷。
 > 致命（P0）和严重（P1）问题已全部修复并录入 CHANGELOG。
+> 注：v1.9.2 后期网页化重构（B1 领域模型抽取 / B2 WorkspaceProvider 全量接线 / C 真实 `<Routes>` 路由化）为**行为保持型内部重构**（仅移动代码、未改交互语义），经 `tsc` + `vite build` 双重验证，未引入新的已知缺陷。
 
 ---
 
@@ -94,10 +95,10 @@
 
 ## 其他已知问题
 
-- **express-rate-limit** 包未安装（`tsc --noEmit` 报错），auth.ts 的登录限流中间件未生效
+- ~~**express-rate-limit** 包未安装（auth.ts 登录限流中间件未生效）~~ **已修复（v1.9.2）**：`express-rate-limit@^8.6.0` 已安装，`src/server/routes/auth.ts` 已 `import rateLimit` 并启用登录限速中间件。
 - 系统无端到端测试，所有验证依赖手动回归
 - 扫描仪原生桥接模块 (`native/ScannerBridge`) 仅 Windows 可用，无 Linux/macOS 适配
 
 ---
 
-_最后更新：2026-07-19 | 发现版本：v1.9.0_
+_最后更新：2026-07-21 | 发现版本：v1.9.2_

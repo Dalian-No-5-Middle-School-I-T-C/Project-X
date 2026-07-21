@@ -75,7 +75,8 @@ router.get("/backup", async (_req: Request, res: Response) => {
     if (existsSync(projectxDbPath)) {
       const db = getDatabase();
       try {
-        db.exec(`VACUUM INTO '${projectxBak.replace(/\\/g, "\\\\")}'`);
+        const safeTarget = projectxBak.replace(/\\/g, "\\\\").replace(/'/g, "''");
+        db.exec(`VACUUM INTO '${safeTarget}'`);
       } catch (err) {
         // VACUUM INTO 可能不支持旧版 SQLite，降级为文件复制
         console.warn("[Backup] VACUUM INTO failed, falling back to file copy:", err);
