@@ -154,7 +154,7 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onOpenNe
 
         {isAdmin && (
           <div
-            style={cardStyle}
+            className="home-card"
             onClick={() => onNavigate(globalSettingsCard.id)}
             role="button"
             tabIndex={0}
