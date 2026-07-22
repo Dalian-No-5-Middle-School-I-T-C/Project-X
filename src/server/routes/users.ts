@@ -4,7 +4,7 @@ import { UserRepository, type BatchStudentInput } from "../repositories/UserRepo
 import { authService } from "../services/AuthService";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS, ROLE_NAMES, TEACHER_ROLE_LABELS } from "../auth/permissions";
-import { validateInitialPassword, generateRandomInitialPassword } from "../auth/passwordPolicy";
+import { validateInitialPassword } from "../auth/passwordPolicy";
 
 /**
  * 用户管理 API（仅管理员，要求 user:manage 权限）
@@ -35,12 +35,6 @@ function resolveRoleId(role: unknown): number | null {
     if ([1, 2, 3].includes(n)) return n;
   }
   return null;
-}
-
-/** 检查当前活跃管理员数量，<=1 表示不允许停用/降级最后一名管理员。 */
-async function isLastActiveAdmin(): Promise<boolean> {
-  const admins = await userRepo.adminListUsers({ roleName: ROLE_NAMES.ADMIN, pageSize: 1000 });
-  return admins.total <= 1;
 }
 
 /** GET /api/users — 用户列表（分页/搜索/按角色/含禁用） */
@@ -104,12 +98,10 @@ router.post("/", async (req: Request, res: Response) => {
       return;
     }
 
-    // 密码：管理员显式提供则使用；缺失时由 server 端生成随机不可推导初始密码（禁止以学号等可推导值兜底）
-    const providedPassword = password ? String(password) : "";
-    const generatedPassword = providedPassword ? null : generateRandomInitialPassword();
-    const finalPassword = providedPassword || generatedPassword!;
+    // 密码默认：学生用学号，教师/管理员需显式提供
+    const finalPassword = password || (roleId === ROLE_IDS.STUDENT ? String(student_number) : "");
     const passwordError = validateInitialPassword({
-      password: finalPassword,
+      password: String(finalPassword),
       isStudent: roleId === ROLE_IDS.STUDENT,
       studentNumber: student_number ? String(student_number) : undefined
     });
@@ -120,16 +112,15 @@ router.post("/", async (req: Request, res: Response) => {
 
     const created = await userRepo.createUser({
       username: String(username),
-      password: finalPassword,
+      password: String(finalPassword),
       name: String(name),
       role_id: roleId,
       student_number: student_number ? String(student_number) : undefined,
       teacher_role: roleId === ROLE_IDS.TEACHER ? (teacher_role || undefined) : undefined,
       email: email ? String(email) : undefined,
-      phone: phone ? String(phone) : undefined,
-      initial_password: finalPassword
+      phone: phone ? String(phone) : undefined
     });
-    res.status(201).json({ ...stripHash(created), ...(generatedPassword ? { initialPassword: generatedPassword } : {}) });
+    res.status(201).json(stripHash(created));
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "创建失败" });
   }
@@ -150,14 +141,7 @@ router.put("/:id", async (req: Request, res: Response) => {
     if (name !== undefined) params.name = String(name);
     if (email !== undefined) params.email = String(email);
     if (phone !== undefined) params.phone = String(phone);
-    if (is_active !== undefined) {
-      // 防止停用最后一名活跃管理员导致系统锁死
-      if (!is_active && existing.role_id === ROLE_IDS.ADMIN && await isLastActiveAdmin()) {
-        res.status(400).json({ message: "系统至少需保留一名管理员，无法停用" });
-        return;
-      }
-      params.is_active = is_active ? 1 : 0;
-    }
+    if (is_active !== undefined) params.is_active = is_active ? 1 : 0;
     if (student_number !== undefined) params.student_number = String(student_number);
     if (role !== undefined) {
       const roleId = resolveRoleId(role);
@@ -167,7 +151,8 @@ router.put("/:id", async (req: Request, res: Response) => {
       }
       // 防止把最后一个管理员降级
       if (existing.role_id === ROLE_IDS.ADMIN && roleId !== ROLE_IDS.ADMIN) {
-        if (await isLastActiveAdmin()) {
+        const admins = await userRepo.adminListUsers({ roleName: ROLE_NAMES.ADMIN, pageSize: 1000 });
+        if (admins.total <= 1) {
           res.status(400).json({ message: "系统至少需保留一名管理员，无法降级" });
           return;
         }
@@ -228,9 +213,12 @@ router.delete("/:id", async (req: Request, res: Response) => {
     res.status(404).json({ message: "用户不存在" });
     return;
   }
-  if (existing.role_id === ROLE_IDS.ADMIN && await isLastActiveAdmin()) {
-    res.status(400).json({ message: "系统至少需保留一名管理员，无法禁用" });
-    return;
+  if (existing.role_id === ROLE_IDS.ADMIN) {
+    const admins = await userRepo.adminListUsers({ roleName: ROLE_NAMES.ADMIN, pageSize: 1000 });
+    if (admins.total <= 1) {
+      res.status(400).json({ message: "系统至少需保留一名管理员，无法禁用" });
+      return;
+    }
   }
   await userRepo.deactivateUser(id);
   authService.revokeUserTokens(id);
