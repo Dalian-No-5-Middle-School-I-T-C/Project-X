@@ -182,27 +182,32 @@ v1.6.1 起（v1.7.0 增强学生学期对比），系统拆分为 **Web 端** �
 
 ### 6.1 AI 成绩分析
 
-AI 分析支持两种方式：
+> **重要**：所有 AI 功能（成绩 AI 分析、原卷知识点分析、学生 AI 建议）都经由后端调用的 **Python 中转服务 `llmclient`** 真正访问大模型。因此**无论用哪种服务商，都需要 `llmclient` 在运行**——旧版说明中"自定义服务商无需启动 Python"已不准确，当前版本所有 AI 调用都经 `llmclient` 中转。
 
-**方式 A：内置服务商（llmclient）**
+**llmclient 自动启动（推荐，v1.9.4+）**
 
-需先启动 Python 中转服务：
+Node 后端启动时会**自动拉起** `llmclient`（默认 `http://127.0.0.1:8766`），一般无需手动启动：
+
+- 关闭自动启动：`LLMCLIENT_AUTOSTART=false`
+- 指定 Python 解释器：`LLMCLIENT_PYTHON`（默认 Windows 用 `py`、Linux/macOS 用 `python3`；若依赖装在某个虚拟环境，指向该环境的 python）
+- 监听地址 / 端口：跟随 `LLMCLIENT_URL`（默认 `http://127.0.0.1:8766`）
+
+若自动启动失败（如找不到 Python 或依赖未装），后端日志会打印 `[llmclient] …` 提示，AI 功能暂不可用，但**不会拖垮主服务**；此时可手动启动（见下）或修正上面的环境变量后重启。
+
+**手动启动（可选）**
 
 ```text
 py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766
 ```
 
-并在 `llmclient/.env` 或环境变量中配置对应模型的 API Key。
+并在 `llmclient/.env` 中配置对应模型的 API Key（`GEMINI_API_KEY` / `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` 等）。
 
-**方式 B：自定义服务商**
+**服务商配置（两种来源，最终都经 llmclient 转发）**
 
-无需启动 Python 服务，直接在 **账号设置 → AI 服务商** 中添加：
+- **内置服务商**：在 `llmclient/.env` 配置模型 API Key，由 llmclient 默认使用。
+- **自定义 / 系统服务商**：在 **全局设置 → AI 系统配置**（管理员）或 **账号设置 → AI 服务商** 中添加（类型 GPT / DeepSeek / Gemini + API Key + Base URL）。这些凭证会作为 `providerOverride` 通过 llmclient 转发给对应模型，**并非直连**——因此仍依赖 llmclient 运行。
 
-1. 选择类型：GPT（OpenAI 兼容）/ DeepSeek / Gemini
-2. 填写 API Key（Gemini 无需填写 Base URL）
-3. 在 AI 分析面板选择已配置的服务商 → 输入模型名 → 生成分析
-
-若按钮不可用，请检查服务是否运行、API Key 是否配置。
+若 AI 按钮不可用，请检查：`llmclient` 是否运行（访问 `http://127.0.0.1:8766/health` 应返回 `{"ok":true}`）、API Key 是否配置、模型凭证是否正确。
 
 ---
 

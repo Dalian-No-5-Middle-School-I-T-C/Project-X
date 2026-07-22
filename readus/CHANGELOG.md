@@ -42,6 +42,16 @@
 - **修复**：`GradingConfigPage` 的「网阅默认」卡片与逐题块列表/批量弹窗均补「复评模式」下拉（单评/双评/三评），随 `__default__` 存取；`BlockGradingConfigService.getBlockConfig` 改为：若存在 `__default__` 模板则继承 `def.review_mode`，否则默认 1。
 - **验证**：`PUT .../blocks/__default__` 带 `reviewMode=3` → 入库；`GET` 新建题块走 `getBlockConfig` 继承 `reviewMode=3`；`POST .../batch` 批量改选中题块 `reviewMode=2` → 生效；typecheck 通过。
 
+### 7. llmclient（Python AI 中转）随 Node 服务自动启动
+
+- **背景**：所有 AI 功能（成绩分析 / 原卷知识点 / 学生 AI 建议）都经 Node 转发到 Python `llmclient` 侧车（默认 `http://127.0.0.1:8766`），此前需每次手动 `py -m uvicorn llmclient.server:app`。用户要求免去手动启动。
+- **修复**：新增 `src/apps/answer-card/server/llm-launcher.ts`：
+  - `startLlmClientSidecar()` 在 `startServer` 监听后自动拉起侧车（fire-and-forget，不阻塞启动）；`SIGINT`/`SIGTERM` 时 `shutdownLlmClient()` 一并退出。
+  - `ensureLlmClient()` 在每次 AI 调用（`fetchLlmClient`）前确保侧车已起——未起则自动拉起并轮询 `/health` 直到就绪（超时 30s），崩溃后下次调用会重新拉起。
+  - 解释器按 `py`→`python`→`python3`（Windows/Linux 反序）候选探测，跳过 ENOENT；可通过 `LLMCLIENT_PYTHON` 指定（如虚拟环境 python）。`LLMCLIENT_URL` 决定监听地址/端口。`LLMCLIENT_AUTOSTART=false` 可关闭。
+  - 找不到 Python / 依赖缺失时打印 `[llmclient] …` 警告并优雅降级，不拖垮主服务。
+- **文档**：`user guide/.../用户使用说明.md` §6.1 修正「方式 B 自定义服务商无需启动 Python」为「所有 AI 调用都经 llmclient 中转」，并补充自动启动说明；`ARCHITECTURE.md` §4.2 同步。
+
 ### 数据层
 
 - 迁移 v24（与 #185 的 v23 安全迁移顺序衔接）：`block_grading_config` 加 `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold`；`review_assignments` 加 `auto_assigned`；新增 `system_settings` 表与默认键。

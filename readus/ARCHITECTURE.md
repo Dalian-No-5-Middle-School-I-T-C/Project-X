@@ -241,7 +241,7 @@ React AnalysisAiPanel
   -> Gemini / DeepSeek / OpenAI-compatible provider
 ```
 
-`llmclient` 位于仓库根目录，使用 Python `FastAPI + uvicorn` 手动启动。Node 后端只负责探活、鉴权转发和把当前考试/班级范围传给 Python 服务。模型只能调用白名单成绩工具读取 `projectx.db`，不开放原始 SQL。
+`llmclient` 位于仓库根目录，使用 Python `FastAPI + uvicorn`。Node 后端在启动时会**自动拉起**该服务（默认 `http://127.0.0.1:8766`，见 `src/apps/answer-card/server/llm-launcher.ts`），也可手动启动；也可通过 `LLMCLIENT_AUTOSTART=false` 关闭、`LLMCLIENT_PYTHON` 指定解释器、`LLMCLIENT_URL` 指定地址端口。Node 后端只负责探活、鉴权转发和把当前考试/班级范围传给 Python 服务（AI 调用前会 `ensureLlmClient()` 确保侧车已起，未起则自动拉起）。模型只能调用白名单成绩工具读取 `projectx.db`，不开放原始 SQL。
 
 ### 4.3 Repository 模式
 
