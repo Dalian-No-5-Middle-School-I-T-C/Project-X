@@ -487,8 +487,8 @@ function App() {
   }, [card]);
 
   // v1.9.4: 拉取全局原卷标志（认证即可读），驱动导出拦截/自动弹窗/侧边栏高亮
-  useEffect(() => {
-    fetchJson<{ ok: boolean; data: { requireOriginalPaper: number; highlightMissingPaper: number } }>(
+  const refreshGlobalPaper = useCallback(() => {
+    return fetchJson<{ ok: boolean; data: { requireOriginalPaper: number; highlightMissingPaper: number } }>(
       "/api/system-settings/public"
     )
       .then((r) => {
@@ -496,6 +496,7 @@ function App() {
       })
       .catch(() => {});
   }, []);
+  useEffect(() => { void refreshGlobalPaper(); }, [refreshGlobalPaper]);
 
   useEffect(() => {
     if (user && !modeInitialized.current) {
@@ -1783,7 +1784,7 @@ function App() {
             element={
               <div className="main-grid">
                 <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-                  <GlobalSettingsPage onBack={() => switchMode("home")} />
+                  <GlobalSettingsPage onBack={() => { void refreshGlobalPaper(); switchMode("home"); }} />
                 </section>
               </div>
             }
