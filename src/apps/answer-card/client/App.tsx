@@ -1778,7 +1778,16 @@ function App() {
           />
           <Route path="/design/*" element={<DesignPage />} />
           <Route path="/exam-manage" element={<ExamManagePage />} />
-          <Route path="/global-settings" element={<GlobalSettingsPage onBack={() => switchMode("home")} />} />
+          <Route
+            path="/global-settings"
+            element={
+              <div className="main-grid">
+                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+                  <GlobalSettingsPage onBack={() => switchMode("home")} />
+                </section>
+              </div>
+            }
+          />
           <Route
             path="/analysis"
             element={
