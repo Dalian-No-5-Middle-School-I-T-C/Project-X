@@ -21,6 +21,7 @@ declare global {
         student_number: string | null;
         teacher_role: string | null;
         subject: string | null;
+        password_change_required: boolean;
       };
     }
   }
@@ -66,7 +67,8 @@ async function attachUser(req: Request, token: string): Promise<boolean> {
     role_name: user.role_name ?? "unknown",
     student_number: user.student_number ?? null,
     teacher_role: (user as any).teacher_role ?? null,
-    subject: (user as any).subject ?? null
+    subject: (user as any).subject ?? null,
+    password_change_required: Boolean((user as any).password_change_required)
   };
   return true;
 }
@@ -171,6 +173,19 @@ export async function getCurrentUserHandler(req: Request, res: Response): Promis
     email: user.email,
     last_login_at: user.last_login_at,
     show_tab_bar: (user as any).show_tab_bar ?? 0,
+    passwordChangeRequired: Boolean((user as any).password_change_required),
     permissions: permissionsForRole(user.role_id)
   });
+}
+
+/** 强制改密账号只能访问挂载在本中间件之前的认证自助端点。 */
+export function requirePasswordChangeCompleted(req: Request, res: Response, next: NextFunction): void {
+  if (req.user?.password_change_required) {
+    res.status(428).json({
+      code: "PASSWORD_CHANGE_REQUIRED",
+      message: "必须先修改一次性密码"
+    });
+    return;
+  }
+  next();
 }

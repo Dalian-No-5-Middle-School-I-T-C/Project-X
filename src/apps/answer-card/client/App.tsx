@@ -1301,8 +1301,23 @@ function App() {
       });
       setGradingResult(result);
       const msg = `阅卷完成：${result.rows.length} 张，${result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0)} 题待复核`;
-      const extra = gradingExamId ? "，正在后台写入数据库..." : "（未选择考试，数据未落库）";
+      const extra = !gradingExamId
+        ? "（未选择考试，数据未落库）"
+        : result.persistence?.status === "done"
+          ? `，已持久化 ${result.persistence.persisted} 名学生并关闭考试`
+          : `，仅持久化 ${result.persistence?.persisted ?? 0} 名学生，${result.persistence?.failedCount ?? 0} 项失败；考试未关闭，可修正后重试`;
       setStatus(msg + extra);
+    } catch (error) {
+      const failedResult = error as Error & Partial<CombinedGradingBatchResult>;
+      if (Array.isArray(failedResult.rows) && failedResult.persistence) {
+        setGradingResult(failedResult as CombinedGradingBatchResult);
+        setStatus(
+          `阅卷落库失败：已持久化 ${failedResult.persistence.persisted} 名学生，` +
+          `${failedResult.persistence.failedCount} 项失败；考试未关闭，可修正后重试`
+        );
+      } else {
+        setStatus(`阅卷失败：${error instanceof Error ? error.message : String(error)}`);
+      }
     } finally {
       gradingProgressSourceRef.current?.close();
       gradingProgressSourceRef.current = null;

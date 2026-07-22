@@ -679,6 +679,16 @@ const MIGRATIONS: Migration[] = [
           ON exams(grade_id, class_id);
       `);
     }
+  },
+  {
+    version: 23,
+    name: "security-bootstrap-and-grading-status",
+    up(db) {
+      addColumnIfMissing(db, "users", "password_change_required", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "success_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "failure_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "error_summary", "TEXT");
+    }
   }
 ];
 

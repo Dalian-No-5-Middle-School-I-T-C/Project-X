@@ -1,14 +1,89 @@
 import express from "express";
-import type { Request, Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
 import { getMysqlDb, buildInsertIgnore } from "../db";
 import type { DbAdapter } from "../db";
 import { ZipArchive } from "archiver";
 import XLSX from "xlsx";
 import { competitionRank } from "../../shared/ranking";
+import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
 
 const router = express.Router();
 router.use(authMiddleware);
+
+router.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.user?.role_name === "student") {
+    res.status(403).json({ message: "学生无权访问考试组管理接口" });
+    return;
+  }
+  next();
+});
+
+function requireGroupManager(req: Request, res: Response, next: NextFunction): void {
+  if (req.user?.role_name === "admin" || (req.user?.role_name === "teacher" && req.user.teacher_role === "grade_leader")) {
+    next();
+    return;
+  }
+  res.status(403).json({ message: "权限不足：仅管理员或年级组长可管理考试组" });
+}
+
+async function visibleExamIdsForGroupRead(req: Request): Promise<number[] | null> {
+  if (req.user?.role_name === "admin" || req.user?.teacher_role === "grade_leader") return null;
+  if (req.user?.role_name !== "teacher" || !req.user.teacher_role) return [];
+  return getVisibleExamIds(req.user);
+}
+
+async function canReadGroup(req: Request, groupId: number): Promise<boolean> {
+  const visibleIds = await visibleExamIdsForGroupRead(req);
+  if (visibleIds === null) return true;
+  if (visibleIds.length === 0) return false;
+  const rows = await getMysqlDb().all<{ exam_id: number }>(
+    "SELECT exam_id FROM exam_group_members WHERE group_id = ?",
+    groupId
+  );
+  if (rows.length === 0) return false;
+  const visible = new Set(visibleIds);
+  return rows.every((row) => visible.has(Number(row.exam_id)));
+}
+
+async function requireReadableGroup(req: Request, res: Response, next: NextFunction): Promise<void> {
+  const groupId = Number(req.params.groupId);
+  if (!Number.isInteger(groupId) || groupId <= 0) {
+    res.status(400).json({ message: "无效的考试组 ID" });
+    return;
+  }
+  if (!(await canReadGroup(req, groupId))) {
+    res.status(403).json({ message: "权限不足：考试组包含不可访问的考试" });
+    return;
+  }
+  next();
+}
+
+async function assertExamIdsVisible(req: Request, res: Response, examIds: number[]): Promise<boolean> {
+  const uniqueIds = [...new Set(examIds.map(Number))];
+  if (uniqueIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+    res.status(400).json({ message: "examIds 必须全部为正整数" });
+    return false;
+  }
+  if (uniqueIds.length > 0) {
+    const existingRows = await getMysqlDb().all<{ id: number }>(
+      `SELECT id FROM exams WHERE id IN (${uniqueIds.map(() => "?").join(",")})`,
+      ...uniqueIds
+    );
+    if (existingRows.length !== uniqueIds.length) {
+      res.status(404).json({ message: "包含不存在的考试" });
+      return false;
+    }
+  }
+  const visibleIds = await visibleExamIdsForGroupRead(req);
+  if (visibleIds === null) return true;
+  const visible = new Set(visibleIds);
+  if (uniqueIds.some((id) => !visible.has(id))) {
+    res.status(403).json({ message: "权限不足：包含不可访问的考试" });
+    return false;
+  }
+  return true;
+}
 
 // ── Helper types ──
 
@@ -58,7 +133,15 @@ router.get("/", async (req: Request, res: Response) => {
     if (req.query.status) { sql += " AND eg.status = ?"; params.push(req.query.status); }
     sql += " ORDER BY eg.created_at DESC";
 
-    const rows = await db.all(sql, ...params) as any[];
+    let rows = await db.all(sql, ...params) as any[];
+    const visibleIds = await visibleExamIdsForGroupRead(req);
+    if (visibleIds !== null) {
+      const readable: any[] = [];
+      for (const row of rows) {
+        if (await canReadGroup(req, Number(row.id))) readable.push(row);
+      }
+      rows = readable;
+    }
     const result = rows.map((r) => ({
       id: r.id, name: r.name, description: r.description,
       tag: r.tag, grade_id: r.grade_id, grade_name: r.grade_name || null,
@@ -75,7 +158,7 @@ router.get("/", async (req: Request, res: Response) => {
 
 // ── POST /api/exam-groups ── create exam group ──
 
-router.post("/", async (req: Request, res: Response) => {
+router.post("/", requireGroupManager, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const { name, description, grade_id, tag, is_official, total_score_mode, only_full_participants, examIds }
@@ -89,23 +172,25 @@ router.post("/", async (req: Request, res: Response) => {
       res.status(400).json({ message: "大考名称不能为空" });
       return;
     }
+    if (examIds && !(await assertExamIdsVisible(req, res, examIds))) return;
 
-    const result = await db.run(`
-      INSERT INTO exam_groups (name, description, grade_id, tag, status, is_official, total_score_mode, only_full_participants, created_by)
-      VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
-    `, name.trim(), description ?? null, grade_id ?? null, tag ?? null,
-      is_official ?? 0, total_score_mode ?? "raw", only_full_participants ?? 0,
-      req.user!.id);
+    const groupId = await db.transaction(async (tx) => {
+      const result = await tx.run(`
+        INSERT INTO exam_groups (name, description, grade_id, tag, status, is_official, total_score_mode, only_full_participants, created_by)
+        VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+      `, name.trim(), description ?? null, grade_id ?? null, tag ?? null,
+        is_official ?? 0, total_score_mode ?? "raw", only_full_participants ?? 0,
+        req.user!.id);
 
-    const groupId = result.lastInsertRowid as number;
-
-    // Associate exams if provided
-    if (examIds && examIds.length > 0) {
-      const insertSql = buildInsertIgnore(db.dialect, "exam_group_members", ["group_id", "exam_id", "sort_order"]);
-      for (const [idx, examId] of examIds.entries()) {
-        await db.run(insertSql, groupId, examId, idx);
+      const createdGroupId = result.lastInsertRowid as number;
+      if (examIds && examIds.length > 0) {
+        const insertSql = buildInsertIgnore(tx.dialect, "exam_group_members", ["group_id", "exam_id", "sort_order"]);
+        for (const [idx, examId] of examIds.entries()) {
+          await tx.run(insertSql, createdGroupId, examId, idx);
+        }
       }
-    }
+      return createdGroupId;
+    });
 
     res.status(201).json({ id: groupId, message: "大考创建成功" });
   } catch (error) {
@@ -115,7 +200,7 @@ router.post("/", async (req: Request, res: Response) => {
 
 // ── GET /api/exam-groups/:groupId ── get group detail ──
 
-router.get("/:groupId", async (req: Request, res: Response) => {
+router.get("/:groupId", requireReadableGroup, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -137,6 +222,7 @@ router.get("/:groupId", async (req: Request, res: Response) => {
       JOIN exams e ON e.id = egm.exam_id
       LEFT JOIN answer_cards ac ON ac.id = e.card_id
       LEFT JOIN student_scores ss ON ss.exam_id = e.id
+      WHERE egm.group_id = ?
       GROUP BY egm.id
       ORDER BY egm.sort_order, egm.id
     `, groupId) as any[];
@@ -162,7 +248,7 @@ router.get("/:groupId", async (req: Request, res: Response) => {
 
 // ── PUT /api/exam-groups/:groupId ── update group ──
 
-router.put("/:groupId", async (req: Request, res: Response) => {
+router.put("/:groupId", requireGroupManager, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -191,7 +277,7 @@ router.put("/:groupId", async (req: Request, res: Response) => {
 
 // ── DELETE /api/exam-groups/:groupId ── delete group ──
 
-router.delete("/:groupId", async (req: Request, res: Response) => {
+router.delete("/:groupId", requireGroupManager, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -207,15 +293,16 @@ router.delete("/:groupId", async (req: Request, res: Response) => {
       WHERE egm.group_id = ?
     `, groupId) as Array<{ id: number; name: string }>;
 
-    // If deleting exams too, delete them (with cascade to scores etc.)
-    if (deleteExams && memberExams.length > 0) {
-      for (const exam of memberExams) {
-        await db.run("DELETE FROM exams WHERE id = ?", exam.id);
+    await db.transaction(async (tx) => {
+      // If deleting exams too, delete them (with cascade to scores etc.)
+      if (deleteExams && memberExams.length > 0) {
+        for (const exam of memberExams) {
+          await tx.run("DELETE FROM exams WHERE id = ?", exam.id);
+        }
       }
-    }
-
-    // Delete the group (cascade deletes members)
-    await db.run("DELETE FROM exam_groups WHERE id = ?", groupId);
+      // Delete the group (cascade deletes members)
+      await tx.run("DELETE FROM exam_groups WHERE id = ?", groupId);
+    });
 
     res.json({ ok: true, deletedExams: deleteExams ? memberExams.length : 0, message: "大考已删除" });
   } catch (error) {
@@ -225,7 +312,7 @@ router.delete("/:groupId", async (req: Request, res: Response) => {
 
 // ── POST /api/exam-groups/:groupId/exams ── associate exams ──
 
-router.post("/:groupId/exams", async (req: Request, res: Response) => {
+router.post("/:groupId/exams", requireGroupManager, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -235,6 +322,7 @@ router.post("/:groupId/exams", async (req: Request, res: Response) => {
       res.status(400).json({ message: "请至少选择一个考试" });
       return;
     }
+    if (!(await assertExamIdsVisible(req, res, examIds))) return;
 
     // Get current max sort_order
     const maxOrder = await db.get(
@@ -244,11 +332,14 @@ router.post("/:groupId/exams", async (req: Request, res: Response) => {
 
     const insertSql = buildInsertIgnore(db.dialect, "exam_group_members", ["group_id", "exam_id", "sort_order"]);
 
-    const added: number[] = [];
-    for (const examId of examIds) {
-      const result = await db.run(insertSql, groupId, examId, nextOrder);
-      if (result.changes > 0) { added.push(examId); nextOrder++; }
-    }
+    const added = await db.transaction(async (tx) => {
+      const inserted: number[] = [];
+      for (const examId of examIds) {
+        const result = await tx.run(insertSql, groupId, examId, nextOrder);
+        if (result.changes > 0) { inserted.push(examId); nextOrder++; }
+      }
+      return inserted;
+    });
 
     res.json({ ok: true, added, message: `已关联 ${added.length} 场考试` });
   } catch (error) {
@@ -258,7 +349,7 @@ router.post("/:groupId/exams", async (req: Request, res: Response) => {
 
 // ── DELETE /api/exam-groups/:groupId/exams/:examId ── remove exam ──
 
-router.delete("/:groupId/exams/:examId", async (req: Request, res: Response) => {
+router.delete("/:groupId/exams/:examId", requireGroupManager, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -275,19 +366,22 @@ router.delete("/:groupId/exams/:examId", async (req: Request, res: Response) => 
 
 // ── PUT /api/exam-groups/:groupId/exams/sort ── update sort order ──
 
-router.put("/:groupId/exams/sort", async (req: Request, res: Response) => {
+router.put("/:groupId/exams/sort", requireGroupManager, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
     const items = req.body as { examId: number; sortOrder: number }[];
     if (!Array.isArray(items)) { res.status(400).json({ message: "请求格式错误" }); return; }
+    if (!(await assertExamIdsVisible(req, res, items.map((item) => item.examId)))) return;
 
-    for (const item of items) {
-      await db.run(
-        "UPDATE exam_group_members SET sort_order = ? WHERE group_id = ? AND exam_id = ?",
-        item.sortOrder, groupId, item.examId
-      );
-    }
+    await db.transaction(async (tx) => {
+      for (const item of items) {
+        await tx.run(
+          "UPDATE exam_group_members SET sort_order = ? WHERE group_id = ? AND exam_id = ?",
+          item.sortOrder, groupId, item.examId
+        );
+      }
+    });
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "更新排序失败" });
@@ -296,7 +390,7 @@ router.put("/:groupId/exams/sort", async (req: Request, res: Response) => {
 
 // ── GET /api/exam-groups/:groupId/overview ── group overview ──
 
-router.get("/:groupId/overview", async (req: Request, res: Response) => {
+router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -392,7 +486,7 @@ router.get("/:groupId/overview", async (req: Request, res: Response) => {
 
 // ── GET /api/exam-groups/:groupId/rankings ── group rankings ──
 
-router.get("/:groupId/rankings", async (req: Request, res: Response) => {
+router.get("/:groupId/rankings", requireReadableGroup, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -597,7 +691,7 @@ router.get("/:groupId/rankings", async (req: Request, res: Response) => {
 
 // ── POST /api/exam-groups/:groupId/export ── export ZIP ──
 
-router.post("/:groupId/export", async (req: Request, res: Response) => {
+router.post("/:groupId/export", requireReadableGroup, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);

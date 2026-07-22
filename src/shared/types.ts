@@ -452,6 +452,22 @@ export type CombinedGradingBatchResult = {
   batchId: string;
   cardId: string;
   rows: CombinedGradingRow[];
+  persistence?: GradingPersistenceResult;
+};
+
+export type GradingPersistenceFailure = {
+  fileName: string;
+  studentId?: string;
+  code: "RECOGNITION_FAILED" | "STUDENT_ID_MISSING" | "STUDENT_NOT_FOUND" | "PERSISTENCE_FAILED";
+  message: string;
+};
+
+export type GradingPersistenceResult = {
+  batchId: number;
+  status: "done" | "partial" | "error";
+  persisted: number;
+  failedCount: number;
+  failed: GradingPersistenceFailure[];
 };
 
 // ── Analysis Types ────────────────────────────────────
