@@ -242,7 +242,7 @@ Electron 主进程（`electron/main.cjs`）启动内嵌 Express 服务并加载 
 | 项目 | v1.0 | v1.1 |
 |------|------|------|
 | **Schema 迁移** | — | **无需迁移**，复用已有 `users/roles/grades/classes/...` 表 |
-| **默认账号** | 库中有 admin，但 UI 不强制使用 | 首次登录 `admin` / `admin123`，须立即改密 |
+| **默认账号** | 库中有 admin，但 UI 不强制使用 | 首次登录 `admin` + 数据库同目录的一次性引导密码，系统强制立即改密 |
 | **向后兼容** | — | `PROJECTX_AUTH_ENFORCE=0` 时旧版「无 Token 调业务 API」仍可工作（管理 API 除外） |
 
 ### 4.4 架构演进示意

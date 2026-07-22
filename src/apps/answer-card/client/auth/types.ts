@@ -11,6 +11,7 @@ export interface AuthUser {
   email?: string | null;
   last_login_at?: string | null;
   show_tab_bar?: number;          // v1.9.0: 0=隐藏 1=显示
+  passwordChangeRequired?: boolean;
   permissions: string[];
 }
 
@@ -18,9 +19,8 @@ export interface LoginResponse {
   token: string;
   user: Omit<AuthUser, "permissions"> & { permissions?: string[] };
   permissions: string[];
+  passwordChangeRequired: boolean;
   message?: string;
-  /** 安全警告（如 admin 仍使用默认密码），前端应弹窗提示 */
-  warning?: string;
 }
 
 export interface UserListItem {

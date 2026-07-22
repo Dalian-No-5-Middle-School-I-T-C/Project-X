@@ -62,8 +62,8 @@ router.post("/login", loginLimiter, async (req: Request, res: Response) => {
       token: result.token,
       user: result.user,
       permissions: result.permissions,
+      passwordChangeRequired: result.passwordChangeRequired ?? false,
       message: result.message,
-      ...(result.warning ? { warning: result.warning } : {})
     });
   } catch (error) {
     console.error("Login error:", error);

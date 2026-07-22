@@ -1,5 +1,5 @@
 import { UserRepository, type UserRecord } from "../repositories/UserRepository";
-import { verifyPassword, hashPassword, getMysqlDb } from "../db";
+import { verifyPassword, hashPassword, getMysqlDb, removeBootstrapAdminFile } from "../db";
 import { permissionsForRole } from "../auth/permissions";
 import { validateUserChosenPassword } from "../auth/passwordPolicy";
 import { randomBytes, createHash } from "node:crypto";
@@ -13,8 +13,7 @@ export interface LoginResult {
   token?: string;
   permissions?: string[];
   message?: string;
-  /** 安全警告（如 admin 仍使用默认密码），前端应弹窗提示 */
-  warning?: string;
+  passwordChangeRequired?: boolean;
 }
 
 export interface ChangePasswordResult {
@@ -136,15 +135,6 @@ export class AuthService {
     this.tokenStore.set(hashToken(token), { userId: user.id, expiresAt });
     this.scheduleSave();
 
-    // 检测 admin 是否仍使用默认密码（H-S7 安全警告）
-    let warning: string | undefined;
-    if (user.username === "admin" && user.password_hash) {
-      const isDefault = await verifyPassword("admin123", user.password_hash);
-      if (isDefault) {
-        warning = "默认管理员密码未修改，请尽快前往账号设置修改密码";
-      }
-    }
-
     // 清除敏感信息
     const { password_hash, ...safeUser } = user;
 
@@ -154,7 +144,7 @@ export class AuthService {
       token,
       permissions: permissionsForRole(user.role_id),
       message: "登录成功",
-      ...(warning ? { warning } : {})
+      passwordChangeRequired: Boolean(user.password_change_required)
     };
   }
 
@@ -167,8 +157,8 @@ export class AuthService {
     if (passwordError) return { success: false, message: passwordError };
 
     const db = getMysqlDb();
-    const row = await db.get("SELECT password_hash FROM users WHERE id = ?", userId) as
-      | { password_hash: string }
+    const row = await db.get("SELECT username, password_hash FROM users WHERE id = ?", userId) as
+      | { username: string; password_hash: string }
       | undefined;
     if (!row) {
       return { success: false, message: "用户不存在" };
@@ -184,7 +174,11 @@ export class AuthService {
     }
 
     const newHash = await hashPassword(newPassword);
-    await db.run("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", newHash, userId);
+    await db.run(
+      "UPDATE users SET password_hash = ?, password_change_required = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      newHash, userId
+    );
+    if (row.username === "admin") removeBootstrapAdminFile();
 
     // 安全起见：改密后吊销该用户的所有其它会话
     this.revokeUserTokens(userId);

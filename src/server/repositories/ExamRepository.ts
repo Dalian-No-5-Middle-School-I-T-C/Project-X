@@ -31,8 +31,8 @@ export interface ScanRecordInput {
 export class ExamRepository {
   private db: DbAdapter;
 
-  constructor() {
-    this.db = getMysqlDb();
+  constructor(db: DbAdapter = getMysqlDb()) {
+    this.db = db;
   }
 
   async createExam(params: {
@@ -195,5 +195,22 @@ export class ExamRepository {
 
   async finishBatch(batchId: number): Promise<void> {
     await this.db.run("UPDATE scan_batches SET status = 'done', finished_at = CURRENT_TIMESTAMP WHERE id = ?", batchId);
+  }
+
+  async finishBatchWithOutcome(
+    batchId: number,
+    status: "done" | "partial" | "error",
+    successCount: number,
+    failureCount: number,
+    errorSummary: string | null
+  ): Promise<void> {
+    await this.db.run(
+      `UPDATE scan_batches
+       SET status = ?, success_count = ?, failure_count = ?, error_summary = ?,
+           file_count = ?, finished_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      status, successCount, failureCount, errorSummary,
+      successCount + failureCount, batchId
+    );
   }
 }
