@@ -722,6 +722,20 @@ const MIGRATIONS: Migration[] = [
         ensureSetting.run(key, value);
       }
     }
+  },
+  // v25 (v1.9.4 修复): 补齐 security-bootstrap(v23) 因迁移重编号被跳过而缺失的列
+  // 背景：合并前 online-review-grading-enhancements 曾占用 v23 并已被记入 schema_migrations；
+  // 合并后把它重编号为 v24、把 security-bootstrap 放到 v23，导致执行器按版本号判重而跳过了
+  // v23，password_change_required 等列永久缺失，ensureDefaultAdmin() 启动即崩。本迁移幂等补回。
+  {
+    version: 25,
+    name: "backfill-security-bootstrap-columns",
+    up(db) {
+      addColumnIfMissing(db, "users", "password_change_required", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "success_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "failure_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "error_summary", "TEXT");
+    }
   }
 ];
 

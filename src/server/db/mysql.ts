@@ -613,6 +613,16 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
           ('workload_balance_threshold', '4')`,
       ]
     },
+    {
+      version: 25,
+      name: "backfill-security-bootstrap-columns",
+      sqls: [
+        `ALTER TABLE users ADD COLUMN password_change_required TINYINT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN success_count INT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN failure_count INT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN error_summary LONGTEXT`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {
