@@ -21,7 +21,8 @@ import {
   SquarePen,
   Trash2,
   Upload,
-  Users
+  Users,
+  Settings
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
 import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "./auth/api";
@@ -45,6 +46,7 @@ import { GroupExportModal } from "./components/GroupExportModal";
 import { HomePage } from "./components/HomePage";
 import { GradePanel } from "./components/GradePanel";
 import { ExamDetailPage } from "./components/ExamDetailPage";
+import { GlobalSettingsPage } from "./components/GlobalSettingsPage";
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -228,6 +230,7 @@ function defaultModeForUser(
     if (mode === "exam-manage") return hasPermission(PERMISSIONS.EXAM_WRITE);
     if (mode === "analysis") return hasPermission(PERMISSIONS.EXAM_READ);
     if (mode === "account") return hasPermission(PERMISSIONS.USER_MANAGE);
+    if (mode === "global-settings") return hasPermission(PERMISSIONS.SYSTEM_MANAGE);
     return false;
   };
 
@@ -599,6 +602,7 @@ function App() {
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
   const canManageAccounts = variantAllows("account") && hasPermission(PERMISSIONS.USER_MANAGE);
+  const canManageGlobal = hasPermission(PERMISSIONS.SYSTEM_MANAGE);
   const showCardSidebar = mode === "design" && canDesign;
   const showScoresTab = canViewScores;
 
@@ -1615,6 +1619,8 @@ function App() {
                   ? "考试管理"
                   : mode === "account"
                     ? "账号管理"
+                  : mode === "global-settings"
+                    ? "全局设置"
                   : mode === "sponsor"
                     ? "支持项目"
                     : mode === "guide"
@@ -1626,9 +1632,11 @@ function App() {
                 ? "查看各场考试得分、排名与逐题明细"
                 : mode === "exam-manage"
                   ? "创建、管理考试与阅卷批次"
-                  : mode === "account"
+                : mode === "account"
                   ? "管理用户、班级与花名册"
-                  : mode === "sponsor"
+                : mode === "global-settings"
+                  ? "系统级默认值与策略（仅管理员）"
+                : mode === "sponsor"
                     ? "感谢您的信任与支持"
                     : mode === "guide"
                       ? "Project-X 操作指南与常见问题"
@@ -1690,6 +1698,11 @@ function App() {
               {canManageAccounts && (
               <button className={mode === "account" ? "active" : ""} onClick={() => void switchMode("account")} type="button">
                 <Users size={16} /> 账号
+              </button>
+              )}
+              {canManageGlobal && (
+              <button className={mode === "global-settings" ? "active" : ""} onClick={() => void switchMode("global-settings")} type="button">
+                <Settings size={16} /> 全局设置
               </button>
               )}
             </div>
@@ -2291,6 +2304,11 @@ function App() {
         <div className={`main-grid account-grid ${mode === "account" ? "" : "hidden-panel"}`}>
           <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
             <AccountManagement />
+          </section>
+        </div>
+        <div className={`main-grid global-settings-grid ${mode === "global-settings" ? "" : "hidden-panel"}`}>
+          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+            <GlobalSettingsPage onBack={() => switchMode("home")} />
           </section>
         </div>
         <div className={`main-grid sponsor-grid ${mode === "sponsor" ? "" : "hidden-panel"}`}>

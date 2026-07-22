@@ -798,6 +798,7 @@ src/types/
 | `teacher_id` | INTEGER FK | 教师 ID |
 | `student_count` | INTEGER | 分配份数 |
 | `assigned_student_ids` | TEXT(JSON) | 学生 ID 数组 |
+| `auto_assigned` | INTEGER DEFAULT 0 | 1=工作量均衡自动再分配追加的份数（v1.9.4） |
 
 **UNIQUE**: `(exam_id, block_id, teacher_id)`
 
@@ -840,10 +841,25 @@ src/types/
 | `block_id` | TEXT | 题块 ID |
 | `dispute_threshold` | REAL | 分差阈值 |
 | `rounding` | TEXT | ceil/floor/round/none |
-| `arbitrator_id` | INTEGER FK | 仲裁教师 |
+| `arbitrator_id` | INTEGER FK | 仲裁教师（可空；留空启用工作量均衡） |
 | `review_mode` | INTEGER | 1=1P, 2=2P, 3=3P |
+| `has_half_point` | INTEGER DEFAULT 0 | 本题块含 0.5 小数（v1.9.4，按 block 粒度） |
+| `auto_reassign_no_arb` | INTEGER DEFAULT 1 | 未设仲裁人时自动重分配开关（v1.9.4） |
+| `workload_balance_threshold` | INTEGER DEFAULT 4 | 工作量均衡阈值：已分配教师间最多-最少份数差上限（v1.9.4） |
 
 **UNIQUE**: `(exam_id, block_id)`
+
+#### `system_settings` — 系统级全局设置（v1.9.4 新增）
+
+仅管理员读写，承载对所有考试生效的默认值与策略；题块级设置仍由 `block_grading_config` 控制。
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `key` | TEXT PK | 设置键 |
+| `value` | TEXT | 设置值 |
+| `updated_at` | TEXT | 最近更新时间 |
+
+**候选键**：`allow_half_point`（是否允许 0.5，默认 `1`）、`default_dispute_threshold`（默认分差阈值，默认 `2`）、`default_rounding`（默认取整，默认 `ceil`）、`auto_reassign_policy`（无仲裁人自动重分配，默认 `1`）、`workload_balance_threshold`（工作量均衡阈值，默认 `4`）。
 
 **成绩分析关联查询**：
 ```sql

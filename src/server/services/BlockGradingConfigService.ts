@@ -10,6 +10,9 @@ type ConfigRow = {
   rounding: string;
   arbitrator_id: number | null;
   review_mode: number;
+  has_half_point: number;
+  auto_reassign_no_arb: number;
+  workload_balance_threshold: number;
   created_at: string;
   updated_at: string;
 };
@@ -23,6 +26,9 @@ function toConfig(row: ConfigRow): BlockGradingConfig {
     rounding: row.rounding as RoundingMode,
     arbitratorId: row.arbitrator_id,
     reviewMode: row.review_mode as ReviewMode,
+    hasHalfPoint: row.has_half_point ?? 0,
+    autoReassignNoArb: row.auto_reassign_no_arb ?? 1,
+    workloadBalanceThreshold: row.workload_balance_threshold ?? 4,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -66,6 +72,9 @@ export async function getBlockConfig(
     rounding: defaultRoundingMode(blockKind),
     arbitratorId: null,
     reviewMode: 1,
+    hasHalfPoint: 0,
+    autoReassignNoArb: 1,
+    workloadBalanceThreshold: 4,
     createdAt: now,
     updatedAt: now
   };
@@ -92,6 +101,12 @@ export async function upsertBlockConfig(
     rounding?: RoundingMode;
     arbitratorId?: number | null;
     reviewMode?: ReviewMode;
+    /** 本题块是否允许 0.5 小数（0/1） */
+    hasHalfPoint?: number;
+    /** 未设仲裁人时是否自动工作量均衡再分配（0/1） */
+    autoReassignNoArb?: number;
+    /** 工作量均衡阈值（份数差上限） */
+    workloadBalanceThreshold?: number;
   },
   db: DbAdapter = getMysqlDb()
 ): Promise<BlockGradingConfig> {
@@ -121,6 +136,18 @@ export async function upsertBlockConfig(
       setClauses.push("review_mode = ?");
       values.push(updates.reviewMode);
     }
+    if (updates.hasHalfPoint !== undefined) {
+      setClauses.push("has_half_point = ?");
+      values.push(updates.hasHalfPoint);
+    }
+    if (updates.autoReassignNoArb !== undefined) {
+      setClauses.push("auto_reassign_no_arb = ?");
+      values.push(updates.autoReassignNoArb);
+    }
+    if (updates.workloadBalanceThreshold !== undefined) {
+      setClauses.push("workload_balance_threshold = ?");
+      values.push(updates.workloadBalanceThreshold);
+    }
 
     if (setClauses.length === 0) {
       const row = await db.get(
@@ -141,14 +168,17 @@ export async function upsertBlockConfig(
     );
   } else {
     await db.run(
-      `INSERT INTO block_grading_config (exam_id, block_id, dispute_threshold, rounding, arbitrator_id, review_mode)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO block_grading_config (exam_id, block_id, dispute_threshold, rounding, arbitrator_id, review_mode, has_half_point, auto_reassign_no_arb, workload_balance_threshold)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       examId,
       blockId,
       updates.disputeThreshold ?? 2,
       updates.rounding ?? "ceil",
       updates.arbitratorId ?? null,
-      updates.reviewMode ?? 1
+      updates.reviewMode ?? 1,
+      updates.hasHalfPoint ?? 0,
+      updates.autoReassignNoArb ?? 1,
+      updates.workloadBalanceThreshold ?? 4
     );
   }
 
@@ -169,6 +199,9 @@ export async function batchUpdateConfigs(
     rounding?: RoundingMode;
     arbitratorId?: number | null;
     reviewMode?: ReviewMode;
+    hasHalfPoint?: number;
+    autoReassignNoArb?: number;
+    workloadBalanceThreshold?: number;
   },
   db: DbAdapter = getMysqlDb()
 ): Promise<void> {

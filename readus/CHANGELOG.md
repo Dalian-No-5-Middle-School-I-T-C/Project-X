@@ -1,5 +1,48 @@
 # Project-X CHANGELOG
 
+## v1.9.4 (2026-07-22) — 网阅打分面板双模式 + 0.5 小数 + 工作量均衡
+
+### 1. 打分面板按满分阈值切换双模式
+
+- **枚举模式（满分 < 20）**：直接枚举每个正分大按钮，点击即定分并自动跳下一页；含 0.5 时底部另起一行提供 `0` / `0.5` 专用按钮（极低分须显式点选）。
+- **位值模式（满分 ≥ 20）**：沿用「十位 + 个位 + 十分位」方案；十位/个位选完仅更新预览，选到十分位（0 或 0.5）即合成完整分值并自动提交跳转。
+- 自动跳转统一状态机：选满即提交并游标 +1；合成值越界（> 满分或 < 0）不跳，保留当前卷。
+
+### 2. 0.5 小数支持
+
+- `block_grading_config.has_half_point`（按题块粒度，v1.9.4 新增）控制是否显示 0.5。
+- 「批量设置网阅分差」页新增「本题块含 0.5 小数」批量控件；打分面板按 `has_half_point` 显示。
+- 满分 < 20 且含 0.5：主区枚举 1, 1.5, …, 满分，底部专用行放 0 / 0.5。
+- 满分 ≥ 20 且含 0.5：十分位列显示 0 / 0.5。
+
+### 3. 仲裁人可选 + 工作量自动再分配
+
+- 题块设置保留仲裁人（可留空）。
+- 未设仲裁人且 `auto_reassign_no_arb=1` 时，`ReviewAssignmentService.rebalanceWorkload` 在分配后自动把「剩余/未分配卷」吸收到份数最少的已分配教师，并在教师间搬运卷，使任意两位教师份数差 ≤ `workload_balance_threshold`（默认 4 份，D1 选定）。
+- 争议卷（无仲裁人）自动改派给一位「已分配本题块且未评过该生」的教师（进度条加卷），并允许其提交追加复评轮。
+- 被自动追加的卷标记 `review_assignments.auto_assigned=1`，与原始分配在统计/溯源上可区分。
+
+### 4. 权限下调
+
+- `has_half_point` 与工作量分配下放给「本题块已分配教师」可编辑；仲裁人 / 分差 / 取整 / 模式仍限管理员（`block-grading-config` 路由按 `role_id` 校验）。
+- 系统级全局设置收口到 Home「全局设置」（仅管理员可见）。
+
+### 5. 设置拆分
+
+- 个性化设置（不变）：位置不变。
+- 局部网阅（权限下调→教师）：`has_half_point`、工作量分配（仅本人已分配块）。
+- 全局（新增，仅管理员）：Home → 全局设置，含 `allow_half_point` / `default_dispute_threshold` / `default_rounding` / `auto_reassign_policy` / `workload_balance_threshold`，读写 `/api/system-settings`。
+
+### 数据层
+
+- 迁移 v23：`block_grading_config` 加 `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold`；`review_assignments` 加 `auto_assigned`；新增 `system_settings` 表与默认键。
+- MariaDB 同步迁移（`mariadbMigrations` v23）。
+
+### DEV 测试入口（路径 B）
+
+- `testdata/demo-exams` 种子新增「演示-网阅测试」考试（题块 A 满分 15·含 0.5、题块 B 满分 25），并新增第二教师 `demo-teacher-2` 演示工作量均衡。
+- `./import-all.sh seed`（或 `npx tsx testdata/demo-exams/scripts/seed.ts`）后即可用 `demo-teacher / teacher123` 登录实测打分面板与全局设置。
+
 ## v1.9.1 (2026-07-19) — 答题卡设计器全面增强
 
 ### 作文块（essay block）

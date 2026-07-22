@@ -679,6 +679,41 @@ const MIGRATIONS: Migration[] = [
           ON exams(grade_id, class_id);
       `);
     }
+  },
+  // v23: 网阅打分与分配增强 (v1.9.4)
+  // - block_grading_config: has_half_point / auto_reassign_no_arb / workload_balance_threshold
+  // - review_assignments: auto_assigned
+  // - system_settings: 全局默认键（updated_at 补齐与 MariaDB parity）
+  {
+    version: 23,
+    name: "online-review-grading-enhancements-1.9.4",
+    up(db) {
+      // 1. block_grading_config 新列
+      addColumnIfMissing(db, "block_grading_config", "has_half_point", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "block_grading_config", "auto_reassign_no_arb", "INTEGER NOT NULL DEFAULT 1");
+      addColumnIfMissing(db, "block_grading_config", "workload_balance_threshold", "INTEGER NOT NULL DEFAULT 4");
+
+      // 2. review_assignments 新列
+      addColumnIfMissing(db, "review_assignments", "auto_assigned", "INTEGER NOT NULL DEFAULT 0");
+
+      // 3. system_settings 补齐 updated_at（与 MariaDB 表结构 parity）
+      addColumnIfMissing(db, "system_settings", "updated_at", "TEXT");
+
+      // 4. system_settings 默认键（可重复执行）
+      const ensureSetting = db.prepare(
+        "INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)"
+      );
+      const defaults: Array<[string, string]> = [
+        ["allow_half_point", "1"],
+        ["default_dispute_threshold", "2"],
+        ["default_rounding", "ceil"],
+        ["auto_reassign_policy", "1"],
+        ["workload_balance_threshold", "4"],
+      ];
+      for (const [key, value] of defaults) {
+        ensureSetting.run(key, value);
+      }
+    }
   }
 ];
 

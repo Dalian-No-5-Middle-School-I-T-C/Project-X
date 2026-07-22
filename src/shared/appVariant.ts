@@ -1,4 +1,4 @@
-export type ProjectXAppMode = "home" | "design" | "exam-manage" | "analysis" | "scores" | "account" | "sponsor" | "guide" | "permissions";
+export type ProjectXAppMode = "home" | "design" | "exam-manage" | "analysis" | "scores" | "account" | "global-settings" | "sponsor" | "guide" | "permissions";
 
 export type ProjectXVariant = "student" | "teacher" | "teacher-scanner";
 

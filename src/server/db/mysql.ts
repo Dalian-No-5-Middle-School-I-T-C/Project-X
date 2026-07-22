@@ -587,6 +587,22 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `CREATE INDEX IF NOT EXISTS idx_exams_grade_class ON exams(grade_id, class_id)`,
       ]
     },
+    {
+      version: 23,
+      name: "online-review-grading-enhancements-1.9.4",
+      sqls: [
+        `ALTER TABLE block_grading_config ADD COLUMN has_half_point TINYINT DEFAULT 0`,
+        `ALTER TABLE block_grading_config ADD COLUMN auto_reassign_no_arb TINYINT DEFAULT 1`,
+        `ALTER TABLE block_grading_config ADD COLUMN workload_balance_threshold INT DEFAULT 4`,
+        `ALTER TABLE review_assignments ADD COLUMN auto_assigned TINYINT DEFAULT 0`,
+        `INSERT IGNORE INTO system_settings (\`key\`, value) VALUES
+          ('allow_half_point', '1'),
+          ('default_dispute_threshold', '2'),
+          ('default_rounding', 'ceil'),
+          ('auto_reassign_policy', '1'),
+          ('workload_balance_threshold', '4')`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

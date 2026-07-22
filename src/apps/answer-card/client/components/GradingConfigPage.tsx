@@ -13,6 +13,7 @@ export function GradingConfigPage({ examId }: Props) {
   const [showBatch, setShowBatch] = useState(false);
   const [batchThreshold, setBatchThreshold] = useState("");
   const [batchRounding, setBatchRounding] = useState("");
+  const [batchHasHalf, setBatchHasHalf] = useState("");
   const [loading, setLoading] = useState(true);
   const [arbitrators, setArbitrators] = useState<ArbitratorCandidate[]>([]);
 
@@ -61,6 +62,7 @@ export function GradingConfigPage({ examId }: Props) {
     const body: any = { blockIds };
     if (batchThreshold) body.disputeThreshold = Number(batchThreshold);
     if (batchRounding) body.rounding = batchRounding;
+    if (batchHasHalf) body.hasHalfPoint = Number(batchHasHalf);
 
     await fetchJson(`/api/block-grading-config/exams/${examId}/batch`, {
       method: "POST",
@@ -70,6 +72,7 @@ export function GradingConfigPage({ examId }: Props) {
     setShowBatch(false);
     setBatchThreshold("");
     setBatchRounding("");
+    setBatchHasHalf("");
     load();
   };
 
@@ -118,6 +121,7 @@ export function GradingConfigPage({ examId }: Props) {
               <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
                 阈值: {config?.disputeThreshold ?? "—"} ·
                 取整: {config?.rounding === "ceil" ? "↑" : config?.rounding === "half" ? "0.5" : config?.rounding === "none" ? "—" : config?.rounding ?? "—"} ·
+                0.5: {config?.hasHalfPoint === 1 ? "是" : config?.hasHalfPoint === 0 ? "否" : "—"} ·
                 仲裁: {config?.arbitratorId ? `教师${config.arbitratorId}` : "未指定"}
               </div>
             </div>
@@ -163,6 +167,14 @@ export function GradingConfigPage({ examId }: Props) {
                 <option value="round">四舍五入</option>
                 <option value="half">保留 0.5</option>
                 <option value="none">保留小数</option>
+              </select>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 13 }}>本题块含 0.5 小数</label>
+              <select value={batchHasHalf} onChange={(e) => setBatchHasHalf(e.target.value)} style={selectStyle}>
+                <option value="">不修改</option>
+                <option value="1">是（启用手写 0.5 评分）</option>
+                <option value="0">否</option>
               </select>
             </div>
 
