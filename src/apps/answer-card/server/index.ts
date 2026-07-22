@@ -35,6 +35,8 @@ import reviewSessionRoutes from "../../../server/routes/review-session";
 import reviewArbitrationRoutes from "../../../server/routes/review-arbitration";
 import reviewAnnotationsRoutes from "../../../server/routes/review-annotations";
 import blockGradingConfigRoutes from "../../../server/routes/block-grading-config";
+import systemSettingsRoutes from "../../../server/routes/system-settings";
+import { startLlmClientSidecar, shutdownLlmClient } from "./llm-launcher";
 import dashboardRoutes from "../../../server/routes/dashboard";
 import adminPermissionsRoutes from "../../../server/routes/admin-permissions";
 import apiKeysRoutes from "../../../server/routes/api-keys";
@@ -704,6 +706,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/review-arbitration", analysisGate, reviewArbitrationRoutes);
   app.use("/api/review-annotations", analysisGate, reviewAnnotationsRoutes);
   app.use("/api/block-grading-config", analysisGate, blockGradingConfigRoutes);
+  app.use("/api/system-settings", systemSettingsRoutes);
   app.use("/api/dashboard", dashboardRoutes);
   app.use(paperRoutes());
 
@@ -1806,6 +1809,13 @@ export async function startServer(port = Number(process.env.PORT ?? 5174)): Prom
       (server as ProjectXServer).actualPort = actualPort;
       (server as ProjectXServer).localUrl = `http://127.0.0.1:${actualPort}`;
       console.log(`Answer card designer API running at http://127.0.0.1:${actualPort}`);
+      startLlmClientSidecar();
+      const shutdown = () => {
+        shutdownLlmClient();
+        server.close(() => process.exit(0));
+      };
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
       resolve(server as ProjectXServer);
     });
     server.listen(port, "127.0.0.1");

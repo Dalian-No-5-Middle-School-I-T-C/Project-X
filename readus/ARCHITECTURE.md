@@ -17,6 +17,11 @@
 > - **网阅**：嵌入考试管理，2P/3P 多评 + 争议仲裁 + PAD 优先 UI + 断点续批
 > - 移除独立 `grading` 模式，新增 `home` 模式
 
+> **v1.9.4** 网阅打分面板与工作量均衡增强（详见 §6.6）：
+> - 打分面板按满分阈值自动切换「枚举模式（<20）/ 位值模式（≥20）」，含 0.5 小数与自动跳转
+> - 仲裁人可选；未设仲裁人时按阈值自动再分配剩余卷与争议卷
+> - 设置三层拆分：个性化（不变）/ 局部网阅（考试「网阅设置」Tab，含「网阅默认」模板）/ 全局（仅管理员，原卷策略 + AI 系统配置）
+
 技术栈：**Electron 桌面壳（扫描端）+ Express 后端 + React 前端 + C++ 原生子进程 + Python LLM 中转服务**。
 
 ---
@@ -236,7 +241,7 @@ React AnalysisAiPanel
   -> Gemini / DeepSeek / OpenAI-compatible provider
 ```
 
-`llmclient` 位于仓库根目录，使用 Python `FastAPI + uvicorn` 手动启动。Node 后端只负责探活、鉴权转发和把当前考试/班级范围传给 Python 服务。模型只能调用白名单成绩工具读取 `projectx.db`，不开放原始 SQL。
+`llmclient` 位于仓库根目录，使用 Python `FastAPI + uvicorn`。Node 后端在启动时会**自动拉起**该服务（默认 `http://127.0.0.1:8766`，见 `src/apps/answer-card/server/llm-launcher.ts`），也可手动启动；也可通过 `LLMCLIENT_AUTOSTART=false` 关闭、`LLMCLIENT_PYTHON` 指定解释器、`LLMCLIENT_URL` 指定地址端口。Node 后端只负责探活、鉴权转发和把当前考试/班级范围传给 Python 服务（AI 调用前会 `ensureLlmClient()` 确保侧车已起，未起则自动拉起）。模型只能调用白名单成绩工具读取 `projectx.db`，不开放原始 SQL。
 
 ### 4.3 Repository 模式
 
@@ -460,6 +465,71 @@ sequenceDiagram
 - `answer_block_crops` 通过 `source_type/source_record_id` 统一关联普通阅卷 `scan_records` 和扫描仪 `twain_scan_records`。
 - `CombinedRecognitionResult.blockCrops` 为本次识别的临时 manifest；落库后前端读取的是持久化 `AnswerBlockCrop`。
 
+### 6.6 网上阅卷打分面板与工作量均衡 (v1.9.4)
+
+v1.9.4 把「网上阅卷」的打分交互、小数粒度、工作量分配与权限边界做了一次增强，目标是让教师在 PAD 上既能快速给小分题打整数/0.5 分，也能给大分题走位值合成，同时把「没人兜底争议卷」的场景变成系统自动均衡。
+
+#### 6.6.1 打分面板双模式
+
+`ScorePad` 依据题块满分 `maxScore` 自动选择一种输入方案：
+
+| 模式 | 触发 | 交互 | 提交时机 |
+|------|------|------|----------|
+| **枚举模式** | `maxScore < 20` | 直接枚举每个正分大按钮（1, 2, …, 满分），含 0.5 时主区按 0.5 步进，底部专用行放 `0` / `0.5` | 点任一按钮即合成分值并提交 |
+| **位值模式** | `maxScore ≥ 20` | 十位 + 个位 + 十分位三列；十分位仅 `0`（含 0.5 时加 `0.5`） | 选到十分位（0 或 0.5）即合成完整分值并提交 |
+
+`has_half_point`（`block_grading_config` 按题块粒度，v1.9.4 新增）决定 0.5 是否出现：枚举模式主区按 0.5 步进并追加底部 `0/0.5` 行；位值模式在十分位列渲染 `0` / `0.5`。
+
+#### 6.6.2 自动跳转状态机
+
+选分即提交、提交即跳下一卷。统一状态机：
+
+```mermaid
+stateDiagram-v2
+    [*] --> 选分中
+    选分中 --> 合成分值: 选满/点按钮
+    合成分值 --> 越界检查: 计算 v
+    越界检查 --> 选分中: v > 满分 或 v < 0（保留当前卷）
+    越界检查 --> 提交并跳转: 0 ≤ v ≤ 满分
+    提交并跳转 --> 选分中: 光标 +1，加载下一卷
+    提交并跳转 --> [*]: 已是最后一卷
+```
+
+- 枚举模式点按钮、位值模式选到十分位都触发「合成 → 越界检查 → 提交跳转」。
+- 合成值越界（> 满分或 < 0）不跳，保留当前卷等教师修正。
+- 底部 `0/0.5` 专用行（枚举 + 含 0.5）为极低分专用，必须显式点选才提交，避免误把零分卷当跳过。
+
+#### 6.6.3 仲裁人可选 + 工作量自动再分配
+
+`ReviewAssignmentService.rebalanceWorkload(examId, blockId, db)` 在每次分配（`createAssignments`）后自动执行，把「份数差」收敛到阈值内：
+
+1. **吸收未分配卷**：把切块中存在但还没分配给任何教师的卷（`cropByStudent` 中不在 `assignedSet` 的），补到当前份数最少的已分配教师。
+2. **教师间搬运**：在两两已分配教师间把卷从多的一方移到少的一方，直到任意两位教师份数差 ≤ `workload_balance_threshold`（考试「网阅设置 → 网阅默认」中设置，默认 4 份）。
+3. **仲裁人可选**：`block_grading_config.arbitrator_id` 可留空；留空且 `auto_reassign_no_arb=1` 时，争议卷自动改派给「已分配本题块且未评过该生」的教师（进度条加卷），并允许其提交追加复评轮。`review_assignments.auto_assigned=1` 标记被自动追加的卷，与原始分配在统计/溯源上可区分。
+
+```mermaid
+flowchart TD
+    A[createAssignments] --> B[事务内写原始分配]
+    B --> C[rebalanceWorkload]
+    C --> D{有未分配卷?}
+    D -->|是| E[补到份数最少教师]
+    D -->|否| F{任意两位差>阈值?}
+    E --> F
+    F -->|是| G[多→少搬运]
+    G --> F
+    F -->|否| H[提交事务+返回再平衡后分配]
+```
+
+#### 6.6.4 设置三层拆分与权限
+
+| 层 | 入口 | 可改字段 | 权限 |
+|----|------|----------|------|
+| 个性化 | 账号设置 | 主题/显示/背景/评分显示模式等 | 本人 |
+| 局部网阅 | 考试详情「网阅设置」Tab | 题块级：`has_half_point`、本人已分配块的工作量（教师）；「网阅默认」模板：`dispute_threshold` / `rounding` / `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold` / `review_mode`（复评模式，管理员） | 教师：本人已分配块 `has_half_point`+工作量；管理员：全部 |
+| 全局 | Home → 全局设置 | `require_original_paper` / `highlight_missing_paper`（原卷策略）+ AI 系统服务商（`/api/ai/providers/system`） | 仅管理员（Home 卡片仅 `system:manage` 可见） |
+
+`block-grading-config` 路由按 `role_id` 校验：`arbitrator_id` / `dispute_threshold` / `rounding` / `review_mode` / `auto_reassign_no_arb` / `workload_balance_threshold` 为管理员专属；教师仅可改本人已分配块的 `has_half_point` 与工作量分配，越权返回 403。「网阅默认」存于 `block_grading_config` 的 `block_id='__default__'`，`getBlockConfig` 在新建题块行时优先继承该默认值。全局设置中：原卷两键读写 `/api/system-settings`（键存 `system_settings` 表，并提供 `/api/system-settings/public` 只读端点供前端判断强制上传/高亮）；AI 系统服务商存 `ai_providers` 表（`is_system=1`，由 `/api/ai/providers/system` 管理，普通用户不可访问该路由，但可被教师 AI 分析作为系统级服务商选用）。
+
 ---
 
 ## 7. C++ 原生层
@@ -582,5 +652,5 @@ flowchart LR
 
 ---
 
-> 文档更新日期：2026-07-21  
-> 基于 Project-X v1.9.2 代码库分析（含阶段 2 续 B1/B2/C 重构）
+> 文档更新日期：2026-07-22  
+> 基于 Project-X v1.9.4 代码库分析（含 v1.9.2 网页化改造 + v1.9.4 网阅打分面板双模式与工作量均衡）

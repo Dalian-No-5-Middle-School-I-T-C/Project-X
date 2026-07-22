@@ -216,6 +216,7 @@ export type WorkspaceValue = {
   canAnalyze: boolean;
   canViewScores: boolean;
   canManageAccounts: boolean;
+  canManageGlobal: boolean;
   canWriteExam: boolean;
   showCardSidebar: boolean;
   showScoresTab: boolean;

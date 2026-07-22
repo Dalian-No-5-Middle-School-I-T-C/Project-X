@@ -1,5 +1,77 @@
 # Project-X CHANGELOG
 
+## v1.9.4 (2026-07-22) — 网阅打分面板双模式 + 0.5 小数 + 工作量均衡
+
+### 1. 打分面板按满分阈值切换双模式
+
+- **枚举模式（满分 < 20）**：直接枚举每个正分大按钮，点击即定分并自动跳下一页；含 0.5 时底部另起一行提供 `0` / `0.5` 专用按钮（极低分须显式点选）。
+- **位值模式（满分 ≥ 20）**：沿用「十位 + 个位 + 十分位」方案；十位/个位选完仅更新预览，选到十分位（0 或 0.5）即合成完整分值并自动提交跳转。
+- 自动跳转统一状态机：选满即提交并游标 +1；合成值越界（> 满分或 < 0）不跳，保留当前卷。
+
+### 2. 0.5 小数支持
+
+- `block_grading_config.has_half_point`（按题块粒度，v1.9.4 新增）控制是否显示 0.5。
+- 「批量设置网阅分差」页新增「本题块含 0.5 小数」批量控件；打分面板按 `has_half_point` 显示。
+- 满分 < 20 且含 0.5：主区枚举 1, 1.5, …, 满分，底部专用行放 0 / 0.5。
+- 满分 ≥ 20 且含 0.5：十分位列显示 0 / 0.5。
+
+### 3. 仲裁人可选 + 工作量自动再分配
+
+- 题块设置保留仲裁人（可留空）。
+- 未设仲裁人且 `auto_reassign_no_arb=1` 时，`ReviewAssignmentService.rebalanceWorkload` 在分配后自动把「剩余/未分配卷」吸收到份数最少的已分配教师，并在教师间搬运卷，使任意两位教师份数差 ≤ `workload_balance_threshold`（默认 4 份，D1 选定）。
+- 争议卷（无仲裁人）自动改派给一位「已分配本题块且未评过该生」的教师（进度条加卷），并允许其提交追加复评轮；若已分配教师均已评过该生（教师数不足），回退改派给原阅卷老师（不 care 是否评过）。
+- 被自动追加的卷标记 `review_assignments.auto_assigned=1`，与原始分配在统计/溯源上可区分。
+
+### 4. 权限下调
+
+- `has_half_point` 与工作量分配下放给「本题块已分配教师」可编辑；仲裁人 / 分差 / 取整 / 模式仍限管理员（`block-grading-config` 路由按 `role_id` 校验）。
+- 系统级全局设置收口到 Home「全局设置」（仅管理员可见）。
+
+### 5. 设置三层拆分（重构）
+
+- 个性化设置（不变）：账号设置，主题/显示/背景等。
+- 局部网阅（考试「网阅设置」Tab）：
+  - 题块级：`has_half_point`、本人已分配块的工作量（教师可改，v1.9.4 下放）。
+  - **「网阅默认」模板**（管理员）：`dispute_threshold` / `rounding` / `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold` / `review_mode`（复评模式：1 单评 / 2 双评 / 3 三评），存 `block_grading_config.block_id='__default__'`；新建题块行时 `getBlockConfig` 自动继承。这 5 项原先错误地放在全局设置页，现归位到网阅，并真正生效（此前在全局页仅读写、后端未消费）；`review_mode` 此前后端+表已支持但前端从未渲染、且 `getBlockConfig` 硬编码为 1，现补进 UI 并改为继承 `__default__`。
+- 全局（仅管理员，Home → 全局设置）：**原卷策略** `require_original_paper` / `highlight_missing_paper` + **AI 系统服务商**（`/api/ai/providers/system`，`ai_providers.is_system=1`）。新增 `GET /api/system-settings/public` 只读端点供前端判断强制上传/高亮。
+- 原卷两开关从 `users` 个人列提升为系统级（`users.require_original_paper`/`highlight_missing_paper` 列废弃保留），所有教师统一遵从管理员设定。
+
+### 6. reviewMode（复评模式 / 仲裁卷重批次数）补进网阅设置 UI
+
+- **背景**：用户发现「网阅设置」缺「仲裁卷重批次数」。经核对全量 git 历史，老全局页 5 个网阅键里原本就没有该字段；它对应数据模型 `block_grading_config.review_mode`（复评模式：1 单评 / 2 双评 / 3 三评，争议卷按 `reviewMode+2` 轮破僵局），后端 + 表一直支持，但**前端网阅设置 UI 从未渲染**，且 `getBlockConfig` 硬编码 `reviewMode:1` 不继承「网阅默认」模板。
+- **修复**：`GradingConfigPage` 的「网阅默认」卡片与逐题块列表/批量弹窗均补「复评模式」下拉（单评/双评/三评），随 `__default__` 存取；`BlockGradingConfigService.getBlockConfig` 改为：若存在 `__default__` 模板则继承 `def.review_mode`，否则默认 1。
+- **验证**：`PUT .../blocks/__default__` 带 `reviewMode=3` → 入库；`GET` 新建题块走 `getBlockConfig` 继承 `reviewMode=3`；`POST .../batch` 批量改选中题块 `reviewMode=2` → 生效；typecheck 通过。
+
+### 7. llmclient（Python AI 中转）随 Node 服务自动启动
+
+- **背景**：所有 AI 功能（成绩分析 / 原卷知识点 / 学生 AI 建议）都经 Node 转发到 Python `llmclient` 侧车（默认 `http://127.0.0.1:8766`），此前需每次手动 `py -m uvicorn llmclient.server:app`。用户要求免去手动启动。
+- **修复**：新增 `src/apps/answer-card/server/llm-launcher.ts`：
+  - `startLlmClientSidecar()` 在 `startServer` 监听后自动拉起侧车（fire-and-forget，不阻塞启动）；`SIGINT`/`SIGTERM` 时 `shutdownLlmClient()` 一并退出。
+  - `ensureLlmClient()` 在每次 AI 调用（`fetchLlmClient`）前确保侧车已起——未起则自动拉起并轮询 `/health` 直到就绪（超时 30s），崩溃后下次调用会重新拉起。
+  - 解释器按 `py`→`python`→`python3`（Windows/Linux 反序）候选探测，跳过 ENOENT；可通过 `LLMCLIENT_PYTHON` 指定（如虚拟环境 python）。`LLMCLIENT_URL` 决定监听地址/端口。`LLMCLIENT_AUTOSTART=false` 可关闭。
+  - 找不到 Python / 依赖缺失时打印 `[llmclient] …` 警告并优雅降级，不拖垮主服务。
+- **文档**：`user guide/.../用户使用说明.md` §6.1 修正「方式 B 自定义服务商无需启动 Python」为「所有 AI 调用都经 llmclient 中转」，并补充自动启动说明；`ARCHITECTURE.md` §4.2 同步。
+
+### 数据层
+
+- 迁移 v24（与 #185 的 v23 安全迁移顺序衔接）：`block_grading_config` 加 `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold`；`review_assignments` 加 `auto_assigned`；新增 `system_settings` 表与默认键。
+- 迁移 v25（修复）：合并重编号导致 #185 v23 被跳过，补建 `users.password_change_required` 等 security-bootstrap 列。
+- 迁移 v26（设置重构）：`system_settings` 新增原卷两键（`require_original_paper`/`highlight_missing_paper`，默认 `1`），并清理未消费的 5 个网阅死键；`users` 原卷两列标记废弃（保留）。MariaDB 同步（v25、v26）。
+- MariaDB 同步迁移（`mariadbMigrations` v24/v25/v26）。
+
+### DEV 测试入口（路径 B）
+
+- `testdata/demo-exams` 种子新增「演示-网阅测试」考试（题块 A 满分 15·含 0.5、题块 B 满分 25），并新增第二教师 `demo-teacher-2` 演示工作量均衡。
+- `./import-all.sh seed`（或 `npx tsx testdata/demo-exams/scripts/seed.ts`）后可用 `demo-teacher / teacher123` 登录实测打分面板与全局设置；`admin` 初始密码见数据库旁的 `bootstrap-admin.txt`（首次登录强制改密）。
+
+## v1.9.3 #185 安全修复 (2026-07-22) — 随机管理员密码 + PX-SEC/PX-COR 修复
+
+- **默认管理员改为随机一次性密码**：首次数据库初始化创建 `admin` 时生成随机密码并写入数据库旁的 `bootstrap-admin.txt`（权限 0600），登录强制要求立即改密。`admin` / `admin123` 不再可用；首次登录请使用 `bootstrap-admin.txt` 中的密码并按提示改密。
+- **安全问题修复**：PX-SEC-028、PX-SEC-002、PX-SEC-001、PX-SEC-024、PX-COR-001。
+- **新增关键安全测试套件** `verify:security-critical`（`npm run verify:security-critical`），与 `verify:auth` 互补覆盖安全/数据完整性关键路径。
+- **问题报告机制**：新增「问题报告」入口，便于师生反馈。
+- 受影响文件：`AGENTS.md`（安全与多端说明更新）。
+
 ## v1.9.2 (2026-07-21) — 网页化改造 / 启动台模式 + 前端风格统一 + BUG 修复
 
 本版本是「审计 → 修复 → 统一 → 网页化」一揽子改造，分三阶段落地（前情见内部工作文档 `.workbuddy/plans/AUDIT-2026-07-20.md` / `PLAN-2026-07-20.md` / `SMOKE-2026-07-20.md`，不进仓库）。
