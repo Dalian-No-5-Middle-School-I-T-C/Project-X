@@ -17,6 +17,8 @@ class AnalysisRunRequest(BaseModel):
     model: str | None = None
     locale: str = "zh-CN"
     providerOverride: ProviderOverride | None = None
+    callerRole: str | None = None
+    studentId: int | None = None
 
 
 class AiAnalysisQuestionAction(BaseModel):

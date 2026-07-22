@@ -509,7 +509,12 @@ export async function createApp(): Promise<express.Express> {
     if (req.method === "OPTIONS") { res.status(204).end(); return; }
     next();
   });
-  app.use("/assets", express.static(assetsDir));
+  app.use("/assets", express.static(assetsDir, {
+    setHeaders: (res, _filePath) => {
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Disposition", "attachment");
+    }
+  }));
 
   app.get("/api/app/health", async (_req, res) => {
     const db = await healthCheck();
@@ -725,6 +730,12 @@ export async function createApp(): Promise<express.Express> {
     }),
     limits: { fileSize: 12 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      const allowedExts = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
+      if (!allowedExts.includes(ext)) {
+        cb(new Error("仅支持图片文件"));
+        return;
+      }
       if (file.mimetype.startsWith("image/")) {
         cb(null, true);
       } else {
@@ -1067,6 +1078,15 @@ export async function createApp(): Promise<express.Express> {
       const confidenceThreshold = await resolveConfidenceThreshold(req);
 
       const examIdParam = fieldValue(req.body.examId);
+      if (examIdParam) {
+        const examIdNum = Number(examIdParam);
+        if (!Number.isFinite(examIdNum)) {
+          res.status(400).json({ message: "examId 格式无效" });
+          return;
+        }
+        const ok = await validateExamIdsAccess(req, res, [examIdNum]);
+        if (!ok) return;
+      }
 
       let finished = 0;
       if (progressId) {
@@ -1197,6 +1217,9 @@ export async function createApp(): Promise<express.Express> {
       }
       if (!req.file) {
         res.status(400).json({ message: "没有收到图片文件" });
+        return;
+      }
+      if (!await assertImageFile(req.file.path, res)) {
         return;
       }
       res.status(201).json({

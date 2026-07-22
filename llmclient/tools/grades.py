@@ -55,6 +55,27 @@ def connect_db(db_path: Path | None = None) -> sqlite3.Connection | MariaDbConne
     return conn
 
 
+def resolve_student_class_id(student_id: int) -> int | None:
+    with connect_db() as conn:
+        row = conn.execute(
+            """
+            SELECT cs.class_id AS class_id
+            FROM class_students cs
+            JOIN classes c ON c.id = cs.class_id
+            WHERE cs.student_id = ?
+            ORDER BY cs.joined_at ASC, c.sort_order ASC, cs.class_id ASC
+            LIMIT 1
+            """,
+            [student_id],
+        ).fetchone()
+    if row is None:
+        return None
+    try:
+        return int(row["class_id"])
+    except (TypeError, ValueError):
+        return None
+
+
 def _round1(value: float | int | None) -> float:
     if value is None:
         return 0.0
@@ -164,8 +185,31 @@ def get_score_distribution(examId: int, classId: int | None = None) -> dict[str,
     }
 
 
-def get_class_summaries(examId: int) -> dict[str, Any]:
+def get_class_summaries(examId: int, classId: int | None = None) -> dict[str, Any]:
     with connect_db() as conn:
+        if classId is not None:
+            if classId == 0:
+                unknown_scores = _scores(conn, examId, 0)
+                return {
+                    "classes": [
+                        {"classId": 0, "className": "Unknown class", "summary": _score_summary(unknown_scores)}
+                    ] if unknown_scores else []
+                }
+            row = conn.execute(
+                "SELECT c.id AS classId, c.name AS className FROM classes c WHERE c.id = ?",
+                [classId],
+            ).fetchone()
+            if row is None:
+                return {"classes": []}
+            return {
+                "classes": [
+                    {
+                        "classId": int(row["classId"]),
+                        "className": row["className"],
+                        "summary": _score_summary(_scores(conn, examId, classId)),
+                    }
+                ]
+            }
         classes = conn.execute(
             """
             SELECT DISTINCT c.id AS classId, c.name AS className

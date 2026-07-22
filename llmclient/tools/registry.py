@@ -56,7 +56,13 @@ FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
     {
         "name": "get_class_summaries",
         "description": "Read class-level score summaries for an exam.",
-        "parameters": _params({"examId": {"type": "integer"}}, ["examId"]),
+        "parameters": _params(
+            {
+                "examId": {"type": "integer"},
+                "classId": {"type": "integer", "description": "Optional class id; use 0 for unknown class"},
+            },
+            ["examId"],
+        ),
     },
     {
         "name": "get_question_analysis",
