@@ -17,6 +17,14 @@ export function GradingConfigPage({ examId }: Props) {
   const [loading, setLoading] = useState(true);
   const [arbitrators, setArbitrators] = useState<ArbitratorCandidate[]>([]);
 
+  // v1.9.4 设置重构：本场考试的「网阅默认」模板（block_id='__default__'）
+  const [defThreshold, setDefThreshold] = useState("2");
+  const [defRounding, setDefRounding] = useState("ceil");
+  const [defHasHalf, setDefHasHalf] = useState("0");
+  const [defAutoReassign, setDefAutoReassign] = useState(true);
+  const [defWorkload, setDefWorkload] = useState("4");
+  const [savingDefault, setSavingDefault] = useState(false);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -35,11 +43,39 @@ export function GradingConfigPage({ examId }: Props) {
           const map: Record<string, BlockGradingConfig> = {};
           for (const c of configRes.data) map[c.blockId] = c;
           setConfigs(map);
+          // 初始化「网阅默认」表单
+          const d = map["__default__"];
+          if (d) {
+            setDefThreshold(String(d.disputeThreshold ?? 2));
+            setDefRounding(d.rounding ?? "ceil");
+            setDefHasHalf(String(d.hasHalfPoint === 1 ? 1 : 0));
+            setDefAutoReassign(d.autoReassignNoArb !== 0);
+            setDefWorkload(String(d.workloadBalanceThreshold ?? 4));
+          }
         }
       }
     } catch { /* silent */ }
     setLoading(false);
   }, [examId]);
+
+  const handleSaveDefault = async () => {
+    setSavingDefault(true);
+    try {
+      await fetchJson(`/api/block-grading-config/exams/${examId}/blocks/__default__`, {
+        method: "PUT",
+        body: JSON.stringify({
+          disputeThreshold: Number(defThreshold) || 2,
+          rounding: defRounding,
+          hasHalfPoint: Number(defHasHalf),
+          autoReassignNoArb: defAutoReassign ? 1 : 0,
+          workloadBalanceThreshold: Number(defWorkload) || 4,
+        }),
+      });
+      load();
+    } finally {
+      setSavingDefault(false);
+    }
+  };
 
   useEffect(() => { load(); }, [load]);
 
@@ -83,6 +119,52 @@ export function GradingConfigPage({ examId }: Props) {
       <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 8 }}>网阅设置</div>
       <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 16 }}>
         配置各题块的分差阈值、取整方式和仲裁人。选中多题后可使用批量调整。
+      </div>
+
+      {/* v1.9.4 设置重构：本场考试的「网阅默认」模板（此前误放在全局设置） */}
+      <div style={{ padding: "14px 16px", background: "var(--color-background-secondary)", borderRadius: 10, border: "0.5px solid var(--color-border-tertiary)", marginBottom: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 2 }}>网阅默认（新建题块模板）</div>
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+          本场考试新建题块未单独配置时套用以下默认策略；仍可在下方逐题覆盖。
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <label style={{ fontSize: 13 }}>
+            分差阈值
+            <input type="number" value={defThreshold} onChange={(e) => setDefThreshold(e.target.value)} style={selectStyle} />
+          </label>
+          <label style={{ fontSize: 13 }}>
+            均衡阈值（份）
+            <input type="number" value={defWorkload} onChange={(e) => setDefWorkload(e.target.value)} style={selectStyle} />
+          </label>
+          <label style={{ fontSize: 13 }}>
+            取整方式
+            <select value={defRounding} onChange={(e) => setDefRounding(e.target.value)} style={selectStyle}>
+              <option value="ceil">向上取整</option>
+              <option value="floor">向下取整</option>
+              <option value="round">四舍五入</option>
+              <option value="half">保留 0.5</option>
+              <option value="none">保留小数</option>
+            </select>
+          </label>
+          <label style={{ fontSize: 13 }}>
+            本题块含 0.5 小数
+            <select value={defHasHalf} onChange={(e) => setDefHasHalf(e.target.value)} style={selectStyle}>
+              <option value="1">是</option>
+              <option value="0">否</option>
+            </select>
+          </label>
+        </div>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginTop: 12 }}>
+          <input type="checkbox" checked={defAutoReassign} onChange={(e) => setDefAutoReassign(e.target.checked)} />
+          无仲裁人时自动重分配争议/剩余卷
+        </label>
+        <button
+          onClick={() => void handleSaveDefault()}
+          disabled={savingDefault}
+          style={{ ...smallBtnStyle, background: "#3C3489", color: "#fff", marginTop: 12 }}
+        >
+          {savingDefault ? "保存中..." : "保存网阅默认"}
+        </button>
       </div>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>

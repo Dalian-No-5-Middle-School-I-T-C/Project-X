@@ -370,6 +370,11 @@ function App() {
   const [gradingProgress, setGradingProgress] = useState<GradingProgress>({ active: false, finished: 0, total: 0 });
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
+  // v1.9.4: 原卷两开关提升为纯全局，由管理员在「全局设置」统一控制；全平台遵从。
+  const [globalPaper, setGlobalPaper] = useState<{ requireOriginalPaper: number; highlightMissingPaper: number }>({
+    requireOriginalPaper: 1,
+    highlightMissingPaper: 1,
+  });
   const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>("idle");
   const gradingProgressSourceRef = useRef<EventSource | null>(null);
   // Note: Scanner has been split into a separate build (ScannerApp.tsx).
@@ -480,6 +485,17 @@ function App() {
   useEffect(() => {
     latestCardRef.current = card;
   }, [card]);
+
+  // v1.9.4: 拉取全局原卷标志（认证即可读），驱动导出拦截/自动弹窗/侧边栏高亮
+  useEffect(() => {
+    fetchJson<{ ok: boolean; data: { requireOriginalPaper: number; highlightMissingPaper: number } }>(
+      "/api/system-settings/public"
+    )
+      .then((r) => {
+        if (r?.ok && r.data) setGlobalPaper(r.data);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (user && !modeInitialized.current) {
@@ -755,9 +771,8 @@ function App() {
 
       setStatus(`已创建答题卡 「${created.title}」 (${created.id})${statusExtra}`);
 
-      // v1.8.0: 自动弹出原卷上传面板
-      const userSettings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch((): { requireOriginalPaper?: number } => ({}));
-      if (userSettings.requireOriginalPaper !== 0) {
+      // v1.8.0: 自动弹出原卷上传面板（受全局「强制要求上传原卷」控制）
+      if (globalPaper.requireOriginalPaper !== 0) {
         setPaperPanelCardId(created.id);
         setShowPaperPanel(true);
       }
@@ -888,11 +903,10 @@ function App() {
   }
 
   async function exportCard(cardId: string) {
-    // v1.8.0: 检查原卷是否上传
+    // v1.8.0: 检查原卷是否上传（受全局「强制要求上传原卷」控制）
     try {
       const cardInfo = await fetchJson<{ has_original_paper?: number }>(`/api/cards/${cardId}/paper/info`);
-      const settings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch((): { requireOriginalPaper?: number } => ({}));
-      if (settings.requireOriginalPaper !== 0 && !cardInfo?.has_original_paper) {
+      if (globalPaper.requireOriginalPaper !== 0 && !cardInfo?.has_original_paper) {
         if (confirm("此答题卡尚未上传原卷，根据当前设置不允许导出。是否现在上传原卷？")) {
           setPaperPanelCardId(cardId);
           setShowPaperPanel(true);
@@ -924,12 +938,12 @@ function App() {
   }
 
   async function showExportCheck(savedCard: AnswerCard, pdfUrl: string) {
-    const settings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch((): { requireOriginalPaper?: number } => ({}));
     let paperInfo: { hasPaper: boolean; filename?: string; mimeType?: string } = { hasPaper: false };
     let knowledgeReady = false;
     let knowledgePoints: Array<{ question_number: number; points: string[] }> = [];
 
-    if (settings.requireOriginalPaper !== 0) {
+    // 受全局「强制要求上传原卷」控制
+    if (globalPaper.requireOriginalPaper !== 0) {
       try {
         const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string }>(`/api/cards/${savedCard.id}/paper/info`);
         paperInfo = { hasPaper: !!info?.has_original_paper, filename: info?.filename, mimeType: info?.mime_type };
@@ -1559,7 +1573,9 @@ function App() {
               key={item.id}
               className={`card-list-item ${card?.id === item.id ? "active" : ""}`}
               style={{
-                borderLeft: (item as any).has_original_paper ? "3px solid transparent" : "3px solid var(--warn, #f59e0b)"
+                borderLeft: globalPaper.highlightMissingPaper !== 0 && !(item as any).has_original_paper
+                  ? "3px solid var(--warn, #f59e0b)"
+                  : "3px solid transparent"
               }}
             >
               <button

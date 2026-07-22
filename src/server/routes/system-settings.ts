@@ -4,11 +4,38 @@
  * 表: system_settings(key TEXT PRIMARY KEY, value TEXT)
  */
 import { Router } from "express";
-import { requirePermission } from "../middleware/auth";
+import { requirePermission, authMiddleware } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 
 const router = Router();
+
+// GET /api/system-settings/public — 认证用户可读的全局标志（原卷相关 UI 用）
+// 原卷两开关已提升为纯全局：管理员在全局设置页统一控制，所有教师遵从。
+router.get(
+  "/public",
+  authMiddleware,
+  async (_req, res) => {
+    try {
+      const rows = (await getMysqlDb().all(
+        "SELECT `key`, value FROM system_settings WHERE `key` IN (?, ?)",
+        "require_original_paper",
+        "highlight_missing_paper"
+      )) as Array<{ key: string; value: string }>;
+      const map: Record<string, string> = {};
+      for (const r of rows) map[r.key] = r.value;
+      res.json({
+        ok: true,
+        data: {
+          requireOriginalPaper: map.require_original_paper !== "0" ? 1 : 0,
+          highlightMissingPaper: map.highlight_missing_paper !== "0" ? 1 : 0,
+        },
+      });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  }
+);
 
 // GET /api/system-settings — 读取全部全局设置（管理员）
 router.get(

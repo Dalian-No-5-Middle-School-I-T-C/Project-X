@@ -48,7 +48,7 @@
 - **考试管理增强**：每条考试新增「网阅」按钮，进入 5 Tab 管理页（阅卷 / 分配 / 争议 / 溯源 / 设置）
 - **打分面板双模式**（v1.9.4）：满分 < 20 走「枚举模式」直接点分大按钮；满分 ≥ 20 走「十位+个位+十分位」位值合成；含 0.5 时枚举底部加 `0/0.5` 专用行、位值十分位列渲染 `0/0.5`；点选即提交并自动跳下一卷
 - **仲裁人可选 + 工作量均衡**（v1.9.4）：题块仲裁人可留空，未设仲裁人时分配后自动把未分配卷吸收到份数最少的教师、并在教师间搬运使份数差 ≤ 阈值（默认 4 份）；争议卷自动改派给已分配且未评过该生的教师，被自动追加的卷标记 `auto_assigned`
-- **设置三层拆分**（v1.9.4）：个性化（账号设置，不变）/ 局部网阅（`has_half_point` 与本人块工作量下放到已分配教师）/ 全局（Home → 全局设置，仅管理员，含 0.5 开关、默认分差、取整、自动改派、均衡阈值）
+- **设置三层拆分**（v1.9.4 重构）：个性化（账号设置，不变）/ 局部网阅（考试「网阅设置」Tab：题块级 `has_half_point`+本人块工作量下放到教师；「网阅默认」模板含分差/取整/0.5/自动改派/均衡阈值，由管理员设置并作为新建题块默认值）/ 全局（Home → 全局设置，仅管理员：原卷强制上传+高亮策略、AI 系统服务商）
 
 ### 答题卡设计
 
@@ -544,7 +544,9 @@ Project-X/
 | `POST` | `/api/review-arbitration/crops/:cid/resolve` | 提交仲裁最终分 |  ← v1.9.0 |
 | `GET` | `/api/block-grading-config/exams/:id` | 题块网阅设置列表 |  ← v1.9.0 |
 | `POST` | `/api/block-grading-config/exams/:id/batch` | 批量更新题块设置 |  ← v1.9.0 |
-| `GET/PUT` | `/api/system-settings` | 全局网阅设置（0.5 开关/默认分差/取整/自动改派/均衡阈值，仅管理员） |  ← v1.9.4 |
+| `GET/PUT` | `/api/system-settings` | 全局设置（原卷策略 `require_original_paper`/`highlight_missing_paper`、AI 系统服务商开关位，仅管理员） |  ← v1.9.4 |
+| `GET` | `/api/system-settings/public` | 只读：原卷两策略标志（认证用户），供前端判断强制上传/高亮 |  ← v1.9.4 |
+| `GET/POST/PUT/DELETE` | `/api/ai/providers/system` | AI 系统服务商管理（仅管理员，`is_system=1`） |  ← v1.9.4 |
 | `GET` | `/api/dashboard` | 首页仪表盘数据 |  ← v1.9.0 |
 | `GET` | `/api/review/my-exams` | 教师待阅考试列表 |  ← v1.9.0 |
 | `GET` | `/api/review-annotations?cropId=` | 读取切块批注 |  ← v1.9.0 |

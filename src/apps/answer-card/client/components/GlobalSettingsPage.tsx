@@ -6,25 +6,13 @@ interface Props {
 }
 
 type Settings = {
-  allow_half_point?: string;
-  default_dispute_threshold?: string;
-  default_rounding?: string;
-  auto_reassign_policy?: string;
-  workload_balance_threshold?: string;
+  require_original_paper?: string;
+  highlight_missing_paper?: string;
 };
 
 const FIELDS: Array<{ key: keyof Settings; label: string; desc: string; type: "toggle" | "number" | "select"; options?: Array<{ value: string; label: string }> }> = [
-  { key: "allow_half_point", label: "允许 0.5 小数评分", desc: "系统级总开关；教师仍可按题块关闭", type: "toggle" },
-  { key: "default_dispute_threshold", label: "默认分差阈值", desc: "新考试默认评分分差阈值（分）", type: "number" },
-  { key: "default_rounding", label: "默认取整方式", desc: "新考试默认合分取整", type: "select", options: [
-    { value: "ceil", label: "向上取整" },
-    { value: "floor", label: "向下取整" },
-    { value: "round", label: "四舍五入" },
-    { value: "half", label: "保留 0.5" },
-    { value: "none", label: "保留小数" },
-  ] },
-  { key: "auto_reassign_policy", label: "无仲裁人自动重分配", desc: "争议/剩余卷自动派发给已分配教师", type: "toggle" },
-  { key: "workload_balance_threshold", label: "工作量均衡阈值", desc: "未设仲裁人时，教师间份数差上限（份）", type: "number" },
+  { key: "require_original_paper", label: "强制要求上传原卷", desc: "创建答题卡后必须上传原卷才能导出（全平台统一）", type: "toggle" },
+  { key: "highlight_missing_paper", label: "侧边栏高亮未上传原卷", desc: "左侧列表用颜色标记缺少原卷的考试（全平台统一）", type: "toggle" },
 ];
 
 export function GlobalSettingsPage({ onBack }: Props) {
@@ -73,6 +61,62 @@ export function GlobalSettingsPage({ onBack }: Props) {
     setSaving(false);
   };
 
+  // v1.9.4: AI 系统配置（管理员维护，所有用户可选用）
+  const [aiProviders, setAiProviders] = useState<Array<{ id: number; name: string; providerType: string; baseUrl: string; apiKey: string; models: string[] | null; isActive: boolean }>>([]);
+  const [aiEditor, setAiEditor] = useState<{ open: boolean; id?: number; name: string; providerType: string; baseUrl: string; apiKey: string; models: string }>({ open: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" });
+  const [aiMsg, setAiMsg] = useState<string | null>(null);
+
+  const loadAi = useCallback(async () => {
+    try {
+      const res = await fetchJson<Array<{ id: number; name: string; providerType: string; baseUrl: string; apiKey: string; models: string[] | null; isActive: boolean }>>("/api/ai/providers/system");
+      if (Array.isArray(res)) setAiProviders(res);
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => { loadAi(); }, [loadAi]);
+
+  const openAiEditor = (p?: any) =>
+    setAiEditor({
+      open: true,
+      id: p?.id,
+      name: p?.name ?? "",
+      providerType: p?.providerType ?? "openai",
+      baseUrl: p?.baseUrl ?? "",
+      apiKey: p?.apiKey && !String(p.apiKey).includes("•") ? p.apiKey : "",
+      models: p?.models ? JSON.stringify(p.models) : "",
+    });
+
+  const saveAi = async () => {
+    setAiMsg(null);
+    try {
+      const body: any = {
+        name: aiEditor.name,
+        providerType: aiEditor.providerType,
+        baseUrl: aiEditor.baseUrl,
+        apiKey: aiEditor.apiKey,
+        models: aiEditor.models ? JSON.parse(aiEditor.models) : null,
+      };
+      const url = aiEditor.id ? `/api/ai/providers/system/${aiEditor.id}` : "/api/ai/providers/system";
+      const method = aiEditor.id ? "PUT" : "POST";
+      await fetchJson(url, { method, body: JSON.stringify(body) });
+      setAiEditor({ open: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" });
+      setAiMsg("✅ 已保存 AI 系统服务商");
+      loadAi();
+    } catch (e: any) {
+      setAiMsg(`⚠ ${e?.message || "保存失败"}`);
+    }
+  };
+
+  const deleteAi = async (id: number) => {
+    if (!confirm("确认删除该 AI 系统服务商？")) return;
+    try {
+      await fetchJson(`/api/ai/providers/system/${id}`, { method: "DELETE" });
+      loadAi();
+    } catch (e: any) {
+      setAiMsg(`⚠ ${e?.message || "删除失败"}`);
+    }
+  };
+
   if (loading) return <div style={{ padding: 24 }}>加载中...</div>;
 
   return (
@@ -82,7 +126,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
         <div style={{ fontSize: 15, fontWeight: 500 }}>全局设置（仅管理员）</div>
       </div>
       <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 20 }}>
-        以下设置为系统级默认值，对所有考试生效；题块级设置（如 0.5、仲裁人）仍由各考试网阅设置控制。
+        以下为系统级策略，对所有考试与教师统一生效。网阅相关默认（0.5、分差阈值、取整、自动重分配、均衡阈值）请在各考试「网阅设置」中配置。
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -136,6 +180,68 @@ export function GlobalSettingsPage({ onBack }: Props) {
         ))}
       </div>
 
+      {/* v1.9.4: AI 系统配置段 */}
+      <div style={{ marginTop: 28, paddingTop: 20, borderTop: "1px solid var(--color-border-tertiary)" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+          <div style={{ fontSize: 15, fontWeight: 500 }}>AI 系统配置</div>
+          <button onClick={() => openAiEditor()} style={{ ...smallBtnStyle, background: "#3C3489", color: "#fff" }}>＋ 新增系统服务商</button>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+          由管理员统一维护的系统级 AI 服务商，所有教师均可在分析/原卷中选用。
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {aiProviders.length === 0 && (
+            <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>尚未配置系统级 AI 服务商。</div>
+          )}
+          {aiProviders.map((p) => (
+            <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8, border: "0.5px solid var(--color-border-tertiary)" }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 500 }}>{p.name} <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>（{p.providerType}{p.isActive ? "" : " · 已停用"}）</span></div>
+                <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{p.baseUrl || "—"}{p.models && p.models.length ? ` · ${p.models.length} 模型` : ""}</div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => openAiEditor(p)} style={smallBtnStyle}>编辑</button>
+                <button onClick={() => void deleteAi(p.id)} style={{ ...smallBtnStyle, color: "#E24B4A" }}>删除</button>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {aiEditor.open && (
+          <div style={{ marginTop: 12, padding: 14, background: "var(--color-background-secondary)", borderRadius: 10, border: "0.5px solid var(--color-border-tertiary)" }}>
+            <div style={{ fontWeight: 500, marginBottom: 10 }}>{aiEditor.id ? "编辑系统服务商" : "新增系统服务商"}</div>
+            <label style={{ display: "block", fontSize: 13, marginBottom: 8 }}>名称
+              <input value={aiEditor.name} onChange={(e) => setAiEditor({ ...aiEditor, name: e.target.value })} style={selectStyle} />
+            </label>
+            <label style={{ display: "block", fontSize: 13, marginBottom: 8 }}>类型
+              <select value={aiEditor.providerType} onChange={(e) => setAiEditor({ ...aiEditor, providerType: e.target.value })} style={selectStyle}>
+                <option value="openai">OpenAI 兼容</option>
+                <option value="deepseek">DeepSeek</option>
+                <option value="gemini">Gemini</option>
+              </select>
+            </label>
+            <label style={{ display: "block", fontSize: 13, marginBottom: 8 }}>Base URL{aiEditor.providerType === "gemini" ? "（Gemini 留空）" : ""}
+              <input value={aiEditor.baseUrl} onChange={(e) => setAiEditor({ ...aiEditor, baseUrl: e.target.value })} style={selectStyle} />
+            </label>
+            <label style={{ display: "block", fontSize: 13, marginBottom: 8 }}>API Key{aiEditor.id ? "（留空则不修改）" : ""}
+              <input type="password" value={aiEditor.apiKey} onChange={(e) => setAiEditor({ ...aiEditor, apiKey: e.target.value })} style={selectStyle} />
+            </label>
+            <label style={{ display: "block", fontSize: 13, marginBottom: 12 }}>模型（JSON 数组，如 ["gpt-4o"]）
+              <input value={aiEditor.models} onChange={(e) => setAiEditor({ ...aiEditor, models: e.target.value })} style={selectStyle} />
+            </label>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setAiEditor({ open: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" })} style={smallBtnStyle}>取消</button>
+              <button onClick={() => void saveAi()} style={{ ...smallBtnStyle, background: "#3C3489", color: "#fff" }}>保存</button>
+            </div>
+          </div>
+        )}
+
+        {aiMsg && (
+          <div style={{ fontSize: 13, color: aiMsg.includes("✅") ? "var(--color-text-success, #22c55e)" : "#E24B4A", margin: "12px 0" }}>{aiMsg}</div>
+        )}
+      </div>
+
       {message && (
         <div style={{
           fontSize: 13,
@@ -179,6 +285,15 @@ const backBtnStyle: React.CSSProperties = {
   fontWeight: 500,
   border: "1px solid var(--color-border-primary)",
   borderRadius: 8,
+  background: "var(--color-background-secondary)",
+  cursor: "pointer",
+};
+
+const smallBtnStyle: React.CSSProperties = {
+  padding: "6px 14px",
+  fontSize: 13,
+  borderRadius: 6,
+  border: "0.5px solid var(--color-border-primary)",
   background: "var(--color-background-secondary)",
   cursor: "pointer",
 };

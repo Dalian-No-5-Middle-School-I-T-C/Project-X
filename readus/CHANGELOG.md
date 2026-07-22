@@ -27,16 +27,21 @@
 - `has_half_point` 与工作量分配下放给「本题块已分配教师」可编辑；仲裁人 / 分差 / 取整 / 模式仍限管理员（`block-grading-config` 路由按 `role_id` 校验）。
 - 系统级全局设置收口到 Home「全局设置」（仅管理员可见）。
 
-### 5. 设置拆分
+### 5. 设置三层拆分（重构）
 
-- 个性化设置（不变）：位置不变。
-- 局部网阅（权限下调→教师）：`has_half_point`、工作量分配（仅本人已分配块）。
-- 全局（新增，仅管理员）：Home → 全局设置，含 `allow_half_point` / `default_dispute_threshold` / `default_rounding` / `auto_reassign_policy` / `workload_balance_threshold`，读写 `/api/system-settings`。
+- 个性化设置（不变）：账号设置，主题/显示/背景等。
+- 局部网阅（考试「网阅设置」Tab）：
+  - 题块级：`has_half_point`、本人已分配块的工作量（教师可改，v1.9.4 下放）。
+  - **「网阅默认」模板**（管理员）：`dispute_threshold` / `rounding` / `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold`，存 `block_grading_config.block_id='__default__'`；新建题块行时 `getBlockConfig` 自动继承。这 5 项原先错误地放在全局设置页，现归位到网阅，并真正生效（此前在全局页仅读写、后端未消费）。
+- 全局（仅管理员，Home → 全局设置）：**原卷策略** `require_original_paper` / `highlight_missing_paper` + **AI 系统服务商**（`/api/ai/providers/system`，`ai_providers.is_system=1`）。新增 `GET /api/system-settings/public` 只读端点供前端判断强制上传/高亮。
+- 原卷两开关从 `users` 个人列提升为系统级（`users.require_original_paper`/`highlight_missing_paper` 列废弃保留），所有教师统一遵从管理员设定。
 
 ### 数据层
 
 - 迁移 v24（与 #185 的 v23 安全迁移顺序衔接）：`block_grading_config` 加 `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold`；`review_assignments` 加 `auto_assigned`；新增 `system_settings` 表与默认键。
-- MariaDB 同步迁移（`mariadbMigrations` v24）。
+- 迁移 v25（修复）：合并重编号导致 #185 v23 被跳过，补建 `users.password_change_required` 等 security-bootstrap 列。
+- 迁移 v26（设置重构）：`system_settings` 新增原卷两键（`require_original_paper`/`highlight_missing_paper`，默认 `1`），并清理未消费的 5 个网阅死键；`users` 原卷两列标记废弃（保留）。MariaDB 同步（v25、v26）。
+- MariaDB 同步迁移（`mariadbMigrations` v24/v25/v26）。
 
 ### DEV 测试入口（路径 B）
 

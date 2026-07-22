@@ -736,6 +736,32 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, "scan_batches", "failure_count", "INTEGER DEFAULT 0");
       addColumnIfMissing(db, "scan_batches", "error_summary", "TEXT");
     }
+  },
+  // v26 (v1.9.4 设置重构): 原卷两开关提升为纯全局 + 清理误放全局的网阅死键
+  // - users.require_original_paper / highlight_missing_paper 个人列标记废弃（保留数据，不再读取）；
+  //   改由 system_settings 统一控制，管理员在全局设置页设定，全平台遵从。
+  // - 清理 v1.9.4 误放在全局设置页的 5 个网阅键（后端从未消费），改归各考试「网阅设置」默认模板。
+  {
+    version: 26,
+    name: "global-original-paper-and-cleanup-review-defaults",
+    up(db) {
+      const ensureSetting = db.prepare(
+        "INSERT OR IGNORE INTO system_settings (`key`, value) VALUES (?, ?)"
+      );
+      ensureSetting.run("require_original_paper", "1");
+      ensureSetting.run("highlight_missing_paper", "1");
+
+      const dropDead = db.prepare(
+        "DELETE FROM system_settings WHERE `key` IN (?, ?, ?, ?, ?)"
+      );
+      dropDead.run(
+        "allow_half_point",
+        "default_dispute_threshold",
+        "default_rounding",
+        "auto_reassign_policy",
+        "workload_balance_threshold"
+      );
+    }
   }
 ];
 

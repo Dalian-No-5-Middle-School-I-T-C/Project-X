@@ -62,19 +62,26 @@ export async function getBlockConfig(
 
   if (row) return toConfig(row);
 
-  // 不存在则返回默认值（不写入数据库）
+  // 不存在则返回默认值（不写入数据库）。v1.9.4 设置重构：优先采用本场考试的
+  // 「网阅默认」模板（block_id='__default__'），让各考试可独立设定新建题块的默认策略。
+  const def = await db.get(
+    "SELECT * FROM block_grading_config WHERE exam_id = ? AND block_id = ?",
+    examId,
+    "__default__"
+  ) as ConfigRow | undefined;
+
   const now = new Date().toISOString();
   return {
     id: 0,
     examId,
     blockId,
-    disputeThreshold: defaultDisputeThreshold(blockKind, maxScore),
-    rounding: defaultRoundingMode(blockKind),
+    disputeThreshold: def ? def.dispute_threshold : defaultDisputeThreshold(blockKind, maxScore),
+    rounding: def ? (def.rounding as RoundingMode) : defaultRoundingMode(blockKind),
     arbitratorId: null,
     reviewMode: 1,
-    hasHalfPoint: 0,
-    autoReassignNoArb: 1,
-    workloadBalanceThreshold: 4,
+    hasHalfPoint: def ? def.has_half_point ?? 0 : 0,
+    autoReassignNoArb: def ? def.auto_reassign_no_arb ?? 1 : 1,
+    workloadBalanceThreshold: def ? def.workload_balance_threshold ?? 4 : 4,
     createdAt: now,
     updatedAt: now
   };

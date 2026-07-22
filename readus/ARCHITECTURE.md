@@ -20,7 +20,7 @@
 > **v1.9.4** 网阅打分面板与工作量均衡增强（详见 §6.6）：
 > - 打分面板按满分阈值自动切换「枚举模式（<20）/ 位值模式（≥20）」，含 0.5 小数与自动跳转
 > - 仲裁人可选；未设仲裁人时按阈值自动再分配剩余卷与争议卷
-> - 设置三层拆分：个性化（不变）/ 局部网阅（教师可改 `has_half_point` 与本人块工作量）/ 全局（仅管理员）
+> - 设置三层拆分：个性化（不变）/ 局部网阅（考试「网阅设置」Tab，含「网阅默认」模板）/ 全局（仅管理员，原卷策略 + AI 系统配置）
 
 技术栈：**Electron 桌面壳（扫描端）+ Express 后端 + React 前端 + C++ 原生子进程 + Python LLM 中转服务**。
 
@@ -504,7 +504,7 @@ stateDiagram-v2
 `ReviewAssignmentService.rebalanceWorkload(examId, blockId, db)` 在每次分配（`createAssignments`）后自动执行，把「份数差」收敛到阈值内：
 
 1. **吸收未分配卷**：把切块中存在但还没分配给任何教师的卷（`cropByStudent` 中不在 `assignedSet` 的），补到当前份数最少的已分配教师。
-2. **教师间搬运**：在两两已分配教师间把卷从多的一方移到少的一方，直到任意两位教师份数差 ≤ `workload_balance_threshold`（系统默认 4 份，可通过全局设置调整）。
+2. **教师间搬运**：在两两已分配教师间把卷从多的一方移到少的一方，直到任意两位教师份数差 ≤ `workload_balance_threshold`（考试「网阅设置 → 网阅默认」中设置，默认 4 份）。
 3. **仲裁人可选**：`block_grading_config.arbitrator_id` 可留空；留空且 `auto_reassign_no_arb=1` 时，争议卷自动改派给「已分配本题块且未评过该生」的教师（进度条加卷），并允许其提交追加复评轮。`review_assignments.auto_assigned=1` 标记被自动追加的卷，与原始分配在统计/溯源上可区分。
 
 ```mermaid
@@ -524,11 +524,11 @@ flowchart TD
 
 | 层 | 入口 | 可改字段 | 权限 |
 |----|------|----------|------|
-| 个性化 | 账号设置（不变） | 主题/显示等 | 本人 |
-| 局部网阅 | 考试详情「设置」Tab | `has_half_point`、本人已分配块的工作量分配 | 本题块已分配教师（v1.9.4 下放） |
-| 全局 | Home → 全局设置 | `allow_half_point` / `default_dispute_threshold` / `default_rounding` / `auto_reassign_policy` / `workload_balance_threshold` | 仅管理员（Home 卡片仅 `system:manage` 可见） |
+| 个性化 | 账号设置 | 主题/显示/背景/评分显示模式等 | 本人 |
+| 局部网阅 | 考试详情「网阅设置」Tab | 题块级：`has_half_point`、本人已分配块的工作量（教师）；「网阅默认」模板：`dispute_threshold` / `rounding` / `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold`（管理员） | 教师：本人已分配块 `has_half_point`+工作量；管理员：全部 |
+| 全局 | Home → 全局设置 | `require_original_paper` / `highlight_missing_paper`（原卷策略）+ AI 系统服务商（`/api/ai/providers/system`） | 仅管理员（Home 卡片仅 `system:manage` 可见） |
 
-`block-grading-config` 路由按 `role_id` 校验：`arbitrator_id` / `dispute_threshold` / `rounding` / `review_mode` / `auto_reassign_no_arb` / `workload_balance_threshold` 为管理员专属；教师仅可改本人已分配块的 `has_half_point` 与工作量分配，越权返回 403。全局设置读写 `/api/system-settings`，键存于 `system_settings` 表（`key/value/updated_at`）。
+`block-grading-config` 路由按 `role_id` 校验：`arbitrator_id` / `dispute_threshold` / `rounding` / `review_mode` / `auto_reassign_no_arb` / `workload_balance_threshold` 为管理员专属；教师仅可改本人已分配块的 `has_half_point` 与工作量分配，越权返回 403。「网阅默认」存于 `block_grading_config` 的 `block_id='__default__'`，`getBlockConfig` 在新建题块行时优先继承该默认值。全局设置中：原卷两键读写 `/api/system-settings`（键存 `system_settings` 表，并提供 `/api/system-settings/public` 只读端点供前端判断强制上传/高亮）；AI 系统服务商存 `ai_providers` 表（`is_system=1`，由 `/api/ai/providers/system` 管理，普通用户不可访问该路由，但可被教师 AI 分析作为系统级服务商选用）。
 
 ---
 

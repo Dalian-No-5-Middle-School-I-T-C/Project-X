@@ -623,6 +623,14 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE scan_batches ADD COLUMN error_summary LONGTEXT`,
       ]
     },
+    {
+      version: 26,
+      name: "global-original-paper-and-cleanup-review-defaults",
+      sqls: [
+        `INSERT IGNORE INTO system_settings (\`key\`, value) VALUES ('require_original_paper', '1'), ('highlight_missing_paper', '1')`,
+        `DELETE FROM system_settings WHERE \`key\` IN ('allow_half_point', 'default_dispute_threshold', 'default_rounding', 'auto_reassign_policy', 'workload_balance_threshold')`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

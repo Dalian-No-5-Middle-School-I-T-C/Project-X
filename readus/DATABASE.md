@@ -851,7 +851,7 @@ src/types/
 
 #### `system_settings` — 系统级全局设置（v1.9.4 新增）
 
-仅管理员读写，承载对所有考试生效的默认值与策略；题块级设置仍由 `block_grading_config` 控制。
+仅管理员读写，承载系统级策略（原卷上传要求、AI 系统服务商开关位等）。注意：原先放在此处的 5 个网阅默认值（`allow_half_point`/`default_dispute_threshold`/`default_rounding`/`auto_reassign_policy`/`workload_balance_threshold`）已在 v1.9.4 设置重构中迁移至考试「网阅设置 → 网阅默认」（存 `block_grading_config.block_id='__default__'`），此表不再承载它们。
 
 | 列 | 类型 | 说明 |
 |-----|------|------|
@@ -859,7 +859,7 @@ src/types/
 | `value` | TEXT | 设置值 |
 | `updated_at` | TEXT | 最近更新时间 |
 
-**候选键**：`allow_half_point`（是否允许 0.5，默认 `1`）、`default_dispute_threshold`（默认分差阈值，默认 `2`）、`default_rounding`（默认取整，默认 `ceil`）、`auto_reassign_policy`（无仲裁人自动重分配，默认 `1`）、`workload_balance_threshold`（工作量均衡阈值，默认 `4`）。
+**当前键**：`require_original_paper`（强制上传原卷，默认 `1`）、`highlight_missing_paper`（侧边栏高亮未上传原卷，默认 `1`）、`ladder_enabled`（最近发展区折线，默认 `0`）。前端通过 `GET /api/system-settings/public` 读取原卷两键判断是否强制上传/高亮。
 
 **成绩分析关联查询**：
 ```sql
@@ -894,12 +894,14 @@ ORDER BY avg_rate ASC;
 | `extra_notes` | TEXT | 教师特别描述 |
 | `knowledge_points_text` | TEXT | 知识点纯文本备份 |
 
-#### `users` 新增列
+#### `users` 列（原卷开关已迁移至系统级）
+
+> ⚠️ 以下两列在 v1.9.4 设置重构中已废弃：原卷强制上传/高亮改为系统级统一开关（见 `system_settings.require_original_paper` / `highlight_missing_paper`），由管理员在 Home「全局设置」控制，所有教师统一遵从。两列保留以兼容旧数据，但代码已不再读取。
 
 | 列 | 类型 | 说明 |
 |-----|------|------|
-| `require_original_paper` | INTEGER DEFAULT 1 | 强制上传原卷开关 |
-| `highlight_missing_paper` | INTEGER DEFAULT 1 | 侧边栏高亮开关 |
+| `require_original_paper` | INTEGER DEFAULT 1 | **已废弃** 原卷强制开关（改由 system_settings 控制） |
+| `highlight_missing_paper` | INTEGER DEFAULT 1 | **已废弃** 侧边栏高亮开关（改由 system_settings 控制） |
 
 ---
 
