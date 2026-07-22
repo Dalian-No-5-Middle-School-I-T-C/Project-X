@@ -14,6 +14,7 @@ export function GradingConfigPage({ examId }: Props) {
   const [batchThreshold, setBatchThreshold] = useState("");
   const [batchRounding, setBatchRounding] = useState("");
   const [batchHasHalf, setBatchHasHalf] = useState("");
+  const [batchReviewMode, setBatchReviewMode] = useState("");
   const [loading, setLoading] = useState(true);
   const [arbitrators, setArbitrators] = useState<ArbitratorCandidate[]>([]);
 
@@ -23,6 +24,7 @@ export function GradingConfigPage({ examId }: Props) {
   const [defHasHalf, setDefHasHalf] = useState("0");
   const [defAutoReassign, setDefAutoReassign] = useState(true);
   const [defWorkload, setDefWorkload] = useState("4");
+  const [defReviewMode, setDefReviewMode] = useState("1");
   const [savingDefault, setSavingDefault] = useState(false);
 
   const load = useCallback(async () => {
@@ -51,6 +53,7 @@ export function GradingConfigPage({ examId }: Props) {
             setDefHasHalf(String(d.hasHalfPoint === 1 ? 1 : 0));
             setDefAutoReassign(d.autoReassignNoArb !== 0);
             setDefWorkload(String(d.workloadBalanceThreshold ?? 4));
+            setDefReviewMode(String(d.reviewMode ?? 1));
           }
         }
       }
@@ -61,16 +64,17 @@ export function GradingConfigPage({ examId }: Props) {
   const handleSaveDefault = async () => {
     setSavingDefault(true);
     try {
-      await fetchJson(`/api/block-grading-config/exams/${examId}/blocks/__default__`, {
-        method: "PUT",
-        body: JSON.stringify({
-          disputeThreshold: Number(defThreshold) || 2,
-          rounding: defRounding,
-          hasHalfPoint: Number(defHasHalf),
-          autoReassignNoArb: defAutoReassign ? 1 : 0,
-          workloadBalanceThreshold: Number(defWorkload) || 4,
-        }),
-      });
+        await fetchJson(`/api/block-grading-config/exams/${examId}/blocks/__default__`, {
+          method: "PUT",
+          body: JSON.stringify({
+            disputeThreshold: Number(defThreshold) || 2,
+            rounding: defRounding,
+            hasHalfPoint: Number(defHasHalf),
+            autoReassignNoArb: defAutoReassign ? 1 : 0,
+            workloadBalanceThreshold: Number(defWorkload) || 4,
+            reviewMode: Number(defReviewMode) || 1,
+          }),
+        });
       load();
     } finally {
       setSavingDefault(false);
@@ -99,6 +103,7 @@ export function GradingConfigPage({ examId }: Props) {
     if (batchThreshold) body.disputeThreshold = Number(batchThreshold);
     if (batchRounding) body.rounding = batchRounding;
     if (batchHasHalf) body.hasHalfPoint = Number(batchHasHalf);
+    if (batchReviewMode) body.reviewMode = Number(batchReviewMode);
 
     await fetchJson(`/api/block-grading-config/exams/${examId}/batch`, {
       method: "POST",
@@ -109,6 +114,7 @@ export function GradingConfigPage({ examId }: Props) {
     setBatchThreshold("");
     setBatchRounding("");
     setBatchHasHalf("");
+    setBatchReviewMode("");
     load();
   };
 
@@ -151,6 +157,14 @@ export function GradingConfigPage({ examId }: Props) {
             <select value={defHasHalf} onChange={(e) => setDefHasHalf(e.target.value)} style={selectStyle}>
               <option value="1">是</option>
               <option value="0">否</option>
+            </select>
+          </label>
+          <label style={{ fontSize: 13 }}>
+            复评模式（仲裁卷可+2轮）
+            <select value={defReviewMode} onChange={(e) => setDefReviewMode(e.target.value)} style={selectStyle}>
+              <option value="1">单评（1轮）</option>
+              <option value="2">双评（2轮）</option>
+              <option value="3">三评（3轮）</option>
             </select>
           </label>
         </div>
@@ -204,6 +218,7 @@ export function GradingConfigPage({ examId }: Props) {
                 阈值: {config?.disputeThreshold ?? "—"} ·
                 取整: {config?.rounding === "ceil" ? "↑" : config?.rounding === "half" ? "0.5" : config?.rounding === "none" ? "—" : config?.rounding ?? "—"} ·
                 0.5: {config?.hasHalfPoint === 1 ? "是" : config?.hasHalfPoint === 0 ? "否" : "—"} ·
+                复评: {config?.reviewMode === 1 ? "单评" : config?.reviewMode === 2 ? "双评" : config?.reviewMode === 3 ? "三评" : "—"} ·
                 仲裁: {config?.arbitratorId ? `教师${config.arbitratorId}` : "未指定"}
               </div>
             </div>
@@ -257,6 +272,15 @@ export function GradingConfigPage({ examId }: Props) {
                 <option value="">不修改</option>
                 <option value="1">是（启用手写 0.5 评分）</option>
                 <option value="0">否</option>
+              </select>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 13 }}>复评模式（仲裁卷可+2轮）</label>
+              <select value={batchReviewMode} onChange={(e) => setBatchReviewMode(e.target.value)} style={selectStyle}>
+                <option value="">不修改</option>
+                <option value="1">单评（1轮）</option>
+                <option value="2">双评（2轮）</option>
+                <option value="3">三评（3轮）</option>
               </select>
             </div>
 

@@ -78,7 +78,7 @@ export async function getBlockConfig(
     disputeThreshold: def ? def.dispute_threshold : defaultDisputeThreshold(blockKind, maxScore),
     rounding: def ? (def.rounding as RoundingMode) : defaultRoundingMode(blockKind),
     arbitratorId: null,
-    reviewMode: 1,
+    reviewMode: def ? (def.review_mode as ReviewMode) ?? 1 : 1,
     hasHalfPoint: def ? def.has_half_point ?? 0 : 0,
     autoReassignNoArb: def ? def.auto_reassign_no_arb ?? 1 : 1,
     workloadBalanceThreshold: def ? def.workload_balance_threshold ?? 4 : 4,

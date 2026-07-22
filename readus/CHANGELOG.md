@@ -32,9 +32,15 @@
 - 个性化设置（不变）：账号设置，主题/显示/背景等。
 - 局部网阅（考试「网阅设置」Tab）：
   - 题块级：`has_half_point`、本人已分配块的工作量（教师可改，v1.9.4 下放）。
-  - **「网阅默认」模板**（管理员）：`dispute_threshold` / `rounding` / `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold`，存 `block_grading_config.block_id='__default__'`；新建题块行时 `getBlockConfig` 自动继承。这 5 项原先错误地放在全局设置页，现归位到网阅，并真正生效（此前在全局页仅读写、后端未消费）。
+  - **「网阅默认」模板**（管理员）：`dispute_threshold` / `rounding` / `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold` / `review_mode`（复评模式：1 单评 / 2 双评 / 3 三评），存 `block_grading_config.block_id='__default__'`；新建题块行时 `getBlockConfig` 自动继承。这 5 项原先错误地放在全局设置页，现归位到网阅，并真正生效（此前在全局页仅读写、后端未消费）；`review_mode` 此前后端+表已支持但前端从未渲染、且 `getBlockConfig` 硬编码为 1，现补进 UI 并改为继承 `__default__`。
 - 全局（仅管理员，Home → 全局设置）：**原卷策略** `require_original_paper` / `highlight_missing_paper` + **AI 系统服务商**（`/api/ai/providers/system`，`ai_providers.is_system=1`）。新增 `GET /api/system-settings/public` 只读端点供前端判断强制上传/高亮。
 - 原卷两开关从 `users` 个人列提升为系统级（`users.require_original_paper`/`highlight_missing_paper` 列废弃保留），所有教师统一遵从管理员设定。
+
+### 6. reviewMode（复评模式 / 仲裁卷重批次数）补进网阅设置 UI
+
+- **背景**：用户发现「网阅设置」缺「仲裁卷重批次数」。经核对全量 git 历史，老全局页 5 个网阅键里原本就没有该字段；它对应数据模型 `block_grading_config.review_mode`（复评模式：1 单评 / 2 双评 / 3 三评，争议卷按 `reviewMode+2` 轮破僵局），后端 + 表一直支持，但**前端网阅设置 UI 从未渲染**，且 `getBlockConfig` 硬编码 `reviewMode:1` 不继承「网阅默认」模板。
+- **修复**：`GradingConfigPage` 的「网阅默认」卡片与逐题块列表/批量弹窗均补「复评模式」下拉（单评/双评/三评），随 `__default__` 存取；`BlockGradingConfigService.getBlockConfig` 改为：若存在 `__default__` 模板则继承 `def.review_mode`，否则默认 1。
+- **验证**：`PUT .../blocks/__default__` 带 `reviewMode=3` → 入库；`GET` 新建题块走 `getBlockConfig` 继承 `reviewMode=3`；`POST .../batch` 批量改选中题块 `reviewMode=2` → 生效；typecheck 通过。
 
 ### 数据层
 
