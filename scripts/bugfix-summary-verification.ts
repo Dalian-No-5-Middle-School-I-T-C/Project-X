@@ -44,7 +44,7 @@ async function main(): Promise<void> {
   const { AuthService } = await import("../src/server/services/AuthService");
 
   initializeDatabase();
-  await ensureDefaultAdmin();
+  const bootstrap = await ensureDefaultAdmin();
   const app = await createApp();
   const server = app.listen(0);
   await new Promise<void>((r) => server.once("listening", () => r()));
@@ -67,15 +67,34 @@ async function main(): Promise<void> {
     "P1-2 白名单 origin 正确回显 ACAO 头"
   );
 
-  // ── P0-8：默认管理员密码警告 ──
+  // ── P0-8：默认管理员改为一次性密码并强制改密 ──
+  const bootstrapPassword = readFileSync(bootstrap.passwordFile, "utf8").trim();
   const loginRes = await fetch(`${base}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ identifier: "admin", password: "admin123" }),
+    body: JSON.stringify({ identifier: "admin", password: bootstrapPassword }),
   });
-  const loginBody = (await loginRes.json().catch(() => ({}))) as { warning?: string; token?: string };
-  ok(loginRes.status === 200 && !!loginBody.warning, "P0-8 admin/admin123 登录返回 warning 字段");
-  const adminToken = loginBody.token;
+  const loginBody = (await loginRes.json().catch(() => ({}))) as { passwordChangeRequired?: boolean; token?: string };
+  ok(loginRes.status === 200 && loginBody.passwordChangeRequired === true, "P0-8 一次性管理员密码登录后强制改密");
+  const oldAdminToken = loginBody.token;
+  const protectedRes = await fetch(`${base}/api/cards`, {
+    headers: oldAdminToken ? { Authorization: `Bearer ${oldAdminToken}` } : {}
+  });
+  ok(protectedRes.status === 428, "P0-8 强制改密会话访问业务 API → 428");
+  const changedRes = await fetch(`${base}/api/auth/change-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(oldAdminToken ? { Authorization: `Bearer ${oldAdminToken}` } : {}) },
+    body: JSON.stringify({ oldPassword: bootstrapPassword, newPassword: "VerifyAdmin-2026!" })
+  });
+  ok(changedRes.status === 200, "P0-8 管理员完成首次改密");
+  const reloginRes = await fetch(`${base}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ identifier: "admin", password: "VerifyAdmin-2026!" })
+  });
+  const reloginBody = (await reloginRes.json().catch(() => ({}))) as { token?: string };
+  const adminToken = reloginBody.token;
+  ok(reloginRes.status === 200 && !!adminToken, "P0-8 改密后重新登录成功");
 
   // ── P1-1：登录速率限制（15 分钟 / 10 次）──
   let saw429 = false;

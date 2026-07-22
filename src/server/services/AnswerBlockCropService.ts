@@ -110,67 +110,74 @@ export async function persistAnswerBlockCrops(
   if (crops.length === 0) return [];
 
   const finalRows: AnswerBlockCrop[] = [];
+  const movedPaths: string[] = [];
   const targetDir = path.join(blockCropsDir, safeId(params.cardId), `${params.sourceType}_${safeId(sourceRecordId)}`);
   await mkdir(targetDir, { recursive: true });
 
-  for (let index = 0; index < crops.length; index += 1) {
-    const crop = crops[index];
-    if (!crop?.path || !existsSync(crop.path) || !crop.blockId || !Array.isArray(crop.questionNumbers) || crop.questionNumbers.length === 0) {
-      continue;
+  try {
+    for (let index = 0; index < crops.length; index += 1) {
+      const crop = crops[index];
+      if (!crop?.path || !existsSync(crop.path) || !crop.blockId || !Array.isArray(crop.questionNumbers) || crop.questionNumbers.length === 0) {
+        continue;
+      }
+
+      const id = randomUUID();
+      const targetPath = path.join(targetDir, targetFileName(crop, index));
+      await moveCropFile(crop.path, targetPath);
+      movedPaths.push(targetPath);
+
+      await db.run(
+        `INSERT INTO answer_block_crops (
+          id, card_id, exam_id, student_id, student_number, source_type, source_record_id,
+          block_id, block_title, block_type, page_number, segment_index,
+          question_numbers, rect_json, image_path, width_px, height_px, dpi, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id,
+        params.cardId,
+        params.examId ?? null,
+        params.studentId ?? null,
+        params.studentNumber ?? null,
+        params.sourceType,
+        sourceRecordId,
+        crop.blockId,
+        crop.blockTitle ?? "",
+        crop.blockType,
+        crop.pageNumber,
+        crop.segmentIndex,
+        JSON.stringify(crop.questionNumbers),
+        JSON.stringify(crop.rect),
+        targetPath,
+        crop.widthPx,
+        crop.heightPx,
+        crop.dpi,
+        "ready"
+      );
+
+      finalRows.push(toAnswerBlockCrop({
+        id,
+        card_id: params.cardId,
+        exam_id: params.examId ?? null,
+        student_id: params.studentId ?? null,
+        student_number: params.studentNumber ?? null,
+        source_type: params.sourceType,
+        source_record_id: sourceRecordId,
+        block_id: crop.blockId,
+        block_title: crop.blockTitle ?? "",
+        block_type: crop.blockType,
+        page_number: crop.pageNumber,
+        segment_index: crop.segmentIndex,
+        question_numbers: JSON.stringify(crop.questionNumbers),
+        rect_json: JSON.stringify(crop.rect),
+        image_path: targetPath,
+        width_px: crop.widthPx,
+        height_px: crop.heightPx,
+        dpi: crop.dpi,
+        status: "ready"
+      }));
     }
-
-    const id = randomUUID();
-    const targetPath = path.join(targetDir, targetFileName(crop, index));
-    await moveCropFile(crop.path, targetPath);
-
-    await db.run(
-      `INSERT INTO answer_block_crops (
-        id, card_id, exam_id, student_id, student_number, source_type, source_record_id,
-        block_id, block_title, block_type, page_number, segment_index,
-        question_numbers, rect_json, image_path, width_px, height_px, dpi, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      id,
-      params.cardId,
-      params.examId ?? null,
-      params.studentId ?? null,
-      params.studentNumber ?? null,
-      params.sourceType,
-      sourceRecordId,
-      crop.blockId,
-      crop.blockTitle ?? "",
-      crop.blockType,
-      crop.pageNumber,
-      crop.segmentIndex,
-      JSON.stringify(crop.questionNumbers),
-      JSON.stringify(crop.rect),
-      targetPath,
-      crop.widthPx,
-      crop.heightPx,
-      crop.dpi,
-      "ready"
-    );
-
-    finalRows.push(toAnswerBlockCrop({
-      id,
-      card_id: params.cardId,
-      exam_id: params.examId ?? null,
-      student_id: params.studentId ?? null,
-      student_number: params.studentNumber ?? null,
-      source_type: params.sourceType,
-      source_record_id: sourceRecordId,
-      block_id: crop.blockId,
-      block_title: crop.blockTitle ?? "",
-      block_type: crop.blockType,
-      page_number: crop.pageNumber,
-      segment_index: crop.segmentIndex,
-      question_numbers: JSON.stringify(crop.questionNumbers),
-      rect_json: JSON.stringify(crop.rect),
-      image_path: targetPath,
-      width_px: crop.widthPx,
-      height_px: crop.heightPx,
-      dpi: crop.dpi,
-      status: "ready"
-    }));
+  } catch (error) {
+    await Promise.all(movedPaths.map((targetPath) => unlink(targetPath).catch(() => {})));
+    throw error;
   }
 
   return finalRows;

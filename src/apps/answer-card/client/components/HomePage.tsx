@@ -8,6 +8,8 @@ interface Props {
   teacherRole: string | null;
   userName: string;
   onNavigate: (mode: string) => void;
+  /** 在新标签打开某功能并让当前页也跳转过去（首页“答题卡设计”等入口使用） */
+  onOpenNewTab?: (mode: string) => void;
   onEnterExam: (examId: number) => void;
 }
 
@@ -20,7 +22,7 @@ const moduleCards = [
 const adminCard = { id: "account", icon: Users, label: "账号管理", desc: "管理师生账号", permission: "user:manage" };
 const globalSettingsCard = { id: "global-settings", icon: BookOpen, label: "全局设置", desc: "系统级默认值与策略", permission: "system:manage" };
 
-export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterExam }: Props) {
+export function HomePage({ userRole, teacherRole, userName, onNavigate, onOpenNewTab, onEnterExam }: Props) {
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -112,14 +114,20 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterE
         gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
         gap: 16
       }}>
-        {moduleCards.map((card) => (
+        {moduleCards.map((card) => {
+          // “答题卡设计”从首页进入时单开新标签，当前页也跳转过去
+          const enter = (): void => {
+            if (onOpenNewTab) onOpenNewTab(card.id);
+            else onNavigate(card.id);
+          };
+          return (
           <div
             key={card.id}
             style={cardStyle}
-            onClick={() => onNavigate(card.id)}
+            onClick={enter}
             role="button"
             tabIndex={0}
-            onKeyDown={(e) => e.key === "Enter" && onNavigate(card.id)}
+            onKeyDown={(e) => e.key === "Enter" && enter()}
           >
             <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
               <card.icon size={36} style={{ color: "var(--color-text-secondary)", flexShrink: 0 }} />
@@ -131,15 +139,16 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterE
               </div>
             </div>
           </div>
-        ))}
+          );
+        })}
 
         {isAdmin && (
           <div
             style={cardStyle}
-            onClick={() => onNavigate(adminCard.id)}
+            onClick={() => (onOpenNewTab ? onOpenNewTab(adminCard.id) : onNavigate(adminCard.id))}
             role="button"
             tabIndex={0}
-            onKeyDown={(e) => e.key === "Enter" && onNavigate(adminCard.id)}
+            onKeyDown={(e) => e.key === "Enter" && (onOpenNewTab ? onOpenNewTab(adminCard.id) : onNavigate(adminCard.id))}
           >
             <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
               <adminCard.icon size={36} style={{ color: "var(--color-text-secondary)", flexShrink: 0 }} />

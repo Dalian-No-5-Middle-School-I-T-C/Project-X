@@ -281,7 +281,7 @@ npx tsx testdata/demo-exams/scripts/seed.ts
 |------|------|--------|
 | `demo-teacher` | `teacher123` | 题块 A 枚举模式 + 0.5 底部行；题块 B 位值模式；本人块 `has_half_point` 可改 |
 | `demo-teacher-2` | `teacher123` | 工作量均衡后被追加的卷（`auto_assigned`）；教师改局部设置的 403/200 边界 |
-| `admin` | `admin123` | Home → 全局设置（仅管理员可见）；仲裁人留空自动改派争议卷 |
+| `admin` | 见数据库旁 `bootstrap-admin.txt`（首次登录强制改密） | Home → 全局设置（仅管理员可见）；仲裁人留空自动改派争议卷 |
 
 清理 / 重置演示数据：脚本每次运行会先执行 `cleanupDemoData`（删除「演示-」前缀的考试、答题卡、演示账号等），再重建，因此**重复运行即自动重置**，无需单独 clean 子命令：
 
@@ -368,7 +368,7 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | [多端使用说明.md](./readus/多端使用说明.md) | Web 端 / 扫描端的功能差异、共用数据目录、账号登录与构建部署 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（持续更新至 v1.9.4：网阅打分面板双模式 + 0.5 小数 + 工作量均衡） | 全体 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（持续更新至 v1.9.4：#185 安全修复 + 网页化改造 + 网阅打分面板双模式） | 全体 |
 
 ---
 

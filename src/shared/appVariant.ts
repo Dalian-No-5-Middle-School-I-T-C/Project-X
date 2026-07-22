@@ -40,7 +40,7 @@ export const PROJECTX_VARIANTS: Record<ProjectXVariant, ProjectXVariantConfig> =
     appId: "cn.projectx.teacher",
     userDataDir: "answer-card-designer",
     defaultMode: "home",
-    allowedModes: ["home", "design", "exam-manage", "analysis", "account"],
+    allowedModes: ["home", "design", "exam-manage", "analysis", "account", "global-settings"],
     enableScanner: false,
     nativeResources: "recognizer"
   },
@@ -52,7 +52,7 @@ export const PROJECTX_VARIANTS: Record<ProjectXVariant, ProjectXVariantConfig> =
     appId: "cn.projectx.teacher-scanner",
     userDataDir: "answer-card-designer",
     defaultMode: "home",
-    allowedModes: ["home", "design", "exam-manage", "analysis", "account"],
+    allowedModes: ["home", "design", "exam-manage", "analysis", "account", "global-settings"],
     enableScanner: true,
     nativeResources: "scanner"
   }

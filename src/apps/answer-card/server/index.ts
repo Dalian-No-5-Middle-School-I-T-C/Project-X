@@ -15,6 +15,8 @@ import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
 import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
 import type { AssignedFormula } from "../../../shared/types";
+import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
+import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -44,6 +46,8 @@ import {
   persistAnswerBlockCrops
 } from "../../../server/services/AnswerBlockCropService";
 import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
+import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
+import { authService } from "../../../server/services/AuthService";
 import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
@@ -58,7 +62,9 @@ import type {
   CrossExamTotalRequest,
   LayoutDocument,
   ObjectiveGradingBatchResult,
-  ObjectiveRecognitionResult
+  ObjectiveRecognitionResult,
+  GradingPersistenceFailure,
+  GradingPersistenceResult
 } from "../../../shared/types";
 import { createPdf } from "./pdf";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
@@ -286,33 +292,29 @@ async function autoBackupOnExamClose(examId: number): Promise<void> {
   }
 }
 
-/** Background persistence: save grading results to database without blocking response */
-async function persistGradingResults(
+/** Persist grading results before responding; each student is atomic. */
+export async function persistGradingResults(
   examIdParam: string,
   rows: CombinedGradingRow[],
   createdBy?: number
-): Promise<void> {
+): Promise<GradingPersistenceResult> {
   const { ExamRepository } = await import("../../../server/repositories/ExamRepository");
-  const { getMysqlDb, hashPassword, buildInsertIgnore } = await import("../../../server/db");
+  const { getMysqlDb } = await import("../../../server/db");
 
   const examRepo = new ExamRepository();
   const db = getMysqlDb();
 
   const examId = Number(examIdParam);
   const exam = await examRepo.findExamById(examId);
-  if (!exam) return;
+  if (!exam) {
+    throw Object.assign(new Error("考试不存在"), { status: 404, code: ApiError.NOT_FOUND });
+  }
+  const previousExamStatus = exam.status;
 
   await examRepo.updateStatus(examId, "grading");
   const batchId = await examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
+  await db.run("UPDATE scan_batches SET status = 'processing' WHERE id = ?", batchId);
 
-  const ensureStudentSql = buildInsertIgnore(db.dialect, "users", [
-    "username", "password_hash", "name", "role_id", "student_number",
-  ]);
-  const updateBlankStudentPasswordSql = `
-    UPDATE users
-    SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE student_number = ? AND role_id = 3 AND password_hash = ''
-  `;
   const findStudentSql = `
     SELECT id FROM users WHERE student_number = ? AND role_id = 3 LIMIT 1
   `;
@@ -324,27 +326,31 @@ async function persistGradingResults(
   `;
 
   let persisted = 0;
-  const studentPasswordHashes = new Map<string, string>();
+  const failedStudents: GradingPersistenceFailure[] = [];
   for (const row of rows) {
-    if (row.studentId && !studentPasswordHashes.has(row.studentId)) {
-      studentPasswordHashes.set(row.studentId, await hashPassword(row.studentId));
+    if (row.recognitionStatus === "failed" || row.recognition.status === "failed") {
+      failedStudents.push({
+        fileName: row.fileName,
+        ...(row.studentId ? { studentId: row.studentId } : {}),
+        code: "RECOGNITION_FAILED",
+        message: "答题卡识别失败"
+      });
+      continue;
     }
-  }
-
-  const failedStudents: Array<{ studentId: string; error: string }> = [];
-  for (const row of rows) {
-    if (!row.studentId) continue;
+    if (!row.studentId) {
+      failedStudents.push({ fileName: row.fileName, code: "STUDENT_ID_MISSING", message: "未识别到学生 ID" });
+      continue;
+    }
+    const studentId = row.studentId;
+    const stu = await db.get(findStudentSql, studentId) as { id: number } | undefined;
+    if (!stu) {
+      failedStudents.push({ fileName: row.fileName, studentId, code: "STUDENT_NOT_FOUND", message: "学生不存在" });
+      continue;
+    }
     try {
-      const studentPasswordHash = studentPasswordHashes.get(row.studentId) ?? "";
-      const studentId = row.studentId;  // 闭包外提取，确保类型收窄（闭包内 row.studentId 会变回 string|null）
-      // P0-6 (H-S5): 每个学生用事务包裹，中途失败回滚避免残留半成品数据
       await db.transaction(async (tx) => {
-        await tx.run(ensureStudentSql, studentId, studentPasswordHash, studentId, studentId);
-        await tx.run(updateBlankStudentPasswordSql, studentPasswordHash, studentId);
-        const stu = await tx.get(findStudentSql, studentId) as { id: number } | undefined;
-        if (!stu) return;
-
-        const recordId = await examRepo.addScanRecord({
+        const txExamRepo = new ExamRepository(tx);
+        const recordId = await txExamRepo.addScanRecord({
           batch_id: batchId,
           file_path: (row as any).actualPath || row.fileName,
           file_name: row.fileName,
@@ -361,7 +367,7 @@ async function persistGradingResults(
           crops: row.recognition.blockCrops ?? []
         }, tx);
 
-        await examRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
+        await txExamRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
 
         for (const q of row.questions) {
           await tx.run(insertQsSql, examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
@@ -369,25 +375,39 @@ async function persistGradingResults(
         for (const sq of row.subjectiveQuestions ?? []) {
           await tx.run(insertQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
         }
-        persisted++;
       });
+      persisted++;
     } catch (err) {
-      console.error(`[Grading] Failed to persist row for ${row.studentId}:`, err);
-      failedStudents.push({ studentId: row.studentId, error: String(err) });
+      console.error(`[Grading] Failed to persist row for ${studentId}:`, err);
+      failedStudents.push({
+        fileName: row.fileName,
+        studentId,
+        code: "PERSISTENCE_FAILED",
+        message: "成绩持久化失败"
+      });
     }
   }
-  if (failedStudents.length > 0) {
-    console.warn(`[Grading] ${failedStudents.length} students failed to persist: ${failedStudents.map(f => f.studentId).join(", ")}`);
-  }
-
-  await examRepo.finishBatch(batchId);
-  await examRepo.updateStatus(examId, "closed");
-  console.log(`[Grading] Persisted ${persisted} student scores to exam ${examId}`);
-
-  // Auto-backup DB after exam closes (non-blocking)
-  autoBackupOnExamClose(examId).catch((e) =>
-    console.error("[AutoBackup] Failed:", e)
+  const status: GradingPersistenceResult["status"] = failedStudents.length === 0 && persisted > 0
+    ? "done"
+    : persisted > 0 ? "partial" : "error";
+  await examRepo.finishBatchWithOutcome(
+    batchId,
+    status,
+    persisted,
+    failedStudents.length,
+    failedStudents.length > 0 ? JSON.stringify(failedStudents) : null
   );
+
+  if (status === "done") {
+    await examRepo.updateStatus(examId, "closed");
+    autoBackupOnExamClose(examId).catch((e) => console.error("[AutoBackup] Failed:", e));
+  } else if (status === "error") {
+    await examRepo.updateStatus(examId, previousExamStatus);
+  } else {
+    await examRepo.updateStatus(examId, "grading");
+  }
+  console.log(`[Grading] exam=${examId} batch=${batchId} status=${status} persisted=${persisted} failed=${failedStudents.length}`);
+  return { batchId, status, persisted, failedCount: failedStudents.length, failed: failedStudents };
 }
 
 /**
@@ -438,19 +458,41 @@ export async function createApp(): Promise<express.Express> {
   // 确保连接池在使用前已创建（MariaDB 模式下 initMariadbSchema / ensureDefaultAdmin 依赖）
   getMysqlDb();
   await initMariadbSchema();
-  await ensureDefaultAdmin();
+  const adminBootstrap = await ensureDefaultAdmin();
+  if (adminBootstrap.rotated) authService.revokeUserTokens(adminBootstrap.adminId);
   await initPermissionCache();
   const cleanupTimer = scheduleCleanup(24, 30);
   cleanupTimer.unref();
   await ensureDataDirs();
   console.log("[Server] 数据库初始化完成");
 
-  // P0-4 (C-S2): 鉴权默认开启，仅显式设置 0/false 才关闭（向后兼容开发环境）
-  const enforceAuth =
-    process.env.PROJECTX_AUTH_ENFORCE !== "0" && process.env.PROJECTX_AUTH_ENFORCE !== "false";
+// P0-4 (C-S2): 鉴权默认开启，仅显式设置 0/false 才关闭（向后兼容开发环境）。
+  // 判定统一委托给 isAuthEnforced()（server/lib/authEnforce.ts）作为唯一真相源。
+  const enforceAuth = isAuthEnforced();
   console.log(`[Server] RBAC 鉴权强制模式: ${enforceAuth ? "开启" : "关闭（仅解析身份）"}`);
   // P0-5 (C-S3): 同步鉴权状态到 middleware 模块，供 requireExamAccess 使用
   setAuthEnforced(enforceAuth);
+
+  // ── Express 5 异步错误处理（防请求挂死）──
+  // Express 5 不再自动捕获 async handler 抛出的异常；这里在注册层
+  // 统一包裹所有 app.get/post/put/delete/patch/use 调用（含已挂载的
+  // Router），使任意未捕获的 rejection 都被转发到全局错误中间件，
+  // 返回 500 JSON 而非让请求永久挂起。
+  {
+    const methods = ["get", "post", "put", "delete", "patch", "use"] as const;
+    for (const m of methods) {
+      const original = (app as any)[m].bind(app);
+      (app as any)[m] = (pathOrHandler: unknown, ...handlers: unknown[]) => {
+        const args = [pathOrHandler, ...handlers].map((h: unknown) => {
+          if (typeof h !== "function") return h; // 路径字符串 / Router 选项等
+          if ((h as any).length === 4) return h; // 错误处理中间件保持原样
+          if ((h as any).stack) return wrapRouter(h as any); // Router 实例 → 递归包裹
+          return asyncHandler(h as any); // 普通处理器 / 中间件
+        });
+        return original(...args);
+      };
+    }
+  }
 
   app.use(express.json({ limit: "8mb" }));
   // P1-2 (M-S1): CORS — 从环境变量读取允许的 origin 白名单，不再使用通配符 *
@@ -480,6 +522,8 @@ export async function createApp(): Promise<express.Express> {
 
   // 认证与账号控制系统路由
   app.use("/api/auth", authRoutes);
+  // 强制改密账号的自助认证端点已在上方处理；其它 API 一律拒绝。
+  app.use("/api", requirePasswordChangeCompleted);
 
   // ── 用户自身设置（无需管理员权限） ──
   // GET  /api/users/me/settings — 读取当前用户设置
@@ -496,6 +540,7 @@ export async function createApp(): Promise<express.Express> {
         backgroundOpacity: (user as any).background_opacity ?? 0,
         requireOriginalPaper: (user as any).require_original_paper ?? 1,
         highlightMissingPaper: (user as any).highlight_missing_paper ?? 1,
+        showTabBar: (user as any).show_tab_bar ?? 0,
       });
     } catch (err) { next(err); }
   });
@@ -642,17 +687,7 @@ export async function createApp(): Promise<express.Express> {
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
-  // ── 健康检查 ──
-  app.get("/api/app/health", async (_req, res) => {
-    try {
-      const health = await healthCheck();
-      res.json(health);
-    } catch (err) {
-      res.status(500).json({ ok: false, error: String(err) });
-    }
-  });
-
-  console.log("[Server] v1.6.1 routes mounted");
+  console.log("[Server] v1.9.2 routes mounted");
 
   // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
@@ -1082,20 +1117,19 @@ export async function createApp(): Promise<express.Express> {
         emitGradingProgress({ type: "done", batchId: progressId, finished, total: gradingFiles.length });
       }
 
-      // Send response immediately so user sees results
+      let persistence: GradingPersistenceResult | undefined;
+      if (examIdParam) {
+        persistence = await persistGradingResults(examIdParam, rows, req.user?.id);
+      }
+
       const result: CombinedGradingBatchResult = {
         batchId: `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         cardId,
-        rows
+        rows,
+        ...(persistence ? { persistence } : {})
       };
-      res.json(result);
-
-      // Persist to database asynchronously (non-blocking)
-      if (examIdParam) {
-        persistGradingResults(examIdParam, rows, req.user?.id).catch((err) => {
-          console.error("[Grading] Persist failed:", err);
-        });
-      }
+      const responseStatus = persistence?.status === "partial" ? 207 : persistence?.status === "error" ? 422 : 200;
+      res.status(responseStatus).json(result);
     } catch (error) {
       if (progressId) {
         const snapshot = gradingProgressSnapshots.get(progressId);
@@ -1559,6 +1593,7 @@ export async function createApp(): Promise<express.Express> {
       const assignedScoreService = new AssignedScoreService();
       res.json({
         formula: await assignedScoreService.getFormula(examId),
+        customFormulaDisabled: true,
         isAssignedSubject: AssignedScoreService.isAssignedSubject(exam.subject ?? ""),
         presets: AssignedScoreService.getFormulaPresets()
       });
@@ -1590,6 +1625,14 @@ export async function createApp(): Promise<express.Express> {
           recalculate: boolean;
         };
         const assignedScoreService = new AssignedScoreService();
+
+        if (formula?.type === "custom") {
+          res.status(422).json({
+            code: "CUSTOM_FORMULA_DISABLED",
+            message: "自定义赋分表达式已因安全原因停用，请改用比例或线性公式"
+          });
+          return;
+        }
 
         if (!formula?.enabled) {
           await assignedScoreService.disableFormula(examId);
@@ -1741,7 +1784,11 @@ export async function createApp(): Promise<express.Express> {
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(error);
-    res.status(500).json({ code: ApiError.INTERNAL, message: error instanceof Error ? error.message : "服务器内部错误" });
+    const typed = error as { status?: unknown; code?: unknown; message?: unknown };
+    const status = typeof typed?.status === "number" && typed.status >= 400 && typed.status < 600 ? typed.status : 500;
+    const code = typeof typed?.code === "string" ? typed.code : ApiError.INTERNAL;
+    const message = typeof typed?.message === "string" ? typed.message : "服务器内部错误";
+    res.status(status).json({ code, message });
   });
 
   return app;

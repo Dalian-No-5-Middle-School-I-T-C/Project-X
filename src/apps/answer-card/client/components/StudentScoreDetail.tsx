@@ -140,7 +140,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
                           {q.score_type === "objective" ? (q.mode === "multiple" ? "多选" : "单选") : "解答"}
                         </td>
                         <td style={s_td}>
-                          <span style={{ fontWeight: 600, color: perfect ? "#2E7D32" : zero ? "var(--brand)" : "var(--text-primary)" }}>
+                          <span style={{ fontWeight: 600, color: perfect ? "var(--success)" : zero ? "var(--brand)" : "var(--text-primary)" }}>
                             {q.score}
                           </span>/{q.max_score}
                           {q.manually_modified ? <span style={{ fontSize: 10, color: "var(--brand)", marginLeft: 4 }}>改</span> : null}
@@ -149,7 +149,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
                           {stat ? (
                             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                               <div style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--line-light)", overflow: "hidden", maxWidth: 100 }}>
-                                <div style={{ height: "100%", borderRadius: 3, background: classRate >= 80 ? "#2E7D32" : classRate >= 60 ? "#E65100" : "var(--brand)", width: `${classRate}%`, transition: "width 0.3s" }} />
+                                <div style={{ height: "100%", borderRadius: 3, background: classRate >= 80 ? "var(--success)" : classRate >= 60 ? "#E65100" : "var(--brand)", width: `${classRate}%`, transition: "width 0.3s" }} />
                               </div>
                               <span style={{ fontSize: 11, minWidth: 40 }}>{stat.avgScore}/{stat.maxScore} ({classRate}%)</span>
                             </div>
@@ -170,7 +170,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
                 选择题 <strong>班级均分率 {classObjRate}%</strong> ({objScores.length}题)
               </div>
               <div style={{ height: 10, borderRadius: 5, background: "var(--line-light)", overflow: "hidden" }}>
-                <div style={{ height: "100%", borderRadius: 5, background: classObjRate >= 80 ? "#2E7D32" : classObjRate >= 60 ? "#E65100" : "var(--brand)", width: `${classObjRate}%`, transition: "width 0.5s" }} />
+                <div style={{ height: "100%", borderRadius: 5, background: classObjRate >= 80 ? "var(--success)" : classObjRate >= 60 ? "#E65100" : "var(--brand)", width: `${classObjRate}%`, transition: "width 0.5s" }} />
               </div>
             </div>
             {subjScores.length > 0 && (
@@ -179,7 +179,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
                   解答题 <strong>班级均分率 {classSubjRate}%</strong> ({subjScores.length}题)
                 </div>
                 <div style={{ height: 10, borderRadius: 5, background: "var(--line-light)", overflow: "hidden" }}>
-                  <div style={{ height: "100%", borderRadius: 5, background: classSubjRate >= 80 ? "#2E7D32" : classSubjRate >= 60 ? "#E65100" : "var(--brand)", width: `${classSubjRate}%`, transition: "width 0.5s" }} />
+                  <div style={{ height: "100%", borderRadius: 5, background: classSubjRate >= 80 ? "var(--success)" : classSubjRate >= 60 ? "#E65100" : "var(--brand)", width: `${classSubjRate}%`, transition: "width 0.5s" }} />
                 </div>
               </div>
             )}

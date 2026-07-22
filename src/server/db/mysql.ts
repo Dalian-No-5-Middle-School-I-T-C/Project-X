@@ -589,6 +589,16 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     },
     {
       version: 23,
+      name: "security-bootstrap-and-grading-status",
+      sqls: [
+        `ALTER TABLE users ADD COLUMN password_change_required TINYINT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN success_count INT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN failure_count INT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN error_summary LONGTEXT`,
+      ]
+    },
+    {
+      version: 24,
       name: "online-review-grading-enhancements-1.9.4",
       sqls: [
         `ALTER TABLE block_grading_config ADD COLUMN has_half_point TINYINT DEFAULT 0`,

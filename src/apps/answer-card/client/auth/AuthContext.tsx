@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { fetchJson, setAuthToken, getAuthToken } from "./api";
 import { permissionGrants, TEACHER_ROLE_LABELS, type AuthUser, type LoginResponse } from "./types";
+import { ForcedPasswordChange } from "./ForcedPasswordChange";
 
 // ── v1.6.0: 运行时 Persona（视图身份） ──────────────────────
 export type AppPersona = "student" | "teacher" | "teacher-scanner";
@@ -129,6 +130,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuthToken(result.token);
     const nextUser: AuthUser = {
       ...result.user,
+      passwordChangeRequired: result.passwordChangeRequired,
       role_name: result.user.role_name ?? "unknown",
       permissions: result.permissions ?? result.user.permissions ?? []
     };
@@ -137,11 +139,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (nextUser.role_name === "admin") {
       setTeacherRoleOverrideState(loadTeacherRoleOverride());
     }
-    // H-S7: admin 仍使用默认密码时弹窗警告（延迟弹出让登录跳转先完成）
-    if (result.warning) {
-      window.setTimeout(() => window.alert(`⚠️ 安全警告\n\n${result.warning}`), 200);
-    }
-    return result.warning;
+    return result.passwordChangeRequired ? "必须先修改一次性密码" : undefined;
   }, []);
 
   useEffect(() => {
@@ -216,7 +214,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [user, loading, login, logout, refreshUser, hasPermission, teacherRole, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona]
   );
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {user?.passwordChangeRequired ? (
+        <ForcedPasswordChange
+          username={user.username}
+          onChanged={() => {
+            setAuthToken(null);
+            setUser(null);
+          }}
+        />
+      ) : children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth(): AuthContextValue {

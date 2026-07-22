@@ -680,12 +680,20 @@ const MIGRATIONS: Migration[] = [
       `);
     }
   },
-  // v23: 网阅打分与分配增强 (v1.9.4)
-  // - block_grading_config: has_half_point / auto_reassign_no_arb / workload_balance_threshold
-  // - review_assignments: auto_assigned
-  // - system_settings: 全局默认键（updated_at 补齐与 MariaDB parity）
+  // v23 (origin/main, #184): 安全引导 + 扫描批次状态
   {
     version: 23,
+    name: "security-bootstrap-and-grading-status",
+    up(db) {
+      addColumnIfMissing(db, "users", "password_change_required", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "success_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "failure_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "error_summary", "TEXT");
+    }
+  },
+  // v24 (v1.9.4 分支): 网阅打分与分配增强
+  {
+    version: 24,
     name: "online-review-grading-enhancements-1.9.4",
     up(db) {
       // 1. block_grading_config 新列
