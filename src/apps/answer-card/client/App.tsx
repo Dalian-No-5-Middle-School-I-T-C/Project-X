@@ -50,6 +50,12 @@ import { GroupExportModal } from "./components/GroupExportModal";
 import { HomePage } from "./components/HomePage";
 import { GradePanel } from "./components/GradePanel";
 import { ExamDetailPage } from "./components/ExamDetailPage";
+import { MobileDrawer } from "./components/MobileDrawer";
+import { HomeRoutePage } from "./pages/HomeRoutePage";
+import { AnalysisRoutePage } from "./pages/AnalysisRoutePage";
+import { ScoresRoutePage } from "./pages/ScoresRoutePage";
+import { AccountRoutePage } from "./pages/AccountRoutePage";
+import { SponsorRoutePage, PermissionsRoutePage, GuideRoutePage } from "./pages/InfoRoutePages";
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -416,6 +422,8 @@ function App() {
       return "light";
     }
   });
+  // 移动端 Drawer 开合状态（仅 ≤480px 渲染，见 MobileDrawer 与 styles.css）
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
   const autoSaveLabel =
@@ -1521,6 +1529,8 @@ function App() {
     setTheme,
     showBg,
     setShowBg,
+    drawerOpen,
+    setDrawerOpen,
     canDesign,
     canManageExams,
     canGrade,
@@ -1597,6 +1607,18 @@ function App() {
 
       <section className="workspace">
         <header className="topbar">
+          <button
+            className="mobile-menu-button"
+            type="button"
+            onClick={() => setDrawerOpen(true)}
+            aria-label="打开导航菜单"
+          >
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </button>
           <div>
             <h1>
               {mode === "home" ? "首页" : mode === "scores"
@@ -1729,112 +1751,15 @@ function App() {
             取代原先「全部网格常驻 + hidden-panel 切换」的范式。state/handler 仍集中在 App（经 WorkspaceProvider 下发），
             顶栏标题 / showCardSidebar / useBlocker 由已与 URL 同步的 mode 驱动，行为不变。 */}
         <Routes>
-          <Route
-            path="/home"
-            element={
-              <div className="main-grid home-grid">
-                <section style={{ gridColumn: "1 / -1", padding: 0 }}>
-                  <HomePage
-                    userName={user?.name ?? ""}
-                    userRole={user?.role_name ?? ""}
-                    teacherRole={user?.teacher_role ?? null}
-                    onNavigate={(m) => switchMode(m as AppMode)}
-                    onOpenNewTab={(m) => {
-                      // 经确认：首页任意模块卡片均在新标签打开（而非只对「答题卡设计」），
-                      // 配合网页化深链 / 刷新保持当前页的设计。如有回归到分模块差异化的需求，
-                      // 应在此按 m 过滤，仅 design 走新标签、其余回退 onNavigate。
-                      const path = MODE_PATH[m as AppMode] ?? "/design";
-                      window.open(window.location.origin + path, "_blank", "noopener");
-                    }}
-                    onEnterExam={(id) => { switchMode("exam-manage"); setSelectedExamId(id); }}
-                  />
-                </section>
-              </div>
-            }
-          />
+          <Route path="/home" element={<HomeRoutePage />} />
           <Route path="/design/*" element={<DesignPage />} />
           <Route path="/exam-manage" element={<ExamManagePage />} />
-          <Route
-            path="/analysis"
-            element={
-              <div className="main-grid analysis-grid">
-                <section className="preview-panel analysis-results-panel" style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column" }}>
-                  {analysisTab === "select" && analysisGroupId == null && (
-                    <ExamSelectPage
-                      refreshKey={examListRefreshKey}
-                      onSelectExam={(examId) => { setSelectedAnalysisExamId(examId); setAnalysisTab("detail"); }}
-                      onSelectGroup={(groupId) => { setAnalysisGroupId(groupId); }}
-                    />
-                  )}
-                  {analysisGroupId != null && (
-                    <ExamGroupDetailPage
-                      groupId={analysisGroupId}
-                      onBack={() => setAnalysisGroupId(null)}
-                      onExport={() => setShowGroupExport(true)}
-                    />
-                  )}
-                  {analysisTab === "detail" && selectedAnalysisExamId != null && analysisGroupId == null && (
-                    <ScoreDetailPage
-                      examId={selectedAnalysisExamId}
-                      examName={exams.find((e) => e.id === selectedAnalysisExamId)?.name ?? ""}
-                      subject={exams.find((e) => e.id === selectedAnalysisExamId)?.subject ?? null}
-                      onBack={() => { setSelectedAnalysisExamId(null); setAnalysisTab("select"); }}
-                    />
-                  )}
-                </section>
-              </div>
-            }
-          />
-          <Route
-            path="/scores"
-            element={
-              <div className="main-grid scores-grid">
-                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-                  <StudentScores />
-                </section>
-              </div>
-            }
-          />
-          <Route
-            path="/account"
-            element={
-              <div className="main-grid account-grid">
-                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-                  <AccountManagement />
-                </section>
-              </div>
-            }
-          />
-          <Route
-            path="/sponsor"
-            element={
-              <div className="main-grid sponsor-grid">
-                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-                  <SponsorPage onBack={() => navigate(MODE_PATH[previousModeRef.current] ?? "/home")} />
-                </section>
-              </div>
-            }
-          />
-          <Route
-            path="/permissions"
-            element={
-              <div className="main-grid permissions-grid">
-                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-                  <PermissionManager onBack={() => navigate(MODE_PATH[previousModeRef.current] ?? "/home")} />
-                </section>
-              </div>
-            }
-          />
-          <Route
-            path="/guide"
-            element={
-              <div className="main-grid guide-grid">
-                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-                  <UserGuidePage onBack={() => navigate(MODE_PATH[previousModeRef.current] ?? "/home")} />
-                </section>
-              </div>
-            }
-          />
+          <Route path="/analysis" element={<AnalysisRoutePage />} />
+          <Route path="/scores" element={<ScoresRoutePage />} />
+          <Route path="/account" element={<AccountRoutePage />} />
+          <Route path="/sponsor" element={<SponsorRoutePage />} />
+          <Route path="/permissions" element={<PermissionsRoutePage />} />
+          <Route path="/guide" element={<GuideRoutePage />} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
         {gradingPanel && (
@@ -1842,6 +1767,8 @@ function App() {
             <GradePanel examId={gradingPanel.examId} blockId={gradingPanel.blockId} teacherId={user?.id ?? 0} onBack={() => setGradingPanel(null)} />
           </div>
         )}
+        {/* 移动端抽屉导航（≤480px 渲染，Portal 到 body） */}
+        <MobileDrawer />
         <footer className="statusbar">
           <span className="statusbar-message">{status}</span>
           <BeianFooter className="statusbar-beian" />

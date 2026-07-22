@@ -1,5 +1,47 @@
 # Project-X CHANGELOG
 
+## v1.9.5 (2026-07-23) — 移动端 Web UI/UX 适配
+
+> 在冻结技术栈（React 19 + TS + Vite 7，不引入新依赖、不引入第三方状态库、不改后端/DB schema、延续 Context 模式）前提下，完成移动端功能与界面适配。三项决策：**App.tsx 适度拆分**（抽离 6 个 mode 页面为独立路由组件，不引入状态库）；**优化重心=功能可用性优先**；**断点收敛为 3 级**（480 手机 / 768 平板 / 1024 桌面）。全部改动经 `npx vite build --mode web` 验证通过，无 TS 错误。
+
+**基础设施（断点单一事实源）**
+- 新建 `client/breakpoints.ts`：导出 `BP = { phone: 480, tablet: 768, desktop: 1024 }` 及 `maxWidthQuery()` / `minWidthQuery()` 辅助函数，作为全仓响应式断点唯一真相源。
+- 新建 `client/hooks/useMediaQuery.ts`：`matchMedia` hook + `useIsMobile()` / `useIsTablet()` / `useIsDesktop()` 派生 hook（SSR 安全，避免水合不匹配）。
+- `client/theme.ts`：re-export `breakpoints` 镜像，供 JS 侧一致引用。
+
+**Modal 规范化（止血）**
+- `styles.css`：修复 480px 块 `.modal-backdrop` → `.modal-overlay` 断链（旧类名无样式导致遮罩失效）；`.modal-card` 新增抓手条（`::before` 36×4px）+ 安全区 `padding-bottom: env(safe-area-inset-bottom)`；`:root` 新增 `--bp-phone/--bp-tablet/--bp-desktop`。
+- 删除 `styles.css` 尾部重复段（6554–6746 行），消除样式覆盖冲突。
+- `components/ui/Modal.tsx`：移除内联 `maxHeight:"85vh"` 与 `width:"92vw"`（由 CSS 类统一控制），保留 `cardStyle` 逃生门。
+
+**App.tsx 拆分 + 移动抽屉导航**
+- 抽离路由页：`pages/HomeRoutePage.tsx` / `AnalysisRoutePage.tsx` / `ScoresRoutePage.tsx` / `AccountRoutePage.tsx` / `InfoRoutePages.tsx`（sponsor/permissions/guide 三合一，统一 `navigateBackFromInfo()` 返回）。`App.tsx` 由 2398 行降至 2325 行。
+- 新建 `components/MobileDrawer.tsx`：承载 9 个 mode 导航 + 设计模式操作 + 主题切换，ESC / 遮罩关闭。
+- `WorkspaceContext.tsx`：`WorkspaceValue` 增加 `drawerOpen` / `setDrawerOpen`。
+- `App.tsx`：新增 `drawerOpen` 状态；顶栏左侧加汉堡按钮（仅 480px 显示）；渲染 `MobileDrawer`。`styles.css` 新增 `.mobile-menu-button` / `.mobile-drawer-overlay` / `.mobile-drawer` / `.drawer-nav-item` 及暗色覆盖。
+
+**表格卡片化（零 JS，480px 自动）**
+- `styles.css`：新增 `.data-card-list` / `.data-card` / `.data-card-row` / `.data-card-actions`；新增 `.table-cards`（480px 块内，依据 `td[data-label]` 将表格转为卡片，无需 JS）。移除三处强制 `min-width`（`.analysis-ranking-table` 560px / `.student-subject-table` 500px / `.account-table` 600px）。
+- 新建 `components/ui/DataCard.tsx`：通用卡片组件，支持 `rows` / `actions` / `onClick`。
+- 应用：`AnalysisRanking`、`ExamManagePage`、`ExamSelectPage`、`CardSelectPage`、`ScoreTable`、`UserManagement`、`StudentManagement` 均加 `useIsMobile` 条件渲染（移动端 `DataCard`，桌面保留原表格）。
+
+**HomePage 响应式 + 输入控件清理**
+- 重写 `components/HomePage.tsx`：内联样式全替换为 CSS 类（`.home-container` / `.home-welcome*` / `.home-quick-grid` / `.home-quick-card` 等 4 色变体 / `.home-module-grid` / `.home-card*`）。
+- `styles.css`：新增 `.home-*` 基础类（约 100 行）+ 480px 块响应式（padding 16px、title 18px、单列、44px 触摸区）。
+- 清理输入控件 `fontSize:13` 内联（`ExamSelectPage:628` / `AnalysisAiPanel:200` / `ScoreDetailPage:257`），避免 iOS Safari 触发 300ms 缩放与字号跳变。
+
+**指标**
+- 新增文件 9 个；`styles.css` 6746 → 6930 行；`@media` 13 → 12 处；`App.tsx` 2398 → 2325 行；`package.json` 版本号 v1.9.5。
+- 全部改动 `npx vite build --mode web` 通过，无 TS 错误。
+
+**遗留（后续迭代）**
+- 断点归并（1300/1060→1024，860/760/700→768，横屏保留方向）——风险较高，待截图对比 1100/800/720px 后实施。
+- 暗色模式扩展覆盖 `.data-card`。
+- 阶段 5 手势增强（`useSwipeClose` / `usePullToRefresh` 原生 touch，可选）。
+- 真机验证：iOS Safari + Android Chrome，480px 全功能可达、无横向溢出、输入框不缩放。
+
+---
+
 ## v1.9.2 (2026-07-21) — 网页化改造 / 启动台模式 + 前端风格统一 + BUG 修复
 
 本版本是「审计 → 修复 → 统一 → 网页化」一揽子改造，分三阶段落地（前情见内部工作文档 `.workbuddy/plans/AUDIT-2026-07-20.md` / `PLAN-2026-07-20.md` / `SMOKE-2026-07-20.md`，不进仓库）。

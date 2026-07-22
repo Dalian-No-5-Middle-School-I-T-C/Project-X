@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Layers, Search, ClipboardList } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import { useIsMobile } from "../hooks/useMediaQuery";
+import { DataCard } from "./ui/DataCard";
 import type { CardSummary, ExamGroupFilterItem } from "../../../../shared/types";
 
 interface Props {
@@ -262,6 +264,38 @@ export function CardSelectPage({ onSelectCard }: Props) {
 
 // ── Card list table ──
 function CardListTable({ cards, onSelect }: { cards: CardSummary[]; onSelect: (id: string) => void }) {
+  const isMobile = useIsMobile();
+
+  if (isMobile) {
+    return (
+      <div className="data-card-list">
+        {cards.map((card) => (
+          <DataCard
+            key={card.id}
+            rows={[
+              {
+                label: "答题卡名称",
+                value: (
+                  <>
+                    {card.title || "未命名答题卡"}
+                    <span style={{ fontSize: 11, color: "var(--muted)", marginLeft: 8 }}>ID:{card.id}</span>
+                  </>
+                ),
+                strong: true,
+              },
+              { label: "科目", value: card.subjectLabel || "—" },
+              { label: "日期", value: card.examDate || "—" },
+            ]}
+            actions={
+              <span style={{ color: "var(--brand)", fontSize: 13, textAlign: "center", width: "100%" }}>选择 ▶</span>
+            }
+            onClick={() => onSelect(card.id)}
+          />
+        ))}
+      </div>
+    );
+  }
+
   return (
     <div className="exam-list-table">
       <div className="exam-list-head">

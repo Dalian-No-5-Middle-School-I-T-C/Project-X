@@ -41,66 +41,60 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onOpenNe
   const hasLatestScan = dashboard?.latestScanExam;
 
   return (
-    <div style={{ maxWidth: 960, margin: "0 auto", padding: "32px 24px" }}>
+    <div className="home-container">
       {/* 欢迎 */}
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 500, margin: 0 }}>
+      <div className="home-welcome">
+        <h1 className="home-welcome-title">
           欢迎回来，{userName}
         </h1>
         {teacherRole && (
-          <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+          <span className="home-welcome-role">
             {teacherRole === "grade_leader" ? "学年主任" : teacherRole === "head_teacher" ? "班主任" : "学科老师"}
           </span>
         )}
       </div>
 
       {/* 快捷入口 — 始终显示 */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-        gap: 16,
-        marginBottom: 32,
-        minHeight: 80,
-      }}>
+      <div className="home-quick-grid">
         {loading ? (
-          <div style={{ ...quickCardStyle("#F1EFE8", "#888780"), cursor: "default" }}>
-            <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>加载中...</div>
+          <div className="home-quick-card home-quick-card-gray" style={{ cursor: "default" }}>
+            <div className="home-quick-card-desc">加载中...</div>
           </div>
         ) : hasContinueReview ? (
           <div
-            style={quickCardStyle("#FFF8E1", "#FFA000")}
+            className="home-quick-card home-quick-card-amber"
             onClick={() => onEnterExam(dashboard!.unfinishedTask!.examId)}
             role="button" tabIndex={0}
             onKeyDown={(e) => e.key === "Enter" && onEnterExam(dashboard!.unfinishedTask!.examId)}
           >
-            <div style={{ fontSize: 20, marginBottom: 6 }}>📝</div>
-            <div style={{ fontWeight: 500, fontSize: 15 }}>继续阅卷</div>
-            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 4 }}>
+            <div className="home-quick-card-icon">📝</div>
+            <div className="home-quick-card-label">继续阅卷</div>
+            <div className="home-quick-card-desc">
               {dashboard!.unfinishedTask!.examName} · {dashboard!.unfinishedTask!.blockTitle}
             </div>
           </div>
         ) : hasLatestScan ? (
           <div
-            style={quickCardStyle("#E6F1FB", "#378ADD")}
+            className="home-quick-card home-quick-card-blue"
             onClick={() => onEnterExam(dashboard!.latestScanExam!.examId)}
             role="button" tabIndex={0}
             onKeyDown={(e) => e.key === "Enter" && onEnterExam(dashboard!.latestScanExam!.examId)}
           >
-            <div style={{ fontSize: 20, marginBottom: 6 }}>🆕</div>
-            <div style={{ fontWeight: 500, fontSize: 15 }}>最新扫描</div>
-            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 4 }}>
+            <div className="home-quick-card-icon">🆕</div>
+            <div className="home-quick-card-label">最新扫描</div>
+            <div className="home-quick-card-desc">
               {dashboard!.latestScanExam!.examName}{dashboard!.latestScanExam!.subject ? ` · ${dashboard!.latestScanExam!.subject}` : ""}
             </div>
           </div>
         ) : (
-          <div style={{ ...quickCardStyle("#EEEDFE", "#7F77DD"), cursor: "pointer" }}
+          <div className="home-quick-card home-quick-card-purple"
             onClick={() => onNavigate("exam-manage")}
             role="button" tabIndex={0}
             onKeyDown={(e) => e.key === "Enter" && onNavigate("exam-manage")}
           >
-            <div style={{ fontSize: 20, marginBottom: 6 }}>📋</div>
-            <div style={{ fontWeight: 500, fontSize: 15 }}>考试管理</div>
-            <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginTop: 4 }}>
+            <div className="home-quick-card-icon">📋</div>
+            <div className="home-quick-card-label">考试管理</div>
+            <div className="home-quick-card-desc">
               查看和管理所有考试
             </div>
           </div>
@@ -108,11 +102,7 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onOpenNe
       </div>
 
       {/* 模块卡片 */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-        gap: 16
-      }}>
+      <div className="home-module-grid">
         {moduleCards.map((card) => {
           // “答题卡设计”从首页进入时单开新标签，当前页也跳转过去
           const enter = (): void => {
@@ -122,17 +112,17 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onOpenNe
           return (
           <div
             key={card.id}
-            style={cardStyle}
+            className="home-card"
             onClick={enter}
             role="button"
             tabIndex={0}
             onKeyDown={(e) => e.key === "Enter" && enter()}
           >
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-              <card.icon size={36} style={{ color: "var(--color-text-secondary)", flexShrink: 0 }} />
+            <div className="home-card-inner">
+              <card.icon size={36} className="home-card-icon" />
               <div>
-                <div style={{ fontWeight: 500, fontSize: 16, marginBottom: 4 }}>{card.label}</div>
-                <div style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+                <div className="home-card-label">{card.label}</div>
+                <div className="home-card-desc">
                   {card.desc}
                 </div>
               </div>
@@ -143,17 +133,17 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onOpenNe
 
         {isAdmin && (
           <div
-            style={cardStyle}
+            className="home-card"
             onClick={() => (onOpenNewTab ? onOpenNewTab(adminCard.id) : onNavigate(adminCard.id))}
             role="button"
             tabIndex={0}
             onKeyDown={(e) => e.key === "Enter" && (onOpenNewTab ? onOpenNewTab(adminCard.id) : onNavigate(adminCard.id))}
           >
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-              <adminCard.icon size={36} style={{ color: "var(--color-text-secondary)", flexShrink: 0 }} />
+            <div className="home-card-inner">
+              <adminCard.icon size={36} className="home-card-icon" />
               <div>
-                <div style={{ fontWeight: 500, fontSize: 16, marginBottom: 4 }}>{adminCard.label}</div>
-                <div style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+                <div className="home-card-label">{adminCard.label}</div>
+                <div className="home-card-desc">
                   {adminCard.desc}
                 </div>
               </div>
@@ -164,18 +154,3 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onOpenNe
     </div>
   );
 }
-
-const cardStyle: React.CSSProperties = {
-  background: "var(--color-background-secondary)",
-  borderRadius: 12,
-  padding: "24px",
-  cursor: "pointer",
-  border: "0.5px solid var(--color-border-tertiary)",
-  transition: "box-shadow 0.15s",
-};
-
-const quickCardStyle = (bg: string, border: string): React.CSSProperties => ({
-  ...cardStyle,
-  background: bg,
-  borderLeft: `3px solid ${border}`,
-});
