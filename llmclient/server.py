@@ -109,7 +109,15 @@ def analysis_run(request: AnalysisRunRequest, _: None = Depends(require_internal
         raise HTTPException(status_code=400, detail=f"Project-X database not found: {default_db_path()}")
 
     try:
-        return run_analysis(model, request.examId, request.classId, request.locale, provider_dict)
+        return run_analysis(
+            model,
+            request.examId,
+            request.classId,
+            request.locale,
+            provider_dict,
+            caller_role=request.callerRole,
+            student_id=request.studentId,
+        )
     except HTTPException:
         raise
     except Exception as exc:

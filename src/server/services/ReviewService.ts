@@ -8,6 +8,7 @@ import {
 import { computeMultiReviewResult } from "./ArbitrationService";
 import { getBlockConfig } from "./BlockGradingConfigService";
 import type {
+  BodyBlock,
   ReviewBlockCropItem,
   ReviewBlockSummary,
   ReviewSubmitResult,
@@ -16,6 +17,40 @@ import type {
   ReviewRoundDetail
 } from "../../shared/types";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
+
+export class ReviewValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReviewValidationError";
+  }
+}
+
+type AuthoritativeQuestion = {
+  questionNumber: number;
+  maxScore: number;
+  scoreType: "objective" | "subjective";
+};
+
+function buildBlockQuestionMap(block: BodyBlock): Map<number, AuthoritativeQuestion> {
+  const map = new Map<number, AuthoritativeQuestion>();
+  if (block.type === "objective") {
+    for (const def of objectiveQuestionDefinitions(block)) {
+      map.set(def.questionNumber, {
+        questionNumber: def.questionNumber,
+        maxScore: Number(def.score ?? 0),
+        scoreType: "objective"
+      });
+    }
+  } else {
+    for (const question of block.questions ?? []) {
+      const qNum = typeof question.number === "number" ? question.number : parseInt(String(question.number), 10);
+      if (Number.isFinite(qNum)) {
+        map.set(qNum, { questionNumber: qNum, maxScore: Number(question.score ?? 0), scoreType: "subjective" });
+      }
+    }
+  }
+  return map;
+}
 
 type CropRow = {
   id: string;
@@ -144,6 +179,31 @@ export async function submitReviewCropScores(params: {
   const card = await cardRepo.findById(exam.card_id);
   if (!card) throw new Error("答题卡不存在");
 
+  const targetBlock = card.bodyBlocks.find((b) => b.id === crop.block_id);
+  if (!targetBlock) throw new ReviewValidationError("题块配置不存在，无法校验分数");
+  const blockQuestionMap = buildBlockQuestionMap(targetBlock);
+  if (blockQuestionMap.size === 0) throw new ReviewValidationError("题块未配置题目，无法校验分数");
+  if (params.scores.length > blockQuestionMap.size) {
+    throw new ReviewValidationError(`分数项数（${params.scores.length}）超过题块题目数（${blockQuestionMap.size}）`);
+  }
+  for (const item of params.scores) {
+    const qNum = Number(item.questionNumber);
+    const auth = blockQuestionMap.get(qNum);
+    if (!auth) {
+      throw new ReviewValidationError(`题号 ${item.questionNumber} 不属于该题块`);
+    }
+    if (item.scoreType !== auth.scoreType) {
+      throw new ReviewValidationError(`题号 ${item.questionNumber} 的题型与题块配置不符`);
+    }
+    if (item.maxScore != null && Number(item.maxScore) !== auth.maxScore) {
+      throw new ReviewValidationError(`题号 ${item.questionNumber} 的满分与服务器配置不一致`);
+    }
+    const score = Number(item.score);
+    if (!Number.isFinite(score) || score < 0 || score > auth.maxScore) {
+      throw new ReviewValidationError(`题号 ${item.questionNumber} 的分数超出有效范围 [0, ${auth.maxScore}]`);
+    }
+  }
+
   // 读取评分配置（含 reviewMode）
   const blockType = crop.block_type ?? "subjective";
   let maxBlockScore = 0;
@@ -175,8 +235,8 @@ export async function submitReviewCropScores(params: {
   const upsertSQL = buildUpsertSQL(db.dialect, "question_scores", upsertCols, conflictCols, updateCols);
 
   const submittedScores = params.scores.map((item) => {
-    const maxScore = item.maxScore ?? maxScoreByQuestion.get(item.questionNumber) ?? item.score;
-    return { ...item, maxScore, score: Math.max(0, Math.min(maxScore, item.score)) };
+    const auth = blockQuestionMap.get(Number(item.questionNumber))!;
+    return { ...item, maxScore: auth.maxScore, score: Number(item.score) };
   });
   let totalScore = 0;
   let finalReviewRound = 0;

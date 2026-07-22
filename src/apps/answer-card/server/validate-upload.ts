@@ -60,6 +60,6 @@ export async function assertImageFile(
   if (await isValidImageFile(filePath)) return true;
   // Not a real image — delete the file and reject
   try { await rm(filePath); } catch { /* best-effort cleanup */ }
-  res.status(400).json({ message: "上传的文件不是受支持的图片格式" });
+  res.status(415).json({ message: "上传的文件不是受支持的图片格式" });
   return false;
 }

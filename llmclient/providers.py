@@ -27,6 +27,21 @@ def _quiet_gemini_non_text_warning() -> None:
             logger.addFilter(_GeminiNonTextWarningFilter())
 
 
+def _resolve_effective_class_id(
+    class_id: int | None,
+    caller_role: str | None,
+    student_id: int | None,
+) -> int | None:
+    if caller_role == "student" and student_id is not None:
+        from llmclient.tools.grades import resolve_student_class_id
+
+        resolved = resolve_student_class_id(int(student_id))
+        if resolved is not None:
+            return resolved
+        return 0
+    return class_id
+
+
 def _user_prompt(exam_id: int, class_id: int | None, locale: str) -> str:
     scope = "all classes" if class_id is None else f"classId={class_id}"
     return (
@@ -97,6 +112,8 @@ def run_openai_compatible_analysis(
     class_id: int | None,
     locale: str,
     provider_override: dict[str, str] | None = None,
+    caller_role: str | None = None,
+    student_id: int | None = None,
 ) -> AnalysisRunResponse:
     # Use provider override if provided, else fall back to env vars
     if provider_override:
@@ -193,6 +210,8 @@ def run_gemini_analysis(
     class_id: int | None,
     locale: str,
     provider_override: dict[str, str] | None = None,
+    caller_role: str | None = None,
+    student_id: int | None = None,
 ) -> AnalysisRunResponse:
     from google import genai
     from google.genai import types
@@ -261,12 +280,16 @@ def run_analysis(
     class_id: int | None,
     locale: str,
     provider_override: dict[str, str] | None = None,
+    caller_role: str | None = None,
+    student_id: int | None = None,
 ) -> AnalysisRunResponse:
     # If provider_override is given, treat as OpenAI-compatible unless explicitly gemini
     effective_provider = provider_override.get("provider_type", model.provider) if provider_override else model.provider
 
+    effective_class_id = _resolve_effective_class_id(class_id, caller_role, student_id)
+
     if effective_provider == "gemini":
-        return run_gemini_analysis(model, exam_id, class_id, locale, provider_override)
+        return run_gemini_analysis(model, exam_id, effective_class_id, locale, provider_override)
     # All other providers (openai, deepseek, custom) are OpenAI-compatible
-    return run_openai_compatible_analysis(model, exam_id, class_id, locale, provider_override)
+    return run_openai_compatible_analysis(model, exam_id, effective_class_id, locale, provider_override)
 

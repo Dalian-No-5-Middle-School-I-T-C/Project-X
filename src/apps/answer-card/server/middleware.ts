@@ -51,12 +51,13 @@ export function makeGate(enforce: boolean, readPerm: string, writePerm: string) 
  * - admin / grade_leader → null (all visible)
  * - head_teacher → own classes + created exams
  * - subject_teacher → own subject + classes + created exams
- * - plain teacher (no teacher_role) → null (back-compat)
+ * - plain teacher (no teacher_role) → [] (fail-closed: zero visible)
+ * - student / other roles → [] (fail-closed: zero visible)
  */
 export async function getVisibleExamIds(user: express.Request["user"]): Promise<number[] | null> {
   if (!user || user.role_name === "admin") return null;
-  if (user.role_name !== "teacher") return null;
-  if (!user.teacher_role) return null; // plain teacher: all visible (back-compat)
+  if (user.role_name !== "teacher") return [];
+  if (!user.teacher_role) return [];
 
   if (user.teacher_role === "grade_leader") return null;
 
@@ -125,7 +126,7 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
     }
   }
 
-  return null;
+  return [];
 }
 
 async function hasTable(db: DbAdapter, table: string): Promise<boolean> {
