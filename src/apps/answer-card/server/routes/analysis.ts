@@ -46,15 +46,15 @@ async function getActiveAiProviders(userId: number) {
   const providerRows = await db.all<AiProviderRow>(`
     SELECT id, name, provider_type, base_url, api_key, models, is_active
     FROM ai_providers
-    WHERE user_id = ? AND is_active = 1
-    ORDER BY sort_order, id
+    WHERE (user_id = ? OR is_system = 1) AND is_active = 1
+    ORDER BY is_system, sort_order, id
   `, userId);
   return providerRows.map(mapAiProvider);
 }
 
 async function getAiProviderForUser(providerId: number, userId: number) {
   const db = getMysqlDb();
-  return db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND user_id = ?", providerId, userId);
+  return db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId);
 }
 
 // ── Trends ──────────────────────────────────────────────

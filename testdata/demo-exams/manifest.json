@@ -5,7 +5,7 @@
   "compatibleWith": ["v1.6.3", "v1.7.0"],
   "prefix": "演示-",
   "accounts": {
-    "admin": { "identifier": "admin", "password": "admin123" },
+    "admin": { "identifier": "admin", "password": "见数据库旁 bootstrap-admin.txt（#185 起为随机一次性密码，首次登录强制改密）" },
     "teacher": { "identifier": "demo-teacher", "password": "teacher123" },
     "students": {
       "range": "20260101-20260116",

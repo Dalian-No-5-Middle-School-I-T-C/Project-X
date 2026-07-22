@@ -46,6 +46,9 @@
 - **断点续批**：退出自动保存进度和草稿分数，重新进入弹窗恢复
 - **阅卷溯源**：每学生每轮评审人+分数可追溯
 - **考试管理增强**：每条考试新增「网阅」按钮，进入 5 Tab 管理页（阅卷 / 分配 / 争议 / 溯源 / 设置）
+- **打分面板双模式**（v1.9.4）：满分 < 20 走「枚举模式」直接点分大按钮；满分 ≥ 20 走「十位+个位+十分位」位值合成；含 0.5 时枚举底部加 `0/0.5` 专用行、位值十分位列渲染 `0/0.5`；点选即提交并自动跳下一卷
+- **仲裁人可选 + 工作量均衡**（v1.9.4）：题块仲裁人可留空，未设仲裁人时分配后自动把未分配卷吸收到份数最少的教师、并在教师间搬运使份数差 ≤ 阈值（默认 4 份）；争议卷自动改派给已分配且未评过该生的教师，被自动追加的卷标记 `auto_assigned`
+- **设置三层拆分**（v1.9.4 重构）：个性化（账号设置，不变）/ 局部网阅（考试「网阅设置」Tab：题块级 `has_half_point`+本人块工作量下放到教师；「网阅默认」模板含分差/取整/0.5/自动改派/均衡阈值/复评模式（reviewMode：单评/双评/三评），由管理员设置并作为新建题块默认值）/ 全局（Home → 全局设置，仅管理员：原卷强制上传+高亮策略、AI 系统服务商）
 
 ### 答题卡设计
 
@@ -268,6 +271,39 @@ npm run dev
 
 AI 成绩分析依赖单独手动启动的 Python 中转服务；配置方式见 **[AI成绩分析.md](./readus/AI成绩分析.md)**。
 
+#### 网阅功能演示数据（Demo 种子）
+
+无需真实扫描仪或原生识别器即可实测 v1.9.4 的网阅增强（双模式打分面板、0.5 小数、工作量均衡、全局设置）。`testdata/demo-exams` 提供一键种子：
+
+```powershell
+# 方式一：仓库脚本（需 Git Bash / WSL）
+./import-all.sh seed
+
+# 方式二：直接调用 tsx
+npx tsx testdata/demo-exams/scripts/seed.ts
+```
+
+种子会写入：
+
+- 一场「演示-网阅测试」考试，含题块 **A**（满分 15、含 0.5 小数）与题块 **B**（满分 25）；
+- 第二教师账号 `demo-teacher-2` / `teacher123`（学科数学），用于演示工作量均衡；
+- 切块与分配：题块 A 故意把卷拆给两位教师并留 2 份未分配，触发 `rebalanceWorkload` 自动均衡（份数差收敛到 ≤ 4）。
+
+登录实测：
+
+| 账号 | 密码 | 可验证 |
+|------|------|--------|
+| `demo-teacher` | `teacher123` | 题块 A 枚举模式 + 0.5 底部行；题块 B 位值模式；本人块 `has_half_point` 可改 |
+| `demo-teacher-2` | `teacher123` | 工作量均衡后被追加的卷（`auto_assigned`）；教师改局部设置的 403/200 边界 |
+| `admin` | 见数据库旁 `bootstrap-admin.txt`（首次登录强制改密） | Home → 全局设置（仅管理员可见）；仲裁人留空自动改派争议卷 |
+
+清理 / 重置演示数据：脚本每次运行会先执行 `cleanupDemoData`（删除「演示-」前缀的考试、答题卡、演示账号等），再重建，因此**重复运行即自动重置**，无需单独 clean 子命令：
+
+```powershell
+# 重置演示数据（先清后建）
+./import-all.sh seed
+```
+
 如需分终端调试，也可手动启动：
 
 ```powershell
@@ -326,7 +362,7 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | `npm run electron:dist:ia32` | 生成扫描端便携 EXE (ia32) |
 | `npm run electron:msi` | 生成扫描端 MSI (x64) |
 | `npm run electron:msi:ia32` | 生成扫描端 MSI (ia32) |
-| `npm run verify:auth` | 账号权限自动化验证（33 项用例） |
+| `npm run verify:auth` | 账号权限自动化验证（54 项用例） |
 | `npx tsx scripts/grading-rules-smoke.ts` | 客观题部分得分规则冒烟验证 |
 
 ---
@@ -522,6 +558,9 @@ Project-X/
 | `POST` | `/api/review-arbitration/crops/:cid/resolve` | 提交仲裁最终分 |  ← v1.9.0 |
 | `GET` | `/api/block-grading-config/exams/:id` | 题块网阅设置列表 |  ← v1.9.0 |
 | `POST` | `/api/block-grading-config/exams/:id/batch` | 批量更新题块设置 |  ← v1.9.0 |
+| `GET/PUT` | `/api/system-settings` | 全局设置（原卷策略 `require_original_paper`/`highlight_missing_paper`、AI 系统服务商开关位，仅管理员） |  ← v1.9.4 |
+| `GET` | `/api/system-settings/public` | 只读：原卷两策略标志（认证用户），供前端判断强制上传/高亮 |  ← v1.9.4 |
+| `GET/POST/PUT/DELETE` | `/api/ai/providers/system` | AI 系统服务商管理（仅管理员，`is_system=1`） |  ← v1.9.4 |
 | `GET` | `/api/dashboard` | 首页仪表盘数据 |  ← v1.9.0 |
 | `GET` | `/api/review/my-exams` | 教师待阅考试列表 |  ← v1.9.0 |
 | `GET` | `/api/review-annotations?cropId=` | 读取切块批注 |  ← v1.9.0 |

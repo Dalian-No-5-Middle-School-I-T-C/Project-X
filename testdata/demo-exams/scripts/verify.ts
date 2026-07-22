@@ -5,7 +5,20 @@
  * 需已启动服务: npm run dev
  */
 
+import { readFileSync, existsSync } from "node:fs";
+import path from "node:path";
+
 const BASE = process.env.PROJECTX_API_BASE ?? "http://127.0.0.1:5174";
+
+// #185 起管理员为随机一次性密码，写入数据库旁的 bootstrap-admin.txt；优先读取它
+function resolveAdminPassword(): string {
+  const dbPath = process.env.PROJECTX_DB_PATH
+    ? path.resolve(process.env.PROJECTX_DB_PATH)
+    : path.join(process.cwd(), "data", "projectx.db");
+  const file = path.join(path.dirname(dbPath), "bootstrap-admin.txt");
+  if (existsSync(file)) return readFileSync(file, "utf8").trim();
+  return "admin123";
+}
 
 let passed = 0;
 let failed = 0;
@@ -32,7 +45,7 @@ async function main(): Promise<void> {
   const health = await fetch(`${BASE}/api/app/health`).then((r) => r.json());
   ok(health.ok === true, "服务健康");
 
-  const token = await login("admin", "admin123");
+  const token = await login("admin", resolveAdminPassword());
   const headers = { Authorization: `Bearer ${token}` };
 
   const grades = await fetch(`${BASE}/api/classes/grades`, { headers }).then((r) => r.json());

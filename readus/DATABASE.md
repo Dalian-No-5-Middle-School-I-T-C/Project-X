@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.9.2
+> **版本**: v1.9.4
 > **技术栈**: SQLite (本地) / MariaDB 10.11 LTS (远程) + better-sqlite3 + mysql2 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力，支持本地单机部署和远程服务器部署
 
@@ -692,6 +692,7 @@ src/types/
 
 ## 更新日志
 
+- **v1.9.4** (07-22) — 网阅打分双模式 + 0.5 小数 + 工作量均衡 + 设置三层拆分
 - **v1.5.5** (06-27) — MariaDB 10.11 LTS 双模就绪：DbAdapter 重写 + schema.mariadb.sql + 迁移工具 + 一键建库 + 备份恢复 + 用户设置界面
 - **v1.5.0** (06-24) — 大考组功能：`exam_groups` + `exam_group_members` 表
 - **v1.2.1** (06-17) — 数据库全量备份/恢复（ZIP 导出导入），强制考试时间，UI 响应式三级断点，导入模板升级 .xlsx
@@ -798,6 +799,7 @@ src/types/
 | `teacher_id` | INTEGER FK | 教师 ID |
 | `student_count` | INTEGER | 分配份数 |
 | `assigned_student_ids` | TEXT(JSON) | 学生 ID 数组 |
+| `auto_assigned` | INTEGER DEFAULT 0 | 1=工作量均衡自动再分配追加的份数（v1.9.4） |
 
 **UNIQUE**: `(exam_id, block_id, teacher_id)`
 
@@ -840,10 +842,25 @@ src/types/
 | `block_id` | TEXT | 题块 ID |
 | `dispute_threshold` | REAL | 分差阈值 |
 | `rounding` | TEXT | ceil/floor/round/none |
-| `arbitrator_id` | INTEGER FK | 仲裁教师 |
+| `arbitrator_id` | INTEGER FK | 仲裁教师（可空；留空启用工作量均衡） |
 | `review_mode` | INTEGER | 1=1P, 2=2P, 3=3P |
+| `has_half_point` | INTEGER DEFAULT 0 | 本题块含 0.5 小数（v1.9.4，按 block 粒度） |
+| `auto_reassign_no_arb` | INTEGER DEFAULT 1 | 未设仲裁人时自动重分配开关（v1.9.4） |
+| `workload_balance_threshold` | INTEGER DEFAULT 4 | 工作量均衡阈值：已分配教师间最多-最少份数差上限（v1.9.4） |
 
 **UNIQUE**: `(exam_id, block_id)`
+
+#### `system_settings` — 系统级全局设置（v1.9.4 新增）
+
+仅管理员读写，承载系统级策略（原卷上传要求、AI 系统服务商开关位等）。注意：原先放在此处的 5 个网阅默认值（`allow_half_point`/`default_dispute_threshold`/`default_rounding`/`auto_reassign_policy`/`workload_balance_threshold`）已在 v1.9.4 设置重构中迁移至考试「网阅设置 → 网阅默认」（存 `block_grading_config.block_id='__default__'`），此表不再承载它们。
+
+| 列 | 类型 | 说明 |
+|-----|------|------|
+| `key` | TEXT PK | 设置键 |
+| `value` | TEXT | 设置值 |
+| `updated_at` | TEXT | 最近更新时间 |
+
+**当前键**：`require_original_paper`（强制上传原卷，默认 `1`）、`highlight_missing_paper`（侧边栏高亮未上传原卷，默认 `1`）、`ladder_enabled`（最近发展区折线，默认 `0`）。前端通过 `GET /api/system-settings/public` 读取原卷两键判断是否强制上传/高亮。
 
 **成绩分析关联查询**：
 ```sql
@@ -878,12 +895,14 @@ ORDER BY avg_rate ASC;
 | `extra_notes` | TEXT | 教师特别描述 |
 | `knowledge_points_text` | TEXT | 知识点纯文本备份 |
 
-#### `users` 新增列
+#### `users` 列（原卷开关已迁移至系统级）
+
+> ⚠️ 以下两列在 v1.9.4 设置重构中已废弃：原卷强制上传/高亮改为系统级统一开关（见 `system_settings.require_original_paper` / `highlight_missing_paper`），由管理员在 Home「全局设置」控制，所有教师统一遵从。两列保留以兼容旧数据，但代码已不再读取。
 
 | 列 | 类型 | 说明 |
 |-----|------|------|
-| `require_original_paper` | INTEGER DEFAULT 1 | 强制上传原卷开关 |
-| `highlight_missing_paper` | INTEGER DEFAULT 1 | 侧边栏高亮开关 |
+| `require_original_paper` | INTEGER DEFAULT 1 | **已废弃** 原卷强制开关（改由 system_settings 控制） |
+| `highlight_missing_paper` | INTEGER DEFAULT 1 | **已废弃** 侧边栏高亮开关（改由 system_settings 控制） |
 
 ---
 

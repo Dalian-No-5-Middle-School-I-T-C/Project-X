@@ -634,6 +634,7 @@ CREATE TABLE IF NOT EXISTS review_assignments (
     teacher_id           INT NOT NULL,
     student_count        INT DEFAULT 0,
     assigned_student_ids LONGTEXT,
+    auto_assigned        TINYINT DEFAULT 0,
     created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_ra_exam_block_teacher (exam_id, block_id, teacher_id),
     FOREIGN KEY (exam_id)    REFERENCES exams(id) ON DELETE CASCADE,
@@ -677,6 +678,9 @@ CREATE TABLE IF NOT EXISTS block_grading_config (
     rounding           VARCHAR(16) DEFAULT 'ceil',
     arbitrator_id      INT,
     review_mode        INT DEFAULT 1,
+    has_half_point             TINYINT DEFAULT 0,
+    auto_reassign_no_arb       TINYINT DEFAULT 1,
+    workload_balance_threshold INT DEFAULT 4,
     created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_bgc_exam_block (exam_id, block_id),
@@ -754,4 +758,9 @@ INSERT IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive,
     (3, '期中期末', 0, 1, 0);
 
 INSERT IGNORE INTO system_settings (`key`, value) VALUES
-    ('ladder_enabled', '1');
+    ('ladder_enabled', '1'),
+    ('allow_half_point', '1'),
+    ('default_dispute_threshold', '2'),
+    ('default_rounding', 'ceil'),
+    ('auto_reassign_policy', '1'),
+    ('workload_balance_threshold', '4');

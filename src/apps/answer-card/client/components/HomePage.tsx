@@ -20,6 +20,7 @@ const moduleCards = [
 ];
 
 const adminCard = { id: "account", icon: Users, label: "账号管理", desc: "管理师生账号", permission: "user:manage" };
+const globalSettingsCard = { id: "global-settings", icon: BookOpen, label: "全局设置", desc: "系统级默认值与策略", permission: "system:manage" };
 
 export function HomePage({ userRole, teacherRole, userName, onNavigate, onOpenNewTab, onEnterExam }: Props) {
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
@@ -145,6 +146,26 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onOpenNe
                 <div className="home-card-label">{adminCard.label}</div>
                 <div className="home-card-desc">
                   {adminCard.desc}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {isAdmin && (
+          <div
+            style={cardStyle}
+            onClick={() => onNavigate(globalSettingsCard.id)}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => e.key === "Enter" && onNavigate(globalSettingsCard.id)}
+          >
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+              <globalSettingsCard.icon size={36} style={{ color: "var(--color-text-secondary)", flexShrink: 0 }} />
+              <div>
+                <div style={{ fontWeight: 500, fontSize: 16, marginBottom: 4 }}>{globalSettingsCard.label}</div>
+                <div style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
+                  {globalSettingsCard.desc}
                 </div>
               </div>
             </div>
