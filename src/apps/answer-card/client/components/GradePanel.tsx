@@ -122,9 +122,8 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
             scores: current.questionNumbers.map((q: any) => ({
               questionNumber: Number(q),
               scoreType: current.blockType || "subjective",
-              score,
-              maxScore: maxScore,
             })),
+            blockTotalScore: score,
             status: "reviewed",
           }),
         }

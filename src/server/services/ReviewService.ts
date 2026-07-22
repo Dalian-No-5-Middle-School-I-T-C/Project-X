@@ -136,12 +136,47 @@ export async function listReviewBlockCropItems(
   }));
 }
 
+/**
+ * 题块总分模式拆分（#187 设计）：将整个题块的合计分按比例分配到各小题。
+ * - 末题兜底，保证拆分合计精确等于题块总分（允许 step 粒度取整）。
+ * - 每题得分 clamp 到该小题权威满分 [0, max]。
+ * step 为最小分值粒度：允许 0.5 时取 0.5，否则取 1。
+ */
+function splitBlockTotal(
+  blockTotal: number,
+  items: ReviewSubmitScoreInput[],
+  maxScoreByQuestion: Map<number, number>,
+  maxBlockScore: number,
+  step: number
+): Map<number, number> {
+  const result = new Map<number, number>();
+  const nums = items.map((it) => it.questionNumber);
+  if (nums.length === 0) return result;
+  let allocated = 0;
+  for (let i = 0; i < nums.length; i++) {
+    const qNum = nums[i];
+    const max = maxScoreByQuestion.get(qNum) ?? 0;
+    if (i === nums.length - 1) {
+      const v = Math.max(0, Math.min(blockTotal - allocated, max));
+      result.set(qNum, v);
+    } else {
+      const raw = (blockTotal * max) / maxBlockScore;
+      const v = Math.max(0, Math.min(Math.round(raw / step) * step, max));
+      result.set(qNum, v);
+      allocated += v;
+    }
+  }
+  return result;
+}
+
 export async function submitReviewCropScores(params: {
   examId: number;
   cropId: string;
   scores: ReviewSubmitScoreInput[];
   status?: string;
   userId: number;
+  /** 题块总分模式（#187）：整个题块的合计分，后端按比例拆分到各小题 */
+  blockTotalScore?: number;
 }, db: DbAdapter = getMysqlDb()): Promise<ReviewSubmitResult> {
   const crop = await db.get(
     "SELECT * FROM answer_block_crops WHERE id = ? AND exam_id = ?",
@@ -188,10 +223,46 @@ export async function submitReviewCropScores(params: {
   const updateCols = ["score", "max_score", "manually_modified", "modified_by", "modified_at", "block_id"];
   const upsertSQL = buildUpsertSQL(db.dialect, "question_scores", upsertCols, conflictCols, updateCols);
 
-  const submittedScores = params.scores.map((item) => {
-    const maxScore = item.maxScore ?? maxScoreByQuestion.get(item.questionNumber) ?? item.score;
-    return { ...item, maxScore, score: Math.max(0, Math.min(maxScore, item.score)) };
-  });
+  // ── 题块总分模式（#187）与逐题模式（#186）兼容 ──
+  // 优先采用题块总分：前端只提交一个合计分，后端按比例拆分到各小题并写入正确的逐题满分。
+  // 未提交题块总分时（如 OnlineReviewPanel 逐题输入），按逐题校验的严格模式处理。
+  const step = config.hasHalfPoint ? 0.5 : 1;
+  const submittedScores: Array<{ questionNumber: number; scoreType: string; score: number; maxScore: number }> =
+    params.blockTotalScore != null
+      ? (() => {
+          const total = Number(params.blockTotalScore);
+          if (!Number.isFinite(total) || total < -1e-9) throw new Error("题块总分无效");
+          if (total > maxBlockScore + 1e-6) {
+            throw new Error(`题块总分不能超过本题块满分 ${maxBlockScore}`);
+          }
+          const split = splitBlockTotal(
+            Math.round(total * 100) / 100,
+            params.scores,
+            maxScoreByQuestion,
+            maxBlockScore,
+            step
+          );
+          return params.scores.map((item) => {
+            const qNum = item.questionNumber;
+            const max = maxScoreByQuestion.get(qNum) ?? 0;
+            const score = Math.max(0, Math.min(max, split.get(qNum) ?? 0));
+            return { questionNumber: qNum, scoreType: String(item.scoreType), score, maxScore: max };
+          });
+        })()
+      : params.scores.map((item) => {
+          const authoritative = maxScoreByQuestion.get(item.questionNumber);
+          // #186 严格校验：逐题模式若显式携带 maxScore，必须与权威逐题满分一致
+          if (item.maxScore != null && authoritative != null && Math.abs(item.maxScore - authoritative) > 1e-6) {
+            throw new Error(`第${item.questionNumber}题满分应为 ${authoritative}，提交值为 ${item.maxScore}`);
+          }
+          const maxScore = item.maxScore ?? authoritative ?? item.score;
+          return {
+            questionNumber: item.questionNumber,
+            scoreType: String(item.scoreType),
+            score: Math.max(0, Math.min(maxScore, item.score)),
+            maxScore
+          };
+        });
   let totalScore = 0;
   let finalReviewRound = 0;
   let scoreBreakdown: Array<{ round: number; reviewerId: number; score: number; reviewedAt: string; questionScores: Record<string, number> }> = [];

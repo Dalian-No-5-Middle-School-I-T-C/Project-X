@@ -97,11 +97,14 @@ router.post(
       }
 
       const status = typeof req.body?.status === "string" ? req.body.status.trim() : "reviewed";
+      const blockTotalScore =
+        typeof req.body?.blockTotalScore === "number" ? req.body.blockTotalScore : undefined;
       const result = await submitReviewCropScores({
         examId,
         cropId,
         scores,
         status,
+        blockTotalScore,
         userId: req.user!.id
       });
       res.json(result);

@@ -630,6 +630,8 @@ CREATE TABLE IF NOT EXISTS block_grading_config (
     rounding           TEXT DEFAULT 'ceil',
     arbitrator_id      INTEGER REFERENCES users(id),
     review_mode        INTEGER DEFAULT 1,
+    scoring_mode       TEXT DEFAULT 'block_total',
+    score_distribution TEXT DEFAULT 'proportional',
     created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(exam_id, block_id)
