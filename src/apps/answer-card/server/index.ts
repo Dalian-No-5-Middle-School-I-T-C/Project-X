@@ -15,6 +15,8 @@ import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
 import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
 import type { AssignedFormula } from "../../../shared/types";
+import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
+import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -444,12 +446,33 @@ export async function createApp(): Promise<express.Express> {
   await ensureDataDirs();
   console.log("[Server] 数据库初始化完成");
 
-  // P0-4 (C-S2): 鉴权默认开启，仅显式设置 0/false 才关闭（向后兼容开发环境）
-  const enforceAuth =
-    process.env.PROJECTX_AUTH_ENFORCE !== "0" && process.env.PROJECTX_AUTH_ENFORCE !== "false";
+// P0-4 (C-S2): 鉴权默认开启，仅显式设置 0/false 才关闭（向后兼容开发环境）。
+  // 判定统一委托给 isAuthEnforced()（server/lib/authEnforce.ts）作为唯一真相源。
+  const enforceAuth = isAuthEnforced();
   console.log(`[Server] RBAC 鉴权强制模式: ${enforceAuth ? "开启" : "关闭（仅解析身份）"}`);
   // P0-5 (C-S3): 同步鉴权状态到 middleware 模块，供 requireExamAccess 使用
   setAuthEnforced(enforceAuth);
+
+  // ── Express 5 异步错误处理（防请求挂死）──
+  // Express 5 不再自动捕获 async handler 抛出的异常；这里在注册层
+  // 统一包裹所有 app.get/post/put/delete/patch/use 调用（含已挂载的
+  // Router），使任意未捕获的 rejection 都被转发到全局错误中间件，
+  // 返回 500 JSON 而非让请求永久挂起。
+  {
+    const methods = ["get", "post", "put", "delete", "patch", "use"] as const;
+    for (const m of methods) {
+      const original = (app as any)[m].bind(app);
+      (app as any)[m] = (pathOrHandler: unknown, ...handlers: unknown[]) => {
+        const args = [pathOrHandler, ...handlers].map((h: unknown) => {
+          if (typeof h !== "function") return h; // 路径字符串 / Router 选项等
+          if ((h as any).length === 4) return h; // 错误处理中间件保持原样
+          if ((h as any).stack) return wrapRouter(h as any); // Router 实例 → 递归包裹
+          return asyncHandler(h as any); // 普通处理器 / 中间件
+        });
+        return original(...args);
+      };
+    }
+  }
 
   app.use(express.json({ limit: "8mb" }));
   // P1-2 (M-S1): CORS — 从环境变量读取允许的 origin 白名单，不再使用通配符 *
@@ -495,6 +518,7 @@ export async function createApp(): Promise<express.Express> {
         backgroundOpacity: (user as any).background_opacity ?? 0,
         requireOriginalPaper: (user as any).require_original_paper ?? 1,
         highlightMissingPaper: (user as any).highlight_missing_paper ?? 1,
+        showTabBar: (user as any).show_tab_bar ?? 0,
       });
     } catch (err) { next(err); }
   });
@@ -641,17 +665,7 @@ export async function createApp(): Promise<express.Express> {
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
-  // ── 健康检查 ──
-  app.get("/api/app/health", async (_req, res) => {
-    try {
-      const health = await healthCheck();
-      res.json(health);
-    } catch (err) {
-      res.status(500).json({ ok: false, error: String(err) });
-    }
-  });
-
-  console.log("[Server] v1.6.1 routes mounted");
+  console.log("[Server] v1.9.2 routes mounted");
 
   // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);

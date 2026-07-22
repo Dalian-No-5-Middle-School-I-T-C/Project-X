@@ -2,6 +2,15 @@
 
 **Project-X（答题卡设计阅卷系统）** 是大连五中自研的智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 网上阅卷（2P/3P 多评 + 争议仲裁）→ 成绩分析 → AI 成绩分析** 全流程。架构上支持 **本地 SQLite 单机模式** 和 **远程 MariaDB 服务器模式**，通过统一的 `DbAdapter` 接口无缝切换。
 
+> **v1.9.2** 网页化改造 / 启动台模式：
+> - **URL 路由化 → 真实 `<Routes>`**：`createBrowserRouter` + `react-router-dom v7` 每功能独立 URL；阶段 2 续由「`mode` + CSS `hidden-panel` 全挂载」升级为由 URL 真实驱动渲染（含 `/home` `/design` `/exam-manage` `/grading` `/analysis` `/scores` `/account` `/sponsor` `/permissions` `/guide`）
+> - **启动台模式**：Home 模块卡支持 `在新窗口打开`，子页面顶部有 `← 返回首页` 按钮
+> - **前端组件解耦**：`App.tsx` 巨石拆为 `cardModel.ts`（设计 helper）+ `pages/DesignEditors.tsx`（编辑器/SVG）+ `pages/*`（Design/ExamManage/Grading 页面）；`WorkspaceProvider` 全量下发包级共享状态（`useWorkspace()`），App 由 ~3700 行降为 ~2290 行
+> - **设计令牌 + 组件库**：`theme.ts` TS 令牌镜像 + `components/ui/*` 共享组件库（Button/Modal/SegmentedControl/Input/Panel/Table/Spinner/LoadingScreen）
+> - **设计风格统一**：`styles.css` 新增 `--success`/`--warning`/`--info` 语义色 + `--z-*` z-index 阶梯，硬编码色全部收敛
+> - **异步安全**：`asyncHandler.ts` + `wrapRouter` 全局包裹 async 处理器，防请求挂死
+> - **新增路由**：赋分公式 `GET/PUT /api/exams/:examId/assigned-formula`、express-rate-limit 登录限速
+>
 > **v1.9.0** 网阅系统全面重构：
 > - **Home 仪表盘**：登录后进入图形化首页，模块卡片 + 快捷入口
 > - **考试管理**：阅卷中黄底置顶，考试详情 5 Tab（阅卷/分配/争议/溯源/设置）
@@ -132,25 +141,63 @@ electron/                 ← 桌面打包入口
 
 ## 3. 前端架构
 
-前端是 **单页应用（SPA）**，核心在 `App.tsx`，通过 `AppMode` 切换五种工作模式：
+### 3.1 路由与工作模式（v1.9.2+）
 
-```typescript
-type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
-```
+v1.9.2 从传统 `useState` 状态切换升级为 **URL 路由化**，使用 `react-router-dom v7` 的 `createBrowserRouter`；后期（阶段 2 续 C）由「`mode` 状态 + CSS `hidden-panel` 全挂载切换」进一步改为由 URL **真实驱动渲染**（`App.tsx` 内 `<Routes>` 路由表）：
 
-| 模式 | 职责 | 主要组件 |
-|------|------|----------|
-| **design** | 编辑答题卡、预览、导出 PDF | 内联编辑器 + `buildLayout` 预览 |
-| **grading** | 上传图片、批量识别判分 | `GradingResults`、`ScanPreviewModal`（共享弹窗） |
-| **analysis** | 考试统计、排名、题目分析 | `AnalysisOverview`、`AnalysisDistribution`、`AnalysisRanking`、`AnalysisQuestions`、`ScoreTable`、`ScanPreviewModal`（预览列） |
-| **scores** | 学生查看个人成绩 | `StudentScores` |
-| **account** | 教师/学生管理 | `AccountManagement`、`TeacherManagement`、`ClassManagement` |
+- **`main.tsx`**：创建 `RouterProvider`，加载 `modeRoutes.ts` 定义的路由表
+- **`modeRoutes.ts`**：定义 URL 与工作模式的映射（`MODE_PATH`），含 `home / design / exam-manage / grading / analysis / scores / account / sponsor / permissions / guide`；`pathToMode()` 用于深链还原
+- **真实 `<Routes>`**：`App.tsx` 用 `<Routes>` 按当前路径渲染对应页面，`*` → `<Navigate to="/home" />`；`gradingPanel` 浮层与 statusbar 保持在 `<Routes>` 之外。`mode` 状态由登录初始化 effect 与 URL 实时同步，顶栏 `NavLink` 高亮、标题、`showCardSidebar`、`useBlocker` 均自动正确
+- **深链支持**：页面刷新/新标签打开时 **尊重地址栏 URL**，而非无条件打回首页
+- **`useBlocker`**：答题卡有未保存修改时拦截离开 `/design` 的导航，弹出确认对话框
+- **启动台模式**：Home 页模块卡提供 `在新窗口打开` 能力（新前台标签打开功能 URL，首页保留为常驻启动台），子页面顶部仅在紧凑模式（`!showTabBar`）时显示 `← 返回首页` 按钮
+
+### 3.2 页面组件抽取与状态外置（v1.9.2+）
+
+大型组件从 `App.tsx` 内联 JSX 抽取为独立 page 组件，并通过 `WorkspaceContext` 消费共享状态，实现「拆而不改行为」的渐进重构：
+
+**模块拆分（按依赖方向解环）：**
+
+| 模块 | 文件 | 职责 |
+|------|------|------|
+| **设计领域模型** | `client/cardModel.ts` | 20+ 设计 helper（`modeLabels`/`defaultObjective`/`defaultSubjective`/`subjectiveBlockKindLabel`/`answerLineCount` 等）+ `PreviewMode`/`PREVIEW_*` 预览设置常量，从 `App.tsx` 收编 |
+| **设计编辑器** | `client/pages/DesignEditors.tsx` | `ObjectiveEditor` / `SubjectiveEditor` / `CardPreview` / `StudentAreaSvg` / `ObjectiveSvg` / `SubjectiveSvg`，从 `App.tsx` 抽出 |
+| **DesignPage** | `pages/DesignPage.tsx` | 答题卡设计 / 编辑（改 `useWorkspace()` 消费，直接从 `./DesignEditors` 导入编辑器） |
+| **ExamManagePage** | `pages/ExamManagePage.tsx` | 考试管理 / 阅卷 / 大考组（改 `useWorkspace()` 消费） |
+| **GradingPage** | `pages/GradingPage.tsx` | 上传图片、批量识别判分（保留 props 范式，未切 `useWorkspace()`） |
+
+**状态外置：** `WorkspaceContext.tsx` 定义完整 `WorkspaceValue` 值对象（~119 字段）。`App.tsx` 构造 `workspace` 并用 `<WorkspaceProvider value={workspace}>` 包裹整个 `<main>` 壳层；`DesignPage` / `ExamManagePage` 通过 `useWorkspace()` 读取共享状态（`teacherId`/`teacherRole`/`userRole` 由 `user` 派生），不再逐层 props 透传。`GradingPage` 因交互形态差异，仍按计划以 props 接收（函数引用不变 → 行为一致）。
+
+> 设计意义：`App.tsx` 体积由 ~3700 行降为 ~2290 行，仅保留状态与 handlers；共享依赖集中在 `cardModel.ts` / `DesignEditors.tsx`，消除 `App.tsx` 与页面之间的循环引用风险。
+
+### 3.3 设计令牌与 UI 组件库（v1.9.2+）
+
+- **`theme.ts`**：将 `styles.css` 的 CSS 自定义属性镜像为 TS 对象，供 JS 侧图表/状态点引用
+- **`components/ui/`**：共享 UI 组件库（Button / Modal / SegmentedControl / Input / Panel / Table / Spinner / LoadingScreen），封装 5 种模态实现 + 4 套分段控件 + 裸 `<table>` 等不一致
+- **语义色**：`styles.css` 新增 `--success:#2E7D32; --warning:#E65100; --info:#1565C0`，组件中硬编码 `#2E7D32` 全部替换为 `var(--success)`
+- **z-index 阶梯**：`--z-dropdown:900` / `--z-modal:1000` / `--z-toast:1100` / `--z-lightbox:1200`
+
+### 3.4 工作模式一览
+
+| 模式 | 路径 | 职责 | 主要组件 |
+|------|------|------|----------|
+| **home** | `/home` | 启动台仪表盘，模块卡可新标签打开 | `HomePage` |
+| **design** | `/design/*` | 编辑答题卡、预览、导出 PDF | `DesignPage` + `DesignEditors`(`CardPreview`/`ObjectiveEditor`/`SubjectiveEditor`) + `buildLayout` 预览 |
+| **exam-manage** | `/exam-manage` | 考试管理 / 阅卷分配 / 大考组 | `ExamManagePage` |
+| **grading** | `/grading` | 上传图片、批量识别判分 | `GradingPage` + `GradingResults`、`ScanPreviewModal`（UI 由 `GradePanel` 弹层承载） |
+| **analysis** | `/analysis` | 考试统计、排名、题目分析 | `ExamSelectPage` / `ExamGroupDetailPage` / `ScoreDetailPage` |
+| **scores** | `/scores` | 学生查看个人成绩 | `StudentScores` |
+| **account** | `/account` | 教师/学生管理 | `AccountManagement`、`TeacherManagement`、`ClassManagement` |
+| **sponsor** | `/sponsor` | 赞助页 | `SponsorPage` |
+| **permissions** | `/permissions` | 权限管理 | `PermissionManager` |
+| **guide** | `/guide` | 使用指南 | `UserGuidePage` |
 
 **特点：**
 
-- 无 Redux/Zustand，用 React `useState` + `fetch` 直连 REST API
+- 无 Redux/Zustand，用 React `useState` + `WorkspaceContext`（`useWorkspace()`）+ `fetch` 直连 REST API
+- 路由由 URL 真实驱动（`<Routes>`），非 `hidden-panel` 全挂载切换；切走即卸载，回来看重（设计页编辑态、考试管理选择态在 workspace 中保留）
 - 图标：`lucide-react`
-- 样式：单一 `styles.css`，无 UI 框架
+- 样式：单一 `styles.css` + `theme.ts` 设计令牌，无 UI 框架
 - 与后端通信：`fetchJson` 封装，开发时 Vite 代理到 5174
 
 ---
@@ -489,7 +536,7 @@ flowchart LR
 
 1. **Windows 绑定** — TWAIN、Electron 打包、C++ 均面向 Windows 桌面环境；当前提供 x64 与 ia32 两套 native 资源
 2. **派生布局** — SQLite 保存答题卡结构，`layouts/` JSON 由 `buildLayout(card)` 按需刷新；`answer_cards.layout_data` 仅为兼容遗留列
-3. **单体 Express** — 路由集中在 `index.ts`（700+ 行），随功能增长可考虑按域拆 router
+3. **单体 Express** — 路由集中在 `index.ts`（1600+ 行），随功能增长可考虑按域拆 router
 4. **子进程识别** — 简单可靠，但高并发批量阅卷时进程开销明显
 5. **Auth 完全贯通** — v1.1 具备登录门禁、角色化 UI 和基于权限的 API 访问
 
@@ -523,7 +570,7 @@ flowchart LR
 
 | 层级 | 技术 |
 |------|------|
-| **前端** | React 19 + TypeScript + Vite + Lucide React |
+| **前端** | React 19 + TypeScript + Vite + react-router-dom v7 + Lucide React |
 | **后端** | Node.js + Express 5 + multer |
 | **AI 中转** | Python + FastAPI + OpenAI SDK + Google GenAI SDK |
 | **识别引擎** | C++ + OpenCV 4.13 + nlohmann/json（子进程调用） |
@@ -535,5 +582,5 @@ flowchart LR
 
 ---
 
-> 文档生成日期：2026-06-13  
-> 基于 Project-X v1.5.0 代码库分析
+> 文档更新日期：2026-07-21  
+> 基于 Project-X v1.9.2 代码库分析（含阶段 2 续 B1/B2/C 重构）

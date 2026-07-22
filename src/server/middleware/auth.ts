@@ -1,8 +1,12 @@
 import type { Request, Response, NextFunction } from "express";
 import { authService } from "../services/AuthService";
 import { permissionsForRole, roleHasPermission, type Permission } from "../auth/permissions";
+import { isAuthEnforced } from "../lib/authEnforce";
 
 export const AUTH_COOKIE_NAME = "projectx_auth_token";
+
+// 强制鉴权判定统一委托给 isAuthEnforced()（server/lib/authEnforce.ts），
+// 与 createApp 共用同一真相源，避免语义相反的 bug。
 
 // 扩展 Express Request 类型
 declare global {
@@ -74,6 +78,12 @@ async function attachUser(req: Request, token: string): Promise<boolean> {
 export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = extractToken(req);
   if (!token) {
+    // 未强制鉴权模式下（与 optionalAuth / makeGate 一致）：无 token 也放行，
+    // 保持“未登录即可使用”的兼容；开启强制模式时必须有有效令牌。
+    if (!isAuthEnforced()) {
+      next();
+      return;
+    }
     res.status(401).json({ message: "未提供认证令牌" });
     return;
   }

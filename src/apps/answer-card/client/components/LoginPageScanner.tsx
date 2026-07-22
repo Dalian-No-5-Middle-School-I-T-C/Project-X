@@ -150,7 +150,7 @@ export function LoginPageScanner() {
                   >
                     {testStatus === "testing" ? "测试中..." : "测试连接"}
                   </button>
-                  {testStatus === "ok" && <span style={{ color: "#2E7D32", fontSize: 12 }}>服务器可达</span>}
+                  {testStatus === "ok" && <span style={{ color: "var(--success)", fontSize: 12 }}>服务器可达</span>}
                   {testStatus === "fail" && <span style={{ color: "var(--brand)", fontSize: 12 }}>连接失败</span>}
                   <button
                     type="button"

@@ -442,7 +442,7 @@ export function AccountMenu({
                 }}
               />
               {importMsg && (
-                <div style={{ padding: "6px 12px", fontSize: 12, color: importMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>
+                <div style={{ padding: "6px 12px", fontSize: 12, color: importMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>
                   {importMsg}
                 </div>
               )}
@@ -557,7 +557,7 @@ export function AccountMenu({
                       左侧列表用颜色标记缺少原卷的考试
                     </span>
 
-                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
                     <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>保存设置</button>
                   </>
                 )}
@@ -570,7 +570,7 @@ export function AccountMenu({
                       显示底部 Tab 导航栏
                     </label>
                     <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                      关闭后各页面使用"← 返回首页"按钮导航，更简洁
+                      顶部导航栏「首页」可随时返回，建议保持开启
                     </span>
 
                     <h4 style={{ marginTop: 16 }}>背景图透明度</h4>
@@ -582,9 +582,9 @@ export function AccountMenu({
                     <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center" }}>
                       <button className="ghost-button" style={{ fontSize: 11 }} onClick={() => bgFileRef.current?.click()}>上传背景图</button>
                       <input ref={bgFileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleBgUpload} />
-                      {bgMsg && <span style={{ fontSize: 11, color: bgMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{bgMsg}</span>}
+                      {bgMsg && <span style={{ fontSize: 11, color: bgMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{bgMsg}</span>}
                     </div>
-                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
                     <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>保存设置</button>
                   </>
                 )}
@@ -738,7 +738,7 @@ export function AccountMenu({
                         </div>
                       </div>
                     )}
-                    {settingsMsg && settingsTab === "ai" && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                    {settingsMsg && settingsTab === "ai" && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
                   </>
                 )}
 
@@ -799,7 +799,7 @@ export function AccountMenu({
                       </p>
                     )}
 
-                    {dbMsg && <p style={{ fontSize: 12, margin: "8px 0 0", color: dbMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{dbMsg}</p>}
+                    {dbMsg && <p style={{ fontSize: 12, margin: "8px 0 0", color: dbMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{dbMsg}</p>}
                     <button className="primary-button" type="button" onClick={() => { saveDbConfig(); }} disabled={dbLoading} style={{ marginTop: 8 }}>
                       {dbLoading ? "保存中..." : "保存数据存储设置"}
                     </button>

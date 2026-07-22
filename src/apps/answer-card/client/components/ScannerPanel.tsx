@@ -478,7 +478,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
           {/* 上传状态指示 */}
           {uploadState && (
-            <div style={{ fontSize: 12, padding: "6px 8px", borderRadius: 4, marginTop: 4, background: uploadState === "done" ? "#e8f5e9" : uploadState === "error" ? "#ffebee" : "#e3f2fd", color: uploadState === "done" ? "#2E7D32" : uploadState === "error" ? "var(--brand)" : "#1565C0" }}>
+            <div style={{ fontSize: 12, padding: "6px 8px", borderRadius: 4, marginTop: 4, background: uploadState === "done" ? "#e8f5e9" : uploadState === "error" ? "#ffebee" : "#e3f2fd", color: uploadState === "done" ? "var(--success)" : uploadState === "error" ? "var(--brand)" : "#1565C0" }}>
               {uploadState === "uploading" && <><Loader size={12} className="spinning" style={{ marginRight: 4 }} /> {uploadMsg}</>}
               {uploadState === "done" && <><Check size={12} style={{ marginRight: 4 }} /> {uploadMsg}</>}
               {uploadState === "error" && <><AlertTriangle size={12} style={{ marginRight: 4 }} /> {uploadMsg}</>}

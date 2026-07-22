@@ -196,7 +196,7 @@ export function AssignedFormulaModal({ examId, examName, subject, onClose, onSav
         </div>
 
         <div className="modal-footer" style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "12px 20px", borderTop: "1px solid var(--line)" }}>
-          {message && <span style={{ flex: 1, fontSize: 13, color: message.includes("失败") ? "var(--brand)" : "#2E7D32", alignSelf: "center" }}>{message}</span>}
+          {message && <span style={{ flex: 1, fontSize: 13, color: message.includes("失败") ? "var(--brand)" : "var(--success)", alignSelf: "center" }}>{message}</span>}
           <button className="ghost-button" onClick={onClose}>取消</button>
           {formula?.enabled && (
             <button className="ghost-button" onClick={() => handleSave(true)} disabled={busy}>
