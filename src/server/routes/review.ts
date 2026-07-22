@@ -10,8 +10,7 @@ import { optionalPositiveNumber } from "../../apps/answer-card/server/helpers";
 import {
   listReviewBlockCropItems,
   listReviewBlocks,
-  submitReviewCropScores,
-  ReviewValidationError
+  submitReviewCropScores
 } from "../services/ReviewService";
 import { getReviewTrace } from "../services/ReviewService";
 import type { ReviewSubmitScoreInput } from "../../shared/types";
@@ -91,20 +90,13 @@ router.post(
         return;
       }
 
-      const contentLength = Number(req.headers["content-length"] ?? 0);
-      if (contentLength > 64 * 1024) {
-        res.status(400).json({ message: "载荷过大" });
-        return;
-      }
-
       const scores = req.body?.scores as ReviewSubmitScoreInput[] | undefined;
       if (!Array.isArray(scores) || scores.length === 0) {
         res.status(400).json({ message: "请提供分数数据" });
         return;
       }
 
-      const rawStatus = typeof req.body?.status === "string" ? req.body.status.trim() : "";
-      const status = rawStatus === "draft" || rawStatus === "submitted" ? rawStatus : undefined;
+      const status = typeof req.body?.status === "string" ? req.body.status.trim() : "reviewed";
       const result = await submitReviewCropScores({
         examId,
         cropId,
@@ -114,10 +106,6 @@ router.post(
       });
       res.json(result);
     } catch (error) {
-      if (error instanceof ReviewValidationError) {
-        res.status(422).json({ message: error.message });
-        return;
-      }
       if (error instanceof Error && /不存在|未关联/.test(error.message)) {
         res.status(404).json({ message: error.message });
         return;
