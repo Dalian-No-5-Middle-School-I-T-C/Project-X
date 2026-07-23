@@ -241,10 +241,10 @@ npm run typecheck
 
 ```
 用户名: admin
-密码:   admin123
+密码:   查看数据库文件同目录的 bootstrap-admin.txt
 ```
 
-**首次登录后请立即通过 `POST /api/auth/change-password` 修改默认密码。**
+**该密码只能用于安全初始化；首次登录后必须通过界面或 `POST /api/auth/change-password` 修改。改密后引导文件会自动删除。**
 
 典型初始化流程（管理员操作）：
 

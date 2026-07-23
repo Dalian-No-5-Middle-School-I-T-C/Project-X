@@ -9,6 +9,14 @@ ZIP="$ROOT/testdata/demo-exams/backup/projectx-demo.zip"
 
 cd "$ROOT"
 
+# #185 起管理员为随机一次性密码，写入数据库旁的 bootstrap-admin.txt；优先读取它
+BOOTSTRAP_FILE="$ROOT/data/bootstrap-admin.txt"
+if [[ -f "$BOOTSTRAP_FILE" ]]; then
+  ADMIN_PW="$(tr -d '[:space:]' < "$BOOTSTRAP_FILE")"
+else
+  ADMIN_PW="admin123"
+fi
+
 case "$MODE" in
   seed)
     echo "==> 写入演示数据到当前数据库"
@@ -22,7 +30,7 @@ case "$MODE" in
     echo "==> 通过 API 恢复备份 (需服务已启动)"
     TOKEN=$(curl -sf -X POST "$API/api/auth/login" \
       -H 'Content-Type: application/json' \
-      -d '{"identifier":"admin","password":"admin123"}' | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+      -d "{\"identifier\":\"admin\",\"password\":\"$ADMIN_PW\"}" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
     curl -sf -X POST "$API/api/db/restore" \
       -H "Authorization: Bearer $TOKEN" \
       -H 'Content-Type: application/zip' \

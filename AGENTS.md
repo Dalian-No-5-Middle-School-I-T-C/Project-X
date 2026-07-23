@@ -14,14 +14,14 @@ Project-X (答题卡设计阅卷系统): an answer-card designer, OMR grading, a
 
 ### Running (dev)
 - `npm run dev` starts backend + frontend together (via `concurrently`). The `predev` hook (`scripts/ensure-native-modules.cjs`) auto-rebuilds `better-sqlite3` if its binary is missing/mismatched, so `npm run dev` self-heals native module issues.
-- Open `http://127.0.0.1:5173/`. A default admin is seeded on first DB init: username `admin`, password `admin123`.
+- Open `http://127.0.0.1:5173/`. First DB initialization creates username `admin` with a random one-time password in `bootstrap-admin.txt` beside the database; login requires an immediate password change.
 - The login API (`POST /api/auth/login`) expects `{ "identifier": ..., "password": ... }` — the field is `identifier` (username/student-no/staff-no), NOT `username`.
 - Health check: `GET http://127.0.0.1:5174/api/app/health` → `{"ok":true,...}`.
 
 ### Lint / test / build (standard commands live in `package.json`)
 - "Lint" = typecheck only (no ESLint configured): `npm run typecheck` (`tsc --noEmit`).
-- Tests: `npm run verify:auth` (auth/RBAC suite) and `npx tsx scripts/grading-rules-smoke.ts` (grading smoke).
-  - NOTE: `verify:auth` 全部 53 项通过（含上一场考试对比与未知班级班级列表）。
+- Tests: `npm run verify:auth` (auth/RBAC suite), `npm run verify:security-critical` (critical security/integrity suite), and `npx tsx scripts/grading-rules-smoke.ts` (grading smoke).
+  - NOTE: `verify:auth` 全部 54 项通过（含上一场考试对比与未知班级班级列表）。
 - Build:
   - `npm run build` → typecheck + `vite build --mode web` → `dist/web/` + esbuild bundle → `dist/server/`
   - `npm run build:scanner:full` → typecheck + `vite build --mode scanner` → `dist/scanner/` + esbuild bundle → `dist/server/`

@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "1.9.1",
+  "version": "1.9.4",
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
@@ -30,6 +30,7 @@
     "electron:msi:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && electron-builder --win msi --ia32",
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
+    "verify:security-critical": "tsx scripts/verify-security-critical.ts",
     "verify:a3": "tsx scripts/verify-a3.ts",
     "typecheck": "tsc --noEmit"
   },
@@ -43,7 +44,6 @@
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.11.1",
     "chart.js": "^4.5.1",
-    "expr-eval": "^2.0.2",
     "express": "^5.1.0",
     "express-rate-limit": "^8.6.0",
     "mammoth": "^1.12.0",
@@ -53,6 +53,7 @@
     "pdfkit": "^0.17.2",
     "react-chartjs-2": "^5.3.1",
     "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.18.1",
     "remark-gfm": "^4.0.1",
     "sharp": "^0.35.3",
     "tesseract.js": "^7.0.0",

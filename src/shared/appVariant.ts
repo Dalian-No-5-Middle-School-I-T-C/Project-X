@@ -1,4 +1,4 @@
-export type ProjectXAppMode = "home" | "design" | "exam-manage" | "analysis" | "scores" | "account" | "sponsor" | "guide" | "permissions";
+export type ProjectXAppMode = "home" | "design" | "exam-manage" | "analysis" | "scores" | "account" | "global-settings" | "sponsor" | "guide" | "permissions";
 
 export type ProjectXVariant = "student" | "teacher" | "teacher-scanner";
 
@@ -40,7 +40,7 @@ export const PROJECTX_VARIANTS: Record<ProjectXVariant, ProjectXVariantConfig> =
     appId: "cn.projectx.teacher",
     userDataDir: "answer-card-designer",
     defaultMode: "home",
-    allowedModes: ["home", "design", "exam-manage", "analysis", "account"],
+    allowedModes: ["home", "design", "exam-manage", "analysis", "account", "global-settings"],
     enableScanner: false,
     nativeResources: "recognizer"
   },
@@ -52,7 +52,7 @@ export const PROJECTX_VARIANTS: Record<ProjectXVariant, ProjectXVariantConfig> =
     appId: "cn.projectx.teacher-scanner",
     userDataDir: "answer-card-designer",
     defaultMode: "home",
-    allowedModes: ["home", "design", "exam-manage", "analysis", "account"],
+    allowedModes: ["home", "design", "exam-manage", "analysis", "account", "global-settings"],
     enableScanner: true,
     nativeResources: "scanner"
   }

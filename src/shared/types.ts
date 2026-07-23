@@ -382,6 +382,8 @@ export type AnswerBlockCrop = {
   status?: string;
   score?: number | null;
   maxScore?: number | null;
+  /** 本题块是否允许 0.5 小数（来自 block_grading_config，用于打分面板） */
+  hasHalfPoint?: number;
 };
 
 /** 网上阅卷题块汇总 */
@@ -392,6 +394,10 @@ export type ReviewBlockSummary = {
   totalCount: number;
   pendingCount: number;
   reviewedCount: number;
+  /** 本题块是否含 0.5 小数（v1.9.4） */
+  hasHalfPoint: number;
+  /** 本题块满分（逐题 max_score 求和，v1.9.4 打分面板用） */
+  maxScore: number;
 };
 
 /** 网上阅卷队列项（含学生姓名） */
@@ -452,6 +458,22 @@ export type CombinedGradingBatchResult = {
   batchId: string;
   cardId: string;
   rows: CombinedGradingRow[];
+  persistence?: GradingPersistenceResult;
+};
+
+export type GradingPersistenceFailure = {
+  fileName: string;
+  studentId?: string;
+  code: "RECOGNITION_FAILED" | "STUDENT_ID_MISSING" | "STUDENT_NOT_FOUND" | "PERSISTENCE_FAILED";
+  message: string;
+};
+
+export type GradingPersistenceResult = {
+  batchId: number;
+  status: "done" | "partial" | "error";
+  persisted: number;
+  failedCount: number;
+  failed: GradingPersistenceFailure[];
 };
 
 // ── Analysis Types ────────────────────────────────────
@@ -1062,6 +1084,12 @@ export interface BlockGradingConfig {
   rounding: RoundingMode;
   arbitratorId: number | null;
   reviewMode: ReviewMode;
+  /** 本题块是否允许 0.5 小数打分（按 block 粒度） */
+  hasHalfPoint: number;
+  /** 未设仲裁人时是否自动按工作量均衡再分配（1=开，0=关） */
+  autoReassignNoArb: number;
+  /** 工作量均衡阈值：已分配本题块教师「最多-最少份数差」上限 */
+  workloadBalanceThreshold: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -1075,6 +1103,8 @@ export interface ReviewAssignment {
   teacherName?: string;
   studentCount: number;
   assignedStudentIds: number[];
+  /** 1=自动再分配追加的份数（工作量均衡），0=初始分配 */
+  autoAssigned: number;
   createdAt: string;
 }
 

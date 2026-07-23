@@ -1,5 +1,165 @@
 # Project-X CHANGELOG
 
+## v1.9.4 (2026-07-22) — 网阅打分面板双模式 + 0.5 小数 + 工作量均衡
+
+### 1. 打分面板按满分阈值切换双模式
+
+- **枚举模式（满分 < 20）**：直接枚举每个正分大按钮，点击即定分并自动跳下一页；含 0.5 时底部另起一行提供 `0` / `0.5` 专用按钮（极低分须显式点选）。
+- **位值模式（满分 ≥ 20）**：沿用「十位 + 个位 + 十分位」方案；十位/个位选完仅更新预览，选到十分位（0 或 0.5）即合成完整分值并自动提交跳转。
+- 自动跳转统一状态机：选满即提交并游标 +1；合成值越界（> 满分或 < 0）不跳，保留当前卷。
+
+### 2. 0.5 小数支持
+
+- `block_grading_config.has_half_point`（按题块粒度，v1.9.4 新增）控制是否显示 0.5。
+- 「批量设置网阅分差」页新增「本题块含 0.5 小数」批量控件；打分面板按 `has_half_point` 显示。
+- 满分 < 20 且含 0.5：主区枚举 1, 1.5, …, 满分，底部专用行放 0 / 0.5。
+- 满分 ≥ 20 且含 0.5：十分位列显示 0 / 0.5。
+
+### 3. 仲裁人可选 + 工作量自动再分配
+
+- 题块设置保留仲裁人（可留空）。
+- 未设仲裁人且 `auto_reassign_no_arb=1` 时，`ReviewAssignmentService.rebalanceWorkload` 在分配后自动把「剩余/未分配卷」吸收到份数最少的已分配教师，并在教师间搬运卷，使任意两位教师份数差 ≤ `workload_balance_threshold`（默认 4 份，D1 选定）。
+- 争议卷（无仲裁人）自动改派给一位「已分配本题块且未评过该生」的教师（进度条加卷），并允许其提交追加复评轮；若已分配教师均已评过该生（教师数不足），回退改派给原阅卷老师（不 care 是否评过）。
+- 被自动追加的卷标记 `review_assignments.auto_assigned=1`，与原始分配在统计/溯源上可区分。
+
+### 4. 权限下调
+
+- `has_half_point` 与工作量分配下放给「本题块已分配教师」可编辑；仲裁人 / 分差 / 取整 / 模式仍限管理员（`block-grading-config` 路由按 `role_id` 校验）。
+- 系统级全局设置收口到 Home「全局设置」（仅管理员可见）。
+
+### 5. 设置三层拆分（重构）
+
+- 个性化设置（不变）：账号设置，主题/显示/背景等。
+- 局部网阅（考试「网阅设置」Tab）：
+  - 题块级：`has_half_point`、本人已分配块的工作量（教师可改，v1.9.4 下放）。
+  - **「网阅默认」模板**（管理员）：`dispute_threshold` / `rounding` / `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold` / `review_mode`（复评模式：1 单评 / 2 双评 / 3 三评），存 `block_grading_config.block_id='__default__'`；新建题块行时 `getBlockConfig` 自动继承。这 5 项原先错误地放在全局设置页，现归位到网阅，并真正生效（此前在全局页仅读写、后端未消费）；`review_mode` 此前后端+表已支持但前端从未渲染、且 `getBlockConfig` 硬编码为 1，现补进 UI 并改为继承 `__default__`。
+- 全局（仅管理员，Home → 全局设置）：**原卷策略** `require_original_paper` / `highlight_missing_paper` + **AI 系统服务商**（`/api/ai/providers/system`，`ai_providers.is_system=1`）。新增 `GET /api/system-settings/public` 只读端点供前端判断强制上传/高亮。
+- 原卷两开关从 `users` 个人列提升为系统级（`users.require_original_paper`/`highlight_missing_paper` 列废弃保留），所有教师统一遵从管理员设定。
+
+### 6. reviewMode（复评模式 / 仲裁卷重批次数）补进网阅设置 UI
+
+- **背景**：用户发现「网阅设置」缺「仲裁卷重批次数」。经核对全量 git 历史，老全局页 5 个网阅键里原本就没有该字段；它对应数据模型 `block_grading_config.review_mode`（复评模式：1 单评 / 2 双评 / 3 三评，争议卷按 `reviewMode+2` 轮破僵局），后端 + 表一直支持，但**前端网阅设置 UI 从未渲染**，且 `getBlockConfig` 硬编码 `reviewMode:1` 不继承「网阅默认」模板。
+- **修复**：`GradingConfigPage` 的「网阅默认」卡片与逐题块列表/批量弹窗均补「复评模式」下拉（单评/双评/三评），随 `__default__` 存取；`BlockGradingConfigService.getBlockConfig` 改为：若存在 `__default__` 模板则继承 `def.review_mode`，否则默认 1。
+- **验证**：`PUT .../blocks/__default__` 带 `reviewMode=3` → 入库；`GET` 新建题块走 `getBlockConfig` 继承 `reviewMode=3`；`POST .../batch` 批量改选中题块 `reviewMode=2` → 生效；typecheck 通过。
+
+### 7. llmclient（Python AI 中转）随 Node 服务自动启动
+
+- **背景**：所有 AI 功能（成绩分析 / 原卷知识点 / 学生 AI 建议）都经 Node 转发到 Python `llmclient` 侧车（默认 `http://127.0.0.1:8766`），此前需每次手动 `py -m uvicorn llmclient.server:app`。用户要求免去手动启动。
+- **修复**：新增 `src/apps/answer-card/server/llm-launcher.ts`：
+  - `startLlmClientSidecar()` 在 `startServer` 监听后自动拉起侧车（fire-and-forget，不阻塞启动）；`SIGINT`/`SIGTERM` 时 `shutdownLlmClient()` 一并退出。
+  - `ensureLlmClient()` 在每次 AI 调用（`fetchLlmClient`）前确保侧车已起——未起则自动拉起并轮询 `/health` 直到就绪（超时 30s），崩溃后下次调用会重新拉起。
+  - 解释器按 `py`→`python`→`python3`（Windows/Linux 反序）候选探测，跳过 ENOENT；可通过 `LLMCLIENT_PYTHON` 指定（如虚拟环境 python）。`LLMCLIENT_URL` 决定监听地址/端口。`LLMCLIENT_AUTOSTART=false` 可关闭。
+  - 找不到 Python / 依赖缺失时打印 `[llmclient] …` 警告并优雅降级，不拖垮主服务。
+- **文档**：`user guide/.../用户使用说明.md` §6.1 修正「方式 B 自定义服务商无需启动 Python」为「所有 AI 调用都经 llmclient 中转」，并补充自动启动说明；`ARCHITECTURE.md` §4.2 同步。
+
+### 数据层
+
+- 迁移 v24（与 #185 的 v23 安全迁移顺序衔接）：`block_grading_config` 加 `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold`；`review_assignments` 加 `auto_assigned`；新增 `system_settings` 表与默认键。
+- 迁移 v25（修复）：合并重编号导致 #185 v23 被跳过，补建 `users.password_change_required` 等 security-bootstrap 列。
+- 迁移 v26（设置重构）：`system_settings` 新增原卷两键（`require_original_paper`/`highlight_missing_paper`，默认 `1`），并清理未消费的 5 个网阅死键；`users` 原卷两列标记废弃（保留）。MariaDB 同步（v25、v26）。
+- MariaDB 同步迁移（`mariadbMigrations` v24/v25/v26）。
+
+### DEV 测试入口（路径 B）
+
+- `testdata/demo-exams` 种子新增「演示-网阅测试」考试（题块 A 满分 15·含 0.5、题块 B 满分 25），并新增第二教师 `demo-teacher-2` 演示工作量均衡。
+- `./import-all.sh seed`（或 `npx tsx testdata/demo-exams/scripts/seed.ts`）后可用 `demo-teacher / teacher123` 登录实测打分面板与全局设置；`admin` 初始密码见数据库旁的 `bootstrap-admin.txt`（首次登录强制改密）。
+
+## v1.9.3 #185 安全修复 (2026-07-22) — 随机管理员密码 + PX-SEC/PX-COR 修复
+
+- **默认管理员改为随机一次性密码**：首次数据库初始化创建 `admin` 时生成随机密码并写入数据库旁的 `bootstrap-admin.txt`（权限 0600），登录强制要求立即改密。`admin` / `admin123` 不再可用；首次登录请使用 `bootstrap-admin.txt` 中的密码并按提示改密。
+- **安全问题修复**：PX-SEC-028、PX-SEC-002、PX-SEC-001、PX-SEC-024、PX-COR-001。
+- **新增关键安全测试套件** `verify:security-critical`（`npm run verify:security-critical`），与 `verify:auth` 互补覆盖安全/数据完整性关键路径。
+- **问题报告机制**：新增「问题报告」入口，便于师生反馈。
+- 受影响文件：`AGENTS.md`（安全与多端说明更新）。
+
+## v1.9.2 (2026-07-21) — 网页化改造 / 启动台模式 + 前端风格统一 + BUG 修复
+
+本版本是「审计 → 修复 → 统一 → 网页化」一揽子改造，分三阶段落地（前情见内部工作文档 `.workbuddy/plans/AUDIT-2026-07-20.md` / `PLAN-2026-07-20.md` / `SMOKE-2026-07-20.md`，不进仓库）。
+
+### 阶段 0：BUG 修复（运行时已验证，见 `.workbuddy/plans/SMOKE-2026-07-20.md`）
+
+- **赋分公式路由缺失（P0，功能性 404）**：前端 `AssignedFormulaModal` 调用 `GET/PUT /api/exams/:examId/assigned-formula`，后端从未注册该路由。新增路由（`requireExamAccess` 保护），经 `AssignedScoreService` 暴露。SMOKE 实测：GET 返回 `{formula,isAssignedSubject,presets}`，PUT 保存生效，不再 404。
+- **Express 5 async 未捕获拒绝（P1，防请求挂死）**：新增 `server/lib/asyncHandler.ts` + `wrapRouter`，`createApp()` 内对全部 router/handler 统一包裹；async handler 抛错 → 转发错误中间件返回 500 JSON，不再永久转圈。
+- **鉴权语义不统一（P1）**：`authMiddleware` 现读 `PROJECTX_AUTH_ENFORCE`（与 `makeGate` 一致）；默认开启，关闭且无 token 时放行（保留「无登录可用」兼容），开启时要求有效令牌。
+- **其他小修**：删除 `index.ts` 重复的 `/api/app/health`（保留一处并加 try/catch）；`backup.ts` 的 `VACUUM INTO '[object Object]'` 增加单引号转义（防 Windows 用户名含单引号导致的语法错误/注入）；`score-editing.ts` 对 `scores` 数组元素与 answers 题号键做校验（非法即 400）。
+
+### 阶段 1：前端统一（设计令牌 + 组件库 + 硬编码色收敛）
+
+> 审计发现：存在完整设计系统（`styles.css` 6601 行 / 829 个类 + 暗色主题），但 84% 组件在写内联 `style`（1015 处内联 / 206 处硬编码色），同一语义多种硬编码色（成功绿 `#2E7D32`×15 等）。根因是「基类已写好、后续开发全 inline」。本阶段以「回流」为主。
+
+- **设计令牌 / 组件库地基**：新建 `client/theme.ts` 镜像 `styles.css` 的 `:root` 变量为 TS 对象（供 JS 侧图表/状态点引用，杜绝「同文件混用 `var(--brand)` 与 `#2E7D32`」）；`styles.css` 新增语义色 `--success:#2E7D32; --warning:#E65100; --info:#1565C0` + `--z-*` z-index 阶梯（`--z-modal:1000` / `--z-toast:1100` / `--z-lightbox:1200` / `--z-dropdown:900`），为收敛 `100→100000→999999` 的 z-index 通胀打底；补全 ScannerApp 缺失的 `.loading-screen` / `.loading-spinner` 等类（修复扫描端加载屏无样式）。
+- **共享 UI 组件库** `components/ui/*`：`Button` / `Modal`(Portal + 统一层级) / `SegmentedControl` / `Input` / `Panel` / `Table` / `Spinner` / `LoadingScreen`，封装 5 种模态实现 + 4 套分段控件 + 裸 `<table>` 等不一致。
+- **重复硬编码色收敛（批 1）**：全仓散落的「成功绿」 `#2E7D32`（15 处）统一替换为 `var(--success)`（AccountMenu / AssignedFormulaModal / LoginPageScanner / ScannerPanel / StudentScoreDetail / ScoreFixPage 共 6 文件，`replace_all` 完成），消除同一语义多种硬编码色。
+
+### 阶段 2：网页化改造 / 启动台模式（每功能独立 URL）
+
+- **URL 路由化**：引入 `react-router-dom` v7，`main.tsx` 改用 `createBrowserRouter`（数据路由，`useBlocker` 方可生效）；新增 `modeRoutes.ts`（`MODE_PATH` 模式↔路径映射 + `pathToMode()`）；`mode` 改为 URL 驱动（初始从 `pathToMode(location.pathname)` 派生，地址栏↔mode 双向同步）；顶栏改为 6 个 `<NavLink>`（首页 / 设计 / 考试管理 / 分析 / 我的成绩 / 账号）。
+- **根因修复（关键）**：登录初始化 effect 原先无条件 `setMode(defaultModeForUser)`（=home），会把深链 / 新标签打回 home → 打开 `/design` 新标签仍显示 home、「新窗口打开」看似无效。改为「地址栏已是功能路径则尊重之，否则回退默认首页」。
+- **启动台模式（每功能新开界面）**：首页所有模块卡（设计 / 考试管理 / 分析 / 账号）改为 `onOpenNewTab`，点击在**新前台标签**打开该功能 URL，首页保留为常驻启动台；子页面「← 返回首页」按钮仅在关闭顶栏导航（紧凑模式 `!showTabBar`）时显示，避免与顶栏「首页」NavLink 重复；删除冗余的顶栏「在新窗口打开当前功能」按钮。
+- **未保存离开确认**：`useBlocker` 拦截离开 `/design` 时的未保存改动，弹确认 Modal。
+- **页面组件抽取（props 透传范式，零行为风险）**：`pages/DesignPage.tsx`（答题卡设计）、`pages/ExamManagePage.tsx`（考试管理）、`pages/GradingPage.tsx`（阅卷面板，原 `grading-grid` 为常驻隐藏的状态容器，实际阅卷 UI 由 `GradePanel` 弹层承载）从 `App.tsx` 巨石抽出；`WorkspaceContext.tsx` 声明 `WorkspaceValue` 类型骨架（含 `addEssayBlock`），为后续 `useWorkspace()` 全量接线铺路；三个编辑器（`CardPreview` / `ObjectiveEditor` / `SubjectiveEditor`）与全部 handler 以 props 原样传入，函数引用不变 → 交互行为完全一致。
+
+### 阶段 2 续：领域模型抽取 + 状态外置 + 真实路由化（tsc + web 构建均 EXIT 0）
+
+- **领域模型抽取（B1，解环瘦身）**：把设计器相关的纯函数从 `App.tsx` 收编到 `client/cardModel.ts`（`modeLabels` / `optionLayoutLabels` / `styleLabels` / `kindLabels` / `blankLabelStyleLabels` / `subjectiveBlockKind` / `subjectiveBlockKindLabel` / `answerBlankItems` / `cloneCard` / `answerText` / `defaultObjective` / `defaultSubjective` / `defaultBlankBlock` / `defaultEssayBlock` / `defaultAnswerBlankQuestion` / `answerLineCount` / `heightForAnswerLines` / `numericQuestionValue` / `findNextQuestionNumber` / `defaultBlankQuestion` 等 20+ helper，以及 `PreviewMode` / `PREVIEW_SETTINGS_KEY` / `PREVIEW_MIN_PERCENT` / `PREVIEW_MAX_PERCENT` 预览设置常量）；把三个编辑器及其 SVG 预览从 `App.tsx` 抽到 `client/pages/DesignEditors.tsx`（`ObjectiveEditor` / `SubjectiveEditor` / `CardPreview` / `StudentAreaSvg` / `ObjectiveSvg` / `SubjectiveSvg`）。`App.tsx` 体积由 ~3700 行降为 ~2290 行，仅保留状态与 handlers。
+- **状态外置（B2，全量接线 WorkspaceProvider）**：`WorkspaceContext.tsx` 的 `WorkspaceValue` 由骨架升级为完整值对象（~119 字段，含 `selectedExamId` / `setSelectedExamId` / `onStartReview`，`subjectiveBlockKindLabel` 收敛为 `(SubjectiveBlock) => string`，`PdfWarningState.validation` 对齐为 `CardScoreValidationResult`），`App.tsx` 用 `<WorkspaceProvider value={workspace}>` 包裹整个 `<main>` 壳层；`pages/DesignPage.tsx` / `pages/ExamManagePage.tsx` 改为 `useWorkspace()` 消费共享状态（`teacherId` / `teacherRole` / `userRole` 由 `user` 派生），去掉逐层 props 透传；`DesignPage` 直接从 `./DesignEditors` 导入编辑器，`App.tsx` 删除对 DesignEditors 的失效 import。`GradingPage` 按计划仍保留 props 范式（未切 `useWorkspace()`）。
+- **真实路由化（C，阶段 2 收官）**：`App.tsx` 由「`mode` 状态 + CSS `hidden-panel` 全挂载切换」改为由 URL 真实驱动渲染——`<Routes>` 路由表：`/home`(默认) 、`/design/*` 、`/exam-manage` 、`/analysis` 、`/scores` 、`/account` 、`/sponsor` 、`/permissions` 、`/guide` ，`*` → `<Navigate to="/home" />` ；`gradingPanel` 浮层与 statusbar 保持在 `<Routes>` 之外（阅卷功能由 `GradePanel` 弹层承载）。`mode` 状态早已由登录初始化 effect 与 URL 实时同步，顶栏标题 / `showCardSidebar` / `useBlocker` 等全部自动正确（拆而不改行为）。回归点修复：账号菜单 `onOpenGuide` / `onOpenPermissions` 原先只 `setMode` 不 `navigate`，路由化后 URL 不变会导致页面不切换，已改为先 `previousModeRef.current = mode` 再 `switchMode(x)`，与 `onOpenSponsor` 一致。（注：`/grading` 孤儿路由已于后续「阶段 2 续 2」BUG-4 修复中移除。）
+
+### 阶段 2 续 2：安全与路由 bug 修复（来自审计清单 BUG-1 / BUG-4，tsc + web 构建均 EXIT 0）
+
+- **BUG-1 鉴权强制判定语义相反（安全隐患）**：修复前 `authMiddleware`（`src/server/middleware/auth.ts`）用模块级常量 `ENFORCE_AUTH = PROJECTX_AUTH_ENFORCE === "1" || === "true"`（默认放行），而 `createApp`（`src/apps/answer-card/server/index.ts`）用 `enforceAuth = PROJECTX_AUTH_ENFORCE !== "0" && !== "false"`（默认强制）——两者语义相反。后果：当 `PROJECTX_AUTH_ENFORCE` 未设置或设为 `yes` / `on` 等非字面值时，`createApp` 认为强制开启，但 `authMiddleware` 退化为 `optionalAuth`，对它**直接保护**的路由无 token 也放行。修复：新建 `src/server/auth/enforce.ts` 导出唯一真相源 `resolveEnforceAuth()`（未设置 / 非 `0`/`false` → 强制，仅 `0`/`false` → 关闭）；`authMiddleware`、`makeGate` 依赖的 `authEnforced`（`src/apps/answer-card/server/middleware.ts`）、`createApp` 的 `enforceAuth` 三处统一调用该函数。运行时验证判定矩阵：`(unset)` / `yes` / `on` / `1` / `true` → **强制**，`0` / `false` → 关闭。
+- **BUG-4 `/grading` 孤儿路由 + 永久隐藏（功能死链）**：修复前 `App.tsx` 的 `<Routes>` 含 `<Route path="/grading" element={<GradingPage active={false} .../>} />`，但 `ProjectXAppMode`（`src/shared/appVariant.ts`）联合类型与 `MODE_PATH`（`modeRoutes.ts`）均不含 `grading`，顶栏也无入口，且 `active={false}` 使页面被 `hidden-panel` 永久隐藏——是「可达但不可见」的死链。修复：移除该孤儿路由与 `GradingPage` 的 import。实际阅卷功能由 `GradePanel` 弹层承载（`exam-manage` 的「网阅」按钮触发 `onStartReview` → `setGradingPanel`），与本路由无关，功能不受影响。`src/apps/answer-card/client/pages/GradingPage.tsx` 文件保留（合法组件，未来若启用独立阅卷页可直接复用），不再是死链。
+
+### 新增依赖
+`react-router-dom` v7、`express-rate-limit`（登录限速，阶段 0 已用）。
+
+### 修改文件清单（节选）
+
+| 文件 | 阶段 | 内容 |
+|------|------|------|
+| `src/apps/answer-card/server/index.ts` | 0 | assigned-formula 路由 + async 包装 + 删重复 health |
+| `src/server/lib/asyncHandler.ts` | 0 | 新增 async 错误包装 |
+| `src/server/middleware/auth.ts` | 0 | 鉴权读 enforceAuth |
+| `src/server/routes/backup.ts` / `score-editing.ts` | 0 | 单引号转义 / 入参校验 |
+| `src/apps/answer-card/client/theme.ts` | 1 | 新增令牌镜像 |
+| `src/apps/answer-card/client/styles.css` | 1 | `--success/--warning/--info` + `--z-*` + 补 loading 类 |
+| `src/apps/answer-card/client/components/ui/*` | 1 | Button/Modal/SegmentedControl/Input/Panel/Table/Spinner/LoadingScreen |
+| `src/apps/answer-card/client/main.tsx` | 2 | createBrowserRouter |
+| `src/apps/answer-card/client/modeRoutes.ts` | 2 | 新增路由映射 |
+| `src/apps/answer-card/client/App.tsx` | 2 / 2续 | URL 驱动 + NavLink + 抽 DesignPage/ExamManagePage/GradingPage；2续：cardModel 导入 + WorkspaceProvider 包裹 + 真实 `<Routes>` + guide/permissions 导航修复 |
+| `src/apps/answer-card/client/cardModel.ts` | 2续(B1) | 新增：收编 20+ 设计 helper + PreviewMode/PREVIEW_* 预览常量 |
+| `src/apps/answer-card/client/pages/DesignEditors.tsx` | 2续(B1) | 新增：ObjectiveEditor/SubjectiveEditor/CardPreview/StudentAreaSvg/ObjectiveSvg/SubjectiveSvg |
+| `src/apps/answer-card/client/pages/DesignPage.tsx` / `ExamManagePage.tsx` | 2 / 2续(B2) | 新增页面组件；2续：改 `useWorkspace()` 消费，去掉 props 透传 |
+| `src/apps/answer-card/client/pages/GradingPage.tsx` | 2 | 新增页面组件（props 范式，未切 useWorkspace） |
+| `src/apps/answer-card/client/WorkspaceContext.tsx` | 2 / 2续(B2) | WorkspaceValue 骨架 → 完整值对象（~119 字段） |
+| `src/apps/answer-card/client/components/HomePage.tsx` | 2 | 模块卡全部单开新标签 |
+| `src/apps/answer-card/server/validation.ts` | 3 | `UpdateUserSettingsSchema` 补 requireOriginalPaper/highlightMissingPaper/showTabBar |
+| `src/apps/answer-card/server/index.ts` | 3 | GET settings 补 showTabBar 返回 + 删重复 assigned-formula 路由 |
+| `readus/ARCHITECTURE.md` | 3 | 前端架构重写（路由化/页面抽取/设计令牌/UI 组件库）+ v1.9.2 摘要 |
+| `readus/DATABASE.md` | 3 | 版本号 v1.9.0 → v1.9.2 |
+| `readus/KNOWN-ISSUES.md` | 3 | 审查版本号 + 最后更新日期 |
+| `README.md` | 3 | CHANGELOG 描述更新 |
+
+### 验证
+- `npx tsc --noEmit` → EXIT 0（阶段 3 修复后仍通过）
+- `npx vite build --mode web` → 1919 模块通过（阶段 3 修复后仍通过）
+- SPA 深链（vite preview 实测）：`/` `/design` `/exam-manage` `/analysis` `/scores` `/account` `/sponsor` `/guide` `/permissions` 及未知路径 `/totally-unknown` 均 HTTP 200（SPA fallback 正常），`<Routes>` 由 URL 真实驱动渲染。
+- B1/B2/C 收尾验证：`npx tsc --noEmit` 与 `npx vite build --mode web` 在 cardModel/DesignEditors 抽取、WorkspaceProvider 全量接线、真实 `<Routes>` 路由化后均 EXIT 0（`/api/app/background` 构建期未解析为良性提示，chunk >500kB 为既有告警，均非错误）。
+- 阶段 0 四项修复经 `.workbuddy/plans/SMOKE-2026-07-20.md` 运行时验证通过（赋分公式复活、async→500、鉴权统一、score-editing 校验）
+- 阶段 3 经全量代码审查：Grep 确认 assigned-formula 路由无重复、settings schema 字段与前端的 payload 对齐、GET/PUT settings 两端字段一致、文档版本号全部同步
+- ⚠️ 无浏览器运行时 QA：抽取页（设计 / 考试管理 / 阅卷）需本地 `npm run dev` 实点冒烟。
+
+### 阶段 3：发布后验证修复（2026-07-21 下午）
+
+以上三阶段完成后经全量代码审查 + `tsc --noEmit` + `vite build --mode web` 验证，发现并修复 3 项回归问题：
+
+- **🔴 assigned-formula 路由双重注册（P0，合并冲突残留）**：`index.ts` 中 `GET/PUT /api/exams/:examId/assigned-formula` 各出现两次（1554+1637、1581+1659），第二组为死代码（Express 只匹配第一组）。根因为合并时两版实现均被保留。已删除 1636–1680 行重复块，保留第一组。
+- **🔴 保存用户设置静默失败（P0，Zod schema 滞后）**：`validation.ts` 的 `UpdateUserSettingsSchema` 仅定义 4 字段（scoreDisplayMode / reviewConfidenceThreshold / aiApiKey / backgroundOpacity），但前端 `AccountMenu.saveSettings()` 发送 6 字段（多了 requireOriginalPaper / highlightMissingPaper / showTabBar）。Zod `z.object()` 默认**静默剥离未知键**，`validateBody` 又以 `req.body = result.data` 覆盖原始 body → PATCH handler 收到的 req.body 缺失后三字段 → UPDATE 跳过 → 设置从未写入数据库、前端却显示"已保存"。根因为火箭在 7/4（加 requireOriginalPaper+highlightMissingPaper）和 7/19（加 showTabBar）两次往前端扩展字段时均忘记同步更新 schema。已补全 `requireOriginalPaper` / `highlightMissingPaper` / `showTabBar`（`z.coerce.boolean().optional()`）。
+- **🟡 架构/数据库/已知问题文档版本滞后（P1/P2）**：`ARCHITECTURE.md` 仅描述到 v1.9.0，缺失路由化/页面抽取/设计令牌/UI 组件库等 v1.9.2 关键变更；`DATABASE.md` 与 `KNOWN-ISSUES.md` 版本标记停留在 v1.9.0；`README.md` CHANGELOG 描述仍写"v1.9.0 网上阅卷重构"。已全部同步更新到 v1.9.2，`ARCHITECTURE.md` 前端架构章节重写。
+- **🔴 GET settings 缺失 showTabBar（P1，与上一项同源）**：`GET /api/users/me/settings` 未返回 `showTabBar` 字段，但前端 `AccountMenu` 的 `setShowTabBar(s.showTabBar === 1)` 依赖该字段，导致设置面板的「显示底部 Tab 导航栏」开关永远加载为关闭状态（`undefined === 1` → `false`），与数据库实际值不一致。PATCH 端已能正确写入，但读取端漏了。根因同上：火箭 7/19 加 `showTabBar` 时只改了 PATCH handler 和前端 saveSettings，忘记同步改 GET handler。已补 `showTabBar: (user as any).show_tab_bar ?? 0`。
+
+---
+
 ## v1.9.1 (2026-07-19) — 答题卡设计器全面增强
 
 ### 作文块（essay block）
@@ -54,6 +214,7 @@
 | `src/shared/cardTemplates.ts` | +50 行 | `essayBlock()` + `linedQuestion()` 新格式 + 语文模板集成 |
 
 **总计**：+700 行新增代码，0 个删除，0 个新依赖。
+
 
 ### 版本
 - v1.9.0 → v1.9.1

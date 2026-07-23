@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS users (
     email            TEXT,
     phone            TEXT,
     teacher_role     TEXT,                    -- subject_teacher / head_teacher / grade_leader（仅教师）
+    password_change_required INTEGER DEFAULT 0, -- 1=必须先修改一次性/重置密码
     require_original_paper INTEGER DEFAULT 1, -- v1.8.0: 教师是否强制要求上传原卷
     highlight_missing_paper INTEGER DEFAULT 1, -- v1.8.0: 侧边栏高亮未上传原卷的考试
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
@@ -325,6 +326,9 @@ CREATE TABLE IF NOT EXISTS scan_batches (
     name        TEXT,                         -- 高一1班第一次扫描
     status      TEXT DEFAULT 'pending',       -- pending / processing / done / error
     file_count  INTEGER DEFAULT 0,
+    success_count INTEGER DEFAULT 0,
+    failure_count INTEGER DEFAULT 0,
+    error_summary TEXT,
     created_by  INTEGER REFERENCES users(id),
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     finished_at DATETIME
@@ -678,7 +682,7 @@ INSERT OR IGNORE INTO roles (id, name, display_name, permissions) VALUES
     (3, 'student', '学生', '["score:read"]');
 
 -- 注意：默认管理员账号由应用程序在启动时通过 ensureDefaultAdmin() 自动创建
--- 账号: admin / 密码: admin123（首次登录后必须修改）
+-- 账号: admin / 随机一次性密码（写入数据库旁的 bootstrap-admin.txt，权限 0600，首次登录强制改密）
 
 -- 插入默认数据保留策略
 INSERT OR IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive, auto_delete) VALUES

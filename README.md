@@ -1,7 +1,7 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.9.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-1.9.4-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,7 +13,7 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.9.0
+> **当前版本**：v1.9.4
 > **核心能力**：Home 仪表盘（快捷入口 + 模块卡片）→ 答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 网上阅卷队列（2P/3P 多评 + 争议仲裁 + 断点续批 + PAD 优先 UI + 批注系统）→ 考试管理 → 大考组 → 成绩分析（含上次考试对比、学生学期成绩对比）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → AI 知识点分析 → 知识点弱项诊断 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → Web/Scanner 构建分离 → iOS 15 Safari Web 兼容 → 原卷上传
 > **下个里程碑**：v2.0.0 — TBD
 
@@ -46,6 +46,9 @@
 - **断点续批**：退出自动保存进度和草稿分数，重新进入弹窗恢复
 - **阅卷溯源**：每学生每轮评审人+分数可追溯
 - **考试管理增强**：每条考试新增「网阅」按钮，进入 5 Tab 管理页（阅卷 / 分配 / 争议 / 溯源 / 设置）
+- **打分面板双模式**（v1.9.4）：满分 < 20 走「枚举模式」直接点分大按钮；满分 ≥ 20 走「十位+个位+十分位」位值合成；含 0.5 时枚举底部加 `0/0.5` 专用行、位值十分位列渲染 `0/0.5`；点选即提交并自动跳下一卷
+- **仲裁人可选 + 工作量均衡**（v1.9.4）：题块仲裁人可留空，未设仲裁人时分配后自动把未分配卷吸收到份数最少的教师、并在教师间搬运使份数差 ≤ 阈值（默认 4 份）；争议卷自动改派给已分配且未评过该生的教师，被自动追加的卷标记 `auto_assigned`
+- **设置三层拆分**（v1.9.4 重构）：个性化（账号设置，不变）/ 局部网阅（考试「网阅设置」Tab：题块级 `has_half_point`+本人块工作量下放到教师；「网阅默认」模板含分差/取整/0.5/自动改派/均衡阈值/复评模式（reviewMode：单评/双评/三评），由管理员设置并作为新建题块默认值）/ 全局（Home → 全局设置，仅管理员：原卷强制上传+高亮策略、AI 系统服务商）
 
 ### 答题卡设计
 
@@ -254,6 +257,39 @@ npm run dev
 
 AI 成绩分析依赖单独手动启动的 Python 中转服务；配置方式见 **[AI成绩分析.md](./readus/AI成绩分析.md)**。
 
+#### 网阅功能演示数据（Demo 种子）
+
+无需真实扫描仪或原生识别器即可实测 v1.9.4 的网阅增强（双模式打分面板、0.5 小数、工作量均衡、全局设置）。`testdata/demo-exams` 提供一键种子：
+
+```powershell
+# 方式一：仓库脚本（需 Git Bash / WSL）
+./import-all.sh seed
+
+# 方式二：直接调用 tsx
+npx tsx testdata/demo-exams/scripts/seed.ts
+```
+
+种子会写入：
+
+- 一场「演示-网阅测试」考试，含题块 **A**（满分 15、含 0.5 小数）与题块 **B**（满分 25）；
+- 第二教师账号 `demo-teacher-2` / `teacher123`（学科数学），用于演示工作量均衡；
+- 切块与分配：题块 A 故意把卷拆给两位教师并留 2 份未分配，触发 `rebalanceWorkload` 自动均衡（份数差收敛到 ≤ 4）。
+
+登录实测：
+
+| 账号 | 密码 | 可验证 |
+|------|------|--------|
+| `demo-teacher` | `teacher123` | 题块 A 枚举模式 + 0.5 底部行；题块 B 位值模式；本人块 `has_half_point` 可改 |
+| `demo-teacher-2` | `teacher123` | 工作量均衡后被追加的卷（`auto_assigned`）；教师改局部设置的 403/200 边界 |
+| `admin` | 见数据库旁 `bootstrap-admin.txt`（首次登录强制改密） | Home → 全局设置（仅管理员可见）；仲裁人留空自动改派争议卷 |
+
+清理 / 重置演示数据：脚本每次运行会先执行 `cleanupDemoData`（删除「演示-」前缀的考试、答题卡、演示账号等），再重建，因此**重复运行即自动重置**，无需单独 clean 子命令：
+
+```powershell
+# 重置演示数据（先清后建）
+./import-all.sh seed
+```
+
 如需分终端调试，也可手动启动：
 
 ```powershell
@@ -312,7 +348,7 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | `npm run electron:dist:ia32` | 生成扫描端便携 EXE (ia32) |
 | `npm run electron:msi` | 生成扫描端 MSI (x64) |
 | `npm run electron:msi:ia32` | 生成扫描端 MSI (ia32) |
-| `npm run verify:auth` | 账号权限自动化验证（33 项用例） |
+| `npm run verify:auth` | 账号权限自动化验证（54 项用例） |
 | `npx tsx scripts/grading-rules-smoke.ts` | 客观题部分得分规则冒烟验证 |
 
 ---
@@ -332,7 +368,7 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | [多端使用说明.md](./readus/多端使用说明.md) | Web 端 / 扫描端的功能差异、共用数据目录、账号登录与构建部署 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.9.0 网上阅卷重构 + 安全修复） | 全体 |
+| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（持续更新至 v1.9.4：#185 安全修复 + 网页化改造 + 网阅打分面板双模式） | 全体 |
 
 ---
 
@@ -508,6 +544,9 @@ Project-X/
 | `POST` | `/api/review-arbitration/crops/:cid/resolve` | 提交仲裁最终分 |  ← v1.9.0 |
 | `GET` | `/api/block-grading-config/exams/:id` | 题块网阅设置列表 |  ← v1.9.0 |
 | `POST` | `/api/block-grading-config/exams/:id/batch` | 批量更新题块设置 |  ← v1.9.0 |
+| `GET/PUT` | `/api/system-settings` | 全局设置（原卷策略 `require_original_paper`/`highlight_missing_paper`、AI 系统服务商开关位，仅管理员） |  ← v1.9.4 |
+| `GET` | `/api/system-settings/public` | 只读：原卷两策略标志（认证用户），供前端判断强制上传/高亮 |  ← v1.9.4 |
+| `GET/POST/PUT/DELETE` | `/api/ai/providers/system` | AI 系统服务商管理（仅管理员，`is_system=1`） |  ← v1.9.4 |
 | `GET` | `/api/dashboard` | 首页仪表盘数据 |  ← v1.9.0 |
 | `GET` | `/api/review/my-exams` | 教师待阅考试列表 |  ← v1.9.0 |
 | `GET` | `/api/review-annotations?cropId=` | 读取切块批注 |  ← v1.9.0 |

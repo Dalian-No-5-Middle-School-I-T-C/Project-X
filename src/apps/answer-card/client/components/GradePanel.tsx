@@ -107,13 +107,13 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   }, [current, draftScores]);
 
   // 保存并下一份
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(async (scoreOverride?: number) => {
     if (!current || saving) return;
     setSaving(true);
     setError(null);
 
     try {
-      const score = draftScores[current.id] ?? 0;
+      const score = scoreOverride ?? draftScores[current.id] ?? 0;
       const res = await fetchJson<ReviewSubmitResult>(
         `/api/review/exams/${examId}/block-crops/${encodeURIComponent(current.id)}/submit`,
         {
@@ -368,8 +368,10 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
         }}>
           <ScorePad
             maxScore={maxScore}
+            hasHalfPoint={current?.hasHalfPoint === 1}
             currentScore={currentScore}
             onScoreChange={handleScoreChange}
+            onSubmit={handleSubmit}
             disabled={saving}
           />
 
@@ -391,7 +393,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
 
           {/* 操作按钮 */}
           <button
-            onClick={handleSubmit}
+            onClick={() => handleSubmit()}
             disabled={saving || !current}
             style={{
               width: "100%",

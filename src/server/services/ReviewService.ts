@@ -77,8 +77,18 @@ export async function listReviewBlocks(examId: number, db: DbAdapter = getMysqlD
        MAX(abc.block_type) AS blockType,
        COUNT(*) AS totalCount,
        SUM(CASE WHEN COALESCE(abc.status, 'ready') IN ('ready', 'pending') THEN 1 ELSE 0 END) AS pendingCount,
-       SUM(CASE WHEN abc.status = 'reviewed' THEN 1 ELSE 0 END) AS reviewedCount
+       SUM(CASE WHEN abc.status = 'reviewed' THEN 1 ELSE 0 END) AS reviewedCount,
+       COALESCE(MAX(bgc.has_half_point), 0) AS hasHalfPoint,
+       COALESCE((
+         SELECT SUM(mx) FROM (
+           SELECT MAX(qs2.max_score) AS mx
+           FROM question_scores qs2
+           WHERE qs2.exam_id = abc.exam_id AND qs2.block_id = abc.block_id
+           GROUP BY qs2.question_number
+         )
+       ), 0) AS maxScore
      FROM answer_block_crops abc
+     LEFT JOIN block_grading_config bgc ON bgc.exam_id = abc.exam_id AND bgc.block_id = abc.block_id
      WHERE abc.exam_id = ?
      GROUP BY abc.block_id
      ORDER BY abc.block_id`,
@@ -90,6 +100,8 @@ export async function listReviewBlocks(examId: number, db: DbAdapter = getMysqlD
     totalCount: number;
     pendingCount: number;
     reviewedCount: number;
+    hasHalfPoint: number;
+    maxScore: number;
   }>;
 
   return rows.map((row) => ({
@@ -98,7 +110,9 @@ export async function listReviewBlocks(examId: number, db: DbAdapter = getMysqlD
     blockType: row.blockType,
     totalCount: Number(row.totalCount),
     pendingCount: Number(row.pendingCount),
-    reviewedCount: Number(row.reviewedCount)
+    reviewedCount: Number(row.reviewedCount),
+    hasHalfPoint: Number(row.hasHalfPoint ?? 0),
+    maxScore: Number(row.maxScore ?? 0)
   }));
 }
 
@@ -189,20 +203,28 @@ export async function submitReviewCropScores(params: {
   await db.transaction(async (tx) => {
     // 评分历史必须在事务内读取和追加；事务外快照会在并发提交时覆盖另一位教师的记录。
     const freshCrop = await tx.get(
-      "SELECT review_round, score_breakdown FROM answer_block_crops WHERE id = ?",
+      "SELECT review_round, score_breakdown, status FROM answer_block_crops WHERE id = ?",
       params.cropId
-    ) as { review_round: number; score_breakdown: string | null } | undefined;
+    ) as { review_round: number; score_breakdown: string | null; status: string | null } | undefined;
     const currentRound = freshCrop?.review_round ?? 0;
     if (!freshCrop) throw new Error("作答切块不存在");
     try { scoreBreakdown = freshCrop.score_breakdown ? JSON.parse(freshCrop.score_breakdown) : []; } catch { scoreBreakdown = []; }
 
-    if (scoreBreakdown.length >= reviewMode || currentRound >= reviewMode) {
-      throw new Error("该题块已达到评分上限，请刷新后重试");
-    }
     const reviewerIds = new Set(scoreBreakdown.map((b) => b.reviewerId));
-    if (reviewerIds.has(params.userId)) throw new Error("您已对该题块评分，请勿重复提交");
+    // 争议卷回退给原老师时（含自动回退），允许其追加复评以打破僵局；其余情况禁止重复提交
+    if (reviewerIds.has(params.userId) && freshCrop.status !== "disputed") {
+      throw new Error("您已对该题块评分，请勿重复提交");
+    }
     if (config.arbitratorId != null && config.arbitratorId === params.userId) throw new Error("您是该题块的仲裁人，不能参与初评");
     if (config.arbitratorId != null && reviewerIds.has(config.arbitratorId)) throw new Error("该题块的仲裁人已参与评分，需要更换仲裁人");
+
+    // 争议卷（含自动改派/回退给原老师）允许追加复评以打破僵局；
+    // 限制最多比正常模式多 2 轮，避免两教师在争议卷上无限互评
+    const maxDisputedRounds = reviewMode + 2;
+    const isDisputedRereview = freshCrop.status === "disputed" && scoreBreakdown.length < maxDisputedRounds;
+    if ((scoreBreakdown.length >= reviewMode || currentRound >= reviewMode) && !isDisputedRereview) {
+      throw new Error("该题块已达到评分上限，请刷新后重试");
+    }
 
     totalScore = submittedScores.reduce((sum, item) => sum + item.score, 0);
     finalReviewRound = currentRound + 1;
@@ -268,6 +290,8 @@ export async function submitReviewCropScores(params: {
     if (scoreBreakdown.length >= reviewMode) {
       if (disputed) {
         await tx.run("UPDATE answer_block_crops SET status = ? WHERE id = ?", "disputed", params.cropId);
+        // 无仲裁人时，把争议卷自动改派：优先「已分配本题块且未评过该生」的教师，不足则回退原老师（自动过程）
+        await autoAssignDisputedCrop(params.examId, crop.block_id ?? "", params.cropId, reviewerIds, tx);
       } else if (finalScore != null) {
         await tx.run(
           "UPDATE answer_block_crops SET final_score = ?, status = ? WHERE id = ?",
@@ -292,6 +316,101 @@ export async function submitReviewCropScores(params: {
     reviewRound: finalReviewRound,
     finalScore
   };
+}
+
+/**
+ * 无仲裁人时，把争议卷自动改派：
+ *  1) 优先改派给「已分配本题块且尚未评过该生」的教师（工作量均衡，追加其待批队列 auto_assigned=1）；
+ *  2) 兜底：若本题块已分配教师数不足（都已评过该生，无合格的新教师），自动把争议卷回退给
+ *     「原老师」（最初评过该生的教师），不再限制其是否已评过 —— 这是一个自动过程，
+ *     让原老师在争议卷上追加一轮复评以打破僵局。若连已分配教师都没有，则保持 disputed 进入人工争议池。
+ */
+async function autoAssignDisputedCrop(
+  examId: number,
+  blockId: string,
+  cropId: string,
+  excludeReviewerIds: Set<number>,
+  db: DbAdapter
+): Promise<void> {
+  const config = await getBlockConfig(examId, blockId, "answer", 0, db);
+  if (config.arbitratorId != null || config.autoReassignNoArb !== 1) return;
+
+  const crop = await db.get(
+    "SELECT student_id, score_breakdown FROM answer_block_crops WHERE id = ? AND exam_id = ?",
+    cropId,
+    examId
+  ) as { student_id: number | null; score_breakdown: string | null } | undefined;
+  if (!crop?.student_id) return;
+
+  const assignments = await db.all(
+    "SELECT id, teacher_id, assigned_student_ids, auto_assigned FROM review_assignments WHERE exam_id = ? AND block_id = ?",
+    examId,
+    blockId
+  ) as Array<{ id: number; teacher_id: number; assigned_student_ids: string | null; auto_assigned: number | null }>;
+
+  // 优先：已分配本题块、未参与过本生评分、且未产生争议的教师（工作量均衡）
+  const eligible = assignments.filter((a) => {
+    if (excludeReviewerIds.has(a.teacher_id)) return false;
+    const ids = a.assigned_student_ids ? (JSON.parse(a.assigned_student_ids) as number[]) : [];
+    return !ids.includes(crop.student_id!);
+  });
+
+  let target: { id: number; teacher_id: number; assigned_student_ids: string | null; auto_assigned: number | null } | null =
+    eligible.length > 0
+      ? eligible.reduce((a, b) =>
+          (JSON.parse(a.assigned_student_ids ?? "[]") as number[]).length <=
+          (JSON.parse(b.assigned_student_ids ?? "[]") as number[]).length
+            ? a
+            : b
+        )
+      : null;
+
+  // 兜底：本题块已分配教师不足（都已评过该生），自动回退给「原老师」（最初评过该生的教师）
+  if (!target) {
+    let originalTeacherId: number | null = null;
+    try {
+      const breakdown = crop.score_breakdown
+        ? (JSON.parse(crop.score_breakdown) as Array<{ reviewerId: number }>)
+        : [];
+      if (breakdown.length > 0) originalTeacherId = breakdown[0].reviewerId;
+    } catch {
+      originalTeacherId = null;
+    }
+    // 若评分历史缺失，退而求其次：取最初（非自动改派）持有该生的分配教师
+    if (originalTeacherId == null) {
+      const orig = assignments.find((a) => {
+        if (a.auto_assigned === 1) return false;
+        const ids = a.assigned_student_ids ? (JSON.parse(a.assigned_student_ids) as number[]) : [];
+        return ids.includes(crop.student_id!);
+      });
+      originalTeacherId = orig?.teacher_id ?? null;
+    }
+    if (originalTeacherId != null) {
+      target = assignments.find((a) => a.teacher_id === originalTeacherId) ?? null;
+    }
+    // 仍无明确目标则落到工作量最轻的已分配教师，确保争议卷一定被回退而非滞留
+    if (!target && assignments.length > 0) {
+      target = assignments.reduce((a, b) =>
+        (JSON.parse(a.assigned_student_ids ?? "[]") as number[]).length <=
+        (JSON.parse(b.assigned_student_ids ?? "[]") as number[]).length
+          ? a
+          : b
+      );
+    }
+  }
+
+  if (!target) return; // 连已分配教师都没有 → 争议池兜底
+
+  const existingIds = JSON.parse(target.assigned_student_ids ?? "[]") as number[];
+  const ids = existingIds.includes(crop.student_id!)
+    ? existingIds
+    : [...existingIds, crop.student_id!];
+  await db.run(
+    "UPDATE review_assignments SET assigned_student_ids = ?, student_count = ?, auto_assigned = 1 WHERE id = ?",
+    JSON.stringify(ids),
+    ids.length,
+    target.id
+  );
 }
 
 /** 获取阅卷溯源数据 */

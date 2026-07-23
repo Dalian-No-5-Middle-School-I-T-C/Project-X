@@ -206,11 +206,24 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
     return;
   }
 
-  const updates = req.body?.scores as Array<{ questionNumber: number; scoreType: string; score: number }> | undefined;
-  if (!updates || !Array.isArray(updates) || updates.length === 0) {
+  const updatesRaw = req.body?.scores;
+  if (!Array.isArray(updatesRaw) || updatesRaw.length === 0) {
     res.status(400).json({ message: "未提供分数修改数据" });
     return;
   }
+  // 逐元素校验，防止非法数据进入 SQL / 计分计算
+  for (const u of updatesRaw) {
+    if (
+      !u || typeof u !== "object" ||
+      typeof u.questionNumber !== "number" || !Number.isFinite(u.questionNumber) ||
+      typeof u.scoreType !== "string" || u.scoreType.length === 0 ||
+      typeof u.score !== "number" || !Number.isFinite(u.score)
+    ) {
+      res.status(400).json({ message: "分数修改数据格式非法" });
+      return;
+    }
+  }
+  const updates = updatesRaw as Array<{ questionNumber: number; scoreType: string; score: number }>;
 
   const db = getMysqlDb();
   const userId = req.user!.id;
@@ -318,11 +331,28 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
     return;
   }
 
-  const answerUpdates = req.body?.answers as Record<string, string[]> | undefined;
-  if (!answerUpdates || Object.keys(answerUpdates).length === 0) {
+  const answerUpdatesRaw = req.body?.answers;
+  if (!answerUpdatesRaw || typeof answerUpdatesRaw !== "object" || Array.isArray(answerUpdatesRaw)) {
     res.status(400).json({ message: "未提供答案修改数据" });
     return;
   }
+  const answerEntries = Object.entries(answerUpdatesRaw);
+  if (answerEntries.length === 0) {
+    res.status(400).json({ message: "未提供答案修改数据" });
+    return;
+  }
+  // 校验题号键为数字、值为字符串数组，防止非法键/值进入答案重写
+  for (const [key, val] of answerEntries) {
+    if (!/^\d+$/.test(key)) {
+      res.status(400).json({ message: `题号非法: ${key}` });
+      return;
+    }
+    if (!Array.isArray(val) || !val.every((x: unknown) => typeof x === "string")) {
+      res.status(400).json({ message: `题号 ${key} 的答案必须是字符串数组` });
+      return;
+    }
+  }
+  const answerUpdates = answerUpdatesRaw as Record<string, string[]>;
 
   const db = getMysqlDb();
   const userId = req.user!.id;

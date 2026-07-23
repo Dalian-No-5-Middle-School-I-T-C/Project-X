@@ -14,6 +14,7 @@ import { initializeDatabase, ensureDefaultAdmin, getDatabase, closeDatabase } fr
 import { UserRepository } from "../../../src/server/repositories/UserRepository.ts";
 import { ClassRepository } from "../../../src/server/repositories/ClassRepository.ts";
 import { ROLE_IDS } from "../../../src/server/auth/permissions.ts";
+import { seedReviewDemo } from "./seed-review.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "../../..");
@@ -169,8 +170,14 @@ function cleanupDemoData(db: ReturnType<typeof getDatabase>): void {
     const ph = demoExamIds.map(() => "?").join(",");
     db.prepare(`DELETE FROM question_scores WHERE exam_id IN (${ph})`).run(...demoExamIds);
     db.prepare(`DELETE FROM student_scores WHERE exam_id IN (${ph})`).run(...demoExamIds);
+    db.prepare(`DELETE FROM answer_block_crops WHERE exam_id IN (${ph})`).run(...demoExamIds);
+    db.prepare(`DELETE FROM review_assignments WHERE exam_id IN (${ph})`).run(...demoExamIds);
+    db.prepare(`DELETE FROM block_grading_config WHERE exam_id IN (${ph})`).run(...demoExamIds);
     db.prepare(`DELETE FROM exams WHERE id IN (${ph})`).run(...demoExamIds);
   }
+
+  // 网阅演示用答题卡（card_id 88000999）
+  db.prepare("DELETE FROM answer_cards WHERE id = '88000999'").run();
 
   for (let i = 1; i <= 8; i++) {
     db.prepare("DELETE FROM answer_cards WHERE id = ?").run(`${CARD_ID_PREFIX}${String(i).padStart(3, "0")}`);
@@ -187,6 +194,7 @@ function cleanupDemoData(db: ReturnType<typeof getDatabase>): void {
   }
 
   db.prepare("DELETE FROM users WHERE username = 'demo-teacher'").run();
+  db.prepare("DELETE FROM users WHERE username = 'demo-teacher-2'").run();
   db.prepare("DELETE FROM classes WHERE name IN ('演示1班', '演示2班')").run();
   db.prepare("DELETE FROM grades WHERE name = '高一(演示)'").run();
 }
@@ -231,14 +239,22 @@ export async function seedDemoExams(dbPath?: string): Promise<void> {
 
   cleanupDemoData(db);
 
-  const grade = classRepo.createGrade("高一(演示)", 1);
-  const class1 = classRepo.createClass(grade.id, "演示1班", 1);
-  const class2 = classRepo.createClass(grade.id, "演示2班", 2);
+  const grade = await classRepo.createGrade("高一(演示)", 1);
+  const class1 = await classRepo.createClass(grade.id, "演示1班", 1);
+  const class2 = await classRepo.createClass(grade.id, "演示2班", 2);
 
   await userRepo.createUser({
     username: "demo-teacher",
     password: "teacher123",
     name: "演示教师",
+    role_id: ROLE_IDS.TEACHER,
+    subject: "数学"
+  });
+
+  await userRepo.createUser({
+    username: "demo-teacher-2",
+    password: "teacher123",
+    name: "演示教师乙",
     role_id: ROLE_IDS.TEACHER,
     subject: "数学"
   });
@@ -258,8 +274,8 @@ export async function seedDemoExams(dbPath?: string): Promise<void> {
     if (row) studentIdByNumber.set(num, row.id);
   }
 
-  classRepo.addStudents(class1.id, STUDENT_NUMBERS.slice(0, 8).map((n) => studentIdByNumber.get(n)!));
-  classRepo.addStudents(class2.id, STUDENT_NUMBERS.slice(8).map((n) => studentIdByNumber.get(n)!));
+  await classRepo.addStudents(class1.id, STUDENT_NUMBERS.slice(0, 8).map((n) => studentIdByNumber.get(n)!));
+  await classRepo.addStudents(class2.id, STUDENT_NUMBERS.slice(8).map((n) => studentIdByNumber.get(n)!));
 
   const insertCard = db.prepare(`
     INSERT INTO answer_cards (id, title, subject_label, exam_date)
@@ -293,6 +309,13 @@ export async function seedDemoExams(dbPath?: string): Promise<void> {
   seedExam(PRIOR_MATH_EXAM);
   for (const spec of WEEK_EXAMS) weekExamIds.push(seedExam(spec));
   seedExam(OUTSIDE_WEEK_EXAM);
+
+  // 网阅打分面板 DEV 演示数据（v1.9.4 路径 B 测试入口）
+  const teacherRow = db.prepare("SELECT id FROM users WHERE username = 'demo-teacher'").get() as { id: number } | undefined;
+  const teacher2Row = db.prepare("SELECT id FROM users WHERE username = 'demo-teacher-2'").get() as { id: number } | undefined;
+  if (teacherRow) {
+    await seedReviewDemo(db, grade, studentIdByNumber, teacherRow.id, teacher2Row?.id);
+  }
 
   const groupInfo = db.prepare(`
     INSERT INTO exam_groups (name, description, grade_id, tag, status, total_score_mode, only_full_participants, created_by)

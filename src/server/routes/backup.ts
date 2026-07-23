@@ -11,7 +11,7 @@ import crypto from "node:crypto";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect } from "../db";
+import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect, ensureDefaultAdmin, removeBootstrapAdminFile } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -75,7 +75,8 @@ router.get("/backup", async (_req: Request, res: Response) => {
     if (existsSync(projectxDbPath)) {
       const db = getDatabase();
       try {
-        db.exec(`VACUUM INTO '${projectxBak.replace(/\\/g, "\\\\")}'`);
+        const safeTarget = projectxBak.replace(/\\/g, "\\\\").replace(/'/g, "''");
+        db.exec(`VACUUM INTO '${safeTarget}'`);
       } catch (err) {
         // VACUUM INTO 可能不支持旧版 SQLite，降级为文件复制
         console.warn("[Backup] VACUUM INTO failed, falling back to file copy:", err);
@@ -240,6 +241,15 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
 
     // 3. 替换文件
     await copyFile(projectxBak, projectxDbPath);
+
+    // 恢复后重新引导管理员账号（#185 安全模型）：还原出的库若使用旧默认口令 admin123
+    // 或引导文件丢失，则重新生成一次性口令并写入 bootstrap-admin.txt，确保还原后可用引导文件登录。
+    try {
+      removeBootstrapAdminFile();
+      await ensureDefaultAdmin();
+    } catch (e) {
+      console.warn("[Restore] 管理员再引导失败（可重启服务自动修复）:", e);
+    }
 
     // 恢复 scanner.db（如果有）
     const scannerBak = path.join(tmpDir, "scanner.db");

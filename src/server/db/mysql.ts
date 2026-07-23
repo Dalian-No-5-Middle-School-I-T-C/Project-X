@@ -587,6 +587,50 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `CREATE INDEX IF NOT EXISTS idx_exams_grade_class ON exams(grade_id, class_id)`,
       ]
     },
+    {
+      version: 23,
+      name: "security-bootstrap-and-grading-status",
+      sqls: [
+        `ALTER TABLE users ADD COLUMN password_change_required TINYINT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN success_count INT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN failure_count INT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN error_summary LONGTEXT`,
+      ]
+    },
+    {
+      version: 24,
+      name: "online-review-grading-enhancements-1.9.4",
+      sqls: [
+        `ALTER TABLE block_grading_config ADD COLUMN has_half_point TINYINT DEFAULT 0`,
+        `ALTER TABLE block_grading_config ADD COLUMN auto_reassign_no_arb TINYINT DEFAULT 1`,
+        `ALTER TABLE block_grading_config ADD COLUMN workload_balance_threshold INT DEFAULT 4`,
+        `ALTER TABLE review_assignments ADD COLUMN auto_assigned TINYINT DEFAULT 0`,
+        `INSERT IGNORE INTO system_settings (\`key\`, value) VALUES
+          ('allow_half_point', '1'),
+          ('default_dispute_threshold', '2'),
+          ('default_rounding', 'ceil'),
+          ('auto_reassign_policy', '1'),
+          ('workload_balance_threshold', '4')`,
+      ]
+    },
+    {
+      version: 25,
+      name: "backfill-security-bootstrap-columns",
+      sqls: [
+        `ALTER TABLE users ADD COLUMN password_change_required TINYINT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN success_count INT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN failure_count INT DEFAULT 0`,
+        `ALTER TABLE scan_batches ADD COLUMN error_summary LONGTEXT`,
+      ]
+    },
+    {
+      version: 26,
+      name: "global-original-paper-and-cleanup-review-defaults",
+      sqls: [
+        `INSERT IGNORE INTO system_settings (\`key\`, value) VALUES ('require_original_paper', '1'), ('highlight_missing_paper', '1')`,
+        `DELETE FROM system_settings WHERE \`key\` IN ('allow_half_point', 'default_dispute_threshold', 'default_rounding', 'auto_reassign_policy', 'workload_balance_threshold')`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

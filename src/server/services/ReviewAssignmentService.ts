@@ -1,6 +1,7 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { randomDistribute } from "./RandomDistributionService";
+import { getBlockConfig } from "./BlockGradingConfigService";
 import type { ReviewAssignment, TeacherBlockAssignment } from "../../shared/types";
 
 type AssignmentRow = {
@@ -10,6 +11,7 @@ type AssignmentRow = {
   teacher_id: number;
   student_count: number;
   assigned_student_ids: string | null;
+  auto_assigned?: number;
   created_at: string;
 };
 
@@ -31,6 +33,7 @@ function toReviewAssignment(row: AssignmentRow, teacherName?: string): ReviewAss
     teacherName,
     studentCount: row.student_count,
     assignedStudentIds: parseAssignedIds(row.assigned_student_ids),
+    autoAssigned: row.auto_assigned ?? 0,
     createdAt: row.created_at
   };
 }
@@ -120,8 +123,8 @@ export async function createAssignments(
 
     for (const [teacherId, studentIds] of distribution) {
       await tx.run(
-        `INSERT INTO review_assignments (exam_id, block_id, teacher_id, student_count, assigned_student_ids)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO review_assignments (exam_id, block_id, teacher_id, student_count, assigned_student_ids, auto_assigned)
+         VALUES (?, ?, ?, ?, ?, 0)`,
         examId,
         blockId,
         teacherId,
@@ -136,12 +139,106 @@ export async function createAssignments(
         teacherId,
         studentCount: studentIds.length,
         assignedStudentIds: studentIds,
+        autoAssigned: 0,
         createdAt: new Date().toISOString()
       });
     }
   });
 
-  return assignments;
+  // v1.9.4：若未设仲裁人，自动把剩余/未分配卷均衡派发给已分配本题块的教师（份数差≤阈值）
+  await rebalanceWorkload(examId, blockId, db);
+
+  return getAssignmentsByBlock(examId, blockId, db);
+}
+
+/**
+ * 工作量均衡自动再分配（v1.9.4）。
+ *
+ * 触发条件：题块未设仲裁人（arbitrator_id 为空）且 auto_reassign_no_arb=1。
+ * 行为：在已分配本题块的教师之间搬运「未阅」卷，使任意两位教师的份数差 ≤ workload_balance_threshold。
+ * 被追加卷的教师其 assignment 标记 auto_assigned=1（进度条加卷）。
+ * 不搬运已阅/争议卷，且不会把卷交给已阅过该生的教师（避免自审）。
+ */
+export async function rebalanceWorkload(
+  examId: number,
+  blockId: string,
+  db: DbAdapter = getMysqlDb()
+): Promise<void> {
+  const config = await getBlockConfig(examId, blockId, "answer", 0, db);
+  if (config.arbitratorId != null || config.autoReassignNoArb !== 1) return;
+
+  const assignments = await getAssignmentsByBlock(examId, blockId, db);
+  if (assignments.length < 2) return;
+
+  const cropRows = await db.all(
+    "SELECT student_id, status, reviewer_id FROM answer_block_crops WHERE exam_id = ? AND block_id = ?",
+    examId, blockId
+  ) as Array<{ student_id: number | null; status: string | null; reviewer_id: number | null }>;
+  const cropByStudent = new Map<number, { status: string | null; reviewerId: number | null }>();
+  for (const r of cropRows) {
+    if (r.student_id != null) cropByStudent.set(r.student_id, { status: r.status, reviewerId: r.reviewer_id });
+  }
+
+  type Working = { id: number; teacherId: number; ids: number[]; autoAssigned: number };
+  const working: Working[] = assignments.map((a) => ({
+    id: a.id,
+    teacherId: a.teacherId,
+    ids: [...a.assignedStudentIds],
+    autoAssigned: a.autoAssigned
+  }));
+
+  const alreadyReviewed = (sid: number, teacherId: number): boolean =>
+    cropByStudent.get(sid)?.reviewerId === teacherId;
+
+  const isMovable = (sid: number, toTeacherId: number): boolean => {
+    const c = cropByStudent.get(sid);
+    if (!c) return false;
+    if (c.status === "reviewed" || c.status === "disputed") return false; // 已阅/争议不再搬
+    if (c.reviewerId === toTeacherId) return false; // 目标已阅过 → 自审
+    return true;
+  };
+
+  const countOf = (w: Working) => w.ids.length;
+  const minByCount = (list: Working[]) => list.reduce((a, b) => (countOf(b) < countOf(a) ? b : a));
+  const maxByCount = (list: Working[]) => list.reduce((a, b) => (countOf(b) > countOf(a) ? b : a));
+
+  // 1) 吸收「尚未分配」的卷（分配后剩余未分配卷），派给份数最少且未阅过该生的教师
+  const assignedSet = new Set<number>();
+  for (const w of working) for (const id of w.ids) assignedSet.add(id);
+  const unassignedPool = Array.from(cropByStudent.keys()).filter((s) => !assignedSet.has(s));
+  for (const sid of unassignedPool) {
+    const eligible = working.filter((w) => !alreadyReviewed(sid, w.teacherId));
+    if (eligible.length === 0) continue; // 无合格教师 → 争议池兜底
+    const target = minByCount(eligible);
+    target.ids.push(sid);
+    target.autoAssigned = 1;
+    assignedSet.add(sid);
+  }
+
+  // 2) 在已分配教师间搬运，使任意两位教师份数差收敛到阈值内
+  let guard = 0;
+  while (guard++ < 10000) {
+    const maxW = maxByCount(working);
+    const minW = minByCount(working);
+    if (countOf(maxW) - countOf(minW) <= config.workloadBalanceThreshold) break;
+    const movableIdx = maxW.ids.findIndex((sid) => isMovable(sid, minW.teacherId));
+    if (movableIdx === -1) break; // 无可用卷可搬 → 已达均衡上限
+    const [sid] = maxW.ids.splice(movableIdx, 1);
+    minW.ids.push(sid);
+    minW.autoAssigned = 1;
+  }
+
+  await db.transaction(async (tx) => {
+    for (const w of working) {
+      await tx.run(
+        "UPDATE review_assignments SET assigned_student_ids = ?, student_count = ?, auto_assigned = ? WHERE id = ?",
+        JSON.stringify(w.ids),
+        w.ids.length,
+        w.autoAssigned,
+        w.id
+      );
+    }
+  });
 }
 
 /** 删除某分配 */

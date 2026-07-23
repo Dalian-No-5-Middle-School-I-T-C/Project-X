@@ -1,4 +1,3 @@
-import { Parser } from "expr-eval";
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import type { AssignedFormula, AssignedFormulaType } from "../../shared/types";
@@ -11,17 +10,15 @@ export const ASSIGNED_SCORE_SUBJECTS = ["化学", "生物", "地理", "政治"];
 /**
  * 赋分引擎 v1.4.0
  *
- * 三种内置公式 + 自定义表达式：
+ * 两种内置公式；历史 custom 配置仅保留数据，不再执行：
  * A. proportional — 等比例转换
  *    assigned = minOut + (raw - minIn) / (maxIn - minIn) × (maxOut - minOut)
  * B. linear — 线性公式
  *    assigned = raw × a + b
- * C. custom — 自定义表达式 (expr-eval)
- *    可用变量: raw, max, min, avg, std
  */
 export class AssignedScoreService {
   private db: DbAdapter;
-  private parser = new Parser();
+  private customWarningLogged = false;
 
   constructor() {
     this.db = getMysqlDb();
@@ -88,18 +85,9 @@ export class AssignedScoreService {
         return Math.round(Math.max(0, Math.min(120, result)) * 10) / 10;
       }
       case "custom": {
-        if (!formula.params.expression) return rawScore;
-        try {
-          const expr = this.parser.parse(formula.params.expression);
-          const result = expr.evaluate({
-            raw: rawScore, max: stats.max, min: stats.min,
-            avg: stats.avg, std: stats.std
-          });
-          if (typeof result === "number" && Number.isFinite(result)) {
-            return Math.round(result * 10) / 10;
-          }
-        } catch {
-          // expression parse error — return raw
+        if (!this.customWarningLogged) {
+          console.warn("[AssignedScore] CUSTOM_FORMULA_DISABLED: 历史自定义表达式未执行，保留原始分数");
+          this.customWarningLogged = true;
         }
         return rawScore;
       }
@@ -114,6 +102,10 @@ export class AssignedScoreService {
   async recalculateAll(examId: number): Promise<{ updated: number; skipped: number }> {
     const formula = await this.getFormula(examId);
     if (!formula || !formula.enabled) {
+      return { updated: 0, skipped: 0 };
+    }
+    if (formula.type === "custom") {
+      console.warn(`[AssignedScore] CUSTOM_FORMULA_DISABLED: exam ${examId} 未执行重算`);
       return { updated: 0, skipped: 0 };
     }
 
@@ -188,14 +180,6 @@ export class AssignedScoreService {
         formula: {
           type: "linear", enabled: true,
           params: { a: 0.7, b: 30 }
-        }
-      },
-      {
-        id: "custom-starter",
-        name: "自定义 (可编辑表达式)",
-        formula: {
-          type: "custom", enabled: true,
-          params: { expression: "raw * 0.7 + 30" }
         }
       }
     ];
