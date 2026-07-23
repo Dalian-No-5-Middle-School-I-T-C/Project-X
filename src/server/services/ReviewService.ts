@@ -137,9 +137,11 @@ export async function listReviewBlockCropItems(
 }
 
 /**
- * 题块总分模式拆分（#187 设计）：将整个题块的合计分按比例分配到各小题。
- * - 末题兜底，保证拆分合计精确等于题块总分（允许 step 粒度取整）。
+ * 题块总分模式拆分（#187 设计）：将整个题块的合计分分配到各小题。
+ * - distribution='proportional'：按各小题满分占题块满分的比例分配（默认）。
+ * - distribution='equal'：忽略满分，均匀分配到各小题。
  * - 每题得分 clamp 到该小题权威满分 [0, max]。
+ * - 末题/余数兜底，保证拆分合计精确等于题块总分（step 粒度内）。
  * step 为最小分值粒度：允许 0.5 时取 0.5，否则取 1。
  */
 function splitBlockTotal(
@@ -147,25 +149,41 @@ function splitBlockTotal(
   items: ReviewSubmitScoreInput[],
   maxScoreByQuestion: Map<number, number>,
   maxBlockScore: number,
-  step: number
+  step: number,
+  distribution: "proportional" | "equal"
 ): Map<number, number> {
   const result = new Map<number, number>();
   const nums = items.map((it) => it.questionNumber);
   if (nums.length === 0) return result;
-  let allocated = 0;
-  for (let i = 0; i < nums.length; i++) {
-    const qNum = nums[i];
-    const max = maxScoreByQuestion.get(qNum) ?? 0;
-    if (i === nums.length - 1) {
-      const v = Math.max(0, Math.min(blockTotal - allocated, max));
-      result.set(qNum, v);
-    } else {
-      const raw = (blockTotal * max) / maxBlockScore;
-      const v = Math.max(0, Math.min(Math.round(raw / step) * step, max));
-      result.set(qNum, v);
-      allocated += v;
+
+  const sumMax = nums.reduce((acc, q) => acc + (maxScoreByQuestion.get(q) ?? 0), 0);
+  const raw = nums.map((q) => {
+    if (distribution === "equal") {
+      return blockTotal / nums.length;
     }
+    const max = maxScoreByQuestion.get(q) ?? 0;
+    const denom = maxBlockScore > 0 ? maxBlockScore : sumMax || 1;
+    return (blockTotal * max) / denom;
+  });
+
+  // 先按 step 取整并 clamp 到 [0, max]
+  const rounded = raw.map((r, i) => {
+    const max = maxScoreByQuestion.get(nums[i]) ?? 0;
+    return Math.max(0, Math.min(Math.round(r / step) * step, max));
+  });
+
+  // 修正取整漂移，使合计精确等于题块总分（从末题向前吸收余量）
+  let residual =
+    Math.round((blockTotal - rounded.reduce((a, b) => a + b, 0)) / step) * step;
+  for (let i = nums.length - 1; i >= 0 && Math.abs(residual) > 1e-9; i--) {
+    const before = rounded[i];
+    const max = maxScoreByQuestion.get(nums[i]) ?? 0;
+    const next = Math.max(0, Math.min(before + residual, max));
+    residual -= next - before;
+    rounded[i] = next;
   }
+
+  nums.forEach((q, i) => result.set(q, rounded[i]));
   return result;
 }
 
@@ -227,6 +245,15 @@ export async function submitReviewCropScores(params: {
   // 优先采用题块总分：前端只提交一个合计分，后端按比例拆分到各小题并写入正确的逐题满分。
   // 未提交题块总分时（如 OnlineReviewPanel 逐题输入），按逐题校验的严格模式处理。
   const step = config.hasHalfPoint ? 0.5 : 1;
+  // 评分模式 / 拆分策略以题块配置为准（修复 scoringMode 配置失效的冲突）
+  const scoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";
+  const distribution = config.scoreDistribution === "equal" ? "equal" : "proportional";
+  // 冲突修复：逐题评分模式下前端不应提交题块总分，否则与配置意图相悖且会丢失逐题分数
+  if (scoringMode === "per_question" && params.blockTotalScore != null) {
+    throw new Error(
+      "该题块配置为「逐题评分」模式，前端不应提交题块总分；请改用在线阅卷逐题输入，或将该题块评分模式改为「题块总分」"
+    );
+  }
   const submittedScores: Array<{ questionNumber: number; scoreType: string; score: number; maxScore: number }> =
     params.blockTotalScore != null
       ? (() => {
@@ -240,7 +267,8 @@ export async function submitReviewCropScores(params: {
             params.scores,
             maxScoreByQuestion,
             maxBlockScore,
-            step
+            step,
+            distribution
           );
           return params.scores.map((item) => {
             const qNum = item.questionNumber;

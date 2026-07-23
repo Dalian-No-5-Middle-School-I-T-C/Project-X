@@ -133,6 +133,22 @@ export async function upsertBlockConfig(
     blockId
   ) as { id: number } | undefined;
 
+  // 校验评分模式 / 拆分策略枚举，避免写入非法值
+  if (
+    updates.scoringMode !== undefined &&
+    updates.scoringMode !== "block_total" &&
+    updates.scoringMode !== "per_question"
+  ) {
+    throw new Error(`scoringMode 取值非法：${updates.scoringMode}（仅允许 block_total / per_question）`);
+  }
+  if (
+    updates.scoreDistribution !== undefined &&
+    updates.scoreDistribution !== "proportional" &&
+    updates.scoreDistribution !== "equal"
+  ) {
+    throw new Error(`scoreDistribution 取值非法：${updates.scoreDistribution}（仅允许 proportional / equal）`);
+  }
+
   if (existing) {
     const setClauses: string[] = [];
     const values: unknown[] = [];
