@@ -26,6 +26,7 @@ type FontCandidate = {
 };
 
 const bundledFontCandidates: FontCandidate[] = [
+  { filePath: "C:\\Windows\\Fonts\\simsun.ttc", postscriptName: "SimSun" },
   { filePath: "C:\\Windows\\Fonts\\msyh.ttc", postscriptName: "MicrosoftYaHei" },
   { filePath: "C:\\Windows\\Fonts\\simhei.ttf" },
   { filePath: "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", postscriptName: "NotoSansCJKsc-Regular" },
@@ -181,26 +182,58 @@ function drawHeader(doc: PDFKit.PDFDocument, page: PageLayout) {
 
 function drawStudentArea(doc: PDFKit.PDFDocument, page: PageLayout) {
   if (!page.studentArea) return;
-  const { infoRect, digitRect, digitCells } = page.studentArea;
-  drawRect(doc, infoRect, { stroke: "#333", lineWidth: 0.25 });
-  drawRect(doc, digitRect, { stroke: "#333", lineWidth: 0.25 });
-  drawCenteredText(doc, "填涂号区", digitRect.x, digitRect.y + 2, digitRect.width, 10);
+  const { infoRect, digitRect, digitCells, digitHeaderCells, digitLabelCells, notesRect, combinedRect, fieldRows, boxInfo } = page.studentArea;
 
-  drawText(doc, "姓名：", infoRect.x + 5, infoRect.y + 10, 9);
-  doc.moveTo(pt(infoRect.x + 18), pt(infoRect.y + 14.5)).lineTo(pt(infoRect.x + infoRect.width - 9), pt(infoRect.y + 14.5)).stroke();
-  drawText(doc, "班级：", infoRect.x + 5, infoRect.y + 22, 9);
-  doc.moveTo(pt(infoRect.x + 18), pt(infoRect.y + 26.5)).lineTo(pt(infoRect.x + infoRect.width - 9), pt(infoRect.y + 26.5)).stroke();
-
-  for (let row = 0; row < Math.max(...digitCells.map((cell) => cell.digitIndex)) + 1; row += 1) {
-    doc.moveTo(pt(digitRect.x), pt(digitRect.y + 7 + row * 4.8)).lineTo(pt(digitRect.x + digitRect.width), pt(digitRect.y + 7 + row * 4.8)).stroke();
+  for (const row of fieldRows) {
+    drawText(doc, row.label, row.labelX, row.labelY - 0.5, 8.5);
+    doc.moveTo(pt(row.lineX1), pt(row.lineY)).lineTo(pt(row.lineX2), pt(row.lineY)).stroke();
   }
-  const separatorX = digitRect.x + 8.5;
-  doc.moveTo(pt(separatorX), pt(digitRect.y + 7)).lineTo(pt(separatorX), pt(digitRect.y + digitRect.height)).stroke();
 
-  digitCells.forEach((cell) => {
-    drawRect(doc, cell.rect, { stroke: "#333", lineWidth: 0.15 });
-    drawCenteredText(doc, String(cell.digit), cell.rect.x, cell.rect.y - 0.15, cell.rect.width, 5.5);
-  });
+  // A4 左侧栏：描基本信息外框
+  if (boxInfo !== false) {
+    drawRect(doc, infoRect, { stroke: "#333", lineWidth: 0.25 });
+  }
+  // A3 模板式：描「注意事项 + 填涂号区」的大方框
+  if (combinedRect) {
+    drawRect(doc, combinedRect, { stroke: "#333", lineWidth: 0.25 });
+  }
+
+  if (notesRect) {
+    if (!combinedRect) drawRect(doc, notesRect, { stroke: "#333", lineWidth: 0.25 });
+    drawCenteredText(doc, "注意事项", notesRect.x, notesRect.y + 1.5, notesRect.width, 9);
+    doc.lineWidth(pt(0.2));
+    doc.moveTo(pt(notesRect.x), pt(notesRect.y + 5.5)).lineTo(pt(notesRect.x + notesRect.width), pt(notesRect.y + 5.5)).stroke();
+    const lines = (page.studentArea.notesText ?? "").split("\n").filter((line) => line.trim().length > 0);
+    lines.forEach((line, index) => {
+      drawText(doc, line.trim(), notesRect.x + 3, notesRect.y + 7.8 + index * 4.8, 7.5);
+    });
+  }
+
+  // A3 大方框内注意事项与填涂号区之间的分隔线
+  if (combinedRect && notesRect && digitRect.width > 0) {
+    const sepX = notesRect.x + notesRect.width + (digitRect.x - (notesRect.x + notesRect.width)) / 2;
+    doc.moveTo(pt(sepX), pt(combinedRect.y + 4)).lineTo(pt(sepX), pt(combinedRect.y + combinedRect.height - 4)).stroke();
+  }
+
+  if (digitRect.width > 0) {
+    if (!combinedRect) drawRect(doc, digitRect, { stroke: "#333", lineWidth: 0.25 });
+    drawCenteredText(doc, "填涂号区", digitRect.x, digitRect.y + 2, digitRect.width, 9);
+
+    // 左侧空框列：供考生手填考号位（标准表格形态，仅画空方框、不印文字）
+    (digitLabelCells ?? []).forEach((label) => {
+      drawRect(doc, label.rect, { stroke: "#333", lineWidth: 0.15 });
+    });
+    // 顶部表头行：0-9 列标（标准表格形态）
+    (digitHeaderCells ?? []).forEach((header) => {
+      drawRect(doc, header.rect, { stroke: "#333", lineWidth: 0.15 });
+      drawCenteredText(doc, String(header.digit), header.rect.x, header.rect.y - 0.1, header.rect.width, 5.5);
+    });
+    // 数据格：0-9 直接印在每格内（保持 OpenCV 识别几何恒定）
+    digitCells.forEach((cell) => {
+      drawRect(doc, cell.rect, { stroke: "#333", lineWidth: 0.15 });
+      drawCenteredText(doc, String(cell.digit), cell.rect.x, cell.rect.y - 0.15, cell.rect.width, 5.5);
+    });
+  }
 }
 
 function drawObjectiveBlock(doc: PDFKit.PDFDocument, block: Extract<PageRenderBlock, { type: "objective" }>) {
@@ -254,14 +287,15 @@ function drawEssayGrid(
   block: Extract<PageRenderBlock, { type: "subjective" }>
 ) {
   const q = originalBlock.questions[0];
-  const g = q?.essayGrid;
-  if (!g) return;
+  const g = q?.essayGrid ?? { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
 
   const cellW = g.cellWidthMm || 7;
   const cellH = g.cellHeightMm || 7;
   const lineColor = g.lineColor || "#222";
   const lineW = g.lineWidthMm ?? 0.15;
   const showTitle = g.showTitle !== false;
+  const showFrame = g.showFrame !== false;
+  const showWordScale = g.showWordScale !== false;
   const insetX = 4;
 
   const bodyW = block.rect.width;
@@ -270,23 +304,62 @@ function drawEssayGrid(
   const gridW = columns * cellW;
   const offsetX = block.rect.x + (bodyW - gridW) / 2;
 
-  const gridH = block.rect.height - (showTitle ? 9 : 2);
-  const rows = Math.floor(gridH / cellH);
-  const startY = block.rect.y + (showTitle ? 9 : 2);
+  const gap = 1.6; // 行间窄溜宽度（mm），仅作为格间空隙，格子本身保持完整高度
+  const gridTop = showTitle ? 9 : 2;
+  const bottomPad = 2;
+  const gridH = block.rect.height - gridTop - bottomPad;
+  const rows = Math.max(0, Math.floor((gridH + gap) / (cellH + gap)));
+  const startY = block.rect.y + gridTop;
 
-  // 标题
-  if (showTitle) {
-    drawText(doc, `${block.title}（${q?.score ?? 0}分）`, block.rect.x + insetX, block.rect.y + 1.5, 9);
+  // 粗边框（仿考试卷作文格外框）
+  if (showFrame && block.frameRect) {
+    drawRect(doc, block.frameRect, { stroke: "#111", lineWidth: 0.4 });
   }
 
-  // 格子
+  // 标题（置于边框内左上角）
+  if (showTitle) {
+    drawText(doc, block.title, block.rect.x + insetX, block.rect.y + 1.5, 9);
+  }
+
+  // 格子：保持完整高度，行间留出较宽窄溜用于横向标注字数刻度
   for (let row = 0; row < rows; row++) {
+    const cy = startY + row * (cellH + gap);
     for (let col = 0; col < columns; col++) {
       const cx = offsetX + col * cellW;
-      const cy = startY + row * cellH;
       drawRect(doc, { x: cx, y: cy, width: cellW, height: cellH }, {
         stroke: lineColor, lineWidth: lineW, fill: "#fff"
       });
+    }
+    // 行间窄溜：淡虚线贯穿整栏（末行不画）
+    if (row < rows - 1) {
+      const lineY = startY + (row + 1) * (cellH + gap) - gap / 2;
+      doc.lineWidth(pt(0.08));
+      doc.strokeColor("#ddd");
+      doc.dash(pt(1), { space: pt(1) });
+      doc.moveTo(pt(offsetX), pt(lineY)).lineTo(pt(offsetX + gridW), pt(lineY)).stroke();
+      doc.undash();
+    }
+  }
+
+  // 字数刻度：每 100 字里程碑数字置于该行下方窄缝、右对齐到对应格右边线（格子右下角的窄溜里，不进格内）
+  if (showWordScale && columns > 0) {
+    const startCell = block.essayStartCell ?? 0;
+    const targetCells = g.targetChars || 600;
+    const padX = 0.6; // 距格右边线内缩
+    for (let row = 0; row < rows; row++) {
+      const rowStart = startCell + row * columns;
+      const rowEnd = rowStart + columns - 1;
+      const milestone = Math.ceil((rowStart + 1) / 100) * 100;
+      if (milestone <= rowEnd && milestone <= targetCells) {
+        const cellIndex = milestone - rowStart - 1;
+        const cellRight = offsetX + (cellIndex + 1) * cellW;       // 该格右边线
+        const seamY = startY + (row + 1) * (cellH + gap) - gap / 2; // 该行下方窄缝中心（保持正下方）
+        const boxW = cellW + 1; // 容错宽度，右对齐落在格右边线内缩处
+        // 右对齐：数字贴该格右边线（内缩 padX），竖直仍在该行下方窄缝
+        drawText(doc, String(milestone), cellRight - padX - boxW, seamY - 1.1, 4.5, {
+          width: boxW, align: "right", lineBreak: false
+        });
+      }
     }
   }
 }

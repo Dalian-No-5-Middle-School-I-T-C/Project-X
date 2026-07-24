@@ -40,6 +40,63 @@
 - 阶段 5 手势增强（`useSwipeClose` / `usePullToRefresh` 原生 touch，可选）。
 - 真机验证：iOS Safari + Android Chrome，480px 全功能可达、无横向溢出、输入框不缩放。
 
+**阶段 5：作文块适配修复（2026-07-24）**
+> 修复作文块在设计器中身份错乱、配置面板暴露不适用字段、预览双重标题，以及后端上传与资源服务的安全隐患。全部改动经 `npm run build`（typecheck + web + server）验证通过，无 TS 错误。
+
+**UX / 功能缺陷（P0）**
+- `client/App.tsx` `autoNameBlocks`：按 `sub.blockKind` 区分「作文 / 填空题 / 解答题」，不再把作文块强制改名成「解答题」（此前任何保存都会把作文块标题覆盖为「解答题」）。
+- `client/pages/DesignEditors.tsx` `SubjectiveEditor`：作文块（`isEssayBlock`）隐藏不适用字段——主观题样式、得分填涂格、作答区类型、最小高度、启用横线格/线格；并隐藏删除小题按钮（作文块固定单题，防止误删唯一小题）。
+- 预览标题去重：`SubjectiveSvg`（SVG 预览）与 `server/pdf.ts` `drawEssayGrid`（PDF）统一为仅渲染 `block.title` 单行标题，移除冗余「题：（000）」硬编码第二行与重复「（分数分）」后缀；`essayGrid` 缺失时以默认值兜底渲染占位框，不再 `return null` 导致整块消失。
+
+**体验（P1）**
+- 作文块配置面板新增实时预估：「预计约 N 行 × M 栏（每面板 X 列，A3 三栏并排）。实际页数取决于版面余量。」依据 `card.paper.size` 与格子尺寸计算。
+- 复选框文案 `显示"题：（000）"标题` → `在答题区上方显示标题`，更专业。
+
+**后端安全与稳定性（P3）**
+- `server/validate-upload.ts` 的 `assertImageFile`（magic bytes 校验）接入题块图片上传与自定义背景上传，拒绝伪装成图片的 HTML/JS，关闭存储型 XSS 入口（此前仅校验 MIME，可伪造）。
+- `server/index.ts`：移除公开的 `app.use("/assets", express.static(...))`，改为受控路由 `GET /api/assets/:cardId/:assetId`，使用 `path.basename` 防路径穿越，`existsSync` 校验，私有缓存头；前端 `apiUrl` 引用同步改为 `/api/assets/...`。
+- `normalizeCard`：对主观题 `essayGrid` 做上限校验（`targetChars ≤ 5000`、`rows ≤ 200`、`columns ≤ 60`、`cellWidth/HeightMm ∈ [4,12]`、`lineWidthMm ∈ [0.05,0.5]`），防止超大数据触发布局/PDF 生成 DoS。
+
+### 阶段 6：作文块布局独占新页 + 美学仿制（2026-07-24）
+
+> 修复「作文格嵌入上一页答题区」的核心布局缺陷，并仿照标准考试卷作文格（粗外框、字数刻度、标题内置）提升视觉专业度。改动均经 `npm run build` 验证（typecheck + web + server，EXIT 0）。
+
+**布局修复（P0：作文块独占新页/新栏）**
+- `shared/layout.ts`：新增 `nextPage()`（前进到下一物理页）回调，与原有 `nextPanel()`（前进一栏）区分。
+- `layoutSubjectiveBlock`：作文块（`blockKind === "essay"`）进入布局前，若当前页已有内容，先 `nextPage()` 跳到下一物理页顶部，杜绝作文格被塞进上一页底部的窄条。
+- `layoutEssayBlock`：移除依赖 `nextPanel` 的「逐栏前进」逻辑，改为统一以物理页为单位（`newPage()` 绑定为物理页回调），整页写满后前进到下一物理页；`safeRowsThisPanel` 计算改为 `min(本页可放行数, 平摊每栏行数)`，保证最后一页铺满且不留无效窄条。
+
+**渲染美学（P1：仿制模板）**
+- `EssayGridConfig` 新增 `showFrame?`（默认 true）、`showWordScale?`（默认 true）。
+- `shared/layout.ts`：作文块现在生成 `frameRect`（粗边框矩形），与常规主观题一致。
+- `server/pdf.ts` 的 `drawEssayGrid` 与 `DesignEditors.tsx` 的 `SubjectiveSvg` 作文分支同步增强：
+  - 绘制 `#111` 0.4mm 外边框（`showFrame` 控制）；
+  - 标题置于边框内左上角（`showTitle` 控制）；
+  - 字数刻度：每 100 字在左缘画短横线 + 数字标注（`showWordScale` 控制），每栏独立计数；
+  - SVG 与 PDF 共用同一套行数/边距/刻度算法，避免漂移。
+
+**配置面板（P1）**
+- `DesignEditors.tsx` 作文块配置区新增「显示作文区外边框」「显示字数刻度（每 100 字标注）」两个复选框。
+- `cardModel.ts` 的 `defaultEssayBlock` 初始化 `showFrame: true`、`showWordScale: true`。
+- `server/index.ts` 的 `normalizeCard` 在重建 `essayGrid` 时保留 `showFrame` / `showWordScale`，避免保存后被丢弃。
+
+### 阶段 6.1：字数额度修复 + 字数里程碑跨栏连续 + 行间窄溜（2026-07-24）
+
+> 针对阶段 6 上线后用户反馈的三个问题：① 目标字数（如 500）实际生成格子远不足；② A3 三栏都显示「作文题」标题；③ 缺少模板「两行格中间的窄溜」与每 100 字全局连续标注。本轮一次性修复，均经 `npm run build` 验证（EXIT 0）。
+
+**字数额度修复（P0）**
+- `shared/layout.ts` 的 `layoutEssayBlock` 重写分页逻辑：目标由「按整页总列数折算的行数」改为**按总格子数 `targetChars` 累计驱动**——`produced` 全局累计，每栏 `essayStartCell = produced + p*columns*rowsToDraw` 记录该栏首格全局序号，跨栏/跨页连续生成直到 `produced >= targetChars`。彻底解决 500 字只生成约 378 格的问题。
+- 同一物理页三栏改用统一 `gridTopBase`（`showTitle ? 9 : 2`）计算块高，保证**三栏等高、底部对齐**；续写栏标题区留白。
+
+**标题去重（P0）**
+- `layoutEssayBlock` 仅第一栏（`isFirstPanelOverall && p===0`）带 `title`，其余栏 `title` 置空，渲染器遇空标题不画标题行。消除 A3 三栏都显示「作文题」的怪象。
+
+**行间窄溜 + 字数里程碑（P1，仿模板）**
+- `shared/types.ts` 的 `SubjectiveRenderBlock` 新增 `essayStartCell?: number`，供渲染层计算全局累计字数。
+- SVG（`DesignEditors.tsx`）与 PDF（`server/pdf.ts`）同步：
+  - 每个格子上下各留 0.3mm 间隙（`drawH = cellH - 0.6`），并在每行底部画淡色虚线（`#ddd`、0.08mm、`dash 1,1`）形成「行间窄溜」；
+  - 字数刻度改为**跨栏全局连续**：依据 `block.essayStartCell` 计算每行跨过的第一个 100 倍数（`ceil((rowStart+1)/100)*100`），左侧画突出长标记线（`#555`、0.15mm）+ 精确标注 `100/200/300…`，且 `milestone <= targetChars` 才标。三栏不再各自从 100 重数。
+
 ---
 
 ## v1.9.2 (2026-07-21) — 网页化改造 / 启动台模式 + 前端风格统一 + BUG 修复
