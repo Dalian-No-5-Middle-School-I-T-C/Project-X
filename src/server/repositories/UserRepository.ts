@@ -1,7 +1,7 @@
 import { getMysqlDb, buildInsertIgnore } from "../db";
 import type { DbAdapter } from "../db";
 import { hashPassword, verifyPassword } from "../db";
-import { validateInitialPassword } from "../auth/passwordPolicy";
+import { validateInitialPassword, generateRandomInitialPassword } from "../auth/passwordPolicy";
 import crypto from "node:crypto";
 
 export interface UserRecord {
@@ -135,22 +135,22 @@ export class UserRepository {
 
   async batchCreateStudents(rows: BatchStudentInput[]): Promise<BatchImportResult> {
     const result: BatchImportResult = { created: 0, skipped: 0, errors: [], createdIds: [] };
-    const prepared: Array<{ row: BatchStudentInput; username: string; hash: string }> = [];
+    const prepared: Array<{ row: BatchStudentInput; username: string; hash: string; initialPassword: string }> = [];
     for (const row of rows) {
       const username = (row.username || row.student_number || "").trim();
       const studentNumber = (row.student_number || "").trim();
       if (!username || !studentNumber || !row.name) { result.errors.push({ row, message: "缺少用户名/学号/姓名" }); continue; }
       if (await this.usernameExists(username) || await this.studentNumberExists(studentNumber)) { result.skipped++; result.errors.push({ row, message: "用户名或学号已存在" }); continue; }
-      const initialPassword = row.password || studentNumber;
+      // 显式密码优先；缺失时生成不可推导随机初始密码（不再以学号兜底）
+      const initialPassword = row.password || generateRandomInitialPassword();
       const passwordError = validateInitialPassword({ password: initialPassword, isStudent: true, studentNumber });
       if (passwordError) { result.errors.push({ row, message: passwordError }); continue; }
-      prepared.push({ row: { ...row, username, student_number: studentNumber }, username, hash: await hashPassword(initialPassword) });
+      prepared.push({ row: { ...row, username, student_number: studentNumber }, username, hash: await hashPassword(initialPassword), initialPassword });
     }
     await this.db.transaction(async (tx) => {
       for (const item of prepared) {
         try {
-          const initPwd = item.row.password || item.row.student_number;
-          const insertResult = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", item.username, item.hash, item.row.name, item.row.student_number, initPwd);
+          const insertResult = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", item.username, item.hash, item.row.name, item.row.student_number, item.initialPassword);
           result.created++;
           result.createdIds.push(insertResult.lastInsertRowid);
         } catch (err) { result.errors.push({ row: item.row, message: err instanceof Error ? err.message : String(err) }); }
@@ -266,7 +266,7 @@ export class UserRepository {
           const studentNumber = (row[numberIdx] ?? "").trim(), studentName = (row[nameIdx] ?? "").trim();
           if (!studentNumber && !studentName) continue;
           if (!studentNumber || !studentName) { result.students.errors.push({ row, message: "缺少学号/姓名" }); continue; }
-          const username = `P${studentNumber}`, password = username;
+          const username = `P${studentNumber}`, password = generateRandomInitialPassword();
           if (!gradeName || !className) { result.students.errors.push({ row, message: "缺少年级/班级" }); continue; }
 
           const existingStudent = await this.findByStudentNumber(studentNumber);
