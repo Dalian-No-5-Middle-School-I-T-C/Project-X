@@ -4,7 +4,6 @@
 import { SquarePen, ListPlus, ArrowUp, ArrowDown, Plus, Trash2 } from "lucide-react";
 import { useWorkspace } from "../WorkspaceContext";
 import { CardPreview, ObjectiveEditor, SubjectiveEditor } from "./DesignEditors";
-import { DEFAULT_STUDENT_NOTES } from "../../../../shared/defaultCard";
 
 export function DesignPage() {
   const {
@@ -100,62 +99,6 @@ export function DesignPage() {
                   }
                 />
               </label>
-
-              <div style={{ marginTop: 4 }}>
-                <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>基本信息字段</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 12px" }}>
-                  {[
-                    { key: "showName", label: "姓名" },
-                    { key: "showClass", label: "班级" },
-                    { key: "showSeat", label: "座位号" },
-                    { key: "showExamNumber", label: "考号" },
-                    { key: "showStudentNumber", label: "学号（填涂号区）" }
-                  ].map((item) => (
-                    <label key={item.key} className="check-row" style={{ fontSize: 12 }}>
-                      <input
-                        type="checkbox"
-                        checked={card.studentInfo[item.key as keyof typeof card.studentInfo] === true}
-                        onChange={(event) =>
-                          updateCard((draft) => {
-                            (draft.studentInfo as unknown as Record<string, boolean | undefined>)[item.key] = event.target.checked;
-                          })
-                        }
-                      />
-                      {item.label}
-                    </label>
-                  ))}
-                </div>
-              </div>
-
-              <label className="check-row" style={{ marginTop: 6 }}>
-                <input
-                  type="checkbox"
-                  checked={card.studentInfo.showNotes === true}
-                  onChange={(event) =>
-                    updateCard((draft) => {
-                      draft.studentInfo.showNotes = event.target.checked;
-                      if (event.target.checked && !draft.studentInfo.notesText) {
-                        draft.studentInfo.notesText = DEFAULT_STUDENT_NOTES;
-                      }
-                    })
-                  }
-                />
-                显示注意事项
-              </label>
-              {card.studentInfo.showNotes === true && (
-                <label style={{ marginTop: 4 }}>
-                  注意事项内容
-                  <textarea
-                    rows={4}
-                    value={card.studentInfo.notesText || DEFAULT_STUDENT_NOTES}
-                    onChange={(event) =>
-                      updateCard((draft) => void (draft.studentInfo.notesText = event.target.value))
-                    }
-                    style={{ fontSize: 12, resize: "vertical" }}
-                  />
-                </label>
-              )}
-
               <label>
                 答题卡面
                 <select
@@ -221,7 +164,6 @@ export function DesignPage() {
                 ) : (
                   <SubjectiveEditor
                     block={selectedBlock}
-                    card={card}
                     layoutVersion={card.layoutVersion}
                     onChange={(mutator) => updateBlock(selectedBlock.id, mutator)}
                     onUpload={uploadImage}

@@ -14,7 +14,7 @@ import { AnalysisRepository } from "../../../server/repositories/AnalysisReposit
 import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
 import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
-import type { AssignedFormula, StudentInfoSettings } from "../../../shared/types";
+import type { AssignedFormula } from "../../../shared/types";
 import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
 import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import authRoutes from "../../../server/routes/auth";
@@ -50,7 +50,7 @@ import { optionalAuth, authMiddleware, requirePermission } from "../../../server
 import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
 import { authService } from "../../../server/services/AuthService";
 import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
-import { createDefaultCard, DEFAULT_STUDENT_INFO, generateCardId } from "../../../shared/defaultCard";
+import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
@@ -107,36 +107,6 @@ async function resolveConfidenceThreshold(req: express.Request): Promise<number>
   return resolveReviewConfidenceThreshold(req.user?.id);
 }
 
-/** 数值夹紧：非有限数回落到 fallback，并约束在 [min, max] 区间。 */
-function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
-  const n = typeof value === "number" && Number.isFinite(value) ? value : fallback;
-  return Math.min(max, Math.max(min, n));
-}
-
-/** 整数夹紧：四舍五入后约束在 [min, max] 区间。 */
-function clampInt(value: unknown, min: number, max: number, fallback: number = 0): number {
-  const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
-  return Math.min(max, Math.max(min, n));
-}
-
-function normalizeStudentInfo(info: StudentInfoSettings | undefined, paperSize: "A4" | "A3"): StudentInfoSettings {
-  const legacyFields = Array.isArray(info?.fields) ? info!.fields : [];
-  const base = {
-    studentNumberDigits: clampInt(info?.studentNumberDigits, 1, 12, DEFAULT_STUDENT_INFO.studentNumberDigits),
-    showName: info?.showName ?? legacyFields.includes("姓名"),
-    showClass: info?.showClass ?? legacyFields.includes("班级"),
-    showSeat: info?.showSeat ?? false,
-    showExamNumber: info?.showExamNumber ?? false,
-    showStudentNumber: info?.showStudentNumber ?? legacyFields.includes("学号") ?? true,
-    // A3 默认带注意事项（参考模板）；A4 默认不带
-    showNotes: info?.showNotes ?? (paperSize === "A3"),
-    notesText: typeof info?.notesText === "string" && info.notesText.length <= 1000
-      ? info.notesText
-      : DEFAULT_STUDENT_INFO.notesText
-  };
-  return base;
-}
-
 function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
   const examDate = fieldValue((card as any).examDate ?? card.examDate).trim();
   const paperSize = card.paper?.size === "A3" ? "A3" : "A4";
@@ -155,36 +125,16 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
       if (block.type === "subjective" && Array.isArray((block as any).questions)) {
         return {
           ...block,
-          questions: (block as any).questions.map((q: any) => {
-            const normalized = {
-              ...q,
-              score: typeof q.score === "number" ? q.score : 0,
-              minHeightMm: typeof q.minHeightMm === "number" ? q.minHeightMm : 68,
-            };
-            // 作文格参数上限校验，防止 targetChars/rows/columns 过大导致布局与 PDF 生成 DoS。
-            if (q.essayGrid) {
-              const g = q.essayGrid;
-              normalized.essayGrid = {
-                columns: clampInt(g.columns, 0, 60),
-                rows: clampInt(g.rows, 0, 200),
-                cellWidthMm: clampNumber(g.cellWidthMm, 4, 12, 7),
-                cellHeightMm: clampNumber(g.cellHeightMm, 4, 12, 7),
-                targetChars: clampInt(g.targetChars, 1, 5000, 600),
-                showTitle: g.showTitle !== false,
-                lineColor: typeof g.lineColor === "string" ? g.lineColor : "#222",
-                lineWidthMm: clampNumber(g.lineWidthMm, 0.05, 0.5, 0.15),
-                showFrame: g.showFrame !== false,
-                showWordScale: g.showWordScale !== false,
-              };
-            }
-            return normalized;
-          })
+          questions: (block as any).questions.map((q: any) => ({
+            ...q,
+            score: typeof q.score === "number" ? q.score : 0,
+            minHeightMm: typeof q.minHeightMm === "number" ? q.minHeightMm : 68,
+          }))
         };
       }
       return block;
     }),
     paper: { size: paperSize, orientation: paperSize === "A3" ? "landscape" : "portrait" },
-    studentInfo: normalizeStudentInfo(card.studentInfo, paperSize),
     layoutVersion: card.layoutVersion === 2 ? 2 : 1,
     updatedAt: new Date().toISOString()
   };
@@ -561,24 +511,7 @@ export async function createApp(): Promise<express.Express> {
     if (req.method === "OPTIONS") { res.status(204).end(); return; }
     next();
   });
-  // 受控资源路由：替换原先公开的 app.use("/assets", express.static(...))。
-  // 通过 cardAssetsDir 落盘，使用 path.basename 防止路径穿越；仍置于 /api 下便于统一鉴权与缓存策略。
-  app.get("/api/assets/:cardId/:assetId", optionalAuth, (req, res) => {
-    const cardId = safeId(paramValue(req.params.cardId));
-    const assetId = path.basename(String(req.params.assetId));
-    const dir = cardAssetsDir(cardId);
-    const target = path.join(dir, assetId);
-    if (!target.startsWith(dir)) {
-      res.status(400).json({ message: "非法路径" });
-      return;
-    }
-    if (!existsSync(target)) {
-      res.status(404).json({ message: "资源不存在" });
-      return;
-    }
-    res.setHeader("Cache-Control", "private, max-age=86400");
-    res.sendFile(target);
-  });
+  app.use("/assets", express.static(assetsDir));
 
   app.get("/api/app/health", async (_req, res) => {
     const db = await healthCheck();
@@ -685,7 +618,6 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ error: "请选择图片文件" });
         return;
       }
-      if (!await assertImageFile(req.file.path, res)) return;
       // 重命名为 user_${userId}.jpg，覆盖旧背景
       const target = path.join(backgroundsDir, `${req.user?.id}.jpg`);
       await rename(req.file.path, target);
@@ -1270,11 +1202,10 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "没有收到图片文件" });
         return;
       }
-      if (!await assertImageFile(req.file.path, res)) return;
       res.status(201).json({
         assetId: req.file.filename,
         originalName: req.file.originalname,
-        url: `/api/assets/${cardId}/${req.file.filename}`
+        url: `/assets/${cardId}/${req.file.filename}`
       });
     } catch (error) {
       next(error);

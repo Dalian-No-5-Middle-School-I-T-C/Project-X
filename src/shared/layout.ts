@@ -14,7 +14,6 @@ import type {
   SubjectiveQuestion
 } from "./types";
 import { formatBlankLabel } from "./blankLabels";
-import { DEFAULT_STUDENT_NOTES } from "./defaultCard";
 import { objectiveQuestionDefinitions, type ObjectiveQuestionDefinition } from "./grading";
 
 let PAGE_WIDTH = 210;
@@ -50,8 +49,8 @@ const DENSITY: Record<ObjectiveDensity, DensitySettings> = {
 };
 const OBJECTIVE_SETTINGS = DENSITY.compact;
 const OBJECTIVE_FRAME_TOP = 6.2;
-const OBJECTIVE_INNER_TOP = 1.4;
-const OBJECTIVE_INNER_BOTTOM = 1.0;
+const OBJECTIVE_INNER_TOP = 2.4;
+const OBJECTIVE_INNER_BOTTOM = 2.2;
 const OBJECTIVE_ROW_MARKER_SIZE = 2.2;
 const OBJECTIVE_OPTION_TOP_OFFSET = 0.9;
 const OBJECTIVE_CONTENT_SIDE_INSET = 8.5;
@@ -60,7 +59,7 @@ let OBJECTIVE_STANDARD_COLUMNS = 4;
 const OBJECTIVE_GRID_CELL_QUESTIONS = 5;
 const OBJECTIVE_VERTICAL_GROUP_QUESTIONS = 4;
 const OBJECTIVE_WIDE_OPTION_THRESHOLD = 5;
-const OBJECTIVE_GRID_ROW_GAP = 0.4;
+const OBJECTIVE_GRID_ROW_GAP = 1.5;
 
 type ObjectiveArrangementMode = "rows" | "grid" | "vertical-grid";
 
@@ -145,98 +144,24 @@ function createPage(card: AnswerCard, pageNumber: number, includeTitle: boolean)
   };
 }
 
-// 估算文本在给定字号（pt）下的宽度（mm），用于注意事项自动换行。
-function measureTextWidthMm(text: string, sizePt: number): number {
-  const unit = (sizePt / 72) * 25.4; // 一个 CJK 字宽 ≈ 字号
-  let width = 0;
-  for (const ch of text) {
-    width += /[\x00-\x7F]/.test(ch) ? unit * 0.5 : unit;
-  }
-  return width;
-}
+function layoutStudentArea(card: AnswerCard, page: PageLayout, y: number): StudentAreaLayout {
+  const rowCount = Math.max(1, card.studentInfo.studentNumberDigits);
+  const rowH = 4.8;
+  const areaHeight = Math.max(29, 7 + rowCount * rowH);
+  const infoWidth = IS_A3 ? 48 : 66;
+  const infoRect = rect(MARGIN_X, y, infoWidth, areaHeight);
+  const digitRect = rect(MARGIN_X + infoWidth + 4, y, BODY_WIDTH - infoWidth - 4, areaHeight);
+  const digitCells: StudentAreaLayout["digitCells"] = [];
+  const cellW = 4.6;
+  const cellH = 2.8;
+  const startX = digitRect.x + 13;
+  const startY = digitRect.y + 8;
+  const usableW = digitRect.width - 18;
+  const colGap = usableW / 10;
 
-// 按方框内可用宽度自动换行（保留显式换行符），返回换行后的行数组。
-// sizePt 取保守值 8（略大于实际渲染的 7.5pt），确保估算行宽不超过渲染宽度，文字不溢出框。
-function wrapNotesLines(text: string, innerWidthMm: number, sizePt = 8): string[] {
-  const out: string[] = [];
-  for (const raw of text.split("\n")) {
-    if (raw.length === 0) {
-      out.push("");
-      continue;
-    }
-    let current = "";
-    let width = 0;
-    for (const ch of raw) {
-      const w = /[\x00-\x7F]/.test(ch) ? (sizePt / 72) * 25.4 * 0.5 : (sizePt / 72) * 25.4;
-      if (width + w > innerWidthMm && current.length > 0) {
-        out.push(current);
-        current = ch;
-        width = w;
-      } else {
-        current += ch;
-        width += w;
-      }
-    }
-    out.push(current);
-  }
-  return out.filter((line) => line.trim().length > 0);
-}
-
-// 填涂号区格点几何（两种版式共用，固定尺寸以兼容 OpenCV 识别）
-const DIGIT_CELL_W = 5;
-const DIGIT_CELL_H = 2.8;
-const DIGIT_CELL_GAP = 1;
-const DIGIT_ROW_H = 4.8;
-const DIGIT_TOP_PAD = 8; // 「填涂号区」标题到表头行的距离
-const DIGIT_HEADER_H = 2.8; // 顶部 0-9 表头行高
-const DIGIT_LABEL_COL_W = 5; // 左侧空框列宽（供考生手填考号位）
-const DIGIT_SIDE_PAD = 3; // 填涂号区左右内边距（名义值，实际按可用宽自适应）
-const DIGIT_CELLS_W = 10 * DIGIT_CELL_W + 9 * DIGIT_CELL_GAP; // 数据格总宽 59mm
-// 标准表格形态紧凑外框宽（左空框列 + 数据格 + 两侧内边距）
-const DIGIT_COMPACT_W = DIGIT_LABEL_COL_W + DIGIT_CELLS_W + DIGIT_SIDE_PAD * 2; // 70mm
-
-function layoutDigitCells(
-  digitRect: Rect,
-  rowCount: number,
-  page: PageLayout,
-  digitCells: StudentAreaLayout["digitCells"],
-  headerCells?: StudentAreaLayout["digitHeaderCells"],
-  labelCells?: StudentAreaLayout["digitLabelCells"]
-): void {
-  const totalW = DIGIT_CELLS_W;
-  // 左右内边距按可用宽自适应（保证左空框列 + 数据格都能放下）
-  const sidePad = Math.max(1, (digitRect.width - DIGIT_LABEL_COL_W - DIGIT_CELLS_W) / 2);
-  const startX = digitRect.x + sidePad + DIGIT_LABEL_COL_W;
-  const headerY = digitRect.y + DIGIT_TOP_PAD;
-  const startY = digitRect.y + DIGIT_TOP_PAD + DIGIT_HEADER_H;
-  // 顶部表头行：0-9 列标（标准表格形态）
-  if (headerCells) {
-    for (let digit = 0; digit <= 9; digit += 1) {
-      const cell = rect(
-        startX + digit * (DIGIT_CELL_W + DIGIT_CELL_GAP),
-        headerY,
-        DIGIT_CELL_W,
-        DIGIT_HEADER_H
-      );
-      headerCells.push({ digit, rect: cell });
-    }
-  }
   for (let digitIndex = 0; digitIndex < rowCount; digitIndex += 1) {
-    // 左侧空框列：供考生手填考号位（标准表格形态，仅画空方框、不印文字）
-    if (labelCells) {
-      const labelY = startY + digitIndex * DIGIT_ROW_H + (DIGIT_ROW_H - DIGIT_CELL_H) / 2;
-      labelCells.push({
-        digitIndex,
-        rect: rect(digitRect.x + sidePad, labelY, DIGIT_LABEL_COL_W, DIGIT_CELL_H)
-      });
-    }
     for (let digit = 0; digit <= 9; digit += 1) {
-      const cell = rect(
-        startX + digit * (DIGIT_CELL_W + DIGIT_CELL_GAP),
-        startY + digitIndex * DIGIT_ROW_H,
-        DIGIT_CELL_W,
-        DIGIT_CELL_H
-      );
+      const cell = rect(startX + digit * colGap, startY + digitIndex * rowH, cellW, cellH);
       digitCells.push({ digitIndex, digit, rect: cell });
       page.elements.push({
         id: `p${page.pageNumber}_student_${digitIndex}_${digit}`,
@@ -247,206 +172,8 @@ function layoutDigitCells(
       });
     }
   }
-}
 
-function layoutStudentArea(card: AnswerCard, page: PageLayout, y: number): StudentAreaLayout {
-  const info = card.studentInfo;
-  const layoutMode: "left_sidebar" | "a3" = IS_A3 ? "a3" : "left_sidebar";
-  // A3 学生信息区仅占第一栏（参考模板，与正文等宽）；A4 同理用单栏宽
-  const areaX = MARGIN_X;
-  const areaW = BODY_WIDTH;
-  const rowCount = Math.max(1, info.studentNumberDigits);
-  const showStudentNumber = info.showStudentNumber !== false;
-
-  const textFields = [
-    { label: "姓名", flag: info.showName !== false, slot: 22 },
-    { label: "班级", flag: info.showClass !== false, slot: 20 },
-    { label: "座位号", flag: info.showSeat === true, slot: 22 },
-    { label: "考号", flag: info.showExamNumber === true, slot: 22 }
-  ];
-  const enabledFields = textFields.filter((field) => field.flag);
-
-  const showNotes = info.showNotes === true;
-  const notesTitleH = 5.5;
-  const notesLineH = 4.8;
-  const notesPadding = 3;
-  const basicWidth = IS_A3 ? 40 : 46;
-  const gapBetween = 4;
-  const minDigitWidth = 55;
-  // 三栏宽度：基本信息固定 + 注意事项（可压缩）+ 填涂号区（剩余，保底 minDigitWidth）
-  let notesWidth = showNotes ? (IS_A3 ? 44 : 50) : 0;
-  if (showNotes) {
-    const usableWithoutNotes = BODY_WIDTH - basicWidth - gapBetween * 2;
-    if (usableWithoutNotes - notesWidth < minDigitWidth) {
-      notesWidth = Math.max(20, usableWithoutNotes - minDigitWidth);
-    }
-  }
-  const rawNotes = showNotes ? (info.notesText || DEFAULT_STUDENT_NOTES) : "";
-  const notesLines = showNotes ? wrapNotesLines(rawNotes, notesWidth - notesPadding * 2) : [];
-  const notesHeight = showNotes ? notesTitleH + notesLines.length * notesLineH + notesPadding * 2 : 0;
-  let wrappedNotes = notesLines.join("\n");
-
-  const digitHeight = DIGIT_TOP_PAD + DIGIT_HEADER_H + rowCount * DIGIT_ROW_H + 2;
-
-  const fieldRows: StudentAreaLayout["fieldRows"] = [];
-  const digitCells: StudentAreaLayout["digitCells"] = [];
-  const digitHeaderCells: StudentAreaLayout["digitHeaderCells"] = [];
-  const digitLabelCells: StudentAreaLayout["digitLabelCells"] = [];
-  let infoRect: Rect;
-  let digitRect: Rect;
-  let notesRect: Rect | undefined;
-  let combinedRect: Rect | undefined;
-
-  if (layoutMode === "left_sidebar") {
-    // 三栏：基本信息（左） | 注意事项（中，可选） | 填涂号区（右，占满剩余栏宽）
-    const x0 = MARGIN_X;
-    const fieldRowHeight = 6;
-    const topPad = 4;
-    const botPad = 4;
-    const fieldsHeight = enabledFields.length * fieldRowHeight;
-    const basicInnerH = topPad + fieldsHeight + botPad;
-
-    // 填涂号区固定紧凑表格宽度（标准表格形态），右对齐于信息区右侧
-    const digitW = DIGIT_COMPACT_W;
-    const digitX = x0 + BODY_WIDTH - digitW;
-
-    // 注意事项：置于基本信息与填涂号区之间，填满中间空隙
-    let actualNotesWidth = 0;
-    if (showNotes) {
-      const notesX = x0 + basicWidth + gapBetween;
-      const availForNotes = digitX - gapBetween - notesX;
-      actualNotesWidth = availForNotes >= 14 ? availForNotes : 0;
-    }
-    const a4NotesLines = actualNotesWidth > 0 ? wrapNotesLines(rawNotes, actualNotesWidth - notesPadding * 2) : [];
-    const a4NotesHeight = actualNotesWidth > 0 ? notesTitleH + a4NotesLines.length * notesLineH + notesPadding * 2 : 0;
-    if (actualNotesWidth > 0) wrappedNotes = a4NotesLines.join("\n");
-
-    const areaHeight = Math.max(29, basicInnerH, a4NotesHeight, digitHeight);
-
-    const basicRect = rect(x0, y, basicWidth, areaHeight);
-    if (actualNotesWidth > 0) {
-      notesRect = rect(x0 + basicWidth + gapBetween, y, actualNotesWidth, areaHeight);
-    } else {
-      notesRect = undefined;
-      if (showNotes) wrappedNotes = ""; // 空间不足时不显示注意事项
-    }
-    digitRect = showStudentNumber
-      ? rect(digitX, y, digitW, areaHeight)
-      : rect(digitX, y, 0, areaHeight);
-
-    // 字段纵向居中：即使只选两项也位于信息框垂直中央
-    const fieldY0 = basicRect.y + (basicRect.height - fieldsHeight) / 2;
-    let fieldY = fieldY0;
-    for (const field of enabledFields) {
-      const label = `${field.label}：`;
-      const labelX = basicRect.x + 4;
-      const labelY = fieldY + 4.5;
-      const labelWidth = field.label.length * 3.5 + 1.5;
-      fieldRows.push({
-        label,
-        labelX,
-        labelY,
-        lineX1: labelX + labelWidth,
-        lineX2: basicRect.x + basicRect.width - 5,
-        lineY: fieldY + 5.2
-      });
-      fieldY += fieldRowHeight;
-    }
-
-    if (showStudentNumber && digitRect.width > 0) {
-      layoutDigitCells(digitRect, rowCount, page, digitCells, digitHeaderCells, digitLabelCells);
-    }
-
-    infoRect = basicRect;
-  } else {
-    // a3 模板式：字段横排于标题下方一行；其下「大方框」内含「注意事项 | 填涂号区」左右两栏，
-    // 与模板一致（学生信息区仅占第一栏，不跨整页）。填涂号区外框紧贴固定格点（59mm）+ 两侧 3mm。
-    const topPad = 3;
-    const fieldsGap = 8;
-    const fieldsRowH = 7;
-    const fieldUnderlineLen = 16; // 每个字段下方填空线固定长度，避免连成贯穿线
-    const fieldsAvailable = areaW - 8;
-    let fieldsRows = 1;
-    let cursorX = 0;
-    for (const field of enabledFields) {
-      const fieldW = field.label.length * 3.5 + 1.5 + fieldUnderlineLen;
-      if (cursorX > 0 && cursorX + fieldW > fieldsAvailable) {
-        fieldsRows += 1;
-        cursorX = 0;
-      }
-      cursorX += fieldW + fieldsGap;
-    }
-    if (enabledFields.length === 0) fieldsRows = 1;
-
-    const fieldsTop = y + topPad;
-    const fieldsBandH = Math.max(fieldsRows * fieldsRowH, 14);
-    const fieldsRowOffset = (fieldsBandH - fieldsRows * fieldsRowH) / 2;
-
-    const combPad = 4; // 大方框内边距
-    const combInnerW = areaW - combPad * 2;
-    const midGap = 4; // 注意事项与填涂号区之间的分隔间隙
-    const notesInnerW = showNotes ? 44 : 0; // 注意事项宽度（A3 模板式）
-    const digitBoxW = showStudentNumber ? Math.min(DIGIT_COMPACT_W, combInnerW - notesInnerW - midGap) : 0; // 标准表格紧凑宽（约70mm），不超过大方框内剩余宽
-    const combinedTop = fieldsTop + fieldsBandH + 5; // 字段行与大方框间距
-
-    const a3NotesLines = showNotes ? wrapNotesLines(rawNotes, notesInnerW - notesPadding * 2) : [];
-    wrappedNotes = a3NotesLines.join("\n");
-    const a3NotesBoxH = showNotes
-      ? notesTitleH + a3NotesLines.length * notesLineH + notesPadding * 2
-      : digitHeight;
-    const combInnerH = Math.max(a3NotesBoxH, digitHeight);
-
-    combinedRect = rect(areaX, combinedTop, areaW, combInnerH + combPad * 2);
-    if (showNotes) {
-      notesRect = rect(combinedRect.x + combPad, combinedTop + combPad, notesInnerW, combInnerH);
-    }
-    const digitX = combinedRect.x + combPad + notesInnerW + midGap;
-    digitRect = showStudentNumber
-      ? rect(digitX, combinedTop + combPad, digitBoxW, combInnerH)
-      : rect(combinedRect.x + combPad, combinedTop + combPad, 0, combInnerH);
-
-    // 字段横向排布：下划线固定长度，避免多个字段连成一条贯穿线
-    let rowIndex = 0;
-    let rowX = areaX + 4;
-    for (const field of enabledFields) {
-      const label = `${field.label}：`;
-      const labelWidth = field.label.length * 3.5 + 1.5;
-      const fieldW = labelWidth + fieldUnderlineLen;
-      if (rowX > areaX + 4 && rowX + fieldW > areaX + areaW - 4) {
-        rowIndex += 1;
-        rowX = areaX + 4;
-      }
-      const baseY = fieldsTop + fieldsRowOffset + rowIndex * fieldsRowH;
-      fieldRows.push({
-        label,
-        labelX: rowX,
-        labelY: baseY + 5.5,
-        lineX1: rowX + labelWidth,
-        lineX2: rowX + fieldW,
-        lineY: baseY + 6.2
-      });
-      rowX += fieldW + fieldsGap;
-    }
-
-    if (showStudentNumber && digitRect.width > 0) {
-      layoutDigitCells(digitRect, rowCount, page, digitCells, digitHeaderCells, digitLabelCells);
-    }
-
-    infoRect = rect(areaX, y, areaW, combinedRect.y + combinedRect.height - y);
-  }
-
-  page.studentArea = {
-    infoRect,
-    digitRect,
-    digitCells,
-    digitHeaderCells,
-    digitLabelCells,
-    notesRect,
-    combinedRect,
-    notesText: showNotes ? wrappedNotes : undefined,
-    fieldRows,
-    boxInfo: layoutMode === "a3" ? false : true
-  };
+  page.studentArea = { infoRect, digitRect, digitCells };
   return page.studentArea;
 }
 
@@ -759,7 +486,7 @@ const V2_SCORE_HEADER_HEIGHT = 6;
 const BLANK_BLOCK_INSET_X = 6;
 const BLANK_BLOCK_INSET_Y = 3;
 const BLANK_ITEM_GAP_X = 1.6;
-const BLANK_ITEM_ROW_HEIGHT = 11;
+const BLANK_ITEM_ROW_HEIGHT = 13;
 const BLANK_NUMBER_WIDTH = 8;
 const V1_BLANK_SCORE_HEADER_HEIGHT = 7;
 const BLANK_INNER_GAP_X = 2.4;
@@ -907,10 +634,10 @@ function answerBlankLabelWidth(spec: BlankLineSpec): number {
 
 function layoutAnswerBlankLines(question: SubjectiveQuestion, contentRect: Rect): PlacedBlankLine[] {
   const specs = blankLineSpecs(question);
-  const gapX = 4;
-  const gapY = 4;
-  const leftInset = 5;
-  const usableWidth = contentRect.width - leftInset - 5;
+  const gapX = 6;
+  const gapY = 5;
+  const leftInset = 8;
+  const usableWidth = contentRect.width - leftInset - 6;
   let x = contentRect.x + leftInset;
   let y = contentRect.y + 13;
   let rowHeight = 0;
@@ -1185,10 +912,7 @@ function availableHeight(y: number): number {
 
 function firstBodyY(card: AnswerCard, page: PageLayout): number {
   const studentArea = layoutStudentArea(card, page, 48);
-  const infoBottom = studentArea.infoRect.y + studentArea.infoRect.height;
-  const digitBottom =
-    studentArea.digitRect.width > 0 ? studentArea.digitRect.y + studentArea.digitRect.height : 0;
-  return Math.max(infoBottom, digitBottom) + 5;
+  return studentArea.digitRect.y + studentArea.digitRect.height + 5;
 }
 
 function nextPageY(): number {
@@ -1220,15 +944,6 @@ export function buildLayout(card: AnswerCard): LayoutDocument {
       pages.push(page);
       panelIndex = 0;
     }
-    activatePanel(page.panels[panelIndex]);
-    y = nextPageY();
-  };
-
-  // 前进到下一个「物理页」：作文块等需独占整页的内容使用，避免跨栏碎片。
-  const nextPage = () => {
-    page = createPage(card, pages.length + 1, false);
-    pages.push(page);
-    panelIndex = 0;
     activatePanel(page.panels[panelIndex]);
     y = nextPageY();
   };
@@ -1280,7 +995,7 @@ export function buildLayout(card: AnswerCard): LayoutDocument {
       continue;
     }
 
-    layoutSubjectiveBlock(block, ensureSpace, nextPanel, nextPage, () => page, (nextY) => {
+    layoutSubjectiveBlock(block, ensureSpace, nextPanel, () => page, (nextY) => {
       y = nextY;
     }, () => y);
   }
@@ -1300,7 +1015,8 @@ export function buildLayout(card: AnswerCard): LayoutDocument {
 
 function layoutEssayBlock(
   block: SubjectiveBlock,
-  nextPhysicalPage: () => void,
+  _ensureSpace: (height: number) => void,
+  newPage: () => void,
   getPage: () => PageLayout,
   setY: (value: number) => void,
   getY: () => number
@@ -1312,12 +1028,11 @@ function layoutEssayBlock(
     columns: 0, rows: 0, cellWidthMm: ESSAY_DEFAULT_CELL_MM,
     cellHeightMm: ESSAY_DEFAULT_CELL_MM, targetChars: 600,
     showTitle: true, lineColor: ESSAY_DEFAULT_LINE_COLOR,
-    lineWidthMm: ESSAY_DEFAULT_LINE_WIDTH, showFrame: true, showWordScale: true,
+    lineWidthMm: ESSAY_DEFAULT_LINE_WIDTH,
   };
   const cellW = Math.max(1, grid.cellWidthMm || ESSAY_DEFAULT_CELL_MM);
   const cellH = Math.max(1, grid.cellHeightMm || ESSAY_DEFAULT_CELL_MM);
   const showTitle = grid.showTitle !== false;
-  const showFrame = grid.showFrame !== false;
 
   // 每面板独立算列数（栏内居中）；A4 单面板。
   const panelW = BODY_WIDTH;
@@ -1325,56 +1040,69 @@ function layoutEssayBlock(
   const usableW = panelW - panelInsetX * 2;
   const columns = grid.columns > 0 ? grid.columns : Math.max(1, Math.floor(usableW / cellW));
 
-  // 逐面板 X 起点：A3 三栏并排，A4 单栏
+  // 逐面板 X 起点：A3 三栏并排，A4 单栏（模块级 A3_PANEL_GAP / OUTER_MARGIN_X 已定义）
   const panelCount = IS_A3 ? 3 : 1;
   const panelStarts: number[] = [];
   for (let p = 0; p < panelCount; p++) {
     panelStarts.push(IS_A3 ? p * (panelW + A3_PANEL_GAP) + OUTER_MARGIN_X : MARGIN_X);
   }
 
-  // 标题区高度统一基准：保证同一物理页三栏等高、底部对齐；续写栏标题区留白。
-  const gridTopBase = showTitle ? 9 : 2;
+  // 渲染器（客户端 SubjectiveSvg / 服务器 drawEssayGrid）按 block.rect 计算行列：
+  //   标题区高度 = showTitle ? 9 : 2，网格从 rect.y + 该高度起，行数 = floor((rect.height - 标题区) / cellH)
+  // 因此每块高度须覆盖「标题区 + rows*cellH + bottomPad」，格子才能被正确画出。
+  const gridTop = showTitle ? 9 : 2;
   const bottomPad = 2;
 
-  // 目标总格子数 = targetChars；跨栏/跨页连续生成，直到累计格子数 >= 目标字数。
-  const targetCells = Math.max(1, grid.targetChars || 600);
-  let produced = 0;          // 全局已生成格子数
-  let isFirstPanelOverall = true;
+  // 目标总行数：按整页总列数（columns * panelCount）折算目标字数，使 A3 三栏并排铺满。
+  const totalColumns = columns * panelCount;
+  const targetRows = grid.rows > 0
+    ? grid.rows
+    : Math.ceil((grid.targetChars || 600) / totalColumns);
 
-  while (produced < targetCells) {
+  let remainingRows = targetRows;
+  let emptyAdvances = 0;
+
+  while (remainingRows > 0) {
     const startY = getY();
-    const availableH = availableHeight(startY) - gridTopBase - bottomPad - 4;
-    let rowsThisPanel = Math.max(0, Math.floor(availableH / cellH));
-    if (rowsThisPanel <= 0) {
-      nextPhysicalPage();
+    const availableH = availableHeight(startY) - gridTop - bottomPad - 4;
+    const rowsThisPanel = Math.min(
+      Math.floor(availableH / cellH),
+      Math.ceil(remainingRows / panelCount)
+    );
+    const safeRowsThisPanel = Math.max(0, rowsThisPanel);
+
+    if (safeRowsThisPanel <= 0) {
+      emptyAdvances += 1;
+      if (emptyAdvances > ESSAY_MAX_EMPTY_ADVANCES) {
+        ACTIVE_WARNINGS.push(`${block.title} 格子过高，当前版面无法继续排版作文格。`);
+        break;
+      }
+      newPage();
       continue;
     }
 
-    const minRowsNeeded = Math.ceil((targetCells - produced) / (columns * panelCount));
-    const rowsToDraw = Math.min(rowsThisPanel, minRowsNeeded);
-    const blockHeight = gridTopBase + rowsToDraw * cellH + bottomPad;
-
+    emptyAdvances = 0;
+    const blockHeight = gridTop + safeRowsThisPanel * cellH + bottomPad;
+    const page = getPage();
+    // 同一页的多个面板用不同 X 起点推块，互不重叠；行数按单面板高度计算。
     for (let p = 0; p < panelCount; p++) {
-      const startCellThisPanel = produced + p * columns * rowsToDraw;  // 该栏首格全局序号
-      const isHeadPanel = isFirstPanelOverall && p === 0;
-      const blockRect = rect(panelStarts[p], startY, panelW, blockHeight);
-      getPage().blocks.push({
+      page.blocks.push({
         type: "subjective",
         blockId: block.id,
-        title: isHeadPanel ? block.title : "",
-        rect: blockRect,
-        frameRect: showFrame ? blockRect : undefined,
-        essayStartCell: startCellThisPanel,
+        title: block.title,
+        rect: rect(panelStarts[p], startY, panelW, blockHeight),
         questions: [],
       });
     }
 
-    produced += rowsToDraw * columns * panelCount;
+    const rowsThisPage = safeRowsThisPanel * panelCount;
+    remainingRows -= rowsThisPage;
     setY(startY + blockHeight + 4);
-    isFirstPanelOverall = false;
 
-    if (produced < targetCells) {
-      nextPhysicalPage();
+    if (remainingRows > 0) {
+      // newPage() 每次只前进一个面板；本迭代已写满当前页全部面板，
+      // 需前进 panelCount 个面板（即切到下一物理页的面板 0），否则会在同页叠字。
+      for (let p = 0; p < panelCount; p++) newPage();
     }
   }
 }
@@ -1383,7 +1111,6 @@ function layoutSubjectiveBlock(
   block: SubjectiveBlock,
   ensureSpace: (height: number) => void,
   newPage: () => void,
-  nextPhysicalPage: () => void,
   getPage: () => PageLayout,
   setY: (value: number) => void,
   getY: () => number
@@ -1398,12 +1125,7 @@ function layoutSubjectiveBlock(
   const isEssayBlock = block.blockKind === "essay";
 
   if (isEssayBlock) {
-    // 作文块独占新物理页：若当前页已有内容，先跳到下一物理页顶部，
-    // 避免作文格嵌入上一页答题区（截图所见「第一页底部窄条」问题）。
-    if (getPage().blocks.length > 0) {
-      nextPhysicalPage();
-    }
-    layoutEssayBlock(block, nextPhysicalPage, getPage, setY, getY);
+    layoutEssayBlock(block, ensureSpace, newPage, getPage, setY, getY);
     return;
   }
 
