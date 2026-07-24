@@ -17,6 +17,13 @@ import type {
 } from "../../shared/types";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
 
+export class ReviewValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReviewValidationError";
+  }
+}
+
 type CropRow = {
   id: string;
   card_id: string;
