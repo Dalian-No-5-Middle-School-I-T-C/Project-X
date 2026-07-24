@@ -1,5 +1,43 @@
 # Project-X CHANGELOG
 
+## v1.9.6 (2026-07-24) — 实机问题修复（5 项）
+
+> 基于 1.9.4 实机测试发现的 5 个小问题，全部经 `npm run build`（typecheck + web + server）验证通过，无 TS 错误。
+> 分支：1.9.5 基线（井号191）。与 1.9.6 答题卡设计器（学生信息区/作文格）改动相互独立，可叠加。
+
+**1. 刷新网页重置背景图透明度（P1）**
+- `AccountMenu.tsx`：背景图透明度滑杆原本只改本地状态与 `--bg-opacity` CSS 变量、未持久化；现改为防抖（400ms）PATCH `/api/users/me/settings` 的 `backgroundOpacity`。
+- 后端 `users.background_opacity` 早已支持 GET/PUT，`App.tsx` 登录即加载并应用，刷新后恢复。
+
+**2. 上传原卷只能上传一张图片（P1，新增多页支持）**
+- 新增数据表 `original_paper_pages`（card_id, page_index, filename, stored_path），三份 schema（SQLite/MySQL/MariaDB）均 `CREATE TABLE IF NOT EXISTS`，服务启动自动建表。
+- 上传路由 `paperUpload.single("file")` → `paperUpload.array("files", 40)`，逐页入库；首页（page 1）仍写 `original.<ext>` 以向后兼容预览/导出/AI 读取。
+- `GET /paper` 支持 `?page=N`；`/paper/info` 返回 `pages` 列表；新增 `DELETE /paper/page/:pageIndex` 单页删除；`DELETE /paper` 清空全部页与文件。
+- `getPaperFiles`（AI 知识点分析）改为读取全部页。
+- 前端 `DragDropZone` 支持 `multiple` + `onFiles`；`PaperUploadPanel` 改为多文件选择与「第 N 页」列表（查看/单页删除/删除全部）。
+
+**3. 「返回首页」按钮位置调整（已回滚，P2）**
+- `App.tsx`：曾将顶栏左侧的「← 返回首页」按钮改为 `position: fixed` 视口左下角浮动按钮（bottom:40px, left:16px），但该按钮位于带 transform 的顶栏祖先内，`fixed` 定位被该祖先包含，最终渲染到左上方并与文字重叠。
+- 已回滚为原始内联按钮（顶栏左侧、`marginRight:12`，仅 `!showTabBar && mode!=="home"` 时显示），消除重叠。原「位于正上方」的体感问题暂不处理，待后续统一评估导航布局。
+
+**4. 「全局设置」按钮彻底失效（P1）**
+- 根因：`App.tsx` 的 `<Routes>` 缺少 `/global-settings` 路由，点击后落到 `path="*"` 重定向回 `/home`。
+- 新增 `pages/GlobalSettingsRoutePage.tsx` 包裹 `GlobalSettingsPage`（提供 `onBack`），并补上 `<Route path="/global-settings">`。
+
+**5. 「最新扫描」被「考试管理」负优化（P2）**
+- `HomePage.tsx` 首页快捷入口原为三元互斥（继续阅卷 > 最新扫描 > 考试管理），导致「最新扫描」被「考试管理」取代。
+- 改为多卡并列：有未完成阅卷则显示「继续阅卷」、有最新扫描则显示「最新扫描」，且「考试管理」始终显示（无动态卡时至少保留入口）。
+
+**6. 「全局设置」页面前端美化（P3）**
+- `GlobalSettingsPage.tsx`：原左对齐、`maxWidth:640`、无容器包裹，观感简陋。
+- 改为整页居中布局（`minHeight: calc(100vh - 96px)` + flex 纵向留白 + 横向 `alignItems: center`），内容包入 `maxWidth: 560` 的圆角卡片（边框 + 阴影）；标题升级为 18px/600 并加「仅管理员」徽标，整体居于页面中央。
+- 注：路由补全（item 4 的 `GlobalSettingsRoutePage`）保留不变。
+
+**7. 暗色模式首页快捷入口卡「糊掉」配色修复（P2）**
+- 现象：`home-quick-card-*`（琥珀/蓝/紫/灰）使用高饱和浅色硬编码背景（`#FFF8E1`、`#E6F1FB`、`#EEEDFE`、`#F1EFE8`），在 `[data-theme="dark"]` 下与浅色文字（`--text-primary`）对比度极低，形成一块「糊掉」的亮块（实测「考试管理」紫卡最严重）。
+- 修复：`styles.css` 新增暗色模式覆盖——将四色背景改为半透明低饱和色（`rgba(255,160,0,0.12)` / `rgba(55,138,221,0.12)` / `rgba(127,119,221,0.15)` / `rgba(139,148,158,0.12)`），左边界色改为对应高明度色；hover 阴影加深以适配暗底。
+- 保持浅色模式原有 pastel 配色不变。
+
 ## v1.9.5 (2026-07-23) — 移动端 Web UI/UX 适配
 
 > 在冻结技术栈（React 19 + TS + Vite 7，不引入新依赖、不引入第三方状态库、不改后端/DB schema、延续 Context 模式）前提下，完成移动端功能与界面适配。三项决策：**App.tsx 适度拆分**（抽离 6 个 mode 页面为独立路由组件，不引入状态库）；**优化重心=功能可用性优先**；**断点收敛为 3 级**（480 手机 / 768 平板 / 1024 桌面）。全部改动经 `npx vite build --mode web` 验证通过，无 TS 错误。

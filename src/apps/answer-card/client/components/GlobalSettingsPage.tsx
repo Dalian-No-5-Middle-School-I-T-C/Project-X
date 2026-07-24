@@ -120,10 +120,12 @@ export function GlobalSettingsPage({ onBack }: Props) {
   if (loading) return <div style={{ padding: 24 }}>加载中...</div>;
 
   return (
-    <div style={{ padding: 24, maxWidth: 640 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+    <div style={{ minHeight: "calc(100vh - 96px)", display: "flex", flexDirection: "column", alignItems: "center", padding: "36px 24px 56px" }}>
+      <div style={{ width: "100%", maxWidth: 560, background: "var(--color-background-primary)", border: "1px solid var(--color-border-tertiary)", borderRadius: 16, padding: "24px 26px 28px", boxShadow: "0 8px 28px rgba(0,0,0,0.07)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
         <button onClick={onBack} style={backBtnStyle}>← 返回</button>
-        <div style={{ fontSize: 15, fontWeight: 500 }}>全局设置（仅管理员）</div>
+        <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: "0.2px" }}>全局设置</div>
+        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", padding: "2px 8px", borderRadius: 6, marginLeft: 2 }}>仅管理员</span>
       </div>
       <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 20 }}>
         以下为系统级策略，对所有考试与教师统一生效。网阅相关默认（0.5、分差阈值、取整、自动重分配、均衡阈值）请在各考试「网阅设置」中配置。
@@ -274,6 +276,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
       >
         {saving ? "保存中..." : "保存全局设置"}
       </button>
+      </div>
     </div>
   );
 }
