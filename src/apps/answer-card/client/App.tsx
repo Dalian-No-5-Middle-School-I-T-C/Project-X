@@ -57,6 +57,7 @@ import { AnalysisRoutePage } from "./pages/AnalysisRoutePage";
 import { ScoresRoutePage } from "./pages/ScoresRoutePage";
 import { AccountRoutePage } from "./pages/AccountRoutePage";
 import { SponsorRoutePage, PermissionsRoutePage, GuideRoutePage } from "./pages/InfoRoutePages";
+import { GlobalSettingsRoutePage } from "./pages/GlobalSettingsRoutePage";
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -1680,7 +1681,7 @@ function App() {
           </div>
           <div className="topbar-actions-left">
             {!showTabBar && mode !== "home" && (
-              <button onClick={() => switchMode("home")} style={{ height: 44, padding: "0 16px", fontSize: 14, fontWeight: 500, border: "1px solid var(--color-border-primary)", borderRadius: 8, background: "var(--color-background-secondary)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>← 返回首页</button>
+              <button onClick={() => switchMode("home")} style={{ height: 44, padding: "0 16px", fontSize: 14, fontWeight: 500, border: "1px solid var(--color-border-primary)", borderRadius: 8, background: "var(--color-background-secondary)", color: "var(--color-text-primary)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>← 返回首页</button>
             )}
             {card && canDesign && mode === "design" && (
               <>
@@ -1792,6 +1793,7 @@ function App() {
           <Route path="/sponsor" element={<SponsorRoutePage />} />
           <Route path="/permissions" element={<PermissionsRoutePage />} />
           <Route path="/guide" element={<GuideRoutePage />} />
+          <Route path="/global-settings" element={<GlobalSettingsRoutePage onBack={() => void switchMode("home")} />} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
         {gradingPanel && (

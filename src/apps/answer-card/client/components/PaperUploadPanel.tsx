@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { DragDropZone } from "./DragDropZone";
 import { KnowledgeTagList } from "./KnowledgeTagList";
@@ -18,8 +18,14 @@ interface KnowledgePointItem {
   points: string[];
 }
 
+interface PaperPage {
+  pageIndex: number;
+  filename: string;
+}
+
 export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, existingFilename, onUploaded }: Props) {
   const [filename, setFilename] = useState<string | null>(existingFilename || null);
+  const [pages, setPages] = useState<PaperPage[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [questionRange, setQuestionRange] = useState<"all" | "custom">("all");
@@ -30,33 +36,45 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
   const [knowledgePoints, setKnowledgePoints] = useState<KnowledgePointItem[]>([]);
   const [saving, setSaving] = useState(false);
 
+  const loadPages = useCallback(async () => {
+    try {
+      const res = await authFetch(`/api/cards/${cardId}/paper/info`);
+      if (res.ok) {
+        const data = await res.json();
+        setPages(data.pages || []);
+        setFilename(data.filename || (data.pages && data.pages[0]?.filename) || null);
+      }
+    } catch { /* silent */ }
+  }, [cardId]);
+
   // Reset when panel opens
   useEffect(() => {
     if (open) {
-      setFilename(existingFilename || null);
       setQuestionRange("all");
       setCustomRange("");
       setExtraNotes("");
       setUploadError(null);
       setAnalyzeError(null);
       setKnowledgePoints([]);
+      void loadPages();
     }
-  }, [open, existingFilename]);
+  }, [open, loadPages]);
 
   if (!open) return null;
 
-  const handleFile = async (file: File) => {
+  const handleFiles = async (files: File[]) => {
+    if (files.length === 0) return;
     setUploading(true);
     setUploadError(null);
     try {
       const formData = new FormData();
-
-      // 图片格式：前端压缩
-      if (file.type.startsWith("image/")) {
-        const compressed = await compressImageFile(file);
-        formData.append("file", compressed, file.name.replace(/\.[^.]+$/, ".jpg"));
-      } else {
-        formData.append("file", file);
+      for (const file of files) {
+        if (file.type.startsWith("image/")) {
+          const compressed = await compressImageFile(file);
+          formData.append("files", compressed, file.name.replace(/\.[^.]+$/, ".jpg"));
+        } else {
+          formData.append("files", file);
+        }
       }
 
       const res = await authFetch(`/api/cards/${cardId}/paper`, {
@@ -69,8 +87,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
         throw new Error(err.error || err.message || "上传失败");
       }
 
-      const data = await res.json();
-      setFilename(data.filename);
+      await loadPages();
       onUploaded?.();
     } catch (err: any) {
       setUploadError(err.message || "上传失败");
@@ -79,10 +96,18 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
     }
   };
 
+  const handleDeletePage = async (pageIndex: number) => {
+    try {
+      await authFetch(`/api/cards/${cardId}/paper/page/${pageIndex}`, { method: "DELETE" });
+      await loadPages();
+    } catch { /* ignore */ }
+  };
+
   const handleDelete = async () => {
     try {
       await authFetch(`/api/cards/${cardId}/paper`, { method: "DELETE" });
       setFilename(null);
+      setPages([]);
       setKnowledgePoints([]);
     } catch {
       // ignore
@@ -173,30 +198,45 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
           <button className="modal-close-btn" onClick={onClose}>✕</button>
         </div>
 
-        {/* 导入文件区 */}
+        {/* 导入文件区（支持多页） */}
         <div className="paper-section">
-          <h4>导入文件</h4>
-          {filename ? (
-            <div className="paper-file-info">
-              <span>✅ {filename}</span>
-              <div className="paper-file-actions">
-                <button className="ghost-button" onClick={() => window.open(`/api/cards/${cardId}/paper`, "_blank")}>
-                  查看
-                </button>
-                <button className="ghost-button danger" onClick={handleDelete}>
-                  删除
-                </button>
-              </div>
+          <h4>导入文件（支持多页）</h4>
+          <DragDropZone
+            accept=".docx,.pdf,image/*"
+            maxSize={50 * 1024 * 1024}
+            multiple
+            onFiles={handleFiles}
+            disabled={uploading}
+            label={uploading ? "上传中..." : "拖拽文件到此处，或点击选择（可多选多页）"}
+            sublabel="DOCX / PDF / 图片，最大 50MB，可一次选择多页"
+          />
+          {pages.length > 0 && (
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              {pages.map((p) => (
+                <div
+                  key={p.pageIndex}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                    padding: "10px 12px",
+                    background: "var(--color-background-secondary)",
+                    borderRadius: 8,
+                    border: "0.5px solid var(--color-border-tertiary)",
+                    gap: 12,
+                  }}
+                >
+                  <span style={{ fontSize: 13 }}>第 {p.pageIndex} 页 · {p.filename}</span>
+                  <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                    <button className="ghost-button" onClick={() => window.open(`/api/cards/${cardId}/paper?page=${p.pageIndex}`, "_blank")}>查看</button>
+                    <button className="ghost-button danger" onClick={() => void handleDeletePage(p.pageIndex)}>删除</button>
+                  </div>
+                </div>
+              ))}
+              <button className="ghost-button danger" onClick={() => void handleDelete()} style={{ alignSelf: "flex-start", marginTop: 4 }}>
+                删除全部原卷
+              </button>
             </div>
-          ) : (
-            <DragDropZone
-              accept=".docx,.pdf,image/*"
-              maxSize={50 * 1024 * 1024}
-              onFile={handleFile}
-              disabled={uploading}
-              label={uploading ? "上传中..." : "拖拽文件到此处，或点击选择"}
-              sublabel="DOCX / PDF / 图片，最大 50MB"
-            />
           )}
           {uploadError && <p className="field-error">{uploadError}</p>}
         </div>
@@ -252,7 +292,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
           <button
             className="primary-button"
             onClick={handleAnalyze}
-            disabled={analyzing || !filename}
+            disabled={analyzing || pages.length === 0}
           >
             {analyzing ? "分析中..." : "🤖 开始分析"}
           </button>
@@ -281,7 +321,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
           <button
             className="primary-button"
             onClick={handleSave}
-            disabled={saving || !filename}
+            disabled={saving || pages.length === 0}
           >
             {saving ? "保存中..." : "保存全部"}
           </button>

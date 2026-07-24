@@ -121,3 +121,41 @@ export async function storePaperFile(
 
   return { originalPath: jpgPath, pdfPath };
 }
+
+/**
+ * 按页码存储原卷文件（多页支持）
+ * - pageIndex === 1 沿用 legacy 文件名 original.<ext>（向后兼容预览/导出/AI 读取）
+ * - pageIndex > 1 使用 original-<N>.<ext>，避免覆盖首页
+ * 返回磁盘文件名、相对路径（papers/<cardId>/...）与是否生成了 PDF
+ */
+export async function storePaperPageFile(
+  sourcePath: string,
+  filename: string,
+  paperDirPath: string,
+  pageIndex: number
+): Promise<{ diskFilename: string; relPath: string; pdfAvailable: boolean }> {
+  const ext = path.extname(filename).toLowerCase();
+  const baseName = pageIndex === 1 ? "original" : `original-${pageIndex}`;
+  const originalPath = path.join(paperDirPath, `${baseName}${ext}`);
+  const relRoot = path.resolve(process.cwd(), "data", "answer-card");
+
+  if (isDocx(filename)) {
+    await copyFile(sourcePath, originalPath);
+    return { diskFilename: `${baseName}${ext}`, relPath: path.relative(relRoot, originalPath), pdfAvailable: false };
+  }
+
+  if (isPdf(filename)) {
+    await copyFile(sourcePath, originalPath);
+    return { diskFilename: `${baseName}${ext}`, relPath: path.relative(relRoot, originalPath), pdfAvailable: true };
+  }
+
+  // 图片：压缩 JPEG + 生成 PDF
+  const compressed = await compressImage(sourcePath);
+  const jpgName = `${baseName}.jpg`;
+  await writeFile(path.join(paperDirPath, jpgName), compressed);
+
+  const pdfName = `${baseName}.pdf`;
+  await imageToPdf(sourcePath, path.join(paperDirPath, pdfName));
+
+  return { diskFilename: jpgName, relPath: path.relative(relRoot, path.join(paperDirPath, jpgName)), pdfAvailable: true };
+}

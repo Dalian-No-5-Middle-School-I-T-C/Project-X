@@ -2264,6 +2264,27 @@ input[type="checkbox"]:disabled {
   background: #F1EFE8;
   border-left-color: #888780;
 }
+
+/* 暗色模式：快捷入口卡禁用高饱和浅色背景，改用半透明低饱色，避免文字糊掉 */
+[data-theme="dark"] .home-quick-card-amber {
+  background: rgba(255, 160, 0, 0.12);
+  border-left-color: #FFB74D;
+}
+[data-theme="dark"] .home-quick-card-blue {
+  background: rgba(55, 138, 221, 0.12);
+  border-left-color: #64B5F6;
+}
+[data-theme="dark"] .home-quick-card-purple {
+  background: rgba(127, 119, 221, 0.15);
+  border-left-color: #9FA8D3;
+}
+[data-theme="dark"] .home-quick-card-gray {
+  background: rgba(139, 148, 158, 0.12);
+  border-left-color: #8B949E;
+}
+[data-theme="dark"] .home-quick-card:hover {
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
 .home-quick-card-icon {
   font-size: 20px;
   margin-bottom: 6px;
