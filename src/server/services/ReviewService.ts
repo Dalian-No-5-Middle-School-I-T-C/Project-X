@@ -215,8 +215,12 @@ export async function submitReviewCropScores(params: {
   const blockType = crop.block_type ?? "subjective";
   // 仅取当前题块定义计算满分，避免把整张答题卡的满分当作单题块满分
   const targetBlockId = crop.block_id ?? "";
-  const targetBlock = card.bodyBlocks.find((b) => b.id === targetBlockId);
-  if (!targetBlock) throw new Error("答题卡中未找到当前题块定义");
+  // 兜底：若按 block_id 找不到（答题卡被替换/编辑而 crop 未重建的异常态），
+  // 退回同类型首个题块，避免整批改卷因硬抛错而全部失败。
+  const targetBlock =
+    card.bodyBlocks.find((b) => b.id === targetBlockId) ??
+    card.bodyBlocks.find((b) => b.type === blockType);
+  if (!targetBlock) throw new Error(`答题卡中未找到当前题块定义（block_id=${targetBlockId}）`);
   let maxBlockScore = 0;
   const maxScoreByQuestion = new Map<number, number>();
   if (targetBlock.type === "objective") {
@@ -266,6 +270,18 @@ export async function submitReviewCropScores(params: {
           }
           if (Math.abs(total - Math.round(total / step) * step) > 1e-9) {
             throw new Error(`题块总分必须是 ${step} 分的整数倍`);
+          }
+          // 题号集合校验：题块总分代表整个题块，提交项必须恰好覆盖本题块的权威小题，
+          // 否则漏传的题会被静默写成 0/0，多传的题不属于本题块。
+          const authoritativeNums = new Set(maxScoreByQuestion.keys());
+          const submittedNums = new Set(params.scores.map((s) => s.questionNumber));
+          for (const n of authoritativeNums) {
+            if (!submittedNums.has(n)) throw new Error(`题块总分模式缺少第${n}题的分数项`);
+          }
+          for (const s of params.scores) {
+            if (!authoritativeNums.has(s.questionNumber)) {
+              throw new Error(`题块总分模式提交了不属于本题块的第${s.questionNumber}题`);
+            }
           }
           const split = splitBlockTotal(
             Math.round(total * 100) / 100,
