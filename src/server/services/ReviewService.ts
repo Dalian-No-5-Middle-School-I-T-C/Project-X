@@ -144,7 +144,7 @@ export async function listReviewBlockCropItems(
  * - 末题/余数兜底，保证拆分合计精确等于题块总分（step 粒度内）。
  * step 为最小分值粒度：允许 0.5 时取 0.5，否则取 1。
  */
-function splitBlockTotal(
+export function splitBlockTotal(
   blockTotal: number,
   items: ReviewSubmitScoreInput[],
   maxScoreByQuestion: Map<number, number>,
@@ -213,18 +213,20 @@ export async function submitReviewCropScores(params: {
 
   // 读取评分配置（含 reviewMode）
   const blockType = crop.block_type ?? "subjective";
+  // 仅取当前题块定义计算满分，避免把整张答题卡的满分当作单题块满分
+  const targetBlockId = crop.block_id ?? "";
+  const targetBlock = card.bodyBlocks.find((b) => b.id === targetBlockId);
+  if (!targetBlock) throw new Error("答题卡中未找到当前题块定义");
   let maxBlockScore = 0;
   const maxScoreByQuestion = new Map<number, number>();
-  for (const block of card.bodyBlocks) {
-    if (block.type === "objective") {
-      for (const def of objectiveQuestionDefinitions(block)) {
-        maxScoreByQuestion.set(def.questionNumber, Number(def.score ?? 0));
-      }
-    } else if (block.type === "subjective") {
-      for (const question of block.questions ?? []) {
-        const qNum = typeof question.number === "number" ? question.number : parseInt(String(question.number), 10);
-        if (Number.isFinite(qNum)) maxScoreByQuestion.set(qNum, Number(question.score ?? 0));
-      }
+  if (targetBlock.type === "objective") {
+    for (const def of objectiveQuestionDefinitions(targetBlock)) {
+      maxScoreByQuestion.set(def.questionNumber, Number(def.score ?? 0));
+    }
+  } else if (targetBlock.type === "subjective") {
+    for (const question of targetBlock.questions ?? []) {
+      const qNum = typeof question.number === "number" ? question.number : parseInt(String(question.number), 10);
+      if (Number.isFinite(qNum)) maxScoreByQuestion.set(qNum, Number(question.score ?? 0));
     }
   }
   maxBlockScore = Array.from(maxScoreByQuestion.values()).reduce((a, b) => a + b, 0);
@@ -261,6 +263,9 @@ export async function submitReviewCropScores(params: {
           if (!Number.isFinite(total) || total < -1e-9) throw new Error("题块总分无效");
           if (total > maxBlockScore + 1e-6) {
             throw new Error(`题块总分不能超过本题块满分 ${maxBlockScore}`);
+          }
+          if (Math.abs(total - Math.round(total / step) * step) > 1e-9) {
+            throw new Error(`题块总分必须是 ${step} 分的整数倍`);
           }
           const split = splitBlockTotal(
             Math.round(total * 100) / 100,
