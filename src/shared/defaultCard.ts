@@ -1,4 +1,21 @@
-import type { AnswerCard } from "./types";
+import type { AnswerCard, StudentInfoSettings } from "./types";
+
+export const DEFAULT_STUDENT_NOTES = [
+  "1. 答题前请将姓名、班级、准考证号等填写清楚。",
+  "2. 客观题必须使用2B铅笔填涂，修改时用橡皮擦干净。",
+  "3. 请在题号对应的答题区域作答，区域外书写无效。"
+].join("\n");
+
+export const DEFAULT_STUDENT_INFO: StudentInfoSettings = {
+  studentNumberDigits: 5,
+  showName: true,
+  showClass: true,
+  showSeat: false,
+  showExamNumber: false,
+  showStudentNumber: true,
+  showNotes: false,
+  notesText: DEFAULT_STUDENT_NOTES
+};
 
 export function createBlockId(prefix: string): string {
   return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
@@ -28,8 +45,9 @@ export function createDefaultCard(id: string, subject?: string, paperSize: "A4" 
     subject: subject ?? undefined,
     paper: { size: paperSize, orientation: paperSize === "A3" ? "landscape" : "portrait" },
     studentInfo: {
-      fields: ["姓名", "班级"],
-      studentNumberDigits: 5
+      ...DEFAULT_STUDENT_INFO,
+      // A3 默认需要注意事项（参考模板）；A4 默认不带
+      showNotes: paperSize === "A3"
     },
     bodyBlocks: [],
     sided: "single",
