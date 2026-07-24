@@ -50,7 +50,7 @@ function objectiveBlock(title: string, questions: ObjectiveQuestionConfig[]): Ob
 }
 
 function linedQuestion(number: number | string, score = 0, minHeightMm = 34, lineCount?: number): SubjectiveQuestion {
-  const spacing = 7;
+  const spacing = 8;
   const count = lineCount ?? Math.max(1, Math.floor((minHeightMm - 14) / spacing));
   const h = lineCount ? 14 + lineCount * spacing : minHeightMm;
   return {
@@ -59,7 +59,7 @@ function linedQuestion(number: number | string, score = 0, minHeightMm = 34, lin
     score,
     style: "manual_score_grid",
     kind: "lined_answer",
-    lineGrid: { enabled: true, lineSpacingMm: spacing, fixedLineCount: count, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 4, insetRightMm: 4 },
+    lineGrid: { enabled: true, lineSpacingMm: spacing, fixedLineCount: count, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
     scoreGrid: { enabled: true, strokeColor: "#999", strokeWidthMm: 0.15, fillColor: "#fff", fontSize: 2.8, dividerColor: "#ccc", dividerWidthMm: 0.1, showLabel: true },
     images: [],
     minHeightMm: h
@@ -74,7 +74,7 @@ function blankQuestion(number: number | string, score = 0, count = 1): Subjectiv
     style: score > 0 ? "manual_score_grid" : "plain_subjective",
     kind: "blank",
     blanks: { count, widthMm: 24, heightMm: 6, labelStyle: "none" },
-    lineGrid: { enabled: false, lineSpacingMm: 7, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 4, insetRightMm: 4 },
+    lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
     images: [],
     minHeightMm: 14
   };
@@ -123,7 +123,7 @@ function essayBlock(number: number | string, score = 60, targetChars = 600): Sub
       score,
       style: "manual_score_grid",
       kind: "plain_box",
-      lineGrid: { enabled: false, lineSpacingMm: 7, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 4, insetRightMm: 4 },
+      lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
       images: [],
       minHeightMm: 280,
       essayGrid: {

@@ -1,31 +1,42 @@
 # Project-X CHANGELOG
 
-## v1.9.6 (2026-07-24) — 答题卡学生信息区/填涂号区版式重构 + 里程碑定位修正
+## v1.9.6 (2026-07-24) — 实机问题修复（5 项）
 
-> 围绕答题卡学生信息区版式真实性（贴合参考模板）与填涂号区 OpenCV 识别兼容性，完成一系列版式打磨。核心约束：填涂号区单元格几何（5mm×2.8mm，gap 1mm，行高 4.8mm）恒定不可改，所有版式调整仅作用于外框/绘制方式/布局，不影响识别坐标。全部改动经 `npm run build`（typecheck + web + server）验证通过，EXIT 0。
+> 基于 1.9.4 实机测试发现的 5 个小问题，全部经 `npm run build`（typecheck + web + server）验证通过，无 TS 错误。
+> 分支：1.9.5 基线（井号191）。与 1.9.6 答题卡设计器（学生信息区/作文格）改动相互独立，可叠加。
 
-**学生信息区版式（A4/A3 自动分版，斩掉版式开关）**
-- 按纸张自动选版式：A4 保持左侧栏（基本信息｜注意事项｜填涂号区 三栏）；A3 默认带注意事项并完全参考模板（字段横排于题头下，其下「注意事项｜填涂号区」由 `combinedRect` 大方框包裹，仅占第一栏，不跨整页）。
-- 字段开关与注意事项：姓名/班级/座位号/考号/学号开关 + 注意事项开关/文本；A3 默认仅姓名+班级+注意事项（贴合模板）。`CardRepository` 做新旧格式兼容，旧卡读取不丢字段。
-- 字段纵向居中：A4 左侧栏与 A3 字段带对启用字段行垂直居中，即使仅选两项也显示在框中央。
-- 注意事项防溢出：`wrapNotesLines` 估算字号统一为 ≥ 渲染字号（8pt 估算 vs 7.5pt 渲染），长文本自动换行且框随内容延伸，不再顶出框。
-- 全局宋体：PDF 注册 SimSun（`simsun.ttc`），SVG 各 `.svg-*` 类统一宋体字体族。
-- A3 模板精修：字段下划线固定 16mm 独立线（避免连成贯穿线）、字段带与下两栏间距 5mm、注意事项正文加大至 7.5pt / 标题 9pt。
+**1. 刷新网页重置背景图透明度（P1）**
+- `AccountMenu.tsx`：背景图透明度滑杆原本只改本地状态与 `--bg-opacity` CSS 变量、未持久化；现改为防抖（400ms）PATCH `/api/users/me/settings` 的 `backgroundOpacity`。
+- 后端 `users.background_opacity` 早已支持 GET/PUT，`App.tsx` 登录即加载并应用，刷新后恢复。
 
-**填涂号区（标准表格形态，匹配参考模板 2卡加黑白.jpg）**
-- 最终形态：顶部 0-9 表头行 + 左侧一列空方框（供考生手填考号位，不印字）+ 数据格每格印 0-9；外框紧凑 70mm。
-- OpenCV 兼容：数据格几何恒定（5×2.8mm、gap 1mm、行高 4.8mm），识别坐标不变；仅改外框与绘制方式。
-- 中间多次回滚/再制均以该形态为最终落点：先因单元格几何不可改而回滚自适应填充方案，再据模板重制为标准表格 + 左侧空框列。
+**2. 上传原卷只能上传一张图片（P1，新增多页支持）**
+- 新增数据表 `original_paper_pages`（card_id, page_index, filename, stored_path），三份 schema（SQLite/MySQL/MariaDB）均 `CREATE TABLE IF NOT EXISTS`，服务启动自动建表。
+- 上传路由 `paperUpload.single("file")` → `paperUpload.array("files", 40)`，逐页入库；首页（page 1）仍写 `original.<ext>` 以向后兼容预览/导出/AI 读取。
+- `GET /paper` 支持 `?page=N`；`/paper/info` 返回 `pages` 列表；新增 `DELETE /paper/page/:pageIndex` 单页删除；`DELETE /paper` 清空全部页与文件。
+- `getPaperFiles`（AI 知识点分析）改为读取全部页。
+- 前端 `DragDropZone` 支持 `multiple` + `onFiles`；`PaperUploadPanel` 改为多文件选择与「第 N 页」列表（查看/单页删除/删除全部）。
 
-**作文字数里程碑定位修正**
-- 里程碑（每 100 字）统一改为落在对应格子**下方窄缝（格间空隙）内、右对齐到该格右边线**，而非原"格正下方居中"或误入格内；删除原竖标记线，窄缝恢复纯净。PDF 与 SVG 预览同步。
+**3. 「返回首页」按钮位置调整（已回滚，P2）**
+- `App.tsx`：曾将顶栏左侧的「← 返回首页」按钮改为 `position: fixed` 视口左下角浮动按钮（bottom:40px, left:16px），但该按钮位于带 transform 的顶栏祖先内，`fixed` 定位被该祖先包含，最终渲染到左上方并与文字重叠。
+- 已回滚为原始内联按钮（顶栏左侧、`marginRight:12`，仅 `!showTabBar && mode!=="home"` 时显示），消除重叠。原「位于正上方」的体感问题暂不处理，待后续统一评估导航布局。
 
-**关键约束（后续同类需求必读）**
-- 填涂号区单元格尺寸为 OpenCV 识别硬依赖，任何版式调整只能改外框（`digitRect`）尺寸/位置，不得改单元格参数。
-- 里程碑"右下角"指下行窄缝里靠右，绝不可写进格子内。
+**4. 「全局设置」按钮彻底失效（P1）**
+- 根因：`App.tsx` 的 `<Routes>` 缺少 `/global-settings` 路由，点击后落到 `path="*"` 重定向回 `/home`。
+- 新增 `pages/GlobalSettingsRoutePage.tsx` 包裹 `GlobalSettingsPage`（提供 `onBack`），并补上 `<Route path="/global-settings">`。
 
-**指标**
-- `package.json` 版本号 v1.9.5 → v1.9.6；`npm run build` 全量通过（typecheck + web 1931 模块 + server 647.7kb）。
+**5. 「最新扫描」被「考试管理」负优化（P2）**
+- `HomePage.tsx` 首页快捷入口原为三元互斥（继续阅卷 > 最新扫描 > 考试管理），导致「最新扫描」被「考试管理」取代。
+- 改为多卡并列：有未完成阅卷则显示「继续阅卷」、有最新扫描则显示「最新扫描」，且「考试管理」始终显示（无动态卡时至少保留入口）。
+
+**6. 「全局设置」页面前端美化（P3）**
+- `GlobalSettingsPage.tsx`：原左对齐、`maxWidth:640`、无容器包裹，观感简陋。
+- 改为整页居中布局（`minHeight: calc(100vh - 96px)` + flex 纵向留白 + 横向 `alignItems: center`），内容包入 `maxWidth: 560` 的圆角卡片（边框 + 阴影）；标题升级为 18px/600 并加「仅管理员」徽标，整体居于页面中央。
+- 注：路由补全（item 4 的 `GlobalSettingsRoutePage`）保留不变。
+
+**7. 暗色模式首页快捷入口卡「糊掉」配色修复（P2）**
+- 现象：`home-quick-card-*`（琥珀/蓝/紫/灰）使用高饱和浅色硬编码背景（`#FFF8E1`、`#E6F1FB`、`#EEEDFE`、`#F1EFE8`），在 `[data-theme="dark"]` 下与浅色文字（`--text-primary`）对比度极低，形成一块「糊掉」的亮块（实测「考试管理」紫卡最严重）。
+- 修复：`styles.css` 新增暗色模式覆盖——将四色背景改为半透明低饱和色（`rgba(255,160,0,0.12)` / `rgba(55,138,221,0.12)` / `rgba(127,119,221,0.15)` / `rgba(139,148,158,0.12)`），左边界色改为对应高明度色；hover 阴影加深以适配暗底。
+- 保持浅色模式原有 pastel 配色不变。
 
 ## v1.9.5 (2026-07-23) — 移动端 Web UI/UX 适配
 
@@ -66,63 +77,6 @@
 - 暗色模式扩展覆盖 `.data-card`。
 - 阶段 5 手势增强（`useSwipeClose` / `usePullToRefresh` 原生 touch，可选）。
 - 真机验证：iOS Safari + Android Chrome，480px 全功能可达、无横向溢出、输入框不缩放。
-
-**阶段 5：作文块适配修复（2026-07-24）**
-> 修复作文块在设计器中身份错乱、配置面板暴露不适用字段、预览双重标题，以及后端上传与资源服务的安全隐患。全部改动经 `npm run build`（typecheck + web + server）验证通过，无 TS 错误。
-
-**UX / 功能缺陷（P0）**
-- `client/App.tsx` `autoNameBlocks`：按 `sub.blockKind` 区分「作文 / 填空题 / 解答题」，不再把作文块强制改名成「解答题」（此前任何保存都会把作文块标题覆盖为「解答题」）。
-- `client/pages/DesignEditors.tsx` `SubjectiveEditor`：作文块（`isEssayBlock`）隐藏不适用字段——主观题样式、得分填涂格、作答区类型、最小高度、启用横线格/线格；并隐藏删除小题按钮（作文块固定单题，防止误删唯一小题）。
-- 预览标题去重：`SubjectiveSvg`（SVG 预览）与 `server/pdf.ts` `drawEssayGrid`（PDF）统一为仅渲染 `block.title` 单行标题，移除冗余「题：（000）」硬编码第二行与重复「（分数分）」后缀；`essayGrid` 缺失时以默认值兜底渲染占位框，不再 `return null` 导致整块消失。
-
-**体验（P1）**
-- 作文块配置面板新增实时预估：「预计约 N 行 × M 栏（每面板 X 列，A3 三栏并排）。实际页数取决于版面余量。」依据 `card.paper.size` 与格子尺寸计算。
-- 复选框文案 `显示"题：（000）"标题` → `在答题区上方显示标题`，更专业。
-
-**后端安全与稳定性（P3）**
-- `server/validate-upload.ts` 的 `assertImageFile`（magic bytes 校验）接入题块图片上传与自定义背景上传，拒绝伪装成图片的 HTML/JS，关闭存储型 XSS 入口（此前仅校验 MIME，可伪造）。
-- `server/index.ts`：移除公开的 `app.use("/assets", express.static(...))`，改为受控路由 `GET /api/assets/:cardId/:assetId`，使用 `path.basename` 防路径穿越，`existsSync` 校验，私有缓存头；前端 `apiUrl` 引用同步改为 `/api/assets/...`。
-- `normalizeCard`：对主观题 `essayGrid` 做上限校验（`targetChars ≤ 5000`、`rows ≤ 200`、`columns ≤ 60`、`cellWidth/HeightMm ∈ [4,12]`、`lineWidthMm ∈ [0.05,0.5]`），防止超大数据触发布局/PDF 生成 DoS。
-
-### 阶段 6：作文块布局独占新页 + 美学仿制（2026-07-24）
-
-> 修复「作文格嵌入上一页答题区」的核心布局缺陷，并仿照标准考试卷作文格（粗外框、字数刻度、标题内置）提升视觉专业度。改动均经 `npm run build` 验证（typecheck + web + server，EXIT 0）。
-
-**布局修复（P0：作文块独占新页/新栏）**
-- `shared/layout.ts`：新增 `nextPage()`（前进到下一物理页）回调，与原有 `nextPanel()`（前进一栏）区分。
-- `layoutSubjectiveBlock`：作文块（`blockKind === "essay"`）进入布局前，若当前页已有内容，先 `nextPage()` 跳到下一物理页顶部，杜绝作文格被塞进上一页底部的窄条。
-- `layoutEssayBlock`：移除依赖 `nextPanel` 的「逐栏前进」逻辑，改为统一以物理页为单位（`newPage()` 绑定为物理页回调），整页写满后前进到下一物理页；`safeRowsThisPanel` 计算改为 `min(本页可放行数, 平摊每栏行数)`，保证最后一页铺满且不留无效窄条。
-
-**渲染美学（P1：仿制模板）**
-- `EssayGridConfig` 新增 `showFrame?`（默认 true）、`showWordScale?`（默认 true）。
-- `shared/layout.ts`：作文块现在生成 `frameRect`（粗边框矩形），与常规主观题一致。
-- `server/pdf.ts` 的 `drawEssayGrid` 与 `DesignEditors.tsx` 的 `SubjectiveSvg` 作文分支同步增强：
-  - 绘制 `#111` 0.4mm 外边框（`showFrame` 控制）；
-  - 标题置于边框内左上角（`showTitle` 控制）；
-  - 字数刻度：每 100 字在左缘画短横线 + 数字标注（`showWordScale` 控制），每栏独立计数；
-  - SVG 与 PDF 共用同一套行数/边距/刻度算法，避免漂移。
-
-**配置面板（P1）**
-- `DesignEditors.tsx` 作文块配置区新增「显示作文区外边框」「显示字数刻度（每 100 字标注）」两个复选框。
-- `cardModel.ts` 的 `defaultEssayBlock` 初始化 `showFrame: true`、`showWordScale: true`。
-- `server/index.ts` 的 `normalizeCard` 在重建 `essayGrid` 时保留 `showFrame` / `showWordScale`，避免保存后被丢弃。
-
-### 阶段 6.1：字数额度修复 + 字数里程碑跨栏连续 + 行间窄溜（2026-07-24）
-
-> 针对阶段 6 上线后用户反馈的三个问题：① 目标字数（如 500）实际生成格子远不足；② A3 三栏都显示「作文题」标题；③ 缺少模板「两行格中间的窄溜」与每 100 字全局连续标注。本轮一次性修复，均经 `npm run build` 验证（EXIT 0）。
-
-**字数额度修复（P0）**
-- `shared/layout.ts` 的 `layoutEssayBlock` 重写分页逻辑：目标由「按整页总列数折算的行数」改为**按总格子数 `targetChars` 累计驱动**——`produced` 全局累计，每栏 `essayStartCell = produced + p*columns*rowsToDraw` 记录该栏首格全局序号，跨栏/跨页连续生成直到 `produced >= targetChars`。彻底解决 500 字只生成约 378 格的问题。
-- 同一物理页三栏改用统一 `gridTopBase`（`showTitle ? 9 : 2`）计算块高，保证**三栏等高、底部对齐**；续写栏标题区留白。
-
-**标题去重（P0）**
-- `layoutEssayBlock` 仅第一栏（`isFirstPanelOverall && p===0`）带 `title`，其余栏 `title` 置空，渲染器遇空标题不画标题行。消除 A3 三栏都显示「作文题」的怪象。
-
-**行间窄溜 + 字数里程碑（P1，仿模板）**
-- `shared/types.ts` 的 `SubjectiveRenderBlock` 新增 `essayStartCell?: number`，供渲染层计算全局累计字数。
-- SVG（`DesignEditors.tsx`）与 PDF（`server/pdf.ts`）同步：
-  - 每个格子上下各留 0.3mm 间隙（`drawH = cellH - 0.6`），并在每行底部画淡色虚线（`#ddd`、0.08mm、`dash 1,1`）形成「行间窄溜」；
-  - 字数刻度改为**跨栏全局连续**：依据 `block.essayStartCell` 计算每行跨过的第一个 100 倍数（`ceil((rowStart+1)/100)*100`），左侧画突出长标记线（`#555`、0.15mm）+ 精确标注 `100/200/300…`，且 `milestone <= targetChars` 才标。三栏不再各自从 100 重数。
 
 ---
 

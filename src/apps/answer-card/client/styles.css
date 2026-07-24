@@ -1967,11 +1967,6 @@ input[type="checkbox"]:disabled {
   fill: #111;
 }
 
-.svg-micro {
-  font-size: 1.7px;
-  fill: #555;
-}
-
 .svg-option-label {
   font-size: 2.55px;
   fill: #111;
@@ -1986,16 +1981,6 @@ input[type="checkbox"]:disabled {
   font-size: 3px;
   fill: #111;
   font-weight: 600;
-}
-
-.svg-notes {
-  font-size: 2.65px;
-  fill: #111;
-}
-
-/* 答题卡预览统一使用宋体，与导出 PDF 一致 */
-.svg-title, .svg-section, .svg-label, .svg-small, .svg-tiny, .svg-notes, .svg-micro, .svg-option-label, .svg-blank-label, .svg-footer {
-  font-family: "SimSun", "Songti SC", "STSong", "宋体", serif;
 }
 
 /* ── Responsive ─────────────────────────────────────── */
