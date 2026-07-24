@@ -55,50 +55,54 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onOpenNe
         )}
       </div>
 
-      {/* 快捷入口 — 始终显示 */}
+      {/* 快捷入口 — 始终显示（多卡并列，不再互斥：继续阅卷 / 最新扫描 / 考试管理 可同时出现） */}
       <div className="home-quick-grid">
         {loading ? (
           <div className="home-quick-card home-quick-card-gray" style={{ cursor: "default" }}>
             <div className="home-quick-card-desc">加载中...</div>
           </div>
-        ) : hasContinueReview ? (
-          <div
-            className="home-quick-card home-quick-card-amber"
-            onClick={() => onEnterExam(dashboard!.unfinishedTask!.examId)}
-            role="button" tabIndex={0}
-            onKeyDown={(e) => e.key === "Enter" && onEnterExam(dashboard!.unfinishedTask!.examId)}
-          >
-            <div className="home-quick-card-icon">📝</div>
-            <div className="home-quick-card-label">继续阅卷</div>
-            <div className="home-quick-card-desc">
-              {dashboard!.unfinishedTask!.examName} · {dashboard!.unfinishedTask!.blockTitle}
-            </div>
-          </div>
-        ) : hasLatestScan ? (
-          <div
-            className="home-quick-card home-quick-card-blue"
-            onClick={() => onEnterExam(dashboard!.latestScanExam!.examId)}
-            role="button" tabIndex={0}
-            onKeyDown={(e) => e.key === "Enter" && onEnterExam(dashboard!.latestScanExam!.examId)}
-          >
-            <div className="home-quick-card-icon">🆕</div>
-            <div className="home-quick-card-label">最新扫描</div>
-            <div className="home-quick-card-desc">
-              {dashboard!.latestScanExam!.examName}{dashboard!.latestScanExam!.subject ? ` · ${dashboard!.latestScanExam!.subject}` : ""}
-            </div>
-          </div>
         ) : (
-          <div className="home-quick-card home-quick-card-purple"
-            onClick={() => onNavigate("exam-manage")}
-            role="button" tabIndex={0}
-            onKeyDown={(e) => e.key === "Enter" && onNavigate("exam-manage")}
-          >
-            <div className="home-quick-card-icon">📋</div>
-            <div className="home-quick-card-label">考试管理</div>
-            <div className="home-quick-card-desc">
-              查看和管理所有考试
+          <>
+            {hasContinueReview && (
+              <div
+                className="home-quick-card home-quick-card-amber"
+                onClick={() => onEnterExam(dashboard!.unfinishedTask!.examId)}
+                role="button" tabIndex={0}
+                onKeyDown={(e) => e.key === "Enter" && onEnterExam(dashboard!.unfinishedTask!.examId)}
+              >
+                <div className="home-quick-card-icon">📝</div>
+                <div className="home-quick-card-label">继续阅卷</div>
+                <div className="home-quick-card-desc">
+                  {dashboard!.unfinishedTask!.examName} · {dashboard!.unfinishedTask!.blockTitle}
+                </div>
+              </div>
+            )}
+            {hasLatestScan && (
+              <div
+                className="home-quick-card home-quick-card-blue"
+                onClick={() => onEnterExam(dashboard!.latestScanExam!.examId)}
+                role="button" tabIndex={0}
+                onKeyDown={(e) => e.key === "Enter" && onEnterExam(dashboard!.latestScanExam!.examId)}
+              >
+                <div className="home-quick-card-icon">🆕</div>
+                <div className="home-quick-card-label">最新扫描</div>
+                <div className="home-quick-card-desc">
+                  {dashboard!.latestScanExam!.examName}{dashboard!.latestScanExam!.subject ? ` · ${dashboard!.latestScanExam!.subject}` : ""}
+                </div>
+              </div>
+            )}
+            <div className="home-quick-card home-quick-card-purple"
+              onClick={() => onNavigate("exam-manage")}
+              role="button" tabIndex={0}
+              onKeyDown={(e) => e.key === "Enter" && onNavigate("exam-manage")}
+            >
+              <div className="home-quick-card-icon">📋</div>
+              <div className="home-quick-card-label">考试管理</div>
+              <div className="home-quick-card-desc">
+                查看和管理所有考试
+              </div>
             </div>
-          </div>
+          </>
         )}
       </div>
 

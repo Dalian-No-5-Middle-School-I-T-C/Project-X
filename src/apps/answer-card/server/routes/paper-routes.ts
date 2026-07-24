@@ -6,13 +6,14 @@ import { ensurePaperDir, paperDir, safeId } from "../storage";
 import {
   validatePaperFile,
   storePaperFile,
+  storePaperPageFile,
 } from "../paper-converter";
 import { autoExtractPaperText, getFileMime } from "../paper-ocr";
 import type { DbAdapter } from "../../../../server/db/mysql";
 import { getMysqlDb } from "../../../../server/db/mysql";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import type { Request, Response } from "express";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { llmClientUrl, llmClientHeaders } from "../llm-client";
 
 type AiProviderRow = {
@@ -117,73 +118,98 @@ async function readKnowledgePointResponse(resp: globalThis.Response): Promise<an
 export function paperRoutes(): Router {
   const router = Router();
 
-  // POST /api/cards/:cardId/paper — 上传原卷
-  router.post("/api/cards/:cardId/paper", paperUpload.single("file"), async (req: Request, res: Response) => {
+  // POST /api/cards/:cardId/paper — 上传原卷（支持多页）
+  router.post("/api/cards/:cardId/paper", paperUpload.array("files", 40), async (req: Request, res: Response) => {
     try {
       const cardId = String(req.params.cardId);
-      const file = req.file;
-      if (!file) {
+      const files = ((req.files as Express.Multer.File[]) || []).filter(Boolean);
+      if (files.length === 0) {
         res.status(400).json({ error: "未选择文件" });
         return;
       }
 
-      const error = validatePaperFile(file.originalname, file.size);
-      if (error) {
-        unlinkSync(file.path);
-        res.status(400).json({ error });
-        return;
-      }
+      const db = getMysqlDb();
+      const maxRow = await db.get(
+        "SELECT COALESCE(MAX(page_index), 0) AS mx FROM original_paper_pages WHERE card_id = ?",
+        cardId
+      ) as { mx: number } | undefined;
+      let nextIndex = (maxRow?.mx ?? 0) + 1;
 
       await ensurePaperDir(cardId);
       const dir = paperDir(cardId);
 
-      const { originalPath, pdfPath } = await storePaperFile(
-        file.path,
-        file.originalname,
-        dir
-      );
+      const uploaded: Array<{ pageIndex: number; filename: string }> = [];
+      let firstFilename = "";
+      let firstRelPath = "";
 
-      // 清理 multer 临时文件
-      try { unlinkSync(file.path); } catch {}
+      for (const file of files) {
+        const error = validatePaperFile(file.originalname, file.size);
+        if (error) {
+          try { unlinkSync(file.path); } catch {}
+          continue;
+        }
+        const pageIndex = nextIndex;
+        nextIndex += 1;
+        const { diskFilename, relPath } = await storePaperPageFile(file.path, file.originalname, dir, pageIndex);
+        try { unlinkSync(file.path); } catch {}
 
-      // 更新 answer_cards 表
-      const db = getMysqlDb();
-      const relPath = path.relative(path.resolve(process.cwd(), "data", "answer-card"), originalPath);
+        await db.run(
+          "INSERT INTO original_paper_pages (card_id, page_index, filename, stored_path) VALUES (?, ?, ?, ?)",
+          cardId, pageIndex, diskFilename, relPath
+        );
+        if (pageIndex === 1) {
+          firstFilename = diskFilename;
+          firstRelPath = relPath;
+        }
+        uploaded.push({ pageIndex, filename: diskFilename });
+      }
+
+      if (uploaded.length === 0) {
+        res.status(400).json({ error: "文件校验失败，未上传任何页" });
+        return;
+      }
+
+      // legacy 字段保留首页，向后兼容预览/导出/AI 读取
+      const firstRow = firstFilename
+        ? { filename: firstFilename, stored_path: firstRelPath }
+        : await db.get(
+            "SELECT filename, stored_path FROM original_paper_pages WHERE card_id = ? ORDER BY page_index LIMIT 1",
+            cardId
+          ) as { filename: string; stored_path: string } | undefined;
+      const firstFilenameOut = firstRow?.filename || "";
+      const firstRelPathOut = firstFilename ? firstRelPath : (firstRow?.stored_path || "");
       await db.run(
         "UPDATE answer_cards SET has_original_paper = 1, original_paper_filename = ?, original_paper_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        file.originalname, relPath, cardId
+        firstFilenameOut, firstRelPathOut, cardId
       );
 
-      res.json({
-        success: true,
-        filename: file.originalname,
-        size: file.size,
-        pdfAvailable: !!pdfPath,
-      });
+      res.json({ success: true, pages: uploaded, count: uploaded.length });
     } catch (err: any) {
       console.error("[paper] upload failed:", err);
       res.status(500).json({ error: err.message || "上传失败" });
     }
   });
 
-  // GET /api/cards/:cardId/paper — 预览/下载原卷
-  // ?info=type 返回 { mimeType, filename } JSON（前端判断渲染方式）
+  // GET /api/cards/:cardId/paper — 预览/下载原卷（支持 ?page=N 指定页码）
+  // ?info=type 返回 { mimeType, filename, page } JSON（前端判断渲染方式）
   router.get("/api/cards/:cardId/paper", async (req: Request, res: Response) => {
     try {
       const cardId = String(req.params.cardId);
       const dir = paperDir(cardId);
+      const page = Number(req.query.page) || 1;
+      const baseName = page === 1 ? "original" : `original-${page}`;
 
       // ?info=type — 只返回文件类型信息，不返回文件
       if (req.query.info === "type") {
         for (const ext of [".jpg", ".jpeg", ".png", ".bmp", ".webp"]) {
-          const fp = path.join(dir, `original${ext}`);
-          if (existsSync(fp)) { res.json({ mimeType: getFileMime(`original${ext}`), filename: `original${ext}` }); return; }
+          const fp = path.join(dir, `${baseName}${ext}`);
+          if (existsSync(fp)) { res.json({ mimeType: getFileMime(`${baseName}${ext}`), filename: `${baseName}${ext}`, page }); return; }
         }
-        const pdfPath = path.join(dir, "original.pdf");
-        if (existsSync(pdfPath)) { res.json({ mimeType: "application/pdf", filename: "original.pdf" }); return; }
+        const pdfPath = path.join(dir, `${baseName}.pdf`);
+        if (existsSync(pdfPath)) { res.json({ mimeType: "application/pdf", filename: `${baseName}.pdf`, page }); return; }
         for (const ext of [".docx"]) {
-          const fp = path.join(dir, `original${ext}`);
-          if (existsSync(fp)) { res.json({ mimeType: getFileMime(`original${ext}`), filename: `original${ext}` }); return; }
+          const fp = path.join(dir, `${baseName}${ext}`);
+          if (existsSync(fp)) { res.json({ mimeType: getFileMime(`${baseName}${ext}`), filename: `${baseName}${ext}`, page }); return; }
         }
         res.status(404).json({ error: "原卷文件不存在" });
         return;
@@ -192,18 +218,17 @@ export function paperRoutes(): Router {
       // ?format=image — 优先返回图片（用于 <img> 预览）
       if (req.query.format === "image") {
         for (const ext of [".jpg", ".jpeg", ".png", ".bmp", ".webp"]) {
-          const fp = path.join(dir, `original${ext}`);
+          const fp = path.join(dir, `${baseName}${ext}`);
           if (existsSync(fp)) { res.sendFile(fp); return; }
         }
-        // 无图片时回退到 PDF
-        const pdfPath = path.join(dir, "original.pdf");
+        const pdfPath = path.join(dir, `${baseName}.pdf`);
         if (existsSync(pdfPath)) { res.sendFile(pdfPath); return; }
         res.status(404).json({ error: "无可预览的图片格式" });
         return;
       }
 
       // 默认：优先返回 PDF（保持向后兼容）
-      const pdfPath = path.join(dir, "original.pdf");
+      const pdfPath = path.join(dir, `${baseName}.pdf`);
       if (existsSync(pdfPath)) {
         res.contentType("application/pdf");
         res.sendFile(pdfPath);
@@ -212,13 +237,13 @@ export function paperRoutes(): Router {
 
       // 其次返回图片
       for (const ext of [".jpg", ".jpeg", ".png", ".bmp", ".webp"]) {
-        const filePath = path.join(dir, `original${ext}`);
+        const filePath = path.join(dir, `${baseName}${ext}`);
         if (existsSync(filePath)) { res.sendFile(filePath); return; }
       }
 
       // DOCX
       for (const ext of [".docx"]) {
-        const filePath = path.join(dir, `original${ext}`);
+        const filePath = path.join(dir, `${baseName}${ext}`);
         if (existsSync(filePath)) { res.sendFile(filePath); return; }
       }
 
@@ -229,22 +254,24 @@ export function paperRoutes(): Router {
     }
   });
 
-  // DELETE /api/cards/:cardId/paper — 删除原卷
+  // DELETE /api/cards/:cardId/paper — 删除原卷（全部页）
   router.delete("/api/cards/:cardId/paper", async (req: Request, res: Response) => {
     try {
       const cardId = String(req.params.cardId);
       const dir = paperDir(cardId);
 
-      // 删除文件
-      for (const ext of [".docx", ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"]) {
-        const filePath = path.join(dir, `original${ext}`);
-        if (existsSync(filePath)) {
-          try { unlinkSync(filePath); } catch {}
+      // 删除 papers/<cardId> 目录下所有 original* 文件（含多页 original-N.*）
+      let entries: string[] = [];
+      try { entries = await readdir(dir); } catch {}
+      for (const e of entries) {
+        if (/^original(-\d+)?\.(jpg|jpeg|png|bmp|tiff|webp|pdf|docx)$/i.test(e)) {
+          try { unlinkSync(path.join(dir, e)); } catch {}
         }
       }
 
       // 更新数据库标记
       const db = getMysqlDb();
+      await db.run("DELETE FROM original_paper_pages WHERE card_id = ?", cardId);
       await db.run(
         "UPDATE answer_cards SET has_original_paper = 0, original_paper_filename = NULL, original_paper_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         cardId
@@ -253,6 +280,39 @@ export function paperRoutes(): Router {
       res.json({ success: true });
     } catch (err: any) {
       console.error("[paper] delete failed:", err);
+      res.status(500).json({ error: err.message || "删除失败" });
+    }
+  });
+
+  // DELETE /api/cards/:cardId/paper/page/:pageIndex — 删除单页
+  router.delete("/api/cards/:cardId/paper/page/:pageIndex", async (req: Request, res: Response) => {
+    try {
+      const cardId = String(req.params.cardId);
+      const pageIndex = Number(req.params.pageIndex);
+      const dir = paperDir(cardId);
+      const db = getMysqlDb();
+      const row = await db.get(
+        "SELECT filename FROM original_paper_pages WHERE card_id = ? AND page_index = ?",
+        cardId, pageIndex
+      ) as { filename: string } | undefined;
+      if (row) {
+        const baseName = pageIndex === 1 ? "original" : `original-${pageIndex}`;
+        for (const ext of [".docx", ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"]) {
+          const fp = path.join(dir, `${baseName}${ext}`);
+          if (existsSync(fp)) { try { unlinkSync(fp); } catch {} }
+        }
+        await db.run("DELETE FROM original_paper_pages WHERE card_id = ? AND page_index = ?", cardId, pageIndex);
+      }
+      const remaining = await db.get("SELECT COUNT(*) AS c FROM original_paper_pages WHERE card_id = ?", cardId) as { c: number };
+      if (remaining.c === 0) {
+        await db.run(
+          "UPDATE answer_cards SET has_original_paper = 0, original_paper_filename = NULL, original_paper_path = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          cardId
+        );
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("[paper] delete page failed:", err);
       res.status(500).json({ error: err.message || "删除失败" });
     }
   });
@@ -287,14 +347,23 @@ export function paperRoutes(): Router {
       );
       if (!row) { res.status(404).json({ error: "答题卡不存在" }); return; }
 
-      const dbHas = !!(row as any).has_original_paper;
-      const filenameOnDisk = fileOnDisk?.filename || (row as any).original_paper_filename;
+      const pages = await db.all(
+        "SELECT page_index AS pageIndex, filename FROM original_paper_pages WHERE card_id = ? ORDER BY page_index",
+        cardId
+      ) as Array<{ pageIndex: number; filename: string }>;
 
-      // 如果 DB 未标记但文件存在，自动修复 DB
-      if (!dbHas && fileOnDisk) {
+      const dbHas = !!(row as any).has_original_paper || pages.length > 0;
+      const filenameOnDisk = fileOnDisk?.filename || (row as any).original_paper_filename || pages[0]?.filename;
+
+      // 如果 DB 未标记但文件或分页数据存在，自动修复 DB
+      if (!dbHas && (fileOnDisk || pages.length > 0)) {
+        const fixFilename = filenameOnDisk || pages[0]?.filename || null;
+        const fixPath = pages[0]
+          ? `papers/${safeId(cardId)}/${pages[0].filename}`
+          : (fileOnDisk ? `papers/${safeId(cardId)}/${fileOnDisk.filename}` : null);
         await db.run(
           "UPDATE answer_cards SET has_original_paper = 1, original_paper_filename = ?, original_paper_path = ? WHERE id = ?",
-          fileOnDisk.filename, `papers/${safeId(cardId)}/${fileOnDisk.filename}`, cardId
+          fixFilename, fixPath, cardId
         );
       }
 
@@ -304,6 +373,7 @@ export function paperRoutes(): Router {
         mime_type: fileOnDisk?.mimeType,
         question_range: (row as any).question_range,
         extra_notes: (row as any).extra_notes,
+        pages,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "获取失败" });
@@ -511,24 +581,27 @@ export function paperRoutes(): Router {
 async function getPaperFiles(cardId: string): Promise<Array<{ mimeType: string; base64: string }>> {
   const dir = paperDir(cardId);
   const files: Array<{ mimeType: string; base64: string }> = [];
+  let entries: string[] = [];
+  try { entries = await readdir(dir); } catch { return files; }
 
-  // 优先查找图片文件
-  for (const ext of [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".webp"]) {
-    const fp = path.join(dir, `original${ext}`);
-    if (existsSync(fp)) {
-      const buf = await readFile(fp);
-      files.push({ mimeType: getFileMime(`original${ext}`), base64: buf.toString("base64") });
-      return files;
-    }
+  const imgRe = /^original(-\d+)?\.(jpg|jpeg|png|bmp|tiff|webp)$/i;
+  const pdfRe = /^original(-\d+)?\.pdf$/i;
+
+  // 所有页的图片（按页码排序）
+  const imgEntries = entries.filter((e) => imgRe.test(e)).sort();
+  for (const e of imgEntries) {
+    const fp = path.join(dir, e);
+    const buf = await readFile(fp);
+    files.push({ mimeType: getFileMime(e), base64: buf.toString("base64") });
   }
+  if (files.length) return files;
 
-  // PDF 文件
-  const pdfPath = path.join(dir, "original.pdf");
-  if (existsSync(pdfPath)) {
-    const buf = await readFile(pdfPath);
+  // 回退：所有页的 PDF
+  const pdfEntries = entries.filter((e) => pdfRe.test(e)).sort();
+  for (const e of pdfEntries) {
+    const fp = path.join(dir, e);
+    const buf = await readFile(fp);
     files.push({ mimeType: "application/pdf", base64: buf.toString("base64") });
-    return files;
   }
-
   return files;
 }
