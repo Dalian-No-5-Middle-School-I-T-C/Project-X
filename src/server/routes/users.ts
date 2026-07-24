@@ -214,7 +214,7 @@ router.post("/:id/reset-password", async (req: Request, res: Response) => {
     }
     await userRepo.updateUser(id, { password });
     authService.revokeUserTokens(id);
-    res.json({ message: "密码已重置" });
+    res.json({ message: "密码已重置", ...(newPassword ? {} : { initialPassword: password }) });
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "重置失败" });
   }

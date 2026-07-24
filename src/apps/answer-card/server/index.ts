@@ -495,6 +495,9 @@ export async function createApp(): Promise<express.Express> {
     }
   }
 
+  // 阅卷提交路由使用 64 KB 限制，覆盖全局 8 MB；须在全局解析器前注册
+  app.use("/api/review/exams/:examId/block-crops/:cropId/submit", express.json({ limit: "64kb" }));
+
   app.use(express.json({ limit: "8mb" }));
   // P1-2 (M-S1): CORS — 从环境变量读取允许的 origin 白名单，不再使用通配符 *
   const allowedOrigins = (process.env.PROJECTX_CORS_ORIGIN ?? "http://127.0.0.1:5173,http://localhost:5173")

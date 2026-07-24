@@ -186,6 +186,30 @@ export async function submitReviewCropScores(params: {
   const config = await getBlockConfig(params.examId, crop.block_id ?? "", blockType, maxBlockScore, db);
   const reviewMode = config.reviewMode;
 
+  // 入参校验：逐条检查 scores 的结构和数值合法性
+  const seenQuestions = new Set<number>();
+  for (const item of params.scores) {
+    const qNum = Number(item.questionNumber);
+    if (!Number.isFinite(qNum) || qNum <= 0) {
+      throw new ReviewValidationError(`无效的题号: ${item.questionNumber}`);
+    }
+    if (seenQuestions.has(qNum)) {
+      throw new ReviewValidationError(`题号 ${qNum} 重复提交`);
+    }
+    seenQuestions.add(qNum);
+    const max = maxScoreByQuestion.get(qNum);
+    if (max == null || max <= 0) {
+      throw new ReviewValidationError(`题号 ${qNum} 不在答题卡题目范围内`);
+    }
+    const score = Number(item.score);
+    if (!Number.isFinite(score)) {
+      throw new ReviewValidationError(`题号 ${qNum} 的分数不是有效数字`);
+    }
+    if (score < 0 || score > max) {
+      throw new ReviewValidationError(`题号 ${qNum} 的分数 ${score} 超出有效范围 [0, ${max}]`);
+    }
+  }
+
   const now = new Date().toISOString();
   const upsertCols = [
     "exam_id", "student_id", "question_number", "question_id", "block_id",

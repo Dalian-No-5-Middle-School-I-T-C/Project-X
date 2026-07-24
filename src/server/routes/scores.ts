@@ -319,11 +319,20 @@ router.get("/students/:studentId", canQueryOthers, async (req: Request, res: Res
     res.status(404).json({ message: "学生不存在" });
     return;
   }
+  let scores = await scoreRepo.getStudentScores(studentId);
+  // 教师仅可见其任教范围内的考试成绩
+  if (req.user!.role_name === "teacher") {
+    const visibleIds = await getVisibleExamIds(req.user);
+    if (visibleIds !== null) {
+      const visible = new Set(visibleIds);
+      scores = scores.filter((s) => visible.has(s.exam_id));
+    }
+  }
   res.json({
     studentId,
     name: student.name,
     student_number: student.student_number,
-    scores: await scoreRepo.getStudentScores(studentId)
+    scores
   });
 });
 

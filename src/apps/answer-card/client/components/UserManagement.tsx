@@ -142,12 +142,18 @@ export function UserManagement() {
   }
 
   async function resetPassword(user: UserListItem) {
-    const hint = user.student_number ? `（默认重置为学号 ${user.student_number}）` : "";
+    const hint = "（不填新密码则自动生成随机密码）";
     if (!confirm(`重置「${user.name}」的密码？${hint}`)) return;
     setBusy(true);
     try {
-      await fetchJson(`/api/users/${user.id}/reset-password`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      setError(`已重置 ${user.name} 的密码`);
+      const res = await fetchJson<{ message: string; initialPassword?: string }>(`/api/users/${user.id}/reset-password`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (res.initialPassword) {
+        // 显示可复制的随机密码
+        await navigator.clipboard.writeText(res.initialPassword);
+        setError(`已重置 ${user.name} 的密码，新密码「${res.initialPassword}」已复制到剪贴板`);
+      } else {
+        setError(`已重置 ${user.name} 的密码`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "重置失败");
     } finally {

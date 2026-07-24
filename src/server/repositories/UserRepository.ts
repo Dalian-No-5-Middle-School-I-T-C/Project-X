@@ -62,7 +62,7 @@ export class UserRepository {
     const updates: string[] = [];
     const values: unknown[] = [];
     if (params.name !== undefined) { updates.push("name = ?"); values.push(params.name); }
-    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); }
+    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); updates.push("initial_password = ?"); values.push(params.password); }
     if (params.email !== undefined) { updates.push("email = ?"); values.push(params.email); }
     if (params.phone !== undefined) { updates.push("phone = ?"); values.push(params.phone); }
     if (params.is_active !== undefined) { updates.push("is_active = ?"); values.push(params.is_active); }

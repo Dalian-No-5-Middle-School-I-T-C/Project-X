@@ -91,12 +91,6 @@ router.post(
         return;
       }
 
-      const contentLength = Number(req.headers["content-length"] ?? 0);
-      if (contentLength > 64 * 1024) {
-        res.status(400).json({ message: "载荷过大" });
-        return;
-      }
-
       const scores = req.body?.scores as ReviewSubmitScoreInput[] | undefined;
       if (!Array.isArray(scores) || scores.length === 0) {
         res.status(400).json({ message: "请提供分数数据" });
