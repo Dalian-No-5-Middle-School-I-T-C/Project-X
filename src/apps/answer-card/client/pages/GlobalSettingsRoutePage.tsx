@@ -6,7 +6,7 @@ import { GlobalSettingsPage } from "../components/GlobalSettingsPage";
  */
 export function GlobalSettingsRoutePage({ onBack }: { onBack: () => void }) {
   return (
-    <div className="main-grid account-grid">
+    <div className="main-grid global-settings-grid">
       <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
         <GlobalSettingsPage onBack={onBack} />
       </section>

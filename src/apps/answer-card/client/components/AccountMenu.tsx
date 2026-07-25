@@ -246,6 +246,16 @@ export function AccountMenu({
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [open]);
 
+  // v1.9.5: 组件卸载时清理防抖定时器，避免对已卸载组件触发 PATCH
+  useEffect(() => {
+    return () => {
+      if (bgSaveTimer.current) {
+        window.clearTimeout(bgSaveTimer.current);
+        bgSaveTimer.current = null;
+      }
+    };
+  }, []);
+
   if (!user) return null;
 
   async function handleChangePassword() {
