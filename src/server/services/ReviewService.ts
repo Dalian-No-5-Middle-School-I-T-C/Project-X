@@ -160,15 +160,22 @@ export async function submitReviewCropScores(params: {
 
   // 读取评分配置（含 reviewMode）
   const blockType = crop.block_type ?? "subjective";
+  const targetBlockId = crop.block_id ?? "";
+  // 仅取当前题块计算满分，避免把整张答题卡的满分当作单题块满分。
+  // 兜底：若按 block_id 找不到（答题卡被替换/编辑而 crop 未重建的异常态），
+  // 退回同类型首个题块，避免整批改卷因硬抛错而全部失败。
+  const targetBlock =
+    card.bodyBlocks.find((b) => b.id === targetBlockId) ??
+    card.bodyBlocks.find((b) => b.type === blockType);
   let maxBlockScore = 0;
   const maxScoreByQuestion = new Map<number, number>();
-  for (const block of card.bodyBlocks) {
-    if (block.type === "objective") {
-      for (const def of objectiveQuestionDefinitions(block)) {
+  if (targetBlock) {
+    if (targetBlock.type === "objective") {
+      for (const def of objectiveQuestionDefinitions(targetBlock)) {
         maxScoreByQuestion.set(def.questionNumber, Number(def.score ?? 0));
       }
-    } else if (block.type === "subjective") {
-      for (const question of block.questions ?? []) {
+    } else if (targetBlock.type === "subjective") {
+      for (const question of targetBlock.questions ?? []) {
         const qNum = typeof question.number === "number" ? question.number : parseInt(String(question.number), 10);
         if (Number.isFinite(qNum)) maxScoreByQuestion.set(qNum, Number(question.score ?? 0));
       }

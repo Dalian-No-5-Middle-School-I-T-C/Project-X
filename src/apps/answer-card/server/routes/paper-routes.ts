@@ -5,7 +5,6 @@ import { existsSync, unlinkSync } from "node:fs";
 import { ensurePaperDir, paperDir, safeId } from "../storage";
 import {
   validatePaperFile,
-  storePaperFile,
   storePaperPageFile,
 } from "../paper-converter";
 import { autoExtractPaperText, getFileMime } from "../paper-ocr";
@@ -128,46 +127,63 @@ export function paperRoutes(): Router {
         return;
       }
 
-      const db = getMysqlDb();
-      const maxRow = await db.get(
-        "SELECT COALESCE(MAX(page_index), 0) AS mx FROM original_paper_pages WHERE card_id = ?",
-        cardId
-      ) as { mx: number } | undefined;
-      let nextIndex = (maxRow?.mx ?? 0) + 1;
-
       await ensurePaperDir(cardId);
       const dir = paperDir(cardId);
+      const db = getMysqlDb();
 
+      // 先校验全部文件，收集通过/失败列表（不静默跳过）
+      const validFiles: Array<{ file: Express.Multer.File; originalname: string }> = [];
+      const failed: Array<{ filename: string; error: string }> = [];
+      for (const file of files) {
+        const name = file.originalname;
+        const errMsg = validatePaperFile(name, file.size);
+        if (errMsg) {
+          failed.push({ filename: name, error: errMsg });
+          try { unlinkSync(file.path); } catch {}
+        } else {
+          validFiles.push({ file, originalname: name });
+        }
+      }
+
+      if (validFiles.length === 0) {
+        res.status(400).json({
+          error: "文件校验失败，未上传任何页",
+          failed,
+        });
+        return;
+      }
+
+      // 事务内完成 page_index 分配与入库，避免并发竞争
       const uploaded: Array<{ pageIndex: number; filename: string }> = [];
       let firstFilename = "";
       let firstRelPath = "";
 
-      for (const file of files) {
-        const error = validatePaperFile(file.originalname, file.size);
-        if (error) {
+      await db.transaction(async (tx) => {
+        const maxRow = await tx.get(
+          "SELECT COALESCE(MAX(page_index), 0) AS mx FROM original_paper_pages WHERE card_id = ?",
+          cardId
+        ) as { mx: number } | undefined;
+        let nextIndex = (maxRow?.mx ?? 0) + 1;
+
+        for (const { file, originalname } of validFiles) {
+          const pageIndex = nextIndex;
+          nextIndex += 1;
+
+          const { diskFilename, relPath } = await storePaperPageFile(file.path, originalname, dir, pageIndex);
           try { unlinkSync(file.path); } catch {}
-          continue;
-        }
-        const pageIndex = nextIndex;
-        nextIndex += 1;
-        const { diskFilename, relPath } = await storePaperPageFile(file.path, file.originalname, dir, pageIndex);
-        try { unlinkSync(file.path); } catch {}
 
-        await db.run(
-          "INSERT INTO original_paper_pages (card_id, page_index, filename, stored_path) VALUES (?, ?, ?, ?)",
-          cardId, pageIndex, diskFilename, relPath
-        );
-        if (pageIndex === 1) {
-          firstFilename = diskFilename;
-          firstRelPath = relPath;
+          // UNIQUE(card_id, page_index) 约束保证不会重复写入
+          await tx.run(
+            "INSERT INTO original_paper_pages (card_id, page_index, filename, stored_path) VALUES (?, ?, ?, ?)",
+            cardId, pageIndex, diskFilename, relPath
+          );
+          if (pageIndex === 1) {
+            firstFilename = diskFilename;
+            firstRelPath = relPath;
+          }
+          uploaded.push({ pageIndex, filename: diskFilename });
         }
-        uploaded.push({ pageIndex, filename: diskFilename });
-      }
-
-      if (uploaded.length === 0) {
-        res.status(400).json({ error: "文件校验失败，未上传任何页" });
-        return;
-      }
+      });
 
       // legacy 字段保留首页，向后兼容预览/导出/AI 读取
       const firstRow = firstFilename
@@ -183,7 +199,12 @@ export function paperRoutes(): Router {
         firstFilenameOut, firstRelPathOut, cardId
       );
 
-      res.json({ success: true, pages: uploaded, count: uploaded.length });
+      res.json({
+        success: true,
+        pages: uploaded,
+        count: uploaded.length,
+        ...(failed.length > 0 ? { failed } : {}),
+      });
     } catch (err: any) {
       console.error("[paper] upload failed:", err);
       res.status(500).json({ error: err.message || "上传失败" });
@@ -201,16 +222,25 @@ export function paperRoutes(): Router {
 
       // ?info=type — 只返回文件类型信息，不返回文件
       if (req.query.info === "type") {
+        // 查询总页数
+        const db = getMysqlDb();
+        const countRow = await db.get(
+          "SELECT COUNT(*) AS c FROM original_paper_pages WHERE card_id = ?",
+          cardId
+        ) as { c: number } | undefined;
+        const totalPages = countRow?.c ?? 0;
+
         for (const ext of [".jpg", ".jpeg", ".png", ".bmp", ".webp"]) {
           const fp = path.join(dir, `${baseName}${ext}`);
-          if (existsSync(fp)) { res.json({ mimeType: getFileMime(`${baseName}${ext}`), filename: `${baseName}${ext}`, page }); return; }
+          if (existsSync(fp)) { res.json({ mimeType: getFileMime(`${baseName}${ext}`), filename: `${baseName}${ext}`, page, totalPages }); return; }
         }
         const pdfPath = path.join(dir, `${baseName}.pdf`);
-        if (existsSync(pdfPath)) { res.json({ mimeType: "application/pdf", filename: `${baseName}.pdf`, page }); return; }
+        if (existsSync(pdfPath)) { res.json({ mimeType: "application/pdf", filename: `${baseName}.pdf`, page, totalPages }); return; }
         for (const ext of [".docx"]) {
           const fp = path.join(dir, `${baseName}${ext}`);
-          if (existsSync(fp)) { res.json({ mimeType: getFileMime(`${baseName}${ext}`), filename: `${baseName}${ext}`, page }); return; }
+          if (existsSync(fp)) { res.json({ mimeType: getFileMime(`${baseName}${ext}`), filename: `${baseName}${ext}`, page, totalPages }); return; }
         }
+        // 文件已在磁盘但 DB 无记录（旧数据回溯）：总页数为 1
         res.status(404).json({ error: "原卷文件不存在" });
         return;
       }
