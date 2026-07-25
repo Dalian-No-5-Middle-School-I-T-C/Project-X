@@ -1090,6 +1090,10 @@ export interface BlockGradingConfig {
   autoReassignNoArb: number;
   /** 工作量均衡阈值：已分配本题块教师「最多-最少份数差」上限 */
   workloadBalanceThreshold: number;
+  /** 题块评分模式：block_total=题块合计分（#187 默认），per_question=逐题输入（#186） */
+  scoringMode: string;
+  /** 题块总分拆分策略：proportional=按小题满分比例，equal=均分 */
+  scoreDistribution: string;
   createdAt: string;
   updatedAt: string;
 }

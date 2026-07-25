@@ -19,7 +19,7 @@ const router = Router();
 /** v1.9.4 权限下调：仅管理员可改仲裁人/分差/取整/模式；教师仅可改 has_half_point，且限本人已分配块 */
 const ADMIN_ONLY_FIELDS = [
   "disputeThreshold", "rounding", "arbitratorId", "reviewMode",
-  "autoReassignNoArb", "workloadBalanceThreshold"
+  "autoReassignNoArb", "workloadBalanceThreshold", "scoringMode", "scoreDistribution"
 ] as const;
 
 async function teacherAssignedToBlock(
@@ -91,7 +91,8 @@ router.put(
 
       const {
         disputeThreshold, rounding, arbitratorId, reviewMode,
-        hasHalfPoint, autoReassignNoArb, workloadBalanceThreshold
+        hasHalfPoint, autoReassignNoArb, workloadBalanceThreshold,
+        scoringMode, scoreDistribution
       } = req.body;
 
       const config = await upsertBlockConfig(examId, blockId, {
@@ -101,7 +102,9 @@ router.put(
         reviewMode,
         hasHalfPoint,
         autoReassignNoArb,
-        workloadBalanceThreshold
+        workloadBalanceThreshold,
+        scoringMode,
+        scoreDistribution
       });
       res.json({ ok: true, data: config });
     } catch (err: any) {
@@ -120,7 +123,8 @@ router.post(
       const examId = Number(req.params.examId);
       const {
         blockIds, disputeThreshold, rounding, arbitratorId, reviewMode,
-        hasHalfPoint, autoReassignNoArb, workloadBalanceThreshold
+        hasHalfPoint, autoReassignNoArb, workloadBalanceThreshold,
+        scoringMode, scoreDistribution
       } = req.body;
 
       if (!Array.isArray(blockIds) || blockIds.length === 0) {
@@ -151,7 +155,9 @@ router.post(
         reviewMode,
         hasHalfPoint,
         autoReassignNoArb,
-        workloadBalanceThreshold
+        workloadBalanceThreshold,
+        scoringMode,
+        scoreDistribution
       });
 
       res.json({ ok: true, message: `已更新 ${targetBlocks.length} 道题的设置` });

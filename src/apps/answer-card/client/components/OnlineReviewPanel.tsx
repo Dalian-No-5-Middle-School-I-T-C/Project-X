@@ -3,6 +3,11 @@ import {
   CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, Loader2, RefreshCw
 } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
+import {
+  resolveScoringMode,
+  type ClientScoringMode,
+  type ConfigFetchResult
+} from "../../../../server/services/scoringModeValidator";
 import type {
   ReviewBlockCropItem,
   ReviewBlockCropsResponse,
@@ -29,6 +34,15 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  // PR #189 二次修复：客户端评分模式从二态（block_total/per_question）扩为三态：
+  //   - "block_total" → 配置明确读到 block_total，禁用提交（与管理配置一致）
+  //   - "per_question" → 配置明确读到 per_question，正常提交
+  //   - "unknown"      → 配置加载失败，黄色警告 + 保留提交（服务端兜底）
+  // 之前 fetch 失败时直接按 block_total 处理是"安全失败"，但与管理界面无法切换
+  // 模式叠加后会形成硬锁死（网络抖动一下老师就再也提交不了分数）。
+  // null = 题块未选中 / 配置尚未加载完成。
+  const [scoringMode, setScoringMode] = useState<ClientScoringMode | null>(null);
+  const [configLoadError, setConfigLoadError] = useState<string | null>(null);
 
   const current = queue[index] ?? null;
 
@@ -73,6 +87,38 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
     }
   }, [examId, selectedBlockId, classId, statusFilter]);
 
+  // PR #189 二次修复：加载评分模式并归一为三态。
+  // 区分"配置缺失但响应成功"（合法未配置，回退 block_total）
+  // 和"配置加载失败"（网络/服务异常，必须走 unknown 让服务端兜底）。
+  const loadBlockConfig = useCallback(async () => {
+    if (!selectedBlockId) {
+      setScoringMode(null);
+      setConfigLoadError(null);
+      return;
+    }
+    let fetchResult: ConfigFetchResult;
+    try {
+      const res = await fetchJson<{ ok: boolean; data?: { scoringMode?: string } }>(
+        `/api/block-grading-config/exams/${examId}/blocks/${encodeURIComponent(selectedBlockId)}`
+      );
+      // res.ok=true 但 data.scoringMode 为空 → 合法"未配置"
+      // res.ok=false → 服务端说配置不存在（也可能返回 404）
+      if (res.ok && res.data) {
+        fetchResult = { kind: "ok", scoringMode: res.data.scoringMode };
+      } else {
+        fetchResult = { kind: "config-missing" };
+      }
+    } catch (err) {
+      fetchResult = {
+        kind: "fetch-failed",
+        error: err instanceof Error ? err.message : "配置加载失败"
+      };
+    }
+    const { mode, configLoadError: errMsg } = resolveScoringMode(fetchResult);
+    setScoringMode(mode);
+    setConfigLoadError(errMsg);
+  }, [examId, selectedBlockId]);
+
   useEffect(() => {
     void loadBlocks();
   }, [loadBlocks]);
@@ -80,6 +126,10 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
   useEffect(() => {
     void loadQueue();
   }, [loadQueue]);
+
+  useEffect(() => {
+    void loadBlockConfig();
+  }, [loadBlockConfig]);
 
   useEffect(() => {
     if (!current?.studentId) {
@@ -119,6 +169,13 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
 
   async function submitCurrent(status: "reviewed" | "disputed" = "reviewed", advance = true) {
     if (!current || !current.studentId) return;
+    // PR #189 二次修复：只在「配置明确读到 block_total」时禁用提交。
+    // "unknown"（配置加载失败）必须允许提交，让服务端校验兜底——
+    // 否则网络抖动一下老师就被硬锁死。
+    if (scoringMode === "block_total") {
+      setError("本题块配置为「题块总分」模式，请使用阅卷面板（GradePanel）输入合计分；或请管理员将该题块评分模式改为「逐题评分」");
+      return;
+    }
     setSaving(true);
     setError("");
     setMessage("");
@@ -269,6 +326,53 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
                 <p className="hint">当前得分：{current.score} / {current.maxScore}</p>
               )}
 
+              {/* PR #189 二次修复：双态横幅。
+                   - block_total：红色硬警告 + 禁用提交（与管理配置一致）
+                   - unknown   ：黄色软警告 + 保留提交（让服务端兜底，避免硬锁死）
+              */}
+              {scoringMode === "block_total" && (
+                <div
+                  style={{
+                    fontSize: 14,
+                    color: "#E24B4A",
+                    padding: "12px 14px",
+                    background: "rgba(226,75,74,0.1)",
+                    borderRadius: 8,
+                    marginBottom: 12
+                  }}
+                >
+                  本题块配置为「题块总分」模式，请使用阅卷面板（GradePanel）输入合计分；如需在此面板按题打分，请管理员将本题块评分模式改为「逐题评分」。
+                </div>
+              )}
+              {scoringMode === "unknown" && (
+                <div
+                  style={{
+                    fontSize: 13,
+                    color: "#B45309",
+                    padding: "10px 14px",
+                    background: "rgba(245,158,11,0.12)",
+                    borderRadius: 8,
+                    marginBottom: 12,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10
+                  }}
+                >
+                  <span style={{ flex: 1 }}>
+                    ⚠ 题块配置加载失败{configLoadError ? `（${configLoadError}）` : ""}，未能确认评分模式。
+                    本次提交将按当前页面输入（逐题）发送，服务端校验兜底；若被拒绝请重试或联系管理员。
+                  </span>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => void loadBlockConfig()}
+                    style={{ fontSize: 12, padding: "4px 10px" }}
+                  >
+                    重试加载
+                  </button>
+                </div>
+              )}
+
               <div className="online-review-score-grid">
                 {current.questionNumbers.map((qNum) => {
                   const num = Number(qNum);
@@ -289,14 +393,14 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
               </div>
 
               <div className="online-review-actions">
-                <button className="primary-button" type="button" disabled={saving} onClick={() => void submitCurrent("reviewed", true)}>
+                <button className="primary-button" type="button" disabled={saving || scoringMode === "block_total"} onClick={() => void submitCurrent("reviewed", true)}>
                   {saving ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}
                   保存并下一份
                 </button>
-                <button className="ghost-button" type="button" disabled={saving} onClick={() => void submitCurrent("reviewed", false)}>
+                <button className="ghost-button" type="button" disabled={saving || scoringMode === "block_total"} onClick={() => void submitCurrent("reviewed", false)}>
                   仅保存
                 </button>
-                <button className="ghost-button" type="button" disabled={saving} onClick={() => void submitCurrent("disputed", false)}>
+                <button className="ghost-button" type="button" disabled={saving || scoringMode === "block_total"} onClick={() => void submitCurrent("disputed", false)}>
                   标记争议
                 </button>
               </div>

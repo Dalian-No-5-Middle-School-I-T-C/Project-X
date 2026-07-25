@@ -689,6 +689,8 @@ CREATE TABLE IF NOT EXISTS block_grading_config (
     rounding           VARCHAR(16) DEFAULT 'ceil',
     arbitrator_id      INT,
     review_mode        INT DEFAULT 1,
+    scoring_mode       VARCHAR(16) NOT NULL DEFAULT 'block_total',
+    score_distribution VARCHAR(16) NOT NULL DEFAULT 'proportional',
     has_half_point             TINYINT DEFAULT 0,
     auto_reassign_no_arb       TINYINT DEFAULT 1,
     workload_balance_threshold INT DEFAULT 4,

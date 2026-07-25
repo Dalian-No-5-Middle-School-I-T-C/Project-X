@@ -7,6 +7,7 @@ import {
 } from "./AnswerBlockCropService";
 import { computeMultiReviewResult } from "./ArbitrationService";
 import { getBlockConfig } from "./BlockGradingConfigService";
+import { validateScoringModeConsistency, validateBlockTotalCoverage, type ScoringMode } from "./scoringModeValidator";
 import type {
   ReviewBlockCropItem,
   ReviewBlockSummary,
@@ -136,12 +137,65 @@ export async function listReviewBlockCropItems(
   }));
 }
 
+/**
+ * 题块总分模式拆分（#187 设计）：将整个题块的合计分分配到各小题。
+ * - distribution='proportional'：按各小题满分占题块满分的比例分配（默认）。
+ * - distribution='equal'：忽略满分，均匀分配到各小题。
+ * - 每题得分 clamp 到该小题权威满分 [0, max]。
+ * - 末题/余数兜底，保证拆分合计精确等于题块总分（step 粒度内）。
+ * step 为最小分值粒度：允许 0.5 时取 0.5，否则取 1。
+ */
+export function splitBlockTotal(
+  blockTotal: number,
+  items: ReviewSubmitScoreInput[],
+  maxScoreByQuestion: Map<number, number>,
+  maxBlockScore: number,
+  step: number,
+  distribution: "proportional" | "equal"
+): Map<number, number> {
+  const result = new Map<number, number>();
+  const nums = items.map((it) => it.questionNumber);
+  if (nums.length === 0) return result;
+
+  const sumMax = nums.reduce((acc, q) => acc + (maxScoreByQuestion.get(q) ?? 0), 0);
+  const raw = nums.map((q) => {
+    if (distribution === "equal") {
+      return blockTotal / nums.length;
+    }
+    const max = maxScoreByQuestion.get(q) ?? 0;
+    const denom = maxBlockScore > 0 ? maxBlockScore : sumMax || 1;
+    return (blockTotal * max) / denom;
+  });
+
+  // 先按 step 取整并 clamp 到 [0, max]
+  const rounded = raw.map((r, i) => {
+    const max = maxScoreByQuestion.get(nums[i]) ?? 0;
+    return Math.max(0, Math.min(Math.round(r / step) * step, max));
+  });
+
+  // 修正取整漂移，使合计精确等于题块总分（从末题向前吸收余量）
+  let residual =
+    Math.round((blockTotal - rounded.reduce((a, b) => a + b, 0)) / step) * step;
+  for (let i = nums.length - 1; i >= 0 && Math.abs(residual) > 1e-9; i--) {
+    const before = rounded[i];
+    const max = maxScoreByQuestion.get(nums[i]) ?? 0;
+    const next = Math.max(0, Math.min(before + residual, max));
+    residual -= next - before;
+    rounded[i] = next;
+  }
+
+  nums.forEach((q, i) => result.set(q, rounded[i]));
+  return result;
+}
+
 export async function submitReviewCropScores(params: {
   examId: number;
   cropId: string;
   scores: ReviewSubmitScoreInput[];
   status?: string;
   userId: number;
+  /** 题块总分模式（#187）：整个题块的合计分，后端按比例拆分到各小题 */
+  blockTotalScore?: number;
 }, db: DbAdapter = getMysqlDb()): Promise<ReviewSubmitResult> {
   const crop = await db.get(
     "SELECT * FROM answer_block_crops WHERE id = ? AND exam_id = ?",
@@ -178,8 +232,7 @@ export async function submitReviewCropScores(params: {
       for (const question of targetBlock.questions ?? []) {
         const qNum = typeof question.number === "number" ? question.number : parseInt(String(question.number), 10);
         if (Number.isFinite(qNum)) maxScoreByQuestion.set(qNum, Number(question.score ?? 0));
-      }
-    }
+      }    }
   }
   maxBlockScore = Array.from(maxScoreByQuestion.values()).reduce((a, b) => a + b, 0);
 
@@ -195,10 +248,65 @@ export async function submitReviewCropScores(params: {
   const updateCols = ["score", "max_score", "manually_modified", "modified_by", "modified_at", "block_id"];
   const upsertSQL = buildUpsertSQL(db.dialect, "question_scores", upsertCols, conflictCols, updateCols);
 
-  const submittedScores = params.scores.map((item) => {
-    const maxScore = item.maxScore ?? maxScoreByQuestion.get(item.questionNumber) ?? item.score;
-    return { ...item, maxScore, score: Math.max(0, Math.min(maxScore, item.score)) };
-  });
+  // ── 题块总分模式（#187）与逐题模式（#186）兼容 ──
+  // 优先采用题块总分：前端只提交一个合计分，后端按比例拆分到各小题并写入正确的逐题满分。
+  // 未提交题块总分时（如 OnlineReviewPanel 逐题输入），按逐题校验的严格模式处理。
+  const step = config.hasHalfPoint ? 0.5 : 1;
+  // 评分模式 / 拆分策略以题块配置为准（修复 scoringMode 配置失效的冲突）
+  const scoringMode: ScoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";
+  const distribution = config.scoreDistribution === "equal" ? "equal" : "proportional";
+  // 评分模式双向校验（PR #189 修复：原实现只校验 per_question 单方向，
+  // 导致 block_total + 仅逐题分数也能通过，scoringMode 形同虚设）
+  // 把 blockTotalScore 归一化为「是否合法提交」(null/undefined/NaN 视为未提交)
+  const blockTotalScoreNum = params.blockTotalScore == null ? Number.NaN : Number(params.blockTotalScore);
+  const hasBlockTotalScore = Number.isFinite(blockTotalScoreNum);
+  const consistency = validateScoringModeConsistency(scoringMode, hasBlockTotalScore);
+  if (!consistency.ok) throw new Error(consistency.error);
+  const submittedScores: Array<{ questionNumber: number; scoreType: string; score: number; maxScore: number }> =
+    params.blockTotalScore != null
+      ? (() => {
+          const total = Number(params.blockTotalScore);
+          if (!Number.isFinite(total) || total < -1e-9) throw new Error("题块总分无效");
+          if (total > maxBlockScore + 1e-6) {
+            throw new Error(`题块总分不能超过本题块满分 ${maxBlockScore}`);
+          }
+          if (Math.abs(total - Math.round(total / step) * step) > 1e-9) {
+            throw new Error(`题块总分必须是 ${step} 分的整数倍`);
+          }
+          // 题号集合校验：题块总分代表整个题块，提交项必须恰好覆盖本题块的权威小题，
+          // 且每题只允许出现一次（否则 totalScore 虚高且 scoreBreakdown 内部不一致）。
+          const authoritativeNums = Array.from(maxScoreByQuestion.keys());
+          const coverage = validateBlockTotalCoverage(authoritativeNums, params.scores);
+          if (!coverage.ok) throw new Error(coverage.error);
+          const split = splitBlockTotal(
+            Math.round(total * 100) / 100,
+            params.scores,
+            maxScoreByQuestion,
+            maxBlockScore,
+            step,
+            distribution
+          );
+          return params.scores.map((item) => {
+            const qNum = item.questionNumber;
+            const max = maxScoreByQuestion.get(qNum) ?? 0;
+            const score = Math.max(0, Math.min(max, split.get(qNum) ?? 0));
+            return { questionNumber: qNum, scoreType: String(item.scoreType), score, maxScore: max };
+          });
+        })()
+      : params.scores.map((item) => {
+          const authoritative = maxScoreByQuestion.get(item.questionNumber);
+          // #186 严格校验：逐题模式若显式携带 maxScore，必须与权威逐题满分一致
+          if (item.maxScore != null && authoritative != null && Math.abs(item.maxScore - authoritative) > 1e-6) {
+            throw new Error(`第${item.questionNumber}题满分应为 ${authoritative}，提交值为 ${item.maxScore}`);
+          }
+          const maxScore = item.maxScore ?? authoritative ?? item.score;
+          return {
+            questionNumber: item.questionNumber,
+            scoreType: String(item.scoreType),
+            score: Math.max(0, Math.min(maxScore, item.score)),
+            maxScore
+          };
+        });
   let totalScore = 0;
   let finalReviewRound = 0;
   let scoreBreakdown: Array<{ round: number; reviewerId: number; score: number; reviewedAt: string; questionScores: Record<string, number> }> = [];
