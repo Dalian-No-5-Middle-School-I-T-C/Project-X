@@ -7,7 +7,7 @@ import {
 } from "./AnswerBlockCropService";
 import { computeMultiReviewResult } from "./ArbitrationService";
 import { getBlockConfig } from "./BlockGradingConfigService";
-import { validateScoringModeConsistency, type ScoringMode } from "./scoringModeValidator";
+import { validateScoringModeConsistency, validateBlockTotalCoverage, type ScoringMode } from "./scoringModeValidator";
 import type {
   ReviewBlockCropItem,
   ReviewBlockSummary,
@@ -274,17 +274,10 @@ export async function submitReviewCropScores(params: {
             throw new Error(`题块总分必须是 ${step} 分的整数倍`);
           }
           // 题号集合校验：题块总分代表整个题块，提交项必须恰好覆盖本题块的权威小题，
-          // 否则漏传的题会被静默写成 0/0，多传的题不属于本题块。
-          const authoritativeNums = new Set(maxScoreByQuestion.keys());
-          const submittedNums = new Set(params.scores.map((s) => s.questionNumber));
-          for (const n of authoritativeNums) {
-            if (!submittedNums.has(n)) throw new Error(`题块总分模式缺少第${n}题的分数项`);
-          }
-          for (const s of params.scores) {
-            if (!authoritativeNums.has(s.questionNumber)) {
-              throw new Error(`题块总分模式提交了不属于本题块的第${s.questionNumber}题`);
-            }
-          }
+          // 且每题只允许出现一次（否则 totalScore 虚高且 scoreBreakdown 内部不一致）。
+          const authoritativeNums = Array.from(maxScoreByQuestion.keys());
+          const coverage = validateBlockTotalCoverage(authoritativeNums, params.scores);
+          if (!coverage.ok) throw new Error(coverage.error);
           const split = splitBlockTotal(
             Math.round(total * 100) / 100,
             params.scores,

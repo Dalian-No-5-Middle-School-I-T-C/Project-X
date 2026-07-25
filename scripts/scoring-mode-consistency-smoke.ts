@@ -14,7 +14,6 @@
  *   6) 边界：block_total + blockTotalScore = NaN → 拒绝（与"未提交"同义，但显式错误更稳）
  */
 import { validateScoringModeConsistency } from "../src/server/services/scoringModeValidator";
-
 interface Case {
   name: string;
   scoringMode: "block_total" | "per_question";
