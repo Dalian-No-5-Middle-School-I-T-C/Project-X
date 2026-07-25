@@ -7,6 +7,7 @@ import {
 } from "./AnswerBlockCropService";
 import { computeMultiReviewResult } from "./ArbitrationService";
 import { getBlockConfig } from "./BlockGradingConfigService";
+import { validateScoringModeConsistency, type ScoringMode } from "./scoringModeValidator";
 import type {
   ReviewBlockCropItem,
   ReviewBlockSummary,
@@ -252,14 +253,15 @@ export async function submitReviewCropScores(params: {
   // 未提交题块总分时（如 OnlineReviewPanel 逐题输入），按逐题校验的严格模式处理。
   const step = config.hasHalfPoint ? 0.5 : 1;
   // 评分模式 / 拆分策略以题块配置为准（修复 scoringMode 配置失效的冲突）
-  const scoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";
+  const scoringMode: ScoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";
   const distribution = config.scoreDistribution === "equal" ? "equal" : "proportional";
-  // 冲突修复：逐题评分模式下前端不应提交题块总分，否则与配置意图相悖且会丢失逐题分数
-  if (scoringMode === "per_question" && params.blockTotalScore != null) {
-    throw new Error(
-      "该题块配置为「逐题评分」模式，前端不应提交题块总分；请改用在线阅卷逐题输入，或将该题块评分模式改为「题块总分」"
-    );
-  }
+  // 评分模式双向校验（PR #189 修复：原实现只校验 per_question 单方向，
+  // 导致 block_total + 仅逐题分数也能通过，scoringMode 形同虚设）
+  // 把 blockTotalScore 归一化为「是否合法提交」(null/undefined/NaN 视为未提交)
+  const blockTotalScoreNum = params.blockTotalScore == null ? Number.NaN : Number(params.blockTotalScore);
+  const hasBlockTotalScore = Number.isFinite(blockTotalScoreNum);
+  const consistency = validateScoringModeConsistency(scoringMode, hasBlockTotalScore);
+  if (!consistency.ok) throw new Error(consistency.error);
   const submittedScores: Array<{ questionNumber: number; scoreType: string; score: number; maxScore: number }> =
     params.blockTotalScore != null
       ? (() => {

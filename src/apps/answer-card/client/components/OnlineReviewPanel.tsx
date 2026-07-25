@@ -29,6 +29,10 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  // PR #189 修复：当前题块的评分模式（block_total / per_question）。
+  // 当管理员把题块配置为「题块总分」时，本面板（按题输入）应当禁用提交，
+  // 避免在线阅卷与 GradePanel 走两套评分语义。
+  const [scoringMode, setScoringMode] = useState<"block_total" | "per_question" | null>(null);
 
   const current = queue[index] ?? null;
 
@@ -73,6 +77,29 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
     }
   }, [examId, selectedBlockId, classId, statusFilter]);
 
+  // PR #189 修复：加载当前题块的 scoringMode 配置，
+  // 决定 OnlineReviewPanel 应该走「逐题」还是「题块总分」输入模式。
+  // 若题块配置为「题块总分」，本面板只能禁用提交并提示，避免与 GradePanel 走不同评分语义。
+  const loadBlockConfig = useCallback(async () => {
+    if (!selectedBlockId) {
+      setScoringMode(null);
+      return;
+    }
+    try {
+      const res = await fetchJson<{ ok: boolean; data?: { scoringMode?: string } }>(
+        `/api/block-grading-config/exams/${examId}/blocks/${encodeURIComponent(selectedBlockId)}`
+      );
+      if (res.ok && res.data?.scoringMode) {
+        setScoringMode(res.data.scoringMode === "per_question" ? "per_question" : "block_total");
+      } else {
+        // 配置缺失 → 走「网阅默认」/「题块总分」语义（与后端默认一致）
+        setScoringMode("block_total");
+      }
+    } catch {
+      setScoringMode("block_total");
+    }
+  }, [examId, selectedBlockId]);
+
   useEffect(() => {
     void loadBlocks();
   }, [loadBlocks]);
@@ -80,6 +107,10 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
   useEffect(() => {
     void loadQueue();
   }, [loadQueue]);
+
+  useEffect(() => {
+    void loadBlockConfig();
+  }, [loadBlockConfig]);
 
   useEffect(() => {
     if (!current?.studentId) {
@@ -119,6 +150,12 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
 
   async function submitCurrent(status: "reviewed" | "disputed" = "reviewed", advance = true) {
     if (!current || !current.studentId) return;
+    // PR #189 修复：本题块若配置为「题块总分」，本面板（按题输入）应拒绝提交。
+    // 让用户改用 GradePanel 输入合计分，或让管理员把题块改为「逐题评分」配置。
+    if (scoringMode === "block_total") {
+      setError("本题块配置为「题块总分」模式，请使用阅卷面板（GradePanel）输入合计分；或请管理员将该题块评分模式改为「逐题评分」");
+      return;
+    }
     setSaving(true);
     setError("");
     setMessage("");
@@ -269,6 +306,23 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
                 <p className="hint">当前得分：{current.score} / {current.maxScore}</p>
               )}
 
+              {/* PR #189 修复：题块配置为「题块总分」时，本面板（按题输入）禁用提交。
+                  显示醒目提示让老师立刻知道应该改用阅卷面板（GradePanel）。 */}
+              {scoringMode === "block_total" && (
+                <div
+                  style={{
+                    fontSize: 14,
+                    color: "#E24B4A",
+                    padding: "12px 14px",
+                    background: "rgba(226,75,74,0.1)",
+                    borderRadius: 8,
+                    marginBottom: 12
+                  }}
+                >
+                  本题块配置为「题块总分」模式，请使用阅卷面板（GradePanel）输入合计分；如需在此面板按题打分，请管理员将本题块评分模式改为「逐题评分」。
+                </div>
+              )}
+
               <div className="online-review-score-grid">
                 {current.questionNumbers.map((qNum) => {
                   const num = Number(qNum);
@@ -289,14 +343,14 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
               </div>
 
               <div className="online-review-actions">
-                <button className="primary-button" type="button" disabled={saving} onClick={() => void submitCurrent("reviewed", true)}>
+                <button className="primary-button" type="button" disabled={saving || scoringMode === "block_total"} onClick={() => void submitCurrent("reviewed", true)}>
                   {saving ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}
                   保存并下一份
                 </button>
-                <button className="ghost-button" type="button" disabled={saving} onClick={() => void submitCurrent("reviewed", false)}>
+                <button className="ghost-button" type="button" disabled={saving || scoringMode === "block_total"} onClick={() => void submitCurrent("reviewed", false)}>
                   仅保存
                 </button>
-                <button className="ghost-button" type="button" disabled={saving} onClick={() => void submitCurrent("disputed", false)}>
+                <button className="ghost-button" type="button" disabled={saving || scoringMode === "block_total"} onClick={() => void submitCurrent("disputed", false)}>
                   标记争议
                 </button>
               </div>

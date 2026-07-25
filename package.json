@@ -33,6 +33,7 @@
     "verify:security-critical": "tsx scripts/verify-security-critical.ts",
     "verify:a3": "tsx scripts/verify-a3.ts",
     "verify:block-total": "tsx scripts/block-total-split-smoke.ts",
+    "verify:scoring-mode": "tsx scripts/scoring-mode-consistency-smoke.ts",
     "typecheck": "tsc --noEmit"
   },
   "browserslist": [
