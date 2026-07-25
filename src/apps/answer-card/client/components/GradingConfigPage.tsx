@@ -15,6 +15,9 @@ export function GradingConfigPage({ examId }: Props) {
   const [batchRounding, setBatchRounding] = useState("");
   const [batchHasHalf, setBatchHasHalf] = useState("");
   const [batchReviewMode, setBatchReviewMode] = useState("");
+  // PR #189 修复：批量调整也需要覆盖评分模式 + 拆分策略（管理员可改字段）
+  const [batchScoringMode, setBatchScoringMode] = useState("");
+  const [batchScoreDistribution, setBatchScoreDistribution] = useState("");
   const [loading, setLoading] = useState(true);
   const [arbitrators, setArbitrators] = useState<ArbitratorCandidate[]>([]);
 
@@ -25,6 +28,10 @@ export function GradingConfigPage({ examId }: Props) {
   const [defAutoReassign, setDefAutoReassign] = useState(true);
   const [defWorkload, setDefWorkload] = useState("4");
   const [defReviewMode, setDefReviewMode] = useState("1");
+  // PR #189 修复：网阅默认模板也需承载评分模式 + 拆分策略，
+  // 否则新题块只能回退到 DB 默认（block_total）且管理员无 UI 可改。
+  const [defScoringMode, setDefScoringMode] = useState<"block_total" | "per_question">("block_total");
+  const [defScoreDistribution, setDefScoreDistribution] = useState<"proportional" | "equal">("proportional");
   const [savingDefault, setSavingDefault] = useState(false);
 
   const load = useCallback(async () => {
@@ -54,6 +61,9 @@ export function GradingConfigPage({ examId }: Props) {
             setDefAutoReassign(d.autoReassignNoArb !== 0);
             setDefWorkload(String(d.workloadBalanceThreshold ?? 4));
             setDefReviewMode(String(d.reviewMode ?? 1));
+            // PR #189 修复：把已有的 scoringMode / scoreDistribution 反映到表单
+            setDefScoringMode(d.scoringMode === "per_question" ? "per_question" : "block_total");
+            setDefScoreDistribution(d.scoreDistribution === "equal" ? "equal" : "proportional");
           }
         }
       }
@@ -73,6 +83,9 @@ export function GradingConfigPage({ examId }: Props) {
             autoReassignNoArb: defAutoReassign ? 1 : 0,
             workloadBalanceThreshold: Number(defWorkload) || 4,
             reviewMode: Number(defReviewMode) || 1,
+            // PR #189 修复：把评分模式 / 拆分策略写回网阅默认模板
+            scoringMode: defScoringMode,
+            scoreDistribution: defScoringMode === "per_question" ? "proportional" : defScoreDistribution,
           }),
         });
       load();
@@ -104,6 +117,15 @@ export function GradingConfigPage({ examId }: Props) {
     if (batchRounding) body.rounding = batchRounding;
     if (batchHasHalf) body.hasHalfPoint = Number(batchHasHalf);
     if (batchReviewMode) body.reviewMode = Number(batchReviewMode);
+    // PR #189 修复：批量弹窗也支持覆盖评分模式 / 拆分策略
+    if (batchScoringMode) {
+      body.scoringMode = batchScoringMode;
+      // per_question 模式下 scoreDistribution 无意义，若用户切到 per_question 就清掉
+      if (batchScoringMode === "per_question") body.scoreDistribution = "proportional";
+      else if (batchScoreDistribution) body.scoreDistribution = batchScoreDistribution;
+    } else if (batchScoreDistribution) {
+      body.scoreDistribution = batchScoreDistribution;
+    }
 
     await fetchJson(`/api/block-grading-config/exams/${examId}/batch`, {
       method: "POST",
@@ -115,6 +137,8 @@ export function GradingConfigPage({ examId }: Props) {
     setBatchRounding("");
     setBatchHasHalf("");
     setBatchReviewMode("");
+    setBatchScoringMode("");
+    setBatchScoreDistribution("");
     load();
   };
 
@@ -167,6 +191,31 @@ export function GradingConfigPage({ examId }: Props) {
               <option value="3">三评（3轮）</option>
             </select>
           </label>
+          {/* PR #189 修复：网阅默认模板暴露评分模式，管理员才能在 UI 中改 block_total / per_question */}
+          <label style={{ fontSize: 13 }}>
+            评分模式
+            <select
+              value={defScoringMode}
+              onChange={(e) => setDefScoringMode(e.target.value as "block_total" | "per_question")}
+              style={selectStyle}
+            >
+              <option value="block_total">题块总分（合计分，后端按比例拆分）</option>
+              <option value="per_question">逐题评分（每题独立输入，GradePanel 不可用）</option>
+            </select>
+          </label>
+          {defScoringMode !== "per_question" && (
+            <label style={{ fontSize: 13 }}>
+              拆分策略（题块总分模式）
+              <select
+                value={defScoreDistribution}
+                onChange={(e) => setDefScoreDistribution(e.target.value as "proportional" | "equal")}
+                style={selectStyle}
+              >
+                <option value="proportional">按满分比例拆分（默认）</option>
+                <option value="equal">按题数均分</option>
+              </select>
+            </label>
+          )}
         </div>
         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginTop: 12 }}>
           <input type="checkbox" checked={defAutoReassign} onChange={(e) => setDefAutoReassign(e.target.checked)} />
@@ -215,6 +264,12 @@ export function GradingConfigPage({ examId }: Props) {
               />
               <div style={{ flex: 1, fontSize: 14 }}>{block.blockTitle}</div>
               <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+                {/* PR #189 修复：题块摘要展示当前评分模式，让管理员在列表里就能看出
+                    哪些题块是 block_total、哪些是 per_question。 */}
+                模式: {config?.scoringMode === "per_question" ? "逐题评分" : config?.scoringMode === "block_total" ? "题块总分" : "—"}
+                {config?.scoringMode === "block_total" && (
+                  <> · 拆分: {config.scoreDistribution === "equal" ? "均分" : "按比例"}</>
+                )} ·{" "}
                 阈值: {config?.disputeThreshold ?? "—"} ·
                 取整: {config?.rounding === "ceil" ? "↑" : config?.rounding === "half" ? "0.5" : config?.rounding === "none" ? "—" : config?.rounding ?? "—"} ·
                 0.5: {config?.hasHalfPoint === 1 ? "是" : config?.hasHalfPoint === 0 ? "否" : "—"} ·
@@ -283,6 +338,37 @@ export function GradingConfigPage({ examId }: Props) {
                 <option value="3">三评（3轮）</option>
               </select>
             </div>
+            {/* PR #189 修复：批量调整弹窗暴露评分模式（管理员可改） */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ fontSize: 13 }}>评分模式</label>
+              <select
+                value={batchScoringMode}
+                onChange={(e) => {
+                  setBatchScoringMode(e.target.value);
+                  // 切到 per_question 时把拆分策略重置为不修改
+                  if (e.target.value === "per_question") setBatchScoreDistribution("");
+                }}
+                style={selectStyle}
+              >
+                <option value="">不修改</option>
+                <option value="block_total">题块总分</option>
+                <option value="per_question">逐题评分</option>
+              </select>
+            </div>
+            {batchScoringMode !== "per_question" && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ fontSize: 13 }}>拆分策略（题块总分模式）</label>
+                <select
+                  value={batchScoreDistribution}
+                  onChange={(e) => setBatchScoreDistribution(e.target.value)}
+                  style={selectStyle}
+                >
+                  <option value="">不修改</option>
+                  <option value="proportional">按满分比例拆分</option>
+                  <option value="equal">按题数均分</option>
+                </select>
+              </div>
+            )}
 
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 16 }}>
               将覆盖: {Array.from(selected).map((id) => blocks.find((b) => b.blockId === id)?.blockTitle ?? id).join(", ")}

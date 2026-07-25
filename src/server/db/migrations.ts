@@ -762,6 +762,15 @@ const MIGRATIONS: Migration[] = [
         "workload_balance_threshold"
       );
     }
+  },
+  // v27 (1.9.5): 题块总分评分模式 — 新增评分模式与拆分策略字段
+  {
+    version: 27,
+    name: "block-grading-scoring-mode",
+    up(db) {
+      addColumnIfMissing(db, "block_grading_config", "scoring_mode", "TEXT NOT NULL DEFAULT 'block_total'");
+      addColumnIfMissing(db, "block_grading_config", "score_distribution", "TEXT NOT NULL DEFAULT 'proportional'");
+    }
   }
 ];
 
