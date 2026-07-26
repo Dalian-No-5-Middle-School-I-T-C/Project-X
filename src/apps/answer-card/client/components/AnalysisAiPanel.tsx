@@ -197,7 +197,7 @@ export function AnalysisAiPanel({ examId, classId = "" }: Props) {
                 disabled={generating}
                 style={{
                   padding: "6px 12px", borderRadius: 8, border: "1px solid var(--line-strong)",
-                  fontSize: 13, minWidth: 180, height: 36, boxSizing: "border-box"
+                  minWidth: 180, height: 36, boxSizing: "border-box"
                 }}
               />
               <datalist id="custom-provider-models">

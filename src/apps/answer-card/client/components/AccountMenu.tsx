@@ -41,6 +41,7 @@ export function AccountMenu({
   const [reviewThreshold, setReviewThreshold] = useState(0.12);
   const [bgOpacity, setBgOpacity] = useState(0);
   const bgFileRef = useRef<HTMLInputElement | null>(null);
+  const bgSaveTimer = useRef<number | null>(null);
   const [bgMsg, setBgMsg] = useState("");
   const [settingsMsg, setSettingsMsg] = useState("");
 
@@ -143,6 +144,18 @@ export function AccountMenu({
     }
   }
 
+  // v1.9.5: 滑动背景图透明度时防抖持久化，避免刷新后被重置为 0
+  const persistBgOpacity = (v: number) => {
+    if (bgSaveTimer.current) window.clearTimeout(bgSaveTimer.current);
+    bgSaveTimer.current = window.setTimeout(() => {
+      fetchJson("/api/users/me/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backgroundOpacity: v }),
+      }).catch(() => {});
+    }, 400);
+  };
+
   async function handleBgUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -232,6 +245,16 @@ export function AccountMenu({
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [open]);
+
+  // v1.9.5: 组件卸载时清理防抖定时器，避免对已卸载组件触发 PATCH
+  useEffect(() => {
+    return () => {
+      if (bgSaveTimer.current) {
+        window.clearTimeout(bgSaveTimer.current);
+        bgSaveTimer.current = null;
+      }
+    };
+  }, []);
 
   if (!user) return null;
 
@@ -556,7 +579,7 @@ export function AccountMenu({
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
                       <span style={{ color: "var(--muted)" }}>{Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}</span>
                     </div>
-                    <input type="range" min="0" max="0.5" step="0.01" value={bgOpacity} onChange={(e) => { const v = Number(e.target.value); setBgOpacity(v); document.documentElement.style.setProperty("--bg-opacity", String(v)); if (v > 0) document.body.classList.add("has-bg-image"); else document.body.classList.remove("has-bg-image"); }} style={{ width: "100%", marginTop: 4 }} />
+                    <input type="range" min="0" max="0.5" step="0.01" value={bgOpacity} onChange={(e) => { const v = Number(e.target.value); setBgOpacity(v); document.documentElement.style.setProperty("--bg-opacity", String(v)); if (v > 0) document.body.classList.add("has-bg-image"); else document.body.classList.remove("has-bg-image"); persistBgOpacity(v); }} style={{ width: "100%", marginTop: 4 }} />
                     <span style={{ fontSize: 11, color: "var(--muted)" }}>0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
                     <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center" }}>
                       <button className="ghost-button" style={{ fontSize: 11 }} onClick={() => bgFileRef.current?.click()}>上传背景图</button>

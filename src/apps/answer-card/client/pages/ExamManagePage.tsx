@@ -4,6 +4,8 @@ import { Plus, Trash2, Layers } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { useWorkspace } from "../WorkspaceContext";
 import { ExamDetailPage } from "../components/ExamDetailPage";
+import { useIsMobile } from "../hooks/useMediaQuery";
+import { DataCard } from "../components/ui/DataCard";
 
 export function ExamManagePage() {
   const {
@@ -43,6 +45,7 @@ export function ExamManagePage() {
   const teacherId = user?.id ?? 0;
   const teacherRole = user?.teacher_role ?? null;
   const userRole = user?.role_name ?? "";
+  const isMobile = useIsMobile();
 
   return (
     <div className={`main-grid exam-manage-grid ${active ? "" : "hidden-panel"}`}>
@@ -159,6 +162,46 @@ export function ExamManagePage() {
         )}
 
         {examManageMode === "single" && exams.length > 0 && (
+          isMobile ? (
+            <div className="data-card-list">
+              {exams.map((exam) => (
+                <DataCard
+                  key={exam.id}
+                  rows={[
+                    { label: "考试名称", value: exam.name, strong: true },
+                    { label: "科目", value: exam.subject || "—" },
+                    { label: "答题卡", value: exam.card_id ?? "未关联" },
+                    {
+                      label: "状态",
+                      value: (
+                        <span className={`exam-list-badge exam-list-badge-${exam.status}`}>
+                          {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
+                        </span>
+                      ),
+                    },
+                  ]}
+                  actions={
+                    <>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, flex: "none", minHeight: "var(--touch-target-min)" }}>
+                        <input type="checkbox" checked={selectedExamIds.has(exam.id)} onChange={() => {
+                          const next = new Set(selectedExamIds);
+                          if (next.has(exam.id)) next.delete(exam.id); else next.add(exam.id);
+                          setSelectedExamIds(next);
+                        }} />
+                        选择
+                      </label>
+                      <button className="ghost-button" style={{ fontSize: 13, color: "#3C3489" }}
+                        onClick={() => setSelectedExamId(exam.id)}>网阅</button>
+                      <button className="ghost-button" style={{ fontSize: 13, color: "var(--brand)" }}
+                        onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</button>
+                      <button className="ghost-button" style={{ fontSize: 13, color: "#1D9E75" }}
+                        onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</button>
+                    </>
+                  }
+                />
+              ))}
+            </div>
+          ) : (
           <div className="exam-list-table">
             <div className="exam-list-head">
               <span style={{ width: 36, flexShrink: 0 }}>
@@ -201,6 +244,7 @@ export function ExamManagePage() {
               </div>
             ))}
           </div>
+          )
         )}
 
         {/* Exam group list */}
@@ -208,6 +252,47 @@ export function ExamManagePage() {
           <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>暂无大考，点击上方「新建大考」创建。</div>
         )}
         {examManageMode === "group" && examGroups.length > 0 && (
+          isMobile ? (
+            <div className="data-card-list">
+              {examGroups.map((group: any) => (
+                <DataCard
+                  key={group.id}
+                  rows={[
+                    { label: "大考名称", value: group.name, strong: true },
+                    {
+                      label: "标签",
+                      value: (
+                        <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11,
+                          background: group.tag ? "var(--primary)" : "var(--bg-secondary)",
+                          color: group.tag ? "#fff" : "var(--muted)" }}>
+                          {group.tag || "—"}
+                        </span>
+                      ),
+                    },
+                    { label: "年级", value: group.grade_name || "—" },
+                    { label: "含考试数", value: group.member_count },
+                    {
+                      label: "有无成绩",
+                      value: (
+                        <span className={`exam-list-badge ${group.has_results ? "exam-list-badge-closed" : "exam-list-badge-draft"}`}>
+                          {group.has_results ? "有成绩" : "无成绩"}
+                        </span>
+                      ),
+                    },
+                  ]}
+                  actions={
+                    <button className="ghost-button" style={{ fontSize: 13, color: "var(--brand)" }}
+                      onClick={() => setGroupDeleteTarget({
+                        groupId: group.id,
+                        groupName: group.name,
+                        memberCount: group.member_count,
+                        deleteExams: false
+                      })}>删除</button>
+                  }
+                />
+              ))}
+            </div>
+          ) : (
           <div className="exam-list-table">
             <div className="exam-list-head">
               <span style={{ flex: 1, minWidth: 180 }}>大考名称</span>
@@ -246,6 +331,7 @@ export function ExamManagePage() {
               </div>
             ))}
           </div>
+          )
         )}
       </section>
       )}

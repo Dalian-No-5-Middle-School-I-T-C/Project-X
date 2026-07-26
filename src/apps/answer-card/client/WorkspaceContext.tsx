@@ -209,6 +209,10 @@ export type WorkspaceValue = {
   showBg: number;
   setShowBg: Dispatch<SetStateAction<number>>;
 
+  // ── 移动端 Drawer ──
+  drawerOpen: boolean;
+  setDrawerOpen: Dispatch<SetStateAction<boolean>>;
+
   // ── 权限派生 ──
   canDesign: boolean;
   canManageExams: boolean;

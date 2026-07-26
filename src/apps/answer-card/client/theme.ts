@@ -47,3 +47,7 @@ export const semantic: Record<"success" | "danger" | "warning", string> = {
   danger: tokens.danger,
   warning: tokens.warning,
 };
+
+// 响应式断点镜像（单一事实源在 breakpoints.ts，此处仅 re-export 便于组件统一入口）
+export { BP as breakpoints } from "./breakpoints";
+export type { Breakpoint } from "./breakpoints";
