@@ -254,7 +254,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             onChange={(e) => { setClassId(e.target.value); }}
             style={{
               padding: "6px 12px", borderRadius: 8, border: "1px solid var(--line-strong)",
-              fontSize: 13, background: "var(--surface)", cursor: "pointer", minWidth: 130, height: 36, boxSizing: "border-box"
+              background: "var(--surface)", cursor: "pointer", minWidth: 130, height: 36, boxSizing: "border-box"
             }}
           >
             <option value="">全部班级</option>

@@ -131,6 +131,17 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     FOREIGN KEY (created_by) REFERENCES users(id)
 ) ENGINE=InnoDB;
 
+-- v1.9.5: 原卷多页支持
+CREATE TABLE IF NOT EXISTS original_paper_pages (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    card_id          VARCHAR(20) NOT NULL,
+    page_index       INT NOT NULL,
+    filename         VARCHAR(255) NOT NULL,
+    stored_path      VARCHAR(500) NOT NULL,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_paper_pages (card_id, page_index)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS objective_blocks (
     id               VARCHAR(36) PRIMARY KEY,
     card_id          VARCHAR(20) NOT NULL,

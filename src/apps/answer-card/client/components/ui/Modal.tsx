@@ -46,7 +46,7 @@ export function Modal({
       <div
         className="modal-card"
         onClick={(e) => e.stopPropagation()}
-        style={{ maxWidth: width, width: "92vw", maxHeight: "85vh", overflow: "hidden", display: "flex", flexDirection: "column", ...cardStyle }}
+        style={{ maxWidth: width, overflow: "hidden", display: "flex", flexDirection: "column", ...cardStyle }}
       >
         {title !== undefined && (
           <div className="modal-header">
