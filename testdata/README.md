@@ -21,5 +21,5 @@
 npx tsx testdata/demo-exams/scripts/verify.ts
 ```
 
-默认管理员：`admin` / `admin123`  
+默认管理员：`admin`，密码见数据库旁 `bootstrap-admin.txt`（#185 起为随机一次性密码，首次登录强制改密）  
 演示学生：`20260101` ~ `20260116`，密码 = 学号

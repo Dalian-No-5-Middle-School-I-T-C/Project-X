@@ -1,6 +1,7 @@
 import type {
   AnswerCard,
   BodyBlock,
+  LineGridConfig,
   ObjectiveBlock,
   ObjectiveMode,
   ObjectiveQuestionConfig,
@@ -48,16 +49,20 @@ function objectiveBlock(title: string, questions: ObjectiveQuestionConfig[]): Ob
   };
 }
 
-function linedQuestion(number: number | string, score = 0, minHeightMm = 34): SubjectiveQuestion {
+function linedQuestion(number: number | string, score = 0, minHeightMm = 34, lineCount?: number): SubjectiveQuestion {
+  const spacing = 8;
+  const count = lineCount ?? Math.max(1, Math.floor((minHeightMm - 14) / spacing));
+  const h = lineCount ? 14 + lineCount * spacing : minHeightMm;
   return {
     id: templateId("q"),
     number,
     score,
     style: "manual_score_grid",
     kind: "lined_answer",
-    lineGrid: { enabled: true, lineSpacingMm: 8 },
+    lineGrid: { enabled: true, lineSpacingMm: spacing, fixedLineCount: count, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
+    scoreGrid: { enabled: true, strokeColor: "#999", strokeWidthMm: 0.15, fillColor: "#fff", fontSize: 2.8, dividerColor: "#ccc", dividerWidthMm: 0.1, showLabel: true },
     images: [],
-    minHeightMm
+    minHeightMm: h
   };
 }
 
@@ -69,7 +74,7 @@ function blankQuestion(number: number | string, score = 0, count = 1): Subjectiv
     style: score > 0 ? "manual_score_grid" : "plain_subjective",
     kind: "blank",
     blanks: { count, widthMm: 24, heightMm: 6, labelStyle: "none" },
-    lineGrid: { enabled: false, lineSpacingMm: 8 },
+    lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
     images: [],
     minHeightMm: 14
   };
@@ -104,6 +109,35 @@ function fillBlankBlock(title: string, questions: SubjectiveQuestion[]): Subject
 
 function answerBlock(number: number | string, question: SubjectiveQuestion): SubjectiveBlock {
   return subjectiveBlock("解答题", [{ ...question, number }], "answer");
+}
+
+function essayBlock(number: number | string, score = 60, targetChars = 600): SubjectiveBlock {
+  return {
+    id: templateId("subj"),
+    type: "subjective",
+    blockKind: "essay",
+    title: "作文",
+    questions: [{
+      id: templateId("q"),
+      number,
+      score,
+      style: "manual_score_grid",
+      kind: "plain_box",
+      lineGrid: { enabled: false, lineSpacingMm: 8, lineColor: "#222", lineWidthMm: 0.15, insetLeftMm: 8, insetRightMm: 6 },
+      images: [],
+      minHeightMm: 280,
+      essayGrid: {
+        columns: 0,
+        rows: 0,
+        cellWidthMm: 7,
+        cellHeightMm: 7,
+        targetChars,
+        showTitle: true,
+        lineColor: "#222",
+        lineWidthMm: 0.15,
+      },
+    }],
+  };
 }
 
 function rangeQuestions(start: number, end: number, mode: ObjectiveMode, optionCount: number, score: number): ObjectiveQuestionConfig[] {
@@ -170,10 +204,11 @@ function chineseTemplate(options: SubjectTemplateOptions): BodyBlock[] {
       subjectiveBlocks[3],
       subjectiveBlocks[4],
       objectiveBlock("选择题 15", [objectiveQuestion(15, "single", 4, 3)]),
-      ...subjectiveBlocks.slice(5)
+      ...subjectiveBlocks.slice(5),
+      essayBlock(23, 60, 600),
     ];
   }
-  return [objectiveBlock("选择题", choiceQuestions), ...subjectiveBlocks];
+  return [objectiveBlock("选择题", choiceQuestions), ...subjectiveBlocks, essayBlock(23, 60, 600)];
 }
 
 function englishTemplate(withListening: boolean): BodyBlock[] {

@@ -1,11 +1,26 @@
 # Project-X 架构分析
 
-**Project-X（答题卡设计阅卷系统）** 是大连五中自研的智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 成绩分析 → AI 成绩分析** 全流程。架构上支持 **本地 SQLite 单机模式** 和 **远程 MariaDB 服务器模式**，通过统一的 `DbAdapter` 接口无缝切换。
+**Project-X（答题卡设计阅卷系统）** 是大连五中自研的智能试卷管理工具，覆盖 **答题卡设计 → PDF 导出 → 扫描/上传识别 → 自动判分 → 网上阅卷（2P/3P 多评 + 争议仲裁）→ 成绩分析 → AI 成绩分析** 全流程。架构上支持 **本地 SQLite 单机模式** 和 **远程 MariaDB 服务器模式**，通过统一的 `DbAdapter` 接口无缝切换。
 
-> v1.6.1 起，代码库拆分为两个构建目标；v1.6.2 起识别结果可产出大题作答图片切块：
-> - **Web 构建** (`dist/web/`)：教师 + 学生页面，无扫描代码，部署到服务器
-> - **Scanner 构建** (`dist/scanner/`)：仅 ScannerPanel，打包进 Electron 桌面端
-> - 教师/学生 Electron 端已废弃，统一使用浏览器访问 Web 端
+> **v1.9.2** 网页化改造 / 启动台模式：
+> - **URL 路由化 → 真实 `<Routes>`**：`createBrowserRouter` + `react-router-dom v7` 每功能独立 URL；阶段 2 续由「`mode` + CSS `hidden-panel` 全挂载」升级为由 URL 真实驱动渲染（含 `/home` `/design` `/exam-manage` `/grading` `/analysis` `/scores` `/account` `/sponsor` `/permissions` `/guide`）
+> - **启动台模式**：Home 模块卡支持 `在新窗口打开`，子页面顶部有 `← 返回首页` 按钮
+> - **前端组件解耦**：`App.tsx` 巨石拆为 `cardModel.ts`（设计 helper）+ `pages/DesignEditors.tsx`（编辑器/SVG）+ `pages/*`（Design/ExamManage/Grading 页面）；`WorkspaceProvider` 全量下发包级共享状态（`useWorkspace()`），App 由 ~3700 行降为 ~2290 行
+> - **设计令牌 + 组件库**：`theme.ts` TS 令牌镜像 + `components/ui/*` 共享组件库（Button/Modal/SegmentedControl/Input/Panel/Table/Spinner/LoadingScreen）
+> - **设计风格统一**：`styles.css` 新增 `--success`/`--warning`/`--info` 语义色 + `--z-*` z-index 阶梯，硬编码色全部收敛
+> - **异步安全**：`asyncHandler.ts` + `wrapRouter` 全局包裹 async 处理器，防请求挂死
+> - **新增路由**：赋分公式 `GET/PUT /api/exams/:examId/assigned-formula`、express-rate-limit 登录限速
+>
+> **v1.9.0** 网阅系统全面重构：
+> - **Home 仪表盘**：登录后进入图形化首页，模块卡片 + 快捷入口
+> - **考试管理**：阅卷中黄底置顶，考试详情 5 Tab（阅卷/分配/争议/溯源/设置）
+> - **网阅**：嵌入考试管理，2P/3P 多评 + 争议仲裁 + PAD 优先 UI + 断点续批
+> - 移除独立 `grading` 模式，新增 `home` 模式
+
+> **v1.9.4** 网阅打分面板与工作量均衡增强（详见 §6.6）：
+> - 打分面板按满分阈值自动切换「枚举模式（<20）/ 位值模式（≥20）」，含 0.5 小数与自动跳转
+> - 仲裁人可选；未设仲裁人时按阈值自动再分配剩余卷与争议卷
+> - 设置三层拆分：个性化（不变）/ 局部网阅（考试「网阅设置」Tab，含「网阅默认」模板）/ 全局（仅管理员，原卷策略 + AI 系统配置）
 
 技术栈：**Electron 桌面壳（扫描端）+ Express 后端 + React 前端 + C++ 原生子进程 + Python LLM 中转服务**。
 
@@ -131,25 +146,63 @@ electron/                 ← 桌面打包入口
 
 ## 3. 前端架构
 
-前端是 **单页应用（SPA）**，核心在 `App.tsx`，通过 `AppMode` 切换五种工作模式：
+### 3.1 路由与工作模式（v1.9.2+）
 
-```typescript
-type AppMode = "design" | "grading" | "analysis" | "scores" | "account";
-```
+v1.9.2 从传统 `useState` 状态切换升级为 **URL 路由化**，使用 `react-router-dom v7` 的 `createBrowserRouter`；后期（阶段 2 续 C）由「`mode` 状态 + CSS `hidden-panel` 全挂载切换」进一步改为由 URL **真实驱动渲染**（`App.tsx` 内 `<Routes>` 路由表）：
 
-| 模式 | 职责 | 主要组件 |
-|------|------|----------|
-| **design** | 编辑答题卡、预览、导出 PDF | 内联编辑器 + `buildLayout` 预览 |
-| **grading** | 上传图片、批量识别判分 | `GradingResults`、`ScanPreviewModal`（共享弹窗） |
-| **analysis** | 考试统计、排名、题目分析 | `AnalysisOverview`、`AnalysisDistribution`、`AnalysisRanking`、`AnalysisQuestions`、`ScoreTable`、`ScanPreviewModal`（预览列） |
-| **scores** | 学生查看个人成绩 | `StudentScores` |
-| **account** | 教师/学生管理 | `AccountManagement`、`TeacherManagement`、`ClassManagement` |
+- **`main.tsx`**：创建 `RouterProvider`，加载 `modeRoutes.ts` 定义的路由表
+- **`modeRoutes.ts`**：定义 URL 与工作模式的映射（`MODE_PATH`），含 `home / design / exam-manage / grading / analysis / scores / account / sponsor / permissions / guide`；`pathToMode()` 用于深链还原
+- **真实 `<Routes>`**：`App.tsx` 用 `<Routes>` 按当前路径渲染对应页面，`*` → `<Navigate to="/home" />`；`gradingPanel` 浮层与 statusbar 保持在 `<Routes>` 之外。`mode` 状态由登录初始化 effect 与 URL 实时同步，顶栏 `NavLink` 高亮、标题、`showCardSidebar`、`useBlocker` 均自动正确
+- **深链支持**：页面刷新/新标签打开时 **尊重地址栏 URL**，而非无条件打回首页
+- **`useBlocker`**：答题卡有未保存修改时拦截离开 `/design` 的导航，弹出确认对话框
+- **启动台模式**：Home 页模块卡提供 `在新窗口打开` 能力（新前台标签打开功能 URL，首页保留为常驻启动台），子页面顶部仅在紧凑模式（`!showTabBar`）时显示 `← 返回首页` 按钮
+
+### 3.2 页面组件抽取与状态外置（v1.9.2+）
+
+大型组件从 `App.tsx` 内联 JSX 抽取为独立 page 组件，并通过 `WorkspaceContext` 消费共享状态，实现「拆而不改行为」的渐进重构：
+
+**模块拆分（按依赖方向解环）：**
+
+| 模块 | 文件 | 职责 |
+|------|------|------|
+| **设计领域模型** | `client/cardModel.ts` | 20+ 设计 helper（`modeLabels`/`defaultObjective`/`defaultSubjective`/`subjectiveBlockKindLabel`/`answerLineCount` 等）+ `PreviewMode`/`PREVIEW_*` 预览设置常量，从 `App.tsx` 收编 |
+| **设计编辑器** | `client/pages/DesignEditors.tsx` | `ObjectiveEditor` / `SubjectiveEditor` / `CardPreview` / `StudentAreaSvg` / `ObjectiveSvg` / `SubjectiveSvg`，从 `App.tsx` 抽出 |
+| **DesignPage** | `pages/DesignPage.tsx` | 答题卡设计 / 编辑（改 `useWorkspace()` 消费，直接从 `./DesignEditors` 导入编辑器） |
+| **ExamManagePage** | `pages/ExamManagePage.tsx` | 考试管理 / 阅卷 / 大考组（改 `useWorkspace()` 消费） |
+| **GradingPage** | `pages/GradingPage.tsx` | 上传图片、批量识别判分（保留 props 范式，未切 `useWorkspace()`） |
+
+**状态外置：** `WorkspaceContext.tsx` 定义完整 `WorkspaceValue` 值对象（~119 字段）。`App.tsx` 构造 `workspace` 并用 `<WorkspaceProvider value={workspace}>` 包裹整个 `<main>` 壳层；`DesignPage` / `ExamManagePage` 通过 `useWorkspace()` 读取共享状态（`teacherId`/`teacherRole`/`userRole` 由 `user` 派生），不再逐层 props 透传。`GradingPage` 因交互形态差异，仍按计划以 props 接收（函数引用不变 → 行为一致）。
+
+> 设计意义：`App.tsx` 体积由 ~3700 行降为 ~2290 行，仅保留状态与 handlers；共享依赖集中在 `cardModel.ts` / `DesignEditors.tsx`，消除 `App.tsx` 与页面之间的循环引用风险。
+
+### 3.3 设计令牌与 UI 组件库（v1.9.2+）
+
+- **`theme.ts`**：将 `styles.css` 的 CSS 自定义属性镜像为 TS 对象，供 JS 侧图表/状态点引用
+- **`components/ui/`**：共享 UI 组件库（Button / Modal / SegmentedControl / Input / Panel / Table / Spinner / LoadingScreen），封装 5 种模态实现 + 4 套分段控件 + 裸 `<table>` 等不一致
+- **语义色**：`styles.css` 新增 `--success:#2E7D32; --warning:#E65100; --info:#1565C0`，组件中硬编码 `#2E7D32` 全部替换为 `var(--success)`
+- **z-index 阶梯**：`--z-dropdown:900` / `--z-modal:1000` / `--z-toast:1100` / `--z-lightbox:1200`
+
+### 3.4 工作模式一览
+
+| 模式 | 路径 | 职责 | 主要组件 |
+|------|------|------|----------|
+| **home** | `/home` | 启动台仪表盘，模块卡可新标签打开 | `HomePage` |
+| **design** | `/design/*` | 编辑答题卡、预览、导出 PDF | `DesignPage` + `DesignEditors`(`CardPreview`/`ObjectiveEditor`/`SubjectiveEditor`) + `buildLayout` 预览 |
+| **exam-manage** | `/exam-manage` | 考试管理 / 阅卷分配 / 大考组 | `ExamManagePage` |
+| **grading** | `/grading` | 上传图片、批量识别判分 | `GradingPage` + `GradingResults`、`ScanPreviewModal`（UI 由 `GradePanel` 弹层承载） |
+| **analysis** | `/analysis` | 考试统计、排名、题目分析 | `ExamSelectPage` / `ExamGroupDetailPage` / `ScoreDetailPage` |
+| **scores** | `/scores` | 学生查看个人成绩 | `StudentScores` |
+| **account** | `/account` | 教师/学生管理 | `AccountManagement`、`TeacherManagement`、`ClassManagement` |
+| **sponsor** | `/sponsor` | 赞助页 | `SponsorPage` |
+| **permissions** | `/permissions` | 权限管理 | `PermissionManager` |
+| **guide** | `/guide` | 使用指南 | `UserGuidePage` |
 
 **特点：**
 
-- 无 Redux/Zustand，用 React `useState` + `fetch` 直连 REST API
+- 无 Redux/Zustand，用 React `useState` + `WorkspaceContext`（`useWorkspace()`）+ `fetch` 直连 REST API
+- 路由由 URL 真实驱动（`<Routes>`），非 `hidden-panel` 全挂载切换；切走即卸载，回来看重（设计页编辑态、考试管理选择态在 workspace 中保留）
 - 图标：`lucide-react`
-- 样式：单一 `styles.css`，无 UI 框架
+- 样式：单一 `styles.css` + `theme.ts` 设计令牌，无 UI 框架
 - 与后端通信：`fetchJson` 封装，开发时 Vite 代理到 5174
 
 ---
@@ -188,7 +241,7 @@ React AnalysisAiPanel
   -> Gemini / DeepSeek / OpenAI-compatible provider
 ```
 
-`llmclient` 位于仓库根目录，使用 Python `FastAPI + uvicorn` 手动启动。Node 后端只负责探活、鉴权转发和把当前考试/班级范围传给 Python 服务。模型只能调用白名单成绩工具读取 `projectx.db`，不开放原始 SQL。
+`llmclient` 位于仓库根目录，使用 Python `FastAPI + uvicorn`。Node 后端在启动时会**自动拉起**该服务（默认 `http://127.0.0.1:8766`，见 `src/apps/answer-card/server/llm-launcher.ts`），也可手动启动；也可通过 `LLMCLIENT_AUTOSTART=false` 关闭、`LLMCLIENT_PYTHON` 指定解释器、`LLMCLIENT_URL` 指定地址端口。Node 后端只负责探活、鉴权转发和把当前考试/班级范围传给 Python 服务（AI 调用前会 `ensureLlmClient()` 确保侧车已起，未起则自动拉起）。模型只能调用白名单成绩工具读取 `projectx.db`，不开放原始 SQL。
 
 ### 4.3 Repository 模式
 
@@ -412,6 +465,71 @@ sequenceDiagram
 - `answer_block_crops` 通过 `source_type/source_record_id` 统一关联普通阅卷 `scan_records` 和扫描仪 `twain_scan_records`。
 - `CombinedRecognitionResult.blockCrops` 为本次识别的临时 manifest；落库后前端读取的是持久化 `AnswerBlockCrop`。
 
+### 6.6 网上阅卷打分面板与工作量均衡 (v1.9.4)
+
+v1.9.4 把「网上阅卷」的打分交互、小数粒度、工作量分配与权限边界做了一次增强，目标是让教师在 PAD 上既能快速给小分题打整数/0.5 分，也能给大分题走位值合成，同时把「没人兜底争议卷」的场景变成系统自动均衡。
+
+#### 6.6.1 打分面板双模式
+
+`ScorePad` 依据题块满分 `maxScore` 自动选择一种输入方案：
+
+| 模式 | 触发 | 交互 | 提交时机 |
+|------|------|------|----------|
+| **枚举模式** | `maxScore < 20` | 直接枚举每个正分大按钮（1, 2, …, 满分），含 0.5 时主区按 0.5 步进，底部专用行放 `0` / `0.5` | 点任一按钮即合成分值并提交 |
+| **位值模式** | `maxScore ≥ 20` | 十位 + 个位 + 十分位三列；十分位仅 `0`（含 0.5 时加 `0.5`） | 选到十分位（0 或 0.5）即合成完整分值并提交 |
+
+`has_half_point`（`block_grading_config` 按题块粒度，v1.9.4 新增）决定 0.5 是否出现：枚举模式主区按 0.5 步进并追加底部 `0/0.5` 行；位值模式在十分位列渲染 `0` / `0.5`。
+
+#### 6.6.2 自动跳转状态机
+
+选分即提交、提交即跳下一卷。统一状态机：
+
+```mermaid
+stateDiagram-v2
+    [*] --> 选分中
+    选分中 --> 合成分值: 选满/点按钮
+    合成分值 --> 越界检查: 计算 v
+    越界检查 --> 选分中: v > 满分 或 v < 0（保留当前卷）
+    越界检查 --> 提交并跳转: 0 ≤ v ≤ 满分
+    提交并跳转 --> 选分中: 光标 +1，加载下一卷
+    提交并跳转 --> [*]: 已是最后一卷
+```
+
+- 枚举模式点按钮、位值模式选到十分位都触发「合成 → 越界检查 → 提交跳转」。
+- 合成值越界（> 满分或 < 0）不跳，保留当前卷等教师修正。
+- 底部 `0/0.5` 专用行（枚举 + 含 0.5）为极低分专用，必须显式点选才提交，避免误把零分卷当跳过。
+
+#### 6.6.3 仲裁人可选 + 工作量自动再分配
+
+`ReviewAssignmentService.rebalanceWorkload(examId, blockId, db)` 在每次分配（`createAssignments`）后自动执行，把「份数差」收敛到阈值内：
+
+1. **吸收未分配卷**：把切块中存在但还没分配给任何教师的卷（`cropByStudent` 中不在 `assignedSet` 的），补到当前份数最少的已分配教师。
+2. **教师间搬运**：在两两已分配教师间把卷从多的一方移到少的一方，直到任意两位教师份数差 ≤ `workload_balance_threshold`（考试「网阅设置 → 网阅默认」中设置，默认 4 份）。
+3. **仲裁人可选**：`block_grading_config.arbitrator_id` 可留空；留空且 `auto_reassign_no_arb=1` 时，争议卷自动改派给「已分配本题块且未评过该生」的教师（进度条加卷），并允许其提交追加复评轮。`review_assignments.auto_assigned=1` 标记被自动追加的卷，与原始分配在统计/溯源上可区分。
+
+```mermaid
+flowchart TD
+    A[createAssignments] --> B[事务内写原始分配]
+    B --> C[rebalanceWorkload]
+    C --> D{有未分配卷?}
+    D -->|是| E[补到份数最少教师]
+    D -->|否| F{任意两位差>阈值?}
+    E --> F
+    F -->|是| G[多→少搬运]
+    G --> F
+    F -->|否| H[提交事务+返回再平衡后分配]
+```
+
+#### 6.6.4 设置三层拆分与权限
+
+| 层 | 入口 | 可改字段 | 权限 |
+|----|------|----------|------|
+| 个性化 | 账号设置 | 主题/显示/背景/评分显示模式等 | 本人 |
+| 局部网阅 | 考试详情「网阅设置」Tab | 题块级：`has_half_point`、本人已分配块的工作量（教师）；「网阅默认」模板：`dispute_threshold` / `rounding` / `has_half_point` / `auto_reassign_no_arb` / `workload_balance_threshold` / `review_mode`（复评模式，管理员） | 教师：本人已分配块 `has_half_point`+工作量；管理员：全部 |
+| 全局 | Home → 全局设置 | `require_original_paper` / `highlight_missing_paper`（原卷策略）+ AI 系统服务商（`/api/ai/providers/system`） | 仅管理员（Home 卡片仅 `system:manage` 可见） |
+
+`block-grading-config` 路由按 `role_id` 校验：`arbitrator_id` / `dispute_threshold` / `rounding` / `review_mode` / `auto_reassign_no_arb` / `workload_balance_threshold` 为管理员专属；教师仅可改本人已分配块的 `has_half_point` 与工作量分配，越权返回 403。「网阅默认」存于 `block_grading_config` 的 `block_id='__default__'`，`getBlockConfig` 在新建题块行时优先继承该默认值。全局设置中：原卷两键读写 `/api/system-settings`（键存 `system_settings` 表，并提供 `/api/system-settings/public` 只读端点供前端判断强制上传/高亮）；AI 系统服务商存 `ai_providers` 表（`is_system=1`，由 `/api/ai/providers/system` 管理，普通用户不可访问该路由，但可被教师 AI 分析作为系统级服务商选用）。
+
 ---
 
 ## 7. C++ 原生层
@@ -488,7 +606,7 @@ flowchart LR
 
 1. **Windows 绑定** — TWAIN、Electron 打包、C++ 均面向 Windows 桌面环境；当前提供 x64 与 ia32 两套 native 资源
 2. **派生布局** — SQLite 保存答题卡结构，`layouts/` JSON 由 `buildLayout(card)` 按需刷新；`answer_cards.layout_data` 仅为兼容遗留列
-3. **单体 Express** — 路由集中在 `index.ts`（700+ 行），随功能增长可考虑按域拆 router
+3. **单体 Express** — 路由集中在 `index.ts`（1600+ 行），随功能增长可考虑按域拆 router
 4. **子进程识别** — 简单可靠，但高并发批量阅卷时进程开销明显
 5. **Auth 完全贯通** — v1.1 具备登录门禁、角色化 UI 和基于权限的 API 访问
 
@@ -522,7 +640,7 @@ flowchart LR
 
 | 层级 | 技术 |
 |------|------|
-| **前端** | React 19 + TypeScript + Vite + Lucide React |
+| **前端** | React 19 + TypeScript + Vite + react-router-dom v7 + Lucide React |
 | **后端** | Node.js + Express 5 + multer |
 | **AI 中转** | Python + FastAPI + OpenAI SDK + Google GenAI SDK |
 | **识别引擎** | C++ + OpenCV 4.13 + nlohmann/json（子进程调用） |
@@ -534,5 +652,5 @@ flowchart LR
 
 ---
 
-> 文档生成日期：2026-06-13  
-> 基于 Project-X v1.5.0 代码库分析
+> 文档更新日期：2026-07-22  
+> 基于 Project-X v1.9.4 代码库分析（含 v1.9.2 网页化改造 + v1.9.4 网阅打分面板双模式与工作量均衡）

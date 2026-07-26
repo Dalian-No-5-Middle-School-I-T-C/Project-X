@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Calculator, X } from "lucide-react";
 import { fetchJson } from "../auth/api";
-import type { AssignedFormula, AssignedFormulaType } from "../../../../shared/types";
+import type { AssignedFormula } from "../../../../shared/types";
 
 interface Props {
   examId: number;
@@ -17,17 +17,10 @@ interface FormulaPreset {
   formula: AssignedFormula;
 }
 
-const FORMULA_LABELS: Record<AssignedFormulaType, string> = {
-  proportional: "等比例转换",
-  linear: "线性公式",
-  custom: "自定义表达式"
-};
-
 export function AssignedFormulaModal({ examId, examName, subject, onClose, onSaved }: Props) {
   const [loading, setLoading] = useState(true);
   const [formula, setFormula] = useState<AssignedFormula | null>(null);
   const [presets, setPresets] = useState<FormulaPreset[]>([]);
-  const [isAssignedSubject, setIsAssignedSubject] = useState(false);
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -36,6 +29,7 @@ export function AssignedFormulaModal({ examId, examName, subject, onClose, onSav
       formula: AssignedFormula | null;
       isAssignedSubject: boolean;
       presets: FormulaPreset[];
+      customFormulaDisabled: boolean;
     }>(`/api/exams/${examId}/assigned-formula`)
       .then((data) => {
         setFormula(data.formula);
@@ -68,17 +62,6 @@ export function AssignedFormulaModal({ examId, examName, subject, onClose, onSav
 
   function applyPreset(preset: FormulaPreset) {
     setFormula(structuredClone(preset.formula));
-  }
-
-  function updateType(type: AssignedFormulaType) {
-    if (!formula) return;
-    setFormula({
-      ...formula,
-      type,
-      params: type === "proportional" ? { minIn: 0, maxIn: 100, minOut: 30, maxOut: 100 }
-        : type === "linear" ? { a: 0.7, b: 30 }
-        : { expression: "raw * 0.7 + 30" }
-    });
   }
 
   if (loading) {
@@ -127,6 +110,11 @@ export function AssignedFormulaModal({ examId, examName, subject, onClose, onSav
           </div>
 
           {/* Enable toggle */}
+          {formula?.type === "custom" && (
+            <div className="inline-warning" role="alert">
+              此考试保存了历史自定义表达式。该功能已因安全原因停用，历史配置和既有赋分不会被自动修改；请选择上方比例或线性预设后再保存。
+            </div>
+          )}
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, cursor: "pointer" }}>
             <input
               type="checkbox"
@@ -175,35 +163,19 @@ export function AssignedFormulaModal({ examId, examName, subject, onClose, onSav
                 </div>
               )}
 
-              {/* Custom expression */}
-              {formula.type === "custom" && (
-                <div>
-                  <label style={{ fontSize: 12, color: "var(--muted)", display: "block", marginBottom: 2 }}>自定义表达式</label>
-                  <input
-                    type="text"
-                    value={formula.params.expression ?? ""}
-                    onChange={(e) => setFormula({ ...formula, params: { ...formula.params, expression: e.target.value } })}
-                    placeholder="raw * 0.7 + 30"
-                    style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 13, fontFamily: "monospace" }}
-                  />
-                  <span style={{ fontSize: 11, color: "var(--muted)", display: "block", marginTop: 2 }}>
-                    可用变量: raw (原始分), max (最高分), min (最低分), avg (平均分), std (标准差)
-                  </span>
-                </div>
-              )}
             </>
           )}
         </div>
 
         <div className="modal-footer" style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "12px 20px", borderTop: "1px solid var(--line)" }}>
-          {message && <span style={{ flex: 1, fontSize: 13, color: message.includes("失败") ? "var(--brand)" : "#2E7D32", alignSelf: "center" }}>{message}</span>}
+          {message && <span style={{ flex: 1, fontSize: 13, color: message.includes("失败") ? "var(--brand)" : "var(--success)", alignSelf: "center" }}>{message}</span>}
           <button className="ghost-button" onClick={onClose}>取消</button>
-          {formula?.enabled && (
+          {formula?.enabled && formula.type !== "custom" && (
             <button className="ghost-button" onClick={() => handleSave(true)} disabled={busy}>
               保存并重算全部
             </button>
           )}
-          <button className="primary-button" onClick={() => handleSave(false)} disabled={busy}>
+          <button className="primary-button" onClick={() => handleSave(false)} disabled={busy || formula?.type === "custom"}>
             {busy ? "保存中..." : "仅保存"}
           </button>
         </div>

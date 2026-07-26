@@ -12,9 +12,34 @@ import {
   listReviewBlocks,
   submitReviewCropScores
 } from "../services/ReviewService";
+import { getReviewTrace } from "../services/ReviewService";
 import type { ReviewSubmitScoreInput } from "../../shared/types";
+import { getMysqlDb } from "../db";
 
 const router = Router();
+
+// GET /api/review/my-exams — 教师有哪些考试有待阅任务
+router.get("/my-exams", async (req, res) => {
+  try {
+    const userId = (req as any).user?.id;
+    if (!userId) return res.status(401).json({ ok: false, error: "未登录" });
+
+    const rows = await getMysqlDb().all(
+      `SELECT ra.exam_id AS examId,
+              SUM(ra.student_count) AS totalCount,
+              SUM(ra.student_count) - COUNT(CASE WHEN abc.status = 'reviewed' AND abc.reviewer_id = ? THEN 1 END) AS pendingCount
+       FROM review_assignments ra
+       LEFT JOIN answer_block_crops abc ON abc.exam_id = ra.exam_id AND abc.block_id = ra.block_id
+       WHERE ra.teacher_id = ?
+       GROUP BY ra.exam_id`,
+      userId, userId
+    );
+
+    res.json({ ok: true, data: rows });
+  } catch (err: any) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 router.get("/exams/:examId/blocks", requireExamAccess, async (req, res, next) => {
   try {
@@ -72,11 +97,14 @@ router.post(
       }
 
       const status = typeof req.body?.status === "string" ? req.body.status.trim() : "reviewed";
+      const blockTotalScore =
+        typeof req.body?.blockTotalScore === "number" ? req.body.blockTotalScore : undefined;
       const result = await submitReviewCropScores({
         examId,
         cropId,
         scores,
         status,
+        blockTotalScore,
         userId: req.user!.id
       });
       res.json(result);
@@ -89,5 +117,21 @@ router.post(
     }
   }
 );
+
+// GET /api/review/exams/:examId/trace — 阅卷溯源
+router.get("/exams/:examId/trace", requireExamAccess, async (req, res, next) => {
+  try {
+    const examId = Number(req.params.examId);
+    if (!Number.isFinite(examId)) {
+      res.status(400).json({ message: "Invalid examId" });
+      return;
+    }
+    const blockId = typeof req.query.blockId === "string" ? req.query.blockId : undefined;
+    const trace = await getReviewTrace(examId, blockId);
+    res.json({ ok: true, data: trace });
+  } catch (error) {
+    next(error);
+  }
+});
 
 export default router;

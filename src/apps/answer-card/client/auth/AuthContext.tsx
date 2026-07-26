@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { fetchJson, setAuthToken, getAuthToken } from "./api";
 import { permissionGrants, TEACHER_ROLE_LABELS, type AuthUser, type LoginResponse } from "./types";
+import { ForcedPasswordChange } from "./ForcedPasswordChange";
 
 // ── v1.6.0: 运行时 Persona（视图身份） ──────────────────────
 export type AppPersona = "student" | "teacher" | "teacher-scanner";
@@ -69,7 +70,7 @@ function availablePersonasForUser(user: AuthUser): AppPersona[] {
 interface AuthContextValue {
   user: AuthUser | null;
   loading: boolean;
-  login: (identifier: string, password: string, isPersistent?: boolean) => Promise<void>;
+  login: (identifier: string, password: string, isPersistent?: boolean) => Promise<string | undefined>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   hasPermission: (perm: string) => boolean;
@@ -120,7 +121,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     })();
   }, [refreshUser]);
 
-  const login = useCallback(async (identifier: string, password: string, isPersistent?: boolean) => {
+  const login = useCallback(async (identifier: string, password: string, isPersistent?: boolean): Promise<string | undefined> => {
     const result = await fetchJson<LoginResponse>("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -129,6 +130,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuthToken(result.token);
     const nextUser: AuthUser = {
       ...result.user,
+      passwordChangeRequired: result.passwordChangeRequired,
       role_name: result.user.role_name ?? "unknown",
       permissions: result.permissions ?? result.user.permissions ?? []
     };
@@ -137,6 +139,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (nextUser.role_name === "admin") {
       setTeacherRoleOverrideState(loadTeacherRoleOverride());
     }
+    return result.passwordChangeRequired ? "必须先修改一次性密码" : undefined;
   }, []);
 
   useEffect(() => {
@@ -211,7 +214,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [user, loading, login, logout, refreshUser, hasPermission, teacherRole, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona]
   );
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {user?.passwordChangeRequired ? (
+        <ForcedPasswordChange
+          username={user.username}
+          onChanged={() => {
+            setAuthToken(null);
+            setUser(null);
+          }}
+        />
+      ) : children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth(): AuthContextValue {

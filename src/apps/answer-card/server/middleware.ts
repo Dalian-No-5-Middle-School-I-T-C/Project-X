@@ -9,6 +9,12 @@ import type express from "express";
 import { getMysqlDb, type DbAdapter } from "../../../server/db";
 import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
+import { isAuthEnforced } from "../../../server/lib/authEnforce";
+
+// P0-5 (C-S3): 模块级鉴权状态，由 createApp 初始化时设置
+// enforceAuth=true 时 requireExamAccess 无用户返回 401；false 时保持向后兼容放行
+let authEnforced = isAuthEnforced();
+export function setAuthEnforced(v: boolean): void { authEnforced = v; }
 
 // ── Gate factory ──────────────────────────────────────────
 
@@ -136,6 +142,11 @@ async function hasTable(db: DbAdapter, table: string): Promise<boolean> {
  */
 export async function requireExamAccess(req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> {
   if (!req.user) {
+    // P0-5 (C-S3): 鉴权开启时无用户返回 401；关闭时保持向后兼容放行
+    if (authEnforced) {
+      res.status(401).json({ message: "未提供认证令牌" });
+      return;
+    }
     next();
     return;
   }

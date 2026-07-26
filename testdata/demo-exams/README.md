@@ -60,9 +60,11 @@ npm run dev   # 先启动服务
 ## 手动 API 导入
 
 ```bash
+# #185 起管理员为随机一次性密码，读取数据库旁的 bootstrap-admin.txt
+ADMIN_PW="$(tr -d '[:space:]' < data/bootstrap-admin.txt 2>/dev/null || echo admin123)"
 TOKEN=$(curl -s -X POST http://127.0.0.1:5174/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"identifier":"admin","password":"admin123"}' | jq -r .token)
+  -d "{\"identifier\":\"admin\",\"password\":\"$ADMIN_PW\"}" | jq -r .token)
 
 curl -X POST http://127.0.0.1:5174/api/db/restore \
   -H "Authorization: Bearer $TOKEN" \

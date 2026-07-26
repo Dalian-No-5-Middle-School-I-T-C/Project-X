@@ -22,7 +22,7 @@ export function AccountMenu({
   onOpenGuide?: () => void;
   onOpenPermissions?: () => void;
 }) {
-  const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona } = useAuth();
+  const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona, refreshUser } = useAuth();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
   const isElectron = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -40,8 +40,6 @@ export function AccountMenu({
   const [displayMode, setDisplayMode] = useState("zscore");
   const [reviewThreshold, setReviewThreshold] = useState(0.12);
   const [bgOpacity, setBgOpacity] = useState(0);
-  const [requireOriginalPaper, setRequireOriginalPaper] = useState(true);
-  const [highlightMissingPaper, setHighlightMissingPaper] = useState(true);
   const bgFileRef = useRef<HTMLInputElement | null>(null);
   const [bgMsg, setBgMsg] = useState("");
   const [settingsMsg, setSettingsMsg] = useState("");
@@ -54,6 +52,8 @@ export function AccountMenu({
   });
   const [showHelpCard, setShowHelpCard] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"grading" | "client" | "ai" | "db">("grading");
+  // v1.9.0: Tab 栏开关
+  const [showTabBar, setShowTabBar] = useState(false);
 
   // ── 数据存储设置（管理员） ──────────────────────────
   const [dbMode, setDbMode] = useState<"local" | "remote">("local");
@@ -68,14 +68,13 @@ export function AccountMenu({
 
   useEffect(() => {
     if (open && showSettings) {
-      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; requireOriginalPaper?: number; highlightMissingPaper?: number }>("/api/users/me/settings")
+      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; showTabBar?: number }>("/api/users/me/settings")
         .then((s) => {
           if (!s || typeof s !== "object") return;
           setDisplayMode(s.scoreDisplayMode || "zscore");
           setReviewThreshold(s.reviewConfidenceThreshold ?? 0.12);
           setBgOpacity(s.backgroundOpacity ?? 0);
-          setRequireOriginalPaper(s.requireOriginalPaper !== 0);
-          setHighlightMissingPaper(s.highlightMissingPaper !== 0);
+          setShowTabBar(s.showTabBar === 1);
         })
         .catch(() => {});
       loadProviders();
@@ -132,11 +131,12 @@ export function AccountMenu({
           scoreDisplayMode: displayMode,
           reviewConfidenceThreshold: reviewThreshold,
           backgroundOpacity: bgOpacity,
-          requireOriginalPaper: requireOriginalPaper,
-          highlightMissingPaper: highlightMissingPaper,
+          showTabBar: showTabBar,
         })
       });
       setSettingsMsg("已保存");
+      // v1.9.0: 刷新用户状态使 Tab 栏开关即时生效
+      await refreshUser();
       setTimeout(() => setSettingsMsg(""), 1500);
     } catch (err) {
       setSettingsMsg(err instanceof Error ? err.message : "保存失败");
@@ -436,7 +436,7 @@ export function AccountMenu({
                 }}
               />
               {importMsg && (
-                <div style={{ padding: "6px 12px", fontSize: 12, color: importMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>
+                <div style={{ padding: "6px 12px", fontSize: 12, color: importMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>
                   {importMsg}
                 </div>
               )}
@@ -534,31 +534,25 @@ export function AccountMenu({
                     <input type="range" min="0" max="1" step="0.01" value={reviewThreshold} onChange={(e) => setReviewThreshold(Number(e.target.value))} style={{ width: "100%", marginTop: 2 }} />
                     <span style={{ fontSize: 11, color: "var(--muted)" }}>低于此值的题目标记"需要复核"</span>
 
-                    {/* v1.8.0: 原卷设置 */}
-                    <h4 style={{ marginTop: 16 }}>原卷上传设置</h4>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <input type="checkbox" checked={requireOriginalPaper} onChange={(e) => setRequireOriginalPaper(e.target.checked)} />
-                      <span>强制要求上传原卷</span>
-                    </label>
-                    <span style={{ fontSize: 11, color: "var(--muted)", display: "block", marginLeft: 24, marginBottom: 8 }}>
-                      创建答题卡后必须上传原卷才能导出
-                    </span>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <input type="checkbox" checked={highlightMissingPaper} onChange={(e) => setHighlightMissingPaper(e.target.checked)} />
-                      <span>侧边栏高亮未上传原卷</span>
-                    </label>
-                    <span style={{ fontSize: 11, color: "var(--muted)", display: "block", marginLeft: 24 }}>
-                      左侧列表用颜色标记缺少原卷的考试
-                    </span>
+                    {/* v1.9.4: 原卷两开关已提升为纯全局，由管理员在「全局设置」统一控制，此处不再提供个人开关 */}
 
-                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
                     <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>保存设置</button>
                   </>
                 )}
 
                 {settingsTab === "client" && (
                   <>
-                    <h4>背景图透明度</h4>
+                    <h4>底部导航栏</h4>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 12 }}>
+                      <input type="checkbox" checked={showTabBar} onChange={(e) => setShowTabBar(e.target.checked)} />
+                      显示底部 Tab 导航栏
+                    </label>
+                    <span style={{ fontSize: 11, color: "var(--muted)" }}>
+                      顶部导航栏「首页」可随时返回，建议保持开启
+                    </span>
+
+                    <h4 style={{ marginTop: 16 }}>背景图透明度</h4>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
                       <span style={{ color: "var(--muted)" }}>{Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}</span>
                     </div>
@@ -567,9 +561,9 @@ export function AccountMenu({
                     <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center" }}>
                       <button className="ghost-button" style={{ fontSize: 11 }} onClick={() => bgFileRef.current?.click()}>上传背景图</button>
                       <input ref={bgFileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleBgUpload} />
-                      {bgMsg && <span style={{ fontSize: 11, color: bgMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{bgMsg}</span>}
+                      {bgMsg && <span style={{ fontSize: 11, color: bgMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{bgMsg}</span>}
                     </div>
-                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
                     <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>保存设置</button>
                   </>
                 )}
@@ -723,7 +717,7 @@ export function AccountMenu({
                         </div>
                       </div>
                     )}
-                    {settingsMsg && settingsTab === "ai" && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                    {settingsMsg && settingsTab === "ai" && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
                   </>
                 )}
 
@@ -784,7 +778,7 @@ export function AccountMenu({
                       </p>
                     )}
 
-                    {dbMsg && <p style={{ fontSize: 12, margin: "8px 0 0", color: dbMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{dbMsg}</p>}
+                    {dbMsg && <p style={{ fontSize: 12, margin: "8px 0 0", color: dbMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{dbMsg}</p>}
                     <button className="primary-button" type="button" onClick={() => { saveDbConfig(); }} disabled={dbLoading} style={{ marginTop: 8 }}>
                       {dbLoading ? "保存中..." : "保存数据存储设置"}
                     </button>

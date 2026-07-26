@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import bcrypt from "bcryptjs";
-import { mkdirSync, readFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,42 +75,89 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
   return bcrypt.compare(password, hash);
 }
 
-export async function ensureDefaultAdmin(): Promise<void> {
+const BOOTSTRAP_ADMIN_FILE = "bootstrap-admin.txt";
+
+export function getBootstrapAdminPath(): string {
+  return path.join(path.dirname(resolveProjectDbPath()), BOOTSTRAP_ADMIN_FILE);
+}
+
+function writeBootstrapAdminPassword(password: string): void {
+  const target = getBootstrapAdminPath();
+  const dir = path.dirname(target);
+  const temp = path.join(dir, `.${BOOTSTRAP_ADMIN_FILE}.${process.pid}.${Date.now()}.tmp`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(temp, `${password}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  try {
+    renameSync(temp, target);
+  } catch {
+    rmSync(target, { force: true });
+    renameSync(temp, target);
+  }
+  try { chmodSync(target, 0o600); } catch { /* Windows ACLs may ignore POSIX modes. */ }
+  console.warn(`[SECURITY] 管理员一次性密码已写入受保护文件: ${target}`);
+}
+
+export function removeBootstrapAdminFile(): void {
+  try { rmSync(getBootstrapAdminPath(), { force: true }); } catch (error) {
+    console.warn("[SECURITY] 清理管理员一次性密码文件失败:", error);
+  }
+}
+
+export interface DefaultAdminBootstrapResult {
+  adminId: number;
+  rotated: boolean;
+  passwordFile: string;
+}
+
+export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult> {
   const dialect = detectDialect();
+  const db = getMysqlDb();
+  const existing = await db.get<{ id: number; password_hash: string; password_change_required: number }>(
+    "SELECT id, password_hash, password_change_required FROM users WHERE username = ?",
+    "admin"
+  );
+  const passwordFile = getBootstrapAdminPath();
+
+  if (existing) {
+    const usesLegacyDefault = await verifyPassword("admin123", existing.password_hash);
+    const lostBootstrapSecret = Boolean(existing.password_change_required) && !existsSync(passwordFile);
+    if (usesLegacyDefault || lostBootstrapSecret) {
+      const password = randomBytes(24).toString("base64url");
+      await db.run(
+        "UPDATE users SET password_hash = ?, password_change_required = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        await hashPassword(password), existing.id
+      );
+      writeBootstrapAdminPassword(password);
+      await (dialect === "mariadb" ? ensureDefaultApiKey(db) : ensureDefaultApiKeySqlite(getDatabase()));
+      return { adminId: existing.id, rotated: true, passwordFile };
+    }
+    await (dialect === "mariadb" ? ensureDefaultApiKey(db) : ensureDefaultApiKeySqlite(getDatabase()));
+    return { adminId: existing.id, rotated: false, passwordFile };
+  }
 
   if (dialect === "mariadb") {
-    const db = getMysqlDb();
-    const existing = await db.get("SELECT id FROM users WHERE username = ?", "admin");
-    if (existing) {
-      await ensureDefaultApiKey(db);
-      return;
-    }
-    const passwordHash = await hashPassword("admin123");
+    const password = randomBytes(24).toString("base64url");
+    const passwordHash = await hashPassword(password);
     const insertAdminSql = buildInsertIgnore("mariadb", "users", [
-      "username", "password_hash", "name", "role_id", "is_active",
+      "username", "password_hash", "name", "role_id", "is_active", "password_change_required",
     ]);
-    await db.run(insertAdminSql, "admin", passwordHash, "系统管理员", 1, 1);
-    console.log("[DB] Default admin created: username=admin, password=admin123");
+    const result = await db.run(insertAdminSql, "admin", passwordHash, "系统管理员", 1, 1, 1);
+    writeBootstrapAdminPassword(password);
     await ensureDefaultApiKey(db);
-    return;
+    return { adminId: result.lastInsertRowid, rotated: true, passwordFile };
   }
 
   // SQLite 模式
-  const db = getDatabase();
-  const existing = db.prepare("SELECT id FROM users WHERE username = ?").get("admin");
-  if (existing) {
-    await ensureDefaultApiKeySqlite(db);
-    return;
-  }
-
-  const passwordHash = await hashPassword("admin123");
-  db.prepare(
-    `INSERT INTO users (username, password_hash, name, role_id, is_active)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run("admin", passwordHash, "系统管理员", 1, 1);
-  console.log("[DB] Default admin created: username=admin, password=admin123");
-  console.log("[DB] 请登录后立即修改默认密码");
-  await ensureDefaultApiKeySqlite(db);
+  const sqlite = getDatabase();
+  const password = randomBytes(24).toString("base64url");
+  const passwordHash = await hashPassword(password);
+  const result = sqlite.prepare(
+    `INSERT INTO users (username, password_hash, name, role_id, is_active, password_change_required)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run("admin", passwordHash, "系统管理员", 1, 1, 1);
+  writeBootstrapAdminPassword(password);
+  await ensureDefaultApiKeySqlite(sqlite);
+  return { adminId: Number(result.lastInsertRowid), rotated: true, passwordFile };
 }
 
 // v1.6.0: 确保至少有一条扫描用的 API Key

@@ -15,6 +15,8 @@ import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
 import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
 import type { AssignedFormula } from "../../../shared/types";
+import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
+import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -28,6 +30,14 @@ import examGroupRoutes from "../../../server/routes/exam-groups";
 import aiProviderRoutes from "../../../server/routes/ai-providers";
 import scoreEditingRoutes from "../../../server/routes/score-editing";
 import reviewRoutes from "../../../server/routes/review";
+import reviewAssignRoutes from "../../../server/routes/review-assign";
+import reviewSessionRoutes from "../../../server/routes/review-session";
+import reviewArbitrationRoutes from "../../../server/routes/review-arbitration";
+import reviewAnnotationsRoutes from "../../../server/routes/review-annotations";
+import blockGradingConfigRoutes from "../../../server/routes/block-grading-config";
+import systemSettingsRoutes from "../../../server/routes/system-settings";
+import { startLlmClientSidecar, shutdownLlmClient } from "./llm-launcher";
+import dashboardRoutes from "../../../server/routes/dashboard";
 import adminPermissionsRoutes from "../../../server/routes/admin-permissions";
 import apiKeysRoutes from "../../../server/routes/api-keys";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
@@ -37,6 +47,8 @@ import {
   persistAnswerBlockCrops
 } from "../../../server/services/AnswerBlockCropService";
 import { optionalAuth, authMiddleware, requirePermission } from "../../../server/middleware/auth";
+import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
+import { authService } from "../../../server/services/AuthService";
 import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
 import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
@@ -51,7 +63,9 @@ import type {
   CrossExamTotalRequest,
   LayoutDocument,
   ObjectiveGradingBatchResult,
-  ObjectiveRecognitionResult
+  ObjectiveRecognitionResult,
+  GradingPersistenceFailure,
+  GradingPersistenceResult
 } from "../../../shared/types";
 import { createPdf } from "./pdf";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
@@ -66,7 +80,7 @@ import {
 } from "./helpers";
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
-  validateExamIdsAccess
+  validateExamIdsAccess, setAuthEnforced
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
@@ -279,33 +293,29 @@ async function autoBackupOnExamClose(examId: number): Promise<void> {
   }
 }
 
-/** Background persistence: save grading results to database without blocking response */
-async function persistGradingResults(
+/** Persist grading results before responding; each student is atomic. */
+export async function persistGradingResults(
   examIdParam: string,
   rows: CombinedGradingRow[],
   createdBy?: number
-): Promise<void> {
+): Promise<GradingPersistenceResult> {
   const { ExamRepository } = await import("../../../server/repositories/ExamRepository");
-  const { getMysqlDb, hashPassword, buildInsertIgnore } = await import("../../../server/db");
+  const { getMysqlDb } = await import("../../../server/db");
 
   const examRepo = new ExamRepository();
   const db = getMysqlDb();
 
   const examId = Number(examIdParam);
   const exam = await examRepo.findExamById(examId);
-  if (!exam) return;
+  if (!exam) {
+    throw Object.assign(new Error("考试不存在"), { status: 404, code: ApiError.NOT_FOUND });
+  }
+  const previousExamStatus = exam.status;
 
   await examRepo.updateStatus(examId, "grading");
   const batchId = await examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
+  await db.run("UPDATE scan_batches SET status = 'processing' WHERE id = ?", batchId);
 
-  const ensureStudentSql = buildInsertIgnore(db.dialect, "users", [
-    "username", "password_hash", "name", "role_id", "student_number",
-  ]);
-  const updateBlankStudentPasswordSql = `
-    UPDATE users
-    SET password_hash = ?, updated_at = CURRENT_TIMESTAMP
-    WHERE student_number = ? AND role_id = 3 AND password_hash = ''
-  `;
   const findStudentSql = `
     SELECT id FROM users WHERE student_number = ? AND role_id = 3 LIMIT 1
   `;
@@ -317,61 +327,88 @@ async function persistGradingResults(
   `;
 
   let persisted = 0;
-  const studentPasswordHashes = new Map<string, string>();
+  const failedStudents: GradingPersistenceFailure[] = [];
   for (const row of rows) {
-    if (row.studentId && !studentPasswordHashes.has(row.studentId)) {
-      studentPasswordHashes.set(row.studentId, await hashPassword(row.studentId));
-    }
-  }
-
-  for (const row of rows) {
-    if (!row.studentId) continue;
-    try {
-      const studentPasswordHash = studentPasswordHashes.get(row.studentId) ?? "";
-      await db.run(ensureStudentSql, row.studentId, studentPasswordHash, row.studentId, row.studentId);
-      await db.run(updateBlankStudentPasswordSql, studentPasswordHash, row.studentId);
-      const stu = await db.get(findStudentSql, row.studentId) as { id: number } | undefined;
-      if (!stu) continue;
-
-      const recordId = await examRepo.addScanRecord({
-        batch_id: batchId,
-        file_path: (row as any).actualPath || row.fileName,
-        file_name: row.fileName,
-        student_number: row.studentId,
-        student_id: stu.id
+    if (row.recognitionStatus === "failed" || row.recognition.status === "failed") {
+      failedStudents.push({
+        fileName: row.fileName,
+        ...(row.studentId ? { studentId: row.studentId } : {}),
+        code: "RECOGNITION_FAILED",
+        message: "答题卡识别失败"
       });
-      await persistAnswerBlockCrops({
-        cardId: row.recognition.cardId ?? String(exam.card_id ?? ""),
-        examId,
-        studentId: stu.id,
-        studentNumber: row.studentId,
-        sourceType: "scan_record",
-        sourceRecordId: recordId,
-        crops: row.recognition.blockCrops ?? []
-      }, db);
+      continue;
+    }
+    if (!row.studentId) {
+      failedStudents.push({ fileName: row.fileName, code: "STUDENT_ID_MISSING", message: "未识别到学生 ID" });
+      continue;
+    }
+    const studentId = row.studentId;
+    const stu = await db.get(findStudentSql, studentId) as { id: number } | undefined;
+    if (!stu) {
+      failedStudents.push({ fileName: row.fileName, studentId, code: "STUDENT_NOT_FOUND", message: "学生不存在" });
+      continue;
+    }
+    try {
+      await db.transaction(async (tx) => {
+        const txExamRepo = new ExamRepository(tx);
+        const recordId = await txExamRepo.addScanRecord({
+          batch_id: batchId,
+          file_path: (row as any).actualPath || row.fileName,
+          file_name: row.fileName,
+          student_number: studentId,
+          student_id: stu.id
+        });
+        await persistAnswerBlockCrops({
+          cardId: row.recognition.cardId ?? String(exam.card_id ?? ""),
+          examId,
+          studentId: stu.id,
+          studentNumber: studentId,
+          sourceType: "scan_record",
+          sourceRecordId: recordId,
+          crops: row.recognition.blockCrops ?? []
+        }, tx);
 
-      await examRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
+        await txExamRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
 
-      for (const q of row.questions) {
-        await db.run(insertQsSql, examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
-      }
-      for (const sq of row.subjectiveQuestions ?? []) {
-        await db.run(insertQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
-      }
+        for (const q of row.questions) {
+          await tx.run(insertQsSql, examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+        }
+        for (const sq of row.subjectiveQuestions ?? []) {
+          await tx.run(insertQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
+        }
+      });
       persisted++;
     } catch (err) {
-      console.error(`[Grading] Failed to persist row for ${row.studentId}:`, err);
+      console.error(`[Grading] Failed to persist row for ${studentId}:`, err);
+      failedStudents.push({
+        fileName: row.fileName,
+        studentId,
+        code: "PERSISTENCE_FAILED",
+        message: "成绩持久化失败"
+      });
     }
   }
-
-  await examRepo.finishBatch(batchId);
-  await examRepo.updateStatus(examId, "closed");
-  console.log(`[Grading] Persisted ${persisted} student scores to exam ${examId}`);
-
-  // Auto-backup DB after exam closes (non-blocking)
-  autoBackupOnExamClose(examId).catch((e) =>
-    console.error("[AutoBackup] Failed:", e)
+  const status: GradingPersistenceResult["status"] = failedStudents.length === 0 && persisted > 0
+    ? "done"
+    : persisted > 0 ? "partial" : "error";
+  await examRepo.finishBatchWithOutcome(
+    batchId,
+    status,
+    persisted,
+    failedStudents.length,
+    failedStudents.length > 0 ? JSON.stringify(failedStudents) : null
   );
+
+  if (status === "done") {
+    await examRepo.updateStatus(examId, "closed");
+    autoBackupOnExamClose(examId).catch((e) => console.error("[AutoBackup] Failed:", e));
+  } else if (status === "error") {
+    await examRepo.updateStatus(examId, previousExamStatus);
+  } else {
+    await examRepo.updateStatus(examId, "grading");
+  }
+  console.log(`[Grading] exam=${examId} batch=${batchId} status=${status} persisted=${persisted} failed=${failedStudents.length}`);
+  return { batchId, status, persisted, failedCount: failedStudents.length, failed: failedStudents };
 }
 
 /**
@@ -422,24 +459,56 @@ export async function createApp(): Promise<express.Express> {
   // 确保连接池在使用前已创建（MariaDB 模式下 initMariadbSchema / ensureDefaultAdmin 依赖）
   getMysqlDb();
   await initMariadbSchema();
-  await ensureDefaultAdmin();
+  const adminBootstrap = await ensureDefaultAdmin();
+  if (adminBootstrap.rotated) authService.revokeUserTokens(adminBootstrap.adminId);
   await initPermissionCache();
   const cleanupTimer = scheduleCleanup(24, 30);
   cleanupTimer.unref();
   await ensureDataDirs();
   console.log("[Server] 数据库初始化完成");
 
-  const enforceAuth =
-    process.env.PROJECTX_AUTH_ENFORCE === "1" || process.env.PROJECTX_AUTH_ENFORCE === "true";
+// P0-4 (C-S2): 鉴权默认开启，仅显式设置 0/false 才关闭（向后兼容开发环境）。
+  // 判定统一委托给 isAuthEnforced()（server/lib/authEnforce.ts）作为唯一真相源。
+  const enforceAuth = isAuthEnforced();
   console.log(`[Server] RBAC 鉴权强制模式: ${enforceAuth ? "开启" : "关闭（仅解析身份）"}`);
+  // P0-5 (C-S3): 同步鉴权状态到 middleware 模块，供 requireExamAccess 使用
+  setAuthEnforced(enforceAuth);
+
+  // ── Express 5 异步错误处理（防请求挂死）──
+  // Express 5 不再自动捕获 async handler 抛出的异常；这里在注册层
+  // 统一包裹所有 app.get/post/put/delete/patch/use 调用（含已挂载的
+  // Router），使任意未捕获的 rejection 都被转发到全局错误中间件，
+  // 返回 500 JSON 而非让请求永久挂起。
+  {
+    const methods = ["get", "post", "put", "delete", "patch", "use"] as const;
+    for (const m of methods) {
+      const original = (app as any)[m].bind(app);
+      (app as any)[m] = (pathOrHandler: unknown, ...handlers: unknown[]) => {
+        const args = [pathOrHandler, ...handlers].map((h: unknown) => {
+          if (typeof h !== "function") return h; // 路径字符串 / Router 选项等
+          if ((h as any).length === 4) return h; // 错误处理中间件保持原样
+          if ((h as any).stack) return wrapRouter(h as any); // Router 实例 → 递归包裹
+          return asyncHandler(h as any); // 普通处理器 / 中间件
+        });
+        return original(...args);
+      };
+    }
+  }
 
   app.use(express.json({ limit: "8mb" }));
-  // v1.6.0: CORS — 允许 WEB 客户端跨域访问（教师/学生在浏览器使用 HTTP API）
-  app.use((_req, res, next) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
+  // P1-2 (M-S1): CORS — 从环境变量读取允许的 origin 白名单，不再使用通配符 *
+  const allowedOrigins = (process.env.PROJECTX_CORS_ORIGIN ?? "http://127.0.0.1:5173,http://localhost:5173")
+    .split(",").map(s => s.trim()).filter(Boolean);
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key");
-    if (_req.method === "OPTIONS") { res.status(204).end(); return; }
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    if (req.method === "OPTIONS") { res.status(204).end(); return; }
     next();
   });
   app.use("/assets", express.static(assetsDir));
@@ -454,13 +523,15 @@ export async function createApp(): Promise<express.Express> {
 
   // 认证与账号控制系统路由
   app.use("/api/auth", authRoutes);
+  // 强制改密账号的自助认证端点已在上方处理；其它 API 一律拒绝。
+  app.use("/api", requirePasswordChangeCompleted);
 
   // ── 用户自身设置（无需管理员权限） ──
   // GET  /api/users/me/settings — 读取当前用户设置
   // PATCH /api/users/me/settings — 更新当前用户设置
   app.get("/api/users/me/settings", authMiddleware, async (_req, res, next) => {
     try {
-      const userId = (_req as any).user.userId ?? (_req as any).user.id;
+      const userId = _req.user!.id;
       const userRepo = new UserRepository();
       const user = await userRepo.findById(userId);
       if (!user) { res.status(404).json({ message: "用户不存在" }); return; }
@@ -470,13 +541,14 @@ export async function createApp(): Promise<express.Express> {
         backgroundOpacity: (user as any).background_opacity ?? 0,
         requireOriginalPaper: (user as any).require_original_paper ?? 1,
         highlightMissingPaper: (user as any).highlight_missing_paper ?? 1,
+        showTabBar: (user as any).show_tab_bar ?? 0,
       });
     } catch (err) { next(err); }
   });
   app.patch("/api/users/me/settings", authMiddleware, validateBody(UpdateUserSettingsSchema), async (_req, res, next) => {
     try {
-      const userId = (_req as any).user.userId ?? (_req as any).user.id;
-      const body = (_req as any).body as Record<string, unknown>;
+      const userId = _req.user!.id;
+      const body = _req.body as Record<string, unknown>;
       const setClauses: string[] = [];
       const values: unknown[] = [];
       if (body.scoreDisplayMode !== undefined) { setClauses.push("score_display_mode = ?"); values.push(body.scoreDisplayMode); }
@@ -484,6 +556,7 @@ export async function createApp(): Promise<express.Express> {
       if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
       if (body.requireOriginalPaper !== undefined) { setClauses.push("require_original_paper = ?"); values.push(body.requireOriginalPaper ? 1 : 0); }
       if (body.highlightMissingPaper !== undefined) { setClauses.push("highlight_missing_paper = ?"); values.push(body.highlightMissingPaper ? 1 : 0); }
+      if (body.showTabBar !== undefined) { setClauses.push("show_tab_bar = ?"); values.push(body.showTabBar ? 1 : 0); }
       if (setClauses.length > 0) {
         setClauses.push("updated_at = CURRENT_TIMESTAMP");
         values.push(userId);
@@ -499,8 +572,8 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/app/background", optionalAuth, (req, res) => {
     // 用户自定义背景优先
-    if ((req as any).user) {
-      const customBg = path.join(backgroundsDir, `${(req as any).user.id}.jpg`);
+    if (req.user) {
+      const customBg = path.join(backgroundsDir, `${req.user?.id}.jpg`);
       if (existsSync(customBg)) {
         res.setHeader("Cache-Control", "no-cache");
         res.sendFile(customBg);
@@ -546,7 +619,7 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       // 重命名为 user_${userId}.jpg，覆盖旧背景
-      const target = path.join(backgroundsDir, `${(req as any).user.id}.jpg`);
+      const target = path.join(backgroundsDir, `${req.user?.id}.jpg`);
       await rename(req.file.path, target);
       res.json({ ok: true });
     } catch (error) {
@@ -615,17 +688,7 @@ export async function createApp(): Promise<express.Express> {
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
-  // ── 健康检查 ──
-  app.get("/api/app/health", async (_req, res) => {
-    try {
-      const health = await healthCheck();
-      res.json(health);
-    } catch (err) {
-      res.status(500).json({ ok: false, error: String(err) });
-    }
-  });
-
-  console.log("[Server] v1.6.1 routes mounted");
+  console.log("[Server] v1.9.2 routes mounted");
 
   // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
@@ -638,6 +701,13 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/analysis", analysisGate, analysisRoutes);
   app.use("/api/answer-block-crops", cropGate);
   app.use("/api/review", analysisGate, reviewRoutes);
+  app.use("/api/review-assign", analysisGate, reviewAssignRoutes);
+  app.use("/api/review-session", analysisGate, reviewSessionRoutes);
+  app.use("/api/review-arbitration", analysisGate, reviewArbitrationRoutes);
+  app.use("/api/review-annotations", analysisGate, reviewAnnotationsRoutes);
+  app.use("/api/block-grading-config", analysisGate, blockGradingConfigRoutes);
+  app.use("/api/system-settings", systemSettingsRoutes);
+  app.use("/api/dashboard", dashboardRoutes);
   app.use(paperRoutes());
 
   const cardRepo = new CardRepository();
@@ -1048,20 +1118,19 @@ export async function createApp(): Promise<express.Express> {
         emitGradingProgress({ type: "done", batchId: progressId, finished, total: gradingFiles.length });
       }
 
-      // Send response immediately so user sees results
+      let persistence: GradingPersistenceResult | undefined;
+      if (examIdParam) {
+        persistence = await persistGradingResults(examIdParam, rows, req.user?.id);
+      }
+
       const result: CombinedGradingBatchResult = {
         batchId: `batch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         cardId,
-        rows
+        rows,
+        ...(persistence ? { persistence } : {})
       };
-      res.json(result);
-
-      // Persist to database asynchronously (non-blocking)
-      if (examIdParam) {
-        persistGradingResults(examIdParam, rows, req.user?.id).catch((err) => {
-          console.error("[Grading] Persist failed:", err);
-        });
-      }
+      const responseStatus = persistence?.status === "partial" ? 207 : persistence?.status === "error" ? 422 : 200;
+      res.status(responseStatus).json(result);
     } catch (error) {
       if (progressId) {
         const snapshot = gradingProgressSnapshots.get(progressId);
@@ -1237,6 +1306,7 @@ export async function createApp(): Promise<express.Express> {
       const layout = buildLayout(card);
       // 收集 assets base64
       const assetsMap: Record<string, string> = {};
+      const failedAssets: string[] = [];
       const assetsPath = cardAssetsDir(cardId);
       if (existsSync(assetsPath)) {
         const { readdir } = await import("node:fs/promises");
@@ -1245,7 +1315,10 @@ export async function createApp(): Promise<express.Express> {
           try {
             const data = await readFile(path.join(assetsPath, file));
             assetsMap[file] = data.toString("base64");
-          } catch {}
+          } catch (err) {
+            console.warn(`[Export Card] 读取资源失败 ${file}:`, err);
+            failedAssets.push(file);
+          }
         }
       }
       res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -1259,7 +1332,8 @@ export async function createApp(): Promise<express.Express> {
         exportedAt: new Date().toISOString(),
         card,
         layout,
-        assets: assetsMap
+        assets: assetsMap,
+        ...(failedAssets.length > 0 ? { warnings: { failedAssets } } : {})
       });
     } catch (error) {
       next(error);
@@ -1359,6 +1433,7 @@ export async function createApp(): Promise<express.Express> {
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
 
       // 导入 assets
+      const failedImports: string[] = [];
       if (imported.assets && Object.keys(imported.assets).length > 0) {
         const assetsPath = cardAssetsDir(newId);
         await mkdir(assetsPath, { recursive: true });
@@ -1367,8 +1442,12 @@ export async function createApp(): Promise<express.Express> {
           if (safeFilename && /^[a-zA-Z0-9_\-\.]+$/.test(safeFilename)) {
             try {
               const buffer = Buffer.from(base64, "base64");
+              if (buffer.length === 0) throw new Error("空数据");
               await writeFile(path.join(assetsPath, safeFilename), buffer);
-            } catch {}
+            } catch (err) {
+              console.warn(`[Import Card] 写入资源失败 ${safeFilename}:`, err);
+              failedImports.push(safeFilename);
+            }
           }
         }
       }
@@ -1402,7 +1481,8 @@ export async function createApp(): Promise<express.Express> {
         ...toCardSummary({ id: saved.id, title: saved.title, updatedAt: saved.updatedAt }),
         createdExamId,
         duplicateExamName: duplicateExamName || undefined,
-        idConflictMsg: conflictMsg || undefined
+        idConflictMsg: conflictMsg || undefined,
+        ...(failedImports.length > 0 ? { warnings: { failedImports } } : {})
       });
     } catch (error) {
       next(error);
@@ -1514,6 +1594,7 @@ export async function createApp(): Promise<express.Express> {
       const assignedScoreService = new AssignedScoreService();
       res.json({
         formula: await assignedScoreService.getFormula(examId),
+        customFormulaDisabled: true,
         isAssignedSubject: AssignedScoreService.isAssignedSubject(exam.subject ?? ""),
         presets: AssignedScoreService.getFormulaPresets()
       });
@@ -1545,6 +1626,14 @@ export async function createApp(): Promise<express.Express> {
           recalculate: boolean;
         };
         const assignedScoreService = new AssignedScoreService();
+
+        if (formula?.type === "custom") {
+          res.status(422).json({
+            code: "CUSTOM_FORMULA_DISABLED",
+            message: "自定义赋分表达式已因安全原因停用，请改用比例或线性公式"
+          });
+          return;
+        }
 
         if (!formula?.enabled) {
           await assignedScoreService.disableFormula(examId);
@@ -1696,7 +1785,11 @@ export async function createApp(): Promise<express.Express> {
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(error);
-    res.status(500).json({ code: ApiError.INTERNAL, message: error instanceof Error ? error.message : "服务器内部错误" });
+    const typed = error as { status?: unknown; code?: unknown; message?: unknown };
+    const status = typeof typed?.status === "number" && typed.status >= 400 && typed.status < 600 ? typed.status : 500;
+    const code = typeof typed?.code === "string" ? typed.code : ApiError.INTERNAL;
+    const message = typeof typed?.message === "string" ? typed.message : "服务器内部错误";
+    res.status(status).json({ code, message });
   });
 
   return app;
@@ -1716,6 +1809,13 @@ export async function startServer(port = Number(process.env.PORT ?? 5174)): Prom
       (server as ProjectXServer).actualPort = actualPort;
       (server as ProjectXServer).localUrl = `http://127.0.0.1:${actualPort}`;
       console.log(`Answer card designer API running at http://127.0.0.1:${actualPort}`);
+      startLlmClientSidecar();
+      const shutdown = () => {
+        shutdownLlmClient();
+        server.close(() => process.exit(0));
+      };
+      process.on("SIGINT", shutdown);
+      process.on("SIGTERM", shutdown);
       resolve(server as ProjectXServer);
     });
     server.listen(port, "127.0.0.1");

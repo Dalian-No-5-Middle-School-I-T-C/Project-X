@@ -3,6 +3,8 @@
  *
  * Extracted from index.ts so the analysis router can import them.
  */
+import { ensureLlmClient } from "./llm-launcher";
+
 export function llmClientUrl(pathname = ""): string {
   const base = (process.env.LLMCLIENT_URL || "http://127.0.0.1:8766").replace(/\/+$/, "");
   return `${base}${pathname.startsWith("/") ? pathname : `/${pathname}`}`;
@@ -18,6 +20,15 @@ export function llmClientHeaders(extra?: Record<string, string>): Record<string,
 }
 
 export async function fetchLlmClient(pathname: string, init?: RequestInit, timeoutMs = 5_000): Promise<Response> {
+  // Best-effort: make sure the Python sidecar is up (auto-starts it on first need).
+  const autostart = (process.env.LLMCLIENT_AUTOSTART ?? "true").toLowerCase();
+  if (autostart !== "false" && autostart !== "0") {
+    try {
+      await ensureLlmClient();
+    } catch {
+      /* fall through; the fetch below will surface the connection error */
+    }
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {

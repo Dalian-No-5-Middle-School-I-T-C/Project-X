@@ -554,6 +554,223 @@ const MIGRATIONS: Migration[] = [
       // ai_providers 新增 is_system 标记（v1.8.0 系统级 AI 配置）
       addColumnIfMissing(db, "ai_providers", "is_system", "INTEGER DEFAULT 0");
     }
+  },
+  {
+    version: 19,
+    name: "online-review-v2",
+    up(db) {
+      // 1. review_assignments — 阅卷任务分配
+      if (!hasTable(db, "review_assignments")) {
+        db.exec(`
+          CREATE TABLE review_assignments (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            exam_id              INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            block_id             TEXT NOT NULL,
+            teacher_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            student_count        INTEGER DEFAULT 0,
+            assigned_student_ids TEXT,
+            created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(exam_id, block_id, teacher_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_ra_exam_block ON review_assignments(exam_id, block_id);
+          CREATE INDEX IF NOT EXISTS idx_ra_teacher ON review_assignments(teacher_id);
+        `);
+      }
+
+      // 2. review_sessions — 断点续批
+      if (!hasTable(db, "review_sessions")) {
+        db.exec(`
+          CREATE TABLE review_sessions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            exam_id       INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            block_id      TEXT NOT NULL,
+            current_index INTEGER DEFAULT 0,
+            position_json TEXT,
+            draft_scores  TEXT,
+            updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(teacher_id, exam_id, block_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_rs_teacher ON review_sessions(teacher_id);
+        `);
+      }
+
+      // 3. review_annotations — 批注
+      if (!hasTable(db, "review_annotations")) {
+        db.exec(`
+          CREATE TABLE review_annotations (
+            id          TEXT PRIMARY KEY,
+            crop_id     TEXT NOT NULL REFERENCES answer_block_crops(id) ON DELETE CASCADE,
+            reviewer_id INTEGER NOT NULL REFERENCES users(id),
+            type        TEXT NOT NULL CHECK(type IN ('text', 'drawing')),
+            data_json   TEXT NOT NULL,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_rannot_crop ON review_annotations(crop_id);
+        `);
+      }
+
+      // 4. block_grading_config — 逐题块网阅设置
+      if (!hasTable(db, "block_grading_config")) {
+        db.exec(`
+          CREATE TABLE block_grading_config (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            exam_id            INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            block_id           TEXT NOT NULL,
+            dispute_threshold  REAL DEFAULT 2,
+            rounding           TEXT DEFAULT 'ceil',
+            arbitrator_id      INTEGER REFERENCES users(id),
+            review_mode        INTEGER DEFAULT 1,
+            created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(exam_id, block_id)
+          );
+          CREATE INDEX IF NOT EXISTS idx_bgc_exam ON block_grading_config(exam_id);
+        `);
+      }
+
+      // 5. answer_block_crops — 加阅卷溯源字段
+      addColumnIfMissing(db, "answer_block_crops", "reviewer_id",     "INTEGER REFERENCES users(id)");
+      addColumnIfMissing(db, "answer_block_crops", "reviewed_at",     "DATETIME");
+      addColumnIfMissing(db, "answer_block_crops", "review_round",    "INTEGER DEFAULT 1");
+      addColumnIfMissing(db, "answer_block_crops", "final_score",     "REAL");
+      addColumnIfMissing(db, "answer_block_crops", "final_score_by",  "INTEGER REFERENCES users(id)");
+      addColumnIfMissing(db, "answer_block_crops", "score_breakdown", "TEXT");
+
+      // 6. users — Tab 栏开关
+      addColumnIfMissing(db, "users", "show_tab_bar", "INTEGER DEFAULT 0");
+
+      // 7. exams — 阅卷模式
+      addColumnIfMissing(db, "exams", "review_mode",    "INTEGER DEFAULT 1");
+      addColumnIfMissing(db, "exams", "review_enabled", "INTEGER DEFAULT 0");
+    }
+  },
+  {
+    version: 20,
+    name: "subjective-grid-json",
+    up(db) {
+      addColumnIfMissing(db, "subjective_questions", "line_grid_json", "TEXT");
+      addColumnIfMissing(db, "subjective_questions", "essay_grid_json", "TEXT");
+    }
+  },
+  {
+    version: 21,
+    name: "subjective-score-grid-json",
+    up(db) {
+      addColumnIfMissing(db, "subjective_questions", "score_grid_json", "TEXT");
+    }
+  },
+  // v22: 性能复合索引对齐 — 幂等空操作 (SQLite v12 已创建,这里保持与 MariaDB v22 版本号一致)
+  // 注: SQLite v17 被跳过是 PR133 合并时的有意设计 — v9 已等价覆盖 "original-paper-and-knowledge-points"
+  {
+    version: 22,
+    name: "analysis-performance-indexes-parity",
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_total
+          ON student_scores(exam_id, total_score);
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_assigned
+          ON student_scores(exam_id, assigned_score);
+        CREATE INDEX IF NOT EXISTS idx_student_scores_exam_student
+          ON student_scores(exam_id, student_id);
+        CREATE INDEX IF NOT EXISTS idx_question_scores_exam_type
+          ON question_scores(exam_id, score_type);
+        CREATE INDEX IF NOT EXISTS idx_exams_grade_class
+          ON exams(grade_id, class_id);
+      `);
+    }
+  },
+  // v23 (origin/main, #184): 安全引导 + 扫描批次状态
+  {
+    version: 23,
+    name: "security-bootstrap-and-grading-status",
+    up(db) {
+      addColumnIfMissing(db, "users", "password_change_required", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "success_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "failure_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "error_summary", "TEXT");
+    }
+  },
+  // v24 (v1.9.4 分支): 网阅打分与分配增强
+  {
+    version: 24,
+    name: "online-review-grading-enhancements-1.9.4",
+    up(db) {
+      // 1. block_grading_config 新列
+      addColumnIfMissing(db, "block_grading_config", "has_half_point", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "block_grading_config", "auto_reassign_no_arb", "INTEGER NOT NULL DEFAULT 1");
+      addColumnIfMissing(db, "block_grading_config", "workload_balance_threshold", "INTEGER NOT NULL DEFAULT 4");
+
+      // 2. review_assignments 新列
+      addColumnIfMissing(db, "review_assignments", "auto_assigned", "INTEGER NOT NULL DEFAULT 0");
+
+      // 3. system_settings 补齐 updated_at（与 MariaDB 表结构 parity）
+      addColumnIfMissing(db, "system_settings", "updated_at", "TEXT");
+
+      // 4. system_settings 默认键（可重复执行）
+      const ensureSetting = db.prepare(
+        "INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)"
+      );
+      const defaults: Array<[string, string]> = [
+        ["allow_half_point", "1"],
+        ["default_dispute_threshold", "2"],
+        ["default_rounding", "ceil"],
+        ["auto_reassign_policy", "1"],
+        ["workload_balance_threshold", "4"],
+      ];
+      for (const [key, value] of defaults) {
+        ensureSetting.run(key, value);
+      }
+    }
+  },
+  // v25 (v1.9.4 修复): 补齐 security-bootstrap(v23) 因迁移重编号被跳过而缺失的列
+  // 背景：合并前 online-review-grading-enhancements 曾占用 v23 并已被记入 schema_migrations；
+  // 合并后把它重编号为 v24、把 security-bootstrap 放到 v23，导致执行器按版本号判重而跳过了
+  // v23，password_change_required 等列永久缺失，ensureDefaultAdmin() 启动即崩。本迁移幂等补回。
+  {
+    version: 25,
+    name: "backfill-security-bootstrap-columns",
+    up(db) {
+      addColumnIfMissing(db, "users", "password_change_required", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "success_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "failure_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "error_summary", "TEXT");
+    }
+  },
+  // v26 (v1.9.4 设置重构): 原卷两开关提升为纯全局 + 清理误放全局的网阅死键
+  // - users.require_original_paper / highlight_missing_paper 个人列标记废弃（保留数据，不再读取）；
+  //   改由 system_settings 统一控制，管理员在全局设置页设定，全平台遵从。
+  // - 清理 v1.9.4 误放在全局设置页的 5 个网阅键（后端从未消费），改归各考试「网阅设置」默认模板。
+  {
+    version: 26,
+    name: "global-original-paper-and-cleanup-review-defaults",
+    up(db) {
+      const ensureSetting = db.prepare(
+        "INSERT OR IGNORE INTO system_settings (`key`, value) VALUES (?, ?)"
+      );
+      ensureSetting.run("require_original_paper", "1");
+      ensureSetting.run("highlight_missing_paper", "1");
+
+      const dropDead = db.prepare(
+        "DELETE FROM system_settings WHERE `key` IN (?, ?, ?, ?, ?)"
+      );
+      dropDead.run(
+        "allow_half_point",
+        "default_dispute_threshold",
+        "default_rounding",
+        "auto_reassign_policy",
+        "workload_balance_threshold"
+      );
+    }
+  },
+  // v27 (1.9.5): 题块总分评分模式 — 新增评分模式与拆分策略字段
+  {
+    version: 27,
+    name: "block-grading-scoring-mode",
+    up(db) {
+      addColumnIfMissing(db, "block_grading_config", "scoring_mode", "TEXT NOT NULL DEFAULT 'block_total'");
+      addColumnIfMissing(db, "block_grading_config", "score_distribution", "TEXT NOT NULL DEFAULT 'proportional'");
+    }
   }
 ];
 

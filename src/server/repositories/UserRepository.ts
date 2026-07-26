@@ -9,6 +9,7 @@ export interface UserRecord {
   role_name?: string; role_display_name?: string; student_number: string | null;
   subject: string | null; teacher_role: string | null; initial_password: string | null;
   email: string | null; phone: string | null; is_active: number;
+  password_change_required: number;
   last_login_at: string | null; created_at: string; updated_at: string;
 }
 

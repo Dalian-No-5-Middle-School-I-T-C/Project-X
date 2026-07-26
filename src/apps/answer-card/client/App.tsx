@@ -1,4 +1,9 @@
 ﻿import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { NavLink, Route, Routes, Navigate, useBlocker, useLocation, useNavigate } from "react-router-dom";
+import { DesignPage } from "./pages/DesignPage";
+import { ExamManagePage } from "./pages/ExamManagePage";
+import { MODE_PATH, pathToMode } from "./modeRoutes";
+import { WorkspaceProvider, type WorkspaceValue } from "./WorkspaceContext";
 import {
   ArrowDown,
   ArrowUp,
@@ -17,13 +22,14 @@ import {
   Search,
   BookOpen,
   FileUp,
+  Home,
   SquarePen,
   Trash2,
   Upload,
   Users
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
-import { apiUrl, authFetch, fetchJson, urlWithToken } from "./auth/api";
+import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "./auth/api";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
@@ -41,6 +47,10 @@ import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
 import { ExamGroupDetailPage } from "./components/ExamGroupDetailPage";
 import { GroupExportModal } from "./components/GroupExportModal";
+import { HomePage } from "./components/HomePage";
+import { GlobalSettingsPage } from "./components/GlobalSettingsPage";
+import { GradePanel } from "./components/GradePanel";
+import { ExamDetailPage } from "./components/ExamDetailPage";
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -93,17 +103,30 @@ import type {
   QuestionAnalysisItem,
   StudentRankingItem
 } from "../../../shared/types";
+import {
+  modeLabels,
+  optionLayoutLabels,
+  styleLabels,
+  kindLabels,
+  blankLabelStyleLabels,
+  subjectiveBlockKind,
+  subjectiveBlockKindLabel,
+  answerBlankItems,
+  cloneCard,
+  answerText,
+  defaultObjective,
+  defaultSubjective,
+  defaultBlankBlock,
+  defaultEssayBlock,
+  defaultAnswerBlankQuestion,
+  answerLineCount,
+  heightForAnswerLines,
+  numericQuestionValue,
+  findNextQuestionNumber,
+  defaultBlankQuestion
+} from "./cardModel";
 
-const modeLabels: Record<ObjectiveMode, string> = {
-  single: "单选",
-  multiple: "多选",
-  indefinite: "不定项"
-};
 
-const optionLayoutLabels: Record<ObjectiveOptionLayout, string> = {
-  horizontal: "横向",
-  vertical: "竖向（4题一组）"
-};
 
 type CardDeleteConflict = {
   cardId: string;
@@ -126,11 +149,6 @@ type GroupDeleteTarget = {
 };
 
 type AutoSaveState = "idle" | "dirty" | "saving" | "saved" | "error";
-type PreviewMode = "fit-width" | "fit-page" | "fit-panel" | "custom";
-
-const PREVIEW_SETTINGS_KEY = "projectx-card-preview-settings-v1";
-const PREVIEW_MIN_PERCENT = 50;
-const PREVIEW_MAX_PERCENT = 400;
 
 type PdfWarningState = {
   validation: CardScoreValidationResult;
@@ -142,55 +160,12 @@ type PdfWarningState = {
   cardId?: string;
 };
 
-const styleLabels: Record<SubjectiveStyle, string> = {
-  manual_score_grid: "带分数填涂区",
-  plain_subjective: "纯主观题书写块"
-};
 
-const kindLabels: Record<SubjectiveKind, string> = {
-  blank: "填空",
-  lined_answer: "横线格",
-  plain_box: "空白大框"
-};
 
-const blankLabelStyleLabels: Record<BlankLabelStyle, string> = {
-  none: "不带序号",
-  arabic_parentheses: "(1)(2)",
-  roman_parentheses: "(i)(ii)"
-};
 
-function subjectiveBlockKind(block: SubjectiveBlock): SubjectiveBlockKind {
-  if (block.blockKind) return block.blockKind;
-  if (block.title.includes("解答")) return "answer";
-  if (block.questions.length > 0 && block.questions.every((question) => question.kind === "blank")) return "fill_blank";
-  return "answer";
-}
 
-function subjectiveBlockKindLabel(block: SubjectiveBlock): string {
-  return subjectiveBlockKind(block) === "fill_blank" ? "填空题" : "解答题";
-}
 
-function answerBlankItems(question: SubjectiveQuestion): BlankItem[] {
-  const fallbackWidth = question.blanks?.widthMm ?? 32;
-  const fallbackHeight = question.blanks?.heightMm ?? 6;
-  if (question.blanks?.items?.length) {
-    return question.blanks.items.map((item) => ({
-      label: item.label ?? "",
-      widthMm: item.widthMm || fallbackWidth,
-      heightMm: item.heightMm || fallbackHeight
-    }));
-  }
-  const count = Math.max(1, question.blanks?.count ?? 4);
-  return Array.from({ length: count }, (_, index) => ({
-    label: formatBlankLabel(question.blanks?.labelStyle ?? "arabic_parentheses", index),
-    widthMm: fallbackWidth,
-    heightMm: fallbackHeight
-  }));
-}
 
-function cloneCard(card: AnswerCard): AnswerCard {
-  return JSON.parse(JSON.stringify(card)) as AnswerCard;
-}
 
 type AppMode = ProjectXAppMode;
 
@@ -213,10 +188,10 @@ function defaultModeForUser(
 ): AppMode {
   const canOpenMode = (mode: AppMode): boolean => {
     if (!variantConfig.allowedModes.includes(mode)) return false;
+    if (mode === "home") return true;
     if (mode === "scores") return hasPermission(PERMISSIONS.SCORE_READ);
     if (mode === "design") return hasPermission(PERMISSIONS.CARD_READ);
     if (mode === "exam-manage") return hasPermission(PERMISSIONS.EXAM_WRITE);
-    if (mode === "grading") return hasPermission(PERMISSIONS.GRADE_READ);
     if (mode === "analysis") return hasPermission(PERMISSIONS.EXAM_READ);
     if (mode === "account") return hasPermission(PERMISSIONS.USER_MANAGE);
     return false;
@@ -235,9 +210,6 @@ function isImageFile(file: File): boolean {
   return file.type.startsWith("image/") || /\.(png|jpe?g|bmp|webp|tiff?)$/i.test(file.name);
 }
 
-function answerText(options: string[]): string {
-  return options.length > 0 ? options.join("") : "-";
-}
 
 function csvTextCell(value: string | number | null | undefined): string {
   // 前导制表符可阻止 Excel 将 "8/10"、"3/4" 等识别为日期
@@ -265,7 +237,11 @@ function downloadCsv(rows: CombinedGradingRow[], cardId: string) {
       row.message ?? ""
     ])
   ];
-  const csv = lines.map((line) => line.map((cell) => `"${cell.replace(/"/g, '""')}"`).join(",")).join("\n");
+  // L-S13: CSV 公式注入防御 — 对以 =, +, -, @, TAB, CR 开头的单元格加前缀单引号
+  const csv = lines.map((line) => line.map((cell) => {
+    const safe = /^[=+\-@\t\r]/.test(cell) ? `'${cell}` : cell;
+    return `"${safe.replace(/"/g, '""')}"`;
+  }).join(",")).join("\n");
   const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -281,119 +257,15 @@ function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value : [];
 }
 
-function defaultObjective(start: number): ObjectiveBlock {
-  return {
-    id: createBlockId("obj"),
-    type: "objective",
-    title: "客观题",
-    questionStart: start,
-    questionCount: 10,
-    optionCount: 4,
-    mode: "single",
-    scorePerQuestion: 5,
-    density: "compact",
-    optionLayout: "horizontal",
-    answerKey: {},
-    multipleScoring: {
-      partialScores: { 1: 2, 2: 4 },
-      wrongOrExtraScore: 0
-    }
-  };
-}
 
-function defaultSubjective(nextNumber: number): SubjectiveBlock {
-  return {
-    id: createBlockId("subj"),
-    type: "subjective",
-    blockKind: "answer",
-    title: "解答题",
-    questions: [
-      {
-        id: createBlockId("q"),
-        number: nextNumber,
-        score: 12,
-        style: "manual_score_grid",
-        kind: "plain_box",
-        lineGrid: { enabled: false, lineSpacingMm: 8 },
-        images: [],
-        minHeightMm: 62
-      }
-    ]
-  };
-}
 
-function defaultBlankQuestion(
-  questionNumber: string | number,
-  score = 0,
-  style: SubjectiveStyle = "plain_subjective"
-): SubjectiveQuestion {
-  return {
-    id: createBlockId("q"),
-    number: questionNumber,
-    score,
-    style,
-    kind: "blank",
-    blanks: { count: 1, widthMm: 22, heightMm: 6, labelStyle: "none" },
-    lineGrid: { enabled: false, lineSpacingMm: 8 },
-    images: [],
-    minHeightMm: 14
-  };
-}
 
-function defaultBlankBlock(nextNumber: number): SubjectiveBlock {
-  return {
-    id: createBlockId("subj"),
-    type: "subjective",
-    blockKind: "fill_blank",
-    title: "填空题",
-    questions: Array.from({ length: 10 }, (_, index) =>
-      defaultBlankQuestion(nextNumber + index, index === 0 ? 15 : 0, index === 0 ? "manual_score_grid" : "plain_subjective")
-    )
-  };
-}
 
-function defaultAnswerBlankQuestion(nextNumber: number): SubjectiveQuestion {
-  return {
-    ...defaultBlankQuestion(nextNumber, 12, "manual_score_grid"),
-    minHeightMm: 62,
-    blanks: {
-      count: 4,
-      widthMm: 32,
-      heightMm: 6,
-      labelStyle: "arabic_parentheses",
-      items: Array.from({ length: 4 }, (_, index) => ({
-        label: `(${index + 1})`,
-        widthMm: 32,
-        heightMm: 6
-      }))
-    }
-  };
-}
 
-function answerLineCount(question: SubjectiveQuestion): number {
-  const spacing = Math.max(5, question.lineGrid?.lineSpacingMm ?? 8);
-  return Math.max(1, Math.min(20, Math.ceil((question.minHeightMm - 14) / spacing)));
-}
 
-function heightForAnswerLines(lineCount: number, spacing: number): number {
-  return 14 + Math.max(1, Math.min(20, lineCount)) * Math.max(5, spacing);
-}
 
-function numericQuestionValue(value: string | number): number {
-  const parsed = Number.parseInt(String(value), 10);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
 
-function findNextQuestionNumber(card: AnswerCard): number {
-  let max = 0;
-  for (const block of card.bodyBlocks) {
-    if (block.type === "objective") max = Math.max(max, block.questionStart + block.questionCount - 1);
-    if (block.type === "subjective") {
-      for (const question of block.questions) max = Math.max(max, numericQuestionValue(question.number));
-    }
-  }
-  return max + 1;
-}
+
 
 /** v1.8.0 — 导出检查卡片内的知识点分析小面板 */
 function KnowledgeAnalysisInline({ cardId, onDone }: { cardId: string; onDone: (points: Array<{ question_number: number; points: string[] }>) => void }) {
@@ -466,8 +338,27 @@ function App() {
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
-  const [mode, setMode] = useState<AppMode>("design");
-  const previousModeRef = useRef<AppMode>("design");
+  const [mode, setMode] = useState<AppMode>(pathToMode(window.location.pathname) ?? "home");
+  const navigate = useNavigate();
+  const location = useLocation();
+  const modeInitialized = useRef(false);
+  // URL ↔ mode 同步（Phase 2 网页化）：深链/刷新/浏览器前进后退均保持当前页
+  useEffect(() => {
+    const m = pathToMode(location.pathname);
+    if (m) setMode(m);
+  }, [location.pathname]);
+
+  // 阶段 2.5：离开「设计」页且存在未保存更改时，拦截导航并弹确认（需数据路由支持）
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      mode === "design" &&
+      autoSaveState === "dirty" &&
+      currentLocation.pathname !== nextLocation.pathname
+  );
+  const showTabBar = (user as any)?.show_tab_bar === 1;
+  const [selectedExamId, setSelectedExamId] = useState<number | null>(null);
+  const [gradingPanel, setGradingPanel] = useState<{ examId: number; blockId: string } | null>(null);
+  const previousModeRef = useRef<AppMode>("home");
   const latestCardRef = useRef<AnswerCard | null>(null);
   const autoSaveTimerRef = useRef<number | null>(null);
   const editRevisionRef = useRef(0);
@@ -479,6 +370,11 @@ function App() {
   const [gradingProgress, setGradingProgress] = useState<GradingProgress>({ active: false, finished: 0, total: 0 });
   const [status, setStatus] = useState("准备就绪");
   const [isBusy, setIsBusy] = useState(false);
+  // v1.9.4: 原卷两开关提升为纯全局，由管理员在「全局设置」统一控制；全平台遵从。
+  const [globalPaper, setGlobalPaper] = useState<{ requireOriginalPaper: number; highlightMissingPaper: number }>({
+    requireOriginalPaper: 1,
+    highlightMissingPaper: 1,
+  });
   const [autoSaveState, setAutoSaveState] = useState<AutoSaveState>("idle");
   const gradingProgressSourceRef = useRef<EventSource | null>(null);
   // Note: Scanner has been split into a separate build (ScannerApp.tsx).
@@ -547,11 +443,12 @@ function App() {
   // 扫描 TAB：需要 variant 允许扫描 + grading 权限 + 本地有扫描硬件
   const canDesign = variantAllows("design") && hasPermission(PERMISSIONS.CARD_READ);
   const canManageExams = variantAllows("exam-manage") && hasPermission(PERMISSIONS.EXAM_WRITE);
-  const canGrade = variantAllows("grading") && hasPermission(PERMISSIONS.GRADE_READ);
+  const canGrade = hasPermission(PERMISSIONS.GRADE_READ);
   const canAnalyze = variantAllows("analysis") && hasPermission(PERMISSIONS.EXAM_READ);
   const canWriteExam = hasPermission(PERMISSIONS.EXAM_WRITE);
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
   const canManageAccounts = variantAllows("account") && hasPermission(PERMISSIONS.USER_MANAGE);
+  const canManageGlobal = variantAllows("global-settings") && hasPermission(PERMISSIONS.SYSTEM_MANAGE);
   const showCardSidebar = mode === "design" && canDesign;
   const showScoresTab = canViewScores;
 
@@ -565,14 +462,12 @@ function App() {
       onEnter?: () => void | Promise<void>;
     };
     const items: NavItem[] = [];
+    items.push({ id: "home", icon: <Home size={22} />, label: "首页", shortLabel: "首页" });
     if (canDesign) {
       items.push({ id: "design", icon: <SquarePen size={22} />, label: "答题卡设计", shortLabel: "设计" });
     }
     if (canManageExams) {
       items.push({ id: "exam-manage", icon: <ClipboardList size={22} />, label: "考试管理", shortLabel: "考试", onEnter: async () => { await loadExams(); await loadExamGroups(); } });
-    }
-    if (canGrade) {
-      items.push({ id: "grading", icon: <ClipboardCheck size={22} />, label: "阅卷批改", shortLabel: "阅卷" });
     }
     if (canAnalyze) {
       items.push({ id: "analysis", icon: <BarChart3 size={22} />, label: "成绩分析", shortLabel: "分析", onEnter: loadExams });
@@ -585,15 +480,31 @@ function App() {
     }
     // 移动端最多5个Tab
     return items.slice(0, 5);
-  }, [canDesign, canManageExams, canGrade, canAnalyze, showScoresTab, canManageAccounts, loadExams, loadExamGroups]);
+  }, [canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, loadExams, loadExamGroups]);
 
   useEffect(() => {
     latestCardRef.current = card;
   }, [card]);
 
+  // v1.9.4: 拉取全局原卷标志（认证即可读），驱动导出拦截/自动弹窗/侧边栏高亮
+  const refreshGlobalPaper = useCallback(() => {
+    return fetchJson<{ ok: boolean; data: { requireOriginalPaper: number; highlightMissingPaper: number } }>(
+      "/api/system-settings/public"
+    )
+      .then((r) => {
+        if (r?.ok && r.data) setGlobalPaper(r.data);
+      })
+      .catch(() => {});
+  }, []);
+  useEffect(() => { void refreshGlobalPaper(); }, [refreshGlobalPaper]);
+
   useEffect(() => {
-    if (user) {
-      setMode(defaultModeForUser(hasPermission, appVariant));
+    if (user && !modeInitialized.current) {
+      modeInitialized.current = true;
+      // 尊重深链/新标签带来的 URL：地址栏已是某功能路径则用之，否则回退默认首页。
+      // 否则点“答题卡设计”打开的 /design 新标签会被强行改回 home（已修复的 BUG）。
+      const fromUrl = pathToMode(window.location.pathname);
+      setMode(fromUrl ?? defaultModeForUser(hasPermission, appVariant));
     }
   }, [user?.id, hasPermission, appVariant]);
 
@@ -674,9 +585,9 @@ function App() {
         setAnalysisTab("select");
         return;
       }
-      // 赞助/使用说明 → 返回上一模式
+      // 赞助/使用说明 → 返回上一模式（同步 URL）
       if (mode === "sponsor" || mode === "guide" || mode === "permissions") {
-        setMode(previousModeRef.current);
+        navigate(MODE_PATH[previousModeRef.current] ?? "/home");
         return;
       }
     }
@@ -686,7 +597,7 @@ function App() {
 
   // 进入阅卷模式时预加载考试列表
   useEffect(() => {
-    if (mode === "grading" && exams.length === 0) {
+    if (mode === "exam-manage" && exams.length === 0) {
       loadExams();
     }
   }, [mode, exams.length]);
@@ -861,9 +772,8 @@ function App() {
 
       setStatus(`已创建答题卡 「${created.title}」 (${created.id})${statusExtra}`);
 
-      // v1.8.0: 自动弹出原卷上传面板
-      const userSettings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch((): { requireOriginalPaper?: number } => ({}));
-      if (userSettings.requireOriginalPaper !== 0) {
+      // v1.8.0: 自动弹出原卷上传面板（受全局「强制要求上传原卷」控制）
+      if (globalPaper.requireOriginalPaper !== 0) {
         setPaperPanelCardId(created.id);
         setShowPaperPanel(true);
       }
@@ -994,11 +904,10 @@ function App() {
   }
 
   async function exportCard(cardId: string) {
-    // v1.8.0: 检查原卷是否上传
+    // v1.8.0: 检查原卷是否上传（受全局「强制要求上传原卷」控制）
     try {
       const cardInfo = await fetchJson<{ has_original_paper?: number }>(`/api/cards/${cardId}/paper/info`);
-      const settings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch((): { requireOriginalPaper?: number } => ({}));
-      if (settings.requireOriginalPaper !== 0 && !cardInfo?.has_original_paper) {
+      if (globalPaper.requireOriginalPaper !== 0 && !cardInfo?.has_original_paper) {
         if (confirm("此答题卡尚未上传原卷，根据当前设置不允许导出。是否现在上传原卷？")) {
           setPaperPanelCardId(cardId);
           setShowPaperPanel(true);
@@ -1030,12 +939,12 @@ function App() {
   }
 
   async function showExportCheck(savedCard: AnswerCard, pdfUrl: string) {
-    const settings = await fetchJson<{ requireOriginalPaper?: number }>("/api/users/me/settings").catch((): { requireOriginalPaper?: number } => ({}));
     let paperInfo: { hasPaper: boolean; filename?: string; mimeType?: string } = { hasPaper: false };
     let knowledgeReady = false;
     let knowledgePoints: Array<{ question_number: number; points: string[] }> = [];
 
-    if (settings.requireOriginalPaper !== 0) {
+    // 受全局「强制要求上传原卷」控制
+    if (globalPaper.requireOriginalPaper !== 0) {
       try {
         const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string }>(`/api/cards/${savedCard.id}/paper/info`);
         paperInfo = { hasPaper: !!info?.has_original_paper, filename: info?.filename, mimeType: info?.mime_type };
@@ -1224,6 +1133,7 @@ function App() {
       }
     }
     setMode(nextMode);
+    navigate(MODE_PATH[nextMode]);
     try {
       await afterSwitch?.();
     } catch (err) {
@@ -1270,6 +1180,15 @@ function App() {
   function addBlankBlock() {
     if (!card) return;
     const block = defaultBlankBlock(findNextQuestionNumber(card));
+    updateCard((draft) => {
+      draft.bodyBlocks.push(block);
+    });
+    setSelectedBlockId(block.id);
+  }
+
+  function addEssayBlock() {
+    if (!card) return;
+    const block = defaultEssayBlock(findNextQuestionNumber(card));
     updateCard((draft) => {
       draft.bodyBlocks.push(block);
     });
@@ -1399,8 +1318,23 @@ function App() {
       });
       setGradingResult(result);
       const msg = `阅卷完成：${result.rows.length} 张，${result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0)} 题待复核`;
-      const extra = gradingExamId ? "，正在后台写入数据库..." : "（未选择考试，数据未落库）";
+      const extra = !gradingExamId
+        ? "（未选择考试，数据未落库）"
+        : result.persistence?.status === "done"
+          ? `，已持久化 ${result.persistence.persisted} 名学生并关闭考试`
+          : `，仅持久化 ${result.persistence?.persisted ?? 0} 名学生，${result.persistence?.failedCount ?? 0} 项失败；考试未关闭，可修正后重试`;
       setStatus(msg + extra);
+    } catch (error) {
+      const failedResult = error as Error & Partial<CombinedGradingBatchResult>;
+      if (Array.isArray(failedResult.rows) && failedResult.persistence) {
+        setGradingResult(failedResult as CombinedGradingBatchResult);
+        setStatus(
+          `阅卷落库失败：已持久化 ${failedResult.persistence.persisted} 名学生，` +
+          `${failedResult.persistence.failedCount} 项失败；考试未关闭，可修正后重试`
+        );
+      } else {
+        setStatus(`阅卷失败：${error instanceof Error ? error.message : String(error)}`);
+      }
     } finally {
       gradingProgressSourceRef.current?.close();
       gradingProgressSourceRef.current = null;
@@ -1491,7 +1425,134 @@ function App() {
     return <LoginPage />;
   }
 
+  const navigateBackFromInfo = () => navigate(MODE_PATH[previousModeRef.current] ?? "/home");
+  const startReview = (examId: number, blockId: string) => setGradingPanel({ examId, blockId });
+
+  const workspace: WorkspaceValue = {
+    user,
+    hasPermission,
+    appVariant,
+    variantAllows,
+    mode,
+    setMode,
+    previousModeRef,
+    navigateBackFromInfo,
+    switchMode,
+    cards,
+    card,
+    setCard,
+    selectedBlockId,
+    setSelectedBlockId,
+    layout,
+    selectedBlock,
+    updateCard,
+    updateBlock,
+    moveBlock,
+    removeBlock,
+    addObjectiveBlock,
+    addSubjectiveBlock,
+    addBlankBlock,
+    addEssayBlock,
+    uploadImage,
+    subjectiveBlockKindLabel,
+    loadCard,
+    createCard,
+    saveCard,
+    exportPdfForCurrentCard,
+    deleteCard,
+    refreshCards,
+    flushPendingCardSave,
+    autoSaveState,
+    autoSaveLabel,
+    isBusy,
+    setIsBusy,
+    status,
+    setStatus,
+    gradingFiles,
+    setGradingFiles,
+    gradingExamId,
+    setGradingExamId,
+    cardOverride,
+    setCardOverride,
+    gradingResult,
+    setGradingResult,
+    gradingProgress,
+    addGradingFiles,
+    gradeAnswerCardFiles,
+    downloadCsv,
+    exams,
+    setExams,
+    examListRefreshKey,
+    examGroups,
+    setExamGroups,
+    examManageMode,
+    setExamManageMode,
+    showCreateExam,
+    setShowCreateExam,
+    showCreateGroup,
+    setShowCreateGroup,
+    selectedExamIds,
+    setSelectedExamIds,
+    selectedExamId,
+    setSelectedExamId,
+    newExamName,
+    setNewExamName,
+    newExamSubject,
+    setNewExamSubject,
+    newExamCardId,
+    setNewExamCardId,
+    loadExams,
+    loadExamGroups,
+    deleteExams,
+    setExamDeleteTarget,
+    setGroupDeleteTarget,
+    setAssignedFormulaExamId,
+    onStartReview: startReview,
+    analysisTab,
+    setAnalysisTab,
+    selectedAnalysisExamId,
+    setSelectedAnalysisExamId,
+    analysisGroupId,
+    setAnalysisGroupId,
+    showGroupExport,
+    setShowGroupExport,
+    loadAnalysis,
+    showImportCardModal,
+    setShowImportCardModal,
+    importCardData,
+    setImportCardData,
+    handleImportConfirm,
+    showPaperPanel,
+    setShowPaperPanel,
+    paperPanelCardId,
+    setPaperPanelCardId,
+    exportCheck,
+    setExportCheck,
+    paperPreviewOpen,
+    setPaperPreviewOpen,
+    paperZoom,
+    setPaperZoom,
+    cardDeleteConflict,
+    setCardDeleteConflict,
+    theme,
+    setTheme,
+    showBg,
+    setShowBg,
+    canDesign,
+    canManageExams,
+    canGrade,
+    canAnalyze,
+    canViewScores,
+    canManageAccounts,
+    canManageGlobal,
+    canWriteExam,
+    showCardSidebar,
+    showScoresTab,
+    mobileNavItems,
+  };
+
   return (
+    <WorkspaceProvider value={workspace}>
     <main className={`app-shell ${showCardSidebar ? "" : "no-card-sidebar"}`}>
       {showCardSidebar && (
       <aside className="sidebar">
@@ -1513,7 +1574,9 @@ function App() {
               key={item.id}
               className={`card-list-item ${card?.id === item.id ? "active" : ""}`}
               style={{
-                borderLeft: (item as any).has_original_paper ? "3px solid transparent" : "3px solid var(--warn, #f59e0b)"
+                borderLeft: globalPaper.highlightMissingPaper !== 0 && !(item as any).has_original_paper
+                  ? "3px solid var(--warn, #f59e0b)"
+                  : "3px solid transparent"
               }}
             >
               <button
@@ -1556,7 +1619,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>
-              {mode === "scores"
+              {mode === "home" ? "首页" : mode === "scores"
                 ? "我的成绩"
                 : mode === "exam-manage"
                   ? "考试管理"
@@ -1569,7 +1632,7 @@ function App() {
                     : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
             </h1>
             <p>
-              {mode === "scores"
+              {mode === "home" ? `欢迎，${user?.name ?? ""}` : mode === "scores"
                 ? "查看各场考试得分、排名与逐题明细"
                 : mode === "exam-manage"
                   ? "创建、管理考试与阅卷批次"
@@ -1587,6 +1650,9 @@ function App() {
             </p>
           </div>
           <div className="topbar-actions-left">
+            {!showTabBar && mode !== "home" && (
+              <button onClick={() => switchMode("home")} style={{ height: 44, padding: "0 16px", fontSize: 14, fontWeight: 500, border: "1px solid var(--color-border-primary)", borderRadius: 8, background: "var(--color-background-secondary)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>← 返回首页</button>
+            )}
             {card && canDesign && mode === "design" && (
               <>
                 <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
@@ -1607,36 +1673,39 @@ function App() {
             )}
           </div>
           <div className="topbar-actions">
-            <div className="mode-toggle" role="tablist" aria-label="工作模式">
+            <div className="mode-toggle" role="tablist" aria-label="工作模式" style={showTabBar ? undefined : { display: "none" }}>
+              <NavLink to={MODE_PATH.home} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("home"); }}>
+                <Home size={16} /> 首页
+              </NavLink>
               {canDesign && (
-              <button className={mode === "design" ? "active" : ""} onClick={() => void switchMode("design")} type="button">
+              <NavLink to={MODE_PATH.design} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("design"); }}>
                 <SquarePen size={16} /> 设计
-              </button>
+              </NavLink>
               )}
               {canManageExams && (
-              <button className={mode === "exam-manage" ? "active" : ""} onClick={() => void switchMode("exam-manage", async () => { await loadExams(); await loadExamGroups(); })} type="button">
+              <NavLink to={MODE_PATH["exam-manage"]} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("exam-manage", async () => { await loadExams(); await loadExamGroups(); }); }}>
                 <ClipboardList size={16} /> 考试管理
-              </button>
-              )}
-              {canGrade && (
-              <button className={mode === "grading" ? "active" : ""} onClick={() => void switchMode("grading")} type="button">
-                <ClipboardCheck size={16} /> 阅卷
-              </button>
+              </NavLink>
               )}
               {canAnalyze && (
-              <button className={mode === "analysis" ? "active" : ""} onClick={() => void switchMode("analysis", loadExams)} type="button">
+              <NavLink to={MODE_PATH.analysis} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("analysis", loadExams); }}>
                 <BarChart3 size={16} /> 分析
-              </button>
+              </NavLink>
               )}
               {showScoresTab && (
-              <button className={mode === "scores" ? "active" : ""} onClick={() => void switchMode("scores")} type="button">
+              <NavLink to={MODE_PATH.scores} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("scores"); }}>
                 <BarChart3 size={16} /> 我的成绩
-              </button>
+              </NavLink>
               )}
               {canManageAccounts && (
-              <button className={mode === "account" ? "active" : ""} onClick={() => void switchMode("account")} type="button">
+              <NavLink to={MODE_PATH.account} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("account"); }}>
                 <Users size={16} /> 账号
-              </button>
+              </NavLink>
+              )}
+              {canManageGlobal && (
+              <NavLink to={MODE_PATH["global-settings"]} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("global-settings"); }}>
+                <BookOpen size={16} /> 全局设置
+              </NavLink>
               )}
             </div>
             <button
@@ -1666,580 +1735,148 @@ function App() {
             </button>
             <AccountMenu
               onOpenSponsor={() => {
-                const previous = mode;
-                void switchMode("sponsor", () => {
-                  previousModeRef.current = previous;
-                });
+                previousModeRef.current = mode;
+                void switchMode("sponsor");
               }}
               onOpenGuide={() => {
                 previousModeRef.current = mode;
-                setMode("guide");
+                void switchMode("guide");
               }}
               onOpenPermissions={() => {
                 previousModeRef.current = mode;
-                setMode("permissions");
+                void switchMode("permissions");
               }}
             />
           </div>
         </header>
 
-        <div className={`main-grid ${mode === "design" ? "" : "hidden-panel"}`}>
-          <section className="preview-panel">
-            {card && layout ? <CardPreview card={card} layout={layout} /> : <div className="blank-preview">选择或新建答题卡</div>}
-          </section>
-
-          <aside className="inspector">
-            {card ? (
-              <>
-                <section className="panel">
-                  <div className="panel-title">
-                    <SquarePen size={17} /> 基本信息
-                  </div>
-                  <label>
-                    标题
-                    <input value={card.title} onChange={(event) => updateCard((draft) => void (draft.title = event.target.value))} />
-                  </label>
-                  {card.subjectLabel && (
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", fontSize: 13, color: "var(--text-secondary)" }}>
-                      <span>科目</span>
-                      <span style={{ fontWeight: 600, color: "var(--text)" }}>{card.subjectLabel}</span>
-                    </div>
-                  )}
-                  {card.examDate && (
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", fontSize: 13, color: "var(--text-secondary)" }}>
-                      <span>考试时间</span>
-                      <span style={{ fontWeight: 600, color: "var(--text)" }}>{card.examDate}</span>
-                    </div>
-                  )}
-                  <label>
-                    答题卡纸型
-                    <select
-                      value={card.paper?.size ?? "A4"}
-                      onChange={(event) =>
-                        updateCard((draft) => {
-                          const size = event.target.value as "A4" | "A3";
-                          draft.paper = { size, orientation: size === "A3" ? "landscape" : "portrait" };
-                        })
-                      }
-                    >
-                      <option value="A4">A4 纵向</option>
-                      <option value="A3">A3 横向三版</option>
-                    </select>
-                  </label>
-                  {card.layoutVersion !== 2 && (
-                    <div className="layout-version-banner" role="note">
-                      <strong>当前使用 V1 兼容排版</strong>
-                      <span>旧打印件仍按原分数格坐标识别。升级后将使用紧凑分数区和更大的作答空间。</span>
-                      <button
-                        className="ghost-button"
-                        type="button"
-                        onClick={() => {
-                          if (!confirm("升级到 V2 后，已经打印的旧答题卡不能再按此卡片的新坐标识别。确认升级并立即重排吗？")) return;
-                          updateCard((draft) => void (draft.layoutVersion = 2));
-                        }}
-                      >
-                        升级到紧凑排版 V2
-                      </button>
-                    </div>
-                  )}
-                  <label>
-                    学号位数
-                    <input
-                      type="number"
-                      min={1}
-                      max={12}
-                      value={card.studentInfo.studentNumberDigits}
-                      onChange={(event) =>
-                        updateCard((draft) => void (draft.studentInfo.studentNumberDigits = Number(event.target.value)))
-                      }
-                    />
-                  </label>
-                  <label>
-                    答题卡面
-                    <select
-                      value={card.sided ?? "double"}
-                      onChange={(event) =>
-                        updateCard((draft) => void (draft.sided = event.target.value as "single" | "double"))
-                      }
-                    >
-                      <option value="single">单面（仅正面有题）</option>
-                      <option value="double">双面（正反面均有题）</option>
-                    </select>
-                  </label>
-                </section>
-
-                <section className="panel">
-                  <div className="panel-title">
-                    <ListPlus size={17} /> 正文题块
-                  </div>
-                  <div className="block-list">
-                    {card.bodyBlocks.map((block, index) => (
-                      <div key={block.id} className={`block-chip ${selectedBlockId === block.id ? "active" : ""}`}>
-                        <button onClick={() => setSelectedBlockId(block.id)}>
-                          <strong>{block.type === "objective" ? "客观题" : subjectiveBlockKindLabel(block)}</strong>
-                          <span>{block.title}</span>
-                        </button>
-                        <div className="chip-actions">
-                          <button title="上移" onClick={() => moveBlock(block.id, -1)} disabled={index === 0}>
-                            <ArrowUp size={15} />
-                          </button>
-                          <button title="下移" onClick={() => moveBlock(block.id, 1)} disabled={index === card.bodyBlocks.length - 1}>
-                            <ArrowDown size={15} />
-                          </button>
-                          <button title="在后面插入客观题" onClick={() => addObjectiveBlock(index)}>
-                            <Plus size={15} />
-                          </button>
-                          <button title="删除" onClick={() => removeBlock(block.id)}>
-                            <Trash2 size={15} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="split-actions">
-                    <button className="ghost-button" onClick={() => addObjectiveBlock()}>
-                      <Plus size={16} /> 客观题块
-                    </button>
-                    <button className="ghost-button" onClick={addBlankBlock}>
-                      <Plus size={16} /> 填空题块
-                    </button>
-                    <button className="ghost-button" onClick={addSubjectiveBlock}>
-                      <Plus size={16} /> 解答题块
-                    </button>
-                  </div>
-                </section>
-
-                {selectedBlock && (
-                  <section className="panel">
-                    {selectedBlock.type === "objective" ? (
-                      <ObjectiveEditor block={selectedBlock} onChange={(mutator) => updateBlock(selectedBlock.id, mutator)} />
-                    ) : (
-                      <SubjectiveEditor
-                        block={selectedBlock}
-                        layoutVersion={card.layoutVersion}
-                        onChange={(mutator) => updateBlock(selectedBlock.id, mutator)}
-                        onUpload={uploadImage}
-                      />
-                    )}
-                  </section>
-                )}
-
-                {layout?.warnings.length ? (
-                  <section className="panel warning-panel">
-                    {layout.warnings.map((warning) => (
-                      <p key={warning}>{warning}</p>
-                    ))}
-                  </section>
-                ) : null}
-              </>
-            ) : (
-              <div className="empty-text">请新建或载入答题卡。</div>
-            )}
-          </aside>
-        </div>
-        <div className={`main-grid exam-manage-grid ${mode === "exam-manage" ? "" : "hidden-panel"}`}>
-          <section className="preview-panel" style={{ gridColumn: "1 / -1", padding: 24, overflowY: "auto" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-              <strong style={{ fontSize: 16 }}>考试管理</strong>
-              {examManageMode === "single" ? (
-                <button className="primary-button" onClick={() => setShowCreateExam(!showCreateExam)}>
-                  <Plus size={16} /> 新建考试
-                </button>
-              ) : (
-                <button className="primary-button" onClick={() => setShowCreateGroup(true)}>
-                  <Plus size={16} /> 新建大考
-                </button>
-              )}
-              {examManageMode === "single" && selectedExamIds.size > 0 && (
-                <button
-                  className="ghost-button"
-                  style={{ color: "var(--brand)" }}
-                  onClick={() => setExamDeleteTarget({
-                    exams: exams.filter((exam) => selectedExamIds.has(exam.id)),
-                    deleteLinkedCards: false
-                  })}
-                >
-                  <Trash2 size={16} /> 删除选中 ({selectedExamIds.size})
-                </button>
-              )}
-              {(examManageMode === "single" ? exams.length : examGroups.length) > 0 && (
-                <span style={{ fontSize: 13, color: "var(--muted)" }}>
-                  共 {examManageMode === "single" ? exams.length : examGroups.length} {examManageMode === "single" ? "个考试" : "个大考"}
-                </span>
-              )}
-              {/* Single/Group toggle — right side */}
-              <div style={{ display: "flex", gap: 0, border: "1px solid var(--brand)", borderRadius: 6, overflow: "hidden", marginLeft: "auto" }}>
-                <button onClick={() => setExamManageMode("single")} style={{
-                  padding: "5px 14px", border: "none", background: examManageMode === "single" ? "var(--brand)" : "var(--surface)",
-                  color: examManageMode === "single" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "single" ? 600 : 400
-                }}>单科考试</button>
-                <button onClick={() => { setExamManageMode("group"); loadExamGroups(); }} style={{
-                  padding: "5px 14px", border: "none", background: examManageMode === "group" ? "var(--brand)" : "var(--surface)",
-                  color: examManageMode === "group" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "group" ? 600 : 400,
-                  display: "flex", alignItems: "center", gap: 4
-                }}><Layers size={13} /> 大考</button>
-              </div>
-            </div>
-
-            {examManageMode === "single" && showCreateExam && (
-              <div style={{ background: "var(--surface-soft)", borderRadius: 8, padding: 14, marginBottom: 16, display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
-                <input value={newExamName} onChange={(e) => setNewExamName(e.target.value)} placeholder="考试名称" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
-                <input value={newExamSubject} onChange={(e) => setNewExamSubject(e.target.value)} placeholder="科目（自动从答题卡继承）" style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }} />
-                <select
-                  value={newExamCardId || card?.id || ""}
-                  onChange={(e) => {
-                    const selectedCardId = e.target.value;
-                    setNewExamCardId(selectedCardId);
-                    const selectedCard = cards.find((c) => c.id === selectedCardId);
-                    if (selectedCard) {
-                      if (!newExamName) setNewExamName(selectedCard.title);
-                      if (!newExamSubject) setNewExamSubject(selectedCard.subjectLabel || "");
-                    }
-                  }}
-                  style={{ padding: "6px 10px", border: "1px solid var(--line-strong)", borderRadius: 4, fontSize: 13 }}
-                >
-                  <option value="" disabled>选择答题卡</option>
-                  {cards.map((c) => (<option key={c.id} value={c.id}>{c.title}</option>))}
-                </select>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button className="primary-button" onClick={async () => {
-                    const name = newExamName.trim();
-                    if (!name) { setStatus("请填写考试名称"); return; }
-                    try {
-                      let cardId = newExamCardId || card?.id;
-                      // 方案 B：如果没有选择答题卡，先自动创建一张最简答题卡
-                      if (!cardId) {
-                        const subjectPinyinMap: Record<string, string> = {
-                          "语文": "yuwen", "数学": "shuxue", "英语": "yingyu", "外语": "yingyu",
-                          "物理": "wuli", "化学": "huaxue", "生物": "shengwu",
-                          "政治": "zhengzhi", "历史": "lishi", "地理": "dili"
-                        };
-                        const subjectVal = newExamSubject.trim();
-                        const subjectPinyin = subjectPinyinMap[subjectVal] || subjectVal || "custom";
-                        const today = new Date().toISOString().split("T")[0];
-                        const cardRes = await fetchJson<any>("/api/cards", {
-                          method: "POST",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({
-                            subject: subjectPinyin,
-                            title: name,
-                            subjectLabel: subjectVal || undefined,
-                            examDate: today,
-                            englishListening: false,
-                            chineseChoicePlacement: "front"
-                          })
-                        });
-                        cardId = cardRes.id;
-                      }
-                      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId, subject: newExamSubject.trim() || undefined }) });
-                      setNewExamName(""); setNewExamSubject(""); setShowCreateExam(false);
-                      loadExams();
-                    } catch (err) { setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`); }
-                  }}>确认创建</button>
-                  <button className="ghost-button" onClick={() => setShowCreateExam(false)}>取消</button>
-                </div>
-              </div>
-            )}
-
-            {examManageMode === "single" && exams.length === 0 && !showCreateExam && (
-              <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>暂无考试，点击上方「新建考试」创建。</div>
-            )}
-
-            {examManageMode === "single" && exams.length > 0 && (
-              <div className="exam-list-table">
-                <div className="exam-list-head">
-                  <span style={{ width: 36, flexShrink: 0 }}>
-                    <input type="checkbox" onChange={(e) => {
-                      if (e.target.checked) setSelectedExamIds(new Set(exams.map(ex => ex.id)));
-                      else setSelectedExamIds(new Set());
-                    }} checked={selectedExamIds.size === exams.length && exams.length > 0} />
-                  </span>
-                  <span style={{ flex: 1, minWidth: 160 }}>考试名称</span>
-                  <span style={{ width: 80 }}>科目</span>
-                  <span style={{ width: 100 }}>答题卡</span>
-                  <span style={{ width: 70, textAlign: "center" }}>状态</span>
-                  <span style={{ width: 100, textAlign: "right" }}>操作</span>
-                </div>
-                {exams.map((exam) => (
-                  <div key={exam.id} className="exam-list-row" style={{ cursor: "default" }}>
-                    <span style={{ width: 36, flexShrink: 0 }}>
-                      <input type="checkbox" checked={selectedExamIds.has(exam.id)} onChange={() => {
-                        const next = new Set(selectedExamIds);
-                        if (next.has(exam.id)) next.delete(exam.id); else next.add(exam.id);
-                        setSelectedExamIds(next);
-                      }} />
-                    </span>
-                    <span style={{ flex: 1, minWidth: 160, fontWeight: 500 }}>{exam.name}</span>
-                    <span style={{ width: 80, color: "var(--muted)" }}>{exam.subject || "—"}</span>
-                    <span style={{ width: 100, color: "var(--muted)", fontSize: 12 }}>{exam.card_id ?? "未关联"}</span>
-                    <span style={{ width: 70, textAlign: "center" }}>
-                      <span className={`exam-list-badge exam-list-badge-${exam.status}`}>
-                        {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
-                      </span>
-                    </span>
-                    <span style={{ width: 100, textAlign: "right", whiteSpace: "nowrap" }}>
-                      <button
-                        className="ghost-button"
-                        style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
-                        onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}
-                      >删除</button>
-                      <button
-                        className="ghost-button"
-                        style={{ fontSize: 12, color: "#1D9E75", padding: "2px 6px", marginLeft: 6 }}
-                        onClick={() => setAssignedFormulaExamId(exam.id)}
-                      >赋分</button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Exam group list */}
-            {examManageMode === "group" && examGroups.length === 0 && (
-              <div className="empty-text" style={{ padding: 60, textAlign: "center" }}>暂无大考，点击上方「新建大考」创建。</div>
-            )}
-            {examManageMode === "group" && examGroups.length > 0 && (
-              <div className="exam-list-table">
-                <div className="exam-list-head">
-                  <span style={{ flex: 1, minWidth: 180 }}>大考名称</span>
-                  <span style={{ width: 80 }}>标签</span>
-                  <span style={{ width: 80 }}>年级</span>
-                  <span style={{ width: 80, textAlign: "center" }}>含考试数</span>
-                  <span style={{ width: 80, textAlign: "center" }}>有无成绩</span>
-                  <span style={{ width: 100, textAlign: "right" }}>操作</span>
-                </div>
-                {examGroups.map((group: any) => (
-                  <div key={group.id} className="exam-list-row" style={{ cursor: "default" }}>
-                    <span style={{ flex: 1, minWidth: 180, fontWeight: 500 }}>{group.name}</span>
-                    <span style={{ width: 80 }}>
-                      <span style={{ display: "inline-block", padding: "2px 8px", borderRadius: 10, fontSize: 11,
-                        background: group.tag ? "var(--primary)" : "var(--bg-secondary)",
-                        color: group.tag ? "#fff" : "var(--muted)" }}>
-                        {group.tag || "—"}
-                      </span>
-                    </span>
-                    <span style={{ width: 80, color: "var(--muted)" }}>{group.grade_name || "—"}</span>
-                    <span style={{ width: 80, textAlign: "center", fontWeight: 500 }}>{group.member_count}</span>
-                    <span style={{ width: 80, textAlign: "center" }}>
-                      <span className={`exam-list-badge ${group.has_results ? "exam-list-badge-closed" : "exam-list-badge-draft"}`}>
-                        {group.has_results ? "有成绩" : "无成绩"}
-                      </span>
-                    </span>
-                    <span style={{ width: 100, textAlign: "right", whiteSpace: "nowrap" }}>
-                      <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px" }}
-                        onClick={() => setGroupDeleteTarget({
-                          groupId: group.id,
-                          groupName: group.name,
-                          memberCount: group.member_count,
-                          deleteExams: false
-                        })}>删除</button>
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-        </div>
-        <div className={`main-grid grading-grid ${mode === "grading" ? "" : "hidden-panel"}`}>
-          <section className="preview-panel grading-results-panel">
-            <GradingResults result={gradingResult} onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)} />
-          </section>
-
-          <aside className="inspector">
-            <section className="panel">
-              <div className="panel-title">
-                <ClipboardCheck size={17} /> 阅卷设置
-              </div>
-              <label>
-                考试
-                <select
-                  value={gradingExamId}
-                  onChange={async (e) => {
-                    const examId = e.target.value;
-                    setGradingExamId(examId);
-                    setCardOverride(false);  // 切换考试时重置覆盖状态
-                    if (examId) {
-                      // 自动加载考试关联的答题卡
-                      const exam = exams.find((ex) => String(ex.id) === examId);
-                      if (exam?.card_id && exam.card_id !== card?.id) {
-                        await loadCard(exam.card_id);
-                      }
-                    }
-                  }}
-                >
-                  <option value="">不关联考试</option>
-                  {exams.map((exam) => (
-                    <option key={exam.id} value={String(exam.id)}>
-                      {exam.name} {exam.subject ? `(${exam.subject})` : ""}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {gradingExamId && card ? (
-                // 已选考试 → 只读展示关联答题卡，可手动覆盖
-                <div>
-                  <label style={{ marginBottom: 4 }}>关联答题卡</label>
-                  {cardOverride ? (
-                    <select
-                      value={card?.id ?? ""}
-                      onChange={(e) => { void loadCard(e.target.value); setCardOverride(false); }}
-                      disabled={isBusy}
-                    >
-                      {cards.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {item.title} / {item.id}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "var(--surface-soft)", borderRadius: 6 }}>
-                      <span style={{ fontSize: 13, flex: 1 }}>{card.title} / {card.id}</span>
-                      <button className="link-button" type="button" onClick={() => setCardOverride(true)} disabled={isBusy} style={{ fontSize: 12, padding: "2px 8px" }}>
-                        换答题卡
-                      </button>
-                    </div>
-                  )}
-                  <p className="hint" style={{ marginTop: 4 }}>答题卡已根据所选考试自动关联</p>
-                </div>
-              ) : (
-                // 未选考试 → 独立选择答题卡（裸阅卷场景）
-                <label>
-                  答题卡
-                  <select value={card?.id ?? ""} onChange={(event) => void loadCard(event.target.value)} disabled={isBusy || cards.length === 0}>
-                    <option value="" disabled>
-                      请选择答题卡
-                    </option>
-                    {cards.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.title} / {item.id}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              )}
-              <div className="split-actions">
-                <label className="upload-button">
-                  <Upload size={16} /> 导入图片
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    onChange={(event) => {
-                      addGradingFiles(event.target.files);
-                      event.currentTarget.value = "";
+        {/* C 阶段（2026-07-21）：真实 URL 路由渲染 —— 仅当前路径对应的页面挂载，
+            取代原先「全部网格常驻 + hidden-panel 切换」的范式。state/handler 仍集中在 App（经 WorkspaceProvider 下发），
+            顶栏标题 / showCardSidebar / useBlocker 由已与 URL 同步的 mode 驱动，行为不变。 */}
+        <Routes>
+          <Route
+            path="/home"
+            element={
+              <div className="main-grid home-grid">
+                <section style={{ gridColumn: "1 / -1", padding: 0 }}>
+                  <HomePage
+                    userName={user?.name ?? ""}
+                    userRole={user?.role_name ?? ""}
+                    teacherRole={user?.teacher_role ?? null}
+                    onNavigate={(m) => switchMode(m as AppMode)}
+                    onOpenNewTab={(m) => {
+                      // 经确认：首页任意模块卡片均在新标签打开（而非只对「答题卡设计」），
+                      // 配合网页化深链 / 刷新保持当前页的设计。如有回归到分模块差异化的需求，
+                      // 应在此按 m 过滤，仅 design 走新标签、其余回退 onNavigate。
+                      const path = MODE_PATH[m as AppMode] ?? "/design";
+                      window.open(window.location.origin + path, "_blank", "noopener");
                     }}
+                    onEnterExam={(id) => { switchMode("exam-manage"); setSelectedExamId(id); }}
                   />
-                </label>
-                <label className="upload-button">
-                  <FolderOpen size={16} /> 导入目录
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    {...directoryInputProps}
-                    onChange={(event) => {
-                      addGradingFiles(event.target.files);
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                </label>
+                </section>
               </div>
-              <div className="file-queue">
-                <div>
-                  <strong>{gradingFiles.length}</strong>
-                  <span>张待阅卷图片</span>
-                </div>
-                <button className="ghost-button" type="button" onClick={() => setGradingFiles([])} disabled={gradingFiles.length === 0 || isBusy}>
-                  清空
-                </button>
+            }
+          />
+          <Route path="/design/*" element={<DesignPage />} />
+          <Route path="/exam-manage" element={<ExamManagePage />} />
+          <Route
+            path="/global-settings"
+            element={
+              <div className="main-grid">
+                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+                  <GlobalSettingsPage onBack={() => { void refreshGlobalPaper(); switchMode("home"); }} />
+                </section>
               </div>
-              {gradingFiles.length > 0 && (
-                <div className="queued-files">
-                  {gradingFiles.slice(0, 8).map((file) => (
-                    <span key={`${file.name}_${file.size}_${file.lastModified}`}>{file.webkitRelativePath || file.name}</span>
-                  ))}
-                  {gradingFiles.length > 8 && <span>还有 {gradingFiles.length - 8} 张...</span>}
-                </div>
-              )}
-              <button className="primary-button wide-button" onClick={() => void gradeAnswerCardFiles()} disabled={!card || gradingFiles.length === 0 || isBusy}>
-                <ClipboardCheck size={17} /> 开始识别并判分
-              </button>
-              {gradingProgress.active && (
-                <div className="grading-progress">
-                  <div className="grading-progress-text">
-                    识别答题卡，已识别 {gradingProgress.finished}/{gradingProgress.total} 张
-                  </div>
-                  <div className="grading-progress-track">
-                    <div
-                      className="grading-progress-fill"
-                      style={{
-                        width: `${gradingProgress.total > 0 ? Math.min(100, (gradingProgress.finished / gradingProgress.total) * 100) : 0}%`
-                      }}
+            }
+          />
+          <Route
+            path="/analysis"
+            element={
+              <div className="main-grid analysis-grid">
+                <section className="preview-panel analysis-results-panel" style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column" }}>
+                  {analysisTab === "select" && analysisGroupId == null && (
+                    <ExamSelectPage
+                      refreshKey={examListRefreshKey}
+                      onSelectExam={(examId) => { setSelectedAnalysisExamId(examId); setAnalysisTab("detail"); }}
+                      onSelectGroup={(groupId) => { setAnalysisGroupId(groupId); }}
                     />
-                  </div>
-                </div>
-              )}
-      <p className="hint">低置信题会标记待复核；学号未识别时仍保留成绩行。</p>
-            </section>
-          </aside>
-        </div>
-        <div className={`main-grid analysis-grid ${mode === "analysis" ? "" : "hidden-panel"}`}>
-          <section className="preview-panel analysis-results-panel" style={{ gridColumn: "1 / -1", display: "flex", flexDirection: "column" }}>
-
-            {/* 考试选择页 */}
-            {analysisTab === "select" && analysisGroupId == null && (
-              <ExamSelectPage
-                refreshKey={examListRefreshKey}
-                onSelectExam={(examId) => { setSelectedAnalysisExamId(examId); setAnalysisTab("detail"); }}
-                onSelectGroup={(groupId) => { setAnalysisGroupId(groupId); }}
-              />
-            )}
-
-            {/* 大考详情页 */}
-            {analysisGroupId != null && (
-              <ExamGroupDetailPage
-                groupId={analysisGroupId}
-                onBack={() => setAnalysisGroupId(null)}
-                onExport={() => setShowGroupExport(true)}
-              />
-            )}
-
-            {/* 成绩详情页 (v1.4.0) */}
-            {analysisTab === "detail" && selectedAnalysisExamId != null && analysisGroupId == null && (
-              <ScoreDetailPage
-                examId={selectedAnalysisExamId}
-                examName={exams.find((e) => e.id === selectedAnalysisExamId)?.name ?? ""}
-                subject={exams.find((e) => e.id === selectedAnalysisExamId)?.subject ?? null}
-                onBack={() => { setSelectedAnalysisExamId(null); setAnalysisTab("select"); }}
-              />
-            )}
-          </section>
-        </div>
-        <div className={`main-grid scores-grid ${mode === "scores" ? "" : "hidden-panel"}`}>
-          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-            <StudentScores />
-          </section>
-        </div>
-        <div className={`main-grid account-grid ${mode === "account" ? "" : "hidden-panel"}`}>
-          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-            <AccountManagement />
-          </section>
-        </div>
-        <div className={`main-grid sponsor-grid ${mode === "sponsor" ? "" : "hidden-panel"}`}>
-          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-            <SponsorPage onBack={() => setMode(previousModeRef.current)} />
-          </section>
-        </div>
-        <div className={`main-grid permissions-grid ${mode === "permissions" ? "" : "hidden-panel"}`}>
-          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-            <PermissionManager onBack={() => setMode(previousModeRef.current)} />
-          </section>
-        </div>
-        <div className={`main-grid guide-grid ${mode === "guide" ? "" : "hidden-panel"}`}>
-          <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-            <UserGuidePage onBack={() => setMode(previousModeRef.current)} />
-          </section>
-        </div>
+                  )}
+                  {analysisGroupId != null && (
+                    <ExamGroupDetailPage
+                      groupId={analysisGroupId}
+                      onBack={() => setAnalysisGroupId(null)}
+                      onExport={() => setShowGroupExport(true)}
+                    />
+                  )}
+                  {analysisTab === "detail" && selectedAnalysisExamId != null && analysisGroupId == null && (
+                    <ScoreDetailPage
+                      examId={selectedAnalysisExamId}
+                      examName={exams.find((e) => e.id === selectedAnalysisExamId)?.name ?? ""}
+                      subject={exams.find((e) => e.id === selectedAnalysisExamId)?.subject ?? null}
+                      onBack={() => { setSelectedAnalysisExamId(null); setAnalysisTab("select"); }}
+                    />
+                  )}
+                </section>
+              </div>
+            }
+          />
+          <Route
+            path="/scores"
+            element={
+              <div className="main-grid scores-grid">
+                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+                  <StudentScores />
+                </section>
+              </div>
+            }
+          />
+          <Route
+            path="/account"
+            element={
+              <div className="main-grid account-grid">
+                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+                  <AccountManagement />
+                </section>
+              </div>
+            }
+          />
+          <Route
+            path="/sponsor"
+            element={
+              <div className="main-grid sponsor-grid">
+                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+                  <SponsorPage onBack={() => navigate(MODE_PATH[previousModeRef.current] ?? "/home")} />
+                </section>
+              </div>
+            }
+          />
+          <Route
+            path="/permissions"
+            element={
+              <div className="main-grid permissions-grid">
+                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+                  <PermissionManager onBack={() => navigate(MODE_PATH[previousModeRef.current] ?? "/home")} />
+                </section>
+              </div>
+            }
+          />
+          <Route
+            path="/guide"
+            element={
+              <div className="main-grid guide-grid">
+                <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
+                  <UserGuidePage onBack={() => navigate(MODE_PATH[previousModeRef.current] ?? "/home")} />
+                </section>
+              </div>
+            }
+          />
+          <Route path="*" element={<Navigate to="/home" replace />} />
+        </Routes>
+        {gradingPanel && (
+          <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "var(--color-background-primary)" }}>
+            <GradePanel examId={gradingPanel.examId} blockId={gradingPanel.blockId} teacherId={user?.id ?? 0} onBack={() => setGradingPanel(null)} />
+          </div>
+        )}
         <footer className="statusbar">
           <span className="statusbar-message">{status}</span>
           <BeianFooter className="statusbar-beian" />
@@ -2247,6 +1884,7 @@ function App() {
       </section>
 
       {/* ── 移动端底部导航栏 ── */}
+      {showTabBar && (
       <nav className="bottom-nav" aria-label="主导航">
         <div className="bottom-nav-inner">
           {mobileNavItems.map((m) => (
@@ -2265,6 +1903,7 @@ function App() {
           ))}
         </div>
       </nav>
+      )}
 
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
       {paperPanelCardId && (
@@ -2333,13 +1972,13 @@ function App() {
                       {exportCheck.paperInfo.mimeType?.startsWith("image/") ? (
                         <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, overflow: "hidden", cursor: "pointer", background: "var(--surface-raised)" }}
                           onClick={() => { if (exportCheck.cardId) setPaperPreviewOpen(exportCheck.cardId); }} title="点击放大">
-                          <img src={urlWithToken(`/api/cards/${exportCheck.cardId}/paper?format=image`)} alt="原卷"
+                          <img src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper?format=image`)} alt="原卷"
                             style={{ maxWidth: "100%", maxHeight: 240, objectFit: "contain", display: "block", margin: "0 auto" }}
                             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                           <p style={{ textAlign: "center", padding: "4px 0 8px", color: "var(--muted)", fontSize: 12 }}>点击放大查看</p>
                         </div>
                       ) : exportCheck.paperInfo.mimeType === "application/pdf" ? (
-                        <iframe src={urlWithToken(`/api/cards/${exportCheck.cardId}/paper`)} style={{ width: "100%", height: 380, border: "1px solid var(--line-soft)", borderRadius: 6 }} title="原卷PDF" />
+                        <iframe src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper`)} style={{ width: "100%", height: 380, border: "1px solid var(--line-soft)", borderRadius: 6 }} title="原卷PDF" />
                       ) : (
                         <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, padding: 16, textAlign: "center", background: "var(--surface-raised)" }}>
                           <p style={{ margin: 0, fontWeight: 600 }}>{exportCheck.paperInfo.filename}</p>
@@ -2454,7 +2093,7 @@ function App() {
             </div>
             <div style={{ padding: 16, textAlign: "center", overflow: "auto" }}>
               <img
-                src={urlWithToken(`/api/cards/${paperPreviewOpen}/paper?format=image`)}
+                src={mediaUrl(`/api/cards/${paperPreviewOpen}/paper?format=image`)}
                 alt="原卷"
                 style={{ maxWidth: `${paperZoom * 100}%`, maxHeight: `${paperZoom * 75}vh`, objectFit: "contain", transition: "max-width 0.15s, max-height 0.15s" }}
               />
@@ -2634,7 +2273,30 @@ function App() {
           onClose={() => setShowGroupExport(false)}
         />
       )}
+      {blocker.state === "blocked" && (
+        <div className="modal-overlay" onClick={() => blocker.reset?.()}>
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 8px" }}>未保存的更改</h3>
+            <p style={{ margin: "0 0 16px", color: "var(--muted)" }}>
+              答题卡设计页有未保存的修改，离开将丢失。确定离开吗？
+            </p>
+            <div className="modal-footer" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button className="ghost-button" type="button" onClick={() => blocker.reset?.()}>留在此页</button>
+              <button
+                className="primary-button"
+                type="button"
+                onClick={async () => {
+                  // 与 switchMode 行为对齐：离开前先尽力落盘，避免静默丢弃
+                  // dirty 的答题卡编辑；落盘失败也不拦截 —— 用户已明确选择离开。
+                  try { await flushPendingCardSave("switch"); } catch { /* 忽略落盘失败，仍然离开 */ }
+                  blocker.proceed?.();
+                }}>离开</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
+    </WorkspaceProvider>
   );
 }
 
@@ -2767,1075 +2429,5 @@ function GradingResults({
   );
 }
 
-function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; onChange: (mutator: (block: BodyBlock) => void) => void }) {
-  const questions = objectiveQuestionNumbers(block);
-  const questionConfigs = objectiveQuestionDefinitions(block);
-  const answerKey = normalizeObjectiveAnswerKey(block);
-  const missingAnswerCount = questions.filter((questionNumber) => !answerKey[questionNumber]?.length).length;
-  const [showPerQuestion, setShowPerQuestion] = useState(false);  // v1.4.7: 默认折叠每题配置
-
-  function toggleAnswer(questionNumber: number, option: string) {
-    onChange((draft) => {
-      const objective = draft as ObjectiveBlock;
-      objective.questions = normalizeObjectiveQuestions(objective);
-      const config = objective.questions.find((item) => item.questionNumber === questionNumber);
-      const current = new Set(config?.answerKey ?? objective.answerKey?.[questionNumber] ?? []);
-      if ((config?.mode ?? objective.mode) === "single") {
-        if (config) config.answerKey = current.has(option) ? [] : [option];
-      } else {
-        if (current.has(option)) {
-          current.delete(option);
-        } else {
-          current.add(option);
-        }
-        if (config) config.answerKey = Array.from(current).sort();
-      }
-      if (config?.answerKey?.length === 0) {
-        delete config.answerKey;
-      }
-      objective.answerKey = normalizeObjectiveAnswerKey(objective);
-    });
-  }
-
-  function updateQuestionConfig(questionNumber: number, mutator: (question: NonNullable<ObjectiveBlock["questions"]>[number]) => void) {
-    onChange((draft) => {
-      const objective = draft as ObjectiveBlock;
-      objective.questions = normalizeObjectiveQuestions(objective);
-      const question = objective.questions.find((item) => item.questionNumber === questionNumber);
-      if (!question) return;
-      mutator(question);
-      if (question.mode === "single" && question.answerKey && question.answerKey.length > 1) {
-        question.answerKey = [question.answerKey[0]];
-      }
-      objective.answerKey = normalizeObjectiveAnswerKey(objective);
-      const first = objective.questions[0];
-      objective.questionStart = first?.questionNumber ?? objective.questionStart;
-      objective.questionCount = objective.questions.length;
-    });
-  }
-
-  function defaultQuestionScoringRule() {
-    return {
-      type: "per_selected_count" as const,
-      partialScores: {},
-      wrongOrExtraScore: 0
-    };
-  }
-
-  function scoringRuleFor(question: (typeof questionConfigs)[number]) {
-    return question.scoringRule ?? defaultQuestionScoringRule();
-  }
-
-  function updateScoringRule(questionNumber: number, mutator: (rule: any) => any) {
-    updateQuestionConfig(questionNumber, (draft) => {
-      const current = draft.scoringRule ?? defaultQuestionScoringRule();
-      draft.scoringRule = mutator(JSON.parse(JSON.stringify(current)));
-    });
-  }
-
-  function setScoringRuleType(questionNumber: number, type: "per_selected_count" | "by_correct_count" | "fixed_partial") {
-    updateScoringRule(questionNumber, (rule) => {
-      const common = {
-        wrongOrExtraScore: Number(rule.wrongOrExtraScore ?? 0),
-        allowWrongOptions: rule.allowWrongOptions === true
-      };
-      if (type === "fixed_partial") return { type, partialScore: 0, ...common };
-      if (type === "by_correct_count") return { type, partialScoresByCorrectCount: {}, ...common };
-      return { type, partialScores: {}, ...common };
-    });
-  }
-
-  function updateWrongOrExtraScore(questionNumber: number, value: number) {
-    updateScoringRule(questionNumber, (rule) => ({ ...rule, wrongOrExtraScore: value }));
-  }
-
-  function updateAllowWrongOptions(questionNumber: number, checked: boolean) {
-    updateScoringRule(questionNumber, (rule) => ({ ...rule, allowWrongOptions: checked }));
-  }
-
-  function updateFixedPartialScore(questionNumber: number, value: number) {
-    updateScoringRule(questionNumber, (rule) => ({ ...rule, type: "fixed_partial", partialScore: value }));
-  }
-
-  function updatePerSelectedScore(questionNumber: number, selectedCount: number, value: number) {
-    updateScoringRule(questionNumber, (rule) => ({
-      ...rule,
-      type: "per_selected_count",
-      partialScores: { ...(rule.partialScores ?? {}), [selectedCount]: value }
-    }));
-  }
-
-  function updateByCorrectCountScore(questionNumber: number, correctCount: number, selectedCount: number, value: number) {
-    updateScoringRule(questionNumber, (rule) => ({
-      ...rule,
-      type: "by_correct_count",
-      partialScoresByCorrectCount: {
-        ...(rule.partialScoresByCorrectCount ?? {}),
-        [correctCount]: {
-          ...(rule.partialScoresByCorrectCount?.[correctCount] ?? {}),
-          [selectedCount]: value
-        }
-      }
-    }));
-  }
-
-  return (
-    <>
-      <div className="panel-title">客观题机器阅卷块</div>
-      <label>
-        标题
-        <input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
-      </label>
-      <div className="answer-key-editor">
-        <div className="answer-key-title">
-          <strong>标准答案</strong>
-          <span>{missingAnswerCount === 0 ? "已全部配置" : `${missingAnswerCount} 题未配置`}</span>
-        </div>
-        <div className="answer-key-grid">
-          {questions.map((questionNumber) => (
-            <div className="answer-key-row" key={questionNumber}>
-              <span>{questionNumber}</span>
-              <div>
-                {optionLabelsForQuestion(block, questionNumber).map((option) => {
-                  const active = answerKey[questionNumber]?.includes(option) ?? false;
-                  return (
-                    <button
-                      key={option}
-                      type="button"
-                      className={active ? "active" : ""}
-                      onClick={() => toggleAnswer(questionNumber, option)}
-                      title={`第 ${questionNumber} 题 ${option} 选项`}
-                    >
-                      {option}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="two-col">
-        <label>
-          起始题号
-          <input
-            type="number"
-            min={1}
-            value={block.questionStart}
-            onChange={(event) =>
-              onChange((draft) => {
-                const objective = draft as ObjectiveBlock;
-                objective.questionStart = Number(event.target.value);
-                objective.answerKey = normalizeObjectiveAnswerKey(objective);
-              })
-            }
-          />
-        </label>
-        <label>
-          题目数
-          <input
-            type="number"
-            min={1}
-            max={120}
-            value={block.questionCount}
-            onChange={(event) =>
-              onChange((draft) => {
-                const objective = draft as ObjectiveBlock;
-                objective.questionCount = Number(event.target.value);
-                objective.answerKey = normalizeObjectiveAnswerKey(objective);
-              })
-            }
-          />
-        </label>
-      </div>
-      <div className="two-col">
-        <label>
-          选项数
-          <input
-            type="number"
-            min={2}
-            max={8}
-            value={block.optionCount}
-            onChange={(event) =>
-              onChange((draft) => {
-                const objective = draft as ObjectiveBlock;
-                objective.optionCount = Number(event.target.value);
-                // v1.4.7: 同步到逐题配置
-                objective.questions = normalizeObjectiveQuestions(objective);
-                for (const q of objective.questions) {
-                  q.optionCount = objective.optionCount;
-                }
-                objective.answerKey = normalizeObjectiveAnswerKey(objective);
-              })
-            }
-          />
-        </label>
-        <label>
-          每题分值
-          <input type="number" min={0} step={0.5} value={block.scorePerQuestion} onChange={(event) => onChange((draft) => void ((draft as ObjectiveBlock).scorePerQuestion = Number(event.target.value)))} />
-        </label>
-      </div>
-      <div className="two-col">
-        <label>
-          题型
-          <select
-            value={block.mode}
-            onChange={(event) =>
-              onChange((draft) => {
-                const objective = draft as ObjectiveBlock;
-                objective.mode = event.target.value as ObjectiveMode;
-                // v1.4.7: 同步块级题型到所有逐题配置
-                objective.questions = normalizeObjectiveQuestions(objective);
-                for (const q of objective.questions) {
-                  q.mode = objective.mode;
-                  if (objective.mode !== "multiple" && objective.mode !== "indefinite") {
-                    delete q.scoringRule;
-                  }
-                }
-                objective.answerKey = normalizeObjectiveAnswerKey(objective);
-              })
-            }
-          >
-            {Object.entries(modeLabels).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          选项排列
-          <select
-            value={block.optionLayout ?? "horizontal"}
-            onChange={(event) =>
-              onChange((draft) => {
-                (draft as ObjectiveBlock).optionLayout = event.target.value as ObjectiveOptionLayout;
-              })
-            }
-          >
-            {Object.entries(optionLayoutLabels).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <div className="two-col">
-        <label>
-          少选1项得分
-          <input
-            type="number"
-            step={0.5}
-            value={block.multipleScoring?.partialScores[1] ?? 0}
-            onChange={(event) =>
-              onChange((draft) => {
-                const objective = draft as ObjectiveBlock;
-                objective.multipleScoring ??= { partialScores: {}, wrongOrExtraScore: 0 };
-                objective.multipleScoring.partialScores[1] = Number(event.target.value);
-              })
-            }
-          />
-        </label>
-        <label>
-          多选/错选得分
-          <input
-            type="number"
-            step={0.5}
-            value={block.multipleScoring?.wrongOrExtraScore ?? 0}
-            onChange={(event) =>
-              onChange((draft) => {
-                const objective = draft as ObjectiveBlock;
-                objective.multipleScoring ??= { partialScores: {}, wrongOrExtraScore: 0 };
-                objective.multipleScoring.wrongOrExtraScore = Number(event.target.value);
-              })
-            }
-          />
-        </label>
-      </div>
-      <div style={{ marginTop: 8 }}>
-        <button className="ghost-button" type="button" onClick={() => setShowPerQuestion(!showPerQuestion)} style={{ fontSize: 12 }}>
-          {showPerQuestion ? "▲ 收起每题配置" : "▼ 展开每题配置"}
-        </button>
-      </div>
-      {showPerQuestion && (
-      <div className="answer-key-editor">
-        <div className="answer-key-title">
-          <strong>每题配置</strong>
-          <span>可混排单选、多选、不定项</span>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {questionConfigs.map((question) => (
-            <div className="question-editor" key={question.questionNumber} style={{ margin: 0 }}>
-              <div className="question-editor-title">
-                <strong>第 {question.questionNumber} 题</strong>
-              </div>
-              <div className="three-col">
-                <label>
-                  题号
-                  <input type="number" min={1} value={question.questionNumber} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.questionNumber = Number(event.target.value)))} />
-                </label>
-                <label>
-                  题型
-                  <select value={question.mode} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => { draft.mode = event.target.value as ObjectiveMode; if (draft.mode === "single") draft.scoringRule = undefined; })}>
-                    {Object.entries(modeLabels).map(([value, label]) => (<option key={value} value={value}>{label}</option>))}
-                  </select>
-                </label>
-                <label>
-                  选项数
-                  <input type="number" min={2} max={8} value={question.optionCount} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.optionCount = Number(event.target.value)))} />
-                </label>
-              </div>
-              <label>
-                分值
-                <input type="number" min={0} step={0.5} value={question.score} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.score = Number(event.target.value)))} />
-              </label>
-              {question.mode !== "single" && (
-                <>
-                  <div className="two-col">
-                    <label>
-                      少选计分方式
-                      <select
-                        value={scoringRuleFor(question).type}
-                        onChange={(event) =>
-                          setScoringRuleType(
-                            question.questionNumber,
-                            event.target.value as "per_selected_count" | "by_correct_count" | "fixed_partial"
-                          )
-                        }
-                      >
-                        <option value="per_selected_count">按选对项数给分</option>
-                        <option value="by_correct_count">按正确答案数量给分</option>
-                        <option value="fixed_partial">少选固定分</option>
-                      </select>
-                    </label>
-                    <label>
-                      错选/多选/不选得分
-                      <input
-                        type="number"
-                        step={0.5}
-                        value={(scoringRuleFor(question) as any).wrongOrExtraScore ?? 0}
-                        onChange={(event) => updateWrongOrExtraScore(question.questionNumber, Number(event.target.value))}
-                      />
-                    </label>
-                  </div>
-                  {scoringRuleFor(question).type === "fixed_partial" ? (
-                    <label>
-                      少选固定得分
-                      <input
-                        type="number"
-                        step={0.5}
-                        value={(scoringRuleFor(question) as any).partialScore ?? 0}
-                        onChange={(event) => updateFixedPartialScore(question.questionNumber, Number(event.target.value))}
-                      />
-                    </label>
-                  ) : scoringRuleFor(question).type === "by_correct_count" ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      <span style={{ fontSize: 12, color: "var(--muted)" }}>
-                        根据标准答案个数，设置少选时选对几项得几分
-                      </span>
-                      {Array.from({ length: Math.max(0, question.optionCount - 1) }, (_, index) => index + 2).map((correctCount) => (
-                        <div key={correctCount} style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 8, alignItems: "center" }}>
-                          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{correctCount} 个答案</span>
-                          <div className="three-col">
-                            {Array.from({ length: correctCount - 1 }, (_, index) => index + 1).map((selectedCount) => (
-                              <label key={selectedCount}>
-                                {selectedCount} 项对
-                                <input
-                                  type="number"
-                                  step={0.5}
-                                  value={(scoringRuleFor(question) as any).partialScoresByCorrectCount?.[correctCount]?.[selectedCount] ?? 0}
-                                  onChange={(event) =>
-                                    updateByCorrectCountScore(
-                                      question.questionNumber,
-                                      correctCount,
-                                      selectedCount,
-                                      Number(event.target.value)
-                                    )
-                                  }
-                                />
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="three-col">
-                      {Array.from({ length: Math.max(1, question.optionCount - 1) }, (_, index) => index + 1).map((selectedCount) => (
-                        <label key={selectedCount}>
-                          选对 {selectedCount} 项
-                          <input
-                            type="number"
-                            step={0.5}
-                            value={(scoringRuleFor(question) as any).partialScores?.[selectedCount] ?? 0}
-                            onChange={(event) =>
-                              updatePerSelectedScore(question.questionNumber, selectedCount, Number(event.target.value))
-                            }
-                          />
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                  <label className="check-row">
-                    <input
-                      type="checkbox"
-                      checked={(scoringRuleFor(question) as any).allowWrongOptions === true}
-                      onChange={(event) => updateAllowWrongOptions(question.questionNumber, event.target.checked)}
-                    />
-                    错选但未超过正确答案数时，只按选对项给分
-                  </label>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-      )}
-      <p className="hint">横向模式少于 15 题按行排列、15 题及以上按 5 题小组网格排列；竖向模式按高考 AB 卡式 4 题一组纵向排布，每题选项仍保持横向小组选项。超过 5 个选项的题目独占一行。</p>
-    </>
-  );
-}
-
-function SubjectiveEditor({
-  block,
-  layoutVersion,
-  onChange,
-  onUpload
-}: {
-  block: SubjectiveBlock;
-  layoutVersion: 1 | 2;
-  onChange: (mutator: (block: BodyBlock) => void) => void;
-  onUpload: (blockId: string, questionId: string, file: File) => Promise<void>;
-}) {
-  const isFillBlankBlock = subjectiveBlockKind(block) === "fill_blank";
-
-  function updateQuestion(questionId: string, mutator: (question: SubjectiveQuestion) => void) {
-    onChange((draft) => {
-      if (draft.type !== "subjective") return;
-      const question = draft.questions.find((item) => item.id === questionId);
-      if (question) mutator(question);
-    });
-  }
-
-  function updateAnswerBlankItems(questionId: string, mutator: (items: BlankItem[]) => BlankItem[]) {
-    updateQuestion(questionId, (draft) => {
-      const items = mutator(answerBlankItems(draft));
-      const first = items[0] ?? { label: "(1)", widthMm: 32, heightMm: 6 };
-      draft.blanks = {
-        ...(draft.blanks ?? { labelStyle: "arabic_parentheses" }),
-        count: items.length,
-        widthMm: first.widthMm,
-        heightMm: first.heightMm,
-        labelStyle: draft.blanks?.labelStyle ?? "arabic_parentheses",
-        items
-      };
-    });
-  }
-
-  return (
-    <>
-      <div className="panel-title">{isFillBlankBlock ? "填空题块" : "解答题块"}</div>
-      <label>
-        标题
-        <input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
-      </label>
-      {isFillBlankBlock && (
-        <>
-          <label>
-            填空题块满分
-            <input
-              type="number"
-              min={0}
-              max={60}
-              step={0.5}
-              value={block.questions[0]?.score ?? 0}
-              onChange={(event) =>
-                onChange((draft) => {
-                  if (draft.type !== "subjective") return;
-                  const scoreQuestion = draft.questions[0];
-                  if (!scoreQuestion) return;
-                  scoreQuestion.score = Number(event.target.value);
-                  scoreQuestion.style = "manual_score_grid";
-                })
-              }
-            />
-          </label>
-          {layoutVersion === 2 && (block.questions[0]?.score ?? 0) <= 0 && (
-            <p className="inline-warning">满分为 0，V2 不会生成分数填涂格。请先设置满分。</p>
-          )}
-        </>
-      )}
-      {block.questions.map((question) => (
-        <div className="question-editor" key={question.id}>
-          <div className="question-editor-title">
-            <strong>第 {question.number} 题</strong>
-            <button
-              title="删除小题"
-              onClick={() =>
-                onChange((draft) => {
-                  if (draft.type !== "subjective") return;
-                  const isScoreQuestion = isFillBlankBlock && draft.questions[0]?.id === question.id;
-                  const blockScore = draft.questions[0]?.score ?? 0;
-                  draft.questions = draft.questions.filter((item) => item.id !== question.id);
-                  if (isScoreQuestion && draft.questions[0]) {
-                    draft.questions[0].score = blockScore;
-                    draft.questions[0].style = "manual_score_grid";
-                  }
-                })
-              }
-            >
-              <Trash2 size={15} />
-            </button>
-          </div>
-          {layoutVersion === 2 && !isFillBlankBlock && question.style === "manual_score_grid" && question.score <= 0 && (
-            <p className="inline-warning">分值为 0，V2 已隐藏 0/0.5 分数格；设置正分后会自动显示。</p>
-          )}
-          <div className="two-col">
-            <label>
-              题号
-              <input value={question.number} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.number = event.target.value))} />
-            </label>
-            {isFillBlankBlock ? (
-              <label>
-                横线宽(mm)
-                <input
-                  type="number"
-                  min={8}
-                  value={question.blanks?.widthMm ?? 22}
-                  onChange={(event) =>
-                    updateQuestion(
-                      question.id,
-                      (draft) => void (draft.blanks = { ...(draft.blanks ?? { count: 1, heightMm: 6, labelStyle: "none" }), widthMm: Number(event.target.value) })
-                    )
-                  }
-                />
-              </label>
-            ) : (
-              <label>
-                分值
-                <input type="number" min={0} step={0.5} value={question.score} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.score = Number(event.target.value)))} />
-              </label>
-            )}
-          </div>
-          {isFillBlankBlock ? (
-            <div className="three-col">
-              <label>
-                空数
-                <input
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={question.blanks?.count ?? 1}
-                  onChange={(event) =>
-                    updateQuestion(
-                      question.id,
-                      (draft) => void (draft.blanks = { ...(draft.blanks ?? { widthMm: 22, heightMm: 6, labelStyle: "none" }), count: Number(event.target.value) })
-                    )
-                  }
-                />
-              </label>
-              <label>
-                横线高度(mm)
-                <input
-                  type="number"
-                  min={4}
-                  value={question.blanks?.heightMm ?? 6}
-                  onChange={(event) =>
-                    updateQuestion(
-                      question.id,
-                      (draft) => void (draft.blanks = { ...(draft.blanks ?? { count: 1, widthMm: 22, labelStyle: "none" }), heightMm: Number(event.target.value) })
-                    )
-                  }
-                />
-              </label>
-              <label>
-                序号类型
-                <select
-                  value={question.blanks?.labelStyle ?? "none"}
-                  onChange={(event) =>
-                    updateQuestion(
-                      question.id,
-                      (draft) =>
-                        void (draft.blanks = {
-                          ...(draft.blanks ?? { count: 1, widthMm: 22, heightMm: 6 }),
-                          labelStyle: event.target.value as BlankLabelStyle
-                        })
-                    )
-                  }
-                >
-                  {Object.entries(blankLabelStyleLabels).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          ) : (
-            <>
-              <label>
-                主观题样式
-                <select value={question.style} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.style = event.target.value as SubjectiveStyle))}>
-                  {Object.entries(styleLabels).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                作答区类型
-                <select
-                  value={question.kind}
-                  onChange={(event) =>
-                    updateQuestion(question.id, (draft) => {
-                      draft.kind = event.target.value as SubjectiveKind;
-                      if (draft.kind === "blank" && !draft.blanks?.items?.length) {
-                        draft.blanks = defaultAnswerBlankQuestion(numericQuestionValue(draft.number)).blanks;
-                      }
-                      if (draft.kind === "blank") {
-                        draft.style = "manual_score_grid";
-                        if (draft.score <= 0) draft.score = 12;
-                      }
-                    })
-                  }
-                >
-                  {Object.entries(kindLabels).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {layoutVersion === 2 && question.kind === "lined_answer" && question.lineGrid?.enabled ? (
-                <label>
-                  作答行数
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={answerLineCount(question)}
-                    onChange={(event) =>
-                      updateQuestion(question.id, (draft) => {
-                        const spacing = draft.lineGrid?.lineSpacingMm ?? 8;
-                        draft.minHeightMm = heightForAnswerLines(Number(event.target.value), spacing);
-                      })
-                    }
-                  />
-                </label>
-              ) : (
-                <label>
-                  最小高度(mm)
-                  <input type="number" min={24} max={220} value={question.minHeightMm} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.minHeightMm = Number(event.target.value)))} />
-                </label>
-              )}
-            </>
-          )}
-          {question.kind === "blank" && !isFillBlankBlock && (
-            <div className="blank-item-list">
-              {answerBlankItems(question).map((item, blankIndex) => (
-                <div className="blank-item-row" key={blankIndex}>
-                  <label>
-                    小题号
-                    <input
-                      value={item.label ?? ""}
-                      onChange={(event) =>
-                        updateAnswerBlankItems(question.id, (items) =>
-                          items.map((current, index) => (index === blankIndex ? { ...current, label: event.target.value } : current))
-                        )
-                      }
-                    />
-                  </label>
-                  <label>
-                    宽(mm)
-                    <input
-                      type="number"
-                      min={8}
-                      value={item.widthMm}
-                      onChange={(event) =>
-                        updateAnswerBlankItems(question.id, (items) =>
-                          items.map((current, index) => (index === blankIndex ? { ...current, widthMm: Number(event.target.value) } : current))
-                        )
-                      }
-                    />
-                  </label>
-                  <label>
-                    高(mm)
-                    <input
-                      type="number"
-                      min={4}
-                      value={item.heightMm}
-                      onChange={(event) =>
-                        updateAnswerBlankItems(question.id, (items) =>
-                          items.map((current, index) => (index === blankIndex ? { ...current, heightMm: Number(event.target.value) } : current))
-                        )
-                      }
-                    />
-                  </label>
-                  <button
-                    title="删除这个空"
-                    onClick={() => updateAnswerBlankItems(question.id, (items) => (items.length > 1 ? items.filter((_, index) => index !== blankIndex) : items))}
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              ))}
-              <button
-                className="ghost-button"
-                onClick={() =>
-                  updateAnswerBlankItems(question.id, (items) => [
-                    ...items,
-                    {
-                      label: `(${items.length + 1})`,
-                      widthMm: items[items.length - 1]?.widthMm ?? 32,
-                      heightMm: items[items.length - 1]?.heightMm ?? 6
-                    }
-                  ])
-                }
-              >
-                <Plus size={16} /> 添加空
-              </button>
-            </div>
-          )}
-          {!isFillBlankBlock && (
-            <>
-              <label className="check-row">
-                <input
-                  type="checkbox"
-                  checked={question.lineGrid?.enabled ?? false}
-                  onChange={(event) => updateQuestion(question.id, (draft) => void (draft.lineGrid = { ...(draft.lineGrid ?? { lineSpacingMm: 8 }), enabled: event.target.checked }))}
-                />
-                使用横线格
-              </label>
-              <label>
-                横线间距(mm)
-                <input
-                  type="number"
-                  min={5}
-                  max={16}
-                  value={question.lineGrid?.lineSpacingMm ?? 8}
-                  onChange={(event) =>
-                    updateQuestion(question.id, (draft) => {
-                      const lines = layoutVersion === 2 && draft.kind === "lined_answer" ? answerLineCount(draft) : null;
-                      const spacing = Number(event.target.value);
-                      draft.lineGrid = { ...(draft.lineGrid ?? { enabled: true }), lineSpacingMm: spacing };
-                      if (lines !== null) draft.minHeightMm = heightForAnswerLines(lines, spacing);
-                    })
-                  }
-                />
-              </label>
-              <label className="upload-button">
-                <ImagePlus size={16} /> 插入图片
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) void onUpload(block.id, question.id, file);
-                    event.currentTarget.value = "";
-                  }}
-                />
-              </label>
-              {(question.images ?? []).map((image, index) => (
-                <div className="image-row" key={`${image.assetId}_${index}`}>
-                  <span>{image.originalName ?? image.assetId}</span>
-                  <input type="number" min={10} value={image.widthMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))} />
-                  <input type="number" min={10} value={image.heightMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))} />
-                </div>
-              ))}
-            </>
-          )}
-        </div>
-      ))}
-      {isFillBlankBlock && (
-        <button
-          className="ghost-button"
-          onClick={() =>
-            onChange((draft) => {
-              if (draft.type !== "subjective") return;
-              const next = Math.max(0, ...draft.questions.map((item) => numericQuestionValue(item.number))) + 1;
-              draft.questions.push(defaultBlankQuestion(next));
-            })
-          }
-        >
-          <Plus size={16} /> 添加填空题
-        </button>
-      )}
-    </>
-  );
-}
-
-function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocument }) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const toolbarRef = useRef<HTMLDivElement>(null);
-  const [viewport, setViewport] = useState({ width: 760, height: 560 });
-  const [{ mode, customPercent }, setPreviewSettings] = useState<{ mode: PreviewMode; customPercent: number }>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(PREVIEW_SETTINGS_KEY) ?? "null") as { mode?: string; customPercent?: number } | null;
-      const validModes: PreviewMode[] = ["fit-width", "fit-page", "fit-panel", "custom"];
-      const savedMode = validModes.includes(saved?.mode as PreviewMode) ? saved?.mode as PreviewMode : "fit-width";
-      const savedPercent = Number(saved?.customPercent);
-      return {
-        mode: savedMode,
-        customPercent: Number.isFinite(savedPercent)
-          ? Math.max(PREVIEW_MIN_PERCENT, Math.min(PREVIEW_MAX_PERCENT, savedPercent))
-          : 100
-      };
-    } catch {
-      return { mode: "fit-width", customPercent: 100 };
-    }
-  });
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(PREVIEW_SETTINGS_KEY, JSON.stringify({ mode, customPercent }));
-    } catch {}
-  }, [mode, customPercent]);
-
-  useEffect(() => {
-    const root = rootRef.current;
-    const parent = root?.parentElement;
-    if (!root || !parent) return;
-    const measure = () => {
-      const style = getComputedStyle(parent);
-      const verticalPadding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
-      setViewport({
-        width: Math.max(1, root.clientWidth),
-        height: Math.max(1, parent.clientHeight - verticalPadding - (toolbarRef.current?.offsetHeight ?? 0) - 16)
-      });
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(parent);
-    observer.observe(root);
-    return () => observer.disconnect();
-  }, []);
-
-  const firstPage = layout.pages[0];
-  const paperRatio = firstPage ? firstPage.width / firstPage.height : 1;
-  const panelRatio = firstPage?.panels[0]?.rect.width
-    ? firstPage.width / firstPage.panels[0].rect.width
-    : 1;
-  const fitPagePercent = Math.max(
-    PREVIEW_MIN_PERCENT,
-    Math.min(100, viewport.height * paperRatio / viewport.width * 100)
-  );
-  const effectivePercent = Math.max(
-    PREVIEW_MIN_PERCENT,
-    Math.min(
-      PREVIEW_MAX_PERCENT,
-      mode === "fit-page"
-        ? fitPagePercent
-        : mode === "fit-panel"
-          ? panelRatio * 100
-          : mode === "custom"
-            ? customPercent
-            : 100
-    )
-  );
-  const pageWidth = viewport.width * effectivePercent / 100;
-
-  const changeZoom = (delta: number) => {
-    const next = Math.max(PREVIEW_MIN_PERCENT, Math.min(PREVIEW_MAX_PERCENT, Math.round(effectivePercent / 10) * 10 + delta));
-    setPreviewSettings({ mode: "custom", customPercent: next });
-  };
-
-  return (
-    <div className="preview-shell" ref={rootRef}>
-      <div className="preview-toolbar" ref={toolbarRef} aria-label="预览缩放工具栏">
-        <button type="button" className={mode === "fit-width" ? "active" : ""} onClick={() => setPreviewSettings({ mode: "fit-width", customPercent })}>适合宽度</button>
-        <button type="button" className={mode === "fit-page" ? "active" : ""} onClick={() => setPreviewSettings({ mode: "fit-page", customPercent })}>适合页面</button>
-        <button type="button" className={mode === "fit-panel" ? "active" : ""} onClick={() => setPreviewSettings({ mode: "fit-panel", customPercent })}>适合单版</button>
-        <span className="preview-toolbar-separator" />
-        <button type="button" aria-label="缩小预览" onClick={() => changeZoom(-10)} disabled={effectivePercent <= PREVIEW_MIN_PERCENT}>−</button>
-        <output aria-label="当前缩放比例">{Math.round(effectivePercent)}%</output>
-        <button type="button" aria-label="放大预览" onClick={() => changeZoom(10)} disabled={effectivePercent >= PREVIEW_MAX_PERCENT}>＋</button>
-      </div>
-      <div className="pages">
-        {layout.pages.map((page) => (
-          <svg
-            className="page"
-            key={page.pageNumber}
-            viewBox={`0 0 ${page.width} ${page.height}`}
-            style={{ aspectRatio: `${page.width} / ${page.height}`, width: `${pageWidth}px` }}
-            role="img"
-            aria-label={`第${page.pageNumber}页预览`}
-          >
-            <rect x="0" y="0" width={page.width} height={page.height} style={{ fill: "#fff" }} />
-            {page.markers.map((marker) => (
-              <rect key={marker.role} {...marker.rect} fill="#20342f" />
-            ))}
-            <text x={page.header.idTextX} y={page.header.idTextY} className="svg-small">
-              ID:{page.header.id}
-            </text>
-            {page.header.codeBoxes.map((box, index) => (
-              <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" style={index !== 0 && index !== page.header.codeBoxes.length - 1 ? { fill: "#fff" } : undefined} />
-            ))}
-            {page.header.title && (
-              <text x={page.header.titleX} y={page.header.titleY} textAnchor="middle" className="svg-title">
-                {page.header.title}
-              </text>
-            )}
-            {page.studentArea && <StudentAreaSvg area={page.studentArea} />}
-            {page.blocks.map((block, index) =>
-              block.type === "objective" ? <ObjectiveSvg block={block} key={`${block.blockId}_${index}`} /> : <SubjectiveSvg card={card} block={block} key={`${block.blockId}_${index}`} />
-            )}
-            <text x={page.width / 2} y={page.height - 13} textAnchor="middle" className="svg-footer">
-              第{page.pageNumber}页/共{layout.pages.length}页
-            </text>
-          </svg>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][number]["studentArea"]> }) {
-  const rowCount = Math.max(...area.digitCells.map((cell) => cell.digitIndex)) + 1;
-  const separatorX = area.digitRect.x + 8.5;
-  return (
-    <g>
-      <rect {...area.infoRect} fill="none" stroke="#333" strokeWidth="0.25" />
-      <rect {...area.digitRect} fill="none" stroke="#333" strokeWidth="0.25" />
-      <text x={area.digitRect.x + area.digitRect.width / 2} y={area.digitRect.y + 5.2} textAnchor="middle" className="svg-label">
-        填涂号区
-      </text>
-      <text x={area.infoRect.x + 5} y={area.infoRect.y + 13.5} className="svg-label">
-        姓名：
-      </text>
-      <line x1={area.infoRect.x + 18} y1={area.infoRect.y + 14.5} x2={area.infoRect.x + area.infoRect.width - 9} y2={area.infoRect.y + 14.5} stroke="#333" strokeWidth="0.25" />
-      <text x={area.infoRect.x + 5} y={area.infoRect.y + 25.5} className="svg-label">
-        班级：
-      </text>
-      <line x1={area.infoRect.x + 18} y1={area.infoRect.y + 26.5} x2={area.infoRect.x + area.infoRect.width - 9} y2={area.infoRect.y + 26.5} stroke="#333" strokeWidth="0.25" />
-      {Array.from({ length: rowCount }).map((_, row) => (
-        <line key={row} x1={area.digitRect.x} y1={area.digitRect.y + 7 + row * 4.8} x2={area.digitRect.x + area.digitRect.width} y2={area.digitRect.y + 7 + row * 4.8} stroke="#999" strokeWidth="0.15" />
-      ))}
-      <line x1={separatorX} y1={area.digitRect.y + 7} x2={separatorX} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
-      {area.digitCells.map((cell) => (
-        <g key={`${cell.digitIndex}_${cell.digit}`}>
-          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
-          <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
-            {cell.digit}
-          </text>
-        </g>
-      ))}
-    </g>
-  );
-}
-
-function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "objective" }> }) {
-  return (
-    <g>
-      <text x={block.rect.x} y={block.rect.y + 4.4} className="svg-section">
-        {block.title}
-      </text>
-      <rect {...block.frameRect} fill="none" stroke="#222" strokeWidth="0.25" />
-      {block.rowMarkers.map((marker) => (
-        <g key={marker.row}>
-          <rect {...marker.left} fill="#20342f" />
-          <rect {...marker.right} fill="#20342f" />
-        </g>
-      ))}
-      {block.items.map((item) => (
-        <g key={item.questionNumber}>
-          <text x={item.labelX - 2.5} y={(item.options[0]?.rect.y ?? item.labelY) + (item.options[0]?.rect.height ?? 0) / 2} textAnchor="middle" dominantBaseline="central" className="svg-option-label">
-            {item.questionNumber}
-          </text>
-          {item.options.map((option) => (
-            <g key={option.label}>
-              <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
-              <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2} textAnchor="middle" dominantBaseline="central" className="svg-option-label">
-                {option.label}
-              </text>
-            </g>
-          ))}
-        </g>
-      ))}
-    </g>
-  );
-}
-
-function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extract<PageRenderBlock, { type: "subjective" }> }) {
-  const isV2 = card.layoutVersion === 2;
-  return (
-    <g>
-      {block.title && (
-        <text x={block.rect.x} y={block.rect.y + 4.4} className="svg-section">
-          {block.title}
-        </text>
-      )}
-      {block.frameRect && <rect {...block.frameRect} fill="none" stroke="#222" strokeWidth="0.25" />}
-      {block.questions.map((question) => (
-        <g key={question.questionId}>
-          {!block.frameRect && <rect {...question.rect} fill="none" stroke="#222" strokeWidth="0.25" />}
-          {question.style === "manual_score_grid" && (!isV2 || question.scoreCells.length > 0) && (
-            <>
-              {block.frameRect && question.kind === "blank" && question.scoreCells.length > 0 ? (
-                <>
-                  <text x={block.frameRect.x + 4} y={question.scoreCells[0].rect.y + (isV2 ? 3 : 4.2)} className="svg-tiny">
-                    得分
-                  </text>
-                  <line
-                    x1={block.frameRect.x}
-                    y1={isV2 ? block.frameRect.y + 6 : question.scoreCells[0].rect.y + question.scoreCells[0].rect.height + 2}
-                    x2={block.frameRect.x + block.frameRect.width}
-                    y2={isV2 ? block.frameRect.y + 6 : question.scoreCells[0].rect.y + question.scoreCells[0].rect.height + 2}
-                    stroke="#777"
-                    strokeWidth="0.2"
-                  />
-                </>
-              ) : (
-                <line x1={question.rect.x} y1={question.contentRect.y} x2={question.rect.x + question.rect.width} y2={question.contentRect.y} stroke="#777" strokeWidth="0.2" />
-              )}
-              {question.scoreCells.map((cell) => (
-                <g key={cell.score}>
-                  <rect {...cell.rect} fill="#fff" stroke="#222" strokeWidth="0.2" style={{ fill: "#fff" }} />
-                  {cell.score !== null && (
-                    <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + (isV2 ? 3 : 4.2)} textAnchor="middle" className="svg-tiny">
-                      {cell.score}
-                    </text>
-                  )}
-                </g>
-              ))}
-            </>
-          )}
-          {question.kind === "blank" ? (
-            <text x={question.contentRect.x + 3} y={question.contentRect.y + 7.2} className="svg-tiny">
-              {question.questionNumber}
-            </text>
-          ) : (
-            <text x={question.rect.x + 2} y={isV2 ? question.rect.y + 4.3 : question.contentRect.y + 6} className="svg-tiny">
-              {question.questionNumber}.（{question.score}分）
-            </text>
-          )}
-          {question.lineYs.map((lineY) => (
-            <line key={lineY} x1={question.contentRect.x + 8} y1={lineY} x2={question.contentRect.x + question.contentRect.width - 6} y2={lineY} stroke="#888" strokeWidth="0.2" />
-          ))}
-          {question.blanks.map((blank, index) => {
-            const blankLabel = question.blankLabels?.[index] ?? (question.kind === "blank" ? formatBlankLabel(question.blankLabelStyle, index) : `${question.questionNumber}.${index + 1}`);
-            return (
-              <g key={index}>
-                {blankLabel && (
-                  <text x={blank.x - 0.8} y={blank.y + blank.height} textAnchor="end" dominantBaseline="middle" className="svg-blank-label">
-                    {blankLabel}
-                  </text>
-                )}
-                <line x1={blank.x} y1={blank.y + blank.height} x2={blank.x + blank.width} y2={blank.y + blank.height} stroke="#333" strokeWidth="0.25" />
-              </g>
-            );
-          })}
-          {question.images.map((image) => (
-            <g key={image.assetId}>
-              <image href={apiUrl(`/assets/${card.id}/${image.assetId}`)} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
-              <rect {...image.rect} fill="none" stroke="#666" strokeWidth="0.18" />
-            </g>
-          ))}
-        </g>
-      ))}
-    </g>
-  );
-}
 
 export default App;

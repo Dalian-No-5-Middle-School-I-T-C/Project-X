@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS users (
     email            VARCHAR(255),
     phone            VARCHAR(50),
     teacher_role     VARCHAR(50),
+    password_change_required TINYINT DEFAULT 0,
     require_original_paper TINYINT DEFAULT 1,  -- v1.8.0
     highlight_missing_paper TINYINT DEFAULT 1, -- v1.8.0
     is_active        TINYINT DEFAULT 1,
@@ -201,6 +202,9 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     blanks_height_mm DOUBLE,
     blanks_label_style VARCHAR(50),
     blanks_items_json TEXT,
+    line_grid_json   TEXT,
+    essay_grid_json  TEXT,
+    score_grid_json  TEXT,
     sort_order       INT DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (block_id) REFERENCES subjective_blocks(id) ON DELETE CASCADE
@@ -330,6 +334,9 @@ CREATE TABLE IF NOT EXISTS scan_batches (
     name        VARCHAR(255),
     status      VARCHAR(20) DEFAULT 'pending',
     file_count  INT DEFAULT 0,
+    success_count INT DEFAULT 0,
+    failure_count INT DEFAULT 0,
+    error_summary LONGTEXT,
     created_by  INT,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     finished_at DATETIME,

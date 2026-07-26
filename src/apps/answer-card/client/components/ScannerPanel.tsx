@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Camera, Play, Square, RefreshCw, AlertTriangle, Check, Loader, Eye, Upload, Database } from "lucide-react";
-import { authFetch, urlWithToken } from "../auth/api";
+import { authFetch, mediaUrl, urlWithToken } from "../auth/api";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 import { ScanPreviewModal } from "./ScanPreviewModal";
 import type { AnswerCard } from "../../../../shared/types";
@@ -345,7 +345,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }
 
   function imageUrl(recordId: string): string {
-    return urlWithToken(`/api/scanner/scan-image/${recordId}`);
+    return mediaUrl(`/api/scanner/scan-image/${recordId}`);
   }
 
   return (
@@ -478,7 +478,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
           {/* 上传状态指示 */}
           {uploadState && (
-            <div style={{ fontSize: 12, padding: "6px 8px", borderRadius: 4, marginTop: 4, background: uploadState === "done" ? "#e8f5e9" : uploadState === "error" ? "#ffebee" : "#e3f2fd", color: uploadState === "done" ? "#2E7D32" : uploadState === "error" ? "var(--brand)" : "#1565C0" }}>
+            <div style={{ fontSize: 12, padding: "6px 8px", borderRadius: 4, marginTop: 4, background: uploadState === "done" ? "#e8f5e9" : uploadState === "error" ? "#ffebee" : "#e3f2fd", color: uploadState === "done" ? "var(--success)" : uploadState === "error" ? "var(--brand)" : "#1565C0" }}>
               {uploadState === "uploading" && <><Loader size={12} className="spinning" style={{ marginRight: 4 }} /> {uploadMsg}</>}
               {uploadState === "done" && <><Check size={12} style={{ marginRight: 4 }} /> {uploadMsg}</>}
               {uploadState === "error" && <><AlertTriangle size={12} style={{ marginRight: 4 }} /> {uploadMsg}</>}

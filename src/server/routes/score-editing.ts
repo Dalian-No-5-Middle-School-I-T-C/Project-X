@@ -206,11 +206,24 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
     return;
   }
 
-  const updates = req.body?.scores as Array<{ questionNumber: number; scoreType: string; score: number }> | undefined;
-  if (!updates || !Array.isArray(updates) || updates.length === 0) {
+  const updatesRaw = req.body?.scores;
+  if (!Array.isArray(updatesRaw) || updatesRaw.length === 0) {
     res.status(400).json({ message: "未提供分数修改数据" });
     return;
   }
+  // 逐元素校验，防止非法数据进入 SQL / 计分计算
+  for (const u of updatesRaw) {
+    if (
+      !u || typeof u !== "object" ||
+      typeof u.questionNumber !== "number" || !Number.isFinite(u.questionNumber) ||
+      typeof u.scoreType !== "string" || u.scoreType.length === 0 ||
+      typeof u.score !== "number" || !Number.isFinite(u.score)
+    ) {
+      res.status(400).json({ message: "分数修改数据格式非法" });
+      return;
+    }
+  }
+  const updates = updatesRaw as Array<{ questionNumber: number; scoreType: string; score: number }>;
 
   const db = getMysqlDb();
   const userId = req.user!.id;
@@ -227,10 +240,12 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
       ) as { id: number; score: number; max_score: number } | undefined;
 
       if (existing) {
+        // P1-7: 分数未变时不标记 manually_modified
+        const scoreChanged = existing.score !== u.score;
         await tx.run(
-          `UPDATE question_scores SET score = ?, manually_modified = 1, modified_by = ?, modified_at = ?
+          `UPDATE question_scores SET score = ?, manually_modified = ?, modified_by = ?, modified_at = ?
            WHERE exam_id = ? AND student_id = ? AND question_number = ? AND score_type = ?`,
-          u.score, userId, now, examId, studentId, u.questionNumber, u.scoreType
+          u.score, scoreChanged ? 1 : 0, userId, now, examId, studentId, u.questionNumber, u.scoreType
         );
         await tx.run(
           `INSERT INTO answer_overrides (exam_id, card_id, question_number, score_type, override_type, old_value, new_value, created_by, created_at)
@@ -260,9 +275,11 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
         manually_modified = 1, modified_by = ?, modified_at = ?
       WHERE exam_id = ? AND student_id = ?
     `, totalObjective, totalSubjective, newTotal, userId, now, examId, studentId);
+
+    // P1-8: 排名重算在事务内执行，确保数据一致性
+    await recomputeExamRankings(tx, examId);
   });
 
-  await recomputeExamRankings(db, examId);
   res.json({ ok: true });
 });
 
@@ -314,11 +331,28 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
     return;
   }
 
-  const answerUpdates = req.body?.answers as Record<string, string[]> | undefined;
-  if (!answerUpdates || Object.keys(answerUpdates).length === 0) {
+  const answerUpdatesRaw = req.body?.answers;
+  if (!answerUpdatesRaw || typeof answerUpdatesRaw !== "object" || Array.isArray(answerUpdatesRaw)) {
     res.status(400).json({ message: "未提供答案修改数据" });
     return;
   }
+  const answerEntries = Object.entries(answerUpdatesRaw);
+  if (answerEntries.length === 0) {
+    res.status(400).json({ message: "未提供答案修改数据" });
+    return;
+  }
+  // 校验题号键为数字、值为字符串数组，防止非法键/值进入答案重写
+  for (const [key, val] of answerEntries) {
+    if (!/^\d+$/.test(key)) {
+      res.status(400).json({ message: `题号非法: ${key}` });
+      return;
+    }
+    if (!Array.isArray(val) || !val.every((x: unknown) => typeof x === "string")) {
+      res.status(400).json({ message: `题号 ${key} 的答案必须是字符串数组` });
+      return;
+    }
+  }
+  const answerUpdates = answerUpdatesRaw as Record<string, string[]>;
 
   const db = getMysqlDb();
   const userId = req.user!.id;
@@ -379,6 +413,7 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
     }
 
     for (const { student_id: studentId } of students) {
+      // ... (same recognition processing)
       const recognitionRows = await tx.all(`
         SELECT orr.question_number, orr.selected_options, orr.confidence
         FROM objective_recognitions orr
@@ -435,9 +470,11 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
 
       updatedCount++;
     }
+
+    // P1-8: 排名重算在事务内执行
+    await recomputeExamRankings(tx, examId);
   });
 
-  await recomputeExamRankings(db, examId);
   res.json({ ok: true, updatedCount, modifiedAnswers: Object.keys(answerUpdates).length });
 });
 
