@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Camera, Play, Square, RefreshCw, AlertTriangle, Check, Loader, Eye, Upload, Database } from "lucide-react";
-import { authFetch, mediaUrl, urlWithToken } from "../auth/api";
+import { authFetch, mediaUrl, remoteScannerFetch, urlWithToken } from "../auth/api";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 import { ScanPreviewModal } from "./ScanPreviewModal";
 import type { AnswerCard } from "../../../../shared/types";
@@ -234,7 +234,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
     try {
       // Step 1: 创建远程扫描会话
-      const createRes = await authFetch("/api/scanner/upload/sessions", {
+      const createRes = await remoteScannerFetch("/api/scanner/upload/sessions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -243,7 +243,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           dpi, paperSize, pageCount: currentPages.length,
         }),
       });
-      if (!createRes.ok) throw new Error("创建远程会话失败");
+      if (!createRes.ok) {
+        const body = await createRes.json().catch(() => null) as { message?: string } | null;
+        throw new Error(body?.message || `创建远程会话失败（HTTP ${createRes.status}）`);
+      }
       const { sessionId: remoteSessionId, uploadTokens } = await createRes.json() as { sessionId: string; uploadTokens: string[] };
 
       // Step 2: 逐页上传图片
@@ -263,17 +266,22 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         form.append("pageNum", String(page.pageNum));
         form.append("side", page.side);
 
-        const uploadRes = await authFetch(`/api/scanner/upload/sessions/${remoteSessionId}/pages`, {
+        const uploadRes = await remoteScannerFetch(`/api/scanner/upload/sessions/${remoteSessionId}/pages`, {
           method: "POST",
           body: form,
         });
         if (!uploadRes.ok) {
-          console.error(`Page ${page.pageNum} upload failed`);
+          const body = await uploadRes.json().catch(() => null) as { message?: string } | null;
+          throw new Error(body?.message || `第 ${page.pageNum} 页上传失败（HTTP ${uploadRes.status}）`);
         }
       }
 
       // Step 3: 标记完成
-      await authFetch(`/api/scanner/upload/sessions/${remoteSessionId}/complete`, { method: "POST" });
+      const completeRes = await remoteScannerFetch(`/api/scanner/upload/sessions/${remoteSessionId}/complete`, { method: "POST" });
+      if (!completeRes.ok) {
+        const body = await completeRes.json().catch(() => null) as { message?: string } | null;
+        throw new Error(body?.message || `提交扫描会话失败（HTTP ${completeRes.status}）`);
+      }
 
       setUploadState("done");
       setUploadMsg(`上传完成！${currentPages.length} 页已提交到服务器`);

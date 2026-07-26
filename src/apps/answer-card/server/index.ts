@@ -17,6 +17,7 @@ import { AssignedScoreService } from "../../../server/services/AssignedScoreServ
 import type { AssignedFormula } from "../../../shared/types";
 import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
 import { isAuthEnforced } from "../../../server/lib/authEnforce";
+import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -453,6 +454,7 @@ function scannerEnabled(): boolean {
 
 export async function createApp(): Promise<express.Express> {
   const app = express();
+  const scannerClientApiEnabled = isScannerClientApiEnabled();
 
   console.log("[Server] 正在初始化数据库...");
   initializeDatabase();
@@ -501,7 +503,7 @@ export async function createApp(): Promise<express.Express> {
     .split(",").map(s => s.trim()).filter(Boolean);
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (origin && allowedOrigins.includes(origin)) {
+    if (origin && (allowedOrigins.includes(origin) || isScannerClientOrigin(origin))) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
     }
@@ -515,7 +517,14 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/app/health", async (_req, res) => {
     const db = await healthCheck();
-    res.status(db.ok ? 200 : 503).json({ ok: db.ok, db });
+    res.status(db.ok ? 200 : 503).json({
+      ok: db.ok,
+      db,
+      capabilities: {
+        scannerClientApi: scannerClientApiEnabled,
+        nativeScannerApi: scannerEnabled()
+      }
+    });
   });
 
   // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
@@ -638,7 +647,16 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/db", backupRoutes);
   app.use("/api/admin/api-keys", apiKeysRoutes);
   app.use("/api/admin/permissions", adminPermissionsRoutes);
-  app.use("/api/scanner/upload", scannerUploadRoutes);
+  if (scannerClientApiEnabled) {
+    app.use("/api/scanner/upload", scannerUploadRoutes);
+  } else {
+    app.use("/api/scanner/upload", (_req, res) => {
+      res.status(404).json({
+        code: "SCANNER_CLIENT_API_DISABLED",
+        message: "Remote scanner client API is disabled on this server."
+      });
+    });
+  }
   app.use("/api/ai/providers", aiProviderRoutes);
   app.use("/api/ladder", ladderRoutes);
 
