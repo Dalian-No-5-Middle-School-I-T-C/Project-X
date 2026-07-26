@@ -98,7 +98,14 @@ router.post(
       }
 
       const rawStatus = typeof req.body?.status === "string" ? req.body.status.trim() : "";
-      const status = rawStatus === "draft" || rawStatus === "submitted" ? rawStatus : undefined;
+      let status: string | undefined;
+      if (rawStatus === "") {
+        status = undefined; // 未提供 → 服务层回退 "reviewed"（保持向后兼容）
+      } else if (rawStatus === "draft" || rawStatus === "submitted") {
+        status = rawStatus;
+      } else {
+        throw new ReviewValidationError(`非法的 status 值: ${rawStatus}`);
+      }
       const result = await submitReviewCropScores({
         examId,
         cropId,

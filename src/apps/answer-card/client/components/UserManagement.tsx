@@ -148,9 +148,13 @@ export function UserManagement() {
     try {
       const res = await fetchJson<{ message: string; initialPassword?: string }>(`/api/users/${user.id}/reset-password`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
       if (res.initialPassword) {
-        // 显示可复制的随机密码
-        await navigator.clipboard.writeText(res.initialPassword);
-        setError(`已重置 ${user.name} 的密码，新密码「${res.initialPassword}」已复制到剪贴板`);
+        // 先展示新密码，再独立尝试复制到剪贴板（复制失败不影响“重置成功”结论，密码已展示）
+        setError(`已重置 ${user.name} 的密码，新密码为「${res.initialPassword}」（请妥善记录）`);
+        try {
+          await navigator.clipboard.writeText(res.initialPassword);
+        } catch {
+          // 剪贴板不可用（非安全上下文/未授权）时忽略，密码已展示在提示中
+        }
       } else {
         setError(`已重置 ${user.name} 的密码`);
       }
