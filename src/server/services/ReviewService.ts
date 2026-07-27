@@ -245,6 +245,7 @@ export async function submitReviewCropScores(params: {
 
   const config = await getBlockConfig(params.examId, crop.block_id ?? "", blockType, maxBlockScore, db);
   const reviewMode = config.reviewMode;
+  const scoringMode: ScoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";
 
   // 入参校验：逐条检查 scores 的结构和数值合法性
   const seenQuestions = new Set<number>();
@@ -261,12 +262,15 @@ export async function submitReviewCropScores(params: {
     if (max == null || max <= 0) {
       throw new ReviewValidationError(`题号 ${qNum} 不在答题卡题目范围内`);
     }
-    const score = Number(item.score);
-    if (!Number.isFinite(score)) {
-      throw new ReviewValidationError(`题号 ${qNum} 的分数不是有效数字`);
-    }
-    if (score < 0 || score > max) {
-      throw new ReviewValidationError(`题号 ${qNum} 的分数 ${score} 超出有效范围 [0, ${max}]`);
+    // 逐题模式：校验逐题 score 的有限值和范围；题块总分模式由 blockTotalScore 统一校验
+    if (scoringMode === "per_question") {
+      const score = Number(item.score);
+      if (!Number.isFinite(score)) {
+        throw new ReviewValidationError(`题号 ${qNum} 的分数不是有效数字`);
+      }
+      if (score < 0 || score > max) {
+        throw new ReviewValidationError(`题号 ${qNum} 的分数 ${score} 超出有效范围 [0, ${max}]`);
+      }
     }
   }
 
@@ -283,8 +287,6 @@ export async function submitReviewCropScores(params: {
   // 优先采用题块总分：前端只提交一个合计分，后端按比例拆分到各小题并写入正确的逐题满分。
   // 未提交题块总分时（如 OnlineReviewPanel 逐题输入），按逐题校验的严格模式处理。
   const step = config.hasHalfPoint ? 0.5 : 1;
-  // 评分模式 / 拆分策略以题块配置为准（修复 scoringMode 配置失效的冲突）
-  const scoringMode: ScoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";
   const distribution = config.scoreDistribution === "equal" ? "equal" : "proportional";
   // 评分模式双向校验（PR #189 修复：原实现只校验 per_question 单方向，
   // 导致 block_total + 仅逐题分数也能通过，scoringMode 形同虚设）
