@@ -29,7 +29,7 @@ type AccessibleError = { status: number; message: string };
 /** 校验请求者是否有权访问目标学生的成绩数据 */
 async function assertStudentAccessible(
   studentId: number,
-  user: { id: number; role_name: string }
+  user: NonNullable<express.Request["user"]>
 ): Promise<AccessibleError | null> {
   if (!Number.isFinite(studentId) || studentId <= 0) return { status: 400, message: "无效的学生 ID" };
   if (user.role_name === "admin") return null;
@@ -38,16 +38,16 @@ async function assertStudentAccessible(
     return null;
   }
   if (user.role_name === "teacher") {
-    const db = getMysqlDb();
-    const row = await db.get<{ ok: number }>(
-      `SELECT 1 AS ok
-       FROM class_students cs
-       JOIN teacher_classes tc ON tc.class_id = cs.class_id AND tc.teacher_id = ?
-       WHERE cs.student_id = ?
-       LIMIT 1`,
-      user.id, studentId
-    );
-    if (!row) return { status: 403, message: "无权访问该学生：未在该生所在班级任教" };
+    // 与 getVisibleExamIds 保持一致：教师仅能访问“与目标学生共享至少一场可见考试”的学生。
+    // admin / grade_leader / 普通教师(back-compat) 经 getVisibleExamIds 返回 null（全部可见）→ 直接放行。
+    const visible = await getVisibleExamIds(user);
+    if (visible === null) return null;
+    if (visible.length === 0) return { status: 403, message: "无权访问该学生：当前无可访问的考试" };
+    const scores = await scoreRepo.getStudentScores(studentId);
+    const visibleSet = new Set(visible);
+    if (!scores.some((s) => visibleSet.has(s.exam_id))) {
+      return { status: 403, message: "无权访问该学生：未共享任何可见考试" };
+    }
     return null;
   }
   return { status: 403, message: "权限不足" };
