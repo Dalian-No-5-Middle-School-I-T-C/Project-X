@@ -142,12 +142,22 @@ export function UserManagement() {
   }
 
   async function resetPassword(user: UserListItem) {
-    const hint = user.student_number ? `（默认重置为学号 ${user.student_number}）` : "";
+    const hint = "（不填新密码则自动生成随机密码）";
     if (!confirm(`重置「${user.name}」的密码？${hint}`)) return;
     setBusy(true);
     try {
-      await fetchJson(`/api/users/${user.id}/reset-password`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      setError(`已重置 ${user.name} 的密码`);
+      const res = await fetchJson<{ message: string; initialPassword?: string }>(`/api/users/${user.id}/reset-password`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      if (res.initialPassword) {
+        // 先展示新密码，再独立尝试复制到剪贴板（复制失败不影响“重置成功”结论，密码已展示）
+        setError(`已重置 ${user.name} 的密码，新密码为「${res.initialPassword}」（请妥善记录）`);
+        try {
+          await navigator.clipboard.writeText(res.initialPassword);
+        } catch {
+          // 剪贴板不可用（非安全上下文/未授权）时忽略，密码已展示在提示中
+        }
+      } else {
+        setError(`已重置 ${user.name} 的密码`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "重置失败");
     } finally {

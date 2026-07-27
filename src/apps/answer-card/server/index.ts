@@ -518,6 +518,9 @@ export async function createApp(): Promise<express.Express> {
     }
   }
 
+  // 阅卷提交路由使用 64 KB 限制，覆盖全局 8 MB；须在全局解析器前注册
+  app.use("/api/review/exams/:examId/block-crops/:cropId/submit", express.json({ limit: "64kb" }));
+
   app.use(express.json({ limit: "8mb" }));
   // P1-2 (M-S1): CORS — 从环境变量读取允许的 origin 白名单，不再使用通配符 *
   const allowedOrigins = (process.env.PROJECTX_CORS_ORIGIN ?? "http://127.0.0.1:5173,http://localhost:5173")
@@ -534,7 +537,11 @@ export async function createApp(): Promise<express.Express> {
     if (req.method === "OPTIONS") { res.status(204).end(); return; }
     next();
   });
-  app.use("/assets", express.static(assetsDir));
+  app.use("/assets", express.static(assetsDir, {
+    setHeaders: (res, _filePath) => {
+      res.setHeader("X-Content-Type-Options", "nosniff");
+    }
+  }));
 
   app.get("/api/app/health", async (_req, res) => {
     const db = await healthCheck();
@@ -627,6 +634,12 @@ export async function createApp(): Promise<express.Express> {
     }),
     limits: { fileSize: 5 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      const allowedExts = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
+      if (!allowedExts.includes(ext)) {
+        cb(new Error("仅支持图片文件"));
+        return;
+      }
       if (file.mimetype.startsWith("image/")) {
         cb(null, true);
       } else {
@@ -751,6 +764,12 @@ export async function createApp(): Promise<express.Express> {
     }),
     limits: { fileSize: 12 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      const allowedExts = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
+      if (!allowedExts.includes(ext)) {
+        cb(new Error("仅支持图片文件"));
+        return;
+      }
       if (file.mimetype.startsWith("image/")) {
         cb(null, true);
       } else {
