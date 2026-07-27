@@ -26,31 +26,62 @@ router.use(authMiddleware);
 
 type AccessibleError = { status: number; message: string };
 
+/**
+ * 返回教师可访问的班级 ID 集合。与 getVisibleExamIds 保持同源：
+ * - admin / grade_leader / 普通教师(无 teacher_role) → null（全校可见）
+ * - head_teacher → teacher_classes 关联所有班级
+ * - subject_teacher → teacher_classes 中科目匹配的班级
+ * - 其他 → []（零可见）
+ */
+async function getAccessibleClassIds(
+  user: NonNullable<express.Request[“user”]>
+): Promise<number[] | null> {
+  if (!user || user.role_name === “admin”) return null;
+  if (user.role_name !== “teacher”) return [];
+  if (!user.teacher_role) return null; // plain teacher: back-compat 全部可见
+  if (user.teacher_role === “grade_leader”) return null;
+  const db = getMysqlDb();
+  if (user.teacher_role === “head_teacher”) {
+    const rows = await db.all<{ class_id: number }>(
+      “SELECT class_id FROM teacher_classes WHERE teacher_id = ?”, user.id
+    );
+    return rows.length > 0 ? rows.map((r) => r.class_id) : [];
+  }
+  if (user.teacher_role === “subject_teacher”) {
+    if (!user.subject) return [];
+    const rows = await db.all<{ class_id: number }>(
+      “SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)”,
+      user.id, user.subject
+    );
+    return rows.length > 0 ? rows.map((r) => r.class_id) : [];
+  }
+  return [];
+}
+
 /** 校验请求者是否有权访问目标学生的成绩数据 */
 async function assertStudentAccessible(
   studentId: number,
-  user: NonNullable<express.Request["user"]>
+  user: NonNullable<express.Request[“user”]>
 ): Promise<AccessibleError | null> {
-  if (!Number.isFinite(studentId) || studentId <= 0) return { status: 400, message: "无效的学生 ID" };
-  if (user.role_name === "admin") return null;
-  if (user.role_name === "student") {
-    if (user.id !== studentId) return { status: 403, message: "只能查询自己的成绩" };
+  if (!Number.isFinite(studentId) || studentId <= 0) return { status: 400, message: “无效的学生 ID” };
+  if (user.role_name === “admin”) return null;
+  if (user.role_name === “student”) {
+    if (user.id !== studentId) return { status: 403, message: “只能查询自己的成绩” };
     return null;
   }
-  if (user.role_name === "teacher") {
-    // 与 getVisibleExamIds 保持一致：教师仅能访问“与目标学生共享至少一场可见考试”的学生。
-    // admin / grade_leader / 普通教师(back-compat) 经 getVisibleExamIds 返回 null（全部可见）→ 直接放行。
-    const visible = await getVisibleExamIds(user);
-    if (visible === null) return null;
-    if (visible.length === 0) return { status: 403, message: "无权访问该学生：当前无可访问的考试" };
-    const scores = await scoreRepo.getStudentScores(studentId);
-    const visibleSet = new Set(visible);
-    if (!scores.some((s) => visibleSet.has(s.exam_id))) {
-      return { status: 403, message: "无权访问该学生：未共享任何可见考试" };
-    }
+  if (user.role_name === “teacher”) {
+    const classIds = await getAccessibleClassIds(user);
+    if (classIds === null) return null; // grade_leader / plain teacher → 全校可见
+    if (classIds.length === 0) return { status: 403, message: “无权访问该学生：当前无任教班级” };
+    const db = getMysqlDb();
+    const row = await db.get<{ ok: number }>(
+      `SELECT 1 AS ok FROM class_students WHERE student_id = ? AND class_id IN (${classIds.map(() => “?”).join(“,”)}) LIMIT 1`,
+      studentId, ...classIds
+    );
+    if (!row) return { status: 403, message: “无权访问该学生：未在该生所在班级任教” };
     return null;
   }
-  return { status: 403, message: "权限不足" };
+  return { status: 403, message: “权限不足” };
 }
 
 /** 解析学生的主班级 ID（用于 AI 分析上下文） */

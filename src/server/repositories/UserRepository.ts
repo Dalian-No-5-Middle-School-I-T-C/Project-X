@@ -62,7 +62,7 @@ export class UserRepository {
     const updates: string[] = [];
     const values: unknown[] = [];
     if (params.name !== undefined) { updates.push("name = ?"); values.push(params.name); }
-    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); updates.push("initial_password = ?"); values.push(params.password); }
+    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); /* initial_password 用于管理员导出/发放密码，密码变更时同步保持可追溯 */ updates.push("initial_password = ?"); values.push(params.password); }
     if (params.email !== undefined) { updates.push("email = ?"); values.push(params.email); }
     if (params.phone !== undefined) { updates.push("phone = ?"); values.push(params.phone); }
     if (params.is_active !== undefined) { updates.push("is_active = ?"); values.push(params.is_active); }
@@ -198,7 +198,7 @@ export class UserRepository {
     if (params.name !== undefined) { updates.push("name = ?"); values.push(params.name); }
     if (params.subject !== undefined) { updates.push("subject = ?"); values.push(params.subject); }
     if (params.teacher_role !== undefined) { updates.push("teacher_role = ?"); values.push(params.teacher_role); }
-    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); updates.push("initial_password = ?"); values.push(params.password); }
+    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); /* initial_password 用于管理员导出/发放密码，密码变更时同步 */ updates.push("initial_password = ?"); values.push(params.password); }
     updates.push("updated_at = CURRENT_TIMESTAMP"); values.push(id);
     await this.db.run(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`, ...values);
     return await this.findById(id);
