@@ -34,23 +34,23 @@ type AccessibleError = { status: number; message: string };
  * - 其他 → []（零可见）
  */
 async function getAccessibleClassIds(
-  user: NonNullable<express.Request[“user”]>
+  user: NonNullable<express.Request["user"]>
 ): Promise<number[] | null> {
-  if (!user || user.role_name === “admin”) return null;
-  if (user.role_name !== “teacher”) return [];
+  if (!user || user.role_name === "admin") return null;
+  if (user.role_name !== "teacher") return [];
   if (!user.teacher_role) return null; // plain teacher: back-compat 全部可见
-  if (user.teacher_role === “grade_leader”) return null;
+  if (user.teacher_role === "grade_leader") return null;
   const db = getMysqlDb();
-  if (user.teacher_role === “head_teacher”) {
+  if (user.teacher_role === "head_teacher") {
     const rows = await db.all<{ class_id: number }>(
-      “SELECT class_id FROM teacher_classes WHERE teacher_id = ?”, user.id
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ?", user.id
     );
     return rows.length > 0 ? rows.map((r) => r.class_id) : [];
   }
-  if (user.teacher_role === “subject_teacher”) {
+  if (user.teacher_role === "subject_teacher") {
     if (!user.subject) return [];
     const rows = await db.all<{ class_id: number }>(
-      “SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)”,
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
       user.id, user.subject
     );
     return rows.length > 0 ? rows.map((r) => r.class_id) : [];
@@ -61,27 +61,27 @@ async function getAccessibleClassIds(
 /** 校验请求者是否有权访问目标学生的成绩数据 */
 async function assertStudentAccessible(
   studentId: number,
-  user: NonNullable<express.Request[“user”]>
+  user: NonNullable<express.Request["user"]>
 ): Promise<AccessibleError | null> {
-  if (!Number.isFinite(studentId) || studentId <= 0) return { status: 400, message: “无效的学生 ID” };
-  if (user.role_name === “admin”) return null;
-  if (user.role_name === “student”) {
-    if (user.id !== studentId) return { status: 403, message: “只能查询自己的成绩” };
+  if (!Number.isFinite(studentId) || studentId <= 0) return { status: 400, message: "无效的学生 ID" };
+  if (user.role_name === "admin") return null;
+  if (user.role_name === "student") {
+    if (user.id !== studentId) return { status: 403, message: "只能查询自己的成绩" };
     return null;
   }
-  if (user.role_name === “teacher”) {
+  if (user.role_name === "teacher") {
     const classIds = await getAccessibleClassIds(user);
     if (classIds === null) return null; // grade_leader / plain teacher → 全校可见
-    if (classIds.length === 0) return { status: 403, message: “无权访问该学生：当前无任教班级” };
+    if (classIds.length === 0) return { status: 403, message: "无权访问该学生：当前无任教班级" };
     const db = getMysqlDb();
     const row = await db.get<{ ok: number }>(
-      `SELECT 1 AS ok FROM class_students WHERE student_id = ? AND class_id IN (${classIds.map(() => “?”).join(“,”)}) LIMIT 1`,
+      `SELECT 1 AS ok FROM class_students WHERE student_id = ? AND class_id IN (${classIds.map(() => "?").join(",")}) LIMIT 1`,
       studentId, ...classIds
     );
-    if (!row) return { status: 403, message: “无权访问该学生：未在该生所在班级任教” };
+    if (!row) return { status: 403, message: "无权访问该学生：未在该生所在班级任教" };
     return null;
   }
-  return { status: 403, message: “权限不足” };
+  return { status: 403, message: "权限不足" };
 }
 
 /** 解析学生的主班级 ID（用于 AI 分析上下文） */
