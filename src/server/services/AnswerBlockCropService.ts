@@ -6,6 +6,9 @@ import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { blockCropsDir, safeId } from "../../apps/answer-card/server/storage";
 import type { AnswerBlockCrop, AnswerBlockCropSourceType, RecognitionBlockCrop, Rect } from "../../shared/types";
+import { CardRepository } from "../repositories/CardRepository";
+import { objectiveQuestionDefinitions } from "../../shared/grading";
+import type { AnswerCard } from "../../shared/types";
 
 type CropRow = {
   id: string;
@@ -243,6 +246,20 @@ async function blockHasHalfPointMap(examId: number, db: DbAdapter): Promise<Map<
   return map;
 }
 
+function blockMaxScoreFromCard(card: AnswerCard): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const block of card.bodyBlocks) {
+    let sum = 0;
+    if (block.type === "objective") {
+      for (const def of objectiveQuestionDefinitions(block)) sum += Number(def.score ?? 0);
+    } else if (block.type === "subjective") {
+      for (const q of block.questions ?? []) sum += Number(q.score ?? 0);
+    }
+    map.set(block.id, sum);
+  }
+  return map;
+}
+
 async function withQuestionScores(rows: CropRow[], examId: number, db: DbAdapter): Promise<AnswerBlockCrop[]> {
   if (rows.length === 0) return [];
   const studentIds = Array.from(new Set(rows.map((row) => row.student_id).filter((id): id is number => id != null)));
@@ -258,6 +275,16 @@ async function withQuestionScores(rows: CropRow[], examId: number, db: DbAdapter
   }
 
   const halfMap = await blockHasHalfPointMap(examId, db);
+
+  let blockMaxMap: Map<string, number> | null = null;
+  try {
+    const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
+    if (exam?.card_id) {
+      const card = await new CardRepository().findById(exam.card_id);
+      if (card) blockMaxMap = blockMaxScoreFromCard(card);
+    }
+  } catch { /* 题块权威满分缺失时退回历史行为 */ }
+
   return rows.map((row) => {
     const crop = toAnswerBlockCrop(row);
     crop.hasHalfPoint = halfMap.get(row.block_id) ?? 0;
@@ -268,6 +295,8 @@ async function withQuestionScores(rows: CropRow[], examId: number, db: DbAdapter
     if (scores.length > 0) {
       crop.score = scores.reduce((sum, score) => sum + Number(score.score ?? 0), 0);
       crop.maxScore = scores.reduce((sum, score) => sum + Number(score.max_score ?? 0), 0);
+    } else if (blockMaxMap) {
+      crop.maxScore = blockMaxMap.get(row.block_id) ?? crop.maxScore ?? 0;
     }
     return crop;
   });

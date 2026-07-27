@@ -25,6 +25,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [annotations, setAnnotations] = useState<ReviewAnnotation[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [scoringMode, setScoringMode] = useState<string>("block_total");
   const imageRef = useRef<HTMLDivElement>(null);
 
   const current = queue[currentIndex];
@@ -69,6 +70,16 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
     } catch { /* silent */ }
   }, [examId, blockId, zoom, rotation]);
 
+  // 加载题块评分配置
+  const loadConfig = useCallback(async () => {
+    try {
+      const res = await fetchJson<{ ok: boolean; data?: { scoringMode?: string } }>(
+        `/api/block-grading-config/exams/${examId}/blocks/${encodeURIComponent(blockId)}`
+      );
+      if (res.ok && res.data?.scoringMode) setScoringMode(res.data.scoringMode);
+    } catch { /* 使用默认题块总分模式 */ }
+  }, [examId, blockId]);
+
   // 加载批注
   const loadAnnotations = useCallback(async (cropId: string) => {
     try {
@@ -82,7 +93,8 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   useEffect(() => {
     loadQueue();
     loadSession();
-  }, [loadQueue, loadSession]);
+    loadConfig();
+  }, [loadQueue, loadSession, loadConfig]);
 
   // 当前切块变化时加载批注
   useEffect(() => {
@@ -109,6 +121,10 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   // 保存并下一份
   const handleSubmit = useCallback(async (scoreOverride?: number) => {
     if (!current || saving) return;
+    if (scoringMode === "per_question") {
+      setError("本题块为逐题评分模式，请使用在线阅卷逐题输入");
+      return;
+    }
     setSaving(true);
     setError(null);
 
@@ -122,9 +138,8 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
             scores: current.questionNumbers.map((q: any) => ({
               questionNumber: Number(q),
               scoreType: current.blockType || "subjective",
-              score,
-              maxScore: maxScore,
             })),
+            blockTotalScore: score,
             status: "reviewed",
           }),
         }
@@ -153,7 +168,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
       setError(err.message);
     }
     setSaving(false);
-  }, [current, saving, draftScores, examId, currentIndex, queue.length, maxScore, goTo, saveSession]);
+  }, [current, saving, draftScores, examId, currentIndex, queue.length, maxScore, goTo, saveSession, scoringMode]);
 
   // 缩放
   const zoomIn = () => setZoom((z) => Math.min(4, z + 0.25));
@@ -366,14 +381,23 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
           display: "flex",
           flexDirection: "column",
         }}>
-          <ScorePad
-            maxScore={maxScore}
-            hasHalfPoint={current?.hasHalfPoint === 1}
-            currentScore={currentScore}
-            onScoreChange={handleScoreChange}
-            onSubmit={handleSubmit}
-            disabled={saving}
-          />
+          {scoringMode === "per_question" ? (
+            <div style={{
+              fontSize: 14, color: "#E24B4A", padding: "12px 14px",
+              background: "rgba(226,75,74,0.1)", borderRadius: 8,
+            }}>
+              本题块配置为「逐题评分」模式，请使用在线阅卷逐题输入；如需在此面板打分，请管理员将评分模式改为「题块总分」。
+            </div>
+          ) : (
+            <ScorePad
+              maxScore={maxScore}
+              hasHalfPoint={current?.hasHalfPoint === 1}
+              currentScore={currentScore}
+              onScoreChange={handleScoreChange}
+              onSubmit={handleSubmit}
+              disabled={saving}
+            />
+          )}
 
           <div style={{ flex: 1 }} />
 
@@ -394,7 +418,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
           {/* 操作按钮 */}
           <button
             onClick={() => handleSubmit()}
-            disabled={saving || !current}
+            disabled={saving || !current || scoringMode === "per_question"}
             style={{
               width: "100%",
               minHeight: 56,

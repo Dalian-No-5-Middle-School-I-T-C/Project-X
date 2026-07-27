@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "1.9.4",
+  "version": "1.9.6",
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
@@ -32,6 +32,11 @@
     "verify:auth": "tsx scripts/verify-auth.ts",
     "verify:security-critical": "tsx scripts/verify-security-critical.ts",
     "verify:a3": "tsx scripts/verify-a3.ts",
+    "verify:block-total": "tsx scripts/block-total-split-smoke.ts",
+    "verify:block-total-coverage": "tsx scripts/block-total-coverage-smoke.ts",
+    "verify:scoring-mode": "tsx scripts/scoring-mode-consistency-smoke.ts",
+    "verify:online-review-scoring-mode": "tsx scripts/online-review-scoring-mode-smoke.ts",
+    "verify:scoring-mode-config": "tsx scripts/scoring-mode-config-integration.ts",
     "typecheck": "tsc --noEmit"
   },
   "browserslist": [

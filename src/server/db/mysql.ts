@@ -631,6 +631,14 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `DELETE FROM system_settings WHERE \`key\` IN ('allow_half_point', 'default_dispute_threshold', 'default_rounding', 'auto_reassign_policy', 'workload_balance_threshold')`,
       ]
     },
+    {
+      version: 27,
+      name: "block-grading-scoring-mode",
+      sqls: [
+        `ALTER TABLE block_grading_config ADD COLUMN scoring_mode VARCHAR(16) NOT NULL DEFAULT 'block_total'`,
+        `ALTER TABLE block_grading_config ADD COLUMN score_distribution VARCHAR(16) NOT NULL DEFAULT 'proportional'`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

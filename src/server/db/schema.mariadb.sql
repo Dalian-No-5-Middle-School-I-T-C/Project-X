@@ -150,6 +150,17 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     FOREIGN KEY (created_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- v1.9.5: 原卷多页支持
+CREATE TABLE IF NOT EXISTS original_paper_pages (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    card_id          VARCHAR(20) NOT NULL,
+    page_index       INT NOT NULL,
+    filename         VARCHAR(255) NOT NULL,
+    stored_path      VARCHAR(500) NOT NULL,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_paper_pages (card_id, page_index)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS objective_blocks (
     id               VARCHAR(36) PRIMARY KEY,
     card_id          VARCHAR(20) NOT NULL,
@@ -678,6 +689,8 @@ CREATE TABLE IF NOT EXISTS block_grading_config (
     rounding           VARCHAR(16) DEFAULT 'ceil',
     arbitrator_id      INT,
     review_mode        INT DEFAULT 1,
+    scoring_mode       VARCHAR(16) NOT NULL DEFAULT 'block_total',
+    score_distribution VARCHAR(16) NOT NULL DEFAULT 'proportional',
     has_half_point             TINYINT DEFAULT 0,
     auto_reassign_no_arb       TINYINT DEFAULT 1,
     workload_balance_threshold INT DEFAULT 4,

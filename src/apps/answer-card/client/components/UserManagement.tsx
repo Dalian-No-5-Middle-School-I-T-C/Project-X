@@ -253,7 +253,7 @@ export function UserManagement() {
         </div>
       )}
 
-      <div className="account-table-wrap">
+      <div className="account-table-wrap table-cards">
         <table className="account-table">
           <thead>
             <tr>
@@ -270,18 +270,18 @@ export function UserManagement() {
           <tbody>
             {data?.users.map((user) => (
               <tr key={user.id} className={user.is_active ? "" : "inactive-row"}>
-                <td>{user.username}</td>
-                <td>{user.name}</td>
-                <td>{ROLE_LABELS[user.role_name ?? ""] ?? user.role_display_name ?? user.role_id}</td>
-                <td>{user.role_name === "teacher" ? (TEACHER_ROLE_LABELS[user.teacher_role ?? ""] ?? "普通") : "—"}</td>
-                <td>{user.student_number ?? "—"}</td>
-                <td>
+                <td data-label="用户名">{user.username}</td>
+                <td data-label="姓名">{user.name}</td>
+                <td data-label="角色">{ROLE_LABELS[user.role_name ?? ""] ?? user.role_display_name ?? user.role_id}</td>
+                <td data-label="教师细分">{user.role_name === "teacher" ? (TEACHER_ROLE_LABELS[user.teacher_role ?? ""] ?? "普通") : "—"}</td>
+                <td data-label="学号">{user.student_number ?? "—"}</td>
+                <td data-label="状态">
                   <span className={`status-badge ${user.is_active ? "active" : "inactive"}`}>
                     {user.is_active ? "正常" : "已禁用"}
                   </span>
                 </td>
-                <td>{user.last_login_at ? new Date(user.last_login_at).toLocaleString() : "—"}</td>
-                <td className="account-row-actions">
+                <td data-label="最后登录">{user.last_login_at ? new Date(user.last_login_at).toLocaleString() : "—"}</td>
+                <td data-label="操作" className="account-row-actions">
                   <button className="ghost-button" type="button" title="重置密码" onClick={() => void resetPassword(user)} disabled={busy}>
                     <KeyIcon />
                   </button>

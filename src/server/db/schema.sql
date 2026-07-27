@@ -127,6 +127,17 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- v1.9.5: 原卷多页支持（一卡可有多页原卷）
+CREATE TABLE IF NOT EXISTS original_paper_pages (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id          TEXT NOT NULL,
+    page_index       INTEGER NOT NULL,
+    filename         TEXT NOT NULL,
+    stored_path      TEXT NOT NULL,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(card_id, page_index)
+);
+
 -- 客观题块
 CREATE TABLE IF NOT EXISTS objective_blocks (
     id               TEXT PRIMARY KEY,
@@ -630,6 +641,8 @@ CREATE TABLE IF NOT EXISTS block_grading_config (
     rounding           TEXT DEFAULT 'ceil',
     arbitrator_id      INTEGER REFERENCES users(id),
     review_mode        INTEGER DEFAULT 1,
+    scoring_mode       TEXT NOT NULL DEFAULT 'block_total',
+    score_distribution TEXT NOT NULL DEFAULT 'proportional',
     created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(exam_id, block_id)

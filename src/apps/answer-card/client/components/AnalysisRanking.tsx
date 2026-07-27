@@ -24,7 +24,7 @@ export function AnalysisRanking({ ranking }: Props) {
   return (
     <div className="analysis-section">
       <div className="panel-title">学生排名</div>
-      <div className="analysis-ranking-table-wrap">
+      <div className="analysis-ranking-table-wrap table-cards">
         <table className="analysis-ranking-table">
           <thead>
             <tr>
@@ -40,13 +40,13 @@ export function AnalysisRanking({ ranking }: Props) {
           <tbody>
             {ranking.map((item) => (
               <tr key={item.studentNumber}>
-                <td className="rank-cell">{item.rank}</td>
-                <td>{item.studentNumber}</td>
-                <td>{item.studentName}</td>
-                <td className="score-col score-value">{item.totalScore}</td>
-                <td className="score-col">{item.objectiveScore}</td>
-                <td className="score-col">{item.subjectiveScore}</td>
-                <td className="review-col">
+                <td className="rank-cell" data-label="#">{item.rank}</td>
+                <td data-label="学号">{item.studentNumber}</td>
+                <td data-label="姓名">{item.studentName}</td>
+                <td className="score-col score-value" data-label="总分">{item.totalScore}</td>
+                <td className="score-col" data-label="客观">{item.objectiveScore}</td>
+                <td className="score-col" data-label="主观">{item.subjectiveScore}</td>
+                <td className="review-col" data-label="低分题占比">
                   {item.errorRateLevel === "none" ? (
                     <span style={{ color: "var(--muted)" }}>—</span>
                   ) : (

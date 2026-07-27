@@ -2,10 +2,33 @@ import express from "express";
 import multer from "multer";
 import { cpus } from "node:os";
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
+
+// 服务端启动时一次性读取 package.json 拿到版本号，避免在源码各处写死 v1.x.x；
+// 与客户端 import.meta.env.VITE_APP_VERSION（vite.config.ts 注入）保持同源。
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+function readServerVersion(): string {
+  try {
+    // 兼容开发（tsx 读取源码，相对 cwd）与构建后（dist/server/index.mjs 位于 dist/server/）。
+    const candidates = [
+      path.join(process.cwd(), "package.json"),
+      path.join(__dirname, "..", "..", "..", "package.json"),
+    ];
+    for (const p of candidates) {
+      if (!existsSync(p)) continue;
+      const pkg = JSON.parse(readFileSync(p, "utf8")) as { version?: string };
+      if (pkg.version) return pkg.version;
+    }
+  } catch {
+    // 忽略：继续使用兜底值
+  }
+  return "0.0.0";
+}
+const SERVER_VERSION = readServerVersion();
 import { ensureDefaultAdmin, getMysqlDb, initializeDatabase, initMariadbSchema, healthCheck, type DbAdapter } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
@@ -701,7 +724,7 @@ export async function createApp(): Promise<express.Express> {
     } catch (err: any) { res.status(500).json({ message: err.message }); }
   });
 
-  console.log("[Server] v1.9.2 routes mounted");
+  console.log("[Server] v" + SERVER_VERSION + " routes mounted");
 
   // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);

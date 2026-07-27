@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, Minus, Search } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
+import { useIsMobile } from "../hooks/useMediaQuery";
+import { DataCard } from "./ui/DataCard";
 import type { ScoreTableRow, ScoreDisplayMode } from "../../../../shared/types";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 
@@ -22,6 +24,7 @@ function modeLabel(m: ScoreDisplayMode): string {
 }
 
 export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRowClick }: Props) {
+  const isMobile = useIsMobile();
   const [rows, setRows] = useState<ScoreTableRow[]>([]);
   const [examName, setExamName] = useState("");
   const [subject, setSubject] = useState<string | null>(null);
@@ -160,6 +163,50 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
       </div>
 
       {/* Table */}
+      {isMobile ? (
+        <div className="data-card-list">
+          {sorted.map((row, i) => (
+            <DataCard
+              key={row.studentId}
+              rows={[
+                { label: "#", value: i + 1 },
+                {
+                  label: "姓名",
+                  value: (
+                    <>
+                      <span style={{ fontWeight: 500 }}>{row.studentName}</span>
+                      <span style={{ fontSize: 11, color: "var(--muted)", display: "block" }}>{row.studentNumber}</span>
+                    </>
+                  ),
+                  strong: true,
+                },
+                { label: "班级", value: row.className },
+                { label: hasAssigned ? "原始分" : "成绩", value: formatScore(row.totalScore), strong: true },
+                ...(hasAssigned ? [{ label: "赋分", value: row.assignedScore != null ? formatScore(row.assignedScore) : "—" }] : []),
+                { label: "年排", value: row.gradeRank },
+                { label: "班排", value: row.classRank },
+                { label: "名次变化", value: renderChange(row.rankChange) },
+                { label: displayLabel, value: row.displayValue != null ? formatScore(row.displayValue) : "—" },
+              ]}
+              actions={
+                <button
+                  onClick={() => void openPreview(row.studentId, row.studentName, row.studentNumber)}
+                  disabled={previewLoading}
+                  style={{
+                    background: "none", border: "none", cursor: "pointer",
+                    color: "var(--brand)", fontSize: 13, padding: 0,
+                    textDecoration: "underline", textUnderlineOffset: 2,
+                    minHeight: "var(--touch-target-min)", width: "100%"
+                  }}
+                >
+                  预览答题卡
+                </button>
+              }
+              onClick={onRowClick ? () => onRowClick(row.studentId, row.studentName, row.studentNumber) : undefined}
+            />
+          ))}
+        </div>
+      ) : (
       <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
@@ -241,6 +288,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
           </tbody>
         </table>
       </div>
+      )}
 
       {previewPages !== null && (
         <ScanPreviewModal
