@@ -10,8 +10,8 @@
 | `import/students.csv` | 16 名演示学生（可单独 CSV 导入） |
 | `import/teachers.csv` | 1 名演示教师 |
 | `manifest.json` | 用例清单与预期结果（含账号、场景） |
-| `scripts/seed.ts` | 可重复运行的种子脚本 |
-| `scripts/seed-review.ts` | 网阅打分面板 DEV 演示种子 |
+| `scripts/seed.ts` | 可重复运行的种子脚本（CLI 薄包装，核心逻辑在 `src/server/services/DemoDataService.ts`） |
+| `scripts/seed-review.ts` | 网阅演示种子（已并入 DemoDataService，本文件仅保留兼容占位） |
 | `scripts/build-backup.ts` | 重新生成 ZIP 备份 |
 | `scripts/verify.ts` | 导入后 API 校验（含自动改密） |
 | `scripts/import-all.sh` | 一键导入入口 |
@@ -37,7 +37,12 @@
 
 ## 导入方式
 
-### 方式一：种子脚本（推荐，直接写入当前 DB）
+### 方式零：前端一键导入（推荐，无需命令行）
+
+管理员登录后，点击右上角**账户菜单 → 导入演示数据**（调用 `POST /api/db/import-demo`，幂等、不覆盖现有数据、无需重启）。
+配套的**清除演示数据**按钮（`POST /api/db/clear-demo`）可一键清理全部「演示-」前缀数据。仅 SQLite 部署可用。
+
+### 方式一：种子脚本（命令行，直接写入当前 DB）
 
 ```bash
 npm run dev   # 先启动服务以初始化 schema
