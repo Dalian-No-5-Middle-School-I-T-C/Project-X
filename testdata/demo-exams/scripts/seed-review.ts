@@ -154,8 +154,10 @@ export async function seedReviewDemo(
   );
   const insertConfig = db.prepare(
     `INSERT OR IGNORE INTO block_grading_config
-       (exam_id, block_id, dispute_threshold, rounding, arbitrator_id, review_mode, has_half_point, auto_reassign_no_arb, workload_balance_threshold)
-     VALUES (?, ?, 2, 'ceil', NULL, 1, ?, 1, 4)`
+       (exam_id, block_id, dispute_threshold, rounding, arbitrator_id, review_mode,
+        has_half_point, auto_reassign_no_arb, workload_balance_threshold,
+        scoring_mode, score_distribution)
+     VALUES (?, ?, 2, 'ceil', NULL, 1, ?, 1, 4, ?, ?)`
   );
   const insertAssignment = db.prepare(
     `INSERT INTO review_assignments (exam_id, block_id, teacher_id, student_count, assigned_student_ids, auto_assigned)
@@ -163,7 +165,10 @@ export async function seedReviewDemo(
   );
 
   for (const block of REVIEW_BLOCKS) {
-    insertConfig.run(examId, block.blockId, block.hasHalf);
+    // 题块 A: block_total + proportional（默认）；题块 B: per_question + equal
+    const scoringMode = block.blockId === "A" ? "block_total" : "per_question";
+    const scoreDist = block.blockId === "A" ? "proportional" : "equal";
+    insertConfig.run(examId, block.blockId, block.hasHalf, scoringMode, scoreDist);
   }
 
   // 分配策略：

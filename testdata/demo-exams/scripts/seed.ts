@@ -259,11 +259,14 @@ export async function seedDemoExams(dbPath?: string): Promise<void> {
     subject: "数学"
   });
 
+  // 显式传 password=学号：batchCreateStudents 默认生成随机不可推导密码，
+  // 此处覆盖为可读值以便 verify.ts 能用学号登录验证 学生端功能（与 manifest 一致）。
   const batch = await userRepo.batchCreateStudents(
     STUDENT_NUMBERS.map((num, i) => ({
       username: num,
       name: STUDENT_NAMES[i],
-      student_number: num
+      student_number: num,
+      password: num
     }))
   );
   console.log(`[seed] 学生: 新增 ${batch.created}，跳过 ${batch.skipped}`);
@@ -328,6 +331,11 @@ export async function seedDemoExams(dbPath?: string): Promise<void> {
     VALUES (?, 'week', '2026-06-16', '2026-06-22', (SELECT id FROM users WHERE username = 'admin'))
   `).run(`${DEMO_PREFIX}第25周考试包`);
   linkGroupExams(db, Number(crossInfo.lastInsertRowid), weekExamIds);
+
+  // 保险写入全局设置默认键（迁移 v26 已写入；若库为空或被清理则补齐），便于 verify 校验
+  const ensureSetting = db.prepare("INSERT OR IGNORE INTO system_settings (`key`, value) VALUES (?, ?)");
+  ensureSetting.run("require_original_paper", "1");
+  ensureSetting.run("highlight_missing_paper", "1");
 
   console.log("[seed] 完成: 8 场考试, 16 名学生, 大考合集 + 跨考已存组");
 }
