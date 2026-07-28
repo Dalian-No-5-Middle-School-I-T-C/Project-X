@@ -88,6 +88,7 @@
 - **双屏流程**：答题卡选择页（单科/大考双Tab）→ 扫描工作台（直扫 + 导入阅卷）
 - **本地/远程双模**：本地直接识别存 SQLite；远程模式下扫描完成自动上传到远端服务器
 - **远端上传**：三步流程（创建会话 → 逐页上传图片 → 标记完成），API Key 鉴权
+- **服务端接入模式**：Ubuntu 设置 `PROJECTX_ENABLE_SCANNER_CLIENT_API=1` 接收扫描端上传；无需、也不应在服务器启用 TWAIN
 - **切块资产同步**：扫描仪 OCR 与普通批量阅卷都会落库 `answer_block_crops`；远程上传模式预留切块 manifest/文件接收能力，服务端可复用扫描端生成的大题图片。
 - **文件导入阅卷**：扫描端也支持导入目录或单张图片进行识别的判分
 - **单面过滤**：单面答题卡自动跳过背面扫描结果，避免无效数据
@@ -602,7 +603,7 @@ Project-X/
 | `GET/POST/PUT/DELETE` | `/api/ai/providers` | AI 服务商配置管理 |
 | `GET` | `/api/db/backup` | 导出全量数据 ZIP（SQLite: VACUUM / MariaDB: mysqldump） |
 | `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |
-| `GET` | `/api/app/health` | 健康检查（含 `db.dialect` + `latencyMs`） |
+| `GET` | `/api/app/health` | 健康检查（含数据库状态与 `capabilities.scannerClientApi`） |
 | `GET/PATCH` | `/api/app/db-config` | 数据库配置读取/修改（管理员） |
 | `POST`            | `/api/scanner/upload/sessions`              | 创建扫描上传会话（API Key + JWT 双鉴权） |
 | `POST`            | `/api/scanner/upload/sessions/:id/pages`   | 上传扫描页（multipart） |
