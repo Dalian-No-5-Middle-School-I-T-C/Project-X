@@ -639,6 +639,16 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE block_grading_config ADD COLUMN score_distribution VARCHAR(16) NOT NULL DEFAULT 'proportional'`,
       ]
     },
+    {
+      version: 28,
+      name: "demo-data-source-flag",
+      sqls: [
+        `ALTER TABLE users ADD COLUMN is_demo TINYINT NOT NULL DEFAULT 0`,
+        `ALTER TABLE answer_cards ADD COLUMN is_demo TINYINT NOT NULL DEFAULT 0`,
+        `ALTER TABLE classes ADD COLUMN is_demo TINYINT NOT NULL DEFAULT 0`,
+        `ALTER TABLE grades ADD COLUMN is_demo TINYINT NOT NULL DEFAULT 0`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

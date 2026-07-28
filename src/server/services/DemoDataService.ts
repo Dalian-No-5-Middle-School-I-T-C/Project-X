@@ -159,6 +159,7 @@ export interface ClearDemoStats {
 }
 
 function cleanupDemoData(db: Database.Database): ClearDemoStats {
+  // 演示考试 / 考试组仍按「演示-」前缀识别（前缀独特，不存在与真实数据冲突的风险）。
   const demoExamIds = (db.prepare("SELECT id FROM exams WHERE name LIKE ?").all(`${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
   const demoGroupIds = (db.prepare("SELECT id FROM exam_groups WHERE name LIKE ?").all(`${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
 
@@ -181,32 +182,48 @@ function cleanupDemoData(db: Database.Database): ClearDemoStats {
     db.prepare(`DELETE FROM exams WHERE id IN (${ph})`).run(...demoExamIds);
   }
 
-  // 网阅演示用答题卡（card_id 88000999）
-  db.prepare("DELETE FROM answer_cards WHERE id = '88000999'").run();
+  // v1.9.6: 答题卡 / 用户 / 班级 / 年级 按归属标记 is_demo=1 清理，不再依赖硬编码 ID /
+  // 学号 / 用户名 / 名称，避免误删同名真实数据。安全语义：is_demo=0 的真实记录永不被清理。
+  const removedCards = db.prepare("DELETE FROM answer_cards WHERE is_demo = 1").run().changes;
 
-  for (let i = 1; i <= 8; i++) {
-    db.prepare("DELETE FROM answer_cards WHERE id = ?").run(`${CARD_ID_PREFIX}${String(i).padStart(3, "0")}`);
-  }
-
+  // 收集待清理的演示用户 id（学生 + 演示教师），先解除 class_students 关联再删用户
   const demoStudentIds = (db.prepare(
-    `SELECT id FROM users WHERE student_number IN (${STUDENT_NUMBERS.map(() => "?").join(",")})`
-  ).all(...STUDENT_NUMBERS) as Array<{ id: number }>).map((r) => r.id);
+    "SELECT id FROM users WHERE is_demo = 1"
+  ).all() as Array<{ id: number }>).map((r) => r.id);
+  const removedStudents = demoStudentIds.length;
 
   if (demoStudentIds.length > 0) {
     const ph = demoStudentIds.map(() => "?").join(",");
     db.prepare(`DELETE FROM class_students WHERE student_id IN (${ph})`).run(...demoStudentIds);
+    db.prepare(`DELETE FROM teacher_classes WHERE teacher_id IN (${ph})`).run(...demoStudentIds);
     db.prepare(`DELETE FROM users WHERE id IN (${ph})`).run(...demoStudentIds);
   }
 
-  db.prepare("DELETE FROM users WHERE username = 'demo-teacher'").run();
-  db.prepare("DELETE FROM users WHERE username = 'demo-teacher-2'").run();
-  db.prepare("DELETE FROM classes WHERE name IN ('演示1班', '演示2班')").run();
-  db.prepare("DELETE FROM grades WHERE name = '高一(演示)'").run();
+  // 删演示班级在前，删演示年级在后（classes.grade_id → grades.id 外键级联）。
+  // v1.9.6 安全收窄：仅当演示年级下不存在 is_demo=0 的真实班级时才删除演示年级，
+  // 避免外键 ON DELETE CASCADE 顺带扫掉挂在演示年级下的真实班级。
+  db.prepare("DELETE FROM classes WHERE is_demo = 1").run();
+  const hasRealClassUnderDemoGrade = Boolean(
+    db.prepare(
+      "SELECT 1 FROM classes WHERE is_demo = 0 AND grade_id IN (SELECT id FROM grades WHERE is_demo = 1) LIMIT 1"
+    ).get()
+  );
+  if (!hasRealClassUnderDemoGrade) {
+    db.prepare("DELETE FROM grades WHERE is_demo = 1").run();
+  } else {
+    // 边界保护：保留有真实班级挂靠的演示年级，避免级联误删真实数据。
+    console.warn(
+      "[clearDemoData] 检测到真实班级挂靠在演示年级下，已保留该演示年级以避免级联删除真实班级，请手动迁移真实班级后再次清理。"
+    );
+  }
+
+  // removedCards 不在返回值中体现（仅作日志用），避免改动 ClearDemoStats 接口签名
+  void removedCards;
 
   return {
     removedExams: demoExamIds.length,
     removedGroups: demoGroupIds.length,
-    removedStudents: demoStudentIds.length
+    removedStudents
   };
 }
 
@@ -261,6 +278,12 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   const class1 = await classRepo.createClass(grade.id, "演示1班", 1);
   const class2 = await classRepo.createClass(grade.id, "演示2班", 2);
 
+  // v1.9.6: 标记刚创建的演示年级/班级为 is_demo=1，使 clearDemoData() 按 is_demo 标记
+  // 清理，不依赖硬编码名称。即使真实班级/年级同名也不被误删。
+  db.prepare("UPDATE grades SET is_demo = 1 WHERE id = ?").run(grade.id);
+  db.prepare("UPDATE classes SET is_demo = 1 WHERE id = ?").run(class1.id);
+  db.prepare("UPDATE classes SET is_demo = 1 WHERE id = ?").run(class2.id);
+
   await userRepo.createUser({
     username: "demo-teacher",
     password: "teacher123",
@@ -277,6 +300,9 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
     subject: "数学"
   });
 
+  // v1.9.6: 把刚创建的演示教师打标记（按唯一用户名匹配，不影响真实账号）
+  db.prepare("UPDATE users SET is_demo = 1 WHERE username IN ('demo-teacher', 'demo-teacher-2')").run();
+
   // 显式传 password=学号：batchCreateStudents 默认生成随机不可推导密码，
   // 此处覆盖为可读值以便 verify.ts 能用学号登录验证 学生端功能（与 manifest 一致）。
   const batch = await userRepo.batchCreateStudents(
@@ -289,6 +315,10 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   );
   console.log(`[seed] 学生: 新增 ${batch.created}，跳过 ${batch.skipped}`);
 
+  // v1.9.6: 演示学生打 is_demo=1（按学号集合匹配；学号字段唯一，不波及真实学生）
+  const studentNumPh = STUDENT_NUMBERS.map(() => "?").join(",");
+  db.prepare(`UPDATE users SET is_demo = 1 WHERE student_number IN (${studentNumPh})`).run(...STUDENT_NUMBERS);
+
   const studentIdByNumber = new Map<string, number>();
   for (const num of STUDENT_NUMBERS) {
     const row = db.prepare("SELECT id FROM users WHERE student_number = ?").get(num) as { id: number } | undefined;
@@ -299,8 +329,8 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   await classRepo.addStudents(class2.id, STUDENT_NUMBERS.slice(8).map((n) => studentIdByNumber.get(n)!));
 
   const insertCard = db.prepare(`
-    INSERT INTO answer_cards (id, title, subject_label, exam_date)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO answer_cards (id, title, subject_label, exam_date, is_demo)
+    VALUES (?, ?, ?, ?, 1)
   `);
   const insertExam = db.prepare(`
     INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, created_by)
@@ -479,7 +509,7 @@ async function seedReviewDemo(
 ): Promise<void> {
   // 1. 答题卡（submitReviewCropScores 需要 card 存在，body 可空）
   db.prepare(
-    "INSERT OR IGNORE INTO answer_cards (id, title, subject_label, exam_date) VALUES (?, ?, ?, ?)"
+    "INSERT OR IGNORE INTO answer_cards (id, title, subject_label, exam_date, is_demo) VALUES (?, ?, ?, ?, 1)"
   ).run(REVIEW_CARD_ID, "演示-网阅卡", "数学", "2026-06-25");
 
   // 2. 考试（review_enabled=1）

@@ -771,6 +771,18 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, "block_grading_config", "scoring_mode", "TEXT NOT NULL DEFAULT 'block_total'");
       addColumnIfMissing(db, "block_grading_config", "score_distribution", "TEXT NOT NULL DEFAULT 'proportional'");
     }
+  },
+  // v28 (1.9.6): 演示数据归属标记 — 给 users/answer_cards/classes/grades 增加 is_demo 列，
+  // 使 clearDemoData() 不再依赖硬编码学号/用户名/班级名/答题卡 ID 判断，避免误删真实数据。
+  {
+    version: 28,
+    name: "demo-data-source-flag",
+    up(db) {
+      addColumnIfMissing(db, "users", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "answer_cards", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "classes", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "grades", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+    }
   }
 ];
 

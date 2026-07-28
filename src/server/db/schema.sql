@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS users (
     highlight_missing_paper INTEGER DEFAULT 1, -- v1.8.0: 侧边栏高亮未上传原卷的考试
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
     show_tab_bar     INTEGER DEFAULT 0,      -- v1.9.0: 0=隐藏底部导航 1=显示
+    is_demo          INTEGER NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示数据（clearDemoData 仅按此标记清理，避免误删真实账号）
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -69,6 +70,7 @@ CREATE TABLE IF NOT EXISTS grades (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL,              -- 高一 / 高二 / 高三
     sort_order   INTEGER DEFAULT 0,         -- 排序
+    is_demo      INTEGER NOT NULL DEFAULT 0, -- v1.9.6: 1=演示年级
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -78,6 +80,7 @@ CREATE TABLE IF NOT EXISTS classes (
     grade_id     INTEGER NOT NULL REFERENCES grades(id) ON DELETE CASCADE,
     name         TEXT NOT NULL,              -- 1班 / 2班
     sort_order   INTEGER DEFAULT 0,
+    is_demo      INTEGER NOT NULL DEFAULT 0, -- v1.9.6: 1=演示班级
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -123,6 +126,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     extra_notes      TEXT,                                 -- v1.8.0: 教师特别描述
     knowledge_points_text TEXT,                            -- v1.8.0: 知识点纯文本备份
     created_by       INTEGER REFERENCES users(id),
+    is_demo          INTEGER NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示答题卡（clearDemoData 仅按此标记清理）
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
