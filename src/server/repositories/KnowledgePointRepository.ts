@@ -1,26 +1,7 @@
 import type { DbAdapter } from "../db/mysql";
 import { getMysqlDb } from "../db/mysql";
 import { getAnalysisThresholds } from "../services/analysisConfig";
-
-export type KnowledgeSeverity = "common_weak" | "weak" | "ok";
-
-export interface KnowledgeWeaknessItem {
-  point_text: string;
-  question_numbers: string;
-  /** 该知识点全部关联题的得分率（按学生作答人次加权平均，0-100） */
-  avg_rate: number;
-  /** 覆盖学生人次 */
-  student_count: number;
-  total_questions: number;
-  /** v29 P0-4 轻量版：薄弱分层
-   *  - common_weak: 得分率低于预警线（默认 60%）且覆盖人次多 → 共性薄弱
-   *  - weak: 得分率低于预警线但覆盖人次较少 → 一般薄弱
-   *  - ok: 达到预警线
-   */
-  severity: KnowledgeSeverity;
-  /** 该知识点覆盖的学生人次占该考试作答总人次的比例（0-100） */
-  coverage_rate: number;
-}
+import type { KnowledgeSeverity, KnowledgeWeaknessItem } from "../../shared/types";
 
 export interface KnowledgePointRow {
   id: number;

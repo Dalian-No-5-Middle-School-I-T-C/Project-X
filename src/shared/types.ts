@@ -657,6 +657,26 @@ export type ClassComparisonResponse = {
   optionStats?: ClassComparisonOptionStat[];
 };
 
+// ── 知识点弱点 + 阈值配置（v29）────────────────────
+export type KnowledgeSeverity = "common_weak" | "weak" | "ok";
+
+export type KnowledgeWeaknessItem = {
+  point_text: string;
+  question_numbers: string;
+  avg_rate: number;
+  student_count: number;
+  total_questions: number;
+  severity: KnowledgeSeverity;
+  coverage_rate: number;
+};
+
+export type AnalysisThresholds = {
+  passRate: number;
+  excellentRate: number;
+  segmentSize: number;
+  errorTiers: [number, number, number];
+};
+
 export type ExamRecord = {
   id: number;
   name: string;

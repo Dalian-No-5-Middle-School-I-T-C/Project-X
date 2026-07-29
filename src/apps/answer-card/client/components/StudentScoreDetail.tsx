@@ -22,8 +22,10 @@ interface StudentScore {
     id: number; question_number: number; score_type: string;
     score: number; max_score: number;
     mode: string; optionCount: number; blockType: string;
+    answerKey?: string[];
     manually_modified: number;
   }>;
+  recognition?: Record<number, { selectedOptions: string[]; confidence: number }>;
   classQuestionStats: Record<number, ClassQStat>;
   scans: Array<{ recordId: number; fileName: string; pageNum: number }>;
   answerBlocks: AnswerBlockCrop[];
@@ -113,7 +115,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--line)", textAlign: "left", fontSize: 12, color: "var(--text-secondary)" }}>
-                    <th style={s_th}>题号</th><th style={s_th}>类型</th><th style={s_th}>得分/满分</th><th style={s_th}>班级得分率</th>
+                    <th style={s_th}>题号</th><th style={s_th}>类型</th><th style={s_th}>得分/满分</th><th style={s_th}>作答</th><th style={s_th}>班级得分率</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -122,6 +124,21 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
                     const classRate = stat && stat.maxScore > 0 ? Math.round(stat.avgScore / stat.maxScore * 100) : 0;
                     const perfect = q.score >= q.max_score;
                     const zero = q.score === 0;
+                    const isObj = q.score_type === "objective";
+                    const rec = data.recognition?.[q.question_number];
+                    const selected = rec?.selectedOptions ?? [];
+                    const answerKey: string[] = isObj ? (q.answerKey ?? []) : [];
+                    // 选项显示
+                    let answerDisplay: string | null = null;
+                    let answerColor = "var(--muted)";
+                    if (isObj && answerKey.length > 0) {
+                      if (selected.length === 0) { answerDisplay = "未答"; answerColor = "var(--muted)"; }
+                      else {
+                        answerDisplay = selected.join("");
+                        const correct = q.score >= q.max_score;
+                        answerColor = correct ? "var(--success)" : "var(--brand)";
+                      }
+                    }
                     return (
                       <tr
                         key={i}
@@ -144,6 +161,9 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
                             {q.score}
                           </span>/{q.max_score}
                           {q.manually_modified ? <span style={{ fontSize: 10, color: "var(--brand)", marginLeft: 4 }}>改</span> : null}
+                        </td>
+                        <td style={{ ...s_td, fontSize: 12, fontWeight: 600, color: answerColor }}>
+                          {answerDisplay ?? "—"}
                         </td>
                         <td style={s_td}>
                           {stat ? (
