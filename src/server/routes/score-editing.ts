@@ -476,7 +476,7 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
           await tx.run(upsertSQL,
             examId, studentId, def.questionNumber, null, block.id,
             grade.score, grade.maxScore, "objective",
-            1, userId, now,
+            0, userId, now, // Bugfix: 答案key变更触发的自动重评分不应标记 manually_modified=1
             JSON.stringify(rec?.selectedOptions ?? [])
           );
           totalObj += grade.score;

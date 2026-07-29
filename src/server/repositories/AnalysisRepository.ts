@@ -176,7 +176,8 @@ export class AnalysisRepository {
   async getExamOverview(examId: number, classId?: number): Promise<ExamOverview> {
     const c = classFilter(classId);
     const thresholds = await getAnalysisThresholds();
-    const totalMax = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT DISTINCT question_number, score_type, max_score FROM question_scores WHERE exam_id = ?)`, examId) as any;
+    // Bugfix: 使用 GROUP BY + MAX 代替 DISTINCT，避免同一题 max_score 不一致时 fullScore 膨胀
+    const totalMax = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
     const fullScore = totalMax?.total ?? 100;
     const passLine = fullScore * thresholds.passRate, excellentLine = fullScore * thresholds.excellentRate;
     const stats = await this.db.get(`SELECT COUNT(*) as gradedCount, ROUND(AVG(ss.total_score), 1) as avgScore, ROUND(MAX(ss.total_score), 1) as maxScore, ROUND(MIN(ss.total_score), 1) as minScore, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as passCount, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellentCount FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where}`, passLine, excellentLine, examId, ...c.params) as any;
@@ -374,7 +375,8 @@ export class AnalysisRepository {
   /** B3: 跨班对比 — 总分统计/分段分布/逐题得分率/（可选）逐题选项，按所选班级拆分 */
   async getClassComparison(examId: number, classIds: number[], includeOptions: boolean): Promise<ClassComparisonResponse> {
     const thresholds = await getAnalysisThresholds();
-    const totalMax = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT DISTINCT question_number, score_type, max_score FROM question_scores WHERE exam_id = ?)`, examId) as any;
+    // Bugfix: 使用 GROUP BY + MAX 代替 DISTINCT，避免同一题 max_score 不一致时 fullScore 膨胀
+    const totalMax = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
     const fullScore = totalMax?.total ?? 100;
     const passLine = fullScore * thresholds.passRate, excellentLine = fullScore * thresholds.excellentRate;
     const ranges = generateDistributionRanges(fullScore, thresholds.segmentSize);

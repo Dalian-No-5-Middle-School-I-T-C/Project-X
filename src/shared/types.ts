@@ -540,6 +540,7 @@ export type ClassScoreSummary = {
 };
 
 export type ExamOverview = {
+  /** 已阅人数（当前版本等同 gradedCount，因无独立“注册学生”表；后续迭代可对接学籍名册） */
   totalStudents: number;
   gradedCount: number;
   avgScore: number;
