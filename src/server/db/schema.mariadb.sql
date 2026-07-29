@@ -564,6 +564,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     score           DOUBLE,
     max_score       DOUBLE,
     score_type      VARCHAR(20),
+    selected_options TEXT,
     manually_modified TINYINT DEFAULT 0,
     modified_by     INT,
     modified_at     DATETIME,

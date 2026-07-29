@@ -287,8 +287,12 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
 /**
  * POST /api/db/import-demo
  * 一键导入演示测试数据（「演示-」前缀，幂等，不覆盖现有数据，无需重启）
+ *
+ * 鉴权：路由级 requirePermission(USER_MANAGE) 已过滤非管理员；此路由额外要求
+ * SYSTEM_MANAGE「系统维护（数据清理、归档等）」权限，作为「最高权限管理员」语义闸口。
+ * 当前仅 admin（持 "*" 通配）能通过；未来若要拆分管理子角色，SYSTEM_MANAGE 可单独授予。
  */
-router.post("/import-demo", async (_req: Request, res: Response) => {
+router.post("/import-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async (_req: Request, res: Response) => {
   if (detectDialect() === "mariadb") {
     res.status(400).json({ message: "演示数据导入目前仅支持 SQLite 部署（MariaDB 请使用命令行种子脚本）" });
     return;
@@ -309,8 +313,10 @@ router.post("/import-demo", async (_req: Request, res: Response) => {
 /**
  * POST /api/db/clear-demo
  * 清除全部「演示-」前缀演示数据（不动真实数据）
+ *
+ * 鉴权：同 /import-demo，要求 SYSTEM_MANAGE 权限（语义：数据清理、归档等）。
  */
-router.post("/clear-demo", (_req: Request, res: Response) => {
+router.post("/clear-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), (_req: Request, res: Response) => {
   if (detectDialect() === "mariadb") {
     res.status(400).json({ message: "演示数据清除目前仅支持 SQLite 部署" });
     return;

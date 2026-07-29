@@ -350,6 +350,13 @@ export async function persistGradingResults(
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `;
 
+  // 客观题额外持久化学生所选选项（v29），供逐题选项分析/跨班选项对比使用
+  const insertQsWithOptionsSql = `
+    REPLACE INTO question_scores
+      (exam_id, student_id, question_number, question_id, score, max_score, score_type, selected_options)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+
   let persisted = 0;
   const failedStudents: GradingPersistenceFailure[] = [];
   for (const row of rows) {
@@ -395,7 +402,11 @@ export async function persistGradingResults(
         await txExamRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
 
         for (const q of row.questions) {
-          await tx.run(insertQsSql, examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+          await tx.run(
+            insertQsWithOptionsSql,
+            examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective",
+            JSON.stringify(q.selectedOptions ?? [])
+          );
         }
         for (const sq of row.subjectiveQuestions ?? []) {
           await tx.run(insertQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");

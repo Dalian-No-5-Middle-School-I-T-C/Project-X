@@ -532,6 +532,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     score           REAL,
     max_score       REAL,
     score_type      TEXT,                    -- objective / subjective
+    selected_options TEXT,                   -- v29: 客观题学生所选选项 JSON 数组，如 ["A","C"]
     manually_modified INTEGER DEFAULT 0,       -- v1.4.1: 手动改分标记
     modified_by     INTEGER REFERENCES users(id), -- v1.4.1
     modified_at     DATETIME,                   -- v1.4.1

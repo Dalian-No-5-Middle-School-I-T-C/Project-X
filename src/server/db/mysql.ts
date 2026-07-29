@@ -649,6 +649,18 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE grades ADD COLUMN is_demo TINYINT NOT NULL DEFAULT 0`,
       ]
     },
+    {
+      version: 29,
+      name: "selected-options-and-analysis-thresholds",
+      sqls: [
+        `ALTER TABLE question_scores ADD COLUMN selected_options TEXT`,
+        `INSERT IGNORE INTO system_settings (\`key\`, value) VALUES
+          ('analysis_pass_rate', '0.6'),
+          ('analysis_excellent_rate', '0.9'),
+          ('analysis_segment_size', '10'),
+          ('analysis_error_tiers', '70,50,30')`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

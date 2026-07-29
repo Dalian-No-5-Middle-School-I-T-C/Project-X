@@ -783,6 +783,24 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, "classes", "is_demo", "INTEGER NOT NULL DEFAULT 0");
       addColumnIfMissing(db, "grades", "is_demo", "INTEGER NOT NULL DEFAULT 0");
     }
+  },
+  // v29: 成绩分析增强 — question_scores 记录学生所选选项（JSON 数组），
+  // 使逐题选项分析/跨班选项对比可用；同时写入成绩分析阈值全局默认配置。
+  {
+    version: 29,
+    name: "selected-options-and-analysis-thresholds",
+    up(db) {
+      addColumnIfMissing(db, "question_scores", "selected_options", "TEXT");
+      if (hasTable(db, "system_settings")) {
+        const ensureSetting = db.prepare(
+          "INSERT OR IGNORE INTO system_settings (`key`, value) VALUES (?, ?)"
+        );
+        ensureSetting.run("analysis_pass_rate", "0.6");
+        ensureSetting.run("analysis_excellent_rate", "0.9");
+        ensureSetting.run("analysis_segment_size", "10");
+        ensureSetting.run("analysis_error_tiers", "70,50,30");
+      }
+    }
   }
 ];
 

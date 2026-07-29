@@ -2,11 +2,16 @@ import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { competitionRank } from "../../shared/ranking";
 import { rankPercentile } from "../services/rankingUpdate";
+import { getAnalysisThresholds, DEFAULT_ANALYSIS_THRESHOLDS } from "../services/analysisConfig";
+import { CardRepository } from "./CardRepository";
+import { objectiveQuestionDefinitions } from "../../shared/grading";
 import type {
-  ClassScoreSummary, CrossExamAttendanceMode, CrossExamClassSummary,
+  ClassComparisonClassSummary, ClassComparisonOptionStat, ClassComparisonQuestionStat,
+  ClassComparisonResponse, ClassScoreSummary, CrossExamAttendanceMode, CrossExamClassSummary,
   CrossExamGroup, CrossExamTotalExam, CrossExamTotalMode,
   CrossExamTotalRequest, CrossExamTotalResponse, CrossExamTotalRow,
-  ErrorRateLevel, ExamFilterItem, ExamOverview, QuestionAnalysisItem,
+  ErrorRateLevel, ExamFilterItem, ExamOverview, OptionAnalysisQuestion, OptionAnalysisResponse,
+  OptionStat, QuestionAnalysisItem,
   PreviousExamComparison, ScoreSummary, ScoreTrendPoint, StudentRankingItem
 } from "../../shared/types";
 
@@ -35,8 +40,8 @@ function percentile(sorted: number[], p: number): number {
   if (lower === upper) return sorted[lower];
   return sorted[lower] + (sorted[upper] - sorted[lower]) * (index - lower);
 }
-function errorRateLevel(rate: number): ErrorRateLevel {
-  if (rate >= 70) return "high"; if (rate >= 50) return "medium"; if (rate >= 30) return "low"; return "none";
+function errorRateLevel(rate: number, tiers: [number, number, number] = DEFAULT_ANALYSIS_THRESHOLDS.errorTiers): ErrorRateLevel {
+  if (rate >= tiers[0]) return "high"; if (rate >= tiers[1]) return "medium"; if (rate >= tiers[2]) return "low"; return "none";
 }
 function emptyErrorRateBuckets() { return { low: 0, medium: 0, high: 0 }; }
 function countErrorRateBuckets(qs: QuestionAnalysisItem[]) {
@@ -50,15 +55,21 @@ function normalizeExamIds(v: Array<number | string | null | undefined> | undefin
 }
 function dateOnly(v: string | null | undefined): string | null { if (!v) return null; return String(v).slice(0, 10); }
 function addDays(d: string, n: number): string { return new Date(new Date(`${d}T00:00:00.000Z`).getTime() + n * 86400000).toISOString().slice(0, 10); }
-function generateDistributionRanges(fullScore: number) {
+function generateDistributionRanges(fullScore: number, segmentSize: number = DEFAULT_ANALYSIS_THRESHOLDS.segmentSize) {
+  const step = Math.max(1, Math.round(segmentSize));
   const r: Array<{ range: string; min: number; max: number }> = [];
-  for (let min = 0; min < fullScore; min += 10) r.push({ range: `${min}-${Math.min(min + 9, fullScore)}`, min, max: Math.min(min + 9, fullScore) });
+  for (let min = 0; min < fullScore; min += step) r.push({ range: `${min}-${Math.min(min + step - 1, fullScore)}`, min, max: Math.min(min + step - 1, fullScore) });
   return r;
 }
 
+const OPTION_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+
+type ObjectiveDef = { mode: string; optionCount: number; maxScore: number; answerKey: string[] };
+
 export class AnalysisRepository {
   private db: DbAdapter;
-  constructor() { this.db = getMysqlDb(); }
+  private cardRepo: CardRepository;
+  constructor() { this.db = getMysqlDb(); this.cardRepo = new CardRepository(); }
 
   async getExamClasses(examId: number): Promise<Array<{ classId: number; className: string; gradeName?: string }>> {
     const classes = await this.db.all(`SELECT DISTINCT cs.class_id as classId, c.name as className, g.name as gradeName FROM student_scores ss JOIN class_students cs ON cs.student_id = ss.student_id JOIN classes c ON c.id = cs.class_id LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY g.sort_order, c.sort_order, c.name`, examId);
@@ -164,22 +175,23 @@ export class AnalysisRepository {
 
   async getExamOverview(examId: number, classId?: number): Promise<ExamOverview> {
     const c = classFilter(classId);
+    const thresholds = await getAnalysisThresholds();
     const totalMax = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT DISTINCT question_number, score_type, max_score FROM question_scores WHERE exam_id = ?)`, examId) as any;
     const fullScore = totalMax?.total ?? 100;
-    const passLine = fullScore * 0.6, excellentLine = fullScore * 0.9;
+    const passLine = fullScore * thresholds.passRate, excellentLine = fullScore * thresholds.excellentRate;
     const stats = await this.db.get(`SELECT COUNT(*) as gradedCount, ROUND(AVG(ss.total_score), 1) as avgScore, ROUND(MAX(ss.total_score), 1) as maxScore, ROUND(MIN(ss.total_score), 1) as minScore, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as passCount, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellentCount FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where}`, passLine, excellentLine, examId, ...c.params) as any;
     if (!stats || stats.gradedCount === 0) {
-      return { totalStudents: 0, gradedCount: 0, avgScore: 0, maxScore: 0, minScore: 0, stdDev: 0, passRate: 0, excellentRate: 0, distribution: [], scoreSummary: null, overallScoreSummary: await this.getScoreSummary(examId), classSummaries: await this.getClassScoreSummaries(examId), highErrorQuestionCount: 0, errorRateBuckets: emptyErrorRateBuckets() };
+      return { totalStudents: 0, gradedCount: 0, avgScore: 0, maxScore: 0, minScore: 0, stdDev: 0, passRate: 0, excellentRate: 0, passScore: round1(passLine), excellentScore: round1(excellentLine), distribution: [], scoreSummary: null, overallScoreSummary: await this.getScoreSummary(examId), classSummaries: await this.getClassScoreSummaries(examId), highErrorQuestionCount: 0, errorRateBuckets: emptyErrorRateBuckets() };
     }
     const stdDevRow = await this.db.get(`SELECT ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as stdDev FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where}`, stats.avgScore, stats.avgScore, examId, ...c.params) as any;
-    const ranges = generateDistributionRanges(fullScore);
+    const ranges = generateDistributionRanges(fullScore, thresholds.segmentSize);
     const distribution = await Promise.all(ranges.map(async (r) => {
       const row = await this.db.get(`SELECT COUNT(*) as cnt FROM student_scores ss ${c.join} WHERE ss.exam_id = ? AND ss.total_score >= ? AND ss.total_score <= ? ${c.where}`, examId, r.min, r.max, ...c.params) as any;
       return { ...r, count: row.cnt };
     }));
     const qa = await this.getQuestionAnalysis(examId, classId);
     const eb = countErrorRateBuckets(qa);
-    return { totalStudents: stats.gradedCount, gradedCount: stats.gradedCount, avgScore: stats.avgScore, maxScore: stats.maxScore, minScore: stats.minScore, stdDev: stdDevRow?.stdDev ?? 0, passRate: Math.round((stats.passCount / stats.gradedCount) * 100), excellentRate: Math.round((stats.excellentCount / stats.gradedCount) * 100), distribution, scoreSummary: await this.getScoreSummary(examId, classId), overallScoreSummary: await this.getScoreSummary(examId), classSummaries: await this.getClassScoreSummaries(examId), highErrorQuestionCount: eb.low + eb.medium + eb.high, errorRateBuckets: eb };
+    return { totalStudents: stats.gradedCount, gradedCount: stats.gradedCount, avgScore: stats.avgScore, maxScore: stats.maxScore, minScore: stats.minScore, stdDev: stdDevRow?.stdDev ?? 0, passRate: Math.round((stats.passCount / stats.gradedCount) * 100), excellentRate: Math.round((stats.excellentCount / stats.gradedCount) * 100), passScore: round1(passLine), excellentScore: round1(excellentLine), distribution, scoreSummary: await this.getScoreSummary(examId, classId), overallScoreSummary: await this.getScoreSummary(examId), classSummaries: await this.getClassScoreSummaries(examId), highErrorQuestionCount: eb.low + eb.medium + eb.high, errorRateBuckets: eb };
   }
 
   async getClassScoreSummaries(examId: number): Promise<ClassScoreSummary[]> {
@@ -270,19 +282,220 @@ export class AnalysisRepository {
 
   async getStudentRanking(examId: number, classId?: number): Promise<StudentRankingItem[]> {
     const c = classFilter(classId);
+    const tiers = (await getAnalysisThresholds()).errorTiers;
     const rows = await this.db.all(`SELECT u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, (SELECT COUNT(*) FROM question_scores qs WHERE qs.exam_id = ss.exam_id AND qs.student_id = ss.student_id AND qs.score < qs.max_score * 0.5) as low_score_count, (SELECT COUNT(*) FROM question_scores qs WHERE qs.exam_id = ss.exam_id AND qs.student_id = ss.student_id) as question_count FROM student_scores ss JOIN users u ON u.id = ss.student_id ${c.join} WHERE ss.exam_id = ? ${c.where} ORDER BY ss.total_score DESC`, examId, ...c.params) as any[];
-    const items = rows.map((r: any) => ({ rank: 0, studentNumber: r.student_number, studentName: r.name, totalScore: r.total_score, objectiveScore: r.objective_score, subjectiveScore: r.subjective_score, lowScoreCount: r.low_score_count ?? 0, questionCount: r.question_count ?? 0, errorRate: (r.question_count ?? 0) > 0 ? Math.round((r.low_score_count ?? 0) / (r.question_count ?? 1) * 100) : 0, errorRateLevel: errorRateLevel((r.question_count ?? 0) > 0 ? Math.round((r.low_score_count ?? 0) / (r.question_count ?? 1) * 100) : 0) }));
+    const items = rows.map((r: any) => ({ rank: 0, studentNumber: r.student_number, studentName: r.name, totalScore: r.total_score, objectiveScore: r.objective_score, subjectiveScore: r.subjective_score, lowScoreCount: r.low_score_count ?? 0, questionCount: r.question_count ?? 0, errorRate: (r.question_count ?? 0) > 0 ? Math.round((r.low_score_count ?? 0) / (r.question_count ?? 1) * 100) : 0, errorRateLevel: errorRateLevel((r.question_count ?? 0) > 0 ? Math.round((r.low_score_count ?? 0) / (r.question_count ?? 1) * 100) : 0, tiers) }));
     competitionRank(items, r => r.totalScore, (r, rank) => { r.rank = rank; });
     return items;
   }
 
   async getQuestionAnalysis(examId: number, classId?: number): Promise<QuestionAnalysisItem[]> {
     const c = classFilterQs(classId);
+    const tiers = (await getAnalysisThresholds()).errorTiers;
     const rows = await this.db.all(`SELECT qs.question_number, qs.score_type as question_type, ROUND(AVG(qs.score), 1) as avgScore, MAX(qs.max_score) as maxScore, COUNT(*) as totalCount, SUM(CASE WHEN qs.score >= qs.max_score THEN 1 ELSE 0 END) as correctCount, SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) as objectiveErrorCount, SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) as subjectiveLowScoreCount FROM question_scores qs ${c.join} WHERE qs.exam_id = ? ${c.where} GROUP BY qs.question_number, qs.score_type ORDER BY CASE WHEN MAX(qs.max_score) > 0 THEN AVG(qs.score) / MAX(qs.max_score) ELSE 1 END ASC`, examId, ...c.params) as any[];
     return rows.map((r: any) => {
       const isObj = r.question_type === "objective", errCnt = isObj ? r.objectiveErrorCount : r.subjectiveLowScoreCount, errRate = r.totalCount > 0 ? Math.round((errCnt / r.totalCount) * 100) : 0;
-      return { questionNumber: String(r.question_number), questionType: isObj ? "客观" : "主观", scoreRate: r.maxScore > 0 ? Math.round((r.avgScore / r.maxScore) * 100) : 0, correctRate: isObj && r.totalCount > 0 ? Math.round((r.correctCount / r.totalCount) * 100) : null, avgScore: r.avgScore, maxScore: r.maxScore, errorCount: errCnt, errorRate: errRate, errorRateLevel: errorRateLevel(errRate), totalCount: r.totalCount };
+      return { questionNumber: String(r.question_number), questionType: isObj ? "客观" : "主观", scoreRate: r.maxScore > 0 ? Math.round((r.avgScore / r.maxScore) * 100) : 0, correctRate: isObj && r.totalCount > 0 ? Math.round((r.correctCount / r.totalCount) * 100) : null, avgScore: r.avgScore, maxScore: r.maxScore, errorCount: errCnt, errorRate: errRate, errorRateLevel: errorRateLevel(errRate, tiers), totalCount: r.totalCount };
     });
+  }
+
+  /** 从答题卡解析客观题元数据（题号 → 模式/选项数/满分/标准答案） */
+  private async getObjectiveDefs(examId: number): Promise<Map<number, ObjectiveDef>> {
+    const defs = new Map<number, ObjectiveDef>();
+    const exam = await this.db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
+    if (!exam?.card_id) return defs;
+    const card = await this.cardRepo.findById(exam.card_id);
+    if (!card) return defs;
+    for (const block of card.bodyBlocks) {
+      if (block.type !== "objective") continue;
+      for (const def of objectiveQuestionDefinitions(block)) {
+        defs.set(def.questionNumber, {
+          mode: def.mode, optionCount: def.optionCount,
+          maxScore: def.score, answerKey: def.answerKey ?? []
+        });
+      }
+    }
+    return defs;
+  }
+
+  /** B2: 逐题选项分析 — 每道客观题各选项的选择人数/比例、未答人数、满分率 */
+  async getOptionAnalysis(examId: number, classId?: number): Promise<OptionAnalysisResponse> {
+    const empty: OptionAnalysisResponse = { hasOptionData: false, questions: [] };
+    const defs = await this.getObjectiveDefs(examId);
+    if (defs.size === 0) return empty;
+
+    const c = classFilterQs(classId);
+    const rows = await this.db.all(`
+      SELECT qs.question_number, qs.selected_options, qs.score, qs.max_score
+      FROM question_scores qs ${c.join}
+      WHERE qs.exam_id = ? AND qs.score_type = 'objective' AND qs.selected_options IS NOT NULL ${c.where}
+    `, examId, ...c.params) as Array<{ question_number: number; selected_options: string | null; score: number; max_score: number }>;
+    if (rows.length === 0) return empty;
+
+    type Agg = { total: number; unanswered: number; fullScore: number; counts: Map<string, number> };
+    const byQuestion = new Map<number, Agg>();
+    for (const r of rows) {
+      let agg = byQuestion.get(r.question_number);
+      if (!agg) { agg = { total: 0, unanswered: 0, fullScore: 0, counts: new Map() }; byQuestion.set(r.question_number, agg); }
+      agg.total++;
+      if (r.max_score > 0 && r.score >= r.max_score) agg.fullScore++;
+      let opts: string[] = [];
+      try { opts = r.selected_options ? JSON.parse(r.selected_options) : []; } catch { opts = []; }
+      if (opts.length === 0) { agg.unanswered++; continue; }
+      for (const o of opts) agg.counts.set(o, (agg.counts.get(o) ?? 0) + 1);
+    }
+
+    const questions: OptionAnalysisQuestion[] = [];
+    for (const [qNum, def] of Array.from(defs.entries()).sort((a, b) => a[0] - b[0])) {
+      const agg = byQuestion.get(qNum);
+      const options: OptionStat[] = OPTION_LABELS.slice(0, def.optionCount).map((label) => {
+        const count = agg?.counts.get(label) ?? 0;
+        return {
+          option: label, count,
+          rate: agg && agg.total > 0 ? Math.round((count / agg.total) * 100) : 0,
+          isCorrect: def.answerKey.includes(label)
+        };
+      });
+      questions.push({
+        questionNumber: qNum,
+        mode: def.mode,
+        optionCount: def.optionCount,
+        maxScore: def.maxScore,
+        answerKey: def.answerKey,
+        correctRate: agg && agg.total > 0 ? Math.round((agg.fullScore / agg.total) * 100) : null,
+        answeredCount: agg ? agg.total - agg.unanswered : 0,
+        unansweredCount: agg?.unanswered ?? 0,
+        options
+      });
+    }
+    return { hasOptionData: true, questions };
+  }
+
+  /** B3: 跨班对比 — 总分统计/分段分布/逐题得分率/（可选）逐题选项，按所选班级拆分 */
+  async getClassComparison(examId: number, classIds: number[], includeOptions: boolean): Promise<ClassComparisonResponse> {
+    const thresholds = await getAnalysisThresholds();
+    const totalMax = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT DISTINCT question_number, score_type, max_score FROM question_scores WHERE exam_id = ?)`, examId) as any;
+    const fullScore = totalMax?.total ?? 100;
+    const passLine = fullScore * thresholds.passRate, excellentLine = fullScore * thresholds.excellentRate;
+    const ranges = generateDistributionRanges(fullScore, thresholds.segmentSize);
+
+    const examClasses = await this.getExamClasses(examId);
+    const selected = examClasses.filter((cls) => classIds.includes(cls.classId));
+
+    // ① 各班总分统计 + 分段分布
+    const classes: ClassComparisonClassSummary[] = [];
+    for (const cls of selected) {
+      const c = classFilter(cls.classId);
+      const rows = await this.db.all(
+        `SELECT ss.total_score as totalScore FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where} ORDER BY ss.total_score ASC`,
+        examId, ...c.params
+      ) as Array<{ totalScore: number }>;
+      const scores = rows.map((r) => Number(r.totalScore)).filter((s) => Number.isFinite(s));
+      if (scores.length === 0) continue;
+      const sum = scores.reduce((a, b) => a + b, 0);
+      const avg = sum / scores.length;
+      const variance = scores.reduce((a, b) => a + (b - avg) ** 2, 0) / scores.length;
+      const distribution = ranges.map((r) => ({
+        ...r, count: scores.filter((s) => s >= r.min && s <= r.max).length
+      }));
+      classes.push({
+        classId: cls.classId, className: cls.className, gradeName: cls.gradeName,
+        count: scores.length,
+        avgScore: round1(avg),
+        maxScore: round1(scores[scores.length - 1]),
+        minScore: round1(scores[0]),
+        median: round1(percentile(scores, 0.5)),
+        stdDev: round1(Math.sqrt(variance)),
+        passRate: Math.round((scores.filter((s) => s >= passLine).length / scores.length) * 100),
+        excellentRate: Math.round((scores.filter((s) => s >= excellentLine).length / scores.length) * 100),
+        distribution
+      });
+    }
+
+    // ② 逐题 × 逐班得分率（客观题含正确率）
+    const qMap = new Map<string, ClassComparisonQuestionStat>();
+    for (const cls of selected) {
+      const c = classFilterQs(cls.classId);
+      const rows = await this.db.all(`
+        SELECT qs.question_number, qs.score_type, ROUND(AVG(qs.score), 1) as avgScore, MAX(qs.max_score) as maxScore,
+               SUM(CASE WHEN qs.score >= qs.max_score THEN 1 ELSE 0 END) as correctCount, COUNT(*) as cnt
+        FROM question_scores qs ${c.join}
+        WHERE qs.exam_id = ? ${c.where}
+        GROUP BY qs.question_number, qs.score_type
+      `, examId, ...c.params) as any[];
+      for (const r of rows) {
+        const key = `${r.question_number}:${r.score_type}`;
+        let item = qMap.get(key);
+        if (!item) {
+          item = { questionNumber: r.question_number, scoreType: r.score_type, maxScore: r.maxScore, byClass: [] };
+          qMap.set(key, item);
+        }
+        item.byClass.push({
+          classId: cls.classId,
+          scoreRate: r.maxScore > 0 ? Math.round((r.avgScore / r.maxScore) * 100) : 0,
+          correctRate: r.score_type === "objective" && r.cnt > 0 ? Math.round((r.correctCount / r.cnt) * 100) : null
+        });
+      }
+    }
+    const questionStats = Array.from(qMap.values()).sort((a, b) => a.questionNumber - b.questionNumber);
+
+    // ③ （可选）逐题 × 逐班 × 选项选择率
+    let optionStats: ClassComparisonOptionStat[] | undefined;
+    if (includeOptions) {
+      const defs = await this.getObjectiveDefs(examId);
+      if (defs.size > 0) {
+        // per class: 题号 → (选项 → 人次)，及每题总行数（rate 基数）
+        const perClass: Array<{ classId: number; totals: Map<number, number>; counts: Map<number, Map<string, number>> }> = [];
+        let anyRows = 0;
+        for (const cls of selected) {
+          const c = classFilterQs(cls.classId);
+          const rows = await this.db.all(`
+            SELECT qs.question_number, qs.selected_options
+            FROM question_scores qs ${c.join}
+            WHERE qs.exam_id = ? AND qs.score_type = 'objective' AND qs.selected_options IS NOT NULL ${c.where}
+          `, examId, ...c.params) as Array<{ question_number: number; selected_options: string | null }>;
+          anyRows += rows.length;
+          const totals = new Map<number, number>();
+          const counts = new Map<number, Map<string, number>>();
+          for (const r of rows) {
+            totals.set(r.question_number, (totals.get(r.question_number) ?? 0) + 1);
+            let opts: string[] = [];
+            try { opts = r.selected_options ? JSON.parse(r.selected_options) : []; } catch { opts = []; }
+            if (opts.length === 0) continue;
+            let m = counts.get(r.question_number);
+            if (!m) { m = new Map(); counts.set(r.question_number, m); }
+            for (const o of opts) m.set(o, (m.get(o) ?? 0) + 1);
+          }
+          perClass.push({ classId: cls.classId, totals, counts });
+        }
+        if (anyRows > 0) {
+          optionStats = [];
+          for (const [qNum, def] of Array.from(defs.entries()).sort((a, b) => a[0] - b[0])) {
+            optionStats.push({
+              questionNumber: qNum,
+              answerKey: def.answerKey,
+              byClass: perClass.map((pc) => {
+                const total = pc.totals.get(qNum) ?? 0;
+                const counts = pc.counts.get(qNum);
+                return {
+                  classId: pc.classId,
+                  options: OPTION_LABELS.slice(0, def.optionCount).map((label) => {
+                    const count = counts?.get(label) ?? 0;
+                    return {
+                      option: label, count,
+                      rate: total > 0 ? Math.round((count / total) * 100) : 0,
+                      isCorrect: def.answerKey.includes(label)
+                    } as OptionStat;
+                  })
+                };
+              })
+            });
+          }
+        }
+      }
+    }
+
+    return { classes, questionStats, ...(optionStats ? { optionStats } : {}) };
   }
 
   async getExportData(examId: number, classId?: number): Promise<ExportData> {

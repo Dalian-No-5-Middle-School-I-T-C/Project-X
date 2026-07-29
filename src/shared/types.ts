@@ -548,6 +548,10 @@ export type ExamOverview = {
   stdDev: number;
   passRate: number;
   excellentRate: number;
+  /** 及格线（绝对分），由全局阈值配置 × 满分计算 */
+  passScore: number;
+  /** 优秀线（绝对分），由全局阈值配置 × 满分计算 */
+  excellentScore: number;
   distribution: Array<{ range: string; min: number; max: number; count: number }>;
   scoreSummary: ScoreSummary | null;
   overallScoreSummary: ScoreSummary | null;
@@ -582,6 +586,75 @@ export type QuestionAnalysisItem = {
   errorRate: number;
   errorRateLevel: ErrorRateLevel;
   totalCount: number;
+};
+
+// ── 逐题选项分析（v29）──────────────────────────────
+export type OptionStat = {
+  /** 选项标签，如 "A" */
+  option: string;
+  /** 选择该选项的人次（多选题按人次计） */
+  count: number;
+  /** 选择率（百分比 0-100，基数为作答人数） */
+  rate: number;
+  /** 是否属于标准答案 */
+  isCorrect: boolean;
+};
+
+export type OptionAnalysisQuestion = {
+  questionNumber: number;
+  /** single / multiple / indeterminate */
+  mode: string;
+  optionCount: number;
+  maxScore: number;
+  answerKey: string[];
+  /** 满分率（百分比）；无法判定时为 null */
+  correctRate: number | null;
+  answeredCount: number;
+  unansweredCount: number;
+  options: OptionStat[];
+};
+
+export type OptionAnalysisResponse = {
+  /** false = 该考试阅卷时未记录选项数据（历史考试） */
+  hasOptionData: boolean;
+  questions: OptionAnalysisQuestion[];
+};
+
+// ── 跨班对比（v29）─────────────────────────────────
+export type ClassComparisonClassSummary = {
+  classId: number;
+  className: string;
+  gradeName?: string;
+  count: number;
+  avgScore: number;
+  maxScore: number;
+  minScore: number;
+  median: number;
+  stdDev: number;
+  passRate: number;
+  excellentRate: number;
+  distribution: Array<{ range: string; min: number; max: number; count: number }>;
+};
+
+export type ClassComparisonQuestionStat = {
+  questionNumber: number;
+  /** objective / subjective */
+  scoreType: string;
+  maxScore: number;
+  byClass: Array<{ classId: number; scoreRate: number; correctRate: number | null }>;
+};
+
+export type ClassComparisonOptionStat = {
+  questionNumber: number;
+  answerKey: string[];
+  byClass: Array<{ classId: number; options: OptionStat[] }>;
+};
+
+export type ClassComparisonResponse = {
+  classes: ClassComparisonClassSummary[];
+  questionStats: ClassComparisonQuestionStat[];
+  /** 仅当 includeOptions=1 且有选项数据时返回 */
+  optionStats?: ClassComparisonOptionStat[];
 };
 
 export type ExamRecord = {

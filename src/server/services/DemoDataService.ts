@@ -232,15 +232,51 @@ export function clearDemoData(): ClearDemoStats {
   return cleanupDemoData(getDatabase());
 }
 
+// 演示客观题答案（5 道单选，4 个选项），供逐题选项分析演示
+const DEMO_ANSWER_KEYS: Record<number, string[]> = { 1: ["A"], 2: ["B"], 3: ["C"], 4: ["D"], 5: ["A"] };
+const DEMO_OPTIONS = ["A", "B", "C", "D"];
+
+/** 为演示答题卡补一个客观题块 + 标准答案，使选项分析端点能解析题元数据 */
+function ensureDemoObjectiveBlock(db: Database.Database, cardId: string): void {
+  const blockId = `${cardId}-obj`;
+  db.prepare(`
+    INSERT OR IGNORE INTO objective_blocks
+      (id, card_id, sort_order, title, question_start, question_count, option_count, mode, score_per_question)
+    VALUES (?, ?, 0, '选择题', 1, 5, 4, 'single', 30)
+  `).run(blockId, cardId);
+  const insertKey = db.prepare(
+    "INSERT OR IGNORE INTO objective_answer_keys (block_id, question_number, correct_options) VALUES (?, ?, ?)"
+  );
+  for (const [q, key] of Object.entries(DEMO_ANSWER_KEYS)) {
+    insertKey.run(blockId, Number(q), JSON.stringify(key));
+  }
+}
+
+/**
+ * 生成学生所选选项（确定性伪随机，重播种结果稳定）：
+ * 得分 ≥ 满分 80% 判为答对 → 选标准答案；否则选一个干扰项，
+ * 每题设一个「热门干扰项」（约 55% 错选集中于此），让选项分布图更有讲解价值。
+ */
+function demoSelectedOptions(examId: number, studentId: number, q: number, score: number, maxScore: number): string[] {
+  const key = DEMO_ANSWER_KEYS[q] ?? ["A"];
+  if (score >= maxScore * 0.8) return [...key];
+  const wrongs = DEMO_OPTIONS.filter((o) => !key.includes(o));
+  const h = (examId * 31 + studentId * 7 + q * 13) % 100;
+  const popular = wrongs[q % wrongs.length];
+  return [h < 55 ? popular : wrongs[h % wrongs.length]];
+}
+
 function seedQuestionScores(
   db: Database.Database,
   examId: number,
+  cardId: string,
   studentIdByNumber: Map<string, number>,
   scores: Record<string, number>
 ): void {
+  ensureDemoObjectiveBlock(db, cardId);
   const insertQ = db.prepare(`
-    INSERT INTO question_scores (exam_id, student_id, question_number, score, max_score, score_type)
-    VALUES (?, ?, ?, ?, ?, 'objective')
+    INSERT INTO question_scores (exam_id, student_id, question_number, score, max_score, score_type, selected_options)
+    VALUES (?, ?, ?, ?, ?, 'objective', ?)
   `);
   for (const [num, total] of Object.entries(scores)) {
     if (total <= 0) continue;
@@ -250,7 +286,7 @@ function seedQuestionScores(
     const remainder = total - perQ * 5;
     for (let q = 1; q <= 5; q++) {
       const score = q === 5 ? perQ + remainder : perQ;
-      insertQ.run(examId, sid, q, score, 30);
+      insertQ.run(examId, sid, q, score, 30, JSON.stringify(demoSelectedOptions(examId, sid, q, score, 30)));
     }
   }
 }
@@ -355,7 +391,7 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
       const sid = studentIdByNumber.get(num);
       if (sid) insertScore.run(examId, sid, total, total);
     }
-    if (spec.withQuestions) seedQuestionScores(db, examId, studentIdByNumber, spec.scores);
+    if (spec.withQuestions) seedQuestionScores(db, examId, spec.cardId, studentIdByNumber, spec.scores);
     return examId;
   }
 
