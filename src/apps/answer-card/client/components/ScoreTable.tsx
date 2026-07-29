@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, Minus, Search } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { DataCard } from "./ui/DataCard";
+import { formatScore } from "../util/format";
 import type { ScoreTableRow, ScoreDisplayMode } from "../../../../shared/types";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 
@@ -14,10 +15,6 @@ interface Props {
 }
 
 type SortKey = "totalScore" | "gradeRank" | "classRank" | "displayValue" | "rankChange";
-
-function formatScore(v: number): string {
-  return Number.isInteger(v) ? String(v) : v.toFixed(1);
-}
 
 function modeLabel(m: ScoreDisplayMode): string {
   return m === "deviation" ? "偏差值" : m === "zscore" ? "Z值" : "百分位";

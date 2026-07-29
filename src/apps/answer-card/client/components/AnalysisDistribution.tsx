@@ -1,5 +1,6 @@
 import { BarChart3 } from "lucide-react";
 import type { ClassScoreSummary, ScoreSummary } from "../../../../shared/types";
+import { formatScore } from "../util/format";
 
 interface Props {
   summary: ScoreSummary | null;
@@ -15,10 +16,6 @@ type PlotItem = {
   summary: ScoreSummary;
   active: boolean;
 };
-
-function formatScore(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
-}
 
 function clampLabel(label: string): string {
   return label.length > 8 ? `${label.slice(0, 8)}…` : label;

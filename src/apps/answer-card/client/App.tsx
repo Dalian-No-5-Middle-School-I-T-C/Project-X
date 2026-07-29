@@ -101,14 +101,10 @@ import { ImportCardModal, type ImportCardFormData } from "./components/ImportCar
 import { AnalysisOverview } from "./components/AnalysisOverview";
 import { AnalysisDistribution } from "./components/AnalysisDistribution";
 import { AnalysisAiPanel } from "./components/AnalysisAiPanel";
-import { AnalysisRanking } from "./components/AnalysisRanking";
 import { AnalysisQuestions } from "./components/AnalysisQuestions";
 import { AnalysisTrend } from "./components/AnalysisTrend";
 import type {
-  ExamOverview,
   ExamRecord,
-  QuestionAnalysisItem,
-  StudentRankingItem
 } from "../../../shared/types";
 import {
   modeLabels,
@@ -390,9 +386,6 @@ function App() {
   const [analysisClassId, setAnalysisClassId] = useState<string>("");
   const [analysisClasses, setAnalysisClasses] = useState<Array<{ classId: number; className: string }>>([]);
   const [showExportMenu, setShowExportMenu] = useState(false);
-  const [analysisOverview, setAnalysisOverview] = useState<ExamOverview | null>(null);
-  const [analysisRanking, setAnalysisRanking] = useState<StudentRankingItem[]>([]);
-  const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
   const [exams, setExams] = useState<ExamRecord[]>([]);
   const [examListRefreshKey, setExamListRefreshKey] = useState(0);
   // Exam groups
@@ -889,9 +882,6 @@ function App() {
       setSelectedExamIds(new Set());
       if (analysisExamId && target.exams.some((exam) => exam.id === analysisExamId)) {
         setAnalysisExamId(null);
-        setAnalysisOverview(null);
-        setAnalysisRanking([]);
-        setAnalysisQuestions([]);
       }
       await loadExams();
       if (target.deleteLinkedCards) {
@@ -1372,53 +1362,6 @@ function App() {
     }
   }
 
-  async function loadAnalysis(examId: number, classId?: string) {
-    setAnalysisExamId(examId);
-    const cidParam = classId ? `?classId=${classId}` : "";
-    try {
-      const [overview, ranking, questions, classes] = await Promise.all([
-        fetchJson<ExamOverview>(`/api/analysis/exams/${examId}/overview${cidParam}`),
-        fetchJson<StudentRankingItem[]>(`/api/analysis/exams/${examId}/students${cidParam}`),
-        fetchJson<QuestionAnalysisItem[]>(`/api/analysis/exams/${examId}/questions${cidParam}`),
-        classId ? Promise.resolve([]) : fetchJson<Array<{ classId: number; className: string }>>(`/api/analysis/exams/${examId}/classes`)
-      ]);
-      setAnalysisOverview(overview);
-      setAnalysisRanking(ranking);
-      setAnalysisQuestions(questions);
-      if (!classId) setAnalysisClasses(classes);
-      setStatus(`分析加载完成：${overview.gradedCount} 人${classId ? "（当前班级）" : ""}`);
-    } catch (err) {
-      setStatus(`分析加载失败：${err instanceof Error ? err.message : String(err)}`);
-      setAnalysisOverview(null);
-      setAnalysisRanking([]);
-      setAnalysisQuestions([]);
-    }
-  }
-
-  function downloadAnalysisCsv(classId?: string) {
-    if (!analysisExamId) return;
-    setShowExportMenu(false);
-    const params = classId ? `?classId=${classId}` : "";
-    const exam = exams.find(e => e.id === analysisExamId);
-    const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.xlsx`;
-
-    authFetch(`/api/analysis/exams/${analysisExamId}/export-csv${params}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(await res.text());
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        setStatus("Excel 导出完成");
-      })
-      .catch((err) => setStatus(`导出失败: ${err instanceof Error ? err.message : String(err)}`));
-  }
-
   const selectedBlock = card?.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null;
 
   if (loading) {
@@ -1525,7 +1468,6 @@ function App() {
     setAnalysisGroupId,
     showGroupExport,
     setShowGroupExport,
-    loadAnalysis,
     showImportCardModal,
     setShowImportCardModal,
     importCardData,
