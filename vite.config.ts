@@ -46,6 +46,28 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 5173,
       strictPort: true,
+      // Dev perf: pre-transform the first-screen module graph on startup
+      warmup: {
+        clientFiles: ["./src/apps/answer-card/client/main.tsx"]
+      },
+      // Dev perf: keep chokidar away from large non-frontend directories
+      watch: {
+        ignored: [
+          "**/.npm-cache/**",
+          "**/.qoder/**",
+          "**/.omo/**",
+          "**/data/**",
+          "**/testdata/**",
+          "**/release/**",
+          "**/resources/**",
+          "**/build/**",
+          "**/readus/**",
+          "**/input/**",
+          "**/native/**",
+          "**/llmclient/**",
+          "**/miniprogram/**"
+        ]
+      },
       proxy: {
         "/api": "http://127.0.0.1:5174",
         "/assets": "http://127.0.0.1:5174"
