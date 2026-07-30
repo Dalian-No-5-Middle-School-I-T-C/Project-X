@@ -200,6 +200,48 @@ async function main(): Promise<void> {
   ).n;
   ok(realStudentCount2 === 3, `重复清理后真实用户仍 ${realStudentCount2}（应=3）`);
 
+  // ── 7. P0 回归：真实学生占用固定演示学号（20260101~20260116） ──────
+  // 修复前：seedDemoData 的 UPDATE users SET is_demo=1 WHERE student_number IN (...)
+  // 会把该真实学生打成 is_demo=1 并加入演示班级/写入演示成绩，clearDemoData 随后删号。
+  section("7. 固定演示学号被真实学生占用");
+  const conflictNumber = "20260101";
+  const conflictId = (
+    db.prepare(
+      "INSERT INTO users (username, password_hash, name, role_id, student_number, is_demo) VALUES (?, ?, ?, ?, ?, 0)"
+    ).run("conflict-student", "hash", "真实学生乙", realRoleId, conflictNumber)
+  ).lastInsertRowid;
+
+  const seedStats2 = await seedDemoData();
+  ok(seedStats2.studentsSkipped === 1, `冲突学号被跳过（skipped=${seedStats2.studentsSkipped}）`);
+  ok(seedStats2.studentsCreated === 15, `其余 15 名演示学生正常创建（实际 ${seedStats2.studentsCreated}）`);
+
+  const conflictFlag = db
+    .prepare("SELECT is_demo FROM users WHERE id = ?")
+    .get(conflictId) as { is_demo: number } | undefined;
+  ok(conflictFlag?.is_demo === 0, `真实学生 ${conflictNumber} 未被标记 is_demo=1（实际 ${conflictFlag?.is_demo}）`);
+
+  const conflictInDemoClass = Boolean(
+    db.prepare(
+      "SELECT 1 FROM class_students cs JOIN classes c ON c.id = cs.class_id WHERE cs.student_id = ? AND c.is_demo = 1"
+    ).get(conflictId)
+  );
+  ok(!conflictInDemoClass, "真实学生未被加入演示班级");
+
+  const conflictHasDemoScore = Boolean(
+    db.prepare(
+      "SELECT 1 FROM student_scores ss JOIN exams e ON e.id = ss.exam_id WHERE ss.student_id = ? AND e.name LIKE '演示-%'"
+    ).get(conflictId)
+  );
+  ok(!conflictHasDemoScore, "真实学生没有演示考试成绩记录");
+
+  const clearStats2 = clearDemoData();
+  ok(
+    clearStats2.removedStudents === 17,
+    `仅清除 15 演示学生 + 2 演示教师（实际 removedStudents=${clearStats2.removedStudents}）`
+  );
+  const conflictSurvives = Boolean(db.prepare("SELECT 1 FROM users WHERE id = ?").get(conflictId));
+  ok(conflictSurvives, `清除演示数据后真实学生 ${conflictNumber} 账号仍存在`);
+
   closeDatabase();
   console.log(`\n────────────────────────────────────────\n结果：\x1b[32m${passed} 通过\x1b[0m，\x1b[31m${failed} 失败\x1b[0m`);
   if (failed > 0) {

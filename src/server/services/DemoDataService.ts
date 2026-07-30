@@ -351,18 +351,31 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   );
   console.log(`[seed] 学生: 新增 ${batch.created}，跳过 ${batch.skipped}`);
 
-  // v1.9.6: 演示学生打 is_demo=1（按学号集合匹配；学号字段唯一，不波及真实学生）
-  const studentNumPh = STUDENT_NUMBERS.map(() => "?").join(",");
-  db.prepare(`UPDATE users SET is_demo = 1 WHERE student_number IN (${studentNumPh})`).run(...STUDENT_NUMBERS);
-
+  // v1.9.7: 仅对本次新建的演示学生打 is_demo=1（按 createdIds 精确匹配）。
+  // 不能按学号集合盲打标：若真实学生恰好占用固定演示学号，
+  // batchCreateStudents 会跳过创建，盲打标会把该真实学生标成演示账号，
+  // 后续 clearDemoData 会删除真实账号（P0 数据丢失风险）。
   const studentIdByNumber = new Map<string, number>();
-  for (const num of STUDENT_NUMBERS) {
-    const row = db.prepare("SELECT id FROM users WHERE student_number = ?").get(num) as { id: number } | undefined;
-    if (row) studentIdByNumber.set(num, row.id);
+  if (batch.createdIds.length > 0) {
+    const createdPh = batch.createdIds.map(() => "?").join(",");
+    db.prepare(`UPDATE users SET is_demo = 1 WHERE id IN (${createdPh})`).run(...batch.createdIds);
+    // 演示班级分班 / 成绩种子同样只覆盖本次新建的演示学生，被跳过的真实学生不入演示班级、不写演示成绩
+    const createdRows = db.prepare(
+      `SELECT id, student_number FROM users WHERE id IN (${createdPh})`
+    ).all(...batch.createdIds) as Array<{ id: number; student_number: string | null }>;
+    for (const row of createdRows) {
+      if (row.student_number) studentIdByNumber.set(row.student_number, row.id);
+    }
   }
 
-  await classRepo.addStudents(class1.id, STUDENT_NUMBERS.slice(0, 8).map((n) => studentIdByNumber.get(n)!));
-  await classRepo.addStudents(class2.id, STUDENT_NUMBERS.slice(8).map((n) => studentIdByNumber.get(n)!));
+  const class1StudentIds = STUDENT_NUMBERS.slice(0, 8)
+    .map((n) => studentIdByNumber.get(n))
+    .filter((id): id is number => typeof id === "number");
+  const class2StudentIds = STUDENT_NUMBERS.slice(8)
+    .map((n) => studentIdByNumber.get(n))
+    .filter((id): id is number => typeof id === "number");
+  await classRepo.addStudents(class1.id, class1StudentIds);
+  await classRepo.addStudents(class2.id, class2StudentIds);
 
   const insertCard = db.prepare(`
     INSERT INTO answer_cards (id, title, subject_label, exam_date, is_demo)
