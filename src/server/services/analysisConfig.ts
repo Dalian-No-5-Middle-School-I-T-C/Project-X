@@ -48,14 +48,22 @@ function clamp(v: number, min: number, max: number, fallback: number): number {
   return v;
 }
 
-export function parseErrorTiers(raw: string | null | undefined): [number, number, number] {
-  const fallback = DEFAULT_ANALYSIS_THRESHOLDS.errorTiers;
-  if (!raw) return [...fallback];
+/**
+ * 严格解析错误率档位：必须是 3 个位于 (0, 100] 且严格递减的数值；非法返回 null。
+ * 用于 PUT 入参校验（非法应报 400 而非静默回退默认值）。
+ */
+export function parseErrorTiersStrict(raw: string | null | undefined): [number, number, number] | null {
+  if (!raw) return null;
   const parts = String(raw).split(",").map((s) => Number(s.trim()));
-  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n) || n <= 0 || n > 100)) return [...fallback];
+  if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n) || n <= 0 || n > 100)) return null;
   const [high, medium, low] = parts;
-  if (!(high > medium && medium > low)) return [...fallback];
+  if (!(high > medium && medium > low)) return null;
   return [high, medium, low];
+}
+
+/** 宽松解析：非法时回退默认值（仅用于读库内已存配置，避免脏数据致分析不可用） */
+export function parseErrorTiers(raw: string | null | undefined): [number, number, number] {
+  return parseErrorTiersStrict(raw) ?? [...DEFAULT_ANALYSIS_THRESHOLDS.errorTiers];
 }
 
 export async function getAnalysisThresholds(): Promise<AnalysisThresholds> {
@@ -106,7 +114,14 @@ export function validateThresholdsInput(body: unknown): { ok: true; value: Analy
   if (!Number.isFinite(segmentSize) || segmentSize < 1 || segmentSize > 100 || !Number.isInteger(segmentSize)) {
     return { ok: false, message: "分数段粒度必须是 1-100 的整数" };
   }
-  const tiers = parseErrorTiers(typeof b.errorTiers === "string" ? b.errorTiers : Array.isArray(b.errorTiers) ? (b.errorTiers as unknown[]).join(",") : null);
+  // Bugfix: errorTiers 非法时报 400，而非静默替换成默认值导致「保存成功但未生效」
+  const rawTiers = typeof b.errorTiers === "string"
+    ? b.errorTiers
+    : Array.isArray(b.errorTiers) ? (b.errorTiers as unknown[]).join(",") : null;
+  const tiers = parseErrorTiersStrict(rawTiers);
+  if (!tiers) {
+    return { ok: false, message: "错误率档位必须是 3 个位于 (0, 100] 且严格递减的数值，如 \"70,50,30\"" };
+  }
   return {
     ok: true,
     value: { passRate, excellentRate, segmentSize, errorTiers: tiers }

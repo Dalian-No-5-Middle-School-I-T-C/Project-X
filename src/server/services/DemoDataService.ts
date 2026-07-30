@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 import type Database from "better-sqlite3";
-import { getDatabase, resolveAnswerCardDataDir, type DbAdapter } from "../db";
+import { getDatabase, hashPassword, resolveAnswerCardDataDir, type DbAdapter } from "../db";
 import { UserRepository } from "../repositories/UserRepository";
 import { ClassRepository } from "../repositories/ClassRepository";
 import { ROLE_IDS } from "../auth/permissions";
@@ -310,34 +310,28 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
 
   cleanupDemoData(db);
 
-  const grade = await classRepo.createGrade("高一(演示)", 1);
-  const class1 = await classRepo.createClass(grade.id, "演示1班", 1);
-  const class2 = await classRepo.createClass(grade.id, "演示2班", 2);
-
-  // v1.9.6: 标记刚创建的演示年级/班级为 is_demo=1，使 clearDemoData() 按 is_demo 标记
-  // 清理，不依赖硬编码名称。即使真实班级/年级同名也不被误删。
-  db.prepare("UPDATE grades SET is_demo = 1 WHERE id = ?").run(grade.id);
-  db.prepare("UPDATE classes SET is_demo = 1 WHERE id = ?").run(class1.id);
-  db.prepare("UPDATE classes SET is_demo = 1 WHERE id = ?").run(class2.id);
-
-  await userRepo.createUser({
-    username: "demo-teacher",
-    password: "teacher123",
-    name: "演示教师",
-    role_id: ROLE_IDS.TEACHER,
-    subject: "数学"
-  });
-
-  await userRepo.createUser({
-    username: "demo-teacher-2",
-    password: "teacher123",
-    name: "演示教师乙",
-    role_id: ROLE_IDS.TEACHER,
-    subject: "数学"
-  });
-
-  // v1.9.6: 把刚创建的演示教师打标记（按唯一用户名匹配，不影响真实账号）
-  db.prepare("UPDATE users SET is_demo = 1 WHERE username IN ('demo-teacher', 'demo-teacher-2')").run();
+  // v1.9.8: 年级/班级/演示教师在单个事务内以 INSERT 直写 is_demo=1，创建与打标原子完成。
+  // 此前「先创建再 UPDATE 打标」存在窗口：若进程在两步之间崩溃，demo-teacher 以 is_demo=0
+  // 残留（users.username UNIQUE），下次导入 createUser 必然冲突且 cleanup 无法清理，
+  // 导致导入永久失败。bcrypt 哈希为异步，须在同步事务外预先计算。
+  const teacherPasswordHash = await hashPassword("teacher123");
+  const created = db.transaction(() => {
+    const gradeId = Number(
+      db.prepare("INSERT INTO grades (name, sort_order, is_demo) VALUES (?, ?, 1)").run("高一(演示)", 1).lastInsertRowid
+    );
+    const insertClass = db.prepare("INSERT INTO classes (grade_id, name, sort_order, is_demo) VALUES (?, ?, ?, 1)");
+    const class1Id = Number(insertClass.run(gradeId, "演示1班", 1).lastInsertRowid);
+    const class2Id = Number(insertClass.run(gradeId, "演示2班", 2).lastInsertRowid);
+    const insertTeacher = db.prepare(
+      "INSERT INTO users (username, password_hash, name, role_id, subject, is_demo) VALUES (?, ?, ?, ?, ?, 1)"
+    );
+    insertTeacher.run("demo-teacher", teacherPasswordHash, "演示教师", ROLE_IDS.TEACHER, "数学");
+    insertTeacher.run("demo-teacher-2", teacherPasswordHash, "演示教师乙", ROLE_IDS.TEACHER, "数学");
+    return { gradeId, class1Id, class2Id };
+  })();
+  const grade = { id: created.gradeId };
+  const class1 = { id: created.class1Id };
+  const class2 = { id: created.class2Id };
 
   // 显式传 password=学号：batchCreateStudents 默认生成随机不可推导密码，
   // 此处覆盖为可读值以便 verify.ts 能用学号登录验证 学生端功能（与 manifest 一致）。

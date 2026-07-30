@@ -107,53 +107,6 @@ function ThresholdSettingsModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ── 临界生列表 ──────────────────────────────────────
-function CriticalStudents({ overview, className }: { overview: ExamOverview; className: string }) {
-  const { passScore, excellentScore } = overview;
-  const margin = Math.max(1, Math.round(passScore * 0.05)); // ±5% 左右
-  const passLow = passScore - margin;
-  const passHigh = passScore + margin;
-  const excLow = excellentScore - margin;
-  const excHigh = excellentScore + margin;
-
-  const [critical, setCritical] = useState<Array<{ name: string; number: string; score: number }>>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    // Load score table to find borderline students
-    fetchJson<{ rows: ScoreTableRow[] }>(`/api/analysis/exams/${overview.totalStudents > 0 ? "" : ""}score-table?displayMode=gradeRank`)
-      .then((d) => {
-        const borderline = d.rows
-          .filter((r) => (r.totalScore >= passLow && r.totalScore <= passHigh) || (r.totalScore >= excLow && r.totalScore <= excHigh))
-          .sort((a, b) => a.totalScore - b.totalScore)
-          .map((r) => ({ name: r.studentName, number: r.studentNumber, score: r.totalScore }));
-        setCritical(borderline);
-      })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [passLow, passHigh, excLow, excHigh]);
-
-  if (loading) return null;
-  if (critical.length === 0) return <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: 8 }}>暂无限界生</div>;
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      {critical.map((s, i) => (
-        <div key={i} style={{
-          display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "2px 0",
-          color: s.score >= (passLow + excLow) / 2 ? "var(--warning)" : "var(--text-secondary)"
-        }}>
-          <span style={{ minWidth: 24, fontWeight: 600, color: s.score >= passScore ? "var(--success)" : s.score >= passLow ? "var(--warning)" : "var(--muted)" }}>
-            {s.score >= excellentScore ? "🏆" : s.score >= passScore ? "✓" : "i"}
-          </span>
-          <span>{s.name}</span>
-          <span style={{ marginLeft: "auto", fontWeight: 500 }}>{formatScore(s.score)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 // ── 主组件 ──────────────────────────────────────────
 export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const { user, isAdmin } = useAuth();
