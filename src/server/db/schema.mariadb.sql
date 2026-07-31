@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS users (
     highlight_missing_paper TINYINT DEFAULT 1,
     is_active        TINYINT DEFAULT 1,
     show_tab_bar     TINYINT DEFAULT 0,             -- v1.9.0: 底部导航栏开关
+    is_demo          TINYINT NOT NULL DEFAULT 0,     -- v1.9.6: 1=演示数据（clearDemoData 仅按此标记清理）
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -72,6 +73,7 @@ CREATE TABLE IF NOT EXISTS grades (
     id           INT AUTO_INCREMENT PRIMARY KEY,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -80,6 +82,7 @@ CREATE TABLE IF NOT EXISTS classes (
     grade_id     INT NOT NULL,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (grade_id) REFERENCES grades(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -145,6 +148,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     extra_notes      TEXT,
     knowledge_points_text TEXT,
     created_by       INT,
+    is_demo          TINYINT NOT NULL DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(id)
@@ -560,6 +564,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     score           DOUBLE,
     max_score       DOUBLE,
     score_type      VARCHAR(20),
+    selected_options TEXT,
     manually_modified TINYINT DEFAULT 0,
     modified_by     INT,
     modified_at     DATETIME,

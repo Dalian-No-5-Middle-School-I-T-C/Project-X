@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Database, Download, Eye, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit, Shield } from "lucide-react";
+import { ChevronDown, Database, Download, Eye, FlaskConical, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit, Shield, Terminal } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson, authFetch } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
@@ -36,6 +36,8 @@ export function AccountMenu({
   const [busy, setBusy] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [importBusy, setImportBusy] = useState(false);
+  const [demoBusy, setDemoBusy] = useState(false);
+  const [showDevMode, setShowDevMode] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [displayMode, setDisplayMode] = useState("zscore");
   const [reviewThreshold, setReviewThreshold] = useState(0.12);
@@ -305,8 +307,35 @@ export function AccountMenu({
     }
   }
 
-  async function handleImportDb(file: File) {
+  async function handleImportDemo() {
+    if (!confirm("将导入演示测试数据（9 场考试、16 名学生、2 个合集，含网阅演示），不会覆盖现有数据。继续？")) return;
     setImportMsg("");
+    setDemoBusy(true);
+    try {
+      const result = await fetchJson<{ ok: boolean; message?: string }>("/api/db/import-demo", { method: "POST" });
+      setImportMsg(result.message || "演示数据导入完成");
+    } catch (err) {
+      setImportMsg(err instanceof Error ? err.message : "演示数据导入失败");
+    } finally {
+      setDemoBusy(false);
+    }
+  }
+
+  async function handleClearDemo() {
+    if (!confirm("将清除全部「演示-」前缀的演示数据（不影响真实数据）。继续？")) return;
+    setImportMsg("");
+    setDemoBusy(true);
+    try {
+      const result = await fetchJson<{ ok: boolean; message?: string }>("/api/db/clear-demo", { method: "POST" });
+      setImportMsg(result.message || "演示数据已清除");
+    } catch (err) {
+      setImportMsg(err instanceof Error ? err.message : "演示数据清除失败");
+    } finally {
+      setDemoBusy(false);
+    }
+  }
+
+  async function handleImportDb(file: File) {    setImportMsg("");
     setImportBusy(true);
     try {
       const resp = await authFetch("/api/db/restore", {
@@ -458,9 +487,44 @@ export function AccountMenu({
                   if (file) handleImportDb(file);
                 }}
               />
-              {importMsg && (
-                <div style={{ padding: "6px 12px", fontSize: 12, color: importMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>
-                  {importMsg}
+              {/* ── v1.9.6: 开发者模式子菜单（演示数据等高危功能，调研/导入演示用） ── */}
+              <button
+                type="button"
+                className="account-menu-item"
+                onClick={() => { setShowDevMode(!showDevMode); setImportMsg(""); }}
+                aria-expanded={showDevMode}
+              >
+                <Terminal size={15} /> 开发者模式
+                <ChevronDown size={14} style={{ marginLeft: "auto", transform: showDevMode ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+              </button>
+              {showDevMode && (
+                <div style={{ padding: "4px 12px 4px 28px", display: "flex", flexDirection: "column", gap: 2, background: "var(--surface-soft)", borderLeft: "2px solid var(--line)" }}>
+                  <div style={{ fontSize: 10, color: "var(--muted)", letterSpacing: "0.5px", textTransform: "uppercase", marginTop: 2, marginBottom: 2 }}>
+                    演示数据
+                  </div>
+                  <button
+                    type="button"
+                    className="account-menu-item"
+                    onClick={() => void handleImportDemo()}
+                    disabled={demoBusy}
+                    style={{ fontSize: 13, padding: "6px 8px" }}
+                  >
+                    <FlaskConical size={14} /> {demoBusy ? "处理中..." : "导入演示数据"}
+                  </button>
+                  <button
+                    type="button"
+                    className="account-menu-item"
+                    onClick={() => void handleClearDemo()}
+                    disabled={demoBusy}
+                    style={{ fontSize: 13, padding: "6px 8px" }}
+                  >
+                    <Trash2 size={14} /> 清除演示数据
+                  </button>
+                  {importMsg && (
+                    <div style={{ fontSize: 11, padding: "4px 0", color: importMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>
+                      {importMsg}
+                    </div>
+                  )}
                 </div>
               )}
             </>

@@ -4914,19 +4914,20 @@ input[type="checkbox"]:disabled {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
-  padding: 20px;
-  min-width: 220px;
+  gap: 14px;
+  padding: 24px;
+  min-width: 348px;
 }
 
 .sponsor-channel-name {
   margin: 0;
-  font-size: 13px;
+  font-size: 16px;
+  font-weight: 600;
 }
 
 .sponsor-qr-image {
-  width: 180px;
-  height: 180px;
+  width: 300px;
+  height: 300px;
   border-radius: 12px;
   object-fit: contain;
 }
@@ -4937,8 +4938,8 @@ input[type="checkbox"]:disabled {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  width: 180px;
-  height: 180px;
+  width: 300px;
+  height: 300px;
   border: 1px dashed var(--line);
   border-radius: 12px;
   color: var(--muted);
@@ -6546,12 +6547,12 @@ body.has-bg-image::after {
   .sponsor-channel-card {
     min-width: 0;
     width: 100%;
-    max-width: 280px;
+    max-width: 320px;
   }
   .sponsor-qr-image,
   .sponsor-qr-placeholder {
-    width: 140px;
-    height: 140px;
+    width: 240px;
+    height: 240px;
   }
 
   /* ── Guide Mode ── */
@@ -6949,3 +6950,62 @@ body.has-bg-image::after {
   .paper-upload-panel { max-width: 90vw; }
 }
 
+
+/* ====== v29: 打印样式 (@media print) ====== */
+@media print {
+  /* 隐藏导航、交互控件 */
+  .mode-toggle,
+  .analysis-header-bar button,
+  .analysis-header-bar select,
+  .sub-tab-bar,
+  #topbar,
+  #drawer-toggle,
+  .mobile-drawer,
+  .beian-footer {
+    display: none !important;
+  }
+
+  /* 白底、排除玻璃/阴影效果 */
+  body {
+    background: #fff !important;
+  }
+  .analysis-section,
+  .analysis-card,
+  .card,
+  .panel,
+  .modal-card {
+    background: #fff !important;
+    box-shadow: none !important;
+    border: 1px solid #ccc !important;
+    backdrop-filter: none !important;
+  }
+
+  /* 表格适应打印 */
+  table {
+    page-break-inside: avoid;
+  }
+  th, td {
+    color: #000 !important;
+    border-color: #999 !important;
+  }
+
+  /* 图表容器分页控制 */
+  .analysis-section {
+    page-break-inside: avoid;
+    margin-bottom: 12px !important;
+  }
+
+  /* 确保分析卡3-4列打印时不错乱 */
+  .analysis-cards {
+    display: grid !important;
+    grid-template-columns: repeat(4, 1fr) !important;
+  }
+
+  /* 隐藏滚动条 */
+  * {
+    overflow-y: visible !important;
+  }
+
+  /* 确保链接不丢失其内容 */
+  a { text-decoration: underline; }
+}

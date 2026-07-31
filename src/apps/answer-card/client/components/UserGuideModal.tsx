@@ -1,6 +1,9 @@
+import { lazy, Suspense } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
-import { UserGuidePage } from "./UserGuidePage";
+
+// 懒加载：隔离 react-markdown / remark-gfm / 用户指南 md 文本，仅打开弹窗时才加载
+const UserGuidePage = lazy(() => import("./UserGuidePage").then((m) => ({ default: m.UserGuidePage })));
 
 export function UserGuideModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   if (!open) return null;
@@ -17,7 +20,9 @@ export function UserGuideModal({ open, onClose }: { open: boolean; onClose: () =
             <X size={18} />
           </button>
         </div>
-        <UserGuidePage embedded />
+        <Suspense fallback={<p className="empty-text" style={{ padding: 24 }}>正在加载...</p>}>
+          <UserGuidePage embedded />
+        </Suspense>
       </div>
     </div>,
     document.body

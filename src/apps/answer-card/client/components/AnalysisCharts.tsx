@@ -14,6 +14,7 @@ ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarEle
 
 const BRAND_COLORS = ["#C00F28", "#E8354A", "#FF6B7A", "#FFB3BC", "#FDE8EC"];
 const CHART_COLORS = ["#C00F28", "#3B82F6", "#10B981", "#F59E0B", "#8B5CF6", "#EC4899", "#6366F1", "#14B8A6"];
+const DISTRIBUTION_GRADIENT = ["#E8354A", "#C00F28", "#9E0B20", "#7A0818", "#5A0612"];
 
 /** Chart.js uses Canvas API — resolve CSS variables to actual values */
 function resolveColor(input: string): string {
@@ -131,6 +132,85 @@ export function TrendLine({ data, height = 220, reverseY = false }: { data: Tren
               reverse: reverseY,
               grid: { color: "rgba(0,0,0,0.04)" },
             },
+            x: { grid: { display: false } },
+          },
+        } as any}
+      />
+    </div>
+  );
+}
+
+// ── Distribution bar chart (score range histogram) ───────
+
+interface HistogramData {
+  labels: string[];
+  values: number[];
+}
+
+/**
+ * 分数段柱状图（单班）。柱色按分数高低渐变（低分段深红 → 高分段红）。
+ * 用于替换原分析页 CSS 分布条 + 重复展示的环形图。
+ */
+export function DistributionBar({ data, height = 240 }: { data: HistogramData; height?: number }) {
+  const chartData = {
+    labels: data.labels,
+    datasets: [{
+      data: data.values,
+      backgroundColor: data.labels.map((_, i) =>
+        DISTRIBUTION_GRADIENT[Math.min(Math.floor(i * DISTRIBUTION_GRADIENT.length / Math.max(1, data.labels.length)), DISTRIBUTION_GRADIENT.length - 1)]
+      ),
+      borderRadius: 6,
+      barPercentage: 0.85,
+    }],
+  };
+  return (
+    <div style={{ height }}>
+      <Bar
+        data={chartData}
+        options={{
+          ...CHART_BASE,
+          plugins: { ...CHART_BASE.plugins, legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, grid: { color: "rgba(0,0,0,0.04)" }, ticks: { precision: 0 } },
+            x: { grid: { display: false } },
+          },
+        } as any}
+      />
+    </div>
+  );
+}
+
+/**
+ * 多班对比分段柱状图（分组）。每个分段一组柱，每班一根。
+ * className 列表决定图例顺序；class 排名为 [分段][班级] 的二维数组。
+ */
+export function ClassDistributionBar({
+  labels, classes, matrix, height = 280,
+}: {
+  labels: string[];
+  classes: Array<{ className: string }>;
+  /** matrix[groupIndex][classIndex] = 人数 */
+  matrix: number[][];
+  height?: number;
+}) {
+  const chartData = {
+    labels,
+    datasets: classes.map((cls, ci) => ({
+      label: cls.className,
+      data: matrix.map((row) => row[ci] ?? 0),
+      backgroundColor: CHART_COLORS[ci % CHART_COLORS.length],
+      borderRadius: 4,
+      barPercentage: 0.8,
+    })),
+  };
+  return (
+    <div style={{ height }}>
+      <Bar
+        data={chartData}
+        options={{
+          ...CHART_BASE,
+          scales: {
+            y: { beginAtZero: true, grid: { color: "rgba(0,0,0,0.04)" }, ticks: { precision: 0 } },
             x: { grid: { display: false } },
           },
         } as any}

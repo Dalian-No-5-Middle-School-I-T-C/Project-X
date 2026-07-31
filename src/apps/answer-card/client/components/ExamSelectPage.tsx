@@ -3,6 +3,7 @@ import { CalendarDays, Layers, Save, Search, Trash2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { DataCard } from "./ui/DataCard";
+import { formatScore } from "../util/format";
 import type {
   CrossExamAttendanceMode,
   CrossExamGroup,
@@ -29,9 +30,6 @@ function addDays(date: string, days: number): string {
   const d = new Date(`${date}T00:00:00.000Z`);
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
-}
-function formatScore(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 export function ExamSelectPage({ onSelectExam, onSelectGroup, refreshKey = 0 }: Props) {

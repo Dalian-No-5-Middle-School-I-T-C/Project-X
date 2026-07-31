@@ -29,7 +29,7 @@ function readServerVersion(): string {
   return "0.0.0";
 }
 const SERVER_VERSION = readServerVersion();
-import { ensureDefaultAdmin, getMysqlDb, initializeDatabase, initMariadbSchema, healthCheck, type DbAdapter } from "../../../server/db";
+import { ensureDefaultAdmin, getMysqlDb, buildUpsertSQL, initializeDatabase, initMariadbSchema, healthCheck, type DbAdapter } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
@@ -344,11 +344,21 @@ export async function persistGradingResults(
     SELECT id FROM users WHERE student_number = ? AND role_id = 3 LIMIT 1
   `;
 
-  const insertQsSql = `
-    REPLACE INTO question_scores
-      (exam_id, student_id, question_number, question_id, score, max_score, score_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `;
+  // Bugfix: 使用 ON CONFLICT upsert 代替 REPLACE INTO，避免重新阅卷时
+  // 静默清除 manually_modified/modified_by/modified_at 等手动改分标记。
+  // 冲突时仅更新分数相关列，保留手动修改元数据。
+  const upsertObjectiveQsSql = buildUpsertSQL(
+    db.dialect, "question_scores",
+    ["exam_id", "student_id", "question_number", "question_id", "score", "max_score", "score_type", "selected_options"],
+    ["exam_id", "student_id", "question_number", "score_type"],
+    ["question_id", "score", "max_score", "selected_options"]
+  );
+  const upsertSubjectiveQsSql = buildUpsertSQL(
+    db.dialect, "question_scores",
+    ["exam_id", "student_id", "question_number", "question_id", "score", "max_score", "score_type"],
+    ["exam_id", "student_id", "question_number", "score_type"],
+    ["question_id", "score", "max_score"]
+  );
 
   let persisted = 0;
   const failedStudents: GradingPersistenceFailure[] = [];
@@ -395,10 +405,14 @@ export async function persistGradingResults(
         await txExamRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
 
         for (const q of row.questions) {
-          await tx.run(insertQsSql, examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+          await tx.run(
+            upsertObjectiveQsSql,
+            examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective",
+            JSON.stringify(q.selectedOptions ?? [])
+          );
         }
         for (const sq of row.subjectiveQuestions ?? []) {
-          await tx.run(insertQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
+          await tx.run(upsertSubjectiveQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
         }
       });
       persisted++;

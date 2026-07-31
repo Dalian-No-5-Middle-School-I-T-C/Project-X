@@ -1,7 +1,5 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+﻿import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { NavLink, Route, Routes, Navigate, useBlocker, useLocation, useNavigate } from "react-router-dom";
-import { DesignPage } from "./pages/DesignPage";
-import { ExamManagePage } from "./pages/ExamManagePage";
 import { MODE_PATH, pathToMode } from "./modeRoutes";
 import { WorkspaceProvider, type WorkspaceValue } from "./WorkspaceContext";
 import {
@@ -33,31 +31,34 @@ import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "./auth/api
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
-import { AccountManagement } from "./components/AccountManagement";
 import { BeianFooter } from "./components/BeianFooter";
-import { StudentScores } from "./components/StudentScores";
-import { SponsorPage } from "./components/SponsorPage";
-import { UserGuidePage } from "./components/UserGuidePage";
-import { PermissionManager } from "./components/PermissionManager";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
-import { PaperUploadPanel } from "./components/PaperUploadPanel";
-import { ExamSelectPage } from "./components/ExamSelectPage";
-import { ScoreDetailPage } from "./components/ScoreDetailPage";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
-import { ExamGroupDetailPage } from "./components/ExamGroupDetailPage";
 import { GroupExportModal } from "./components/GroupExportModal";
-import { HomePage } from "./components/HomePage";
-import { GlobalSettingsPage } from "./components/GlobalSettingsPage";
-import { GradePanel } from "./components/GradePanel";
-import { ExamDetailPage } from "./components/ExamDetailPage";
 import { MobileDrawer } from "./components/MobileDrawer";
 import { HomeRoutePage } from "./pages/HomeRoutePage";
-import { AnalysisRoutePage } from "./pages/AnalysisRoutePage";
-import { ScoresRoutePage } from "./pages/ScoresRoutePage";
-import { AccountRoutePage } from "./pages/AccountRoutePage";
-import { SponsorRoutePage, PermissionsRoutePage, GuideRoutePage } from "./pages/InfoRoutePages";
-import { GlobalSettingsRoutePage } from "./pages/GlobalSettingsRoutePage";
+
+// 路由级懒加载（dev 首屏性能）：登录后首屏只需 HomeRoutePage，
+// 其余模式页面按需加载，将 chart.js / react-markdown 等重依赖隔离出首屏模块图。
+const DesignPage = lazy(() => import("./pages/DesignPage").then((m) => ({ default: m.DesignPage })));
+const ExamManagePage = lazy(() => import("./pages/ExamManagePage").then((m) => ({ default: m.ExamManagePage })));
+const AnalysisRoutePage = lazy(() => import("./pages/AnalysisRoutePage").then((m) => ({ default: m.AnalysisRoutePage })));
+const ScoresRoutePage = lazy(() => import("./pages/ScoresRoutePage").then((m) => ({ default: m.ScoresRoutePage })));
+const AccountRoutePage = lazy(() => import("./pages/AccountRoutePage").then((m) => ({ default: m.AccountRoutePage })));
+const SponsorRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.SponsorRoutePage })));
+const PermissionsRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.PermissionsRoutePage })));
+const GuideRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.GuideRoutePage })));
+const GlobalSettingsRoutePage = lazy(() => import("./pages/GlobalSettingsRoutePage").then((m) => ({ default: m.GlobalSettingsRoutePage })));
+const GradePanel = lazy(() => import("./components/GradePanel").then((m) => ({ default: m.GradePanel })));
+const PaperUploadPanel = lazy(() => import("./components/PaperUploadPanel").then((m) => ({ default: m.PaperUploadPanel })));
+
+// 懒加载路由切换时的居中加载指示（与 loading 态文案一致）
+const routeFallback = (
+  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "40vh" }}>
+    <p className="empty-text">正在加载...</p>
+  </div>
+);
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -98,17 +99,8 @@ import {
 } from "../../../shared/appVariant";
 import { ScanPreviewModal, type ScanPage } from "./components/ScanPreviewModal";
 import { ImportCardModal, type ImportCardFormData } from "./components/ImportCardModal";
-import { AnalysisOverview } from "./components/AnalysisOverview";
-import { AnalysisDistribution } from "./components/AnalysisDistribution";
-import { AnalysisAiPanel } from "./components/AnalysisAiPanel";
-import { AnalysisRanking } from "./components/AnalysisRanking";
-import { AnalysisQuestions } from "./components/AnalysisQuestions";
-import { AnalysisTrend } from "./components/AnalysisTrend";
 import type {
-  ExamOverview,
   ExamRecord,
-  QuestionAnalysisItem,
-  StudentRankingItem
 } from "../../../shared/types";
 import {
   modeLabels,
@@ -390,9 +382,6 @@ function App() {
   const [analysisClassId, setAnalysisClassId] = useState<string>("");
   const [analysisClasses, setAnalysisClasses] = useState<Array<{ classId: number; className: string }>>([]);
   const [showExportMenu, setShowExportMenu] = useState(false);
-  const [analysisOverview, setAnalysisOverview] = useState<ExamOverview | null>(null);
-  const [analysisRanking, setAnalysisRanking] = useState<StudentRankingItem[]>([]);
-  const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
   const [exams, setExams] = useState<ExamRecord[]>([]);
   const [examListRefreshKey, setExamListRefreshKey] = useState(0);
   // Exam groups
@@ -889,9 +878,6 @@ function App() {
       setSelectedExamIds(new Set());
       if (analysisExamId && target.exams.some((exam) => exam.id === analysisExamId)) {
         setAnalysisExamId(null);
-        setAnalysisOverview(null);
-        setAnalysisRanking([]);
-        setAnalysisQuestions([]);
       }
       await loadExams();
       if (target.deleteLinkedCards) {
@@ -1372,53 +1358,6 @@ function App() {
     }
   }
 
-  async function loadAnalysis(examId: number, classId?: string) {
-    setAnalysisExamId(examId);
-    const cidParam = classId ? `?classId=${classId}` : "";
-    try {
-      const [overview, ranking, questions, classes] = await Promise.all([
-        fetchJson<ExamOverview>(`/api/analysis/exams/${examId}/overview${cidParam}`),
-        fetchJson<StudentRankingItem[]>(`/api/analysis/exams/${examId}/students${cidParam}`),
-        fetchJson<QuestionAnalysisItem[]>(`/api/analysis/exams/${examId}/questions${cidParam}`),
-        classId ? Promise.resolve([]) : fetchJson<Array<{ classId: number; className: string }>>(`/api/analysis/exams/${examId}/classes`)
-      ]);
-      setAnalysisOverview(overview);
-      setAnalysisRanking(ranking);
-      setAnalysisQuestions(questions);
-      if (!classId) setAnalysisClasses(classes);
-      setStatus(`分析加载完成：${overview.gradedCount} 人${classId ? "（当前班级）" : ""}`);
-    } catch (err) {
-      setStatus(`分析加载失败：${err instanceof Error ? err.message : String(err)}`);
-      setAnalysisOverview(null);
-      setAnalysisRanking([]);
-      setAnalysisQuestions([]);
-    }
-  }
-
-  function downloadAnalysisCsv(classId?: string) {
-    if (!analysisExamId) return;
-    setShowExportMenu(false);
-    const params = classId ? `?classId=${classId}` : "";
-    const exam = exams.find(e => e.id === analysisExamId);
-    const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.xlsx`;
-
-    authFetch(`/api/analysis/exams/${analysisExamId}/export-csv${params}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(await res.text());
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        setStatus("Excel 导出完成");
-      })
-      .catch((err) => setStatus(`导出失败: ${err instanceof Error ? err.message : String(err)}`));
-  }
-
   const selectedBlock = card?.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null;
 
   if (loading) {
@@ -1525,7 +1464,6 @@ function App() {
     setAnalysisGroupId,
     showGroupExport,
     setShowGroupExport,
-    loadAnalysis,
     showImportCardModal,
     setShowImportCardModal,
     importCardData,
@@ -1778,20 +1716,22 @@ function App() {
             顶栏标题 / showCardSidebar / useBlocker 由已与 URL 同步的 mode 驱动，行为不变。 */}
         <Routes>
           <Route path="/home" element={<HomeRoutePage />} />
-          <Route path="/design/*" element={<DesignPage />} />
-          <Route path="/exam-manage" element={<ExamManagePage />} />
-          <Route path="/analysis" element={<AnalysisRoutePage />} />
-          <Route path="/scores" element={<ScoresRoutePage />} />
-          <Route path="/account" element={<AccountRoutePage />} />
-          <Route path="/sponsor" element={<SponsorRoutePage />} />
-          <Route path="/permissions" element={<PermissionsRoutePage />} />
-          <Route path="/guide" element={<GuideRoutePage />} />
-          <Route path="/global-settings" element={<GlobalSettingsRoutePage onBack={() => void switchMode("home")} />} />
+          <Route path="/design/*" element={<Suspense fallback={routeFallback}><DesignPage /></Suspense>} />
+          <Route path="/exam-manage" element={<Suspense fallback={routeFallback}><ExamManagePage /></Suspense>} />
+          <Route path="/analysis" element={<Suspense fallback={routeFallback}><AnalysisRoutePage /></Suspense>} />
+          <Route path="/scores" element={<Suspense fallback={routeFallback}><ScoresRoutePage /></Suspense>} />
+          <Route path="/account" element={<Suspense fallback={routeFallback}><AccountRoutePage /></Suspense>} />
+          <Route path="/sponsor" element={<Suspense fallback={routeFallback}><SponsorRoutePage /></Suspense>} />
+          <Route path="/permissions" element={<Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense>} />
+          <Route path="/guide" element={<Suspense fallback={routeFallback}><GuideRoutePage /></Suspense>} />
+          <Route path="/global-settings" element={<Suspense fallback={routeFallback}><GlobalSettingsRoutePage onBack={() => void switchMode("home")} /></Suspense>} />
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
         {gradingPanel && (
           <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "var(--color-background-primary)" }}>
-            <GradePanel examId={gradingPanel.examId} blockId={gradingPanel.blockId} teacherId={user?.id ?? 0} onBack={() => setGradingPanel(null)} />
+            <Suspense fallback={routeFallback}>
+              <GradePanel examId={gradingPanel.examId} blockId={gradingPanel.blockId} teacherId={user?.id ?? 0} onBack={() => setGradingPanel(null)} />
+            </Suspense>
           </div>
         )}
         {/* 移动端抽屉导航（≤480px 渲染，Portal 到 body） */}
@@ -1826,12 +1766,14 @@ function App() {
 
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
       {paperPanelCardId && (
-        <PaperUploadPanel
-          cardId={paperPanelCardId}
-          open={showPaperPanel}
-          onClose={() => setShowPaperPanel(false)}
-          onUploaded={() => void refreshCards()}
-        />
+        <Suspense fallback={null}>
+          <PaperUploadPanel
+            cardId={paperPanelCardId}
+            open={showPaperPanel}
+            onClose={() => setShowPaperPanel(false)}
+            onUploaded={() => void refreshCards()}
+          />
+        </Suspense>
       )}
       <ImportCardModal
         open={showImportCardModal && importCardData !== null}

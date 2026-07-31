@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    is_demo          TINYINT NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示数据
     FOREIGN KEY (role_id) REFERENCES roles(id)
 ) ENGINE=InnoDB;
 
@@ -57,6 +58,7 @@ CREATE TABLE IF NOT EXISTS grades (
     id           INT AUTO_INCREMENT PRIMARY KEY,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
@@ -65,6 +67,7 @@ CREATE TABLE IF NOT EXISTS classes (
     grade_id     INT NOT NULL,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (grade_id) REFERENCES grades(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
@@ -126,6 +129,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     extra_notes      TEXT,                               -- v1.8.0
     knowledge_points_text TEXT,                            -- v1.8.0
     created_by       INT,
+    is_demo          TINYINT NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示答题卡
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(id)
@@ -469,6 +473,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     score           DOUBLE,
     max_score       DOUBLE,
     score_type      VARCHAR(20),
+    selected_options TEXT,
     manually_modified TINYINT DEFAULT 0,
     modified_by     INT,
     modified_at     DATETIME,

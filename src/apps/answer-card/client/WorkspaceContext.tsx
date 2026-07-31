@@ -178,7 +178,6 @@ export type WorkspaceValue = {
   setAnalysisGroupId: Dispatch<SetStateAction<number | null>>;
   showGroupExport: boolean;
   setShowGroupExport: Dispatch<SetStateAction<boolean>>;
-  loadAnalysis: (examId: number, classId?: string) => Promise<void>;
 
   // ── 导入 / 原卷 / 导出检查 ──
   showImportCardModal: boolean;

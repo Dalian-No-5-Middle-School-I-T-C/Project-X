@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ScoreTrendPoint } from "../../../../shared/types";
 import { fetchJson } from "../auth/api";
+import { formatScore } from "../util/format";
 
 interface ClassOption {
   id: number;
@@ -12,10 +13,6 @@ interface Props {
   exams: Array<{ subject?: string | null }>;
   initialSubject?: string;
   initialClassId?: string;
-}
-
-function formatScore(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function buildPath(points: Array<{ x: number; y: number }>): string {

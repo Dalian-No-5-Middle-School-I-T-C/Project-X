@@ -156,6 +156,11 @@ export class ExamRepository {
     return result.lastInsertRowid;
   }
 
+  /**
+   * @deprecated 主流程从未调用此方法（persistGradingResults 直接写 question_scores.selected_options）。
+   * objective_recognitions 表在当前版本中始终为空，仅作为历史遗留回退源。
+   * 如需写入识别结果，请优先考虑写入 question_scores.selected_options。
+   */
   async saveRecognition(recordId: number, blockId: string, questionNumber: number, selectedOptions: string[], confidence?: number): Promise<void> {
     await this.db.run(
       "REPLACE INTO objective_recognitions (record_id, block_id, question_number, selected_options, confidence) VALUES (?, ?, ?, ?, ?)",
