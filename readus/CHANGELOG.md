@@ -1,5 +1,6 @@
 # Project-X CHANGELOG
 
+
 ## v1.9.6 (2026-07-24) — 实机问题修复（5 项）
 
 > 基于 1.9.4 实机测试发现的 5 个小问题，全部经 `npm run build`（typecheck + web + server）验证通过，无 TS 错误。
@@ -77,6 +78,7 @@
 - 暗色模式扩展覆盖 `.data-card`。
 - 阶段 5 手势增强（`useSwipeClose` / `usePullToRefresh` 原生 touch，可选）。
 - 真机验证：iOS Safari + Android Chrome，480px 全功能可达、无横向溢出、输入框不缩放。
+
 
 ---
 

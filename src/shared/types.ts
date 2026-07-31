@@ -43,9 +43,19 @@ export type PaperSettings = {
   orientation: "portrait" | "landscape";
 };
 
+export type StudentInfoField = "姓名" | "班级" | "座位号" | "考号" | "学号";
+
 export type StudentInfoSettings = {
-  fields: Array<"姓名" | "班级" | "学号">;
+  /** @deprecated 旧版字段列表，新版使用显式开关 */
+  fields?: StudentInfoField[];
   studentNumberDigits: number;
+  showName?: boolean;
+  showClass?: boolean;
+  showSeat?: boolean;
+  showExamNumber?: boolean;
+  showStudentNumber?: boolean;
+  showNotes?: boolean;
+  notesText?: string;
 };
 
 export type ObjectiveBlock = {
@@ -115,9 +125,11 @@ export type EssayGridConfig = {
   cellWidthMm: number;      // 格子宽度，默认 7
   cellHeightMm: number;     // 格子高度，默认 7
   targetChars: number;      // 目标字数，默认 600
-  showTitle: boolean;       // 显示"题：（000）"
+  showTitle: boolean;       // 显示标题
   lineColor: string;        // 线色，默认 "#222"
   lineWidthMm: number;      // 线宽，默认 0.15
+  showFrame?: boolean;      // 显示作文区粗边框（默认 true）
+  showWordScale?: boolean;  // 显示字数刻度（每 100 字标注，默认 true）
 };
 
 export type SubjectiveBlock = {
@@ -216,7 +228,17 @@ export type PageRenderBlock =
       frameRect?: Rect;
       questions: SubjectiveRenderItem[];
       panelIndex?: number;
+      essayStartCell?: number;
     };
+
+export type StudentAreaFieldRow = {
+  label: string;
+  labelX: number;
+  labelY: number;
+  lineX1: number;
+  lineX2: number;
+  lineY: number;
+};
 
 export type StudentAreaLayout = {
   infoRect: Rect;

@@ -36,6 +36,7 @@ import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
 import { GroupExportModal } from "./components/GroupExportModal";
+
 import { MobileDrawer } from "./components/MobileDrawer";
 import { HomeRoutePage } from "./pages/HomeRoutePage";
 
@@ -59,6 +60,7 @@ const routeFallback = (
     <p className="empty-text">正在加载...</p>
   </div>
 );
+
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -1098,15 +1100,22 @@ function App() {
         const prefix = toChinese(index + 1);
         const count = obj.questionCount ?? 0;
         const total = count * (obj.scorePerQuestion ?? 0);
-        block.title = `${prefix}、${typeName}（${count}题 ${total}分）`;
+        block.title = `${prefix}、${typeName}（共${count}题，共${total}分）`;
       } else if (block.type === "subjective") {
         const sub = block as SubjectiveBlock;
-        const isFillBlank = sub.questions.length > 0 && sub.questions[0]?.style === "manual_score_grid" && sub.questions.every((q) => q.kind === "blank");
-        const typeName = isFillBlank ? "填空题" : "解答题";
+        let typeName = "解答题";
+        if (sub.blockKind === "essay") {
+          typeName = "作文";
+        } else if (sub.blockKind === "fill_blank") {
+          typeName = "填空题";
+        } else {
+          const isFillBlank = sub.questions.length > 0 && sub.questions[0]?.style === "manual_score_grid" && sub.questions.every((q) => q.kind === "blank");
+          typeName = isFillBlank ? "填空题" : "解答题";
+        }
         const prefix = toChinese(index + 1);
         const count = sub.questions.length;
         const total = sub.questions.reduce((sum, q) => sum + (q.score || 0), 0);
-        block.title = `${prefix}、${typeName}（${count}题 ${total}分）`;
+        block.title = `${prefix}、${typeName}（共${count}题，共${total}分）`;
       }
       index++;
     }
@@ -1716,6 +1725,7 @@ function App() {
             顶栏标题 / showCardSidebar / useBlocker 由已与 URL 同步的 mode 驱动，行为不变。 */}
         <Routes>
           <Route path="/home" element={<HomeRoutePage />} />
+
           <Route path="/design/*" element={<Suspense fallback={routeFallback}><DesignPage /></Suspense>} />
           <Route path="/exam-manage" element={<Suspense fallback={routeFallback}><ExamManagePage /></Suspense>} />
           <Route path="/analysis" element={<Suspense fallback={routeFallback}><AnalysisRoutePage /></Suspense>} />
@@ -1725,6 +1735,7 @@ function App() {
           <Route path="/permissions" element={<Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense>} />
           <Route path="/guide" element={<Suspense fallback={routeFallback}><GuideRoutePage /></Suspense>} />
           <Route path="/global-settings" element={<Suspense fallback={routeFallback}><GlobalSettingsRoutePage onBack={() => void switchMode("home")} /></Suspense>} />
+
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
         {gradingPanel && (

@@ -512,11 +512,13 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
 
 export function SubjectiveEditor({
   block,
+  card,
   layoutVersion,
   onChange,
   onUpload
 }: {
   block: SubjectiveBlock;
+  card: AnswerCard;
   layoutVersion: 1 | 2;
   onChange: (mutator: (block: BodyBlock) => void) => void;
   onUpload: (blockId: string, questionId: string, file: File) => Promise<void>;
@@ -584,6 +586,7 @@ export function SubjectiveEditor({
         <div className="question-editor" key={question.id}>
           <div className="question-editor-title">
             <strong>第 {question.number} 题</strong>
+            {!isEssayBlock && (
             <button
               title="删除小题"
               onClick={() =>
@@ -601,6 +604,7 @@ export function SubjectiveEditor({
             >
               <Trash2 size={15} />
             </button>
+            )}
           </div>
           {layoutVersion === 2 && !isFillBlankBlock && question.style === "manual_score_grid" && question.score <= 0 && (
             <p className="inline-warning">分值为 0，V2 已隐藏 0/0.5 分数格；设置正分后会自动显示。</p>
@@ -718,7 +722,7 @@ export function SubjectiveEditor({
               ))}
             </div>
             </>
-          ) : (
+          ) : (!isEssayBlock && (
             <>
               <label>
                 主观题样式
@@ -827,7 +831,7 @@ export function SubjectiveEditor({
                 </label>
               )}
             </>
-          )}
+          ))}
           {question.kind === "blank" && !isFillBlankBlock && (
             <div className="blank-item-list">
               {answerBlankItems(question).map((item, blankIndex) => (
@@ -908,7 +912,7 @@ export function SubjectiveEditor({
           )}
           {!isFillBlankBlock && (
             <>
-              {question.kind !== "blank" && (
+              {question.kind !== "blank" && !isEssayBlock && (
                 <>
               <label className="check-row">
                 <input
@@ -1105,13 +1109,47 @@ export function SubjectiveEditor({
               type="checkbox"
               checked={block.questions[0]?.essayGrid?.showTitle !== false}
               onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
                 draft.essayGrid.showTitle = event.target.checked;
               })}
-            /> 显示"题：（000）"标题
+            /> 在答题区上方显示标题
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={block.questions[0]?.essayGrid?.showFrame !== false}
+              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
+                draft.essayGrid.showFrame = event.target.checked;
+              })}
+            /> 显示作文区外边框
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={block.questions[0]?.essayGrid?.showWordScale !== false}
+              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
+                draft.essayGrid.showWordScale = event.target.checked;
+              })}
+            /> 显示字数刻度（每 100 字标注）
           </label>
           <div style={{ fontSize: 11, color: "var(--muted)" }}>
             系统将自动计算每栏列数和行数。A3 三栏模式生效时网格均分到三栏。
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", background: "var(--bg-soft)", padding: "6px 8px", borderRadius: 6 }}>
+            {(() => {
+              const eg = block.questions[0]?.essayGrid;
+              const cw = eg?.cellWidthMm ?? 7;
+              const isA3 = card.paper?.size === "A3";
+              const bodyWidth = (isA3 ? 420 : 210) - 17 * 2;
+              const usableW = bodyWidth - 4 * 2;
+              const colsPerPanel = Math.max(1, Math.floor(usableW / cw));
+              const panelCount = isA3 ? 3 : 1;
+              const totalCols = colsPerPanel * panelCount;
+              const rows = Math.ceil((eg?.targetChars ?? 600) / totalCols);
+              return `预计约 ${rows} 行 × ${totalCols} 栏（每面板 ${colsPerPanel} 列${isA3 ? "，A3 三栏并排" : ""}）。实际页数取决于版面余量。`;
+            })()}
           </div>
         </div>
       )}
@@ -1319,13 +1357,14 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
 
   if (isEssay) {
     const q = originalBlock && originalBlock.type === "subjective" ? originalBlock.questions[0] : null;
-    const g = q?.essayGrid;
-    if (!g) return null;
+    const g = q?.essayGrid ?? { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
     const cellW = g.cellWidthMm || 7;
     const cellH = g.cellHeightMm || 7;
     const lineColor = g.lineColor || "#222";
     const lineW = g.lineWidthMm ?? 0.15;
     const showTitle = g.showTitle !== false;
+    const showFrame = g.showFrame !== false;
+    const showWordScale = g.showWordScale !== false;
 
     // 计算栏宽和列数
     const bodyW = block.rect.width;
@@ -1335,35 +1374,81 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
     const gridW = columns * cellW;
     const offsetX = block.rect.x + (bodyW - gridW) / 2;
 
-    // 高度内能放的行数
-    const gridH = block.rect.height - (showTitle ? 9 : 2);
-    const rows = Math.floor(gridH / cellH);
-    const startY = block.rect.y + (showTitle ? 9 : 2);
+    const gap = 1.6; // 行间窄溜宽度（mm），仅作为格间空隙，格子保持完整高度
+    const gridTop = showTitle ? 9 : 2;
+    const bottomPad = 2;
+    const gridH = block.rect.height - gridTop - bottomPad;
+    const rows = Math.max(0, Math.floor((gridH + gap) / (cellH + gap)));
+    const startY = block.rect.y + gridTop;
+
+    const cells: ReactElement[] = [];
+    const guideLines: ReactElement[] = [];
+    for (let row = 0; row < rows; row++) {
+      const cy = startY + row * (cellH + gap);
+      for (let col = 0; col < columns; col++) {
+        cells.push(
+          <rect
+            key={`${row}_${col}`}
+            x={offsetX + col * cellW}
+            y={cy}
+            width={cellW}
+            height={cellH}
+            fill="#fff"
+            stroke={lineColor}
+            strokeWidth={lineW}
+          />
+        );
+      }
+      // 行间窄溜：淡虚线贯穿整栏（末行不画）
+      if (row < rows - 1) {
+        const lineY = startY + (row + 1) * (cellH + gap) - gap / 2;
+        guideLines.push(
+          <line key={`gap_${row}`} x1={offsetX} y1={lineY} x2={offsetX + gridW} y2={lineY} stroke="#ddd" strokeWidth={0.08} strokeDasharray="1,1" />
+        );
+      }
+    }
+
+    const scaleTicks: ReactElement[] = [];
+    if (showWordScale && columns > 0) {
+      const startCell = block.essayStartCell ?? 0;
+      const targetCells = g.targetChars || 600;
+      for (let row = 0; row < rows; row++) {
+        const rowStart = startCell + row * columns;
+        const rowEnd = rowStart + columns - 1;
+        const milestone = Math.ceil((rowStart + 1) / 100) * 100;  // 本行跨过的第一个 100 倍数
+        if (milestone <= rowEnd && milestone <= targetCells) {
+          const cellIndex = milestone - rowStart - 1; // 0-based column of the milestone cell
+          const cellRight = offsetX + (cellIndex + 1) * cellW;   // 该格右边线
+          const seamY = startY + (row + 1) * (cellH + gap) - gap / 2; // 该行下方窄缝中心
+          scaleTicks.push(
+            <text
+              key={`scale_${row}`}
+              x={cellRight - 0.6}
+              y={seamY}
+              fontSize={1.7}
+              textAnchor="end"
+              dominantBaseline="middle"
+              fill="#555"
+              className="svg-micro"
+            >
+              {milestone}
+            </text>
+          );
+        }
+      }
+    }
 
     return (
       <g>
+        {showFrame && block.frameRect && (
+          <rect {...block.frameRect} fill="none" stroke="#111" strokeWidth={0.4} />
+        )}
         {showTitle && block.title && (
-          <>
-            <text x={block.rect.x + insetX} y={block.rect.y + 5} className="svg-section">{block.title}（{q?.score}分）</text>
-            <text x={block.rect.x + insetX + 64} y={block.rect.y + 5} className="svg-tiny" fill="#888">
-              题：（{String(q?.number ?? 1).padStart(3, "0")}）
-            </text>
-          </>
+          <text x={block.rect.x + insetX} y={block.rect.y + 5} className="svg-section">{block.title}</text>
         )}
-        {[...Array(rows)].map((_, row) =>
-          [...Array(columns)].map((_, col) => (
-            <rect
-              key={`${row}_${col}`}
-              x={offsetX + col * cellW}
-              y={startY + row * cellH}
-              width={cellW}
-              height={cellH}
-              fill="#fff"
-              stroke={lineColor}
-              strokeWidth={lineW}
-            />
-          ))
-        )}
+        {guideLines}
+        {cells}
+        {scaleTicks}
       </g>
     );
   }
@@ -1469,7 +1554,7 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
           })}
           {question.images.map((image) => (
             <g key={image.assetId}>
-              <image href={apiUrl(`/assets/${card.id}/${image.assetId}`)} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
+              <image href={apiUrl(`/api/assets/${card.id}/${image.assetId}`)} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
               <rect {...image.rect} fill="none" stroke="#666" strokeWidth="0.18" />
             </g>
           ))}

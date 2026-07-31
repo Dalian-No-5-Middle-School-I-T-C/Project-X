@@ -219,6 +219,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
           <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{examName}</h2>
           {subject && <span style={{ fontSize: 12, color: "var(--muted)" }}>{subject}</span>}
         </div>
+
         <select value={displayMode} onChange={(e) => { const m = e.target.value as ScoreDisplayMode; setDisplayMode(m); fetchJson("/api/users/me/settings", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scoreDisplayMode: m }) }).catch(() => {}); }}
           style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid var(--line-strong)", fontSize: 13, background: "var(--surface)", height: 36, boxSizing: "border-box", cursor: "pointer" }} title="成绩指标显示">
           <option value="deviation">偏差值</option><option value="zscore">Z值</option><option value="percentile">百分位</option>
@@ -236,6 +237,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
         {isAdmin && (
           <button onClick={() => setShowThresholdSettings(true)} className="ghost-button" title="分析阈值设置" style={{ padding: 6, borderRadius: 8 }}>
             <Settings size={16} />
+
           </button>
         )}
       </div>
