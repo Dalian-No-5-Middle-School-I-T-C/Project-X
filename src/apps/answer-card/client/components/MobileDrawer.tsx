@@ -140,7 +140,7 @@ export function MobileDrawer() {
 
         <div className="mobile-drawer-footer">
 
-          <span className="mobile-drawer-version">Project-X v1.9.2</span>
+          <span className="mobile-drawer-version">Project-X v{import.meta.env.VITE_APP_VERSION}</span>
 
         </div>
       </aside>

@@ -1283,35 +1283,44 @@ export function CardPreview({ card, layout }: { card: AnswerCard; layout: Layout
 }
 
 export function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][number]["studentArea"]> }) {
-  const rowCount = Math.max(...area.digitCells.map((cell) => cell.digitIndex)) + 1;
-  const separatorX = area.digitRect.x + 8.5;
+  const hasDigits = area.digitCells.length > 0;
   return (
     <g>
       <rect {...area.infoRect} fill="none" stroke="#333" strokeWidth="0.25" />
-      <rect {...area.digitRect} fill="none" stroke="#333" strokeWidth="0.25" />
-      <text x={area.digitRect.x + area.digitRect.width / 2} y={area.digitRect.y + 5.2} textAnchor="middle" className="svg-label">
-        填涂号区
-      </text>
-      <text x={area.infoRect.x + 5} y={area.infoRect.y + 13.5} className="svg-label">
-        姓名：
-      </text>
-      <line x1={area.infoRect.x + 18} y1={area.infoRect.y + 14.5} x2={area.infoRect.x + area.infoRect.width - 9} y2={area.infoRect.y + 14.5} stroke="#333" strokeWidth="0.25" />
-      <text x={area.infoRect.x + 5} y={area.infoRect.y + 25.5} className="svg-label">
-        班级：
-      </text>
-      <line x1={area.infoRect.x + 18} y1={area.infoRect.y + 26.5} x2={area.infoRect.x + area.infoRect.width - 9} y2={area.infoRect.y + 26.5} stroke="#333" strokeWidth="0.25" />
-      {Array.from({ length: rowCount }).map((_, row) => (
-        <line key={row} x1={area.digitRect.x} y1={area.digitRect.y + 7 + row * 4.8} x2={area.digitRect.x + area.digitRect.width} y2={area.digitRect.y + 7 + row * 4.8} stroke="#999" strokeWidth="0.15" />
-      ))}
-      <line x1={separatorX} y1={area.digitRect.y + 7} x2={separatorX} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
-      {area.digitCells.map((cell) => (
-        <g key={`${cell.digitIndex}_${cell.digit}`}>
-          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
-          <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
-            {cell.digit}
+      {area.fieldRows.map((row) => (
+        <g key={row.label}>
+          <text x={row.labelX} y={row.lineY - 1.0} className="svg-label">
+            {row.label}
           </text>
+          <line x1={row.lineX1} y1={row.lineY} x2={row.lineX2} y2={row.lineY} stroke="#333" strokeWidth="0.25" />
         </g>
       ))}
+      {area.notesLines && area.notesLines.length > 0 && area.notesY !== undefined &&
+        area.notesLines.map((line, index) => (
+          <text key={index} x={area.infoRect.x + 5} y={area.notesY! + index * 4.2} className="svg-notes">
+            {line}
+          </text>
+        ))}
+      {hasDigits && (
+        <>
+          <rect {...area.digitRect} fill="none" stroke="#333" strokeWidth="0.25" />
+          <text x={area.digitRect.x + area.digitRect.width / 2} y={area.digitRect.y + 5.2} textAnchor="middle" className="svg-label">
+            填涂号区
+          </text>
+          {Array.from({ length: Math.max(...area.digitCells.map((cell) => cell.digitIndex)) + 1 }).map((_, row) => (
+            <line key={row} x1={area.digitRect.x} y1={area.digitRect.y + 7 + row * 4.8} x2={area.digitRect.x + area.digitRect.width} y2={area.digitRect.y + 7 + row * 4.8} stroke="#999" strokeWidth="0.15" />
+          ))}
+          <line x1={area.digitRect.x + 8.5} y1={area.digitRect.y + 7} x2={area.digitRect.x + 8.5} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
+          {area.digitCells.map((cell) => (
+            <g key={`${cell.digitIndex}_${cell.digit}`}>
+              <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
+              <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
+                {cell.digit}
+              </text>
+            </g>
+          ))}
+        </>
+      )}
     </g>
   );
 }

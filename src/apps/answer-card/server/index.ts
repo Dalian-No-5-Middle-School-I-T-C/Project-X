@@ -116,7 +116,8 @@ import {
   UpdateUserSettingsSchema,
   validateBody
 } from "./validation";
-import { ApiError } from "../../../server/api-error";import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
+import { ApiError } from "../../../server/api-error";
+import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
 
 
 

@@ -234,6 +234,7 @@ export type PageRenderBlock =
 export type StudentAreaFieldRow = {
   label: string;
   labelX: number;
+  /** 标签文本基线 y（mm，PDF 渲染语义；SVG 预览按 lineY 自行偏移） */
   labelY: number;
   lineX1: number;
   lineX2: number;
@@ -244,6 +245,12 @@ export type StudentAreaLayout = {
   infoRect: Rect;
   digitRect: Rect;
   digitCells: Array<{ digitIndex: number; digit: number; rect: Rect }>;
+  /** 信息区手写字段行（姓名/班级/座位号/考号，按 studentInfo 开关过滤），渲染层据此画标签与下划线 */
+  fieldRows: StudentAreaFieldRow[];
+  /** 注意事项文本行（showNotes 开启时），渲染层逐行绘制 */
+  notesLines?: string[];
+  /** 注意事项首行文本基线 y（mm） */
+  notesY?: number;
 };
 
 export type PageLayout = {

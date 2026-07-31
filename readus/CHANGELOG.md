@@ -1,6 +1,30 @@
 # Project-X CHANGELOG
 
 
+## v1.9.6 (2026-07-31) — 在 #201 基线上合入 #193，修复填涂号区回归（PR #202）
+
+> 基于 #201 基线（fix/pr193-on-201）合入 #193（作文格修复、移动端适配、受控资源路由等），并修复 #193 引入的填涂号区回归。
+> 验证：`tsc --noEmit` 0 错误；默认配置布局输出与 #201 逐字节一致。
+
+**1. 填涂号区回归修复（P0）**
+- #193 曾将学生信息区重构为「标准表格形态」（顶部 0-9 表头行 + 左侧空框列），与 PDF/SVG/识别器坐标不一致导致格子错位。
+- 已回退到 #201 实现：`layout.ts`（colGap 自适应格子）、`pdf.ts drawStudentArea`、`DesignEditors StudentAreaSvg`、`types.ts StudentAreaLayout` 四处保持一致，默认输出与 #201 逐字节一致。
+
+**2. 学生信息区字段开关生效（P1）**
+- `DesignPage` 的「基本信息字段」开关（姓名/班级/座位号/考号）与「显示注意事项」此前只写入 `studentInfo`、布局引擎不读取，勾选无效果。
+- 现在 `layoutStudentArea` 按开关生成 `fieldRows` 与 `notesLines`（复用自动换行），PDF/SVG 渲染层同步按 `fieldRows`/`notesLines` 绘制；三处渲染共用同一数据源，从架构上消除「三处不一致」的回归根因。
+- 新增「学号（填涂号区）」开关支持：关闭后不生成涂写格（识别器对空 `student_digits` 返回 `not_present`，不判失败）。
+
+**3. 移动端抽屉版本号修复（P2）**
+- `MobileDrawer.tsx` 曾硬编码 v1.9.2，现恢复为动态 `import.meta.env.VITE_APP_VERSION`（与桌面端一致）。
+
+**4. README 补回爱发电地址行（P2）**
+- #201 直推 main 的爱发电地址在冲突解决时被丢弃，已按 main 原样补回。
+
+**5. 清理合并痕迹（P3）**
+- `server/index.ts` 一行双 import 拆分；`GlobalSettingsRoutePage` 类名对齐 main（`global-settings-grid`）；`layout.ts`/`types.ts` 死代码（`DEFAULT_STUDENT_NOTES`/`measureTextWidthMm`/`wrapNotesLines`/`StudentAreaFieldRow`）随本次改造转为被使用或被清理。
+
+
 ## v1.9.6 (2026-07-24) — 实机问题修复（5 项）
 
 > 基于 1.9.4 实机测试发现的 5 个小问题，全部经 `npm run build`（typecheck + web + server）验证通过，无 TS 错误。

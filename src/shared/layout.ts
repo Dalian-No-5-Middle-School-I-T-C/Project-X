@@ -145,16 +145,6 @@ function createPage(card: AnswerCard, pageNumber: number, includeTitle: boolean)
   };
 }
 
-// 估算文本在给定字号（pt）下的宽度（mm），用于注意事项自动换行。
-function measureTextWidthMm(text: string, sizePt: number): number {
-  const unit = (sizePt / 72) * 25.4; // 一个 CJK 字宽 ≈ 字号
-  let width = 0;
-  for (const ch of text) {
-    width += /[\x00-\x7F]/.test(ch) ? unit * 0.5 : unit;
-  }
-  return width;
-}
-
 // 按方框内可用宽度自动换行（保留显式换行符），返回换行后的行数组。
 // sizePt 取保守值 8（略大于实际渲染的 7.5pt），确保估算行宽不超过渲染宽度，文字不溢出框。
 function wrapNotesLines(text: string, innerWidthMm: number, sizePt = 8): string[] {
@@ -183,12 +173,56 @@ function wrapNotesLines(text: string, innerWidthMm: number, sizePt = 8): string[
 }
 
 function layoutStudentArea(card: AnswerCard, page: PageLayout, y: number): StudentAreaLayout {
-  const rowCount = Math.max(1, card.studentInfo.studentNumberDigits);
+  const info = card.studentInfo;
+  const rowCount = Math.max(1, info.studentNumberDigits);
   const rowH = 4.8;
-  const areaHeight = Math.max(29, 7 + rowCount * rowH);
+  // 学号填涂区开关：默认（未定义或 true）显示；关闭后不生成涂写格，
+  // 识别器对空 student_digits 返回 not_present 且不判失败（answer_recognition.cpp）
+  const showStudentNumber = info.showStudentNumber !== false;
+  // 手写字段行：姓名/班级默认显示（!== false），座位号/考号仅在显式开启时显示
+  const textFields = [
+    { label: "姓名", flag: info.showName !== false },
+    { label: "班级", flag: info.showClass !== false },
+    { label: "座位号", flag: info.showSeat === true },
+    { label: "考号", flag: info.showExamNumber === true }
+  ];
+  const enabledFields = textFields.filter((field) => field.flag);
+
+  const showNotes = info.showNotes === true;
+  const rawNotes = showNotes ? (info.notesText || DEFAULT_STUDENT_NOTES) : "";
+  const notesInnerW = (IS_A3 ? 48 : 66) - 14;
+  const notesLines = showNotes ? wrapNotesLines(rawNotes, notesInnerW) : [];
+  const notesLineH = 4.2;
+
   const infoWidth = IS_A3 ? 48 : 66;
+  // 填涂号区需要 7 + rowCount*rowH（保底 29mm）；信息区按字段行数/注意事项自适应
+  const digitAreaHeight = showStudentNumber ? Math.max(29, 7 + rowCount * rowH) : 0;
+  const fieldRows: StudentAreaLayout["fieldRows"] = [];
+  enabledFields.forEach((field, index) => {
+    // 行距 12mm：第 0 行下划线在 y+14.5，标签基线在其上方 4.5mm（与 #201 渲染坐标一致）
+    fieldRows.push({
+      label: `${field.label}：`,
+      labelX: MARGIN_X + 5,
+      labelY: y + 10 + index * 12,
+      lineX1: MARGIN_X + 18,
+      lineX2: MARGIN_X + infoWidth - 9,
+      lineY: y + 14.5 + index * 12
+    });
+  });
+  const fieldsBottom = enabledFields.length > 0 ? y + 14.5 + (enabledFields.length - 1) * 12 : y + 10;
+  const notesY = fieldsBottom + 5;
+  const notesBottom =
+    showNotes && notesLines.length > 0 ? notesY + notesLines.length * notesLineH : fieldsBottom + 2.5;
+  const infoAreaHeight = Math.max(29, notesBottom - y);
+  const areaHeight = Math.max(digitAreaHeight, infoAreaHeight);
   const infoRect = rect(MARGIN_X, y, infoWidth, areaHeight);
-  const digitRect = rect(MARGIN_X + infoWidth + 4, y, BODY_WIDTH - infoWidth - 4, areaHeight);
+  // 关闭学号填涂区时 digitRect 宽度置 0（firstBodyY 据此跳过），并清空涂写格
+  const digitRect = rect(
+    MARGIN_X + infoWidth + 4,
+    y,
+    showStudentNumber ? BODY_WIDTH - infoWidth - 4 : 0,
+    areaHeight
+  );
   const digitCells: StudentAreaLayout["digitCells"] = [];
   const cellW = 4.6;
   const cellH = 2.8;
@@ -197,21 +231,29 @@ function layoutStudentArea(card: AnswerCard, page: PageLayout, y: number): Stude
   const usableW = digitRect.width - 18;
   const colGap = usableW / 10;
 
-  for (let digitIndex = 0; digitIndex < rowCount; digitIndex += 1) {
-    for (let digit = 0; digit <= 9; digit += 1) {
-      const cell = rect(startX + digit * colGap, startY + digitIndex * rowH, cellW, cellH);
-      digitCells.push({ digitIndex, digit, rect: cell });
-      page.elements.push({
-        id: `p${page.pageNumber}_student_${digitIndex}_${digit}`,
-        type: "student_digit",
-        digitIndex,
-        digit,
-        rect: cell
-      });
+  if (showStudentNumber) {
+    for (let digitIndex = 0; digitIndex < rowCount; digitIndex += 1) {
+      for (let digit = 0; digit <= 9; digit += 1) {
+        const cell = rect(startX + digit * colGap, startY + digitIndex * rowH, cellW, cellH);
+        digitCells.push({ digitIndex, digit, rect: cell });
+        page.elements.push({
+          id: `p${page.pageNumber}_student_${digitIndex}_${digit}`,
+          type: "student_digit",
+          digitIndex,
+          digit,
+          rect: cell
+        });
+      }
     }
   }
 
-  page.studentArea = { infoRect, digitRect, digitCells };
+  page.studentArea = {
+    infoRect,
+    digitRect,
+    digitCells,
+    fieldRows,
+    ...(showNotes && notesLines.length > 0 ? { notesLines, notesY } : {})
+  };
   return page.studentArea;
 }
 

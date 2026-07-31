@@ -182,15 +182,21 @@ function drawHeader(doc: PDFKit.PDFDocument, page: PageLayout) {
 
 function drawStudentArea(doc: PDFKit.PDFDocument, page: PageLayout) {
   if (!page.studentArea) return;
-  const { infoRect, digitRect, digitCells } = page.studentArea;
+  const { infoRect, digitRect, digitCells, fieldRows, notesLines, notesY } = page.studentArea;
   drawRect(doc, infoRect, { stroke: "#333", lineWidth: 0.25 });
+  fieldRows.forEach((row) => {
+    drawText(doc, row.label, row.labelX, row.labelY, 9);
+    doc.moveTo(pt(row.lineX1), pt(row.lineY)).lineTo(pt(row.lineX2), pt(row.lineY)).stroke();
+  });
+  if (notesLines && notesLines.length > 0 && notesY !== undefined) {
+    notesLines.forEach((line, index) => {
+      drawText(doc, line, infoRect.x + 5, notesY + index * 4.2, 7.5);
+    });
+  }
+  // 关闭学号填涂区（showStudentNumber=false）时不绘制涂写格
+  if (digitCells.length === 0) return;
   drawRect(doc, digitRect, { stroke: "#333", lineWidth: 0.25 });
   drawCenteredText(doc, "填涂号区", digitRect.x, digitRect.y + 2, digitRect.width, 10);
-
-  drawText(doc, "姓名：", infoRect.x + 5, infoRect.y + 10, 9);
-  doc.moveTo(pt(infoRect.x + 18), pt(infoRect.y + 14.5)).lineTo(pt(infoRect.x + infoRect.width - 9), pt(infoRect.y + 14.5)).stroke();
-  drawText(doc, "班级：", infoRect.x + 5, infoRect.y + 22, 9);
-  doc.moveTo(pt(infoRect.x + 18), pt(infoRect.y + 26.5)).lineTo(pt(infoRect.x + infoRect.width - 9), pt(infoRect.y + 26.5)).stroke();
 
   for (let row = 0; row < Math.max(...digitCells.map((cell) => cell.digitIndex)) + 1; row += 1) {
     doc.moveTo(pt(digitRect.x), pt(digitRect.y + 7 + row * 4.8)).lineTo(pt(digitRect.x + digitRect.width), pt(digitRect.y + 7 + row * 4.8)).stroke();
