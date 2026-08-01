@@ -1,5 +1,44 @@
 # Project-X CHANGELOG
 
+## v1.10.0 — 成绩分析增强（难度 P / 区分度 D / 总体分析 / 大考 6-Tab）
+
+> 分析模块重构：普通考试与大考统一为 6-Tab 结构，新增难度系数 P、区分度 D 双指标（考试/大考/科目/题目四级）、题目分析排序与逐生下钻、总体分析分布可视化，以及大考 AI 分析。
+
+**1. 难度 P / 区分度 D 双指标**
+- 后端 `AnalysisRepository` 经 `discriminationByExtremeGroup`（`src/shared/stats.ts`，极端组法 27%）在考试、大考、科目、题目四级统一产出 P/D；分布结果 `DistributionResult` 新增 `qq`（Q-Q 图坐标）。
+- 前端 `DifficultyBadge` / `DiscriminationBadge` 彩色档位徽章；档位阈值由管理员在 Home「全局设置」配置，持久化于 `system_settings.analysis_difficulty_bands` / `analysis_discrimination_bands`，前端经 `useBands()` 读取。
+
+**2. 题目分析：可排序 + 逐生下钻**
+- `AnalysisQuestions` 表头可点击排序（题号/类型/得分率/正确率/平均分/满分/错误率/P/D）。
+- 点击行打开 `QuestionStudentScoresModal` 查看该题每个学生的得分明细（学号/姓名/班级/得分率/知识点）；大考下钻复用 per-exam 的 `/api/analysis/exams/:examId/question-students` 端点。
+
+**3. 总体分析 Tab（整合 score_distribution_viewer）**
+- 新增 `AnalysisOverall`（普通考试与大考共用）：直方图（叠加正态曲线）+ Q-Q 图 + 正态性检验（Shapiro-Wilk / KS / AD / 偏度 / 峰度）；普通考试按全卷与各班、大考按总分/各科/各班切换；样本量 < 30 给出小样本提示。
+
+**4. 双 6-Tab 结构**
+- 普通考试（`ScoreDetailPage`）与大考（`ExamGroupDetailPage`）均为：概况/成绩/题目分析/班级对比/总体分析/AI 分析。大考的「成绩/题目分析/班级对比」支持「合并 ↔ 分科」视图切换（SubjectViewMode）。「班级对比」与「题目分析」共存，不互相替代。
+
+**5. 大考 AI 分析**
+- 新增 `POST /api/exam-groups/:groupId/ai-analysis`；Node 仅传 `groupId`，`llmclient /analysis/run` 经 `get_group_exam_ids` 解析成员考试集合下传工具层，模型按成员考试逐科汇总。工具返回体新增 P/D（`get_exam_overview` / `get_question_analysis`），工具层强制校验 `examId` 属于大考成员。
+
+**验证**：`npm run typecheck` 与 `npm run build`（web + server）通过；仓库分析数据（考试 26、大考 8）冒烟验证指标、分布（含 Q-Q）、逐生下钻、大考聚合、班级对比均返回结构正确；区分度算法经合成数据单测确认（清晰梯度 D≈0.8）。
+
+## v1.10.0.1 (2026-08-01) — 区分度 D 全为 0 修正
+
+修复 v1.10.0 引入的区分度计算缺陷：题目分析在组装逐生小题得分时，聚合查询列别名为 `question_type`，但下钻取 `byQuestion` 映射时误用了 `r.score_type`（在聚合结果中为 `undefined`），导致每个题的 `byQuestion.get(key)` 均返回 `undefined`、区分度极端组法被跳过，前端所有题目的区分度 D 恒为 0（难度 P 正常）。
+
+- `src/server/repositories/AnalysisRepository.ts`：`computeQuestionAnalysis` 的查表键由 `${r.question_number}:${r.score_type}` 改为 `${r.question_number}:${r.question_type}`，与 `byQuestion` 的键对齐。
+- 验证：`getQuestionAnalysis(26)` 从「11 题 D 全 0」恢复为「9/11 非 0」；大考 `getGroupQuestionAnalysis(8)` 逐题区分度经同一修复路径恢复正常。区分度算法本身经合成数据单测确认正确（清晰梯度 D≈0.8），与 Python `llmclient` 工具层 `_extreme_group_discrimination` 结果一致；修复后 TS 与 Python 两侧 P/D 输出对齐。
+
+## v1.10.0.2 (2026-08-01) — 班级筛选下题目分析崩溃修复
+
+修复 v1.10.0 引入的第二个回归：`getQuestionAnalysis` 在**带 classId 筛选**时抛出 `SqliteError: no such column: qs.student_id`。
+
+- 根因：`getQuestionAnalysis` 把 `classFilterQs(classId)`（其 JOIN 条件为 `cs.student_id = qs.student_id`，引用 `question_scores` 别名 `qs`）同时用于 `getExamTotalsMap`；而 `getExamTotalsMap` 查询的是 `student_scores ss`，该语句内并无 `qs` 表，故带 classId 时 JOIN 引用了不存在的 `qs.student_id`。无 classId 时 `classFilterQs` 返回空 JOIN，故此前全量（未筛选班级）冒烟未暴露此问题。
+- 修复：`getQuestionAnalysis` 对 `getExamTotalsMap` 改用 `classFilter(classId)`（JOIN 条件 `cs.student_id = ss.student_id`，与 `student_scores ss` 对齐）；题目聚合查询与逐生小题得分查询仍用 `classFilterQs`（作用于 `question_scores qs`）。两者按同一班级筛选，学生集合一致，区分度极端组法对齐无误。
+- 影响面：班级筛选下的题目分析、概况（P/D 以外的统计）、逐生下钻等路径此前在选班级时 500；大考逐题下钻复用 per-exam 端点，同样受益。无班级筛选的主路径不受影响。
+- 验证：`npm run verify:auth` 由「54 项中 1 项异常」恢复为 **54/54**（`getExamOverview(examId, classId)` 用例）；`getQuestionAnalysis(26, 62)` 返回 11 题（9 非 0 D）无异常；`verify:security-critical` 42/42、`grading-rules-smoke` 通过、`npm run build` 通过。
+
 ## v1.9.6 (2026-07-24) — 实机问题修复（5 项）
 
 > 基于 1.9.4 实机测试发现的 5 个小问题，全部经 `npm run build`（typecheck + web + server）验证通过，无 TS 错误。

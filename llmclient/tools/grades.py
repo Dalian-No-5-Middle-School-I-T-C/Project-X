@@ -129,6 +129,31 @@ def _error_rate_level(rate: int | float) -> str:
     return "none"
 
 
+def _totals_by_student(conn: sqlite3.Connection, exam_id: int, class_id: int | None = None) -> dict[int, float]:
+    join, where, params = _class_filter("ss", class_id)
+    rows = conn.execute(
+        f"SELECT ss.student_id AS sid, ss.total_score AS total FROM student_scores ss {join} WHERE ss.exam_id = ? {where}",
+        [exam_id, *params],
+    ).fetchall()
+    return {int(r["sid"]): float(r["total"]) for r in rows if r["total"] is not None}
+
+
+def _extreme_group_discrimination(totals: dict[int, float], items: dict[int, float], max_score: float) -> float:
+    """区分度 D（极端组法）：按总分降序取前/后 27%，D = 高分组得分率 − 低分组得分率。"""
+    if max_score <= 0:
+        return 0.0
+    pairs = [(totals[s], items[s]) for s in items if s in totals and items[s] is not None]
+    if len(pairs) < 2:
+        return 0.0
+    pairs.sort(key=lambda p: p[0], reverse=True)
+    k = max(1, int(math.floor(len(pairs) * 0.27)))
+    high = pairs[:k]
+    low = pairs[-k:]
+    high_rate = sum(item / max_score for _, item in high) / len(high)
+    low_rate = sum(item / max_score for _, item in low) / len(low)
+    return round(high_rate - low_rate, 3)
+
+
 def get_exam_overview(examId: int, classId: int | None = None) -> dict[str, Any]:
     with connect_db() as conn:
         exam = conn.execute(
@@ -138,10 +163,22 @@ def get_exam_overview(examId: int, classId: int | None = None) -> dict[str, Any]
         if exam is None:
             return {"error": f"exam {examId} not found"}
         scores = _scores(conn, examId, classId)
+        totals = _totals_by_student(conn, examId, classId)
+        full_row = conn.execute(
+            "SELECT SUM(max_score) AS total FROM ("
+            "SELECT question_number, score_type, MAX(max_score) AS max_score FROM question_scores "
+            "WHERE exam_id = ? GROUP BY question_number, score_type)",
+            [examId],
+        ).fetchone()
+        full = float(full_row["total"] or 0)
+        difficulty = round(sum(scores) / len(scores) / full, 3) if full > 0 and scores else 0.0
+        discrimination = _extreme_group_discrimination(totals, totals, full)
         return {
             "exam": dict(exam),
             "classId": classId,
             "summary": _score_summary(scores),
+            "difficulty": difficulty,
+            "discrimination": discrimination,
         }
 
 
@@ -196,6 +233,17 @@ def get_class_summaries(examId: int) -> dict[str, Any]:
 def get_question_analysis(examId: int, classId: int | None = None, limit: int = 12) -> dict[str, Any]:
     join, where, params = _class_filter("qs", classId)
     with connect_db() as conn:
+        totals = _totals_by_student(conn, examId, classId)
+        all_qs = conn.execute(
+            f"SELECT qs.student_id AS sid, qs.question_number AS qn, qs.score_type AS st, qs.score AS score "
+            f"FROM question_scores qs {join} WHERE qs.exam_id = ? {where}",
+            [examId, *params],
+        ).fetchall()
+        items_by_q: dict[tuple, dict[int, float]] = {}
+        for r in all_qs:
+            key = (r["qn"], r["st"])
+            items_by_q.setdefault(key, {})[int(r["sid"])] = float(r["score"])
+
         rows = conn.execute(
             f"""
             SELECT
@@ -224,6 +272,9 @@ def get_question_analysis(examId: int, classId: int | None = None, limit: int = 
         is_objective = row["questionType"] == "objective"
         error_count = int(row["objectiveErrorCount"] or 0) if is_objective else int(row["subjectiveLowScoreCount"] or 0)
         error_rate = round(error_count / total * 100) if total > 0 else 0
+        items = items_by_q.get((row["questionNumber"], row["questionType"]), {})
+        difficulty = round(avg_score / max_score, 3) if max_score > 0 else 0.0
+        discrimination = _extreme_group_discrimination(totals, items, max_score)
         questions.append(
             {
                 "questionNumber": str(row["questionNumber"]),
@@ -236,9 +287,20 @@ def get_question_analysis(examId: int, classId: int | None = None, limit: int = 
                 "errorRate": error_rate,
                 "errorRateLevel": _error_rate_level(error_rate),
                 "totalCount": total,
+                "difficulty": difficulty,
+                "discrimination": discrimination,
             }
         )
     return {"questions": questions}
+
+
+def get_group_exam_ids(group_id: int) -> list[int]:
+    with connect_db() as conn:
+        rows = conn.execute(
+            "SELECT exam_id FROM exam_group_members WHERE group_id = ? ORDER BY sort_order, exam_id",
+            [group_id],
+        ).fetchall()
+        return [int(r["exam_id"]) for r in rows]
 
 
 def get_rank_segments(examId: int, classId: int | None = None) -> dict[str, Any]:

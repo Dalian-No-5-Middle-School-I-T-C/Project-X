@@ -11,6 +11,7 @@
  * invalidateAnalysisThresholdsCache() 失效。
  */
 import { getMysqlDb } from "../db";
+import type { ThresholdBand } from "../../shared/stats";
 
 export interface AnalysisThresholds {
   /** 及格线比例（0-1），如 0.6 表示满分的 60% */
@@ -34,13 +35,73 @@ export const ANALYSIS_SETTING_KEYS = {
   passRate: "analysis_pass_rate",
   excellentRate: "analysis_excellent_rate",
   segmentSize: "analysis_segment_size",
-  errorTiers: "analysis_error_tiers"
+  errorTiers: "analysis_error_tiers",
+  difficultyBands: "analysis_difficulty_bands",
+  discriminationBands: "analysis_discrimination_bands"
 } as const;
+
+/** 难度系数档位默认值（阈值升序，max 为归属上界，单位 0-1） */
+export const DEFAULT_DIFFICULTY_BANDS: ThresholdBand[] = [
+  { max: 0.3, label: "难", color: "#E24B4A" },
+  { max: 0.5, label: "较难", color: "#EF9F27" },
+  { max: 0.7, label: "中等", color: "#BA7517" },
+  { max: 1.01, label: "容易", color: "#639922" }
+];
+
+/** 区分度档位默认值（阈值升序，max 为归属上界，单位 0-1） */
+export const DEFAULT_DISCRIMINATION_BANDS: ThresholdBand[] = [
+  { max: 0.2, label: "差", color: "#E24B4A" },
+  { max: 0.3, label: "尚可", color: "#EF9F27" },
+  { max: 0.4, label: "良好", color: "#BA7517" },
+  { max: 1.01, label: "优秀", color: "#639922" }
+];
 
 let cache: AnalysisThresholds | null = null;
 
 export function invalidateAnalysisThresholdsCache(): void {
   cache = null;
+  bandsCache = null;
+}
+
+export interface DifficultyDiscriminationBands {
+  difficulty: ThresholdBand[];
+  discrimination: ThresholdBand[];
+}
+
+let bandsCache: DifficultyDiscriminationBands | null = null;
+
+function parseBands(raw: string | null | undefined, fallback: ThresholdBand[]): ThresholdBand[] {
+  if (!raw) return fallback;
+  try {
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr) || arr.length === 0) return fallback;
+    const ok = arr.every((b) => typeof b === "object" && b && typeof (b as any).max === "number" && typeof (b as any).label === "string");
+    return ok ? (arr as ThresholdBand[]) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export async function getDifficultyDiscriminationBands(): Promise<DifficultyDiscriminationBands> {
+  if (bandsCache) return bandsCache;
+  const db = getMysqlDb();
+  let rows: Array<{ key: string; value: string }> = [];
+  try {
+    rows = (await db.all(
+      "SELECT `key`, value FROM system_settings WHERE `key` IN (?, ?)",
+      ANALYSIS_SETTING_KEYS.difficultyBands,
+      ANALYSIS_SETTING_KEYS.discriminationBands
+    )) as Array<{ key: string; value: string }>;
+  } catch {
+    return { difficulty: DEFAULT_DIFFICULTY_BANDS, discrimination: DEFAULT_DISCRIMINATION_BANDS };
+  }
+  const map: Record<string, string> = {};
+  for (const r of rows) map[r.key] = r.value;
+  bandsCache = {
+    difficulty: parseBands(map[ANALYSIS_SETTING_KEYS.difficultyBands], DEFAULT_DIFFICULTY_BANDS),
+    discrimination: parseBands(map[ANALYSIS_SETTING_KEYS.discriminationBands], DEFAULT_DISCRIMINATION_BANDS)
+  };
+  return bandsCache;
 }
 
 function clamp(v: number, min: number, max: number, fallback: number): number {
