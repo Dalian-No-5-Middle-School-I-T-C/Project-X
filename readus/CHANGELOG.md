@@ -1,5 +1,173 @@
 # Project-X CHANGELOG
 
+## v1.9.6 (2026-07-24) — 实机问题修复（5 项）
+
+> 基于 1.9.4 实机测试发现的 5 个小问题，全部经 `npm run build`（typecheck + web + server）验证通过，无 TS 错误。
+> 分支：1.9.5 基线（井号191）。与 1.9.6 答题卡设计器（学生信息区/作文格）改动相互独立，可叠加。
+
+**1. 刷新网页重置背景图透明度（P1）**
+- `AccountMenu.tsx`：背景图透明度滑杆原本只改本地状态与 `--bg-opacity` CSS 变量、未持久化；现改为防抖（400ms）PATCH `/api/users/me/settings` 的 `backgroundOpacity`。
+- 后端 `users.background_opacity` 早已支持 GET/PUT，`App.tsx` 登录即加载并应用，刷新后恢复。
+
+**2. 上传原卷只能上传一张图片（P1，新增多页支持）**
+- 新增数据表 `original_paper_pages`（card_id, page_index, filename, stored_path），三份 schema（SQLite/MySQL/MariaDB）均 `CREATE TABLE IF NOT EXISTS`，服务启动自动建表。
+- 上传路由 `paperUpload.single("file")` → `paperUpload.array("files", 40)`，逐页入库；首页（page 1）仍写 `original.<ext>` 以向后兼容预览/导出/AI 读取。
+- `GET /paper` 支持 `?page=N`；`/paper/info` 返回 `pages` 列表；新增 `DELETE /paper/page/:pageIndex` 单页删除；`DELETE /paper` 清空全部页与文件。
+- `getPaperFiles`（AI 知识点分析）改为读取全部页。
+- 前端 `DragDropZone` 支持 `multiple` + `onFiles`；`PaperUploadPanel` 改为多文件选择与「第 N 页」列表（查看/单页删除/删除全部）。
+
+**3. 「返回首页」按钮位置调整（已回滚，P2）**
+- `App.tsx`：曾将顶栏左侧的「← 返回首页」按钮改为 `position: fixed` 视口左下角浮动按钮（bottom:40px, left:16px），但该按钮位于带 transform 的顶栏祖先内，`fixed` 定位被该祖先包含，最终渲染到左上方并与文字重叠。
+- 已回滚为原始内联按钮（顶栏左侧、`marginRight:12`，仅 `!showTabBar && mode!=="home"` 时显示），消除重叠。原「位于正上方」的体感问题暂不处理，待后续统一评估导航布局。
+
+**4. 「全局设置」按钮彻底失效（P1）**
+- 根因：`App.tsx` 的 `<Routes>` 缺少 `/global-settings` 路由，点击后落到 `path="*"` 重定向回 `/home`。
+- 新增 `pages/GlobalSettingsRoutePage.tsx` 包裹 `GlobalSettingsPage`（提供 `onBack`），并补上 `<Route path="/global-settings">`。
+
+**5. 「最新扫描」被「考试管理」负优化（P2）**
+- `HomePage.tsx` 首页快捷入口原为三元互斥（继续阅卷 > 最新扫描 > 考试管理），导致「最新扫描」被「考试管理」取代。
+- 改为多卡并列：有未完成阅卷则显示「继续阅卷」、有最新扫描则显示「最新扫描」，且「考试管理」始终显示（无动态卡时至少保留入口）。
+
+**6. 「全局设置」页面前端美化（P3）**
+- `GlobalSettingsPage.tsx`：原左对齐、`maxWidth:640`、无容器包裹，观感简陋。
+- 改为整页居中布局（`minHeight: calc(100vh - 96px)` + flex 纵向留白 + 横向 `alignItems: center`），内容包入 `maxWidth: 560` 的圆角卡片（边框 + 阴影）；标题升级为 18px/600 并加「仅管理员」徽标，整体居于页面中央。
+- 注：路由补全（item 4 的 `GlobalSettingsRoutePage`）保留不变。
+
+**7. 暗色模式首页快捷入口卡「糊掉」配色修复（P2）**
+- 现象：`home-quick-card-*`（琥珀/蓝/紫/灰）使用高饱和浅色硬编码背景（`#FFF8E1`、`#E6F1FB`、`#EEEDFE`、`#F1EFE8`），在 `[data-theme="dark"]` 下与浅色文字（`--text-primary`）对比度极低，形成一块「糊掉」的亮块（实测「考试管理」紫卡最严重）。
+- 修复：`styles.css` 新增暗色模式覆盖——将四色背景改为半透明低饱和色（`rgba(255,160,0,0.12)` / `rgba(55,138,221,0.12)` / `rgba(127,119,221,0.15)` / `rgba(139,148,158,0.12)`），左边界色改为对应高明度色；hover 阴影加深以适配暗底。
+- 保持浅色模式原有 pastel 配色不变。
+
+## v1.9.5 (2026-07-23) — 移动端 Web UI/UX 适配
+
+> 在冻结技术栈（React 19 + TS + Vite 7，不引入新依赖、不引入第三方状态库、不改后端/DB schema、延续 Context 模式）前提下，完成移动端功能与界面适配。三项决策：**App.tsx 适度拆分**（抽离 6 个 mode 页面为独立路由组件，不引入状态库）；**优化重心=功能可用性优先**；**断点收敛为 3 级**（480 手机 / 768 平板 / 1024 桌面）。全部改动经 `npx vite build --mode web` 验证通过，无 TS 错误。
+
+**基础设施（断点单一事实源）**
+- 新建 `client/breakpoints.ts`：导出 `BP = { phone: 480, tablet: 768, desktop: 1024 }` 及 `maxWidthQuery()` / `minWidthQuery()` 辅助函数，作为全仓响应式断点唯一真相源。
+- 新建 `client/hooks/useMediaQuery.ts`：`matchMedia` hook + `useIsMobile()` / `useIsTablet()` / `useIsDesktop()` 派生 hook（SSR 安全，避免水合不匹配）。
+- `client/theme.ts`：re-export `breakpoints` 镜像，供 JS 侧一致引用。
+
+**Modal 规范化（止血）**
+- `styles.css`：修复 480px 块 `.modal-backdrop` → `.modal-overlay` 断链（旧类名无样式导致遮罩失效）；`.modal-card` 新增抓手条（`::before` 36×4px）+ 安全区 `padding-bottom: env(safe-area-inset-bottom)`；`:root` 新增 `--bp-phone/--bp-tablet/--bp-desktop`。
+- 删除 `styles.css` 尾部重复段（6554–6746 行），消除样式覆盖冲突。
+- `components/ui/Modal.tsx`：移除内联 `maxHeight:"85vh"` 与 `width:"92vw"`（由 CSS 类统一控制），保留 `cardStyle` 逃生门。
+
+**App.tsx 拆分 + 移动抽屉导航**
+- 抽离路由页：`pages/HomeRoutePage.tsx` / `AnalysisRoutePage.tsx` / `ScoresRoutePage.tsx` / `AccountRoutePage.tsx` / `InfoRoutePages.tsx`（sponsor/permissions/guide 三合一，统一 `navigateBackFromInfo()` 返回）。`App.tsx` 由 2398 行降至 2325 行。
+- 新建 `components/MobileDrawer.tsx`：承载 9 个 mode 导航 + 设计模式操作 + 主题切换，ESC / 遮罩关闭。
+- `WorkspaceContext.tsx`：`WorkspaceValue` 增加 `drawerOpen` / `setDrawerOpen`。
+- `App.tsx`：新增 `drawerOpen` 状态；顶栏左侧加汉堡按钮（仅 480px 显示）；渲染 `MobileDrawer`。`styles.css` 新增 `.mobile-menu-button` / `.mobile-drawer-overlay` / `.mobile-drawer` / `.drawer-nav-item` 及暗色覆盖。
+
+**表格卡片化（零 JS，480px 自动）**
+- `styles.css`：新增 `.data-card-list` / `.data-card` / `.data-card-row` / `.data-card-actions`；新增 `.table-cards`（480px 块内，依据 `td[data-label]` 将表格转为卡片，无需 JS）。移除三处强制 `min-width`（`.analysis-ranking-table` 560px / `.student-subject-table` 500px / `.account-table` 600px）。
+- 新建 `components/ui/DataCard.tsx`：通用卡片组件，支持 `rows` / `actions` / `onClick`。
+- 应用：`AnalysisRanking`、`ExamManagePage`、`ExamSelectPage`、`CardSelectPage`、`ScoreTable`、`UserManagement`、`StudentManagement` 均加 `useIsMobile` 条件渲染（移动端 `DataCard`，桌面保留原表格）。
+
+**HomePage 响应式 + 输入控件清理**
+- 重写 `components/HomePage.tsx`：内联样式全替换为 CSS 类（`.home-container` / `.home-welcome*` / `.home-quick-grid` / `.home-quick-card` 等 4 色变体 / `.home-module-grid` / `.home-card*`）。
+- `styles.css`：新增 `.home-*` 基础类（约 100 行）+ 480px 块响应式（padding 16px、title 18px、单列、44px 触摸区）。
+- 清理输入控件 `fontSize:13` 内联（`ExamSelectPage:628` / `AnalysisAiPanel:200` / `ScoreDetailPage:257`），避免 iOS Safari 触发 300ms 缩放与字号跳变。
+
+**指标**
+- 新增文件 9 个；`styles.css` 6746 → 6930 行；`@media` 13 → 12 处；`App.tsx` 2398 → 2325 行；`package.json` 版本号 v1.9.5。
+- 全部改动 `npx vite build --mode web` 通过，无 TS 错误。
+
+**遗留（后续迭代）**
+- 断点归并（1300/1060→1024，860/760/700→768，横屏保留方向）——风险较高，待截图对比 1100/800/720px 后实施。
+- 暗色模式扩展覆盖 `.data-card`。
+- 阶段 5 手势增强（`useSwipeClose` / `usePullToRefresh` 原生 touch，可选）。
+- 真机验证：iOS Safari + Android Chrome，480px 全功能可达、无横向溢出、输入框不缩放。
+
+---
+
+## v1.9.2 (2026-07-21) — 网页化改造 / 启动台模式 + 前端风格统一 + BUG 修复
+
+本版本是「审计 → 修复 → 统一 → 网页化」一揽子改造，分三阶段落地（前情见内部工作文档 `.workbuddy/plans/AUDIT-2026-07-20.md` / `PLAN-2026-07-20.md` / `SMOKE-2026-07-20.md`，不进仓库）。
+
+### 阶段 0：BUG 修复（运行时已验证，见 `.workbuddy/plans/SMOKE-2026-07-20.md`）
+
+- **赋分公式路由缺失（P0，功能性 404）**：前端 `AssignedFormulaModal` 调用 `GET/PUT /api/exams/:examId/assigned-formula`，后端从未注册该路由。新增路由（`requireExamAccess` 保护），经 `AssignedScoreService` 暴露。SMOKE 实测：GET 返回 `{formula,isAssignedSubject,presets}`，PUT 保存生效，不再 404。
+- **Express 5 async 未捕获拒绝（P1，防请求挂死）**：新增 `server/lib/asyncHandler.ts` + `wrapRouter`，`createApp()` 内对全部 router/handler 统一包裹；async handler 抛错 → 转发错误中间件返回 500 JSON，不再永久转圈。
+- **鉴权语义不统一（P1）**：`authMiddleware` 现读 `PROJECTX_AUTH_ENFORCE`（与 `makeGate` 一致）；默认开启，关闭且无 token 时放行（保留「无登录可用」兼容），开启时要求有效令牌。
+- **其他小修**：删除 `index.ts` 重复的 `/api/app/health`（保留一处并加 try/catch）；`backup.ts` 的 `VACUUM INTO '[object Object]'` 增加单引号转义（防 Windows 用户名含单引号导致的语法错误/注入）；`score-editing.ts` 对 `scores` 数组元素与 answers 题号键做校验（非法即 400）。
+
+### 阶段 1：前端统一（设计令牌 + 组件库 + 硬编码色收敛）
+
+> 审计发现：存在完整设计系统（`styles.css` 6601 行 / 829 个类 + 暗色主题），但 84% 组件在写内联 `style`（1015 处内联 / 206 处硬编码色），同一语义多种硬编码色（成功绿 `#2E7D32`×15 等）。根因是「基类已写好、后续开发全 inline」。本阶段以「回流」为主。
+
+- **设计令牌 / 组件库地基**：新建 `client/theme.ts` 镜像 `styles.css` 的 `:root` 变量为 TS 对象（供 JS 侧图表/状态点引用，杜绝「同文件混用 `var(--brand)` 与 `#2E7D32`」）；`styles.css` 新增语义色 `--success:#2E7D32; --warning:#E65100; --info:#1565C0` + `--z-*` z-index 阶梯（`--z-modal:1000` / `--z-toast:1100` / `--z-lightbox:1200` / `--z-dropdown:900`），为收敛 `100→100000→999999` 的 z-index 通胀打底；补全 ScannerApp 缺失的 `.loading-screen` / `.loading-spinner` 等类（修复扫描端加载屏无样式）。
+- **共享 UI 组件库** `components/ui/*`：`Button` / `Modal`(Portal + 统一层级) / `SegmentedControl` / `Input` / `Panel` / `Table` / `Spinner` / `LoadingScreen`，封装 5 种模态实现 + 4 套分段控件 + 裸 `<table>` 等不一致。
+- **重复硬编码色收敛（批 1）**：全仓散落的「成功绿」 `#2E7D32`（15 处）统一替换为 `var(--success)`（AccountMenu / AssignedFormulaModal / LoginPageScanner / ScannerPanel / StudentScoreDetail / ScoreFixPage 共 6 文件，`replace_all` 完成），消除同一语义多种硬编码色。
+
+### 阶段 2：网页化改造 / 启动台模式（每功能独立 URL）
+
+- **URL 路由化**：引入 `react-router-dom` v7，`main.tsx` 改用 `createBrowserRouter`（数据路由，`useBlocker` 方可生效）；新增 `modeRoutes.ts`（`MODE_PATH` 模式↔路径映射 + `pathToMode()`）；`mode` 改为 URL 驱动（初始从 `pathToMode(location.pathname)` 派生，地址栏↔mode 双向同步）；顶栏改为 6 个 `<NavLink>`（首页 / 设计 / 考试管理 / 分析 / 我的成绩 / 账号）。
+- **根因修复（关键）**：登录初始化 effect 原先无条件 `setMode(defaultModeForUser)`（=home），会把深链 / 新标签打回 home → 打开 `/design` 新标签仍显示 home、「新窗口打开」看似无效。改为「地址栏已是功能路径则尊重之，否则回退默认首页」。
+- **启动台模式（每功能新开界面）**：首页所有模块卡（设计 / 考试管理 / 分析 / 账号）改为 `onOpenNewTab`，点击在**新前台标签**打开该功能 URL，首页保留为常驻启动台；子页面「← 返回首页」按钮仅在关闭顶栏导航（紧凑模式 `!showTabBar`）时显示，避免与顶栏「首页」NavLink 重复；删除冗余的顶栏「在新窗口打开当前功能」按钮。
+- **未保存离开确认**：`useBlocker` 拦截离开 `/design` 时的未保存改动，弹确认 Modal。
+- **页面组件抽取（props 透传范式，零行为风险）**：`pages/DesignPage.tsx`（答题卡设计）、`pages/ExamManagePage.tsx`（考试管理）、`pages/GradingPage.tsx`（阅卷面板，原 `grading-grid` 为常驻隐藏的状态容器，实际阅卷 UI 由 `GradePanel` 弹层承载）从 `App.tsx` 巨石抽出；`WorkspaceContext.tsx` 声明 `WorkspaceValue` 类型骨架（含 `addEssayBlock`），为后续 `useWorkspace()` 全量接线铺路；三个编辑器（`CardPreview` / `ObjectiveEditor` / `SubjectiveEditor`）与全部 handler 以 props 原样传入，函数引用不变 → 交互行为完全一致。
+
+### 阶段 2 续：领域模型抽取 + 状态外置 + 真实路由化（tsc + web 构建均 EXIT 0）
+
+- **领域模型抽取（B1，解环瘦身）**：把设计器相关的纯函数从 `App.tsx` 收编到 `client/cardModel.ts`（`modeLabels` / `optionLayoutLabels` / `styleLabels` / `kindLabels` / `blankLabelStyleLabels` / `subjectiveBlockKind` / `subjectiveBlockKindLabel` / `answerBlankItems` / `cloneCard` / `answerText` / `defaultObjective` / `defaultSubjective` / `defaultBlankBlock` / `defaultEssayBlock` / `defaultAnswerBlankQuestion` / `answerLineCount` / `heightForAnswerLines` / `numericQuestionValue` / `findNextQuestionNumber` / `defaultBlankQuestion` 等 20+ helper，以及 `PreviewMode` / `PREVIEW_SETTINGS_KEY` / `PREVIEW_MIN_PERCENT` / `PREVIEW_MAX_PERCENT` 预览设置常量）；把三个编辑器及其 SVG 预览从 `App.tsx` 抽到 `client/pages/DesignEditors.tsx`（`ObjectiveEditor` / `SubjectiveEditor` / `CardPreview` / `StudentAreaSvg` / `ObjectiveSvg` / `SubjectiveSvg`）。`App.tsx` 体积由 ~3700 行降为 ~2290 行，仅保留状态与 handlers。
+- **状态外置（B2，全量接线 WorkspaceProvider）**：`WorkspaceContext.tsx` 的 `WorkspaceValue` 由骨架升级为完整值对象（~119 字段，含 `selectedExamId` / `setSelectedExamId` / `onStartReview`，`subjectiveBlockKindLabel` 收敛为 `(SubjectiveBlock) => string`，`PdfWarningState.validation` 对齐为 `CardScoreValidationResult`），`App.tsx` 用 `<WorkspaceProvider value={workspace}>` 包裹整个 `<main>` 壳层；`pages/DesignPage.tsx` / `pages/ExamManagePage.tsx` 改为 `useWorkspace()` 消费共享状态（`teacherId` / `teacherRole` / `userRole` 由 `user` 派生），去掉逐层 props 透传；`DesignPage` 直接从 `./DesignEditors` 导入编辑器，`App.tsx` 删除对 DesignEditors 的失效 import。`GradingPage` 按计划仍保留 props 范式（未切 `useWorkspace()`）。
+- **真实路由化（C，阶段 2 收官）**：`App.tsx` 由「`mode` 状态 + CSS `hidden-panel` 全挂载切换」改为由 URL 真实驱动渲染——`<Routes>` 路由表：`/home`(默认) 、`/design/*` 、`/exam-manage` 、`/analysis` 、`/scores` 、`/account` 、`/sponsor` 、`/permissions` 、`/guide` ，`*` → `<Navigate to="/home" />` ；`gradingPanel` 浮层与 statusbar 保持在 `<Routes>` 之外（阅卷功能由 `GradePanel` 弹层承载）。`mode` 状态早已由登录初始化 effect 与 URL 实时同步，顶栏标题 / `showCardSidebar` / `useBlocker` 等全部自动正确（拆而不改行为）。回归点修复：账号菜单 `onOpenGuide` / `onOpenPermissions` 原先只 `setMode` 不 `navigate`，路由化后 URL 不变会导致页面不切换，已改为先 `previousModeRef.current = mode` 再 `switchMode(x)`，与 `onOpenSponsor` 一致。（注：`/grading` 孤儿路由已于后续「阶段 2 续 2」BUG-4 修复中移除。）
+
+### 阶段 2 续 2：安全与路由 bug 修复（来自审计清单 BUG-1 / BUG-4，tsc + web 构建均 EXIT 0）
+
+- **BUG-1 鉴权强制判定语义相反（安全隐患）**：修复前 `authMiddleware`（`src/server/middleware/auth.ts`）用模块级常量 `ENFORCE_AUTH = PROJECTX_AUTH_ENFORCE === "1" || === "true"`（默认放行），而 `createApp`（`src/apps/answer-card/server/index.ts`）用 `enforceAuth = PROJECTX_AUTH_ENFORCE !== "0" && !== "false"`（默认强制）——两者语义相反。后果：当 `PROJECTX_AUTH_ENFORCE` 未设置或设为 `yes` / `on` 等非字面值时，`createApp` 认为强制开启，但 `authMiddleware` 退化为 `optionalAuth`，对它**直接保护**的路由无 token 也放行。修复：新建 `src/server/auth/enforce.ts` 导出唯一真相源 `resolveEnforceAuth()`（未设置 / 非 `0`/`false` → 强制，仅 `0`/`false` → 关闭）；`authMiddleware`、`makeGate` 依赖的 `authEnforced`（`src/apps/answer-card/server/middleware.ts`）、`createApp` 的 `enforceAuth` 三处统一调用该函数。运行时验证判定矩阵：`(unset)` / `yes` / `on` / `1` / `true` → **强制**，`0` / `false` → 关闭。
+- **BUG-4 `/grading` 孤儿路由 + 永久隐藏（功能死链）**：修复前 `App.tsx` 的 `<Routes>` 含 `<Route path="/grading" element={<GradingPage active={false} .../>} />`，但 `ProjectXAppMode`（`src/shared/appVariant.ts`）联合类型与 `MODE_PATH`（`modeRoutes.ts`）均不含 `grading`，顶栏也无入口，且 `active={false}` 使页面被 `hidden-panel` 永久隐藏——是「可达但不可见」的死链。修复：移除该孤儿路由与 `GradingPage` 的 import。实际阅卷功能由 `GradePanel` 弹层承载（`exam-manage` 的「网阅」按钮触发 `onStartReview` → `setGradingPanel`），与本路由无关，功能不受影响。`src/apps/answer-card/client/pages/GradingPage.tsx` 文件保留（合法组件，未来若启用独立阅卷页可直接复用），不再是死链。
+
+### 新增依赖
+`react-router-dom` v7、`express-rate-limit`（登录限速，阶段 0 已用）。
+
+### 修改文件清单（节选）
+
+| 文件 | 阶段 | 内容 |
+|------|------|------|
+| `src/apps/answer-card/server/index.ts` | 0 | assigned-formula 路由 + async 包装 + 删重复 health |
+| `src/server/lib/asyncHandler.ts` | 0 | 新增 async 错误包装 |
+| `src/server/middleware/auth.ts` | 0 | 鉴权读 enforceAuth |
+| `src/server/routes/backup.ts` / `score-editing.ts` | 0 | 单引号转义 / 入参校验 |
+| `src/apps/answer-card/client/theme.ts` | 1 | 新增令牌镜像 |
+| `src/apps/answer-card/client/styles.css` | 1 | `--success/--warning/--info` + `--z-*` + 补 loading 类 |
+| `src/apps/answer-card/client/components/ui/*` | 1 | Button/Modal/SegmentedControl/Input/Panel/Table/Spinner/LoadingScreen |
+| `src/apps/answer-card/client/main.tsx` | 2 | createBrowserRouter |
+| `src/apps/answer-card/client/modeRoutes.ts` | 2 | 新增路由映射 |
+| `src/apps/answer-card/client/App.tsx` | 2 / 2续 | URL 驱动 + NavLink + 抽 DesignPage/ExamManagePage/GradingPage；2续：cardModel 导入 + WorkspaceProvider 包裹 + 真实 `<Routes>` + guide/permissions 导航修复 |
+| `src/apps/answer-card/client/cardModel.ts` | 2续(B1) | 新增：收编 20+ 设计 helper + PreviewMode/PREVIEW_* 预览常量 |
+| `src/apps/answer-card/client/pages/DesignEditors.tsx` | 2续(B1) | 新增：ObjectiveEditor/SubjectiveEditor/CardPreview/StudentAreaSvg/ObjectiveSvg/SubjectiveSvg |
+| `src/apps/answer-card/client/pages/DesignPage.tsx` / `ExamManagePage.tsx` | 2 / 2续(B2) | 新增页面组件；2续：改 `useWorkspace()` 消费，去掉 props 透传 |
+| `src/apps/answer-card/client/pages/GradingPage.tsx` | 2 | 新增页面组件（props 范式，未切 useWorkspace） |
+| `src/apps/answer-card/client/WorkspaceContext.tsx` | 2 / 2续(B2) | WorkspaceValue 骨架 → 完整值对象（~119 字段） |
+| `src/apps/answer-card/client/components/HomePage.tsx` | 2 | 模块卡全部单开新标签 |
+| `src/apps/answer-card/server/validation.ts` | 3 | `UpdateUserSettingsSchema` 补 requireOriginalPaper/highlightMissingPaper/showTabBar |
+| `src/apps/answer-card/server/index.ts` | 3 | GET settings 补 showTabBar 返回 + 删重复 assigned-formula 路由 |
+| `readus/ARCHITECTURE.md` | 3 | 前端架构重写（路由化/页面抽取/设计令牌/UI 组件库）+ v1.9.2 摘要 |
+| `readus/DATABASE.md` | 3 | 版本号 v1.9.0 → v1.9.2 |
+| `readus/KNOWN-ISSUES.md` | 3 | 审查版本号 + 最后更新日期 |
+| `README.md` | 3 | CHANGELOG 描述更新 |
+
+### 验证
+- `npx tsc --noEmit` → EXIT 0（阶段 3 修复后仍通过）
+- `npx vite build --mode web` → 1919 模块通过（阶段 3 修复后仍通过）
+- SPA 深链（vite preview 实测）：`/` `/design` `/exam-manage` `/analysis` `/scores` `/account` `/sponsor` `/guide` `/permissions` 及未知路径 `/totally-unknown` 均 HTTP 200（SPA fallback 正常），`<Routes>` 由 URL 真实驱动渲染。
+- B1/B2/C 收尾验证：`npx tsc --noEmit` 与 `npx vite build --mode web` 在 cardModel/DesignEditors 抽取、WorkspaceProvider 全量接线、真实 `<Routes>` 路由化后均 EXIT 0（`/api/app/background` 构建期未解析为良性提示，chunk >500kB 为既有告警，均非错误）。
+- 阶段 0 四项修复经 `.workbuddy/plans/SMOKE-2026-07-20.md` 运行时验证通过（赋分公式复活、async→500、鉴权统一、score-editing 校验）
+- 阶段 3 经全量代码审查：Grep 确认 assigned-formula 路由无重复、settings schema 字段与前端的 payload 对齐、GET/PUT settings 两端字段一致、文档版本号全部同步
+- ⚠️ 无浏览器运行时 QA：抽取页（设计 / 考试管理 / 阅卷）需本地 `npm run dev` 实点冒烟。
+
+### 阶段 3：发布后验证修复（2026-07-21 下午）
+
+以上三阶段完成后经全量代码审查 + `tsc --noEmit` + `vite build --mode web` 验证，发现并修复 3 项回归问题：
+
+- **🔴 assigned-formula 路由双重注册（P0，合并冲突残留）**：`index.ts` 中 `GET/PUT /api/exams/:examId/assigned-formula` 各出现两次（1554+1637、1581+1659），第二组为死代码（Express 只匹配第一组）。根因为合并时两版实现均被保留。已删除 1636–1680 行重复块，保留第一组。
+- **🔴 保存用户设置静默失败（P0，Zod schema 滞后）**：`validation.ts` 的 `UpdateUserSettingsSchema` 仅定义 4 字段（scoreDisplayMode / reviewConfidenceThreshold / aiApiKey / backgroundOpacity），但前端 `AccountMenu.saveSettings()` 发送 6 字段（多了 requireOriginalPaper / highlightMissingPaper / showTabBar）。Zod `z.object()` 默认**静默剥离未知键**，`validateBody` 又以 `req.body = result.data` 覆盖原始 body → PATCH handler 收到的 req.body 缺失后三字段 → UPDATE 跳过 → 设置从未写入数据库、前端却显示"已保存"。根因为火箭在 7/4（加 requireOriginalPaper+highlightMissingPaper）和 7/19（加 showTabBar）两次往前端扩展字段时均忘记同步更新 schema。已补全 `requireOriginalPaper` / `highlightMissingPaper` / `showTabBar`（`z.coerce.boolean().optional()`）。
+- **🟡 架构/数据库/已知问题文档版本滞后（P1/P2）**：`ARCHITECTURE.md` 仅描述到 v1.9.0，缺失路由化/页面抽取/设计令牌/UI 组件库等 v1.9.2 关键变更；`DATABASE.md` 与 `KNOWN-ISSUES.md` 版本标记停留在 v1.9.0；`README.md` CHANGELOG 描述仍写"v1.9.0 网上阅卷重构"。已全部同步更新到 v1.9.2，`ARCHITECTURE.md` 前端架构章节重写。
+- **🔴 GET settings 缺失 showTabBar（P1，与上一项同源）**：`GET /api/users/me/settings` 未返回 `showTabBar` 字段，但前端 `AccountMenu` 的 `setShowTabBar(s.showTabBar === 1)` 依赖该字段，导致设置面板的「显示底部 Tab 导航栏」开关永远加载为关闭状态（`undefined === 1` → `false`），与数据库实际值不一致。PATCH 端已能正确写入，但读取端漏了。根因同上：火箭 7/19 加 `showTabBar` 时只改了 PATCH handler 和前端 saveSettings，忘记同步改 GET handler。已补 `showTabBar: (user as any).show_tab_bar ?? 0`。
+
+---
+
 ## v1.9.1 (2026-07-19) — 答题卡设计器全面增强
 
 ### 作文块（essay block）
@@ -54,6 +222,7 @@
 | `src/shared/cardTemplates.ts` | +50 行 | `essayBlock()` + `linedQuestion()` 新格式 + 语文模板集成 |
 
 **总计**：+700 行新增代码，0 个删除，0 个新依赖。
+
 
 ### 版本
 - v1.9.0 → v1.9.1

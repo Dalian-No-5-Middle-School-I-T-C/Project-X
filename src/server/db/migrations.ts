@@ -679,6 +679,128 @@ const MIGRATIONS: Migration[] = [
           ON exams(grade_id, class_id);
       `);
     }
+  },
+  // v23 (origin/main, #184): 安全引导 + 扫描批次状态
+  {
+    version: 23,
+    name: "security-bootstrap-and-grading-status",
+    up(db) {
+      addColumnIfMissing(db, "users", "password_change_required", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "success_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "failure_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "error_summary", "TEXT");
+    }
+  },
+  // v24 (v1.9.4 分支): 网阅打分与分配增强
+  {
+    version: 24,
+    name: "online-review-grading-enhancements-1.9.4",
+    up(db) {
+      // 1. block_grading_config 新列
+      addColumnIfMissing(db, "block_grading_config", "has_half_point", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "block_grading_config", "auto_reassign_no_arb", "INTEGER NOT NULL DEFAULT 1");
+      addColumnIfMissing(db, "block_grading_config", "workload_balance_threshold", "INTEGER NOT NULL DEFAULT 4");
+
+      // 2. review_assignments 新列
+      addColumnIfMissing(db, "review_assignments", "auto_assigned", "INTEGER NOT NULL DEFAULT 0");
+
+      // 3. system_settings 补齐 updated_at（与 MariaDB 表结构 parity）
+      addColumnIfMissing(db, "system_settings", "updated_at", "TEXT");
+
+      // 4. system_settings 默认键（可重复执行）
+      const ensureSetting = db.prepare(
+        "INSERT OR IGNORE INTO system_settings (key, value) VALUES (?, ?)"
+      );
+      const defaults: Array<[string, string]> = [
+        ["allow_half_point", "1"],
+        ["default_dispute_threshold", "2"],
+        ["default_rounding", "ceil"],
+        ["auto_reassign_policy", "1"],
+        ["workload_balance_threshold", "4"],
+      ];
+      for (const [key, value] of defaults) {
+        ensureSetting.run(key, value);
+      }
+    }
+  },
+  // v25 (v1.9.4 修复): 补齐 security-bootstrap(v23) 因迁移重编号被跳过而缺失的列
+  // 背景：合并前 online-review-grading-enhancements 曾占用 v23 并已被记入 schema_migrations；
+  // 合并后把它重编号为 v24、把 security-bootstrap 放到 v23，导致执行器按版本号判重而跳过了
+  // v23，password_change_required 等列永久缺失，ensureDefaultAdmin() 启动即崩。本迁移幂等补回。
+  {
+    version: 25,
+    name: "backfill-security-bootstrap-columns",
+    up(db) {
+      addColumnIfMissing(db, "users", "password_change_required", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "success_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "failure_count", "INTEGER DEFAULT 0");
+      addColumnIfMissing(db, "scan_batches", "error_summary", "TEXT");
+    }
+  },
+  // v26 (v1.9.4 设置重构): 原卷两开关提升为纯全局 + 清理误放全局的网阅死键
+  // - users.require_original_paper / highlight_missing_paper 个人列标记废弃（保留数据，不再读取）；
+  //   改由 system_settings 统一控制，管理员在全局设置页设定，全平台遵从。
+  // - 清理 v1.9.4 误放在全局设置页的 5 个网阅键（后端从未消费），改归各考试「网阅设置」默认模板。
+  {
+    version: 26,
+    name: "global-original-paper-and-cleanup-review-defaults",
+    up(db) {
+      const ensureSetting = db.prepare(
+        "INSERT OR IGNORE INTO system_settings (`key`, value) VALUES (?, ?)"
+      );
+      ensureSetting.run("require_original_paper", "1");
+      ensureSetting.run("highlight_missing_paper", "1");
+
+      const dropDead = db.prepare(
+        "DELETE FROM system_settings WHERE `key` IN (?, ?, ?, ?, ?)"
+      );
+      dropDead.run(
+        "allow_half_point",
+        "default_dispute_threshold",
+        "default_rounding",
+        "auto_reassign_policy",
+        "workload_balance_threshold"
+      );
+    }
+  },
+  // v27 (1.9.5): 题块总分评分模式 — 新增评分模式与拆分策略字段
+  {
+    version: 27,
+    name: "block-grading-scoring-mode",
+    up(db) {
+      addColumnIfMissing(db, "block_grading_config", "scoring_mode", "TEXT NOT NULL DEFAULT 'block_total'");
+      addColumnIfMissing(db, "block_grading_config", "score_distribution", "TEXT NOT NULL DEFAULT 'proportional'");
+    }
+  },
+  // v28 (1.9.6): 演示数据归属标记 — 给 users/answer_cards/classes/grades 增加 is_demo 列，
+  // 使 clearDemoData() 不再依赖硬编码学号/用户名/班级名/答题卡 ID 判断，避免误删真实数据。
+  {
+    version: 28,
+    name: "demo-data-source-flag",
+    up(db) {
+      addColumnIfMissing(db, "users", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "answer_cards", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "classes", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "grades", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+    }
+  },
+  // v29: 成绩分析增强 — question_scores 记录学生所选选项（JSON 数组），
+  // 使逐题选项分析/跨班选项对比可用；同时写入成绩分析阈值全局默认配置。
+  {
+    version: 29,
+    name: "selected-options-and-analysis-thresholds",
+    up(db) {
+      addColumnIfMissing(db, "question_scores", "selected_options", "TEXT");
+      if (hasTable(db, "system_settings")) {
+        const ensureSetting = db.prepare(
+          "INSERT OR IGNORE INTO system_settings (`key`, value) VALUES (?, ?)"
+        );
+        ensureSetting.run("analysis_pass_rate", "0.6");
+        ensureSetting.run("analysis_excellent_rate", "0.9");
+        ensureSetting.run("analysis_segment_size", "10");
+        ensureSetting.run("analysis_error_tiers", "70,50,30");
+      }
+    }
   }
 ];
 

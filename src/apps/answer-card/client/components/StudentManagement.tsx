@@ -189,7 +189,7 @@ export function StudentManagement() {
           <div className="class-column-title">花名册</div>
           {selectedClassId ? (
             <>
-              <div className="account-table-wrap" style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
+              <div className="account-table-wrap table-cards" style={{ overflow: "auto", flex: 1, minHeight: 0 }}>
                 <table className="account-table">
                   <thead>
                     <tr>
@@ -201,9 +201,9 @@ export function StudentManagement() {
                   <tbody>
                     {students.map((s) => (
                       <tr key={s.student_id}>
-                        <td>{s.student_number}</td>
-                        <td>{s.name}</td>
-                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{s.username}</td>
+                        <td data-label="学号">{s.student_number}</td>
+                        <td data-label="姓名">{s.name}</td>
+                        <td data-label="账号" style={{ fontFamily: "monospace", fontSize: 12 }}>{s.username}</td>
                       </tr>
                     ))}
                   </tbody>

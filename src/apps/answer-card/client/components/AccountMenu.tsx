@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Database, Download, Eye, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit, Shield } from "lucide-react";
+import { ChevronDown, Database, Download, Eye, FlaskConical, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit, Shield, Terminal } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson, authFetch } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
@@ -36,13 +36,14 @@ export function AccountMenu({
   const [busy, setBusy] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [importBusy, setImportBusy] = useState(false);
+  const [demoBusy, setDemoBusy] = useState(false);
+  const [showDevMode, setShowDevMode] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [displayMode, setDisplayMode] = useState("zscore");
   const [reviewThreshold, setReviewThreshold] = useState(0.12);
   const [bgOpacity, setBgOpacity] = useState(0);
-  const [requireOriginalPaper, setRequireOriginalPaper] = useState(true);
-  const [highlightMissingPaper, setHighlightMissingPaper] = useState(true);
   const bgFileRef = useRef<HTMLInputElement | null>(null);
+  const bgSaveTimer = useRef<number | null>(null);
   const [bgMsg, setBgMsg] = useState("");
   const [settingsMsg, setSettingsMsg] = useState("");
 
@@ -70,14 +71,12 @@ export function AccountMenu({
 
   useEffect(() => {
     if (open && showSettings) {
-      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; requireOriginalPaper?: number; highlightMissingPaper?: number; showTabBar?: number }>("/api/users/me/settings")
+      fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; showTabBar?: number }>("/api/users/me/settings")
         .then((s) => {
           if (!s || typeof s !== "object") return;
           setDisplayMode(s.scoreDisplayMode || "zscore");
           setReviewThreshold(s.reviewConfidenceThreshold ?? 0.12);
           setBgOpacity(s.backgroundOpacity ?? 0);
-          setRequireOriginalPaper(s.requireOriginalPaper !== 0);
-          setHighlightMissingPaper(s.highlightMissingPaper !== 0);
           setShowTabBar(s.showTabBar === 1);
         })
         .catch(() => {});
@@ -135,8 +134,6 @@ export function AccountMenu({
           scoreDisplayMode: displayMode,
           reviewConfidenceThreshold: reviewThreshold,
           backgroundOpacity: bgOpacity,
-          requireOriginalPaper: requireOriginalPaper,
-          highlightMissingPaper: highlightMissingPaper,
           showTabBar: showTabBar,
         })
       });
@@ -148,6 +145,18 @@ export function AccountMenu({
       setSettingsMsg(err instanceof Error ? err.message : "保存失败");
     }
   }
+
+  // v1.9.5: 滑动背景图透明度时防抖持久化，避免刷新后被重置为 0
+  const persistBgOpacity = (v: number) => {
+    if (bgSaveTimer.current) window.clearTimeout(bgSaveTimer.current);
+    bgSaveTimer.current = window.setTimeout(() => {
+      fetchJson("/api/users/me/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ backgroundOpacity: v }),
+      }).catch(() => {});
+    }, 400);
+  };
 
   async function handleBgUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -239,6 +248,16 @@ export function AccountMenu({
     return () => document.removeEventListener("pointerdown", handlePointerDown);
   }, [open]);
 
+  // v1.9.5: 组件卸载时清理防抖定时器，避免对已卸载组件触发 PATCH
+  useEffect(() => {
+    return () => {
+      if (bgSaveTimer.current) {
+        window.clearTimeout(bgSaveTimer.current);
+        bgSaveTimer.current = null;
+      }
+    };
+  }, []);
+
   if (!user) return null;
 
   async function handleChangePassword() {
@@ -288,8 +307,35 @@ export function AccountMenu({
     }
   }
 
-  async function handleImportDb(file: File) {
+  async function handleImportDemo() {
+    if (!confirm("将导入演示测试数据（9 场考试、16 名学生、2 个合集，含网阅演示），不会覆盖现有数据。继续？")) return;
     setImportMsg("");
+    setDemoBusy(true);
+    try {
+      const result = await fetchJson<{ ok: boolean; message?: string }>("/api/db/import-demo", { method: "POST" });
+      setImportMsg(result.message || "演示数据导入完成");
+    } catch (err) {
+      setImportMsg(err instanceof Error ? err.message : "演示数据导入失败");
+    } finally {
+      setDemoBusy(false);
+    }
+  }
+
+  async function handleClearDemo() {
+    if (!confirm("将清除全部「演示-」前缀的演示数据（不影响真实数据）。继续？")) return;
+    setImportMsg("");
+    setDemoBusy(true);
+    try {
+      const result = await fetchJson<{ ok: boolean; message?: string }>("/api/db/clear-demo", { method: "POST" });
+      setImportMsg(result.message || "演示数据已清除");
+    } catch (err) {
+      setImportMsg(err instanceof Error ? err.message : "演示数据清除失败");
+    } finally {
+      setDemoBusy(false);
+    }
+  }
+
+  async function handleImportDb(file: File) {    setImportMsg("");
     setImportBusy(true);
     try {
       const resp = await authFetch("/api/db/restore", {
@@ -441,9 +487,44 @@ export function AccountMenu({
                   if (file) handleImportDb(file);
                 }}
               />
-              {importMsg && (
-                <div style={{ padding: "6px 12px", fontSize: 12, color: importMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>
-                  {importMsg}
+              {/* ── v1.9.6: 开发者模式子菜单（演示数据等高危功能，调研/导入演示用） ── */}
+              <button
+                type="button"
+                className="account-menu-item"
+                onClick={() => { setShowDevMode(!showDevMode); setImportMsg(""); }}
+                aria-expanded={showDevMode}
+              >
+                <Terminal size={15} /> 开发者模式
+                <ChevronDown size={14} style={{ marginLeft: "auto", transform: showDevMode ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
+              </button>
+              {showDevMode && (
+                <div style={{ padding: "4px 12px 4px 28px", display: "flex", flexDirection: "column", gap: 2, background: "var(--surface-soft)", borderLeft: "2px solid var(--line)" }}>
+                  <div style={{ fontSize: 10, color: "var(--muted)", letterSpacing: "0.5px", textTransform: "uppercase", marginTop: 2, marginBottom: 2 }}>
+                    演示数据
+                  </div>
+                  <button
+                    type="button"
+                    className="account-menu-item"
+                    onClick={() => void handleImportDemo()}
+                    disabled={demoBusy}
+                    style={{ fontSize: 13, padding: "6px 8px" }}
+                  >
+                    <FlaskConical size={14} /> {demoBusy ? "处理中..." : "导入演示数据"}
+                  </button>
+                  <button
+                    type="button"
+                    className="account-menu-item"
+                    onClick={() => void handleClearDemo()}
+                    disabled={demoBusy}
+                    style={{ fontSize: 13, padding: "6px 8px" }}
+                  >
+                    <Trash2 size={14} /> 清除演示数据
+                  </button>
+                  {importMsg && (
+                    <div style={{ fontSize: 11, padding: "4px 0", color: importMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>
+                      {importMsg}
+                    </div>
+                  )}
                 </div>
               )}
             </>
@@ -540,24 +621,9 @@ export function AccountMenu({
                     <input type="range" min="0" max="1" step="0.01" value={reviewThreshold} onChange={(e) => setReviewThreshold(Number(e.target.value))} style={{ width: "100%", marginTop: 2 }} />
                     <span style={{ fontSize: 11, color: "var(--muted)" }}>低于此值的题目标记"需要复核"</span>
 
-                    {/* v1.8.0: 原卷设置 */}
-                    <h4 style={{ marginTop: 16 }}>原卷上传设置</h4>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <input type="checkbox" checked={requireOriginalPaper} onChange={(e) => setRequireOriginalPaper(e.target.checked)} />
-                      <span>强制要求上传原卷</span>
-                    </label>
-                    <span style={{ fontSize: 11, color: "var(--muted)", display: "block", marginLeft: 24, marginBottom: 8 }}>
-                      创建答题卡后必须上传原卷才能导出
-                    </span>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                      <input type="checkbox" checked={highlightMissingPaper} onChange={(e) => setHighlightMissingPaper(e.target.checked)} />
-                      <span>侧边栏高亮未上传原卷</span>
-                    </label>
-                    <span style={{ fontSize: 11, color: "var(--muted)", display: "block", marginLeft: 24 }}>
-                      左侧列表用颜色标记缺少原卷的考试
-                    </span>
+                    {/* v1.9.4: 原卷两开关已提升为纯全局，由管理员在「全局设置」统一控制，此处不再提供个人开关 */}
 
-                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
                     <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>保存设置</button>
                   </>
                 )}
@@ -570,21 +636,21 @@ export function AccountMenu({
                       显示底部 Tab 导航栏
                     </label>
                     <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                      关闭后各页面使用"← 返回首页"按钮导航，更简洁
+                      顶部导航栏「首页」可随时返回，建议保持开启
                     </span>
 
                     <h4 style={{ marginTop: 16 }}>背景图透明度</h4>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
                       <span style={{ color: "var(--muted)" }}>{Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}</span>
                     </div>
-                    <input type="range" min="0" max="0.5" step="0.01" value={bgOpacity} onChange={(e) => { const v = Number(e.target.value); setBgOpacity(v); document.documentElement.style.setProperty("--bg-opacity", String(v)); if (v > 0) document.body.classList.add("has-bg-image"); else document.body.classList.remove("has-bg-image"); }} style={{ width: "100%", marginTop: 4 }} />
+                    <input type="range" min="0" max="0.5" step="0.01" value={bgOpacity} onChange={(e) => { const v = Number(e.target.value); setBgOpacity(v); document.documentElement.style.setProperty("--bg-opacity", String(v)); if (v > 0) document.body.classList.add("has-bg-image"); else document.body.classList.remove("has-bg-image"); persistBgOpacity(v); }} style={{ width: "100%", marginTop: 4 }} />
                     <span style={{ fontSize: 11, color: "var(--muted)" }}>0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
                     <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center" }}>
                       <button className="ghost-button" style={{ fontSize: 11 }} onClick={() => bgFileRef.current?.click()}>上传背景图</button>
                       <input ref={bgFileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleBgUpload} />
-                      {bgMsg && <span style={{ fontSize: 11, color: bgMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{bgMsg}</span>}
+                      {bgMsg && <span style={{ fontSize: 11, color: bgMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{bgMsg}</span>}
                     </div>
-                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
                     <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>保存设置</button>
                   </>
                 )}
@@ -738,7 +804,7 @@ export function AccountMenu({
                         </div>
                       </div>
                     )}
-                    {settingsMsg && settingsTab === "ai" && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{settingsMsg}</p>}
+                    {settingsMsg && settingsTab === "ai" && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
                   </>
                 )}
 
@@ -799,7 +865,7 @@ export function AccountMenu({
                       </p>
                     )}
 
-                    {dbMsg && <p style={{ fontSize: 12, margin: "8px 0 0", color: dbMsg.includes("失败") ? "var(--brand)" : "#2E7D32" }}>{dbMsg}</p>}
+                    {dbMsg && <p style={{ fontSize: 12, margin: "8px 0 0", color: dbMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{dbMsg}</p>}
                     <button className="primary-button" type="button" onClick={() => { saveDbConfig(); }} disabled={dbLoading} style={{ marginTop: 8 }}>
                       {dbLoading ? "保存中..." : "保存数据存储设置"}
                     </button>

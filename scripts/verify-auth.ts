@@ -17,7 +17,7 @@
  * 全部用例通过则进程退出码为 0，否则为 1。
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -96,7 +96,7 @@ async function main(): Promise<void> {
   // ── 1. 初始化 ─────────────────────────────────────────
   section("1. 数据库初始化与默认管理员");
   initializeDatabase();
-  await ensureDefaultAdmin();
+  const bootstrap = await ensureDefaultAdmin();
   loadRolePermissions(true);
   const db = getDatabase();
   const roleCount = (db.prepare("SELECT COUNT(*) c FROM roles").get() as { c: number }).c;
@@ -119,8 +119,9 @@ async function main(): Promise<void> {
   const auth = new AuthService();
   const badLogin = await auth.login("admin", "wrong-password");
   ok(!badLogin.success, "错误密码登录被拒绝");
-  const adminLogin = await auth.login("admin", "admin123");
-  ok(adminLogin.success && Boolean(adminLogin.token), "管理员正确密码登录成功");
+  const bootstrapPassword = readFileSync(bootstrap.passwordFile, "utf8").trim();
+  const adminLogin = await auth.login("admin", bootstrapPassword);
+  ok(adminLogin.success && Boolean(adminLogin.token), "管理员使用一次性引导密码登录成功");
   ok(JSON.stringify(adminLogin.permissions) === JSON.stringify(["*"]), "登录响应携带权限 ['*']");
   const sessionUser = await auth.getUserByToken(adminLogin.token!);
   ok(sessionUser?.username === "admin", "Token 可换取当前用户");

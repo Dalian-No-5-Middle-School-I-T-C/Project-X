@@ -11,8 +11,9 @@ import crypto from "node:crypto";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect } from "../db";
+import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect, ensureDefaultAdmin, removeBootstrapAdminFile } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
+import { seedDemoData, clearDemoData } from "../services/DemoDataService";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -75,7 +76,8 @@ router.get("/backup", async (_req: Request, res: Response) => {
     if (existsSync(projectxDbPath)) {
       const db = getDatabase();
       try {
-        db.exec(`VACUUM INTO '${projectxBak.replace(/\\/g, "\\\\")}'`);
+        const safeTarget = projectxBak.replace(/\\/g, "\\\\").replace(/'/g, "''");
+        db.exec(`VACUUM INTO '${safeTarget}'`);
       } catch (err) {
         // VACUUM INTO 可能不支持旧版 SQLite，降级为文件复制
         console.warn("[Backup] VACUUM INTO failed, falling back to file copy:", err);
@@ -241,6 +243,15 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
     // 3. 替换文件
     await copyFile(projectxBak, projectxDbPath);
 
+    // 恢复后重新引导管理员账号（#185 安全模型）：还原出的库若使用旧默认口令 admin123
+    // 或引导文件丢失，则重新生成一次性口令并写入 bootstrap-admin.txt，确保还原后可用引导文件登录。
+    try {
+      removeBootstrapAdminFile();
+      await ensureDefaultAdmin();
+    } catch (e) {
+      console.warn("[Restore] 管理员再引导失败（可重启服务自动修复）:", e);
+    }
+
     // 恢复 scanner.db（如果有）
     const scannerBak = path.join(tmpDir, "scanner.db");
     if (existsSync(scannerBak)) {
@@ -270,6 +281,56 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
     console.error("[Restore] Import failed:", error);
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
+  }
+});
+
+/**
+ * POST /api/db/import-demo
+ * 一键导入演示测试数据（「演示-」前缀，幂等，不覆盖现有数据，无需重启）
+ *
+ * 鉴权：路由级 requirePermission(USER_MANAGE) 已过滤非管理员；此路由额外要求
+ * SYSTEM_MANAGE「系统维护（数据清理、归档等）」权限，作为「最高权限管理员」语义闸口。
+ * 当前仅 admin（持 "*" 通配）能通过；未来若要拆分管理子角色，SYSTEM_MANAGE 可单独授予。
+ */
+router.post("/import-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async (_req: Request, res: Response) => {
+  if (detectDialect() === "mariadb") {
+    res.status(400).json({ message: "演示数据导入目前仅支持 SQLite 部署（MariaDB 请使用命令行种子脚本）" });
+    return;
+  }
+  try {
+    const stats = await seedDemoData();
+    res.json({
+      ok: true,
+      message: `演示数据导入完成：${stats.exams} 场考试 / 16 名学生 / ${stats.groups} 个合集（教师 demo-teacher，密码 teacher123）`,
+      stats
+    });
+  } catch (error) {
+    console.error("[DemoData] 导入失败:", error);
+    res.status(500).json({ message: error instanceof Error ? error.message : "演示数据导入失败" });
+  }
+});
+
+/**
+ * POST /api/db/clear-demo
+ * 清除全部「演示-」前缀演示数据（不动真实数据）
+ *
+ * 鉴权：同 /import-demo，要求 SYSTEM_MANAGE 权限（语义：数据清理、归档等）。
+ */
+router.post("/clear-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), (_req: Request, res: Response) => {
+  if (detectDialect() === "mariadb") {
+    res.status(400).json({ message: "演示数据清除目前仅支持 SQLite 部署" });
+    return;
+  }
+  try {
+    const stats = clearDemoData();
+    res.json({
+      ok: true,
+      message: `演示数据已清除：${stats.removedExams} 场考试 / ${stats.removedStudents} 名学生 / ${stats.removedGroups} 个合集`,
+      stats
+    });
+  } catch (error) {
+    console.error("[DemoData] 清除失败:", error);
+    res.status(500).json({ message: error instanceof Error ? error.message : "演示数据清除失败" });
   }
 });
 

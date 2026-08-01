@@ -35,21 +35,33 @@ export function LoginPageScanner() {
   const [serverUrl, setServerUrl] = useState(loadServerUrl());
   const [apiKey, setApiKey] = useState(loadApiKey());
   const [testStatus, setTestStatus] = useState<"" | "testing" | "ok" | "fail">("");
+  const [testMessage, setTestMessage] = useState("");
 
   async function handleTestConnection() {
     if (!serverUrl.trim()) return;
     setTestStatus("testing");
+    setTestMessage("");
     try {
       const url = serverUrl.replace(/\/+$/, "") + "/api/app/health";
       const res = await fetch(url, { method: "GET", signal: AbortSignal.timeout(5000) });
-      if (res.ok) {
+      const body = await res.json() as {
+        ok?: boolean;
+        capabilities?: { scannerClientApi?: boolean };
+      };
+      if (res.ok && body.ok === true && body.capabilities?.scannerClientApi === true) {
         setTestStatus("ok");
         setTimeout(() => setTestStatus(""), 3000);
       } else {
         setTestStatus("fail");
+        setTestMessage(
+          res.ok
+            ? "服务器在线，但未启用远程扫描客户端 API"
+            : `服务器返回 ${res.status}`
+        );
       }
-    } catch {
+    } catch (err) {
       setTestStatus("fail");
+      setTestMessage(err instanceof Error ? err.message : "连接失败");
     }
   }
 
@@ -70,6 +82,7 @@ export function LoginPageScanner() {
     // 每次提交前同步服务器URL到localStorage
     const url = serverUrl.trim().replace(/\/+$/, "");
     if (url) saveServerUrl(url);
+    saveApiKey(apiKey.trim());
 
     setBusy(true);
     try {
@@ -113,7 +126,7 @@ export function LoginPageScanner() {
             {showRemote && (
               <div style={{ marginTop: 8, padding: "10px 12px", background: "var(--surface-soft)", borderRadius: 6, fontSize: 12 }}>
                 <div style={{ marginBottom: 8, color: "var(--text-secondary)" }}>
-                  留空 = 纯本地模式（所有数据存本地SQLite）。填入服务器地址可连接到远端API。
+                  扫描、识别和账号登录始终在本机完成。填入服务器地址和 API Key 后，可将扫描结果上传到远端服务器。
                 </div>
                 <label style={{ display: "flex", flexDirection: "column", gap: 3, marginBottom: 6 }}>
                   <span style={{ fontWeight: 500 }}>服务器地址</span>
@@ -123,6 +136,7 @@ export function LoginPageScanner() {
                     onChange={(e) => {
                       setServerUrl(e.target.value);
                       setTestStatus("");
+                      setTestMessage("");
                     }}
                     placeholder="http://192.168.1.100:5174"
                     autoComplete="off"
@@ -150,8 +164,8 @@ export function LoginPageScanner() {
                   >
                     {testStatus === "testing" ? "测试中..." : "测试连接"}
                   </button>
-                  {testStatus === "ok" && <span style={{ color: "#2E7D32", fontSize: 12 }}>服务器可达</span>}
-                  {testStatus === "fail" && <span style={{ color: "var(--brand)", fontSize: 12 }}>连接失败</span>}
+                  {testStatus === "ok" && <span style={{ color: "var(--success)", fontSize: 12 }}>服务器可达</span>}
+                  {testStatus === "fail" && <span style={{ color: "var(--brand)", fontSize: 12 }}>{testMessage || "连接失败"}</span>}
                   <button
                     type="button"
                     className="ghost-button"

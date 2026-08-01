@@ -1,9 +1,11 @@
 import express from "express";
 import type { Request, Response } from "express";
+import { getMysqlDb } from "../db";
 import { ScoreRepository } from "../repositories/ScoreRepository";
 import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS } from "../auth/permissions";
+import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
 
 /**
@@ -14,13 +16,88 @@ import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types"
  * - /me/trends        ：带班级/年级均分对比的趋势数据
  * - /me/subject-comparison ：学科横向对比（含薄弱学科标注）
  * - /me/ai-analysis   ：学生个人 AI 整体分析
- * - /students/*       ：教师/管理员代查（要求 grade:read 权限）
+ * - /students/*       ：教师/管理员代查（要求 grade:read 权限 + 任教班级校验）
  */
 const router = express.Router();
 const scoreRepo = new ScoreRepository();
 const userRepo = new UserRepository();
 
 router.use(authMiddleware);
+
+type AccessibleError = { status: number; message: string };
+
+/**
+ * 返回教师可访问的班级 ID 集合。与 getVisibleExamIds 保持同源：
+ * - admin / grade_leader / 普通教师(无 teacher_role) → null（全校可见）
+ * - head_teacher → teacher_classes 关联所有班级
+ * - subject_teacher → teacher_classes 中科目匹配的班级
+ * - 其他 → []（零可见）
+ */
+async function getAccessibleClassIds(
+  user: NonNullable<express.Request["user"]>
+): Promise<number[] | null> {
+  if (!user || user.role_name === "admin") return null;
+  if (user.role_name !== "teacher") return [];
+  if (!user.teacher_role) return null; // plain teacher: back-compat 全部可见
+  if (user.teacher_role === "grade_leader") return null;
+  const db = getMysqlDb();
+  if (user.teacher_role === "head_teacher") {
+    const rows = await db.all<{ class_id: number }>(
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ?", user.id
+    );
+    return rows.length > 0 ? rows.map((r) => r.class_id) : [];
+  }
+  if (user.teacher_role === "subject_teacher") {
+    if (!user.subject) return [];
+    const rows = await db.all<{ class_id: number }>(
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
+      user.id, user.subject
+    );
+    return rows.length > 0 ? rows.map((r) => r.class_id) : [];
+  }
+  return [];
+}
+
+/** 校验请求者是否有权访问目标学生的成绩数据 */
+async function assertStudentAccessible(
+  studentId: number,
+  user: NonNullable<express.Request["user"]>
+): Promise<AccessibleError | null> {
+  if (!Number.isFinite(studentId) || studentId <= 0) return { status: 400, message: "无效的学生 ID" };
+  if (user.role_name === "admin") return null;
+  if (user.role_name === "student") {
+    if (user.id !== studentId) return { status: 403, message: "只能查询自己的成绩" };
+    return null;
+  }
+  if (user.role_name === "teacher") {
+    const classIds = await getAccessibleClassIds(user);
+    if (classIds === null) return null; // grade_leader / plain teacher → 全校可见
+    if (classIds.length === 0) return { status: 403, message: "无权访问该学生：当前无任教班级" };
+    const db = getMysqlDb();
+    const row = await db.get<{ ok: number }>(
+      `SELECT 1 AS ok FROM class_students WHERE student_id = ? AND class_id IN (${classIds.map(() => "?").join(",")}) LIMIT 1`,
+      studentId, ...classIds
+    );
+    if (!row) return { status: 403, message: "无权访问该学生：未在该生所在班级任教" };
+    return null;
+  }
+  return { status: 403, message: "权限不足" };
+}
+
+/** 解析学生的主班级 ID（用于 AI 分析上下文） */
+async function resolveStudentPrimaryClassId(studentId: number): Promise<number | null> {
+  const db = getMysqlDb();
+  const row = await db.get<{ class_id: number }>(
+    `SELECT cs.class_id AS class_id
+     FROM class_students cs
+     JOIN classes c ON c.id = cs.class_id
+     WHERE cs.student_id = ?
+     ORDER BY cs.joined_at ASC, c.sort_order ASC, cs.class_id ASC
+     LIMIT 1`,
+    studentId
+  );
+  return row ? row.class_id : null;
+}
 
 /** GET /api/scores/me — 当前登录用户（学生）的全部考试成绩 */
 router.get("/me", async (req: Request, res: Response) => {
@@ -119,6 +196,8 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
     return;
   }
 
+  const classId = await resolveStudentPrimaryClassId(req.user!.id);
+
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120_000);
@@ -130,6 +209,9 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
       },
       body: JSON.stringify({
         examId,
+        classId,
+        callerRole: "student",
+        studentId: req.user!.id,
         model: typeof req.body?.model === "string" ? req.body.model : undefined,
         locale: "zh-CN",
       }),
@@ -258,28 +340,62 @@ const canQueryOthers = requirePermission(PERMISSIONS.GRADE_READ);
 /** GET /api/scores/students/:studentId — 代查某学生全部成绩 */
 router.get("/students/:studentId", canQueryOthers, async (req: Request, res: Response) => {
   const studentId = Number(req.params.studentId);
+  const accessError = await assertStudentAccessible(studentId, req.user!);
+  if (accessError) {
+    res.status(accessError.status).json({ message: accessError.message });
+    return;
+  }
   const student = await userRepo.findByIdIncludingInactive(studentId);
   if (!student || student.role_id !== ROLE_IDS.STUDENT) {
     res.status(404).json({ message: "学生不存在" });
     return;
   }
+  let scores = await scoreRepo.getStudentScores(studentId);
+  // 教师仅可见其任教范围内的考试成绩
+  if (req.user!.role_name === "teacher") {
+    const visibleIds = await getVisibleExamIds(req.user);
+    if (visibleIds !== null) {
+      const visible = new Set(visibleIds);
+      scores = scores.filter((s) => visible.has(s.exam_id));
+    }
+  }
   res.json({
     studentId,
     name: student.name,
     student_number: student.student_number,
-    scores: await scoreRepo.getStudentScores(studentId)
+    scores
   });
 });
 
 /** GET /api/scores/students/:studentId/exams/:examId — 代查逐题明细 */
-router.get("/students/:studentId/exams/:examId", canQueryOthers, async (req: Request, res: Response) => {
-  const studentId = Number(req.params.studentId);
-  const examId = Number(req.params.examId);
-  res.json({
-    studentId,
-    examId,
-    questions: await scoreRepo.getStudentQuestionScores(studentId, examId)
-  });
-});
+router.get(
+  "/students/:studentId/exams/:examId",
+  canQueryOthers,
+  async (req: Request, res: Response) => {
+    const studentId = Number(req.params.studentId);
+    const examId = Number(req.params.examId);
+    const accessError = await assertStudentAccessible(studentId, req.user!);
+    if (accessError) {
+      res.status(accessError.status).json({ message: accessError.message });
+      return;
+    }
+    if (req.user!.role_name === "teacher") {
+      const visible = await getVisibleExamIds(req.user);
+      if (visible !== null && !visible.includes(examId)) {
+        res.status(403).json({ message: "无权访问此考试" });
+        return;
+      }
+    }
+    if (req.user!.role_name === "student" && !(await scoreRepo.hasScore(studentId, examId))) {
+      res.status(403).json({ message: "该学生未参加该考试" });
+      return;
+    }
+    res.json({
+      studentId,
+      examId,
+      questions: await scoreRepo.getStudentQuestionScores(studentId, examId)
+    });
+  }
+);
 
 export default router;

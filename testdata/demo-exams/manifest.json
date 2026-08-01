@@ -1,15 +1,16 @@
 {
   "name": "projectx-demo-exams",
-  "version": "1.1.0",
-  "description": "演示考试数据集 — 覆盖单科/大考/跨考/并列排名/缺考/导出/名次变化/学期对比等测试场景",
-  "compatibleWith": ["v1.6.3", "v1.7.0"],
+  "version": "1.2.0",
+  "description": "演示考试数据集 — 覆盖单科/大考/跨考/并列排名/缺考/导出/名次变化/学期对比/网阅打分面板等测试场景",
+  "compatibleWith": ["v1.9.4", "v1.9.5", "v1.9.6"],
   "prefix": "演示-",
   "accounts": {
-    "admin": { "identifier": "admin", "password": "admin123" },
+    "admin": { "identifier": "admin", "password": "见数据库旁 bootstrap-admin.txt（#185 起为随机一次性密码，首次登录强制改密；seed 后 verify 会自动改密为 Admin@Demo2026 并回写文件）" },
     "teacher": { "identifier": "demo-teacher", "password": "teacher123" },
+    "teacher2": { "identifier": "demo-teacher-2", "password": "teacher123" },
     "students": {
       "range": "20260101-20260116",
-      "passwordRule": "与学号相同"
+      "passwordRule": "与学号相同（seed 显式传 password=学号；batchCreateStudents 默认生成随机密码，此处覆盖为可读值以便验证登录）"
     }
   },
   "organization": {
@@ -77,6 +78,18 @@
       "id": "question-export",
       "feature": "客观题小分导出",
       "expect": "演示-数学含 Q1~Q5 客观题小分"
+    },
+    {
+      "id": "online-review-1p",
+      "feature": "网阅打分面板(1P)",
+      "steps": "demo-teacher 登录 → 网阅 → 演示-网阅测试",
+      "expect": "题块 A(满分15·含0.5·枚举模式) / B(满分25·位值模式)；题块A工作量均衡后教师2:5份教师3:3份"
+    },
+    {
+      "id": "global-settings",
+      "feature": "全局设置",
+      "steps": "admin → 全局设置",
+      "expect": "require_original_paper / highlight_missing_paper 等键存在并可读写"
     }
   ]
 }

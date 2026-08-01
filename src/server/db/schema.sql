@@ -43,10 +43,12 @@ CREATE TABLE IF NOT EXISTS users (
     email            TEXT,
     phone            TEXT,
     teacher_role     TEXT,                    -- subject_teacher / head_teacher / grade_leader（仅教师）
+    password_change_required INTEGER DEFAULT 0, -- 1=必须先修改一次性/重置密码
     require_original_paper INTEGER DEFAULT 1, -- v1.8.0: 教师是否强制要求上传原卷
     highlight_missing_paper INTEGER DEFAULT 1, -- v1.8.0: 侧边栏高亮未上传原卷的考试
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
     show_tab_bar     INTEGER DEFAULT 0,      -- v1.9.0: 0=隐藏底部导航 1=显示
+    is_demo          INTEGER NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示数据（clearDemoData 仅按此标记清理，避免误删真实账号）
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -68,6 +70,7 @@ CREATE TABLE IF NOT EXISTS grades (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL,              -- 高一 / 高二 / 高三
     sort_order   INTEGER DEFAULT 0,         -- 排序
+    is_demo      INTEGER NOT NULL DEFAULT 0, -- v1.9.6: 1=演示年级
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -77,6 +80,7 @@ CREATE TABLE IF NOT EXISTS classes (
     grade_id     INTEGER NOT NULL REFERENCES grades(id) ON DELETE CASCADE,
     name         TEXT NOT NULL,              -- 1班 / 2班
     sort_order   INTEGER DEFAULT 0,
+    is_demo      INTEGER NOT NULL DEFAULT 0, -- v1.9.6: 1=演示班级
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -122,8 +126,20 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     extra_notes      TEXT,                                 -- v1.8.0: 教师特别描述
     knowledge_points_text TEXT,                            -- v1.8.0: 知识点纯文本备份
     created_by       INTEGER REFERENCES users(id),
+    is_demo          INTEGER NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示答题卡（clearDemoData 仅按此标记清理）
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- v1.9.5: 原卷多页支持（一卡可有多页原卷）
+CREATE TABLE IF NOT EXISTS original_paper_pages (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id          TEXT NOT NULL,
+    page_index       INTEGER NOT NULL,
+    filename         TEXT NOT NULL,
+    stored_path      TEXT NOT NULL,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(card_id, page_index)
 );
 
 -- 客观题块
@@ -325,6 +341,9 @@ CREATE TABLE IF NOT EXISTS scan_batches (
     name        TEXT,                         -- 高一1班第一次扫描
     status      TEXT DEFAULT 'pending',       -- pending / processing / done / error
     file_count  INTEGER DEFAULT 0,
+    success_count INTEGER DEFAULT 0,
+    failure_count INTEGER DEFAULT 0,
+    error_summary TEXT,
     created_by  INTEGER REFERENCES users(id),
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     finished_at DATETIME
@@ -513,6 +532,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     score           REAL,
     max_score       REAL,
     score_type      TEXT,                    -- objective / subjective
+    selected_options TEXT,                   -- v29: 客观题学生所选选项 JSON 数组，如 ["A","C"]
     manually_modified INTEGER DEFAULT 0,       -- v1.4.1: 手动改分标记
     modified_by     INTEGER REFERENCES users(id), -- v1.4.1
     modified_at     DATETIME,                   -- v1.4.1
@@ -626,6 +646,8 @@ CREATE TABLE IF NOT EXISTS block_grading_config (
     rounding           TEXT DEFAULT 'ceil',
     arbitrator_id      INTEGER REFERENCES users(id),
     review_mode        INTEGER DEFAULT 1,
+    scoring_mode       TEXT NOT NULL DEFAULT 'block_total',
+    score_distribution TEXT NOT NULL DEFAULT 'proportional',
     created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(exam_id, block_id)
@@ -678,7 +700,7 @@ INSERT OR IGNORE INTO roles (id, name, display_name, permissions) VALUES
     (3, 'student', '学生', '["score:read"]');
 
 -- 注意：默认管理员账号由应用程序在启动时通过 ensureDefaultAdmin() 自动创建
--- 账号: admin / 密码: admin123（首次登录后必须修改）
+-- 账号: admin / 随机一次性密码（写入数据库旁的 bootstrap-admin.txt，权限 0600，首次登录强制改密）
 
 -- 插入默认数据保留策略
 INSERT OR IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive, auto_delete) VALUES

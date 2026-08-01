@@ -1,8 +1,12 @@
 import type { Request, Response, NextFunction } from "express";
 import { authService } from "../services/AuthService";
 import { permissionsForRole, roleHasPermission, type Permission } from "../auth/permissions";
+import { isAuthEnforced } from "../lib/authEnforce";
 
 export const AUTH_COOKIE_NAME = "projectx_auth_token";
+
+// 强制鉴权判定统一委托给 isAuthEnforced()（server/lib/authEnforce.ts），
+// 与 createApp 共用同一真相源，避免语义相反的 bug。
 
 // 扩展 Express Request 类型
 declare global {
@@ -17,6 +21,7 @@ declare global {
         student_number: string | null;
         teacher_role: string | null;
         subject: string | null;
+        password_change_required: boolean;
       };
     }
   }
@@ -62,7 +67,8 @@ async function attachUser(req: Request, token: string): Promise<boolean> {
     role_name: user.role_name ?? "unknown",
     student_number: user.student_number ?? null,
     teacher_role: (user as any).teacher_role ?? null,
-    subject: (user as any).subject ?? null
+    subject: (user as any).subject ?? null,
+    password_change_required: Boolean((user as any).password_change_required)
   };
   return true;
 }
@@ -74,6 +80,12 @@ async function attachUser(req: Request, token: string): Promise<boolean> {
 export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
   const token = extractToken(req);
   if (!token) {
+    // 未强制鉴权模式下（与 optionalAuth / makeGate 一致）：无 token 也放行，
+    // 保持“未登录即可使用”的兼容；开启强制模式时必须有有效令牌。
+    if (!isAuthEnforced()) {
+      next();
+      return;
+    }
     res.status(401).json({ message: "未提供认证令牌" });
     return;
   }
@@ -161,6 +173,19 @@ export async function getCurrentUserHandler(req: Request, res: Response): Promis
     email: user.email,
     last_login_at: user.last_login_at,
     show_tab_bar: (user as any).show_tab_bar ?? 0,
+    passwordChangeRequired: Boolean((user as any).password_change_required),
     permissions: permissionsForRole(user.role_id)
   });
+}
+
+/** 强制改密账号只能访问挂载在本中间件之前的认证自助端点。 */
+export function requirePasswordChangeCompleted(req: Request, res: Response, next: NextFunction): void {
+  if (req.user?.password_change_required) {
+    res.status(428).json({
+      code: "PASSWORD_CHANGE_REQUIRED",
+      message: "必须先修改一次性密码"
+    });
+    return;
+  }
+  next();
 }

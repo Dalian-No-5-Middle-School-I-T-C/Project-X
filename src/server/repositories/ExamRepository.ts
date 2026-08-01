@@ -31,8 +31,8 @@ export interface ScanRecordInput {
 export class ExamRepository {
   private db: DbAdapter;
 
-  constructor() {
-    this.db = getMysqlDb();
+  constructor(db: DbAdapter = getMysqlDb()) {
+    this.db = db;
   }
 
   async createExam(params: {
@@ -156,6 +156,11 @@ export class ExamRepository {
     return result.lastInsertRowid;
   }
 
+  /**
+   * @deprecated 主流程从未调用此方法（persistGradingResults 直接写 question_scores.selected_options）。
+   * objective_recognitions 表在当前版本中始终为空，仅作为历史遗留回退源。
+   * 如需写入识别结果，请优先考虑写入 question_scores.selected_options。
+   */
   async saveRecognition(recordId: number, blockId: string, questionNumber: number, selectedOptions: string[], confidence?: number): Promise<void> {
     await this.db.run(
       "REPLACE INTO objective_recognitions (record_id, block_id, question_number, selected_options, confidence) VALUES (?, ?, ?, ?, ?)",
@@ -195,5 +200,22 @@ export class ExamRepository {
 
   async finishBatch(batchId: number): Promise<void> {
     await this.db.run("UPDATE scan_batches SET status = 'done', finished_at = CURRENT_TIMESTAMP WHERE id = ?", batchId);
+  }
+
+  async finishBatchWithOutcome(
+    batchId: number,
+    status: "done" | "partial" | "error",
+    successCount: number,
+    failureCount: number,
+    errorSummary: string | null
+  ): Promise<void> {
+    await this.db.run(
+      `UPDATE scan_batches
+       SET status = ?, success_count = ?, failure_count = ?, error_summary = ?,
+           file_count = ?, finished_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      status, successCount, failureCount, errorSummary,
+      successCount + failureCount, batchId
+    );
   }
 }

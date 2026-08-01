@@ -382,6 +382,8 @@ export type AnswerBlockCrop = {
   status?: string;
   score?: number | null;
   maxScore?: number | null;
+  /** 本题块是否允许 0.5 小数（来自 block_grading_config，用于打分面板） */
+  hasHalfPoint?: number;
 };
 
 /** 网上阅卷题块汇总 */
@@ -392,6 +394,10 @@ export type ReviewBlockSummary = {
   totalCount: number;
   pendingCount: number;
   reviewedCount: number;
+  /** 本题块是否含 0.5 小数（v1.9.4） */
+  hasHalfPoint: number;
+  /** 本题块满分（逐题 max_score 求和，v1.9.4 打分面板用） */
+  maxScore: number;
 };
 
 /** 网上阅卷队列项（含学生姓名） */
@@ -452,6 +458,22 @@ export type CombinedGradingBatchResult = {
   batchId: string;
   cardId: string;
   rows: CombinedGradingRow[];
+  persistence?: GradingPersistenceResult;
+};
+
+export type GradingPersistenceFailure = {
+  fileName: string;
+  studentId?: string;
+  code: "RECOGNITION_FAILED" | "STUDENT_ID_MISSING" | "STUDENT_NOT_FOUND" | "PERSISTENCE_FAILED";
+  message: string;
+};
+
+export type GradingPersistenceResult = {
+  batchId: number;
+  status: "done" | "partial" | "error";
+  persisted: number;
+  failedCount: number;
+  failed: GradingPersistenceFailure[];
 };
 
 // ── Analysis Types ────────────────────────────────────
@@ -518,6 +540,7 @@ export type ClassScoreSummary = {
 };
 
 export type ExamOverview = {
+  /** 已阅人数（当前版本等同 gradedCount，因无独立“注册学生”表；后续迭代可对接学籍名册） */
   totalStudents: number;
   gradedCount: number;
   avgScore: number;
@@ -526,6 +549,10 @@ export type ExamOverview = {
   stdDev: number;
   passRate: number;
   excellentRate: number;
+  /** 及格线（绝对分），由全局阈值配置 × 满分计算 */
+  passScore: number;
+  /** 优秀线（绝对分），由全局阈值配置 × 满分计算 */
+  excellentScore: number;
   distribution: Array<{ range: string; min: number; max: number; count: number }>;
   scoreSummary: ScoreSummary | null;
   overallScoreSummary: ScoreSummary | null;
@@ -560,6 +587,95 @@ export type QuestionAnalysisItem = {
   errorRate: number;
   errorRateLevel: ErrorRateLevel;
   totalCount: number;
+};
+
+// ── 逐题选项分析（v29）──────────────────────────────
+export type OptionStat = {
+  /** 选项标签，如 "A" */
+  option: string;
+  /** 选择该选项的人次（多选题按人次计） */
+  count: number;
+  /** 选择率（百分比 0-100，基数为作答人数） */
+  rate: number;
+  /** 是否属于标准答案 */
+  isCorrect: boolean;
+};
+
+export type OptionAnalysisQuestion = {
+  questionNumber: number;
+  /** single / multiple / indeterminate */
+  mode: string;
+  optionCount: number;
+  maxScore: number;
+  answerKey: string[];
+  /** 满分率（百分比）；无法判定时为 null */
+  correctRate: number | null;
+  answeredCount: number;
+  unansweredCount: number;
+  options: OptionStat[];
+};
+
+export type OptionAnalysisResponse = {
+  /** false = 该考试阅卷时未记录选项数据（历史考试） */
+  hasOptionData: boolean;
+  questions: OptionAnalysisQuestion[];
+};
+
+// ── 跨班对比（v29）─────────────────────────────────
+export type ClassComparisonClassSummary = {
+  classId: number;
+  className: string;
+  gradeName?: string;
+  count: number;
+  avgScore: number;
+  maxScore: number;
+  minScore: number;
+  median: number;
+  stdDev: number;
+  passRate: number;
+  excellentRate: number;
+  distribution: Array<{ range: string; min: number; max: number; count: number }>;
+};
+
+export type ClassComparisonQuestionStat = {
+  questionNumber: number;
+  /** objective / subjective */
+  scoreType: string;
+  maxScore: number;
+  byClass: Array<{ classId: number; scoreRate: number; correctRate: number | null }>;
+};
+
+export type ClassComparisonOptionStat = {
+  questionNumber: number;
+  answerKey: string[];
+  byClass: Array<{ classId: number; options: OptionStat[] }>;
+};
+
+export type ClassComparisonResponse = {
+  classes: ClassComparisonClassSummary[];
+  questionStats: ClassComparisonQuestionStat[];
+  /** 仅当 includeOptions=1 且有选项数据时返回 */
+  optionStats?: ClassComparisonOptionStat[];
+};
+
+// ── 知识点弱点 + 阈值配置（v29）────────────────────
+export type KnowledgeSeverity = "common_weak" | "weak" | "ok";
+
+export type KnowledgeWeaknessItem = {
+  point_text: string;
+  question_numbers: string;
+  avg_rate: number;
+  student_count: number;
+  total_questions: number;
+  severity: KnowledgeSeverity;
+  coverage_rate: number;
+};
+
+export type AnalysisThresholds = {
+  passRate: number;
+  excellentRate: number;
+  segmentSize: number;
+  errorTiers: [number, number, number];
 };
 
 export type ExamRecord = {
@@ -1062,6 +1178,16 @@ export interface BlockGradingConfig {
   rounding: RoundingMode;
   arbitratorId: number | null;
   reviewMode: ReviewMode;
+  /** 本题块是否允许 0.5 小数打分（按 block 粒度） */
+  hasHalfPoint: number;
+  /** 未设仲裁人时是否自动按工作量均衡再分配（1=开，0=关） */
+  autoReassignNoArb: number;
+  /** 工作量均衡阈值：已分配本题块教师「最多-最少份数差」上限 */
+  workloadBalanceThreshold: number;
+  /** 题块评分模式：block_total=题块合计分（#187 默认），per_question=逐题输入（#186） */
+  scoringMode: string;
+  /** 题块总分拆分策略：proportional=按小题满分比例，equal=均分 */
+  scoreDistribution: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -1075,6 +1201,8 @@ export interface ReviewAssignment {
   teacherName?: string;
   studentCount: number;
   assignedStudentIds: number[];
+  /** 1=自动再分配追加的份数（工作量均衡），0=初始分配 */
+  autoAssigned: number;
   createdAt: string;
 }
 

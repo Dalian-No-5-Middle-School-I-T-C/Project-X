@@ -1,7 +1,8 @@
 # 已知问题 (Known Issues)
 
-> 基于 v1.9.0 全面代码审查（2026-07-19），以下为已识别但尚未修复的中等问题和设计缺陷。
+> 基于 v1.9.2 全面代码审查（2026-07-19），以下为已识别但尚未修复的中等问题和设计缺陷。
 > 致命（P0）和严重（P1）问题已全部修复并录入 CHANGELOG。
+> 注：v1.9.2 后期网页化重构（B1 领域模型抽取 / B2 WorkspaceProvider 全量接线 / C 真实 `<Routes>` 路由化）为**行为保持型内部重构**（仅移动代码、未改交互语义），经 `tsc` + `vite build` 双重验证，未引入新的已知缺陷。
 
 ---
 
@@ -44,7 +45,7 @@
 | DB-5 | `users.grade_id` 字段存在但部分查询未设索引 | `schema.sql` | 低：查询走全表扫描，数据量阈值 ~10K 前无感 |
 | DB-6 | `exam_archives` 表标记 `is_deleted` 但无物理清理策略 | `cleanup.ts` | 低：仅日志提示，需手动操作 |
 | DB-7 | MariaDB `ALTER TABLE ADD COLUMN` 无 `IF NOT EXISTS`（依赖 `try/catch`） | `mysql.ts` | 低：try/catch 已兜底，MariaDB 8.0+ 可改用原生 |
-| DB-8 | `question_scores UNIQUE(exam_id, student_id, question_number, score_type)` 缺失，同一题目可能存在多条记录 | `schema.sql` / `migrations.ts` | 中：合并评分去重仅内存 Map 处理，DB 层无约束 |
+| DB-8 | ~~`question_scores UNIQUE(exam_id, student_id, question_number, score_type)` 缺失~~ **已核实约束存在（2026-07-30 复查）**：`schema.sql` 自 Pre v1.0 起即含该 UNIQUE 约束，MariaDB/MySQL schema 亦有 `uq_exam_student_q` 唯一键 | `schema.sql` / `schema.mariadb.sql` | 无：原条目记录有误，DB 层约束已生效 |
 
 ---
 
@@ -88,16 +89,16 @@
 | UI-4 | `CropImageViewer` 批注浮层 `z-index` 未统一管理，可能与其他模态框冲突 | `CropImageViewer.tsx` | 低：仅在叠加使用时有感 |
 | UI-5 | `ScannerPanel` 扫描进度 SSE 断连后无自动重连 | `ScannerPanel.tsx` | 中：网络波动时需手动刷新 |
 | UI-6 | `ScoreDetailPage` 的 `manually_modified` 标记在总分行和子题行可能存在不一致 | `ScoreDetailPage.tsx` | 低：只是展示布尔值 |
-| UI-7 | `AccountMenu` 背景透明度滑块无防抖，每次拖动都发 API 请求 | `AccountMenu.tsx` | 低：单次请求很轻，高频拖拽会刷多次 |
+| UI-7 | ~~`AccountMenu` 背景透明度滑块无防抖，每次拖动都发 API 请求~~ **已修复（v1.9.6）**：改为 400ms 防抖 PATCH `/api/users/me/settings` | `AccountMenu.tsx` | 无 |
 
 ---
 
 ## 其他已知问题
 
-- **express-rate-limit** 包未安装（`tsc --noEmit` 报错），auth.ts 的登录限流中间件未生效
+- ~~**express-rate-limit** 包未安装（auth.ts 登录限流中间件未生效）~~ **已修复（v1.9.2）**：`express-rate-limit@^8.6.0` 已安装，`src/server/routes/auth.ts` 已 `import rateLimit` 并启用登录限速中间件。
 - 系统无端到端测试，所有验证依赖手动回归
 - 扫描仪原生桥接模块 (`native/ScannerBridge`) 仅 Windows 可用，无 Linux/macOS 适配
 
 ---
 
-_最后更新：2026-07-19 | 发现版本：v1.9.0_
+_最后更新：2026-07-30（复核 DB-8 / UI-7）| 发现版本：v1.9.2_

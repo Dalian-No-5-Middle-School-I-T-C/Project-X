@@ -3,13 +3,15 @@ import React, { useRef, useState, useCallback } from "react";
 interface Props {
   accept: string;
   maxSize: number;
-  onFile: (file: File) => void;
+  onFile?: (file: File) => void;
+  onFiles?: (files: File[]) => void;
+  multiple?: boolean;
   disabled?: boolean;
   label?: string;
   sublabel?: string;
 }
 
-export function DragDropZone({ accept, maxSize, onFile, disabled, label, sublabel }: Props) {
+export function DragDropZone({ accept, maxSize, onFile, onFiles, multiple, disabled, label, sublabel }: Props) {
   const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -32,39 +34,49 @@ export function DragDropZone({ accept, maxSize, onFile, disabled, label, sublabe
     [accept, maxSize]
   );
 
+  const handleFilesSelected = useCallback(
+    (fileList: File[]) => {
+      if (fileList.length === 0) return;
+      if (multiple && onFiles) {
+        const valid = fileList.filter((f) => !validate(f));
+        if (valid.length === 0) {
+          setError(validate(fileList[0]) || "文件格式不支持");
+          setTimeout(() => setError(null), 3000);
+          return;
+        }
+        setError(null);
+        onFiles(valid);
+      } else {
+        const file = fileList[0];
+        const err = validate(file);
+        if (err) {
+          setError(err);
+          setTimeout(() => setError(null), 3000);
+          return;
+        }
+        setError(null);
+        onFile?.(file);
+      }
+    },
+    [disabled, validate, onFile, onFiles, multiple]
+  );
+
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
       if (disabled) return;
-      const file = e.dataTransfer.files[0];
-      if (!file) return;
-      const err = validate(file);
-      if (err) {
-        setError(err);
-        setTimeout(() => setError(null), 3000);
-        return;
-      }
-      setError(null);
-      onFile(file);
+      handleFilesSelected(Array.from(e.dataTransfer.files));
     },
-    [disabled, validate, onFile]
+    [disabled, handleFilesSelected]
   );
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      const err = validate(file);
-      if (err) {
-        setError(err);
-        setTimeout(() => setError(null), 3000);
-        return;
-      }
-      setError(null);
-      onFile(file);
+      handleFilesSelected(Array.from(e.target.files || []));
+      e.target.value = "";
     },
-    [validate, onFile]
+    [handleFilesSelected]
   );
 
   return (
@@ -82,6 +94,7 @@ export function DragDropZone({ accept, maxSize, onFile, disabled, label, sublabe
         ref={inputRef}
         type="file"
         accept={accept}
+        multiple={multiple}
         capture="environment"
         onChange={handleChange}
         style={{ display: "none" }}

@@ -18,11 +18,6 @@ interface ApiKeyAuthOptions {
 
 export function apiKeyAuth(options: ApiKeyAuthOptions = {}) {
   return async (req: Request, res: Response, next: NextFunction) => {
-    // 如果已有用户认证（authMiddleware 已通过），跳过 key 认证
-    if ((req as any).user) {
-      return next();
-    }
-
     const apiKey = req.headers["x-api-key"] as string | undefined;
     if (!apiKey) {
       res.status(401).json({ message: "缺少 X-Api-Key 请求头" });

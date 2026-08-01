@@ -43,12 +43,14 @@ CREATE TABLE IF NOT EXISTS users (
     email            VARCHAR(255),
     phone            VARCHAR(50),
     teacher_role     VARCHAR(50),
+    password_change_required TINYINT DEFAULT 0,
     require_original_paper TINYINT DEFAULT 1,  -- v1.8.0
     highlight_missing_paper TINYINT DEFAULT 1, -- v1.8.0
     is_active        TINYINT DEFAULT 1,
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    is_demo          TINYINT NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示数据
     FOREIGN KEY (role_id) REFERENCES roles(id)
 ) ENGINE=InnoDB;
 
@@ -56,6 +58,7 @@ CREATE TABLE IF NOT EXISTS grades (
     id           INT AUTO_INCREMENT PRIMARY KEY,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
@@ -64,6 +67,7 @@ CREATE TABLE IF NOT EXISTS classes (
     grade_id     INT NOT NULL,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (grade_id) REFERENCES grades(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
@@ -125,9 +129,21 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     extra_notes      TEXT,                               -- v1.8.0
     knowledge_points_text TEXT,                            -- v1.8.0
     created_by       INT,
+    is_demo          TINYINT NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示答题卡
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(id)
+) ENGINE=InnoDB;
+
+-- v1.9.5: 原卷多页支持
+CREATE TABLE IF NOT EXISTS original_paper_pages (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    card_id          VARCHAR(20) NOT NULL,
+    page_index       INT NOT NULL,
+    filename         VARCHAR(255) NOT NULL,
+    stored_path      VARCHAR(500) NOT NULL,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_paper_pages (card_id, page_index)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS objective_blocks (
@@ -333,6 +349,9 @@ CREATE TABLE IF NOT EXISTS scan_batches (
     name        VARCHAR(255),
     status      VARCHAR(20) DEFAULT 'pending',
     file_count  INT DEFAULT 0,
+    success_count INT DEFAULT 0,
+    failure_count INT DEFAULT 0,
+    error_summary LONGTEXT,
     created_by  INT,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     finished_at DATETIME,
@@ -454,6 +473,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     score           DOUBLE,
     max_score       DOUBLE,
     score_type      VARCHAR(20),
+    selected_options TEXT,
     manually_modified TINYINT DEFAULT 0,
     modified_by     INT,
     modified_at     DATETIME,

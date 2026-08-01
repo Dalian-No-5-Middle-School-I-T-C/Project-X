@@ -1,13 +1,31 @@
 const TOKEN_KEY = "projectx_auth_token";
 
 // v1.6.0: API 基础地址支持运行时配置
-// 优先级: localStorage > VITE_PROJECTX_API_BASE > 空（相对路径）
+// Web 端优先级: localStorage > VITE_PROJECTX_API_BASE > 空（相对路径）
+// 扫描端始终使用本机相对路径；远端服务器仅供 scanner upload API 使用。
 function getApiBase(): string {
+  if (import.meta.env.VITE_BUILD_TARGET === "scanner") return "";
   try {
     const stored = localStorage.getItem("projectx_server_url");
     if (stored) return stored.replace(/\/+$/, "");
   } catch { /* ignore */ }
   return (import.meta.env.VITE_PROJECTX_API_BASE ?? "").replace(/\/+$/, "");
+}
+
+function getStoredApiKey(): string | null {
+  try {
+    return localStorage.getItem("projectx_api_key");
+  } catch {
+    return null;
+  }
+}
+
+function getRemoteScannerBase(): string {
+  try {
+    return (localStorage.getItem("projectx_server_url") ?? "").trim().replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
 }
 
 let authToken: string | null = null;
@@ -48,7 +66,7 @@ function notifyUnauthorized(): void {
 export async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const token = getAuthToken();
   // v1.6.0: 同时支持 Api-Key header
-  const storedApiKey = (() => { try { return localStorage.getItem("projectx_api_key"); } catch { return null; } })();
+  const storedApiKey = import.meta.env.VITE_BUILD_TARGET === "scanner" ? null : getStoredApiKey();
   const headers = new Headers(options?.headers);
   if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
@@ -83,7 +101,7 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
 
 export function authFetch(url: string, options?: RequestInit): Promise<Response> {
   const token = getAuthToken();
-  const storedApiKey = (() => { try { return localStorage.getItem("projectx_api_key"); } catch { return null; } })();
+  const storedApiKey = import.meta.env.VITE_BUILD_TARGET === "scanner" ? null : getStoredApiKey();
   const headers = new Headers(options?.headers);
   if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
@@ -92,6 +110,24 @@ export function authFetch(url: string, options?: RequestInit): Promise<Response>
     headers.set("X-Api-Key", storedApiKey);
   }
   return fetch(apiUrl(url), { ...options, headers });
+}
+
+/** 扫描端专用：仅把远程上传请求发送到配置的 Project-X 服务器。 */
+export function remoteScannerFetch(url: string, options?: RequestInit): Promise<Response> {
+  const base = getRemoteScannerBase();
+  if (!base) {
+    return Promise.reject(new Error("未配置远端服务器地址"));
+  }
+
+  const headers = new Headers(options?.headers);
+  const apiKey = getStoredApiKey();
+  if (apiKey && !headers.has("X-Api-Key")) {
+    headers.set("X-Api-Key", apiKey);
+  }
+  const resolved = /^[a-z][a-z0-9+.-]*:/i.test(url)
+    ? url
+    : `${base}${url.startsWith("/") ? url : `/${url}`}`;
+  return fetch(resolved, { ...options, headers });
 }
 
 /** 为无法在请求头携带 Token 的场景（PDF、SSE 等）追加 ?token= */

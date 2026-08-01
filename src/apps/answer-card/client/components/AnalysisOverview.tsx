@@ -1,6 +1,7 @@
 import type { ExamOverview, StudentRankingItem } from "../../../../shared/types";
 import { AnalysisDistribution } from "./AnalysisDistribution";
 import { ScoreDoughnut } from "./AnalysisCharts";
+import { formatScore } from "../util/format";
 
 interface Props {
   overview: ExamOverview | null;
@@ -14,10 +15,6 @@ interface Props {
   };
   progressTop5?: Array<{ studentName: string; studentNumber?: string; rankChange: number }>;
   declineTop5?: Array<{ studentName: string; studentNumber?: string; rankChange: number }>;
-}
-
-function formatScore(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 export function AnalysisOverview({

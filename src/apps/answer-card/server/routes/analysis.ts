@@ -6,18 +6,65 @@
  * Dependencies: helpers, middleware, llm-client, repos, db.
  */
 import express from "express";
-import { getMysqlDb } from "../../../../server/db";
+import { getMysqlDb, buildUpsertSQL } from "../../../../server/db";
 import { AnalysisRepository } from "../../../../server/repositories/AnalysisRepository";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
 import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../middleware";
+import { requirePermission, authMiddleware } from "../../../../server/middleware/auth";
+import { PERMISSIONS } from "../../../../server/auth/permissions";
+import {
+  getAnalysisThresholds, validateThresholdsInput, invalidateAnalysisThresholdsCache,
+  ANALYSIS_SETTING_KEYS, DEFAULT_ANALYSIS_THRESHOLDS
+} from "../../../../server/services/analysisConfig";
 import { maskApiKey } from "../../../../server/utils/maskApiKey";
 import { fetchLlmClient } from "../llm-client";
 import { CreateExamGroupSchema, validateBody } from "../validation";
 import type { CrossExamTotalRequest } from "../../../../shared/types";
 
 const router = express.Router();
+
+// ── 阈值配置（路线图 P0-1）─────────────────────────────
+// GET: 任何已登录用户可读（分析页需展示当前阈值）；PUT: 限管理员。
+
+router.get("/config/thresholds", authMiddleware, async (_req, res, next) => {
+  try {
+    const t = await getAnalysisThresholds();
+    res.json(t);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/config/thresholds", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async (req, res, next) => {
+  try {
+    const result = validateThresholdsInput(req.body);
+    if (!result.ok) { res.status(400).json({ message: result.message }); return; }
+    const t = result.value;
+    const db = getMysqlDb();
+    const upsertSQL = buildUpsertSQL(
+      db.dialect, "system_settings",
+      ["key", "value", "updated_at"], ["key"], ["value", "updated_at"]
+    );
+    const now = new Date().toISOString();
+    await db.transaction(async (tx) => {
+      await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.passRate, String(t.passRate), now);
+      await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.excellentRate, String(t.excellentRate), now);
+      await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.segmentSize, String(t.segmentSize), now);
+      await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.errorTiers, t.errorTiers.join(","), now);
+    });
+    invalidateAnalysisThresholdsCache();
+    res.json({ ok: true, data: await getAnalysisThresholds() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 阈值默认值常量（供前端首屏占位）
+router.get("/config/thresholds/defaults", authMiddleware, async (_req, res) => {
+  res.json({ ...DEFAULT_ANALYSIS_THRESHOLDS, errorTiers: [...DEFAULT_ANALYSIS_THRESHOLDS.errorTiers] });
+});
 
 type AiProviderRow = {
   id: number;
@@ -46,15 +93,15 @@ async function getActiveAiProviders(userId: number) {
   const providerRows = await db.all<AiProviderRow>(`
     SELECT id, name, provider_type, base_url, api_key, models, is_active
     FROM ai_providers
-    WHERE user_id = ? AND is_active = 1
-    ORDER BY sort_order, id
+    WHERE (user_id = ? OR is_system = 1) AND is_active = 1
+    ORDER BY is_system, sort_order, id
   `, userId);
   return providerRows.map(mapAiProvider);
 }
 
 async function getAiProviderForUser(providerId: number, userId: number) {
   const db = getMysqlDb();
-  return db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND user_id = ?", providerId, userId);
+  return db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId);
 }
 
 // ── Trends ──────────────────────────────────────────────
@@ -260,6 +307,36 @@ router.get("/exams/:examId/questions", requireExamAccess, async (req, res, next)
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
     const questions = await analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
     res.json(questions);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── B2: 逐题选项分析（v29）──────────────────────────
+router.get("/exams/:examId/option-analysis", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    const classId = req.query.classId ? Number(req.query.classId) : undefined;
+    const data = await analysisRepo.getOptionAnalysis(Number(req.params.examId), classId);
+    res.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── B3: 跨班对比（v29）─────────────────────────────
+router.get("/exams/:examId/class-comparison", requireExamAccess, async (req, res, next) => {
+  try {
+    const raw = typeof req.query.classIds === "string" ? req.query.classIds : "";
+    const classIds = raw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+    if (classIds.length < 2 || classIds.length > 8) {
+      res.status(400).json({ message: "请选择 2-8 个班级进行对比" });
+      return;
+    }
+    const includeOptions = req.query.includeOptions === "1" || req.query.includeOptions === "true";
+    const analysisRepo = new AnalysisRepository();
+    const data = await analysisRepo.getClassComparison(Number(req.params.examId), classIds, includeOptions);
+    res.json(data);
   } catch (error) {
     next(error);
   }

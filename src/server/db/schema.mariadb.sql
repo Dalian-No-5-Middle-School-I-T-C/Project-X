@@ -44,11 +44,13 @@ CREATE TABLE IF NOT EXISTS users (
     email            VARCHAR(255),
     phone            VARCHAR(50),
     teacher_role     VARCHAR(50),
+    password_change_required TINYINT DEFAULT 0,
     -- v9: 原卷偏好
     require_original_paper TINYINT DEFAULT 1,
     highlight_missing_paper TINYINT DEFAULT 1,
     is_active        TINYINT DEFAULT 1,
     show_tab_bar     TINYINT DEFAULT 0,             -- v1.9.0: 底部导航栏开关
+    is_demo          TINYINT NOT NULL DEFAULT 0,     -- v1.9.6: 1=演示数据（clearDemoData 仅按此标记清理）
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -71,6 +73,7 @@ CREATE TABLE IF NOT EXISTS grades (
     id           INT AUTO_INCREMENT PRIMARY KEY,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -79,6 +82,7 @@ CREATE TABLE IF NOT EXISTS classes (
     grade_id     INT NOT NULL,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (grade_id) REFERENCES grades(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -144,9 +148,21 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     extra_notes      TEXT,
     knowledge_points_text TEXT,
     created_by       INT,
+    is_demo          TINYINT NOT NULL DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- v1.9.5: 原卷多页支持
+CREATE TABLE IF NOT EXISTS original_paper_pages (
+    id               INT AUTO_INCREMENT PRIMARY KEY,
+    card_id          VARCHAR(20) NOT NULL,
+    page_index       INT NOT NULL,
+    filename         VARCHAR(255) NOT NULL,
+    stored_path      VARCHAR(500) NOT NULL,
+    created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_paper_pages (card_id, page_index)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS objective_blocks (
@@ -352,6 +368,9 @@ CREATE TABLE IF NOT EXISTS scan_batches (
     name        VARCHAR(255),
     status      VARCHAR(20) DEFAULT 'pending',
     file_count  INT DEFAULT 0,
+    success_count INT DEFAULT 0,
+    failure_count INT DEFAULT 0,
+    error_summary LONGTEXT,
     created_by  INT,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     finished_at DATETIME,
@@ -545,6 +564,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     score           DOUBLE,
     max_score       DOUBLE,
     score_type      VARCHAR(20),
+    selected_options TEXT,
     manually_modified TINYINT DEFAULT 0,
     modified_by     INT,
     modified_at     DATETIME,
@@ -630,6 +650,7 @@ CREATE TABLE IF NOT EXISTS review_assignments (
     teacher_id           INT NOT NULL,
     student_count        INT DEFAULT 0,
     assigned_student_ids LONGTEXT,
+    auto_assigned        TINYINT DEFAULT 0,
     created_at           DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_ra_exam_block_teacher (exam_id, block_id, teacher_id),
     FOREIGN KEY (exam_id)    REFERENCES exams(id) ON DELETE CASCADE,
@@ -673,6 +694,11 @@ CREATE TABLE IF NOT EXISTS block_grading_config (
     rounding           VARCHAR(16) DEFAULT 'ceil',
     arbitrator_id      INT,
     review_mode        INT DEFAULT 1,
+    scoring_mode       VARCHAR(16) NOT NULL DEFAULT 'block_total',
+    score_distribution VARCHAR(16) NOT NULL DEFAULT 'proportional',
+    has_half_point             TINYINT DEFAULT 0,
+    auto_reassign_no_arb       TINYINT DEFAULT 1,
+    workload_balance_threshold INT DEFAULT 4,
     created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_bgc_exam_block (exam_id, block_id),
@@ -750,4 +776,9 @@ INSERT IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive,
     (3, '期中期末', 0, 1, 0);
 
 INSERT IGNORE INTO system_settings (`key`, value) VALUES
-    ('ladder_enabled', '1');
+    ('ladder_enabled', '1'),
+    ('allow_half_point', '1'),
+    ('default_dispute_threshold', '2'),
+    ('default_rounding', 'ceil'),
+    ('auto_reassign_policy', '1'),
+    ('workload_balance_threshold', '4');

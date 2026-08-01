@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { CalendarDays, Layers, Save, Search, Trash2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import { useIsMobile } from "../hooks/useMediaQuery";
+import { DataCard } from "./ui/DataCard";
+import { formatScore } from "../util/format";
 import type {
   CrossExamAttendanceMode,
   CrossExamGroup,
@@ -28,11 +31,9 @@ function addDays(date: string, days: number): string {
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 }
-function formatScore(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
-}
 
 export function ExamSelectPage({ onSelectExam, onSelectGroup, refreshKey = 0 }: Props) {
+  const isMobile = useIsMobile();
   const [mainMode, setMainMode] = useState<MainMode>("single");
   const [crossMode, setCrossMode] = useState<CrossMode>("week");
   const [filters, setFilters] = useState<FilterOptions>({ academicYears: [], subjects: [] });
@@ -324,6 +325,22 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup, refreshKey = 0 }: 
                   </div>
                   {weekPreviewExams.length === 0 ? (
                     <div style={{ fontSize: 12, color: "var(--muted)", padding: "8px 0" }}>该日期范围内暂无考试</div>
+                  ) : isMobile ? (
+                    <div className="data-card-list" style={{ maxHeight: 200, overflow: "auto" }}>
+                      {weekPreviewExams.map((exam) => (
+                        <DataCard
+                          key={exam.id}
+                          rows={[
+                            { label: "考试名称", value: exam.name, strong: true },
+                            { label: "科目", value: exam.subject || "—" },
+                            { label: "年级", value: exam.grade_name || "—" },
+                            { label: "日期", value: exam.exam_date || "—" },
+                            { label: "已阅", value: exam.graded_count },
+                            { label: "均分", value: exam.graded_count > 0 ? exam.avg_score : "—" },
+                          ]}
+                        />
+                      ))}
+                    </div>
                   ) : (
                     <div className="exam-list-table" style={{ maxHeight: 200, overflow: "auto" }}>
                       <div className="exam-list-head">
@@ -360,6 +377,34 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup, refreshKey = 0 }: 
                   <span style={{ color: "var(--muted)", fontSize: 13, paddingBottom: 6 }}>已选 {selectedIds.length} 场</span>
                 </div>
                 {/* Exam picker list */}
+                {isMobile ? (
+                  <div className="data-card-list" style={{ maxHeight: 260, overflow: "auto", marginTop: 12 }}>
+                    {exams.map((exam) => (
+                      <DataCard
+                        key={exam.id}
+                        rows={[
+                          { label: "考试名称", value: exam.name, strong: true },
+                          { label: "科目", value: exam.subject || "—" },
+                          { label: "年级", value: exam.grade_name || "—" },
+                          { label: "日期", value: exam.exam_date || "—" },
+                          { label: "已阅", value: exam.graded_count },
+                          { label: "均分", value: exam.graded_count > 0 ? exam.avg_score : "—" },
+                        ]}
+                        actions={
+                          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, width: "100%", minHeight: "var(--touch-target-min)" }}>
+                            <input type="checkbox" checked={selectedExamIds.has(exam.id)} onChange={() => {
+                              const next = new Set(selectedExamIds);
+                              if (next.has(exam.id)) next.delete(exam.id); else next.add(exam.id);
+                              setSelectedExamIds(next);
+                            }} />
+                            选择此考试
+                          </label>
+                        }
+                      />
+                    ))}
+                    {exams.length === 0 && <div style={{ padding: 16, color: "var(--muted)", fontSize: 13, textAlign: "center" }}>暂无匹配考试</div>}
+                  </div>
+                ) : (
                 <div className="exam-list-table" style={{ maxHeight: 260, overflow: "auto", marginTop: 12 }}>
                   <div className="exam-list-head">
                     <span style={{ width: 36 }} />
@@ -387,6 +432,7 @@ export function ExamSelectPage({ onSelectExam, onSelectGroup, refreshKey = 0 }: 
                   ))}
                   {exams.length === 0 && <div className="exam-list-row"><span style={{ padding: 16, color: "var(--muted)", fontSize: 13 }}>暂无匹配考试</span></div>}
                 </div>
+                )}
               </div>
             )}
 
@@ -577,7 +623,7 @@ function CrossResultTable({ result, rows, search, setSearch }: {
           <div className="panel-title" style={{ margin: 0 }}>总成绩排名</div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, border: "1px solid var(--line)", borderRadius: 8, padding: "4px 10px", marginLeft: "auto" }}>
             <Search size={14} style={{ color: "var(--muted)" }} />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索姓名/学号/班级" style={{ border: "none", outline: "none", background: "transparent", fontSize: 13 }} />
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索姓名/学号/班级" style={{ border: "none", outline: "none", background: "transparent" }} />
           </div>
         </div>
         <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 10 }}>

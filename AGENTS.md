@@ -14,14 +14,14 @@ Project-X (答题卡设计阅卷系统): an answer-card designer, OMR grading, a
 
 ### Running (dev)
 - `npm run dev` starts backend + frontend together (via `concurrently`). The `predev` hook (`scripts/ensure-native-modules.cjs`) auto-rebuilds `better-sqlite3` if its binary is missing/mismatched, so `npm run dev` self-heals native module issues.
-- Open `http://127.0.0.1:5173/`. A default admin is seeded on first DB init: username `admin`, password `admin123`.
+- Open `http://127.0.0.1:5173/`. First DB initialization creates username `admin` with a random one-time password in `bootstrap-admin.txt` beside the database; login requires an immediate password change.
 - The login API (`POST /api/auth/login`) expects `{ "identifier": ..., "password": ... }` — the field is `identifier` (username/student-no/staff-no), NOT `username`.
 - Health check: `GET http://127.0.0.1:5174/api/app/health` → `{"ok":true,...}`.
 
 ### Lint / test / build (standard commands live in `package.json`)
 - "Lint" = typecheck only (no ESLint configured): `npm run typecheck` (`tsc --noEmit`).
-- Tests: `npm run verify:auth` (auth/RBAC suite) and `npx tsx scripts/grading-rules-smoke.ts` (grading smoke).
-  - NOTE: `verify:auth` 全部 53 项通过（含上一场考试对比与未知班级班级列表）。
+- Tests: `npm run verify:auth` (auth/RBAC suite), `npm run verify:security-critical` (critical security/integrity suite), and `npx tsx scripts/grading-rules-smoke.ts` (grading smoke).
+  - NOTE: `verify:auth` 全部 54 项通过（含上一场考试对比与未知班级班级列表）。
 - Build:
   - `npm run build` → typecheck + `vite build --mode web` → `dist/web/` + esbuild bundle → `dist/server/`
   - `npm run build:scanner:full` → typecheck + `vite build --mode scanner` → `dist/scanner/` + esbuild bundle → `dist/server/`
@@ -36,3 +36,14 @@ README states Node 24+ for dev, but the project runs fine on the Node 22 LTS ava
 
 ### Install note
 Use `npm install --ignore-scripts` (avoids Electron download issues), then `npm rebuild better-sqlite3` to compile the native SQLite binding for the current Node.
+
+## Code of Conduct — 八荣八耻
+
+以瞎猜接口为耻，以认真查询为荣。
+以模糊执行为耻，以寻求确认为荣。
+以臆想业务为耻，以人类确认为荣。
+以创造接口为耻，以复用现有为荣。
+以跳过验证为耻，以主动测试为荣。
+以破坏架构为耻，以遵循规范为荣。
+以假装理解为耻，以诚实无知为荣。
+以盲目修改为耻，以谨慎重构为荣。
