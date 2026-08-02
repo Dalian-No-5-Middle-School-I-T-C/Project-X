@@ -66,6 +66,17 @@ router.get("/config/thresholds/defaults", authMiddleware, async (_req, res) => {
   res.json({ ...DEFAULT_ANALYSIS_THRESHOLDS, errorTiers: [...DEFAULT_ANALYSIS_THRESHOLDS.errorTiers] });
 });
 
+// 难度/区分度档位（系统设置可配，缺省回退内置默认）
+router.get("/config/bands", authMiddleware, async (_req, res, next) => {
+  try {
+    const { getDifficultyDiscriminationBands } = await import("../../../../server/services/analysisConfig");
+    const bands = await getDifficultyDiscriminationBands();
+    res.json(bands);
+  } catch (error) {
+    next(error);
+  }
+});
+
 type AiProviderRow = {
   id: number;
   name: string;
@@ -307,6 +318,47 @@ router.get("/exams/:examId/questions", requireExamAccess, async (req, res, next)
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
     const questions = await analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
     res.json(questions);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 逐题下钻：全班每人得分（难度/区分度增强）─────────────
+router.get("/exams/:examId/question-students", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    const questionNumber = req.query.questionNumber ? Number(req.query.questionNumber) : undefined;
+    if (questionNumber == null || !Number.isFinite(questionNumber)) {
+      res.status(400).json({ message: "缺少 questionNumber 参数" });
+      return;
+    }
+    const classId = req.query.classId ? Number(req.query.classId) : undefined;
+    const students = await analysisRepo.getQuestionStudentScores(Number(req.params.examId), questionNumber, classId);
+    res.json(students);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 总体分析：单科/各班分布 ─────────────────────────
+router.get("/exams/:examId/distribution", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    const mode = (req.query.mode as string) === "class" ? "class" : "subject";
+    const dist = await analysisRepo.getExamDistribution(Number(req.params.examId), mode);
+    res.json(dist);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 考试整体难度/区分度指标 ─────────────────────────
+router.get("/exams/:examId/metrics", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    const classId = req.query.classId ? Number(req.query.classId) : undefined;
+    const metrics = await analysisRepo.getExamMetrics(Number(req.params.examId), classId);
+    res.json(metrics);
   } catch (error) {
     next(error);
   }

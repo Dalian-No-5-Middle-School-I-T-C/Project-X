@@ -1,3 +1,5 @@
+import type { HistogramBin, NormalityResult, QQPoint, ThresholdBand } from "./stats";
+
 export type ObjectiveMode = "single" | "multiple" | "indefinite";
 export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
 export type ObjectiveOptionLayout = "horizontal" | "vertical";
@@ -616,6 +618,12 @@ export type QuestionAnalysisItem = {
   errorRate: number;
   errorRateLevel: ErrorRateLevel;
   totalCount: number;
+  /** 难度系数 P（0-1）= 平均得分 / 满分 */
+  difficulty: number;
+  /** 区分度 D（极端组法，-1~1）= 高分组得分率 - 低分组得分率 */
+  discrimination: number;
+  /** 关联知识点文本（若已标注） */
+  knowledgePoint?: string | null;
 };
 
 // ── 逐题选项分析（v29）──────────────────────────────
@@ -1072,6 +1080,10 @@ export interface GroupSubjectSummary {
   excellentRate: number;
   fullScore: number;
   hasAssignedScore: boolean;
+  /** 难度系数 P（0-1） */
+  difficulty?: number;
+  /** 区分度 D（极端组法） */
+  discrimination?: number;
 }
 
 /** 大考概览 */
@@ -1081,6 +1093,10 @@ export interface GroupOverview {
   totalParticipants: number;
   fullParticipants: number;
   subjects: GroupSubjectSummary[];
+  /** 大考整体难度系数 P */
+  difficulty?: number;
+  /** 大考整体区分度 D */
+  discrimination?: number;
 }
 
 /** 大考排名行 - 每科成绩 */
@@ -1279,6 +1295,118 @@ export interface ReviewTraceItem {
   resolvedBy: string | null;
   status: string;
 }
+
+// ============================================================
+// 难度系数 / 区分度 / 总体分析（成绩分析增强）
+// ============================================================
+
+/** 难度与区分度档位（复用 stats.ThresholdBand 形状） */
+export type DifficultyBand = ThresholdBand;
+export type DiscriminationBand = ThresholdBand;
+
+/** 大考概览各科补充 P/D */
+export interface GroupSubjectMetric extends GroupSubjectSummary {
+  difficulty?: number;
+  discrimination?: number;
+}
+
+/** 普通考试整体难度/区分度指标 */
+export interface ExamMetrics {
+  difficulty: number;
+  discrimination: number;
+  fullScore: number;
+  avgScore: number;
+  gradedCount: number;
+}
+
+/** 大考整体 + 逐科难度/区分度指标 */
+export interface GroupMetrics {
+  difficulty: number;
+  discrimination: number;
+  totalFullScore: number;
+  totalAvg: number;
+  memberCount: number;
+  subjects: GroupSubjectMetric[];
+}
+
+/** 总体分析分布结果（单科/总分/各班） */
+export interface DistributionResult {
+  /** 维度：subject=单科分布，total=大考总分分布，class=某班分布 */
+  scope: "subject" | "total" | "class";
+  /** 维度标识（如 classId 或 "total"） */
+  scopeId: string;
+  label: string;
+  fullScore: number;
+  segmentSize: number;
+  bins: HistogramBin[];
+  mean: number;
+  stdDev: number;
+  normality: NormalityResult;
+  difficulty: number;
+  discrimination: number;
+  sampleSize: number;
+  /** 赋分是否可用（只读已落库 assigned_score） */
+  assignedAvailable: boolean;
+  /** 赋分分布（若可用） */
+  assignedBins?: HistogramBin[];
+  /** Q-Q 图数据点（样本值 vs 理论正态分位），用于正态性可视化 */
+  qq?: QQPoint[];
+}
+
+/** 逐题下钻 - 单个学生得分 */
+export interface QuestionStudentScore {
+  studentId: number;
+  studentNumber: string;
+  name: string;
+  className: string | null;
+  score: number;
+  maxScore: number;
+  scoreRate: number;
+  /** 是否满分 */
+  isFull: boolean;
+  /** 关联知识点文本（若已标注） */
+  knowledgePoint?: string | null;
+}
+
+/** 大考逐题分析响应（含整体与逐科） */
+export interface GroupQuestionAnalysisResponse {
+  overall: { difficulty: number; discrimination: number };
+  subjects: Array<{
+    examId: number;
+    subject: string;
+    examName: string;
+    fullScore: number;
+    avgScore: number;
+    difficulty: number;
+    discrimination: number;
+    questions: QuestionAnalysisItem[];
+  }>;
+}
+
+/** 大考班级对比响应 */
+export interface GroupClassComparisonResponse {
+  classes: Array<{
+    classId: number;
+    className: string;
+    gradeName?: string;
+    count: number;
+    avgScore: number;
+    maxScore: number;
+    minScore: number;
+    median: number;
+    stdDev: number;
+    passRate: number;
+    excellentRate: number;
+    distribution: HistogramBin[];
+  }>;
+  /** 逐科 × 班级的均分/得分率对比 */
+  subjectClassSummaries: Array<{
+    examId: number;
+    subject: string;
+    byClass: Array<{ classId: number; avgScore: number; scoreRate: number }>;
+  }>;
+}
+
 
 /** 争议卷条目 */
 export interface DisputeItem {

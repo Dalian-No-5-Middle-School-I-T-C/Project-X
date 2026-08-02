@@ -4,7 +4,7 @@
 > **适用对象**: 教师、管理员、开发者 / 运维
 > **关联文档**: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`ADMIN-GUIDE.md`](./ADMIN-GUIDE.md) · [`多端使用说明.md`](./多端使用说明.md)
 
-Project-X v1.2.0 在「分析 → 成绩分析」中新增 AI 成绩分析卡片。v1.4.0 扩展为多服务商架构，支持 GPT、DeepSeek、Gemini 三线路。v1.4.7 修复 Gemini 自定义服务商路由 Bug，Gemini 使用 Google 原生 GenAI SDK（不需 Base URL）。
+Project-X v1.2.0 在「分析 → 成绩分析」中新增 AI 成绩分析卡片。v1.4.0 扩展为多服务商架构，支持 GPT、DeepSeek、Gemini 三线路。v1.4.7 修复 Gemini 自定义服务商路由 Bug，Gemini 使用 Google 原生 GenAI SDK（不需 Base URL）。v1.10.0 起 **大考（考试组）详情页也内置 AI 分析**，且成绩工具返回体新增 **难度系数 P** 与 **区分度 D**，供模型判断试卷难易与题目区分能力。
 
 AI 报告只读取当前考试和当前班级筛选范围内的成绩统计数据，不允许模型执行任意 SQL，也不会把学生个人姓名作为分析素材返回给模型。
 
@@ -20,7 +20,7 @@ AI 报告只读取当前考试和当前班级筛选范围内的成绩统计数�
 py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766
 ```
 
-进入「分析 → 成绩分析」，选择「内置 LLM 服务」→ 下拉选择模型 → 点击「生成分析」。
+进入「分析 → 成绩分析」，选择「内置 LLM 服务」→ 下拉选择模型 → 点击「生成分析」。**大考（考试组）详情页的「AI 分析」Tab 同样可用**，请求仅携带 `groupId`，由 Python 侧解析成员考试后逐科汇总。
 
 Python 服务未启动、数据库路径不可访问、或当前 provider 没有配置 API Key 时，前端会禁用生成按钮并显示原因。
 
@@ -87,14 +87,14 @@ Python 服务未启动、数据库路径不可访问、或当前 provider 没有
 
 | 工具 | 用途 |
 |------|------|
-| `get_exam_overview` | 读取考试名称、科目、总体统计 |
+| `get_exam_overview` | 读取考试名称、科目、总体统计；**返回难度 P 与区分度 D** |
 | `get_score_distribution` | 读取分数段与四分位统计 |
 | `get_class_summaries` | 读取各班成绩摘要 |
-| `get_question_analysis` | 读取低得分率题目 |
+| `get_question_analysis` | 读取低得分率题目；**每题返回难度 P 与区分度 D** |
 | `get_rank_segments` | 读取匿名排名分段统计 |
 | `get_review_risks` | 读取错误率或低分率偏高题目，按低 / 中 / 高分档 |
 
-工具层会强制校验 `examId` 和当前班级筛选范围；模型传入多余参数时会被过滤，不会直接进入数据库层。
+工具层会强制校验 `examId` 和当前班级筛选范围；模型传入多余参数时会被过滤，不会直接进入数据库层。**大考模式**下，Node 仅传 `groupId`，Python 侧 `get_group_exam_ids` 解析出成员考试集合后下传工具层；工具层会强制要求模型传入的 `examId` 属于该大考成员，否则返回错误，确保模型不能越权读取其它考试。P / D 数值属于聚合统计量，仍不携带学生姓名，延续既有白名单。
 
 ---
 
@@ -106,6 +106,7 @@ Node 后端新增接口：
 |------|------|------|
 | `GET` | `/api/analysis/ai/status` | 探测 Python 服务 + 用户自定义服务商 |
 | `POST` | `/api/analysis/exams/:examId/ai-analysis` | 转发当前考试，支持 providerId 参数 |
+| `POST` | `/api/exam-groups/:groupId/ai-analysis` | 转发大考（仅传 groupId），Python 侧解析成员考试后逐科汇总 |
 
 ### 自定义服务商 API
 

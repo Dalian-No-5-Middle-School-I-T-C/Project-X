@@ -36,7 +36,6 @@ import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
 import { GroupExportModal } from "./components/GroupExportModal";
-
 import { MobileDrawer } from "./components/MobileDrawer";
 import { HomeRoutePage } from "./pages/HomeRoutePage";
 
@@ -60,7 +59,6 @@ const routeFallback = (
     <p className="empty-text">正在加载...</p>
   </div>
 );
-
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -1725,7 +1723,6 @@ function App() {
             顶栏标题 / showCardSidebar / useBlocker 由已与 URL 同步的 mode 驱动，行为不变。 */}
         <Routes>
           <Route path="/home" element={<HomeRoutePage />} />
-
           <Route path="/design/*" element={<Suspense fallback={routeFallback}><DesignPage /></Suspense>} />
           <Route path="/exam-manage" element={<Suspense fallback={routeFallback}><ExamManagePage /></Suspense>} />
           <Route path="/analysis" element={<Suspense fallback={routeFallback}><AnalysisRoutePage /></Suspense>} />
@@ -1735,7 +1732,6 @@ function App() {
           <Route path="/permissions" element={<Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense>} />
           <Route path="/guide" element={<Suspense fallback={routeFallback}><GuideRoutePage /></Suspense>} />
           <Route path="/global-settings" element={<Suspense fallback={routeFallback}><GlobalSettingsRoutePage onBack={() => void switchMode("home")} /></Suspense>} />
-
           <Route path="*" element={<Navigate to="/home" replace />} />
         </Routes>
         {gradingPanel && (

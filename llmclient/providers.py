@@ -27,8 +27,17 @@ def _quiet_gemini_non_text_warning() -> None:
             logger.addFilter(_GeminiNonTextWarningFilter())
 
 
-def _user_prompt(exam_id: int, class_id: int | None, locale: str) -> str:
+def _user_prompt(exam_id: int, class_id: int | None, locale: str, group_exam_ids: set[int] | None = None) -> str:
     scope = "all classes" if class_id is None else f"classId={class_id}"
+    if group_exam_ids:
+        member_list = ", ".join(str(e) for e in sorted(group_exam_ids))
+        return (
+            f"Generate a structured score analysis report for a GROUP (大考) of member exams [{member_list}], "
+            f"scope={scope}, locale={locale}. For each member exam, call get_exam_overview / get_question_analysis with its examId, "
+            "then synthesize an overall group report. Use the difficulty (P) and discrimination (D) returned by the tools to evaluate "
+            "whether the paper was too hard/easy and whether questions discriminated ability well."
+            f"Current Date: {datetime.now().strftime('%Y-%m-%d')}. This is the REAL TIME NOW, NOT a simulated or past or future date."
+        )
     return (
         f"Generate a structured score analysis report for examId={exam_id}, scope={scope}, locale={locale}. "
         "Call tools as needed before writing the final json report."
@@ -93,10 +102,11 @@ def _gemini_text(response: Any) -> str:
 
 def run_openai_compatible_analysis(
     model: ModelConfig,
-    exam_id: int,
+    exam_id: int | None,
     class_id: int | None,
     locale: str,
     provider_override: dict[str, str] | None = None,
+    group_exam_ids: set[int] | None = None,
 ) -> AnalysisRunResponse:
     # Use provider override if provided, else fall back to env vars
     if provider_override:
@@ -112,7 +122,7 @@ def run_openai_compatible_analysis(
     client = OpenAI(api_key=api_key, base_url=base_url)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": _user_prompt(exam_id, class_id, locale)},
+        {"role": "user", "content": _user_prompt(exam_id, class_id, locale, group_exam_ids)},
     ]
     traces: list[ToolCallTrace] = []
 
@@ -169,7 +179,7 @@ def run_openai_compatible_analysis(
                 arguments = json.loads(tool.function.arguments or "{}")
             except json.JSONDecodeError:
                 arguments = {}
-            result = call_tool(tool.function.name, arguments, exam_id, class_id)
+            result = call_tool(tool.function.name, arguments, exam_id, class_id, group_exam_ids)
             traces.append(_trace(tool.function.name, arguments, result))
             messages.append(
                 {
@@ -189,10 +199,11 @@ def run_openai_compatible_analysis(
 
 def run_gemini_analysis(
     model: ModelConfig,
-    exam_id: int,
+    exam_id: int | None,
     class_id: int | None,
     locale: str,
     provider_override: dict[str, str] | None = None,
+    group_exam_ids: set[int] | None = None,
 ) -> AnalysisRunResponse:
     from google import genai
     from google.genai import types
@@ -214,7 +225,7 @@ def run_gemini_analysis(
     contents: list[Any] = [
         types.Content(
             role="user",
-            parts=[types.Part(text=_user_prompt(exam_id, class_id, locale))],
+            parts=[types.Part(text=_user_prompt(exam_id, class_id, locale, group_exam_ids))],
         )
     ]
     traces: list[ToolCallTrace] = []
@@ -234,7 +245,7 @@ def run_gemini_analysis(
         response_parts = []
         for fc in function_calls:
             arguments = dict(getattr(fc, "args", None) or {})
-            result = call_tool(fc.name, arguments, exam_id, class_id)
+            result = call_tool(fc.name, arguments, exam_id, class_id, group_exam_ids)
             traces.append(_trace(fc.name, arguments, result))
             response_parts.append(
                 types.Part(
@@ -257,16 +268,17 @@ def run_gemini_analysis(
 
 def run_analysis(
     model: ModelConfig,
-    exam_id: int,
+    exam_id: int | None,
     class_id: int | None,
     locale: str,
     provider_override: dict[str, str] | None = None,
+    group_exam_ids: set[int] | None = None,
 ) -> AnalysisRunResponse:
     # If provider_override is given, treat as OpenAI-compatible unless explicitly gemini
     effective_provider = provider_override.get("provider_type", model.provider) if provider_override else model.provider
 
     if effective_provider == "gemini":
-        return run_gemini_analysis(model, exam_id, class_id, locale, provider_override)
+        return run_gemini_analysis(model, exam_id, class_id, locale, provider_override, group_exam_ids)
     # All other providers (openai, deepseek, custom) are OpenAI-compatible
-    return run_openai_compatible_analysis(model, exam_id, class_id, locale, provider_override)
+    return run_openai_compatible_analysis(model, exam_id, class_id, locale, provider_override, group_exam_ids)
 

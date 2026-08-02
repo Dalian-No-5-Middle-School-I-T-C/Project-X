@@ -3,9 +3,7 @@ import { ArrowDown, ArrowUp, Minus, Search } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { DataCard } from "./ui/DataCard";
-
 import { formatScore } from "../util/format";
-
 import type { ScoreTableRow, ScoreDisplayMode } from "../../../../shared/types";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 
