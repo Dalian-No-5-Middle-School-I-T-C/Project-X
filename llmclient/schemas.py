@@ -12,9 +12,8 @@ class ProviderOverride(BaseModel):
 
 
 class AnalysisRunRequest(BaseModel):
-    examId: int | None = None
+    examId: int
     classId: int | None = None
-    groupId: int | None = None
     model: str | None = None
     locale: str = "zh-CN"
     providerOverride: ProviderOverride | None = None

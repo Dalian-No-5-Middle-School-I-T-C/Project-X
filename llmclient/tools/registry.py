@@ -33,7 +33,7 @@ def _params(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
 FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
     {
         "name": "get_exam_overview",
-        "description": "Read the selected exam name, subject, score summary, and overall difficulty (P) and discrimination (D). Use P/D to judge if the paper was too hard/easy and whether it discriminated ability well.",
+        "description": "Read the selected exam name, subject, and score summary.",
         "parameters": _params(
             {
                 "examId": {"type": "integer", "description": "Project-X exam id"},
@@ -60,7 +60,7 @@ FUNCTION_DECLARATIONS: list[dict[str, Any]] = [
     },
     {
         "name": "get_question_analysis",
-        "description": "Read weakest questions ordered by score rate. Each question includes difficulty (P) and discrimination (D): use D to flag questions that failed to separate strong/weak students, and P to flag overly hard/easy items.",
+        "description": "Read weakest questions ordered by score rate.",
         "parameters": _params(
             {
                 "examId": {"type": "integer"},
@@ -129,27 +129,16 @@ def _strip_gemini_unsupported_schema_fields(value: Any) -> None:
             _strip_gemini_unsupported_schema_fields(item)
 
 
-def call_tool(
-    name: str,
-    arguments: dict[str, Any],
-    exam_id: int,
-    class_id: int | None,
-    group_exam_ids: set[int] | None = None,
-) -> dict[str, Any]:
+def call_tool(name: str, arguments: dict[str, Any], exam_id: int, class_id: int | None) -> dict[str, Any]:
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
         return {"error": f"unknown tool: {name}"}
 
     safe_args = dict(arguments or {})
     requested_exam = int(safe_args.get("examId", exam_id))
-    if group_exam_ids:
-        if requested_exam not in group_exam_ids:
-            return {"error": "tool examId must be a member exam of the group"}
-        safe_args["examId"] = requested_exam
-    else:
-        if requested_exam != exam_id:
-            return {"error": "tool examId must match the selected exam"}
-        safe_args["examId"] = exam_id
+    if requested_exam != exam_id:
+        return {"error": "tool examId must match the selected exam"}
+    safe_args["examId"] = exam_id
 
     if "classId" in safe_args and safe_args["classId"] is None:
         safe_args.pop("classId")
