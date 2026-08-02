@@ -138,7 +138,7 @@ export function AnalysisQuestions({ questions, bands, onRowClick }: Props) {
                     <DifficultyBadge value={q.difficulty} bands={bands?.difficulty} />
                   </td>
                   <td style={{ padding: "8px 12px", textAlign: "right" }}>
-                    <DiscriminationBadge value={q.discrimination} bands={bands?.discrimination} />
+                    <DiscriminationBadge value={q.discrimination} bands={bands?.discrimination} sampleSize={q.totalCount} />
                   </td>
                   <td style={{ padding: "8px 12px", textAlign: "right" }}>
                     <span className={`error-level-badge error-level-${q.errorRateLevel}`}>

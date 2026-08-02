@@ -154,6 +154,34 @@ def _extreme_group_discrimination(totals: dict[int, float], items: dict[int, flo
     return round(high_rate - low_rate, 3)
 
 
+def _question_discriminations(
+    conn: sqlite3.Connection, exam_id: int, class_id: int | None, totals: dict[int, float]
+) -> dict[tuple[int, str], float]:
+    """逐题区分度 D（极端组法 27%），键为 (question_number, score_type)。
+
+    与 Web 端 `AnalysisRepository.computeQuestionAnalysis` 口径一致：
+    D = (高分组该题平均得分 − 低分组该题平均得分) / 该题满分，
+    仅统计在 totals（分组基准）中的学生。
+    """
+    join, where, params = _class_filter("qs", class_id)
+    rows = conn.execute(
+        "SELECT qs.student_id AS sid, qs.question_number AS qn, qs.score_type AS st, "
+        "qs.score AS score, qs.max_score AS max_score "
+        f"FROM question_scores qs {join} WHERE qs.exam_id = ? {where}",
+        [exam_id, *params],
+    ).fetchall()
+    items_by_q: dict[tuple, dict[int, float]] = {}
+    max_by_q: dict[tuple, float] = {}
+    for r in rows:
+        key = (r["qn"], r["st"])
+        items_by_q.setdefault(key, {})[int(r["sid"])] = float(r["score"])
+        max_by_q[key] = max(max_by_q.get(key, 0.0), float(r["max_score"] or 0))
+    return {
+        key: _extreme_group_discrimination(totals, items, max_by_q[key])
+        for key, items in items_by_q.items()
+    }
+
+
 def get_exam_overview(examId: int, classId: int | None = None) -> dict[str, Any]:
     with connect_db() as conn:
         exam = conn.execute(
@@ -171,12 +199,16 @@ def get_exam_overview(examId: int, classId: int | None = None) -> dict[str, Any]
             [examId],
         ).fetchone()
         full = float(full_row["total"] or 0)
-        difficulty = round(sum(scores) / len(scores) / full, 3) if full > 0 and scores else 0.0
-        discrimination = _extreme_group_discrimination(totals, totals, full)
+        summary = _score_summary(scores)
+        # 难度 P = 均分（保留 1 位）/ 满分，与 Web 端 getExamMetrics 一致
+        difficulty = round(summary["avg"] / full, 3) if full > 0 and summary.get("count", 0) > 0 else 0.0
+        # 考试级 D = 各题 D 的算术平均（逐题 D 为极端组法 27%），与 Web 端 getExamMetrics 一致
+        disc_map = _question_discriminations(conn, examId, classId, totals)
+        discrimination = round(sum(disc_map.values()) / len(disc_map), 3) if disc_map else 0.0
         return {
             "exam": dict(exam),
             "classId": classId,
-            "summary": _score_summary(scores),
+            "summary": summary,
             "difficulty": difficulty,
             "discrimination": discrimination,
         }
@@ -234,15 +266,7 @@ def get_question_analysis(examId: int, classId: int | None = None, limit: int = 
     join, where, params = _class_filter("qs", classId)
     with connect_db() as conn:
         totals = _totals_by_student(conn, examId, classId)
-        all_qs = conn.execute(
-            f"SELECT qs.student_id AS sid, qs.question_number AS qn, qs.score_type AS st, qs.score AS score "
-            f"FROM question_scores qs {join} WHERE qs.exam_id = ? {where}",
-            [examId, *params],
-        ).fetchall()
-        items_by_q: dict[tuple, dict[int, float]] = {}
-        for r in all_qs:
-            key = (r["qn"], r["st"])
-            items_by_q.setdefault(key, {})[int(r["sid"])] = float(r["score"])
+        disc_map = _question_discriminations(conn, examId, classId, totals)
 
         rows = conn.execute(
             f"""
@@ -272,9 +296,8 @@ def get_question_analysis(examId: int, classId: int | None = None, limit: int = 
         is_objective = row["questionType"] == "objective"
         error_count = int(row["objectiveErrorCount"] or 0) if is_objective else int(row["subjectiveLowScoreCount"] or 0)
         error_rate = round(error_count / total * 100) if total > 0 else 0
-        items = items_by_q.get((row["questionNumber"], row["questionType"]), {})
         difficulty = round(avg_score / max_score, 3) if max_score > 0 else 0.0
-        discrimination = _extreme_group_discrimination(totals, items, max_score)
+        discrimination = disc_map.get((row["questionNumber"], row["questionType"]), 0.0)
         questions.append(
             {
                 "questionNumber": str(row["questionNumber"]),

@@ -1,5 +1,15 @@
 # Project-X CHANGELOG
 
+## v1.10.0.4 (2026-08-03) — 统计口径统一（评审整改 PR-A）
+
+> 统一 P/D 计算口径，修正正态性检验实现与展示，小样本不再展示区分度 D。
+
+- 统一考试级区分度 D 口径：Python AI 工具 `get_exam_overview` 由「总分极端组差 / 满分」改为「各题 D 的算术平均」，与 Web 端 `getExamMetrics` 一致；逐题 D 复用同一实现（`_question_discriminations`），难度 P 也按「均分保留 1 位再除以满分」对齐。
+- KS 正态性检验 p 值改用 Lilliefors 修正（Dallal & Wilkinson 1986 解析近似），n<5 不再给出 p 值；`normality()` 注释与实现对齐（综合判定以 Shapiro-Francia 为主判）。
+- 小样本（&lt;4 人）时前端区分度 D 徽章显示「样本不足」。
+- 文档：`readus/ARCHITECTURE.md` 新增 §13 成绩分析指标定义；总体分析正态性表补充 KS 参考值说明。
+- 验证：`npm run typecheck` 通过；`scripts/bugfix-analysis-verification.ts` 新增考试级 D 均值与 KS 小样本断言（38/38）；TS/Python 合成数据 D 对比一致。
+
 ## v1.10.0.3 (2026-08-02) — 评审修复（大考参与口径 / 正态性 / 直方图 / 阈值）
 
 > 修复 4 项 P0/P1 bug + 3 项非阻断观察，保证大考统计与总体分析数据准确。

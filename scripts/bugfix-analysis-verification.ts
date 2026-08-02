@@ -89,6 +89,11 @@ ok(m1SubB?.gradedCount === 2 && m1SubB.avgScore === 75, "语文 gradedCount=2, a
 const groupQuestions = await repo.getGroupQuestionAnalysis(grp);
 ok(groupQuestions.subjects.every((s) => s.avgScore === 75), "大考逐科均分遵守 only_full 参与者口径", groupQuestions.subjects);
 ok(groupQuestions.subjects.every((s) => s.questions.every((q) => q.totalCount === 2)), "大考逐题统计排除缺考学生", groupQuestions.subjects);
+const examMetrics1 = await repo.getExamMetrics(e1);
+const examQa1 = await repo.getQuestionAnalysis(e1);
+const meanD = examQa1.reduce((s, q) => s + (q.discrimination ?? 0), 0) / (examQa1.length || 1);
+ok(Math.abs(examMetrics1.discrimination - Math.round(meanD * 1000) / 1000) < 1e-9,
+  "考试级 D = 各题 D 均值（与 AI 工具同口径）", { examD: examMetrics1.discrimination, meanD });
 
 const classDrill = await repo.getQuestionStudentScores(e1, 1, classId);
 ok(classDrill.length === 3 && classDrill.every((s) => s.className === "1班"), "逐题下钻按班级过滤且不发生 JOIN 别名冲突", classDrill);
@@ -165,6 +170,8 @@ ok(r2.shapiroFrancia.W > 0.9, "正态数据 W > 0.9", { W: r2.shapiroFrancia.W }
 ok(r2.isNormal === true, "正态数据 isNormal=true", r2);
 ok(r2.andersonDarling.pValue != null && r2.andersonDarling.pValue > 0 && r2.andersonDarling.pValue < 1,
   "AD p 值使用分段近似而非错误钳制为 1", r2.andersonDarling);
+const tiny = normality([50, 60, 70]);
+ok(tiny.kolmogorovSmirnov.pValue == null, "KS n<5 不给出 p 值（Lilliefors 近似仅 n≥5）", tiny.kolmogorovSmirnov);
 
 // ═══ Bug 4: 直方图标签 ═══
 console.log("\n== Bug 4: 直方图区间标签（半开区间，不再误归类）==");

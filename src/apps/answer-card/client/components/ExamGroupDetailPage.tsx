@@ -311,7 +311,7 @@ function OverviewTab({
               <span style={{ color: "var(--muted)" }}>区分度 D</span>
               <span style={{ fontWeight: 500, textAlign: "right" }}>
                 {metricsByExam.get(sub.examId)?.discrimination != null
-                  ? <DiscriminationBadge value={metricsByExam.get(sub.examId)!.discrimination!} bands={bands?.discrimination} />
+                  ? <DiscriminationBadge value={metricsByExam.get(sub.examId)!.discrimination!} bands={bands?.discrimination} sampleSize={metricsByExam.get(sub.examId)!.gradedCount} />
                   : "—"}
               </span>
             </div>
@@ -366,7 +366,7 @@ function OverviewTab({
                     <td style={tdStyleR}>{sub.passRate}%</td>
                     <td style={tdStyleR}>{sub.excellentRate}%</td>
                     <td style={tdStyleR}>{m?.difficulty != null ? <DifficultyBadge value={m.difficulty} bands={bands?.difficulty} /> : "—"}</td>
-                    <td style={tdStyleR}>{m?.discrimination != null ? <DiscriminationBadge value={m.discrimination} bands={bands?.discrimination} /> : "—"}</td>
+                    <td style={tdStyleR}>{m?.discrimination != null ? <DiscriminationBadge value={m.discrimination} bands={bands?.discrimination} sampleSize={m.gradedCount} /> : "—"}</td>
                   </tr>
                 );
               })}
