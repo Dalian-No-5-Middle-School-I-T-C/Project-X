@@ -55,3 +55,6 @@ ignored/
 .qoder/ 
 .zcode/ 
 .omo/ 
+
+# 设计系统方案「明澈 Clarity」：不进仓库同步
+design/
