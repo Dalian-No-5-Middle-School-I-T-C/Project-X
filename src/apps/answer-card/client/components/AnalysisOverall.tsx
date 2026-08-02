@@ -28,7 +28,7 @@ export function AnalysisOverall({ kind, examId, groupId, bands }: Props) {
 
   useEffect(() => {
     setLoading(true); setError("");
-    const base = kind === "exam" ? `/api/analysis/exams/${examId}` : `/api/analysis/exam-groups/${groupId}`;
+    const base = kind === "exam" ? `/api/analysis/exams/${examId}` : `/api/exam-groups/${groupId}`;
     const distPromises = kind === "exam"
       ? Promise.all([
           fetchJson<DistributionResult[]>(`${base}/distribution?mode=subject`),
