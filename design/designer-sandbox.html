@@ -90,8 +90,8 @@ input[type=color]{padding:2px;width:100%}
 input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(--px-accent-bg);flex:0 0 auto}
 
 /* ── AppRail ── */
-.app-shell{display:flex;height:100vh;overflow:hidden}
-.app-rail{position:relative;flex:0 0 auto;width:var(--px-rail-w);background:var(--px-bg-surface);border-right:1px solid var(--px-border-subtle);
+.app-shell{display:flex;min-height:100vh;align-items:stretch}
+.app-rail{position:sticky;top:0;align-self:flex-start;height:100vh;flex:0 0 auto;width:var(--px-rail-w);background:var(--px-bg-surface);border-right:1px solid var(--px-border-subtle);
   display:flex;flex-direction:column;padding:var(--px-space-4) var(--px-space-3);transition:width var(--px-dur-2) var(--px-ease-out),padding var(--px-dur-2) var(--px-ease-out)}
 /* 内层容器承担裁切：随栏宽变化平滑揭示/隐藏标签，避免标签溢出到内容区造成重排 */
 .rail-inner{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow:hidden}
@@ -149,11 +149,11 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .designer-topbar .title{font-size:var(--px-text-xl);font-weight:600}
 .designer-topbar .sub{font-size:12px;color:var(--px-fg-tertiary);margin-left:2px}
 .topbar-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
-.designer-body{flex:1 1 auto;display:grid;grid-template-columns:var(--px-context-panel-w) 1fr 360px;grid-template-rows:1fr;min-height:0;overflow:hidden}
+.designer-body{flex:1 1 auto;display:grid;grid-template-columns:var(--px-context-panel-w) 1fr 360px;grid-template-rows:auto}
 
 /* ── ContextPanel ── */
 .context-panel{background:var(--px-bg-surface);border-right:1px solid var(--px-border-subtle);
-  display:flex;flex-direction:column;min-height:0;overflow:auto}
+  display:flex;flex-direction:column;overflow:visible}
 .ctx-section{padding:var(--px-space-4);border-bottom:1px solid var(--px-border-subtle)}
 .ctx-section h4{margin:0 0 10px;font-size:12px;font-weight:600;color:var(--px-fg-tertiary);letter-spacing:.04em;text-transform:uppercase}
 .card-list{display:flex;flex-direction:column;gap:6px}
@@ -181,7 +181,7 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .split-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px}
 
 /* ── Canvas ── */
-.canvas{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--px-bg-canvas);overflow:hidden}
+.canvas{display:flex;flex-direction:column;min-width:0;background:var(--px-bg-canvas)}
 .preview-toolbar{display:flex;align-items:center;gap:6px;padding:8px 12px;border-bottom:1px solid var(--px-border-subtle);background:var(--px-bg-surface);flex:0 0 auto}
 .preview-toolbar button{border:1px solid var(--px-border-default);background:var(--px-bg-surface);color:var(--px-fg-secondary);
   height:30px;padding:0 10px;border-radius:var(--px-radius-sm);font-size:12px}
@@ -190,7 +190,7 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .preview-toolbar .sep{width:1px;height:18px;background:var(--px-border-default);margin:0 4px}
 .preview-toolbar output{font-variant-numeric:tabular-nums;font-size:12px;color:var(--px-fg-secondary);min-width:42px;text-align:center}
 .preview-toolbar .spacer{margin-left:auto;font-size:12px;color:var(--px-fg-tertiary)}
-.pages-wrap{flex:1 1 auto;overflow:auto;padding:24px;display:flex;flex-direction:column;align-items:center;gap:24px;
+.pages-wrap{flex:1 1 auto;overflow:visible;padding:24px;display:flex;flex-direction:column;align-items:center;gap:24px;
   background:var(--px-bg-canvas)}
 .pages{display:flex;flex-direction:column;gap:24px;align-items:center}
 .page{background:var(--px-paper-bg);box-shadow:var(--px-shadow-2);border-radius:2px}
@@ -211,7 +211,7 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 
 /* ── Inspector ── */
 .inspector{background:var(--px-bg-surface);border-left:1px solid var(--px-border-subtle);
-  overflow:auto;padding:var(--px-space-4);display:flex;flex-direction:column;gap:var(--px-space-4);min-height:0}
+  overflow:visible;padding:var(--px-space-4);display:flex;flex-direction:column;gap:var(--px-space-4)}
 .panel{border:1px solid var(--px-border-default);border-radius:var(--px-radius-lg);background:var(--px-bg-surface);overflow:hidden}
 .panel>.panel-title{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;padding:10px 12px;border-bottom:1px solid var(--px-border-subtle)}
 .section-title{font-size:13px;font-weight:600;margin:0 0 6px;color:var(--px-fg-primary)}
@@ -283,10 +283,10 @@ details.panel .panel-body{padding:0 12px 12px}
 .toast.show{opacity:1;transform:translateY(0)}
 
 /* ── 外壳右侧：两级（选择画廊 → 编辑器）── */
-.shell-right{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;height:100%}
+.shell-right{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0}
 
 /* 第一级：答题卡选择画廊 */
-.select-stage{display:none;flex-direction:column;min-height:0;flex:1 1 auto;overflow:auto}
+.select-stage{display:none;flex-direction:column;flex:1 1 auto;overflow:visible}
 .select-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding:22px 28px 14px;flex:0 0 auto}
 .select-head h2{margin:0;font-size:20px;font-weight:700;letter-spacing:-0.01em}
 .select-head .muted{margin:4px 0 0;font-size:13px;color:var(--px-fg-secondary)}
@@ -352,7 +352,7 @@ details.panel .panel-body{padding:0 12px 12px}
     <div class="select-stage" id="selectStage"></div>
 
     <!-- 第二级：答题卡编辑器 -->
-    <div class="editor-stage" id="editorStage" style="display:none;flex-direction:column;min-height:0;flex:1 1 auto;overflow:hidden">
+    <div class="editor-stage" id="editorStage" style="display:none;flex-direction:column;flex:1 1 auto">
       <header class="designer-topbar">
         <button class="btn ghost sm back-btn" id="backBtn">← 卡片列表</button>
         <div class="title">答题卡设计器</div>
