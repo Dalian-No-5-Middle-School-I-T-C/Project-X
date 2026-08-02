@@ -327,13 +327,24 @@ router.get("/exams/:examId/questions", requireExamAccess, async (req, res, next)
 router.get("/exams/:examId/question-students", requireExamAccess, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
+    // Bugfix: 严格校验 examId/questionNumber/classId，统一回正为有限正整数；无效值直接 400，
+    // 避免后端异常或空结果（此前仅校验 questionNumber）。
+    const examId = Number(req.params.examId);
+    if (!Number.isInteger(examId) || examId <= 0) {
+      res.status(400).json({ message: "examId 必须是正整数" });
+      return;
+    }
     const questionNumber = req.query.questionNumber ? Number(req.query.questionNumber) : undefined;
     if (questionNumber == null || !Number.isFinite(questionNumber)) {
       res.status(400).json({ message: "缺少 questionNumber 参数" });
       return;
     }
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
-    const students = await analysisRepo.getQuestionStudentScores(Number(req.params.examId), questionNumber, classId);
+    if (classId !== undefined && (!Number.isInteger(classId) || classId < 0)) {
+      res.status(400).json({ message: "classId 必须是 ≥ 0 的整数（0=无班级）" });
+      return;
+    }
+    const students = await analysisRepo.getQuestionStudentScores(examId, questionNumber, classId);
     res.json(students);
   } catch (error) {
     next(error);

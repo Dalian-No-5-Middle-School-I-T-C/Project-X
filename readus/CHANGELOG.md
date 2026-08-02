@@ -1,5 +1,53 @@
 # Project-X CHANGELOG
 
+## v1.10.0.3 (2026-08-02) — 评审修复（大考参与口径 / 正态性 / 直方图 / 阈值）
+
+> 修复 4 项 P0/P1 bug + 3 项非阻断观察，保证大考统计与总体分析数据准确。
+
+**1. 大考参与口径（Bug 1，高严重）**
+- `AnalysisRepository.getGroupTotalsMap` 之前无视 `exam_groups.only_full_participants` 与 `total_score_mode` 策略；缺考学生只要单科有成绩就被纳入大考总分，拉低均分与难度系数。
+- 现读取 `exam_groups` 策略：
+  - `only_full_participants=1` → `HAVING COUNT(DISTINCT exam_id) = member_count` 排除缺科者；
+  - `total_score_mode='assigned'` → 对设有 `assigned_formula` 的考试使用 `assigned_score`（无则回退 `total_score`）。
+- 全部大考相关方法（`getGroupMetrics` / `getGroupQuestionAnalysis` / `getGroupDistribution` / `getGroupClassComparison`）统一参与者口径；`getGroupMetrics.subjects[]` 不再硬编码 `gradedCount/maxScore/minScore/stdDev=0`（passRate/excellentRate 见 §6 跟进修复）。
+- 测试：`scripts/bugfix-analysis-verification.ts` Bug 1 段（10 用例，全绿）。
+
+**2. 正态性检验实现（Bug 2，高严重）**
+- `shapiroFrancia`：原 W 计算未将期望正态分位数居中（den 含 `m²n` 误差），n=12 数据 W 被压至 0.014；Royston p 值近似公式含 `ln·ln·0` 笔误。
+  - 修：W 改用 `[(v-v̄)·(e-ē)]² / [Σ(v-v̄)² · Σ(e-ē)²]`，p 值采用 Royston 1992 标准渐近 `μ = -1.5861 - 0.31082·ln(n) - 0.083751·ln²(n) + 0.0038915·ln³(n)`。
+- `kolmogorovSmirnov`：原 D 计算两次 `Math.abs((i+1)/n - fExp)` 实际为同一值，未区分 D⁺/D⁻。
+  - 修：D⁺ = max(i/n - F(x_i))、D⁻ = max(F(x_i) - (i-1)/n)。
+- `normality` 综合判定：原"任一 p≥0.05 即通过"过于宽松，路径 0（10 个 0 + 1 个 100）被错判为正态。
+  - 修：以 Shapiro-Francia 为主判（n<5 不可靠直接 false，n≥5 且 p≥0.05 视为正态）。
+- 测试：极端偏态 isNormal=false (SF p<0.001)、正态数据 W>0.9、KS N(0,1) 50 样本不拒绝。
+
+**3. 大考班级对比遵守阈值（Bug 3，中严重）**
+- `getGroupClassComparison` 之前硬编码 `0.6` / `0.9` 算 passRate/excellentRate，与普通考试口径不一致。
+- 修：改用 `thresholds.passRate` / `thresholds.excellentRate`（已 `await getAnalysisThresholds()`，变量就在上下文里）。
+- 测试：调阈 0.5/0.85 后 passRate 50%→50%、excellentRate 0%→25%（之前会被 0.9 硬钉死为 0%）。
+
+**4. 直方图区间标签（Bug 4，中低严重）**
+- `histogram()`（`src/shared/stats.ts`）和 `generateDistributionRanges()`（`AnalysisRepository.ts`）之前用 "0-9"、"10-19"… 闭区间标签；归类用 `Math.floor(v/step)` 实际是半开区间 [min, min+step)。
+  - 9.5 → bin 1 但标签 "0-9" 易让小数成绩（如 0.5 分档）误读为"被归到 0-9 段而不是 0-10 段"。
+  - 修：标签改为 "0-<10"、"10-<20"… 末段 "90-100"；`min/max` 字段前 N-1 段仍为 `min+step-1`（兼容 SQL `BETWEEN r.min AND r.max`），末段 `max=fullScore`（闭区间，含满分；修复之前 100 不被 SQL 计入的隐藏缺口）。
+
+**5. 非阻断观察**
+- `routes/analysis.ts` `GET /exams/:examId/question-students` 之前只校验 `questionNumber`，`examId`/`classId` 无校验；补齐有限正整数校验，无效值 400。
+- `getGroupMetrics.subjects[]` 中 `gradedCount/maxScore/minScore/stdDev` 之前硬编码 0；现按参与者集合实际聚合（passRate/excellentRate 见 §6 跟进修复）。
+
+**6. 跟进修复：subjects[] 及格率/优秀率仍硬编码 0（评审遗留，2026-08-02 夜间）**
+- 独立 agent 评审指出 `getGroupMetrics.subjects[]` 的 `passRate/excellentRate` 仍是硬编码 0（§5 原描述与实际不符，已更正）。
+- 修：在逐科聚合 SQL 中按「该科满分 × 全局阈值」计算 `passRate = 及格线以上人数 / 实考人数`、`excellentRate = 优秀线以上人数 / 实考人数`，口径与 `getGroupClassComparison` 对总分用 `totalFull × thresholds` 一致；阈值经 `getAnalysisThresholds()` 读取（默认 0.6/0.9，管理员可配）。
+- 注册永久回归：`scripts/bugfix-analysis-verification.ts` 新增断言——数学(60/60/90) passRate=100% excellentRate=33%、语文(70/50/80) passRate=67% excellentRate=0%。
+
+**验证**
+- `npx tsx scripts/bugfix-analysis-verification.ts` — **31 用例 全绿**（覆盖四项修复 + 阈值变更回测 + subjects 及格/优秀率）
+- `npm run typecheck` / `npm run build` — 全绿
+- `npm run verify:auth` — 54/54 全绿
+- `npm run verify:security-critical` — 42/42 全绿
+- `npx tsx scripts/grading-rules-smoke.ts` — ok
+- 真实数据回归：演示大考（6 科 16 人）`getGroupMetrics.subjects[].gradedCount/maxScore/minScore/stdDev` 现全部为真实值（非 0），分布 isNormal=true（p=0.38），班级对比 passRate=100%/excellentRate=38% 正确反映配置阈值。
+
 ## v1.10.0 — 成绩分析增强（难度 P / 区分度 D / 总体分析 / 大考 6-Tab）
 
 > 分析模块重构：普通考试与大考统一为 6-Tab 结构，新增难度系数 P、区分度 D 双指标（考试/大考/科目/题目四级）、题目分析排序与逐生下钻、总体分析分布可视化，以及大考 AI 分析。

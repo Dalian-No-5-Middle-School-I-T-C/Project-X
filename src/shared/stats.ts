@@ -110,13 +110,21 @@ export interface HistogramBin {
   count: number;
 }
 
-/** 按固定段长生成直方图（与现有 generateDistributionRanges 口径一致） */
+/** 按固定段长生成直方图
+ *
+ * 桶为半开区间 [min, min+step)，最后一段闭区间收尾（包含 fullScore）。
+ * - 标签使用 "0-<10"、"10-<20"…，最后一段 "90-100"——避免 9.5 被读作 0-9 的"小数成绩归类错位"
+ * - 数值字段 min/max：前 N-1 段 max = min+step-1（适配 SQL `BETWEEN r.min AND r.max` 过滤整数成绩），
+ *   末段 max = fullScore（闭区间，含满分；保证 JS 桶计数与 SQL 计数一致）。 */
 export function histogram(values: number[], fullScore: number, segmentSize: number): HistogramBin[] {
   const step = Math.max(1, Math.round(segmentSize));
   const bins: HistogramBin[] = [];
   for (let min = 0; min < fullScore; min += step) {
-    const max = Math.min(min + step - 1, fullScore);
-    bins.push({ range: `${min}-${max}`, min, max, count: 0 });
+    const upperExclusive = min + step;
+    const isLast = upperExclusive >= fullScore;
+    const max = isLast ? fullScore : Math.min(upperExclusive - 1, fullScore);
+    const range = isLast ? `${min}-${fullScore}` : `${min}-<${upperExclusive}`;
+    bins.push({ range, min, max, count: 0 });
   }
   if (bins.length === 0) bins.push({ range: `0-${fullScore}`, min: 0, max: fullScore, count: 0 });
   for (const v of values) {
@@ -191,25 +199,40 @@ export interface NormalityResult {
   sampleSize: number;
 }
 
-/** Shapiro-Francia 检验（Shapiro-Wilk 家族，基于 Q-Q 相关） */
+/** Shapiro-Francia 检验（Shapiro-Wilk 家族，基于数据与理论正态分位数的相关平方）
+ *
+ * W = [Σ (v_i - v̄)(m_i - m̄)]² / [Σ(v_i - v̄)² · Σ(m_i - m̄)²]
+ *   其中 m_i = v̄ + s · Φ⁻¹((i - 3/8) / (n + 1/4)) （Blom 期望值）
+ *
+ * p 值采用 Royston 1992 的渐近正态近似：log(1-W) ≈ N(μ_n, σ_n²)
+ *   μ_n = -1.5861 - 0.31082·ln(n) - 0.083751·ln(n)² + 0.0038915·ln(n)³
+ *   σ_n = exp(-0.4803 - 0.082676·ln(n) + 0.0030302·ln(n)²)
+ * 仅作参考：n<5 不可靠，n>5000 精度下降。 */
 export function shapiroFrancia(values: number[]): { W: number; pValue: number | null } {
   const n = values.length;
   if (n < 5) return { W: 1, pValue: null };
   const sorted = [...values].sort((a, b) => a - b);
-  const m = mean(sorted);
+  const vBar = mean(sorted);
   const sd = stdDev(sorted);
   if (sd === 0) return { W: 1, pValue: null };
-  const exp = sorted.map((_, i) => m + sd * normalQuantile((i + 1 - 0.375) / (n + 0.25)));
-  const num = sorted.reduce((s, v, i) => s + exp[i] * (v - m), 0);
-  const den = Math.sqrt(sorted.reduce((s, v) => s + (v - m) * (v - m), 0) * exp.reduce((s, e) => s + e * e, 0));
-  const W = den === 0 ? 1 : (num / den) * (num / den);
-  // Royston 近似 p 值（小样本外不精确，仅作参考）
+  // 期望正态分位值（Blom 位置），已用 v̄ 与 s 居中
+  const expected = sorted.map((_, i) => vBar + sd * normalQuantile((i + 1 - 0.375) / (n + 0.25)));
+  const eBar = mean(expected);
+  let num = 0, d1 = 0, d2 = 0;
+  for (let i = 0; i < n; i++) {
+    const dv = sorted[i] - vBar;
+    const de = expected[i] - eBar;
+    num += dv * de;
+    d1 += dv * dv;
+    d2 += de * de;
+  }
+  const W = (d1 > 0 && d2 > 0) ? (num * num) / (d1 * d2) : 1;
   let pValue: number | null = null;
-  if (n <= 5000) {
+  if (W > 0 && W < 1) {
     const ln = Math.log(n);
-    const mu = 0.0038915 * Math.pow(ln, 3) - 0.083751 * ln * ln + 0.51072 * ln - 0.73708;
-    const sigma = Math.exp(0.0039185 * ln * ln - 0.01052 * ln * ln * 0 + 0.05249 * Math.sqrt(ln) - 0.47074) * 0.1;
-    if (Number.isFinite(mu) && sigma > 0) {
+    const mu = -1.5861 - 0.31082 * ln - 0.083751 * ln * ln + 0.0038915 * Math.pow(ln, 3);
+    const sigma = Math.exp(-0.4803 - 0.082676 * ln + 0.0030302 * ln * ln);
+    if (sigma > 0 && Number.isFinite(mu)) {
       const z = (Math.log(1 - W) - mu) / sigma;
       pValue = Math.max(0, Math.min(1, 1 - normalCdf(z)));
     }
@@ -217,7 +240,13 @@ export function shapiroFrancia(values: number[]): { W: number; pValue: number | 
   return { W: Math.round(W * 10000) / 10000, pValue };
 }
 
-/** Kolmogorov-Smirnov 检验（与标准正态比较） */
+/** Kolmogorov-Smirnov 检验（与正态分布比较）
+ *
+ * D⁺ = max_i (i/n - F(x_i))        — 经验 CDF 上界
+ * D⁻ = max_i (F(x_i) - (i-1)/n)    — 经验 CDF 下界
+ * D  = max(D⁺, D⁻)
+ *
+ * p 值采用 Kolmogorov 分布的 Smirnov 渐近：P(D > x) ≈ 2·Σ_{j=1}^∞ (-1)^(j-1) e^{-2j²x²} */
 export function kolmogorovSmirnov(values: number[]): { D: number; pValue: number | null } {
   const n = values.length;
   if (n === 0) return { D: 0, pValue: null };
@@ -225,13 +254,16 @@ export function kolmogorovSmirnov(values: number[]): { D: number; pValue: number
   const sd = stdDev(values);
   if (sd === 0) return { D: 0, pValue: null };
   const sorted = [...values].sort((a, b) => a - b);
-  let D = 0;
+  let dPlus = 0, dMinus = 0;
   for (let i = 0; i < n; i++) {
-    const f = (i + 1) / n;
     const fExp = normalCdf((sorted[i] - m) / sd);
-    D = Math.max(D, Math.abs(f - fExp), Math.abs((i + 1) / n - normalCdf((sorted[i] - m) / sd)));
+    const upper = (i + 1) / n;        // F_n(x_i) 上界
+    const lower = i / n;               // F_n(x_{i-1}) 下界
+    if (upper - fExp > dPlus) dPlus = upper - fExp;
+    if (fExp - lower > dMinus) dMinus = fExp - lower;
   }
-  // p 值近似（Kolmogorov 分布，Miller 级数）
+  const D = Math.max(dPlus, dMinus);
+  // Smirnov 渐近：n=无穷 时 P(D > x) 的级数近似
   const x = Math.sqrt(n) * D;
   let pValue = 0;
   for (let j = 1; j <= 10; j++) {
@@ -265,13 +297,14 @@ export function andersonDarling(values: number[]): { A2: number; pValue: number 
   return { A2: Math.round(A2 * 10000) / 10000, pValue: pValue == null ? null : Math.max(0, Math.min(1, pValue)) };
 }
 
-/** 综合正态性检验 */
+/** 综合正态性检验
+ * 采用 Shapiro-Francia 为主判（在小/中样本下对正态偏离最敏感，功效最高）。
+ * 当 n < 5 时样本量过小不做正态性判断，返回 isNormal=false。 */
 export function normality(values: number[]): NormalityResult {
   const sf = shapiroFrancia(values);
   const ks = kolmogorovSmirnov(values);
   const ad = andersonDarling(values);
-  const p = (v: number | null) => v == null ? 0 : v;
-  const isNormal = values.length >= 3 && (p(sf.pValue) >= 0.05 || p(ks.pValue) >= 0.05 || p(ad.pValue) >= 0.05);
+  const isNormal = values.length >= 5 && sf.pValue != null && sf.pValue >= 0.05;
   return {
     shapiroFrancia: sf,
     kolmogorovSmirnov: ks,
