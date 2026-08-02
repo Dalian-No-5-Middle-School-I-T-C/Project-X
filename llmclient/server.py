@@ -108,8 +108,19 @@ def analysis_run(request: AnalysisRunRequest, _: None = Depends(require_internal
     if not mariadb_configured() and not default_db_path().exists():
         raise HTTPException(status_code=400, detail=f"Project-X database not found: {default_db_path()}")
 
+    group_exam_ids: set[int] | None = None
+    if request.groupId is not None:
+        from llmclient.tools.grades import get_group_exam_ids
+
+        member_ids = get_group_exam_ids(request.groupId)
+        if not member_ids:
+            raise HTTPException(status_code=400, detail=f"Exam group {request.groupId} has no member exams")
+        group_exam_ids = set(member_ids)
+    elif request.examId is None:
+        raise HTTPException(status_code=400, detail="examId or groupId is required")
+
     try:
-        return run_analysis(model, request.examId, request.classId, request.locale, provider_dict)
+        return run_analysis(model, request.examId, request.classId, request.locale, provider_dict, group_exam_ids)
     except HTTPException:
         raise
     except Exception as exc:
