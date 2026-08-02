@@ -7,22 +7,6 @@ import { ZipArchive } from "archiver";
 import XLSX from "xlsx";
 import { competitionRank } from "../../shared/ranking";
 import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
-import { AnalysisRepository } from "../repositories/AnalysisRepository";
-import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
-
-interface AiProviderRow {
-  id: number;
-  provider_type: string;
-  base_url: string;
-  api_key: string;
-  user_id: number;
-  is_system: number;
-}
-
-async function getAiProviderForUser(providerId: number, userId: number): Promise<AiProviderRow | null> {
-  const db = getMysqlDb();
-  return db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId) ?? null;
-}
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -497,104 +481,6 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
     });
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "获取大考概览失败" });
-  }
-});
-
-// ── GET /api/exam-groups/:groupId/metrics ── 大考整体+逐科难度/区分度 ──
-
-router.get("/:groupId/metrics", requireReadableGroup, async (req: Request, res: Response) => {
-  try {
-    const analysisRepo = new AnalysisRepository();
-    const metrics = await analysisRepo.getGroupMetrics(Number(req.params.groupId));
-    res.json(metrics);
-  } catch (error) {
-    res.status(500).json({ message: error instanceof Error ? error.message : "获取大考指标失败" });
-  }
-});
-
-// ── GET /api/exam-groups/:groupId/question-analysis ── 大考逐题分析 ──
-
-router.get("/:groupId/question-analysis", requireReadableGroup, async (req: Request, res: Response) => {
-  try {
-    const analysisRepo = new AnalysisRepository();
-    const data = await analysisRepo.getGroupQuestionAnalysis(Number(req.params.groupId));
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ message: error instanceof Error ? error.message : "获取大考逐题分析失败" });
-  }
-});
-
-// ── GET /api/exam-groups/:groupId/distribution ── 大考总体分析分布 ──
-
-router.get("/:groupId/distribution", requireReadableGroup, async (req: Request, res: Response) => {
-  try {
-    const analysisRepo = new AnalysisRepository();
-    const mode = (req.query.mode as string) === "total" ? "total" : (req.query.mode as string) === "class" ? "class" : "subject";
-    const dist = await analysisRepo.getGroupDistribution(Number(req.params.groupId), mode);
-    res.json(dist);
-  } catch (error) {
-    res.status(500).json({ message: error instanceof Error ? error.message : "获取大考分布失败" });
-  }
-});
-
-// ── GET /api/exam-groups/:groupId/class-comparison ── 大考班级对比 ──
-
-router.get("/:groupId/class-comparison", requireReadableGroup, async (req: Request, res: Response) => {
-  try {
-    const analysisRepo = new AnalysisRepository();
-    const data = await analysisRepo.getGroupClassComparison(Number(req.params.groupId));
-    res.json(data);
-  } catch (error) {
-    res.status(500).json({ message: error instanceof Error ? error.message : "获取大考班级对比失败" });
-  }
-});
-
-// ── POST /api/exam-groups/:groupId/ai-analysis ── 大考 AI 分析 ──
-
-router.post("/:groupId/ai-analysis", requireReadableGroup, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const groupId = Number(req.params.groupId);
-    if (!Number.isFinite(groupId) || groupId <= 0) {
-      res.status(400).json({ message: "无效的大考 ID" });
-      return;
-    }
-    const providerId = req.body?.providerId ? Number(req.body.providerId) : undefined;
-    let providerOverride: Record<string, unknown> | undefined;
-    if (providerId && Number.isFinite(providerId)) {
-      const prov = await getAiProviderForUser(providerId, req.user!.id);
-      if (prov) {
-        providerOverride = { provider_type: prov.provider_type, base_url: prov.base_url, api_key: prov.api_key };
-      }
-    }
-    const response = await fetchLlmClient("/analysis/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        groupId,
-        model: typeof req.body?.model === "string" ? req.body.model : undefined,
-        locale: "zh-CN",
-        providerOverride: providerOverride ?? undefined
-      })
-    }, 120_000);
-    if (!response.ok) {
-      let message = `AI 服务返回 ${response.status}`;
-      try {
-        const body = await response.json() as { detail?: string; message?: string };
-        message = body.detail || body.message || message;
-      } catch {
-        const text = await response.text().catch(() => "");
-        if (text) message = text;
-      }
-      res.status(response.status >= 400 && response.status < 500 ? response.status : 502).json({ message });
-      return;
-    }
-    res.json(await response.json());
-  } catch (error) {
-    if (error instanceof Error && (error.message.includes("fetch") || error.message.includes("ECONNREFUSED"))) {
-      res.status(503).json({ message: "无法连接到 Python llmclient 中转服务。请先启动：py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766" });
-      return;
-    }
-    next(error);
   }
 });
 

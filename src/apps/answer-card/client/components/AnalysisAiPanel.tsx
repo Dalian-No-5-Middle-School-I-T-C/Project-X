@@ -4,8 +4,7 @@ import { fetchJson } from "../auth/api";
 import type { AiAnalysisResponse, AiAnalysisStatus, AiProviderConfig } from "../../../../shared/types";
 
 interface Props {
-  examId?: number;
-  groupId?: number;
+  examId: number;
   classId?: string;
 }
 
@@ -36,7 +35,7 @@ function listBlock(title: string, items: string[]) {
   );
 }
 
-export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
+export function AnalysisAiPanel({ examId, classId = "" }: Props) {
   const [status, setStatus] = useState<AiAnalysisStatus | null>(null);
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState(0); // 0 = 内置 llmclient
@@ -98,7 +97,7 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
   useEffect(() => {
     setAnalysis(null);
     void loadStatus();
-  }, [examId, groupId, classId]);
+  }, [examId, classId]);
 
   async function generateAnalysis() {
     setGenerating(true);
@@ -107,10 +106,7 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
       const body: Record<string, unknown> = { model: selectedModel || undefined };
       if (classId !== "") body.classId = Number(classId);
       if (selectedProviderId > 0) body.providerId = selectedProviderId;
-      const endpoint = groupId
-        ? `/api/exam-groups/${groupId}/ai-analysis`
-        : `/api/analysis/exams/${examId}/ai-analysis`;
-      const result = await fetchJson<AiAnalysisResponse>(endpoint, {
+      const result = await fetchJson<AiAnalysisResponse>(`/api/analysis/exams/${examId}/ai-analysis`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)

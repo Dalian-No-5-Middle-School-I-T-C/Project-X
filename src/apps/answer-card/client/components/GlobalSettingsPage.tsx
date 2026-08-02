@@ -15,28 +15,9 @@ const FIELDS: Array<{ key: keyof Settings; label: string; desc: string; type: "t
   { key: "highlight_missing_paper", label: "侧边栏高亮未上传原卷", desc: "左侧列表用颜色标记缺少原卷的考试（全平台统一）", type: "toggle" },
 ];
 
-// 难度/区分度档位（与后端 analysisConfig 默认一致）
-type Band = { max: number; label: string; color: string };
-const BAND_KEY_DIFF = "analysis_difficulty_bands";
-const BAND_KEY_DISC = "analysis_discrimination_bands";
-const DEFAULT_DIFFICULTY_BANDS: Band[] = [
-  { max: 0.3, label: "难", color: "#E24B4A" },
-  { max: 0.5, label: "较难", color: "#EF9F27" },
-  { max: 0.7, label: "中等", color: "#BA7517" },
-  { max: 1, label: "容易", color: "#639922" },
-];
-const DEFAULT_DISCRIMINATION_BANDS: Band[] = [
-  { max: 0.2, label: "差", color: "#E24B4A" },
-  { max: 0.3, label: "尚可", color: "#EF9F27" },
-  { max: 0.4, label: "良好", color: "#BA7517" },
-  { max: 1, label: "优秀", color: "#639922" },
-];
-
 export function GlobalSettingsPage({ onBack }: Props) {
   const [settings, setSettings] = useState<Settings>({});
   const [draft, setDraft] = useState<Settings>({});
-  const [diffBands, setDiffBands] = useState<Band[]>(DEFAULT_DIFFICULTY_BANDS);
-  const [discBands, setDiscBands] = useState<Band[]>(DEFAULT_DISCRIMINATION_BANDS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
@@ -46,11 +27,8 @@ export function GlobalSettingsPage({ onBack }: Props) {
     try {
       const res = await fetchJson<{ ok: boolean; data: Settings }>("/api/system-settings");
       if (res.ok) {
-        const data = (res.data ?? {}) as Record<string, string>;
-        setSettings(data as Settings);
-        setDraft(data as Settings);
-        try { if (data[BAND_KEY_DIFF]) setDiffBands(JSON.parse(data[BAND_KEY_DIFF])); } catch { /* keep default */ }
-        try { if (data[BAND_KEY_DISC]) setDiscBands(JSON.parse(data[BAND_KEY_DISC])); } catch { /* keep default */ }
+        setSettings(res.data ?? {});
+        setDraft(res.data ?? {});
       }
     } catch { /* silent */ }
     setLoading(false);
@@ -67,17 +45,12 @@ export function GlobalSettingsPage({ onBack }: Props) {
     setSaving(true);
     setMessage(null);
     try {
-      const payload: Record<string, string> = {
-        ...(draft as Record<string, string>),
-        [BAND_KEY_DIFF]: JSON.stringify([...diffBands].sort((a, b) => a.max - b.max)),
-        [BAND_KEY_DISC]: JSON.stringify([...discBands].sort((a, b) => a.max - b.max)),
-      };
       const res = await fetchJson<{ ok: boolean; error?: string }>("/api/system-settings", {
         method: "PUT",
-        body: JSON.stringify({ settings: payload }),
+        body: JSON.stringify({ settings: draft }),
       });
       if (res.ok) {
-        setSettings(payload as Settings);
+        setSettings(draft);
         setMessage("✅ 已保存全局设置");
       } else {
         setMessage(`⚠ ${(res as any).error ?? "保存失败"}`);
@@ -271,18 +244,6 @@ export function GlobalSettingsPage({ onBack }: Props) {
         )}
       </div>
 
-      {/* 难度/区分度档位设置 */}
-      <div style={{ marginTop: 28, paddingTop: 20, borderTop: "1px solid var(--color-border-tertiary)" }}>
-        <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>难度 / 区分度档位</div>
-        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 16 }}>
-          设置成绩分析中难度系数 P 与区分度 D 的着色档位。各档按「上限阈值」升序判定，数值 ≤ 阈值即归入该档。未配置时使用内置默认。
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-          <BandEditor title="难度系数 P 档位" desc="P = 平均得分 / 满分（0–1）。" bands={diffBands} onChange={setDiffBands} />
-          <BandEditor title="区分度 D 档位" desc="D = 高分组得分率 − 低分组得分率（0–1）。" bands={discBands} onChange={setDiscBands} />
-        </div>
-      </div>
-
       {message && (
         <div style={{
           fontSize: 13,
@@ -330,53 +291,6 @@ const backBtnStyle: React.CSSProperties = {
   background: "var(--color-background-secondary)",
   cursor: "pointer",
 };
-
-function BandEditor({ title, desc, bands, onChange }: { title: string; desc: string; bands: Band[]; onChange: (b: Band[]) => void }) {
-  function update(i: number, patch: Partial<Band>) {
-    onChange(bands.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
-  }
-  function remove(i: number) {
-    onChange(bands.filter((_, idx) => idx !== i));
-  }
-  function add() {
-    onChange([...bands, { max: 1, label: "新档位", color: "#639922" }]);
-  }
-  return (
-    <div>
-      <div style={{ fontSize: 14, fontWeight: 500 }}>{title}</div>
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", margin: "4px 0 10px" }}>{desc}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {bands.map((b, i) => (
-          <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              type="number" step="0.05" min="0" max="1"
-              value={b.max}
-              onChange={(e) => update(i, { max: Number(e.target.value) })}
-              style={{ ...selectStyle, width: 84 }}
-              title="上限阈值(0-1)：数值 ≤ 该阈值归入此档"
-            />
-            <input
-              value={b.label}
-              onChange={(e) => update(i, { label: e.target.value })}
-              style={{ ...selectStyle, width: 120 }}
-              placeholder="档位名"
-            />
-            <input
-              type="color"
-              value={b.color}
-              onChange={(e) => update(i, { color: e.target.value })}
-              style={{ width: 36, height: 32, border: "none", background: "none", cursor: "pointer", padding: 0 }}
-              title="徽章颜色"
-            />
-            <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>≤ {b.max} 显示「{b.label}」</span>
-            <button onClick={() => remove(i)} style={{ ...smallBtnStyle, color: "#E24B4A" }}>删除</button>
-          </div>
-        ))}
-      </div>
-      <button onClick={add} style={{ ...smallBtnStyle, marginTop: 8 }}>+ 添加档位</button>
-    </div>
-  );
-}
 
 const smallBtnStyle: React.CSSProperties = {
   padding: "6px 14px",
