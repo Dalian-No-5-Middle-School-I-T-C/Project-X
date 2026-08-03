@@ -1,5 +1,5 @@
 ﻿import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import { NavLink, Route, Routes, Navigate, useBlocker, useLocation, useNavigate } from "react-router-dom";
+import { Route, Routes, Navigate, useBlocker, useLocation, useNavigate } from "react-router-dom";
 import { MODE_PATH, pathToMode } from "./modeRoutes";
 import { WorkspaceProvider, type WorkspaceValue } from "./WorkspaceContext";
 import {
@@ -15,19 +15,24 @@ import {
   ImagePlus,
   Layers,
   ListPlus,
+  Menu,
+  Moon,
   Plus,
   Save,
   Search,
+  Settings,
+  Sun,
   BookOpen,
   FileUp,
   Home,
   SquarePen,
   Trash2,
   Upload,
-  Users
+  Users,
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
 import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "./auth/api";
+import { cn } from "./lib/utils";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
@@ -36,8 +41,36 @@ import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
 import { GroupExportModal } from "./components/GroupExportModal";
-import { MobileDrawer } from "./components/MobileDrawer";
 import { HomeRoutePage } from "./pages/HomeRoutePage";
+import {
+  AppShell,
+  AppMain,
+  AppContentRow,
+  AppContent,
+  AppRail,
+  AppRailBrand,
+  AppRailNav,
+  AppRailGroupLabel,
+  AppRailItem,
+  AppRailFooter,
+  PageHeader,
+  ContextPanel,
+  ContextPanelHeader,
+  ContextPanelBody,
+  ContextItem,
+  StatusBar,
+  StatusItem,
+  StatusSpacer,
+  SaveStatus,
+  Button,
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetBody,
+  Toaster,
+  type SaveState,
+} from "./components/ui/v2";
 
 // 路由级懒加载（dev 首屏性能）：登录后首屏只需 HomeRoutePage，
 // 其余模式页面按需加载，将 chart.js / react-markdown 等重依赖隔离出首屏模块图。
@@ -1500,199 +1533,141 @@ function App() {
     mobileNavItems,
   };
 
+  const railNavItems: Array<
+    | { type: "item"; id: AppMode; icon: ReactElement; label: string; onClick?: () => void | Promise<void> }
+    | { type: "group"; label: string }
+  > = useMemo(() => {
+    const items: typeof railNavItems = [
+      { type: "item", id: "home", icon: <Home />, label: "首页" },
+    ];
+    if (canDesign) {
+      items.push({ type: "item", id: "design", icon: <SquarePen />, label: "答题卡设计" });
+    }
+    if (canManageExams) {
+      items.push({
+        type: "item",
+        id: "exam-manage",
+        icon: <ClipboardList />,
+        label: "考试管理",
+        onClick: async () => {
+          await loadExams();
+          await loadExamGroups();
+        },
+      });
+    }
+    if (canAnalyze) {
+      items.push({ type: "item", id: "analysis", icon: <BarChart3 />, label: "成绩分析", onClick: loadExams });
+    }
+    if (showScoresTab) {
+      items.push({ type: "item", id: "scores", icon: <BarChart3 />, label: "我的成绩" });
+    }
+    items.push({ type: "group", label: "管理" });
+    if (canManageAccounts) {
+      items.push({ type: "item", id: "account", icon: <Users />, label: "账号管理" });
+    }
+    if (canManageGlobal) {
+      items.push({ type: "item", id: "global-settings", icon: <Settings />, label: "全局设置" });
+    }
+    return items;
+  }, [canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, canManageGlobal, loadExams, loadExamGroups]);
+
+  const pageTitle =
+    mode === "home"
+      ? "首页"
+      : mode === "scores"
+        ? "我的成绩"
+        : mode === "exam-manage"
+          ? "考试管理"
+          : mode === "account"
+            ? "账号管理"
+            : mode === "sponsor"
+              ? "支持项目"
+              : mode === "guide"
+                ? "使用说明"
+                : mode === "global-settings"
+                  ? "全局设置"
+                  : mode === "permissions"
+                    ? "权限说明"
+                    : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统");
+
+  const pageSubtitle =
+    mode === "home"
+      ? `欢迎，${user?.name ?? ""}`
+      : mode === "scores"
+        ? "查看各场考试得分、排名与逐题明细"
+        : mode === "exam-manage"
+          ? "创建、管理考试与阅卷批次"
+          : mode === "account"
+            ? "管理用户、班级与花名册"
+            : mode === "sponsor"
+              ? "感谢您的信任与支持"
+              : mode === "guide"
+                ? "Project-X 操作指南与常见问题"
+                : mode === "global-settings"
+                  ? "系统级策略与服务商配置"
+                  : mode === "permissions"
+                    ? `${user.name} · ${user.role_display_name ?? user.role_name}`
+                    : card
+                      ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
+                      : canDesign
+                        ? "创建答题卡后开始编辑"
+                        : `${user.name} · ${user.role_display_name ?? user.role_name}`;
+
+  const designActions = card && canDesign && mode === "design" && (
+    <>
+      <Button variant="ghost" size="sm" asChild>
+        <a href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
+          坐标 JSON
+        </a>
+      </Button>
+      <Button variant="outline" size="sm" onClick={() => void exportPdfForCurrentCard()} disabled={isBusy}>
+        <FileDown size={16} /> PDF
+      </Button>
+      <Button variant="primary" size="sm" onClick={() => void saveCard()} disabled={isBusy}>
+        <Save size={16} /> 保存
+      </Button>
+      {autoSaveLabel && (
+        <SaveStatus
+          state={autoSaveState as SaveState}
+          savedAt={autoSaveState === "saved" ? new Date().toLocaleTimeString() : undefined}
+        />
+      )}
+    </>
+  );
+
   return (
     <WorkspaceProvider value={workspace}>
-    <main className={`app-shell ${showCardSidebar ? "" : "no-card-sidebar"}`}>
-      {showCardSidebar && (
-      <aside className="sidebar">
-        <div className="brand">
-          <img src="/icon.png" alt="" className="brand-icon" />
-          <div>
-            <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v{import.meta.env.VITE_APP_VERSION}</span>
-          </div>
-        </div>
-        <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
-          <button className="primary-button" onClick={() => { setShowNewCardModal(true); if (exams.length === 0) loadExams(); }} disabled={isBusy || !canDesign} style={{ width: "100%" }}>
-            <Plus size={17} /> 新建答题卡
-          </button>
-        </div>
-        <div className="card-list">
-          {cards.map((item) => (
-            <div
-              key={item.id}
-              className={`card-list-item ${card?.id === item.id ? "active" : ""}`}
-              style={{
-                borderLeft: globalPaper.highlightMissingPaper !== 0 && !(item as any).has_original_paper
-                  ? "3px solid var(--warn, #f59e0b)"
-                  : "3px solid transparent"
-              }}
-            >
-              <button
-                className="card-list-main"
-                onClick={() => void loadCard(item.id)}
-              >
-                <span>{item.title || "未命名答题卡"}</span>
-                <small>{item.subjectLabel ? `${item.subjectLabel} · ` : ""}ID:{item.id}</small>
-              </button>
-              <div className="card-list-actions">
-                <button title="上传原卷" onClick={(e) => { e.stopPropagation(); setPaperPanelCardId(item.id); setShowPaperPanel(true); }}>
-                  <FileUp size={14} />
-                </button>
-                <button title="导出" onClick={(e) => { e.stopPropagation(); void exportCard(item.id); }}>
-                  <Download size={14} />
-                </button>
-                <button
-                  title="删除"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (confirm(`确定删除「${item.title || item.id}」？此操作不可撤销。`)) {
-                      void deleteCard(item.id);
-                    }
-                  }}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
-          ))}
-          {cards.length === 0 && <p className="empty-text">暂无答题卡，先新建一张。</p>}
-        </div>
-        <button className="ghost-button" onClick={() => void importCard()} disabled={isBusy} style={{ marginTop: 8, width: "100%" }}>
-          <Upload size={16} /> 导入答题卡
-        </button>
-      </aside>
-      )}
-
-      <section className="workspace">
-        <header className="topbar">
-          <button
-            className="mobile-menu-button"
-            type="button"
-            onClick={() => setDrawerOpen(true)}
-            aria-label="打开导航菜单"
-          >
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="3" y1="6" x2="21" y2="6" />
-              <line x1="3" y1="12" x2="21" y2="12" />
-              <line x1="3" y1="18" x2="21" y2="18" />
-            </svg>
-          </button>
-          <div>
-            <h1>
-              {mode === "home" ? "首页" : mode === "scores"
-                ? "我的成绩"
-                : mode === "exam-manage"
-                  ? "考试管理"
-                  : mode === "account"
-                    ? "账号管理"
-                  : mode === "sponsor"
-                    ? "支持项目"
-                    : mode === "guide"
-                      ? "使用说明"
-                    : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
-            </h1>
-            <p>
-              {mode === "home" ? `欢迎，${user?.name ?? ""}` : mode === "scores"
-                ? "查看各场考试得分、排名与逐题明细"
-                : mode === "exam-manage"
-                  ? "创建、管理考试与阅卷批次"
-                  : mode === "account"
-                  ? "管理用户、班级与花名册"
-                  : mode === "sponsor"
-                    ? "感谢您的信任与支持"
-                    : mode === "guide"
-                      ? "Project-X 操作指南与常见问题"
-                    : card
-                    ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
-                    : canDesign
-                      ? "创建答题卡后开始编辑"
-                      : `${user.name} · ${user.role_display_name ?? user.role_name}`}
-            </p>
-          </div>
-          <div className="topbar-actions-left">
-            {!showTabBar && mode !== "home" && (
-              <button onClick={() => switchMode("home")} style={{ height: 44, padding: "0 16px", fontSize: 14, fontWeight: 500, border: "1px solid var(--color-border-primary)", borderRadius: 8, background: "var(--color-background-secondary)", color: "var(--color-text-primary)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>← 返回首页</button>
+      <AppShell>
+        <AppRail>
+          <AppRailBrand
+            logo={<img src="/icon.png" alt="" className="size-6" />}
+            title="Project-X"
+            subtitle="答题卡设计阅卷系统"
+          />
+          <AppRailNav>
+            {railNavItems.map((it, idx) =>
+              it.type === "group" ? (
+                <AppRailGroupLabel key={`g-${idx}`}>{it.label}</AppRailGroupLabel>
+              ) : (
+                <AppRailItem
+                  key={it.id}
+                  icon={it.icon}
+                  label={it.label}
+                  active={mode === it.id}
+                  onClick={() => void switchMode(it.id, it.onClick)}
+                />
+              ),
             )}
-            {card && canDesign && mode === "design" && (
-              <>
-                <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
-                  坐标JSON
-                </a>
-                <button className="ghost-button" type="button" onClick={() => void exportPdfForCurrentCard()} disabled={isBusy}>
-                  <FileDown size={17} /> PDF
-                </button>
-                <button className="primary-button" onClick={() => void saveCard()} disabled={isBusy}>
-                  <Save size={17} /> 保存
-                </button>
-                {autoSaveLabel && (
-                  <span className={`autosave-status autosave-${autoSaveState}`}>
-                    {autoSaveLabel}
-                  </span>
-                )}
-              </>
-            )}
-          </div>
-          <div className="topbar-actions">
-            <div className="mode-toggle" role="tablist" aria-label="工作模式" style={showTabBar ? undefined : { display: "none" }}>
-              <NavLink to={MODE_PATH.home} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("home"); }}>
-                <Home size={16} /> 首页
-              </NavLink>
-              {canDesign && (
-              <NavLink to={MODE_PATH.design} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("design"); }}>
-                <SquarePen size={16} /> 设计
-              </NavLink>
-              )}
-              {canManageExams && (
-              <NavLink to={MODE_PATH["exam-manage"]} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("exam-manage", async () => { await loadExams(); await loadExamGroups(); }); }}>
-                <ClipboardList size={16} /> 考试管理
-              </NavLink>
-              )}
-              {canAnalyze && (
-              <NavLink to={MODE_PATH.analysis} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("analysis", loadExams); }}>
-                <BarChart3 size={16} /> 分析
-              </NavLink>
-              )}
-              {showScoresTab && (
-              <NavLink to={MODE_PATH.scores} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("scores"); }}>
-                <BarChart3 size={16} /> 我的成绩
-              </NavLink>
-              )}
-              {canManageAccounts && (
-              <NavLink to={MODE_PATH.account} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("account"); }}>
-                <Users size={16} /> 账号
-              </NavLink>
-              )}
-              {canManageGlobal && (
-              <NavLink to={MODE_PATH["global-settings"]} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("global-settings"); }}>
-                <BookOpen size={16} /> 全局设置
-              </NavLink>
-              )}
-            </div>
+          </AppRailNav>
+          <AppRailFooter>
             <button
-              className="theme-toggle"
               type="button"
               onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
               title={theme === "light" ? "切换为夜间模式" : "切换为日间模式"}
               aria-label="切换主题"
+              className="inline-flex h-control-md w-control-md items-center justify-center rounded-md text-secondary-foreground transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground"
             >
-              {theme === "light" ? (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="5" />
-                  <line x1="12" y1="1" x2="12" y2="3" />
-                  <line x1="12" y1="21" x2="12" y2="23" />
-                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                  <line x1="1" y1="12" x2="3" y2="12" />
-                  <line x1="21" y1="12" x2="23" y2="12" />
-                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-                </svg>
-              ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-                </svg>
-              )}
+              {theme === "light" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
             <AccountMenu
               onOpenSponsor={() => {
@@ -1708,61 +1683,244 @@ function App() {
                 void switchMode("permissions");
               }}
             />
-          </div>
-        </header>
+          </AppRailFooter>
+        </AppRail>
 
-        {/* C 阶段（2026-07-21）：真实 URL 路由渲染 —— 仅当前路径对应的页面挂载，
-            取代原先「全部网格常驻 + hidden-panel 切换」的范式。state/handler 仍集中在 App（经 WorkspaceProvider 下发），
-            顶栏标题 / showCardSidebar / useBlocker 由已与 URL 同步的 mode 驱动，行为不变。 */}
-        <Routes>
-          <Route path="/home" element={<HomeRoutePage />} />
-          <Route path="/design/*" element={<Suspense fallback={routeFallback}><DesignPage /></Suspense>} />
-          <Route path="/exam-manage" element={<Suspense fallback={routeFallback}><ExamManagePage /></Suspense>} />
-          <Route path="/analysis" element={<Suspense fallback={routeFallback}><AnalysisRoutePage /></Suspense>} />
-          <Route path="/scores" element={<Suspense fallback={routeFallback}><ScoresRoutePage /></Suspense>} />
-          <Route path="/account" element={<Suspense fallback={routeFallback}><AccountRoutePage /></Suspense>} />
-          <Route path="/sponsor" element={<Suspense fallback={routeFallback}><SponsorRoutePage /></Suspense>} />
-          <Route path="/permissions" element={<Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense>} />
-          <Route path="/guide" element={<Suspense fallback={routeFallback}><GuideRoutePage /></Suspense>} />
-          <Route path="/global-settings" element={<Suspense fallback={routeFallback}><GlobalSettingsRoutePage onBack={() => void switchMode("home")} /></Suspense>} />
-          <Route path="*" element={<Navigate to="/home" replace />} />
-        </Routes>
-        {gradingPanel && (
-          <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "var(--color-background-primary)" }}>
-            <Suspense fallback={routeFallback}>
-              <GradePanel examId={gradingPanel.examId} blockId={gradingPanel.blockId} teacherId={user?.id ?? 0} onBack={() => setGradingPanel(null)} />
-            </Suspense>
-          </div>
-        )}
-        {/* 移动端抽屉导航（≤480px 渲染，Portal 到 body） */}
-        <MobileDrawer />
-        <footer className="statusbar">
-          <span className="statusbar-message">{status}</span>
-          <BeianFooter className="statusbar-beian" />
-        </footer>
-      </section>
+        <AppMain>
+          <PageHeader
+            title={pageTitle}
+            subtitle={pageSubtitle}
+            leading={
+              !showTabBar && mode !== "home" ? (
+                <Button variant="ghost" size="sm" onClick={() => switchMode("home")}>
+                  ← 返回首页
+                </Button>
+              ) : undefined
+            }
+            actions={
+              <div className="flex items-center gap-2">
+                {designActions}
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="hidden lg:inline-flex"
+                  onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
+                  aria-label="切换主题"
+                >
+                  {theme === "light" ? <Sun size={18} /> : <Moon size={18} />}
+                </Button>
+                <div className="hidden lg:block">
+                  <AccountMenu
+                    onOpenSponsor={() => {
+                      previousModeRef.current = mode;
+                      void switchMode("sponsor");
+                    }}
+                    onOpenGuide={() => {
+                      previousModeRef.current = mode;
+                      void switchMode("guide");
+                    }}
+                    onOpenPermissions={() => {
+                      previousModeRef.current = mode;
+                      void switchMode("permissions");
+                    }}
+                  />
+                </div>
+                <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+                  <button
+                    type="button"
+                    className="inline-flex h-control-md w-control-md items-center justify-center rounded-md text-secondary-foreground transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground lg:hidden"
+                    onClick={() => setDrawerOpen(true)}
+                    aria-label="打开导航菜单"
+                  >
+                    <Menu size={20} />
+                  </button>
+                  <SheetContent side="left" className="w-[260px]">
+                    <SheetHeader>
+                      <SheetTitle>Project-X 导航</SheetTitle>
+                    </SheetHeader>
+                    <SheetBody>
+                      <nav className="flex flex-col gap-1">
+                        {railNavItems.map((it, idx) =>
+                          it.type === "group" ? (
+                            <div
+                              key={`mg-${idx}`}
+                              className="mt-3 mb-1 px-2 text-xs font-medium text-muted-foreground"
+                            >
+                              {it.label}
+                            </div>
+                          ) : (
+                            <button
+                              key={it.id}
+                              type="button"
+                              onClick={() => {
+                                setDrawerOpen(false);
+                                void switchMode(it.id, it.onClick);
+                              }}
+                              className={cn(
+                                "flex h-9 items-center gap-2.5 rounded-md px-2.5 text-base font-medium transition-colors",
+                                mode === it.id
+                                  ? "bg-accent text-accent-foreground"
+                                  : "text-secondary-foreground hover:bg-secondary hover:text-foreground",
+                              )}
+                            >
+                              {it.icon}
+                              {it.label}
+                            </button>
+                          ),
+                        )}
+                      </nav>
+                    </SheetBody>
+                  </SheetContent>
+                </Sheet>
+              </div>
+            }
+          />
 
-      {/* ── 移动端底部导航栏 ── */}
-      {showTabBar && (
-      <nav className="bottom-nav" aria-label="主导航">
-        <div className="bottom-nav-inner">
-          {mobileNavItems.map((m) => (
-            <button
-              key={m.id}
-              className={`bottom-nav-item ${mode === m.id ? "active" : ""}`}
-              onClick={() => void switchMode(m.id, m.onEnter)}
-              type="button"
-              title={m.label}
-              aria-label={m.label}
-              aria-current={mode === m.id ? "page" : undefined}
-            >
-              {m.icon}
-              <span>{m.shortLabel}</span>
-            </button>
-          ))}
+          <AppContentRow>
+            {showCardSidebar && (
+              <ContextPanel>
+                <ContextPanelHeader>
+                  <span className="text-sm font-medium">答题卡</span>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => {
+                      setShowNewCardModal(true);
+                      if (exams.length === 0) loadExams();
+                    }}
+                    disabled={isBusy || !canDesign}
+                    aria-label="新建答题卡"
+                  >
+                    <Plus size={16} />
+                  </Button>
+                </ContextPanelHeader>
+                <ContextPanelBody>
+                  {cards.map((item) => (
+                    <ContextItem
+                      key={item.id}
+                      icon={<FileUp size={16} />}
+                      title={item.title || "未命名答题卡"}
+                      meta={`${item.subjectLabel ? `${item.subjectLabel} · ` : ""}ID:${item.id}`}
+                      active={card?.id === item.id}
+                      onClick={() => void loadCard(item.id)}
+                      trailing={
+                        <div className="flex items-center gap-0.5">
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPaperPanelCardId(item.id);
+                              setShowPaperPanel(true);
+                            }}
+                            aria-label="上传原卷"
+                          >
+                            <Upload size={14} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void exportCard(item.id);
+                            }}
+                            aria-label="导出"
+                          >
+                            <Download size={14} />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (confirm(`确定删除「${item.title || item.id}」？此操作不可撤销。`)) {
+                                void deleteCard(item.id);
+                              }
+                            }}
+                            aria-label="删除"
+                          >
+                            <Trash2 size={14} />
+                          </Button>
+                        </div>
+                      }
+                    />
+                  ))}
+                  {cards.length === 0 && (
+                    <p className="px-2 py-4 text-center text-sm text-muted-foreground">
+                      暂无答题卡，先新建一张。
+                    </p>
+                  )}
+                </ContextPanelBody>
+                <div className="border-t border-border-subtle p-3">
+                  <Button
+                    variant="outline"
+                    block
+                    onClick={() => void importCard()}
+                    disabled={isBusy}
+                  >
+                    <Upload size={16} /> 导入答题卡
+                  </Button>
+                </div>
+              </ContextPanel>
+            )}
+
+            <AppContent width={showCardSidebar ? "full" : "normal"} bare={showCardSidebar}>
+              {/* C 阶段（2026-07-21）：真实 URL 路由渲染 —— 仅当前路径对应的页面挂载。 */}
+              <Routes>
+                <Route path="/home" element={<HomeRoutePage />} />
+                <Route path="/design/*" element={<Suspense fallback={routeFallback}><DesignPage /></Suspense>} />
+                <Route path="/exam-manage" element={<Suspense fallback={routeFallback}><ExamManagePage /></Suspense>} />
+                <Route path="/analysis" element={<Suspense fallback={routeFallback}><AnalysisRoutePage /></Suspense>} />
+                <Route path="/scores" element={<Suspense fallback={routeFallback}><ScoresRoutePage /></Suspense>} />
+                <Route path="/account" element={<Suspense fallback={routeFallback}><AccountRoutePage /></Suspense>} />
+                <Route path="/sponsor" element={<Suspense fallback={routeFallback}><SponsorRoutePage /></Suspense>} />
+                <Route path="/permissions" element={<Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense>} />
+                <Route path="/guide" element={<Suspense fallback={routeFallback}><GuideRoutePage /></Suspense>} />
+                <Route path="/global-settings" element={<Suspense fallback={routeFallback}><GlobalSettingsRoutePage onBack={() => void switchMode("home")} /></Suspense>} />
+                <Route path="*" element={<Navigate to="/home" replace />} />
+              </Routes>
+            </AppContent>
+          </AppContentRow>
+
+          <StatusBar>
+            <StatusItem plain>{status}</StatusItem>
+            <StatusSpacer />
+            <BeianFooter className="statusbar-beian" />
+          </StatusBar>
+        </AppMain>
+      </AppShell>
+
+      {gradingPanel && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "var(--color-background-primary)" }}>
+          <Suspense fallback={routeFallback}>
+            <GradePanel examId={gradingPanel.examId} blockId={gradingPanel.blockId} teacherId={user?.id ?? 0} onBack={() => setGradingPanel(null)} />
+          </Suspense>
         </div>
-      </nav>
       )}
+
+      {/* 移动端底部导航栏 */}
+      {showTabBar && (
+        <nav className="bottom-nav" aria-label="主导航">
+          <div className="bottom-nav-inner">
+            {mobileNavItems.map((m) => (
+              <button
+                key={m.id}
+                className={`bottom-nav-item ${mode === m.id ? "active" : ""}`}
+                onClick={() => void switchMode(m.id, m.onEnter)}
+                type="button"
+                title={m.label}
+                aria-label={m.label}
+                aria-current={mode === m.id ? "page" : undefined}
+              >
+                {m.icon}
+                <span>{m.shortLabel}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
+      )}
+
+      <Toaster />
 
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
       {paperPanelCardId && (
@@ -2156,7 +2314,6 @@ function App() {
           </div>
         </div>
       )}
-    </main>
     </WorkspaceProvider>
   );
 }
