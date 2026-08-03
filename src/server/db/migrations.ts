@@ -801,6 +801,15 @@ const MIGRATIONS: Migration[] = [
         ensureSetting.run("analysis_error_tiers", "70,50,30");
       }
     }
+  },
+  // v30: 填空题升级 — 主观题新增 annotation（文字注释/题干说明），
+  // 与逐空 blanks_items_json 的自定义横线、subjective_question_images 的插图配合使用。
+  {
+    version: 30,
+    name: "subjective-question-annotation",
+    up(db) {
+      addColumnIfMissing(db, "subjective_questions", "annotation", "TEXT");
+    }
   }
 ];
 

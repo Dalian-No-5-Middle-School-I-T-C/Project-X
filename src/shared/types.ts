@@ -75,6 +75,8 @@ export type SubjectiveQuestion = {
   score: number;
   style: SubjectiveStyle;
   kind: SubjectiveKind;
+  /** 填空题/主观题文字注释（题干说明），渲染在作答区上方。 */
+  annotation?: string;
   blanks?: { count: number; widthMm: number; heightMm: number; labelStyle?: BlankLabelStyle; items?: BlankItem[] };
   lineGrid?: LineGridConfig;
   essayGrid?: EssayGridConfig;
@@ -194,6 +196,8 @@ export type SubjectiveRenderItem = {
   blanks: Rect[];
   blankLabels?: string[];
   blankRightAnnotations?: string[];
+  /** 逐行排布后的文字注释，text 已按单元格宽度换行。 */
+  annotationLines?: Array<{ text: string; rect: Rect }>;
   blankLabelStyle?: BlankLabelStyle;
   blankLabelSlotWidth?: number;
   images: Array<{ assetId: string; originalName?: string; rect: Rect }>;

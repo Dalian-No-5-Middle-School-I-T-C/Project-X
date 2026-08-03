@@ -661,6 +661,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
           ('analysis_error_tiers', '70,50,30')`,
       ]
     },
+    {
+      version: 30,
+      name: "subjective-question-annotation",
+      sqls: [
+        `ALTER TABLE subjective_questions ADD COLUMN annotation TEXT`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

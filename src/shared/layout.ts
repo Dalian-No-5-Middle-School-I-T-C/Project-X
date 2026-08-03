@@ -493,6 +493,11 @@ const BLANK_INNER_GAP_X = 2.4;
 const BLANK_MAX_COLUMNS = 5;
 const BLANK_MIN_LINE_WIDTH = 16;
 const BLANK_MAX_SHRINK_RATIO = 0.7;
+const BLANK_ROW_GAP_Y = 5;
+const BLANK_ANNOTATION_CHAR_WIDTH = 2.2;
+const BLANK_ANNOTATION_LINE_HEIGHT = 3.4;
+const BLANK_ANNOTATION_GAP_Y = 1.5;
+const BLANK_IMAGE_GAP_Y = 2;
 const ESSAY_DEFAULT_CELL_MM = 7;
 const ESSAY_DEFAULT_LINE_COLOR = "#222";
 const ESSAY_DEFAULT_LINE_WIDTH = 0.15;
@@ -562,18 +567,6 @@ function blankAnnotationWidth(text?: string): number {
   return text.length * BLANK_ANNO_CHAR_WIDTH + BLANK_ANNO_GAP;
 }
 
-function blankQuestionLineWidth(question: SubjectiveQuestion): number {
-  return Math.max(22, ...blankLineSpecs(question).map((item) => item.widthMm));
-}
-
-function blankQuestionLineHeight(question: SubjectiveQuestion): number {
-  return Math.max(6, ...blankLineSpecs(question).map((item) => item.heightMm));
-}
-
-function blankMinimumLineWidth(question: SubjectiveQuestion): number {
-  return Math.max(BLANK_MIN_LINE_WIDTH, blankQuestionLineWidth(question) * BLANK_MAX_SHRINK_RATIO);
-}
-
 function blankLabelWidth(question: SubjectiveQuestion, index: number): number {
   const label = blankLineSpecs(question)[index]?.label ?? "";
   return label ? label.length * 1.8 + 0.8 : 0;
@@ -583,17 +576,21 @@ function maxBlankLabelWidth(question: SubjectiveQuestion): number {
   return Math.max(0, ...blankLineSpecs(question).map((_, index) => blankLabelWidth(question, index)));
 }
 
-function blankColumnLineWidth(question: SubjectiveQuestion, columnW: number, labelSlotWidth: number): number {
+/**
+ * 填空题块：返回每个空的实际横线宽度（mm）。
+ * 优先使用逐空自定义宽度；整列放不下时按比例整体缩小，且不低于最小线宽。
+ */
+function blankColumnLineWidths(question: SubjectiveQuestion, columnW: number, labelSlotWidth: number): number[] {
   const specs = blankLineSpecs(question);
   const blankCount = specs.length;
+  if (blankCount === 0) return [];
   const labelWidth = labelSlotWidth * blankCount;
   const annoWidth = specs.reduce((sum, spec) => sum + blankAnnotationWidth(spec.rightAnnotation), 0);
-  const availableLineWidth =
-    (columnW - BLANK_NUMBER_WIDTH - labelWidth - annoWidth - BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) - 2) / blankCount;
-  return Math.min(
-    blankQuestionLineWidth(question),
-    Math.max(blankMinimumLineWidth(question), availableLineWidth)
-  );
+  const available =
+    columnW - BLANK_NUMBER_WIDTH - labelWidth - annoWidth - BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) - 2;
+  const totalRequested = specs.reduce((sum, spec) => sum + Math.max(BLANK_MIN_LINE_WIDTH, spec.widthMm), 0);
+  const scale = totalRequested > 0 ? Math.min(1, Math.max(0, available) / totalRequested) : 1;
+  return specs.map((spec) => Math.max(BLANK_MIN_LINE_WIDTH, round(spec.widthMm * scale)));
 }
 
 function blankQuestionFitsColumn(question: SubjectiveQuestion, columnW: number, labelSlotWidth: number): boolean {
@@ -601,9 +598,13 @@ function blankQuestionFitsColumn(question: SubjectiveQuestion, columnW: number, 
   const blankCount = specs.length;
   const labelWidth = labelSlotWidth * blankCount;
   const annoWidth = specs.reduce((sum, spec) => sum + blankAnnotationWidth(spec.rightAnnotation), 0);
-  const availableLineWidth =
-    (columnW - BLANK_NUMBER_WIDTH - labelWidth - annoWidth - BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) - 2) / blankCount;
-  return availableLineWidth >= blankMinimumLineWidth(question);
+  const minLineWidth = specs.reduce(
+    (sum, spec) => sum + Math.max(BLANK_MIN_LINE_WIDTH, spec.widthMm * BLANK_MAX_SHRINK_RATIO),
+    0
+  );
+  const needed =
+    BLANK_NUMBER_WIDTH + labelWidth + annoWidth + minLineWidth + BLANK_INNER_GAP_X * Math.max(0, blankCount - 1) + 2;
+  return needed <= columnW;
 }
 
 function blankBlockColumnCount(questions: SubjectiveQuestion[]): number {
@@ -626,6 +627,126 @@ function blankScoreQuestion(questions: SubjectiveQuestion[]): SubjectiveQuestion
     return questions.find((question) => question.style === "manual_score_grid" && question.score > 0);
   }
   return questions.find((question) => question.style === "manual_score_grid") ?? questions[0];
+}
+
+/** 按单元格宽度把注释文字按字符折行（中文按全角字符估算宽度）。 */
+function wrapBlankAnnotation(text: string, maxWidthMm: number): string[] {
+  const clean = text.replace(/\s+/g, " ").trim();
+  if (!clean) return [];
+  const charsPerLine = Math.max(1, Math.floor(maxWidthMm / BLANK_ANNOTATION_CHAR_WIDTH));
+  const lines: string[] = [];
+  for (let i = 0; i < clean.length; i += charsPerLine) lines.push(clean.slice(i, i + charsPerLine));
+  return lines;
+}
+
+type FillBlankCellLayout = {
+  annotationLines: Array<{ text: string; rect: Rect }>;
+  blanks: Rect[];
+  blankLabels: string[];
+  blankRightAnnotations: string[];
+  images: Array<{ assetId: string; originalName?: string; rect: Rect }>;
+  bottom: number;
+};
+
+/**
+ * 填空题块单元格内容布局：文字注释（折行）→ 逐空横线（每空独立宽度，可换行）→ 图片。
+ * 返回内容绝对坐标与内容底部位置，供高度估算与正式排版共用。
+ */
+function layoutFillBlankCell(
+  question: SubjectiveQuestion,
+  cellRect: Rect,
+  labelSlotWidth: number,
+  pushImageElement?: (image: { assetId: string; originalName?: string; rect: Rect }) => void
+): FillBlankCellLayout {
+  const widths = blankColumnLineWidths(question, cellRect.width, labelSlotWidth);
+  const specs = blankLineSpecs(question);
+  const cellRight = cellRect.x + cellRect.width - 2;
+  const startX = cellRect.x + BLANK_NUMBER_WIDTH;
+  let cursorY = cellRect.y + 2;
+
+  const annotationLines: Array<{ text: string; rect: Rect }> = [];
+  if (question.annotation?.trim()) {
+    const lines = wrapBlankAnnotation(question.annotation, Math.max(8, cellRect.width - BLANK_NUMBER_WIDTH - 3));
+    lines.forEach((text, index) => {
+      annotationLines.push({
+        text,
+        rect: rect(
+          cellRect.x + BLANK_NUMBER_WIDTH + 1,
+          cursorY + index * BLANK_ANNOTATION_LINE_HEIGHT,
+          cellRect.width - BLANK_NUMBER_WIDTH - 2,
+          BLANK_ANNOTATION_LINE_HEIGHT
+        )
+      });
+    });
+    cursorY += lines.length * BLANK_ANNOTATION_LINE_HEIGHT + BLANK_ANNOTATION_GAP_Y;
+  }
+
+  const blanks: Rect[] = [];
+  const blankLabels: string[] = [];
+  const blankRightAnnotations: string[] = [];
+  let x = startX;
+  let blankY = cursorY;
+  let rowHeight = 0;
+  specs.forEach((spec, index) => {
+    const lineWidth = widths[index] ?? Math.max(BLANK_MIN_LINE_WIDTH, spec.widthMm);
+    const lineHeight = Math.max(4, spec.heightMm || 6);
+    const annoWidth = blankAnnotationWidth(spec.rightAnnotation);
+    const itemWidth = labelSlotWidth + lineWidth + annoWidth + BLANK_INNER_GAP_X;
+    const hasPrevOnRow = x > startX;
+    if (hasPrevOnRow && x + itemWidth > cellRight) {
+      x = startX;
+      blankY += rowHeight + BLANK_ROW_GAP_Y;
+      rowHeight = 0;
+    }
+    const blankX = x + labelSlotWidth;
+    blanks.push(rect(blankX, blankY, lineWidth, lineHeight));
+    blankLabels.push(spec.label);
+    blankRightAnnotations.push(spec.rightAnnotation ?? "");
+    x = blankX + lineWidth + annoWidth + BLANK_INNER_GAP_X;
+    rowHeight = Math.max(rowHeight, lineHeight);
+  });
+  const blanksBottom = blanks.length > 0 ? Math.max(...blanks.map((blank) => blank.y + blank.height)) : cursorY;
+
+  const images: Array<{ assetId: string; originalName?: string; rect: Rect }> = [];
+  let imageY = blanksBottom + 2;
+  for (const image of question.images ?? []) {
+    const maxImageWidth = Math.max(10, cellRect.width - 4);
+    const scale = image.widthMm > maxImageWidth ? maxImageWidth / image.widthMm : 1;
+    const imageWidth = image.widthMm * scale;
+    const imageHeight = image.heightMm * scale;
+    const imageX =
+      image.align === "center"
+        ? cellRect.x + (cellRect.width - imageWidth) / 2
+        : image.align === "right"
+          ? cellRect.x + cellRect.width - imageWidth - 2
+          : cellRect.x + 2;
+    const imageRect = rect(imageX, imageY, imageWidth, imageHeight);
+    images.push({ assetId: image.assetId, originalName: image.originalName, rect: imageRect });
+    if (pushImageElement) pushImageElement({ assetId: image.assetId, originalName: image.originalName, rect: imageRect });
+    imageY += imageHeight + BLANK_IMAGE_GAP_Y;
+  }
+  const bottom = images.length > 0 ? imageY - BLANK_IMAGE_GAP_Y : blanksBottom;
+
+  return { annotationLines, blanks, blankLabels, blankRightAnnotations, images, bottom };
+}
+
+function fillBlankCellHeight(question: SubjectiveQuestion, columnW: number, labelSlotWidth: number): number {
+  const cell = layoutFillBlankCell(question, rect(0, 0, columnW, 0), labelSlotWidth);
+  return Math.max(BLANK_ITEM_ROW_HEIGHT, cell.bottom + 5);
+}
+
+function blankRowHeights(questions: SubjectiveQuestion[], columns: number, columnW: number, labelSlotWidth: number): number[] {
+  const rows = Math.ceil(questions.length / columns);
+  const heights: number[] = [];
+  for (let row = 0; row < rows; row += 1) {
+    let height = 0;
+    for (let col = 0; col < columns; col += 1) {
+      const question = questions[row * columns + col];
+      if (question) height = Math.max(height, fillBlankCellHeight(question, columnW, labelSlotWidth));
+    }
+    heights.push(height);
+  }
+  return heights;
 }
 
 function answerBlankLabelWidth(spec: BlankLineSpec): number {
@@ -684,8 +805,13 @@ function blankSubjectiveSegmentHeight(questions: SubjectiveQuestion[], blockTitl
   const scoreHeader = includeScoreHeader && blankScoreQuestion(questions)
     ? (IS_LAYOUT_V2 ? V2_SCORE_HEADER_HEIGHT : V1_BLANK_SCORE_HEADER_HEIGHT)
     : 0;
-  const rows = Math.ceil(questions.length / blankBlockColumnCount(questions));
-  return titleH + scoreHeader + BLANK_BLOCK_INSET_Y * 2 + rows * BLANK_ITEM_ROW_HEIGHT;
+  const columns = blankBlockColumnCount(questions);
+  const usableW = BODY_WIDTH - BLANK_BLOCK_INSET_X * 2;
+  const columnW = (usableW - BLANK_ITEM_GAP_X * (columns - 1)) / columns;
+  const labelSlotWidth = Math.max(0, ...questions.map(maxBlankLabelWidth));
+  const rowHeights = blankRowHeights(questions, columns, columnW, labelSlotWidth);
+  const contentH = rowHeights.reduce((sum, height) => sum + height, 0);
+  return titleH + scoreHeader + BLANK_BLOCK_INSET_Y * 2 + contentH;
 }
 
 function addSubjectiveQuestion(
@@ -831,11 +957,12 @@ function addBlankSubjectiveSegment(
   const renderQuestions: Extract<PageRenderBlock, { type: "subjective" }>["questions"] = [];
   const columns = blankBlockColumnCount(questions);
   const itemAreaW = frameRect.width - BLANK_BLOCK_INSET_X * 2;
-  const columnW = itemAreaW / columns;
+  const columnW = (itemAreaW - BLANK_ITEM_GAP_X * (columns - 1)) / columns;
   const scoreQuestion = includeScoreHeader ? blankScoreQuestion(questions) : undefined;
   const scoreCellsByQuestionId = new Map<string, Array<{ score: number | null; rect: Rect }>>();
   const scoreHeader = scoreQuestion ? (IS_LAYOUT_V2 ? V2_SCORE_HEADER_HEIGHT : V1_BLANK_SCORE_HEADER_HEIGHT) : 0;
   const blankLabelSlotWidth = Math.max(0, ...questions.map(maxBlankLabelWidth));
+  const rowHeights = blankRowHeights(questions, columns, columnW, blankLabelSlotWidth);
 
   if (scoreQuestion && scoreQuestion.scoreGrid?.enabled !== false) {
     scoreCellsByQuestionId.set(
@@ -849,19 +976,19 @@ function addBlankSubjectiveSegment(
     const col = index % columns;
     const row = Math.floor(index / columns);
     const itemX = frameRect.x + BLANK_BLOCK_INSET_X + col * (columnW + BLANK_ITEM_GAP_X);
-    const itemY = frameRect.y + scoreHeader + BLANK_BLOCK_INSET_Y + row * BLANK_ITEM_ROW_HEIGHT;
-    const specs = blankLineSpecs(question);
-    const blankCount = specs.length;
-    const lineW = blankColumnLineWidth(question, columnW, blankLabelSlotWidth);
-    const lineH = blankQuestionLineHeight(question);
-    let blankX = itemX + BLANK_NUMBER_WIDTH;
-    const blanks: Rect[] = [];
-    for (let blankIndex = 0; blankIndex < blankCount; blankIndex += 1) {
-      blankX += blankLabelSlotWidth;
-      blanks.push(rect(blankX, itemY + 2, lineW, lineH));
-      blankX += lineW + blankAnnotationWidth(specs[blankIndex]?.rightAnnotation) + BLANK_INNER_GAP_X;
-    }
-    const questionRect = rect(itemX, itemY, Math.min(columnW - 1, blankX - itemX - BLANK_INNER_GAP_X + 1), BLANK_ITEM_ROW_HEIGHT);
+    const itemY =
+      frameRect.y + scoreHeader + BLANK_BLOCK_INSET_Y + rowHeights.slice(0, row).reduce((sum, h) => sum + h, 0);
+    const cellRect = rect(itemX, itemY, columnW, rowHeights[row]);
+    const cell = layoutFillBlankCell(question, cellRect, blankLabelSlotWidth, (image) => {
+      page.elements.push({
+        id: `p${page.pageNumber}_image_${block.id}_${question.id}_${image.assetId}`,
+        type: "image_area",
+        blockId: block.id,
+        questionId: question.id,
+        assetId: image.assetId,
+        rect: image.rect
+      });
+    });
 
     page.elements.push({
       id: `p${page.pageNumber}_subj_${block.id}_${question.id}`,
@@ -869,7 +996,7 @@ function addBlankSubjectiveSegment(
       blockId: block.id,
       questionId: question.id,
       questionNumber: question.number,
-      rect: questionRect
+      rect: cellRect
     });
 
     renderQuestions.push({
@@ -879,18 +1006,19 @@ function addBlankSubjectiveSegment(
       score: question.score,
       style: question.id === scoreQuestion?.id ? "manual_score_grid" : "plain_subjective",
       kind: question.kind,
-      rect: questionRect,
-      contentRect: questionRect,
+      rect: cellRect,
+      contentRect: cellRect,
       scoreCells: scoreCellsByQuestionId.get(question.id) ?? [],
       lineYs: [],
       lineGrid: question.lineGrid,
       scoreGrid: question.scoreGrid,
-      blanks,
-      blankLabels: specs.map((item) => item.label),
-      blankRightAnnotations: specs.map((item) => item.rightAnnotation || ""),
+      blanks: cell.blanks,
+      blankLabels: cell.blankLabels,
+      blankRightAnnotations: cell.blankRightAnnotations,
+      annotationLines: cell.annotationLines,
       blankLabelStyle: question.blanks?.labelStyle,
       blankLabelSlotWidth,
-      images: []
+      images: cell.images
     });
   }
 

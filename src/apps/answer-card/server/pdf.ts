@@ -371,6 +371,10 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
     }
   });
 
+  (question.annotationLines ?? []).forEach((line) => {
+    drawText(doc, line.text, line.rect.x, line.rect.y, 7);
+  });
+
   question.images.forEach((image) => {
     const fullPath = path.join(cardAssetsDir(card.id), path.basename(image.assetId));
     if (existsSync(fullPath)) {

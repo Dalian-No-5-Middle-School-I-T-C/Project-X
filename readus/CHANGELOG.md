@@ -1,5 +1,32 @@
 # Project-X CHANGELOG
 
+## v1.10.1 (2026-08-03) — 填空题升级：自定义横线 / 插入图片 / 文字注释
+
+> 填空题块支持逐空自定义横线（宽度、高度），支持插入题干图片，支持添加文字注释（自动折行）。
+
+### 自定义横线
+- 填空题块编辑器：每个空可单独设置横线宽（mm）与高（mm），支持逐空删除与「添加空」；块级「默认横线宽/高」作为新增空的默认值。
+- 布局引擎：填空题紧凑网格按逐空自定义宽度排线，整列放不下时按比例整体缩小且不低于最小线宽；横线高度逐空生效。
+
+### 插入图片
+- 填空题块每题支持「插入图片」，沿用现有 `subjective_question_images` 存储；编辑器可调整宽/高、对齐方式（靠左/居中/靠右）并删除图片。
+- 布局引擎：单元格内图片自动缩放至列宽以内，排在横线下方并计入行高；SVG 预览与 PDF 输出同步渲染。
+
+### 文字注释
+- `SubjectiveQuestion` 新增 `annotation`（文字注释/题干说明），`subjective_questions` 新增 `annotation` 列（迁移 v30）。
+- 编辑器提供「文字注释」输入框；布局按单元格宽度自动折行，SVG/PDF 同步绘制。
+
+### 修改文件清单
+| 文件 | 改动 | 内容 |
+|------|------|------|
+| `src/shared/types.ts` | +4 行 | `SubjectiveQuestion.annotation` / `SubjectiveRenderItem.annotationLines` |
+| `src/shared/layout.ts` | +150 行 | 填空单元格布局：逐空宽度、注释折行、图片排版、动态行高 |
+| `src/apps/answer-card/client/pages/DesignEditors.tsx` | +100 行 | 逐空横线编辑、文字注释、图片管理、SVG 注释渲染 |
+| `src/apps/answer-card/server/pdf.ts` | +4 行 | PDF 注释行绘制 |
+| `src/server/repositories/CardRepository.ts` | +4 行 | annotation 持久化 |
+| `src/server/db/migrations.ts` / `mysql.ts` | +8 行 | 迁移 v30 `subjective_questions.annotation` |
+| `scripts/fill-blank-upgrade-smoke.ts` | 新增 | 填空题升级冒烟测试 |
+
 ## v1.10.0.4 (2026-08-03) — 统计口径统一（评审整改 PR-A）
 
 > 统一 P/D 计算口径，修正正态性检验实现与展示，小样本不再展示区分度 D。

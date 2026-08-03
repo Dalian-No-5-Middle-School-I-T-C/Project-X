@@ -110,10 +110,10 @@ export class CardRepository {
       for (let qi = 0; qi < block.questions.length; qi++) {
         const q = block.questions[qi];
         await tx.run(
-          `INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm, blanks_label_style, blanks_items_json, line_grid_json, essay_grid_json, score_grid_json, sort_order)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO subjective_questions (id, block_id, number, score, style, kind, annotation, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm, blanks_label_style, blanks_items_json, line_grid_json, essay_grid_json, score_grid_json, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           q.id, block.id, q.number, q.score, q.style ?? "manual_score_grid", q.kind ?? "plain_box",
-          q.minHeightMm ?? 68, q.lineGrid?.enabled ? 1 : 0, q.lineGrid?.lineSpacingMm ?? 8,
+          q.annotation || null, q.minHeightMm ?? 68, q.lineGrid?.enabled ? 1 : 0, q.lineGrid?.lineSpacingMm ?? 8,
           q.blanks?.count, q.blanks?.widthMm, q.blanks?.heightMm, q.blanks?.labelStyle,
           q.blanks?.items ? JSON.stringify(q.blanks.items) : undefined,
           q.lineGrid ? JSON.stringify(q.lineGrid) : undefined,
@@ -206,7 +206,7 @@ export class CardRepository {
         }
         return {
           id: q.id, number: q.number, score: q.score, style: q.style, kind: q.kind,
-          minHeightMm: q.min_height_mm, lineGrid, essayGrid, scoreGrid,
+          annotation: q.annotation ?? undefined, minHeightMm: q.min_height_mm, lineGrid, essayGrid, scoreGrid,
           blanks: q.blanks_count ? { count: q.blanks_count, widthMm: q.blanks_width_mm, heightMm: q.blanks_height_mm, labelStyle: q.blanks_label_style ?? undefined, items: q.blanks_items_json ? JSON.parse(q.blanks_items_json) : undefined } : undefined,
           images: images.map((img: any) => ({ assetId: img.asset_id, originalName: img.original_name, widthMm: img.width_mm, heightMm: img.height_mm, align: img.align }))
         };
