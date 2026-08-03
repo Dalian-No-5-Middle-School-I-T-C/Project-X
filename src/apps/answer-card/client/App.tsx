@@ -1391,6 +1391,44 @@ function App() {
     }
   }
 
+  const railNavItems: Array<
+    | { type: "item"; id: AppMode; icon: ReactElement; label: string; onClick?: () => void | Promise<void> }
+    | { type: "group"; label: string }
+  > = useMemo(() => {
+    const items: typeof railNavItems = [
+      { type: "item", id: "home", icon: <Home />, label: "首页" },
+    ];
+    if (canDesign) {
+      items.push({ type: "item", id: "design", icon: <SquarePen />, label: "答题卡设计" });
+    }
+    if (canManageExams) {
+      items.push({
+        type: "item",
+        id: "exam-manage",
+        icon: <ClipboardList />,
+        label: "考试管理",
+        onClick: async () => {
+          await loadExams();
+          await loadExamGroups();
+        },
+      });
+    }
+    if (canAnalyze) {
+      items.push({ type: "item", id: "analysis", icon: <BarChart3 />, label: "成绩分析", onClick: loadExams });
+    }
+    if (showScoresTab) {
+      items.push({ type: "item", id: "scores", icon: <BarChart3 />, label: "我的成绩" });
+    }
+    items.push({ type: "group", label: "管理" });
+    if (canManageAccounts) {
+      items.push({ type: "item", id: "account", icon: <Users />, label: "账号管理" });
+    }
+    if (canManageGlobal) {
+      items.push({ type: "item", id: "global-settings", icon: <Settings />, label: "全局设置" });
+    }
+    return items;
+  }, [canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, canManageGlobal, loadExams, loadExamGroups]);
+
   const selectedBlock = card?.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null;
 
   if (loading) {
@@ -1532,44 +1570,6 @@ function App() {
     showScoresTab,
     mobileNavItems,
   };
-
-  const railNavItems: Array<
-    | { type: "item"; id: AppMode; icon: ReactElement; label: string; onClick?: () => void | Promise<void> }
-    | { type: "group"; label: string }
-  > = useMemo(() => {
-    const items: typeof railNavItems = [
-      { type: "item", id: "home", icon: <Home />, label: "首页" },
-    ];
-    if (canDesign) {
-      items.push({ type: "item", id: "design", icon: <SquarePen />, label: "答题卡设计" });
-    }
-    if (canManageExams) {
-      items.push({
-        type: "item",
-        id: "exam-manage",
-        icon: <ClipboardList />,
-        label: "考试管理",
-        onClick: async () => {
-          await loadExams();
-          await loadExamGroups();
-        },
-      });
-    }
-    if (canAnalyze) {
-      items.push({ type: "item", id: "analysis", icon: <BarChart3 />, label: "成绩分析", onClick: loadExams });
-    }
-    if (showScoresTab) {
-      items.push({ type: "item", id: "scores", icon: <BarChart3 />, label: "我的成绩" });
-    }
-    items.push({ type: "group", label: "管理" });
-    if (canManageAccounts) {
-      items.push({ type: "item", id: "account", icon: <Users />, label: "账号管理" });
-    }
-    if (canManageGlobal) {
-      items.push({ type: "item", id: "global-settings", icon: <Settings />, label: "全局设置" });
-    }
-    return items;
-  }, [canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, canManageGlobal, loadExams, loadExamGroups]);
 
   const pageTitle =
     mode === "home"
