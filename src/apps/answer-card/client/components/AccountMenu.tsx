@@ -4,6 +4,7 @@ import { ChevronDown, Database, Download, Eye, FlaskConical, Heart, KeyRound, Lo
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson, authFetch } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
+import { cn } from "../lib/utils";
 import type { AiProviderConfig } from "../../../../shared/types";
 
 /** 判断是否为服务端脱敏后的 API Key（编辑时不应回传写库） */
@@ -17,10 +18,12 @@ export function AccountMenu({
   onOpenSponsor,
   onOpenGuide,
   onOpenPermissions,
+  compact = false,
 }: {
   onOpenSponsor?: () => void;
   onOpenGuide?: () => void;
   onOpenPermissions?: () => void;
+  compact?: boolean;
 }) {
   const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona, refreshUser } = useAuth();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
@@ -358,8 +361,15 @@ export function AccountMenu({
   }
 
   return (
-    <div className="account-menu" ref={menuRef}>
-      <button className="account-menu-trigger" type="button" onClick={() => setOpen(!open)}>
+    <div className={cn("account-menu", compact && "w-control-md")} ref={menuRef}>
+      <button
+        className={cn(
+          "account-menu-trigger",
+          compact && "h-control-md w-control-md justify-center p-0 [&>small]:hidden [&>span]:hidden [&>svg:last-child]:hidden",
+        )}
+        type="button"
+        onClick={() => setOpen(!open)}
+      >
         <User size={16} />
         <span>{user.name}</span>
         <small>{TEACHER_ROLE_LABELS[user.teacher_role ?? ""] ?? ROLE_LABELS[user.role_name] ?? user.role_name}</small>

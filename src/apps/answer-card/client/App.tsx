@@ -7,6 +7,7 @@ import {
   ArrowUp,
   BarChart3,
   ChevronDown,
+  ChevronLeft,
   ClipboardCheck,
   ClipboardList,
   Download,
@@ -455,6 +456,14 @@ function App() {
   });
   // 移动端 Drawer 开合状态（仅 ≤480px 渲染，见 MobileDrawer 与 styles.css）
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [railExpandedOnHover, setRailExpandedOnHover] = useState(false);
+  const railCollapseTimerRef = useRef<number | null>(null);
+  const effectiveRailCollapsed = railCollapsed && !railExpandedOnHover;
+
+  useEffect(() => () => {
+    if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
+  }, []);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
   const autoSaveLabel =
@@ -1655,22 +1664,50 @@ function App() {
   return (
     <WorkspaceProvider value={workspace}>
       <AppShell>
-        <AppRail>
+        <AppRail
+          collapsed={effectiveRailCollapsed}
+          className="relative"
+          onMouseEnter={() => {
+            if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
+            if (railCollapsed) setRailExpandedOnHover(true);
+          }}
+          onMouseLeave={() => {
+            if (!railCollapsed) return;
+            if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
+            railCollapseTimerRef.current = window.setTimeout(() => setRailExpandedOnHover(false), 120);
+          }}
+        >
+          <Button
+            variant="outline"
+            size="icon-sm"
+            type="button"
+            aria-label={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
+            title={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
+            className="absolute -right-3 top-1/2 z-50 -translate-y-1/2 rounded-full bg-card shadow-2"
+            onClick={() => {
+              setRailCollapsed((collapsed) => !collapsed);
+              setRailExpandedOnHover(false);
+            }}
+          >
+            <ChevronLeft className={cn("size-3.5 transition-transform duration-(--px-dur-2)", railCollapsed && "rotate-180")} />
+          </Button>
           <AppRailBrand
             logo={<img src="/icon.png" alt="" className="size-6" />}
             title="Project-X"
             subtitle="答题卡设计阅卷系统"
+            collapsed={effectiveRailCollapsed}
           />
           <AppRailNav>
             {railNavItems.map((it, idx) =>
               it.type === "group" ? (
-                <AppRailGroupLabel key={`g-${idx}`}>{it.label}</AppRailGroupLabel>
+                <AppRailGroupLabel key={`g-${idx}`} collapsed={effectiveRailCollapsed}>{it.label}</AppRailGroupLabel>
               ) : (
                 <AppRailItem
                   key={it.id}
                   icon={it.icon}
                   label={it.label}
                   active={mode === it.id}
+                  collapsed={effectiveRailCollapsed}
                   onClick={() => void switchMode(it.id, it.onClick)}
                 />
               ),
@@ -1687,6 +1724,7 @@ function App() {
               {theme === "light" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
             <AccountMenu
+              compact={effectiveRailCollapsed}
               onOpenSponsor={() => {
                 previousModeRef.current = mode;
                 void switchMode("sponsor");
