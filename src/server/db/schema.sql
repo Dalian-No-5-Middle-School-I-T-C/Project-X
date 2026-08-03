@@ -217,6 +217,7 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     line_grid_json   TEXT,
     essay_grid_json  TEXT,
     score_grid_json  TEXT,
+    annotation       TEXT,
     sort_order       INTEGER DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );

@@ -5,6 +5,8 @@ import { existsSync, unlinkSync } from "node:fs";
 import { ensurePaperDir, paperDir, safeId } from "../storage";
 import {
   validatePaperFile,
+
+
   storePaperPageFile,
 } from "../paper-converter";
 import { autoExtractPaperText, getFileMime } from "../paper-ocr";
@@ -127,6 +129,7 @@ export function paperRoutes(): Router {
         return;
       }
 
+
       await ensurePaperDir(cardId);
       const dir = paperDir(cardId);
       const db = getMysqlDb();
@@ -154,9 +157,11 @@ export function paperRoutes(): Router {
       }
 
       // 事务内完成 page_index 分配与入库，避免并发竞争
+
       const uploaded: Array<{ pageIndex: number; filename: string }> = [];
       let firstFilename = "";
       let firstRelPath = "";
+
 
       await db.transaction(async (tx) => {
         const maxRow = await tx.get(
@@ -185,6 +190,7 @@ export function paperRoutes(): Router {
         }
       });
 
+
       // legacy 字段保留首页，向后兼容预览/导出/AI 读取
       const firstRow = firstFilename
         ? { filename: firstFilename, stored_path: firstRelPath }
@@ -199,12 +205,14 @@ export function paperRoutes(): Router {
         firstFilenameOut, firstRelPathOut, cardId
       );
 
+
       res.json({
         success: true,
         pages: uploaded,
         count: uploaded.length,
         ...(failed.length > 0 ? { failed } : {}),
       });
+
     } catch (err: any) {
       console.error("[paper] upload failed:", err);
       res.status(500).json({ error: err.message || "上传失败" });
@@ -232,6 +240,7 @@ export function paperRoutes(): Router {
 
         for (const ext of [".jpg", ".jpeg", ".png", ".bmp", ".webp"]) {
           const fp = path.join(dir, `${baseName}${ext}`);
+
           if (existsSync(fp)) { res.json({ mimeType: getFileMime(`${baseName}${ext}`), filename: `${baseName}${ext}`, page, totalPages }); return; }
         }
         const pdfPath = path.join(dir, `${baseName}.pdf`);
@@ -239,6 +248,7 @@ export function paperRoutes(): Router {
         for (const ext of [".docx"]) {
           const fp = path.join(dir, `${baseName}${ext}`);
           if (existsSync(fp)) { res.json({ mimeType: getFileMime(`${baseName}${ext}`), filename: `${baseName}${ext}`, page, totalPages }); return; }
+
         }
         // 文件已在磁盘但 DB 无记录（旧数据回溯）：总页数为 1
         res.status(404).json({ error: "原卷文件不存在" });

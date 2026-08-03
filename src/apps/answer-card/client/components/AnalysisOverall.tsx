@@ -99,7 +99,7 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
                     <td style={tdR}>{formatScore(s.fullScore)}</td>
                     <td style={tdR}>{formatScore(s.avgScore)}</td>
                     <td style={tdR}><DifficultyBadge value={s.difficulty ?? 0} bands={bands?.difficulty} /></td>
-                    <td style={tdR}><DiscriminationBadge value={s.discrimination ?? 0} bands={bands?.discrimination} /></td>
+                    <td style={tdR}><DiscriminationBadge value={s.discrimination ?? 0} bands={bands?.discrimination} sampleSize={s.gradedCount} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -140,7 +140,7 @@ function DistributionCard({ d, showTotalNote, bands }: { d: DistributionResult; 
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <div className="panel-title" style={{ margin: 0 }}>{d.label} 分布</div>
         <DifficultyBadge value={d.difficulty} bands={bands?.difficulty} />
-        <DiscriminationBadge value={d.discrimination} bands={bands?.discrimination} />
+        <DiscriminationBadge value={d.discrimination} bands={bands?.discrimination} sampleSize={n} />
         <span style={{ fontSize: 12, color: "var(--muted)" }}>样本 {n} · 均分 {formatScore(d.mean)} · 标准差 {formatScore(d.stdDev)}</span>
         {smallSample && <span style={{ fontSize: 11, color: "#E65100", border: "1px solid #E65100", borderRadius: 6, padding: "1px 6px" }}>样本量&lt;30，仅供参考</span>}
       </div>
@@ -274,7 +274,7 @@ function NormalityTable({ normality }: { normality: NormalityResult }) {
           ))}
         </tbody>
       </table>
-      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>注：p≥0.05 视为不拒绝正态假设（常规阈值）。</div>
+      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>注：综合判定以 Shapiro-Francia 为主（p≥0.05 视为近似正态）；KS 为 Lilliefors 修正近似，p 值仅作参考；样本 &lt;5 时检验不可靠。</div>
     </div>
   );
 }

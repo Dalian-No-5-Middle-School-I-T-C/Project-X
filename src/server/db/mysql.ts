@@ -662,6 +662,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       ]
     },
     {
+      version: 30,
+      name: "subjective-question-annotation",
+      sqls: [
+        `ALTER TABLE subjective_questions ADD COLUMN annotation TEXT`,
+      ]
+    },
+    {
       version: 31,
       name: "exam-group-arts-science-track",
       sqls: [

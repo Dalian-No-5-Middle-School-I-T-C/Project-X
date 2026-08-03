@@ -320,7 +320,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                   <div style={{ fontSize: 12, color: "var(--muted)" }}>区分度 D（高分组得分率 − 低分组得分率）</div>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     <span style={{ fontSize: 22, fontWeight: 700 }}>{metrics.discrimination.toFixed(3)}</span>
-                    <DiscriminationBadge value={metrics.discrimination} bands={bands?.discrimination} />
+                    <DiscriminationBadge value={metrics.discrimination} bands={bands?.discrimination} sampleSize={metrics.gradedCount} />
                   </div>
                 </div>
               </div>

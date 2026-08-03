@@ -512,11 +512,13 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
 
 export function SubjectiveEditor({
   block,
+  card,
   layoutVersion,
   onChange,
   onUpload
 }: {
   block: SubjectiveBlock;
+  card: AnswerCard;
   layoutVersion: 1 | 2;
   onChange: (mutator: (block: BodyBlock) => void) => void;
   onUpload: (blockId: string, questionId: string, file: File) => Promise<void>;
@@ -545,6 +547,64 @@ export function SubjectiveEditor({
         items
       };
     });
+  }
+
+  function renderImageEditor(question: SubjectiveQuestion) {
+    const images = question.images ?? [];
+    return (
+      <>
+        <label className="upload-button">
+          <ImagePlus size={16} /> 插入图片
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void onUpload(block.id, question.id, file);
+              event.currentTarget.value = "";
+            }}
+          />
+        </label>
+        {images.map((image, index) => (
+          <div className="image-row" key={`${image.assetId}_${index}`}>
+            <span title={image.originalName ?? image.assetId}>{image.originalName ?? image.assetId}</span>
+            <input
+              type="number"
+              min={10}
+              max={200}
+              title="宽度(mm)"
+              value={image.widthMm}
+              onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))}
+            />
+            <input
+              type="number"
+              min={10}
+              max={200}
+              title="高度(mm)"
+              value={image.heightMm}
+              onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))}
+            />
+            <select
+              value={image.align}
+              title="对齐方式"
+              onChange={(event) =>
+                updateQuestion(question.id, (draft) => void ((draft.images![index].align = event.target.value as "left" | "center" | "right")))
+              }
+            >
+              <option value="left">靠左</option>
+              <option value="center">居中</option>
+              <option value="right">靠右</option>
+            </select>
+            <button
+              title="删除图片"
+              onClick={() => updateQuestion(question.id, (draft) => void (draft.images = (draft.images ?? []).filter((_, imgIndex) => imgIndex !== index)))}
+            >
+              <Trash2 size={15} />
+            </button>
+          </div>
+        ))}
+      </>
+    );
   }
 
   return (
@@ -584,6 +644,7 @@ export function SubjectiveEditor({
         <div className="question-editor" key={question.id}>
           <div className="question-editor-title">
             <strong>第 {question.number} 题</strong>
+            {!isEssayBlock && (
             <button
               title="删除小题"
               onClick={() =>
@@ -601,6 +662,7 @@ export function SubjectiveEditor({
             >
               <Trash2 size={15} />
             </button>
+            )}
           </div>
           {layoutVersion === 2 && !isFillBlankBlock && question.style === "manual_score_grid" && question.score <= 0 && (
             <p className="inline-warning">分值为 0，V2 已隐藏 0/0.5 分数格；设置正分后会自动显示。</p>
@@ -612,7 +674,7 @@ export function SubjectiveEditor({
             </label>
             {isFillBlankBlock ? (
               <label>
-                横线宽(mm)
+                默认横线宽(mm)
                 <input
                   type="number"
                   min={8}
@@ -661,7 +723,7 @@ export function SubjectiveEditor({
                 />
               </label>
               <label>
-                横线高度(mm)
+                默认横线高(mm)
                 <input
                   type="number"
                   min={4}
@@ -697,9 +759,50 @@ export function SubjectiveEditor({
                 </select>
               </label>
             </div>
+            <p className="hint">「默认横线宽/高」仅作为新增空的默认值；已列出的每个空可单独调整宽、高与批注。</p>
+            <label>
+              文字注释
+              <textarea
+                rows={2}
+                maxLength={160}
+                placeholder="可填写题干说明，如：看图计算并填空；注：答案不唯一"
+                value={question.annotation ?? ""}
+                onChange={(event) =>
+                  updateQuestion(question.id, (draft) => void (draft.annotation = event.target.value.trim() ? event.target.value : undefined))
+                }
+              />
+            </label>
             <div className="blank-item-list">
               {answerBlankItems(question).map((item, blankIndex) => (
                 <div className="blank-item-row" key={blankIndex}>
+                  <label>
+                    空{blankIndex + 1} 宽(mm)
+                    <input
+                      type="number"
+                      min={8}
+                      max={60}
+                      value={item.widthMm}
+                      onChange={(event) =>
+                        updateAnswerBlankItems(question.id, (items) =>
+                          items.map((current, index) => (index === blankIndex ? { ...current, widthMm: Number(event.target.value) } : current))
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    高(mm)
+                    <input
+                      type="number"
+                      min={4}
+                      max={20}
+                      value={item.heightMm}
+                      onChange={(event) =>
+                        updateAnswerBlankItems(question.id, (items) =>
+                          items.map((current, index) => (index === blankIndex ? { ...current, heightMm: Number(event.target.value) } : current))
+                        )
+                      }
+                    />
+                  </label>
                   <label>
                     空{blankIndex + 1} 右侧批注
                     <input
@@ -714,11 +817,33 @@ export function SubjectiveEditor({
                       }
                     />
                   </label>
+                  <button
+                    title="删除这个空"
+                    onClick={() => updateAnswerBlankItems(question.id, (items) => (items.length > 1 ? items.filter((_, index) => index !== blankIndex) : items))}
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </div>
               ))}
+              <button
+                className="ghost-button"
+                onClick={() =>
+                  updateAnswerBlankItems(question.id, (items) => [
+                    ...items,
+                    {
+                      label: undefined,
+                      widthMm: question.blanks?.widthMm ?? 22,
+                      heightMm: question.blanks?.heightMm ?? 6
+                    }
+                  ])
+                }
+              >
+                <Plus size={16} /> 添加空
+              </button>
             </div>
+            {renderImageEditor(question)}
             </>
-          ) : (
+          ) : (!isEssayBlock && (
             <>
               <label>
                 主观题样式
@@ -827,7 +952,7 @@ export function SubjectiveEditor({
                 </label>
               )}
             </>
-          )}
+          ))}
           {question.kind === "blank" && !isFillBlankBlock && (
             <div className="blank-item-list">
               {answerBlankItems(question).map((item, blankIndex) => (
@@ -908,7 +1033,7 @@ export function SubjectiveEditor({
           )}
           {!isFillBlankBlock && (
             <>
-              {question.kind !== "blank" && (
+              {question.kind !== "blank" && !isEssayBlock && (
                 <>
               <label className="check-row">
                 <input
@@ -1023,25 +1148,7 @@ export function SubjectiveEditor({
               )}
                 </>
               )}
-              <label className="upload-button">
-                <ImagePlus size={16} /> 插入图片
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) void onUpload(block.id, question.id, file);
-                    event.currentTarget.value = "";
-                  }}
-                />
-              </label>
-              {(question.images ?? []).map((image, index) => (
-                <div className="image-row" key={`${image.assetId}_${index}`}>
-                  <span>{image.originalName ?? image.assetId}</span>
-                  <input type="number" min={10} value={image.widthMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))} />
-                  <input type="number" min={10} value={image.heightMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))} />
-                </div>
-              ))}
+              {renderImageEditor(question)}
             </>
           )}
         </div>
@@ -1105,13 +1212,47 @@ export function SubjectiveEditor({
               type="checkbox"
               checked={block.questions[0]?.essayGrid?.showTitle !== false}
               onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
                 draft.essayGrid.showTitle = event.target.checked;
               })}
-            /> 显示"题：（000）"标题
+            /> 在答题区上方显示标题
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={block.questions[0]?.essayGrid?.showFrame !== false}
+              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
+                draft.essayGrid.showFrame = event.target.checked;
+              })}
+            /> 显示作文区外边框
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={block.questions[0]?.essayGrid?.showWordScale !== false}
+              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
+                draft.essayGrid.showWordScale = event.target.checked;
+              })}
+            /> 显示字数刻度（每 100 字标注）
           </label>
           <div style={{ fontSize: 11, color: "var(--muted)" }}>
             系统将自动计算每栏列数和行数。A3 三栏模式生效时网格均分到三栏。
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", background: "var(--bg-soft)", padding: "6px 8px", borderRadius: 6 }}>
+            {(() => {
+              const eg = block.questions[0]?.essayGrid;
+              const cw = eg?.cellWidthMm ?? 7;
+              const isA3 = card.paper?.size === "A3";
+              const bodyWidth = (isA3 ? 420 : 210) - 17 * 2;
+              const usableW = bodyWidth - 4 * 2;
+              const colsPerPanel = Math.max(1, Math.floor(usableW / cw));
+              const panelCount = isA3 ? 3 : 1;
+              const totalCols = colsPerPanel * panelCount;
+              const rows = Math.ceil((eg?.targetChars ?? 600) / totalCols);
+              return `预计约 ${rows} 行 × ${totalCols} 栏（每面板 ${colsPerPanel} 列${isA3 ? "，A3 三栏并排" : ""}）。实际页数取决于版面余量。`;
+            })()}
           </div>
         </div>
       )}
@@ -1245,35 +1386,44 @@ export function CardPreview({ card, layout }: { card: AnswerCard; layout: Layout
 }
 
 export function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][number]["studentArea"]> }) {
-  const rowCount = Math.max(...area.digitCells.map((cell) => cell.digitIndex)) + 1;
-  const separatorX = area.digitRect.x + 8.5;
+  const hasDigits = area.digitCells.length > 0;
   return (
     <g>
       <rect {...area.infoRect} fill="none" stroke="#333" strokeWidth="0.25" />
-      <rect {...area.digitRect} fill="none" stroke="#333" strokeWidth="0.25" />
-      <text x={area.digitRect.x + area.digitRect.width / 2} y={area.digitRect.y + 5.2} textAnchor="middle" className="svg-label">
-        填涂号区
-      </text>
-      <text x={area.infoRect.x + 5} y={area.infoRect.y + 13.5} className="svg-label">
-        姓名：
-      </text>
-      <line x1={area.infoRect.x + 18} y1={area.infoRect.y + 14.5} x2={area.infoRect.x + area.infoRect.width - 9} y2={area.infoRect.y + 14.5} stroke="#333" strokeWidth="0.25" />
-      <text x={area.infoRect.x + 5} y={area.infoRect.y + 25.5} className="svg-label">
-        班级：
-      </text>
-      <line x1={area.infoRect.x + 18} y1={area.infoRect.y + 26.5} x2={area.infoRect.x + area.infoRect.width - 9} y2={area.infoRect.y + 26.5} stroke="#333" strokeWidth="0.25" />
-      {Array.from({ length: rowCount }).map((_, row) => (
-        <line key={row} x1={area.digitRect.x} y1={area.digitRect.y + 7 + row * 4.8} x2={area.digitRect.x + area.digitRect.width} y2={area.digitRect.y + 7 + row * 4.8} stroke="#999" strokeWidth="0.15" />
-      ))}
-      <line x1={separatorX} y1={area.digitRect.y + 7} x2={separatorX} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
-      {area.digitCells.map((cell) => (
-        <g key={`${cell.digitIndex}_${cell.digit}`}>
-          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
-          <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
-            {cell.digit}
+      {area.fieldRows.map((row) => (
+        <g key={row.label}>
+          <text x={row.labelX} y={row.lineY - 1.0} className="svg-label">
+            {row.label}
           </text>
+          <line x1={row.lineX1} y1={row.lineY} x2={row.lineX2} y2={row.lineY} stroke="#333" strokeWidth="0.25" />
         </g>
       ))}
+      {area.notesLines && area.notesLines.length > 0 && area.notesY !== undefined &&
+        area.notesLines.map((line, index) => (
+          <text key={index} x={area.infoRect.x + 5} y={area.notesY! + index * 4.2} className="svg-notes">
+            {line}
+          </text>
+        ))}
+      {hasDigits && (
+        <>
+          <rect {...area.digitRect} fill="none" stroke="#333" strokeWidth="0.25" />
+          <text x={area.digitRect.x + area.digitRect.width / 2} y={area.digitRect.y + 5.2} textAnchor="middle" className="svg-label">
+            填涂号区
+          </text>
+          {Array.from({ length: Math.max(...area.digitCells.map((cell) => cell.digitIndex)) + 1 }).map((_, row) => (
+            <line key={row} x1={area.digitRect.x} y1={area.digitRect.y + 7 + row * 4.8} x2={area.digitRect.x + area.digitRect.width} y2={area.digitRect.y + 7 + row * 4.8} stroke="#999" strokeWidth="0.15" />
+          ))}
+          <line x1={area.digitRect.x + 8.5} y1={area.digitRect.y + 7} x2={area.digitRect.x + 8.5} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
+          {area.digitCells.map((cell) => (
+            <g key={`${cell.digitIndex}_${cell.digit}`}>
+              <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
+              <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
+                {cell.digit}
+              </text>
+            </g>
+          ))}
+        </>
+      )}
     </g>
   );
 }
@@ -1319,13 +1469,14 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
 
   if (isEssay) {
     const q = originalBlock && originalBlock.type === "subjective" ? originalBlock.questions[0] : null;
-    const g = q?.essayGrid;
-    if (!g) return null;
+    const g = q?.essayGrid ?? { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
     const cellW = g.cellWidthMm || 7;
     const cellH = g.cellHeightMm || 7;
     const lineColor = g.lineColor || "#222";
     const lineW = g.lineWidthMm ?? 0.15;
     const showTitle = g.showTitle !== false;
+    const showFrame = g.showFrame !== false;
+    const showWordScale = g.showWordScale !== false;
 
     // 计算栏宽和列数
     const bodyW = block.rect.width;
@@ -1335,35 +1486,81 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
     const gridW = columns * cellW;
     const offsetX = block.rect.x + (bodyW - gridW) / 2;
 
-    // 高度内能放的行数
-    const gridH = block.rect.height - (showTitle ? 9 : 2);
-    const rows = Math.floor(gridH / cellH);
-    const startY = block.rect.y + (showTitle ? 9 : 2);
+    const gap = 1.6; // 行间窄溜宽度（mm），仅作为格间空隙，格子保持完整高度
+    const gridTop = showTitle ? 9 : 2;
+    const bottomPad = 2;
+    const gridH = block.rect.height - gridTop - bottomPad;
+    const rows = Math.max(0, Math.floor((gridH + gap) / (cellH + gap)));
+    const startY = block.rect.y + gridTop;
+
+    const cells: ReactElement[] = [];
+    const guideLines: ReactElement[] = [];
+    for (let row = 0; row < rows; row++) {
+      const cy = startY + row * (cellH + gap);
+      for (let col = 0; col < columns; col++) {
+        cells.push(
+          <rect
+            key={`${row}_${col}`}
+            x={offsetX + col * cellW}
+            y={cy}
+            width={cellW}
+            height={cellH}
+            fill="#fff"
+            stroke={lineColor}
+            strokeWidth={lineW}
+          />
+        );
+      }
+      // 行间窄溜：淡虚线贯穿整栏（末行不画）
+      if (row < rows - 1) {
+        const lineY = startY + (row + 1) * (cellH + gap) - gap / 2;
+        guideLines.push(
+          <line key={`gap_${row}`} x1={offsetX} y1={lineY} x2={offsetX + gridW} y2={lineY} stroke="#ddd" strokeWidth={0.08} strokeDasharray="1,1" />
+        );
+      }
+    }
+
+    const scaleTicks: ReactElement[] = [];
+    if (showWordScale && columns > 0) {
+      const startCell = block.essayStartCell ?? 0;
+      const targetCells = g.targetChars || 600;
+      for (let row = 0; row < rows; row++) {
+        const rowStart = startCell + row * columns;
+        const rowEnd = rowStart + columns - 1;
+        const milestone = Math.ceil((rowStart + 1) / 100) * 100;  // 本行跨过的第一个 100 倍数
+        if (milestone <= rowEnd && milestone <= targetCells) {
+          const cellIndex = milestone - rowStart - 1; // 0-based column of the milestone cell
+          const cellRight = offsetX + (cellIndex + 1) * cellW;   // 该格右边线
+          const seamY = startY + (row + 1) * (cellH + gap) - gap / 2; // 该行下方窄缝中心
+          scaleTicks.push(
+            <text
+              key={`scale_${row}`}
+              x={cellRight - 0.6}
+              y={seamY}
+              fontSize={1.7}
+              textAnchor="end"
+              dominantBaseline="middle"
+              fill="#555"
+              className="svg-micro"
+            >
+              {milestone}
+            </text>
+          );
+        }
+      }
+    }
 
     return (
       <g>
+        {showFrame && block.frameRect && (
+          <rect {...block.frameRect} fill="none" stroke="#111" strokeWidth={0.4} />
+        )}
         {showTitle && block.title && (
-          <>
-            <text x={block.rect.x + insetX} y={block.rect.y + 5} className="svg-section">{block.title}（{q?.score}分）</text>
-            <text x={block.rect.x + insetX + 64} y={block.rect.y + 5} className="svg-tiny" fill="#888">
-              题：（{String(q?.number ?? 1).padStart(3, "0")}）
-            </text>
-          </>
+          <text x={block.rect.x + insetX} y={block.rect.y + 5} className="svg-section">{block.title}</text>
         )}
-        {[...Array(rows)].map((_, row) =>
-          [...Array(columns)].map((_, col) => (
-            <rect
-              key={`${row}_${col}`}
-              x={offsetX + col * cellW}
-              y={startY + row * cellH}
-              width={cellW}
-              height={cellH}
-              fill="#fff"
-              stroke={lineColor}
-              strokeWidth={lineW}
-            />
-          ))
-        )}
+        {guideLines}
+        {cells}
+        {scaleTicks}
       </g>
     );
   }
@@ -1467,9 +1664,14 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
               </g>
             );
           })}
+          {(question.annotationLines ?? []).map((line) => (
+            <text key={`${line.rect.x}-${line.rect.y}`} x={line.rect.x} y={line.rect.y + 2.6} className="svg-tiny" fill="#444">
+              {line.text}
+            </text>
+          ))}
           {question.images.map((image) => (
             <g key={image.assetId}>
-              <image href={apiUrl(`/assets/${card.id}/${image.assetId}`)} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
+              <image href={apiUrl(`/api/assets/${card.id}/${image.assetId}`)} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
               <rect {...image.rect} fill="none" stroke="#666" strokeWidth="0.18" />
             </g>
           ))}
