@@ -128,3 +128,65 @@ export {
   type TaskProgressProps,
 } from "./progress";
 export { Pagination, type PaginationProps } from "./pagination";
+
+/* ── 数据展示 / 业务外壳（P2-3）──────────────────────────────────── */
+export {
+  TableWrap,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+  TableCaption,
+} from "./table";
+export {
+  DataTable,
+  type DataTableProps,
+  type ColumnDef,
+  type SortingState,
+} from "./data-table";
+export {
+  EmptyState,
+  ErrorState,
+  type EmptyStateProps,
+  type ErrorStateProps,
+} from "./empty-state";
+export {
+  StatCard,
+  StatCardRow,
+  ScoreBadge,
+  type StatCardProps,
+  type ScoreBadgeProps,
+} from "./stat-card";
+export { UploadZone, type UploadZoneProps } from "./upload-zone";
+export {
+  AppShell,
+  AppMain,
+  AppContentRow,
+  AppContent,
+  AppRail,
+  AppRailBrand,
+  AppRailNav,
+  AppRailGroupLabel,
+  AppRailItem,
+  AppRailFooter,
+  PageHeader,
+  ContextPanel,
+  ContextPanelHeader,
+  ContextPanelBody,
+  ContextItem,
+  StatusBar,
+  StatusItem,
+  StatusSpacer,
+  SaveStatus,
+  type AppContentProps,
+  type AppRailProps,
+  type AppRailBrandProps,
+  type AppRailItemProps,
+  type PageHeaderProps,
+  type ContextItemProps,
+  type StatusItemProps,
+  type SaveState,
+  type SaveStatusProps,
+} from "./shell";
