@@ -55,3 +55,76 @@ export {
   SelectItem,
   SelectSeparator,
 } from "./select";
+
+/* ── 覆盖层 / 导航 / 反馈（P2-2）────────────────────────────────── */
+export {
+  Dialog,
+  DialogTrigger,
+  DialogClose,
+  DialogPortal,
+  DialogOverlay,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogBody,
+  DialogFooter,
+  ConfirmDialog,
+  type DialogSize,
+  type DialogContentProps,
+  type ConfirmDialogProps,
+} from "./dialog";
+export {
+  Sheet,
+  SheetTrigger,
+  SheetClose,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+  SheetBody,
+  SheetFooter,
+  type SheetContentProps,
+} from "./sheet";
+export {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuCheckboxItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuShortcut,
+  DropdownMenuGroup,
+  DropdownMenuPortal,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
+} from "./dropdown-menu";
+export {
+  TooltipProvider,
+  TooltipRoot,
+  TooltipTrigger,
+  TooltipContent,
+  Tip,
+  type TipProps,
+} from "./tooltip";
+export { Toaster, notify, toast } from "./toaster";
+export { Tabs, TabsList, TabsTrigger, TabsContent, TabsCount } from "./tabs";
+export {
+  SegmentedControl,
+  ToggleGroup,
+  ToggleGroupItem,
+  type SegmentedItem,
+  type SegmentedControlProps,
+} from "./segmented-control";
+export {
+  Progress,
+  TaskProgress,
+  type ProgressProps,
+  type ProgressTone,
+  type TaskProgressProps,
+} from "./progress";
+export { Pagination, type PaginationProps } from "./pagination";
