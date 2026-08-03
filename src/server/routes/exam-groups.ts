@@ -785,15 +785,17 @@ router.get("/:groupId/rankings", requireReadableGroup, async (req: Request, res:
     // Get rankings per exam for grade and class rank
     const examRanks: Record<number, Map<number, { gradeRank: number; classRank: number }>> = {};
     for (const examId of memberIds) {
+      const rankParams: unknown[] = [examId];
+      if (track !== "all") rankParams.push(track);
       const rankRows = await db.all(`
         SELECT ss.student_id, ss.total_score, c.name as class_name, c.id as class_id
         FROM student_scores ss
         JOIN users u ON u.id = ss.student_id
         LEFT JOIN class_students cs ON cs.student_id = ss.student_id
         LEFT JOIN classes c ON c.id = cs.class_id
-        WHERE ss.exam_id = ?
+        WHERE ss.exam_id = ? ${trackStudentClause}
         ORDER BY ss.total_score DESC
-      `, examId) as Array<{ student_id: number; total_score: number; class_name: string | null; class_id: number | null }>;
+      `, ...rankParams) as Array<{ student_id: number; total_score: number; class_name: string | null; class_id: number | null }>;
 
       const rankMap = new Map<number, { gradeRank: number; classRank: number }>();
       examRanks[examId] = rankMap;
@@ -833,7 +835,7 @@ router.get("/:groupId/rankings", requireReadableGroup, async (req: Request, res:
     }> = [];
 
     for (const [, student] of studentMap) {
-      const subjects = members.map((m) => {
+      const subjects = trackMembers.map((m) => {
         const s = student.scores.get(m.exam_id);
         const ranks = examRanks[m.exam_id]?.get(student.studentId);
         return {
