@@ -7,7 +7,9 @@ import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import App from "./App";
 import { AuthProvider } from "./auth/AuthContext";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import "./styles.css";
+// 唯一样式入口：app.css 内部按 legacy < theme < base < components < utilities
+// 的层序依次引入 tokens.css / styles.css / legacy-bridge.css，顺序不得在此绕过。
+import "./theme/app.css";
 
 // This is the web mode entry point (teacher + student, no scanner panel).
 // Used in dev (npm run dev) and in web builds (vite build --mode web).
