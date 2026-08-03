@@ -549,6 +549,64 @@ export function SubjectiveEditor({
     });
   }
 
+  function renderImageEditor(question: SubjectiveQuestion) {
+    const images = question.images ?? [];
+    return (
+      <>
+        <label className="upload-button">
+          <ImagePlus size={16} /> 插入图片
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) void onUpload(block.id, question.id, file);
+              event.currentTarget.value = "";
+            }}
+          />
+        </label>
+        {images.map((image, index) => (
+          <div className="image-row" key={`${image.assetId}_${index}`}>
+            <span title={image.originalName ?? image.assetId}>{image.originalName ?? image.assetId}</span>
+            <input
+              type="number"
+              min={10}
+              max={200}
+              title="宽度(mm)"
+              value={image.widthMm}
+              onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))}
+            />
+            <input
+              type="number"
+              min={10}
+              max={200}
+              title="高度(mm)"
+              value={image.heightMm}
+              onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))}
+            />
+            <select
+              value={image.align}
+              title="对齐方式"
+              onChange={(event) =>
+                updateQuestion(question.id, (draft) => void ((draft.images![index].align = event.target.value as "left" | "center" | "right")))
+              }
+            >
+              <option value="left">靠左</option>
+              <option value="center">居中</option>
+              <option value="right">靠右</option>
+            </select>
+            <button
+              title="删除图片"
+              onClick={() => updateQuestion(question.id, (draft) => void (draft.images = (draft.images ?? []).filter((_, imgIndex) => imgIndex !== index)))}
+            >
+              <Trash2 size={15} />
+            </button>
+          </div>
+        ))}
+      </>
+    );
+  }
+
   return (
     <>
       <div className="panel-title">{isFillBlankBlock ? "填空题块" : isEssayBlock ? "作文块" : "解答题块"}</div>
@@ -616,7 +674,7 @@ export function SubjectiveEditor({
             </label>
             {isFillBlankBlock ? (
               <label>
-                横线宽(mm)
+                默认横线宽(mm)
                 <input
                   type="number"
                   min={8}
@@ -665,7 +723,7 @@ export function SubjectiveEditor({
                 />
               </label>
               <label>
-                横线高度(mm)
+                默认横线高(mm)
                 <input
                   type="number"
                   min={4}
@@ -701,9 +759,50 @@ export function SubjectiveEditor({
                 </select>
               </label>
             </div>
+            <p className="hint">「默认横线宽/高」仅作为新增空的默认值；已列出的每个空可单独调整宽、高与批注。</p>
+            <label>
+              文字注释
+              <textarea
+                rows={2}
+                maxLength={160}
+                placeholder="可填写题干说明，如：看图计算并填空；注：答案不唯一"
+                value={question.annotation ?? ""}
+                onChange={(event) =>
+                  updateQuestion(question.id, (draft) => void (draft.annotation = event.target.value.trim() ? event.target.value : undefined))
+                }
+              />
+            </label>
             <div className="blank-item-list">
               {answerBlankItems(question).map((item, blankIndex) => (
                 <div className="blank-item-row" key={blankIndex}>
+                  <label>
+                    空{blankIndex + 1} 宽(mm)
+                    <input
+                      type="number"
+                      min={8}
+                      max={60}
+                      value={item.widthMm}
+                      onChange={(event) =>
+                        updateAnswerBlankItems(question.id, (items) =>
+                          items.map((current, index) => (index === blankIndex ? { ...current, widthMm: Number(event.target.value) } : current))
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
+                    高(mm)
+                    <input
+                      type="number"
+                      min={4}
+                      max={20}
+                      value={item.heightMm}
+                      onChange={(event) =>
+                        updateAnswerBlankItems(question.id, (items) =>
+                          items.map((current, index) => (index === blankIndex ? { ...current, heightMm: Number(event.target.value) } : current))
+                        )
+                      }
+                    />
+                  </label>
                   <label>
                     空{blankIndex + 1} 右侧批注
                     <input
@@ -718,9 +817,31 @@ export function SubjectiveEditor({
                       }
                     />
                   </label>
+                  <button
+                    title="删除这个空"
+                    onClick={() => updateAnswerBlankItems(question.id, (items) => (items.length > 1 ? items.filter((_, index) => index !== blankIndex) : items))}
+                  >
+                    <Trash2 size={15} />
+                  </button>
                 </div>
               ))}
+              <button
+                className="ghost-button"
+                onClick={() =>
+                  updateAnswerBlankItems(question.id, (items) => [
+                    ...items,
+                    {
+                      label: undefined,
+                      widthMm: question.blanks?.widthMm ?? 22,
+                      heightMm: question.blanks?.heightMm ?? 6
+                    }
+                  ])
+                }
+              >
+                <Plus size={16} /> 添加空
+              </button>
             </div>
+            {renderImageEditor(question)}
             </>
           ) : (!isEssayBlock && (
             <>
@@ -1027,25 +1148,7 @@ export function SubjectiveEditor({
               )}
                 </>
               )}
-              <label className="upload-button">
-                <ImagePlus size={16} /> 插入图片
-                <input
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    if (file) void onUpload(block.id, question.id, file);
-                    event.currentTarget.value = "";
-                  }}
-                />
-              </label>
-              {(question.images ?? []).map((image, index) => (
-                <div className="image-row" key={`${image.assetId}_${index}`}>
-                  <span>{image.originalName ?? image.assetId}</span>
-                  <input type="number" min={10} value={image.widthMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))} />
-                  <input type="number" min={10} value={image.heightMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))} />
-                </div>
-              ))}
+              {renderImageEditor(question)}
             </>
           )}
         </div>
@@ -1561,6 +1664,11 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
               </g>
             );
           })}
+          {(question.annotationLines ?? []).map((line) => (
+            <text key={`${line.rect.x}-${line.rect.y}`} x={line.rect.x} y={line.rect.y + 2.6} className="svg-tiny" fill="#444">
+              {line.text}
+            </text>
+          ))}
           {question.images.map((image) => (
             <g key={image.assetId}>
               <image href={apiUrl(`/api/assets/${card.id}/${image.assetId}`)} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
