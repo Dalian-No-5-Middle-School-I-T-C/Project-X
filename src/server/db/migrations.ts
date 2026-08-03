@@ -810,6 +810,17 @@ const MIGRATIONS: Migration[] = [
     up(db) {
       addColumnIfMissing(db, "subjective_questions", "annotation", "TEXT");
     }
+  },
+  // v31 (Issue #177): 大考合集文理分科 —— 升 v31 以避让 main 已占用的 v30 (subjective-question-annotation)
+  // - users.track：学生文/理属性（'arts' 文科 / 'science' 理科）
+  // - exam_group_members.track_type：考试组内科目归属（common 共同 / arts 文科 / science 理科）
+  {
+    version: 31,
+    name: "exam-group-arts-science-track",
+    up(db) {
+      addColumnIfMissing(db, "users", "track", "TEXT");
+      addColumnIfMissing(db, "exam_group_members", "track_type", "TEXT NOT NULL DEFAULT 'common'");
+    }
   }
 ];
 

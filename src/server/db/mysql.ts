@@ -668,6 +668,14 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE subjective_questions ADD COLUMN annotation TEXT`,
       ]
     },
+    {
+      version: 31,
+      name: "exam-group-arts-science-track",
+      sqls: [
+        `ALTER TABLE users ADD COLUMN track TEXT`,
+        `ALTER TABLE exam_group_members ADD COLUMN track_type VARCHAR(20) NOT NULL DEFAULT 'common'`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {
