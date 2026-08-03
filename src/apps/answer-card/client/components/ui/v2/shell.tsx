@@ -83,6 +83,7 @@ export function AppContent({
         className={cn(
           "mx-auto w-full",
           !bare && "p-6",
+          bare && "h-full",
           width === "normal" && "max-w-content",
           width === "wide" && "max-w-content-wide",
         )}

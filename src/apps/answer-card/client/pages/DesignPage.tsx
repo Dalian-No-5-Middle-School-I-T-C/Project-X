@@ -1,6 +1,6 @@
 // DesignPage — 答题卡设计器（严格按 design/designer-sandbox.html + demo.html 视觉规格）
 // 两级流程：select=卡片画廊 / editor=三栏工作台
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import {
   ArrowLeft,
   ArrowDown,
@@ -32,15 +32,12 @@ import {
   Field,
   Input,
   Panel,
-  SegmentedControl,
   Select,
   SelectValue,
   SelectTrigger,
   SelectContent,
   SelectItem,
 } from "../components/ui/v2";
-
-type PreviewMode = "fit-width" | "fit-page" | "fit-panel" | "custom";
 
 function formatDate(d?: string) {
   if (!d) return "";
@@ -79,8 +76,6 @@ export function DesignPage() {
     canDesign,
   } = useWorkspace();
 
-  const [previewMode, setPreviewMode] = useState<PreviewMode>("fit-page");
-  const [customPercent, setCustomPercent] = useState<number>(100);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; cardId: string } | null>(null);
 
   const selectedBlock = card ? (card.bodyBlocks.find((b) => b.id === selectedBlockId) ?? null) : null;
@@ -324,48 +319,6 @@ export function DesignPage() {
 
         {/* Canvas */}
         <section className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
-          <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-4">
-            <SegmentedControl<PreviewMode>
-              value={previewMode}
-              onValueChange={(v) => setPreviewMode(v)}
-              items={[
-                { value: "fit-width", label: "适合宽度" },
-                { value: "fit-page", label: "适合页面" },
-                { value: "fit-panel", label: "适合单版" },
-              ]}
-              size="sm"
-            />
-            <div className="h-4 w-px bg-border" />
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="缩小"
-              onClick={() => {
-                setCustomPercent((p) => Math.max(20, Math.round(p / 10) * 10 - 10));
-                setPreviewMode("custom");
-              }}
-            >
-              <span className="text-sm">−</span>
-            </Button>
-            <output className="min-w-[42px] text-center text-xs tabular-nums text-muted-foreground">
-              {customPercent}%
-            </output>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="放大"
-              onClick={() => {
-                setCustomPercent((p) => Math.min(200, Math.round(p / 10) * 10 + 10));
-                setPreviewMode("custom");
-              }}
-            >
-              <Plus size={14} />
-            </Button>
-            <span className="ml-auto text-xs text-muted-foreground">
-              {card?.paper?.size === "A3" ? "A3 横向三版" : "A4 纵向"} · 共 {layout?.pages.length ?? 1} 页
-            </span>
-          </div>
-
           {layout?.warnings.length ? (
             <div className="mx-4 mt-3 rounded-md border border-warning-border bg-warning-soft p-2.5 text-xs text-warning-fg">
               {layout.warnings.map((w, i) => (

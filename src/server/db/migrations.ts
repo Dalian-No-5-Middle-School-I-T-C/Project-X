@@ -801,6 +801,13 @@ const MIGRATIONS: Migration[] = [
         ensureSetting.run("analysis_error_tiers", "70,50,30");
       }
     }
+  },
+  {
+    version: 31,
+    name: "exam-group-track-type",
+    up(db) {
+      addColumnIfMissing(db, "exam_group_members", "track_type", "TEXT NOT NULL DEFAULT 'common'");
+    }
   }
 ];
 

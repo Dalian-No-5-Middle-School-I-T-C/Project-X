@@ -661,6 +661,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
           ('analysis_error_tiers', '70,50,30')`,
       ]
     },
+    {
+      version: 31,
+      name: "exam-group-track-type",
+      sqls: [
+        `ALTER TABLE exam_group_members ADD COLUMN track_type VARCHAR(20) NOT NULL DEFAULT 'common'`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {
