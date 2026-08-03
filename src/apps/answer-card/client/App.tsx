@@ -29,6 +29,7 @@ import {
   Trash2,
   Upload,
   Users,
+  ArrowLeft,
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
 import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "./auth/api";
@@ -370,6 +371,7 @@ function App() {
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [designScreen, setDesignScreen] = useState<"select" | "editor">("select");
   const [mode, setMode] = useState<AppMode>(pathToMode(window.location.pathname) ?? "home");
   const navigate = useNavigate();
   const location = useLocation();
@@ -1464,6 +1466,8 @@ function App() {
     setSelectedBlockId,
     layout,
     selectedBlock,
+    designScreen,
+    setDesignScreen,
     updateCard,
     updateBlock,
     moveBlock,
@@ -1588,7 +1592,9 @@ function App() {
                   ? "全局设置"
                   : mode === "permissions"
                     ? "权限说明"
-                    : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统");
+                    : mode === "design" && designScreen === "select"
+                      ? "答题卡"
+                      : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统");
 
   const pageSubtitle =
     mode === "home"
@@ -1607,32 +1613,43 @@ function App() {
                   ? "系统级策略与服务商配置"
                   : mode === "permissions"
                     ? `${user.name} · ${user.role_display_name ?? user.role_name}`
-                    : card
-                      ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
-                      : canDesign
-                        ? "创建答题卡后开始编辑"
-                        : `${user.name} · ${user.role_display_name ?? user.role_name}`;
+                    : mode === "design" && designScreen === "select"
+                      ? "选择或新建一张答题卡"
+                      : card
+                        ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
+                        : canDesign
+                          ? "创建答题卡后开始编辑"
+                          : `${user.name} · ${user.role_display_name ?? user.role_name}`;
 
-  const designActions = card && canDesign && mode === "design" && (
-    <>
-      <Button variant="ghost" size="sm" asChild>
-        <a href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
-          坐标 JSON
-        </a>
+  const designActions = canDesign && mode === "design" && (
+    designScreen === "select" ? (
+      <Button variant="primary" size="sm" onClick={() => setShowNewCardModal(true)} disabled={isBusy}>
+        <Plus size={16} /> 新建答题卡
       </Button>
-      <Button variant="outline" size="sm" onClick={() => void exportPdfForCurrentCard()} disabled={isBusy}>
-        <FileDown size={16} /> PDF
-      </Button>
-      <Button variant="primary" size="sm" onClick={() => void saveCard()} disabled={isBusy}>
-        <Save size={16} /> 保存
-      </Button>
-      {autoSaveLabel && (
-        <SaveStatus
-          state={autoSaveState as SaveState}
-          savedAt={autoSaveState === "saved" ? new Date().toLocaleTimeString() : undefined}
-        />
-      )}
-    </>
+    ) : card ? (
+      <>
+        <Button variant="ghost" size="sm" onClick={() => setDesignScreen("select")}>
+          <ArrowLeft size={16} /> 卡片列表
+        </Button>
+        <Button variant="ghost" size="sm" asChild>
+          <a href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
+            坐标 JSON
+          </a>
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => void exportPdfForCurrentCard()} disabled={isBusy}>
+          <FileDown size={16} /> PDF
+        </Button>
+        <Button variant="primary" size="sm" onClick={() => void saveCard()} disabled={isBusy}>
+          <Save size={16} /> 保存
+        </Button>
+        {autoSaveLabel && (
+          <SaveStatus
+            state={autoSaveState as SaveState}
+            savedAt={autoSaveState === "saved" ? new Date().toLocaleTimeString() : undefined}
+          />
+        )}
+      </>
+    ) : null
   );
 
   return (
