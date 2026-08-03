@@ -2,6 +2,33 @@ import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import type { AnswerCard } from "../../shared/types";
 import { normalizeObjectiveQuestions } from "../../shared/grading";
+import { DEFAULT_STUDENT_INFO } from "../../shared/defaultCard";
+import type { StudentInfoSettings } from "../../shared/types";
+
+function parseStudentInfo(raw: string | null | undefined, digits: number): StudentInfoSettings {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw ?? "null");
+  } catch {
+    parsed = null;
+  }
+  // 兼容旧版：student_fields 原存的是字段数组，如 ["姓名","班级"]
+  if (Array.isArray(parsed)) {
+    const legacyFields = parsed as string[];
+    return {
+      ...DEFAULT_STUDENT_INFO,
+      studentNumberDigits: digits,
+      fields: legacyFields as StudentInfoSettings["fields"],
+      showName: legacyFields.includes("姓名"),
+      showClass: legacyFields.includes("班级"),
+      showStudentNumber: legacyFields.includes("学号")
+    };
+  }
+  if (parsed && typeof parsed === "object") {
+    return { ...(parsed as StudentInfoSettings), studentNumberDigits: digits };
+  }
+  return { ...DEFAULT_STUDENT_INFO, studentNumberDigits: digits };
+}
 
 export interface CardSummary {
   id: string;
@@ -31,7 +58,7 @@ export class CardRepository {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       card.id, card.title, card.subject ?? null, (card as any).subjectLabel ?? null,
       (card as any).examDate ?? null, card.paper?.size ?? "A4", card.paper?.orientation ?? "portrait",
-      JSON.stringify(card.studentInfo?.fields ?? []), card.studentInfo?.studentNumberDigits ?? 5,
+      JSON.stringify(card.studentInfo ?? { studentNumberDigits: 5 }), card.studentInfo?.studentNumberDigits ?? 5,
       card.sided ?? "double", card.layoutVersion ?? 1, createdBy ?? null
     );
   }
@@ -42,7 +69,7 @@ export class CardRepository {
         `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, paper_size = ?, orientation = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
         card.title, card.subject ?? null, (card as any).subjectLabel ?? null, (card as any).examDate ?? null,
         card.paper?.size ?? "A4", card.paper?.orientation ?? "portrait",
-        JSON.stringify(card.studentInfo?.fields ?? []), card.studentInfo?.studentNumberDigits ?? 5,
+        JSON.stringify(card.studentInfo ?? { studentNumberDigits: 5 }), card.studentInfo?.studentNumberDigits ?? 5,
         card.sided ?? "double", card.layoutVersion ?? 1, card.id
       );
 
@@ -154,7 +181,7 @@ export class CardRepository {
       subject: cardRow.subject ?? undefined, subjectLabel: cardRow.subject_label ?? undefined,
       examDate: cardRow.exam_date ?? undefined,
       paper: { size: cardRow.paper_size, orientation: cardRow.orientation },
-      studentInfo: { fields: JSON.parse(cardRow.student_fields ?? "[]"), studentNumberDigits: cardRow.student_number_digits },
+      studentInfo: parseStudentInfo(cardRow.student_fields, cardRow.student_number_digits),
       bodyBlocks: [], sided: (cardRow.sided as "single" | "double") ?? "double",
       layoutVersion: cardRow.layout_version === 2 ? 2 : 1, updatedAt: cardRow.updated_at
     };

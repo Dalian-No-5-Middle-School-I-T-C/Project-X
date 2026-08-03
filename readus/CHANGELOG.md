@@ -1,5 +1,6 @@
 # Project-X CHANGELOG
 
+
 ## v1.10.1 (2026-08-03) — 填空题升级：自定义横线 / 插入图片 / 文字注释
 
 > 填空题块支持逐空自定义横线（宽度、高度），支持插入题干图片，支持添加文字注释（自动折行）。
@@ -77,12 +78,19 @@
 - 修：在逐科聚合 SQL 中按「该科满分 × 全局阈值」计算 `passRate = 及格线以上人数 / 实考人数`、`excellentRate = 优秀线以上人数 / 实考人数`，口径与 `getGroupClassComparison` 对总分用 `totalFull × thresholds` 一致；阈值经 `getAnalysisThresholds()` 读取（默认 0.6/0.9，管理员可配）。
 - 注册永久回归：`scripts/bugfix-analysis-verification.ts` 新增断言——数学(60/60/90) passRate=100% excellentRate=33%、语文(70/50/80) passRate=67% excellentRate=0%。
 
+**7. 跟进：逐题下钻 classId 过滤触发 `cs` 别名重复 → 500（Codex 在 PR #206 评审指出，2026-08-03）**
+- 根因：`AnalysisRepository.getQuestionStudentScores()` 在 `question_scores qs` 上先 `LEFT JOIN class_students cs`（显示班级名），又插入 `classFilterQs(classId)` 返回的 `JOIN class_students cs`（按班级过滤）——同名别名 `cs` 重复；一旦传入正 `classId` 即报 `duplicate alias` / `no such column: cs.class_id`，HTTP 500。
+- git blame 显示该 `cs` JOIN 来自 `f04b2e8e`（火箭，2026-08-01），**早于 PR #206**，属历史存量 bug，非 PR #206 引入；Codex 在评审 PR #206 时顺带发现。
+- **冲突处理**：将本地 `cs2`/`cl` 标量子查询修复 `git stash pop` 到本分支时，与分支已合入的修复冲突——分支 `f158bce` 已用 `cs_scope`（过滤 `EXISTS`）+ `cs_display`（显示标量子查询）两个**不同别名**重写该方法，且额外覆盖 `classId===0`（无班级学生）与 `classId>0` 时显示班级名对齐过滤班级。分支方案更完整且无编译依赖（`c.join` 在该方法内已不存在），故冲突取**分支侧**，本地改动被取代；该 bug 在 PR #206 上本已修好。
+- 注册永久回归：`scripts/bugfix-question-students-alias.ts` — **10 用例 全绿**（覆盖无 classId / 正 classId / classId=0（无班级）/ 双班学生不重复行 四场景，均不抛异常）。
+
 **验证**
 - `npx tsx scripts/bugfix-analysis-verification.ts` — **31 用例 全绿**（覆盖四项修复 + 阈值变更回测 + subjects 及格/优秀率）
 - `npm run typecheck` / `npm run build` — 全绿
 - `npm run verify:auth` — 54/54 全绿
 - `npm run verify:security-critical` — 42/42 全绿
 - `npx tsx scripts/grading-rules-smoke.ts` — ok
+- `npx tsx scripts/bugfix-question-students-alias.ts` — **10 用例 全绿**（逐题下钻 classId 过滤 / cs 别名冲突回归）
 - 真实数据回归：演示大考（6 科 16 人）`getGroupMetrics.subjects[].gradedCount/maxScore/minScore/stdDev` 现全部为真实值（非 0），分布 isNormal=true（p=0.38），班级对比 passRate=100%/excellentRate=38% 正确反映配置阈值。
 
 ## v1.10.0 — 成绩分析增强（难度 P / 区分度 D / 总体分析 / 大考 6-Tab）
@@ -123,6 +131,29 @@
 - 修复：`getQuestionAnalysis` 对 `getExamTotalsMap` 改用 `classFilter(classId)`（JOIN 条件 `cs.student_id = ss.student_id`，与 `student_scores ss` 对齐）；题目聚合查询与逐生小题得分查询仍用 `classFilterQs`（作用于 `question_scores qs`）。两者按同一班级筛选，学生集合一致，区分度极端组法对齐无误。
 - 影响面：班级筛选下的题目分析、概况（P/D 以外的统计）、逐生下钻等路径此前在选班级时 500；大考逐题下钻复用 per-exam 端点，同样受益。无班级筛选的主路径不受影响。
 - 验证：`npm run verify:auth` 由「54 项中 1 项异常」恢复为 **54/54**（`getExamOverview(examId, classId)` 用例）；`getQuestionAnalysis(26, 62)` 返回 11 题（9 非 0 D）无异常；`verify:security-critical` 42/42、`grading-rules-smoke` 通过、`npm run build` 通过。
+
+## v1.9.6 (2026-07-31) — 在 #201 基线上合入 #193，修复填涂号区回归（PR #202）
+
+> 基于 #201 基线（fix/pr193-on-201）合入 #193（作文格修复、移动端适配、受控资源路由等），并修复 #193 引入的填涂号区回归。
+> 验证：`tsc --noEmit` 0 错误；默认配置布局输出与 #201 逐字节一致。
+
+**1. 填涂号区回归修复（P0）**
+- #193 曾将学生信息区重构为「标准表格形态」（顶部 0-9 表头行 + 左侧空框列），与 PDF/SVG/识别器坐标不一致导致格子错位。
+- 已回退到 #201 实现：`layout.ts`（colGap 自适应格子）、`pdf.ts drawStudentArea`、`DesignEditors StudentAreaSvg`、`types.ts StudentAreaLayout` 四处保持一致，默认输出与 #201 逐字节一致。
+
+**2. 学生信息区字段开关生效（P1）**
+- `DesignPage` 的「基本信息字段」开关（姓名/班级/座位号/考号）与「显示注意事项」此前只写入 `studentInfo`、布局引擎不读取，勾选无效果。
+- 现在 `layoutStudentArea` 按开关生成 `fieldRows` 与 `notesLines`（复用自动换行），PDF/SVG 渲染层同步按 `fieldRows`/`notesLines` 绘制；三处渲染共用同一数据源，从架构上消除「三处不一致」的回归根因。
+- 新增「学号（填涂号区）」开关支持：关闭后不生成涂写格（识别器对空 `student_digits` 返回 `not_present`，不判失败）。
+
+**3. 移动端抽屉版本号修复（P2）**
+- `MobileDrawer.tsx` 曾硬编码 v1.9.2，现恢复为动态 `import.meta.env.VITE_APP_VERSION`（与桌面端一致）。
+
+**4. README 补回爱发电地址行（P2）**
+- #201 直推 main 的爱发电地址在冲突解决时被丢弃，已按 main 原样补回。
+
+**5. 清理合并痕迹（P3）**
+- `server/index.ts` 一行双 import 拆分；`GlobalSettingsRoutePage` 类名对齐 main（`global-settings-grid`）；`layout.ts`/`types.ts` 死代码（`DEFAULT_STUDENT_NOTES`/`measureTextWidthMm`/`wrapNotesLines`/`StudentAreaFieldRow`）随本次改造转为被使用或被清理。
 
 ## v1.9.6 (2026-07-24) — 实机问题修复（5 项）
 
@@ -201,6 +232,7 @@
 - 暗色模式扩展覆盖 `.data-card`。
 - 阶段 5 手势增强（`useSwipeClose` / `usePullToRefresh` 原生 touch，可选）。
 - 真机验证：iOS Safari + Android Chrome，480px 全功能可达、无横向溢出、输入框不缩放。
+
 
 ---
 
