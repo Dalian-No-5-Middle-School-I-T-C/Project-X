@@ -23,6 +23,8 @@ export interface ClassStudent {
   username: string;
   name: string;
   student_number: string | null;
+  /** 文理分科：arts 文科 / science 理科（Issue #177） */
+  track: string | null;
   joined_at: string;
 }
 
@@ -91,7 +93,7 @@ export class ClassRepository {
 
   async listStudents(classId: number): Promise<ClassStudent[]> {
     return await this.db.all(`
-      SELECT cs.student_id, u.username, u.name, u.student_number, cs.joined_at
+      SELECT cs.student_id, u.username, u.name, u.student_number, u.track, cs.joined_at
       FROM class_students cs
       JOIN users u ON u.id = cs.student_id
       WHERE cs.class_id = ? AND u.is_active = 1

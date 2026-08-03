@@ -1013,6 +1013,8 @@ export interface ExamGroupMember {
   examName: string;
   subject: string | null;
   sortOrder: number;
+  /** 文理分科科目归属：common 共同 / arts 文科 / science 理科（Issue #177） */
+  trackType: string;
   examDate: string | null;
   status: string;
   gradedCount: number;
@@ -1023,6 +1025,8 @@ export interface ExamGroupMember {
 /** 大考组详情 */
 export interface ExamGroupDetail extends ExamGroup {
   members: ExamGroupMember[];
+  /** examId -> trackType 映射（Issue #177） */
+  memberTracks?: Record<string, string>;
 }
 
 /** 大考创建/更新请求 */
@@ -1030,6 +1034,7 @@ export interface ExamGroupRequest {
   name: string;
   description?: string;
   grade_id?: number | null;
+  memberTracks?: Record<string, string>;
   tag?: string;
   is_official?: number;
   total_score_mode?: "raw" | "assigned";
@@ -1042,6 +1047,8 @@ export interface GroupSubjectSummary {
   examId: number;
   examName: string;
   subject: string;
+  /** 文理分科科目归属：common 共同 / arts 文科 / science 理科（Issue #177） */
+  trackType?: string;
   gradedCount: number;
   avgScore: number;
   maxScore: number;
@@ -1061,6 +1068,8 @@ export interface GroupSubjectSummary {
 export interface GroupOverview {
   groupId: number;
   groupName: string;
+  /** 当前文理筛选：all / arts / science（Issue #177） */
+  track?: string;
   totalParticipants: number;
   fullParticipants: number;
   subjects: GroupSubjectSummary[];

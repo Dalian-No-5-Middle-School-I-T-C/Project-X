@@ -42,6 +42,8 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [classId, setClassId] = useState("");
   const [fullOnly, setFullOnly] = useState(false);
+  /** 文理分科（Issue #177）：all / arts / science */
+  const [trackFilter, setTrackFilter] = useState<"all" | "arts" | "science">("all");
   const [loading, setLoading] = useState(true);
   const [drill, setDrill] = useState<{ examId: number; questionNumber: string; maxScore: number } | null>(null);
 
@@ -60,7 +62,7 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
     loadOverview();
     loadMetrics();
     loadRankings();
-  }, [groupId, fullOnly, classId]);
+  }, [groupId, fullOnly, classId, trackFilter]);
 
   useEffect(() => {
     if (subTab === "question-analysis" && !questionAnalysis) loadQuestionAnalysis();
@@ -70,13 +72,13 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
   async function loadOverview() {
     setLoading(true);
     try {
-      const data = await fetchJson<GroupOverview>(`/api/exam-groups/${groupId}/overview`);
+      const data = await fetchJson<GroupOverview>(`/api/exam-groups/${groupId}/overview?track=${trackFilter}`);
       setOverview(data);
     } catch { setOverview(null); }
     finally { setLoading(false); }
   }
   async function loadMetrics() {
-    try { setMetrics(await fetchJson<GroupMetrics>(`/api/exam-groups/${groupId}/metrics`)); }
+    try { setMetrics(await fetchJson<GroupMetrics>(`/api/exam-groups/${groupId}/metrics?track=${trackFilter}`)); }
     catch { setMetrics(null); }
   }
   async function loadRankings() {
@@ -84,6 +86,7 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
       const params = new URLSearchParams();
       if (classId) params.set("classId", classId);
       if (fullOnly) params.set("fullOnly", "1");
+      params.set("track", trackFilter);
       const data = await fetchJson<GroupRankingResponse>(`/api/exam-groups/${groupId}/rankings?${params.toString()}`);
       setRankings(data);
     } catch { setRankings(null); }
@@ -98,6 +101,12 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
   }
 
   const subjectList = useMemo(() => (overview?.subjects ?? []).map((s) => s.subject), [overview]);
+
+  function changeTrackFilter(track: "all" | "arts" | "science") {
+    setTrackFilter(track);
+    setQuestionAnalysis(null);
+    setClassComparison(null);
+  }
   const metricsByExam = useMemo(
     () => new Map((metrics?.subjects ?? []).map((s) => [s.examId, s])),
     [metrics]
@@ -145,6 +154,7 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{overview.groupName}</h2>
           <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 2 }}>
             {overview.subjects.length} 科 · {overview.totalParticipants} 人参加 · {overview.fullParticipants} 人全科
+            {trackFilter !== "all" && ` · ${trackFilter === "arts" ? "文科" : "理科"}`}
           </div>
         </div>
         {isTeacher && onExport && (
@@ -177,9 +187,10 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
         ))}
       </div>
 
-      {/* View-mode toggle (成绩/题目分析/班级对比 共用) */}
-      {showViewToggle && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 20px 0", flexShrink: 0, flexWrap: "wrap" }}>
+      {/* View-mode toggle (成绩/题目分析/班级对比 共用) + 文理分科筛选（Issue #177） */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 20px 0", flexShrink: 0, flexWrap: "wrap" }}>
+        {showViewToggle && (
+          <>
           <Layers size={14} style={{ color: "var(--muted)" }} />
           <span style={{ fontSize: 12, color: "var(--muted)" }}>显示</span>
           <ViewToggleButton active={viewMode === "combined"} onClick={() => setViewMode("combined")}>总分 + 每科</ViewToggleButton>
@@ -190,8 +201,13 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
               {subjectList.map((s) => <option key={s} value={s}>{s}</option>)}
             </select>
           )}
-        </div>
-      )}
+          </>
+        )}
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>文理</span>
+        <ViewToggleButton active={trackFilter === "all"} onClick={() => changeTrackFilter("all")}>全部</ViewToggleButton>
+        <ViewToggleButton active={trackFilter === "arts"} onClick={() => changeTrackFilter("arts")}>文科</ViewToggleButton>
+        <ViewToggleButton active={trackFilter === "science"} onClick={() => changeTrackFilter("science")}>理科</ViewToggleButton>
+      </div>
 
       {/* Content */}
       <div style={{ flex: 1, overflow: "auto", padding: "16px 20px" }}>
@@ -208,7 +224,7 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
         {subTab === "class-compare" && (
           <GroupClassCompareTab cc={classComparison} viewMode={viewMode} subjectFilter={activeSubject} />
         )}
-        {subTab === "overall" && <AnalysisOverall kind="group" groupId={groupId} bands={bands ?? undefined} />}
+        {subTab === "overall" && <AnalysisOverall kind="group" groupId={groupId} track={trackFilter} bands={bands ?? undefined} />}
         {subTab === "ai" && <AnalysisAiPanel groupId={groupId} />}
       </div>
 
@@ -284,7 +300,18 @@ function OverviewTab({
             background: "var(--bg-secondary)", borderRadius: 10,
             padding: 14, border: "1px solid var(--border)"
           }}>
-            <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>{sub.subject}</div>
+            <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+              {sub.subject}
+              {sub.trackType && sub.trackType !== "common" && (
+                <span style={{
+                  fontSize: 10, fontWeight: 500, color: "#fff",
+                  background: sub.trackType === "arts" ? "#ec4899" : "#3b82f6",
+                  borderRadius: 4, padding: "1px 5px"
+                }}>
+                  {sub.trackType === "arts" ? "文科" : "理科"}
+                </span>
+              )}
+            </div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 12px", fontSize: 12 }}>
               <span style={{ color: "var(--muted)" }}>人数</span>
               <span style={{ fontWeight: 500, textAlign: "right" }}>{sub.gradedCount}</span>

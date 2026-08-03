@@ -20,6 +20,7 @@ export function StudentManagement() {
   const [showNewStudent, setShowNewStudent] = useState(false);
   const [newStudentName, setNewStudentName] = useState("");
   const [newStudentNumber, setNewStudentNumber] = useState("");
+  const [newStudentTrack, setNewStudentTrack] = useState("");
 
   const loadGrades = useCallback(async () => {
     const data = await fetchJson<GradeRecord[]>("/api/classes/grades");
@@ -118,15 +119,35 @@ export function StudentManagement() {
           username: newStudentNumber.trim(),
           name: newStudentName.trim(),
           role: "student",
-          student_number: newStudentNumber.trim()
+          student_number: newStudentNumber.trim(),
+          track: newStudentTrack || undefined
         })
       });
       setShowNewStudent(false);
       setNewStudentName("");
       setNewStudentNumber("");
+      setNewStudentTrack("");
       await handleRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建学生失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 文理分科（Issue #177）：更新学生文/理属性 */
+  async function handleTrackChange(student: StudentWithClass, track: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await authFetch(`/api/users/${student.student_id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ track: track || null })
+      });
+      setStudents((prev) => prev.map((s) => s.student_id === student.student_id ? { ...s, track: track || null } : s));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新文理分科失败");
     } finally {
       setBusy(false);
     }
@@ -140,7 +161,7 @@ export function StudentManagement() {
           <button className="ghost-button" type="button" onClick={handleRefresh} disabled={busy}>
             <RefreshCw size={14} /> 刷新
           </button>
-          <button className="ghost-button" type="button" onClick={() => { setShowNewStudent(true); setNewStudentName(""); setNewStudentNumber(""); }} disabled={busy}>
+          <button className="ghost-button" type="button" onClick={() => { setShowNewStudent(true); setNewStudentName(""); setNewStudentNumber(""); setNewStudentTrack(""); }} disabled={busy}>
             <Plus size={14} /> 新建学生
           </button>
           <button className="ghost-button" type="button" onClick={() => setShowImport(true)} disabled={busy}>
@@ -195,6 +216,7 @@ export function StudentManagement() {
                     <tr>
                       <th>学号</th>
                       <th>姓名</th>
+                      <th>文理</th>
                       <th>账号</th>
                     </tr>
                   </thead>
@@ -203,6 +225,21 @@ export function StudentManagement() {
                       <tr key={s.student_id}>
                         <td data-label="学号">{s.student_number}</td>
                         <td data-label="姓名">{s.name}</td>
+                        <td data-label="文理">
+                          <select
+                            value={s.track ?? ""}
+                            disabled={busy}
+                            onChange={(e) => void handleTrackChange(s, e.target.value)}
+                            style={{
+                              padding: "3px 6px", borderRadius: 6, border: "1px solid var(--line-strong)",
+                              fontSize: 12, background: "var(--surface)", color: "var(--text-primary)"
+                            }}
+                          >
+                            <option value="">未设置</option>
+                            <option value="arts">文科</option>
+                            <option value="science">理科</option>
+                          </select>
+                        </td>
                         <td data-label="账号" style={{ fontFamily: "monospace", fontSize: 12 }}>{s.username}</td>
                       </tr>
                     ))}
@@ -245,6 +282,14 @@ export function StudentManagement() {
               <label>
                 姓名
                 <input value={newStudentName} onChange={(e) => setNewStudentName(e.target.value)} placeholder="学生姓名" disabled={busy} />
+              </label>
+              <label>
+                文理分科
+                <select value={newStudentTrack} onChange={(e) => setNewStudentTrack(e.target.value)} disabled={busy}>
+                  <option value="">未设置</option>
+                  <option value="arts">文科</option>
+                  <option value="science">理科</option>
+                </select>
               </label>
             </div>
             <div className="modal-footer">

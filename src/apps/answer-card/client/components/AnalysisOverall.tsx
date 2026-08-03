@@ -11,6 +11,8 @@ interface Props {
   kind: "exam" | "group";
   examId?: number;
   groupId?: number;
+  /** 文理分科筛选（Issue #177，仅 group 生效） */
+  track?: "all" | "arts" | "science";
   bands?: { difficulty: ThresholdBand[]; discrimination: ThresholdBand[] };
 }
 
@@ -20,7 +22,7 @@ function normalPdf(x: number, mean: number, sd: number): number {
   return Math.exp(-0.5 * z * z) / (sd * Math.sqrt(2 * Math.PI));
 }
 
-export function AnalysisOverall({ kind, examId, groupId, bands }: Props) {
+export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }: Props) {
   const [distributions, setDistributions] = useState<DistributionResult[]>([]);
   const [metrics, setMetrics] = useState<ExamMetrics | GroupMetrics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -29,23 +31,24 @@ export function AnalysisOverall({ kind, examId, groupId, bands }: Props) {
   useEffect(() => {
     setLoading(true); setError("");
     const base = kind === "exam" ? `/api/analysis/exams/${examId}` : `/api/exam-groups/${groupId}`;
+    const trackSuffix = kind === "group" ? `&track=${track}` : "";
     const distPromises = kind === "exam"
       ? Promise.all([
           fetchJson<DistributionResult[]>(`${base}/distribution?mode=subject`),
           fetchJson<DistributionResult[]>(`${base}/distribution?mode=class`),
         ]).then(([s, c]) => [...s, ...c])
       : Promise.all([
-          fetchJson<DistributionResult[]>(`${base}/distribution?mode=total`),
-          fetchJson<DistributionResult[]>(`${base}/distribution?mode=subject`),
-          fetchJson<DistributionResult[]>(`${base}/distribution?mode=class`),
+          fetchJson<DistributionResult[]>(`${base}/distribution?mode=total${trackSuffix}`),
+          fetchJson<DistributionResult[]>(`${base}/distribution?mode=subject${trackSuffix}`),
+          fetchJson<DistributionResult[]>(`${base}/distribution?mode=class${trackSuffix}`),
         ]).then(([t, s, c]) => [...t, ...s, ...c]);
-    const metricPromise = fetchJson<ExamMetrics | GroupMetrics>(`${base}/metrics`);
+    const metricPromise = fetchJson<ExamMetrics | GroupMetrics>(`${base}/metrics${kind === "group" ? `?track=${track}` : ""}`);
 
     Promise.all([distPromises, metricPromise])
       .then(([d, m]) => { setDistributions(Array.isArray(d) ? d : []); setMetrics(m as any); })
       .catch((e) => setError(e.message ?? "加载失败"))
       .finally(() => setLoading(false));
-  }, [kind, examId, groupId]);
+  }, [kind, examId, groupId, track]);
 
   if (loading) return <div style={{ padding: 30, textAlign: "center", color: "var(--muted)" }}>正在加载总体分析...</div>;
   if (error) return <div style={{ padding: 30, color: "#A32D2D" }}>{error}</div>;

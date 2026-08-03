@@ -801,6 +801,17 @@ const MIGRATIONS: Migration[] = [
         ensureSetting.run("analysis_error_tiers", "70,50,30");
       }
     }
+  },
+  // v30 (Issue #177): 大考合集文理分科
+  // - users.track：学生文/理属性（'arts' 文科 / 'science' 理科）
+  // - exam_group_members.track_type：考试组内科目归属（common 共同 / arts 文科 / science 理科）
+  {
+    version: 30,
+    name: "exam-group-arts-science-track",
+    up(db) {
+      addColumnIfMissing(db, "users", "track", "TEXT");
+      addColumnIfMissing(db, "exam_group_members", "track_type", "TEXT NOT NULL DEFAULT 'common'");
+    }
   }
 ];
 

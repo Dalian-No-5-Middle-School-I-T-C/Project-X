@@ -478,13 +478,35 @@ export class AnalysisRepository {
   // ── 大考聚合 ─────────────────────────────────────
 
   /** 大考整体 + 逐科难度/区分度 */
-  async getGroupMetrics(groupId: number): Promise<GroupMetrics> {
+  /** 文理分科（Issue #177）：考试组内科目归属映射 */
+  private async getGroupMemberTrackMap(groupId: number): Promise<Map<number, string>> {
+    const rows = await this.db.all<{ exam_id: number; track_type: string | null }>(
+      "SELECT exam_id, track_type FROM exam_group_members WHERE group_id = ?",
+      groupId
+    );
+    const map = new Map<number, string>();
+    for (const row of rows) map.set(Number(row.exam_id), row.track_type || "common");
+    return map;
+  }
+
+  /** 文理分科（Issue #177）：按筛选返回应纳入统计的科目 id 列表 */
+  private groupMemberIdsForTrack(members: Map<number, string>, track: "all" | "arts" | "science"): number[] {
+    if (track === "all") return Array.from(members.keys());
+    return Array.from(members.entries())
+      .filter(([, trackType]) => trackType === "common" || trackType === track)
+      .map(([examId]) => examId);
+  }
+
+  async getGroupMetrics(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<GroupMetrics> {
     const group = await this.getExamGroup(groupId);
-    if (!group || group.examIds.length === 0) return { difficulty: 0, discrimination: 0, totalFullScore: 0, totalAvg: 0, memberCount: 0, subjects: [] };
-    const qa = await this.getGroupQuestionAnalysis(groupId);
-    const fullScores = await this.getExamFullScoreMap(group.examIds);
-    const totalFullScore = group.examIds.reduce((s, id) => s + (fullScores.get(id) ?? 0), 0);
-    const totals = await this.getGroupTotalsMap(groupId);
+    if (!group) return { difficulty: 0, discrimination: 0, totalFullScore: 0, totalAvg: 0, memberCount: 0, subjects: [] };
+    const memberMap = await this.getGroupMemberTrackMap(groupId);
+    const examIds = this.groupMemberIdsForTrack(memberMap, track);
+    if (examIds.length === 0) return { difficulty: 0, discrimination: 0, totalFullScore: 0, totalAvg: 0, memberCount: 0, subjects: [] };
+    const qa = await this.getGroupQuestionAnalysis(groupId, track);
+    const fullScores = await this.getExamFullScoreMap(examIds);
+    const totalFullScore = examIds.reduce((s, id) => s + (fullScores.get(id) ?? 0), 0);
+    const totals = await this.getGroupTotalsMap(groupId, track);
     const totalAvg = totals.size > 0 ? mean(Array.from(totals.values())) : 0;
     // 逐科参数：复用各科的统计（按大考参与者口径），不再硬编码为 0
     const thresholds = await getAnalysisThresholds();
@@ -521,24 +543,27 @@ export class AnalysisRepository {
       discrimination: Math.round(disc * 1000) / 1000,
       totalFullScore: Math.round(totalFullScore * 10) / 10,
       totalAvg: Math.round(totalAvg * 10) / 10,
-      memberCount: group.examIds.length,
+      memberCount: examIds.length,
       subjects
     };
   }
 
   /** 大考逐题分析（整体 + 逐科），D 分组基准=大考总分 */
-  async getGroupQuestionAnalysis(groupId: number): Promise<GroupQuestionAnalysisResponse> {
+  async getGroupQuestionAnalysis(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<GroupQuestionAnalysisResponse> {
     const group = await this.getExamGroup(groupId);
     const empty: GroupQuestionAnalysisResponse = { overall: { difficulty: 0, discrimination: 0 }, subjects: [] };
-    if (!group || group.examIds.length === 0) return empty;
-    const totals = await this.getGroupTotalsMap(groupId);
+    if (!group) return empty;
+    const memberMap = await this.getGroupMemberTrackMap(groupId);
+    const examIds = this.groupMemberIdsForTrack(memberMap, track);
+    if (examIds.length === 0) return empty;
+    const totals = await this.getGroupTotalsMap(groupId, track);
     const participantIds = Array.from(totals.keys());
     const participantFilter = participantIds.length > 0
       ? { join: "", where: `AND qs.student_id IN (${participantIds.map(() => "?").join(",")})`, params: participantIds }
       : { join: "", where: "AND 1=0", params: [] };
     const subjects: GroupQuestionAnalysisResponse["subjects"] = [];
     let discSum = 0;
-    for (const examId of group.examIds) {
+    for (const examId of examIds) {
       const items = await this.computeQuestionAnalysis(examId, participantFilter, totals);
       const fullRow = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
       const fullScore = fullRow?.total ?? 100;
@@ -575,10 +600,11 @@ export class AnalysisRepository {
    *   即缺一科即被排除，避免被当「低分」拉低均分与难度系数。
    * - `total_score_mode = 'assigned'`：当该成员考试设置了 `assigned_formula`（赋分公式）时，
    *   使用 `assigned_score`；否则回退到 `total_score`。这样大考总分按业务策略口径汇总。 */
-  private async getGroupTotalsMap(groupId: number): Promise<Map<number, number>> {
-    const group = await this.getExamGroup(groupId);
+  private async getGroupTotalsMap(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<Map<number, number>> {
     const m = new Map<number, number>();
-    if (!group || group.examIds.length === 0) return m;
+    const memberMap = await this.getGroupMemberTrackMap(groupId);
+    const examIds = this.groupMemberIdsForTrack(memberMap, track);
+    if (examIds.length === 0) return m;
     const cfg = await this.db.get(
       `SELECT COALESCE(only_full_participants, 0) AS only_full, COALESCE(total_score_mode, 'raw') AS mode FROM exam_groups WHERE id = ?`,
       groupId
@@ -590,35 +616,40 @@ export class AnalysisRepository {
               THEN COALESCE(ss.assigned_score, ss.total_score) 
               ELSE ss.total_score END`
       : `ss.total_score`;
+    const trackClause = track === "all" ? "" : "AND u.track = ?";
     let sql = `
       SELECT ss.student_id, SUM(${scoreExpr}) AS total
       FROM student_scores ss
       JOIN exams e ON e.id = ss.exam_id
-      WHERE ss.exam_id IN (${group.examIds.map(() => "?").join(",")})
+      JOIN users u ON u.id = ss.student_id
+      WHERE ss.exam_id IN (${examIds.map(() => "?").join(",")}) ${trackClause}
       GROUP BY ss.student_id
     `;
-    if (onlyFull) sql += ` HAVING COUNT(DISTINCT ss.exam_id) = ${group.examIds.length}`;
-    const rows = await this.db.all(sql, ...group.examIds) as Array<{ student_id: number; total: number }>;
+    if (onlyFull) sql += ` HAVING COUNT(DISTINCT ss.exam_id) = ${examIds.length}`;
+    const params: unknown[] = [...examIds];
+    if (track !== "all") params.push(track);
+    const rows = await this.db.all(sql, ...params) as Array<{ student_id: number; total: number }>;
     for (const r of rows) m.set(r.student_id, Number(r.total));
     return m;
   }
 
   /** 大考参与者集合：与 getGroupTotalsMap 保持同一口径（用于 getGroupDistribution/ClassComparison
    * 等需要按参与者过滤的查询）。 */
-  private async getGroupParticipantIds(groupId: number): Promise<Set<number>> {
-    const group = await this.getExamGroup(groupId);
-    if (!group || group.examIds.length === 0) return new Set();
-    const totals = await this.getGroupTotalsMap(groupId);
+  private async getGroupParticipantIds(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<Set<number>> {
+    const totals = await this.getGroupTotalsMap(groupId, track);
     return new Set(totals.keys());
   }
 
   /** 大考分布（subject=各科；total=总分；class=各班总分）
    * 所有模式按 getGroupTotalsMap 的参与者口径过滤，保持与总指标一致。 */
-  async getGroupDistribution(groupId: number, mode: "subject" | "total" | "class"): Promise<DistributionResult[]> {
+  async getGroupDistribution(groupId: number, mode: "subject" | "total" | "class", track: "all" | "arts" | "science" = "all"): Promise<DistributionResult[]> {
     const group = await this.getExamGroup(groupId);
-    if (!group || group.examIds.length === 0) return [];
+    if (!group) return [];
+    const memberMap = await this.getGroupMemberTrackMap(groupId);
+    const examIds = this.groupMemberIdsForTrack(memberMap, track);
+    if (examIds.length === 0) return [];
     const thresholds = await getAnalysisThresholds();
-    const totals = await this.getGroupTotalsMap(groupId);
+    const totals = await this.getGroupTotalsMap(groupId, track);
     const participants = Array.from(totals.keys());
     const participantClause = participants.length > 0
       ? `AND ss.student_id IN (${participants.map(() => "?").join(",")})`
@@ -630,15 +661,15 @@ export class AnalysisRepository {
         FROM student_scores ss
         LEFT JOIN class_students cs ON cs.student_id = ss.student_id
         LEFT JOIN classes c ON c.id = cs.class_id
-        WHERE ss.exam_id IN (${group.examIds.map(() => "?").join(",")}) ${participantClause}
-      `, ...group.examIds, ...participants) as Array<{ student_id: number; class_id: number | null; class_name: string | null }>;
+        WHERE ss.exam_id IN (${examIds.map(() => "?").join(",")}) ${participantClause}
+      `, ...examIds, ...participants) as Array<{ student_id: number; class_id: number | null; class_name: string | null }>;
       const classOf = new Map<number, { classId: number; className: string }>();
       for (const r of classRows) classOf.set(r.student_id, { classId: r.class_id ?? 0, className: r.class_name ?? "未知班级" });
-      const fullScoreMap = await this.getExamFullScoreMap(group.examIds);
-      const totalFull = group.examIds.reduce((s, id) => s + (fullScoreMap.get(id) ?? 0), 0);
+      const fullScoreMap = await this.getExamFullScoreMap(examIds);
+      const totalFull = examIds.reduce((s, id) => s + (fullScoreMap.get(id) ?? 0), 0);
       if (mode === "total") {
         const scores = Array.from(totals.values());
-        const disc = await this.groupOverallDiscrimination(groupId);
+        const disc = await this.groupOverallDiscrimination(groupId, track);
         results.push(this.buildDistribution("total", "total", "大考总分分布", totalFull, thresholds.segmentSize, scores, disc));
       } else {
         const byClass = new Map<number, { className: string; scores: number[] }>();
@@ -653,46 +684,49 @@ export class AnalysisRepository {
       }
       return results;
     }
-    for (const examId of group.examIds) {
+    for (const examId of examIds) {
       const rows = await this.db.all(`SELECT ss.total_score FROM student_scores ss WHERE ss.exam_id = ? ${participantClause} ORDER BY ss.total_score ASC`, examId, ...participants) as any[];
       const scores = rows.map((r: any) => Number(r.total_score)).filter(Number.isFinite);
       const fullRow = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
       const fullScore = fullRow?.total ?? 100;
       const exam = await this.db.get(`SELECT name, subject FROM exams WHERE id = ?`, examId) as any;
-      const disc = await this.groupSubjectDiscrimination(groupId, examId);
+      const disc = await this.groupSubjectDiscrimination(groupId, examId, track);
       results.push(this.buildDistribution("subject", String(examId), exam?.subject ?? exam?.name ?? String(examId), fullScore, thresholds.segmentSize, scores, disc));
     }
     return results;
   }
 
-  private async groupSubjectDiscrimination(groupId: number, examId: number): Promise<number> {
-    const qa = await this.getGroupQuestionAnalysis(groupId);
+  private async groupSubjectDiscrimination(groupId: number, examId: number, track: "all" | "arts" | "science" = "all"): Promise<number> {
+    const qa = await this.getGroupQuestionAnalysis(groupId, track);
     const sub = qa.subjects.find((s) => s.examId === examId);
     return sub ? sub.discrimination : 0;
   }
 
-  private async groupOverallDiscrimination(groupId: number): Promise<number> {
-    const qa = await this.getGroupQuestionAnalysis(groupId);
+  private async groupOverallDiscrimination(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<number> {
+    const qa = await this.getGroupQuestionAnalysis(groupId, track);
     return qa.overall.discrimination;
   }
 
   /** 大考班级对比（班级总分统计 + 逐科班级均分对比） */
-  async getGroupClassComparison(groupId: number): Promise<GroupClassComparisonResponse> {
+  async getGroupClassComparison(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<GroupClassComparisonResponse> {
     const group = await this.getExamGroup(groupId);
     const empty: GroupClassComparisonResponse = { classes: [], subjectClassSummaries: [] };
-    if (!group || group.examIds.length === 0) return empty;
+    if (!group) return empty;
+    const memberMap = await this.getGroupMemberTrackMap(groupId);
+    const examIds = this.groupMemberIdsForTrack(memberMap, track);
+    if (examIds.length === 0) return empty;
     const thresholds = await getAnalysisThresholds();
-    const totals = await this.getGroupTotalsMap(groupId);
-    const fullScoreMap = await this.getExamFullScoreMap(group.examIds);
-    const totalFull = group.examIds.reduce((s, id) => s + (fullScoreMap.get(id) ?? 0), 0);
+    const totals = await this.getGroupTotalsMap(groupId, track);
+    const fullScoreMap = await this.getExamFullScoreMap(examIds);
+    const totalFull = examIds.reduce((s, id) => s + (fullScoreMap.get(id) ?? 0), 0);
     const classRows = await this.db.all(`
       SELECT ss.student_id, c.id as class_id, c.name as class_name, g.name as grade_name
       FROM student_scores ss
       LEFT JOIN class_students cs ON cs.student_id = ss.student_id
       LEFT JOIN classes c ON c.id = cs.class_id
       LEFT JOIN grades g ON g.id = c.grade_id
-      WHERE ss.exam_id IN (${group.examIds.map(() => "?").join(",")})
-    `, ...group.examIds) as Array<{ student_id: number; class_id: number | null; class_name: string | null; grade_name: string | null }>;
+      WHERE ss.exam_id IN (${examIds.map(() => "?").join(",")})
+    `, ...examIds) as Array<{ student_id: number; class_id: number | null; class_name: string | null; grade_name: string | null }>;
     const classMeta = new Map<number, { className: string; gradeName?: string }>();
     for (const r of classRows) classMeta.set(r.class_id ?? 0, { className: r.class_name ?? "未知班级", gradeName: r.grade_name ?? undefined });
     const classOf = new Map<number, number>();
@@ -732,7 +766,7 @@ export class AnalysisRepository {
       ? `AND ss.student_id IN (${participantIds.map(() => "?").join(",")})`
       : `AND 1=0`;
     const subjectClassSummaries: GroupClassComparisonResponse["subjectClassSummaries"] = [];
-    for (const examId of group.examIds) {
+    for (const examId of examIds) {
       const fullRow = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
       const fullScore = fullRow?.total ?? 100;
       const exam = await this.db.get(`SELECT name, subject FROM exams WHERE id = ?`, examId) as any;
