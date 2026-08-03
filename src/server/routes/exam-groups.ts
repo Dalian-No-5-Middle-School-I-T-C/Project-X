@@ -494,6 +494,10 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
     const group = await db.get("SELECT name FROM exam_groups WHERE id = ?", groupId) as { name: string } | undefined;
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
 
+    // 评审修复（PR #212）：逐科统计必须与参与人数同口径——按 users.track 过滤学生
+    const trackStudentClause = track === "all" ? "" : "AND u.track = ?";
+    const memberParams: unknown[] = [groupId];
+    if (track !== "all") memberParams.push(track);
     const members = await db.all(`
       SELECT e.id as exam_id, e.name as exam_name, e.subject,
              e.assigned_formula,
@@ -505,10 +509,11 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
       LEFT JOIN student_scores ss ON ss.exam_id = e.id
-      WHERE egm.group_id = ?
+      LEFT JOIN users u ON u.id = ss.student_id
+      WHERE egm.group_id = ? ${trackStudentClause}
       GROUP BY e.id
       ORDER BY egm.sort_order, egm.id
-    `, groupId) as any[];
+    `, ...memberParams) as any[];
     const trackMembers = track === "all"
       ? members
       : members.filter((m) => memberMatchesTrack(m.track_type, track));
@@ -525,8 +530,10 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
 
       const stdRow = await db.get(`
         SELECT ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as std
-        FROM student_scores ss WHERE ss.exam_id = ?
-      `, m.avg_score, m.avg_score, m.exam_id) as { std: number } | undefined;
+        FROM student_scores ss
+        JOIN users u ON u.id = ss.student_id
+        WHERE ss.exam_id = ? ${trackStudentClause}
+      `, m.avg_score, m.avg_score, m.exam_id, ...(track !== "all" ? [track] : [])) as { std: number } | undefined;
 
       const passLine = fullScore * 0.6;
       const excellentLine = fullScore * 0.9;
@@ -534,8 +541,10 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
         SELECT
           SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as pass_count,
           SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellent_count
-        FROM student_scores ss WHERE ss.exam_id = ?
-      `, passLine, excellentLine, m.exam_id) as { pass_count: number; excellent_count: number } | undefined;
+        FROM student_scores ss
+        JOIN users u ON u.id = ss.student_id
+        WHERE ss.exam_id = ? ${trackStudentClause}
+      `, passLine, excellentLine, m.exam_id, ...(track !== "all" ? [track] : [])) as { pass_count: number; excellent_count: number } | undefined;
 
       subjects.push({
         examId: m.exam_id,
@@ -555,7 +564,6 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
     }
 
     // Total participants（按文理筛选学生）
-    const trackStudentClause = track === "all" ? "" : "AND u.track = ?";
     const totalParams: unknown[] = [groupId];
     if (track !== "all") totalParams.push(track);
     const totalRow = await db.get(`

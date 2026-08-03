@@ -353,6 +353,61 @@ function computeRankings(ctx: TestCtx, track: TrackFilter, fullOnly?: boolean) {
   return { rows, displayColumns, memberCount: trackMembers.length };
 }
 
+/**
+ * 复刻 overview 路由的逐科统计逻辑（评审修复后：逐科统计与参与人数同口径，
+ * 按 users.track 过滤学生，覆盖 gradedCount / 均分 / 最高最低 / 及格率）。
+ */
+function computeOverview(ctx: TestCtx, track: TrackFilter) {
+  const { db, groupId } = ctx;
+  const trackStudentClause = track === "all" ? "" : "AND u.track = ?";
+  const memberParams: unknown[] = [groupId];
+  if (track !== "all") memberParams.push(track);
+
+  const members = db.prepare(`
+    SELECT e.id as exam_id, e.subject, egm.track_type,
+           COUNT(ss.exam_id) as graded_count,
+           ROUND(AVG(ss.total_score), 1) as avg_score,
+           ROUND(MAX(ss.total_score), 1) as max_score,
+           ROUND(MIN(ss.total_score), 1) as min_score
+    FROM exam_group_members egm
+    JOIN exams e ON e.id = egm.exam_id
+    LEFT JOIN student_scores ss ON ss.exam_id = e.id
+    LEFT JOIN users u ON u.id = ss.student_id
+    WHERE egm.group_id = ? ${trackStudentClause}
+    GROUP BY e.id
+    ORDER BY egm.sort_order, egm.id
+  `).all(...memberParams) as Array<{
+    exam_id: number; subject: string; track_type: string;
+    graded_count: number; avg_score: number; max_score: number; min_score: number;
+  }>;
+
+  const trackMembers = track === "all"
+    ? members
+    : members.filter(m => memberMatchesTrack(m.track_type, track));
+
+  const subjects: Array<{
+    examId: number; subject: string; trackType: string;
+    gradedCount: number; avgScore: number; maxScore: number; minScore: number; passRate: number;
+  }> = [];
+  for (const m of trackMembers) {
+    const exam = db.prepare("SELECT subject, full_score FROM exams WHERE id = ?").get(m.exam_id) as any;
+    const fullScore = Number(exam.full_score) || 100;
+    const passLine = fullScore * 0.6;
+    const passRow = db.prepare(`
+      SELECT SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as pass_count
+      FROM student_scores ss
+      JOIN users u ON u.id = ss.student_id
+      WHERE ss.exam_id = ? ${trackStudentClause}
+    `).get(passLine, m.exam_id, ...(track !== "all" ? [track] : [])) as { pass_count: number };
+    subjects.push({
+      examId: m.exam_id, subject: m.subject, trackType: m.track_type,
+      gradedCount: m.graded_count, avgScore: m.avg_score, maxScore: m.max_score, minScore: m.min_score,
+      passRate: m.graded_count > 0 ? Math.round((passRow.pass_count || 0) / m.graded_count * 100) : 0
+    });
+  }
+  return { subjects };
+}
+
 // ══════════════════════════════════════
 //          测试用例
 // ══════════════════════════════════════
@@ -474,6 +529,40 @@ const ctx = buildTestDb();
 
   const rSci = computeRankings(ctx, "science");
   ok(!rSci.rows.some(r => r.studentName === "孙七"), "理科模式：孙七(track=null) 被排除", { names: rSci.rows.map(r => r.studentName) });
+}
+
+// ─── 场景 ⑦：概览逐科统计按文理过滤（评审 P1 Issue 2）───
+{
+  console.log("\n--- 场景 ⑦：概览逐科统计按文理过滤（共同科目不含异科学生） ---");
+  const all = computeOverview(ctx, "all");
+  const arts = computeOverview(ctx, "arts");
+  const sci = computeOverview(ctx, "science");
+
+  const find = (list: ReturnType<typeof computeOverview>["subjects"], subject: string) =>
+    list.find((s) => s.subject === subject);
+
+  // 全体模式：语文 5 人（2 文科 + 2 理科 + 1 未分科），均分 (120+115+110+105+100)/5=110
+  const ywAll = find(all.subjects, "语文");
+  ok(ywAll?.gradedCount === 5, "全体模式：语文 gradedCount=5（含未分科）", { count: ywAll?.gradedCount });
+  ok(ywAll?.avgScore === 110, "全体模式：语文均分=110", { avg: ywAll?.avgScore });
+
+  // 文科模式：语文只统计 张三(120)/李四(115)，均分 117.5，及格率 100%
+  const ywArts = find(arts.subjects, "语文");
+  ok(ywArts?.gradedCount === 2, "文科模式：语文 gradedCount=2（不含理科/未分科）", { count: ywArts?.gradedCount });
+  ok(ywArts?.avgScore === 117.5, "文科模式：语文均分=117.5（仅文科生）", { avg: ywArts?.avgScore });
+  ok(ywArts?.maxScore === 120 && ywArts?.minScore === 115, "文科模式：语文最高/最低=120/115", { max: ywArts?.maxScore, min: ywArts?.minScore });
+  ok(ywArts?.passRate === 100, "文科模式：语文及格率=100%（仅文科生）", { rate: ywArts?.passRate });
+
+  // 理科模式：语文只统计 王五(110)/赵六(105)，均分 107.5
+  const ywSci = find(sci.subjects, "语文");
+  ok(ywSci?.gradedCount === 2, "理科模式：语文 gradedCount=2（不含文科/未分科）", { count: ywSci?.gradedCount });
+  ok(ywSci?.avgScore === 107.5, "理科模式：语文均分=107.5（仅理科生）", { avg: ywSci?.avgScore });
+
+  // 理科科目：文科模式不展示物理；理科模式物理只统计王五/赵六
+  ok(!find(arts.subjects, "物理"), "文科模式：概览不含物理科目", { subjects: arts.subjects.map(s => s.subject) });
+  const wlSci = find(sci.subjects, "物理");
+  ok(wlSci?.gradedCount === 2, "理科模式：物理 gradedCount=2（仅理科生）", { count: wlSci?.gradedCount });
+  ok(wlSci?.avgScore === 135, "理科模式：物理均分=135（(140+130)/2）", { avg: wlSci?.avgScore });
 }
 
 // ── 清理 ──

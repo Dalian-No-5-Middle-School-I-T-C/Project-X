@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowLeft, BarChart3, ClipboardList, Download, FileText, Layers } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { useAuth } from "../auth/AuthContext";
@@ -67,7 +67,7 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
   useEffect(() => {
     if (subTab === "question-analysis" && !questionAnalysis) loadQuestionAnalysis();
     if (subTab === "class-compare" && !classComparison) loadClassComparison();
-  }, [subTab]);
+  }, [subTab, trackFilter, groupId]);
 
   async function loadOverview() {
     setLoading(true);
@@ -91,13 +91,27 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
       setRankings(data);
     } catch { setRankings(null); }
   }
+  // 评审修复（PR #212）：逐题分析/班级对比携带 track 参数；
+  // 用请求序号防止快速切换文理时旧响应覆盖新响应。
+  const qaReqSeq = useRef(0);
+  const ccReqSeq = useRef(0);
   async function loadQuestionAnalysis() {
-    try { setQuestionAnalysis(await fetchJson<GroupQuestionAnalysisResponse>(`/api/exam-groups/${groupId}/question-analysis`)); }
-    catch { setQuestionAnalysis(null); }
+    const seq = ++qaReqSeq.current;
+    try {
+      const data = await fetchJson<GroupQuestionAnalysisResponse>(`/api/exam-groups/${groupId}/question-analysis?track=${trackFilter}`);
+      if (seq === qaReqSeq.current) setQuestionAnalysis(data);
+    } catch {
+      if (seq === qaReqSeq.current) setQuestionAnalysis(null);
+    }
   }
   async function loadClassComparison() {
-    try { setClassComparison(await fetchJson<GroupClassComparisonResponse>(`/api/exam-groups/${groupId}/class-comparison`)); }
-    catch { setClassComparison(null); }
+    const seq = ++ccReqSeq.current;
+    try {
+      const data = await fetchJson<GroupClassComparisonResponse>(`/api/exam-groups/${groupId}/class-comparison?track=${trackFilter}`);
+      if (seq === ccReqSeq.current) setClassComparison(data);
+    } catch {
+      if (seq === ccReqSeq.current) setClassComparison(null);
+    }
   }
 
   const subjectList = useMemo(() => (overview?.subjects ?? []).map((s) => s.subject), [overview]);
