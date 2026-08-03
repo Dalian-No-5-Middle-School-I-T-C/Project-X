@@ -2,6 +2,33 @@ import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import type { AnswerCard } from "../../shared/types";
 import { normalizeObjectiveQuestions } from "../../shared/grading";
+import { DEFAULT_STUDENT_INFO } from "../../shared/defaultCard";
+import type { StudentInfoSettings } from "../../shared/types";
+
+function parseStudentInfo(raw: string | null | undefined, digits: number): StudentInfoSettings {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw ?? "null");
+  } catch {
+    parsed = null;
+  }
+  // 兼容旧版：student_fields 原存的是字段数组，如 ["姓名","班级"]
+  if (Array.isArray(parsed)) {
+    const legacyFields = parsed as string[];
+    return {
+      ...DEFAULT_STUDENT_INFO,
+      studentNumberDigits: digits,
+      fields: legacyFields as StudentInfoSettings["fields"],
+      showName: legacyFields.includes("姓名"),
+      showClass: legacyFields.includes("班级"),
+      showStudentNumber: legacyFields.includes("学号")
+    };
+  }
+  if (parsed && typeof parsed === "object") {
+    return { ...(parsed as StudentInfoSettings), studentNumberDigits: digits };
+  }
+  return { ...DEFAULT_STUDENT_INFO, studentNumberDigits: digits };
+}
 
 export interface CardSummary {
   id: string;
@@ -31,7 +58,7 @@ export class CardRepository {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       card.id, card.title, card.subject ?? null, (card as any).subjectLabel ?? null,
       (card as any).examDate ?? null, card.paper?.size ?? "A4", card.paper?.orientation ?? "portrait",
-      JSON.stringify(card.studentInfo?.fields ?? []), card.studentInfo?.studentNumberDigits ?? 5,
+      JSON.stringify(card.studentInfo ?? { studentNumberDigits: 5 }), card.studentInfo?.studentNumberDigits ?? 5,
       card.sided ?? "double", card.layoutVersion ?? 1, createdBy ?? null
     );
   }
@@ -42,7 +69,7 @@ export class CardRepository {
         `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, paper_size = ?, orientation = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
         card.title, card.subject ?? null, (card as any).subjectLabel ?? null, (card as any).examDate ?? null,
         card.paper?.size ?? "A4", card.paper?.orientation ?? "portrait",
-        JSON.stringify(card.studentInfo?.fields ?? []), card.studentInfo?.studentNumberDigits ?? 5,
+        JSON.stringify(card.studentInfo ?? { studentNumberDigits: 5 }), card.studentInfo?.studentNumberDigits ?? 5,
         card.sided ?? "double", card.layoutVersion ?? 1, card.id
       );
 
@@ -110,10 +137,10 @@ export class CardRepository {
       for (let qi = 0; qi < block.questions.length; qi++) {
         const q = block.questions[qi];
         await tx.run(
-          `INSERT INTO subjective_questions (id, block_id, number, score, style, kind, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm, blanks_label_style, blanks_items_json, line_grid_json, essay_grid_json, score_grid_json, sort_order)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO subjective_questions (id, block_id, number, score, style, kind, annotation, min_height_mm, line_grid_enabled, line_spacing_mm, blanks_count, blanks_width_mm, blanks_height_mm, blanks_label_style, blanks_items_json, line_grid_json, essay_grid_json, score_grid_json, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           q.id, block.id, q.number, q.score, q.style ?? "manual_score_grid", q.kind ?? "plain_box",
-          q.minHeightMm ?? 68, q.lineGrid?.enabled ? 1 : 0, q.lineGrid?.lineSpacingMm ?? 8,
+          q.annotation || null, q.minHeightMm ?? 68, q.lineGrid?.enabled ? 1 : 0, q.lineGrid?.lineSpacingMm ?? 8,
           q.blanks?.count, q.blanks?.widthMm, q.blanks?.heightMm, q.blanks?.labelStyle,
           q.blanks?.items ? JSON.stringify(q.blanks.items) : undefined,
           q.lineGrid ? JSON.stringify(q.lineGrid) : undefined,
@@ -154,7 +181,7 @@ export class CardRepository {
       subject: cardRow.subject ?? undefined, subjectLabel: cardRow.subject_label ?? undefined,
       examDate: cardRow.exam_date ?? undefined,
       paper: { size: cardRow.paper_size, orientation: cardRow.orientation },
-      studentInfo: { fields: JSON.parse(cardRow.student_fields ?? "[]"), studentNumberDigits: cardRow.student_number_digits },
+      studentInfo: parseStudentInfo(cardRow.student_fields, cardRow.student_number_digits),
       bodyBlocks: [], sided: (cardRow.sided as "single" | "double") ?? "double",
       layoutVersion: cardRow.layout_version === 2 ? 2 : 1, updatedAt: cardRow.updated_at
     };
@@ -206,7 +233,7 @@ export class CardRepository {
         }
         return {
           id: q.id, number: q.number, score: q.score, style: q.style, kind: q.kind,
-          minHeightMm: q.min_height_mm, lineGrid, essayGrid, scoreGrid,
+          annotation: q.annotation ?? undefined, minHeightMm: q.min_height_mm, lineGrid, essayGrid, scoreGrid,
           blanks: q.blanks_count ? { count: q.blanks_count, widthMm: q.blanks_width_mm, heightMm: q.blanks_height_mm, labelStyle: q.blanks_label_style ?? undefined, items: q.blanks_items_json ? JSON.parse(q.blanks_items_json) : undefined } : undefined,
           images: images.map((img: any) => ({ assetId: img.asset_id, originalName: img.original_name, widthMm: img.width_mm, heightMm: img.height_mm, align: img.align }))
         };

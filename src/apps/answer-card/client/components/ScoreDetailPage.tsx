@@ -1,25 +1,28 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, BarChart3, ClipboardList, Download, FileText, Settings, Trophy, TrendingUp, TrendingDown, Users } from "lucide-react";
+import { Activity, ArrowLeft, BarChart3, ClipboardList, Download, FileText, Settings, Trophy, TrendingUp, TrendingDown, Users } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson } from "../auth/api";
 import { formatScore, formatPercent, formatChange } from "../util/format";
-import type { ExamOverview, PreviousExamComparison, QuestionAnalysisItem, StudentRankingItem, ScoreDisplayMode, ScoreTableRow, AnalysisThresholds, KnowledgeWeaknessItem } from "../../../../shared/types";
+import type { ExamOverview, ExamMetrics, PreviousExamComparison, QuestionAnalysisItem, StudentRankingItem, ScoreDisplayMode, ScoreTableRow, AnalysisThresholds, KnowledgeWeaknessItem } from "../../../../shared/types";
 import { AnalysisOverview } from "./AnalysisOverview";
 import { AnalysisDistribution } from "./AnalysisDistribution";
 import { AnalysisAiPanel } from "./AnalysisAiPanel";
 import { AnalysisQuestions } from "./AnalysisQuestions";
+import { AnalysisOverall } from "./AnalysisOverall";
+import { QuestionStudentScoresModal } from "./QuestionStudentScoresModal";
 import { ScoreTable } from "./ScoreTable";
 import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
 import { AnalysisTrend } from "./AnalysisTrend";
 import { DistributionBar, ClassDistributionBar } from "./AnalysisCharts";
+import { useBands, DifficultyBadge, DiscriminationBadge } from "./MetricBadge";
 
 interface ClassOption { id: number; name: string; grade_name?: string; }
 
 interface Props { examId: number; examName: string; subject: string | null; onBack: () => void; }
 
-type SubTab = "overview" | "scores" | "question-analysis" | "class-compare" | "ai";
+type SubTab = "overview" | "scores" | "question-analysis" | "class-compare" | "overall" | "ai";
 
 // ── Inline KPI stat card ──────────────────────────────
 function StatCard({ label, value, sub, trend, color, info }: {
@@ -111,6 +114,7 @@ function ThresholdSettingsModal({ onClose }: { onClose: () => void }) {
 export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const { user, isAdmin } = useAuth();
   const isTeacher = user?.role_name === "teacher" || isAdmin;
+  const bands = useBands();
   const [subTab, setSubTab] = useState<SubTab>("overview");
   const [showFixPage, setShowFixPage] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<{ id: number; name: string; number: string } | null>(null);
@@ -119,6 +123,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const [showThresholdSettings, setShowThresholdSettings] = useState(false);
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [overview, setOverview] = useState<ExamOverview | null>(null);
+  const [metrics, setMetrics] = useState<ExamMetrics | null>(null);
   const [ranking, setRanking] = useState<StudentRankingItem[]>([]);
   const [questions, setQuestions] = useState<QuestionAnalysisItem[]>([]);
   const [displayMode, setDisplayMode] = useState<ScoreDisplayMode>("zscore");
@@ -128,6 +133,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const [declineTop5, setDeclineTop5] = useState<Array<{ studentName: string; studentNumber?: string; rankChange: number }>>([]);
   const [previousComparison, setPreviousComparison] = useState<PreviousExamComparison | null>(null);
   const [comparisonClassId, setComparisonClassId] = useState("");
+  const [drillQuestion, setDrillQuestion] = useState<string | null>(null);
 
   useEffect(() => {
     fetchJson<ClassOption[]>("/api/classes")
@@ -138,7 +144,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
       .catch(() => {});
   }, []);
 
-  useEffect(() => { loadOverview(); loadQuestions(); loadRanking(); loadProgressRankings(); loadPreviousComparison(); }, [examId, classId]);
+  useEffect(() => { loadOverview(); loadQuestions(); loadRanking(); loadProgressRankings(); loadPreviousComparison(); loadMetrics(); }, [examId, classId]);
   useEffect(() => { setScoreTableKey((k) => k + 1); }, [displayMode]);
 
   async function loadOverview() {
@@ -174,12 +180,19 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
       setQuestions(await fetchJson<QuestionAnalysisItem[]>(`/api/analysis/exams/${examId}/questions?${params.toString()}`));
     } catch { setQuestions([]); }
   }
+  async function loadMetrics() {
+    try {
+      const params = new URLSearchParams(); if (classId) params.set("classId", classId);
+      setMetrics(await fetchJson<ExamMetrics>(`/api/analysis/exams/${examId}/metrics?${params.toString()}`));
+    } catch { setMetrics(null); }
+  }
 
   const subTabConfigs = useMemo(() => [
     { key: "overview" as SubTab, label: "概况", icon: FileText },
     { key: "scores" as SubTab, label: "成绩", icon: Users },
     { key: "question-analysis" as SubTab, label: "题目分析", icon: BarChart3 },
     { key: "class-compare" as SubTab, label: "班级对比", icon: BarChart3 },
+    { key: "overall" as SubTab, label: "总体分析", icon: Activity },
     { key: "ai" as SubTab, label: "AI分析", icon: ClipboardList },
   ], []);
 
@@ -293,6 +306,26 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
               <StatCard label="最低分" value={formatScore(overview.minScore)} />
             </div>
 
+            {/* 难度系数 / 区分度 卡 */}
+            {metrics && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+                <div className="analysis-card" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>难度系数 P（平均得分 / 满分）</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 22, fontWeight: 700 }}>{metrics.difficulty.toFixed(3)}</span>
+                    <DifficultyBadge value={metrics.difficulty} bands={bands?.difficulty} />
+                  </div>
+                </div>
+                <div className="analysis-card" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <div style={{ fontSize: 12, color: "var(--muted)" }}>区分度 D（高分组得分率 − 低分组得分率）</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 22, fontWeight: 700 }}>{metrics.discrimination.toFixed(3)}</span>
+                    <DiscriminationBadge value={metrics.discrimination} bands={bands?.discrimination} sampleSize={metrics.gradedCount} />
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* 分数段柱状图 + 班级箱线图 */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
               {overview.distribution.length > 0 && (
@@ -390,7 +423,11 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             {/* 题目得分率表 */}
             <div className="analysis-section">
               <div className="panel-title">逐题得分率</div>
-              <AnalysisQuestions questions={questions} />
+              <AnalysisQuestions
+                questions={questions}
+                bands={bands ?? undefined}
+                onRowClick={(qn) => setDrillQuestion(qn)}
+              />
             </div>
 
             {/* 知识点弱点（接通后端） */}
@@ -411,6 +448,11 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
           <ClassComparePanel examId={examId} classes={classes} />
         )}
 
+        {/* ====== 总体分析 Tab ====== */}
+        {subTab === "overall" && (
+          <AnalysisOverall kind="exam" examId={examId} bands={bands ?? undefined} />
+        )}
+
         {/* ====== AI分析 Tab ====== */}
         {subTab === "ai" && (
           <div style={{ padding: 24 }}>
@@ -422,6 +464,15 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
       {/* Modals */}
       {showExport && <ExportModal examId={examId} examName={examName} classId={classId || undefined} onClose={() => setShowExport(false)} />}
       {showThresholdSettings && <ThresholdSettingsModal onClose={() => setShowThresholdSettings(false)} />}
+      {drillQuestion && (
+        <QuestionStudentScoresModal
+          examId={examId}
+          questionNumber={drillQuestion}
+          questionMaxScore={questions.find((q) => q.questionNumber === drillQuestion)?.maxScore ?? 0}
+          classId={classId || undefined}
+          onClose={() => setDrillQuestion(null)}
+        />
+      )}
     </div>
   );
 }

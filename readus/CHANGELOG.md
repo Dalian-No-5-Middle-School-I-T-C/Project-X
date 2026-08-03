@@ -1,5 +1,160 @@
 # Project-X CHANGELOG
 
+
+## v1.10.1 (2026-08-03) — 填空题升级：自定义横线 / 插入图片 / 文字注释
+
+> 填空题块支持逐空自定义横线（宽度、高度），支持插入题干图片，支持添加文字注释（自动折行）。
+
+### 自定义横线
+- 填空题块编辑器：每个空可单独设置横线宽（mm）与高（mm），支持逐空删除与「添加空」；块级「默认横线宽/高」作为新增空的默认值。
+- 布局引擎：填空题紧凑网格按逐空自定义宽度排线，整列放不下时按比例整体缩小且不低于最小线宽；横线高度逐空生效。
+
+### 插入图片
+- 填空题块每题支持「插入图片」，沿用现有 `subjective_question_images` 存储；编辑器可调整宽/高、对齐方式（靠左/居中/靠右）并删除图片。
+- 布局引擎：单元格内图片自动缩放至列宽以内，排在横线下方并计入行高；SVG 预览与 PDF 输出同步渲染。
+
+### 文字注释
+- `SubjectiveQuestion` 新增 `annotation`（文字注释/题干说明），`subjective_questions` 新增 `annotation` 列（迁移 v30）。
+- 编辑器提供「文字注释」输入框；布局按单元格宽度自动折行，SVG/PDF 同步绘制。
+
+### 修改文件清单
+| 文件 | 改动 | 内容 |
+|------|------|------|
+| `src/shared/types.ts` | +4 行 | `SubjectiveQuestion.annotation` / `SubjectiveRenderItem.annotationLines` |
+| `src/shared/layout.ts` | +150 行 | 填空单元格布局：逐空宽度、注释折行、图片排版、动态行高 |
+| `src/apps/answer-card/client/pages/DesignEditors.tsx` | +100 行 | 逐空横线编辑、文字注释、图片管理、SVG 注释渲染 |
+| `src/apps/answer-card/server/pdf.ts` | +4 行 | PDF 注释行绘制 |
+| `src/server/repositories/CardRepository.ts` | +4 行 | annotation 持久化 |
+| `src/server/db/migrations.ts` / `mysql.ts` | +8 行 | 迁移 v30 `subjective_questions.annotation` |
+| `scripts/fill-blank-upgrade-smoke.ts` | 新增 | 填空题升级冒烟测试 |
+
+## v1.10.0.4 (2026-08-03) — 统计口径统一（评审整改 PR-A）
+
+> 统一 P/D 计算口径，修正正态性检验实现与展示，小样本不再展示区分度 D。
+
+- 统一考试级区分度 D 口径：Python AI 工具 `get_exam_overview` 由「总分极端组差 / 满分」改为「各题 D 的算术平均」，与 Web 端 `getExamMetrics` 一致；逐题 D 复用同一实现（`_question_discriminations`），难度 P 也按「均分保留 1 位再除以满分」对齐。
+- KS 正态性检验 p 值改用 Lilliefors 修正（Dallal & Wilkinson 1986 解析近似），n<5 不再给出 p 值；`normality()` 注释与实现对齐（综合判定以 Shapiro-Francia 为主判）。
+- 小样本（&lt;4 人）时前端区分度 D 徽章显示「样本不足」：覆盖题目分析表、普通考试概况、大考概况整体/分科、大考逐题分析整体/分科、总体分析分布卡（`GroupMetrics.participantCount`、`GroupQuestionAnalysisResponse.overall/subjects.sampleSize`）。
+- 文档：`readus/ARCHITECTURE.md` 新增 §13 成绩分析指标定义；总体分析正态性表补充 KS 参考值说明。
+- 验证：`npm run typecheck` 通过；`scripts/bugfix-analysis-verification.ts` 新增考试级 D 均值与 KS 小样本断言（38/38）；TS/Python 合成数据 D 对比一致。
+
+## v1.10.0.3 (2026-08-02) — 评审修复（大考参与口径 / 正态性 / 直方图 / 阈值）
+
+> 修复 4 项 P0/P1 bug + 3 项非阻断观察，保证大考统计与总体分析数据准确。
+
+**1. 大考参与口径（Bug 1，高严重）**
+- `AnalysisRepository.getGroupTotalsMap` 之前无视 `exam_groups.only_full_participants` 与 `total_score_mode` 策略；缺考学生只要单科有成绩就被纳入大考总分，拉低均分与难度系数。
+- 现读取 `exam_groups` 策略：
+  - `only_full_participants=1` → `HAVING COUNT(DISTINCT exam_id) = member_count` 排除缺科者；
+  - `total_score_mode='assigned'` → 对设有 `assigned_formula` 的考试使用 `assigned_score`（无则回退 `total_score`）。
+- 全部大考相关方法（`getGroupMetrics` / `getGroupQuestionAnalysis` / `getGroupDistribution` / `getGroupClassComparison`）统一参与者口径；`getGroupMetrics.subjects[]` 不再硬编码 `gradedCount/maxScore/minScore/stdDev=0`（passRate/excellentRate 见 §6 跟进修复）。
+- 测试：`scripts/bugfix-analysis-verification.ts` Bug 1 段（10 用例，全绿）。
+
+**2. 正态性检验实现（Bug 2，高严重）**
+- `shapiroFrancia`：原 W 计算未将期望正态分位数居中（den 含 `m²n` 误差），n=12 数据 W 被压至 0.014；Royston p 值近似公式含 `ln·ln·0` 笔误。
+  - 修：W 改用 `[(v-v̄)·(e-ē)]² / [Σ(v-v̄)² · Σ(e-ē)²]`，p 值采用 Royston 1992 标准渐近 `μ = -1.5861 - 0.31082·ln(n) - 0.083751·ln²(n) + 0.0038915·ln³(n)`。
+- `kolmogorovSmirnov`：原 D 计算两次 `Math.abs((i+1)/n - fExp)` 实际为同一值，未区分 D⁺/D⁻。
+  - 修：D⁺ = max(i/n - F(x_i))、D⁻ = max(F(x_i) - (i-1)/n)。
+- `normality` 综合判定：原"任一 p≥0.05 即通过"过于宽松，路径 0（10 个 0 + 1 个 100）被错判为正态。
+  - 修：以 Shapiro-Francia 为主判（n<5 不可靠直接 false，n≥5 且 p≥0.05 视为正态）。
+- 测试：极端偏态 isNormal=false (SF p<0.001)、正态数据 W>0.9、KS N(0,1) 50 样本不拒绝。
+
+**3. 大考班级对比遵守阈值（Bug 3，中严重）**
+- `getGroupClassComparison` 之前硬编码 `0.6` / `0.9` 算 passRate/excellentRate，与普通考试口径不一致。
+- 修：改用 `thresholds.passRate` / `thresholds.excellentRate`（已 `await getAnalysisThresholds()`，变量就在上下文里）。
+- 测试：调阈 0.5/0.85 后 passRate 50%→50%、excellentRate 0%→25%（之前会被 0.9 硬钉死为 0%）。
+
+**4. 直方图区间标签（Bug 4，中低严重）**
+- `histogram()`（`src/shared/stats.ts`）和 `generateDistributionRanges()`（`AnalysisRepository.ts`）之前用 "0-9"、"10-19"… 闭区间标签；归类用 `Math.floor(v/step)` 实际是半开区间 [min, min+step)。
+  - 9.5 → bin 1 但标签 "0-9" 易让小数成绩（如 0.5 分档）误读为"被归到 0-9 段而不是 0-10 段"。
+  - 修：标签改为 "0-<10"、"10-<20"… 末段 "90-100"；`min/max` 字段前 N-1 段仍为 `min+step-1`（兼容 SQL `BETWEEN r.min AND r.max`），末段 `max=fullScore`（闭区间，含满分；修复之前 100 不被 SQL 计入的隐藏缺口）。
+
+**5. 非阻断观察**
+- `routes/analysis.ts` `GET /exams/:examId/question-students` 之前只校验 `questionNumber`，`examId`/`classId` 无校验；补齐有限正整数校验，无效值 400。
+- `getGroupMetrics.subjects[]` 中 `gradedCount/maxScore/minScore/stdDev` 之前硬编码 0；现按参与者集合实际聚合（passRate/excellentRate 见 §6 跟进修复）。
+
+**6. 跟进修复：subjects[] 及格率/优秀率仍硬编码 0（评审遗留，2026-08-02 夜间）**
+- 独立 agent 评审指出 `getGroupMetrics.subjects[]` 的 `passRate/excellentRate` 仍是硬编码 0（§5 原描述与实际不符，已更正）。
+- 修：在逐科聚合 SQL 中按「该科满分 × 全局阈值」计算 `passRate = 及格线以上人数 / 实考人数`、`excellentRate = 优秀线以上人数 / 实考人数`，口径与 `getGroupClassComparison` 对总分用 `totalFull × thresholds` 一致；阈值经 `getAnalysisThresholds()` 读取（默认 0.6/0.9，管理员可配）。
+- 注册永久回归：`scripts/bugfix-analysis-verification.ts` 新增断言——数学(60/60/90) passRate=100% excellentRate=33%、语文(70/50/80) passRate=67% excellentRate=0%。
+
+**7. 跟进：逐题下钻 classId 过滤触发 `cs` 别名重复 → 500（Codex 在 PR #206 评审指出，2026-08-03）**
+- 根因：`AnalysisRepository.getQuestionStudentScores()` 在 `question_scores qs` 上先 `LEFT JOIN class_students cs`（显示班级名），又插入 `classFilterQs(classId)` 返回的 `JOIN class_students cs`（按班级过滤）——同名别名 `cs` 重复；一旦传入正 `classId` 即报 `duplicate alias` / `no such column: cs.class_id`，HTTP 500。
+- git blame 显示该 `cs` JOIN 来自 `f04b2e8e`（火箭，2026-08-01），**早于 PR #206**，属历史存量 bug，非 PR #206 引入；Codex 在评审 PR #206 时顺带发现。
+- **冲突处理**：将本地 `cs2`/`cl` 标量子查询修复 `git stash pop` 到本分支时，与分支已合入的修复冲突——分支 `f158bce` 已用 `cs_scope`（过滤 `EXISTS`）+ `cs_display`（显示标量子查询）两个**不同别名**重写该方法，且额外覆盖 `classId===0`（无班级学生）与 `classId>0` 时显示班级名对齐过滤班级。分支方案更完整且无编译依赖（`c.join` 在该方法内已不存在），故冲突取**分支侧**，本地改动被取代；该 bug 在 PR #206 上本已修好。
+- 注册永久回归：`scripts/bugfix-question-students-alias.ts` — **10 用例 全绿**（覆盖无 classId / 正 classId / classId=0（无班级）/ 双班学生不重复行 四场景，均不抛异常）。
+
+**验证**
+- `npx tsx scripts/bugfix-analysis-verification.ts` — **31 用例 全绿**（覆盖四项修复 + 阈值变更回测 + subjects 及格/优秀率）
+- `npm run typecheck` / `npm run build` — 全绿
+- `npm run verify:auth` — 54/54 全绿
+- `npm run verify:security-critical` — 42/42 全绿
+- `npx tsx scripts/grading-rules-smoke.ts` — ok
+- `npx tsx scripts/bugfix-question-students-alias.ts` — **10 用例 全绿**（逐题下钻 classId 过滤 / cs 别名冲突回归）
+- 真实数据回归：演示大考（6 科 16 人）`getGroupMetrics.subjects[].gradedCount/maxScore/minScore/stdDev` 现全部为真实值（非 0），分布 isNormal=true（p=0.38），班级对比 passRate=100%/excellentRate=38% 正确反映配置阈值。
+
+## v1.10.0 — 成绩分析增强（难度 P / 区分度 D / 总体分析 / 大考 6-Tab）
+
+> 分析模块重构：普通考试与大考统一为 6-Tab 结构，新增难度系数 P、区分度 D 双指标（考试/大考/科目/题目四级）、题目分析排序与逐生下钻、总体分析分布可视化，以及大考 AI 分析。
+
+**1. 难度 P / 区分度 D 双指标**
+- 后端 `AnalysisRepository` 经 `discriminationByExtremeGroup`（`src/shared/stats.ts`，极端组法 27%）在考试、大考、科目、题目四级统一产出 P/D；分布结果 `DistributionResult` 新增 `qq`（Q-Q 图坐标）。
+- 前端 `DifficultyBadge` / `DiscriminationBadge` 彩色档位徽章；档位阈值由管理员在 Home「全局设置」配置，持久化于 `system_settings.analysis_difficulty_bands` / `analysis_discrimination_bands`，前端经 `useBands()` 读取。
+
+**2. 题目分析：可排序 + 逐生下钻**
+- `AnalysisQuestions` 表头可点击排序（题号/类型/得分率/正确率/平均分/满分/错误率/P/D）。
+- 点击行打开 `QuestionStudentScoresModal` 查看该题每个学生的得分明细（学号/姓名/班级/得分率/知识点）；大考下钻复用 per-exam 的 `/api/analysis/exams/:examId/question-students` 端点。
+
+**3. 总体分析 Tab（整合 score_distribution_viewer）**
+- 新增 `AnalysisOverall`（普通考试与大考共用）：直方图（叠加正态曲线）+ Q-Q 图 + 正态性检验（Shapiro-Wilk / KS / AD / 偏度 / 峰度）；普通考试按全卷与各班、大考按总分/各科/各班切换；样本量 < 30 给出小样本提示。
+
+**4. 双 6-Tab 结构**
+- 普通考试（`ScoreDetailPage`）与大考（`ExamGroupDetailPage`）均为：概况/成绩/题目分析/班级对比/总体分析/AI 分析。大考的「成绩/题目分析/班级对比」支持「合并 ↔ 分科」视图切换（SubjectViewMode）。「班级对比」与「题目分析」共存，不互相替代。
+
+**5. 大考 AI 分析**
+- 新增 `POST /api/exam-groups/:groupId/ai-analysis`；Node 仅传 `groupId`，`llmclient /analysis/run` 经 `get_group_exam_ids` 解析成员考试集合下传工具层，模型按成员考试逐科汇总。工具返回体新增 P/D（`get_exam_overview` / `get_question_analysis`），工具层强制校验 `examId` 属于大考成员。
+
+**验证**：`npm run typecheck` 与 `npm run build`（web + server）通过；仓库分析数据（考试 26、大考 8）冒烟验证指标、分布（含 Q-Q）、逐生下钻、大考聚合、班级对比均返回结构正确；区分度算法经合成数据单测确认（清晰梯度 D≈0.8）。
+
+## v1.10.0.1 (2026-08-01) — 区分度 D 全为 0 修正
+
+修复 v1.10.0 引入的区分度计算缺陷：题目分析在组装逐生小题得分时，聚合查询列别名为 `question_type`，但下钻取 `byQuestion` 映射时误用了 `r.score_type`（在聚合结果中为 `undefined`），导致每个题的 `byQuestion.get(key)` 均返回 `undefined`、区分度极端组法被跳过，前端所有题目的区分度 D 恒为 0（难度 P 正常）。
+
+- `src/server/repositories/AnalysisRepository.ts`：`computeQuestionAnalysis` 的查表键由 `${r.question_number}:${r.score_type}` 改为 `${r.question_number}:${r.question_type}`，与 `byQuestion` 的键对齐。
+- 验证：`getQuestionAnalysis(26)` 从「11 题 D 全 0」恢复为「9/11 非 0」；大考 `getGroupQuestionAnalysis(8)` 逐题区分度经同一修复路径恢复正常。区分度算法本身经合成数据单测确认正确（清晰梯度 D≈0.8），与 Python `llmclient` 工具层 `_extreme_group_discrimination` 结果一致；修复后 TS 与 Python 两侧 P/D 输出对齐。
+
+## v1.10.0.2 (2026-08-01) — 班级筛选下题目分析崩溃修复
+
+修复 v1.10.0 引入的第二个回归：`getQuestionAnalysis` 在**带 classId 筛选**时抛出 `SqliteError: no such column: qs.student_id`。
+
+- 根因：`getQuestionAnalysis` 把 `classFilterQs(classId)`（其 JOIN 条件为 `cs.student_id = qs.student_id`，引用 `question_scores` 别名 `qs`）同时用于 `getExamTotalsMap`；而 `getExamTotalsMap` 查询的是 `student_scores ss`，该语句内并无 `qs` 表，故带 classId 时 JOIN 引用了不存在的 `qs.student_id`。无 classId 时 `classFilterQs` 返回空 JOIN，故此前全量（未筛选班级）冒烟未暴露此问题。
+- 修复：`getQuestionAnalysis` 对 `getExamTotalsMap` 改用 `classFilter(classId)`（JOIN 条件 `cs.student_id = ss.student_id`，与 `student_scores ss` 对齐）；题目聚合查询与逐生小题得分查询仍用 `classFilterQs`（作用于 `question_scores qs`）。两者按同一班级筛选，学生集合一致，区分度极端组法对齐无误。
+- 影响面：班级筛选下的题目分析、概况（P/D 以外的统计）、逐生下钻等路径此前在选班级时 500；大考逐题下钻复用 per-exam 端点，同样受益。无班级筛选的主路径不受影响。
+- 验证：`npm run verify:auth` 由「54 项中 1 项异常」恢复为 **54/54**（`getExamOverview(examId, classId)` 用例）；`getQuestionAnalysis(26, 62)` 返回 11 题（9 非 0 D）无异常；`verify:security-critical` 42/42、`grading-rules-smoke` 通过、`npm run build` 通过。
+
+## v1.9.6 (2026-07-31) — 在 #201 基线上合入 #193，修复填涂号区回归（PR #202）
+
+> 基于 #201 基线（fix/pr193-on-201）合入 #193（作文格修复、移动端适配、受控资源路由等），并修复 #193 引入的填涂号区回归。
+> 验证：`tsc --noEmit` 0 错误；默认配置布局输出与 #201 逐字节一致。
+
+**1. 填涂号区回归修复（P0）**
+- #193 曾将学生信息区重构为「标准表格形态」（顶部 0-9 表头行 + 左侧空框列），与 PDF/SVG/识别器坐标不一致导致格子错位。
+- 已回退到 #201 实现：`layout.ts`（colGap 自适应格子）、`pdf.ts drawStudentArea`、`DesignEditors StudentAreaSvg`、`types.ts StudentAreaLayout` 四处保持一致，默认输出与 #201 逐字节一致。
+
+**2. 学生信息区字段开关生效（P1）**
+- `DesignPage` 的「基本信息字段」开关（姓名/班级/座位号/考号）与「显示注意事项」此前只写入 `studentInfo`、布局引擎不读取，勾选无效果。
+- 现在 `layoutStudentArea` 按开关生成 `fieldRows` 与 `notesLines`（复用自动换行），PDF/SVG 渲染层同步按 `fieldRows`/`notesLines` 绘制；三处渲染共用同一数据源，从架构上消除「三处不一致」的回归根因。
+- 新增「学号（填涂号区）」开关支持：关闭后不生成涂写格（识别器对空 `student_digits` 返回 `not_present`，不判失败）。
+
+**3. 移动端抽屉版本号修复（P2）**
+- `MobileDrawer.tsx` 曾硬编码 v1.9.2，现恢复为动态 `import.meta.env.VITE_APP_VERSION`（与桌面端一致）。
+
+**4. README 补回爱发电地址行（P2）**
+- #201 直推 main 的爱发电地址在冲突解决时被丢弃，已按 main 原样补回。
+
+**5. 清理合并痕迹（P3）**
+- `server/index.ts` 一行双 import 拆分；`GlobalSettingsRoutePage` 类名对齐 main（`global-settings-grid`）；`layout.ts`/`types.ts` 死代码（`DEFAULT_STUDENT_NOTES`/`measureTextWidthMm`/`wrapNotesLines`/`StudentAreaFieldRow`）随本次改造转为被使用或被清理。
+
 ## v1.9.6 (2026-07-24) — 实机问题修复（5 项）
 
 > 基于 1.9.4 实机测试发现的 5 个小问题，全部经 `npm run build`（typecheck + web + server）验证通过，无 TS 错误。
@@ -77,6 +232,7 @@
 - 暗色模式扩展覆盖 `.data-card`。
 - 阶段 5 手势增强（`useSwipeClose` / `usePullToRefresh` 原生 touch，可选）。
 - 真机验证：iOS Safari + Android Chrome，480px 全功能可达、无横向溢出、输入框不缩放。
+
 
 ---
 

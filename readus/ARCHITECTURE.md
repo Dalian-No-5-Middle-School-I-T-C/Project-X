@@ -243,6 +243,16 @@ React AnalysisAiPanel
 
 `llmclient` 位于仓库根目录，使用 Python `FastAPI + uvicorn`。Node 后端在启动时会**自动拉起**该服务（默认 `http://127.0.0.1:8766`，见 `src/apps/answer-card/server/llm-launcher.ts`），也可手动启动；也可通过 `LLMCLIENT_AUTOSTART=false` 关闭、`LLMCLIENT_PYTHON` 指定解释器、`LLMCLIENT_URL` 指定地址端口。Node 后端只负责探活、鉴权转发和把当前考试/班级范围传给 Python 服务（AI 调用前会 `ensureLlmClient()` 确保侧车已起，未起则自动拉起）。模型只能调用白名单成绩工具读取 `projectx.db`，不开放原始 SQL。
 
+#### 4.2.1 成绩分析模块（难度 P / 区分度 D / 总体分析）
+
+成绩分析在 v1.10.0 重构为「双 6-Tab」结构，普通考试（`ScoreDetailPage`）与大考（`ExamGroupDetailPage`）均为：**概况 / 成绩 / 题目分析 / 班级对比 / 总体分析 / AI 分析**；大考的「成绩 / 题目分析 / 班级对比」支持「合并 ↔ 分科」视图切换（`SubjectViewMode`）。「班级对比」与「题目分析」共存，不互相替代。
+
+- **难度系数 P 与区分度 D**：P = 平均分 / 满分；D 采用极端组法（按总分降序取高/低各 27% 学生，D = 高分组得分率 − 低分组得分率），在考试 / 大考 / 科目 / 题目四级统一产出。`AnalysisRepository` 通过 `discriminationByExtremeGroup`（`src/shared/stats.ts`）计算，分布结果 `DistributionResult` 新增 `qq`（Q-Q 图坐标）。
+- **题目分析**：表头可点击排序（题号/类型/得分率/正确率/平均分/满分/错误率/P/D），点击行打开 `QuestionStudentScoresModal` 下钻查看该题**每个学生的得分明细**（学号/姓名/班级/得分率/知识点），大考下钻复用 per-exam 的 `/api/analysis/exams/:examId/question-students` 端点。难度/区分度以 `DifficultyBadge` / `DiscriminationBadge` 彩色档位徽章呈现。
+- **总体分析**：整合自 `score_distribution_viewer.html` 的分布可视化——直方图（叠加正态曲线）+ Q-Q 图 + 正态性检验（Shapiro-Wilk / KS / AD / 偏度 / 峰度）；普通考试按全卷与各班、大考按总分 / 各科 / 各班切换；样本量 < 30 给出小样本提示。组件 `AnalysisOverall` 普通考试与大考共用。
+- **档位阈值**：管理员在 Home「全局设置」配置难度 / 区分度档位（阈值、标签、颜色），持久化于 `system_settings.analysis_difficulty_bands` / `analysis_discrimination_bands`；前端通过 `useBands()` 钩子读取，徽章与统计统一口径。
+- **大考 AI 分析**：`/api/exam-groups/:groupId/ai-analysis` 转发时只传 `groupId`（不传 `examId`），Node 把请求转给 `llmclient /analysis/run`，由 Python 侧 `get_group_exam_ids` 解析成员考试集合并下传工具层；模型按成员考试逐科调用工具汇总。`AnalysisAiPanel` 通过 `groupId` 或 `examId` 自动选择端点。
+
 ### 4.3 Repository 模式
 
 `src/server/repositories/` 封装 SQLite 访问：
@@ -652,5 +662,35 @@ flowchart LR
 
 ---
 
-> 文档更新日期：2026-07-22  
-> 基于 Project-X v1.9.4 代码库分析（含 v1.9.2 网页化改造 + v1.9.4 网阅打分面板双模式与工作量均衡）
+> 文档更新日期：2026-08-01  
+> 基于 Project-X v1.10.0 代码库分析（含 v1.9.2 网页化改造 + v1.9.4 网阅打分面板 + v1.10.0 成绩分析增强：难度 P / 区分度 D / 总体分析 / 大考 6-Tab / 大考 AI 分析）
+
+---
+
+## 13. 成绩分析指标定义（P/D）
+
+> 本节为 Web 端（`src/server/repositories/AnalysisRepository.ts`、`src/shared/stats.ts`）与 AI 工具端（`llmclient/tools/grades.py`）的统一口径，两端必须保持一致（v1.10.0.4 起）。
+
+### 13.1 难度系数 P
+
+- 定义：`P = 平均得分 / 满分`，保留 3 位小数；满分 ≤ 0 时返回 0。
+- 均分先保留 1 位小数再参与计算（`ROUND(AVG(...), 1)`），Web 与 AI 工具同规则。
+- 适用层级：考试、大考整体、大考分科、逐题。
+
+### 13.2 区分度 D（极端组法，27%）
+
+- 逐题 D：以「分组基准总分」降序排列，取前/后 27%（至少 1 人）为高/低分组，
+  `D = (高分组该题平均得分 − 低分组该题平均得分) / 该题满分`，保留 3 位小数。
+- 普通考试的分组基准 = 该考试总分；大考的分组基准 = 大考总分（仅统计参与口径内的学生）。
+- 考试级 D = **各题 D 的算术平均**（非加权）；大考整体 D = 各科 D 的算术平均。
+- 小样本规则：样本 < 4 人时前端不展示 D（显示「样本不足」），避免极端组每组仅 1 人的噪声值。
+
+### 13.3 正态性检验
+
+- 综合判定以 **Shapiro-Francia** 为主判（p≥0.05 视为近似正态）；KS/AD 作为展示项。
+- KS 因均值/方差由样本估计，p 值采用 **Lilliefors 修正**（Dallal & Wilkinson 1986 解析近似），n<5 不给出 p 值，前端标注「仅作参考」。
+- AD 采用 Stephens 有限样本修正的分段近似。
+
+### 13.4 档位（阈值可配置）
+
+- 难度/区分度档位阈值由管理员在「全局设置」配置，持久化于 `system_settings.analysis_difficulty_bands` / `analysis_discrimination_bands`，缺省回退内置默认。
