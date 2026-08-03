@@ -46,7 +46,13 @@ export function DifficultyBadge({ value, bands }: { value: number; bands?: Thres
   return <span style={badgeStyle(color)} title="难度系数 P">{label} · {value.toFixed(2)}</span>;
 }
 
-export function DiscriminationBadge({ value, bands }: { value: number; bands?: ThresholdBand[] }) {
+/** 区分度 D 的最小可信样本量（极端组法在更小样本下每组不足 1 人，D 失去意义） */
+export const MIN_D_SAMPLE_SIZE = 4;
+
+export function DiscriminationBadge({ value, bands, sampleSize }: { value: number; bands?: ThresholdBand[]; sampleSize?: number }) {
+  if (sampleSize !== undefined && sampleSize < MIN_D_SAMPLE_SIZE) {
+    return <span style={badgeStyle("#888780")} title={`区分度 D：样本不足（至少需要 ${MIN_D_SAMPLE_SIZE} 人）`}>样本不足</span>;
+  }
   const { label, color } = classifyBand(value, bands);
   return <span style={badgeStyle(color)} title="区分度 D">{label} · {value.toFixed(2)}</span>;
 }

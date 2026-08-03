@@ -480,7 +480,7 @@ export class AnalysisRepository {
   /** 大考整体 + 逐科难度/区分度 */
   async getGroupMetrics(groupId: number): Promise<GroupMetrics> {
     const group = await this.getExamGroup(groupId);
-    if (!group || group.examIds.length === 0) return { difficulty: 0, discrimination: 0, totalFullScore: 0, totalAvg: 0, memberCount: 0, subjects: [] };
+    if (!group || group.examIds.length === 0) return { difficulty: 0, discrimination: 0, totalFullScore: 0, totalAvg: 0, memberCount: 0, participantCount: 0, subjects: [] };
     const qa = await this.getGroupQuestionAnalysis(groupId);
     const fullScores = await this.getExamFullScoreMap(group.examIds);
     const totalFullScore = group.examIds.reduce((s, id) => s + (fullScores.get(id) ?? 0), 0);
@@ -522,6 +522,7 @@ export class AnalysisRepository {
       totalFullScore: Math.round(totalFullScore * 10) / 10,
       totalAvg: Math.round(totalAvg * 10) / 10,
       memberCount: group.examIds.length,
+      participantCount: totals.size,
       subjects
     };
   }
@@ -529,7 +530,7 @@ export class AnalysisRepository {
   /** 大考逐题分析（整体 + 逐科），D 分组基准=大考总分 */
   async getGroupQuestionAnalysis(groupId: number): Promise<GroupQuestionAnalysisResponse> {
     const group = await this.getExamGroup(groupId);
-    const empty: GroupQuestionAnalysisResponse = { overall: { difficulty: 0, discrimination: 0 }, subjects: [] };
+    const empty: GroupQuestionAnalysisResponse = { overall: { difficulty: 0, discrimination: 0, sampleSize: 0 }, subjects: [] };
     if (!group || group.examIds.length === 0) return empty;
     const totals = await this.getGroupTotalsMap(groupId);
     const participantIds = Array.from(totals.keys());
@@ -543,17 +544,18 @@ export class AnalysisRepository {
       const fullRow = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
       const fullScore = fullRow?.total ?? 100;
       const avgRow = await this.db.get(
-        `SELECT ROUND(AVG(ss.total_score), 1) as avg FROM student_scores ss WHERE ss.exam_id = ? ${participantIds.length > 0 ? `AND ss.student_id IN (${participantIds.map(() => "?").join(",")})` : "AND 1=0"}`,
+        `SELECT COUNT(*) as sampleSize, ROUND(AVG(ss.total_score), 1) as avg FROM student_scores ss WHERE ss.exam_id = ? ${participantIds.length > 0 ? `AND ss.student_id IN (${participantIds.map(() => "?").join(",")})` : "AND 1=0"}`,
         examId, ...participantIds
       ) as any;
       const avgScore = avgRow?.avg ?? 0;
+      const subjectSampleSize = Number(avgRow?.sampleSize ?? 0);
       const disc = items.length > 0 ? items.reduce((s, q) => s + (q.discrimination ?? 0), 0) / items.length : 0;
       const exam = await this.db.get(`SELECT name, subject FROM exams WHERE id = ?`, examId) as any;
       discSum += disc;
       subjects.push({
         examId, subject: exam?.subject ?? "", examName: exam?.name ?? String(examId),
         fullScore, avgScore, difficulty: fullScore > 0 ? Math.round((avgScore / fullScore) * 1000) / 1000 : 0,
-        discrimination: Math.round(disc * 1000) / 1000, questions: items
+        discrimination: Math.round(disc * 1000) / 1000, sampleSize: subjectSampleSize, questions: items
       });
     }
     const overallDisc = subjects.length > 0 ? discSum / subjects.length : 0;
@@ -562,7 +564,8 @@ export class AnalysisRepository {
     return {
       overall: {
         difficulty: totalFullScore > 0 ? Math.round((totalAvg / totalFullScore) * 1000) / 1000 : 0,
-        discrimination: Math.round(overallDisc * 1000) / 1000
+        discrimination: Math.round(overallDisc * 1000) / 1000,
+        sampleSize: totals.size
       },
       subjects
     };
