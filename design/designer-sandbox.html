@@ -181,7 +181,7 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .split-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px}
 
 /* ── Canvas ── */
-.canvas{display:flex;flex-direction:column;min-width:0;background:var(--px-bg-canvas)}
+.canvas{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;min-width:0;background:var(--px-bg-canvas);overflow:hidden}
 .preview-toolbar{display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--px-border-subtle);background:var(--px-bg-surface);flex:0 0 auto}
 /* SegmentedControl：文档 §6 规格 — 容器 bg-subtle，选中项浮起 + shadow-1 */
 .preview-toolbar .segmented{display:inline-flex!important;align-items:center;background:var(--px-bg-subtle);border-radius:var(--px-radius-md);padding:2px;gap:2px}
@@ -192,7 +192,7 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .preview-toolbar .sep{width:1px;height:18px;background:var(--px-border-default);margin:0 4px}
 .preview-toolbar output{font-variant-numeric:tabular-nums;font-size:12px;color:var(--px-fg-secondary);min-width:42px;text-align:center}
 .preview-toolbar .spacer{margin-left:auto;font-size:12px;color:var(--px-fg-tertiary)}
-.pages-wrap{flex:1 1 auto;overflow:visible;padding:24px;display:flex;flex-direction:column;align-items:center;gap:24px;
+.pages-wrap{flex:1 1 auto;overflow:auto;padding:24px;display:flex;flex-direction:column;align-items:center;gap:24px;
   background:var(--px-bg-canvas)}
 .pages{display:flex;flex-direction:column;gap:24px;align-items:center}
 .page{background:var(--px-paper-bg);box-shadow:var(--px-shadow-2);border-radius:2px}
