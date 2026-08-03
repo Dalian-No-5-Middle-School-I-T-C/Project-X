@@ -135,7 +135,10 @@ export function UploadZone({
       }}
       className={cn(
         "flex w-full cursor-pointer flex-col items-center justify-center gap-2 text-center",
-        "rounded-lg border-[1.5px] border-dashed border-border-strong bg-card",
+        // 1.5px 必须写成 border-[length:1.5px]：Tailwind v4 里 border-[1.5px]
+        // 会被当成颜色候选而静默丢弃（本项目未引 Preflight，丢弃后会退化成
+        // 浏览器默认 medium ≈3px 虚线框）。
+        "rounded-lg border-[length:1.5px] border-dashed border-border-strong bg-card",
         "transition-[background-color,border-color] duration-(--px-dur-2) ease-standard",
         "outline-none focus-visible:shadow-focus",
         size === "sm" ? "px-4 py-5" : "px-6 py-7",
