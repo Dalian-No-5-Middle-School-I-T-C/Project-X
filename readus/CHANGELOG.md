@@ -50,12 +50,19 @@
 - 修：在逐科聚合 SQL 中按「该科满分 × 全局阈值」计算 `passRate = 及格线以上人数 / 实考人数`、`excellentRate = 优秀线以上人数 / 实考人数`，口径与 `getGroupClassComparison` 对总分用 `totalFull × thresholds` 一致；阈值经 `getAnalysisThresholds()` 读取（默认 0.6/0.9，管理员可配）。
 - 注册永久回归：`scripts/bugfix-analysis-verification.ts` 新增断言——数学(60/60/90) passRate=100% excellentRate=33%、语文(70/50/80) passRate=67% excellentRate=0%。
 
+**7. 跟进：逐题下钻 classId 过滤触发 `cs` 别名重复 → 500（Codex 在 PR #206 评审指出，2026-08-03）**
+- 根因：`AnalysisRepository.getQuestionStudentScores()` 在 `question_scores qs` 上先 `LEFT JOIN class_students cs`（显示班级名），又插入 `classFilterQs(classId)` 返回的 `JOIN class_students cs`（按班级过滤）——同名别名 `cs` 重复；一旦传入正 `classId` 即报 `duplicate alias` / `no such column: cs.class_id`，HTTP 500。
+- git blame 显示该 `cs` JOIN 来自 `f04b2e8e`（火箭，2026-08-01），**早于 PR #206**，属历史存量 bug，非 PR #206 引入；Codex 在评审 PR #206 时顺带发现。
+- **冲突处理**：将本地 `cs2`/`cl` 标量子查询修复 `git stash pop` 到本分支时，与分支已合入的修复冲突——分支 `f158bce` 已用 `cs_scope`（过滤 `EXISTS`）+ `cs_display`（显示标量子查询）两个**不同别名**重写该方法，且额外覆盖 `classId===0`（无班级学生）与 `classId>0` 时显示班级名对齐过滤班级。分支方案更完整且无编译依赖（`c.join` 在该方法内已不存在），故冲突取**分支侧**，本地改动被取代；该 bug 在 PR #206 上本已修好。
+- 注册永久回归：`scripts/bugfix-question-students-alias.ts` — **10 用例 全绿**（覆盖无 classId / 正 classId / classId=0（无班级）/ 双班学生不重复行 四场景，均不抛异常）。
+
 **验证**
 - `npx tsx scripts/bugfix-analysis-verification.ts` — **31 用例 全绿**（覆盖四项修复 + 阈值变更回测 + subjects 及格/优秀率）
 - `npm run typecheck` / `npm run build` — 全绿
 - `npm run verify:auth` — 54/54 全绿
 - `npm run verify:security-critical` — 42/42 全绿
 - `npx tsx scripts/grading-rules-smoke.ts` — ok
+- `npx tsx scripts/bugfix-question-students-alias.ts` — **10 用例 全绿**（逐题下钻 classId 过滤 / cs 别名冲突回归）
 - 真实数据回归：演示大考（6 科 16 人）`getGroupMetrics.subjects[].gradedCount/maxScore/minScore/stdDev` 现全部为真实值（非 0），分布 isNormal=true（p=0.38），班级对比 passRate=100%/excellentRate=38% 正确反映配置阈值。
 
 ## v1.10.0 — 成绩分析增强（难度 P / 区分度 D / 总体分析 / 大考 6-Tab）
