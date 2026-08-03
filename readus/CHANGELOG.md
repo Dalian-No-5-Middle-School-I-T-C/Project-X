@@ -6,7 +6,7 @@
 
 - 统一考试级区分度 D 口径：Python AI 工具 `get_exam_overview` 由「总分极端组差 / 满分」改为「各题 D 的算术平均」，与 Web 端 `getExamMetrics` 一致；逐题 D 复用同一实现（`_question_discriminations`），难度 P 也按「均分保留 1 位再除以满分」对齐。
 - KS 正态性检验 p 值改用 Lilliefors 修正（Dallal & Wilkinson 1986 解析近似），n<5 不再给出 p 值；`normality()` 注释与实现对齐（综合判定以 Shapiro-Francia 为主判）。
-- 小样本（&lt;4 人）时前端区分度 D 徽章显示「样本不足」。
+- 小样本（&lt;4 人）时前端区分度 D 徽章显示「样本不足」：覆盖题目分析表、普通考试概况、大考概况整体/分科、大考逐题分析整体/分科、总体分析分布卡（`GroupMetrics.participantCount`、`GroupQuestionAnalysisResponse.overall/subjects.sampleSize`）。
 - 文档：`readus/ARCHITECTURE.md` 新增 §13 成绩分析指标定义；总体分析正态性表补充 KS 参考值说明。
 - 验证：`npm run typecheck` 通过；`scripts/bugfix-analysis-verification.ts` 新增考试级 D 均值与 KS 小样本断言（38/38）；TS/Python 合成数据 D 对比一致。
 

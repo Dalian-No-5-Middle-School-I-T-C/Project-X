@@ -70,6 +70,7 @@ console.log("\n== Bug 1: 大考参与口径（only_full_participants / total_sco
 // 默认 only_full=0, raw
 const m0 = await repo.getGroupMetrics(grp);
 ok(m0.memberCount === 2, "memberCount=2");
+ok(m0.participantCount === 4, "大考 metrics 返回参与人数 4（含缺考单科学生）", m0.participantCount);
 ok(m0.subjects.every((s: any) => s.gradedCount > 0), "subjects gradedCount 全部为正（非硬编码 0）", m0.subjects);
 // subjects 的 passRate/excellentRate 不再硬编码 0（按 该科满分×阈值 口径）
 const subMath = m0.subjects.find((s: any) => s.examId === e1);   // 数学: 60,60,90 / 满分100 / pass60 excell90
@@ -81,6 +82,7 @@ ok(m0.totalAvg === Math.round(((130 + 60 + 50 + 170) / 4) * 10) / 10, "totalAvg 
 // only_full=1：只 A 和 D
 db.prepare("UPDATE exam_groups SET only_full_participants = 1 WHERE id = ?").run(grp);
 const m1 = await repo.getGroupMetrics(grp);
+ok(m1.participantCount === 2, "only_full=1 参与人数 2", m1.participantCount);
 ok(m1.totalAvg === Math.round(((130 + 170) / 2) * 10) / 10, "only_full=1 → totalAvg 只含 A+D (100)", { totalAvg: m1.totalAvg });
 const m1SubA = m1.subjects.find((s: any) => s.examId === e1);
 const m1SubB = m1.subjects.find((s: any) => s.examId === e2);
@@ -89,6 +91,8 @@ ok(m1SubB?.gradedCount === 2 && m1SubB.avgScore === 75, "语文 gradedCount=2, a
 const groupQuestions = await repo.getGroupQuestionAnalysis(grp);
 ok(groupQuestions.subjects.every((s) => s.avgScore === 75), "大考逐科均分遵守 only_full 参与者口径", groupQuestions.subjects);
 ok(groupQuestions.subjects.every((s) => s.questions.every((q) => q.totalCount === 2)), "大考逐题统计排除缺考学生", groupQuestions.subjects);
+ok(groupQuestions.overall.sampleSize === 2 && groupQuestions.subjects.every((s) => s.sampleSize === 2),
+  "大考逐题分析返回整体/分科样本量", { overall: groupQuestions.overall.sampleSize, subjects: groupQuestions.subjects.map((s) => s.sampleSize) });
 const examMetrics1 = await repo.getExamMetrics(e1);
 const examQa1 = await repo.getQuestionAnalysis(e1);
 const meanD = examQa1.reduce((s, q) => s + (q.discrimination ?? 0), 0) / (examQa1.length || 1);

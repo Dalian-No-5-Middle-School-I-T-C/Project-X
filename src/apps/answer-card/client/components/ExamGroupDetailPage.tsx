@@ -261,7 +261,7 @@ function OverviewTab({
             <div style={{ fontSize: 12, color: "var(--muted)" }}>整体区分度 D</div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 20, fontWeight: 700 }}>{overallMetrics.discrimination.toFixed(3)}</span>
-              <DiscriminationBadge value={overallMetrics.discrimination} bands={bands?.discrimination} />
+              <DiscriminationBadge value={overallMetrics.discrimination} bands={bands?.discrimination} sampleSize={overallMetrics.participantCount} />
             </div>
           </div>
           <div style={{ background: "var(--bg-secondary)", borderRadius: 10, padding: 14, border: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 4 }}>
@@ -505,7 +505,7 @@ function GroupQuestionAnalysisTab({
           <MetricLine label="难度系数 P" value={qa.overall.difficulty.toFixed(3)} />
           <DifficultyBadge value={qa.overall.difficulty} bands={bands?.difficulty} />
           <MetricLine label="区分度 D" value={qa.overall.discrimination.toFixed(3)} />
-          <DiscriminationBadge value={qa.overall.discrimination} bands={bands?.discrimination} />
+          <DiscriminationBadge value={qa.overall.discrimination} bands={bands?.discrimination} sampleSize={qa.overall.sampleSize} />
         </div>
       </div>
 
@@ -515,7 +515,7 @@ function GroupQuestionAnalysisTab({
             <div className="panel-title" style={{ margin: 0 }}>{s.subject}（{s.examName}）</div>
             <span style={{ fontSize: 12, color: "var(--muted)" }}>满分 {s.fullScore} · 均分 {s.avgScore}</span>
             <DifficultyBadge value={s.difficulty} bands={bands?.difficulty} />
-            <DiscriminationBadge value={s.discrimination} bands={bands?.discrimination} />
+            <DiscriminationBadge value={s.discrimination} bands={bands?.discrimination} sampleSize={s.sampleSize} />
           </div>
           <div style={{ marginTop: 12 }}>
             <AnalysisQuestions

@@ -1297,6 +1297,8 @@ export interface GroupMetrics {
   totalFullScore: number;
   totalAvg: number;
   memberCount: number;
+  /** 大考参与人数（小样本判断用） */
+  participantCount: number;
   subjects: GroupSubjectMetric[];
 }
 
@@ -1341,7 +1343,7 @@ export interface QuestionStudentScore {
 
 /** 大考逐题分析响应（含整体与逐科） */
 export interface GroupQuestionAnalysisResponse {
-  overall: { difficulty: number; discrimination: number };
+  overall: { difficulty: number; discrimination: number; sampleSize: number };
   subjects: Array<{
     examId: number;
     subject: string;
@@ -1350,6 +1352,8 @@ export interface GroupQuestionAnalysisResponse {
     avgScore: number;
     difficulty: number;
     discrimination: number;
+    /** 该科参与人数（小样本判断用） */
+    sampleSize: number;
     questions: QuestionAnalysisItem[];
   }>;
 }
