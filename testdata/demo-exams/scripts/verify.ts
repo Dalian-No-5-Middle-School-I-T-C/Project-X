@@ -172,6 +172,10 @@ async function main(): Promise<void> {
       const blocksRaw = await fetch(`${BASE}/api/review/exams/${reviewExam.id}/blocks`, { headers: tHeaders }).then((r) => r.json().catch(() => null));
       const blocksList: any[] = blocksRaw?.blocks ?? blocksRaw ?? [];
       ok(Array.isArray(blocksList) && blocksList.length === 2, `网阅: 题块 2 个 (A/B)`);
+      // 断点续批：demo-teacher 在题块 B 留有草稿会话（draft_scores 非空）
+      const sessRaw = await fetch(`${BASE}/api/review-session/exams/${reviewExam.id}/blocks/B`, { headers: tHeaders }).then((r) => r.json().catch(() => null));
+      const sess = sessRaw?.data ?? sessRaw ?? null;
+      ok(Boolean(sess?.draftScores) && Object.keys(sess.draftScores ?? {}).length >= 1, "断点续批: 题块 B 草稿会话存在");
     }
     // 管理员视角：该考试题块评分配置（响应为 { ok, data: [...] }）
     const cfgRaw = await fetch(`${BASE}/api/block-grading-config/exams/${reviewExam.id}`, { headers }).then((r) => r.json().catch(() => null));
@@ -179,8 +183,67 @@ async function main(): Promise<void> {
     ok(cfgList.length === 2, `网阅配置: 2 个题块 (实际 ${cfgList.length})`);
     const aCfg = cfgList.find((c) => c.blockId === "A");
     ok(aCfg?.scoringMode === "block_total", `题块A scoringMode=block_total`);
+    ok(aCfg?.reviewMode === 2, `题块A reviewMode=2 (双评)`);
     const bCfg = cfgList.find((c) => c.blockId === "B");
     ok(bCfg?.scoringMode === "per_question", `题块B scoringMode=per_question`);
+    ok(bCfg?.reviewMode === 1, `题块B reviewMode=1 (单评)`);
+
+    // 打分记录：题块 A 双评 2P（3 已批 + 1 争议 + 4 待二评）、B 单评 1P（3 已批 + 5 待批）
+    const cropsARaw = await fetch(`${BASE}/api/review/exams/${reviewExam.id}/block-crops?blockId=A`, { headers }).then((r) => r.json().catch(() => null));
+    const statusA: Record<string, number> = {};
+    for (const c of cropsARaw?.rows ?? []) statusA[c.status] = (statusA[c.status] ?? 0) + 1;
+    ok((cropsARaw?.rows?.length ?? 0) === 8, `网阅A: 8 份卷 (实际 ${cropsARaw?.rows?.length ?? 0})`);
+    ok(statusA.reviewed === 3 && statusA.disputed === 1 && statusA.pending === 4,
+      `网阅A: 双评 3 已批 / 1 争议 / 4 待二评 (${JSON.stringify(statusA)})`);
+
+    const cropsBRaw = await fetch(`${BASE}/api/review/exams/${reviewExam.id}/block-crops?blockId=B`, { headers }).then((r) => r.json().catch(() => null));
+    const statusB: Record<string, number> = {};
+    for (const c of cropsBRaw?.rows ?? []) statusB[c.status] = (statusB[c.status] ?? 0) + 1;
+    ok((cropsBRaw?.rows?.length ?? 0) === 8 && statusB.reviewed === 3 && statusB.ready === 5,
+      `网阅B: 3 已批 / 5 待批 (${JSON.stringify(statusB)})`);
+
+    // 网阅成绩：已批学生主观分已落 student_scores（张明 30 / 李华 34 / 王芳 29）
+    const reviewTable = await fetch(`${BASE}/api/analysis/exams/${reviewExam.id}/score-table`, { headers }).then((r) => r.json().catch(() => null));
+    const scoreByName = Object.fromEntries((reviewTable?.rows ?? []).map((r: { studentName?: string; totalScore?: number }) => [r.studentName, r.totalScore]));
+    ok(scoreByName["张明"] === 30 && scoreByName["李华"] === 34 && scoreByName["王芳"] === 29,
+      `网阅成绩: 已批学生总分 30/34/29 (${JSON.stringify({ 张明: scoreByName["张明"], 李华: scoreByName["李华"], 王芳: scoreByName["王芳"] })})`);
+  }
+
+  // ── v1.9.9: 新功能数据（文理分科 / 填空题升级）──
+
+  // 文理分科：16 名演示学生均带 track 标签（1班=理科 8 人、2班=文科 8 人）
+  const userList = await fetch(`${BASE}/api/users?keyword=202601&pageSize=30`, { headers }).then((r) => r.json());
+  const demoStudents = (userList.users ?? []).filter((u: { username?: string }) => /^202601\d{2}$/.test(u.username ?? ""));
+  const scienceCount = demoStudents.filter((u: { track?: string }) => u.track === "science").length;
+  const artsCount = demoStudents.filter((u: { track?: string }) => u.track === "arts").length;
+  ok(demoStudents.length === 16, `文理分科: 演示学生 16 人 (实际 ${demoStudents.length})`);
+  ok(scienceCount === 8 && artsCount === 8, `文理分科: 理科 ${scienceCount} 人 / 文科 ${artsCount} 人`);
+
+  // 大考合集：7 科成员，语数英=共同、物化生=理科、历史=文科
+  if (big) {
+    const detail = await fetch(`${BASE}/api/exam-groups/${big.id}`, { headers }).then((r) => r.json());
+    const members: any[] = detail.members ?? [];
+    ok(members.length === 7, `大考合集: 7 科成员 (实际 ${members.length})`);
+    const trackBySubject = Object.fromEntries(members.map((m: { subject?: string; trackType?: string }) => [m.subject, m.trackType]));
+    ok(trackBySubject["语文"] === "common" && trackBySubject["数学"] === "common" && trackBySubject["英语"] === "common", "大考合集: 语数英=共同科目");
+    ok(trackBySubject["物理"] === "science" && trackBySubject["化学"] === "science" && trackBySubject["生物"] === "science", "大考合集: 物化生=理科科目");
+    ok(trackBySubject["历史"] === "arts", "大考合集: 历史=文科科目");
+  } else {
+    ok(false, "大考合集存在（文理分科检查）");
+  }
+
+  // 填空题升级：演示-语文卡含 fill_blank 块（自定义横线 / 文字注释 / 插入图片）
+  const chineseCard = await fetch(`${BASE}/api/cards/88000001`, { headers }).then((r) => r.json().catch(() => null));
+  const fbBlock = (chineseCard?.bodyBlocks ?? []).find((b: { blockKind?: string }) => b.blockKind === "fill_blank");
+  ok(Boolean(fbBlock), "语文卡: fill_blank 填空题块存在");
+  if (fbBlock) {
+    const fbQuestions: any[] = fbBlock.questions ?? [];
+    ok(fbQuestions.length === 3, `语文卡: 填空题 3 道 (实际 ${fbQuestions.length})`);
+    const q1 = fbQuestions.find((q: { id: string }) => q.id === "fb-q1");
+    ok(q1?.blanks?.items?.length === 2 && q1.blanks.items[0].widthMm !== q1.blanks.items[1].widthMm, "语文卡: 逐空自定义横线宽度");
+    ok(Boolean(q1?.annotation), "语文卡: 文字注释存在");
+    const q2 = fbQuestions.find((q: { id: string }) => q.id === "fb-q2");
+    ok(q2?.images?.length === 1 && q2.images[0].assetId === "fig-demo.png", "语文卡: 插入图片存在");
   }
 
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);

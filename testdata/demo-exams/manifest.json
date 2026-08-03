@@ -1,8 +1,8 @@
 {
   "name": "projectx-demo-exams",
-  "version": "1.2.0",
-  "description": "演示考试数据集 — 覆盖单科/大考/跨考/并列排名/缺考/导出/名次变化/学期对比/网阅打分面板等测试场景",
-  "compatibleWith": ["v1.9.4", "v1.9.5", "v1.9.6"],
+  "version": "1.3.0",
+  "description": "演示考试数据集 — 覆盖单科/大考(文理分科)/跨考/并列排名/缺考/导出/名次变化/学期对比/网阅打分(双评仲裁·断点续批)/填空题升级(自定义横线·注释·图片)/P-D统计与正态性检验等测试场景",
+  "compatibleWith": ["v1.9.4", "v1.9.5", "v1.9.6", "v1.9.7", "v1.9.8", "v1.9.9"],
   "prefix": "演示-",
   "accounts": {
     "admin": { "identifier": "admin", "password": "见数据库旁 bootstrap-admin.txt（#185 起为随机一次性密码，首次登录强制改密；seed 后 verify 会自动改密为 Admin@Demo2026 并回写文件）" },
@@ -10,22 +10,39 @@
     "teacher2": { "identifier": "demo-teacher-2", "password": "teacher123" },
     "students": {
       "range": "20260101-20260116",
-      "passwordRule": "与学号相同（seed 显式传 password=学号；batchCreateStudents 默认生成随机密码，此处覆盖为可读值以便验证登录）"
+      "passwordRule": "与学号相同（seed 显式传 password=学号；batchCreateStudents 默认生成随机密码，此处覆盖为可读值以便验证登录）",
+      "trackRule": "20260101~20260108 = science（演示1班·理科班）、20260109~20260116 = arts（演示2班·文科班）"
     }
   },
   "organization": {
     "grade": "高一(演示)",
-    "classes": ["演示1班", "演示2班"],
+    "classes": ["演示1班(理科)", "演示2班(文科)"],
     "studentsPerClass": 8
   },
   "exams": {
     "weekRange": { "start": "2026-06-16", "end": "2026-06-22", "count": 6 },
     "outsideWeek": ["演示-历史"],
-    "total": 8
+    "total": 9
   },
   "groups": {
     "examGroup": "演示-2026高考摸底大考",
+    "examGroupMemberCount": 7,
+    "examGroupTracks": { "语数英": "common", "物化生": "science", "历史": "arts" },
     "crossExamGroup": "演示-第25周考试包"
+  },
+  "fillBlankCard": {
+    "cardId": "88000001",
+    "blockKind": "fill_blank",
+    "questions": 3,
+    "features": ["逐空自定义横线(宽度/高度/右侧批注)", "文字注释", "插入图片(居中)"]
+  },
+  "reviewExam": {
+    "name": "演示-网阅测试",
+    "blockA": { "mode": "双评2P", "maxScore": 15, "hasHalfPoint": true, "scoringMode": "block_total", "distribution": "proportional", "states": { "reviewed": 3, "disputed": 1, "pending": 4 } },
+    "blockB": { "mode": "单评1P", "maxScore": 25, "hasHalfPoint": false, "scoringMode": "per_question", "distribution": "equal", "states": { "reviewed": 3, "ready": 5 } },
+    "resumeSession": "demo-teacher 题块 B 草稿会话(draft_scores)",
+    "annotation": "题块 B 已批卷 1 条文字批注",
+    "scores": { "张明": 30, "李华": 34, "王芳": 29 }
   },
   "testScenarios": [
     {
@@ -37,7 +54,7 @@
     {
       "id": "absent-chem-bio",
       "feature": "缺考",
-      "expect": "化学缺周杰(20260108)；生物缺沈婷(20260116)"
+      "expect": "化学缺周杰(20260108·理科)；生物无缺考（沈婷为文科生，属文理分科不参加）"
     },
     {
       "id": "cross-week",
@@ -49,13 +66,19 @@
       "id": "exam-group",
       "feature": "大考合集",
       "steps": "分析 → 大考 → 演示-2026高考摸底大考",
-      "expect": "6 科概览 + 跨科排名表"
+      "expect": "7 科概览（语数英=共同、物化生=理科、历史=文科）+ 跨科排名表"
+    },
+    {
+      "id": "exam-group-track",
+      "feature": "大考合集·文理分科",
+      "steps": "分析 → 大考 → 演示-2026高考摸底大考",
+      "expect": "物理/化学/生物仅统计理科生(8人)、历史仅统计文科生(8人)；学生按 users.track 筛选，P/D 分科计算"
     },
     {
       "id": "cross-saved-group",
       "feature": "跨考已存组",
       "steps": "分析 → 跨考 → 已存组 → 演示-第25周考试包",
-      "expect": "6 场考试统计"
+      "expect": "6 场考试统计（全科共同，不受文理分科影响）"
     },
     {
       "id": "rank-change",
@@ -80,10 +103,22 @@
       "expect": "演示-数学含 Q1~Q5 客观题小分"
     },
     {
-      "id": "online-review-1p",
-      "feature": "网阅打分面板(1P)",
-      "steps": "demo-teacher 登录 → 网阅 → 演示-网阅测试",
-      "expect": "题块 A(满分15·含0.5·枚举模式) / B(满分25·位值模式)；题块A工作量均衡后教师2:5份教师3:3份"
+      "id": "fill-blank-upgrade",
+      "feature": "填空题升级",
+      "steps": "答题卡设计 → 演示-语文(88000001) → 填空题（演示）块",
+      "expect": "3 道填空题：Q1 两空宽度/高度不同+右侧批注+文字注释；Q2 插入居中图片；Q3 普通横线；PDF 预览可渲染"
+    },
+    {
+      "id": "online-review-2p",
+      "feature": "网阅打分面板(双评+仲裁)",
+      "steps": "demo-teacher / demo-teacher-2 登录 → 网阅 → 演示-网阅测试",
+      "expect": "题块A(满分15·含0.5·双评2P·block_total) 已有 3 份双评一致、1 份争议(9 vs 13)、4 份待二评；题块B(满分25·单评1P·per_question) 已有 3 份已批、5 份待批；争议卷走仲裁/复评流程"
+    },
+    {
+      "id": "online-review-resume",
+      "feature": "断点续批",
+      "steps": "demo-teacher 打开题块 B",
+      "expect": "恢复上次位置与草稿分数（review_sessions draft_scores 非空）"
     },
     {
       "id": "global-settings",
