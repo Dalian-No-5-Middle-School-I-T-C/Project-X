@@ -1,7 +1,30 @@
 import type { ExamOverview, StudentRankingItem } from "../../../../shared/types";
+import { cn } from "../lib/utils";
 import { AnalysisDistribution } from "./AnalysisDistribution";
 import { ScoreDoughnut } from "./AnalysisCharts";
 import { formatScore } from "../util/format";
+import {
+  EmptyState,
+  Progress,
+  StatCard,
+  StatCardRow,
+  type ProgressTone,
+} from "./ui/v2";
+
+/**
+ * AnalysisOverview —— T2 迁移（T03 主分析页 + 图表子树）
+ *
+ * 换肤范围（功能守恒，接口/路由/权限零改动）：
+ *  · `.overview-info-grid/.overview-info-card/.overview-info-value/.overview-info-label`
+ *    → v2 `StatCard` / `StatCardRow`
+ *  · `.overview-compare-bar` 里的硬编码涨跌绿／红 → StatCard 的 delta 语义着色
+ *  · `.dist-bar-chart/.dist-bar-*` 手写条形（含硬编码红／绿）
+ *    → v2 `Progress` + tone 分档（首段=destructive，末段=success，其余=primary）
+ *  · 榜单 `rankRowStyle/rankNumStyle` 两个 style 工厂 → Tailwind 语义类
+ *
+ * ⚠ 现状备注：本组件当前在客户端**无引用**（ScoreDetailPage 已内联「概况」Tab）。
+ *   为保证仓库内不残留旧 token，此处一并换肤；是否删除由后续清理决定。
+ */
 
 interface Props {
   overview: ExamOverview | null;
@@ -17,6 +40,22 @@ interface Props {
   declineTop5?: Array<{ studentName: string; studentNumber?: string; rankChange: number }>;
 }
 
+/** 分段条着色：最低分段红、最高分段绿、其余品牌色（与旧版三色一致，改走语义 token） */
+function segmentTone(index: number, lastIndex: number): ProgressTone {
+  if (index === 0) return "destructive";
+  if (index === lastIndex) return "success";
+  return "primary";
+}
+
+function RankPanel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="flex flex-col gap-1 rounded-lg border border-border-subtle bg-card px-4 py-3">
+      <h3 className="mb-1 text-sm font-semibold text-foreground">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
 export function AnalysisOverview({
   overview,
   ranking,
@@ -27,108 +66,84 @@ export function AnalysisOverview({
   declineTop5
 }: Props) {
   if (!overview) {
-    return <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>暂无数据，请先完成阅卷。</div>;
+    return <EmptyState title="暂无数据" description="请先完成阅卷。" />;
   }
 
   if (overview.gradedCount === 0) {
-    return <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>此考试暂无阅卷数据。</div>;
+    return <EmptyState title="此考试暂无阅卷数据" description="完成阅卷后即可查看概况。" />;
   }
 
   const visibleDistribution = overview.distribution.filter((d) => d.count > 0);
   const maxBarCount = Math.max(...visibleDistribution.map((d) => d.count), 1);
+  const lastIdx = visibleDistribution.length - 1;
 
   return (
-    <div>
+    <div className="flex flex-col gap-5">
       {/* Section 1: Info Cards */}
-      <div className="overview-info-grid">
-        <div className="overview-info-card">
-          <span className="overview-info-value">{overview.gradedCount}</span>
-          <span className="overview-info-label">考试人数</span>
-        </div>
-        <div className="overview-info-card">
-          <span className="overview-info-value">{formatScore(overview.avgScore)}</span>
-          <span className="overview-info-label">平均分</span>
-        </div>
-        <div className="overview-info-card">
-          <span className="overview-info-value">{formatScore(overview.maxScore)}</span>
-          <span className="overview-info-label">最高分</span>
-        </div>
-        <div className="overview-info-card">
-          <span className="overview-info-value">{formatScore(overview.minScore)}</span>
-          <span className="overview-info-label">最低分</span>
-        </div>
-        <div className="overview-info-card">
-          <span className="overview-info-value">{overview.passRate}%</span>
-          <span className="overview-info-label">及格率 (60%)</span>
-        </div>
-        <div className="overview-info-card">
-          <span className="overview-info-value">{overview.excellentRate}%</span>
-          <span className="overview-info-label">优秀率 (90%)</span>
-        </div>
-        <div className="overview-info-card">
-          <span className="overview-info-value">{formatScore(overview.stdDev)}</span>
-          <span className="overview-info-label">标准差</span>
-        </div>
-      </div>
+      <StatCardRow>
+        <StatCard label="考试人数" value={String(overview.gradedCount)} />
+        <StatCard label="平均分" value={formatScore(overview.avgScore)} />
+        <StatCard label="最高分" value={formatScore(overview.maxScore)} />
+        <StatCard label="最低分" value={formatScore(overview.minScore)} />
+        <StatCard label="及格率 (60%)" value={`${overview.passRate}%`} />
+        <StatCard label="优秀率 (90%)" value={`${overview.excellentRate}%`} />
+        <StatCard label="标准差" value={formatScore(overview.stdDev)} />
+      </StatCardRow>
 
       {/* Previous exam comparison */}
       {previousComparison && previousComparison.prevExamName && (
-        <div className="overview-compare-bar">
-          <span style={{ fontSize: 13, color: "var(--muted)" }}>
-            对比上次 ({previousComparison.prevExamName}):
+        <div className="flex flex-wrap items-center gap-4 rounded-lg border border-border-subtle bg-card px-4 py-3">
+          <span className="text-sm text-muted-foreground">
+            对比上次（{previousComparison.prevExamName}）
           </span>
           {previousComparison.avgScoreChange != null && (
-            <span style={{
-              fontSize: 13, fontWeight: 500,
-              color: previousComparison.avgScoreChange >= 0 ? "#3B6D11" : "#A32D2D",
-              marginLeft: 12
-            }}>
-              均分 {previousComparison.avgScoreChange >= 0 ? "↑" : "↓"} {Math.abs(previousComparison.avgScoreChange).toFixed(1)}
+            <span
+              className={cn(
+                "text-sm font-medium tabular-nums",
+                previousComparison.avgScoreChange >= 0 ? "text-success-foreground" : "text-destructive-fg",
+              )}
+            >
+              均分 {previousComparison.avgScoreChange >= 0 ? "+" : "−"}
+              {Math.abs(previousComparison.avgScoreChange).toFixed(1)}
             </span>
           )}
           {previousComparison.passRateChange != null && (
-            <span style={{
-              fontSize: 13, fontWeight: 500,
-              color: previousComparison.passRateChange >= 0 ? "#3B6D11" : "#A32D2D",
-              marginLeft: 12
-            }}>
-              及格率 {previousComparison.passRateChange >= 0 ? "↑" : "↓"} {Math.abs(previousComparison.passRateChange).toFixed(1)}%
+            <span
+              className={cn(
+                "text-sm font-medium tabular-nums",
+                previousComparison.passRateChange >= 0 ? "text-success-foreground" : "text-destructive-fg",
+              )}
+            >
+              及格率 {previousComparison.passRateChange >= 0 ? "+" : "−"}
+              {Math.abs(previousComparison.passRateChange).toFixed(1)}%
             </span>
           )}
         </div>
       )}
 
       {/* Section 2: Score Distribution Bar Chart */}
-      <div className="analysis-section" style={{ marginTop: 20 }}>
-        <div className="panel-title">分数段分布</div>
-        <div className="dist-bar-chart">
+      <section className="flex flex-col gap-2">
+        <h3 className="text-sm font-semibold text-foreground">分数段分布</h3>
+        <div className="flex flex-col gap-1.5 rounded-lg border border-border-subtle bg-card px-4 py-3">
           {visibleDistribution.map((d, i) => {
             const pct = ((d.count / overview.gradedCount) * 100).toFixed(1);
             const barPct = (d.count / maxBarCount) * 100;
-            const lastIdx = visibleDistribution.length - 1;
-            let barColor = "var(--brand)";
-            if (i === 0) barColor = "#E24B4A";      // 最低分段 → 红
-            else if (i === lastIdx) barColor = "#639922"; // 最高分段 → 绿
-
             return (
-              <div key={d.range} className="dist-bar-row">
-                <span className="dist-bar-label">{d.range}</span>
-                <div className="dist-bar-track">
-                  <div
-                    className="dist-bar-fill"
-                    style={{
-                      width: `${Math.max(barPct, 2)}%`,
-                      background: barColor
-                    }}
-                  />
-                </div>
-                <span className="dist-bar-count">{d.count}人</span>
-                <span className="dist-bar-pct">{pct}%</span>
+              <div key={d.range} className="flex items-center gap-3 text-xs">
+                <span className="w-20 shrink-0 tabular-nums text-muted-foreground">{d.range}</span>
+                <Progress
+                  value={Math.max(barPct, 2)}
+                  tone={segmentTone(i, lastIdx)}
+                  size="sm"
+                  className="min-w-0 flex-1"
+                />
+                <span className="w-12 shrink-0 text-right tabular-nums text-foreground">{d.count}人</span>
+                <span className="w-14 shrink-0 text-right tabular-nums text-muted-foreground">{pct}%</span>
               </div>
             );
           })}
         </div>
-      </div>
+      </section>
 
       {/* Section 3: Box Plot */}
       {overview.scoreSummary && overview.overallScoreSummary && (
@@ -143,68 +158,64 @@ export function AnalysisOverview({
 
       {/* Section 4: Grade Rankings (top5/bottom5 by score) */}
       {ranking && ranking.length > 0 && (
-        <div style={{ marginTop: 20, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <div className="analysis-section">
-            <div className="panel-title">年级前五</div>
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <RankPanel title="年级前五">
             {ranking.slice(0, 5).map((r) => (
-              <div key={r.studentName} style={rankRowStyle}>
-                <span style={rankNumStyle("#3B6D11")}>#{r.rank}</span>
-                <span>{r.studentName}</span>
-                <span style={{ color: "var(--muted)", fontSize: 12 }}>{formatScore(r.totalScore)}分</span>
+              <div key={r.studentName} className="flex items-center gap-2.5 py-0.5 text-sm">
+                <span className="min-w-8 font-semibold tabular-nums text-success-foreground">#{r.rank}</span>
+                <span className="truncate text-foreground">{r.studentName}</span>
+                <span className="ml-auto text-xs tabular-nums text-muted-foreground">{formatScore(r.totalScore)}分</span>
               </div>
             ))}
-          </div>
-          <div className="analysis-section">
-            <div className="panel-title">年级后五</div>
+          </RankPanel>
+          <RankPanel title="年级后五">
             {ranking.slice(-5).reverse().map((r) => (
-              <div key={r.studentName} style={rankRowStyle}>
-                <span style={rankNumStyle("#A32D2D")}>#{r.rank}</span>
-                <span>{r.studentName}</span>
-                <span style={{ color: "var(--muted)", fontSize: 12 }}>{formatScore(r.totalScore)}分</span>
+              <div key={r.studentName} className="flex items-center gap-2.5 py-0.5 text-sm">
+                <span className="min-w-8 font-semibold tabular-nums text-destructive-fg">#{r.rank}</span>
+                <span className="truncate text-foreground">{r.studentName}</span>
+                <span className="ml-auto text-xs tabular-nums text-muted-foreground">{formatScore(r.totalScore)}分</span>
               </div>
             ))}
-          </div>
+          </RankPanel>
         </div>
       )}
 
       {/* Section 5: Progress & Decline Rankings (rankChange-based) */}
-      <div style={{ marginTop: 20, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <div className="analysis-section">
-          <div className="panel-title">进步前五</div>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <RankPanel title="进步前五">
           {progressTop5 && progressTop5.length > 0 ? (
             progressTop5.map((r, i) => (
-              <div key={r.studentName} style={rankRowStyle}>
-                <span style={rankNumStyle("#3B6D11")}>↑ {Math.abs(r.rankChange)}</span>
-                <span>{r.studentName}</span>
-                {r.studentNumber && <span style={{ color: "var(--muted)", fontSize: 12 }}>{r.studentNumber}</span>}
+              <div key={`${r.studentName}-${i}`} className="flex items-center gap-2.5 py-0.5 text-sm">
+                <span className="min-w-8 font-semibold tabular-nums text-success-foreground">↑ {Math.abs(r.rankChange)}</span>
+                <span className="truncate text-foreground">{r.studentName}</span>
+                {r.studentNumber && <span className="ml-auto text-xs tabular-nums text-muted-foreground">{r.studentNumber}</span>}
               </div>
             ))
           ) : (
-            <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13, textAlign: "center" }}>暂无数据</div>
+            <p className="py-3 text-center text-sm text-muted-foreground">暂无数据</p>
           )}
-        </div>
-        <div className="analysis-section">
-          <div className="panel-title">退步前五</div>
+        </RankPanel>
+        <RankPanel title="退步前五">
           {declineTop5 && declineTop5.length > 0 ? (
             declineTop5.map((r, i) => (
-              <div key={r.studentName} style={rankRowStyle}>
-                <span style={rankNumStyle("#A32D2D")}>↓ {Math.abs(r.rankChange)}</span>
-                <span>{r.studentName}</span>
-                {r.studentNumber && <span style={{ color: "var(--muted)", fontSize: 12 }}>{r.studentNumber}</span>}
+              <div key={`${r.studentName}-${i}`} className="flex items-center gap-2.5 py-0.5 text-sm">
+                <span className="min-w-8 font-semibold tabular-nums text-destructive-fg">↓ {Math.abs(r.rankChange)}</span>
+                <span className="truncate text-foreground">{r.studentName}</span>
+                {r.studentNumber && <span className="ml-auto text-xs tabular-nums text-muted-foreground">{r.studentNumber}</span>}
               </div>
             ))
           ) : (
-            <div style={{ padding: "12px 0", color: "var(--muted)", fontSize: 13, textAlign: "center" }}>暂无数据</div>
+            <p className="py-3 text-center text-sm text-muted-foreground">暂无数据</p>
           )}
-        </div>
+        </RankPanel>
       </div>
 
-      {/* Section 5: Chart visualization */}
+      {/* Section 6: Chart visualization */}
       {overview.distribution && overview.distribution.length > 0 && (
-        <div className="analysis-section" style={{ marginTop: 20 }}>
-          <div className="panel-title">图表可视化</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            <div className="overview-info-card" style={{ padding: 16 }}>
+        <section className="flex flex-col gap-2">
+          <h3 className="text-sm font-semibold text-foreground">图表可视化</h3>
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <div className="rounded-lg border border-border-subtle bg-card p-4">
               <ScoreDoughnut
                 data={{
                   labels: overview.distribution.map((d) => d.range),
@@ -213,32 +224,23 @@ export function AnalysisOverview({
                 height={200}
               />
             </div>
-            <div className="overview-info-card" style={{ padding: 16 }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "10px 0", fontSize: 13 }}>
-                {[
-                  { label: "标准差", value: formatScore(overview.stdDev) },
-                  { label: "及格率", value: overview.passRate + "%" },
-                  { label: "优秀率", value: overview.excellentRate + "%" },
-                  { label: "最高分", value: formatScore(overview.maxScore) },
-                  { label: "最低分", value: formatScore(overview.minScore) },
-                ].map((item) => (
-                  <div key={item.label} style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ color: "var(--text-secondary)" }}>{item.label}</span>
-                    <span style={{ fontWeight: 600 }}>{item.value}</span>
-                  </div>
-                ))}
-              </div>
+            <div className="flex flex-col gap-2.5 rounded-lg border border-border-subtle bg-card p-4 text-sm">
+              {[
+                { label: "标准差", value: formatScore(overview.stdDev) },
+                { label: "及格率", value: `${overview.passRate}%` },
+                { label: "优秀率", value: `${overview.excellentRate}%` },
+                { label: "最高分", value: formatScore(overview.maxScore) },
+                { label: "最低分", value: formatScore(overview.minScore) },
+              ].map((item) => (
+                <div key={item.label} className="flex items-center justify-between">
+                  <span className="text-secondary-foreground">{item.label}</span>
+                  <span className="font-semibold tabular-nums text-foreground">{item.value}</span>
+                </div>
+              ))}
             </div>
           </div>
-        </div>
+        </section>
       )}
     </div>
   );
 }
-
-const rankRowStyle: React.CSSProperties = {
-  display: "flex", gap: 10, padding: "3px 0", fontSize: 13, alignItems: "center"
-};
-const rankNumStyle = (color: string): React.CSSProperties => ({
-  fontWeight: 600, color, minWidth: 32, fontSize: 12
-});
