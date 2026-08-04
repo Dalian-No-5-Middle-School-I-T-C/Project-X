@@ -478,7 +478,7 @@ const FILL_BLANK_CARD_ID = "88000001"; // 演示-语文卡
  * 清除演示数据时经 subjective_blocks.card_id → answer_cards ON DELETE CASCADE 自动级联，无需额外清理。
  */
 function seedFillBlankDemo(db: Database.Database): void {
-  // 卡片不存在（例如学号/卡号被真实数据占用而跳过创建）时跳过，保证幂等
+  // 卡片不存在时跳过（防御性检查；演示卡号被真实数据占用时 seedExam 的 INSERT 会先行报错）
   const card = db.prepare("SELECT id FROM answer_cards WHERE id = ?").get(FILL_BLANK_CARD_ID) as { id: string } | undefined;
   if (!card) return;
 

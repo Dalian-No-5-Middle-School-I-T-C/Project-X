@@ -6,7 +6,8 @@
  *
  * #185 起管理员为随机一次性密码、首次登录强制改密。本脚本会：
  *   1. 读 bootstrap-admin.txt 取一次性密码登录；
- *   2. 若返回 428 PASSWORD_CHANGE_REQUIRED，自动改密为 Admin@Demo2026 并回写文件；
+ *   2. 若登录响应要求强制改密（428 PASSWORD_CHANGE_REQUIRED 或 passwordChangeRequired 标志），
+ *      自动改密为 Admin@Demo2026 并回写文件；
  *   3. 用新密码重新登录后执行全部校验。
  */
 
@@ -56,9 +57,9 @@ async function login(identifier: string, password: string): Promise<{ token?: st
 async function loginAdmin(): Promise<string> {
   const initial = readAdminPassword();
   const first = await login("admin", initial);
-  if (first.token) return first.token;
+  if (first.token && !first.body?.passwordChangeRequired) return first.token;
 
-  if (first.status === 428 || first.body?.code === "PASSWORD_CHANGE_REQUIRED") {
+  if (first.status === 428 || first.body?.code === "PASSWORD_CHANGE_REQUIRED" || first.body?.passwordChangeRequired) {
     console.log("  ℹ 检测到首次登录需改密，自动改密为 Admin@Demo2026 …");
     // 用一次性密码作为 oldPassword 调用 change-password
     const changer = await fetch(`${BASE}/api/auth/change-password`, {
