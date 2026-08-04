@@ -6,6 +6,7 @@ import { fetchJson, setAuthToken } from "./auth/api";
 import { LoginPageScanner } from "./components/LoginPageScanner";
 import { CardSelectPage } from "./components/CardSelectPage";
 import { ScannerWorkspace } from "./components/ScannerWorkspace";
+import { Spinner } from "./components/ui/v2";
 import type { CardSummary } from "../../../shared/types";
 
 // ── ScannerApp：双屏容器 ──
@@ -28,9 +29,9 @@ export function ScannerApp() {
 
   if (loading) {
     return (
-      <div className="loading-screen">
-        <div className="loading-spinner" />
-        <p>加载中…</p>
+      <div className="flex h-[100dvh] w-full flex-col items-center justify-center gap-3 bg-background">
+        <Spinner size={28} />
+        <p className="m-0 text-sm text-muted-foreground">加载中…</p>
       </div>
     );
   }
