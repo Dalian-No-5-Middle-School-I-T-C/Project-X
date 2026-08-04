@@ -1497,7 +1497,7 @@ function App() {
     return (
       <div className="login-shell">
         <p className="empty-text">正在加载...</p>
-        <BeianFooter className="login-beian-footer" />
+        <BeianFooter className="login-beian-footer" floating />
       </div>
     );
   }

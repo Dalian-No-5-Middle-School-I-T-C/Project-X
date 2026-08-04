@@ -245,7 +245,7 @@ export function LoginPageScanner() {
           </Button>
         </form>
       </Card>
-      <BeianFooter className="text-xs" />
+      <BeianFooter className="text-xs" floating />
       <UserGuideModal open={showGuide} onClose={() => setShowGuide(false)} />
     </div>
   );

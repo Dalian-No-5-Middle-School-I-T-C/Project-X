@@ -32,7 +32,7 @@ export function LoginPage() {
   }
 
   return (
-    <div className="flex min-h-[100dvh] items-center justify-center overflow-y-auto bg-background p-6">
+    <div className="relative flex min-h-[100dvh] items-center justify-center overflow-y-auto bg-background p-6">
       <Card className="login-card-demo grid w-full max-w-[820px] overflow-hidden shadow-3 md:grid-cols-[340px_minmax(0,1fr)]">
         <div className="login-brand-panel flex flex-col gap-3 border-b border-border-subtle bg-secondary p-7 md:border-b-0 md:border-r">
           <div className="flex size-11 items-center justify-center rounded-xl bg-primary text-primary-foreground"><Shield size={22} /></div>
@@ -69,7 +69,7 @@ export function LoginPage() {
           </form>
         </CardContent>
       </Card>
-      <BeianFooter className="login-beian-footer" />
+      <BeianFooter className="login-beian-footer" floating />
       <UserGuideModal open={showGuide} onClose={() => setShowGuide(false)} />
     </div>
   );
