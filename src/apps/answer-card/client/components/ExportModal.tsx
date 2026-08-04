@@ -1,6 +1,35 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, Download, GripVertical, Plus, Save, Trash2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Download,
+  GripVertical,
+  Plus,
+  Save,
+  Trash2,
+  X,
+} from "lucide-react";
 import { fetchJson, authFetch } from "../auth/api";
+import { cn } from "../lib/utils";
+import {
+  Button,
+  Checkbox,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableWrap,
+  notify,
+} from "./ui/v2";
 
 interface Props {
   examId: number;
@@ -39,6 +68,30 @@ const SIDE_COL_WIDTHS = [5, 8, 7]; // 年排, 班级, 分数
 
 const DEFAULT_COLUMNS = ["classRank", "studentName", "totalScore", "assignedScore", "gradeRank", "objectiveScore", "subjectiveScore"];
 
+const ALL_COLUMNS = [
+  "studentNumber", "studentName", "className", "totalScore", "assignedScore",
+  "gradeRank", "classRank", "objectiveScore", "subjectiveScore", "rankChange",
+  "displayValue",
+];
+
+/**
+ * 列分类 → 数据可视化色板类名。
+ *
+ * 迁移说明：原实现返回硬编码 hex（#059669 / #d97706 / #7c3aed），
+ * 现改为语义化的 chart-N 令牌类，色相与旧值一一对应且随主题切换。
+ */
+const CATEGORY_ACCENT: Record<string, { border: string; text: string }> = {
+  basic: { border: "border-chart-1", text: "text-chart-1" },
+  score: { border: "border-chart-3", text: "text-chart-3" },
+  ranking: { border: "border-chart-4", text: "text-chart-4" },
+  questions: { border: "border-chart-5", text: "text-chart-5" },
+  other: { border: "border-border-strong", text: "text-muted-foreground" },
+};
+
+function categoryAccent(category: string) {
+  return CATEGORY_ACCENT[category] ?? CATEGORY_ACCENT.other;
+}
+
 function computeTotalWidth(columns: string[], sideN: number, gap: number): number {
   const mainW = columns.reduce((sum, c) => sum + (COL_WIDTHS[c] ?? 8), 0);
   if (sideN > 0) {
@@ -58,7 +111,7 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
   const [activeTemplate, setActiveTemplate] = useState<number | null>(null);
   const [previewRows, setPreviewRows] = useState<Record<string, unknown>[]>([]);
   const [exporting, setExporting] = useState(false);
-  const [hasAssignedScore, setHasAssignedScore] = useState(false);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
   const dragItem = useRef<number | null>(null);
   const dragOverItem = useRef<number | null>(null);
 
@@ -86,7 +139,7 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
     const params = new URLSearchParams();
     if (classId) params.set("classId", classId);
     fetchJson<{ rows: Record<string, unknown>[]; hasAssignedScore: boolean }>(`/api/analysis/exams/${examId}/score-table?${params.toString()}`)
-      .then((data) => { setPreviewRows(data.rows.slice(0, 3)); setHasAssignedScore(data.hasAssignedScore); })
+      .then((data) => { setPreviewRows(data.rows.slice(0, 3)); })
       .catch(() => setPreviewRows([]));
   }, [examId, classId]);
 
@@ -100,8 +153,14 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
     setSelected(selected.filter((_, i) => i !== index));
   }
 
-  function handleDragStart(index: number) { dragItem.current = index; }
-  function handleDragOver(e: React.DragEvent, index: number) { e.preventDefault(); dragOverItem.current = index; }
+  function handleDragStart(index: number) {
+    dragItem.current = index;
+    setDragIndex(index);
+  }
+  function handleDragOver(e: React.DragEvent, index: number) {
+    e.preventDefault();
+    dragOverItem.current = index;
+  }
   function handleDrop() {
     if (dragItem.current == null || dragOverItem.current == null) return;
     const copy = [...selected];
@@ -110,6 +169,12 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
     setSelected(copy);
     dragItem.current = null;
     dragOverItem.current = null;
+    setDragIndex(null);
+  }
+  function handleDragEnd() {
+    dragItem.current = null;
+    dragOverItem.current = null;
+    setDragIndex(null);
   }
 
   function saveTemplate(slot: number) {
@@ -154,8 +219,9 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
       a.download = `${examName.replace(/[\/:*?"<>|]/g, "_")}_成绩表.xlsx`;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
+      notify.success("成绩表已导出");
     } catch (err) {
-      alert(err instanceof Error ? err.message : "导出失败");
+      notify.error(err instanceof Error ? err.message : "导出失败");
     } finally { setExporting(false); }
   }
 
@@ -167,127 +233,232 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
     const v = row[key];
     return v != null ? String(v) : "—";
   }
-  function getCategoryColor(category: string): string {
-    switch (category) {
-      case "basic": return "var(--primary)";
-      case "score": return "#059669";
-      case "ranking": return "#d97706";
-      case "questions": return "#7c3aed";
-      default: return "var(--muted)";
-    }
-  }
 
   const totalWidth = computeTotalWidth(selected, sideN, gapCols);
   const overA4 = totalWidth > A4_MAX_CHARS;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640, width: "94vw", maxHeight: "90vh" }}>
-        <div className="modal-header">
-          <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>导出成绩 — {examName}</h3>
-          <button className="ghost-button" onClick={onClose}><X size={18} /></button>
-        </div>
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next && !exporting) onClose();
+      }}
+    >
+      <DialogContent size="md" className="max-h-[90vh]">
+        <DialogHeader>
+          <DialogTitle>导出成绩 — {examName}</DialogTitle>
+          <DialogDescription>
+            拖拽调整列顺序，可存为模板复用；导出为 Excel 工作簿。
+          </DialogDescription>
+        </DialogHeader>
 
-        <div className="modal-body" style={{ padding: "16px 20px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 14 }}>
-          {/* Quick presets */}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ fontSize: 13, fontWeight: 500 }}>快捷:</span>
-            <button className="ghost-button" onClick={() => { setSelected(DEFAULT_COLUMNS); setSideN(10); setActiveTemplate(null); }} style={{ fontSize: 12 }}>基础表</button>
-            <button className="ghost-button" onClick={() => setSelected(["studentNumber","studentName","className","totalScore","assignedScore","gradeRank","classRank","objectiveScore","subjectiveScore","rankChange","displayValue"])} style={{ fontSize: 12 }}>全列</button>
+        <DialogBody className="flex flex-col gap-4">
+          {/* 快捷预设 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-medium text-foreground">快捷</span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setSelected(DEFAULT_COLUMNS);
+                setSideN(10);
+                setActiveTemplate(null);
+              }}
+            >
+              基础表
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setSelected(ALL_COLUMNS)}
+            >
+              全列
+            </Button>
           </div>
 
-          {/* Column capsules */}
-          <div>
-            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 6 }}>列排列 (拖拽调整)</label>
-            <div className="capsule-bar">
-              {selected.map((colId, i) => (
-                <div
-                  key={colId}
-                  className={`capsule${dragItem.current === i ? " capsule-dragging" : ""}`}
-                  style={{ borderColor: getCategoryColor(COLUMN_DEFS.find((c) => c.id === colId)?.category ?? "other") }}
-                  draggable
-                  onDragStart={() => handleDragStart(i)}
-                  onDragOver={(e) => handleDragOver(e, i)}
-                  onDrop={handleDrop}
-                  onDragEnd={() => { dragItem.current = null; dragOverItem.current = null; }}
-                >
-                  <GripVertical size={12} style={{ cursor: "grab", color: "var(--muted)" }} />
-                  <span>{colLabel(colId)}</span>
-                  <button onClick={(e) => { e.stopPropagation(); removeColumn(i); }} style={{ marginLeft: 2, cursor: "pointer", border: "none", background: "none", color: "var(--muted)", padding: 0, fontSize: 14 }}>×</button>
-                </div>
-              ))}
-              {selected.length === 0 && <span style={{ fontSize: 12, color: "var(--muted)" }}>点击下方列添加</span>}
+          {/* 已选列胶囊 */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-foreground">
+              列排列（拖拽调整）
+            </span>
+            <div className="flex min-h-11 flex-wrap items-center gap-2 rounded-md border border-border-subtle bg-secondary p-2">
+              {selected.map((colId, i) => {
+                const accent = categoryAccent(
+                  COLUMN_DEFS.find((c) => c.id === colId)?.category ?? "other",
+                );
+                return (
+                  <div
+                    key={colId}
+                    draggable
+                    onDragStart={() => handleDragStart(i)}
+                    onDragOver={(e) => handleDragOver(e, i)}
+                    onDrop={handleDrop}
+                    onDragEnd={handleDragEnd}
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-xs text-foreground",
+                      "transition-opacity duration-(--px-dur-1) ease-standard",
+                      accent.border,
+                      dragIndex === i && "opacity-50",
+                    )}
+                  >
+                    <GripVertical className="size-3 cursor-grab text-muted-foreground" />
+                    <span>{colLabel(colId)}</span>
+                    <button
+                      type="button"
+                      aria-label={`移除 ${colLabel(colId)}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        removeColumn(i);
+                      }}
+                      className={cn(
+                        "ml-0.5 inline-flex size-4 items-center justify-center rounded-xs",
+                        "text-muted-foreground transition-colors duration-(--px-dur-1) ease-standard",
+                        "hover:bg-secondary hover:text-foreground",
+                        "outline-none focus-visible:shadow-focus",
+                      )}
+                    >
+                      <X className="size-3" />
+                    </button>
+                  </div>
+                );
+              })}
+              {selected.length === 0 && (
+                <span className="text-xs text-muted-foreground">
+                  点击下方列添加
+                </span>
+              )}
             </div>
           </div>
 
-          {/* Column pool */}
-          <div>
-            <label style={{ fontSize: 12, color: "var(--muted)", display: "block", marginBottom: 4 }}>可选列</label>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {unselected.map((c) => (
-                <button key={c.id} className="capsule capsule-add" onClick={() => addColumn(c.id)}
-                  style={{ borderColor: getCategoryColor(c.category), color: getCategoryColor(c.category) }}>
-                  <Plus size={11} /> {c.label}
-                </button>
-              ))}
-              {unselected.length === 0 && <span style={{ fontSize: 12, color: "var(--muted)" }}>已选择全部列</span>}
+          {/* 可选列 */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs text-muted-foreground">可选列</span>
+            <div className="flex flex-wrap gap-1.5">
+              {unselected.map((c) => {
+                const accent = categoryAccent(c.category);
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => addColumn(c.id)}
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-md border border-dashed bg-card px-2 py-1 text-xs",
+                      "transition-colors duration-(--px-dur-1) ease-standard hover:bg-secondary",
+                      "outline-none focus-visible:shadow-focus",
+                      accent.border,
+                      accent.text,
+                    )}
+                  >
+                    <Plus className="size-3" /> {c.label}
+                  </button>
+                );
+              })}
+              {unselected.length === 0 && (
+                <span className="text-xs text-muted-foreground">
+                  已选择全部列
+                </span>
+              )}
             </div>
           </div>
 
-          {/* A4 warning */}
+          {/* A4 超宽告警 */}
           {overA4 && (
-            <div style={{ padding: "8px 12px", background: "#fef3c7", borderRadius: 8, fontSize: 12, color: "#92400e" }}>
-              <AlertTriangle size={15} aria-hidden="true" /> 所选列总宽可能超出 1 页竖版A4 (Word默认页边距)。当前约 {totalWidth}ch / 建议 ≤{A4_MAX_CHARS}ch。请减少列或调整侧表。
+            <div className="flex items-start gap-2 rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-xs text-warning-foreground">
+              <AlertTriangle className="mt-px size-4 shrink-0" aria-hidden="true" />
+              <span>
+                所选列总宽可能超出 1 页竖版 A4（Word 默认页边距）。当前约{" "}
+                <span className="tabular-nums">{totalWidth}</span>ch / 建议 ≤
+                <span className="tabular-nums">{A4_MAX_CHARS}</span>ch。请减少列或调整侧表。
+              </span>
             </div>
           )}
 
-          {/* Preview with real data */}
-          <div>
-            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 4 }}>数据预览</label>
-            <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12, background: "var(--surface)" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", whiteSpace: "nowrap" }}>
-                <thead>
-                  <tr style={{ background: "var(--surface-tint)", borderBottom: "1px solid var(--line)" }}>
+          {/* 数据预览 */}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-sm font-medium text-foreground">数据预览</span>
+            <TableWrap className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
                     {selected.map((colId) => (
-                      <th key={colId} style={{ padding: "5px 8px", textAlign: "left", fontWeight: 600, fontSize: 12 }}>
+                      <TableHead key={colId} className="whitespace-nowrap">
                         {colLabel(colId)}
-                      </th>
+                      </TableHead>
                     ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {previewRows.length > 0 ? previewRows.map((row, ri) => (
-                    <tr key={ri} style={{ borderTop: "1px solid var(--line-light)" }}>
-                      {selected.map((colId) => (
-                        <td key={colId} style={{ padding: "4px 8px", fontSize: 12 }}>{colValue(colId, row)}</td>
-                      ))}
-                    </tr>
-                  )) : (
-                    <tr><td colSpan={selected.length || 1} style={{ padding: "8px", color: "var(--muted)", textAlign: "center", fontSize: 12 }}>加载预览数据中...</td></tr>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {previewRows.length > 0 ? (
+                    previewRows.map((row, ri) => (
+                      <TableRow key={ri}>
+                        {selected.map((colId) => (
+                          <TableCell
+                            key={colId}
+                            className="tabular-nums whitespace-nowrap"
+                          >
+                            {colValue(colId, row)}
+                          </TableCell>
+                        ))}
+                      </TableRow>
+                    ))
+                  ) : (
+                    <TableRow>
+                      <TableCell
+                        colSpan={selected.length || 1}
+                        className="text-center text-muted-foreground"
+                      >
+                        加载预览数据中…
+                      </TableCell>
+                    </TableRow>
                   )}
-                </tbody>
-              </table>
-            </div>
+                </TableBody>
+              </Table>
+            </TableWrap>
           </div>
 
-          {/* Side table */}
-          <div>
-            <label style={{ fontSize: 13, fontWeight: 500, display: "flex", alignItems: "center", gap: 8 }}>
-              <input type="checkbox" checked={sideN > 0} onChange={(e) => setSideN(e.target.checked ? 10 : 0)} />
-              附加年级排名参照表 (同Sheet右侧)
+          {/* 侧表 */}
+          <div className="flex flex-col gap-2">
+            <label
+              htmlFor="export-side-table"
+              className="flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground select-none"
+            >
+              <Checkbox
+                id="export-side-table"
+                checked={sideN > 0}
+                onCheckedChange={(v) => setSideN(v === true ? 10 : 0)}
+              />
+              附加年级排名参照表（同 Sheet 右侧）
             </label>
             {sideN > 0 && (
-              <div style={{ display: "flex", gap: 16, marginTop: 6 }}>
-                <label style={{ fontSize: 12 }}>前 <input type="number" value={sideN} onChange={(e) => setSideN(Math.max(1, Number(e.target.value)))} style={{ width: 48, padding: "2px 6px", borderRadius: 4, border: "1px solid var(--line-strong)", fontSize: 12 }} /> 名</label>
-                <label style={{ fontSize: 12 }}>间隙 <input type="number" value={gapCols} onChange={(e) => setGapCols(Math.max(1, Number(e.target.value)))} style={{ width: 40, padding: "2px 6px", borderRadius: 4, border: "1px solid var(--line-strong)", fontSize: 12 }} /> 列</label>
+              <div className="flex flex-wrap items-center gap-4 pl-6">
+                <label className="flex items-center gap-2 text-xs text-secondary-foreground">
+                  前
+                  <Input
+                    type="number"
+                    value={sideN}
+                    onChange={(e) => setSideN(Math.max(1, Number(e.target.value)))}
+                    className="h-control-sm w-16 tabular-nums"
+                  />
+                  名
+                </label>
+                <label className="flex items-center gap-2 text-xs text-secondary-foreground">
+                  间隙
+                  <Input
+                    type="number"
+                    value={gapCols}
+                    onChange={(e) => setGapCols(Math.max(1, Number(e.target.value)))}
+                    className="h-control-sm w-16 tabular-nums"
+                  />
+                  列
+                </label>
               </div>
             )}
           </div>
 
-          {/* Templates */}
-          <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
-            <label style={{ fontSize: 13, fontWeight: 500, display: "block", marginBottom: 8 }}>自定义模板</label>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {/* 自定义模板 */}
+          <div className="flex flex-col gap-2 border-t border-border-subtle pt-3">
+            <span className="text-sm font-medium text-foreground">自定义模板</span>
+            <div className="flex flex-col gap-2">
               {[1, 2, 3, 4].map((slot) => {
                 const t = templates.find((tp) => tp.slot === slot);
                 const isActive = activeTemplate === slot;
@@ -295,47 +466,81 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
                   <div
                     key={slot}
                     onClick={() => t && loadTemplate(t)}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 8, cursor: t ? "pointer" : "default",
-                      padding: "6px 10px", borderRadius: 8,
-                      border: isActive ? "2px solid var(--brand)" : "1px solid var(--line)",
-                      background: isActive ? "var(--surface-tint)" : "var(--surface)",
-                      transition: "border 0.15s"
-                    }}
+                    className={cn(
+                      "flex items-center gap-2 rounded-md border px-2.5 py-1.5",
+                      "transition-colors duration-(--px-dur-1) ease-standard",
+                      t ? "cursor-pointer" : "cursor-default",
+                      isActive
+                        ? "border-accent-border bg-accent"
+                        : "border-border-subtle bg-card",
+                    )}
                   >
-                    <span style={{ fontSize: 12, color: "var(--muted)", width: 48, fontWeight: isActive ? 600 : 400 }}>
-                      {isActive && "● "}模板{slot}
+                    <span
+                      className={cn(
+                        "w-14 shrink-0 text-xs text-muted-foreground",
+                        isActive && "font-semibold text-accent-foreground",
+                      )}
+                    >
+                      模板<span className="tabular-nums">{slot}</span>
                     </span>
-                    <input
+                    <Input
                       type="text"
                       value={t ? templateNames[slot] ?? t.name : templateNames[slot] ?? ""}
-                      onChange={(e) => { e.stopPropagation(); setTemplateNames({ ...templateNames, [slot]: e.target.value }); }}
+                      onChange={(e) => {
+                        e.stopPropagation();
+                        setTemplateNames({ ...templateNames, [slot]: e.target.value });
+                      }}
                       onClick={(e) => e.stopPropagation()}
                       placeholder="模板名称"
-                      style={{ flex: 1, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
+                      className="h-control-sm flex-1"
                     />
-                    <button className="ghost-button" onClick={(e) => { e.stopPropagation(); saveTemplate(slot); }} style={{ fontSize: 11, padding: "3px 8px" }}>
-                      <Save size={12} /> 保存
-                    </button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      icon={<Save className="size-3" />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        saveTemplate(slot);
+                      }}
+                    >
+                      保存
+                    </Button>
                     {t && (
-                      <button className="ghost-button" onClick={(e) => { e.stopPropagation(); deleteTemplate(slot); }} style={{ fontSize: 11, color: "var(--brand)", padding: "3px 8px" }}>
-                        <Trash2 size={12} />
-                      </button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`删除模板${slot}`}
+                        className="text-destructive-fg hover:text-destructive-fg"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteTemplate(slot);
+                        }}
+                      >
+                        <Trash2 className="size-3" />
+                      </Button>
                     )}
                   </div>
                 );
               })}
             </div>
           </div>
-        </div>
+        </DialogBody>
 
-        <div className="modal-footer" style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "12px 20px", borderTop: "1px solid var(--line)" }}>
-          <button className="ghost-button" onClick={onClose}>取消</button>
-          <button className="primary-button" onClick={doExport} disabled={exporting || selected.length === 0}>
-            <Download size={16} /> {exporting ? "导出中..." : "导出 Excel"}
-          </button>
-        </div>
-      </div>
-    </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={exporting}>
+            取消
+          </Button>
+          <Button
+            variant="primary"
+            icon={<Download className="size-4" />}
+            onClick={() => void doExport()}
+            loading={exporting}
+            disabled={selected.length === 0}
+          >
+            导出 Excel
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
