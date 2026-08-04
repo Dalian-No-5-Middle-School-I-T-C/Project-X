@@ -7,7 +7,7 @@ import { formatScore } from "../util/format";
  * 班级分数箱线图（手绘 SVG）。
  *
  * 迁移说明：保留原 SVG 绘制与「点击柱形筛选班级」交互，
- * 仅把 `boxplot-*` 旧工具类换成 Tailwind 语义类
+ * 仅把旧箱线图工具类换成 Tailwind 语义类
  * （描边/网格/文字走 border-*、foreground、muted-foreground 系列），
  * 全文件零硬编码十六进制、零内联 style。
  */
@@ -208,7 +208,10 @@ export function AnalysisDistribution({
               return (
                 <g
                   key={item.id}
-                  className={cn("group", interactive && "cursor-pointer")}
+                  className={cn(
+                    "group",
+                    interactive && "cursor-pointer focus-visible:outline-none",
+                  )}
                   role={interactive ? "button" : undefined}
                   tabIndex={interactive ? 0 : undefined}
                   aria-label={interactive ? `筛选 ${item.label}` : undefined}
@@ -231,7 +234,7 @@ export function AnalysisDistribution({
                       y={top - 4}
                       width={80}
                       height={bottom - top + 52}
-                      className="fill-transparent outline-none"
+                      className="fill-transparent outline-none transition-[stroke,stroke-width] group-focus-visible:stroke-ring group-focus-visible:[stroke-width:3px]"
                     />
                   )}
                   <title>{title}</title>
