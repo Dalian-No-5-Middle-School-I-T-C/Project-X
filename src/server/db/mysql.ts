@@ -676,6 +676,16 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE exam_group_members ADD COLUMN track_type VARCHAR(20) NOT NULL DEFAULT 'common'`,
       ]
     },
+    {
+      version: 32,
+      name: "online-review-paper-pool",
+      sqls: [
+        `ALTER TABLE answer_block_crops ADD COLUMN claimed_by INT`,
+        `ALTER TABLE answer_block_crops ADD COLUMN claimed_at DATETIME`,
+        `ALTER TABLE answer_block_crops ADD COLUMN claim_count INT NOT NULL DEFAULT 0`,
+        `CREATE INDEX idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by)`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {
