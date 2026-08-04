@@ -1,6 +1,6 @@
 # 演示考试数据包
 
-覆盖 Project-X **v1.9.4+ / v1.9.5 / v1.9.6** 功能测试所需的完整数据集。
+覆盖 Project-X **v1.9.4 ~ v1.9.9** 功能测试所需的完整数据集（含文理分科 #212、填空题升级 #211、网阅打分记录/双评仲裁/断点续批 #173/#177）。
 
 ## 内容
 
@@ -19,20 +19,28 @@
 ## 数据概览
 
 - **年级**：高一(演示)
-- **班级**：演示1班、演示2班（各 8 人）
-- **学生**：`20260101` ~ `20260116`，密码 = 学号（seed 显式覆盖默认随机密码）
+- **班级**：演示1班（理科班）、演示2班（文科班），各 8 人
+- **学生**：`20260101` ~ `20260116`，密码 = 学号（seed 显式覆盖默认随机密码）；`01~08` 理科、`09~16` 文科（`users.track`）
 - **教师**：`demo-teacher` / `teacher123`、`demo-teacher-2` / `teacher123`
 - **考试**：8 场周考/月考 + 1 场网阅测试（共 9 场）
-- **大考合集**：演示-2026高考摸底大考（6 科）
-- **跨考已存组**：演示-第25周考试包（6/16~6/22）
+- **大考合集**：演示-2026高考摸底大考（7 科：语数英=共同、物化生=理科、历史=文科）
+- **跨考已存组**：演示-第25周考试包（6/16~6/22，6 科全共同）
+- **填空题演示**：演示-语文卡（88000001）含 fill_blank 块 3 道题（逐空自定义横线 / 文字注释 / 插入图片）
 
 ### 特意设计的测试点
 
 - 数学 4 人同分 128 → 并列排名
-- 化学缺考周杰（20260108）、生物缺考沈婷（20260116）
+- 化学缺考周杰（20260108）、生物缺考沈婷（20260116）——常规缺考测试点，与文理分科无关（文理分科仅作用于大考合集统计）
 - 演示-数学含 Q1~Q5 客观题小分（导出测试）
 - 演示-数学月考 + 演示-数学 → 名次变化
-- 演示-网阅测试：题块 A(满分15·含0.5·block_total+proportional) / B(满分25·per_question+equal)
+- **文理分科**：大考合集 7 科成员 track_type（common/arts/science），物化生仅统计理科 8 人、历史仅统计文科 8 人
+- **填空题升级**：88000001 卡 fill_blank 块 — Q1 两空宽度/高度不同 + 右侧批注 + 注释；Q2 插入居中图片（`/api/assets/88000001/fig-demo.png`）；Q3 普通横线
+- **网阅打分**（演示-网阅测试）：
+  - 题块 A（满分15·含0.5·双评2P·block_total+proportional）：3 份双评一致已批、1 份争议（9 vs 13，差 4 > 阈值 2）、4 份待二评
+  - 题块 B（满分25·单评1P·per_question+equal）：3 份已批、5 份待批
+  - 已批卷含 `final_score` + `score_breakdown`（两轮明细），逐题主观分已落 `question_scores`，`student_scores` 张明 30 / 李华 34 / 王芳 29
+  - 断点续批：demo-teacher 题块 B 草稿会话（`review_sessions.draft_scores`）
+  - 批注：题块 B 已批卷 1 条文字批注
 - 全局设置：require_original_paper / highlight_missing_paper
 
 ## 导入方式
@@ -63,6 +71,8 @@ npm run dev
 ./testdata/demo-exams/scripts/import-all.sh build
 ```
 
+v1.9.9 起备份包同时包含资源文件（`data/answer-card/`：填空题图片与网阅切块占位图），ZIP 恢复后图片资源完整可用。
+
 ## 校验
 
 ```bash
@@ -88,8 +98,9 @@ curl -X POST http://127.0.0.1:5174/api/db/restore \
 
 ## 兼容性说明
 
-- 数据库迁移版本：v1~v27（v17 跳过），所有迁移幂等（`addColumnIfMissing` / `CREATE TABLE IF NOT EXISTS`）
-- **大考组**使用 `exam_group_members` 表
+- 数据库迁移版本：v1~v31（v17 跳过），所有迁移幂等（`addColumnIfMissing` / `CREATE TABLE IF NOT EXISTS`）
+- **大考组**使用 `exam_group_members` 表（v31 起含 `track_type` 文理分科字段）
 - **跨考已存组**同时写入 `exam_group_members` 与 `exam_group_items`（兼容 main 与 PR #112）
 - 所有考试/组/答题卡名称以 `演示-` 为前缀，重复导入会先清理旧数据（idempotent）
-- ZIP 恢复后必须重启 dev 服务，`initializeDatabase()` 会自动执行缺失迁移（v25~v27 等）
+- 清理演示数据时 `review_sessions` 一并按考试 id 清除（v1.9.9 起）
+- ZIP 恢复后必须重启 dev 服务，`initializeDatabase()` 会自动执行缺失迁移（v25~v31 等）

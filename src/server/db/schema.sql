@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
     name             TEXT NOT NULL,           -- 真实姓名
     role_id          INTEGER NOT NULL REFERENCES roles(id),
     student_number   TEXT UNIQUE,            -- 学号/考号（仅学生有）
+    track            TEXT,                    -- 文理分科：'arts' 文科 / 'science' 理科（仅学生，Issue #177）
     subject          TEXT,                    -- 任教科目（仅教师）
     initial_password TEXT,                    -- 初始明文密码（导出账密用）
     score_display_mode TEXT DEFAULT 'zscore',  -- deviation / zscore / percentile (v1.4.0)
@@ -253,6 +254,7 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
     point_text      TEXT NOT NULL,
     category        TEXT,
     sort_order      INTEGER DEFAULT 0,
+    track_type      TEXT NOT NULL DEFAULT 'common', -- 文理分科科目归属：common 共同 / arts 文科 / science 理科（Issue #177）
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(card_id, question_number, point_text)
 );

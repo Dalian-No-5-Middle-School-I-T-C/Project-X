@@ -14,6 +14,7 @@ import type {
   ReviewBlockSummary,
   ReviewSubmitResult
 } from "../../../../shared/types";
+import { QuestionScorePad } from "./QuestionScorePad";
 
 interface Props {
   examId: number;
@@ -30,6 +31,9 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
   const [queue, setQueue] = useState<ReviewBlockCropItem[]>([]);
   const [index, setIndex] = useState(0);
   const [scoreEdits, setScoreEdits] = useState<Record<number, string>>({});
+  const [scoreMeta, setScoreMeta] = useState<Record<number, { score: number; maxScore: number }>>({});
+  /** Issue #173：可选的给分步进（0.5 / 1），默认 1 */
+  const [step, setStep] = useState<0.5 | 1>(1);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -145,15 +149,21 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
         }>(`/api/exams/${examId}/student/${current.studentId}/scores`);
         if (cancelled) return;
         const initial: Record<number, string> = {};
+        const meta: Record<number, { score: number; maxScore: number }> = {};
         for (const qNum of current.questionNumbers) {
           const num = Number(qNum);
           if (!Number.isFinite(num)) continue;
           const row = detail.questionScores.find((item) => item.question_number === num);
           initial[num] = row != null ? String(row.score) : "";
+          if (row != null) meta[num] = { score: row.score, maxScore: row.max_score };
         }
         setScoreEdits(initial);
+        setScoreMeta(meta);
       } catch {
-        if (!cancelled) setScoreEdits({});
+        if (!cancelled) {
+          setScoreEdits({});
+          setScoreMeta({});
+        }
       }
     })();
 
@@ -166,6 +176,11 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
     () => blocks.find((block) => block.blockId === selectedBlockId) ?? null,
     [blocks, selectedBlockId]
   );
+
+  // Issue #173：题块不允许 0.5 分时，步进强制回落到 1
+  useEffect(() => {
+    if (!selectedBlock?.hasHalfPoint) setStep(1);
+  }, [selectedBlockId, selectedBlock?.hasHalfPoint]);
 
   async function submitCurrent(status: "reviewed" | "disputed" = "reviewed", advance = true) {
     if (!current || !current.studentId) return;
@@ -373,21 +388,65 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
                 </div>
               )}
 
+              {/* Issue #173：给分步进切换（0.5 / 1） */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 13, color: "var(--muted)" }}>给分步进：</span>
+                <button
+                  type="button"
+                  disabled={!selectedBlock?.hasHalfPoint}
+                  onClick={() => setStep(1)}
+                  style={{
+                    minHeight: 28,
+                    padding: "3px 12px",
+                    fontSize: 13,
+                    borderRadius: 7,
+                    border: step === 1 ? "2px solid var(--primary)" : "1px solid var(--border)",
+                    background: step === 1 ? "var(--primary)" : "var(--surface)",
+                    color: step === 1 ? "#fff" : "var(--text-primary)",
+                    cursor: !selectedBlock?.hasHalfPoint ? "default" : "pointer",
+                    opacity: !selectedBlock?.hasHalfPoint ? 0.55 : 1,
+                  }}
+                >
+                  1 分
+                </button>
+                <button
+                  type="button"
+                  disabled={!selectedBlock?.hasHalfPoint}
+                  onClick={() => setStep(0.5)}
+                  style={{
+                    minHeight: 28,
+                    padding: "3px 12px",
+                    fontSize: 13,
+                    borderRadius: 7,
+                    border: step === 0.5 ? "2px solid var(--primary)" : "1px solid var(--border)",
+                    background: step === 0.5 ? "var(--primary)" : "var(--surface)",
+                    color: step === 0.5 ? "#fff" : "var(--text-primary)",
+                    cursor: !selectedBlock?.hasHalfPoint ? "default" : "pointer",
+                    opacity: !selectedBlock?.hasHalfPoint ? 0.55 : 1,
+                  }}
+                >
+                  0.5 分
+                </button>
+                {!selectedBlock?.hasHalfPoint && (
+                  <span style={{ fontSize: 12, color: "var(--muted)" }}>本题块未启用 0.5 分</span>
+                )}
+              </div>
+
               <div className="online-review-score-grid">
                 {current.questionNumbers.map((qNum) => {
                   const num = Number(qNum);
                   if (!Number.isFinite(num)) return null;
                   return (
-                    <label key={num} className="online-review-score-row">
+                    <div key={num} className="online-review-score-row">
                       <span>第 {num} 题</span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={0.5}
+                      <QuestionScorePad
+                        maxScore={scoreMeta[num]?.maxScore ?? 0}
+                        step={step}
                         value={scoreEdits[num] ?? ""}
-                        onChange={(e) => setScoreEdits((prev) => ({ ...prev, [num]: e.target.value }))}
+                        onChange={(value) => setScoreEdits((prev) => ({ ...prev, [num]: value }))}
+                        disabled={saving}
                       />
-                    </label>
+                    </div>
                   );
                 })}
               </div>

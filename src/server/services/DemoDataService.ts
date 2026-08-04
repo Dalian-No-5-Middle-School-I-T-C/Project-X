@@ -138,11 +138,20 @@ function ensureCrossExamTables(db: Database.Database): void {
   }
 }
 
-function linkGroupExams(db: Database.Database, groupId: number, examIds: number[]): void {
+/**
+ * 关联考试组与考试。trackTypes 与 examIds 一一对应（缺省 'common'），
+ * 支持文理分科（#212）：common 共同 / arts 文科 / science 理科。
+ */
+function linkGroupExams(
+  db: Database.Database,
+  groupId: number,
+  examIds: number[],
+  trackTypes?: Array<"common" | "arts" | "science">
+): void {
   const insertMember = db.prepare(
-    "INSERT OR IGNORE INTO exam_group_members (group_id, exam_id, sort_order) VALUES (?, ?, ?)"
+    "INSERT OR IGNORE INTO exam_group_members (group_id, exam_id, sort_order, track_type) VALUES (?, ?, ?, ?)"
   );
-  examIds.forEach((id, i) => insertMember.run(groupId, id, i));
+  examIds.forEach((id, i) => insertMember.run(groupId, id, i, trackTypes?.[i] ?? "common"));
 
   if (tableExists(db, "exam_group_items")) {
     const insertItem = db.prepare(
@@ -178,6 +187,7 @@ function cleanupDemoData(db: Database.Database): ClearDemoStats {
     db.prepare(`DELETE FROM student_scores WHERE exam_id IN (${ph})`).run(...demoExamIds);
     db.prepare(`DELETE FROM answer_block_crops WHERE exam_id IN (${ph})`).run(...demoExamIds);
     db.prepare(`DELETE FROM review_assignments WHERE exam_id IN (${ph})`).run(...demoExamIds);
+    db.prepare(`DELETE FROM review_sessions WHERE exam_id IN (${ph})`).run(...demoExamIds);
     db.prepare(`DELETE FROM block_grading_config WHERE exam_id IN (${ph})`).run(...demoExamIds);
     db.prepare(`DELETE FROM exams WHERE id IN (${ph})`).run(...demoExamIds);
   }
@@ -362,6 +372,14 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
     }
   }
 
+  // v1.9.9: 文理分科标签（#212，大考合集按科类筛选）：演示1班（01~08）= 理科班、演示2班（09~16）= 文科班。
+  // 仅打标本次新建的演示学生，被跳过的真实学生不受影响（与 is_demo 打标同一安全语义）。
+  const setStudentTrack = db.prepare("UPDATE users SET track = ? WHERE id = ?");
+  STUDENT_NUMBERS.forEach((num, i) => {
+    const sid = studentIdByNumber.get(num);
+    if (sid) setStudentTrack.run(i < 8 ? "science" : "arts", sid);
+  });
+
   const class1StudentIds = STUDENT_NUMBERS.slice(0, 8)
     .map((n) => studentIdByNumber.get(n))
     .filter((id): id is number => typeof id === "number");
@@ -404,7 +422,8 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
 
   seedExam(PRIOR_MATH_EXAM);
   for (const spec of WEEK_EXAMS) weekExamIds.push(seedExam(spec));
-  seedExam(OUTSIDE_WEEK_EXAM);
+  const historyExamId = seedExam(OUTSIDE_WEEK_EXAM);
+  seedFillBlankDemo(db);
 
   // 网阅打分面板 DEV 演示数据（v1.9.4 路径 B 测试入口）
   const teacherRow = db.prepare("SELECT id FROM users WHERE username = 'demo-teacher'").get() as { id: number } | undefined;
@@ -417,8 +436,13 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   const groupInfo = db.prepare(`
     INSERT INTO exam_groups (name, description, grade_id, tag, status, total_score_mode, only_full_participants, created_by)
     VALUES (?, ?, ?, '模考', 'active', 'raw', 0, (SELECT id FROM users WHERE username = 'admin'))
-  `).run(`${DEMO_PREFIX}2026高考摸底大考`, "语数英物化生六科联考演示数据", grade.id);
-  linkGroupExams(db, Number(groupInfo.lastInsertRowid), weekExamIds);
+  `).run(`${DEMO_PREFIX}2026高考摸底大考`, "语数英物化生史七科联考演示数据（含文理分科）", grade.id);
+  // 文理分科（#212）：语数英=共同科目、物化生=理科、历史=文科；大考统计按科类筛选学生
+  const bigExamIds = [...weekExamIds, historyExamId];
+  const bigTrackTypes: Array<"common" | "arts" | "science"> = [
+    "common", "common", "common", "science", "science", "science", "arts"
+  ];
+  linkGroupExams(db, Number(groupInfo.lastInsertRowid), bigExamIds, bigTrackTypes);
 
   const crossInfo = db.prepare(`
     INSERT INTO exam_groups (name, source, start_date, end_date, created_by)
@@ -431,13 +455,86 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   ensureSetting.run("require_original_paper", "1");
   ensureSetting.run("highlight_missing_paper", "1");
 
-  console.log(`[seed] 完成: ${examCount} 场考试, 16 名学生, 大考合集 + 跨考已存组`);
+  console.log(`[seed] 完成: ${examCount} 场考试, 16 名学生(文理分科), 大考合集(7科) + 跨考已存组`);
   return {
     studentsCreated: batch.created,
     studentsSkipped: batch.skipped,
     exams: examCount,
     groups: 2
   };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// 填空题升级演示种子（#211）：自定义横线 / 文字注释 / 插入图片
+// ────────────────────────────────────────────────────────────────────────────
+
+const FILL_BLANK_CARD_ID = "88000001"; // 演示-语文卡
+
+/**
+ * 为演示-语文卡补一个填空题块（3 道题）：
+ * - Q1：两空，逐空自定义横线宽度/高度 + 右侧批注 + 文字注释；
+ * - Q2：一空 + 插入图片（居中，资源写入卡片资源目录，与 /api/cards/:id/assets 上传产物同构）；
+ * - Q3：一空普通横线（对照，无注释/图片）。
+ * 清除演示数据时经 subjective_blocks.card_id → answer_cards ON DELETE CASCADE 自动级联，无需额外清理。
+ */
+function seedFillBlankDemo(db: Database.Database): void {
+  // 卡片不存在时跳过（防御性检查；演示卡号被真实数据占用时 seedExam 的 INSERT 会先行报错）
+  const card = db.prepare("SELECT id FROM answer_cards WHERE id = ?").get(FILL_BLANK_CARD_ID) as { id: string } | undefined;
+  if (!card) return;
+
+  const blockId = "fb-demo-1";
+  db.prepare(`
+    INSERT OR IGNORE INTO subjective_blocks (id, card_id, sort_order, block_kind, title)
+    VALUES (?, ?, 0, 'fill_blank', '填空题（演示）')
+  `).run(blockId, FILL_BLANK_CARD_ID);
+
+  // 图片资源：写入 data/answer-card/assets/<cardId>/，设计器/PDF 以 /api/assets/:cardId/:assetId 读取
+  const assetsDir = path.join(resolveAnswerCardDataDir(), "assets", FILL_BLANK_CARD_ID);
+  fs.mkdirSync(assetsDir, { recursive: true });
+  const assetFile = path.join(assetsDir, "fig-demo.png");
+  if (!fs.existsSync(assetFile)) {
+    fs.writeFileSync(assetFile, makePlaceholderPng(96, 60, [245, 243, 235]));
+  }
+
+  const insertQ = db.prepare(`
+    INSERT OR IGNORE INTO subjective_questions
+      (id, block_id, number, score, style, kind, min_height_mm, blanks_count, blanks_width_mm, blanks_height_mm,
+       blanks_label_style, blanks_items_json, annotation, sort_order)
+    VALUES (?, ?, ?, ?, 'plain_subjective', 'blank', ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertImg = db.prepare(
+    "INSERT OR IGNORE INTO subjective_question_images (question_id, asset_id, original_name, width_mm, height_mm, align, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)"
+  );
+
+  // Q1：两空，逐空自定义横线宽度/高度 + 右侧批注 + 文字注释（blanks_items_json 与设计器存储格式一致）
+  insertQ.run(
+    "fb-q1", blockId, 1, 6, 14, 2, 30, 6, "arabic_parentheses",
+    JSON.stringify([
+      { label: "(1)", widthMm: 20, heightMm: 6 },
+      { label: "(2)", widthMm: 34, heightMm: 8, rightAnnotation: "填＞或＜" }
+    ]),
+    "请在横线上填写正确的成语，注意字形与笔画。",
+    0
+  );
+
+  // Q2：一空 + 插入图片（居中）
+  insertQ.run(
+    "fb-q2", blockId, 2, 4, 14, 1, 30, 6, "arabic_parentheses",
+    JSON.stringify([{ label: "(1)", widthMm: 30, heightMm: 6 }]),
+    "观察下面的图片，先写出数量关系式，再列式解答。注意单位换算，结果保留一位小数。",
+    1
+  );
+  insertImg.run("fb-q2", "fig-demo.png", "fig-demo.png", 48, 22, "center", 0);
+
+  // Q3：一空普通横线（对照，仅文字注释）
+  insertQ.run(
+    "fb-q3", blockId, 3, 3, 14, 1, 34, 6, "none",
+    null,
+    "注：答案不唯一，言之有理即可。",
+    2
+  );
+
+  console.log(`[seed] 填空题演示: 卡 ${FILL_BLANK_CARD_ID} 补填空题块（自定义横线 / 文字注释 / 插入图片）`);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -524,7 +621,7 @@ interface ReviewBlockSpec {
 const REVIEW_BLOCKS: ReviewBlockSpec[] = [
   {
     blockId: "A",
-    title: "解答题A（满分15·含0.5）",
+    title: "解答题A（满分15·含0.5·双评）",
     type: "subjective",
     questions: [1, 2, 3],
     maxScorePerQuestion: 5,
@@ -532,7 +629,7 @@ const REVIEW_BLOCKS: ReviewBlockSpec[] = [
   },
   {
     blockId: "B",
-    title: "解答题B（满分25）",
+    title: "解答题B（满分25·单评）",
     type: "subjective",
     questions: [4, 5, 6, 7, 8],
     maxScorePerQuestion: 5,
@@ -586,7 +683,7 @@ async function seedReviewDemo(
        (exam_id, block_id, dispute_threshold, rounding, arbitrator_id, review_mode,
         has_half_point, auto_reassign_no_arb, workload_balance_threshold,
         scoring_mode, score_distribution)
-     VALUES (?, ?, 2, 'ceil', NULL, 1, ?, 1, 4, ?, ?)`
+     VALUES (?, ?, 2, 'ceil', NULL, ?, ?, 1, 4, ?, ?)`
   );
   const insertAssignment = db.prepare(
     `INSERT INTO review_assignments (exam_id, block_id, teacher_id, student_count, assigned_student_ids, auto_assigned)
@@ -594,10 +691,11 @@ async function seedReviewDemo(
   );
 
   for (const block of REVIEW_BLOCKS) {
-    // 题块 A: block_total + proportional（默认）；题块 B: per_question + equal
+    // 题块 A: 双评 2P + block_total + proportional；题块 B: 单评 1P + per_question + equal
     const scoringMode = block.blockId === "A" ? "block_total" : "per_question";
     const scoreDist = block.blockId === "A" ? "proportional" : "equal";
-    insertConfig.run(examId, block.blockId, block.hasHalf, scoringMode, scoreDist);
+    const reviewMode = block.blockId === "A" ? 2 : 1;
+    insertConfig.run(examId, block.blockId, reviewMode, block.hasHalf, scoringMode, scoreDist);
   }
 
   // 分配策略：
@@ -641,6 +739,131 @@ async function seedReviewDemo(
     }
   }
 
+  // ── v1.9.9: 打分记录演示（双评 / 争议 / 断点续批 / 批注）──
+  // score_breakdown 与 ReviewService.submitReviewCropScores 的落库结构一致：
+  // [{ round, reviewerId, score, reviewedAt, questionScores }]
+  const r2 = secondTeacherId ?? teacherId;
+  const reviewedAt = "2026-06-25T09:30:00.000Z";
+
+  interface ReviewRoundSeed {
+    reviewerId: number;
+    score: number;
+    questionScores: Record<string, number>;
+  }
+  interface ReviewCropSeed {
+    blockId: string;
+    studentId: number;
+    status: "reviewed" | "disputed" | "pending";
+    rounds: ReviewRoundSeed[];
+  }
+
+  // 题块 A（双评 2P）：3 份双评一致 → reviewed；1 份双评分歧（9 vs 13，差 4 > 阈值 2）→ disputed；
+  // 其余 4 份已评 1 轮 → pending（等待第二评）
+  const blockAStates: ReviewCropSeed[] = [
+    { blockId: "A", studentId: studentIds[0], status: "reviewed", rounds: [
+      { reviewerId: teacherId, score: 10, questionScores: { "1": 4, "2": 3, "3": 3 } },
+      { reviewerId: r2, score: 10, questionScores: { "1": 4, "2": 3, "3": 3 } }
+    ]},
+    { blockId: "A", studentId: studentIds[1], status: "reviewed", rounds: [
+      { reviewerId: teacherId, score: 12, questionScores: { "1": 5, "2": 4, "3": 3 } },
+      { reviewerId: r2, score: 12, questionScores: { "1": 5, "2": 4, "3": 3 } }
+    ]},
+    { blockId: "A", studentId: studentIds[2], status: "reviewed", rounds: [
+      { reviewerId: teacherId, score: 11, questionScores: { "1": 4, "2": 4, "3": 3 } },
+      { reviewerId: r2, score: 11, questionScores: { "1": 4, "2": 4, "3": 3 } }
+    ]},
+    { blockId: "A", studentId: studentIds[3], status: "disputed", rounds: [
+      { reviewerId: teacherId, score: 9, questionScores: { "1": 3, "2": 3, "3": 3 } },
+      { reviewerId: r2, score: 13, questionScores: { "1": 5, "2": 4, "3": 4 } }
+    ]},
+    { blockId: "A", studentId: studentIds[4], status: "pending", rounds: [
+      { reviewerId: teacherId, score: 10, questionScores: { "1": 4, "2": 3, "3": 3 } }
+    ]},
+    { blockId: "A", studentId: studentIds[5], status: "pending", rounds: [
+      { reviewerId: teacherId, score: 11, questionScores: { "1": 5, "2": 3, "3": 3 } }
+    ]},
+    { blockId: "A", studentId: studentIds[6], status: "pending", rounds: [
+      { reviewerId: teacherId, score: 9, questionScores: { "1": 3, "2": 3, "3": 3 } }
+    ]},
+    { blockId: "A", studentId: studentIds[7], status: "pending", rounds: [
+      { reviewerId: teacherId, score: 12, questionScores: { "1": 5, "2": 4, "3": 3 } }
+    ]}
+  ];
+
+  // 题块 B（单评 1P）：3 份已批 → reviewed，其余 5 份保持 ready 待批
+  const blockBStates: ReviewCropSeed[] = [
+    { blockId: "B", studentId: studentIds[0], status: "reviewed", rounds: [
+      { reviewerId: teacherId, score: 20, questionScores: { "4": 4, "5": 4, "6": 4, "7": 4, "8": 4 } }
+    ]},
+    { blockId: "B", studentId: studentIds[1], status: "reviewed", rounds: [
+      { reviewerId: teacherId, score: 22, questionScores: { "4": 5, "5": 4, "6": 5, "7": 4, "8": 4 } }
+    ]},
+    { blockId: "B", studentId: studentIds[2], status: "reviewed", rounds: [
+      { reviewerId: teacherId, score: 18, questionScores: { "4": 4, "5": 4, "6": 3, "7": 3, "8": 4 } }
+    ]}
+  ];
+  const reviewSeeds = [...blockAStates, ...blockBStates];
+
+  const breakdownOf = (rounds: ReviewRoundSeed[]) =>
+    rounds.map((r, i) => ({ round: i + 1, reviewerId: r.reviewerId, score: r.score, reviewedAt, questionScores: r.questionScores }));
+
+  // 写切块评分状态：reviewed 落 final_score；disputed 无最终分（等仲裁/复评）；pending 保留第 1 轮
+  const updateCrop = db.prepare(`
+    UPDATE answer_block_crops
+    SET status = ?, reviewer_id = ?, reviewed_at = ?, review_round = ?, final_score = ?,
+        final_score_by = ?, score_breakdown = ?
+    WHERE id = ?
+  `);
+  for (const s of reviewSeeds) {
+    const last = s.rounds[s.rounds.length - 1];
+    const finalScore = s.status === "reviewed" ? last.score : null;
+    updateCrop.run(
+      s.status, last.reviewerId, reviewedAt, s.rounds.length,
+      finalScore, finalScore != null ? last.reviewerId : null,
+      JSON.stringify(breakdownOf(s.rounds)),
+      `demo-${examId}-${s.blockId}-${s.studentId}`
+    );
+  }
+
+  // 已批卷逐题主观分落库（与打分提交后的落库语义一致：score_type='subjective'、manually_modified=1）
+  const updateQS = db.prepare(`
+    UPDATE question_scores
+    SET score = ?, score_type = 'subjective', manually_modified = 1, modified_by = ?, modified_at = ?
+    WHERE exam_id = ? AND student_id = ? AND question_number = ?
+  `);
+  for (const s of reviewSeeds) {
+    if (s.status !== "reviewed") continue; // 争议/待评卷不落正式分
+    const last = s.rounds[s.rounds.length - 1];
+    for (const [q, score] of Object.entries(last.questionScores)) {
+      updateQS.run(score, last.reviewerId, reviewedAt, examId, s.studentId, Number(q));
+    }
+  }
+
+  // 网阅考试学生成绩（客观 0、主观 = 已批题块合计；争议卷不计分，仲裁后才会落库）
+  const studentTotal = new Map<number, number>();
+  for (const s of reviewSeeds) {
+    if (s.status !== "reviewed") continue;
+    const last = s.rounds[s.rounds.length - 1];
+    studentTotal.set(s.studentId, (studentTotal.get(s.studentId) ?? 0) + last.score);
+  }
+  const insertStudentScore = db.prepare(
+    "INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?, ?, 0, ?, ?)"
+  );
+  for (const [sid, total] of studentTotal) insertStudentScore.run(examId, sid, total, total);
+
+  // 断点续批：demo-teacher 在题块 B 批到第 4 份时保存的草稿会话（draft_scores 以切块 id 为键，同 GradePanel 语义）
+  db.prepare(`
+    INSERT OR IGNORE INTO review_sessions (teacher_id, exam_id, block_id, current_index, position_json, draft_scores, updated_at)
+    VALUES (?, ?, 'B', 3, '{"zoom":1,"rotation":0}', ?, ?)
+  `).run(teacherId, examId, JSON.stringify({ [`demo-${examId}-B-${studentIds[3]}`]: 19 }), reviewedAt);
+
+  // 批注：题块 B 首份已批卷留一条文字批注（data_json 与前端 AnnotationOverlay 一致：{ text }）
+  db.prepare(`
+    INSERT OR IGNORE INTO review_annotations (id, crop_id, reviewer_id, type, data_json, created_at)
+    VALUES (?, ?, ?, 'text', ?, ?)
+  `).run(`demo-annot-${examId}-b1`, `demo-${examId}-B-${studentIds[0]}`, teacherId,
+    JSON.stringify({ text: "解答规范，书写清晰。" }), reviewedAt);
+
   // 题块 A 工作量均衡：把 8 份卷在已分配教师间收敛到「份数差 ≤ 4」
   if (secondTeacherId != null) {
     await rebalanceWorkload(examId, "A", makeSyncAdapter(db));
@@ -650,8 +873,8 @@ async function seedReviewDemo(
   const aSummary = aAssign.map((r) => `教师${r.teacher_id}:${r.student_count}份${r.auto_assigned ? "(含自动追加)" : ""}`).join("，");
 
   console.log(
-    `[seed] 网阅演示: 考试「${REVIEW_EXAM_NAME}」(id=${examId})，题块 A(满分${REVIEW_BLOCKS[0].questions.length * 5}·含0.5) / B(满分${REVIEW_BLOCKS[1].questions.length * 5})。` +
-      `题块A分配均衡后：${aSummary}`
+    `[seed] 网阅演示: 考试「${REVIEW_EXAM_NAME}」(id=${examId})，题块 A(满分${REVIEW_BLOCKS[0].questions.length * 5}·含0.5·双评2P) / B(满分${REVIEW_BLOCKS[1].questions.length * 5}·单评1P)。` +
+      `已批 A 3 份双评一致 + 1 份争议，B 3 份；断点续批草稿 + 批注 1 条。题块A分配均衡后：${aSummary}`
   );
 }
 
