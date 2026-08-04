@@ -36,13 +36,12 @@ export async function getPoolSummary(
   db: DbAdapter = getMysqlDb()
 ): Promise<ReviewPoolSummary> {
   const rows = await db.all(
-    `SELECT status, claimed_by, COUNT(*) AS cnt
+    `SELECT status, claimed_by, score_breakdown
      FROM answer_block_crops
-     WHERE exam_id = ? AND block_id = ?
-     GROUP BY status, claimed_by`,
+     WHERE exam_id = ? AND block_id = ?`,
     examId,
     blockId
-  ) as Array<{ status: string | null; claimed_by: number | null; cnt: number }>;
+  ) as Array<{ status: string | null; claimed_by: number | null; score_breakdown: string | null }>;
 
   let totalCount = 0;
   let inPoolCount = 0;
@@ -53,7 +52,7 @@ export async function getPoolSummary(
   let myClaimedCount = 0;
 
   for (const row of rows) {
-    const count = Number(row.cnt ?? 0);
+    const count = 1;
     const status = row.status ?? "ready";
     totalCount += count;
     if (status === "reviewed") {
@@ -79,9 +78,11 @@ export async function getPoolSummary(
     let claimed = 0;
     let reviewed = 0;
     for (const row of rows) {
-      if (row.claimed_by !== assignment.teacherId) continue;
-      if (row.status === "reviewed") reviewed += Number(row.cnt ?? 0);
-      else claimed += Number(row.cnt ?? 0);
+      if (row.claimed_by === assignment.teacherId) claimed += 1;
+      try {
+        const history = row.score_breakdown ? JSON.parse(row.score_breakdown) as Array<{ reviewerId?: number }> : [];
+        if (history.some((review) => review.reviewerId === assignment.teacherId)) reviewed += 1;
+      } catch { /* malformed legacy history does not count as completed */ }
     }
     assignmentSummaries.push({
       teacherId: assignment.teacherId,
@@ -160,15 +161,20 @@ export async function claimNextPaper(
       ? `AND EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = answer_block_crops.student_id AND cs.class_id = ?)`
       : "";
     const classParams = options.classId ? [options.classId] : [];
-    const candidate = await tx.get(
-      `SELECT id FROM answer_block_crops
+    const candidates = await tx.all(
+      `SELECT id, score_breakdown FROM answer_block_crops
        WHERE exam_id = ? AND block_id = ? AND ${statusClause()} AND claimed_by IS NULL ${classFilter}
-       ORDER BY student_number, page_number, segment_index
-       LIMIT 1`,
+       ORDER BY student_number, page_number, segment_index`,
       examId,
       blockId,
       ...classParams
-    ) as { id: string } | undefined;
+    ) as Array<{ id: string; score_breakdown: string | null }>;
+    const candidate = candidates.find((item) => {
+      try {
+        const history = item.score_breakdown ? JSON.parse(item.score_breakdown) as Array<{ reviewerId?: number }> : [];
+        return !history.some((review) => review.reviewerId === teacherId);
+      } catch { return true; }
+    });
     if (!candidate) throw new ReviewPoolError("试卷池暂无可用试卷");
 
     const now = new Date().toISOString();
@@ -196,6 +202,20 @@ export async function claimSpecificPaper(
   teacherId: number,
   db: DbAdapter = getMysqlDb()
 ): Promise<ReviewPoolEntry> {
+  const existing = await db.get(
+    "SELECT score_breakdown FROM answer_block_crops WHERE id = ? AND exam_id = ? AND block_id = ?",
+    cropId, examId, blockId
+  ) as { score_breakdown: string | null } | undefined;
+  if (existing?.score_breakdown) {
+    try {
+      const history = JSON.parse(existing.score_breakdown) as Array<{ reviewerId?: number }>;
+      if (history.some((review) => review.reviewerId === teacherId)) {
+        throw new ReviewPoolError("您已批阅过该试卷，不能重复领取");
+      }
+    } catch (error) {
+      if (error instanceof ReviewPoolError) throw error;
+    }
+  }
   const now = new Date().toISOString();
   const result = await db.run(
     `UPDATE answer_block_crops

@@ -49,7 +49,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   // Issue #174: 从试卷池领取下一份（题块总分模式同样走池，避免重复批阅）
   const claimNext = useCallback(async () => {
     if (claiming) return;
-    setClaiming(true);
+    setClaiming(true);  
     setError(null);
     try {
       const res = await fetchJson<{ ok: boolean; data?: ReviewBlockCropItem; error?: string }>(
@@ -57,8 +57,10 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }
       );
       if (!res.ok || !res.data) throw new Error(res.error ?? "领卷失败");
-      setQueue((prev) => [...prev, res.data!]);
-      setCurrentIndex((prev) => prev + 1);
+      setQueue((prev) => {
+        setCurrentIndex(prev.length);
+        return [...prev, res.data!];
+      });
     } catch (err: any) {
       setError(err.message);
     } finally {

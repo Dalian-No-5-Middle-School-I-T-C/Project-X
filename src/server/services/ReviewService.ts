@@ -216,8 +216,10 @@ export async function submitReviewCropScores(params: {
   if (!crop.student_id) throw new Error("该切块未关联学生，无法阅卷");
 
   // Issue #174: 已领取的试卷只能由领取人提交（管理员除外），防止并发冲突覆盖
-  if (crop.claimed_by != null && crop.claimed_by !== params.userId && !params.isAdmin) {
-    throw new ReviewValidationError("该试卷已被其他教师领取，无法提交；请先从试卷池领取");
+  if (!params.isAdmin && crop.claimed_by !== params.userId) {
+    throw new ReviewValidationError(crop.claimed_by == null
+      ? "该试卷尚未领取，无法提交；请先从试卷池领取"
+      : "该试卷已被其他教师领取，无法提交；请先从试卷池领取");
   }
 
   const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", params.examId) as { card_id: string | null } | undefined;
@@ -359,11 +361,14 @@ export async function submitReviewCropScores(params: {
   await db.transaction(async (tx) => {
     // 评分历史必须在事务内读取和追加；事务外快照会在并发提交时覆盖另一位教师的记录。
     const freshCrop = await tx.get(
-      "SELECT review_round, score_breakdown, status FROM answer_block_crops WHERE id = ?",
+      "SELECT review_round, score_breakdown, status, claimed_by FROM answer_block_crops WHERE id = ?",
       params.cropId
-    ) as { review_round: number; score_breakdown: string | null; status: string | null } | undefined;
+    ) as { review_round: number; score_breakdown: string | null; status: string | null; claimed_by: number | null } | undefined;
     const currentRound = freshCrop?.review_round ?? 0;
     if (!freshCrop) throw new Error("作答切块不存在");
+    if (!params.isAdmin && freshCrop.claimed_by !== params.userId) {
+      throw new ReviewValidationError("试卷领取状态已变更，请刷新后重新领取");
+    }
     try { scoreBreakdown = freshCrop.score_breakdown ? JSON.parse(freshCrop.score_breakdown) : []; } catch { scoreBreakdown = []; }
 
     const reviewerIds = new Set(scoreBreakdown.map((b) => b.reviewerId));

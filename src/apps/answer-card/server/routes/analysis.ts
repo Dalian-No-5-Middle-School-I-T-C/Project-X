@@ -398,7 +398,7 @@ router.get("/exams/:examId/class-comparison", requireExamAccess, async (req, res
       const examClasses = await analysisRepo.getExamClasses(Number(req.params.examId));
       classIds = examClasses.map((cls) => cls.classId);
     }
-    if (classIds.length < 2 || classIds.length > 30) {
+    if (classIds.length < 2 || (!allClasses && classIds.length > 30)) {
       res.status(400).json({ message: "请选择 2-30 个班级（或使用 all=1 对比全部班级）" });
       return;
     }

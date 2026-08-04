@@ -104,6 +104,9 @@ router.post(
       const teacherId = (req as any).user?.id;
       if (!teacherId) return res.status(401).json({ ok: false, error: "未登录" });
       const force = req.body?.force === true;
+      if (force && (req as any).user?.role_id !== 1) {
+        return res.status(403).json({ ok: false, error: "仅管理员可强制释放他人领取的试卷" });
+      }
       await releasePaper(examId, blockId, cropId, teacherId, undefined, { force });
       res.json({ ok: true });
     } catch (err: unknown) {
