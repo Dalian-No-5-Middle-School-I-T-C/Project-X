@@ -821,6 +821,18 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, "users", "track", "TEXT");
       addColumnIfMissing(db, "exam_group_members", "track_type", "TEXT NOT NULL DEFAULT 'common'");
     }
+  },
+  // v32 (Issue #174): 网阅试卷池 — answer_block_crops 增加领取锁定字段。
+  // claimed_by/claimed_at 标记当前领取人；claim_count 记录累计领取次数（复核轮次参考）。
+  {
+    version: 32,
+    name: "online-review-paper-pool",
+    up(db) {
+      addColumnIfMissing(db, "answer_block_crops", "claimed_by", "INTEGER REFERENCES users(id)");
+      addColumnIfMissing(db, "answer_block_crops", "claimed_at", "DATETIME");
+      addColumnIfMissing(db, "answer_block_crops", "claim_count", "INTEGER NOT NULL DEFAULT 0");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by)");
+    }
   }
 ];
 

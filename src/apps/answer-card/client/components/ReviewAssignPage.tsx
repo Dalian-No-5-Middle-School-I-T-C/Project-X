@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { RefreshCw, UserPlus } from "lucide-react";
 import { fetchJson } from "../auth/api";
-import type { ReviewAssignment, ReviewBlockSummary } from "../../../../shared/types";
+import type { ReviewAssignment, ReviewBlockSummary, ReviewPoolEntry, ReviewPoolSummary } from "../../../../shared/types";
 
 interface Props {
   examId: number;
@@ -19,6 +19,8 @@ export function ReviewAssignPage({ examId }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+  const [poolData, setPoolData] = useState<{ summary: ReviewPoolSummary; entries: ReviewPoolEntry[] } | null>(null);
+  const [poolMsg, setPoolMsg] = useState("");
 
   // 加载题块列表
   useEffect(() => {
@@ -51,6 +53,24 @@ export function ReviewAssignPage({ examId }: Props) {
   useEffect(() => {
     if (selectedBlockId) loadAssignments(selectedBlockId);
   }, [selectedBlockId, loadAssignments]);
+
+  // Issue #174: 加载试卷池汇总与条目
+  const loadPool = useCallback((blockId: string) => {
+    if (!blockId) return;
+    setPoolMsg("");
+    fetchJson<{ ok: boolean; data: { summary: ReviewPoolSummary; entries: ReviewPoolEntry[] }; error?: string }>(
+      `/api/review-pool/exams/${examId}/blocks/${encodeURIComponent(blockId)}`
+    )
+      .then((res) => {
+        if (res.ok) setPoolData(res.data);
+        else setPoolMsg(res.error ?? "加载试卷池失败");
+      })
+      .catch((err: any) => setPoolMsg(err.message ?? "加载试卷池失败"));
+  }, [examId]);
+
+  useEffect(() => {
+    if (selectedBlockId) loadPool(selectedBlockId);
+  }, [selectedBlockId, loadPool]);
 
   // 更新输入行
   const updateInput = (idx: number, field: "teacherId" | "count", value: number) => {
@@ -93,6 +113,26 @@ export function ReviewAssignPage({ examId }: Props) {
     loadAssignments(selectedBlockId);
   };
 
+  // Issue #174: 强制释放被领取的试卷回池
+  const handleForceRelease = async (cropId: string) => {
+    if (!selectedBlockId) return;
+    setPoolMsg("");
+    try {
+      const res = await fetchJson<{ ok: boolean; error?: string }>(
+        `/api/review-pool/exams/${examId}/blocks/${encodeURIComponent(selectedBlockId)}/crops/${encodeURIComponent(cropId)}/release`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ force: true }) }
+      );
+      if (res.ok) {
+        setPoolMsg("已强制释放该试卷回池");
+        loadPool(selectedBlockId);
+      } else {
+        setPoolMsg(res.error ?? "释放失败");
+      }
+    } catch (err: any) {
+      setPoolMsg(err.message ?? "释放失败");
+    }
+  };
+
   const totalAssigned = assignments.reduce((s, a) => s + a.studentCount, 0);
 
   if (loading) return <div style={{ padding: 24 }}>加载中...</div>;
@@ -101,7 +141,7 @@ export function ReviewAssignPage({ examId }: Props) {
     <div style={{ padding: 24 }}>
       <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 16 }}>
         阅卷任务分配
-        <button onClick={() => loadAssignments(selectedBlockId)} style={{ ...iconBtn, marginLeft: 8 }}>
+        <button onClick={() => { loadAssignments(selectedBlockId); loadPool(selectedBlockId); }} style={{ ...iconBtn, marginLeft: 8 }}>
           <RefreshCw size={14} />
         </button>
       </div>
@@ -142,6 +182,79 @@ export function ReviewAssignPage({ examId }: Props) {
       )}
 
       {/* 新建分配 */}
+      {/* Issue #174: 试卷池管理 */}
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>
+          试卷池管理
+          <button onClick={() => loadPool(selectedBlockId)} style={{ ...iconBtn, marginLeft: 8 }}>
+            <RefreshCw size={14} />
+          </button>
+        </div>
+        {poolMsg && (
+          <div style={{ fontSize: 12, color: "#E24B4A", marginBottom: 8 }}>{poolMsg}</div>
+        )}
+        {poolData ? (
+          <>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8, fontSize: 12 }}>
+              {[
+                ["池中可领", poolData.summary.inPoolCount],
+                ["已领取", poolData.summary.claimedCount],
+                ["已阅", poolData.summary.reviewedCount],
+                ["待复核", poolData.summary.pendingCount],
+                ["争议", poolData.summary.disputedCount],
+                ["总量", poolData.summary.totalCount],
+              ].map(([label, value]) => (
+                <span key={String(label)} style={chipStyle}>
+                  {label} {value}
+                </span>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
+              教师领取情况：
+              {poolData.summary.assignments.length > 0
+                ? poolData.summary.assignments
+                    .map((a) => `${a.teacherName ?? `教师${a.teacherId}`} 分配${a.assignedCount}/已领${a.claimedCount}/已阅${a.reviewedCount}`)
+                    .join("；")
+                : "暂无分配记录（教师仍可直接从池中领卷）"}
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: "var(--color-background-secondary)", borderBottom: "1px solid var(--color-border-primary)" }}>
+                  <th style={{ ...thStyle, width: 90 }}>学生</th>
+                  <th style={{ ...thStyle, width: 70 }}>状态</th>
+                  <th style={{ ...thStyle, width: 90 }}>领取人</th>
+                  <th style={{ ...thStyle, width: 150 }}>领取时间</th>
+                  <th style={{ ...thStyle, width: 60 }}>累计领取</th>
+                  <th style={{ ...thStyle, width: 70 }}>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {poolData.entries.map((entry) => (
+                  <tr key={entry.id} style={{ borderBottom: "1px solid var(--color-border-primary)" }}>
+                    <td style={tdStyle}>
+                      {entry.studentName ?? entry.studentNumber ?? `学生${entry.studentId ?? ""}`}
+                    </td>
+                    <td style={tdStyle}>{statusText(entry.status)}</td>
+                    <td style={tdStyle}>{entry.claimedByName ?? "—"}</td>
+                    <td style={tdStyle}>{entry.claimedAt ? new Date(entry.claimedAt).toLocaleString() : "—"}</td>
+                    <td style={tdStyle}>{entry.claimCount}</td>
+                    <td style={tdStyle}>
+                      {entry.claimedBy != null && (
+                        <button onClick={() => handleForceRelease(entry.id)} style={smallRedBtn}>
+                          强制释放
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        ) : (
+          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>加载中...</div>
+        )}
+      </div>
+
       <div style={{ borderTop: "0.5px solid var(--color-border-primary)", paddingTop: 16 }}>
         <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 12 }}>新建分配</div>
 
@@ -241,6 +354,35 @@ const actionBtn: React.CSSProperties = {
   alignItems: "center",
   gap: 6,
 };
+
+const chipStyle: React.CSSProperties = {
+  padding: "3px 10px",
+  borderRadius: 12,
+  background: "var(--color-background-secondary)",
+  border: "1px solid var(--color-border-primary)",
+};
+
+const thStyle: React.CSSProperties = {
+  padding: "6px 8px",
+  textAlign: "left",
+  fontWeight: 600,
+  whiteSpace: "nowrap",
+};
+
+const tdStyle: React.CSSProperties = {
+  padding: "5px 8px",
+  whiteSpace: "nowrap",
+};
+
+function statusText(status?: string): string {
+  switch (status) {
+    case "ready": return "待批";
+    case "pending": return "待复核";
+    case "reviewed": return "已阅";
+    case "disputed": return "争议";
+    default: return status ?? "—";
+  }
+}
 
 const smallRedBtn: React.CSSProperties = {
   padding: "2px 8px",

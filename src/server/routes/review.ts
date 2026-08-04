@@ -114,7 +114,8 @@ router.post(
         scores,
         status,
         blockTotalScore,
-        userId: req.user!.id
+        userId: req.user!.id,
+        isAdmin: (req as any).user?.role_name === "admin"
       });
       res.json(result);
     } catch (error) {

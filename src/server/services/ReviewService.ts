@@ -35,6 +35,7 @@ type CropRow = {
   block_title: string | null;
   block_type: string | null;
   status: string | null;
+  claimed_by?: number | null;
 };
 
 async function recomputeStudentTotals(
@@ -203,6 +204,8 @@ export async function submitReviewCropScores(params: {
   userId: number;
   /** 题块总分模式（#187）：整个题块的合计分，后端按比例拆分到各小题 */
   blockTotalScore?: number;
+  /** Issue #174: 管理员提交他人已领取试卷时放行（一般由强制释放流程处理） */
+  isAdmin?: boolean;
 }, db: DbAdapter = getMysqlDb()): Promise<ReviewSubmitResult> {
   const crop = await db.get(
     "SELECT * FROM answer_block_crops WHERE id = ? AND exam_id = ?",
@@ -211,6 +214,11 @@ export async function submitReviewCropScores(params: {
   ) as CropRow | undefined;
   if (!crop) throw new Error("作答切块不存在");
   if (!crop.student_id) throw new Error("该切块未关联学生，无法阅卷");
+
+  // Issue #174: 已领取的试卷只能由领取人提交（管理员除外），防止并发冲突覆盖
+  if (crop.claimed_by != null && crop.claimed_by !== params.userId && !params.isAdmin) {
+    throw new ReviewValidationError("该试卷已被其他教师领取，无法提交；请先从试卷池领取");
+  }
 
   const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", params.examId) as { card_id: string | null } | undefined;
   if (!exam?.card_id) throw new Error("考试未关联答题卡");
@@ -381,6 +389,13 @@ export async function submitReviewCropScores(params: {
     scoreBreakdown.push({ round: finalReviewRound, reviewerId: params.userId, score: totalScore, reviewedAt: now, questionScores });
 
     // 仅在所有轮次完成且无争议后才写正式分数，避免最后一评的分数提前影响排名。
+    // Issue #174: 提交后清空领取标记。
+    // pending 回到试卷池等待下一轮复核；reviewed/disputed 离开可领集合。
+    await tx.run(
+      "UPDATE answer_block_crops SET claimed_by = NULL, claimed_at = NULL WHERE id = ?",
+      params.cropId
+    );
+
     if (scoreBreakdown.length >= reviewMode) {
       const allScores = scoreBreakdown.map((b) => b.score);
       const disputeResult = computeMultiReviewResult(allScores, config.disputeThreshold, config.rounding);

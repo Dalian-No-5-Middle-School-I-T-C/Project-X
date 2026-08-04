@@ -1,6 +1,40 @@
 # Project-X CHANGELOG
 
 
+## v1.10.2 (2026-08-04) — 网阅试卷池 + 成绩分析增强（Issue #174 #175）
+
+> 网阅改为「试卷池」领卷模型，杜绝两位教师同时批阅同一份卷子；成绩分析新增雷达图、全部班级对比、选择题选项统计与更多对比维度。
+
+### Issue #174 网阅试卷池
+- `answer_block_crops` 新增 `claimed_by` / `claimed_at` / `claim_count`（迁移 v32 + 三套 schema），`ready/pending/disputed` 且未被领取的切块进入试卷池。
+- 新增 `/api/review-pool/*`：池汇总、领下一份（支持按班级）、指定领取、释放/强制释放；领取为原子更新，并发下同一份卷只会被一位教师拿到。
+- 提交后自动清空领取标记：待复核回到池中等待下一轮，已阅/争议离开池子；已领取试卷仅领取人可提交（管理员例外），非领取人提交返回冲突提示。
+- 前端：逐题网阅面板与题块总分面板均改为「从试卷池领卷 → 批阅 → 提交」；阅卷分配页新增试卷池管理（汇总统计、条目列表、强制释放）。
+- 验证：`scripts/review-pool-smoke.ts` 19 项断言全绿（互斥领取/冲突/释放/累计次数/提交归属）。
+
+### Issue #175 成绩分析优化
+- 跨班对比支持「全部班级」（`all=1`）与最多 30 个班级手工选择；每班新增难度系数 P、区分度 D（与考试级口径一致），响应带 `fullScore`。
+- 班级对比页新增多维度雷达图（平均分率/中位分率/及格率/优秀率/难度/区分度/离散度）与选择题选项对比表（各班每选项人数与比例）。
+- 题目分析 Tab 新增「选择题选项分析」面板：每道客观题各选项选择人数/比例、作答/未答人数、满分率，正确选项高亮。
+
+### 修改文件清单
+| 文件 | 改动 | 内容 |
+|------|------|------|
+| `src/server/db/migrations.ts` / `mysql.ts` / 三套 schema | +v32 | 试卷池三列 + 池查询索引 |
+| `src/server/services/ReviewPoolService.ts` | 新增 | 汇总/领卷/释放/条目查询（原子互斥） |
+| `src/server/routes/review-pool.ts` | 新增 | `/api/review-pool/*` |
+| `src/server/services/ReviewService.ts` | +12 行 | 提交后清空领取标记 + 领取人归属校验 |
+| `src/apps/answer-card/client/components/OnlineReviewPanel.tsx` | 重写队列 | 试卷池领卷/汇总/释放 |
+| `src/apps/answer-card/client/components/GradePanel.tsx` | +40 行 | 题块总分面板池领卷 |
+| `src/apps/answer-card/client/components/ReviewAssignPage.tsx` | +90 行 | 试卷池管理区 |
+| `src/server/repositories/AnalysisRepository.ts` | +10 行 | 跨班对比每班 P/D、fullScore |
+| `src/apps/answer-card/server/routes/analysis.ts` | +10 行 | `all=1` 全部班级、上限 30 |
+| `src/apps/answer-card/client/components/AnalysisCharts.tsx` | +55 行 | `ClassRadar` 雷达图 |
+| `src/apps/answer-card/client/components/OptionAnalysisPanel.tsx` | 新增 | 选项统计面板 |
+| `src/apps/answer-card/client/components/ScoreDetailPage.tsx` | +120 行 | 全部班级/雷达/选项对比/难度区分度列 |
+| `scripts/review-pool-smoke.ts` | 新增 | 试卷池冒烟测试（19 断言） |
+
+
 ## v1.10.1 (2026-08-03) — 填空题升级：自定义横线 / 插入图片 / 文字注释
 
 > 填空题块支持逐空自定义横线（宽度、高度），支持插入题干图片，支持添加文字注释（自动折行）。
