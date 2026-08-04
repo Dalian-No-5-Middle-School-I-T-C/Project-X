@@ -29,9 +29,9 @@ import type { AnswerBlockCrop } from "../../../../shared/types";
  * ScoreFixPage —— T2 迁移（T04 明细/订正/弹窗）
  *
  * 换肤范围（功能守恒，接口/路由/权限零改动）：
- *  · 放大答题卡：`createPortal` + 手写 ESC + zIndex 999999 → `AnswerCardLightbox`（O-6）
+ *  · 放大答题卡：手写 Portal + 手写 ESC + 魔法 z 层级 → `AnswerCardLightbox`（O-6）
  *  · 双模式切换：手写 div 拼色 → v2 `SegmentedControl`
- *  · `primary-button` / 满屏 `style={{}}` → v2 `Button`/`Input`/`Select`/`Table` + 语义类
+ *  · 旧按钮工具类 / 满屏行内 style → v2 `Button`/`Input`/`Select`/`Table` + 语义类
  *  · 「已手动修改」判定统一走 `isManuallyModified()`（O-2，兼容 boolean 与 0/1）
  */
 

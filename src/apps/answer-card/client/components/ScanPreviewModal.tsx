@@ -13,7 +13,7 @@ import {
  * ScanPreviewModal —— T2 迁移（T04 明细/订正/弹窗）
  *
  * 换肤范围（功能守恒，接口/路由/权限零改动）：
- *  · `createPortal` + `.pdf-modal-*` 毛玻璃手写弹窗 → v2 `Dialog`
+ *  · 手写 Portal + `.pdf-modal-*` 毛玻璃弹窗 → v2 `Dialog`
  *    （Radix 负责 ESC / 点遮罩关闭 / 焦点陷阱 / 层级令牌，删掉手写 ESC 分支）
  *  · 页面定位从 `.pdf-page-item` 类选择器改为 `[data-page-item]` 数据属性，
  *    与被删除的旧 CSS 彻底解耦

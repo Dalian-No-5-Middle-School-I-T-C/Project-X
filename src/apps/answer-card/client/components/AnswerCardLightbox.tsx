@@ -12,8 +12,8 @@ import {
 /**
  * AnswerCardLightbox —— 答题卡放大查看（T2 迁移裁决 O-6）
  *
- * 取代 ScoreFixPage / StudentScoreDetail 中两份重复的 `createPortal` +
- * 手写 ESC + `zIndex: 999999` + `#1a1a1a` 实现：
+ * 取代 ScoreFixPage / StudentScoreDetail 中两份重复的手写 Portal +
+ * 手写 ESC + 魔法 z 层级 + 硬编码近黑底色实现：
  *  · 覆盖层统一走 v2 `Dialog`（Radix：ESC / 点遮罩关闭 / 焦点陷阱 / 层级令牌）
  *  · 图片区 `bg-overlay`，缩放与翻页一律 v2 `Button`
  *  · 缩放倍率是运行时数值，只能落在 `style.transform` 上（§0 铁律 2 允许的动态值）

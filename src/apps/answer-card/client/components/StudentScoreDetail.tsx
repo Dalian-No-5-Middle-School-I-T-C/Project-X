@@ -24,8 +24,8 @@ import type { AnswerBlockCrop } from "../../../../shared/types";
  * StudentScoreDetail —— T2 迁移（T04 明细/订正/弹窗）
  *
  * 换肤范围（功能守恒，接口/路由/权限零改动）：
- *  · 放大答题卡：`createPortal` + zIndex 999999 + `#1a1a1a` → `AnswerCardLightbox`（O-6）
- *  · 手写得分率进度条（含硬编码 `#E65100`）→ v2 `Progress` + tone 分档
+ *  · 放大答题卡：手写 Portal + 魔法 z 层级 + 硬编码近黑底 → `AnswerCardLightbox`（O-6）
+ *  · 手写得分率进度条（含硬编码橙色）→ v2 `Progress` + tone 分档
  *  · 手写 table + 斑马纹 → v2 `Table` 原语，改分行走 `selected` 高亮
  *  · 「已手动修改」判定统一走 `isManuallyModified()`（O-2）
  */
@@ -58,7 +58,7 @@ interface StudentScore {
   cardId: string;
 }
 
-/** 得分率分档 → 语义色（替代原先的 success / #E65100 / brand 三段硬编码） */
+/** 得分率分档 → 语义色（替代原先的 绿 / 橙 / 品牌色 三段硬编码） */
 function rateTone(rate: number): ProgressTone {
   if (rate >= 80) return "success";
   if (rate >= 60) return "warning";

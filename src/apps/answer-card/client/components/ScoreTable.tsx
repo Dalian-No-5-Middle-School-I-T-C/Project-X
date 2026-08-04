@@ -23,7 +23,7 @@ import {
  *  · 桌面端手写 `<table>` + 斑马纹 + 手写排序箭头 → v2 `DataTable`
  *    （排序比较逐条搬运：`Number(a ?? 0) - Number(b ?? 0)`，一律先升序；
  *     初始排序键仍随 `classId` 走班排/年排，靠 `key` 重挂载复位）
- *  · 硬编码 `#3B6D11` / `#A32D2D` 名次涨跌色 → `text-success-foreground` / `text-destructive-fg`
+ *  · 硬编码绿 / 红 名次涨跌色 → `text-success-foreground` / `text-destructive-fg`
  *  · 搜索框、预览按钮 → v2 `Input` / `Button`
  *  · 移动端 `DataCard` 分支保留（CardSelectPage / ExamManagePage 仍在用该组件），
  *    仅把内联样式换成语义类

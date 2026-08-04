@@ -24,11 +24,11 @@ import {
  * QuestionStudentScoresModal —— T2 迁移（T04 明细/订正/弹窗）
  *
  * 换肤范围（功能守恒，接口/路由/权限零改动）：
- *  · `modal-overlay` / `modal-card` / `ghost-button` 手写弹窗 → v2 `Dialog`
+ *  · 旧遮罩 / 卡片 / 按钮工具类拼出的手写弹窗 → v2 `Dialog`
  *  · 手写排序表头（含 ⇅ ▲ ▼ 字符）→ v2 `DataTable`，排序比较函数逐条搬运，
  *    默认序与「点新列先降/先升」的方向沿用原实现（score/scoreRate 先降，其余先升）
  *  · 原生 `<select>` 班级筛选 → v2 `Select`（空值走 `__all__` 哨兵，Radix 不接受空串）
- *  · `#A32D2D` 错误色 → DataTable 内建 error 态
+ *  · 硬编码错误红 → DataTable 内建 error 态
  */
 
 const ALL_CLASSES = "__all__";

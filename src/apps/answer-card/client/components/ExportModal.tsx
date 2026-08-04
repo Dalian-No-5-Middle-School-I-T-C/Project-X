@@ -77,7 +77,7 @@ const ALL_COLUMNS = [
 /**
  * 列分类 → 数据可视化色板类名。
  *
- * 迁移说明：原实现返回硬编码 hex（#059669 / #d97706 / #7c3aed），
+ * 迁移说明：原实现返回三段硬编码 hex（绿 / 橙 / 紫），
  * 现改为语义化的 chart-N 令牌类，色相与旧值一一对应且随主题切换。
  */
 const CATEGORY_ACCENT: Record<string, { border: string; text: string }> = {
