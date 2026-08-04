@@ -3,7 +3,7 @@ import { Activity, ArrowLeft, BarChart3, ClipboardList, Download, FileText, Sett
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson } from "../auth/api";
 import { formatScore, formatPercent, formatChange } from "../util/format";
-import type { ExamOverview, ExamMetrics, PreviousExamComparison, QuestionAnalysisItem, StudentRankingItem, ScoreDisplayMode, ScoreTableRow, AnalysisThresholds, KnowledgeWeaknessItem } from "../../../../shared/types";
+import type { ClassComparisonResponse, ExamOverview, ExamMetrics, PreviousExamComparison, QuestionAnalysisItem, StudentRankingItem, ScoreDisplayMode, ScoreTableRow, AnalysisThresholds, KnowledgeWeaknessItem } from "../../../../shared/types";
 import { AnalysisOverview } from "./AnalysisOverview";
 import { AnalysisDistribution } from "./AnalysisDistribution";
 import { AnalysisAiPanel } from "./AnalysisAiPanel";
@@ -15,7 +15,8 @@ import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
 import { AnalysisTrend } from "./AnalysisTrend";
-import { DistributionBar, ClassDistributionBar } from "./AnalysisCharts";
+import { DistributionBar, ClassDistributionBar, ClassRadar } from "./AnalysisCharts";
+import { OptionAnalysisPanel } from "./OptionAnalysisPanel";
 import { useBands, DifficultyBadge, DiscriminationBadge } from "./MetricBadge";
 
 interface ClassOption { id: number; name: string; grade_name?: string; }
@@ -433,6 +434,9 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             {/* 知识点弱点（接通后端） */}
             <KnowledgePanel examId={examId} classId={classId || undefined} />
 
+            {/* Issue #175: 选择题各选项选择人数统计与分析 */}
+            <OptionAnalysisPanel examId={examId} classId={classId || undefined} />
+
             {/* 讲评模式快捷入口 */}
             <div style={{ textAlign: "center" }}>
               <button className="primary-button" style={{ fontSize: 14, padding: "8px 20px" }}
@@ -519,26 +523,41 @@ function KnowledgePanel({ examId, classId }: { examId: number; classId: string |
 
 // ── 班级对比面板 ──────────────────────────────────────
 function ClassComparePanel({ examId, classes }: { examId: number; classes: ClassOption[] }) {
+  const [examClasses, setExamClasses] = useState<ClassOption[]>(classes);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [comparison, setComparison] = useState<any>(null);
+  const [comparison, setComparison] = useState<ClassComparisonResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // Issue #175: 优先使用本场考试实际参与的班级
+  useEffect(() => {
+    fetchJson<Array<{ classId: number; className: string; gradeName?: string }>>(`/api/analysis/exams/${examId}/classes`)
+      .then((d) => {
+        if (Array.isArray(d) && d.length > 0) {
+          setExamClasses(d.map((c) => ({ id: c.classId, name: c.className, grade_name: c.gradeName ?? "无年级" })));
+        }
+      })
+      .catch(() => setExamClasses(classes));
+  }, [examId, classes]);
+
+  const allSelected = examClasses.length > 0 && selectedIds.length === examClasses.length;
+
   function toggleClass(id: number) {
-    setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : prev.length < 8 ? [...prev, id] : prev);
+    setSelectedIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : prev.length < 30 ? [...prev, id] : prev);
   }
 
   useEffect(() => {
     if (selectedIds.length < 2) { setComparison(null); setError(""); return; }
     setLoading(true); setError("");
     const params = new URLSearchParams();
-    params.set("classIds", selectedIds.join(","));
+    if (allSelected) params.set("all", "1");
+    else params.set("classIds", selectedIds.join(","));
     params.set("includeOptions", "1");
-    fetchJson<any>(`/api/analysis/exams/${examId}/class-comparison?${params.toString()}`)
+    fetchJson<ClassComparisonResponse>(`/api/analysis/exams/${examId}/class-comparison?${params.toString()}`)
       .then((d) => setComparison(d))
       .catch((e) => setError(e.message ?? "加载失败"))
       .finally(() => setLoading(false));
-  }, [selectedIds.join(","), examId]);
+  }, [allSelected, selectedIds.join(","), examId]);
 
   // Group classes by grade for chip display
   const grouped = useMemo(() => {
@@ -549,7 +568,25 @@ function ClassComparePanel({ examId, classes }: { examId: number; classes: Class
 
   return (
     <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
-      <div className="panel-title">勾选班级进行对比（2–8 个）</div>
+      <div className="panel-title" style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        班级对比（可对比全部班级）
+        <button
+          onClick={() => setSelectedIds(allSelected ? [] : examClasses.map((c) => c.id))}
+          style={{
+            padding: "3px 12px",
+            borderRadius: 14,
+            fontSize: 12,
+            cursor: "pointer",
+            border: "1.5px solid",
+            borderColor: allSelected ? "var(--brand)" : "var(--line-strong)",
+            background: allSelected ? "var(--brand-soft)" : "var(--surface)",
+            color: allSelected ? "var(--brand)" : "var(--text-secondary)",
+            fontWeight: allSelected ? 600 : 400,
+          }}
+        >
+          {allSelected ? "取消全选" : "全部班级"}
+        </button>
+      </div>
       {Array.from(grouped.entries()).map(([grade, clsList]) => (
         <div key={grade}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "var(--muted)", marginBottom: 4 }}>{grade}</div>
@@ -586,38 +623,48 @@ function ClassComparePanel({ examId, classes }: { examId: number; classes: Class
                   <th style={thCompact}>班级</th><th style={thCompact}>人数</th><th style={thCompact}>均分</th>
                   <th style={thCompact}>中位</th><th style={thCompact}>最高</th><th style={thCompact}>最低</th>
                   <th style={thCompact}>标准差</th><th style={thCompact}>及格率</th><th style={thCompact}>优秀率</th>
+                  <th style={thCompact}>难度系数</th><th style={thCompact}>区分度</th>
                 </tr>
               </thead>
               <tbody>
-                {comparison.classes.map((c: any, i: number) => (
+                {comparison.classes.map((c, i) => (
                   <tr key={c.classId} style={{ background: i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)" }}>
                     <td style={tdCompact}>{c.className}</td><td style={tdCompact}>{c.count}</td>
                     <td style={{ ...tdCompact, fontWeight: 600 }}>{formatScore(c.avgScore)}</td>
                     <td style={tdCompact}>{formatScore(c.median)}</td><td style={tdCompact}>{formatScore(c.maxScore)}</td>
                     <td style={tdCompact}>{formatScore(c.minScore)}</td><td style={tdCompact}>{formatScore(c.stdDev)}</td>
                     <td style={tdCompact}>{formatPercent(c.passRate)}</td><td style={tdCompact}>{formatPercent(c.excellentRate)}</td>
+                    <td style={tdCompact}>{c.difficulty.toFixed(3)}</td><td style={tdCompact}>{c.discrimination.toFixed(3)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
 
-          {/* ② 分段分布对比柱状图 */}
+          {/* ② Issue #175: 多维度雷达对比 */}
+          {comparison.classes.length >= 2 && (
+            <div className="analysis-section">
+              <div className="panel-title">多维度雷达对比（平均分率/中位分率/及格率/优秀率/难度/区分度/离散度）</div>
+              <ClassRadar classes={comparison.classes} fullScore={comparison.fullScore} height={340} />
+            </div>
+          )}
+
+          {/* ③ 分段分布对比柱状图 */}
           {comparison.classes.length > 0 && comparison.classes[0].distribution && (
             <div className="analysis-section">
               <div className="panel-title">分数段分布对比</div>
               <ClassDistributionBar
-                labels={comparison.classes[0].distribution.map((d: any) => d.range)}
-                classes={comparison.classes.map((c: any) => ({ className: c.className }))}
-                matrix={comparison.classes[0].distribution.map((_: any, gi: number) =>
-                  comparison.classes.map((c: any) => c.distribution[gi]?.count ?? 0)
+                labels={comparison.classes[0].distribution.map((d) => d.range)}
+                classes={comparison.classes.map((c) => ({ className: c.className }))}
+                matrix={comparison.classes[0].distribution.map((_, gi) =>
+                  comparison.classes.map((c) => c.distribution[gi]?.count ?? 0)
                 )}
                 height={260}
               />
             </div>
           )}
 
-          {/* ③ 逐题得分率热力表 */}
+          {/* ④ 逐题得分率热力表 */}
           {comparison.questionStats && comparison.questionStats.length > 0 && (
             <div className="analysis-section" style={{ overflowX: "auto" }}>
               <div className="panel-title">逐题得分率</div>
@@ -625,17 +672,17 @@ function ClassComparePanel({ examId, classes }: { examId: number; classes: Class
                 <thead>
                   <tr style={{ background: "var(--bg-soft)", borderBottom: "2px solid var(--line)" }}>
                     <th style={thCompact}>题号</th>
-                    {comparison.classes.map((c: any) => (
+                    {comparison.classes.map((c) => (
                       <th key={c.classId} style={thCompact}>{c.className}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {comparison.questionStats.map((q: any) => (
+                  {comparison.questionStats.map((q) => (
                     <tr key={q.questionNumber}>
                       <td style={tdCompact}>{q.questionNumber}</td>
-                      {comparison.classes.map((c: any) => {
-                        const bc = q.byClass.find((b: any) => b.classId === c.classId);
+                      {comparison.classes.map((c) => {
+                        const bc = q.byClass.find((b) => b.classId === c.classId);
                         const rate = bc?.scoreRate ?? 0;
                         const alpha = rate / 100;
                         return (
@@ -648,6 +695,53 @@ function ClassComparePanel({ examId, classes }: { examId: number; classes: Class
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* ⑤ Issue #175: 选择题各选项选择人数/比例对比 */}
+          {comparison.optionStats && comparison.optionStats.length > 0 && (
+            <div className="analysis-section" style={{ overflowX: "auto" }}>
+              <div className="panel-title">选择题选项对比（各班选择人数/比例，✓=标准答案）</div>
+              {comparison.optionStats.map((q) => (
+                <div key={q.questionNumber} style={{ marginBottom: 14 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+                    第 {q.questionNumber} 题（标准答案：{q.answerKey.join("/") || "—"}）
+                  </div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: "var(--bg-soft)", borderBottom: "1px solid var(--line)" }}>
+                        <th style={thCompact}>班级</th>
+                        {q.byClass[0]?.options.map((o) => (
+                          <th key={o.option} style={thCompact}>
+                            {o.option}{o.isCorrect ? " ✓" : ""}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {q.byClass.map((bc) => (
+                        <tr key={bc.classId}>
+                          <td style={tdCompact}>
+                            {comparison.classes.find((c) => c.classId === bc.classId)?.className ?? `班级${bc.classId}`}
+                          </td>
+                          {bc.options.map((o) => (
+                            <td
+                              key={o.option}
+                              style={{
+                                ...tdCompact,
+                                textAlign: "center",
+                                background: o.isCorrect ? "rgba(99,153,34,0.08)" : undefined,
+                              }}
+                            >
+                              {o.count}（{o.rate}%）
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ))}
             </div>
           )}
         </>

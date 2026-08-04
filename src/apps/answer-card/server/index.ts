@@ -59,6 +59,7 @@ import reviewSessionRoutes from "../../../server/routes/review-session";
 import reviewArbitrationRoutes from "../../../server/routes/review-arbitration";
 import reviewAnnotationsRoutes from "../../../server/routes/review-annotations";
 import blockGradingConfigRoutes from "../../../server/routes/block-grading-config";
+import reviewPoolRoutes from "../../../server/routes/review-pool";
 import systemSettingsRoutes from "../../../server/routes/system-settings";
 import { startLlmClientSidecar, shutdownLlmClient } from "./llm-launcher";
 import dashboardRoutes from "../../../server/routes/dashboard";
@@ -841,6 +842,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/review-arbitration", analysisGate, reviewArbitrationRoutes);
   app.use("/api/review-annotations", analysisGate, reviewAnnotationsRoutes);
   app.use("/api/block-grading-config", analysisGate, blockGradingConfigRoutes);
+  app.use("/api/review-pool", analysisGate, reviewPoolRoutes);
   app.use("/api/system-settings", systemSettingsRoutes);
   app.use("/api/dashboard", dashboardRoutes);
   app.use(paperRoutes());

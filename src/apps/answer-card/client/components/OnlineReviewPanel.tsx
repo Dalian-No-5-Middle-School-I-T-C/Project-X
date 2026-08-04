@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, Loader2, RefreshCw
+  CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, Inbox, Loader2, RefreshCw
 } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import {
@@ -10,8 +10,8 @@ import {
 } from "../../../../server/services/scoringModeValidator";
 import type {
   ReviewBlockCropItem,
-  ReviewBlockCropsResponse,
   ReviewBlockSummary,
+  ReviewPoolSummary,
   ReviewSubmitResult
 } from "../../../../shared/types";
 import { QuestionScorePad } from "./QuestionScorePad";
@@ -22,12 +22,10 @@ interface Props {
   classId?: string;
 }
 
-type StatusFilter = "pending" | "reviewed" | "all";
-
 export function OnlineReviewPanel({ examId, examName, classId }: Props) {
   const [blocks, setBlocks] = useState<ReviewBlockSummary[]>([]);
   const [selectedBlockId, setSelectedBlockId] = useState("");
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("pending");
+  const [pool, setPool] = useState<ReviewPoolSummary | null>(null);
   const [queue, setQueue] = useState<ReviewBlockCropItem[]>([]);
   const [index, setIndex] = useState(0);
   const [scoreEdits, setScoreEdits] = useState<Record<number, string>>({});
@@ -36,15 +34,9 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
   const [step, setStep] = useState<0.5 | 1>(1);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [claiming, setClaiming] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  // PR #189 二次修复：客户端评分模式从二态（block_total/per_question）扩为三态：
-  //   - "block_total" → 配置明确读到 block_total，禁用提交（与管理配置一致）
-  //   - "per_question" → 配置明确读到 per_question，正常提交
-  //   - "unknown"      → 配置加载失败，黄色警告 + 保留提交（服务端兜底）
-  // 之前 fetch 失败时直接按 block_total 处理是"安全失败"，但与管理界面无法切换
-  // 模式叠加后会形成硬锁死（网络抖动一下老师就再也提交不了分数）。
-  // null = 题块未选中 / 配置尚未加载完成。
   const [scoringMode, setScoringMode] = useState<ClientScoringMode | null>(null);
   const [configLoadError, setConfigLoadError] = useState<string | null>(null);
 
@@ -70,30 +62,46 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
     }
   }, [examId, selectedBlockId]);
 
-  const loadQueue = useCallback(async (preserveIndex = false) => {
+  /** 仅刷新试卷池汇总（不重置队列） */
+  const loadPoolSummary = useCallback(async () => {
+    if (!selectedBlockId) {
+      setPool(null);
+      return;
+    }
+    try {
+      const data = await fetchJson<{ ok: boolean; data: { summary: ReviewPoolSummary } }>(
+        `/api/review-pool/exams/${examId}/blocks/${encodeURIComponent(selectedBlockId)}?mine=1`
+      );
+      if (data.ok) setPool(data.data.summary);
+    } catch {
+      /* 汇总失败时保留上次状态 */
+    }
+  }, [examId, selectedBlockId]);
+
+  /** Issue #174：队列 = 我领取的试卷；同时刷新试卷池汇总 */
+  const loadPool = useCallback(async (preserveIndex = false) => {
     if (!selectedBlockId) {
       setQueue([]);
+      setPool(null);
       return;
     }
     setError("");
     try {
-      const params = new URLSearchParams({ blockId: selectedBlockId });
-      if (classId) params.set("classId", classId);
-      if (statusFilter !== "all") params.set("status", statusFilter === "pending" ? "ready" : "reviewed");
-      const data = await fetchJson<ReviewBlockCropsResponse>(
-        `/api/review/exams/${examId}/block-crops?${params.toString()}`
-      );
-      setQueue(data.rows);
-      if (!preserveIndex) setIndex(0);
+      const data = await fetchJson<{
+        ok: boolean;
+        data: { summary: ReviewPoolSummary; entries: ReviewBlockCropItem[] };
+      }>(`/api/review-pool/exams/${examId}/blocks/${encodeURIComponent(selectedBlockId)}?mine=1`);
+      if (data.ok) {
+        setPool(data.data.summary);
+        setQueue(data.data.entries);
+        if (!preserveIndex) setIndex(0);
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载阅卷队列失败");
+      setError(err instanceof Error ? err.message : "加载试卷池失败");
       setQueue([]);
     }
-  }, [examId, selectedBlockId, classId, statusFilter]);
+  }, [examId, selectedBlockId]);
 
-  // PR #189 二次修复：加载评分模式并归一为三态。
-  // 区分"配置缺失但响应成功"（合法未配置，回退 block_total）
-  // 和"配置加载失败"（网络/服务异常，必须走 unknown 让服务端兜底）。
   const loadBlockConfig = useCallback(async () => {
     if (!selectedBlockId) {
       setScoringMode(null);
@@ -105,8 +113,6 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
       const res = await fetchJson<{ ok: boolean; data?: { scoringMode?: string } }>(
         `/api/block-grading-config/exams/${examId}/blocks/${encodeURIComponent(selectedBlockId)}`
       );
-      // res.ok=true 但 data.scoringMode 为空 → 合法"未配置"
-      // res.ok=false → 服务端说配置不存在（也可能返回 404）
       if (res.ok && res.data) {
         fetchResult = { kind: "ok", scoringMode: res.data.scoringMode };
       } else {
@@ -128,8 +134,8 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
   }, [loadBlocks]);
 
   useEffect(() => {
-    void loadQueue();
-  }, [loadQueue]);
+    void loadPool();
+  }, [loadPool]);
 
   useEffect(() => {
     void loadBlockConfig();
@@ -177,16 +183,65 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
     [blocks, selectedBlockId]
   );
 
-  // Issue #173：题块不允许 0.5 分时，步进强制回落到 1
   useEffect(() => {
     if (!selectedBlock?.hasHalfPoint) setStep(1);
   }, [selectedBlockId, selectedBlock?.hasHalfPoint]);
 
+  /** Issue #174：从试卷池领取下一份（支持按班级领取） */
+  async function claimNext() {
+    if (claiming || !selectedBlockId || !pool || pool.inPoolCount === 0) return;
+    setClaiming(true);
+    setError("");
+    setMessage("");
+    try {
+      const body: Record<string, unknown> = {};
+      if (classId) body.classId = Number(classId);
+      const res = await fetchJson<{ ok: boolean; data?: ReviewBlockCropItem; error?: string }>(
+        `/api/review-pool/exams/${examId}/blocks/${encodeURIComponent(selectedBlockId)}/claim`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        }
+      );
+      if (!res.ok || !res.data) throw new Error(res.error ?? "领卷失败");
+      setQueue([...queue, res.data!]);
+      setIndex(queue.length);
+      setMessage(`已领取：${res.data.studentName ?? res.data.studentNumber ?? "学生"}`);
+      await loadPoolSummary();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "领卷失败");
+      await loadPoolSummary();
+    } finally {
+      setClaiming(false);
+    }
+  }
+
+  /** 释放当前试卷回池（本人领取的） */
+  async function releaseCurrent() {
+    if (!current) return;
+    setSaving(true);
+    setError("");
+    setMessage("");
+    try {
+      const res = await fetchJson<{ ok: boolean; error?: string }>(
+        `/api/review-pool/exams/${examId}/blocks/${encodeURIComponent(selectedBlockId)}/crops/${encodeURIComponent(current.id)}/release`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }
+      );
+      if (!res.ok) throw new Error(res.error ?? "释放失败");
+      setQueue((prev) => prev.filter((item) => item.id !== current.id));
+      setIndex((prev) => Math.max(0, prev - 1));
+      setMessage("已释放回试卷池");
+      await loadPoolSummary();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "释放失败");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function submitCurrent(status: "reviewed" | "disputed" = "reviewed", advance = true) {
     if (!current || !current.studentId) return;
-    // PR #189 二次修复：只在「配置明确读到 block_total」时禁用提交。
-    // "unknown"（配置加载失败）必须允许提交，让服务端校验兜底——
-    // 否则网络抖动一下老师就被硬锁死。
     if (scoringMode === "block_total") {
       setError("本题块配置为「题块总分」模式，请使用阅卷面板（GradePanel）输入合计分；或请管理员将该题块评分模式改为「逐题评分」");
       return;
@@ -220,23 +275,10 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
       );
       setMessage(`已保存：${current.studentName ?? current.studentNumber ?? "学生"}，总分 ${result.totalScore}`);
       await loadBlocks();
-      const params = new URLSearchParams({ blockId: selectedBlockId });
-      if (classId) params.set("classId", classId);
-      if (statusFilter !== "all") params.set("status", statusFilter === "pending" ? "ready" : "reviewed");
-      const refreshed = await fetchJson<ReviewBlockCropsResponse>(
-        `/api/review/exams/${examId}/block-crops?${params.toString()}`
-      );
-      const removed = refreshed.rows.length < queue.length;
-      setQueue(refreshed.rows);
-      setIndex((value) => {
-        if (refreshed.rows.length === 0) return 0;
-        // 列表因当前项被复核而缩短时，原索引已自动指向下一份；
-        // 否则（如"全部"筛选下当前项仍在）需显式 +1 才能前进。
-        const target = advance && !removed ? value + 1 : value;
-        return Math.max(0, Math.min(target, refreshed.rows.length - 1));
-      });
+      await loadPool();
     } catch (err) {
       setError(err instanceof Error ? err.message : "保存失败");
+      await loadPoolSummary();
     } finally {
       setSaving(false);
     }
@@ -251,7 +293,7 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
       <div className="scores-empty">
         <ClipboardCheck size={40} />
         <h2>暂无大题切块</h2>
-        <p>请先完成阅卷识别。识别成功后会按大题自动生成作答图片切块，供网上阅卷使用。</p>
+        <p>请先完成阅卷识别。识别成功后会自动按大题生成作答图片切块，供网上阅卷使用。</p>
       </div>
     );
   }
@@ -282,32 +324,49 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
       <div className="online-review-main">
         <div className="online-review-toolbar">
           <div className="online-review-filters">
-            {(["pending", "reviewed", "all"] as StatusFilter[]).map((filter) => (
-              <button
-                key={filter}
-                type="button"
-                className={`ghost-button ${statusFilter === filter ? "active-filter" : ""}`}
-                onClick={() => setStatusFilter(filter)}
-              >
-                {filter === "pending" ? "待阅" : filter === "reviewed" ? "已阅" : "全部"}
-              </button>
-            ))}
+            {pool && (
+              <>
+                <span className="hint">
+                  <Inbox size={13} style={{ verticalAlign: -2, marginRight: 3 }} />
+                  池中可领 {pool.inPoolCount}
+                </span>
+                <span className="hint">我已领 {pool.myClaimedCount}</span>
+                <span className="hint">已阅 {pool.reviewedCount}/{pool.totalCount}</span>
+                {pool.pendingCount > 0 && <span className="hint">待复核 {pool.pendingCount}</span>}
+                {pool.disputedCount > 0 && <span className="hint" style={{ color: "#A32D2D" }}>争议 {pool.disputedCount}</span>}
+              </>
+            )}
           </div>
-          {selectedBlock && (
-            <span className="hint">
-              {selectedBlock.blockTitle} · 已阅 {selectedBlock.reviewedCount}/{selectedBlock.totalCount}
-            </span>
-          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              className="primary-button"
+              type="button"
+              disabled={claiming || !pool || pool.inPoolCount === 0}
+              onClick={() => void claimNext()}
+            >
+              {claiming ? <Loader2 size={14} className="spin" /> : <Inbox size={14} />}
+              {claiming ? "领取中..." : "领取下一份"}
+            </button>
+            <button className="ghost-button" type="button" onClick={() => void loadPool()}>
+              <RefreshCw size={14} /> 刷新
+            </button>
+          </div>
         </div>
+
+        {selectedBlock && (
+          <span className="hint">
+            {selectedBlock.blockTitle} · 已阅 {selectedBlock.reviewedCount}/{selectedBlock.totalCount}
+          </span>
+        )}
 
         {error && <p className="login-error">{error}</p>}
         {message && <p className="hint" style={{ color: "var(--success)" }}>{message}</p>}
 
         {!current ? (
           <div className="scores-empty" style={{ minHeight: 280 }}>
-            <CheckCircle2 size={36} />
-            <h2>当前筛选下无待阅答卷</h2>
-            <p>可切换题块或筛选条件继续阅卷。</p>
+            <Inbox size={36} />
+            <h2>当前无已领取试卷</h2>
+            <p>点击「领取下一份」从试卷池领取试卷；试卷领取后仅供本人批阅，避免同时批阅冲突。</p>
           </div>
         ) : (
           <div className="online-review-workspace">
@@ -341,10 +400,6 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
                 <p className="hint">当前得分：{current.score} / {current.maxScore}</p>
               )}
 
-              {/* PR #189 二次修复：双态横幅。
-                   - block_total：红色硬警告 + 禁用提交（与管理配置一致）
-                   - unknown   ：黄色软警告 + 保留提交（让服务端兜底，避免硬锁死）
-              */}
               {scoringMode === "block_total" && (
                 <div
                   style={{
@@ -388,7 +443,6 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
                 </div>
               )}
 
-              {/* Issue #173：给分步进切换（0.5 / 1） */}
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 13, color: "var(--muted)" }}>给分步进：</span>
                 <button
@@ -461,6 +515,9 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
                 </button>
                 <button className="ghost-button" type="button" disabled={saving || scoringMode === "block_total"} onClick={() => void submitCurrent("disputed", false)}>
                   标记争议
+                </button>
+                <button className="ghost-button" type="button" disabled={saving} onClick={() => void releaseCurrent()}>
+                  释放回池
                 </button>
               </div>
             </div>
