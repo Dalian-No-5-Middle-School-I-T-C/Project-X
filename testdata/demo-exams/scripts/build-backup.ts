@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync, copyFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
-import { closeDatabase, getDatabase } from "../../../src/server/db/index.ts";
+import { closeDatabase, getDatabase, resolveAnswerCardDataDir } from "../../../src/server/db/index.ts";
 import { seedDemoExams } from "./seed.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -45,9 +45,30 @@ async function main(): Promise<void> {
   copyFileSync(vacuumPath, path.join(staging, "projectx.db"));
   writeFileSync(path.join(staging, "metadata.json"), JSON.stringify(metadata, null, 2));
 
+  // 资源文件一并打包（restore 端点会自动解出 data/answer-card/ 目录）：
+  // 填空题图片（assets/88000001/fig-demo.png）与网阅切块占位图（recognition/crops/demo-review/placeholder.png），
+  // 保证 ZIP 恢复后图片资源完整可用。
+  const answerCardDataDir = resolveAnswerCardDataDir();
+  const assetFile = path.join(answerCardDataDir, "assets", "88000001", "fig-demo.png");
+  if (existsSync(assetFile)) {
+    const target = path.join(staging, "data", "answer-card", "assets", "88000001");
+    mkdirSync(target, { recursive: true });
+    copyFileSync(assetFile, path.join(target, "fig-demo.png"));
+  }
+  const cropFile = path.join(answerCardDataDir, "recognition", "crops", "demo-review", "placeholder.png");
+  if (existsSync(cropFile)) {
+    const target = path.join(staging, "data", "answer-card", "recognition", "crops", "demo-review");
+    mkdirSync(target, { recursive: true });
+    copyFileSync(cropFile, path.join(target, "placeholder.png"));
+  }
+
   const zip = new AdmZip();
   zip.addLocalFile(path.join(staging, "projectx.db"));
   zip.addLocalFile(path.join(staging, "metadata.json"));
+  const stagedDataDir = path.join(staging, "data", "answer-card");
+  if (existsSync(stagedDataDir)) {
+    zip.addLocalFolder(stagedDataDir, "data/answer-card");
+  }
   zip.writeZip(ZIP_PATH);
 
   console.log(`[build-backup] 已写入 ${ZIP_PATH}`);
