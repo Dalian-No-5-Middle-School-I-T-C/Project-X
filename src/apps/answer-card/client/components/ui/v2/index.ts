@@ -161,6 +161,17 @@ export {
 } from "./stat-card";
 export { UploadZone, type UploadZoneProps } from "./upload-zone";
 export {
+  Chart,
+  chartPalette,
+  chartBaseOptions,
+  paletteColor,
+  rampPalette,
+  useChartTheme,
+  withAlpha,
+  type ChartProps,
+  type ChartTheme,
+} from "./chart";
+export {
   AppShell,
   AppMain,
   AppContentRow,

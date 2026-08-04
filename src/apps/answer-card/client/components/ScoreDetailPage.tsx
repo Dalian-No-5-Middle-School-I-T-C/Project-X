@@ -327,18 +327,18 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             )}
 
             {/* 分数段柱状图 + 班级箱线图 */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2">
               {overview.distribution.length > 0 && (
-                <div className="analysis-section">
+                <div className="analysis-section flex min-w-0 flex-col">
                   <div className="panel-title">分数段分布</div>
                   <DistributionBar data={{ labels: overview.distribution.map((d) => d.range), values: overview.distribution.map((d) => d.count) }} height={220} />
                 </div>
               )}
               {overview.scoreSummary && overview.overallScoreSummary && (
-                <div className="analysis-section">
+                <div className="analysis-section flex min-w-0 flex-col">
                   <div className="panel-title">班级箱线图</div>
                   <AnalysisDistribution summary={overview.scoreSummary} overallSummary={overview.overallScoreSummary}
-                    classSummaries={overview.classSummaries} selectedClassId={classId} onClassSelect={setClassId} />
+                    classSummaries={overview.classSummaries} selectedClassId={classId} onClassSelect={setClassId} showTitle={false} />
                 </div>
               )}
             </div>
