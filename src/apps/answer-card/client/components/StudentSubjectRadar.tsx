@@ -1,11 +1,38 @@
 import { useEffect, useState } from "react";
-import { Chart as ChartJS, RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend } from "chart.js";
-import { Radar } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  RadialLinearScale,
+  PointElement,
+  LineElement,
+  Filler,
+  Tooltip,
+  Legend,
+  type ChartData,
+  type ChartOptions,
+} from "chart.js";
 import { fetchJson } from "../auth/api";
-import type { SubjectWeaknessItem, StudentTrendPoint } from "../../../../shared/types";
+import type { SubjectWeaknessItem } from "../../../../shared/types";
 import { Radar as RadarIcon, RefreshCw, AlertTriangle, TrendingUp, TrendingDown } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/v2";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Chart,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  paletteColor,
+  useChartTheme,
+  withAlpha,
+} from "./ui/v2";
 
+// v2 Chart 适配器只注册了直角坐标系元素，雷达图额外需要径向刻度
 ChartJS.register(RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
 
 interface SubjectComparisonResponse {
@@ -18,6 +45,7 @@ export function StudentSubjectRadar() {
   const [data, setData] = useState<SubjectComparisonResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const theme = useChartTheme();
 
   async function loadData() {
     setLoading(true);
@@ -44,36 +72,37 @@ export function StudentSubjectRadar() {
   // 仅绘制学生本人的学科成绩，学生端不展示班级比较数据。
   const maxVal = Math.max(...myScores, 100);
 
-  const chartData = {
+  // chart-1 = 品牌红「当前主体」（DESIGN-SYSTEM §3.2），色值来自 theme.ts 令牌镜像
+  const seriesColor = paletteColor(0);
+
+  const chartData: ChartData<"radar"> = {
     labels,
     datasets: [
       {
         label: "我的平均分",
         data: myScores,
-        backgroundColor: "rgba(192, 15, 40, 0.12)",
-        borderColor: "#C00F28",
+        backgroundColor: withAlpha(seriesColor, 0.12),
+        borderColor: seriesColor,
         borderWidth: 2,
-        pointBackgroundColor: "#C00F28",
+        pointBackgroundColor: seriesColor,
         pointRadius: 4,
       },
     ],
   };
 
-  const chartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
+  const chartOptions: ChartOptions<"radar"> = {
     scales: {
       r: {
         beginAtZero: true,
         max: Math.ceil(maxVal / 10) * 10,
-        ticks: { stepSize: 10, font: { size: 10 }, backdropColor: "transparent" },
-        pointLabels: { font: { size: 12, weight: "bold" as const } },
-        grid: { color: "rgba(24, 24, 27, 0.10)" },
-        angleLines: { color: "rgba(24, 24, 27, 0.10)" },
+        ticks: { stepSize: 10, font: { size: 10 }, backdropColor: "transparent", color: theme.tick },
+        pointLabels: { font: { size: 12, weight: "bold" }, color: theme.foreground },
+        grid: { color: theme.grid },
+        angleLines: { color: theme.grid },
       },
     },
     plugins: {
-      legend: { position: "bottom" as const, labels: { boxWidth: 12, padding: 12, font: { size: 12 } } },
+      legend: { position: "bottom" },
     },
   };
 
@@ -81,24 +110,35 @@ export function StudentSubjectRadar() {
     <Card>
       <CardHeader>
         <CardTitle><span className="inline-flex items-center gap-2"><RadarIcon size={17} /> 学科雷达</span></CardTitle>
-        <button className="ghost-button" type="button" onClick={() => void loadData()} disabled={loading}>
-          <RefreshCw size={14} /> 刷新
-        </button>
+        <Button
+          variant="ghost"
+          size="sm"
+          type="button"
+          onClick={() => void loadData()}
+          disabled={loading}
+          loading={loading}
+          icon={<RefreshCw className="size-4" />}
+        >
+          刷新
+        </Button>
       </CardHeader>
       <CardContent>
-      <div className="mb-3 flex items-center justify-between text-xs text-muted-foreground">
+      <div className="mb-3 flex items-center justify-between gap-3 text-xs text-muted-foreground">
         <span>基于 {totalExams} 场考试 · {subjects.length} 个学科</span>
         {weakSubject && (
-          <span className="weak-subject-badge">
-            <AlertTriangle size={14} />
+          <Badge tone="danger" icon={<AlertTriangle />}>
             薄弱学科：{weakSubject}
-          </span>
+          </Badge>
         )}
       </div>
 
-      <div className="h-64">
-        <Radar data={chartData} options={chartOptions} />
-      </div>
+      <Chart
+        type="radar"
+        data={chartData}
+        options={chartOptions}
+        height={256}
+        ariaLabel="本人各学科平均分雷达图"
+      />
 
       {/* Subject detail table */}
       <Table>

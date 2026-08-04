@@ -31,6 +31,32 @@
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 
+/* ── Migration UA reset（仅在 base 层生效，Tailwind Preflight 未引入）───
+   旧 styles.css 仅 reset 了 box-sizing / body / button{cursor:pointer}，
+   未重置 button/input/select/textarea/th/td 等 UA 默认边框与背景，
+   故 Chrome/Firefox UA `2px outset buttonborder` 等泄漏到 v2 组件上
+   （Tab 整圈边框、表格 th 黑框）。本块一次性重置，业务需要再显式加回。
+   范围：仅影响 button / th 等原生控件，**不重置** div/span/section 等容器。
+   P5 清理：引入 Preflight 后删除本块（Preflight 已包含这些 reset）。─── */
+@layer base {
+  button,
+  input,
+  select,
+  textarea,
+  th,
+  td {
+    border: 0;
+    background: transparent;
+    font: inherit;
+    color: inherit;
+  }
+  button { cursor: pointer; }
+  input,
+  textarea,
+  select { padding: 0; }
+  table { border-collapse: collapse; }
+}
+
 /* 弹层进出动画工具类（animate-in / fade-in-0 / zoom-in-95 …）。
    Tailwind v4 本体不含这些类，shadcn/ui 官方配套即本包。纯 CSS，无运行时。 */
 @import "tw-animate-css";

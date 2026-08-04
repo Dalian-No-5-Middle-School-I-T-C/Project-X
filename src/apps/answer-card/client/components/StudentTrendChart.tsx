@@ -1,17 +1,67 @@
 import { useEffect, useState } from "react";
-import { Chart as ChartJS, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler } from "chart.js";
-import { Line } from "react-chartjs-2";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+  Filler,
+  type ChartDataset,
+  type ChartOptions,
+} from "chart.js";
 import { fetchJson } from "../auth/api";
 import type { StudentTrendPoint } from "../../../../shared/types";
 import { LineChart, RefreshCw } from "lucide-react";
+import {
+  Button,
+  Chart,
+  ToggleGroup,
+  ToggleGroupItem,
+  paletteColor,
+  withAlpha,
+} from "./ui/v2";
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, Filler);
 
-const SUBJECT_COLORS: Record<string, string> = {
-  "语文": "#534AB7", "数学": "#D85A30", "英语": "#1D9E75",
-  "物理": "#378ADD", "化学": "#639922", "生物": "#0F6E56",
-  "历史": "#D4537E", "地理": "#EF9F27", "政治": "#993556",
+/**
+ * 学科 → 数据色板序号（`--px-chart-N` / `tokens.chartN`，1..8）。
+ * chart-1 品牌红按 DESIGN-SYSTEM §3.2 保留给「当前主体」，学科系列从 2 起取。
+ */
+const SUBJECT_CHART_INDEX: Record<string, number> = {
+  "语文": 2, "数学": 3, "英语": 4,
+  "物理": 5, "化学": 6, "生物": 7,
+  "历史": 8, "地理": 2, "政治": 5,
 };
+/** 未登记学科兜底 = chart-8 中性灰 */
+const FALLBACK_CHART_INDEX = 8;
+
+/** 学科色只经由色板序号解析，组件内不出现任何十六进制（铁律 §4） */
+function subjectColor(subject: string): string {
+  return paletteColor((SUBJECT_CHART_INDEX[subject] ?? FALLBACK_CHART_INDEX) - 1);
+}
+
+/** 结构性配置；颜色/网格/字体由 v2 Chart 适配器按当前主题注入 */
+const CHART_OPTIONS: ChartOptions<"line"> = {
+  interaction: { mode: "index", intersect: false },
+  plugins: {
+    legend: { display: true, position: "top" },
+  },
+  scales: {
+    y: { beginAtZero: false, title: { display: true, text: "分数" } },
+    x: { ticks: { maxRotation: 30 } },
+  },
+};
+
+const TOGGLE_ITEM_CLASS = [
+  "inline-flex h-7 shrink-0 items-center justify-center rounded-sm px-2.5 whitespace-nowrap",
+  "border-0 bg-transparent text-xs font-medium text-muted-foreground",
+  "transition-[background-color,color,box-shadow] duration-(--px-dur-1) ease-standard",
+  "hover:text-foreground outline-none focus-visible:shadow-focus",
+  "data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-1",
+].join(" ");
 
 interface Props {
   /** 从父组件传入的已有数据（可选，避免重复请求） */
@@ -57,22 +107,15 @@ export function StudentTrendChart({ trends: propTrends, onLoad, compact = false 
     }
   }
 
-  function toggleSubject(s: string) {
-    const next = new Set(selectedSubjects);
-    if (next.has(s)) next.delete(s);
-    else next.add(s);
-    setSelectedSubjects(next);
-  }
-
   // Build datasets — align data to shared labels array
   // Get all unique exam names sorted chronologically (they're already ASC from API)
   const allExams = trends.filter((t) => selectedSubjects.has(t.subject));
   const allLabels = [...new Set(allExams.map((t) => t.examName))];
-  const datasets: import("chart.js").ChartDataset<"line">[] = [];
+  const datasets: ChartDataset<"line">[] = [];
 
   for (const subject of selectedSubjects) {
     const subjectTrends = trends.filter((t) => t.subject === subject);
-    const color = SUBJECT_COLORS[subject] ?? "#888780";
+    const color = subjectColor(subject);
 
     // Map each subject's data to the shared labels array
     const subjectMap = new Map(subjectTrends.map((t) => [t.examName, t]));
@@ -81,7 +124,7 @@ export function StudentTrendChart({ trends: propTrends, onLoad, compact = false 
       label: subject,
       data: alignedScores,
       borderColor: color,
-      backgroundColor: color + "22",
+      backgroundColor: withAlpha(color, 0.13),
       pointBackgroundColor: color,
       pointRadius: 4,
       pointHoverRadius: 6,
@@ -96,64 +139,55 @@ export function StudentTrendChart({ trends: propTrends, onLoad, compact = false 
     datasets,
   };
 
-  const chartOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    interaction: { mode: "index" as const, intersect: false },
-    plugins: {
-      legend: { display: true, position: "top" as const, labels: { boxWidth: 12, padding: 12, font: { size: 12 } } },
-        tooltip: {
-          callbacks: {
-            afterLabel: function (this: any, context: any) {
-              return "";
-            } as any,
-          }
-        }
-    },
-    scales: {
-      y: {
-        beginAtZero: false,
-        title: { display: true, text: "分数", font: { size: 12 } },
-        ticks: { font: { size: 11 } }
-      },
-      x: {
-        ticks: { font: { size: 10 }, maxRotation: 30 }
-      }
-    }
-  };
-
   if (loading) return <div className="flex h-full min-h-20 items-center justify-center text-sm text-muted-foreground">加载中...</div>;
   if (error) return <div className="flex items-center justify-center p-4 text-sm text-destructive-fg">{error}</div>;
   if (trends.length === 0) return <div className="flex h-full min-h-20 items-center justify-center text-sm text-muted-foreground">暂无成绩趋势数据。</div>;
 
   return (
-    <div className={compact ? "h-full" : "rounded-lg border border-border-subtle bg-card p-5"}>
-      {!compact && <div className="mb-4 flex items-center justify-between">
-        <div className="panel-title"><LineChart size={17} /> 成绩趋势</div>
-        <button className="ghost-button" type="button" onClick={() => void loadTrends()} disabled={loading}>
-          <RefreshCw size={14} /> 刷新
-        </button>
-      </div>}
-
-      {!compact && <div className="mb-3 flex flex-wrap items-center gap-2">
-        <div className="student-subject-filters">
-          {subjects.map((s) => (
-            <button
-              key={s}
-              className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${selectedSubjects.has(s) ? "border-primary bg-accent text-accent-foreground" : "border-border text-muted-foreground hover:bg-secondary"}`}
-              type="button"
-              onClick={() => toggleSubject(s)}
-            >
-              {s}
-            </button>
-          ))}
+    <div className={compact ? "flex h-full flex-col" : "rounded-lg border border-border-subtle bg-card p-5"}>
+      {!compact && (
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="inline-flex items-center gap-2 text-base font-semibold text-foreground">
+            <LineChart className="size-4" /> 成绩趋势
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            type="button"
+            onClick={() => void loadTrends()}
+            disabled={loading}
+            loading={loading}
+            icon={<RefreshCw className="size-4" />}
+          >
+            刷新
+          </Button>
         </div>
-      </div>}
+      )}
+
+      {!compact && subjects.length > 0 && (
+        <ToggleGroup
+          type="multiple"
+          value={[...selectedSubjects]}
+          onValueChange={(next: string[]) => setSelectedSubjects(new Set(next))}
+          aria-label="学科筛选"
+          className="mb-3 inline-flex flex-wrap items-center gap-0.5 self-start rounded-md bg-secondary p-0.5"
+        >
+          {subjects.map((s) => (
+            <ToggleGroupItem key={s} value={s} className={TOGGLE_ITEM_CLASS}>
+              {s}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      )}
 
       {/* Chart */}
-      <div className={compact ? "h-full" : "h-72"}>
-        <Line data={chartData} options={chartOptions} />
-      </div>
+      <Chart
+        type="line"
+        data={chartData}
+        options={CHART_OPTIONS}
+        height={compact ? 88 : 288}
+        ariaLabel="个人成绩趋势折线图"
+      />
     </div>
   );
 }

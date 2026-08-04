@@ -34,7 +34,8 @@ export const TabsTrigger = React.forwardRef<
     <TabsPrimitive.Trigger
       ref={ref}
       className={cn(
-        "relative inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap px-3",
+        // border-0 覆盖 Chrome UA button 默认边框（Preflight 未引入，详见 app.css）
+        "relative inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap border-0 px-3",
         "text-base font-medium text-muted-foreground",
         "transition-colors duration-(--px-dur-1) ease-standard",
         "hover:text-foreground",
