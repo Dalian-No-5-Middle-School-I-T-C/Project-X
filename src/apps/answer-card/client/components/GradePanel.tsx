@@ -49,7 +49,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   // Issue #174: 从试卷池领取下一份（题块总分模式同样走池，避免重复批阅）
   const claimNext = useCallback(async () => {
     if (claiming) return;
-    setClaiming(true);
+    setClaiming(true);  
     setError(null);
     try {
       const res = await fetchJson<{ ok: boolean; data?: ReviewBlockCropItem; error?: string }>(
