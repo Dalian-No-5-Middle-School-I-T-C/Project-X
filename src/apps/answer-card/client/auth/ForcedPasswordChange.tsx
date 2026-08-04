@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { KeyRound, ShieldCheck } from "lucide-react";
 import { fetchJson } from "./api";
+import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Input } from "../components/ui/v2";
 
 interface Props {
   username: string;
@@ -37,22 +38,59 @@ export function ForcedPasswordChange({ username, onChanged }: Props) {
   }
 
   return (
-    <div className="login-shell">
-      <div className="login-card">
-        <div className="login-brand">
-          <div className="login-brand-icon"><ShieldCheck size={28} /></div>
-          <div><strong>首次登录安全设置</strong><span>账号 {username} 必须先修改一次性密码</span></div>
-        </div>
-        <form className="login-form" onSubmit={(event) => void submit(event)}>
-          <label>一次性密码<input type="password" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} autoComplete="current-password" disabled={busy} /></label>
-          <label>新密码<input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" disabled={busy} /></label>
-          <label>确认新密码<input type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} autoComplete="new-password" disabled={busy} /></label>
-          {error && <p className="login-error">{error}</p>}
-          <button className="primary-button wide-button" type="submit" disabled={busy || !oldPassword || !newPassword || !confirmPassword}>
-            <KeyRound size={17} /> {busy ? "保存中..." : "修改密码并重新登录"}
-          </button>
-        </form>
-      </div>
+    <div className="flex min-h-[100dvh] items-center justify-center overflow-y-auto bg-background p-6">
+      <Card className="w-full max-w-[460px]">
+        <CardHeader>
+          <div className="flex size-11 items-center justify-center rounded-xl bg-primary text-primary-foreground"><ShieldCheck size={22} /></div>
+          <CardTitle className="mt-3">首次登录安全设置</CardTitle>
+          <CardDescription>账号 {username} 必须先修改一次性密码</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form className="flex flex-col gap-4" onSubmit={(event) => void submit(event)}>
+            <Field label="一次性密码">
+              <Input
+                type="password"
+                value={oldPassword}
+                onChange={(e) => setOldPassword(e.target.value)}
+                placeholder="请输入当前一次性密码"
+                autoComplete="current-password"
+                disabled={busy}
+              />
+            </Field>
+            <Field label="新密码">
+              <Input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                placeholder="设置新密码"
+                autoComplete="new-password"
+                disabled={busy}
+              />
+            </Field>
+            <Field label="确认新密码">
+              <Input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                placeholder="再次输入新密码"
+                autoComplete="new-password"
+                disabled={busy}
+              />
+            </Field>
+            {error && <p className="text-sm text-destructive-fg">{error}</p>}
+            <Button
+              variant="primary"
+              size="lg"
+              block
+              type="submit"
+              disabled={busy || !oldPassword || !newPassword || !confirmPassword}
+              loading={busy}
+            >
+              {!busy && <KeyRound size={17} />} 修改密码并重新登录
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
     </div>
   );
 }
