@@ -637,7 +637,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   );
 }
 
-/** 概况页的小榜单卡片（原 .analysis-section + .panel-title） */
+/** 概况页的小榜单卡片（原分析区块 + 区块标题两个旧工具类） */
 function RankPanel({ title, icon, children }: { title: string; icon?: React.ReactNode; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-1 rounded-lg border border-border-subtle bg-card px-4 py-3">
