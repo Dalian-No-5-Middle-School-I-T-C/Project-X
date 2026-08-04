@@ -1,8 +1,39 @@
 import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
-import { ArrowLeft, ChevronLeft, ChevronRight, Pencil, Save, Search, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowLeft, ImageOff, Pencil, Save, Search } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import { cn } from "../lib/utils";
+import { isManuallyModified } from "../util/score";
+import {
+  Button,
+  EmptyState,
+  Input,
+  SegmentedControl,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableWrap,
+  type SegmentedItem,
+} from "./ui/v2";
+import { AnswerCardLightbox, type LightboxItem } from "./AnswerCardLightbox";
 import type { AnswerBlockCrop } from "../../../../shared/types";
+
+/**
+ * ScoreFixPage —— T2 迁移（T04 明细/订正/弹窗）
+ *
+ * 换肤范围（功能守恒，接口/路由/权限零改动）：
+ *  · 放大答题卡：`createPortal` + 手写 ESC + zIndex 999999 → `AnswerCardLightbox`（O-6）
+ *  · 双模式切换：手写 div 拼色 → v2 `SegmentedControl`
+ *  · `primary-button` / 满屏 `style={{}}` → v2 `Button`/`Input`/`Select`/`Table` + 语义类
+ *  · 「已手动修改」判定统一走 `isManuallyModified()`（O-2，兼容 boolean 与 0/1）
+ */
 
 interface Props {
   examId: number;
@@ -44,6 +75,11 @@ interface StudentHit {
 }
 
 const OPTION_LABELS = ["A","B","C","D","E","F","G","H","I","J"];
+
+const FIX_MODE_ITEMS: readonly SegmentedItem<FixMode>[] = [
+  { value: "score", label: "个别改分" },
+  { value: "answer", label: "修改答案" },
+];
 
 export function ScoreFixPage({ examId, examName, onBack }: Props) {
   // Mode selection first
@@ -203,7 +239,7 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
 
   // ======== RENDER ========
 
-  const scorePreviewItems = student
+  const scorePreviewItems: LightboxItem[] = student
     ? (student.answerBlocks?.length > 0
         ? student.answerBlocks.map((block) => ({
             id: block.id,
@@ -223,203 +259,290 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
     return student?.answerBlocks?.find((block) => block.questionNumbers.some((item) => String(item) === String(questionNumber)));
   }
 
+  const saveMsgClass = saveMsg.includes("成功")
+    ? "text-success-foreground"
+    : "text-destructive-fg";
+
   // Mode selection screen
   if (!fixMode) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 24px", borderBottom: "1px solid var(--line)", background: "var(--surface)", flexShrink: 0 }}>
-          <button onClick={onBack} style={headerBtnStyle}><ArrowLeft size={16} /> 返回成绩</button>
-          <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>成绩修改 — {examName}</h2>
+      <div className="flex h-full flex-col overflow-hidden">
+        <div className="flex shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-6 py-3">
+          <Button variant="outline" size="sm" icon={<ArrowLeft />} onClick={onBack}>
+            返回成绩
+          </Button>
+          <h2 className="m-0 text-base font-semibold">成绩修改 — {examName}</h2>
         </div>
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 24 }}>
-          <button
+        <div className="flex flex-1 items-center justify-center gap-6">
+          <ModeCard
+            icon={<Pencil className="size-9 text-primary" />}
+            title="个别改分"
+            description="搜索学生 → 逐题修改分数"
             onClick={() => setFixMode("score")}
-            style={{
-              width: 240, height: 160, borderRadius: 16, border: "2px solid var(--line)",
-              background: "var(--surface)", cursor: "pointer",
-              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12,
-              transition: "border-color 0.2s, box-shadow 0.2s"
-            }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = "var(--brand)"; (e.currentTarget as HTMLElement).style.boxShadow = "0 0 0 3px var(--brand-glow)"; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = "var(--line)"; (e.currentTarget as HTMLElement).style.boxShadow = "none"; }}
-          >
-            <Pencil size={36} color="var(--brand)" />
-            <div style={{ fontSize: 15, fontWeight: 600 }}>个别改分</div>
-            <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: "0 12px" }}>
-              搜索学生 → 逐题修改分数
-            </div>
-          </button>
-          <button
+          />
+          <ModeCard
+            icon={<Save className="size-9 text-primary" />}
+            title="修改答案"
+            description="修改正确答案 → 自动重算全部分数"
             onClick={() => setFixMode("answer")}
-            style={{
-              width: 240, height: 160, borderRadius: 16, border: "2px solid var(--line)",
-              background: "var(--surface)", cursor: "pointer",
-              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12,
-              transition: "border-color 0.2s, box-shadow 0.2s"
-            }}
-            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = "var(--brand)"; (e.currentTarget as HTMLElement).style.boxShadow = "0 0 0 3px var(--brand-glow)"; }}
-            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = "var(--line)"; (e.currentTarget as HTMLElement).style.boxShadow = "none"; }}
-          >
-            <Save size={36} color="var(--brand)" />
-            <div style={{ fontSize: 15, fontWeight: 600 }}>修改答案</div>
-            <div style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: "0 12px" }}>
-              修改正确答案 → 自动重算全部分数
-            </div>
-          </button>
+          />
         </div>
       </div>
     );
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 24px", borderBottom: "1px solid var(--line)", background: "var(--surface)", flexShrink: 0 }}>
-        <button onClick={() => { if (student) { setStudent(null); setHits([]); setSearch(""); setSearchMsg(""); setScoreEdits({}); } else if (fixMode === "answer") { setFixMode(null); } else { setFixMode(null); } }} style={headerBtnStyle}><ArrowLeft size={16} /></button>
-        <div style={{ flex: 1 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>成绩修改 — {examName}</h2>
+      <div className="flex shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-6 py-3">
+        <Button
+          variant="outline"
+          size="icon-sm"
+          aria-label="返回"
+          title="返回"
+          onClick={() => {
+            if (student) { setStudent(null); setHits([]); setSearch(""); setSearchMsg(""); setScoreEdits({}); }
+            else { setFixMode(null); }
+          }}
+        >
+          <ArrowLeft />
+        </Button>
+        <div className="min-w-0 flex-1">
+          <h2 className="m-0 truncate text-base font-semibold">成绩修改 — {examName}</h2>
         </div>
-        <div style={{ display: "flex", borderRadius: 8, border: "1px solid var(--line)", overflow: "hidden" }}>
-          <button onClick={() => { setFixMode("score"); setStudent(null); setHits([]); setSearch(""); }} style={{ ...modeToggleStyle, background: fixMode === "score" ? "var(--brand)" : "var(--surface)", color: fixMode === "score" ? "#fff" : "var(--text-primary)" }}>个别改分</button>
-          <button onClick={() => setFixMode("answer")} style={{ ...modeToggleStyle, background: fixMode === "answer" ? "var(--brand)" : "var(--surface)", color: fixMode === "answer" ? "#fff" : "var(--text-primary)" }}>修改答案</button>
-        </div>
+        <SegmentedControl
+          size="sm"
+          aria-label="修改方式"
+          value={fixMode}
+          items={FIX_MODE_ITEMS}
+          onValueChange={(next) => {
+            if (next === "score") { setFixMode("score"); setStudent(null); setHits([]); setSearch(""); }
+            else { setFixMode("answer"); }
+          }}
+        />
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflowY: "auto", padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-6">
         {/* ============== SCORE MODE ============== */}
         {fixMode === "score" && (
           <>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "6px 12px", flex: 1, maxWidth: 360 }}>
-                <Search size={14} style={{ color: "var(--muted)", flexShrink: 0 }} />
-                <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} onKeyDown={handleKeyDown}
+            <div className="flex items-center gap-2">
+              <div className="relative w-full max-w-90">
+                <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={handleKeyDown}
                   placeholder="输入考号或姓名搜索..."
-                  style={{ border: "none", outline: "none", fontSize: 13, width: "100%", background: "transparent" }} />
+                  aria-label="搜索学生"
+                  className="h-control-sm pl-9 text-sm"
+                />
               </div>
-              <button className="primary-button" style={{ fontSize: 13 }} onClick={searchStudent} disabled={loadingStudent}>
-                <Search size={14} /> 搜索
-              </button>
+              <Button variant="primary" size="sm" icon={<Search />} onClick={searchStudent} loading={loadingStudent}>
+                搜索
+              </Button>
             </div>
 
-            {searchMsg && <div style={{ color: searchMsg.includes("未找到") ? "var(--muted)" : "var(--brand)", fontSize: 13 }}>{searchMsg}</div>}
+            {searchMsg && (
+              <div className={cn("text-sm", searchMsg.includes("未找到") ? "text-muted-foreground" : "text-destructive-fg")}>
+                {searchMsg}
+              </div>
+            )}
 
             {/* Search results */}
             {hits.length > 0 && !student && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <div className="flex flex-col gap-1">
                 {hits.map((h) => (
-                  <button key={h.id}
+                  <button
+                    key={h.id}
+                    type="button"
                     onClick={() => loadStudent(h.id, h.name, h.studentNumber)}
-                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 14px", borderRadius: 8, border: "1px solid var(--line)", background: "var(--surface)", cursor: "pointer", textAlign: "left", fontSize: 13 }}
-                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--surface-tint)"; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "var(--surface)"; }}
+                    className={cn(
+                      "flex items-center gap-3 rounded-md border border-border bg-card px-3.5 py-2 text-left text-sm",
+                      "transition-colors duration-(--px-dur-1) ease-standard",
+                      "hover:border-border-strong hover:bg-secondary",
+                      "outline-none focus-visible:shadow-focus",
+                    )}
                   >
-                    <span style={{ fontWeight: 500 }}>{h.name}</span>
-                    <span style={{ color: "var(--muted)", fontSize: 12 }}>考号 {h.studentNumber}</span>
+                    <span className="font-medium">{h.name}</span>
+                    <span className="text-xs tabular-nums text-muted-foreground">考号 {h.studentNumber}</span>
                   </button>
                 ))}
               </div>
             )}
 
-            {loadingStudent && <div style={{ textAlign: "center", color: "var(--muted)", padding: 40 }}>加载学生数据...</div>}
+            {loadingStudent && (
+              <div className="p-10 text-center text-sm text-muted-foreground">加载学生数据...</div>
+            )}
 
             {student && (
-              <div style={{ display: "flex", gap: 20, flex: 1, minHeight: 0 }}>
+              <div className="flex min-h-0 flex-1 gap-5">
                 {/* Left: card image — scrolls vertically */}
-                <div style={{ width: 360, flexShrink: 0, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)", display: "flex", flexDirection: "column", overflow: "hidden" }}>
-                  <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, flexShrink: 0 }}>答题卡 — {student.student.name}</div>
-                  <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                <div className="flex w-90 shrink-0 flex-col overflow-hidden rounded-lg border border-border-subtle bg-card">
+                  <div className="shrink-0 border-b border-border-subtle px-3 py-2 text-xs font-medium">
+                    答题卡 — {student.student.name}
+                  </div>
+                  <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
                     {scorePreviewItems.length > 0 ? (
                       scorePreviewItems.map((item, idx) => (
-                        <div key={idx} style={{ cursor: "zoom-in" }} onClick={() => { setActiveImageId(item.id); setEnlargeIdx(idx); }}>
-                          <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 4 }}>
+                        <button
+                          key={`${item.id}-${idx}`}
+                          type="button"
+                          className="block w-full cursor-zoom-in border-0 bg-transparent p-0 text-left outline-none focus-visible:shadow-focus"
+                          onClick={() => { setActiveImageId(item.id); setEnlargeIdx(idx); }}
+                        >
+                          <div
+                            className={cn(
+                              "mb-1 text-xs",
+                              item.id === activeImageId ? "text-primary" : "text-muted-foreground",
+                            )}
+                          >
                             {item.title} · {item.subtitle}
                           </div>
                           <img
                             src={item.imageUrl}
                             alt={item.title}
-                            style={{ width: "100%", border: `1px solid ${item.id === activeImageId ? "var(--brand)" : "var(--line-light)"}`, borderRadius: 4 }}
+                            className={cn(
+                              "block w-full rounded-xs border",
+                              item.id === activeImageId ? "border-primary" : "border-border-subtle",
+                            )}
                             onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
                           />
-                        </div>
+                        </button>
                       ))
                     ) : (
-                      <div style={{ color: "var(--muted)", fontSize: 13, textAlign: "center", padding: 40 }}>暂无扫描图片</div>
+                      <EmptyState size="sm" icon={<ImageOff />} title="暂无扫描图片" />
                     )}
                   </div>
                 </div>
 
                 {/* Right: scores */}
-                <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
-                  <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span>{student.student.name} · {student.student.studentNumber}
-                      {student.totalScore?.manuallyModified && <span style={{ color: "var(--brand)", fontSize: 11, marginLeft: 8 }}>(已手动修改)</span>}
+                <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-border-subtle bg-card">
+                  <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-3 py-2 text-xs font-medium">
+                    <span className="min-w-0 truncate">
+                      {student.student.name} · <span className="tabular-nums">{student.student.studentNumber}</span>
+                      {isManuallyModified(student.totalScore?.manuallyModified) && (
+                        <span className="ml-2 text-xs text-primary">(已手动修改)</span>
+                      )}
                     </span>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                      {saveMsg && <span style={{ fontSize: 11, color: saveMsg.includes("成功") ? "var(--success)" : "var(--brand)" }}>{saveMsg}</span>}
-                      <button className="primary-button" style={{ fontSize: 12 }} onClick={saveScoreEdits} disabled={saving || Object.keys(scoreEdits).length === 0}>
-                        <Save size={12} /> {saving ? "保存..." : "保存修改"}
-                      </button>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {saveMsg && <span className={cn("text-xs", saveMsgClass)}>{saveMsg}</span>}
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        icon={<Save />}
+                        onClick={saveScoreEdits}
+                        loading={saving}
+                        disabled={Object.keys(scoreEdits).length === 0}
+                      >
+                        保存修改
+                      </Button>
                     </div>
                   </div>
-                  <div style={{ padding: 12 }}>
+                  <div className="min-h-0 flex-1 overflow-y-auto p-3">
                     {student.totalScore && (
-                      <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 13 }}>
-                        <span>客观题: <strong>{student.totalScore.objectiveScore}</strong></span>
-                        <span>主观题: <strong>{student.totalScore.subjectiveScore}</strong></span>
-                        <span>总分: <strong>{student.totalScore.totalScore}</strong></span>
-                        {student.totalScore.assignedScore != null && <span>赋分: <strong>{student.totalScore.assignedScore}</strong></span>}
+                      <div className="mb-3 flex flex-wrap gap-4 text-sm">
+                        <span>客观题: <strong className="tabular-nums">{student.totalScore.objectiveScore}</strong></span>
+                        <span>主观题: <strong className="tabular-nums">{student.totalScore.subjectiveScore}</strong></span>
+                        <span>总分: <strong className="tabular-nums">{student.totalScore.totalScore}</strong></span>
+                        {student.totalScore.assignedScore != null && (
+                          <span>赋分: <strong className="tabular-nums">{student.totalScore.assignedScore}</strong></span>
+                        )}
                       </div>
                     )}
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                      <thead>
-                        <tr style={{ borderBottom: "2px solid var(--line)", textAlign: "left", fontSize: 12, color: "var(--text-secondary)" }}>
-                          <th style={{ padding: "6px 8px" }}>题号</th><th style={{ padding: "6px 8px" }}>类型</th><th style={{ padding: "6px 8px" }}>得分/满分</th><th style={{ padding: "6px 8px" }}>识别</th><th style={{ padding: "6px 8px" }}>修改</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {student.questionScores.map((qs, i) => {
-                          const isObj = qs.score_type === "objective";
-                          const rec = student.recognition[qs.question_number];
-                          const cur = getScoreEdit(qs.question_number, qs.score_type, qs.score);
-                          const modified = `${qs.question_number}_${qs.score_type}` in scoreEdits;
-                          return (
-                            <tr
-                              key={i}
-                              onClick={() => {
-                                const block = scoreBlockForQuestion(qs.question_number);
-                                if (block) setActiveImageId(block.id);
-                              }}
-                              style={{
-                                borderTop: "1px solid var(--line-light)",
-                                background: modified ? "var(--surface-tint)" : (i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)"),
-                                cursor: student.answerBlocks?.length > 0 ? "pointer" : "default"
-                              }}
-                            >
-                              <td style={{ padding: "6px 8px", fontWeight: 500 }}>{qs.question_number}</td>
-                              <td style={{ padding: "6px 8px", fontSize: 11, color: "var(--muted)" }}>{isObj ? (qs.mode === "multiple" ? "多选" : qs.mode === "indeterminate" ? "不定" : "单选") : "解答"}</td>
-                              <td style={{ padding: "6px 8px" }}><span style={{ fontWeight: qs.manually_modified ? 600 : undefined, color: modified ? "var(--brand)" : undefined }}>{cur}</span>/{qs.max_score}</td>
-                              <td style={{ padding: "6px 8px", fontSize: 11, color: "var(--muted)" }}>{rec ? rec.selectedOptions.join(",") : "—"}</td>
-                              <td style={{ padding: "6px 8px" }}>
-                                {isObj ? (() => {
-                                  const step = qs.step || qs.max_score;
-                                  const options: number[] = qs.mode === "single" || !qs.mode ? [0, qs.max_score] : [];
-                                  if (qs.mode !== "single" && qs.mode) {
-                                    const steps = Math.round(qs.max_score / step);
-                                    for (let s = 0; s <= steps; s++) options.push(Math.round(s * step * 10) / 10);
-                                  }
-                                  return <select value={cur} onChange={(e) => setScoreEdit(qs.question_number, qs.score_type, Number(e.target.value))} style={{ fontSize: 12, padding: "2px 6px", borderRadius: 4, border: `1px solid var(--line-strong)` }}>
-                                    {options.map((v) => <option key={v} value={v}>{v}</option>)}
-                                  </select>;
-                                })() : (
-                                  <input type="number" min={0} max={qs.max_score} step={0.5} value={cur} onChange={(e) => setScoreEdit(qs.question_number, qs.score_type, Number(e.target.value))} style={{ width: 60, fontSize: 12, padding: "2px 6px", borderRadius: 4, border: "1px solid var(--line-strong)" }} />
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
+                    <TableWrap>
+                      <Table className="text-sm">
+                        <TableHeader>
+                          <TableRow className="hover:bg-transparent">
+                            <TableHead>题号</TableHead>
+                            <TableHead>类型</TableHead>
+                            <TableHead numeric>得分/满分</TableHead>
+                            <TableHead>识别</TableHead>
+                            <TableHead>修改</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {student.questionScores.map((qs, i) => {
+                            const isObj = qs.score_type === "objective";
+                            const rec = student.recognition[qs.question_number];
+                            const cur = getScoreEdit(qs.question_number, qs.score_type, qs.score);
+                            const modified = `${qs.question_number}_${qs.score_type}` in scoreEdits;
+                            const clickable = student.answerBlocks?.length > 0;
+                            return (
+                              <TableRow
+                                key={i}
+                                selected={modified}
+                                clickable={clickable}
+                                onClick={() => {
+                                  const block = scoreBlockForQuestion(qs.question_number);
+                                  if (block) setActiveImageId(block.id);
+                                }}
+                              >
+                                <TableCell className="font-medium tabular-nums">{qs.question_number}</TableCell>
+                                <TableCell className="text-xs text-muted-foreground">
+                                  {isObj ? (qs.mode === "multiple" ? "多选" : qs.mode === "indeterminate" ? "不定" : "单选") : "解答"}
+                                </TableCell>
+                                <TableCell numeric>
+                                  <span
+                                    className={cn(
+                                      isManuallyModified(qs.manually_modified) && "font-semibold",
+                                      modified && "text-primary",
+                                    )}
+                                  >
+                                    {cur}
+                                  </span>
+                                  /{qs.max_score}
+                                </TableCell>
+                                <TableCell className="text-xs text-muted-foreground">
+                                  {rec ? rec.selectedOptions.join(",") : "—"}
+                                </TableCell>
+                                <TableCell onClick={(e) => e.stopPropagation()}>
+                                  {isObj ? (() => {
+                                    const step = qs.step || qs.max_score;
+                                    const options: number[] = qs.mode === "single" || !qs.mode ? [0, qs.max_score] : [];
+                                    if (qs.mode !== "single" && qs.mode) {
+                                      const steps = Math.round(qs.max_score / step);
+                                      for (let s = 0; s <= steps; s++) options.push(Math.round(s * step * 10) / 10);
+                                    }
+                                    return (
+                                      <Select
+                                        value={String(cur)}
+                                        onValueChange={(v) => setScoreEdit(qs.question_number, qs.score_type, Number(v))}
+                                      >
+                                        <SelectTrigger
+                                          className="h-control-sm w-24 text-sm tabular-nums"
+                                          aria-label={`第 ${qs.question_number} 题得分`}
+                                        >
+                                          <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          {options.map((v) => (
+                                            <SelectItem key={v} value={String(v)}>{v}</SelectItem>
+                                          ))}
+                                        </SelectContent>
+                                      </Select>
+                                    );
+                                  })() : (
+                                    <Input
+                                      type="number"
+                                      min={0}
+                                      max={qs.max_score}
+                                      step={0.5}
+                                      value={cur}
+                                      aria-label={`第 ${qs.question_number} 题得分`}
+                                      onChange={(e) => setScoreEdit(qs.question_number, qs.score_type, Number(e.target.value))}
+                                      className="h-control-sm w-20 text-sm tabular-nums"
+                                    />
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </TableWrap>
                   </div>
                 </div>
               </div>
@@ -429,111 +552,120 @@ export function ScoreFixPage({ examId, examName, onBack }: Props) {
 
         {/* ============== ANSWER MODE ============== */}
         {fixMode === "answer" && (
-          <div style={{ flex: 1, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
-            <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border-subtle bg-card">
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-3 py-2 text-xs font-medium">
               <span>标准答案编辑</span>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                {saveMsg && <span style={{ fontSize: 11, color: saveMsg.includes("成功") ? "var(--success)" : "var(--brand)" }}>{saveMsg}</span>}
-                <button className="primary-button" style={{ fontSize: 12 }} onClick={saveAnswerEdits} disabled={saving || Object.keys(answerEdits).length === 0}>
-                  <Save size={12} /> {saving ? "重算中..." : "保存并重算"}
-                </button>
+              <div className="flex shrink-0 items-center gap-2">
+                {saveMsg && <span className={cn("text-xs", saveMsgClass)}>{saveMsg}</span>}
+                <Button
+                  variant="primary"
+                  size="sm"
+                  icon={<Save />}
+                  onClick={saveAnswerEdits}
+                  loading={saving}
+                  disabled={Object.keys(answerEdits).length === 0}
+                >
+                  {saving ? "重算中..." : "保存并重算"}
+                </Button>
               </div>
             </div>
-            <div style={{ padding: 12 }}>
+            <div className="min-h-0 flex-1 overflow-y-auto p-3">
               {loadingAnswers ? (
-                <div style={{ textAlign: "center", padding: 40, color: "var(--muted)" }}>加载答案...</div>
+                <div className="p-10 text-center text-sm text-muted-foreground">加载答案...</div>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div className="flex flex-col gap-3">
                   {cardAnswers.filter((q) => q.questionType === "objective").map((q) => {
                     const cur = getAnswerEdit(q.questionNumber, q.answerKey ?? []);
                     const isMulti = q.mode === "multiple" || q.mode === "indeterminate";
                     const changed = String(q.questionNumber) in answerEdits;
                     return (
-                      <div key={q.questionNumber} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: 8, background: changed ? "var(--surface-tint)" : "var(--bg-soft)", border: `1px solid ${changed ? "var(--brand-glow)" : "var(--line)"}` }}>
-                          <div style={{ fontWeight: 500, fontSize: 14, minWidth: 48 }}>第{q.questionNumber}题</div>
-                          <div style={{ fontSize: 11, color: "var(--muted)", minWidth: 60 }}>{isMulti ? "多选" : "单选"} · {q.optionCount}选项 · {q.score}分</div>
-                          <div style={{ display: "flex", gap: 4, flex: 1 }}>
-                            {OPTION_LABELS.slice(0, q.optionCount ?? 4).map((opt) => {
-                              const sel = cur.includes(opt);
-                              return (
-                                <button key={opt} onClick={() => { if (!(String(q.questionNumber) in answerEdits)) initFromCard(q.questionNumber, q.answerKey ?? []); toggleOption(q.questionNumber, opt, isMulti); }}
-                                  style={{ width: 36, height: 36, borderRadius: 6, border: `2px solid ${sel ? "var(--brand)" : "var(--line)"}`, background: sel ? "var(--brand)" : "var(--surface)", color: sel ? "#fff" : "var(--text-primary)", fontWeight: 600, cursor: "pointer", fontSize: 14 }}>{opt}</button>
-                              );
-                            })}
-                          </div>
+                      <div
+                        key={q.questionNumber}
+                        className={cn(
+                          "flex items-center gap-3 rounded-md border px-3 py-2.5",
+                          changed ? "border-accent-border bg-accent" : "border-border-subtle bg-secondary",
+                        )}
+                      >
+                        <div className="min-w-12 text-sm font-medium">第{q.questionNumber}题</div>
+                        <div className="min-w-15 text-xs text-muted-foreground">
+                          {isMulti ? "多选" : "单选"} · {q.optionCount}选项 · {q.score}分
                         </div>
-                      );
-                    })}
-                    {cardAnswers.filter((q) => q.questionType === "subjective").length > 0 && (
-                      <div style={{ color: "var(--muted)", fontSize: 12, padding: 8 }}>主观题答案请在「个别改分」模式手动输入。</div>
-                    )}
-                  </div>
-                )}
-              </div>
+                        <div className="flex flex-1 gap-1">
+                          {OPTION_LABELS.slice(0, q.optionCount ?? 4).map((opt) => {
+                            const sel = cur.includes(opt);
+                            return (
+                              <button
+                                key={opt}
+                                type="button"
+                                aria-pressed={sel}
+                                onClick={() => {
+                                  if (!(String(q.questionNumber) in answerEdits)) initFromCard(q.questionNumber, q.answerKey ?? []);
+                                  toggleOption(q.questionNumber, opt, isMulti);
+                                }}
+                                className={cn(
+                                  "size-9 rounded-sm border-2 text-sm font-semibold",
+                                  "transition-colors duration-(--px-dur-1) ease-standard",
+                                  "outline-none focus-visible:shadow-focus",
+                                  sel
+                                    ? "border-primary bg-primary text-primary-foreground"
+                                    : "border-border bg-card text-foreground hover:border-border-strong hover:bg-secondary",
+                                )}
+                              >
+                                {opt}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {cardAnswers.filter((q) => q.questionType === "subjective").length > 0 && (
+                    <div className="p-2 text-xs text-muted-foreground">主观题答案请在「个别改分」模式手动输入。</div>
+                  )}
+                </div>
+              )}
             </div>
+          </div>
         )}
       </div>
 
-      {/* Enlarge image modal — inline fixed to avoid parent overflow:hidden clipping */}
-      {enlargeIdx >= 0 && (() => {
-        const cur = scorePreviewItems[enlargeIdx];
-        const hasPrev = enlargeIdx > 0;
-        const hasNext = enlargeIdx < scorePreviewItems.length - 1;
-        const zm = (delta: number) => setZoomState((z) => Math.min(3, Math.max(0.5, z + delta)));
-        return createPortal(
-          <div style={{ position: "fixed", inset: 0, zIndex: 999999, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setEnlargeIdx(-1)}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1a", borderRadius: 14, width: "94vw", maxHeight: "94vh", display: "flex", flexDirection: "column" }}>
-              {/* Header */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", color: "#fff", flexShrink: 0 }}>
-                <span style={{ fontSize: 14, fontWeight: 500 }}>{cur.title} / 共 {scorePreviewItems.length} 张</span>
-                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                  <button onClick={() => zm(-0.25)} style={zmBtnStyle} title="缩小"><ZoomOut size={18} /></button>
-                  <button onClick={() => zm(0.25)} style={zmBtnStyle} title="放大"><ZoomIn size={18} /></button>
-                  <span style={{ fontSize: 12, minWidth: 40, textAlign: "center" }}>{Math.round(zoom * 100)}%</span>
-                  <button onClick={() => setEnlargeIdx(-1)} style={{ ...zmBtnStyle, marginLeft: 4 }}><X size={18} /></button>
-                </div>
-              </div>
-              {/* Image */}
-              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", overflow: "auto", position: "relative", padding: "0 48px" }}>
-                {hasPrev && (
-                  <button onClick={() => { setEnlargeIdx(enlargeIdx - 1); setZoomState(1); }} style={arrowBtnStyle("left")}>
-                    <ChevronLeft size={28} />
-                  </button>
-                )}
-                <img
-                  src={cur.imageUrl}
-                  alt={cur.title}
-                  style={{ maxWidth: `${zoom * 100}%`, maxHeight: `calc(94vh - 120px)`, objectFit: "contain", transition: "max-width 0.2s", transform: `scale(${zoom})`, transformOrigin: "center center" }}
-                />
-                {hasNext && (
-                  <button onClick={() => { setEnlargeIdx(enlargeIdx + 1); setZoomState(1); }} style={arrowBtnStyle("right")}>
-                    <ChevronRight size={28} />
-                  </button>
-                )}
-              </div>
-              {/* Thumbnails */}
-              <div style={{ display: "flex", justifyContent: "center", gap: 6, padding: "8px 16px 12px", overflowX: "auto", flexShrink: 0 }}>
-                {scorePreviewItems.map((item, idx) => (
-                  <button key={idx}
-                    onClick={() => { setEnlargeIdx(idx); setZoomState(1); }}
-                    style={{ padding: 0, border: idx === enlargeIdx ? "2px solid #fff" : "2px solid transparent", borderRadius: 4, cursor: "pointer", opacity: idx === enlargeIdx ? 1 : 0.5, background: "transparent" }}
-                  >
-                    <img src={item.imageUrl} alt="" style={{ width: 40, height: 56, objectFit: "cover", borderRadius: 2 }} />
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>,
-          document.body
-        );
-      })()}
+      {/* 放大答题卡（O-6：Dialog + bg-overlay + v2 缩放/翻页） */}
+      <AnswerCardLightbox
+        items={scorePreviewItems}
+        index={enlargeIdx}
+        zoom={zoom}
+        onIndexChange={setEnlargeIdx}
+        onZoomChange={setZoomState}
+        onClose={() => setEnlargeIdx(-1)}
+      />
     </div>
   );
 }
 
-const headerBtnStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)", cursor: "pointer", fontSize: 13 };
-const modeToggleStyle: React.CSSProperties = { padding: "6px 14px", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 500 };
-const zmBtnStyle: React.CSSProperties = { border: "none", background: "rgba(255,255,255,0.1)", borderRadius: 6, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff" };
-function arrowBtnStyle(side: "left" | "right"): React.CSSProperties {
-  return { position: "absolute", [side]: 4, top: "50%", transform: "translateY(-50%)", zIndex: 1, background: "rgba(255,255,255,0.12)", border: "none", borderRadius: "50%", width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff" };
+interface ModeCardProps {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+  onClick: () => void;
+}
+
+/** 入口大按钮：hover 走类名，替代原来的 onMouseEnter/Leave 手改内联样式 */
+function ModeCard({ icon, title, description, onClick }: ModeCardProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex h-40 w-60 cursor-pointer flex-col items-center justify-center gap-3",
+        "rounded-lg border-2 border-border bg-card",
+        "transition-[border-color,box-shadow] duration-(--px-dur-2) ease-standard",
+        "hover:border-primary hover:shadow-accent",
+        "outline-none focus-visible:shadow-focus",
+      )}
+    >
+      {icon}
+      <div className="text-base font-semibold">{title}</div>
+      <div className="px-3 text-center text-xs text-muted-foreground">{description}</div>
+    </button>
+  );
 }
