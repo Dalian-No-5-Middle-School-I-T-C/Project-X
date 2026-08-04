@@ -1,8 +1,34 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, X, ZoomIn, ZoomOut } from "lucide-react";
-import { createPortal } from "react-dom";
+import { ArrowLeft, ImageOff } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import { cn } from "../lib/utils";
+import { isManuallyModified } from "../util/score";
+import {
+  Button,
+  EmptyState,
+  ErrorState,
+  Progress,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableWrap,
+  type ProgressTone,
+} from "./ui/v2";
+import { AnswerCardLightbox, type LightboxItem } from "./AnswerCardLightbox";
 import type { AnswerBlockCrop } from "../../../../shared/types";
+
+/**
+ * StudentScoreDetail —— T2 迁移（T04 明细/订正/弹窗）
+ *
+ * 换肤范围（功能守恒，接口/路由/权限零改动）：
+ *  · 放大答题卡：`createPortal` + zIndex 999999 + `#1a1a1a` → `AnswerCardLightbox`（O-6）
+ *  · 手写得分率进度条（含硬编码 `#E65100`）→ v2 `Progress` + tone 分档
+ *  · 手写 table + 斑马纹 → v2 `Table` 原语，改分行走 `selected` 高亮
+ *  · 「已手动修改」判定统一走 `isManuallyModified()`（O-2）
+ */
 
 interface Props {
   examId: number;
@@ -30,6 +56,13 @@ interface StudentScore {
   scans: Array<{ recordId: number; fileName: string; pageNum: number }>;
   answerBlocks: AnswerBlockCrop[];
   cardId: string;
+}
+
+/** 得分率分档 → 语义色（替代原先的 success / #E65100 / brand 三段硬编码） */
+function rateTone(rate: number): ProgressTone {
+  if (rate >= 80) return "success";
+  if (rate >= 60) return "warning";
+  return "destructive";
 }
 
 export function StudentScoreDetail({ examId, studentId, studentName, studentNumber, examName, onBack }: Props) {
@@ -60,14 +93,12 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
   const classObjRate = classObjMax > 0 ? Math.round(classObjTotal / classObjMax * 100) : 0;
   const classSubjRate = classSubjMax > 0 ? Math.round(classSubjTotal / classSubjMax * 100) : 0;
 
-  const zm = (d: number) => setZoomState((z) => Math.min(3, Math.max(0.5, z + d)));
-
-  if (loading) return <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>加载中...</div>;
-  if (error) return <div style={{ padding: 40, textAlign: "center", color: "var(--brand)" }}>{error}</div>;
+  if (loading) return <div className="p-10 text-center text-sm text-muted-foreground">加载中...</div>;
+  if (error) return <ErrorState description={error} />;
   if (!data) return null;
 
   const answerBlocks = data.answerBlocks ?? [];
-  const imageItems = answerBlocks.length > 0
+  const imageItems: LightboxItem[] = answerBlocks.length > 0
     ? answerBlocks.map((block) => ({
         id: block.id,
         title: `${block.blockTitle || "大题"} · 第 ${block.pageNumber} 页`,
@@ -86,39 +117,45 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 24px", borderBottom: "1px solid var(--line)", background: "var(--surface)", flexShrink: 0 }}>
-        <button onClick={onBack} style={backBtn}>
-          <ArrowLeft size={16} /> 返回成绩表
-        </button>
-        <div style={{ flex: 1 }}>
-          <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>{studentName} · {studentNumber}</h2>
-          <span style={{ fontSize: 12, color: "var(--muted)" }}>{examName}</span>
+      <div className="flex shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-6 py-3">
+        <Button variant="outline" size="sm" icon={<ArrowLeft />} onClick={onBack}>
+          返回成绩表
+        </Button>
+        <div className="min-w-0 flex-1">
+          <h2 className="m-0 truncate text-base font-semibold">
+            {studentName} · <span className="tabular-nums">{studentNumber}</span>
+          </h2>
+          <span className="text-xs text-muted-foreground">{examName}</span>
         </div>
         {data.totalScore && (
-          <div style={{ display: "flex", gap: 16, fontSize: 13 }}>
-            <span>客观: <strong>{data.totalScore.objectiveScore}</strong></span>
-            <span>主观: <strong>{data.totalScore.subjectiveScore}</strong></span>
-            <span style={{ fontSize: 15, fontWeight: 700, color: "var(--brand)" }}>{data.totalScore.totalScore}</span>
+          <div className="flex shrink-0 items-center gap-4 text-sm">
+            <span>客观: <strong className="tabular-nums">{data.totalScore.objectiveScore}</strong></span>
+            <span>主观: <strong className="tabular-nums">{data.totalScore.subjectiveScore}</strong></span>
+            <span className="text-base font-bold tabular-nums text-primary">{data.totalScore.totalScore}</span>
           </div>
         )}
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflowY: "auto", padding: 24, display: "flex", gap: 20, minHeight: 0 }}>
+      <div className="flex min-h-0 flex-1 gap-5 overflow-y-auto p-6">
         {/* Left: scores */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)", overflow: "hidden", marginBottom: 16 }}>
-            <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--line)", fontSize: 13, fontWeight: 500 }}>逐题得分</div>
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                <thead>
-                  <tr style={{ borderBottom: "1px solid var(--line)", textAlign: "left", fontSize: 12, color: "var(--text-secondary)" }}>
-                    <th style={s_th}>题号</th><th style={s_th}>类型</th><th style={s_th}>得分/满分</th><th style={s_th}>作答</th><th style={s_th}>班级得分率</th>
-                  </tr>
-                </thead>
-                <tbody>
+        <div className="min-w-0 flex-1">
+          <div className="mb-4 overflow-hidden rounded-lg border border-border-subtle bg-card">
+            <div className="border-b border-border-subtle px-3.5 py-2 text-sm font-medium">逐题得分</div>
+            <TableWrap>
+              <Table className="text-sm">
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead>题号</TableHead>
+                    <TableHead>类型</TableHead>
+                    <TableHead numeric>得分/满分</TableHead>
+                    <TableHead>作答</TableHead>
+                    <TableHead>班级得分率</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {data.questionScores.map((q, i) => {
                     const stat = cs[q.question_number];
                     const classRate = stat && stat.maxScore > 0 ? Math.round(stat.avgScore / stat.maxScore * 100) : 0;
@@ -130,153 +167,141 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
                     const answerKey: string[] = isObj ? (q.answerKey ?? []) : [];
                     // 选项显示
                     let answerDisplay: string | null = null;
-                    let answerColor = "var(--muted)";
+                    let answerClass = "text-muted-foreground";
                     if (isObj && answerKey.length > 0) {
-                      if (selected.length === 0) { answerDisplay = "未答"; answerColor = "var(--muted)"; }
-                      else {
+                      if (selected.length === 0) {
+                        answerDisplay = "未答";
+                        answerClass = "text-muted-foreground";
+                      } else {
                         answerDisplay = selected.join("");
                         const correct = q.score >= q.max_score;
-                        answerColor = correct ? "var(--success)" : "var(--brand)";
+                        answerClass = correct ? "text-success-foreground" : "text-destructive-fg";
                       }
                     }
                     return (
-                      <tr
+                      <TableRow
                         key={i}
+                        selected={isManuallyModified(q.manually_modified)}
+                        clickable={answerBlocks.length > 0}
                         onClick={() => {
                           const block = blockForQuestion(q.question_number);
                           if (block) setActiveImageId(block.id);
                         }}
-                        style={{
-                          borderTop: "1px solid var(--line-light)",
-                          background: q.manually_modified ? "var(--surface-tint)" : i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)",
-                          cursor: answerBlocks.length > 0 ? "pointer" : "default"
-                        }}
                       >
-                        <td style={s_td}>{q.question_number}</td>
-                        <td style={{ ...s_td, fontSize: 11, color: "var(--muted)" }}>
+                        <TableCell className="tabular-nums">{q.question_number}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
                           {q.score_type === "objective" ? (q.mode === "multiple" ? "多选" : "单选") : "解答"}
-                        </td>
-                        <td style={s_td}>
-                          <span style={{ fontWeight: 600, color: perfect ? "var(--success)" : zero ? "var(--brand)" : "var(--text-primary)" }}>
+                        </TableCell>
+                        <TableCell numeric>
+                          <span
+                            className={cn(
+                              "font-semibold",
+                              perfect ? "text-success-foreground" : zero ? "text-destructive-fg" : "text-foreground",
+                            )}
+                          >
                             {q.score}
-                          </span>/{q.max_score}
-                          {q.manually_modified ? <span style={{ fontSize: 10, color: "var(--brand)", marginLeft: 4 }}>改</span> : null}
-                        </td>
-                        <td style={{ ...s_td, fontSize: 12, fontWeight: 600, color: answerColor }}>
+                          </span>
+                          /{q.max_score}
+                          {isManuallyModified(q.manually_modified) && (
+                            <span className="ml-1 text-xs text-primary">改</span>
+                          )}
+                        </TableCell>
+                        <TableCell className={cn("text-xs font-semibold", answerClass)}>
                           {answerDisplay ?? "—"}
-                        </td>
-                        <td style={s_td}>
+                        </TableCell>
+                        <TableCell>
                           {stat ? (
-                            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                              <div style={{ flex: 1, height: 6, borderRadius: 3, background: "var(--line-light)", overflow: "hidden", maxWidth: 100 }}>
-                                <div style={{ height: "100%", borderRadius: 3, background: classRate >= 80 ? "var(--success)" : classRate >= 60 ? "#E65100" : "var(--brand)", width: `${classRate}%`, transition: "width 0.3s" }} />
-                              </div>
-                              <span style={{ fontSize: 11, minWidth: 40 }}>{stat.avgScore}/{stat.maxScore} ({classRate}%)</span>
+                            <div className="flex items-center gap-1.5">
+                              <Progress
+                                value={classRate}
+                                tone={rateTone(classRate)}
+                                size="sm"
+                                className="max-w-25"
+                              />
+                              <span className="shrink-0 text-xs tabular-nums">
+                                {stat.avgScore}/{stat.maxScore} ({classRate}%)
+                              </span>
                             </div>
-                          ) : <span style={{ color: "var(--muted)" }}>—</span>}
-                        </td>
-                      </tr>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
                     );
                   })}
-                </tbody>
-              </table>
-            </div>
+                </TableBody>
+              </Table>
+            </TableWrap>
           </div>
 
           {/* Class rate bars */}
-          <div style={{ display: "flex", gap: 12 }}>
-            <div style={{ flex: 1, padding: 12, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
-              <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>
-                选择题 <strong>班级均分率 {classObjRate}%</strong> ({objScores.length}题)
+          <div className="flex gap-3">
+            <div className="flex-1 rounded-lg border border-border-subtle bg-card p-3">
+              <div className="mb-1.5 text-xs text-secondary-foreground">
+                选择题 <strong className="tabular-nums">班级均分率 {classObjRate}%</strong> ({objScores.length}题)
               </div>
-              <div style={{ height: 10, borderRadius: 5, background: "var(--line-light)", overflow: "hidden" }}>
-                <div style={{ height: "100%", borderRadius: 5, background: classObjRate >= 80 ? "var(--success)" : classObjRate >= 60 ? "#E65100" : "var(--brand)", width: `${classObjRate}%`, transition: "width 0.5s" }} />
-              </div>
+              <Progress value={classObjRate} tone={rateTone(classObjRate)} />
             </div>
             {subjScores.length > 0 && (
-              <div style={{ flex: 1, padding: 12, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
-                <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 6 }}>
-                  解答题 <strong>班级均分率 {classSubjRate}%</strong> ({subjScores.length}题)
+              <div className="flex-1 rounded-lg border border-border-subtle bg-card p-3">
+                <div className="mb-1.5 text-xs text-secondary-foreground">
+                  解答题 <strong className="tabular-nums">班级均分率 {classSubjRate}%</strong> ({subjScores.length}题)
                 </div>
-                <div style={{ height: 10, borderRadius: 5, background: "var(--line-light)", overflow: "hidden" }}>
-                  <div style={{ height: "100%", borderRadius: 5, background: classSubjRate >= 80 ? "var(--success)" : classSubjRate >= 60 ? "#E65100" : "var(--brand)", width: `${classSubjRate}%`, transition: "width 0.5s" }} />
-                </div>
+                <Progress value={classSubjRate} tone={rateTone(classSubjRate)} />
               </div>
             )}
           </div>
         </div>
 
         {/* Right: card images */}
-        <div style={{ width: 340, flexShrink: 0, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)", display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 140px)" }}>
-          <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--line)", fontSize: 12, fontWeight: 500, flexShrink: 0 }}>
+        <div className="flex max-h-[calc(100vh-140px)] w-85 shrink-0 flex-col rounded-lg border border-border-subtle bg-card">
+          <div className="shrink-0 border-b border-border-subtle px-3 py-2 text-xs font-medium">
             {answerBlocks.length > 0 ? "大题作答图片" : "答题卡"}
           </div>
-          <div style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
             {imageItems.length > 0 ? (
               imageItems.map((item, idx) => (
-                <button key={idx}
+                <button
+                  key={`${item.id}-${idx}`}
+                  type="button"
                   onClick={() => { setActiveImageId(item.id); setEnlargeIdx(idx); }}
-                  style={{
-                    display: "block", width: "100%", border: "none", background: "transparent",
-                    cursor: "zoom-in", padding: 0, textAlign: "left", margin: 0
-                  }}
+                  className="block w-full cursor-zoom-in border-0 bg-transparent p-0 text-left outline-none focus-visible:shadow-focus"
                 >
-                  <div style={{ fontSize: 11, color: item.id === activeImageId ? "var(--brand)" : "var(--muted)", marginBottom: 4 }}>{item.title} · {item.subtitle}</div>
-                  <img src={item.imageUrl} alt={item.title}
-                    style={{ width: "100%", border: `1px solid ${item.id === activeImageId ? "var(--brand)" : "var(--line-light)"}`, borderRadius: 4, display: "block" }}
-                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                  <div
+                    className={cn(
+                      "mb-1 text-xs",
+                      item.id === activeImageId ? "text-primary" : "text-muted-foreground",
+                    )}
+                  >
+                    {item.title} · {item.subtitle}
+                  </div>
+                  <img
+                    src={item.imageUrl}
+                    alt={item.title}
+                    className={cn(
+                      "block w-full rounded-xs border",
+                      item.id === activeImageId ? "border-primary" : "border-border-subtle",
+                    )}
+                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                  />
                 </button>
               ))
             ) : (
-              <div style={{ color: "var(--muted)", fontSize: 13, textAlign: "center", padding: 40 }}>暂无扫描</div>
+              <EmptyState size="sm" icon={<ImageOff />} title="暂无扫描" />
             )}
           </div>
         </div>
       </div>
 
-      {/* Enlarge modal */}
-      {enlargeIdx >= 0 && (() => {
-        const cur = imageItems[enlargeIdx];
-        const hasPrev = enlargeIdx > 0;
-        const hasNext = enlargeIdx < imageItems.length - 1;
-        return createPortal(
-          <div style={{ position: "fixed", inset: 0, zIndex: 999999, background: "rgba(0,0,0,0.55)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setEnlargeIdx(-1)}>
-            <div onClick={(e) => e.stopPropagation()} style={{ background: "#1a1a1a", borderRadius: 14, width: "94vw", maxHeight: "94vh", display: "flex", flexDirection: "column" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 16px", color: "#fff", flexShrink: 0 }}>
-                <span style={{ fontSize: 14, fontWeight: 500 }}>{cur.title} / 共 {imageItems.length} 张</span>
-                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                  <button onClick={() => zm(-0.25)} style={zmBtn} title="缩小"><ZoomOut size={18} /></button>
-                  <button onClick={() => zm(0.25)} style={zmBtn} title="放大"><ZoomIn size={18} /></button>
-                  <span style={{ fontSize: 12, minWidth: 40, textAlign: "center" }}>{Math.round(zoom * 100)}%</span>
-                  <button onClick={() => setEnlargeIdx(-1)} style={{ ...zmBtn, marginLeft: 4 }}><X size={18} /></button>
-                </div>
-              </div>
-              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", overflow: "auto", position: "relative", padding: "0 48px" }}>
-                {hasPrev && <button onClick={() => { setEnlargeIdx(enlargeIdx - 1); setZoomState(1); }} style={arrowBtn("left")}><ChevronLeft size={28} /></button>}
-                <img src={cur.imageUrl} alt="" style={{ maxWidth: "100%", maxHeight: "calc(94vh - 120px)", objectFit: "contain", transform: `scale(${zoom})`, transformOrigin: "center center", transition: "transform 0.2s" }} />
-                {hasNext && <button onClick={() => { setEnlargeIdx(enlargeIdx + 1); setZoomState(1); }} style={arrowBtn("right")}><ChevronRight size={28} /></button>}
-              </div>
-              <div style={{ display: "flex", justifyContent: "center", gap: 6, padding: "8px 16px 12px", overflowX: "auto", flexShrink: 0 }}>
-                {imageItems.map((item, idx) => (
-                  <button key={idx} onClick={() => { setEnlargeIdx(idx); setZoomState(1); }}
-                    style={{ padding: 0, border: idx === enlargeIdx ? "2px solid #fff" : "2px solid transparent", borderRadius: 4, cursor: "pointer", opacity: idx === enlargeIdx ? 1 : 0.5, background: "transparent" }}>
-                    <img src={item.imageUrl} alt="" style={{ width: 40, height: 56, objectFit: "cover", borderRadius: 2 }} />
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>,
-          document.body
-        );
-      })()}
+      {/* 放大答题卡（O-6：Dialog + bg-overlay + v2 缩放/翻页） */}
+      <AnswerCardLightbox
+        items={imageItems}
+        index={enlargeIdx}
+        zoom={zoom}
+        onIndexChange={setEnlargeIdx}
+        onZoomChange={setZoomState}
+        onClose={() => setEnlargeIdx(-1)}
+      />
     </div>
   );
-}
-
-const backBtn: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 8, background: "var(--surface)", cursor: "pointer", fontSize: 13 };
-const s_th: React.CSSProperties = { padding: "6px 10px", fontWeight: 600 };
-const s_td: React.CSSProperties = { padding: "6px 10px" };
-const zmBtn: React.CSSProperties = { border: "none", background: "rgba(255,255,255,0.1)", borderRadius: 6, width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff" };
-function arrowBtn(side: "left" | "right"): React.CSSProperties {
-  return { position: "absolute", [side]: 4, top: "50%", transform: "translateY(-50%)", zIndex: 1, background: "rgba(255,255,255,0.12)", border: "none", borderRadius: "50%", width: 44, height: 44, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#fff" };
 }
