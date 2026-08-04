@@ -1,6 +1,6 @@
 // DesignPage — 答题卡设计器（严格按 design/designer-sandbox.html + demo.html 视觉规格）
 // 两级流程：select=卡片画廊 / editor=三栏工作台
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowLeft,
   ArrowDown,
@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import { useWorkspace } from "../WorkspaceContext";
 import type { ObjectiveBlock, SubjectiveBlock } from "../../../../shared/types";
+import type { AnswerCard, LayoutDocument } from "../../../../shared/types";
+import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
 import { CardPreview, ObjectiveEditor, SubjectiveEditor } from "./DesignEditors";
 import {
@@ -121,17 +123,7 @@ export function DesignPage() {
   // ── 选择画廊 ──
   if (designScreen === "select") {
     return (
-      <div className="flex h-full flex-col overflow-auto p-6">
-        <div className="mb-5 flex items-end justify-between gap-4">
-          <div>
-            <h2 className="text-xl font-semibold text-foreground">答题卡</h2>
-            <p className="mt-1 text-sm text-muted-foreground">选择一张已有答题卡进行编辑，或新建一张。</p>
-          </div>
-          <Button variant="primary" size="sm" onClick={createAndEnter} disabled={isBusy || !canDesign}>
-            <Plus size={16} /> 新建答题卡
-          </Button>
-        </div>
-
+      <div className="flex h-full flex-col overflow-auto p-6 pt-8">
         {cards.length === 0 ? (
           <EmptyState
             icon={<SquarePen />}
@@ -144,24 +136,22 @@ export function DesignPage() {
             }
           />
         ) : (
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(228px,1fr))] gap-4">
+          <div className="grid w-full grid-cols-[repeat(auto-fill,minmax(228px,1fr))] items-stretch gap-4">
             {cards.map((c) => (
               <Card
                 key={c.id}
                 interactive
-                className="flex cursor-pointer flex-col overflow-hidden"
+                className="flex h-[248px] cursor-pointer flex-col overflow-hidden"
                 onClick={() => void enterEditor(c.id)}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   setCtxMenu({ x: e.clientX, y: e.clientY, cardId: c.id });
                 }}
               >
-                <div className="flex h-[140px] items-center justify-center border-b border-border-subtle bg-muted">
-                  <span className="text-xs text-muted-foreground">答题卡预览</span>
-                </div>
-                <div className="flex flex-col gap-1 p-3">
-                  <CardTitle className="text-sm">{c.title}</CardTitle>
-                  <CardDescription className="text-xs">
+                <CardThumbnail cardId={c.id} />
+                <div className="flex h-[68px] shrink-0 flex-col justify-center gap-1 overflow-hidden px-3 py-2.5">
+                  <CardTitle className="truncate text-sm" title={c.title}>{c.title}</CardTitle>
+                  <CardDescription className="truncate text-xs">
                     {c.subjectLabel || "未设科目"} · {formatDate(c.examDate)}
                   </CardDescription>
                 </div>
@@ -172,7 +162,7 @@ export function DesignPage() {
               onClick={createAndEnter}
               disabled={!canDesign}
               className={cn(
-                "flex min-h-[248px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border-strong bg-card text-sm text-muted-foreground",
+                "flex h-[248px] flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border-strong bg-card text-sm text-muted-foreground",
                 "transition-colors duration-(--px-dur-1) hover:border-primary hover:text-accent-foreground",
                 "disabled:opacity-50",
               )}
@@ -351,11 +341,10 @@ export function DesignPage() {
         </section>
 
         {/* Inspector */}
-        <aside className="flex w-[360px] shrink-0 flex-col overflow-hidden border-l border-border-subtle bg-card">
+        <aside className="flex w-[300px] shrink-0 flex-col overflow-hidden border-l border-border-subtle bg-card">
           {card ? (
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
               <BasicInfoPanel card={card} updateCard={updateCard} />
-              <BlockListPanel card={card} selectedBlockId={selectedBlockId} onSelect={setSelectedBlockId} />
               {selectedBlock && (
                 <Panel>
                   <div className="border-b border-border-subtle px-3 py-2.5 text-sm font-semibold text-foreground">
@@ -406,6 +395,26 @@ export function DesignPage() {
           )}
         </aside>
       </div>
+    </div>
+  );
+}
+
+function CardThumbnail({ cardId }: { cardId: string }) {
+  const [data, setData] = useState<{ card: AnswerCard; layout: LayoutDocument } | null>(null);
+  useEffect(() => {
+    let active = true;
+    void Promise.all([
+      fetchJson<AnswerCard>(`/api/cards/${encodeURIComponent(cardId)}`),
+      fetchJson<LayoutDocument>(`/api/cards/${encodeURIComponent(cardId)}/layout`),
+    ]).then(([card, layout]) => {
+      if (active) setData({ card, layout });
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [cardId]);
+
+  return (
+    <div className="design-card-thumbnail flex h-[180px] shrink-0 items-center justify-center overflow-hidden border-b border-border-subtle bg-muted">
+      {data ? <CardPreview card={data.card} layout={data.layout} firstPageOnly /> : <span className="self-center text-xs text-muted-foreground">正在生成预览</span>}
     </div>
   );
 }

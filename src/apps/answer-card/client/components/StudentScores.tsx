@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { BarChart3, BrainCircuit, CalendarRange, ChevronDown, LineChart, Radar, RefreshCw, Sparkles, TrendingUp } from "lucide-react";
+import { BarChart3, BrainCircuit, CalendarRange, ChevronDown, LineChart, Radar, RefreshCw, Shield, Sparkles, TrendingUp } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { StudentExamScore, StudentQuestionScore } from "../auth/types";
 import type { StudentTrendPoint, AiAnalysisResponse } from "../../../../shared/types";
 import { StudentTrendChart } from "./StudentTrendChart";
 import { StudentSubjectRadar } from "./StudentSubjectRadar";
 import { StudentAiPanel } from "./StudentAiPanel";
-import { GradeLadder } from "./GradeLadder";
 import { StudentSemesterComparison } from "./StudentSemesterComparison";
-import { TrendLine } from "./AnalysisCharts";
+import { Button, Badge, Card, CardContent, CardHeader, CardTitle, EmptyState, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/v2";
 
 interface ScoresResponse {
   studentId: number;
@@ -21,7 +20,7 @@ interface ExamDetailResponse {
   questions: StudentQuestionScore[];
 }
 
-type TabId = "list" | "trend" | "subjects" | "semester" | "ai" | "ladder";
+type TabId = "list" | "trend" | "subjects" | "semester" | "ai";
 
 const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: "list", label: "成绩列表", icon: <BarChart3 size={16} /> },
@@ -29,7 +28,6 @@ const TABS: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: "subjects", label: "学科对比", icon: <Radar size={16} /> },
   { id: "semester", label: "学期对比", icon: <CalendarRange size={16} /> },
   { id: "ai", label: "AI 分析", icon: <Sparkles size={16} /> },
-  { id: "ladder", label: "成绩天梯", icon: <TrendingUp size={16} /> },
 ];
 
 export function StudentScores() {
@@ -40,17 +38,24 @@ export function StudentScores() {
   const [trends, setTrends] = useState<StudentTrendPoint[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [trendError, setTrendError] = useState("");
 
   const loadScores = useCallback(async () => {
     setBusy(true);
     setError("");
     try {
-      const [scoreResult, trendResult] = await Promise.all([
-        fetchJson<ScoresResponse>("/api/scores/me"),
-        fetchJson<StudentTrendPoint[]>("/api/scores/me/trends").catch(() => []),
-      ]);
+      const scoreResult = await fetchJson<ScoresResponse>("/api/scores/me");
       setData(scoreResult);
-      setTrends(Array.isArray(trendResult) ? trendResult : []);
+      setExamDetails({});
+      setExpandedExamId(null);
+      try {
+        const trendResult = await fetchJson<StudentTrendPoint[]>("/api/scores/me/trends");
+        setTrends(Array.isArray(trendResult) ? trendResult : []);
+        setTrendError("");
+      } catch (err) {
+        setTrends([]);
+        setTrendError(err instanceof Error ? err.message : "趋势数据加载失败");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载成绩失败");
       setData(null);
@@ -61,6 +66,20 @@ export function StudentScores() {
 
   useEffect(() => {
     void loadScores();
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === "visible") void loadScores();
+    };
+    const refreshOnFocus = () => void loadScores();
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    window.addEventListener("focus", refreshOnFocus);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void loadScores();
+    }, 30_000);
+    return () => {
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+      window.removeEventListener("focus", refreshOnFocus);
+      window.clearInterval(timer);
+    };
   }, [loadScores]);
 
   async function toggleExamDetail(examId: number) {
@@ -81,169 +100,101 @@ export function StudentScores() {
   // ── 整体概览卡片 ──
   function renderOverview() {
     if (!data || !data.scores.length) return null;
-    const totalExams = data.scores.length;
-    const avgScore = Math.round((data.scores.reduce((s, x) => s + x.total_score, 0) / totalExams) * 10) / 10;
-    const bestExam = [...data.scores].sort((a, b) => b.total_score - a.total_score)[0];
-    const worstExam = [...data.scores].sort((a, b) => a.total_score - b.total_score)[0];
-
-    const subjects = [...new Set(data.scores.map((s) => s.subject).filter(Boolean))];
+    const latest = data.scores[0];
+    const previous = data.scores[1];
+    const maxScore = latest.objective_score + latest.subjective_score > 0
+      ? Math.max(latest.objective_score + latest.subjective_score, 100)
+      : 100;
+    const delta = previous ? Math.round((latest.total_score - previous.total_score) * 10) / 10 : null;
 
     return (
-      <div className="student-overview-cards">
-        <div className="student-stat-card">
-          <span className="student-stat-value">{totalExams}</span>
-          <span className="student-stat-label">参加考试</span>
-        </div>
-        <div className="student-stat-card">
-          <span className="student-stat-value">{avgScore}</span>
-          <span className="student-stat-label">平均分</span>
-        </div>
-        <div className="student-stat-card">
-          <span className="student-stat-value">{subjects.length}</span>
-          <span className="student-stat-label">学科数</span>
-        </div>
-        {bestExam && (
-          <div className="student-stat-card highlight">
-            <span className="student-stat-value">{bestExam.subject} {bestExam.total_score}</span>
-            <span className="student-stat-label">最佳成绩</span>
+      <div className="grid gap-4 md:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)]">
+        <div className="rounded-lg border border-border-subtle bg-card p-5">
+          <p className="m-0 text-xs text-muted-foreground">最近考试总分</p>
+          <div className="mt-2 flex items-baseline gap-1">
+            <strong className="text-3xl font-bold tabular-nums text-foreground">{latest.total_score}</strong>
+            <span className="text-sm text-muted-foreground">/ {maxScore}</span>
           </div>
-        )}
-        {worstExam && (
-          <div className="student-stat-card warn">
-            <span className="student-stat-value">{worstExam.subject} {worstExam.total_score}</span>
-            <span className="student-stat-label">待提升</span>
+          {delta != null && <p className={`mt-2 m-0 text-xs tabular-nums ${delta >= 0 ? "text-success-foreground" : "text-destructive-fg"}`}>{delta >= 0 ? "▲" : "▼"} {Math.abs(delta)} 分 · 较上一场考试</p>}
+        </div>
+        <div className="rounded-lg border border-border-subtle bg-card p-5 md:col-span-2">
+          <div className="flex items-center justify-between">
+            <div><p className="m-0 text-xs text-muted-foreground">近 5 场总分趋势</p><p className="m-0 mt-1 text-sm font-semibold text-foreground">个人成绩变化</p></div>
+            <LineChart size={18} className="text-muted-foreground" />
           </div>
-        )}
+          <div className="mt-4 h-24"><StudentTrendChart trends={trends.slice(0, 5)} compact /></div>
+        </div>
       </div>
     );
   }
 
   // ── Tab: 成绩列表 ──
   function renderScoreList() {
+    const latest = data?.scores[0];
+    if (!latest && !busy && !error) {
+      return <EmptyState icon={<BarChart3 />} title="暂无成绩记录" description="考试阅卷落库后，可在此查看各场考试得分与逐题明细。" />;
+    }
+    if (!latest) return null;
+    const scoreRate = latest.total_score / Math.max(latest.objective_score + latest.subjective_score, 100);
     return (
-      <>
-        {!data?.scores.length && !busy && !error && (
-          <div className="scores-empty">
-            <BarChart3 size={40} />
-            <h2>暂无成绩记录</h2>
-            <p>考试阅卷落库后，可在此查看各场考试得分与排名。</p>
-          </div>
-        )}
-
-        <div className="scores-list">
-          {data?.scores && data.scores.length >= 2 && (() => {
-            const sorted = [...data.scores].reverse();
-            return (
-            <div className="score-card" style={{ padding: 16 }}>
-              <div className="panel-title" style={{ marginBottom: 8 }}>成绩趋势</div>
-              <TrendLine
-                data={{
-                  labels: sorted.map((s) => s.exam_name),
-                  datasets: [{
-                    label: "总分",
-                    data: sorted.map((s) => s.total_score),
-                    color: "#C00F28",
-                  }],
-                }}
-                height={180}
-              />
+      <Card>
+        <CardHeader>
+          <div><CardTitle>{latest.exam_name} · 逐科成绩</CardTitle><p className="mt-1 text-sm text-muted-foreground">点击查看逐题明细</p></div>
+          <Badge tone="neutral" dot>仅本人</Badge>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader><TableRow><TableHead>科目</TableHead><TableHead numeric>得分</TableHead><TableHead numeric>满分</TableHead><TableHead numeric>得分率</TableHead><TableHead>评价</TableHead><TableHead numeric>明细</TableHead></TableRow></TableHeader>
+            <TableBody>
+              <TableRow clickable onClick={() => void toggleExamDetail(latest.exam_id)}>
+                <TableCell>{latest.subject || "综合"}</TableCell>
+                <TableCell numeric><span className="tabular-nums">{latest.total_score}</span></TableCell>
+                <TableCell numeric><span className="tabular-nums">{Math.max(latest.objective_score + latest.subjective_score, 100)}</span></TableCell>
+                <TableCell numeric><span className="tabular-nums">{Math.round(scoreRate * 100)}%</span></TableCell>
+                <TableCell><Badge tone={scoreRate >= 0.85 ? "success" : scoreRate >= 0.6 ? "neutral" : "danger"} dot>{scoreRate >= 0.85 ? "优势" : scoreRate >= 0.6 ? "稳定" : "待提升"}</Badge></TableCell>
+                <TableCell numeric><ChevronDown size={16} className={expandedExamId === latest.exam_id ? "rotate-180" : ""} /></TableCell>
+              </TableRow>
+            </TableBody>
+          </Table>
+          {expandedExamId === latest.exam_id && examDetails[latest.exam_id] && (
+            <div className="mt-4 rounded-md border border-border-subtle bg-secondary p-3">
+              <Table>
+                <TableHeader><TableRow><TableHead>题号</TableHead><TableHead numeric>得分</TableHead><TableHead numeric>满分</TableHead><TableHead>类型</TableHead></TableRow></TableHeader>
+                <TableBody>{examDetails[latest.exam_id].map((q, i) => <TableRow key={`${q.question_id ?? q.question_number}_${i}`}><TableCell>{q.question_number ?? q.question_id ?? "—"}</TableCell><TableCell numeric>{q.score}</TableCell><TableCell numeric>{q.max_score}</TableCell><TableCell>{q.score_type}</TableCell></TableRow>)}</TableBody>
+              </Table>
+              <div className="mt-3"><AiAnalysisForExam examId={latest.exam_id} examName={latest.exam_name} /></div>
             </div>
-            );
-          })()}
-          {data?.scores.map((score) => (
-            <div key={score.exam_id} className="score-card">
-              <button type="button" className="score-card-header" onClick={() => void toggleExamDetail(score.exam_id)}>
-                <div>
-                  <strong>{score.exam_name}</strong>
-                  {score.subject && <span className="score-subject">{score.subject}</span>}
-                </div>
-                <div className="score-card-stats">
-                  <span className="score-total">{score.total_score} 分</span>
-                  {score.rank != null && (
-                    <span className="score-rank">
-                      第 {score.rank} / {score.class_size} 名
-                      {score.percentile != null && ` · 前 ${score.percentile}%`}
-                    </span>
-                  )}
-                </div>
-                <ChevronDown size={16} className={expandedExamId === score.exam_id ? "rotated" : ""} />
-              </button>
-              <div className="score-card-meta">
-                <span>客观 {score.objective_score}</span>
-                <span>主观 {score.subjective_score}</span>
-                <span>{new Date(score.graded_at).toLocaleString()}</span>
-              </div>
-              {expandedExamId === score.exam_id && examDetails[score.exam_id] && (
-                <div className="score-detail-table">
-                  <div className="score-detail-head">
-                    <span>题号</span>
-                    <span>得分</span>
-                    <span>满分</span>
-                    <span>类型</span>
-                  </div>
-                  {examDetails[score.exam_id].map((q, i) => (
-                    <div className="score-detail-row" key={`${q.question_id ?? q.question_number}_${i}`}>
-                      <span>{q.question_number ?? q.question_id ?? "—"}</span>
-                      <span>{q.score}</span>
-                      <span>{q.max_score}</span>
-                      <span>{q.score_type}</span>
-                    </div>
-                  ))}
-                  {/* AI analysis button per exam */}
-                  <div className="score-detail-ai">
-                    <AiAnalysisForExam examId={score.exam_id} examName={score.exam_name} />
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </>
+          )}
+        </CardContent>
+      </Card>
     );
   }
 
   return (
-    <div className="scores-panel">
-      {/* Header */}
-      <div className="account-panel-header">
-        <div>
-          <strong>我的成绩</strong>
-          {data && <span className="account-summary">{data.name}</span>}
-        </div>
-        <button className="ghost-button" type="button" onClick={() => void loadScores()} disabled={busy}>
-          <RefreshCw size={16} /> 刷新
-        </button>
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between rounded-lg border border-border-subtle bg-card px-4 py-3 text-xs text-muted-foreground">
+        <span className="inline-flex items-center gap-2"><Shield size={14} />仅展示本人成绩 · 只读</span>
+        <Button variant="ghost" size="sm" onClick={() => void loadScores()} disabled={busy}><RefreshCw size={16} />刷新</Button>
       </div>
-
-      {error && <p className="login-error">{error}</p>}
-
-      {/* Overview cards (always shown) */}
+      {error && <div className="rounded-md border border-destructive-border bg-destructive-soft px-3 py-2 text-sm text-destructive-fg">{error}</div>}
+      {trendError && <div className="rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-foreground">趋势数据暂时不可用：{trendError}</div>}
       {renderOverview()}
-
-      {/* Tab navigation */}
-      <div className="student-tabs">
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            type="button"
-            className={`student-tab ${activeTab === tab.id ? "active" : ""}`}
-            onClick={() => setActiveTab(tab.id)}
-          >
-            {tab.icon}
-            <span>{tab.label}</span>
-          </button>
-        ))}
+      {data && data.scores.length > 0 && (
+        <>
+          {renderScoreList()}
+          <Card>
+            <CardHeader><CardTitle>AI 学习建议</CardTitle><p className="m-0 text-xs text-muted-foreground">由 LLM 生成</p></CardHeader>
+            <CardContent><StudentAiPanel /></CardContent>
+          </Card>
+        </>
+      )}
+      <div className="flex flex-wrap items-center gap-1 border-b border-border-subtle">
+        {TABS.slice(1).map((tab) => <button key={tab.id} type="button" className={`inline-flex items-center gap-2 border-b-2 px-3 py-2 text-sm ${activeTab === tab.id ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`} onClick={() => setActiveTab(tab.id)}>{tab.icon}{tab.label}</button>)}
       </div>
-
-      {/* Tab content */}
-      <div className="student-tab-content">
-        {activeTab === "list" && renderScoreList()}
-        {activeTab === "trend" && <StudentTrendChart trends={trends} />}
-        {activeTab === "subjects" && <StudentSubjectRadar />}
-        {activeTab === "semester" && <StudentSemesterComparison />}
-        {activeTab === "ai" && <StudentAiPanel />}
-        {activeTab === "ladder" && <GradeLadder />}
-      </div>
+      {activeTab === "trend" && <StudentTrendChart trends={trends} />}
+      {activeTab === "subjects" && <StudentSubjectRadar />}
+      {activeTab === "semester" && <StudentSemesterComparison />}
+      {activeTab === "ai" && data?.scores.length === 0 && <Card><CardContent><StudentAiPanel /></CardContent></Card>}
     </div>
   );
 }

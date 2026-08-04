@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Download, Link, Plus, RefreshCw, Search, Unlink, Upload } from "lucide-react";
+import { Download, Link, Plus, RefreshCw, Search, Unlink, Upload, X } from "lucide-react";
 import { fetchJson, authFetch } from "../auth/api";
 import { TEACHER_ROLE_LABELS } from "../auth/types";
 import type { GradeRecord, ClassRecord, TeacherRecord, TeachersListResponse } from "../auth/types";
@@ -360,7 +360,7 @@ export function TeacherManagement() {
           <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 400, maxWidth: "90vw" }}>
             <div className="modal-header">
               <h2>新建教师</h2>
-              <button className="modal-close" onClick={() => setShowCreateModal(false)}>✕</button>
+              <button className="modal-close" aria-label="关闭新建教师" onClick={() => setShowCreateModal(false)}><X size={16} /></button>
             </div>
             <div className="modal-body">
               <label>

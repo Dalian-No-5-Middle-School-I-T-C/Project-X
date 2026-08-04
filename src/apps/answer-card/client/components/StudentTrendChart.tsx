@@ -17,14 +17,13 @@ interface Props {
   /** 从父组件传入的已有数据（可选，避免重复请求） */
   trends?: StudentTrendPoint[];
   onLoad?: (trends: StudentTrendPoint[]) => void;
+  compact?: boolean;
 }
 
-export function StudentTrendChart({ trends: propTrends, onLoad }: Props) {
+export function StudentTrendChart({ trends: propTrends, onLoad, compact = false }: Props) {
   const [trends, setTrends] = useState<StudentTrendPoint[]>(propTrends ?? []);
   const [loading, setLoading] = useState(!propTrends);
   const [selectedSubjects, setSelectedSubjects] = useState<Set<string>>(new Set());
-  const [showClassAvg, setShowClassAvg] = useState(true);
-  const [showGradeAvg, setShowGradeAvg] = useState(false);
   const [error, setError] = useState("");
 
   const subjects = [...new Set(trends.map((t) => t.subject).filter(Boolean))].sort();
@@ -78,8 +77,6 @@ export function StudentTrendChart({ trends: propTrends, onLoad }: Props) {
     // Map each subject's data to the shared labels array
     const subjectMap = new Map(subjectTrends.map((t) => [t.examName, t]));
     const alignedScores = allLabels.map((name) => subjectMap.get(name)?.totalScore ?? null);
-    const alignedClassAvg = allLabels.map((name) => subjectMap.get(name)?.classAvg ?? null);
-
     datasets.push({
       label: subject,
       data: alignedScores,
@@ -92,22 +89,6 @@ export function StudentTrendChart({ trends: propTrends, onLoad }: Props) {
       fill: false,
       spanGaps: true,
     });
-
-    if (showClassAvg) {
-      datasets.push({
-        label: `${subject}(班级均分)`,
-        data: alignedClassAvg,
-        borderColor: color + "88",
-        backgroundColor: "transparent",
-        pointBackgroundColor: color + "88",
-        pointRadius: 3,
-        pointHoverRadius: 5,
-        borderDash: [5, 3],
-        tension: 0.3,
-        fill: false,
-        spanGaps: true,
-      });
-    }
   }
 
   const chartData = {
@@ -141,35 +122,25 @@ export function StudentTrendChart({ trends: propTrends, onLoad }: Props) {
     }
   };
 
-  if (loading) {
-    return <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>加载中...</div>;
-  }
-
-  if (error) {
-    return <div className="login-error" style={{ padding: 20 }}>{error}</div>;
-  }
-
-  if (trends.length === 0) {
-    return <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>暂无成绩趋势数据。</div>;
-  }
+  if (loading) return <div className="flex h-full min-h-20 items-center justify-center text-sm text-muted-foreground">加载中...</div>;
+  if (error) return <div className="flex items-center justify-center p-4 text-sm text-destructive-fg">{error}</div>;
+  if (trends.length === 0) return <div className="flex h-full min-h-20 items-center justify-center text-sm text-muted-foreground">暂无成绩趋势数据。</div>;
 
   return (
-    <div className="student-chart-section">
-      <div className="student-chart-header">
+    <div className={compact ? "h-full" : "rounded-lg border border-border-subtle bg-card p-5"}>
+      {!compact && <div className="mb-4 flex items-center justify-between">
         <div className="panel-title"><LineChart size={17} /> 成绩趋势</div>
         <button className="ghost-button" type="button" onClick={() => void loadTrends()} disabled={loading}>
           <RefreshCw size={14} /> 刷新
         </button>
-      </div>
+      </div>}
 
-      {/* Controls */}
-      <div className="student-chart-controls">
+      {!compact && <div className="mb-3 flex flex-wrap items-center gap-2">
         <div className="student-subject-filters">
           {subjects.map((s) => (
             <button
               key={s}
-              className={`student-subject-tag ${selectedSubjects.has(s) ? "active" : ""}`}
-              style={selectedSubjects.has(s) ? { borderColor: SUBJECT_COLORS[s] ?? "#888780", background: (SUBJECT_COLORS[s] ?? "#888780") + "18" } : {}}
+              className={`rounded-md border px-2.5 py-1 text-xs transition-colors ${selectedSubjects.has(s) ? "border-primary bg-accent text-accent-foreground" : "border-border text-muted-foreground hover:bg-secondary"}`}
               type="button"
               onClick={() => toggleSubject(s)}
             >
@@ -177,20 +148,10 @@ export function StudentTrendChart({ trends: propTrends, onLoad }: Props) {
             </button>
           ))}
         </div>
-        <div className="student-chart-toggles">
-          <label className="chart-toggle">
-            <input type="checkbox" checked={showClassAvg} onChange={() => setShowClassAvg(!showClassAvg)} />
-            <span>班级均分</span>
-          </label>
-          <label className="chart-toggle">
-            <input type="checkbox" checked={showGradeAvg} onChange={() => setShowGradeAvg(!showGradeAvg)} />
-            <span>年级均分</span>
-          </label>
-        </div>
-      </div>
+      </div>}
 
       {/* Chart */}
-      <div className="student-chart-canvas">
+      <div className={compact ? "h-full" : "h-72"}>
         <Line data={chartData} options={chartOptions} />
       </div>
     </div>

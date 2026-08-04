@@ -21,6 +21,11 @@ export function ScannerApp() {
   const [selectedCardId, setSelectedCardId] = useState<string>("");
   const [selectedCardTitle, setSelectedCardTitle] = useState<string>("");
 
+  useEffect(() => {
+    document.documentElement.dataset.density = "compact";
+    return () => { delete document.documentElement.dataset.density; };
+  }, []);
+
   if (loading) {
     return (
       <div className="loading-screen">

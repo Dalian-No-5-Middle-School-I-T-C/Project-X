@@ -109,7 +109,7 @@ export function AppRail({
     <aside
       data-collapsed={collapsed || undefined}
       className={cn(
-        "flex shrink-0 flex-col gap-0.5 border-r border-border-subtle bg-card",
+        "app-rail relative z-30 flex shrink-0 flex-col gap-0.5 overflow-visible border-r border-border-subtle bg-card max-[640px]:hidden",
         "transition-[width] duration-(--px-dur-2) ease-standard",
         collapsed ? "w-rail-collapsed px-2 py-3" : "w-rail px-2.5 py-3",
         className,
@@ -238,6 +238,7 @@ export const AppRailItem = React.forwardRef<
       aria-current={active ? "page" : undefined}
       className={cn(
         "relative flex h-9 shrink-0 items-center gap-2.5 rounded-md text-base font-medium",
+        "border-0 bg-transparent",
         "transition-colors duration-(--px-dur-1) ease-standard",
         "outline-none focus-visible:shadow-focus",
         collapsed ? "justify-center px-0" : "px-2.5",

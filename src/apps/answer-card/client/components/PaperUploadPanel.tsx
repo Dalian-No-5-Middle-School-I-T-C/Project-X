@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { DragDropZone } from "./DragDropZone";
 import { KnowledgeTagList } from "./KnowledgeTagList";
+import { BrainCircuit, X } from "lucide-react";
 import { authFetch } from "../auth/api";
 
 interface Props {
@@ -194,8 +195,8 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
     <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="paper-upload-panel">
         <div className="paper-upload-header">
-          <h3>📋 原卷信息</h3>
-          <button className="modal-close-btn" onClick={onClose}>✕</button>
+          <h3>原卷信息</h3>
+          <button className="modal-close-btn" aria-label="关闭原卷信息" onClick={onClose}><X size={16} /></button>
         </div>
 
         {/* 导入文件区（支持多页） */}
@@ -294,7 +295,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
             onClick={handleAnalyze}
             disabled={analyzing || pages.length === 0}
           >
-            {analyzing ? "分析中..." : "🤖 开始分析"}
+            <BrainCircuit size={16} /> {analyzing ? "分析中..." : "开始分析"}
           </button>
           {knowledgePoints.length > 0 && (
             <div style={{ marginTop: "12px" }}>

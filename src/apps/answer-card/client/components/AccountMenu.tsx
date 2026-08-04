@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Database, Download, Eye, FlaskConical, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit, Shield, Terminal } from "lucide-react";
+import { AlertTriangle, ChevronDown, Database, Download, Eye, FlaskConical, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit, Shield, Terminal } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson, authFetch } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
@@ -368,6 +368,8 @@ export function AccountMenu({
           compact && "h-control-md w-control-md justify-center p-0 [&>small]:hidden [&>span]:hidden [&>svg:last-child]:hidden",
         )}
         type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
         <User size={16} />
@@ -376,7 +378,7 @@ export function AccountMenu({
         <ChevronDown size={14} className={open ? "rotated" : ""} />
       </button>
       {open && (
-        <div className="account-menu-dropdown">
+        <div className="account-menu-dropdown" role="menu" aria-label="账号菜单">
           <div className="account-menu-info">
             <strong>{user.name}</strong>
             <span>@{user.username}</span>
@@ -871,7 +873,7 @@ export function AccountMenu({
 
                     {dbMode === "remote" && !dbHost.trim() && (
                       <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 0 0" }}>
-                        ⚠ 远程服务器功能尚未完全启用。当前版本仅可在本地模式下使用。
+                        <><AlertTriangle size={15} aria-hidden="true" /> 远程服务器功能尚未完全启用。当前版本仅可在本地模式下使用。</>
                       </p>
                     )}
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CalendarRange, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { StudentSemesterComparison as SemesterComparison } from "../../../../shared/types";
+import { Card, CardContent, CardHeader, CardTitle, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/v2";
 
 const SUBJECT_COLORS: Record<string, string> = {
   "语文": "#534AB7", "数学": "#D85A30", "英语": "#1D9E75",
@@ -60,8 +61,10 @@ export function StudentSemesterComparison() {
   const { current, previous, avgScoreChange, improvedSubjects, declinedSubjects } = data;
 
   return (
-    <div className="semester-comparison-panel">
-      <div className="student-overview-cards">
+    <Card>
+      <CardHeader><CardTitle><span className="inline-flex items-center gap-2"><CalendarRange size={17} /> 学期对比</span></CardTitle></CardHeader>
+      <CardContent>
+      <div className="grid gap-3 sm:grid-cols-3">
         <div className="student-stat-card highlight">
           <span className="student-stat-value">{current.label}</span>
           <span className="student-stat-label">当前学期</span>
@@ -121,7 +124,6 @@ export function StudentSemesterComparison() {
                 <th>考试次数</th>
                 <th>平均分</th>
                 <th>最高分</th>
-                <th>与班均差</th>
                 {previous && <th>上学期均分</th>}
               </tr>
             </thead>
@@ -138,9 +140,6 @@ export function StudentSemesterComparison() {
                     <td>{subject.examCount}</td>
                     <td>{subject.avgScore}</td>
                     <td>{subject.bestScore}</td>
-                    <td style={{ color: subject.avgClassGap >= 0 ? "#3B6D11" : "#A32D2D" }}>
-                      {subject.avgClassGap >= 0 ? "+" : ""}{subject.avgClassGap}
-                    </td>
                     {previous && (
                       <td style={{ color: delta == null ? "var(--muted)" : delta >= 0 ? "#3B6D11" : "#A32D2D" }}>
                         {prevSubject ? (
@@ -162,6 +161,7 @@ export function StudentSemesterComparison() {
           </table>
         </div>
       </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }

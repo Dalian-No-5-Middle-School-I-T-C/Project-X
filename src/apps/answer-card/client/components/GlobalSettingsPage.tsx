@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
 
 interface Props {
@@ -20,16 +21,16 @@ type Band = { max: number; label: string; color: string };
 const BAND_KEY_DIFF = "analysis_difficulty_bands";
 const BAND_KEY_DISC = "analysis_discrimination_bands";
 const DEFAULT_DIFFICULTY_BANDS: Band[] = [
-  { max: 0.3, label: "难", color: "#E24B4A" },
-  { max: 0.5, label: "较难", color: "#EF9F27" },
-  { max: 0.7, label: "中等", color: "#BA7517" },
-  { max: 1, label: "容易", color: "#639922" },
+  { max: 0.3, label: "难", color: "var(--px-danger-bg)" },
+  { max: 0.5, label: "较难", color: "var(--px-warning-bg)" },
+  { max: 0.7, label: "中等", color: "var(--px-amber-700)" },
+  { max: 1, label: "容易", color: "var(--px-success-bg)" },
 ];
 const DEFAULT_DISCRIMINATION_BANDS: Band[] = [
-  { max: 0.2, label: "差", color: "#E24B4A" },
-  { max: 0.3, label: "尚可", color: "#EF9F27" },
-  { max: 0.4, label: "良好", color: "#BA7517" },
-  { max: 1, label: "优秀", color: "#639922" },
+  { max: 0.2, label: "差", color: "var(--px-danger-bg)" },
+  { max: 0.3, label: "尚可", color: "var(--px-warning-bg)" },
+  { max: 0.4, label: "良好", color: "var(--px-amber-700)" },
+  { max: 1, label: "优秀", color: "var(--px-success-bg)" },
 ];
 
 export function GlobalSettingsPage({ onBack }: Props) {
@@ -40,6 +41,19 @@ export function GlobalSettingsPage({ onBack }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageTone, setMessageTone] = useState<"success" | "error">("error");
+  const [railAutoExpand, setRailAutoExpand] = useState(true);
+
+  useEffect(() => {
+    try { setRailAutoExpand(localStorage.getItem("projectx-rail-auto-expand") !== "false"); } catch { /* ignore */ }
+  }, []);
+
+  const toggleRailAutoExpand = () => {
+    const next = !railAutoExpand;
+    setRailAutoExpand(next);
+    try { localStorage.setItem("projectx-rail-auto-expand", String(next)); } catch { /* ignore */ }
+    window.dispatchEvent(new CustomEvent("projectx:rail-auto-expand", { detail: next }));
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -78,12 +92,15 @@ export function GlobalSettingsPage({ onBack }: Props) {
       });
       if (res.ok) {
         setSettings(payload as Settings);
-        setMessage("✅ 已保存全局设置");
+        setMessage("已保存全局设置");
+        setMessageTone("success");
       } else {
-        setMessage(`⚠ ${(res as any).error ?? "保存失败"}`);
+        setMessage((res as any).error ?? "保存失败");
+        setMessageTone("error");
       }
     } catch (err: any) {
-      setMessage(`⚠ ${err.message}`);
+      setMessage(err.message);
+      setMessageTone("error");
     }
     setSaving(false);
   };
@@ -92,6 +109,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
   const [aiProviders, setAiProviders] = useState<Array<{ id: number; name: string; providerType: string; baseUrl: string; apiKey: string; models: string[] | null; isActive: boolean }>>([]);
   const [aiEditor, setAiEditor] = useState<{ open: boolean; id?: number; name: string; providerType: string; baseUrl: string; apiKey: string; models: string }>({ open: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" });
   const [aiMsg, setAiMsg] = useState<string | null>(null);
+  const [aiMsgTone, setAiMsgTone] = useState<"success" | "error">("error");
 
   const loadAi = useCallback(async () => {
     try {
@@ -127,10 +145,12 @@ export function GlobalSettingsPage({ onBack }: Props) {
       const method = aiEditor.id ? "PUT" : "POST";
       await fetchJson(url, { method, body: JSON.stringify(body) });
       setAiEditor({ open: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" });
-      setAiMsg("✅ 已保存 AI 系统服务商");
+      setAiMsg("已保存 AI 系统服务商");
+      setAiMsgTone("success");
       loadAi();
     } catch (e: any) {
-      setAiMsg(`⚠ ${e?.message || "保存失败"}`);
+      setAiMsg(e?.message || "保存失败");
+      setAiMsgTone("error");
     }
   };
 
@@ -140,22 +160,29 @@ export function GlobalSettingsPage({ onBack }: Props) {
       await fetchJson(`/api/ai/providers/system/${id}`, { method: "DELETE" });
       loadAi();
     } catch (e: any) {
-      setAiMsg(`⚠ ${e?.message || "删除失败"}`);
+      setAiMsg(e?.message || "删除失败");
+      setAiMsgTone("error");
     }
   };
 
   if (loading) return <div style={{ padding: 24 }}>加载中...</div>;
 
   return (
-    <div style={{ minHeight: "calc(100vh - 96px)", display: "flex", flexDirection: "column", alignItems: "center", padding: "36px 24px 56px" }}>
-      <div style={{ width: "100%", maxWidth: 560, background: "var(--color-background-primary)", border: "1px solid var(--color-border-tertiary)", borderRadius: 16, padding: "24px 26px 28px", boxShadow: "0 8px 28px rgba(0,0,0,0.07)" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
-        <button onClick={onBack} style={backBtnStyle}>← 返回</button>
-        <div style={{ fontSize: 18, fontWeight: 600, letterSpacing: "0.2px" }}>全局设置</div>
-        <span style={{ fontSize: 12, color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", padding: "2px 8px", borderRadius: 6, marginLeft: 2 }}>仅管理员</span>
-      </div>
+    <div className="global-settings-page min-h-full w-full p-6">
+      <div className="global-settings-card">
+      <div className="mb-5 flex items-center gap-2 text-sm text-muted-foreground"><span className="font-semibold text-foreground">系统级配置</span><span className="rounded-sm bg-secondary px-2 py-0.5 text-xs">仅管理员</span></div>
       <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 20 }}>
         以下为系统级策略，对所有考试与教师统一生效。网阅相关默认（0.5、分差阈值、取整、自动重分配、均衡阈值）请在各考试「网阅设置」中配置。
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "14px 16px", marginBottom: 12, background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", borderRadius: 10 }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 500 }}>侧边栏自动展开</div>
+          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>收起后鼠标移到侧边栏时自动展开；关闭后仍可点击圆形按钮展开并正常导航。</div>
+        </div>
+        <button type="button" role="switch" aria-checked={railAutoExpand} onClick={toggleRailAutoExpand} className={`settings-switch ${railAutoExpand ? "on" : ""}`}>
+          <span />
+        </button>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -180,7 +207,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
                   onClick={() => setField(f.key, draft[f.key] === "1" ? "0" : "1")}
                   style={{
                     ...toggleStyle,
-                    background: draft[f.key] === "1" ? "#3C3489" : "var(--color-border-primary)",
+                    background: draft[f.key] === "1" ? "var(--px-accent-bg)" : "var(--px-border-strong)",
                   }}
                 >
                   <span style={{
@@ -213,7 +240,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
       <div style={{ marginTop: 28, paddingTop: 20, borderTop: "1px solid var(--color-border-tertiary)" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
           <div style={{ fontSize: 15, fontWeight: 500 }}>AI 系统配置</div>
-          <button onClick={() => openAiEditor()} style={{ ...smallBtnStyle, background: "#3C3489", color: "#fff" }}>＋ 新增系统服务商</button>
+          <button onClick={() => openAiEditor()} style={{ ...smallBtnStyle, background: "var(--px-accent-bg)", color: "var(--px-fg-on-accent)" }}>＋ 新增系统服务商</button>
         </div>
         <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
           由管理员统一维护的系统级 AI 服务商，所有教师均可在分析/原卷中选用。
@@ -231,7 +258,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={() => openAiEditor(p)} style={smallBtnStyle}>编辑</button>
-                <button onClick={() => void deleteAi(p.id)} style={{ ...smallBtnStyle, color: "#E24B4A" }}>删除</button>
+                <button onClick={() => void deleteAi(p.id)} style={{ ...smallBtnStyle, color: "var(--px-danger-fg)" }}>删除</button>
               </div>
             </div>
           ))}
@@ -261,13 +288,13 @@ export function GlobalSettingsPage({ onBack }: Props) {
             </label>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button onClick={() => setAiEditor({ open: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" })} style={smallBtnStyle}>取消</button>
-              <button onClick={() => void saveAi()} style={{ ...smallBtnStyle, background: "#3C3489", color: "#fff" }}>保存</button>
+              <button onClick={() => void saveAi()} style={{ ...smallBtnStyle, background: "var(--px-accent-bg)", color: "var(--px-fg-on-accent)" }}>保存</button>
             </div>
           </div>
         )}
 
         {aiMsg && (
-          <div style={{ fontSize: 13, color: aiMsg.includes("✅") ? "var(--color-text-success, #22c55e)" : "#E24B4A", margin: "12px 0" }}>{aiMsg}</div>
+          <div style={{ fontSize: 13, color: aiMsgTone === "success" ? "var(--px-success-fg)" : "var(--px-danger-fg)", margin: "12px 0", display: "flex", alignItems: "center", gap: 6 }}>{aiMsgTone === "success" ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}{aiMsg}</div>
         )}
       </div>
 
@@ -286,13 +313,13 @@ export function GlobalSettingsPage({ onBack }: Props) {
       {message && (
         <div style={{
           fontSize: 13,
-          color: message.includes("✅") ? "var(--color-text-success, #22c55e)" : "#E24B4A",
+           color: messageTone === "success" ? "var(--px-success-fg)" : "var(--px-danger-fg)",
           margin: "16px 0",
           padding: "8px 12px",
-          background: message.includes("✅") ? "rgba(34,197,94,0.1)" : "rgba(226,75,74,0.1)",
+           background: messageTone === "success" ? "var(--px-success-soft)" : "var(--px-danger-soft)",
           borderRadius: 8,
         }}>
-          {message}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>{messageTone === "success" ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}{message}</span>
         </div>
       )}
 
@@ -307,8 +334,8 @@ export function GlobalSettingsPage({ onBack }: Props) {
           fontWeight: 500,
           borderRadius: 12,
           border: "none",
-          background: "#3C3489",
-          color: "#fff",
+           background: "var(--px-accent-bg)",
+           color: "var(--px-fg-on-accent)",
           cursor: saving ? "default" : "pointer",
           opacity: saving ? 0.7 : 1,
         }}
@@ -320,17 +347,6 @@ export function GlobalSettingsPage({ onBack }: Props) {
   );
 }
 
-const backBtnStyle: React.CSSProperties = {
-  height: 44,
-  padding: "0 18px",
-  fontSize: 14,
-  fontWeight: 500,
-  border: "1px solid var(--color-border-primary)",
-  borderRadius: 8,
-  background: "var(--color-background-secondary)",
-  cursor: "pointer",
-};
-
 function BandEditor({ title, desc, bands, onChange }: { title: string; desc: string; bands: Band[]; onChange: (b: Band[]) => void }) {
   function update(i: number, patch: Partial<Band>) {
     onChange(bands.map((x, idx) => (idx === i ? { ...x, ...patch } : x)));
@@ -339,7 +355,7 @@ function BandEditor({ title, desc, bands, onChange }: { title: string; desc: str
     onChange(bands.filter((_, idx) => idx !== i));
   }
   function add() {
-    onChange([...bands, { max: 1, label: "新档位", color: "#639922" }]);
+    onChange([...bands, { max: 1, label: "新档位", color: "var(--px-success-bg)" }]);
   }
   return (
     <div>
@@ -363,13 +379,13 @@ function BandEditor({ title, desc, bands, onChange }: { title: string; desc: str
             />
             <input
               type="color"
-              value={b.color}
+              value={toColorInput(b.color)}
               onChange={(e) => update(i, { color: e.target.value })}
               style={{ width: 36, height: 32, border: "none", background: "none", cursor: "pointer", padding: 0 }}
               title="徽章颜色"
             />
             <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>≤ {b.max} 显示「{b.label}」</span>
-            <button onClick={() => remove(i)} style={{ ...smallBtnStyle, color: "#E24B4A" }}>删除</button>
+            <button onClick={() => remove(i)} style={{ ...smallBtnStyle, color: "var(--px-danger-fg)" }}>删除</button>
           </div>
         ))}
       </div>
@@ -378,12 +394,22 @@ function BandEditor({ title, desc, bands, onChange }: { title: string; desc: str
   );
 }
 
+function toColorInput(value: string): string {
+  const semanticColors: Record<string, string> = {
+    "var(--px-danger-bg)": "#C00F28",
+    "var(--px-warning-bg)": "#D97706",
+    "var(--px-amber-700)": "#B45309",
+    "var(--px-success-bg)": "#16A34A",
+  };
+  return semanticColors[value] ?? (/^#[0-9a-f]{6}$/i.test(value) ? value : "#C00F28");
+}
+
 const smallBtnStyle: React.CSSProperties = {
   padding: "6px 14px",
   fontSize: 13,
   borderRadius: 6,
-  border: "0.5px solid var(--color-border-primary)",
-  background: "var(--color-background-secondary)",
+  border: "1px solid var(--px-border-default)",
+  background: "var(--px-bg-surface)",
   cursor: "pointer",
 };
 

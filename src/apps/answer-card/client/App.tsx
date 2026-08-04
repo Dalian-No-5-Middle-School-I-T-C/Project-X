@@ -24,12 +24,14 @@ import {
   Settings,
   Sun,
   BookOpen,
-  FileUp,
   Home,
   SquarePen,
-  Trash2,
   Upload,
   Users,
+  AlertTriangle,
+  BrainCircuit,
+  CheckCircle2,
+  X,
   ArrowLeft,
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
@@ -56,10 +58,6 @@ import {
   AppRailItem,
   AppRailFooter,
   PageHeader,
-  ContextPanel,
-  ContextPanelHeader,
-  ContextPanelBody,
-  ContextItem,
   StatusBar,
   StatusItem,
   StatusSpacer,
@@ -70,6 +68,7 @@ import {
   SheetHeader,
   SheetTitle,
   SheetBody,
+  TooltipProvider,
   Toaster,
   type SaveState,
 } from "./components/ui/v2";
@@ -355,7 +354,7 @@ function KnowledgeAnalysisInline({ cardId, onDone }: { cardId: string; onDone: (
       <textarea className="textarea-input" placeholder="特别描述（可选）" value={extraNotes} onChange={(e) => setExtraNotes(e.target.value)} rows={2} style={{ width: "100%", marginBottom: 8 }} />
       {error && <p className="field-error" style={{ marginBottom: 8 }}>{error}</p>}
       <button className="primary-button" type="button" onClick={handleAnalyze} disabled={analyzing}>
-        {analyzing ? "分析中..." : "🤖 开始分析"}
+        <BrainCircuit size={16} /> {analyzing ? "分析中..." : "开始分析"}
       </button>
       {analyzing && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>正在调用 AI 分析，约需 10-30 秒...</p>}
     </div>
@@ -378,10 +377,7 @@ function App() {
   const location = useLocation();
   const modeInitialized = useRef(false);
   // URL ↔ mode 同步（Phase 2 网页化）：深链/刷新/浏览器前进后退均保持当前页
-  useEffect(() => {
-    const m = pathToMode(location.pathname);
-    if (m) setMode(m);
-  }, [location.pathname]);
+  // 权限校验在 canOpenMode 声明后统一执行，避免学生端通过教师深链进入页面。
 
   // 阶段 2.5：离开「设计」页且存在未保存更改时，拦截导航并弹确认（需数据路由支持）
   const blocker = useBlocker(
@@ -456,9 +452,34 @@ function App() {
   });
   // 移动端 Drawer 开合状态（仅 ≤480px 渲染，见 MobileDrawer 与 styles.css）
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(() => {
+    try { return localStorage.getItem("projectx-rail-collapsed") === "true"; } catch { return false; }
+  });
   const [railExpandedOnHover, setRailExpandedOnHover] = useState(false);
+  const [railAutoExpand, setRailAutoExpand] = useState(() => {
+    try { return localStorage.getItem("projectx-rail-auto-expand") !== "false"; } catch { return true; }
+  });
   const railCollapseTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("projectx-rail-collapsed");
+      if (saved !== null) setRailCollapsed(saved === "true");
+    } catch { /* ignore storage failures */ }
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem("projectx-rail-collapsed", String(railCollapsed)); } catch { /* ignore storage failures */ }
+  }, [railCollapsed]);
+
+  useEffect(() => {
+    const syncRailSetting = (event: Event) => {
+      const value = (event as CustomEvent<boolean>).detail;
+      if (typeof value === "boolean") setRailAutoExpand(value);
+    };
+    window.addEventListener("projectx:rail-auto-expand", syncRailSetting);
+    return () => window.removeEventListener("projectx:rail-auto-expand", syncRailSetting);
+  }, []);
   const effectiveRailCollapsed = railCollapsed && !railExpandedOnHover;
 
   useEffect(() => () => {
@@ -491,7 +512,23 @@ function App() {
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
   const canManageAccounts = variantAllows("account") && hasPermission(PERMISSIONS.USER_MANAGE);
   const canManageGlobal = variantAllows("global-settings") && hasPermission(PERMISSIONS.SYSTEM_MANAGE);
-  const showCardSidebar = mode === "design" && canDesign;
+  const canOpenMode = useCallback(
+    (candidate: AppMode) => {
+      if (!appVariant.allowedModes.includes(candidate)) return false;
+      if (candidate === "home") return appVariant.id !== "student";
+      if (candidate === "scores") return appVariant.id === "student" || hasPermission(PERMISSIONS.SCORE_READ);
+      if (candidate === "design") return canDesign;
+      if (candidate === "exam-manage") return canManageExams;
+      if (candidate === "analysis") return canAnalyze;
+      if (candidate === "account") return canManageAccounts;
+      if (candidate === "global-settings") return canManageGlobal;
+      return false;
+    },
+    [appVariant.allowedModes, appVariant.id, hasPermission, canDesign, canManageExams, canAnalyze, canManageAccounts, canManageGlobal],
+  );
+  const fallbackMode = appVariant.id === "student" ? "scores" : "home";
+  // 设计器已固定为「画廊 → 编辑器」两步流程，不能再叠加旧的全局答题卡侧栏。
+  const showCardSidebar = false;
   const showScoresTab = canViewScores;
 
   // ── 移动端底部导航配置 ──
@@ -504,7 +541,9 @@ function App() {
       onEnter?: () => void | Promise<void>;
     };
     const items: NavItem[] = [];
-    items.push({ id: "home", icon: <Home size={22} />, label: "首页", shortLabel: "首页" });
+    if (canOpenMode("home")) {
+      items.push({ id: "home", icon: <Home size={22} />, label: "首页", shortLabel: "首页" });
+    }
     if (canDesign) {
       items.push({ id: "design", icon: <SquarePen size={22} />, label: "答题卡设计", shortLabel: "设计" });
     }
@@ -522,7 +561,7 @@ function App() {
     }
     // 移动端最多5个Tab
     return items.slice(0, 5);
-  }, [canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, loadExams, loadExamGroups]);
+  }, [canOpenMode, canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, loadExams, loadExamGroups]);
 
   useEffect(() => {
     latestCardRef.current = card;
@@ -541,14 +580,15 @@ function App() {
   useEffect(() => { void refreshGlobalPaper(); }, [refreshGlobalPaper]);
 
   useEffect(() => {
-    if (user && !modeInitialized.current) {
-      modeInitialized.current = true;
-      // 尊重深链/新标签带来的 URL：地址栏已是某功能路径则用之，否则回退默认首页。
-      // 否则点“答题卡设计”打开的 /design 新标签会被强行改回 home（已修复的 BUG）。
-      const fromUrl = pathToMode(window.location.pathname);
-      setMode(fromUrl ?? defaultModeForUser(hasPermission, appVariant));
+    if (!user) return;
+    const fromUrl = pathToMode(location.pathname);
+    const nextMode = fromUrl && canOpenMode(fromUrl) ? fromUrl : fallbackMode;
+    if (mode !== nextMode) setMode(nextMode);
+    if (!fromUrl || !canOpenMode(fromUrl)) {
+      navigate(MODE_PATH[fallbackMode], { replace: true });
     }
-  }, [user?.id, hasPermission, appVariant]);
+    modeInitialized.current = true;
+  }, [user?.id, location.pathname, mode, canOpenMode, fallbackMode, navigate]);
 
   useEffect(() => {
     const flushOnHide = () => {
@@ -1164,6 +1204,14 @@ function App() {
   }
 
   async function switchMode(nextMode: AppMode, afterSwitch?: () => void | Promise<void>) {
+    if (!canOpenMode(nextMode)) {
+      const safeMode = canOpenMode(fallbackMode) ? fallbackMode : mode;
+      if (safeMode !== mode) {
+        setMode(safeMode);
+        navigate(MODE_PATH[safeMode]);
+      }
+      return;
+    }
     if (mode === "design" && nextMode !== "design") {
       try {
         await flushPendingCardSave("switch");
@@ -1406,9 +1454,10 @@ function App() {
     | { type: "item"; id: AppMode; icon: ReactElement; label: string; onClick?: () => void | Promise<void> }
     | { type: "group"; label: string }
   > = useMemo(() => {
-    const items: typeof railNavItems = [
-      { type: "item", id: "home", icon: <Home />, label: "首页" },
-    ];
+    const items: typeof railNavItems = [];
+    if (canOpenMode("home")) {
+      items.push({ type: "item", id: "home", icon: <Home />, label: "首页" });
+    }
     if (canDesign) {
       items.push({ type: "item", id: "design", icon: <SquarePen />, label: "答题卡设计" });
     }
@@ -1430,7 +1479,9 @@ function App() {
     if (showScoresTab) {
       items.push({ type: "item", id: "scores", icon: <BarChart3 />, label: "我的成绩" });
     }
-    items.push({ type: "group", label: "管理" });
+    if (canManageAccounts || canManageGlobal) {
+      items.push({ type: "group", label: "管理" });
+    }
     if (canManageAccounts) {
       items.push({ type: "item", id: "account", icon: <Users />, label: "账号管理" });
     }
@@ -1438,7 +1489,7 @@ function App() {
       items.push({ type: "item", id: "global-settings", icon: <Settings />, label: "全局设置" });
     }
     return items;
-  }, [canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, canManageGlobal, loadExams, loadExamGroups]);
+  }, [canOpenMode, canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, canManageGlobal, loadExams, loadExamGroups]);
 
   const selectedBlock = card?.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null;
 
@@ -1603,13 +1654,13 @@ function App() {
                     ? "权限说明"
                     : mode === "design" && designScreen === "select"
                       ? "答题卡"
-                      : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统");
+                      : mode === "design" ? "答题卡设计器" : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统");
 
   const pageSubtitle =
     mode === "home"
       ? `欢迎，${user?.name ?? ""}`
       : mode === "scores"
-        ? "查看各场考试得分、排名与逐题明细"
+        ? "仅展示本人成绩 · 只读"
         : mode === "exam-manage"
           ? "创建、管理考试与阅卷批次"
           : mode === "account"
@@ -1624,8 +1675,10 @@ function App() {
                     ? `${user.name} · ${user.role_display_name ?? user.role_name}`
                     : mode === "design" && designScreen === "select"
                       ? "选择或新建一张答题卡"
-                      : card
-                        ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
+                      : card && mode === "design"
+                        ? `${card.title} · ID:${card.id} · ${layout?.pages.length ?? 1} 页`
+                        : card
+                          ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
                         : canDesign
                           ? "创建答题卡后开始编辑"
                           : `${user.name} · ${user.role_display_name ?? user.role_name}`;
@@ -1663,16 +1716,17 @@ function App() {
 
   return (
     <WorkspaceProvider value={workspace}>
-      <AppShell>
+       <TooltipProvider>
+       <AppShell>
         <AppRail
           collapsed={effectiveRailCollapsed}
           className="relative"
           onMouseEnter={() => {
             if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
-            if (railCollapsed) setRailExpandedOnHover(true);
+             if (railCollapsed && railAutoExpand) setRailExpandedOnHover(true);
           }}
           onMouseLeave={() => {
-            if (!railCollapsed) return;
+             if (!railCollapsed || !railAutoExpand) return;
             if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
             railCollapseTimerRef.current = window.setTimeout(() => setRailExpandedOnHover(false), 120);
           }}
@@ -1692,9 +1746,9 @@ function App() {
             <ChevronLeft className={cn("size-3.5 transition-transform duration-(--px-dur-2)", railCollapsed && "rotate-180")} />
           </Button>
           <AppRailBrand
-            logo={<img src="/icon.png" alt="" className="size-6" />}
+            logo={<span className="text-sm font-bold">P</span>}
             title="Project-X"
-            subtitle="答题卡设计阅卷系统"
+            subtitle="答题卡设计系统"
             collapsed={effectiveRailCollapsed}
           />
           <AppRailNav>
@@ -1713,7 +1767,7 @@ function App() {
               ),
             )}
           </AppRailNav>
-          <AppRailFooter>
+          <AppRailFooter className={effectiveRailCollapsed ? "flex-col" : undefined}>
             <button
               type="button"
               onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
@@ -1745,13 +1799,7 @@ function App() {
           <PageHeader
             title={pageTitle}
             subtitle={pageSubtitle}
-            leading={
-              !showTabBar && mode !== "home" ? (
-                <Button variant="ghost" size="sm" onClick={() => switchMode("home")}>
-                  ← 返回首页
-                </Button>
-              ) : undefined
-            }
+             leading={undefined}
             actions={
               <div className="flex items-center gap-2">
                 {designActions}
@@ -1764,22 +1812,6 @@ function App() {
                 >
                   {theme === "light" ? <Sun size={18} /> : <Moon size={18} />}
                 </Button>
-                <div className="hidden lg:block">
-                  <AccountMenu
-                    onOpenSponsor={() => {
-                      previousModeRef.current = mode;
-                      void switchMode("sponsor");
-                    }}
-                    onOpenGuide={() => {
-                      previousModeRef.current = mode;
-                      void switchMode("guide");
-                    }}
-                    onOpenPermissions={() => {
-                      previousModeRef.current = mode;
-                      void switchMode("permissions");
-                    }}
-                  />
-                </div>
                 <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
                   <button
                     type="button"
@@ -1832,107 +1864,20 @@ function App() {
           />
 
           <AppContentRow>
-            {showCardSidebar && (
-              <ContextPanel>
-                <ContextPanelHeader>
-                  <span className="text-sm font-medium">答题卡</span>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => {
-                      setShowNewCardModal(true);
-                      if (exams.length === 0) loadExams();
-                    }}
-                    disabled={isBusy || !canDesign}
-                    aria-label="新建答题卡"
-                  >
-                    <Plus size={16} />
-                  </Button>
-                </ContextPanelHeader>
-                <ContextPanelBody>
-                  {cards.map((item) => (
-                    <ContextItem
-                      key={item.id}
-                      icon={<FileUp size={16} />}
-                      title={item.title || "未命名答题卡"}
-                      meta={`${item.subjectLabel ? `${item.subjectLabel} · ` : ""}ID:${item.id}`}
-                      active={card?.id === item.id}
-                      onClick={() => void loadCard(item.id)}
-                      trailing={
-                        <div className="flex items-center gap-0.5">
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setPaperPanelCardId(item.id);
-                              setShowPaperPanel(true);
-                            }}
-                            aria-label="上传原卷"
-                          >
-                            <Upload size={14} />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void exportCard(item.id);
-                            }}
-                            aria-label="导出"
-                          >
-                            <Download size={14} />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (confirm(`确定删除「${item.title || item.id}」？此操作不可撤销。`)) {
-                                void deleteCard(item.id);
-                              }
-                            }}
-                            aria-label="删除"
-                          >
-                            <Trash2 size={14} />
-                          </Button>
-                        </div>
-                      }
-                    />
-                  ))}
-                  {cards.length === 0 && (
-                    <p className="px-2 py-4 text-center text-sm text-muted-foreground">
-                      暂无答题卡，先新建一张。
-                    </p>
-                  )}
-                </ContextPanelBody>
-                <div className="border-t border-border-subtle p-3">
-                  <Button
-                    variant="outline"
-                    block
-                    onClick={() => void importCard()}
-                    disabled={isBusy}
-                  >
-                    <Upload size={16} /> 导入答题卡
-                  </Button>
-                </div>
-              </ContextPanel>
-            )}
-
-            <AppContent width={showCardSidebar ? "full" : "normal"} bare={showCardSidebar}>
+            <AppContent width={mode === "home" ? "wide" : "full"} bare={mode !== "home"}>
               {/* C 阶段（2026-07-21）：真实 URL 路由渲染 —— 仅当前路径对应的页面挂载。 */}
               <Routes>
-                <Route path="/home" element={<HomeRoutePage />} />
-                <Route path="/design/*" element={<Suspense fallback={routeFallback}><DesignPage /></Suspense>} />
-                <Route path="/exam-manage" element={<Suspense fallback={routeFallback}><ExamManagePage /></Suspense>} />
-                <Route path="/analysis" element={<Suspense fallback={routeFallback}><AnalysisRoutePage /></Suspense>} />
-                <Route path="/scores" element={<Suspense fallback={routeFallback}><ScoresRoutePage /></Suspense>} />
-                <Route path="/account" element={<Suspense fallback={routeFallback}><AccountRoutePage /></Suspense>} />
-                <Route path="/sponsor" element={<Suspense fallback={routeFallback}><SponsorRoutePage /></Suspense>} />
-                <Route path="/permissions" element={<Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense>} />
-                <Route path="/guide" element={<Suspense fallback={routeFallback}><GuideRoutePage /></Suspense>} />
-                <Route path="/global-settings" element={<Suspense fallback={routeFallback}><GlobalSettingsRoutePage onBack={() => void switchMode("home")} /></Suspense>} />
-                <Route path="*" element={<Navigate to="/home" replace />} />
+                <Route path="/home" element={canOpenMode("home") ? <HomeRoutePage /> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/design/*" element={canOpenMode("design") ? <Suspense fallback={routeFallback}><DesignPage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/exam-manage" element={canOpenMode("exam-manage") ? <Suspense fallback={routeFallback}><ExamManagePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/analysis" element={canOpenMode("analysis") ? <Suspense fallback={routeFallback}><AnalysisRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/scores" element={canOpenMode("scores") ? <Suspense fallback={routeFallback}><ScoresRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/account" element={canOpenMode("account") ? <Suspense fallback={routeFallback}><AccountRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/sponsor" element={canOpenMode("home") ? <Suspense fallback={routeFallback}><SponsorRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/permissions" element={canOpenMode("account") ? <Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/guide" element={canOpenMode("home") ? <Suspense fallback={routeFallback}><GuideRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/global-settings" element={canOpenMode("global-settings") ? <Suspense fallback={routeFallback}><GlobalSettingsRoutePage onBack={() => void switchMode("home")} /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="*" element={<Navigate to={MODE_PATH[fallbackMode]} replace />} />
               </Routes>
             </AppContent>
           </AppContentRow>
@@ -1943,7 +1888,8 @@ function App() {
             <BeianFooter className="statusbar-beian" />
           </StatusBar>
         </AppMain>
-      </AppShell>
+       </AppShell>
+       </TooltipProvider>
 
       {gradingPanel && (
         <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "var(--color-background-primary)" }}>
@@ -2041,7 +1987,7 @@ function App() {
                 <div>
                   {exportCheck.paperInfo?.hasPaper ? (
                     <div>
-                      <p style={{ marginBottom: 6, fontSize: 13 }}>✅ 已上传：<strong>{exportCheck.paperInfo.filename}</strong></p>
+                      <p style={{ marginBottom: 6, fontSize: 13 }}><CheckCircle2 size={15} aria-hidden="true" /> 已上传：<strong>{exportCheck.paperInfo.filename}</strong></p>
                       {/* PDF → iframe, 图片 → img, DOCX → 文字 */}
                       {exportCheck.paperInfo.mimeType?.startsWith("image/") ? (
                         <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, overflow: "hidden", cursor: "pointer", background: "var(--surface-raised)" }}
@@ -2063,11 +2009,11 @@ function App() {
                     </div>
                   ) : (
                     <div style={{ background: "var(--brand-soft)", borderRadius: 6, padding: 16, textAlign: "center" }}>
-                      <p style={{ color: "var(--brand)", fontWeight: 600, margin: "0 0 8px" }}>⚠ 尚未上传原卷</p>
+                      <p style={{ color: "var(--brand)", fontWeight: 600, margin: "0 0 8px" }}><AlertTriangle size={15} aria-hidden="true" /> 尚未上传原卷</p>
                       <button className="primary-button" type="button" onClick={() => {
                         setExportCheck(null);
                         if (exportCheck.cardId) { setPaperPanelCardId(exportCheck.cardId); setShowPaperPanel(true); }
-                      }}>📤 立即上传原卷</button>
+                      }}><Upload size={15} aria-hidden="true" /> 立即上传原卷</button>
                     </div>
                   )}
                 </div>
@@ -2078,7 +2024,7 @@ function App() {
                 <div>
                   {exportCheck.knowledgeReady && exportCheck.knowledgePoints?.length ? (
                     <div>
-                      <p style={{ marginBottom: 6, fontSize: 13 }}>✅ 已分析 {exportCheck.knowledgePoints.length} 道题：</p>
+                      <p style={{ marginBottom: 6, fontSize: 13 }}><CheckCircle2 size={15} aria-hidden="true" /> 已分析 {exportCheck.knowledgePoints.length} 道题：</p>
                       <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--line-soft)", borderRadius: 6, padding: 8, background: "var(--surface-raised)" }}>
                         {exportCheck.knowledgePoints.map((q) => (
                           <div key={q.question_number} style={{ marginBottom: 4, fontSize: 13, lineHeight: 1.8 }}>
@@ -2143,7 +2089,7 @@ function App() {
               )}
               {exportCheck.step === "knowledge" && exportCheck.knowledgeReady && (
                 <button className="primary-button" type="button" onClick={() => doFinalPdfExport(exportCheck.pdfUrl)}>
-                  ✅ 确认导出 PDF
+                  <CheckCircle2 size={15} aria-hidden="true" /> 确认导出 PDF
                 </button>
               )}
               </div>
@@ -2162,7 +2108,7 @@ function App() {
                 <button className="ghost-button" type="button" onClick={() => setPaperZoom(z => Math.max(0.25, z - 0.25))} title="缩小">−</button>
                 <button className="ghost-button" type="button" onClick={() => setPaperZoom(1)} title="重置">{Math.round(paperZoom * 100)}%</button>
                 <button className="ghost-button" type="button" onClick={() => setPaperZoom(z => Math.min(3, z + 0.25))} title="放大">+</button>
-                <button className="modal-close" type="button" onClick={() => { setPaperPreviewOpen(null); setPaperZoom(1); }}>✕</button>
+                <button className="modal-close" type="button" aria-label="关闭预览" onClick={() => { setPaperPreviewOpen(null); setPaperZoom(1); }}><X size={16} /></button>
               </div>
             </div>
             <div style={{ padding: 16, textAlign: "center", overflow: "auto" }}>
@@ -2288,7 +2234,7 @@ function App() {
                   <strong>同时删除这 {groupDeleteTarget.memberCount} 场关联考试</strong>
                   <br />
                   <span style={{ color: "var(--muted)", fontSize: 11 }}>
-                    ⚠ 考试的成绩、扫描数据将被永久删除，不可恢复
+                    <AlertTriangle size={15} aria-hidden="true" /> 考试的成绩、扫描数据将被永久删除，不可恢复
                   </span>
                 </span>
               </label>

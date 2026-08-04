@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw, RotateCcw, PenLine, Save } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw, RotateCcw, PenLine, Save } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import { ScorePad } from "./ScorePad";
 import { AnnotationOverlay } from "./AnnotationOverlay";
@@ -25,6 +25,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [annotations, setAnnotations] = useState<ReviewAnnotation[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [errorTone, setErrorTone] = useState<"success" | "error">("error");
   const [scoringMode, setScoringMode] = useState<string>("block_total");
   const imageRef = useRef<HTMLDivElement>(null);
 
@@ -39,7 +40,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
         `/api/review/exams/${examId}/block-crops?blockId=${encodeURIComponent(blockId)}&status=ready`
       );
       if (res.ok) setQueue(res.rows);
-    } catch (err: any) { setError(err.message); }
+    } catch (err: any) { setError(err.message); setErrorTone("error"); }
   }, [examId, blockId]);
 
   // 加载会话
@@ -147,7 +148,8 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
 
       if (res.ok) {
         if (res.disputed) {
-          setError(`⚠ 该卷已标记为争议：${res.disputeReason}`);
+          setError(`该卷已标记为争议：${res.disputeReason}`);
+          setErrorTone("error");
         }
 
         // 清除草稿
@@ -159,7 +161,8 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
         if (currentIndex < queue.length - 1) {
           goTo(currentIndex + 1);
         } else {
-          setError("✅ 该题块已全部批完！");
+          setError("该题块已全部批完！");
+          setErrorTone("success");
         }
 
         saveSession(currentIndex + 1, newScores);
@@ -405,12 +408,13 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
           {error && (
             <div style={{
               fontSize: 13,
-              color: error.includes("✅") ? "var(--color-text-success, #22c55e)" : "#E24B4A",
+              color: errorTone === "success" ? "var(--color-text-success, #22c55e)" : "#E24B4A",
               marginBottom: 12,
               padding: "8px 12px",
-              background: error.includes("✅") ? "rgba(34,197,94,0.1)" : "rgba(226,75,74,0.1)",
+              background: errorTone === "success" ? "rgba(34,197,94,0.1)" : "rgba(226,75,74,0.1)",
               borderRadius: 8,
             }}>
+              {errorTone === "success" ? <CheckCircle2 size={15} aria-hidden="true" /> : <AlertTriangle size={15} aria-hidden="true" />}
               {error}
             </div>
           )}

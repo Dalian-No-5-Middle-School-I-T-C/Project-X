@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Activity, ArrowLeft, BarChart3, ClipboardList, Download, FileText, Settings, Trophy, TrendingUp, TrendingDown, Users } from "lucide-react";
+import { Activity, AlertTriangle, ArrowLeft, BarChart3, CheckCircle2, ClipboardList, Download, FileText, Settings, Star, Trophy, TrendingUp, TrendingDown, Users } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { fetchJson } from "../auth/api";
 import { formatScore, formatPercent, formatChange } from "../util/format";
@@ -392,7 +392,9 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                 <div className="panel-title">临界生（及格/优秀线 ±{Math.round(overview.passScore * 0.05)} 分）</div>
                 {criticalList.map((r) => (
                   <div key={r.studentName} style={{ display: "flex", gap: 8, padding: "3px 0", fontSize: 13, color: r.totalScore >= overview.passScore ? "var(--success)" : "var(--warning)" }}>
-                    <span style={{ minWidth: 24, fontWeight: 600 }}>{r.totalScore >= overview.excellentScore ? "⭐" : r.totalScore >= overview.passScore ? "✅" : "⚠️"}</span>
+                    <span style={{ minWidth: 24, fontWeight: 600 }} aria-label={r.totalScore >= overview.excellentScore ? "优秀" : r.totalScore >= overview.passScore ? "达标" : "待提升"}>
+                      {r.totalScore >= overview.excellentScore ? <Star size={15} aria-hidden="true" /> : r.totalScore >= overview.passScore ? <CheckCircle2 size={15} aria-hidden="true" /> : <AlertTriangle size={15} aria-hidden="true" />}
+                    </span>
                     <span>{r.studentName}</span>
                     <span style={{ marginLeft: "auto", fontWeight: 500 }}>{formatScore(r.totalScore)}</span>
                   </div>
@@ -433,13 +435,6 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             {/* 知识点弱点（接通后端） */}
             <KnowledgePanel examId={examId} classId={classId || undefined} />
 
-            {/* 讲评模式快捷入口 */}
-            <div style={{ textAlign: "center" }}>
-              <button className="primary-button" style={{ fontSize: 14, padding: "8px 20px" }}
-                onClick={() => window.open(`/analysis?examId=${examId}&tab=question-analysis&review=1`, "_blank")}>
-                📺 开启讲评模式（投屏逐题讲卷）
-              </button>
-            </div>
           </div>
         )}
 
@@ -500,7 +495,7 @@ function KnowledgePanel({ examId, classId }: { examId: number; classId: string |
     <div className="analysis-section">
       <div className="panel-title">知识点薄弱环节</div>
       <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
-        ⬤ 共性薄弱（得分率低于及格线且覆盖人数广） ⬤ 一般薄弱 ⬤ 达标 ｜ 按严重度排序
+        <span className="knowledge-legend"><span className="knowledge-legend-item"><span className="knowledge-legend-dot common" />共性薄弱（得分率低于及格线且覆盖人数广）</span><span className="knowledge-legend-item"><span className="knowledge-legend-dot weak" />一般薄弱</span><span className="knowledge-legend-item"><span className="knowledge-legend-dot ok" />达标</span><span>｜按严重度排序</span></span>
       </div>
       {items.map((kp, i) => (
         <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderBottom: "1px solid var(--line-light)", fontSize: 13 }}>

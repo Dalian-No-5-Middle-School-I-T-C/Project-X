@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { AlertTriangle } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { DisputeItem, ArbitratorCandidate } from "../../../../shared/types";
 
@@ -83,7 +84,7 @@ export function DisputeManagePage({ examId }: Props) {
                 ))}
                 {d.arbitratorName && <span style={{ color: "#639922" }}>仲裁: {d.arbitratorName}</span>}
                 {!d.arbitratorName && d.status === "pending" && (
-                  <span style={{ color: "#E24B4A" }}>⚠ 搁置中</span>
+                  <span style={{ color: "#E24B4A", display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangle size={14} aria-hidden="true" /> 搁置中</span>
                 )}
               </div>
               {d.status === "pending" && (

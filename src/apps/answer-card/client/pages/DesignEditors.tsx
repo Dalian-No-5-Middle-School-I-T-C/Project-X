@@ -42,6 +42,7 @@ import {
   SelectItem,
 } from "../components/ui/v2";
 import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "../auth/api";
+import { cn } from "../lib/utils";
 import type {
   AnswerCard,
   BlankItem,
@@ -1040,25 +1041,14 @@ export function SubjectiveEditor({
     </>
   );}
 
-export function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocument }) {
+export function CardPreview({ card, layout, firstPageOnly = false }: { card: AnswerCard; layout: LayoutDocument; firstPageOnly?: boolean }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ width: 760, height: 560 });
-  const [{ mode, customPercent }, setPreviewSettings] = useState<{ mode: PreviewMode; customPercent: number }>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(PREVIEW_SETTINGS_KEY) ?? "null") as { mode?: string; customPercent?: number } | null;
-      const validModes: PreviewMode[] = ["fit-width", "fit-page", "fit-panel", "custom"];
-      const savedMode = validModes.includes(saved?.mode as PreviewMode) ? saved?.mode as PreviewMode : "fit-width";
-      const savedPercent = Number(saved?.customPercent);
-      return {
-        mode: savedMode,
-        customPercent: Number.isFinite(savedPercent)
-          ? Math.max(PREVIEW_MIN_PERCENT, Math.min(PREVIEW_MAX_PERCENT, savedPercent))
-          : 100
-      };
-    } catch {
-      return { mode: "fit-width", customPercent: 100 };
-    }
+  // 每次进入编辑器先按 demo 的默认状态展示完整纸面；缩放操作仍可在本次编辑中使用。
+  const [{ mode, customPercent }, setPreviewSettings] = useState<{ mode: PreviewMode; customPercent: number }>({
+    mode: "fit-width",
+    customPercent: 100,
   });
 
   useEffect(() => {
@@ -1082,7 +1072,6 @@ export function CardPreview({ card, layout }: { card: AnswerCard; layout: Layout
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(parent);
-    observer.observe(root);
     return () => observer.disconnect();
   }, []);
 
@@ -1108,16 +1097,25 @@ export function CardPreview({ card, layout }: { card: AnswerCard; layout: Layout
             : 100
     )
   );
-  const pageWidth = viewport.width * effectivePercent / 100;
+  // Fit width fills the usable canvas; fit page fills its usable height.
+  // Do not cap this value: the paper must follow the current work area.
+  const pageWidth = mode === "fit-page"
+    ? viewport.height * paperRatio
+    : viewport.width * effectivePercent / 100;
 
   const changeZoom = (delta: number) => {
     const next = Math.max(PREVIEW_MIN_PERCENT, Math.min(PREVIEW_MAX_PERCENT, Math.round(effectivePercent / 10) * 10 + delta));
     setPreviewSettings({ mode: "custom", customPercent: next });
   };
 
+  const isThumbnail = firstPageOnly;
+  const thumbnailPageWidth = isThumbnail
+    ? Math.min(viewport.width, viewport.height * paperRatio)
+    : pageWidth;
+
   return (
-    <div className="flex h-full flex-col" ref={rootRef}>
-      <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-4" ref={toolbarRef} aria-label="预览缩放工具栏">
+    <div className={cn("flex h-full min-h-0 w-full min-w-0 flex-col", isThumbnail && "card-preview-thumbnail")} ref={rootRef}>
+      {!isThumbnail && <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-4" ref={toolbarRef} aria-label="预览缩放工具栏">
         <SegmentedControl<PreviewMode>
           value={mode}
           onValueChange={(value) => setPreviewSettings({ mode: value, customPercent })}
@@ -1138,14 +1136,14 @@ export function CardPreview({ card, layout }: { card: AnswerCard; layout: Layout
         <Button variant="ghost" size="icon-sm" aria-label="放大预览" onClick={() => changeZoom(10)} disabled={effectivePercent >= PREVIEW_MAX_PERCENT}>
           <Plus size={14} />
         </Button>
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col items-center gap-6 overflow-auto p-6">
-        {layout.pages.map((page) => (
+      </div>}
+      <div className={cn("flex min-h-0 flex-1 flex-col items-center gap-6 overflow-auto p-6", isThumbnail && "gap-0 p-0") }>
+        {(firstPageOnly ? layout.pages.slice(0, 1) : layout.pages).map((page) => (
           <svg
             key={page.pageNumber}
             viewBox={`0 0 ${page.width} ${page.height}`}
-            className="rounded-xs bg-paper shadow-2"
-            style={{ aspectRatio: `${page.width} / ${page.height}`, width: `${pageWidth}px` }}
+             className="paper-a4-preview rounded-xs bg-paper shadow-2"
+             style={{ aspectRatio: `${page.width} / ${page.height}`, width: `${thumbnailPageWidth}px`, height: `${thumbnailPageWidth * page.height / page.width}px` }}
             role="img"
             aria-label={`第${page.pageNumber}页预览`}
           >
@@ -1160,7 +1158,7 @@ export function CardPreview({ card, layout }: { card: AnswerCard; layout: Layout
               <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" />
             ))}
             {page.header.title && (
-              <text x={page.header.titleX} y={page.header.titleY} textAnchor="middle" fontSize={5} fontWeight={700} fill="#1a1a1a">
+              <text x={page.header.titleX} y={page.header.titleY} textAnchor="middle" dominantBaseline="middle" fontSize={5} fontWeight={700} fill="#1a1a1a">
                 {page.header.title}
               </text>
             )}
@@ -1214,7 +1212,7 @@ export function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pag
 export function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "objective" }> }) {
   return (
     <g>
-      <text x={block.rect.x} y={block.rect.y + 4.4} fontSize={3.4} fontWeight={600} fill="#1a1a1a">
+      <text x={block.rect.x} y={block.rect.y + 4.4} dominantBaseline="middle" fontSize={3.4} fontWeight={600} fill="#1a1a1a">
         {block.title}
       </text>
       <rect {...block.frameRect} fill="none" stroke="#222" strokeWidth="0.25" />
@@ -1304,7 +1302,7 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
   return (
     <g>
       {block.title && (
-        <text x={block.rect.x} y={block.rect.y + 4.4} fontSize={3.4} fontWeight={600} fill="#1a1a1a">
+        <text x={block.rect.x} y={block.rect.y + 4.4} dominantBaseline="middle" fontSize={3.4} fontWeight={600} fill="#1a1a1a">
           {block.title}
         </text>
       )}

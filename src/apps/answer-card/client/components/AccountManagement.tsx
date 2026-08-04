@@ -9,18 +9,18 @@ export function AccountManagement() {
   const [tab, setTab] = useState<AccountTab>("teachers");
 
   return (
-    <div className="account-management">
-      <div className="account-tabs">
+    <div className="account-management h-full w-full p-6">
+      <div className="mb-6 flex gap-4 border-b border-border-subtle">
         <button
           type="button"
-          className={tab === "teachers" ? "active" : ""}
+          className={`flex h-10 items-center gap-2 border-0 border-b-2 bg-transparent px-3 text-sm font-medium ${tab === "teachers" ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}
           onClick={() => setTab("teachers")}
         >
           <UserCog size={15} /> 教师管理
         </button>
         <button
           type="button"
-          className={tab === "classes" ? "active" : ""}
+          className={`flex h-10 items-center gap-2 border-0 border-b-2 bg-transparent px-3 text-sm font-medium ${tab === "classes" ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}
           onClick={() => setTab("classes")}
         >
           <GraduationCap size={15} /> 学生管理

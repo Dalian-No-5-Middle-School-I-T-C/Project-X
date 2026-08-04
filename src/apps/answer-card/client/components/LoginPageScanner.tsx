@@ -95,7 +95,7 @@ export function LoginPageScanner() {
   }
 
   return (
-    <div className="login-shell">
+    <div className="login-shell scanner-login-shell">
       <div className="login-card">
         <div className="login-brand">
           <div className="login-brand-icon">

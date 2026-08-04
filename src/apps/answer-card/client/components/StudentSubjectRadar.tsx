@@ -4,6 +4,7 @@ import { Radar } from "react-chartjs-2";
 import { fetchJson } from "../auth/api";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../../../shared/types";
 import { Radar as RadarIcon, RefreshCw, AlertTriangle, TrendingUp, TrendingDown } from "lucide-react";
+import { Card, CardContent, CardHeader, CardTitle, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/v2";
 
 ChartJS.register(RadialLinearScale, PointElement, LineElement, Filler, Tooltip, Legend);
 
@@ -33,19 +34,15 @@ export function StudentSubjectRadar() {
 
   useEffect(() => { void loadData(); }, []);
 
-  if (loading) return <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>加载中...</div>;
-  if (error) return <div className="login-error" style={{ padding: 20 }}>{error}</div>;
-  if (!data || data.subjects.length === 0) {
-    return <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>暂无学科对比数据。</div>;
-  }
+  if (loading) return <div className="flex min-h-24 items-center justify-center text-sm text-muted-foreground">加载中...</div>;
+  if (error) return <div className="flex items-center justify-center p-4 text-sm text-destructive-fg">{error}</div>;
+  if (!data || data.subjects.length === 0) return <div className="flex min-h-24 items-center justify-center text-sm text-muted-foreground">暂无学科数据。</div>;
 
   const { subjects, weakSubject, totalExams } = data;
   const labels = subjects.map((s) => s.subject);
   const myScores = subjects.map((s) => Math.max(s.avgScore, 0));
-  const classAvgs = subjects.map((s) => Math.max(s.avgClassAvg, 0));
-
-  // Determine max scale
-  const maxVal = Math.max(...myScores, ...classAvgs, 100);
+  // 仅绘制学生本人的学科成绩，学生端不展示班级比较数据。
+  const maxVal = Math.max(...myScores, 100);
 
   const chartData = {
     labels,
@@ -53,21 +50,11 @@ export function StudentSubjectRadar() {
       {
         label: "我的平均分",
         data: myScores,
-        backgroundColor: "rgba(83, 74, 183, 0.15)",
-        borderColor: "#534AB7",
+        backgroundColor: "rgba(192, 15, 40, 0.12)",
+        borderColor: "#C00F28",
         borderWidth: 2,
-        pointBackgroundColor: "#534AB7",
+        pointBackgroundColor: "#C00F28",
         pointRadius: 4,
-      },
-      {
-        label: "班级平均分",
-        data: classAvgs,
-        backgroundColor: "rgba(136, 135, 128, 0.08)",
-        borderColor: "#888780",
-        borderWidth: 1.5,
-        borderDash: [4, 3],
-        pointBackgroundColor: "#888780",
-        pointRadius: 3,
       },
     ],
   };
@@ -81,8 +68,8 @@ export function StudentSubjectRadar() {
         max: Math.ceil(maxVal / 10) * 10,
         ticks: { stepSize: 10, font: { size: 10 }, backdropColor: "transparent" },
         pointLabels: { font: { size: 12, weight: "bold" as const } },
-        grid: { color: "rgba(0,0,0,0.06)" },
-        angleLines: { color: "rgba(0,0,0,0.08)" },
+        grid: { color: "rgba(24, 24, 27, 0.10)" },
+        angleLines: { color: "rgba(24, 24, 27, 0.10)" },
       },
     },
     plugins: {
@@ -91,15 +78,15 @@ export function StudentSubjectRadar() {
   };
 
   return (
-    <div className="student-chart-section">
-      <div className="student-chart-header">
-        <div className="panel-title"><RadarIcon size={17} /> 学科对比</div>
+    <Card>
+      <CardHeader>
+        <CardTitle><span className="inline-flex items-center gap-2"><RadarIcon size={17} /> 学科雷达</span></CardTitle>
         <button className="ghost-button" type="button" onClick={() => void loadData()} disabled={loading}>
           <RefreshCw size={14} /> 刷新
         </button>
-      </div>
-
-      <div className="student-subject-summary">
+      </CardHeader>
+      <CardContent>
+      <div className="mb-3 flex items-center justify-between text-xs text-muted-foreground">
         <span>基于 {totalExams} 场考试 · {subjects.length} 个学科</span>
         {weakSubject && (
           <span className="weak-subject-badge">
@@ -109,37 +96,16 @@ export function StudentSubjectRadar() {
         )}
       </div>
 
-      <div className="student-chart-canvas radar">
+      <div className="h-64">
         <Radar data={chartData} options={chartOptions} />
       </div>
 
       {/* Subject detail table */}
-      <div className="student-subject-table">
-        <div className="student-subject-table-head">
-          <span>学科</span>
-          <span>考试次数</span>
-          <span>平均分</span>
-          <span>班级均分</span>
-          <span>差距</span>
-          <span>趋势</span>
-        </div>
-        {subjects.map((s) => (
-          <div key={s.subject} className={`student-subject-table-row ${s.subject === weakSubject ? "weak" : ""}`}>
-            <span className="subject-name">{s.subject}</span>
-            <span>{s.examCount}</span>
-            <span>{s.avgScore}</span>
-            <span>{s.avgClassAvg}</span>
-            <span className={s.gapToClass < 0 ? "gap-negative" : "gap-positive"}>
-              {s.gapToClass > 0 ? "+" : ""}{s.gapToClass}
-            </span>
-            <span className={`trend-${s.trend}`}>
-              {s.trend === "up" && <TrendingUp size={14} />}
-              {s.trend === "down" && <TrendingDown size={14} />}
-              {s.trend === "stable" && "—"}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
+      <Table>
+        <TableHeader><TableRow><TableHead>学科</TableHead><TableHead numeric>考试次数</TableHead><TableHead numeric>平均分</TableHead><TableHead>趋势</TableHead></TableRow></TableHeader>
+        <TableBody>{subjects.map((s) => <TableRow key={s.subject} selected={s.subject === weakSubject}><TableCell>{s.subject}</TableCell><TableCell numeric>{s.examCount}</TableCell><TableCell numeric>{s.avgScore}</TableCell><TableCell>{s.trend === "up" ? <TrendingUp size={14} className="text-success-foreground" /> : s.trend === "down" ? <TrendingDown size={14} className="text-destructive-fg" /> : "—"}</TableCell></TableRow>)}</TableBody>
+      </Table>
+      </CardContent>
+    </Card>
   );
 }

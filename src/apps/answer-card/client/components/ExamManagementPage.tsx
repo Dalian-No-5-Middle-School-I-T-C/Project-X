@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { ClipboardCheck, Plus, Trash2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { ExamRecord } from "../../../../shared/types";
 
@@ -75,7 +75,7 @@ export function ExamManagementPage({
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontWeight: 500, fontSize: 14 }}>
           {exam.name}
-          {isReview && <span style={{ color: "#E65100", marginLeft: 8, fontSize: 12 }}>🟡 待阅</span>}
+          {isReview && <span style={{ color: "#E65100", marginLeft: 8, fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4 }}><ClipboardCheck size={13} aria-hidden="true" /> 待阅</span>}
         </div>
         <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>
           {exam.subject ?? "未指定科目"} · {exam.status}
@@ -128,7 +128,7 @@ export function ExamManagementPage({
       {reviewExams.length > 0 && (
         <>
           <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8, marginTop: 4 }}>
-            🟡 阅卷中
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><ClipboardCheck size={13} aria-hidden="true" /> 阅卷中</span>
           </div>
           {reviewExams.map((e) => renderExamRow(e, true))}
         </>

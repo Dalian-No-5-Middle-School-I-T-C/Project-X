@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, Loader2, RefreshCw
+  AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, Loader2, RefreshCw
 } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import {
@@ -359,7 +359,7 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
                   }}
                 >
                   <span style={{ flex: 1 }}>
-                    ⚠ 题块配置加载失败{configLoadError ? `（${configLoadError}）` : ""}，未能确认评分模式。
+                    <AlertTriangle size={15} aria-hidden="true" /> 题块配置加载失败{configLoadError ? `（${configLoadError}）` : ""}，未能确认评分模式。
                     本次提交将按当前页面输入（逐题）发送，服务端校验兜底；若被拒绝请重试或联系管理员。
                   </span>
                   <button

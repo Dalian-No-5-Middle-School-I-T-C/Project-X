@@ -1,6 +1,7 @@
 // ExamManagePage — 从 App.tsx 抽出的「考试管理」页面（B2：改由 useWorkspace 消费共享状态）。
 // 不再由 App 透传 props，行为与抽离前完全一致。
-import { Plus, Trash2, Layers } from "lucide-react";
+import { Plus, Trash2, Layers, Search } from "lucide-react";
+import { useMemo, useState } from "react";
 import { fetchJson } from "../auth/api";
 import { useWorkspace } from "../WorkspaceContext";
 import { ExamDetailPage } from "../components/ExamDetailPage";
@@ -46,18 +47,23 @@ export function ExamManagePage() {
   const teacherRole = user?.teacher_role ?? null;
   const userRole = user?.role_name ?? "";
   const isMobile = useIsMobile();
+  const [examSearch, setExamSearch] = useState("");
+  const [examStatusFilter, setExamStatusFilter] = useState<"all" | "draft" | "grading" | "closed">("all");
+  const visibleExams = useMemo(() => exams.filter((exam) => {
+    const matchesSearch = !examSearch.trim() || exam.name.toLowerCase().includes(examSearch.trim().toLowerCase());
+    return matchesSearch && (examStatusFilter === "all" || exam.status === examStatusFilter);
+  }), [exams, examSearch, examStatusFilter]);
 
   return (
-    <div className={`main-grid exam-manage-grid ${active ? "" : "hidden-panel"}`}>
+    <div className={`min-h-full w-full overflow-auto bg-background ${active ? "" : "hidden-panel"}`}>
       {selectedExamId ? (
-        <section style={{ gridColumn: "1 / -1", padding: 0 }}>
+        <section className="min-h-full w-full">
           <ExamDetailPage examId={selectedExamId} teacherId={teacherId} teacherRole={teacherRole} userRole={userRole} onBackToList={() => setSelectedExamId(null)} onBackHome={() => switchMode("home")} onStartReview={onStartReview} />
         </section>
       ) : (
-      <section className="preview-panel" style={{ gridColumn: "1 / -1", padding: 24, overflowY: "auto" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-          <strong style={{ fontSize: 16 }}>考试管理</strong>
-          {examManageMode === "single" ? (
+       <section className="min-h-full w-full overflow-auto bg-background p-6">
+         <div className="flex flex-wrap items-center gap-3 mb-4">
+           {examManageMode === "single" ? (
             <button className="primary-button" onClick={() => setShowCreateExam(!showCreateExam)}>
               <Plus size={16} /> 新建考试
             </button>
@@ -78,23 +84,18 @@ export function ExamManagePage() {
               <Trash2 size={16} /> 删除选中 ({selectedExamIds.size})
             </button>
           )}
-          {(examManageMode === "single" ? exams.length : examGroups.length) > 0 && (
-            <span style={{ fontSize: 13, color: "var(--muted)" }}>
-              共 {examManageMode === "single" ? exams.length : examGroups.length} {examManageMode === "single" ? "个考试" : "个大考"}
-            </span>
-          )}
+           <span className="text-sm text-muted-foreground">共 {examManageMode === "single" ? visibleExams.length : examGroups.length} {examManageMode === "single" ? "个考试" : "个大考"}</span>
+           {examManageMode === "single" && <div className="order-last flex w-full flex-wrap items-center gap-3 lg:order-none lg:ml-4 lg:w-auto">
+             <div className="flex rounded-md bg-secondary p-0.5">
+               {([["all", "全部"], ["draft", "未开始"], ["grading", "阅卷中"], ["closed", "已完成"]] as const).map(([value, label]) => <button key={value} type="button" className={`border-0 rounded-sm px-3 py-1.5 text-xs ${examStatusFilter === value ? "bg-card font-semibold text-foreground shadow-1" : "bg-transparent text-muted-foreground"}`} onClick={() => setExamStatusFilter(value)}>{label}</button>)}
+             </div>
+             <label className="relative"><Search className="pointer-events-none absolute left-2.5 top-2 size-4 text-muted-foreground" /><input className="h-control-md w-56 rounded-md border border-input bg-card pl-8 pr-3 text-sm" value={examSearch} onChange={(event) => setExamSearch(event.target.value)} placeholder="搜索考试名称" /></label>
+           </div>}
           {/* Single/Group toggle — right side */}
-          <div style={{ display: "flex", gap: 0, border: "1px solid var(--brand)", borderRadius: 6, overflow: "hidden", marginLeft: "auto" }}>
-            <button onClick={() => setExamManageMode("single")} style={{
-              padding: "5px 14px", border: "none", background: examManageMode === "single" ? "var(--brand)" : "var(--surface)",
-              color: examManageMode === "single" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "single" ? 600 : 400
-            }}>单科考试</button>
-            <button onClick={() => { setExamManageMode("group"); loadExamGroups(); }} style={{
-              padding: "5px 14px", border: "none", background: examManageMode === "group" ? "var(--brand)" : "var(--surface)",
-              color: examManageMode === "group" ? "#fff" : "var(--text)", fontSize: 12, cursor: "pointer", fontWeight: examManageMode === "group" ? 600 : 400,
-              display: "flex", alignItems: "center", gap: 4
-            }}><Layers size={13} /> 大考</button>
-          </div>
+           <div className="ml-auto flex overflow-hidden rounded-md border border-primary bg-secondary p-0.5">
+             <button className={`rounded-sm border-0 px-3 py-1.5 text-xs ${examManageMode === "single" ? "bg-primary font-semibold text-primary-foreground" : "bg-transparent text-muted-foreground"}`} onClick={() => setExamManageMode("single")}>单科考试</button>
+             <button className={`flex items-center gap-1 rounded-sm border-0 px-3 py-1.5 text-xs ${examManageMode === "group" ? "bg-primary font-semibold text-primary-foreground" : "bg-transparent text-muted-foreground"}`} onClick={() => { setExamManageMode("group"); loadExamGroups(); }}><Layers size={13} /> 大考</button>
+           </div>
         </div>
 
         {examManageMode === "single" && showCreateExam && (
@@ -164,7 +165,7 @@ export function ExamManagePage() {
         {examManageMode === "single" && exams.length > 0 && (
           isMobile ? (
             <div className="data-card-list">
-              {exams.map((exam) => (
+              {visibleExams.map((exam) => (
                 <DataCard
                   key={exam.id}
                   rows={[
@@ -190,7 +191,7 @@ export function ExamManagePage() {
                         }} />
                         选择
                       </label>
-                      <button className="ghost-button" style={{ fontSize: 13, color: "#3C3489" }}
+                       <button className="ghost-button" style={{ fontSize: 13, color: "var(--px-info-fg)" }}
                         onClick={() => setSelectedExamId(exam.id)}>网阅</button>
                       <button className="ghost-button" style={{ fontSize: 13, color: "var(--brand)" }}
                         onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</button>
@@ -214,9 +215,9 @@ export function ExamManagePage() {
               <span style={{ width: 80 }}>科目</span>
               <span style={{ width: 100 }}>答题卡</span>
               <span style={{ width: 70, textAlign: "center" }}>状态</span>
-              <span style={{ width: 100, textAlign: "right" }}>操作</span>
+               <span style={{ width: 190, textAlign: "right" }}>操作</span>
             </div>
-            {exams.map((exam) => (
+            {visibleExams.map((exam) => (
               <div key={exam.id} className="exam-list-row" style={{ cursor: "default" }}>
                 <span style={{ width: 36, flexShrink: 0 }}>
                   <input type="checkbox" checked={selectedExamIds.has(exam.id)} onChange={() => {
@@ -233,8 +234,8 @@ export function ExamManagePage() {
                     {exam.status === "closed" ? "已完成" : exam.status === "grading" ? "阅卷中" : exam.status === "draft" ? "草稿" : exam.status}
                   </span>
                 </span>
-                <span style={{ width: 100, textAlign: "right", whiteSpace: "nowrap" }}>
-                  <button className="ghost-button" style={{ fontSize: 12, color: "#3C3489", padding: "2px 6px" }}
+                 <span style={{ width: 190, textAlign: "right", whiteSpace: "nowrap" }}>
+                   <button className="ghost-button" style={{ fontSize: 12, color: "var(--px-info-fg)", padding: "2px 6px" }}
                     onClick={() => setSelectedExamId(exam.id)}>网阅</button>
                   <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 6px", marginLeft: 4 }}
                     onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</button>

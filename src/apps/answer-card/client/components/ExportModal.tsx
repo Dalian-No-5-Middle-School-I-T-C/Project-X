@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Download, GripVertical, Plus, Save, Trash2, X } from "lucide-react";
+import { AlertTriangle, Download, GripVertical, Plus, Save, Trash2, X } from "lucide-react";
 import { fetchJson, authFetch } from "../auth/api";
 
 interface Props {
@@ -237,7 +237,7 @@ export function ExportModal({ examId, examName, classId, onClose }: Props) {
           {/* A4 warning */}
           {overA4 && (
             <div style={{ padding: "8px 12px", background: "#fef3c7", borderRadius: 8, fontSize: 12, color: "#92400e" }}>
-              ⚠ 所选列总宽可能超出 1 页竖版A4 (Word默认页边距)。当前约 {totalWidth}ch / 建议 ≤{A4_MAX_CHARS}ch。请减少列或调整侧表。
+              <AlertTriangle size={15} aria-hidden="true" /> 所选列总宽可能超出 1 页竖版A4 (Word默认页边距)。当前约 {totalWidth}ch / 建议 ≤{A4_MAX_CHARS}ch。请减少列或调整侧表。
             </div>
           )}
 

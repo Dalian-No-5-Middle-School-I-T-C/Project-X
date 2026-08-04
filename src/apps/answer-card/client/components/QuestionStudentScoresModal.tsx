@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { CheckCircle2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { QuestionStudentScore } from "../../../../shared/types";
 import { formatScore, formatPercent } from "../util/format";
@@ -122,7 +123,7 @@ export function QuestionStudentScoresModal({ examId, questionNumber, questionMax
                     <td style={{ padding: "7px 10px", color: "var(--muted)" }}>{s.className ?? "—"}</td>
                     <td style={{ padding: "7px 10px", textAlign: "right", fontWeight: 600 }}>{formatScore(s.score)}</td>
                     <td style={{ padding: "7px 10px", textAlign: "right" }}>{formatPercent(s.scoreRate)}</td>
-                    <td style={{ padding: "7px 10px", textAlign: "right" }}>{s.isFull ? "✅" : ""}</td>
+                    <td style={{ padding: "7px 10px", textAlign: "right" }}>{s.isFull ? <CheckCircle2 size={15} aria-label="满分" /> : null}</td>
                     <td style={{ padding: "7px 10px", textAlign: "right", fontSize: 12, color: "var(--brand)" }}>{s.knowledgePoint ?? "—"}</td>
                   </tr>
                 ))}

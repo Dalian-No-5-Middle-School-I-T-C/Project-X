@@ -11,6 +11,14 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 // 的层序依次引入 tokens.css / styles.css / legacy-bridge.css，顺序不得在此绕过。
 import "./theme/app.css";
 
+// Match the demo's theme before React paints, avoiding a light-frame flash for dark users.
+try {
+  const storedTheme = localStorage.getItem("projectx-theme");
+  document.documentElement.setAttribute("data-theme", storedTheme === "dark" ? "dark" : "light");
+} catch {
+  document.documentElement.setAttribute("data-theme", "light");
+}
+
 // This is the web mode entry point (teacher + student, no scanner panel).
 // Used in dev (npm run dev) and in web builds (vite build --mode web).
 // Phase 2: 数据路由（createBrowserRouter）让每个工作模式 = 真实 URL，

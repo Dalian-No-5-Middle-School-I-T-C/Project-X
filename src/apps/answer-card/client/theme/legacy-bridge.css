@@ -7,7 +7,8 @@
    实现「旧界面零布局变化、仅色彩切新」。
    【删除时机】P5 清理：styles.css 旧变量定义与本文件一并删除。
    ============================================================================ */
-:root {
+:root,
+[data-theme="light"] {
   /* 品牌绯红 */
   --brand: var(--px-accent-bg);
   --brand-light: var(--px-accent-bg-hover);
@@ -71,4 +72,37 @@
   --bp-phone: var(--px-bp-phone);
   --bp-tablet: var(--px-bp-tablet);
   --bp-desktop: var(--px-bp-desktop);
+}
+
+[data-theme="dark"] {
+  --brand: var(--px-accent-bg);
+  --brand-light: var(--px-accent-bg-hover);
+  --brand-dark: var(--px-accent-bg-active);
+  --brand-soft: var(--px-accent-soft);
+  --brand-tint: var(--px-accent-soft);
+  --brand-glow: var(--px-accent-ring);
+  --text: var(--px-fg-primary);
+  --text-secondary: var(--px-fg-secondary);
+  --text-primary: var(--px-fg-primary);
+  --muted: var(--px-fg-tertiary);
+  --surface: var(--px-bg-surface);
+  --surface-raised: var(--px-bg-raised);
+  --surface-soft: var(--px-bg-subtle);
+  --surface-tint: var(--px-bg-subtle);
+  --surface-glass: color-mix(in srgb, var(--px-bg-surface) 88%, transparent);
+  --surface-glass-hover: color-mix(in srgb, var(--px-bg-surface) 94%, transparent);
+  --background: var(--px-bg-canvas);
+  --background-deep: var(--px-bg-canvas);
+  --bg-soft: var(--px-bg-subtle);
+  --bg-secondary: var(--px-bg-raised);
+  --bg-accent: var(--px-accent-soft);
+  --line: var(--px-border-default);
+  --line-strong: var(--px-border-strong);
+  --line-light: var(--px-border-subtle);
+  --border: var(--px-border-default);
+  --success: var(--px-success-bg);
+  --warning: var(--px-warning-bg);
+  --info: var(--px-info-bg);
+  --danger: var(--px-danger-bg);
+  --danger-soft: var(--px-danger-soft);
 }

@@ -67,6 +67,7 @@ export function SegmentedControl<T extends string>({
             aria-label={item.ariaLabel}
             className={cn(
               "inline-flex shrink-0 items-center justify-center gap-1.5 rounded-sm whitespace-nowrap",
+              "border-0 bg-transparent",
               "font-medium text-muted-foreground",
               "transition-[background-color,color,box-shadow] duration-(--px-dur-1) ease-standard",
               "hover:text-foreground",

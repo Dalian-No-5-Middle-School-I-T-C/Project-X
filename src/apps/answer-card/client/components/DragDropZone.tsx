@@ -1,4 +1,5 @@
 import React, { useRef, useState, useCallback } from "react";
+import { Upload } from "lucide-react";
 
 interface Props {
   accept: string;
@@ -104,7 +105,7 @@ export function DragDropZone({ accept, maxSize, onFile, onFiles, multiple, disab
         <div className="drag-drop-error">{error}</div>
       ) : (
         <>
-          <div className="drag-drop-icon">📤</div>
+          <div className="drag-drop-icon" aria-hidden="true"><Upload size={24} /></div>
           <div className="drag-drop-label">
             {label || "拖拽文件到此处，或点击选择"}
           </div>

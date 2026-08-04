@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Plus, RefreshCw, Search, Trash2, Upload, UserMinus, UserPlus } from "lucide-react";
+import { Download, Plus, RefreshCw, Search, Trash2, Upload, UserMinus, UserPlus, X } from "lucide-react";
 import { fetchJson, authFetch } from "../auth/api";
 import type { ClassRecord, ClassStudent, GradeRecord, UserListItem, UsersListResponse } from "../auth/types";
 import { ImportModal } from "./ImportModal";
@@ -639,7 +639,7 @@ export function ClassManagement() {
           <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 400, maxWidth: "90vw" }}>
             <div className="modal-header">
               <h2>新建学生</h2>
-              <button className="modal-close" onClick={() => setShowNewStudentGlobal(false)}>✕</button>
+              <button className="modal-close" aria-label="关闭新建学生" onClick={() => setShowNewStudentGlobal(false)}><X size={16} /></button>
             </div>
             <div className="modal-body">
               <label>

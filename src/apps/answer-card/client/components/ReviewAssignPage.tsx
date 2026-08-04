@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { RefreshCw, UserPlus } from "lucide-react";
+import { CheckCircle2, Dices, RefreshCw, UserPlus, X } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { ReviewAssignment, ReviewBlockSummary } from "../../../../shared/types";
 
@@ -19,6 +19,7 @@ export function ReviewAssignPage({ examId }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+  const [msgTone, setMsgTone] = useState<"success" | "error" | "">("");
 
   // 加载题块列表
   useEffect(() => {
@@ -69,20 +70,24 @@ export function ReviewAssignPage({ examId }: Props) {
 
     setSaving(true);
     setMsg("");
+    setMsgTone("");
     try {
       const res = await fetchJson<{ ok: boolean; error?: string }>(
         `/api/review-assign/exams/${examId}/blocks/${encodeURIComponent(selectedBlockId)}`,
         { method: "POST", body: JSON.stringify({ teacherCounts }) }
       );
       if (res.ok) {
-        setMsg("✅ 分配成功！系统已随机分配学生");
+        setMsg("分配成功！系统已随机分配学生");
+        setMsgTone("success");
         setInputs([{ teacherId: 0, count: 0 }]);
         loadAssignments(selectedBlockId);
       } else {
         setMsg(res.error || "分配失败");
+        setMsgTone("error");
       }
     } catch (err: any) {
       setMsg(err.message || "网络错误");
+      setMsgTone("error");
     }
     setSaving(false);
   };
@@ -166,7 +171,7 @@ export function ReviewAssignPage({ examId }: Props) {
               style={numInputStyle}
             />
             {inputs.length > 1 && (
-              <button onClick={() => setInputs(inputs.filter((_, i) => i !== idx))} style={smallRedBtn}>×</button>
+              <button aria-label="移除教师" onClick={() => setInputs(inputs.filter((_, i) => i !== idx))} style={smallRedBtn}><X size={14} /></button>
             )}
           </div>
         ))}
@@ -183,7 +188,7 @@ export function ReviewAssignPage({ examId }: Props) {
             disabled={saving || !selectedBlockId}
             style={{ ...actionBtn, background: "#3C3489", color: "#fff", border: "none" }}
           >
-            {saving ? "分配中..." : "🎲 随机分配"}
+            {saving ? "分配中..." : <><Dices size={14} /> 随机分配</>}
           </button>
         </div>
 
@@ -193,9 +198,10 @@ export function ReviewAssignPage({ examId }: Props) {
             fontSize: 13,
             padding: "8px 12px",
             borderRadius: 6,
-            background: msg.includes("✅") ? "rgba(99,153,34,0.1)" : "rgba(226,75,74,0.1)",
-            color: msg.includes("✅") ? "#639922" : "#E24B4A",
+            background: msgTone === "success" ? "rgba(99,153,34,0.1)" : "rgba(226,75,74,0.1)",
+            color: msgTone === "success" ? "#639922" : "#E24B4A",
           }}>
+            {msgTone === "success" && <CheckCircle2 size={15} aria-hidden="true" />}
             {msg}
           </div>
         )}
