@@ -72,6 +72,14 @@ import {
   Spinner,
   TooltipProvider,
   Toaster,
+  Card,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogBody,
+  DialogFooter,
+  Checkbox,
   type SaveState,
 } from "./components/ui/v2";
 
@@ -340,26 +348,29 @@ function KnowledgeAnalysisInline({ cardId, onDone }: { cardId: string; onDone: (
   };
 
   return (
-    <div>
-      <h4 style={{ margin: "0 0 8px", fontSize: 14 }}>题目范围 *</h4>
-      <label className="radio-label">
+    <div className="flex flex-col gap-2">
+      <h4 className="text-sm font-semibold">题目范围 *</h4>
+      <label className="flex items-center gap-2 text-sm">
         <input type="radio" name="kpRange" checked={questionRange === "all"} onChange={() => setQuestionRange("all")} />
         全部题目
       </label>
-      <label className="radio-label">
+      <label className="flex items-center gap-2 text-sm">
         <input type="radio" name="kpRange" checked={questionRange === "custom"} onChange={() => setQuestionRange("custom")} />
         自定义范围
       </label>
       {questionRange === "custom" && (
-        <input type="text" className="text-input" placeholder="如：第1-15题、选择题"
-          value={customRange} onChange={(e) => setCustomRange(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+        <input type="text" className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+          placeholder="如：第1-15题、选择题"
+          value={customRange} onChange={(e) => setCustomRange(e.target.value)} />
       )}
-      <textarea className="textarea-input" placeholder="特别描述（可选）" value={extraNotes} onChange={(e) => setExtraNotes(e.target.value)} rows={2} style={{ width: "100%", marginBottom: 8 }} />
-      {error && <p className="field-error" style={{ marginBottom: 8 }}>{error}</p>}
-      <button className="primary-button" type="button" onClick={handleAnalyze} disabled={analyzing}>
-        <BrainCircuit size={16} /> {analyzing ? "分析中..." : "开始分析"}
-      </button>
-      {analyzing && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>正在调用 AI 分析，约需 10-30 秒...</p>}
+      <textarea className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+        placeholder="特别描述（可选）" value={extraNotes} onChange={(e) => setExtraNotes(e.target.value)} rows={2} />
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <Button variant="primary" type="button" onClick={handleAnalyze} disabled={analyzing}
+        icon={<BrainCircuit size={16} />}>
+        {analyzing ? "分析中..." : "开始分析"}
+      </Button>
+      {analyzing && <p className="mt-1 text-xs text-muted-foreground">正在调用 AI 分析，约需 10-30 秒...</p>}
     </div>
   );
 }
@@ -661,8 +672,15 @@ function App() {
       // 检查是否有输入框聚焦，跳过（让用户正常退出输入）
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      // 检查是否有 modal overlay 打开（modal 自行处理 ESC）
-      if (document.querySelector(".modal-overlay")) return;
+      // 检查是否有弹层打开（弹层自行处理 ESC）：
+      //  · .modal-overlay —— 尚未迁移的旧弹层（AccountMenu 等）
+      //  · [data-state="open"] 的 dialog/alertdialog —— v2 Dialog/Sheet（Radix 自带 ESC 关闭）
+      // P5：App.tsx 内的旧 .modal-overlay/.modal-backdrop 已换成 v2 Dialog，
+      // 必须同时识别 Radix 弹层，否则 ESC 会穿透到全局返回逻辑。
+      if (
+        document.querySelector(".modal-overlay") ||
+        document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]')
+      ) return;
 
       // 成绩分析子页 → 返回考试选择
       if (mode === "analysis" && analysisTab !== "select") {
@@ -1497,10 +1515,15 @@ function App() {
   const selectedBlock = card?.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null;
 
   if (loading) {
+    // P5：原先用 styles.css 的 .login-shell/.empty-text/.login-beian-footer，
+    // 改为 v2 Card + Spinner；BeianFooter 仍 floating 贴右下，不参与居中流。
     return (
-      <div className="login-shell">
-        <p className="empty-text">正在加载...</p>
-        <BeianFooter className="login-beian-footer" floating />
+      <div className="relative flex min-h-screen flex-col items-center justify-center gap-4 bg-background p-6">
+        <Card className="flex flex-col items-center gap-3 px-8 py-7">
+          <Spinner size={24} />
+          <p className="text-sm font-medium text-muted-foreground">正在加载...</p>
+        </Card>
+        <BeianFooter floating />
       </div>
     );
   }
@@ -1895,7 +1918,7 @@ function App() {
        </TooltipProvider>
 
       {gradingPanel && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "var(--color-background-primary)" }}>
+        <div className="fixed inset-0 z-(--px-z-lightbox) bg-background">
           <Suspense fallback={routeFallback}>
             <GradePanel examId={gradingPanel.examId} blockId={gradingPanel.blockId} teacherId={user?.id ?? 0} onBack={() => setGradingPanel(null)} />
           </Suspense>
@@ -1948,40 +1971,61 @@ function App() {
         onClose={() => { setShowImportCardModal(false); setImportCardData(null); setIsBusy(false); }}
       />
       {exportCheck && (
-        <div className="modal-backdrop" onClick={() => setExportCheck(null)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 560, maxWidth: "calc(100vw - 40px)", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
-            <div className="modal-header">
-              <h2>导出检查</h2>
-              <button className="modal-close" type="button" onClick={() => setExportCheck(null)}>×</button>
-            </div>
+        <Dialog open onOpenChange={(next) => { if (!next) setExportCheck(null); }}>
+          <DialogContent size="sm" className="max-w-[560px]">
+            <DialogHeader>
+              <DialogTitle>导出检查</DialogTitle>
+            </DialogHeader>
 
-            {/* 进度条 */}
-            <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--line-soft)", flexWrap: "wrap", fontSize: 13 }}>
-              <span style={{ color: "var(--success, #10b981)", fontWeight: 600 }}>✓ 分值</span><span style={{ color: "var(--muted)" }}>→</span>
-              <span style={{ color: exportCheck.step === "paper" ? "var(--brand)" : exportCheck.paperInfo?.hasPaper ? "var(--success, #10b981)" : "var(--muted)", fontWeight: exportCheck.step === "paper" ? 600 : 400 }}>
+            {/* 进度条：当前步骤品牌红加粗，已完成步骤 success，未开始 muted */}
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-border-subtle px-5 py-2.5 text-sm">
+              <span className="font-semibold text-success-foreground">✓ 分值</span>
+              <span className="text-muted-foreground">→</span>
+              <span
+                className={cn(
+                  exportCheck.step === "paper"
+                    ? "font-semibold text-primary"
+                    : exportCheck.paperInfo?.hasPaper
+                      ? "text-success-foreground"
+                      : "text-muted-foreground",
+                )}
+              >
                 {exportCheck.step === "paper" ? "▶ 原卷" : exportCheck.paperInfo?.hasPaper ? "✓ 原卷" : "○ 原卷"}
-              </span><span style={{ color: "var(--muted)" }}>→</span>
-              <span style={{ color: exportCheck.step === "knowledge" ? "var(--brand)" : exportCheck.knowledgeReady ? "var(--success, #10b981)" : "var(--muted)", fontWeight: exportCheck.step === "knowledge" ? 600 : 400 }}>
+              </span>
+              <span className="text-muted-foreground">→</span>
+              <span
+                className={cn(
+                  exportCheck.step === "knowledge"
+                    ? "font-semibold text-primary"
+                    : exportCheck.knowledgeReady
+                      ? "text-success-foreground"
+                      : "text-muted-foreground",
+                )}
+              >
                 {exportCheck.step === "knowledge" ? "▶ 知识点" : exportCheck.knowledgeReady ? "✓ 知识点" : "○ 知识点"}
-              </span><span style={{ color: "var(--muted)" }}>→</span>
-              <span style={{ color: "var(--muted)" }}>○ 导出</span>
+              </span>
+              <span className="text-muted-foreground">→</span>
+              <span className="text-muted-foreground">○ 导出</span>
             </div>
 
-            <div style={{ overflow: "auto", flex: 1, padding: "8px 0" }}>
+            <DialogBody>
               {/* Step 1: 分值检查 */}
               {exportCheck.step === "score" && exportCheck.validation.issues.length > 0 && (
-                <div>
-                  <div className="score-warning-summary">
-                    <strong>当前总分：{exportCheck.validation.totalScore} 分</strong>
-                    <span>客观题 {exportCheck.validation.objectiveScore} 分 / 主观题 {exportCheck.validation.subjectiveScore} 分</span>
-                    <span>{exportCheck.validation.flexibleTotalSubject ? "语文、英语或外语科目不检查 100/150 总分规则" : `期望总分：${exportCheck.validation.expectedTotals.join(" 或 ")} 分`}</span>
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-col gap-1.5 rounded-lg border border-warning-border bg-warning-soft p-3 text-sm text-foreground">
+                    <strong className="text-base tabular-nums">当前总分：{exportCheck.validation.totalScore} 分</strong>
+                    <span className="tabular-nums">客观题 {exportCheck.validation.objectiveScore} 分 / 主观题 {exportCheck.validation.subjectiveScore} 分</span>
+                    <span className="tabular-nums">{exportCheck.validation.flexibleTotalSubject ? "语文、英语或外语科目不检查 100/150 总分规则" : `期望总分：${exportCheck.validation.expectedTotals.join(" 或 ")} 分`}</span>
                   </div>
-                  <ul className="score-warning-list">
+                  <ul className="m-0 flex max-h-80 list-none flex-col gap-2 overflow-auto p-0">
                     {exportCheck.validation.issues.slice(0, 6).map((issue, i) => (
-                      <li key={`s_${i}`}><span>{issue.message}</span>{issue.questionRefs?.length ? <small> 涉及：{issue.questionRefs.join("、")}</small> : null}</li>
+                      <li key={`s_${i}`} className="flex flex-col gap-1 rounded-md border border-border bg-card p-2.5 text-sm">
+                        <span>{issue.message}</span>
+                        {issue.questionRefs?.length ? <small className="text-xs text-muted-foreground"> 涉及：{issue.questionRefs.join("、")}</small> : null}
+                      </li>
                     ))}
                   </ul>
-                  {exportCheck.validation.issues.length > 6 && <p className="score-warning-more">还有 {exportCheck.validation.issues.length - 6} 条提示</p>}
+                  {exportCheck.validation.issues.length > 6 && <p className="m-0 text-xs text-muted-foreground tabular-nums">还有 {exportCheck.validation.issues.length - 6} 条提示</p>}
                 </div>
               )}
 
@@ -1990,33 +2034,33 @@ function App() {
                 <div>
                   {exportCheck.paperInfo?.hasPaper ? (
                     <div>
-                      <p style={{ marginBottom: 6, fontSize: 13 }}><CheckCircle2 size={15} aria-hidden="true" /> 已上传：<strong>{exportCheck.paperInfo.filename}</strong></p>
+                      <p className="mb-1.5 flex items-center gap-1 text-sm"><CheckCircle2 size={15} aria-hidden="true" /> 已上传：<strong>{exportCheck.paperInfo.filename}</strong></p>
                       {/* PDF → iframe, 图片 → img, DOCX → 文字 */}
                       {exportCheck.paperInfo.mimeType?.startsWith("image/") ? (
-                        <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, overflow: "hidden", cursor: "pointer", background: "var(--surface-raised)" }}
+                        <div className="cursor-pointer overflow-hidden rounded-md border border-border bg-card"
                           onClick={() => { if (exportCheck.cardId) setPaperPreviewOpen(exportCheck.cardId); }} title="点击放大">
                           <img src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper?format=image`)} alt="原卷"
-                            style={{ maxWidth: "100%", maxHeight: 240, objectFit: "contain", display: "block", margin: "0 auto" }}
+                            className="mx-auto block max-h-60 max-w-full object-contain"
                             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                          <p style={{ textAlign: "center", padding: "4px 0 8px", color: "var(--muted)", fontSize: 12 }}>点击放大查看</p>
+                          <p className="px-0 pt-1 pb-2 text-center text-xs text-muted-foreground">点击放大查看</p>
                         </div>
                       ) : exportCheck.paperInfo.mimeType === "application/pdf" ? (
-                        <iframe src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper`)} style={{ width: "100%", height: 380, border: "1px solid var(--line-soft)", borderRadius: 6 }} title="原卷PDF" />
+                        <iframe src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper`)} className="h-95 w-full rounded-md border border-border" title="原卷PDF" />
                       ) : (
-                        <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, padding: 16, textAlign: "center", background: "var(--surface-raised)" }}>
-                          <p style={{ margin: 0, fontWeight: 600 }}>{exportCheck.paperInfo.filename}</p>
-                          <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--muted)" }}>DOCX 文件不支持内联预览</p>
-                          <a href={urlWithToken(`/api/cards/${exportCheck.cardId}/paper`)} target="_blank" style={{ fontSize: 12, marginTop: 4, display: "inline-block" }}>在 Office 中打开</a>
+                        <div className="rounded-md border border-border bg-card p-4 text-center">
+                          <p className="m-0 font-semibold">{exportCheck.paperInfo.filename}</p>
+                          <p className="mt-1 mb-0 text-xs text-muted-foreground">DOCX 文件不支持内联预览</p>
+                          <a href={urlWithToken(`/api/cards/${exportCheck.cardId}/paper`)} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs text-primary hover:underline">在 Office 中打开</a>
                         </div>
                       )}
                     </div>
                   ) : (
-                    <div style={{ background: "var(--brand-soft)", borderRadius: 6, padding: 16, textAlign: "center" }}>
-                      <p style={{ color: "var(--brand)", fontWeight: 600, margin: "0 0 8px" }}><AlertTriangle size={15} aria-hidden="true" /> 尚未上传原卷</p>
-                      <button className="primary-button" type="button" onClick={() => {
+                    <div className="rounded-md bg-accent p-4 text-center">
+                      <p className="m-0 mb-2 flex items-center justify-center gap-1 font-semibold text-primary"><AlertTriangle size={15} aria-hidden="true" /> 尚未上传原卷</p>
+                      <Button variant="primary" type="button" icon={<Upload size={15} aria-hidden="true" />} onClick={() => {
                         setExportCheck(null);
                         if (exportCheck.cardId) { setPaperPanelCardId(exportCheck.cardId); setShowPaperPanel(true); }
-                      }}><Upload size={15} aria-hidden="true" /> 立即上传原卷</button>
+                      }}>立即上传原卷</Button>
                     </div>
                   )}
                 </div>
@@ -2027,20 +2071,20 @@ function App() {
                 <div>
                   {exportCheck.knowledgeReady && exportCheck.knowledgePoints?.length ? (
                     <div>
-                      <p style={{ marginBottom: 6, fontSize: 13 }}><CheckCircle2 size={15} aria-hidden="true" /> 已分析 {exportCheck.knowledgePoints.length} 道题：</p>
-                      <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--line-soft)", borderRadius: 6, padding: 8, background: "var(--surface-raised)" }}>
+                      <p className="mb-1.5 flex items-center gap-1 text-sm tabular-nums"><CheckCircle2 size={15} aria-hidden="true" /> 已分析 {exportCheck.knowledgePoints.length} 道题：</p>
+                      <div className="max-h-55 overflow-y-auto rounded-md border border-border bg-card p-2">
                         {exportCheck.knowledgePoints.map((q) => (
-                          <div key={q.question_number} style={{ marginBottom: 4, fontSize: 13, lineHeight: 1.8 }}>
-                            <strong style={{ color: "var(--muted)" }}>第{q.question_number}题：</strong>
+                          <div key={q.question_number} className="mb-1 text-sm leading-relaxed">
+                            <strong className="text-muted-foreground tabular-nums">第{q.question_number}题：</strong>
                             {q.points.map((p, i) => (
-                              <span key={i} style={{ display: "inline-block", padding: "1px 8px", borderRadius: 10, margin: "1px 2px", background: "#3b82f6", color: "#fff", fontSize: 12 }}>{p}</span>
+                              <span key={i} className="m-0.5 inline-block rounded-full bg-info px-2 py-px text-xs text-primary-foreground">{p}</span>
                             ))}
                           </div>
                         ))}
                       </div>
-                      <button className="ghost-button" type="button" onClick={() => {
+                      <Button variant="ghost" type="button" className="mt-2" onClick={() => {
                         if (exportCheck.cardId) { setPaperPanelCardId(exportCheck.cardId); setShowPaperPanel(true); }
-                      }} style={{ marginTop: 8 }}>编辑或重新分析</button>
+                      }}>编辑或重新分析</Button>
                     </div>
                   ) : (
                     <KnowledgeAnalysisInline cardId={exportCheck.cardId!}
@@ -2050,22 +2094,22 @@ function App() {
                   )}
                 </div>
               )}
-            </div>
+            </DialogBody>
 
-            {/* 底部按钮 */}
-            <div style={{ borderTop: "1px solid var(--line-soft)", padding: "12px 0 0", display: "flex", justifyContent: "space-between", gap: 8, flexShrink: 0 }}>
+            {/* 底部按钮：左「上一步」，右侧为取消 + 主操作 */}
+            <DialogFooter className="justify-between">
               <div>
                 {exportCheck.step !== "score" && (
-                  <button className="ghost-button" type="button" onClick={() => {
+                  <Button variant="ghost" type="button" onClick={() => {
                     const prev = exportCheck.step === "paper" ? "score" : "paper";
                     setExportCheck({ ...exportCheck, step: prev as "score" | "paper" });
-                  }}>← 上一步</button>
+                  }}>← 上一步</Button>
                 )}
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-              <button className="ghost-button" type="button" onClick={() => setExportCheck(null)}>取消</button>
+              <div className="flex gap-2">
+              <Button variant="ghost" type="button" onClick={() => setExportCheck(null)}>取消</Button>
               {exportCheck.step === "score" && (
-                <button className="primary-button" type="button" onClick={async () => {
+                <Button variant="primary" type="button" onClick={async () => {
                   const cardId = exportCheck.cardId;
                   if (cardId) {
                     const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string }>(`/api/cards/${cardId}/paper/info`).catch((): { has_original_paper?: number; filename?: string; mime_type?: string } => ({}));
@@ -2076,84 +2120,85 @@ function App() {
                   } else { setExportCheck({ ...exportCheck, step: "paper" }); }
                 }}>
                   确认分值 → 原卷检查
-                </button>
+                </Button>
               )}
               {exportCheck.step === "paper" && (
                 <>
                   {!exportCheck.paperInfo?.hasPaper && (
-                    <button className="ghost-button" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
+                    <Button variant="ghost" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
                       跳过 → 知识点检查
-                    </button>
+                    </Button>
                   )}
-                  <button className="primary-button" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
+                  <Button variant="primary" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
                     原卷 OK → 知识点检查
-                  </button>
+                  </Button>
                 </>
               )}
               {exportCheck.step === "knowledge" && exportCheck.knowledgeReady && (
-                <button className="primary-button" type="button" onClick={() => doFinalPdfExport(exportCheck.pdfUrl)}>
-                  <CheckCircle2 size={15} aria-hidden="true" /> 确认导出 PDF
-                </button>
+                <Button variant="primary" type="button" icon={<CheckCircle2 size={15} aria-hidden="true" />} onClick={() => doFinalPdfExport(exportCheck.pdfUrl)}>
+                  确认导出 PDF
+                </Button>
               )}
               </div>
-            </div>
-          </div>
-        </div>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {paperPreviewOpen && (
-        <div className="modal-backdrop" onClick={() => { setPaperPreviewOpen(null); setPaperZoom(1); }}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: "90vw", maxWidth: 900, maxHeight: "90vh", overflow: "auto", padding: 0 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-soft)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <h3 style={{ margin: 0, fontSize: 16 }}>原卷预览</h3>
+        <Dialog
+          open
+          onOpenChange={(next) => { if (!next) { setPaperPreviewOpen(null); setPaperZoom(1); } }}
+        >
+          <DialogContent size="lg" hideClose className="max-w-[900px] p-0">
+            <DialogHeader className="flex-row items-center justify-between py-3 pr-4">
+              <DialogTitle className="text-base">原卷预览</DialogTitle>
+              <div className="flex gap-1">
+                <Button variant="ghost" size="icon-sm" type="button" onClick={() => setPaperZoom(z => Math.max(0.25, z - 0.25))} title="缩小" aria-label="缩小">−</Button>
+                <Button variant="ghost" size="sm" type="button" onClick={() => setPaperZoom(1)} title="重置" className="tabular-nums">{Math.round(paperZoom * 100)}%</Button>
+                <Button variant="ghost" size="icon-sm" type="button" onClick={() => setPaperZoom(z => Math.min(3, z + 0.25))} title="放大" aria-label="放大">+</Button>
+                <Button variant="ghost" size="icon-sm" type="button" aria-label="关闭预览" onClick={() => { setPaperPreviewOpen(null); setPaperZoom(1); }}><X size={16} /></Button>
               </div>
-              <div style={{ display: "flex", gap: 4 }}>
-                <button className="ghost-button" type="button" onClick={() => setPaperZoom(z => Math.max(0.25, z - 0.25))} title="缩小">−</button>
-                <button className="ghost-button" type="button" onClick={() => setPaperZoom(1)} title="重置">{Math.round(paperZoom * 100)}%</button>
-                <button className="ghost-button" type="button" onClick={() => setPaperZoom(z => Math.min(3, z + 0.25))} title="放大">+</button>
-                <button className="modal-close" type="button" aria-label="关闭预览" onClick={() => { setPaperPreviewOpen(null); setPaperZoom(1); }}><X size={16} /></button>
-              </div>
-            </div>
-            <div style={{ padding: 16, textAlign: "center", overflow: "auto" }}>
+            </DialogHeader>
+            <DialogBody className="overflow-auto text-center">
               <img
                 src={mediaUrl(`/api/cards/${paperPreviewOpen}/paper?format=image`)}
                 alt="原卷"
-                style={{ maxWidth: `${paperZoom * 100}%`, maxHeight: `${paperZoom * 75}vh`, objectFit: "contain", transition: "max-width 0.15s, max-height 0.15s" }}
+                className="object-contain transition-[max-width,max-height] duration-(--px-dur-2) ease-standard"
+                /* 动态值：缩放倍率由 paperZoom state 实时计算，无法用固定工具类表达 */
+                style={{ maxWidth: `${paperZoom * 100}%`, maxHeight: `${paperZoom * 75}vh` }}
               />
-            </div>
-          </div>
-        </div>
+            </DialogBody>
+          </DialogContent>
+        </Dialog>
       )}
       {cardDeleteConflict && (
-        <div className="modal-backdrop" onClick={() => setCardDeleteConflict(null)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
-            <div className="modal-header">
-              <h2>确认删除答题卡</h2>
-              <button className="modal-close" type="button" onClick={() => setCardDeleteConflict(null)}>×</button>
-            </div>
-            <div className="modal-body">
-              <p style={{ marginTop: 0 }}>
+        <Dialog open onOpenChange={(next) => { if (!next) setCardDeleteConflict(null); }}>
+          <DialogContent size="sm" role="alertdialog" className="max-w-[460px]">
+            <DialogHeader>
+              <DialogTitle>确认删除答题卡</DialogTitle>
+            </DialogHeader>
+            <DialogBody>
+              <p className="mt-0 text-sm tabular-nums">
                 「{cardDeleteConflict.cardTitle}」已被 {cardDeleteConflict.referencedExamCount} 个考试引用。删除答题卡前需要先解除这些考试的关联。
               </p>
               {cardDeleteConflict.referencedExamNames.length > 0 && (
-                <ul style={{ margin: "8px 0 14px", paddingLeft: 20, color: "var(--muted)", fontSize: 13 }}>
+                <ul className="mt-2 mb-3.5 list-disc pl-5 text-sm text-muted-foreground">
                   {cardDeleteConflict.referencedExamNames.map((name) => <li key={name}>{name}</li>)}
                 </ul>
               )}
-              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
-                <input
-                  type="checkbox"
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
                   checked={cardDeleteConflict.deleteReferencedExams}
-                  onChange={(event) => setCardDeleteConflict({ ...cardDeleteConflict, deleteReferencedExams: event.target.checked })}
+                  onCheckedChange={(checked) => setCardDeleteConflict({ ...cardDeleteConflict, deleteReferencedExams: checked === true })}
                   disabled={isBusy}
                 />
                 同时删除这些考试及其成绩/扫描数据
               </label>
-            </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setCardDeleteConflict(null)} disabled={isBusy}>取消</button>
-              <button
-                className="primary-button"
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="ghost" type="button" onClick={() => setCardDeleteConflict(null)} disabled={isBusy}>取消</Button>
+              <Button
+                variant="destructive"
                 type="button"
                 disabled={isBusy}
                 onClick={async () => {
@@ -2166,39 +2211,37 @@ function App() {
                 }}
               >
                 {cardDeleteConflict.deleteReferencedExams ? "删除考试和答题卡" : "解绑考试并删除答题卡"}
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {examDeleteTarget && (
-        <div className="modal-backdrop" onClick={() => setExamDeleteTarget(null)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
-            <div className="modal-header">
-              <h2>确认删除考试</h2>
-              <button className="modal-close" type="button" onClick={() => setExamDeleteTarget(null)}>×</button>
-            </div>
-            <div className="modal-body">
-              <p style={{ marginTop: 0 }}>
+        <Dialog open onOpenChange={(next) => { if (!next) setExamDeleteTarget(null); }}>
+          <DialogContent size="sm" role="alertdialog" className="max-w-[460px]">
+            <DialogHeader>
+              <DialogTitle>确认删除考试</DialogTitle>
+            </DialogHeader>
+            <DialogBody>
+              <p className="mt-0 text-sm tabular-nums">
                 将删除 {examDeleteTarget.exams.length} 个考试，并解除它们与答题卡的关联。
               </p>
-              <ul style={{ margin: "8px 0 14px", paddingLeft: 20, color: "var(--muted)", fontSize: 13 }}>
+              <ul className="mt-2 mb-3.5 list-disc pl-5 text-sm text-muted-foreground">
                 {examDeleteTarget.exams.map((exam) => <li key={exam.id}>{exam.name}</li>)}
               </ul>
-              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
-                <input
-                  type="checkbox"
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
                   checked={examDeleteTarget.deleteLinkedCards}
-                  onChange={(event) => setExamDeleteTarget({ ...examDeleteTarget, deleteLinkedCards: event.target.checked })}
+                  onCheckedChange={(checked) => setExamDeleteTarget({ ...examDeleteTarget, deleteLinkedCards: checked === true })}
                   disabled={isBusy || !examDeleteTarget.exams.some((exam) => exam.card_id)}
                 />
                 同时删除关联答题卡
               </label>
-            </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setExamDeleteTarget(null)} disabled={isBusy}>取消</button>
-              <button
-                className="primary-button"
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="ghost" type="button" onClick={() => setExamDeleteTarget(null)} disabled={isBusy}>取消</Button>
+              <Button
+                variant="destructive"
                 type="button"
                 disabled={isBusy}
                 onClick={async () => {
@@ -2208,52 +2251,50 @@ function App() {
                 }}
               >
                 {examDeleteTarget.deleteLinkedCards ? "删除考试和答题卡" : "解绑答题卡并删除考试"}
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {groupDeleteTarget && (
-        <div className="modal-backdrop" onClick={() => setGroupDeleteTarget(null)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
-            <div className="modal-header">
-              <h2>确认删除大考</h2>
-              <button className="modal-close" type="button" onClick={() => setGroupDeleteTarget(null)}>×</button>
-            </div>
-            <div className="modal-body">
-              <p style={{ marginTop: 0 }}>
+        <Dialog open onOpenChange={(next) => { if (!next) setGroupDeleteTarget(null); }}>
+          <DialogContent size="sm" role="alertdialog" className="max-w-[460px]">
+            <DialogHeader>
+              <DialogTitle>确认删除大考</DialogTitle>
+            </DialogHeader>
+            <DialogBody>
+              <p className="mt-0 text-sm tabular-nums">
                 将删除大考「<strong>{groupDeleteTarget.groupName}</strong>」。
                 该大考关联了 <strong>{groupDeleteTarget.memberCount}</strong> 场考试。
               </p>
-              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13, cursor: "pointer" }}>
-                <input
-                  type="checkbox"
+              <label className="flex cursor-pointer items-start gap-2 text-sm">
+                <Checkbox
                   checked={groupDeleteTarget.deleteExams}
-                  onChange={(event) => setGroupDeleteTarget({ ...groupDeleteTarget, deleteExams: event.target.checked })}
+                  onCheckedChange={(checked) => setGroupDeleteTarget({ ...groupDeleteTarget, deleteExams: checked === true })}
                   disabled={isBusy}
-                  style={{ marginTop: 2 }}
+                  className="mt-0.5"
                 />
                 <span>
-                  <strong>同时删除这 {groupDeleteTarget.memberCount} 场关联考试</strong>
+                  <strong className="tabular-nums">同时删除这 {groupDeleteTarget.memberCount} 场关联考试</strong>
                   <br />
-                  <span style={{ color: "var(--muted)", fontSize: 11 }}>
+                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
                     <AlertTriangle size={15} aria-hidden="true" /> 考试的成绩、扫描数据将被永久删除，不可恢复
                   </span>
                 </span>
               </label>
               {!groupDeleteTarget.deleteExams && (
-                <p style={{ fontSize: 12, color: "var(--muted)", marginBottom: 0, marginTop: 8 }}>
+                <p className="mt-2 mb-0 text-xs text-muted-foreground">
                   取消勾选则仅删除大考组，关联的考试保留不变。
                 </p>
               )}
-            </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setGroupDeleteTarget(null)} disabled={isBusy}>取消</button>
-              <button
-                className="primary-button"
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="ghost" type="button" onClick={() => setGroupDeleteTarget(null)} disabled={isBusy}>取消</Button>
+              <Button
+                variant="destructive"
                 type="button"
                 disabled={isBusy}
-                style={{ background: "var(--brand)" }}
+                className="tabular-nums"
                 onClick={async () => {
                   const target = groupDeleteTarget;
                   try {
@@ -2270,10 +2311,10 @@ function App() {
                 }}
               >
                 {groupDeleteTarget.deleteExams ? `删除大考和 ${groupDeleteTarget.memberCount} 场考试` : "仅删除大考"}
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {assignedFormulaExamId != null && (
         <AssignedFormulaModal
@@ -2297,26 +2338,30 @@ function App() {
         />
       )}
       {blocker.state === "blocked" && (
-        <div className="modal-overlay" onClick={() => blocker.reset?.()}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ margin: "0 0 8px" }}>未保存的更改</h3>
-            <p style={{ margin: "0 0 16px", color: "var(--muted)" }}>
-              答题卡设计页有未保存的修改，离开将丢失。确定离开吗？
-            </p>
-            <div className="modal-footer" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button className="ghost-button" type="button" onClick={() => blocker.reset?.()}>留在此页</button>
-              <button
-                className="primary-button"
+        <Dialog open onOpenChange={(next) => { if (!next) blocker.reset?.(); }}>
+          <DialogContent size="sm" role="alertdialog" hideClose>
+            <DialogHeader>
+              <DialogTitle>未保存的更改</DialogTitle>
+            </DialogHeader>
+            <DialogBody>
+              <p className="m-0 text-sm text-muted-foreground">
+                答题卡设计页有未保存的修改，离开将丢失。确定离开吗？
+              </p>
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="ghost" type="button" onClick={() => blocker.reset?.()}>留在此页</Button>
+              <Button
+                variant="primary"
                 type="button"
                 onClick={async () => {
                   // 与 switchMode 行为对齐：离开前先尽力落盘，避免静默丢弃
                   // dirty 的答题卡编辑；落盘失败也不拦截 —— 用户已明确选择离开。
                   try { await flushPendingCardSave("switch"); } catch { /* 忽略落盘失败，仍然离开 */ }
                   blocker.proceed?.();
-                }}>离开</button>
-            </div>
-          </div>
-        </div>
+                }}>离开</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </WorkspaceProvider>
   );
@@ -2366,9 +2411,9 @@ function GradingResults({
             {result.rows.length} 张答题卡 / 待复核 {totalReview} 题 / 异常 {totalIssues} 处
           </p>
         </div>
-        <button className="primary-button" type="button" onClick={onDownloadCsv} disabled={result.rows.length === 0}>
-          <Download size={17} /> CSV
-        </button>
+        <Button variant="primary" type="button" icon={<Download size={17} />} onClick={onDownloadCsv} disabled={result.rows.length === 0}>
+          CSV
+        </Button>
       </div>
       <div className="score-table">
         <div className="score-table-head">
@@ -2396,9 +2441,9 @@ function GradingResults({
               <span>
                 {row.previewUrl ? (
                   <button
-                    className="score-preview-link"
+                    type="button"
+                    className="cursor-pointer border-0 bg-transparent p-0 text-xs text-primary underline underline-offset-2"
                     onClick={(event) => { event.stopPropagation(); openGradingPreview(row); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--brand)", fontSize: 12, padding: 0, textDecoration: "underline", textUnderlineOffset: 2 }}
                   >
                     预览
                   </button>

@@ -1,11 +1,10 @@
-export { Button } from "./Button";
-export type { ButtonProps } from "./Button";
-export { Modal } from "./Modal";
-export type { ModalProps } from "./Modal";
-export { SegmentedControl } from "./SegmentedControl";
-export type { SegItem, SegmentedControlProps } from "./SegmentedControl";
-export { Input, Textarea, Field } from "./Input";
-export { Panel, Card } from "./Panel";
-export { Table } from "./Table";
-export { Spinner } from "./Spinner";
-export { LoadingScreen } from "./LoadingScreen";
+/**
+ * components/ui —— 兼容桶（P5 清理后）
+ *
+ * 旧的 PascalCase 组件（Button/Modal/SegmentedControl/Input/Panel/Table/
+ * DataCard/Spinner/LoadingScreen）依赖 styles.css 的 legacy 类，已于 P5 删除。
+ * 本文件仅作为过渡期的转发入口，唯一事实源是 `components/ui/v2`。
+ *
+ * 新代码请直接 `import { … } from "…/components/ui/v2"`，不要经由本文件。
+ */
+export * from "./v2";

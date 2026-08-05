@@ -7,7 +7,7 @@
  *  · 颜色只说语义（bg-primary / text-muted-foreground），禁写十六进制
  *  · 图标只用 lucide-react
  *
- * 旧 components/ui/*（PascalCase）在 P5 之前保留，两套并存互不影响。
+ * P5 已完成：旧 components/ui/*（PascalCase）全部删除，本目录是唯一组件事实源。
  */
 
 export { Button, buttonVariants, type ButtonProps } from "./button";
@@ -146,6 +146,12 @@ export {
   type ColumnDef,
   type SortingState,
 } from "./data-table";
+export {
+  DataCard,
+  DataCardList,
+  type DataCardProps,
+  type DataCardRow,
+} from "./data-card";
 export {
   EmptyState,
   ErrorState,

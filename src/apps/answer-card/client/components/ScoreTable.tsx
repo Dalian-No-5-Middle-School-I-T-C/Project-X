@@ -3,12 +3,13 @@ import { Minus, Search } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { cn } from "../lib/utils";
-import { DataCard } from "./ui/DataCard";
 import { formatScore } from "../util/format";
 import type { ScoreTableRow, ScoreDisplayMode } from "../../../../shared/types";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
 import {
   Button,
+  DataCard,
+  DataCardList,
   DataTable,
   EmptyState,
   ErrorState,
@@ -25,8 +26,8 @@ import {
  *     初始排序键仍随 `classId` 走班排/年排，靠 `key` 重挂载复位）
  *  · 硬编码绿 / 红 名次涨跌色 → `text-success-foreground` / `text-destructive-fg`
  *  · 搜索框、预览按钮 → v2 `Input` / `Button`
- *  · 移动端 `DataCard` 分支保留（CardSelectPage / ExamManagePage 仍在用该组件），
- *    仅把内联样式换成语义类
+ *  · 移动端卡片分支改用 v2 `DataCard` / `DataCardList`（P5：旧
+ *    components/ui/DataCard.tsx 依赖 styles.css 的 .data-card-* legacy 类，已删除）
  */
 
 interface Props {
@@ -298,7 +299,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
 
       {/* Table */}
       {isMobile ? (
-        <div className="data-card-list">
+        <DataCardList>
           {filtered.map((row, i) => (
             <DataCard
               key={row.studentId}
@@ -339,7 +340,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
               onClick={onRowClick ? () => onRowClick(row.studentId, row.studentName, row.studentNumber) : undefined}
             />
           ))}
-        </div>
+        </DataCardList>
       ) : (
         <DataTable
           key={classId ?? "__all__"}
