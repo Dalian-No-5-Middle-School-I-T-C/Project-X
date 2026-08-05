@@ -41,6 +41,7 @@ import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
 import { BeianFooter } from "./components/BeianFooter";
+import { NotFound } from "./components/NotFound";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
@@ -68,6 +69,7 @@ import {
   SheetHeader,
   SheetTitle,
   SheetBody,
+  Spinner,
   TooltipProvider,
   Toaster,
   type SaveState,
@@ -89,8 +91,9 @@ const PaperUploadPanel = lazy(() => import("./components/PaperUploadPanel").then
 
 // 懒加载路由切换时的居中加载指示（与 loading 态文案一致）
 const routeFallback = (
-  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "40vh" }}>
-    <p className="empty-text">正在加载...</p>
+  <div className="flex min-h-[40vh] items-center justify-center gap-2 text-muted-foreground">
+    <Spinner size={18} />
+    <span className="text-sm">正在加载...</span>
   </div>
 );
 import type {
@@ -1877,7 +1880,7 @@ function App() {
                 <Route path="/permissions" element={canOpenMode("account") ? <Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/guide" element={canOpenMode("home") ? <Suspense fallback={routeFallback}><GuideRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/global-settings" element={canOpenMode("global-settings") ? <Suspense fallback={routeFallback}><GlobalSettingsRoutePage onBack={() => void switchMode("home")} /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
-                <Route path="*" element={<Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="*" element={<NotFound to={MODE_PATH[fallbackMode]} />} />
               </Routes>
             </AppContent>
           </AppContentRow>
