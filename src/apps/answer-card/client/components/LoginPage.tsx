@@ -3,7 +3,7 @@ import { BookOpen, LogIn, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { BeianFooter } from "./BeianFooter";
 import { UserGuideModal } from "./UserGuideModal";
-import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Field, Input } from "./ui/v2";
+import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, ControlRow, Field, Input, Switch } from "./ui/v2";
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -59,7 +59,11 @@ export function LoginPage() {
               <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="密码" autoComplete="current-password" disabled={busy} />
             </Field>
             <div className="flex items-center justify-between gap-3 text-sm text-secondary-foreground">
-              <label className="flex cursor-pointer select-none items-center gap-2"><input className="size-4 accent-[var(--px-accent-bg)]" type="checkbox" checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} disabled={busy} />记住登录</label>
+              <ControlRow
+                control={<Switch id="remember-me" checked={rememberMe} onCheckedChange={setRememberMe} disabled={busy} />}
+                label="记住登录"
+                htmlFor="remember-me"
+              />
               <button type="button" className="text-accent-foreground hover:underline" onClick={() => setError("请联系管理员重置密码")} disabled={busy}>忘记密码？</button>
             </div>
             {error && <p className="text-sm text-destructive-fg">{error}</p>}
