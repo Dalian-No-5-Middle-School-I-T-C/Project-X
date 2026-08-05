@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Plus, RefreshCw, Search, Trash2, Upload, UserMinus, UserPlus, X } from "lucide-react";
+import { Download, Plus, RefreshCw, Search, Trash2, Upload, UserMinus, UserPlus } from "lucide-react";
 import { fetchJson, authFetch } from "../auth/api";
 import type { ClassRecord, ClassStudent, GradeRecord, UserListItem, UsersListResponse } from "../auth/types";
+import { cn } from "../lib/utils";
+import {
+  Button,
+  Input,
+  Field,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogBody,
+  DialogFooter,
+} from "./ui/v2";
 import { ImportModal } from "./ImportModal";
 
 // ── CSV / 制表符解析工具 ───────────────────────────────────
@@ -489,136 +501,172 @@ export function ClassManagement() {
   }
 
   return (
-    <div className="account-panel class-management">
-      <div className="account-panel-header">
-        <strong>学生管理</strong>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="ghost-button" type="button" onClick={() => void loadGrades()} disabled={busy}>
-            <RefreshCw size={16} /> 刷新
-          </button>
-          <button className="ghost-button" type="button" onClick={() => { setShowNewStudentGlobal(true); setNewStudentName(""); setNewStudentNumber(""); }} disabled={busy}>
-            <UserPlus size={16} /> 新建学生
-          </button>
-          <button className="ghost-button" type="button" onClick={() => setShowCsvImport(true)} disabled={busy}>
-            <Download size={16} /> 导入学生
-          </button>
-          <button className="primary-button" type="button" onClick={handleExportStudents}>
-            <Upload size={16} /> 导出学生账密
-          </button>
+    <div className="flex flex-col gap-4">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-foreground">学生管理</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" icon={<RefreshCw size={16} />} onClick={() => void loadGrades()} disabled={busy}>
+            刷新
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            icon={<UserPlus size={16} />}
+            onClick={() => { setShowNewStudentGlobal(true); setNewStudentName(""); setNewStudentNumber(""); }}
+            disabled={busy}
+          >
+            新建学生
+          </Button>
+          <Button variant="outline" size="sm" icon={<Download size={16} />} onClick={() => setShowCsvImport(true)} disabled={busy}>
+            导入学生
+          </Button>
+          <Button variant="primary" size="sm" icon={<Upload size={16} />} onClick={handleExportStudents}>
+            导出学生账密
+          </Button>
         </div>
-      </div>
+      </header>
 
-      {error && <p className="login-error">{error}</p>}
+      {error && <p className="text-sm text-destructive-fg">{error}</p>}
 
-      <div className="class-layout">
-        <section className="class-column">
-          <div className="class-column-title">年级</div>
-          <div className="class-add-row">
-            <input placeholder="新年级名称" value={newGradeName} onChange={(e) => setNewGradeName(e.target.value)} />
-            <button className="primary-button" type="button" onClick={() => void createGrade()}>
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        {/* 年级 */}
+        <section className="flex flex-col gap-3 rounded-lg border border-border-subtle bg-card p-3">
+          <h3 className="text-sm font-semibold text-foreground">年级</h3>
+          <div className="flex items-center gap-2">
+            <Input placeholder="新年级名称" value={newGradeName} onChange={(e) => setNewGradeName(e.target.value)} />
+            <Button variant="primary" size="icon-sm" onClick={() => void createGrade()}>
               <Plus size={14} />
-            </button>
+            </Button>
           </div>
-          <div className="class-list">
+          <div className="flex flex-col gap-1">
             {grades.map((g) => (
-              <div key={g.id} className={`class-list-item ${selectedGradeId === g.id ? "active" : ""}`}>
-                <button type="button" onClick={() => setSelectedGradeId(g.id)}>{g.name}</button>
-                <button type="button" className="icon-btn danger" title="删除年级" onClick={() => void deleteGrade(g.id, g.name)} disabled={busy}>
-                  <Trash2 size={13} />
+              <div
+                key={g.id}
+                className={cn(
+                  "flex items-center justify-between gap-2 rounded-md border px-3 py-2",
+                  selectedGradeId === g.id ? "border-primary bg-accent" : "border-transparent hover:bg-secondary"
+                )}
+              >
+                <button type="button" onClick={() => setSelectedGradeId(g.id)} className="min-w-0 flex-1 text-left text-sm font-medium text-foreground">
+                  {g.name}
                 </button>
+                <Button variant="ghost" size="icon-sm" title="删除年级" onClick={() => void deleteGrade(g.id, g.name)} disabled={busy}>
+                  <Trash2 size={14} />
+                </Button>
               </div>
             ))}
-            {grades.length === 0 && <p className="empty-text">暂无年级</p>}
+            {grades.length === 0 && <p className="px-2 py-1 text-sm text-muted-foreground">暂无年级</p>}
           </div>
         </section>
 
-        <section className="class-column">
-          <div className="class-column-title">班级</div>
-          <div className="class-add-row">
-            <input placeholder="新班级名称" value={newClassName} onChange={(e) => setNewClassName(e.target.value)} disabled={!selectedGradeId} />
-            <button className="primary-button" type="button" onClick={() => void createClass()} disabled={!selectedGradeId}>
+        {/* 班级 */}
+        <section className="flex flex-col gap-3 rounded-lg border border-border-subtle bg-card p-3">
+          <h3 className="text-sm font-semibold text-foreground">班级</h3>
+          <div className="flex items-center gap-2">
+            <Input
+              placeholder="新班级名称"
+              value={newClassName}
+              onChange={(e) => setNewClassName(e.target.value)}
+              disabled={!selectedGradeId}
+            />
+            <Button variant="primary" size="icon-sm" onClick={() => void createClass()} disabled={!selectedGradeId}>
               <Plus size={14} />
-            </button>
+            </Button>
           </div>
-          <div className="class-list">
+          <div className="flex flex-col gap-1">
             {classes.map((c) => (
-              <div key={c.id} className={`class-list-item ${selectedClassId === c.id ? "active" : ""}`}>
-                <button type="button" onClick={() => setSelectedClassId(c.id)}>
-                  {c.name}
-                  <small>{c.student_count ?? 0} 人</small>
+              <div
+                key={c.id}
+                className={cn(
+                  "flex items-center justify-between gap-2 rounded-md border px-3 py-2",
+                  selectedClassId === c.id ? "border-primary bg-accent" : "border-transparent hover:bg-secondary"
+                )}
+              >
+                <button type="button" onClick={() => setSelectedClassId(c.id)} className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left text-sm font-medium text-foreground">
+                  <span className="truncate">{c.name}</span>
+                  <small className="shrink-0 text-xs text-muted-foreground">{c.student_count ?? 0} 人</small>
                 </button>
-                <button type="button" className="icon-btn danger" title="删除班级" onClick={() => void deleteClass(c.id, c.name)} disabled={busy}>
-                  <Trash2 size={13} />
-                </button>
+                <Button variant="ghost" size="icon-sm" title="删除班级" onClick={() => void deleteClass(c.id, c.name)} disabled={busy}>
+                  <Trash2 size={14} />
+                </Button>
               </div>
             ))}
-            {classes.length === 0 && <p className="empty-text">该年级暂无班级</p>}
+            {classes.length === 0 && <p className="px-2 py-1 text-sm text-muted-foreground">该年级暂无班级</p>}
           </div>
         </section>
 
-        <section className="class-column roster-column">
-          <div className="class-column-title">花名册</div>
+        {/* 花名册 */}
+        <section className="flex min-h-0 flex-col gap-3 rounded-lg border border-border-subtle bg-card p-3">
+          <h3 className="text-sm font-semibold text-foreground">花名册</h3>
           {selectedClassId ? (
             <>
               {/* 搜索已有学生 */}
-              <div className="class-add-row">
-                <input
+              <div className="flex items-center gap-2">
+                <Input
                   placeholder="搜索已有学生学号/姓名"
                   value={studentSearch}
                   onChange={(e) => setStudentSearch(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && void searchStudents()}
                   disabled={busy}
                 />
-                <button className="ghost-button" type="button" onClick={() => void searchStudents()} disabled={busy}>
+                <Button variant="outline" size="icon-sm" onClick={() => void searchStudents()} disabled={busy} aria-label="搜索">
                   <Search size={14} />
-                </button>
+                </Button>
               </div>
               {studentResults.length > 0 && (
-                <div className="student-search-results">
+                <div className="flex flex-col gap-1.5">
                   {studentResults.map((s) => (
-                    <button key={s.id} type="button" className="student-search-item" onClick={() => void addStudent(s.id)} disabled={busy}>
+                    <button
+                      key={s.id}
+                      type="button"
+                      className="rounded-md border border-border-subtle px-3 py-2 text-left text-sm text-foreground hover:bg-secondary"
+                      onClick={() => void addStudent(s.id)}
+                      disabled={busy}
+                    >
                       {s.name} ({s.student_number ?? s.username})
                     </button>
                   ))}
                 </div>
               )}
-              {/* 快捷新建学生（与年级/班级一致的输入+加号交互） */}
-              <div className="class-add-row">
-                <input
+              {/* 快捷新建学生 */}
+              <div className="flex items-center gap-2">
+                <Input
                   placeholder="学号"
                   value={newStudentNumber}
                   onChange={(e) => setNewStudentNumber(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && void handleCreateStudent()}
                   disabled={busy}
-                  style={{ flex: 1 }}
+                  className="flex-1"
                 />
-                <input
+                <Input
                   placeholder="姓名"
                   value={newStudentName}
                   onChange={(e) => setNewStudentName(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && void handleCreateStudent()}
                   disabled={busy}
-                  style={{ flex: 1 }}
+                  className="flex-1"
                 />
-                <button className="primary-button" type="button" onClick={() => void handleCreateStudent()} disabled={busy || !newStudentName.trim() || !newStudentNumber.trim()}>
+                <Button variant="primary" size="icon-sm" onClick={() => void handleCreateStudent()} disabled={busy || !newStudentName.trim() || !newStudentNumber.trim()}>
                   <Plus size={14} />
-                </button>
+                </Button>
               </div>
-              <div className="roster-list">
+              <div className="flex flex-col gap-1">
                 {roster.map((s) => (
-                  <div key={s.student_id} className="roster-item">
-                    <span>{s.name}</span>
-                    <small>{s.student_number ?? s.username}</small>
-                    <button type="button" className="icon-btn danger" title="移出班级" onClick={() => void removeStudent(s.student_id, s.name)} disabled={busy}>
-                      <UserMinus size={13} />
-                    </button>
+                  <div key={s.student_id} className="flex items-center justify-between gap-2 rounded-md border border-border-subtle px-3 py-2">
+                    <div className="min-w-0">
+                      <div className="text-sm text-foreground">{s.name}</div>
+                      <small className="text-xs text-muted-foreground">{s.student_number ?? s.username}</small>
+                    </div>
+                    <Button variant="ghost" size="icon-sm" title="移出班级" onClick={() => void removeStudent(s.student_id, s.name)} disabled={busy}>
+                      <UserMinus size={14} />
+                    </Button>
                   </div>
                 ))}
-                {roster.length === 0 && <p className="empty-text">班级暂无学生</p>}
+                {roster.length === 0 && <p className="px-2 py-1 text-sm text-muted-foreground">班级暂无学生</p>}
               </div>
             </>
           ) : (
-            <p className="empty-text">请先选择班级</p>
+            <p className="px-2 py-1 text-sm text-muted-foreground">请先选择班级</p>
           )}
         </section>
       </div>
@@ -634,32 +682,44 @@ export function ClassManagement() {
       )}
 
       {/* ── 全局新建学生弹窗（标题栏入口） ────────────────── */}
-      {showNewStudentGlobal && (
-        <div className="modal-backdrop" onClick={() => setShowNewStudentGlobal(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 400, maxWidth: "90vw" }}>
-            <div className="modal-header">
-              <h2>新建学生</h2>
-              <button className="modal-close" aria-label="关闭新建学生" onClick={() => setShowNewStudentGlobal(false)}><X size={16} /></button>
-            </div>
-            <div className="modal-body">
-              <label>
-                学号
-                <input value={newStudentNumber} onChange={(e) => setNewStudentNumber(e.target.value)} placeholder="学号（默认作为用户名和初始密码）" disabled={busy} />
-              </label>
-              <label>
-                姓名
-                <input value={newStudentName} onChange={(e) => setNewStudentName(e.target.value)} placeholder="学生姓名" disabled={busy} />
-              </label>
-            </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setShowNewStudentGlobal(false)}>取消</button>
-              <button className="primary-button" type="button" onClick={() => void handleGlobalCreateStudent()} disabled={busy || !newStudentName.trim() || !newStudentNumber.trim()}>
-                创建学生
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <Dialog
+        open={showNewStudentGlobal}
+        onOpenChange={(open) => { if (!open) setShowNewStudentGlobal(false); }}
+      >
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>新建学生</DialogTitle>
+          </DialogHeader>
+          <DialogBody className="flex flex-col gap-3">
+            <Field label="学号">
+              <Input
+                value={newStudentNumber}
+                onChange={(e) => setNewStudentNumber(e.target.value)}
+                placeholder="学号（默认作为用户名和初始密码）"
+                disabled={busy}
+              />
+            </Field>
+            <Field label="姓名">
+              <Input
+                value={newStudentName}
+                onChange={(e) => setNewStudentName(e.target.value)}
+                placeholder="学生姓名"
+                disabled={busy}
+              />
+            </Field>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowNewStudentGlobal(false)}>取消</Button>
+            <Button
+              variant="primary"
+              onClick={() => void handleGlobalCreateStudent()}
+              disabled={busy || !newStudentName.trim() || !newStudentNumber.trim()}
+            >
+              创建学生
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

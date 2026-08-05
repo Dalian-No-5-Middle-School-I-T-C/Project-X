@@ -5,10 +5,8 @@ import { AccountManagement } from "../components/AccountManagement";
  */
 export function AccountRoutePage() {
   return (
-    <div className="main-grid account-grid">
-      <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-        <AccountManagement />
-      </section>
+    <div className="mx-auto w-full max-w-[1200px] px-6 py-6 lg:px-8">
+      <AccountManagement />
     </div>
   );
 }

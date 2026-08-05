@@ -3,8 +3,29 @@
  * Accessible via the Account menu when logged in as admin.
  */
 import { useEffect, useState } from "react";
+import { Check, Save, Shield, Trash2, X } from "lucide-react";
 import { fetchJson } from "../auth/api";
-import { X, Save, Shield } from "lucide-react";
+import {
+  Button,
+  Checkbox,
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+  Card,
+  CardContent,
+  TableWrap,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from "./ui/v2";
+
+/** Radix Select 不允许空字符串 value，用哨兵值表达「未选择」 */
+const NONE = "__none__";
 
 interface Permission {
   id: number;
@@ -116,117 +137,131 @@ export function PermissionManager({ onBack }: Props) {
   }
 
   return (
-    <div style={{ padding: 24 }}>
-      <div className="account-panel-header">
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Shield size={20} />
-          <strong>教师权限管理</strong>
+    <div className="flex flex-col gap-4 p-6">
+      <header className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <Shield size={20} className="text-foreground" />
+          <strong className="text-lg font-semibold text-foreground">教师权限管理</strong>
         </div>
-        <button className="ghost-button" type="button" onClick={onBack}>
-          <X size={16} /> 返回
-        </button>
-      </div>
+        <Button variant="outline" size="sm" icon={<X size={16} />} onClick={onBack}>
+          返回
+        </Button>
+      </header>
 
-      {error && <div className="login-error" style={{ marginBottom: 12 }}>{error}</div>}
+      {error && <p className="text-sm text-destructive-fg">{error}</p>}
 
       {/* Permission editor */}
-      <div className="overview-info-card" style={{ padding: 16, marginBottom: 16 }}>
-        <div className="panel-title" style={{ marginBottom: 12 }}>
-          {editingId ? "编辑权限" : "新增权限"}
-        </div>
-        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13 }}>
-            <span style={{ color: "var(--text-secondary)" }}>教师</span>
-            <select
-              value={selectedTeacher}
-              onChange={(e) => setSelectedTeacher(Number(e.target.value))}
-              style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--line-strong)", minWidth: 140 }}
-            >
-              <option value={0}>选择教师...</option>
-              {teachers.map((t) => (
-                <option key={t.id} value={t.id}>{t.name} ({t.teacher_role || "教师"})</option>
-              ))}
-            </select>
-          </label>
-          <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13 }}>
-            <span style={{ color: "var(--text-secondary)" }}>年级 (空=全部)</span>
-            <select
-              value={selectedGrade ?? ""}
-              onChange={(e) => setSelectedGrade(e.target.value ? Number(e.target.value) : null)}
-              style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--line-strong)", minWidth: 120 }}
-            >
-              <option value="">全部年级</option>
-              {grades.map((g) => (
-                <option key={g.id} value={g.id}>{g.name}</option>
-              ))}
-            </select>
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-            <input type="checkbox" checked={canScores} onChange={(e) => setCanScores(e.target.checked)} />
-            查看成绩
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-            <input type="checkbox" checked={canCharts} onChange={(e) => setCanCharts(e.target.checked)} />
-            查看图表
-          </label>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-            <input type="checkbox" checked={canStudents} onChange={(e) => setCanStudents(e.target.checked)} />
-            查看学生
-          </label>
-          <button className="primary-button" onClick={() => void handleSave()} disabled={!selectedTeacher}>
-            <Save size={14} /> {editingId ? "更新" : "添加"}
-          </button>
-          {editingId && (
-            <button className="ghost-button" onClick={() => { setEditingId(null); setSelectedTeacher(0); setSelectedGrade(null); }}>
-              取消
-            </button>
-          )}
-        </div>
-      </div>
+      <Card>
+        <CardContent className="flex flex-col gap-3">
+          <h3 className="text-sm font-semibold text-foreground">{editingId ? "编辑权限" : "新增权限"}</h3>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted-foreground">教师</span>
+              <Select
+                value={selectedTeacher ? String(selectedTeacher) : NONE}
+                onValueChange={(v) => setSelectedTeacher(v === NONE ? 0 : Number(v))}
+              >
+                <SelectTrigger className="min-w-[140px]">
+                  <SelectValue placeholder="选择教师..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>选择教师...</SelectItem>
+                  {teachers.map((t) => (
+                    <SelectItem key={t.id} value={String(t.id)}>{t.name} ({t.teacher_role || "教师"})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted-foreground">年级 (空=全部)</span>
+              <Select
+                value={selectedGrade != null ? String(selectedGrade) : NONE}
+                onValueChange={(v) => setSelectedGrade(v === NONE ? null : Number(v))}
+              >
+                <SelectTrigger className="min-w-[120px]">
+                  <SelectValue placeholder="全部年级" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>全部年级</SelectItem>
+                  {grades.map((g) => (
+                    <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-foreground">
+              <Checkbox checked={canScores} onCheckedChange={(c) => setCanScores(c === true)} />
+              查看成绩
+            </label>
+            <label className="flex items-center gap-2 text-sm text-foreground">
+              <Checkbox checked={canCharts} onCheckedChange={(c) => setCanCharts(c === true)} />
+              查看图表
+            </label>
+            <label className="flex items-center gap-2 text-sm text-foreground">
+              <Checkbox checked={canStudents} onCheckedChange={(c) => setCanStudents(c === true)} />
+              查看学生
+            </label>
+            <Button variant="primary" size="sm" icon={<Save size={14} />} onClick={() => void handleSave()} disabled={!selectedTeacher}>
+              {editingId ? "更新" : "添加"}
+            </Button>
+            {editingId && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setEditingId(null); setSelectedTeacher(0); setSelectedGrade(null); }}
+              >
+                取消
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Permissions list */}
       {loading ? (
-        <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>加载中...</div>
+        <p className="py-10 text-center text-sm text-muted-foreground">加载中...</p>
       ) : permissions.length === 0 ? (
-        <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>暂无权限设置。默认教师可见所教班级的全部数据。</div>
+        <p className="py-10 text-center text-sm text-muted-foreground">暂无权限设置。默认教师可见所教班级的全部数据。</p>
       ) : (
-        <div className="exam-list-table" style={{ borderRadius: 8, overflow: "hidden" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead>
-              <tr style={{ background: "var(--surface-soft)", textAlign: "left" }}>
-                <th style={{ padding: "8px 12px" }}>教师</th>
-                <th style={{ padding: "8px 12px" }}>角色</th>
-                <th style={{ padding: "8px 12px" }}>年级</th>
-                <th style={{ padding: "8px 12px", textAlign: "center" }}>成绩</th>
-                <th style={{ padding: "8px 12px", textAlign: "center" }}>图表</th>
-                <th style={{ padding: "8px 12px", textAlign: "center" }}>学生</th>
-                <th style={{ padding: "8px 12px" }}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
+        <TableWrap className="rounded-lg border border-border-subtle">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>教师</TableHead>
+                <TableHead>角色</TableHead>
+                <TableHead>年级</TableHead>
+                <TableHead className="text-center">成绩</TableHead>
+                <TableHead className="text-center">图表</TableHead>
+                <TableHead className="text-center">学生</TableHead>
+                <TableHead>操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {permissions.map((p) => (
-                <tr key={p.id} style={{ borderTop: "1px solid var(--line)" }}>
-                  <td style={{ padding: "8px 12px", fontWeight: 500 }}>{p.teacher_name}</td>
-                  <td style={{ padding: "8px 12px", color: "var(--text-secondary)" }}>{p.teacher_role || "教师"}</td>
-                  <td style={{ padding: "8px 12px", color: "var(--text-secondary)" }}>{p.grade_name || "全部"}</td>
-                  <td style={{ padding: "8px 12px", textAlign: "center", color: p.can_view_scores ? "#639922" : "#E24B4A" }}>
-                    {p.can_view_scores ? "✓" : "✗"}
-                  </td>
-                  <td style={{ padding: "8px 12px", textAlign: "center", color: p.can_view_charts ? "#639922" : "#E24B4A" }}>
-                    {p.can_view_charts ? "✓" : "✗"}
-                  </td>
-                  <td style={{ padding: "8px 12px", textAlign: "center", color: p.can_view_students ? "#639922" : "#E24B4A" }}>
-                    {p.can_view_students ? "✓" : "✗"}
-                  </td>
-                  <td style={{ padding: "8px 12px" }}>
-                    <button className="ghost-button" onClick={() => editPermission(p)} style={{ fontSize: 12, marginRight: 4 }}>编辑</button>
-                    <button className="ghost-button" onClick={() => void handleDelete(p.id)} style={{ fontSize: 12, color: "#E24B4A" }}>删除</button>
-                  </td>
-                </tr>
+                <TableRow key={p.id}>
+                  <TableCell className="font-medium">{p.teacher_name}</TableCell>
+                  <TableCell className="text-muted-foreground">{p.teacher_role || "教师"}</TableCell>
+                  <TableCell className="text-muted-foreground">{p.grade_name || "全部"}</TableCell>
+                  <TableCell className="text-center">
+                    {p.can_view_scores ? <Check size={14} className="mx-auto text-foreground" /> : <X size={14} className="mx-auto text-muted-foreground" />}
+                  </TableCell>
+                  <TableCell className="text-center">
+                    {p.can_view_charts ? <Check size={14} className="mx-auto text-foreground" /> : <X size={14} className="mx-auto text-muted-foreground" />}
+                  </TableCell>
+                  <TableCell className="text-center">
+                    {p.can_view_students ? <Check size={14} className="mx-auto text-foreground" /> : <X size={14} className="mx-auto text-muted-foreground" />}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center justify-end gap-1">
+                      <Button variant="ghost" size="sm" onClick={() => editPermission(p)}>编辑</Button>
+                      <Button variant="ghost" size="sm" icon={<Trash2 size={14} />} onClick={() => void handleDelete(p.id)}>删除</Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </TableBody>
+          </Table>
+        </TableWrap>
       )}
     </div>
   );

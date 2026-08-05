@@ -2,22 +2,23 @@ import { ArrowLeft, BookOpen } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import userGuideMarkdown from "../../../../../user guide/Project-X用户使用说明.md?raw";
+import { Button } from "./ui/v2";
 
 export function UserGuidePage({ onBack, embedded }: { onBack?: () => void; embedded?: boolean }) {
   return (
-    <div className="user-guide-page">
+    <div className="flex flex-col gap-4">
       {!embedded && (
-        <div className="account-panel-header">
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <BookOpen size={20} />
-            <strong>Project-X 用户使用说明</strong>
+        <header className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <BookOpen size={20} className="text-foreground" />
+            <strong className="text-lg font-semibold text-foreground">Project-X 用户使用说明</strong>
           </div>
           {onBack && (
-            <button className="ghost-button" type="button" onClick={onBack}>
-              <ArrowLeft size={16} /> 返回
-            </button>
+            <Button variant="outline" size="sm" icon={<ArrowLeft size={16} />} onClick={onBack}>
+              返回
+            </Button>
           )}
-        </div>
+        </header>
       )}
       <article className="user-guide-content markdown-body">
         <ReactMarkdown

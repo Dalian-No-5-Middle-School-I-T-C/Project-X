@@ -1,6 +1,20 @@
-import React, { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import { cn } from "../lib/utils";
+import {
+  Button,
+  Input,
+  Field,
+  Switch,
+  ControlRow,
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+  Card,
+} from "./ui/v2";
 
 interface Props {
   onBack: () => void;
@@ -165,184 +179,163 @@ export function GlobalSettingsPage({ onBack }: Props) {
     }
   };
 
-  if (loading) return <div style={{ padding: 24 }}>加载中...</div>;
+  if (loading) return <div>加载中...</div>;
 
   return (
-    <div className="global-settings-page min-h-full w-full p-6">
-      <div className="global-settings-card">
-      <div className="mb-5 flex items-center gap-2 text-sm text-muted-foreground"><span className="font-semibold text-foreground">系统级配置</span><span className="rounded-sm bg-secondary px-2 py-0.5 text-xs">仅管理员</span></div>
-      <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 20 }}>
-        以下为系统级策略，对所有考试与教师统一生效。网阅相关默认（0.5、分差阈值、取整、自动重分配、均衡阈值）请在各考试「网阅设置」中配置。
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, padding: "14px 16px", marginBottom: 12, background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)", borderRadius: 10 }}>
-        <div>
-          <div style={{ fontSize: 14, fontWeight: 500 }}>侧边栏自动展开</div>
-          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>收起后鼠标移到侧边栏时自动展开；关闭后仍可点击圆形按钮展开并正常导航。</div>
+    <Card className="flex flex-col gap-5 p-6">
+      <div>
+        <div className="mb-2 flex items-center gap-2 text-sm text-muted-foreground">
+          <span className="font-semibold text-foreground">系统级配置</span>
+          <span className="rounded-sm bg-secondary px-2 py-0.5 text-xs">仅管理员</span>
         </div>
-        <button type="button" role="switch" aria-checked={railAutoExpand} onClick={toggleRailAutoExpand} className={`settings-switch ${railAutoExpand ? "on" : ""}`}>
-          <span />
-        </button>
+        <p className="text-xs text-muted-foreground">
+          以下为系统级策略，对所有考试与教师统一生效。网阅相关默认（0.5、分差阈值、取整、自动重分配、均衡阈值）请在各考试「网阅设置」中配置。
+        </p>
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <ControlRow
+        reverse
+        control={<Switch checked={railAutoExpand} onCheckedChange={toggleRailAutoExpand} />}
+        label="侧边栏自动展开"
+        description="收起后鼠标移到侧边栏时自动展开；关闭后仍可点击圆形按钮展开并正常导航。"
+      />
+
+      <div className="flex flex-col gap-3 rounded-lg border border-border-subtle bg-secondary p-4">
         {FIELDS.map((f) => (
-          <div key={f.key} style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "14px 16px",
-            background: "var(--color-background-secondary)",
-            borderRadius: 10,
-            border: "0.5px solid var(--color-border-tertiary)",
-            gap: 16,
-          }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 500 }}>{f.label}</div>
-              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{f.desc}</div>
-            </div>
-            <div style={{ flexShrink: 0 }}>
-              {f.type === "toggle" && (
-                <button
-                  onClick={() => setField(f.key, draft[f.key] === "1" ? "0" : "1")}
-                  style={{
-                    ...toggleStyle,
-                    background: draft[f.key] === "1" ? "var(--px-accent-bg)" : "var(--px-border-strong)",
-                  }}
-                >
-                  <span style={{
-                    ...toggleKnob,
-                    transform: draft[f.key] === "1" ? "translateX(18px)" : "translateX(0)",
-                  }} />
-                </button>
-              )}
-              {f.type === "number" && (
-                <input
+          <ControlRow
+            key={f.key}
+            reverse
+            control={
+              f.type === "toggle" ? (
+                <Switch checked={draft[f.key] === "1"} onCheckedChange={(c) => setField(f.key, c ? "1" : "0")} />
+              ) : f.type === "number" ? (
+                <Input
                   type="number"
                   value={draft[f.key] ?? ""}
                   onChange={(e) => setField(f.key, e.target.value)}
-                  style={inputStyle}
+                  className="w-20 text-center"
                 />
-              )}
-              {f.type === "select" && (
-                <select value={draft[f.key] ?? ""} onChange={(e) => setField(f.key, e.target.value)} style={selectStyle}>
-                  {f.options!.map((o) => (
-                    <option key={o.value} value={o.value}>{o.label}</option>
-                  ))}
-                </select>
-              )}
-            </div>
-          </div>
+              ) : (
+                <Select value={draft[f.key] ?? ""} onValueChange={(v) => setField(f.key, v)}>
+                  <SelectTrigger className="w-[160px]"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {f.options!.map((o) => (
+                      <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )
+            }
+            label={f.label}
+            description={f.desc}
+          />
         ))}
       </div>
 
       {/* v1.9.4: AI 系统配置段 */}
-      <div style={{ marginTop: 28, paddingTop: 20, borderTop: "1px solid var(--color-border-tertiary)" }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-          <div style={{ fontSize: 15, fontWeight: 500 }}>AI 系统配置</div>
-          <button onClick={() => openAiEditor()} style={{ ...smallBtnStyle, background: "var(--px-accent-bg)", color: "var(--px-fg-on-accent)" }}>＋ 新增系统服务商</button>
+      <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-semibold text-foreground">AI 系统配置</div>
+          <Button variant="primary" size="sm" onClick={() => openAiEditor()}>＋ 新增系统服务商</Button>
         </div>
-        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+        <p className="text-xs text-muted-foreground">
           由管理员统一维护的系统级 AI 服务商，所有教师均可在分析/原卷中选用。
-        </div>
+        </p>
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div className="flex flex-col gap-2">
           {aiProviders.length === 0 && (
-            <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>尚未配置系统级 AI 服务商。</div>
+            <p className="text-xs text-muted-foreground">尚未配置系统级 AI 服务商。</p>
           )}
           {aiProviders.map((p) => (
-            <div key={p.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8, border: "0.5px solid var(--color-border-tertiary)" }}>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 500 }}>{p.name} <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>（{p.providerType}{p.isActive ? "" : " · 已停用"}）</span></div>
-                <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>{p.baseUrl || "—"}{p.models && p.models.length ? ` · ${p.models.length} 模型` : ""}</div>
+            <div key={p.id} className="flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-secondary px-3.5 py-2.5">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-foreground">
+                  {p.name} <span className="text-xs text-muted-foreground">（{p.providerType}{p.isActive ? "" : " · 已停用"}）</span>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  {p.baseUrl || "—"}{p.models && p.models.length ? ` · ${p.models.length} 模型` : ""}
+                </div>
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => openAiEditor(p)} style={smallBtnStyle}>编辑</button>
-                <button onClick={() => void deleteAi(p.id)} style={{ ...smallBtnStyle, color: "var(--px-danger-fg)" }}>删除</button>
+              <div className="flex shrink-0 gap-2">
+                <Button variant="ghost" size="sm" onClick={() => openAiEditor(p)}>编辑</Button>
+                <Button variant="ghost" size="sm" onClick={() => void deleteAi(p.id)} className="text-destructive-fg">删除</Button>
               </div>
             </div>
           ))}
         </div>
 
         {aiEditor.open && (
-          <div style={{ marginTop: 12, padding: 14, background: "var(--color-background-secondary)", borderRadius: 10, border: "0.5px solid var(--color-border-tertiary)" }}>
-            <div style={{ fontWeight: 500, marginBottom: 10 }}>{aiEditor.id ? "编辑系统服务商" : "新增系统服务商"}</div>
-            <label style={{ display: "block", fontSize: 13, marginBottom: 8 }}>名称
-              <input value={aiEditor.name} onChange={(e) => setAiEditor({ ...aiEditor, name: e.target.value })} style={selectStyle} />
-            </label>
-            <label style={{ display: "block", fontSize: 13, marginBottom: 8 }}>类型
-              <select value={aiEditor.providerType} onChange={(e) => setAiEditor({ ...aiEditor, providerType: e.target.value })} style={selectStyle}>
-                <option value="openai">OpenAI 兼容</option>
-                <option value="deepseek">DeepSeek</option>
-                <option value="gemini">Gemini</option>
-              </select>
-            </label>
-            <label style={{ display: "block", fontSize: 13, marginBottom: 8 }}>Base URL{aiEditor.providerType === "gemini" ? "（Gemini 留空）" : ""}
-              <input value={aiEditor.baseUrl} onChange={(e) => setAiEditor({ ...aiEditor, baseUrl: e.target.value })} style={selectStyle} />
-            </label>
-            <label style={{ display: "block", fontSize: 13, marginBottom: 8 }}>API Key{aiEditor.id ? "（留空则不修改）" : ""}
-              <input type="password" value={aiEditor.apiKey} onChange={(e) => setAiEditor({ ...aiEditor, apiKey: e.target.value })} style={selectStyle} />
-            </label>
-            <label style={{ display: "block", fontSize: 13, marginBottom: 12 }}>模型（JSON 数组，如 ["gpt-4o"]）
-              <input value={aiEditor.models} onChange={(e) => setAiEditor({ ...aiEditor, models: e.target.value })} style={selectStyle} />
-            </label>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button onClick={() => setAiEditor({ open: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" })} style={smallBtnStyle}>取消</button>
-              <button onClick={() => void saveAi()} style={{ ...smallBtnStyle, background: "var(--px-accent-bg)", color: "var(--px-fg-on-accent)" }}>保存</button>
+          <div className="flex flex-col gap-3 rounded-md border border-border-subtle bg-secondary p-3.5">
+            <div className="font-medium text-foreground">{aiEditor.id ? "编辑系统服务商" : "新增系统服务商"}</div>
+            <Field label="名称">
+              <Input value={aiEditor.name} onChange={(e) => setAiEditor({ ...aiEditor, name: e.target.value })} />
+            </Field>
+            <Field label="类型">
+              <Select value={aiEditor.providerType} onValueChange={(v) => setAiEditor({ ...aiEditor, providerType: v })}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="openai">OpenAI 兼容</SelectItem>
+                  <SelectItem value="deepseek">DeepSeek</SelectItem>
+                  <SelectItem value="gemini">Gemini</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label={<>Base URL{aiEditor.providerType === "gemini" ? "（Gemini 留空）" : ""}</>}>
+              <Input value={aiEditor.baseUrl} onChange={(e) => setAiEditor({ ...aiEditor, baseUrl: e.target.value })} />
+            </Field>
+            <Field label={<>API Key{aiEditor.id ? "（留空则不修改）" : ""}</>}>
+              <Input type="password" value={aiEditor.apiKey} onChange={(e) => setAiEditor({ ...aiEditor, apiKey: e.target.value })} />
+            </Field>
+            <Field label='模型（JSON 数组，如 ["gpt-4o"]）'>
+              <Input value={aiEditor.models} onChange={(e) => setAiEditor({ ...aiEditor, models: e.target.value })} />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setAiEditor({ open: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" })}>取消</Button>
+              <Button variant="primary" onClick={() => void saveAi()}>保存</Button>
             </div>
           </div>
         )}
 
         {aiMsg && (
-          <div style={{ fontSize: 13, color: aiMsgTone === "success" ? "var(--px-success-fg)" : "var(--px-danger-fg)", margin: "12px 0", display: "flex", alignItems: "center", gap: 6 }}>{aiMsgTone === "success" ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}{aiMsg}</div>
+          <Banner tone={aiMsgTone}>{aiMsg}</Banner>
         )}
       </div>
 
       {/* 难度/区分度档位设置 */}
-      <div style={{ marginTop: 28, paddingTop: 20, borderTop: "1px solid var(--color-border-tertiary)" }}>
-        <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 6 }}>难度 / 区分度档位</div>
-        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 16 }}>
+      <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
+        <div className="text-sm font-semibold text-foreground">难度 / 区分度档位</div>
+        <p className="text-xs text-muted-foreground">
           设置成绩分析中难度系数 P 与区分度 D 的着色档位。各档按「上限阈值」升序判定，数值 ≤ 阈值即归入该档。未配置时使用内置默认。
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+        </p>
+        <div className="flex flex-col gap-6">
           <BandEditor title="难度系数 P 档位" desc="P = 平均得分 / 满分（0–1）。" bands={diffBands} onChange={setDiffBands} />
           <BandEditor title="区分度 D 档位" desc="D = 高分组得分率 − 低分组得分率（0–1）。" bands={discBands} onChange={setDiscBands} />
         </div>
       </div>
 
       {message && (
-        <div style={{
-          fontSize: 13,
-           color: messageTone === "success" ? "var(--px-success-fg)" : "var(--px-danger-fg)",
-          margin: "16px 0",
-          padding: "8px 12px",
-           background: messageTone === "success" ? "var(--px-success-soft)" : "var(--px-danger-soft)",
-          borderRadius: 8,
-        }}>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>{messageTone === "success" ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}{message}</span>
-        </div>
+        <Banner tone={messageTone}>{message}</Banner>
       )}
 
-      <button
-        onClick={handleSave}
-        disabled={saving}
-        style={{
-          marginTop: 8,
-          width: "100%",
-          minHeight: 52,
-          fontSize: 16,
-          fontWeight: 500,
-          borderRadius: 12,
-          border: "none",
-           background: "var(--px-accent-bg)",
-           color: "var(--px-fg-on-accent)",
-          cursor: saving ? "default" : "pointer",
-          opacity: saving ? 0.7 : 1,
-        }}
-      >
+      <Button variant="primary" size="lg" block onClick={handleSave} disabled={saving}>
         {saving ? "保存中..." : "保存全局设置"}
-      </button>
-      </div>
+      </Button>
+    </Card>
+  );
+}
+
+function Banner({ tone, children }: { tone: "success" | "error"; children: ReactNode }) {
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm",
+        tone === "success"
+          ? "border-border bg-secondary text-foreground"
+          : "border-destructive-border bg-secondary text-destructive-fg"
+      )}
+    >
+      {tone === "success" ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+      {children}
     </div>
   );
 }
@@ -358,38 +351,41 @@ function BandEditor({ title, desc, bands, onChange }: { title: string; desc: str
     onChange([...bands, { max: 1, label: "新档位", color: "var(--px-success-bg)" }]);
   }
   return (
-    <div>
-      <div style={{ fontSize: 14, fontWeight: 500 }}>{title}</div>
-      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", margin: "4px 0 10px" }}>{desc}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <div className="flex flex-col gap-2">
+      <div className="text-sm font-medium text-foreground">{title}</div>
+      <p className="mb-1 mt-1 text-xs text-muted-foreground">{desc}</p>
+      <div className="flex flex-col gap-2">
         {bands.map((b, i) => (
-          <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            <input
-              type="number" step="0.05" min="0" max="1"
+          <div key={i} className="flex flex-wrap items-center gap-2">
+            <Input
+              type="number"
+              step="0.05"
+              min={0}
+              max={1}
               value={b.max}
               onChange={(e) => update(i, { max: Number(e.target.value) })}
-              style={{ ...selectStyle, width: 84 }}
+              className="w-20 text-center"
               title="上限阈值(0-1)：数值 ≤ 该阈值归入此档"
             />
-            <input
+            <Input
               value={b.label}
               onChange={(e) => update(i, { label: e.target.value })}
-              style={{ ...selectStyle, width: 120 }}
+              className="w-28"
               placeholder="档位名"
             />
             <input
               type="color"
               value={toColorInput(b.color)}
               onChange={(e) => update(i, { color: e.target.value })}
-              style={{ width: 36, height: 32, border: "none", background: "none", cursor: "pointer", padding: 0 }}
+              className="h-9 w-10 cursor-pointer rounded-md border border-input bg-card p-0.5"
               title="徽章颜色"
             />
-            <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>≤ {b.max} 显示「{b.label}」</span>
-            <button onClick={() => remove(i)} style={{ ...smallBtnStyle, color: "var(--px-danger-fg)" }}>删除</button>
+            <span className="text-xs text-muted-foreground">≤ {b.max} 显示「{b.label}」</span>
+            <Button variant="ghost" size="sm" onClick={() => remove(i)} className="text-destructive-fg">删除</Button>
           </div>
         ))}
       </div>
-      <button onClick={add} style={{ ...smallBtnStyle, marginTop: 8 }}>+ 添加档位</button>
+      <Button variant="outline" size="sm" onClick={add} className="self-start">+ 添加档位</Button>
     </div>
   );
 }
@@ -403,52 +399,3 @@ function toColorInput(value: string): string {
   };
   return semanticColors[value] ?? (/^#[0-9a-f]{6}$/i.test(value) ? value : "#C00F28");
 }
-
-const smallBtnStyle: React.CSSProperties = {
-  padding: "6px 14px",
-  fontSize: 13,
-  borderRadius: 6,
-  border: "1px solid var(--px-border-default)",
-  background: "var(--px-bg-surface)",
-  cursor: "pointer",
-};
-
-const toggleStyle: React.CSSProperties = {
-  width: 44,
-  height: 26,
-  borderRadius: 13,
-  border: "none",
-  position: "relative",
-  cursor: "pointer",
-  transition: "background 0.15s",
-  padding: 0,
-};
-
-const toggleKnob: React.CSSProperties = {
-  position: "absolute",
-  top: 3,
-  left: 3,
-  width: 20,
-  height: 20,
-  borderRadius: "50%",
-  background: "#fff",
-  transition: "transform 0.15s",
-};
-
-const inputStyle: React.CSSProperties = {
-  width: 80,
-  padding: "8px",
-  border: "1px solid var(--color-border-primary)",
-  borderRadius: 6,
-  fontSize: 14,
-  textAlign: "center",
-  background: "var(--color-background-primary)",
-};
-
-const selectStyle: React.CSSProperties = {
-  padding: "8px 10px",
-  border: "1px solid var(--color-border-primary)",
-  borderRadius: 6,
-  fontSize: 14,
-  background: "var(--color-background-primary)",
-};

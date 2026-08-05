@@ -1,6 +1,23 @@
 import { useRef, useState } from "react";
-import { Upload, X, Download } from "lucide-react";
+import { Download } from "lucide-react";
 import { parseCsv, detectAndParse, readFileAsText, generateStudentTemplate, generateTeacherTemplate } from "../util/csvParser";
+import {
+  Button,
+  Textarea,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogBody,
+  DialogFooter,
+  TableWrap,
+  Table,
+  TableHeader,
+  TableBody,
+  TableRow,
+  TableHead,
+  TableCell,
+} from "./ui/v2";
 
 interface ImportModalProps {
   title: string;
@@ -87,67 +104,68 @@ export function ImportModal({ title, csvType, onImport, onClose }: ImportModalPr
     : ["科目", "姓名"];
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 520, maxWidth: "95vw" }}>
-        <div className="modal-header">
-          <h2>{title}</h2>
-          <button className="modal-close" onClick={onClose}><X size={18} /></button>
-        </div>
-        <div className="modal-body">
-          <p className="hint">
-            {hint}
-          </p>
-          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+    <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent size="md">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="flex flex-col gap-3">
+          <p className="text-xs text-muted-foreground">{hint}</p>
+          <div className="flex flex-wrap items-center gap-2">
             <input
               type="file"
               ref={fileInputRef}
               accept=".csv,.txt,.xlsx,.xls"
-              style={{ display: "none" }}
+              className="hidden"
               onChange={handleFileSelect}
             />
-            <button className="ghost-button" type="button" onClick={() => fileInputRef.current?.click()}>
-              <Download size={16} /> 选择 CSV / Excel 文件
-            </button>
-            <button className="ghost-button" type="button" onClick={() => void downloadTemplate()}>
-              <Download size={16} /> 下载 Excel 模板
-            </button>
+            <Button variant="outline" size="sm" icon={<Download size={16} />} onClick={() => fileInputRef.current?.click()}>
+              选择 CSV / Excel 文件
+            </Button>
+            <Button variant="outline" size="sm" icon={<Download size={16} />} onClick={() => void downloadTemplate()}>
+              下载 Excel 模板
+            </Button>
           </div>
-          <textarea
+          <Textarea
             rows={6}
             placeholder={placeholder}
             value={importText}
             onChange={(e) => handleTextChange(e.target.value)}
-            style={{
-              borderRadius: 10, padding: 10, border: "1px solid var(--line-strong)",
-              fontSize: 13, fontFamily: "inherit", width: "100%", boxSizing: "border-box"
-            }}
           />
-          {error && <p className="login-error">{error}</p>}
+          {error && <p className="text-sm text-destructive-fg">{error}</p>}
           {preview.length > 0 && (
-            <div style={{ marginTop: 12 }}>
-              <p className="hint">共解析 {preview.length} 条记录：</p>
-              <div className="account-table-wrap" style={{ maxHeight: 200, overflow: "auto" }}>
-                <table className="account-table">
-                  <thead>
-                    <tr>{previewCols.map((c) => <th key={c}>{c}</th>)}</tr>
-                  </thead>
-                  <tbody>
+            <div className="flex flex-col gap-1.5">
+              <p className="text-xs text-muted-foreground">共解析 {preview.length} 条记录：</p>
+              <TableWrap className="max-h-[200px]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      {previewCols.map((c) => <TableHead key={c}>{c}</TableHead>)}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
                     {preview.slice(0, 50).map((r, i) => (
-                      <tr key={i}>{r.slice(0, previewCols.length).map((c, j) => <td key={j}>{c}</td>)}</tr>
+                      <TableRow key={i}>
+                        {r.slice(0, previewCols.length).map((c, j) => <TableCell key={j}>{c}</TableCell>)}
+                      </TableRow>
                     ))}
-                  </tbody>
-                </table>
-              </div>
+                  </TableBody>
+                </Table>
+              </TableWrap>
             </div>
           )}
-        </div>
-        <div className="modal-footer">
-          <button className="ghost-button" type="button" onClick={onClose}>取消</button>
-          <button className="primary-button" type="button" onClick={handleImport} disabled={busy || !importText.trim() || preview.length === 0}>
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>取消</Button>
+          <Button
+            variant="primary"
+            onClick={handleImport}
+            disabled={busy || !importText.trim() || preview.length === 0}
+          >
             {busy ? "导入中..." : `确认导入 (${preview.length})`}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
