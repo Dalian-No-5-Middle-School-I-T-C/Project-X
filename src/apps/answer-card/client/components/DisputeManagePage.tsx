@@ -1,7 +1,29 @@
+// DisputeManagePage —— 争议管理（T5 v2 迁移）
+// 视觉层整体切换到 v2：Card / Badge / Dialog / Field / Input / Button / EmptyState。
+// 功能守恒：
+//  · GET  /api/review-arbitration/exams/:examId/disputes
+//  · GET  /api/review-arbitration/exams/:examId/blocks/:blockId/arbitrators
+//  · POST /api/review-arbitration/crops/:cropId/resolve  { score }
+// 请求/响应形状与权限判断零改动，仅替换视觉层。
 import React, { useState, useEffect, useCallback } from "react";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ShieldCheck } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { DisputeItem, ArbitratorCandidate } from "../../../../shared/types";
+import {
+  Badge,
+  Button,
+  Card,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  EmptyState,
+  Field,
+  Input,
+  Spinner,
+} from "./ui/v2";
 
 interface Props {
   examId: number;
@@ -13,6 +35,8 @@ export function DisputeManagePage({ examId }: Props) {
   const [selectedDispute, setSelectedDispute] = useState<DisputeItem | null>(null);
   const [arbitrators, setArbitrators] = useState<ArbitratorCandidate[]>([]);
   const [resolutionScore, setResolutionScore] = useState("");
+  // UI-1/UI-2：提交节流 + loading 态，避免重复仲裁
+  const [resolving, setResolving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -28,11 +52,6 @@ export function DisputeManagePage({ examId }: Props) {
   useEffect(() => { load(); }, [load]);
 
   const loadArbitrators = async (blockId: string) => {
-    const excludedIds = new Set<number>();
-    const dispute = disputes.find((d) => d.blockId === blockId);
-    if (dispute) {
-      // 简单收集已评审教师
-    }
     const res = await fetchJson<{ ok: boolean; data: ArbitratorCandidate[] }>(
       `/api/review-arbitration/exams/${examId}/blocks/${encodeURIComponent(blockId)}/arbitrators`
     );
@@ -40,130 +59,179 @@ export function DisputeManagePage({ examId }: Props) {
   };
 
   const handleResolve = async (cropId: string) => {
-    if (!resolutionScore) return;
-    await fetchJson(`/api/review-arbitration/crops/${encodeURIComponent(cropId)}/resolve`, {
-      method: "POST",
-      body: JSON.stringify({ score: Number(resolutionScore) }),
-    });
-    setSelectedDispute(null);
-    setResolutionScore("");
-    load();
+    if (!resolutionScore || resolving) return;
+    setResolving(true);
+    try {
+      await fetchJson(`/api/review-arbitration/crops/${encodeURIComponent(cropId)}/resolve`, {
+        method: "POST",
+        body: JSON.stringify({ score: Number(resolutionScore) }),
+      });
+      setSelectedDispute(null);
+      setResolutionScore("");
+      load();
+    } finally {
+      setResolving(false);
+    }
   };
 
-  if (loading) return <div style={{ padding: 24 }}>加载中...</div>;
+  const closeDialog = (open: boolean) => {
+    if (open || resolving) return;
+    setSelectedDispute(null);
+    setResolutionScore("");
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
+        <Spinner size={16} /> 加载中...
+      </div>
+    );
+  }
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 16 }}>争议管理 ({disputes.length})</div>
+    <div className="flex flex-col gap-4 p-6">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-lg font-semibold text-foreground">争议管理</h2>
+        <span className="text-sm tabular-nums text-muted-foreground">
+          共 {disputes.length} 份
+        </span>
+      </div>
 
       {disputes.length === 0 ? (
-        <div style={{ color: "var(--color-text-tertiary)" }}>暂无争议卷</div>
+        <EmptyState
+          icon={<ShieldCheck />}
+          title="暂无争议卷"
+          description="多评分差均在阈值内，无需仲裁。"
+        />
       ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {disputes.map((d) => (
-            <div key={d.cropId} style={{
-              padding: "12px 16px",
-              background: d.status === "pending" ? "rgba(226,75,74,0.05)" : "var(--color-background-secondary)",
-              borderRadius: 8,
-              border: d.status === "pending" ? "1px solid #f09595" : "0.5px solid var(--color-border-tertiary)",
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <span style={{ fontWeight: 500 }}>{d.studentName}</span>
-                  <span style={{ fontSize: 12, color: "var(--color-text-secondary)", marginLeft: 8 }}>
-                    {d.studentNumber} · {d.blockTitle}
-                  </span>
+        <div className="flex flex-col gap-2">
+          {disputes.map((d) => {
+            const pending = d.status === "pending";
+            return (
+              <Card
+                key={d.cropId}
+                className={
+                  pending
+                    ? "border-destructive-border bg-destructive-soft p-4"
+                    : "p-4"
+                }
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-baseline gap-2">
+                    <span className="font-medium text-foreground">{d.studentName}</span>
+                    <span className="text-xs tabular-nums text-muted-foreground">
+                      {d.studentNumber} · {d.blockTitle}
+                    </span>
+                  </div>
+                  <div className="text-sm text-secondary-foreground">
+                    分差:{" "}
+                    <span className="font-medium tabular-nums text-destructive-fg">
+                      {d.scoreDiff}
+                    </span>{" "}
+                    / 阈值 <span className="tabular-nums">{d.threshold}</span>
+                  </div>
                 </div>
-                <div style={{ fontSize: 13 }}>
-                  分差: <span style={{ color: "#E24B4A", fontWeight: 500 }}>{d.scoreDiff}</span> / 阈值 {d.threshold}
+
+                <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  {d.scores.map((s, i) => (
+                    <span key={i} className="tabular-nums">
+                      {s.reviewerName}: {s.score}分
+                    </span>
+                  ))}
+                  {d.arbitratorName && (
+                    <Badge tone="success" dot>
+                      仲裁: {d.arbitratorName}
+                    </Badge>
+                  )}
+                  {!d.arbitratorName && pending && (
+                    <Badge tone="danger" icon={<AlertTriangle aria-hidden="true" />}>
+                      搁置中
+                    </Badge>
+                  )}
                 </div>
-              </div>
-              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 4 }}>
-                {d.scores.map((s, i) => (
-                  <span key={i} style={{ marginRight: 12 }}>{s.reviewerName}: {s.score}分</span>
-                ))}
-                {d.arbitratorName && <span style={{ color: "#639922" }}>仲裁: {d.arbitratorName}</span>}
-                {!d.arbitratorName && d.status === "pending" && (
-                  <span style={{ color: "#E24B4A", display: "inline-flex", alignItems: "center", gap: 4 }}><AlertTriangle size={14} aria-hidden="true" /> 搁置中</span>
+
+                {pending && (
+                  <div className="mt-3">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setSelectedDispute(d);
+                        setResolutionScore("");
+                        loadArbitrators(d.blockId);
+                      }}
+                    >
+                      处理
+                    </Button>
+                  </div>
                 )}
-              </div>
-              {d.status === "pending" && (
-                <button
-                  onClick={() => { setSelectedDispute(d); loadArbitrators(d.blockId); }}
-                  style={{ marginTop: 8, ...actionBtnStyle }}
-                >
-                  处理
-                </button>
-              )}
-            </div>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       )}
 
-      {/* 处理弹窗 */}
-      {selectedDispute && (
-        <div style={{
-          position: "fixed",
-          inset: 0,
-          background: "rgba(0,0,0,0.3)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 1000,
-        }}>
-          <div style={{
-            background: "var(--color-background-primary)",
-            borderRadius: 12,
-            padding: 24,
-            minWidth: 360,
-            maxWidth: 480,
-          }}>
-            <div style={{ fontWeight: 500, marginBottom: 16 }}>
-              仲裁 — {selectedDispute.studentName} · {selectedDispute.blockTitle}
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              {selectedDispute.scores.map((s, i) => (
-                <div key={i} style={{ fontSize: 14 }}>{s.reviewerName}: {s.score}分</div>
-              ))}
-            </div>
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>最终分</label>
-              <input
-                type="number"
-                value={resolutionScore}
-                onChange={(e) => setResolutionScore(e.target.value)}
-                style={{ ...inputStyle, width: "100%", marginTop: 4 }}
-                step={0.5}
-              />
-            </div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button onClick={() => setSelectedDispute(null)} style={actionBtnStyle}>取消</button>
-              <button
+      {/* 仲裁处理对话框 */}
+      <Dialog open={selectedDispute != null} onOpenChange={closeDialog}>
+        {selectedDispute && (
+          <DialogContent size="sm">
+            <DialogHeader>
+              <DialogTitle>
+                仲裁 — {selectedDispute.studentName} · {selectedDispute.blockTitle}
+              </DialogTitle>
+            </DialogHeader>
+            <DialogBody className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1 rounded-md bg-secondary p-3">
+                {selectedDispute.scores.map((s, i) => (
+                  <div key={i} className="text-sm tabular-nums text-foreground">
+                    {s.reviewerName}: {s.score}分
+                  </div>
+                ))}
+              </div>
+
+              {arbitrators.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                  <CheckCircle2 className="size-3.5" aria-hidden="true" />
+                  可选仲裁人：
+                  {arbitrators.map((a) => (
+                    <Badge key={a.id} tone="neutral">
+                      {a.name}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+
+              <Field label="最终分" htmlFor="dispute-final-score">
+                <Input
+                  id="dispute-final-score"
+                  type="number"
+                  step={0.5}
+                  value={resolutionScore}
+                  onChange={(e) => setResolutionScore(e.target.value)}
+                  className="tabular-nums"
+                />
+              </Field>
+            </DialogBody>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={resolving}
+                onClick={() => closeDialog(false)}
+              >
+                取消
+              </Button>
+              <Button
+                variant="primary"
+                loading={resolving}
+                disabled={!resolutionScore}
                 onClick={() => handleResolve(selectedDispute.cropId)}
-                style={{ ...actionBtnStyle, background: "#3C3489", color: "#fff" }}
               >
                 提交仲裁
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        )}
+      </Dialog>
     </div>
   );
 }
-
-const actionBtnStyle: React.CSSProperties = {
-  padding: "6px 14px",
-  fontSize: 13,
-  borderRadius: 6,
-  border: "0.5px solid var(--color-border-primary)",
-  background: "var(--color-background-secondary)",
-  cursor: "pointer",
-};
-
-const inputStyle: React.CSSProperties = {
-  padding: "8px 10px",
-  border: "1px solid var(--color-border-primary)",
-  borderRadius: 6,
-  fontSize: 14,
-};

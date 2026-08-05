@@ -1,6 +1,16 @@
+// OnlineReviewPanel —— 在线阅卷（逐题打分，T5 v2 迁移）
+// 视觉层整体切换到 v2：Panel / Card / SegmentedControl / Badge / Input / Button / EmptyState。
+// 功能守恒（API / 请求体 / 状态机零改动）：
+//  · GET  /api/review/exams/:examId/blocks
+//  · GET  /api/review/exams/:examId/block-crops?blockId=&classId=&status=
+//  · GET  /api/block-grading-config/exams/:examId/blocks/:blockId
+//  · GET  /api/exams/:examId/student/:studentId/scores
+//  · POST /api/review/exams/:examId/block-crops/:cropId/submit  { scores, status }
+// PR #189 二次修复的三态 scoringMode（block_total / per_question / unknown）
+// 与其提交禁用规则逐行保留，仅把双态横幅换成 danger / warning 语义配色。
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, Loader2, RefreshCw
+  AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, ClipboardCheck, RefreshCw
 } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import {
@@ -14,6 +24,15 @@ import type {
   ReviewBlockSummary,
   ReviewSubmitResult
 } from "../../../../shared/types";
+import { cn } from "../lib/utils";
+import {
+  Button,
+  EmptyState,
+  Input,
+  Panel,
+  SegmentedControl,
+  Spinner,
+} from "./ui/v2";
 
 interface Props {
   examId: number;
@@ -22,6 +41,12 @@ interface Props {
 }
 
 type StatusFilter = "pending" | "reviewed" | "all";
+
+const STATUS_FILTER_ITEMS = [
+  { value: "pending", label: "待阅" },
+  { value: "reviewed", label: "已阅" },
+  { value: "all", label: "全部" },
+];
 
 export function OnlineReviewPanel({ examId, examName, classId }: Props) {
   const [blocks, setBlocks] = useState<ReviewBlockSummary[]>([]);
@@ -169,6 +194,8 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
 
   async function submitCurrent(status: "reviewed" | "disputed" = "reviewed", advance = true) {
     if (!current || !current.studentId) return;
+    // UI-1/UI-2：提交节流，避免连点造成重复提交
+    if (saving) return;
     // PR #189 二次修复：只在「配置明确读到 block_total」时禁用提交。
     // "unknown"（配置加载失败）必须允许提交，让服务端校验兜底——
     // 否则网络抖动一下老师就被硬锁死。
@@ -228,103 +255,172 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
   }
 
   if (loading) {
-    return <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>正在加载网上阅卷...</div>;
-  }
-
-  if (blocks.length === 0) {
     return (
-      <div className="scores-empty">
-        <ClipboardCheck size={40} />
-        <h2>暂无大题切块</h2>
-        <p>请先完成阅卷识别。识别成功后会按大题自动生成作答图片切块，供网上阅卷使用。</p>
+      <div className="flex items-center justify-center gap-2 p-10 text-sm text-muted-foreground">
+        <Spinner size={16} /> 正在加载网上阅卷...
       </div>
     );
   }
 
-  return (
-    <div className="online-review-panel">
-      <div className="online-review-sidebar">
-        <div className="panel-title">题块列表</div>
-        <p className="hint" style={{ margin: "0 0 10px" }}>{examName}</p>
-        {blocks.map((block) => (
-          <button
-            key={block.blockId}
-            type="button"
-            className={`online-review-block-item ${selectedBlockId === block.blockId ? "active" : ""}`}
-            onClick={() => setSelectedBlockId(block.blockId)}
-          >
-            <div className="online-review-block-title">{block.blockTitle || block.blockId}</div>
-            <div className="online-review-block-meta">
-              待阅 {block.pendingCount} / 共 {block.totalCount}
-            </div>
-          </button>
-        ))}
-        <button className="ghost-button" type="button" onClick={() => void loadBlocks()} style={{ marginTop: 12 }}>
-          <RefreshCw size={14} /> 刷新
-        </button>
-      </div>
+  if (blocks.length === 0) {
+    return (
+      <EmptyState
+        icon={<ClipboardCheck />}
+        title="暂无大题切块"
+        description="请先完成阅卷识别。识别成功后会按大题自动生成作答图片切块，供网上阅卷使用。"
+      />
+    );
+  }
 
-      <div className="online-review-main">
-        <div className="online-review-toolbar">
-          <div className="online-review-filters">
-            {(["pending", "reviewed", "all"] as StatusFilter[]).map((filter) => (
+  const submitDisabled = saving || scoringMode === "block_total";
+
+  return (
+    <div className="flex h-full min-h-0 w-full gap-4 overflow-hidden p-4">
+      {/* ── 题块列表 ─────────────────────────────────────── */}
+      <Panel className="flex w-64 shrink-0 flex-col gap-2 overflow-y-auto p-3">
+        <div className="flex flex-col gap-0.5">
+          <h2 className="text-base font-semibold text-foreground">题块列表</h2>
+          <p className="truncate text-xs text-muted-foreground">{examName}</p>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          {blocks.map((block) => {
+            const active = selectedBlockId === block.blockId;
+            return (
               <button
-                key={filter}
+                key={block.blockId}
                 type="button"
-                className={`ghost-button ${statusFilter === filter ? "active-filter" : ""}`}
-                onClick={() => setStatusFilter(filter)}
+                onClick={() => setSelectedBlockId(block.blockId)}
+                className={cn(
+                  "w-full rounded-md border px-3 py-2 text-left",
+                  "transition-colors duration-(--px-dur-1) ease-standard",
+                  "outline-none focus-visible:shadow-focus",
+                  active
+                    ? "border-accent-border bg-accent"
+                    : "border-border-subtle bg-card hover:bg-secondary",
+                )}
               >
-                {filter === "pending" ? "待阅" : filter === "reviewed" ? "已阅" : "全部"}
+                <div className="truncate text-sm font-medium text-foreground">
+                  {block.blockTitle || block.blockId}
+                </div>
+                <div className="mt-0.5 text-xs tabular-nums text-muted-foreground">
+                  待阅 {block.pendingCount} / 共 {block.totalCount}
+                </div>
               </button>
-            ))}
-          </div>
+            );
+          })}
+        </div>
+
+        <Button
+          variant="outline"
+          size="sm"
+          block
+          icon={<RefreshCw />}
+          className="mt-2"
+          onClick={() => void loadBlocks()}
+        >
+          刷新
+        </Button>
+      </Panel>
+
+      {/* ── 主区 ─────────────────────────────────────────── */}
+      <div className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <SegmentedControl
+            value={statusFilter}
+            onValueChange={(v) => setStatusFilter(v as StatusFilter)}
+            items={STATUS_FILTER_ITEMS}
+            size="sm"
+          />
           {selectedBlock && (
-            <span className="hint">
+            <span className="text-xs tabular-nums text-muted-foreground">
               {selectedBlock.blockTitle} · 已阅 {selectedBlock.reviewedCount}/{selectedBlock.totalCount}
             </span>
           )}
         </div>
 
-        {error && <p className="login-error">{error}</p>}
-        {message && <p className="hint" style={{ color: "var(--success)" }}>{message}</p>}
+        {error && (
+          <p
+            role="alert"
+            className="rounded-md bg-destructive-soft px-3 py-2 text-sm text-destructive-fg"
+          >
+            {error}
+          </p>
+        )}
+        {message && (
+          <p
+            role="status"
+            className="rounded-md bg-success-soft px-3 py-2 text-sm text-success-foreground"
+          >
+            {message}
+          </p>
+        )}
 
         {!current ? (
-          <div className="scores-empty" style={{ minHeight: 280 }}>
-            <CheckCircle2 size={36} />
-            <h2>当前筛选下无待阅答卷</h2>
-            <p>可切换题块或筛选条件继续阅卷。</p>
-          </div>
+          <EmptyState
+            icon={<CheckCircle2 />}
+            title="当前筛选下无待阅答卷"
+            description="可切换题块或筛选条件继续阅卷。"
+          />
         ) : (
-          <div className="online-review-workspace">
-            <div className="online-review-image-pane">
-              <div className="online-review-student-bar">
-                <strong>{current.studentName ?? "未知姓名"}</strong>
-                <span>{current.studentNumber ? `考号 ${current.studentNumber}` : ""}</span>
-                <span>第 {index + 1} / {queue.length} 份</span>
+          <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
+            {/* 图片区 */}
+            <Panel className="flex min-w-0 flex-1 flex-col gap-3 p-3">
+              <div className="flex flex-wrap items-baseline gap-3 text-sm">
+                <strong className="text-foreground">{current.studentName ?? "未知姓名"}</strong>
+                <span className="tabular-nums text-muted-foreground">
+                  {current.studentNumber ? `考号 ${current.studentNumber}` : ""}
+                </span>
+                <span className="ml-auto tabular-nums text-muted-foreground">
+                  第 {index + 1} / {queue.length} 份
+                </span>
               </div>
-              <div className="online-review-image-wrap">
+
+              <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-md bg-paper p-2">
                 <img
                   src={mediaUrl(current.imageUrl)}
                   alt={current.blockTitle}
-                  className="online-review-image"
+                  className="max-w-full object-contain"
                 />
               </div>
-              <div className="online-review-nav">
-                <button className="ghost-button" type="button" disabled={index <= 0} onClick={() => setIndex((v) => v - 1)}>
-                  <ChevronLeft size={16} /> 上一份
-                </button>
-                <button className="ghost-button" type="button" disabled={index >= queue.length - 1} onClick={() => setIndex((v) => v + 1)}>
-                  下一份 <ChevronRight size={16} />
-                </button>
-              </div>
-            </div>
 
-            <div className="online-review-score-pane">
-              <div className="panel-title">{current.blockTitle || "大题阅卷"}</div>
-              <p className="hint">题号：{current.questionNumbers.join("、")}</p>
-              {current.score != null && current.maxScore != null && (
-                <p className="hint">当前得分：{current.score} / {current.maxScore}</p>
-              )}
+              <div className="flex items-center justify-between gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  icon={<ChevronLeft />}
+                  disabled={index <= 0}
+                  onClick={() => setIndex((v) => v - 1)}
+                >
+                  上一份
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  iconRight={<ChevronRight />}
+                  disabled={index >= queue.length - 1}
+                  onClick={() => setIndex((v) => v + 1)}
+                >
+                  下一份
+                </Button>
+              </div>
+            </Panel>
+
+            {/* 打分区 */}
+            <Panel className="flex w-full shrink-0 flex-col gap-3 p-4 lg:w-80">
+              <div className="flex flex-col gap-0.5">
+                <h3 className="text-base font-semibold text-foreground">
+                  {current.blockTitle || "大题阅卷"}
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  题号：{current.questionNumbers.join("、")}
+                </p>
+                {current.score != null && current.maxScore != null && (
+                  <p className="text-xs tabular-nums text-muted-foreground">
+                    当前得分：{current.score} / {current.maxScore}
+                  </p>
+                )}
+              </div>
 
               {/* PR #189 二次修复：双态横幅。
                    - block_total：红色硬警告 + 禁用提交（与管理配置一致）
@@ -332,58 +428,47 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
               */}
               {scoringMode === "block_total" && (
                 <div
-                  style={{
-                    fontSize: 14,
-                    color: "#E24B4A",
-                    padding: "12px 14px",
-                    background: "rgba(226,75,74,0.1)",
-                    borderRadius: 8,
-                    marginBottom: 12
-                  }}
+                  role="alert"
+                  className="rounded-md border border-destructive-border bg-destructive-soft px-3.5 py-3 text-sm text-destructive-fg"
                 >
                   本题块配置为「题块总分」模式，请使用阅卷面板（GradePanel）输入合计分；如需在此面板按题打分，请管理员将本题块评分模式改为「逐题评分」。
                 </div>
               )}
               {scoringMode === "unknown" && (
                 <div
-                  style={{
-                    fontSize: 13,
-                    color: "#B45309",
-                    padding: "10px 14px",
-                    background: "rgba(245,158,11,0.12)",
-                    borderRadius: 8,
-                    marginBottom: 12,
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10
-                  }}
+                  role="alert"
+                  className="flex items-start gap-2.5 rounded-md border border-warning-border bg-warning-soft px-3.5 py-2.5 text-sm text-warning-foreground"
                 >
-                  <span style={{ flex: 1 }}>
-                    <AlertTriangle size={15} aria-hidden="true" /> 题块配置加载失败{configLoadError ? `（${configLoadError}）` : ""}，未能确认评分模式。
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                  <span className="flex-1">
+                    题块配置加载失败{configLoadError ? `（${configLoadError}）` : ""}，未能确认评分模式。
                     本次提交将按当前页面输入（逐题）发送，服务端校验兜底；若被拒绝请重试或联系管理员。
                   </span>
-                  <button
-                    type="button"
-                    className="ghost-button"
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0"
                     onClick={() => void loadBlockConfig()}
-                    style={{ fontSize: 12, padding: "4px 10px" }}
                   >
                     重试加载
-                  </button>
+                  </Button>
                 </div>
               )}
 
-              <div className="online-review-score-grid">
+              <div className="flex flex-col gap-2">
                 {current.questionNumbers.map((qNum) => {
                   const num = Number(qNum);
                   if (!Number.isFinite(num)) return null;
                   return (
-                    <label key={num} className="online-review-score-row">
-                      <span>第 {num} 题</span>
-                      <input
+                    <label key={num} className="flex items-center gap-3">
+                      <span className="w-20 shrink-0 text-sm text-secondary-foreground">
+                        第 {num} 题
+                      </span>
+                      <Input
                         type="number"
                         min={0}
                         step={0.5}
+                        className="tabular-nums"
                         value={scoreEdits[num] ?? ""}
                         onChange={(e) => setScoreEdits((prev) => ({ ...prev, [num]: e.target.value }))}
                       />
@@ -392,19 +477,37 @@ export function OnlineReviewPanel({ examId, examName, classId }: Props) {
                 })}
               </div>
 
-              <div className="online-review-actions">
-                <button className="primary-button" type="button" disabled={saving || scoringMode === "block_total"} onClick={() => void submitCurrent("reviewed", true)}>
-                  {saving ? <Loader2 size={14} className="spin" /> : <CheckCircle2 size={14} />}
+              <div className="mt-auto flex flex-col gap-2 pt-2">
+                <Button
+                  variant="primary"
+                  block
+                  icon={<CheckCircle2 />}
+                  loading={saving}
+                  disabled={submitDisabled}
+                  onClick={() => void submitCurrent("reviewed", true)}
+                >
                   保存并下一份
-                </button>
-                <button className="ghost-button" type="button" disabled={saving || scoringMode === "block_total"} onClick={() => void submitCurrent("reviewed", false)}>
-                  仅保存
-                </button>
-                <button className="ghost-button" type="button" disabled={saving || scoringMode === "block_total"} onClick={() => void submitCurrent("disputed", false)}>
-                  标记争议
-                </button>
+                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    block
+                    disabled={submitDisabled}
+                    onClick={() => void submitCurrent("reviewed", false)}
+                  >
+                    仅保存
+                  </Button>
+                  <Button
+                    variant="outline"
+                    block
+                    disabled={submitDisabled}
+                    onClick={() => void submitCurrent("disputed", false)}
+                  >
+                    标记争议
+                  </Button>
+                </div>
               </div>
-            </div>
+            </Panel>
           </div>
         )}
       </div>

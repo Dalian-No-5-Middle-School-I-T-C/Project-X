@@ -1,7 +1,17 @@
-import React, { useEffect, useState, useCallback } from "react";
-import { ClipboardCheck, Plus, Trash2 } from "lucide-react";
+import { useEffect, useState, useCallback } from "react";
+import { ClipboardCheck, Layers, Plus, Trash2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { ExamRecord } from "../../../../shared/types";
+import {
+  Badge,
+  Button,
+  Card,
+  Checkbox,
+  EmptyState,
+  SegmentedControl,
+  type SegmentedItem,
+} from "./ui/v2";
+import { cn } from "../lib/utils";
 
 interface ExamItem extends ExamRecord {
   hasReviewTask?: boolean;
@@ -23,6 +33,11 @@ interface Props {
   onEnterExam: (examId: number) => void;
   onEnterReview: (examId: number) => void;
 }
+
+const MANAGE_MODE_ITEMS: ReadonlyArray<SegmentedItem<"single" | "group">> = [
+  { value: "single", label: "单科考试" },
+  { value: "group", label: "大考", icon: <Layers /> },
+];
 
 export function ExamManagementPage({
   exams, onCreateExam, onCreateGroup, onDeleteSelected, selectedIds,
@@ -53,82 +68,82 @@ export function ExamManagementPage({
   const renderExamRow = (exam: ExamItem, isReview: boolean) => (
     <div
       key={exam.id}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        padding: "10px 14px",
-        background: isReview ? "#FFF8E1" : "var(--color-background-secondary)",
-        borderRadius: 8,
-        borderLeft: isReview ? "3px solid #FFA000" : "0.5px solid var(--color-border-tertiary)",
-        gap: 12,
-        marginBottom: 6,
-      }}
+      className={cn(
+        "mb-1.5 flex items-center gap-3 rounded-lg px-3.5 py-2.5",
+        isReview
+          ? "border-l-[3px] border-l-warning bg-warning-soft"
+          : "border border-border-subtle bg-secondary",
+      )}
     >
       {examManageMode === "single" && (
-        <input
-          type="checkbox"
+        <Checkbox
+          aria-label={`选择考试 ${exam.name}`}
           checked={selectedIds.has(exam.id)}
-          onChange={() => onToggleSelect(exam.id)}
-          style={{ width: 16, height: 16, flexShrink: 0 }}
+          onCheckedChange={() => onToggleSelect(exam.id)}
         />
       )}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 500, fontSize: 14 }}>
-          {exam.name}
-          {isReview && <span style={{ color: "#E65100", marginLeft: 8, fontSize: 12, display: "inline-flex", alignItems: "center", gap: 4 }}><ClipboardCheck size={13} aria-hidden="true" /> 待阅</span>}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 text-base font-medium text-foreground">
+          <span className="truncate">{exam.name}</span>
+          {isReview && (
+            <Badge tone="warning" icon={<ClipboardCheck aria-hidden />}>待阅</Badge>
+          )}
         </div>
-        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>
+        <div className="mt-0.5 text-xs text-muted-foreground">
           {exam.subject ?? "未指定科目"} · {exam.status}
           {exam.start_time && ` · ${exam.start_time.slice(0, 10)}`}
         </div>
       </div>
-      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+      <div className="flex shrink-0 gap-1.5">
         {isReview && (
-          <button onClick={() => onEnterReview(exam.id)} style={actionBtn("var(--color-background-warning, #FFA000)", "#fff")}>
+          <Button size="sm" variant="primary" onClick={() => onEnterReview(exam.id)}>
             网阅
-          </button>
+          </Button>
         )}
-        <button onClick={() => onEnterExam(exam.id)} style={actionBtn("var(--color-background-secondary)", "var(--color-text-primary)")}>
+        <Button size="sm" variant="outline" onClick={() => onEnterExam(exam.id)}>
           详情
-        </button>
+        </Button>
       </div>
     </div>
   );
 
   return (
-    <div style={{ padding: 24 }}>
+    <div className="p-6">
       {/* 工具栏 */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         {examManageMode === "single" ? (
           <>
-            <button className="primary-button" onClick={onCreateExam}>
-              <Plus size={16} /> 新建考试
-            </button>
+            <Button variant="primary" icon={<Plus />} onClick={onCreateExam}>
+              新建考试
+            </Button>
             {selectedIds.size > 0 && (
-              <button className="ghost-button" style={{ color: "#E24B4A" }} onClick={onDeleteSelected}>
-                <Trash2 size={16} /> 删除选中 ({selectedIds.size})
-              </button>
+              <Button variant="ghost" icon={<Trash2 />} className="text-destructive-fg" onClick={onDeleteSelected}>
+                删除选中 ({selectedIds.size})
+              </Button>
             )}
           </>
         ) : (
-          <button className="primary-button" onClick={onCreateGroup}>
-            <Plus size={16} /> 新建大考
-          </button>
+          <Button variant="primary" icon={<Plus />} onClick={onCreateGroup}>
+            新建大考
+          </Button>
         )}
-        <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
-          共 {examManageMode === "single" ? exams.length : groupsCount} {examManageMode === "single" ? "个考试" : "个大考"}
+        <span className="text-sm text-muted-foreground">
+          共 <span className="tabular-nums">{examManageMode === "single" ? exams.length : groupsCount}</span> {examManageMode === "single" ? "个考试" : "个大考"}
         </span>
-        <div style={{ display: "flex", gap: 0, border: "1px solid var(--color-text-primary)", borderRadius: 6, overflow: "hidden", marginLeft: "auto" }}>
-          <button onClick={() => onSetExamManageMode("single")} style={toggleStyle(examManageMode === "single")}>单科考试</button>
-          <button onClick={() => onSetExamManageMode("group")} style={toggleStyle(examManageMode === "group")}>大考</button>
-        </div>
+        <SegmentedControl
+          className="ml-auto"
+          aria-label="考试管理视图"
+          value={examManageMode}
+          onValueChange={onSetExamManageMode}
+          items={MANAGE_MODE_ITEMS}
+        />
       </div>
 
       {/* 阅卷中区域 */}
       {reviewExams.length > 0 && (
         <>
-          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8, marginTop: 4 }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><ClipboardCheck size={13} aria-hidden="true" /> 阅卷中</span>
+          <div className="mt-1 mb-2 inline-flex items-center gap-1 text-xs text-muted-foreground">
+            <ClipboardCheck className="size-3.5" aria-hidden /> 阅卷中
           </div>
           {reviewExams.map((e) => renderExamRow(e, true))}
         </>
@@ -136,39 +151,22 @@ export function ExamManagementPage({
 
       {/* 分割线 */}
       {hasDivider && (
-        <div style={{ margin: "16px 0", borderTop: "1px solid var(--color-border-primary)", paddingTop: 8, fontSize: 12, color: "var(--color-text-secondary)" }}>
-          ─── 其他考试 ───
+        <div className="my-4 border-t border-border pt-2 text-xs text-muted-foreground">
+          其他考试
         </div>
       )}
 
       {/* 普通考试 */}
       {normalExams.length > 0 && reviewExams.length === 0 && exams.length > 0 && (
-        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 8 }}>全部考试</div>
+        <div className="mb-2 text-xs text-muted-foreground">全部考试</div>
       )}
       {normalExams.map((e) => renderExamRow(e, false))}
 
       {exams.length === 0 && (
-        <div style={{ padding: 40, textAlign: "center", color: "var(--color-text-tertiary)" }}>
-          暂无考试
-        </div>
+        <Card className="p-2">
+          <EmptyState icon={<Layers />} title="暂无考试" size="sm" />
+        </Card>
       )}
     </div>
   );
-}
-
-function actionBtn(bg: string, color: string): React.CSSProperties {
-  return {
-    padding: "5px 12px", fontSize: 12, fontWeight: 500, borderRadius: 6,
-    border: `0.5px solid ${color === "#fff" ? "transparent" : "var(--color-border-primary)"}`,
-    background: bg, color, cursor: "pointer", whiteSpace: "nowrap",
-  };
-}
-
-function toggleStyle(active: boolean): React.CSSProperties {
-  return {
-    padding: "5px 14px", border: "none",
-    background: active ? "var(--color-text-primary)" : "var(--color-background-secondary)",
-    color: active ? "var(--color-background-primary)" : "var(--color-text-primary)",
-    fontSize: 12, cursor: "pointer", fontWeight: active ? 600 : 400,
-  };
 }

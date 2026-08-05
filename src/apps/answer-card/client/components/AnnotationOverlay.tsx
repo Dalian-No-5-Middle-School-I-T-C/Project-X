@@ -1,5 +1,13 @@
+// AnnotationOverlay —— 阅卷批注浮层（T5 v2 迁移）
+// UI-4：浮层 z-index 一律走令牌阶梯（--px-z-raised / --px-z-dropdown），杜绝魔法数。
+// 视觉层令牌化：批注红改走 destructive 语义；canvas 笔触颜色从 --px-danger-bg 读取，
+// 因此暗色主题下批注颜色会自动跟随，而不再写死 #FF3B30。
+// 功能守恒：批注坐标换算、palm rejection、笔画采集与 onSaveAnnotation 回调形状零改动。
+// 说明：批注定位是数据驱动的动态百分比，按 EXECUTION-PLAN §1.3「动态值除外」
+//       仅保留几何定位的 inline style，不承载任何颜色。
 import React, { useRef, useState, useCallback, useEffect } from "react";
 import type { ReviewAnnotation } from "../../../../shared/types";
+import { Input } from "./ui/v2";
 
 interface Props {
   cropId: string;
@@ -8,6 +16,18 @@ interface Props {
   mode: "text" | "drawing" | false;
   existingAnnotations: ReviewAnnotation[];
   onSaveAnnotation: (annotation: { type: "text" | "drawing"; dataJson: Record<string, unknown>; x: number; y: number; w?: number; h?: number }) => void;
+}
+
+/** canvas 2D 无法消费 CSS 类，按 chart.tsx 既有做法从令牌读取笔触色 */
+const INK_FALLBACK = "rgb(192 15 40)";
+function readInkColor(): string {
+  if (typeof window === "undefined" || typeof document === "undefined") {
+    return INK_FALLBACK;
+  }
+  const value = getComputedStyle(document.documentElement)
+    .getPropertyValue("--px-danger-bg")
+    .trim();
+  return value || INK_FALLBACK;
 }
 
 export function AnnotationOverlay({ cropId, imageWidth, imageHeight, mode, existingAnnotations, onSaveAnnotation }: Props) {
@@ -54,6 +74,7 @@ export function AnnotationOverlay({ cropId, imageWidth, imageHeight, mode, exist
     canvas.width = containerRef.current.clientWidth;
     canvas.height = containerRef.current.clientHeight;
 
+    const inkColor = readInkColor();
     let drawing = false;
     let lastX = 0;
     let lastY = 0;
@@ -85,7 +106,7 @@ export function AnnotationOverlay({ cropId, imageWidth, imageHeight, mode, exist
       const pos = getPos(e);
       currentStroke.push([pos.x, pos.y]);
       ctx.lineTo(e.clientX - canvas.getBoundingClientRect().left, e.clientY - canvas.getBoundingClientRect().top);
-      ctx.strokeStyle = "#FF3B30";
+      ctx.strokeStyle = inkColor;
       ctx.lineWidth = 3;
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
@@ -126,39 +147,27 @@ export function AnnotationOverlay({ cropId, imageWidth, imageHeight, mode, exist
   return (
     <div
       ref={containerRef}
-      style={{
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        cursor: mode === "text" ? "crosshair" : mode === "drawing" ? "crosshair" : "default",
-      }}
+      data-crop-id={cropId}
+      data-drawing={isDrawing || undefined}
+      className="absolute inset-0 z-(--px-z-raised) cursor-crosshair"
       onClick={mode === "text" ? handleTextClick : undefined}
     >
       {/* 已有批注渲染 */}
       {existingAnnotations.map((ann) => (
         <div
           key={ann.id}
+          className={
+            ann.type === "text"
+              ? "pointer-events-none absolute h-auto w-auto"
+              : "pointer-events-none absolute h-full w-full"
+          }
           style={{
-            position: "absolute",
             left: `${(ann.dataJson.x as number ?? 0) / imageWidth * 100}%`,
             top: `${(ann.dataJson.y as number ?? 0) / imageHeight * 100}%`,
-            width: ann.type === "text" ? "auto" : "100%",
-            height: ann.type === "text" ? "auto" : "100%",
-            pointerEvents: "none",
           }}
         >
           {ann.type === "text" && (
-            <div style={{
-              background: "rgba(255, 59, 48, 0.15)",
-              borderLeft: "2px solid #FF3B30",
-              padding: "2px 8px",
-              fontSize: 12,
-              borderRadius: 4,
-              color: "#FF3B30",
-              maxWidth: 200,
-            }}>
+            <div className="max-w-50 rounded-xs border-l-2 border-destructive bg-destructive-soft px-2 py-0.5 text-xs text-destructive-fg">
               {ann.dataJson.text as string}
             </div>
           )}
@@ -169,44 +178,29 @@ export function AnnotationOverlay({ cropId, imageWidth, imageHeight, mode, exist
       {mode === "drawing" && (
         <canvas
           ref={canvasRef}
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width: "100%",
-            height: "100%",
-            touchAction: "none",
-          }}
+          className="absolute top-0 left-0 h-full w-full touch-none"
         />
       )}
 
       {/* 文字输入弹层 */}
       {textInput.show && (
         <div
+          className="absolute z-(--px-z-dropdown)"
           style={{
-            position: "absolute",
             left: `${textInput.x / imageWidth * 100}%`,
             top: `${textInput.y / imageHeight * 100}%`,
-            transform: "translate(0, 0)",
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          <input
+          <Input
             autoFocus
             value={textValue}
             onChange={(e) => setTextValue(e.target.value)}
             onBlur={handleTextSubmit}
             onKeyDown={(e) => { if (e.key === "Enter") handleTextSubmit(); if (e.key === "Escape") setTextInput({ ...textInput, show: false }); }}
             placeholder="输入批注..."
-            style={{
-              border: "1px solid #FF3B30",
-              borderRadius: 4,
-              padding: "4px 8px",
-              fontSize: 13,
-              outline: "none",
-              background: "white",
-              minWidth: 150,
-            }}
+            aria-label="输入批注"
+            className="h-control-sm w-40 border-destructive-border text-sm"
           />
         </div>
       )}

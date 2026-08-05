@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { AlertTriangle, CheckCircle2, ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCw, RotateCcw, PenLine, Save } from "lucide-react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, ClipboardList, ZoomIn, ZoomOut, RotateCw, RotateCcw, PenLine, Save } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import { ScorePad } from "./ScorePad";
 import { AnnotationOverlay } from "./AnnotationOverlay";
 import type { ReviewBlockCropItem, ReviewAnnotation, ReviewSubmitResult } from "../../../../shared/types";
+import { Button, EmptyState, Kbd } from "./ui/v2";
+import { cn } from "../lib/utils";
 
 interface Props {
   examId: number;
@@ -230,66 +232,37 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
 
   if (queue.length === 0 && sessionLoaded) {
     return (
-      <div style={{ padding: 24 }}>
-        <button onClick={onBack} className="back-to-home-button" style={backBtnStyle}>← 返回</button>
-        <div style={{ padding: 40, textAlign: "center", color: "var(--color-text-tertiary)" }}>
-          {error || "暂无待阅切块"}
-        </div>
+      <div className="p-6">
+        <Button variant="outline" icon={<ArrowLeft />} onClick={onBack}>返回</Button>
+        <EmptyState
+          className="mt-4"
+          icon={<ClipboardList />}
+          title={error || "暂无待阅切块"}
+        />
       </div>
     );
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
+    <div className="flex h-screen flex-col overflow-hidden">
       {/* 顶部栏 */}
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        padding: "8px 16px",
-        borderBottom: "0.5px solid var(--color-border-tertiary)",
-        gap: 12,
-        minHeight: 52,
-      }}>
-        <button onClick={onBack} style={backBtnStyle}>← 返回</button>
-        <div style={{ flex: 1, fontWeight: 500, fontSize: 15 }}>
+      <div className="flex min-h-13 items-center gap-3 border-b border-border-subtle px-4 py-2">
+        <Button variant="outline" icon={<ArrowLeft />} onClick={onBack}>返回</Button>
+        <div className="min-w-0 flex-1 truncate text-base font-medium text-foreground">
           {current?.blockTitle || blockId}
         </div>
-        <div style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-secondary)" }}>
+        <div className="text-sm font-medium text-muted-foreground tabular-nums">
           {currentIndex + 1} / {queue.length}
         </div>
       </div>
 
-      {/* 主体 — PAD/移动端响应式 */}
-      <div className="grade-panel-body" style={{
-        flex: 1,
-        display: "grid",
-        gridTemplateColumns: "1.2fr 0.8fr",
-        overflow: "hidden",
-      }}>
-        <style>{`
-          @media (max-width: 900px) {
-            .grade-panel-body {
-              grid-template-columns: 1fr !important;
-              grid-template-rows: 55% 45% !important;
-            }
-          }
-        `}</style>
+      {/* 主体 — PAD/移动端响应式：<900px 上下分栏，≥900px 左右分栏 */}
+      <div className="grid flex-1 grid-cols-1 grid-rows-[55%_45%] overflow-hidden min-[900px]:grid-cols-[1.2fr_0.8fr] min-[900px]:grid-rows-1">
         {/* 左侧: 图片区 */}
-        <div style={{
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          background: "var(--color-background-tertiary)",
-        }}>
+        <div className="flex flex-col overflow-hidden bg-secondary">
           {/* 学生信息 */}
           {current && (
-            <div style={{
-              padding: "8px 16px",
-              fontSize: 13,
-              color: "var(--color-text-secondary)",
-              display: "flex",
-              gap: 16,
-            }}>
+            <div className="flex gap-4 px-4 py-2 text-sm text-muted-foreground">
               <span>{current.studentName || `学生${current.studentId}`}</span>
               {current.studentNumber && <span>考号: {current.studentNumber}</span>}
             </div>
@@ -298,32 +271,19 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
           {/* 图片区域 */}
           <div
             ref={imageRef}
-            style={{
-              flex: 1,
-              overflow: "auto",
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "flex-start",
-              padding: 16,
-              position: "relative",
-            }}
+            className="relative flex flex-1 items-start justify-center overflow-auto p-4"
             onWheel={handleWheel}
           >
             {current && (
-              <div style={{
-                position: "relative",
-                transform: `scale(${zoom}) rotate(${rotation}deg)`,
-                transformOrigin: "center center",
-                transition: "transform 0.2s",
-              }}>
+              <div
+                className="relative origin-center transition-transform duration-(--px-dur-2) ease-standard"
+                // 动态缩放/旋转（EXECUTION-PLAN §1.3 允许的动态值内联）
+                style={{ transform: `scale(${zoom}) rotate(${rotation}deg)` }}
+              >
                 <img
                   src={mediaUrl(current.imageUrl)}
                   alt={current.blockTitle || "作答切块"}
-                  style={{
-                    maxWidth: "100%",
-                    maxHeight: "65vh",
-                    display: "block",
-                  }}
+                  className="block max-h-[65vh] max-w-full"
                   draggable={false}
                 />
                 <AnnotationOverlay
@@ -339,56 +299,40 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
           </div>
 
           {/* 工具栏 */}
-          <div style={{
-            display: "flex",
-            alignItems: "center",
-            padding: "8px 16px",
-            borderTop: "0.5px solid var(--color-border-tertiary)",
-            gap: 8,
-            minHeight: 48,
-          }}>
-            <button onClick={() => goTo(currentIndex - 1)} disabled={currentIndex <= 0} style={iconBtnStyle}>
-              <ChevronLeft size={20} />
-            </button>
-            <button onClick={() => goTo(currentIndex + 1)} disabled={currentIndex >= queue.length - 1} style={iconBtnStyle}>
-              <ChevronRight size={20} />
-            </button>
-            <div style={{ width: 1, height: 20, background: "var(--color-border-primary)" }} />
-            <button onClick={zoomOut} style={iconBtnStyle}><ZoomOut size={20} /></button>
-            <span style={{ fontSize: 12, color: "var(--color-text-secondary)", minWidth: 40, textAlign: "center" }}>
+          <div className="flex min-h-12 items-center gap-2 border-t border-border-subtle px-4 py-2">
+            <Button variant="ghost" size="icon" aria-label="上一份" onClick={() => goTo(currentIndex - 1)} disabled={currentIndex <= 0}>
+              <ChevronLeft />
+            </Button>
+            <Button variant="ghost" size="icon" aria-label="下一份" onClick={() => goTo(currentIndex + 1)} disabled={currentIndex >= queue.length - 1}>
+              <ChevronRight />
+            </Button>
+            <div className="h-5 w-px bg-border" aria-hidden />
+            <Button variant="ghost" size="icon" aria-label="缩小" onClick={zoomOut}><ZoomOut /></Button>
+            <span className="min-w-10 text-center text-xs text-muted-foreground tabular-nums">
               {Math.round(zoom * 100)}%
             </span>
-            <button onClick={zoomIn} style={iconBtnStyle}><ZoomIn size={20} /></button>
-            <div style={{ width: 1, height: 20, background: "var(--color-border-primary)" }} />
-            <button onClick={rotateCCW} style={iconBtnStyle}><RotateCcw size={20} /></button>
-            <button onClick={rotateCW} style={iconBtnStyle}><RotateCw size={20} /></button>
-            <div style={{ width: 1, height: 20, background: "var(--color-border-primary)" }} />
-            <button
+            <Button variant="ghost" size="icon" aria-label="放大" onClick={zoomIn}><ZoomIn /></Button>
+            <div className="h-5 w-px bg-border" aria-hidden />
+            <Button variant="ghost" size="icon" aria-label="逆时针旋转" onClick={rotateCCW}><RotateCcw /></Button>
+            <Button variant="ghost" size="icon" aria-label="顺时针旋转" onClick={rotateCW}><RotateCw /></Button>
+            <div className="h-5 w-px bg-border" aria-hidden />
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="批注"
+              aria-pressed={Boolean(annotateMode)}
+              className={cn(annotateMode && "bg-primary text-primary-foreground hover:bg-primary-hover hover:text-primary-foreground")}
               onClick={() => setAnnotateMode(annotateMode ? false : (isTouchDevice ? "drawing" : "text"))}
-              style={{
-                ...iconBtnStyle,
-                background: annotateMode ? "var(--color-text-primary)" : "transparent",
-                color: annotateMode ? "var(--color-background-primary)" : "var(--color-text-primary)",
-              }}
             >
-              <PenLine size={20} />
-            </button>
+              <PenLine />
+            </Button>
           </div>
         </div>
 
         {/* 右侧: 打分面板 */}
-        <div style={{
-          padding: 16,
-          borderLeft: "0.5px solid var(--color-border-tertiary)",
-          overflow: "auto",
-          display: "flex",
-          flexDirection: "column",
-        }}>
+        <div className="flex flex-col overflow-auto border-l border-border-subtle p-4">
           {scoringMode === "per_question" ? (
-            <div style={{
-              fontSize: 14, color: "#E24B4A", padding: "12px 14px",
-              background: "rgba(226,75,74,0.1)", borderRadius: 8,
-            }}>
+            <div className="rounded-lg bg-destructive-soft px-3.5 py-3 text-base text-destructive-fg">
               本题块配置为「逐题评分」模式，请使用在线阅卷逐题输入；如需在此面板打分，请管理员将评分模式改为「题块总分」。
             </div>
           ) : (
@@ -402,81 +346,44 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
             />
           )}
 
-          <div style={{ flex: 1 }} />
+          <div className="flex-1" />
 
           {/* 错误提示 */}
           {error && (
-            <div style={{
-              fontSize: 13,
-              color: errorTone === "success" ? "var(--color-text-success, #22c55e)" : "#E24B4A",
-              marginBottom: 12,
-              padding: "8px 12px",
-              background: errorTone === "success" ? "rgba(34,197,94,0.1)" : "rgba(226,75,74,0.1)",
-              borderRadius: 8,
-            }}>
-              {errorTone === "success" ? <CheckCircle2 size={15} aria-hidden="true" /> : <AlertTriangle size={15} aria-hidden="true" />}
+            <div
+              className={cn(
+                "mb-3 flex items-center gap-2 rounded-lg px-3 py-2 text-sm",
+                errorTone === "success"
+                  ? "bg-success-soft text-success-foreground"
+                  : "bg-destructive-soft text-destructive-fg",
+              )}
+              role="status"
+            >
+              {errorTone === "success"
+                ? <CheckCircle2 className="size-4 shrink-0" aria-hidden />
+                : <AlertTriangle className="size-4 shrink-0" aria-hidden />}
               {error}
             </div>
           )}
 
           {/* 操作按钮 */}
-          <button
+          <Button
+            variant="primary"
+            block
+            className="mb-2 min-h-14 text-lg [touch-action:manipulation]"
+            icon={<Save className="size-5" />}
+            loading={saving}
+            disabled={!current || scoringMode === "per_question"}
             onClick={() => handleSubmit()}
-            disabled={saving || !current || scoringMode === "per_question"}
-            style={{
-              width: "100%",
-              minHeight: 56,
-              fontSize: 18,
-              fontWeight: 500,
-              borderRadius: 12,
-              border: "none",
-              background: "#3C3489",
-              color: "#fff",
-              cursor: saving ? "default" : "pointer",
-              opacity: saving ? 0.7 : 1,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 8,
-              marginBottom: 8,
-              touchAction: "manipulation",
-            }}
           >
-            <Save size={20} />
             {saving ? "保存中..." : "保存并下一份"}
-          </button>
+          </Button>
 
-          <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", textAlign: "center" }}>
-            Enter = 保存并下一份 · ← → = 翻页 · 滚轮 = 缩放
+          <div className="flex flex-wrap items-center justify-center gap-1.5 text-xs text-muted-foreground">
+            <Kbd>Enter</Kbd> 保存并下一份 · <Kbd>←</Kbd> <Kbd>→</Kbd> 翻页 · 滚轮 缩放
           </div>
         </div>
       </div>
     </div>
   );
 }
-
-const backBtnStyle: React.CSSProperties = {
-  height: 44,
-  padding: "0 18px",
-  fontSize: 14,
-  fontWeight: 500,
-  border: "1px solid var(--color-border-primary)",
-  borderRadius: 8,
-  background: "var(--color-background-secondary)",
-  cursor: "pointer",
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 4,
-};
-
-const iconBtnStyle: React.CSSProperties = {
-  height: 40,
-  width: 40,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  border: "0.5px solid var(--color-border-tertiary)",
-  borderRadius: 8,
-  background: "transparent",
-  cursor: "pointer",
-};
