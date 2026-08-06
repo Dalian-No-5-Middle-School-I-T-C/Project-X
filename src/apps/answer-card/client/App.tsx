@@ -464,7 +464,6 @@ function App() {
       return "light";
     }
   });
-  // 移动端 Drawer 开合状态（仅 ≤480px 渲染，见 MobileDrawer 与 styles.css）
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(() => {
     try { return localStorage.getItem("projectx-rail-collapsed") === "true"; } catch { return false; }
