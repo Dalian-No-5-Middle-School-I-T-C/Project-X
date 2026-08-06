@@ -1,8 +1,22 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { createPortal } from "react-dom";
-import { DragDropZone } from "./DragDropZone";
+import { useState, useEffect, useCallback } from "react";
 import { KnowledgeTagList } from "./KnowledgeTagList";
+import { BrainCircuit } from "lucide-react";
 import { authFetch } from "../auth/api";
+import {
+  Button,
+  ControlRow,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Input,
+  RadioGroup,
+  RadioGroupItem,
+  Textarea,
+  UploadZone,
+} from "./ui/v2";
 
 interface Props {
   cardId: string;
@@ -115,6 +129,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
   };
 
   const handleAnalyze = async () => {
+    if (analyzing) return;
     setAnalyzing(true);
     setAnalyzeError(null);
     try {
@@ -155,6 +170,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
   };
 
   const handleSave = async () => {
+    if (saving) return;
     setSaving(true);
     try {
       const range = questionRange === "all" ? "全部" : customRange.trim();
@@ -190,145 +206,160 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
     }
   };
 
-  return createPortal(
-    <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="paper-upload-panel">
-        <div className="paper-upload-header">
-          <h3>📋 原卷信息</h3>
-          <button className="modal-close-btn" onClick={onClose}>✕</button>
-        </div>
+  return (
+    <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
+      <DialogContent size="md">
+        <DialogHeader>
+          <DialogTitle>原卷信息</DialogTitle>
+        </DialogHeader>
 
-        {/* 导入文件区（支持多页） */}
-        <div className="paper-section">
-          <h4>导入文件（支持多页）</h4>
-          <DragDropZone
-            accept=".docx,.pdf,image/*"
-            maxSize={50 * 1024 * 1024}
-            multiple
-            onFiles={handleFiles}
-            disabled={uploading}
-            label={uploading ? "上传中..." : "拖拽文件到此处，或点击选择（可多选多页）"}
-            sublabel="DOCX / PDF / 图片，最大 50MB，可一次选择多页"
-          />
-          {pages.length > 0 && (
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-              {pages.map((p) => (
-                <div
-                  key={p.pageIndex}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "10px 12px",
-                    background: "var(--color-background-secondary)",
-                    borderRadius: 8,
-                    border: "0.5px solid var(--color-border-tertiary)",
-                    gap: 12,
-                  }}
-                >
-                  <span style={{ fontSize: 13 }}>第 {p.pageIndex} 页 · {p.filename}</span>
-                  <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                    <button className="ghost-button" onClick={() => window.open(`/api/cards/${cardId}/paper?page=${p.pageIndex}`, "_blank")}>查看</button>
-                    <button className="ghost-button danger" onClick={() => void handleDeletePage(p.pageIndex)}>删除</button>
+        <DialogBody className="flex flex-col gap-6">
+          {/* 导入文件区（支持多页） */}
+          <section className="flex flex-col gap-2">
+            <h4 className="m-0 text-base font-medium text-foreground">导入文件（支持多页）</h4>
+            <UploadZone
+              accept=".docx,.pdf,image/*"
+              maxSize={50 * 1024 * 1024}
+              multiple
+              onFiles={handleFiles}
+              disabled={uploading}
+              label={uploading ? "上传中..." : "拖拽文件到此处，或点击选择（可多选多页）"}
+              sublabel="DOCX / PDF / 图片，最大 50MB，可一次选择多页"
+            />
+            {pages.length > 0 && (
+              <div className="mt-1 flex flex-col gap-2">
+                {pages.map((p) => (
+                  <div
+                    key={p.pageIndex}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-border-subtle bg-secondary px-3 py-2.5"
+                  >
+                    <span className="truncate text-sm text-foreground">
+                      第 <span className="tabular-nums">{p.pageIndex}</span> 页 · {p.filename}
+                    </span>
+                    <div className="flex shrink-0 gap-2">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => window.open(`/api/cards/${cardId}/paper?page=${p.pageIndex}`, "_blank")}
+                      >
+                        查看
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive-fg"
+                        onClick={() => void handleDeletePage(p.pageIndex)}
+                      >
+                        删除
+                      </Button>
+                    </div>
                   </div>
-                </div>
-              ))}
-              <button className="ghost-button danger" onClick={() => void handleDelete()} style={{ alignSelf: "flex-start", marginTop: 4 }}>
-                删除全部原卷
-              </button>
-            </div>
-          )}
-          {uploadError && <p className="field-error">{uploadError}</p>}
-        </div>
+                ))}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="self-start text-destructive-fg"
+                  onClick={() => void handleDelete()}
+                >
+                  删除全部原卷
+                </Button>
+              </div>
+            )}
+            {uploadError && <p className="m-0 text-xs text-destructive-fg">{uploadError}</p>}
+          </section>
 
-        {/* 题目范围 */}
-        <div className="paper-section">
-          <h4>题目范围 *</h4>
-          <label className="radio-label">
-            <input
-              type="radio"
-              name="range"
-              checked={questionRange === "all"}
-              onChange={() => setQuestionRange("all")}
-            />
-            全部题目
-          </label>
-          <label className="radio-label">
-            <input
-              type="radio"
-              name="range"
-              checked={questionRange === "custom"}
-              onChange={() => setQuestionRange("custom")}
-            />
-            自定义范围
-          </label>
-          {questionRange === "custom" && (
-            <input
-              type="text"
-              className="text-input"
-              placeholder="如：第1-15题、选择题部分"
-              value={customRange}
-              onChange={(e) => setCustomRange(e.target.value)}
-            />
-          )}
-        </div>
-
-        {/* 特别描述 */}
-        <div className="paper-section">
-          <h4>特别描述（可选）</h4>
-          <textarea
-            className="textarea-input"
-            placeholder="如：本次考试重点考察力学综合运用能力..."
-            value={extraNotes}
-            onChange={(e) => setExtraNotes(e.target.value)}
-            rows={3}
-          />
-        </div>
-
-        {/* AI 分析区 */}
-        <div className="paper-section">
-          <h4>AI 知识点分析</h4>
-          {analyzeError && <p className="field-error">{analyzeError}</p>}
-          <button
-            className="primary-button"
-            onClick={handleAnalyze}
-            disabled={analyzing || pages.length === 0}
-          >
-            {analyzing ? "分析中..." : "🤖 开始分析"}
-          </button>
-          {knowledgePoints.length > 0 && (
-            <div style={{ marginTop: "12px" }}>
-              <KnowledgeTagList
-                questions={knowledgePoints}
-                onChange={setKnowledgePoints}
-                editable
+          {/* 题目范围 */}
+          <section className="flex flex-col gap-2">
+            <h4 className="m-0 text-base font-medium text-foreground">
+              题目范围 <span className="text-destructive" aria-hidden>*</span>
+            </h4>
+            <RadioGroup
+              value={questionRange}
+              onValueChange={(value) => setQuestionRange(value as "all" | "custom")}
+            >
+              <ControlRow
+                htmlFor="paper-range-all"
+                control={<RadioGroupItem id="paper-range-all" value="all" />}
+                label="全部题目"
               />
-              <button
-                className="ghost-button"
-                onClick={handleAnalyze}
-                disabled={analyzing}
-                style={{ marginTop: "8px" }}
-              >
-                重新分析
-              </button>
-            </div>
-          )}
-        </div>
+              <ControlRow
+                htmlFor="paper-range-custom"
+                control={<RadioGroupItem id="paper-range-custom" value="custom" />}
+                label="自定义范围"
+              />
+            </RadioGroup>
+            {questionRange === "custom" && (
+              <Input
+                type="text"
+                placeholder="如：第1-15题、选择题部分"
+                aria-label="自定义题目范围"
+                value={customRange}
+                onChange={(e) => setCustomRange(e.target.value)}
+              />
+            )}
+          </section>
+
+          {/* 特别描述 */}
+          <section className="flex flex-col gap-2">
+            <h4 className="m-0 text-base font-medium text-foreground">特别描述（可选）</h4>
+            <Textarea
+              placeholder="如：本次考试重点考察力学综合运用能力..."
+              aria-label="特别描述"
+              value={extraNotes}
+              onChange={(e) => setExtraNotes(e.target.value)}
+              rows={3}
+            />
+          </section>
+
+          {/* AI 分析区 */}
+          <section className="flex flex-col gap-2">
+            <h4 className="m-0 text-base font-medium text-foreground">AI 知识点分析</h4>
+            {analyzeError && <p className="m-0 text-xs text-destructive-fg">{analyzeError}</p>}
+            <Button
+              variant="primary"
+              className="self-start"
+              icon={<BrainCircuit />}
+              loading={analyzing}
+              disabled={pages.length === 0}
+              onClick={() => void handleAnalyze()}
+            >
+              {analyzing ? "分析中..." : "开始分析"}
+            </Button>
+            {knowledgePoints.length > 0 && (
+              <div className="mt-1 flex flex-col gap-2">
+                <KnowledgeTagList
+                  questions={knowledgePoints}
+                  onChange={setKnowledgePoints}
+                  editable
+                />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="self-start"
+                  loading={analyzing}
+                  onClick={() => void handleAnalyze()}
+                >
+                  重新分析
+                </Button>
+              </div>
+            )}
+          </section>
+        </DialogBody>
 
         {/* 底部按钮 */}
-        <div className="paper-upload-footer">
-          <button className="ghost-button" onClick={onClose}>关闭</button>
-          <button
-            className="primary-button"
-            onClick={handleSave}
-            disabled={saving || pages.length === 0}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>关闭</Button>
+          <Button
+            variant="primary"
+            loading={saving}
+            disabled={pages.length === 0}
+            onClick={() => void handleSave()}
           >
             {saving ? "保存中..." : "保存全部"}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

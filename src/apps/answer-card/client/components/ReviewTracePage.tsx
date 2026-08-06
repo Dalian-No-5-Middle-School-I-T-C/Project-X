@@ -1,9 +1,50 @@
+// ReviewTracePage —— 阅卷溯源（T5 v2 迁移）
+// 视觉层整体切换到 v2：Table / Badge / EmptyState / Spinner。
+// 功能守恒：API `/api/review/exams/:examId/trace` 与数据形状零改动。
 import React, { useState, useEffect, useCallback } from "react";
+import { FileSearch } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { ReviewTraceItem } from "../../../../shared/types";
+import {
+  Badge,
+  EmptyState,
+  Spinner,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableWrap,
+} from "./ui/v2";
 
 interface Props {
   examId: number;
+}
+
+type TraceStatus = ReviewTraceItem["status"];
+
+/** 溯源状态 → v2 Badge tone + 文案（色彩不单独承载状态，始终带文字） */
+function traceStatusBadge(status: TraceStatus): React.ReactElement {
+  if (status === "reviewed") {
+    return (
+      <Badge tone="success" dot>
+        已审
+      </Badge>
+    );
+  }
+  if (status === "disputed") {
+    return (
+      <Badge tone="danger" dot>
+        争议
+      </Badge>
+    );
+  }
+  return (
+    <Badge tone="neutral" dot>
+      {status}
+    </Badge>
+  );
 }
 
 export function ReviewTracePage({ examId }: Props) {
@@ -23,59 +64,70 @@ export function ReviewTracePage({ examId }: Props) {
 
   useEffect(() => { load(); }, [load]);
 
-  if (loading) return <div style={{ padding: 24 }}>加载中...</div>;
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
+        <Spinner size={16} /> 加载中...
+      </div>
+    );
+  }
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 16 }}>阅卷溯源</div>
+    <div className="flex flex-col gap-4 p-6">
+      <h2 className="text-lg font-semibold text-foreground">阅卷溯源</h2>
 
       {traces.length === 0 ? (
-        <div style={{ color: "var(--color-text-tertiary)" }}>暂无溯源数据</div>
+        <EmptyState
+          icon={<FileSearch />}
+          title="暂无溯源数据"
+          description="本场考试尚未产生评分记录，完成阅卷后此处会展示每份作答的评分轨迹。"
+        />
       ) : (
-        <div style={{ overflow: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-            <thead>
-              <tr style={{ borderBottom: "1px solid var(--color-border-primary)", textAlign: "left" }}>
-                <th style={{ padding: "8px 12px" }}>学生</th>
-                <th style={{ padding: "8px 12px" }}>学号</th>
-                <th style={{ padding: "8px 12px" }}>题块</th>
-                <th style={{ padding: "8px 12px" }}>评分历史</th>
-                <th style={{ padding: "8px 12px" }}>最终分</th>
-                <th style={{ padding: "8px 12px" }}>状态</th>
-              </tr>
-            </thead>
-            <tbody>
+        <TableWrap>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>学生</TableHead>
+                <TableHead>学号</TableHead>
+                <TableHead>题块</TableHead>
+                <TableHead>评分历史</TableHead>
+                <TableHead numeric>最终分</TableHead>
+                <TableHead>状态</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {traces.map((t) => (
-                <tr key={t.cropId} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-                  <td style={{ padding: "8px 12px" }}>{t.studentName}</td>
-                  <td style={{ padding: "8px 12px", color: "var(--color-text-secondary)" }}>{t.studentNumber}</td>
-                  <td style={{ padding: "8px 12px" }}>{t.blockTitle}</td>
-                  <td style={{ padding: "8px 12px" }}>
-                    {t.rounds.map((r, i) => (
-                      <span key={i} style={{ marginRight: 8, fontSize: 12, color: "var(--color-text-secondary)" }}>
-                        R{r.round}: {r.reviewerName}({r.score})
-                      </span>
-                    ))}
-                  </td>
-                  <td style={{ padding: "8px 12px", fontWeight: 500 }}>
-                    {t.finalScore != null ? t.finalScore : t.status === "disputed" ? "争议中" : "-"}
-                  </td>
-                  <td style={{ padding: "8px 12px" }}>
-                    <span style={{
-                      fontSize: 12,
-                      padding: "2px 8px",
-                      borderRadius: 4,
-                      background: t.status === "reviewed" ? "rgba(99,153,34,0.1)" : t.status === "disputed" ? "rgba(226,75,74,0.1)" : "var(--color-background-tertiary)",
-                      color: t.status === "reviewed" ? "#639922" : t.status === "disputed" ? "#E24B4A" : "var(--color-text-secondary)",
-                    }}>
-                      {t.status === "reviewed" ? "已审" : t.status === "disputed" ? "争议" : t.status}
-                    </span>
-                  </td>
-                </tr>
+                <TableRow key={t.cropId}>
+                  <TableCell className="font-medium">{t.studentName}</TableCell>
+                  <TableCell className="tabular-nums text-muted-foreground">
+                    {t.studentNumber}
+                  </TableCell>
+                  <TableCell>{t.blockTitle}</TableCell>
+                  <TableCell>
+                    <div className="flex flex-wrap gap-x-3 gap-y-1">
+                      {t.rounds.map((r, i) => (
+                        <span
+                          key={i}
+                          className="text-xs tabular-nums text-muted-foreground"
+                        >
+                          R{r.round}: {r.reviewerName}({r.score})
+                        </span>
+                      ))}
+                    </div>
+                  </TableCell>
+                  <TableCell numeric className="font-medium">
+                    {t.finalScore != null
+                      ? t.finalScore
+                      : t.status === "disputed"
+                        ? "争议中"
+                        : "-"}
+                  </TableCell>
+                  <TableCell>{traceStatusBadge(t.status)}</TableCell>
+                </TableRow>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </TableBody>
+          </Table>
+        </TableWrap>
       )}
     </div>
   );

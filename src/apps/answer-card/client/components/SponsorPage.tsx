@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, QrCode } from "lucide-react";
 import { fetchJson } from "../auth/api";
+import { Button, Card, CardContent } from "./ui/v2";
 
 interface SponsorChannel {
   id: string;
@@ -39,42 +40,42 @@ export function SponsorPage({ onBack }: { onBack: () => void }) {
   }, [loadConfig]);
 
   return (
-    <div className="sponsor-page">
-      <div className="account-panel-header">
-        <div>
-          <strong>{config?.title ?? "支持 Project-X"}</strong>
-        </div>
-        <button className="ghost-button" type="button" onClick={onBack}>
-          <ArrowLeft size={16} /> 返回
-        </button>
-      </div>
+    <div className="flex flex-col gap-4">
+      <header className="flex items-center justify-between gap-3">
+        <strong className="text-lg font-semibold text-foreground">{config?.title ?? "支持 Project-X"}</strong>
+        <Button variant="outline" size="sm" icon={<ArrowLeft size={16} />} onClick={onBack}>
+          返回
+        </Button>
+      </header>
 
-      {error && <p className="login-error">{error}</p>}
+      {error && <p className="text-sm text-destructive-fg">{error}</p>}
 
-      {busy && !config && <p className="empty-text">正在加载...</p>}
+      {busy && !config && <p className="text-sm text-muted-foreground">正在加载...</p>}
 
       {config && (
-        <div className="sponsor-content">
-          <div className="sponsor-channel-grid">
+        <div className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {config.channels.map((channel) => (
-              <div key={channel.id} className="analysis-card sponsor-channel-card">
-                <p className="hint sponsor-channel-name">{channel.name}</p>
-                {channel.qrUrl ? (
-                  <img
-                    className="sponsor-qr-image"
-                    src={channel.qrUrl}
-                    alt={`${channel.name}收款码`}
-                  />
-                ) : (
-                  <div className="sponsor-qr-placeholder">
-                    <QrCode size={32} />
-                    <span>收款码待配置</span>
-                  </div>
-                )}
-              </div>
+              <Card key={channel.id}>
+                <CardContent className="flex flex-col items-center gap-3">
+                  <p className="text-sm font-medium text-foreground">{channel.name}</p>
+                  {channel.qrUrl ? (
+                    <img
+                      className="h-40 w-40 rounded-md border border-border-subtle object-contain"
+                      src={channel.qrUrl}
+                      alt={`${channel.name}收款码`}
+                    />
+                  ) : (
+                    <div className="flex h-40 w-40 flex-col items-center justify-center gap-2 rounded-md border border-dashed border-border text-muted-foreground">
+                      <QrCode size={32} />
+                      <span className="text-xs">收款码待配置</span>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
             ))}
           </div>
-          <p className="empty-text sponsor-description">{config.description}</p>
+          <p className="text-sm text-muted-foreground">{config.description}</p>
         </div>
       )}
     </div>

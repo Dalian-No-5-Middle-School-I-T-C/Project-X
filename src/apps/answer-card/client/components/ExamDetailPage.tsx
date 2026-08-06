@@ -1,10 +1,11 @@
 import React, { useState } from "react";
-import { ClipboardCheck, Users, AlertCircle, FileSearch, Settings } from "lucide-react";
+import { ArrowLeft, ClipboardCheck, Users, AlertCircle, FileSearch, Settings } from "lucide-react";
 import { BlockSelectPage } from "./BlockSelectPage";
 import { ReviewAssignPage } from "./ReviewAssignPage";
 import { DisputeManagePage } from "./DisputeManagePage";
 import { ReviewTracePage } from "./ReviewTracePage";
 import { GradingConfigPage } from "./GradingConfigPage";
+import { Button, Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/v2";
 
 type ExamDetailTab = "review" | "assign" | "disputes" | "trace" | "settings";
 
@@ -20,7 +21,7 @@ interface Props {
 
 const tabs: Array<{
   key: ExamDetailTab;
-  icon: React.FC<{ size?: number }>;
+  icon: React.FC<{ className?: string }>;
   label: string;
   requiresRole: "all" | "grade_leader" | "admin";
 }> = [
@@ -48,68 +49,62 @@ export function ExamDetailPage({
   };
 
   const visibleTabs = tabs.filter((t) => canSeeTab(t.requiresRole));
+  const canSee = (key: ExamDetailTab) => visibleTabs.some((t) => t.key === key);
 
   return (
-    <div style={{ padding: 24 }}>
+    <div className="p-6">
       {/* 返回考试列表 */}
-      <button onClick={onBackToList} style={{ height: 36, padding: "0 14px", fontSize: 13, border: "1px solid var(--color-border-primary)", borderRadius: 6, background: "var(--color-background-secondary)", cursor: "pointer", marginBottom: 16, display: "inline-flex", alignItems: "center", gap: 4 }}>
-        ← 返回考试列表
-      </button>
+      <Button
+        variant="outline"
+        className="mb-4"
+        icon={<ArrowLeft />}
+        onClick={onBackToList}
+      >
+        返回考试列表
+      </Button>
 
-      {/* Tab 栏 */}
-      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--color-border-primary)", marginBottom: 24 }}>
-        {visibleTabs.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            style={{
-              padding: "10px 20px",
-              fontSize: 14,
-              fontWeight: activeTab === tab.key ? 500 : 400,
-              color: activeTab === tab.key ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-              borderBottom: activeTab === tab.key ? "2px solid var(--color-text-primary)" : "2px solid transparent",
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              marginBottom: -2,
-            }}
-          >
-            <tab.icon size={16} />
-            {tab.label}
-          </button>
-        ))}
-      </div>
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ExamDetailTab)}>
+        {/* Tab 栏 */}
+        <TabsList className="mb-6">
+          {visibleTabs.map((tab) => (
+            <TabsTrigger key={tab.key} value={tab.key}>
+              <tab.icon />
+              {tab.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
 
-      {/* Tab 内容 */}
-      {activeTab === "review" && (
-        <BlockSelectPage
-          examId={examId}
-          teacherId={teacherId}
-          onSelectBlock={(blockId) => onStartReview(examId, blockId)}
-        />
-      )}
-
-      {activeTab === "assign" && <ReviewAssignPage examId={examId} />}
-      {activeTab === "disputes" && <DisputeManagePage examId={examId} />}
-      {activeTab === "trace" && <ReviewTracePage examId={examId} />}
-      {activeTab === "settings" && <GradingConfigPage examId={examId} />}
+        {/* Tab 内容 */}
+        {canSee("review") && (
+          <TabsContent value="review">
+            <BlockSelectPage
+              examId={examId}
+              teacherId={teacherId}
+              onSelectBlock={(blockId) => onStartReview(examId, blockId)}
+            />
+          </TabsContent>
+        )}
+        {canSee("assign") && (
+          <TabsContent value="assign">
+            <ReviewAssignPage examId={examId} />
+          </TabsContent>
+        )}
+        {canSee("disputes") && (
+          <TabsContent value="disputes">
+            <DisputeManagePage examId={examId} />
+          </TabsContent>
+        )}
+        {canSee("trace") && (
+          <TabsContent value="trace">
+            <ReviewTracePage examId={examId} />
+          </TabsContent>
+        )}
+        {canSee("settings") && (
+          <TabsContent value="settings">
+            <GradingConfigPage examId={examId} />
+          </TabsContent>
+        )}
+      </Tabs>
     </div>
   );
 }
-
-const navBtnStyle: React.CSSProperties = {
-  height: 44,
-  padding: "0 18px",
-  fontSize: 14,
-  fontWeight: 500,
-  border: "1px solid var(--color-border-primary)",
-  borderRadius: 8,
-  background: "var(--color-background-secondary)",
-  cursor: "pointer",
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 4,
-};

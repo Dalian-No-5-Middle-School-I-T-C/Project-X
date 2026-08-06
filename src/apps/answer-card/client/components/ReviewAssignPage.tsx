@@ -1,7 +1,38 @@
+// ReviewAssignPage —— 阅卷任务分配（T5 v2 迁移）
+// 视觉层整体切换到 v2：Field / Select / Input / Button / Table / Badge / EmptyState。
+// 功能守恒：
+//  · GET    /api/review/exams/:examId/blocks
+//  · GET    /api/review-assign/exams/:examId/eligible-teachers
+//  · GET    /api/review-assign/exams/:examId/blocks/:blockId
+//  · POST   /api/review-assign/exams/:examId/blocks/:blockId  { teacherCounts }
+//  · DELETE /api/review-assign/:id
+//  · GET    /api/review-pool/exams/:examId/blocks/:blockId        （#218 试卷池管理）
+//  · POST   /api/review-pool/exams/:examId/blocks/:blockId/crops/:cropId/release （#218 强制释放）
+// 请求/响应形状与权限判断零改动，仅替换视觉层。
 import React, { useState, useEffect, useCallback } from "react";
-import { RefreshCw, UserPlus } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Dices, RefreshCw, UserPlus, X, Users } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { ReviewAssignment, ReviewBlockSummary, ReviewPoolEntry, ReviewPoolSummary } from "../../../../shared/types";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  Field,
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Spinner,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableWrap,
+} from "./ui/v2";
 
 interface Props {
   examId: number;
@@ -19,6 +50,7 @@ export function ReviewAssignPage({ examId }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState("");
+  const [msgTone, setMsgTone] = useState<"success" | "error" | "">("");
   const [poolData, setPoolData] = useState<{ summary: ReviewPoolSummary; entries: ReviewPoolEntry[] } | null>(null);
   const [poolMsg, setPoolMsg] = useState("");
 
@@ -89,20 +121,25 @@ export function ReviewAssignPage({ examId }: Props) {
 
     setSaving(true);
     setMsg("");
+    setMsgTone("");
     try {
       const res = await fetchJson<{ ok: boolean; error?: string }>(
         `/api/review-assign/exams/${examId}/blocks/${encodeURIComponent(selectedBlockId)}`,
         { method: "POST", body: JSON.stringify({ teacherCounts }) }
       );
       if (res.ok) {
-        setMsg("✅ 分配成功！系统已随机分配学生");
+        setMsg("分配成功！系统已随机分配学生");
+        setMsgTone("success");
         setInputs([{ teacherId: 0, count: 0 }]);
         loadAssignments(selectedBlockId);
+        loadPool(selectedBlockId);
       } else {
         setMsg(res.error || "分配失败");
+        setMsgTone("error");
       }
     } catch (err: any) {
       setMsg(err.message || "网络错误");
+      setMsgTone("error");
     }
     setSaving(false);
   };
@@ -135,269 +172,269 @@ export function ReviewAssignPage({ examId }: Props) {
 
   const totalAssigned = assignments.reduce((s, a) => s + a.studentCount, 0);
 
-  if (loading) return <div style={{ padding: 24 }}>加载中...</div>;
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 p-6 text-sm text-muted-foreground">
+        <Spinner size={16} /> 加载中...
+      </div>
+    );
+  }
 
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 16 }}>
-        阅卷任务分配
-        <button onClick={() => { loadAssignments(selectedBlockId); loadPool(selectedBlockId); }} style={{ ...iconBtn, marginLeft: 8 }}>
-          <RefreshCw size={14} />
-        </button>
-      </div>
-
-      {/* 题块选择 */}
-      <div style={{ marginBottom: 20 }}>
-        <label style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 6, display: "block" }}>选择题块</label>
-        <select
-          value={selectedBlockId}
-          onChange={(e) => setSelectedBlockId(e.target.value)}
-          style={selectStyle}
+    <div className="flex flex-col gap-5 p-6">
+      <div className="flex items-center gap-2">
+        <h2 className="text-lg font-semibold text-foreground">阅卷任务分配</h2>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="刷新分配"
+          onClick={() => { loadAssignments(selectedBlockId); loadPool(selectedBlockId); }}
         >
-          {blocks.map((b) => (
-            <option key={b.blockId} value={b.blockId}>
-              {b.blockTitle} （待批 {b.pendingCount}/{b.totalCount}）
-            </option>
-          ))}
-        </select>
-        {selectedBlockId && (
-          <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 4 }}>
-            已分配 {totalAssigned} 份
-          </div>
-        )}
+          <RefreshCw className="size-3.5" />
+        </Button>
       </div>
 
-      {/* 已有分配 */}
-      {assignments.length > 0 && (
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>当前分配</div>
-          {assignments.map((a) => (
-            <div key={a.id} style={rowStyle}>
-              <span style={{ flex: 1 }}>{a.teacherName ?? `教师${a.teacherId}`}</span>
-              <span style={{ marginRight: 16, color: "var(--color-text-secondary)" }}>{a.studentCount} 份</span>
-              <button onClick={() => handleDelete(a.id)} style={smallRedBtn}>删除</button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* 新建分配 */}
-      {/* Issue #174: 试卷池管理 */}
-      <div style={{ marginBottom: 20 }}>
-        <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>
-          试卷池管理
-          <button onClick={() => loadPool(selectedBlockId)} style={{ ...iconBtn, marginLeft: 8 }}>
-            <RefreshCw size={14} />
-          </button>
-        </div>
-        {poolMsg && (
-          <div style={{ fontSize: 12, color: "#E24B4A", marginBottom: 8 }}>{poolMsg}</div>
-        )}
-        {poolData ? (
-          <>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8, fontSize: 12 }}>
-              {[
-                ["池中可领", poolData.summary.inPoolCount],
-                ["已领取", poolData.summary.claimedCount],
-                ["已阅", poolData.summary.reviewedCount],
-                ["待复核", poolData.summary.pendingCount],
-                ["争议", poolData.summary.disputedCount],
-                ["总量", poolData.summary.totalCount],
-              ].map(([label, value]) => (
-                <span key={String(label)} style={chipStyle}>
-                  {label} {value}
-                </span>
-              ))}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
-              教师领取情况：
-              {poolData.summary.assignments.length > 0
-                ? poolData.summary.assignments
-                    .map((a) => `${a.teacherName ?? `教师${a.teacherId}`} 分配${a.assignedCount}/已领${a.claimedCount}/已阅${a.reviewedCount}`)
-                    .join("；")
-                : "暂无分配记录（教师仍可直接从池中领卷）"}
-            </div>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: "var(--color-background-secondary)", borderBottom: "1px solid var(--color-border-primary)" }}>
-                  <th style={{ ...thStyle, width: 90 }}>学生</th>
-                  <th style={{ ...thStyle, width: 70 }}>状态</th>
-                  <th style={{ ...thStyle, width: 90 }}>领取人</th>
-                  <th style={{ ...thStyle, width: 150 }}>领取时间</th>
-                  <th style={{ ...thStyle, width: 60 }}>累计领取</th>
-                  <th style={{ ...thStyle, width: 70 }}>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {poolData.entries.map((entry) => (
-                  <tr key={entry.id} style={{ borderBottom: "1px solid var(--color-border-primary)" }}>
-                    <td style={tdStyle}>
-                      {entry.studentName ?? entry.studentNumber ?? `学生${entry.studentId ?? ""}`}
-                    </td>
-                    <td style={tdStyle}>{statusText(entry.status)}</td>
-                    <td style={tdStyle}>{entry.claimedByName ?? "—"}</td>
-                    <td style={tdStyle}>{entry.claimedAt ? new Date(entry.claimedAt).toLocaleString() : "—"}</td>
-                    <td style={tdStyle}>{entry.claimCount}</td>
-                    <td style={tdStyle}>
-                      {entry.claimedBy != null && (
-                        <button onClick={() => handleForceRelease(entry.id)} style={smallRedBtn}>
-                          强制释放
-                        </button>
-                      )}
-                    </td>
-                  </tr>
+      {blocks.length === 0 ? (
+        <EmptyState
+          icon={<Users />}
+          title="暂无可分配题块"
+          description="本场考试尚未生成网阅题块，请先完成扫描与切块。"
+        />
+      ) : (
+        <>
+          {/* 题块选择 */}
+          <Field
+            label="选择题块"
+            hint={selectedBlockId ? `已分配 ${totalAssigned} 份` : undefined}
+            className="max-w-md"
+          >
+            <Select value={selectedBlockId} onValueChange={setSelectedBlockId}>
+              <SelectTrigger aria-label="选择题块">
+                <SelectValue placeholder="选择题块..." />
+              </SelectTrigger>
+              <SelectContent>
+                {blocks.map((b) => (
+                  <SelectItem key={b.blockId} value={b.blockId}>
+                    {b.blockTitle} （待批 {b.pendingCount}/{b.totalCount}）
+                  </SelectItem>
                 ))}
-              </tbody>
-            </table>
-          </>
-        ) : (
-          <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>加载中...</div>
-        )}
-      </div>
+              </SelectContent>
+            </Select>
+          </Field>
 
-      <div style={{ borderTop: "0.5px solid var(--color-border-primary)", paddingTop: 16 }}>
-        <div style={{ fontWeight: 500, fontSize: 14, marginBottom: 12 }}>新建分配</div>
+          {/* 已有分配 */}
+          {assignments.length > 0 && (
+            <section className="flex flex-col gap-2">
+              <h3 className="text-sm font-medium text-foreground">当前分配</h3>
+              <div className="flex flex-col gap-1.5">
+                {assignments.map((a) => (
+                  <div
+                    key={a.id}
+                    className="flex items-center gap-3 rounded-md bg-secondary px-3 py-2 text-base"
+                  >
+                    <span className="flex-1 truncate text-foreground">
+                      {a.teacherName ?? `教师${a.teacherId}`}
+                    </span>
+                    <span className="tabular-nums text-muted-foreground">
+                      {a.studentCount} 份
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive-fg"
+                      onClick={() => handleDelete(a.id)}
+                    >
+                      删除
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
-        {inputs.map((input, idx) => (
-          <div key={idx} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
-            <select
-              value={input.teacherId}
-              onChange={(e) => updateInput(idx, "teacherId", Number(e.target.value))}
-              style={{ ...selectStyle, width: 180 }}
-            >
-              <option value={0}>选择教师...</option>
-              {teachers.map((t) => (
-                <option key={t.id} value={t.id}>{t.name}{t.subject ? ` (${t.subject})` : ""}</option>
-              ))}
-            </select>
-            <input
-              type="number"
-              placeholder="份数"
-              min={1}
-              value={input.count || ""}
-              onChange={(e) => updateInput(idx, "count", Number(e.target.value))}
-              style={numInputStyle}
-            />
-            {inputs.length > 1 && (
-              <button onClick={() => setInputs(inputs.filter((_, i) => i !== idx))} style={smallRedBtn}>×</button>
+          {/* 新建分配 */}
+          <section className="flex flex-col gap-3 border-t border-border-subtle pt-4">
+            <h3 className="text-sm font-medium text-foreground">新建分配</h3>
+
+            {inputs.map((input, idx) => (
+              <div key={idx} className="flex flex-wrap items-center gap-2">
+                <Select
+                  value={input.teacherId > 0 ? String(input.teacherId) : ""}
+                  onValueChange={(v) => updateInput(idx, "teacherId", Number(v))}
+                >
+                  <SelectTrigger className="w-48" aria-label="选择教师">
+                    <SelectValue placeholder="选择教师..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {teachers.map((t) => (
+                      <SelectItem key={t.id} value={String(t.id)}>
+                        {t.name}{t.subject ? ` (${t.subject})` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  type="number"
+                  placeholder="份数"
+                  min={1}
+                  aria-label="份数"
+                  value={input.count || ""}
+                  onChange={(e) => updateInput(idx, "count", Number(e.target.value))}
+                  className="w-24 tabular-nums"
+                />
+                {inputs.length > 1 && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="移除教师"
+                    className="text-destructive-fg"
+                    onClick={() => setInputs(inputs.filter((_, i) => i !== idx))}
+                  >
+                    <X className="size-3.5" />
+                  </Button>
+                )}
+              </div>
+            ))}
+
+            <div className="flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                icon={<UserPlus />}
+                onClick={() => setInputs([...inputs, { teacherId: 0, count: 0 }])}
+              >
+                添加教师
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                icon={<Dices />}
+                loading={saving}
+                disabled={!selectedBlockId}
+                onClick={handleCreate}
+              >
+                {saving ? "分配中..." : "随机分配"}
+              </Button>
+            </div>
+
+            {msg && (
+              <div
+                className={
+                  msgTone === "success"
+                    ? "flex items-center gap-2 rounded-md bg-success-soft px-3 py-2 text-sm text-success-foreground"
+                    : "flex items-center gap-2 rounded-md bg-destructive-soft px-3 py-2 text-sm text-destructive-fg"
+                }
+                role="status"
+              >
+                {msgTone === "success" && (
+                  <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
+                )}
+                {msg}
+              </div>
             )}
-          </div>
-        ))}
+          </section>
 
-        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-          <button
-            onClick={() => setInputs([...inputs, { teacherId: 0, count: 0 }])}
-            style={actionBtn}
-          >
-            <UserPlus size={14} /> 添加教师
-          </button>
-          <button
-            onClick={handleCreate}
-            disabled={saving || !selectedBlockId}
-            style={{ ...actionBtn, background: "#3C3489", color: "#fff", border: "none" }}
-          >
-            {saving ? "分配中..." : "🎲 随机分配"}
-          </button>
-        </div>
+          {/* Issue #174: 试卷池管理（#218） */}
+          <section className="flex flex-col gap-3 border-t border-border-subtle pt-4">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-medium text-foreground">试卷池管理</h3>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="刷新试卷池"
+                onClick={() => loadPool(selectedBlockId)}
+              >
+                <RefreshCw className="size-3.5" />
+              </Button>
+            </div>
 
-        {msg && (
-          <div style={{
-            marginTop: 12,
-            fontSize: 13,
-            padding: "8px 12px",
-            borderRadius: 6,
-            background: msg.includes("✅") ? "rgba(99,153,34,0.1)" : "rgba(226,75,74,0.1)",
-            color: msg.includes("✅") ? "#639922" : "#E24B4A",
-          }}>
-            {msg}
-          </div>
-        )}
-      </div>
+            {poolMsg && (
+              <div
+                className="flex items-center gap-2 rounded-md bg-destructive-soft px-3 py-2 text-sm text-destructive-fg"
+                role="status"
+              >
+                <AlertTriangle className="size-4 shrink-0" aria-hidden="true" />
+                {poolMsg}
+              </div>
+            )}
+
+            {poolData ? (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  <Badge tone="info">池中可领 {poolData.summary.inPoolCount}</Badge>
+                  <Badge>已领取 {poolData.summary.claimedCount}</Badge>
+                  <Badge tone="success">已阅 {poolData.summary.reviewedCount}</Badge>
+                  <Badge tone="warning">待复核 {poolData.summary.pendingCount}</Badge>
+                  <Badge tone="danger">争议 {poolData.summary.disputedCount}</Badge>
+                  <Badge>总量 {poolData.summary.totalCount}</Badge>
+                </div>
+
+                <div className="text-sm text-muted-foreground">
+                  教师领取情况：
+                  {poolData.summary.assignments.length > 0
+                    ? poolData.summary.assignments
+                        .map((a) => `${a.teacherName ?? `教师${a.teacherId}`} 分配${a.assignedCount}/已领${a.claimedCount}/已阅${a.reviewedCount}`)
+                        .join("；")
+                    : "暂无分配记录（教师仍可直接从池中领卷）"}
+                </div>
+
+                <TableWrap>
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead>学生</TableHead>
+                        <TableHead>状态</TableHead>
+                        <TableHead>领取人</TableHead>
+                        <TableHead>领取时间</TableHead>
+                        <TableHead numeric>累计领取</TableHead>
+                        <TableHead>操作</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {poolData.entries.map((entry) => (
+                        <TableRow key={entry.id}>
+                          <TableCell>
+                            {entry.studentName ?? entry.studentNumber ?? `学生${entry.studentId ?? ""}`}
+                          </TableCell>
+                          <TableCell>{statusBadge(entry.status)}</TableCell>
+                          <TableCell>{entry.claimedByName ?? "—"}</TableCell>
+                          <TableCell>{entry.claimedAt ? new Date(entry.claimedAt).toLocaleString() : "—"}</TableCell>
+                          <TableCell numeric>{entry.claimCount}</TableCell>
+                          <TableCell>
+                            {entry.claimedBy != null && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="text-destructive-fg"
+                                onClick={() => handleForceRelease(entry.id)}
+                              >
+                                强制释放
+                              </Button>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableWrap>
+              </>
+            ) : (
+              <div className="text-sm text-muted-foreground">{poolMsg || "加载中..."}</div>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }
 
-const selectStyle: React.CSSProperties = {
-  padding: "8px 12px",
-  border: "1px solid var(--color-border-primary)",
-  borderRadius: 6,
-  fontSize: 13,
-  background: "var(--color-background-secondary)",
-};
-
-const numInputStyle: React.CSSProperties = {
-  padding: "8px 10px",
-  border: "1px solid var(--color-border-primary)",
-  borderRadius: 6,
-  fontSize: 13,
-  width: 80,
-};
-
-const rowStyle: React.CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  padding: "8px 12px",
-  background: "var(--color-background-secondary)",
-  borderRadius: 6,
-  marginBottom: 6,
-  fontSize: 14,
-};
-
-const actionBtn: React.CSSProperties = {
-  padding: "8px 16px",
-  fontSize: 13,
-  borderRadius: 6,
-  border: "0.5px solid var(--color-border-primary)",
-  background: "var(--color-background-secondary)",
-  cursor: "pointer",
-  display: "flex",
-  alignItems: "center",
-  gap: 6,
-};
-
-const chipStyle: React.CSSProperties = {
-  padding: "3px 10px",
-  borderRadius: 12,
-  background: "var(--color-background-secondary)",
-  border: "1px solid var(--color-border-primary)",
-};
-
-const thStyle: React.CSSProperties = {
-  padding: "6px 8px",
-  textAlign: "left",
-  fontWeight: 600,
-  whiteSpace: "nowrap",
-};
-
-const tdStyle: React.CSSProperties = {
-  padding: "5px 8px",
-  whiteSpace: "nowrap",
-};
-
-function statusText(status?: string): string {
+/** #218 试卷池条目状态 → v2 状态徽章（§4.5：色彩永不单独承载状态） */
+function statusBadge(status?: string) {
   switch (status) {
-    case "ready": return "待批";
-    case "pending": return "待复核";
-    case "reviewed": return "已阅";
-    case "disputed": return "争议";
-    default: return status ?? "—";
+    case "ready": return <Badge>待批</Badge>;
+    case "pending": return <Badge tone="warning">待复核</Badge>;
+    case "reviewed": return <Badge tone="success">已阅</Badge>;
+    case "disputed": return <Badge tone="danger">争议</Badge>;
+    default: return <Badge>{status ?? "—"}</Badge>;
   }
 }
-
-const smallRedBtn: React.CSSProperties = {
-  padding: "2px 8px",
-  fontSize: 12,
-  color: "#E24B4A",
-  border: "1px solid #f09595",
-  borderRadius: 4,
-  background: "transparent",
-  cursor: "pointer",
-};
-
-const iconBtn: React.CSSProperties = {
-  padding: "2px 6px",
-  border: "none",
-  background: "none",
-  cursor: "pointer",
-  color: "var(--color-text-secondary)",
-};
