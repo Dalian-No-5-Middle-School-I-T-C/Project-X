@@ -69,3 +69,6 @@ scripts/p5-analyze-*.mjs
 scripts/p6-analyze-*.mjs
 scripts/p6-account-settings-debug.mjs
 scripts/radio-bug-*.mjs
+docs/class-diagram.mermaid
+docs/system_design.md
+docs/sequence-diagram.mermaid
