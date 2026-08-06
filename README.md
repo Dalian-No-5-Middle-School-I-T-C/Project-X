@@ -198,6 +198,8 @@
 | [design/designer-sandbox.html](./design/designer-sandbox.html) | 设计器沙盒 |
 | [design/EXECUTION-PLAN.md](./design/EXECUTION-PLAN.md) | 重构执行计划（T1–T8 任务卡、P0–P5 阶段、防串台规约） |
 
+> 完整版（含新 UI 开发指南与全局风格调整方法）见 [readus/UI-ARCHITECTURE.md](./readus/UI-ARCHITECTURE.md)。
+
 ---
 
 ## 新 UI 开发指南（落实设计稿）
