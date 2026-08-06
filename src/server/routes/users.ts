@@ -75,7 +75,7 @@ router.get("/:id", async (req: Request, res: Response) => {
 /** POST /api/users — 创建用户（教师/学生/管理员） */
 router.post("/", async (req: Request, res: Response) => {
   try {
-    const { username, password, name, role, student_number, email, phone, teacher_role } = req.body ?? {};
+    const { username, password, name, role, student_number, email, phone, teacher_role, track } = req.body ?? {};
     if (!username || !name) {
       res.status(400).json({ message: "缺少用户名或姓名" });
       return;
@@ -91,6 +91,10 @@ router.post("/", async (req: Request, res: Response) => {
     }
     if (roleId === ROLE_IDS.STUDENT && !student_number) {
       res.status(400).json({ message: "学生账号必须提供学号" });
+      return;
+    }
+    if (track !== undefined && track !== null && track !== "" && !["arts", "science"].includes(String(track))) {
+      res.status(400).json({ message: "无效的文理分科，仅支持 arts（文科）/ science（理科）" });
       return;
     }
     if (student_number && await userRepo.studentNumberExists(String(student_number))) {
@@ -125,6 +129,7 @@ router.post("/", async (req: Request, res: Response) => {
       role_id: roleId,
       student_number: student_number ? String(student_number) : undefined,
       teacher_role: roleId === ROLE_IDS.TEACHER ? (teacher_role || undefined) : undefined,
+      track: roleId === ROLE_IDS.STUDENT && track ? String(track) : undefined,
       email: email ? String(email) : undefined,
       phone: phone ? String(phone) : undefined,
       initial_password: finalPassword
@@ -145,7 +150,7 @@ router.put("/:id", async (req: Request, res: Response) => {
       return;
     }
 
-    const { name, email, phone, role, is_active, student_number, teacher_role } = req.body ?? {};
+    const { name, email, phone, role, is_active, student_number, teacher_role, track } = req.body ?? {};
     const params: Parameters<UserRepository["updateUser"]>[1] = {};
     if (name !== undefined) params.name = String(name);
     if (email !== undefined) params.email = String(email);
@@ -159,6 +164,13 @@ router.put("/:id", async (req: Request, res: Response) => {
       params.is_active = is_active ? 1 : 0;
     }
     if (student_number !== undefined) params.student_number = String(student_number);
+    if (track !== undefined) {
+      if (track !== null && track !== "" && !["arts", "science"].includes(String(track))) {
+        res.status(400).json({ message: "无效的文理分科，仅支持 arts（文科）/ science（理科）" });
+        return;
+      }
+      params.track = track ? String(track) : null;
+    }
     if (role !== undefined) {
       const roleId = resolveRoleId(role);
       if (roleId === null) {

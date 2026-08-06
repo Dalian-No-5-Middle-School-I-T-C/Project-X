@@ -602,6 +602,17 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
               onRowClick={(qn) => setDrillQuestion(qn)}
             />
             <KnowledgePanel examId={examId} classId={classId || undefined} />
+
+            {/* 讲评模式快捷入口（来自 main #212 相关，保留功能） */}
+            <div className="flex justify-center pt-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => window.open(`/analysis?examId=${examId}&tab=question-analysis&review=1`, "_blank")}
+              >
+                开启讲评模式（投屏逐题讲卷）
+              </Button>
+            </div>
           </TabsContent>
 
           {/* ====== 班级对比 Tab ====== */}

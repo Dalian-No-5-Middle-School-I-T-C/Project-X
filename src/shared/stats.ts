@@ -193,7 +193,7 @@ export interface NormalityResult {
   andersonDarling: { A2: number; pValue: number | null };
   skewness: number;
   kurtosis: number;
-  /** 综合判定：是否近似正态（任一常用检验 p≥0.05 即视为通过） */
+  /** 综合判定：是否近似正态（以 Shapiro-Francia 为主判，p≥0.05 视为通过） */
   isNormal: boolean;
   /** 样本量，小于 3 时检验不可靠 */
   sampleSize: number;
@@ -240,13 +240,15 @@ export function shapiroFrancia(values: number[]): { W: number; pValue: number | 
   return { W: Math.round(W * 10000) / 10000, pValue };
 }
 
-/** Kolmogorov-Smirnov 检验（与正态分布比较）
+/** Kolmogorov-Smirnov 检验（与正态分布比较，参数由样本估计）
  *
  * D⁺ = max_i (i/n - F(x_i))        — 经验 CDF 上界
  * D⁻ = max_i (F(x_i) - (i-1)/n)    — 经验 CDF 下界
  * D  = max(D⁺, D⁻)
  *
- * p 值采用 Kolmogorov 分布的 Smirnov 渐近：P(D > x) ≈ 2·Σ_{j=1}^∞ (-1)^(j-1) e^{-2j²x²} */
+ * 因均值/方差由样本估计，标准 Smirnov 渐近 p 值会偏大（过于宽松），
+ * 故采用 Lilliefors 修正：Dallal & Wilkinson (1986) 的解析近似；
+ * n<5 时 p 值不可靠，返回 null。 */
 export function kolmogorovSmirnov(values: number[]): { D: number; pValue: number | null } {
   const n = values.length;
   if (n === 0) return { D: 0, pValue: null };
@@ -263,14 +265,15 @@ export function kolmogorovSmirnov(values: number[]): { D: number; pValue: number
     if (fExp - lower > dMinus) dMinus = fExp - lower;
   }
   const D = Math.max(dPlus, dMinus);
-  // Smirnov 渐近：n=无穷 时 P(D > x) 的级数近似
-  const x = Math.sqrt(n) * D;
-  let pValue = 0;
-  for (let j = 1; j <= 10; j++) {
-    pValue += Math.pow(-1, j - 1) * Math.exp(-2 * j * j * x * x);
+  // Lilliefors p 值近似（Dallal & Wilkinson 1986）：
+  // p ≈ exp(-7.01256·D²·(n+2.78019) + 2.99587·D·√(n+2.78019) - 0.122119 + 0.974598/√n + 1.67997/n)
+  let pValue: number | null = null;
+  if (n >= 5) {
+    const root = Math.sqrt(n + 2.78019);
+    const approx = -7.01256 * D * D * (n + 2.78019) + 2.99587 * D * root - 0.122119 + 0.974598 / Math.sqrt(n) + 1.67997 / n;
+    pValue = Number.isFinite(approx) ? Math.max(0, Math.min(1, Math.exp(approx))) : null;
   }
-  pValue = 2 * pValue;
-  return { D: Math.round(D * 10000) / 10000, pValue: Number.isFinite(pValue) ? Math.max(0, Math.min(1, pValue)) : null };
+  return { D: Math.round(D * 10000) / 10000, pValue };
 }
 
 /** Anderson-Darling 检验（与标准正态比较） */
@@ -289,11 +292,13 @@ export function andersonDarling(values: number[]): { A2: number; pValue: number 
     S += (2 * (i + 1) - 1) * (Math.log(f1) + Math.log(1 - f2));
   }
   const A2 = -n - S / n;
-  // AD 正态 p 值近似
-  let pValue: number | null = null;
-  if (A2 <= 0.6) pValue = Math.exp(A2 * (1.2937 - 1.7093 * A2 + 4.5356 * A2 * A2) - A2);
-  else if (A2 <= 1.0) pValue = Math.exp(A2 * (1.2937 - 1.7093 * A2 + 4.5356 * A2 * A2) - A2);
-  else pValue = Math.exp(-(A2 - 1.0) * (1.0 + 0.5 / (A2 - 1.0)));
+  // Stephens 的有限样本修正及正态分布 p 值分段近似。
+  const adjusted = A2 * (1 + 0.75 / n + 2.25 / (n * n));
+  let pValue: number;
+  if (adjusted < 0.2) pValue = 1 - Math.exp(-13.436 + 101.14 * adjusted - 223.73 * adjusted * adjusted);
+  else if (adjusted < 0.34) pValue = 1 - Math.exp(-8.318 + 42.796 * adjusted - 59.938 * adjusted * adjusted);
+  else if (adjusted < 0.6) pValue = Math.exp(0.9177 - 4.279 * adjusted - 1.38 * adjusted * adjusted);
+  else pValue = Math.exp(1.2937 - 5.709 * adjusted + 0.0186 * adjusted * adjusted);
   return { A2: Math.round(A2 * 10000) / 10000, pValue: pValue == null ? null : Math.max(0, Math.min(1, pValue)) };
 }
 

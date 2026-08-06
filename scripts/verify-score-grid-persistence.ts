@@ -125,6 +125,7 @@ async function main(): Promise<void> {
   // 验证列确实存在
   const cols = getDatabase().prepare("PRAGMA table_info(subjective_questions)").all() as Array<{ name: string }>;
   ok(cols.some((c) => c.name === "score_grid_json"), "subjective_questions 表含 score_grid_json 列");
+  ok(cols.some((c) => c.name === "annotation"), "subjective_questions 表含 annotation 列（v30）");
 
   // 验证 v22 性能复合索引存在 (与 MariaDB 对齐)
   const indexes = getDatabase().prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as Array<{ name: string }>;
@@ -300,6 +301,34 @@ async function main(): Promise<void> {
     ok(readQ.images.length === 3, `读回 3 张图片 (实际: ${readQ.images.length})`);
     const assetIds = readQ.images.map((img: any) => img.assetId);
     ok(assetIds[0] === "asset-1" && assetIds[1] === "asset-2" && assetIds[2] === "asset-3", `图片顺序保持 [asset-1, asset-2, asset-3] (实际: ${JSON.stringify(assetIds)})`);
+  }
+
+  // ── 9. 填空题升级:annotation 与逐空自定义横线往返 ─────
+  section("9. annotation 与逐空自定义横线往返");
+  {
+    const customItems = [
+      { label: "(1)", widthMm: 18, heightMm: 6 },
+      { label: "(2)", widthMm: 40, heightMm: 9, rightAnnotation: "填＞或＜" }
+    ];
+    const card = buildCard("c8", [
+      {
+        id: "q8",
+        number: "35",
+        score: 0,
+        style: "plain_subjective",
+        kind: "blank",
+        minHeightMm: 20,
+        annotation: "观察图片，列出数量关系式并解答。",
+        blanks: { count: 2, widthMm: 24, heightMm: 6, labelStyle: "arabic_parentheses", items: customItems }
+      }
+    ]);
+    (card.bodyBlocks[0] as any).blockKind = "fill_blank";
+    await repo.createCard(card);
+    await repo.updateCard(card);
+    const readBack = await repo.findById(card.id);
+    const readQ = (readBack!.bodyBlocks[0] as any).questions[0];
+    ok(readQ.annotation === "观察图片，列出数量关系式并解答。", "annotation 往返一致");
+    ok(jsonEqual(readQ.blanks.items, customItems), "逐空自定义宽度/高度/批注往返一致");
   }
 
   closeDatabase();

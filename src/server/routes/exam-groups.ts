@@ -19,6 +19,23 @@ interface AiProviderRow {
   is_system: number;
 }
 
+// Issue #177 文理分科：科目归属 / 筛选
+type TrackType = "common" | "arts" | "science";
+type TrackFilter = "all" | "arts" | "science";
+
+function normalizeTrackType(value: unknown): TrackType | null {
+  return value === "arts" || value === "science" || value === "common" ? value : null;
+}
+
+function normalizeTrackFilter(value: unknown): TrackFilter {
+  return value === "arts" || value === "science" ? value : "all";
+}
+
+function memberMatchesTrack(trackType: string | null | undefined, track: TrackFilter): boolean {
+  const tt = trackType || "common";
+  return track === "all" || tt === "common" || tt === track;
+}
+
 async function getAiProviderForUser(providerId: number, userId: number): Promise<AiProviderRow | null> {
   const db = getMysqlDb();
   return db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId) ?? null;
@@ -177,11 +194,11 @@ router.get("/", async (req: Request, res: Response) => {
 router.post("/", requireGroupManager, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
-    const { name, description, grade_id, tag, is_official, total_score_mode, only_full_participants, examIds }
+    const { name, description, grade_id, tag, is_official, total_score_mode, only_full_participants, examIds, memberTracks }
       = req.body as {
         name: string; description?: string; grade_id?: number | null; tag?: string;
         is_official?: number; total_score_mode?: string; only_full_participants?: number;
-        examIds?: number[];
+        examIds?: number[]; memberTracks?: Record<string, string>;
       };
 
     if (!name || !name.trim()) {
@@ -189,6 +206,14 @@ router.post("/", requireGroupManager, async (req: Request, res: Response) => {
       return;
     }
     if (examIds && !(await assertExamIdsVisible(req, res, examIds))) return;
+    if (memberTracks) {
+      for (const [examId, trackType] of Object.entries(memberTracks)) {
+        if (!Number.isInteger(Number(examId)) || Number(examId) <= 0 || !normalizeTrackType(trackType)) {
+          res.status(400).json({ message: "无效的文理分科配置：科目归属仅支持 common（共同）/ arts（文科）/ science（理科）" });
+          return;
+        }
+      }
+    }
 
     const groupId = await db.transaction(async (tx) => {
       const result = await tx.run(`
@@ -200,9 +225,10 @@ router.post("/", requireGroupManager, async (req: Request, res: Response) => {
 
       const createdGroupId = result.lastInsertRowid as number;
       if (examIds && examIds.length > 0) {
-        const insertSql = buildInsertIgnore(tx.dialect, "exam_group_members", ["group_id", "exam_id", "sort_order"]);
+        const insertSql = buildInsertIgnore(tx.dialect, "exam_group_members", ["group_id", "exam_id", "sort_order", "track_type"]);
         for (const [idx, examId] of examIds.entries()) {
-          await tx.run(insertSql, createdGroupId, examId, idx);
+          const trackType = normalizeTrackType(memberTracks?.[String(examId)]) ?? "common";
+          await tx.run(insertSql, createdGroupId, examId, idx, trackType);
         }
       }
       return createdGroupId;
@@ -230,7 +256,7 @@ router.get("/:groupId", requireReadableGroup, async (req: Request, res: Response
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
 
     const members = await db.all(`
-      SELECT egm.id, egm.exam_id, egm.sort_order,
+      SELECT egm.id, egm.exam_id, egm.sort_order, egm.track_type,
              e.name as exam_name, e.subject, ac.exam_date, e.status, e.assigned_formula,
              COUNT(ss.exam_id) as graded_count,
              ROUND(AVG(ss.total_score), 1) as avg_score
@@ -249,9 +275,11 @@ router.get("/:groupId", requireReadableGroup, async (req: Request, res: Response
       tag: group.tag, status: group.status, is_official: group.is_official,
       total_score_mode: group.total_score_mode, only_full_participants: group.only_full_participants,
       created_by: group.created_by, created_at: group.created_at, updated_at: group.updated_at,
+      memberTracks: Object.fromEntries(members.map((m) => [String(m.exam_id), m.track_type || "common"])),
       members: members.map((m) => ({
         id: m.id, examId: m.exam_id, examName: m.exam_name,
         subject: m.subject, sortOrder: m.sort_order,
+        trackType: m.track_type || "common",
         examDate: m.exam_date || null, status: m.status,
         gradedCount: m.graded_count, avgScore: m.avg_score,
         hasAssignedScore: !!(m.assigned_formula && m.assigned_formula !== "") ? 1 : 0
@@ -271,7 +299,7 @@ router.put("/:groupId", requireGroupManager, async (req: Request, res: Response)
     const existing = await db.get("SELECT id FROM exam_groups WHERE id = ?", groupId);
     if (!existing) { res.status(404).json({ message: "大考不存在" }); return; }
 
-    const { name, description, grade_id, tag, is_official, total_score_mode, only_full_participants } = req.body;
+    const { name, description, grade_id, tag, is_official, total_score_mode, only_full_participants, examIds, memberTracks } = req.body;
     const sets: string[] = ["updated_at = CURRENT_TIMESTAMP"];
     const vals: unknown[] = [];
 
@@ -283,7 +311,57 @@ router.put("/:groupId", requireGroupManager, async (req: Request, res: Response)
     if (total_score_mode !== undefined) { sets.push("total_score_mode = ?"); vals.push(total_score_mode); }
     if (only_full_participants !== undefined) { sets.push("only_full_participants = ?"); vals.push(only_full_participants); }
 
+    if (memberTracks !== undefined && memberTracks !== null) {
+      for (const [examId, trackType] of Object.entries(memberTracks as Record<string, string>)) {
+        if (!Number.isInteger(Number(examId)) || Number(examId) <= 0 || !normalizeTrackType(trackType)) {
+          res.status(400).json({ message: "无效的文理分科配置：科目归属仅支持 common（共同）/ arts（文科）/ science（理科）" });
+          return;
+        }
+      }
+    }
+
     await db.run(`UPDATE exam_groups SET ${sets.join(", ")} WHERE id = ?`, ...vals, groupId);
+
+    // 编辑时同步成员（新增/移除）与文理科目归属
+    if (Array.isArray(examIds)) {
+      if (!(await assertExamIdsVisible(req, res, examIds.map(Number)))) return;
+      await db.transaction(async (tx) => {
+        const existing = await tx.all<{ exam_id: number }>(
+          "SELECT exam_id FROM exam_group_members WHERE group_id = ?",
+          groupId
+        );
+        const existingIds = new Set(existing.map((r) => Number(r.exam_id)));
+        const targetIds = new Set(examIds.map(Number));
+        for (const id of existingIds) {
+          if (!targetIds.has(id)) {
+            await tx.run("DELETE FROM exam_group_members WHERE group_id = ? AND exam_id = ?", groupId, id);
+          }
+        }
+        const insertSql = buildInsertIgnore(tx.dialect, "exam_group_members", ["group_id", "exam_id", "sort_order", "track_type"]);
+        for (const [idx, examId] of examIds.entries()) {
+          const id = Number(examId);
+          if (Number.isInteger(id) && id > 0 && !existingIds.has(id)) {
+            const trackType = normalizeTrackType((memberTracks as Record<string, string> | undefined)?.[String(id)]) ?? "common";
+            await tx.run(insertSql, groupId, id, idx, trackType);
+          }
+        }
+      });
+    }
+
+    if (memberTracks) {
+      await db.transaction(async (tx) => {
+        for (const [examId, trackType] of Object.entries(memberTracks as Record<string, string>)) {
+          const id = Number(examId);
+          if (!Number.isInteger(id) || id <= 0) continue;
+          await tx.run(
+            "UPDATE exam_group_members SET track_type = ? WHERE group_id = ? AND exam_id = ?",
+            normalizeTrackType(trackType) ?? "common",
+            groupId,
+            id
+          );
+        }
+      });
+    }
 
     res.json({ ok: true, message: "大考更新成功" });
   } catch (error) {
@@ -332,7 +410,7 @@ router.post("/:groupId/exams", requireGroupManager, async (req: Request, res: Re
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
-    const { examIds } = req.body as { examIds?: number[] };
+    const { examIds, memberTracks } = req.body as { examIds?: number[]; memberTracks?: Record<string, string> };
 
     if (!examIds || examIds.length === 0) {
       res.status(400).json({ message: "请至少选择一个考试" });
@@ -346,12 +424,13 @@ router.post("/:groupId/exams", requireGroupManager, async (req: Request, res: Re
     ) as { m: number | null };
     let nextOrder = (maxOrder?.m ?? -1) + 1;
 
-    const insertSql = buildInsertIgnore(db.dialect, "exam_group_members", ["group_id", "exam_id", "sort_order"]);
+    const insertSql = buildInsertIgnore(db.dialect, "exam_group_members", ["group_id", "exam_id", "sort_order", "track_type"]);
 
     const added = await db.transaction(async (tx) => {
       const inserted: number[] = [];
       for (const examId of examIds) {
-        const result = await tx.run(insertSql, groupId, examId, nextOrder);
+        const trackType = normalizeTrackType(memberTracks?.[String(examId)]) ?? "common";
+        const result = await tx.run(insertSql, groupId, examId, nextOrder, trackType);
         if (result.changes > 0) { inserted.push(examId); nextOrder++; }
       }
       return inserted;
@@ -410,13 +489,19 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
+    const track = normalizeTrackFilter(req.query.track);
 
     const group = await db.get("SELECT name FROM exam_groups WHERE id = ?", groupId) as { name: string } | undefined;
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
 
+    // 评审修复（PR #212）：逐科统计必须与参与人数同口径——按 users.track 过滤学生
+    const trackStudentClause = track === "all" ? "" : "AND u.track = ?";
+    const memberParams: unknown[] = [groupId];
+    if (track !== "all") memberParams.push(track);
     const members = await db.all(`
       SELECT e.id as exam_id, e.name as exam_name, e.subject,
              e.assigned_formula,
+             egm.track_type,
              COUNT(ss.exam_id) as graded_count,
              ROUND(AVG(ss.total_score), 1) as avg_score,
              ROUND(MAX(ss.total_score), 1) as max_score,
@@ -424,14 +509,18 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
       LEFT JOIN student_scores ss ON ss.exam_id = e.id
-      WHERE egm.group_id = ?
+      LEFT JOIN users u ON u.id = ss.student_id
+      WHERE egm.group_id = ? ${trackStudentClause}
       GROUP BY e.id
       ORDER BY egm.sort_order, egm.id
-    `, groupId) as any[];
+    `, ...memberParams) as any[];
+    const trackMembers = track === "all"
+      ? members
+      : members.filter((m) => memberMatchesTrack(m.track_type, track));
 
     // Calculate full score and std for each subject
     const subjects = [];
-    for (const m of members) {
+    for (const m of trackMembers) {
       const fullScoreRow = await db.get(`
         SELECT SUM(max_score) as total FROM (
           SELECT DISTINCT question_number, score_type, max_score FROM question_scores WHERE exam_id = ?
@@ -441,8 +530,10 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
 
       const stdRow = await db.get(`
         SELECT ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as std
-        FROM student_scores ss WHERE ss.exam_id = ?
-      `, m.avg_score, m.avg_score, m.exam_id) as { std: number } | undefined;
+        FROM student_scores ss
+        JOIN users u ON u.id = ss.student_id
+        WHERE ss.exam_id = ? ${trackStudentClause}
+      `, m.avg_score, m.avg_score, m.exam_id, ...(track !== "all" ? [track] : [])) as { std: number } | undefined;
 
       const passLine = fullScore * 0.6;
       const excellentLine = fullScore * 0.9;
@@ -450,8 +541,10 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
         SELECT
           SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as pass_count,
           SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellent_count
-        FROM student_scores ss WHERE ss.exam_id = ?
-      `, passLine, excellentLine, m.exam_id) as { pass_count: number; excellent_count: number } | undefined;
+        FROM student_scores ss
+        JOIN users u ON u.id = ss.student_id
+        WHERE ss.exam_id = ? ${trackStudentClause}
+      `, passLine, excellentLine, m.exam_id, ...(track !== "all" ? [track] : [])) as { pass_count: number; excellent_count: number } | undefined;
 
       subjects.push({
         examId: m.exam_id,
@@ -465,32 +558,44 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
         passRate: m.graded_count > 0 ? Math.round((passRow?.pass_count || 0) / m.graded_count * 100) : 0,
         excellentRate: m.graded_count > 0 ? Math.round((passRow?.excellent_count || 0) / m.graded_count * 100) : 0,
         fullScore,
-        hasAssignedScore: !!(m.assigned_formula && m.assigned_formula !== "")
+        hasAssignedScore: !!(m.assigned_formula && m.assigned_formula !== ""),
+        trackType: m.track_type || "common"
       });
     }
 
-    // Total participants
+    // Total participants（按文理筛选学生）
+    const totalParams: unknown[] = [groupId];
+    if (track !== "all") totalParams.push(track);
     const totalRow = await db.get(`
       SELECT COUNT(DISTINCT s.student_id) as cnt FROM (
         SELECT ss.student_id FROM exam_group_members egm
         JOIN student_scores ss ON ss.exam_id = egm.exam_id
-        WHERE egm.group_id = ?
+        JOIN users u ON u.id = ss.student_id
+        WHERE egm.group_id = ? ${trackStudentClause}
       ) s
-    `, groupId) as { cnt: number };
+    `, ...totalParams) as { cnt: number };
 
+    const fullParams: unknown[] = [groupId];
+    let memberCountClause = "(SELECT COUNT(*) FROM exam_group_members WHERE group_id = ?)";
+    if (track !== "all") {
+      memberCountClause = "(SELECT COUNT(*) FROM exam_group_members WHERE group_id = ? AND (track_type = 'common' OR track_type = ?))";
+      fullParams.push(track);
+    }
     const fullRow = await db.get(`
       SELECT COUNT(*) as cnt FROM (
         SELECT ss.student_id, COUNT(DISTINCT egm.exam_id) as exam_count
         FROM exam_group_members egm
         JOIN student_scores ss ON ss.exam_id = egm.exam_id
-        WHERE egm.group_id = ?
+        JOIN users u ON u.id = ss.student_id
+        WHERE egm.group_id = ? ${trackStudentClause}
         GROUP BY ss.student_id
-        HAVING exam_count = (SELECT COUNT(*) FROM exam_group_members WHERE group_id = ?)
+        HAVING exam_count = ${memberCountClause}
       )
-    `, groupId, groupId) as { cnt: number } | undefined;
+    `, ...fullParams, ...fullParams.slice(0)) as { cnt: number } | undefined;
 
     res.json({
       groupId, groupName: group.name,
+      track,
       totalParticipants: totalRow.cnt,
       fullParticipants: fullRow?.cnt ?? 0,
       subjects
@@ -505,7 +610,7 @@ router.get("/:groupId/overview", requireReadableGroup, async (req: Request, res:
 router.get("/:groupId/metrics", requireReadableGroup, async (req: Request, res: Response) => {
   try {
     const analysisRepo = new AnalysisRepository();
-    const metrics = await analysisRepo.getGroupMetrics(Number(req.params.groupId));
+    const metrics = await analysisRepo.getGroupMetrics(Number(req.params.groupId), normalizeTrackFilter(req.query.track));
     res.json(metrics);
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "获取大考指标失败" });
@@ -517,7 +622,7 @@ router.get("/:groupId/metrics", requireReadableGroup, async (req: Request, res: 
 router.get("/:groupId/question-analysis", requireReadableGroup, async (req: Request, res: Response) => {
   try {
     const analysisRepo = new AnalysisRepository();
-    const data = await analysisRepo.getGroupQuestionAnalysis(Number(req.params.groupId));
+    const data = await analysisRepo.getGroupQuestionAnalysis(Number(req.params.groupId), normalizeTrackFilter(req.query.track));
     res.json(data);
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "获取大考逐题分析失败" });
@@ -530,7 +635,7 @@ router.get("/:groupId/distribution", requireReadableGroup, async (req: Request, 
   try {
     const analysisRepo = new AnalysisRepository();
     const mode = (req.query.mode as string) === "total" ? "total" : (req.query.mode as string) === "class" ? "class" : "subject";
-    const dist = await analysisRepo.getGroupDistribution(Number(req.params.groupId), mode);
+    const dist = await analysisRepo.getGroupDistribution(Number(req.params.groupId), mode, normalizeTrackFilter(req.query.track));
     res.json(dist);
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "获取大考分布失败" });
@@ -542,7 +647,7 @@ router.get("/:groupId/distribution", requireReadableGroup, async (req: Request, 
 router.get("/:groupId/class-comparison", requireReadableGroup, async (req: Request, res: Response) => {
   try {
     const analysisRepo = new AnalysisRepository();
-    const data = await analysisRepo.getGroupClassComparison(Number(req.params.groupId));
+    const data = await analysisRepo.getGroupClassComparison(Number(req.params.groupId), normalizeTrackFilter(req.query.track));
     res.json(data);
   } catch (error) {
     res.status(500).json({ message: error instanceof Error ? error.message : "获取大考班级对比失败" });
@@ -606,6 +711,7 @@ router.get("/:groupId/rankings", requireReadableGroup, async (req: Request, res:
     const groupId = Number(req.params.groupId);
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
     const fullOnly = req.query.fullOnly === "1";
+    const track = normalizeTrackFilter(req.query.track);
 
     const group = await db.get(`
       SELECT name, total_score_mode, only_full_participants
@@ -614,27 +720,37 @@ router.get("/:groupId/rankings", requireReadableGroup, async (req: Request, res:
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
 
     const members = await db.all(`
-      SELECT egm.exam_id, e.subject, e.assigned_formula, egm.sort_order
+      SELECT egm.exam_id, e.subject, e.assigned_formula, egm.sort_order, egm.track_type
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
       WHERE egm.group_id = ?
       ORDER BY egm.sort_order, egm.id
-    `, groupId) as Array<{ exam_id: number; subject: string | null; assigned_formula: string | null; sort_order: number }>;
+    `, groupId) as Array<{ exam_id: number; subject: string | null; assigned_formula: string | null; sort_order: number; track_type: string | null }>;
 
     if (members.length === 0) {
       res.json({ groupId, groupName: group.name, totalStudents: 0, displayColumns: [], rows: [] });
       return;
     }
+    const trackMembers = track === "all"
+      ? members
+      : members.filter((m) => memberMatchesTrack(m.track_type, track));
+    if (trackMembers.length === 0) {
+      res.json({ groupId, groupName: group.name, totalStudents: 0, displayColumns: [], rows: [] });
+      return;
+    }
 
     const useAssigned = fullOnly ? group.only_full_participants : false;
-    const memberIds = members.map((m) => m.exam_id);
+    const memberIds = trackMembers.map((m) => m.exam_id);
 
-    // Get all scores for all member exams
+    // Get all scores for all member exams（按文理过滤学生）
+    const trackStudentClause = track === "all" ? "" : "AND u.track = ?";
+    const allScoreParams: unknown[] = [...memberIds];
+    if (track !== "all") allScoreParams.push(track);
     const allScores = await db.all(`
       SELECT
         ss.student_id, ss.exam_id, ss.total_score, ss.assigned_score,
         ss.objective_score, ss.subjective_score,
-        u.student_number, u.name,
+        u.student_number, u.name, u.track,
         c.name as class_name, c.id as class_id,
         g.name as grade_name
       FROM student_scores ss
@@ -642,11 +758,11 @@ router.get("/:groupId/rankings", requireReadableGroup, async (req: Request, res:
       LEFT JOIN class_students cs ON cs.student_id = ss.student_id
       LEFT JOIN classes c ON c.id = cs.class_id
       LEFT JOIN grades g ON g.id = c.grade_id
-      WHERE ss.exam_id IN (${memberIds.map(() => "?").join(",")})
-    `, ...memberIds) as Array<{
+      WHERE ss.exam_id IN (${memberIds.map(() => "?").join(",")}) ${trackStudentClause}
+    `, ...allScoreParams) as Array<{
       student_id: number; exam_id: number; total_score: number; assigned_score: number | null;
       objective_score: number; subjective_score: number;
-      student_number: string; name: string;
+      student_number: string; name: string; track: string | null;
       class_name: string | null; class_id: number | null; grade_name: string | null;
     }>;
 
@@ -677,15 +793,17 @@ router.get("/:groupId/rankings", requireReadableGroup, async (req: Request, res:
     // Get rankings per exam for grade and class rank
     const examRanks: Record<number, Map<number, { gradeRank: number; classRank: number }>> = {};
     for (const examId of memberIds) {
+      const rankParams: unknown[] = [examId];
+      if (track !== "all") rankParams.push(track);
       const rankRows = await db.all(`
         SELECT ss.student_id, ss.total_score, c.name as class_name, c.id as class_id
         FROM student_scores ss
         JOIN users u ON u.id = ss.student_id
         LEFT JOIN class_students cs ON cs.student_id = ss.student_id
         LEFT JOIN classes c ON c.id = cs.class_id
-        WHERE ss.exam_id = ?
+        WHERE ss.exam_id = ? ${trackStudentClause}
         ORDER BY ss.total_score DESC
-      `, examId) as Array<{ student_id: number; total_score: number; class_name: string | null; class_id: number | null }>;
+      `, ...rankParams) as Array<{ student_id: number; total_score: number; class_name: string | null; class_id: number | null }>;
 
       const rankMap = new Map<number, { gradeRank: number; classRank: number }>();
       examRanks[examId] = rankMap;
@@ -725,7 +843,7 @@ router.get("/:groupId/rankings", requireReadableGroup, async (req: Request, res:
     }> = [];
 
     for (const [, student] of studentMap) {
-      const subjects = members.map((m) => {
+      const subjects = trackMembers.map((m) => {
         const s = student.scores.get(m.exam_id);
         const ranks = examRanks[m.exam_id]?.get(student.studentId);
         return {
@@ -740,7 +858,7 @@ router.get("/:groupId/rankings", requireReadableGroup, async (req: Request, res:
         };
       });
 
-      const isFull = student.scores.size >= members.length;
+      const isFull = student.scores.size >= trackMembers.length;
 
       if (fullOnly && !isFull) continue;
 
@@ -790,7 +908,7 @@ router.get("/:groupId/rankings", requireReadableGroup, async (req: Request, res:
       }
     }
 
-    const displayColumns = members.map((m) => m.subject || `科目${m.exam_id}`);
+    const displayColumns = trackMembers.map((m) => m.subject || `科目${m.exam_id}`);
 
     res.json({
       groupId, groupName: group.name,

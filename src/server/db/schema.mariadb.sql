@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
     name             VARCHAR(100) NOT NULL,
     role_id          INT NOT NULL,
     student_number   VARCHAR(50) UNIQUE,
+    track            VARCHAR(20),                 -- 文理分科：arts 文科 / science 理科（仅学生，Issue #177）
     subject          VARCHAR(50),
     initial_password VARCHAR(255),
     score_display_mode VARCHAR(20) DEFAULT 'zscore',
@@ -239,6 +240,7 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     line_grid_json   TEXT,
     essay_grid_json  TEXT,
     score_grid_json  TEXT,
+    annotation       TEXT,
     sort_order       INT DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (block_id) REFERENCES subjective_blocks(id) ON DELETE CASCADE
@@ -276,6 +278,7 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
     point_text      TEXT NOT NULL,
     category        VARCHAR(100),
     sort_order      INT DEFAULT 0,
+    track_type      VARCHAR(20) NOT NULL DEFAULT 'common', -- 文理分科科目归属：common 共同 / arts 文科 / science 理科（Issue #177）
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_card_question_point (card_id, question_number, point_text(255)),
     FOREIGN KEY (card_id) REFERENCES answer_cards(id) ON DELETE CASCADE

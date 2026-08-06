@@ -32,12 +32,15 @@ import {
  *    但描边/填充全部换成语义 class：`stroke-border-strong` / `fill-chart-1` /
  *    正态曲线 `stroke-chart-3`，不再出现旧品牌变量与硬编码橙色
  *  · 「样本量<30」提示 → `Badge tone="warning"`；正态/偏离结论 → success / danger 语义色
+ *  · 合并 main：#177 文理分科筛选（track 参数，仅 group 生效）
  */
 
 interface Props {
   kind: "exam" | "group";
   examId?: number;
   groupId?: number;
+  /** 文理分科筛选（Issue #177，仅 group 生效） */
+  track?: "all" | "arts" | "science";
   bands?: { difficulty: ThresholdBand[]; discrimination: ThresholdBand[] };
 }
 
@@ -47,7 +50,7 @@ function normalPdf(x: number, mean: number, sd: number): number {
   return Math.exp(-0.5 * z * z) / (sd * Math.sqrt(2 * Math.PI));
 }
 
-export function AnalysisOverall({ kind, examId, groupId, bands }: Props) {
+export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }: Props) {
   const [distributions, setDistributions] = useState<DistributionResult[]>([]);
   const [metrics, setMetrics] = useState<ExamMetrics | GroupMetrics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -55,24 +58,25 @@ export function AnalysisOverall({ kind, examId, groupId, bands }: Props) {
 
   const load = useCallback(() => {
     setLoading(true); setError("");
-    const base = kind === "exam" ? `/api/analysis/exams/${examId}` : `/api/analysis/exam-groups/${groupId}`;
+    const base = kind === "exam" ? `/api/analysis/exams/${examId}` : `/api/exam-groups/${groupId}`;
+    const trackSuffix = kind === "group" ? `&track=${track}` : "";
     const distPromises = kind === "exam"
       ? Promise.all([
           fetchJson<DistributionResult[]>(`${base}/distribution?mode=subject`),
           fetchJson<DistributionResult[]>(`${base}/distribution?mode=class`),
         ]).then(([s, c]) => [...s, ...c])
       : Promise.all([
-          fetchJson<DistributionResult[]>(`${base}/distribution?mode=total`),
-          fetchJson<DistributionResult[]>(`${base}/distribution?mode=subject`),
-          fetchJson<DistributionResult[]>(`${base}/distribution?mode=class`),
+          fetchJson<DistributionResult[]>(`${base}/distribution?mode=total${trackSuffix}`),
+          fetchJson<DistributionResult[]>(`${base}/distribution?mode=subject${trackSuffix}`),
+          fetchJson<DistributionResult[]>(`${base}/distribution?mode=class${trackSuffix}`),
         ]).then(([t, s, c]) => [...t, ...s, ...c]);
-    const metricPromise = fetchJson<ExamMetrics | GroupMetrics>(`${base}/metrics`);
+    const metricPromise = fetchJson<ExamMetrics | GroupMetrics>(`${base}/metrics${kind === "group" ? `?track=${track}` : ""}`);
 
     Promise.all([distPromises, metricPromise])
       .then(([d, m]) => { setDistributions(Array.isArray(d) ? d : []); setMetrics(m as ExamMetrics | GroupMetrics); })
       .catch((e) => setError(e instanceof Error ? e.message : "加载失败"))
       .finally(() => setLoading(false));
-  }, [kind, examId, groupId]);
+  }, [kind, examId, groupId, track]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -127,7 +131,7 @@ export function AnalysisOverall({ kind, examId, groupId, bands }: Props) {
                       <DifficultyBadge value={s.difficulty ?? 0} bands={bands?.difficulty} />
                     </TableCell>
                     <TableCell numeric>
-                      <DiscriminationBadge value={s.discrimination ?? 0} bands={bands?.discrimination} />
+                      <DiscriminationBadge value={s.discrimination ?? 0} bands={bands?.discrimination} sampleSize={s.gradedCount} />
                     </TableCell>
                   </TableRow>
                 ))}
@@ -155,7 +159,7 @@ function DistributionCard({ d, showTotalNote, bands }: { d: DistributionResult; 
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-sm font-semibold text-foreground">{d.label} 分布</h3>
         <DifficultyBadge value={d.difficulty} bands={bands?.difficulty} />
-        <DiscriminationBadge value={d.discrimination} bands={bands?.discrimination} />
+        <DiscriminationBadge value={d.discrimination} bands={bands?.discrimination} sampleSize={n} />
         <span className="text-xs tabular-nums text-muted-foreground">
           样本 {n} · 均分 {formatScore(d.mean)} · 标准差 {formatScore(d.stdDev)}
         </span>

@@ -261,6 +261,7 @@ npm run server
 |------|------|------|
 | `blanks_label_style` | TEXT | `none` / `arabic_parentheses` / `roman_parentheses` |
 | `blanks_items_json` | TEXT | JSON：每个空的标签、宽度、高度 |
+| `annotation` | TEXT | 填空题文字注释/题干说明（v1.10.1 起） |
 
 ### 模块三：考试与扫描
 

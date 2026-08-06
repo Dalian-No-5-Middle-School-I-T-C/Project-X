@@ -11,6 +11,7 @@ import type { ThresholdBand } from "../../../../shared/stats";
  *    难度/区分度的 `color` 属于业务数据而非设计 token，管理员可在系统设置里改，
  *    因此这里保留数据驱动的行内色值，不改成语义 class、也不塞进 theme.ts。
  *  · 无 bands 时的兜底色改用语义变量 `--color-muted-foreground`，不再硬编码灰值。
+ *  · 合并 main：区分度 D 增加最小样本量守卫（MIN_D_SAMPLE_SIZE，极端组法样本不足时提示）。
  */
 
 export interface BandSet {
@@ -68,6 +69,21 @@ export function DifficultyBadge({ value, bands }: { value: number; bands?: Thres
   return <BandBadge value={value} bands={bands} title="难度系数 P" />;
 }
 
-export function DiscriminationBadge({ value, bands }: { value: number; bands?: ThresholdBand[] }) {
+/** 区分度 D 的最小可信样本量（极端组法在更小样本下每组不足 1 人，D 失去意义） */
+export const MIN_D_SAMPLE_SIZE = 4;
+
+export function DiscriminationBadge({ value, bands, sampleSize }: { value: number; bands?: ThresholdBand[]; sampleSize?: number }) {
+  if (sampleSize !== undefined && sampleSize < MIN_D_SAMPLE_SIZE) {
+    return (
+      <span
+        className={BAND_BADGE_CLASS}
+        title={`区分度 D：样本不足（至少需要 ${MIN_D_SAMPLE_SIZE} 人）`}
+        style={{ color: "var(--color-muted-foreground)", borderColor: "var(--color-muted-foreground)", backgroundColor: "color-mix(in srgb, var(--color-muted-foreground) 12%, transparent)" }}
+      >
+        <span className="size-1.5 shrink-0 rounded-full bg-current" aria-hidden />
+        样本不足
+      </span>
+    );
+  }
   return <BandBadge value={value} bands={bands} title="区分度 D" />;
 }

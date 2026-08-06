@@ -177,7 +177,7 @@ export function AnalysisQuestions({ questions, bands, onRowClick }: Props) {
         sortingFn: (a, b) => nullableNumberCompare(a.original.discrimination, b.original.discrimination),
         meta: { numeric: true, widthClass: "w-32" },
         cell: ({ row }) => (
-          <DiscriminationBadge value={row.original.discrimination} bands={bands?.discrimination} />
+          <DiscriminationBadge value={row.original.discrimination} bands={bands?.discrimination} sampleSize={row.original.totalCount} />
         ),
       },
       {

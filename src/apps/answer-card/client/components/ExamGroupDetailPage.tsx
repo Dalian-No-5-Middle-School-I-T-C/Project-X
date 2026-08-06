@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Activity, ArrowLeft, BarChart3, ClipboardList, Download, FileText, Layers } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { useAuth } from "../auth/AuthContext";
@@ -71,6 +71,8 @@ interface Props {
 
 type SubTab = "overview" | "scores" | "question-analysis" | "class-compare" | "overall" | "ai";
 type ViewMode = "combined" | "per-subject";
+/** 文理分科筛选（Issue #177）：all / arts / science */
+type TrackFilter = "all" | "arts" | "science";
 
 /** 班级下拉的「全年级」哨兵值（v2 Select 不接受空字符串 value） */
 const ALL_CLASSES = "__all__";
@@ -100,6 +102,8 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [classId, setClassId] = useState("");
   const [fullOnly, setFullOnly] = useState(false);
+  /** 文理分科（Issue #177）：all / arts / science */
+  const [trackFilter, setTrackFilter] = useState<TrackFilter>("all");
   const [loading, setLoading] = useState(true);
   const [drill, setDrill] = useState<{ examId: number; questionNumber: string; maxScore: number } | null>(null);
 
@@ -118,23 +122,23 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
     loadOverview();
     loadMetrics();
     loadRankings();
-  }, [groupId, fullOnly, classId]);
+  }, [groupId, fullOnly, classId, trackFilter]);
 
   useEffect(() => {
     if (subTab === "question-analysis" && !questionAnalysis) loadQuestionAnalysis();
     if (subTab === "class-compare" && !classComparison) loadClassComparison();
-  }, [subTab]);
+  }, [subTab, trackFilter, groupId]);
 
   async function loadOverview() {
     setLoading(true);
     try {
-      const data = await fetchJson<GroupOverview>(`/api/exam-groups/${groupId}/overview`);
+      const data = await fetchJson<GroupOverview>(`/api/exam-groups/${groupId}/overview?track=${trackFilter}`);
       setOverview(data);
     } catch { setOverview(null); }
     finally { setLoading(false); }
   }
   async function loadMetrics() {
-    try { setMetrics(await fetchJson<GroupMetrics>(`/api/exam-groups/${groupId}/metrics`)); }
+    try { setMetrics(await fetchJson<GroupMetrics>(`/api/exam-groups/${groupId}/metrics?track=${trackFilter}`)); }
     catch { setMetrics(null); }
   }
   async function loadRankings() {
@@ -142,17 +146,32 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
       const params = new URLSearchParams();
       if (classId) params.set("classId", classId);
       if (fullOnly) params.set("fullOnly", "1");
+      params.set("track", trackFilter);
       const data = await fetchJson<GroupRankingResponse>(`/api/exam-groups/${groupId}/rankings?${params.toString()}`);
       setRankings(data);
     } catch { setRankings(null); }
   }
+  // 评审修复（PR #212）：逐题分析/班级对比携带 track 参数；
+  // 用请求序号防止快速切换文理时旧响应覆盖新响应。
+  const qaReqSeq = useRef(0);
+  const ccReqSeq = useRef(0);
   async function loadQuestionAnalysis() {
-    try { setQuestionAnalysis(await fetchJson<GroupQuestionAnalysisResponse>(`/api/exam-groups/${groupId}/question-analysis`)); }
-    catch { setQuestionAnalysis(null); }
+    const seq = ++qaReqSeq.current;
+    try {
+      const data = await fetchJson<GroupQuestionAnalysisResponse>(`/api/exam-groups/${groupId}/question-analysis?track=${trackFilter}`);
+      if (seq === qaReqSeq.current) setQuestionAnalysis(data);
+    } catch {
+      if (seq === qaReqSeq.current) setQuestionAnalysis(null);
+    }
   }
   async function loadClassComparison() {
-    try { setClassComparison(await fetchJson<GroupClassComparisonResponse>(`/api/exam-groups/${groupId}/class-comparison`)); }
-    catch { setClassComparison(null); }
+    const seq = ++ccReqSeq.current;
+    try {
+      const data = await fetchJson<GroupClassComparisonResponse>(`/api/exam-groups/${groupId}/class-comparison?track=${trackFilter}`);
+      if (seq === ccReqSeq.current) setClassComparison(data);
+    } catch {
+      if (seq === ccReqSeq.current) setClassComparison(null);
+    }
   }
 
   const subjectList = useMemo(() => (overview?.subjects ?? []).map((s) => s.subject), [overview]);
@@ -207,6 +226,7 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
           <h2 className="text-base font-semibold">{overview.groupName}</h2>
           <div className="mt-0.5 text-xs text-muted-foreground tabular-nums">
             {overview.subjects.length} 科 · {overview.totalParticipants} 人参加 · {overview.fullParticipants} 人全科
+            {trackFilter !== "all" && ` · ${trackFilter === "arts" ? "文科" : "理科"}`}
           </div>
         </div>
         {isTeacher && onExport && (
@@ -255,6 +275,19 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
                 </SelectContent>
               </Select>
             )}
+            {/* 文理分科筛选（Issue #177） */}
+            <span className="text-xs text-muted-foreground">文理</span>
+            <SegmentedControl
+              value={trackFilter}
+              onValueChange={(v) => setTrackFilter(v as TrackFilter)}
+              items={[
+                { value: "all", label: "全部" },
+                { value: "arts", label: "文科" },
+                { value: "science", label: "理科" },
+              ]}
+              size="sm"
+              aria-label="文理分科筛选"
+            />
           </div>
         )}
 
@@ -276,7 +309,7 @@ export function ExamGroupDetailPage({ groupId, onBack, onExport }: Props) {
             <GroupClassCompareTab cc={classComparison} viewMode={viewMode} subjectFilter={activeSubject} />
           </TabsContent>
           <TabsContent value="overall">
-            <AnalysisOverall kind="group" groupId={groupId} bands={bands ?? undefined} />
+            <AnalysisOverall kind="group" groupId={groupId} track={trackFilter} bands={bands ?? undefined} />
           </TabsContent>
           <TabsContent value="ai">
             <AnalysisAiPanel groupId={groupId} />
@@ -319,7 +352,7 @@ function OverviewTab({
           <StatCard
             label="整体区分度 D"
             value={overallMetrics.discrimination.toFixed(3)}
-            hint={<DiscriminationBadge value={overallMetrics.discrimination} bands={bands?.discrimination} />}
+            hint={<DiscriminationBadge value={overallMetrics.discrimination} bands={bands?.discrimination} sampleSize={overallMetrics.participantCount} />}
           />
           <StatCard label="大考总分满分" value={overallMetrics.totalFullScore} />
           <StatCard label="大考总均分" value={overallMetrics.totalAvg} />
@@ -356,7 +389,7 @@ function OverviewTab({
               <span className="text-muted-foreground">区分度 D</span>
               <span className="text-right font-medium">
                 {metricsByExam.get(sub.examId)?.discrimination != null
-                  ? <DiscriminationBadge value={metricsByExam.get(sub.examId)!.discrimination!} bands={bands?.discrimination} />
+                  ? <DiscriminationBadge value={metricsByExam.get(sub.examId)!.discrimination!} bands={bands?.discrimination} sampleSize={metricsByExam.get(sub.examId)!.gradedCount} />
                   : "—"}
               </span>
             </div>
@@ -579,7 +612,7 @@ function GroupQuestionAnalysisTab({
           <MetricLine label="难度系数 P" value={qa.overall.difficulty.toFixed(3)} />
           <DifficultyBadge value={qa.overall.difficulty} bands={bands?.difficulty} />
           <MetricLine label="区分度 D" value={qa.overall.discrimination.toFixed(3)} />
-          <DiscriminationBadge value={qa.overall.discrimination} bands={bands?.discrimination} />
+          <DiscriminationBadge value={qa.overall.discrimination} bands={bands?.discrimination} sampleSize={qa.overall.sampleSize} />
         </div>
       </Panel>
 
@@ -589,7 +622,7 @@ function GroupQuestionAnalysisTab({
             <div className="text-sm font-semibold">{s.subject}（{s.examName}）</div>
             <span className="text-xs text-muted-foreground tabular-nums">满分 {s.fullScore} · 均分 {s.avgScore}</span>
             <DifficultyBadge value={s.difficulty} bands={bands?.difficulty} />
-            <DiscriminationBadge value={s.discrimination} bands={bands?.discrimination} />
+            <DiscriminationBadge value={s.discrimination} bands={bands?.discrimination} sampleSize={s.sampleSize} />
           </div>
           <div className="mt-3">
             <AnalysisQuestions

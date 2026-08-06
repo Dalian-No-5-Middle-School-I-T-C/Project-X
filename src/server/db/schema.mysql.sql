@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
     name             VARCHAR(100) NOT NULL,
     role_id          INT NOT NULL,
     student_number   VARCHAR(50) UNIQUE,
+    track            VARCHAR(20),                 -- 文理分科：arts 文科 / science 理科（仅学生，Issue #177）
     subject          VARCHAR(50),
     initial_password VARCHAR(255),
     score_display_mode VARCHAR(20) DEFAULT 'zscore',
@@ -257,6 +258,7 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
     point_text      VARCHAR(50) NOT NULL,
     category        VARCHAR(50),
     sort_order      INT DEFAULT 0,
+    track_type      VARCHAR(20) NOT NULL DEFAULT 'common', -- 文理分科科目归属：common 共同 / arts 文科 / science 理科（Issue #177）
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_card_question_point (card_id, question_number, point_text),
     FOREIGN KEY (card_id) REFERENCES answer_cards(id) ON DELETE CASCADE

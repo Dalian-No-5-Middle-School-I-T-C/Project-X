@@ -46,12 +46,13 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
   const [isOfficial, setIsOfficial] = useState(existingGroup?.is_official ?? 0);
   const [totalScoreMode, setTotalScoreMode] = useState<string>(existingGroup?.total_score_mode ?? "raw");
 
-  const [selectedExams, setSelectedExams] = useState<Array<{ examId: number; examName: string; subject: string; date: string }>>(
+  const [selectedExams, setSelectedExams] = useState<Array<{ examId: number; examName: string; subject: string; date: string; trackType: string }>>(
     existingMembers?.map((m: any) => ({
       examId: m.examId ?? m.exam_id,
       examName: m.examName ?? m.exam_name,
       subject: m.subject ?? "",
-      date: m.examDate ?? m.exam_date ?? ""
+      date: m.examDate ?? m.exam_date ?? "",
+      trackType: m.trackType ?? m.track_type ?? "common"
     })) ?? []
   );
   const [showPicker, setShowPicker] = useState(false);
@@ -108,7 +109,10 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
         tag: tag || null,
         is_official: isOfficial,
         total_score_mode: totalScoreMode,
-        examIds: selectedExams.map((e) => e.examId)
+        examIds: selectedExams.map((e) => e.examId),
+        memberTracks: Object.fromEntries(
+          selectedExams.map((e) => [String(e.examId), e.trackType || "common"])
+        )
       };
 
       if (isEdit) {
@@ -141,8 +145,13 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
       examId: exam.id,
       examName: exam.name,
       subject: exam.subject || "",
-      date: exam.exam_date || ""
+      date: exam.exam_date || "",
+      trackType: defaultTrackType(exam.subject || "")
     }]);
+  }
+
+  function updateTrackType(examId: number, trackType: string) {
+    setSelectedExams(selectedExams.map((e) => e.examId === examId ? { ...e, trackType } : e));
   }
 
   function removeExam(examId: number) {
@@ -152,6 +161,13 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
   // Inline exam creation
   const tags = ["", "月考", "期中", "期末", "模考", "统考"];
   const allSubjects = ["语文", "数学", "英语", "物理", "化学", "生物", "政治", "历史", "地理"];
+
+  /** 文理分科（Issue #177）：按科目自动预填科目归属 */
+  function defaultTrackType(subject: string): string {
+    if (["物理", "化学", "生物"].includes(subject)) return "science";
+    if (["政治", "历史", "地理"].includes(subject)) return "arts";
+    return "common";
+  }
 
   const filteredPicker = pickerExams.filter((e) =>
     !pickerSearch || e.name.includes(pickerSearch) || (e.subject || "").includes(pickerSearch)
@@ -350,14 +366,30 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
                     <span className="shrink-0 text-xs text-secondary-foreground">{exam.subject || "无科目"}</span>
                     {exam.date && <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{exam.date}</span>}
                   </div>
-                  <Button
-                    size="icon-sm"
-                    variant="ghost"
-                    aria-label={`移除 ${exam.examName}`}
-                    onClick={() => removeExam(exam.examId)}
-                  >
-                    <Trash2 />
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {/* 文理分科（Issue #177）：科目归属 共同/文科/理科 */}
+                    <Select
+                      value={exam.trackType || "common"}
+                      onValueChange={(v) => updateTrackType(exam.examId, v)}
+                    >
+                      <SelectTrigger className="h-control-sm w-20 text-xs" aria-label={`${exam.examName} 文理分科归属`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="common">共同</SelectItem>
+                        <SelectItem value="arts">文科</SelectItem>
+                        <SelectItem value="science">理科</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label={`移除 ${exam.examName}`}
+                      onClick={() => removeExam(exam.examId)}
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
                 </div>
               ))}
               {selectedExams.length === 0 && (

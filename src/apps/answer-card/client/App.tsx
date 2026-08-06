@@ -1205,15 +1205,22 @@ function App() {
         const prefix = toChinese(index + 1);
         const count = obj.questionCount ?? 0;
         const total = count * (obj.scorePerQuestion ?? 0);
-        block.title = `${prefix}、${typeName}（${count}题 ${total}分）`;
+        block.title = `${prefix}、${typeName}（共${count}题，共${total}分）`;
       } else if (block.type === "subjective") {
         const sub = block as SubjectiveBlock;
-        const isFillBlank = sub.questions.length > 0 && sub.questions[0]?.style === "manual_score_grid" && sub.questions.every((q) => q.kind === "blank");
-        const typeName = isFillBlank ? "填空题" : "解答题";
+        let typeName = "解答题";
+        if (sub.blockKind === "essay") {
+          typeName = "作文";
+        } else if (sub.blockKind === "fill_blank") {
+          typeName = "填空题";
+        } else {
+          const isFillBlank = sub.questions.length > 0 && sub.questions[0]?.style === "manual_score_grid" && sub.questions.every((q) => q.kind === "blank");
+          typeName = isFillBlank ? "填空题" : "解答题";
+        }
         const prefix = toChinese(index + 1);
         const count = sub.questions.length;
         const total = sub.questions.reduce((sum, q) => sum + (q.score || 0), 0);
-        block.title = `${prefix}、${typeName}（${count}题 ${total}分）`;
+        block.title = `${prefix}、${typeName}（共${count}题，共${total}分）`;
       }
       index++;
     }

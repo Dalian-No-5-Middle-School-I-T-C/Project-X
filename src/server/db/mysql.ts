@@ -662,9 +662,17 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       ]
     },
     {
-      version: 31,
-      name: "exam-group-track-type",
+      version: 30,
+      name: "subjective-question-annotation",
       sqls: [
+        `ALTER TABLE subjective_questions ADD COLUMN annotation TEXT`,
+      ]
+    },
+    {
+      version: 31,
+      name: "exam-group-arts-science-track",
+      sqls: [
+        `ALTER TABLE users ADD COLUMN track TEXT`,
         `ALTER TABLE exam_group_members ADD COLUMN track_type VARCHAR(20) NOT NULL DEFAULT 'common'`,
       ]
     },

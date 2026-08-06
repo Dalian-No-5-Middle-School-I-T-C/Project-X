@@ -802,10 +802,23 @@ const MIGRATIONS: Migration[] = [
       }
     }
   },
+  // v30: 填空题升级 — 主观题新增 annotation（文字注释/题干说明），
+  // 与逐空 blanks_items_json 的自定义横线、subjective_question_images 的插图配合使用。
+  {
+    version: 30,
+    name: "subjective-question-annotation",
+    up(db) {
+      addColumnIfMissing(db, "subjective_questions", "annotation", "TEXT");
+    }
+  },
+  // v31 (Issue #177): 大考合集文理分科 —— 升 v31 以避让 main 已占用的 v30 (subjective-question-annotation)
+  // - users.track：学生文/理属性（'arts' 文科 / 'science' 理科）
+  // - exam_group_members.track_type：考试组内科目归属（common 共同 / arts 文科 / science 理科）
   {
     version: 31,
-    name: "exam-group-track-type",
+    name: "exam-group-arts-science-track",
     up(db) {
+      addColumnIfMissing(db, "users", "track", "TEXT");
       addColumnIfMissing(db, "exam_group_members", "track_type", "TEXT NOT NULL DEFAULT 'common'");
     }
   }
