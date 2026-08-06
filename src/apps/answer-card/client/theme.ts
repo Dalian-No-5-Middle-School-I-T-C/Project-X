@@ -44,6 +44,7 @@ export const tokens = {
   successSoft: "rgba(22, 163, 74, 0.12)",
   warning: "#D97706",
   warningSoft: "rgba(217, 119, 6, 0.12)",
+  amber700: "#B45309", // --px-amber-700（档位徽章深琥珀，JS 侧镜像）
   danger: "#C00F28",
   dangerSoft: "rgba(192, 15, 40, 0.12)",
   info: "#2563EB",

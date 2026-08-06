@@ -1,101 +1,117 @@
 import { ArrowDown, ArrowUp, Crown, Medal, Minus, Trophy } from "lucide-react";
+import type { ReactNode } from "react";
 import type { LadderRow } from "../../../../shared/types";
+import { cn } from "../lib/utils";
 
 interface Props {
   row: LadderRow;
   maxScore: number;
 }
 
-const TOP_COLORS: Record<number, { bg: string; text: string; icon: React.ReactNode }> = {
+// 前三名徽章/进度条的语义配色：金=warning 琥珀、银=secondary、铜=muted
+const TOP_STYLES: Record<
+  number,
+  { badge: string; bar: string; icon: ReactNode }
+> = {
   1: {
-    bg: "linear-gradient(135deg, #FFD700, #FFA500)",
-    text: "#5C3D00",
-    icon: <Crown size={16} fill="#FFD700" stroke="#B8860B" />,
+    badge: "bg-warning-soft text-warning-foreground border-warning-border",
+    bar: "bg-warning",
+    icon: <Crown size={16} className="text-warning-foreground" />,
   },
   2: {
-    bg: "linear-gradient(135deg, #E8E8E8, #B0B0B0)",
-    text: "#3A3A3A",
-    icon: <Medal size={16} fill="#C0C0C0" stroke="#808080" />,
+    badge: "bg-secondary text-secondary-foreground border-border",
+    bar: "bg-muted-foreground",
+    icon: <Medal size={16} className="text-secondary-foreground" />,
   },
   3: {
-    bg: "linear-gradient(135deg, #E8A960, #CD853F)",
-    text: "#3D2000",
-    icon: <Trophy size={16} fill="#CD853F" stroke="#8B6914" />,
+    badge: "bg-muted text-muted-foreground border-border",
+    bar: "bg-muted-foreground",
+    icon: <Trophy size={16} className="text-muted-foreground" />,
   },
 };
 
 export function LadderRowItem({ row, maxScore }: Props) {
-  const topStyle = TOP_COLORS[row.rank];
+  const topStyle = TOP_STYLES[row.rank];
   const isTop3 = row.rank <= 3;
 
   const trendIcon =
     row.rankTrend === "up" ? (
-      <span className="ladder-trend ladder-trend-up">
+      <span className="inline-flex items-center gap-0.5 text-xs font-medium text-success">
         <ArrowUp size={12} /> {row.rankChange ?? ""}
       </span>
     ) : row.rankTrend === "down" ? (
-      <span className="ladder-trend ladder-trend-down">
+      <span className="inline-flex items-center gap-0.5 text-xs font-medium text-destructive-fg">
         <ArrowDown size={12} /> {Math.abs(row.rankChange ?? 0)}
       </span>
     ) : row.rankTrend === "new" ? (
-      <span className="ladder-trend ladder-trend-new">NEW</span>
+      <span className="inline-flex items-center gap-0.5 text-xs font-medium text-info-foreground">
+        NEW
+      </span>
     ) : (
-      <span className="ladder-trend ladder-trend-same">
+      <span className="inline-flex items-center gap-0.5 text-xs font-medium text-muted-foreground">
         <Minus size={12} />
       </span>
     );
 
-  const progressPct = maxScore > 0 ? Math.min(100, Math.round((row.totalScore / maxScore) * 100)) : 0;
+  // 进度条宽度 = 分数占第一名比例，运行时动态值，无法用静态工具类表达
+  const progressPct =
+    maxScore > 0 ? Math.min(100, Math.round((row.totalScore / maxScore) * 100)) : 0;
 
   return (
-    <div className={`ladder-row ${isTop3 ? `ladder-row-top-${row.rank}` : ""}`}>
-      {/* 排名号 */}
-      <div
-        className="ladder-rank-badge"
-        style={
-          isTop3
-            ? { background: topStyle.bg, color: topStyle.text }
-            : undefined
-        }
-      >
-        {isTop3 ? topStyle.icon : <span className="ladder-rank-num">{row.rank}</span>}
-      </div>
-
-      {/* 连接线 */}
-      <div className="ladder-connector" />
-
-      {/* 主体信息 */}
-      <div className="ladder-row-body">
-        <div className="ladder-row-info">
-          <span className="ladder-student-name">{row.studentName}</span>
-          <span className="ladder-student-class">
-            {row.gradeName ? `${row.gradeName} · ` : ""}{row.className}
-          </span>
+    <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4">
+      {/* 排名号 + 主体 */}
+      <div className="flex items-center gap-3">
+        <div
+          className={cn(
+            "flex size-8 shrink-0 items-center justify-center rounded-md border",
+            isTop3 ? topStyle.badge : "bg-secondary text-secondary-foreground border-border",
+          )}
+        >
+          {isTop3 ? (
+            topStyle.icon
+          ) : (
+            <span className="text-sm font-semibold tabular-nums">{row.rank}</span>
+          )}
         </div>
 
-        <div className="ladder-row-right">
-          <span className="ladder-score">{row.totalScore}</span>
-          <span className="ladder-score-unit">分</span>
-          <div className="ladder-row-extra">
-            {trendIcon}
-            <span className="ladder-class-rank">班排 {row.classRank}</span>
+        <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate text-sm font-medium text-foreground">{row.studentName}</span>
+            <span className="truncate text-xs text-muted-foreground">
+              {row.gradeName ? `${row.gradeName} · ` : ""}
+              {row.className}
+            </span>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2">
+            <span className="text-lg font-semibold tabular-nums text-foreground">
+              {row.totalScore}
+            </span>
+            <span className="text-xs text-muted-foreground">分</span>
+            <div className="flex items-center gap-2">
+              {trendIcon}
+              <span className="text-xs text-muted-foreground">班排 {row.classRank}</span>
+            </div>
           </div>
         </div>
       </div>
 
       {/* 进度条 */}
-      <div className="ladder-progress">
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
         <div
-          className={`ladder-progress-fill ${isTop3 ? `ladder-progress-top-${row.rank}` : ""}`}
+          className={cn("h-full rounded-full", isTop3 ? topStyle.bar : "bg-primary")}
           style={{ width: `${progressPct}%` }}
         />
       </div>
 
-      {/* 可展开的科目明细（大考组/跨考场景） */}
+      {/* 科目明细（大考组/跨考场景） */}
       {row.subjectScores && row.subjectScores.length > 0 && (
-        <div className="ladder-subjects">
+        <div className="flex flex-wrap gap-1.5">
           {row.subjectScores.map((s, i) => (
-            <span key={i} className="ladder-subject-chip">
+            <span
+              key={i}
+              className="rounded-md border border-border bg-secondary px-2 py-0.5 text-xs text-secondary-foreground"
+            >
               {s.subject}: {s.score}
             </span>
           ))}

@@ -10,8 +10,8 @@ export function HomeRoutePage() {
   const { user, switchMode, setSelectedExamId } = useWorkspace();
 
   return (
-    <div className="main-grid home-grid">
-      <section style={{ gridColumn: "1 / -1", padding: 0 }}>
+    <div className="grid w-full gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <section className="col-span-full p-0">
         <HomePage
           userName={user?.name ?? ""}
           userRole={user?.role_name ?? ""}

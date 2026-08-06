@@ -1,10 +1,53 @@
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { AlertTriangle, ChevronDown, Database, Download, Eye, FlaskConical, Heart, KeyRound, LogOut, Plus, Settings, Trash2, Upload, User, X, BookOpen, Gauge, Monitor, BrainCircuit, Shield, Terminal } from "lucide-react";
-import { useAuth } from "../auth/AuthContext";
+import {
+  AlertTriangle,
+  BookOpen,
+  BrainCircuit,
+  ChevronDown,
+  Database,
+  Download,
+  Eye,
+  FlaskConical,
+  Gauge,
+  Heart,
+  KeyRound,
+  LogOut,
+  Monitor,
+  Plus,
+  Settings,
+  Shield,
+  Terminal,
+  Trash2,
+  Upload,
+  User,
+} from "lucide-react";
+import { useAuth, type AppPersona, type TeacherRoleOverride } from "../auth/AuthContext";
 import { fetchJson, authFetch } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
 import { cn } from "../lib/utils";
+import {
+  Button,
+  Checkbox,
+  ControlRow,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+  Field,
+  Input,
+  RadioGroup,
+  RadioGroupItem,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "./ui/v2";
 import type { AiProviderConfig } from "../../../../shared/types";
 
 /** 判断是否为服务端脱敏后的 API Key（编辑时不应回传写库） */
@@ -12,6 +55,95 @@ function isMaskedApiKey(key: string): boolean {
   if (!key) return false;
   if (key === "••••") return true;
   return key.startsWith("••••••••") && key.length === 12;
+}
+
+type SettingsTab = "grading" | "client" | "ai" | "db";
+
+interface ProviderEditorState {
+  editing: boolean;
+  id?: number;
+  name: string;
+  providerType: string;
+  baseUrl: string;
+  apiKey: string;
+  models: string;
+}
+
+/** AI 服务商新增/编辑共用的表单（受控于父级 providerEditor 状态） */
+function AiProviderForm({
+  editor,
+  onChange,
+  onSave,
+  onCancel,
+  saveLabel,
+}: {
+  editor: ProviderEditorState;
+  onChange: (patch: Partial<ProviderEditorState>) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  saveLabel: string;
+}) {
+  const { providerType } = editor;
+  return (
+    <div className="mt-2 flex flex-col gap-2 rounded-md border border-accent-border bg-accent p-2.5">
+      <Input
+        type="text"
+        placeholder={editor.editing ? "服务商名称" : "服务商名称 (如 我的GPT)"}
+        value={editor.name}
+        onChange={(e) => onChange({ name: e.target.value })}
+        className="text-sm"
+      />
+      <select
+        value={providerType}
+        onChange={(e) => onChange({ providerType: e.target.value })}
+        className="h-control-md w-full rounded-md border border-input bg-card px-3 text-base text-foreground outline-none transition-[border-color,box-shadow] duration-(--px-dur-1) hover:border-input-hover focus-visible:shadow-focus focus-visible:border-primary"
+      >
+        <option value="openai">GPT (OpenAI 兼容)</option>
+        <option value="deepseek">DeepSeek</option>
+        <option value="gemini">Gemini</option>
+      </select>
+      {providerType !== "gemini" && (
+        <div>
+          <Input
+            type="text"
+            placeholder={editor.editing ? "Base URL" : "Base URL (如 https://api.openai.com)"}
+            value={editor.baseUrl}
+            onChange={(e) => onChange({ baseUrl: e.target.value })}
+            className="w-full font-mono text-sm"
+          />
+          <div className="mt-0.5 text-xs text-muted-foreground">系统会自动补齐末尾的 /v1 路径</div>
+        </div>
+      )}
+      {providerType === "gemini" && (
+        <div className="py-1 text-xs text-muted-foreground">Gemini 使用 Google 原生 SDK，无需填写 Base URL</div>
+      )}
+      <Input
+        type="password"
+        placeholder="API Key"
+        value={editor.apiKey}
+        onChange={(e) => onChange({ apiKey: e.target.value })}
+        className="font-mono text-sm"
+      />
+      <div>
+        <Input
+          type="text"
+          placeholder={editor.editing ? "模型列表 (逗号分隔)" : "模型列表 (逗号分隔，如 gpt-5.4,gpt-5.4-mini)"}
+          value={editor.models}
+          onChange={(e) => onChange({ models: e.target.value })}
+          className="w-full text-sm"
+        />
+        <div className="mt-0.5 text-xs text-muted-foreground">不填则使用"自动获取"，需模型名与供应商一致</div>
+      </div>
+      <div className="flex gap-1.5">
+        <Button variant="primary" size="sm" onClick={onSave}>
+          {saveLabel}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onCancel}>
+          取消
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 export function AccountMenu({
@@ -28,7 +160,6 @@ export function AccountMenu({
   const { user, logout, isAdmin, persona, setPersona, teacherRoleOverride, setTeacherRoleOverride, availablePersonas, canSwitchPersona, refreshUser } = useAuth();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
   const isElectron = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
-  const menuRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [open, setOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -53,11 +184,11 @@ export function AccountMenu({
   // Multi-provider AI management
   const [aiProviders, setAiProviders] = useState<AiProviderConfig[]>([]);
   const [showAddProvider, setShowAddProvider] = useState(false);
-  const [providerEditor, setProviderEditor] = useState<{ editing: boolean; id?: number; name: string; providerType: string; baseUrl: string; apiKey: string; models: string }>({
+  const [providerEditor, setProviderEditor] = useState<ProviderEditorState>({
     editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: ""
   });
   const [showHelpCard, setShowHelpCard] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"grading" | "client" | "ai" | "db">("grading");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("grading");
   // v1.9.0: Tab 栏开关
   const [showTabBar, setShowTabBar] = useState(false);
 
@@ -73,7 +204,7 @@ export function AccountMenu({
   const [dbLoading, setDbLoading] = useState(false);
 
   useEffect(() => {
-    if (open && showSettings) {
+    if (showSettings) {
       fetchJson<{ scoreDisplayMode: string; reviewConfidenceThreshold: number; backgroundOpacity: number; showTabBar?: number }>("/api/users/me/settings")
         .then((s) => {
           if (!s || typeof s !== "object") return;
@@ -86,7 +217,7 @@ export function AccountMenu({
       loadProviders();
       loadDbConfig();
     }
-  }, [open, showSettings]);
+  }, [showSettings]);
 
   async function loadDbConfig() {
     if (!isAdmin) return;
@@ -241,16 +372,6 @@ export function AccountMenu({
     }
   }
 
-  useEffect(() => {
-    if (!open) return;
-    function handlePointerDown(event: PointerEvent) {
-      if (menuRef.current?.contains(event.target as Node)) return;
-      setOpen(false);
-    }
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [open]);
-
   // v1.9.5: 组件卸载时清理防抖定时器，避免对已卸载组件触发 PATCH
   useEffect(() => {
     return () => {
@@ -338,7 +459,8 @@ export function AccountMenu({
     }
   }
 
-  async function handleImportDb(file: File) {    setImportMsg("");
+  async function handleImportDb(file: File) {
+    setImportMsg("");
     setImportBusy(true);
     try {
       const resp = await authFetch("/api/db/restore", {
@@ -360,33 +482,53 @@ export function AccountMenu({
     }
   }
 
+  const roleLabel = TEACHER_ROLE_LABELS[user.teacher_role ?? ""] ?? ROLE_LABELS[user.role_name] ?? user.role_name;
+  const personaLabels: Record<string, string> = { "teacher-scanner": "扫描端（全功能）", teacher: "教师端", student: "学生端（预览）" };
+  const resetProviderEditor = () =>
+    setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" });
+
   return (
-    <div className={cn("account-menu", compact && "w-control-md")} ref={menuRef}>
-      <button
-        className={cn(
-          "account-menu-trigger",
-          compact && "h-control-md w-control-md justify-center p-0 [&>small]:hidden [&>span]:hidden [&>svg:last-child]:hidden",
-        )}
-        type="button"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      >
-        <User size={16} />
-        <span>{user.name}</span>
-        <small>{TEACHER_ROLE_LABELS[user.teacher_role ?? ""] ?? ROLE_LABELS[user.role_name] ?? user.role_name}</small>
-        <ChevronDown size={14} className={open ? "rotated" : ""} />
-      </button>
-      {open && (
-        <div className="account-menu-dropdown" role="menu" aria-label="账号菜单">
-          <div className="account-menu-info">
-            <strong>{user.name}</strong>
-            <span>@{user.username}</span>
-            {user.student_number && <span>学号 {user.student_number}</span>}
-          </div>
+    <>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
+        <DropdownMenuTrigger asChild>
           <button
             type="button"
-            className="account-menu-item"
+            aria-label="账号菜单"
+            className={cn(
+              "inline-flex shrink-0 items-center gap-2 rounded-md text-base font-medium outline-none",
+              "transition-colors duration-(--px-dur-1) ease-standard",
+              "hover:bg-secondary focus-visible:shadow-focus",
+              compact
+                ? "h-control-md w-control-md justify-center p-0"
+                : "h-9 min-w-0 flex-1 justify-start px-2",
+            )}
+          >
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-sm font-semibold text-accent-foreground">
+              {user.name?.charAt(0) || <User size={14} />}
+            </span>
+            {!compact && (
+              <>
+                <span className="flex min-w-0 flex-1 flex-col items-start leading-tight">
+                  <span className="w-full truncate text-sm font-medium text-foreground">{user.name}</span>
+                  <small className="w-full truncate text-xs text-muted-foreground">{roleLabel}</small>
+                </span>
+                <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+              </>
+            )}
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" side="top" className="max-h-[min(72vh,640px)] w-64 overflow-y-auto">
+          {/* 账号信息 */}
+          <div className="px-2.5 pt-2 pb-1.5">
+            <div className="text-base font-semibold text-foreground">{user.name}</div>
+            <div className="text-xs text-muted-foreground">@{user.username}</div>
+            {user.student_number && <div className="text-xs text-muted-foreground">学号 {user.student_number}</div>}
+          </div>
+          <DropdownMenuSeparator />
+
+          {/* 修改密码（就地展开表单，菜单不关闭） */}
+          <DropdownMenuItem
+            onSelect={(e) => e.preventDefault()}
             onClick={() => {
               setShowPassword(!showPassword);
               setMessage("");
@@ -396,66 +538,69 @@ export function AccountMenu({
             }}
           >
             <KeyRound size={15} /> 修改密码
-          </button>
+          </DropdownMenuItem>
           {showPassword && (
-            <div className="account-password-form">
-              <input
+            <div className="mx-1 mb-1 flex flex-col gap-2 rounded-md border border-border bg-card p-2">
+              <Input
                 type="password"
                 placeholder="原密码"
                 value={oldPassword}
                 onChange={(e) => setOldPassword(e.target.value)}
                 disabled={busy}
+                className="h-8 text-sm"
               />
-              <input
+              <Input
                 type="password"
                 placeholder="新密码（至少 6 位）"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 disabled={busy}
+                className="h-8 text-sm"
               />
-              <input
+              <Input
                 type="password"
                 placeholder="确认新密码"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 disabled={busy}
+                className="h-8 text-sm"
               />
-              {message && <p className={message.includes("已修改") ? "login-success" : "login-error"}>{message}</p>}
-              <button className="primary-button" type="button" onClick={() => void handleChangePassword()} disabled={busy}>
+              {message && (
+                <p className={cn("m-0 text-xs", message.includes("已修改") ? "text-success" : "text-destructive-fg")}>
+                  {message}
+                </p>
+              )}
+              <Button variant="primary" size="sm" block type="button" onClick={() => void handleChangePassword()} disabled={busy}>
                 确认修改
-              </button>
+              </Button>
             </div>
           )}
+
           {/* ── v1.6.0: 管理员身份切换 ── */}
           {canSwitchPersona && (
             <>
-              <div className="account-menu-divider" />
-              <div style={{ padding: "8px 12px 4px" }}>
-                <div style={{ fontSize: 11, color: "var(--text-secondary)", marginBottom: 6, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                  <Eye size={12} style={{ verticalAlign: -1, marginRight: 4 }} />
+              <DropdownMenuSeparator />
+              <div className="px-2.5 py-2">
+                <div className="mb-1.5 flex items-center gap-1 text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                  <Eye size={12} className="shrink-0" />
                   查看身份
                 </div>
-                {availablePersonas.filter(p => isElectron || p !== "teacher-scanner").map((p) => {
-                  const labels: Record<string, string> = { "teacher-scanner": "扫描端（全功能）", "teacher": "教师端", "student": "学生端（预览）" };
-                  return (
-                    <label key={p} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 0", cursor: "pointer", fontSize: 13 }}>
-                      <input
-                        type="radio"
-                        name="persona"
-                        value={p}
-                        checked={persona === p}
-                        onChange={() => setPersona(p)}
-                      />
-                      {labels[p] ?? p}
-                    </label>
-                  );
-                })}
+                <RadioGroup value={persona} onValueChange={(v) => setPersona(v as AppPersona)} className="gap-1">
+                  {availablePersonas.filter((p) => isElectron || p !== "teacher-scanner").map((p) => (
+                    <div key={p} className="flex items-center gap-1.5 text-sm">
+                      <RadioGroupItem value={p} id={`persona-${p}`} />
+                      <label htmlFor={`persona-${p}`} className="cursor-pointer text-secondary-foreground select-none">
+                        {personaLabels[p] ?? p}
+                      </label>
+                    </div>
+                  ))}
+                </RadioGroup>
                 {persona === "teacher" && (
-                  <div style={{ marginLeft: 22, marginTop: 2 }}>
+                  <div className="mt-1 ml-6">
                     <select
                       value={teacherRoleOverride ?? ""}
-                      onChange={(e) => setTeacherRoleOverride((e.target.value || null) as any)}
-                      style={{ fontSize: 12, padding: "2px 4px", borderRadius: 4, border: "1px solid var(--line)", background: "var(--surface)", color: "var(--text)" }}
+                      onChange={(e) => setTeacherRoleOverride((e.target.value || null) as TeacherRoleOverride)}
+                      className="rounded-sm border border-border bg-card px-1.5 py-0.5 text-xs text-foreground outline-none focus-visible:shadow-focus"
                     >
                       <option value="">教师角色（实际）</option>
                       <option value="subject_teacher">学科老师</option>
@@ -467,73 +612,64 @@ export function AccountMenu({
               </div>
             </>
           )}
-          <button
-            type="button"
-            className="account-menu-item"
-            onClick={() => { setShowSettings(!showSettings); setSettingsMsg(""); }}
-          >
+
+          <DropdownMenuItem onClick={() => { setShowSettings(true); setSettingsMsg(""); }}>
             <Settings size={15} /> 账号设置
-          </button>
+          </DropdownMenuItem>
+
           {/* 数据库导入导出 — 仅管理员可见 */}
           {isAdmin && (
             <>
-              <div className="account-menu-divider" />
-              <button type="button" className="account-menu-item" onClick={() => void handleExportDb()}>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => void handleExportDb()}>
                 <Download size={15} /> 导出数据
-              </button>
-              <button
-                type="button"
-                className="account-menu-item"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={importBusy}
-              >
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => fileInputRef.current?.click()} disabled={importBusy}>
                 <Upload size={15} /> {importBusy ? "导入中..." : "导入数据"}
-              </button>
+              </DropdownMenuItem>
               <input
                 ref={fileInputRef}
                 type="file"
                 accept=".zip"
-                style={{ display: "none" }}
+                className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
                   if (file) handleImportDb(file);
                 }}
               />
               {/* ── v1.9.6: 开发者模式子菜单（演示数据等高危功能，调研/导入演示用） ── */}
-              <button
-                type="button"
-                className="account-menu-item"
+              <DropdownMenuItem
+                onSelect={(e) => e.preventDefault()}
                 onClick={() => { setShowDevMode(!showDevMode); setImportMsg(""); }}
                 aria-expanded={showDevMode}
               >
                 <Terminal size={15} /> 开发者模式
-                <ChevronDown size={14} style={{ marginLeft: "auto", transform: showDevMode ? "rotate(180deg)" : "none", transition: "transform 0.15s" }} />
-              </button>
+                <ChevronDown
+                  size={14}
+                  className={cn("ml-auto transition-transform duration-(--px-dur-1)", showDevMode && "rotate-180")}
+                />
+              </DropdownMenuItem>
               {showDevMode && (
-                <div style={{ padding: "4px 12px 4px 28px", display: "flex", flexDirection: "column", gap: 2, background: "var(--surface-soft)", borderLeft: "2px solid var(--line)" }}>
-                  <div style={{ fontSize: 10, color: "var(--muted)", letterSpacing: "0.5px", textTransform: "uppercase", marginTop: 2, marginBottom: 2 }}>
+                <div className="mx-1 mb-1 flex flex-col gap-0.5 rounded-sm border-l-2 border-border-subtle bg-secondary px-1 py-1">
+                  <div className="px-2 py-0.5 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
                     演示数据
                   </div>
-                  <button
-                    type="button"
-                    className="account-menu-item"
+                  <DropdownMenuItem
                     onClick={() => void handleImportDemo()}
                     disabled={demoBusy}
-                    style={{ fontSize: 13, padding: "6px 8px" }}
+                    className="h-7 pl-4 text-sm"
                   >
                     <FlaskConical size={14} /> {demoBusy ? "处理中..." : "导入演示数据"}
-                  </button>
-                  <button
-                    type="button"
-                    className="account-menu-item"
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
                     onClick={() => void handleClearDemo()}
                     disabled={demoBusy}
-                    style={{ fontSize: 13, padding: "6px 8px" }}
+                    className="h-7 pl-4 text-sm"
                   >
                     <Trash2 size={14} /> 清除演示数据
-                  </button>
+                  </DropdownMenuItem>
                   {importMsg && (
-                    <div style={{ fontSize: 11, padding: "4px 0", color: importMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>
+                    <div className={cn("px-2 py-0.5 text-xs", importMsg.includes("失败") ? "text-primary" : "text-success")}>
                       {importMsg}
                     </div>
                   )}
@@ -541,407 +677,438 @@ export function AccountMenu({
               )}
             </>
           )}
+
           {onOpenGuide && (
-            <button
-              type="button"
-              className="account-menu-item"
-              onClick={() => {
-                setOpen(false);
-                onOpenGuide();
-              }}
-            >
+            <DropdownMenuItem onClick={() => onOpenGuide()}>
               <BookOpen size={15} /> 使用说明
-            </button>
+            </DropdownMenuItem>
           )}
           {onOpenSponsor && (
-            <button
-              type="button"
-              className="account-menu-item"
-              onClick={() => {
-                setOpen(false);
-                onOpenSponsor();
-              }}
-            >
+            <DropdownMenuItem onClick={() => onOpenSponsor()}>
               <Heart size={15} /> 支持项目
-            </button>
+            </DropdownMenuItem>
           )}
           {onOpenPermissions && user.role_name === "admin" && (
-            <button
-              type="button"
-              className="account-menu-item"
-              onClick={() => {
-                setOpen(false);
-                onOpenPermissions();
-              }}
-            >
+            <DropdownMenuItem onClick={() => onOpenPermissions()}>
               <Shield size={15} /> 权限管理
-            </button>
+            </DropdownMenuItem>
           )}
-          <button type="button" className="account-menu-item danger" onClick={() => void logout()}>
+
+          <DropdownMenuSeparator />
+          <DropdownMenuItem tone="danger" onClick={() => void logout()}>
             <LogOut size={15} /> 退出登录
-          </button>
-        </div>
-      )}
-      {open && <div className="account-menu-backdrop" onClick={() => setOpen(false)} />}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
-      {/* Settings modal — portal to body to escape backdrop-filter containing block */}
-      {showSettings && createPortal(
-        <div className="modal-overlay" onClick={() => setShowSettings(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 640, width: "92vw", maxHeight: "90vh", overflow: "hidden", display: "flex", flexDirection: "column" }}>
-            <div className="modal-header">
-              <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>账号设置</h3>
-              <button className="ghost-button" onClick={() => setShowSettings(false)}>
-                <X size={18} />
-              </button>
-            </div>
-            <div className="account-settings-layout">
-              <div className="account-settings-nav">
-                <button className={`account-settings-nav-item ${settingsTab === "grading" ? "active" : ""}`} onClick={() => setSettingsTab("grading")}>
-                  <Gauge size={15} /> 阅卷设置
-                </button>
-                <button className={`account-settings-nav-item ${settingsTab === "client" ? "active" : ""}`} onClick={() => setSettingsTab("client")}>
-                  <Monitor size={15} /> 客户端设置
-                </button>
-                <button className={`account-settings-nav-item ${settingsTab === "ai" ? "active" : ""}`} onClick={() => setSettingsTab("ai")}>
-                  <BrainCircuit size={15} /> AI 设置
-                </button>
-                {isAdmin && isElectron && (
-                  <button className={`account-settings-nav-item ${settingsTab === "db" ? "active" : ""}`} onClick={() => setSettingsTab("db")}>
-                    <Database size={15} /> 数据存储
+      {/* Settings dialog — v2 Dialog（Radix，自带 role/dialog + data-state） */}
+      <Dialog open={showSettings} onOpenChange={setShowSettings}>
+        <DialogContent size="md">
+          <DialogHeader>
+            <DialogTitle>账号设置</DialogTitle>
+          </DialogHeader>
+          <Tabs
+            orientation="vertical"
+            value={settingsTab}
+            onValueChange={(v) => setSettingsTab(v as SettingsTab)}
+            className="flex min-h-0 flex-1"
+          >
+            <TabsList className="w-36 shrink-0 flex-col items-stretch gap-0.5 overflow-y-auto border-r border-border-subtle border-b-0 p-2">
+              <TabsTrigger
+                value="grading"
+                className="h-auto justify-start gap-2 border-l-[3px] border-l-transparent px-3 py-2.5 text-sm font-medium text-muted-foreground data-[state=active]:border-l-primary data-[state=active]:bg-accent data-[state=active]:text-accent-foreground [&::after]:hidden"
+              >
+                <Gauge size={15} className="shrink-0" /> 阅卷设置
+              </TabsTrigger>
+              <TabsTrigger
+                value="client"
+                className="h-auto justify-start gap-2 border-l-[3px] border-l-transparent px-3 py-2.5 text-sm font-medium text-muted-foreground data-[state=active]:border-l-primary data-[state=active]:bg-accent data-[state=active]:text-accent-foreground [&::after]:hidden"
+              >
+                <Monitor size={15} className="shrink-0" /> 客户端设置
+              </TabsTrigger>
+              <TabsTrigger
+                value="ai"
+                className="h-auto justify-start gap-2 border-l-[3px] border-l-transparent px-3 py-2.5 text-sm font-medium text-muted-foreground data-[state=active]:border-l-primary data-[state=active]:bg-accent data-[state=active]:text-accent-foreground [&::after]:hidden"
+              >
+                <BrainCircuit size={15} className="shrink-0" /> AI 设置
+              </TabsTrigger>
+              {isAdmin && isElectron && (
+                <TabsTrigger
+                  value="db"
+                  className="h-auto justify-start gap-2 border-l-[3px] border-l-transparent px-3 py-2.5 text-sm font-medium text-muted-foreground data-[state=active]:border-l-primary data-[state=active]:bg-accent data-[state=active]:text-accent-foreground [&::after]:hidden"
+                >
+                  <Database size={15} className="shrink-0" /> 数据存储
+                </TabsTrigger>
+              )}
+            </TabsList>
+
+            <TabsContent value="grading" className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
+              <h4 className="mb-1 mt-0 text-base font-semibold text-foreground">成绩指标显示</h4>
+              <RadioGroup value={displayMode} onValueChange={setDisplayMode} className="gap-1.5">
+                <div className="flex items-center gap-1.5 text-sm">
+                  <RadioGroupItem value="deviation" id="dm-deviation" />
+                  <label htmlFor="dm-deviation" className="cursor-pointer text-secondary-foreground select-none">
+                    标准偏差值 (50为基准)
+                  </label>
+                </div>
+                <div className="flex items-center gap-1.5 text-sm">
+                  <RadioGroupItem value="zscore" id="dm-zscore" />
+                  <label htmlFor="dm-zscore" className="cursor-pointer text-secondary-foreground select-none">
+                    Z值 (0为基准)
+                  </label>
+                </div>
+                <div className="flex items-center gap-1.5 text-sm">
+                  <RadioGroupItem value="percentile" id="dm-percentile" />
+                  <label htmlFor="dm-percentile" className="cursor-pointer text-secondary-foreground select-none">
+                    百分位排名 (0~100)
+                  </label>
+                </div>
+              </RadioGroup>
+              <h4 className="mt-2 mb-1 text-base font-semibold text-foreground">
+                复核置信度阈值: {reviewThreshold.toFixed(2)}
+              </h4>
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={reviewThreshold}
+                onChange={(e) => setReviewThreshold(Number(e.target.value))}
+                className="mt-0.5 w-full"
+              />
+              <span className="text-xs text-muted-foreground">低于此值的题目标记"需要复核"</span>
+
+              {/* v1.9.4: 原卷两开关已提升为纯全局，由管理员在「全局设置」统一控制，此处不再提供个人开关 */}
+
+              {settingsMsg && (
+                <p className={cn("m-0 text-xs", settingsMsg.includes("失败") ? "text-primary" : "text-success")}>
+                  {settingsMsg}
+                </p>
+              )}
+              <Button variant="primary" type="button" onClick={() => void saveSettings()} className="mt-1 self-start">
+                保存设置
+              </Button>
+            </TabsContent>
+
+            <TabsContent value="client" className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
+              <h4 className="mb-1 mt-0 text-base font-semibold text-foreground">底部导航栏</h4>
+              <ControlRow
+                control={<Checkbox checked={showTabBar} onCheckedChange={(c) => setShowTabBar(c === true)} />}
+                label="显示底部 Tab 导航栏"
+                description="顶部导航栏「首页」可随时返回，建议保持开启"
+              />
+
+              <h4 className="mt-4 mb-1 text-base font-semibold text-foreground">背景图透明度</h4>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-muted-foreground">
+                  {Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="0.5"
+                step="0.01"
+                value={bgOpacity}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setBgOpacity(v);
+                  document.documentElement.style.setProperty("--bg-opacity", String(v));
+                  if (v > 0) document.body.classList.add("has-bg-image");
+                  else document.body.classList.remove("has-bg-image");
+                  persistBgOpacity(v);
+                }}
+                className="mt-1 w-full"
+              />
+              <span className="text-xs text-muted-foreground">0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
+              <div className="mt-2 flex items-center gap-1.5">
+                <Button variant="ghost" size="sm" onClick={() => bgFileRef.current?.click()}>
+                  上传背景图
+                </Button>
+                <input ref={bgFileRef} type="file" accept="image/*" className="hidden" onChange={handleBgUpload} />
+                {bgMsg && (
+                  <span className={cn("text-xs", bgMsg.includes("失败") ? "text-primary" : "text-success")}>{bgMsg}</span>
+                )}
+              </div>
+              {settingsMsg && (
+                <p className={cn("m-0 text-xs", settingsMsg.includes("失败") ? "text-primary" : "text-success")}>
+                  {settingsMsg}
+                </p>
+              )}
+              <Button variant="primary" type="button" onClick={() => void saveSettings()} className="mt-1 self-start">
+                保存设置
+              </Button>
+            </TabsContent>
+
+            <TabsContent value="ai" className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
+              <div className="flex items-center justify-between">
+                <h4 className="m-0 text-base font-semibold text-foreground">AI 服务商</h4>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowHelpCard(!showHelpCard)}
+                    className="cursor-pointer border-0 bg-transparent p-0 text-xs text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+                  >
+                    如何填写？
                   </button>
-                )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs text-primary"
+                    onClick={() => { setShowAddProvider(true); resetProviderEditor(); }}
+                  >
+                    <Plus size={14} /> 添加
+                  </Button>
+                </div>
               </div>
-              <div className="account-settings-content">
-                {settingsTab === "grading" && (
-                  <>
-                    <h4>成绩指标显示</h4>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                        <input type="radio" name="displayMode" value="deviation" checked={displayMode === "deviation"} onChange={() => setDisplayMode("deviation")} />
-                        标准偏差值 (50为基准)
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                        <input type="radio" name="displayMode" value="zscore" checked={displayMode === "zscore"} onChange={() => setDisplayMode("zscore")} />
-                        Z值 (0为基准)
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                        <input type="radio" name="displayMode" value="percentile" checked={displayMode === "percentile"} onChange={() => setDisplayMode("percentile")} />
-                        百分位排名 (0~100)
-                      </label>
-                    </div>
-                    <h4 style={{ marginTop: 8 }}>复核置信度阈值: {reviewThreshold.toFixed(2)}</h4>
-                    <input type="range" min="0" max="1" step="0.01" value={reviewThreshold} onChange={(e) => setReviewThreshold(Number(e.target.value))} style={{ width: "100%", marginTop: 2 }} />
-                    <span style={{ fontSize: 11, color: "var(--muted)" }}>低于此值的题目标记"需要复核"</span>
 
-                    {/* v1.9.4: 原卷两开关已提升为纯全局，由管理员在「全局设置」统一控制，此处不再提供个人开关 */}
-
-                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
-                    <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>保存设置</button>
-                  </>
-                )}
-
-                {settingsTab === "client" && (
-                  <>
-                    <h4>底部导航栏</h4>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, marginBottom: 12 }}>
-                      <input type="checkbox" checked={showTabBar} onChange={(e) => setShowTabBar(e.target.checked)} />
-                      显示底部 Tab 导航栏
-                    </label>
-                    <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                      顶部导航栏「首页」可随时返回，建议保持开启
-                    </span>
-
-                    <h4 style={{ marginTop: 16 }}>背景图透明度</h4>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
-                      <span style={{ color: "var(--muted)" }}>{Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}</span>
-                    </div>
-                    <input type="range" min="0" max="0.5" step="0.01" value={bgOpacity} onChange={(e) => { const v = Number(e.target.value); setBgOpacity(v); document.documentElement.style.setProperty("--bg-opacity", String(v)); if (v > 0) document.body.classList.add("has-bg-image"); else document.body.classList.remove("has-bg-image"); persistBgOpacity(v); }} style={{ width: "100%", marginTop: 4 }} />
-                    <span style={{ fontSize: 11, color: "var(--muted)" }}>0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
-                    <div style={{ marginTop: 8, display: "flex", gap: 6, alignItems: "center" }}>
-                      <button className="ghost-button" style={{ fontSize: 11 }} onClick={() => bgFileRef.current?.click()}>上传背景图</button>
-                      <input ref={bgFileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handleBgUpload} />
-                      {bgMsg && <span style={{ fontSize: 11, color: bgMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{bgMsg}</span>}
-                    </div>
-                    {settingsMsg && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
-                    <button className="primary-button" type="button" onClick={() => void saveSettings()} style={{ marginTop: 4 }}>保存设置</button>
-                  </>
-                )}
-
-                {settingsTab === "ai" && (
-                  <>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-                      <h4 style={{ margin: 0 }}>AI 服务商</h4>
-                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                        <button onClick={() => setShowHelpCard(!showHelpCard)} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 12, color: "var(--brand)", padding: 0, textDecoration: "underline" }}>
-                          如何填写？
-                        </button>
-                        <button className="ghost-button" style={{ fontSize: 12, color: "var(--brand)", padding: "2px 8px" }} onClick={() => { setShowAddProvider(true); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}>
-                          <Plus size={14} /> 添加
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Provider list */}
-                    {aiProviders.length > 0 && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                        {aiProviders.map((p) => (
-                          <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, background: "var(--surface-soft)", border: "1px solid var(--line)", fontSize: 12 }}>
-                            <div style={{ flex: 1, overflow: "hidden" }}>
-                              <div style={{ fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{p.name}</div>
-                              <div style={{ color: "var(--muted)", fontSize: 11 }}>{p.providerType.toUpperCase()}{p.baseUrl ? ` · ${p.baseUrl}` : ""}</div>
-                            </div>
-                            <button className="ghost-button" style={{ fontSize: 11, padding: "2px 6px" }} onClick={() => { setProviderEditor({ editing: true, id: p.id, name: p.name, providerType: p.providerType, baseUrl: p.baseUrl, apiKey: p.apiKey, models: p.models ? p.models.join(",") : "" }); }}>编辑</button>
-                            <button className="ghost-button" style={{ fontSize: 11, color: "var(--brand)", padding: "2px 6px" }} onClick={() => void deleteProvider(p.id)}><Trash2 size={12} /></button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Provider add form */}
-                    {showAddProvider && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "var(--surface-tint)", border: "1px solid var(--brand-glow)" }}>
-                        <input
-                          type="text" placeholder="服务商名称 (如 我的GPT)"
-                          value={providerEditor.name}
-                          onChange={(e) => setProviderEditor({ ...providerEditor, name: e.target.value })}
-                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
-                        />
-                        <select
-                          value={providerEditor.providerType}
-                          onChange={(e) => setProviderEditor({ ...providerEditor, providerType: e.target.value })}
-                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
-                        >
-                      <option value="openai">GPT (OpenAI 兼容)</option>
-                      <option value="deepseek">DeepSeek</option>
-                      <option value="gemini">Gemini</option>
-                        </select>
-                        {providerEditor.providerType !== "gemini" && (
-                        <div>
-                          <input
-                            type="text" placeholder="Base URL (如 https://api.openai.com)"
-                            value={providerEditor.baseUrl}
-                            onChange={(e) => setProviderEditor({ ...providerEditor, baseUrl: e.target.value })}
-                            style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace", width: "100%", boxSizing: "border-box" }}
-                          />
-                          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
-                            系统会自动补齐末尾的 /v1 路径
-                          </div>
-                        </div>
-                        )}
-                        {providerEditor.providerType === "gemini" && (
-                          <div style={{ fontSize: 11, color: "var(--muted)", padding: "4px 0" }}>
-                            Gemini 使用 Google 原生 SDK，无需填写 Base URL
-                          </div>
-                        )}
-                        <input
-                          type="password" placeholder="API Key"
-                          value={providerEditor.apiKey}
-                          onChange={(e) => setProviderEditor({ ...providerEditor, apiKey: e.target.value })}
-                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace" }}
-                        />
-                        <div>
-                          <input
-                            type="text" placeholder="模型列表 (逗号分隔，如 gpt-5.4,gpt-5.4-mini)"
-                            value={providerEditor.models}
-                            onChange={(e) => setProviderEditor({ ...providerEditor, models: e.target.value })}
-                            style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, width: "100%", boxSizing: "border-box" }}
-                          />
-                          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
-                            不填则使用"自动获取"，需模型名与供应商一致
-                          </div>
-                        </div>
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={() => void saveProvider()}>保存服务商</button>
-                          <button className="ghost-button" style={{ fontSize: 12 }} onClick={() => { setShowAddProvider(false); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}>取消</button>
+              {/* Provider list */}
+              {aiProviders.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  {aiProviders.map((p) => (
+                    <div
+                      key={p.id}
+                      className="flex items-center gap-2 rounded-md border border-border-subtle bg-secondary px-2.5 py-2 text-xs"
+                    >
+                      <div className="min-w-0 flex-1 overflow-hidden">
+                        <div className="truncate font-medium text-foreground">{p.name}</div>
+                        <div className="truncate text-xs text-muted-foreground">
+                          {p.providerType.toUpperCase()}
+                          {p.baseUrl ? ` · ${p.baseUrl}` : ""}
                         </div>
                       </div>
-                    )}
-
-                    {/* Edit form */}
-                    {providerEditor.editing && providerEditor.id !== undefined && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8, padding: "10px 12px", borderRadius: 8, background: "var(--surface-tint)", border: "1px solid var(--brand-glow)" }}>
-                        <input
-                          type="text" placeholder="服务商名称"
-                          value={providerEditor.name}
-                          onChange={(e) => setProviderEditor({ ...providerEditor, name: e.target.value })}
-                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
-                        />
-                        <select
-                          value={providerEditor.providerType}
-                          onChange={(e) => setProviderEditor({ ...providerEditor, providerType: e.target.value })}
-                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12 }}
-                        >
-                      <option value="openai">GPT (OpenAI 兼容)</option>
-                      <option value="deepseek">DeepSeek</option>
-                      <option value="gemini">Gemini</option>
-                        </select>
-                        {providerEditor.providerType !== "gemini" && (
-                        <div>
-                          <input
-                            type="text" placeholder="Base URL"
-                            value={providerEditor.baseUrl}
-                            onChange={(e) => setProviderEditor({ ...providerEditor, baseUrl: e.target.value })}
-                            style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace", width: "100%", boxSizing: "border-box" }}
-                          />
-                          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
-                            系统会自动补齐末尾的 /v1 路径
-                          </div>
-                        </div>
-                        )}
-                        {providerEditor.providerType === "gemini" && (
-                          <div style={{ fontSize: 11, color: "var(--muted)", padding: "4px 0" }}>
-                            Gemini 使用 Google 原生 SDK，无需填写 Base URL
-                          </div>
-                        )}
-                        <input
-                          type="password" placeholder="API Key"
-                          value={providerEditor.apiKey}
-                          onChange={(e) => setProviderEditor({ ...providerEditor, apiKey: e.target.value })}
-                          style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, fontFamily: "monospace" }}
-                        />
-                        <div>
-                          <input
-                            type="text" placeholder="模型列表 (逗号分隔)"
-                            value={providerEditor.models}
-                            onChange={(e) => setProviderEditor({ ...providerEditor, models: e.target.value })}
-                            style={{ padding: "5px 8px", borderRadius: 6, border: "1px solid var(--line-strong)", fontSize: 12, width: "100%", boxSizing: "border-box" }}
-                          />
-                          <div style={{ fontSize: 10, color: "var(--muted)", marginTop: 2 }}>
-                            不填则使用"自动获取"，需模型名与供应商一致
-                          </div>
-                        </div>
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <button className="primary-button" style={{ fontSize: 12, padding: "4px 12px" }} onClick={() => void saveProvider()}>更新</button>
-                          <button className="ghost-button" style={{ fontSize: 12 }} onClick={() => { setShowAddProvider(false); setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" }); }}>取消</button>
-                        </div>
-                      </div>
-                    )}
-                    {settingsMsg && settingsTab === "ai" && <p style={{ fontSize: 12, margin: "4px 0", color: settingsMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{settingsMsg}</p>}
-                  </>
-                )}
-
-                {settingsTab === "db" && (
-                  <>
-                    <h4>数据存储设置</h4>
-                    <p style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 12px 0" }}>
-                      本地模式使用 SQLite 单文件数据库，无需额外安装。远程模式连接 MariaDB 服务器。
-                    </p>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-                        <input type="radio" name="dbMode" value="local" checked={dbMode === "local"}
-                          onChange={() => setDbMode("local")} />
-                        本地数据库（SQLite，当前设备）
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, cursor: "pointer" }}>
-                        <input type="radio" name="dbMode" value="remote" checked={dbMode === "remote"}
-                          onChange={() => setDbMode("remote")} />
-                        远程服务器（MariaDB）
-                      </label>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-xs"
+                        onClick={() => {
+                          setProviderEditor({
+                            editing: true,
+                            id: p.id,
+                            name: p.name,
+                            providerType: p.providerType,
+                            baseUrl: p.baseUrl,
+                            apiKey: p.apiKey,
+                            models: p.models ? p.models.join(",") : "",
+                          });
+                        }}
+                      >
+                        编辑
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-xs text-primary"
+                        onClick={() => void deleteProvider(p.id)}
+                      >
+                        <Trash2 size={12} />
+                      </Button>
                     </div>
+                  ))}
+                </div>
+              )}
 
-                    {dbMode === "remote" && (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8, padding: "8px 10px", borderRadius: 8, background: "var(--surface-tint)", border: "1px solid var(--brand-glow)" }}>
-                        <label style={{ fontSize: 12 }}>
-                          服务器地址
-                          <input type="text" value={dbHost} onChange={(e) => setDbHost(e.target.value)}
-                            placeholder="192.168.1.50" style={{ width: "100%", marginTop: 2, padding: "4px 6px", fontSize: 12, borderRadius: 4, border: "1px solid var(--line)" }} />
-                        </label>
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <label style={{ fontSize: 12, flex: 1 }}>
-                            端口
-                            <input type="number" value={dbPort} onChange={(e) => setDbPort(Number(e.target.value))}
-                              style={{ width: "100%", marginTop: 2, padding: "4px 6px", fontSize: 12, borderRadius: 4, border: "1px solid var(--line)" }} />
-                          </label>
-                          <label style={{ fontSize: 12, flex: 1 }}>
-                            数据库名
-                            <input type="text" value={dbDatabase} onChange={(e) => setDbDatabase(e.target.value)}
-                              style={{ width: "100%", marginTop: 2, padding: "4px 6px", fontSize: 12, borderRadius: 4, border: "1px solid var(--line)" }} />
-                          </label>
-                        </div>
-                        <label style={{ fontSize: 12 }}>
-                          用户名
-                          <input type="text" value={dbUser} onChange={(e) => setDbUser(e.target.value)}
-                            placeholder="projectx_app" style={{ width: "100%", marginTop: 2, padding: "4px 6px", fontSize: 12, borderRadius: 4, border: "1px solid var(--line)" }} />
-                        </label>
-                        <label style={{ fontSize: 12 }}>
-                          密码 {dbHasPassword && <span style={{ color: "var(--muted)", fontSize: 11 }}>(已设置，留空不修改)</span>}
-                          <input type="password" value={dbPassword} onChange={(e) => setDbPassword(e.target.value)}
-                            placeholder={dbHasPassword ? "••••••" : "输入密码"} style={{ width: "100%", marginTop: 2, padding: "4px 6px", fontSize: 12, borderRadius: 4, border: "1px solid var(--line)" }} />
-                        </label>
-                      </div>
-                    )}
+              {/* Provider add form */}
+              {showAddProvider && (
+                <AiProviderForm
+                  editor={providerEditor}
+                  onChange={(patch) => setProviderEditor({ ...providerEditor, ...patch })}
+                  onSave={() => void saveProvider()}
+                  onCancel={() => { setShowAddProvider(false); resetProviderEditor(); }}
+                  saveLabel="保存服务商"
+                />
+              )}
 
-                    {dbMode === "remote" && !dbHost.trim() && (
-                      <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 0 0" }}>
-                        <><AlertTriangle size={15} aria-hidden="true" /> 远程服务器功能尚未完全启用。当前版本仅可在本地模式下使用。</>
-                      </p>
-                    )}
+              {/* Edit form */}
+              {providerEditor.editing && providerEditor.id !== undefined && (
+                <AiProviderForm
+                  editor={providerEditor}
+                  onChange={(patch) => setProviderEditor({ ...providerEditor, ...patch })}
+                  onSave={() => void saveProvider()}
+                  onCancel={resetProviderEditor}
+                  saveLabel="更新"
+                />
+              )}
 
-                    {dbMsg && <p style={{ fontSize: 12, margin: "8px 0 0", color: dbMsg.includes("失败") ? "var(--brand)" : "var(--success)" }}>{dbMsg}</p>}
-                    <button className="primary-button" type="button" onClick={() => { saveDbConfig(); }} disabled={dbLoading} style={{ marginTop: 8 }}>
-                      {dbLoading ? "保存中..." : "保存数据存储设置"}
-                    </button>
-                    <p style={{ fontSize: 11, color: "var(--muted)", margin: "4px 0 0" }}>
-                      修改数据存储模式后需重启服务器方可生效。
-                    </p>
-                  </>
-                )}
+              {settingsMsg && (
+                <p className={cn("m-0 text-xs", settingsMsg.includes("失败") ? "text-primary" : "text-success")}>
+                  {settingsMsg}
+                </p>
+              )}
+            </TabsContent>
+
+            <TabsContent value="db" className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
+              <h4 className="mb-1 mt-0 text-base font-semibold text-foreground">数据存储设置</h4>
+              <p className="m-0 mb-3 text-xs text-muted-foreground">
+                本地模式使用 SQLite 单文件数据库，无需额外安装。远程模式连接 MariaDB 服务器。
+              </p>
+              <RadioGroup
+                value={dbMode}
+                onValueChange={(v) => setDbMode(v as "local" | "remote")}
+                className="gap-2"
+              >
+                <div className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem value="local" id="db-local" />
+                  <label htmlFor="db-local" className="cursor-pointer text-secondary-foreground select-none">
+                    本地数据库（SQLite，当前设备）
+                  </label>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem value="remote" id="db-remote" />
+                  <label htmlFor="db-remote" className="cursor-pointer text-secondary-foreground select-none">
+                    远程服务器（MariaDB）
+                  </label>
+                </div>
+              </RadioGroup>
+
+              {dbMode === "remote" && (
+                <div className="mt-2 flex flex-col gap-1.5 rounded-md border border-accent-border bg-accent p-2.5">
+                  <Field label="服务器地址">
+                    <Input
+                      type="text"
+                      value={dbHost}
+                      onChange={(e) => setDbHost(e.target.value)}
+                      placeholder="192.168.1.50"
+                      className="text-sm"
+                    />
+                  </Field>
+                  <div className="flex gap-1.5">
+                    <Field label="端口" className="flex-1">
+                      <Input
+                        type="number"
+                        value={dbPort}
+                        onChange={(e) => setDbPort(Number(e.target.value))}
+                        className="text-sm"
+                      />
+                    </Field>
+                    <Field label="数据库名" className="flex-1">
+                      <Input
+                        type="text"
+                        value={dbDatabase}
+                        onChange={(e) => setDbDatabase(e.target.value)}
+                        className="text-sm"
+                      />
+                    </Field>
+                  </div>
+                  <Field label="用户名">
+                    <Input
+                      type="text"
+                      value={dbUser}
+                      onChange={(e) => setDbUser(e.target.value)}
+                      placeholder="projectx_app"
+                      className="text-sm"
+                    />
+                  </Field>
+                  <Field
+                    label={
+                      <>密码 {dbHasPassword && <span className="text-xs text-muted-foreground">(已设置，留空不修改)</span>}</>
+                    }
+                  >
+                    <Input
+                      type="password"
+                      value={dbPassword}
+                      onChange={(e) => setDbPassword(e.target.value)}
+                      placeholder={dbHasPassword ? "••••••" : "输入密码"}
+                      className="text-sm"
+                    />
+                  </Field>
+                </div>
+              )}
+
+              {dbMode === "remote" && !dbHost.trim() && (
+                <p className="m-0 text-xs text-muted-foreground">
+                  <AlertTriangle size={15} aria-hidden="true" className="inline" />
+                  远程服务器功能尚未完全启用。当前版本仅可在本地模式下使用。
+                </p>
+              )}
+
+              {dbMsg && (
+                <p className={cn("m-0 text-xs", dbMsg.includes("失败") ? "text-primary" : "text-success")}>{dbMsg}</p>
+              )}
+              <Button
+                variant="primary"
+                type="button"
+                onClick={() => { saveDbConfig(); }}
+                disabled={dbLoading}
+                className="mt-2 self-start"
+              >
+                {dbLoading ? "保存中..." : "保存数据存储设置"}
+              </Button>
+              <p className="m-0 text-xs text-muted-foreground">
+                修改数据存储模式后需重启服务器方可生效。
+              </p>
+            </TabsContent>
+          </Tabs>
+        </DialogContent>
+      </Dialog>
+
+      {/* Help card dialog — v2 Dialog（Radix 独立覆盖层） */}
+      <Dialog open={showHelpCard} onOpenChange={setShowHelpCard}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>AI 服务商配置指南</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <div className="space-y-3 text-base leading-relaxed text-secondary-foreground">
+              <div>
+                <strong>Base URL</strong> 填 API 端点地址，<em>不是</em>网站首页。末尾无需 /v1 自动补齐。
+                <strong>Gemini 无需填写 Base URL</strong>（使用 Google 原生 SDK，仅需 API Key）。
               </div>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
-
-      {/* Help card modal — standalone overlay */}
-      {showHelpCard && createPortal(
-        <div className="modal-overlay" onClick={() => setShowHelpCard(false)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 500, width: "90vw", maxHeight: "85vh", overflowY: "auto" }}>
-            <div className="modal-header">
-              <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>AI 服务商配置指南</h3>
-              <button className="ghost-button" onClick={() => setShowHelpCard(false)}>
-                <X size={18} />
-              </button>
-            </div>
-            <div style={{ padding: "16px 20px", fontSize: 14, lineHeight: 1.8, color: "var(--text-secondary)" }}>
-              <div style={{ marginBottom: 12 }}>
-                <strong>Base URL</strong> 填 API 端点地址，<em>不是</em>网站首页。末尾无需 /v1 自动补齐。<strong>Gemini 无需填写 Base URL</strong>（使用 Google 原生 SDK，仅需 API Key）。
-              </div>
-              <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 12, fontSize: 13 }}>
+              <table className="w-full border-collapse text-sm">
                 <thead>
-                  <tr style={{ borderBottom: "1px solid var(--line)", textAlign: "left" }}>
-                    <th style={{ padding: "6px 8px" }}>服务商</th>
-                    <th style={{ padding: "6px 8px" }}>Base URL 示例</th>
+                  <tr className="border-b border-border text-left">
+                    <th className="px-2 py-1.5 font-medium text-foreground">服务商</th>
+                    <th className="px-2 py-1.5 font-medium text-foreground">Base URL 示例</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>GPT</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>https://api.openai.com</td></tr>
-                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>DeepSeek</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>https://api.deepseek.com</td></tr>
-                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>Gemini</td><td style={{ padding: "6px 8px", fontSize: 12, color: "var(--muted)" }}>无需填写（Google 原生 SDK）</td></tr>
-                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>Azure</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>https://xxx.openai.azure.com/openai</td></tr>
-                  <tr><td style={{ padding: "6px 8px", fontWeight: 500 }}>Ollama</td><td style={{ padding: "6px 8px", fontFamily: "monospace", fontSize: 12 }}>http://localhost:11434</td></tr>
+                  <tr>
+                    <td className="px-2 py-1.5 font-medium">GPT</td>
+                    <td className="px-2 py-1.5 font-mono text-xs">https://api.openai.com</td>
+                  </tr>
+                  <tr>
+                    <td className="px-2 py-1.5 font-medium">DeepSeek</td>
+                    <td className="px-2 py-1.5 font-mono text-xs">https://api.deepseek.com</td>
+                  </tr>
+                  <tr>
+                    <td className="px-2 py-1.5 font-medium">Gemini</td>
+                    <td className="px-2 py-1.5 text-xs text-muted-foreground">无需填写（Google 原生 SDK）</td>
+                  </tr>
+                  <tr>
+                    <td className="px-2 py-1.5 font-medium">Azure</td>
+                    <td className="px-2 py-1.5 font-mono text-xs">https://xxx.openai.azure.com/openai</td>
+                  </tr>
+                  <tr>
+                    <td className="px-2 py-1.5 font-medium">Ollama</td>
+                    <td className="px-2 py-1.5 font-mono text-xs">http://localhost:11434</td>
+                  </tr>
                 </tbody>
               </table>
-              <div style={{ marginBottom: 8 }}>
-                <strong>模型列表</strong> 填逗号分隔，如 <span style={{ fontFamily: "monospace" }}>gpt-5.4,gpt-5.4-mini</span>，留空自动获取。
-              </div>
-              <div style={{ marginBottom: 8 }}>
-                <strong>类型说明</strong>：GPT / DeepSeek 走 OpenAI 兼容协议；<strong>Gemini 走 Google 原生 GenAI SDK</strong>（不兼容 OpenAI 协议，仅需 API Key）。
-              </div>
-              <div style={{ marginBottom: 8, padding: "8px 12px", borderRadius: 8, background: "var(--surface-tint)", border: "1px solid var(--line)" }}>
-                <strong>Gemini API Key 获取</strong>：前往 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" style={{ color: "var(--brand)" }}>Google AI Studio</a> 创建 API Key，粘贴到上方 API Key 栏即可，<em>无需</em>填写 Base URL。
+              <div>
+                <strong>模型列表</strong> 填逗号分隔，如 <span className="font-mono">gpt-5.4,gpt-5.4-mini</span>，留空自动获取。
               </div>
               <div>
-                <strong>使用前提</strong>：需要启动 Python llmclient 中转服务。<br />
-                <span style={{ fontFamily: "monospace", fontSize: 13, background: "var(--surface-soft)", padding: "3px 8px", borderRadius: 4, display: "inline-block", marginTop: 4 }}>
+                <strong>类型说明</strong>：GPT / DeepSeek 走 OpenAI 兼容协议；
+                <strong>Gemini 走 Google 原生 GenAI SDK</strong>（不兼容 OpenAI 协议，仅需 API Key）。
+              </div>
+              <div className="rounded-md border border-border bg-accent p-3">
+                <strong>Gemini API Key 获取</strong>：前往{" "}
+                <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="text-primary">
+                  Google AI Studio
+                </a>{" "}
+                创建 API Key，粘贴到上方 API Key 栏即可，<em>无需</em>填写 Base URL。
+              </div>
+              <div>
+                <strong>使用前提</strong>：需要启动 Python llmclient 中转服务。
+                <br />
+                <span className="mt-1 inline-block rounded-sm bg-secondary px-2 py-1 font-mono text-sm">
                   py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766
                 </span>
               </div>
             </div>
-          </div>
-        </div>,
-        document.body
-      )}
-    </div>
+          </DialogBody>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

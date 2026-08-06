@@ -109,7 +109,7 @@ export function AppRail({
     <aside
       data-collapsed={collapsed || undefined}
       className={cn(
-        "app-rail relative z-30 flex shrink-0 flex-col gap-0.5 overflow-visible border-r border-border-subtle bg-card max-[640px]:hidden",
+        "relative z-30 flex shrink-0 flex-col gap-0.5 overflow-visible border-r border-border-subtle bg-card max-[640px]:hidden",
         "transition-[width] duration-(--px-dur-2) ease-standard",
         collapsed ? "w-rail-collapsed px-2 py-3" : "w-rail px-2.5 py-3",
         className,
@@ -274,7 +274,7 @@ export const AppRailItem = React.forwardRef<
   );
 });
 
-/** 底部区：主题切换 + 用户菜单 */
+/** 底部区：主题切换 + 账号入口（demo.html rail 底部「头像+姓名+更多」蓝本） */
 export function AppRailFooter({
   className,
   ...props
@@ -282,7 +282,7 @@ export function AppRailFooter({
   return (
     <div
       className={cn(
-        "mt-2 flex shrink-0 items-center gap-2 border-t border-border-subtle pt-2",
+        "flex shrink-0 items-center gap-2 border-t border-border-subtle px-2 py-2",
         className,
       )}
       {...props}

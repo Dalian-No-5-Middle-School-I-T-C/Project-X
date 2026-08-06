@@ -73,7 +73,7 @@ export function LoginPage() {
           </form>
         </CardContent>
       </Card>
-      <BeianFooter className="login-beian-footer" floating />
+      <BeianFooter className="absolute inset-x-0 bottom-4 justify-center" floating />
       <UserGuideModal open={showGuide} onClose={() => setShowGuide(false)} />
     </div>
   );

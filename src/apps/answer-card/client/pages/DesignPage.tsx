@@ -181,6 +181,7 @@ export function DesignPage() {
             />
             <div
               className="fixed z-[calc(var(--px-z-modal)+1)] min-w-[120px] overflow-hidden rounded-md border border-border-subtle bg-popover py-1 shadow-3"
+              // 动态值：右键菜单出现位置 = 鼠标坐标，无法用工具类表达
               style={{ left: ctxMenu.x, top: ctxMenu.y }}
             >
               <button
@@ -413,7 +414,7 @@ function CardThumbnail({ cardId }: { cardId: string }) {
   }, [cardId]);
 
   return (
-    <div className="design-card-thumbnail flex h-[180px] shrink-0 items-center justify-center overflow-hidden border-b border-border-subtle bg-muted">
+    <div className="flex h-[180px] shrink-0 items-center justify-center overflow-hidden border-b border-border-subtle bg-muted">
       {data ? <CardPreview card={data.card} layout={data.layout} firstPageOnly /> : <span className="self-center text-xs text-muted-foreground">正在生成预览</span>}
     </div>
   );

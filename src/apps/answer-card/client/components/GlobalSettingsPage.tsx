@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, type ReactNode } from "react";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
+import { tokens } from "../theme";
 import {
   Button,
   Input,
@@ -392,10 +393,10 @@ function BandEditor({ title, desc, bands, onChange }: { title: string; desc: str
 
 function toColorInput(value: string): string {
   const semanticColors: Record<string, string> = {
-    "var(--px-danger-bg)": "#C00F28",
-    "var(--px-warning-bg)": "#D97706",
-    "var(--px-amber-700)": "#B45309",
-    "var(--px-success-bg)": "#16A34A",
+    "var(--px-danger-bg)": tokens.danger,
+    "var(--px-warning-bg)": tokens.warning,
+    "var(--px-amber-700)": tokens.amber700,
+    "var(--px-success-bg)": tokens.success,
   };
-  return semanticColors[value] ?? (/^#[0-9a-f]{6}$/i.test(value) ? value : "#C00F28");
+  return semanticColors[value] ?? (/^#[0-9a-f]{6}$/i.test(value) ? value : tokens.danger);
 }
