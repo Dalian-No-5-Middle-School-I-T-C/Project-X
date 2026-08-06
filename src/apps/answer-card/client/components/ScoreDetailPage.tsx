@@ -8,7 +8,7 @@ import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
 import { formatScore, formatPercent, formatChange } from "../util/format";
 import type {
-  ExamOverview, ExamMetrics, PreviousExamComparison, QuestionAnalysisItem,
+  ClassComparisonResponse, ExamOverview, ExamMetrics, PreviousExamComparison, QuestionAnalysisItem,
   StudentRankingItem, ScoreDisplayMode, ScoreTableRow, AnalysisThresholds, KnowledgeWeaknessItem,
 } from "../../../../shared/types";
 import { AnalysisDistribution } from "./AnalysisDistribution";
@@ -21,7 +21,8 @@ import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
 import { AnalysisTrend } from "./AnalysisTrend";
-import { DistributionBar, ClassDistributionBar } from "./AnalysisCharts";
+import { DistributionBar, ClassDistributionBar, ClassRadar } from "./AnalysisCharts";
+import { OptionAnalysisPanel } from "./OptionAnalysisPanel";
 import { useBands, DifficultyBadge, DiscriminationBadge } from "./MetricBadge";
 import {
   Badge,
@@ -71,6 +72,11 @@ import {
  *  · 逐题热力格的硬编码 rgba → `color-mix(... var(--color-chart-1) ...)` 数据驱动透明度
  *  · 知识点严重度的硬编码红／橙 → destructive / warning / success 语义 class
  *  · 「分数有问题？」按钮的硬编码橙色描边 → v2 `Button variant="outline"` + Wrench 图标
+ *
+ * #218 合并（v2 基底 + main 分析增强）：
+ *  · 班级对比支持「全部班级」一键全选（含 all 参数）+ 本场实际参与班级获取（Issue #175）
+ *  · 总分统计表新增 难度系数 / 区分度 列（Issue #175）
+ *  · 新增 多维度雷达对比（ClassRadar）与 选择题选项对比（optionStats）区块
  */
 
 interface ClassOption { id: number; name: string; grade_name?: string; }
@@ -603,7 +609,10 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             />
             <KnowledgePanel examId={examId} classId={classId || undefined} />
 
-            {/* 讲评模式快捷入口（来自 main #212 相关，保留功能） */}
+            {/* Issue #175: 选择题各选项选择人数统计与分析 */}
+            <OptionAnalysisPanel examId={examId} classId={classId || undefined} />
+
+            {/* 讲评模式快捷入口 */}
             <div className="flex justify-center pt-1">
               <Button
                 variant="outline"
@@ -753,37 +762,29 @@ function KnowledgePanel({ examId, classId }: { examId: number; classId: string |
 }
 
 // ── 班级对比面板 ──────────────────────────────────────
-interface ClassComparisonClass {
-  classId: number;
-  className: string;
-  count: number;
-  avgScore: number;
-  median: number;
-  maxScore: number;
-  minScore: number;
-  stdDev: number;
-  passRate: number;
-  excellentRate: number;
-  distribution?: Array<{ range: string; count: number }>;
-}
-
-interface ClassComparisonQuestion {
-  questionNumber: string;
-  byClass: Array<{ classId: number; scoreRate: number }>;
-}
-
-interface ClassComparisonResult {
-  classes: ClassComparisonClass[];
-  questionStats?: ClassComparisonQuestion[];
-}
 
 const MAX_COMPARE_CLASSES = 8;
 
 function ClassComparePanel({ examId, classGroups }: { examId: number; classGroups: Array<[string, ClassOption[]]> }) {
+  const allClasses = useMemo(() => classGroups.flatMap(([, list]) => list), [classGroups]);
+  const [examClasses, setExamClasses] = useState<ClassOption[]>(allClasses);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
-  const [comparison, setComparison] = useState<ClassComparisonResult | null>(null);
+  const [comparison, setComparison] = useState<ClassComparisonResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Issue #175: 优先使用本场考试实际参与的班级
+  useEffect(() => {
+    fetchJson<Array<{ classId: number; className: string; gradeName?: string }>>(`/api/analysis/exams/${examId}/classes`)
+      .then((d) => {
+        if (Array.isArray(d) && d.length > 0) {
+          setExamClasses(d.map((c) => ({ id: c.classId, name: c.className, grade_name: c.gradeName ?? "无年级" })));
+        }
+      })
+      .catch(() => setExamClasses(allClasses));
+  }, [examId, allClasses]);
+
+  const allSelected = examClasses.length > 0 && selectedIds.length === examClasses.length;
 
   function toggleClass(id: number) {
     setSelectedIds((prev) =>
@@ -799,18 +800,30 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
     if (selectedIds.length < 2) { setComparison(null); setError(""); return; }
     setLoading(true); setError("");
     const params = new URLSearchParams();
-    params.set("classIds", selectedKey);
+    if (allSelected) params.set("all", "1");
+    else params.set("classIds", selectedKey);
     params.set("includeOptions", "1");
-    fetchJson<ClassComparisonResult>(`/api/analysis/exams/${examId}/class-comparison?${params.toString()}`)
+    fetchJson<ClassComparisonResponse>(`/api/analysis/exams/${examId}/class-comparison?${params.toString()}`)
       .then((d) => setComparison(d))
       .catch((e) => setError(e instanceof Error ? e.message : "加载失败"))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedKey, examId]);
+  }, [allSelected, selectedKey, examId]);
 
   return (
     <div className="flex flex-col gap-4 p-6">
-      <h3 className="text-sm font-semibold text-foreground">勾选班级进行对比（2–{MAX_COMPARE_CLASSES} 个）</h3>
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold text-foreground">
+          班级对比（可对比全部班级）
+        </h3>
+        <Button
+          variant={allSelected ? "primary" : "outline"}
+          size="sm"
+          onClick={() => setSelectedIds(allSelected ? [] : examClasses.map((c) => c.id))}
+        >
+          {allSelected ? "取消全选" : "全部班级"}
+        </Button>
+      </div>
       {classGroups.map(([grade, list]) => (
         <div key={grade} className="flex flex-col gap-1.5">
           <span className="text-xs font-semibold text-muted-foreground">{grade}</span>
@@ -865,6 +878,8 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
                     <TableHead numeric>标准差</TableHead>
                     <TableHead numeric>及格率</TableHead>
                     <TableHead numeric>优秀率</TableHead>
+                    <TableHead numeric>难度系数</TableHead>
+                    <TableHead numeric>区分度</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -879,6 +894,8 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
                       <TableCell numeric>{formatScore(c.stdDev)}</TableCell>
                       <TableCell numeric>{formatPercent(c.passRate)}</TableCell>
                       <TableCell numeric>{formatPercent(c.excellentRate)}</TableCell>
+                      <TableCell numeric>{c.difficulty.toFixed(3)}</TableCell>
+                      <TableCell numeric>{c.discrimination.toFixed(3)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -886,7 +903,17 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
             </TableWrap>
           </section>
 
-          {/* ② 分段分布对比柱状图 */}
+          {/* ② Issue #175: 多维度雷达对比 */}
+          {comparison.classes.length >= 2 && (
+            <section className="flex flex-col gap-2">
+              <h3 className="text-sm font-semibold text-foreground">
+                多维度雷达对比（平均分率/中位分率/及格率/优秀率/难度/区分度/离散度）
+              </h3>
+              <ClassRadar classes={comparison.classes} fullScore={comparison.fullScore} height={340} />
+            </section>
+          )}
+
+          {/* ③ 分段分布对比柱状图 */}
           {comparison.classes.length > 0 && comparison.classes[0].distribution && (
             <section className="flex flex-col gap-2">
               <h3 className="text-sm font-semibold text-foreground">分数段分布对比</h3>
@@ -901,7 +928,7 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
             </section>
           )}
 
-          {/* ③ 逐题得分率热力表 */}
+          {/* ④ 逐题得分率热力表 */}
           {comparison.questionStats && comparison.questionStats.length > 0 && (
             <section className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -942,6 +969,59 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
                   </TableBody>
                 </Table>
               </TableWrap>
+            </section>
+          )}
+
+          {/* ⑤ Issue #175: 选择题各选项选择人数/比例对比 */}
+          {comparison.optionStats && comparison.optionStats.length > 0 && (
+            <section className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-semibold text-foreground">选择题选项对比（各班选择人数/比例）</h3>
+                <Badge tone="success">✓ = 标准答案</Badge>
+              </div>
+              {comparison.optionStats.map((q) => (
+                <div key={q.questionNumber} className="flex flex-col gap-1.5">
+                  <div className="text-sm font-medium text-foreground">
+                    第 {q.questionNumber} 题（标准答案：{q.answerKey.join("/") || "—"}）
+                  </div>
+                  <TableWrap>
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="hover:bg-transparent">
+                          <TableHead>班级</TableHead>
+                          {q.byClass[0]?.options.map((o) => (
+                            <TableHead key={o.option} numeric>
+                              {o.option}{o.isCorrect ? " ✓" : ""}
+                            </TableHead>
+                          ))}
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {q.byClass.map((bc) => (
+                          <TableRow key={bc.classId}>
+                            <TableCell>
+                              {comparison.classes.find((c) => c.classId === bc.classId)?.className ?? `班级${bc.classId}`}
+                            </TableCell>
+                            {bc.options.map((o) => (
+                              <TableCell
+                                key={o.option}
+                                numeric
+                                style={
+                                  o.isCorrect
+                                    ? { backgroundColor: "color-mix(in srgb, var(--color-success) 12%, transparent)", fontWeight: 500 }
+                                    : undefined
+                                }
+                              >
+                                {o.count}（{o.rate}%）
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableWrap>
+                </div>
+              ))}
             </section>
           )}
         </>

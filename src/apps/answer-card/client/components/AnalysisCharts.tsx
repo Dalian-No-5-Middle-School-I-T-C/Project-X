@@ -5,10 +5,14 @@
  * 颜色 / 网格 / 主题一律交给 v2 `Chart` 适配器（components/ui/v2/chart.tsx），
  * 调色板唯一来源是 `theme.ts` 的 `tokens.chart1-8`——此处零硬编码十六进制。
  *
- * 五个导出函数的签名保持不变，调用方（AnalysisOverview / ExamGroupDetailPage /
- * ScoreDetailPage）无需改动。
+ * 六个导出函数的签名保持不变，调用方（AnalysisOverview / ExamGroupDetailPage /
+ * ScoreDetailPage）无需改动；#218 新增的 ClassRadar 已适配为 v2 `Chart`。
  */
-import { Chart, paletteColor, rampPalette, withAlpha } from "./ui/v2";
+import { Chart as ChartJS, RadialLinearScale } from "chart.js";
+import { Chart, paletteColor, rampPalette, useChartTheme, withAlpha } from "./ui/v2";
+
+// v2 适配器只注册了折线/柱/环所需元素，radar（#218 ClassRadar）需补注册 RadialLinearScale
+ChartJS.register(RadialLinearScale);
 
 // ── 环形图（分数段占比）────────────────────────────────
 
@@ -241,6 +245,80 @@ export function ClassDistributionBar({
           y: { beginAtZero: true, ticks: { precision: 0 } },
           x: { grid: { display: false } },
         },
+      }}
+    />
+  );
+}
+
+/**
+ * Issue #175: 班级对比雷达图（多维度）。
+ * 维度：平均分率 / 中位分率 / 及格率 / 优秀率 / 难度系数 / 区分度 / 离散度（标准差占满分比）。
+ * 除离散度外均为“越高越好”口径，便于直观比较。
+ */
+export function ClassRadar({
+  classes,
+  fullScore,
+  height = 320,
+}: {
+  classes: Array<{
+    className: string;
+    avgScore: number;
+    median: number;
+    stdDev: number;
+    passRate: number;
+    excellentRate: number;
+    difficulty: number;
+    discrimination: number;
+  }>;
+  fullScore: number;
+  height?: number;
+}) {
+  const theme = useChartTheme();
+  const score = (value: number) => (fullScore > 0 ? (value / fullScore) * 100 : 0);
+  const dims = [
+    { label: "平均分率", get: (c: (typeof classes)[number]) => score(c.avgScore) },
+    { label: "中位分率", get: (c: (typeof classes)[number]) => score(c.median) },
+    { label: "及格率", get: (c: (typeof classes)[number]) => c.passRate },
+    { label: "优秀率", get: (c: (typeof classes)[number]) => c.excellentRate },
+    { label: "难度系数", get: (c: (typeof classes)[number]) => Math.max(0, Math.min(100, c.difficulty * 100)) },
+    { label: "区分度", get: (c: (typeof classes)[number]) => Math.max(0, Math.min(100, c.discrimination * 100)) },
+    { label: "离散度", get: (c: (typeof classes)[number]) => Math.max(0, Math.min(100, score(c.stdDev))) },
+  ];
+
+  const chartData = {
+    labels: dims.map((d) => d.label),
+    datasets: classes.map((cls, ci) => {
+      const color = paletteColor(ci);
+      return {
+        label: cls.className,
+        data: dims.map((d) => Math.round(d.get(cls) * 10) / 10),
+        backgroundColor: withAlpha(color, 0.15),
+        borderColor: color,
+        borderWidth: 2,
+        pointBackgroundColor: color,
+        pointRadius: 3,
+      };
+    }),
+  };
+
+  return (
+    <Chart
+      type="radar"
+      data={chartData}
+      height={height}
+      ariaLabel="班级多维度对比雷达图"
+      options={{
+        scales: {
+          r: {
+            min: 0,
+            max: 100,
+            ticks: { stepSize: 20, font: { size: 10 }, backdropColor: "transparent" },
+            pointLabels: { font: { size: 11, weight: "bold" as const } },
+            grid: { color: theme.grid },
+            angleLines: { color: theme.axis },
+          },
+        },
+        plugins: { legend: { position: "bottom" as const } },
       }}
     />
   );

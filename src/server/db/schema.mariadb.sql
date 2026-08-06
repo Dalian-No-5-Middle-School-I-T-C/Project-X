@@ -467,12 +467,16 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     final_score      DOUBLE,                        -- v1.9.0: 最终分
     final_score_by   INT,                           -- v1.9.0: 最终分判定人
     score_breakdown  LONGTEXT,                      -- v1.9.0: 各轮评分明细 JSON
+    claimed_by       INT,
+    claimed_at       DATETIME,
+    claim_count      INT NOT NULL DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uniq_answer_block_crop_source (source_type, source_record_id, block_id, page_number, segment_index),
     FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
     FOREIGN KEY (student_id) REFERENCES users(id),
     FOREIGN KEY (reviewer_id)   REFERENCES users(id),
-    FOREIGN KEY (final_score_by) REFERENCES users(id)
+    FOREIGN KEY (final_score_by) REFERENCES users(id),
+    FOREIGN KEY (claimed_by)    REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS twain_scan_sessions (
@@ -743,6 +747,7 @@ CREATE INDEX IF NOT EXISTS idx_subjective_grades_record ON subjective_grades(rec
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_exam_student ON answer_block_crops(exam_id, student_id);
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
+CREATE INDEX IF NOT EXISTS idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by);
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_student ON student_scores(student_id);
 CREATE INDEX IF NOT EXISTS idx_question_scores_exam_student ON question_scores(exam_id, student_id);

@@ -542,6 +542,19 @@ flowchart TD
 
 ---
 
+### 6.7 网阅试卷池 (Issue #174, v1.10.2)
+
+网阅领卷改为「试卷池」模型，统一分配与领取管理，从源头避免两位教师同时批阅同一份卷子：
+
+- **池定义**：`answer_block_crops` 中状态为 `ready` / `pending`（待复核）/ `disputed`（争议待处理）且 `claimed_by IS NULL` 的切块属于可领卷；`reviewed` 离开池子。
+- **领卷锁定**：新增 `claimed_by` / `claimed_at` / `claim_count` 三列（迁移 v32）。教师通过 `POST /api/review-pool/exams/:examId/blocks/:blockId/claim` 原子领取下一份（`UPDATE ... WHERE claimed_by IS NULL` 保证并发互斥），可按 `classId` 限定班级；也可指定领取具体试卷。
+- **提交回流**：`submitReviewCropScores` 提交成功后清空领取标记——`pending` 回到池中等待下一轮复核，`reviewed` / `disputed` 离开可领集合；已领取试卷仅领取人可提交（管理员例外），非领取人提交被拒。
+- **管理与释放**：领取人本人可释放回池；年级组长/管理员可强制释放。`ReviewAssignPage` 新增试卷池管理区（汇总 + 条目 + 强制释放），`OnlineReviewPanel`（逐题）与 `GradePanel`（题块总分）均改为「从池领卷 → 批阅 → 提交」流程。
+
+相关路由：`/api/review-pool/*`（`src/server/routes/review-pool.ts`），服务：`src/server/services/ReviewPoolService.ts`。
+
+---
+
 ## 7. C++ 原生层
 
 | 模块 | 路径 | 技术 | 职责 |
@@ -694,3 +707,9 @@ flowchart LR
 ### 13.4 档位（阈值可配置）
 
 - 难度/区分度档位阈值由管理员在「全局设置」配置，持久化于 `system_settings.analysis_difficulty_bands` / `analysis_discrimination_bands`，缺省回退内置默认。
+
+### 13.5 跨班对比与选项分析 (Issue #175, v1.10.2)
+
+- 班级对比支持「全部班级」：`GET /api/analysis/exams/:examId/class-comparison?all=1` 自动取本场考试全部班级，手工选择上限放宽到 30 个；响应新增 `fullScore`，每班新增 `difficulty`（P）与 `discrimination`（D，与 `getExamMetrics` 口径一致，逐题 D 均值）。
+- 前端班级对比页新增**多维度雷达图**（平均分率 / 中位分率 / 及格率 / 优秀率 / 难度系数 / 区分度 / 离散度）与**选择题选项对比表**（各班每选项选择人数与比例，✓ 标标准答案）；总分统计表新增难度/区分度列。
+- 题目分析 Tab 新增「选择题选项分析」面板（`GET /api/analysis/exams/:examId/option-analysis`）：每道客观题展示各选项选择人数/比例、作答/未答人数与满分率，正确选项高亮。

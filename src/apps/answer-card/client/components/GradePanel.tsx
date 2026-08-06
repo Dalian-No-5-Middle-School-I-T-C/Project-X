@@ -24,6 +24,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   const isTouchDevice = typeof window !== "undefined" && ("ontouchstart" in window || navigator.maxTouchPoints > 0);
   const [draftScores, setDraftScores] = useState<Record<string, number>>({});
   const [saving, setSaving] = useState(false);
+  const [claiming, setClaiming] = useState(false);
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [annotations, setAnnotations] = useState<ReviewAnnotation[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -38,12 +39,37 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   // 加载阅卷队列
   const loadQueue = useCallback(async () => {
     try {
-      const res = await fetchJson<{ ok: boolean; rows: ReviewBlockCropItem[] }>(
-        `/api/review/exams/${examId}/block-crops?blockId=${encodeURIComponent(blockId)}&status=ready`
+      const res = await fetchJson<{ ok: boolean; data: { summary: unknown; entries: ReviewBlockCropItem[] } }>(
+        `/api/review-pool/exams/${examId}/blocks/${encodeURIComponent(blockId)}?mine=1`
       );
-      if (res.ok) setQueue(res.rows);
+      if (res.ok) {
+        setQueue(res.data.entries);
+        setCurrentIndex(0);
+      }
     } catch (err: any) { setError(err.message); setErrorTone("error"); }
   }, [examId, blockId]);
+
+  // Issue #174: 从试卷池领取下一份（题块总分模式同样走池，避免重复批阅）
+  const claimNext = useCallback(async () => {
+    if (claiming) return;
+    setClaiming(true);
+    setError(null);
+    try {
+      const res = await fetchJson<{ ok: boolean; data?: ReviewBlockCropItem; error?: string }>(
+        `/api/review-pool/exams/${examId}/blocks/${encodeURIComponent(blockId)}/claim`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) }
+      );
+      if (!res.ok || !res.data) throw new Error(res.error ?? "领卷失败");
+      setQueue((prev) => {
+        setCurrentIndex(prev.length);
+        return [...prev, res.data!];
+      });
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setClaiming(false);
+    }
+  }, [examId, blockId, claiming]);
 
   // 加载会话
   const loadSession = useCallback(async () => {
@@ -159,15 +185,11 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
         delete newScores[current.id];
         setDraftScores(newScores);
 
-        // 如果还有下一份，自动翻页
-        if (currentIndex < queue.length - 1) {
-          goTo(currentIndex + 1);
-        } else {
-          setError("该题块已全部批完！");
-          setErrorTone("success");
-        }
-
-        saveSession(currentIndex + 1, newScores);
+        // Issue #174: 提交后试卷离开已领队列（待复核会回到池中），刷新队列
+        setQueue((prev) => prev.filter((item) => item.id !== current.id));
+        setCurrentIndex(0);
+        saveSession(0, newScores);
+        void loadQueue();
       }
     } catch (err: any) {
       setError(err.message);
@@ -234,6 +256,11 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
     return (
       <div className="p-6">
         <Button variant="outline" icon={<ArrowLeft />} onClick={onBack}>返回</Button>
+        <div className="mt-6 flex items-center justify-center">
+          <Button variant="primary" loading={claiming} onClick={() => void claimNext()}>
+            {claiming ? "领取中..." : "从试卷池领取试卷"}
+          </Button>
+        </div>
         <EmptyState
           className="mt-4"
           icon={<ClipboardList />}
@@ -254,6 +281,23 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
         <div className="text-sm font-medium text-muted-foreground tabular-nums">
           {currentIndex + 1} / {queue.length}
         </div>
+        <button
+          onClick={() => void claimNext()}
+          disabled={claiming}
+          style={{
+            padding: "6px 14px",
+            fontSize: 13,
+            border: "1px solid var(--color-border-primary)",
+            borderRadius: 6,
+            background: "var(--color-background-secondary)",
+            cursor: "pointer",
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+          }}
+        >
+          {claiming ? "领取中..." : "领取下一份"}
+        </button>
       </div>
 
       {/* 主体 — PAD/移动端响应式：<900px 上下分栏，≥900px 左右分栏 */}
