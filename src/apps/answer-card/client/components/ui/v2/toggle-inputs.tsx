@@ -72,8 +72,8 @@ export const RadioGroupItem = React.forwardRef<
       )}
       {...props}
     >
-      <RadioGroupPrimitive.Indicator className="flex size-full items-center justify-center">
-        <span className="size-2 rounded-full bg-primary" />
+      <RadioGroupPrimitive.Indicator className="flex size-full items-center justify-center rounded-full bg-primary text-primary-foreground">
+        <Check className="size-3" strokeWidth={3} />
       </RadioGroupPrimitive.Indicator>
     </RadioGroupPrimitive.Item>
   );

@@ -93,6 +93,7 @@ const ExamManagePage = lazy(() => import("./pages/ExamManagePage").then((m) => (
 const AnalysisRoutePage = lazy(() => import("./pages/AnalysisRoutePage").then((m) => ({ default: m.AnalysisRoutePage })));
 const ScoresRoutePage = lazy(() => import("./pages/ScoresRoutePage").then((m) => ({ default: m.ScoresRoutePage })));
 const AccountRoutePage = lazy(() => import("./pages/AccountRoutePage").then((m) => ({ default: m.AccountRoutePage })));
+const AccountSettingsPage = lazy(() => import("./pages/AccountSettingsPage").then((m) => ({ default: m.AccountSettingsPage })));
 const SponsorRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.SponsorRoutePage })));
 const PermissionsRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.PermissionsRoutePage })));
 const GuideRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.GuideRoutePage })));
@@ -537,6 +538,7 @@ function App() {
       if (candidate === "exam-manage") return canManageExams;
       if (candidate === "analysis") return canAnalyze;
       if (candidate === "account") return canManageAccounts;
+      if (candidate === "account-settings") return true;
       if (candidate === "global-settings") return canManageGlobal;
       return false;
     },
@@ -1500,6 +1502,10 @@ function App() {
     if (showScoresTab) {
       items.push({ type: "item", id: "scores", icon: <BarChart3 />, label: "我的成绩" });
     }
+    // 个人账号设置：所有已登录用户可访问（与「账号管理/全局设置」管理区相邻）
+    if (canOpenMode("account-settings")) {
+      items.push({ type: "item", id: "account-settings", icon: <Settings />, label: "账号设置" });
+    }
     if (canManageAccounts || canManageGlobal) {
       items.push({ type: "group", label: "管理" });
     }
@@ -1670,7 +1676,9 @@ function App() {
           ? "考试管理"
           : mode === "account"
             ? "账号管理"
-            : mode === "sponsor"
+            : mode === "account-settings"
+              ? "账号设置"
+              : mode === "sponsor"
               ? "支持项目"
               : mode === "guide"
                 ? "使用说明"
@@ -1691,7 +1699,9 @@ function App() {
           ? "创建、管理考试与阅卷批次"
           : mode === "account"
             ? "管理用户、班级与花名册"
-            : mode === "sponsor"
+            : mode === "account-settings"
+              ? "个人阅卷、客户端与 AI 服务偏好"
+              : mode === "sponsor"
               ? "感谢您的信任与支持"
               : mode === "guide"
                 ? "Project-X 操作指南与常见问题"
@@ -1899,6 +1909,7 @@ function App() {
                 <Route path="/analysis" element={canOpenMode("analysis") ? <Suspense fallback={routeFallback}><AnalysisRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/scores" element={canOpenMode("scores") ? <Suspense fallback={routeFallback}><ScoresRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/account" element={canOpenMode("account") ? <Suspense fallback={routeFallback}><AccountRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/account-settings" element={canOpenMode("account-settings") ? <Suspense fallback={routeFallback}><AccountSettingsPage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/sponsor" element={canOpenMode("home") ? <Suspense fallback={routeFallback}><SponsorRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/permissions" element={canOpenMode("account") ? <Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/guide" element={canOpenMode("home") ? <Suspense fallback={routeFallback}><GuideRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
