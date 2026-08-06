@@ -64,6 +64,7 @@
     background: transparent;
     font: inherit;
     color: inherit;
+    padding: 0;
   }
   button { cursor: pointer; }
   input,
