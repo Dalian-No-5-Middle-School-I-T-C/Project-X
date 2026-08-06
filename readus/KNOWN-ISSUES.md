@@ -91,6 +91,12 @@
 | UI-6 | `ScoreDetailPage` 的 `manually_modified` 标记在总分行和子题行可能存在不一致 | `ScoreDetailPage.tsx` | 低：只是展示布尔值 |
 | UI-7 | ~~`AccountMenu` 背景透明度滑块无防抖，每次拖动都发 API 请求~~ **已修复（v1.9.6）**：改为 400ms 防抖 PATCH `/api/users/me/settings` | `AccountMenu.tsx` | 无 |
 
+**P6 收尾（2026-08-06，T05）：UI-1 ~ UI-7 全部关闭**
+- UI-1 / UI-4：**随组件删除而失效**（非修复）——`OnlineReviewPanel` / `CropImageViewer` 属 P6 T01 死代码 10 件之一，已随组件删除（commit `c92f6f4` 前工作树），无前端可触发面，关闭。
+- UI-7：**已修复且 T03 守恒**——400ms 防抖逻辑在 T03a AccountMenu 重做中零改动保留（v1.9.6 修复持续生效），关闭。
+- UI-2 / UI-3 / UI-5 / UI-6：**已关闭（P6 完成）**——对应组件已 v2 化迁移（`components/ui/v2/*`），遗留类归零；原风险为低/中等级展示性问题，随 UI 重写关闭。
+- 决策记录：死代码 = **10 件**（天梯 3 件已恢复接线，见 docs/system_design.md P6-Rev R1）。
+
 ---
 
 ## 其他已知问题
@@ -101,4 +107,4 @@
 
 ---
 
-_最后更新：2026-07-30（复核 DB-8 / UI-7）| 发现版本：v1.9.2_
+_最后更新：2026-08-06（P6 T05：UI-1 ~ UI-7 全部关闭）| 发现版本：v1.9.2_

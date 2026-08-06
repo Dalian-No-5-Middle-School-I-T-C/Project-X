@@ -31,6 +31,7 @@ import {
   AlertTriangle,
   BrainCircuit,
   CheckCircle2,
+  Check,
   X,
   ArrowLeft,
 } from "lucide-react";
@@ -1979,7 +1980,7 @@ function App() {
 
             {/* 进度条：当前步骤品牌红加粗，已完成步骤 success，未开始 muted */}
             <div className="flex flex-wrap items-center gap-1.5 border-b border-border-subtle px-5 py-2.5 text-sm">
-              <span className="font-semibold text-success-foreground">✓ 分值</span>
+              <span className="inline-flex items-center gap-1 font-semibold text-success-foreground"><Check size={14} /> 分值</span>
               <span className="text-muted-foreground">→</span>
               <span
                 className={cn(
@@ -1990,7 +1991,13 @@ function App() {
                       : "text-muted-foreground",
                 )}
               >
-                {exportCheck.step === "paper" ? "▶ 原卷" : exportCheck.paperInfo?.hasPaper ? "✓ 原卷" : "○ 原卷"}
+                {exportCheck.step === "paper" ? (
+                  <span className="inline-flex items-center gap-1">▶ 原卷</span>
+                ) : exportCheck.paperInfo?.hasPaper ? (
+                  <span className="inline-flex items-center gap-1"><Check size={14} /> 原卷</span>
+                ) : (
+                  <span className="inline-flex items-center gap-1">○ 原卷</span>
+                )}
               </span>
               <span className="text-muted-foreground">→</span>
               <span
@@ -2002,7 +2009,13 @@ function App() {
                       : "text-muted-foreground",
                 )}
               >
-                {exportCheck.step === "knowledge" ? "▶ 知识点" : exportCheck.knowledgeReady ? "✓ 知识点" : "○ 知识点"}
+                {exportCheck.step === "knowledge" ? (
+                  <span className="inline-flex items-center gap-1">▶ 知识点</span>
+                ) : exportCheck.knowledgeReady ? (
+                  <span className="inline-flex items-center gap-1"><Check size={14} /> 知识点</span>
+                ) : (
+                  <span className="inline-flex items-center gap-1">○ 知识点</span>
+                )}
               </span>
               <span className="text-muted-foreground">→</span>
               <span className="text-muted-foreground">○ 导出</span>
