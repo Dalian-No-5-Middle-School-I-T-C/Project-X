@@ -66,7 +66,7 @@ function AiProviderForm({
 }) {
   const { providerType } = editor;
   return (
-    <div className="mt-2 flex flex-col gap-2 rounded-md border border-accent-border bg-accent p-2.5">
+    <div className="flex flex-col gap-2 rounded-md border border-accent-border bg-accent p-3">
       <Input
         type="text"
         placeholder={editor.editing ? "服务商名称" : "服务商名称 (如 我的GPT)"}
@@ -130,6 +130,10 @@ function AiProviderForm({
 /**
  * /account-settings 路由页：个人「账号设置」（阅卷/客户端/AI/数据存储）。
  * 由 AccountMenu 的设置 Dialog 迁移为独立页面（v2 UI 重构 P6）。
+ *
+ * P6 重写：放弃 vertical Tabs 左栏列布局（v2 Tabs 对 vertical 支持不佳时内容列塌缩），
+ * 改为 v2 Tabs 默认「横向顶部 Tab 条 + 内容区全宽自然排布」，页面容器放宽为 max-w-5xl。
+ * 功能零丢失，仅重排布局与样式。
  */
 export function AccountSettingsPage() {
   const { isAdmin, refreshUser } = useAuth();
@@ -347,145 +351,151 @@ export function AccountSettingsPage() {
     setProviderEditor({ editing: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" });
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-6 py-6">
-      <div className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-overlay">
-        <div className="flex shrink-0 items-center border-b border-border-subtle px-5 py-4">
-          <h1 className="text-lg font-semibold text-foreground">账号设置</h1>
+    <div className="mx-auto w-full max-w-5xl px-4 py-6 sm:px-6">
+      <div className="flex flex-col overflow-hidden rounded-lg border border-border bg-card">
+        {/* 页面头部 */}
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-5 py-4">
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold text-foreground">账号设置</h1>
+            <p className="m-0 text-xs text-muted-foreground">阅卷 · 客户端 · AI 服务商 · 数据存储</p>
+          </div>
         </div>
+
+        {/* v2 Tabs 默认横向：顶部 Tab 条 + 内容区全宽自然排布（绕开 vertical 列布局塌缩） */}
         <Tabs
-          orientation="vertical"
           value={settingsTab}
           onValueChange={(v) => setSettingsTab(v as SettingsTab)}
-          className="flex min-h-0 flex-1"
         >
-          <TabsList className="w-44 shrink-0 flex-col items-stretch gap-0.5 overflow-y-auto border-r border-border-subtle border-b-0 p-2">
-            <TabsTrigger
-              value="grading"
-              className="h-auto justify-start gap-2 border-l-[3px] border-l-transparent px-3 py-2.5 text-sm font-medium text-muted-foreground data-[state=active]:border-l-primary data-[state=active]:bg-accent data-[state=active]:text-accent-foreground [&::after]:hidden"
-            >
-              <Gauge size={15} className="shrink-0" /> 阅卷设置
+          <TabsList className="px-5">
+            <TabsTrigger value="grading">
+              <Gauge size={15} /> 阅卷设置
             </TabsTrigger>
-            <TabsTrigger
-              value="client"
-              className="h-auto justify-start gap-2 border-l-[3px] border-l-transparent px-3 py-2.5 text-sm font-medium text-muted-foreground data-[state=active]:border-l-primary data-[state=active]:bg-accent data-[state=active]:text-accent-foreground [&::after]:hidden"
-            >
-              <Monitor size={15} className="shrink-0" /> 客户端设置
+            <TabsTrigger value="client">
+              <Monitor size={15} /> 客户端设置
             </TabsTrigger>
-            <TabsTrigger
-              value="ai"
-              className="h-auto justify-start gap-2 border-l-[3px] border-l-transparent px-3 py-2.5 text-sm font-medium text-muted-foreground data-[state=active]:border-l-primary data-[state=active]:bg-accent data-[state=active]:text-accent-foreground [&::after]:hidden"
-            >
-              <BrainCircuit size={15} className="shrink-0" /> AI 设置
+            <TabsTrigger value="ai">
+              <BrainCircuit size={15} /> AI 设置
             </TabsTrigger>
             {isAdmin && isElectron && (
-              <TabsTrigger
-                value="db"
-                className="h-auto justify-start gap-2 border-l-[3px] border-l-transparent px-3 py-2.5 text-sm font-medium text-muted-foreground data-[state=active]:border-l-primary data-[state=active]:bg-accent data-[state=active]:text-accent-foreground [&::after]:hidden"
-              >
-                <Database size={15} className="shrink-0" /> 数据存储
+              <TabsTrigger value="db">
+                <Database size={15} /> 数据存储
               </TabsTrigger>
             )}
           </TabsList>
 
-          <TabsContent value="grading" className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
-            <h4 className="mb-1 mt-0 text-base font-semibold text-foreground">成绩指标显示</h4>
-            <RadioGroup value={displayMode} onValueChange={setDisplayMode} className="gap-1.5">
-              <div className="flex items-center gap-1.5 text-sm">
-                <RadioGroupItem value="deviation" id="dm-deviation" />
-                <label htmlFor="dm-deviation" className="cursor-pointer text-secondary-foreground select-none">
-                  标准偏差值 (50为基准)
-                </label>
-              </div>
-              <div className="flex items-center gap-1.5 text-sm">
-                <RadioGroupItem value="zscore" id="dm-zscore" />
-                <label htmlFor="dm-zscore" className="cursor-pointer text-secondary-foreground select-none">
-                  Z值 (0为基准)
-                </label>
-              </div>
-              <div className="flex items-center gap-1.5 text-sm">
-                <RadioGroupItem value="percentile" id="dm-percentile" />
-                <label htmlFor="dm-percentile" className="cursor-pointer text-secondary-foreground select-none">
-                  百分位排名 (0~100)
-                </label>
-              </div>
-            </RadioGroup>
-            <h4 className="mt-2 mb-1 text-base font-semibold text-foreground">
-              复核置信度阈值: {reviewThreshold.toFixed(2)}
-            </h4>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.01"
-              value={reviewThreshold}
-              onChange={(e) => setReviewThreshold(Number(e.target.value))}
-              className="mt-0.5 w-full"
-            />
-            <span className="text-xs text-muted-foreground">低于此值的题目标记"需要复核"</span>
+          <TabsContent value="grading" className="flex flex-col gap-4 px-5 py-5">
+            <div className="flex max-w-xl flex-col gap-4">
+              <section className="flex flex-col gap-2">
+                <h4 className="m-0 text-base font-semibold text-foreground">成绩指标显示</h4>
+                <RadioGroup value={displayMode} onValueChange={setDisplayMode} className="gap-1.5">
+                  <div className="flex items-center gap-1.5 text-sm">
+                    <RadioGroupItem value="deviation" id="dm-deviation" />
+                    <label htmlFor="dm-deviation" className="cursor-pointer text-secondary-foreground select-none">
+                      标准偏差值 (50为基准)
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-sm">
+                    <RadioGroupItem value="zscore" id="dm-zscore" />
+                    <label htmlFor="dm-zscore" className="cursor-pointer text-secondary-foreground select-none">
+                      Z值 (0为基准)
+                    </label>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-sm">
+                    <RadioGroupItem value="percentile" id="dm-percentile" />
+                    <label htmlFor="dm-percentile" className="cursor-pointer text-secondary-foreground select-none">
+                      百分位排名 (0~100)
+                    </label>
+                  </div>
+                </RadioGroup>
+              </section>
 
-            {/* v1.9.4: 原卷两开关已提升为纯全局，由管理员在「全局设置」统一控制，此处不再提供个人开关 */}
+              <section className="flex flex-col gap-2">
+                <h4 className="m-0 text-base font-semibold text-foreground">
+                  复核置信度阈值: <span className="tabular-nums">{reviewThreshold.toFixed(2)}</span>
+                </h4>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={reviewThreshold}
+                  onChange={(e) => setReviewThreshold(Number(e.target.value))}
+                  className="w-full"
+                />
+                <span className="text-xs text-muted-foreground">低于此值的题目标记"需要复核"</span>
+              </section>
+
+              {/* v1.9.4: 原卷两开关已提升为纯全局，由管理员在「全局设置」统一控制，此处不再提供个人开关 */}
+            </div>
 
             {settingsMsg && (
               <p className={cn("m-0 text-xs", settingsMsg.includes("失败") ? "text-primary" : "text-success")}>
                 {settingsMsg}
               </p>
             )}
-            <Button variant="primary" type="button" onClick={() => void saveSettings()} className="mt-1 self-start">
+            <Button variant="primary" type="button" onClick={() => void saveSettings()} className="self-start">
               保存设置
             </Button>
           </TabsContent>
 
-          <TabsContent value="client" className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
-            <h4 className="mb-1 mt-0 text-base font-semibold text-foreground">底部导航栏</h4>
-            <ControlRow
-              control={<Checkbox checked={showTabBar} onCheckedChange={(c) => setShowTabBar(c === true)} />}
-              label="显示底部 Tab 导航栏"
-              description="顶部导航栏「首页」可随时返回，建议保持开启"
-            />
+          <TabsContent value="client" className="flex flex-col gap-4 px-5 py-5">
+            <div className="flex max-w-xl flex-col gap-4">
+              <section className="flex flex-col gap-2">
+                <h4 className="m-0 text-base font-semibold text-foreground">底部导航栏</h4>
+                <ControlRow
+                  control={<Checkbox checked={showTabBar} onCheckedChange={(c) => setShowTabBar(c === true)} />}
+                  label="显示底部 Tab 导航栏"
+                  description="顶部导航栏「首页」可随时返回，建议保持开启"
+                />
+              </section>
 
-            <h4 className="mt-4 mb-1 text-base font-semibold text-foreground">背景图透明度</h4>
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-muted-foreground">
-                {Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}
-              </span>
+              <section className="flex flex-col gap-2">
+                <h4 className="m-0 text-base font-semibold text-foreground">背景图透明度</h4>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-muted-foreground">
+                    {Math.round(bgOpacity * 100)}%{bgOpacity === 0 ? " (关闭)" : ""}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="0.5"
+                  step="0.01"
+                  value={bgOpacity}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setBgOpacity(v);
+                    document.documentElement.style.setProperty("--bg-opacity", String(v));
+                    if (v > 0) document.body.classList.add("has-bg-image");
+                    else document.body.classList.remove("has-bg-image");
+                    persistBgOpacity(v);
+                  }}
+                  className="w-full"
+                />
+                <span className="text-xs text-muted-foreground">0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
+                <div className="flex items-center gap-1.5">
+                  <Button variant="ghost" size="sm" onClick={() => bgFileRef.current?.click()}>
+                    上传背景图
+                  </Button>
+                  <input ref={bgFileRef} type="file" accept="image/*" className="hidden" onChange={handleBgUpload} />
+                  {bgMsg && (
+                    <span className={cn("text-xs", bgMsg.includes("失败") ? "text-primary" : "text-success")}>{bgMsg}</span>
+                  )}
+                </div>
+              </section>
             </div>
-            <input
-              type="range"
-              min="0"
-              max="0.5"
-              step="0.01"
-              value={bgOpacity}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setBgOpacity(v);
-                document.documentElement.style.setProperty("--bg-opacity", String(v));
-                if (v > 0) document.body.classList.add("has-bg-image");
-                else document.body.classList.remove("has-bg-image");
-                persistBgOpacity(v);
-              }}
-              className="mt-1 w-full"
-            />
-            <span className="text-xs text-muted-foreground">0% = 关闭，建议 5%~15%（浮层叠加，不影响阅读）</span>
-            <div className="mt-2 flex items-center gap-1.5">
-              <Button variant="ghost" size="sm" onClick={() => bgFileRef.current?.click()}>
-                上传背景图
-              </Button>
-              <input ref={bgFileRef} type="file" accept="image/*" className="hidden" onChange={handleBgUpload} />
-              {bgMsg && (
-                <span className={cn("text-xs", bgMsg.includes("失败") ? "text-primary" : "text-success")}>{bgMsg}</span>
-              )}
-            </div>
+
             {settingsMsg && (
               <p className={cn("m-0 text-xs", settingsMsg.includes("失败") ? "text-primary" : "text-success")}>
                 {settingsMsg}
               </p>
             )}
-            <Button variant="primary" type="button" onClick={() => void saveSettings()} className="mt-1 self-start">
+            <Button variant="primary" type="button" onClick={() => void saveSettings()} className="self-start">
               保存设置
             </Button>
           </TabsContent>
 
-          <TabsContent value="ai" className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
+          <TabsContent value="ai" className="flex flex-col gap-4 px-5 py-5">
             <div className="flex items-center justify-between">
               <h4 className="m-0 text-base font-semibold text-foreground">AI 服务商</h4>
               <div className="flex items-center gap-2">
@@ -509,7 +519,7 @@ export function AccountSettingsPage() {
 
             {/* Provider list */}
             {aiProviders.length > 0 && (
-              <div className="flex flex-col gap-1.5">
+              <div className="flex max-w-2xl flex-col gap-1.5">
                 {aiProviders.map((p) => (
                   <div
                     key={p.id}
@@ -554,26 +564,28 @@ export function AccountSettingsPage() {
             )}
 
             {/* Provider add form */}
-            {showAddProvider && (
-              <AiProviderForm
-                editor={providerEditor}
-                onChange={(patch) => setProviderEditor({ ...providerEditor, ...patch })}
-                onSave={() => void saveProvider()}
-                onCancel={() => { setShowAddProvider(false); resetProviderEditor(); }}
-                saveLabel="保存服务商"
-              />
-            )}
+            <div className="flex max-w-xl flex-col gap-4">
+              {showAddProvider && (
+                <AiProviderForm
+                  editor={providerEditor}
+                  onChange={(patch) => setProviderEditor({ ...providerEditor, ...patch })}
+                  onSave={() => void saveProvider()}
+                  onCancel={() => { setShowAddProvider(false); resetProviderEditor(); }}
+                  saveLabel="保存服务商"
+                />
+              )}
 
-            {/* Edit form */}
-            {providerEditor.editing && providerEditor.id !== undefined && (
-              <AiProviderForm
-                editor={providerEditor}
-                onChange={(patch) => setProviderEditor({ ...providerEditor, ...patch })}
-                onSave={() => void saveProvider()}
-                onCancel={resetProviderEditor}
-                saveLabel="更新"
-              />
-            )}
+              {/* Edit form */}
+              {providerEditor.editing && providerEditor.id !== undefined && (
+                <AiProviderForm
+                  editor={providerEditor}
+                  onChange={(patch) => setProviderEditor({ ...providerEditor, ...patch })}
+                  onSave={() => void saveProvider()}
+                  onCancel={resetProviderEditor}
+                  saveLabel="更新"
+                />
+              )}
+            </div>
 
             {settingsMsg && (
               <p className={cn("m-0 text-xs", settingsMsg.includes("失败") ? "text-primary" : "text-success")}>
@@ -582,106 +594,110 @@ export function AccountSettingsPage() {
             )}
           </TabsContent>
 
-          <TabsContent value="db" className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
-            <h4 className="mb-1 mt-0 text-base font-semibold text-foreground">数据存储设置</h4>
-            <p className="m-0 mb-3 text-xs text-muted-foreground">
-              本地模式使用 SQLite 单文件数据库，无需额外安装。远程模式连接 MariaDB 服务器。
-            </p>
-            <RadioGroup
-              value={dbMode}
-              onValueChange={(v) => setDbMode(v as "local" | "remote")}
-              className="gap-2"
-            >
-              <div className="flex items-center gap-2 text-sm">
-                <RadioGroupItem value="local" id="db-local" />
-                <label htmlFor="db-local" className="cursor-pointer text-secondary-foreground select-none">
-                  本地数据库（SQLite，当前设备）
-                </label>
-              </div>
-              <div className="flex items-center gap-2 text-sm">
-                <RadioGroupItem value="remote" id="db-remote" />
-                <label htmlFor="db-remote" className="cursor-pointer text-secondary-foreground select-none">
-                  远程服务器（MariaDB）
-                </label>
-              </div>
-            </RadioGroup>
+          <TabsContent value="db" className="flex flex-col gap-4 px-5 py-5">
+            <div className="flex max-w-xl flex-col gap-4">
+              <section className="flex flex-col gap-2">
+                <h4 className="m-0 text-base font-semibold text-foreground">数据存储设置</h4>
+                <p className="m-0 text-xs text-muted-foreground">
+                  本地模式使用 SQLite 单文件数据库，无需额外安装。远程模式连接 MariaDB 服务器。
+                </p>
+              </section>
+              <RadioGroup
+                value={dbMode}
+                onValueChange={(v) => setDbMode(v as "local" | "remote")}
+                className="gap-2"
+              >
+                <div className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem value="local" id="db-local" />
+                  <label htmlFor="db-local" className="cursor-pointer text-secondary-foreground select-none">
+                    本地数据库（SQLite，当前设备）
+                  </label>
+                </div>
+                <div className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem value="remote" id="db-remote" />
+                  <label htmlFor="db-remote" className="cursor-pointer text-secondary-foreground select-none">
+                    远程服务器（MariaDB）
+                  </label>
+                </div>
+              </RadioGroup>
 
-            {dbMode === "remote" && (
-              <div className="mt-2 flex flex-col gap-1.5 rounded-md border border-accent-border bg-accent p-2.5">
-                <Field label="服务器地址">
-                  <Input
-                    type="text"
-                    value={dbHost}
-                    onChange={(e) => setDbHost(e.target.value)}
-                    placeholder="192.168.1.50"
-                    className="text-sm"
-                  />
-                </Field>
-                <div className="flex gap-1.5">
-                  <Field label="端口" className="flex-1">
+              {dbMode === "remote" && (
+                <div className="flex flex-col gap-2 rounded-md border border-accent-border bg-accent p-3">
+                  <Field label="服务器地址">
                     <Input
-                      type="number"
-                      value={dbPort}
-                      onChange={(e) => setDbPort(Number(e.target.value))}
+                      type="text"
+                      value={dbHost}
+                      onChange={(e) => setDbHost(e.target.value)}
+                      placeholder="192.168.1.50"
                       className="text-sm"
                     />
                   </Field>
-                  <Field label="数据库名" className="flex-1">
+                  <div className="flex gap-2">
+                    <Field label="端口" className="flex-1">
+                      <Input
+                        type="number"
+                        value={dbPort}
+                        onChange={(e) => setDbPort(Number(e.target.value))}
+                        className="text-sm"
+                      />
+                    </Field>
+                    <Field label="数据库名" className="flex-1">
+                      <Input
+                        type="text"
+                        value={dbDatabase}
+                        onChange={(e) => setDbDatabase(e.target.value)}
+                        className="text-sm"
+                      />
+                    </Field>
+                  </div>
+                  <Field label="用户名">
                     <Input
                       type="text"
-                      value={dbDatabase}
-                      onChange={(e) => setDbDatabase(e.target.value)}
+                      value={dbUser}
+                      onChange={(e) => setDbUser(e.target.value)}
+                      placeholder="projectx_app"
+                      className="text-sm"
+                    />
+                  </Field>
+                  <Field
+                    label={
+                      <>密码 {dbHasPassword && <span className="text-xs text-muted-foreground">(已设置，留空不修改)</span>}</>
+                    }
+                  >
+                    <Input
+                      type="password"
+                      value={dbPassword}
+                      onChange={(e) => setDbPassword(e.target.value)}
+                      placeholder={dbHasPassword ? "••••••" : "输入密码"}
                       className="text-sm"
                     />
                   </Field>
                 </div>
-                <Field label="用户名">
-                  <Input
-                    type="text"
-                    value={dbUser}
-                    onChange={(e) => setDbUser(e.target.value)}
-                    placeholder="projectx_app"
-                    className="text-sm"
-                  />
-                </Field>
-                <Field
-                  label={
-                    <>密码 {dbHasPassword && <span className="text-xs text-muted-foreground">(已设置，留空不修改)</span>}</>
-                  }
-                >
-                  <Input
-                    type="password"
-                    value={dbPassword}
-                    onChange={(e) => setDbPassword(e.target.value)}
-                    placeholder={dbHasPassword ? "••••••" : "输入密码"}
-                    className="text-sm"
-                  />
-                </Field>
-              </div>
-            )}
+              )}
 
-            {dbMode === "remote" && !dbHost.trim() && (
+              {dbMode === "remote" && !dbHost.trim() && (
+                <p className="m-0 text-xs text-muted-foreground">
+                  <AlertTriangle size={15} aria-hidden="true" className="inline" />
+                  远程服务器功能尚未完全启用。当前版本仅可在本地模式下使用。
+                </p>
+              )}
+
+              {dbMsg && (
+                <p className={cn("m-0 text-xs", dbMsg.includes("失败") ? "text-primary" : "text-success")}>{dbMsg}</p>
+              )}
+              <Button
+                variant="primary"
+                type="button"
+                onClick={() => { saveDbConfig(); }}
+                disabled={dbLoading}
+                className="self-start"
+              >
+                {dbLoading ? "保存中..." : "保存数据存储设置"}
+              </Button>
               <p className="m-0 text-xs text-muted-foreground">
-                <AlertTriangle size={15} aria-hidden="true" className="inline" />
-                远程服务器功能尚未完全启用。当前版本仅可在本地模式下使用。
+                修改数据存储模式后需重启服务器方可生效。
               </p>
-            )}
-
-            {dbMsg && (
-              <p className={cn("m-0 text-xs", dbMsg.includes("失败") ? "text-primary" : "text-success")}>{dbMsg}</p>
-            )}
-            <Button
-              variant="primary"
-              type="button"
-              onClick={() => { saveDbConfig(); }}
-              disabled={dbLoading}
-              className="mt-2 self-start"
-            >
-              {dbLoading ? "保存中..." : "保存数据存储设置"}
-            </Button>
-            <p className="m-0 text-xs text-muted-foreground">
-              修改数据存储模式后需重启服务器方可生效。
-            </p>
+            </div>
           </TabsContent>
         </Tabs>
       </div>
