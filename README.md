@@ -1,7 +1,7 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.9.6-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.0.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,9 +13,9 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.9.6
+> **当前版本**：v2.0.0
 > **核心能力**：Home 仪表盘（快捷入口 + 模块卡片）→ 答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 网上阅卷队列（2P/3P 多评 + 争议仲裁 + 断点续批 + PAD 优先 UI + 批注系统）→ 考试管理 → 大考组 → 成绩分析（难度 P / 区分度 D 双指标、总体分析、上次考试对比、学生学期成绩对比）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → AI 知识点分析 → 知识点弱项诊断 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → Web/Scanner 构建分离 → iOS 15 Safari Web 兼容 → 原卷上传 → 移动端响应式适配（480/768/1024 三档断点、抽屉导航、表格卡片化、Home 页重构）
-> **下个里程碑**：v2.0.0 — TBD
+> **下个里程碑**：TBD
 
 我们的爱发电地址https://ifdian.net/a/ProjectX
 ---
@@ -169,6 +169,52 @@
 - **Modal 规范化**：修复 480px 遮罩断链，卡片底部加抓手条与安全区 padding，移动端统一为底部弹出式。
 
 > 详细改动见 [CHANGELOG.md](./readus/CHANGELOG.md)「v1.9.5：移动端 UI/UX 适配」。
+
+---
+
+## 架构与设计体系（v2.0.0）
+
+### 前端架构
+
+- **Vite + React 19 + TypeScript** 单仓多目标构建：`dist/web/`（教师 + 学生 Web 端）与 `dist/scanner/`（Electron 扫描工作台）共用同一组件库与主题；扫描端通过 `data-density="compact"` 获得紧凑密度，不做第二套主题。
+- **路由 = mode 系统**：每个功能 = 一个真实 URL，mode ↔ 路径的单一映射收敛在 `client/modeRoutes.ts`（`MODE_PATH` / `pathToMode`），支持 URL 深链、新标签打开与刷新保持当前页；多端变体与可用 mode 集合见 `src/shared/appVariant.ts` 的 `allowedModes`。
+
+### UI 现状（v2.0.0）
+
+- **Flat 2.0 设计系统已全量落地**：全部页面完成迁移（T1–T8），旧 `styles.css`（6048 行）与 `theme/legacy-bridge.css` 已删除，遗留类归零。
+- **样式事实源** = `src/apps/answer-card/client/theme/app.css`（`@theme` 块 + `@layer base` 最小 reset）+ `theme/tokens.css` + `theme/backdrop.css`（背景图功能）。禁止新建 CSS 文件、禁止硬编码 hex，铁律见 [AGENTS.md](./AGENTS.md)「样式事实源」。
+- **组件库唯一事实源** = `src/apps/answer-card/client/components/ui/v2/`（桶导出，禁止直指实现文件、禁止跨页面互相 import）。
+- **令牌三处同步**：`design/tokens/tokens.css`（设计层事实源）↔ `app.css @theme` ↔ `client/theme.ts`（JS / 图表取色），由 `scripts/sync-tokens.mjs` 同步，手改任一视为漂移事故。
+
+### 架构 / 设计文档
+
+| 文档 | 说明 |
+|------|------|
+| [readus/ARCHITECTURE.md](./readus/ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 |
+| [docs/system_design.md](./docs/system_design.md) | P6 系统设计（含类图 / 时序图 mermaid） |
+| [design/DESIGN-SYSTEM.md](./design/DESIGN-SYSTEM.md) | Flat 2.0「明澈 Clarity」美学规格（令牌架构、组件规格、设计原则） |
+| [design/tokens/tokens.css](./design/tokens/tokens.css) | 主题令牌事实源（L1 原始 / L2 语义 / L3 组件） |
+| [design/demo/demo.html](./design/demo/demo.html) | 交互 Demo（8 视图 × 亮暗双主题），视觉验收基准 |
+| [design/designer-sandbox.html](./design/designer-sandbox.html) | 设计器沙盒 |
+| [design/EXECUTION-PLAN.md](./design/EXECUTION-PLAN.md) | 重构执行计划（T1–T8 任务卡、P0–P5 阶段、防串台规约） |
+
+---
+
+## 新 UI 开发指南（落实设计稿）
+
+做新页面 / 新组件时，按下述步骤对齐 Flat 2.0 设计系统：
+
+1. **找蓝本**：先在 [design/demo/demo.html](./design/demo/demo.html) 找到对应视图（登录 / 首页 / 考试管理 / 成绩分析 / 学生成绩 / 扫描工作台 / 设计基础 / 组件），再查 [design/DESIGN-SYSTEM.md](./design/DESIGN-SYSTEM.md) §6 组件规格与 §9 设计原则；设计稿未覆盖处选最保守方案，禁止即兴发挥。
+2. **组件**：只从 `components/ui/v2` 桶**具名 import**（Button / Card / Dialog / Tabs / Table / DataCard / EmptyState / Spinner / Badge / Field / Input / Select / Switch / RadioGroup / StatCard / Chart …），禁止直指实现文件、禁止跨页面互相 import。
+3. **样式**：只用 Tailwind 工具类 + 语义令牌（`bg-card` / `border-border` / `text-primary` / `text-muted-foreground` / `rounded-lg` / `rounded-md` / `tabular-nums`）；**禁止**硬编码 hex、内联 `style={{}}`（动态值须注释说明）、新建 CSS 文件（要扩展主题则改 `design/tokens/tokens.css` + `app.css @theme` 并跑 `scripts/sync-tokens.mjs`）。数字一律 `tabular-nums`，图标只用 lucide-react。
+4. **路由**：新页面按四步接线——
+   - `client/modeRoutes.ts`：`MODE_PATH` 加 mode → 路径映射，并注册组件（`pathToMode` 自动防 redirect 回首页，保证深链 / 刷新保持）；
+   - `src/shared/appVariant.ts`：`allowedModes` 加入新 mode（teacher / teacher-scanner / student 三变体按需）；
+   - `App.tsx`：`railNavItems` 加侧栏项。
+5. **验收**：
+   - `npm run typecheck` + `npm run build:web` + `npm run build:scanner` 全绿；
+   - 铁律 grep：hex 仅允许命中 `tokens.css` / `@theme`；`style={{` 仅允许带注释的动态值；
+   - 视觉：Playwright 亮 / 暗双主题截图对照 [design/demo/demo.html](./design/demo/demo.html) 对应视图（ui-visual-verification）。
 
 ---
 

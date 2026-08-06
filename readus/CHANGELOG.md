@@ -1,5 +1,42 @@
 # Project-X CHANGELOG
 
+## v2.0.0 (2026-08-06) — UI 全面重构：Flat 2.0 设计系统落地
+
+> 全部页面完成 Flat 2.0 设计系统迁移（Tailwind v4 + shadcn/ui 组件基座 + 三层令牌化），旧 `styles.css`（6048 行）与 `theme/legacy-bridge.css`（108 行）删除、遗留类归零；同期完成 P6 死代码清除、AccountMenu 侧栏化、天梯榜恢复接线与多项体验修复。typecheck / build:web / build:scanner 全绿。
+
+**1. 设计系统（Flat 2.0）落地**
+- **令牌化三处同步**：`design/tokens/tokens.css`（设计层事实源）↔ `client/theme/app.css`（`@theme` 块）↔ `client/theme.ts`（JS/图表取色），由 `scripts/sync-tokens.mjs` 同步；手改 app.css 视为漂移事故。
+- **组件库唯一事实源** `components/ui/v2/`（桶导出，禁止直指实现文件）；语义类（`bg-card` / `border-border` / `text-primary` 品牌红 `#C00F28` / `rounded-lg` 12px / `rounded-md` 9px / `tabular-nums` 等），字体阶梯最大 `text-5xl`。
+- **设计锚点**：`design/demo.html`（8 视图 × 亮暗双主题）、`design/designer-sandbox.html`（设计器）、`design/DESIGN-SYSTEM.md`（规格）、`design/EXECUTION-PLAN.md`（T1–T8 / P0–P5 计划）。
+
+**2. 页面迁移（T1–T8）**
+- 主题层 / 组件基座 / 应用外壳（AppRail 可收起）/ 答题卡设计器 / 成绩分析 / 扫描链路 / 学生端 / 首页+登录 / 考试管理 / 账号 / 权限 / 设置 / 信息页 / 兜底 404（NotFound）+ ErrorBoundary。
+
+**3. P5 清理**
+- 删除 9 个 legacy ui 组件（Button / Modal / SegmentedControl / Input / Panel / Table / DataCard / Spinner / LoadingScreen），旧桶仅 re-export v2；新增 v2 `DataCard` / `DataCardList`。
+- `App.tsx` 弹层 → v2 `Dialog`、auth 加载态 → v2、硬编码 hex → 语义令牌、ESC 守卫补 Radix 弹层识别。
+
+**4. P6 清理收尾（大项）**
+- **死代码清除**：BFS 可达性分析删除 10 个不可达文件（OnlineReviewPanel / UserManagement / StudentManagement / MobileDrawer / DragDropZone / AnalysisOverview / AnalysisRanking / ExamManagementPage / CropImageViewer / ui-index.ts，共 1986 行；双基线验证非回归）。
+- **AccountMenu 侧栏化**：个人设置入口从头像下拉迁至侧栏；账号设置升级为独立路由页 `/account-settings`（原 Dialog 抽为 `pages/AccountSettingsPage.tsx`，布局重写为横向 Tab，解决 vertical Tabs 压扁）。
+- **天梯榜恢复接线**：成绩天梯 Tab 恢复至「我的成绩」页（StudentScores，接入点 A；此前 commit 95c0c63 曾下线），GradeLadder 系列 v2 化；可达性 3→0 全可达。
+- **样式归零**：删除 `client/styles.css`（6048 行）+ `theme/legacy-bridge.css`（108 行）；最小 reset 接管进 `app.css @layer base`（box-sizing / 尺寸 / margin+overflow / color-scheme；**Preflight 未启用，另立 P7**）；背景图 `has-bg-image` 活功能迁至新建 `theme/backdrop.css`；遗留类归零（审计脚本输出「P6 目标达成」）。
+- 其余：KnowledgeTagList 迁移（17 hex → 确定性散列）、叶子件语义化、`App.tsx` 残留清零、文档关闭 UI-1~7。
+
+**5. 修复与体验**
+- Radio 选中指示器 → 品牌红底白 ✓（根因 = P6 reset 未清 button UA padding，app.css 补 `padding: 0`）。
+- 设置页布局重写（横向 Tab，不再压扁）。
+
+**6. 破坏性 / 注意**
+- 样式事实源变更：CSS 仅剩 `app.css` / `backdrop.css` / `tokens.css`；**禁止新建 CSS 文件、禁止硬编码 hex**。
+- Preflight 待 P7。
+- 死代码删除清单可从 git 历史恢复。
+
+**验证**
+- `npm run typecheck` / `npm run build:web` / `npm run build:scanner` — 全绿。
+- Playwright 亮暗双主题截图走查（ui-visual-verification）。
+- `npm run verify:auth` — 54/54、`npm run verify:security-critical` — 42/42（基线）。
+
 ## v1.10.0.3 (2026-08-02) — 评审修复（大考参与口径 / 正态性 / 直方图 / 阈值）
 
 > 修复 4 项 P0/P1 bug + 3 项非阻断观察，保证大考统计与总体分析数据准确。
