@@ -381,7 +381,7 @@ export function ContextPanelBody({
 
 export interface ContextItemProps
   // 让位于富文本标题；原生 title 提示请改用 <Tip>
-  extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, "title"> {
+  extends Omit<React.HTMLAttributes<HTMLDivElement>, "title"> {
   icon?: React.ReactNode;
   title: React.ReactNode;
   meta?: React.ReactNode;
@@ -390,19 +390,45 @@ export interface ContextItemProps
   trailing?: React.ReactNode;
 }
 
-/** 上下文列表项（设计器题块列表）：选中 = 左侧 3px 品牌红条 + accent-soft 底 */
-export const ContextItem = React.forwardRef<HTMLButtonElement, ContextItemProps>(
+/**
+ * 上下文列表项（设计器题块列表）：选中 = 左侧 3px 品牌红条 + accent-soft 底。
+ * 用 div role=button 而非 <button>：trailing 常塞入 v2 <Button>，button 内嵌 button
+ * 会产生 hydration error（"button cannot be a descendant of <button>"）。
+ * Enter/Space 键盘激活在此手动补齐，等价原生 button。
+ */
+export const ContextItem = React.forwardRef<HTMLDivElement, ContextItemProps>(
   function ContextItem(
-    { className, icon, title, meta, active = false, trailing, ...props },
+    {
+      className,
+      icon,
+      title,
+      meta,
+      active = false,
+      trailing,
+      onClick,
+      onKeyDown,
+      ...props
+    },
     ref,
   ) {
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+      onKeyDown?.(e);
+      if (e.defaultPrevented) return;
+      // 子元素（如 trailing 内按钮）的按键不冒泡触发整项激活
+      if (e.target !== e.currentTarget) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        onClick?.(e as unknown as React.MouseEvent<HTMLDivElement>);
+      }
+    };
     return (
-      <button
+      <div
         ref={ref}
-        type="button"
+        role="button"
+        tabIndex={0}
         data-active={active || undefined}
         className={cn(
-          "group flex w-full items-center gap-2.5 rounded-md px-3 py-2.5 text-left",
+          "group flex w-full cursor-pointer items-center gap-2.5 rounded-md px-3 py-2.5 text-left",
           "border border-border-subtle border-l-[3px]",
           "transition-colors duration-(--px-dur-1) ease-standard",
           "outline-none focus-visible:shadow-focus",
@@ -412,6 +438,8 @@ export const ContextItem = React.forwardRef<HTMLButtonElement, ContextItemProps>
           "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
           className,
         )}
+        onClick={onClick}
+        onKeyDown={handleKeyDown}
         {...props}
       >
         {icon && (
@@ -433,7 +461,7 @@ export const ContextItem = React.forwardRef<HTMLButtonElement, ContextItemProps>
           )}
         </span>
         {trailing && <span className="shrink-0">{trailing}</span>}
-      </button>
+      </div>
     );
   },
 );
