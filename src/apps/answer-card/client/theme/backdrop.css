@@ -1,0 +1,27 @@
+/* ══════════════════════════════════════════════════════════════════════
+   theme/backdrop.css —— 自定义背景图浮层（功能性样式，非遗留装饰）
+
+   从 styles.css:4216（亮色）/ :4576（暗色 [data-theme="dark"]）迁出的
+   **功能性**样式，与组件化迁移不同步的独立 CSS 保留物。
+   背景图开关的 JS 逻辑（App.tsx 中 classList.add/remove("has-bg-image") +
+   --bg-opacity setProperty）零改动，本文件只负责浮层呈现。
+   ══════════════════════════════════════════════════════════════════════ */
+@layer components {
+  /* ── 背景图 (v1.4.6) ──────────────────────────────── */
+  /* body::after 半透明浮层，pointer-events:none 不挡交互 */
+
+  body.has-bg-image::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: var(--z-lightbox);
+    pointer-events: none;
+    background: url(/api/app/background) center / cover no-repeat fixed;
+    opacity: var(--bg-opacity, 0);
+  }
+
+  /* 背景图暗色遮罩 */
+  [data-theme="dark"] body.has-bg-image::after {
+    filter: brightness(0.45) saturate(0.65);
+  }
+}

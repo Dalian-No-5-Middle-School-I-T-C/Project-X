@@ -64,6 +64,7 @@ import {
   StatusSpacer,
   SaveStatus,
   Button,
+  Badge,
   Sheet,
   SheetContent,
   SheetHeader,
@@ -79,6 +80,7 @@ import {
   DialogTitle,
   DialogBody,
   DialogFooter,
+  EmptyState,
   Checkbox,
   type SaveState,
 } from "./components/ui/v2";
@@ -672,12 +674,10 @@ function App() {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       // 检查是否有弹层打开（弹层自行处理 ESC）：
-      //  · .modal-overlay —— 尚未迁移的旧弹层（AccountMenu 等）
       //  · [data-state="open"] 的 dialog/alertdialog —— v2 Dialog/Sheet（Radix 自带 ESC 关闭）
       // P5：App.tsx 内的旧 .modal-overlay/.modal-backdrop 已换成 v2 Dialog，
       // 必须同时识别 Radix 弹层，否则 ESC 会穿透到全局返回逻辑。
       if (
-        document.querySelector(".modal-overlay") ||
         document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]')
       ) return;
 
@@ -1910,7 +1910,7 @@ function App() {
           <StatusBar>
             <StatusItem plain>{status}</StatusItem>
             <StatusSpacer />
-            <BeianFooter className="statusbar-beian" />
+            <BeianFooter />
           </StatusBar>
         </AppMain>
        </AppShell>
@@ -1926,17 +1926,18 @@ function App() {
 
       {/* 移动端底部导航栏 */}
       {showTabBar && (
-        <nav className="bottom-nav" aria-label="主导航">
-          <div className="bottom-nav-inner">
+        <nav className="hidden max-[480px]:fixed max-[480px]:inset-x-0 max-[480px]:bottom-0 max-[480px]:z-(--px-z-header) max-[480px]:flex max-[480px]:h-mobile-nav max-[480px]:border-t max-[480px]:border-border max-[480px]:bg-card max-[480px]:pb-(--px-safe-area-bottom) max-[768px]:landscape:h-12" aria-label="主导航">
+          <div className="flex h-full w-full">
             {mobileNavItems.map((m) => (
               <button
                 key={m.id}
-                className={`bottom-nav-item ${mode === m.id ? "active" : ""}`}
+                data-active={mode === m.id || undefined}
                 onClick={() => void switchMode(m.id, m.onEnter)}
                 type="button"
                 title={m.label}
                 aria-label={m.label}
                 aria-current={mode === m.id ? "page" : undefined}
+                className="flex flex-1 cursor-pointer flex-col items-center justify-center gap-1 border-0 bg-transparent text-[10px] font-medium text-muted-foreground data-[active]:text-primary max-[768px]:landscape:text-[9px] [&_svg]:size-[22px] [&_svg]:shrink-0"
               >
                 {m.icon}
                 <span>{m.shortLabel}</span>
@@ -2390,11 +2391,11 @@ function GradingResults({
 
   if (!result) {
     return (
-      <div className="grading-empty">
-        <ClipboardCheck size={36} />
-        <h2>等待阅卷</h2>
-        <p>选择答题卡，导入答题卡图片或图片目录后开始识别。</p>
-      </div>
+      <EmptyState
+        icon={<ClipboardCheck />}
+        title="等待阅卷"
+        description="选择答题卡，导入答题卡图片或图片目录后开始识别。"
+      />
     );
   }
 
@@ -2402,11 +2403,11 @@ function GradingResults({
   const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
 
   return (
-    <div className="grading-results">
-      <div className="grading-results-header">
+    <div className="mx-auto w-full max-w-[1100px]">
+      <div className="mb-4 flex items-center justify-between gap-3">
         <div>
-          <h2>成绩表</h2>
-          <p>
+          <h2 className="m-0 text-xl font-bold text-foreground">成绩表</h2>
+          <p className="mt-1 text-xs font-medium text-muted-foreground">
             {result.rows.length} 张答题卡 / 待复核 {totalReview} 题 / 异常 {totalIssues} 处
           </p>
         </div>
@@ -2414,8 +2415,8 @@ function GradingResults({
           CSV
         </Button>
       </div>
-      <div className="score-table">
-        <div className="score-table-head">
+      <div className="overflow-hidden rounded-lg border border-border bg-card shadow-2">
+        <div className="grid min-h-10 grid-cols-[minmax(170px,1.6fr)_minmax(88px,0.75fr)_78px_78px_minmax(118px,1fr)_58px_72px] items-center gap-2.5 bg-secondary px-4 text-xs font-bold text-secondary-foreground">
           <span>文件</span>
           <span>学号</span>
           <span>状态</span>
@@ -2425,18 +2426,20 @@ function GradingResults({
           <span>答题卡</span>
         </div>
         {result.rows.map((row) => (
-          <details className="score-row" key={`${row.fileName}_${row.recognition.imagePath ?? row.fileName}`}>
-            <summary>
-              <span title={row.fileName}>{row.fileName}</span>
+          <details className="border-t border-border transition-colors hover:bg-secondary" key={`${row.fileName}_${row.recognition.imagePath ?? row.fileName}`}>
+            <summary className="grid min-h-12 grid-cols-[minmax(170px,1.6fr)_minmax(88px,0.75fr)_78px_78px_minmax(118px,1fr)_58px_72px] cursor-pointer list-none items-center gap-2.5 px-4 [&::-webkit-details-marker]:hidden">
+              <span className="truncate font-medium" title={row.fileName}>{row.fileName}</span>
               <span>{row.studentId ?? "未识别"}</span>
-              <span className={row.recognitionStatus === "ok" && row.issueCount === 0 ? "status-ok" : "status-warn"}>{row.recognitionStatus}</span>
-              <span>
+              <Badge tone={row.recognitionStatus === "ok" && row.issueCount === 0 ? "success" : "warning"} className="rounded-full px-2.5 py-0.5 text-xs font-bold">
+                {row.recognitionStatus}
+              </Badge>
+              <span className="tabular-nums">
                 {row.totalScore}/{row.totalMaxScore}
               </span>
-              <span>
+              <span className="tabular-nums">
                 {row.objectiveScore}/{row.objectiveMaxScore} · {row.subjectiveScore}/{row.subjectiveMaxScore}
               </span>
-              <span>{row.needsReviewCount}</span>
+              <span className="tabular-nums">{row.needsReviewCount}</span>
               <span>
                 {row.previewUrl ? (
                   <button
@@ -2447,36 +2450,36 @@ function GradingResults({
                     预览
                   </button>
                 ) : (
-                  <span className="muted-cell">-</span>
+                  <span className="text-muted-foreground">-</span>
                 )}
               </span>
             </summary>
-            <div className="question-grade-list">
-              {row.message && <p className="row-message">{row.message}</p>}
-              {row.questions.length > 0 && <p className="grading-section-title">客观题</p>}
+            <div className="grid gap-2 bg-secondary px-4 pt-3.5 pb-4">
+              {row.message && <p className="m-0 text-xs font-medium text-warning-foreground">{row.message}</p>}
+              {row.questions.length > 0 && <p className="mt-1.5 text-xs font-bold text-secondary-foreground">客观题</p>}
               {row.questions.map((question) => (
-                <div className={`question-grade ${question.needsReview || question.status === "missing_key" ? "needs-review" : ""}`} key={question.questionNumber}>
-                  <strong>{question.questionNumber}</strong>
+                <div className={cn("grid min-h-[34px] grid-cols-[38px_1fr_1fr_70px_86px_minmax(96px,1fr)] items-center gap-2 rounded-[10px] border border-border bg-card px-2.5 py-1.5 text-xs", (question.needsReview || question.status === "missing_key") && "border-warning-border bg-warning-soft")} key={question.questionNumber}>
+                  <strong className="font-bold text-primary">{question.questionNumber}</strong>
                   <span>标准 {answerText(question.correctOptions)}</span>
                   <span>识别 {answerText(question.selectedOptions)}</span>
-                  <span>
+                  <span className="tabular-nums">
                     {question.score}/{question.maxScore}
                   </span>
-                  <span>置信 {question.confidence.toFixed(3)}</span>
-                  <em>{question.message ?? question.status}</em>
+                  <span className="tabular-nums">置信 {question.confidence.toFixed(3)}</span>
+                  <em className="not-italic font-medium text-muted-foreground">{question.message ?? question.status}</em>
                 </div>
               ))}
-              {row.subjectiveQuestions.length > 0 && <p className="grading-section-title">主观题</p>}
+              {row.subjectiveQuestions.length > 0 && <p className="mt-1.5 text-xs font-bold text-secondary-foreground">主观题</p>}
               {row.subjectiveQuestions.map((question) => (
-                <div className={`question-grade subjective-grade ${question.needsReview ? "needs-review" : ""}`} key={question.questionId}>
-                  <strong>{question.questionNumber}</strong>
+                <div className={cn("grid min-h-[34px] grid-cols-[38px_1fr_70px_70px_86px_minmax(120px,1fr)] items-center gap-2 rounded-[10px] border border-border bg-card px-2.5 py-1.5 text-xs", question.needsReview && "border-warning-border bg-warning-soft")} key={question.questionId}>
+                  <strong className="font-bold text-primary">{question.questionNumber}</strong>
                   <span>有效 {question.validCells.map((cell) => cell.score).join("+") || "-"}</span>
                   <span>无效 {question.invalidCells.length}</span>
-                  <span>
+                  <span className="tabular-nums">
                     {question.score}/{question.maxScore}
                   </span>
-                  <span>置信 {question.confidence.toFixed(3)}</span>
-                  <em>{question.message ?? question.status}</em>
+                  <span className="tabular-nums">置信 {question.confidence.toFixed(3)}</span>
+                  <em className="not-italic font-medium text-muted-foreground">{question.message ?? question.status}</em>
                 </div>
               ))}
             </div>

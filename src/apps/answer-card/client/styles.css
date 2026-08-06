@@ -4210,19 +4210,6 @@ input[type="checkbox"]:disabled {
 .exam-list-badge-grading { background: #fef3c7; color: #92400e; }
 .exam-list-badge-draft { background: #f3f4f6; color: #6b7280; }
 
-/* ── 背景图 (v1.4.6) ──────────────────────────────── */
-/* body::after 半透明浮层，pointer-events:none 不挡交互 */
-
-body.has-bg-image::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-lightbox);
-  pointer-events: none;
-  background: url(/api/app/background) center / cover no-repeat fixed;
-  opacity: var(--bg-opacity, 0);
-}
-
 /* ── 暗色模式覆盖 (v1.4.7) ────────────────────────────── */
 
 /* 输入框 / 下拉 / 文本域 */
@@ -4570,11 +4557,6 @@ body.has-bg-image::after {
 /* 评分表格 */
 [data-theme="dark"] .score-row:nth-child(even) {
   background: rgba(255, 255, 255, 0.02);
-}
-
-/* 背景图暗色遮罩 */
-[data-theme="dark"] body.has-bg-image::after {
-  filter: brightness(0.45) saturate(0.65);
 }
 
 /* 暗色模式下按钮 — 移除高光，hover 不加亮 */

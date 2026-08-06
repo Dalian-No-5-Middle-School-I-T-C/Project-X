@@ -10,6 +10,8 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 // 唯一样式入口：app.css 内部按 legacy < theme < base < components < utilities
 // 的层序依次引入 tokens.css / styles.css / legacy-bridge.css，顺序不得在此绕过。
 import "./theme/app.css";
+// 背景图浮层（从 styles.css 迁出的功能性样式，非遗留装饰）
+import "./theme/backdrop.css";
 
 // Match the demo's theme before React paints, avoiding a light-frame flash for dark users.
 try {
