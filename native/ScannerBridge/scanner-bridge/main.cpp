@@ -23,13 +23,32 @@ static void printUsage() {
     fprintf(stderr, "  --show-ui           Show scanner's native UI\n");
 }
 
-int main(int argc, char* argv[]) {
+// 宽字符参数转 UTF-8：wmain 拿到的是 UTF-16 命令行（Node spawn 按 UTF-16 传参），
+// 转成 UTF-8 std::string 后，输出路径经过 saveDIBToFile 的 CP_UTF8 转换不会乱码
+// （旧实现用 ANSI main，中文系统下 argv 是 GBK 字节，路径解码必然出错）
+static std::string toUtf8(const wchar_t* wstr) {
+    if (!wstr || !*wstr) return "";
+    int len = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) return "";
+    std::string utf8(len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wstr, -1, &utf8[0], len, nullptr, nullptr);
+    return utf8;
+}
+
+int wmain(int argc, wchar_t* argv[]) {
+    // 统一转为 UTF-8 参数
+    std::vector<std::string> args;
+    args.reserve(argc > 0 ? static_cast<size_t>(argc) : 0);
+    for (int i = 0; i < argc; ++i) {
+        args.push_back(toUtf8(argv[i]));
+    }
+
     if (argc < 2) {
         printUsage();
         return 1;
     }
 
-    std::string command = argv[1];
+    std::string command = args[1];
 
     if (command == "list") {
         TwainController controller;
@@ -49,25 +68,25 @@ int main(int argc, char* argv[]) {
 
         // Parse arguments
         for (int i = 2; i < argc; ++i) {
-            std::string arg = argv[i];
+            std::string arg = args[i];
             
             if (arg == "--source" && i + 1 < argc) {
-                config.sourceName = argv[++i];
+                config.sourceName = args[++i];
             } else if (arg == "--dpi" && i + 1 < argc) {
-                config.dpi = atoi(argv[++i]);
+                config.dpi = atoi(args[++i].c_str());
             } else if (arg == "--duplex") {
                 config.duplex = true;
             } else if (arg == "--mode" && i + 1 < argc) {
-                config.colorMode = argv[++i];
+                config.colorMode = args[++i];
             } else if (arg == "--size" && i + 1 < argc) {
-                config.paperSize = argv[++i];
+                config.paperSize = args[++i];
             } else if (arg == "--output" && i + 1 < argc) {
-                config.outputDir = argv[++i];
+                config.outputDir = args[++i];
                 hasOutput = true;
             } else if (arg == "--prefix" && i + 1 < argc) {
-                config.filePrefix = argv[++i];
+                config.filePrefix = args[++i];
             } else if (arg == "--max-pages" && i + 1 < argc) {
-                config.maxPages = atoi(argv[++i]);
+                config.maxPages = atoi(args[++i].c_str());
             } else if (arg == "--show-ui") {
                 config.showUi = true;
             } else if (arg == "--help" || arg == "-h") {

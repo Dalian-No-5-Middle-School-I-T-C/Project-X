@@ -268,6 +268,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             setState("error");
             setErrorMessage(data.message || "扫描出错");
             break;
+          case "cancelled":
+            setState("idle");
+            setProgressMessage(data.message || "扫描已取消");
+            break;
           case "done":
             completedRef.current = true;
             setState("done");
@@ -449,6 +453,12 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     completedRef.current = false;
     setState("idle");
     setProgressMessage("扫描已取消");
+
+    // 通知后端终止 scanner-bridge.exe 子进程（不再只是关闭 SSE，否则 ADF 会继续送纸）
+    const sid = sessionIdRef.current;
+    if (sid) {
+      void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).catch(() => undefined);
+    }
   }
 
   function reset() {

@@ -72,14 +72,19 @@ namespace ScannerBridge {
 TwainController* TwainController::s_instance = nullptr;
 
 static const char* WINDOW_CLASS = "ScannerBridgeTwainClass";
-static const DWORD TWAIN_MSG = WM_USER + 1;
 
 // ── Window Procedure ──────────────────────────────────
 
+// TWAIN DSM 通过注册窗口消息把 MSG_XFERREADY 等状态投递到本窗口，
+// 因此 WndProc 必须把每一条消息都转发给 DAT_EVENT/MSG_PROCESSEVENT，
+// 并传入真实 MSG 结构（pEvent），DSM 回填 TWMessage 后驱动状态机。
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (msg == TWAIN_MSG && TwainController::current()) {
-        TW_UINT16 rc = TwainController::current()->processTwainEvent(wParam);
-        return rc == TWRC_DSEVENT ? 0 : 1;
+    if (TwainController::current()) {
+        MSG m = { hwnd, msg, wParam, lParam, 0, { 0, 0 } };
+        TW_UINT16 rc = TwainController::current()->processTwainEvent(m);
+        if (rc == TWRC_DSEVENT) {
+            return 0;   // DSM 已消费该消息
+        }
     }
     return DefWindowProcA(hwnd, msg, wParam, lParam);
 }
@@ -147,10 +152,10 @@ TwainController* TwainController::current() {
     return s_instance;
 }
 
-TW_UINT16 TwainController::processTwainEvent(WPARAM message) {
+TW_UINT16 TwainController::processTwainEvent(MSG& msg) {
     TW_EVENT event;
-    event.pEvent = nullptr;
-    event.TWMessage = static_cast<TW_UINT16>(message);
+    memset(&event, 0, sizeof(event));
+    event.pEvent = &msg;   // 必须传入真实 MSG 结构，TWMessage 由 DSM 回填
 
     TW_UINT16 rc = DSM_Entry(
         &m_appId,
@@ -298,6 +303,9 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     }
     
     // 6. Capture loop - handle ADF multi-page
+    // 状态机约定：waitForState(6) 等 MSG_XFERREADY（processTwainEvent 置 m_state=6）；
+    // captureNativeTransfer 收到 XFERDONE 后把 m_state 复位为 5，使下一轮 waitForState(6)
+    // 真正等待新一页的 XFERREADY；XFERDONE 后必须立即 ENDXFER 才能推进 TWAIN 状态机。
     int pageNum = 0;
     bool hasMorePages = true;
     
@@ -328,18 +336,29 @@ ScanResult TwainController::scan(const ScanConfig& config) {
                 m_progressCallback(pageNum, "front", "capturing");
             }
             
-            if (captureNativeTransfer(filePath, pageNum, "front", pageResult)) {
-                result.pages.push_back(pageResult);
-            } else {
-                result.errorMessage = "Failed to capture page " + std::to_string(pageNum);
+            if (!captureNativeTransfer(filePath, pageNum, "front", pageResult)) {
+                result.errorMessage = "Failed to capture page " + std::to_string(pageNum) + " (front)";
                 break;
             }
+            result.pages.push_back(pageResult);
         }
         
-        // Back side (duplex)
-        if (config.duplex) {
+        // XFERDONE 后立即 ENDXFER，查询剩余张数
+        TW_PENDINGXFERS pending;
+        memset(&pending, 0, sizeof(pending));
+        TW_UINT16 endRc = DSM_Entry(&m_appId, &m_sourceId,
+            DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
+            (TW_MEMREF)&pending);
+        if (endRc != TWRC_SUCCESS) {
+            logError("ENDXFER failed: " + twainResultToString(endRc));
+            hasMorePages = false;
+            break;
+        }
+        
+        // Back side (duplex) — 由 pending.Count 决定是否还有背面，避免干等 30 秒
+        if (config.duplex && pending.Count > 0) {
             if (!waitForState(6, 30000)) {
-                hasMorePages = false;
+                result.errorMessage = "Timeout waiting for back side of page " + std::to_string(pageNum);
                 break;
             }
             
@@ -356,25 +375,25 @@ ScanResult TwainController::scan(const ScanConfig& config) {
                 m_progressCallback(pageNum, "back", "capturing");
             }
             
-            if (captureNativeTransfer(filePath, pageNum, "back", pageResult)) {
-                result.pages.push_back(pageResult);
+            if (!captureNativeTransfer(filePath, pageNum, "back", pageResult)) {
+                result.errorMessage = "Failed to capture page " + std::to_string(pageNum) + " (back)";
+                break;
+            }
+            result.pages.push_back(pageResult);
+            
+            // 背面传输完成后再次 ENDXFER，推进到下一页
+            memset(&pending, 0, sizeof(pending));
+            endRc = DSM_Entry(&m_appId, &m_sourceId,
+                DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
+                (TW_MEMREF)&pending);
+            if (endRc != TWRC_SUCCESS) {
+                logError("ENDXFER (back) failed: " + twainResultToString(endRc));
+                hasMorePages = false;
+                break;
             }
         }
         
-        // Check for more pages in ADF
-        TW_PENDINGXFERS pending;
-        memset(&pending, 0, sizeof(pending));
-        TW_UINT16 rc = DSM_Entry(
-            &m_appId, &m_sourceId,
-            DG_CONTROL, DAT_PENDINGXFERS, MSG_ENDXFER,
-            (TW_MEMREF)&pending
-        );
-        
-        if (rc == TWRC_SUCCESS && pending.Count > 0) {
-            hasMorePages = true;
-        } else {
-            hasMorePages = false;
-        }
+        hasMorePages = pending.Count > 0;
     }
     
     // 7. Cleanup
@@ -382,7 +401,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     closeSource();
     closeDSM();
     
-    result.success = result.pages.size() > 0;
+    // 成功 = 无中途失败且至少捕获到一页（部分失败的批次不再被当作成功）
+    result.success = result.errorMessage.empty() && result.pages.size() > 0;
     if (!result.success && result.errorMessage.empty()) {
         result.errorMessage = "No pages captured";
     }
@@ -655,8 +675,9 @@ bool TwainController::captureNativeTransfer(
         return false;
     }
     
-    // Use native transfer
-    TW_UINT32 handle = 0;
+    // Use native transfer — DAT_IMAGENATIVEXFER 返回的句柄是指针宽（x64 下 8 字节），
+    // 必须用 TW_HANDLE（=HANDLE）接收，否则会截断句柄并污染栈
+    TW_HANDLE handle = nullptr;
     rc = DSM_Entry(
         &m_appId, &m_sourceId,
         DG_IMAGE, DAT_IMAGENATIVEXFER, MSG_GET,
@@ -667,6 +688,10 @@ bool TwainController::captureNativeTransfer(
         logError("Native transfer failed: " + twainResultToString(rc));
         return false;
     }
+    
+    // 复位状态机：XFERDONE 表示当前帧已取走，下一帧的 MSG_XFERREADY
+    // 会在 ENDXFER 后重新到达，waitForState(6) 必须重新等待
+    m_state = 5;
     
     // Convert DIB handle to file
     bool saved = saveDIBToFile((HANDLE)(uintptr_t)handle, outputPath, result);
@@ -734,6 +759,26 @@ bool TwainController::saveDIBToFile(HANDLE hDib, const std::string& filePath, Pa
         bitmap = new Gdiplus::Bitmap(width, height, stride, format, pixels);
     }
     
+    // 8bpp/1bpp 索引位图：GDI+ 从外部缓冲构造时没有调色板，必须用 DIB 自带颜色表
+    // SetPalette，否则 Save 会套用 GDI+ 默认（halftone）调色板 → 灰度/黑白图假彩色或保存失败
+    if (bitCount <= 8 && colorTableEntries > 0) {
+        const RGBQUAD* colorTable = reinterpret_cast<const RGBQUAD*>(
+            reinterpret_cast<const BYTE*>(pDib) + pDib->biSize);
+        const UINT paletteBytes = sizeof(Gdiplus::ColorPalette) +
+            (colorTableEntries - 1) * sizeof(DWORD);   // ARGB == DWORD
+        std::vector<BYTE> paletteBuf(paletteBytes);
+        auto* palette = reinterpret_cast<Gdiplus::ColorPalette*>(paletteBuf.data());
+        palette->Flags = Gdiplus::PaletteFlagsHasAlpha;
+        palette->Count = colorTableEntries;
+        for (int i = 0; i < colorTableEntries; ++i) {
+            palette->Entries[i] = static_cast<DWORD>(0xFF000000) |
+                (static_cast<DWORD>(colorTable[i].rgbRed) << 16) |
+                (static_cast<DWORD>(colorTable[i].rgbGreen) << 8) |
+                static_cast<DWORD>(colorTable[i].rgbBlue);
+        }
+        bitmap->SetPalette(palette);
+    }
+
     GlobalUnlock(hDib);
     
     if (!bitmap) return false;
