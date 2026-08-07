@@ -17,14 +17,14 @@
   - `flat`（明澈 Flat 2.0，项目默认设计系统）；
   - `paper-edge`（纸锋 Paper Edge，v2.3.0 新增）——设计来源 `demo-brutalist.html`（editorial-brutalist 技能）：纸面米底 #F1EFE9、墨色文字阶、品牌亮蓝 #2E44FF 替换默认绯红 accent；卡片/输入/表格直角 + 按钮/徽章胶囊；阴影 1-3 级归零、4 级为全文件唯一硬偏移 `8px 8px 0`；状态语义重映射（已完成→蓝软族 / 阅卷中→墨描边族 / 异常→绯红族 / 信息→实蓝族）；图表单色纪律（chart-1 蓝 = 当前主体，绯红仅异常）。
 - **默认皮肤不设 `data-skin` 属性**（零污染）：只有选择了非默认皮肤，`<html>` 上才会出现 `data-skin="xxx"`，由 `theme/tokens.css` 的 `[data-skin="xxx"]` 覆盖块接管整套 L2 语义令牌。
-- 皮肤切换入口（4 处）：
+- 皮肤切换入口（2 处）：
 
 | 入口 | 位置 | 说明 |
 |------|------|------|
 | 登录页 | 卡片右上角 Palette 按钮 | 未登录即可切换（自管模式，直接写 localStorage），登录后保留 |
-| 侧栏底部 | 导航栏底部 Palette 按钮 | 替换了原 Sun/Moon 一键按钮，菜单内含「皮肤 + 明暗」两组 |
-| 页头 | 右上角 Palette 按钮（≥lg 屏） | 同上 |
-| 账号设置 | 「客户端设置」Tab → 「外观 / 皮肤」区 | 皮肤 + 明暗分段选择，即时生效 |
+| 账号设置 | 「客户端设置」Tab → 「外观 / 皮肤」区 | **应用内唯一入口**：皮肤 + 明暗分段选择，即时生效 |
+
+> **入口收敛说明（本版回退）**：v2.1.0 曾在「侧栏底部」与「页头」放置皮肤菜单（Palette 按钮），本版已回退——这两处恢复为原先的**暗色模式一键按钮（Sun/Moon）**，仅切换明暗（设备级 `projectx-theme` / `data-theme`），不再承载皮肤选择。皮肤切换因此收敛为上述两处（登录页自管 + 账号设置受控）。
 
 菜单结构（`components/SkinSwitcher.tsx`）：
 
@@ -73,7 +73,7 @@
 | 文件 | 职责 |
 |------|------|
 | `client/components/SkinSwitcher.tsx` | 皮肤切换器组件：`SKIN_OPTIONS` 皮肤注册表、`DEFAULT_SKIN`、受控/自管双模式 |
-| `client/App.tsx` | `skin` state（localStorage `projectx-skin` 初始化）、`data-skin` 同步 effect、登录同步 effect、皮肤回写 effect；侧栏/页头替换原 Sun/Moon 按钮 |
+| `client/App.tsx` | `skin` state（localStorage `projectx-skin` 初始化）、`data-skin` 同步 effect、登录同步 effect、皮肤回写 effect；侧栏底部与页头为**暗色模式一键按钮（Sun/Moon，仅切明暗）**，皮肤切换不在此两处 |
 | `client/WorkspaceContext.tsx` | `WorkspaceValue` 增加 `skin` / `setSkin`（与 `theme` / `setTheme` 并列下发） |
 | `client/auth/types.ts` | `AuthUser.themeSkin?: string` |
 | `client/components/LoginPage.tsx` | 登录页皮肤入口（自管模式，WorkspaceProvider 之外） |
