@@ -833,6 +833,15 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, "answer_block_crops", "claim_count", "INTEGER NOT NULL DEFAULT 0");
       db.exec("CREATE INDEX IF NOT EXISTS idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by)");
     }
+  },
+  // v34 (Issue #178): 考试模式切换 — quiz=晨测(全量权限) / formal=大考(精细权限)。
+  // 注：v33 已由皮肤主题 PR 占用，这里从 v34 起号，避免迁移版本冲突。
+  {
+    version: 34,
+    name: "exam-mode-dual-permission",
+    up(db) {
+      addColumnIfMissing(db, "exams", "exam_mode", "TEXT NOT NULL DEFAULT 'formal'");
+    }
   }
 ];
 

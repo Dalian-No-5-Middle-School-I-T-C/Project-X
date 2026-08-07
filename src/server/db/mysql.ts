@@ -686,6 +686,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `CREATE INDEX idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by)`,
       ]
     },
+    {
+      version: 34,
+      name: "exam-mode-dual-permission",
+      sqls: [
+        `ALTER TABLE exams ADD COLUMN exam_mode VARCHAR(20) NOT NULL DEFAULT 'formal'`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

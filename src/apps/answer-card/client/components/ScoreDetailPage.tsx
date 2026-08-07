@@ -691,13 +691,14 @@ function severityKey(s: string): KnowledgeSeverity {
 function KnowledgePanel({ examId, classId }: { examId: number; classId: string | undefined }) {
   const [items, setItems] = useState<KnowledgeWeaknessItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const bands = useBands();
 
   const load = useCallback(() => {
     setLoading(true);
     const params = new URLSearchParams();
     if (classId) params.set("classId", classId);
-    fetchJson<KnowledgeWeaknessItem[]>(`/api/analysis/knowledge-points/${examId}?${params.toString()}`)
-      .then((d) => setItems(Array.isArray(d) ? d : []))
+    fetchJson<{ weaknesses: KnowledgeWeaknessItem[] } | KnowledgeWeaknessItem[]>(`/api/analysis/knowledge-points/${examId}?${params.toString()}`)
+      .then((d) => setItems(Array.isArray(d) ? d : (d?.weaknesses ?? [])))
       .catch(() => setItems([]))
       .finally(() => setLoading(false));
   }, [examId, classId]);
@@ -735,6 +736,7 @@ function KnowledgePanel({ examId, classId }: { examId: number; classId: string |
           达标
         </span>
         <span>｜按严重度排序</span>
+        <span>｜每题行尾为难度 P / 区分度 D</span>
       </div>
       <ul className="flex flex-col rounded-lg border border-border-subtle bg-card">
         {items.map((kp, i) => {
@@ -749,6 +751,12 @@ function KnowledgePanel({ examId, classId }: { examId: number; classId: string |
               <span className="shrink-0 text-xs tabular-nums text-muted-foreground">题{kp.question_numbers}</span>
               <span className={cn("min-w-11 shrink-0 text-right font-semibold tabular-nums", SEVERITY_TEXT[sev])}>
                 {formatPercent(kp.avg_rate)}
+              </span>
+              <span className="shrink-0">
+                <DifficultyBadge value={kp.difficulty ?? kp.avg_rate / 100} bands={bands?.difficulty} />
+              </span>
+              <span className="shrink-0">
+                <DiscriminationBadge value={kp.discrimination ?? 0} bands={bands?.discrimination} sampleSize={kp.student_count} />
               </span>
               <span className="min-w-12 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
                 {kp.coverage_rate > 0 ? `${kp.coverage_rate}% 学生` : ""}

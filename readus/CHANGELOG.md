@@ -1,5 +1,24 @@
 # Project-X CHANGELOG
 
+## v2.2.0 (2026-08-07) — 知识点难度/区分度 + 考试模式切换（#176 #178）
+
+> 双权限模式落地：晨测（quiz）对教师全量可见，大考（formal）继续走 teacher_role / teacher_permissions 精细权限；成绩分析的知识点面板补齐难度系数 P 与区分度 D，并修复知识点接口响应解包 bug。typecheck / verify:auth / verify:security-critical / 新增 verify:176-178 / build 全绿。
+
+**1. 考试模式切换（Issue #178）**
+- `exams.exam_mode` 列（迁移 v34 + 三套 schema 同步）：`quiz`=晨测（全量权限）、`formal`=大考（精细权限，默认）。
+- 创建考试可选择考试模式；考试管理列表显示晨测/大考徽章；考试详情页管理员可随时切换。
+- `getVisibleExamIds` 双模式：quiz 考试对所有教师放开精细限制，formal 考试保持原有 teacher_role + teacher_permissions 过滤；考试组可见性随之保持一致。
+- 默认 `formal`，保证存量库与既有权限语义不扩大（晨测需显式选择）。
+
+**2. 知识点难度/区分度（Issue #176）**
+- `KnowledgePointRepository.getWeaknessesForExam` 重构为单查询聚合：每个知识点返回 `difficulty`（得分率/100）与 `discrimination`（极端组法逐题 D 均值），学生总分作为分组基准。
+- 成绩分析「题目分析 → 知识点薄弱环节」每行新增难度 P / 区分度 D 徽章（复用可配置档位）。
+- 顺带修复：知识点接口返回 `{ weaknesses }` 而前端按数组解析导致面板恒空的 bug（与 #213 高度相关，待云端复验）。
+
+**验证**
+- `npm run verify:176-178` — 10 项断言全绿（模式写入/默认值/可见性切换/难度区分度数值）。
+- `npm run verify:auth` 54/54；`npm run verify:security-critical` 42/42；typecheck + build 全绿。
+
 ## v2.0.0 (2026-08-06) — UI 全面重构：Flat 2.0 设计系统落地
 
 > 全部页面完成 Flat 2.0 设计系统迁移（Tailwind v4 + shadcn/ui 组件基座 + 三层令牌化），旧 `styles.css`（6048 行）与 `theme/legacy-bridge.css`（108 行）删除、遗留类归零；同期完成 P6 死代码清除、AccountMenu 侧栏化、天梯榜恢复接线与多项体验修复。typecheck / build:web / build:scanner 全绿。

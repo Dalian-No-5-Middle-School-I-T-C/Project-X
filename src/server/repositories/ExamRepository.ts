@@ -14,6 +14,7 @@ export interface ExamRecord {
   status: string;
   assigned_formula: string | null;
   retention_policy_id: number | null;
+  exam_mode?: string;
   created_by: number | null;
   created_at: string;
   updated_at: string;
@@ -39,13 +40,14 @@ export class ExamRepository {
     name: string; card_id: string; grade_id?: number; class_id?: number;
     subject?: string; start_time?: string; end_time?: string;
     retention_policy_id?: number; created_by?: number;
+    exam_mode?: "quiz" | "formal";
   }): Promise<ExamRecord> {
     const result = await this.db.run(
-      `INSERT INTO exams (name, card_id, grade_id, class_id, subject, start_time, end_time, status, retention_policy_id, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
+      `INSERT INTO exams (name, card_id, grade_id, class_id, subject, start_time, end_time, status, retention_policy_id, exam_mode, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)`,
       params.name, params.card_id, params.grade_id ?? null, params.class_id ?? null,
       params.subject ?? null, params.start_time ?? null, params.end_time ?? null,
-      params.retention_policy_id ?? 1, params.created_by ?? null
+      params.retention_policy_id ?? 1, params.exam_mode ?? "formal", params.created_by ?? null
     );
     return (await this.findExamById(result.lastInsertRowid))!;
   }
