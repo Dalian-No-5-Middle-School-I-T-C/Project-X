@@ -311,6 +311,7 @@ CREATE TABLE IF NOT EXISTS exams (
     retention_policy_id INT,
     review_mode    INT DEFAULT 1,           -- v1.9.0: 1=1P 2=2P 3=3P
     review_enabled TINYINT DEFAULT 0,       -- v1.9.0: 网阅开关
+    exam_mode      VARCHAR(20) NOT NULL DEFAULT 'formal',  -- v34: quiz=晨测 formal=大考(默认)
     created_by    INT,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
