@@ -1,6 +1,7 @@
 import type { DbAdapter } from "../db/mysql";
 import { getMysqlDb } from "../db/mysql";
 import { getAnalysisThresholds } from "../services/analysisConfig";
+import { discriminationByExtremeGroup } from "../../shared/stats";
 import type { KnowledgeSeverity, KnowledgeWeaknessItem } from "../../shared/types";
 
 export interface KnowledgePointRow {
@@ -63,12 +64,14 @@ export class KnowledgePointRepository {
   }
 
   async getWeaknessesForExam(examId: number, classId?: number | null): Promise<Array<KnowledgeWeaknessItem>> {
+    // #176：单次查询取回知识点 × 题目 × 学生的原始小题分，避免逐题 N+1 查询。
+    // 同一查询既算得分率（难度 P），也能用极端组法算区分度 D。
     let sql = `
       SELECT kp.point_text,
              kp.question_number,
-             ROUND(AVG(qs.score * 100.0 / NULLIF(qs.max_score, 0)), 1) AS avg_rate,
-             COUNT(DISTINCT qs.student_id) AS student_count,
-             COUNT(DISTINCT qs.question_number) AS total_questions
+             qs.student_id,
+             qs.score,
+             qs.max_score
       FROM question_scores qs
       JOIN exams e ON qs.exam_id = e.id
       JOIN knowledge_points kp ON kp.card_id = e.card_id AND kp.question_number = qs.question_number
@@ -81,77 +84,84 @@ export class KnowledgePointRepository {
       params.push(classId);
     }
 
-    sql += " GROUP BY kp.point_text, kp.question_number ORDER BY kp.point_text, kp.question_number";
+    sql += " ORDER BY kp.point_text, kp.question_number, qs.student_id";
     const rows = await this.db.all(sql, ...params);
 
-    // 考试作答总人次（用作覆盖率基准）：取该范围学生 × 题数的最大可能人次
-    const totalAttemptsRow = await this.db.all(
-      `SELECT COUNT(*) AS cnt
-       FROM question_scores qs
-       JOIN exams e ON qs.exam_id = e.id
-       WHERE qs.exam_id = ?
-       ${classId ? " AND qs.student_id IN (SELECT student_id FROM class_students WHERE class_id = ?)" : ""}`,
+    // 分组基准：学生总分（用于极端组法区分度）
+    const totalRows = await this.db.all(
+      `SELECT student_id, total_score FROM student_scores
+       WHERE exam_id = ?
+       ${classId ? " AND student_id IN (SELECT student_id FROM class_students WHERE class_id = ?)" : ""}`,
       ...(classId ? [examId, classId] : [examId])
-    ) as Array<{ cnt: number }>;
-    const totalAttempts = totalAttemptsRow[0]?.cnt ?? 0;
+    ) as Array<{ student_id: number; total_score: number }>;
+    const totalsMap = new Map(totalRows.map((r) => [r.student_id, r.total_score]));
 
-    // v29 修正：按作答人次加权平均聚合每题得分率到知识点层级，
-    // 取代原先"保留首行 rate"的粗糙做法（注释自承）
+    // 按知识点聚合：point_text → 题目号 → 学生小题分数组
     const map = new Map<string, {
       point_text: string;
-      sumRate: number;     // 加权分子：每题 avg_rate × 该题作答人次
-      totalWeight: number; // 作答人次之和
-      maxStudentCount: number;
-      total_questions: number;
-      question_numbers: number[];
+      questions: Map<number, Array<{ student_id: number; score: number; max_score: number }>>;
+      studentIds: Set<number>;
     }>();
-    for (const row of rows as Array<any>) {
-      const pointText = row.point_text;
-      // 为加权聚合，单独取每题作答人次
-      const attRow = await this.db.all(
-        `SELECT COUNT(*) AS cnt FROM question_scores qs
-         JOIN exams e ON qs.exam_id = e.id
-         WHERE qs.exam_id = ? AND qs.question_number = ?
-         ${classId ? " AND qs.student_id IN (SELECT student_id FROM class_students WHERE class_id = ?)" : ""}`,
-        ...(classId ? [examId, row.question_number, classId] : [examId, row.question_number])
-      ) as Array<{ cnt: number }>;
-      const weight = attRow[0]?.cnt ?? row.student_count ?? 0;
-      let entry = map.get(pointText);
+    for (const row of rows as Array<{ point_text: string; question_number: number; student_id: number; score: number; max_score: number }>) {
+      let entry = map.get(row.point_text);
       if (!entry) {
-        entry = {
-          point_text: pointText, sumRate: 0, totalWeight: 0,
-          maxStudentCount: 0, total_questions: 0, question_numbers: []
-        };
-        map.set(pointText, entry);
+        entry = { point_text: row.point_text, questions: new Map(), studentIds: new Set() };
+        map.set(row.point_text, entry);
       }
-      entry.sumRate += (row.avg_rate ?? 0) * weight;
-      entry.totalWeight += weight;
-      if (row.student_count > entry.maxStudentCount) entry.maxStudentCount = row.student_count;
-      entry.total_questions += 1;
-      if (!entry.question_numbers.includes(row.question_number)) entry.question_numbers.push(row.question_number);
+      const list = entry.questions.get(row.question_number) ?? [];
+      list.push({ student_id: row.student_id, score: row.score, max_score: row.max_score });
+      entry.questions.set(row.question_number, list);
+      entry.studentIds.add(row.student_id);
     }
 
+    const totalAttempts = rows.length;
     const { passRate } = await getAnalysisThresholds();
     // 知识点预警线沿用及格线比例（×100 得分率阈值），覆盖人次占比阈值取 50%
     const weakRateThreshold = Math.round(passRate * 100);
     const coverageThreshold = 50;
 
     const result: Array<KnowledgeWeaknessItem> = Array.from(map.values()).map((entry) => {
-      entry.question_numbers.sort((a, b) => a - b);
-      const avgRate = entry.totalWeight > 0 ? Math.round((entry.sumRate / entry.totalWeight) * 10) / 10 : 0;
+      const questionNumbers = Array.from(entry.questions.keys()).sort((a, b) => a - b);
+      let sumRate = 0;
+      let totalWeight = 0;
+      const discValues: number[] = [];
+      for (const qn of questionNumbers) {
+        const attempts = entry.questions.get(qn)!;
+        const weight = attempts.length;
+        const avgRateQ = attempts.reduce((s, a) => s + (a.max_score > 0 ? (a.score / a.max_score) * 100 : 0), 0) / Math.max(1, weight);
+        sumRate += avgRateQ * weight;
+        totalWeight += weight;
+        const maxScore = attempts[0]?.max_score ?? 0;
+        const paired = attempts
+          .filter((a) => totalsMap.has(a.student_id))
+          .map((a) => ({ score: a.score, total: totalsMap.get(a.student_id)! }));
+        if (paired.length > 0 && maxScore > 0) {
+          discValues.push(discriminationByExtremeGroup(
+            paired.map((p) => p.score),
+            paired.map((p) => p.total),
+            maxScore
+          ));
+        }
+      }
+      const avgRate = totalWeight > 0 ? Math.round((sumRate / totalWeight) * 10) / 10 : 0;
+      const discrimination = discValues.length > 0
+        ? Math.round((discValues.reduce((s, d) => s + d, 0) / discValues.length) * 1000) / 1000
+        : 0;
       const coverageRate = totalAttempts > 0
-        ? Math.round((entry.totalWeight / totalAttempts) * 100)
-        : (entry.maxStudentCount > 0 ? 100 : 0);
+        ? Math.round((totalWeight / totalAttempts) * 100)
+        : (entry.studentIds.size > 0 ? 100 : 0);
       let severity: KnowledgeSeverity = "ok";
       if (avgRate < weakRateThreshold) {
         severity = coverageRate >= coverageThreshold ? "common_weak" : "weak";
       }
       return {
         point_text: entry.point_text,
-        question_numbers: entry.question_numbers.join(","),
+        question_numbers: questionNumbers.join(","),
         avg_rate: avgRate,
-        student_count: entry.maxStudentCount,
-        total_questions: entry.total_questions,
+        difficulty: Math.round((avgRate / 100) * 1000) / 1000,
+        discrimination,
+        student_count: entry.studentIds.size,
+        total_questions: questionNumbers.length,
         severity,
         coverage_rate: coverageRate
       };

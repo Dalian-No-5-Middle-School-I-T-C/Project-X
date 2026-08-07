@@ -32,6 +32,7 @@ import {
   type SegmentedItem,
 } from "../components/ui/v2";
 import { cn } from "../lib/utils";
+import { EXAM_MODE_LABELS, type ExamMode } from "../../../../shared/types";
 
 /** 答题卡下拉「未选择」哨兵：Radix Select 不接受空字符串 value */
 const CARD_PLACEHOLDER = "__no_card__";
@@ -108,6 +109,7 @@ export function ExamManagePage() {
   const [examSearch, setExamSearch] = useState("");
   const [examStatusFilter, setExamStatusFilter] = useState<ExamStatusFilter>("all");
   const [creating, setCreating] = useState(false);
+  const [newExamMode, setNewExamMode] = useState<ExamMode>("formal");
 
   const visibleExams = useMemo(() => exams.filter((exam) => {
     const matchesSearch = !examSearch.trim() || exam.name.toLowerCase().includes(examSearch.trim().toLowerCase());
@@ -164,8 +166,8 @@ export function ExamManagePage() {
         });
         cardId = cardRes.id;
       }
-      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId, subject: newExamSubject.trim() || undefined }) });
-      setNewExamName(""); setNewExamSubject(""); setShowCreateExam(false);
+      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId, subject: newExamSubject.trim() || undefined, mode: newExamMode }) });
+      setNewExamName(""); setNewExamSubject(""); setNewExamMode("formal"); setShowCreateExam(false);
       loadExams();
     } catch (err) {
       setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -243,7 +245,7 @@ export function ExamManagePage() {
           </div>
 
           {examManageMode === "single" && showCreateExam && (
-            <Card className="mb-4 grid grid-cols-1 items-end gap-3 p-4 md:grid-cols-[1fr_1fr_1fr_auto]">
+            <Card className="mb-4 grid grid-cols-1 items-end gap-3 p-4 md:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1fr_auto]">
               <Input
                 value={newExamName}
                 onChange={(e) => setNewExamName(e.target.value)}
@@ -263,6 +265,15 @@ export function ExamManagePage() {
                 <SelectContent>
                   <SelectItem value={CARD_PLACEHOLDER} disabled>选择答题卡</SelectItem>
                   {cards.map((c) => (<SelectItem key={c.id} value={c.id}>{c.title}</SelectItem>))}
+                </SelectContent>
+              </Select>
+              <Select value={newExamMode} onValueChange={(v) => setNewExamMode(v === "formal" ? "formal" : "quiz")}>
+                <SelectTrigger aria-label="考试模式">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="quiz">{EXAM_MODE_LABELS.quiz}（教师全量可见）</SelectItem>
+                  <SelectItem value="formal">{EXAM_MODE_LABELS.formal}（精细权限）</SelectItem>
                 </SelectContent>
               </Select>
               <div className="flex gap-2">
@@ -293,7 +304,12 @@ export function ExamManagePage() {
                         onCheckedChange={() => toggleExamSelected(exam.id)}
                       />
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-base font-medium text-foreground">{exam.name}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-base font-medium text-foreground">{exam.name}</span>
+                          <Badge tone={exam.exam_mode === "formal" ? "info" : "neutral"} className="shrink-0">
+                            {EXAM_MODE_LABELS[exam.exam_mode === "formal" ? "formal" : "quiz"]}
+                          </Badge>
+                        </div>
                         <div className="mt-1 text-xs text-muted-foreground">
                           {exam.subject || "—"} · 答题卡 {exam.card_id ?? "未关联"}
                         </div>
@@ -340,7 +356,14 @@ export function ExamManagePage() {
                             onCheckedChange={() => toggleExamSelected(exam.id)}
                           />
                         </TableCell>
-                        <TableCell className="font-medium">{exam.name}</TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{exam.name}</span>
+                            <Badge tone={exam.exam_mode === "formal" ? "info" : "neutral"} className="shrink-0">
+                              {EXAM_MODE_LABELS[exam.exam_mode === "formal" ? "formal" : "quiz"]}
+                            </Badge>
+                          </div>
+                        </TableCell>
                         <TableCell className="text-muted-foreground">{exam.subject || "—"}</TableCell>
                         <TableCell className="text-xs text-muted-foreground">{exam.card_id ?? "未关联"}</TableCell>
                         <TableCell>
