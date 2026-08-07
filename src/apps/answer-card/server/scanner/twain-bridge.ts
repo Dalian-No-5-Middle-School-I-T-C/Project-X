@@ -160,7 +160,7 @@ export async function scan(config: {
     "--size", config.paperSize,
     "--output", config.outputDir,
     "--prefix", config.filePrefix,
-    "--max-pages", String(config.maxPages || 9999)
+    "--max-pages", String(config.maxPages)   // 0 = 不限（native 侧 maxPages>0 才限制）
   ];
 
   if (config.duplex) {

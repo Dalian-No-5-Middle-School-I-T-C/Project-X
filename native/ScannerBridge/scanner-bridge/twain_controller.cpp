@@ -33,14 +33,20 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
         char envPath[MAX_PATH] = {};
         DWORD envLen = GetEnvironmentVariableA("TWAIN_DSM_DLL", envPath, static_cast<DWORD>(sizeof(envPath)));
         const char* envCandidate = (envLen > 0 && envLen < sizeof(envPath)) ? envPath : nullptr;
-#if defined(_WIN64)
-        const char* defaultDsmPath = "D:\\twain-dsm-2.5.1\\twain-dsm-2.5.1\\Releases\\dsm_020403\\windows\\64\\TWAINDSM.dll";
-#else
-        const char* defaultDsmPath = "D:\\twain-dsm-2.5.1\\twain-dsm-2.5.1\\Releases\\dsm_020403\\windows\\32\\TWAINDSM.dll";
-#endif
+
+        // exe 同目录的 TWAINDSM.dll（build-scanner-bridge.bat 会把仓库内
+        // third_party 的 DSM 复制到产物目录）；不再硬编码 D:\ 绝对路径
+        wchar_t exeDir[MAX_PATH] = {};
+        GetModuleFileNameW(nullptr, exeDir, MAX_PATH);
+        if (wchar_t* slash = wcsrchr(exeDir, L'\\')) *slash = L'\0';
+        wchar_t dsmPathW[MAX_PATH] = {};
+        wsprintfW(dsmPathW, L"%s\\TWAINDSM.dll", exeDir);
+        char dsmPath[MAX_PATH] = {};
+        WideCharToMultiByte(CP_UTF8, 0, dsmPathW, -1, dsmPath, static_cast<int>(sizeof(dsmPath)), nullptr, nullptr);
+
         const char* candidates[] = {
             envCandidate,
-            defaultDsmPath,
+            dsmPath,
             "TWAINDSM.dll",
             "twain_32.dll"
         };
@@ -79,7 +85,9 @@ static const char* WINDOW_CLASS = "ScannerBridgeTwainClass";
 // 因此 WndProc 必须把每一条消息都转发给 DAT_EVENT/MSG_PROCESSEVENT，
 // 并传入真实 MSG 结构（pEvent），DSM 回填 TWMessage 后驱动状态机。
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (TwainController::current()) {
+    // 仅当源已打开（m_state >= 2）才转发：pDest 传 &m_sourceId，
+    // DSM 的 AppValidateIds 对 NULL pDest 直接返回失败，事件永远不会被处理
+    if (TwainController::current() && TwainController::current()->canProcessEvents()) {
         MSG m = { hwnd, msg, wParam, lParam, 0, { 0, 0 } };
         TW_UINT16 rc = TwainController::current()->processTwainEvent(m);
         if (rc == TWRC_DSEVENT) {
@@ -157,9 +165,12 @@ TW_UINT16 TwainController::processTwainEvent(MSG& msg) {
     memset(&event, 0, sizeof(event));
     event.pEvent = &msg;   // 必须传入真实 MSG 结构，TWMessage 由 DSM 回填
 
+    // pDest 必须传源 ID：DSM 对 DAT_EVENT/MSG_PROCESSEVENT 第一步做
+    // AppValidateIds(pAppId, pDSId)，pDest 为 NULL 时直接返回 TWRC_FAILURE，
+    // 事件永远不会到达源、TWMessage 也不会回填（调用方保证 m_state >= 2）
     TW_UINT16 rc = DSM_Entry(
         &m_appId,
-        nullptr,
+        &m_sourceId,
         DG_CONTROL,
         DAT_EVENT,
         MSG_PROCESSEVENT,
@@ -351,6 +362,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             (TW_MEMREF)&pending);
         if (endRc != TWRC_SUCCESS) {
             logError("ENDXFER failed: " + twainResultToString(endRc));
+            result.errorMessage = "ENDXFER failed: " + twainResultToString(endRc);
             hasMorePages = false;
             break;
         }
@@ -388,6 +400,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
                 (TW_MEMREF)&pending);
             if (endRc != TWRC_SUCCESS) {
                 logError("ENDXFER (back) failed: " + twainResultToString(endRc));
+                result.errorMessage = "ENDXFER (back) failed: " + twainResultToString(endRc);
                 hasMorePages = false;
                 break;
             }
@@ -725,7 +738,11 @@ bool TwainController::saveDIBToFile(HANDLE hDib, const std::string& filePath, Pa
     // Handle color table for paletted images
     int colorTableEntries = 0;
     if (bitCount <= 8) {
-        colorTableEntries = (bitCount == 4) ? 16 : (bitCount == 8) ? 256 : 2;
+        // 以 biClrUsed 为准（为 0 时按 bitCount 推算），8bpp 表不足 256 项时像素偏移才不会错
+        colorTableEntries = pDib->biClrUsed;
+        if (colorTableEntries == 0) {
+            colorTableEntries = (bitCount == 4) ? 16 : (bitCount == 8) ? 256 : 2;
+        }
         pixels += colorTableEntries * sizeof(RGBQUAD);
     }
     
@@ -736,10 +753,14 @@ bool TwainController::saveDIBToFile(HANDLE hDib, const std::string& filePath, Pa
     
     // Create a GDI+ bitmap from the DIB data
     Gdiplus::PixelFormat format;
-    if (bitCount == 24) {
+    if (bitCount == 32) {
+        format = PixelFormat32bppRGB;
+    } else if (bitCount == 24) {
         format = PixelFormat24bppRGB;
     } else if (bitCount == 8) {
         format = PixelFormat8bppIndexed;
+    } else if (bitCount == 4) {
+        format = PixelFormat4bppIndexed;
     } else if (bitCount == 1) {
         format = PixelFormat1bppIndexed;
     } else {

@@ -517,51 +517,59 @@ export function createScannerRouter(): Router {
   // ── Progress Events (SSE) ────────────────────────────
 
   router.get("/progress/:sessionId", async (req, res) => {
-    const sessionId = safeId(req.params.sessionId);
+    try {
+      const sessionId = safeId(req.params.sessionId);
 
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no"
-    });
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no"
+      });
 
-    const handler = (event: ScanProgressEvent) => {
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
-      if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
+      const removeHandler = () => {
+        const listeners = progressEmitters.get(sessionId);
+        if (listeners) {
+          listeners.delete(handler);
+          if (listeners.size === 0) progressEmitters.delete(sessionId);
+        }
+      };
+
+      const handler = (event: ScanProgressEvent) => {
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+        if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
+          // 终态即移除自己（不依赖 close 事件的延迟清理），缩小竞态窗口
+          removeHandler();
+          res.end();
+        }
+      };
+
+      // Register listener
+      if (!progressEmitters.has(sessionId)) {
+        progressEmitters.set(sessionId, new Set());
+      }
+      progressEmitters.get(sessionId)!.add(handler);
+
+      req.on("close", () => {
+        removeHandler();
+      });
+
+      // 订阅时若会话已终态（扫描可能在订阅前就完成/失败/被取消），补发终态事件
+      const session = await getSession(sessionId);
+      if (session && (session.status === "completed" || session.status === "error" || session.status === "cancelled")) {
+        removeHandler();
+        if (session.status === "completed") {
+          res.write(`data: ${JSON.stringify({ sessionId, type: "done", message: "扫描已完成" })}\n\n`);
+        } else if (session.status === "cancelled") {
+          res.write(`data: ${JSON.stringify({ sessionId, type: "cancelled", message: "扫描已取消" })}\n\n`);
+        } else {
+          res.write(`data: ${JSON.stringify({ sessionId, type: "error", message: session.error_msg || "扫描出错" })}\n\n`);
+        }
         res.end();
       }
-    };
-
-    // Register listener
-    if (!progressEmitters.has(sessionId)) {
-      progressEmitters.set(sessionId, new Set());
-    }
-    progressEmitters.get(sessionId)!.add(handler);
-
-    req.on("close", () => {
-      const listeners = progressEmitters.get(sessionId);
-      if (listeners) {
-        listeners.delete(handler);
-        if (listeners.size === 0) progressEmitters.delete(sessionId);
-      }
-    });
-
-    // 订阅时若会话已终态（扫描可能在订阅前就完成/失败/被取消），补发终态事件
-    const session = await getSession(sessionId);
-    if (session && (session.status === "completed" || session.status === "error" || session.status === "cancelled")) {
-      const listeners = progressEmitters.get(sessionId);
-      if (listeners) {
-        listeners.delete(handler);
-        if (listeners.size === 0) progressEmitters.delete(sessionId);
-      }
-      if (session.status === "completed") {
-        res.write(`data: ${JSON.stringify({ sessionId, type: "done", message: "扫描已完成" })}\n\n`);
-      } else if (session.status === "cancelled") {
-        res.write(`data: ${JSON.stringify({ sessionId, type: "cancelled", message: "扫描已取消" })}\n\n`);
-      } else {
-        res.write(`data: ${JSON.stringify({ sessionId, type: "error", message: session.error_msg || "扫描出错" })}\n\n`);
-      }
+    } catch (error) {
+      // getSession 等 DB 异常：关闭连接，避免 unhandled rejection 挂住
+      console.error(`[Scanner] SSE progress ${req.params.sessionId} failed:`, error);
       res.end();
     }
   });

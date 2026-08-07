@@ -143,19 +143,21 @@ export async function runScanSession(
       });
     }
 
-    // 竞态防线 2：写 completed 前再查取消状态（扫描期间被取消的兜底，正常取消走 catch 路径）
-    const postScan = await getSession(sessionId);
-    if (postScan?.status === "cancelled") {
-      return sessionId;
-    }
-    await updateSessionStatus(sessionId, "completed");
-
+    // 页面落库后不置 completed：OCR 是流水线的一部分，全部完成才算终态。
+    // 否则 OCR 阶段取消会被"已 completed"拒绝、SSE 补发也会提前发 done
     onProgress({
       sessionId, type: "ocr_start",
       message: "正在识别答题卡...", totalPages: recordIds.length
     });
 
     await runOcrOnSession(sessionId, config.cardId, onProgress);
+
+    // 竞态防线 2：OCR 期间被取消则不再写 completed
+    const postScan = await getSession(sessionId);
+    if (postScan?.status === "cancelled") {
+      return sessionId;
+    }
+    await updateSessionStatus(sessionId, "completed");
 
     onProgress({
       sessionId, type: "done",
@@ -165,12 +167,14 @@ export async function runScanSession(
     return sessionId;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    // 主动取消（cancel 接口已把状态标记为 cancelled）时不覆盖为 error
+    // 主动取消（cancel 接口已把状态标记为 cancelled）：不覆盖为 error 也不向上抛，
+    // 避免 POST 处理器把主动取消当失败打 error 日志
     const current = await getSession(sessionId);
-    if (current?.status !== "cancelled") {
-      await updateSessionStatus(sessionId, "error", msg);
-      onProgress({ sessionId, type: "error", message: msg });
+    if (current?.status === "cancelled") {
+      return sessionId;
     }
+    await updateSessionStatus(sessionId, "error", msg);
+    onProgress({ sessionId, type: "error", message: msg });
     throw error;
   }
 }

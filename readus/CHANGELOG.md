@@ -22,8 +22,8 @@
 - 新增 `POST /api/scanner/scan/:sessionId/cancel`：终止 `scanner-bridge.exe` 子进程（kill + `taskkill /F /T` 强杀兜底），前端取消按钮接入；会话支持 `cancelled` 状态。
 
 **验证**
-- 双架构编译（x64 + ia32）成功，exe 冒烟（list/help）正常；typecheck 0 错误；`verify:auth` 54 项、`verify:security-critical` 42 项全绿。
-- 评审修复（P0/P1）：`toUtf8` 修复 `WideCharToMultiByte` 1 字节缓冲区越界（按含 NUL 的 len 分配后 `pop_back`）；取消竞态修复——`cancelRequested` 集合让"202 后立即取消"在子进程注册前被 `runBridge` 拦截，`runScanSession` 写 `scanning`/`completed` 前各加取消检查，`cancelScan` 返回是否真正终止进程；新增 `verify:scanner-cancel`（7 项，覆盖"创建会话后、注册子进程前立即取消"）。
+- 双架构编译（x64 + ia32）成功，exe 冒烟（list/help）正常；typecheck 0 错误；`verify:auth` 54 项、`verify:security-critical` 42 项、`verify:scanner-cancel` 7 项全绿。
+- 评审修复（P0/P1/PR 224 反馈）：`toUtf8` 修复 `WideCharToMultiByte` 1 字节缓冲区越界（按含 NUL 的 len 分配后 `pop_back`）；`MSG_PROCESSEVENT` 的 `pDest` 改传 `&m_sourceId`（DSM 对 NULL pDest 校验失败）+ WndProc 加 `m_state>=2` 守卫；取消竞态——`cancelRequested` 集合让"202 后立即取消"在子进程注册前被 `runBridge` 拦截，`runScanSession` 写 `scanning`/`completed` 前各加取消检查且取消不 rethrow；`completed` 移到 OCR 全部完成后（OCR 阶段取消不再被拒、SSE 补发不再提前 done）；ENDXFER 失败写 `errorMessage`；DSM 运行时加载删除 `D:\` 绝对路径（改 exe 目录 + fallback）；调色板补 4bpp/32bpp 分支并尊重 `biClrUsed`；SSE 路由 try/catch + 终态主动移除 handler；build 脚本 VS 安装根改用 vswhere `installationPath`、临时文件随机名；`maxPages=0` 直传（0=不限）。
 - 未验证项（需真实扫描仪）：消息泵收事件、双面/多页 ADF、灰度图输出的真机行为待实测。
 
 ## v2.2.0 (2026-08-07) — 知识点难度/区分度 + 考试模式切换（#176 #178）

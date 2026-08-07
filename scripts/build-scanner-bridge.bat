@@ -29,14 +29,20 @@ echo Architecture: %ARCH% ^(%PLATFORM%^)
 echo.
 
 set "MSBUILD="
+set "VS_INSTALL="
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-set "MSBUILD_LIST=%TEMP%\vswhere-msbuild.txt"
+set "MSBUILD_LIST=%TEMP%\vswhere-msbuild-%RANDOM%.txt"
+set "VSWHERE_INSTALL=%TEMP%\vswhere-install-%RANDOM%.txt"
 if exist "%VSWHERE%" (
     rem for /f 内嵌命令会剥离引号导致带空格路径拆开，改用临时文件读取；
     rem MSBUILD 检查必须放在 if 块外（块内 %MSBUILD% 在解析时仍是空值）
     "%VSWHERE%" -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" > "%MSBUILD_LIST%" 2>nul
     set /p MSBUILD=<"%MSBUILD_LIST%"
     del "%MSBUILD_LIST%" >nul 2>&1
+    rem 安装根由 vswhere 直接给出：MSBuild 路径上溯层数随安装布局（Program Files\2022\Community vs D:\apps\vs-s-c）变化，不可靠
+    "%VSWHERE%" -latest -property installationPath > "%VSWHERE_INSTALL%" 2>nul
+    set /p VS_INSTALL_RAW=<"%VSWHERE_INSTALL%"
+    del "%VSWHERE_INSTALL%" >nul 2>&1
 )
 if defined MSBUILD if exist "%MSBUILD%" (
     echo [vswhere] Found MSBuild: %MSBUILD%
@@ -69,7 +75,12 @@ exit /b 1
 
 :found_msbuild
 for /f "delims=" %%i in ("%MSBUILD%") do set "MSBUILD_DIR=%%~dpi"
-set "VS_INSTALL=%MSBUILD_DIR%..\..\..\.."
+if defined VS_INSTALL_RAW (
+    set "VS_INSTALL=%VS_INSTALL_RAW%"
+    echo [vswhere] VS install: %VS_INSTALL%
+) else (
+    set "VS_INSTALL=%MSBUILD_DIR%..\..\..\.."
+)
 
 set "VCVARS="
 for %%f in (
