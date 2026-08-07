@@ -318,7 +318,7 @@ export function PageHeader({
       )}
     >
       {leading}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
         <h1 className="truncate text-lg font-semibold text-foreground">
           {title}
         </h1>

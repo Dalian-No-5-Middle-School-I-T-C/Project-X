@@ -58,8 +58,8 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterE
     <div className="w-full space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">欢迎回来，{userName}</h1>
-          <p className="mt-2 text-sm text-muted-foreground">今天也把每一份答题卡，变成清晰可靠的结果。</p>
+          <h1 className="mb-0 text-3xl font-bold tracking-tight text-foreground">欢迎回来，{userName}</h1>
+          <p className="mt-5 text-sm text-muted-foreground">今天也把每一份答题卡，变成清晰可靠的结果。</p>
         </div>
         {teacherRole && <Badge tone="accent" dot>{teacherRole === "grade_leader" ? "学年主任" : teacherRole === "head_teacher" ? "班主任" : "学科老师"}</Badge>}
       </div>

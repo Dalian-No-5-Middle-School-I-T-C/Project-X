@@ -363,8 +363,8 @@ export function AccountSettingsPage() {
         {/* 页面头部 */}
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-5 py-4">
           <div className="min-w-0">
-            <h1 className="text-lg font-semibold text-foreground">账号设置</h1>
-            <p className="m-0 text-xs text-muted-foreground">阅卷 · 客户端 · AI 服务商 · 数据存储</p>
+            <h1 className="mb-0 text-lg font-semibold text-foreground">账号设置</h1>
+            <p className="m-0 mt-1.5 text-xs text-muted-foreground">阅卷 · 客户端 · AI 服务商 · 数据存储</p>
           </div>
         </div>
 

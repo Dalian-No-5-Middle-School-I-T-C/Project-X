@@ -21,6 +21,7 @@ import {
   Save,
   Search,
   Settings,
+  UserCog,
   BookOpen,
   Home,
   SquarePen,
@@ -1563,7 +1564,7 @@ function App() {
     }
     // 个人账号设置：所有已登录用户可访问（与「账号管理/全局设置」管理区相邻）
     if (canOpenMode("account-settings")) {
-      items.push({ type: "item", id: "account-settings", icon: <Settings />, label: "账号设置" });
+      items.push({ type: "item", id: "account-settings", icon: <UserCog />, label: "账号设置" });
     }
     if (canManageAccounts || canManageGlobal) {
       items.push({ type: "group", label: "管理" });
