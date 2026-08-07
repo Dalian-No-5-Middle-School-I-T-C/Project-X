@@ -1,5 +1,30 @@
 # Project-X CHANGELOG
 
+## v2.2.1 (2026-08-07) — TWAIN 驱动 8 项缺陷修复（PX-COR-009 闭环）
+
+> 修复扫描链路全部 8 项缺陷：消息泵收不到 `MSG_XFERREADY`（扫描卡死 60 秒）、x64 句柄截断、灰度/黑白假彩色、双面/多页丢页抢拍、部分失败被当作成功、中文路径保存失败；TWAIN 2.5.1 SDK 入库（不再依赖 `D:\twain-dsm-2.5.1` 绝对路径）、`win-x64` 原生产物补齐；TS 层扫描会话后台化（立即 202 + SSE 补发终态）与真正可用的取消（杀子进程 + 强杀兜底）。详见 `readus/TWAIN驱动问题研究报告.md` 第六节。
+
+**1. 原生 TWAIN 驱动（ScannerBridge）**
+- 事件消息泵：删除自造 `WM_USER+1`，`WndProc` 全量转发真实消息，`processTwainEvent` 传真实 `MSG`（`pEvent`）——`MSG_XFERREADY` 终于可达，扫描不再卡 60 秒超时。
+- x64 句柄宽度：`DAT_IMAGENATIVEXFER` 返回值改用指针宽 `TW_HANDLE` 接收（原 4 字节 `TW_UINT32` 截断 `HBITMAP` 并污染栈）。
+- 调色板：8bpp/1bpp 保存前用 DIB 颜色表 `SetPalette` 注入 GDI+，灰度/黑白不再假彩色或保存失败。
+- 捕获状态机：每次 XFERDONE 后立即 `ENDXFER` 并复位状态，双面/多页由 `DAT_PENDINGXFERS` 查询驱动——不再丢背面、不再干等 30 秒、不抢拍。
+- 成功判定：`success = 无中途失败 && 至少一页`，背面捕获失败也记录错误——部分失败批次不再被当作完成。
+- 中文路径：`main` 改 `wmain` + `GetCommandLineW` 转 UTF-8。
+
+**2. 构建系统**
+- TWAIN 2.5.1 SDK（`twain.h` + 32/64 位预编译 `TWAINDSM.dll`，LGPL 许可说明）入库 `native/ScannerBridge/third_party/twain-dsm-2.5.1/`；vcxproj 与 build 脚本改仓库内相对路径，换机器/CI 可复现。
+- `resources/native/win-x64/` 产物补齐（scanner-bridge.exe / TWAINDSM.dll / answer-card-recognizer.exe），64 位 Electron 开箱可用。
+- build 脚本修复 vswhere 发现 MSBuild 的两个批处理解析 bug；`.gitignore` 只忽略超大 opencv DLL。
+
+**3. TS 整合层**
+- `POST /api/scanner/scan` 先创建会话立即返回 202，扫描 + OCR 后台执行；SSE 订阅时若会话已终态则补发终态事件——进度不再全部丢失、界面不再卡"扫描中"。
+- 新增 `POST /api/scanner/scan/:sessionId/cancel`：终止 `scanner-bridge.exe` 子进程（kill + `taskkill /F /T` 强杀兜底），前端取消按钮接入；会话支持 `cancelled` 状态。
+
+**验证**
+- 双架构编译（x64 + ia32）成功，exe 冒烟（list/help）正常；typecheck 0 错误；`verify:auth` 54 项、`verify:security-critical` 42 项全绿。
+- 未验证项（需真实扫描仪）：消息泵收事件、双面/多页 ADF、灰度图输出的真机行为待实测。
+
 ## v2.2.0 (2026-08-07) — 知识点难度/区分度 + 考试模式切换（#176 #178）
 
 > 双权限模式落地：晨测（quiz）对教师全量可见，大考（formal）继续走 teacher_role / teacher_permissions 精细权限；成绩分析的知识点面板补齐难度系数 P 与区分度 D，并修复知识点接口响应解包 bug。typecheck / verify:auth / verify:security-critical / 新增 verify:176-178 / build 全绿。
