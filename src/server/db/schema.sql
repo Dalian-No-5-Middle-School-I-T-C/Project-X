@@ -291,6 +291,7 @@ CREATE TABLE IF NOT EXISTS exams (
     retention_policy_id INTEGER REFERENCES data_retention_policies(id),
     review_mode    INTEGER DEFAULT 1,            -- v1.9.0: 1=1P 2=2P 3=3P
     review_enabled INTEGER DEFAULT 0,            -- v1.9.0: 0=未开启网阅 1=已开启
+    exam_mode      TEXT NOT NULL DEFAULT 'formal', -- v34: quiz=晨测(全量权限) formal=大考(精细权限，默认)
     created_by    INTEGER REFERENCES users(id),
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP

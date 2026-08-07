@@ -294,6 +294,7 @@ CREATE TABLE IF NOT EXISTS exams (
     status        VARCHAR(20) DEFAULT 'draft',
     assigned_formula TEXT,
     retention_policy_id INT,
+    exam_mode      VARCHAR(20) NOT NULL DEFAULT 'formal',  -- v34: quiz=晨测 formal=大考(默认)
     created_by    INT,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

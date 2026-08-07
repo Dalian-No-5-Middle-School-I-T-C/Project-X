@@ -51,6 +51,8 @@ export const CreateExamSchema = z.object({
   gradeId: z.number().int().positive().optional(),
   classId: z.number().int().positive().optional(),
   subject: z.string().optional(),
+  // #178: quiz=晨测(全量权限) / formal=大考(精细权限)
+  mode: z.enum(["quiz", "formal"]).optional().default("formal"),
 });
 export type CreateExamInput = z.infer<typeof CreateExamSchema>;
 
@@ -58,6 +60,7 @@ export const UpdateExamSchema = z.object({
   cardId: z.string().optional(),
   name: z.string().optional(),
   subject: z.string().optional(),
+  mode: z.enum(["quiz", "formal"]).optional(),
 });
 export type UpdateExamInput = z.infer<typeof UpdateExamSchema>;
 

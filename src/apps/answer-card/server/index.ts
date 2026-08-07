@@ -1697,7 +1697,7 @@ export async function createApp(): Promise<express.Express> {
 
   app.post("/api/exams", validateBody(CreateExamSchema), async (req, res, next) => {
     try {
-      const { name, cardId, gradeId, classId, subject } = req.body as Record<string, unknown>;
+      const { name, cardId, gradeId, classId, subject, mode } = req.body as Record<string, unknown>;
       if (!name || !cardId) {
         res.status(400).json({ message: "缺少 name 或 cardId" });
         return;
@@ -1714,6 +1714,7 @@ export async function createApp(): Promise<express.Express> {
         grade_id: gradeId ? Number(gradeId) : undefined,
         class_id: classId ? Number(classId) : undefined,
         subject: subject ? String(subject) : undefined,
+        exam_mode: mode === "formal" ? "formal" : "quiz",
         created_by: req.user?.id
       });
       res.status(201).json(exam);
@@ -1857,14 +1858,15 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      const { cardId, name, subject } = req.body as Record<string, unknown>;
+      const { cardId, name, subject, mode } = req.body as Record<string, unknown>;
       const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (cardId !== undefined) updates.card_id = String(cardId);
       if (name !== undefined) updates.name = String(name);
       if (subject !== undefined) updates.subject = String(subject);
+      if (mode === "quiz" || mode === "formal") updates.exam_mode = mode;
 
       // Whitelist: only these columns may appear in a dynamic UPDATE
-      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject"]);
+      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode"]);
       for (const col of Object.keys(updates)) {
         if (!ALLOWED_COLUMNS.has(col)) {
           res.status(400).json({ message: `不支持的更新字段：${col}` });

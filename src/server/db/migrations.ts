@@ -842,6 +842,15 @@ const MIGRATIONS: Migration[] = [
     up(db) {
       addColumnIfMissing(db, "users", "theme_skin", "TEXT DEFAULT 'flat'");
     }
+  },
+  // v34 (Issue #178): 考试模式切换 — quiz=晨测(全量权限) / formal=大考(精细权限)。
+  // 注：v33 已由皮肤主题 PR 占用，这里从 v34 起号，避免迁移版本冲突。
+  {
+    version: 34,
+    name: "exam-mode-dual-permission",
+    up(db) {
+      addColumnIfMissing(db, "exams", "exam_mode", "TEXT NOT NULL DEFAULT 'formal'");
+    }
   }
 ];
 

@@ -748,6 +748,10 @@ export type KnowledgeWeaknessItem = {
   point_text: string;
   question_numbers: string;
   avg_rate: number;
+  /** 知识点难度系数 P（0-1）= 得分率 / 100（#176） */
+  difficulty?: number;
+  /** 知识点区分度 D（极端组法，逐题 D 均值，#176） */
+  discrimination?: number;
   student_count: number;
   total_questions: number;
   severity: KnowledgeSeverity;
@@ -761,6 +765,16 @@ export type AnalysisThresholds = {
   errorTiers: [number, number, number];
 };
 
+/** 考试模式（#178 双权限模式）：quiz=晨测（全量权限），formal=大考（精细权限，默认） */
+export type ExamMode = "quiz" | "formal";
+
+export const EXAM_MODES: ReadonlyArray<ExamMode> = ["quiz", "formal"];
+
+export const EXAM_MODE_LABELS: Record<ExamMode, string> = {
+  quiz: "晨测",
+  formal: "大考"
+};
+
 export type ExamRecord = {
   id: number;
   name: string;
@@ -772,6 +786,8 @@ export type ExamRecord = {
   end_time: string | null;
   status: string;
   assigned_formula: string | null;
+  /** 考试模式（#178），缺省视为 formal */
+  exam_mode?: ExamMode;
   created_at: string;
 };
 

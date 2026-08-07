@@ -1,8 +1,21 @@
 # Project-X CHANGELOG
 
+## v2.3.0 (2026-08-07) — 纸锋 Paper Edge 第二套皮肤（#纸锋）
+
+> 落地 v2.1.0 皮肤扩展机制下的第二套皮肤「纸锋 Paper Edge」（设计来源 `demo-brutalist.html` / editorial-brutalist 技能）：纸面米底 + 墨色文字 + 品牌亮蓝 #2E44FF，直角 + 胶囊圆角纪律，全文件唯一硬偏移阴影 `8px 8px 0`。纯令牌覆盖 + 9 组已评审作用域规则（详见 [SKIN-THEME.md](./SKIN-THEME.md) §五豁免登记），组件零改动，默认皮肤零影响。
+
+- `tokens.css`（theme 与 design 双份同步）追加 `[data-skin="paper-edge"]` L2 覆盖块：圆角归 0、纸面米色表面、墨阶文字、亮蓝 accent、状态语义重映射（已完成→蓝软族 / 阅卷中→墨描边族 / 异常→绯红族 / 信息→实蓝族）、阴影 1-3 级归零 + 4 级硬偏移、图表单色纪律（chart-1 蓝 = 当前主体）；`[data-skin="paper-edge"][data-theme="dark"]` 暗色组合（#141413 系推导，对比度 ≥4.5:1）。
+- 9 组作用域规则（按钮胶囊 + 字重 700 / 主按钮墨底纸字 hover 转蓝 / 描边与次要按钮精调 / 选项卡独立描边胶囊组 / 分段控件无槽描边胶囊 / 进度条直角 / 徽章胶囊 / 统计大数字 800 重）——全部限定 `[data-skin="paper-edge"]` 作用域，`[class~=]` 整词匹配防 variant 前缀误伤。
+- `SkinSwitcher` 注册表登记 `paper-edge`（移除「更多皮肤 · 开发中」禁用占位）；账号设置页「外观 / 皮肤」当前皮肤名跟随注册表动态显示。
+- `app.css` @layer base：原生 range 滑块 `accent-color: var(--px-accent-bg)`（修复 WebView2 默认紫蓝渲染与两套皮肤不协调）。
+- 文档：`DESIGN-SYSTEM.md` 皮肤清单（现有两套）、`SKIN-THEME.md` 皮肤清单与豁免案例登记更新。
+
+**验证**
+- `npm run typecheck` — 0 错误；`npm run verify:auth` 54/54（服务端未变，回归通过）。
+
 ## v2.1.0 (2026-08-07) — 皮肤切换：扩展接口 + 前端按钮 + 账号级持久化
 
-> 搭建前端「皮肤」扩展机制（皮肤 = 与明暗正交的风格维度，`data-skin` 属性预留，当前仅默认「明澈 Flat 2.0」一套）+ 登录页 / 侧栏 / 页头 / 设置页四处切换入口 + 皮肤偏好账号级持久化（换设备自动恢复）。不新增任何视觉风格（皮肤本体未做），完整说明见 [SKIN-THEME.md](./SKIN-THEME.md)。
+> 搭建前端「皮肤」扩展机制（皮肤 = 与明暗正交的风格维度，`data-skin` 属性预留，当前仅默认「明澈 Flat 2.0」一套）+ 登录页 / 侧栏 / 页头 / 设置页四处切换入口 + 皮肤偏好账号级持久化（换设备自动恢复）。完整说明见 [SKIN-THEME.md](./SKIN-THEME.md)。（注：第二套皮肤「纸锋 Paper Edge」于 v2.3.0 落地，见上。）
 
 **1. 前端**
 - 新增 `components/SkinSwitcher.tsx`：皮肤切换器（`SKIN_OPTIONS` 皮肤注册表 + 默认 `flat`；菜单含「皮肤」组（当前勾选 + 「更多皮肤 · 开发中」禁用占位）与「明暗」组（亮/暗，复用既有 theme 状态）；支持受控（App/设置页）与自管（登录页）双模式）。
@@ -25,6 +38,26 @@
 - `npm run typecheck` — 0 错误（顺带修复了 node_modules 缺失导致的 655 个基线类型错误，`npm install --ignore-scripts` 后恢复）。
 - 存量库 `data/projectx.db`（v31）启动自动补齐 v32/v33 迁移，`theme_skin` 列落库实测通过。
 - API 冒烟：`/api/auth/me` 与 settings GET 返回 `themeSkin`；PATCH 更新成功；空串/超长 400 拒绝。
+
+## v2.2.0 (2026-08-07) — 知识点难度/区分度 + 考试模式切换（#176 #178）
+
+> 双权限模式落地：晨测（quiz）对教师全量可见，大考（formal）继续走 teacher_role / teacher_permissions 精细权限；成绩分析的知识点面板补齐难度系数 P 与区分度 D，并修复知识点接口响应解包 bug。typecheck / verify:auth / verify:security-critical / 新增 verify:176-178 / build 全绿。
+
+**1. 考试模式切换（Issue #178）**
+- `exams.exam_mode` 列（迁移 v34 + 三套 schema 同步）：`quiz`=晨测（全量权限）、`formal`=大考（精细权限，默认）。
+- 创建考试可选择考试模式；考试管理列表显示晨测/大考徽章；考试详情页管理员可随时切换。
+- `getVisibleExamIds` 双模式：quiz 考试对所有教师放开精细限制，formal 考试保持原有 teacher_role + teacher_permissions 过滤；考试组可见性随之保持一致。
+- 修复：未配置学科的 `subject_teacher` 也能看到晨测考试（回归测试覆盖）。
+- 默认 `formal`，保证存量库与既有权限语义不扩大（晨测需显式选择）。
+
+**2. 知识点难度/区分度（Issue #176）**
+- `KnowledgePointRepository.getWeaknessesForExam` 重构为单查询聚合：每个知识点返回 `difficulty`（得分率/100）与 `discrimination`（极端组法逐题 D 均值），学生总分作为分组基准。
+- 成绩分析「题目分析 → 知识点薄弱环节」每行新增难度 P / 区分度 D 徽章（复用可配置档位）。
+- 顺带修复：知识点接口返回 `{ weaknesses }` 而前端按数组解析导致面板恒空的 bug（与 #213 高度相关，待云端复验）。
+
+**验证**
+- `npm run verify:176-178` — 10 项断言全绿（模式写入/默认值/可见性切换/难度区分度数值）。
+- `npm run verify:auth` 54/54；`npm run verify:security-critical` 42/42；typecheck + build 全绿。
 
 ## v2.0.0 (2026-08-06) — UI 全面重构：Flat 2.0 设计系统落地
 

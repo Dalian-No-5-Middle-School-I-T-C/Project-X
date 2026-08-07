@@ -693,6 +693,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE users ADD COLUMN theme_skin VARCHAR(32) DEFAULT 'flat'`,
       ]
     },
+    {
+      version: 34,
+      name: "exam-mode-dual-permission",
+      sqls: [
+        `ALTER TABLE exams ADD COLUMN exam_mode VARCHAR(20) NOT NULL DEFAULT 'formal'`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

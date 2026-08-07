@@ -1,11 +1,13 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { ArrowLeft, ClipboardCheck, Users, AlertCircle, FileSearch, Settings } from "lucide-react";
+import { fetchJson } from "../auth/api";
 import { BlockSelectPage } from "./BlockSelectPage";
 import { ReviewAssignPage } from "./ReviewAssignPage";
 import { DisputeManagePage } from "./DisputeManagePage";
 import { ReviewTracePage } from "./ReviewTracePage";
 import { GradingConfigPage } from "./GradingConfigPage";
-import { Button, Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/v2";
+import { Badge, Button, SegmentedControl, Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/v2";
+import { EXAM_MODE_LABELS, type ExamMode, type ExamRecord } from "../../../../shared/types";
 
 type ExamDetailTab = "review" | "assign" | "disputes" | "trace" | "settings";
 
@@ -37,9 +39,36 @@ export function ExamDetailPage({
   onBackToList, onBackHome, onStartReview
 }: Props) {
   const [activeTab, setActiveTab] = useState<ExamDetailTab>("review");
+  const [examMode, setExamMode] = useState<ExamMode>("formal");
+  const [modeBusy, setModeBusy] = useState(false);
 
   const isGradeLeader = teacherRole === "grade_leader" || userRole === "admin";
   const isAdmin = userRole === "admin";
+
+  useEffect(() => {
+    let active = true;
+    fetchJson<ExamRecord>(`/api/exams/${examId}`)
+      .then((exam) => { if (active) setExamMode(exam.exam_mode === "quiz" ? "quiz" : "formal"); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [examId]);
+
+  async function changeMode(mode: ExamMode) {
+    if (modeBusy || mode === examMode) return;
+    setModeBusy(true);
+    try {
+      const updated = await fetchJson<ExamRecord>(`/api/exams/${examId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode })
+      });
+      setExamMode(updated.exam_mode === "quiz" ? "quiz" : "formal");
+    } catch {
+      // 保持原模式，静默失败（列表页刷新后可见真实状态）
+    } finally {
+      setModeBusy(false);
+    }
+  }
 
   const canSeeTab = (requiresRole: string) => {
     if (requiresRole === "all") return true;
@@ -54,14 +83,28 @@ export function ExamDetailPage({
   return (
     <div className="p-6">
       {/* 返回考试列表 */}
-      <Button
-        variant="outline"
-        className="mb-4"
-        icon={<ArrowLeft />}
-        onClick={onBackToList}
-      >
-        返回考试列表
-      </Button>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <Button variant="outline" icon={<ArrowLeft />} onClick={onBackToList}>
+          返回考试列表
+        </Button>
+        <div className="flex items-center gap-2">
+          <Badge tone={examMode === "formal" ? "info" : "neutral"} dot>
+            {EXAM_MODE_LABELS[examMode]}
+          </Badge>
+          {isAdmin && (
+            <SegmentedControl
+              size="sm"
+              aria-label="考试模式"
+              value={examMode}
+              onValueChange={(value) => void changeMode(value as ExamMode)}
+              items={[
+                { value: "quiz", label: EXAM_MODE_LABELS.quiz },
+                { value: "formal", label: EXAM_MODE_LABELS.formal },
+              ]}
+            />
+          )}
+        </div>
+      </div>
 
       <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ExamDetailTab)}>
         {/* Tab 栏 */}
