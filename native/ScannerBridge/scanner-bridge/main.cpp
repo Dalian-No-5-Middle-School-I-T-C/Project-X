@@ -28,10 +28,12 @@ static void printUsage() {
 // （旧实现用 ANSI main，中文系统下 argv 是 GBK 字节，路径解码必然出错）
 static std::string toUtf8(const wchar_t* wstr) {
     if (!wstr || !*wstr) return "";
+    // 第一次调用返回的 len 包含结尾 NUL，按 len 分配、转换后移除 NUL，避免越界写
     int len = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, nullptr, 0, nullptr, nullptr);
     if (len <= 1) return "";
-    std::string utf8(len - 1, '\0');
+    std::string utf8(len, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wstr, -1, &utf8[0], len, nullptr, nullptr);
+    utf8.pop_back();
     return utf8;
 }
 

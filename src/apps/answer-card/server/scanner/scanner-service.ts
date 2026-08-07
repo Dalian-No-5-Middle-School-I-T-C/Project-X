@@ -81,6 +81,12 @@ export async function runScanSession(
   await mkdir(outputDir, { recursive: true });
 
   try {
+    // 竞态防线 1：createScanSession 返回 202 后用户可能立即取消（此时子进程尚未注册），
+    // 若取消已写入 cancelled，这里必须退出而不是把状态覆盖回 scanning
+    const preScan = await getSession(sessionId);
+    if (preScan?.status === "cancelled") {
+      return sessionId;
+    }
     await updateSessionStatus(sessionId, "scanning");
     onProgress({ sessionId, type: "scanning", message: "正在连接扫描仪..." });
 
@@ -137,6 +143,11 @@ export async function runScanSession(
       });
     }
 
+    // 竞态防线 2：写 completed 前再查取消状态（扫描期间被取消的兜底，正常取消走 catch 路径）
+    const postScan = await getSession(sessionId);
+    if (postScan?.status === "cancelled") {
+      return sessionId;
+    }
     await updateSessionStatus(sessionId, "completed");
 
     onProgress({

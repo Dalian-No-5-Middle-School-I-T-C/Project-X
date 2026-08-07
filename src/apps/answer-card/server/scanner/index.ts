@@ -206,11 +206,16 @@ export function createScannerRouter(): Router {
         return;
       }
 
-      cancelScan(id);
+      const terminated = cancelScan(id);
       await updateSessionStatus(id, "cancelled", "用户取消扫描");
       emitProgress(id, { sessionId: id, type: "cancelled", message: "扫描已取消" });
 
-      res.json({ message: "扫描已取消", status: "cancelled" });
+      res.json({
+        message: "扫描已取消",
+        status: "cancelled",
+        // terminated=false 表示子进程尚未启动（取消意图已记录，runBridge 启动前会拦截）
+        terminated
+      });
     } catch (error) {
       next(error);
     }

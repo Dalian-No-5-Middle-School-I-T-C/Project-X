@@ -8,10 +8,19 @@ import type { BridgeScanResult, ScannerSourcesResult } from "./scanner-types";
 // 供取消接口终止扫描（M4b：不再只关 SSE，真正杀进程）
 const activeScans = new Map<string, ReturnType<typeof spawn>>();
 
-/** 取消指定会话的扫描：先 kill 主进程，2 秒后若仍存活用 taskkill /F /T 强杀进程树 */
-export function cancelScan(sessionId: string): void {
+// 已请求取消的会话集合：取消可能早于子进程注册到达（POST 202 后立即取消），
+// 子进程尚未注册时无法杀进程，靠此集合在 runBridge spawn 前拦截启动
+const cancelRequested = new Set<string>();
+
+/** 取消指定会话的扫描：记录取消意图 + 杀主进程，2 秒后若仍存活用 taskkill /F /T 强杀进程树。
+ *  返回是否找到并终止了正在运行的子进程（未注册的由 cancelRequested 拦截）。 */
+export function cancelScan(sessionId: string): boolean {
+  cancelRequested.add(sessionId);
+
   const child = activeScans.get(sessionId);
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return false; // 子进程尚未注册或已退出，交由 runBridge 的取消检查拦截
+  }
 
   child.kill(); // Windows 下 SIGTERM → TerminateProcess
 
@@ -23,6 +32,7 @@ export function cancelScan(sessionId: string): void {
       });
     }
   }, 2000).unref();
+  return true;
 }
 
 function processResourcesPath(): string | undefined {
@@ -60,6 +70,11 @@ export function resolveScannerBridgeExe(): string {
 function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Promise<{ stdout: string; stderr: string }> {
   const exePath = resolveScannerBridgeExe();
 
+  // 取消检查：用户已请求取消（可能早于本函数执行），直接拒绝启动扫描
+  if (sessionId && cancelRequested.has(sessionId)) {
+    return Promise.reject(new Error("扫描已取消"));
+  }
+
   return new Promise((resolve, reject) => {
     const child = spawn(exePath, args, {
       windowsHide: true,
@@ -68,6 +83,8 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
 
     if (sessionId) {
       activeScans.set(sessionId, child);
+      // 子进程已注册，后续取消走杀进程路径，清除待启动拦截标志
+      cancelRequested.delete(sessionId);
     }
 
     const stdoutChunks: Buffer[] = [];

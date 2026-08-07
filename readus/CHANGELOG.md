@@ -23,6 +23,7 @@
 
 **验证**
 - 双架构编译（x64 + ia32）成功，exe 冒烟（list/help）正常；typecheck 0 错误；`verify:auth` 54 项、`verify:security-critical` 42 项全绿。
+- 评审修复（P0/P1）：`toUtf8` 修复 `WideCharToMultiByte` 1 字节缓冲区越界（按含 NUL 的 len 分配后 `pop_back`）；取消竞态修复——`cancelRequested` 集合让"202 后立即取消"在子进程注册前被 `runBridge` 拦截，`runScanSession` 写 `scanning`/`completed` 前各加取消检查，`cancelScan` 返回是否真正终止进程；新增 `verify:scanner-cancel`（7 项，覆盖"创建会话后、注册子进程前立即取消"）。
 - 未验证项（需真实扫描仪）：消息泵收事件、双面/多页 ADF、灰度图输出的真机行为待实测。
 
 ## v2.2.0 (2026-08-07) — 知识点难度/区分度 + 考试模式切换（#176 #178）
