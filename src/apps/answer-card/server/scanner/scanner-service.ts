@@ -51,8 +51,24 @@ export function mapScanPageToLayout(
   return { groupIndex, layoutPage, unusedSide: layoutPage > layoutPageCount };
 }
 
-/** Full scan + OCR workflow */
+/** 创建扫描会话并立即返回 sessionId（POST /scan 先调它拿 id 提前返回 202） */
+export async function createScanSession(config: ScanSessionConfig): Promise<string> {
+  const prepared = await prepareCardLayoutById(config.cardId);
+  if (!prepared) {
+    throw new Error("答题卡不存在，无法开始扫描");
+  }
+  const session = await createSession(config.cardId, config.sessionName, {
+    dpi: config.dpi,
+    duplex: config.duplex,
+    colorMode: config.colorMode,
+    paperSize: config.paperSize
+  });
+  return session.id;
+}
+
+/** Full scan + OCR workflow（后台运行；sessionId 由 createScanSession 预先创建） */
 export async function runScanSession(
+  sessionId: string,
   config: ScanSessionConfig,
   onProgress: ProgressHandler
 ): Promise<string> {
@@ -61,14 +77,6 @@ export async function runScanSession(
     throw new Error("答题卡不存在，无法开始扫描");
   }
   const card = prepared.card;
-  const session = await createSession(config.cardId, config.sessionName, {
-    dpi: config.dpi,
-    duplex: config.duplex,
-    colorMode: config.colorMode,
-    paperSize: config.paperSize
-  });
-
-  const sessionId = session.id;
   const outputDir = scansDir(config.cardId);
   await mkdir(outputDir, { recursive: true });
 
@@ -89,7 +97,7 @@ export async function runScanSession(
       showUi: config.showUi
     };
 
-    const result = await scan(scanConfig);
+    const result = await scan(scanConfig, sessionId);
 
     if (!result.pages || result.pages.length === 0) {
       throw new Error(result.message || "扫描未产生任何页面");
@@ -146,8 +154,12 @@ export async function runScanSession(
     return sessionId;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    await updateSessionStatus(sessionId, "error", msg);
-    onProgress({ sessionId, type: "error", message: msg });
+    // 主动取消（cancel 接口已把状态标记为 cancelled）时不覆盖为 error
+    const current = await getSession(sessionId);
+    if (current?.status !== "cancelled") {
+      await updateSessionStatus(sessionId, "error", msg);
+      onProgress({ sessionId, type: "error", message: msg });
+    }
     throw error;
   }
 }

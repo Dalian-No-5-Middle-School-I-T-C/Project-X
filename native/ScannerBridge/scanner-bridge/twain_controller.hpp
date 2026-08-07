@@ -59,7 +59,7 @@ public:
     // Cancel an in-progress scan
     void cancel();
 
-    TW_UINT16 processTwainEvent(WPARAM message);
+    TW_UINT16 processTwainEvent(MSG& msg);
     static TwainController* current();
 
 private:

@@ -166,8 +166,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
               side: data.side || "front",
               studentId: null,
               studentConf: null,
-              ocrStatus: "pending"
-            }
+              ocrStatus: "pending",
+            },
           ]);
           break;
         case "ocr_start":
@@ -178,7 +178,12 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           setPages((prev) =>
             prev.map((p) =>
               p.pageNum === data.pageNum && p.side === data.side
-                ? { ...p, studentId: data.studentId ?? null, studentConf: data.studentConf ?? null, ocrStatus: data.studentId ? "done" : "review" }
+                ? {
+                    ...p,
+                    studentId: data.studentId ?? null,
+                    studentConf: data.studentConf ?? null,
+                    ocrStatus: data.studentId ? "done" : "review",
+                  }
                 : p
             )
           );
@@ -189,6 +194,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         case "error":
           setState("error");
           setErrorMessage(data.message || "扫描出错");
+          break;
+        case "cancelled":
+          setState("idle");
+          setProgressMessage(data.message || "扫描已取消");
           break;
         case "done":
           setState("done");
@@ -336,6 +345,12 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     eventSourceRef.current?.close();
     setState("idle");
     setProgressMessage("扫描已取消");
+
+    // 通知后端终止 scanner-bridge.exe 子进程（不再只是关闭 SSE，否则 ADF 会继续送纸）
+    const sid = sessionIdRef.current;
+    if (sid) {
+      void authFetch(`/api/scanner/scan/${sid}/cancel`, { method: "POST" }).catch(() => undefined);
+    }
   }
 
   function reset() {

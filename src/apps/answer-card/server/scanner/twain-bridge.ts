@@ -1,8 +1,29 @@
-import { spawn } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { rootDir } from "../storage";
 import type { BridgeScanResult, ScannerSourcesResult } from "./scanner-types";
+
+// 进行中的扫描子进程注册表：sessionId → scanner-bridge.exe 子进程，
+// 供取消接口终止扫描（M4b：不再只关 SSE，真正杀进程）
+const activeScans = new Map<string, ReturnType<typeof spawn>>();
+
+/** 取消指定会话的扫描：先 kill 主进程，2 秒后若仍存活用 taskkill /F /T 强杀进程树 */
+export function cancelScan(sessionId: string): void {
+  const child = activeScans.get(sessionId);
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+
+  child.kill(); // Windows 下 SIGTERM → TerminateProcess
+
+  const pid = child.pid;
+  setTimeout(() => {
+    if (child.exitCode === null && pid) {
+      execFile("taskkill", ["/F", "/T", "/PID", String(pid)], { windowsHide: true }, () => {
+        // 强杀结果不阻塞调用方；失败时进程也会被 10 分钟超时兜底
+      });
+    }
+  }, 2000).unref();
+}
 
 function processResourcesPath(): string | undefined {
   return (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
@@ -36,7 +57,7 @@ export function resolveScannerBridgeExe(): string {
   return found;
 }
 
-function runBridge(args: string[], timeoutMs = 120_000): Promise<{ stdout: string; stderr: string }> {
+function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Promise<{ stdout: string; stderr: string }> {
   const exePath = resolveScannerBridgeExe();
 
   return new Promise((resolve, reject) => {
@@ -44,6 +65,10 @@ function runBridge(args: string[], timeoutMs = 120_000): Promise<{ stdout: strin
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
     });
+
+    if (sessionId) {
+      activeScans.set(sessionId, child);
+    }
 
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
@@ -59,11 +84,17 @@ function runBridge(args: string[], timeoutMs = 120_000): Promise<{ stdout: strin
 
     child.on("error", (error) => {
       clearTimeout(timeout);
+      if (sessionId) {
+        activeScans.delete(sessionId);
+      }
       reject(error);
     });
 
     child.on("close", (code) => {
       clearTimeout(timeout);
+      if (sessionId) {
+        activeScans.delete(sessionId);
+      }
       const stdout = Buffer.concat(stdoutChunks).toString("utf8");
       const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
 
@@ -103,7 +134,7 @@ export async function scan(config: {
   filePrefix: string;
   maxPages: number;
   showUi?: boolean;
-}): Promise<BridgeScanResult> {
+}, sessionId?: string): Promise<BridgeScanResult> {
   const args: string[] = [
     "scan",
     "--source", config.sourceName,
@@ -123,6 +154,6 @@ export async function scan(config: {
     args.push("--show-ui");
   }
 
-  const { stdout } = await runBridge(args, 600_000); // 10 min timeout for scanning
+  const { stdout } = await runBridge(args, 600_000, sessionId); // 10 min timeout for scanning
   return parseBridgeJson(stdout) as unknown as BridgeScanResult;
 }

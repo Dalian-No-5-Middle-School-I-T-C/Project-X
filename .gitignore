@@ -34,10 +34,9 @@ native/**/*.ilk
 native/**/*.idb
 native/**/*.obj
 native/**/*.tlog/
-resources/native/win-x64/*.dll
-resources/native/win-x64/*.exe
-resources/native/win-ia32/*.dll
-resources/native/win-ia32/*.exe
+# 原生产物：只忽略超大 OpenCV DLL（scanner-bridge.exe / TWAINDSM.dll / answer-card-recognizer.exe 需入库，保证换机器可用）
+resources/native/win-x64/opencv_world4130.dll
+resources/native/win-ia32/opencv_world4130.dll
 scripts/image_processing/
 input/818619b500db2b0df1aa6d462872dfe6.jpg
 .workbuddy/
@@ -55,3 +54,20 @@ ignored/
 .qoder/ 
 .zcode/ 
 .omo/ 
+
+# ── 构建/探针缓存（可再生成，不入库） ──
+dist-staging/
+tw-min*
+tw-probe*
+
+# ── 个人路径写死的本地视觉验证脚本（非应用代码） ──
+scripts/screenshot.mjs
+
+# ── 一次性分析/调试脚本（P5/P6 遗留，停止跟踪但保留文件） ──
+scripts/p5-analyze-*.mjs
+scripts/p6-analyze-*.mjs
+scripts/p6-account-settings-debug.mjs
+scripts/radio-bug-*.mjs
+docs/class-diagram.mermaid
+docs/system_design.md
+docs/sequence-diagram.mermaid
