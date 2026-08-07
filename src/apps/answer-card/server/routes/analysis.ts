@@ -391,13 +391,18 @@ router.get("/exams/:examId/option-analysis", requireExamAccess, async (req, res,
 router.get("/exams/:examId/class-comparison", requireExamAccess, async (req, res, next) => {
   try {
     const raw = typeof req.query.classIds === "string" ? req.query.classIds : "";
-    const classIds = raw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
-    if (classIds.length < 2 || classIds.length > 8) {
-      res.status(400).json({ message: "请选择 2-8 个班级进行对比" });
+    let classIds = raw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+    const allClasses = req.query.all === "1" || req.query.all === "true";
+    const analysisRepo = new AnalysisRepository();
+    if (allClasses) {
+      const examClasses = await analysisRepo.getExamClasses(Number(req.params.examId));
+      classIds = examClasses.map((cls) => cls.classId);
+    }
+    if (classIds.length < 2 || (!allClasses && classIds.length > 30)) {
+      res.status(400).json({ message: "请选择 2-30 个班级（或使用 all=1 对比全部班级）" });
       return;
     }
     const includeOptions = req.query.includeOptions === "1" || req.query.includeOptions === "true";
-    const analysisRepo = new AnalysisRepository();
     const data = await analysisRepo.getClassComparison(Number(req.params.examId), classIds, includeOptions);
     res.json(data);
   } catch (error) {

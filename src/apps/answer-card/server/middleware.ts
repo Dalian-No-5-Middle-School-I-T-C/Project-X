@@ -52,6 +52,9 @@ export function makeGate(enforce: boolean, readPerm: string, writePerm: string) 
  * - head_teacher → own classes + created exams
  * - subject_teacher → own subject + classes + created exams
  * - plain teacher (no teacher_role) → null (back-compat)
+ *
+ * #178 双模式：quiz（晨测）考试对教师全量可见（放开精细权限），
+ * formal（大考）继续按 teacher_role + teacher_permissions 精细过滤。
  */
 export async function getVisibleExamIds(user: express.Request["user"]): Promise<number[] | null> {
   if (!user || user.role_name === "admin") return null;
@@ -62,6 +65,14 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
 
   const db = getMysqlDb();
 
+  async function withQuizExamIds(ids: number[]): Promise<number[]> {
+    // 晨测模式 = 全量权限：无论 teacher_role / teacher_permissions 如何限制，quiz 考试都可见
+    const quizRows = await db.all<{ id: number }>("SELECT id FROM exams WHERE exam_mode = 'quiz'");
+    const merged = new Set(ids);
+    for (const row of quizRows) merged.add(row.id);
+    return Array.from(merged);
+  }
+
   if (user.teacher_role === "head_teacher") {
     const classRows = await db.all<{ class_id: number }>(
       "SELECT class_id FROM teacher_classes WHERE teacher_id = ?",
@@ -70,7 +81,7 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
     const classIds = classRows.map((r) => r.class_id);
     if (classIds.length === 0) {
       const ownRows = await db.all<{ id: number }>("SELECT DISTINCT id FROM exams WHERE created_by = ?", user.id);
-      return ownRows.map((r) => r.id);
+      return await withQuizExamIds(ownRows.map((r) => r.id));
     }
     const rows = await db.all<{ id: number }>(
       `SELECT DISTINCT e.id FROM exams e
@@ -78,11 +89,12 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
       user.id,
       ...classIds
     );
-    return rows.map((r) => r.id);
+    return await withQuizExamIds(rows.map((r) => r.id));
   }
 
   if (user.teacher_role === "subject_teacher") {
-    if (!user.subject) return [];
+    // 学科教师未配置学科时，至少仍应看到晨测（quiz=全量权限）
+    if (!user.subject) return await withQuizExamIds([]);
     const classRows = await db.all<{ class_id: number }>(
       "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
       user.id,
@@ -91,7 +103,7 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
     const classIds = classRows.map((r) => r.class_id);
     if (classIds.length === 0) {
       const ownRows = await db.all<{ id: number }>("SELECT DISTINCT id FROM exams WHERE created_by = ?", user.id);
-      return ownRows.map((r) => r.id);
+      return await withQuizExamIds(ownRows.map((r) => r.id));
     }
     const rows = await db.all<{ id: number }>(
       `SELECT DISTINCT e.id FROM exams e
@@ -100,7 +112,7 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
       user.subject,
       ...classIds
     );
-    return rows.map((r) => r.id);
+    return await withQuizExamIds(rows.map((r) => r.id));
   }
 
   // Check teacher_permissions for additional restrictions
@@ -111,7 +123,7 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
         user.id
       );
       // If any restriction forbids all grades (grade_id = null), deny everything
-      if (restrictions.some((r) => r.grade_id === null)) return [];
+      if (restrictions.some((r) => r.grade_id === null)) return await withQuizExamIds([]);
       if (restrictions.length > 0) {
         const restrictedGrades = restrictions.map((r) => r.grade_id).filter(Boolean) as number[];
         const rows = await db.all<{ id: number }>(
@@ -120,7 +132,7 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
            WHERE e.grade_id NOT IN (${restrictedGrades.map(() => "?").join(",")})`,
           ...restrictedGrades
         );
-        return rows.map((r) => r.id);
+        return await withQuizExamIds(rows.map((r) => r.id));
       }
     }
   }

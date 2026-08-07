@@ -290,6 +290,7 @@ CREATE TABLE IF NOT EXISTS exams (
     retention_policy_id INTEGER REFERENCES data_retention_policies(id),
     review_mode    INTEGER DEFAULT 1,            -- v1.9.0: 1=1P 2=2P 3=3P
     review_enabled INTEGER DEFAULT 0,            -- v1.9.0: 0=未开启网阅 1=已开启
+    exam_mode      TEXT NOT NULL DEFAULT 'formal', -- v34: quiz=晨测(全量权限) formal=大考(精细权限，默认)
     created_by    INTEGER REFERENCES users(id),
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -435,6 +436,9 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     final_score      REAL,
     final_score_by   INTEGER REFERENCES users(id),
     score_breakdown  TEXT,
+    claimed_by       INTEGER REFERENCES users(id),
+    claimed_at       DATETIME,
+    claim_count      INTEGER NOT NULL DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(source_type, source_record_id, block_id, page_number, segment_index)
 );
@@ -680,8 +684,9 @@ CREATE INDEX IF NOT EXISTS idx_objective_recognitions_expires ON objective_recog
 CREATE INDEX IF NOT EXISTS idx_objective_grades_record ON objective_grades(record_id);
 CREATE INDEX IF NOT EXISTS idx_subjective_grades_record ON subjective_grades(record_id);
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_exam_student ON answer_block_crops(exam_id, student_id);
-CREATE INDEX IF NOT EXISTS idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
-CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
+  CREATE INDEX IF NOT EXISTS idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
+  CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
+  CREATE INDEX IF NOT EXISTS idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by);
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_student ON student_scores(student_id);
 -- 性能：成绩分析（排名/统计/概览）按 exam_id 过滤并按 total_score / assigned_score 排序

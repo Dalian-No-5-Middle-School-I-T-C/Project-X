@@ -29,7 +29,20 @@ import {
   Users,
   X
 } from "lucide-react";
+import {
+  Button,
+  Field,
+  Input,
+  Panel,
+  SegmentedControl,
+  Select,
+  SelectValue,
+  SelectTrigger,
+  SelectContent,
+  SelectItem,
+} from "../components/ui/v2";
 import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "../auth/api";
+import { cn } from "../lib/utils";
 import type {
   AnswerCard,
   BlankItem,
@@ -193,45 +206,47 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
   }
 
   return (
-    <>
-      <div className="panel-title">客观题机器阅卷块</div>
-      <label>
-        标题
-        <input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
-      </label>
-      <div className="answer-key-editor">
-        <div className="answer-key-title">
+    <div className="flex flex-col gap-3">
+      <div className="text-sm font-semibold text-foreground">客观题机器阅卷块</div>
+      <Field label="标题">
+        <Input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
+      </Field>
+
+      <Panel className="gap-2 p-3">
+        <div className="flex items-center justify-between text-xs">
           <strong>标准答案</strong>
-          <span>{missingAnswerCount === 0 ? "已全部配置" : `${missingAnswerCount} 题未配置`}</span>
+          <span className="text-muted-foreground">{missingAnswerCount === 0 ? "已全部配置" : `${missingAnswerCount} 题未配置`}</span>
         </div>
-        <div className="answer-key-grid">
+        <div className="flex flex-col gap-1.5">
           {questions.map((questionNumber) => (
-            <div className="answer-key-row" key={questionNumber}>
-              <span>{questionNumber}</span>
-              <div>
+            <div className="grid grid-cols-[22px_1fr] items-center gap-2" key={questionNumber}>
+              <span className="text-center text-xs font-semibold tabular-nums text-foreground">{questionNumber}</span>
+              <div className="flex flex-wrap gap-1">
                 {optionLabelsForQuestion(block, questionNumber).map((option) => {
                   const active = answerKey[questionNumber]?.includes(option) ?? false;
                   return (
-                    <button
+                    <Button
                       key={option}
                       type="button"
-                      className={active ? "active" : ""}
+                      variant={active ? "primary" : "outline"}
+                      size="icon-sm"
+                      aria-label={`第 ${questionNumber} 题 ${option} 选项`}
                       onClick={() => toggleAnswer(questionNumber, option)}
-                      title={`第 ${questionNumber} 题 ${option} 选项`}
+                      className="text-xs"
                     >
                       {option}
-                    </button>
+                    </Button>
                   );
                 })}
               </div>
             </div>
           ))}
         </div>
-      </div>
-      <div className="two-col">
-        <label>
-          起始题号
-          <input
+      </Panel>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="起始题号">
+          <Input
             type="number"
             min={1}
             value={block.questionStart}
@@ -243,10 +258,9 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
               })
             }
           />
-        </label>
-        <label>
-          题目数
-          <input
+        </Field>
+        <Field label="题目数">
+          <Input
             type="number"
             min={1}
             max={120}
@@ -259,12 +273,12 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
               })
             }
           />
-        </label>
+        </Field>
       </div>
-      <div className="two-col">
-        <label>
-          选项数
-          <input
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="选项数">
+          <Input
             type="number"
             min={2}
             max={8}
@@ -273,7 +287,6 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
               onChange((draft) => {
                 const objective = draft as ObjectiveBlock;
                 objective.optionCount = Number(event.target.value);
-                // v1.4.7: 同步到逐题配置
                 objective.questions = normalizeObjectiveQuestions(objective);
                 for (const q of objective.questions) {
                   q.optionCount = objective.optionCount;
@@ -282,62 +295,55 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
               })
             }
           />
-        </label>
-        <label>
-          每题分值
-          <input type="number" min={0} step={0.5} value={block.scorePerQuestion} onChange={(event) => onChange((draft) => void ((draft as ObjectiveBlock).scorePerQuestion = Number(event.target.value)))} />
-        </label>
+        </Field>
+        <Field label="每题分值">
+          <Input
+            type="number"
+            min={0}
+            step={0.5}
+            value={block.scorePerQuestion}
+            onChange={(event) => onChange((draft) => void ((draft as ObjectiveBlock).scorePerQuestion = Number(event.target.value)))}
+          />
+        </Field>
       </div>
-      <div className="two-col">
-        <label>
-          题型
-          <select
-            value={block.mode}
-            onChange={(event) =>
-              onChange((draft) => {
-                const objective = draft as ObjectiveBlock;
-                objective.mode = event.target.value as ObjectiveMode;
-                // v1.4.7: 同步块级题型到所有逐题配置
-                objective.questions = normalizeObjectiveQuestions(objective);
-                for (const q of objective.questions) {
-                  q.mode = objective.mode;
-                  if (objective.mode !== "multiple" && objective.mode !== "indefinite") {
-                    delete q.scoringRule;
-                  }
-                }
-                objective.answerKey = normalizeObjectiveAnswerKey(objective);
-              })
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="题型">
+          <Select value={block.mode} onValueChange={(value) => onChange((draft) => {
+            const objective = draft as ObjectiveBlock;
+            objective.mode = value as ObjectiveMode;
+            objective.questions = normalizeObjectiveQuestions(objective);
+            for (const q of objective.questions) {
+              q.mode = objective.mode;
+              if (objective.mode !== "multiple" && objective.mode !== "indefinite") {
+                delete q.scoringRule;
+              }
             }
-          >
-            {Object.entries(modeLabels).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          选项排列
-          <select
-            value={block.optionLayout ?? "horizontal"}
-            onChange={(event) =>
-              onChange((draft) => {
-                (draft as ObjectiveBlock).optionLayout = event.target.value as ObjectiveOptionLayout;
-              })
-            }
-          >
-            {Object.entries(optionLayoutLabels).map(([value, label]) => (
-              <option key={value} value={value}>
-                {label}
-              </option>
-            ))}
-          </select>
-        </label>
+            objective.answerKey = normalizeObjectiveAnswerKey(objective);
+          })}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {Object.entries(modeLabels).map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field label="选项排列">
+          <Select value={block.optionLayout ?? "horizontal"} onValueChange={(value) => onChange((draft) => { (draft as ObjectiveBlock).optionLayout = value as ObjectiveOptionLayout; })}>
+            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {Object.entries(optionLayoutLabels).map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Field>
       </div>
-      <div className="two-col">
-        <label>
-          少选1项得分
-          <input
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="少选1项得分">
+          <Input
             type="number"
             step={0.5}
             value={block.multipleScoring?.partialScores[1] ?? 0}
@@ -349,10 +355,9 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
               })
             }
           />
-        </label>
-        <label>
-          多选/错选得分
-          <input
+        </Field>
+        <Field label="多选/错选得分">
+          <Input
             type="number"
             step={0.5}
             value={block.multipleScoring?.wrongOrExtraScore ?? 0}
@@ -364,161 +369,117 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
               })
             }
           />
-        </label>
+        </Field>
       </div>
-      <div style={{ marginTop: 8 }}>
-        <button className="ghost-button" type="button" onClick={() => setShowPerQuestion(!showPerQuestion)} style={{ fontSize: 12 }}>
-          {showPerQuestion ? "▲ 收起每题配置" : "▼ 展开每题配置"}
-        </button>
-      </div>
+
+      <Button variant="ghost" size="sm" onClick={() => setShowPerQuestion(!showPerQuestion)}>
+        {showPerQuestion ? "▲ 收起每题配置" : "▼ 展开每题配置"}
+      </Button>
+
       {showPerQuestion && (
-      <div className="answer-key-editor">
-        <div className="answer-key-title">
-          <strong>每题配置</strong>
-          <span>可混排单选、多选、不定项</span>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {questionConfigs.map((question) => (
-            <div className="question-editor" key={question.questionNumber} style={{ margin: 0 }}>
-              <div className="question-editor-title">
-                <strong>第 {question.questionNumber} 题</strong>
-              </div>
-              <div className="three-col">
-                <label>
-                  题号
-                  <input type="number" min={1} value={question.questionNumber} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.questionNumber = Number(event.target.value)))} />
-                </label>
-                <label>
-                  题型
-                  <select value={question.mode} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => { draft.mode = event.target.value as ObjectiveMode; if (draft.mode === "single") draft.scoringRule = undefined; })}>
-                    {Object.entries(modeLabels).map(([value, label]) => (<option key={value} value={value}>{label}</option>))}
-                  </select>
-                </label>
-                <label>
-                  选项数
-                  <input type="number" min={2} max={8} value={question.optionCount} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.optionCount = Number(event.target.value)))} />
-                </label>
-              </div>
-              <label>
-                分值
-                <input type="number" min={0} step={0.5} value={question.score} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.score = Number(event.target.value)))} />
-              </label>
-              {question.mode !== "single" && (
-                <>
-                  <div className="two-col">
-                    <label>
-                      少选计分方式
-                      <select
-                        value={scoringRuleFor(question).type}
-                        onChange={(event) =>
-                          setScoringRuleType(
-                            question.questionNumber,
-                            event.target.value as "per_selected_count" | "by_correct_count" | "fixed_partial"
-                          )
-                        }
-                      >
-                        <option value="per_selected_count">按选对项数给分</option>
-                        <option value="by_correct_count">按正确答案数量给分</option>
-                        <option value="fixed_partial">少选固定分</option>
-                      </select>
-                    </label>
-                    <label>
-                      错选/多选/不选得分
-                      <input
-                        type="number"
-                        step={0.5}
-                        value={(scoringRuleFor(question) as any).wrongOrExtraScore ?? 0}
-                        onChange={(event) => updateWrongOrExtraScore(question.questionNumber, Number(event.target.value))}
-                      />
-                    </label>
-                  </div>
-                  {scoringRuleFor(question).type === "fixed_partial" ? (
-                    <label>
-                      少选固定得分
-                      <input
-                        type="number"
-                        step={0.5}
-                        value={(scoringRuleFor(question) as any).partialScore ?? 0}
-                        onChange={(event) => updateFixedPartialScore(question.questionNumber, Number(event.target.value))}
-                      />
-                    </label>
-                  ) : scoringRuleFor(question).type === "by_correct_count" ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      <span style={{ fontSize: 12, color: "var(--muted)" }}>
-                        根据标准答案个数，设置少选时选对几项得几分
-                      </span>
-                      {Array.from({ length: Math.max(0, question.optionCount - 1) }, (_, index) => index + 2).map((correctCount) => (
-                        <div key={correctCount} style={{ display: "grid", gridTemplateColumns: "84px 1fr", gap: 8, alignItems: "center" }}>
-                          <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{correctCount} 个答案</span>
-                          <div className="three-col">
-                            {Array.from({ length: correctCount - 1 }, (_, index) => index + 1).map((selectedCount) => (
-                              <label key={selectedCount}>
-                                {selectedCount} 项对
-                                <input
-                                  type="number"
-                                  step={0.5}
-                                  value={(scoringRuleFor(question) as any).partialScoresByCorrectCount?.[correctCount]?.[selectedCount] ?? 0}
-                                  onChange={(event) =>
-                                    updateByCorrectCountScore(
-                                      question.questionNumber,
-                                      correctCount,
-                                      selectedCount,
-                                      Number(event.target.value)
-                                    )
-                                  }
-                                />
-                              </label>
-                            ))}
+        <Panel className="gap-2 p-3">
+          <div className="flex items-center justify-between text-xs">
+            <strong>每题配置</strong>
+            <span className="text-muted-foreground">可混排单选、多选、不定项</span>
+          </div>
+          <div className="flex flex-col gap-3">
+            {questionConfigs.map((question) => (
+              <Panel key={question.questionNumber} className="gap-2 p-3">
+                <div className="text-xs font-semibold text-foreground">第 {question.questionNumber} 题</div>
+                <div className="grid grid-cols-3 gap-2">
+                  <Field label="题号">
+                    <Input type="number" min={1} value={question.questionNumber} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.questionNumber = Number(event.target.value)))} />
+                  </Field>
+                  <Field label="题型">
+                    <Select value={question.mode} onValueChange={(value) => updateQuestionConfig(question.questionNumber, (draft) => { draft.mode = value as ObjectiveMode; if (draft.mode === "single") draft.scoringRule = undefined; })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {Object.entries(modeLabels).map(([v, l]) => (<SelectItem key={v} value={v}>{l}</SelectItem>))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <Field label="选项数">
+                    <Input type="number" min={2} max={8} value={question.optionCount} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.optionCount = Number(event.target.value)))} />
+                  </Field>
+                </div>
+                <Field label="分值">
+                  <Input type="number" min={0} step={0.5} value={question.score} onChange={(event) => updateQuestionConfig(question.questionNumber, (draft) => void (draft.score = Number(event.target.value)))} />
+                </Field>
+                {question.mode !== "single" && (
+                  <>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Field label="少选计分方式">
+                        <Select value={scoringRuleFor(question).type} onValueChange={(value) => setScoringRuleType(question.questionNumber, value as "per_selected_count" | "by_correct_count" | "fixed_partial")}>
+                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="per_selected_count">按选对项数给分</SelectItem>
+                            <SelectItem value="by_correct_count">按正确答案数量给分</SelectItem>
+                            <SelectItem value="fixed_partial">少选固定分</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </Field>
+                      <Field label="错选/多选/不选得分">
+                        <Input type="number" step={0.5} value={(scoringRuleFor(question) as any).wrongOrExtraScore ?? 0} onChange={(event) => updateWrongOrExtraScore(question.questionNumber, Number(event.target.value))} />
+                      </Field>
+                    </div>
+                    {scoringRuleFor(question).type === "fixed_partial" ? (
+                      <Field label="少选固定得分">
+                        <Input type="number" step={0.5} value={(scoringRuleFor(question) as any).partialScore ?? 0} onChange={(event) => updateFixedPartialScore(question.questionNumber, Number(event.target.value))} />
+                      </Field>
+                    ) : scoringRuleFor(question).type === "by_correct_count" ? (
+                      <div className="flex flex-col gap-2">
+                        <span className="text-xs text-muted-foreground">根据标准答案个数，设置少选时选对几项得几分</span>
+                        {Array.from({ length: Math.max(0, question.optionCount - 1) }, (_, index) => index + 2).map((correctCount) => (
+                          <div key={correctCount} className="grid grid-cols-[84px_1fr] items-center gap-2">
+                            <span className="text-xs text-secondary-foreground">{correctCount} 个答案</span>
+                            <div className="grid grid-cols-3 gap-2">
+                              {Array.from({ length: correctCount - 1 }, (_, index) => index + 1).map((selectedCount) => (
+                                <Field key={selectedCount} label={`${selectedCount} 项对`}>
+                                  <Input type="number" step={0.5} value={(scoringRuleFor(question) as any).partialScoresByCorrectCount?.[correctCount]?.[selectedCount] ?? 0} onChange={(event) => updateByCorrectCountScore(question.questionNumber, correctCount, selectedCount, Number(event.target.value))} />
+                                </Field>
+                              ))}
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="three-col">
-                      {Array.from({ length: Math.max(1, question.optionCount - 1) }, (_, index) => index + 1).map((selectedCount) => (
-                        <label key={selectedCount}>
-                          选对 {selectedCount} 项
-                          <input
-                            type="number"
-                            step={0.5}
-                            value={(scoringRuleFor(question) as any).partialScores?.[selectedCount] ?? 0}
-                            onChange={(event) =>
-                              updatePerSelectedScore(question.questionNumber, selectedCount, Number(event.target.value))
-                            }
-                          />
-                        </label>
-                      ))}
-                    </div>
-                  )}
-                  <label className="check-row">
-                    <input
-                      type="checkbox"
-                      checked={(scoringRuleFor(question) as any).allowWrongOptions === true}
-                      onChange={(event) => updateAllowWrongOptions(question.questionNumber, event.target.checked)}
-                    />
-                    错选但未超过正确答案数时，只按选对项给分
-                  </label>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-3 gap-2">
+                        {Array.from({ length: Math.max(1, question.optionCount - 1) }, (_, index) => index + 1).map((selectedCount) => (
+                          <Field key={selectedCount} label={`选对 ${selectedCount} 项`}>
+                            <Input type="number" step={0.5} value={(scoringRuleFor(question) as any).partialScores?.[selectedCount] ?? 0} onChange={(event) => updatePerSelectedScore(question.questionNumber, selectedCount, Number(event.target.value))} />
+                          </Field>
+                        ))}
+                      </div>
+                    )}
+                    <label className="flex items-center gap-2 text-xs text-secondary-foreground">
+                      <input
+                        type="checkbox"
+                        checked={(scoringRuleFor(question) as any).allowWrongOptions === true}
+                        onChange={(event) => updateAllowWrongOptions(question.questionNumber, event.target.checked)}
+                      />
+                      错选但未超过正确答案数时，只按选对项给分
+                    </label>
+                  </>
+                )}
+              </Panel>
+            ))}
+          </div>
+        </Panel>
       )}
-      <p className="hint">横向模式少于 15 题按行排列、15 题及以上按 5 题小组网格排列；竖向模式按高考 AB 卡式 4 题一组纵向排布，每题选项仍保持横向小组选项。超过 5 个选项的题目独占一行。</p>
-    </>
-  );
-}
+
+      <p className="rounded-md bg-secondary p-2.5 text-xs text-muted-foreground">
+        横向模式少于 15 题按行排列、15 题及以上按 5 题小组网格排列；竖向模式按高考 AB 卡式 4 题一组纵向排布，每题选项仍保持横向小组选项。超过 5 个选项的题目独占一行。
+      </p>
+    </div>
+  );}
 
 export function SubjectiveEditor({
   block,
-  card,
   layoutVersion,
   onChange,
   onUpload
 }: {
   block: SubjectiveBlock;
-  card: AnswerCard;
   layoutVersion: 1 | 2;
   onChange: (mutator: (block: BodyBlock) => void) => void;
   onUpload: (blockId: string, questionId: string, file: File) => Promise<void>;
@@ -549,474 +510,335 @@ export function SubjectiveEditor({
     });
   }
 
-  function renderImageEditor(question: SubjectiveQuestion) {
-    const images = question.images ?? [];
-    return (
-      <>
-        <label className="upload-button">
-          <ImagePlus size={16} /> 插入图片
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) void onUpload(block.id, question.id, file);
-              event.currentTarget.value = "";
-            }}
-          />
-        </label>
-        {images.map((image, index) => (
-          <div className="image-row" key={`${image.assetId}_${index}`}>
-            <span title={image.originalName ?? image.assetId}>{image.originalName ?? image.assetId}</span>
-            <input
-              type="number"
-              min={10}
-              max={200}
-              title="宽度(mm)"
-              value={image.widthMm}
-              onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))}
-            />
-            <input
-              type="number"
-              min={10}
-              max={200}
-              title="高度(mm)"
-              value={image.heightMm}
-              onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))}
-            />
-            <select
-              value={image.align}
-              title="对齐方式"
-              onChange={(event) =>
-                updateQuestion(question.id, (draft) => void ((draft.images![index].align = event.target.value as "left" | "center" | "right")))
-              }
-            >
-              <option value="left">靠左</option>
-              <option value="center">居中</option>
-              <option value="right">靠右</option>
-            </select>
-            <button
-              title="删除图片"
-              onClick={() => updateQuestion(question.id, (draft) => void (draft.images = (draft.images ?? []).filter((_, imgIndex) => imgIndex !== index)))}
-            >
-              <Trash2 size={15} />
-            </button>
-          </div>
-        ))}
-      </>
-    );
-  }
-
   return (
     <>
-      <div className="panel-title">{isFillBlankBlock ? "填空题块" : isEssayBlock ? "作文块" : "解答题块"}</div>
-      <label>
-        标题
-        <input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
-      </label>
-      {isFillBlankBlock && (
-        <>
-          <label>
-            填空题块满分
-            <input
-              type="number"
-              min={0}
-              max={60}
-              step={0.5}
-              value={block.questions[0]?.score ?? 0}
-              onChange={(event) =>
-                onChange((draft) => {
-                  if (draft.type !== "subjective") return;
-                  const scoreQuestion = draft.questions[0];
-                  if (!scoreQuestion) return;
-                  scoreQuestion.score = Number(event.target.value);
-                  scoreQuestion.style = "manual_score_grid";
-                })
-              }
-            />
-          </label>
-          {layoutVersion === 2 && (block.questions[0]?.score ?? 0) <= 0 && (
-            <p className="inline-warning">满分为 0，V2 不会生成分数填涂格。请先设置满分。</p>
-          )}
-        </>
-      )}
-      {block.questions.map((question) => (
-        <div className="question-editor" key={question.id}>
-          <div className="question-editor-title">
-            <strong>第 {question.number} 题</strong>
-            {!isEssayBlock && (
-            <button
-              title="删除小题"
-              onClick={() =>
-                onChange((draft) => {
-                  if (draft.type !== "subjective") return;
-                  const isScoreQuestion = isFillBlankBlock && draft.questions[0]?.id === question.id;
-                  const blockScore = draft.questions[0]?.score ?? 0;
-                  draft.questions = draft.questions.filter((item) => item.id !== question.id);
-                  if (isScoreQuestion && draft.questions[0]) {
-                    draft.questions[0].score = blockScore;
-                    draft.questions[0].style = "manual_score_grid";
-                  }
-                })
-              }
-            >
-              <Trash2 size={15} />
-            </button>
-            )}
-          </div>
-          {layoutVersion === 2 && !isFillBlankBlock && question.style === "manual_score_grid" && question.score <= 0 && (
-            <p className="inline-warning">分值为 0，V2 已隐藏 0/0.5 分数格；设置正分后会自动显示。</p>
-          )}
-          <div className="two-col">
-            <label>
-              题号
-              <input value={question.number} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.number = event.target.value))} />
-            </label>
-            {isFillBlankBlock ? (
-              <label>
-                默认横线宽(mm)
-                <input
-                  type="number"
-                  min={8}
-                  value={question.blanks?.widthMm ?? 22}
-                  onChange={(event) =>
-                    updateQuestion(
-                      question.id,
-                      (draft) => void (draft.blanks = { ...(draft.blanks ?? { count: 1, heightMm: 6, labelStyle: "none" }), widthMm: Number(event.target.value) })
-                    )
-                  }
-                />
-              </label>
-            ) : (
-              <label>
-                分值
-                <input type="number" min={0} step={0.5} value={question.score} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.score = Number(event.target.value)))} />
-              </label>
-            )}
-          </div>
-          {isFillBlankBlock ? (
-            <>
-            <div className="three-col">
-              <label>
-                空数
-                <input
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={question.blanks?.count ?? 1}
-                  onChange={(event) =>
-                    updateQuestion(question.id, (draft) => {
-                      const count = Math.max(1, Math.min(8, Number(event.target.value) || 1));
-                      const widthMm = draft.blanks?.widthMm ?? 22;
-                      const heightMm = draft.blanks?.heightMm ?? 6;
-                      const labelStyle = draft.blanks?.labelStyle ?? "none";
-                      const prev = draft.blanks?.items ?? [];
-                      const items = Array.from({ length: count }, (_, index) => ({
-                        label: prev[index]?.label,
-                        widthMm: prev[index]?.widthMm ?? widthMm,
-                        heightMm: prev[index]?.heightMm ?? heightMm,
-                        rightAnnotation: prev[index]?.rightAnnotation
-                      }));
-                      draft.blanks = { count, widthMm, heightMm, labelStyle, items };
-                    })
-                  }
-                />
-              </label>
-              <label>
-                默认横线高(mm)
-                <input
-                  type="number"
-                  min={4}
-                  value={question.blanks?.heightMm ?? 6}
-                  onChange={(event) =>
-                    updateQuestion(
-                      question.id,
-                      (draft) => void (draft.blanks = { ...(draft.blanks ?? { count: 1, widthMm: 22, labelStyle: "none" }), heightMm: Number(event.target.value) })
-                    )
-                  }
-                />
-              </label>
-              <label>
-                序号类型
-                <select
-                  value={question.blanks?.labelStyle ?? "none"}
-                  onChange={(event) =>
-                    updateQuestion(
-                      question.id,
-                      (draft) =>
-                        void (draft.blanks = {
-                          ...(draft.blanks ?? { count: 1, widthMm: 22, heightMm: 6 }),
-                          labelStyle: event.target.value as BlankLabelStyle
-                        })
-                    )
-                  }
-                >
-                  {Object.entries(blankLabelStyleLabels).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <p className="hint">「默认横线宽/高」仅作为新增空的默认值；已列出的每个空可单独调整宽、高与批注。</p>
-            <label>
-              文字注释
-              <textarea
-                rows={2}
-                maxLength={160}
-                placeholder="可填写题干说明，如：看图计算并填空；注：答案不唯一"
-                value={question.annotation ?? ""}
+      <div className="flex flex-col gap-3">
+        <div className="text-sm font-semibold text-foreground">{isFillBlankBlock ? "填空题块" : isEssayBlock ? "作文块" : "解答题块"}</div>
+        <Field label="标题">
+          <Input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
+        </Field>
+        {isFillBlankBlock && (
+          <>
+            <Field label="填空题块满分">
+              <Input
+                type="number"
+                min={0}
+                max={60}
+                step={0.5}
+                value={block.questions[0]?.score ?? 0}
                 onChange={(event) =>
-                  updateQuestion(question.id, (draft) => void (draft.annotation = event.target.value.trim() ? event.target.value : undefined))
+                  onChange((draft) => {
+                    if (draft.type !== "subjective") return;
+                    const scoreQuestion = draft.questions[0];
+                    if (!scoreQuestion) return;
+                    scoreQuestion.score = Number(event.target.value);
+                    scoreQuestion.style = "manual_score_grid";
+                  })
                 }
               />
-            </label>
-            <div className="blank-item-list">
-              {answerBlankItems(question).map((item, blankIndex) => (
-                <div className="blank-item-row" key={blankIndex}>
-                  <label>
-                    空{blankIndex + 1} 宽(mm)
-                    <input
-                      type="number"
-                      min={8}
-                      max={60}
-                      value={item.widthMm}
-                      onChange={(event) =>
-                        updateAnswerBlankItems(question.id, (items) =>
-                          items.map((current, index) => (index === blankIndex ? { ...current, widthMm: Number(event.target.value) } : current))
-                        )
-                      }
-                    />
-                  </label>
-                  <label>
-                    高(mm)
-                    <input
-                      type="number"
-                      min={4}
-                      max={20}
-                      value={item.heightMm}
-                      onChange={(event) =>
-                        updateAnswerBlankItems(question.id, (items) =>
-                          items.map((current, index) => (index === blankIndex ? { ...current, heightMm: Number(event.target.value) } : current))
-                        )
-                      }
-                    />
-                  </label>
-                  <label>
-                    空{blankIndex + 1} 右侧批注
-                    <input
-                      value={item.rightAnnotation ?? ""}
-                      placeholder="如：填＞或＜"
-                      onChange={(event) =>
-                        updateAnswerBlankItems(question.id, (items) =>
-                          items.map((current, index) =>
-                            index === blankIndex ? { ...current, rightAnnotation: event.target.value || undefined } : current
-                          )
-                        )
-                      }
-                    />
-                  </label>
-                  <button
-                    title="删除这个空"
-                    onClick={() => updateAnswerBlankItems(question.id, (items) => (items.length > 1 ? items.filter((_, index) => index !== blankIndex) : items))}
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
-              ))}
-              <button
-                className="ghost-button"
+            </Field>
+            {layoutVersion === 2 && (block.questions[0]?.score ?? 0) <= 0 && (
+              <p className="rounded-md border border-warning-border bg-warning-soft p-2 text-xs text-warning-fg">满分为 0，V2 不会生成分数填涂格。请先设置满分。</p>
+            )}
+          </>
+        )}
+        {block.questions.map((question) => (
+          <Panel key={question.id} className="gap-2 p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-foreground">第 {question.number} 题</span>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="删除小题"
+                className="text-destructive-fg hover:bg-destructive-soft"
                 onClick={() =>
-                  updateAnswerBlankItems(question.id, (items) => [
-                    ...items,
-                    {
-                      label: undefined,
-                      widthMm: question.blanks?.widthMm ?? 22,
-                      heightMm: question.blanks?.heightMm ?? 6
+                  onChange((draft) => {
+                    if (draft.type !== "subjective") return;
+                    const isScoreQuestion = isFillBlankBlock && draft.questions[0]?.id === question.id;
+                    const blockScore = draft.questions[0]?.score ?? 0;
+                    draft.questions = draft.questions.filter((item) => item.id !== question.id);
+                    if (isScoreQuestion && draft.questions[0]) {
+                      draft.questions[0].score = blockScore;
+                      draft.questions[0].style = "manual_score_grid";
                     }
-                  ])
+                  })
                 }
               >
-                <Plus size={16} /> 添加空
-              </button>
+                <Trash2 size={14} />
+              </Button>
             </div>
-            {renderImageEditor(question)}
-            </>
-          ) : (!isEssayBlock && (
-            <>
-              <label>
-                主观题样式
-                <select value={question.style} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.style = event.target.value as SubjectiveStyle))}>
-                  {Object.entries(styleLabels).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {question.style === "manual_score_grid" && (
-                <div style={{ borderLeft: "1px solid var(--line)", paddingLeft: 8, margin: "4px 0" }}>
-                  <label className="check-row">
-                    <input
-                      type="checkbox"
-                      checked={question.scoreGrid?.enabled !== false}
-                      onChange={(event) => updateQuestion(question.id, (draft) => {
-                        draft.scoreGrid = {
-                          enabled: event.target.checked,
-                          strokeColor: draft.scoreGrid?.strokeColor ?? "#999",
-                          strokeWidthMm: draft.scoreGrid?.strokeWidthMm ?? 0.15,
-                          fillColor: draft.scoreGrid?.fillColor ?? "#fff",
-                          fontSize: draft.scoreGrid?.fontSize ?? 2.8,
-                          dividerColor: draft.scoreGrid?.dividerColor ?? "#ccc",
-                          dividerWidthMm: draft.scoreGrid?.dividerWidthMm ?? 0.1,
-                          showLabel: draft.scoreGrid?.showLabel !== false,
-                        };
-                      })}
-                    />
-                    显示得分填涂格
-                  </label>
-                  {question.scoreGrid?.enabled !== false && (
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 5 }}>
-                      <label>
-                        格线色
-                        <input type="color" value={question.scoreGrid?.strokeColor ?? "#999"}
-                          onChange={(e) => updateQuestion(question.id, (draft) => {
-                            if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, strokeColor: e.target.value };
-                          })}
-                          style={{ padding: 1, height: 24, width: "100%" }} />
-                      </label>
-                      <label>
-                        分隔线
-                        <input type="color" value={question.scoreGrid?.dividerColor ?? "#ccc"}
-                          onChange={(e) => updateQuestion(question.id, (draft) => {
-                            if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, dividerColor: e.target.value };
-                          })}
-                          style={{ padding: 1, height: 24, width: "100%" }} />
-                      </label>
-                      <label className="check-row" style={{ gridColumn: "1 / -1" }}>
-                        <input type="checkbox" checked={question.scoreGrid?.showLabel !== false}
-                          onChange={(e) => updateQuestion(question.id, (draft) => {
-                            if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, showLabel: e.target.checked };
-                          })} />
-                        显示"得分"标签
-                      </label>
-                    </div>
-                  )}
-                </div>
-              )}
-              <label>
-                作答区类型
-                <select
-                  value={question.kind}
-                  onChange={(event) =>
-                    updateQuestion(question.id, (draft) => {
-                      draft.kind = event.target.value as SubjectiveKind;
-                      if (draft.kind === "blank" && !draft.blanks?.items?.length) {
-                        draft.blanks = defaultAnswerBlankQuestion(numericQuestionValue(draft.number)).blanks;
-                      }
-                      if (draft.kind === "blank") {
-                        draft.style = "manual_score_grid";
-                        if (draft.score <= 0) draft.score = 12;
-                      }
-                    })
-                  }
-                >
-                  {Object.entries(kindLabels).map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {layoutVersion === 2 && question.kind === "lined_answer" && question.lineGrid?.enabled ? (
-                <label>
-                  作答行数
-                  <input
+            {layoutVersion === 2 && !isFillBlankBlock && question.style === "manual_score_grid" && question.score <= 0 && (
+              <p className="rounded-md border border-warning-border bg-warning-soft p-2 text-xs text-warning-fg">分值为 0，V2 已隐藏 0/0.5 分数格；设置正分后会自动显示。</p>
+            )}
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="题号">
+                <Input value={question.number} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.number = event.target.value))} />
+              </Field>
+              {isFillBlankBlock ? (
+                <Field label="横线宽(mm)">
+                  <Input
                     type="number"
-                    min={1}
-                    max={20}
-                    value={answerLineCount(question)}
+                    min={8}
+                    value={question.blanks?.widthMm ?? 22}
                     onChange={(event) =>
-                      updateQuestion(question.id, (draft) => {
-                        const spacing = draft.lineGrid?.lineSpacingMm ?? 8;
-                        draft.minHeightMm = heightForAnswerLines(Number(event.target.value), spacing);
-                      })
+                      updateQuestion(
+                        question.id,
+                        (draft) => void (draft.blanks = { ...(draft.blanks ?? { count: 1, heightMm: 6, labelStyle: "none" }), widthMm: Number(event.target.value) })
+                      )
                     }
                   />
-                </label>
+                </Field>
               ) : (
-                <label>
-                  最小高度(mm)
-                  <input type="number" min={24} max={220} value={question.minHeightMm} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.minHeightMm = Number(event.target.value)))} />
-                </label>
+                <Field label="分值">
+                  <Input type="number" min={0} step={0.5} value={question.score} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.score = Number(event.target.value)))} />
+                </Field>
               )}
-            </>
-          ))}
-          {question.kind === "blank" && !isFillBlankBlock && (
-            <div className="blank-item-list">
-              {answerBlankItems(question).map((item, blankIndex) => (
-                <div className="blank-item-row" key={blankIndex}>
-                  <label>
-                    小题号
-                    <input
-                      value={item.label ?? ""}
-                      onChange={(event) =>
-                        updateAnswerBlankItems(question.id, (items) =>
-                          items.map((current, index) => (index === blankIndex ? { ...current, label: event.target.value } : current))
-                        )
-                      }
-                    />
-                  </label>
-                  <label>
-                    右侧批注
-                    <input
-                      value={item.rightAnnotation ?? ""}
-                      placeholder="如：填＞或＜"
-                      onChange={(event) =>
-                        updateAnswerBlankItems(question.id, (items) =>
-                          items.map((current, index) => (index === blankIndex ? { ...current, rightAnnotation: event.target.value || undefined } : current))
-                        )
-                      }
-                    />
-                  </label>
-                  <label>
-                    宽(mm)
-                    <input
+            </div>
+            {isFillBlankBlock ? (
+              <>
+                <div className="grid grid-cols-3 gap-2">
+                  <Field label="空数">
+                    <Input
                       type="number"
-                      min={8}
-                      value={item.widthMm}
+                      min={1}
+                      max={8}
+                      value={question.blanks?.count ?? 1}
                       onChange={(event) =>
-                        updateAnswerBlankItems(question.id, (items) =>
-                          items.map((current, index) => (index === blankIndex ? { ...current, widthMm: Number(event.target.value) } : current))
-                        )
+                        updateQuestion(question.id, (draft) => {
+                          const count = Math.max(1, Math.min(8, Number(event.target.value) || 1));
+                          const widthMm = draft.blanks?.widthMm ?? 22;
+                          const heightMm = draft.blanks?.heightMm ?? 6;
+                          const labelStyle = draft.blanks?.labelStyle ?? "none";
+                          const prev = draft.blanks?.items ?? [];
+                          const items = Array.from({ length: count }, (_, index) => ({
+                            label: prev[index]?.label,
+                            widthMm: prev[index]?.widthMm ?? widthMm,
+                            heightMm: prev[index]?.heightMm ?? heightMm,
+                            rightAnnotation: prev[index]?.rightAnnotation
+                          }));
+                          draft.blanks = { count, widthMm, heightMm, labelStyle, items };
+                        })
                       }
                     />
-                  </label>
-                  <label>
-                    高(mm)
-                    <input
+                  </Field>
+                  <Field label="横线高度(mm)">
+                    <Input
                       type="number"
                       min={4}
-                      value={item.heightMm}
+                      value={question.blanks?.heightMm ?? 6}
                       onChange={(event) =>
-                        updateAnswerBlankItems(question.id, (items) =>
-                          items.map((current, index) => (index === blankIndex ? { ...current, heightMm: Number(event.target.value) } : current))
+                        updateQuestion(
+                          question.id,
+                          (draft) => void (draft.blanks = { ...(draft.blanks ?? { count: 1, widthMm: 22, labelStyle: "none" }), heightMm: Number(event.target.value) })
                         )
                       }
                     />
-                  </label>
-                  <button
-                    title="删除这个空"
-                    onClick={() => updateAnswerBlankItems(question.id, (items) => (items.length > 1 ? items.filter((_, index) => index !== blankIndex) : items))}
-                  >
-                    <Trash2 size={15} />
-                  </button>
+                  </Field>
+                  <Field label="序号类型">
+                    <Select value={question.blanks?.labelStyle ?? "none"} onValueChange={(value) =>
+                      updateQuestion(
+                        question.id,
+                        (draft) =>
+                          void (draft.blanks = {
+                            ...(draft.blanks ?? { count: 1, widthMm: 22, heightMm: 6 }),
+                            labelStyle: value as BlankLabelStyle
+                          })
+                      )
+                    }>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {Object.entries(blankLabelStyleLabels).map(([value, label]) => (
+                          <SelectItem key={value} value={value}>{label}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
                 </div>
-              ))}
-              <button
-                className="ghost-button"
-                onClick={() =>
+                <div className="flex flex-col gap-2 border-l-2 border-border-subtle pl-2">
+                  {answerBlankItems(question).map((item, blankIndex) => (
+                    <Field key={blankIndex} label={`空${blankIndex + 1} 右侧批注`}>
+                      <Input
+                        value={item.rightAnnotation ?? ""}
+                        placeholder="如：填＞或＜"
+                        onChange={(event) =>
+                          updateAnswerBlankItems(question.id, (items) =>
+                            items.map((current, index) =>
+                              index === blankIndex ? { ...current, rightAnnotation: event.target.value || undefined } : current
+                            )
+                          )
+                        }
+                      />
+                    </Field>
+                  ))}
+                </div>
+              </>
+            ) : (
+              <>
+                <Field label="主观题样式">
+                  <Select value={question.style} onValueChange={(value) => updateQuestion(question.id, (draft) => void (draft.style = value as SubjectiveStyle))}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(styleLabels).map(([value, label]) => (
+                        <SelectItem key={value} value={value}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                {question.style === "manual_score_grid" && (
+                  <div className="border-l-2 border-border-subtle pl-2">
+                    <label className="flex items-center gap-2 text-xs text-secondary-foreground">
+                      <input
+                        type="checkbox"
+                        checked={question.scoreGrid?.enabled !== false}
+                        onChange={(event) => updateQuestion(question.id, (draft) => {
+                          draft.scoreGrid = {
+                            enabled: event.target.checked,
+                            strokeColor: draft.scoreGrid?.strokeColor ?? "#999",
+                            strokeWidthMm: draft.scoreGrid?.strokeWidthMm ?? 0.15,
+                            fillColor: draft.scoreGrid?.fillColor ?? "#fff",
+                            fontSize: draft.scoreGrid?.fontSize ?? 2.8,
+                            dividerColor: draft.scoreGrid?.dividerColor ?? "#ccc",
+                            dividerWidthMm: draft.scoreGrid?.dividerWidthMm ?? 0.1,
+                            showLabel: draft.scoreGrid?.showLabel !== false,
+                          };
+                        })}
+                      />
+                      显示得分填涂格
+                    </label>
+                    {question.scoreGrid?.enabled !== false && (
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <Field label="格线色">
+                          <Input type="color" value={question.scoreGrid?.strokeColor ?? "#999"}
+                            onChange={(e) => updateQuestion(question.id, (draft) => {
+                              if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, strokeColor: e.target.value };
+                            })}
+                            className="h-7 px-1 py-0.5" />
+                        </Field>
+                        <Field label="分隔线">
+                          <Input type="color" value={question.scoreGrid?.dividerColor ?? "#ccc"}
+                            onChange={(e) => updateQuestion(question.id, (draft) => {
+                              if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, dividerColor: e.target.value };
+                            })}
+                            className="h-7 px-1 py-0.5" />
+                        </Field>
+                        <label className="col-span-2 flex items-center gap-2 text-xs text-secondary-foreground">
+                          <input type="checkbox" checked={question.scoreGrid?.showLabel !== false}
+                            onChange={(e) => updateQuestion(question.id, (draft) => {
+                              if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, showLabel: e.target.checked };
+                            })} />
+                          显示"得分"标签
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <Field label="作答区类型">
+                  <Select
+                    value={question.kind}
+                    onValueChange={(value) =>
+                      updateQuestion(question.id, (draft) => {
+                        draft.kind = value as SubjectiveKind;
+                        if (draft.kind === "blank" && !draft.blanks?.items?.length) {
+                          draft.blanks = defaultAnswerBlankQuestion(numericQuestionValue(draft.number)).blanks;
+                        }
+                        if (draft.kind === "blank") {
+                          draft.style = "manual_score_grid";
+                          if (draft.score <= 0) draft.score = 12;
+                        }
+                      })
+                    }
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(kindLabels).map(([value, label]) => (
+                        <SelectItem key={value} value={value}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                {layoutVersion === 2 && question.kind === "lined_answer" && question.lineGrid?.enabled ? (
+                  <Field label="作答行数">
+                    <Input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={answerLineCount(question)}
+                      onChange={(event) =>
+                        updateQuestion(question.id, (draft) => {
+                          const spacing = draft.lineGrid?.lineSpacingMm ?? 8;
+                          draft.minHeightMm = heightForAnswerLines(Number(event.target.value), spacing);
+                        })
+                      }
+                    />
+                  </Field>
+                ) : (
+                  <Field label="最小高度(mm)">
+                    <Input type="number" min={24} max={220} value={question.minHeightMm} onChange={(event) => updateQuestion(question.id, (draft) => void (draft.minHeightMm = Number(event.target.value)))} />
+                  </Field>
+                )}
+              </>
+            )}
+            {question.kind === "blank" && !isFillBlankBlock && (
+              <div className="flex flex-col gap-2 border-l-2 border-border-subtle pl-2">
+                {answerBlankItems(question).map((item, blankIndex) => (
+                  <div className="grid grid-cols-[1fr_1fr_80px_80px_28px] items-end gap-2" key={blankIndex}>
+                    <Field label="小题号">
+                      <Input
+                        value={item.label ?? ""}
+                        onChange={(event) =>
+                          updateAnswerBlankItems(question.id, (items) =>
+                            items.map((current, index) => (index === blankIndex ? { ...current, label: event.target.value } : current))
+                          )
+                        }
+                      />
+                    </Field>
+                    <Field label="右侧批注">
+                      <Input
+                        value={item.rightAnnotation ?? ""}
+                        placeholder="如：填＞或＜"
+                        onChange={(event) =>
+                          updateAnswerBlankItems(question.id, (items) =>
+                            items.map((current, index) => (index === blankIndex ? { ...current, rightAnnotation: event.target.value || undefined } : current))
+                          )
+                        }
+                      />
+                    </Field>
+                    <Field label="宽(mm)">
+                      <Input
+                        type="number"
+                        min={8}
+                        value={item.widthMm}
+                        onChange={(event) =>
+                          updateAnswerBlankItems(question.id, (items) =>
+                            items.map((current, index) => (index === blankIndex ? { ...current, widthMm: Number(event.target.value) } : current))
+                          )
+                        }
+                      />
+                    </Field>
+                    <Field label="高(mm)">
+                      <Input
+                        type="number"
+                        min={4}
+                        value={item.heightMm}
+                        onChange={(event) =>
+                          updateAnswerBlankItems(question.id, (items) =>
+                            items.map((current, index) => (index === blankIndex ? { ...current, heightMm: Number(event.target.value) } : current))
+                          )
+                        }
+                      />
+                    </Field>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="删除这个空"
+                      className="text-destructive-fg hover:bg-destructive-soft"
+                      onClick={() => updateAnswerBlankItems(question.id, (items) => (items.length > 1 ? items.filter((_, index) => index !== blankIndex) : items))}
+                    >
+                      <Trash2 size={14} />
+                    </Button>
+                  </div>
+                ))}
+                <Button variant="outline" size="sm" onClick={() =>
                   updateAnswerBlankItems(question.id, (items) => [
                     ...items,
                     {
@@ -1025,260 +847,208 @@ export function SubjectiveEditor({
                       heightMm: items[items.length - 1]?.heightMm ?? 6
                     }
                   ])
-                }
-              >
-                <Plus size={16} /> 添加空
-              </button>
-            </div>
-          )}
-          {!isFillBlankBlock && (
-            <>
-              {question.kind !== "blank" && !isEssayBlock && (
-                <>
-              <label className="check-row">
-                <input
-                  type="checkbox"
-                  checked={question.lineGrid?.enabled ?? false}
-                  onChange={(event) => updateQuestion(question.id, (draft) => {
-                    const wasOn = draft.lineGrid?.enabled;
-                    const enabled = event.target.checked;
-                    draft.lineGrid = {
-                      lineSpacingMm: draft.lineGrid?.lineSpacingMm ?? 8,
-                      lineColor: draft.lineGrid?.lineColor ?? "#222",
-                      lineWidthMm: draft.lineGrid?.lineWidthMm ?? 0.15,
-                      insetLeftMm: draft.lineGrid?.insetLeftMm ?? 8,
-                      insetRightMm: draft.lineGrid?.insetRightMm ?? 6,
-                      lineStyle: draft.lineGrid?.lineStyle ?? "solid",
-                      fixedLineCount: draft.lineGrid?.fixedLineCount,
-                      enabled,
-                    };
-                    if (!wasOn && enabled) {
-                      draft.kind = "lined_answer";
-                      draft.lineGrid = { ...draft.lineGrid, fixedLineCount: answerLineCount(draft) };
-                      draft.minHeightMm = heightForAnswerLines(draft.lineGrid.fixedLineCount!, draft.lineGrid.lineSpacingMm);
-                    }
-                  })}
-                />
-                启用横线格
-              </label>
-              {question.lineGrid?.enabled && (
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                  <label style={{ gridColumn: "1 / -1" }}>
-                    线型
-                    <select
-                      value={question.lineGrid.lineStyle ?? "solid"}
-                      onChange={(event) => updateQuestion(question.id, (draft) => {
-                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineStyle: event.target.value as "solid" | "dashed" | "dotted" };
-                      })}
-                    >
-                      <option value="solid">实线</option>
-                      <option value="dashed">虚线</option>
-                      <option value="dotted">点线</option>
-                    </select>
-                  </label>
-                  <label>
-                    行数
-                    <input
-                      type="number" min={1} max={30}
-                      value={question.lineGrid.fixedLineCount ?? answerLineCount(question)}
-                      onChange={(event) => updateQuestion(question.id, (draft) => {
-                        if (!draft.lineGrid) return;
-                        const count = Math.max(1, Math.min(30, Number(event.target.value) || 1));
-                        draft.lineGrid = { ...draft.lineGrid, fixedLineCount: count };
-                        draft.minHeightMm = heightForAnswerLines(count, draft.lineGrid.lineSpacingMm);
-                      })}
-                    />
-                  </label>
-                  <label>
-                    间距 (mm)
-                    <input
-                      type="number" min={5} max={16} step={1}
-                      value={question.lineGrid.lineSpacingMm ?? 8}
-                      onChange={(event) => updateQuestion(question.id, (draft) => {
-                        if (!draft.lineGrid) return;
-                        const sp = Number(event.target.value) || 8;
-                        draft.lineGrid = { ...draft.lineGrid, lineSpacingMm: sp };
-                        const count = draft.lineGrid.fixedLineCount;
-                        if (count) draft.minHeightMm = heightForAnswerLines(count, sp);
-                      })}
-                    />
-                  </label>
-                  <label>
-                    颜色
-                    <input
-                      type="color"
-                      value={question.lineGrid.lineColor ?? "#222"}
-                      onChange={(event) => updateQuestion(question.id, (draft) => {
-                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineColor: event.target.value };
-                      })}
-                      style={{ padding: 2, height: 28, width: "100%" }}
-                    />
-                  </label>
-                  <label>
-                    线宽 (mm)
-                    <input
-                      type="number" min={0.05} max={0.5} step={0.05}
-                      value={question.lineGrid.lineWidthMm ?? 0.15}
-                      onChange={(event) => updateQuestion(question.id, (draft) => {
-                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineWidthMm: Number(event.target.value) || 0.15 };
-                      })}
-                    />
-                  </label>
-                  <label>
-                    左边距 (mm)
-                    <input
-                      type="number" min={0} max={20}
-                      value={question.lineGrid.insetLeftMm ?? 8}
-                      onChange={(event) => updateQuestion(question.id, (draft) => {
-                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, insetLeftMm: Number(event.target.value) ?? 8 };
-                      })}
-                    />
-                  </label>
-                  <label>
-                    右边距 (mm)
-                    <input
-                      type="number" min={0} max={20}
-                      value={question.lineGrid.insetRightMm ?? 6}
-                      onChange={(event) => updateQuestion(question.id, (draft) => {
-                        if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, insetRightMm: Number(event.target.value) ?? 6 };
-                      })}
-                    />
-                  </label>
-                </div>
-              )}
-                </>
-              )}
-              {renderImageEditor(question)}
-            </>
-          )}
-        </div>
-      ))}
-      {isFillBlankBlock && (
-        <button
-          className="ghost-button"
-          onClick={() =>
+                }>
+                  <Plus size={14} /> 添加空
+                </Button>
+              </div>
+            )}
+            {!isFillBlankBlock && (
+              <>
+                {question.kind !== "blank" && (
+                  <>
+                    <label className="flex items-center gap-2 text-xs text-secondary-foreground">
+                      <input
+                        type="checkbox"
+                        checked={question.lineGrid?.enabled ?? false}
+                        onChange={(event) => updateQuestion(question.id, (draft) => {
+                          const wasOn = draft.lineGrid?.enabled;
+                          const enabled = event.target.checked;
+                          draft.lineGrid = {
+                            lineSpacingMm: draft.lineGrid?.lineSpacingMm ?? 8,
+                            lineColor: draft.lineGrid?.lineColor ?? "#222",
+                            lineWidthMm: draft.lineGrid?.lineWidthMm ?? 0.15,
+                            insetLeftMm: draft.lineGrid?.insetLeftMm ?? 8,
+                            insetRightMm: draft.lineGrid?.insetRightMm ?? 6,
+                            lineStyle: draft.lineGrid?.lineStyle ?? "solid",
+                            fixedLineCount: draft.lineGrid?.fixedLineCount,
+                            enabled,
+                          };
+                          if (!wasOn && enabled) {
+                            draft.kind = "lined_answer";
+                            draft.lineGrid = { ...draft.lineGrid, fixedLineCount: answerLineCount(draft) };
+                            draft.minHeightMm = heightForAnswerLines(draft.lineGrid.fixedLineCount!, draft.lineGrid.lineSpacingMm);
+                          }
+                        })}
+                      />
+                      启用横线格
+                    </label>
+                    {question.lineGrid?.enabled && (
+                      <div className="grid grid-cols-2 gap-2">
+                        <Field label="线型" className="col-span-2">
+                          <Select value={question.lineGrid.lineStyle ?? "solid"} onValueChange={(value) => updateQuestion(question.id, (draft) => {
+                            if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineStyle: value as "solid" | "dashed" | "dotted" };
+                          })}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="solid">实线</SelectItem>
+                              <SelectItem value="dashed">虚线</SelectItem>
+                              <SelectItem value="dotted">点线</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </Field>
+                        <Field label="行数">
+                          <Input
+                            type="number" min={1} max={30}
+                            value={question.lineGrid.fixedLineCount ?? answerLineCount(question)}
+                            onChange={(event) => updateQuestion(question.id, (draft) => {
+                              if (!draft.lineGrid) return;
+                              const count = Math.max(1, Math.min(30, Number(event.target.value) || 1));
+                              draft.lineGrid = { ...draft.lineGrid, fixedLineCount: count };
+                              draft.minHeightMm = heightForAnswerLines(count, draft.lineGrid.lineSpacingMm);
+                            })}
+                          />
+                        </Field>
+                        <Field label="间距 (mm)">
+                          <Input
+                            type="number" min={5} max={16} step={1}
+                            value={question.lineGrid.lineSpacingMm ?? 8}
+                            onChange={(event) => updateQuestion(question.id, (draft) => {
+                              if (!draft.lineGrid) return;
+                              const sp = Number(event.target.value) || 8;
+                              draft.lineGrid = { ...draft.lineGrid, lineSpacingMm: sp };
+                              const count = draft.lineGrid.fixedLineCount;
+                              if (count) draft.minHeightMm = heightForAnswerLines(count, sp);
+                            })}
+                          />
+                        </Field>
+                        <Field label="颜色">
+                          <Input type="color" value={question.lineGrid.lineColor ?? "#222"}
+                            onChange={(event) => updateQuestion(question.id, (draft) => {
+                              if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineColor: event.target.value };
+                            })}
+                            className="h-7 px-1 py-0.5" />
+                        </Field>
+                        <Field label="线宽 (mm)">
+                          <Input type="number" min={0.05} max={0.5} step={0.05} value={question.lineGrid.lineWidthMm ?? 0.15}
+                            onChange={(event) => updateQuestion(question.id, (draft) => {
+                              if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, lineWidthMm: Number(event.target.value) || 0.15 };
+                            })} />
+                        </Field>
+                        <Field label="左边距 (mm)">
+                          <Input type="number" min={0} max={20} value={question.lineGrid.insetLeftMm ?? 8}
+                            onChange={(event) => updateQuestion(question.id, (draft) => {
+                              if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, insetLeftMm: Number(event.target.value) ?? 8 };
+                            })} />
+                        </Field>
+                        <Field label="右边距 (mm)">
+                          <Input type="number" min={0} max={20} value={question.lineGrid.insetRightMm ?? 6}
+                            onChange={(event) => updateQuestion(question.id, (draft) => {
+                              if (draft.lineGrid) draft.lineGrid = { ...draft.lineGrid, insetRightMm: Number(event.target.value) ?? 6 };
+                            })} />
+                        </Field>
+                      </div>
+                    )}
+                  </>
+                )}
+                <label className="relative inline-flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-border-strong bg-card px-3 py-2 text-xs text-secondary-foreground transition-colors hover:border-primary hover:text-accent-foreground">
+                  <ImagePlus size={16} /> 插入图片
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="absolute inset-0 cursor-pointer opacity-0"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void onUpload(block.id, question.id, file);
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                </label>
+                {(question.images ?? []).map((image, index) => (
+                  <div className="flex items-center gap-2 text-xs text-secondary-foreground" key={`${image.assetId}_${index}`}>
+                    <span className="min-w-0 flex-1 truncate">{image.originalName ?? image.assetId}</span>
+                    <Input type="number" min={10} value={image.widthMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))} className="w-20" />
+                    <Input type="number" min={10} value={image.heightMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))} className="w-20" />
+                  </div>
+                ))}
+              </>
+            )}
+          </Panel>
+        ))}
+        {isFillBlankBlock && (
+          <Button variant="outline" size="sm" onClick={() =>
             onChange((draft) => {
               if (draft.type !== "subjective") return;
               const next = Math.max(0, ...draft.questions.map((item) => numericQuestionValue(item.number))) + 1;
               draft.questions.push(defaultBlankQuestion(next));
             })
-          }
-        >
-          <Plus size={16} /> 添加填空题
-        </button>
-      )}
-      {isEssayBlock && (
-        <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
-          <label>
-            目标字数
-            <input
-              type="number"
-              value={block.questions[0]?.essayGrid?.targetChars ?? 600}
-              min={100} max={2000} step={50}
-              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
-                draft.essayGrid.targetChars = Number(event.target.value) || 600;
-              })}
-            />
-          </label>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-            <label>
-              格子宽 (mm)
-              <input
+          }>
+            <Plus size={14} /> 添加填空题
+          </Button>
+        )}
+        {isEssayBlock && (
+          <div className="flex flex-col gap-2">
+            <Field label="目标字数">
+              <Input
                 type="number"
-                value={block.questions[0]?.essayGrid?.cellWidthMm ?? 7}
-                min={4} max={12} step={0.5}
+                value={block.questions[0]?.essayGrid?.targetChars ?? 600}
+                min={100} max={2000} step={50}
                 onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
                   if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
-                  draft.essayGrid.cellWidthMm = Number(event.target.value) || 7;
+                  draft.essayGrid.targetChars = Number(event.target.value) || 600;
                 })}
               />
-            </label>
-            <label>
-              格子高 (mm)
+            </Field>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="格子宽 (mm)">
+                <Input
+                  type="number"
+                  value={block.questions[0]?.essayGrid?.cellWidthMm ?? 7}
+                  min={4} max={12} step={0.5}
+                  onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                    if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                    draft.essayGrid.cellWidthMm = Number(event.target.value) || 7;
+                  })}
+                />
+              </Field>
+              <Field label="格子高 (mm)">
+                <Input
+                  type="number"
+                  value={block.questions[0]?.essayGrid?.cellHeightMm ?? 7}
+                  min={4} max={12} step={0.5}
+                  onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                    if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                    draft.essayGrid.cellHeightMm = Number(event.target.value) || 7;
+                  })}
+                />
+              </Field>
+            </div>
+            <label className="flex items-center gap-2 text-xs text-secondary-foreground">
               <input
-                type="number"
-                value={block.questions[0]?.essayGrid?.cellHeightMm ?? 7}
-                min={4} max={12} step={0.5}
+                type="checkbox"
+                checked={block.questions[0]?.essayGrid?.showTitle !== false}
                 onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
                   if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
-                  draft.essayGrid.cellHeightMm = Number(event.target.value) || 7;
+                  draft.essayGrid.showTitle = event.target.checked;
                 })}
-              />
+              /> 显示"题：（000）"标题
             </label>
+            <div className="text-xs text-muted-foreground">
+              系统将自动计算每栏列数和行数。A3 三栏模式生效时网格均分到三栏。
+            </div>
           </div>
-          <label>
-            <input
-              type="checkbox"
-              checked={block.questions[0]?.essayGrid?.showTitle !== false}
-              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
-                draft.essayGrid.showTitle = event.target.checked;
-              })}
-            /> 在答题区上方显示标题
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={block.questions[0]?.essayGrid?.showFrame !== false}
-              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
-                draft.essayGrid.showFrame = event.target.checked;
-              })}
-            /> 显示作文区外边框
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={block.questions[0]?.essayGrid?.showWordScale !== false}
-              onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
-                draft.essayGrid.showWordScale = event.target.checked;
-              })}
-            /> 显示字数刻度（每 100 字标注）
-          </label>
-          <div style={{ fontSize: 11, color: "var(--muted)" }}>
-            系统将自动计算每栏列数和行数。A3 三栏模式生效时网格均分到三栏。
-          </div>
-          <div style={{ fontSize: 11, color: "var(--muted)", background: "var(--bg-soft)", padding: "6px 8px", borderRadius: 6 }}>
-            {(() => {
-              const eg = block.questions[0]?.essayGrid;
-              const cw = eg?.cellWidthMm ?? 7;
-              const isA3 = card.paper?.size === "A3";
-              const bodyWidth = (isA3 ? 420 : 210) - 17 * 2;
-              const usableW = bodyWidth - 4 * 2;
-              const colsPerPanel = Math.max(1, Math.floor(usableW / cw));
-              const panelCount = isA3 ? 3 : 1;
-              const totalCols = colsPerPanel * panelCount;
-              const rows = Math.ceil((eg?.targetChars ?? 600) / totalCols);
-              return `预计约 ${rows} 行 × ${totalCols} 栏（每面板 ${colsPerPanel} 列${isA3 ? "，A3 三栏并排" : ""}）。实际页数取决于版面余量。`;
-            })()}
-          </div>
-        </div>
-      )}
+        )}
+      </div>
     </>
-  );
-}
+  );}
 
-export function CardPreview({ card, layout }: { card: AnswerCard; layout: LayoutDocument }) {
+export function CardPreview({ card, layout, firstPageOnly = false }: { card: AnswerCard; layout: LayoutDocument; firstPageOnly?: boolean }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ width: 760, height: 560 });
-  const [{ mode, customPercent }, setPreviewSettings] = useState<{ mode: PreviewMode; customPercent: number }>(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem(PREVIEW_SETTINGS_KEY) ?? "null") as { mode?: string; customPercent?: number } | null;
-      const validModes: PreviewMode[] = ["fit-width", "fit-page", "fit-panel", "custom"];
-      const savedMode = validModes.includes(saved?.mode as PreviewMode) ? saved?.mode as PreviewMode : "fit-width";
-      const savedPercent = Number(saved?.customPercent);
-      return {
-        mode: savedMode,
-        customPercent: Number.isFinite(savedPercent)
-          ? Math.max(PREVIEW_MIN_PERCENT, Math.min(PREVIEW_MAX_PERCENT, savedPercent))
-          : 100
-      };
-    } catch {
-      return { mode: "fit-width", customPercent: 100 };
-    }
+  // 每次进入编辑器先按 demo 的默认状态展示完整纸面；缩放操作仍可在本次编辑中使用。
+  const [{ mode, customPercent }, setPreviewSettings] = useState<{ mode: PreviewMode; customPercent: number }>({
+    mode: "fit-width",
+    customPercent: 100,
   });
 
   useEffect(() => {
@@ -1302,7 +1072,6 @@ export function CardPreview({ card, layout }: { card: AnswerCard; layout: Layout
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(parent);
-    observer.observe(root);
     return () => observer.disconnect();
   }, []);
 
@@ -1328,46 +1097,68 @@ export function CardPreview({ card, layout }: { card: AnswerCard; layout: Layout
             : 100
     )
   );
-  const pageWidth = viewport.width * effectivePercent / 100;
+  // Fit width fills the usable canvas; fit page fills its usable height.
+  // Do not cap this value: the paper must follow the current work area.
+  const pageWidth = mode === "fit-page"
+    ? viewport.height * paperRatio
+    : viewport.width * effectivePercent / 100;
 
   const changeZoom = (delta: number) => {
     const next = Math.max(PREVIEW_MIN_PERCENT, Math.min(PREVIEW_MAX_PERCENT, Math.round(effectivePercent / 10) * 10 + delta));
     setPreviewSettings({ mode: "custom", customPercent: next });
   };
 
+  const isThumbnail = firstPageOnly;
+  const thumbnailPageWidth = isThumbnail
+    ? Math.min(viewport.width, viewport.height * paperRatio)
+    : pageWidth;
+
   return (
-    <div className="preview-shell" ref={rootRef}>
-      <div className="preview-toolbar" ref={toolbarRef} aria-label="预览缩放工具栏">
-        <button type="button" className={mode === "fit-width" ? "active" : ""} onClick={() => setPreviewSettings({ mode: "fit-width", customPercent })}>适合宽度</button>
-        <button type="button" className={mode === "fit-page" ? "active" : ""} onClick={() => setPreviewSettings({ mode: "fit-page", customPercent })}>适合页面</button>
-        <button type="button" className={mode === "fit-panel" ? "active" : ""} onClick={() => setPreviewSettings({ mode: "fit-panel", customPercent })}>适合单版</button>
-        <span className="preview-toolbar-separator" />
-        <button type="button" aria-label="缩小预览" onClick={() => changeZoom(-10)} disabled={effectivePercent <= PREVIEW_MIN_PERCENT}>−</button>
-        <output aria-label="当前缩放比例">{Math.round(effectivePercent)}%</output>
-        <button type="button" aria-label="放大预览" onClick={() => changeZoom(10)} disabled={effectivePercent >= PREVIEW_MAX_PERCENT}>＋</button>
-      </div>
-      <div className="pages">
-        {layout.pages.map((page) => (
+    <div className={cn("flex h-full min-h-0 w-full min-w-0 flex-col", isThumbnail && "card-preview-thumbnail")} ref={rootRef}>
+      {!isThumbnail && <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-4" ref={toolbarRef} aria-label="预览缩放工具栏">
+        <SegmentedControl<PreviewMode>
+          value={mode}
+          onValueChange={(value) => setPreviewSettings({ mode: value, customPercent })}
+          items={[
+            { value: "fit-width", label: "适合宽度" },
+            { value: "fit-page", label: "适合页面" },
+            { value: "fit-panel", label: "适合单版" },
+          ]}
+          size="sm"
+        />
+        <div className="h-4 w-px bg-border" />
+        <Button variant="ghost" size="icon-sm" aria-label="缩小预览" onClick={() => changeZoom(-10)} disabled={effectivePercent <= PREVIEW_MIN_PERCENT}>
+          <span className="text-sm">−</span>
+        </Button>
+        <output className="min-w-[42px] text-center text-xs tabular-nums text-muted-foreground" aria-label="当前缩放比例">
+          {Math.round(effectivePercent)}%
+        </output>
+        <Button variant="ghost" size="icon-sm" aria-label="放大预览" onClick={() => changeZoom(10)} disabled={effectivePercent >= PREVIEW_MAX_PERCENT}>
+          <Plus size={14} />
+        </Button>
+      </div>}
+      <div className={cn("flex min-h-0 flex-1 flex-col items-center gap-6 overflow-auto p-6", isThumbnail && "gap-0 p-0") }>
+        {(firstPageOnly ? layout.pages.slice(0, 1) : layout.pages).map((page) => (
           <svg
-            className="page"
             key={page.pageNumber}
             viewBox={`0 0 ${page.width} ${page.height}`}
-            style={{ aspectRatio: `${page.width} / ${page.height}`, width: `${pageWidth}px` }}
+             className="paper-a4-preview rounded-xs bg-paper shadow-2"
+             style={{ aspectRatio: `${page.width} / ${page.height}`, width: `${thumbnailPageWidth}px`, height: `${thumbnailPageWidth * page.height / page.width}px` }}
             role="img"
             aria-label={`第${page.pageNumber}页预览`}
           >
-            <rect x="0" y="0" width={page.width} height={page.height} style={{ fill: "#fff" }} />
+            <rect x="0" y="0" width={page.width} height={page.height} fill="#fff" />
             {page.markers.map((marker) => (
               <rect key={marker.role} {...marker.rect} fill="#20342f" />
             ))}
-            <text x={page.header.idTextX} y={page.header.idTextY} className="svg-small">
+            <text x={page.header.idTextX} y={page.header.idTextY} fontSize={3} fill="#1a1a1a">
               ID:{page.header.id}
             </text>
             {page.header.codeBoxes.map((box, index) => (
-              <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" style={index !== 0 && index !== page.header.codeBoxes.length - 1 ? { fill: "#fff" } : undefined} />
+              <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" />
             ))}
             {page.header.title && (
-              <text x={page.header.titleX} y={page.header.titleY} textAnchor="middle" className="svg-title">
+              <text x={page.header.titleX} y={page.header.titleY} textAnchor="middle" dominantBaseline="middle" fontSize={5} fontWeight={700} fill="#1a1a1a">
                 {page.header.title}
               </text>
             )}
@@ -1375,55 +1166,45 @@ export function CardPreview({ card, layout }: { card: AnswerCard; layout: Layout
             {page.blocks.map((block, index) =>
               block.type === "objective" ? <ObjectiveSvg block={block} key={`${block.blockId}_${index}`} /> : <SubjectiveSvg card={card} block={block} key={`${block.blockId}_${index}`} />
             )}
-            <text x={page.width / 2} y={page.height - 13} textAnchor="middle" className="svg-footer">
+            <text x={page.width / 2} y={page.height - 13} textAnchor="middle" fontSize={3} fill="#1a1a1a">
               第{page.pageNumber}页/共{layout.pages.length}页
             </text>
           </svg>
         ))}
       </div>
     </div>
-  );
-}
+  );}
 
 export function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pages"][number]["studentArea"]> }) {
-  const hasDigits = area.digitCells.length > 0;
+  const rowCount = Math.max(...area.digitCells.map((cell) => cell.digitIndex)) + 1;
+  const separatorX = area.digitRect.x + 8.5;
   return (
     <g>
       <rect {...area.infoRect} fill="none" stroke="#333" strokeWidth="0.25" />
-      {area.fieldRows.map((row) => (
-        <g key={row.label}>
-          <text x={row.labelX} y={row.lineY - 1.0} className="svg-label">
-            {row.label}
+      <rect {...area.digitRect} fill="none" stroke="#333" strokeWidth="0.25" />
+      <text x={area.digitRect.x + area.digitRect.width / 2} y={area.digitRect.y + 5.2} textAnchor="middle" fontSize={2.6} fill="#1a1a1a">
+        填涂号区
+      </text>
+      <text x={area.infoRect.x + 5} y={area.infoRect.y + 13.5} fontSize={2.6} fill="#1a1a1a">
+        姓名：
+      </text>
+      <line x1={area.infoRect.x + 18} y1={area.infoRect.y + 14.5} x2={area.infoRect.x + area.infoRect.width - 9} y2={area.infoRect.y + 14.5} stroke="#333" strokeWidth="0.25" />
+      <text x={area.infoRect.x + 5} y={area.infoRect.y + 25.5} fontSize={2.6} fill="#1a1a1a">
+        班级：
+      </text>
+      <line x1={area.infoRect.x + 18} y1={area.infoRect.y + 26.5} x2={area.infoRect.x + area.infoRect.width - 9} y2={area.infoRect.y + 26.5} stroke="#333" strokeWidth="0.25" />
+      {Array.from({ length: rowCount }).map((_, row) => (
+        <line key={row} x1={area.digitRect.x} y1={area.digitRect.y + 7 + row * 4.8} x2={area.digitRect.x + area.digitRect.width} y2={area.digitRect.y + 7 + row * 4.8} stroke="#999" strokeWidth="0.15" />
+      ))}
+      <line x1={separatorX} y1={area.digitRect.y + 7} x2={separatorX} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
+      {area.digitCells.map((cell) => (
+        <g key={`${cell.digitIndex}_${cell.digit}`}>
+          <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
+          <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" fontSize={2.4} fill="#1a1a1a">
+            {cell.digit}
           </text>
-          <line x1={row.lineX1} y1={row.lineY} x2={row.lineX2} y2={row.lineY} stroke="#333" strokeWidth="0.25" />
         </g>
       ))}
-      {area.notesLines && area.notesLines.length > 0 && area.notesY !== undefined &&
-        area.notesLines.map((line, index) => (
-          <text key={index} x={area.infoRect.x + 5} y={area.notesY! + index * 4.2} className="svg-notes">
-            {line}
-          </text>
-        ))}
-      {hasDigits && (
-        <>
-          <rect {...area.digitRect} fill="none" stroke="#333" strokeWidth="0.25" />
-          <text x={area.digitRect.x + area.digitRect.width / 2} y={area.digitRect.y + 5.2} textAnchor="middle" className="svg-label">
-            填涂号区
-          </text>
-          {Array.from({ length: Math.max(...area.digitCells.map((cell) => cell.digitIndex)) + 1 }).map((_, row) => (
-            <line key={row} x1={area.digitRect.x} y1={area.digitRect.y + 7 + row * 4.8} x2={area.digitRect.x + area.digitRect.width} y2={area.digitRect.y + 7 + row * 4.8} stroke="#999" strokeWidth="0.15" />
-          ))}
-          <line x1={area.digitRect.x + 8.5} y1={area.digitRect.y + 7} x2={area.digitRect.x + 8.5} y2={area.digitRect.y + area.digitRect.height} stroke="#333" strokeWidth="0.2" />
-          {area.digitCells.map((cell) => (
-            <g key={`${cell.digitIndex}_${cell.digit}`}>
-              <rect {...cell.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
-              <text x={cell.rect.x + cell.rect.width / 2} y={cell.rect.y + cell.rect.height / 2} textAnchor="middle" dominantBaseline="middle" className="svg-tiny">
-                {cell.digit}
-              </text>
-            </g>
-          ))}
-        </>
-      )}
     </g>
   );
 }
@@ -1431,7 +1212,7 @@ export function StudentAreaSvg({ area }: { area: NonNullable<LayoutDocument["pag
 export function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type: "objective" }> }) {
   return (
     <g>
-      <text x={block.rect.x} y={block.rect.y + 4.4} className="svg-section">
+      <text x={block.rect.x} y={block.rect.y + 4.4} dominantBaseline="middle" fontSize={3.4} fontWeight={600} fill="#1a1a1a">
         {block.title}
       </text>
       <rect {...block.frameRect} fill="none" stroke="#222" strokeWidth="0.25" />
@@ -1443,13 +1224,13 @@ export function ObjectiveSvg({ block }: { block: Extract<PageRenderBlock, { type
       ))}
       {block.items.map((item) => (
         <g key={item.questionNumber}>
-          <text x={item.labelX - 2.5} y={(item.options[0]?.rect.y ?? item.labelY) + (item.options[0]?.rect.height ?? 0) / 2} textAnchor="middle" dominantBaseline="central" className="svg-option-label">
+          <text x={item.labelX - 2.5} y={(item.options[0]?.rect.y ?? item.labelY) + (item.options[0]?.rect.height ?? 0) / 2} textAnchor="middle" dominantBaseline="central" fontSize={2.6} fill="#1a1a1a">
             {item.questionNumber}
           </text>
           {item.options.map((option) => (
             <g key={option.label}>
-              <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" style={{ fill: "#fff" }} />
-              <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2} textAnchor="middle" dominantBaseline="central" className="svg-option-label">
+              <rect {...option.rect} fill="#fff" stroke="#333" strokeWidth="0.15" />
+              <text x={option.rect.x + option.rect.width / 2} y={option.rect.y + option.rect.height / 2} textAnchor="middle" dominantBaseline="central" fontSize={2.6} fill="#1a1a1a">
                 {option.label}
               </text>
             </g>
@@ -1469,14 +1250,13 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
 
   if (isEssay) {
     const q = originalBlock && originalBlock.type === "subjective" ? originalBlock.questions[0] : null;
-    const g = q?.essayGrid ?? { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
+    const g = q?.essayGrid;
+    if (!g) return null;
     const cellW = g.cellWidthMm || 7;
     const cellH = g.cellHeightMm || 7;
     const lineColor = g.lineColor || "#222";
     const lineW = g.lineWidthMm ?? 0.15;
     const showTitle = g.showTitle !== false;
-    const showFrame = g.showFrame !== false;
-    const showWordScale = g.showWordScale !== false;
 
     // 计算栏宽和列数
     const bodyW = block.rect.width;
@@ -1486,81 +1266,35 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
     const gridW = columns * cellW;
     const offsetX = block.rect.x + (bodyW - gridW) / 2;
 
-    const gap = 1.6; // 行间窄溜宽度（mm），仅作为格间空隙，格子保持完整高度
-    const gridTop = showTitle ? 9 : 2;
-    const bottomPad = 2;
-    const gridH = block.rect.height - gridTop - bottomPad;
-    const rows = Math.max(0, Math.floor((gridH + gap) / (cellH + gap)));
-    const startY = block.rect.y + gridTop;
-
-    const cells: ReactElement[] = [];
-    const guideLines: ReactElement[] = [];
-    for (let row = 0; row < rows; row++) {
-      const cy = startY + row * (cellH + gap);
-      for (let col = 0; col < columns; col++) {
-        cells.push(
-          <rect
-            key={`${row}_${col}`}
-            x={offsetX + col * cellW}
-            y={cy}
-            width={cellW}
-            height={cellH}
-            fill="#fff"
-            stroke={lineColor}
-            strokeWidth={lineW}
-          />
-        );
-      }
-      // 行间窄溜：淡虚线贯穿整栏（末行不画）
-      if (row < rows - 1) {
-        const lineY = startY + (row + 1) * (cellH + gap) - gap / 2;
-        guideLines.push(
-          <line key={`gap_${row}`} x1={offsetX} y1={lineY} x2={offsetX + gridW} y2={lineY} stroke="#ddd" strokeWidth={0.08} strokeDasharray="1,1" />
-        );
-      }
-    }
-
-    const scaleTicks: ReactElement[] = [];
-    if (showWordScale && columns > 0) {
-      const startCell = block.essayStartCell ?? 0;
-      const targetCells = g.targetChars || 600;
-      for (let row = 0; row < rows; row++) {
-        const rowStart = startCell + row * columns;
-        const rowEnd = rowStart + columns - 1;
-        const milestone = Math.ceil((rowStart + 1) / 100) * 100;  // 本行跨过的第一个 100 倍数
-        if (milestone <= rowEnd && milestone <= targetCells) {
-          const cellIndex = milestone - rowStart - 1; // 0-based column of the milestone cell
-          const cellRight = offsetX + (cellIndex + 1) * cellW;   // 该格右边线
-          const seamY = startY + (row + 1) * (cellH + gap) - gap / 2; // 该行下方窄缝中心
-          scaleTicks.push(
-            <text
-              key={`scale_${row}`}
-              x={cellRight - 0.6}
-              y={seamY}
-              fontSize={1.7}
-              textAnchor="end"
-              dominantBaseline="middle"
-              fill="#555"
-              className="svg-micro"
-            >
-              {milestone}
-            </text>
-          );
-        }
-      }
-    }
+    // 高度内能放的行数
+    const gridH = block.rect.height - (showTitle ? 9 : 2);
+    const rows = Math.floor(gridH / cellH);
+    const startY = block.rect.y + (showTitle ? 9 : 2);
 
     return (
       <g>
-        {showFrame && block.frameRect && (
-          <rect {...block.frameRect} fill="none" stroke="#111" strokeWidth={0.4} />
-        )}
         {showTitle && block.title && (
-          <text x={block.rect.x + insetX} y={block.rect.y + 5} className="svg-section">{block.title}</text>
+          <>
+            <text x={block.rect.x + insetX} y={block.rect.y + 5} fontSize={3.4} fontWeight={600} fill="#1a1a1a">{block.title}（{q?.score}分）</text>
+            <text x={block.rect.x + insetX + 64} y={block.rect.y + 5} fontSize={2.4} fill="#888">
+              题：（{String(q?.number ?? 1).padStart(3, "0")}）
+            </text>
+          </>
         )}
-        {guideLines}
-        {cells}
-        {scaleTicks}
+        {[...Array(rows)].map((_, row) =>
+          [...Array(columns)].map((_, col) => (
+            <rect
+              key={`${row}_${col}`}
+              x={offsetX + col * cellW}
+              y={startY + row * cellH}
+              width={cellW}
+              height={cellH}
+              fill="#fff"
+              stroke={lineColor}
+              strokeWidth={lineW}
+            />
+          ))
+        )}
       </g>
     );
   }
@@ -1568,7 +1302,7 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
   return (
     <g>
       {block.title && (
-        <text x={block.rect.x} y={block.rect.y + 4.4} className="svg-section">
+        <text x={block.rect.x} y={block.rect.y + 4.4} dominantBaseline="middle" fontSize={3.4} fontWeight={600} fill="#1a1a1a">
           {block.title}
         </text>
       )}
@@ -1591,7 +1325,7 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
               {block.frameRect && question.kind === "blank" && question.scoreCells.length > 0 ? (
                 <>
                   {showL && (
-                    <text x={block.frameRect.x + 4} y={question.scoreCells[0].rect.y + (isV2 ? 3 : 4.2)} className="svg-tiny">
+                    <text x={block.frameRect.x + 4} y={question.scoreCells[0].rect.y + (isV2 ? 3 : 4.2)} fontSize={2.4} fill="#1a1a1a">
                       得分
                     </text>
                   )}
@@ -1624,11 +1358,11 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
             })()
           )}
           {question.kind === "blank" ? (
-            <text x={question.contentRect.x + 3} y={question.contentRect.y + 7.2} className="svg-tiny">
+            <text x={question.contentRect.x + 3} y={question.contentRect.y + 7.2} fontSize={2.4} fill="#1a1a1a">
               {question.questionNumber}
             </text>
           ) : (
-            <text x={question.rect.x + 2} y={isV2 ? question.rect.y + 4.3 : question.contentRect.y + 6} className="svg-tiny">
+            <text x={question.rect.x + 2} y={isV2 ? question.rect.y + 4.3 : question.contentRect.y + 6} fontSize={2.4} fill="#1a1a1a">
               {question.questionNumber}.（{question.score}分）
             </text>
           )}
@@ -1650,7 +1384,7 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
             return (
               <g key={index}>
                 {blankLabel && (
-                  <text x={blank.x - 0.8} y={blank.y + blank.height} textAnchor="end" dominantBaseline="middle" className="svg-blank-label">
+                  <text x={blank.x - 0.8} y={blank.y + blank.height} textAnchor="end" dominantBaseline="middle" fontSize={2.4} fill="#1a1a1a">
                     {blankLabel}
                   </text>
                 )}
@@ -1664,14 +1398,9 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
               </g>
             );
           })}
-          {(question.annotationLines ?? []).map((line) => (
-            <text key={`${line.rect.x}-${line.rect.y}`} x={line.rect.x} y={line.rect.y + 2.6} className="svg-tiny" fill="#444">
-              {line.text}
-            </text>
-          ))}
           {question.images.map((image) => (
             <g key={image.assetId}>
-              <image href={apiUrl(`/api/assets/${card.id}/${image.assetId}`)} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
+              <image href={apiUrl(`/assets/${card.id}/${image.assetId}`)} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
               <rect {...image.rect} fill="none" stroke="#666" strokeWidth="0.18" />
             </g>
           ))}

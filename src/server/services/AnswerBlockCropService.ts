@@ -32,6 +32,9 @@ type CropRow = {
   status: string | null;
   score?: number | null;
   max_score?: number | null;
+  claimed_by?: number | null;
+  claimed_at?: string | null;
+  claim_count?: number;
 };
 
 export type PersistAnswerBlockCropsParams = {
@@ -79,7 +82,10 @@ function toAnswerBlockCrop(row: CropRow): AnswerBlockCrop {
     dpi: Number(row.dpi),
     status: row.status ?? "ready",
     score: row.score ?? null,
-    maxScore: row.max_score ?? null
+    maxScore: row.max_score ?? null,
+    claimedBy: row.claimed_by ?? null,
+    claimedAt: row.claimed_at ?? null,
+    claimCount: row.claim_count ?? 0
   };
 }
 
@@ -207,7 +213,7 @@ export async function listAnswerBlockCropsForStudent(
 }
 
 export async function listReviewBlockCrops(
-  params: { examId: number; blockId?: string; classId?: number; status?: string },
+  params: { examId: number; blockId?: string; classId?: number; status?: string; cropId?: string },
   db: DbAdapter = getMysqlDb()
 ): Promise<AnswerBlockCrop[]> {
   const filters = ["abc.exam_id = ?"];
@@ -223,6 +229,10 @@ export async function listReviewBlockCrops(
   if (params.classId) {
     filters.push("EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = abc.student_id AND cs.class_id = ?)");
     values.push(params.classId);
+  }
+  if (params.cropId) {
+    filters.push("abc.id = ?");
+    values.push(params.cropId);
   }
 
   const rows = await db.all(

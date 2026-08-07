@@ -90,9 +90,11 @@ input[type=color]{padding:2px;width:100%}
 input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(--px-accent-bg);flex:0 0 auto}
 
 /* ── AppRail ── */
-.app-shell{display:grid;grid-template-columns:var(--px-rail-w) 1fr;height:100vh;overflow:hidden}
-.app-rail{position:relative;background:var(--px-bg-surface);border-right:1px solid var(--px-border-subtle);
-  display:flex;flex-direction:column;padding:var(--px-space-4) var(--px-space-3);transition:padding var(--px-dur-2) var(--px-ease-out)}
+.app-shell{display:flex;min-height:100vh;align-items:stretch}
+.app-rail{position:sticky;top:0;align-self:flex-start;height:100vh;flex:0 0 auto;width:var(--px-rail-w);background:var(--px-bg-surface);border-right:1px solid var(--px-border-subtle);
+  display:flex;flex-direction:column;padding:var(--px-space-4) var(--px-space-3);transition:width var(--px-dur-2) var(--px-ease-out),padding var(--px-dur-2) var(--px-ease-out)}
+/* 内层容器承担裁切：随栏宽变化平滑揭示/隐藏标签，避免标签溢出到内容区造成重排 */
+.rail-inner{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow:hidden}
 .rail-handle{position:absolute;right:-12px;top:50%;transform:translateY(-50%);z-index:50;
   width:24px;height:24px;border-radius:50%;border:1px solid var(--px-border-default);
   background:var(--px-bg-surface);color:var(--px-fg-secondary);display:flex;align-items:center;justify-content:center;
@@ -120,24 +122,25 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .rail-user-text span{font-size:11px;color:var(--px-fg-tertiary)}
 .rail-theme{display:flex;align-items:center;justify-content:center;padding:0}
 .rail-theme svg,.theme-icon{width:18px;height:18px;flex:0 0 auto}
+/* 折叠文本：用 max-width/max-height+opacity 过渡。折叠时尺寸与高度归零，既不占布局把图标挤偏，也不撑高导致下方内容下移 */
+.brand-text,.rail-item .label,.rail-user-text,.rail-theme span{max-width:240px;max-height:60px;opacity:1;overflow:hidden;white-space:nowrap;transition:max-width var(--px-dur-2) var(--px-ease-out),max-height var(--px-dur-2) var(--px-ease-out),opacity var(--px-dur-2) var(--px-ease-out)}
+.rail-item .label,.rail-theme span{display:inline-block;vertical-align:middle}
 
 /* 删除按钮统一红色 */
 .chip-actions button.danger,.question-editor-title button.qe-trash,.bl-trash{color:var(--px-danger-fg)}
 .chip-actions button.danger:hover,.question-editor-title button.qe-trash:hover,.bl-trash:hover{background:var(--px-danger-soft)}
 
 /* 侧边栏收起态 */
-.app-shell{transition:grid-template-columns var(--px-dur-2) var(--px-ease-out)}
-.app-shell.rail-collapsed{grid-template-columns:var(--px-rail-collapsed-w) 1fr}
-.app-shell.rail-collapsed .app-rail{padding-left:10px;padding-right:10px}
-.app-shell.rail-collapsed .rail-handle{right:-10px}
+.app-shell.rail-collapsed .app-rail{padding-left:10px;padding-right:10px;width:var(--px-rail-collapsed-w)}
 .app-shell.rail-collapsed .rail-handle svg{transform:rotate(180deg)}
-.app-shell.rail-collapsed .brand{justify-content:center;padding-left:0;padding-right:0;border-bottom-color:transparent}
-.app-shell.rail-collapsed .brand-text{display:none}
+.app-shell.rail-collapsed .brand{justify-content:center;padding-left:0;padding-right:0;border-bottom-color:transparent;gap:0}
+.app-shell.rail-collapsed .brand-text{max-width:0;max-height:0;opacity:0}
 .app-shell.rail-collapsed .rail-item{justify-content:center;padding-left:0;padding-right:0;gap:0}
-.app-shell.rail-collapsed .rail-item .label{display:none}
-.app-shell.rail-collapsed .rail-user-text{display:none}
-.app-shell.rail-collapsed .rail-user{justify-content:center;padding:0}
-.app-shell.rail-collapsed .rail-theme span{display:none}
+.app-shell.rail-collapsed .rail-item .label{max-width:0;max-height:0;opacity:0}
+.app-shell.rail-collapsed .rail-user-text{max-width:0;max-height:0;opacity:0}
+.app-shell.rail-collapsed .rail-user{justify-content:center;padding:0;gap:0}
+.app-shell.rail-collapsed .rail-theme{gap:0}
+.app-shell.rail-collapsed .rail-theme span{max-width:0;max-height:0;opacity:0}
 
 /* ── Designer 主体 ── */
 .designer{display:flex;flex-direction:column;min-width:0;height:100vh}
@@ -146,11 +149,11 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .designer-topbar .title{font-size:var(--px-text-xl);font-weight:600}
 .designer-topbar .sub{font-size:12px;color:var(--px-fg-tertiary);margin-left:2px}
 .topbar-actions{margin-left:auto;display:flex;gap:8px;align-items:center}
-.designer-body{flex:1 1 auto;display:grid;grid-template-columns:var(--px-context-panel-w) 1fr 360px;min-height:0}
+.designer-body{flex:1 1 auto;display:grid;grid-template-columns:var(--px-context-panel-w) 1fr 360px;grid-template-rows:auto}
 
 /* ── ContextPanel ── */
 .context-panel{background:var(--px-bg-surface);border-right:1px solid var(--px-border-subtle);
-  display:flex;flex-direction:column;min-height:0;overflow:auto}
+  display:flex;flex-direction:column;overflow:visible}
 .ctx-section{padding:var(--px-space-4);border-bottom:1px solid var(--px-border-subtle)}
 .ctx-section h4{margin:0 0 10px;font-size:12px;font-weight:600;color:var(--px-fg-tertiary);letter-spacing:.04em;text-transform:uppercase}
 .card-list{display:flex;flex-direction:column;gap:6px}
@@ -178,12 +181,14 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 .split-actions{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px}
 
 /* ── Canvas ── */
-.canvas{display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--px-bg-canvas)}
-.preview-toolbar{display:flex;align-items:center;gap:6px;padding:8px 12px;border-bottom:1px solid var(--px-border-subtle);background:var(--px-bg-surface);flex:0 0 auto}
-.preview-toolbar button{border:1px solid var(--px-border-default);background:var(--px-bg-surface);color:var(--px-fg-secondary);
-  height:30px;padding:0 10px;border-radius:var(--px-radius-sm);font-size:12px}
-.preview-toolbar button:hover{border-color:var(--px-border-strong);color:var(--px-fg-primary)}
-.preview-toolbar button.active{background:var(--px-accent-soft);color:var(--px-accent-fg);border-color:var(--px-accent-border)}
+.canvas{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;min-width:0;background:var(--px-bg-canvas);overflow:hidden}
+.preview-toolbar{display:flex;align-items:center;gap:12px;padding:8px 16px;border-bottom:1px solid var(--px-border-subtle);background:var(--px-bg-surface);flex:0 0 auto}
+/* SegmentedControl：文档 §6 规格 — 容器 bg-subtle，选中项浮起 + shadow-1 */
+.preview-toolbar .segmented{display:inline-flex!important;align-items:center;background:var(--px-bg-subtle);border-radius:var(--px-radius-md);padding:2px;gap:2px}
+.preview-toolbar .segmented>button{border:0!important;background:transparent!important;color:var(--px-fg-secondary);height:28px;padding:0 12px;border-radius:var(--px-radius-sm);
+  font-size:12px;font-weight:500;display:inline-flex;align-items:center;justify-content:center;transition:background var(--px-dur-1),color var(--px-dur-1),box-shadow var(--px-dur-1)}
+.preview-toolbar .segmented>button:hover{color:var(--px-fg-primary)}
+.preview-toolbar .segmented>button.active{background:var(--px-bg-surface)!important;color:var(--px-fg-primary)!important;box-shadow:var(--px-shadow-1)!important}
 .preview-toolbar .sep{width:1px;height:18px;background:var(--px-border-default);margin:0 4px}
 .preview-toolbar output{font-variant-numeric:tabular-nums;font-size:12px;color:var(--px-fg-secondary);min-width:42px;text-align:center}
 .preview-toolbar .spacer{margin-left:auto;font-size:12px;color:var(--px-fg-tertiary)}
@@ -208,9 +213,10 @@ input[type=checkbox],input[type=radio]{width:16px;height:16px;accent-color:var(-
 
 /* ── Inspector ── */
 .inspector{background:var(--px-bg-surface);border-left:1px solid var(--px-border-subtle);
-  overflow:auto;padding:var(--px-space-4);display:flex;flex-direction:column;gap:var(--px-space-4)}
+  overflow:visible;padding:var(--px-space-4);display:flex;flex-direction:column;gap:var(--px-space-4)}
 .panel{border:1px solid var(--px-border-default);border-radius:var(--px-radius-lg);background:var(--px-bg-surface);overflow:hidden}
 .panel>.panel-title{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;padding:10px 12px;border-bottom:1px solid var(--px-border-subtle)}
+.section-title{font-size:13px;font-weight:600;margin:0 0 6px;color:var(--px-fg-primary)}
 .panel .panel-body{padding:12px;display:flex;flex-direction:column;gap:10px}
 .empty-text{color:var(--px-fg-tertiary);font-size:13px;text-align:center;padding:24px}
 label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--px-fg-secondary)}
@@ -234,7 +240,9 @@ label .rowval{color:var(--px-fg-primary);font-weight:600}
 .btn.ghost{background:transparent;border-color:var(--px-border-default)}
 .btn.danger{color:var(--px-danger-fg);border-color:var(--px-danger-border)}
 .btn.danger:hover{background:var(--px-danger-soft)}
-.btn.sm{height:30px;padding:0 10px;font-size:12px}
+.btn.sm{height:32px;padding:0 10px;font-size:12px}
+.btn.icon-btn{width:32px;padding:0}
+.btn.icon-btn svg{width:16px;height:16px}
 .btn.block{width:100%}
 
 /* 答案键编辑器 */
@@ -279,17 +287,17 @@ details.panel .panel-body{padding:0 12px 12px}
 .toast.show{opacity:1;transform:translateY(0)}
 
 /* ── 外壳右侧：两级（选择画廊 → 编辑器）── */
-.shell-right{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%}
+.shell-right{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0}
 
 /* 第一级：答题卡选择画廊 */
-.select-stage{display:none;flex-direction:column;min-height:0;flex:1 1 auto;overflow:auto}
+.select-stage{display:none;flex-direction:column;flex:1 1 auto;overflow:visible}
 .select-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding:22px 28px 14px;flex:0 0 auto}
 .select-head h2{margin:0;font-size:20px;font-weight:700;letter-spacing:-0.01em}
 .select-head .muted{margin:4px 0 0;font-size:13px;color:var(--px-fg-secondary)}
 .card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(228px,1fr));gap:16px;padding:6px 28px 28px;align-content:start}
 .card-tile{display:flex;flex-direction:column;background:var(--px-bg-surface);border:1px solid var(--px-border-default);
-  border-radius:var(--px-radius-lg);overflow:hidden;cursor:pointer;transition:border-color var(--px-dur-2),box-shadow var(--px-dur-2),transform var(--px-dur-2)}
-.card-tile:hover{border-color:var(--px-border-strong);box-shadow:var(--px-shadow-2);transform:translateY(-2px)}
+  border-radius:var(--px-radius-lg);overflow:hidden;cursor:pointer;transition:border-color var(--px-dur-2),box-shadow var(--px-dur-2),background var(--px-dur-2)}
+.card-tile:hover{border-color:var(--px-border-strong);box-shadow:var(--px-shadow-2);background:var(--px-bg-subtle)}
 .card-tile.active{border-color:var(--px-accent-bg);box-shadow:0 0 0 1px var(--px-accent-bg)}
 .ct-thumb{height:140px;background:var(--px-bg-neutral);border-bottom:1px solid var(--px-border-subtle);overflow:hidden;display:flex;align-items:center;justify-content:center;padding:8px}
 .ct-thumb svg{width:auto;height:100%;max-width:100%;display:block}
@@ -322,6 +330,7 @@ details.panel .panel-body{padding:0 12px 12px}
     <button class="rail-handle" id="railHandle" title="收起侧边栏" aria-label="收起侧边栏">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
     </button>
+    <div class="rail-inner">
     <div class="brand">
       <div class="logo">P</div>
       <div class="brand-text">
@@ -339,6 +348,7 @@ details.panel .panel-body{padding:0 12px 12px}
         <svg class="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
       </button>
     </div>
+    </div>
   </aside>
 
   <div class="shell-right">
@@ -346,16 +356,16 @@ details.panel .panel-body{padding:0 12px 12px}
     <div class="select-stage" id="selectStage"></div>
 
     <!-- 第二级：答题卡编辑器 -->
-    <div class="editor-stage" id="editorStage" style="display:none;flex-direction:column;min-height:0;flex:1 1 auto">
+    <div class="editor-stage" id="editorStage" style="display:none;flex-direction:column;flex:1 1 auto">
       <header class="designer-topbar">
-        <button class="back-btn" id="backBtn">← 卡片列表</button>
+        <button class="btn ghost sm back-btn" id="backBtn">← 卡片列表</button>
         <div class="title">答题卡设计器</div>
         <div class="sub" id="cardSub"></div>
         <div class="topbar-actions">
-          <button class="btn sm" id="newCardBtn">新建答题卡</button>
-          <button class="btn sm" id="saveBtn">保存</button>
-          <button class="btn sm" id="exportBtn">导出 JSON</button>
-          <button class="btn sm" id="importBtn">导入 JSON</button>
+          <button class="btn primary sm" id="newCardBtn">新建答题卡</button>
+          <button class="btn ghost sm" id="saveBtn">保存</button>
+          <button class="btn ghost sm" id="exportBtn">导出 JSON</button>
+          <button class="btn ghost sm" id="importBtn">导入 JSON</button>
           <input type="file" id="importFile" accept="application/json" style="display:none" />
         </div>
       </header>
@@ -1301,13 +1311,15 @@ const App = (() => {
     const pages=layout.pages.map(p=>Svg.pageSvg(c,p,layout.pages.length)).join("");
     el.innerHTML=`
       <div class="preview-toolbar">
-        <button class="${preview.mode==="fit-width"?"active":""}" data-pm="fit-width">适合宽度</button>
-        <button class="${preview.mode==="fit-page"?"active":""}" data-pm="fit-page">适合页面</button>
-        <button class="${preview.mode==="fit-panel"?"active":""}" data-pm="fit-panel">适合单版</button>
+        <div class="segmented" role="group" aria-label="预览缩放模式">
+          <button class="${preview.mode==="fit-width"?"active":""}" data-pm="fit-width">适合宽度</button>
+          <button class="${preview.mode==="fit-page"?"active":""}" data-pm="fit-page">适合页面</button>
+          <button class="${preview.mode==="fit-panel"?"active":""}" data-pm="fit-panel">适合单版</button>
+        </div>
         <span class="sep"></span>
-        <button data-zoom="-10" ${eff<=PREVIEW_MIN?"disabled":""}>−</button>
+        <button class="btn ghost sm icon-btn" data-zoom="-10" aria-label="缩小" ${eff<=PREVIEW_MIN?"disabled":""}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/></svg></button>
         <output>${Math.round(eff)}%</output>
-        <button data-zoom="10" ${eff>=PREVIEW_MAX?"disabled":""}>＋</button>
+        <button class="btn ghost sm icon-btn" data-zoom="10" aria-label="放大" ${eff>=PREVIEW_MAX?"disabled":""}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg></button>
         <span class="spacer">${c.paper?.size==="A3"?"A3 横向三版":"A4 纵向"} · 共 ${layout.pages.length} 页</span>
       </div>
       ${warns}
@@ -1327,8 +1339,8 @@ const App = (() => {
     const warnPanel = layout&&layout.warnings.length?`<details class="panel"><summary>排版警告<span class="chev">▶</span></summary><div class="panel-body">${layout.warnings.map(w=>`<p class="inline-warning">${esc(w)}</p>`).join("")}</div></details>`:"";
     el.innerHTML=`
       ${basicInfo(c)}
-      <details class="panel" open><summary>正文题块<span class="chev">▶</span></summary><div class="panel-body">${blockMiniList(c)}</div></details>
-      ${editor?`<details class="panel" open><summary>选中块设置<span class="chev">▶</span></summary><div class="panel-body">${editor}</div></details>`:""}
+      <div class="panel"><div class="panel-title">正文题块</div><div class="panel-body">${blockMiniList(c)}</div></div>
+      ${editor?`<div class="panel"><div class="panel-title">选中块设置</div><div class="panel-body">${editor}</div></div>`:""}
       ${warnPanel}`;
     bindInspector(c);
   }
@@ -1337,7 +1349,7 @@ const App = (() => {
   }
   function basicInfo(c){
     const v1banner = c.layoutVersion!==2?`<div class="layout-version-banner"><strong>当前使用 V1 兼容排版</strong><span>旧打印件仍按原分数格坐标识别。升级后将使用紧凑分数区和更大的作答空间。</span><button class="btn ghost sm" data-upgrade="1">升级到紧凑排版 V2</button></div>`:"";
-    return `<details class="panel" open><summary>基本信息<span class="chev">▶</span></summary><div class="panel-body">
+    return `<div class="panel"><div class="panel-title">基本信息</div><div class="panel-body">
       <label>标题<input data-ci="title" value="${esc(c.title)}"></label>
       ${c.subjectLabel?`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--px-fg-secondary)"><span>科目</span><span style="font-weight:600;color:var(--px-fg-primary)">${esc(c.subjectLabel)}</span></div>`:""}
       ${c.examDate?`<div style="display:flex;justify-content:space-between;font-size:13px;color:var(--px-fg-secondary)"><span>考试时间</span><span style="font-weight:600;color:var(--px-fg-primary)">${esc(c.examDate)}</span></div>`:""}
@@ -1345,7 +1357,7 @@ const App = (() => {
       ${v1banner}
       <label>学号位数<input type="number" min="1" max="12" data-ci="studentInfo.studentNumberDigits" value="${c.studentInfo.studentNumberDigits}"></label>
       <label>答题卡面<select data-ci="sided"><option value="single" ${c.sided==="single"?"selected":""}>单面（仅正面有题）</option><option value="double" ${c.sided==="double"?"selected":""}>双面（正反面均有题）</option></select></label>
-    </div></details>`;
+    </div></div>`;
   }
 
   /* 客观题编辑器 */
@@ -1392,7 +1404,7 @@ const App = (() => {
         ${scoring}</div>`;
     }).join("");
 
-    return `<div class="panel-title">客观题机器阅卷块</div>
+    return `<div class="section-title">客观题机器阅卷块</div>
       <label>标题<input data-bf="title" value="${esc(b.title)}"></label>
       <div class="answer-key-editor">
         <div class="answer-key-title"><strong>标准答案</strong><span>${missing===0?"已全部配置":missing+" 题未配置"}</span></div>
@@ -1426,7 +1438,7 @@ const App = (() => {
   function subjectiveEditor(b,layoutVersion){
     const isFill=CardModel.subjectiveBlockKind(b)==="fill_blank";
     const isEssay=CardModel.subjectiveBlockKind(b)==="essay";
-    let head=`<div class="panel-title">${isFill?"填空题块":isEssay?"作文块":"解答题块"}</div>
+    let head=`<div class="section-title">${isFill?"填空题块":isEssay?"作文块":"解答题块"}</div>
       <label>标题<input data-bf="title" value="${esc(b.title)}"></label>`;
     if(isFill){
       head+=`<label>填空题块满分<input type="number" min="0" max="60" step="0.5" data-fillscore value="${b.questions[0]?.score??0}"></label>`;
@@ -1727,8 +1739,18 @@ const App = (() => {
   }
   function initRailHover(){
     const rail=document.querySelector(".app-rail"), shell=document.querySelector(".app-shell");
-    rail.addEventListener("mouseenter",()=>{ if(railCollapsed) shell.classList.remove("rail-collapsed"); });
-    rail.addEventListener("mouseleave",()=>{ if(railCollapsed) shell.classList.add("rail-collapsed"); });
+    let collapseTimer=null;
+    rail.addEventListener("mouseenter",()=>{
+      if(collapseTimer){ clearTimeout(collapseTimer); collapseTimer=null; }
+      if(railCollapsed) shell.classList.remove("rail-collapsed");
+    });
+    rail.addEventListener("mouseleave",()=>{
+      if(railCollapsed){
+        // 延迟收回，避免光标在手柄边界来回触发 enter/leave 造成抖动
+        if(collapseTimer) clearTimeout(collapseTimer);
+        collapseTimer=setTimeout(()=>{ if(railCollapsed) shell.classList.add("rail-collapsed"); },120);
+      }
+    });
   }
 
   function init(){

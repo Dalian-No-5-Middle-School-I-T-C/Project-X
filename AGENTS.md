@@ -37,9 +37,14 @@ README states Node 24+ for dev, but the project runs fine on the Node 22 LTS ava
 ### Install note
 Use `npm install --ignore-scripts` (avoids Electron download issues), then `npm rebuild better-sqlite3` to compile the native SQLite binding for the current Node.
 
-## Code of Conduct — 八荣八耻
+## 样式事实源（P6 T05 定稿）
 
-以瞎猜接口为耻，以认真查询为荣。
+- **CSS 唯一事实源** = `src/apps/answer-card/client/theme/app.css` + `theme/tokens.css` + `theme/backdrop.css`。旧 `styles.css`（6048 行）与 `theme/legacy-bridge.css` 已于 P6 T05 删除，legacy 类归零。
+- **组件唯一事实源** = `src/apps/answer-card/client/components/ui/v2/*`（桶文件具名 import）。
+- **禁止新建 CSS 文件、禁止手写 CSS**。业务样式一律用 Tailwind 工具类 + `--px-*` 语义令牌；需要扩展主题在 `app.css` 的 `@theme` 块内加，禁止散落硬编码。
+- Preflight 未启用（架构师 D2 决策），全局 reset 已由 `app.css` 的 `@layer base` 接管；**Preflight 启用另立 P7**。
+
+## Code of Conduct — 八荣八耻以瞎猜接口为耻，以认真查询为荣。
 以模糊执行为耻，以寻求确认为荣。
 以臆想业务为耻，以人类确认为荣。
 以创造接口为耻，以复用现有为荣。

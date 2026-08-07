@@ -1,4 +1,13 @@
-import React, { useState } from "react";
+import { useState } from "react";
+import { Plus, X } from "lucide-react";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  Input,
+  SkeletonText,
+  paletteColor,
+} from "./ui/v2";
 
 interface QuestionPoints {
   question_number: number;
@@ -12,26 +21,18 @@ interface Props {
   loading?: boolean;
 }
 
-const CATEGORY_COLORS: Record<string, string> = {
-  "力学": "#3b82f6",
-  "电磁": "#ef4444",
-  "电磁学": "#ef4444",
-  "热学": "#10b981",
-  "光学": "#f59e0b",
-  "近代物理": "#8b5cf6",
-  "原子物理": "#8b5cf6",
-  "代数": "#3b82f6",
-  "几何": "#ef4444",
-  "概率统计": "#10b981",
-  "函数": "#8b5cf6",
-  "无机": "#3b82f6",
-  "有机": "#ef4444",
-  "实验": "#f59e0b",
-  "计算": "#8b5cf6",
-};
+/** 字符串确定性散列：同一知识点名恒映射到同一调色板序号 */
+function hashCode(text: string): number {
+  let h = 0;
+  for (let i = 0; i < text.length; i++) {
+    h = (h * 31 + text.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
 
-function pickColor(_point: string): string {
-  return "#6b7280"; // 默认灰色，后续可扩展学科匹配
+/** 学科色只经由图表调色板解析，组件内不出现任何十六进制（铁律 §4） */
+function subjectColor(point: string): string {
+  return paletteColor(hashCode(point));
 }
 
 export function KnowledgeTagList({ questions, onChange, editable = true, loading }: Props) {
@@ -78,27 +79,34 @@ export function KnowledgeTagList({ questions, onChange, editable = true, loading
 
   if (loading) {
     return (
-      <div className="knowledge-loading">
-        <div className="skeleton-row" />
-        <div className="skeleton-row" />
-        <div className="skeleton-row" />
+      <div role="status" aria-label="知识点加载中">
+        <SkeletonText lines={3} />
       </div>
     );
   }
 
+  if (questions.length === 0) {
+    return (
+      <EmptyState
+        size="sm"
+        title="暂无知识点"
+        description="开始分析后自动生成知识点标签"
+      />
+    );
+  }
+
   return (
-    <div className="knowledge-tag-list">
+    <div className="flex flex-col gap-4">
       {questions.map((q, qi) => (
-        <div key={q.question_number} className="knowledge-question-group">
-          <div className="knowledge-question-header">第{q.question_number}题</div>
-          <div className="knowledge-tags">
+        <div key={q.question_number} className="rounded-lg border border-border bg-card p-4">
+          <div className="mb-2 text-sm font-medium text-foreground">第{q.question_number}题</div>
+          <div className="flex flex-wrap items-center gap-1.5">
             {q.points.map((point, pi) => {
               const isEditing = editingIdx?.qi === qi && editingIdx?.pi === pi;
               if (isEditing) {
                 return (
-                  <input
+                  <Input
                     key={pi}
-                    className="knowledge-tag-edit"
                     value={editValue}
                     onChange={(e) => setEditValue(e.target.value)}
                     onBlur={commitEdit}
@@ -107,42 +115,50 @@ export function KnowledgeTagList({ questions, onChange, editable = true, loading
                       if (e.key === "Escape") setEditingIdx(null);
                     }}
                     autoFocus
-                    style={{ fontSize: "14px" }}
+                    className="max-w-40"
+                    aria-label="编辑知识点"
                   />
                 );
               }
               return (
-                <span
+                <Badge
                   key={pi}
-                  className="knowledge-tag"
-                  style={{ backgroundColor: pickColor(point), color: "#fff" }}
+                  tone="solid"
+                  className="cursor-pointer select-none hover:opacity-85"
+                  // 动态值：知识点名 → 图表调色板色（散列稳定），非静态工具类可表达
+                  style={{ backgroundColor: subjectColor(point) }}
                   onDoubleClick={() => startEdit(qi, pi, point)}
                   title="双击编辑"
                 >
                   {point}
                   {editable && (
                     <button
-                      className="knowledge-tag-remove"
+                      type="button"
                       onClick={(e) => {
                         e.stopPropagation();
                         removePoint(qi, pi);
                       }}
+                      className="-m-0.5 inline-flex shrink-0 items-center rounded-sm p-0.5 text-white/70 transition-colors hover:text-white"
                       title="删除"
+                      aria-label="删除知识点"
                     >
-                      ×
+                      <X aria-hidden />
                     </button>
                   )}
-                </span>
+                </Badge>
               );
             })}
             {editable && (
-              <button
-                className="knowledge-tag-add"
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                icon={<Plus />}
                 onClick={() => addPoint(qi)}
                 title="添加知识点"
               >
-                + 添加
-              </button>
+                添加
+              </Button>
             )}
           </div>
         </div>

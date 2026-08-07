@@ -1,10 +1,35 @@
 /// <reference types="vite/client" />
 
 import { useState } from "react";
-import { ArrowLeft, Camera, ClipboardCheck, Download, FolderOpen, ImagePlus } from "lucide-react";
+import {
+  ArrowLeft,
+  Camera,
+  ChevronDown,
+  ChevronRight,
+  ClipboardCheck,
+  Download,
+  FolderOpen,
+  ImagePlus,
+} from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import { ScannerPanel } from "./ScannerPanel";
 import type { CombinedGradingBatchResult, CombinedGradingRow } from "../../../../shared/types";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableWrap,
+} from "./ui/v2";
 
 interface Props {
   cardId: string;
@@ -106,31 +131,15 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack }: Props) {
   }
 
   return (
-    <main className="app-shell no-card-sidebar">
-      <section className="workspace">
-        <header className="topbar">
-          <div>
-            <h1 style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 16 }}>
-              <button
-                onClick={onBack}
-                style={{
-                  background: "none", border: "none", cursor: "pointer",
-                  padding: 4, borderRadius: 6, color: "var(--muted)",
-                  display: "flex", alignItems: "center"
-                }}
-              >
-                <ArrowLeft size={18} />
-              </button>
-              <span style={{ fontWeight: 700 }}>{cardTitle}</span>
-              <span style={{ fontSize: 12, color: "var(--muted)", fontWeight: 400 }}>ID:{cardId}</span>
-            </h1>
-            <p>扫描仪直扫或导入图片进行阅卷判分</p>
-          </div>
+    <main className="flex h-screen min-w-0 flex-col overflow-hidden bg-background">
+        <header className="flex h-page-header shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-5">
+          <Button variant="ghost" size="icon-sm" onClick={onBack} aria-label="返回答题卡列表"><ArrowLeft size={18} /></Button>
+          <div className="flex min-w-0 flex-1 flex-col"><strong className="truncate text-base font-semibold">{cardTitle}</strong><span className="truncate text-xs text-muted-foreground">扫描仪直扫或导入图片进行阅卷判分 · ID:{cardId}</span></div>
         </header>
 
-        <div className="main-grid grading-grid">
+        <div className="flex min-h-0 flex-1 flex-row-reverse">
           {/* ── Main area: ScannerPanel or GradingResults ── */}
-          <section className="preview-panel grading-results-panel">
+          <section className="min-w-0 flex-1 overflow-auto bg-background p-6">
             {scanning ? (
               <ScannerPanel
                 cardId={cardId}
@@ -146,23 +155,24 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack }: Props) {
                 onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)}
               />
             ) : (
-              <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--text-secondary)" }}>
-                <Camera size={48} style={{ marginBottom: 16, opacity: 0.3 }} />
-                <p style={{ fontSize: 15 }}>开始扫描或导入图片进行阅卷</p>
-                {status && <p style={{ fontSize: 13, marginTop: 8, color: "var(--brand)" }}>{status}</p>}
+              <div className="flex h-full min-h-[360px] flex-col items-center justify-center text-muted-foreground">
+                <Camera className="mb-4 size-12 opacity-30" />
+                <p className="text-sm">开始扫描或导入图片进行阅卷</p>
+                {status && <p className="mt-2 text-sm text-primary">{status}</p>}
               </div>
             )}
           </section>
 
           {/* ── Sidebar: Scan settings + File import ── */}
-          <aside className="inspector">
+          <aside className="flex w-[340px] shrink-0 flex-col gap-4 overflow-auto border-r border-border-subtle bg-card p-4">
             {/* ── TWAIN Scanner ── */}
-            <section className="panel">
-              <div className="panel-title">
-                <Camera size={17} /> 扫描仪直扫
-              </div>
-              <button
-                className="primary-button wide-button"
+            <Card>
+              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Camera size={17} /> 扫描仪直扫</CardTitle></CardHeader>
+              <CardContent>
+              <Button
+                variant="primary"
+                block
+                icon={<Camera size={17} />}
                 onClick={() => {
                   setScanning(true);
                   setGradingResult(null);
@@ -170,97 +180,106 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack }: Props) {
                 }}
                 disabled={isBusy}
               >
-                <Camera size={17} /> 开始扫描
-              </button>
-              <p className="hint" style={{ marginTop: 8 }}>连接扫描仪进行 TWAIN 直扫和自动识别</p>
-            </section>
+                开始扫描
+              </Button>
+              <p className="mt-2 rounded-md bg-secondary p-2 text-xs text-muted-foreground">连接扫描仪进行 TWAIN 直扫和自动识别</p>
+              </CardContent>
+            </Card>
 
             {/* ── File Import ── */}
-            <section className="panel">
-              <div className="panel-title">
-                <ImagePlus size={17} /> 导入阅卷
+            <Card>
+              <CardHeader><CardTitle className="flex items-center gap-2 text-base"><ImagePlus size={17} /> 导入阅卷</CardTitle></CardHeader>
+              <CardContent>
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button variant="outline" size="sm" asChild>
+                  <label className="cursor-pointer">
+                    <FolderOpen size={16} /> 导入目录
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      {...directoryInputProps}
+                      onChange={(event) => {
+                        addGradingFiles(event.target.files);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                </Button>
+                <Button variant="outline" size="sm" asChild>
+                  <label className="cursor-pointer">
+                    <ImagePlus size={16} /> 导入图片
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(event) => {
+                        addGradingFiles(event.target.files);
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                  </label>
+                </Button>
               </div>
 
-              <div className="split-actions">
-                <label className="upload-button">
-                  <FolderOpen size={16} /> 导入目录
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    {...directoryInputProps}
-                    onChange={(event) => {
-                      addGradingFiles(event.target.files);
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                </label>
-                <label className="upload-button">
-                  <ImagePlus size={16} /> 导入图片
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    onChange={(event) => {
-                      addGradingFiles(event.target.files);
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                </label>
-              </div>
-
-              <div className="file-queue" style={{ marginTop: 12 }}>
-                <div>
-                  <strong>{gradingFiles.length}</strong>
-                  <span>张待阅卷图片</span>
+                <div className="mt-3 flex items-center justify-between text-sm">
+                <div className="flex items-baseline gap-1">
+                  <strong className="tabular-nums">{gradingFiles.length}</strong>
+                  <span className="text-muted-foreground">张待阅卷图片</span>
                 </div>
                 {gradingFiles.length > 0 && (
-                  <button
-                    className="ghost-button"
+                  <Button
                     type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="text-xs"
                     onClick={() => setGradingFiles([])}
-                    style={{ fontSize: 12 }}
                   >
                     清空
-                  </button>
+                  </Button>
                 )}
               </div>
 
               {gradingFiles.length > 0 && (
-                <div className="queued-files">
+                <div className="mt-2 flex max-h-32 flex-col gap-1 overflow-auto rounded-md border border-border-subtle bg-secondary p-2">
                   {gradingFiles.slice(0, 6).map((file) => (
-                    <span key={`${file.name}_${file.size}_${file.lastModified}`}>
+                    <span
+                      key={`${file.name}_${file.size}_${file.lastModified}`}
+                      className="truncate text-xs text-muted-foreground"
+                    >
                       {file.webkitRelativePath || file.name}
                     </span>
                   ))}
-                  {gradingFiles.length > 6 && <span>还有 {gradingFiles.length - 6} 张...</span>}
+                  {gradingFiles.length > 6 && (
+                    <span className="text-xs text-muted-foreground">还有 {gradingFiles.length - 6} 张...</span>
+                  )}
                 </div>
               )}
 
-              <button
-                className="primary-button wide-button"
-                style={{ marginTop: 12 }}
+              <Button
+                variant="primary"
+                block
+                className="mt-3"
+                icon={<ClipboardCheck size={17} />}
+                loading={isBusy}
                 onClick={() => void gradeAnswerCardFiles()}
                 disabled={gradingFiles.length === 0 || isBusy}
               >
-                <ClipboardCheck size={17} /> 开始识别判分
-              </button>
-            </section>
+                开始识别判分
+              </Button>
+              </CardContent>
+            </Card>
 
             {/* ── Status ── */}
             {status && (
-              <section className="panel">
-                <div className="panel-title">状态</div>
-                <p style={{ fontSize: 13 }}>{status}</p>
-              </section>
+              <Card><CardHeader><CardTitle className="text-base">状态</CardTitle></CardHeader><CardContent><p className="text-sm">{status}</p></CardContent></Card>
             )}
           </aside>
         </div>
-
-        <footer className="statusbar">
-          <span className="statusbar-message">{status}</span>
-        </footer>
-      </section>
+        <footer className="flex h-statusbar shrink-0 items-center border-t border-border-subtle bg-card px-4 text-xs text-muted-foreground">{status || "扫描服务已就绪"}</footer>
     </main>
   );
 }
@@ -273,97 +292,181 @@ function GradingResultsInline({
   result: CombinedGradingBatchResult | null;
   onDownloadCsv: () => void;
 }) {
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+
   if (!result || result.rows.length === 0) {
     return (
-      <div className="grading-empty">
-        <ClipboardCheck size={36} />
-        <h2>等待阅卷</h2>
-        <p>导入答题卡图片后开始识别。</p>
-      </div>
+      <EmptyState
+        icon={<ClipboardCheck />}
+        title="等待阅卷"
+        description="导入答题卡图片后开始识别。"
+      />
     );
   }
 
   const totalReview = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
   const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
 
+  function toggleRow(key: string) {
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
   return (
-    <div className="grading-results">
-      <div className="grading-results-header">
-        <div>
-          <h2>成绩表</h2>
-          <p>{result.rows.length} 张答题卡 / 待复核 {totalReview} 题 / 异常 {totalIssues} 处</p>
+    <div className="flex min-h-0 flex-col gap-3">
+      <div className="flex items-end justify-between gap-3">
+        <div className="flex min-w-0 flex-col gap-1">
+          <h2 className="m-0 text-lg font-semibold text-foreground">成绩表</h2>
+          <p className="m-0 text-sm text-muted-foreground">
+            <span className="tabular-nums">{result.rows.length}</span> 张答题卡 / 待复核{" "}
+            <span className="tabular-nums">{totalReview}</span> 题 / 异常{" "}
+            <span className="tabular-nums">{totalIssues}</span> 处
+          </p>
         </div>
-        <button className="primary-button" type="button" onClick={onDownloadCsv} disabled={result.rows.length === 0}>
-          <Download size={17} /> CSV
-        </button>
+        <Button
+          variant="primary"
+          size="sm"
+          type="button"
+          icon={<Download size={16} />}
+          onClick={onDownloadCsv}
+          disabled={result.rows.length === 0}
+        >
+          CSV
+        </Button>
       </div>
-      <div className="score-table">
-        <div className="score-table-head">
-          <span>文件</span>
-          <span>学号</span>
-          <span>状态</span>
-          <span>总分</span>
-          <span>客观/主观</span>
-          <span>复核</span>
-          <span>答题卡</span>
-        </div>
-        {result.rows.map((row) => (
-          <details className="score-row" key={`${row.fileName}_${row.recognition.imagePath ?? row.fileName}`}>
-            <summary>
-              <span title={row.fileName}>{row.fileName}</span>
-              <span>{row.studentId ?? "未识别"}</span>
-              <span className={row.recognitionStatus === "ok" && row.issueCount === 0 ? "status-ok" : "status-warn"}>
-                {row.recognitionStatus}
-              </span>
-              <span>{row.totalScore}/{row.totalMaxScore}</span>
-              <span>{row.objectiveScore}/{row.objectiveMaxScore} · {row.subjectiveScore}/{row.subjectiveMaxScore}</span>
-              <span>{row.needsReviewCount}</span>
-              <span>
-                {row.previewUrl ? (
-                  <button
-                    className="score-preview-link"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      const url = mediaUrl(row.previewUrl!);
-                      window.open(url, "_blank");
-                    }}
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--brand)", fontSize: 12, padding: 0, textDecoration: "underline", textUnderlineOffset: 2 }}
-                  >
-                    预览
-                  </button>
-                ) : (
-                  <span className="muted-cell">-</span>
-                )}
-              </span>
-            </summary>
-            <div className="question-grade-list">
-              {row.message && <p className="row-message">{row.message}</p>}
-              {row.questions.length > 0 && <p className="grading-section-title">客观题</p>}
-              {row.questions.map((question) => (
-                <div className={`question-grade ${question.needsReview || question.status === "missing_key" ? "needs-review" : ""}`} key={question.questionNumber}>
-                  <strong>{question.questionNumber}</strong>
-                  <span>标准 {(question.correctOptions || []).join("")}</span>
-                  <span>识别 {(question.selectedOptions || []).join("")}</span>
-                  <span>{question.score}/{question.maxScore}</span>
-                  <span>置信 {question.confidence.toFixed(3)}</span>
-                  <em>{question.message ?? question.status}</em>
-                </div>
-              ))}
-              {row.subjectiveQuestions.length > 0 && <p className="grading-section-title">主观题</p>}
-              {row.subjectiveQuestions.map((question) => (
-                <div className={`question-grade subjective-grade ${question.needsReview ? "needs-review" : ""}`} key={question.questionId}>
-                  <strong>{question.questionNumber}</strong>
-                  <span>有效 {question.validCells.map((cell) => cell.score).join("+") || "-"}</span>
-                  <span>无效 {question.invalidCells.length}</span>
-                  <span>{question.score}/{question.maxScore}</span>
-                  <span>置信 {question.confidence.toFixed(3)}</span>
-                  <em>{question.message ?? question.status}</em>
-                </div>
-              ))}
-            </div>
-          </details>
-        ))}
-      </div>
+
+      <TableWrap className="rounded-lg border border-border-subtle bg-card">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>文件</TableHead>
+              <TableHead>学号</TableHead>
+              <TableHead>状态</TableHead>
+              <TableHead numeric>总分</TableHead>
+              <TableHead numeric>客观/主观</TableHead>
+              <TableHead numeric>复核</TableHead>
+              <TableHead>答题卡</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {result.rows.map((row) => {
+              const key = `${row.fileName}_${row.recognition.imagePath ?? row.fileName}`;
+              const isOpen = expanded.has(key);
+              const isClean = row.recognitionStatus === "ok" && row.issueCount === 0;
+              return [
+                <TableRow
+                  key={key}
+                  clickable
+                  aria-expanded={isOpen}
+                  onClick={() => toggleRow(key)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      toggleRow(key);
+                    }
+                  }}
+                  tabIndex={0}
+                >
+                  <TableCell className="max-w-[220px]">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      {isOpen
+                        ? <ChevronDown size={14} className="shrink-0 text-muted-foreground" aria-hidden />
+                        : <ChevronRight size={14} className="shrink-0 text-muted-foreground" aria-hidden />}
+                      <span className="truncate" title={row.fileName}>{row.fileName}</span>
+                    </span>
+                  </TableCell>
+                  <TableCell className="tabular-nums">{row.studentId ?? "未识别"}</TableCell>
+                  <TableCell>
+                    <Badge tone={isClean ? "success" : "warning"} dot>
+                      {row.recognitionStatus}
+                    </Badge>
+                  </TableCell>
+                  <TableCell numeric>{row.totalScore}/{row.totalMaxScore}</TableCell>
+                  <TableCell numeric>
+                    {row.objectiveScore}/{row.objectiveMaxScore} · {row.subjectiveScore}/{row.subjectiveMaxScore}
+                  </TableCell>
+                  <TableCell numeric>{row.needsReviewCount}</TableCell>
+                  <TableCell>
+                    {row.previewUrl ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-auto px-1 py-0 text-xs text-accent-foreground underline underline-offset-2"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          const url = mediaUrl(row.previewUrl!);
+                          window.open(url, "_blank");
+                        }}
+                      >
+                        预览
+                      </Button>
+                    ) : (
+                      <span className="text-muted-foreground">-</span>
+                    )}
+                  </TableCell>
+                </TableRow>,
+                isOpen ? (
+                  <TableRow key={`${key}__detail`} className="hover:bg-transparent">
+                    <TableCell colSpan={7} className="h-auto bg-secondary py-3">
+                      <div className="flex flex-col gap-2">
+                        {row.message && (
+                          <p className="m-0 text-xs text-destructive-fg">{row.message}</p>
+                        )}
+                        {row.questions.length > 0 && (
+                          <p className="m-0 text-xs font-medium text-muted-foreground">客观题</p>
+                        )}
+                        {row.questions.map((question) => {
+                          const flagged = question.needsReview || question.status === "missing_key";
+                          return (
+                            <div
+                              key={question.questionNumber}
+                              className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border-subtle bg-card px-3 py-1.5 text-xs"
+                            >
+                              <strong className="tabular-nums text-foreground">{question.questionNumber}</strong>
+                              <span className="text-muted-foreground">标准 {(question.correctOptions || []).join("")}</span>
+                              <span className="text-muted-foreground">识别 {(question.selectedOptions || []).join("")}</span>
+                              <span className="tabular-nums text-foreground">{question.score}/{question.maxScore}</span>
+                              <span className="tabular-nums text-muted-foreground">置信 {question.confidence.toFixed(3)}</span>
+                              <Badge tone={flagged ? "danger" : "neutral"} dot={flagged} className="ml-auto">
+                                {question.message ?? question.status}
+                              </Badge>
+                            </div>
+                          );
+                        })}
+                        {row.subjectiveQuestions.length > 0 && (
+                          <p className="m-0 text-xs font-medium text-muted-foreground">主观题</p>
+                        )}
+                        {row.subjectiveQuestions.map((question) => (
+                          <div
+                            key={question.questionId}
+                            className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border-subtle bg-card px-3 py-1.5 text-xs"
+                          >
+                            <strong className="tabular-nums text-foreground">{question.questionNumber}</strong>
+                            <span className="text-muted-foreground">
+                              有效 {question.validCells.map((cell) => cell.score).join("+") || "-"}
+                            </span>
+                            <span className="tabular-nums text-muted-foreground">无效 {question.invalidCells.length}</span>
+                            <span className="tabular-nums text-foreground">{question.score}/{question.maxScore}</span>
+                            <span className="tabular-nums text-muted-foreground">置信 {question.confidence.toFixed(3)}</span>
+                            <Badge tone={question.needsReview ? "danger" : "neutral"} dot={question.needsReview} className="ml-auto">
+                              {question.message ?? question.status}
+                            </Badge>
+                          </div>
+                        ))}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ) : null,
+              ];
+            })}
+          </TableBody>
+        </Table>
+      </TableWrap>
     </div>
   );
 }

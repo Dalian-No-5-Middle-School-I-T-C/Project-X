@@ -419,6 +419,12 @@ export type AnswerBlockCrop = {
   maxScore?: number | null;
   /** 本题块是否允许 0.5 小数（来自 block_grading_config，用于打分面板） */
   hasHalfPoint?: number;
+  /** Issue #174: 试卷池领取人（null=在池中待领） */
+  claimedBy?: number | null;
+  /** Issue #174: 领取时间 */
+  claimedAt?: string | null;
+  /** Issue #174: 累计领取次数（复核轮次参考） */
+  claimCount?: number;
 };
 
 /** 网上阅卷题块汇总 */
@@ -443,6 +449,36 @@ export type ReviewBlockCropItem = AnswerBlockCrop & {
 export type ReviewBlockCropsResponse = {
   examId: number;
   rows: ReviewBlockCropItem[];
+};
+
+/** Issue #174: 试卷池汇总（含各教师领取/完成情况） */
+export type ReviewPoolSummary = {
+  examId: number;
+  blockId: string;
+  totalCount: number;
+  /** 池中可领（含待复核/争议待处理且未被领取） */
+  inPoolCount: number;
+  /** 已领取未提交 */
+  claimedCount: number;
+  reviewedCount: number;
+  disputedCount: number;
+  /** 待复核轮次（pending） */
+  pendingCount: number;
+  /** 当前用户已领取数 */
+  myClaimedCount: number;
+  assignments: Array<{
+    teacherId: number;
+    teacherName?: string;
+    assignedCount: number;
+    claimedCount: number;
+    reviewedCount: number;
+  }>;
+};
+
+/** Issue #174: 试卷池条目（含领取人信息） */
+export type ReviewPoolEntry = ReviewBlockCropItem & {
+  claimedByName?: string | null;
+  claimCount: number;
 };
 
 export type ReviewSubmitScoreInput = {
@@ -675,6 +711,10 @@ export type ClassComparisonClassSummary = {
   stdDev: number;
   passRate: number;
   excellentRate: number;
+  /** 难度系数 P（平均分/满分，0-1） */
+  difficulty: number;
+  /** 区分度 D（极端组法，-1~1） */
+  discrimination: number;
   distribution: Array<{ range: string; min: number; max: number; count: number }>;
 };
 
@@ -693,6 +733,8 @@ export type ClassComparisonOptionStat = {
 };
 
 export type ClassComparisonResponse = {
+  /** 试卷满分（用于雷达图等归一化） */
+  fullScore: number;
   classes: ClassComparisonClassSummary[];
   questionStats: ClassComparisonQuestionStat[];
   /** 仅当 includeOptions=1 且有选项数据时返回 */
@@ -706,6 +748,10 @@ export type KnowledgeWeaknessItem = {
   point_text: string;
   question_numbers: string;
   avg_rate: number;
+  /** 知识点难度系数 P（0-1）= 得分率 / 100（#176） */
+  difficulty?: number;
+  /** 知识点区分度 D（极端组法，逐题 D 均值，#176） */
+  discrimination?: number;
   student_count: number;
   total_questions: number;
   severity: KnowledgeSeverity;
@@ -719,6 +765,16 @@ export type AnalysisThresholds = {
   errorTiers: [number, number, number];
 };
 
+/** 考试模式（#178 双权限模式）：quiz=晨测（全量权限），formal=大考（精细权限，默认） */
+export type ExamMode = "quiz" | "formal";
+
+export const EXAM_MODES: ReadonlyArray<ExamMode> = ["quiz", "formal"];
+
+export const EXAM_MODE_LABELS: Record<ExamMode, string> = {
+  quiz: "晨测",
+  formal: "大考"
+};
+
 export type ExamRecord = {
   id: number;
   name: string;
@@ -730,6 +786,8 @@ export type ExamRecord = {
   end_time: string | null;
   status: string;
   assigned_formula: string | null;
+  /** 考试模式（#178），缺省视为 formal */
+  exam_mode?: ExamMode;
   created_at: string;
 };
 

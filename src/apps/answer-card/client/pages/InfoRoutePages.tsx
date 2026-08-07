@@ -10,10 +10,8 @@ import { UserGuidePage } from "../components/UserGuidePage";
 export function SponsorRoutePage() {
   const { navigateBackFromInfo } = useWorkspace();
   return (
-    <div className="main-grid sponsor-grid">
-      <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-        <SponsorPage onBack={navigateBackFromInfo} />
-      </section>
+    <div className="mx-auto w-full max-w-[1200px] px-6 py-6 lg:px-8">
+      <SponsorPage onBack={navigateBackFromInfo} />
     </div>
   );
 }
@@ -21,10 +19,8 @@ export function SponsorRoutePage() {
 export function PermissionsRoutePage() {
   const { navigateBackFromInfo } = useWorkspace();
   return (
-    <div className="main-grid permissions-grid">
-      <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-        <PermissionManager onBack={navigateBackFromInfo} />
-      </section>
+    <div className="mx-auto w-full max-w-[1200px] px-6 py-6 lg:px-8">
+      <PermissionManager onBack={navigateBackFromInfo} />
     </div>
   );
 }
@@ -32,10 +28,8 @@ export function PermissionsRoutePage() {
 export function GuideRoutePage() {
   const { navigateBackFromInfo } = useWorkspace();
   return (
-    <div className="main-grid guide-grid">
-      <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-        <UserGuidePage onBack={navigateBackFromInfo} />
-      </section>
+    <div className="mx-auto w-full max-w-[1200px] px-6 py-6 lg:px-8">
+      <UserGuidePage onBack={navigateBackFromInfo} />
     </div>
   );
 }
