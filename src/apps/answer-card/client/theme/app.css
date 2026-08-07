@@ -71,6 +71,9 @@
   textarea,
   select { padding: 0; }
   table { border-collapse: collapse; }
+  /* 原生滑块跟随品牌 accent（亮色/暗色/皮肤经令牌自动适配；
+     未设置时 WebView2 默认渲染为紫蓝色，与两套皮肤均不协调） */
+  input[type="range"] { accent-color: var(--px-accent-bg); }
 }
 
 /* 弹层进出动画工具类（animate-in / fade-in-0 / zoom-in-95 …）。

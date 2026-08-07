@@ -347,3 +347,282 @@
     --px-dur-4: 1ms;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   皮肤 · 纸锋 Paper Edge（v2.3.0 新增，data-skin="paper-edge"）
+   ----------------------------------------------------------------------------
+   设计来源：demo-brutalist.html（editorial-brutalist 技能）——纸面米底、
+   墨色文字、品牌亮蓝 #2E44FF、直角 + 胶囊圆角纪律、全文件唯一硬偏移阴影。
+   色彩纪律：亮蓝 = 品牌/主行动/当前数据系列；绯红 #C00F28 仅危险/错误/异常；
+   「已完成/识别通过」→ 蓝软族；「阅卷中/待处理」→ 墨描边族；其余交给纸面中性阶。
+
+   【已评审的「纯令牌覆盖」豁免】本皮肤块末尾含一组作用域规则（按钮/徽章/
+   分段控件/选项卡/进度条/统计数字的圆角、字重与配色精调）。原因：demo 的
+   组件观感纪律（按钮胶囊墨底、选项卡胶囊组、进度条直角等）无法由纯令牌
+   表达。规则全部限定在 [data-skin="paper-edge"] 作用域内，默认皮肤零影响。
+   评审记录见 readus/SKIN-THEME.md §五。
+   ══════════════════════════════════════════════════════════════════════════ */
+[data-skin="paper-edge"] {
+  /* ── L1 覆盖：圆角纪律 —— 卡片/输入/表格/弹层一律直角（胶囊见末尾作用域规则） ── */
+  --px-radius-xs:  0;
+  --px-radius-sm:  0;
+  --px-radius-md:  0;
+  --px-radius-lg:  0;
+  --px-radius-xl:  0;
+  --px-radius-2xl: 0;
+
+  /* ── 底色 / 表面：纸面米色系 ── */
+  --px-bg-canvas:  #F1EFE9;   /* PAPER */
+  --px-bg-surface: #F1EFE9;
+  --px-bg-raised:  #F1EFE9;
+  --px-bg-overlay: #F1EFE9;
+  --px-bg-subtle:  #E9E6DE;   /* PAPER-2：表头/斑马纹/次填充 */
+  --px-bg-muted:   #E9E6DE;
+  --px-bg-inverse: #141413;   /* DARK：toast/状态栏反色 */
+  --px-bg-scrim:   rgba(20, 20, 19, 0.50);
+
+  /* ── 文字：墨阶 ── */
+  --px-fg-primary:   #1A1917; /* INK */
+  --px-fg-secondary: #4A4842; /* INK-SOFT */
+  --px-fg-tertiary:  #8B887E; /* GRAY */
+  --px-fg-disabled:  #B8B5AB;
+  --px-fg-inverse:   #F1EFE9;
+  --px-fg-on-accent: #FFFFFF;
+
+  /* ── 边框：细线优先，强调边 = 墨实线 ── */
+  --px-border-subtle: #E3E0D6;
+  --px-border-default: #D8D5CB; /* LINE */
+  --px-border-strong:  #1A1917; /* INK */
+
+  /* ── 品牌 Accent：亮蓝族（替换默认绯红 accent） ── */
+  --px-accent-bg:         #2E44FF;  /* BLUE */
+  --px-accent-bg-hover:   #1F30C8;  /* DEEP */
+  --px-accent-bg-active:  #16249B;
+  --px-accent-soft:       rgba(46, 68, 255, 0.09);
+  --px-accent-soft-hover: rgba(46, 68, 255, 0.14);
+  --px-accent-fg:         #1F30C8;
+  --px-accent-border:     rgba(46, 68, 255, 0.35);
+  --px-accent-ring:       rgba(46, 68, 255, 0.35);
+
+  /* ── 状态语义重映射（demo 徽章纪律） ── */
+  /* success：已完成/识别通过 → 蓝软族 */
+  --px-success-bg:     #2E44FF;
+  --px-success-soft:   rgba(46, 68, 255, 0.09);
+  --px-success-fg:     #1F30C8;
+  --px-success-border: rgba(46, 68, 255, 0.35);
+  /* warning：阅卷中/待处理 → 墨描边族（透明底 + 墨字 + 墨边） */
+  --px-warning-bg:     #1A1917;
+  --px-warning-soft:   transparent;
+  --px-warning-fg:     #1A1917;
+  --px-warning-border: #1A1917;
+  /* danger：异常/危险 → 绯红族（与 --px-red-* 同值） */
+  --px-danger-bg:     #C00F28;
+  --px-danger-soft:   #FCF3F4;
+  --px-danger-fg:     #A10D22;
+  --px-danger-border: #F1C2C9;
+  /* info：信息/新扫描 → 实蓝族 */
+  --px-info-bg:     #2E44FF;
+  --px-info-soft:   rgba(46, 68, 255, 0.09);
+  --px-info-fg:     #1F30C8;
+  --px-info-border: rgba(46, 68, 255, 0.35);
+
+  /* ── 阴影：1-3 级归零（边框优先）；4 级 = 全文件唯一硬偏移 ── */
+  --px-shadow-1: none;
+  --px-shadow-2: none;
+  --px-shadow-3: none;
+  --px-shadow-4: 8px 8px 0 #1A1917;
+  --px-shadow-accent: none;
+
+  /* ── 焦点环：保持全局唯一形态，色相转蓝 ── */
+  --px-focus-ring: 0 0 0 2px var(--px-bg-canvas), 0 0 0 4px #2E44FF;
+
+  /* ── 选中文字 ── */
+  --px-selection-bg: rgba(46, 68, 255, 0.14);
+
+  /* ── 数据可视化单色纪律：蓝 = 当前主体；灰/墨 = 其他系列；绯红仅异常 ── */
+  --px-chart-1: #2E44FF;
+  --px-chart-2: #8B887E;
+  --px-chart-3: #C00F28;
+  --px-chart-4: #1A1917;
+  --px-chart-5: #4A4842;
+  --px-chart-6: #B8B5AB;
+  --px-chart-7: #D8D5CB;
+  --px-chart-8: #E9E6DE;
+
+  /* 纸面语义（--px-paper-*）刻意不覆盖：答题卡纸张恒白（ADR-6 / demo --sheet:#FFF） */
+}
+
+/* ── 纸锋 · 暗色组合（由 demo 深色区块板 #141413 系推导；对比度 ≥4.5:1） ── */
+[data-skin="paper-edge"][data-theme="dark"] {
+  --px-bg-canvas:  #141413;   /* DARK */
+  --px-bg-surface: #1D1D1B;   /* DARK-2 */
+  --px-bg-raised:  #1D1D1B;
+  --px-bg-overlay: #1D1D1B;
+  --px-bg-subtle:  #1D1D1B;
+  --px-bg-muted:   #2E2E2B;   /* LINE-DARK */
+  --px-bg-inverse: #F1EFE9;
+  --px-bg-scrim:   rgba(0, 0, 0, 0.56);
+
+  --px-fg-primary:   #F1EFE9;
+  --px-fg-secondary: #B8B5AB;
+  --px-fg-tertiary:  #8A887F; /* GRAY-ON-DARK */
+  --px-fg-disabled:  #5C5C55;
+  --px-fg-inverse:   #1A1917;
+  --px-fg-on-accent: #FFFFFF;
+
+  --px-border-subtle: rgba(241, 239, 233, 0.08);
+  --px-border-default: #2E2E2B;
+  --px-border-strong:  #F1EFE9;
+
+  /* accent 提亮一档：白字对比度 ≥4.5:1 */
+  --px-accent-bg:         #4A5CFF;
+  --px-accent-bg-hover:   #5F70FF;
+  --px-accent-bg-active:  #2E44FF;
+  --px-accent-soft:       rgba(46, 68, 255, 0.22);
+  --px-accent-soft-hover: rgba(46, 68, 255, 0.28);
+  --px-accent-fg:         #9DB0FF;
+  --px-accent-border:     rgba(46, 68, 255, 0.50);
+  --px-accent-ring:       rgba(90, 107, 255, 0.50);
+
+  --px-success-bg:     #4A5CFF;
+  --px-success-soft:   rgba(46, 68, 255, 0.22);
+  --px-success-fg:     #9DB0FF;
+  --px-success-border: rgba(46, 68, 255, 0.50);
+
+  --px-warning-bg:     #F1EFE9;
+  --px-warning-soft:   transparent;
+  --px-warning-fg:     #F1EFE9;
+  --px-warning-border: #8A887F;
+
+  --px-danger-bg:     #D93851;
+  --px-danger-soft:   rgba(192, 15, 40, 0.18);
+  --px-danger-fg:     #F28393;  /* demo --err-on-dark */
+  --px-danger-border: rgba(192, 15, 40, 0.50);
+
+  --px-info-bg:     #4A5CFF;
+  --px-info-soft:   rgba(46, 68, 255, 0.22);
+  --px-info-fg:     #9DB0FF;
+  --px-info-border: rgba(46, 68, 255, 0.50);
+
+  --px-shadow-4: 8px 8px 0 #000000;
+
+  --px-selection-bg: rgba(46, 68, 255, 0.35);
+
+  /* 图表：暗色下蓝/灰提亮，绯红异常档转 on-dark 值 */
+  --px-chart-1: #4A5CFF;
+  --px-chart-2: #8A887F;
+  --px-chart-3: #F28393;
+  --px-chart-4: #F1EFE9;
+  --px-chart-5: #B8B5AB;
+  --px-chart-6: #5C5C55;
+  --px-chart-7: #2E2E2B;
+  --px-chart-8: #1D1D1B;
+}
+
+/* 纸锋暗色 · 主按钮例外（demo .sec-dark .btn.pri：暗色区块主按钮保持蓝底白字） */
+[data-skin="paper-edge"][data-theme="dark"] button[class~="bg-primary"]:not([role="checkbox"]):not([role="radio"]):not([role="switch"]),
+[data-skin="paper-edge"][data-theme="dark"] button[class~="bg-primary"]:not([role="checkbox"]):not([role="radio"]):not([role="switch"]):hover:not(:disabled) {
+  background-color: var(--px-accent-bg);
+  color: #FFFFFF;
+}
+
+/* ── 纸锋 · 作用域规则（已评审豁免，见区块头注记） ──
+   目标：在组件零改动前提下复刻 demo 的组件观感纪律。
+   命中面控制：Button 组件 = rounded-md + whitespace-nowrap（cva 基类特征）；
+   分段控件容器 = role=radiogroup + bg-secondary（设置页单选组无此类，不误伤）；
+   原生角色控件（checkbox/radio/switch）显式排除。 */
+
+/* ① 圆角：胶囊命中面（Button 全变体 / 分段选项 / 徽章） */
+[data-skin="paper-edge"] button[class~="rounded-md"][class~="whitespace-nowrap"],
+[data-skin="paper-edge"] button[class~="rounded-sm"],
+[data-skin="paper-edge"] span[class~="rounded-sm"] {
+  border-radius: var(--px-radius-full);
+}
+
+/* ② 按钮排印（demo .btn：字重 700） */
+[data-skin="paper-edge"] button[class~="rounded-md"][class~="whitespace-nowrap"] {
+  font-weight: 700;
+}
+
+/* ③ 次要按钮（demo .btn.sec：纸灰底，hover 深一档；须置于描边规则之前） */
+[data-skin="paper-edge"] button[class~="bg-secondary"][class~="border-border"]:hover:not(:disabled) {
+  background-color: var(--px-border-default);
+}
+
+/* ④ 描边按钮（demo .btn.out：墨描边，hover 墨底纸字） */
+[data-skin="paper-edge"] button[class~="bg-card"][class~="border-border"] {
+  border-color: var(--px-border-strong);
+}
+[data-skin="paper-edge"] button[class~="bg-card"][class~="border-border"]:hover:not(:disabled) {
+  background-color: var(--px-fg-primary);
+  border-color: var(--px-fg-primary);
+  color: var(--px-bg-canvas);
+}
+
+/* ⑤ 主按钮（demo .btn.pri：墨底纸字，hover 转蓝；checkbox/radio/switch 除外） */
+[data-skin="paper-edge"] button[class~="bg-primary"]:not([role="checkbox"]):not([role="radio"]):not([role="switch"]) {
+  background-color: var(--px-fg-primary);
+  color: var(--px-bg-canvas);
+}
+[data-skin="paper-edge"] button[class~="bg-primary"]:not([role="checkbox"]):not([role="radio"]):not([role="switch"]):hover:not(:disabled) {
+  background-color: var(--px-accent-bg);
+  color: #FFFFFF;
+}
+[data-skin="paper-edge"] button[class~="bg-primary"]:not([role="checkbox"]):not([role="radio"]):not([role="switch"]):active:not(:disabled) {
+  background-color: var(--px-accent-bg-hover);
+  color: #FFFFFF;
+}
+
+/* ⑥ 进度条（demo .prog：直角轨道 + 直角填充） */
+[data-skin="paper-edge"] [role="progressbar"],
+[data-skin="paper-edge"] [role="progressbar"] > [class~="rounded-full"] {
+  border-radius: 0;
+}
+
+/* ⑦ 选项卡（demo .tabs：独立描边胶囊组，选中墨底纸字，无下划线） */
+[data-skin="paper-edge"] [role="tablist"] {
+  border-bottom: 0;
+  gap: 8px;
+}
+[data-skin="paper-edge"] [role="tab"] {
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid var(--px-border-default);
+  border-radius: var(--px-radius-full);
+  font-size: 13px;
+  color: var(--px-fg-secondary);
+}
+[data-skin="paper-edge"] [role="tab"]::after {
+  display: none;
+}
+[data-skin="paper-edge"] [role="tab"]:hover {
+  color: var(--px-fg-primary);
+}
+[data-skin="paper-edge"] [role="tab"][data-state="active"] {
+  background-color: var(--px-fg-primary);
+  border-color: var(--px-fg-primary);
+  color: var(--px-bg-canvas);
+}
+
+/* ⑧ 分段控件（demo .seg：无槽独立描边胶囊，选中墨底纸字） */
+[data-skin="paper-edge"] [role="radiogroup"][class~="bg-secondary"] {
+  background-color: transparent;
+  padding: 0;
+  gap: 8px;
+  border-radius: 0;
+}
+[data-skin="paper-edge"] [role="radiogroup"][class~="bg-secondary"] button {
+  border: 1px solid var(--px-border-default);
+  font-weight: 500;
+}
+[data-skin="paper-edge"] [role="radiogroup"][class~="bg-secondary"] button[data-state="on"] {
+  background-color: var(--px-fg-primary);
+  border-color: var(--px-fg-primary);
+  color: var(--px-bg-canvas);
+}
+
+/* ⑨ 统计大数字（demo .stat .v：800 重 + 紧缩字距 + 等宽数字） */
+[data-skin="paper-edge"] [class~="text-3xl"][class~="tabular-nums"] {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}

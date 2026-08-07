@@ -36,7 +36,11 @@
 
 > 双构建目标（web / scanner）共用同一组件库与主题；scanner 端通过 `data-density="compact"` 获得紧凑密度，**不做第二套主题**。
 
-> **皮肤扩展机制（v2.1.0 预留，未做第二套视觉风格）**：前端已建立「皮肤 = 风格维度（`data-skin`），与明暗（`data-theme`）正交」的扩展接口——当前仅默认皮肤 `flat`（即本设计系统），新增皮肤只需在 tokens.css 追加 `[data-skin="xxx"]` L2 覆盖块 + 前端注册表登记一项（组件零改动），机制细节见 `readus/SKIN-THEME.md`。若未来新增皮肤，需遵守本文件 §3.2 色彩体系纪律（对比度 ≥4.5:1、chart-1 恒等于当前主体、纸面恒白 ADR-6）。
+> **皮肤扩展机制（v2.1.0 建立；v2.3.0 落地第二套皮肤）**：前端已建立「皮肤 = 风格维度（`data-skin`），与明暗（`data-theme`）正交」的扩展接口——默认皮肤 `flat`（即本设计系统）不设 `data-skin` 属性；新增皮肤只需在 tokens.css 追加 `[data-skin="xxx"]` L2 覆盖块 + 前端注册表登记一项（组件零改动），机制细节见 `readus/SKIN-THEME.md`。新增皮肤需遵守本文件 §3.2 色彩体系纪律（对比度 ≥4.5:1、chart-1 恒等于当前主体、纸面恒白 ADR-6）。
+>
+> **现有皮肤清单**：
+> - `flat`（明澈 Flat 2.0）——默认风格，即本文件定义的全部内容；
+> - `paper-edge`（纸锋 Paper Edge，v2.3.0）——来源 `demo-brutalist.html`（editorial-brutalist 技能）。令牌映射要点：accent 由品牌红转亮蓝 #2E44FF 族；success 重映射为蓝软族、warning 为墨描边族、danger 保持绯红族（与 `--px-red-*` 同值）；阴影 1-3 级归零、shadow-4 = 全文件唯一硬偏移 `8px 8px 0`；半径令牌归 0（直角）+ 3 条已评审的作用域规则实现按钮/徽章胶囊（豁免登记见 `readus/SKIN-THEME.md` §五）；chart-1 蓝 = 当前主体（§3.2 纪律保持）。暗色组合由 demo 深色区块板（#141413/#1D1D1B/#2E2E2B）推导，accent 提亮至 #4A5CFF 保对比度。
 
 ---
 

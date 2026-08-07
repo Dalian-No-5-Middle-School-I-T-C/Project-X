@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Lock, Moon, Palette, Sun } from "lucide-react";
+import { Moon, Palette, Sun } from "lucide-react";
 import { cn } from "../lib/utils";
 import {
   DropdownMenu,
@@ -10,7 +10,6 @@ import {
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
-  DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "./ui/v2";
 
@@ -18,7 +17,8 @@ import {
    皮肤切换器（v2.1.0）
    ------------------------------------------------------------------
    皮肤 = 风格维度（data-skin），与明暗（data-theme）正交：
-   - 皮肤选择的是「整套视觉风格」，当前仅有默认皮肤 'flat'（明澈 Flat 2.0）；
+   - 皮肤选择的是「整套视觉风格」，现有 'flat'（明澈 Flat 2.0，默认）与
+     'paper-edge'（纸锋 Paper Edge）两套；
      未来新增皮肤时：① tokens.css 增加 [data-skin="xxx"] 的 L2 语义令牌覆盖块；
      ② 在本文件 SKIN_OPTIONS 注册表登记（id 与 data-skin 值一致）。
    - 明暗选择复用既有 projectx-theme / data-theme 机制，与皮肤互不干扰。
@@ -32,6 +32,7 @@ import {
 /** 皮肤注册表 —— 新增皮肤在此登记（id 同时是 data-skin 属性值） */
 export const SKIN_OPTIONS: ReadonlyArray<{ id: string; label: string; description: string }> = [
   { id: "flat", label: "明澈 Flat 2.0", description: "默认风格" },
+  { id: "paper-edge", label: "纸锋 Paper Edge", description: "纸面墨蓝 · 直角硬影" },
 ];
 
 export const DEFAULT_SKIN = "flat";
@@ -158,11 +159,6 @@ export function SkinSwitcher({
               {option.label}
             </DropdownMenuCheckboxItem>
           ))}
-          <DropdownMenuCheckboxItem checked={false} disabled>
-            <Lock className="mr-2 size-4 text-muted-foreground" />
-            更多皮肤
-            <DropdownMenuShortcut>开发中</DropdownMenuShortcut>
-          </DropdownMenuCheckboxItem>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuLabel>明暗</DropdownMenuLabel>

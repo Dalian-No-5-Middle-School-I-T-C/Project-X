@@ -11,9 +11,11 @@
 | 维度 | 属性 | 可选值 | 持久化 |
 |------|------|--------|--------|
 | 明暗 | `data-theme` | `light` / `dark` | 设备级（localStorage `projectx-theme`） |
-| 皮肤 | `data-skin` | `flat`（默认，明澈 Flat 2.0）· 未来新增 | **账号级**（users 表 `theme_skin`，换设备自动恢复） |
+| 皮肤 | `data-skin` | `flat`（默认，明澈 Flat 2.0）· `paper-edge`（纸锋 Paper Edge） | **账号级**（users 表 `theme_skin`，换设备自动恢复） |
 
-- **当前仅有一套皮肤**：`flat`（明澈 Flat 2.0，项目默认设计系统）。皮肤选择器中的「更多皮肤 · 开发中」为禁用占位项。
+- **现有两套皮肤**：
+  - `flat`（明澈 Flat 2.0，项目默认设计系统）；
+  - `paper-edge`（纸锋 Paper Edge，v2.3.0 新增）——设计来源 `demo-brutalist.html`（editorial-brutalist 技能）：纸面米底 #F1EFE9、墨色文字阶、品牌亮蓝 #2E44FF 替换默认绯红 accent；卡片/输入/表格直角 + 按钮/徽章胶囊；阴影 1-3 级归零、4 级为全文件唯一硬偏移 `8px 8px 0`；状态语义重映射（已完成→蓝软族 / 阅卷中→墨描边族 / 异常→绯红族 / 信息→实蓝族）；图表单色纪律（chart-1 蓝 = 当前主体，绯红仅异常）。
 - **默认皮肤不设 `data-skin` 属性**（零污染）：只有选择了非默认皮肤，`<html>` 上才会出现 `data-skin="xxx"`，由 `theme/tokens.css` 的 `[data-skin="xxx"]` 覆盖块接管整套 L2 语义令牌。
 - 皮肤切换入口（4 处）：
 
@@ -29,7 +31,7 @@
 ```
 ┌ 外观 · 皮肤 ──────────────┐
 │ ◉ 明澈 Flat 2.0（默认风格） │ ← 皮肤组（Checkbox 勾选当前）
-│ 🔒 更多皮肤 · 开发中        │ ← 禁用占位
+│ ○ 纸锋 Paper Edge          │
 │ ────────────────────────── │
 │ 明暗                        │
 │ (•) 亮色  ( ) 暗色         │ ← 明暗组（Radio，复用既有 theme 状态）
@@ -134,6 +136,17 @@ curl http://<host>:5174/api/users/me/settings -H "Authorization: Bearer <token>"
 5. **文档同步**：本文件「皮肤清单」一节登记；`design/DESIGN-SYSTEM.md` 的 §3 记录用途（可复现规约：L1 建档 → L2 指派语义 → 文档记录）。
 
 > 注意：新增皮肤**不允许**引入新 CSS 文件或组件内手写样式（AGENTS.md 铁律）。全部差异必须落在 tokens.css 的 `[data-skin]` 覆盖块内；若某套风格需要组件结构变化（而非令牌可表达），说明该风格不适合走皮肤机制，需单独评审。
+>
+> **已评审豁免案例（纸锋 paper-edge，v2.3.0）**：纸锋皮肤块末尾含一组作用域规则（9 组），用于复刻 demo 的组件观感纪律——这些差异无法由纯令牌表达。规则全部以 `[data-skin="paper-edge"]` 限定作用域、不新建 CSS 文件、不改组件代码，默认皮肤零影响：
+>
+> 1. **胶囊圆角命中面**：Button 组件（`button[class~="rounded-md"][class~="whitespace-nowrap"]`，cva 基类特征）、分段选项（`button[class~="rounded-sm"]`）、徽章（`span[class~="rounded-sm"]`）；侧栏导航项、图标按钮、复选框不受影响（保持直角）。**注意一律用整词匹配 `[class~=]`**：子串匹配 `[class*=]` 会误命中 `data-[state=active]:after:bg-primary` 这类带 variant 前缀的工具类（曾导致选项卡全部被主按钮规则染墨）；
+> 2. **按钮观感**（demo `.btn` 纪律）：字重 700；主按钮墨底纸字、hover 转蓝（暗色下保持蓝底白字）；描边按钮墨描边、hover 墨底；原生角色控件（checkbox/radio/switch）显式排除；
+> 3. **选项卡**（demo `.tabs`）：下划线式改为独立描边胶囊组，选中墨底纸字；
+> 4. **分段控件**（demo `.seg`）：容器槽透明化（无槽独立胶囊，按 `bg-secondary` 类特征区分设置页单选组，不误伤），选中项墨底纸字；
+> 5. **进度条**（demo `.prog`）：`[role="progressbar"]` 轨道与填充直角；
+> 6. **统计大数字**（demo `.stat .v`）：800 重 + 紧缩字距。
+>
+> 后续皮肤如需类似豁免，须同样在此登记评审。
 
 ---
 
