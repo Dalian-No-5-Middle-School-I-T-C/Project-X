@@ -173,6 +173,7 @@ export async function getCurrentUserHandler(req: Request, res: Response): Promis
     email: user.email,
     last_login_at: user.last_login_at,
     show_tab_bar: (user as any).show_tab_bar ?? 0,
+    themeSkin: (user as any).theme_skin ?? "flat",
     passwordChangeRequired: Boolean((user as any).password_change_required),
     permissions: permissionsForRole(user.role_id)
   });

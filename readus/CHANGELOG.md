@@ -1,5 +1,31 @@
 # Project-X CHANGELOG
 
+## v2.1.0 (2026-08-07) — 皮肤切换：扩展接口 + 前端按钮 + 账号级持久化
+
+> 搭建前端「皮肤」扩展机制（皮肤 = 与明暗正交的风格维度，`data-skin` 属性预留，当前仅默认「明澈 Flat 2.0」一套）+ 登录页 / 侧栏 / 页头 / 设置页四处切换入口 + 皮肤偏好账号级持久化（换设备自动恢复）。不新增任何视觉风格（皮肤本体未做），完整说明见 [SKIN-THEME.md](./SKIN-THEME.md)。
+
+**1. 前端**
+- 新增 `components/SkinSwitcher.tsx`：皮肤切换器（`SKIN_OPTIONS` 皮肤注册表 + 默认 `flat`；菜单含「皮肤」组（当前勾选 + 「更多皮肤 · 开发中」禁用占位）与「明暗」组（亮/暗，复用既有 theme 状态）；支持受控（App/设置页）与自管（登录页）双模式）。
+- `App.tsx`：新增 `skin` state（localStorage `projectx-skin`，默认 `flat` 不设 `data-skin` 属性，零污染零迁移）；登录后同步 effect（本地显式选择优先并回写后端，无本地记录则应用账号偏好）；皮肤变更自动 `PATCH /api/users/me/settings`（fire-and-forget）；侧栏底部与页头原 Sun/Moon 按钮升级为 SkinSwitcher。
+- 入口：登录页卡片右上角（自管模式，未登录即可切换）、账号设置「客户端设置」Tab →「外观 / 皮肤」区（明暗 SegmentedControl + 皮肤按钮，即时生效）。
+- 机制预留：`WorkspaceContext` 暴露 `skin`/`setSkin`；`AuthUser.themeSkin`；`main.tsx` / `main-scanner.tsx` 渲染前预置 `data-skin`（防未来皮肤白闪）；`chart.tsx` MutationObserver `attributeFilter` 增加 `data-skin`（未来皮肤切换图表自动重绘）；`tokens.css` 头部注释区新增「皮肤扩展规约」（`[data-skin="xxx"]` L2 覆盖块 + 暗色组合选择器写法）。
+- 扫描端（ScannerApp）：登录后应用账号皮肤偏好（不提供切换按钮）。
+
+**2. 后端**
+- `users.theme_skin` 列（TEXT 默认 `'flat'`，皮肤 ID 字符串不枚举）：SQLite 迁移 **v33 `user-theme-skin`** + 三套 schema（sql / mariadb / mysql）+ MariaDB `mariadbMigrations` v33。
+- `GET /api/auth/me` 与 `GET/PATCH /api/users/me/settings` 增加 `themeSkin` 字段（校验：`z.string().min(1).max(32)`，空串/超长 400 拒绝）；登录响应 `user` 经 `SELECT u.*` 自动携带。
+
+**3. 修复（存量库升级路径）**
+- `schema.sql` 移除 `idx_answer_block_crops_pool` 索引（其列 `claimed_by` 属 v32 迁移新增，写在 schema.sql 会导致存量库（迁移未到 v32）启动崩溃 `no such column: claimed_by`；该索引由 v32 迁移幂等创建，全新库不受影响）。
+
+**4. 文档**
+- 新增 `readus/SKIN-THEME.md`（完整说明：入口、数据流、前后端实现、API、新增皮肤 5 步扩展指南、FAQ）；README 功能特性 / UI 现状 / 文档表更新；`readus/UI-ARCHITECTURE.md` 新增 §三.7 皮肤扩展机制；`user guide` 4.14 更新为「外观 / 皮肤」。
+
+**验证**
+- `npm run typecheck` — 0 错误（顺带修复了 node_modules 缺失导致的 655 个基线类型错误，`npm install --ignore-scripts` 后恢复）。
+- 存量库 `data/projectx.db`（v31）启动自动补齐 v32/v33 迁移，`theme_skin` 列落库实测通过。
+- API 冒烟：`/api/auth/me` 与 settings GET 返回 `themeSkin`；PATCH 更新成功；空串/超长 400 拒绝。
+
 ## v2.0.0 (2026-08-06) — UI 全面重构：Flat 2.0 设计系统落地
 
 > 全部页面完成 Flat 2.0 设计系统迁移（Tailwind v4 + shadcn/ui 组件基座 + 三层令牌化），旧 `styles.css`（6048 行）与 `theme/legacy-bridge.css`（108 行）删除、遗留类归零；同期完成 P6 死代码清除、AccountMenu 侧栏化、天梯榜恢复接线与多项体验修复。typecheck / build:web / build:scanner 全绿。

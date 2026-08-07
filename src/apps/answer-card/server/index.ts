@@ -662,6 +662,7 @@ export async function createApp(): Promise<express.Express> {
         requireOriginalPaper: (user as any).require_original_paper ?? 1,
         highlightMissingPaper: (user as any).highlight_missing_paper ?? 1,
         showTabBar: (user as any).show_tab_bar ?? 0,
+        themeSkin: (user as any).theme_skin ?? "flat",
       });
     } catch (err) { next(err); }
   });
@@ -677,6 +678,7 @@ export async function createApp(): Promise<express.Express> {
       if (body.requireOriginalPaper !== undefined) { setClauses.push("require_original_paper = ?"); values.push(body.requireOriginalPaper ? 1 : 0); }
       if (body.highlightMissingPaper !== undefined) { setClauses.push("highlight_missing_paper = ?"); values.push(body.highlightMissingPaper ? 1 : 0); }
       if (body.showTabBar !== undefined) { setClauses.push("show_tab_bar = ?"); values.push(body.showTabBar ? 1 : 0); }
+      if (body.themeSkin !== undefined) { setClauses.push("theme_skin = ?"); values.push(body.themeSkin); }
       if (setClauses.length > 0) {
         setClauses.push("updated_at = CURRENT_TIMESTAMP");
         values.push(userId);

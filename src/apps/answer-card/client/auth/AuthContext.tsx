@@ -130,6 +130,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuthToken(result.token);
     const nextUser: AuthUser = {
       ...result.user,
+      // v2.1.0: 登录响应 user 来自 SELECT u.*（snake_case theme_skin），
+      // /api/auth/me 返回 camelCase themeSkin —— 此处统一为 AuthUser.themeSkin
+      themeSkin: (result.user as { theme_skin?: string }).theme_skin,
       passwordChangeRequired: result.passwordChangeRequired,
       role_name: result.user.role_name ?? "unknown",
       permissions: result.permissions ?? result.user.permissions ?? []

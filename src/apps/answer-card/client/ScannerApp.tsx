@@ -27,6 +27,18 @@ export function ScannerApp() {
     return () => { delete document.documentElement.dataset.density; };
   }, []);
 
+  // v2.1.0: 登录后应用账号皮肤偏好（皮肤=风格维度；明暗沿用登录页/本地已生效的 data-theme）。
+  // 与 web 端 App.tsx 的同步策略一致：后端 theme_skin 非默认时写入 localStorage + data-skin。
+  useEffect(() => {
+    if (!user?.themeSkin) return;
+    try {
+      if (user.themeSkin !== "flat") {
+        localStorage.setItem("projectx-skin", user.themeSkin);
+        document.documentElement.dataset.skin = user.themeSkin;
+      }
+    } catch { /* ignore storage failures */ }
+  }, [user?.themeSkin]);
+
   if (loading) {
     return (
       <div className="flex h-[100dvh] w-full flex-col items-center justify-center gap-3 bg-background">

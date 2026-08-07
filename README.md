@@ -138,6 +138,7 @@
   - 未设置细分角色的教师保持全权限（向后兼容）
 - **记住密码**：勾选后签发 180 天持久令牌，令牌存磁盘（`~/.projectx/tokens.json`），服务器/软件重启不丢失
 - **6 个月免登录**：本设备内打开即用，无需反复输入密码
+- **皮肤切换**（v2.1.0）：前端外观皮肤（当前为「明澈 Flat 2.0」默认皮肤 + 明暗亮/暗），登录页 / 侧栏 / 页头 / 账号设置四处入口；皮肤偏好账号级持久化，换设备自动恢复；扩展接口预留，详见 [SKIN-THEME.md](./readus/SKIN-THEME.md)
 
 ### 学生功能
 
@@ -185,6 +186,7 @@
 - **样式事实源** = `src/apps/answer-card/client/theme/app.css`（`@theme` 块 + `@layer base` 最小 reset）+ `theme/tokens.css` + `theme/backdrop.css`（背景图功能）。禁止新建 CSS 文件、禁止硬编码 hex，铁律见 [AGENTS.md](./AGENTS.md)「样式事实源」。
 - **组件库唯一事实源** = `src/apps/answer-card/client/components/ui/v2/`（桶导出，禁止直指实现文件、禁止跨页面互相 import）。
 - **令牌三处同步**：`design/tokens/tokens.css`（设计层事实源）↔ `app.css @theme` ↔ `client/theme.ts`（JS / 图表取色），由 `scripts/sync-tokens.mjs` 同步，手改任一视为漂移事故。
+- **皮肤扩展机制**（v2.1.0）：皮肤 = 与明暗正交的风格维度（`data-skin` 属性），当前仅默认皮肤 `flat`（明澈 Flat 2.0，不设属性零污染）；新增皮肤只需在 `theme/tokens.css` 追加 `[data-skin="xxx"]` L2 覆盖块 + `components/SkinSwitcher.tsx` 注册表登记一项，组件与业务代码零改动，详见 [SKIN-THEME.md](./readus/SKIN-THEME.md)。
 
 ### 架构 / 设计文档
 
@@ -434,6 +436,7 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | [ADMIN-GUIDE.md](./readus/ADMIN-GUIDE.md) | 管理员日常操作：教师/学生管理、导入导出、年级班级花名册 | 机房管理员 / 教务 |
 | [多端使用说明.md](./readus/多端使用说明.md) | Web 端 / 扫描端的功能差异、共用数据目录、账号登录与构建部署 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
+| [SKIN-THEME.md](./readus/SKIN-THEME.md) | 皮肤切换功能说明：入口、数据流、API、如何新增一套皮肤 | 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
 | [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.9.5 移动端适配 + v1.9.2 网页化改造 + v1.9.0 网上阅卷重构） | 全体 |
 

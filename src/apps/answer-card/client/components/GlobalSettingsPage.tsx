@@ -57,10 +57,11 @@ export function GlobalSettingsPage({ onBack }: Props) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [messageTone, setMessageTone] = useState<"success" | "error">("error");
-  const [railAutoExpand, setRailAutoExpand] = useState(true);
+  const [railAutoExpand, setRailAutoExpand] = useState(false);
 
   useEffect(() => {
-    try { setRailAutoExpand(localStorage.getItem("projectx-rail-auto-expand") !== "false"); } catch { /* ignore */ }
+    // v2.1.0: 自动展开默认关闭（与 App.tsx 默认值保持一致）
+    try { setRailAutoExpand(localStorage.getItem("projectx-rail-auto-expand") === "true"); } catch { /* ignore */ }
   }, []);
 
   const toggleRailAutoExpand = () => {

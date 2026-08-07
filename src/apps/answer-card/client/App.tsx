@@ -17,12 +17,10 @@ import {
   Layers,
   ListPlus,
   Menu,
-  Moon,
   Plus,
   Save,
   Search,
   Settings,
-  Sun,
   BookOpen,
   Home,
   SquarePen,
@@ -41,6 +39,7 @@ import { cn } from "./lib/utils";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
+import { SkinSwitcher, DEFAULT_SKIN } from "./components/SkinSwitcher";
 import { BeianFooter } from "./components/BeianFooter";
 import { NotFound } from "./components/NotFound";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
@@ -468,15 +467,26 @@ function App() {
       return "light";
     }
   });
+  // v2.1.0: 皮肤 = 风格维度（与明暗正交）。'flat'=明澈 Flat 2.0（默认），
+  // 未来新增皮肤在 tokens.css 加 [data-skin="xxx"] 覆盖块 + SkinSwitcher 注册表登记。
+  const [skin, setSkin] = useState<string>(() => {
+    try {
+      return localStorage.getItem("projectx-skin") || DEFAULT_SKIN;
+    } catch {
+      return DEFAULT_SKIN;
+    }
+  });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(() => {
     try { return localStorage.getItem("projectx-rail-collapsed") === "true"; } catch { return false; }
   });
   const [railExpandedOnHover, setRailExpandedOnHover] = useState(false);
   const [railAutoExpand, setRailAutoExpand] = useState(() => {
-    try { return localStorage.getItem("projectx-rail-auto-expand") !== "false"; } catch { return true; }
+    // v2.1.0: 自动展开默认关闭（仅显式开启过才为 true），避免鼠标扫过侧栏边缘即展开的干扰
+    try { return localStorage.getItem("projectx-rail-auto-expand") === "true"; } catch { return false; }
   });
   const railCollapseTimerRef = useRef<number | null>(null);
+  const railExpandTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     try {
@@ -501,6 +511,7 @@ function App() {
 
   useEffect(() => () => {
     if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
+    if (railExpandTimerRef.current !== null) window.clearTimeout(railExpandTimerRef.current);
   }, []);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
@@ -639,6 +650,34 @@ function App() {
       .catch(() => {});
   }, [user?.id]);
 
+  // v2.1.0: 登录后皮肤偏好同步（账号为权威，本地非默认显式选择优先）：
+  // - 本地有非默认记录（登录页/上次会话显式选过）→ 保留本地值，由下方「皮肤变更→PATCH」effect 同步到账号；
+  // - 本地无记录或为默认 → 应用账号 themeSkin（换设备恢复账号偏好）。
+  // 注：登录响应 user 字段为 snake_case theme_skin（SELECT u.*），/api/auth/me 为 themeSkin，此处兼容两者。
+  useEffect(() => {
+    if (!user) return;
+    const serverSkin = (user.themeSkin ?? (user as { theme_skin?: string }).theme_skin) || DEFAULT_SKIN;
+    let localSkin: string | null = null;
+    try { localSkin = localStorage.getItem("projectx-skin"); } catch { /* ignore */ }
+    if (localSkin && localSkin !== DEFAULT_SKIN) {
+      setSkin(localSkin);
+    } else {
+      setSkin(serverSkin);
+    }
+  }, [user?.id, user?.themeSkin]);
+
+  // v2.1.0: 皮肤变更 → 同步到账号（已登录时）。fire-and-forget，离线/失败静默。
+  useEffect(() => {
+    if (!user) return;
+    const serverSkin = user.themeSkin || DEFAULT_SKIN;
+    if (skin === serverSkin) return;
+    void fetchJson("/api/users/me/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ themeSkin: skin }),
+    }).catch(() => { /* 皮肤偏好同步失败不打扰用户 */ });
+  }, [skin, user?.id, user?.themeSkin]);
+
   // 背景图：body::after 半透明浮层 (pointer-events:none 不挡交互)
   useEffect(() => {
     if (showBg > 0) {
@@ -662,6 +701,19 @@ function App() {
       /* private browsing / storage disabled */
     }
   }, [theme]);
+
+  // 皮肤（风格维度）同步：默认 'flat' 不设 data-skin 也不落盘（零污染，
+  // 且 localStorage 无记录 ⇔ "未显式选择"，供登录后同步 effect 区分），
+  // 非默认皮肤写 localStorage + data-skin 属性供 tokens.css 覆盖。
+  useEffect(() => {
+    if (skin === DEFAULT_SKIN) {
+      delete document.documentElement.dataset.skin;
+      try { localStorage.removeItem("projectx-skin"); } catch { /* private browsing / storage disabled */ }
+    } else {
+      document.documentElement.dataset.skin = skin;
+      try { localStorage.setItem("projectx-skin", skin); } catch { /* private browsing / storage disabled */ }
+    }
+  }, [skin]);
 
   useEffect(() => {
     return () => {
@@ -1657,6 +1709,8 @@ function App() {
     setCardDeleteConflict,
     theme,
     setTheme,
+    skin,
+    setSkin,
     showBg,
     setShowBg,
     drawerOpen,
@@ -1766,10 +1820,17 @@ function App() {
           className="relative"
           onMouseEnter={() => {
             if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
-             if (railCollapsed && railAutoExpand) setRailExpandedOnHover(true);
+            if (railCollapsed && railAutoExpand) {
+              // 延时展开（200ms）：鼠标短暂扫过侧栏边缘不触发，停留片刻才展开
+              railExpandTimerRef.current = window.setTimeout(() => setRailExpandedOnHover(true), 200);
+            }
           }}
           onMouseLeave={() => {
-             if (!railCollapsed || !railAutoExpand) return;
+            if (railExpandTimerRef.current !== null) {
+              window.clearTimeout(railExpandTimerRef.current);
+              railExpandTimerRef.current = null;
+            }
+            if (!railCollapsed || !railAutoExpand) return;
             if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
             railCollapseTimerRef.current = window.setTimeout(() => setRailExpandedOnHover(false), 120);
           }}
@@ -1778,8 +1839,8 @@ function App() {
             variant="outline"
             size="icon-sm"
             type="button"
-            aria-label={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
-            title={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
+            aria-label={effectiveRailCollapsed ? "展开侧边栏" : "收起侧边栏"}
+            title={effectiveRailCollapsed ? "展开侧边栏" : "收起侧边栏"}
             className="absolute -right-3 top-1/2 z-50 -translate-y-1/2 rounded-full bg-card shadow-2"
             onClick={() => {
               setRailCollapsed((collapsed) => !collapsed);
@@ -1811,15 +1872,13 @@ function App() {
             )}
           </AppRailNav>
           <AppRailFooter className={effectiveRailCollapsed ? "flex-col" : undefined}>
-            <button
-              type="button"
-              onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
-              title={theme === "light" ? "切换为夜间模式" : "切换为日间模式"}
-              aria-label="切换主题"
-              className="inline-flex h-control-md w-control-md items-center justify-center rounded-md text-secondary-foreground transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground"
-            >
-              {theme === "light" ? <Sun size={18} /> : <Moon size={18} />}
-            </button>
+            <SkinSwitcher
+              skin={skin}
+              onSkinChange={setSkin}
+              theme={theme}
+              onThemeChange={setTheme}
+              align={effectiveRailCollapsed ? "center" : "end"}
+            />
             <AccountMenu
               compact={effectiveRailCollapsed}
               onOpenSponsor={() => {
@@ -1846,15 +1905,14 @@ function App() {
             actions={
               <div className="flex items-center gap-2">
                 {designActions}
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
+                <SkinSwitcher
+                  skin={skin}
+                  onSkinChange={setSkin}
+                  theme={theme}
+                  onThemeChange={setTheme}
+                  size="sm"
                   className="hidden lg:inline-flex"
-                  onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
-                  aria-label="切换主题"
-                >
-                  {theme === "light" ? <Sun size={18} /> : <Moon size={18} />}
-                </Button>
+                />
                 <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
                   <button
                     type="button"

@@ -833,6 +833,15 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, "answer_block_crops", "claim_count", "INTEGER NOT NULL DEFAULT 0");
       db.exec("CREATE INDEX IF NOT EXISTS idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by)");
     }
+  },
+  // v33: 前端皮肤偏好 — users.theme_skin 存储皮肤 ID（'flat'=明澈 Flat 2.0 默认，
+  // 未来新增皮肤在此登记）。账号级持久化，前端登录后下发同步（见 readus/SKIN-THEME.md）。
+  {
+    version: 33,
+    name: "user-theme-skin",
+    up(db) {
+      addColumnIfMissing(db, "users", "theme_skin", "TEXT DEFAULT 'flat'");
+    }
   }
 ];
 

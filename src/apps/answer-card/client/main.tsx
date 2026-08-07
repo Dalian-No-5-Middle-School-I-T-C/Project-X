@@ -21,6 +21,17 @@ try {
   document.documentElement.setAttribute("data-theme", "light");
 }
 
+// v2.1.0: 皮肤预置（皮肤=风格维度，与明暗正交）。默认皮肤 'flat' 不设 data-skin，
+// 只有非默认皮肤才需要设置该属性（tokens.css 以 [data-skin="xxx"] 覆盖 L2 语义令牌）。
+try {
+  const storedSkin = localStorage.getItem("projectx-skin");
+  if (storedSkin && storedSkin !== "flat") {
+    document.documentElement.dataset.skin = storedSkin;
+  }
+} catch {
+  /* private browsing / storage disabled */
+}
+
 // This is the web mode entry point (teacher + student, no scanner panel).
 // Used in dev (npm run dev) and in web builds (vite build --mode web).
 // Phase 2: 数据路由（createBrowserRouter）让每个工作模式 = 真实 URL，

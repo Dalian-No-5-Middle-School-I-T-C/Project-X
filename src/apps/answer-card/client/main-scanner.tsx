@@ -14,6 +14,16 @@ try {
   document.documentElement.setAttribute("data-theme", "light");
 }
 
+// v2.1.0: 皮肤预置（与 main.tsx 一致）。默认皮肤 'flat' 不设 data-skin。
+try {
+  const storedSkin = localStorage.getItem("projectx-skin");
+  if (storedSkin && storedSkin !== "flat") {
+    document.documentElement.dataset.skin = storedSkin;
+  }
+} catch {
+  /* private browsing / storage disabled */
+}
+
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <AuthProvider>

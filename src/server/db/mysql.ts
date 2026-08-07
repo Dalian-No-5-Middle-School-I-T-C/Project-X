@@ -686,6 +686,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `CREATE INDEX idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by)`,
       ]
     },
+    {
+      version: 33,
+      name: "user-theme-skin",
+      sqls: [
+        `ALTER TABLE users ADD COLUMN theme_skin VARCHAR(32) DEFAULT 'flat'`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

@@ -10,6 +10,13 @@
      L2 Semantic   语义令牌  —— bg/fg/border/accent/status，组件只能引用本层
      L3 Component  组件令牌  —— 控件高度/行高等，组件可覆盖但不可引用具体色值
    主题切换：[data-theme="dark"] ｜ 密度切换：[data-density="compact"]
+   皮肤扩展（v2.1.0 预留）：皮肤 = 风格维度，与明暗正交。
+     - 默认皮肤 'flat'（明澈 Flat 2.0）不设 data-skin 属性，本文件现有定义即其全部样式；
+     - 新增皮肤时：在本文件追加 [data-skin="xxx"] 的 L2 语义令牌覆盖块（色系/阴影/圆角等），
+       并在 [data-skin="xxx"][data-theme="dark"] 下补暗色覆盖（对比度 ≥4.5:1），
+       同时在 client/components/SkinSwitcher.tsx 的 SKIN_OPTIONS 注册表登记 id，
+       以及 main.tsx / main-scanner.tsx 的预置逻辑无需改动（非 'flat' 自动生效），
+       chart.tsx 的 MutationObserver 已监听 data-skin 自动重绘。详见 readus/SKIN-THEME.md。
    同步规约：修改本文件后必须同步 tokens.json 与 theme.ts（见 EXECUTION-PLAN 附录B）
    ============================================================================ */
 
