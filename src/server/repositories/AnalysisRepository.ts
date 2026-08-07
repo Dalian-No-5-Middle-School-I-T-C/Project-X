@@ -896,6 +896,9 @@ export class AnalysisRepository {
       const distribution = ranges.map((r) => ({
         ...r, count: scores.filter((s) => s >= r.min && s <= r.max).length
       }));
+      // Issue #175: 每班难度/区分度（与 getExamMetrics 口径一致：D = 逐题区分度均值）
+      const qa = await this.getQuestionAnalysis(examId, cls.classId);
+      const disc = qa.length > 0 ? qa.reduce((s, q) => s + (q.discrimination ?? 0), 0) / qa.length : 0;
       classes.push({
         classId: cls.classId, className: cls.className, gradeName: cls.gradeName,
         count: scores.length,
@@ -906,6 +909,8 @@ export class AnalysisRepository {
         stdDev: round1(Math.sqrt(variance)),
         passRate: Math.round((scores.filter((s) => s >= passLine).length / scores.length) * 100),
         excellentRate: Math.round((scores.filter((s) => s >= excellentLine).length / scores.length) * 100),
+        difficulty: fullScore > 0 ? Math.round((avg / fullScore) * 1000) / 1000 : 0,
+        discrimination: Math.round(disc * 1000) / 1000,
         distribution
       });
     }
@@ -993,7 +998,7 @@ export class AnalysisRepository {
       }
     }
 
-    return { classes, questionStats, ...(optionStats ? { optionStats } : {}) };
+    return { fullScore, classes, questionStats, ...(optionStats ? { optionStats } : {}) };
   }
 
   async getExportData(examId: number, classId?: number): Promise<ExportData> {

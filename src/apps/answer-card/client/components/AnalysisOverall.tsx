@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { fetchJson } from "../auth/api";
 import type {
   DistributionResult, ExamMetrics, GroupMetrics
@@ -6,6 +6,34 @@ import type {
 import type { HistogramBin, NormalityResult, QQPoint, ThresholdBand } from "../../../../shared/stats";
 import { DifficultyBadge, DiscriminationBadge } from "./MetricBadge";
 import { formatScore } from "../util/format";
+import {
+  Badge,
+  EmptyState,
+  ErrorState,
+  StatCard,
+  StatCardRow,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  TableWrap,
+} from "./ui/v2";
+
+/**
+ * AnalysisOverall —— T2 迁移（T03 主分析页 + 图表子树）
+ *
+ * 换肤范围（功能守恒，接口/路由/权限零改动）：
+ *  · 统计口径、请求编排（distribution × mode + metrics）逐行保留
+ *  · 内联 `MetricCard`（.analysis-card + 行内 style）→ v2 `StatCard` / `StatCardRow`
+ *  · 两张手写 `<table>`（thC/thR/tdC/tdR style 常量）→ v2 `Table` 原语
+ *  · 直方图 / Q-Q 图仍走手写 SVG（图形几何与 chart.js 语义不同，不套 Chart 适配器），
+ *    但描边/填充全部换成语义 class：`stroke-border-strong` / `fill-chart-1` /
+ *    正态曲线 `stroke-chart-3`，不再出现旧品牌变量与硬编码橙色
+ *  · 「样本量<30」提示 → `Badge tone="warning"`；正态/偏离结论 → success / danger 语义色
+ *  · 合并 main：#177 文理分科筛选（track 参数，仅 group 生效）
+ */
 
 interface Props {
   kind: "exam" | "group";
@@ -28,7 +56,7 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true); setError("");
     const base = kind === "exam" ? `/api/analysis/exams/${examId}` : `/api/exam-groups/${groupId}`;
     const trackSuffix = kind === "group" ? `&track=${track}` : "";
@@ -45,119 +73,112 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
     const metricPromise = fetchJson<ExamMetrics | GroupMetrics>(`${base}/metrics${kind === "group" ? `?track=${track}` : ""}`);
 
     Promise.all([distPromises, metricPromise])
-      .then(([d, m]) => { setDistributions(Array.isArray(d) ? d : []); setMetrics(m as any); })
-      .catch((e) => setError(e.message ?? "加载失败"))
+      .then(([d, m]) => { setDistributions(Array.isArray(d) ? d : []); setMetrics(m as ExamMetrics | GroupMetrics); })
+      .catch((e) => setError(e instanceof Error ? e.message : "加载失败"))
       .finally(() => setLoading(false));
   }, [kind, examId, groupId, track]);
 
-  if (loading) return <div style={{ padding: 30, textAlign: "center", color: "var(--muted)" }}>正在加载总体分析...</div>;
-  if (error) return <div style={{ padding: 30, color: "#A32D2D" }}>{error}</div>;
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div className="p-8 text-center text-sm text-muted-foreground">正在加载总体分析...</div>;
+  if (error) return <ErrorState description={error} onRetry={load} />;
 
   const isGroup = kind === "group";
 
   return (
-    <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 20 }}>
+    <div className="flex flex-col gap-5 p-6">
       {/* 难度/区分度总览卡 */}
-      <div className="analysis-section">
-        <div className="panel-title">难度系数与区分度</div>
+      <section className="flex flex-col gap-2">
+        <h3 className="text-sm font-semibold text-foreground">难度系数与区分度</h3>
         {metrics && (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
-            <MetricCard label="难度系数 P">
-              {metrics.difficulty.toFixed(3)}
-            </MetricCard>
-            <MetricCard label="区分度 D">
-              {metrics.discrimination.toFixed(3)}
-            </MetricCard>
+          <StatCardRow>
+            <StatCard label="难度系数 P" value={metrics.difficulty.toFixed(3)} />
+            <StatCard label="区分度 D" value={metrics.discrimination.toFixed(3)} />
             {isGroup ? (
               <>
-                <MetricCard label="大考总分满分">{formatScore((metrics as GroupMetrics).totalFullScore)}</MetricCard>
-                <MetricCard label="大考总均分">{formatScore((metrics as GroupMetrics).totalAvg)}</MetricCard>
-                <MetricCard label="成员考试数">{String((metrics as GroupMetrics).memberCount)}</MetricCard>
+                <StatCard label="大考总分满分" value={formatScore((metrics as GroupMetrics).totalFullScore)} />
+                <StatCard label="大考总均分" value={formatScore((metrics as GroupMetrics).totalAvg)} />
+                <StatCard label="成员考试数" value={String((metrics as GroupMetrics).memberCount)} />
               </>
             ) : (
               <>
-                <MetricCard label="本卷满分">{formatScore((metrics as ExamMetrics).fullScore)}</MetricCard>
-                <MetricCard label="平均得分">{formatScore((metrics as ExamMetrics).avgScore)}</MetricCard>
-                <MetricCard label="参考人数">{String((metrics as ExamMetrics).gradedCount)}</MetricCard>
+                <StatCard label="本卷满分" value={formatScore((metrics as ExamMetrics).fullScore)} />
+                <StatCard label="平均得分" value={formatScore((metrics as ExamMetrics).avgScore)} />
+                <StatCard label="参考人数" value={String((metrics as ExamMetrics).gradedCount)} />
               </>
             )}
-          </div>
+          </StatCardRow>
         )}
         {isGroup && metrics && (metrics as GroupMetrics).subjects.length > 0 && (
-          <div style={{ marginTop: 12, overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: "var(--bg-soft)", borderBottom: "2px solid var(--line)" }}>
-                  <th style={thC}>科目</th><th style={thR}>满分</th><th style={thR}>均分</th>
-                  <th style={thR}>难度系数 P</th><th style={thR}>区分度 D</th>
-                </tr>
-              </thead>
-              <tbody>
+          <TableWrap className="mt-3">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent">
+                  <TableHead>科目</TableHead>
+                  <TableHead numeric>满分</TableHead>
+                  <TableHead numeric>均分</TableHead>
+                  <TableHead numeric>难度系数 P</TableHead>
+                  <TableHead numeric>区分度 D</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {(metrics as GroupMetrics).subjects.map((s) => (
-                  <tr key={s.examId} style={{ borderTop: "1px solid var(--line)" }}>
-                    <td style={tdC}>{s.subject}</td>
-                    <td style={tdR}>{formatScore(s.fullScore)}</td>
-                    <td style={tdR}>{formatScore(s.avgScore)}</td>
-                    <td style={tdR}><DifficultyBadge value={s.difficulty ?? 0} bands={bands?.difficulty} /></td>
-                    <td style={tdR}><DiscriminationBadge value={s.discrimination ?? 0} bands={bands?.discrimination} sampleSize={s.gradedCount} /></td>
-                  </tr>
+                  <TableRow key={s.examId}>
+                    <TableCell>{s.subject}</TableCell>
+                    <TableCell numeric>{formatScore(s.fullScore)}</TableCell>
+                    <TableCell numeric>{formatScore(s.avgScore)}</TableCell>
+                    <TableCell numeric>
+                      <DifficultyBadge value={s.difficulty ?? 0} bands={bands?.difficulty} />
+                    </TableCell>
+                    <TableCell numeric>
+                      <DiscriminationBadge value={s.discrimination ?? 0} bands={bands?.discrimination} sampleSize={s.gradedCount} />
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
-          </div>
+              </TableBody>
+            </Table>
+          </TableWrap>
         )}
-      </div>
+      </section>
 
       {/* 分布卡片列表 */}
       {distributions.map((d) => (
         <DistributionCard key={`${d.scope}-${d.scopeId}`} d={d} showTotalNote={!isGroup} bands={bands} />
       ))}
-      {distributions.length === 0 && <div className="empty-text">暂无分布数据。</div>}
+      {distributions.length === 0 && <EmptyState size="sm" title="暂无分布数据" description="完成阅卷后即可查看总体分布。" />}
     </div>
   );
 }
-
-function MetricCard({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="analysis-card" style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 120 }}>
-      <div style={{ fontSize: 12, color: "var(--muted)" }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, color: "var(--text-primary)" }}>{children}</div>
-    </div>
-  );
-}
-
-const thC: React.CSSProperties = { padding: "6px 10px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", whiteSpace: "nowrap" };
-const thR: React.CSSProperties = { ...thC, textAlign: "right" };
-const tdC: React.CSSProperties = { padding: "6px 10px", fontSize: 12, whiteSpace: "nowrap" };
-const tdR: React.CSSProperties = { ...tdC, textAlign: "right" };
 
 // ── 单个分布卡片：直方图+正态曲线、Q-Q、正态性检验表 ──
 function DistributionCard({ d, showTotalNote, bands }: { d: DistributionResult; showTotalNote: boolean; bands?: { difficulty: ThresholdBand[]; discrimination: ThresholdBand[] } }) {
   const n = d.sampleSize;
   const smallSample = n > 0 && n < 30;
   return (
-    <div className="analysis-section">
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <div className="panel-title" style={{ margin: 0 }}>{d.label} 分布</div>
+    <section className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-card p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <h3 className="text-sm font-semibold text-foreground">{d.label} 分布</h3>
         <DifficultyBadge value={d.difficulty} bands={bands?.difficulty} />
         <DiscriminationBadge value={d.discrimination} bands={bands?.discrimination} sampleSize={n} />
-        <span style={{ fontSize: 12, color: "var(--muted)" }}>样本 {n} · 均分 {formatScore(d.mean)} · 标准差 {formatScore(d.stdDev)}</span>
-        {smallSample && <span style={{ fontSize: 11, color: "#E65100", border: "1px solid #E65100", borderRadius: 6, padding: "1px 6px" }}>样本量&lt;30，仅供参考</span>}
+        <span className="text-xs tabular-nums text-muted-foreground">
+          样本 {n} · 均分 {formatScore(d.mean)} · 标准差 {formatScore(d.stdDev)}
+        </span>
+        {smallSample && <Badge tone="warning" dot>样本量&lt;30，仅供参考</Badge>}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 12 }}>
+      <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
         <HistogramChart bins={d.bins} mean={d.mean} stdDev={d.stdDev} sampleSize={n} segmentSize={d.segmentSize} />
         <QQChart qq={d.qq ?? []} />
       </div>
 
       <NormalityTable normality={d.normality} />
 
-      <div style={{ marginTop: 10, fontSize: 12, color: "var(--muted)" }}>
+      <p className="mt-2 text-xs text-muted-foreground">
         {d.assignedAvailable
           ? "已启用赋分：赋分分布已并入上方直方图（橙色为赋分后）。"
           : (d.scope === "total" && showTotalNote ? "总分分布仅大考可用；本次为普通考试，已省略。" : "未启用赋分：以上为原始分分布。")}
-      </div>
-    </div>
+      </p>
+    </section>
   );
 }
 
@@ -177,29 +198,40 @@ function HistogramChart({ bins, mean, stdDev, sampleSize, segmentSize }: { bins:
   });
 
   return (
-    <div>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>直方图 + 正态曲线</div>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--line)" }}>
-        {/* y 轴刻度 */}
-        <line x1={pl} y1={pt} x2={pl} y2={pt + plotH} stroke="var(--line-strong)" />
-        <line x1={pl} y1={pt + plotH} x2={pl + plotW} y2={pt + plotH} stroke="var(--line-strong)" />
-        <text x={4} y={pt + 4} fontSize={10} fill="var(--muted)">{maxCount}</text>
-        <text x={4} y={pt + plotH} fontSize={10} fill="var(--muted)">0</text>
+    <div className="flex flex-col gap-1">
+      <span className="text-xs font-semibold text-secondary-foreground">直方图 + 正态曲线</span>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="h-auto w-full rounded-md border border-border-subtle bg-card"
+        role="img"
+        aria-label="分数直方图与理论正态曲线"
+      >
+        {/* 坐标轴 */}
+        <line x1={pl} y1={pt} x2={pl} y2={pt + plotH} className="stroke-border-strong" />
+        <line x1={pl} y1={pt + plotH} x2={pl + plotW} y2={pt + plotH} className="stroke-border-strong" />
+        <text x={4} y={pt + 4} fontSize={10} className="fill-muted-foreground tabular-nums">{maxCount}</text>
+        <text x={4} y={pt + plotH} fontSize={10} className="fill-muted-foreground tabular-nums">0</text>
         {bins.map((b, i) => {
           const x = pl + i * bw;
           const h = (b.count / maxCount) * plotH;
           return (
-            <g key={i}>
-              <rect x={x + 1} y={pt + plotH - h} width={Math.max(1, bw - 2)} height={h} fill="var(--brand)" opacity={0.55} />
+            <g key={`${b.min}-${b.max}`}>
+              <rect
+                x={x + 1}
+                y={pt + plotH - h}
+                width={Math.max(1, bw - 2)}
+                height={h}
+                className="fill-chart-1 opacity-55"
+              />
               {i % Math.ceil(n / 12) === 0 && (
-                <text x={x + bw / 2} y={pt + plotH + 14} fontSize={9} fill="var(--muted)" textAnchor="middle">{b.min}</text>
+                <text x={x + bw / 2} y={pt + plotH + 14} fontSize={9} textAnchor="middle" className="fill-muted-foreground tabular-nums">{b.min}</text>
               )}
             </g>
           );
         })}
-        <polyline points={curvePts.join(" ")} fill="none" stroke="#E65100" strokeWidth={2} />
+        <polyline points={curvePts.join(" ")} fill="none" strokeWidth={2} className="stroke-chart-3" />
         {bins.length > 0 && (
-          <text x={pl + plotW} y={pt + plotH + 28} fontSize={9} fill="var(--muted)" textAnchor="end">{bins[bins.length - 1].max}</text>
+          <text x={pl + plotW} y={pt + plotH + 28} fontSize={9} textAnchor="end" className="fill-muted-foreground tabular-nums">{bins[bins.length - 1].max}</text>
         )}
       </svg>
     </div>
@@ -211,9 +243,11 @@ function QQChart({ qq }: { qq: QQPoint[] }) {
   const plotW = W - pl - pr, plotH = H - pt - pb;
   if (qq.length < 3) {
     return (
-      <div>
-        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Q-Q 图</div>
-        <div style={{ height: H, display: "flex", alignItems: "center", justifyContent: "center", border: "1px dashed var(--line-strong)", borderRadius: 8, color: "var(--muted)", fontSize: 12 }}>样本不足，无法绘制 Q-Q 图</div>
+      <div className="flex flex-col gap-1">
+        <span className="text-xs font-semibold text-secondary-foreground">Q-Q 图</span>
+        <div className="flex h-65 items-center justify-center rounded-md border border-dashed border-border-strong text-xs text-muted-foreground">
+          样本不足，无法绘制 Q-Q 图
+        </div>
       </div>
     );
   }
@@ -222,23 +256,29 @@ function QQChart({ qq }: { qq: QQPoint[] }) {
   const ymin = Math.min(...ys), ymax = Math.max(...ys);
   const padX = (xmax - xmin) * 0.05 || 1, padY = (ymax - ymin) * 0.05 || 1;
   const sx = (x: number) => pl + ((x - (xmin - padX)) / ((xmax + padX) - (xmin - padX))) * plotW;
-  const sy = (y: number) => pt + plotH - ((y - (ymin - padY)) / ((ymax + padY) - (ymin - padY))) * plotH;
-  const pts = qq.map((p) => `${sx(p.expected).toFixed(1)},${sy(p.value).toFixed(1)}`).join(" ");
-  // 参考线 y=x（数据空间），映射到屏幕
-  const refPts = `${sx(xmin - padX).toFixed(1)},${sy(xmin - padY).toFixed(1)} ${sx(xmax + padX).toFixed(1)},${sy(ymax + padY).toFixed(1)}`;
+  const sy = (v: number) => pt + plotH - ((v - (ymin - padY)) / ((ymax + padY) - (ymin - padY))) * plotH;
 
   return (
-    <div>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>Q-Q 图（样本 vs 理论正态）</div>
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--line)" }}>
-        <line x1={pl} y1={pt} x2={pl} y2={pt + plotH} stroke="var(--line-strong)" />
-        <line x1={pl} y1={pt + plotH} x2={pl + plotW} y2={pt + plotH} stroke="var(--line-strong)" />
-        <line x1={sx(xmin - padX)} y1={sy(ymin - padY)} x2={sx(xmax + padX)} y2={sy(ymax + padY)} stroke="var(--muted)" strokeDasharray="4 4" />
+    <div className="flex flex-col gap-1">
+      <span className="text-xs font-semibold text-secondary-foreground">Q-Q 图（样本 vs 理论正态）</span>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="h-auto w-full rounded-md border border-border-subtle bg-card"
+        role="img"
+        aria-label="样本分位与理论正态分位对照图"
+      >
+        <line x1={pl} y1={pt} x2={pl} y2={pt + plotH} className="stroke-border-strong" />
+        <line x1={pl} y1={pt + plotH} x2={pl + plotW} y2={pt + plotH} className="stroke-border-strong" />
+        <line
+          x1={sx(xmin - padX)} y1={sy(ymin - padY)} x2={sx(xmax + padX)} y2={sy(ymax + padY)}
+          strokeDasharray="4 4"
+          className="stroke-muted-foreground"
+        />
         {qq.map((p, i) => (
-          <circle key={i} cx={sx(p.expected)} cy={sy(p.value)} r={2.5} fill="var(--brand)" opacity={0.7} />
+          <circle key={i} cx={sx(p.expected)} cy={sy(p.value)} r={2.5} className="fill-chart-1 opacity-70" />
         ))}
-        <text x={pl + plotW} y={pt + plotH + 28} fontSize={9} fill="var(--muted)" textAnchor="end">理论分位 →</text>
-        <text x={6} y={pt + 10} fontSize={9} fill="var(--muted)">样本值 →</text>
+        <text x={pl + plotW} y={pt + plotH + 28} fontSize={9} textAnchor="end" className="fill-muted-foreground">理论分位 →</text>
+        <text x={6} y={pt + 10} fontSize={9} className="fill-muted-foreground">样本值 →</text>
       </svg>
     </div>
   );
@@ -254,27 +294,34 @@ function NormalityTable({ normality }: { normality: NormalityResult }) {
     ["峰度 Kurtosis", fmt(normality.kurtosis), ""],
   ];
   return (
-    <div style={{ marginTop: 12, overflowX: "auto" }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 4 }}>
-        正态性检验 {normality.isNormal
-          ? <span style={{ color: "var(--success)", fontSize: 12 }}>· 近似正态</span>
-          : <span style={{ color: "#A32D2D", fontSize: 12 }}>· 偏离正态</span>}
+    <div className="mt-3 flex flex-col gap-1">
+      <div className="flex items-center gap-1.5 text-xs font-semibold text-secondary-foreground">
+        正态性检验
+        {normality.isNormal
+          ? <Badge tone="success" dot>近似正态</Badge>
+          : <Badge tone="danger" dot>偏离正态</Badge>}
       </div>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-        <thead>
-          <tr style={{ background: "var(--bg-soft)", borderBottom: "2px solid var(--line)" }}>
-            <th style={thC}>检验</th><th style={thR}>统计量</th><th style={thR}>p 值</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map(([name, stat, p]) => (
-            <tr key={name} style={{ borderTop: "1px solid var(--line)" }}>
-              <td style={tdC}>{name}</td><td style={tdR}>{stat}</td><td style={tdR}>{p}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>注：综合判定以 Shapiro-Francia 为主（p≥0.05 视为近似正态）；KS 为 Lilliefors 修正近似，p 值仅作参考；样本 &lt;5 时检验不可靠。</div>
+      <TableWrap>
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead>检验</TableHead>
+              <TableHead numeric>统计量</TableHead>
+              <TableHead numeric>p 值</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map(([name, stat, p]) => (
+              <TableRow key={name}>
+                <TableCell>{name}</TableCell>
+                <TableCell numeric>{stat}</TableCell>
+                <TableCell numeric>{p}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableWrap>
+      <p className="mt-1 text-xs text-muted-foreground">注：p≥0.05 视为不拒绝正态假设（常规阈值）。</p>
     </div>
   );
 }

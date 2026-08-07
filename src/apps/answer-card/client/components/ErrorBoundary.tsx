@@ -1,4 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
+import { Button, Card } from "./ui/v2";
 
 type ErrorBoundaryProps = {
   children: ReactNode;
@@ -22,21 +24,27 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   render(): ReactNode {
     if (this.state.error) {
       return (
-        <div className="login-shell">
-          <div className="login-card">
-            <div className="login-brand">
-              <strong>页面加载失败</strong>
-              <span>请刷新后重试，或联系管理员</span>
-            </div>
-            <p className="login-error">{this.state.error.message}</p>
-            <button
-              className="primary-button wide-button"
+        <div className="flex min-h-[100dvh] items-center justify-center bg-background px-4">
+          <Card className="w-full max-w-md p-6 text-center" role="alert">
+            <span className="mx-auto flex size-11 items-center justify-center rounded-full bg-destructive-soft text-destructive-fg">
+              <AlertTriangle size={22} aria-hidden />
+            </span>
+            <p className="m-0 mt-3 text-lg font-semibold text-foreground">页面加载失败</p>
+            <p className="m-0 mt-1 text-sm text-muted-foreground">请刷新后重试，或联系管理员</p>
+            <p className="m-0 mt-3 rounded-sm bg-muted p-2 text-left text-xs break-words text-muted-foreground">
+              {this.state.error.message}
+            </p>
+            <Button
+              className="mt-4"
+              variant="primary"
+              block
               type="button"
+              icon={<RefreshCw />}
               onClick={() => window.location.reload()}
             >
               刷新页面
-            </button>
-          </div>
+            </Button>
+          </Card>
         </div>
       );
     }

@@ -322,8 +322,11 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
 
   // v1.9.8: 年级/班级/演示教师在单个事务内以 INSERT 直写 is_demo=1，创建与打标原子完成。
   // 此前「先创建再 UPDATE 打标」存在窗口：若进程在两步之间崩溃，demo-teacher 以 is_demo=0
-  // 残留（users.username UNIQUE），下次导入 createUser 必然冲突且 cleanup 无法清理，
-  // 导致导入永久失败。bcrypt 哈希为异步，须在同步事务外预先计算。
+  // 残留（users.username UNIQUE），cleanup 按 is_demo=1 识别无法清理，下次导入必撞 UNIQUE。
+  // 修复：教师改用 INSERT OR IGNORE（与本文件其它 seed 一致）兜底该残留，导入不再 500；
+  // 教师 id 在下方按 username SELECT 取用（line 429-430），OR IGNORE 不会丢失引用。
+  // 注意：is_demo=0 的残留教师不会被 cleanup 清除（安全语义：不清真实数据），但沿用其 id
+  // 即可完成演示数据回填。bcrypt 哈希为异步，须在同步事务外预先计算。
   const teacherPasswordHash = await hashPassword("teacher123");
   const created = db.transaction(() => {
     const gradeId = Number(
@@ -333,7 +336,7 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
     const class1Id = Number(insertClass.run(gradeId, "演示1班", 1).lastInsertRowid);
     const class2Id = Number(insertClass.run(gradeId, "演示2班", 2).lastInsertRowid);
     const insertTeacher = db.prepare(
-      "INSERT INTO users (username, password_hash, name, role_id, subject, is_demo) VALUES (?, ?, ?, ?, ?, 1)"
+      "INSERT OR IGNORE INTO users (username, password_hash, name, role_id, subject, is_demo) VALUES (?, ?, ?, ?, ?, 1)"
     );
     insertTeacher.run("demo-teacher", teacherPasswordHash, "演示教师", ROLE_IDS.TEACHER, "数学");
     insertTeacher.run("demo-teacher-2", teacherPasswordHash, "演示教师乙", ROLE_IDS.TEACHER, "数学");
@@ -390,7 +393,7 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   await classRepo.addStudents(class2.id, class2StudentIds);
 
   const insertCard = db.prepare(`
-    INSERT INTO answer_cards (id, title, subject_label, exam_date, is_demo)
+    INSERT OR IGNORE INTO answer_cards (id, title, subject_label, exam_date, is_demo)
     VALUES (?, ?, ?, ?, 1)
   `);
   const insertExam = db.prepare(`
@@ -429,8 +432,8 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   const teacherRow = db.prepare("SELECT id FROM users WHERE username = 'demo-teacher'").get() as { id: number } | undefined;
   const teacher2Row = db.prepare("SELECT id FROM users WHERE username = 'demo-teacher-2'").get() as { id: number } | undefined;
   if (teacherRow) {
-    await seedReviewDemo(db, grade, studentIdByNumber, teacherRow.id, teacher2Row?.id);
-    examCount += 1;
+    const reviewSeeded = await seedReviewDemo(db, grade, studentIdByNumber, teacherRow.id, teacher2Row?.id);
+    if (reviewSeeded) examCount += 1;
   }
 
   const groupInfo = db.prepare(`
@@ -646,7 +649,19 @@ async function seedReviewDemo(
   studentIdByNumber: Map<string, number>,
   teacherId: number,
   secondTeacherId?: number
-): Promise<void> {
+): Promise<boolean> {
+  // 取前 8 名学生用于演示（份数适中，便于观察进度条与均衡）。
+  // 若演示学号已被真实账号占用（batchCreateStudents 会跳过创建 → studentIdByNumber 无映射），
+  // 无学生可分配时直接跳过网阅种子：既不创建空壳考试，也避免后续把 undefined studentId
+  // 写入 student_scores（student_id NOT NULL）导致 import-demo 500。
+  const studentIds = STUDENT_NUMBERS_FOR_REVIEW.map((num) => studentIdByNumber.get(num)).filter(
+    (id): id is number => typeof id === "number"
+  );
+  if (studentIds.length === 0) {
+    console.warn("[seed] 网阅演示: 无演示学生可分配（演示学号被占用/跳过），跳过「演示-网阅测试」种子");
+    return false;
+  }
+
   // 1. 答题卡（submitReviewCropScores 需要 card 存在，body 可空）
   db.prepare(
     "INSERT OR IGNORE INTO answer_cards (id, title, subject_label, exam_date, is_demo) VALUES (?, ?, ?, ?, 1)"
@@ -660,11 +675,6 @@ async function seedReviewDemo(
   const examId = Number(examInfo.lastInsertRowid);
 
   const imgPath = ensurePlaceholderImage();
-
-  // 取前 8 名学生用于演示（份数适中，便于观察进度条与均衡）
-  const studentIds = STUDENT_NUMBERS_FOR_REVIEW.map((num) => studentIdByNumber.get(num)).filter(
-    (id): id is number => typeof id === "number"
-  );
 
   const insertCrop = db.prepare(
     `INSERT INTO answer_block_crops
@@ -802,7 +812,11 @@ async function seedReviewDemo(
       { reviewerId: teacherId, score: 18, questionScores: { "4": 4, "5": 4, "6": 3, "7": 3, "8": 4 } }
     ]}
   ];
-  const reviewSeeds = [...blockAStates, ...blockBStates];
+  // 仅保留有有效学生映射的种子记录：演示学号被部分占用时 studentIds 可能短于 8，
+  // 尾部索引为 undefined，若不过滤会把 undefined 写入 student_scores（NOT NULL）报错。
+  const reviewSeeds = [...blockAStates, ...blockBStates].filter(
+    (s): s is ReviewCropSeed & { studentId: number } => typeof s.studentId === "number"
+  );
 
   const breakdownOf = (rounds: ReviewRoundSeed[]) =>
     rounds.map((r, i) => ({ round: i + 1, reviewerId: r.reviewerId, score: r.score, reviewedAt, questionScores: r.questionScores }));
@@ -876,6 +890,7 @@ async function seedReviewDemo(
     `[seed] 网阅演示: 考试「${REVIEW_EXAM_NAME}」(id=${examId})，题块 A(满分${REVIEW_BLOCKS[0].questions.length * 5}·含0.5·双评2P) / B(满分${REVIEW_BLOCKS[1].questions.length * 5}·单评1P)。` +
       `已批 A 3 份双评一致 + 1 份争议，B 3 份；断点续批草稿 + 批注 1 条。题块A分配均衡后：${aSummary}`
   );
+  return true;
 }
 
 /** 用同步 better-sqlite3 实例构造 DbAdapter，便于种子逻辑复用服务端 rebalanceWorkload */

@@ -1,10 +1,13 @@
-import React, { useState } from "react";
-import { ClipboardCheck, Users, AlertCircle, FileSearch, Settings } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { ArrowLeft, ClipboardCheck, Users, AlertCircle, FileSearch, Settings } from "lucide-react";
+import { fetchJson } from "../auth/api";
 import { BlockSelectPage } from "./BlockSelectPage";
 import { ReviewAssignPage } from "./ReviewAssignPage";
 import { DisputeManagePage } from "./DisputeManagePage";
 import { ReviewTracePage } from "./ReviewTracePage";
 import { GradingConfigPage } from "./GradingConfigPage";
+import { Badge, Button, SegmentedControl, Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/v2";
+import { EXAM_MODE_LABELS, type ExamMode, type ExamRecord } from "../../../../shared/types";
 
 type ExamDetailTab = "review" | "assign" | "disputes" | "trace" | "settings";
 
@@ -20,7 +23,7 @@ interface Props {
 
 const tabs: Array<{
   key: ExamDetailTab;
-  icon: React.FC<{ size?: number }>;
+  icon: React.FC<{ className?: string }>;
   label: string;
   requiresRole: "all" | "grade_leader" | "admin";
 }> = [
@@ -36,9 +39,36 @@ export function ExamDetailPage({
   onBackToList, onBackHome, onStartReview
 }: Props) {
   const [activeTab, setActiveTab] = useState<ExamDetailTab>("review");
+  const [examMode, setExamMode] = useState<ExamMode>("formal");
+  const [modeBusy, setModeBusy] = useState(false);
 
   const isGradeLeader = teacherRole === "grade_leader" || userRole === "admin";
   const isAdmin = userRole === "admin";
+
+  useEffect(() => {
+    let active = true;
+    fetchJson<ExamRecord>(`/api/exams/${examId}`)
+      .then((exam) => { if (active) setExamMode(exam.exam_mode === "quiz" ? "quiz" : "formal"); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [examId]);
+
+  async function changeMode(mode: ExamMode) {
+    if (modeBusy || mode === examMode) return;
+    setModeBusy(true);
+    try {
+      const updated = await fetchJson<ExamRecord>(`/api/exams/${examId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode })
+      });
+      setExamMode(updated.exam_mode === "quiz" ? "quiz" : "formal");
+    } catch {
+      // 保持原模式，静默失败（列表页刷新后可见真实状态）
+    } finally {
+      setModeBusy(false);
+    }
+  }
 
   const canSeeTab = (requiresRole: string) => {
     if (requiresRole === "all") return true;
@@ -48,68 +78,76 @@ export function ExamDetailPage({
   };
 
   const visibleTabs = tabs.filter((t) => canSeeTab(t.requiresRole));
+  const canSee = (key: ExamDetailTab) => visibleTabs.some((t) => t.key === key);
 
   return (
-    <div style={{ padding: 24 }}>
+    <div className="p-6">
       {/* 返回考试列表 */}
-      <button onClick={onBackToList} style={{ height: 36, padding: "0 14px", fontSize: 13, border: "1px solid var(--color-border-primary)", borderRadius: 6, background: "var(--color-background-secondary)", cursor: "pointer", marginBottom: 16, display: "inline-flex", alignItems: "center", gap: 4 }}>
-        ← 返回考试列表
-      </button>
-
-      {/* Tab 栏 */}
-      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid var(--color-border-primary)", marginBottom: 24 }}>
-        {visibleTabs.map((tab) => (
-          <button
-            key={tab.key}
-            onClick={() => setActiveTab(tab.key)}
-            style={{
-              padding: "10px 20px",
-              fontSize: 14,
-              fontWeight: activeTab === tab.key ? 500 : 400,
-              color: activeTab === tab.key ? "var(--color-text-primary)" : "var(--color-text-secondary)",
-              borderBottom: activeTab === tab.key ? "2px solid var(--color-text-primary)" : "2px solid transparent",
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
-              marginBottom: -2,
-            }}
-          >
-            <tab.icon size={16} />
-            {tab.label}
-          </button>
-        ))}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <Button variant="outline" icon={<ArrowLeft />} onClick={onBackToList}>
+          返回考试列表
+        </Button>
+        <div className="flex items-center gap-2">
+          <Badge tone={examMode === "formal" ? "info" : "neutral"} dot>
+            {EXAM_MODE_LABELS[examMode]}
+          </Badge>
+          {isAdmin && (
+            <SegmentedControl
+              size="sm"
+              aria-label="考试模式"
+              value={examMode}
+              onValueChange={(value) => void changeMode(value as ExamMode)}
+              items={[
+                { value: "quiz", label: EXAM_MODE_LABELS.quiz },
+                { value: "formal", label: EXAM_MODE_LABELS.formal },
+              ]}
+            />
+          )}
+        </div>
       </div>
 
-      {/* Tab 内容 */}
-      {activeTab === "review" && (
-        <BlockSelectPage
-          examId={examId}
-          teacherId={teacherId}
-          onSelectBlock={(blockId) => onStartReview(examId, blockId)}
-        />
-      )}
+      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ExamDetailTab)}>
+        {/* Tab 栏 */}
+        <TabsList className="mb-6">
+          {visibleTabs.map((tab) => (
+            <TabsTrigger key={tab.key} value={tab.key}>
+              <tab.icon />
+              {tab.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
 
-      {activeTab === "assign" && <ReviewAssignPage examId={examId} />}
-      {activeTab === "disputes" && <DisputeManagePage examId={examId} />}
-      {activeTab === "trace" && <ReviewTracePage examId={examId} />}
-      {activeTab === "settings" && <GradingConfigPage examId={examId} />}
+        {/* Tab 内容 */}
+        {canSee("review") && (
+          <TabsContent value="review">
+            <BlockSelectPage
+              examId={examId}
+              teacherId={teacherId}
+              onSelectBlock={(blockId) => onStartReview(examId, blockId)}
+            />
+          </TabsContent>
+        )}
+        {canSee("assign") && (
+          <TabsContent value="assign">
+            <ReviewAssignPage examId={examId} />
+          </TabsContent>
+        )}
+        {canSee("disputes") && (
+          <TabsContent value="disputes">
+            <DisputeManagePage examId={examId} />
+          </TabsContent>
+        )}
+        {canSee("trace") && (
+          <TabsContent value="trace">
+            <ReviewTracePage examId={examId} />
+          </TabsContent>
+        )}
+        {canSee("settings") && (
+          <TabsContent value="settings">
+            <GradingConfigPage examId={examId} />
+          </TabsContent>
+        )}
+      </Tabs>
     </div>
   );
 }
-
-const navBtnStyle: React.CSSProperties = {
-  height: 44,
-  padding: "0 18px",
-  fontSize: 14,
-  fontWeight: 500,
-  border: "1px solid var(--color-border-primary)",
-  borderRadius: 8,
-  background: "var(--color-background-secondary)",
-  cursor: "pointer",
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 4,
-};

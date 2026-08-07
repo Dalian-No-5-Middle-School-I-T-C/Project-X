@@ -1,5 +1,95 @@
 # Project-X CHANGELOG
 
+## v2.2.0 (2026-08-07) — 知识点难度/区分度 + 考试模式切换（#176 #178）
+
+> 双权限模式落地：晨测（quiz）对教师全量可见，大考（formal）继续走 teacher_role / teacher_permissions 精细权限；成绩分析的知识点面板补齐难度系数 P 与区分度 D，并修复知识点接口响应解包 bug。typecheck / verify:auth / verify:security-critical / 新增 verify:176-178 / build 全绿。
+
+**1. 考试模式切换（Issue #178）**
+- `exams.exam_mode` 列（迁移 v34 + 三套 schema 同步）：`quiz`=晨测（全量权限）、`formal`=大考（精细权限，默认）。
+- 创建考试可选择考试模式；考试管理列表显示晨测/大考徽章；考试详情页管理员可随时切换。
+- `getVisibleExamIds` 双模式：quiz 考试对所有教师放开精细限制，formal 考试保持原有 teacher_role + teacher_permissions 过滤；考试组可见性随之保持一致。
+- 修复：未配置学科的 `subject_teacher` 也能看到晨测考试（回归测试覆盖）。
+- 默认 `formal`，保证存量库与既有权限语义不扩大（晨测需显式选择）。
+
+**2. 知识点难度/区分度（Issue #176）**
+- `KnowledgePointRepository.getWeaknessesForExam` 重构为单查询聚合：每个知识点返回 `difficulty`（得分率/100）与 `discrimination`（极端组法逐题 D 均值），学生总分作为分组基准。
+- 成绩分析「题目分析 → 知识点薄弱环节」每行新增难度 P / 区分度 D 徽章（复用可配置档位）。
+- 顺带修复：知识点接口返回 `{ weaknesses }` 而前端按数组解析导致面板恒空的 bug（与 #213 高度相关，待云端复验）。
+
+**验证**
+- `npm run verify:176-178` — 10 项断言全绿（模式写入/默认值/可见性切换/难度区分度数值）。
+- `npm run verify:auth` 54/54；`npm run verify:security-critical` 42/42；typecheck + build 全绿。
+
+## v2.0.0 (2026-08-06) — UI 全面重构：Flat 2.0 设计系统落地
+
+> 全部页面完成 Flat 2.0 设计系统迁移（Tailwind v4 + shadcn/ui 组件基座 + 三层令牌化），旧 `styles.css`（6048 行）与 `theme/legacy-bridge.css`（108 行）删除、遗留类归零；同期完成 P6 死代码清除、AccountMenu 侧栏化、天梯榜恢复接线与多项体验修复。typecheck / build:web / build:scanner 全绿。
+
+**1. 设计系统（Flat 2.0）落地**
+- **令牌化三处同步**：`design/tokens/tokens.css`（设计层事实源）↔ `client/theme/app.css`（`@theme` 块）↔ `client/theme.ts`（JS/图表取色），由 `scripts/sync-tokens.mjs` 同步；手改 app.css 视为漂移事故。
+- **组件库唯一事实源** `components/ui/v2/`（桶导出，禁止直指实现文件）；语义类（`bg-card` / `border-border` / `text-primary` 品牌红 `#C00F28` / `rounded-lg` 12px / `rounded-md` 9px / `tabular-nums` 等），字体阶梯最大 `text-5xl`。
+- **设计锚点**：`design/demo.html`（8 视图 × 亮暗双主题）、`design/designer-sandbox.html`（设计器）、`design/DESIGN-SYSTEM.md`（规格）、`design/EXECUTION-PLAN.md`（T1–T8 / P0–P5 计划）。
+
+**2. 页面迁移（T1–T8）**
+- 主题层 / 组件基座 / 应用外壳（AppRail 可收起）/ 答题卡设计器 / 成绩分析 / 扫描链路 / 学生端 / 首页+登录 / 考试管理 / 账号 / 权限 / 设置 / 信息页 / 兜底 404（NotFound）+ ErrorBoundary。
+
+**3. P5 清理**
+- 删除 9 个 legacy ui 组件（Button / Modal / SegmentedControl / Input / Panel / Table / DataCard / Spinner / LoadingScreen），旧桶仅 re-export v2；新增 v2 `DataCard` / `DataCardList`。
+- `App.tsx` 弹层 → v2 `Dialog`、auth 加载态 → v2、硬编码 hex → 语义令牌、ESC 守卫补 Radix 弹层识别。
+
+**4. P6 清理收尾（大项）**
+- **死代码清除**：BFS 可达性分析删除 10 个不可达文件（OnlineReviewPanel / UserManagement / StudentManagement / MobileDrawer / DragDropZone / AnalysisOverview / AnalysisRanking / ExamManagementPage / CropImageViewer / ui-index.ts，共 1986 行；双基线验证非回归）。
+- **AccountMenu 侧栏化**：个人设置入口从头像下拉迁至侧栏；账号设置升级为独立路由页 `/account-settings`（原 Dialog 抽为 `pages/AccountSettingsPage.tsx`，布局重写为横向 Tab，解决 vertical Tabs 压扁）。
+- **天梯榜恢复接线**：成绩天梯 Tab 恢复至「我的成绩」页（StudentScores，接入点 A；此前 commit 95c0c63 曾下线），GradeLadder 系列 v2 化；可达性 3→0 全可达。
+- **样式归零**：删除 `client/styles.css`（6048 行）+ `theme/legacy-bridge.css`（108 行）；最小 reset 接管进 `app.css @layer base`（box-sizing / 尺寸 / margin+overflow / color-scheme；**Preflight 未启用，另立 P7**）；背景图 `has-bg-image` 活功能迁至新建 `theme/backdrop.css`；遗留类归零（审计脚本输出「P6 目标达成」）。
+- 其余：KnowledgeTagList 迁移（17 hex → 确定性散列）、叶子件语义化、`App.tsx` 残留清零、文档关闭 UI-1~7。
+
+**5. 修复与体验**
+- Radio 选中指示器 → 品牌红底白 ✓（根因 = P6 reset 未清 button UA padding，app.css 补 `padding: 0`）。
+- 设置页布局重写（横向 Tab，不再压扁）。
+
+**6. 破坏性 / 注意**
+- 样式事实源变更：CSS 仅剩 `app.css` / `backdrop.css` / `tokens.css`；**禁止新建 CSS 文件、禁止硬编码 hex**。
+- Preflight 待 P7。
+- 死代码删除清单可从 git 历史恢复。
+
+**验证**
+- `npm run typecheck` / `npm run build:web` / `npm run build:scanner` — 全绿。
+- Playwright 亮暗双主题截图走查（ui-visual-verification）。
+- `npm run verify:auth` — 54/54、`npm run verify:security-critical` — 42/42（基线）。
+
+## v1.10.2 (2026-08-04) — 网阅试卷池 + 成绩分析增强（Issue #174 #175）
+
+> 网阅改为「试卷池」领卷模型，杜绝两位教师同时批阅同一份卷子；成绩分析新增雷达图、全部班级对比、选择题选项统计与更多对比维度。
+
+### Issue #174 网阅试卷池
+- `answer_block_crops` 新增 `claimed_by` / `claimed_at` / `claim_count`（迁移 v32 + 三套 schema），`ready/pending/disputed` 且未被领取的切块进入试卷池。
+- 新增 `/api/review-pool/*`：池汇总、领下一份（支持按班级）、指定领取、释放/强制释放；领取为原子更新，并发下同一份卷只会被一位教师拿到。
+- 提交后自动清空领取标记：待复核回到池中等待下一轮，已阅/争议离开池子；已领取试卷仅领取人可提交（管理员例外），非领取人提交返回冲突提示。
+- 前端：逐题网阅面板与题块总分面板均改为「从试卷池领卷 → 批阅 → 提交」；阅卷分配页新增试卷池管理（汇总统计、条目列表、强制释放）。
+- 验证：`scripts/review-pool-smoke.ts` 19 项断言全绿（互斥领取/冲突/释放/累计次数/提交归属）。
+
+### Issue #175 成绩分析优化
+- 跨班对比支持「全部班级」（`all=1`）与最多 30 个班级手工选择；每班新增难度系数 P、区分度 D（与考试级口径一致），响应带 `fullScore`。
+- 班级对比页新增多维度雷达图（平均分率/中位分率/及格率/优秀率/难度/区分度/离散度）与选择题选项对比表（各班每选项人数与比例）。
+- 题目分析 Tab 新增「选择题选项分析」面板：每道客观题各选项选择人数/比例、作答/未答人数、满分率，正确选项高亮。
+
+### 修改文件清单
+| 文件 | 改动 | 内容 |
+|------|------|------|
+| `src/server/db/migrations.ts` / `mysql.ts` / 三套 schema | +v32 | 试卷池三列 + 池查询索引 |
+| `src/server/services/ReviewPoolService.ts` | 新增 | 汇总/领卷/释放/条目查询（原子互斥） |
+| `src/server/routes/review-pool.ts` | 新增 | `/api/review-pool/*` |
+| `src/server/services/ReviewService.ts` | +12 行 | 提交后清空领取标记 + 领取人归属校验 |
+| `src/apps/answer-card/client/components/OnlineReviewPanel.tsx` | 重写队列 | 试卷池领卷/汇总/释放 |
+| `src/apps/answer-card/client/components/GradePanel.tsx` | +40 行 | 题块总分面板池领卷 |
+| `src/apps/answer-card/client/components/ReviewAssignPage.tsx` | +90 行 | 试卷池管理区 |
+| `src/server/repositories/AnalysisRepository.ts` | +10 行 | 跨班对比每班 P/D、fullScore |
+| `src/apps/answer-card/server/routes/analysis.ts` | +10 行 | `all=1` 全部班级、上限 30 |
+| `src/apps/answer-card/client/components/AnalysisCharts.tsx` | +55 行 | `ClassRadar` 雷达图 |
+| `src/apps/answer-card/client/components/OptionAnalysisPanel.tsx` | 新增 | 选项统计面板 |
+| `src/apps/answer-card/client/components/ScoreDetailPage.tsx` | +120 行 | 全部班级/雷达/选项对比/难度区分度列 |
+| `scripts/review-pool-smoke.ts` | 新增 | 试卷池冒烟测试（19 断言） |
+
 
 ## v1.10.1 (2026-08-03) — 填空题升级：自定义横线 / 插入图片 / 文字注释
 
@@ -153,9 +243,7 @@
 - #201 直推 main 的爱发电地址在冲突解决时被丢弃，已按 main 原样补回。
 
 **5. 清理合并痕迹（P3）**
-- `server/index.ts` 一行双 import 拆分；`GlobalSettingsRoutePage` 类名对齐 main（`global-settings-grid`）；`layout.ts`/`types.ts` 死代码（`DEFAULT_STUDENT_NOTES`/`measureTextWidthMm`/`wrapNotesLines`/`StudentAreaFieldRow`）随本次改造转为被使用或被清理。
-
-## v1.9.6 (2026-07-24) — 实机问题修复（5 项）
+- `server/index.ts` 一行双 import 拆分；`GlobalSettingsRoutePage` 类名对齐 main（`global-settings-grid`）；`layout.ts`/`types.ts` 死代码（`DEFAULT_STUDENT_NOTES`/`measureTextWidthMm`/`wrapNotesLines`/`StudentAreaFieldRow`）随本次改造转为被使用或被清理。## v1.9.6 (2026-07-24) — 实机问题修复（5 项）
 
 > 基于 1.9.4 实机测试发现的 5 个小问题，全部经 `npm run build`（typecheck + web + server）验证通过，无 TS 错误。
 > 分支：1.9.5 基线（井号191）。与 1.9.6 答题卡设计器（学生信息区/作文格）改动相互独立，可叠加。

@@ -292,6 +292,7 @@ CREATE TABLE IF NOT EXISTS exams (
     status        VARCHAR(20) DEFAULT 'draft',
     assigned_formula TEXT,
     retention_policy_id INT,
+    exam_mode      VARCHAR(20) NOT NULL DEFAULT 'formal',  -- v34: quiz=晨测 formal=大考(默认)
     created_by    INT,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -439,10 +440,14 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     height_px        INT NOT NULL,
     dpi              INT NOT NULL,
     status           VARCHAR(32) DEFAULT 'ready',
+    claimed_by       INT,
+    claimed_at       DATETIME,
+    claim_count      INT NOT NULL DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uniq_answer_block_crop_source (source_type, source_record_id, block_id, page_number, segment_index),
     FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
-    FOREIGN KEY (student_id) REFERENCES users(id)
+    FOREIGN KEY (student_id) REFERENCES users(id),
+    FOREIGN KEY (claimed_by) REFERENCES users(id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS student_scores (
@@ -567,6 +572,7 @@ CREATE INDEX idx_subjective_grades_record ON subjective_grades(record_id);
 CREATE INDEX idx_answer_block_crops_exam_student ON answer_block_crops(exam_id, student_id);
 CREATE INDEX idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
 CREATE INDEX idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
+CREATE INDEX idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by);
 CREATE INDEX idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX idx_student_scores_student ON student_scores(student_id);
 CREATE INDEX idx_question_scores_exam_student ON question_scores(exam_id, student_id);

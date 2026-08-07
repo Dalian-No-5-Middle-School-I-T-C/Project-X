@@ -92,6 +92,9 @@ export type WorkspaceValue = {
   setSelectedBlockId: Dispatch<SetStateAction<string | null>>;
   layout: LayoutDocument | null;
   selectedBlock: BodyBlock | null;
+  /** 设计器两级流程：select=卡片画廊 / editor=三栏工作台 */
+  designScreen: "select" | "editor";
+  setDesignScreen: Dispatch<SetStateAction<"select" | "editor">>;
   updateCard: (mutator: (draft: AnswerCard) => void) => void;
   updateBlock: (blockId: string, mutator: (block: BodyBlock) => void) => void;
   moveBlock: (blockId: string, direction: -1 | 1) => void;

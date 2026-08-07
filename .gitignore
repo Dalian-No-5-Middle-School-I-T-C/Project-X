@@ -55,3 +55,20 @@ ignored/
 .qoder/ 
 .zcode/ 
 .omo/ 
+
+# ── 构建/探针缓存（可再生成，不入库） ──
+dist-staging/
+tw-min*
+tw-probe*
+
+# ── 个人路径写死的本地视觉验证脚本（非应用代码） ──
+scripts/screenshot.mjs
+
+# ── 一次性分析/调试脚本（P5/P6 遗留，停止跟踪但保留文件） ──
+scripts/p5-analyze-*.mjs
+scripts/p6-analyze-*.mjs
+scripts/p6-account-settings-debug.mjs
+scripts/radio-bug-*.mjs
+docs/class-diagram.mermaid
+docs/system_design.md
+docs/sequence-diagram.mermaid
