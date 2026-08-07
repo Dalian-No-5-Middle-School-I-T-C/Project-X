@@ -93,7 +93,8 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
   }
 
   if (user.teacher_role === "subject_teacher") {
-    if (!user.subject) return [];
+    // 学科教师未配置学科时，至少仍应看到晨测（quiz=全量权限）
+    if (!user.subject) return await withQuizExamIds([]);
     const classRows = await db.all<{ class_id: number }>(
       "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
       user.id,

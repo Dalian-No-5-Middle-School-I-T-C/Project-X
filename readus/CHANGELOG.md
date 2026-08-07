@@ -8,6 +8,7 @@
 - `exams.exam_mode` 列（迁移 v34 + 三套 schema 同步）：`quiz`=晨测（全量权限）、`formal`=大考（精细权限，默认）。
 - 创建考试可选择考试模式；考试管理列表显示晨测/大考徽章；考试详情页管理员可随时切换。
 - `getVisibleExamIds` 双模式：quiz 考试对所有教师放开精细限制，formal 考试保持原有 teacher_role + teacher_permissions 过滤；考试组可见性随之保持一致。
+- 修复：未配置学科的 `subject_teacher` 也能看到晨测考试（回归测试覆盖）。
 - 默认 `formal`，保证存量库与既有权限语义不扩大（晨测需显式选择）。
 
 **2. 知识点难度/区分度（Issue #176）**

@@ -105,6 +105,27 @@ async function main(): Promise<void> {
   ok(Array.isArray(visible1) && visible1.includes(quiz.id), "晨测考试对受限教师全量可见");
   ok(Array.isArray(visible1) && !visible1.includes(formal.id), "大考考试对受限教师不可见");
 
+  const noSubjectTeacherId = Number(
+    db.prepare(
+      "INSERT INTO users (username, password_hash, name, role_id, teacher_role, subject) VALUES ('T178B', 'x', '无学科教师', ?, ?, NULL)"
+    ).run(ROLE_IDS.TEACHER, TEACHER_ROLES.SUBJECT_TEACHER).lastInsertRowid
+  );
+  const noSubjectUser = {
+    id: noSubjectTeacherId,
+    role_name: "teacher",
+    teacher_role: TEACHER_ROLES.SUBJECT_TEACHER,
+    subject: null
+  } as any;
+  const visibleNoSubject = await getVisibleExamIds(noSubjectUser);
+  ok(
+    Array.isArray(visibleNoSubject) && visibleNoSubject.includes(quiz.id),
+    "无学科的学科教师仍可看到晨测考试"
+  );
+  ok(
+    Array.isArray(visibleNoSubject) && !visibleNoSubject.includes(formal.id),
+    "无学科的学科教师看不到未授权大考"
+  );
+
   db.prepare("UPDATE exams SET exam_mode = 'formal' WHERE id = ?").run(quiz.id);
   const visible2 = await getVisibleExamIds(teacherUser);
   ok(Array.isArray(visible2) && !visible2.includes(quiz.id), "晨测切换为大考后不再全量可见");
