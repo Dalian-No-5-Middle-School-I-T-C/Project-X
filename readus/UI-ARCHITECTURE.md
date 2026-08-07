@@ -105,7 +105,7 @@ client/theme.ts（JS/图表取色）     ── chart.js 适配器等消费
 | [design/demo/demo.html](../design/demo/demo.html) | 交互 Demo（**8 视图**：登录 / 首页 / 考试管理 / 成绩分析 / 学生成绩 / 扫描工作台 / 设计基础 / 组件，亮暗双主题），**视觉验收基准** |
 | [design/designer-sandbox.html](../design/designer-sandbox.html) | 设计器沙盒 |
 | [design/EXECUTION-PLAN.md](../design/EXECUTION-PLAN.md) | 重构执行计划（T1–T8 任务卡、P0–P5 阶段、防串台规约、附录 B 同步规约） |
-| [docs/system_design.md](../docs/system_design.md) | P6 系统设计（含 mermaid 类图 / 时序图） |
+| [docs/superpowers/specs/2026-07-29-grade-analysis-redesign-design.md](../docs/superpowers/specs/2026-07-29-grade-analysis-redesign-design.md) | 成绩分析重构设计文档（选项分析 / 跨班对比 / 可配置阈值体系，已批准实施） |
 | [readus/ARCHITECTURE.md](./ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 |
 | [AGENTS.md](../AGENTS.md) | 「样式事实源（P6 T05 定稿）」节 = 团队铁律 |
 | [readus/CHANGELOG.md](./CHANGELOG.md) | v2.0.0 条目 = 本次重构变更全记录 |
