@@ -7,8 +7,8 @@ import { requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
 import { requireExamAccess, getVisibleExamIds } from "../../apps/answer-card/server/middleware";
 import { getDisputes, getEligibleArbitrators } from "../services/ArbitrationService";
-import { getMysqlDb } from "../db";
-import { recomputeExamRankings } from "../services/rankingUpdate";
+import { getMysqlDb, buildUpsertSQL } from "../db";
+import { recomputeExamRankings, roundScore } from "../services/rankingUpdate";
 import { getBlockConfig } from "../services/BlockGradingConfigService";
 
 const router = Router();
@@ -137,37 +137,68 @@ router.post(
         }
 
         // 同时写入 question_scores（使用正确的 max_score）
+        // Bugfix: 使用 buildUpsertSQL 保证跨平台兼容（SQLite + MariaDB）；
+        //         保留 selected_options 列避免仲裁覆写时丢失选项数据。
+        const upsertQsSQL = buildUpsertSQL(
+          db.dialect, "question_scores",
+          ["exam_id", "student_id", "question_number", "score", "max_score", "score_type", "selected_options", "manually_modified", "modified_by", "modified_at"],
+          ["exam_id", "student_id", "question_number", "score_type"],
+          ["score", "max_score", "selected_options", "manually_modified", "modified_by", "modified_at"]
+        );
         for (const qNum of questionNumbers) {
-          // P1-9: 查找该题目在该考试的 max_score
+          // P1-9: 查找该题目在该考试的 max_score 与已有 selected_options
           const existingQs = await tx.get(
-            "SELECT max_score, score_type FROM question_scores WHERE exam_id = ? AND question_number = ? LIMIT 1",
+            "SELECT max_score, score_type, selected_options FROM question_scores WHERE exam_id = ? AND student_id = ? AND question_number = ? LIMIT 1",
             crop.exam_id,
+            crop.student_id,
             qNum
-          ) as { max_score: number; score_type: string } | undefined;
+          ) as { max_score: number; score_type: string; selected_options: string | null } | undefined;
 
           const maxScore = existingQs?.max_score ?? Number(score);
           const scoreType = existingQs?.score_type ?? "subjective";
+          const preservedOptions = existingQs?.selected_options ?? null;
 
           const resolvedScore = Math.max(0, Math.min(maxScore, Number(score)));
           await tx.run(
-            `INSERT OR REPLACE INTO question_scores (exam_id, student_id, question_number, score, max_score, score_type, manually_modified, modified_by, modified_at)
-             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+            upsertQsSQL,
             crop.exam_id,
             crop.student_id,
             qNum,
             resolvedScore,
             maxScore,
             scoreType,
+            preservedOptions,
+            1,
             userId,
             now
           );
         }
+
+        // Bugfix: 仲裁后必须重算学生总分（之前仅重算排名，总分仍为旧值）
+        const scoreRows = await tx.all(
+          "SELECT score, score_type FROM question_scores WHERE exam_id = ? AND student_id = ?",
+          crop.exam_id, crop.student_id
+        ) as Array<{ score: number; score_type: string }>;
+        let totalObj = 0, totalSubj = 0;
+        for (const s of scoreRows) {
+          if (s.score_type === "objective") totalObj += s.score;
+          else totalSubj += s.score;
+        }
+        totalObj = roundScore(totalObj);
+        totalSubj = roundScore(totalSubj);
+        const newTotal = roundScore(totalObj + totalSubj);
+        await tx.run(
+          `UPDATE student_scores SET objective_score = ?, subjective_score = ?, total_score = ?,
+            manually_modified = 1, modified_by = ?, modified_at = ?
+           WHERE exam_id = ? AND student_id = ?`,
+          totalObj, totalSubj, newTotal, userId, now, crop.exam_id, crop.student_id
+        );
       });
 
-      // 重算总分和排名（在事务外，失败不影响仲裁结果）
-      const crop = await db.get("SELECT exam_id FROM answer_block_crops WHERE id = ?", cropId) as any;
-      if (crop?.exam_id) {
-        await recomputeExamRankings(db, crop.exam_id);
+      // 重算排名（在事务外，失败不影响仲裁结果）
+      const cropAfter = await db.get("SELECT exam_id FROM answer_block_crops WHERE id = ?", cropId) as any;
+      if (cropAfter?.exam_id) {
+        await recomputeExamRankings(db, cropAfter.exam_id);
       }
 
       res.json({ ok: true, cropId, finalScore: Number(score) });

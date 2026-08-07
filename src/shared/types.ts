@@ -1,3 +1,5 @@
+import type { HistogramBin, NormalityResult, QQPoint, ThresholdBand } from "./stats";
+
 export type ObjectiveMode = "single" | "multiple" | "indefinite";
 export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
 export type ObjectiveOptionLayout = "horizontal" | "vertical";
@@ -43,9 +45,19 @@ export type PaperSettings = {
   orientation: "portrait" | "landscape";
 };
 
+export type StudentInfoField = "姓名" | "班级" | "座位号" | "考号" | "学号";
+
 export type StudentInfoSettings = {
-  fields: Array<"姓名" | "班级" | "学号">;
+  /** @deprecated 旧版字段列表，新版使用显式开关 */
+  fields?: StudentInfoField[];
   studentNumberDigits: number;
+  showName?: boolean;
+  showClass?: boolean;
+  showSeat?: boolean;
+  showExamNumber?: boolean;
+  showStudentNumber?: boolean;
+  showNotes?: boolean;
+  notesText?: string;
 };
 
 export type ObjectiveBlock = {
@@ -73,6 +85,8 @@ export type SubjectiveQuestion = {
   score: number;
   style: SubjectiveStyle;
   kind: SubjectiveKind;
+  /** 填空题/主观题文字注释（题干说明），渲染在作答区上方。 */
+  annotation?: string;
   blanks?: { count: number; widthMm: number; heightMm: number; labelStyle?: BlankLabelStyle; items?: BlankItem[] };
   lineGrid?: LineGridConfig;
   essayGrid?: EssayGridConfig;
@@ -115,9 +129,11 @@ export type EssayGridConfig = {
   cellWidthMm: number;      // 格子宽度，默认 7
   cellHeightMm: number;     // 格子高度，默认 7
   targetChars: number;      // 目标字数，默认 600
-  showTitle: boolean;       // 显示"题：（000）"
+  showTitle: boolean;       // 显示标题
   lineColor: string;        // 线色，默认 "#222"
   lineWidthMm: number;      // 线宽，默认 0.15
+  showFrame?: boolean;      // 显示作文区粗边框（默认 true）
+  showWordScale?: boolean;  // 显示字数刻度（每 100 字标注，默认 true）
 };
 
 export type SubjectiveBlock = {
@@ -192,6 +208,8 @@ export type SubjectiveRenderItem = {
   blanks: Rect[];
   blankLabels?: string[];
   blankRightAnnotations?: string[];
+  /** 逐行排布后的文字注释，text 已按单元格宽度换行。 */
+  annotationLines?: Array<{ text: string; rect: Rect }>;
   blankLabelStyle?: BlankLabelStyle;
   blankLabelSlotWidth?: number;
   images: Array<{ assetId: string; originalName?: string; rect: Rect }>;
@@ -216,12 +234,29 @@ export type PageRenderBlock =
       frameRect?: Rect;
       questions: SubjectiveRenderItem[];
       panelIndex?: number;
+      essayStartCell?: number;
     };
+
+export type StudentAreaFieldRow = {
+  label: string;
+  labelX: number;
+  /** 标签文本基线 y（mm，PDF 渲染语义；SVG 预览按 lineY 自行偏移） */
+  labelY: number;
+  lineX1: number;
+  lineX2: number;
+  lineY: number;
+};
 
 export type StudentAreaLayout = {
   infoRect: Rect;
   digitRect: Rect;
   digitCells: Array<{ digitIndex: number; digit: number; rect: Rect }>;
+  /** 信息区手写字段行（姓名/班级/座位号/考号，按 studentInfo 开关过滤），渲染层据此画标签与下划线 */
+  fieldRows: StudentAreaFieldRow[];
+  /** 注意事项文本行（showNotes 开启时），渲染层逐行绘制 */
+  notesLines?: string[];
+  /** 注意事项首行文本基线 y（mm） */
+  notesY?: number;
 };
 
 export type PageLayout = {
@@ -384,6 +419,12 @@ export type AnswerBlockCrop = {
   maxScore?: number | null;
   /** 本题块是否允许 0.5 小数（来自 block_grading_config，用于打分面板） */
   hasHalfPoint?: number;
+  /** Issue #174: 试卷池领取人（null=在池中待领） */
+  claimedBy?: number | null;
+  /** Issue #174: 领取时间 */
+  claimedAt?: string | null;
+  /** Issue #174: 累计领取次数（复核轮次参考） */
+  claimCount?: number;
 };
 
 /** 网上阅卷题块汇总 */
@@ -408,6 +449,36 @@ export type ReviewBlockCropItem = AnswerBlockCrop & {
 export type ReviewBlockCropsResponse = {
   examId: number;
   rows: ReviewBlockCropItem[];
+};
+
+/** Issue #174: 试卷池汇总（含各教师领取/完成情况） */
+export type ReviewPoolSummary = {
+  examId: number;
+  blockId: string;
+  totalCount: number;
+  /** 池中可领（含待复核/争议待处理且未被领取） */
+  inPoolCount: number;
+  /** 已领取未提交 */
+  claimedCount: number;
+  reviewedCount: number;
+  disputedCount: number;
+  /** 待复核轮次（pending） */
+  pendingCount: number;
+  /** 当前用户已领取数 */
+  myClaimedCount: number;
+  assignments: Array<{
+    teacherId: number;
+    teacherName?: string;
+    assignedCount: number;
+    claimedCount: number;
+    reviewedCount: number;
+  }>;
+};
+
+/** Issue #174: 试卷池条目（含领取人信息） */
+export type ReviewPoolEntry = ReviewBlockCropItem & {
+  claimedByName?: string | null;
+  claimCount: number;
 };
 
 export type ReviewSubmitScoreInput = {
@@ -540,6 +611,7 @@ export type ClassScoreSummary = {
 };
 
 export type ExamOverview = {
+  /** 已阅人数（当前版本等同 gradedCount，因无独立“注册学生”表；后续迭代可对接学籍名册） */
   totalStudents: number;
   gradedCount: number;
   avgScore: number;
@@ -548,6 +620,10 @@ export type ExamOverview = {
   stdDev: number;
   passRate: number;
   excellentRate: number;
+  /** 及格线（绝对分），由全局阈值配置 × 满分计算 */
+  passScore: number;
+  /** 优秀线（绝对分），由全局阈值配置 × 满分计算 */
+  excellentScore: number;
   distribution: Array<{ range: string; min: number; max: number; count: number }>;
   scoreSummary: ScoreSummary | null;
   overallScoreSummary: ScoreSummary | null;
@@ -582,6 +658,107 @@ export type QuestionAnalysisItem = {
   errorRate: number;
   errorRateLevel: ErrorRateLevel;
   totalCount: number;
+  /** 难度系数 P（0-1）= 平均得分 / 满分 */
+  difficulty: number;
+  /** 区分度 D（极端组法，-1~1）= 高分组得分率 - 低分组得分率 */
+  discrimination: number;
+  /** 关联知识点文本（若已标注） */
+  knowledgePoint?: string | null;
+};
+
+// ── 逐题选项分析（v29）──────────────────────────────
+export type OptionStat = {
+  /** 选项标签，如 "A" */
+  option: string;
+  /** 选择该选项的人次（多选题按人次计） */
+  count: number;
+  /** 选择率（百分比 0-100，基数为作答人数） */
+  rate: number;
+  /** 是否属于标准答案 */
+  isCorrect: boolean;
+};
+
+export type OptionAnalysisQuestion = {
+  questionNumber: number;
+  /** single / multiple / indeterminate */
+  mode: string;
+  optionCount: number;
+  maxScore: number;
+  answerKey: string[];
+  /** 满分率（百分比）；无法判定时为 null */
+  correctRate: number | null;
+  answeredCount: number;
+  unansweredCount: number;
+  options: OptionStat[];
+};
+
+export type OptionAnalysisResponse = {
+  /** false = 该考试阅卷时未记录选项数据（历史考试） */
+  hasOptionData: boolean;
+  questions: OptionAnalysisQuestion[];
+};
+
+// ── 跨班对比（v29）─────────────────────────────────
+export type ClassComparisonClassSummary = {
+  classId: number;
+  className: string;
+  gradeName?: string;
+  count: number;
+  avgScore: number;
+  maxScore: number;
+  minScore: number;
+  median: number;
+  stdDev: number;
+  passRate: number;
+  excellentRate: number;
+  /** 难度系数 P（平均分/满分，0-1） */
+  difficulty: number;
+  /** 区分度 D（极端组法，-1~1） */
+  discrimination: number;
+  distribution: Array<{ range: string; min: number; max: number; count: number }>;
+};
+
+export type ClassComparisonQuestionStat = {
+  questionNumber: number;
+  /** objective / subjective */
+  scoreType: string;
+  maxScore: number;
+  byClass: Array<{ classId: number; scoreRate: number; correctRate: number | null }>;
+};
+
+export type ClassComparisonOptionStat = {
+  questionNumber: number;
+  answerKey: string[];
+  byClass: Array<{ classId: number; options: OptionStat[] }>;
+};
+
+export type ClassComparisonResponse = {
+  /** 试卷满分（用于雷达图等归一化） */
+  fullScore: number;
+  classes: ClassComparisonClassSummary[];
+  questionStats: ClassComparisonQuestionStat[];
+  /** 仅当 includeOptions=1 且有选项数据时返回 */
+  optionStats?: ClassComparisonOptionStat[];
+};
+
+// ── 知识点弱点 + 阈值配置（v29）────────────────────
+export type KnowledgeSeverity = "common_weak" | "weak" | "ok";
+
+export type KnowledgeWeaknessItem = {
+  point_text: string;
+  question_numbers: string;
+  avg_rate: number;
+  student_count: number;
+  total_questions: number;
+  severity: KnowledgeSeverity;
+  coverage_rate: number;
+};
+
+export type AnalysisThresholds = {
+  passRate: number;
+  excellentRate: number;
+  segmentSize: number;
+  errorTiers: [number, number, number];
 };
 
 export type ExamRecord = {
@@ -911,6 +1088,8 @@ export interface ExamGroupMember {
   examName: string;
   subject: string | null;
   sortOrder: number;
+  /** 文理分科科目归属：common 共同 / arts 文科 / science 理科（Issue #177） */
+  trackType: string;
   examDate: string | null;
   status: string;
   gradedCount: number;
@@ -921,6 +1100,8 @@ export interface ExamGroupMember {
 /** 大考组详情 */
 export interface ExamGroupDetail extends ExamGroup {
   members: ExamGroupMember[];
+  /** examId -> trackType 映射（Issue #177） */
+  memberTracks?: Record<string, string>;
 }
 
 /** 大考创建/更新请求 */
@@ -928,6 +1109,7 @@ export interface ExamGroupRequest {
   name: string;
   description?: string;
   grade_id?: number | null;
+  memberTracks?: Record<string, string>;
   tag?: string;
   is_official?: number;
   total_score_mode?: "raw" | "assigned";
@@ -940,6 +1122,8 @@ export interface GroupSubjectSummary {
   examId: number;
   examName: string;
   subject: string;
+  /** 文理分科科目归属：common 共同 / arts 文科 / science 理科（Issue #177） */
+  trackType?: string;
   gradedCount: number;
   avgScore: number;
   maxScore: number;
@@ -949,15 +1133,25 @@ export interface GroupSubjectSummary {
   excellentRate: number;
   fullScore: number;
   hasAssignedScore: boolean;
+  /** 难度系数 P（0-1） */
+  difficulty?: number;
+  /** 区分度 D（极端组法） */
+  discrimination?: number;
 }
 
 /** 大考概览 */
 export interface GroupOverview {
   groupId: number;
   groupName: string;
+  /** 当前文理筛选：all / arts / science（Issue #177） */
+  track?: string;
   totalParticipants: number;
   fullParticipants: number;
   subjects: GroupSubjectSummary[];
+  /** 大考整体难度系数 P */
+  difficulty?: number;
+  /** 大考整体区分度 D */
+  discrimination?: number;
 }
 
 /** 大考排名行 - 每科成绩 */
@@ -1156,6 +1350,122 @@ export interface ReviewTraceItem {
   resolvedBy: string | null;
   status: string;
 }
+
+// ============================================================
+// 难度系数 / 区分度 / 总体分析（成绩分析增强）
+// ============================================================
+
+/** 难度与区分度档位（复用 stats.ThresholdBand 形状） */
+export type DifficultyBand = ThresholdBand;
+export type DiscriminationBand = ThresholdBand;
+
+/** 大考概览各科补充 P/D */
+export interface GroupSubjectMetric extends GroupSubjectSummary {
+  difficulty?: number;
+  discrimination?: number;
+}
+
+/** 普通考试整体难度/区分度指标 */
+export interface ExamMetrics {
+  difficulty: number;
+  discrimination: number;
+  fullScore: number;
+  avgScore: number;
+  gradedCount: number;
+}
+
+/** 大考整体 + 逐科难度/区分度指标 */
+export interface GroupMetrics {
+  difficulty: number;
+  discrimination: number;
+  totalFullScore: number;
+  totalAvg: number;
+  memberCount: number;
+  /** 大考参与人数（小样本判断用） */
+  participantCount: number;
+  subjects: GroupSubjectMetric[];
+}
+
+/** 总体分析分布结果（单科/总分/各班） */
+export interface DistributionResult {
+  /** 维度：subject=单科分布，total=大考总分分布，class=某班分布 */
+  scope: "subject" | "total" | "class";
+  /** 维度标识（如 classId 或 "total"） */
+  scopeId: string;
+  label: string;
+  fullScore: number;
+  segmentSize: number;
+  bins: HistogramBin[];
+  mean: number;
+  stdDev: number;
+  normality: NormalityResult;
+  difficulty: number;
+  discrimination: number;
+  sampleSize: number;
+  /** 赋分是否可用（只读已落库 assigned_score） */
+  assignedAvailable: boolean;
+  /** 赋分分布（若可用） */
+  assignedBins?: HistogramBin[];
+  /** Q-Q 图数据点（样本值 vs 理论正态分位），用于正态性可视化 */
+  qq?: QQPoint[];
+}
+
+/** 逐题下钻 - 单个学生得分 */
+export interface QuestionStudentScore {
+  studentId: number;
+  studentNumber: string;
+  name: string;
+  className: string | null;
+  score: number;
+  maxScore: number;
+  scoreRate: number;
+  /** 是否满分 */
+  isFull: boolean;
+  /** 关联知识点文本（若已标注） */
+  knowledgePoint?: string | null;
+}
+
+/** 大考逐题分析响应（含整体与逐科） */
+export interface GroupQuestionAnalysisResponse {
+  overall: { difficulty: number; discrimination: number; sampleSize: number };
+  subjects: Array<{
+    examId: number;
+    subject: string;
+    examName: string;
+    fullScore: number;
+    avgScore: number;
+    difficulty: number;
+    discrimination: number;
+    /** 该科参与人数（小样本判断用） */
+    sampleSize: number;
+    questions: QuestionAnalysisItem[];
+  }>;
+}
+
+/** 大考班级对比响应 */
+export interface GroupClassComparisonResponse {
+  classes: Array<{
+    classId: number;
+    className: string;
+    gradeName?: string;
+    count: number;
+    avgScore: number;
+    maxScore: number;
+    minScore: number;
+    median: number;
+    stdDev: number;
+    passRate: number;
+    excellentRate: number;
+    distribution: HistogramBin[];
+  }>;
+  /** 逐科 × 班级的均分/得分率对比 */
+  subjectClassSummaries: Array<{
+    examId: number;
+    subject: string;
+    byClass: Array<{ classId: number; avgScore: number; scoreRate: number }>;
+  }>;
+}
+
 
 /** 争议卷条目 */
 export interface DisputeItem {

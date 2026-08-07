@@ -5,10 +5,8 @@ import { StudentScores } from "../components/StudentScores";
  */
 export function ScoresRoutePage() {
   return (
-    <div className="main-grid scores-grid">
-      <section className="preview-panel" style={{ gridColumn: "1 / -1" }}>
-        <StudentScores />
-      </section>
+    <div className="mx-auto w-full max-w-[1200px] px-6 py-6 lg:px-8">
+      <StudentScores />
     </div>
   );
 }

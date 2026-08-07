@@ -771,6 +771,68 @@ const MIGRATIONS: Migration[] = [
       addColumnIfMissing(db, "block_grading_config", "scoring_mode", "TEXT NOT NULL DEFAULT 'block_total'");
       addColumnIfMissing(db, "block_grading_config", "score_distribution", "TEXT NOT NULL DEFAULT 'proportional'");
     }
+  },
+  // v28 (1.9.6): 演示数据归属标记 — 给 users/answer_cards/classes/grades 增加 is_demo 列，
+  // 使 clearDemoData() 不再依赖硬编码学号/用户名/班级名/答题卡 ID 判断，避免误删真实数据。
+  {
+    version: 28,
+    name: "demo-data-source-flag",
+    up(db) {
+      addColumnIfMissing(db, "users", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "answer_cards", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "classes", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+      addColumnIfMissing(db, "grades", "is_demo", "INTEGER NOT NULL DEFAULT 0");
+    }
+  },
+  // v29: 成绩分析增强 — question_scores 记录学生所选选项（JSON 数组），
+  // 使逐题选项分析/跨班选项对比可用；同时写入成绩分析阈值全局默认配置。
+  {
+    version: 29,
+    name: "selected-options-and-analysis-thresholds",
+    up(db) {
+      addColumnIfMissing(db, "question_scores", "selected_options", "TEXT");
+      if (hasTable(db, "system_settings")) {
+        const ensureSetting = db.prepare(
+          "INSERT OR IGNORE INTO system_settings (`key`, value) VALUES (?, ?)"
+        );
+        ensureSetting.run("analysis_pass_rate", "0.6");
+        ensureSetting.run("analysis_excellent_rate", "0.9");
+        ensureSetting.run("analysis_segment_size", "10");
+        ensureSetting.run("analysis_error_tiers", "70,50,30");
+      }
+    }
+  },
+  // v30: 填空题升级 — 主观题新增 annotation（文字注释/题干说明），
+  // 与逐空 blanks_items_json 的自定义横线、subjective_question_images 的插图配合使用。
+  {
+    version: 30,
+    name: "subjective-question-annotation",
+    up(db) {
+      addColumnIfMissing(db, "subjective_questions", "annotation", "TEXT");
+    }
+  },
+  // v31 (Issue #177): 大考合集文理分科 —— 升 v31 以避让 main 已占用的 v30 (subjective-question-annotation)
+  // - users.track：学生文/理属性（'arts' 文科 / 'science' 理科）
+  // - exam_group_members.track_type：考试组内科目归属（common 共同 / arts 文科 / science 理科）
+  {
+    version: 31,
+    name: "exam-group-arts-science-track",
+    up(db) {
+      addColumnIfMissing(db, "users", "track", "TEXT");
+      addColumnIfMissing(db, "exam_group_members", "track_type", "TEXT NOT NULL DEFAULT 'common'");
+    }
+  },
+  // v32 (Issue #174): 网阅试卷池 — answer_block_crops 增加领取锁定字段。
+  // claimed_by/claimed_at 标记当前领取人；claim_count 记录累计领取次数（复核轮次参考）。
+  {
+    version: 32,
+    name: "online-review-paper-pool",
+    up(db) {
+      addColumnIfMissing(db, "answer_block_crops", "claimed_by", "INTEGER REFERENCES users(id)");
+      addColumnIfMissing(db, "answer_block_crops", "claimed_at", "DATETIME");
+      addColumnIfMissing(db, "answer_block_crops", "claim_count", "INTEGER NOT NULL DEFAULT 0");
+      db.exec("CREATE INDEX IF NOT EXISTS idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by)");
+    }
   }
 ];
 

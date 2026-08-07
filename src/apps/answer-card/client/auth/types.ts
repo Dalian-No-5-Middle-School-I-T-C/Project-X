@@ -76,6 +76,8 @@ export interface ClassStudent {
   username: string;
   name: string;
   student_number: string | null;
+  /** 文理分科：arts 文科 / science 理科（Issue #177） */
+  track: string | null;
   joined_at: string;
 }
 
@@ -170,6 +172,8 @@ export interface StudentWithClass {
   username: string;
   name: string;
   student_number: string | null;
+  /** 文理分科：arts 文科 / science 理科（Issue #177） */
+  track: string | null;
   initial_password: string | null;
   class_id: number;
   class_name: string;

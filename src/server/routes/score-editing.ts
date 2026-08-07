@@ -80,7 +80,7 @@ router.get("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
 
   const questionScores = await db.all(`
     SELECT id, question_number, question_id, block_id, score, max_score, score_type,
-           manually_modified, modified_at
+           selected_options, manually_modified, modified_at
     FROM question_scores
     WHERE exam_id = ? AND student_id = ?
     ORDER BY question_number
@@ -159,6 +159,16 @@ router.get("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
     return { ...qs, ...(def ?? {}) };
   });
 
+  // v29: 优先从 question_scores.selected_options 构造 recognition（主数据源）；
+  // objective_recognitions 仅作为历史遗留数据与 confidence 的回退来源。
+  const recognitionMap = new Map<number, { selectedOptions: string[]; confidence: number }>();
+  for (const qs of questionScores) {
+    if (qs.score_type !== "objective" || qs.selected_options == null) continue;
+    let opts: string[] = [];
+    try { opts = JSON.parse(qs.selected_options); } catch { opts = []; }
+    recognitionMap.set(qs.question_number, { selectedOptions: opts, confidence: 1 });
+  }
+
   const recognitionRows = await db.all(`
     SELECT orr.question_number, orr.selected_options, orr.confidence
     FROM objective_recognitions orr
@@ -168,15 +178,17 @@ router.get("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
     ORDER BY orr.confidence DESC
   `, examId, studentId) as any[];
 
-  const recognitionMap = new Map<number, { selectedOptions: string[]; confidence: number }>();
   for (const r of recognitionRows) {
     const existing = recognitionMap.get(r.question_number);
-    if (!existing || r.confidence > existing.confidence) {
-      recognitionMap.set(r.question_number, {
-        selectedOptions: r.selected_options ? JSON.parse(r.selected_options) : [],
-        confidence: r.confidence
-      });
+    if (existing) {
+      // 已有 question_scores 数据，仅补充真实置信度
+      existing.confidence = r.confidence ?? existing.confidence;
+      continue;
     }
+    recognitionMap.set(r.question_number, {
+      selectedOptions: r.selected_options ? JSON.parse(r.selected_options) : [],
+      confidence: r.confidence
+    });
   }
 
   const answerBlocks = await listAnswerBlockCropsForStudent(examId, studentId, db);
@@ -397,9 +409,9 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
   const confidenceThreshold = await resolveReviewConfidenceThreshold(req.user?.id);
 
   // Build cross-platform upsert SQL for question_scores
-  const upsertCols = ["exam_id", "student_id", "question_number", "question_id", "block_id", "score", "max_score", "score_type", "manually_modified", "modified_by", "modified_at"];
+  const upsertCols = ["exam_id", "student_id", "question_number", "question_id", "block_id", "score", "max_score", "score_type", "manually_modified", "modified_by", "modified_at", "selected_options"];
   const conflictCols = ["exam_id", "student_id", "question_number", "score_type"];
-  const updateCols = ["score", "max_score", "manually_modified", "modified_by", "modified_at"];
+  const updateCols = ["score", "max_score", "manually_modified", "modified_by", "modified_at", "selected_options"];
   const upsertSQL = buildUpsertSQL(db.dialect, "question_scores", upsertCols, conflictCols, updateCols);
 
   await db.transaction(async (tx) => {
@@ -413,24 +425,40 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
     }
 
     for (const { student_id: studentId } of students) {
-      // ... (same recognition processing)
-      const recognitionRows = await tx.all(`
-        SELECT orr.question_number, orr.selected_options, orr.confidence
-        FROM objective_recognitions orr
-        JOIN scan_records sr ON sr.id = orr.record_id
-        JOIN scan_batches sb ON sb.id = sr.batch_id
-        WHERE sb.exam_id = ? AND sr.student_id = ?
-        ORDER BY orr.confidence DESC
+      // v29: 学生所选选项改从 question_scores.selected_options 读取
+      // （objective_recognitions 在主流程中从未写入，重评分会把全体学生当未作答）
+      const optionRows = await tx.all(`
+        SELECT question_number, selected_options
+        FROM question_scores
+        WHERE exam_id = ? AND student_id = ? AND score_type = 'objective' AND selected_options IS NOT NULL
       `, examId, studentId) as any[];
 
       const recognitionMap = new Map<number, { selectedOptions: string[]; confidence: number }>();
-      for (const r of recognitionRows) {
-        const existing = recognitionMap.get(r.question_number);
-        if (!existing || r.confidence > existing.confidence) {
-          recognitionMap.set(r.question_number, {
-            selectedOptions: r.selected_options ? JSON.parse(r.selected_options) : [],
-            confidence: r.confidence
-          });
+      for (const r of optionRows) {
+        let opts: string[] = [];
+        try { opts = r.selected_options ? JSON.parse(r.selected_options) : []; } catch { opts = []; }
+        recognitionMap.set(r.question_number, { selectedOptions: opts, confidence: 1 });
+      }
+
+      // 回退：历史遗留的 objective_recognitions 数据（若存在）
+      if (recognitionMap.size === 0) {
+        const recognitionRows = await tx.all(`
+          SELECT orr.question_number, orr.selected_options, orr.confidence
+          FROM objective_recognitions orr
+          JOIN scan_records sr ON sr.id = orr.record_id
+          JOIN scan_batches sb ON sb.id = sr.batch_id
+          WHERE sb.exam_id = ? AND sr.student_id = ?
+          ORDER BY orr.confidence DESC
+        `, examId, studentId) as any[];
+
+        for (const r of recognitionRows) {
+          const existing = recognitionMap.get(r.question_number);
+          if (!existing || r.confidence > existing.confidence) {
+            recognitionMap.set(r.question_number, {
+              selectedOptions: r.selected_options ? JSON.parse(r.selected_options) : [],
+              confidence: r.confidence
+            });
+          }
         }
       }
 
@@ -448,7 +476,8 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
           await tx.run(upsertSQL,
             examId, studentId, def.questionNumber, null, block.id,
             grade.score, grade.maxScore, "objective",
-            1, userId, now
+            0, userId, now, // Bugfix: 答案key变更触发的自动重评分不应标记 manually_modified=1
+            JSON.stringify(rec?.selectedOptions ?? [])
           );
           totalObj += grade.score;
         }

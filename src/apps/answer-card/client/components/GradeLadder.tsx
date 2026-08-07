@@ -3,6 +3,17 @@ import { Power, RefreshCw, TrendingUp } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { useAuth } from "../auth/AuthContext";
 import type { LadderResponse, ExamFilterItem, ExamGroupFilterItem } from "../../../../shared/types";
+import {
+  Button,
+  EmptyState,
+  SegmentedControl,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  notify,
+} from "./ui/v2";
 import { LadderLeaderboard } from "./LadderLeaderboard";
 
 type Scope = "single" | "group" | "cross";
@@ -100,6 +111,7 @@ export function GradeLadder() {
     } catch (err) {
       const msg = err instanceof Error ? err.message : "加载天梯数据失败";
       // 如果是天梯关闭的 403，后端已返回 message
+      notify.error(msg);
       setError(msg);
       setData(null);
     } finally {
@@ -141,179 +153,182 @@ export function GradeLadder() {
 
   // 配置加载中
   if (ladderEnabled === null) {
-    return (
-      <div className="scores-empty">
-        <TrendingUp size={40} />
-        <h2>加载中...</h2>
-      </div>
-    );
+    return <EmptyState icon={<TrendingUp />} title="加载中…" />;
   }
 
   // 天梯关闭且非管理员
   if (blocked) {
     return (
-      <div className="ladder-container">
-        <div className="scores-empty">
-          <Power size={40} />
-          <h2>成绩天梯暂未开放</h2>
-          <p>管理员已关闭天梯功能，开放后可在此查看年级前十名榜单。</p>
-        </div>
+      <div className="flex flex-col gap-4">
+        <EmptyState
+          icon={<Power />}
+          title="成绩天梯暂未开放"
+          description="管理员已关闭天梯功能，开放后可在此查看年级前十名榜单。"
+        />
       </div>
     );
   }
 
   return (
-    <div className="ladder-container">
+    <div className="flex flex-col gap-4">
       {/* 管理员开关 */}
       {isAdmin && (
-        <div className="ladder-admin-bar">
-          <span className="ladder-admin-label">
+        <div className="flex items-center justify-between rounded-lg border border-border-subtle bg-card px-4 py-3">
+          <span className="text-sm text-muted-foreground">
             {ladderEnabled ? "成绩天梯已开放" : "成绩天梯已关闭（仅管理员可见）"}
           </span>
-          <button
-            type="button"
-            className={`ladder-toggle-btn ${ladderEnabled ? "ladder-toggle-off" : ""}`}
-            onClick={toggleLadder}
+          <Button
+            variant={ladderEnabled ? "outline" : "primary"}
+            size="sm"
+            icon={<Power size={14} />}
+            onClick={() => void toggleLadder()}
             disabled={toggling}
           >
-            <Power size={14} /> {toggling ? "..." : ladderEnabled ? "关闭" : "开启"}
-          </button>
+            {toggling ? "..." : ladderEnabled ? "关闭" : "开启"}
+          </Button>
         </div>
       )}
 
       {/* 范围选择器 */}
-      <div className="ladder-scope-selector">
-        <button
-          type="button"
-          className={`ladder-scope-btn ${scope === "single" ? "active" : ""}`}
-          onClick={() => changeScope("single")}
-        >
-          单场考试
-        </button>
-        <button
-          type="button"
-          className={`ladder-scope-btn ${scope === "group" ? "active" : ""}`}
-          onClick={() => changeScope("group")}
-        >
-          大考组
-        </button>
-        <button
-          type="button"
-          className={`ladder-scope-btn ${scope === "cross" ? "active" : ""}`}
-          onClick={() => changeScope("cross")}
-        >
-          跨考累计
-        </button>
-      </div>
+      <SegmentedControl
+        aria-label="天梯榜单范围"
+        value={scope}
+        onValueChange={changeScope}
+        items={[
+          { value: "single", label: "单场考试" },
+          { value: "group", label: "大考组" },
+          { value: "cross", label: "跨考累计" },
+        ]}
+      />
 
       {/* 次级选择器 */}
-      <div className="ladder-sub-selector">
+      <div className="flex flex-wrap items-center gap-2">
         {scope === "single" && (
-          <select
-            className="ladder-select"
-            value={selectedExamId ?? ""}
-            onChange={(e) => setSelectedExamId(e.target.value ? Number(e.target.value) : null)}
+          <Select
+            value={selectedExamId?.toString() ?? ""}
+            onValueChange={(v) => setSelectedExamId(v ? Number(v) : null)}
           >
-            <option value="">请选择考试</option>
-            {exams.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.name} {e.subject ? `(${e.subject})` : ""}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger className="w-64">
+              <SelectValue placeholder="请选择考试" />
+            </SelectTrigger>
+            <SelectContent>
+              {exams.map((e) => (
+                <SelectItem key={e.id} value={e.id.toString()}>
+                  {e.name}
+                  {e.subject ? ` (${e.subject})` : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         )}
 
         {scope === "group" && (
-          <select
-            className="ladder-select"
-            value={selectedGroupId ?? ""}
-            onChange={(e) => setSelectedGroupId(e.target.value ? Number(e.target.value) : null)}
+          <Select
+            value={selectedGroupId?.toString() ?? ""}
+            onValueChange={(v) => setSelectedGroupId(v ? Number(v) : null)}
           >
-            <option value="">请选择大考组</option>
-            {groups.map((g) => (
-              <option key={g.id} value={g.id}>
-                {g.name}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger className="w-64">
+              <SelectValue placeholder="请选择大考组" />
+            </SelectTrigger>
+            <SelectContent>
+              {groups.map((g) => (
+                <SelectItem key={g.id} value={g.id.toString()}>
+                  {g.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         )}
 
         {scope === "cross" && (
-          <select
-            className="ladder-select"
+          <Select
             value={crossMode}
-            onChange={(e) => setCrossMode(e.target.value as "week" | "selected" | "group")}
+            onValueChange={(v) => setCrossMode(v as "week" | "selected" | "group")}
           >
-            <option value="week">按日期包</option>
-            <option value="selected">手动选择</option>
-            <option value="group">大考组模式</option>
-          </select>
+            <SelectTrigger className="w-64">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="week">按日期包</SelectItem>
+              <SelectItem value="selected">手动选择</SelectItem>
+              <SelectItem value="group">大考组模式</SelectItem>
+            </SelectContent>
+          </Select>
         )}
 
-        <button type="button" className="ghost-button" onClick={loadLadder} disabled={busy}>
-          <RefreshCw size={14} /> 刷新
-        </button>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon={<RefreshCw size={14} />}
+          onClick={loadLadder}
+          disabled={busy}
+        >
+          刷新
+        </Button>
       </div>
 
-      {error && <p className="login-error">{error}</p>}
+      {error && (
+        <div className="rounded-md border border-destructive-border bg-destructive-soft px-3 py-2 text-sm text-destructive-fg">
+          {error}
+        </div>
+      )}
 
       {/* 统计栏 */}
       {data && hasSelection && (
-        <div className="ladder-stats">
-          <div className="ladder-stat-item">
-            <span className="ladder-stat-value">{data.studentCount}</span>
-            <span className="ladder-stat-label">参与人数</span>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="flex flex-col gap-0.5 rounded-lg border border-border bg-card px-4 py-3">
+            <span className="text-lg font-semibold tabular-nums text-foreground">
+              {data.studentCount}
+            </span>
+            <span className="text-xs text-muted-foreground">参与人数</span>
           </div>
-          <div className="ladder-stat-item">
+          <div className="flex flex-col gap-0.5 rounded-lg border border-border bg-card px-4 py-3">
             {data.myRank != null ? (
               <>
-                <span className="ladder-stat-value">第 {data.myRank} 名</span>
-                <span className="ladder-stat-label">你的排名</span>
+                <span className="text-lg font-semibold tabular-nums text-foreground">
+                  第 {data.myRank} 名
+                </span>
+                <span className="text-xs text-muted-foreground">你的排名</span>
               </>
             ) : (
               <>
-                <span className="ladder-stat-value">—</span>
-                <span className="ladder-stat-label">
+                <span className="text-lg font-semibold tabular-nums text-foreground">—</span>
+                <span className="text-xs text-muted-foreground">
                   {data.studentCount > 0 ? "未参加" : "暂无数据"}
                 </span>
               </>
             )}
           </div>
-          <div className="ladder-stat-item">
-            <span className="ladder-stat-value">
+          <div className="flex flex-col gap-0.5 rounded-lg border border-border bg-card px-4 py-3">
+            <span className="text-lg font-semibold tabular-nums text-foreground">
               {data.myScore != null ? `${data.myScore} 分` : "—"}
             </span>
-            <span className="ladder-stat-label">你的总分</span>
+            <span className="text-xs text-muted-foreground">你的总分</span>
           </div>
-          <div className="ladder-stat-item">
-            <span className="ladder-stat-value">{data.scopeName}</span>
-            <span className="ladder-stat-label">当前榜单</span>
+          <div className="flex flex-col gap-0.5 rounded-lg border border-border bg-card px-4 py-3">
+            <span className="text-lg font-semibold text-foreground">{data.scopeName}</span>
+            <span className="text-xs text-muted-foreground">当前榜单</span>
           </div>
         </div>
       )}
 
       {/* 前十名阶梯榜单 */}
-      {busy && (
-        <div className="scores-empty">
-          <TrendingUp size={40} />
-          <h2>加载中...</h2>
-        </div>
-      )}
+      {busy && <EmptyState icon={<TrendingUp />} title="加载中…" />}
 
       {!busy && !hasSelection && (
-        <div className="scores-empty">
-          <TrendingUp size={40} />
-          <h2>年级前十名</h2>
-          <p>请在上方选择考试范围，查看年级前十名榜单。</p>
-        </div>
+        <EmptyState
+          icon={<TrendingUp />}
+          title="年级前十名"
+          description="请在上方选择考试范围，查看年级前十名榜单。"
+        />
       )}
 
       {!busy && hasSelection && data && data.rows.length === 0 && (
-        <div className="scores-empty">
-          <TrendingUp size={40} />
-          <h2>暂无排名数据</h2>
-          <p>该范围内暂无成绩记录。</p>
-        </div>
+        <EmptyState
+          icon={<TrendingUp />}
+          title="暂无排名数据"
+          description="该范围内暂无成绩记录。"
+        />
       )}
 
       {!busy && data && data.rows.length > 0 && <LadderLeaderboard rows={data.rows} />}

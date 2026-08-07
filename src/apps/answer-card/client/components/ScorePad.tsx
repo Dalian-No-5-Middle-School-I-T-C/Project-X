@@ -1,4 +1,9 @@
+// ScorePad —— 阅卷分数键盘（T5 v2 迁移）
+// 视觉层令牌化：按钮改用 v2 语义类（选中=品牌红实底，未选=secondary），
+// 触摸目标沿用 56px 下限（大于 --px-touch-target 44px，判分工作台刻意放大）。
+// 功能守恒：位置模式 / 枚举模式的取值、提交与自动跳转逻辑逐行保留。
 import React, { useMemo } from "react";
+import { cn } from "../lib/utils";
 
 interface Props {
   maxScore: number;
@@ -22,6 +27,20 @@ const formatHalf = (v: number) => {
   const r = Math.round(v * 2) / 2;
   return Number.isInteger(r) ? String(r) : r.toFixed(1);
 };
+
+/** 判分键统一配方：56px 触摸目标 + 语义色，选中态为品牌红实底 */
+const padBtnClass = (selected: boolean, disabled?: boolean, emphasis?: boolean): string =>
+  cn(
+    "min-h-14 min-w-14 rounded-lg border text-2xl font-medium tabular-nums touch-manipulation",
+    "transition-colors duration-(--px-dur-1) ease-standard",
+    "outline-none focus-visible:shadow-focus",
+    selected
+      ? "border-primary bg-primary text-primary-foreground"
+      : emphasis
+        ? "border-border bg-muted text-foreground hover:bg-secondary"
+        : "border-border bg-secondary text-foreground hover:border-border-strong",
+    disabled ? "cursor-default opacity-50" : "cursor-pointer",
+  );
 
 export function ScorePad({ maxScore, hasHalfPoint, currentScore, onScoreChange, onSubmit, disabled }: Props) {
   const usePositionMode = maxScore >= 20;
@@ -98,24 +117,21 @@ export function ScorePad({ maxScore, hasHalfPoint, currentScore, onScoreChange, 
 
   if (usePositionMode) {
     return (
-      <div style={{ userSelect: "none" }}>
-        <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 8 }}>
-          满分 {maxScore} 分 · 位值输入
-        </div>
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: positionColumns.map(() => "1fr").join(" "),
-          gap: 8,
-          marginBottom: 12,
-        }}>
+      <div className="select-none">
+        <p className="mb-2 text-sm text-muted-foreground">
+          满分 <span className="tabular-nums">{maxScore}</span> 分 · 位值输入
+        </p>
+        <div className="mb-3 flex gap-2">
           {positionColumns.map((col, colIdx) => (
-            <div key={colIdx} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div key={colIdx} className="flex flex-1 flex-col gap-2">
               {col.map((btn, btnIdx) => (
                 <button
                   key={btnIdx}
+                  type="button"
                   onClick={() => handlePositionClick(colIdx, btn.value)}
                   disabled={disabled}
-                  style={padBtnStyle(isSelected(colIdx, btn.value), disabled)}
+                  aria-pressed={isSelected(colIdx, btn.value)}
+                  className={padBtnClass(isSelected(colIdx, btn.value), disabled)}
                 >
                   {btn.label}
                 </button>
@@ -130,22 +146,18 @@ export function ScorePad({ maxScore, hasHalfPoint, currentScore, onScoreChange, 
 
   // 枚举模式
   return (
-    <div style={{ userSelect: "none" }}>
-      <div style={{ fontSize: 13, color: "var(--color-text-secondary)", marginBottom: 8 }}>
-        满分 {maxScore} 分 · 点击即定分
-      </div>
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(64px, 1fr))",
-        gap: 8,
-        marginBottom: 12,
-      }}>
+    <div className="select-none">
+      <p className="mb-2 text-sm text-muted-foreground">
+        满分 <span className="tabular-nums">{maxScore}</span> 分 · 点击即定分
+      </p>
+      <div className="mb-3 grid grid-cols-[repeat(auto-fill,minmax(64px,1fr))] gap-2">
         {enumMain.map((btn, idx) => (
           <button
             key={idx}
+            type="button"
             onClick={() => commit(btn.value)}
             disabled={disabled}
-            style={padBtnStyle(false, disabled)}
+            className={padBtnClass(false, disabled)}
           >
             {btn.label}
           </button>
@@ -154,21 +166,18 @@ export function ScorePad({ maxScore, hasHalfPoint, currentScore, onScoreChange, 
 
       {enumBottom.length > 0 && (
         <>
-          <div style={{ height: 1, background: "var(--color-border-tertiary)", margin: "4px 0 12px" }} />
-          <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 6 }}>
+          <div className="mt-1 mb-3 h-px bg-border-subtle" />
+          <p className="mb-1.5 text-xs text-muted-foreground">
             极低分（空白 / 近空白卷）请显式点选：
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          </p>
+          <div className="grid grid-cols-2 gap-2">
             {enumBottom.map((btn, idx) => (
               <button
                 key={idx}
+                type="button"
                 onClick={() => commit(btn.value)}
                 disabled={disabled}
-                style={{
-                  ...padBtnStyle(false, disabled),
-                  minHeight: 52,
-                  background: "var(--color-background-tertiary)",
-                }}
+                className={cn(padBtnClass(false, disabled, true), "min-h-13")}
               >
                 {btn.label}
               </button>
@@ -184,25 +193,9 @@ export function ScorePad({ maxScore, hasHalfPoint, currentScore, onScoreChange, 
 
 function ScorePreview({ currentScore }: { currentScore: number }) {
   return (
-    <div style={{ textAlign: "center", fontSize: 28, fontWeight: 500, padding: "8px 0" }}>
+    <div className="py-2 text-center text-3xl font-medium tabular-nums text-foreground">
       {currentScore % 1 > 0 ? currentScore.toFixed(1) : currentScore}
-      <span style={{ fontSize: 14, color: "var(--color-text-secondary)" }}> 分</span>
+      <span className="text-base text-muted-foreground"> 分</span>
     </div>
   );
 }
-
-const padBtnStyle = (selected: boolean, disabled?: boolean): React.CSSProperties => ({
-  minHeight: 56,
-  minWidth: 56,
-  fontSize: 22,
-  fontWeight: 500,
-  borderRadius: 10,
-  border: selected
-    ? "2px solid var(--color-text-primary)"
-    : "1px solid var(--color-border-primary)",
-  background: selected ? "var(--color-text-primary)" : "var(--color-background-secondary)",
-  color: selected ? "var(--color-background-primary)" : "var(--color-text-primary)",
-  cursor: disabled ? "default" : "pointer",
-  transition: "all 0.1s",
-  touchAction: "manipulation",
-});

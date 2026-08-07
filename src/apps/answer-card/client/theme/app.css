@@ -1,0 +1,244 @@
+/* ══════════════════════════════════════════════════════════════════════
+   Tailwind v4 分层导入（P6 终态）
+
+   ⚠ 不引入 Preflight（`tailwindcss/preflight.css`）——架构师 D2 决策。
+   Preflight 的 `*{margin:0;padding:0;border:0 solid}` 与标题字号归一会
+   造成全站布局位移。P6 采用**最小 reset 接管**：styles.css 删除后，
+   其全局 reset 遗产（box-sizing / html,body,#root 尺寸 / body margin /
+   overflow / 主题过渡 / color-scheme）已在下方 @layer base 内接管。
+   **Preflight 启用另立 P7**。
+
+   工具类不依赖 Preflight：border-* 通过 `@property --tw-border-style`
+   (initial-value: solid) 自带线型；box-sizing 由 @layer base 提供。
+   新组件一律显式声明 bg/border/padding，不吃 UA 默认值。
+   ══════════════════════════════════════════════════════════════════════ */
+/* ── 层叠顺序（唯一事实源）──────────────────────────────────────────────
+   theme < base < components < utilities
+
+   P6 T05：旧 styles.css 已删除，`legacy` 层已移除。层序归并为
+   theme → base → components → utilities，无历史兼容负担。
+   ────────────────────────────────────────────────────────────────────── */
+@layer theme, base, components, utilities;
+
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/* ── 全局 reset 接管（@layer base，仅在 base 层生效，Preflight 未引入）──
+   P6 T05：styles.css 删除后，其全局 reset 的唯一不可丢遗产在此接管：
+   `*{box-sizing}` / `html,body,#root` 尺寸 / `body{margin:0;overflow:hidden}`
+   + 背景/前景色与主题过渡 / `[data-theme="dark"]{color-scheme}`。
+   同时保留迁移期 UA reset（button/input/select/textarea/th/td 边框与背景、
+   `button{cursor:pointer}`），避免 UA `2px outset buttonborder` 泄漏到
+   v2 组件上（Tab 整圈边框、表格 th 黑框）。
+   范围：仅影响原生控件，**不重置** div/span/section 等容器。
+   Preflight 启用另立 P7（启用后本块大部分可删，仅保留 color-scheme）。─── */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    box-sizing: border-box;
+  }
+  html,
+  body,
+  #root {
+    width: 100%;
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    overflow: hidden;
+    background: var(--px-bg-canvas);
+    color: var(--px-fg-primary);
+    transition: background var(--px-dur-2) ease-out, color var(--px-dur-2) ease-out;
+  }
+  [data-theme="dark"] {
+    color-scheme: dark;
+  }
+  button,
+  input,
+  select,
+  textarea,
+  th,
+  td {
+    border: 0;
+    background: transparent;
+    font: inherit;
+    color: inherit;
+    padding: 0;
+  }
+  button { cursor: pointer; }
+  input,
+  textarea,
+  select { padding: 0; }
+  table { border-collapse: collapse; }
+}
+
+/* 弹层进出动画工具类（animate-in / fade-in-0 / zoom-in-95 …）。
+   Tailwind v4 本体不含这些类，shadcn/ui 官方配套即本包。纯 CSS，无运行时。 */
+@import "tw-animate-css";
+
+/* 令牌事实源（落地副本 of design/tokens/tokens.css，确保视觉单一源；
+   light/dark/compact 三套映射全部在本文件内）。
+   刻意**不分层**：令牌是变量定义，须在任何消费它的工具类之前生效。 */
+@import "./tokens.css";
+
+/* 显式声明扫描范围（web / scanner 双构建的 CWD 不同，避免依赖自动探测） */
+@source "..";
+
+/* dark 策略：沿用现有 [data-theme="dark"] 属性，切换逻辑零改动 */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ── shadcn/ui 主题映射（DESIGN-SYSTEM §3.3）：Tailwind 语义色 → --px-* 语义令牌 ──
+   组件一律消费本块生成的语义工具类（bg-background / text-foreground / border-border …），
+   禁止业务代码直接写 --px-red-600 等 L1 原始令牌。 */
+@theme {
+  /* 底色 / 表面 */
+  --color-background: var(--px-bg-canvas);
+  --color-foreground: var(--px-fg-primary);
+  --color-card: var(--px-bg-surface);
+  --color-card-foreground: var(--px-fg-primary);
+  --color-popover: var(--px-bg-raised);
+  --color-popover-foreground: var(--px-fg-primary);
+  --color-overlay: var(--px-bg-overlay);
+  --color-scrim: var(--px-bg-scrim);
+  --color-inverse: var(--px-bg-inverse);
+  --color-inverse-foreground: var(--px-fg-inverse);
+  /* 纸面隐喻：答题卡纸张在暗色下依然是白纸 */
+  --color-paper: var(--px-paper-bg);
+  --color-paper-foreground: var(--px-paper-fg);
+
+  /* 品牌 Accent */
+  --color-primary: var(--px-accent-bg);
+  --color-primary-foreground: var(--px-fg-on-accent);
+  --color-primary-hover: var(--px-accent-bg-hover);
+  --color-primary-active: var(--px-accent-bg-active);
+  --color-accent-soft-hover: var(--px-accent-soft-hover);
+  --color-accent-border: var(--px-accent-border);
+
+  /* 中性 */
+  --color-secondary: var(--px-bg-subtle);
+  --color-secondary-foreground: var(--px-fg-secondary);
+  --color-muted: var(--px-bg-muted);
+  --color-muted-foreground: var(--px-fg-tertiary);
+  --color-disabled-foreground: var(--px-fg-disabled);
+
+  /* Accent 软语义（选中行/软标签底） */
+  --color-accent: var(--px-accent-soft);
+  --color-accent-foreground: var(--px-accent-fg);
+
+  /* 边框 / 输入 / 焦点环（3 级边框：发丝 → 默认 → 强调） */
+  --color-border: var(--px-border-default);
+  --color-border-subtle: var(--px-border-subtle);
+  --color-border-strong: var(--px-border-strong);
+  --color-input: var(--px-input-border);
+  --color-input-hover: var(--px-input-border-hover);
+  --color-ring: var(--px-accent-ring);
+
+  /* 状态语义（4 件套：bg/soft/fg/border） */
+  --color-success: var(--px-success-bg);
+  --color-success-foreground: var(--px-success-fg);
+  --color-success-soft: var(--px-success-soft);
+  --color-success-border: var(--px-success-border);
+  --color-warning: var(--px-warning-bg);
+  --color-warning-foreground: var(--px-warning-fg);
+  --color-warning-soft: var(--px-warning-soft);
+  --color-warning-border: var(--px-warning-border);
+  --color-info: var(--px-info-bg);
+  --color-info-foreground: var(--px-info-fg);
+  --color-info-soft: var(--px-info-soft);
+  --color-info-border: var(--px-info-border);
+  --color-destructive: var(--px-danger-bg);
+  --color-destructive-foreground: var(--px-fg-on-accent);
+  --color-destructive-soft: var(--px-danger-soft);
+  --color-destructive-border: var(--px-danger-border);
+  --color-destructive-fg: var(--px-danger-fg);
+  /* danger 与 accent 在本系统同为品牌红，hover/active 档位共用（非漂移） */
+  --color-destructive-hover: var(--px-accent-bg-hover);
+  --color-destructive-active: var(--px-accent-bg-active);
+
+  /* 数据可视化色板（chart.js 适配器从 theme.ts 取，组件用 bg-chart-* 兜底） */
+  --color-chart-1: var(--px-chart-1);
+  --color-chart-2: var(--px-chart-2);
+  --color-chart-3: var(--px-chart-3);
+  --color-chart-4: var(--px-chart-4);
+  --color-chart-5: var(--px-chart-5);
+  --color-chart-6: var(--px-chart-6);
+  --color-chart-7: var(--px-chart-7);
+  --color-chart-8: var(--px-chart-8);
+
+  /* 圆角（DESIGN-SYSTEM §4.3） */
+  --radius-xs: var(--px-radius-xs);
+  --radius-sm: var(--px-radius-sm);
+  --radius-md: var(--px-radius-md);
+  --radius-lg: var(--px-radius-lg);
+  --radius-xl: var(--px-radius-xl);
+  --radius-2xl: var(--px-radius-2xl);
+  --radius-full: var(--px-radius-full);
+
+  /* 阴影（4 档，拒绝泛光）+ 全局唯一焦点环（2px 底色 + 4px 品牌红 30%） */
+  --shadow-1: var(--px-shadow-1);
+  --shadow-2: var(--px-shadow-2);
+  --shadow-3: var(--px-shadow-3);
+  --shadow-4: var(--px-shadow-4);
+  --shadow-accent: var(--px-shadow-accent);
+  --shadow-focus: var(--px-focus-ring);
+
+  /* 层级（z-index）：Tailwind v4 没有 --z-* 主题命名空间，
+     组件一律写 `z-(--px-z-dropdown)` 这类变量简写直接消费 L1 阶梯令牌。
+     阶梯：base 0 / raised 10 / sticky 50 / header 100 / drawer 200 /
+     dropdown 300 / modal 400 / toast 500 / lightbox 600（见 tokens.css）。 */
+
+  /* 字体 */
+  --font-sans: var(--px-font-sans);
+  --font-mono: var(--px-font-mono);
+
+  /* ── 字号阶梯（DESIGN-SYSTEM §4.1）──
+     覆盖 Tailwind 默认 16px 基准：本系统正文 text-base = 14px。
+     不覆盖会导致全站字号比设计稿大一档。 */
+  --text-xs: var(--px-text-xs);
+  --text-xs--line-height: var(--px-leading-normal);
+  --text-sm: var(--px-text-sm);
+  --text-sm--line-height: var(--px-leading-normal);
+  --text-base: var(--px-text-base);
+  --text-base--line-height: var(--px-leading-normal);
+  --text-lg: var(--px-text-lg);
+  --text-lg--line-height: var(--px-leading-normal);
+  --text-xl: var(--px-text-xl);
+  --text-xl--line-height: var(--px-leading-tight);
+  --text-2xl: var(--px-text-2xl);
+  --text-2xl--line-height: var(--px-leading-tight);
+  --text-3xl: var(--px-text-3xl);
+  --text-3xl--line-height: var(--px-leading-tight);
+  --text-4xl: var(--px-text-4xl);
+  --text-4xl--line-height: var(--px-leading-tight);
+  --text-5xl: var(--px-text-5xl);
+  --text-5xl--line-height: var(--px-leading-tight);
+
+  --leading-tight: var(--px-leading-tight);
+  --leading-normal: var(--px-leading-normal);
+  --leading-relaxed: var(--px-leading-relaxed);
+
+  /* ── 动效（§4.4）：全部经令牌，prefers-reduced-motion 自动收敛为 1ms ── */
+  --ease-standard: var(--px-ease-standard);
+  --ease-out-token: var(--px-ease-out);
+  --ease-spring: var(--px-ease-spring);
+
+  /* ── 命名尺寸（生成 h-control-md / w-rail / h-table-row 等工具类）──
+     全部指向 L3 令牌，因此 [data-density="compact"] 下自动变矮，
+     组件无需为紧凑密度写任何分支。 */
+  --spacing-control-sm: var(--px-control-h-sm);
+  --spacing-control-md: var(--px-control-h-md);
+  --spacing-control-lg: var(--px-control-h-lg);
+  --spacing-touch: var(--px-touch-target);
+  --spacing-table-row: var(--px-table-row-h);
+  --spacing-table-header: var(--px-table-header-h);
+  --spacing-rail: var(--px-rail-w);
+  --spacing-rail-collapsed: var(--px-rail-w-collapsed);
+  --spacing-context-panel: var(--px-context-panel-w);
+  --spacing-page-header: var(--px-page-header-h);
+  --spacing-statusbar: var(--px-statusbar-h);
+  --spacing-mobile-nav: var(--px-mobile-bottom-nav-h);
+
+  --container-content: var(--px-content-max-w);
+  --container-content-wide: var(--px-content-max-w-wide);
+}

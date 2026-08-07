@@ -1,10 +1,34 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Minus, Search } from "lucide-react";
+import { Minus, Search } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import { useIsMobile } from "../hooks/useMediaQuery";
-import { DataCard } from "./ui/DataCard";
+import { cn } from "../lib/utils";
+import { formatScore } from "../util/format";
 import type { ScoreTableRow, ScoreDisplayMode } from "../../../../shared/types";
 import { ScanPreviewModal, type ScanPage } from "./ScanPreviewModal";
+import {
+  Button,
+  DataCard,
+  DataCardList,
+  DataTable,
+  EmptyState,
+  ErrorState,
+  Input,
+  type ColumnDef,
+} from "./ui/v2";
+
+/**
+ * ScoreTable —— T2 迁移（T04 明细/订正/弹窗）
+ *
+ * 换肤范围（功能守恒，接口/路由/权限零改动）：
+ *  · 桌面端手写 `<table>` + 斑马纹 + 手写排序箭头 → v2 `DataTable`
+ *    （排序比较逐条搬运：`Number(a ?? 0) - Number(b ?? 0)`，一律先升序；
+ *     初始排序键仍随 `classId` 走班排/年排，靠 `key` 重挂载复位）
+ *  · 硬编码绿 / 红 名次涨跌色 → `text-success-foreground` / `text-destructive-fg`
+ *  · 搜索框、预览按钮 → v2 `Input` / `Button`
+ *  · 移动端卡片分支改用 v2 `DataCard` / `DataCardList`（P5：旧
+ *    components/ui/DataCard.tsx 依赖 styles.css 的 .data-card-* legacy 类，已删除）
+ */
 
 interface Props {
   examId: number;
@@ -15,26 +39,23 @@ interface Props {
 
 type SortKey = "totalScore" | "gradeRank" | "classRank" | "displayValue" | "rankChange";
 
-function formatScore(v: number): string {
-  return Number.isInteger(v) ? String(v) : v.toFixed(1);
-}
-
 function modeLabel(m: ScoreDisplayMode): string {
   return m === "deviation" ? "偏差值" : m === "zscore" ? "Z值" : "百分位";
+}
+
+/** 与迁移前一致：null/undefined 视作 0 后按数值比较 */
+function numericCompare(a: number | null | undefined, b: number | null | undefined): number {
+  return Number(a ?? 0) - Number(b ?? 0);
 }
 
 export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRowClick }: Props) {
   const isMobile = useIsMobile();
   const [rows, setRows] = useState<ScoreTableRow[]>([]);
-  const [examName, setExamName] = useState("");
-  const [subject, setSubject] = useState<string | null>(null);
   const [hasAssigned, setHasAssigned] = useState(false);
   const [totalCount, setTotalCount] = useState(0);
   const displayMode = propDisplayMode || "deviation";
   const displayLabel = modeLabel(displayMode);
   const [search, setSearch] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("gradeRank");
-  const [sortAsc, setSortAsc] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -66,7 +87,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
         }));
         setPreviewPages(pages);
       }
-    } catch (err) {
+    } catch {
       setPreviewSubtitle("加载答题卡失败");
     } finally {
       setPreviewLoading(false);
@@ -85,12 +106,9 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
       rows: ScoreTableRow[]; totalCount: number;
     }>(`/api/analysis/exams/${examId}/score-table?${params.toString()}`)
       .then((data) => {
-        setExamName(data.examName);
-        setSubject(data.subject);
         setHasAssigned(data.hasAssignedScore);
         setRows(data.rows);
         setTotalCount(data.totalCount);
-        setSortKey(classId ? "classRank" : "gradeRank");
       })
       .catch((err) => setError(err instanceof Error ? err.message : "加载失败"))
       .finally(() => setLoading(false));
@@ -106,66 +124,183 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
     );
   }, [rows, search]);
 
-  const sorted = useMemo(() => {
-    const data = [...filtered];
-    data.sort((a, b) => {
-      const va = a[sortKey] ?? 0;
-      const vb = b[sortKey] ?? 0;
-      return sortAsc ? Number(va) - Number(vb) : Number(vb) - Number(va);
-    });
-    return data;
-  }, [filtered, sortKey, sortAsc]);
-
-  function handleSort(key: SortKey) {
-    if (sortKey === key) {
-      setSortAsc(!sortAsc);
-    } else {
-      setSortKey(key);
-      setSortAsc(true);
-    }
-  }
-
-  function renderSortArrow(key: SortKey) {
-    if (sortKey !== key) return <span style={{ color: "var(--line-strong)", fontSize: 10, marginLeft: 2 }}>↕</span>;
-    return sortAsc
-      ? <ArrowUp size={10} style={{ marginLeft: 2 }} />
-      : <ArrowDown size={10} style={{ marginLeft: 2 }} />;
-  }
-
   function renderChange(change: number | null | undefined) {
-    if (change == null) return <span style={{ color: "var(--muted)" }}>—</span>;
-    if (change > 0) return <span style={{ color: "#3B6D11", fontWeight: 500 }}>↑ +{change}</span>;
-    if (change < 0) return <span style={{ color: "#A32D2D", fontWeight: 500 }}>↓ {change}</span>;
-    return <span style={{ color: "var(--muted)" }}><Minus size={12} style={{ verticalAlign: "middle" }} /> 0</span>;
+    if (change == null) return <span className="text-muted-foreground">—</span>;
+    if (change > 0) return <span className="font-medium tabular-nums text-success-foreground">↑ +{change}</span>;
+    if (change < 0) return <span className="font-medium tabular-nums text-destructive-fg">↓ {change}</span>;
+    return (
+      <span className="inline-flex items-center gap-1 tabular-nums text-muted-foreground">
+        <Minus className="size-3" /> 0
+      </span>
+    );
   }
 
-  if (loading) return <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>加载成绩数据...</div>;
-  if (error) return <div className="empty-text" style={{ padding: 40, textAlign: "center", color: "var(--brand)" }}>{error}</div>;
-  if (rows.length === 0) return <div className="empty-text" style={{ padding: 40, textAlign: "center" }}>此考试暂无成绩数据。</div>;
+  const defaultSortKey: SortKey = classId ? "classRank" : "gradeRank";
+
+  const columns = useMemo<ColumnDef<ScoreTableRow, unknown>[]>(() => {
+    const list: ColumnDef<ScoreTableRow, unknown>[] = [
+      {
+        id: "index",
+        header: "#",
+        enableSorting: false,
+        meta: { widthClass: "w-12" },
+        cell: ({ row, table }) => (
+          <span className="tabular-nums text-muted-foreground">
+            {table.getSortedRowModel().flatRows.indexOf(row) + 1}
+          </span>
+        ),
+      },
+      {
+        id: "studentName",
+        header: "姓名",
+        enableSorting: false,
+        cell: ({ row }) => (
+          <>
+            <span className="font-medium">{row.original.studentName}</span>
+            <span className="block text-xs tabular-nums text-muted-foreground">
+              {row.original.studentNumber}
+            </span>
+          </>
+        ),
+      },
+      {
+        id: "className",
+        header: "班级",
+        enableSorting: false,
+        cell: ({ row }) => row.original.className,
+      },
+      {
+        id: "totalScore",
+        header: hasAssigned ? "原始分" : "成绩",
+        accessorFn: (row) => row.totalScore,
+        meta: { numeric: true },
+        sortDescFirst: false,
+        sortingFn: (a, b) => numericCompare(a.original.totalScore, b.original.totalScore),
+        cell: ({ row }) => <span className="font-semibold">{formatScore(row.original.totalScore)}</span>,
+      },
+    ];
+
+    if (hasAssigned) {
+      list.push({
+        id: "assignedScore",
+        header: "赋分",
+        enableSorting: false,
+        meta: { numeric: true },
+        cell: ({ row }) => (
+          <span
+            className={cn(
+              "font-medium",
+              row.original.assignedScore != null ? "text-primary" : "text-muted-foreground",
+            )}
+          >
+            {row.original.assignedScore != null ? formatScore(row.original.assignedScore) : "—"}
+          </span>
+        ),
+      });
+    }
+
+    list.push(
+      {
+        id: "gradeRank",
+        header: "年排",
+        accessorFn: (row) => row.gradeRank,
+        meta: { numeric: true },
+        sortDescFirst: false,
+        sortingFn: (a, b) => numericCompare(a.original.gradeRank, b.original.gradeRank),
+        cell: ({ row }) => row.original.gradeRank,
+      },
+      {
+        id: "classRank",
+        header: "班排",
+        accessorFn: (row) => row.classRank,
+        meta: { numeric: true },
+        sortDescFirst: false,
+        sortingFn: (a, b) => numericCompare(a.original.classRank, b.original.classRank),
+        cell: ({ row }) => row.original.classRank,
+      },
+      {
+        id: "rankChange",
+        header: "名次变化",
+        accessorFn: (row) => row.rankChange,
+        meta: { numeric: true },
+        sortDescFirst: false,
+        sortingFn: (a, b) => numericCompare(a.original.rankChange, b.original.rankChange),
+        cell: ({ row }) => renderChange(row.original.rankChange),
+      },
+      {
+        id: "displayValue",
+        header: displayLabel,
+        accessorFn: (row) => row.displayValue,
+        meta: { numeric: true },
+        sortDescFirst: false,
+        sortingFn: (a, b) => numericCompare(a.original.displayValue, b.original.displayValue),
+        cell: ({ row }) => (
+          <span className="font-medium">
+            {row.original.displayValue != null ? formatScore(row.original.displayValue) : "—"}
+          </span>
+        ),
+      },
+      {
+        id: "scan",
+        header: "答题卡",
+        enableSorting: false,
+        meta: { action: true },
+        cell: ({ row }) => (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={previewLoading}
+            onClick={(e) => {
+              // 预览是行内独立动作，不应连带触发「进入学生详情」的行点击
+              e.stopPropagation();
+              void openPreview(row.original.studentId, row.original.studentName, row.original.studentNumber);
+            }}
+          >
+            预览
+          </Button>
+        ),
+      },
+    );
+
+    return list;
+    // openPreview 只依赖 examId，随组件生命周期稳定
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasAssigned, displayLabel, previewLoading]);
+
+  if (loading) {
+    return <div className="p-10 text-center text-sm text-muted-foreground">加载成绩数据...</div>;
+  }
+  if (error) {
+    return <ErrorState description={error} />;
+  }
+  if (rows.length === 0) {
+    return <EmptyState title="此考试暂无成绩数据" description="完成阅卷后成绩会自动出现在这里。" />;
+  }
 
   return (
     <div>
       {/* Toolbar */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, padding: "4px 10px", flex: 1, minWidth: 200, maxWidth: 320 }}>
-          <Search size={14} style={{ color: "var(--muted)", flexShrink: 0 }} />
-          <input
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="relative w-full max-w-80 min-w-50 flex-1">
+          <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="搜索姓名/学号/班级..."
-            style={{ border: "none", outline: "none", fontSize: 13, width: "100%", background: "transparent" }}
+            aria-label="搜索学生"
+            className="h-control-sm pl-9 text-sm"
           />
         </div>
-        <span style={{ fontSize: 13, color: "var(--muted)", marginLeft: "auto" }}>
+        <span className="ml-auto text-sm tabular-nums text-muted-foreground">
           共 {filtered.length}/{totalCount} 人
         </span>
       </div>
 
       {/* Table */}
       {isMobile ? (
-        <div className="data-card-list">
-          {sorted.map((row, i) => (
+        <DataCardList>
+          {filtered.map((row, i) => (
             <DataCard
               key={row.studentId}
               rows={[
@@ -174,8 +309,8 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
                   label: "姓名",
                   value: (
                     <>
-                      <span style={{ fontWeight: 500 }}>{row.studentName}</span>
-                      <span style={{ fontSize: 11, color: "var(--muted)", display: "block" }}>{row.studentNumber}</span>
+                      <span className="font-medium">{row.studentName}</span>
+                      <span className="block text-xs tabular-nums text-muted-foreground">{row.studentNumber}</span>
                     </>
                   ),
                   strong: true,
@@ -189,105 +324,37 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
                 { label: displayLabel, value: row.displayValue != null ? formatScore(row.displayValue) : "—" },
               ]}
               actions={
-                <button
-                  onClick={() => void openPreview(row.studentId, row.studentName, row.studentNumber)}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  block
                   disabled={previewLoading}
-                  style={{
-                    background: "none", border: "none", cursor: "pointer",
-                    color: "var(--brand)", fontSize: 13, padding: 0,
-                    textDecoration: "underline", textUnderlineOffset: 2,
-                    minHeight: "var(--touch-target-min)", width: "100%"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void openPreview(row.studentId, row.studentName, row.studentNumber);
                   }}
                 >
                   预览答题卡
-                </button>
+                </Button>
               }
               onClick={onRowClick ? () => onRowClick(row.studentId, row.studentName, row.studentNumber) : undefined}
             />
           ))}
-        </div>
+        </DataCardList>
       ) : (
-      <div style={{ overflowX: "auto", border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface)" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-          <thead>
-            <tr style={{ background: "var(--surface-tint)", borderBottom: "2px solid var(--line)" }}>
-              <th style={thStyle}>#</th>
-              <th style={thStyle}>姓名</th>
-              <th style={thStyle}>班级</th>
-              <th style={thStyle}>
-                <button onClick={() => handleSort("totalScore")} style={thBtnStyle}>
-                  {hasAssigned ? "原始分" : "成绩"} {renderSortArrow("totalScore")}
-                </button>
-              </th>
-              {hasAssigned && (
-                <th style={thStyle}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>赋分</span>
-                </th>
-              )}
-              <th style={thStyle}>
-                <button onClick={() => handleSort("gradeRank")} style={thBtnStyle}>
-                  年排 {renderSortArrow("gradeRank")}
-                </button>
-              </th>
-              <th style={thStyle}>
-                <button onClick={() => handleSort("classRank")} style={thBtnStyle}>
-                  班排 {renderSortArrow("classRank")}
-                </button>
-              </th>
-              <th style={thStyle}>
-                <button onClick={() => handleSort("rankChange")} style={thBtnStyle}>
-                  名次变化 {renderSortArrow("rankChange")}
-                </button>
-              </th>
-              <th style={thStyle}>
-                <button onClick={() => handleSort("displayValue")} style={thBtnStyle}>
-                  {displayLabel} {renderSortArrow("displayValue")}
-                </button>
-              </th>
-              <th style={thStyle}>答题卡</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sorted.map((row, i) => (
-              <tr key={row.studentId}
-                style={{ borderTop: "1px solid var(--line-light)", background: i % 2 === 0 ? "var(--surface)" : "var(--bg-soft)", cursor: onRowClick ? "pointer" : "default" }}
-                onClick={() => onRowClick?.(row.studentId, row.studentName, row.studentNumber)}
-              >  <td style={tdStyle}>{i + 1}</td>
-                <td style={tdStyle}>
-                  <span style={{ fontWeight: 500 }}>{row.studentName}</span>
-                  <span style={{ fontSize: 11, color: "var(--muted)", display: "block" }}>{row.studentNumber}</span>
-                </td>
-                <td style={tdStyle}>{row.className}</td>
-                <td style={{ ...tdStyle, fontWeight: 600 }}>{formatScore(row.totalScore)}</td>
-                {hasAssigned && (
-                  <td style={{ ...tdStyle, fontWeight: 500, color: row.assignedScore != null ? "var(--brand)" : "var(--muted)" }}>
-                    {row.assignedScore != null ? formatScore(row.assignedScore) : "—"}
-                  </td>
-                )}
-                <td style={tdStyle}>{row.gradeRank}</td>
-                <td style={tdStyle}>{row.classRank}</td>
-                <td style={tdStyle}>{renderChange(row.rankChange)}</td>
-                <td style={{ ...tdStyle, fontWeight: 500 }}>
-                  {row.displayValue != null ? formatScore(row.displayValue) : "—"}
-                </td>
-                <td style={tdStyle}>
-                  <button
-                    onClick={() => void openPreview(row.studentId, row.studentName, row.studentNumber)}
-                    disabled={previewLoading}
-                    style={{
-                      background: "none", border: "none", cursor: "pointer",
-                      color: "var(--brand)", fontSize: 12, padding: 0,
-                      textDecoration: "underline", textUnderlineOffset: 2
-                    }}
-                  >
-                    预览
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+        <DataTable
+          key={classId ?? "__all__"}
+          columns={columns}
+          data={filtered}
+          getRowId={(row) => String(row.studentId)}
+          initialSorting={[{ id: defaultSortKey, desc: false }]}
+          onRowClick={
+            onRowClick
+              ? (row) => onRowClick(row.studentId, row.studentName, row.studentNumber)
+              : undefined
+          }
+          wrapClassName="rounded-lg border border-border-subtle"
+        />
       )}
 
       {previewPages !== null && (
@@ -301,18 +368,3 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
     </div>
   );
 }
-
-const thStyle: React.CSSProperties = {
-  padding: "10px 10px", textAlign: "left", fontSize: 12, fontWeight: 600,
-  color: "var(--text-secondary)", whiteSpace: "nowrap"
-};
-
-const thBtnStyle: React.CSSProperties = {
-  background: "none", border: "none", cursor: "pointer",
-  fontSize: 12, fontWeight: 600, color: "var(--text-secondary)",
-  display: "flex", alignItems: "center", gap: 2, padding: 0
-};
-
-const tdStyle: React.CSSProperties = {
-  padding: "8px 10px", fontSize: 13, verticalAlign: "top"
-};

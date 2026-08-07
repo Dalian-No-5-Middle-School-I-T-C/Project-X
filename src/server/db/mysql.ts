@@ -639,6 +639,53 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE block_grading_config ADD COLUMN score_distribution VARCHAR(16) NOT NULL DEFAULT 'proportional'`,
       ]
     },
+    {
+      version: 28,
+      name: "demo-data-source-flag",
+      sqls: [
+        `ALTER TABLE users ADD COLUMN is_demo TINYINT NOT NULL DEFAULT 0`,
+        `ALTER TABLE answer_cards ADD COLUMN is_demo TINYINT NOT NULL DEFAULT 0`,
+        `ALTER TABLE classes ADD COLUMN is_demo TINYINT NOT NULL DEFAULT 0`,
+        `ALTER TABLE grades ADD COLUMN is_demo TINYINT NOT NULL DEFAULT 0`,
+      ]
+    },
+    {
+      version: 29,
+      name: "selected-options-and-analysis-thresholds",
+      sqls: [
+        `ALTER TABLE question_scores ADD COLUMN selected_options TEXT`,
+        `INSERT IGNORE INTO system_settings (\`key\`, value) VALUES
+          ('analysis_pass_rate', '0.6'),
+          ('analysis_excellent_rate', '0.9'),
+          ('analysis_segment_size', '10'),
+          ('analysis_error_tiers', '70,50,30')`,
+      ]
+    },
+    {
+      version: 30,
+      name: "subjective-question-annotation",
+      sqls: [
+        `ALTER TABLE subjective_questions ADD COLUMN annotation TEXT`,
+      ]
+    },
+    {
+      version: 31,
+      name: "exam-group-arts-science-track",
+      sqls: [
+        `ALTER TABLE users ADD COLUMN track TEXT`,
+        `ALTER TABLE exam_group_members ADD COLUMN track_type VARCHAR(20) NOT NULL DEFAULT 'common'`,
+      ]
+    },
+    {
+      version: 32,
+      name: "online-review-paper-pool",
+      sqls: [
+        `ALTER TABLE answer_block_crops ADD COLUMN claimed_by INT`,
+        `ALTER TABLE answer_block_crops ADD COLUMN claimed_at DATETIME`,
+        `ALTER TABLE answer_block_crops ADD COLUMN claim_count INT NOT NULL DEFAULT 0`,
+        `CREATE INDEX idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by)`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

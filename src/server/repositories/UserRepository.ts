@@ -1,12 +1,13 @@
 import { getMysqlDb, buildInsertIgnore } from "../db";
 import type { DbAdapter } from "../db";
 import { hashPassword, verifyPassword } from "../db";
-import { validateInitialPassword } from "../auth/passwordPolicy";
+import { validateInitialPassword, generateRandomInitialPassword } from "../auth/passwordPolicy";
 import crypto from "node:crypto";
 
 export interface UserRecord {
   id: number; username: string; password_hash: string; name: string; role_id: number;
   role_name?: string; role_display_name?: string; student_number: string | null;
+  track: string | null;
   subject: string | null; teacher_role: string | null; initial_password: string | null;
   email: string | null; phone: string | null; is_active: number;
   password_change_required: number;
@@ -16,12 +17,14 @@ export interface UserRecord {
 export interface CreateUserParams {
   username: string; password: string; name: string; role_id: number;
   student_number?: string; subject?: string; teacher_role?: string;
+  track?: string;
   initial_password?: string; email?: string; phone?: string;
 }
 
 export interface UpdateUserParams {
   name?: string; password?: string; email?: string; phone?: string;
   is_active?: number; student_number?: string; role_id?: number; teacher_role?: string | null;
+  track?: string | null;
 }
 
 export interface BatchStudentInput { username: string; name: string; student_number: string; password?: string; }
@@ -50,9 +53,9 @@ export class UserRepository {
   async createUser(params: CreateUserParams): Promise<UserRecord> {
     const passwordHash = await hashPassword(params.password);
     const result = await this.db.run(
-      `INSERT INTO users (username, password_hash, name, role_id, student_number, subject, teacher_role, initial_password, email, phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO users (username, password_hash, name, role_id, student_number, track, subject, teacher_role, initial_password, email, phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params.username, passwordHash, params.name, params.role_id, params.student_number ?? null,
-      params.subject ?? null, params.teacher_role ?? null, params.initial_password ?? null,
+      params.track ?? null, params.subject ?? null, params.teacher_role ?? null, params.initial_password ?? null,
       params.email ?? null, params.phone ?? null
     );
     return (await this.findById(result.lastInsertRowid))!;
@@ -62,11 +65,12 @@ export class UserRepository {
     const updates: string[] = [];
     const values: unknown[] = [];
     if (params.name !== undefined) { updates.push("name = ?"); values.push(params.name); }
-    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); }
+    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); /* initial_password 用于管理员导出/发放密码，密码变更时同步保持可追溯 */ updates.push("initial_password = ?"); values.push(params.password); }
     if (params.email !== undefined) { updates.push("email = ?"); values.push(params.email); }
     if (params.phone !== undefined) { updates.push("phone = ?"); values.push(params.phone); }
     if (params.is_active !== undefined) { updates.push("is_active = ?"); values.push(params.is_active); }
     if (params.student_number !== undefined) { updates.push("student_number = ?"); values.push(params.student_number); }
+    if (params.track !== undefined) { updates.push("track = ?"); values.push(params.track); }
     if (params.role_id !== undefined) { updates.push("role_id = ?"); values.push(params.role_id); }
     if (params.teacher_role !== undefined) { updates.push("teacher_role = ?"); values.push(params.teacher_role); }
     updates.push("updated_at = CURRENT_TIMESTAMP");
@@ -135,22 +139,22 @@ export class UserRepository {
 
   async batchCreateStudents(rows: BatchStudentInput[]): Promise<BatchImportResult> {
     const result: BatchImportResult = { created: 0, skipped: 0, errors: [], createdIds: [] };
-    const prepared: Array<{ row: BatchStudentInput; username: string; hash: string }> = [];
+    const prepared: Array<{ row: BatchStudentInput; username: string; hash: string; initialPassword: string }> = [];
     for (const row of rows) {
       const username = (row.username || row.student_number || "").trim();
       const studentNumber = (row.student_number || "").trim();
       if (!username || !studentNumber || !row.name) { result.errors.push({ row, message: "缺少用户名/学号/姓名" }); continue; }
       if (await this.usernameExists(username) || await this.studentNumberExists(studentNumber)) { result.skipped++; result.errors.push({ row, message: "用户名或学号已存在" }); continue; }
-      const initialPassword = row.password || studentNumber;
+      // 显式密码优先；缺失时生成不可推导随机初始密码（不再以学号兜底）
+      const initialPassword = row.password || generateRandomInitialPassword();
       const passwordError = validateInitialPassword({ password: initialPassword, isStudent: true, studentNumber });
       if (passwordError) { result.errors.push({ row, message: passwordError }); continue; }
-      prepared.push({ row: { ...row, username, student_number: studentNumber }, username, hash: await hashPassword(initialPassword) });
+      prepared.push({ row: { ...row, username, student_number: studentNumber }, username, hash: await hashPassword(initialPassword), initialPassword });
     }
     await this.db.transaction(async (tx) => {
       for (const item of prepared) {
         try {
-          const initPwd = item.row.password || item.row.student_number;
-          const insertResult = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", item.username, item.hash, item.row.name, item.row.student_number, initPwd);
+          const insertResult = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", item.username, item.hash, item.row.name, item.row.student_number, item.initialPassword);
           result.created++;
           result.createdIds.push(insertResult.lastInsertRowid);
         } catch (err) { result.errors.push({ row: item.row, message: err instanceof Error ? err.message : String(err) }); }
@@ -198,14 +202,14 @@ export class UserRepository {
     if (params.name !== undefined) { updates.push("name = ?"); values.push(params.name); }
     if (params.subject !== undefined) { updates.push("subject = ?"); values.push(params.subject); }
     if (params.teacher_role !== undefined) { updates.push("teacher_role = ?"); values.push(params.teacher_role); }
-    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); updates.push("initial_password = ?"); values.push(params.password); }
+    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); /* initial_password 用于管理员导出/发放密码，密码变更时同步 */ updates.push("initial_password = ?"); values.push(params.password); }
     updates.push("updated_at = CURRENT_TIMESTAMP"); values.push(id);
     await this.db.run(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`, ...values);
     return await this.findById(id);
   }
 
   async listStudentsByClass(classId?: number): Promise<Array<any>> {
-    let sql = `SELECT cs.student_id, u.username, u.name, u.student_number, u.initial_password, c.id as class_id, c.name as class_name, g.id as grade_id, g.name as grade_name, cs.joined_at FROM class_students cs JOIN users u ON u.id = cs.student_id AND u.is_active = 1 JOIN classes c ON c.id = cs.class_id JOIN grades g ON g.id = c.grade_id`;
+    let sql = `SELECT cs.student_id, u.username, u.name, u.student_number, u.track, u.initial_password, c.id as class_id, c.name as class_name, g.id as grade_id, g.name as grade_name, cs.joined_at FROM class_students cs JOIN users u ON u.id = cs.student_id AND u.is_active = 1 JOIN classes c ON c.id = cs.class_id JOIN grades g ON g.id = c.grade_id`;
     const params: unknown[] = [];
     if (classId) { sql += " WHERE cs.class_id = ?"; params.push(classId); }
     sql += " ORDER BY g.sort_order ASC, c.sort_order ASC, u.student_number ASC";
@@ -266,7 +270,7 @@ export class UserRepository {
           const studentNumber = (row[numberIdx] ?? "").trim(), studentName = (row[nameIdx] ?? "").trim();
           if (!studentNumber && !studentName) continue;
           if (!studentNumber || !studentName) { result.students.errors.push({ row, message: "缺少学号/姓名" }); continue; }
-          const username = `P${studentNumber}`, password = username;
+          const username = `P${studentNumber}`, password = generateRandomInitialPassword();
           if (!gradeName || !className) { result.students.errors.push({ row, message: "缺少年级/班级" }); continue; }
 
           const existingStudent = await this.findByStudentNumber(studentNumber);

@@ -18,6 +18,13 @@ import type {
 } from "../../shared/types";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
 
+export class ReviewValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReviewValidationError";
+  }
+}
+
 type CropRow = {
   id: string;
   card_id: string;
@@ -28,6 +35,7 @@ type CropRow = {
   block_title: string | null;
   block_type: string | null;
   status: string | null;
+  claimed_by?: number | null;
 };
 
 async function recomputeStudentTotals(
@@ -196,6 +204,8 @@ export async function submitReviewCropScores(params: {
   userId: number;
   /** 题块总分模式（#187）：整个题块的合计分，后端按比例拆分到各小题 */
   blockTotalScore?: number;
+  /** Issue #174: 管理员提交他人已领取试卷时放行（一般由强制释放流程处理） */
+  isAdmin?: boolean;
 }, db: DbAdapter = getMysqlDb()): Promise<ReviewSubmitResult> {
   const crop = await db.get(
     "SELECT * FROM answer_block_crops WHERE id = ? AND exam_id = ?",
@@ -204,6 +214,13 @@ export async function submitReviewCropScores(params: {
   ) as CropRow | undefined;
   if (!crop) throw new Error("作答切块不存在");
   if (!crop.student_id) throw new Error("该切块未关联学生，无法阅卷");
+
+  // Issue #174: 已领取的试卷只能由领取人提交（管理员除外），防止并发冲突覆盖
+  if (!params.isAdmin && crop.claimed_by !== params.userId) {
+    throw new ReviewValidationError(crop.claimed_by == null
+      ? "该试卷尚未领取，无法提交；请先从试卷池领取"
+      : "该试卷已被其他教师领取，无法提交；请先从试卷池领取");
+  }
 
   const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", params.examId) as { card_id: string | null } | undefined;
   if (!exam?.card_id) throw new Error("考试未关联答题卡");
@@ -238,6 +255,34 @@ export async function submitReviewCropScores(params: {
 
   const config = await getBlockConfig(params.examId, crop.block_id ?? "", blockType, maxBlockScore, db);
   const reviewMode = config.reviewMode;
+  const scoringMode: ScoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";
+
+  // 入参校验：逐条检查 scores 的结构和数值合法性
+  const seenQuestions = new Set<number>();
+  for (const item of params.scores) {
+    const qNum = Number(item.questionNumber);
+    if (!Number.isFinite(qNum) || qNum <= 0) {
+      throw new ReviewValidationError(`无效的题号: ${item.questionNumber}`);
+    }
+    if (seenQuestions.has(qNum)) {
+      throw new ReviewValidationError(`题号 ${qNum} 重复提交`);
+    }
+    seenQuestions.add(qNum);
+    const max = maxScoreByQuestion.get(qNum);
+    if (max == null || max <= 0) {
+      throw new ReviewValidationError(`题号 ${qNum} 不在答题卡题目范围内`);
+    }
+    // 逐题模式：校验逐题 score 的有限值和范围；题块总分模式由 blockTotalScore 统一校验
+    if (scoringMode === "per_question") {
+      const score = Number(item.score);
+      if (!Number.isFinite(score)) {
+        throw new ReviewValidationError(`题号 ${qNum} 的分数不是有效数字`);
+      }
+      if (score < 0 || score > max) {
+        throw new ReviewValidationError(`题号 ${qNum} 的分数 ${score} 超出有效范围 [0, ${max}]`);
+      }
+    }
+  }
 
   const now = new Date().toISOString();
   const upsertCols = [
@@ -252,8 +297,6 @@ export async function submitReviewCropScores(params: {
   // 优先采用题块总分：前端只提交一个合计分，后端按比例拆分到各小题并写入正确的逐题满分。
   // 未提交题块总分时（如 OnlineReviewPanel 逐题输入），按逐题校验的严格模式处理。
   const step = config.hasHalfPoint ? 0.5 : 1;
-  // 评分模式 / 拆分策略以题块配置为准（修复 scoringMode 配置失效的冲突）
-  const scoringMode: ScoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";
   const distribution = config.scoreDistribution === "equal" ? "equal" : "proportional";
   // 评分模式双向校验（PR #189 修复：原实现只校验 per_question 单方向，
   // 导致 block_total + 仅逐题分数也能通过，scoringMode 形同虚设）
@@ -318,11 +361,14 @@ export async function submitReviewCropScores(params: {
   await db.transaction(async (tx) => {
     // 评分历史必须在事务内读取和追加；事务外快照会在并发提交时覆盖另一位教师的记录。
     const freshCrop = await tx.get(
-      "SELECT review_round, score_breakdown, status FROM answer_block_crops WHERE id = ?",
+      "SELECT review_round, score_breakdown, status, claimed_by FROM answer_block_crops WHERE id = ?",
       params.cropId
-    ) as { review_round: number; score_breakdown: string | null; status: string | null } | undefined;
+    ) as { review_round: number; score_breakdown: string | null; status: string | null; claimed_by: number | null } | undefined;
     const currentRound = freshCrop?.review_round ?? 0;
     if (!freshCrop) throw new Error("作答切块不存在");
+    if (!params.isAdmin && freshCrop.claimed_by !== params.userId) {
+      throw new ReviewValidationError("试卷领取状态已变更，请刷新后重新领取");
+    }
     try { scoreBreakdown = freshCrop.score_breakdown ? JSON.parse(freshCrop.score_breakdown) : []; } catch { scoreBreakdown = []; }
 
     const reviewerIds = new Set(scoreBreakdown.map((b) => b.reviewerId));
@@ -348,6 +394,13 @@ export async function submitReviewCropScores(params: {
     scoreBreakdown.push({ round: finalReviewRound, reviewerId: params.userId, score: totalScore, reviewedAt: now, questionScores });
 
     // 仅在所有轮次完成且无争议后才写正式分数，避免最后一评的分数提前影响排名。
+    // Issue #174: 提交后清空领取标记。
+    // pending 回到试卷池等待下一轮复核；reviewed/disputed 离开可领集合。
+    await tx.run(
+      "UPDATE answer_block_crops SET claimed_by = NULL, claimed_at = NULL WHERE id = ?",
+      params.cropId
+    );
+
     if (scoreBreakdown.length >= reviewMode) {
       const allScores = scoreBreakdown.map((b) => b.score);
       const disputeResult = computeMultiReviewResult(allScores, config.disputeThreshold, config.rounding);

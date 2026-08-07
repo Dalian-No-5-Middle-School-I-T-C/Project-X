@@ -1,7 +1,7 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.9.5-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.0.0-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,10 +13,11 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v1.9.5
-> **核心能力**：Home 仪表盘（快捷入口 + 模块卡片）→ 答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 网上阅卷队列（2P/3P 多评 + 争议仲裁 + 断点续批 + PAD 优先 UI + 批注系统）→ 考试管理 → 大考组 → 成绩分析（含上次考试对比、学生学期成绩对比）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → AI 知识点分析 → 知识点弱项诊断 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → Web/Scanner 构建分离 → iOS 15 Safari Web 兼容 → 原卷上传 → 移动端响应式适配（480/768/1024 三档断点、抽屉导航、表格卡片化、Home 页重构）
-> **下个里程碑**：v2.0.0 — TBD
+> **当前版本**：v2.0.0
+> **核心能力**：Home 仪表盘（快捷入口 + 模块卡片）→ 答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 网上阅卷队列（2P/3P 多评 + 争议仲裁 + 断点续批 + PAD 优先 UI + 批注系统）→ 考试管理 → 大考组 → 成绩分析（难度 P / 区分度 D 双指标、总体分析、上次考试对比、学生学期成绩对比）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → AI 知识点分析 → 知识点弱项诊断 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → Web/Scanner 构建分离 → iOS 15 Safari Web 兼容 → 原卷上传 → 移动端响应式适配（480/768/1024 三档断点、抽屉导航、表格卡片化、Home 页重构）
+> **下个里程碑**：TBD
 
+我们的爱发电地址https://ifdian.net/a/ProjectX
 ---
 
 ## 为什么要做这个项目？
@@ -88,6 +89,7 @@
 - **双屏流程**：答题卡选择页（单科/大考双Tab）→ 扫描工作台（直扫 + 导入阅卷）
 - **本地/远程双模**：本地直接识别存 SQLite；远程模式下扫描完成自动上传到远端服务器
 - **远端上传**：三步流程（创建会话 → 逐页上传图片 → 标记完成），API Key 鉴权
+- **服务端接入模式**：Ubuntu 设置 `PROJECTX_ENABLE_SCANNER_CLIENT_API=1` 接收扫描端上传；无需、也不应在服务器启用 TWAIN
 - **切块资产同步**：扫描仪 OCR 与普通批量阅卷都会落库 `answer_block_crops`；远程上传模式预留切块 manifest/文件接收能力，服务端可复用扫描端生成的大题图片。
 - **文件导入阅卷**：扫描端也支持导入目录或单张图片进行识别的判分
 - **单面过滤**：单面答题卡自动跳过背面扫描结果，避免无效数据
@@ -99,23 +101,26 @@
 
 - **考试选择页**：三选一切换 [单科 | 大考 | 跨考]，单科按学年/年级/学科筛选，大考展示合集列表，跨考嵌入按周打包/选定考试/已存组三种分析模式
 - **大考组管理**：创建大考合集（如"2026高考摸底大考"含语数英物化生），关联已有考试或直接在合集中新建考试，支持拖拽排序和删除确认（可选级联删除关联考试）
-- **大考分析**：概览 Tab 各科参数卡片网格，成绩 Tab 横向跨科排名表（校排/班排/分数，赋分科目同行显示赋分），支持班级筛选和「仅全科参加」开关
+- **大考分析**：6 Tab（概览 / 成绩 / 题目分析 / 班级对比 / 总体分析 / AI 分析），概览 Tab 各科参数卡片网格，成绩 Tab 横向跨科排名表（校排/班排/分数，赋分科目同行显示赋分），支持「合并 / 分科」视图切换、班级筛选和「仅全科参加」开关，各科均带难度 P / 区分度 D 徽章
 - **跨考试总分**：按日期自动打包一周考试、手动选择考试合并、或读取已保存考试组，一键计算跨考试总分排名，预览该周考试列表
 - **并列排名**：全系统排名统一为同分并列（1, 2, 2, 4, 5...），覆盖跨考、大考、单科、导出等所有场景
 - **导出增强**：单科导出可选「客观题小分」「主观题小分」胶囊列；大考导出为 ZIP（总览表含跨科排名 + 各科详细小分 Excel）
 - **考试管理**：创建考试、关联答题卡（支持新建答题卡时同步创建/关联）、科目、赋分
-- **成绩查看页**：4 子Tab（概况 / 成绩 / 考试分析 / AI 分析），班级选择器 + 指标切换 + 「分数有问题？」入口（教师/管理员）
+- **成绩查看页**：6 子Tab（概况 / 成绩 / 题目分析 / 班级对比 / 总体分析 / AI 分析），班级选择器 + 指标切换 + 「分数有问题？」入口（教师/管理员）
 
 - **成绩修改**：支持个别改分（逐题下拉/输入）和批量修改答案（按钮组切换选项），修改后自动重算全部分数+排名；点击学生行进入逐题得分明细页（班级均分率 + 答题卡放大预览）
 
-- **概况 Tab**：信息卡片（人数/均分/最高/最低/及格率/优秀率/标准差）+ 分数段水平条形图（10 分一段，0 人段自动隐藏，首段红/末段绿）+ 箱型图 + 年级前五/后五 + 进步前五/退步前五
-- **成绩 Tab**：成绩表格含校排/班排/名次变化/偏差值/Z值/百分位，支持排序与搜索
-- **考试分析 Tab**：成绩分布 + 班级对比（下拉选择基准班级，均分差值着色）+ 题目得分率
-- **AI 分析 Tab**：支持 GPT / DeepSeek / Gemini 多服务商，Gemini 使用 Google 原生 SDK 无需 Base URL，账号设置中「AI 服务商」集中管理
+- **概况 Tab**：信息卡片（人数/均分/最高/最低/及格率/优秀率/标准差）+ **难度系数 P / 区分度 D** 指标卡 + 分数段水平条形图（10 分一段，0 人段自动隐藏，首段红/末段绿）+ 箱型图 + 年级前五/后五 + 进步前五/退步前五
+- **成绩 Tab**：成绩表格含校排/班排/名次变化/偏差值/Z值/百分位，支持排序与搜索；大考支持「合并 / 分科」视图切换与班级筛选
+- **题目分析 Tab**：逐题得分率表，**表头可点击排序**（题号/类型/得分率/正确率/平均分/满分/错误率/难度 P/区分度 D），点击行下钻查看该题**每个学生的得分明细**（学号/姓名/班级/得分率/知识点），难度与区分度以彩色档位徽章呈现
+- **班级对比 Tab**：下拉选择基准班级，各班均分差值着色；大考下额外提供逐科班级均分对比（与「题目分析」共存，不互相替代）
+- **总体分析 Tab**：整合成绩分布可视化——直方图（叠加正态曲线）+ Q-Q 图 + 正态性检验（Shapiro-Wilk / KS / AD / 偏度 / 峰度）；普通考试按全卷与各班、大考按总分 / 各科 / 各班切换；样本量 < 30 时给出小样本提示
+- **AI 分析 Tab**：支持 GPT / DeepSeek / Gemini 多服务商，Gemini 使用 Google 原生 SDK 无需 Base URL，账号设置中「AI 服务商」集中管理；**大考同样支持 AI 分析**（按成员考试逐科汇总）；模型读取的成绩工具现已附带难度 P 与区分度 D，用于判断试卷难易与题目区分能力
+- **档位阈值（系统设置）**：管理员在 Home「全局设置」中可配置难度 / 区分度档位（阈值、标签、颜色），前端徽章与后端统计统一读取 `system_settings.analysis_difficulty_bands` / `analysis_discrimination_bands`
 - **赋分引擎**：等比例/线性/自定义表达式三种公式，化学/生物/地理/政治自动赋分
 - **导出系统**：胶囊拖拽排序列，4 个自定义模板槽，A4 竖版超页警告，侧表（年级前 N 名），Excel (.xlsx)
 - **阅卷自动落库**：判分时选择考试自动写入数据库，消除阅后即焚
-- **AI 成绩分析**：多服务商架构（GPT/DeepSeek/Gemini，Gemini 走 Google 原生 SDK），白名单成绩工具生成结构化报告
+- **AI 成绩分析**：多服务商架构（GPT/DeepSeek/Gemini，Gemini 走 Google 原生 SDK），白名单成绩工具生成结构化报告；工具输出已包含难度 P 与区分度 D，大考可由模型按成员考试汇总
 - **原卷上传**（v1.8.0）：答题卡创建后自动引导上传原卷（DOCX/PDF/图片），前端 Canvas 压缩 + 后端 sharp 压缩，最大 50MB
 - **AI 知识点分析**（v1.8.0）：AI 自动分析每道题的知识点，支持多模态直传（Gemini/GPT 看图）和 OCR 增强（视觉模型转写 → 推理模型分析），结果以彩色标签呈现，教师可双击编辑
 - **知识点弱项诊断**（v1.8.0）：成绩分析 AI 可通过知识点维度诊断班级薄弱环节，按得分率排序，"勾股定理得分率 62%" 级别精准定位
@@ -164,6 +169,54 @@
 - **Modal 规范化**：修复 480px 遮罩断链，卡片底部加抓手条与安全区 padding，移动端统一为底部弹出式。
 
 > 详细改动见 [CHANGELOG.md](./readus/CHANGELOG.md)「v1.9.5：移动端 UI/UX 适配」。
+
+---
+
+## 架构与设计体系（v2.0.0）
+
+### 前端架构
+
+- **Vite + React 19 + TypeScript** 单仓多目标构建：`dist/web/`（教师 + 学生 Web 端）与 `dist/scanner/`（Electron 扫描工作台）共用同一组件库与主题；扫描端通过 `data-density="compact"` 获得紧凑密度，不做第二套主题。
+- **路由 = mode 系统**：每个功能 = 一个真实 URL，mode ↔ 路径的单一映射收敛在 `client/modeRoutes.ts`（`MODE_PATH` / `pathToMode`），支持 URL 深链、新标签打开与刷新保持当前页；多端变体与可用 mode 集合见 `src/shared/appVariant.ts` 的 `allowedModes`。
+
+### UI 现状（v2.0.0）
+
+- **Flat 2.0 设计系统已全量落地**：全部页面完成迁移（T1–T8），旧 `styles.css`（6048 行）与 `theme/legacy-bridge.css` 已删除，遗留类归零。
+- **样式事实源** = `src/apps/answer-card/client/theme/app.css`（`@theme` 块 + `@layer base` 最小 reset）+ `theme/tokens.css` + `theme/backdrop.css`（背景图功能）。禁止新建 CSS 文件、禁止硬编码 hex，铁律见 [AGENTS.md](./AGENTS.md)「样式事实源」。
+- **组件库唯一事实源** = `src/apps/answer-card/client/components/ui/v2/`（桶导出，禁止直指实现文件、禁止跨页面互相 import）。
+- **令牌三处同步**：`design/tokens/tokens.css`（设计层事实源）↔ `app.css @theme` ↔ `client/theme.ts`（JS / 图表取色），由 `scripts/sync-tokens.mjs` 同步，手改任一视为漂移事故。
+
+### 架构 / 设计文档
+
+| 文档 | 说明 |
+|------|------|
+| [readus/ARCHITECTURE.md](./readus/ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 |
+| [docs/system_design.md](./docs/system_design.md) | P6 系统设计（含类图 / 时序图 mermaid） |
+| [design/DESIGN-SYSTEM.md](./design/DESIGN-SYSTEM.md) | Flat 2.0「明澈 Clarity」美学规格（令牌架构、组件规格、设计原则） |
+| [design/tokens/tokens.css](./design/tokens/tokens.css) | 主题令牌事实源（L1 原始 / L2 语义 / L3 组件） |
+| [design/demo/demo.html](./design/demo/demo.html) | 交互 Demo（8 视图 × 亮暗双主题），视觉验收基准 |
+| [design/designer-sandbox.html](./design/designer-sandbox.html) | 设计器沙盒 |
+| [design/EXECUTION-PLAN.md](./design/EXECUTION-PLAN.md) | 重构执行计划（T1–T8 任务卡、P0–P5 阶段、防串台规约） |
+
+> 完整版（含新 UI 开发指南与全局风格调整方法）见 [readus/UI-ARCHITECTURE.md](./readus/UI-ARCHITECTURE.md)。
+
+---
+
+## 新 UI 开发指南（落实设计稿）
+
+做新页面 / 新组件时，按下述步骤对齐 Flat 2.0 设计系统：
+
+1. **找蓝本**：先在 [design/demo/demo.html](./design/demo/demo.html) 找到对应视图（登录 / 首页 / 考试管理 / 成绩分析 / 学生成绩 / 扫描工作台 / 设计基础 / 组件），再查 [design/DESIGN-SYSTEM.md](./design/DESIGN-SYSTEM.md) §6 组件规格与 §9 设计原则；设计稿未覆盖处选最保守方案，禁止即兴发挥。
+2. **组件**：只从 `components/ui/v2` 桶**具名 import**（Button / Card / Dialog / Tabs / Table / DataCard / EmptyState / Spinner / Badge / Field / Input / Select / Switch / RadioGroup / StatCard / Chart …），禁止直指实现文件、禁止跨页面互相 import。
+3. **样式**：只用 Tailwind 工具类 + 语义令牌（`bg-card` / `border-border` / `text-primary` / `text-muted-foreground` / `rounded-lg` / `rounded-md` / `tabular-nums`）；**禁止**硬编码 hex、内联 `style={{}}`（动态值须注释说明）、新建 CSS 文件（要扩展主题则改 `design/tokens/tokens.css` + `app.css @theme` 并跑 `scripts/sync-tokens.mjs`）。数字一律 `tabular-nums`，图标只用 lucide-react。
+4. **路由**：新页面按四步接线——
+   - `client/modeRoutes.ts`：`MODE_PATH` 加 mode → 路径映射，并注册组件（`pathToMode` 自动防 redirect 回首页，保证深链 / 刷新保持）；
+   - `src/shared/appVariant.ts`：`allowedModes` 加入新 mode（teacher / teacher-scanner / student 三变体按需）；
+   - `App.tsx`：`railNavItems` 加侧栏项。
+5. **验收**：
+   - `npm run typecheck` + `npm run build:web` + `npm run build:scanner` 全绿；
+   - 铁律 grep：hex 仅允许命中 `tokens.css` / `@theme`；`style={{` 仅允许带注释的动态值；
+   - 视觉：Playwright 亮 / 暗双主题截图对照 [design/demo/demo.html](./design/demo/demo.html) 对应视图（ui-visual-verification）。
 
 ---
 
@@ -602,7 +655,7 @@ Project-X/
 | `GET/POST/PUT/DELETE` | `/api/ai/providers` | AI 服务商配置管理 |
 | `GET` | `/api/db/backup` | 导出全量数据 ZIP（SQLite: VACUUM / MariaDB: mysqldump） |
 | `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |
-| `GET` | `/api/app/health` | 健康检查（含 `db.dialect` + `latencyMs`） |
+| `GET` | `/api/app/health` | 健康检查（含数据库状态与 `capabilities.scannerClientApi`） |
 | `GET/PATCH` | `/api/app/db-config` | 数据库配置读取/修改（管理员） |
 | `POST`            | `/api/scanner/upload/sessions`              | 创建扫描上传会话（API Key + JWT 双鉴权） |
 | `POST`            | `/api/scanner/upload/sessions/:id/pages`   | 上传扫描页（multipart） |

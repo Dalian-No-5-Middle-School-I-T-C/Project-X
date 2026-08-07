@@ -10,7 +10,8 @@ import { optionalPositiveNumber } from "../../apps/answer-card/server/helpers";
 import {
   listReviewBlockCropItems,
   listReviewBlocks,
-  submitReviewCropScores
+  submitReviewCropScores,
+  ReviewValidationError
 } from "../services/ReviewService";
 import { getReviewTrace } from "../services/ReviewService";
 import type { ReviewSubmitScoreInput } from "../../shared/types";
@@ -96,7 +97,15 @@ router.post(
         return;
       }
 
-      const status = typeof req.body?.status === "string" ? req.body.status.trim() : "reviewed";
+      const rawStatus = typeof req.body?.status === "string" ? req.body.status.trim() : "";
+      let status: string | undefined;
+      if (rawStatus === "") {
+        status = undefined; // 未提供 → 服务层回退 "reviewed"（保持向后兼容）
+      } else if (rawStatus === "draft" || rawStatus === "submitted" || rawStatus === "reviewed" || rawStatus === "disputed") {
+        status = rawStatus;
+      } else {
+        throw new ReviewValidationError(`非法的 status 值: ${rawStatus}`);
+      }
       const blockTotalScore =
         typeof req.body?.blockTotalScore === "number" ? req.body.blockTotalScore : undefined;
       const result = await submitReviewCropScores({
@@ -105,10 +114,15 @@ router.post(
         scores,
         status,
         blockTotalScore,
-        userId: req.user!.id
+        userId: req.user!.id,
+        isAdmin: (req as any).user?.role_id === 1
       });
       res.json(result);
     } catch (error) {
+      if (error instanceof ReviewValidationError) {
+        res.status(422).json({ message: error.message });
+        return;
+      }
       if (error instanceof Error && /不存在|未关联/.test(error.message)) {
         res.status(404).json({ message: error.message });
         return;

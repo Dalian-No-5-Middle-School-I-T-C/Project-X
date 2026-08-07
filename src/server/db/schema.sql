@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
     name             TEXT NOT NULL,           -- 真实姓名
     role_id          INTEGER NOT NULL REFERENCES roles(id),
     student_number   TEXT UNIQUE,            -- 学号/考号（仅学生有）
+    track            TEXT,                    -- 文理分科：'arts' 文科 / 'science' 理科（仅学生，Issue #177）
     subject          TEXT,                    -- 任教科目（仅教师）
     initial_password TEXT,                    -- 初始明文密码（导出账密用）
     score_display_mode TEXT DEFAULT 'zscore',  -- deviation / zscore / percentile (v1.4.0)
@@ -48,6 +49,7 @@ CREATE TABLE IF NOT EXISTS users (
     highlight_missing_paper INTEGER DEFAULT 1, -- v1.8.0: 侧边栏高亮未上传原卷的考试
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
     show_tab_bar     INTEGER DEFAULT 0,      -- v1.9.0: 0=隐藏底部导航 1=显示
+    is_demo          INTEGER NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示数据（clearDemoData 仅按此标记清理，避免误删真实账号）
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -69,6 +71,7 @@ CREATE TABLE IF NOT EXISTS grades (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     name         TEXT NOT NULL,              -- 高一 / 高二 / 高三
     sort_order   INTEGER DEFAULT 0,         -- 排序
+    is_demo      INTEGER NOT NULL DEFAULT 0, -- v1.9.6: 1=演示年级
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -78,6 +81,7 @@ CREATE TABLE IF NOT EXISTS classes (
     grade_id     INTEGER NOT NULL REFERENCES grades(id) ON DELETE CASCADE,
     name         TEXT NOT NULL,              -- 1班 / 2班
     sort_order   INTEGER DEFAULT 0,
+    is_demo      INTEGER NOT NULL DEFAULT 0, -- v1.9.6: 1=演示班级
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -123,6 +127,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     extra_notes      TEXT,                                 -- v1.8.0: 教师特别描述
     knowledge_points_text TEXT,                            -- v1.8.0: 知识点纯文本备份
     created_by       INTEGER REFERENCES users(id),
+    is_demo          INTEGER NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示答题卡（clearDemoData 仅按此标记清理）
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -212,6 +217,7 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     line_grid_json   TEXT,
     essay_grid_json  TEXT,
     score_grid_json  TEXT,
+    annotation       TEXT,
     sort_order       INTEGER DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 );
@@ -248,6 +254,7 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
     point_text      TEXT NOT NULL,
     category        TEXT,
     sort_order      INTEGER DEFAULT 0,
+    track_type      TEXT NOT NULL DEFAULT 'common', -- 文理分科科目归属：common 共同 / arts 文科 / science 理科（Issue #177）
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(card_id, question_number, point_text)
 );
@@ -428,6 +435,9 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     final_score      REAL,
     final_score_by   INTEGER REFERENCES users(id),
     score_breakdown  TEXT,
+    claimed_by       INTEGER REFERENCES users(id),
+    claimed_at       DATETIME,
+    claim_count      INTEGER NOT NULL DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(source_type, source_record_id, block_id, page_number, segment_index)
 );
@@ -528,6 +538,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     score           REAL,
     max_score       REAL,
     score_type      TEXT,                    -- objective / subjective
+    selected_options TEXT,                   -- v29: 客观题学生所选选项 JSON 数组，如 ["A","C"]
     manually_modified INTEGER DEFAULT 0,       -- v1.4.1: 手动改分标记
     modified_by     INTEGER REFERENCES users(id), -- v1.4.1
     modified_at     DATETIME,                   -- v1.4.1
@@ -672,8 +683,9 @@ CREATE INDEX IF NOT EXISTS idx_objective_recognitions_expires ON objective_recog
 CREATE INDEX IF NOT EXISTS idx_objective_grades_record ON objective_grades(record_id);
 CREATE INDEX IF NOT EXISTS idx_subjective_grades_record ON subjective_grades(record_id);
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_exam_student ON answer_block_crops(exam_id, student_id);
-CREATE INDEX IF NOT EXISTS idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
-CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
+  CREATE INDEX IF NOT EXISTS idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
+  CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
+  CREATE INDEX IF NOT EXISTS idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by);
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_student ON student_scores(student_id);
 -- 性能：成绩分析（排名/统计/概览）按 exam_id 过滤并按 total_score / assigned_score 排序

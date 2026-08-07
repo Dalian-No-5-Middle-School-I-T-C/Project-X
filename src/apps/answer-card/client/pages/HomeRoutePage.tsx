@@ -1,5 +1,4 @@
 import { useWorkspace } from "../WorkspaceContext";
-import { MODE_PATH } from "../modeRoutes";
 import { HomePage } from "../components/HomePage";
 import type { AppMode } from "../WorkspaceContext";
 
@@ -11,19 +10,14 @@ export function HomeRoutePage() {
   const { user, switchMode, setSelectedExamId } = useWorkspace();
 
   return (
-    <div className="main-grid home-grid">
-      <section style={{ gridColumn: "1 / -1", padding: 0 }}>
+    <div className="grid w-full gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <section className="col-span-full p-0">
         <HomePage
           userName={user?.name ?? ""}
           userRole={user?.role_name ?? ""}
           teacherRole={user?.teacher_role ?? null}
           onNavigate={(m) => switchMode(m as AppMode)}
-          onOpenNewTab={(m) => {
-            // 经确认：首页任意模块卡片均在新标签打开（而非只对「答题卡设计」），
-            // 配合网页化深链 / 刷新保持当前页的设计。
-            const path = MODE_PATH[m as AppMode] ?? "/design";
-            window.open(window.location.origin + path, "_blank", "noopener");
-          }}
+          onOpenNewTab={(m) => switchMode(m as AppMode)}
           onEnterExam={(id) => { switchMode("exam-manage"); setSelectedExamId(id); }}
         />
       </section>

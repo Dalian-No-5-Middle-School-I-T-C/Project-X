@@ -1,6 +1,27 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { LineChart } from "lucide-react";
 import type { ScoreTrendPoint } from "../../../../shared/types";
 import { fetchJson } from "../auth/api";
+import { cn } from "../lib/utils";
+import { formatScore } from "../util/format";
+import {
+  EmptyState,
+  ErrorState,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Skeleton,
+} from "./ui/v2";
+
+/**
+ * 成绩变化曲线（手绘 SVG 折线图）。
+ *
+ * 迁移说明：保留原取数逻辑与 SVG 绘制，`trend-*` 旧工具类换成 Tailwind 语义类，
+ * 年级线用 `chart-1`、班级线用 `chart-3`（数据系列色，来自 theme.ts 令牌），
+ * 加载/失败/空三态改用 v2 `Skeleton`/`ErrorState`/`EmptyState`。
+ */
 
 interface ClassOption {
   id: number;
@@ -14,15 +35,24 @@ interface Props {
   initialClassId?: string;
 }
 
-function formatScore(value: number): string {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
-}
+/** 班级下拉里「年级整体」的哨兵值（Radix Select 不接受空字符串 value） */
+const ALL_CLASSES = "__all__";
 
 function buildPath(points: Array<{ x: number; y: number }>): string {
-  return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`).join(" ");
+  return points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${point.x} ${point.y}`)
+    .join(" ");
 }
 
-export function AnalysisTrend({ exams, initialSubject, initialClassId }: Props) {
+function roundTick(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+export function AnalysisTrend({
+  exams,
+  initialSubject,
+  initialClassId,
+}: Props) {
   const subjects = useMemo(() => {
     const seen = new Set<string>();
     const result: string[] = [];
@@ -42,11 +72,14 @@ export function AnalysisTrend({ exams, initialSubject, initialClassId }: Props) 
   const [trend, setTrend] = useState<ScoreTrendPoint[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
-    if (initialSubject && subjects.includes(initialSubject)) setSubject(initialSubject);
+    if (initialSubject && subjects.includes(initialSubject))
+      setSubject(initialSubject);
     else if (!subject && subjects.length > 0) setSubject(subjects[0]);
-    if (subject && subjects.length > 0 && !subjects.includes(subject)) setSubject(subjects[0]);
+    if (subject && subjects.length > 0 && !subjects.includes(subject))
+      setSubject(subjects[0]);
   }, [initialSubject, subject, subjects]);
 
   useEffect(() => {
@@ -77,7 +110,9 @@ export function AnalysisTrend({ exams, initialSubject, initialClassId }: Props) 
       .catch((err) => {
         if (!cancelled) {
           setTrend([]);
-          setError(err instanceof Error ? err.message : "加载成绩变化曲线失败");
+          setError(
+            err instanceof Error ? err.message : "加载成绩变化曲线失败",
+          );
         }
       })
       .finally(() => {
@@ -87,7 +122,9 @@ export function AnalysisTrend({ exams, initialSubject, initialClassId }: Props) 
     return () => {
       cancelled = true;
     };
-  }, [subject, classId]);
+  }, [subject, classId, reloadKey]);
+
+  const retry = useCallback(() => setReloadKey((key) => key + 1), []);
 
   const chart = useMemo(() => {
     const width = 720;
@@ -98,89 +135,244 @@ export function AnalysisTrend({ exams, initialSubject, initialClassId }: Props) 
     const bottom = 206;
     const values = trend.flatMap((point) => [
       point.gradeAvg,
-      ...(point.classAvg != null ? [point.classAvg] : [])
+      ...(point.classAvg != null ? [point.classAvg] : []),
     ]);
     const rawMin = values.length ? Math.min(...values) : 0;
     const rawMax = values.length ? Math.max(...values) : 100;
     const span = Math.max(rawMax - rawMin, 1);
     const min = Math.max(0, rawMin - span * 0.12);
     const max = rawMax + span * 0.12;
-    const xFor = (index: number) => trend.length <= 1 ? (left + right) / 2 : left + (index / (trend.length - 1)) * (right - left);
-    const yFor = (value: number) => bottom - ((value - min) / Math.max(max - min, 1)) * (bottom - top);
-    const gradePoints = trend.map((point, index) => ({ x: xFor(index), y: yFor(point.gradeAvg), value: point.gradeAvg, label: point.examName }));
+    const xFor = (index: number) =>
+      trend.length <= 1
+        ? (left + right) / 2
+        : left + (index / (trend.length - 1)) * (right - left);
+    const yFor = (value: number) =>
+      bottom - ((value - min) / Math.max(max - min, 1)) * (bottom - top);
+    const gradePoints = trend.map((point, index) => ({
+      x: xFor(index),
+      y: yFor(point.gradeAvg),
+      value: point.gradeAvg,
+      label: point.examName,
+    }));
     const classPoints = trend
-      .map((point, index) => point.classAvg == null ? null : ({ x: xFor(index), y: yFor(point.classAvg), value: point.classAvg, label: point.examName }))
-      .filter((point): point is { x: number; y: number; value: number; label: string } => point !== null);
+      .map((point, index) =>
+        point.classAvg == null
+          ? null
+          : {
+              x: xFor(index),
+              y: yFor(point.classAvg),
+              value: point.classAvg,
+              label: point.examName,
+            },
+      )
+      .filter(
+        (
+          point,
+        ): point is { x: number; y: number; value: number; label: string } =>
+          point !== null,
+      );
     const ticks = [max, min + (max - min) / 2, min].map(roundTick);
-    return { width, height, left, right, top, bottom, gradePoints, classPoints, ticks, yFor };
+    return {
+      width,
+      height,
+      left,
+      right,
+      top,
+      bottom,
+      gradePoints,
+      classPoints,
+      ticks,
+      yFor,
+    };
   }, [trend]);
 
   if (subjects.length === 0) {
     return (
-      <div className="analysis-section">
-        <div className="panel-title">成绩变化曲线</div>
-        <div className="empty-text">暂无带科目的考试数据。</div>
-      </div>
+      <section className="flex flex-col gap-3">
+        <h3 className="m-0 text-base font-semibold text-foreground">
+          成绩变化曲线
+        </h3>
+        <div className="rounded-lg border border-border-subtle bg-card">
+          <EmptyState
+            size="sm"
+            icon={<LineChart />}
+            title="暂无带科目的考试数据"
+            description="给考试补充科目后，这里会展示历次考试的均分走势。"
+          />
+        </div>
+      </section>
     );
   }
 
   return (
-    <div className="analysis-section">
-      <div className="panel-title">成绩变化曲线</div>
-      <div className="trend-panel">
-        <div className="trend-controls">
-          <label>
-            <span>科目</span>
-            <select value={subject} onChange={(event) => setSubject(event.target.value)}>
-              {subjects.map((item) => (
-                <option key={item} value={item}>{item}</option>
-              ))}
-            </select>
+    <section className="flex flex-col gap-3">
+      <h3 className="m-0 text-base font-semibold text-foreground">
+        成绩变化曲线
+      </h3>
+      <div className="flex flex-col rounded-lg border border-border-subtle bg-card p-4">
+        <div className="mb-3 flex flex-wrap gap-3">
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="shrink-0">科目</span>
+            <Select value={subject} onValueChange={setSubject}>
+              <SelectTrigger className="h-control-sm w-40 text-sm">
+                <SelectValue placeholder="选择科目" />
+              </SelectTrigger>
+              <SelectContent>
+                {subjects.map((item) => (
+                  <SelectItem key={item} value={item}>
+                    {item}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </label>
-          <label>
-            <span>班级</span>
-            <select value={classId} onChange={(event) => setClassId(event.target.value)}>
-              <option value="">年级整体</option>
-              <option value="0">未知班级</option>
-              {classes.map((item) => (
-                <option key={item.id} value={String(item.id)}>
-                  {item.grade_name ? `${item.grade_name} / ${item.name}` : item.name}
-                </option>
-              ))}
-            </select>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="shrink-0">班级</span>
+            <Select
+              value={classId === "" ? ALL_CLASSES : classId}
+              onValueChange={(value) =>
+                setClassId(value === ALL_CLASSES ? "" : value)
+              }
+            >
+              <SelectTrigger className="h-control-sm w-48 text-sm">
+                <SelectValue placeholder="年级整体" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_CLASSES}>年级整体</SelectItem>
+                <SelectItem value="0">未知班级</SelectItem>
+                {classes.map((item) => (
+                  <SelectItem key={item.id} value={String(item.id)}>
+                    {item.grade_name
+                      ? `${item.grade_name} / ${item.name}`
+                      : item.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </label>
         </div>
 
-        {busy && <div className="empty-text">正在加载成绩变化曲线...</div>}
-        {error && !busy && <div className="empty-text">{error}</div>}
-        {!busy && !error && trend.length === 0 && <div className="empty-text">当前科目暂无已阅卷成绩。</div>}
+        {busy && (
+          <div className="flex flex-col gap-3" aria-busy="true">
+            <Skeleton className="h-[260px] w-full" />
+            <Skeleton className="h-4 w-40" />
+          </div>
+        )}
+
+        {!busy && error && (
+          <ErrorState
+            size="sm"
+            title="加载成绩变化曲线失败"
+            description={error}
+            onRetry={retry}
+          />
+        )}
+
+        {!busy && !error && trend.length === 0 && (
+          <EmptyState
+            size="sm"
+            icon={<LineChart />}
+            title="当前科目暂无已阅卷成绩"
+            description="完成阅卷并发布成绩后，这里会显示历次均分走势。"
+          />
+        )}
+
         {!busy && !error && trend.length > 0 && (
           <>
-            <svg viewBox={`0 0 ${chart.width} ${chart.height}`} className="trend-chart" role="img" aria-label="成绩变化曲线">
-              <line x1={chart.left} y1={chart.top} x2={chart.left} y2={chart.bottom} className="trend-axis" />
-              <line x1={chart.left} y1={chart.bottom} x2={chart.right} y2={chart.bottom} className="trend-axis" />
+            <svg
+              viewBox={`0 0 ${chart.width} ${chart.height}`}
+              className="block h-auto w-full max-w-[760px]"
+              role="img"
+              aria-label="成绩变化曲线"
+            >
+              <line
+                x1={chart.left}
+                y1={chart.top}
+                x2={chart.left}
+                y2={chart.bottom}
+                className="stroke-border-strong"
+                strokeWidth={1.6}
+              />
+              <line
+                x1={chart.left}
+                y1={chart.bottom}
+                x2={chart.right}
+                y2={chart.bottom}
+                className="stroke-border-strong"
+                strokeWidth={1.6}
+              />
               {chart.ticks.map((tick) => (
                 <g key={tick}>
-                  <line x1={chart.left} y1={chart.yFor(tick)} x2={chart.right} y2={chart.yFor(tick)} className="trend-grid-line" />
-                  <text x={chart.left - 10} y={chart.yFor(tick) + 4} textAnchor="end" className="trend-axis-label">
+                  <line
+                    x1={chart.left}
+                    y1={chart.yFor(tick)}
+                    x2={chart.right}
+                    y2={chart.yFor(tick)}
+                    className="stroke-border-subtle"
+                    strokeWidth={1}
+                  />
+                  <text
+                    x={chart.left - 10}
+                    y={chart.yFor(tick) + 4}
+                    textAnchor="end"
+                    className="fill-muted-foreground text-xs tabular-nums"
+                  >
                     {formatScore(tick)}
                   </text>
                 </g>
               ))}
-              {chart.gradePoints.length > 1 && <path d={buildPath(chart.gradePoints)} className="trend-line trend-line-grade" />}
-              {chart.classPoints.length > 1 && <path d={buildPath(chart.classPoints)} className="trend-line trend-line-class" />}
+              {chart.gradePoints.length > 1 && (
+                <path
+                  d={buildPath(chart.gradePoints)}
+                  className="fill-none stroke-chart-1"
+                  strokeWidth={2.4}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              )}
+              {chart.classPoints.length > 1 && (
+                <path
+                  d={buildPath(chart.classPoints)}
+                  className="fill-none stroke-chart-3"
+                  strokeWidth={2.4}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              )}
               {chart.gradePoints.map((point) => (
                 <g key={`grade-${point.label}`}>
-                  <circle cx={point.x} cy={point.y} r={5} className="trend-dot trend-dot-grade" />
-                  <text x={point.x} y={point.y - 10} textAnchor="middle" className="trend-point-label">
+                  <circle
+                    cx={point.x}
+                    cy={point.y}
+                    r={5}
+                    className="fill-chart-1 stroke-card"
+                    strokeWidth={2}
+                  />
+                  <text
+                    x={point.x}
+                    y={point.y - 10}
+                    textAnchor="middle"
+                    className="fill-chart-1 text-xs font-bold tabular-nums"
+                  >
                     {formatScore(point.value)}
                   </text>
                 </g>
               ))}
               {chart.classPoints.map((point) => (
                 <g key={`class-${point.label}`}>
-                  <circle cx={point.x} cy={point.y} r={5} className="trend-dot trend-dot-class" />
-                  <text x={point.x} y={point.y + 18} textAnchor="middle" className="trend-point-label trend-point-label-class">
+                  <circle
+                    cx={point.x}
+                    cy={point.y}
+                    r={5}
+                    className="fill-chart-3 stroke-card"
+                    strokeWidth={2}
+                  />
+                  <text
+                    x={point.x}
+                    y={point.y + 18}
+                    textAnchor="middle"
+                    className="fill-chart-3 text-xs font-bold tabular-nums"
+                  >
                     {formatScore(point.value)}
                   </text>
                 </g>
@@ -188,23 +380,39 @@ export function AnalysisTrend({ exams, initialSubject, initialClassId }: Props) 
               {trend.map((point, index) => {
                 const x = chart.gradePoints[index]?.x ?? chart.left;
                 return (
-                  <text key={point.examId} x={x} y={238} textAnchor="middle" className="trend-exam-label">
-                    {point.examName.length > 8 ? `${point.examName.slice(0, 8)}...` : point.examName}
+                  <text
+                    key={point.examId}
+                    x={x}
+                    y={238}
+                    textAnchor="middle"
+                    className="fill-muted-foreground text-[11px]"
+                  >
+                    {point.examName.length > 8
+                      ? `${point.examName.slice(0, 8)}...`
+                      : point.examName}
                   </text>
                 );
               })}
             </svg>
-            <div className="trend-legend">
-              <span><i className="trend-legend-grade" />年级均分</span>
-              {classId && <span><i className="trend-legend-class" />班级均分</span>}
+            <div
+              className={cn(
+                "mt-2 flex items-center gap-4 text-xs text-muted-foreground",
+              )}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <i className="inline-block h-[3px] w-4.5 rounded-full bg-chart-1" />
+                年级均分
+              </span>
+              {classId && (
+                <span className="inline-flex items-center gap-1.5">
+                  <i className="inline-block h-[3px] w-4.5 rounded-full bg-chart-3" />
+                  班级均分
+                </span>
+              )}
             </div>
           </>
         )}
       </div>
-    </div>
+    </section>
   );
-}
-
-function roundTick(value: number): number {
-  return Math.round(value * 10) / 10;
 }

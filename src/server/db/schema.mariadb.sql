@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
     name             VARCHAR(100) NOT NULL,
     role_id          INT NOT NULL,
     student_number   VARCHAR(50) UNIQUE,
+    track            VARCHAR(20),                 -- 文理分科：arts 文科 / science 理科（仅学生，Issue #177）
     subject          VARCHAR(50),
     initial_password VARCHAR(255),
     score_display_mode VARCHAR(20) DEFAULT 'zscore',
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS users (
     highlight_missing_paper TINYINT DEFAULT 1,
     is_active        TINYINT DEFAULT 1,
     show_tab_bar     TINYINT DEFAULT 0,             -- v1.9.0: 底部导航栏开关
+    is_demo          TINYINT NOT NULL DEFAULT 0,     -- v1.9.6: 1=演示数据（clearDemoData 仅按此标记清理）
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -72,6 +74,7 @@ CREATE TABLE IF NOT EXISTS grades (
     id           INT AUTO_INCREMENT PRIMARY KEY,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -80,6 +83,7 @@ CREATE TABLE IF NOT EXISTS classes (
     grade_id     INT NOT NULL,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (grade_id) REFERENCES grades(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -145,6 +149,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     extra_notes      TEXT,
     knowledge_points_text TEXT,
     created_by       INT,
+    is_demo          TINYINT NOT NULL DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(id)
@@ -235,6 +240,7 @@ CREATE TABLE IF NOT EXISTS subjective_questions (
     line_grid_json   TEXT,
     essay_grid_json  TEXT,
     score_grid_json  TEXT,
+    annotation       TEXT,
     sort_order       INT DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (block_id) REFERENCES subjective_blocks(id) ON DELETE CASCADE
@@ -272,6 +278,7 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
     point_text      TEXT NOT NULL,
     category        VARCHAR(100),
     sort_order      INT DEFAULT 0,
+    track_type      VARCHAR(20) NOT NULL DEFAULT 'common', -- 文理分科科目归属：common 共同 / arts 文科 / science 理科（Issue #177）
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_card_question_point (card_id, question_number, point_text(255)),
     FOREIGN KEY (card_id) REFERENCES answer_cards(id) ON DELETE CASCADE
@@ -460,12 +467,16 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     final_score      DOUBLE,                        -- v1.9.0: 最终分
     final_score_by   INT,                           -- v1.9.0: 最终分判定人
     score_breakdown  LONGTEXT,                      -- v1.9.0: 各轮评分明细 JSON
+    claimed_by       INT,
+    claimed_at       DATETIME,
+    claim_count      INT NOT NULL DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uniq_answer_block_crop_source (source_type, source_record_id, block_id, page_number, segment_index),
     FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
     FOREIGN KEY (student_id) REFERENCES users(id),
     FOREIGN KEY (reviewer_id)   REFERENCES users(id),
-    FOREIGN KEY (final_score_by) REFERENCES users(id)
+    FOREIGN KEY (final_score_by) REFERENCES users(id),
+    FOREIGN KEY (claimed_by)    REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS twain_scan_sessions (
@@ -560,6 +571,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     score           DOUBLE,
     max_score       DOUBLE,
     score_type      VARCHAR(20),
+    selected_options TEXT,
     manually_modified TINYINT DEFAULT 0,
     modified_by     INT,
     modified_at     DATETIME,
@@ -735,6 +747,7 @@ CREATE INDEX IF NOT EXISTS idx_subjective_grades_record ON subjective_grades(rec
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_exam_student ON answer_block_crops(exam_id, student_id);
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
+CREATE INDEX IF NOT EXISTS idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by);
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_student ON student_scores(student_id);
 CREATE INDEX IF NOT EXISTS idx_question_scores_exam_student ON question_scores(exam_id, student_id);

@@ -261,6 +261,7 @@ npm run server
 |------|------|------|
 | `blanks_label_style` | TEXT | `none` / `arabic_parentheses` / `roman_parentheses` |
 | `blanks_items_json` | TEXT | JSON：每个空的标签、宽度、高度 |
+| `annotation` | TEXT | 填空题文字注释/题干说明（v1.10.1 起） |
 
 ### 模块三：考试与扫描
 
@@ -860,7 +861,19 @@ src/types/
 | `value` | TEXT | 设置值 |
 | `updated_at` | TEXT | 最近更新时间 |
 
-**当前键**：`require_original_paper`（强制上传原卷，默认 `1`）、`highlight_missing_paper`（侧边栏高亮未上传原卷，默认 `1`）、`ladder_enabled`（最近发展区折线，默认 `0`）。前端通过 `GET /api/system-settings/public` 读取原卷两键判断是否强制上传/高亮。
+**当前键**：`require_original_paper`（强制上传原卷，默认 `1`）、`highlight_missing_paper`（侧边栏高亮未上传原卷，默认 `1`）、`ladder_enabled`（最近发展区折线，默认 `0`）、`analysis_difficulty_bands`（成绩分析难度档位 JSON，v1.10.0 新增）、`analysis_discrimination_bands`（成绩分析区分度档位 JSON，v1.10.0 新增）。前端通过 `GET /api/system-settings/public` 读取原卷两键判断是否强制上传/高亮；难度 / 区分度档位由管理员在 Home「全局设置」配置，供前端徽章与后端统计统一读取。
+
+档位 JSON 结构示例：
+
+```json
+[
+  { "max": 0.4,  "label": "难",   "color": "#dc2626" },
+  { "max": 0.7,  "label": "中",   "color": "#f59e0b" },
+  { "max": 1.01, "label": "易",   "color": "#16a34a" }
+]
+```
+
+键按 `max` 升序匹配第一个 `value <= max` 的档位（区分度同理，`max` 表示「达到该区分度」的阈值）。
 
 **成绩分析关联查询**：
 ```sql

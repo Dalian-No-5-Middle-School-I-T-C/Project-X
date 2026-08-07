@@ -6,18 +6,76 @@
  * Dependencies: helpers, middleware, llm-client, repos, db.
  */
 import express from "express";
-import { getMysqlDb } from "../../../../server/db";
+import { getMysqlDb, buildUpsertSQL } from "../../../../server/db";
 import { AnalysisRepository } from "../../../../server/repositories/AnalysisRepository";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
 import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../middleware";
+import { requirePermission, authMiddleware } from "../../../../server/middleware/auth";
+import { PERMISSIONS } from "../../../../server/auth/permissions";
+import {
+  getAnalysisThresholds, validateThresholdsInput, invalidateAnalysisThresholdsCache,
+  ANALYSIS_SETTING_KEYS, DEFAULT_ANALYSIS_THRESHOLDS
+} from "../../../../server/services/analysisConfig";
 import { maskApiKey } from "../../../../server/utils/maskApiKey";
 import { fetchLlmClient } from "../llm-client";
 import { CreateExamGroupSchema, validateBody } from "../validation";
 import type { CrossExamTotalRequest } from "../../../../shared/types";
 
 const router = express.Router();
+
+// ── 阈值配置（路线图 P0-1）─────────────────────────────
+// GET: 任何已登录用户可读（分析页需展示当前阈值）；PUT: 限管理员。
+
+router.get("/config/thresholds", authMiddleware, async (_req, res, next) => {
+  try {
+    const t = await getAnalysisThresholds();
+    res.json(t);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/config/thresholds", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async (req, res, next) => {
+  try {
+    const result = validateThresholdsInput(req.body);
+    if (!result.ok) { res.status(400).json({ message: result.message }); return; }
+    const t = result.value;
+    const db = getMysqlDb();
+    const upsertSQL = buildUpsertSQL(
+      db.dialect, "system_settings",
+      ["key", "value", "updated_at"], ["key"], ["value", "updated_at"]
+    );
+    const now = new Date().toISOString();
+    await db.transaction(async (tx) => {
+      await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.passRate, String(t.passRate), now);
+      await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.excellentRate, String(t.excellentRate), now);
+      await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.segmentSize, String(t.segmentSize), now);
+      await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.errorTiers, t.errorTiers.join(","), now);
+    });
+    invalidateAnalysisThresholdsCache();
+    res.json({ ok: true, data: await getAnalysisThresholds() });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 阈值默认值常量（供前端首屏占位）
+router.get("/config/thresholds/defaults", authMiddleware, async (_req, res) => {
+  res.json({ ...DEFAULT_ANALYSIS_THRESHOLDS, errorTiers: [...DEFAULT_ANALYSIS_THRESHOLDS.errorTiers] });
+});
+
+// 难度/区分度档位（系统设置可配，缺省回退内置默认）
+router.get("/config/bands", authMiddleware, async (_req, res, next) => {
+  try {
+    const { getDifficultyDiscriminationBands } = await import("../../../../server/services/analysisConfig");
+    const bands = await getDifficultyDiscriminationBands();
+    res.json(bands);
+  } catch (error) {
+    next(error);
+  }
+});
 
 type AiProviderRow = {
   id: number;
@@ -260,6 +318,93 @@ router.get("/exams/:examId/questions", requireExamAccess, async (req, res, next)
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
     const questions = await analysisRepo.getQuestionAnalysis(Number(req.params.examId), classId);
     res.json(questions);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 逐题下钻：全班每人得分（难度/区分度增强）─────────────
+router.get("/exams/:examId/question-students", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    // Bugfix: 严格校验 examId/questionNumber/classId，统一回正为有限正整数；无效值直接 400，
+    // 避免后端异常或空结果（此前仅校验 questionNumber）。
+    const examId = Number(req.params.examId);
+    if (!Number.isInteger(examId) || examId <= 0) {
+      res.status(400).json({ message: "examId 必须是正整数" });
+      return;
+    }
+    const questionNumber = req.query.questionNumber ? Number(req.query.questionNumber) : undefined;
+    if (questionNumber == null || !Number.isFinite(questionNumber)) {
+      res.status(400).json({ message: "缺少 questionNumber 参数" });
+      return;
+    }
+    const classId = req.query.classId ? Number(req.query.classId) : undefined;
+    if (classId !== undefined && (!Number.isInteger(classId) || classId < 0)) {
+      res.status(400).json({ message: "classId 必须是 ≥ 0 的整数（0=无班级）" });
+      return;
+    }
+    const students = await analysisRepo.getQuestionStudentScores(examId, questionNumber, classId);
+    res.json(students);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 总体分析：单科/各班分布 ─────────────────────────
+router.get("/exams/:examId/distribution", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    const mode = (req.query.mode as string) === "class" ? "class" : "subject";
+    const dist = await analysisRepo.getExamDistribution(Number(req.params.examId), mode);
+    res.json(dist);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 考试整体难度/区分度指标 ─────────────────────────
+router.get("/exams/:examId/metrics", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    const classId = req.query.classId ? Number(req.query.classId) : undefined;
+    const metrics = await analysisRepo.getExamMetrics(Number(req.params.examId), classId);
+    res.json(metrics);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── B2: 逐题选项分析（v29）──────────────────────────
+router.get("/exams/:examId/option-analysis", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    const classId = req.query.classId ? Number(req.query.classId) : undefined;
+    const data = await analysisRepo.getOptionAnalysis(Number(req.params.examId), classId);
+    res.json(data);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── B3: 跨班对比（v29）─────────────────────────────
+router.get("/exams/:examId/class-comparison", requireExamAccess, async (req, res, next) => {
+  try {
+    const raw = typeof req.query.classIds === "string" ? req.query.classIds : "";
+    let classIds = raw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+    const allClasses = req.query.all === "1" || req.query.all === "true";
+    const analysisRepo = new AnalysisRepository();
+    if (allClasses) {
+      const examClasses = await analysisRepo.getExamClasses(Number(req.params.examId));
+      classIds = examClasses.map((cls) => cls.classId);
+    }
+    if (classIds.length < 2 || (!allClasses && classIds.length > 30)) {
+      res.status(400).json({ message: "请选择 2-30 个班级（或使用 all=1 对比全部班级）" });
+      return;
+    }
+    const includeOptions = req.query.includeOptions === "1" || req.query.includeOptions === "true";
+    const data = await analysisRepo.getClassComparison(Number(req.params.examId), classIds, includeOptions);
+    res.json(data);
   } catch (error) {
     next(error);
   }

@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS users (
     name             VARCHAR(100) NOT NULL,
     role_id          INT NOT NULL,
     student_number   VARCHAR(50) UNIQUE,
+    track            VARCHAR(20),                 -- 文理分科：arts 文科 / science 理科（仅学生，Issue #177）
     subject          VARCHAR(50),
     initial_password VARCHAR(255),
     score_display_mode VARCHAR(20) DEFAULT 'zscore',
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    is_demo          TINYINT NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示数据
     FOREIGN KEY (role_id) REFERENCES roles(id)
 ) ENGINE=InnoDB;
 
@@ -57,6 +59,7 @@ CREATE TABLE IF NOT EXISTS grades (
     id           INT AUTO_INCREMENT PRIMARY KEY,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
@@ -65,6 +68,7 @@ CREATE TABLE IF NOT EXISTS classes (
     grade_id     INT NOT NULL,
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
+    is_demo      TINYINT NOT NULL DEFAULT 0,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (grade_id) REFERENCES grades(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
@@ -126,6 +130,7 @@ CREATE TABLE IF NOT EXISTS answer_cards (
     extra_notes      TEXT,                               -- v1.8.0
     knowledge_points_text TEXT,                            -- v1.8.0
     created_by       INT,
+    is_demo          TINYINT NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示答题卡
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (created_by) REFERENCES users(id)
@@ -253,6 +258,7 @@ CREATE TABLE IF NOT EXISTS knowledge_points (
     point_text      VARCHAR(50) NOT NULL,
     category        VARCHAR(50),
     sort_order      INT DEFAULT 0,
+    track_type      VARCHAR(20) NOT NULL DEFAULT 'common', -- 文理分科科目归属：common 共同 / arts 文科 / science 理科（Issue #177）
     created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_card_question_point (card_id, question_number, point_text),
     FOREIGN KEY (card_id) REFERENCES answer_cards(id) ON DELETE CASCADE
@@ -433,10 +439,14 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     height_px        INT NOT NULL,
     dpi              INT NOT NULL,
     status           VARCHAR(32) DEFAULT 'ready',
+    claimed_by       INT,
+    claimed_at       DATETIME,
+    claim_count      INT NOT NULL DEFAULT 0,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uniq_answer_block_crop_source (source_type, source_record_id, block_id, page_number, segment_index),
     FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
-    FOREIGN KEY (student_id) REFERENCES users(id)
+    FOREIGN KEY (student_id) REFERENCES users(id),
+    FOREIGN KEY (claimed_by) REFERENCES users(id)
 ) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS student_scores (
@@ -469,6 +479,7 @@ CREATE TABLE IF NOT EXISTS question_scores (
     score           DOUBLE,
     max_score       DOUBLE,
     score_type      VARCHAR(20),
+    selected_options TEXT,
     manually_modified TINYINT DEFAULT 0,
     modified_by     INT,
     modified_at     DATETIME,
@@ -560,6 +571,7 @@ CREATE INDEX idx_subjective_grades_record ON subjective_grades(record_id);
 CREATE INDEX idx_answer_block_crops_exam_student ON answer_block_crops(exam_id, student_id);
 CREATE INDEX idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
 CREATE INDEX idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
+CREATE INDEX idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by);
 CREATE INDEX idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX idx_student_scores_student ON student_scores(student_id);
 CREATE INDEX idx_question_scores_exam_student ON question_scores(exam_id, student_id);

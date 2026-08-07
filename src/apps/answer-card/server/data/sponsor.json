@@ -1,8 +1,9 @@
 {
   "title": "支持 Project-X",
-  "description": "项目持续维护离不开社区支持，感谢您的信任。",
+  "description": "使用「爱发电」扫码支持 Project-X，项目持续维护离不开您的信任。",
   "channels": [
-    { "id": "wechat", "name": "微信", "qrFile": null, "enabled": true },
-    { "id": "alipay", "name": "支付宝", "qrFile": null, "enabled": true }
+    { "id": "afdian", "name": "爱发电", "qrFile": "afdian.jpg", "enabled": true },
+    { "id": "wechat", "name": "微信", "qrFile": null, "enabled": false },
+    { "id": "alipay", "name": "支付宝", "qrFile": null, "enabled": false }
   ]
 }

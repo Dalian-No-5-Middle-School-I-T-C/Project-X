@@ -29,7 +29,7 @@ function readServerVersion(): string {
   return "0.0.0";
 }
 const SERVER_VERSION = readServerVersion();
-import { ensureDefaultAdmin, getMysqlDb, initializeDatabase, initMariadbSchema, healthCheck, type DbAdapter } from "../../../server/db";
+import { ensureDefaultAdmin, getMysqlDb, buildUpsertSQL, initializeDatabase, initMariadbSchema, healthCheck, type DbAdapter } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
@@ -37,9 +37,10 @@ import { AnalysisRepository } from "../../../server/repositories/AnalysisReposit
 import { ScoreRepository } from "../../../server/repositories/ScoreRepository";
 import { UserRepository } from "../../../server/repositories/UserRepository";
 import { AssignedScoreService } from "../../../server/services/AssignedScoreService";
-import type { AssignedFormula } from "../../../shared/types";
+import type { AssignedFormula, StudentInfoSettings } from "../../../shared/types";
 import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
 import { isAuthEnforced } from "../../../server/lib/authEnforce";
+import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -58,6 +59,7 @@ import reviewSessionRoutes from "../../../server/routes/review-session";
 import reviewArbitrationRoutes from "../../../server/routes/review-arbitration";
 import reviewAnnotationsRoutes from "../../../server/routes/review-annotations";
 import blockGradingConfigRoutes from "../../../server/routes/block-grading-config";
+import reviewPoolRoutes from "../../../server/routes/review-pool";
 import systemSettingsRoutes from "../../../server/routes/system-settings";
 import { startLlmClientSidecar, shutdownLlmClient } from "./llm-launcher";
 import dashboardRoutes from "../../../server/routes/dashboard";
@@ -73,7 +75,7 @@ import { optionalAuth, authMiddleware, requirePermission } from "../../../server
 import { requirePasswordChangeCompleted } from "../../../server/middleware/auth";
 import { authService } from "../../../server/services/AuthService";
 import { initPermissionCache, roleHasPermission, PERMISSIONS } from "../../../server/auth/permissions";
-import { createDefaultCard, generateCardId } from "../../../shared/defaultCard";
+import { createDefaultCard, DEFAULT_STUDENT_INFO, generateCardId } from "../../../shared/defaultCard";
 import { applySubjectTemplate } from "../../../shared/cardTemplates";
 import { gradeCombinedRecognition, gradeObjectiveRecognition, normalizeObjectiveAnswerKey, normalizeObjectiveQuestions } from "../../../shared/grading";
 import { buildLayout } from "../../../shared/layout";
@@ -115,7 +117,8 @@ import {
   UpdateUserSettingsSchema,
   validateBody
 } from "./validation";
-import { ApiError } from "../../../server/api-error";import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
+import { ApiError } from "../../../server/api-error";
+import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
 
 
 
@@ -128,6 +131,36 @@ import { ApiError } from "../../../server/api-error";import { assetsDir, cardAss
 async function resolveConfidenceThreshold(req: express.Request): Promise<number> {
   const { resolveReviewConfidenceThreshold } = await import("../../../server/services/userSettings");
   return resolveReviewConfidenceThreshold(req.user?.id);
+}
+
+/** 数值夹紧：非有限数回落到 fallback，并约束在 [min, max] 区间。 */
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const n = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+/** 整数夹紧：四舍五入后约束在 [min, max] 区间。 */
+function clampInt(value: unknown, min: number, max: number, fallback: number = 0): number {
+  const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+function normalizeStudentInfo(info: StudentInfoSettings | undefined, paperSize: "A4" | "A3"): StudentInfoSettings {
+  const legacyFields = Array.isArray(info?.fields) ? info!.fields : [];
+  const base = {
+    studentNumberDigits: clampInt(info?.studentNumberDigits, 1, 12, DEFAULT_STUDENT_INFO.studentNumberDigits),
+    showName: info?.showName ?? legacyFields.includes("姓名"),
+    showClass: info?.showClass ?? legacyFields.includes("班级"),
+    showSeat: info?.showSeat ?? false,
+    showExamNumber: info?.showExamNumber ?? false,
+    showStudentNumber: info?.showStudentNumber ?? legacyFields.includes("学号") ?? true,
+    // A3 默认带注意事项（参考模板）；A4 默认不带
+    showNotes: info?.showNotes ?? (paperSize === "A3"),
+    notesText: typeof info?.notesText === "string" && info.notesText.length <= 1000
+      ? info.notesText
+      : DEFAULT_STUDENT_INFO.notesText
+  };
+  return base;
 }
 
 function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
@@ -148,16 +181,36 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
       if (block.type === "subjective" && Array.isArray((block as any).questions)) {
         return {
           ...block,
-          questions: (block as any).questions.map((q: any) => ({
-            ...q,
-            score: typeof q.score === "number" ? q.score : 0,
-            minHeightMm: typeof q.minHeightMm === "number" ? q.minHeightMm : 68,
-          }))
+          questions: (block as any).questions.map((q: any) => {
+            const normalized = {
+              ...q,
+              score: typeof q.score === "number" ? q.score : 0,
+              minHeightMm: typeof q.minHeightMm === "number" ? q.minHeightMm : 68,
+            };
+            // 作文格参数上限校验，防止 targetChars/rows/columns 过大导致布局与 PDF 生成 DoS。
+            if (q.essayGrid) {
+              const g = q.essayGrid;
+              normalized.essayGrid = {
+                columns: clampInt(g.columns, 0, 60),
+                rows: clampInt(g.rows, 0, 200),
+                cellWidthMm: clampNumber(g.cellWidthMm, 4, 12, 7),
+                cellHeightMm: clampNumber(g.cellHeightMm, 4, 12, 7),
+                targetChars: clampInt(g.targetChars, 1, 5000, 600),
+                showTitle: g.showTitle !== false,
+                lineColor: typeof g.lineColor === "string" ? g.lineColor : "#222",
+                lineWidthMm: clampNumber(g.lineWidthMm, 0.05, 0.5, 0.15),
+                showFrame: g.showFrame !== false,
+                showWordScale: g.showWordScale !== false,
+              };
+            }
+            return normalized;
+          })
         };
       }
       return block;
     }),
     paper: { size: paperSize, orientation: paperSize === "A3" ? "landscape" : "portrait" },
+    studentInfo: normalizeStudentInfo(card.studentInfo, paperSize),
     layoutVersion: card.layoutVersion === 2 ? 2 : 1,
     updatedAt: new Date().toISOString()
   };
@@ -343,11 +396,21 @@ export async function persistGradingResults(
     SELECT id FROM users WHERE student_number = ? AND role_id = 3 LIMIT 1
   `;
 
-  const insertQsSql = `
-    REPLACE INTO question_scores
-      (exam_id, student_id, question_number, question_id, score, max_score, score_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `;
+  // Bugfix: 使用 ON CONFLICT upsert 代替 REPLACE INTO，避免重新阅卷时
+  // 静默清除 manually_modified/modified_by/modified_at 等手动改分标记。
+  // 冲突时仅更新分数相关列，保留手动修改元数据。
+  const upsertObjectiveQsSql = buildUpsertSQL(
+    db.dialect, "question_scores",
+    ["exam_id", "student_id", "question_number", "question_id", "score", "max_score", "score_type", "selected_options"],
+    ["exam_id", "student_id", "question_number", "score_type"],
+    ["question_id", "score", "max_score", "selected_options"]
+  );
+  const upsertSubjectiveQsSql = buildUpsertSQL(
+    db.dialect, "question_scores",
+    ["exam_id", "student_id", "question_number", "question_id", "score", "max_score", "score_type"],
+    ["exam_id", "student_id", "question_number", "score_type"],
+    ["question_id", "score", "max_score"]
+  );
 
   let persisted = 0;
   const failedStudents: GradingPersistenceFailure[] = [];
@@ -394,10 +457,14 @@ export async function persistGradingResults(
         await txExamRepo.saveStudentScore(examId, stu.id, row.objectiveScore, row.subjectiveScore);
 
         for (const q of row.questions) {
-          await tx.run(insertQsSql, examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective");
+          await tx.run(
+            upsertObjectiveQsSql,
+            examId, stu.id, q.questionNumber, "", q.score, q.maxScore, "objective",
+            JSON.stringify(q.selectedOptions ?? [])
+          );
         }
         for (const sq of row.subjectiveQuestions ?? []) {
-          await tx.run(insertQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
+          await tx.run(upsertSubjectiveQsSql, examId, stu.id, sq.questionNumber, sq.questionId, sq.score, sq.maxScore, "subjective");
         }
       });
       persisted++;
@@ -476,6 +543,7 @@ function scannerEnabled(): boolean {
 
 export async function createApp(): Promise<express.Express> {
   const app = express();
+  const scannerClientApiEnabled = isScannerClientApiEnabled();
 
   console.log("[Server] 正在初始化数据库...");
   initializeDatabase();
@@ -518,13 +586,16 @@ export async function createApp(): Promise<express.Express> {
     }
   }
 
+  // 阅卷提交路由使用 64 KB 限制，覆盖全局 8 MB；须在全局解析器前注册
+  app.use("/api/review/exams/:examId/block-crops/:cropId/submit", express.json({ limit: "64kb" }));
+
   app.use(express.json({ limit: "8mb" }));
   // P1-2 (M-S1): CORS — 从环境变量读取允许的 origin 白名单，不再使用通配符 *
   const allowedOrigins = (process.env.PROJECTX_CORS_ORIGIN ?? "http://127.0.0.1:5173,http://localhost:5173")
     .split(",").map(s => s.trim()).filter(Boolean);
   app.use((req, res, next) => {
     const origin = req.headers.origin;
-    if (origin && allowedOrigins.includes(origin)) {
+    if (origin && (allowedOrigins.includes(origin) || isScannerClientOrigin(origin))) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
     }
@@ -534,11 +605,37 @@ export async function createApp(): Promise<express.Express> {
     if (req.method === "OPTIONS") { res.status(204).end(); return; }
     next();
   });
-  app.use("/assets", express.static(assetsDir));
+
+  // 受控资源路由：替换原先公开的 app.use("/assets", express.static(...))。
+  // 通过 cardAssetsDir 落盘，使用 path.basename 防止路径穿越；仍置于 /api 下便于统一鉴权与缓存策略。
+  app.get("/api/assets/:cardId/:assetId", optionalAuth, (req, res) => {
+    const cardId = safeId(paramValue(req.params.cardId));
+    const assetId = path.basename(String(req.params.assetId));
+    const dir = cardAssetsDir(cardId);
+    const target = path.join(dir, assetId);
+    if (!target.startsWith(dir)) {
+      res.status(400).json({ message: "非法路径" });
+      return;
+    }
+    if (!existsSync(target)) {
+      res.status(404).json({ message: "资源不存在" });
+      return;
+    }
+    res.setHeader("Cache-Control", "private, max-age=86400");
+    res.sendFile(target);
+  });
+
 
   app.get("/api/app/health", async (_req, res) => {
     const db = await healthCheck();
-    res.status(db.ok ? 200 : 503).json({ ok: db.ok, db });
+    res.status(db.ok ? 200 : 503).json({
+      ok: db.ok,
+      db,
+      capabilities: {
+        scannerClientApi: scannerClientApiEnabled,
+        nativeScannerApi: scannerEnabled()
+      }
+    });
   });
 
   // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
@@ -627,6 +724,12 @@ export async function createApp(): Promise<express.Express> {
     }),
     limits: { fileSize: 5 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      const allowedExts = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
+      if (!allowedExts.includes(ext)) {
+        cb(new Error("仅支持图片文件"));
+        return;
+      }
       if (file.mimetype.startsWith("image/")) {
         cb(null, true);
       } else {
@@ -641,6 +744,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ error: "请选择图片文件" });
         return;
       }
+      if (!await assertImageFile(req.file.path, res)) return;
       // 重命名为 user_${userId}.jpg，覆盖旧背景
       const target = path.join(backgroundsDir, `${req.user?.id}.jpg`);
       await rename(req.file.path, target);
@@ -661,7 +765,16 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/db", backupRoutes);
   app.use("/api/admin/api-keys", apiKeysRoutes);
   app.use("/api/admin/permissions", adminPermissionsRoutes);
-  app.use("/api/scanner/upload", scannerUploadRoutes);
+  if (scannerClientApiEnabled) {
+    app.use("/api/scanner/upload", scannerUploadRoutes);
+  } else {
+    app.use("/api/scanner/upload", (_req, res) => {
+      res.status(404).json({
+        code: "SCANNER_CLIENT_API_DISABLED",
+        message: "Remote scanner client API is disabled on this server."
+      });
+    });
+  }
   app.use("/api/ai/providers", aiProviderRoutes);
   app.use("/api/ladder", ladderRoutes);
 
@@ -729,6 +842,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/review-arbitration", analysisGate, reviewArbitrationRoutes);
   app.use("/api/review-annotations", analysisGate, reviewAnnotationsRoutes);
   app.use("/api/block-grading-config", analysisGate, blockGradingConfigRoutes);
+  app.use("/api/review-pool", analysisGate, reviewPoolRoutes);
   app.use("/api/system-settings", systemSettingsRoutes);
   app.use("/api/dashboard", dashboardRoutes);
   app.use(paperRoutes());
@@ -751,6 +865,12 @@ export async function createApp(): Promise<express.Express> {
     }),
     limits: { fileSize: 12 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      const allowedExts = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
+      if (!allowedExts.includes(ext)) {
+        cb(new Error("仅支持图片文件"));
+        return;
+      }
       if (file.mimetype.startsWith("image/")) {
         cb(null, true);
       } else {
@@ -1225,10 +1345,11 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "没有收到图片文件" });
         return;
       }
+      if (!await assertImageFile(req.file.path, res)) return;
       res.status(201).json({
         assetId: req.file.filename,
         originalName: req.file.originalname,
-        url: `/assets/${cardId}/${req.file.filename}`
+        url: `/api/assets/${cardId}/${req.file.filename}`
       });
     } catch (error) {
       next(error);

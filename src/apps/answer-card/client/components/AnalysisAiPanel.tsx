@@ -2,11 +2,27 @@ import { AlertCircle, BrainCircuit, RefreshCw, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { fetchJson } from "../auth/api";
 import type { AiAnalysisResponse, AiAnalysisStatus, AiProviderConfig } from "../../../../shared/types";
+import {
+  Badge,
+  Button,
+  Input,
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/v2";
 
 interface Props {
-  examId: number;
+  examId?: number;
+  groupId?: number;
   classId?: string;
 }
+
+/** 内置 LLM 服务在 Select 里的哨兵值（Radix Select 不接受空字符串 value）。 */
+const BUILTIN_PROVIDER = "0";
 
 function modelLabel(status: AiAnalysisStatus | null, modelId: string): string {
   const model = status?.models.find((item) => item.id === modelId);
@@ -18,16 +34,22 @@ function providerLabel(providers: AiProviderConfig[], providerId: number): strin
   return p ? p.name : "未知服务商";
 }
 
-function listBlock(title: string, items: string[]) {
+/** 报告里的一个列表小节（薄弱点 / 教学建议 …）。 */
+function ListBlock({ title, items }: { title: string; items: string[] }) {
   return (
-    <div className="ai-report-block">
-      <h4>{title}</h4>
+    <div className="flex min-w-0 flex-col gap-1.5 rounded-md border border-border-subtle bg-card p-3">
+      <h4 className="m-0 text-sm font-semibold text-foreground">{title}</h4>
       {items.length === 0 ? (
-        <p className="ai-muted">暂无</p>
+        <p className="m-0 text-sm text-muted-foreground">暂无</p>
       ) : (
-        <ul>
+        <ul className="m-0 flex list-disc flex-col gap-1 pl-4">
           {items.map((item, index) => (
-            <li key={`${title}-${index}`}>{item}</li>
+            <li
+              key={`${title}-${index}`}
+              className="text-sm text-secondary-foreground"
+            >
+              {item}
+            </li>
           ))}
         </ul>
       )}
@@ -35,7 +57,7 @@ function listBlock(title: string, items: string[]) {
   );
 }
 
-export function AnalysisAiPanel({ examId, classId = "" }: Props) {
+export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
   const [status, setStatus] = useState<AiAnalysisStatus | null>(null);
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState(0); // 0 = 内置 llmclient
@@ -97,7 +119,7 @@ export function AnalysisAiPanel({ examId, classId = "" }: Props) {
   useEffect(() => {
     setAnalysis(null);
     void loadStatus();
-  }, [examId, classId]);
+  }, [examId, groupId, classId]);
 
   async function generateAnalysis() {
     setGenerating(true);
@@ -106,7 +128,10 @@ export function AnalysisAiPanel({ examId, classId = "" }: Props) {
       const body: Record<string, unknown> = { model: selectedModel || undefined };
       if (classId !== "") body.classId = Number(classId);
       if (selectedProviderId > 0) body.providerId = selectedProviderId;
-      const result = await fetchJson<AiAnalysisResponse>(`/api/analysis/exams/${examId}/ai-analysis`, {
+      const endpoint = groupId
+        ? `/api/exam-groups/${groupId}/ai-analysis`
+        : `/api/analysis/exams/${examId}/ai-analysis`;
+      const result = await fetchJson<AiAnalysisResponse>(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
@@ -119,88 +144,98 @@ export function AnalysisAiPanel({ examId, classId = "" }: Props) {
     }
   }
 
+  function handleProviderChange(value: string) {
+    const pid = Number(value);
+    setSelectedProviderId(pid);
+    if (pid === 0) {
+      // Built-in: use default model
+      const preferred = availableModels.find((m) => m.id === status?.defaultModel)
+        ?? availableModels[0];
+      setSelectedModel(preferred?.id ?? "");
+    } else {
+      // User provider: pick first configured model or empty
+      const prov = userProviders.find((p) => p.id === pid);
+      setSelectedModel(prov?.models?.[0] ?? "");
+    }
+  }
+
   const hasBuiltinModels = availableModels.length > 0;
   const hasUserProviders = userProviders.length > 0;
+  const noProviders = !hasBuiltinModels && !hasUserProviders;
   const aiAvailable = status?.available ?? false;
   const disabledReason = status?.available ? "" : (status?.reason || "AI service is not available.");
   const canGenerate = Boolean(aiAvailable && selectedModel && !generating);
 
   return (
-    <div className="analysis-section ai-analysis-panel">
-      <div className="ai-analysis-header">
-        <div className="panel-title">
-          <Sparkles size={17} /> AI 成绩分析
+    <div className="flex min-w-0 flex-col gap-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-base font-semibold text-foreground">
+          <Sparkles className="size-4 text-primary" /> AI 成绩分析
         </div>
-        <div className="ai-analysis-controls" style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          {/* Provider selector — multi-provider support */}
-          <select
-            value={selectedProviderId}
-            onChange={(e) => {
-              const pid = Number(e.target.value);
-              setSelectedProviderId(pid);
-              if (pid === 0) {
-                // Built-in: use default model
-                const preferred = availableModels.find((m) => m.id === status?.defaultModel)
-                  ?? availableModels[0];
-                setSelectedModel(preferred?.id ?? "");
-              } else {
-                // User provider: pick first configured model or empty
-                const prov = userProviders.find((p) => p.id === pid);
-                setSelectedModel(prov?.models?.[0] ?? "");
-              }
-            }}
-            disabled={(!hasBuiltinModels && !hasUserProviders) || generating}
-            style={{ minWidth: 140 }}
+        <div className="flex flex-wrap items-center gap-2">
+          {/* 服务商选择 —— 支持多服务商 */}
+          <Select
+            value={String(selectedProviderId)}
+            onValueChange={handleProviderChange}
+            disabled={noProviders || generating}
           >
-            {!hasBuiltinModels && !hasUserProviders ? (
-              <option value="0">暂无可用服务商</option>
-            ) : (
-              <>
-                {hasBuiltinModels && <option value="0">内置 LLM 服务</option>}
-                {hasUserProviders && (
-                  <optgroup label="自定义服务商">
-                    {userProviders.map((p) => (
-                      <option key={p.id} value={p.id}>{p.name} ({p.providerType})</option>
-                    ))}
-                  </optgroup>
-                )}
-              </>
-            )}
-          </select>
-
-          {/* Model selector: dropdown for built-in, text+datalist for custom providers */}
-          {selectedProviderId === 0 ? (
-            <select
-              value={selectedModel}
-              onChange={(event) => setSelectedModel(event.target.value)}
-              disabled={availableModels.length === 0 || generating}
-              style={{ minWidth: 160 }}
-            >
-              {availableModels.length === 0 ? (
-                <option value="">暂无可用模型</option>
+            <SelectTrigger className="w-40" aria-label="AI 服务商">
+              <SelectValue placeholder="选择服务商" />
+            </SelectTrigger>
+            <SelectContent>
+              {noProviders ? (
+                <SelectItem value={BUILTIN_PROVIDER}>暂无可用服务商</SelectItem>
               ) : (
-                availableModels.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.label}
-                  </option>
-                ))
+                <>
+                  {hasBuiltinModels && (
+                    <SelectItem value={BUILTIN_PROVIDER}>内置 LLM 服务</SelectItem>
+                  )}
+                  {hasUserProviders && (
+                    <SelectGroup>
+                      <SelectLabel>自定义服务商</SelectLabel>
+                      {userProviders.map((p) => (
+                        <SelectItem key={p.id} value={String(p.id)}>
+                          {p.name}（{p.providerType}）
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                </>
               )}
-            </select>
+            </SelectContent>
+          </Select>
+
+          {/* 模型选择：内置走下拉，自定义服务商走文本 + datalist */}
+          {selectedProviderId === 0 ? (
+            <Select
+              value={selectedModel}
+              onValueChange={setSelectedModel}
+              disabled={availableModels.length === 0 || generating}
+            >
+              <SelectTrigger className="w-44" aria-label="模型">
+                <SelectValue placeholder="暂无可用模型" />
+              </SelectTrigger>
+              <SelectContent>
+                {availableModels.map((model) => (
+                  <SelectItem key={model.id} value={model.id}>
+                    {model.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           ) : (
             <>
-              <input
+              <Input
                 type="text"
                 value={selectedModel}
                 onChange={(e) => setSelectedModel(e.target.value)}
                 placeholder="输入模型名称，如 gpt-5.4"
-                list="custom-provider-models"
+                list="analysis-ai-models"
                 disabled={generating}
-                style={{
-                  padding: "6px 12px", borderRadius: 8, border: "1px solid var(--line-strong)",
-                  minWidth: 180, height: 36, boxSizing: "border-box"
-                }}
+                aria-label="模型名称"
+                className="w-48"
               />
-              <datalist id="custom-provider-models">
+              <datalist id="analysis-ai-models">
                 {providerModelOptions?.map((m) => (
                   <option key={m} value={m} />
                 ))}
@@ -208,68 +243,112 @@ export function AnalysisAiPanel({ examId, classId = "" }: Props) {
             </>
           )}
 
-          <button className="icon-button" title="刷新 AI 服务状态" onClick={() => void loadStatus()} disabled={loadingStatus || generating}>
-            <RefreshCw size={15} />
-          </button>
-          <button className="primary-button" onClick={() => void generateAnalysis()} disabled={!canGenerate}>
-            <BrainCircuit size={16} /> {generating ? "分析中..." : "生成分析"}
-          </button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="刷新 AI 服务状态"
+            title="刷新 AI 服务状态"
+            onClick={() => void loadStatus()}
+            disabled={loadingStatus || generating}
+            loading={loadingStatus}
+            icon={<RefreshCw className="size-4" />}
+          />
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<BrainCircuit className="size-4" />}
+            onClick={() => void generateAnalysis()}
+            disabled={!canGenerate}
+            loading={generating}
+          >
+            生成分析
+          </Button>
         </div>
       </div>
 
       {!aiAvailable && (
-        <div className="ai-status-warning">
-          <AlertCircle size={15} />
-          <span>{loadingStatus ? "正在检测 AI 服务..." : disabledReason}</span>
+        <div className="flex items-start gap-2 rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-foreground">
+          <AlertCircle className="mt-0.5 size-4 shrink-0" />
+          <span>{loadingStatus ? "正在检测 AI 服务…" : disabledReason}</span>
         </div>
       )}
 
       {error && (
-        <div className="ai-status-warning">
-          <AlertCircle size={15} />
+        <div className="flex items-start gap-2 rounded-md border border-destructive-border bg-destructive-soft px-3 py-2 text-sm text-destructive-fg">
+          <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <span>{error}</span>
         </div>
       )}
 
       {analysis && (
-        <div className="ai-report">
-          <div className="ai-report-summary">
-            <strong>{analysis.report.overallJudgement}</strong>
-            <span>{selectedProviderId > 0 ? `${providerLabel(userProviders, selectedProviderId)} / ` : ""}{modelLabel(status, analysis.model)} · {new Date(analysis.generatedAt).toLocaleString()}</span>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1 rounded-md border border-accent-border bg-accent px-3 py-2.5">
+            <strong className="text-base font-semibold text-foreground">
+              {analysis.report.overallJudgement}
+            </strong>
+            <span className="text-xs text-muted-foreground">
+              {selectedProviderId > 0
+                ? `${providerLabel(userProviders, selectedProviderId)} / `
+                : ""}
+              {modelLabel(status, analysis.model)} ·{" "}
+              <span className="tabular-nums">
+                {new Date(analysis.generatedAt).toLocaleString()}
+              </span>
+            </span>
           </div>
-          <div className="ai-report-block">
-            <h4>分布洞察</h4>
-            <p>{analysis.report.distributionInsight || "暂无"}</p>
+
+          <div className="flex flex-col gap-1.5 rounded-md border border-border-subtle bg-card p-3">
+            <h4 className="m-0 text-sm font-semibold text-foreground">分布洞察</h4>
+            <p className="m-0 text-sm text-secondary-foreground">
+              {analysis.report.distributionInsight || "暂无"}
+            </p>
           </div>
-          <div className="ai-report-grid">
-            {listBlock("薄弱点", analysis.report.weakPoints)}
-            {listBlock("错误率高", analysis.report.reviewRisks)}
-            {listBlock("教学建议", analysis.report.teachingSuggestions)}
-            {listBlock("下一步行动", analysis.report.nextActions)}
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <ListBlock title="薄弱点" items={analysis.report.weakPoints} />
+            <ListBlock title="错误率高" items={analysis.report.reviewRisks} />
+            <ListBlock title="教学建议" items={analysis.report.teachingSuggestions} />
+            <ListBlock title="下一步行动" items={analysis.report.nextActions} />
           </div>
+
           {analysis.report.questionActions.length > 0 && (
-            <div className="ai-question-actions">
-              <h4>题目建议</h4>
-              {analysis.report.questionActions.map((item, index) => (
-                <div key={`${item.questionNumber}-${index}`} className="ai-question-action">
-                  <strong>{item.questionNumber}</strong>
-                  <span>{item.reason}</span>
-                  <em>{item.action}</em>
-                </div>
-              ))}
+            <div className="flex flex-col gap-2 rounded-md border border-border-subtle bg-card p-3">
+              <h4 className="m-0 text-sm font-semibold text-foreground">题目建议</h4>
+              <div className="flex flex-col gap-2">
+                {analysis.report.questionActions.map((item, index) => (
+                  <div
+                    key={`${item.questionNumber}-${index}`}
+                    className="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-b border-border-subtle pb-2 last:border-b-0 last:pb-0"
+                  >
+                    <strong className="shrink-0 text-sm tabular-nums text-foreground">
+                      {item.questionNumber}
+                    </strong>
+                    <span className="min-w-0 flex-1 text-sm text-secondary-foreground">
+                      {item.reason}
+                    </span>
+                    <em className="text-sm text-primary not-italic">{item.action}</em>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
+
           {analysis.report.caveats.length > 0 && (
-            <div className="ai-caveats">
+            <div className="flex flex-wrap gap-1.5">
               {analysis.report.caveats.map((item, index) => (
-                <span key={index}>{item}</span>
+                <Badge key={index} tone="warning">
+                  {item}
+                </Badge>
               ))}
             </div>
           )}
+
           {analysis.toolCalls.length > 0 && (
-            <div className="ai-tool-trace">
+            <div className="flex flex-wrap gap-1.5">
               {analysis.toolCalls.map((call, index) => (
-                <span key={`${call.name}-${index}`}>{call.name}: {call.summary}</span>
+                <Badge key={`${call.name}-${index}`} tone="neutral">
+                  {call.name}: {call.summary}
+                </Badge>
               ))}
             </div>
           )}

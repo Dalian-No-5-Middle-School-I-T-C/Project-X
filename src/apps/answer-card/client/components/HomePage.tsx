@@ -1,181 +1,95 @@
-import React, { useEffect, useState, useCallback } from "react";
-import { SquarePen, ClipboardList, BarChart3, Users, Clock, BookOpen } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { BarChart3, BookOpen, ChevronRight, ClipboardList, ScanLine, SquarePen, Users } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { DashboardData } from "../../../../shared/types";
+import { Badge, Card, CardContent, CardDescription, CardTitle, Skeleton } from "../components/ui/v2";
 
 interface Props {
   userRole: string;
   teacherRole: string | null;
   userName: string;
   onNavigate: (mode: string) => void;
-  /** 在新标签打开某功能并让当前页也跳转过去（首页“答题卡设计”等入口使用） */
+  /** Compatibility prop retained for existing callers; all app navigation stays in-page. */
   onOpenNewTab?: (mode: string) => void;
   onEnterExam: (examId: number) => void;
 }
 
 const moduleCards = [
-  { id: "design", icon: SquarePen, label: "答题卡设计", desc: "创建和编辑答题卡模板", permission: "card:read" },
-  { id: "exam-manage", icon: ClipboardList, label: "考试管理", desc: "安排考试、网上阅卷入口", permission: "exam:write" },
-  { id: "analysis", icon: BarChart3, label: "成绩分析", desc: "查看分析报告与跨班对比", permission: "exam:read" },
+  { id: "design", icon: SquarePen, label: "答题卡设计", desc: "创建和编辑答题卡模板" },
+  { id: "exam-manage", icon: ClipboardList, label: "考试管理", desc: "安排考试、网上阅卷入口" },
+  { id: "analysis", icon: BarChart3, label: "成绩分析", desc: "查看分析报告与跨班对比" },
 ];
 
-const adminCard = { id: "account", icon: Users, label: "账号管理", desc: "管理师生账号", permission: "user:manage" };
-const globalSettingsCard = { id: "global-settings", icon: BookOpen, label: "全局设置", desc: "系统级默认值与策略", permission: "system:manage" };
-
-export function HomePage({ userRole, teacherRole, userName, onNavigate, onOpenNewTab, onEnterExam }: Props) {
+export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterExam }: Props) {
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
+  const [recentExams, setRecentExams] = useState<Array<{ id: number; name: string; subject?: string | null; exam_date?: string | null }>>([]);
   const [loading, setLoading] = useState(true);
-
   const loadDashboard = useCallback(async () => {
     try {
       const res = await fetchJson<{ ok: boolean; data: DashboardData }>("/api/dashboard");
       if (res.ok) setDashboard(res.data);
-    } catch { /* silent */ }
+      const exams = await fetchJson<Array<{ id: number; name: string; subject?: string | null; exam_date?: string | null }>>("/api/exams");
+      setRecentExams(exams.slice(0, 4));
+    } catch { /* dashboard is supplemental */ }
     setLoading(false);
   }, []);
-
-  useEffect(() => { loadDashboard(); }, [loadDashboard]);
+  useEffect(() => { void loadDashboard(); }, [loadDashboard]);
 
   const isAdmin = userRole === "admin";
-  // 始终尝试渲染快捷入口，API 无数据时显示默认卡片
-  const hasContinueReview = dashboard?.hasUnfinishedGrading && dashboard.unfinishedTask;
-  const hasLatestScan = dashboard?.latestScanExam;
+  const quickCards = [
+    dashboard?.hasUnfinishedGrading && dashboard.unfinishedTask ? {
+      icon: SquarePen, title: "继续阅卷", description: `${dashboard.unfinishedTask.examName} · ${dashboard.unfinishedTask.blockTitle}`,
+      tone: "border-warning-border bg-warning-soft text-warning-foreground", onClick: () => onEnterExam(dashboard.unfinishedTask!.examId),
+    } : {
+      icon: SquarePen, title: "继续阅卷", description: "暂无待阅卷任务",
+      tone: "border-warning-border bg-warning-soft text-warning-foreground", onClick: () => onNavigate("exam-manage"),
+    },
+    dashboard?.latestScanExam ? {
+      icon: ScanLine, title: "最新扫描", description: `${dashboard.latestScanExam.examName}${dashboard.latestScanExam.subject ? ` · ${dashboard.latestScanExam.subject}` : ""}`,
+      tone: "border-info-border bg-info-soft text-info-foreground", onClick: () => onEnterExam(dashboard.latestScanExam!.examId),
+    } : {
+      icon: ScanLine, title: "最新扫描", description: "暂无扫描记录",
+      tone: "border-info-border bg-info-soft text-info-foreground", onClick: () => onNavigate("exam-manage"),
+    },
+    { icon: ClipboardList, title: "考试管理", description: "查看和管理所有考试", tone: "border-border bg-card text-secondary-foreground", onClick: () => onNavigate("exam-manage") },
+  ] as Array<{ icon: typeof ClipboardList; title: string; description: string; tone: string; onClick: () => void }>;
 
   return (
-    <div className="home-container">
-      {/* 欢迎 */}
-      <div className="home-welcome">
-        <h1 className="home-welcome-title">
-          欢迎回来，{userName}
-        </h1>
-        {teacherRole && (
-          <span className="home-welcome-role">
-            {teacherRole === "grade_leader" ? "学年主任" : teacherRole === "head_teacher" ? "班主任" : "学科老师"}
-          </span>
-        )}
+    <div className="w-full space-y-6">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">欢迎回来，{userName}</h1>
+          <p className="mt-2 text-sm text-muted-foreground">今天也把每一份答题卡，变成清晰可靠的结果。</p>
+        </div>
+        {teacherRole && <Badge tone="accent" dot>{teacherRole === "grade_leader" ? "学年主任" : teacherRole === "head_teacher" ? "班主任" : "学科老师"}</Badge>}
       </div>
 
-      {/* 快捷入口 — 始终显示（多卡并列，不再互斥：继续阅卷 / 最新扫描 / 考试管理 可同时出现） */}
-      <div className="home-quick-grid">
-        {loading ? (
-          <div className="home-quick-card home-quick-card-gray" style={{ cursor: "default" }}>
-            <div className="home-quick-card-desc">加载中...</div>
-          </div>
-        ) : (
-          <>
-            {hasContinueReview && (
-              <div
-                className="home-quick-card home-quick-card-amber"
-                onClick={() => onEnterExam(dashboard!.unfinishedTask!.examId)}
-                role="button" tabIndex={0}
-                onKeyDown={(e) => e.key === "Enter" && onEnterExam(dashboard!.unfinishedTask!.examId)}
-              >
-                <div className="home-quick-card-icon">📝</div>
-                <div className="home-quick-card-label">继续阅卷</div>
-                <div className="home-quick-card-desc">
-                  {dashboard!.unfinishedTask!.examName} · {dashboard!.unfinishedTask!.blockTitle}
-                </div>
-              </div>
-            )}
-            {hasLatestScan && (
-              <div
-                className="home-quick-card home-quick-card-blue"
-                onClick={() => onEnterExam(dashboard!.latestScanExam!.examId)}
-                role="button" tabIndex={0}
-                onKeyDown={(e) => e.key === "Enter" && onEnterExam(dashboard!.latestScanExam!.examId)}
-              >
-                <div className="home-quick-card-icon">🆕</div>
-                <div className="home-quick-card-label">最新扫描</div>
-                <div className="home-quick-card-desc">
-                  {dashboard!.latestScanExam!.examName}{dashboard!.latestScanExam!.subject ? ` · ${dashboard!.latestScanExam!.subject}` : ""}
-                </div>
-              </div>
-            )}
-            <div className="home-quick-card home-quick-card-purple"
-              onClick={() => onNavigate("exam-manage")}
-              role="button" tabIndex={0}
-              onKeyDown={(e) => e.key === "Enter" && onNavigate("exam-manage")}
-            >
-              <div className="home-quick-card-icon">📋</div>
-              <div className="home-quick-card-label">考试管理</div>
-              <div className="home-quick-card-desc">
-                查看和管理所有考试
-              </div>
-            </div>
-          </>
-        )}
+      <div className="grid gap-4 md:grid-cols-3">
+        {loading ? <Skeleton className="h-20" /> : quickCards.map(({ icon: Icon, title, description, tone, onClick }) => (
+          <Card key={title} interactive className={tone} onClick={onClick}>
+            <CardContent className="flex items-center gap-3 p-4"><Icon className="size-5" /><div className="min-w-0 flex-1"><CardTitle className="text-sm">{title}</CardTitle><CardDescription className="mt-1 truncate">{description}</CardDescription></div><ChevronRight className="size-4 text-muted-foreground" /></CardContent>
+          </Card>
+        ))}
       </div>
 
-      {/* 模块卡片 */}
-      <div className="home-module-grid">
-        {moduleCards.map((card) => {
-          // “答题卡设计”从首页进入时单开新标签，当前页也跳转过去
-          const enter = (): void => {
-            if (onOpenNewTab) onOpenNewTab(card.id);
-            else onNavigate(card.id);
-          };
-          return (
-          <div
-            key={card.id}
-            className="home-card"
-            onClick={enter}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => e.key === "Enter" && enter()}
-          >
-            <div className="home-card-inner">
-              <card.icon size={36} className="home-card-icon" />
-              <div>
-                <div className="home-card-label">{card.label}</div>
-                <div className="home-card-desc">
-                  {card.desc}
-                </div>
-              </div>
-            </div>
-          </div>
-          );
-        })}
+      <section>
+        <div className="mb-3 flex items-center justify-between"><h2 className="text-lg font-semibold">工作模块</h2><span className="text-xs text-muted-foreground">快速进入常用功能</span></div>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {moduleCards.map(({ id, icon: Icon, label, desc }) => <Card key={id} interactive onClick={() => onNavigate(id)}><CardContent className="flex items-start gap-4 p-5"><Icon className="size-6 text-primary" /><div><CardTitle className="text-base">{label}</CardTitle><CardDescription className="mt-1">{desc}</CardDescription></div></CardContent></Card>)}
+          {isAdmin && <Card interactive onClick={() => onNavigate("account")}><CardContent className="flex items-start gap-4 p-5"><Users className="size-6 text-primary" /><div><CardTitle className="text-base">账号管理</CardTitle><CardDescription className="mt-1">管理师生账号</CardDescription></div></CardContent></Card>}
+          {isAdmin && <Card interactive onClick={() => onNavigate("global-settings")}><CardContent className="flex items-start gap-4 p-5"><BookOpen className="size-6 text-secondary-foreground" /><div><CardTitle className="text-base">全局设置</CardTitle><CardDescription className="mt-1">系统级默认值与策略</CardDescription></div></CardContent></Card>}
+        </div>
+      </section>
 
-        {isAdmin && (
-          <div
-            className="home-card"
-            onClick={() => (onOpenNewTab ? onOpenNewTab(adminCard.id) : onNavigate(adminCard.id))}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => e.key === "Enter" && (onOpenNewTab ? onOpenNewTab(adminCard.id) : onNavigate(adminCard.id))}
-          >
-            <div className="home-card-inner">
-              <adminCard.icon size={36} className="home-card-icon" />
-              <div>
-                <div className="home-card-label">{adminCard.label}</div>
-                <div className="home-card-desc">
-                  {adminCard.desc}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {isAdmin && (
-          <div
-            className="home-card"
-            onClick={() => onNavigate(globalSettingsCard.id)}
-            role="button"
-            tabIndex={0}
-            onKeyDown={(e) => e.key === "Enter" && onNavigate(globalSettingsCard.id)}
-          >
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-              <globalSettingsCard.icon size={36} style={{ color: "var(--color-text-secondary)", flexShrink: 0 }} />
-              <div>
-                <div style={{ fontWeight: 500, fontSize: 16, marginBottom: 4 }}>{globalSettingsCard.label}</div>
-                <div style={{ fontSize: 13, color: "var(--color-text-secondary)", lineHeight: 1.5 }}>
-                  {globalSettingsCard.desc}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+      <Card>
+        <div className="flex items-center justify-between border-b border-border-subtle px-5 py-4"><CardTitle className="text-base">最近考试</CardTitle><button className="border-0 bg-transparent flex items-center gap-1 text-sm text-secondary-foreground hover:text-foreground" type="button" onClick={() => onNavigate("exam-manage")}>全部考试 <ChevronRight className="size-4" /></button></div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm"><thead className="bg-secondary text-xs text-muted-foreground"><tr><th className="px-5 py-3 text-left font-medium">考试名称</th><th className="px-5 py-3 text-left font-medium">学科</th><th className="px-5 py-3 text-left font-medium">日期</th><th className="px-5 py-3 text-right font-medium">操作</th></tr></thead><tbody>
+            {recentExams.map((exam) => <tr key={exam.id} className="border-t border-border-subtle"><td className="px-5 py-3 font-medium">{exam.name}</td><td className="px-5 py-3 text-muted-foreground">{exam.subject || "未设科目"}</td><td className="px-5 py-3 tabular-nums text-muted-foreground">{exam.exam_date || "-"}</td><td className="px-5 py-3 text-right"><button className="border-0 bg-transparent text-secondary-foreground hover:text-foreground" type="button" onClick={() => onNavigate("exam-manage")}>查看</button></td></tr>)}
+            {!loading && recentExams.length === 0 && <tr><td colSpan={4} className="px-5 py-8 text-center text-muted-foreground">暂无考试记录</td></tr>}
+          </tbody></table>
+        </div>
+      </Card>
     </div>
   );
 }

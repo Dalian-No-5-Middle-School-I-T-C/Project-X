@@ -1,7 +1,5 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
-import { NavLink, Route, Routes, Navigate, useBlocker, useLocation, useNavigate } from "react-router-dom";
-import { DesignPage } from "./pages/DesignPage";
-import { ExamManagePage } from "./pages/ExamManagePage";
+﻿import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { Route, Routes, Navigate, useBlocker, useLocation, useNavigate } from "react-router-dom";
 import { MODE_PATH, pathToMode } from "./modeRoutes";
 import { WorkspaceProvider, type WorkspaceValue } from "./WorkspaceContext";
 import {
@@ -9,6 +7,7 @@ import {
   ArrowUp,
   BarChart3,
   ChevronDown,
+  ChevronLeft,
   ClipboardCheck,
   ClipboardList,
   Download,
@@ -17,47 +16,98 @@ import {
   ImagePlus,
   Layers,
   ListPlus,
+  Menu,
+  Moon,
   Plus,
   Save,
   Search,
+  Settings,
+  Sun,
   BookOpen,
-  FileUp,
   Home,
   SquarePen,
-  Trash2,
   Upload,
-  Users
+  Users,
+  AlertTriangle,
+  BrainCircuit,
+  CheckCircle2,
+  Check,
+  X,
+  ArrowLeft,
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
 import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "./auth/api";
+import { cn } from "./lib/utils";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
-import { AccountManagement } from "./components/AccountManagement";
 import { BeianFooter } from "./components/BeianFooter";
-import { StudentScores } from "./components/StudentScores";
-import { SponsorPage } from "./components/SponsorPage";
-import { UserGuidePage } from "./components/UserGuidePage";
-import { PermissionManager } from "./components/PermissionManager";
+import { NotFound } from "./components/NotFound";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
-import { PaperUploadPanel } from "./components/PaperUploadPanel";
-import { ExamSelectPage } from "./components/ExamSelectPage";
-import { ScoreDetailPage } from "./components/ScoreDetailPage";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
-import { ExamGroupDetailPage } from "./components/ExamGroupDetailPage";
 import { GroupExportModal } from "./components/GroupExportModal";
-import { HomePage } from "./components/HomePage";
-import { GlobalSettingsPage } from "./components/GlobalSettingsPage";
-import { GradePanel } from "./components/GradePanel";
-import { ExamDetailPage } from "./components/ExamDetailPage";
-import { MobileDrawer } from "./components/MobileDrawer";
 import { HomeRoutePage } from "./pages/HomeRoutePage";
-import { AnalysisRoutePage } from "./pages/AnalysisRoutePage";
-import { ScoresRoutePage } from "./pages/ScoresRoutePage";
-import { AccountRoutePage } from "./pages/AccountRoutePage";
-import { SponsorRoutePage, PermissionsRoutePage, GuideRoutePage } from "./pages/InfoRoutePages";
-import { GlobalSettingsRoutePage } from "./pages/GlobalSettingsRoutePage";
+import {
+  AppShell,
+  AppMain,
+  AppContentRow,
+  AppContent,
+  AppRail,
+  AppRailBrand,
+  AppRailNav,
+  AppRailGroupLabel,
+  AppRailItem,
+  AppRailFooter,
+  PageHeader,
+  StatusBar,
+  StatusItem,
+  StatusSpacer,
+  SaveStatus,
+  Button,
+  Badge,
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetBody,
+  Spinner,
+  TooltipProvider,
+  Toaster,
+  Card,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogBody,
+  DialogFooter,
+  EmptyState,
+  Checkbox,
+  type SaveState,
+} from "./components/ui/v2";
+
+// 路由级懒加载（dev 首屏性能）：登录后首屏只需 HomeRoutePage，
+// 其余模式页面按需加载，将 chart.js / react-markdown 等重依赖隔离出首屏模块图。
+const DesignPage = lazy(() => import("./pages/DesignPage").then((m) => ({ default: m.DesignPage })));
+const ExamManagePage = lazy(() => import("./pages/ExamManagePage").then((m) => ({ default: m.ExamManagePage })));
+const AnalysisRoutePage = lazy(() => import("./pages/AnalysisRoutePage").then((m) => ({ default: m.AnalysisRoutePage })));
+const ScoresRoutePage = lazy(() => import("./pages/ScoresRoutePage").then((m) => ({ default: m.ScoresRoutePage })));
+const AccountRoutePage = lazy(() => import("./pages/AccountRoutePage").then((m) => ({ default: m.AccountRoutePage })));
+const AccountSettingsPage = lazy(() => import("./pages/AccountSettingsPage").then((m) => ({ default: m.AccountSettingsPage })));
+const SponsorRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.SponsorRoutePage })));
+const PermissionsRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.PermissionsRoutePage })));
+const GuideRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.GuideRoutePage })));
+const GlobalSettingsRoutePage = lazy(() => import("./pages/GlobalSettingsRoutePage").then((m) => ({ default: m.GlobalSettingsRoutePage })));
+const GradePanel = lazy(() => import("./components/GradePanel").then((m) => ({ default: m.GradePanel })));
+const PaperUploadPanel = lazy(() => import("./components/PaperUploadPanel").then((m) => ({ default: m.PaperUploadPanel })));
+
+// 懒加载路由切换时的居中加载指示（与 loading 态文案一致）
+const routeFallback = (
+  <div className="flex min-h-[40vh] items-center justify-center gap-2 text-muted-foreground">
+    <Spinner size={18} />
+    <span className="text-sm">正在加载...</span>
+  </div>
+);
 import type {
   AnswerCard,
   BlankLabelStyle,
@@ -98,17 +148,8 @@ import {
 } from "../../../shared/appVariant";
 import { ScanPreviewModal, type ScanPage } from "./components/ScanPreviewModal";
 import { ImportCardModal, type ImportCardFormData } from "./components/ImportCardModal";
-import { AnalysisOverview } from "./components/AnalysisOverview";
-import { AnalysisDistribution } from "./components/AnalysisDistribution";
-import { AnalysisAiPanel } from "./components/AnalysisAiPanel";
-import { AnalysisRanking } from "./components/AnalysisRanking";
-import { AnalysisQuestions } from "./components/AnalysisQuestions";
-import { AnalysisTrend } from "./components/AnalysisTrend";
 import type {
-  ExamOverview,
   ExamRecord,
-  QuestionAnalysisItem,
-  StudentRankingItem
 } from "../../../shared/types";
 import {
   modeLabels,
@@ -311,26 +352,29 @@ function KnowledgeAnalysisInline({ cardId, onDone }: { cardId: string; onDone: (
   };
 
   return (
-    <div>
-      <h4 style={{ margin: "0 0 8px", fontSize: 14 }}>题目范围 *</h4>
-      <label className="radio-label">
+    <div className="flex flex-col gap-2">
+      <h4 className="text-sm font-semibold">题目范围 *</h4>
+      <label className="flex items-center gap-2 text-sm">
         <input type="radio" name="kpRange" checked={questionRange === "all"} onChange={() => setQuestionRange("all")} />
         全部题目
       </label>
-      <label className="radio-label">
+      <label className="flex items-center gap-2 text-sm">
         <input type="radio" name="kpRange" checked={questionRange === "custom"} onChange={() => setQuestionRange("custom")} />
         自定义范围
       </label>
       {questionRange === "custom" && (
-        <input type="text" className="text-input" placeholder="如：第1-15题、选择题"
-          value={customRange} onChange={(e) => setCustomRange(e.target.value)} style={{ width: "100%", marginBottom: 8 }} />
+        <input type="text" className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+          placeholder="如：第1-15题、选择题"
+          value={customRange} onChange={(e) => setCustomRange(e.target.value)} />
       )}
-      <textarea className="textarea-input" placeholder="特别描述（可选）" value={extraNotes} onChange={(e) => setExtraNotes(e.target.value)} rows={2} style={{ width: "100%", marginBottom: 8 }} />
-      {error && <p className="field-error" style={{ marginBottom: 8 }}>{error}</p>}
-      <button className="primary-button" type="button" onClick={handleAnalyze} disabled={analyzing}>
-        {analyzing ? "分析中..." : "🤖 开始分析"}
-      </button>
-      {analyzing && <p style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>正在调用 AI 分析，约需 10-30 秒...</p>}
+      <textarea className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+        placeholder="特别描述（可选）" value={extraNotes} onChange={(e) => setExtraNotes(e.target.value)} rows={2} />
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      <Button variant="primary" type="button" onClick={handleAnalyze} disabled={analyzing}
+        icon={<BrainCircuit size={16} />}>
+        {analyzing ? "分析中..." : "开始分析"}
+      </Button>
+      {analyzing && <p className="mt-1 text-xs text-muted-foreground">正在调用 AI 分析，约需 10-30 秒...</p>}
     </div>
   );
 }
@@ -345,15 +389,13 @@ function App() {
   const [cards, setCards] = useState<CardSummary[]>([]);
   const [card, setCard] = useState<AnswerCard | null>(null);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
+  const [designScreen, setDesignScreen] = useState<"select" | "editor">("select");
   const [mode, setMode] = useState<AppMode>(pathToMode(window.location.pathname) ?? "home");
   const navigate = useNavigate();
   const location = useLocation();
   const modeInitialized = useRef(false);
   // URL ↔ mode 同步（Phase 2 网页化）：深链/刷新/浏览器前进后退均保持当前页
-  useEffect(() => {
-    const m = pathToMode(location.pathname);
-    if (m) setMode(m);
-  }, [location.pathname]);
+  // 权限校验在 canOpenMode 声明后统一执行，避免学生端通过教师深链进入页面。
 
   // 阶段 2.5：离开「设计」页且存在未保存更改时，拦截导航并弹确认（需数据路由支持）
   const blocker = useBlocker(
@@ -390,9 +432,6 @@ function App() {
   const [analysisClassId, setAnalysisClassId] = useState<string>("");
   const [analysisClasses, setAnalysisClasses] = useState<Array<{ classId: number; className: string }>>([]);
   const [showExportMenu, setShowExportMenu] = useState(false);
-  const [analysisOverview, setAnalysisOverview] = useState<ExamOverview | null>(null);
-  const [analysisRanking, setAnalysisRanking] = useState<StudentRankingItem[]>([]);
-  const [analysisQuestions, setAnalysisQuestions] = useState<QuestionAnalysisItem[]>([]);
   const [exams, setExams] = useState<ExamRecord[]>([]);
   const [examListRefreshKey, setExamListRefreshKey] = useState(0);
   // Exam groups
@@ -429,8 +468,40 @@ function App() {
       return "light";
     }
   });
-  // 移动端 Drawer 开合状态（仅 ≤480px 渲染，见 MobileDrawer 与 styles.css）
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [railCollapsed, setRailCollapsed] = useState(() => {
+    try { return localStorage.getItem("projectx-rail-collapsed") === "true"; } catch { return false; }
+  });
+  const [railExpandedOnHover, setRailExpandedOnHover] = useState(false);
+  const [railAutoExpand, setRailAutoExpand] = useState(() => {
+    try { return localStorage.getItem("projectx-rail-auto-expand") !== "false"; } catch { return true; }
+  });
+  const railCollapseTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("projectx-rail-collapsed");
+      if (saved !== null) setRailCollapsed(saved === "true");
+    } catch { /* ignore storage failures */ }
+  }, []);
+
+  useEffect(() => {
+    try { localStorage.setItem("projectx-rail-collapsed", String(railCollapsed)); } catch { /* ignore storage failures */ }
+  }, [railCollapsed]);
+
+  useEffect(() => {
+    const syncRailSetting = (event: Event) => {
+      const value = (event as CustomEvent<boolean>).detail;
+      if (typeof value === "boolean") setRailAutoExpand(value);
+    };
+    window.addEventListener("projectx:rail-auto-expand", syncRailSetting);
+    return () => window.removeEventListener("projectx:rail-auto-expand", syncRailSetting);
+  }, []);
+  const effectiveRailCollapsed = railCollapsed && !railExpandedOnHover;
+
+  useEffect(() => () => {
+    if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
+  }, []);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
   const autoSaveLabel =
@@ -458,7 +529,24 @@ function App() {
   const canViewScores = variantAllows("scores") && hasPermission(PERMISSIONS.SCORE_READ);
   const canManageAccounts = variantAllows("account") && hasPermission(PERMISSIONS.USER_MANAGE);
   const canManageGlobal = variantAllows("global-settings") && hasPermission(PERMISSIONS.SYSTEM_MANAGE);
-  const showCardSidebar = mode === "design" && canDesign;
+  const canOpenMode = useCallback(
+    (candidate: AppMode) => {
+      if (!appVariant.allowedModes.includes(candidate)) return false;
+      if (candidate === "home") return appVariant.id !== "student";
+      if (candidate === "scores") return appVariant.id === "student" || hasPermission(PERMISSIONS.SCORE_READ);
+      if (candidate === "design") return canDesign;
+      if (candidate === "exam-manage") return canManageExams;
+      if (candidate === "analysis") return canAnalyze;
+      if (candidate === "account") return canManageAccounts;
+      if (candidate === "account-settings") return true;
+      if (candidate === "global-settings") return canManageGlobal;
+      return false;
+    },
+    [appVariant.allowedModes, appVariant.id, hasPermission, canDesign, canManageExams, canAnalyze, canManageAccounts, canManageGlobal],
+  );
+  const fallbackMode = appVariant.id === "student" ? "scores" : "home";
+  // 设计器已固定为「画廊 → 编辑器」两步流程，不能再叠加旧的全局答题卡侧栏。
+  const showCardSidebar = false;
   const showScoresTab = canViewScores;
 
   // ── 移动端底部导航配置 ──
@@ -471,7 +559,9 @@ function App() {
       onEnter?: () => void | Promise<void>;
     };
     const items: NavItem[] = [];
-    items.push({ id: "home", icon: <Home size={22} />, label: "首页", shortLabel: "首页" });
+    if (canOpenMode("home")) {
+      items.push({ id: "home", icon: <Home size={22} />, label: "首页", shortLabel: "首页" });
+    }
     if (canDesign) {
       items.push({ id: "design", icon: <SquarePen size={22} />, label: "答题卡设计", shortLabel: "设计" });
     }
@@ -489,7 +579,7 @@ function App() {
     }
     // 移动端最多5个Tab
     return items.slice(0, 5);
-  }, [canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, loadExams, loadExamGroups]);
+  }, [canOpenMode, canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, loadExams, loadExamGroups]);
 
   useEffect(() => {
     latestCardRef.current = card;
@@ -508,14 +598,15 @@ function App() {
   useEffect(() => { void refreshGlobalPaper(); }, [refreshGlobalPaper]);
 
   useEffect(() => {
-    if (user && !modeInitialized.current) {
-      modeInitialized.current = true;
-      // 尊重深链/新标签带来的 URL：地址栏已是某功能路径则用之，否则回退默认首页。
-      // 否则点“答题卡设计”打开的 /design 新标签会被强行改回 home（已修复的 BUG）。
-      const fromUrl = pathToMode(window.location.pathname);
-      setMode(fromUrl ?? defaultModeForUser(hasPermission, appVariant));
+    if (!user) return;
+    const fromUrl = pathToMode(location.pathname);
+    const nextMode = fromUrl && canOpenMode(fromUrl) ? fromUrl : fallbackMode;
+    if (mode !== nextMode) setMode(nextMode);
+    if (!fromUrl || !canOpenMode(fromUrl)) {
+      navigate(MODE_PATH[fallbackMode], { replace: true });
     }
-  }, [user?.id, hasPermission, appVariant]);
+    modeInitialized.current = true;
+  }, [user?.id, location.pathname, mode, canOpenMode, fallbackMode, navigate]);
 
   useEffect(() => {
     const flushOnHide = () => {
@@ -585,8 +676,13 @@ function App() {
       // 检查是否有输入框聚焦，跳过（让用户正常退出输入）
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      // 检查是否有 modal overlay 打开（modal 自行处理 ESC）
-      if (document.querySelector(".modal-overlay")) return;
+      // 检查是否有弹层打开（弹层自行处理 ESC）：
+      //  · [data-state="open"] 的 dialog/alertdialog —— v2 Dialog/Sheet（Radix 自带 ESC 关闭）
+      // P5：App.tsx 内的旧 .modal-overlay/.modal-backdrop 已换成 v2 Dialog，
+      // 必须同时识别 Radix 弹层，否则 ESC 会穿透到全局返回逻辑。
+      if (
+        document.querySelector('[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"]')
+      ) return;
 
       // 成绩分析子页 → 返回考试选择
       if (mode === "analysis" && analysisTab !== "select") {
@@ -889,9 +985,6 @@ function App() {
       setSelectedExamIds(new Set());
       if (analysisExamId && target.exams.some((exam) => exam.id === analysisExamId)) {
         setAnalysisExamId(null);
-        setAnalysisOverview(null);
-        setAnalysisRanking([]);
-        setAnalysisQuestions([]);
       }
       await loadExams();
       if (target.deleteLinkedCards) {
@@ -1112,15 +1205,22 @@ function App() {
         const prefix = toChinese(index + 1);
         const count = obj.questionCount ?? 0;
         const total = count * (obj.scorePerQuestion ?? 0);
-        block.title = `${prefix}、${typeName}（${count}题 ${total}分）`;
+        block.title = `${prefix}、${typeName}（共${count}题，共${total}分）`;
       } else if (block.type === "subjective") {
         const sub = block as SubjectiveBlock;
-        const isFillBlank = sub.questions.length > 0 && sub.questions[0]?.style === "manual_score_grid" && sub.questions.every((q) => q.kind === "blank");
-        const typeName = isFillBlank ? "填空题" : "解答题";
+        let typeName = "解答题";
+        if (sub.blockKind === "essay") {
+          typeName = "作文";
+        } else if (sub.blockKind === "fill_blank") {
+          typeName = "填空题";
+        } else {
+          const isFillBlank = sub.questions.length > 0 && sub.questions[0]?.style === "manual_score_grid" && sub.questions.every((q) => q.kind === "blank");
+          typeName = isFillBlank ? "填空题" : "解答题";
+        }
         const prefix = toChinese(index + 1);
         const count = sub.questions.length;
         const total = sub.questions.reduce((sum, q) => sum + (q.score || 0), 0);
-        block.title = `${prefix}、${typeName}（${count}题 ${total}分）`;
+        block.title = `${prefix}、${typeName}（共${count}题，共${total}分）`;
       }
       index++;
     }
@@ -1134,6 +1234,14 @@ function App() {
   }
 
   async function switchMode(nextMode: AppMode, afterSwitch?: () => void | Promise<void>) {
+    if (!canOpenMode(nextMode)) {
+      const safeMode = canOpenMode(fallbackMode) ? fallbackMode : mode;
+      if (safeMode !== mode) {
+        setMode(safeMode);
+        navigate(MODE_PATH[safeMode]);
+      }
+      return;
+    }
     if (mode === "design" && nextMode !== "design") {
       try {
         await flushPendingCardSave("switch");
@@ -1372,60 +1480,63 @@ function App() {
     }
   }
 
-  async function loadAnalysis(examId: number, classId?: string) {
-    setAnalysisExamId(examId);
-    const cidParam = classId ? `?classId=${classId}` : "";
-    try {
-      const [overview, ranking, questions, classes] = await Promise.all([
-        fetchJson<ExamOverview>(`/api/analysis/exams/${examId}/overview${cidParam}`),
-        fetchJson<StudentRankingItem[]>(`/api/analysis/exams/${examId}/students${cidParam}`),
-        fetchJson<QuestionAnalysisItem[]>(`/api/analysis/exams/${examId}/questions${cidParam}`),
-        classId ? Promise.resolve([]) : fetchJson<Array<{ classId: number; className: string }>>(`/api/analysis/exams/${examId}/classes`)
-      ]);
-      setAnalysisOverview(overview);
-      setAnalysisRanking(ranking);
-      setAnalysisQuestions(questions);
-      if (!classId) setAnalysisClasses(classes);
-      setStatus(`分析加载完成：${overview.gradedCount} 人${classId ? "（当前班级）" : ""}`);
-    } catch (err) {
-      setStatus(`分析加载失败：${err instanceof Error ? err.message : String(err)}`);
-      setAnalysisOverview(null);
-      setAnalysisRanking([]);
-      setAnalysisQuestions([]);
+  const railNavItems: Array<
+    | { type: "item"; id: AppMode; icon: ReactElement; label: string; onClick?: () => void | Promise<void> }
+    | { type: "group"; label: string }
+  > = useMemo(() => {
+    const items: typeof railNavItems = [];
+    if (canOpenMode("home")) {
+      items.push({ type: "item", id: "home", icon: <Home />, label: "首页" });
     }
-  }
-
-  function downloadAnalysisCsv(classId?: string) {
-    if (!analysisExamId) return;
-    setShowExportMenu(false);
-    const params = classId ? `?classId=${classId}` : "";
-    const exam = exams.find(e => e.id === analysisExamId);
-    const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.xlsx`;
-
-    authFetch(`/api/analysis/exams/${analysisExamId}/export-csv${params}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error(await res.text());
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        setStatus("Excel 导出完成");
-      })
-      .catch((err) => setStatus(`导出失败: ${err instanceof Error ? err.message : String(err)}`));
-  }
+    if (canDesign) {
+      items.push({ type: "item", id: "design", icon: <SquarePen />, label: "答题卡设计" });
+    }
+    if (canManageExams) {
+      items.push({
+        type: "item",
+        id: "exam-manage",
+        icon: <ClipboardList />,
+        label: "考试管理",
+        onClick: async () => {
+          await loadExams();
+          await loadExamGroups();
+        },
+      });
+    }
+    if (canAnalyze) {
+      items.push({ type: "item", id: "analysis", icon: <BarChart3 />, label: "成绩分析", onClick: loadExams });
+    }
+    if (showScoresTab) {
+      items.push({ type: "item", id: "scores", icon: <BarChart3 />, label: "我的成绩" });
+    }
+    // 个人账号设置：所有已登录用户可访问（与「账号管理/全局设置」管理区相邻）
+    if (canOpenMode("account-settings")) {
+      items.push({ type: "item", id: "account-settings", icon: <Settings />, label: "账号设置" });
+    }
+    if (canManageAccounts || canManageGlobal) {
+      items.push({ type: "group", label: "管理" });
+    }
+    if (canManageAccounts) {
+      items.push({ type: "item", id: "account", icon: <Users />, label: "账号管理" });
+    }
+    if (canManageGlobal) {
+      items.push({ type: "item", id: "global-settings", icon: <Settings />, label: "全局设置" });
+    }
+    return items;
+  }, [canOpenMode, canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, canManageGlobal, loadExams, loadExamGroups]);
 
   const selectedBlock = card?.bodyBlocks.find((block) => block.id === selectedBlockId) ?? null;
 
   if (loading) {
+    // P5：原先用 styles.css 的 .login-shell/.empty-text/.login-beian-footer，
+    // 改为 v2 Card + Spinner；BeianFooter 仍 floating 贴右下，不参与居中流。
     return (
-      <div className="login-shell">
-        <p className="empty-text">正在加载...</p>
-        <BeianFooter className="login-beian-footer" />
+      <div className="relative flex min-h-screen flex-col items-center justify-center gap-4 bg-background p-6">
+        <Card className="flex flex-col items-center gap-3 px-8 py-7">
+          <Spinner size={24} />
+          <p className="text-sm font-medium text-muted-foreground">正在加载...</p>
+        </Card>
+        <BeianFooter floating />
       </div>
     );
   }
@@ -1454,6 +1565,8 @@ function App() {
     setSelectedBlockId,
     layout,
     selectedBlock,
+    designScreen,
+    setDesignScreen,
     updateCard,
     updateBlock,
     moveBlock,
@@ -1525,7 +1638,6 @@ function App() {
     setAnalysisGroupId,
     showGroupExport,
     setShowGroupExport,
-    loadAnalysis,
     showImportCardModal,
     setShowImportCardModal,
     importCardData,
@@ -1562,201 +1674,154 @@ function App() {
     mobileNavItems,
   };
 
+  const pageTitle =
+    mode === "home"
+      ? "首页"
+      : mode === "scores"
+        ? "我的成绩"
+        : mode === "exam-manage"
+          ? "考试管理"
+          : mode === "account"
+            ? "账号管理"
+            : mode === "account-settings"
+              ? "账号设置"
+              : mode === "sponsor"
+              ? "支持项目"
+              : mode === "guide"
+                ? "使用说明"
+                : mode === "global-settings"
+                  ? "全局设置"
+                  : mode === "permissions"
+                    ? "权限说明"
+                    : mode === "design" && designScreen === "select"
+                      ? "答题卡"
+                      : mode === "design" ? "答题卡设计器" : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统");
+
+  const pageSubtitle =
+    mode === "home"
+      ? `欢迎，${user?.name ?? ""}`
+      : mode === "scores"
+        ? "仅展示本人成绩 · 只读"
+        : mode === "exam-manage"
+          ? "创建、管理考试与阅卷批次"
+          : mode === "account"
+            ? "管理用户、班级与花名册"
+            : mode === "account-settings"
+              ? "个人阅卷、客户端与 AI 服务偏好"
+              : mode === "sponsor"
+              ? "感谢您的信任与支持"
+              : mode === "guide"
+                ? "Project-X 操作指南与常见问题"
+                : mode === "global-settings"
+                  ? "系统级策略与服务商配置"
+                  : mode === "permissions"
+                    ? `${user.name} · ${user.role_display_name ?? user.role_name}`
+                    : mode === "design" && designScreen === "select"
+                      ? "选择或新建一张答题卡"
+                      : card && mode === "design"
+                        ? `${card.title} · ID:${card.id} · ${layout?.pages.length ?? 1} 页`
+                        : card
+                          ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
+                        : canDesign
+                          ? "创建答题卡后开始编辑"
+                          : `${user.name} · ${user.role_display_name ?? user.role_name}`;
+
+  const designActions = canDesign && mode === "design" && (
+    designScreen === "select" ? (
+      <Button variant="primary" size="sm" onClick={() => setShowNewCardModal(true)} disabled={isBusy}>
+        <Plus size={16} /> 新建答题卡
+      </Button>
+    ) : card ? (
+      <>
+        <Button variant="ghost" size="sm" onClick={() => setDesignScreen("select")}>
+          <ArrowLeft size={16} /> 卡片列表
+        </Button>
+        <Button variant="ghost" size="sm" asChild>
+          <a href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
+            坐标 JSON
+          </a>
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => void exportPdfForCurrentCard()} disabled={isBusy}>
+          <FileDown size={16} /> PDF
+        </Button>
+        <Button variant="primary" size="sm" onClick={() => void saveCard()} disabled={isBusy}>
+          <Save size={16} /> 保存
+        </Button>
+        {autoSaveLabel && (
+          <SaveStatus
+            state={autoSaveState as SaveState}
+            savedAt={autoSaveState === "saved" ? new Date().toLocaleTimeString() : undefined}
+          />
+        )}
+      </>
+    ) : null
+  );
+
   return (
     <WorkspaceProvider value={workspace}>
-    <main className={`app-shell ${showCardSidebar ? "" : "no-card-sidebar"}`}>
-      {showCardSidebar && (
-      <aside className="sidebar">
-        <div className="brand">
-          <img src="/icon.png" alt="" className="brand-icon" />
-          <div>
-            <strong>答题卡设计阅卷系统</strong>
-            <span>Project-X v{import.meta.env.VITE_APP_VERSION}</span>
-          </div>
-        </div>
-        <div style={{ gap: 8, display: "flex", flexDirection: "column" }}>
-          <button className="primary-button" onClick={() => { setShowNewCardModal(true); if (exams.length === 0) loadExams(); }} disabled={isBusy || !canDesign} style={{ width: "100%" }}>
-            <Plus size={17} /> 新建答题卡
-          </button>
-        </div>
-        <div className="card-list">
-          {cards.map((item) => (
-            <div
-              key={item.id}
-              className={`card-list-item ${card?.id === item.id ? "active" : ""}`}
-              style={{
-                borderLeft: globalPaper.highlightMissingPaper !== 0 && !(item as any).has_original_paper
-                  ? "3px solid var(--warn, #f59e0b)"
-                  : "3px solid transparent"
-              }}
-            >
-              <button
-                className="card-list-main"
-                onClick={() => void loadCard(item.id)}
-              >
-                <span>{item.title || "未命名答题卡"}</span>
-                <small>{item.subjectLabel ? `${item.subjectLabel} · ` : ""}ID:{item.id}</small>
-              </button>
-              <div className="card-list-actions">
-                <button title="上传原卷" onClick={(e) => { e.stopPropagation(); setPaperPanelCardId(item.id); setShowPaperPanel(true); }}>
-                  <FileUp size={14} />
-                </button>
-                <button title="导出" onClick={(e) => { e.stopPropagation(); void exportCard(item.id); }}>
-                  <Download size={14} />
-                </button>
-                <button
-                  title="删除"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (confirm(`确定删除「${item.title || item.id}」？此操作不可撤销。`)) {
-                      void deleteCard(item.id);
-                    }
-                  }}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
-          ))}
-          {cards.length === 0 && <p className="empty-text">暂无答题卡，先新建一张。</p>}
-        </div>
-        <button className="ghost-button" onClick={() => void importCard()} disabled={isBusy} style={{ marginTop: 8, width: "100%" }}>
-          <Upload size={16} /> 导入答题卡
-        </button>
-      </aside>
-      )}
-
-      <section className="workspace">
-        <header className="topbar">
-          <button
-            className="mobile-menu-button"
+       <TooltipProvider>
+       <AppShell>
+        <AppRail
+          collapsed={effectiveRailCollapsed}
+          className="relative"
+          onMouseEnter={() => {
+            if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
+             if (railCollapsed && railAutoExpand) setRailExpandedOnHover(true);
+          }}
+          onMouseLeave={() => {
+             if (!railCollapsed || !railAutoExpand) return;
+            if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
+            railCollapseTimerRef.current = window.setTimeout(() => setRailExpandedOnHover(false), 120);
+          }}
+        >
+          <Button
+            variant="outline"
+            size="icon-sm"
             type="button"
-            onClick={() => setDrawerOpen(true)}
-            aria-label="打开导航菜单"
+            aria-label={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
+            title={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
+            className="absolute -right-3 top-1/2 z-50 -translate-y-1/2 rounded-full bg-card shadow-2"
+            onClick={() => {
+              setRailCollapsed((collapsed) => !collapsed);
+              setRailExpandedOnHover(false);
+            }}
           >
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="3" y1="6" x2="21" y2="6" />
-              <line x1="3" y1="12" x2="21" y2="12" />
-              <line x1="3" y1="18" x2="21" y2="18" />
-            </svg>
-          </button>
-          <div>
-            <h1>
-              {mode === "home" ? "首页" : mode === "scores"
-                ? "我的成绩"
-                : mode === "exam-manage"
-                  ? "考试管理"
-                  : mode === "account"
-                    ? "账号管理"
-                  : mode === "sponsor"
-                    ? "支持项目"
-                    : mode === "guide"
-                      ? "使用说明"
-                    : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统")}
-            </h1>
-            <p>
-              {mode === "home" ? `欢迎，${user?.name ?? ""}` : mode === "scores"
-                ? "查看各场考试得分、排名与逐题明细"
-                : mode === "exam-manage"
-                  ? "创建、管理考试与阅卷批次"
-                  : mode === "account"
-                  ? "管理用户、班级与花名册"
-                  : mode === "sponsor"
-                    ? "感谢您的信任与支持"
-                    : mode === "guide"
-                      ? "Project-X 操作指南与常见问题"
-                    : card
-                    ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
-                    : canDesign
-                      ? "创建答题卡后开始编辑"
-                      : `${user.name} · ${user.role_display_name ?? user.role_name}`}
-            </p>
-          </div>
-          <div className="topbar-actions-left">
-            {!showTabBar && mode !== "home" && (
-              <button onClick={() => switchMode("home")} style={{ height: 44, padding: "0 16px", fontSize: 14, fontWeight: 500, border: "1px solid var(--color-border-primary)", borderRadius: 8, background: "var(--color-background-secondary)", color: "var(--color-text-primary)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 }}>← 返回首页</button>
+            <ChevronLeft className={cn("size-3.5 transition-transform duration-(--px-dur-2)", railCollapsed && "rotate-180")} />
+          </Button>
+          <AppRailBrand
+            logo={<span className="text-sm font-bold">P</span>}
+            title="Project-X"
+            subtitle="答题卡设计系统"
+            collapsed={effectiveRailCollapsed}
+          />
+          <AppRailNav>
+            {railNavItems.map((it, idx) =>
+              it.type === "group" ? (
+                <AppRailGroupLabel key={`g-${idx}`} collapsed={effectiveRailCollapsed}>{it.label}</AppRailGroupLabel>
+              ) : (
+                <AppRailItem
+                  key={it.id}
+                  icon={it.icon}
+                  label={it.label}
+                  active={mode === it.id}
+                  collapsed={effectiveRailCollapsed}
+                  onClick={() => void switchMode(it.id, it.onClick)}
+                />
+              ),
             )}
-            {card && canDesign && mode === "design" && (
-              <>
-                <a className="ghost-button" href={urlWithToken(`/api/cards/${card.id}/layout`)} target="_blank" rel="noreferrer">
-                  坐标JSON
-                </a>
-                <button className="ghost-button" type="button" onClick={() => void exportPdfForCurrentCard()} disabled={isBusy}>
-                  <FileDown size={17} /> PDF
-                </button>
-                <button className="primary-button" onClick={() => void saveCard()} disabled={isBusy}>
-                  <Save size={17} /> 保存
-                </button>
-                {autoSaveLabel && (
-                  <span className={`autosave-status autosave-${autoSaveState}`}>
-                    {autoSaveLabel}
-                  </span>
-                )}
-              </>
-            )}
-          </div>
-          <div className="topbar-actions">
-            <div className="mode-toggle" role="tablist" aria-label="工作模式" style={showTabBar ? undefined : { display: "none" }}>
-              <NavLink to={MODE_PATH.home} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("home"); }}>
-                <Home size={16} /> 首页
-              </NavLink>
-              {canDesign && (
-              <NavLink to={MODE_PATH.design} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("design"); }}>
-                <SquarePen size={16} /> 设计
-              </NavLink>
-              )}
-              {canManageExams && (
-              <NavLink to={MODE_PATH["exam-manage"]} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("exam-manage", async () => { await loadExams(); await loadExamGroups(); }); }}>
-                <ClipboardList size={16} /> 考试管理
-              </NavLink>
-              )}
-              {canAnalyze && (
-              <NavLink to={MODE_PATH.analysis} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("analysis", loadExams); }}>
-                <BarChart3 size={16} /> 分析
-              </NavLink>
-              )}
-              {showScoresTab && (
-              <NavLink to={MODE_PATH.scores} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("scores"); }}>
-                <BarChart3 size={16} /> 我的成绩
-              </NavLink>
-              )}
-              {canManageAccounts && (
-              <NavLink to={MODE_PATH.account} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("account"); }}>
-                <Users size={16} /> 账号
-              </NavLink>
-              )}
-              {canManageGlobal && (
-              <NavLink to={MODE_PATH["global-settings"]} className={({ isActive }) => (isActive ? "active" : "")} onClick={(e) => { e.preventDefault(); void switchMode("global-settings"); }}>
-                <BookOpen size={16} /> 全局设置
-              </NavLink>
-              )}
-            </div>
+          </AppRailNav>
+          <AppRailFooter className={effectiveRailCollapsed ? "flex-col" : undefined}>
             <button
-              className="theme-toggle"
               type="button"
               onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
               title={theme === "light" ? "切换为夜间模式" : "切换为日间模式"}
               aria-label="切换主题"
+              className="inline-flex h-control-md w-control-md items-center justify-center rounded-md text-secondary-foreground transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground"
             >
-              {theme === "light" ? (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="5" />
-                  <line x1="12" y1="1" x2="12" y2="3" />
-                  <line x1="12" y1="21" x2="12" y2="23" />
-                  <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-                  <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-                  <line x1="1" y1="12" x2="3" y2="12" />
-                  <line x1="21" y1="12" x2="23" y2="12" />
-                  <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-                  <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
-                </svg>
-              ) : (
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-                </svg>
-              )}
+              {theme === "light" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
             <AccountMenu
+              compact={effectiveRailCollapsed}
               onOpenSponsor={() => {
                 previousModeRef.current = mode;
                 void switchMode("sponsor");
@@ -1770,68 +1835,149 @@ function App() {
                 void switchMode("permissions");
               }}
             />
-          </div>
-        </header>
+          </AppRailFooter>
+        </AppRail>
 
-        {/* C 阶段（2026-07-21）：真实 URL 路由渲染 —— 仅当前路径对应的页面挂载，
-            取代原先「全部网格常驻 + hidden-panel 切换」的范式。state/handler 仍集中在 App（经 WorkspaceProvider 下发），
-            顶栏标题 / showCardSidebar / useBlocker 由已与 URL 同步的 mode 驱动，行为不变。 */}
-        <Routes>
-          <Route path="/home" element={<HomeRoutePage />} />
-          <Route path="/design/*" element={<DesignPage />} />
-          <Route path="/exam-manage" element={<ExamManagePage />} />
-          <Route path="/analysis" element={<AnalysisRoutePage />} />
-          <Route path="/scores" element={<ScoresRoutePage />} />
-          <Route path="/account" element={<AccountRoutePage />} />
-          <Route path="/sponsor" element={<SponsorRoutePage />} />
-          <Route path="/permissions" element={<PermissionsRoutePage />} />
-          <Route path="/guide" element={<GuideRoutePage />} />
-          <Route path="/global-settings" element={<GlobalSettingsRoutePage onBack={() => void switchMode("home")} />} />
-          <Route path="*" element={<Navigate to="/home" replace />} />
-        </Routes>
-        {gradingPanel && (
-          <div style={{ position: "fixed", inset: 0, zIndex: 10000, background: "var(--color-background-primary)" }}>
+        <AppMain>
+          <PageHeader
+            title={pageTitle}
+            subtitle={pageSubtitle}
+             leading={undefined}
+            actions={
+              <div className="flex items-center gap-2">
+                {designActions}
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="hidden lg:inline-flex"
+                  onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
+                  aria-label="切换主题"
+                >
+                  {theme === "light" ? <Sun size={18} /> : <Moon size={18} />}
+                </Button>
+                <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
+                  <button
+                    type="button"
+                    className="inline-flex h-control-md w-control-md items-center justify-center rounded-md text-secondary-foreground transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground lg:hidden"
+                    onClick={() => setDrawerOpen(true)}
+                    aria-label="打开导航菜单"
+                  >
+                    <Menu size={20} />
+                  </button>
+                  <SheetContent side="left" className="w-[260px]">
+                    <SheetHeader>
+                      <SheetTitle>Project-X 导航</SheetTitle>
+                    </SheetHeader>
+                    <SheetBody>
+                      <nav className="flex flex-col gap-1">
+                        {railNavItems.map((it, idx) =>
+                          it.type === "group" ? (
+                            <div
+                              key={`mg-${idx}`}
+                              className="mt-3 mb-1 px-2 text-xs font-medium text-muted-foreground"
+                            >
+                              {it.label}
+                            </div>
+                          ) : (
+                            <button
+                              key={it.id}
+                              type="button"
+                              onClick={() => {
+                                setDrawerOpen(false);
+                                void switchMode(it.id, it.onClick);
+                              }}
+                              className={cn(
+                                "flex h-9 items-center gap-2.5 rounded-md px-2.5 text-base font-medium transition-colors",
+                                mode === it.id
+                                  ? "bg-accent text-accent-foreground"
+                                  : "text-secondary-foreground hover:bg-secondary hover:text-foreground",
+                              )}
+                            >
+                              {it.icon}
+                              {it.label}
+                            </button>
+                          ),
+                        )}
+                      </nav>
+                    </SheetBody>
+                  </SheetContent>
+                </Sheet>
+              </div>
+            }
+          />
+
+          <AppContentRow>
+            <AppContent width={mode === "home" ? "wide" : "full"} bare={mode !== "home"}>
+              {/* C 阶段（2026-07-21）：真实 URL 路由渲染 —— 仅当前路径对应的页面挂载。 */}
+              <Routes>
+                <Route path="/home" element={canOpenMode("home") ? <HomeRoutePage /> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/design/*" element={canOpenMode("design") ? <Suspense fallback={routeFallback}><DesignPage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/exam-manage" element={canOpenMode("exam-manage") ? <Suspense fallback={routeFallback}><ExamManagePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/analysis" element={canOpenMode("analysis") ? <Suspense fallback={routeFallback}><AnalysisRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/scores" element={canOpenMode("scores") ? <Suspense fallback={routeFallback}><ScoresRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/account" element={canOpenMode("account") ? <Suspense fallback={routeFallback}><AccountRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/account-settings" element={canOpenMode("account-settings") ? <Suspense fallback={routeFallback}><AccountSettingsPage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/sponsor" element={canOpenMode("home") ? <Suspense fallback={routeFallback}><SponsorRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/permissions" element={canOpenMode("account") ? <Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/guide" element={canOpenMode("home") ? <Suspense fallback={routeFallback}><GuideRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/global-settings" element={canOpenMode("global-settings") ? <Suspense fallback={routeFallback}><GlobalSettingsRoutePage onBack={() => void switchMode("home")} /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="*" element={<NotFound to={MODE_PATH[fallbackMode]} />} />
+              </Routes>
+            </AppContent>
+          </AppContentRow>
+
+          <StatusBar>
+            <StatusItem plain>{status}</StatusItem>
+            <StatusSpacer />
+            <BeianFooter />
+          </StatusBar>
+        </AppMain>
+       </AppShell>
+       </TooltipProvider>
+
+      {gradingPanel && (
+        <div className="fixed inset-0 z-(--px-z-lightbox) bg-background">
+          <Suspense fallback={routeFallback}>
             <GradePanel examId={gradingPanel.examId} blockId={gradingPanel.blockId} teacherId={user?.id ?? 0} onBack={() => setGradingPanel(null)} />
-          </div>
-        )}
-        {/* 移动端抽屉导航（≤480px 渲染，Portal 到 body） */}
-        <MobileDrawer />
-        <footer className="statusbar">
-          <span className="statusbar-message">{status}</span>
-          <BeianFooter className="statusbar-beian" />
-        </footer>
-      </section>
-
-      {/* ── 移动端底部导航栏 ── */}
-      {showTabBar && (
-      <nav className="bottom-nav" aria-label="主导航">
-        <div className="bottom-nav-inner">
-          {mobileNavItems.map((m) => (
-            <button
-              key={m.id}
-              className={`bottom-nav-item ${mode === m.id ? "active" : ""}`}
-              onClick={() => void switchMode(m.id, m.onEnter)}
-              type="button"
-              title={m.label}
-              aria-label={m.label}
-              aria-current={mode === m.id ? "page" : undefined}
-            >
-              {m.icon}
-              <span>{m.shortLabel}</span>
-            </button>
-          ))}
+          </Suspense>
         </div>
-      </nav>
       )}
+
+      {/* 移动端底部导航栏 */}
+      {showTabBar && (
+        <nav className="hidden max-[480px]:fixed max-[480px]:inset-x-0 max-[480px]:bottom-0 max-[480px]:z-(--px-z-header) max-[480px]:flex max-[480px]:h-mobile-nav max-[480px]:border-t max-[480px]:border-border max-[480px]:bg-card max-[480px]:pb-(--px-safe-area-bottom) max-[768px]:landscape:h-12" aria-label="主导航">
+          <div className="flex h-full w-full">
+            {mobileNavItems.map((m) => (
+              <button
+                key={m.id}
+                data-active={mode === m.id || undefined}
+                onClick={() => void switchMode(m.id, m.onEnter)}
+                type="button"
+                title={m.label}
+                aria-label={m.label}
+                aria-current={mode === m.id ? "page" : undefined}
+                className="flex flex-1 cursor-pointer flex-col items-center justify-center gap-1 border-0 bg-transparent text-[10px] font-medium text-muted-foreground data-[active]:text-primary max-[768px]:landscape:text-[9px] [&_svg]:size-[22px] [&_svg]:shrink-0"
+              >
+                {m.icon}
+                <span>{m.shortLabel}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
+      )}
+
+      <Toaster />
 
       <NewCardModal open={showNewCardModal} onClose={() => setShowNewCardModal(false)} onCreate={createCard} exams={exams} />
       {paperPanelCardId && (
-        <PaperUploadPanel
-          cardId={paperPanelCardId}
-          open={showPaperPanel}
-          onClose={() => setShowPaperPanel(false)}
-          onUploaded={() => void refreshCards()}
-        />
+        <Suspense fallback={null}>
+          <PaperUploadPanel
+            cardId={paperPanelCardId}
+            open={showPaperPanel}
+            onClose={() => setShowPaperPanel(false)}
+            onUploaded={() => void refreshCards()}
+          />
+        </Suspense>
       )}
       <ImportCardModal
         open={showImportCardModal && importCardData !== null}
@@ -1844,40 +1990,73 @@ function App() {
         onClose={() => { setShowImportCardModal(false); setImportCardData(null); setIsBusy(false); }}
       />
       {exportCheck && (
-        <div className="modal-backdrop" onClick={() => setExportCheck(null)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 560, maxWidth: "calc(100vw - 40px)", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
-            <div className="modal-header">
-              <h2>导出检查</h2>
-              <button className="modal-close" type="button" onClick={() => setExportCheck(null)}>×</button>
+        <Dialog open onOpenChange={(next) => { if (!next) setExportCheck(null); }}>
+          <DialogContent size="sm" className="max-w-[560px]">
+            <DialogHeader>
+              <DialogTitle>导出检查</DialogTitle>
+            </DialogHeader>
+
+            {/* 进度条：当前步骤品牌红加粗，已完成步骤 success，未开始 muted */}
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-border-subtle px-5 py-2.5 text-sm">
+              <span className="inline-flex items-center gap-1 font-semibold text-success-foreground"><Check size={14} /> 分值</span>
+              <span className="text-muted-foreground">→</span>
+              <span
+                className={cn(
+                  exportCheck.step === "paper"
+                    ? "font-semibold text-primary"
+                    : exportCheck.paperInfo?.hasPaper
+                      ? "text-success-foreground"
+                      : "text-muted-foreground",
+                )}
+              >
+                {exportCheck.step === "paper" ? (
+                  <span className="inline-flex items-center gap-1">▶ 原卷</span>
+                ) : exportCheck.paperInfo?.hasPaper ? (
+                  <span className="inline-flex items-center gap-1"><Check size={14} /> 原卷</span>
+                ) : (
+                  <span className="inline-flex items-center gap-1">○ 原卷</span>
+                )}
+              </span>
+              <span className="text-muted-foreground">→</span>
+              <span
+                className={cn(
+                  exportCheck.step === "knowledge"
+                    ? "font-semibold text-primary"
+                    : exportCheck.knowledgeReady
+                      ? "text-success-foreground"
+                      : "text-muted-foreground",
+                )}
+              >
+                {exportCheck.step === "knowledge" ? (
+                  <span className="inline-flex items-center gap-1">▶ 知识点</span>
+                ) : exportCheck.knowledgeReady ? (
+                  <span className="inline-flex items-center gap-1"><Check size={14} /> 知识点</span>
+                ) : (
+                  <span className="inline-flex items-center gap-1">○ 知识点</span>
+                )}
+              </span>
+              <span className="text-muted-foreground">→</span>
+              <span className="text-muted-foreground">○ 导出</span>
             </div>
 
-            {/* 进度条 */}
-            <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "10px 0", borderBottom: "1px solid var(--line-soft)", flexWrap: "wrap", fontSize: 13 }}>
-              <span style={{ color: "var(--success, #10b981)", fontWeight: 600 }}>✓ 分值</span><span style={{ color: "var(--muted)" }}>→</span>
-              <span style={{ color: exportCheck.step === "paper" ? "var(--brand)" : exportCheck.paperInfo?.hasPaper ? "var(--success, #10b981)" : "var(--muted)", fontWeight: exportCheck.step === "paper" ? 600 : 400 }}>
-                {exportCheck.step === "paper" ? "▶ 原卷" : exportCheck.paperInfo?.hasPaper ? "✓ 原卷" : "○ 原卷"}
-              </span><span style={{ color: "var(--muted)" }}>→</span>
-              <span style={{ color: exportCheck.step === "knowledge" ? "var(--brand)" : exportCheck.knowledgeReady ? "var(--success, #10b981)" : "var(--muted)", fontWeight: exportCheck.step === "knowledge" ? 600 : 400 }}>
-                {exportCheck.step === "knowledge" ? "▶ 知识点" : exportCheck.knowledgeReady ? "✓ 知识点" : "○ 知识点"}
-              </span><span style={{ color: "var(--muted)" }}>→</span>
-              <span style={{ color: "var(--muted)" }}>○ 导出</span>
-            </div>
-
-            <div style={{ overflow: "auto", flex: 1, padding: "8px 0" }}>
+            <DialogBody>
               {/* Step 1: 分值检查 */}
               {exportCheck.step === "score" && exportCheck.validation.issues.length > 0 && (
-                <div>
-                  <div className="score-warning-summary">
-                    <strong>当前总分：{exportCheck.validation.totalScore} 分</strong>
-                    <span>客观题 {exportCheck.validation.objectiveScore} 分 / 主观题 {exportCheck.validation.subjectiveScore} 分</span>
-                    <span>{exportCheck.validation.flexibleTotalSubject ? "语文、英语或外语科目不检查 100/150 总分规则" : `期望总分：${exportCheck.validation.expectedTotals.join(" 或 ")} 分`}</span>
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-col gap-1.5 rounded-lg border border-warning-border bg-warning-soft p-3 text-sm text-foreground">
+                    <strong className="text-base tabular-nums">当前总分：{exportCheck.validation.totalScore} 分</strong>
+                    <span className="tabular-nums">客观题 {exportCheck.validation.objectiveScore} 分 / 主观题 {exportCheck.validation.subjectiveScore} 分</span>
+                    <span className="tabular-nums">{exportCheck.validation.flexibleTotalSubject ? "语文、英语或外语科目不检查 100/150 总分规则" : `期望总分：${exportCheck.validation.expectedTotals.join(" 或 ")} 分`}</span>
                   </div>
-                  <ul className="score-warning-list">
+                  <ul className="m-0 flex max-h-80 list-none flex-col gap-2 overflow-auto p-0">
                     {exportCheck.validation.issues.slice(0, 6).map((issue, i) => (
-                      <li key={`s_${i}`}><span>{issue.message}</span>{issue.questionRefs?.length ? <small> 涉及：{issue.questionRefs.join("、")}</small> : null}</li>
+                      <li key={`s_${i}`} className="flex flex-col gap-1 rounded-md border border-border bg-card p-2.5 text-sm">
+                        <span>{issue.message}</span>
+                        {issue.questionRefs?.length ? <small className="text-xs text-muted-foreground"> 涉及：{issue.questionRefs.join("、")}</small> : null}
+                      </li>
                     ))}
                   </ul>
-                  {exportCheck.validation.issues.length > 6 && <p className="score-warning-more">还有 {exportCheck.validation.issues.length - 6} 条提示</p>}
+                  {exportCheck.validation.issues.length > 6 && <p className="m-0 text-xs text-muted-foreground tabular-nums">还有 {exportCheck.validation.issues.length - 6} 条提示</p>}
                 </div>
               )}
 
@@ -1886,33 +2065,33 @@ function App() {
                 <div>
                   {exportCheck.paperInfo?.hasPaper ? (
                     <div>
-                      <p style={{ marginBottom: 6, fontSize: 13 }}>✅ 已上传：<strong>{exportCheck.paperInfo.filename}</strong></p>
+                      <p className="mb-1.5 flex items-center gap-1 text-sm"><CheckCircle2 size={15} aria-hidden="true" /> 已上传：<strong>{exportCheck.paperInfo.filename}</strong></p>
                       {/* PDF → iframe, 图片 → img, DOCX → 文字 */}
                       {exportCheck.paperInfo.mimeType?.startsWith("image/") ? (
-                        <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, overflow: "hidden", cursor: "pointer", background: "var(--surface-raised)" }}
+                        <div className="cursor-pointer overflow-hidden rounded-md border border-border bg-card"
                           onClick={() => { if (exportCheck.cardId) setPaperPreviewOpen(exportCheck.cardId); }} title="点击放大">
                           <img src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper?format=image`)} alt="原卷"
-                            style={{ maxWidth: "100%", maxHeight: 240, objectFit: "contain", display: "block", margin: "0 auto" }}
+                            className="mx-auto block max-h-60 max-w-full object-contain"
                             onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                          <p style={{ textAlign: "center", padding: "4px 0 8px", color: "var(--muted)", fontSize: 12 }}>点击放大查看</p>
+                          <p className="px-0 pt-1 pb-2 text-center text-xs text-muted-foreground">点击放大查看</p>
                         </div>
                       ) : exportCheck.paperInfo.mimeType === "application/pdf" ? (
-                        <iframe src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper`)} style={{ width: "100%", height: 380, border: "1px solid var(--line-soft)", borderRadius: 6 }} title="原卷PDF" />
+                        <iframe src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper`)} className="h-95 w-full rounded-md border border-border" title="原卷PDF" />
                       ) : (
-                        <div style={{ border: "1px solid var(--line-soft)", borderRadius: 6, padding: 16, textAlign: "center", background: "var(--surface-raised)" }}>
-                          <p style={{ margin: 0, fontWeight: 600 }}>{exportCheck.paperInfo.filename}</p>
-                          <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--muted)" }}>DOCX 文件不支持内联预览</p>
-                          <a href={urlWithToken(`/api/cards/${exportCheck.cardId}/paper`)} target="_blank" style={{ fontSize: 12, marginTop: 4, display: "inline-block" }}>在 Office 中打开</a>
+                        <div className="rounded-md border border-border bg-card p-4 text-center">
+                          <p className="m-0 font-semibold">{exportCheck.paperInfo.filename}</p>
+                          <p className="mt-1 mb-0 text-xs text-muted-foreground">DOCX 文件不支持内联预览</p>
+                          <a href={urlWithToken(`/api/cards/${exportCheck.cardId}/paper`)} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs text-primary hover:underline">在 Office 中打开</a>
                         </div>
                       )}
                     </div>
                   ) : (
-                    <div style={{ background: "var(--brand-soft)", borderRadius: 6, padding: 16, textAlign: "center" }}>
-                      <p style={{ color: "var(--brand)", fontWeight: 600, margin: "0 0 8px" }}>⚠ 尚未上传原卷</p>
-                      <button className="primary-button" type="button" onClick={() => {
+                    <div className="rounded-md bg-accent p-4 text-center">
+                      <p className="m-0 mb-2 flex items-center justify-center gap-1 font-semibold text-primary"><AlertTriangle size={15} aria-hidden="true" /> 尚未上传原卷</p>
+                      <Button variant="primary" type="button" icon={<Upload size={15} aria-hidden="true" />} onClick={() => {
                         setExportCheck(null);
                         if (exportCheck.cardId) { setPaperPanelCardId(exportCheck.cardId); setShowPaperPanel(true); }
-                      }}>📤 立即上传原卷</button>
+                      }}>立即上传原卷</Button>
                     </div>
                   )}
                 </div>
@@ -1923,20 +2102,20 @@ function App() {
                 <div>
                   {exportCheck.knowledgeReady && exportCheck.knowledgePoints?.length ? (
                     <div>
-                      <p style={{ marginBottom: 6, fontSize: 13 }}>✅ 已分析 {exportCheck.knowledgePoints.length} 道题：</p>
-                      <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--line-soft)", borderRadius: 6, padding: 8, background: "var(--surface-raised)" }}>
+                      <p className="mb-1.5 flex items-center gap-1 text-sm tabular-nums"><CheckCircle2 size={15} aria-hidden="true" /> 已分析 {exportCheck.knowledgePoints.length} 道题：</p>
+                      <div className="max-h-55 overflow-y-auto rounded-md border border-border bg-card p-2">
                         {exportCheck.knowledgePoints.map((q) => (
-                          <div key={q.question_number} style={{ marginBottom: 4, fontSize: 13, lineHeight: 1.8 }}>
-                            <strong style={{ color: "var(--muted)" }}>第{q.question_number}题：</strong>
+                          <div key={q.question_number} className="mb-1 text-sm leading-relaxed">
+                            <strong className="text-muted-foreground tabular-nums">第{q.question_number}题：</strong>
                             {q.points.map((p, i) => (
-                              <span key={i} style={{ display: "inline-block", padding: "1px 8px", borderRadius: 10, margin: "1px 2px", background: "#3b82f6", color: "#fff", fontSize: 12 }}>{p}</span>
+                              <span key={i} className="m-0.5 inline-block rounded-full bg-info px-2 py-px text-xs text-primary-foreground">{p}</span>
                             ))}
                           </div>
                         ))}
                       </div>
-                      <button className="ghost-button" type="button" onClick={() => {
+                      <Button variant="ghost" type="button" className="mt-2" onClick={() => {
                         if (exportCheck.cardId) { setPaperPanelCardId(exportCheck.cardId); setShowPaperPanel(true); }
-                      }} style={{ marginTop: 8 }}>编辑或重新分析</button>
+                      }}>编辑或重新分析</Button>
                     </div>
                   ) : (
                     <KnowledgeAnalysisInline cardId={exportCheck.cardId!}
@@ -1946,22 +2125,22 @@ function App() {
                   )}
                 </div>
               )}
-            </div>
+            </DialogBody>
 
-            {/* 底部按钮 */}
-            <div style={{ borderTop: "1px solid var(--line-soft)", padding: "12px 0 0", display: "flex", justifyContent: "space-between", gap: 8, flexShrink: 0 }}>
+            {/* 底部按钮：左「上一步」，右侧为取消 + 主操作 */}
+            <DialogFooter className="justify-between">
               <div>
                 {exportCheck.step !== "score" && (
-                  <button className="ghost-button" type="button" onClick={() => {
+                  <Button variant="ghost" type="button" onClick={() => {
                     const prev = exportCheck.step === "paper" ? "score" : "paper";
                     setExportCheck({ ...exportCheck, step: prev as "score" | "paper" });
-                  }}>← 上一步</button>
+                  }}>← 上一步</Button>
                 )}
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-              <button className="ghost-button" type="button" onClick={() => setExportCheck(null)}>取消</button>
+              <div className="flex gap-2">
+              <Button variant="ghost" type="button" onClick={() => setExportCheck(null)}>取消</Button>
               {exportCheck.step === "score" && (
-                <button className="primary-button" type="button" onClick={async () => {
+                <Button variant="primary" type="button" onClick={async () => {
                   const cardId = exportCheck.cardId;
                   if (cardId) {
                     const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string }>(`/api/cards/${cardId}/paper/info`).catch((): { has_original_paper?: number; filename?: string; mime_type?: string } => ({}));
@@ -1972,84 +2151,85 @@ function App() {
                   } else { setExportCheck({ ...exportCheck, step: "paper" }); }
                 }}>
                   确认分值 → 原卷检查
-                </button>
+                </Button>
               )}
               {exportCheck.step === "paper" && (
                 <>
                   {!exportCheck.paperInfo?.hasPaper && (
-                    <button className="ghost-button" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
+                    <Button variant="ghost" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
                       跳过 → 知识点检查
-                    </button>
+                    </Button>
                   )}
-                  <button className="primary-button" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
+                  <Button variant="primary" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
                     原卷 OK → 知识点检查
-                  </button>
+                  </Button>
                 </>
               )}
               {exportCheck.step === "knowledge" && exportCheck.knowledgeReady && (
-                <button className="primary-button" type="button" onClick={() => doFinalPdfExport(exportCheck.pdfUrl)}>
-                  ✅ 确认导出 PDF
-                </button>
+                <Button variant="primary" type="button" icon={<CheckCircle2 size={15} aria-hidden="true" />} onClick={() => doFinalPdfExport(exportCheck.pdfUrl)}>
+                  确认导出 PDF
+                </Button>
               )}
               </div>
-            </div>
-          </div>
-        </div>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {paperPreviewOpen && (
-        <div className="modal-backdrop" onClick={() => { setPaperPreviewOpen(null); setPaperZoom(1); }}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: "90vw", maxWidth: 900, maxHeight: "90vh", overflow: "auto", padding: 0 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", borderBottom: "1px solid var(--line-soft)" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <h3 style={{ margin: 0, fontSize: 16 }}>原卷预览</h3>
+        <Dialog
+          open
+          onOpenChange={(next) => { if (!next) { setPaperPreviewOpen(null); setPaperZoom(1); } }}
+        >
+          <DialogContent size="lg" hideClose className="max-w-[900px] p-0">
+            <DialogHeader className="flex-row items-center justify-between py-3 pr-4">
+              <DialogTitle className="text-base">原卷预览</DialogTitle>
+              <div className="flex gap-1">
+                <Button variant="ghost" size="icon-sm" type="button" onClick={() => setPaperZoom(z => Math.max(0.25, z - 0.25))} title="缩小" aria-label="缩小">−</Button>
+                <Button variant="ghost" size="sm" type="button" onClick={() => setPaperZoom(1)} title="重置" className="tabular-nums">{Math.round(paperZoom * 100)}%</Button>
+                <Button variant="ghost" size="icon-sm" type="button" onClick={() => setPaperZoom(z => Math.min(3, z + 0.25))} title="放大" aria-label="放大">+</Button>
+                <Button variant="ghost" size="icon-sm" type="button" aria-label="关闭预览" onClick={() => { setPaperPreviewOpen(null); setPaperZoom(1); }}><X size={16} /></Button>
               </div>
-              <div style={{ display: "flex", gap: 4 }}>
-                <button className="ghost-button" type="button" onClick={() => setPaperZoom(z => Math.max(0.25, z - 0.25))} title="缩小">−</button>
-                <button className="ghost-button" type="button" onClick={() => setPaperZoom(1)} title="重置">{Math.round(paperZoom * 100)}%</button>
-                <button className="ghost-button" type="button" onClick={() => setPaperZoom(z => Math.min(3, z + 0.25))} title="放大">+</button>
-                <button className="modal-close" type="button" onClick={() => { setPaperPreviewOpen(null); setPaperZoom(1); }}>✕</button>
-              </div>
-            </div>
-            <div style={{ padding: 16, textAlign: "center", overflow: "auto" }}>
+            </DialogHeader>
+            <DialogBody className="overflow-auto text-center">
               <img
                 src={mediaUrl(`/api/cards/${paperPreviewOpen}/paper?format=image`)}
                 alt="原卷"
-                style={{ maxWidth: `${paperZoom * 100}%`, maxHeight: `${paperZoom * 75}vh`, objectFit: "contain", transition: "max-width 0.15s, max-height 0.15s" }}
+                className="object-contain transition-[max-width,max-height] duration-(--px-dur-2) ease-standard"
+                /* 动态值：缩放倍率由 paperZoom state 实时计算，无法用固定工具类表达 */
+                style={{ maxWidth: `${paperZoom * 100}%`, maxHeight: `${paperZoom * 75}vh` }}
               />
-            </div>
-          </div>
-        </div>
+            </DialogBody>
+          </DialogContent>
+        </Dialog>
       )}
       {cardDeleteConflict && (
-        <div className="modal-backdrop" onClick={() => setCardDeleteConflict(null)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
-            <div className="modal-header">
-              <h2>确认删除答题卡</h2>
-              <button className="modal-close" type="button" onClick={() => setCardDeleteConflict(null)}>×</button>
-            </div>
-            <div className="modal-body">
-              <p style={{ marginTop: 0 }}>
+        <Dialog open onOpenChange={(next) => { if (!next) setCardDeleteConflict(null); }}>
+          <DialogContent size="sm" role="alertdialog" className="max-w-[460px]">
+            <DialogHeader>
+              <DialogTitle>确认删除答题卡</DialogTitle>
+            </DialogHeader>
+            <DialogBody>
+              <p className="mt-0 text-sm tabular-nums">
                 「{cardDeleteConflict.cardTitle}」已被 {cardDeleteConflict.referencedExamCount} 个考试引用。删除答题卡前需要先解除这些考试的关联。
               </p>
               {cardDeleteConflict.referencedExamNames.length > 0 && (
-                <ul style={{ margin: "8px 0 14px", paddingLeft: 20, color: "var(--muted)", fontSize: 13 }}>
+                <ul className="mt-2 mb-3.5 list-disc pl-5 text-sm text-muted-foreground">
                   {cardDeleteConflict.referencedExamNames.map((name) => <li key={name}>{name}</li>)}
                 </ul>
               )}
-              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
-                <input
-                  type="checkbox"
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
                   checked={cardDeleteConflict.deleteReferencedExams}
-                  onChange={(event) => setCardDeleteConflict({ ...cardDeleteConflict, deleteReferencedExams: event.target.checked })}
+                  onCheckedChange={(checked) => setCardDeleteConflict({ ...cardDeleteConflict, deleteReferencedExams: checked === true })}
                   disabled={isBusy}
                 />
                 同时删除这些考试及其成绩/扫描数据
               </label>
-            </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setCardDeleteConflict(null)} disabled={isBusy}>取消</button>
-              <button
-                className="primary-button"
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="ghost" type="button" onClick={() => setCardDeleteConflict(null)} disabled={isBusy}>取消</Button>
+              <Button
+                variant="destructive"
                 type="button"
                 disabled={isBusy}
                 onClick={async () => {
@@ -2062,39 +2242,37 @@ function App() {
                 }}
               >
                 {cardDeleteConflict.deleteReferencedExams ? "删除考试和答题卡" : "解绑考试并删除答题卡"}
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {examDeleteTarget && (
-        <div className="modal-backdrop" onClick={() => setExamDeleteTarget(null)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
-            <div className="modal-header">
-              <h2>确认删除考试</h2>
-              <button className="modal-close" type="button" onClick={() => setExamDeleteTarget(null)}>×</button>
-            </div>
-            <div className="modal-body">
-              <p style={{ marginTop: 0 }}>
+        <Dialog open onOpenChange={(next) => { if (!next) setExamDeleteTarget(null); }}>
+          <DialogContent size="sm" role="alertdialog" className="max-w-[460px]">
+            <DialogHeader>
+              <DialogTitle>确认删除考试</DialogTitle>
+            </DialogHeader>
+            <DialogBody>
+              <p className="mt-0 text-sm tabular-nums">
                 将删除 {examDeleteTarget.exams.length} 个考试，并解除它们与答题卡的关联。
               </p>
-              <ul style={{ margin: "8px 0 14px", paddingLeft: 20, color: "var(--muted)", fontSize: 13 }}>
+              <ul className="mt-2 mb-3.5 list-disc pl-5 text-sm text-muted-foreground">
                 {examDeleteTarget.exams.map((exam) => <li key={exam.id}>{exam.name}</li>)}
               </ul>
-              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
-                <input
-                  type="checkbox"
+              <label className="flex items-center gap-2 text-sm">
+                <Checkbox
                   checked={examDeleteTarget.deleteLinkedCards}
-                  onChange={(event) => setExamDeleteTarget({ ...examDeleteTarget, deleteLinkedCards: event.target.checked })}
+                  onCheckedChange={(checked) => setExamDeleteTarget({ ...examDeleteTarget, deleteLinkedCards: checked === true })}
                   disabled={isBusy || !examDeleteTarget.exams.some((exam) => exam.card_id)}
                 />
                 同时删除关联答题卡
               </label>
-            </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setExamDeleteTarget(null)} disabled={isBusy}>取消</button>
-              <button
-                className="primary-button"
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="ghost" type="button" onClick={() => setExamDeleteTarget(null)} disabled={isBusy}>取消</Button>
+              <Button
+                variant="destructive"
                 type="button"
                 disabled={isBusy}
                 onClick={async () => {
@@ -2104,52 +2282,50 @@ function App() {
                 }}
               >
                 {examDeleteTarget.deleteLinkedCards ? "删除考试和答题卡" : "解绑答题卡并删除考试"}
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {groupDeleteTarget && (
-        <div className="modal-backdrop" onClick={() => setGroupDeleteTarget(null)}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ width: 460, maxWidth: "calc(100vw - 40px)" }}>
-            <div className="modal-header">
-              <h2>确认删除大考</h2>
-              <button className="modal-close" type="button" onClick={() => setGroupDeleteTarget(null)}>×</button>
-            </div>
-            <div className="modal-body">
-              <p style={{ marginTop: 0 }}>
+        <Dialog open onOpenChange={(next) => { if (!next) setGroupDeleteTarget(null); }}>
+          <DialogContent size="sm" role="alertdialog" className="max-w-[460px]">
+            <DialogHeader>
+              <DialogTitle>确认删除大考</DialogTitle>
+            </DialogHeader>
+            <DialogBody>
+              <p className="mt-0 text-sm tabular-nums">
                 将删除大考「<strong>{groupDeleteTarget.groupName}</strong>」。
                 该大考关联了 <strong>{groupDeleteTarget.memberCount}</strong> 场考试。
               </p>
-              <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 13, cursor: "pointer" }}>
-                <input
-                  type="checkbox"
+              <label className="flex cursor-pointer items-start gap-2 text-sm">
+                <Checkbox
                   checked={groupDeleteTarget.deleteExams}
-                  onChange={(event) => setGroupDeleteTarget({ ...groupDeleteTarget, deleteExams: event.target.checked })}
+                  onCheckedChange={(checked) => setGroupDeleteTarget({ ...groupDeleteTarget, deleteExams: checked === true })}
                   disabled={isBusy}
-                  style={{ marginTop: 2 }}
+                  className="mt-0.5"
                 />
                 <span>
-                  <strong>同时删除这 {groupDeleteTarget.memberCount} 场关联考试</strong>
+                  <strong className="tabular-nums">同时删除这 {groupDeleteTarget.memberCount} 场关联考试</strong>
                   <br />
-                  <span style={{ color: "var(--muted)", fontSize: 11 }}>
-                    ⚠ 考试的成绩、扫描数据将被永久删除，不可恢复
+                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                    <AlertTriangle size={15} aria-hidden="true" /> 考试的成绩、扫描数据将被永久删除，不可恢复
                   </span>
                 </span>
               </label>
               {!groupDeleteTarget.deleteExams && (
-                <p style={{ fontSize: 12, color: "var(--muted)", marginBottom: 0, marginTop: 8 }}>
+                <p className="mt-2 mb-0 text-xs text-muted-foreground">
                   取消勾选则仅删除大考组，关联的考试保留不变。
                 </p>
               )}
-            </div>
-            <div className="modal-footer">
-              <button className="ghost-button" type="button" onClick={() => setGroupDeleteTarget(null)} disabled={isBusy}>取消</button>
-              <button
-                className="primary-button"
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="ghost" type="button" onClick={() => setGroupDeleteTarget(null)} disabled={isBusy}>取消</Button>
+              <Button
+                variant="destructive"
                 type="button"
                 disabled={isBusy}
-                style={{ background: "var(--brand)" }}
+                className="tabular-nums"
                 onClick={async () => {
                   const target = groupDeleteTarget;
                   try {
@@ -2166,10 +2342,10 @@ function App() {
                 }}
               >
                 {groupDeleteTarget.deleteExams ? `删除大考和 ${groupDeleteTarget.memberCount} 场考试` : "仅删除大考"}
-              </button>
-            </div>
-          </div>
-        </div>
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
       {assignedFormulaExamId != null && (
         <AssignedFormulaModal
@@ -2193,28 +2369,31 @@ function App() {
         />
       )}
       {blocker.state === "blocked" && (
-        <div className="modal-overlay" onClick={() => blocker.reset?.()}>
-          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ margin: "0 0 8px" }}>未保存的更改</h3>
-            <p style={{ margin: "0 0 16px", color: "var(--muted)" }}>
-              答题卡设计页有未保存的修改，离开将丢失。确定离开吗？
-            </p>
-            <div className="modal-footer" style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              <button className="ghost-button" type="button" onClick={() => blocker.reset?.()}>留在此页</button>
-              <button
-                className="primary-button"
+        <Dialog open onOpenChange={(next) => { if (!next) blocker.reset?.(); }}>
+          <DialogContent size="sm" role="alertdialog" hideClose>
+            <DialogHeader>
+              <DialogTitle>未保存的更改</DialogTitle>
+            </DialogHeader>
+            <DialogBody>
+              <p className="m-0 text-sm text-muted-foreground">
+                答题卡设计页有未保存的修改，离开将丢失。确定离开吗？
+              </p>
+            </DialogBody>
+            <DialogFooter>
+              <Button variant="ghost" type="button" onClick={() => blocker.reset?.()}>留在此页</Button>
+              <Button
+                variant="primary"
                 type="button"
                 onClick={async () => {
                   // 与 switchMode 行为对齐：离开前先尽力落盘，避免静默丢弃
                   // dirty 的答题卡编辑；落盘失败也不拦截 —— 用户已明确选择离开。
                   try { await flushPendingCardSave("switch"); } catch { /* 忽略落盘失败，仍然离开 */ }
                   blocker.proceed?.();
-                }}>离开</button>
-            </div>
-          </div>
-        </div>
+                }}>离开</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
-    </main>
     </WorkspaceProvider>
   );
 }
@@ -2243,11 +2422,11 @@ function GradingResults({
 
   if (!result) {
     return (
-      <div className="grading-empty">
-        <ClipboardCheck size={36} />
-        <h2>等待阅卷</h2>
-        <p>选择答题卡，导入答题卡图片或图片目录后开始识别。</p>
-      </div>
+      <EmptyState
+        icon={<ClipboardCheck />}
+        title="等待阅卷"
+        description="选择答题卡，导入答题卡图片或图片目录后开始识别。"
+      />
     );
   }
 
@@ -2255,20 +2434,20 @@ function GradingResults({
   const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
 
   return (
-    <div className="grading-results">
-      <div className="grading-results-header">
+    <div className="mx-auto w-full max-w-[1100px]">
+      <div className="mb-4 flex items-center justify-between gap-3">
         <div>
-          <h2>成绩表</h2>
-          <p>
+          <h2 className="m-0 text-xl font-bold text-foreground">成绩表</h2>
+          <p className="mt-1 text-xs font-medium text-muted-foreground">
             {result.rows.length} 张答题卡 / 待复核 {totalReview} 题 / 异常 {totalIssues} 处
           </p>
         </div>
-        <button className="primary-button" type="button" onClick={onDownloadCsv} disabled={result.rows.length === 0}>
-          <Download size={17} /> CSV
-        </button>
+        <Button variant="primary" type="button" icon={<Download size={17} />} onClick={onDownloadCsv} disabled={result.rows.length === 0}>
+          CSV
+        </Button>
       </div>
-      <div className="score-table">
-        <div className="score-table-head">
+      <div className="overflow-hidden rounded-lg border border-border bg-card shadow-2">
+        <div className="grid min-h-10 grid-cols-[minmax(170px,1.6fr)_minmax(88px,0.75fr)_78px_78px_minmax(118px,1fr)_58px_72px] items-center gap-2.5 bg-secondary px-4 text-xs font-bold text-secondary-foreground">
           <span>文件</span>
           <span>学号</span>
           <span>状态</span>
@@ -2278,58 +2457,60 @@ function GradingResults({
           <span>答题卡</span>
         </div>
         {result.rows.map((row) => (
-          <details className="score-row" key={`${row.fileName}_${row.recognition.imagePath ?? row.fileName}`}>
-            <summary>
-              <span title={row.fileName}>{row.fileName}</span>
+          <details className="border-t border-border transition-colors hover:bg-secondary" key={`${row.fileName}_${row.recognition.imagePath ?? row.fileName}`}>
+            <summary className="grid min-h-12 grid-cols-[minmax(170px,1.6fr)_minmax(88px,0.75fr)_78px_78px_minmax(118px,1fr)_58px_72px] cursor-pointer list-none items-center gap-2.5 px-4 [&::-webkit-details-marker]:hidden">
+              <span className="truncate font-medium" title={row.fileName}>{row.fileName}</span>
               <span>{row.studentId ?? "未识别"}</span>
-              <span className={row.recognitionStatus === "ok" && row.issueCount === 0 ? "status-ok" : "status-warn"}>{row.recognitionStatus}</span>
-              <span>
+              <Badge tone={row.recognitionStatus === "ok" && row.issueCount === 0 ? "success" : "warning"} className="rounded-full px-2.5 py-0.5 text-xs font-bold">
+                {row.recognitionStatus}
+              </Badge>
+              <span className="tabular-nums">
                 {row.totalScore}/{row.totalMaxScore}
               </span>
-              <span>
+              <span className="tabular-nums">
                 {row.objectiveScore}/{row.objectiveMaxScore} · {row.subjectiveScore}/{row.subjectiveMaxScore}
               </span>
-              <span>{row.needsReviewCount}</span>
+              <span className="tabular-nums">{row.needsReviewCount}</span>
               <span>
                 {row.previewUrl ? (
                   <button
-                    className="score-preview-link"
+                    type="button"
+                    className="cursor-pointer border-0 bg-transparent p-0 text-xs text-primary underline underline-offset-2"
                     onClick={(event) => { event.stopPropagation(); openGradingPreview(row); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", color: "var(--brand)", fontSize: 12, padding: 0, textDecoration: "underline", textUnderlineOffset: 2 }}
                   >
                     预览
                   </button>
                 ) : (
-                  <span className="muted-cell">-</span>
+                  <span className="text-muted-foreground">-</span>
                 )}
               </span>
             </summary>
-            <div className="question-grade-list">
-              {row.message && <p className="row-message">{row.message}</p>}
-              {row.questions.length > 0 && <p className="grading-section-title">客观题</p>}
+            <div className="grid gap-2 bg-secondary px-4 pt-3.5 pb-4">
+              {row.message && <p className="m-0 text-xs font-medium text-warning-foreground">{row.message}</p>}
+              {row.questions.length > 0 && <p className="mt-1.5 text-xs font-bold text-secondary-foreground">客观题</p>}
               {row.questions.map((question) => (
-                <div className={`question-grade ${question.needsReview || question.status === "missing_key" ? "needs-review" : ""}`} key={question.questionNumber}>
-                  <strong>{question.questionNumber}</strong>
+                <div className={cn("grid min-h-[34px] grid-cols-[38px_1fr_1fr_70px_86px_minmax(96px,1fr)] items-center gap-2 rounded-[10px] border border-border bg-card px-2.5 py-1.5 text-xs", (question.needsReview || question.status === "missing_key") && "border-warning-border bg-warning-soft")} key={question.questionNumber}>
+                  <strong className="font-bold text-primary">{question.questionNumber}</strong>
                   <span>标准 {answerText(question.correctOptions)}</span>
                   <span>识别 {answerText(question.selectedOptions)}</span>
-                  <span>
+                  <span className="tabular-nums">
                     {question.score}/{question.maxScore}
                   </span>
-                  <span>置信 {question.confidence.toFixed(3)}</span>
-                  <em>{question.message ?? question.status}</em>
+                  <span className="tabular-nums">置信 {question.confidence.toFixed(3)}</span>
+                  <em className="not-italic font-medium text-muted-foreground">{question.message ?? question.status}</em>
                 </div>
               ))}
-              {row.subjectiveQuestions.length > 0 && <p className="grading-section-title">主观题</p>}
+              {row.subjectiveQuestions.length > 0 && <p className="mt-1.5 text-xs font-bold text-secondary-foreground">主观题</p>}
               {row.subjectiveQuestions.map((question) => (
-                <div className={`question-grade subjective-grade ${question.needsReview ? "needs-review" : ""}`} key={question.questionId}>
-                  <strong>{question.questionNumber}</strong>
+                <div className={cn("grid min-h-[34px] grid-cols-[38px_1fr_70px_70px_86px_minmax(120px,1fr)] items-center gap-2 rounded-[10px] border border-border bg-card px-2.5 py-1.5 text-xs", question.needsReview && "border-warning-border bg-warning-soft")} key={question.questionId}>
+                  <strong className="font-bold text-primary">{question.questionNumber}</strong>
                   <span>有效 {question.validCells.map((cell) => cell.score).join("+") || "-"}</span>
                   <span>无效 {question.invalidCells.length}</span>
-                  <span>
+                  <span className="tabular-nums">
                     {question.score}/{question.maxScore}
                   </span>
-                  <span>置信 {question.confidence.toFixed(3)}</span>
-                  <em>{question.message ?? question.status}</em>
+                  <span className="tabular-nums">置信 {question.confidence.toFixed(3)}</span>
+                  <em className="not-italic font-medium text-muted-foreground">{question.message ?? question.status}</em>
                 </div>
               ))}
             </div>

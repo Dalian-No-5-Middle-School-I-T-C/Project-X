@@ -10,6 +10,7 @@ process.env.ANSWER_CARD_DATA_DIR = path.join(tempDir, "data");
 process.env.USERPROFILE = path.join(tempDir, "home");
 process.env.PROJECTX_AUTH_ENFORCE = "1";
 process.env.PROJECTX_ENABLE_SCANNER = "false";
+process.env.PROJECTX_ENABLE_SCANNER_CLIENT_API = "true";
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST"
@@ -132,6 +133,42 @@ async function main(): Promise<void> {
     await new Promise<void>((resolve) => server!.once("listening", resolve));
     const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 
+    section("远程扫描客户端接入模式");
+    const scannerOrigin = "http://127.0.0.1:53147";
+    const scannerHealth = await fetch(`${base}/api/app/health`, {
+      headers: { Origin: scannerOrigin }
+    });
+    const scannerHealthBody = await scannerHealth.json() as {
+      capabilities?: { scannerClientApi?: boolean; nativeScannerApi?: boolean };
+    };
+    check(
+      scannerHealth.status === 200
+        && scannerHealth.headers.get("access-control-allow-origin") === scannerOrigin
+        && scannerHealthBody.capabilities?.scannerClientApi === true
+        && scannerHealthBody.capabilities?.nativeScannerApi === false,
+      "扫描客户端模式允许动态环回端口且不启用服务端 TWAIN"
+    );
+    const untrustedOriginHealth = await fetch(`${base}/api/app/health`, {
+      headers: { Origin: "https://untrusted.example" }
+    });
+    check(
+      untrustedOriginHealth.headers.get("access-control-allow-origin") === null,
+      "扫描客户端模式不放行非白名单公网来源"
+    );
+    const scannerPreflight = await fetch(`${base}/api/scanner/upload/sessions`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: scannerOrigin,
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type,x-api-key"
+      }
+    });
+    check(
+      scannerPreflight.status === 204
+        && scannerPreflight.headers.get("access-control-allow-origin") === scannerOrigin,
+      "扫描上传 API 预检请求通过"
+    );
+
     const bootstrapLogin = await fetch(`${base}/api/auth/login`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ identifier: "admin", password: recoveredPassword })
@@ -174,6 +211,32 @@ async function main(): Promise<void> {
     check((await middlewareResult(dualAuth, { authorization: `Bearer ${teacherToken}`, "x-api-key": "fake-key" })).status === 401, "JWT 与伪 Key 同时存在时不回退 JWT");
     check((await middlewareResult(dualAuth, { authorization: `Bearer ${studentToken}`, "x-api-key": "fake-key" })).status === 401, "学生 JWT 加伪 Key 返回 401");
     check((await middlewareResult(dualAuth, { "x-api-key": "key-wrong" })).status === 403, "错误 scope 的 Key 返回 403");
+    const remoteUploadSession = await fetch(`${base}/api/scanner/upload/sessions`, {
+      method: "POST",
+      headers: {
+        Origin: scannerOrigin,
+        "Content-Type": "application/json",
+        "X-Api-Key": "key-scanner"
+      },
+      body: JSON.stringify({
+        cardId: "critical-card",
+        name: "远程扫描接入验收",
+        dpi: 300,
+        paperSize: "A4",
+        pageCount: 1
+      })
+    });
+    const remoteUploadBody = await remoteUploadSession.json() as {
+      sessionId?: string;
+      uploadTokens?: string[];
+    };
+    check(
+      remoteUploadSession.status === 201
+        && remoteUploadSession.headers.get("access-control-allow-origin") === scannerOrigin
+        && remoteUploadBody.sessionId?.startsWith("scan_") === true
+        && remoteUploadBody.uploadTokens?.length === 1,
+      "有效 scanner Key 可从环回来源创建远程上传会话"
+    );
 
     section("考试组权限与事务");
     let grade = db.prepare("SELECT id FROM grades ORDER BY id LIMIT 1").get() as { id: number } | undefined;

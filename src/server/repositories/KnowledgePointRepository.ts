@@ -1,5 +1,7 @@
 import type { DbAdapter } from "../db/mysql";
 import { getMysqlDb } from "../db/mysql";
+import { getAnalysisThresholds } from "../services/analysisConfig";
+import type { KnowledgeSeverity, KnowledgeWeaknessItem } from "../../shared/types";
 
 export interface KnowledgePointRow {
   id: number;
@@ -60,13 +62,7 @@ export class KnowledgePointRepository {
     await this.db.run("DELETE FROM knowledge_points WHERE card_id = ?", cardId);
   }
 
-  async getWeaknessesForExam(examId: number, classId?: number | null): Promise<Array<{
-    point_text: string;
-    question_numbers: string;
-    avg_rate: number;
-    student_count: number;
-    total_questions: number;
-  }>> {
+  async getWeaknessesForExam(examId: number, classId?: number | null): Promise<Array<KnowledgeWeaknessItem>> {
     let sql = `
       SELECT kp.point_text,
              kp.question_number,
@@ -88,38 +84,82 @@ export class KnowledgePointRepository {
     sql += " GROUP BY kp.point_text, kp.question_number ORDER BY kp.point_text, kp.question_number";
     const rows = await this.db.all(sql, ...params);
 
-    // Aggregate question numbers in JS for SQLite / MySQL compatibility
-    const map = new Map<string, { point_text: string; avg_rate: number; student_count: number; total_questions: number; question_numbers: number[] }>();
-    for (const row of rows) {
-      const pointText = (row as any).point_text;
-      if (!map.has(pointText)) {
-        map.set(pointText, {
-          point_text: pointText,
-          avg_rate: (row as any).avg_rate,
-          student_count: (row as any).student_count,
-          total_questions: (row as any).total_questions,
-          question_numbers: []
-        });
+    // 考试作答总人次（用作覆盖率基准）：取该范围学生 × 题数的最大可能人次
+    const totalAttemptsRow = await this.db.all(
+      `SELECT COUNT(*) AS cnt
+       FROM question_scores qs
+       JOIN exams e ON qs.exam_id = e.id
+       WHERE qs.exam_id = ?
+       ${classId ? " AND qs.student_id IN (SELECT student_id FROM class_students WHERE class_id = ?)" : ""}`,
+      ...(classId ? [examId, classId] : [examId])
+    ) as Array<{ cnt: number }>;
+    const totalAttempts = totalAttemptsRow[0]?.cnt ?? 0;
+
+    // v29 修正：按作答人次加权平均聚合每题得分率到知识点层级，
+    // 取代原先"保留首行 rate"的粗糙做法（注释自承）
+    const map = new Map<string, {
+      point_text: string;
+      sumRate: number;     // 加权分子：每题 avg_rate × 该题作答人次
+      totalWeight: number; // 作答人次之和
+      maxStudentCount: number;
+      total_questions: number;
+      question_numbers: number[];
+    }>();
+    for (const row of rows as Array<any>) {
+      const pointText = row.point_text;
+      // 为加权聚合，单独取每题作答人次
+      const attRow = await this.db.all(
+        `SELECT COUNT(*) AS cnt FROM question_scores qs
+         JOIN exams e ON qs.exam_id = e.id
+         WHERE qs.exam_id = ? AND qs.question_number = ?
+         ${classId ? " AND qs.student_id IN (SELECT student_id FROM class_students WHERE class_id = ?)" : ""}`,
+        ...(classId ? [examId, row.question_number, classId] : [examId, row.question_number])
+      ) as Array<{ cnt: number }>;
+      const weight = attRow[0]?.cnt ?? row.student_count ?? 0;
+      let entry = map.get(pointText);
+      if (!entry) {
+        entry = {
+          point_text: pointText, sumRate: 0, totalWeight: 0,
+          maxStudentCount: 0, total_questions: 0, question_numbers: []
+        };
+        map.set(pointText, entry);
       }
-      const entry = map.get(pointText)!;
-      const qn = (row as any).question_number;
-      if (!entry.question_numbers.includes(qn)) {
-        entry.question_numbers.push(qn);
-      }
-      // avg_rate across all questions for this point: weighted average
-      // (simpler: keep first per-question rate, but for correctness we recompute below)
+      entry.sumRate += (row.avg_rate ?? 0) * weight;
+      entry.totalWeight += weight;
+      if (row.student_count > entry.maxStudentCount) entry.maxStudentCount = row.student_count;
+      entry.total_questions += 1;
+      if (!entry.question_numbers.includes(row.question_number)) entry.question_numbers.push(row.question_number);
     }
 
-    return Array.from(map.values()).map((entry) => {
+    const { passRate } = await getAnalysisThresholds();
+    // 知识点预警线沿用及格线比例（×100 得分率阈值），覆盖人次占比阈值取 50%
+    const weakRateThreshold = Math.round(passRate * 100);
+    const coverageThreshold = 50;
+
+    const result: Array<KnowledgeWeaknessItem> = Array.from(map.values()).map((entry) => {
       entry.question_numbers.sort((a, b) => a - b);
+      const avgRate = entry.totalWeight > 0 ? Math.round((entry.sumRate / entry.totalWeight) * 10) / 10 : 0;
+      const coverageRate = totalAttempts > 0
+        ? Math.round((entry.totalWeight / totalAttempts) * 100)
+        : (entry.maxStudentCount > 0 ? 100 : 0);
+      let severity: KnowledgeSeverity = "ok";
+      if (avgRate < weakRateThreshold) {
+        severity = coverageRate >= coverageThreshold ? "common_weak" : "weak";
+      }
       return {
         point_text: entry.point_text,
         question_numbers: entry.question_numbers.join(","),
-        avg_rate: entry.avg_rate,
-        student_count: entry.student_count,
+        avg_rate: avgRate,
+        student_count: entry.maxStudentCount,
         total_questions: entry.total_questions,
+        severity,
+        coverage_rate: coverageRate
       };
     });
+    // 按 severity 严重度 → 得分率升序 排序，薄弱项在前
+    const sevOrder: Record<KnowledgeSeverity, number> = { common_weak: 0, weak: 1, ok: 2 };
+    result.sort((a, b) => sevOrder[a.severity] - sevOrder[b.severity] || a.avg_rate - b.avg_rate);
+    return result;
   }
 
   async getWeaknessesForStudent(examId: number, studentId: number): Promise<Array<{

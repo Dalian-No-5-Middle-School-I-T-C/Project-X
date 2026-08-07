@@ -1,8 +1,30 @@
 import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
-import { Plus, Search, Trash2, X } from "lucide-react";
+import { Plus, Search, Trash2 } from "lucide-react";
 import { authFetch, fetchJson } from "../auth/api";
 import type { ExamFilterItem, ExamGroupMember } from "../../../../shared/types";
+import {
+  Button,
+  Checkbox,
+  ControlRow,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  Field,
+  Input,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Spinner,
+} from "./ui/v2";
+import { cn } from "../lib/utils";
+
+/** Radix Select 不接受空字符串 value，用哨兵代表「不限 / 无标签 / 全部科目」 */
+const ANY = "__any__";
 
 interface Props {
   onClose: () => void;
@@ -24,12 +46,13 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
   const [isOfficial, setIsOfficial] = useState(existingGroup?.is_official ?? 0);
   const [totalScoreMode, setTotalScoreMode] = useState<string>(existingGroup?.total_score_mode ?? "raw");
 
-  const [selectedExams, setSelectedExams] = useState<Array<{ examId: number; examName: string; subject: string; date: string }>>(
+  const [selectedExams, setSelectedExams] = useState<Array<{ examId: number; examName: string; subject: string; date: string; trackType: string }>>(
     existingMembers?.map((m: any) => ({
       examId: m.examId ?? m.exam_id,
       examName: m.examName ?? m.exam_name,
       subject: m.subject ?? "",
-      date: m.examDate ?? m.exam_date ?? ""
+      date: m.examDate ?? m.exam_date ?? "",
+      trackType: m.trackType ?? m.track_type ?? "common"
     })) ?? []
   );
   const [showPicker, setShowPicker] = useState(false);
@@ -54,13 +77,6 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
     loadPickerExams();
   }, []);
 
-  // ESC to close
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   useEffect(() => {
     if (showPicker && pickerSubject) {
       loadPickerExams();
@@ -79,6 +95,7 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
   }
 
   async function handleSubmit() {
+    if (creating) return;
     if (!name.trim()) { setError("大考名称不能为空"); return; }
     if (selectedExams.length === 0) { setError("请至少关联一场考试"); return; }
 
@@ -92,7 +109,10 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
         tag: tag || null,
         is_official: isOfficial,
         total_score_mode: totalScoreMode,
-        examIds: selectedExams.map((e) => e.examId)
+        examIds: selectedExams.map((e) => e.examId),
+        memberTracks: Object.fromEntries(
+          selectedExams.map((e) => [String(e.examId), e.trackType || "common"])
+        )
       };
 
       if (isEdit) {
@@ -125,8 +145,13 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
       examId: exam.id,
       examName: exam.name,
       subject: exam.subject || "",
-      date: exam.exam_date || ""
+      date: exam.exam_date || "",
+      trackType: defaultTrackType(exam.subject || "")
     }]);
+  }
+
+  function updateTrackType(examId: number, trackType: string) {
+    setSelectedExams(selectedExams.map((e) => e.examId === examId ? { ...e, trackType } : e));
   }
 
   function removeExam(examId: number) {
@@ -135,238 +160,261 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
 
   // Inline exam creation
   const tags = ["", "月考", "期中", "期末", "模考", "统考"];
-  const allSubjects = ["语文","数学","英语","物理","化学","生物","政治","历史","地理"];
+  const allSubjects = ["语文", "数学", "英语", "物理", "化学", "生物", "政治", "历史", "地理"];
+
+  /** 文理分科（Issue #177）：按科目自动预填科目归属 */
+  function defaultTrackType(subject: string): string {
+    if (["物理", "化学", "生物"].includes(subject)) return "science";
+    if (["政治", "历史", "地理"].includes(subject)) return "arts";
+    return "common";
+  }
 
   const filteredPicker = pickerExams.filter((e) =>
     !pickerSearch || e.name.includes(pickerSearch) || (e.subject || "").includes(pickerSearch)
   );
 
-  return createPortal(
-    <div style={{
-      position: "fixed", inset: 0, zIndex: 100000,
-      display: "flex", alignItems: "center", justifyContent: "center",
-      background: "rgba(0,0,0,0.45)"
-    }} onClick={onClose}>
-      <div style={{
-        background: "var(--surface)", borderRadius: 12,
-        width: 580, maxWidth: "94vw", maxHeight: "85vh", overflow: "auto",
-        boxShadow: "var(--shadow-lg)", padding: 24,
-        color: "var(--text-primary)"
-      }} onClick={(e) => e.stopPropagation()}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 600, color: "var(--text-primary)" }}>
-            {isEdit ? "编辑大考" : "创建大考"}
-          </h3>
-          <button onClick={onClose} style={{
-            background: "none", border: "none", cursor: "pointer",
-            padding: 4, borderRadius: 6, color: "var(--muted)"
-          }}><X size={18} /></button>
-        </div>
+  return (
+    <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
+      <DialogContent size="md">
+        <DialogHeader>
+          <DialogTitle>{isEdit ? "编辑大考" : "创建大考"}</DialogTitle>
+        </DialogHeader>
 
-        {/* Name & grade row */}
-        <div style={{ display: "flex", gap: 12, marginBottom: 12, alignItems: "flex-end" }}>
-          <div style={{ flex: 1.5 }}>
-            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4, color: "#555" }}>
-              大考名称 <span style={{ color: "#e53e3e" }}>*</span>
-            </div>
-            <input value={name} onChange={(e) => setName(e.target.value)}
-              placeholder="如：2026高考摸底大考"
-              style={inputStyle} />
+        <DialogBody className="flex flex-col gap-4">
+          {/* Name & grade row */}
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+            <Field className="sm:flex-[1.5]" label="大考名称" required htmlFor="exam-group-name">
+              <Input
+                id="exam-group-name"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="如：2026高考摸底大考"
+              />
+            </Field>
+            <Field className="sm:flex-1" label="年级">
+              <Select
+                value={gradeId || ANY}
+                onValueChange={(value) => setGradeId(value === ANY ? "" : value)}
+              >
+                <SelectTrigger aria-label="年级">
+                  <SelectValue placeholder="不限" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ANY}>不限</SelectItem>
+                  {grades.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Field>
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4, color: "#555" }}>年级</div>
-            <select value={gradeId} onChange={(e) => setGradeId(e.target.value)}
-              style={selectStyle}>
-              <option value="">不限</option>
-              {grades.map((g) => <option key={g.id} value={String(g.id)}>{g.name}</option>)}
-            </select>
-          </div>
-        </div>
 
-        {/* Description & tag */}
-        <div style={{ display: "flex", gap: 12, marginBottom: 12, alignItems: "flex-end" }}>
-          <div style={{ flex: 1.5 }}>
-            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4, color: "#555" }}>描述</div>
-            <input value={description} onChange={(e) => setDescription(e.target.value)}
-              placeholder="可选描述"
-              style={inputStyle} />
+          {/* Description & tag */}
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
+            <Field className="sm:flex-[1.5]" label="描述" htmlFor="exam-group-desc">
+              <Input
+                id="exam-group-desc"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="可选描述"
+              />
+            </Field>
+            <Field className="sm:flex-1" label="标签">
+              <Select
+                value={tag || ANY}
+                onValueChange={(value) => setTag(value === ANY ? "" : value)}
+              >
+                <SelectTrigger aria-label="标签">
+                  <SelectValue placeholder="无标签" />
+                </SelectTrigger>
+                <SelectContent>
+                  {tags.map((t) => (
+                    <SelectItem key={t || ANY} value={t || ANY}>{t || "无标签"}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4, color: "#555" }}>标签</div>
-            <select value={tag} onChange={(e) => setTag(e.target.value)}
-              style={selectStyle}>
-              {tags.map((t) => <option key={t} value={t}>{t || "无标签"}</option>)}
-            </select>
-          </div>
-        </div>
 
-        {/* Options */}
-        <div style={{ display: "flex", gap: 16, marginBottom: 16, fontSize: 13, alignItems: "center" }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-            <input type="checkbox" checked={isOfficial === 1} onChange={(e) => setIsOfficial(e.target.checked ? 1 : 0)} />
-            官方统考
-          </label>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ color: "#555" }}>总分计算：</span>
-            <select value={totalScoreMode} onChange={(e) => setTotalScoreMode(e.target.value)}
-              style={{ ...selectStyle, padding: "4px 8px", fontSize: 12, width: "auto" }}>
-              <option value="raw">原始分</option>
-              <option value="assigned">赋分</option>
-            </select>
-            <span style={{ fontSize: 11, color: "#999" }}>
-              （仅对化学/生物/地理/政治等赋分科目生效）
-            </span>
-          </div>
-        </div>
-
-        {/* Associated exams */}
-        <div style={{ marginBottom: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontSize: 14, fontWeight: 500, color: "#555" }}>
-              关联考试 <span style={{ color: "#e53e3e" }}>*</span>
-              <span style={{ fontSize: 12, color: "#999", fontWeight: 400, marginLeft: 8 }}>
-                已选 {selectedExams.length} 场
+          {/* Options */}
+          <div className="flex flex-wrap items-center gap-4">
+            <ControlRow
+              htmlFor="exam-group-official"
+              control={
+                <Checkbox
+                  id="exam-group-official"
+                  checked={isOfficial === 1}
+                  onCheckedChange={(checked) => setIsOfficial(checked === true ? 1 : 0)}
+                />
+              }
+              label="官方统考"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-secondary-foreground">总分计算：</span>
+              <Select value={totalScoreMode} onValueChange={setTotalScoreMode}>
+                <SelectTrigger className="w-28" aria-label="总分计算方式">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="raw">原始分</SelectItem>
+                  <SelectItem value="assigned">赋分</SelectItem>
+                </SelectContent>
+              </Select>
+              <span className="text-xs text-muted-foreground">
+                （仅对化学/生物/地理/政治等赋分科目生效）
               </span>
             </div>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button onClick={() => setShowPicker(!showPicker)} style={{
-                background: "#dc2626", color: "#fff", border: "none",
-                borderRadius: 6, padding: "4px 12px", fontSize: 12, cursor: "pointer",
-                display: "flex", alignItems: "center", gap: 4
-              }}>
-                <Plus size={13} /> {showPicker ? "收起" : "关联已有考试"}
-              </button>
-            </div>
           </div>
 
-          {/* Picker panel */}
-          {showPicker && (
-            <div style={{
-              border: "1px solid #e2e8f0", borderRadius: 8,
-              padding: 12, marginBottom: 8, background: "#f8fafc",
-              maxHeight: 200, overflow: "auto"
-            }}>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <div style={{ position: "relative", flex: 1 }}>
-                  <Search size={14} style={{ position: "absolute", left: 8, top: 8, color: "#999" }} />
-                  <input value={pickerSearch} onChange={(e) => setPickerSearch(e.target.value)}
-                    placeholder="搜索考试..."
-                    style={{ ...inputStyle, paddingLeft: 28, fontSize: 12 }} />
-                </div>
-                <select value={pickerSubject} onChange={(e) => setPickerSubject(e.target.value)}
-                  style={{ ...selectStyle, width: 100, fontSize: 12 }}>
-                  <option value="">全部科目</option>
-                  {allSubjects.map((s) => <option key={s} value={s}>{s}</option>)}
-                </select>
+          {/* Associated exams */}
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-medium text-secondary-foreground">
+                关联考试 <span className="text-destructive" aria-hidden>*</span>
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  已选 <span className="tabular-nums">{selectedExams.length}</span> 场
+                </span>
               </div>
-              {pickerLoading ? (
-                <div style={{ textAlign: "center", padding: 16, color: "#999", fontSize: 13 }}>
-                  加载中...
+              <Button
+                size="sm"
+                variant="primary"
+                icon={<Plus />}
+                onClick={() => setShowPicker(!showPicker)}
+              >
+                {showPicker ? "收起" : "关联已有考试"}
+              </Button>
+            </div>
+
+            {/* Picker panel */}
+            {showPicker && (
+              <div className="max-h-50 overflow-auto rounded-lg border border-border-subtle bg-secondary p-3">
+                <div className="mb-2 flex gap-2">
+                  <div className="relative flex-1">
+                    <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+                    <Input
+                      className="pl-8"
+                      value={pickerSearch}
+                      onChange={(e) => setPickerSearch(e.target.value)}
+                      placeholder="搜索考试..."
+                      aria-label="搜索考试"
+                    />
+                  </div>
+                  <Select
+                    value={pickerSubject || ANY}
+                    onValueChange={(value) => setPickerSubject(value === ANY ? "" : value)}
+                  >
+                    <SelectTrigger className="w-32" aria-label="科目筛选">
+                      <SelectValue placeholder="全部科目" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ANY}>全部科目</SelectItem>
+                      {allSubjects.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
                 </div>
-              ) : filteredPicker.length === 0 ? (
-                <div style={{ textAlign: "center", padding: 16, color: "#999", fontSize: 13 }}>
-                  {pickerExams.length === 0 ? "暂无可用考试" : "没有匹配的考试"}
+                {pickerLoading ? (
+                  <div className="flex items-center justify-center gap-2 py-4 text-sm text-muted-foreground">
+                    <Spinner /> 加载中...
+                  </div>
+                ) : filteredPicker.length === 0 ? (
+                  <div className="py-4 text-center text-sm text-muted-foreground">
+                    {pickerExams.length === 0 ? "暂无可用考试" : "没有匹配的考试"}
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1">
+                    {filteredPicker.slice(0, 30).map((exam) => {
+                      const alreadyAdded = selectedExams.some((e) => e.examId === exam.id);
+                      return (
+                        <button
+                          key={exam.id}
+                          type="button"
+                          disabled={alreadyAdded}
+                          onClick={() => addExamFromPicker(exam)}
+                          className={cn(
+                            "flex items-center justify-between gap-2 rounded-md border-0 px-2 py-1.5 text-left text-sm",
+                            "outline-none focus-visible:shadow-focus",
+                            alreadyAdded
+                              ? "cursor-default bg-warning-soft opacity-60"
+                              : "cursor-pointer bg-card hover:bg-accent",
+                          )}
+                        >
+                          <span className="flex min-w-0 gap-2">
+                            <span className="truncate font-medium text-foreground">{exam.name}</span>
+                            <span className="shrink-0 text-muted-foreground">{exam.subject || "—"}</span>
+                          </span>
+                          <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                            {alreadyAdded ? "已添加" : exam.graded_count > 0 ? `${exam.graded_count}人 均${exam.avg_score}` : "未阅卷"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Selected exams list */}
+            <div className="flex flex-col gap-1.5">
+              {selectedExams.map((exam, idx) => (
+                <div
+                  key={exam.examId}
+                  className="flex items-center justify-between gap-2 rounded-lg bg-secondary px-3 py-2 text-sm"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-primary text-xs font-semibold text-primary-foreground tabular-nums">
+                      {idx + 1}
+                    </span>
+                    <span className="truncate font-medium text-foreground">{exam.examName}</span>
+                    <span className="shrink-0 text-xs text-secondary-foreground">{exam.subject || "无科目"}</span>
+                    {exam.date && <span className="shrink-0 text-xs text-muted-foreground tabular-nums">{exam.date}</span>}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    {/* 文理分科（Issue #177）：科目归属 共同/文科/理科 */}
+                    <Select
+                      value={exam.trackType || "common"}
+                      onValueChange={(v) => updateTrackType(exam.examId, v)}
+                    >
+                      <SelectTrigger className="h-control-sm w-20 text-xs" aria-label={`${exam.examName} 文理分科归属`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="common">共同</SelectItem>
+                        <SelectItem value="arts">文科</SelectItem>
+                        <SelectItem value="science">理科</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      size="icon-sm"
+                      variant="ghost"
+                      aria-label={`移除 ${exam.examName}`}
+                      onClick={() => removeExam(exam.examId)}
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
                 </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {filteredPicker.slice(0, 30).map((exam) => {
-                    const alreadyAdded = selectedExams.some((e) => e.examId === exam.id);
-                    return (
-                      <div key={exam.id} style={{
-                        display: "flex", justifyContent: "space-between", alignItems: "center",
-                        padding: "6px 8px", borderRadius: 6,
-                        background: alreadyAdded ? "#fef3c7" : "var(--surface)",
-                        opacity: alreadyAdded ? 0.6 : 1,
-                        cursor: alreadyAdded ? "default" : "pointer",
-                        fontSize: 13
-                      }} onClick={() => !alreadyAdded && addExamFromPicker(exam)}>
-                        <div style={{ display: "flex", gap: 8 }}>
-                          <span style={{ fontWeight: 500 }}>{exam.name}</span>
-                          <span style={{ color: "var(--muted)" }}>{exam.subject || "—"}</span>
-                        </div>
-                        <span style={{ fontSize: 11, color: "var(--muted)" }}>
-                          {alreadyAdded ? "已添加" : exam.graded_count > 0 ? `${exam.graded_count}人 均${exam.avg_score}` : "未阅卷"}
-                        </span>
-                      </div>
-                    );
-                  })}
+              ))}
+              {selectedExams.length === 0 && (
+                <div className="rounded-lg border border-dashed border-border px-3 py-5 text-center text-sm text-muted-foreground">
+                  点击上方「关联已有考试」从列表选择
                 </div>
               )}
             </div>
+          </div>
+
+          {error && (
+            <div className="rounded-md bg-destructive-soft px-3 py-2 text-sm text-destructive-fg">
+              {error}
+            </div>
           )}
-
-          {/* Selected exams list */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {selectedExams.map((exam, idx) => (
-              <div key={exam.examId} style={{
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-                padding: "8px 12px", borderRadius: 8,
-                background: "#f1f5f9", fontSize: 13
-              }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                  <span style={{
-                    background: "#dc2626", color: "#fff",
-                    borderRadius: "50%", width: 22, height: 22,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 11, fontWeight: 600
-                  }}>{idx + 1}</span>
-                  <span style={{ fontWeight: 500 }}>{exam.examName}</span>
-                  <span style={{ color: "#666", fontSize: 12 }}>{exam.subject || "无科目"}</span>
-                  {exam.date && <span style={{ color: "#999", fontSize: 11 }}>{exam.date}</span>}
-                </div>
-                <button onClick={() => removeExam(exam.examId)} style={{
-                  background: "none", border: "none", cursor: "pointer",
-                  padding: 2, borderRadius: 4, color: "#999"
-                }}><Trash2 size={14} /></button>
-              </div>
-            ))}
-            {selectedExams.length === 0 && (
-              <div style={{ textAlign: "center", padding: 20, color: "#999", fontSize: 13, border: "1px dashed #e2e8f0", borderRadius: 8 }}>
-              点击上方「关联已有考试」从列表选择
-              </div>
-            )}
-          </div>
-        </div>
-
-        {error && (
-          <div style={{ color: "#e53e3e", fontSize: 13, marginBottom: 12, background: "#fed7d7", padding: "8px 12px", borderRadius: 6 }}>
-            {error}
-          </div>
-        )}
+        </DialogBody>
 
         {/* Actions */}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
-          <button onClick={onClose} style={secondaryBtnStyle}>取消</button>
-          <button onClick={handleSubmit} disabled={creating} style={primaryBtnStyle}>
-            {creating ? "提交中..." : isEdit ? "保存修改" : "创建大考"}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose} disabled={creating}>取消</Button>
+          <Button variant="primary" onClick={() => void handleSubmit()} loading={creating}>
+            {isEdit ? "保存修改" : "创建大考"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
-
-// Shared styles
-const inputStyle: React.CSSProperties = {
-  padding: "8px 10px", borderRadius: 6, border: "1px solid var(--line-strong)",
-  fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box",
-  background: "var(--surface)", color: "var(--text-primary)"
-};
-
-const selectStyle: React.CSSProperties = {
-  padding: "8px 10px", borderRadius: 6, border: "1px solid var(--line-strong)",
-  fontSize: 13, outline: "none", width: "100%", boxSizing: "border-box",
-  background: "var(--surface)", color: "var(--text-primary)"
-};
-
-const primaryBtnStyle: React.CSSProperties = {
-  background: "var(--brand)", color: "#fff", border: "none",
-  borderRadius: 6, padding: "8px 20px", fontSize: 13, cursor: "pointer",
-  fontWeight: 500
-};
-
-const secondaryBtnStyle: React.CSSProperties = {
-  background: "#f3f4f6", color: "#333", border: "1px solid #d1d5db",
-  borderRadius: 6, padding: "8px 20px", fontSize: 13, cursor: "pointer"
-};

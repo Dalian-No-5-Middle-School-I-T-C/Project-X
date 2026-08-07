@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +27,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [
       react(),
+      tailwindcss(),
       {
         name: "projectx-scanner-index-html",
         closeBundle() {
@@ -45,6 +47,29 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
+      strictPort: true,
+      // Dev perf: pre-transform the first-screen module graph on startup
+      warmup: {
+        clientFiles: ["./src/apps/answer-card/client/main.tsx"]
+      },
+      // Dev perf: keep chokidar away from large non-frontend directories
+      watch: {
+        ignored: [
+          "**/.npm-cache/**",
+          "**/.qoder/**",
+          "**/.omo/**",
+          "**/data/**",
+          "**/testdata/**",
+          "**/release/**",
+          "**/resources/**",
+          "**/build/**",
+          "**/readus/**",
+          "**/input/**",
+          "**/native/**",
+          "**/llmclient/**",
+          "**/miniprogram/**"
+        ]
+      },
       proxy: {
         "/api": "http://127.0.0.1:5174",
         "/assets": "http://127.0.0.1:5174"
