@@ -482,7 +482,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                 {/* 分数段柱状图 + 班级箱线图 */}
                 <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2">
                   {overview.distribution.length > 0 && (
-                    <section className="flex min-w-0 flex-col gap-2">
+                    <section className="brutal-hard flex min-w-0 flex-col gap-2">
                       <h3 className="text-sm font-semibold text-foreground">分数段分布</h3>
                       <DistributionBar
                         data={{ labels: overview.distribution.map((d) => d.range), values: overview.distribution.map((d) => d.count) }}

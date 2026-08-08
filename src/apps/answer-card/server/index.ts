@@ -662,7 +662,7 @@ export async function createApp(): Promise<express.Express> {
         requireOriginalPaper: (user as any).require_original_paper ?? 1,
         highlightMissingPaper: (user as any).highlight_missing_paper ?? 1,
         showTabBar: (user as any).show_tab_bar ?? 0,
-        themeSkin: (user as any).theme_skin ?? "flat",
+        themeSkin: (user as any).theme_skin ?? "paper-edge",
       });
     } catch (err) { next(err); }
   });

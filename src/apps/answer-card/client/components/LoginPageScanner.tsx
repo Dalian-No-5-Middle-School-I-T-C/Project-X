@@ -180,7 +180,7 @@ export function LoginPageScanner() {
                   >
                     {testStatus === "testing" ? "测试中..." : "测试连接"}
                   </Button>
-                  {testStatus === "ok" && <Badge tone="success" dot>服务器可达</Badge>}
+                  {testStatus === "ok" && <Badge tone="success" dot className="scan-lime">服务器可达</Badge>}
                   {testStatus === "fail" && (
                     <Badge tone="danger" dot>
                       {testMessage || "连接失败"}

@@ -10,12 +10,13 @@
      L2 Semantic   语义令牌  —— bg/fg/border/accent/status，组件只能引用本层
      L3 Component  组件令牌  —— 控件高度/行高等，组件可覆盖但不可引用具体色值
    主题切换：[data-theme="dark"] ｜ 密度切换：[data-density="compact"]
-   皮肤扩展（v2.1.0 预留）：皮肤 = 风格维度，与明暗正交。
-     - 默认皮肤 'flat'（明澈 Flat 2.0）不设 data-skin 属性，本文件现有定义即其全部样式；
+   皮肤扩展（v2.1.0 预留；v2.3.0 起默认皮肤 = 'paper-edge'）：皮肤 = 风格维度，与明暗正交。
+     - 默认皮肤 'paper-edge'（纸锋 Paper Edge）：本文件默认 :root 定义是 'flat'（明澈）基准，
+       默认皮肤通过 data-skin 属性 + 下方覆盖块生效（见 readus/SKIN-THEME.md）；
      - 新增皮肤时：在本文件追加 [data-skin="xxx"] 的 L2 语义令牌覆盖块（色系/阴影/圆角等），
        并在 [data-skin="xxx"][data-theme="dark"] 下补暗色覆盖（对比度 ≥4.5:1），
        同时在 client/components/SkinSwitcher.tsx 的 SKIN_OPTIONS 注册表登记 id，
-       以及 main.tsx / main-scanner.tsx 的预置逻辑无需改动（非 'flat' 自动生效），
+       main.tsx / main-scanner.tsx 预置逻辑始终按 localStorage 设置 data-skin，
        chart.tsx 的 MutationObserver 已监听 data-skin 自动重绘。详见 readus/SKIN-THEME.md。
    同步规约：修改本文件后必须同步 tokens.json 与 theme.ts（见 EXECUTION-PLAN 附录B）
    ============================================================================ */
@@ -106,6 +107,7 @@
 
   --px-font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
                   "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  --px-font-serif: "Songti SC", "Noto Serif SC", "Source Han Serif SC", "SimSun", serif;
   --px-font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Consolas,
                   "Courier New", monospace;
 
@@ -212,6 +214,7 @@
   --px-shadow-2: 0 1px 2px rgba(24, 24, 27, 0.04), 0 4px 12px rgba(24, 24, 27, 0.06);
   --px-shadow-3: 0 2px 4px rgba(24, 24, 27, 0.05), 0 12px 32px rgba(24, 24, 27, 0.10);
   --px-shadow-4: 0 4px 8px rgba(24, 24, 27, 0.06), 0 24px 64px rgba(24, 24, 27, 0.14);
+  --px-shadow-hard: 0 2px 4px rgba(24, 24, 27, 0.05), 0 12px 32px rgba(24, 24, 27, 0.10); /* 重点卡硬阴影位（皮肤可覆盖为硬偏移，默认同 shadow-3） */
   --px-shadow-accent: 0 2px 8px rgba(192, 15, 40, 0.22);
 
   /* ── 焦点环（全局唯一形态） ── */
@@ -285,6 +288,7 @@
   --px-shadow-2: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.40);
   --px-shadow-3: 0 2px 4px rgba(0, 0, 0, 0.40), 0 12px 32px rgba(0, 0, 0, 0.50);
   --px-shadow-4: 0 4px 8px rgba(0, 0, 0, 0.45), 0 24px 64px rgba(0, 0, 0, 0.55);
+  --px-shadow-hard: 0 2px 4px rgba(0, 0, 0, 0.40), 0 12px 32px rgba(0, 0, 0, 0.50); /* 重点卡硬阴影位（皮肤可覆盖为硬偏移，默认同 shadow-3） */
   --px-shadow-accent: 0 2px 8px rgba(217, 56, 81, 0.28);
 
   --px-paper-bg: #FFFFFF;   /* 纸面隐喻：暗色下答题卡仍为白纸 */
@@ -357,10 +361,11 @@
    「已完成/识别通过」→ 蓝软族；「阅卷中/待处理」→ 墨描边族；其余交给纸面中性阶。
 
    【已评审的「纯令牌覆盖」豁免】本皮肤块末尾含一组作用域规则（按钮/徽章/
-   分段控件/选项卡/进度条/统计数字的圆角、字重与配色精调）。原因：demo 的
-   组件观感纪律（按钮胶囊墨底、选项卡胶囊组、进度条直角等）无法由纯令牌
-   表达。规则全部限定在 [data-skin="paper-edge"] 作用域内，默认皮肤零影响。
-   评审记录见 readus/SKIN-THEME.md §五。
+   分段控件/选项卡/进度条/统计数字/纸纹/重点卡硬影/荧光绿状态点/弹层/区标题
+   的圆角、字重、配色与观感精调）。原因：demo 的组件观感纪律（按钮胶囊墨底、
+   选项卡胶囊组、进度条直角、纸纹网格、仅 2 张重点卡硬影、扫描台荧光绿等）
+   无法由纯令牌表达。规则全部限定在 [data-skin="paper-edge"] 作用域内，
+   默认皮肤零影响。评审记录见 readus/SKIN-THEME.md §五。
    ══════════════════════════════════════════════════════════════════════════ */
 [data-skin="paper-edge"] {
   /* ── L1 覆盖：圆角纪律 —— 卡片/输入/表格/弹层一律直角（胶囊见末尾作用域规则） ── */
@@ -384,7 +389,7 @@
   /* ── 文字：墨阶 ── */
   --px-fg-primary:   #1A1917; /* INK */
   --px-fg-secondary: #4A4842; /* INK-SOFT */
-  --px-fg-tertiary:  #8B887E; /* GRAY */
+  --px-fg-tertiary:  #6F6D66; /* GRAY（纸底 ≥4.5:1，P2 评审修正） */
   --px-fg-disabled:  #B8B5AB;
   --px-fg-inverse:   #F1EFE9;
   --px-fg-on-accent: #FFFFFF;
@@ -426,15 +431,20 @@
   --px-info-fg:     #1F30C8;
   --px-info-border: rgba(46, 68, 255, 0.35);
 
-  /* ── 阴影：1-3 级归零（边框优先）；4 级 = 全文件唯一硬偏移 ── */
+  /* ── 阴影：1-4 级全部归零（边框优先）；硬偏移仅经 --px-shadow-hard 落到 2 张重点卡 ── */
   --px-shadow-1: none;
   --px-shadow-2: none;
   --px-shadow-3: none;
-  --px-shadow-4: 8px 8px 0 #1A1917;
+  --px-shadow-4: none;
+  --px-shadow-hard: 8px 8px 0 #1A1917;   /* demo --sh-hard：全文件唯一硬偏移（登录卡/分布卡） */
   --px-shadow-accent: none;
 
-  /* ── 焦点环：保持全局唯一形态，色相转蓝 ── */
-  --px-focus-ring: 0 0 0 2px var(--px-bg-canvas), 0 0 0 4px #2E44FF;
+  /* ── 荧光绿（demo --lime #C8FF33）：仅扫描台强调；--px-lime-strong 供米纸底可读（对比度 ≥4.5:1） ── */
+  --px-lime: #C8FF33;
+  --px-lime-strong: #4F6B00;
+
+  /* ── 焦点环：单条 2px 实线（demo outline: 2px solid blue） ── */
+  --px-focus-ring: 0 0 0 2px #2E44FF;
 
   /* ── 选中文字 ── */
   --px-selection-bg: rgba(46, 68, 255, 0.14);
@@ -504,7 +514,10 @@
   --px-info-fg:     #9DB0FF;
   --px-info-border: rgba(46, 68, 255, 0.50);
 
-  --px-shadow-4: 8px 8px 0 #000000;
+  --px-shadow-hard: 8px 8px 0 #000000;
+
+  /* 荧光绿：暗色底直接用 demo 原值 */
+  --px-lime-strong: #C8FF33;
 
   --px-selection-bg: rgba(46, 68, 255, 0.35);
 
@@ -624,5 +637,36 @@
 /* ⑨ 统计大数字（demo .stat .v：800 重 + 紧缩字距 + 等宽数字） */
 [data-skin="paper-edge"] [class~="text-3xl"][class~="tabular-nums"] {
   font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+/* ⑩ 纸纹网格（demo .paper-grid：64px 浅网格；元素自带底色，暗色下网格自然不可见） */
+[data-skin="paper-edge"] .paper-grid {
+  background-image:
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, 0.045) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(90deg, rgba(0, 0, 0, 0.045) 0 1px, transparent 1px 64px);
+}
+
+/* ⑪ 重点卡硬阴影（demo .login-card / .panel：全文件仅 2 落点 = 登录卡 + 分数段分布卡） */
+[data-skin="paper-edge"] .brutal-hard {
+  box-shadow: var(--px-shadow-hard);
+}
+
+/* ⑫ 扫描台荧光绿状态点（demo .dot--lime：「识别服务已连接」；消费方 = Badge 前置状态点） */
+[data-skin="paper-edge"] .scan-lime > span {
+  background-color: var(--px-lime-strong);
+}
+
+/* ⑬ 弹层去硬影 + 墨边（demo modal：墨边、无硬影；shadow-4 仅 dialog/sheet 消费） */
+[data-skin="paper-edge"] [class~="shadow-4"] {
+  box-shadow: none;
+}
+[data-skin="paper-edge"] [class~="shadow-4"][class~="border-border"] {
+  border-color: var(--px-border-strong);
+}
+
+/* ⑭ 区标题排印（demo .sec h2：900 重 + 紧缩字距；行高不动，防中文长标题挤压） */
+[data-skin="paper-edge"] h2 {
+  font-weight: 900;
   letter-spacing: -0.02em;
 }

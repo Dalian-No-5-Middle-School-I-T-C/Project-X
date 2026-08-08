@@ -20,11 +20,11 @@ try {
   document.documentElement.setAttribute("data-theme", "light");
 }
 
-// v2.1.0: 皮肤预置（皮肤=风格维度，与明暗正交）。默认皮肤 'flat' 不设 data-skin，
-// 只有非默认皮肤才需要设置该属性（tokens.css 以 [data-skin="xxx"] 覆盖 L2 语义令牌）。
+// v2.1.0: 皮肤预置（皮肤=风格维度，与明暗正交）。v2.3.0 起默认皮肤 = 'paper-edge'，
+// 其 CSS 覆盖块依赖 data-skin 属性，故 localStorage 有记录即设置（含默认值），防白闪。
 try {
   const storedSkin = localStorage.getItem("projectx-skin");
-  if (storedSkin && storedSkin !== "flat") {
+  if (storedSkin) {
     document.documentElement.dataset.skin = storedSkin;
   }
 } catch {

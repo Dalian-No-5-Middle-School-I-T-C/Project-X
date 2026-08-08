@@ -447,7 +447,7 @@ export function AccountSettingsPage() {
 
           <TabsContent value="client" className="flex flex-col gap-4 px-5 py-5">
             <div className="flex max-w-xl flex-col gap-4">
-              {/* v2.1.0: 外观 / 皮肤 — 皮肤=风格维度，明暗即时生效并随账号同步；v2.3.0 当前皮肤名跟随注册表动态显示 */}
+              {/* v2.1.0: 外观 / 皮肤 — 皮肤=风格维度（随账号同步）；明暗为设备级偏好（仅存本地）；v2.3.0 当前皮肤名跟随注册表动态显示 */}
               <section className="flex flex-col gap-2">
                 <h4 className="m-0 text-base font-semibold text-foreground">外观 / 皮肤</h4>
                 <ControlRow
@@ -469,7 +469,7 @@ export function AccountSettingsPage() {
                     />
                   }
                   label="明暗模式"
-                  description="亮色/暗色即时生效，偏好随账号同步"
+                  description="亮色/暗色即时生效，为设备级偏好（仅皮肤随账号同步）"
                 />
               </section>
 

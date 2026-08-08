@@ -40,7 +40,7 @@ import { cn } from "./lib/utils";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
-import { SkinSwitcher, DEFAULT_SKIN } from "./components/SkinSwitcher";
+import { SkinSwitcher, DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
 import { BeianFooter } from "./components/BeianFooter";
 import { NotFound } from "./components/NotFound";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
@@ -655,17 +655,19 @@ function App() {
       .catch(() => {});
   }, [user?.id]);
 
-  // v2.1.0: 登录后皮肤偏好同步（账号为权威，本地非默认显式选择优先）：
-  // - 本地有非默认记录（登录页/上次会话显式选过）→ 保留本地值，由下方「皮肤变更→PATCH」effect 同步到账号；
-  // - 本地无记录或为默认 → 应用账号 themeSkin（换设备恢复账号偏好）。
-  // 注：登录响应 user 字段为 snake_case theme_skin（SELECT u.*），/api/auth/me 为 themeSkin，此处兼容两者。
+  // v2.1.0: 登录后皮肤偏好同步（v2.3.0 语义：账号为权威，本会话显式选择优先）：
+  // - sessionStorage 有「会话内显式选择」标记（登录页/设置页切换过皮肤，含默认值）
+  //   → 本地优先，由下方「皮肤变更→PATCH」effect 同步到账号（登录页选择登录后保留）；
+  // - 无标记（未显式选择过）→ 应用账号 themeSkin（换设备恢复账号偏好；
+  //   老账号 theme_skin='flat' 保持 flat，不被新默认覆盖）。
+  // 注：登录响应/me 的 theme_skin 已由 AuthContext 归一化为 themeSkin，此处不再兼容 snake_case。
   useEffect(() => {
     if (!user) return;
-    const serverSkin = (user.themeSkin ?? (user as { theme_skin?: string }).theme_skin) || DEFAULT_SKIN;
-    let localSkin: string | null = null;
-    try { localSkin = localStorage.getItem("projectx-skin"); } catch { /* ignore */ }
-    if (localSkin && localSkin !== DEFAULT_SKIN) {
-      setSkin(localSkin);
+    const serverSkin = user.themeSkin || DEFAULT_SKIN;
+    let chosen: string | null = null;
+    try { chosen = sessionStorage.getItem(SKIN_CHOSEN_KEY); } catch { /* ignore */ }
+    if (chosen) {
+      setSkin(chosen);
     } else {
       setSkin(serverSkin);
     }
@@ -707,17 +709,12 @@ function App() {
     }
   }, [theme]);
 
-  // 皮肤（风格维度）同步：默认 'flat' 不设 data-skin 也不落盘（零污染，
-  // 且 localStorage 无记录 ⇔ "未显式选择"，供登录后同步 effect 区分），
-  // 非默认皮肤写 localStorage + data-skin 属性供 tokens.css 覆盖。
+  // 皮肤（风格维度）同步：始终落盘 + 设 data-skin（默认皮肤 paper-edge 的 CSS 覆盖块
+  // 依赖 data-skin 属性；「显式选择」语义由 SkinSwitcher 记 sessionStorage，
+  // 登录同步 effect 据此区分显式选择与默认值落盘）。
   useEffect(() => {
-    if (skin === DEFAULT_SKIN) {
-      delete document.documentElement.dataset.skin;
-      try { localStorage.removeItem("projectx-skin"); } catch { /* private browsing / storage disabled */ }
-    } else {
-      document.documentElement.dataset.skin = skin;
-      try { localStorage.setItem("projectx-skin", skin); } catch { /* private browsing / storage disabled */ }
-    }
+    document.documentElement.dataset.skin = skin;
+    try { localStorage.setItem("projectx-skin", skin); } catch { /* private browsing / storage disabled */ }
   }, [skin]);
 
   useEffect(() => {

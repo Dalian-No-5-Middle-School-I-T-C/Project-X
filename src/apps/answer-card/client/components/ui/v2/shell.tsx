@@ -28,7 +28,7 @@ export function AppShell({
 }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn("flex h-screen w-full overflow-hidden bg-background", className)}
+      className={cn("paper-grid flex h-screen w-full overflow-hidden bg-background", className)}
       {...props}
     />
   );

@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS users (
     highlight_missing_paper INTEGER DEFAULT 1, -- v1.8.0: 侧边栏高亮未上传原卷的考试
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
     show_tab_bar     INTEGER DEFAULT 0,      -- v1.9.0: 0=隐藏底部导航 1=显示
-    theme_skin       TEXT DEFAULT 'flat',    -- v2.1.0: 前端皮肤 ID（'flat'=明澈 Flat 2.0；未来新增皮肤在此登记）
+    theme_skin       TEXT DEFAULT 'paper-edge', -- v2.1.0: 前端皮肤 ID；v2.3.0 默认改为 'paper-edge'（纸锋；'flat'=明澈 可选）
     is_demo          INTEGER NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示数据（clearDemoData 仅按此标记清理，避免误删真实账号）
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,

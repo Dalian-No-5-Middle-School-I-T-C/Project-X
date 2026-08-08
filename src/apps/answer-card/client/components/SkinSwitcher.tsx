@@ -3,7 +3,6 @@ import { Moon, Palette, Sun } from "lucide-react";
 import { cn } from "../lib/utils";
 import {
   DropdownMenu,
-  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuLabel,
@@ -14,14 +13,17 @@ import {
 } from "./ui/v2";
 
 /* ══════════════════════════════════════════════════════════════════
-   皮肤切换器（v2.1.0）
+   皮肤切换器（v2.1.0；v2.3.0 默认皮肤改为 'paper-edge'）
    ------------------------------------------------------------------
    皮肤 = 风格维度（data-skin），与明暗（data-theme）正交：
-   - 皮肤选择的是「整套视觉风格」，现有 'flat'（明澈 Flat 2.0，默认）与
-     'paper-edge'（纸锋 Paper Edge）两套；
+   - 皮肤选择的是「整套视觉风格」，现有 'paper-edge'（纸锋 Paper Edge，默认）与
+     'flat'（明澈 Flat 2.0）两套；
      未来新增皮肤时：① tokens.css 增加 [data-skin="xxx"] 的 L2 语义令牌覆盖块；
      ② 在本文件 SKIN_OPTIONS 注册表登记（id 与 data-skin 值一致）。
    - 明暗选择复用既有 projectx-theme / data-theme 机制，与皮肤互不干扰。
+   - 显式选择标记：任何一次切换（受控/自管）都会写入 sessionStorage
+     projectx-skin-chosen，App 登录同步 effect 据此区分「本会话显式选择」与
+     「默认值落盘」（见 readus/SKIN-THEME.md §二）；登出时由 AuthContext 清除。
 
    两种使用模式：
    - 受控（App / 设置页）：传 skin/theme + onSkinChange/onThemeChange；
@@ -31,12 +33,13 @@ import {
 
 /** 皮肤注册表 —— 新增皮肤在此登记（id 同时是 data-skin 属性值） */
 export const SKIN_OPTIONS: ReadonlyArray<{ id: string; label: string; description: string }> = [
-  { id: "flat", label: "明澈 Flat 2.0", description: "默认风格" },
-  { id: "paper-edge", label: "纸锋 Paper Edge", description: "纸面墨蓝 · 直角硬影" },
+  { id: "paper-edge", label: "纸锋 Paper Edge", description: "默认风格 · 纸面墨蓝 · 直角硬影" },
+  { id: "flat", label: "明澈 Flat 2.0", description: "可选风格 · 白底绯红" },
 ];
 
-export const DEFAULT_SKIN = "flat";
+export const DEFAULT_SKIN = "paper-edge";
 export const SKIN_STORAGE_KEY = "projectx-skin";
+export const SKIN_CHOSEN_KEY = "projectx-skin-chosen";
 export const THEME_STORAGE_KEY = "projectx-theme";
 
 function readLocalSkin(): string {
@@ -56,17 +59,8 @@ function readLocalTheme(): "light" | "dark" {
 }
 
 function writeLocalSkin(skin: string): void {
-  // 默认皮肤不设 data-skin 也不落盘（零污染；localStorage 无记录 ⇔ 未显式选择，
-  // 与 App.tsx 的皮肤同步 effect 保持一致，供登录后「账号为权威」逻辑区分）
-  if (skin === DEFAULT_SKIN) {
-    try {
-      localStorage.removeItem(SKIN_STORAGE_KEY);
-    } catch {
-      /* private browsing / storage disabled */
-    }
-    delete document.documentElement.dataset.skin;
-    return;
-  }
+  // 默认皮肤也落盘 + 设 data-skin：默认 paper-edge 的 CSS 覆盖块依赖 data-skin 属性；
+  // localStorage 仅作跨会话登录页记忆，「显式选择」语义由 sessionStorage chosen 标志承载。
   try {
     localStorage.setItem(SKIN_STORAGE_KEY, skin);
   } catch {
@@ -114,6 +108,14 @@ export function SkinSwitcher({
   const currentSkinLabel = SKIN_OPTIONS.find((s) => s.id === activeSkin)?.label ?? activeSkin;
 
   function handleSkinChange(next: string) {
+    // 会话内显式选择标记（登录页/设置页任何切换都记录）：App 登录同步 effect
+    // 据此区分「本会话显式选择」（本地优先）与「默认值落盘」（账号为权威），
+    // 避免共享设备上账号间皮肤继承；登出时由 AuthContext 清除。
+    try {
+      sessionStorage.setItem(SKIN_CHOSEN_KEY, next);
+    } catch {
+      /* private browsing / storage disabled */
+    }
     if (onSkinChange) onSkinChange(next);
     else {
       setLocalSkin(next);
@@ -149,16 +151,19 @@ export function SkinSwitcher({
       <DropdownMenuContent align={align} className="w-52">
         <DropdownMenuLabel>外观</DropdownMenuLabel>
         <DropdownMenuGroup>
-          {SKIN_OPTIONS.map((option) => (
-            <DropdownMenuCheckboxItem
-              key={option.id}
-              checked={activeSkin === option.id}
-              onCheckedChange={() => handleSkinChange(option.id)}
-            >
-              <Palette className="mr-2 size-4 text-muted-foreground" />
-              {option.label}
-            </DropdownMenuCheckboxItem>
-          ))}
+          <DropdownMenuRadioGroup value={activeSkin} onValueChange={handleSkinChange}>
+            {SKIN_OPTIONS.map((option) => (
+              <DropdownMenuRadioItem key={option.id} value={option.id}>
+                <Palette className="mr-2 size-4 shrink-0 text-muted-foreground" />
+                <span className="flex min-w-0 flex-col">
+                  <span>{option.label}</span>
+                  <span className="truncate text-xs font-normal text-muted-foreground">
+                    {option.description}
+                  </span>
+                </span>
+              </DropdownMenuRadioItem>
+            ))}
+          </DropdownMenuRadioGroup>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
         <DropdownMenuLabel>明暗</DropdownMenuLabel>

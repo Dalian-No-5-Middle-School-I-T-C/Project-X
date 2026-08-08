@@ -33,11 +33,11 @@ export function LoginPage() {
   }
 
   return (
-    <div className="relative flex min-h-[100dvh] items-center justify-center overflow-y-auto bg-background p-6">
+    <div className="paper-grid relative flex min-h-[100dvh] items-center justify-center overflow-y-auto bg-background p-6">
       {/* v2.1.0: 登录页皮肤入口（自管模式：登录前直接读写 localStorage + data-* 属性；
           登录后由 App 接管，本地选择优先并同步到账号） */}
       <SkinSwitcher className="absolute right-4 top-4 z-10" />
-      <Card className="login-card-demo grid w-full max-w-[820px] overflow-hidden shadow-3 md:grid-cols-[340px_minmax(0,1fr)]">
+      <Card className="login-card-demo brutal-hard grid w-full max-w-[820px] overflow-hidden md:grid-cols-[340px_minmax(0,1fr)]">
         <div className="login-brand-panel flex flex-col gap-3 border-b border-border-subtle bg-secondary p-7 md:border-b-0 md:border-r">
           <div className="flex size-11 items-center justify-center rounded-xl bg-primary text-primary-foreground"><Shield size={22} /></div>
           <div>

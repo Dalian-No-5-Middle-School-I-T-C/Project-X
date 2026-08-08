@@ -131,7 +131,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack }: Props) {
   }
 
   return (
-    <main className="flex h-screen min-w-0 flex-col overflow-hidden bg-background">
+    <main className="paper-grid flex h-screen min-w-0 flex-col overflow-hidden bg-background">
         <header className="flex h-page-header shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-5">
           <Button variant="ghost" size="icon-sm" onClick={onBack} aria-label="返回答题卡列表"><ArrowLeft size={18} /></Button>
           <div className="flex min-w-0 flex-1 flex-col"><strong className="truncate text-base font-semibold">{cardTitle}</strong><span className="truncate text-xs text-muted-foreground">扫描仪直扫或导入图片进行阅卷判分 · ID:{cardId}</span></div>
@@ -381,7 +381,7 @@ function GradingResultsInline({
                   </TableCell>
                   <TableCell className="tabular-nums">{row.studentId ?? "未识别"}</TableCell>
                   <TableCell>
-                    <Badge tone={isClean ? "success" : "warning"} dot>
+                    <Badge tone={isClean ? "success" : "warning"} dot className={isClean ? "scan-lime" : undefined}>
                       {row.recognitionStatus}
                     </Badge>
                   </TableCell>

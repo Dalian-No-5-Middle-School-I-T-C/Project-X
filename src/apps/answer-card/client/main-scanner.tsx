@@ -14,10 +14,11 @@ try {
   document.documentElement.setAttribute("data-theme", "light");
 }
 
-// v2.1.0: 皮肤预置（与 main.tsx 一致）。默认皮肤 'flat' 不设 data-skin。
+// v2.1.0: 皮肤预置（与 main.tsx 一致）。v2.3.0 起默认皮肤 = 'paper-edge'，
+// 其 CSS 覆盖块依赖 data-skin 属性，故 localStorage 有记录即设置（含默认值）。
 try {
   const storedSkin = localStorage.getItem("projectx-skin");
-  if (storedSkin && storedSkin !== "flat") {
+  if (storedSkin) {
     document.documentElement.dataset.skin = storedSkin;
   }
 } catch {
