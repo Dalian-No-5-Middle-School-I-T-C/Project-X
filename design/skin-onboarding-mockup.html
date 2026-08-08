@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Project-X 皮肤选择 · 设计稿</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    body { font-family: "Inter", "Noto Sans SC", system-ui, sans-serif; }
+    .brand-red { color: #C00F28; }
+    .bg-brand-red { background-color: #C00F28; }
+    .ring-brand-red { --tw-ring-color: #C00F28; }
+    .border-brand-red { border-color: #C00F28; }
+    .preview-shadow { box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 6px 18px rgba(0,0,0,0.06); }
+    .selected-card {
+      box-shadow: 0 0 0 2px #C00F28, 0 8px 24px rgba(192,15,40,0.10);
+    }
+    [data-skin-card].selected .check-circle { opacity: 1; transform: scale(1); }
+    [data-skin-card] .check-circle { opacity: 0; transform: scale(0.8); transition: all .2s ease; }
+    [data-skin-card] { transition: box-shadow .2s ease, transform .15s ease; }
+    [data-skin-card]:hover { transform: translateY(-2px); }
+  </style>
+</head>
+<body class="min-h-screen flex items-center justify-center bg-[#F4F5F7] p-6">
+
+  <!-- 设计稿标题（评审用，正式上线前移除） -->
+  <div class="fixed top-4 left-4 text-xs text-gray-400">设计稿 / 首次进入登录页前的皮肤选择 · v2（无默认 · 必须二选一 · 预览放大）</div>
+
+  <main class="w-full max-w-6xl">
+    <div class="bg-white rounded-2xl p-8 md:p-12 preview-shadow">
+      <!-- Header -->
+      <div class="text-center mb-8">
+        <h1 class="text-2xl md:text-3xl font-bold text-gray-900 mb-2">选择界面风格</h1>
+        <p class="text-sm md:text-base text-gray-500">请选择一套视觉风格后再进入登录；选定后仍可前往账号设置随时改回</p>
+      </div>
+
+      <!-- Options -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8" role="radiogroup" aria-label="选择界面风格">
+
+        <!-- 明澈 Flat 2.0 -->
+        <button
+          type="button"
+          data-skin-card
+          data-value="flat"
+          aria-checked="false"
+          class="group relative rounded-xl border border-gray-200 bg-white text-left overflow-hidden focus:outline-none focus:ring-2 focus:ring-brand-red focus:ring-offset-2"
+          onclick="selectSkin('flat')"
+        >
+          <!-- 选中标记 -->
+          <div class="check-circle absolute top-3 right-3 z-10 flex items-center justify-center w-7 h-7 rounded-full bg-brand-red text-white shadow">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+          </div>
+
+          <!-- 预览图（放大：3/2 比例，完整可观） -->
+          <div class="aspect-[3/2] w-full overflow-hidden bg-gray-50 border-b border-gray-100">
+            <img src="skin-onboarding-assets/flat-preview.png" alt="明澈 Flat 2.0 预览" class="w-full h-full object-cover object-top" />
+          </div>
+
+          <!-- 信息 -->
+          <div class="p-6">
+            <h2 class="text-lg font-bold text-gray-900 mb-1.5">明澈 Flat 2.0</h2>
+            <p class="text-sm text-gray-500 leading-relaxed">轻盈、现代、白底绯红强调色；适合日常高频阅卷与明亮办公环境。</p>
+          </div>
+        </button>
+
+        <!-- 纸锋 Paper Edge -->
+        <button
+          type="button"
+          data-skin-card
+          data-value="paper-edge"
+          aria-checked="false"
+          class="group relative rounded-xl border border-gray-200 bg-white text-left overflow-hidden focus:outline-none focus:ring-2 focus:ring-brand-red focus:ring-offset-2"
+          onclick="selectSkin('paper-edge')"
+        >
+          <div class="check-circle absolute top-3 right-3 z-10 flex items-center justify-center w-7 h-7 rounded-full bg-brand-red text-white shadow">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="3" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>
+          </div>
+
+          <div class="aspect-[3/2] w-full overflow-hidden bg-[#F1EFE9] border-b border-gray-100">
+            <img src="skin-onboarding-assets/paper-edge-preview.png" alt="纸锋 Paper Edge 预览" class="w-full h-full object-cover object-top" />
+          </div>
+
+          <div class="p-6">
+            <h2 class="text-lg font-bold text-gray-900 mb-1.5">纸锋 Paper Edge</h2>
+            <p class="text-sm text-gray-500 leading-relaxed">纸米色底、墨色文字、亮蓝强调；直角硬影、杂志编辑感，适合展示汇报。</p>
+          </div>
+        </button>
+
+      </div>
+
+      <!-- Bottom action -->
+      <div class="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
+        <p class="text-xs text-gray-400 text-center sm:text-left">标准设置后，仍可前往「账号设置 → 客户端设置」修改外观与皮肤。</p>
+        <button
+          id="confirmBtn"
+          type="button"
+          disabled
+          class="px-7 py-3 rounded-lg text-sm font-semibold text-white bg-brand-red hover:bg-[#A00D22] active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed"
+          onclick="confirmSkin()"
+        >
+          请先选择一种风格
+        </button>
+      </div>
+    </div>
+
+    <!-- 登录页背景示意（半透明占位） -->
+    <div class="mt-6 text-center text-xs text-gray-400">背景：登录页卡片（被遮罩层覆盖）</div>
+  </main>
+
+  <script>
+    const cards = document.querySelectorAll('[data-skin-card]');
+    const confirmBtn = document.getElementById('confirmBtn');
+    let selected = null;
+
+    function selectSkin(value) {
+      selected = value;
+      cards.forEach(card => {
+        const isMatch = card.dataset.value === value;
+        card.setAttribute('aria-checked', String(isMatch));
+        card.classList.toggle('selected-card', isMatch);
+      });
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = value === 'flat'
+        ? '使用明澈风格，进入登录'
+        : '使用纸锋风格，进入登录';
+    }
+
+    function confirmSkin() {
+      alert('设计稿演示：已选择 ' + selected + '\n真实实现时此处写入 localStorage「projectx-skin」并设置 data-skin，然后进入登录页。');
+    }
+
+    // 初始：无默认、必须二选一，确认按钮禁用
+    confirmBtn.textContent = '请先选择一种风格';
+  </script>
+</body>
+</html>

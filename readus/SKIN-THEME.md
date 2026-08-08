@@ -26,6 +26,8 @@
 
 > **入口收敛说明（本版回退）**：v2.1.0 曾在「侧栏底部」与「页头」放置皮肤菜单（Palette 按钮），本版已回退——这两处恢复为原先的**暗色模式一键按钮（Sun/Moon）**，仅切换明暗（设备级 `projectx-theme` / `data-theme`），不再承载皮肤选择。皮肤切换因此收敛为上述两处（登录页自管 + 账号设置受控）。
 
+**首次强制引导层（新增）**：首次进入登录页前（`localStorage["projectx-skin-onboarded"]` 缺失的设备级一次性标志），先弹出全屏引导层（`components/SkinOnboarding.tsx`），**明澈 / 纸锋两张大预览卡并排、带简介、必须二选一**——初始无预选、确认按钮禁用，点选其一后才可「进入登录」。确认时写入 sessionStorage `projectx-skin-chosen`（走登录同步 effect 的本地优先分支，登录后保留选择）+ 自管落盘 `projectx-skin` / `data-skin`（复用 `writeLocalSkin`）+ 写一次性 `onboarded` 标志。该引导仅覆盖未登录态（登录后登录页卸载），与登录页右上角 `SkinSwitcher` 自管入口并存（后者为登录前的备用切换）。
+
 菜单结构（`components/SkinSwitcher.tsx`）：
 
 ```
@@ -81,7 +83,8 @@
 | `client/WorkspaceContext.tsx` | `WorkspaceValue` 增加 `skin` / `setSkin`（与 `theme` / `setTheme` 并列下发） |
 | `client/auth/AuthContext.tsx` | 登录/me 响应统一归一化为 `themeSkin`；登出与会话失效时清除 `projectx-skin-chosen` |
 | `client/auth/types.ts` | `AuthUser.themeSkin?: string` |
-| `client/components/LoginPage.tsx` | 登录页皮肤入口（自管模式，WorkspaceProvider 之外） |
+| `client/components/LoginPage.tsx` | 登录页皮肤入口（自管模式，WorkspaceProvider 之外）；首次引导层 `SkinOnboarding` 挂载点（`showOnboarding` state 由 `shouldShowSkinOnboarding()` 初始化） |
+| `client/components/SkinOnboarding.tsx` | 首次登录前强制引导层：明澈 / 纸锋预览卡二选一（无默认），确认时写 `projectx-skin-chosen` + `writeLocalSkin` + `projectx-skin-onboarded` 一次性标志；纯语义令牌，无手写 CSS |
 | `client/pages/AccountSettingsPage.tsx` | 「客户端设置」Tab →「外观 / 皮肤」区（SegmentedControl 亮/暗 + SkinSwitcher）；明暗文案标注「设备级偏好」 |
 | `client/main.tsx` / `main-scanner.tsx` | 渲染前预置 `data-skin`（读 `projectx-skin`，有记录即设置，防白闪） |
 | `client/ScannerApp.tsx` | 登录页/登录后按本地或账号 `themeSkin` 落盘 + 设 `data-skin`（账号 flat 显式写入覆盖残留，换账号不继承）；不提供切换按钮 |
@@ -164,6 +167,9 @@ curl http://<host>:5174/api/users/me/settings -H "Authorization: Bearer <token>"
 
 **Q：为什么默认皮肤也设 `data-skin` 属性？**
 A：v2.3.0 起默认皮肤为 `paper-edge`，其 CSS 覆盖块依赖 `[data-skin="paper-edge"]` 属性选择器生效，故 `<html>` 上始终带 `data-skin`（默认纸锋；显式选 flat 时为 `data-skin="flat"`，无覆盖块回退 `:root` 明澈基准）。v2.1.0–v2.2.x「默认 flat 不设属性（与 PR #221 前 DOM 一致）」的约定随默认皮肤变更退出。
+
+**Q：首次进入为什么必须选皮肤？**
+A：首次登录前（`projectx-skin-onboarded` 标志缺失）弹出全屏引导层，明澈 / 纸锋带预览二选一、无默认预选，确认后方可进入登录页。这是设备级一次性引导（清 localStorage 后会再次弹出）；选完写入 `projectx-skin-chosen` 标记，登录后按本地优先保留，同时记 onboarded 标志避免重复弹窗。登录后仍可经右上角 `SkinSwitcher` 或账号设置随时改回。
 
 **Q：登录页选的皮肤登录后会保留吗？**
 A：会。登录页切换会写入 sessionStorage `projectx-skin-chosen` 标记；登录后该标记存在 → 本地优先，并自动回写账号。未显式选择过（全新用户/换设备）→ 应用账号偏好。

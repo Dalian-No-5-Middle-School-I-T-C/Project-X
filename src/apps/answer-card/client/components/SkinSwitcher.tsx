@@ -58,7 +58,7 @@ function readLocalTheme(): "light" | "dark" {
   }
 }
 
-function writeLocalSkin(skin: string): void {
+export function writeLocalSkin(skin: string): void {
   // 默认皮肤也落盘 + 设 data-skin：默认 paper-edge 的 CSS 覆盖块依赖 data-skin 属性；
   // localStorage 仅作跨会话登录页记忆，「显式选择」语义由 sessionStorage chosen 标志承载。
   try {

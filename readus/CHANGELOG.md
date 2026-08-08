@@ -39,6 +39,25 @@
 - 存量库 `data/projectx.db`（v31）启动自动补齐 v32/v33 迁移，`theme_skin` 列落库实测通过。
 - API 冒烟：`/api/auth/me` 与 settings GET 返回 `themeSkin`；PATCH 更新成功；空串/超长 400 拒绝。
 
+## v2.1.1 (2026-08-08) — 首次登录前皮肤引导层 + 入口收敛 + 暗色按钮恢复
+
+> 皮肤切换体验收敛：新增**首次进入登录页前的强制皮肤引导层**（明澈 / 纸锋两张大预览卡并排、带简介、必须二选一，确认后才进入登录）；将 v2.1.0 的四处入口收敛为「登录页 + 账号设置」两处，侧栏底部与页头恢复为原先的暗色模式一键按钮（Sun/Moon）。全程 Tailwind 语义令牌，未新建 CSS、未违反 UI 设计规范。完整说明见 [SKIN-THEME.md](./SKIN-THEME.md) §一。
+
+**1. 前端**
+- 新增 `components/SkinOnboarding.tsx`：全屏引导层（`role="radiogroup"` + 两个 `role="radio"` 卡片）。首次进入（`localStorage["projectx-skin-onboarded"]` 缺失）弹出；初始无预选、确认按钮禁用（文案「请先选择一种风格」），必须点选其一；确认时写入 sessionStorage `projectx-skin-chosen`（登录同步本地优先）+ 自管落盘 `projectx-skin` / `data-skin`（复用 `writeLocalSkin`）+ 一次性 `onboarded` 标志，随后卸载引导层显示登录页。
+- `components/LoginPage.tsx`：用 `shouldShowSkinOnboarding()` 初始化 `showOnboarding` state，条件渲染引导层（`<>` 包裹）；确认后置 false 显示登录页。登录页右上角 `SkinSwitcher` 自管入口保留（登录前备用切换）。
+- `components/SkinSwitcher.tsx`：导出既有 `writeLocalSkin`（引导层复用，避免重复逻辑）。
+- `App.tsx`：侧栏底部（`AppRailFooter`）与页头（`PageHeader` actions）的 `SkinSwitcher` 移除，原地恢复**暗色模式一键按钮（Sun/Moon）**——点击切换 `theme`，复用既有 `data-theme` + `projectx-theme` 持久化 effect（设备级，无后端改动）；严格沿用现 UI 系统 Tailwind 工具类（`h-control-md` / `size-8` / `text-secondary-foreground` / `hover:bg-secondary` / `duration-(--px-dur-1)` 等），未引入 legacy CSS。
+- `public/skin-onboarding-assets/`：复制 `flat-preview.png` / `paper-edge-preview.png`，构建以 `/skin-onboarding-assets/...` 根路径引用（已验证进入 `dist/web/`）。
+
+**2. 文档**
+- `readus/SKIN-THEME.md`：入口表由「4 处」更正为「2 处」+ 收敛说明、新增「首次强制引导层」段、前端实现表与 FAQ 同步。
+- `README.md` 功能特性「皮肤切换」条目同步收敛描述。
+
+**验证**
+- `npm run typecheck` — 0 错误；`npm run build`（web + server）双绿，预览图确认进入 `dist/web/skin-onboarding-assets/`。
+- 真机闭环（Playwright，独立 QA agent + 主理人接管复测）：明澈 / 纸锋 × 亮 / 暗 全组合 PASS——初始禁用、点选启用、落盘 `projectx-skin`/`chosen`/`onboarded`/`data-skin` 全中、确认后进入登录页、预览图 HTTP 200、防重复弹窗、零非 401 浏览器报错；暗色标题对比度 14.68:1。原 QA 脚本曾标记「选中边框与未选同色」，经静置复测确认为 150ms 边框过渡的采样假阳性（非选中态缺陷），非源码 bug。
+
 ## v2.2.0 (2026-08-07) — 知识点难度/区分度 + 考试模式切换（#176 #178）
 
 > 双权限模式落地：晨测（quiz）对教师全量可见，大考（formal）继续走 teacher_role / teacher_permissions 精细权限；成绩分析的知识点面板补齐难度系数 P 与区分度 D，并修复知识点接口响应解包 bug。typecheck / verify:auth / verify:security-critical / 新增 verify:176-178 / build 全绿。
