@@ -17,6 +17,7 @@ import {
   Layers,
   ListPlus,
   Menu,
+  Moon,
   Plus,
   Save,
   Search,
@@ -25,6 +26,7 @@ import {
   BookOpen,
   Home,
   SquarePen,
+  Sun,
   Upload,
   Users,
   AlertTriangle,
@@ -40,7 +42,7 @@ import { cn } from "./lib/utils";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
-import { SkinSwitcher, DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
+import { DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
 import { BeianFooter } from "./components/BeianFooter";
 import { NotFound } from "./components/NotFound";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
@@ -1874,13 +1876,22 @@ function App() {
             )}
           </AppRailNav>
           <AppRailFooter className={effectiveRailCollapsed ? "flex-col" : undefined}>
-            <SkinSwitcher
-              skin={skin}
-              onSkinChange={setSkin}
-              theme={theme}
-              onThemeChange={setTheme}
-              align={effectiveRailCollapsed ? "center" : "end"}
-            />
+            {/* v2.1.0 前常驻的暗色模式一键按钮：原被皮肤菜单取代，本版恢复。
+                明暗为设备级偏好（data-theme + localStorage projectx-theme），与皮肤正交。 */}
+            <button
+              type="button"
+              aria-label={theme === "dark" ? "切换到亮色模式" : "切换到暗色模式"}
+              title={theme === "dark" ? "切换为亮色模式" : "切换为暗色模式"}
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              className={cn(
+                "inline-flex items-center justify-center rounded-md text-secondary-foreground",
+                "transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground",
+                "h-control-md w-control-md",
+                effectiveRailCollapsed ? "self-center" : undefined,
+              )}
+            >
+              {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
             <AccountMenu
               compact={effectiveRailCollapsed}
               onOpenSponsor={() => {
@@ -1907,14 +1918,20 @@ function App() {
             actions={
               <div className="flex items-center gap-2">
                 {designActions}
-                <SkinSwitcher
-                  skin={skin}
-                  onSkinChange={setSkin}
-                  theme={theme}
-                  onThemeChange={setTheme}
-                  size="sm"
-                  className="hidden lg:inline-flex"
-                />
+                {/* 暗色模式一键按钮（与侧栏底部同源，≥lg 屏显示；皮肤切换已收敛至账户设置） */}
+                <button
+                  type="button"
+                  aria-label={theme === "dark" ? "切换到亮色模式" : "切换到暗色模式"}
+                  title={theme === "dark" ? "切换为亮色模式" : "切换为暗色模式"}
+                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                  className={cn(
+                    "inline-flex size-8 items-center justify-center rounded-md text-secondary-foreground",
+                    "transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground",
+                    "hidden lg:inline-flex",
+                  )}
+                >
+                  {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+                </button>
                 <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
                   <button
                     type="button"

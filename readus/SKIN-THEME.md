@@ -17,14 +17,14 @@
   - `paper-edge`（纸锋 Paper Edge，v2.3.0 起为**默认皮肤**）——设计来源 `demo-brutalist.html`（editorial-brutalist 技能）：纸面米底 #F1EFE9、墨色文字阶、品牌亮蓝 #2E44FF 替换默认绯红 accent；卡片/输入/表格直角 + 按钮/徽章胶囊；**纸纹网格**（`.paper-grid`，64px 浅网格铺内容区）、**硬偏移阴影仅 2 张重点卡**（登录卡 + 分数段分布卡，`.brutal-hard` → `--px-shadow-hard`）、**扫描台荧光绿状态点**（`--px-lime` / `--px-lime-strong`，`.scan-lime`）；状态语义重映射（已完成→蓝软族 / 阅卷中→墨描边族 / 异常→绯红族 / 信息→实蓝族）；图表单色纪律（chart-1 蓝 = 当前主体，绯红仅异常）。
   - `flat`（明澈 Flat 2.0，v2.3.0 前为默认设计系统）。
 - **默认皮肤也设 `data-skin` 属性**：默认 `paper-edge` 的 CSS 覆盖块依赖 `[data-skin="paper-edge"]` 属性选择器，故 `<html>` 上始终出现 `data-skin`（默认纸锋；显式选 flat 时为 `data-skin="flat"`，无覆盖块回退 `:root` 明澈基准）。
-- 皮肤切换入口（4 处）：
+- 皮肤切换入口（2 处）：
 
 | 入口 | 位置 | 说明 |
 |------|------|------|
 | 登录页 | 卡片右上角 Palette 按钮 | 未登录即可切换（自管模式，直接写 localStorage），登录后保留 |
-| 侧栏底部 | 导航栏底部 Palette 按钮 | 替换了原 Sun/Moon 一键按钮，菜单内含「皮肤 + 明暗」两组 |
-| 页头 | 右上角 Palette 按钮（≥lg 屏） | 同上 |
-| 账号设置 | 「客户端设置」Tab → 「外观 / 皮肤」区 | 皮肤 + 明暗分段选择，即时生效 |
+| 账号设置 | 「客户端设置」Tab → 「外观 / 皮肤」区 | **应用内唯一入口**：皮肤 + 明暗分段选择，即时生效 |
+
+> **入口收敛说明（本版回退）**：v2.1.0 曾在「侧栏底部」与「页头」放置皮肤菜单（Palette 按钮），本版已回退——这两处恢复为原先的**暗色模式一键按钮（Sun/Moon）**，仅切换明暗（设备级 `projectx-theme` / `data-theme`），不再承载皮肤选择。皮肤切换因此收敛为上述两处（登录页自管 + 账号设置受控）。
 
 菜单结构（`components/SkinSwitcher.tsx`）：
 
@@ -61,7 +61,7 @@
 
 皮肤状态单一来源 = App 顶层 `skin` state；「显式选择」与「默认值落盘」通过 sessionStorage 标记区分：
 
-1. **显式选择标记**（`SkinSwitcher`）：任何一次切换（登录页/侧栏/页头/设置页，含选择默认皮肤值）都会写入 sessionStorage `projectx-skin-chosen`；**登出/会话失效时由 AuthContext 清除**。localStorage `projectx-skin` 仅作跨会话登录页记忆与防白闪。
+1. **显式选择标记**（`SkinSwitcher`）：任何一次切换（登录页/账号设置页，含选择默认皮肤值）都会写入 sessionStorage `projectx-skin-chosen`；**登出/会话失效时由 AuthContext 清除**。localStorage `projectx-skin` 仅作跨会话登录页记忆与防白闪。
 2. **登录后同步**（App.tsx，`user` 变化时）：
    - sessionStorage 有「显式选择」标记 → **本地优先**（「登录页选的皮肤登录后保留」），由第 3 条 effect 回写账号；
    - 无标记（未显式选择过）→ **账号为权威**：应用账号 `themeSkin`（换设备恢复账号偏好；老账号 `theme_skin='flat'` 保持 flat，不被新默认覆盖）。
@@ -77,7 +77,7 @@
 | 文件 | 职责 |
 |------|------|
 | `client/components/SkinSwitcher.tsx` | 皮肤切换器组件：`SKIN_OPTIONS` 皮肤注册表、`DEFAULT_SKIN`（v2.3.0 = `paper-edge`）、`SKIN_CHOSEN_KEY`（sessionStorage 显式选择标记）、受控/自管双模式；皮肤组为 Radio 单选 + 描述小字展示 |
-| `client/App.tsx` | `skin` state（localStorage `projectx-skin` 初始化）、`data-skin` 同步 effect（始终落盘 + 设置）、登录同步 effect（chosen 标记优先，否则账号权威）、皮肤回写 effect |
+| `client/App.tsx` | `skin` state（localStorage `projectx-skin` 初始化）、`data-skin` 同步 effect（始终落盘 + 设置）、登录同步 effect（chosen 标记优先，否则账号权威）、皮肤回写 effect；侧栏底部与页头为**暗色模式一键按钮（Sun/Moon，仅切明暗）**，皮肤切换不在此两处 |
 | `client/WorkspaceContext.tsx` | `WorkspaceValue` 增加 `skin` / `setSkin`（与 `theme` / `setTheme` 并列下发） |
 | `client/auth/AuthContext.tsx` | 登录/me 响应统一归一化为 `themeSkin`；登出与会话失效时清除 `projectx-skin-chosen` |
 | `client/auth/types.ts` | `AuthUser.themeSkin?: string` |
