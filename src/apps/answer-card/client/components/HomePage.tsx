@@ -46,10 +46,10 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterE
     },
     dashboard?.latestScanExam ? {
       icon: ScanLine, title: "最新扫描", description: `${dashboard.latestScanExam.examName}${dashboard.latestScanExam.subject ? ` · ${dashboard.latestScanExam.subject}` : ""}`,
-      tone: "border-info-border bg-info-soft text-info-foreground", onClick: () => onEnterExam(dashboard.latestScanExam!.examId),
+      tone: "border-border bg-card text-secondary-foreground", onClick: () => onEnterExam(dashboard.latestScanExam!.examId),
     } : {
       icon: ScanLine, title: "最新扫描", description: "暂无扫描记录",
-      tone: "border-info-border bg-info-soft text-info-foreground", onClick: () => onNavigate("exam-manage"),
+      tone: "border-border bg-card text-secondary-foreground", onClick: () => onNavigate("exam-manage"),
     },
     { icon: ClipboardList, title: "考试管理", description: "查看和管理所有考试", tone: "border-border bg-card text-secondary-foreground", onClick: () => onNavigate("exam-manage") },
   ] as Array<{ icon: typeof ClipboardList; title: string; description: string; tone: string; onClick: () => void }>;
