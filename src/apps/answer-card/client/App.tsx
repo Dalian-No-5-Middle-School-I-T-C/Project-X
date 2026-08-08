@@ -543,6 +543,10 @@ function App() {
   const canManageGlobal = variantAllows("global-settings") && hasPermission(PERMISSIONS.SYSTEM_MANAGE);
   const canOpenMode = useCallback(
     (candidate: AppMode) => {
+      // 信息页不在 allowedModes 主导航内，按路由守卫同样的规则放行：
+      // guide/sponsor 与 home 同门槛（非学生端），permissions 与 account 同门槛（账号管理权限）。
+      if (candidate === "guide" || candidate === "sponsor") return appVariant.id !== "student";
+      if (candidate === "permissions") return canManageAccounts;
       if (!appVariant.allowedModes.includes(candidate)) return false;
       if (candidate === "home") return appVariant.id !== "student";
       if (candidate === "scores") return appVariant.id === "student" || hasPermission(PERMISSIONS.SCORE_READ);
