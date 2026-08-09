@@ -46,7 +46,7 @@ export interface ScanSessionConfig {
 
 export interface ScanProgressEvent {
   sessionId: string;
-  type: "scanning" | "page_done" | "ocr_start" | "ocr_page_done" | "ocr_done" | "error" | "done";
+  type: "scanning" | "page_done" | "ocr_start" | "ocr_page_done" | "ocr_done" | "error" | "done" | "cancelled";
   recordId?: string;
   pageNum?: number;
   side?: string;
