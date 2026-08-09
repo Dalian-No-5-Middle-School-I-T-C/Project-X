@@ -28,19 +28,23 @@ router.get("/my-exams", async (req, res) => {
     // 修复：原先 LEFT JOIN 后对 ra.student_count 做 SUM 会按切块行数重复放大。
     // 改为按分配行聚合，已阅数用每块的子查询精确统计。
     const rows = await getMysqlDb().all(
-      `SELECT ra.exam_id AS examId,
-              SUM(ra.student_count) AS totalCount,
-              SUM(ra.student_count) - SUM(COALESCE((
-                SELECT COUNT(*)
-                FROM answer_block_crops abc2
-                WHERE abc2.exam_id = ra.exam_id
-                  AND abc2.block_id = ra.block_id
-                  AND abc2.status = 'reviewed'
-                  AND abc2.reviewer_id = ?
-              ), 0)) AS pendingCount
-       FROM review_assignments ra
-       WHERE ra.teacher_id = ?
-       GROUP BY ra.exam_id`,
+      `SELECT examId, totalCount,
+              CASE WHEN rawPending < 0 THEN 0 ELSE rawPending END AS pendingCount
+       FROM (
+         SELECT ra.exam_id AS examId,
+                SUM(ra.student_count) AS totalCount,
+                SUM(ra.student_count) - SUM(COALESCE((
+                  SELECT COUNT(*)
+                  FROM answer_block_crops abc2
+                  WHERE abc2.exam_id = ra.exam_id
+                    AND abc2.block_id = ra.block_id
+                    AND abc2.status = 'reviewed'
+                    AND abc2.reviewer_id = ?
+                ), 0)) AS rawPending
+         FROM review_assignments ra
+         WHERE ra.teacher_id = ?
+         GROUP BY ra.exam_id
+       ) t`,
       userId, userId
     );
 

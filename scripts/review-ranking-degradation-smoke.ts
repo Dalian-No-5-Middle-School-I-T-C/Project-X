@@ -5,7 +5,7 @@
  *
  * 运行：npm run verify:review-ranking-degradation
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
@@ -241,6 +241,30 @@ async function main(): Promise<void> {
       "TWAIN 路由（/sources）在 Web 模式返回 404 disabled"
     );
 
+    section("答题卡资源鉴权（assets 路由在全局 optionalAuth 之前注册的回归）");
+    const assetDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "assets", "review-card");
+    mkdirSync(assetDir, { recursive: true });
+    const assetFile = path.join(assetDir, "asset-test.png");
+    writeFileSync(assetFile, "not-a-real-image");
+    const anonAsset = await fetch(`${base}/api/assets/review-card/asset-test.png`);
+    check(anonAsset.status === 401, "未登录访问答题卡资源返回 401（强制鉴权）");
+    const adminAsset = await fetch(`${base}/api/assets/review-card/asset-test.png`, {
+      headers: authHeaders(token)
+    });
+    check(adminAsset.status === 200, "教师/管理员登录后可访问答题卡资源（optionalAuth 顺序正确）");
+
+    section("阅卷分配：不存在的教师被拒绝");
+    const badAssign = await fetch(`${base}/api/review-assign/exams/${examId}/blocks/b1`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders(token) },
+      body: JSON.stringify({ teacherCounts: { 99999: 5 } })
+    });
+    const badAssignBody = await badAssign.json() as { error?: string };
+    check(
+      badAssign.status === 400 && String(badAssignBody.error).includes("不存在的教师"),
+      "分配包含不存在的教师时返回 400（而非外键 500）"
+    );
+
     section("成绩趋势按教师可见范围过滤");
     db.prepare("INSERT INTO grades (id, name, sort_order) VALUES (30, '高三', 0)").run();
     db.prepare("INSERT INTO classes (id, grade_id, name, sort_order) VALUES (101, 30, '一班', 0)").run();
@@ -288,6 +312,35 @@ async function main(): Promise<void> {
     check(
       adminTrendBody.some((e) => e.examId === examId) && adminTrendBody.some((e) => e.examId === exam2Id),
       "管理员趋势包含全部考试"
+    );
+
+    section("我的待阅：已阅数超过分配数时待阅数收敛为 0");
+    db.prepare(
+      `INSERT INTO review_assignments (exam_id, block_id, teacher_id, student_count, assigned_student_ids)
+       VALUES (?, 'b1', ?, 1, '[1]')`
+    ).run(
+      examId, teacherId
+    );
+    db.prepare(
+      `INSERT INTO answer_block_crops
+        (id, card_id, exam_id, student_id, student_number, source_type, source_record_id, block_id,
+         block_title, block_type, page_number, segment_index, question_numbers, rect_json, image_path,
+         width_px, height_px, dpi, status, reviewer_id, review_round, claim_count)
+       VALUES ('crop-x1', 'review-card', ?, ?, 'S001', 'scan_record', 'rx1', 'b1',
+         '解答题', 'subjective', 1, 0, '[1]', '{}', '/tmp/x.png',
+         100, 100, 300, 'reviewed', ?, 1, 0),
+              ('crop-x2', 'review-card', ?, ?, 'S002', 'scan_record', 'rx2', 'b1',
+         '解答题', 'subjective', 1, 0, '[1]', '{}', '/tmp/y.png',
+         100, 100, 300, 'reviewed', ?, 1, 0)`
+    ).run(
+      examId, studentIds[0], teacherId, examId, studentIds[1], teacherId
+    );
+    const myExams = await fetch(`${base}/api/review/my-exams`, { headers: authHeaders(teacherToken) });
+    const myExamsBody = await myExams.json() as { data?: Array<{ examId: number; totalCount: number; pendingCount: number }> };
+    const row = myExamsBody.data?.find((r) => r.examId === examId);
+    check(
+      myExams.status === 200 && row?.totalCount === 1 && row?.pendingCount === 0,
+      `已阅数(2) > 分配数(1) 时 pendingCount 收敛为 0（实际 ${row?.pendingCount}）`
     );
 
     section("学生搜索：LIKE 通配符按字面量匹配");

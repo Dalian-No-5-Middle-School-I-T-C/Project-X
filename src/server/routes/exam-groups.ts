@@ -38,7 +38,7 @@ function memberMatchesTrack(trackType: string | null | undefined, track: TrackFi
 
 async function getAiProviderForUser(providerId: number, userId: number): Promise<AiProviderRow | null> {
   const db = getMysqlDb();
-  return db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId) ?? null;
+  return (await db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId)) ?? null;
 }
 
 const router = express.Router();

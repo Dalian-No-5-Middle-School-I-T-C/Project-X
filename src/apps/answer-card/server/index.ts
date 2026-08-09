@@ -629,7 +629,9 @@ export async function createApp(): Promise<express.Express> {
   // 受控资源路由：替换原先公开的 app.use("/assets", express.static(...))。
   // 通过 cardAssetsDir 落盘，使用 path.basename 防止路径穿越；仍置于 /api 下便于统一鉴权与缓存策略。
   // 答题卡资源含考试插图/原卷，强制鉴权模式下必须登录且具备 card:read（兼容模式下仍放行）。
-  app.get("/api/assets/:cardId/:assetId", makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.CARD_READ), (req, res) => {
+  // 注意：本路由注册在全局 optionalAuth 之前，必须先挂 optionalAuth 再挂 gate，
+  // 否则 req.user 永远为空，强制模式下连教师都会被 401。
+  app.get("/api/assets/:cardId/:assetId", optionalAuth, makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.CARD_READ), (req, res) => {
     const cardId = safeId(paramValue(req.params.cardId));
     const assetId = path.basename(String(req.params.assetId));
     const dir = cardAssetsDir(cardId);

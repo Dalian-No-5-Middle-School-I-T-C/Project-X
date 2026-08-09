@@ -116,6 +116,7 @@ router.post(
       if (!teacherCounts || typeof teacherCounts !== "object") {
         return res.status(400).json({ ok: false, error: "teacherCounts 必填，格式: {teacherId: count}" });
       }
+      const db = getMysqlDb();
 
       const map = new Map<number, number>();
       for (const [key, val] of Object.entries(teacherCounts)) {
@@ -125,6 +126,15 @@ router.post(
           return res.status(400).json({ ok: false, error: `无效的分配参数: ${key}=${val}` });
         }
         map.set(teacherId, count);
+      }
+      // 校验教师存在且为教师角色（防止外键 500 / 误把学生 ID 当作阅卷教师）
+      const teacherIds = Array.from(map.keys());
+      const teacherRows = await db.all(
+        `SELECT id FROM users WHERE id IN (${teacherIds.map(() => "?").join(",")}) AND role_id = 2`,
+        ...teacherIds
+      ) as Array<{ id: number }>;
+      if (teacherRows.length !== teacherIds.length) {
+        return res.status(400).json({ ok: false, error: "分配列表包含不存在的教师" });
       }
 
       const userId = (req as any).user?.id;

@@ -6,6 +6,7 @@ import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS } from "../auth/permissions";
 import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
+import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
 
 /**
@@ -181,9 +182,6 @@ router.get("/me/subject-comparison", async (req: Request, res: Response) => {
 
 // ── 学生每场考试 AI 分析 ──
 
-const LLM_CLIENT_BASE = process.env.LLM_CLIENT_URL || "http://127.0.0.1:8766";
-const LLM_INTERNAL_KEY = process.env.LLM_INTERNAL_KEY || "";
-
 /** POST /api/scores/me/exams/:examId/ai-analysis — 学生单场考试 AI 分析（绕过教师端 analysisGate） */
 router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
@@ -199,14 +197,11 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
   const classId = await resolveStudentPrimaryClassId(req.user!.id);
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120_000);
-    const response = await fetch(`${LLM_CLIENT_BASE}/analysis/run`, {
+    // 复用统一的 llmclient 转发封装（自动拉起 sidecar + 内部鉴权头），
+    // 避免与 llm-client.ts 的环境变量命名（LLMCLIENT_URL/LLMCLIENT_INTERNAL_API_KEY）不一致。
+    const response = await fetchLlmClient("/analysis/run", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(LLM_INTERNAL_KEY ? { Authorization: `Bearer ${LLM_INTERNAL_KEY}` } : {}),
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         examId,
         classId,
@@ -215,9 +210,7 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
         model: typeof req.body?.model === "string" ? req.body.model : undefined,
         locale: "zh-CN",
       }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+    }, 120_000);
 
     if (!response.ok) {
       let message = `LLM service returned ${response.status}`;

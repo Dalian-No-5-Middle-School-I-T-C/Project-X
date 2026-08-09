@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import { raw as expressRaw } from "express";
 import { ZipArchive } from "archiver";
 import AdmZip from "adm-zip";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, copyFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -238,7 +238,15 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
       console.warn("[Restore] 关闭 scanner DB 失败（继续恢复）:", e);
     }
 
-    // 3. 替换文件
+    // 3. 替换文件（先清理旧 WAL/SHM，避免残留日志污染新库）
+    for (const suffix of ["-wal", "-shm"]) {
+      const sidecar = projectxDbPath + suffix;
+      if (existsSync(sidecar)) {
+        try { rmSync(sidecar, { force: true }); } catch (e) {
+          console.warn(`[Restore] 清理 ${suffix} 失败（继续）:`, e);
+        }
+      }
+    }
     await copyFile(projectxBak, projectxDbPath);
 
     // 恢复后重新引导管理员账号（#185 安全模型）：还原出的库若使用旧默认口令 admin123

@@ -112,7 +112,7 @@ async function getActiveAiProviders(userId: number) {
 
 async function getAiProviderForUser(providerId: number, userId: number) {
   const db = getMysqlDb();
-  return db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId);
+  return (await db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId)) ?? null;
 }
 
 // ── Trends ──────────────────────────────────────────────
