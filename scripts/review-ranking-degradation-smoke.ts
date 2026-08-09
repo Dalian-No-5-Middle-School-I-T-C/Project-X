@@ -108,10 +108,10 @@ async function main(): Promise<void> {
          block_title, block_type, page_number, segment_index, question_numbers, rect_json, image_path,
          width_px, height_px, dpi, status, review_round, claim_count)
        VALUES ('crop1', 'review-card', ?, ?, 'S001', 'scan_record', 'r1', 'b1',
-         '解答题', 'subjective', 1, 0, '[1]', '{}', '/tmp/x.png',
+         '解答题', 'subjective', 1, 0, '[1]', '{}', ?,
          100, 100, 300, 'ready', 0, 0)`
     ).run(
-      examId, studentId
+      examId, studentId, path.join(tempDir, "crop1.png")
     );
     db.prepare(
       `INSERT INTO block_grading_config (exam_id, block_id, dispute_threshold, rounding, review_mode, scoring_mode, score_distribution)
@@ -367,6 +367,44 @@ async function main(): Promise<void> {
     check(
       dashTeacherBody.data?.unfinishedTask?.progress?.total === 1,
       `继续阅卷进度总数取分配份数而非分配行数（实际 ${dashTeacherBody.data?.unfinishedTask?.progress?.total}）`
+    );
+
+    section("学生自助详情契约（小程序 detail 依赖，后端 PR #232）");
+    writeFileSync(path.join(tempDir, "crop1.png"), "fake-crop-image");
+    db.prepare(
+      "UPDATE users SET password_hash = ? WHERE id = ?"
+    ).run(await hashPassword("Student-2026!"), studentIds[0]);
+    const studentLogin = await authService.login("S001", "Student-2026!");
+    if (!studentLogin.token) throw new Error("学生登录失败");
+    const studentToken = studentLogin.token;
+    const detailRes = await fetch(`${base}/api/scores/me/exams/${examId}`, {
+      headers: authHeaders(studentToken)
+    });
+    const detailBody = await detailRes.json() as {
+      examId?: number;
+      questions?: unknown[];
+      classQuestionStats?: Record<string, { avgScore: number; maxScore: number; count: number }>;
+      answerBlocks?: Array<{ id: string; blockTitle: string; questionNumbers: unknown[] }>;
+    };
+    check(
+      detailRes.status === 200 && detailBody.examId === examId && Array.isArray(detailBody.questions),
+      "学生可读取本人逐题明细（questions）"
+    );
+    check(
+      detailBody.classQuestionStats != null && typeof detailBody.classQuestionStats === "object",
+      "详情返回班级均分映射 classQuestionStats"
+    );
+    check(
+      Array.isArray(detailBody.answerBlocks) && detailBody.answerBlocks.length >= 1
+        && detailBody.answerBlocks[0].id === "crop1",
+      "详情返回本人原卷切块 answerBlocks（含 crop1）"
+    );
+    const cropImageRes = await fetch(`${base}/api/answer-block-crops/crop1/image`, {
+      headers: authHeaders(studentToken)
+    });
+    check(
+      cropImageRes.status === 200,
+      "学生可下载本人切块图片（downloadFile 契约）"
     );
 
     section("仲裁人列表（考试带年级时不再因 users.grade_id 报错）");
