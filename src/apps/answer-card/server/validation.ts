@@ -135,8 +135,6 @@ export const UpdateUserSettingsSchema = z.object({
   reviewConfidenceThreshold: z.number().min(0).max(1).optional(),
   aiApiKey: z.string().nullable().optional(),
   backgroundOpacity: z.number().min(0).max(1).optional(),
-  requireOriginalPaper: flexibleBoolean.optional(),
-  highlightMissingPaper: flexibleBoolean.optional(),
   showTabBar: flexibleBoolean.optional(),
   // v2.1.0: 前端皮肤 ID（字符串不枚举，为未来新增皮肤留空间；'flat'=明澈 Flat 2.0）
   themeSkin: z.string().min(1).max(32).optional(),

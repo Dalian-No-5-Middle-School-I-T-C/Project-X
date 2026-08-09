@@ -146,8 +146,15 @@ export function ReviewAssignPage({ examId }: Props) {
 
   // 删除分配
   const handleDelete = async (id: number) => {
-    await fetchJson(`/api/review-assign/${id}`, { method: "DELETE" });
-    loadAssignments(selectedBlockId);
+    setMsg("");
+    setMsgTone("");
+    try {
+      await fetchJson(`/api/review-assign/${id}`, { method: "DELETE" });
+      loadAssignments(selectedBlockId);
+    } catch (err: any) {
+      setMsg(err.message || "删除分配失败");
+      setMsgTone("error");
+    }
   };
 
   // Issue #174: 强制释放被领取的试卷回池

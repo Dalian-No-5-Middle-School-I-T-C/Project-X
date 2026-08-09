@@ -36,20 +36,7 @@ try {
 // Phase 2: 数据路由（createBrowserRouter）让每个工作模式 = 真实 URL，
 // 并且使 useBlocker（未保存离开确认）能真正拦截导航。App 内部按 URL 渲染对应模式。
 
-// DESIGN_PREVIEW：P2 过闸走查页（临时，不发布）。
-// 放在鉴权闸之外，走查时不需要登录。P5 清理时删除本 lazy 与下方对应路由。
-const DesignPreviewPage = React.lazy(() => import("./dev/DesignPreviewPage"));
-
 const router = createBrowserRouter([
-  // DESIGN_PREVIEW：P5 清理时连同 dev/ 目录一并删除
-  {
-    path: "/design-preview",
-    element: (
-      <React.Suspense fallback={null}>
-        <DesignPreviewPage />
-      </React.Suspense>
-    ),
-  },
   {
     path: "*",
     element: <App />,

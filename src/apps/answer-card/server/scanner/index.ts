@@ -19,7 +19,13 @@ import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { gradeSessionStudentResults, type CombinedStudentResult } from "../../../../shared/grading";
 
-export function createScannerRouter(): Router {
+/**
+ * 创建扫描路由。
+ * @param twainEnabled 是否启用 TWAIN 原生扫描（依赖本机 scanner-bridge.exe）。
+ *                     Web 部署关闭时，/sources、/scan、/progress 返回 404，
+ *                     但答题卡图片预览等纯文件/存储路由始终可用。
+ */
+export function createScannerRouter(twainEnabled = true): Router {
   const router = Router();
 
   // Write scanner result to projectx.db for linked exams
@@ -93,54 +99,90 @@ export function createScannerRouter(): Router {
     }
   }
 
-  // ── Scanner Sources ──────────────────────────────────
-
-  router.get("/sources", async (_req, res, next) => {
-    try {
-      const result = await listSources();
-      res.json(result);
-    } catch (error) {
-      next(error);
-    }
-  });
-
-  // ── Scan Sessions ────────────────────────────────────
-
-  router.post("/scan", async (req, res, next) => {
-    try {
-      const body = req.body as Partial<ScanSessionConfig>;
-
-      if (!body.cardId) {
-        res.status(400).json({ message: "缺少 cardId 参数" });
-        return;
+  // ── TWAIN 专用路由（依赖本机 scanner-bridge.exe）──────────
+  if (twainEnabled) {
+    router.get("/sources", async (_req, res, next) => {
+      try {
+        const result = await listSources();
+        res.json(result);
+      } catch (error) {
+        next(error);
       }
+    });
 
-      const config: ScanSessionConfig = {
-        cardId: safeId(body.cardId),
-        sessionName: body.sessionName || `扫描_${new Date().toLocaleDateString("zh-CN")}`,
-        sourceName: body.sourceName || "",
-        dpi: body.dpi && body.dpi > 0 ? body.dpi : 300,
-        duplex: body.duplex === true,
-        colorMode: body.colorMode || "gray",
-        paperSize: body.paperSize || "A4",
-        maxPages: body.maxPages || 0,
-        showUi: body.showUi === true
+    router.post("/scan", async (req, res, next) => {
+      try {
+        const body = req.body as Partial<ScanSessionConfig>;
+
+        if (!body.cardId) {
+          res.status(400).json({ message: "缺少 cardId 参数" });
+          return;
+        }
+
+        const config: ScanSessionConfig = {
+          cardId: safeId(body.cardId),
+          sessionName: body.sessionName || `扫描_${new Date().toLocaleDateString("zh-CN")}`,
+          sourceName: body.sourceName || "",
+          dpi: body.dpi && body.dpi > 0 ? body.dpi : 300,
+          duplex: body.duplex === true,
+          colorMode: body.colorMode || "gray",
+          paperSize: body.paperSize || "A4",
+          maxPages: body.maxPages || 0,
+          showUi: body.showUi === true
+        };
+
+        // Start scan in background
+        const sessionId = await runScanSession(config, (event) => {
+          emitProgress(event.sessionId, event);
+        });
+
+        res.status(202).json({
+          sessionId,
+          message: "扫描已启动",
+          status: "scanning"
+        });
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    // ── Progress Events (SSE) ────────────────────────────
+    router.get("/progress/:sessionId", (req, res) => {
+      const sessionId = safeId(req.params.sessionId);
+
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no"
+      });
+
+      const handler = (event: ScanProgressEvent) => {
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+        if (event.type === "done" || event.type === "error") {
+          res.end();
+        }
       };
 
-      // Start scan in background
-      const sessionId = await runScanSession(config, (event) => {
-        emitProgress(event.sessionId, event);
-      });
+      // Register listener
+      if (!progressEmitters.has(sessionId)) {
+        progressEmitters.set(sessionId, new Set());
+      }
+      progressEmitters.get(sessionId)!.add(handler);
 
-      res.status(202).json({
-        sessionId,
-        message: "扫描已启动",
-        status: "scanning"
+      req.on("close", () => {
+        const listeners = progressEmitters.get(sessionId);
+        if (listeners) {
+          listeners.delete(handler);
+          if (listeners.size === 0) progressEmitters.delete(sessionId);
+        }
       });
-    } catch (error) {
-      next(error);
-    }
-  });
+    });
+  } else {
+    router.all(["/sources", "/scan", "/progress/:sessionId"], (_req, res) => {
+      res.status(404).json({ message: "Scanner (TWAIN) is disabled in this Project-X package." });
+    });
+  }
 
   // ── Scan Session Status ──────────────────────────────
 
@@ -473,40 +515,6 @@ export function createScannerRouter(): Router {
     } catch (error) {
       next(error);
     }
-  });
-
-  // ── Progress Events (SSE) ────────────────────────────
-
-  router.get("/progress/:sessionId", (req, res) => {
-    const sessionId = safeId(req.params.sessionId);
-
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      "X-Accel-Buffering": "no"
-    });
-
-    const handler = (event: ScanProgressEvent) => {
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
-      if (event.type === "done" || event.type === "error") {
-        res.end();
-      }
-    };
-
-    // Register listener
-    if (!progressEmitters.has(sessionId)) {
-      progressEmitters.set(sessionId, new Set());
-    }
-    progressEmitters.get(sessionId)!.add(handler);
-
-    req.on("close", () => {
-      const listeners = progressEmitters.get(sessionId);
-      if (listeners) {
-        listeners.delete(handler);
-        if (listeners.size === 0) progressEmitters.delete(sessionId);
-      }
-    });
   });
 
   return router;

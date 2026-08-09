@@ -97,9 +97,13 @@ export class AssignedScoreService {
   }
 
   /**
-   * 对整场考试执行赋分重算
+   * 对整场考试执行赋分重算。
+   * 传入外部 db（如事务适配器）时在调用方事务内执行；未传时使用自身连接。
+   * 赋分批量更新使用单条 CASE WHEN 语句（语句级原子性）：
+   * 任一学生失败则整条语句回滚，不会残留“部分新口径、部分旧口径”的混合状态；
+   * 天然兼容 SQLite 与 MariaDB（不依赖 SAVEPOINT 的预处理差异）。
    */
-  async recalculateAll(examId: number): Promise<{ updated: number; skipped: number }> {
+  async recalculateAll(examId: number, db: DbAdapter = this.db): Promise<{ updated: number; skipped: number }> {
     const formula = await this.getFormula(examId);
     if (!formula || !formula.enabled) {
       return { updated: 0, skipped: 0 };
@@ -109,7 +113,7 @@ export class AssignedScoreService {
       return { updated: 0, skipped: 0 };
     }
 
-    const stats = await this.db.get(`
+    const stats = await db.get(`
       SELECT
         MAX(total_score) as max,
         MIN(total_score) as min,
@@ -117,7 +121,7 @@ export class AssignedScoreService {
       FROM student_scores WHERE exam_id = ?
     `, examId) as { max: number; min: number; avg: number };
 
-    const scores = await this.db.all(
+    const scores = await db.all(
       "SELECT total_score FROM student_scores WHERE exam_id = ?",
       examId
     ) as Array<{ total_score: number }>;
@@ -128,30 +132,38 @@ export class AssignedScoreService {
     const std = Math.sqrt(variance);
     const stdStats = { max: stats.max, min: stats.min, avg: stats.avg, std };
 
-    const students = await this.db.all(
+    const students = await db.all(
       "SELECT student_id, total_score FROM student_scores WHERE exam_id = ?",
       examId
     ) as Array<{ student_id: number; total_score: number }>;
 
-    let updated = 0;
-    let skipped = 0;
+    const pending = students
+      .filter((s) => s.total_score != null)
+      .map((s) => ({
+        studentId: s.student_id,
+        assigned: this.calculateAssignedScore(s.total_score, formula, stdStats)
+      }));
+    const skipped = students.length - pending.length;
 
-    await this.db.transaction(async (tx) => {
-      for (const s of students) {
-        if (s.total_score == null) {
-          skipped++;
-          continue;
-        }
-        const assigned = this.calculateAssignedScore(s.total_score, formula, stdStats);
-        await tx.run(
-          "UPDATE student_scores SET assigned_score = ? WHERE exam_id = ? AND student_id = ?",
-          assigned, examId, s.student_id
-        );
-        updated++;
-      }
-    });
+    if (pending.length > 0) {
+      // 单条 UPDATE 内以 CASE WHEN 逐学生赋值：任一学生（触发器/约束）失败，
+      // 数据库回滚整条语句，所有学生保持原赋分。
+      // 参数数量 = 2n + 1 + n；SQLite 默认变量上限 32766、MariaDB 预编译上限更高，
+      // 单场考试数千学生以内均安全（学校场景远低于此）。
+      const cases = pending.map(() => "WHEN student_id = ? THEN ?").join(" ");
+      const ids = pending.map((p) => p.studentId);
+      const params: unknown[] = [];
+      for (const p of pending) params.push(p.studentId, p.assigned);
+      params.push(examId, ...ids);
+      await db.run(
+        `UPDATE student_scores
+         SET assigned_score = CASE ${cases} ELSE assigned_score END
+         WHERE exam_id = ? AND student_id IN (${ids.map(() => "?").join(",")})`,
+        ...params
+      );
+    }
 
-    return { updated, skipped };
+    return { updated: pending.length, skipped };
   }
 
   /**
