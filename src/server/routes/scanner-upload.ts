@@ -18,6 +18,7 @@ import crypto from "node:crypto";
 import { dualAuth } from "../middleware/scanner-auth";
 import { getMysqlDb } from "../db";
 import { persistAnswerBlockCrops } from "../services/AnswerBlockCropService";
+import { isValidImageBuffer } from "../../apps/answer-card/server/validate-upload";
 import type { RecognitionBlockCrop } from "../../shared/types";
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -105,6 +106,11 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
       res.status(400).json({ message: "未上传图片" });
       return;
     }
+    // 魔数校验（Content-Type/扩展名可伪造，文件头不可）
+    if (!isValidImageBuffer(req.file.buffer)) {
+      res.status(400).json({ message: "上传的文件不是受支持的图片格式" });
+      return;
+    }
     if (!token) {
       res.status(400).json({ message: "缺少 upload token" });
       return;
@@ -143,7 +149,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
 });
 
 // ── POST /api/scanner/sessions/:sessionId/complete ──────
-router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array("crops"), async (req: Request, res: Response) => {
+router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array("crops", 50), async (req: Request, res: Response) => {
   try {
     const sessionId = String(req.params.sessionId);
     const recordId = String(req.params.recordId);
@@ -159,8 +165,21 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array
     }
 
     const manifestRaw = typeof req.body?.manifest === "string" ? req.body.manifest : "[]";
-    const manifest = JSON.parse(manifestRaw) as Array<RecognitionBlockCrop & { fileName?: string }>;
+    let manifest: Array<RecognitionBlockCrop & { fileName?: string }>;
+    try {
+      manifest = JSON.parse(manifestRaw) as Array<RecognitionBlockCrop & { fileName?: string }>;
+      if (!Array.isArray(manifest)) throw new Error("manifest 必须是数组");
+    } catch (err: any) {
+      res.status(400).json({ message: `切块清单无效: ${err.message}` });
+      return;
+    }
     const files = Array.isArray(req.files) ? req.files as Express.Multer.File[] : [];
+    for (const file of files) {
+      if (!isValidImageBuffer(file.buffer)) {
+        res.status(400).json({ message: `切块文件 ${file.originalname} 不是受支持的图片格式` });
+        return;
+      }
+    }
     const tempDir = path.join(scannerUploadDir(), "crops-temp", sessionId, recordId);
     if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
 

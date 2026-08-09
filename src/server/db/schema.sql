@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS users (
     highlight_missing_paper INTEGER DEFAULT 1, -- v1.8.0: 侧边栏高亮未上传原卷的考试
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
     show_tab_bar     INTEGER DEFAULT 0,      -- v1.9.0: 0=隐藏底部导航 1=显示
+    theme_skin       TEXT DEFAULT 'paper-edge', -- v2.1.0: 前端皮肤 ID；v2.3.0 默认改为 'paper-edge'（纸锋；'flat'=明澈 可选）
     is_demo          INTEGER NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示数据（clearDemoData 仅按此标记清理，避免误删真实账号）
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -686,7 +687,8 @@ CREATE INDEX IF NOT EXISTS idx_subjective_grades_record ON subjective_grades(rec
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_exam_student ON answer_block_crops(exam_id, student_id);
   CREATE INDEX IF NOT EXISTS idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
   CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
-  CREATE INDEX IF NOT EXISTS idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by);
+  -- 注：idx_answer_block_crops_pool 由 v32 迁移创建（其列 claimed_by 为 v32 新增，
+  --     写在 schema.sql 会导致存量库（列未就绪）启动崩溃）
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_student ON student_scores(student_id);
 -- 性能：成绩分析（排名/统计/概览）按 exam_id 过滤并按 total_score / assigned_score 排序

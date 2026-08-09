@@ -13,11 +13,11 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v2.0.0
-> **核心能力**：Home 仪表盘（快捷入口 + 模块卡片）→ 答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 网上阅卷队列（2P/3P 多评 + 争议仲裁 + 断点续批 + PAD 优先 UI + 批注系统）→ 考试管理 → 大考组 → 成绩分析（难度 P / 区分度 D 双指标、总体分析、上次考试对比、学生学期成绩对比）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → AI 知识点分析 → 知识点弱项诊断 → 并列排名 → 暗色主题 → MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → Web/Scanner 构建分离 → iOS 15 Safari Web 兼容 → 原卷上传 → 移动端响应式适配（480/768/1024 三档断点、抽屉导航、表格卡片化、Home 页重构）
+> **当前版本**：v2.0.0（CHANGELOG 的 v2.1.0~v2.3.0 为已合入但未发版的内部里程碑，见 [CHANGELOG.md](./readus/CHANGELOG.md)）
+> **核心能力**：Home 仪表盘（快捷入口 + 模块卡片）→ 答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 网上阅卷队列（2P/3P 多评 + 争议仲裁 + 断点续批 + PAD 优先 UI + 批注系统）→ 考试管理（含晨测/大考双模式）→ 大考组 → 成绩分析（难度 P / 区分度 D 双指标、总体分析、上次考试对比、学生学期成绩对比、知识点难度/区分度）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → AI 知识点分析 → 知识点弱项诊断 → 并列排名 → 暗色主题 → 皮肤切换（明澈 Flat 2.0 + 纸锋 Paper Edge）→ MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → Web/Scanner 构建分离 → iOS 15 Safari Web 兼容 → 原卷上传 → 移动端响应式适配（480/768/1024 三档断点、底部导航 + 抽屉、表格卡片化、Home 页重构）
 > **下个里程碑**：TBD
 
-我们的爱发电地址https://ifdian.net/a/ProjectX
+我们的爱发电地址：https://ifdian.net/a/ProjectX
 ---
 
 ## 为什么要做这个项目？
@@ -41,7 +41,7 @@
 
 - **Home 仪表盘**：登录后进入图形化首页，模块卡片 + 快捷入口（继续阅卷 / 最新考试），Tab 栏可开关
 - **任务分配引擎**：年级组长为每个题块分配教师和份数，系统随机分配（Fisher-Yates 算法），教师进入考试后自选题块
-- **2P/3P 多评**：双评或三评独立打分，分差超阈值自动争议；5 种取整方式（ceil/floot/round/half/none），每道题可单独配置
+- **2P/3P 多评**：双评或三评独立打分，分差超阈值自动争议；5 种取整方式（ceil/floor/round/half/none），每道题可单独配置
 - **新阅卷 UI（PAD 优先）**：左图右分，大按钮打分，滚轮缩放，90° 旋转，批注系统（文字 + 手写 + palm rejection），学生端可查看批注
 - **争议仲裁**：争议自动交由指定仲裁人或搁置，年级组长可手动判分
 - **断点续批**：退出自动保存进度和草稿分数，重新进入弹窗恢复
@@ -138,6 +138,9 @@
   - 未设置细分角色的教师保持全权限（向后兼容）
 - **记住密码**：勾选后签发 180 天持久令牌，令牌存磁盘（`~/.projectx/tokens.json`），服务器/软件重启不丢失
 - **6 个月免登录**：本设备内打开即用，无需反复输入密码
+- **考试模式**（v2.2.0）：创建考试可选「晨测（quiz，教师全量可见）/ 大考（formal，精细权限）」，考试详情页管理员可随时切换
+- **知识点难度/区分度**（v2.2.0）：成绩分析「题目分析 → 知识点薄弱环节」每行带难度 P / 区分度 D 徽章（复用可配置档位）
+- **皮肤切换**（v2.1.0 / v2.1.1）：前端外观皮肤（「纸锋 Paper Edge」v2.3.0 起为默认 + 「明澈 Flat 2.0」，明暗两维度正交）；入口收敛为**登录页自管 + 账号设置受控**两处，并新增**首次登录前强制引导层**（明澈 / 纸锋大预览并排、必须二选一）；皮肤偏好账号级持久化，换设备自动恢复；扩展接口预留，详见 [SKIN-THEME.md](./readus/SKIN-THEME.md)
 
 ### 学生功能
 
@@ -162,13 +165,13 @@
 
 在冻结技术栈（React 19 + TypeScript + Vite 7，不引入新依赖 / 第三方状态库，延续 Context 模式）前提下完成移动端功能与界面适配，目标是让教师/学生在手机与平板上通过浏览器即可完整使用全部功能。
 
-- **响应式断点**：统一为 3 级——`480px`（手机）/ `768px`（平板）/ `1024px`（桌面）。新增 `client/breakpoints.ts`（断点唯一真相源）与 `client/hooks/useMediaQuery.ts`（`useIsMobile` / `useIsTablet` / `useIsDesktop`，SSR 安全）。
-- **抽屉导航**：480px 下顶栏显示汉堡按钮，唤起 `MobileDrawer` 抽屉（9 个 mode 导航 + 设计操作 + 主题切换），ESC / 遮罩关闭。
+- **响应式断点**：统一为 3 级——`480px`（手机）/ `768px`（平板）/ `1024px`（桌面）。`client/breakpoints.ts` 为断点唯一真相源，`client/hooks/useMediaQuery.ts` 提供 `useIsMobile` / `useIsTablet` / `useIsDesktop`（SSR 安全）。
+- **导航适配**（v2.0.0 重构）：`<1024px` 顶栏显示汉堡按钮，唤起 `Sheet` 侧边抽屉（按权限列出全部可用模块：首页 / 答题卡设计 / 考试管理 / 成绩分析 / 账号…，含设计操作与外观切换）；`≤480px` 手机下另提供底部导航栏（常用模块 ≤5 项）。ESC / 遮罩关闭。
 - **表格卡片化**：480px 下依据 `td[data-label]` 将长表格自动转为卡片列表（`DataCard` 组件），桌面端保留原表格，零额外 JS 开销。
 - **Home 页重构**：内联样式全部替换为 CSS 类，480px 单列 + 44px 触摸区；输入控件移除 `fontSize:13` 内联，避免 iOS Safari 输入框聚焦时整体缩放。
 - **Modal 规范化**：修复 480px 遮罩断链，卡片底部加抓手条与安全区 padding，移动端统一为底部弹出式。
 
-> 详细改动见 [CHANGELOG.md](./readus/CHANGELOG.md)「v1.9.5：移动端 UI/UX 适配」。
+> 移动端适配始于 v1.9.5，详见 [CHANGELOG.md](./readus/CHANGELOG.md)「v1.9.5：移动端 Web UI/UX 适配」；v2.0.0 随 Flat 2.0 重构将抽屉导航替换为 `Sheet` + 底部导航。
 
 ---
 
@@ -177,7 +180,7 @@
 ### 前端架构
 
 - **Vite + React 19 + TypeScript** 单仓多目标构建：`dist/web/`（教师 + 学生 Web 端）与 `dist/scanner/`（Electron 扫描工作台）共用同一组件库与主题；扫描端通过 `data-density="compact"` 获得紧凑密度，不做第二套主题。
-- **路由 = mode 系统**：每个功能 = 一个真实 URL，mode ↔ 路径的单一映射收敛在 `client/modeRoutes.ts`（`MODE_PATH` / `pathToMode`），支持 URL 深链、新标签打开与刷新保持当前页；多端变体与可用 mode 集合见 `src/shared/appVariant.ts` 的 `allowedModes`。
+- **路由 = mode 系统**：每个功能 = 一个真实 URL，mode ↔ 路径的单一映射收敛在 `client/modeRoutes.ts`（`MODE_PATH` / `pathToMode`，11 个 mode：home / design / exam-manage / analysis / scores / account / account-settings / global-settings / sponsor / guide / permissions），支持 URL 深链、新标签打开与刷新保持当前页；多端变体与可用 mode 集合见 `src/shared/appVariant.ts` 的 `allowedModes`。
 
 ### UI 现状（v2.0.0）
 
@@ -185,13 +188,15 @@
 - **样式事实源** = `src/apps/answer-card/client/theme/app.css`（`@theme` 块 + `@layer base` 最小 reset）+ `theme/tokens.css` + `theme/backdrop.css`（背景图功能）。禁止新建 CSS 文件、禁止硬编码 hex，铁律见 [AGENTS.md](./AGENTS.md)「样式事实源」。
 - **组件库唯一事实源** = `src/apps/answer-card/client/components/ui/v2/`（桶导出，禁止直指实现文件、禁止跨页面互相 import）。
 - **令牌三处同步**：`design/tokens/tokens.css`（设计层事实源）↔ `app.css @theme` ↔ `client/theme.ts`（JS / 图表取色），由 `scripts/sync-tokens.mjs` 同步，手改任一视为漂移事故。
+- **皮肤扩展机制**（v2.1.0 + v2.3.0）：皮肤 = 与明暗正交的风格维度（`data-skin` 属性），现有两套皮肤——默认 `flat`（明澈 Flat 2.0，不设属性零污染）与 `paper-edge`（纸锋 Paper Edge，v2.3.0，纸面米底 + 墨色文字 + 品牌亮蓝）；新增皮肤只需在 `theme/tokens.css` 追加 `[data-skin="xxx"]` L2 覆盖块 + `components/SkinSwitcher.tsx` 注册表登记一项，组件与业务代码零改动，详见 [SKIN-THEME.md](./readus/SKIN-THEME.md)。
 
 ### 架构 / 设计文档
 
 | 文档 | 说明 |
 |------|------|
 | [readus/ARCHITECTURE.md](./readus/ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 |
-| [docs/system_design.md](./docs/system_design.md) | P6 系统设计（含类图 / 时序图 mermaid） |
+| [docs/superpowers/specs/2026-07-29-grade-analysis-redesign-design.md](./docs/superpowers/specs/2026-07-29-grade-analysis-redesign-design.md) | 成绩分析重构设计文档（选项分析 / 跨班对比 / 可配置阈值体系，已批准实施） |
+| [design/EXECUTION-PLAN.md](./design/EXECUTION-PLAN.md) | P6 设计执行计划 |
 | [design/DESIGN-SYSTEM.md](./design/DESIGN-SYSTEM.md) | Flat 2.0「明澈 Clarity」美学规格（令牌架构、组件规格、设计原则） |
 | [design/tokens/tokens.css](./design/tokens/tokens.css) | 主题令牌事实源（L1 原始 / L2 语义 / L3 组件） |
 | [design/demo/demo.html](./design/demo/demo.html) | 交互 Demo（8 视图 × 亮暗双主题），视觉验收基准 |
@@ -226,15 +231,15 @@
 
 #### 方式一：便携版 EXE（推荐临时使用）
 
-前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载：
+前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载（版本号以 Releases 最新为准）：
 ```
-答题卡扫描端-1.6.3-x64.exe
-答题卡扫描端-1.6.3-ia32.exe
+答题卡扫描端-2.0.0-x64.exe
+答题卡扫描端-2.0.0-ia32.exe
 ```
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。扫描端含 TWAIN 直扫 + 答题卡选择 + 结果预览。教师/学生功能请通过浏览器访问服务器部署的 Web 端。
 
-> v1.6.3 起，`ia32` 包会下载/使用真正的 32 位 Electron 运行时，并重建 32 位 `better-sqlite3`；打包后可用 PE 架构检查确认 exe 为 x86。
+> 自 v1.6.3 起，`ia32` 包使用真正的 32 位 Electron 运行时，并重建 32 位 `better-sqlite3`；打包后可用 PE 架构检查确认 exe 为 x86。
 
 #### 方式二：MSI 安装包（推荐机房部署）
 
@@ -246,9 +251,9 @@
 1. 打开程序 → 点击「新建答题卡」→ 弹窗中选择科目、填写考试名称和考试日期
 2. 编辑标题、题块、标准答案 → 保存 → 导出 PDF → 打印
 
-**阅卷判分**：
-1. 切到「阅卷」模式 → 选考试（答题卡自动关联）→ 导入图片
-2. 点击「开始识别并判分」→ 查看成绩 → 导出 Excel (.xlsx)
+**阅卷判分**（v1.9.0 起阅卷并入考试管理，Web 端走网上阅卷；图片批量判分在扫描端）：
+1. Web 端：「考试管理」→ 选择考试 → 点「网阅」→「阅卷」Tab 选题块 → 逐卷打分（支持 2P/3P 多评）
+2. 扫描端：选择答题卡 → 扫描工作台导入图片或直接扫描 →「开始识别判分」→ 查看成绩 → 导出 Excel (.xlsx)
 
 **查看分析**：
 1. 切到「分析」模式 → 选考试 → 查看总览/排名/题目分析
@@ -310,8 +315,8 @@ npm run dev
 
 | 端 | 访问地址 | 页面内容 |
 |----|---------|---------|
-| **Web 端** | `http://127.0.0.1:5173/` | 教师 + 学生完整功能（设计/阅卷/分析/账号） |
-| **扫描端** | `http://127.0.0.1:5173/index-scanner.html` | 答题卡选择 + ScannerPanel 扫描面板 |
+| **Web 端** | `http://127.0.0.1:5173/` | 教师 + 学生完整功能（设计/考试管理/网上阅卷/分析/账号） |
+| **扫描端** | `http://127.0.0.1:5173/index-scanner.html` | 答题卡选择 + ScannerPanel 扫描面板（直扫 + 图片导入判分） |
 
 两个入口共用同一个 Vite dev server 和后端 API，无需额外配置。
 
@@ -326,9 +331,10 @@ AI 成绩分析依赖单独手动启动的 Python 中转服务；配置方式见
 
 #### 网阅功能演示数据（Demo 种子）
 
-无需真实扫描仪或原生识别器即可实测 v1.9.4 的网阅增强（双模式打分面板、0.5 小数、工作量均衡、全局设置）。`testdata/demo-exams` 提供一键种子：
+无需真实扫描仪或原生识别器即可实测网阅（双模式打分面板、0.5 小数、工作量均衡、全局设置）、文理分科大考、填空题升级、P/D 统计与正态性检验等。`testdata/demo-exams` 提供一键种子（v1.9.4 起，覆盖至 #212/#211/#206）：
 
 ```powershell
+# 方式零：前端一键导入（推荐，管理员登录后 账户菜单 → 导入演示数据 / 清除演示数据）
 # 方式一：仓库脚本（需 Git Bash / WSL）
 ./import-all.sh seed
 
@@ -416,6 +422,9 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | `npm run electron:msi` | 生成扫描端 MSI (x64) |
 | `npm run electron:msi:ia32` | 生成扫描端 MSI (ia32) |
 | `npm run verify:auth` | 账号权限自动化验证（54 项用例） |
+| `npm run verify:security-critical` | 安全/完整性关键用例（42 项） |
+| `npm run verify:176-178` | 考试模式（晨测/大考）+ 知识点难度/区分度冒烟（10 项） |
+| `npx tsx testdata/demo-exams/scripts/verify.ts` | 演示数据完整性校验 |
 | `npx tsx scripts/grading-rules-smoke.ts` | 客观题部分得分规则冒烟验证 |
 
 ---
@@ -434,8 +443,9 @@ Web 端构建产物部署到服务器，教师和学生通过浏览器访问。
 | [ADMIN-GUIDE.md](./readus/ADMIN-GUIDE.md) | 管理员日常操作：教师/学生管理、导入导出、年级班级花名册 | 机房管理员 / 教务 |
 | [多端使用说明.md](./readus/多端使用说明.md) | Web 端 / 扫描端的功能差异、共用数据目录、账号登录与构建部署 | 管理员 / 教师 / 打包维护 |
 | [AI成绩分析.md](./readus/AI成绩分析.md) | AI 成绩分析卡片、llmclient Python 服务、模型配置、工具白名单与本地端口探活 | 教师 / 管理员 / 开发者 |
+| [SKIN-THEME.md](./readus/SKIN-THEME.md) | 皮肤切换功能说明：入口、数据流、API、如何新增一套皮肤 | 开发者 |
 | [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md) | 赞助/支持页面入口、收款码配置与 API 说明（Issue #11） | 开发者 / 运维 |
-| [CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v1.9.5 移动端适配 + v1.9.2 网页化改造 + v1.9.0 网上阅卷重构） | 全体 |
+| [readus/CHANGELOG.md](./readus/CHANGELOG.md) | 版本变更记录（v2.3.0 纸锋皮肤 + v2.2.0 考试模式/知识点 P·D + v2.1.0 皮肤机制 + v2.0.0 Flat 2.0 重构 + v1.9.5 移动端适配等） | 全体 |
 
 ---
 
@@ -450,7 +460,8 @@ Project-X/
 │   │   ├── client/                      # React 前端
 │   │   │   ├── App.tsx                  # 主应用（Web 端，不含扫描面板）
 │   │   │   ├── ScannerApp.tsx            # 扫描端双屏容器（v1.6.1：选卡↔工作台）
-│   │   │   ├── styles.css               # 全局样式
+│   │   │   ├── theme/                    # 样式事实源（app.css + tokens.css + backdrop.css）
+│   │   │   ├── pages/                    # 路由页（Home/Design/ExamManage/Analysis/Scores/Account/AccountSettings/GlobalSettings/Info…，v2.0.0 起）
 │   │   │   └── components/              # 子组件
 │   │   │       ├── NewCardModal.tsx        # 新建答题卡弹窗（科目+名称+日期+考试关联）
 │   │   │       ├── LoginPage.tsx            # Web 端登录页（v1.6.3: 仅用户名密码，不含扫描功能）
@@ -459,7 +470,6 @@ Project-X/
 │   │   │       ├── SponsorPage.tsx          # 赞助/支持页面（收款码预留）
 │   │   │       ├── AccountManagement.tsx    # 教师/学生管理（双 Tab）
 │   │   │       ├── TeacherManagement.tsx    # 教师管理（科目/班级关联）
-│   │   │       ├── StudentManagement.tsx    # 学生管理（按班级+导入/导出）
 │   │   │       ├── ImportModal.tsx          # 通用CSV/Excel导入弹窗
 │   │   │       ├── ImportCardModal.tsx       # 导入答题卡确认弹窗（科目/考试/日期）
 │   │   │       ├── ScanPreviewModal.tsx      # PDF 式多页答题卡预览弹窗（缩放/PgUp/PgDn）
@@ -474,14 +484,13 @@ Project-X/
 │   │   │       ├── CreateExamGroupModal.tsx  # 大考创建/编辑弹窗（关联考试+内联新建考试）
 │   │   │       ├── ExamGroupDetailPage.tsx   # 大考分析视图（概览+跨科排名表）
 │   │   │       ├── GroupExportModal.tsx      # 大考 ZIP 导出配置
-│   │   │       ├── AnalysisOverview.tsx     # 概况：信息卡片+分布图+排名
+│   │   │       ├── AnalysisOverall.tsx      # 概况：信息卡片+分布图+排名
 │   │   │       ├── AnalysisDistribution.tsx # 箱型图/分数分布
 │   │   │       ├── AnalysisAiPanel.tsx      # AI 成绩分析（多服务商）
 │   │   │       ├── ScoreTable.tsx           # 成绩表格（排序/搜索/偏差值）
 │   │   │       ├── ExportModal.tsx          # 导出弹窗（胶囊拖拽/模板/A4适配）
 │   │   │       ├── AssignedFormulaModal.tsx # 赋分公式配置
 │   │   │       └── AnalysisQuestions.tsx   # 题目得分率排行
-│   │   │       ├── DragDropZone.tsx          # 通用拖拽上传组件（v1.8.0）
 │   │   │       ├── KnowledgeTagList.tsx      # 可编辑知识点彩色标签（v1.8.0）
 │   │   │       ├── PaperUploadPanel.tsx      # 原卷上传与AI分析面板（v1.8.0）
 │   │   └── server/                      # Express 后端
@@ -499,14 +508,13 @@ Project-X/
 │   │       └── scanner/                 # TWAIN 扫描仪子系统
 │   ├── server/                          # 共享服务模块
 │   │   ├── db/                          # 主数据库（projectx.db / MariaDB）
-│   │   ├── repositories/
-│   │   │   └── KnowledgePointRepository.ts # 知识点 CRUD + 成绩联动查询（v1.8.0）
-│   │   ├── mysql.ts                 # DbAdapter 统一接口 + SQLite / MariadbAdapter（v1.5.5）
 │   │   ├── repositories/                # 数据访问层
 │   │   │   ├── CardRepository.ts         # 答题卡 CRUD
 │   │   │   ├── ExamRepository.ts         # 考试 CRUD
-│   │   │   ├── UserRepository.ts         # 用户管理
+│   │   │   ├── UserRepository.ts         # 用户管理（含 CSV 导入）
+│   │   │   ├── KnowledgePointRepository.ts # 知识点 CRUD + 成绩联动查询（v1.8.0）
 │   │   │   └── AnalysisRepository.ts     # 分析查询
+│   │   ├── mysql.ts                 # DbAdapter 统一接口 + SQLite / MariadbAdapter（v1.5.5）
 │   │   ├── middleware/                   # 认证中间件（含 v1.6.0 api-key 认证）
 │   │   ├── routes/                       # 认证/用户/赞助/AI服务商/成绩修改/导出/大考组/跨考/API Key/扫描上传等路由
 │   │   └── services/                     # AuthService / AssignedScoreService（赋分引擎）
@@ -655,6 +663,8 @@ Project-X/
 | `GET/POST/PUT/DELETE` | `/api/ai/providers` | AI 服务商配置管理 |
 | `GET` | `/api/db/backup` | 导出全量数据 ZIP（SQLite: VACUUM / MariaDB: mysqldump） |
 | `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |
+| `POST` | `/api/db/import-demo` | 一键导入演示数据（管理员，幂等、不覆盖现有数据） |  ← v1.9.4 |
+| `POST` | `/api/db/clear-demo` | 一键清除「演示-」前缀数据（管理员） |  ← v1.9.4 |
 | `GET` | `/api/app/health` | 健康检查（含数据库状态与 `capabilities.scannerClientApi`） |
 | `GET/PATCH` | `/api/app/db-config` | 数据库配置读取/修改（管理员） |
 | `POST`            | `/api/scanner/upload/sessions`              | 创建扫描上传会话（API Key + JWT 双鉴权） |
@@ -685,7 +695,7 @@ Project-X/
 > 感谢所有为 Project-X 提供测试反馈、文档建议和代码贡献的同学与老师！
 
 ---
-##看板娘
+## 看板娘
 <img width="1254" height="1254" alt="82210f7b5cb77968108b5aa81a3b2191" src="https://github.com/user-attachments/assets/34c2c9b5-a373-48cf-b605-5a66faecc7b8" />
 <img width="1070" height="1470" alt="31c82194dfda46f5a99ea69efd19eb45" src="https://github.com/user-attachments/assets/c73fd099-d40f-4dd2-8e1a-57982522b326" />
 <img width="1254" height="1254" alt="9884f7ad4fb44e7d82c66620f1eb43a5" src="https://github.com/user-attachments/assets/e4e05802-68d4-486b-8c32-da3abf754f14" />

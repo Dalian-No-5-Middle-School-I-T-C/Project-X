@@ -35,14 +35,16 @@ router.get("/:examId/students/search", requireExamAccess, async (req: Request, r
   }
 
   const db = getMysqlDb();
+  // 转义 LIKE 通配符，避免用户输入 % / _ 时匹配到无关学生
+  const escaped = q.replace(/[\\%_]/g, (m) => `\\${m}`);
   const students = await db.all(`
     SELECT DISTINCT u.id, u.name, u.student_number
     FROM student_scores ss
     JOIN users u ON u.id = ss.student_id
-    WHERE ss.exam_id = ? AND (u.student_number = ? OR u.name LIKE ?)
+    WHERE ss.exam_id = ? AND (u.student_number = ? OR u.name LIKE ? ESCAPE '\\')
     ORDER BY u.student_number
     LIMIT 20
-  `, examId, q, `%${q}%`) as Array<{ id: number; name: string; student_number: string | null }>;
+  `, examId, q, `%${escaped}%`) as Array<{ id: number; name: string; student_number: string | null }>;
 
   res.json(students.map((s) => ({
     id: s.id,
@@ -244,6 +246,26 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
   const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
   if (!exam) { res.status(404).json({ message: "考试不存在" }); return; }
 
+  // 校验每道题存在且分数在 [0, max_score] 内，防止负数/超满分写入成绩
+  const scoreRows = await db.all(
+    "SELECT question_number, score_type, max_score FROM question_scores WHERE exam_id = ? AND student_id = ?",
+    examId, studentId
+  ) as Array<{ question_number: number; score_type: string; max_score: number }>;
+  const maxByKey = new Map<string, number>();
+  for (const row of scoreRows) maxByKey.set(`${row.question_number}_${row.score_type}`, Number(row.max_score));
+  for (const u of updates) {
+    const max = maxByKey.get(`${u.questionNumber}_${u.scoreType}`);
+    if (max == null) {
+      res.status(400).json({ message: `题号 ${u.questionNumber}（${u.scoreType}）不存在或尚未评分` });
+      return;
+    }
+    if (u.score < 0 || u.score > max) {
+      res.status(400).json({ message: `题号 ${u.questionNumber} 的分数需在 [0, ${max}] 范围内` });
+      return;
+    }
+  }
+
+  let assignedScoreWarning: string | undefined;
   await db.transaction(async (tx) => {
     for (const u of updates) {
       const existing = await tx.get(
@@ -289,10 +311,16 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
     `, totalObjective, totalSubjective, newTotal, userId, now, examId, studentId);
 
     // P1-8: 排名重算在事务内执行，确保数据一致性
-    await recomputeExamRankings(tx, examId);
+    const recalc = await recomputeExamRankings(tx, examId);
+    if (recalc.assignedScoresRecalculated === false) {
+      assignedScoreWarning = recalc.assignedScoreError;
+    }
   });
 
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    ...(assignedScoreWarning ? { warnings: { assignedScoreError: assignedScoreWarning } } : {})
+  });
 });
 
 // ── 获取考试的答题卡答案配置 ──────────────────────
@@ -402,8 +430,6 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
     }
   }
 
-  await cardRepo.updateCard(card);
-
   const students = await db.all("SELECT student_id FROM student_scores WHERE exam_id = ?", examId) as Array<{ student_id: number }>;
   let updatedCount = 0;
   const confidenceThreshold = await resolveReviewConfidenceThreshold(req.user?.id);
@@ -414,7 +440,11 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
   const updateCols = ["score", "max_score", "manually_modified", "modified_by", "modified_at", "selected_options"];
   const upsertSQL = buildUpsertSQL(db.dialect, "question_scores", upsertCols, conflictCols, updateCols);
 
+  let assignedScoreWarning: string | undefined;
   await db.transaction(async (tx) => {
+    // 答案与重算同事务：任一步失败整体回滚，避免“答案已改但分数未重算”的半更新状态
+    await cardRepo.updateCardInTx(card, tx);
+
     for (const [qNum, newKey] of Object.entries(answerUpdates)) {
       await tx.run(
         `INSERT INTO answer_overrides (exam_id, card_id, question_number, score_type, override_type, old_value, new_value, created_by, created_at)
@@ -491,9 +521,11 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
       const roundedObj = roundScore(totalObj);
       const roundedSubj = roundScore(Number(subjScore.total ?? 0));
       const totalScore = roundScore(roundedObj + roundedSubj);
+      // 答案变更触发的自动重评分不标记 manually_modified（与上方 question_scores 的
+      // 0 标记保持一致，避免把整场学生误标为“手动修改”）。
       await tx.run(`
         UPDATE student_scores SET objective_score = ?, subjective_score = ?, total_score = ?,
-          manually_modified = 1, modified_by = ?, modified_at = ?
+          modified_by = ?, modified_at = ?
         WHERE exam_id = ? AND student_id = ?
       `, roundedObj, roundedSubj, totalScore, userId, now, examId, studentId);
 
@@ -501,10 +533,18 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
     }
 
     // P1-8: 排名重算在事务内执行
-    await recomputeExamRankings(tx, examId);
+    const recalc = await recomputeExamRankings(tx, examId);
+    if (recalc.assignedScoresRecalculated === false) {
+      assignedScoreWarning = recalc.assignedScoreError;
+    }
   });
 
-  res.json({ ok: true, updatedCount, modifiedAnswers: Object.keys(answerUpdates).length });
+  res.json({
+    ok: true,
+    updatedCount,
+    modifiedAnswers: Object.keys(answerUpdates).length,
+    ...(assignedScoreWarning ? { warnings: { assignedScoreError: assignedScoreWarning } } : {})
+  });
 });
 
 export default router;

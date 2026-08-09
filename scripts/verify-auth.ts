@@ -90,6 +90,7 @@ async function main(): Promise<void> {
   const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
   const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
   const { requirePermission, requireRole } = await import("../src/server/middleware/auth");
+  const { requireExamAccess } = await import("../src/apps/answer-card/server/middleware");
   const perms = await import("../src/server/auth/permissions");
   const { PERMISSIONS, ROLE_IDS, roleHasPermission, permissionsForRole, loadRolePermissions } = perms;
 
@@ -324,6 +325,32 @@ async function main(): Promise<void> {
   const classManage = requireRole("admin", "teacher");
   ok((await runMiddleware(classManage, teacherUser)).allowed, "教师可读班级（requireRole）");
   ok((await runMiddleware(classManage, studentUser)).status === 403, "学生读班级被拒绝（requireRole）");
+
+  // 学生自助访问（天梯 / 逐题详情）：
+  // GET 自己参加过的考试放行；未参加考试与写操作（改分）一律 403
+  async function runExamAccess(user: any, method: string, url: string, examId: number) {
+    return new Promise<{ status: number | null; allowed: boolean }>((resolve) => {
+      let status: number | null = null;
+      const req: any = { user, method, originalUrl: url, params: { examId: String(examId) } };
+      const res: any = {
+        status(code: number) { status = code; return res; },
+        json() { resolve({ status, allowed: false }); }
+      };
+      requireExamAccess(req, res, () => resolve({ status, allowed: true }));
+    });
+  }
+  ok(
+    (await runExamAccess(studentUser, "GET", "/api/ladder/exams/" + examId, examId)).allowed,
+    "学生 GET 自己参加过的考试被放行（天梯）"
+  );
+  ok(
+    (await runExamAccess(studentUser, "GET", "/api/ladder/exams/" + (examId + 999), examId + 999)).status === 403,
+    "学生 GET 未参加的考试被 403"
+  );
+  ok(
+    (await runExamAccess(studentUser, "PUT", "/api/exams/" + examId + "/student/" + student.id + "/scores", examId)).status === 403,
+    "学生写操作（改分）被 403"
+  );
 
   closeDatabase();
 }

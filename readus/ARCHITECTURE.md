@@ -168,31 +168,35 @@ v1.9.2 从传统 `useState` 状态切换升级为 **URL 路由化**，使用 `re
 | **设计领域模型** | `client/cardModel.ts` | 20+ 设计 helper（`modeLabels`/`defaultObjective`/`defaultSubjective`/`subjectiveBlockKindLabel`/`answerLineCount` 等）+ `PreviewMode`/`PREVIEW_*` 预览设置常量，从 `App.tsx` 收编 |
 | **设计编辑器** | `client/pages/DesignEditors.tsx` | `ObjectiveEditor` / `SubjectiveEditor` / `CardPreview` / `StudentAreaSvg` / `ObjectiveSvg` / `SubjectiveSvg`，从 `App.tsx` 抽出 |
 | **DesignPage** | `pages/DesignPage.tsx` | 答题卡设计 / 编辑（改 `useWorkspace()` 消费，直接从 `./DesignEditors` 导入编辑器） |
-| **ExamManagePage** | `pages/ExamManagePage.tsx` | 考试管理 / 阅卷 / 大考组（改 `useWorkspace()` 消费） |
-| **GradingPage** | `pages/GradingPage.tsx` | 上传图片、批量识别判分（保留 props 范式，未切 `useWorkspace()`） |
+| **ExamManagePage** | `pages/ExamManagePage.tsx` | 考试管理 / 网阅入口 / 大考组（改 `useWorkspace()` 消费） |
 
-**状态外置：** `WorkspaceContext.tsx` 定义完整 `WorkspaceValue` 值对象（~119 字段）。`App.tsx` 构造 `workspace` 并用 `<WorkspaceProvider value={workspace}>` 包裹整个 `<main>` 壳层；`DesignPage` / `ExamManagePage` 通过 `useWorkspace()` 读取共享状态（`teacherId`/`teacherRole`/`userRole` 由 `user` 派生），不再逐层 props 透传。`GradingPage` 因交互形态差异，仍按计划以 props 接收（函数引用不变 → 行为一致）。
+**状态外置：** `WorkspaceContext.tsx` 定义完整 `WorkspaceValue` 值对象（~119 字段）。`App.tsx` 构造 `workspace` 并用 `<WorkspaceProvider value={workspace}>` 包裹整个 `<main>` 壳层；`DesignPage` / `ExamManagePage` 通过 `useWorkspace()` 读取共享状态（`teacherId`/`teacherRole`/`userRole` 由 `user` 派生），不再逐层 props 透传。阅卷（`GradePanel` 弹层）与扫描工作台（扫描端）不通过 workspace 承载交互状态。
 
 > 设计意义：`App.tsx` 体积由 ~3700 行降为 ~2290 行，仅保留状态与 handlers；共享依赖集中在 `cardModel.ts` / `DesignEditors.tsx`，消除 `App.tsx` 与页面之间的循环引用风险。
 
-### 3.3 设计令牌与 UI 组件库（v1.9.2+）
+### 3.3 设计令牌与 UI 组件库（v1.9.2+，v2.0.0 重构为 Flat 2.0 设计系统）
 
-- **`theme.ts`**：将 `styles.css` 的 CSS 自定义属性镜像为 TS 对象，供 JS 侧图表/状态点引用
-- **`components/ui/`**：共享 UI 组件库（Button / Modal / SegmentedControl / Input / Panel / Table / Spinner / LoadingScreen），封装 5 种模态实现 + 4 套分段控件 + 裸 `<table>` 等不一致
-- **语义色**：`styles.css` 新增 `--success:#2E7D32; --warning:#E65100; --info:#1565C0`，组件中硬编码 `#2E7D32` 全部替换为 `var(--success)`
-- **z-index 阶梯**：`--z-dropdown:900` / `--z-modal:1000` / `--z-toast:1100` / `--z-lightbox:1200`
+> v2.0.0 起样式与组件事实源全面切换：旧 `styles.css`（6048 行）与 `theme/legacy-bridge.css` 已删除，详见 [AGENTS.md](../AGENTS.md)「样式事实源」与 [UI-ARCHITECTURE.md](./UI-ARCHITECTURE.md)。以下为当前状态：
+
+- **`theme/tokens.css`**：L1 原始 / L2 语义（亮·暗）/ L3 组件三层令牌唯一事实源；`theme/app.css` 为 Tailwind v4 入口（`@theme` 块映射 `--px-*` → 语义工具类）；`theme/backdrop.css` 承载背景图功能样式。**`client/theme.ts`**：JS 侧令牌镜像（图表取色/动态样式），与 `tokens.css` 经 `scripts/sync-tokens.mjs` 三处同步。
+- **`components/ui/v2/`**：唯一组件事实源（桶具名 import），旧 `components/ui/*` 首版组件（Button / Modal / SegmentedControl / Input / Panel / Table / Spinner / LoadingScreen）已于 P5 删除，仅 re-export v2。
+- **皮肤扩展机制**（v2.1.0 + v2.3.0）：`data-skin` 属性 + `tokens.css` 追加 `[data-skin="xxx"]` L2 覆盖块 + `SkinSwitcher` 注册表；现有 `flat`（默认）与 `paper-edge` 两套皮肤，详见 [SKIN-THEME.md](./SKIN-THEME.md)。
+- **z-index 阶梯**：`--z-dropdown:900` / `--z-modal:1000` / `--z-toast:1100` / `--z-lightbox:1200`（L2 令牌并入 tokens.css）
 
 ### 3.4 工作模式一览
+
+> 现状共 11 个 mode（`client/modeRoutes.ts` 为唯一映射）；v1.9.2 的独立 `grading` 模式已移除，阅卷由考试管理「网阅」按钮进入。
 
 | 模式 | 路径 | 职责 | 主要组件 |
 |------|------|------|----------|
 | **home** | `/home` | 启动台仪表盘，模块卡可新标签打开 | `HomePage` |
 | **design** | `/design/*` | 编辑答题卡、预览、导出 PDF | `DesignPage` + `DesignEditors`(`CardPreview`/`ObjectiveEditor`/`SubjectiveEditor`) + `buildLayout` 预览 |
-| **exam-manage** | `/exam-manage` | 考试管理 / 阅卷分配 / 大考组 | `ExamManagePage` |
-| **grading** | `/grading` | 上传图片、批量识别判分 | `GradingPage` + `GradingResults`、`ScanPreviewModal`（UI 由 `GradePanel` 弹层承载） |
+| **exam-manage** | `/exam-manage` | 考试管理 / 网阅入口（5 Tab）/ 大考组 | `ExamManagePage` |
 | **analysis** | `/analysis` | 考试统计、排名、题目分析 | `ExamSelectPage` / `ExamGroupDetailPage` / `ScoreDetailPage` |
 | **scores** | `/scores` | 学生查看个人成绩 | `StudentScores` |
-| **account** | `/account` | 教师/学生管理 | `AccountManagement`、`TeacherManagement`、`ClassManagement` |
+| **account** | `/account` | 教师/学生/班级管理 | `AccountManagement`、`TeacherManagement`、`ClassManagement` |
+| **account-settings** | `/account-settings` | 个人账号设置（v2.0.0 起独立路由页，横向 Tab） | `AccountSettingsPage` |
+| **global-settings** | `/global-settings` | 全局设置（仅管理员，v2.0.0 起独立路由页） | `GlobalSettingsPage` |
 | **sponsor** | `/sponsor` | 赞助页 | `SponsorPage` |
 | **permissions** | `/permissions` | 权限管理 | `PermissionManager` |
 | **guide** | `/guide` | 使用指南 | `UserGuidePage` |
@@ -202,7 +206,7 @@ v1.9.2 从传统 `useState` 状态切换升级为 **URL 路由化**，使用 `re
 - 无 Redux/Zustand，用 React `useState` + `WorkspaceContext`（`useWorkspace()`）+ `fetch` 直连 REST API
 - 路由由 URL 真实驱动（`<Routes>`），非 `hidden-panel` 全挂载切换；切走即卸载，回来看重（设计页编辑态、考试管理选择态在 workspace 中保留）
 - 图标：`lucide-react`
-- 样式：单一 `styles.css` + `theme.ts` 设计令牌，无 UI 框架
+- 样式：Tailwind 工具类 + `--px-*` 语义令牌（`theme/app.css` + `theme/tokens.css`），禁止新建 CSS 文件、禁止硬编码 hex
 - 与后端通信：`fetchJson` 封装，开发时 Vite 代理到 5174
 
 ---

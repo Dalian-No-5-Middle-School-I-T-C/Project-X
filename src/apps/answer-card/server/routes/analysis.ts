@@ -112,7 +112,7 @@ async function getActiveAiProviders(userId: number) {
 
 async function getAiProviderForUser(providerId: number, userId: number) {
   const db = getMysqlDb();
-  return db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId);
+  return (await db.get<AiProviderRow>("SELECT * FROM ai_providers WHERE id = ? AND (user_id = ? OR is_system = 1)", providerId, userId)) ?? null;
 }
 
 // ── Trends ──────────────────────────────────────────────
@@ -122,7 +122,9 @@ router.get("/trends", async (req, res, next) => {
     const subject = typeof req.query.subject === "string" ? req.query.subject : "";
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
     const analysisRepo = new AnalysisRepository();
-    const trend = await analysisRepo.getScoreTrend(subject, classId);
+    // 按教师可见考试范围过滤，避免学科老师/班主任拉取全校趋势
+    const visibleExamIds = await getVisibleExamIds(req.user);
+    const trend = await analysisRepo.getScoreTrend(subject, classId, visibleExamIds);
     res.json(trend);
   } catch (error) {
     next(error);
@@ -581,7 +583,8 @@ router.get("/exams/:examId/export-csv", requireExamAccess, async (req, res, next
     const filename = `${exam?.name ?? "成绩表"}_${classId ? "班级" : "年级"}.xlsx`;
 
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(filename)}"`);
+    // RFC 5987：中文文件名用 filename* 传输，避免浏览器显示 URL 编码串
+    res.setHeader("Content-Disposition", `attachment; filename="scores.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`);
     res.send(buf);
   } catch (error) {
     next(error);

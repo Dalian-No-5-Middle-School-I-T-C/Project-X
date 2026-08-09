@@ -1,8 +1,10 @@
 # Project-X 账号管理系统技术架构与版本说明
 
-> **版本**: v1.5.0
+> **版本**: v1.5.0（历史架构快照）
 > **日期**: 2026-06-17
 > **关联文档**: [`ACCOUNT-CONTROL.md`](./ACCOUNT-CONTROL.md)（后端 API 详述）· [`ARCHITECTURE.md`](./ARCHITECTURE.md)（系统总览）· [`ADMIN-GUIDE.md`](./ADMIN-GUIDE.md)（管理员手册）
+
+> ⚠️ **现状提示**：本文档为 v1.1~v1.5 时代的架构快照，其中前端文件结构（`styles.css`、模式 Tab 等）已随 v1.9.x 网页化路由与 v2.0.0 Flat 2.0 重构大幅演进，**前端结构请以 [ARCHITECTURE.md](./ARCHITECTURE.md) 与 [UI-ARCHITECTURE.md](./UI-ARCHITECTURE.md) 为准**；账号 RBAC 模型、权限矩阵与教师细分角色部分仍然有效。
 
 本文档从**全栈视角**说明 Project-X 三级账号控制系统（RBAC）的技术架构，并对比 **v1.1 账号系统** 与 **早期 main 分支（v1.0）** 的差异。
 

@@ -186,7 +186,8 @@ export function useChartTheme(): ChartTheme {
     });
     observer.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["data-theme", "class", "style"],
+      // v2.1.0: data-skin 为皮肤维度（风格，与明暗正交），未来新增皮肤时图表自动跟随
+      attributeFilter: ["data-theme", "data-skin", "class", "style"],
     });
     return () => observer.disconnect();
   }, []);
