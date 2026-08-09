@@ -42,6 +42,18 @@ export async function isValidImageFile(filePath: string): Promise<boolean> {
   }
 }
 
+/** 内存态文件（multer memoryStorage）的魔数校验，供扫描上传等场景复用。 */
+export function isValidImageBuffer(buffer: Buffer): boolean {
+  if (!buffer || buffer.length < 4) return false;
+  if (buffer.subarray(0, 4).equals(Buffer.from([0x52, 0x49, 0x46, 0x46]))) {
+    // RIFF 容器还须校验 WEBP 四字符标识，避免 WAV/AVI 等 RIFF 文件混入
+    return buffer.length >= 12 && buffer.subarray(8, 12).toString("ascii") === "WEBP";
+  }
+  return MAGIC_BYTES.some(({ signature }) =>
+    buffer.subarray(0, signature.length).equals(signature)
+  );
+}
+
 /**
  * Validates uploaded image files (multer single or array).
  * On invalid image, removes the file from disk and sends 400.

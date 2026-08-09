@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS users (
     highlight_missing_paper TINYINT DEFAULT 1,
     is_active        TINYINT DEFAULT 1,
     show_tab_bar     TINYINT DEFAULT 0,             -- v1.9.0: 底部导航栏开关
+    theme_skin       VARCHAR(32) DEFAULT 'paper-edge', -- v2.1.0: 前端皮肤 ID；v2.3.0 默认改为 'paper-edge'（纸锋；'flat'=明澈 可选）
     is_demo          TINYINT NOT NULL DEFAULT 0,     -- v1.9.6: 1=演示数据（clearDemoData 仅按此标记清理）
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -748,7 +749,6 @@ CREATE INDEX IF NOT EXISTS idx_subjective_grades_record ON subjective_grades(rec
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_exam_student ON answer_block_crops(exam_id, student_id);
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_source ON answer_block_crops(source_type, source_record_id);
 CREATE INDEX IF NOT EXISTS idx_answer_block_crops_block ON answer_block_crops(card_id, block_id);
-CREATE INDEX IF NOT EXISTS idx_answer_block_crops_pool ON answer_block_crops(exam_id, block_id, status, claimed_by);
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam ON student_scores(exam_id);
 CREATE INDEX IF NOT EXISTS idx_student_scores_student ON student_scores(student_id);
 CREATE INDEX IF NOT EXISTS idx_question_scores_exam_student ON question_scores(exam_id, student_id);

@@ -130,6 +130,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuthToken(result.token);
     const nextUser: AuthUser = {
       ...result.user,
+      // v2.1.0: 登录响应 user 来自 SELECT u.*（snake_case theme_skin），
+      // /api/auth/me 返回 camelCase themeSkin —— 此处统一为 AuthUser.themeSkin
+      themeSkin: (result.user as { theme_skin?: string }).theme_skin,
       passwordChangeRequired: result.passwordChangeRequired,
       role_name: result.user.role_name ?? "unknown",
       permissions: result.permissions ?? result.user.permissions ?? []
@@ -143,7 +146,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    const onUnauthorized = () => setUser(null);
+    const onUnauthorized = () => {
+      setUser(null);
+      // 会话失效即视为登出：清除「会话内显式皮肤选择」标记，避免下一账号继承
+      try { sessionStorage.removeItem("projectx-skin-chosen"); } catch { /* ignore */ }
+    };
     window.addEventListener("projectx:unauthorized", onUnauthorized);
     return () => window.removeEventListener("projectx:unauthorized", onUnauthorized);
   }, []);
@@ -156,6 +163,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     setAuthToken(null);
     setUser(null);
+    // 清除「会话内显式皮肤选择」标记（见 readus/SKIN-THEME.md §二）：
+    // 共享设备上下一账号登录时以账号偏好为准，不继承上一账号的皮肤。
+    try { sessionStorage.removeItem("projectx-skin-chosen"); } catch { /* ignore */ }
   }, []);
 
   const hasPermission = useCallback(

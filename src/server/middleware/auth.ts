@@ -48,10 +48,13 @@ export function extractToken(req: Request): string | null {
   if (cookieToken) {
     return cookieToken;
   }
-  // 兼容查询参数（用于 SSE / PDF 等无法设置请求头的场景）
-  const queryToken = req.query.token;
-  if (typeof queryToken === "string" && queryToken) {
-    return queryToken;
+  // 兼容查询参数（用于 SSE / PDF 等无法设置请求头的场景）。
+  // 仅 GET/HEAD 接受 ?token=，避免写操作 token 泄漏进 URL/代理日志。
+  if (req.method === "GET" || req.method === "HEAD") {
+    const queryToken = req.query.token;
+    if (typeof queryToken === "string" && queryToken) {
+      return queryToken;
+    }
   }
   return null;
 }
@@ -173,6 +176,7 @@ export async function getCurrentUserHandler(req: Request, res: Response): Promis
     email: user.email,
     last_login_at: user.last_login_at,
     show_tab_bar: (user as any).show_tab_bar ?? 0,
+    themeSkin: (user as any).theme_skin ?? "paper-edge",
     passwordChangeRequired: Boolean((user as any).password_change_required),
     permissions: permissionsForRole(user.role_id)
   });

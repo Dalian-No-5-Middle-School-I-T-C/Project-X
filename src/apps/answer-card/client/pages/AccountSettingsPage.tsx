@@ -5,12 +5,16 @@ import {
   Database,
   Gauge,
   Monitor,
+  Moon,
   Plus,
+  Sun,
   Trash2,
 } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
+import { useWorkspace } from "../WorkspaceContext";
 import { fetchJson, authFetch } from "../auth/api";
 import { cn } from "../lib/utils";
+import { SkinSwitcher, SKIN_OPTIONS } from "../components/SkinSwitcher";
 import {
   Button,
   Checkbox,
@@ -24,6 +28,7 @@ import {
   Input,
   RadioGroup,
   RadioGroupItem,
+  SegmentedControl,
   Tabs,
   TabsContent,
   TabsList,
@@ -137,6 +142,8 @@ function AiProviderForm({
  */
 export function AccountSettingsPage() {
   const { isAdmin, refreshUser } = useAuth();
+  // v2.1.0: 皮肤/明暗状态由 App 顶层持有（WorkspaceContext 下发），此处直接读改即时生效
+  const { theme, setTheme, skin, setSkin } = useWorkspace();
   // v1.6.0: 非 Electron 环境（WEB 端）不显示扫描端选项和数据库设置
   const isElectron = typeof navigator !== "undefined" && navigator.userAgent.includes("Electron");
 
@@ -356,8 +363,8 @@ export function AccountSettingsPage() {
         {/* 页面头部 */}
         <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-5 py-4">
           <div className="min-w-0">
-            <h1 className="text-lg font-semibold text-foreground">账号设置</h1>
-            <p className="m-0 text-xs text-muted-foreground">阅卷 · 客户端 · AI 服务商 · 数据存储</p>
+            <h1 className="mb-0 text-lg font-semibold text-foreground">账号设置</h1>
+            <p className="m-0 mt-1.5 text-xs text-muted-foreground">阅卷 · 客户端 · AI 服务商 · 数据存储</p>
           </div>
         </div>
 
@@ -440,6 +447,32 @@ export function AccountSettingsPage() {
 
           <TabsContent value="client" className="flex flex-col gap-4 px-5 py-5">
             <div className="flex max-w-xl flex-col gap-4">
+              {/* v2.1.0: 外观 / 皮肤 — 皮肤=风格维度（随账号同步）；明暗为设备级偏好（仅存本地）；v2.3.0 当前皮肤名跟随注册表动态显示 */}
+              <section className="flex flex-col gap-2">
+                <h4 className="m-0 text-base font-semibold text-foreground">外观 / 皮肤</h4>
+                <ControlRow
+                  control={<SkinSwitcher skin={skin} onSkinChange={setSkin} theme={theme} onThemeChange={setTheme} size="sm" />}
+                  label="皮肤风格"
+                  description={`当前：${SKIN_OPTIONS.find((o) => o.id === skin)?.label ?? skin}`}
+                />
+                <ControlRow
+                  control={
+                    <SegmentedControl
+                      value={theme}
+                      onValueChange={(v) => setTheme(v as "light" | "dark")}
+                      items={[
+                        { value: "light", label: "亮色", icon: <Sun size={15} /> },
+                        { value: "dark", label: "暗色", icon: <Moon size={15} /> },
+                      ]}
+                      size="sm"
+                      aria-label="明暗模式"
+                    />
+                  }
+                  label="明暗模式"
+                  description="亮色/暗色即时生效，为设备级偏好（仅皮肤随账号同步）"
+                />
+              </section>
+
               <section className="flex flex-col gap-2">
                 <h4 className="m-0 text-base font-semibold text-foreground">底部导航栏</h4>
                 <ControlRow

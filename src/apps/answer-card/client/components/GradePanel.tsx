@@ -35,6 +35,8 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   const current = queue[currentIndex];
   const currentScore = current ? (draftScores[current.id] ?? current.score ?? 0) : 0;
   const maxScore = current?.maxScore ?? 0;
+  // 是否已为本卷显式选过分数（防止未选分时误提交 0 分）
+  const hasEnteredScore = current ? draftScores[current.id] !== undefined : false;
 
   // 加载阅卷队列
   const loadQueue = useCallback(async () => {
@@ -150,6 +152,11 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
   // 保存并下一份
   const handleSubmit = useCallback(async (scoreOverride?: number) => {
     if (!current || saving) return;
+    if (scoreOverride === undefined && draftScores[current.id] === undefined) {
+      setError("请先选择分数再提交，避免误提交 0 分");
+      setErrorTone("error");
+      return;
+    }
     if (scoringMode === "per_question") {
       setError("本题块为逐题评分模式，请使用在线阅卷逐题输入");
       return;
@@ -175,6 +182,13 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
       );
 
       if (res.ok) {
+        if (res.rankingsRecalculated === false) {
+          setError(`分数已保存，但排名/赋分重算失败：${res.rankingError ?? "未知错误"}，请稍后联系管理员重算`);
+          setErrorTone("error");
+        } else if (res.assignedScoresRecalculated === false) {
+          setError(`分数已保存，但赋分重算失败：${res.assignedScoreError ?? "未知错误"}，请稍后联系管理员重算`);
+          setErrorTone("error");
+        }
         if (res.disputed) {
           setError(`该卷已标记为争议：${res.disputeReason}`);
           setErrorTone("error");
@@ -282,19 +296,10 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
           {currentIndex + 1} / {queue.length}
         </div>
         <button
+          type="button"
           onClick={() => void claimNext()}
           disabled={claiming}
-          style={{
-            padding: "6px 14px",
-            fontSize: 13,
-            border: "1px solid var(--color-border-primary)",
-            borderRadius: 6,
-            background: "var(--color-background-secondary)",
-            cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 4,
-          }}
+          className="inline-flex cursor-pointer items-center gap-1 rounded-md border border-border bg-secondary px-3 py-1.5 text-[13px] text-foreground disabled:cursor-default disabled:opacity-50"
         >
           {claiming ? "领取中..." : "领取下一份"}
         </button>
@@ -417,7 +422,7 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
             className="mb-2 min-h-14 text-lg [touch-action:manipulation]"
             icon={<Save className="size-5" />}
             loading={saving}
-            disabled={!current || scoringMode === "per_question"}
+            disabled={!current || scoringMode === "per_question" || !hasEnteredScore}
             onClick={() => handleSubmit()}
           >
             {saving ? "保存中..." : "保存并下一份"}

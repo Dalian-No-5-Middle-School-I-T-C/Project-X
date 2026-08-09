@@ -37,6 +37,7 @@ export function DisputeManagePage({ examId }: Props) {
   const [resolutionScore, setResolutionScore] = useState("");
   // UI-1/UI-2：提交节流 + loading 态，避免重复仲裁
   const [resolving, setResolving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -61,6 +62,7 @@ export function DisputeManagePage({ examId }: Props) {
   const handleResolve = async (cropId: string) => {
     if (!resolutionScore || resolving) return;
     setResolving(true);
+    setErrorMsg("");
     try {
       await fetchJson(`/api/review-arbitration/crops/${encodeURIComponent(cropId)}/resolve`, {
         method: "POST",
@@ -69,6 +71,8 @@ export function DisputeManagePage({ examId }: Props) {
       setSelectedDispute(null);
       setResolutionScore("");
       load();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "仲裁提交失败，请重试");
     } finally {
       setResolving(false);
     }
@@ -96,6 +100,12 @@ export function DisputeManagePage({ examId }: Props) {
           共 {disputes.length} 份
         </span>
       </div>
+
+      {errorMsg && (
+        <div className="rounded-md border border-destructive-border bg-destructive-soft px-3 py-2 text-sm text-destructive-fg">
+          {errorMsg}
+        </div>
+      )}
 
       {disputes.length === 0 ? (
         <EmptyState

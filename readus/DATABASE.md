@@ -1,6 +1,6 @@
 # Project-X 数据库模块文档
 
-> **版本**: v1.9.4
+> **版本**: v2.0.0（迁移至 v34：v33 `users.theme_skin` 皮肤偏好、v34 `exams.exam_mode` 晨测/大考；SQLite `migrations.ts` 与 MariaDB `mariadbMigrations` 双轨同步）
 > **技术栈**: SQLite (本地) / MariaDB 10.11 LTS (远程) + better-sqlite3 + mysql2 + bcryptjs
 > **目标**: 为五中智能试卷管理系统提供统一的数据存储与访问能力，支持本地单机部署和远程服务器部署
 

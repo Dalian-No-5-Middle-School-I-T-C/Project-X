@@ -104,8 +104,11 @@ router.post(
       const teacherId = (req as any).user?.id;
       if (!teacherId) return res.status(401).json({ ok: false, error: "未登录" });
       const force = req.body?.force === true;
-      if (force && (req as any).user?.role_id !== 1) {
-        return res.status(403).json({ ok: false, error: "仅管理员可强制释放他人领取的试卷" });
+      const user = (req as any).user as { role_id?: number; role_name?: string; teacher_role?: string | null };
+      const isAdmin = user?.role_id === 1;
+      const isGradeLeader = user?.role_name === "teacher" && user?.teacher_role === "grade_leader";
+      if (force && !isAdmin && !isGradeLeader) {
+        return res.status(403).json({ ok: false, error: "仅管理员或学年主任可强制释放他人领取的试卷" });
       }
       await releasePaper(examId, blockId, cropId, teacherId, undefined, { force });
       res.json({ ok: true });

@@ -64,25 +64,28 @@ export class CardRepository {
   }
 
   async updateCard(card: AnswerCard): Promise<void> {
-    await this.db.transaction(async (tx) => {
-      await tx.run(
-        `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, paper_size = ?, orientation = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-        card.title, card.subject ?? null, (card as any).subjectLabel ?? null, (card as any).examDate ?? null,
-        card.paper?.size ?? "A4", card.paper?.orientation ?? "portrait",
-        JSON.stringify(card.studentInfo ?? { studentNumberDigits: 5 }), card.studentInfo?.studentNumberDigits ?? 5,
-        card.sided ?? "double", card.layoutVersion ?? 1, card.id
-      );
+    await this.db.transaction((tx) => this.updateCardInTx(card, tx));
+  }
 
-      await tx.run("DELETE FROM objective_blocks WHERE card_id = ?", card.id);
-      await tx.run("DELETE FROM subjective_blocks WHERE card_id = ?", card.id);
+  /** 在调用方已开启的事务内保存答题卡（供「改答案 + 重算成绩」等原子流程复用）。 */
+  async updateCardInTx(card: AnswerCard, tx: DbAdapter): Promise<void> {
+    await tx.run(
+      `UPDATE answer_cards SET title = ?, subject = ?, subject_label = ?, exam_date = ?, paper_size = ?, orientation = ?, student_fields = ?, student_number_digits = ?, sided = ?, layout_version = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      card.title, card.subject ?? null, (card as any).subjectLabel ?? null, (card as any).examDate ?? null,
+      card.paper?.size ?? "A4", card.paper?.orientation ?? "portrait",
+      JSON.stringify(card.studentInfo ?? { studentNumberDigits: 5 }), card.studentInfo?.studentNumberDigits ?? 5,
+      card.sided ?? "double", card.layoutVersion ?? 1, card.id
+    );
 
-      if (card.bodyBlocks) {
-        for (const block of card.bodyBlocks) {
-          if (block.type === "objective") await this.insertObjectiveBlock(block as any, card.id, tx);
-          else if (block.type === "subjective") await this.insertSubjectiveBlock(block as any, card.id, tx);
-        }
+    await tx.run("DELETE FROM objective_blocks WHERE card_id = ?", card.id);
+    await tx.run("DELETE FROM subjective_blocks WHERE card_id = ?", card.id);
+
+    if (card.bodyBlocks) {
+      for (const block of card.bodyBlocks) {
+        if (block.type === "objective") await this.insertObjectiveBlock(block as any, card.id, tx);
+        else if (block.type === "subjective") await this.insertSubjectiveBlock(block as any, card.id, tx);
       }
-    });
+    }
   }
 
   private async insertObjectiveBlock(block: any, cardId: string, tx: DbAdapter): Promise<void> {

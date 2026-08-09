@@ -46,10 +46,10 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterE
     },
     dashboard?.latestScanExam ? {
       icon: ScanLine, title: "最新扫描", description: `${dashboard.latestScanExam.examName}${dashboard.latestScanExam.subject ? ` · ${dashboard.latestScanExam.subject}` : ""}`,
-      tone: "border-info-border bg-info-soft text-info-foreground", onClick: () => onEnterExam(dashboard.latestScanExam!.examId),
+      tone: "border-border bg-card text-secondary-foreground", onClick: () => onEnterExam(dashboard.latestScanExam!.examId),
     } : {
       icon: ScanLine, title: "最新扫描", description: "暂无扫描记录",
-      tone: "border-info-border bg-info-soft text-info-foreground", onClick: () => onNavigate("exam-manage"),
+      tone: "border-border bg-card text-secondary-foreground", onClick: () => onNavigate("exam-manage"),
     },
     { icon: ClipboardList, title: "考试管理", description: "查看和管理所有考试", tone: "border-border bg-card text-secondary-foreground", onClick: () => onNavigate("exam-manage") },
   ] as Array<{ icon: typeof ClipboardList; title: string; description: string; tone: string; onClick: () => void }>;
@@ -58,8 +58,8 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterE
     <div className="w-full space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">欢迎回来，{userName}</h1>
-          <p className="mt-2 text-sm text-muted-foreground">今天也把每一份答题卡，变成清晰可靠的结果。</p>
+          <h1 className="mb-0 text-3xl font-bold tracking-tight text-foreground">欢迎回来，{userName}</h1>
+          <p className="mt-5 text-sm text-muted-foreground">今天也把每一份答题卡，变成清晰可靠的结果。</p>
         </div>
         {teacherRole && <Badge tone="accent" dot>{teacherRole === "grade_leader" ? "学年主任" : teacherRole === "head_teacher" ? "班主任" : "学科老师"}</Badge>}
       </div>

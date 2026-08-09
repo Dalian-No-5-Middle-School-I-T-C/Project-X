@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import { raw as expressRaw } from "express";
 import { ZipArchive } from "archiver";
 import AdmZip from "adm-zip";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, copyFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -55,7 +55,6 @@ router.get("/backup", async (_req: Request, res: Response) => {
   }
 
   const tmpDir = path.join(os.tmpdir(), `projectx-backup-${crypto.randomUUID()}`);
-  const zipFile = path.join(os.tmpdir(), `projectx-backup-${Date.now()}.zip`);
 
   try {
     await mkdir(tmpDir, { recursive: true });
@@ -105,7 +104,6 @@ router.get("/backup", async (_req: Request, res: Response) => {
     // 3. 打包 data/answer-card/ 目录
     const dataDir = getDataDir();
     const dataBakDir = path.join(tmpDir, "data", "answer-card");
-    const excludeDirs = new Set(["scans"]);  // 扫描图片可能很大，但用户可能需要
     if (existsSync(dataDir)) {
       await copyDirectory(dataDir, dataBakDir, (filePath: string) => {
         // 跳过 .db 文件（已单独备份）
@@ -240,7 +238,15 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
       console.warn("[Restore] 关闭 scanner DB 失败（继续恢复）:", e);
     }
 
-    // 3. 替换文件
+    // 3. 替换文件（先清理旧 WAL/SHM，避免残留日志污染新库）
+    for (const suffix of ["-wal", "-shm"]) {
+      const sidecar = projectxDbPath + suffix;
+      if (existsSync(sidecar)) {
+        try { rmSync(sidecar, { force: true }); } catch (e) {
+          console.warn(`[Restore] 清理 ${suffix} 失败（继续）:`, e);
+        }
+      }
+    }
     await copyFile(projectxBak, projectxDbPath);
 
     // 恢复后重新引导管理员账号（#185 安全模型）：还原出的库若使用旧默认口令 admin123
@@ -301,7 +307,7 @@ router.post("/import-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async 
     const stats = await seedDemoData();
     res.json({
       ok: true,
-      message: `演示数据导入完成：${stats.exams} 场考试 / 16 名学生 / ${stats.groups} 个合集（教师 demo-teacher，密码 teacher123）`,
+      message: `演示数据导入完成：${stats.exams} 场考试 / 16 名学生 / ${stats.groups} 个合集（教师 demo-teacher，密码 teacher123）。⚠️ 演示账号凭据固定且可预测，仅限测试环境使用，请勿在生产环境导入。`,
       stats
     });
   } catch (error) {

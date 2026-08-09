@@ -25,14 +25,26 @@ router.get("/my-exams", async (req, res) => {
     const userId = (req as any).user?.id;
     if (!userId) return res.status(401).json({ ok: false, error: "未登录" });
 
+    // 修复：原先 LEFT JOIN 后对 ra.student_count 做 SUM 会按切块行数重复放大。
+    // 改为按分配行聚合，已阅数用每块的子查询精确统计。
     const rows = await getMysqlDb().all(
-      `SELECT ra.exam_id AS examId,
-              SUM(ra.student_count) AS totalCount,
-              SUM(ra.student_count) - COUNT(CASE WHEN abc.status = 'reviewed' AND abc.reviewer_id = ? THEN 1 END) AS pendingCount
-       FROM review_assignments ra
-       LEFT JOIN answer_block_crops abc ON abc.exam_id = ra.exam_id AND abc.block_id = ra.block_id
-       WHERE ra.teacher_id = ?
-       GROUP BY ra.exam_id`,
+      `SELECT examId, totalCount,
+              CASE WHEN rawPending < 0 THEN 0 ELSE rawPending END AS pendingCount
+       FROM (
+         SELECT ra.exam_id AS examId,
+                SUM(ra.student_count) AS totalCount,
+                SUM(ra.student_count) - SUM(COALESCE((
+                  SELECT COUNT(*)
+                  FROM answer_block_crops abc2
+                  WHERE abc2.exam_id = ra.exam_id
+                    AND abc2.block_id = ra.block_id
+                    AND abc2.status = 'reviewed'
+                    AND abc2.reviewer_id = ?
+                ), 0)) AS rawPending
+         FROM review_assignments ra
+         WHERE ra.teacher_id = ?
+         GROUP BY ra.exam_id
+       ) t`,
       userId, userId
     );
 
@@ -108,6 +120,9 @@ router.post(
       }
       const blockTotalScore =
         typeof req.body?.blockTotalScore === "number" ? req.body.blockTotalScore : undefined;
+      const user = (req as any).user as { role_id?: number; role_name?: string; teacher_role?: string | null };
+      const isAdmin = user?.role_id === 1;
+      const isGradeLeader = user?.role_name === "teacher" && user?.teacher_role === "grade_leader";
       const result = await submitReviewCropScores({
         examId,
         cropId,
@@ -115,7 +130,8 @@ router.post(
         status,
         blockTotalScore,
         userId: req.user!.id,
-        isAdmin: (req as any).user?.role_id === 1
+        // 管理员与学年主任均可代交/强制处理他人已领取的试卷
+        isAdmin: isAdmin || isGradeLeader
       });
       res.json(result);
     } catch (error) {

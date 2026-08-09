@@ -13,7 +13,7 @@
 | 项 | 说明 |
 |----|------|
 | 前端 | **Vite 7 + React 19 + TypeScript**，Tailwind CSS v4（无 Preflight，另立 P7）+ shadcn/ui 组件基座 |
-| 双构建目标 | `dist/web/`（教师 + 学生 Web 端）与 `dist/scanner/`（Electron 扫描工作台）**共用同一组件库与主题**；扫描端通过 `data-density="compact"` 获得紧凑密度，不做第二套主题 |
+| 双构建目标 | `dist/web/`（教师 + 学生 Web 端）与 `dist/scanner/`（Electron 扫描工作台）**共用同一组件库与主题**；扫描端通过 `data-density="compact"` 获得紧凑密度，不做第二套主题（皮肤扩展机制见 §三.7） |
 | 后端 | Express API（`src/apps/answer-card/server/index.ts`），端口 **5174**；Vite dev 在 5173 并代理 `/api` |
 | 组件 | `components/ui/v2/` 是**唯一组件事实源**（P5 已删除旧 PascalCase 组件目录） |
 | 样式 | **三文件事实源**：`theme/app.css` + `theme/tokens.css` + `theme/backdrop.css`，旧 `styles.css`（6048 行）与 `theme/legacy-bridge.css` 已于 P6 T05 删除，遗留类归零 |
@@ -105,7 +105,7 @@ client/theme.ts（JS/图表取色）     ── chart.js 适配器等消费
 | [design/demo/demo.html](../design/demo/demo.html) | 交互 Demo（**8 视图**：登录 / 首页 / 考试管理 / 成绩分析 / 学生成绩 / 扫描工作台 / 设计基础 / 组件，亮暗双主题），**视觉验收基准** |
 | [design/designer-sandbox.html](../design/designer-sandbox.html) | 设计器沙盒 |
 | [design/EXECUTION-PLAN.md](../design/EXECUTION-PLAN.md) | 重构执行计划（T1–T8 任务卡、P0–P5 阶段、防串台规约、附录 B 同步规约） |
-| [docs/system_design.md](../docs/system_design.md) | P6 系统设计（含 mermaid 类图 / 时序图） |
+| [docs/superpowers/specs/2026-07-29-grade-analysis-redesign-design.md](../docs/superpowers/specs/2026-07-29-grade-analysis-redesign-design.md) | 成绩分析重构设计文档（选项分析 / 跨班对比 / 可配置阈值体系，已批准实施） |
 | [readus/ARCHITECTURE.md](./ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 |
 | [AGENTS.md](../AGENTS.md) | 「样式事实源（P6 T05 定稿）」节 = 团队铁律 |
 | [readus/CHANGELOG.md](./CHANGELOG.md) | v2.0.0 条目 = 本次重构变更全记录 |
@@ -255,6 +255,15 @@ import { Button, Card, CardContent, Badge, StatCard, Chart, paletteColor } from 
 - **换色残点清单**：`--px-chart-1`（L1 硬编码 `#C00F28`）+ L2 亮块 3 处 `rgba(192,15,40,…)`（`--px-accent-ring` / `--px-selection-bg` / `--px-shadow-accent`）必须一起改，否则残留旧品牌红；
 - **禁手改 `app.css`**（`@theme` 块是同步产物）；**Preflight 未启用**（P7 前新增样式要显式声明 bg/border/padding）；
 - 全部改完跑 `ui-visual-verification`（Playwright 亮暗截图对照 demo）收尾。
+
+### 7. 皮肤扩展机制（v2.1.0 预留）
+
+**皮肤（Skin）= 与明暗正交的风格维度**：`data-theme` 管明暗（light/dark），`data-skin` 管风格（当前仅默认 `flat` 一套）。完整功能说明与扩展步骤见 [SKIN-THEME.md](./SKIN-THEME.md)，此处只列前端接线点：
+
+- **状态**：`App.tsx` 顶层 `skin` state（localStorage `projectx-skin` 初始化），经 `WorkspaceContext` 以 `skin` / `setSkin` 下发；`data-skin` 同步 effect 遵循「默认 `flat` 不设属性」约定（零污染、零迁移）。
+- **切换 UI**：`components/SkinSwitcher.tsx`（皮肤 + 明暗两组菜单，受控/自管双模式）挂在登录页、侧栏底部、页头；设置页「客户端设置」Tab 有「外观 / 皮肤」区。
+- **账号级持久化**：登录后「本地优先」应用本地选择并回写后端（`PATCH /api/users/me/settings { themeSkin }`）；新设备无本地记录时应用账号 `themeSkin`（`/api/auth/me` 下发，users 表 `theme_skin` 列，迁移 v33）。
+- **扩展路径**：新增一套皮肤 = tokens.css 追加 `[data-skin="xxx"]`（+ `[data-skin="xxx"][data-theme="dark"]` 暗色覆盖，注意 CSS 特异性顺序）→ `SkinSwitcher.tsx` `SKIN_OPTIONS` 注册一项；组件零改动，图表（MutationObserver 已监听 `data-skin`）与防白闪（main 预置）自动跟随。
 
 ---
 

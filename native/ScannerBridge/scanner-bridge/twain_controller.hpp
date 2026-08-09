@@ -59,8 +59,12 @@ public:
     // Cancel an in-progress scan
     void cancel();
 
-    TW_UINT16 processTwainEvent(WPARAM message);
+    TW_UINT16 processTwainEvent(MSG& msg);
     static TwainController* current();
+
+    // WndProc 守卫：仅当源已打开（m_state >= 2）才把窗口消息转发给 DSM，
+    // 窗口创建/销毁期间 m_sourceId 无效，转发只会得到 TWRC_FAILURE
+    bool canProcessEvents() const { return m_state >= 2; }
 
 private:
     // TWAIN state machine

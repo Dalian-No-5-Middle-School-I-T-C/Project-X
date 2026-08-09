@@ -1,5 +1,88 @@
 # Project-X CHANGELOG
 
+## v2.2.1 (2026-08-07) — TWAIN 驱动 8 项缺陷修复（PX-COR-009 闭环）
+
+> 修复扫描链路全部 8 项缺陷：消息泵收不到 `MSG_XFERREADY`（扫描卡死 60 秒）、x64 句柄截断、灰度/黑白假彩色、双面/多页丢页抢拍、部分失败被当作成功、中文路径保存失败；TWAIN 2.5.1 SDK 入库（不再依赖 `D:\twain-dsm-2.5.1` 绝对路径）、`win-x64` 原生产物补齐；TS 层扫描会话后台化（立即 202 + SSE 补发终态）与真正可用的取消（杀子进程 + 强杀兜底）。详见 `readus/TWAIN驱动问题研究报告.md` 第六节。
+
+**1. 原生 TWAIN 驱动（ScannerBridge）**
+- 事件消息泵：删除自造 `WM_USER+1`，`WndProc` 全量转发真实消息，`processTwainEvent` 传真实 `MSG`（`pEvent`）——`MSG_XFERREADY` 终于可达，扫描不再卡 60 秒超时。
+- x64 句柄宽度：`DAT_IMAGENATIVEXFER` 返回值改用指针宽 `TW_HANDLE` 接收（原 4 字节 `TW_UINT32` 截断 `HBITMAP` 并污染栈）。
+- 调色板：8bpp/1bpp 保存前用 DIB 颜色表 `SetPalette` 注入 GDI+，灰度/黑白不再假彩色或保存失败。
+- 捕获状态机：每次 XFERDONE 后立即 `ENDXFER` 并复位状态，双面/多页由 `DAT_PENDINGXFERS` 查询驱动——不再丢背面、不再干等 30 秒、不抢拍。
+- 成功判定：`success = 无中途失败 && 至少一页`，背面捕获失败也记录错误——部分失败批次不再被当作完成。
+- 中文路径：`main` 改 `wmain` + `GetCommandLineW` 转 UTF-8。
+
+**2. 构建系统**
+- TWAIN 2.5.1 SDK（`twain.h` + 32/64 位预编译 `TWAINDSM.dll`，LGPL 许可说明）入库 `native/ScannerBridge/third_party/twain-dsm-2.5.1/`；vcxproj 与 build 脚本改仓库内相对路径，换机器/CI 可复现。
+- `resources/native/win-x64/` 产物补齐（scanner-bridge.exe / TWAINDSM.dll / answer-card-recognizer.exe），64 位 Electron 开箱可用。
+- build 脚本修复 vswhere 发现 MSBuild 的两个批处理解析 bug；`.gitignore` 只忽略超大 opencv DLL。
+
+**3. TS 整合层**
+- `POST /api/scanner/scan` 先创建会话立即返回 202，扫描 + OCR 后台执行；SSE 订阅时若会话已终态则补发终态事件——进度不再全部丢失、界面不再卡"扫描中"。
+- 新增 `POST /api/scanner/scan/:sessionId/cancel`：终止 `scanner-bridge.exe` 子进程（kill + `taskkill /F /T` 强杀兜底），前端取消按钮接入；会话支持 `cancelled` 状态。
+
+**验证**
+- 双架构编译（x64 + ia32）成功，exe 冒烟（list/help）正常；typecheck 0 错误；`verify:auth` 54 项、`verify:security-critical` 42 项、`verify:scanner-cancel` 7 项全绿。
+- 评审修复（P0/P1/PR 224 反馈）：`toUtf8` 修复 `WideCharToMultiByte` 1 字节缓冲区越界（按含 NUL 的 len 分配后 `pop_back`）；`MSG_PROCESSEVENT` 的 `pDest` 改传 `&m_sourceId`（DSM 对 NULL pDest 校验失败）+ WndProc 加 `m_state>=2` 守卫；取消竞态——`cancelRequested` 集合让"202 后立即取消"在子进程注册前被 `runBridge` 拦截，`runScanSession` 写 `scanning`/`completed` 前各加取消检查且取消不 rethrow；`completed` 移到 OCR 全部完成后（OCR 阶段取消不再被拒、SSE 补发不再提前 done）；ENDXFER 失败写 `errorMessage`；DSM 运行时加载删除 `D:\` 绝对路径（改 exe 目录 + fallback）；调色板补 4bpp/32bpp 分支并尊重 `biClrUsed`；SSE 路由 try/catch + 终态主动移除 handler；build 脚本 VS 安装根改用 vswhere `installationPath`、临时文件随机名；`maxPages=0` 直传（0=不限）。
+- 未验证项（需真实扫描仪）：消息泵收事件、双面/多页 ADF、灰度图输出的真机行为待实测。
+## v2.3.0 (2026-08-07) — 纸锋 Paper Edge 第二套皮肤（#纸锋）
+
+> 落地 v2.1.0 皮肤扩展机制下的第二套皮肤「纸锋 Paper Edge」（设计来源 `demo-brutalist.html` / editorial-brutalist 技能）：纸面米底 + 墨色文字 + 品牌亮蓝 #2E44FF，直角 + 胶囊圆角纪律，全文件唯一硬偏移阴影 `8px 8px 0`。纯令牌覆盖 + 9 组已评审作用域规则（详见 [SKIN-THEME.md](./SKIN-THEME.md) §五豁免登记），组件零改动，默认皮肤零影响。
+
+- `tokens.css`（theme 与 design 双份同步）追加 `[data-skin="paper-edge"]` L2 覆盖块：圆角归 0、纸面米色表面、墨阶文字、亮蓝 accent、状态语义重映射（已完成→蓝软族 / 阅卷中→墨描边族 / 异常→绯红族 / 信息→实蓝族）、阴影 1-3 级归零 + 4 级硬偏移、图表单色纪律（chart-1 蓝 = 当前主体）；`[data-skin="paper-edge"][data-theme="dark"]` 暗色组合（#141413 系推导，对比度 ≥4.5:1）。
+- 9 组作用域规则（按钮胶囊 + 字重 700 / 主按钮墨底纸字 hover 转蓝 / 描边与次要按钮精调 / 选项卡独立描边胶囊组 / 分段控件无槽描边胶囊 / 进度条直角 / 徽章胶囊 / 统计大数字 800 重）——全部限定 `[data-skin="paper-edge"]` 作用域，`[class~=]` 整词匹配防 variant 前缀误伤。
+- `SkinSwitcher` 注册表登记 `paper-edge`（移除「更多皮肤 · 开发中」禁用占位）；账号设置页「外观 / 皮肤」当前皮肤名跟随注册表动态显示。
+- `app.css` @layer base：原生 range 滑块 `accent-color: var(--px-accent-bg)`（修复 WebView2 默认紫蓝渲染与两套皮肤不协调）。
+- 文档：`DESIGN-SYSTEM.md` 皮肤清单（现有两套）、`SKIN-THEME.md` 皮肤清单与豁免案例登记更新。
+
+**验证**
+- `npm run typecheck` — 0 错误；`npm run verify:auth` 54/54（服务端未变，回归通过）。
+
+## v2.1.0 (2026-08-07) — 皮肤切换：扩展接口 + 前端按钮 + 账号级持久化
+
+> 搭建前端「皮肤」扩展机制（皮肤 = 与明暗正交的风格维度，`data-skin` 属性预留，当前仅默认「明澈 Flat 2.0」一套）+ 登录页 / 侧栏 / 页头 / 设置页四处切换入口 + 皮肤偏好账号级持久化（换设备自动恢复）。完整说明见 [SKIN-THEME.md](./SKIN-THEME.md)。（注：第二套皮肤「纸锋 Paper Edge」于 v2.3.0 落地，见上。）
+
+**1. 前端**
+- 新增 `components/SkinSwitcher.tsx`：皮肤切换器（`SKIN_OPTIONS` 皮肤注册表 + 默认 `flat`；菜单含「皮肤」组（当前勾选 + 「更多皮肤 · 开发中」禁用占位）与「明暗」组（亮/暗，复用既有 theme 状态）；支持受控（App/设置页）与自管（登录页）双模式）。
+- `App.tsx`：新增 `skin` state（localStorage `projectx-skin`，默认 `flat` 不设 `data-skin` 属性，零污染零迁移）；登录后同步 effect（本地显式选择优先并回写后端，无本地记录则应用账号偏好）；皮肤变更自动 `PATCH /api/users/me/settings`（fire-and-forget）；侧栏底部与页头原 Sun/Moon 按钮升级为 SkinSwitcher。
+- 入口：登录页卡片右上角（自管模式，未登录即可切换）、账号设置「客户端设置」Tab →「外观 / 皮肤」区（明暗 SegmentedControl + 皮肤按钮，即时生效）。
+- 机制预留：`WorkspaceContext` 暴露 `skin`/`setSkin`；`AuthUser.themeSkin`；`main.tsx` / `main-scanner.tsx` 渲染前预置 `data-skin`（防未来皮肤白闪）；`chart.tsx` MutationObserver `attributeFilter` 增加 `data-skin`（未来皮肤切换图表自动重绘）；`tokens.css` 头部注释区新增「皮肤扩展规约」（`[data-skin="xxx"]` L2 覆盖块 + 暗色组合选择器写法）。
+- 扫描端（ScannerApp）：登录后应用账号皮肤偏好（不提供切换按钮）。
+
+**2. 后端**
+- `users.theme_skin` 列（TEXT 默认 `'flat'`，皮肤 ID 字符串不枚举）：SQLite 迁移 **v33 `user-theme-skin`** + 三套 schema（sql / mariadb / mysql）+ MariaDB `mariadbMigrations` v33。
+- `GET /api/auth/me` 与 `GET/PATCH /api/users/me/settings` 增加 `themeSkin` 字段（校验：`z.string().min(1).max(32)`，空串/超长 400 拒绝）；登录响应 `user` 经 `SELECT u.*` 自动携带。
+
+**3. 修复（存量库升级路径）**
+- `schema.sql` 移除 `idx_answer_block_crops_pool` 索引（其列 `claimed_by` 属 v32 迁移新增，写在 schema.sql 会导致存量库（迁移未到 v32）启动崩溃 `no such column: claimed_by`；该索引由 v32 迁移幂等创建，全新库不受影响）。
+
+**4. 文档**
+- 新增 `readus/SKIN-THEME.md`（完整说明：入口、数据流、前后端实现、API、新增皮肤 5 步扩展指南、FAQ）；README 功能特性 / UI 现状 / 文档表更新；`readus/UI-ARCHITECTURE.md` 新增 §三.7 皮肤扩展机制；`user guide` 4.14 更新为「外观 / 皮肤」。
+
+**验证**
+- `npm run typecheck` — 0 错误（顺带修复了 node_modules 缺失导致的 655 个基线类型错误，`npm install --ignore-scripts` 后恢复）。
+- 存量库 `data/projectx.db`（v31）启动自动补齐 v32/v33 迁移，`theme_skin` 列落库实测通过。
+- API 冒烟：`/api/auth/me` 与 settings GET 返回 `themeSkin`；PATCH 更新成功；空串/超长 400 拒绝。
+
+## v2.1.1 (2026-08-08) — 首次登录前皮肤引导层 + 入口收敛 + 暗色按钮恢复
+
+> 皮肤切换体验收敛：新增**首次进入登录页前的强制皮肤引导层**（明澈 / 纸锋两张大预览卡并排、带简介、必须二选一，确认后才进入登录）；将 v2.1.0 的四处入口收敛为「登录页 + 账号设置」两处，侧栏底部与页头恢复为原先的暗色模式一键按钮（Sun/Moon）。全程 Tailwind 语义令牌，未新建 CSS、未违反 UI 设计规范。完整说明见 [SKIN-THEME.md](./SKIN-THEME.md) §一。
+
+**1. 前端**
+- 新增 `components/SkinOnboarding.tsx`：全屏引导层（`role="radiogroup"` + 两个 `role="radio"` 卡片）。首次进入（`localStorage["projectx-skin-onboarded"]` 缺失）弹出；初始无预选、确认按钮禁用（文案「请先选择一种风格」），必须点选其一；确认时写入 sessionStorage `projectx-skin-chosen`（登录同步本地优先）+ 自管落盘 `projectx-skin` / `data-skin`（复用 `writeLocalSkin`）+ 一次性 `onboarded` 标志，随后卸载引导层显示登录页。
+- `components/LoginPage.tsx`：用 `shouldShowSkinOnboarding()` 初始化 `showOnboarding` state，条件渲染引导层（`<>` 包裹）；确认后置 false 显示登录页。登录页右上角 `SkinSwitcher` 自管入口保留（登录前备用切换）。
+- `components/SkinSwitcher.tsx`：导出既有 `writeLocalSkin`（引导层复用，避免重复逻辑）。
+- `App.tsx`：侧栏底部（`AppRailFooter`）与页头（`PageHeader` actions）的 `SkinSwitcher` 移除，原地恢复**暗色模式一键按钮（Sun/Moon）**——点击切换 `theme`，复用既有 `data-theme` + `projectx-theme` 持久化 effect（设备级，无后端改动）；严格沿用现 UI 系统 Tailwind 工具类（`h-control-md` / `size-8` / `text-secondary-foreground` / `hover:bg-secondary` / `duration-(--px-dur-1)` 等），未引入 legacy CSS。
+- `public/skin-onboarding-assets/`：复制 `flat-preview.png` / `paper-edge-preview.png`，构建以 `/skin-onboarding-assets/...` 根路径引用（已验证进入 `dist/web/`）。
+
+**2. 文档**
+- `readus/SKIN-THEME.md`：入口表由「4 处」更正为「2 处」+ 收敛说明、新增「首次强制引导层」段、前端实现表与 FAQ 同步。
+- `README.md` 功能特性「皮肤切换」条目同步收敛描述。
+
+**验证**
+- `npm run typecheck` — 0 错误；`npm run build`（web + server）双绿，预览图确认进入 `dist/web/skin-onboarding-assets/`。
+- 真机闭环（Playwright，独立 QA agent + 主理人接管复测）：明澈 / 纸锋 × 亮 / 暗 全组合 PASS——初始禁用、点选启用、落盘 `projectx-skin`/`chosen`/`onboarded`/`data-skin` 全中、确认后进入登录页、预览图 HTTP 200、防重复弹窗、零非 401 浏览器报错；暗色标题对比度 14.68:1。原 QA 脚本曾标记「选中边框与未选同色」，经静置复测确认为 150ms 边框过渡的采样假阳性（非选中态缺陷），非源码 bug。
+
 ## v2.2.0 (2026-08-07) — 知识点难度/区分度 + 考试模式切换（#176 #178）
 
 > 双权限模式落地：晨测（quiz）对教师全量可见，大考（formal）继续走 teacher_role / teacher_permissions 精细权限；成绩分析的知识点面板补齐难度系数 P 与区分度 D，并修复知识点接口响应解包 bug。typecheck / verify:auth / verify:security-critical / 新增 verify:176-178 / build 全绿。

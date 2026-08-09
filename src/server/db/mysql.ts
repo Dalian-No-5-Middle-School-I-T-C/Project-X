@@ -687,6 +687,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       ]
     },
     {
+      version: 33,
+      name: "user-theme-skin",
+      sqls: [
+        `ALTER TABLE users ADD COLUMN theme_skin VARCHAR(32) DEFAULT 'flat'`,
+      ]
+    },
+    {
       version: 34,
       name: "exam-mode-dual-permission",
       sqls: [

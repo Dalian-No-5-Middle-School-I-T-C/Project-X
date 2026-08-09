@@ -94,3 +94,22 @@ result.success = result.pages.size() > 0;
 本报告所述原生缺陷与 `readus/Project-X快速问题处置报告.md` 中的 **PX-COR-009**（"TWAIN 集成存在句柄宽度、缓冲区寿命、事件、双面扫描和成功状态缺陷"，置信度中高）完全一致。逐项比对当前源码，**这些缺陷仍然存在且未被修复**（例如 659 行的 `TW_UINT32 handle`、75/79-85 行的 `WM_USER+1`、150-153 行的 `pEvent=nullptr`、340-344 行的双面分支），因此 PX-COR-009 在源码层面是**开放状态**，不是已关闭事件。
 
 > 验证方式：直接读取 `twain_controller.cpp` / `twain_controller.hpp` / `main.cpp` / `scanner-bridge.vcxproj` / `build-scanner-bridge.bat` 并核对 `resources/native` 实际目录；未运行真实扫描硬件或编译。
+
+## 六、修复记录（2026-08-07，全部完成）
+
+本节 8 项缺陷已于 2026-08-07 全部修复并通过编译验证（VS2026 / MSVC 14.51，x64 + ia32 双架构），TS 层通过 `verify:auth`（54 项）与 `verify:security-critical`（42 项）。
+
+| 编号 | 状态 | 修复内容 |
+| --- | --- | --- |
+| C1 | ✅ 已修复 | `twain_controller.cpp`：删除 `WM_USER+1` 监听，`WndProc` 全量转发消息，`processTwainEvent` 接收真实 `MSG`（`pEvent=&msg`） |
+| C2 | ✅ 已修复 | `captureNativeTransfer`：`TW_UINT32 handle` → `TW_HANDLE handle`（指针宽，x64 不再截断/栈污染） |
+| C3 | ✅ 已修复 | 新构建并提交 `resources/native/win-x64/{scanner-bridge.exe, TWAINDSM.dll, answer-card-recognizer.exe}`（`.gitignore` 已收窄为只忽略 opencv DLL） |
+| C4 | ✅ 已修复 | TWAIN 2.5.1 SDK（`twain.h` + 双架构 `TWAINDSM.dll`）入库 `native/ScannerBridge/third_party/twain-dsm-2.5.1/`；vcxproj 改用 `$(ProjectDir)` 相对路径；build 脚本 DSM 默认路径改仓库内（保留 `TWAIN_DSM_DLL` 覆盖）；另修好 vswhere 发现 MSBuild 的批处理解析 bug（`for /f` 引号剥离 + 块内变量展开时机） |
+| M1 | ✅ 已修复 | `saveDIBToFile`：8bpp/1bpp 从 DIB 颜色表构造 `ColorPalette` 并 `SetPalette` 后再保存 |
+| M2 | ✅ 已修复 | 捕获循环重写：每次 XFERDONE 后立即 ENDXFER 并复位 `m_state`，背面由 `DAT_PENDINGXFERS` 查询驱动（不再干等 30 秒也不抢拍） |
+| M3 | ✅ 已修复 | `success = errorMessage.empty() && pages.size() > 0`；背面捕获失败也写 `errorMessage` |
+| M4 | ✅ 已修复 | ① `POST /scan` 先 `createScanSession` 立即 202，扫描+OCR 后台执行，SSE 订阅时补发终态；② 新增 `POST /scan/:sessionId/cancel` 真正终止 `scanner-bridge.exe`（kill + `taskkill /F /T` 强杀兜底），前端取消按钮接入；③ `main.cpp` 改 `wmain` + `GetCommandLineW` 转 UTF-8，中文路径不再乱码 |
+
+补充勘误：原报告 C4 所述"PlatformToolset=v145（VS2019）"有误——v145 实为 VS2026 的正式工具集名，本机（VS2026 / 18.7）直接编译通过，未改动工具集。
+
+遗留验证项（需真实硬件）：C1/C2/M2 的真机扫描行为（消息泵收事件、双面/多页 ADF、灰度图输出）需接入扫描仪后实测；本次仅完成编译、冒烟（`list`/`--help` 正常）与代码审查。
