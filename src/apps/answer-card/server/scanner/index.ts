@@ -147,36 +147,54 @@ export function createScannerRouter(twainEnabled = true): Router {
     });
 
     // ── Progress Events (SSE) ────────────────────────────
-    router.get("/progress/:sessionId", (req, res) => {
-      const sessionId = safeId(req.params.sessionId);
+    router.get("/progress/:sessionId", async (req, res) => {
+      try {
+        const sessionId = safeId(req.params.sessionId);
 
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no"
-      });
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no"
+        });
 
-      const handler = (event: ScanProgressEvent) => {
-        res.write(`data: ${JSON.stringify(event)}\n\n`);
-        if (event.type === "done" || event.type === "error") {
+        const handler = (event: ScanProgressEvent) => {
+          if (res.writableEnded || res.destroyed) return;
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+          if (event.type === "done" || event.type === "error") {
+            res.end();
+          }
+        };
+
+        // Register listener
+        if (!progressEmitters.has(sessionId)) {
+          progressEmitters.set(sessionId, new Set());
+        }
+        progressEmitters.get(sessionId)!.add(handler);
+
+        req.on("close", () => {
+          const listeners = progressEmitters.get(sessionId);
+          if (listeners) {
+            listeners.delete(handler);
+            if (listeners.size === 0) progressEmitters.delete(sessionId);
+          }
+        });
+
+        // 订阅时若会话已终态（扫描可能在订阅前就完成/失败），补发终态事件
+        const session = await getSession(sessionId);
+        if (res.writableEnded || res.destroyed) return;
+        if (session && (session.status === "completed" || session.status === "error")) {
+          if (session.status === "completed") {
+            res.write(`data: ${JSON.stringify({ sessionId, type: "done", message: "扫描已完成" })}\n\n`);
+          } else {
+            res.write(`data: ${JSON.stringify({ sessionId, type: "error", message: session.error_msg || "扫描出错" })}\n\n`);
+          }
           res.end();
         }
-      };
-
-      // Register listener
-      if (!progressEmitters.has(sessionId)) {
-        progressEmitters.set(sessionId, new Set());
+      } catch (error) {
+        console.error(`[Scanner] SSE progress ${req.params.sessionId} failed:`, error);
+        res.end();
       }
-      progressEmitters.get(sessionId)!.add(handler);
-
-      req.on("close", () => {
-        const listeners = progressEmitters.get(sessionId);
-        if (listeners) {
-          listeners.delete(handler);
-          if (listeners.size === 0) progressEmitters.delete(sessionId);
-        }
-      });
     });
   } else {
     router.all(["/sources", "/scan", "/progress/:sessionId"], (_req, res) => {
