@@ -536,6 +536,7 @@ export function createScannerRouter(): Router {
       };
 
       const handler = (event: ScanProgressEvent) => {
+        if (res.writableEnded || res.destroyed) return;
         res.write(`data: ${JSON.stringify(event)}\n\n`);
         if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
           // 终态即移除自己（不依赖 close 事件的延迟清理），缩小竞态窗口
@@ -556,6 +557,7 @@ export function createScannerRouter(): Router {
 
       // 订阅时若会话已终态（扫描可能在订阅前就完成/失败/被取消），补发终态事件
       const session = await getSession(sessionId);
+      if (res.writableEnded || res.destroyed) return;
       if (session && (session.status === "completed" || session.status === "error" || session.status === "cancelled")) {
         removeHandler();
         if (session.status === "completed") {
