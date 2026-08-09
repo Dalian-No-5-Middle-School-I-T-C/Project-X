@@ -87,7 +87,7 @@ async function main(): Promise<void> {
     );
 
     // 3 名学生：第 1 名成功、第 2 名被触发器强制失败、第 3 名未执行，
-    // 用于验证 savepoint 回滚后所有学生赋分保持原值（无部分更新）。
+    // 用于验证单条 CASE WHEN UPDATE 语句级回滚后所有学生赋分保持原值（无部分更新）。
     const studentIds: number[] = [];
     for (const num of ["S001", "S002", "S003"]) {
       const info = db.prepare(
@@ -182,6 +182,48 @@ async function main(): Promise<void> {
       "赋分中途失败后全部回滚（3 名学生均保持原值，无部分更新）"
     );
     db.exec("DROP TRIGGER review_rank_degrade");
+
+    section("赋分重算：单条 UPDATE 批量赋值（MariaDB 连接池兼容）");
+    // 用记录调用的假 adapter 验证 recalculateAll 只发出「一条」CASE WHEN UPDATE：
+    // 单条语句在任意物理连接上都是语句级原子，不依赖 SAVEPOINT/固定连接，
+    // 因此 MariaDB 连接池不会产生跨连接的部分更新问题。
+    const { AssignedScoreService: AssignedScoreServiceClass } = await import("../src/server/services/AssignedScoreService");
+    const calls: string[] = [];
+    const fakeDb = {
+      dialect: "mariadb",
+      async get(sql: string): Promise<any> {
+        calls.push(`get:${sql.slice(0, 60)}`);
+        if (sql.includes("assigned_formula")) {
+          return { assigned_formula: JSON.stringify({ type: "proportional", enabled: true, params: { minIn: 0, maxIn: 10, minOut: 30, maxOut: 100 } }) };
+        }
+        if (sql.includes("MAX(total_score)")) return { max: 10, min: 10, avg: 10 };
+        return null;
+      },
+      async all(): Promise<any[]> {
+        calls.push("all:scores");
+        return [
+          { student_id: 1, total_score: 10 },
+          { student_id: 2, total_score: 10 },
+          { student_id: 3, total_score: 10 },
+        ];
+      },
+      async run(sql: string): Promise<any> {
+        calls.push(`run:${sql.slice(0, 80)}`);
+        return { lastInsertRowid: 1, changes: 3 };
+      },
+      async exec(): Promise<void> { calls.push("exec"); },
+      async transaction<T>(fn: (db: any) => Promise<T>): Promise<T> { return fn(fakeDb); },
+    };
+    const fakeSvc = new AssignedScoreServiceClass();
+    // getFormula 使用实例的 this.db，测试中整体替换为假 adapter 以模拟池行为
+    (fakeSvc as any).db = fakeDb;
+    const fakeResult = await fakeSvc.recalculateAll(123, fakeDb as any);
+    const updateCalls = calls.filter((c) => c.startsWith("run:"));
+    check(fakeResult.updated === 3 && fakeResult.skipped === 0, "假 adapter 下 3 名学生全部计入更新");
+    check(
+      updateCalls.length === 1 && updateCalls[0].includes("CASE"),
+      "赋分重算仅发出 1 条 CASE WHEN UPDATE（语句级原子，不依赖 SAVEPOINT/固定连接）"
+    );
 
     section("学生搜索：LIKE 通配符按字面量匹配");
     const names = ["张%三", "张四", "李_五", "王\\六"];
