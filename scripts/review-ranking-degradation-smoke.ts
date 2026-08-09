@@ -369,6 +369,16 @@ async function main(): Promise<void> {
       `继续阅卷进度总数取分配份数而非分配行数（实际 ${dashTeacherBody.data?.unfinishedTask?.progress?.total}）`
     );
 
+    section("仲裁人列表（考试带年级时不再因 users.grade_id 报错）");
+    const arbRes = await fetch(`${base}/api/review-arbitration/exams/${examId}/blocks/b1/arbitrators`, {
+      headers: authHeaders(token)
+    });
+    const arbBody = await arbRes.json() as { ok?: boolean; data?: unknown };
+    check(
+      arbRes.status === 200 && arbBody.ok === true && Array.isArray(arbBody.data),
+      "仲裁人候选接口在考试带 grade_id 时返回 200（users.grade_id 修复生效）"
+    );
+
     section("学生搜索：LIKE 通配符按字面量匹配");
     const names = ["张%三", "张四", "李_五", "王\\六"];
     const likeStudentIds: number[] = [];
