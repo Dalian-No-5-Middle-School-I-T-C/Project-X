@@ -343,6 +343,32 @@ async function main(): Promise<void> {
       `已阅数(2) > 分配数(1) 时 pendingCount 收敛为 0（实际 ${row?.pendingCount}）`
     );
 
+    section("仪表盘：按教师可见范围过滤 + 继续阅卷进度");
+    db.prepare(
+      `INSERT INTO review_sessions (teacher_id, exam_id, block_id, current_index)
+       VALUES (?, ?, 'b1', 1)`
+    ).run(
+      teacherId, examId
+    );
+    const dashTeacher = await fetch(`${base}/api/dashboard`, { headers: authHeaders(teacherToken) });
+    const dashTeacherBody = await dashTeacher.json() as {
+      data?: { stats?: { totalExams: number }; unfinishedTask?: { progress?: { total: number } } };
+    };
+    const dashAdmin = await fetch(`${base}/api/dashboard`, { headers: authHeaders(token) });
+    const dashAdminBody = await dashAdmin.json() as { data?: { stats?: { totalExams: number } } };
+    check(
+      dashTeacherBody.data?.stats?.totalExams === 1,
+      `学科教师仪表盘统计仅含可见考试（实际 ${dashTeacherBody.data?.stats?.totalExams}）`
+    );
+    check(
+      dashAdminBody.data?.stats?.totalExams === 2,
+      `管理员仪表盘统计包含全部考试（实际 ${dashAdminBody.data?.stats?.totalExams}）`
+    );
+    check(
+      dashTeacherBody.data?.unfinishedTask?.progress?.total === 1,
+      `继续阅卷进度总数取分配份数而非分配行数（实际 ${dashTeacherBody.data?.unfinishedTask?.progress?.total}）`
+    );
+
     section("学生搜索：LIKE 通配符按字面量匹配");
     const names = ["张%三", "张四", "李_五", "王\\六"];
     const likeStudentIds: number[] = [];

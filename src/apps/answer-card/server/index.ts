@@ -682,8 +682,6 @@ export async function createApp(): Promise<express.Express> {
         scoreDisplayMode: (user as any).score_display_mode ?? "zscore",
         reviewConfidenceThreshold: (user as any).review_confidence_threshold ?? 0.12,
         backgroundOpacity: (user as any).background_opacity ?? 0,
-        requireOriginalPaper: (user as any).require_original_paper ?? 1,
-        highlightMissingPaper: (user as any).highlight_missing_paper ?? 1,
         showTabBar: (user as any).show_tab_bar ?? 0,
       });
     } catch (err) { next(err); }
@@ -697,8 +695,6 @@ export async function createApp(): Promise<express.Express> {
       if (body.scoreDisplayMode !== undefined) { setClauses.push("score_display_mode = ?"); values.push(body.scoreDisplayMode); }
       if (body.reviewConfidenceThreshold !== undefined) { setClauses.push("review_confidence_threshold = ?"); values.push(body.reviewConfidenceThreshold); }
       if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
-      if (body.requireOriginalPaper !== undefined) { setClauses.push("require_original_paper = ?"); values.push(body.requireOriginalPaper ? 1 : 0); }
-      if (body.highlightMissingPaper !== undefined) { setClauses.push("highlight_missing_paper = ?"); values.push(body.highlightMissingPaper ? 1 : 0); }
       if (body.showTabBar !== undefined) { setClauses.push("show_tab_bar = ?"); values.push(body.showTabBar ? 1 : 0); }
       if (setClauses.length > 0) {
         setClauses.push("updated_at = CURRENT_TIMESTAMP");
@@ -1950,6 +1946,21 @@ export async function createApp(): Promise<express.Express> {
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(error);
+    // 上传类错误映射：multer 超限应 413、其它上传错误 400，而不是 500
+    if (error && typeof error === "object" && (error as any)?.name === "MulterError") {
+      const multerCode = String((error as any)?.code ?? "");
+      const isSizeLimit = multerCode === "LIMIT_FILE_SIZE";
+      res.status(isSizeLimit ? 413 : 400).json({
+        code: "UPLOAD_ERROR",
+        message: isSizeLimit ? "上传文件超过大小限制" : `上传错误：${multerCode}`
+      });
+      return;
+    }
+    // JSON 请求体解析失败应 400
+    if (error && typeof error === "object" && (error as any)?.type === "entity.parse.failed") {
+      res.status(400).json({ code: "INVALID_JSON", message: "请求体不是有效的 JSON" });
+      return;
+    }
     const typed = error as { status?: unknown; code?: unknown; message?: unknown };
     const status = typeof typed?.status === "number" && typed.status >= 400 && typed.status < 600 ? typed.status : 500;
     const code = typeof typed?.code === "string" ? typed.code : ApiError.INTERNAL;
