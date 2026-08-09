@@ -20,11 +20,11 @@ export function BeianFooter({ className = "", floating = false }: BeianFooterPro
     : "static";
   return (
     <div className={`${base} ${position} ${className}`.trim()}>
-      <a className="inline-flex items-center gap-1 transition-colors hover:text-primary" href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer">
+      <a className="inline-flex items-center gap-1 text-muted-foreground no-underline opacity-75" href="https://beian.miit.gov.cn/" target="_blank" rel="noreferrer">
         辽ICP备2026013340号
       </a>
       <a
-        className="inline-flex items-center gap-1 transition-colors hover:text-primary"
+        className="inline-flex items-center gap-1 text-muted-foreground no-underline opacity-75"
         href="https://beian.mps.gov.cn/#/query/webSearch?code=21020402001085"
         rel="noreferrer"
         target="_blank"

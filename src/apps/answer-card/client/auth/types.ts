@@ -11,6 +11,7 @@ export interface AuthUser {
   email?: string | null;
   last_login_at?: string | null;
   show_tab_bar?: number;          // v1.9.0: 0=隐藏 1=显示
+  themeSkin?: string;             // v2.1.0: 前端皮肤 ID（'flat'=明澈 Flat 2.0）
   passwordChangeRequired?: boolean;
   permissions: string[];
 }

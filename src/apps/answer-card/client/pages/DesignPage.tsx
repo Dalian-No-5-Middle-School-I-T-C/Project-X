@@ -97,15 +97,23 @@ export function DesignPage() {
 
   const createAndEnter = async () => {
     if (!canDesign) return;
-    await createCard({
-      title: "未命名答题卡",
-      subject: "",
-      subjectLabel: "",
-      examDate: "",
-      examAction: "none",
-      paperSize: "A4",
-    });
-    setDesignScreen("editor");
+    // 快捷创建「未命名答题卡」：subject/examDate 为后端必填，
+    // 使用「其他」科目（无科目模板 → 空白卡）与当天日期作为默认值。
+    const today = new Date();
+    const examDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+    try {
+      await createCard({
+        title: "未命名答题卡",
+        subject: "other",
+        subjectLabel: "",
+        examDate,
+        examAction: "none",
+        paperSize: "A4",
+      });
+      setDesignScreen("editor");
+    } catch (err) {
+      alert(`创建答题卡失败：${err instanceof Error ? err.message : String(err)}`);
+    }
   };
 
   const handleDeleteCard = async (id: string) => {

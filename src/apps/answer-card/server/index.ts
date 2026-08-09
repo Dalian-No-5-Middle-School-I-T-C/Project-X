@@ -683,6 +683,7 @@ export async function createApp(): Promise<express.Express> {
         reviewConfidenceThreshold: (user as any).review_confidence_threshold ?? 0.12,
         backgroundOpacity: (user as any).background_opacity ?? 0,
         showTabBar: (user as any).show_tab_bar ?? 0,
+        themeSkin: (user as any).theme_skin ?? "paper-edge",
       });
     } catch (err) { next(err); }
   });
@@ -696,6 +697,7 @@ export async function createApp(): Promise<express.Express> {
       if (body.reviewConfidenceThreshold !== undefined) { setClauses.push("review_confidence_threshold = ?"); values.push(body.reviewConfidenceThreshold); }
       if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
       if (body.showTabBar !== undefined) { setClauses.push("show_tab_bar = ?"); values.push(body.showTabBar ? 1 : 0); }
+      if (body.themeSkin !== undefined) { setClauses.push("theme_skin = ?"); values.push(body.themeSkin); }
       if (setClauses.length > 0) {
         setClauses.push("updated_at = CURRENT_TIMESTAMP");
         values.push(userId);

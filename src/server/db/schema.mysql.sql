@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS users (
     require_original_paper TINYINT DEFAULT 1,  -- v1.8.0
     highlight_missing_paper TINYINT DEFAULT 1, -- v1.8.0
     is_active        TINYINT DEFAULT 1,
+    show_tab_bar     TINYINT DEFAULT 0,             -- v1.9.0: 底部导航栏开关（MySQL 版此前缺失，与 mariadb 对齐补录）
+    theme_skin       VARCHAR(32) DEFAULT 'paper-edge', -- v2.1.0: 前端皮肤 ID；v2.3.0 默认改为 'paper-edge'（纸锋；'flat'=明澈 可选）
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

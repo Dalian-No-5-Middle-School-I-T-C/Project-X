@@ -95,7 +95,7 @@
 - UI-1 / UI-4：**随组件删除而失效**（非修复）——`OnlineReviewPanel` / `CropImageViewer` 属 P6 T01 死代码 10 件之一，已随组件删除（commit `c92f6f4` 前工作树），无前端可触发面，关闭。
 - UI-7：**已修复且 T03 守恒**——400ms 防抖逻辑在 T03a AccountMenu 重做中零改动保留（v1.9.6 修复持续生效），关闭。
 - UI-2 / UI-3 / UI-5 / UI-6：**已关闭（P6 完成）**——对应组件已 v2 化迁移（`components/ui/v2/*`），遗留类归零；原风险为低/中等级展示性问题，随 UI 重写关闭。
-- 决策记录：死代码 = **10 件**（天梯 3 件已恢复接线，见 docs/system_design.md P6-Rev R1）。
+- 决策记录：死代码 = **10 件**（天梯 3 件已恢复接线，见 readus/CHANGELOG.md v2.0.0「P6 清理收尾」）。
 
 ---
 

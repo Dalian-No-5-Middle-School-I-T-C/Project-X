@@ -57,10 +57,11 @@ export function GlobalSettingsPage({ onBack }: Props) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [messageTone, setMessageTone] = useState<"success" | "error">("error");
-  const [railAutoExpand, setRailAutoExpand] = useState(true);
+  const [railAutoExpand, setRailAutoExpand] = useState(false);
 
   useEffect(() => {
-    try { setRailAutoExpand(localStorage.getItem("projectx-rail-auto-expand") !== "false"); } catch { /* ignore */ }
+    // v2.1.0: 自动展开默认关闭（与 App.tsx 默认值保持一致）
+    try { setRailAutoExpand(localStorage.getItem("projectx-rail-auto-expand") === "true"); } catch { /* ignore */ }
   }, []);
 
   const toggleRailAutoExpand = () => {
@@ -391,12 +392,16 @@ function BandEditor({ title, desc, bands, onChange }: { title: string; desc: str
   );
 }
 
+/** var(--px-xxx) 语义色 → color input 可用的 hex。
+ *  运行时读 computed value（皮肤感知：paper-edge 下 success=亮蓝、warning=墨，而非 flat 基准旧色）；
+ *  读不到时回退 tokens（明澈基准）。 */
 function toColorInput(value: string): string {
-  const semanticColors: Record<string, string> = {
-    "var(--px-danger-bg)": tokens.danger,
-    "var(--px-warning-bg)": tokens.warning,
-    "var(--px-amber-700)": tokens.amber700,
-    "var(--px-success-bg)": tokens.success,
-  };
-  return semanticColors[value] ?? (/^#[0-9a-f]{6}$/i.test(value) ? value : tokens.danger);
+  if (/^#[0-9a-f]{6}$/i.test(value)) return value;
+  const m = /^var\((--[^)]+)\)$/.exec(value);
+  const raw = m ? getComputedStyle(document.documentElement).getPropertyValue(m[1]).trim() : "";
+  const rgb = raw.match(/\d+(?:\.\d+)?/g)?.slice(0, 3).map(Number);
+  if (rgb && rgb.length === 3 && rgb.every((n) => n >= 0 && n <= 255)) {
+    return `#${rgb.map((n) => Math.round(n).toString(16).padStart(2, "0")).join("")}`;
+  }
+  return tokens.danger;
 }

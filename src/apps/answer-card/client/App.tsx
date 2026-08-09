@@ -22,10 +22,11 @@ import {
   Save,
   Search,
   Settings,
-  Sun,
+  UserCog,
   BookOpen,
   Home,
   SquarePen,
+  Sun,
   Upload,
   Users,
   AlertTriangle,
@@ -41,6 +42,7 @@ import { cn } from "./lib/utils";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
+import { DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
 import { BeianFooter } from "./components/BeianFooter";
 import { NotFound } from "./components/NotFound";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
@@ -468,15 +470,26 @@ function App() {
       return "light";
     }
   });
+  // v2.1.0: 皮肤 = 风格维度（与明暗正交）。'flat'=明澈 Flat 2.0（默认），
+  // 未来新增皮肤在 tokens.css 加 [data-skin="xxx"] 覆盖块 + SkinSwitcher 注册表登记。
+  const [skin, setSkin] = useState<string>(() => {
+    try {
+      return localStorage.getItem("projectx-skin") || DEFAULT_SKIN;
+    } catch {
+      return DEFAULT_SKIN;
+    }
+  });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [railCollapsed, setRailCollapsed] = useState(() => {
     try { return localStorage.getItem("projectx-rail-collapsed") === "true"; } catch { return false; }
   });
   const [railExpandedOnHover, setRailExpandedOnHover] = useState(false);
   const [railAutoExpand, setRailAutoExpand] = useState(() => {
-    try { return localStorage.getItem("projectx-rail-auto-expand") !== "false"; } catch { return true; }
+    // v2.1.0: 自动展开默认关闭（仅显式开启过才为 true），避免鼠标扫过侧栏边缘即展开的干扰
+    try { return localStorage.getItem("projectx-rail-auto-expand") === "true"; } catch { return false; }
   });
   const railCollapseTimerRef = useRef<number | null>(null);
+  const railExpandTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     try {
@@ -501,6 +514,7 @@ function App() {
 
   useEffect(() => () => {
     if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
+    if (railExpandTimerRef.current !== null) window.clearTimeout(railExpandTimerRef.current);
   }, []);
 
   const layout = useMemo<LayoutDocument | null>(() => (card ? buildLayout(card) : null), [card]);
@@ -531,6 +545,10 @@ function App() {
   const canManageGlobal = variantAllows("global-settings") && hasPermission(PERMISSIONS.SYSTEM_MANAGE);
   const canOpenMode = useCallback(
     (candidate: AppMode) => {
+      // 信息页不在 allowedModes 主导航内，按路由守卫同样的规则放行：
+      // guide/sponsor 与 home 同门槛（非学生端），permissions 与 account 同门槛（账号管理权限）。
+      if (candidate === "guide" || candidate === "sponsor") return appVariant.id !== "student";
+      if (candidate === "permissions") return canManageAccounts;
       if (!appVariant.allowedModes.includes(candidate)) return false;
       if (candidate === "home") return appVariant.id !== "student";
       if (candidate === "scores") return appVariant.id === "student" || hasPermission(PERMISSIONS.SCORE_READ);
@@ -639,6 +657,36 @@ function App() {
       .catch(() => {});
   }, [user?.id]);
 
+  // v2.1.0: 登录后皮肤偏好同步（v2.3.0 语义：账号为权威，本会话显式选择优先）：
+  // - sessionStorage 有「会话内显式选择」标记（登录页/设置页切换过皮肤，含默认值）
+  //   → 本地优先，由下方「皮肤变更→PATCH」effect 同步到账号（登录页选择登录后保留）；
+  // - 无标记（未显式选择过）→ 应用账号 themeSkin（换设备恢复账号偏好；
+  //   老账号 theme_skin='flat' 保持 flat，不被新默认覆盖）。
+  // 注：登录响应/me 的 theme_skin 已由 AuthContext 归一化为 themeSkin，此处不再兼容 snake_case。
+  useEffect(() => {
+    if (!user) return;
+    const serverSkin = user.themeSkin || DEFAULT_SKIN;
+    let chosen: string | null = null;
+    try { chosen = sessionStorage.getItem(SKIN_CHOSEN_KEY); } catch { /* ignore */ }
+    if (chosen) {
+      setSkin(chosen);
+    } else {
+      setSkin(serverSkin);
+    }
+  }, [user?.id, user?.themeSkin]);
+
+  // v2.1.0: 皮肤变更 → 同步到账号（已登录时）。fire-and-forget，离线/失败静默。
+  useEffect(() => {
+    if (!user) return;
+    const serverSkin = user.themeSkin || DEFAULT_SKIN;
+    if (skin === serverSkin) return;
+    void fetchJson("/api/users/me/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ themeSkin: skin }),
+    }).catch(() => { /* 皮肤偏好同步失败不打扰用户 */ });
+  }, [skin, user?.id, user?.themeSkin]);
+
   // 背景图：body::after 半透明浮层 (pointer-events:none 不挡交互)
   useEffect(() => {
     if (showBg > 0) {
@@ -662,6 +710,14 @@ function App() {
       /* private browsing / storage disabled */
     }
   }, [theme]);
+
+  // 皮肤（风格维度）同步：始终落盘 + 设 data-skin（默认皮肤 paper-edge 的 CSS 覆盖块
+  // 依赖 data-skin 属性；「显式选择」语义由 SkinSwitcher 记 sessionStorage，
+  // 登录同步 effect 据此区分显式选择与默认值落盘）。
+  useEffect(() => {
+    document.documentElement.dataset.skin = skin;
+    try { localStorage.setItem("projectx-skin", skin); } catch { /* private browsing / storage disabled */ }
+  }, [skin]);
 
   useEffect(() => {
     return () => {
@@ -1511,7 +1567,7 @@ function App() {
     }
     // 个人账号设置：所有已登录用户可访问（与「账号管理/全局设置」管理区相邻）
     if (canOpenMode("account-settings")) {
-      items.push({ type: "item", id: "account-settings", icon: <Settings />, label: "账号设置" });
+      items.push({ type: "item", id: "account-settings", icon: <UserCog />, label: "账号设置" });
     }
     if (canManageAccounts || canManageGlobal) {
       items.push({ type: "group", label: "管理" });
@@ -1657,6 +1713,8 @@ function App() {
     setCardDeleteConflict,
     theme,
     setTheme,
+    skin,
+    setSkin,
     showBg,
     setShowBg,
     drawerOpen,
@@ -1766,10 +1824,17 @@ function App() {
           className="relative"
           onMouseEnter={() => {
             if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
-             if (railCollapsed && railAutoExpand) setRailExpandedOnHover(true);
+            if (railCollapsed && railAutoExpand) {
+              // 延时展开（200ms）：鼠标短暂扫过侧栏边缘不触发，停留片刻才展开
+              railExpandTimerRef.current = window.setTimeout(() => setRailExpandedOnHover(true), 200);
+            }
           }}
           onMouseLeave={() => {
-             if (!railCollapsed || !railAutoExpand) return;
+            if (railExpandTimerRef.current !== null) {
+              window.clearTimeout(railExpandTimerRef.current);
+              railExpandTimerRef.current = null;
+            }
+            if (!railCollapsed || !railAutoExpand) return;
             if (railCollapseTimerRef.current !== null) window.clearTimeout(railCollapseTimerRef.current);
             railCollapseTimerRef.current = window.setTimeout(() => setRailExpandedOnHover(false), 120);
           }}
@@ -1778,8 +1843,8 @@ function App() {
             variant="outline"
             size="icon-sm"
             type="button"
-            aria-label={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
-            title={railCollapsed ? "展开侧边栏" : "收起侧边栏"}
+            aria-label={effectiveRailCollapsed ? "展开侧边栏" : "收起侧边栏"}
+            title={effectiveRailCollapsed ? "展开侧边栏" : "收起侧边栏"}
             className="absolute -right-3 top-1/2 z-50 -translate-y-1/2 rounded-full bg-card shadow-2"
             onClick={() => {
               setRailCollapsed((collapsed) => !collapsed);
@@ -1811,14 +1876,21 @@ function App() {
             )}
           </AppRailNav>
           <AppRailFooter className={effectiveRailCollapsed ? "flex-col" : undefined}>
+            {/* v2.1.0 前常驻的暗色模式一键按钮：原被皮肤菜单取代，本版恢复。
+                明暗为设备级偏好（data-theme + localStorage projectx-theme），与皮肤正交。 */}
             <button
               type="button"
-              onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
-              title={theme === "light" ? "切换为夜间模式" : "切换为日间模式"}
-              aria-label="切换主题"
-              className="inline-flex h-control-md w-control-md items-center justify-center rounded-md text-secondary-foreground transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground"
+              aria-label={theme === "dark" ? "切换到亮色模式" : "切换到暗色模式"}
+              title={theme === "dark" ? "切换为亮色模式" : "切换为暗色模式"}
+              onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+              className={cn(
+                "inline-flex items-center justify-center rounded-md text-secondary-foreground",
+                "transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground",
+                "h-control-md w-control-md",
+                effectiveRailCollapsed ? "self-center" : undefined,
+              )}
             >
-              {theme === "light" ? <Sun size={18} /> : <Moon size={18} />}
+              {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
             <AccountMenu
               compact={effectiveRailCollapsed}
@@ -1846,15 +1918,20 @@ function App() {
             actions={
               <div className="flex items-center gap-2">
                 {designActions}
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="hidden lg:inline-flex"
-                  onClick={() => setTheme((t) => (t === "light" ? "dark" : "light"))}
-                  aria-label="切换主题"
+                {/* 暗色模式一键按钮（与侧栏底部同源，≥lg 屏显示；皮肤切换已收敛至账户设置） */}
+                <button
+                  type="button"
+                  aria-label={theme === "dark" ? "切换到亮色模式" : "切换到暗色模式"}
+                  title={theme === "dark" ? "切换为亮色模式" : "切换为暗色模式"}
+                  onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+                  className={cn(
+                    "inline-flex size-8 items-center justify-center rounded-md text-secondary-foreground",
+                    "transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground",
+                    "hidden lg:inline-flex",
+                  )}
                 >
-                  {theme === "light" ? <Sun size={18} /> : <Moon size={18} />}
-                </Button>
+                  {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+                </button>
                 <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
                   <button
                     type="button"

@@ -208,6 +208,10 @@ export type WorkspaceValue = {
   // ── 主题 / 背景 ──
   theme: "light" | "dark";
   setTheme: Dispatch<SetStateAction<"light" | "dark">>;
+  // v2.1.0: 皮肤 = 风格维度（与明暗正交）。'flat'=明澈 Flat 2.0（默认），
+  // 未来新增皮肤在 tokens.css 加 [data-skin="xxx"] 覆盖块后在此登记即可。
+  skin: string;
+  setSkin: Dispatch<SetStateAction<string>>;
   showBg: number;
   setShowBg: Dispatch<SetStateAction<number>>;
 
