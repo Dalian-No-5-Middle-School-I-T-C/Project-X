@@ -225,6 +225,71 @@ async function main(): Promise<void> {
       "赋分重算仅发出 1 条 CASE WHEN UPDATE（语句级原子，不依赖 SAVEPOINT/固定连接）"
     );
 
+    section("Web 模式（PROJECTX_ENABLE_SCANNER=false）：图片路由可用、TWAIN 关闭");
+    const imgRes = await fetch(`${base}/api/scanner/grading-image/review-card/nope.png`, {
+      headers: authHeaders(token)
+    });
+    const imgBody = await imgRes.json() as { message?: string };
+    check(
+      imgRes.status === 404 && imgBody.message === "图片不存在",
+      "grading-image 纯文件路由在 Web 模式仍挂载（成绩/改分页整页预览不 404）"
+    );
+    const twainRes = await fetch(`${base}/api/scanner/sources`, { headers: authHeaders(token) });
+    const twainBody = await twainRes.json() as { message?: string };
+    check(
+      twainRes.status === 404 && String(twainBody.message).includes("disabled"),
+      "TWAIN 路由（/sources）在 Web 模式返回 404 disabled"
+    );
+
+    section("成绩趋势按教师可见范围过滤");
+    db.prepare("INSERT INTO grades (id, name, sort_order) VALUES (30, '高三', 0)").run();
+    db.prepare("INSERT INTO classes (id, grade_id, name, sort_order) VALUES (101, 30, '一班', 0)").run();
+    db.prepare("INSERT INTO classes (id, grade_id, name, sort_order) VALUES (102, 30, '二班', 1)").run();
+    for (const sid of studentIds) {
+      db.prepare("INSERT INTO class_students (class_id, student_id) VALUES (101, ?)").run(sid);
+    }
+    const teacherInfo = db.prepare(
+      `INSERT INTO users (username, name, role_id, subject, teacher_role, is_active, password_hash)
+       VALUES ('teacher1', '化学老师', 2, '化学', 'subject_teacher', 1, ?)`
+    ).run(await hashPassword("TeacherTest-2026!"));
+    const teacherId = Number(teacherInfo.lastInsertRowid);
+    db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, 101, '化学')").run(teacherId);
+    db.prepare("UPDATE exams SET class_id = 101, grade_id = 30 WHERE id = ?").run(examId);
+    const exam2 = db.prepare(
+      `INSERT INTO exams (name, card_id, subject, class_id, grade_id, status, created_by)
+       VALUES ('趋势不可见考试', 'review-card', '化学', 102, 30, 'active', ?)`
+    ).run(admin.id);
+    const exam2Id = Number(exam2.lastInsertRowid);
+    const s4 = db.prepare(
+      `INSERT INTO users (username, name, role_id, student_number, is_active, password_hash)
+       VALUES ('S004', '四号生', 3, 'S004', 1, '')`
+    ).run();
+    const s4Id = Number(s4.lastInsertRowid);
+    db.prepare("INSERT INTO class_students (class_id, student_id) VALUES (102, ?)").run(s4Id);
+    db.prepare(
+      `INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score)
+       VALUES (?, ?, 0, 0, 8)`
+    ).run(exam2Id, s4Id);
+    const teacherLogin = await authService.login("teacher1", "TeacherTest-2026!");
+    if (!teacherLogin.token) throw new Error("教师登录失败");
+    const teacherToken = teacherLogin.token;
+    const teacherTrend = await fetch(`${base}/api/analysis/trends?subject=${encodeURIComponent("化学")}`, {
+      headers: authHeaders(teacherToken)
+    });
+    const teacherTrendBody = await teacherTrend.json() as Array<{ examId: number }>;
+    const adminTrend = await fetch(`${base}/api/analysis/trends?subject=${encodeURIComponent("化学")}`, {
+      headers: authHeaders(token)
+    });
+    const adminTrendBody = await adminTrend.json() as Array<{ examId: number }>;
+    check(
+      teacherTrendBody.length === 1 && teacherTrendBody[0].examId === examId,
+      "学科教师趋势仅包含其可见考试（跨班级考试被过滤）"
+    );
+    check(
+      adminTrendBody.some((e) => e.examId === examId) && adminTrendBody.some((e) => e.examId === exam2Id),
+      "管理员趋势包含全部考试"
+    );
+
     section("学生搜索：LIKE 通配符按字面量匹配");
     const names = ["张%三", "张四", "李_五", "王\\六"];
     const likeStudentIds: number[] = [];
@@ -254,6 +319,18 @@ async function main(): Promise<void> {
       const body = await res.json() as Array<{ name: string }>;
       check(res.status === 200 && body.length === expected, `搜索「${q}」返回 ${expected} 条（LIKE 字面量）`);
     }
+
+    section("登录账号维度限速");
+    let got429 = false;
+    for (let i = 0; i < 12; i++) {
+      const res = await fetch(`${base}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier: "teacher1", password: "wrong-pass" })
+      });
+      if (res.status === 429) { got429 = true; break; }
+    }
+    check(got429, "同一账号连续错误登录超过账号阈值后返回 429（轮换 IP 也无法绕过账号维度）");
 
     console.log(`\nreview-ranking-degradation：${passed} 通过，${failures.length} 失败`);
     if (failures.length > 0) {

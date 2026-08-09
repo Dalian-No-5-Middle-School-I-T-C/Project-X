@@ -29,7 +29,7 @@ function readServerVersion(): string {
   return "0.0.0";
 }
 const SERVER_VERSION = readServerVersion();
-import { ensureDefaultAdmin, getDatabase, getMysqlDb, buildUpsertSQL, initializeDatabase, initMariadbSchema, healthCheck, resolveProjectDbPath, type DbAdapter } from "../../../server/db";
+import { ensureDefaultAdmin, getDatabase, getMysqlDb, buildUpsertSQL, initializeDatabase, initMariadbSchema, healthCheck, resolveProjectDbPath, detectDialect, type DbAdapter } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
@@ -353,11 +353,15 @@ function emitGradingProgress(event: GradingProgressEvent): void {
  * Fire-and-forget — errors are logged but never thrown to the caller.
  */
 async function autoBackupOnExamClose(examId: number): Promise<void> {
+  // MariaDB 模式下主数据在远端，本地不存在可备份的 SQLite 主库；
+  // 直接跳过，避免 getDatabase() 误建空库并生成无意义备份。
+  if (detectDialect() === "mariadb") return;
   const backupDir = path.join(dataDir, "backups");
   await mkdir(backupDir, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   // 以真实数据库路径为准（支持自定义 PROJECTX_DB_PATH，不能靠 dataDir/.. 推算）
   const src = resolveProjectDbPath();
+  if (!existsSync(src)) return;
   const dst = path.join(backupDir, `projectx_exam${examId}_${ts}.db`);
   try {
     // WAL 模式下直接 copyFile 主库会丢失未 checkpoint 的最近写入；
@@ -1902,13 +1906,9 @@ export async function createApp(): Promise<express.Express> {
   });
 
 
-  if (scannerEnabled()) {
-    app.use("/api/scanner", scannerAuth, createScannerRouter());
-  } else {
-    app.use("/api/scanner", (_req, res) => {
-      res.status(404).json({ message: "Scanner is disabled in this Project-X package." });
-    });
-  }
+  // TWAIN 扫描仅在显式启用时开放；答题卡图片预览等纯文件/存储路由始终可用
+  // （Web 部署下成绩详情/改分页的整页预览依赖它们）。
+  app.use("/api/scanner", scannerAuth, createScannerRouter(scannerEnabled()));
 
   app.use("/api", (_req, res) => {
     res.status(404).json({ code: ApiError.NOT_FOUND, message: "API route not found" });
