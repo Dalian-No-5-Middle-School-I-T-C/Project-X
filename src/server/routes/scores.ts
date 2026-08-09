@@ -8,6 +8,7 @@ import { PERMISSIONS, ROLE_IDS } from "../auth/permissions";
 import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
 import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
+import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 
 /**
  * 成绩查询 API
@@ -106,16 +107,40 @@ router.get("/me", async (req: Request, res: Response) => {
   res.json({ studentId: req.user!.id, name: req.user!.name, scores });
 });
 
-/** GET /api/scores/me/exams/:examId — 当前用户某场考试的逐题明细 */
+/** GET /api/scores/me/exams/:examId — 当前用户某场考试的逐题明细（含班级均分与原卷图块） */
 router.get("/me/exams/:examId", async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   if (!(await scoreRepo.hasScore(req.user!.id, examId))) {
     res.status(404).json({ message: "未找到你在该场考试的成绩" });
     return;
   }
+
+  // 班级逐题均分 + 原卷图块：仅返回当前用户自己的数据，
+  // 避免为小程序放开 /api/exams 教师接口造成越权（IDOR）
+  const db = getMysqlDb();
+  const classQuestionStats: Record<number, { avgScore: number; maxScore: number; count: number }> = {};
+  const classId = await resolveStudentPrimaryClassId(req.user!.id);
+  if (classId) {
+    const classAvgs = await db.all(
+      `SELECT qs.question_number, qs.score_type, ROUND(AVG(qs.score), 1) as avgScore, MAX(qs.max_score) as maxScore, COUNT(*) as cnt
+       FROM question_scores qs
+       JOIN class_students cs ON cs.student_id = qs.student_id
+       WHERE qs.exam_id = ? AND cs.class_id = ?
+       GROUP BY qs.question_number, qs.score_type
+       ORDER BY qs.question_number`,
+      examId, classId
+    ) as Array<{ question_number: number; score_type: string; avgScore: number; maxScore: number; cnt: number }>;
+    for (const row of classAvgs) {
+      classQuestionStats[row.question_number] = { avgScore: row.avgScore, maxScore: row.maxScore, count: row.cnt };
+    }
+  }
+  const answerBlocks = await listAnswerBlockCropsForStudent(examId, req.user!.id, db);
+
   res.json({
     examId,
-    questions: await scoreRepo.getStudentQuestionScores(req.user!.id, examId)
+    questions: await scoreRepo.getStudentQuestionScores(req.user!.id, examId),
+    classQuestionStats,
+    answerBlocks
   });
 });
 
