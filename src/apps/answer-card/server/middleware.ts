@@ -169,7 +169,9 @@ export async function requireExamAccess(req: express.Request, res: express.Respo
   }
 
   if (req.user.role_name === "student") {
-    if (req.method !== "POST" || !req.originalUrl.includes("/ai-analysis")) {
+    // 学生仅允许读取自己参加了的考试（GET）或提交本场 AI 分析（POST）；
+    // 写操作（改分/编辑/代查他人）一律拒绝
+    if (req.method !== "GET" && !(req.method === "POST" && req.originalUrl.includes("/ai-analysis"))) {
       res.status(403).json({ message: "权限不足" });
       return;
     }

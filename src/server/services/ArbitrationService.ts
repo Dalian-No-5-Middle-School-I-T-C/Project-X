@@ -277,7 +277,9 @@ export async function getEligibleArbitrators(
      FROM users u
      WHERE u.role_id = 2
        ${exam.subject ? "AND u.subject = ?" : ""}
-       ${exam.grade_id !== null ? "AND u.grade_id = ?" : ""}
+       ${exam.grade_id !== null
+         ? "AND (NOT EXISTS (SELECT 1 FROM teacher_classes tc WHERE tc.teacher_id = u.id) OR EXISTS (SELECT 1 FROM teacher_classes tc2 JOIN classes c2 ON c2.id = tc2.class_id WHERE tc2.teacher_id = u.id AND c2.grade_id = ?))"
+         : ""}
        AND u.id NOT IN (SELECT teacher_id FROM review_assignments WHERE exam_id = ? AND block_id = ?)
      ORDER BY u.name`,
     ...(exam.subject ? [exam.subject] : []),

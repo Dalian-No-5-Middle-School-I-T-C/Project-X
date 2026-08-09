@@ -191,7 +191,7 @@
 | 文档 | 说明 |
 |------|------|
 | [readus/ARCHITECTURE.md](./readus/ARCHITECTURE.md) | 系统总体架构、分层、数据流、原生模块与构建部署 |
-| [docs/system_design.md](./docs/system_design.md) | P6 系统设计（含类图 / 时序图 mermaid） |
+| [design/EXECUTION-PLAN.md](./design/EXECUTION-PLAN.md) | P6 设计执行计划 |
 | [design/DESIGN-SYSTEM.md](./design/DESIGN-SYSTEM.md) | Flat 2.0「明澈 Clarity」美学规格（令牌架构、组件规格、设计原则） |
 | [design/tokens/tokens.css](./design/tokens/tokens.css) | 主题令牌事实源（L1 原始 / L2 语义 / L3 组件） |
 | [design/demo/demo.html](./design/demo/demo.html) | 交互 Demo（8 视图 × 亮暗双主题），视觉验收基准 |

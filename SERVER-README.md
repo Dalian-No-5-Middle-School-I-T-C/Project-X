@@ -69,9 +69,10 @@ git pull origin main
 # 3. 恢复本地修改
 git stash pop
 
-# 4. 同步前端文件到 dist/web
-cp Grade-Analysis-System-mobile.html dist/web/Grade-Analysis-System-mobile.html
-cp Grade-Analysis-System-mobile.html dist/web/index.html
+# 4. 构建并同步前端到 dist/web
+npm run build:web
+# 注意：请勿再用根目录的 Grade-Analysis-System-mobile.html 覆盖 dist/web/index.html；
+# React 应用入口由 Vite 构建生成，该旧版单页仅用于微信小程序独立部署。
 
 # 5. 重启后端（先停止旧进程，再启动新进程）
 kill <旧后端PID>
