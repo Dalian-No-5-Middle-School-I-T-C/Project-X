@@ -475,11 +475,16 @@ export async function submitReviewCropScores(params: {
   // 不把“分数已落库但排名未更新”伪装成完全成功。
   let rankingsRecalculated = true;
   let rankingError: string | undefined;
+  let assignedScoresRecalculated = true;
   try {
-    await recomputeExamRankings(db, params.examId);
+    const recalc = await recomputeExamRankings(db, params.examId);
+    rankingsRecalculated = recalc.rankingsRecalculated;
+    assignedScoresRecalculated = recalc.assignedScoresRecalculated;
+    if (!recalc.assignedScoresRecalculated) rankingError = recalc.assignedScoreError;
   } catch (err) {
     rankingsRecalculated = false;
     rankingError = err instanceof Error ? err.message : String(err);
+    assignedScoresRecalculated = false;
     console.error(`[Review] 排名重算失败 exam=${params.examId} crop=${params.cropId}:`, err);
   }
 
@@ -493,7 +498,9 @@ export async function submitReviewCropScores(params: {
     reviewRound: finalReviewRound,
     finalScore,
     rankingsRecalculated,
-    rankingError
+    rankingError,
+    assignedScoresRecalculated,
+    assignedScoreError: assignedScoresRecalculated ? undefined : rankingError
   };
 }
 

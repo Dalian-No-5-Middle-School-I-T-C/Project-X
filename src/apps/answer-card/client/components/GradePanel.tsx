@@ -185,6 +185,9 @@ export function GradePanel({ examId, blockId, teacherId, onBack }: Props) {
         if (res.rankingsRecalculated === false) {
           setError(`分数已保存，但排名/赋分重算失败：${res.rankingError ?? "未知错误"}，请稍后联系管理员重算`);
           setErrorTone("error");
+        } else if (res.assignedScoresRecalculated === false) {
+          setError(`分数已保存，但赋分重算失败：${res.assignedScoreError ?? "未知错误"}，请稍后联系管理员重算`);
+          setErrorTone("error");
         }
         if (res.disputed) {
           setError(`该卷已标记为争议：${res.disputeReason}`);

@@ -30,13 +30,25 @@ export function rankPercentile(rank: number, total: number): number {
 /**
  * 重算某场考试所有学生的 rank / percentile，并触发赋分重算。
  * 使用 competitionRank，确保与全局排名逻辑一致。
+ * 返回分项结果：排名失败会直接抛出（由调用方决定如何反馈）；
+ * 赋分失败不再静默吞掉，通过 assignedScoresRecalculated / assignedScoreError 上报。
  */
-export async function recomputeExamRankings(db: DbAdapter, examId: number): Promise<void> {
+export interface RankingRecalcResult {
+  /** 排名/百分位是否成功更新（失败时 recomputeExamRankings 会抛出） */
+  rankingsRecalculated: boolean;
+  /** 赋分是否成功重算 */
+  assignedScoresRecalculated: boolean;
+  assignedScoreError?: string;
+}
+
+export async function recomputeExamRankings(db: DbAdapter, examId: number): Promise<RankingRecalcResult> {
   const allStudents = await db.all(
     "SELECT id, total_score FROM student_scores WHERE exam_id = ? ORDER BY total_score DESC",
     examId
   ) as Array<{ id: number; total_score: number }>;
-  if (allStudents.length === 0) return;
+  if (allStudents.length === 0) {
+    return { rankingsRecalculated: true, assignedScoresRecalculated: true };
+  }
 
   const n = allStudents.length;
   const ranks = new Map<number, number>();
@@ -56,10 +68,15 @@ export async function recomputeExamRankings(db: DbAdapter, examId: number): Prom
     );
   }
 
+  let assignedScoresRecalculated = true;
+  let assignedScoreError: string | undefined;
   try {
     const assignedService = new AssignedScoreService();
     await assignedService.recalculateAll(examId, db);
-  } catch {
-    // 无赋分配置或重算失败，静默跳过
+  } catch (err) {
+    // 赋分失败不再静默：返回分项结果供调用方反馈（rankingsRecalculated 仍为 true）
+    assignedScoresRecalculated = false;
+    assignedScoreError = err instanceof Error ? err.message : String(err);
   }
+  return { rankingsRecalculated: true, assignedScoresRecalculated, assignedScoreError };
 }

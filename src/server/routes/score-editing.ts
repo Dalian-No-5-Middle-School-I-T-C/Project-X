@@ -41,7 +41,7 @@ router.get("/:examId/students/search", requireExamAccess, async (req: Request, r
     SELECT DISTINCT u.id, u.name, u.student_number
     FROM student_scores ss
     JOIN users u ON u.id = ss.student_id
-    WHERE ss.exam_id = ? AND (u.student_number = ? OR u.name LIKE ?)
+    WHERE ss.exam_id = ? AND (u.student_number = ? OR u.name LIKE ? ESCAPE '\\')
     ORDER BY u.student_number
     LIMIT 20
   `, examId, q, `%${escaped}%`) as Array<{ id: number; name: string; student_number: string | null }>;
@@ -265,6 +265,7 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
     }
   }
 
+  let assignedScoreWarning: string | undefined;
   await db.transaction(async (tx) => {
     for (const u of updates) {
       const existing = await tx.get(
@@ -310,10 +311,16 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
     `, totalObjective, totalSubjective, newTotal, userId, now, examId, studentId);
 
     // P1-8: 排名重算在事务内执行，确保数据一致性
-    await recomputeExamRankings(tx, examId);
+    const recalc = await recomputeExamRankings(tx, examId);
+    if (recalc.assignedScoresRecalculated === false) {
+      assignedScoreWarning = recalc.assignedScoreError;
+    }
   });
 
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    ...(assignedScoreWarning ? { warnings: { assignedScoreError: assignedScoreWarning } } : {})
+  });
 });
 
 // ── 获取考试的答题卡答案配置 ──────────────────────
@@ -433,6 +440,7 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
   const updateCols = ["score", "max_score", "manually_modified", "modified_by", "modified_at", "selected_options"];
   const upsertSQL = buildUpsertSQL(db.dialect, "question_scores", upsertCols, conflictCols, updateCols);
 
+  let assignedScoreWarning: string | undefined;
   await db.transaction(async (tx) => {
     // 答案与重算同事务：任一步失败整体回滚，避免“答案已改但分数未重算”的半更新状态
     await cardRepo.updateCardInTx(card, tx);
@@ -525,10 +533,18 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
     }
 
     // P1-8: 排名重算在事务内执行
-    await recomputeExamRankings(tx, examId);
+    const recalc = await recomputeExamRankings(tx, examId);
+    if (recalc.assignedScoresRecalculated === false) {
+      assignedScoreWarning = recalc.assignedScoreError;
+    }
   });
 
-  res.json({ ok: true, updatedCount, modifiedAnswers: Object.keys(answerUpdates).length });
+  res.json({
+    ok: true,
+    updatedCount,
+    modifiedAnswers: Object.keys(answerUpdates).length,
+    ...(assignedScoreWarning ? { warnings: { assignedScoreError: assignedScoreWarning } } : {})
+  });
 });
 
 export default router;

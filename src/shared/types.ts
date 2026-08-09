@@ -500,6 +500,9 @@ export type ReviewSubmitResult = {
   /** 分数已提交但排名/赋分重算失败时为 false（前端应提示） */
   rankingsRecalculated?: boolean;
   rankingError?: string;
+  /** 赋分是否成功重算（排名成功但赋分失败时区分上报） */
+  assignedScoresRecalculated?: boolean;
+  assignedScoreError?: string;
 };
 
 export type SubjectiveQuestionGradeStatus = "ok" | "invalid" | "missing_score_grid";

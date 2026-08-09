@@ -38,6 +38,7 @@
     "verify:fill-blank-upgrade": "tsx scripts/fill-blank-upgrade-smoke.ts",
     "verify:scoring-mode": "tsx scripts/scoring-mode-consistency-smoke.ts",
     "verify:online-review-scoring-mode": "tsx scripts/online-review-scoring-mode-smoke.ts",
+    "verify:review-ranking-degradation": "tsx scripts/review-ranking-degradation-smoke.ts",
     "verify:scoring-mode-config": "tsx scripts/scoring-mode-config-integration.ts",
     "verify:176-178": "tsx scripts/verify-176-178-smoke.ts",
     "typecheck": "tsc --noEmit"
