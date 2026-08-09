@@ -141,17 +141,30 @@ export class AssignedScoreService {
     let updated = 0;
     let skipped = 0;
 
-    for (const s of students) {
-      if (s.total_score == null) {
-        skipped++;
-        continue;
+    // savepoint 保证赋分整体原子：任一学生失败则回滚全部赋分更新，
+    // 避免出现“部分学生新口径、部分旧口径”的混合状态。
+    // 与外部事务（改分/改答案）可共存：失败只回滚赋分部分，不影响已提交的排名/分数。
+    await db.exec("SAVEPOINT assigned_score_recalc");
+    try {
+      for (const s of students) {
+        if (s.total_score == null) {
+          skipped++;
+          continue;
+        }
+        const assigned = this.calculateAssignedScore(s.total_score, formula, stdStats);
+        await db.run(
+          "UPDATE student_scores SET assigned_score = ? WHERE exam_id = ? AND student_id = ?",
+          assigned, examId, s.student_id
+        );
+        updated++;
       }
-      const assigned = this.calculateAssignedScore(s.total_score, formula, stdStats);
-      await db.run(
-        "UPDATE student_scores SET assigned_score = ? WHERE exam_id = ? AND student_id = ?",
-        assigned, examId, s.student_id
-      );
-      updated++;
+      await db.exec("RELEASE SAVEPOINT assigned_score_recalc");
+    } catch (err) {
+      // 回滚整个赋分 savepoint，保证不残留部分更新；随后释放 savepoint
+      // （SQLite 中 ROLLBACK TO 后事务仍保持打开，必须 RELEASE）。
+      try { await db.exec("ROLLBACK TO SAVEPOINT assigned_score_recalc"); } catch { /* 回滚失败则交由上层处理 */ }
+      try { await db.exec("RELEASE SAVEPOINT assigned_score_recalc"); } catch { /* 忽略释放失败 */ }
+      throw err;
     }
 
     return { updated, skipped };

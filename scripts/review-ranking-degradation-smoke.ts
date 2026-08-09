@@ -86,16 +86,22 @@ async function main(): Promise<void> {
       examId
     );
 
-    const student = db.prepare(
-      `INSERT INTO users (username, name, role_id, student_number, is_active, password_hash) VALUES ('S001', '测试学生', 3, 'S001', 1, '')`
-    ).run();
-    const studentId = Number(student.lastInsertRowid);
-    db.prepare(
-      `INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score)
-       VALUES (?, ?, 0, 0, 10)`
-    ).run(
-      examId, studentId
-    );
+    // 3 名学生：第 1 名成功、第 2 名被触发器强制失败、第 3 名未执行，
+    // 用于验证 savepoint 回滚后所有学生赋分保持原值（无部分更新）。
+    const studentIds: number[] = [];
+    for (const num of ["S001", "S002", "S003"]) {
+      const info = db.prepare(
+        `INSERT INTO users (username, name, role_id, student_number, is_active, password_hash) VALUES (?, ?, 3, ?, 1, '')`
+      ).run(num, `测试学生${num}`, num);
+      const sid = Number(info.lastInsertRowid);
+      studentIds.push(sid);
+      db.prepare(
+        `INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score)
+         VALUES (?, ?, 0, 0, 10)`
+      ).run(examId, sid);
+    }
+    const studentId = studentIds[0];
+    const failingStudentId = studentIds[1];
     db.prepare(
       `INSERT INTO answer_block_crops
         (id, card_id, exam_id, student_id, student_number, source_type, source_record_id, block_id,
@@ -114,10 +120,11 @@ async function main(): Promise<void> {
       examId
     );
 
-    // 触发器：赋分（assigned_score）更新时强制失败；排名（rank/percentile）更新不受影响
+    // 触发器：仅第 2 名学生的赋分更新失败，模拟“中途失败”；
+    // 排名（rank/percentile）更新不设置 assigned_score，不受影响。
     db.exec(
       `CREATE TRIGGER review_rank_degrade BEFORE UPDATE ON student_scores
-       WHEN NEW.assigned_score IS NOT NULL AND (OLD.assigned_score IS NULL OR NEW.assigned_score <> OLD.assigned_score)
+       WHEN NEW.assigned_score IS NOT NULL AND NEW.student_id = ${failingStudentId}
        BEGIN SELECT RAISE(ABORT, 'forced assigned failure'); END`
     );
 
@@ -139,11 +146,13 @@ async function main(): Promise<void> {
     const submitBody = await submitRes.json() as {
       ok?: boolean;
       rankingsRecalculated?: boolean;
+      rankingError?: string;
       assignedScoresRecalculated?: boolean;
       assignedScoreError?: string;
     };
     check(submitRes.status === 200 && submitBody.ok === true, "提交接口返回 200 ok");
     check(submitBody.rankingsRecalculated === true, "排名重算成功（rank/percentile 不受赋分失败影响）");
+    check(submitBody.rankingError === undefined, "rankingError 仅表示排名失败（与赋分错误语义分离）");
     check(
       submitBody.assignedScoresRecalculated === false
         && typeof submitBody.assignedScoreError === "string"
@@ -162,19 +171,28 @@ async function main(): Promise<void> {
     check(cropState.status === "reviewed" && cropState.final_score === 10, "分数已保存（不因赋分失败回滚）");
     check(scoreState?.score === 10, "逐题分数已落库");
     check(rankState.rank === 1 && rankState.percentile === 100, "排名已更新");
-    check(rankState.assigned_score === null, "赋分在首个学生处失败，未产生部分更新");
+    const assignedStates = studentIds.map((sid) => {
+      const row = db.prepare(
+        "SELECT assigned_score FROM student_scores WHERE exam_id = ? AND student_id = ?"
+      ).get(examId, sid) as { assigned_score: number | null };
+      return row.assigned_score;
+    });
+    check(
+      assignedStates.every((v) => v === null),
+      "赋分中途失败后全部回滚（3 名学生均保持原值，无部分更新）"
+    );
     db.exec("DROP TRIGGER review_rank_degrade");
 
     section("学生搜索：LIKE 通配符按字面量匹配");
     const names = ["张%三", "张四", "李_五", "王\\六"];
-    const studentIds: number[] = [];
+    const likeStudentIds: number[] = [];
     for (const name of names) {
       const info = db.prepare(
         `INSERT INTO users (username, name, role_id, student_number, is_active, password_hash) VALUES (?, ?, 3, ?, 1, '')`
       ).run(`U_${name}`, name, `SN_${name}`);
-      studentIds.push(Number(info.lastInsertRowid));
+      likeStudentIds.push(Number(info.lastInsertRowid));
     }
-    for (const sid of studentIds) {
+    for (const sid of likeStudentIds) {
       db.prepare(
         `INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score)
          VALUES (?, ?, 0, 0, 10)`
