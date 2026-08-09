@@ -497,6 +497,9 @@ export type ReviewSubmitResult = {
   disputeReason?: string;
   reviewRound?: number;
   finalScore?: number | null;
+  /** 分数已提交但排名/赋分重算失败时为 false（前端应提示） */
+  rankingsRecalculated?: boolean;
+  rankingError?: string;
 };
 
 export type SubjectiveQuestionGradeStatus = "ok" | "invalid" | "missing_score_grid";

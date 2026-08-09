@@ -58,7 +58,7 @@ export async function recomputeExamRankings(db: DbAdapter, examId: number): Prom
 
   try {
     const assignedService = new AssignedScoreService();
-    await assignedService.recalculateAll(examId);
+    await assignedService.recalculateAll(examId, db);
   } catch {
     // 无赋分配置或重算失败，静默跳过
   }

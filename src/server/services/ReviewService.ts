@@ -41,9 +41,7 @@ type CropRow = {
 async function recomputeStudentTotals(
   tx: DbAdapter,
   examId: number,
-  studentId: number,
-  userId: number,
-  now: string
+  studentId: number
 ): Promise<number> {
   const rows = await tx.all(
     "SELECT score, score_type FROM question_scores WHERE exam_id = ? AND student_id = ?",
@@ -61,16 +59,14 @@ async function recomputeStudentTotals(
   totalSubjective = roundScore(totalSubjective);
   const newTotal = roundScore(totalObjective + totalSubjective);
 
+  // 网阅提交属于自动评分流程，不标记 manually_modified（保留既有手动修改审计语义）。
   await tx.run(
     `UPDATE student_scores
-     SET objective_score = ?, subjective_score = ?, total_score = ?,
-         manually_modified = 1, modified_by = ?, modified_at = ?
+     SET objective_score = ?, subjective_score = ?, total_score = ?
      WHERE exam_id = ? AND student_id = ?`,
     totalObjective,
     totalSubjective,
     newTotal,
-    userId,
-    now,
     examId,
     studentId
   );
@@ -134,9 +130,13 @@ export async function listReviewBlockCropItems(
 
   const studentIds = Array.from(new Set(crops.map((crop) => crop.studentId).filter((id): id is number => id != null)));
   const nameById = new Map<number, string>();
-  for (const studentId of studentIds) {
-    const row = await db.get("SELECT name FROM users WHERE id = ?", studentId) as { name: string } | undefined;
-    if (row) nameById.set(studentId, row.name);
+  if (studentIds.length > 0) {
+    const placeholders = studentIds.map(() => "?").join(",");
+    const rows = await db.all(
+      `SELECT id, name FROM users WHERE id IN (${placeholders})`,
+      ...studentIds
+    ) as Array<{ id: number; name: string }>;
+    for (const row of rows) nameById.set(row.id, row.name);
   }
 
   return crops.map((crop) => ({
@@ -427,7 +427,7 @@ export async function submitReviewCropScores(params: {
             await tx.run(upsertSQL, params.examId, crop.student_id, resolved.item.questionNumber, null, crop.block_id, resolved.score, resolved.item.maxScore, resolved.item.scoreType, 1, params.userId, now);
           }
         }
-        if (!disputed) totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!, params.userId, now);
+        if (!disputed) totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!);
       }
     }
 
@@ -471,8 +471,17 @@ export async function submitReviewCropScores(params: {
     }
   });
 
-  // 排名重算在事务外（调用方应处理失败）
-  await recomputeExamRankings(db, params.examId);
+  // 排名重算在事务外（赋分重算可能涉及独立连接）；失败时降级返回，
+  // 不把“分数已落库但排名未更新”伪装成完全成功。
+  let rankingsRecalculated = true;
+  let rankingError: string | undefined;
+  try {
+    await recomputeExamRankings(db, params.examId);
+  } catch (err) {
+    rankingsRecalculated = false;
+    rankingError = err instanceof Error ? err.message : String(err);
+    console.error(`[Review] 排名重算失败 exam=${params.examId} crop=${params.cropId}:`, err);
+  }
 
   return {
     ok: true,
@@ -482,7 +491,9 @@ export async function submitReviewCropScores(params: {
     disputed,
     disputeReason,
     reviewRound: finalReviewRound,
-    finalScore
+    finalScore,
+    rankingsRecalculated,
+    rankingError
   };
 }
 
@@ -617,6 +628,25 @@ export async function getReviewTrace(
     resolved_by: string | null;
   }>;
 
+  // 批量解析评审人姓名，避免逐条查 users（N+1）
+  const reviewerIds = new Set<number>();
+  for (const row of rows) {
+    if (!row.score_breakdown) continue;
+    try {
+      const breakdown = JSON.parse(row.score_breakdown) as Array<{ reviewerId?: number }>;
+      for (const b of breakdown) if (typeof b.reviewerId === "number") reviewerIds.add(b.reviewerId);
+    } catch { /* ignore malformed */ }
+  }
+  const reviewerNameById = new Map<number, string>();
+  if (reviewerIds.size > 0) {
+    const placeholders = Array.from(reviewerIds).map(() => "?").join(",");
+    const reviewers = await db.all(
+      `SELECT id, name FROM users WHERE id IN (${placeholders})`,
+      ...Array.from(reviewerIds)
+    ) as Array<{ id: number; name: string }>;
+    for (const r of reviewers) reviewerNameById.set(r.id, r.name);
+  }
+
   return rows.map((row) => {
     let rounds: ReviewRoundDetail[] = [];
     if (row.score_breakdown) {
@@ -627,7 +657,7 @@ export async function getReviewTrace(
         rounds = breakdown.map((b) => ({
           round: b.round,
           reviewerId: b.reviewerId,
-          reviewerName: `教师${b.reviewerId}`,
+          reviewerName: reviewerNameById.get(b.reviewerId) ?? `教师${b.reviewerId}`,
           score: b.score,
           reviewedAt: b.reviewedAt
         }));

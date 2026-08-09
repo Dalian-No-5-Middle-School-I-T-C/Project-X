@@ -29,7 +29,7 @@ function readServerVersion(): string {
   return "0.0.0";
 }
 const SERVER_VERSION = readServerVersion();
-import { ensureDefaultAdmin, getMysqlDb, buildUpsertSQL, initializeDatabase, initMariadbSchema, healthCheck, type DbAdapter } from "../../../server/db";
+import { ensureDefaultAdmin, getDatabase, getMysqlDb, buildUpsertSQL, initializeDatabase, initMariadbSchema, healthCheck, resolveProjectDbPath, type DbAdapter } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
@@ -356,16 +356,26 @@ async function autoBackupOnExamClose(examId: number): Promise<void> {
   const backupDir = path.join(dataDir, "backups");
   await mkdir(backupDir, { recursive: true });
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
-  const src = path.join(dataDir, "..", "projectx.db");
+  // 以真实数据库路径为准（支持自定义 PROJECTX_DB_PATH，不能靠 dataDir/.. 推算）
+  const src = resolveProjectDbPath();
   const dst = path.join(backupDir, `projectx_exam${examId}_${ts}.db`);
   try {
-    const { copyFile } = await import("node:fs/promises");
-    if (existsSync(src)) {
-      await copyFile(src, dst);
-      console.log(`[AutoBackup] exam ${examId} → ${path.basename(dst)}`);
-    }
+    // WAL 模式下直接 copyFile 主库会丢失未 checkpoint 的最近写入；
+    // 使用 SQLite Online Backup API 生成一致性快照。
+    const db = getDatabase();
+    await db.backup(dst);
+    console.log(`[AutoBackup] exam ${examId} → ${path.basename(dst)}`);
   } catch (err) {
-    console.error(`[AutoBackup] Copy failed for exam ${examId}:`, err);
+    console.error(`[AutoBackup] Online backup failed for exam ${examId}:`, err);
+    try {
+      const { copyFile } = await import("node:fs/promises");
+      if (existsSync(src)) {
+        await copyFile(src, dst);
+        console.log(`[AutoBackup] exam ${examId} → ${path.basename(dst)} (file copy fallback)`);
+      }
+    } catch (copyErr) {
+      console.error(`[AutoBackup] Copy failed for exam ${examId}:`, copyErr);
+    }
   }
 }
 
@@ -529,13 +539,15 @@ export async function persistGradingResults(
 
 
 function scannerEnabled(): boolean {
+  // 仅显式开启（Electron main.cjs 设置 PROJECTX_ENABLE_SCANNER=1）或 teacher-scanner 变体启用；
+  // Web 部署默认关闭，避免暴露依赖本机原生 exe 的扫描 API。
   if (process.env.PROJECTX_ENABLE_SCANNER === "1" || process.env.PROJECTX_ENABLE_SCANNER === "true") {
     return true;
   }
   if (process.env.PROJECTX_ENABLE_SCANNER === "0" || process.env.PROJECTX_ENABLE_SCANNER === "false") {
     return false;
   }
-  return process.env.PROJECTX_VARIANT === "teacher-scanner" || !process.env.PROJECTX_VARIANT;
+  return process.env.PROJECTX_VARIANT === "teacher-scanner";
 }
 
 
@@ -544,6 +556,10 @@ function scannerEnabled(): boolean {
 export async function createApp(): Promise<express.Express> {
   const app = express();
   const scannerClientApiEnabled = isScannerClientApiEnabled();
+
+  // 服务仅监听 127.0.0.1，公网流量必然经反代/隧道进入；
+  // 信任最近一跳让登录限速等拿到真实客户端 IP（可用 PROJECTX_TRUST_PROXY=0 关闭）。
+  app.set("trust proxy", process.env.PROJECTX_TRUST_PROXY === "0" ? false : 1);
 
   console.log("[Server] 正在初始化数据库...");
   initializeDatabase();
@@ -608,7 +624,8 @@ export async function createApp(): Promise<express.Express> {
 
   // 受控资源路由：替换原先公开的 app.use("/assets", express.static(...))。
   // 通过 cardAssetsDir 落盘，使用 path.basename 防止路径穿越；仍置于 /api 下便于统一鉴权与缓存策略。
-  app.get("/api/assets/:cardId/:assetId", optionalAuth, (req, res) => {
+  // 答题卡资源含考试插图/原卷，强制鉴权模式下必须登录且具备 card:read（兼容模式下仍放行）。
+  app.get("/api/assets/:cardId/:assetId", makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.CARD_READ), (req, res) => {
     const cardId = safeId(paramValue(req.params.cardId));
     const assetId = path.basename(String(req.params.assetId));
     const dir = cardAssetsDir(cardId);

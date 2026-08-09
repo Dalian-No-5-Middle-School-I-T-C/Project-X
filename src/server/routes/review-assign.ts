@@ -2,7 +2,7 @@
  * 阅卷任务分配 API
  * 挂载点: /api/review-assign
  */
-import { Router } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
 import { requireExamAccess } from "../../apps/answer-card/server/middleware";
@@ -18,6 +18,22 @@ import {
 
 const router = Router();
 
+/** 阅卷分配仅限学年主任（grade_leader）或管理员；普通教师不得创建/删除分配。 */
+function requireGradeLeaderOrAdmin(req: Request, res: Response, next: NextFunction): void {
+  const user = (req as any).user as { role_id?: number; role_name?: string; teacher_role?: string | null } | undefined;
+  if (!user) {
+    res.status(401).json({ ok: false, error: "未登录" });
+    return;
+  }
+  const isAdmin = user.role_id === 1;
+  const isGradeLeader = user.role_name === "teacher" && user.teacher_role === "grade_leader";
+  if (!isAdmin && !isGradeLeader) {
+    res.status(403).json({ ok: false, error: "仅学年主任或管理员可执行阅卷分配" });
+    return;
+  }
+  next();
+}
+
 // GET /api/review-assign/exams/:examId/eligible-teachers — 可分配教师列表（同科同年级）
 router.get(
   "/exams/:examId/eligible-teachers",
@@ -30,12 +46,16 @@ router.get(
       const exam = await db.get("SELECT subject, grade_id FROM exams WHERE id = ?", examId) as { subject: string | null; grade_id: number | null } | undefined;
       if (!exam) return res.status(404).json({ ok: false, error: "考试不存在" });
 
+      // users 表没有 grade_id 列，年级过滤须经 teacher_classes → classes.grade_id；
+      // 未绑定班级的教师不参与年级过滤（保持向后兼容）。
       const rows = await db.all(
         `SELECT u.id, u.name, u.subject
          FROM users u
          WHERE u.role_id = 2
            ${exam.subject ? "AND u.subject = ?" : ""}
-           ${exam.grade_id !== null ? "AND u.grade_id = ?" : ""}
+           ${exam.grade_id !== null
+             ? "AND (NOT EXISTS (SELECT 1 FROM teacher_classes tc WHERE tc.teacher_id = u.id) OR EXISTS (SELECT 1 FROM teacher_classes tc2 JOIN classes c2 ON c2.id = tc2.class_id WHERE tc2.teacher_id = u.id AND c2.grade_id = ?))"
+             : ""}
          ORDER BY u.name`,
         ...(exam.subject ? [exam.subject] : []),
         ...(exam.grade_id !== null ? [exam.grade_id] : [])
@@ -88,6 +108,7 @@ router.post(
   "/exams/:examId/blocks/:blockId",
   requireExamAccess,
   requirePermission(PERMISSIONS.GRADE_WRITE),
+  requireGradeLeaderOrAdmin,
   async (req, res) => {
     try {
       const examId = Number(req.params.examId);
@@ -98,7 +119,12 @@ router.post(
 
       const map = new Map<number, number>();
       for (const [key, val] of Object.entries(teacherCounts)) {
-        map.set(Number(key), Number(val));
+        const teacherId = Number(key);
+        const count = Number(val);
+        if (!Number.isInteger(teacherId) || teacherId <= 0 || !Number.isInteger(count) || count <= 0) {
+          return res.status(400).json({ ok: false, error: `无效的分配参数: ${key}=${val}` });
+        }
+        map.set(teacherId, count);
       }
 
       const userId = (req as any).user?.id;
@@ -114,6 +140,7 @@ router.post(
 router.delete(
   "/:id",
   requirePermission(PERMISSIONS.GRADE_WRITE),
+  requireGradeLeaderOrAdmin,
   async (req, res) => {
     try {
       await deleteAssignment(Number(req.params.id));

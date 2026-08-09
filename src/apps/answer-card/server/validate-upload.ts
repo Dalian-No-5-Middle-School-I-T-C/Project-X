@@ -42,6 +42,14 @@ export async function isValidImageFile(filePath: string): Promise<boolean> {
   }
 }
 
+/** 内存态文件（multer memoryStorage）的魔数校验，供扫描上传等场景复用。 */
+export function isValidImageBuffer(buffer: Buffer): boolean {
+  if (!buffer || buffer.length < 4) return false;
+  return MAGIC_BYTES.some(({ signature }) =>
+    buffer.subarray(0, signature.length).equals(signature)
+  );
+}
+
 /**
  * Validates uploaded image files (multer single or array).
  * On invalid image, removes the file from disk and sends 400.

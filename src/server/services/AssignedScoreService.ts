@@ -99,7 +99,12 @@ export class AssignedScoreService {
   /**
    * 对整场考试执行赋分重算
    */
-  async recalculateAll(examId: number): Promise<{ updated: number; skipped: number }> {
+  /**
+   * 对整场考试执行赋分重算。
+   * 传入外部 db（如事务适配器）时在调用方事务内执行；未传时使用自身连接。
+   * 每行 UPDATE 为单语句原子操作，重算幂等，调用方可自行决定事务边界。
+   */
+  async recalculateAll(examId: number, db: DbAdapter = this.db): Promise<{ updated: number; skipped: number }> {
     const formula = await this.getFormula(examId);
     if (!formula || !formula.enabled) {
       return { updated: 0, skipped: 0 };
@@ -109,7 +114,7 @@ export class AssignedScoreService {
       return { updated: 0, skipped: 0 };
     }
 
-    const stats = await this.db.get(`
+    const stats = await db.get(`
       SELECT
         MAX(total_score) as max,
         MIN(total_score) as min,
@@ -117,7 +122,7 @@ export class AssignedScoreService {
       FROM student_scores WHERE exam_id = ?
     `, examId) as { max: number; min: number; avg: number };
 
-    const scores = await this.db.all(
+    const scores = await db.all(
       "SELECT total_score FROM student_scores WHERE exam_id = ?",
       examId
     ) as Array<{ total_score: number }>;
@@ -128,7 +133,7 @@ export class AssignedScoreService {
     const std = Math.sqrt(variance);
     const stdStats = { max: stats.max, min: stats.min, avg: stats.avg, std };
 
-    const students = await this.db.all(
+    const students = await db.all(
       "SELECT student_id, total_score FROM student_scores WHERE exam_id = ?",
       examId
     ) as Array<{ student_id: number; total_score: number }>;
@@ -136,20 +141,18 @@ export class AssignedScoreService {
     let updated = 0;
     let skipped = 0;
 
-    await this.db.transaction(async (tx) => {
-      for (const s of students) {
-        if (s.total_score == null) {
-          skipped++;
-          continue;
-        }
-        const assigned = this.calculateAssignedScore(s.total_score, formula, stdStats);
-        await tx.run(
-          "UPDATE student_scores SET assigned_score = ? WHERE exam_id = ? AND student_id = ?",
-          assigned, examId, s.student_id
-        );
-        updated++;
+    for (const s of students) {
+      if (s.total_score == null) {
+        skipped++;
+        continue;
       }
-    });
+      const assigned = this.calculateAssignedScore(s.total_score, formula, stdStats);
+      await db.run(
+        "UPDATE student_scores SET assigned_score = ? WHERE exam_id = ? AND student_id = ?",
+        assigned, examId, s.student_id
+      );
+      updated++;
+    }
 
     return { updated, skipped };
   }

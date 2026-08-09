@@ -13,6 +13,13 @@ const loginLimiter = rateLimit({
   max: 10,
   standardHeaders: true,
   legacyHeaders: false,
+  // 按「IP + 账号」双维度计数：同一账号在不同 IP 攻击仍受限；
+  // 同一 IP 上不同账号互不误伤（反代/隧道后全校共享出口 IP 时尤为重要）。
+  keyGenerator: (req) => {
+    const body = (req as any).body as { identifier?: unknown } | undefined;
+    const identifier = typeof body?.identifier === "string" ? body.identifier.trim().toLowerCase() : "";
+    return identifier ? `${req.ip ?? "unknown"}:${identifier}` : (req.ip ?? "unknown");
+  },
   message: { message: "登录尝试过于频繁，请 15 分钟后重试" }
 });
 
