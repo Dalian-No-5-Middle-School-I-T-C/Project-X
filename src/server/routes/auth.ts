@@ -59,7 +59,7 @@ function clearAuthCookie(res: Response): void {
  */
 router.post("/login", loginIpLimiter, loginAccountLimiter, async (req: Request, res: Response) => {
   try {
-    const { identifier, password, isPersistent } = req.body;
+    const { identifier, password, isPersistent } = req.body ?? {};
 
     if (typeof identifier !== "string" || typeof password !== "string" || !identifier || !password) {
       res.status(400).json({ message: "请输入用户名和密码" });

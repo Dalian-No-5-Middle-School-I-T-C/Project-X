@@ -606,6 +606,14 @@ export async function createApp(): Promise<express.Express> {
     }
   }
 
+  // 最小安全响应头（不设 X-Frame-Options，避免破坏 iframe 嵌入场景）
+  // 注册在最前：OPTIONS 预检、JSON 解析失败、请求体超限等中间件错误响应也需携带
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    next();
+  });
+
   // 阅卷提交路由使用 64 KB 限制，覆盖全局 8 MB；须在全局解析器前注册
   app.use("/api/review/exams/:examId/block-crops/:cropId/submit", express.json({ limit: "64kb" }));
 
@@ -623,13 +631,6 @@ export async function createApp(): Promise<express.Express> {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Api-Key");
     res.setHeader("Access-Control-Allow-Credentials", "true");
     if (req.method === "OPTIONS") { res.status(204).end(); return; }
-    next();
-  });
-
-  // 最小安全响应头（不设 X-Frame-Options，避免破坏 iframe 嵌入场景）
-  app.use((_req, res, next) => {
-    res.setHeader("X-Content-Type-Options", "nosniff");
-    res.setHeader("Referrer-Policy", "no-referrer");
     next();
   });
 

@@ -18,3 +18,6 @@
 *.zip binary
 *.tar.gz binary
 *.node binary
+
+# CRLF 文件的新增行会被 diff --check 误报尾随空白，忽略行尾 CR
+*.html whitespace=cr-at-eol
