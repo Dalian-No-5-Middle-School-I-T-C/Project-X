@@ -103,17 +103,13 @@ https://your-domain.com/Grade-Analysis-System-mobile.html
 
 ### 3.3 跨域部署
 
-如果网页和后端使用不同域名，需要在后端开启 CORS。修改 `src/apps/answer-card/server/index.ts`，在路由前添加：
+如果网页和后端使用不同域名，需要在后端开启 CORS。后端通过环境变量 `PROJECTX_CORS_ORIGIN` 配置允许的前端域名白名单（逗号分隔），例如：
 
-```typescript
-import cors from 'cors';
-
-app.use(cors({
-  origin: ['https://your-frontend-domain.com', 'https://your-miniprogram-domain.com'],
-  credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+```bash
+PROJECTX_CORS_ORIGIN=https://your-frontend-domain.com
 ```
+
+未设置时默认仅允许本机调试地址。学生端小程序使用原生 `wx.request` / `downloadFile`，不受浏览器 CORS 限制，无需加入白名单。
 
 并在 `Grade-Analysis-System-mobile.html` 的 URL 中通过 `?api_base=...` 指定后端地址：
 

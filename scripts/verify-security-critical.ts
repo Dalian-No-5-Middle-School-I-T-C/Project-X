@@ -175,6 +175,11 @@ async function main(): Promise<void> {
     });
     const bootstrapBody = await bootstrapLogin.json() as { token: string; passwordChangeRequired: boolean };
     check(bootstrapLogin.status === 200 && bootstrapBody.passwordChangeRequired, "登录响应返回 passwordChangeRequired=true");
+    const badTypeLogin = await fetch(`${base}/api/auth/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: 12345, password: "x" })
+    });
+    check(badTypeLogin.status === 400, "非字符串 identifier 登录请求被 400 拒绝");
     const meResponse = await fetch(`${base}/api/auth/me`, { headers: authHeaders(bootstrapBody.token) });
     const meBody = await meResponse.json() as { passwordChangeRequired?: boolean };
     check(meResponse.status === 200 && meBody.passwordChangeRequired === true, "/api/auth/me 返回强制改密状态");
@@ -361,11 +366,16 @@ async function main(): Promise<void> {
     // 等待 fire-and-forget 的「考试关闭自动备份」完成，避免与临时目录删除竞态
     // （否则会输出 AutoBackup 目录不存在的误导性错误日志）。
     await new Promise((resolve) => setTimeout(resolve, 600));
-    // Windows 上备份连接可能仍占用文件句柄，清理失败只告警，不把环境性 EPERM 当作用例失败
+    // Windows 上备份连接可能仍占用文件句柄，仅对这种环境性 EPERM/EBUSY 告警，其余清理错误照常抛出
     try {
       rmSync(tempDir, { recursive: true, force: true });
     } catch (error) {
-      console.warn("[verify] 临时目录清理失败（可忽略）:", (error as Error).message);
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EPERM" || code === "EBUSY") {
+        console.warn("[verify] 临时目录清理失败（Windows 句柄占用，可忽略）:", (error as Error).message);
+      } else {
+        throw error;
+      }
     }
   }
 }
