@@ -25,7 +25,7 @@ https://plaintiff-spears-weapon-mining.trycloudflare.com/Grade-Analysis-System-m
 ```
 
 ### 微信小程序接入
-将上述地址配置为 `web-view` 的 `src` 属性。
+学生端小程序为独立仓库 X-exam，通过原生 request/downloadFile 访问后端，不使用 `web-view`；此页面仅用于浏览器直访。
 
 ## 当前运行中的进程
 

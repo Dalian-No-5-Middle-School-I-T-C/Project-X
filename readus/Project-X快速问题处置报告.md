@@ -209,7 +209,6 @@ findings/card-permission-domain-confusion/card-permission-domain-confusion.md。
 - src/server/middleware/auth.ts:37-51
 - src/apps/answer-card/server/index.ts:477-478
 - src/apps/answer-card/client/auth/api.ts:97-114
-- 小程序/web-view URL 构造路径
 
 应停止接受查询令牌，改用 Authorization 头或 Secure、HttpOnly、
 SameSite Cookie；对流式/媒体请求使用一次性、短时、受众和对象绑定的

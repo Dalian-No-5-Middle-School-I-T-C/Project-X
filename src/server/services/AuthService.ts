@@ -96,10 +96,10 @@ export class AuthService {
 
   /**
    * 用户登录
-   * 支持用户名（学号/职工号）或邮箱登录
+   * 支持用户名（学号/职工号）登录
    */
   async login(identifier: string, password: string, isPersistent = false): Promise<LoginResult> {
-    // 查找用户（支持 username 或 student_number 或 email）
+    // 查找用户：先按 username，纯数字再按 student_number
     let user = await this.userRepo.findByUsername(identifier);
 
     if (!user && /^\d+$/.test(identifier)) {

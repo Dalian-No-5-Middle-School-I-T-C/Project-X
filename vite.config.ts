@@ -66,8 +66,7 @@ export default defineConfig(({ mode }) => {
           "**/readus/**",
           "**/input/**",
           "**/native/**",
-          "**/llmclient/**",
-          "**/miniprogram/**"
+          "**/llmclient/**"
         ]
       },
       proxy: {
