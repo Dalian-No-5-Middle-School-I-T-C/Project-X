@@ -21,7 +21,7 @@ export function setAuthEnforced(v: boolean): void { authEnforced = v; }
 /**
  * Creates an RBAC gate middleware.
  *
- * When PROJECTX_AUTH_ENFORCE is off (default), the gate is a pass-through
+ * When PROJECTX_AUTH_ENFORCE is off (set to "0"/"false"), the gate is a pass-through
  * so the v1.0 login-free frontend still works.  When ON, unauthenticated
  * requests get 401 and insufficient permissions get 403.
  */

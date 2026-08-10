@@ -626,6 +626,13 @@ export async function createApp(): Promise<express.Express> {
     next();
   });
 
+  // 最小安全响应头（不设 X-Frame-Options，避免破坏 iframe 嵌入场景）
+  app.use((_req, res, next) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    next();
+  });
+
   // 受控资源路由：替换原先公开的 app.use("/assets", express.static(...))。
   // 通过 cardAssetsDir 落盘，使用 path.basename 防止路径穿越；仍置于 /api 下便于统一鉴权与缓存策略。
   // 答题卡资源含考试插图/原卷，强制鉴权模式下必须登录且具备 card:read（兼容模式下仍放行）。

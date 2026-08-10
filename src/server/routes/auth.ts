@@ -61,7 +61,7 @@ router.post("/login", loginIpLimiter, loginAccountLimiter, async (req: Request, 
   try {
     const { identifier, password, isPersistent } = req.body;
 
-    if (!identifier || !password) {
+    if (typeof identifier !== "string" || typeof password !== "string" || !identifier || !password) {
       res.status(400).json({ message: "请输入用户名和密码" });
       return;
     }

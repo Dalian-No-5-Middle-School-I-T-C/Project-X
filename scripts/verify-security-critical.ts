@@ -361,7 +361,12 @@ async function main(): Promise<void> {
     // 等待 fire-and-forget 的「考试关闭自动备份」完成，避免与临时目录删除竞态
     // （否则会输出 AutoBackup 目录不存在的误导性错误日志）。
     await new Promise((resolve) => setTimeout(resolve, 600));
-    rmSync(tempDir, { recursive: true, force: true });
+    // Windows 上备份连接可能仍占用文件句柄，清理失败只告警，不把环境性 EPERM 当作用例失败
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch (error) {
+      console.warn("[verify] 临时目录清理失败（可忽略）:", (error as Error).message);
+    }
   }
 }
 
