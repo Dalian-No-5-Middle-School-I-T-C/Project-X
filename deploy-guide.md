@@ -87,6 +87,9 @@ cp Grade-Analysis-System-mobile.html /var/www/project-x/
 location / {
     root /var/www/project-x;
     try_files $uri $uri/ /index.html;
+    # 静态页面不经 Express，需由 Nginx 补安全响应头（API 响应已由后端统一添加）
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
 }
 
 location /api/ {
@@ -125,7 +128,7 @@ https://your-frontend-domain.com/Grade-Analysis-System-mobile.html?api_base=http
 
 1. 注册小程序账号并获取 **AppID**（个人主体即可，无需企业认证；具体以微信平台类目审核为准）。
 2. 在「开发」→「开发管理」→「开发设置」→「服务器域名」中，把后端域名加入 **request** 与 **downloadFile** 合法域名。
-3. 用微信开发者工具导入 X-exam 仓库，在 `project.config.json` 中填入 AppID 后编译预览。
+3. 用微信开发者工具导入 X-exam 仓库，确认 `project.config.json` 中的 AppID（仓库已配置；如使用自己的小程序，替换为你的 AppID）后编译预览。
 
 ---
 

@@ -191,7 +191,7 @@ body { font-family: 'Noto Sans SC', sans-serif; background: #f1f5f9; }
 const urlParams = new URLSearchParams(location.search);
 const API_BASE = (urlParams.get('api_base') || urlParams.get('apiBase') || '').replace(/\/$/, '');
 let apiMode = urlParams.get('demo') === '1' ? 'demo' : 'live';
-let authToken = urlParams.get('token') || localStorage.getItem('px_token') || null;
+let authToken = localStorage.getItem('px_token') || null;
 let currentUser = null;
 let currentRole = null;
 let currentStudent = null;
@@ -1566,7 +1566,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       else showSection('studentDashboard');
       return;
     } catch (e) {
-      console.warn('[Init] URL token 登录失败，回退到登录页:', e);
+      console.warn('[Init] Token 自动登录失败，回退到登录页:', e);
       authToken = null;
     }
   }
