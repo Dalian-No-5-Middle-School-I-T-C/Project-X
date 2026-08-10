@@ -519,8 +519,8 @@ export async function persistGradingResults(
  * 业务路由的 RBAC 网关。
  *
  * 兼容性设计：通过环境变量 PROJECTX_AUTH_ENFORCE 控制是否强制鉴权。
- *  - 关闭（默认）：仅 optionalAuth 解析用户（用于 created_by），不拦截，保持 v1.0 前端无登录可用；
- *  - 开启（=1/true）：未登录返回 401，权限不足返回 403。
+ *  - 关闭（显式设 "0"/"false"）：仅 optionalAuth 解析用户（用于 created_by），不拦截，保持 v1.0 前端无登录可用；
+ *  - 开启（默认，含未设置）：未登录返回 401，权限不足返回 403。
  * GET/HEAD 走 readPerm，写操作走 writePerm。
  */
 

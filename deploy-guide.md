@@ -8,7 +8,7 @@
 
 | 项目 | 要求 | 说明 |
 |------|------|------|
-| 小程序主体 | 个人主体即可 | 学生端为原生页面，无需 `web-view` 企业认证 |
+| 小程序主体 | 个人主体即可（以微信平台类目审核为准） | 学生端为原生页面，无需 `web-view` 企业认证 |
 | 服务器 | 有公网 IP 或域名 | 用于部署后端 API + 静态网页 |
 | 域名备案 | 国内服务器需 ICP 备案 | 微信小程序强制要求 |
 | HTTPS | 必须 | 小程序只支持 HTTPS 业务域名 |
@@ -123,7 +123,7 @@ https://your-frontend-domain.com/Grade-Analysis-System-mobile.html?api_base=http
 
 学生端小程序为独立仓库 [X-exam](https://github.com/Dalian-No-5-Middle-School-I-T-C/X-exam)（原生 `wx.request` / `downloadFile`，不使用 `web-view`）：
 
-1. 注册小程序账号并获取 **AppID**（个人主体即可，无需企业认证）。
+1. 注册小程序账号并获取 **AppID**（个人主体即可，无需企业认证；具体以微信平台类目审核为准）。
 2. 在「开发」→「开发管理」→「开发设置」→「服务器域名」中，把后端域名加入 **request** 与 **downloadFile** 合法域名。
 3. 用微信开发者工具导入 X-exam 仓库，在 `project.config.json` 中填入 AppID 后编译预览。
 
@@ -220,7 +220,7 @@ GET /api/analysis/exams/1/questions
 
 ### Q5: 个人主体小程序能否使用
 
-- 可以。学生端已改为原生页面（X-exam 仓库），不依赖 `web-view`，个人主体即可发布。
+- 可以。学生端已改为原生页面（X-exam 仓库），不依赖 `web-view`，个人主体即可发布（以微信平台类目审核为准）。
 
 ---
 
