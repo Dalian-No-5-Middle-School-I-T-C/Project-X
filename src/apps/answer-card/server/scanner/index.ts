@@ -1,12 +1,14 @@
 import { Router } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { listSources, runScanSession, scansDir, getCardScansWithStudents } from "./scanner-service";
+import { listSources, runScanSession, createScanSession, scansDir, getCardScansWithStudents } from "./scanner-service";
+import { cancelScan } from "./twain-bridge";
 import {
   listScanRecords,
   getScanRecordWithResult,
   deleteScanRecord,
   getSession,
+  updateSessionStatus,
   listSessions,
   deleteSession,
   listScanRecordsGroupedByStudent,
@@ -131,15 +133,49 @@ export function createScannerRouter(twainEnabled = true): Router {
           showUi: body.showUi === true
         };
 
-        // Start scan in background
-        const sessionId = await runScanSession(config, (event) => {
-          emitProgress(event.sessionId, event);
-        });
+        // 先建会话拿 sessionId，立即返回 202；扫描 + OCR 后台执行。
+        const sessionId = await createScanSession(config);
 
         res.status(202).json({
           sessionId,
           message: "扫描已启动",
           status: "scanning"
+        });
+
+        void runScanSession(sessionId, config, (event) => {
+          emitProgress(event.sessionId, event);
+        }).catch((error) => {
+          console.error(`[Scanner] Scan session ${sessionId} failed:`, error);
+        });
+      } catch (error) {
+        next(error);
+      }
+    });
+
+    // ── Cancel Scan Session ──────────────────────────────
+    // 真正终止 scanner-bridge.exe 子进程（kill + 强杀兜底），并广播 cancelled 事件
+    router.post("/scan/:sessionId/cancel", async (req, res, next) => {
+      try {
+        const id = safeId(req.params.sessionId);
+        const session = await getSession(id);
+        if (!session) {
+          res.status(404).json({ message: "扫描会话不存在" });
+          return;
+        }
+        if (session.status === "completed" || session.status === "error" || session.status === "cancelled") {
+          res.json({ message: "扫描已结束，无需取消", status: session.status });
+          return;
+        }
+
+        const terminated = cancelScan(id);
+        await updateSessionStatus(id, "cancelled", "用户取消扫描");
+        emitProgress(id, { sessionId: id, type: "cancelled", message: "扫描已取消" });
+
+        res.json({
+          message: "扫描已取消",
+          status: "cancelled",
+          // terminated=false 表示子进程尚未启动（取消意图已记录，runBridge 启动前会拦截）
+          terminated
         });
       } catch (error) {
         next(error);
@@ -147,36 +183,64 @@ export function createScannerRouter(twainEnabled = true): Router {
     });
 
     // ── Progress Events (SSE) ────────────────────────────
-    router.get("/progress/:sessionId", (req, res) => {
-      const sessionId = safeId(req.params.sessionId);
+    router.get("/progress/:sessionId", async (req, res) => {
+      try {
+        const sessionId = safeId(req.params.sessionId);
 
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no"
-      });
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no"
+        });
 
-      const handler = (event: ScanProgressEvent) => {
-        res.write(`data: ${JSON.stringify(event)}\n\n`);
-        if (event.type === "done" || event.type === "error") {
+        const removeHandler = () => {
+          const listeners = progressEmitters.get(sessionId);
+          if (listeners) {
+            listeners.delete(handler);
+            if (listeners.size === 0) progressEmitters.delete(sessionId);
+          }
+        };
+
+        const handler = (event: ScanProgressEvent) => {
+          if (res.writableEnded || res.destroyed) return;
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+          if (event.type === "done" || event.type === "error" || event.type === "cancelled") {
+            // 终态即移除自己（不依赖 close 事件的延迟清理），缩小竞态窗口
+            removeHandler();
+            res.end();
+          }
+        };
+
+        // Register listener
+        if (!progressEmitters.has(sessionId)) {
+          progressEmitters.set(sessionId, new Set());
+        }
+        progressEmitters.get(sessionId)!.add(handler);
+
+        req.on("close", () => {
+          removeHandler();
+        });
+
+        // 订阅时若会话已终态（扫描可能在订阅前就完成/失败/被取消），补发终态事件
+        const session = await getSession(sessionId);
+        if (res.writableEnded || res.destroyed) return;
+        if (session && (session.status === "completed" || session.status === "error" || session.status === "cancelled")) {
+          removeHandler();
+          if (session.status === "completed") {
+            res.write(`data: ${JSON.stringify({ sessionId, type: "done", message: "扫描已完成" })}\n\n`);
+          } else if (session.status === "cancelled") {
+            res.write(`data: ${JSON.stringify({ sessionId, type: "cancelled", message: "扫描已取消" })}\n\n`);
+          } else {
+            res.write(`data: ${JSON.stringify({ sessionId, type: "error", message: session.error_msg || "扫描出错" })}\n\n`);
+          }
           res.end();
         }
-      };
-
-      // Register listener
-      if (!progressEmitters.has(sessionId)) {
-        progressEmitters.set(sessionId, new Set());
+      } catch (error) {
+        // getSession 等 DB 异常：关闭连接，避免 unhandled rejection 挂住
+        console.error(`[Scanner] SSE progress ${req.params.sessionId} failed:`, error);
+        res.end();
       }
-      progressEmitters.get(sessionId)!.add(handler);
-
-      req.on("close", () => {
-        const listeners = progressEmitters.get(sessionId);
-        if (listeners) {
-          listeners.delete(handler);
-          if (listeners.size === 0) progressEmitters.delete(sessionId);
-        }
-      });
     });
   } else {
     router.all(["/sources", "/scan", "/progress/:sessionId"], (_req, res) => {

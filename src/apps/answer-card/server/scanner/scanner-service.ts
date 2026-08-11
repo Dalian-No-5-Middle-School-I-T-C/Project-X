@@ -51,8 +51,24 @@ export function mapScanPageToLayout(
   return { groupIndex, layoutPage, unusedSide: layoutPage > layoutPageCount };
 }
 
-/** Full scan + OCR workflow */
+/** 创建扫描会话并立即返回 sessionId（POST /scan 先调它拿 id 提前返回 202） */
+export async function createScanSession(config: ScanSessionConfig): Promise<string> {
+  const prepared = await prepareCardLayoutById(config.cardId);
+  if (!prepared) {
+    throw new Error("答题卡不存在，无法开始扫描");
+  }
+  const session = await createSession(config.cardId, config.sessionName, {
+    dpi: config.dpi,
+    duplex: config.duplex,
+    colorMode: config.colorMode,
+    paperSize: config.paperSize
+  });
+  return session.id;
+}
+
+/** Full scan + OCR workflow（后台运行；sessionId 由 createScanSession 预先创建） */
 export async function runScanSession(
+  sessionId: string,
   config: ScanSessionConfig,
   onProgress: ProgressHandler
 ): Promise<string> {
@@ -61,18 +77,16 @@ export async function runScanSession(
     throw new Error("答题卡不存在，无法开始扫描");
   }
   const card = prepared.card;
-  const session = await createSession(config.cardId, config.sessionName, {
-    dpi: config.dpi,
-    duplex: config.duplex,
-    colorMode: config.colorMode,
-    paperSize: config.paperSize
-  });
-
-  const sessionId = session.id;
   const outputDir = scansDir(config.cardId);
   await mkdir(outputDir, { recursive: true });
 
   try {
+    // 竞态防线 1：createScanSession 返回 202 后用户可能立即取消（此时子进程尚未注册），
+    // 若取消已写入 cancelled，这里必须退出而不是把状态覆盖回 scanning
+    const preScan = await getSession(sessionId);
+    if (preScan?.status === "cancelled") {
+      return sessionId;
+    }
     await updateSessionStatus(sessionId, "scanning");
     onProgress({ sessionId, type: "scanning", message: "正在连接扫描仪..." });
 
@@ -89,7 +103,7 @@ export async function runScanSession(
       showUi: config.showUi
     };
 
-    const result = await scan(scanConfig);
+    const result = await scan(scanConfig, sessionId);
 
     if (!result.pages || result.pages.length === 0) {
       throw new Error(result.message || "扫描未产生任何页面");
@@ -129,14 +143,21 @@ export async function runScanSession(
       });
     }
 
-    await updateSessionStatus(sessionId, "completed");
-
+    // 页面落库后不置 completed：OCR 是流水线的一部分，全部完成才算终态。
+    // 否则 OCR 阶段取消会被"已 completed"拒绝、SSE 补发也会提前发 done
     onProgress({
       sessionId, type: "ocr_start",
       message: "正在识别答题卡...", totalPages: recordIds.length
     });
 
     await runOcrOnSession(sessionId, config.cardId, onProgress);
+
+    // 竞态防线 2：OCR 期间被取消则不再写 completed
+    const postScan = await getSession(sessionId);
+    if (postScan?.status === "cancelled") {
+      return sessionId;
+    }
+    await updateSessionStatus(sessionId, "completed");
 
     onProgress({
       sessionId, type: "done",
@@ -146,6 +167,12 @@ export async function runScanSession(
     return sessionId;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    // 主动取消（cancel 接口已把状态标记为 cancelled）：不覆盖为 error 也不向上抛，
+    // 避免 POST 处理器把主动取消当失败打 error 日志
+    const current = await getSession(sessionId);
+    if (current?.status === "cancelled") {
+      return sessionId;
+    }
     await updateSessionStatus(sessionId, "error", msg);
     onProgress({ sessionId, type: "error", message: msg });
     throw error;

@@ -4,23 +4,23 @@ setlocal enabledelayedexpansion
 set "ARCH=%~1"
 if "%ARCH%"=="" set "ARCH=x64"
 
+set "SCRIPT_DIR=%~dp0"
+for %%i in ("%SCRIPT_DIR%..") do set "ROOT_DIR=%%~fi"
+
 if /I "%ARCH%"=="x64" (
     set "PLATFORM=x64"
     set "OUT_ARCH=win-x64"
     set "VC_ARCH=x64"
-    set "TWAIN_DSM_DLL_DEFAULT=D:\twain-dsm-2.5.1\twain-dsm-2.5.1\Releases\dsm_020403\windows\64\TWAINDSM.dll"
+    set "TWAIN_DSM_DLL_DEFAULT=%ROOT_DIR%\native\ScannerBridge\third_party\twain-dsm-2.5.1\dsm\win-x64\TWAINDSM.dll"
 ) else if /I "%ARCH%"=="ia32" (
     set "PLATFORM=Win32"
     set "OUT_ARCH=win-ia32"
     set "VC_ARCH=x86"
-    set "TWAIN_DSM_DLL_DEFAULT=D:\twain-dsm-2.5.1\twain-dsm-2.5.1\Releases\dsm_020403\windows\32\TWAINDSM.dll"
+    set "TWAIN_DSM_DLL_DEFAULT=%ROOT_DIR%\native\ScannerBridge\third_party\twain-dsm-2.5.1\dsm\win-ia32\TWAINDSM.dll"
 ) else (
     echo Usage: build-scanner-bridge.bat [x64^|ia32]
     exit /b 1
 )
-
-set "SCRIPT_DIR=%~dp0"
-for %%i in ("%SCRIPT_DIR%..") do set "ROOT_DIR=%%~fi"
 
 echo ============================================
 echo  Project-X Scanner Bridge Build Script
@@ -29,15 +29,24 @@ echo Architecture: %ARCH% ^(%PLATFORM%^)
 echo.
 
 set "MSBUILD="
+set "VS_INSTALL="
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "MSBUILD_LIST=%TEMP%\vswhere-msbuild-%RANDOM%.txt"
+set "VSWHERE_INSTALL=%TEMP%\vswhere-install-%RANDOM%.txt"
 if exist "%VSWHERE%" (
-    for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" 2^>nul`) do (
-        if exist "%%i" (
-            set "MSBUILD=%%i"
-            echo [vswhere] Found MSBuild: %%i
-        )
-    )
-    if defined MSBUILD goto :found_msbuild
+    rem for /f 内嵌命令会剥离引号导致带空格路径拆开，改用临时文件读取；
+    rem MSBUILD 检查必须放在 if 块外（块内 %MSBUILD% 在解析时仍是空值）
+    "%VSWHERE%" -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" > "%MSBUILD_LIST%" 2>nul
+    set /p MSBUILD=<"%MSBUILD_LIST%"
+    del "%MSBUILD_LIST%" >nul 2>&1
+    rem 安装根由 vswhere 直接给出：MSBuild 路径上溯层数随安装布局（Program Files\2022\Community vs D:\apps\vs-s-c）变化，不可靠
+    "%VSWHERE%" -latest -property installationPath > "%VSWHERE_INSTALL%" 2>nul
+    set /p VS_INSTALL_RAW=<"%VSWHERE_INSTALL%"
+    del "%VSWHERE_INSTALL%" >nul 2>&1
+)
+if defined MSBUILD if exist "%MSBUILD%" (
+    echo [vswhere] Found MSBuild: %MSBUILD%
+    goto :found_msbuild
 )
 
 for %%d in ("Community" "Professional" "Enterprise" "BuildTools") do (
@@ -66,7 +75,12 @@ exit /b 1
 
 :found_msbuild
 for /f "delims=" %%i in ("%MSBUILD%") do set "MSBUILD_DIR=%%~dpi"
-set "VS_INSTALL=%MSBUILD_DIR%..\..\..\.."
+if defined VS_INSTALL_RAW (
+    set "VS_INSTALL=%VS_INSTALL_RAW%"
+    echo [vswhere] VS install: %VS_INSTALL%
+) else (
+    set "VS_INSTALL=%MSBUILD_DIR%..\..\..\.."
+)
 
 set "VCVARS="
 for %%f in (

@@ -1,6 +1,6 @@
 # Project-X 成绩分析系统 · 小程序上线部署指南
 
-> 本指南教你如何把 `Grade-Analysis-System-mobile.html` 接入 Project-X 后端，并通过 **微信小程序 web-view** 方式上线发布。
+> 本指南说明 Project-X 后端部署与学生端小程序（独立仓库 [X-exam](https://github.com/Dalian-No-5-Middle-School-I-T-C/X-exam)）的上线步骤。
 
 ---
 
@@ -8,7 +8,7 @@
 
 | 项目 | 要求 | 说明 |
 |------|------|------|
-| 小程序主体 | **企业 / 组织 / 政府** | 个人类型小程序无法使用 `web-view` 组件 |
+| 小程序主体 | 个人主体即可（以微信平台类目审核为准） | 学生端为原生页面，无需 `web-view` 企业认证 |
 | 服务器 | 有公网 IP 或域名 | 用于部署后端 API + 静态网页 |
 | 域名备案 | 国内服务器需 ICP 备案 | 微信小程序强制要求 |
 | HTTPS | 必须 | 小程序只支持 HTTPS 业务域名 |
@@ -87,6 +87,9 @@ cp Grade-Analysis-System-mobile.html /var/www/project-x/
 location / {
     root /var/www/project-x;
     try_files $uri $uri/ /index.html;
+    # 静态页面不经 Express，需由 Nginx 补安全响应头（API 响应已由后端统一添加）
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
 }
 
 location /api/ {
@@ -103,17 +106,13 @@ https://your-domain.com/Grade-Analysis-System-mobile.html
 
 ### 3.3 跨域部署
 
-如果网页和后端使用不同域名，需要在后端开启 CORS。修改 `src/apps/answer-card/server/index.ts`，在路由前添加：
+如果网页和后端使用不同域名，需要在后端开启 CORS。后端通过环境变量 `PROJECTX_CORS_ORIGIN` 配置允许的前端域名白名单（逗号分隔），例如：
 
-```typescript
-import cors from 'cors';
-
-app.use(cors({
-  origin: ['https://your-frontend-domain.com', 'https://your-miniprogram-domain.com'],
-  credentials: true,
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+```bash
+PROJECTX_CORS_ORIGIN=https://your-frontend-domain.com
 ```
+
+未设置时默认仅允许本机调试地址。学生端小程序使用原生 `wx.request` / `downloadFile`，不受浏览器 CORS 限制，无需加入白名单。
 
 并在 `Grade-Analysis-System-mobile.html` 的 URL 中通过 `?api_base=...` 指定后端地址：
 
@@ -125,46 +124,11 @@ https://your-frontend-domain.com/Grade-Analysis-System-mobile.html?api_base=http
 
 ## 四、微信小程序配置
 
-### 4.1 注册与认证
+学生端小程序为独立仓库 [X-exam](https://github.com/Dalian-No-5-Middle-School-I-T-C/X-exam)（原生 `wx.request` / `downloadFile`，不使用 `web-view`）：
 
-1. 登录 [微信公众平台](https://mp.weixin.qq.com)
-2. 注册小程序账号，选择 **企业/组织/政府** 主体类型
-3. 完成主体认证（需企业营业执照或组织机构代码证）
-4. 在「开发」→「开发管理」→「开发设置」中获取 **AppID**
-
-> ⚠️ **重要**：个人主体小程序无法使用 `web-view`，请务必确认主体类型。
-
-### 4.2 配置业务域名
-
-1. 进入「开发」→「开发管理」→「开发设置」→「服务器域名」
-2. 在 **request 合法域名** 中添加你的后端域名：
-   ```
-   https://your-domain.com
-   ```
-3. 在 **业务域名（webview）** 中添加你的前端网页域名：
-   ```
-   https://your-domain.com
-   ```
-4. 下载「校验文件」并上传到网站根目录（微信会验证域名所有权）
-
-### 4.3 导入小程序项目
-
-1. 下载并安装 [微信开发者工具](https://developers.weixin.qq.com/miniprogram/dev/devtools/download.html)
-2. 打开开发者工具，选择「导入项目」
-3. 选择 `miniprogram` 目录
-4. 填入你的 **AppID**（在 `project.config.json` 中把 `wxYOURAPPIDHERE` 替换）
-5. 点击「编译」预览效果
-
-### 4.4 修改小程序配置
-
-打开 `miniprogram/project.config.json`，替换 AppID：
-
-```json
-{
-  "appid": "wx1234567890abcdef",
-  "projectname": "project-x-grade-analysis"
-}
-```
+1. 注册小程序账号并获取 **AppID**（个人主体即可，无需企业认证；具体以微信平台类目审核为准）。
+2. 在「开发」→「开发管理」→「开发设置」→「服务器域名」中，把后端域名加入 **request** 与 **downloadFile** 合法域名。
+3. 用微信开发者工具导入 X-exam 仓库，确认 `project.config.json` 中的 AppID（仓库已配置；如使用自己的小程序，替换为你的 AppID）后编译预览。
 
 ---
 
@@ -234,11 +198,11 @@ GET /api/analysis/exams/1/questions
 
 ## 七、常见问题排查
 
-### Q1: 小程序中打开网页空白或报错
+### Q1: 小程序页面空白或接口报错
 
-- 检查「业务域名」是否已配置并通过验证
-- 检查网页是否为 HTTPS
-- 检查 `web-view` 的 `src` 地址是否正确编码
+- 检查「服务器域名」中是否已配置后端的 request / downloadFile 合法域名
+- 检查 `project.config.json` 中的 AppID 是否已替换
+- 检查后端是否 HTTPS 且可公网访问
 
 ### Q2: 网页提示「后端连接失败」
 
@@ -257,10 +221,9 @@ GET /api/analysis/exams/1/questions
 - 后端 `AnalysisRepository` 依赖 `class_students` 表关联。如果学生没有绑定班级，缓存会为空，班级列显示为空字符串
 - 在后台管理页面把学生分配到班级即可
 
-### Q5: 个人类型小程序无法使用 web-view
+### Q5: 个人主体小程序能否使用
 
-- **无解**。必须注册企业/组织主体才能使用 `web-view`。
-- 替代方案：将页面重写为小程序原生页面（WXML/WXSS/JS），但工作量极大。
+- 可以。学生端已改为原生页面（X-exam 仓库），不依赖 `web-view`，个人主体即可发布（以微信平台类目审核为准）。
 
 ---
 
@@ -269,7 +232,7 @@ GET /api/analysis/exams/1/questions
 | 文件 | 说明 | 位置 |
 |------|------|------|
 | `Grade-Analysis-System-mobile.html` | 改造后的成绩分析网页（支持移动端 + API 接入） | 项目根目录 |
-| `miniprogram/` | 微信小程序项目代码 | 项目根目录 |
+| X-exam 仓库 | 学生端小程序（独立仓库） | [github.com/Dalian-No-5-Middle-School-I-T-C/X-exam](https://github.com/Dalian-No-5-Middle-School-I-T-C/X-exam) |
 | `deploy-guide.md` | 本部署指南 | 项目根目录 |
 
 ---

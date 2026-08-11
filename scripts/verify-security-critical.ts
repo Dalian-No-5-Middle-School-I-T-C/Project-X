@@ -144,6 +144,8 @@ async function main(): Promise<void> {
     check(
       scannerHealth.status === 200
         && scannerHealth.headers.get("access-control-allow-origin") === scannerOrigin
+        && scannerHealth.headers.get("x-content-type-options") === "nosniff"
+        && scannerHealth.headers.get("referrer-policy") === "no-referrer"
         && scannerHealthBody.capabilities?.scannerClientApi === true
         && scannerHealthBody.capabilities?.nativeScannerApi === false,
       "扫描客户端模式允许动态环回端口且不启用服务端 TWAIN"
@@ -165,8 +167,10 @@ async function main(): Promise<void> {
     });
     check(
       scannerPreflight.status === 204
-        && scannerPreflight.headers.get("access-control-allow-origin") === scannerOrigin,
-      "扫描上传 API 预检请求通过"
+        && scannerPreflight.headers.get("access-control-allow-origin") === scannerOrigin
+        && scannerPreflight.headers.get("x-content-type-options") === "nosniff"
+        && scannerPreflight.headers.get("referrer-policy") === "no-referrer",
+      "扫描上传 API 预检请求通过且携带安全响应头"
     );
 
     const bootstrapLogin = await fetch(`${base}/api/auth/login`, {
@@ -175,6 +179,44 @@ async function main(): Promise<void> {
     });
     const bootstrapBody = await bootstrapLogin.json() as { token: string; passwordChangeRequired: boolean };
     check(bootstrapLogin.status === 200 && bootstrapBody.passwordChangeRequired, "登录响应返回 passwordChangeRequired=true");
+    const badTypeLogin = await fetch(`${base}/api/auth/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: 12345, password: "x" })
+    });
+    check(badTypeLogin.status === 400, "非字符串 identifier 登录请求被 400 拒绝");
+    const noBodyLogin = await fetch(`${base}/api/auth/login`, { method: "POST" });
+    check(noBodyLogin.status === 400, "无请求体登录请求被 400 拒绝");
+    const emptyBodyLogin = await fetch(`${base}/api/auth/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    check(emptyBodyLogin.status === 400, "空请求体登录请求被 400 拒绝");
+    const badPasswordLogin = await fetch(`${base}/api/auth/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: "admin", password: 123 })
+    });
+    check(badPasswordLogin.status === 400, "非字符串 password 登录请求被 400 拒绝");
+    const badJsonLogin = await fetch(`${base}/api/auth/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: "{"
+    });
+    const badJsonBody = await badJsonLogin.json() as { code?: string };
+    check(
+      badJsonLogin.status === 400 && badJsonBody.code === "INVALID_JSON"
+        && badJsonLogin.headers.get("x-content-type-options") === "nosniff"
+        && badJsonLogin.headers.get("referrer-policy") === "no-referrer",
+      "非法 JSON 返回 400 INVALID_JSON 且携带安全响应头"
+    );
+    const oversized = await fetch(`${base}/api/review/exams/1/block-crops/1/submit`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: "x".repeat(70 * 1024) })
+    });
+    check(
+      oversized.status === 413
+        && oversized.headers.get("x-content-type-options") === "nosniff"
+        && oversized.headers.get("referrer-policy") === "no-referrer",
+      "请求体超限返回 413 且携带安全响应头"
+    );
     const meResponse = await fetch(`${base}/api/auth/me`, { headers: authHeaders(bootstrapBody.token) });
     const meBody = await meResponse.json() as { passwordChangeRequired?: boolean };
     check(meResponse.status === 200 && meBody.passwordChangeRequired === true, "/api/auth/me 返回强制改密状态");
@@ -361,7 +403,17 @@ async function main(): Promise<void> {
     // 等待 fire-and-forget 的「考试关闭自动备份」完成，避免与临时目录删除竞态
     // （否则会输出 AutoBackup 目录不存在的误导性错误日志）。
     await new Promise((resolve) => setTimeout(resolve, 600));
-    rmSync(tempDir, { recursive: true, force: true });
+    // Windows 上备份连接可能仍占用文件句柄，仅对这种环境性 EPERM/EBUSY 告警，其余清理错误照常抛出
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EPERM" || code === "EBUSY") {
+        console.warn("[verify] 临时目录清理失败（Windows 句柄占用，可忽略）:", (error as Error).message);
+      } else {
+        throw error;
+      }
+    }
   }
 }
 
