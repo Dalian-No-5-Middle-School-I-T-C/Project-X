@@ -11,6 +11,7 @@ import {
   ClipboardCheck,
   ClipboardList,
   Download,
+  ExternalLink,
   FileDown,
   FolderOpen,
   ImagePlus,
@@ -39,6 +40,7 @@ import {
 import { useAuth } from "./auth/AuthContext";
 import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "./auth/api";
 import { cn } from "./lib/utils";
+import { PROMO_SITE_URL } from "./lib/external-links";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
 import { AccountMenu } from "./components/AccountMenu";
@@ -1892,6 +1894,22 @@ function App() {
             >
               {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
+            {/* 宣传网站入口：外链 GitHub Pages 宣传站点（与暗色按钮同尺寸） */}
+            <a
+              href={PROMO_SITE_URL}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="访问宣传网站"
+              title="访问宣传网站"
+              className={cn(
+                "inline-flex items-center justify-center rounded-md text-secondary-foreground",
+                "transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground",
+                "h-control-md w-control-md",
+                effectiveRailCollapsed ? "self-center" : undefined,
+              )}
+            >
+              <ExternalLink size={18} />
+            </a>
             <AccountMenu
               compact={effectiveRailCollapsed}
               onOpenSponsor={() => {

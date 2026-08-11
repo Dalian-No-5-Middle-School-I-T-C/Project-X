@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
-import { BookOpen, LogIn, Shield } from "lucide-react";
+import { BookOpen, ExternalLink, LogIn, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
+import { PROMO_SITE_URL } from "../lib/external-links";
 import { BeianFooter } from "./BeianFooter";
 import { UserGuideModal } from "./UserGuideModal";
 import { SkinSwitcher } from "./SkinSwitcher";
@@ -43,7 +44,19 @@ export function LoginPage() {
       <div className="paper-grid relative flex min-h-[100dvh] items-center justify-center overflow-y-auto bg-background p-6">
         {/* v2.1.0: 登录页皮肤入口（自管模式：登录前直接读写 localStorage + data-* 属性；
             登录后由 App 接管，本地选择优先并同步到账号） */}
-        <SkinSwitcher className="absolute right-4 top-4 z-10" />
+        <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
+          <a
+            href={PROMO_SITE_URL}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="访问宣传网站"
+            title="访问宣传网站"
+            className="inline-flex h-control-md w-control-md items-center justify-center rounded-md text-secondary-foreground transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground"
+          >
+            <ExternalLink size={18} />
+          </a>
+          <SkinSwitcher />
+        </div>
       <Card className="login-card-demo brutal-hard grid w-full max-w-[820px] overflow-hidden md:grid-cols-[340px_minmax(0,1fr)]">
         <div className="login-brand-panel flex flex-col gap-3 border-b border-border-subtle bg-secondary p-7 md:border-b-0 md:border-r">
           <div className="flex size-11 items-center justify-center rounded-xl bg-primary text-primary-foreground"><Shield size={22} /></div>
