@@ -42,6 +42,7 @@
     "verify:scoring-mode-config": "tsx scripts/scoring-mode-config-integration.ts",
     "verify:176-178": "tsx scripts/verify-176-178-smoke.ts",
     "verify:scanner-cancel": "tsx scripts/verify-scanner-cancel.ts",
+    "verify:core-logic": "tsx scripts/verify-core-logic.ts",
     "typecheck": "tsc --noEmit"
   },
   "browserslist": [
