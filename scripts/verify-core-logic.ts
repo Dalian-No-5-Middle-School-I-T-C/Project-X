@@ -130,6 +130,12 @@ section("1. validateCardScores —— 总分与科目");
   const rFlex = validateCardScores(card("yuwen", [objectiveBlock(25, 4)]));
   check("语文按拼音 yuwen 识别为灵活总分", rFlex.flexibleTotalSubject === true && rFlex.issues.length === 0);
 
+  const rFlexBad = validateCardScores(card("yuwen", [objectiveBlock(10, 4)]));
+  check(
+    "语文 40 分豁免总分 100/150 告警",
+    rFlexBad.flexibleTotalSubject === true && !rFlexBad.issues.some((i) => i.kind === "total")
+  );
+
   const rBadTotal = validateCardScores(card("shuxue", [objectiveBlock(10, 4)]));
   check(
     "总分 40 非 100/150 时产生 total 告警",
@@ -162,8 +168,11 @@ section("4. formatBlankLabel");
   check("阿拉伯数字 (1)", formatBlankLabel("arabic_parentheses", 0) === "(1)");
   check("罗马数字 (i)", formatBlankLabel("roman_parentheses", 0) === "(i)");
   check("罗马数字 (ii)", formatBlankLabel("roman_parentheses", 1) === "(ii)");
+  check("罗马数字 (iv)", formatBlankLabel("roman_parentheses", 3) === "(iv)");
   check("罗马数字 (v)", formatBlankLabel("roman_parentheses", 4) === "(v)");
+  check("罗马数字 (ix)", formatBlankLabel("roman_parentheses", 8) === "(ix)");
   check("罗马数字 (x)", formatBlankLabel("roman_parentheses", 9) === "(x)");
+  check("罗马数字 (xl)", formatBlankLabel("roman_parentheses", 39) === "(xl)");
   check("罗马数字 (l)", formatBlankLabel("roman_parentheses", 49) === "(l)");
 }
 
