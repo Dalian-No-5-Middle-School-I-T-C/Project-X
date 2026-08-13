@@ -122,6 +122,15 @@ export class ClassRepository {
     await this.db.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", classId, studentId);
   }
 
+  /** 学生迁移：从原班级移除并加入目标班级（目标班级所属年级即学生的新年级）。 */
+  async moveStudent(fromClassId: number, toClassId: number, studentId: number): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", fromClassId, studentId);
+      const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
+      await tx.run(sql, toClassId, studentId);
+    });
+  }
+
   async isStudentInClass(classId: number, studentId: number): Promise<boolean> {
     const row = await this.db.get("SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ? LIMIT 1", classId, studentId);
     return Boolean(row);

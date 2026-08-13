@@ -192,6 +192,13 @@ async function main(): Promise<void> {
   ok(await classRepo.isStudentInClass(klass.id, student.id), "学生归属判定正确");
   await classRepo.removeStudent(klass.id, student.id);
   ok(!(await classRepo.isStudentInClass(klass.id, student.id)), "移除学生成功");
+  // 学生迁移（#235）：跨班级/跨年级
+  const grade2 = await classRepo.createGrade("高二", 2);
+  const klass2 = await classRepo.createClass(grade2.id, "2班", 1);
+  const mover = studentIds.find((sid) => sid !== student.id);
+  await classRepo.moveStudent(klass.id, klass2.id, mover!);
+  ok(await classRepo.isStudentInClass(klass2.id, mover!), "学生已迁移到目标班级");
+  ok(!(await classRepo.isStudentInClass(klass.id, mover!)), "学生已从原班级移除");
 
   // ── 6. 学生自助查分 ───────────────────────────────────
   section("6. 学生自助查分");
