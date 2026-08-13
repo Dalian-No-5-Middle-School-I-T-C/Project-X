@@ -7,7 +7,8 @@ export function currentStage(gradeName: string, now = new Date()): string | null
   if (!entry) return null;
   const schoolYearStart = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
   const stage = schoolYearStart - entry + 1;
-  return stage >= 1 && stage <= 3 ? ["高一", "高二", "高三"][stage - 1] : null;
+  if (stage >= 1 && stage <= 3) return ["高一", "高二", "高三"][stage - 1];
+  return stage > 3 ? "已毕业" : null;
 }
 
 // demo(): 自检（npm run verify:grade-stage）
@@ -20,7 +21,8 @@ if (typeof process !== "undefined" && process.argv?.[1]?.endsWith("gradeStage.ts
     ["2025级", "2026-09-01", "高二"],
     ["2026级", "2026-09-01", "高一"],
     ["2027级", "2026-09-01", null],
-    ["2022级", "2026-09-01", null],
+    ["2022级", "2026-09-01", "已毕业"],
+    ["2024级", "2029-09-01", "已毕业"],
     ["高一", "2026-08-13", null],
   ];
   for (const [name, date, expected] of cases) {
