@@ -123,8 +123,8 @@ export type CreateExamGroupInput = z.infer<typeof CreateExamGroupSchema>;
  */
 const flexibleBoolean = z.preprocess(
   (v) => {
-    if (v === "true" || v === true || v === 1) return true;
-    if (v === "false" || v === false || v === 0) return false;
+    if (v === "true" || v === "1" || v === true || v === 1) return true;
+    if (v === "false" || v === "0" || v === false || v === 0) return false;
     return v;
   },
   z.boolean(),

@@ -71,3 +71,6 @@ scripts/radio-bug-*.mjs
 docs/class-diagram.mermaid
 docs/system_design.md
 docs/sequence-diagram.mermaid
+
+# GUI 测试截图（web-gui-tester 验证证据，不入库）
+gui-test-screenshots/
