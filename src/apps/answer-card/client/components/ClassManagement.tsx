@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowRightLeft, Download, Plus, RefreshCw, Search, Trash2, Upload, UserMinus, UserPlus } from "lucide-react";
+import { ArrowRightLeft, Download, Pencil, Plus, RefreshCw, Search, Trash2, Upload, UserMinus, UserPlus } from "lucide-react";
 import { fetchJson, authFetch } from "../auth/api";
 import type { ClassRecord, ClassStudent, GradeRecord, UserListItem, UsersListResponse } from "../auth/types";
 import { cn } from "../lib/utils";
@@ -219,6 +219,25 @@ export function ClassManagement() {
       await loadGrades();
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function renameGrade(id: number, name: string) {
+    const next = prompt("修改年级名称：", name)?.trim();
+    if (!next || next === name) return;
+    setBusy(true);
+    setError("");
+    try {
+      await fetchJson(`/api/classes/grades/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: next })
+      });
+      await loadGrades();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重命名失败");
     } finally {
       setBusy(false);
     }
@@ -595,9 +614,14 @@ export function ClassManagement() {
                 <button type="button" onClick={() => setSelectedGradeId(g.id)} className="min-w-0 flex-1 text-left text-sm font-medium text-foreground">
                   {g.name}
                 </button>
-                <Button variant="ghost" size="icon-sm" title="删除年级" onClick={() => void deleteGrade(g.id, g.name)} disabled={busy}>
-                  <Trash2 size={14} />
-                </Button>
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button variant="ghost" size="icon-sm" title="重命名年级" onClick={() => void renameGrade(g.id, g.name)} disabled={busy}>
+                    <Pencil size={14} />
+                  </Button>
+                  <Button variant="ghost" size="icon-sm" title="删除年级" onClick={() => void deleteGrade(g.id, g.name)} disabled={busy}>
+                    <Trash2 size={14} />
+                  </Button>
+                </div>
               </div>
             ))}
             {grades.length === 0 && <p className="px-2 py-1 text-sm text-muted-foreground">暂无年级</p>}

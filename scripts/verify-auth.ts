@@ -183,6 +183,8 @@ async function main(): Promise<void> {
   const grade = await classRepo.createGrade("高一", 1);
   const klass = await classRepo.createClass(grade.id, "1班", 1);
   ok(klass.grade_name === "高一", "创建年级与班级成功");
+  await classRepo.updateGrade(grade.id, "2024级");
+  ok((await classRepo.findClassById(klass.id))?.grade_name === "2024级", "年级重命名同步到班级");
   const studentIds = (db.prepare("SELECT id FROM users WHERE role_id = 3").all() as Array<{ id: number }>).map(
     (r) => r.id
   );

@@ -50,6 +50,10 @@ export class ClassRepository {
     return (await this.db.get("SELECT * FROM grades WHERE id = ?", result.lastInsertRowid))!;
   }
 
+  async updateGrade(id: number, name: string): Promise<void> {
+    await this.db.run("UPDATE grades SET name = ? WHERE id = ?", name, id);
+  }
+
   async deleteGrade(id: number): Promise<void> {
     await this.db.run("DELETE FROM grades WHERE id = ?", id);
   }

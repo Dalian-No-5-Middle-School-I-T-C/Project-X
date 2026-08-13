@@ -33,6 +33,17 @@ router.post("/grades", manage, async (req: Request, res: Response) => {
   res.status(201).json(await classRepo.createGrade(String(name), Number(sortOrder ?? 0)));
 });
 
+router.put("/grades/:id", manage, async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const { name } = req.body ?? {};
+  if (!name) {
+    res.status(400).json({ message: "缺少年级名称" });
+    return;
+  }
+  await classRepo.updateGrade(id, String(name));
+  res.json({ message: "年级已重命名" });
+});
+
 router.delete("/grades/:id", manage, async (req: Request, res: Response) => {
   await classRepo.deleteGrade(Number(req.params.id));
   res.json({ message: "年级已删除（含其下班级）" });
