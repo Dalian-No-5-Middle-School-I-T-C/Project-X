@@ -1898,7 +1898,7 @@ function App() {
             <a
               href={PROMO_SITE_URL}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               aria-label="访问宣传网站"
               title="访问宣传网站"
               className={cn(
