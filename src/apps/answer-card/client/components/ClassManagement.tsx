@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, Plus, RefreshCw, Search, Trash2, Upload, UserMinus, UserPlus } from "lucide-react";
+import { ArrowRightLeft, Download, Pencil, Plus, RefreshCw, Search, Trash2, Upload, UserMinus, UserPlus } from "lucide-react";
 import { fetchJson, authFetch } from "../auth/api";
 import type { ClassRecord, ClassStudent, GradeRecord, UserListItem, UsersListResponse } from "../auth/types";
 import { cn } from "../lib/utils";
+import { currentStage } from "../util/gradeStage";
 import {
   Button,
   Input,
@@ -13,8 +14,16 @@ import {
   DialogTitle,
   DialogBody,
   DialogFooter,
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
 } from "./ui/v2";
 import { ImportModal } from "./ImportModal";
+
+/** Radix Select 不允许空字符串作为 value，用哨兵值表达「未选择」。 */
+const NONE = "__none__";
 
 // ── CSV / 制表符解析工具 ───────────────────────────────────
 function parseCsv(text: string): string[][] {
@@ -113,6 +122,12 @@ export function ClassManagement() {
   // v1.1: 批量导入（CSV/Excel）
   const [showCsvImport, setShowCsvImport] = useState(false);
 
+  // 学生迁移弹窗（跨班级/跨年级）
+  const [moveTarget, setMoveTarget] = useState<ClassStudent | null>(null);
+  const [moveGradeId, setMoveGradeId] = useState<number | null>(null);
+  const [moveClassId, setMoveClassId] = useState<number | null>(null);
+  const [allClasses, setAllClasses] = useState<ClassRecord[]>([]);
+
   const loadGrades = useCallback(async () => {
     const data = await fetchJson<GradeRecord[]>("/api/classes/grades");
     setGrades(data);
@@ -210,6 +225,25 @@ export function ClassManagement() {
     }
   }
 
+  async function renameGrade(id: number, name: string) {
+    const next = prompt("修改年级名称：", name)?.trim();
+    if (!next || next === name) return;
+    setBusy(true);
+    setError("");
+    try {
+      await fetchJson(`/api/classes/grades/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: next })
+      });
+      await loadGrades();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重命名失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function createClass() {
     if (!selectedGradeId) {
       setError("请先选择年级");
@@ -291,6 +325,37 @@ export function ClassManagement() {
       if (selectedGradeId) await loadClasses(selectedGradeId);
     } catch (err) {
       setError(err instanceof Error ? err.message : "移除失败");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openMoveDialog(student: ClassStudent) {
+    setMoveTarget(student);
+    setMoveGradeId(selectedGradeId);
+    setMoveClassId(null);
+    try {
+      setAllClasses(await fetchJson<ClassRecord[]>("/api/classes"));
+    } catch {
+      setAllClasses(classes);
+    }
+  }
+
+  async function confirmMove() {
+    if (!moveTarget || !selectedClassId || !moveClassId) return;
+    setBusy(true);
+    setError("");
+    try {
+      await fetchJson(`/api/classes/${selectedClassId}/students/${moveTarget.student_id}/move`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetClassId: moveClassId })
+      });
+      await loadRoster(selectedClassId);
+      if (selectedGradeId) await loadClasses(selectedGradeId);
+      setMoveTarget(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "迁移失败");
     } finally {
       setBusy(false);
     }
@@ -547,12 +612,20 @@ export function ClassManagement() {
                   selectedGradeId === g.id ? "border-primary bg-accent" : "border-transparent hover:bg-secondary"
                 )}
               >
-                <button type="button" onClick={() => setSelectedGradeId(g.id)} className="min-w-0 flex-1 text-left text-sm font-medium text-foreground">
-                  {g.name}
+                <button type="button" onClick={() => setSelectedGradeId(g.id)} className="flex min-w-0 flex-1 items-center gap-1 text-left text-sm font-medium text-foreground">
+                  <span className="truncate">{g.name}</span>
+                  {currentStage(g.name) && (
+                    <small className="shrink-0 text-xs text-muted-foreground">{currentStage(g.name)}</small>
+                  )}
                 </button>
-                <Button variant="ghost" size="icon-sm" title="删除年级" onClick={() => void deleteGrade(g.id, g.name)} disabled={busy}>
-                  <Trash2 size={14} />
-                </Button>
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button variant="ghost" size="icon-sm" title="重命名年级" onClick={() => void renameGrade(g.id, g.name)} disabled={busy}>
+                    <Pencil size={14} />
+                  </Button>
+                  <Button variant="ghost" size="icon-sm" title="删除年级" onClick={() => void deleteGrade(g.id, g.name)} disabled={busy}>
+                    <Trash2 size={14} />
+                  </Button>
+                </div>
               </div>
             ))}
             {grades.length === 0 && <p className="px-2 py-1 text-sm text-muted-foreground">暂无年级</p>}
@@ -657,9 +730,14 @@ export function ClassManagement() {
                       <div className="text-sm text-foreground">{s.name}</div>
                       <small className="text-xs text-muted-foreground">{s.student_number ?? s.username}</small>
                     </div>
-                    <Button variant="ghost" size="icon-sm" title="移出班级" onClick={() => void removeStudent(s.student_id, s.name)} disabled={busy}>
-                      <UserMinus size={14} />
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button variant="ghost" size="icon-sm" title="迁移到其他班级" onClick={() => void openMoveDialog(s)} disabled={busy}>
+                        <ArrowRightLeft size={14} />
+                      </Button>
+                      <Button variant="ghost" size="icon-sm" title="移出班级" onClick={() => void removeStudent(s.student_id, s.name)} disabled={busy}>
+                        <UserMinus size={14} />
+                      </Button>
+                    </div>
                   </div>
                 ))}
                 {roster.length === 0 && <p className="px-2 py-1 text-sm text-muted-foreground">班级暂无学生</p>}
@@ -716,6 +794,61 @@ export function ClassManagement() {
               disabled={busy || !newStudentName.trim() || !newStudentNumber.trim()}
             >
               创建学生
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── 学生迁移弹窗 ────────────────────────────────── */}
+      <Dialog
+        open={moveTarget !== null}
+        onOpenChange={(open) => { if (!open) setMoveTarget(null); }}
+      >
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>迁移学生</DialogTitle>
+          </DialogHeader>
+          <DialogBody className="flex flex-col gap-3">
+            <p className="text-sm text-muted-foreground">
+              将 {moveTarget?.name}（{moveTarget?.student_number ?? moveTarget?.username}）迁移到：
+            </p>
+            <Field label="年级">
+              <Select
+                value={moveGradeId != null ? String(moveGradeId) : NONE}
+                onValueChange={(v) => { setMoveGradeId(v === NONE ? null : Number(v)); setMoveClassId(null); }}
+                disabled={busy}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="选择年级" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>选择年级</SelectItem>
+                  {grades.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field label="班级">
+              <Select
+                value={moveClassId != null ? String(moveClassId) : NONE}
+                onValueChange={(v) => setMoveClassId(v === NONE ? null : Number(v))}
+                disabled={busy || moveGradeId == null}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="选择班级" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE}>选择班级</SelectItem>
+                  {allClasses
+                    .filter((c) => c.grade_id === moveGradeId && c.id !== selectedClassId)
+                    .map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </Field>
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMoveTarget(null)}>取消</Button>
+            <Button variant="primary" onClick={() => void confirmMove()} disabled={busy || moveClassId == null}>
+              迁移
             </Button>
           </DialogFooter>
         </DialogContent>

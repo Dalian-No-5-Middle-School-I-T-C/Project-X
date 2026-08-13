@@ -183,6 +183,8 @@ async function main(): Promise<void> {
   const grade = await classRepo.createGrade("高一", 1);
   const klass = await classRepo.createClass(grade.id, "1班", 1);
   ok(klass.grade_name === "高一", "创建年级与班级成功");
+  await classRepo.updateGrade(grade.id, "2024级");
+  ok((await classRepo.findClassById(klass.id))?.grade_name === "2024级", "年级重命名同步到班级");
   const studentIds = (db.prepare("SELECT id FROM users WHERE role_id = 3").all() as Array<{ id: number }>).map(
     (r) => r.id
   );
@@ -192,6 +194,13 @@ async function main(): Promise<void> {
   ok(await classRepo.isStudentInClass(klass.id, student.id), "学生归属判定正确");
   await classRepo.removeStudent(klass.id, student.id);
   ok(!(await classRepo.isStudentInClass(klass.id, student.id)), "移除学生成功");
+  // 学生迁移（#235）：跨班级/跨年级
+  const grade2 = await classRepo.createGrade("高二", 2);
+  const klass2 = await classRepo.createClass(grade2.id, "2班", 1);
+  const mover = studentIds.find((sid) => sid !== student.id);
+  await classRepo.moveStudent(klass.id, klass2.id, mover!);
+  ok(await classRepo.isStudentInClass(klass2.id, mover!), "学生已迁移到目标班级");
+  ok(!(await classRepo.isStudentInClass(klass.id, mover!)), "学生已从原班级移除");
 
   // ── 6. 学生自助查分 ───────────────────────────────────
   section("6. 学生自助查分");
