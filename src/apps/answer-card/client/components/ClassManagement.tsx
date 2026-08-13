@@ -3,6 +3,7 @@ import { ArrowRightLeft, Download, Pencil, Plus, RefreshCw, Search, Trash2, Uplo
 import { fetchJson, authFetch } from "../auth/api";
 import type { ClassRecord, ClassStudent, GradeRecord, UserListItem, UsersListResponse } from "../auth/types";
 import { cn } from "../lib/utils";
+import { currentStage } from "../util/gradeStage";
 import {
   Button,
   Input,
@@ -611,8 +612,11 @@ export function ClassManagement() {
                   selectedGradeId === g.id ? "border-primary bg-accent" : "border-transparent hover:bg-secondary"
                 )}
               >
-                <button type="button" onClick={() => setSelectedGradeId(g.id)} className="min-w-0 flex-1 text-left text-sm font-medium text-foreground">
-                  {g.name}
+                <button type="button" onClick={() => setSelectedGradeId(g.id)} className="flex min-w-0 flex-1 items-center gap-1 text-left text-sm font-medium text-foreground">
+                  <span className="truncate">{g.name}</span>
+                  {currentStage(g.name) && (
+                    <small className="shrink-0 text-xs text-muted-foreground">{currentStage(g.name)}</small>
+                  )}
                 </button>
                 <div className="flex shrink-0 items-center gap-1">
                   <Button variant="ghost" size="icon-sm" title="重命名年级" onClick={() => void renameGrade(g.id, g.name)} disabled={busy}>
