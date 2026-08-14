@@ -119,7 +119,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack }: Props) {
             ) : gradingResult ? (
               <GradingResultsInline
                 result={gradingResult}
-          onDownloadCsv={() => gradingResult && downloadGradingCsv(gradingResult.rows, gradingResult.cardId)}
+                onDownloadCsv={() => gradingResult && downloadGradingCsv(gradingResult.rows, gradingResult.cardId)}
               />
             ) : (
               <div className="flex h-full min-h-[360px] flex-col items-center justify-center text-muted-foreground">
