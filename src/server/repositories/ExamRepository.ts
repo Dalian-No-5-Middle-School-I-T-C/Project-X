@@ -136,10 +136,15 @@ export class ExamRepository {
 
   async updateStatus(id: number, status: string): Promise<void> {
     if (status === "closed") {
-      // COALESCE：重复结考不覆盖首次出分时间
+      // 出分时间语义：从非 closed 状态进入 closed（含重新阅卷后再次结考）视为一次新的出分，
+      // 刷新 closed_at；closed → closed（重复调用）保留首次出分时间。
       await this.db.run(
-        "UPDATE exams SET status = ?, closed_at = COALESCE(closed_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        status, id
+        `UPDATE exams
+         SET status = 'closed',
+             closed_at = CASE WHEN status = 'closed' THEN closed_at ELSE CURRENT_TIMESTAMP END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        id
       );
     } else {
       await this.db.run("UPDATE exams SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", status, id);

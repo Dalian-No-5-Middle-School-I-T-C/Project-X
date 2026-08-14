@@ -323,6 +323,12 @@ async function main(): Promise<void> {
   await examRepo.updateStatus(draftExamId, "closed");
   const reopenedRow = db.prepare("SELECT closed_at FROM exams WHERE id = ?").get(draftExamId) as { closed_at: string | null };
   ok(reopenedRow.closed_at === firstClosedAt, "重复结考不覆盖首次出分时间");
+  // 重新阅卷（grading → closed）视为新的出分：closed_at 刷新（先把 closed_at 拨回旧值以确定性验证）
+  db.prepare("UPDATE exams SET closed_at = '2020-01-01 00:00:00' WHERE id = ?").run(draftExamId);
+  await examRepo.updateStatus(draftExamId, "grading");
+  await examRepo.updateStatus(draftExamId, "closed");
+  const regradedRow = db.prepare("SELECT closed_at FROM exams WHERE id = ?").get(draftExamId) as { closed_at: string | null };
+  ok(regradedRow.closed_at !== "2020-01-01 00:00:00" && Boolean(regradedRow.closed_at), "重新阅卷后再结考刷新出分时间");
 
   // ── 6.3 首页仪表盘：最新出分（角色可见范围）────────────────
   section("6.3 Dashboard latest released exam (role scope)");
