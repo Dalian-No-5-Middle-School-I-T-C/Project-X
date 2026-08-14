@@ -700,6 +700,14 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE exams ADD COLUMN exam_mode VARCHAR(20) NOT NULL DEFAULT 'formal'`,
       ]
     },
+    {
+      version: 35,
+      name: "exam-closed-at",
+      sqls: [
+        `ALTER TABLE exams ADD COLUMN closed_at DATETIME`,
+        `UPDATE exams SET closed_at = updated_at WHERE status = 'closed' AND closed_at IS NULL`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

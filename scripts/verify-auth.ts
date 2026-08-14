@@ -307,6 +307,23 @@ async function main(): Promise<void> {
   const { listReviewBlocks } = await import("../src/server/services/ReviewService");
   ok((await listReviewBlocks(trendExam1)).length === 0, "review block list empty without crops");
 
+  // ── 6.2 首页仪表盘：最新出分（closed_at 写入点）────────────────
+  section("6.2 Dashboard latest released exam (closed_at)");
+  const { ExamRepository } = await import("../src/server/repositories/ExamRepository");
+  const examRepo = new ExamRepository();
+
+  const draftExamId = Number(
+    db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status) VALUES ('待结考', '99999999', '数学', ?, 'draft')")
+      .run(klass.id).lastInsertRowid
+  );
+  await examRepo.updateStatus(draftExamId, "closed");
+  const closedRow = db.prepare("SELECT closed_at FROM exams WHERE id = ?").get(draftExamId) as { closed_at: string | null };
+  ok(Boolean(closedRow.closed_at), "updateStatus('closed') 写入 exams.closed_at");
+  const firstClosedAt = closedRow.closed_at;
+  await examRepo.updateStatus(draftExamId, "closed");
+  const reopenedRow = db.prepare("SELECT closed_at FROM exams WHERE id = ?").get(draftExamId) as { closed_at: string | null };
+  ok(reopenedRow.closed_at === firstClosedAt, "重复结考不覆盖首次出分时间");
+
   section("7. 中间件 requirePermission / requireRole");
   const adminUser = { id: adminRow.id, role_id: ROLE_IDS.ADMIN, role_name: "admin" };
   const teacherUser = { id: teacher.id, role_id: ROLE_IDS.TEACHER, role_name: "teacher" };
