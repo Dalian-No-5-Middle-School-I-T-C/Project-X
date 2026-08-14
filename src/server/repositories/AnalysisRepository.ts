@@ -568,20 +568,49 @@ export class AnalysisRepository {
     const participantFilter = participantIds.length > 0
       ? { join: "", where: `AND qs.student_id IN (${participantIds.map(() => "?").join(",")})`, params: participantIds }
       : { join: "", where: "AND 1=0", params: [] };
+    // N+1 收敛：满分与考试元信息一次性批量取（缺题分数据的考试沿用旧兜底满分 100）
+    const fullRows = await this.db.all(
+      `SELECT exam_id, SUM(max_score) AS total FROM (
+         SELECT exam_id, question_number, score_type, MAX(max_score) AS max_score
+         FROM question_scores WHERE exam_id IN (${placeholders(examIds)})
+         GROUP BY exam_id, question_number, score_type
+       ) GROUP BY exam_id`,
+      ...examIds
+    ) as Array<{ exam_id: number; total: number | null }>;
+    const fullByExam = new Map<number, number>(fullRows.map((r) => [Number(r.exam_id), r.total ?? 100]));
+    const examRows = await this.db.all(
+      `SELECT id, name, subject FROM exams WHERE id IN (${placeholders(examIds)})`,
+      ...examIds
+    ) as Array<{ id: number; name: string; subject: string | null }>;
+    const examById = new Map<number, { name: string; subject: string | null }>(
+      examRows.map((r) => [Number(r.id), { name: r.name, subject: r.subject }])
+    );
+    const avgRows = participantIds.length > 0
+      ? await this.db.all(
+          `SELECT ss.exam_id, COUNT(*) AS sampleSize, ROUND(AVG(ss.total_score), 1) AS avg
+           FROM student_scores ss
+           WHERE ss.exam_id IN (${placeholders(examIds)})
+             AND ss.student_id IN (${placeholders(participantIds)})
+           GROUP BY ss.exam_id`,
+          ...examIds,
+          ...participantIds
+        ) as Array<{ exam_id: number; sampleSize: number; avg: number | null }>
+      : [];
+    const avgByExam = new Map<number, { sampleSize: number; avg: number }>(
+      avgRows.map((r) => [Number(r.exam_id), { sampleSize: Number(r.sampleSize), avg: r.avg ?? 0 }])
+    );
     const subjects: GroupQuestionAnalysisResponse["subjects"] = [];
     let discSum = 0;
+    // ponytail: 逐题的 computeQuestionAnalysis 仍按考试逐个跑（每题要查知识库/极端组）。
+    // 年级规模无碍；若一场大考科目数变多且出现慢查询，再把 qs 聚合按 exam_id 批量化。
     for (const examId of examIds) {
       const items = await this.computeQuestionAnalysis(examId, participantFilter, totals);
-      const fullRow = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
-      const fullScore = fullRow?.total ?? 100;
-      const avgRow = await this.db.get(
-        `SELECT COUNT(*) as sampleSize, ROUND(AVG(ss.total_score), 1) as avg FROM student_scores ss WHERE ss.exam_id = ? ${participantIds.length > 0 ? `AND ss.student_id IN (${participantIds.map(() => "?").join(",")})` : "AND 1=0"}`,
-        examId, ...participantIds
-      ) as any;
-      const avgScore = avgRow?.avg ?? 0;
-      const subjectSampleSize = Number(avgRow?.sampleSize ?? 0);
+      const fullScore = fullByExam.get(examId) ?? 100;
+      const avgRow = avgByExam.get(examId) ?? { sampleSize: 0, avg: 0 };
+      const avgScore = avgRow.avg;
+      const subjectSampleSize = avgRow.sampleSize;
       const disc = items.length > 0 ? items.reduce((s, q) => s + (q.discrimination ?? 0), 0) / items.length : 0;
-      const exam = await this.db.get(`SELECT name, subject FROM exams WHERE id = ?`, examId) as any;
+      const exam = examById.get(examId);
       discSum += disc;
       subjects.push({
         examId, subject: exam?.subject ?? "", examName: exam?.name ?? String(examId),
@@ -693,22 +722,48 @@ export class AnalysisRepository {
       }
       return results;
     }
+    // N+1 收敛：逐题区分度只需算一次（原实现每个科目都重跑整组题目分析，O(n²)）；
+    // 成绩行与考试元信息也批量取出后在内存按科目分组，顺序语义与逐科查询一致。
+    const qa = await this.getGroupQuestionAnalysis(groupId, track);
+    const scoreRows = participants.length > 0
+      ? await this.db.all(
+          `SELECT ss.exam_id, ss.total_score FROM student_scores ss
+           WHERE ss.exam_id IN (${placeholders(examIds)}) ${participantClause}
+           ORDER BY ss.exam_id ASC, ss.total_score ASC`,
+          ...examIds,
+          ...participants
+        ) as Array<{ exam_id: number; total_score: number }>
+      : [];
+    const scoresByExam = new Map<number, number[]>();
+    for (const r of scoreRows) {
+      const list = scoresByExam.get(Number(r.exam_id)) ?? [];
+      list.push(Number(r.total_score));
+      scoresByExam.set(Number(r.exam_id), list);
+    }
+    const fullRows = await this.db.all(
+      `SELECT exam_id, SUM(max_score) AS total FROM (
+         SELECT exam_id, question_number, score_type, MAX(max_score) AS max_score
+         FROM question_scores WHERE exam_id IN (${placeholders(examIds)})
+         GROUP BY exam_id, question_number, score_type
+       ) GROUP BY exam_id`,
+      ...examIds
+    ) as Array<{ exam_id: number; total: number | null }>;
+    const fullByExam = new Map<number, number>(fullRows.map((r) => [Number(r.exam_id), r.total ?? 100]));
+    const examRows = await this.db.all(
+      `SELECT id, name, subject FROM exams WHERE id IN (${placeholders(examIds)})`,
+      ...examIds
+    ) as Array<{ id: number; name: string; subject: string | null }>;
+    const examById = new Map<number, { name: string; subject: string | null }>(
+      examRows.map((r) => [Number(r.id), { name: r.name, subject: r.subject }])
+    );
     for (const examId of examIds) {
-      const rows = await this.db.all(`SELECT ss.total_score FROM student_scores ss WHERE ss.exam_id = ? ${participantClause} ORDER BY ss.total_score ASC`, examId, ...participants) as any[];
-      const scores = rows.map((r: any) => Number(r.total_score)).filter(Number.isFinite);
-      const fullRow = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
-      const fullScore = fullRow?.total ?? 100;
-      const exam = await this.db.get(`SELECT name, subject FROM exams WHERE id = ?`, examId) as any;
-      const disc = await this.groupSubjectDiscrimination(groupId, examId, track);
+      const scores = (scoresByExam.get(examId) ?? []).filter(Number.isFinite);
+      const fullScore = fullByExam.get(examId) ?? 100;
+      const exam = examById.get(examId);
+      const disc = qa.subjects.find((s) => s.examId === examId)?.discrimination ?? 0;
       results.push(this.buildDistribution("subject", String(examId), exam?.subject ?? exam?.name ?? String(examId), fullScore, thresholds.segmentSize, scores, disc));
     }
     return results;
-  }
-
-  private async groupSubjectDiscrimination(groupId: number, examId: number, track: "all" | "arts" | "science" = "all"): Promise<number> {
-    const qa = await this.getGroupQuestionAnalysis(groupId, track);
-    const sub = qa.subjects.find((s) => s.examId === examId);
-    return sub ? sub.discrimination : 0;
   }
 
   private async groupOverallDiscrimination(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<number> {
@@ -775,17 +830,44 @@ export class AnalysisRepository {
       ? `AND ss.student_id IN (${participantIds.map(() => "?").join(",")})`
       : `AND 1=0`;
     const subjectClassSummaries: GroupClassComparisonResponse["subjectClassSummaries"] = [];
+    // N+1 收敛：逐科成绩行 / 满分 / 考试名批量查询，内存按科分组；结果与逐科查询一致。
+    const fullRows = await this.db.all(
+      `SELECT exam_id, SUM(max_score) AS total FROM (
+         SELECT exam_id, question_number, score_type, MAX(max_score) AS max_score
+         FROM question_scores WHERE exam_id IN (${placeholders(examIds)})
+         GROUP BY exam_id, question_number, score_type
+       ) GROUP BY exam_id`,
+      ...examIds
+    ) as Array<{ exam_id: number; total: number | null }>;
+    const fullByExam = new Map<number, number>(fullRows.map((r) => [Number(r.exam_id), r.total ?? 100]));
+    const examRows = await this.db.all(
+      `SELECT id, name, subject FROM exams WHERE id IN (${placeholders(examIds)})`,
+      ...examIds
+    ) as Array<{ id: number; name: string; subject: string | null }>;
+    const examById = new Map<number, { name: string; subject: string | null }>(
+      examRows.map((r) => [Number(r.id), { name: r.name, subject: r.subject }])
+    );
+    const subjectRows = participantIds.length > 0
+      ? await this.db.all(
+          `SELECT ss.exam_id, ss.student_id, ss.total_score, c.id as class_id
+           FROM student_scores ss
+           LEFT JOIN class_students cs ON cs.student_id = ss.student_id
+           LEFT JOIN classes c ON c.id = cs.class_id
+           WHERE ss.exam_id IN (${placeholders(examIds)}) ${participantClause}`,
+          ...examIds,
+          ...participantIds
+        ) as Array<{ exam_id: number; student_id: number; total_score: number; class_id: number | null }>
+      : [];
+    const subjectRowsByExam = new Map<number, Array<{ student_id: number; total_score: number; class_id: number | null }>>();
+    for (const r of subjectRows) {
+      const list = subjectRowsByExam.get(Number(r.exam_id)) ?? [];
+      list.push({ student_id: r.student_id, total_score: r.total_score, class_id: r.class_id });
+      subjectRowsByExam.set(Number(r.exam_id), list);
+    }
     for (const examId of examIds) {
-      const fullRow = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
-      const fullScore = fullRow?.total ?? 100;
-      const exam = await this.db.get(`SELECT name, subject FROM exams WHERE id = ?`, examId) as any;
-      const rows = await this.db.all(`
-        SELECT ss.student_id, ss.total_score, c.id as class_id
-        FROM student_scores ss
-        LEFT JOIN class_students cs ON cs.student_id = ss.student_id
-        LEFT JOIN classes c ON c.id = cs.class_id
-        WHERE ss.exam_id = ? ${participantClause}
-      `, examId, ...participantIds) as Array<{ student_id: number; total_score: number; class_id: number | null }>;
+      const fullScore = fullByExam.get(examId) ?? 100;
+      const exam = examById.get(examId);
+      const rows = subjectRowsByExam.get(examId) ?? [];
       const byCls = new Map<number, number[]>();
       for (const r of rows) {
         const cid = r.class_id ?? 0;
