@@ -1,4 +1,4 @@
-﻿import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Route, Routes, Navigate, useBlocker, useLocation, useNavigate } from "react-router-dom";
 import { MODE_PATH, pathToMode } from "./modeRoutes";
 import { WorkspaceProvider, type WorkspaceValue } from "./WorkspaceContext";
@@ -31,7 +31,6 @@ import {
   Upload,
   Users,
   AlertTriangle,
-  BrainCircuit,
   CheckCircle2,
   Check,
   X,
@@ -48,6 +47,7 @@ import { DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
 import { BeianFooter } from "./components/BeianFooter";
 import { NotFound } from "./components/NotFound";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
+import { KnowledgeAnalysisInline } from "./components/KnowledgeAnalysisInline";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
 import { GroupExportModal } from "./components/GroupExportModal";
@@ -118,7 +118,6 @@ import type {
   BodyBlock,
   CardSummary,
   CombinedGradingBatchResult,
-  CombinedGradingRow,
   LayoutDocument,
   ObjectiveBlock,
   ObjectiveMode,
@@ -142,7 +141,6 @@ import {
   validateCardScores,
   type CardScoreValidationResult
 } from "../../../shared/cardScoreValidation";
-import { csvCell } from "../../../shared/csv";
 import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../shared/blankLabels";
@@ -264,45 +262,6 @@ function isImageFile(file: File): boolean {
 }
 
 
-function csvTextCell(value: string | number | null | undefined): string {
-  // 前导制表符可阻止 Excel 将 "8/10"、"3/4" 等识别为日期
-  const text = String(value ?? "");
-  if (/^\d{1,2}\/\d{1,2}$/.test(text) || /^\d{1,2}-\d{1,2}$/.test(text)) {
-    return `\t${text}`;
-  }
-  return text;
-}
-
-function downloadCsv(rows: CombinedGradingRow[], cardId: string) {
-  const header = ["文件名", "学号", "识别状态", "总分", "满分", "客观题得分", "主观题得分", "待复核题数", "异常数", "备注"];
-  const lines = [
-    header,
-    ...rows.map((row) => [
-      row.fileName,
-      row.studentId ?? "未识别",
-      row.recognitionStatus,
-      String(row.totalScore),
-      String(row.totalMaxScore),
-      csvTextCell(`${row.objectiveScore}/${row.objectiveMaxScore}`),
-      csvTextCell(`${row.subjectiveScore}/${row.subjectiveMaxScore}`),
-      String(row.needsReviewCount),
-      String(row.issueCount),
-      row.message ?? ""
-    ])
-  ];
-  // L-S13: CSV 公式注入防御 + 引号/换行转义，与名册导出共用同一实现（src/shared/csv.ts）
-  const csv = lines.map((line) => line.map(csvCell).join(",")).join("\n");
-  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `成绩表_${cardId}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
-}
-
 function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value : [];
 }
@@ -316,70 +275,6 @@ function asArray<T>(value: unknown): T[] {
 
 
 
-
-/** v1.8.0 — 导出检查卡片内的知识点分析小面板 */
-function KnowledgeAnalysisInline({ cardId, onDone }: { cardId: string; onDone: (points: Array<{ question_number: number; points: string[] }>) => void }) {
-  const [questionRange, setQuestionRange] = useState("全部");
-  const [customRange, setCustomRange] = useState("");
-  const [extraNotes, setExtraNotes] = useState("");
-  const [analyzing, setAnalyzing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleAnalyze = async () => {
-    setAnalyzing(true);
-    setError(null);
-    const range = questionRange === "all" ? "全部" : customRange.trim();
-    if (!range) { setError("请输入题目范围"); setAnalyzing(false); return; }
-
-    try {
-      const res = await fetchJson<{ knowledgePoints?: Array<{ questionNumber: number; points: string[] }>; mode?: string; message?: string }>(
-        `/api/cards/${cardId}/knowledge-points/analyze`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ questionRange: range, extraNotes: extraNotes.trim() }) }
-      );
-      if (res.message && (!res.knowledgePoints || res.knowledgePoints.length === 0)) {
-        setError(res.message); setAnalyzing(false); return;
-      }
-      const pts = (res.knowledgePoints || []).map(k => ({ question_number: k.questionNumber || (k as any).question_number, points: k.points }));
-      // Auto-save
-      await fetchJson(`/api/cards/${cardId}/knowledge-points`, {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ points: pts.flatMap(p => p.points.map(pt => ({ question_number: p.question_number, point_text: pt }))) })
-      }).catch(() => {});
-      onDone(pts);
-    } catch (e: any) {
-      setError(e?.message || "AI 服务暂时不可用，请检查 llmclient 是否启动");
-    } finally {
-      setAnalyzing(false);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-2">
-      <h4 className="text-sm font-semibold">题目范围 *</h4>
-      <label className="flex items-center gap-2 text-sm">
-        <input type="radio" name="kpRange" checked={questionRange === "all"} onChange={() => setQuestionRange("all")} />
-        全部题目
-      </label>
-      <label className="flex items-center gap-2 text-sm">
-        <input type="radio" name="kpRange" checked={questionRange === "custom"} onChange={() => setQuestionRange("custom")} />
-        自定义范围
-      </label>
-      {questionRange === "custom" && (
-        <input type="text" className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-          placeholder="如：第1-15题、选择题"
-          value={customRange} onChange={(e) => setCustomRange(e.target.value)} />
-      )}
-      <textarea className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-        placeholder="特别描述（可选）" value={extraNotes} onChange={(e) => setExtraNotes(e.target.value)} rows={2} />
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      <Button variant="primary" type="button" onClick={handleAnalyze} disabled={analyzing}
-        icon={<BrainCircuit size={16} />}>
-        {analyzing ? "分析中..." : "开始分析"}
-      </Button>
-      {analyzing && <p className="mt-1 text-xs text-muted-foreground">正在调用 AI 分析，约需 10-30 秒...</p>}
-    </div>
-  );
-}
 
 function App() {
   const { user, loading, hasPermission, persona, teacherRoleOverride } = useAuth();
@@ -1657,7 +1552,6 @@ function App() {
     gradingProgress,
     addGradingFiles,
     gradeAnswerCardFiles,
-    downloadCsv,
     exams,
     setExams,
     examListRefreshKey,
@@ -2490,137 +2384,5 @@ function App() {
     </WorkspaceProvider>
   );
 }
-
-function GradingResults({
-  result,
-  onDownloadCsv
-}: {
-  result: CombinedGradingBatchResult | null;
-  onDownloadCsv: () => void;
-}) {
-  // Hooks 必须在任何早返回之前调用，避免 result 由 null 变为非空时 Hook 数量变化导致崩溃
-  const [previewPages, setPreviewPages] = useState<ScanPage[] | null>(null);
-  const [previewTitle, setPreviewTitle] = useState("");
-
-  function openGradingPreview(row: CombinedGradingRow) {
-    if (!row.previewUrl) return;
-    setPreviewTitle(`学号: ${row.studentId ?? "未识别"} · 文件: ${row.fileName}`);
-    setPreviewPages([{
-      recordId: row.fileName,
-      pageNum: 1,
-      side: "front",
-      imageUrl: urlWithToken(row.previewUrl)
-    }]);
-  }
-
-  if (!result) {
-    return (
-      <EmptyState
-        icon={<ClipboardCheck />}
-        title="等待阅卷"
-        description="选择答题卡，导入答题卡图片或图片目录后开始识别。"
-      />
-    );
-  }
-
-  const totalReview = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
-  const totalIssues = result.rows.reduce((sum, row) => sum + row.issueCount, 0);
-
-  return (
-    <div className="mx-auto w-full max-w-[1100px]">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <h2 className="m-0 text-xl font-bold text-foreground">成绩表</h2>
-          <p className="mt-1 text-xs font-medium text-muted-foreground">
-            {result.rows.length} 张答题卡 / 待复核 {totalReview} 题 / 异常 {totalIssues} 处
-          </p>
-        </div>
-        <Button variant="primary" type="button" icon={<Download size={17} />} onClick={onDownloadCsv} disabled={result.rows.length === 0}>
-          CSV
-        </Button>
-      </div>
-      <div className="overflow-hidden rounded-lg border border-border bg-card shadow-2">
-        <div className="grid min-h-10 grid-cols-[minmax(170px,1.6fr)_minmax(88px,0.75fr)_78px_78px_minmax(118px,1fr)_58px_72px] items-center gap-2.5 bg-secondary px-4 text-xs font-bold text-secondary-foreground">
-          <span>文件</span>
-          <span>学号</span>
-          <span>状态</span>
-          <span>总分</span>
-          <span>客观/主观</span>
-          <span>复核</span>
-          <span>答题卡</span>
-        </div>
-        {result.rows.map((row) => (
-          <details className="border-t border-border transition-colors hover:bg-secondary" key={`${row.fileName}_${row.recognition.imagePath ?? row.fileName}`}>
-            <summary className="grid min-h-12 grid-cols-[minmax(170px,1.6fr)_minmax(88px,0.75fr)_78px_78px_minmax(118px,1fr)_58px_72px] cursor-pointer list-none items-center gap-2.5 px-4 [&::-webkit-details-marker]:hidden">
-              <span className="truncate font-medium" title={row.fileName}>{row.fileName}</span>
-              <span>{row.studentId ?? "未识别"}</span>
-              <Badge tone={row.recognitionStatus === "ok" && row.issueCount === 0 ? "success" : "warning"} className="rounded-full px-2.5 py-0.5 text-xs font-bold">
-                {row.recognitionStatus}
-              </Badge>
-              <span className="tabular-nums">
-                {row.totalScore}/{row.totalMaxScore}
-              </span>
-              <span className="tabular-nums">
-                {row.objectiveScore}/{row.objectiveMaxScore} · {row.subjectiveScore}/{row.subjectiveMaxScore}
-              </span>
-              <span className="tabular-nums">{row.needsReviewCount}</span>
-              <span>
-                {row.previewUrl ? (
-                  <button
-                    type="button"
-                    className="cursor-pointer border-0 bg-transparent p-0 text-xs text-primary underline underline-offset-2"
-                    onClick={(event) => { event.stopPropagation(); openGradingPreview(row); }}
-                  >
-                    预览
-                  </button>
-                ) : (
-                  <span className="text-muted-foreground">-</span>
-                )}
-              </span>
-            </summary>
-            <div className="grid gap-2 bg-secondary px-4 pt-3.5 pb-4">
-              {row.message && <p className="m-0 text-xs font-medium text-warning-foreground">{row.message}</p>}
-              {row.questions.length > 0 && <p className="mt-1.5 text-xs font-bold text-secondary-foreground">客观题</p>}
-              {row.questions.map((question) => (
-                <div className={cn("grid min-h-[34px] grid-cols-[38px_1fr_1fr_70px_86px_minmax(96px,1fr)] items-center gap-2 rounded-[10px] border border-border bg-card px-2.5 py-1.5 text-xs", (question.needsReview || question.status === "missing_key") && "border-warning-border bg-warning-soft")} key={question.questionNumber}>
-                  <strong className="font-bold text-primary">{question.questionNumber}</strong>
-                  <span>标准 {answerText(question.correctOptions)}</span>
-                  <span>识别 {answerText(question.selectedOptions)}</span>
-                  <span className="tabular-nums">
-                    {question.score}/{question.maxScore}
-                  </span>
-                  <span className="tabular-nums">置信 {question.confidence.toFixed(3)}</span>
-                  <em className="not-italic font-medium text-muted-foreground">{question.message ?? question.status}</em>
-                </div>
-              ))}
-              {row.subjectiveQuestions.length > 0 && <p className="mt-1.5 text-xs font-bold text-secondary-foreground">主观题</p>}
-              {row.subjectiveQuestions.map((question) => (
-                <div className={cn("grid min-h-[34px] grid-cols-[38px_1fr_70px_70px_86px_minmax(120px,1fr)] items-center gap-2 rounded-[10px] border border-border bg-card px-2.5 py-1.5 text-xs", question.needsReview && "border-warning-border bg-warning-soft")} key={question.questionId}>
-                  <strong className="font-bold text-primary">{question.questionNumber}</strong>
-                  <span>有效 {question.validCells.map((cell) => cell.score).join("+") || "-"}</span>
-                  <span>无效 {question.invalidCells.length}</span>
-                  <span className="tabular-nums">
-                    {question.score}/{question.maxScore}
-                  </span>
-                  <span className="tabular-nums">置信 {question.confidence.toFixed(3)}</span>
-                  <em className="not-italic font-medium text-muted-foreground">{question.message ?? question.status}</em>
-                </div>
-              ))}
-            </div>
-          </details>
-        ))}
-      </div>
-
-      {previewPages !== null && (
-        <ScanPreviewModal
-          title={previewTitle}
-          pages={previewPages}
-          onClose={() => setPreviewPages(null)}
-        />
-      )}
-    </div>
-  );
-}
-
 
 export default App;
