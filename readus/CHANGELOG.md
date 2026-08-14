@@ -1,5 +1,13 @@
 # Project-X CHANGELOG
 
+## v2.2.3 (2026-08-14) — 巨型文件拆分与大考查询批量化（未发版，基于 #239）
+
+- 路由拆分：`exam-groups.ts`（1204 行）拆为 CRUD 主路由 + `exam-groups-analysis.ts`（概览/指标/逐题/分布/班级对比/AI/排名/导出）+ `exam-groups-helpers.ts`（权限与文理分科公共逻辑），行为不变。
+- 服务拆分：`DemoDataService.ts`（859 行）的网阅种子与填空题种子拆到 `services/demo/`，PNG 占位图生成独立为 `demo/png.ts`。
+- 前端拆分：`App.tsx` 的 CSV 导出（与扫描端重复实现合并为 `lib/gradingCsv.ts`）、知识点分析面板（`KnowledgeAnalysisInline.tsx`）抽出，删除无引用的 `GradingResults` 死代码。
+- N+1 收敛：大考逐题/分布/班级对比的满分、考试元信息、逐科成绩改为一次批量查询；逐科区分度由每科重跑整组分析（O(n²)）改为复用一次结果。
+- 修复大考导出 ZIP 中文文件名未编码导致响应头非法、下载 500 的问题（`filename*` 全量百分号编码）。
+
 ## v2.2.2 (2026-08-14) — 真实使用评审修复
 
 - 网阅提交两项 P0 回归：新切块 `review_round` 默认 1 导致首评误报「已达到评分上限」（迁移 v36 + 两处插入点显式置 0 + schema 默认值修正）；演示/空卡体切块提交报「题号不在答题卡题目范围内」（种子补全题块 + 提交回退用落库逐题满分）。新增 `verify:review-submit` 回归脚本。
