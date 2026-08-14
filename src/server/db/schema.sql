@@ -287,6 +287,7 @@ CREATE TABLE IF NOT EXISTS exams (
     start_time    DATETIME,
     end_time      DATETIME,
     status        TEXT DEFAULT 'draft',        -- draft / active / grading / closed
+    closed_at     DATETIME,                    -- 结考/出分时间 (v35)
     assigned_formula TEXT,                     -- JSON: 赋分公式配置 (v1.4.0)
     retention_policy_id INTEGER REFERENCES data_retention_policies(id),
     review_mode    INTEGER DEFAULT 1,            -- v1.9.0: 1=1P 2=2P 3=3P

@@ -397,8 +397,8 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
     VALUES (?, ?, ?, ?, 1)
   `);
   const insertExam = db.prepare(`
-    INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, created_by)
-    VALUES (?, ?, ?, ?, ?, 'closed', (SELECT id FROM users WHERE username = 'admin'))
+    INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, closed_at, created_by)
+    VALUES (?, ?, ?, ?, ?, 'closed', CURRENT_TIMESTAMP, (SELECT id FROM users WHERE username = 'admin'))
   `);
   const insertScore = db.prepare(`
     INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score)
@@ -669,8 +669,8 @@ async function seedReviewDemo(
 
   // 2. 考试（review_enabled=1）
   const examInfo = db.prepare(
-    `INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, review_enabled, created_by)
-     VALUES (?, ?, ?, ?, ?, 'closed', 1, (SELECT id FROM users WHERE username = 'admin'))`
+    `INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, closed_at, review_enabled, created_by)
+     VALUES (?, ?, ?, ?, ?, 'closed', CURRENT_TIMESTAMP, 1, (SELECT id FROM users WHERE username = 'admin'))`
   ).run(REVIEW_EXAM_NAME, REVIEW_CARD_ID, grade.id, "数学", "2026-06-25");
   const examId = Number(examInfo.lastInsertRowid);
 

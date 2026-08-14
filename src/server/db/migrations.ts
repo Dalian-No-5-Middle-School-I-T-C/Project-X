@@ -851,6 +851,15 @@ const MIGRATIONS: Migration[] = [
     up(db) {
       addColumnIfMissing(db, "exams", "exam_mode", "TEXT NOT NULL DEFAULT 'formal'");
     }
+  },
+  // v35: 首页「最新出分」— exams.closed_at 记录结考/出分时间；历史 closed 考试用 updated_at 回填
+  {
+    version: 35,
+    name: "exam-closed-at",
+    up(db) {
+      addColumnIfMissing(db, "exams", "closed_at", "DATETIME");
+      db.exec("UPDATE exams SET closed_at = updated_at WHERE status = 'closed' AND closed_at IS NULL");
+    }
   }
 ];
 

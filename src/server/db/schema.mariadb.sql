@@ -308,6 +308,7 @@ CREATE TABLE IF NOT EXISTS exams (
     start_time    DATETIME,
     end_time      DATETIME,
     status        VARCHAR(20) DEFAULT 'draft',
+    closed_at     DATETIME,                    -- 结考/出分时间 (v35)
     assigned_formula TEXT,
     retention_policy_id INT,
     review_mode    INT DEFAULT 1,           -- v1.9.0: 1=1P 2=2P 3=3P

@@ -12,6 +12,7 @@ export interface ExamRecord {
   start_time: string | null;
   end_time: string | null;
   status: string;
+  closed_at: string | null;
   assigned_formula: string | null;
   retention_policy_id: number | null;
   exam_mode?: string;
@@ -134,7 +135,20 @@ export class ExamRepository {
   }
 
   async updateStatus(id: number, status: string): Promise<void> {
-    await this.db.run("UPDATE exams SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", status, id);
+    if (status === "closed") {
+      // 出分时间语义：从非 closed 状态进入 closed（含重新阅卷后再次结考）视为一次新的出分，
+      // 刷新 closed_at；closed → closed（重复调用）保留首次出分时间。
+      await this.db.run(
+        `UPDATE exams
+         SET closed_at = CASE WHEN status = 'closed' THEN closed_at ELSE CURRENT_TIMESTAMP END,
+             status = 'closed',
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        id
+      );
+    } else {
+      await this.db.run("UPDATE exams SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", status, id);
+    }
   }
 
   async createScanBatch(examId: number, name: string, createdBy?: number): Promise<number> {

@@ -316,6 +316,79 @@ async function main(): Promise<void> {
   const { listReviewBlocks } = await import("../src/server/services/ReviewService");
   ok((await listReviewBlocks(trendExam1)).length === 0, "review block list empty without crops");
 
+  // ── 6.2 首页仪表盘：最新出分（closed_at 写入点）────────────────
+  section("6.2 Dashboard latest released exam (closed_at)");
+  const { ExamRepository } = await import("../src/server/repositories/ExamRepository");
+  const examRepo = new ExamRepository();
+
+  const draftExamId = Number(
+    db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status) VALUES ('待结考', '99999999', '数学', ?, 'draft')")
+      .run(klass.id).lastInsertRowid
+  );
+  await examRepo.updateStatus(draftExamId, "closed");
+  const closedRow = db.prepare("SELECT closed_at FROM exams WHERE id = ?").get(draftExamId) as { closed_at: string | null };
+  ok(Boolean(closedRow.closed_at), "updateStatus('closed') 写入 exams.closed_at");
+  const firstClosedAt = closedRow.closed_at;
+  await examRepo.updateStatus(draftExamId, "closed");
+  const reopenedRow = db.prepare("SELECT closed_at FROM exams WHERE id = ?").get(draftExamId) as { closed_at: string | null };
+  ok(reopenedRow.closed_at === firstClosedAt, "重复结考不覆盖首次出分时间");
+  // 重新阅卷（grading → closed）视为新的出分：closed_at 刷新（先把 closed_at 拨回旧值以确定性验证）
+  db.prepare("UPDATE exams SET closed_at = '2020-01-01 00:00:00' WHERE id = ?").run(draftExamId);
+  await examRepo.updateStatus(draftExamId, "grading");
+  await examRepo.updateStatus(draftExamId, "closed");
+  const regradedRow = db.prepare("SELECT closed_at FROM exams WHERE id = ?").get(draftExamId) as { closed_at: string | null };
+  ok(regradedRow.closed_at !== "2020-01-01 00:00:00" && Boolean(regradedRow.closed_at), "重新阅卷后再结考刷新出分时间");
+
+  // ── 6.3 首页仪表盘：最新出分（角色可见范围）────────────────
+  section("6.3 Dashboard latest released exam (role scope)");
+  // 6.2 的待结考样例 closed_at=当前时间，会遮蔽本节的固定出分样例，先清理
+  db.prepare("DELETE FROM exams WHERE id = ?").run(draftExamId);
+  const { getDashboardData } = await import("../src/server/services/DashboardService");
+  const class2 = await classRepo.createClass(grade.id, "2班", 2);
+
+  const headTeacher = await userRepo.createUser({
+    username: "t_ht", password: "ht123", name: "班主任", role_id: ROLE_IDS.TEACHER
+  });
+  const subjectTeacher = await userRepo.createUser({
+    username: "t_st", password: "st123", name: "数学老师", role_id: ROLE_IDS.TEACHER
+  });
+  db.prepare("UPDATE users SET teacher_role = 'head_teacher' WHERE id = ?").run(headTeacher.id);
+  db.prepare("UPDATE users SET teacher_role = 'subject_teacher', subject = '数学' WHERE id = ?").run(subjectTeacher.id);
+  db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, ?)").run(headTeacher.id, klass.id, null);
+  db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, ?)").run(subjectTeacher.id, klass.id, "数学");
+
+  const insertReleased = db.prepare(
+    "INSERT INTO exams (name, card_id, subject, class_id, status, closed_at) VALUES (?, '99999999', ?, ?, 'closed', ?)"
+  );
+  const releasePhysicsA = Number(insertReleased.run("A班物理", "物理", klass.id, "2026-07-02 09:00:00").lastInsertRowid);
+  const releaseMathA = Number(insertReleased.run("A班数学", "数学", klass.id, "2026-07-01 09:00:00").lastInsertRowid);
+  const releaseMathB = Number(insertReleased.run("B班数学", "数学", class2.id, "2026-07-03 09:00:00").lastInsertRowid);
+  db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status) VALUES ('A班英语', '99999999', '英语', ?, 'grading')")
+    .run(klass.id);
+
+  const dashAdminUser = { id: adminRow.id, role_id: ROLE_IDS.ADMIN, role_name: "admin" };
+  const dashGradeLeaderUser = { id: teacher.id, role_id: ROLE_IDS.TEACHER, role_name: "teacher", teacher_role: "grade_leader", subject: null };
+  const dashHeadTeacherUser = { id: headTeacher.id, role_id: ROLE_IDS.TEACHER, role_name: "teacher", teacher_role: "head_teacher", subject: null };
+  const dashSubjectTeacherUser = { id: subjectTeacher.id, role_id: ROLE_IDS.TEACHER, role_name: "teacher", teacher_role: "subject_teacher", subject: "数学" };
+
+  const adminDash = await getDashboardData(dashAdminUser);
+  ok(adminDash.latestReleasedExam?.examId === releaseMathB, "管理员：最新出分=全校最新 closed（B班数学）");
+  const gradeLeaderDash = await getDashboardData(dashGradeLeaderUser);
+  ok(gradeLeaderDash.latestReleasedExam?.examId === releaseMathB, "年级主任：最新出分=全校最新 closed（同管理员）");
+  const headDash = await getDashboardData(dashHeadTeacherUser);
+  ok(headDash.latestReleasedExam?.examId === releasePhysicsA, "班主任：仅本班最新出分（A班物理）");
+  const subjectDash = await getDashboardData(dashSubjectTeacherUser);
+  ok(subjectDash.latestReleasedExam?.examId === releaseMathA, "科任老师：仅本人科目+班级最新出分（A班数学，排除更晚的物理）");
+  ok(subjectDash.latestReleasedExam?.releasedAt === "2026-07-01 09:00:00", "科任老师：releasedAt 返回 closed_at");
+
+  const emptyTeacher = await userRepo.createUser({
+    username: "t_empty", password: "e123", name: "空老师", role_id: ROLE_IDS.TEACHER
+  });
+  db.prepare("UPDATE users SET teacher_role = 'subject_teacher', subject = '化学' WHERE id = ?").run(emptyTeacher.id);
+  const emptyDash = await getDashboardData({ id: emptyTeacher.id, role_id: ROLE_IDS.TEACHER, role_name: "teacher", teacher_role: "subject_teacher", subject: "化学" });
+  ok(emptyDash.latestReleasedExam === null, "无可见考试时 latestReleasedExam 为 null");
+  ok(adminDash.stats.completedExams >= 3, "抽取后 stats 统计保持不变");
+
   section("7. 中间件 requirePermission / requireRole");
   const adminUser = { id: adminRow.id, role_id: ROLE_IDS.ADMIN, role_name: "admin" };
   const teacherUser = { id: teacher.id, role_id: ROLE_IDS.TEACHER, role_name: "teacher" };
