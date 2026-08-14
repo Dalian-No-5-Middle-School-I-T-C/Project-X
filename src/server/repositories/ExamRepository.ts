@@ -140,8 +140,8 @@ export class ExamRepository {
       // 刷新 closed_at；closed → closed（重复调用）保留首次出分时间。
       await this.db.run(
         `UPDATE exams
-         SET status = 'closed',
-             closed_at = CASE WHEN status = 'closed' THEN closed_at ELSE CURRENT_TIMESTAMP END,
+         SET closed_at = CASE WHEN status = 'closed' THEN closed_at ELSE CURRENT_TIMESTAMP END,
+             status = 'closed',
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
         id
