@@ -12,6 +12,7 @@ import {
   ImagePlus,
 } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
+import { downloadGradingCsv } from "../lib/gradingCsv";
 import { ScannerPanel } from "./ScannerPanel";
 import type { CombinedGradingBatchResult, CombinedGradingRow } from "../../../../shared/types";
 import {
@@ -44,40 +45,6 @@ const directoryInputProps = {
 
 function isImageFile(file: File): boolean {
   return file.type.startsWith("image/") || /\.(png|jpe?g|bmp|webp|tiff?)$/i.test(file.name);
-}
-
-function downloadCsv(rows: CombinedGradingRow[], cardId: string) {
-  const header = ["文件名", "学号", "识别状态", "总分", "满分", "客观题得分", "主观题得分", "待复核题数", "异常数", "备注"];
-  const lines = [
-    header,
-    ...rows.map((row) => [
-      row.fileName,
-      row.studentId ?? "未识别",
-      row.recognitionStatus,
-      String(row.totalScore),
-      String(row.totalMaxScore),
-      `${row.objectiveScore}/${row.objectiveMaxScore}`,
-      `${row.subjectiveScore}/${row.subjectiveMaxScore}`,
-      String(row.needsReviewCount),
-      String(row.issueCount),
-      row.message ?? ""
-    ])
-  ];
-  // L-S13: CSV 公式注入防御 — 对以 =, +, -, @, TAB, CR 开头的单元格加前缀单引号
-  const csv = lines.map((line) => line.map((cell) => {
-    const s = String(cell);
-    const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
-    return `"${safe.replace(/"/g, '""')}"`;
-  }).join(",")).join("\n");
-  const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `成绩表_${cardId}.csv`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
 }
 
 export function ScannerWorkspace({ cardId, cardTitle, onBack }: Props) {
@@ -152,7 +119,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack }: Props) {
             ) : gradingResult ? (
               <GradingResultsInline
                 result={gradingResult}
-                onDownloadCsv={() => gradingResult && downloadCsv(gradingResult.rows, gradingResult.cardId)}
+                onDownloadCsv={() => gradingResult && downloadGradingCsv(gradingResult.rows, gradingResult.cardId)}
               />
             ) : (
               <div className="flex h-full min-h-[360px] flex-col items-center justify-center text-muted-foreground">
