@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
@@ -391,6 +391,27 @@ async function main(): Promise<void> {
     const errorBatch = db.prepare("SELECT status,success_count,failure_count FROM scan_batches WHERE id=?").get(errorResult.batchId) as { status: string; success_count: number; failure_count: number };
     check(errorResult.status === "error" && errorResult.persisted === 0 && errorResult.failedCount === 2, "未知学生和识别失败均计入失败");
     check(errorExamState.status === "active" && errorBatch.status === "error" && errorBatch.success_count === 0 && errorBatch.failure_count === 2, "全部失败：批次 error、考试恢复调用前状态");
+
+    section("扫描原图保留期与阅卷保护");
+    {
+      const { runCleanup } = await import("../src/server/db/cleanup");
+      const activeExam = createExam("清理保护-阅卷中", "grading");
+      const closedExam = createExam("清理保护-已关闭", "closed");
+      const activeBatch = Number(db.prepare("INSERT INTO scan_batches (exam_id, name) VALUES (?, 'protect-active')").run(activeExam).lastInsertRowid);
+      const closedBatch = Number(db.prepare("INSERT INTO scan_batches (exam_id, name) VALUES (?, 'protect-closed')").run(closedExam).lastInsertRowid);
+      const past = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString();
+      const activeFile = path.join(tempDir, "active-scan.png");
+      const closedFile = path.join(tempDir, "closed-scan.png");
+      writeFileSync(activeFile, "png");
+      writeFileSync(closedFile, "png");
+      db.prepare("INSERT INTO scan_records (batch_id, file_path, file_name, expires_at) VALUES (?,?,?,?)").run(activeBatch, activeFile, "active.png", past);
+      db.prepare("INSERT INTO scan_records (batch_id, file_path, file_name, expires_at) VALUES (?,?,?,?)").run(closedBatch, closedFile, "closed.png", past);
+      await runCleanup(30);
+      const activeRow = db.prepare("SELECT file_path FROM scan_records WHERE batch_id=?").get(activeBatch) as { file_path: string | null };
+      const closedRow = db.prepare("SELECT file_path FROM scan_records WHERE batch_id=?").get(closedBatch) as { file_path: string | null };
+      check(activeRow.file_path === activeFile && existsSync(activeFile), "阅卷中考试的过期扫描图不被清理");
+      check(closedRow.file_path === null && !existsSync(closedFile), "已关闭考试的过期扫描图按保留期清理");
+    }
 
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);
     if (failures.length > 0) {

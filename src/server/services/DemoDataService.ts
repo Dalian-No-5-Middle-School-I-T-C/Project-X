@@ -662,10 +662,31 @@ async function seedReviewDemo(
     return false;
   }
 
-  // 1. 答题卡（submitReviewCropScores 需要 card 存在，body 可空）
+  // 1. 答题卡 + 真实题块（submitReviewCropScores 依赖卡内题块计算逐题满分，
+  //    卡体为空会导致打分提交必失败「题号不在答题卡题目范围内」）。
   db.prepare(
     "INSERT OR IGNORE INTO answer_cards (id, title, subject_label, exam_date, is_demo) VALUES (?, ?, ?, ?, 1)"
   ).run(REVIEW_CARD_ID, "演示-网阅卡", "数学", "2026-06-25");
+  const insertReviewBlock = db.prepare(
+    "INSERT OR IGNORE INTO subjective_blocks (id, card_id, sort_order, block_kind, title) VALUES (?, ?, ?, 'answer', ?)"
+  );
+  const insertReviewQuestion = db.prepare(
+    `INSERT OR IGNORE INTO subjective_questions
+       (id, block_id, number, score, style, kind, min_height_mm, sort_order)
+     VALUES (?, ?, ?, ?, 'manual_score_grid', 'plain_box', 68, ?)`
+  );
+  for (const block of REVIEW_BLOCKS) {
+    insertReviewBlock.run(block.blockId, REVIEW_CARD_ID, block.blockId === "A" ? 0 : 1, block.title);
+    block.questions.forEach((q, index) => {
+      insertReviewQuestion.run(
+        `demo-review-${block.blockId}-q${q}`,
+        block.blockId,
+        q,
+        block.maxScorePerQuestion,
+        index
+      );
+    });
+  }
 
   // 2. 考试（review_enabled=1）
   const examInfo = db.prepare(
@@ -680,8 +701,8 @@ async function seedReviewDemo(
     `INSERT INTO answer_block_crops
        (id, card_id, exam_id, student_id, student_number, source_type, source_record_id,
         block_id, block_title, block_type, page_number, segment_index,
-        question_numbers, rect_json, image_path, width_px, height_px, dpi, status)
-     VALUES (?, ?, ?, ?, ?, 'demo', ?, ?, ?, ?, 1, 0, ?, '{}', ?, 240, 320, 300, 'ready')`
+        question_numbers, rect_json, image_path, width_px, height_px, dpi, status, review_round)
+     VALUES (?, ?, ?, ?, ?, 'demo', ?, ?, ?, ?, 1, 0, ?, '{}', ?, 240, 320, 300, 'ready', 0)`
   );
   const insertQS = db.prepare(
     `INSERT INTO question_scores

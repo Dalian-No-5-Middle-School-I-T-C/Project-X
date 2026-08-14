@@ -11,6 +11,7 @@
  */
 import { validateCardScores } from "../src/shared/cardScoreValidation";
 import { formatBlankLabel } from "../src/shared/blankLabels";
+import { csvCell } from "../src/shared/csv";
 import {
   paramValue,
   fieldValue,
@@ -228,6 +229,15 @@ section("7. server/validation —— validateBody 中间件");
   check("非法请求返回 400 + INVALID_VALUE", bad.status === 400 && bad.payload?.code === "INVALID_VALUE" && !bad.next);
   const good = await runValidate(CreateCardSchema, { subject: "数学", title: "考试", examDate: "2026-08-12" });
   check("合法请求放行并应用默认值", good.next && good.body?.englishListening === true);
+}
+
+section("8. shared/csv —— 名册/成绩导出统一转义");
+{
+  check("普通值加引号", csvCell("张三") === '"张三"');
+  check("内嵌双引号转义", csvCell('a"b') === '"a""b"');
+  check("公式注入加单引号前缀", csvCell("=1+1") === `"'=1+1"`);
+  check("日期型加制表符防 Excel 转日期", csvCell("8/10").includes("\t8/10"));
+  check("空值输出空单元格", csvCell(null) === '""');
 }
 
 async function runValidate(

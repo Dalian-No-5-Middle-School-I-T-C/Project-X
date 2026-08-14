@@ -142,6 +142,7 @@ import {
   validateCardScores,
   type CardScoreValidationResult
 } from "../../../shared/cardScoreValidation";
+import { csvCell } from "../../../shared/csv";
 import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../shared/blankLabels";
@@ -289,11 +290,8 @@ function downloadCsv(rows: CombinedGradingRow[], cardId: string) {
       row.message ?? ""
     ])
   ];
-  // L-S13: CSV 公式注入防御 — 对以 =, +, -, @, TAB, CR 开头的单元格加前缀单引号
-  const csv = lines.map((line) => line.map((cell) => {
-    const safe = /^[=+\-@\t\r]/.test(cell) ? `'${cell}` : cell;
-    return `"${safe.replace(/"/g, '""')}"`;
-  }).join(",")).join("\n");
+  // L-S13: CSV 公式注入防御 + 引号/换行转义，与名册导出共用同一实现（src/shared/csv.ts）
+  const csv = lines.map((line) => line.map(csvCell).join(",")).join("\n");
   const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");

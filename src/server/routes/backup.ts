@@ -307,7 +307,7 @@ router.post("/import-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async 
     const stats = await seedDemoData();
     res.json({
       ok: true,
-      message: `演示数据导入完成：${stats.exams} 场考试 / 16 名学生 / ${stats.groups} 个合集（教师 demo-teacher，密码 teacher123）。⚠️ 演示账号凭据固定且可预测，仅限测试环境使用，请勿在生产环境导入。`,
+      message: `演示数据已重置并重新导入：${stats.exams} 场考试 / 16 名学生 / ${stats.groups} 个合集（教师 demo-teacher，密码 teacher123）。⚠️ 原有「演示-」前缀数据（含在其上完成的阅卷/改分）会被清空并更换考试 ID；演示账号凭据固定且可预测，仅限测试环境使用，请勿在生产环境导入。`,
       stats
     });
   } catch (error) {
