@@ -297,55 +297,64 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
         </span>
       </div>
 
-      {/* Table */}
+      {/* Table（桌面端分页渲染，避免整年级上千行一次性撑爆 DOM） */}
       {isMobile ? (
-        <DataCardList>
-          {filtered.map((row, i) => (
-            <DataCard
-              key={row.studentId}
-              rows={[
-                { label: "#", value: i + 1 },
-                {
-                  label: "姓名",
-                  value: (
-                    <>
-                      <span className="font-medium">{row.studentName}</span>
-                      <span className="block text-xs tabular-nums text-muted-foreground">{row.studentNumber}</span>
-                    </>
-                  ),
-                  strong: true,
-                },
-                { label: "班级", value: row.className },
-                { label: hasAssigned ? "原始分" : "成绩", value: formatScore(row.totalScore), strong: true },
-                ...(hasAssigned ? [{ label: "赋分", value: row.assignedScore != null ? formatScore(row.assignedScore) : "—" }] : []),
-                { label: "年排", value: row.gradeRank },
-                { label: "班排", value: row.classRank },
-                { label: "名次变化", value: renderChange(row.rankChange) },
-                { label: displayLabel, value: row.displayValue != null ? formatScore(row.displayValue) : "—" },
-              ]}
-              actions={
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  block
-                  disabled={previewLoading}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void openPreview(row.studentId, row.studentName, row.studentNumber);
-                  }}
-                >
-                  预览答题卡
-                </Button>
-              }
-              onClick={onRowClick ? () => onRowClick(row.studentId, row.studentName, row.studentNumber) : undefined}
-            />
-          ))}
-        </DataCardList>
+        <>
+          <DataCardList>
+            {filtered.slice(0, 100).map((row, i) => (
+              <DataCard
+                key={row.studentId}
+                rows={[
+                  { label: "#", value: i + 1 },
+                  {
+                    label: "姓名",
+                    value: (
+                      <>
+                        <span className="font-medium">{row.studentName}</span>
+                        <span className="block text-xs tabular-nums text-muted-foreground">{row.studentNumber}</span>
+                      </>
+                    ),
+                    strong: true,
+                  },
+                  { label: "班级", value: row.className },
+                  { label: hasAssigned ? "原始分" : "成绩", value: formatScore(row.totalScore), strong: true },
+                  ...(hasAssigned ? [{ label: "赋分", value: row.assignedScore != null ? formatScore(row.assignedScore) : "—" }] : []),
+                  { label: "年排", value: row.gradeRank },
+                  { label: "班排", value: row.classRank },
+                  { label: "名次变化", value: renderChange(row.rankChange) },
+                  { label: displayLabel, value: row.displayValue != null ? formatScore(row.displayValue) : "—" },
+                ]}
+                actions={
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    block
+                    disabled={previewLoading}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void openPreview(row.studentId, row.studentName, row.studentNumber);
+                    }}
+                  >
+                    预览答题卡
+                  </Button>
+                }
+                onClick={onRowClick ? () => onRowClick(row.studentId, row.studentName, row.studentNumber) : undefined}
+              />
+            ))}
+          </DataCardList>
+          {filtered.length > 100 && (
+            <p className="mt-3 text-center text-sm text-muted-foreground">
+              移动端仅显示前 100 条，请用搜索或切换到桌面版查看全部 {filtered.length} 条
+            </p>
+          )}
+        </>
       ) : (
         <DataTable
           key={classId ?? "__all__"}
           columns={columns}
           data={filtered}
+          pageSize={100}
+          pageSizeOptions={[50, 100, 200]}
           getRowId={(row) => String(row.studentId)}
           initialSorting={[{ id: defaultSortKey, desc: false }]}
           onRowClick={

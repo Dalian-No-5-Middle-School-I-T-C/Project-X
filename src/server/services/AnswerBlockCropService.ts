@@ -139,8 +139,8 @@ export async function persistAnswerBlockCrops(
         `INSERT INTO answer_block_crops (
           id, card_id, exam_id, student_id, student_number, source_type, source_record_id,
           block_id, block_title, block_type, page_number, segment_index,
-          question_numbers, rect_json, image_path, width_px, height_px, dpi, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          question_numbers, rect_json, image_path, width_px, height_px, dpi, status, review_round
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
         id,
         params.cardId,
         params.examId ?? null,

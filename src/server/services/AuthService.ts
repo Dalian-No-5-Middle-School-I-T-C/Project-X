@@ -175,7 +175,9 @@ export class AuthService {
 
     const newHash = await hashPassword(newPassword);
     await db.run(
-      "UPDATE users SET password_hash = ?, password_change_required = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      // 用户首次改密成功后清空明文初始密码：库文件不再泄漏全部账号的初始口令；
+      // 管理员再次「重置密码」时仍会重新写入新初始密码供导出下发。
+      "UPDATE users SET password_hash = ?, password_change_required = 0, initial_password = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
       newHash, userId
     );
     if (row.username === "admin") removeBootstrapAdminFile();

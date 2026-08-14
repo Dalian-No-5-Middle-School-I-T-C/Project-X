@@ -434,7 +434,7 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     status           TEXT DEFAULT 'ready',
     reviewer_id      INTEGER REFERENCES users(id),
     reviewed_at      DATETIME,
-    review_round     INTEGER DEFAULT 1,
+    review_round     INTEGER DEFAULT 0,
     final_score      REAL,
     final_score_by   INTEGER REFERENCES users(id),
     score_breakdown  TEXT,
