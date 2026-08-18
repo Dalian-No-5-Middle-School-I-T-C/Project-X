@@ -67,6 +67,7 @@ import {
 } from "../../../../shared/grading";
 import { createBlockId } from "../../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../../shared/blankLabels";
+import { shouldRenderScoreGrid } from "../../../../shared/scoreGrid";
 import {
   answerBlankItems,
   answerLineCount,
@@ -1363,7 +1364,7 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
       {block.questions.map((question) => (
         <g key={question.questionId}>
           {!block.frameRect && <rect {...question.rect} fill="none" stroke="#222" strokeWidth="0.25" />}
-          {question.style === "manual_score_grid" && (!isV2 || question.scoreCells.length > 0) && (
+          {shouldRenderScoreGrid(question, isV2) && (
             (() => {
               const sg = question.scoreGrid;
               const sc = sg?.strokeColor ?? "#999";
@@ -1395,7 +1396,7 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
                 <line x1={question.rect.x} y1={question.contentRect.y} x2={question.rect.x + question.rect.width} y2={question.contentRect.y} stroke={dc} strokeWidth={dw} />
               )}
               {question.scoreCells.map((cell) => (
-                <g key={cell.score}>
+                <g key={cell.score} data-testid="score-cell">
                   <rect x={cell.rect.x} y={cell.rect.y} width={cell.rect.width} height={cell.rect.height}
                     fill={fc} stroke={sc} strokeWidth={sw} style={{ fill: fc }} />
                   {cell.score !== null && (

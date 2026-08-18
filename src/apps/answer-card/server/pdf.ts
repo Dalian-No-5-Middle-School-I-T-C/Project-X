@@ -13,6 +13,7 @@ import type {
 } from "../../../shared/types";
 import { buildLayout } from "../../../shared/layout";
 import { formatBlankLabel } from "../../../shared/blankLabels";
+import { shouldRenderScoreGrid } from "../../../shared/scoreGrid";
 import { cardAssetsDir } from "./storage";
 
 const MM_TO_PT = 72 / 25.4;
@@ -347,7 +348,7 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
     drawText(doc, String(question.questionNumber), question.contentRect.x + 3, question.contentRect.y + 3.2, 8);
   }
 
-  if (question.style === "manual_score_grid" && question.scoreGrid?.enabled !== false && (!isV2 || question.scoreCells.length > 0)) {
+  if (shouldRenderScoreGrid(question, isV2)) {
     const sg = question.scoreGrid;
     const sc = sg?.strokeColor ?? "#999";
     const sw = sg?.strokeWidthMm ?? 0.15;
