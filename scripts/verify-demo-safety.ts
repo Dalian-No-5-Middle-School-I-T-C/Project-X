@@ -121,7 +121,7 @@ async function main(): Promise<void> {
 
   // ── 3. 执行清理 ───────────────────────────────────────────────
   section("3. 执行 clearDemoData");
-  const stats = clearDemoData();
+  const stats = await clearDemoData();
   console.log(`  清理结果: exams=${stats.removedExams}, groups=${stats.removedGroups}, students=${stats.removedStudents}`);
 
   // ── 4. 断言真实数据完整保留 ───────────────────────────────────
@@ -190,7 +190,7 @@ async function main(): Promise<void> {
   // ── 6. 幂等性：再清一次应无异常且真实数据依旧保留 ────────────────
   section("6. 幂等性：重复清理");
   try {
-    clearDemoData();
+    await clearDemoData();
     ok(true, "重复清理不抛异常");
   } catch (err) {
     ok(false, `重复清理抛异常: ${(err as Error).message}`);
@@ -234,7 +234,7 @@ async function main(): Promise<void> {
   );
   ok(!conflictHasDemoScore, "真实学生没有演示考试成绩记录");
 
-  const clearStats2 = clearDemoData();
+  const clearStats2 = await clearDemoData();
   ok(
     clearStats2.removedStudents === 17,
     `仅清除 15 演示学生 + 2 演示教师（实际 removedStudents=${clearStats2.removedStudents}）`

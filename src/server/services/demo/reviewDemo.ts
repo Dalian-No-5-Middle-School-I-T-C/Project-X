@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type Database from "better-sqlite3";
-import { resolveAnswerCardDataDir, type DbAdapter } from "../../db";
+import { buildInsertIgnore, resolveAnswerCardDataDir, type DbAdapter } from "../../db";
 import { rebalanceWorkload } from "../ReviewAssignmentService";
 import { makePlaceholderPng } from "./png";
 const REVIEW_CARD_ID = "88000999";
@@ -47,7 +46,7 @@ const REVIEW_BLOCKS: ReviewBlockSpec[] = [
 ];
 
 export async function seedReviewDemo(
-  db: Database.Database,
+  db: DbAdapter,
   grade: { id: number },
   studentIdByNumber: Map<string, number>,
   teacherId: number,
@@ -70,69 +69,61 @@ export async function seedReviewDemo(
 
   // 1. 答题卡 + 真实题块（submitReviewCropScores 依赖卡内题块计算逐题满分，
   //    卡体为空会导致打分提交必失败「题号不在答题卡题目范围内」）。
-  db.prepare(
-    "INSERT OR IGNORE INTO answer_cards (id, title, subject_label, exam_date, is_demo) VALUES (?, ?, ?, ?, 1)"
-  ).run(REVIEW_CARD_ID, "演示-网阅卡", "数学", "2026-06-25");
-  const insertReviewBlock = db.prepare(
-    "INSERT OR IGNORE INTO subjective_blocks (id, card_id, sort_order, block_kind, title) VALUES (?, ?, ?, 'answer', ?)"
+  await db.run(
+    buildInsertIgnore(db.dialect, "answer_cards", ["id", "title", "subject_label", "exam_date", "is_demo"]),
+    REVIEW_CARD_ID, "演示-网阅卡", "数学", "2026-06-25", 1
   );
-  const insertReviewQuestion = db.prepare(
-    `INSERT OR IGNORE INTO subjective_questions
-       (id, block_id, number, score, style, kind, min_height_mm, sort_order)
-     VALUES (?, ?, ?, ?, 'manual_score_grid', 'plain_box', 68, ?)`
-  );
+  const insertReviewBlock = buildInsertIgnore(db.dialect, "subjective_blocks", ["id", "card_id", "sort_order", "block_kind", "title"]);
+  const insertReviewQuestion = buildInsertIgnore(db.dialect, "subjective_questions", [
+    "id", "block_id", "number", "score", "style", "kind", "min_height_mm", "sort_order"
+  ]);
   for (const block of REVIEW_BLOCKS) {
-    insertReviewBlock.run(block.blockId, REVIEW_CARD_ID, block.blockId === "A" ? 0 : 1, block.title);
-    block.questions.forEach((q, index) => {
-      insertReviewQuestion.run(
+    await db.run(insertReviewBlock, block.blockId, REVIEW_CARD_ID, block.blockId === "A" ? 0 : 1, "answer", block.title);
+    for (const [index, q] of block.questions.entries()) {
+      await db.run(
+        insertReviewQuestion,
         `demo-review-${block.blockId}-q${q}`,
         block.blockId,
         q,
         block.maxScorePerQuestion,
-        index
+        "manual_score_grid", "plain_box", 68, index
       );
-    });
+    }
   }
 
   // 2. 考试（review_enabled=1）
-  const examInfo = db.prepare(
+  const examInfo = await db.run(
     `INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, closed_at, review_enabled, created_by)
-     VALUES (?, ?, ?, ?, ?, 'closed', CURRENT_TIMESTAMP, 1, (SELECT id FROM users WHERE username = 'admin'))`
-  ).run(REVIEW_EXAM_NAME, REVIEW_CARD_ID, grade.id, "数学", "2026-06-25");
+     VALUES (?, ?, ?, ?, ?, 'closed', CURRENT_TIMESTAMP, 1, (SELECT id FROM users WHERE username = 'admin'))`,
+    REVIEW_EXAM_NAME, REVIEW_CARD_ID, grade.id, "数学", "2026-06-25"
+  );
   const examId = Number(examInfo.lastInsertRowid);
 
   const imgPath = ensurePlaceholderImage();
 
-  const insertCrop = db.prepare(
-    `INSERT INTO answer_block_crops
+  const insertCrop = `INSERT INTO answer_block_crops
        (id, card_id, exam_id, student_id, student_number, source_type, source_record_id,
         block_id, block_title, block_type, page_number, segment_index,
         question_numbers, rect_json, image_path, width_px, height_px, dpi, status, review_round)
-     VALUES (?, ?, ?, ?, ?, 'demo', ?, ?, ?, ?, 1, 0, ?, '{}', ?, 240, 320, 300, 'ready', 0)`
-  );
-  const insertQS = db.prepare(
-    `INSERT INTO question_scores
+     VALUES (?, ?, ?, ?, ?, 'demo', ?, ?, ?, ?, 1, 0, ?, '{}', ?, 240, 320, 300, 'ready', 0)`;
+  const nowSql = db.dialect === "mariadb" ? "NOW()" : "datetime('now')";
+  const insertQS = `INSERT INTO question_scores
        (exam_id, student_id, question_number, question_id, block_id, score, max_score, score_type, manually_modified, modified_by, modified_at)
-     VALUES (?, ?, ?, NULL, ?, 0, ?, 'subjective', 0, (SELECT id FROM users WHERE username = 'admin'), datetime('now'))`
-  );
-  const insertConfig = db.prepare(
-    `INSERT OR IGNORE INTO block_grading_config
-       (exam_id, block_id, dispute_threshold, rounding, arbitrator_id, review_mode,
-        has_half_point, auto_reassign_no_arb, workload_balance_threshold,
-        scoring_mode, score_distribution)
-     VALUES (?, ?, 2, 'ceil', NULL, ?, ?, 1, 4, ?, ?)`
-  );
-  const insertAssignment = db.prepare(
-    `INSERT INTO review_assignments (exam_id, block_id, teacher_id, student_count, assigned_student_ids, auto_assigned)
-     VALUES (?, ?, ?, ?, ?, 0)`
-  );
+     VALUES (?, ?, ?, NULL, ?, 0, ?, 'subjective', 0, (SELECT id FROM users WHERE username = 'admin'), ${nowSql})`;
+  const insertConfig = buildInsertIgnore(db.dialect, "block_grading_config", [
+    "exam_id", "block_id", "dispute_threshold", "rounding", "arbitrator_id", "review_mode",
+    "has_half_point", "auto_reassign_no_arb", "workload_balance_threshold",
+    "scoring_mode", "score_distribution"
+  ]);
+  const insertAssignment = `INSERT INTO review_assignments (exam_id, block_id, teacher_id, student_count, assigned_student_ids, auto_assigned)
+     VALUES (?, ?, ?, ?, ?, 0)`;
 
   for (const block of REVIEW_BLOCKS) {
     // 题块 A: 双评 2P + block_total + proportional；题块 B: 单评 1P + per_question + equal
     const scoringMode = block.blockId === "A" ? "block_total" : "per_question";
     const scoreDist = block.blockId === "A" ? "proportional" : "equal";
     const reviewMode = block.blockId === "A" ? 2 : 1;
-    insertConfig.run(examId, block.blockId, reviewMode, block.hasHalf, scoringMode, scoreDist);
+    await db.run(insertConfig, examId, block.blockId, 2, "ceil", null, reviewMode, block.hasHalf, 1, 4, scoringMode, scoreDist);
   }
 
   // 分配策略：
@@ -142,22 +133,23 @@ export async function seedReviewDemo(
   const blockAFirstTeacher = studentIds.slice(0, 5);
   const blockASecondTeacher = secondTeacherId != null ? studentIds.slice(5, 6) : [];
   if (secondTeacherId != null) {
-    insertAssignment.run(examId, "A", teacherId, blockAFirstTeacher.length, JSON.stringify(blockAFirstTeacher));
-    insertAssignment.run(examId, "A", secondTeacherId, blockASecondTeacher.length, JSON.stringify(blockASecondTeacher));
+    await db.run(insertAssignment, examId, "A", teacherId, blockAFirstTeacher.length, JSON.stringify(blockAFirstTeacher));
+    await db.run(insertAssignment, examId, "A", secondTeacherId, blockASecondTeacher.length, JSON.stringify(blockASecondTeacher));
   } else {
     // 无第二教师时退化为单教师全量分配
-    insertAssignment.run(examId, "A", teacherId, studentIds.length, JSON.stringify(studentIds));
+    await db.run(insertAssignment, examId, "A", teacherId, studentIds.length, JSON.stringify(studentIds));
   }
-  insertAssignment.run(examId, "B", teacherId, studentIds.length, JSON.stringify(studentIds));
+  await db.run(insertAssignment, examId, "B", teacherId, studentIds.length, JSON.stringify(studentIds));
 
   for (const studentId of studentIds) {
-    const studentNumberRow = db.prepare("SELECT student_number FROM users WHERE id = ?").get(studentId) as
+    const studentNumberRow = await db.get("SELECT student_number FROM users WHERE id = ?", studentId) as
       | { student_number: string | null }
       | undefined;
     const studentNumber = studentNumberRow?.student_number ?? null;
     for (const block of REVIEW_BLOCKS) {
       const cropId = `demo-${examId}-${block.blockId}-${studentId}`;
-      insertCrop.run(
+      await db.run(
+        insertCrop,
         cropId,
         REVIEW_CARD_ID,
         examId,
@@ -171,7 +163,7 @@ export async function seedReviewDemo(
         imgPath
       );
       for (const q of block.questions) {
-        insertQS.run(examId, studentId, q, block.blockId, block.maxScorePerQuestion);
+        await db.run(insertQS, examId, studentId, q, block.blockId, block.maxScorePerQuestion);
       }
     }
   }
@@ -180,7 +172,8 @@ export async function seedReviewDemo(
   // score_breakdown 与 ReviewService.submitReviewCropScores 的落库结构一致：
   // [{ round, reviewerId, score, reviewedAt, questionScores }]
   const r2 = secondTeacherId ?? teacherId;
-  const reviewedAt = "2026-06-25T09:30:00.000Z";
+  // 双端兼容的 DATETIME 字面量（MariaDB 严格模式拒绝 ISO-T 格式）
+  const reviewedAt = "2026-06-25 09:30:00";
 
   interface ReviewRoundSeed {
     reviewerId: number;
@@ -249,16 +242,15 @@ export async function seedReviewDemo(
     rounds.map((r, i) => ({ round: i + 1, reviewerId: r.reviewerId, score: r.score, reviewedAt, questionScores: r.questionScores }));
 
   // 写切块评分状态：reviewed 落 final_score；disputed 无最终分（等仲裁/复评）；pending 保留第 1 轮
-  const updateCrop = db.prepare(`
-    UPDATE answer_block_crops
+  const updateCrop = `UPDATE answer_block_crops
     SET status = ?, reviewer_id = ?, reviewed_at = ?, review_round = ?, final_score = ?,
         final_score_by = ?, score_breakdown = ?
-    WHERE id = ?
-  `);
+    WHERE id = ?`;
   for (const s of reviewSeeds) {
     const last = s.rounds[s.rounds.length - 1];
     const finalScore = s.status === "reviewed" ? last.score : null;
-    updateCrop.run(
+    await db.run(
+      updateCrop,
       s.status, last.reviewerId, reviewedAt, s.rounds.length,
       finalScore, finalScore != null ? last.reviewerId : null,
       JSON.stringify(breakdownOf(s.rounds)),
@@ -267,16 +259,14 @@ export async function seedReviewDemo(
   }
 
   // 已批卷逐题主观分落库（与打分提交后的落库语义一致：score_type='subjective'、manually_modified=1）
-  const updateQS = db.prepare(`
-    UPDATE question_scores
+  const updateQS = `UPDATE question_scores
     SET score = ?, score_type = 'subjective', manually_modified = 1, modified_by = ?, modified_at = ?
-    WHERE exam_id = ? AND student_id = ? AND question_number = ?
-  `);
+    WHERE exam_id = ? AND student_id = ? AND question_number = ?`;
   for (const s of reviewSeeds) {
     if (s.status !== "reviewed") continue; // 争议/待评卷不落正式分
     const last = s.rounds[s.rounds.length - 1];
     for (const [q, score] of Object.entries(last.questionScores)) {
-      updateQS.run(score, last.reviewerId, reviewedAt, examId, s.studentId, Number(q));
+      await db.run(updateQS, score, last.reviewerId, reviewedAt, examId, s.studentId, Number(q));
     }
   }
 
@@ -287,30 +277,28 @@ export async function seedReviewDemo(
     const last = s.rounds[s.rounds.length - 1];
     studentTotal.set(s.studentId, (studentTotal.get(s.studentId) ?? 0) + last.score);
   }
-  const insertStudentScore = db.prepare(
-    "INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?, ?, 0, ?, ?)"
-  );
-  for (const [sid, total] of studentTotal) insertStudentScore.run(examId, sid, total, total);
+  const insertStudentScore = "INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?, ?, 0, ?, ?)";
+  for (const [sid, total] of studentTotal) await db.run(insertStudentScore, examId, sid, total, total);
 
   // 断点续批：demo-teacher 在题块 B 批到第 4 份时保存的草稿会话（draft_scores 以切块 id 为键，同 GradePanel 语义）
-  db.prepare(`
-    INSERT OR IGNORE INTO review_sessions (teacher_id, exam_id, block_id, current_index, position_json, draft_scores, updated_at)
-    VALUES (?, ?, 'B', 3, '{"zoom":1,"rotation":0}', ?, ?)
-  `).run(teacherId, examId, JSON.stringify({ [`demo-${examId}-B-${studentIds[3]}`]: 19 }), reviewedAt);
+  await db.run(
+    buildInsertIgnore(db.dialect, "review_sessions", ["teacher_id", "exam_id", "block_id", "current_index", "position_json", "draft_scores", "updated_at"]),
+    teacherId, examId, "B", 3, JSON.stringify({ zoom: 1, rotation: 0 }), JSON.stringify({ [`demo-${examId}-B-${studentIds[3]}`]: 19 }), reviewedAt
+  );
 
   // 批注：题块 B 首份已批卷留一条文字批注（data_json 与前端 AnnotationOverlay 一致：{ text }）
-  db.prepare(`
-    INSERT OR IGNORE INTO review_annotations (id, crop_id, reviewer_id, type, data_json, created_at)
-    VALUES (?, ?, ?, 'text', ?, ?)
-  `).run(`demo-annot-${examId}-b1`, `demo-${examId}-B-${studentIds[0]}`, teacherId,
-    JSON.stringify({ text: "解答规范，书写清晰。" }), reviewedAt);
+  await db.run(
+    buildInsertIgnore(db.dialect, "review_annotations", ["id", "crop_id", "reviewer_id", "type", "data_json", "created_at"]),
+    `demo-annot-${examId}-b1`, `demo-${examId}-B-${studentIds[0]}`, teacherId,
+    "text", JSON.stringify({ text: "解答规范，书写清晰。" }), reviewedAt
+  );
 
   // 题块 A 工作量均衡：把 8 份卷在已分配教师间收敛到「份数差 ≤ 4」
   if (secondTeacherId != null) {
-    await rebalanceWorkload(examId, "A", makeSyncAdapter(db));
+    await rebalanceWorkload(examId, "A", db);
   }
 
-  const aAssign = db.prepare("SELECT teacher_id, student_count, auto_assigned FROM review_assignments WHERE exam_id = ? AND block_id = 'A' ORDER BY teacher_id").all(examId) as Array<{ teacher_id: number; student_count: number; auto_assigned: number }>;
+  const aAssign = await db.all("SELECT teacher_id, student_count, auto_assigned FROM review_assignments WHERE exam_id = ? AND block_id = 'A' ORDER BY teacher_id", examId) as Array<{ teacher_id: number; student_count: number; auto_assigned: number }>;
   const aSummary = aAssign.map((r) => `教师${r.teacher_id}:${r.student_count}份${r.auto_assigned ? "(含自动追加)" : ""}`).join("，");
 
   console.log(
@@ -318,33 +306,4 @@ export async function seedReviewDemo(
       `已批 A 3 份双评一致 + 1 份争议，B 3 份；断点续批草稿 + 批注 1 条。题块A分配均衡后：${aSummary}`
   );
   return true;
-}
-
-/** 用同步 better-sqlite3 实例构造 DbAdapter，便于种子逻辑复用服务端 rebalanceWorkload */
-function makeSyncAdapter(db: Database.Database): DbAdapter {
-  const adapter: DbAdapter = {
-    dialect: "sqlite",
-    get: <T = any>(sql: string, ...params: any[]) => Promise.resolve((db.prepare(sql).get(...params) as T | null | undefined) ?? null),
-    all: <T = any>(sql: string, ...params: any[]) => Promise.resolve(db.prepare(sql).all(...params) as T[]),
-    run: (sql, ...params) => {
-      const r = db.prepare(sql).run(...params);
-      return Promise.resolve({ lastInsertRowid: Number(r.lastInsertRowid), changes: r.changes });
-    },
-    exec: (sql) => {
-      db.exec(sql);
-      return Promise.resolve();
-    },
-    transaction: async (fn) => {
-      db.exec("BEGIN");
-      try {
-        const v = await fn(adapter);
-        db.exec("COMMIT");
-        return v;
-      } catch (e) {
-        db.exec("ROLLBACK");
-        throw e;
-      }
-    }
-  };
-  return adapter;
 }
