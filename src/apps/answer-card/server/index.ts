@@ -573,7 +573,13 @@ export async function createApp(): Promise<express.Express> {
   const adminBootstrap = await ensureDefaultAdmin();
   if (adminBootstrap.rotated) authService.revokeUserTokens(adminBootstrap.adminId);
   await initPermissionCache();
-  const cleanupTimer = scheduleCleanup(24, 30);
+  // 扫描原图保留期可通过 PROJECTX_SCAN_RETENTION_DAYS 配置（默认 30 天）。
+  // 只保留成绩、需要长期存原图的部署请显式调大；阅卷中的考试始终不清理。
+  const cleanupRetainDays = (() => {
+    const raw = Number(process.env.PROJECTX_SCAN_RETENTION_DAYS);
+    return Number.isFinite(raw) && raw >= 1 ? raw : 30;
+  })();
+  const cleanupTimer = scheduleCleanup(24, cleanupRetainDays);
   cleanupTimer.unref();
   await ensureDataDirs();
   console.log("[Server] 数据库初始化完成");

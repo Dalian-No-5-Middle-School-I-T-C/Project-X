@@ -1537,6 +1537,12 @@ export interface DashboardData {
     subject: string;
     scannedAt: string;
   } | null;
+  latestReleasedExam: {
+    examId: number;
+    examName: string;
+    subject: string;
+    releasedAt: string;
+  } | null;
   stats: {
     totalExams: number;
     activeGradingExams: number;

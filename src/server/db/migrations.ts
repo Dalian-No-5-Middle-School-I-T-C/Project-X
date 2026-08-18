@@ -851,6 +851,26 @@ const MIGRATIONS: Migration[] = [
     up(db) {
       addColumnIfMissing(db, "exams", "exam_mode", "TEXT NOT NULL DEFAULT 'formal'");
     }
+  },
+  // v35: 首页「最新出分」— exams.closed_at 记录结考/出分时间；历史 closed 考试用 updated_at 回填
+  {
+    version: 35,
+    name: "exam-closed-at",
+    up(db) {
+      addColumnIfMissing(db, "exams", "closed_at", "DATETIME");
+      db.exec("UPDATE exams SET closed_at = updated_at WHERE status = 'closed' AND closed_at IS NULL");
+    }
+  },
+  // v36: review_round 语义是「已完成轮数」，新切块应为 0（历史默认 1 导致首评即报
+  // 「已达到评分上限」）。仅重置尚无任何评分历史的切块，已评/争议卷保留原值。
+  {
+    version: 36,
+    name: "review-round-fresh-crops-zero",
+    up(db) {
+      db.exec(
+        "UPDATE answer_block_crops SET review_round = 0 WHERE score_breakdown IS NULL OR score_breakdown = '' OR score_breakdown = '[]'"
+      );
+    }
   }
 ];
 

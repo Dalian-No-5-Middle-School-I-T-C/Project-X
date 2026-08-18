@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { BarChart3, BookOpen, ChevronRight, ClipboardList, ScanLine, SquarePen, Users } from "lucide-react";
+import { Award, BarChart3, BookOpen, ChevronRight, ClipboardList, ScanLine, SquarePen, Users } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { DashboardData } from "../../../../shared/types";
 import { Badge, Card, CardContent, CardDescription, CardTitle, Skeleton } from "../components/ui/v2";
@@ -12,6 +12,7 @@ interface Props {
   /** Compatibility prop retained for existing callers; all app navigation stays in-page. */
   onOpenNewTab?: (mode: string) => void;
   onEnterExam: (examId: number) => void;
+  onOpenAnalysis: (examId: number) => void;
 }
 
 const moduleCards = [
@@ -20,7 +21,7 @@ const moduleCards = [
   { id: "analysis", icon: BarChart3, label: "成绩分析", desc: "查看分析报告与跨班对比" },
 ];
 
-export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterExam }: Props) {
+export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterExam, onOpenAnalysis }: Props) {
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [recentExams, setRecentExams] = useState<Array<{ id: number; name: string; subject?: string | null; exam_date?: string | null }>>([]);
   const [loading, setLoading] = useState(true);
@@ -51,6 +52,13 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterE
       icon: ScanLine, title: "最新扫描", description: "暂无扫描记录",
       tone: "border-border bg-card text-secondary-foreground", onClick: () => onNavigate("exam-manage"),
     },
+    dashboard?.latestReleasedExam ? {
+      icon: Award, title: "最新出分", description: `${dashboard.latestReleasedExam.examName}${dashboard.latestReleasedExam.subject ? ` · ${dashboard.latestReleasedExam.subject}` : ""}`,
+      tone: "border-success-border bg-success-soft text-success-foreground", onClick: () => onOpenAnalysis(dashboard.latestReleasedExam!.examId),
+    } : {
+      icon: Award, title: "最新出分", description: "暂无出分记录",
+      tone: "border-success-border bg-success-soft text-success-foreground", onClick: () => onNavigate("analysis"),
+    },
     { icon: ClipboardList, title: "考试管理", description: "查看和管理所有考试", tone: "border-border bg-card text-secondary-foreground", onClick: () => onNavigate("exam-manage") },
   ] as Array<{ icon: typeof ClipboardList; title: string; description: string; tone: string; onClick: () => void }>;
 
@@ -64,7 +72,7 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterE
         {teacherRole && <Badge tone="accent" dot>{teacherRole === "grade_leader" ? "学年主任" : teacherRole === "head_teacher" ? "班主任" : "学科老师"}</Badge>}
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         {loading ? <Skeleton className="h-20" /> : quickCards.map(({ icon: Icon, title, description, tone, onClick }) => (
           <Card key={title} interactive className={tone} onClick={onClick}>
             <CardContent className="flex items-center gap-3 p-4"><Icon className="size-5" /><div className="min-w-0 flex-1"><CardTitle className="text-sm">{title}</CardTitle><CardDescription className="mt-1 truncate">{description}</CardDescription></div><ChevronRight className="size-4 text-muted-foreground" /></CardContent>

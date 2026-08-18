@@ -48,7 +48,7 @@ export function LoginPage() {
           <a
             href={PROMO_SITE_URL}
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
             aria-label="访问宣传网站"
             title="访问宣传网站"
             className="inline-flex h-control-md w-control-md items-center justify-center rounded-md text-secondary-foreground transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground"

@@ -546,7 +546,7 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         // 5. answer_block_crops 加列
         `ALTER TABLE answer_block_crops ADD COLUMN reviewer_id     INT`,
         `ALTER TABLE answer_block_crops ADD COLUMN reviewed_at     DATETIME`,
-        `ALTER TABLE answer_block_crops ADD COLUMN review_round    INT DEFAULT 1`,
+        `ALTER TABLE answer_block_crops ADD COLUMN review_round    INT DEFAULT 0`,
         `ALTER TABLE answer_block_crops ADD COLUMN final_score     DOUBLE`,
         `ALTER TABLE answer_block_crops ADD COLUMN final_score_by  INT`,
         `ALTER TABLE answer_block_crops ADD COLUMN score_breakdown LONGTEXT`,
@@ -698,6 +698,22 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       name: "exam-mode-dual-permission",
       sqls: [
         `ALTER TABLE exams ADD COLUMN exam_mode VARCHAR(20) NOT NULL DEFAULT 'formal'`,
+      ]
+    },
+    {
+      version: 35,
+      name: "exam-closed-at",
+      // 历史 closed 行用 updated_at 回填为近似出分时间（best-effort）
+      sqls: [
+        `ALTER TABLE exams ADD COLUMN closed_at DATETIME`,
+        `UPDATE exams SET closed_at = updated_at WHERE status = 'closed' AND closed_at IS NULL`,
+      ]
+    },
+    {
+      version: 36,
+      name: "review-round-fresh-crops-zero",
+      sqls: [
+        `UPDATE answer_block_crops SET review_round = 0 WHERE score_breakdown IS NULL OR score_breakdown = '' OR score_breakdown = '[]'`,
       ]
     },
   ];

@@ -7,7 +7,6 @@ import type {
   AnswerCard,
   CardSummary,
   CombinedGradingBatchResult,
-  CombinedGradingRow,
   ExamRecord,
   ExamOverview,
   QuestionAnalysisItem,
@@ -139,7 +138,6 @@ export type WorkspaceValue = {
   gradingProgress: { active: boolean; finished: number; total: number };
   addGradingFiles: (files: FileList | null) => void;
   gradeAnswerCardFiles: () => Promise<void>;
-  downloadCsv: (rows: CombinedGradingRow[], cardId: string) => void;
 
   // ── 考试管理 ──
   exams: ExamRecord[];

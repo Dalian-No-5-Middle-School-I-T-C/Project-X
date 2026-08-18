@@ -37,6 +37,9 @@ jobs:
       - name: Auth / RBAC test suite
         run: npm run verify:auth
 
+      - name: Core logic verify suite
+        run: npm run verify:core-logic
+
   build:
     name: Build
     runs-on: ubuntu-latest

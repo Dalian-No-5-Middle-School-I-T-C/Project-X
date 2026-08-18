@@ -308,6 +308,7 @@ CREATE TABLE IF NOT EXISTS exams (
     start_time    DATETIME,
     end_time      DATETIME,
     status        VARCHAR(20) DEFAULT 'draft',
+    closed_at     DATETIME,                    -- 结考/出分时间 (v35)
     assigned_formula TEXT,
     retention_policy_id INT,
     review_mode    INT DEFAULT 1,           -- v1.9.0: 1=1P 2=2P 3=3P
@@ -465,7 +466,7 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     status           VARCHAR(32) DEFAULT 'ready',
     reviewer_id      INT,                           -- v1.9.0: 审阅人
     reviewed_at      DATETIME,                      -- v1.9.0: 审阅时间
-    review_round     INT DEFAULT 1,                 -- v1.9.0: 第几轮审阅
+    review_round     INT DEFAULT 0,                 -- v1.9.0: 已完成审阅轮数（0=未评）
     final_score      DOUBLE,                        -- v1.9.0: 最终分
     final_score_by   INT,                           -- v1.9.0: 最终分判定人
     score_breakdown  LONGTEXT,                      -- v1.9.0: 各轮评分明细 JSON
