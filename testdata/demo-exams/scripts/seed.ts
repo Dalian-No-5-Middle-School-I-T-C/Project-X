@@ -5,6 +5,8 @@
  *   npx tsx testdata/demo-exams/scripts/seed.ts
  *   PROJECTX_DB_PATH=/path/to.db npx tsx testdata/demo-exams/scripts/seed.ts
  *
+ * 支持 SQLite 与 MariaDB 双方言：默认写本地 SQLite；设置 PROJECTX_MARIADB_HOST 等
+ * 环境变量（或 config.yml database.mode: remote）后直接写入 MariaDB。
  * 可重复运行：会先清理「演示-」前缀数据。
  * 核心逻辑在 src/server/services/DemoDataService.ts（服务端 /api/db/import-demo 同款）。
  */

@@ -21,6 +21,14 @@
 | **P2** | 填空题右侧批注水平高度与答题横线齐平、不美观 | 前端 `DesignEditors.tsx` | SVG 预览中填空左侧空号标签与右侧批注文本原定位在答题横线（`y = blank.y + blank.height`），压线而过。现统一上移 `1.8mm`，与 PDF 端既有 `-2.35mm` 偏移视觉对齐，呈现于横线上方居中。 |
 | **P3** | 填空题「横线高度（MM）」标签在窄栏内换行 | 前端 `DesignEditors.tsx` | 标签文案过长导致折行破坏对齐。缩短为「横线高(mm)」。 |
 
+### 增强（Enhancements）
+
+- **演示数据链路双后端化（SQLite + MariaDB）**：`DemoDataService.ts` 与 `demo/fillBlankDemo.ts`、`demo/reviewDemo.ts` 由 better-sqlite3 原生 API 改造为 `DbAdapter`（`getMysqlDb()`）。`POST /api/db/import-demo`、`POST /api/db/clear-demo` 移除 MariaDB 400 门控，**MariaDB 部署下可一键导入/清除演示测试数据**（此前仅 SQLite）。
+  - 方言适配：约 11 处 `INSERT OR IGNORE` → `buildInsertIgnore(dialect, ...)`；`tableExists` 按方言探测（`sqlite_master` / `information_schema.tables`）；同步事务 → `await db.transaction(async (tx) => ...)`；`datetime('now')` → `NOW()`（按方言）；`exam_group_items` 影子表（PR #112 兼容）仅 SQLite 建/写/清，MariaDB 完全跳过。
+  - 附带修正：`reviewDemo.ts` 演示时间戳 `2026-06-25T09:30:00.000Z` → `2026-06-25 09:30:00`（MariaDB DATETIME 严格模式）；移除已无必要的 `makeSyncAdapter`；`clearDemoData()` 签名由同步改异步，`backup.ts` 路由与 `verify-demo-safety.ts` 调用点同步补 `await`。
+  - **验证**：`scripts/verify-demo-safety.ts`（临时隔离 SQLite 库）23 项断言全部通过（种子/清理幂等/同名真实数据保护/冲突学号回归）；`tsc --noEmit` 改动文件零报错；MariaDB 路径静态检查无遗留 SQLite 专有写法。
+  - 注：CLI 种子 `npx tsx testdata/demo-exams/scripts/seed.ts` 在 MariaDB 环境下（设置 `PROJECTX_MARIADB_HOST` 等环境变量）现会正确写入 MariaDB，不再落入本地 SQLite。
+
 ### 部署注意事项
 
 - **PDF 中文渲染（非代码阻断项）**：`pdf.ts` 已内置多平台 CJK 字体候选（Windows `simsun.ttc`、macOS `PingFang`、Linux `Noto Sans CJK` 等）及系统字体扫描回退；仅当全部缺失时才降级为 `Helvetica`（中文空白）。生产环境（浪潮 5220 / Linux）需确保存在可用 CJK 字体，或显式设置环境变量 `PROJECTX_PDF_FONT_PATH` 指向字体文件。
