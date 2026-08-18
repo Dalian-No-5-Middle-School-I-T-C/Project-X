@@ -347,7 +347,7 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
     drawText(doc, String(question.questionNumber), question.contentRect.x + 3, question.contentRect.y + 3.2, 8);
   }
 
-  if (question.style === "manual_score_grid" && (!isV2 || question.scoreCells.length > 0)) {
+  if (question.style === "manual_score_grid" && question.scoreGrid?.enabled !== false && (!isV2 || question.scoreCells.length > 0)) {
     const sg = question.scoreGrid;
     const sc = sg?.strokeColor ?? "#999";
     const sw = sg?.strokeWidthMm ?? 0.15;

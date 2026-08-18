@@ -144,11 +144,11 @@ export class CardRepository {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           q.id, block.id, q.number, q.score, q.style ?? "manual_score_grid", q.kind ?? "plain_box",
           q.annotation || null, q.minHeightMm ?? 68, q.lineGrid?.enabled ? 1 : 0, q.lineGrid?.lineSpacingMm ?? 8,
-          q.blanks?.count, q.blanks?.widthMm, q.blanks?.heightMm, q.blanks?.labelStyle,
-          q.blanks?.items ? JSON.stringify(q.blanks.items) : undefined,
-          q.lineGrid ? JSON.stringify(q.lineGrid) : undefined,
-          q.essayGrid ? JSON.stringify(q.essayGrid) : undefined,
-          q.scoreGrid ? JSON.stringify(q.scoreGrid) : undefined,
+          q.blanks?.count ?? null, q.blanks?.widthMm ?? null, q.blanks?.heightMm ?? null, q.blanks?.labelStyle ?? null,
+          q.blanks?.items ? JSON.stringify(q.blanks.items) : null,
+          q.lineGrid ? JSON.stringify(q.lineGrid) : null,
+          q.essayGrid ? JSON.stringify(q.essayGrid) : null,
+          q.scoreGrid ? JSON.stringify(q.scoreGrid) : null,
           qi
         );
 
