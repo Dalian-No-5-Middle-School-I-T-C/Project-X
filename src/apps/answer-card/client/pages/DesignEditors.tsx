@@ -67,6 +67,7 @@ import {
 } from "../../../../shared/grading";
 import { createBlockId } from "../../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../../shared/blankLabels";
+import { shouldRenderScoreGrid } from "../../../../shared/scoreGrid";
 import {
   answerBlankItems,
   answerLineCount,
@@ -542,7 +543,7 @@ export function SubjectiveEditor({
             )}
           </>
         )}
-        {block.questions.map((question) => (
+        {!isEssayBlock && block.questions.map((question) => (
           <Panel key={question.id} className="gap-2 p-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-foreground">第 {question.number} 题</span>
@@ -621,7 +622,7 @@ export function SubjectiveEditor({
                       }
                     />
                   </Field>
-                  <Field label="横线高度(mm)">
+                  <Field label="横线高(mm)">
                     <Input
                       type="number"
                       min={4}
@@ -653,6 +654,39 @@ export function SubjectiveEditor({
                       </SelectContent>
                     </Select>
                   </Field>
+                </div>
+                <div className="border-l-2 border-border-subtle pl-2">
+                  <label className="flex items-center gap-2 text-xs text-secondary-foreground">
+                    <input
+                      type="checkbox"
+                      checked={question.scoreGrid?.enabled !== false}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        draft.scoreGrid = {
+                          enabled: event.target.checked,
+                          strokeColor: draft.scoreGrid?.strokeColor ?? "#999",
+                          strokeWidthMm: draft.scoreGrid?.strokeWidthMm ?? 0.15,
+                          fillColor: draft.scoreGrid?.fillColor ?? "#fff",
+                          fontSize: draft.scoreGrid?.fontSize ?? 2.8,
+                          dividerColor: draft.scoreGrid?.dividerColor ?? "#ccc",
+                          dividerWidthMm: draft.scoreGrid?.dividerWidthMm ?? 0.1,
+                          showLabel: draft.scoreGrid?.showLabel !== false,
+                        };
+                      })}
+                    />
+                    显示得分填涂格
+                  </label>
+                  {question.scoreGrid?.enabled !== false && (
+                    <label className="mt-2 flex items-center gap-2 text-xs text-secondary-foreground">
+                      <input
+                        type="checkbox"
+                        checked={question.scoreGrid?.showLabel !== false}
+                        onChange={(event) => updateQuestion(question.id, (draft) => {
+                          if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, showLabel: event.target.checked };
+                        })}
+                      />
+                      显示"得分"标签
+                    </label>
+                  )}
                 </div>
                 <div className="flex flex-col gap-2 border-l-2 border-border-subtle pl-2">
                   {answerBlankItems(question).map((item, blankIndex) => (
@@ -1032,6 +1066,26 @@ export function SubjectiveEditor({
                 })}
               /> 显示"题：（000）"标题
             </label>
+            <label className="flex items-center gap-2 text-xs text-secondary-foreground">
+              <input
+                type="checkbox"
+                checked={block.questions[0]?.essayGrid?.showFrame !== false}
+                onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                  draft.essayGrid.showFrame = event.target.checked;
+                })}
+              /> 显示粗边框
+            </label>
+            <label className="flex items-center gap-2 text-xs text-secondary-foreground">
+              <input
+                type="checkbox"
+                checked={block.questions[0]?.essayGrid?.showWordScale !== false}
+                onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                  draft.essayGrid.showWordScale = event.target.checked;
+                })}
+              /> 显示字数刻度
+            </label>
             <div className="text-xs text-muted-foreground">
               系统将自动计算每栏列数和行数。A3 三栏模式生效时网格均分到三栏。
             </div>
@@ -1310,7 +1364,7 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
       {block.questions.map((question) => (
         <g key={question.questionId}>
           {!block.frameRect && <rect {...question.rect} fill="none" stroke="#222" strokeWidth="0.25" />}
-          {question.style === "manual_score_grid" && (!isV2 || question.scoreCells.length > 0) && (
+          {shouldRenderScoreGrid(question, isV2) && (
             (() => {
               const sg = question.scoreGrid;
               const sc = sg?.strokeColor ?? "#999";
@@ -1342,7 +1396,7 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
                 <line x1={question.rect.x} y1={question.contentRect.y} x2={question.rect.x + question.rect.width} y2={question.contentRect.y} stroke={dc} strokeWidth={dw} />
               )}
               {question.scoreCells.map((cell) => (
-                <g key={cell.score}>
+                <g key={cell.score} data-testid="score-cell">
                   <rect x={cell.rect.x} y={cell.rect.y} width={cell.rect.width} height={cell.rect.height}
                     fill={fc} stroke={sc} strokeWidth={sw} style={{ fill: fc }} />
                   {cell.score !== null && (
@@ -1384,13 +1438,13 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
             return (
               <g key={index}>
                 {blankLabel && (
-                  <text x={blank.x - 0.8} y={blank.y + blank.height} textAnchor="end" dominantBaseline="middle" fontSize={2.4} fill="#1a1a1a">
+                  <text x={blank.x - 0.8} y={blank.y + blank.height - 1.8} textAnchor="end" dominantBaseline="middle" fontSize={2.4} fill="#1a1a1a">
                     {blankLabel}
                   </text>
                 )}
                 <line x1={blank.x} y1={blank.y + blank.height} x2={blank.x + blank.width} y2={blank.y + blank.height} stroke="#333" strokeWidth="0.25" />
                 {question.blankRightAnnotations?.[index] && (
-                  <text x={blank.x + blank.width + 1.2} y={blank.y + blank.height} dominantBaseline="middle"
+                  <text x={blank.x + blank.width + 1.2} y={blank.y + blank.height - 1.8} dominantBaseline="middle"
                     fontSize="3" fill="#888">
                     {question.blankRightAnnotations[index]}
                   </text>
