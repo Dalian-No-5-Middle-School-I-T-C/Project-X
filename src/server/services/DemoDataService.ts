@@ -5,11 +5,10 @@
  *   不覆盖现有真实数据，可重复执行。
  * - clearDemoData(): 仅清除「演示-」前缀数据。
  *
- * 假定调用方已完成 initializeDatabase()；仅支持 SQLite 方言。
+ * 假定调用方已完成 initializeDatabase()；SQLite / MariaDB 双方言兼容（DbAdapter）。
  */
 
-import type Database from "better-sqlite3";
-import { getDatabase, hashPassword } from "../db";
+import { buildInsertIgnore, getMysqlDb, hashPassword, type DbAdapter } from "../db";
 import { UserRepository } from "../repositories/UserRepository";
 import { ClassRepository } from "../repositories/ClassRepository";
 import { ROLE_IDS } from "../auth/permissions";
@@ -117,14 +116,24 @@ const OUTSIDE_WEEK_EXAM: ExamSpec = {
   }
 };
 
-function tableExists(db: Database.Database, name: string): boolean {
-  const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
+async function tableExists(db: DbAdapter, name: string): Promise<boolean> {
+  if (db.dialect === "mariadb") {
+    const row = await db.get(
+      "SELECT 1 AS x FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
+      name
+    );
+    return Boolean(row);
+  }
+  const row = await db.get("SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name=?", name);
   return Boolean(row);
 }
 
-function ensureCrossExamTables(db: Database.Database): void {
-  if (!tableExists(db, "exam_group_items")) {
-    db.exec(`
+async function ensureCrossExamTables(db: DbAdapter): Promise<void> {
+  // exam_group_items 为 PR #112 兼容影子表：仅 SQLite 侧动态建表；
+  // MariaDB 侧 schema.mariadb.sql 无此表，跳过（不建/不写/不清）。
+  if (db.dialect === "mariadb") return;
+  if (!(await tableExists(db, "exam_group_items"))) {
+    await db.exec(`
       CREATE TABLE exam_group_items (
         group_id      INTEGER NOT NULL REFERENCES exam_groups(id) ON DELETE CASCADE,
         exam_id       INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
@@ -140,22 +149,22 @@ function ensureCrossExamTables(db: Database.Database): void {
  * 关联考试组与考试。trackTypes 与 examIds 一一对应（缺省 'common'），
  * 支持文理分科（#212）：common 共同 / arts 文科 / science 理科。
  */
-function linkGroupExams(
-  db: Database.Database,
+async function linkGroupExams(
+  db: DbAdapter,
   groupId: number,
   examIds: number[],
   trackTypes?: Array<"common" | "arts" | "science">
-): void {
-  const insertMember = db.prepare(
-    "INSERT OR IGNORE INTO exam_group_members (group_id, exam_id, sort_order, track_type) VALUES (?, ?, ?, ?)"
-  );
-  examIds.forEach((id, i) => insertMember.run(groupId, id, i, trackTypes?.[i] ?? "common"));
+): Promise<void> {
+  const insertMember = buildInsertIgnore(db.dialect, "exam_group_members", ["group_id", "exam_id", "sort_order", "track_type"]);
+  for (const [i, id] of examIds.entries()) {
+    await db.run(insertMember, groupId, id, i, trackTypes?.[i] ?? "common");
+  }
 
-  if (tableExists(db, "exam_group_items")) {
-    const insertItem = db.prepare(
-      "INSERT OR IGNORE INTO exam_group_items (group_id, exam_id, sort_order) VALUES (?, ?, ?)"
-    );
-    examIds.forEach((id, i) => insertItem.run(groupId, id, i));
+  if (await tableExists(db, "exam_group_items")) {
+    const insertItem = buildInsertIgnore(db.dialect, "exam_group_items", ["group_id", "exam_id", "sort_order"]);
+    for (const [i, id] of examIds.entries()) {
+      await db.run(insertItem, groupId, id, i);
+    }
   }
 }
 
@@ -165,59 +174,57 @@ export interface ClearDemoStats {
   removedStudents: number;
 }
 
-function cleanupDemoData(db: Database.Database): ClearDemoStats {
+async function cleanupDemoData(db: DbAdapter): Promise<ClearDemoStats> {
   // 演示考试 / 考试组仍按「演示-」前缀识别（前缀独特，不存在与真实数据冲突的风险）。
-  const demoExamIds = (db.prepare("SELECT id FROM exams WHERE name LIKE ?").all(`${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
-  const demoGroupIds = (db.prepare("SELECT id FROM exam_groups WHERE name LIKE ?").all(`${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
+  const demoExamIds = (await db.all("SELECT id FROM exams WHERE name LIKE ?", `${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
+  const demoGroupIds = (await db.all("SELECT id FROM exam_groups WHERE name LIKE ?", `${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
 
   if (demoGroupIds.length > 0) {
     const ph = demoGroupIds.map(() => "?").join(",");
-    db.prepare(`DELETE FROM exam_group_members WHERE group_id IN (${ph})`).run(...demoGroupIds);
-    if (tableExists(db, "exam_group_items")) {
-      db.prepare(`DELETE FROM exam_group_items WHERE group_id IN (${ph})`).run(...demoGroupIds);
+    await db.run(`DELETE FROM exam_group_members WHERE group_id IN (${ph})`, ...demoGroupIds);
+    if (await tableExists(db, "exam_group_items")) {
+      await db.run(`DELETE FROM exam_group_items WHERE group_id IN (${ph})`, ...demoGroupIds);
     }
-    db.prepare(`DELETE FROM exam_groups WHERE id IN (${ph})`).run(...demoGroupIds);
+    await db.run(`DELETE FROM exam_groups WHERE id IN (${ph})`, ...demoGroupIds);
   }
 
   if (demoExamIds.length > 0) {
     const ph = demoExamIds.map(() => "?").join(",");
-    db.prepare(`DELETE FROM question_scores WHERE exam_id IN (${ph})`).run(...demoExamIds);
-    db.prepare(`DELETE FROM student_scores WHERE exam_id IN (${ph})`).run(...demoExamIds);
-    db.prepare(`DELETE FROM answer_block_crops WHERE exam_id IN (${ph})`).run(...demoExamIds);
-    db.prepare(`DELETE FROM review_assignments WHERE exam_id IN (${ph})`).run(...demoExamIds);
-    db.prepare(`DELETE FROM review_sessions WHERE exam_id IN (${ph})`).run(...demoExamIds);
-    db.prepare(`DELETE FROM block_grading_config WHERE exam_id IN (${ph})`).run(...demoExamIds);
-    db.prepare(`DELETE FROM exams WHERE id IN (${ph})`).run(...demoExamIds);
+    await db.run(`DELETE FROM question_scores WHERE exam_id IN (${ph})`, ...demoExamIds);
+    await db.run(`DELETE FROM student_scores WHERE exam_id IN (${ph})`, ...demoExamIds);
+    await db.run(`DELETE FROM answer_block_crops WHERE exam_id IN (${ph})`, ...demoExamIds);
+    await db.run(`DELETE FROM review_assignments WHERE exam_id IN (${ph})`, ...demoExamIds);
+    await db.run(`DELETE FROM review_sessions WHERE exam_id IN (${ph})`, ...demoExamIds);
+    await db.run(`DELETE FROM block_grading_config WHERE exam_id IN (${ph})`, ...demoExamIds);
+    await db.run(`DELETE FROM exams WHERE id IN (${ph})`, ...demoExamIds);
   }
 
   // v1.9.6: 答题卡 / 用户 / 班级 / 年级 按归属标记 is_demo=1 清理，不再依赖硬编码 ID /
   // 学号 / 用户名 / 名称，避免误删同名真实数据。安全语义：is_demo=0 的真实记录永不被清理。
-  const removedCards = db.prepare("DELETE FROM answer_cards WHERE is_demo = 1").run().changes;
+  const removedCards = (await db.run("DELETE FROM answer_cards WHERE is_demo = 1")).changes;
 
   // 收集待清理的演示用户 id（学生 + 演示教师），先解除 class_students 关联再删用户
-  const demoStudentIds = (db.prepare(
-    "SELECT id FROM users WHERE is_demo = 1"
-  ).all() as Array<{ id: number }>).map((r) => r.id);
+  const demoStudentIds = (await db.all("SELECT id FROM users WHERE is_demo = 1") as Array<{ id: number }>).map((r) => r.id);
   const removedStudents = demoStudentIds.length;
 
   if (demoStudentIds.length > 0) {
     const ph = demoStudentIds.map(() => "?").join(",");
-    db.prepare(`DELETE FROM class_students WHERE student_id IN (${ph})`).run(...demoStudentIds);
-    db.prepare(`DELETE FROM teacher_classes WHERE teacher_id IN (${ph})`).run(...demoStudentIds);
-    db.prepare(`DELETE FROM users WHERE id IN (${ph})`).run(...demoStudentIds);
+    await db.run(`DELETE FROM class_students WHERE student_id IN (${ph})`, ...demoStudentIds);
+    await db.run(`DELETE FROM teacher_classes WHERE teacher_id IN (${ph})`, ...demoStudentIds);
+    await db.run(`DELETE FROM users WHERE id IN (${ph})`, ...demoStudentIds);
   }
 
   // 删演示班级在前，删演示年级在后（classes.grade_id → grades.id 外键级联）。
   // v1.9.6 安全收窄：仅当演示年级下不存在 is_demo=0 的真实班级时才删除演示年级，
   // 避免外键 ON DELETE CASCADE 顺带扫掉挂在演示年级下的真实班级。
-  db.prepare("DELETE FROM classes WHERE is_demo = 1").run();
+  await db.run("DELETE FROM classes WHERE is_demo = 1");
   const hasRealClassUnderDemoGrade = Boolean(
-    db.prepare(
-      "SELECT 1 FROM classes WHERE is_demo = 0 AND grade_id IN (SELECT id FROM grades WHERE is_demo = 1) LIMIT 1"
-    ).get()
+    await db.get(
+      "SELECT 1 AS x FROM classes WHERE is_demo = 0 AND grade_id IN (SELECT id FROM grades WHERE is_demo = 1) LIMIT 1"
+    )
   );
   if (!hasRealClassUnderDemoGrade) {
-    db.prepare("DELETE FROM grades WHERE is_demo = 1").run();
+    await db.run("DELETE FROM grades WHERE is_demo = 1");
   } else {
     // 边界保护：保留有真实班级挂靠的演示年级，避免级联误删真实数据。
     console.warn(
@@ -236,8 +243,8 @@ function cleanupDemoData(db: Database.Database): ClearDemoStats {
 }
 
 /** 清除全部「演示-」前缀数据（不动真实数据）。假定 DB 已初始化。 */
-export function clearDemoData(): ClearDemoStats {
-  return cleanupDemoData(getDatabase());
+export async function clearDemoData(): Promise<ClearDemoStats> {
+  return cleanupDemoData(getMysqlDb());
 }
 
 // 演示客观题答案（5 道单选，4 个选项），供逐题选项分析演示
@@ -245,18 +252,17 @@ const DEMO_ANSWER_KEYS: Record<number, string[]> = { 1: ["A"], 2: ["B"], 3: ["C"
 const DEMO_OPTIONS = ["A", "B", "C", "D"];
 
 /** 为演示答题卡补一个客观题块 + 标准答案，使选项分析端点能解析题元数据 */
-function ensureDemoObjectiveBlock(db: Database.Database, cardId: string): void {
+async function ensureDemoObjectiveBlock(db: DbAdapter, cardId: string): Promise<void> {
   const blockId = `${cardId}-obj`;
-  db.prepare(`
-    INSERT OR IGNORE INTO objective_blocks
-      (id, card_id, sort_order, title, question_start, question_count, option_count, mode, score_per_question)
-    VALUES (?, ?, 0, '选择题', 1, 5, 4, 'single', 30)
-  `).run(blockId, cardId);
-  const insertKey = db.prepare(
-    "INSERT OR IGNORE INTO objective_answer_keys (block_id, question_number, correct_options) VALUES (?, ?, ?)"
+  await db.run(
+    buildInsertIgnore(db.dialect, "objective_blocks", [
+      "id", "card_id", "sort_order", "title", "question_start", "question_count", "option_count", "mode", "score_per_question"
+    ]),
+    blockId, cardId, 0, "选择题", 1, 5, 4, "single", 30
   );
+  const insertKey = buildInsertIgnore(db.dialect, "objective_answer_keys", ["block_id", "question_number", "correct_options"]);
   for (const [q, key] of Object.entries(DEMO_ANSWER_KEYS)) {
-    insertKey.run(blockId, Number(q), JSON.stringify(key));
+    await db.run(insertKey, blockId, Number(q), JSON.stringify(key));
   }
 }
 
@@ -274,18 +280,16 @@ function demoSelectedOptions(examId: number, studentId: number, q: number, score
   return [h < 55 ? popular : wrongs[h % wrongs.length]];
 }
 
-function seedQuestionScores(
-  db: Database.Database,
+async function seedQuestionScores(
+  db: DbAdapter,
   examId: number,
   cardId: string,
   studentIdByNumber: Map<string, number>,
   scores: Record<string, number>
-): void {
-  ensureDemoObjectiveBlock(db, cardId);
-  const insertQ = db.prepare(`
-    INSERT INTO question_scores (exam_id, student_id, question_number, score, max_score, score_type, selected_options)
-    VALUES (?, ?, ?, ?, ?, 'objective', ?)
-  `);
+): Promise<void> {
+  await ensureDemoObjectiveBlock(db, cardId);
+  const insertQ = `INSERT INTO question_scores (exam_id, student_id, question_number, score, max_score, score_type, selected_options)
+    VALUES (?, ?, ?, ?, ?, 'objective', ?)`;
   for (const [num, total] of Object.entries(scores)) {
     if (total <= 0) continue;
     const sid = studentIdByNumber.get(num);
@@ -294,7 +298,7 @@ function seedQuestionScores(
     const remainder = total - perQ * 5;
     for (let q = 1; q <= 5; q++) {
       const score = q === 5 ? perQ + remainder : perQ;
-      insertQ.run(examId, sid, q, score, 30, JSON.stringify(demoSelectedOptions(examId, sid, q, score, 30)));
+      await db.run(insertQ, examId, sid, q, score, 30, JSON.stringify(demoSelectedOptions(examId, sid, q, score, 30)));
     }
   }
 }
@@ -311,12 +315,12 @@ export interface SeedDemoStats {
  * 假定 DB 已初始化且 admin 用户已存在（服务端运行态天然满足；CLI 需先 ensureDefaultAdmin）。
  */
 export async function seedDemoData(): Promise<SeedDemoStats> {
-  const db = getDatabase();
-  ensureCrossExamTables(db);
+  const db = getMysqlDb();
+  await ensureCrossExamTables(db);
   const userRepo = new UserRepository();
   const classRepo = new ClassRepository();
 
-  cleanupDemoData(db);
+  await cleanupDemoData(db);
 
   // v1.9.8: 年级/班级/演示教师在单个事务内以 INSERT 直写 is_demo=1，创建与打标原子完成。
   // 此前「先创建再 UPDATE 打标」存在窗口：若进程在两步之间崩溃，demo-teacher 以 is_demo=0
@@ -326,20 +330,18 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   // 注意：is_demo=0 的残留教师不会被 cleanup 清除（安全语义：不清真实数据），但沿用其 id
   // 即可完成演示数据回填。bcrypt 哈希为异步，须在同步事务外预先计算。
   const teacherPasswordHash = await hashPassword("teacher123");
-  const created = db.transaction(() => {
-    const gradeId = Number(
-      db.prepare("INSERT INTO grades (name, sort_order, is_demo) VALUES (?, ?, 1)").run("高一(演示)", 1).lastInsertRowid
-    );
-    const insertClass = db.prepare("INSERT INTO classes (grade_id, name, sort_order, is_demo) VALUES (?, ?, ?, 1)");
-    const class1Id = Number(insertClass.run(gradeId, "演示1班", 1).lastInsertRowid);
-    const class2Id = Number(insertClass.run(gradeId, "演示2班", 2).lastInsertRowid);
-    const insertTeacher = db.prepare(
-      "INSERT OR IGNORE INTO users (username, password_hash, name, role_id, subject, is_demo) VALUES (?, ?, ?, ?, ?, 1)"
-    );
-    insertTeacher.run("demo-teacher", teacherPasswordHash, "演示教师", ROLE_IDS.TEACHER, "数学");
-    insertTeacher.run("demo-teacher-2", teacherPasswordHash, "演示教师乙", ROLE_IDS.TEACHER, "数学");
+  const created = await db.transaction(async (tx) => {
+    const gradeResult = await tx.run("INSERT INTO grades (name, sort_order, is_demo) VALUES (?, ?, 1)", "高一(演示)", 1);
+    const gradeId = Number(gradeResult.lastInsertRowid);
+    const class1Result = await tx.run("INSERT INTO classes (grade_id, name, sort_order, is_demo) VALUES (?, ?, ?, 1)", gradeId, "演示1班", 1);
+    const class1Id = Number(class1Result.lastInsertRowid);
+    const class2Result = await tx.run("INSERT INTO classes (grade_id, name, sort_order, is_demo) VALUES (?, ?, ?, 1)", gradeId, "演示2班", 2);
+    const class2Id = Number(class2Result.lastInsertRowid);
+    const insertTeacher = buildInsertIgnore(tx.dialect, "users", ["username", "password_hash", "name", "role_id", "subject", "is_demo"]);
+    await tx.run(insertTeacher, "demo-teacher", teacherPasswordHash, "演示教师", ROLE_IDS.TEACHER, "数学", 1);
+    await tx.run(insertTeacher, "demo-teacher-2", teacherPasswordHash, "演示教师乙", ROLE_IDS.TEACHER, "数学", 1);
     return { gradeId, class1Id, class2Id };
-  })();
+  });
   const grade = { id: created.gradeId };
   const class1 = { id: created.class1Id };
   const class2 = { id: created.class2Id };
@@ -363,11 +365,12 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   const studentIdByNumber = new Map<string, number>();
   if (batch.createdIds.length > 0) {
     const createdPh = batch.createdIds.map(() => "?").join(",");
-    db.prepare(`UPDATE users SET is_demo = 1 WHERE id IN (${createdPh})`).run(...batch.createdIds);
+    await db.run(`UPDATE users SET is_demo = 1 WHERE id IN (${createdPh})`, ...batch.createdIds);
     // 演示班级分班 / 成绩种子同样只覆盖本次新建的演示学生，被跳过的真实学生不入演示班级、不写演示成绩
-    const createdRows = db.prepare(
-      `SELECT id, student_number FROM users WHERE id IN (${createdPh})`
-    ).all(...batch.createdIds) as Array<{ id: number; student_number: string | null }>;
+    const createdRows = await db.all(
+      `SELECT id, student_number FROM users WHERE id IN (${createdPh})`,
+      ...batch.createdIds
+    ) as Array<{ id: number; student_number: string | null }>;
     for (const row of createdRows) {
       if (row.student_number) studentIdByNumber.set(row.student_number, row.id);
     }
@@ -375,11 +378,10 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
 
   // v1.9.9: 文理分科标签（#212，大考合集按科类筛选）：演示1班（01~08）= 理科班、演示2班（09~16）= 文科班。
   // 仅打标本次新建的演示学生，被跳过的真实学生不受影响（与 is_demo 打标同一安全语义）。
-  const setStudentTrack = db.prepare("UPDATE users SET track = ? WHERE id = ?");
-  STUDENT_NUMBERS.forEach((num, i) => {
+  for (const [i, num] of STUDENT_NUMBERS.entries()) {
     const sid = studentIdByNumber.get(num);
-    if (sid) setStudentTrack.run(i < 8 ? "science" : "arts", sid);
-  });
+    if (sid) await db.run("UPDATE users SET track = ? WHERE id = ?", i < 8 ? "science" : "arts", sid);
+  }
 
   const class1StudentIds = STUDENT_NUMBERS.slice(0, 8)
     .map((n) => studentIdByNumber.get(n))
@@ -390,71 +392,66 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   await classRepo.addStudents(class1.id, class1StudentIds);
   await classRepo.addStudents(class2.id, class2StudentIds);
 
-  const insertCard = db.prepare(`
-    INSERT OR IGNORE INTO answer_cards (id, title, subject_label, exam_date, is_demo)
-    VALUES (?, ?, ?, ?, 1)
-  `);
-  const insertExam = db.prepare(`
-    INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, closed_at, created_by)
-    VALUES (?, ?, ?, ?, ?, 'closed', CURRENT_TIMESTAMP, (SELECT id FROM users WHERE username = 'admin'))
-  `);
-  const insertScore = db.prepare(`
-    INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score)
-    VALUES (?, ?, ?, 0, ?)
-  `);
+  const insertCard = buildInsertIgnore(db.dialect, "answer_cards", ["id", "title", "subject_label", "exam_date", "is_demo"]);
+  const insertExam = `INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, closed_at, created_by)
+    VALUES (?, ?, ?, ?, ?, 'closed', CURRENT_TIMESTAMP, (SELECT id FROM users WHERE username = 'admin'))`;
+  const insertScore = `INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score)
+    VALUES (?, ?, ?, 0, ?)`;
 
   const weekExamIds: number[] = [];
   let examCount = 0;
 
-  function seedExam(spec: ExamSpec): number {
-    insertCard.run(spec.cardId, spec.name, spec.subject, spec.examDate);
-    const info = insertExam.run(spec.name, spec.cardId, grade.id, spec.subject, spec.examDate);
+  async function seedExam(spec: ExamSpec): Promise<number> {
+    await db.run(insertCard, spec.cardId, spec.name, spec.subject, spec.examDate, 1);
+    const info = await db.run(insertExam, spec.name, spec.cardId, grade.id, spec.subject, spec.examDate);
     const examId = Number(info.lastInsertRowid);
     examCount += 1;
 
     for (const [num, total] of Object.entries(spec.scores)) {
       if (total <= 0) continue;
       const sid = studentIdByNumber.get(num);
-      if (sid) insertScore.run(examId, sid, total, total);
+      if (sid) await db.run(insertScore, examId, sid, total, total);
     }
-    if (spec.withQuestions) seedQuestionScores(db, examId, spec.cardId, studentIdByNumber, spec.scores);
+    if (spec.withQuestions) await seedQuestionScores(db, examId, spec.cardId, studentIdByNumber, spec.scores);
     return examId;
   }
 
-  seedExam(PRIOR_MATH_EXAM);
-  for (const spec of WEEK_EXAMS) weekExamIds.push(seedExam(spec));
-  const historyExamId = seedExam(OUTSIDE_WEEK_EXAM);
-  seedFillBlankDemo(db);
+  await seedExam(PRIOR_MATH_EXAM);
+  for (const spec of WEEK_EXAMS) weekExamIds.push(await seedExam(spec));
+  const historyExamId = await seedExam(OUTSIDE_WEEK_EXAM);
+  await seedFillBlankDemo(db);
 
   // 网阅打分面板 DEV 演示数据（v1.9.4 路径 B 测试入口）
-  const teacherRow = db.prepare("SELECT id FROM users WHERE username = 'demo-teacher'").get() as { id: number } | undefined;
-  const teacher2Row = db.prepare("SELECT id FROM users WHERE username = 'demo-teacher-2'").get() as { id: number } | undefined;
+  const teacherRow = await db.get("SELECT id FROM users WHERE username = 'demo-teacher'") as { id: number } | undefined;
+  const teacher2Row = await db.get("SELECT id FROM users WHERE username = 'demo-teacher-2'") as { id: number } | undefined;
   if (teacherRow) {
     const reviewSeeded = await seedReviewDemo(db, grade, studentIdByNumber, teacherRow.id, teacher2Row?.id, STUDENT_NUMBERS);
     if (reviewSeeded) examCount += 1;
   }
 
-  const groupInfo = db.prepare(`
-    INSERT INTO exam_groups (name, description, grade_id, tag, status, total_score_mode, only_full_participants, created_by)
-    VALUES (?, ?, ?, '模考', 'active', 'raw', 0, (SELECT id FROM users WHERE username = 'admin'))
-  `).run(`${DEMO_PREFIX}2026高考摸底大考`, "语数英物化生史七科联考演示数据（含文理分科）", grade.id);
+  const groupInfo = await db.run(
+    `INSERT INTO exam_groups (name, description, grade_id, tag, status, total_score_mode, only_full_participants, created_by)
+     VALUES (?, ?, ?, '模考', 'active', 'raw', 0, (SELECT id FROM users WHERE username = 'admin'))`,
+    `${DEMO_PREFIX}2026高考摸底大考`, "语数英物化生史七科联考演示数据（含文理分科）", grade.id
+  );
   // 文理分科（#212）：语数英=共同科目、物化生=理科、历史=文科；大考统计按科类筛选学生
   const bigExamIds = [...weekExamIds, historyExamId];
   const bigTrackTypes: Array<"common" | "arts" | "science"> = [
     "common", "common", "common", "science", "science", "science", "arts"
   ];
-  linkGroupExams(db, Number(groupInfo.lastInsertRowid), bigExamIds, bigTrackTypes);
+  await linkGroupExams(db, Number(groupInfo.lastInsertRowid), bigExamIds, bigTrackTypes);
 
-  const crossInfo = db.prepare(`
-    INSERT INTO exam_groups (name, source, start_date, end_date, created_by)
-    VALUES (?, 'week', '2026-06-16', '2026-06-22', (SELECT id FROM users WHERE username = 'admin'))
-  `).run(`${DEMO_PREFIX}第25周考试包`);
-  linkGroupExams(db, Number(crossInfo.lastInsertRowid), weekExamIds);
+  const crossInfo = await db.run(
+    `INSERT INTO exam_groups (name, source, start_date, end_date, created_by)
+     VALUES (?, 'week', '2026-06-16', '2026-06-22', (SELECT id FROM users WHERE username = 'admin'))`,
+    `${DEMO_PREFIX}第25周考试包`
+  );
+  await linkGroupExams(db, Number(crossInfo.lastInsertRowid), weekExamIds);
 
   // 保险写入全局设置默认键（迁移 v26 已写入；若库为空或被清理则补齐），便于 verify 校验
-  const ensureSetting = db.prepare("INSERT OR IGNORE INTO system_settings (`key`, value) VALUES (?, ?)");
-  ensureSetting.run("require_original_paper", "1");
-  ensureSetting.run("highlight_missing_paper", "1");
+  const ensureSetting = buildInsertIgnore(db.dialect, "system_settings", ["`key`", "value"]);
+  await db.run(ensureSetting, "require_original_paper", "1");
+  await db.run(ensureSetting, "highlight_missing_paper", "1");
 
   console.log(`[seed] 完成: ${examCount} 场考试, 16 名学生(文理分科), 大考合集(7科) + 跨考已存组`);
   return {
