@@ -168,6 +168,19 @@ export function ExamManagePage() {
     setSelectedExamIds(new Set());
   }
 
+  /** 列表/日历视图切换：清空勾选，避免列表选中的考试在日历视图不可见却仍计入批量删除 */
+  function handleExamViewChange(next: ExamView) {
+    setExamView(next);
+    setSelectedExamIds(new Set());
+  }
+
+  /** 单科/大考模式切换：大考视图无勾选 UI，切回单科时不应复活此前的隐藏选中 */
+  function handleManageModeChange(next: "single" | "group") {
+    setExamManageMode(next);
+    setSelectedExamIds(new Set());
+    if (next === "group") loadExamGroups();
+  }
+
   function handleCardPicked(selectedCardId: string) {
     if (selectedCardId === CARD_PLACEHOLDER) return;
     setNewExamCardId(selectedCardId);
@@ -380,17 +393,14 @@ export function ExamManagePage() {
                   size="sm"
                   aria-label="单科考试视图"
                   value={examView}
-                  onValueChange={setExamView}
+                  onValueChange={handleExamViewChange}
                   items={EXAM_VIEW_ITEMS}
                 />
               )}
               <SegmentedControl
                 aria-label="考试管理视图"
                 value={examManageMode}
-                onValueChange={(next) => {
-                  setExamManageMode(next);
-                  if (next === "group") loadExamGroups();
-                }}
+                onValueChange={handleManageModeChange}
                 items={MANAGE_MODE_ITEMS}
               />
             </div>
