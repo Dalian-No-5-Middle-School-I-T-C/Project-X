@@ -5,7 +5,8 @@ import { ZipArchive } from "archiver";
 import XLSX from "xlsx";
 import { competitionRank } from "../../shared/ranking";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
-import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
+import { createAiAnalysisJob, enqueueAiAnalysisJob } from "../services/aiAnalysisJobs";
+import type { AiJobCreateResponse } from "../../shared/types";
 import {
   getAiProviderForUser,
   memberMatchesTrack,
@@ -204,34 +205,20 @@ router.post("/ai-analysis", requireReadableGroup, async (req: Request, res: Resp
         providerOverride = { provider_type: prov.provider_type, base_url: prov.base_url, api_key: prov.api_key };
       }
     }
-    const response = await fetchLlmClient("/analysis/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        groupId,
-        model: typeof req.body?.model === "string" ? req.body.model : undefined,
-        locale: "zh-CN",
-        providerOverride: providerOverride ?? undefined
-      })
-    }, 120_000);
-    if (!response.ok) {
-      let message = `AI 服务返回 ${response.status}`;
-      try {
-        const body = await response.json() as { detail?: string; message?: string };
-        message = body.detail || body.message || message;
-      } catch {
-        const text = await response.text().catch(() => "");
-        if (text) message = text;
-      }
-      res.status(response.status >= 400 && response.status < 500 ? response.status : 502).json({ message });
-      return;
-    }
-    res.json(await response.json());
+    // 建议 5：先建任务立即返回 jobId，后台串行队列执行
+    const jobId = await createAiAnalysisJob({
+      groupId,
+      model: typeof req.body?.model === "string" ? req.body.model : undefined,
+      providerOverride,
+      createdBy: req.user?.id ?? null,
+    });
+    enqueueAiAnalysisJob(jobId, {
+      groupId,
+      model: typeof req.body?.model === "string" ? req.body.model : undefined,
+      providerOverride,
+    }).catch((err) => console.error(`[AiJob] #${jobId} failed:`, err));
+    res.status(202).json({ jobId, status: "queued" } satisfies AiJobCreateResponse);
   } catch (error) {
-    if (error instanceof Error && (error.message.includes("fetch") || error.message.includes("ECONNREFUSED"))) {
-      res.status(503).json({ message: "无法连接到 Python llmclient 中转服务。请先启动：py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766" });
-      return;
-    }
     next(error);
   }
 });

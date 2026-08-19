@@ -8,7 +8,7 @@ import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
 import { formatScore, formatPercent, formatChange } from "../util/format";
 import type {
-  ClassComparisonResponse, ExamOverview, ExamMetrics, PreviousExamComparison, QuestionAnalysisItem,
+  ClassComparisonResponse, ClassKnowledgeResponse, ExamOverview, ExamMetrics, PreviousExamComparison, QuestionAnalysisItem,
   StudentRankingItem, ScoreDisplayMode, ScoreTableRow, AnalysisThresholds, KnowledgeWeaknessItem,
 } from "../../../../shared/types";
 import { AnalysisDistribution } from "./AnalysisDistribution";
@@ -21,7 +21,13 @@ import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
 import { AnalysisTrend } from "./AnalysisTrend";
-import { DistributionBar, ClassDistributionBar, ClassRadar } from "./AnalysisCharts";
+import { DistributionBar, ClassDistributionBar, ClassRadar, KnowledgeRadar } from "./AnalysisCharts";
+import { BorderlineDialog } from "./BorderlineDialog";
+import { SubjectDeviationPanel } from "./SubjectDeviationPanel";
+import { KnowledgeAnnotatePanel } from "./KnowledgeAnnotatePanel";
+import { ComparablePanel } from "./ComparablePanel";
+import { QualityTrendPanel } from "./QualityTrendPanel";
+import { downloadBlob } from "../util/download";
 import { OptionAnalysisPanel } from "./OptionAnalysisPanel";
 import { useBands, DifficultyBadge, DiscriminationBadge } from "./MetricBadge";
 import {
@@ -83,7 +89,7 @@ interface ClassOption { id: number; name: string; grade_name?: string; }
 
 interface Props { examId: number; examName: string; subject: string | null; onBack: () => void; }
 
-type SubTab = "overview" | "scores" | "question-analysis" | "class-compare" | "overall" | "ai";
+type SubTab = "overview" | "scores" | "question-analysis" | "class-compare" | "deviation" | "overall" | "ai";
 
 /** Radix Select 不接受空字符串值，用哨兵表示「全部班级」 */
 const ALL_CLASSES = "__all__";
@@ -215,6 +221,8 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
   const [classId, setClassId] = useState("");
   const [showExport, setShowExport] = useState(false);
   const [showThresholdSettings, setShowThresholdSettings] = useState(false);
+  const [showBorderline, setShowBorderline] = useState(false);
+  const [kpRefreshKey, setKpRefreshKey] = useState(0);
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [overview, setOverview] = useState<ExamOverview | null>(null);
   const [metrics, setMetrics] = useState<ExamMetrics | null>(null);
@@ -285,6 +293,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
     { key: "scores" as SubTab, label: "成绩", icon: Users },
     { key: "question-analysis" as SubTab, label: "题目分析", icon: BarChart3 },
     { key: "class-compare" as SubTab, label: "班级对比", icon: BarChart3 },
+    { key: "deviation" as SubTab, label: "偏科", icon: AlertTriangle },
     { key: "overall" as SubTab, label: "总体分析", icon: Activity },
     { key: "ai" as SubTab, label: "AI分析", icon: ClipboardList },
   ], []);
@@ -548,6 +557,13 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                   </RankPanel>
                 </div>
 
+                {/* 建议 4：临界生完整名单入口 */}
+                <div className="flex justify-end">
+                  <Button variant="outline" size="sm" icon={<Users />} onClick={() => setShowBorderline(true)}>
+                    临界生完整名单（培优补差）
+                  </Button>
+                </div>
+
                 {/* 临界生名单 */}
                 {criticalList.length > 0 && (
                   <RankPanel title={`临界生（及格/优秀线 ±${Math.round(overview.passScore * 0.05)} 分）`}>
@@ -602,12 +618,31 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
 
           {/* ====== 题目分析 Tab ====== */}
           <TabsContent value="question-analysis" className="flex flex-col gap-5 p-6">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-foreground">题目分析</span>
+              {/* 建议 11：错题本导出 */}
+              <Button
+                variant="outline"
+                size="sm"
+                icon={<Download />}
+                onClick={() => {
+                  const params = new URLSearchParams();
+                  if (classId) params.set("classId", classId);
+                  downloadBlob(`/api/analysis/exams/${examId}/export-wrong?${params.toString()}`, `${examName}_错题本.xlsx`)
+                    .catch(() => {});
+                }}
+              >
+                错题本导出（XLSX）
+              </Button>
+            </div>
             <AnalysisQuestions
               questions={questions}
               bands={bands ?? undefined}
               onRowClick={(qn) => setDrillQuestion(qn)}
             />
-            <KnowledgePanel examId={examId} classId={classId || undefined} />
+            {/* 建议 8：知识点半自动标注（词典匹配 → 人工勾选应用） */}
+            <KnowledgeAnnotatePanel examId={examId} onApplied={() => setKpRefreshKey((k) => k + 1)} />
+            <KnowledgePanel key={kpRefreshKey} examId={examId} classId={classId || undefined} />
 
             {/* Issue #175: 选择题各选项选择人数统计与分析 */}
             <OptionAnalysisPanel examId={examId} classId={classId || undefined} />
@@ -629,9 +664,20 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
             <ClassComparePanel examId={examId} classGroups={classGroups} />
           </TabsContent>
 
+          {/* ====== 偏科 Tab（建议 7）====== */}
+          <TabsContent value="deviation" className="p-6">
+            <SubjectDeviationPanel examId={examId} subject={subject} classId={classId} />
+          </TabsContent>
+
           {/* ====== 总体分析 Tab ====== */}
           <TabsContent value="overall">
             <AnalysisOverall kind="exam" examId={examId} bands={bands ?? undefined} />
+            <div className="flex flex-col gap-5 p-6">
+              {/* 建议 14：年级间同类考试对比 */}
+              <ComparablePanel examId={examId} />
+              {/* 建议 15：学科命题质量趋势 */}
+              <QualityTrendPanel subject={subject} />
+            </div>
           </TabsContent>
 
           {/* ====== AI分析 Tab ====== */}
@@ -644,6 +690,9 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
       {/* Modals */}
       {showExport && <ExportModal examId={examId} examName={examName} classId={classId || undefined} onClose={() => setShowExport(false)} />}
       <ThresholdSettingsDialog open={showThresholdSettings} onClose={() => setShowThresholdSettings(false)} />
+      {showBorderline && (
+        <BorderlineDialog examId={examId} examName={examName} classes={classes} onClose={() => setShowBorderline(false)} />
+      )}
       {drillQuestion && (
         <QuestionStudentScoresModal
           examId={examId}
@@ -780,6 +829,8 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
   const [comparison, setComparison] = useState<ClassComparisonResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  // 建议 10：班级知识点掌握对比（雷达）
+  const [knowledge, setKnowledge] = useState<ClassKnowledgeResponse | null>(null);
 
   // Issue #175: 优先使用本场考试实际参与的班级
   useEffect(() => {
@@ -817,6 +868,15 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allSelected, selectedKey, examId]);
+
+  // 建议 10：与班级对比同选区加载知识点雷达
+  useEffect(() => {
+    if (selectedIds.length < 2) { setKnowledge(null); return; }
+    fetchJson<ClassKnowledgeResponse>(`/api/analysis/exams/${examId}/class-knowledge?classIds=${selectedIds.join(",")}`)
+      .then(setKnowledge)
+      .catch(() => setKnowledge(null));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedKey, examId]);
 
   return (
     <div className="flex flex-col gap-4 p-6">
@@ -918,6 +978,23 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
                 多维度雷达对比（平均分率/中位分率/及格率/优秀率/难度/区分度/离散度）
               </h3>
               <ClassRadar classes={comparison.classes} fullScore={comparison.fullScore} height={340} />
+            </section>
+          )}
+
+          {/* ②.5 建议 10: 班级知识点掌握对比（得分率雷达） */}
+          {knowledge && !knowledge.empty && knowledge.knowledgePoints.length >= 2 && (
+            <section className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-semibold text-foreground">班级知识点掌握对比（得分率）</h3>
+                <Badge tone="neutral">覆盖 {knowledge.coverageRate}% 题目（已标注知识点）</Badge>
+                <span className="text-xs text-muted-foreground">「3 班函数弱、5 班立体几何弱」这类维度对比</span>
+              </div>
+              <KnowledgeRadar
+                points={knowledge.knowledgePoints}
+                classes={knowledge.classes}
+                matrix={knowledge.matrix}
+                height={340}
+              />
             </section>
           )}
 

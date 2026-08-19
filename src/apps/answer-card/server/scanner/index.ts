@@ -49,6 +49,7 @@ export function createScannerRouter(twainEnabled = true): Router {
 
     const { getMysqlDb, buildUpsertSQL } = await import("../../../../server/db");
     const { roundScore } = await import("../../../../server/services/rankingUpdate");
+    const { analysisCache } = await import("../../../../server/services/analysisCache");
     const db = getMysqlDb();
 
     const scoreUpsertSQL = buildUpsertSQL(
@@ -104,6 +105,9 @@ export function createScannerRouter(twainEnabled = true): Router {
         );
       }
     });
+
+    // 分析结果缓存精准失效（建议 6）
+    for (const exam of exams) analysisCache.invalidateExam(exam.id);
   }
 
   // Progress event emitters by sessionId (for WebSocket integration)

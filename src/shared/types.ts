@@ -588,6 +588,10 @@ export type StudentTrendPoint = {
   classSize: number;
   rank: number;
   percentile: number;
+  /** 该场满分（建议 3 教师端端点补充，用于得分率） */
+  fullScore?: number;
+  /** 得分率 0-100（totalScore / fullScore） */
+  scoreRate?: number;
 };
 
 /** 学科薄弱分析结果 */
@@ -854,6 +858,180 @@ export type AiAnalysisResponse = {
   report: AiAnalysisReport;
   toolCalls: AiAnalysisToolCall[];
 };
+
+// ============================================================
+// 成绩分析优化清单 第 2-4 批新增类型
+// ============================================================
+
+// ── 建议 4：临界生（踩线生）名单 ──────────────────────
+export type BorderlineLineKind = "pass" | "excellent" | "custom" | "percent";
+
+export interface BorderlineStudentItem {
+  rank: number;
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  classId: number | null;
+  totalScore: number;
+  /** 阈值线绝对值 */
+  line: number;
+  /** |totalScore - line| */
+  distance: number;
+  /** totalScore - line（负 = 线下） */
+  distanceAbove: number;
+  /** "below" | "above" */
+  side: "below" | "above";
+}
+
+export interface BorderlineResponse {
+  examId: number;
+  lineKind: BorderlineLineKind;
+  lineLabel: string;
+  line: number;
+  margin: number;
+  fullScore: number;
+  items: BorderlineStudentItem[];
+}
+
+// ── 建议 7：偏科预警 ─────────────────────────────────
+export interface SubjectZScore {
+  examId: number;
+  subject: string;
+  score: number;
+  gradeAvg: number;
+  gradeStd: number;
+  z: number;
+}
+
+export interface SubjectDeviationItem {
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  subjects: SubjectZScore[];
+  /** 最低 Z（越负越偏科） */
+  lowestZ: number;
+  /** 最低 Z 对应科目名 */
+  lowestSubject: string;
+  /** 是否触发预警（lowestZ < -threshold） */
+  flagged: boolean;
+}
+
+export interface SubjectDeviationResponse {
+  examIds: number[];
+  threshold: number;
+  items: SubjectDeviationItem[];
+}
+
+// ── 建议 10：班级知识点掌握对比 ──────────────────────
+export interface ClassKnowledgeStat {
+  classId: number;
+  className: string;
+}
+
+export interface ClassKnowledgePointStat {
+  knowledgePoint: string;
+  byClass: Array<{ classId: number; scoreRate: number | null; questionCount: number }>;
+}
+
+export interface ClassKnowledgeResponse {
+  examId: number;
+  knowledgePoints: string[];
+  classes: ClassKnowledgeStat[];
+  matrix: ClassKnowledgePointStat[];
+  /** 已标注知识点题目覆盖率 0-100 */
+  coverageRate: number;
+  /** 无知识点标注时为空列表 */
+  empty: boolean;
+}
+
+// ── 建议 11：错题本导出行 ────────────────────────────
+export interface WrongQuestionRow {
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  totalScore: number;
+  wrongCount: number;
+  questionNumber: number;
+  maxScore: number;
+  score: number;
+  scoreRate: number;
+}
+
+// ── 建议 14：年级间同类考试对比 ──────────────────────
+export interface ComparableExamItem {
+  examId: number;
+  examName: string;
+  gradeName: string | null;
+  examDate: string | null;
+  gradedCount: number;
+  avgScore: number;
+  stdDev: number;
+  difficulty: number;
+  discrimination: number;
+  fullScore: number;
+}
+
+export interface ComparableResponse {
+  cardId: string | null;
+  cardTitle: string;
+  currentExamId: number;
+  exams: ComparableExamItem[];
+}
+
+// ── 建议 15：学科命题质量趋势 ────────────────────────
+export interface SubjectQualityPoint {
+  examId: number;
+  examName: string;
+  examDate: string | null;
+  difficulty: number;
+  discrimination: number;
+  avgScore: number;
+  fullScore: number;
+  gradedCount: number;
+}
+
+export interface SubjectQualityResponse {
+  subject: string;
+  points: SubjectQualityPoint[];
+}
+
+// ── 建议 5：AI 学情分析异步任务化 ────────────────────
+export type AiJobState = "queued" | "running" | "done" | "error";
+
+export interface AiJobCreateResponse {
+  jobId: number;
+  status: AiJobState;
+}
+
+export interface AiJobPollResponse {
+  id: number;
+  examId?: number | null;
+  groupId?: number | null;
+  classId?: number | null;
+  status: AiJobState;
+  result?: AiAnalysisResponse | null;
+  error?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ── 建议 8：知识点半自动标注 ──────────────────────────
+export interface KnowledgeSuggestionItem {
+  questionNumber: number;
+  /** 可用的题干/注释文本（用于展示） */
+  source: string;
+  /** 匹配到的候选知识点 */
+  matched: string[];
+}
+
+export interface KnowledgeSuggestResponse {
+  cardId: string | null;
+  subject: string | null;
+  suggestions: KnowledgeSuggestionItem[];
+}
 
 // ============================================================
 // v1.4.0 新增类型：成绩查看改造
