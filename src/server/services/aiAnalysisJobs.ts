@@ -6,7 +6,7 @@
  *  - 后台串行队列执行（并发 = 1，天然防重）
  *  - 前端轮询 GET /ai-analysis/jobs/:id
  *  - 落库的 result 顺便成为 AI 分析的持久缓存
- *  - 服务重启时残留的 queued/running 任务在下次创建任务前标记为 failed
+ *  - 服务重启时残留的 queued/running 任务由服务启动阶段一次性标记为 failed（见 createApp）
  */
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
@@ -82,17 +82,24 @@ export async function runAiAnalysis(spec: AiJobSpec): Promise<AiAnalysisResponse
   return await response.json() as AiAnalysisResponse;
 }
 
-/** 服务重启后残留任务的清理（在创建新任务前执行一次）。 */
-async function markInterruptedJobsFailed(db: DbAdapter): Promise<void> {
+/** 服务重启后残留任务的清理（只在服务启动阶段调用一次，见 createApp）。 */
+let interruptedCleanupDone = false;
+export async function markInterruptedJobsFailed(db: DbAdapter): Promise<void> {
+  if (interruptedCleanupDone) return;
+  interruptedCleanupDone = true;
   await db.run(
     `UPDATE ai_analysis_jobs SET status = 'error', error = '服务重启中断，任务未完成' WHERE status IN ('queued', 'running')`
   );
 }
 
+/** 服务启动时调用：把上次进程残留的 queued/running 任务标记为 failed。 */
+export async function cleanupInterruptedAiJobs(): Promise<void> {
+  await markInterruptedJobsFailed(getMysqlDb());
+}
+
 /** 创建任务并立即返回 jobId。 */
 export async function createAiAnalysisJob(input: AiJobCreateInput): Promise<number> {
   const db = getMysqlDb();
-  await markInterruptedJobsFailed(db);
   const info = await db.run(
     `INSERT INTO ai_analysis_jobs (exam_id, group_id, class_id, status, model, created_by)
      VALUES (?, ?, ?, 'queued', ?, ?)`,
@@ -137,4 +144,15 @@ export async function getAiAnalysisJob(jobId: number): Promise<AiJobPollResponse
   const db = getMysqlDb();
   const row = await db.get("SELECT * FROM ai_analysis_jobs WHERE id = ?", jobId);
   return row ? rowToPoll(row) : null;
+}
+
+/**
+ * 读取任务及其创建者（供轮询接口的 IDOR 校验）。
+ * 不把 created_by 放进 AiJobPollResponse，避免向客户端暴露任务归属。
+ */
+export async function getAiAnalysisJobWithCreator(jobId: number): Promise<{ job: AiJobPollResponse; createdBy: number | null } | null> {
+  const db = getMysqlDb();
+  const row = await db.get("SELECT * FROM ai_analysis_jobs WHERE id = ?", jobId);
+  if (!row) return null;
+  return { job: rowToPoll(row), createdBy: row.created_by != null ? Number(row.created_by) : null };
 }

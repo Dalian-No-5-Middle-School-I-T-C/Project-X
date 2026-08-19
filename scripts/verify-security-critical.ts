@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
-import type { CombinedGradingRow } from "../src/shared/types";
+import type { CombinedGradingRow, StudentTrendPoint } from "../src/shared/types";
 
 const tempDir = mkdtempSync(path.join(tmpdir(), "projectx-security-critical-"));
 process.env.PROJECTX_DB_PATH = path.join(tempDir, "projectx.db");
@@ -411,6 +411,59 @@ async function main(): Promise<void> {
       const closedRow = db.prepare("SELECT file_path FROM scan_records WHERE batch_id=?").get(closedBatch) as { file_path: string | null };
       check(activeRow.file_path === activeFile && existsSync(activeFile), "阅卷中考试的过期扫描图不被清理");
       check(closedRow.file_path === null && !existsSync(closedFile), "已关闭考试的过期扫描图按保留期清理");
+    }
+
+    section("AI 任务状态隔离与越权访问");
+    {
+      const { createAiAnalysisJob } = await import("../src/server/services/aiAnalysisJobs");
+
+      // #1 创建新任务不得把已在运行/排队中的既有任务误标为失败
+      const runningJob = Number(db.prepare("INSERT INTO ai_analysis_jobs (exam_id,status,created_by) VALUES (?, 'running', ?)").run(visibleExam, teacher.id).lastInsertRowid);
+      const queuedJob = Number(db.prepare("INSERT INTO ai_analysis_jobs (exam_id,status,created_by) VALUES (?, 'queued', ?)").run(visibleExam, teacher.id).lastInsertRowid);
+      const newJobId = await createAiAnalysisJob({ examId: visibleExam, createdBy: teacher.id });
+      const runningState = (db.prepare("SELECT status FROM ai_analysis_jobs WHERE id=?").get(runningJob) as { status: string }).status;
+      const queuedState = (db.prepare("SELECT status FROM ai_analysis_jobs WHERE id=?").get(queuedJob) as { status: string }).status;
+      check(runningState === "running" && queuedState === "queued", "创建新任务不会把运行中/排队中的既有任务误标为失败");
+
+      // #2 任务轮询 IDOR：非创建者且考试/考试组不可见时拒绝
+      const teacher2 = await users.createUser({ username: "critical-teacher2", password: "teacher-pass", name: "外班教师", role_id: 2, teacher_role: "subject_teacher", subject: "语文" });
+      db.prepare("INSERT INTO teacher_classes (teacher_id,class_id,subject) VALUES (?,?,?)").run(teacher2.id, classB, "语文");
+      const teacher2Token = (await authService.login(teacher2.username, "teacher-pass")).token!;
+      check((await fetch(`${base}/api/analysis/ai-analysis/jobs/${newJobId}`, { headers: authHeaders(teacherToken) })).status === 200, "创建者可轮询自己的任务");
+      check((await fetch(`${base}/api/analysis/ai-analysis/jobs/${newJobId}`, { headers: authHeaders(teacher2Token) })).status === 403, "对不可见考试的非创建者教师轮询返回 403");
+      check((await fetch(`${base}/api/analysis/ai-analysis/jobs/${newJobId}`, { headers: authHeaders(leaderToken) })).status === 200, "年级组长（全量可见）可轮询非本人任务");
+      check((await fetch(`${base}/api/analysis/ai-analysis/jobs/${newJobId}`, { headers: authHeaders(adminToken) })).status === 200, "管理员可轮询任意任务");
+      check((await fetch(`${base}/api/analysis/ai-analysis/jobs/999999`, { headers: authHeaders(teacherToken) })).status === 404, "轮询不存在的任务返回 404");
+      const leaderExamJob = await createAiAnalysisJob({ examId: hiddenExam, createdBy: leader.id });
+      check((await fetch(`${base}/api/analysis/ai-analysis/jobs/${leaderExamJob}`, { headers: authHeaders(studentToken) })).status === 403, "未参加考试的学生轮询他人任务返回 403");
+      const groupJob = await createAiAnalysisJob({ groupId: visibleGroup, createdBy: teacher.id });
+      const pollGroupTeacher2 = await fetch(`${base}/api/analysis/ai-analysis/jobs/${groupJob}`, { headers: authHeaders(teacher2Token) });
+      const pollGroupLeader = await fetch(`${base}/api/analysis/ai-analysis/jobs/${groupJob}`, { headers: authHeaders(leaderToken) });
+      check(pollGroupTeacher2.status === 403 && pollGroupLeader.status === 200, "考试组任务按组成员可见性二次校验");
+    }
+
+    section("学生成长曲线可见范围");
+    {
+      // 外班学生：仅在语文/外班考试有成绩，对数学教师不可见
+      const hiddenScoreStudent = await users.createUser({ username: "critical-hidden", password: "student-pass", name: "外班学生", role_id: 3, student_number: "S2001" });
+      db.prepare("INSERT INTO student_scores (exam_id,student_id,total_score) VALUES (?,?,?)").run(hiddenExam, hiddenScoreStudent.id, 90);
+      const leaderTrendForeign = await fetch(`${base}/api/analysis/students/${hiddenScoreStudent.id}/trend`, { headers: authHeaders(leaderToken) });
+      const leaderTrendForeignBody = await leaderTrendForeign.json() as StudentTrendPoint[];
+      const teacherTrendForeign = await fetch(`${base}/api/analysis/students/${hiddenScoreStudent.id}/trend`, { headers: authHeaders(teacherToken) });
+      check(leaderTrendForeign.status === 200 && leaderTrendForeignBody.some((p) => p.examId === hiddenExam), "全量可见角色可读取外班学生完整曲线");
+      check(teacherTrendForeign.status === 403, "仅在外班考试有成绩的学生对受限教师返回 403");
+
+      // 本班学生：历史里既有可见考试（visibleExam / 阅卷考试）也有不可见 hiddenExam，曲线必须被裁剪
+      db.prepare("INSERT INTO student_scores (exam_id,student_id,total_score) VALUES (?,?,?)").run(hiddenExam, student.id, 85);
+      const teacherTrendOwn = await fetch(`${base}/api/analysis/students/${student.id}/trend`, { headers: authHeaders(teacherToken) });
+      const teacherTrendOwnBody = await teacherTrendOwn.json() as StudentTrendPoint[];
+      check(
+        teacherTrendOwn.status === 200
+          && teacherTrendOwnBody.length > 0
+          && teacherTrendOwnBody.some((p) => p.examId === visibleExam)
+          && !teacherTrendOwnBody.some((p) => p.examId === hiddenExam),
+        "本班学生曲线只包含教师可见考试的数据（过滤掉不可见考试）"
+      );
     }
 
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);

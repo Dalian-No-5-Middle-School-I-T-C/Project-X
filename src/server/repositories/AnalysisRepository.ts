@@ -1212,15 +1212,22 @@ export class AnalysisRepository {
   // ── 建议 3：学生个人跨考试成长曲线 ──────────────────
   // 一次拉该生全部历史成绩 + 每场考试的年级/班级统计（批量化，避免循环查询）；
   // 排名优先复用 rankingUpdate 已落库的 rank/percentile，缺失时现场按总分排。
-  async getStudentTrend(studentId: number): Promise<StudentTrendPoint[]> {
+  // visibleExamIds 非空时仅统计调用者可见考试内的数据（越权防护，见 /students/:id/trend）。
+  // null 表示不过滤；空数组表示无任何可见考试 → 直接返回空。
+  async getStudentTrend(studentId: number, visibleExamIds: number[] | null = null): Promise<StudentTrendPoint[]> {
+    if (visibleExamIds !== null && visibleExamIds.length === 0) return [];
+    const filterVisible = visibleExamIds !== null;
+    const params: Array<number | string> = [studentId];
+    const visibleClause = filterVisible ? ` AND ss.exam_id IN (${placeholders(visibleExamIds!)})` : "";
+    if (filterVisible) params.push(...visibleExamIds!);
     const s = await this.db.all(
       `SELECT ss.exam_id as examId, e.name as examName, e.subject,
               COALESCE(e.start_time, e.end_time, e.created_at) as examTime,
               ss.total_score as totalScore, ss.rank as rankStored, ss.percentile as pctStored
        FROM student_scores ss JOIN exams e ON e.id = ss.exam_id
-       WHERE ss.student_id = ?
+       WHERE ss.student_id = ?${visibleClause}
        ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC, e.id ASC`,
-      studentId
+      ...params
     ) as Array<{ examId: number; examName: string; subject: string | null; examTime: string; totalScore: number; rankStored: number | null; pctStored: number | null }>;
     if (s.length === 0) return [];
     const examIds = s.map((r) => r.examId);

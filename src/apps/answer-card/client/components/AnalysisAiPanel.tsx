@@ -133,10 +133,12 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
         if (job.status === "done") {
           setAnalysis(job.result ?? null);
           setError("");
+          setPolling(false);
           setJobId(null);
         } else if (job.status === "error") {
           setError(job.error ?? "AI 分析失败");
           setAnalysis(null);
+          setPolling(false);
           setJobId(null);
         }
       } catch {
@@ -149,6 +151,7 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
   useEffect(() => {
     setAnalysis(null);
     setJobId(null);
+    setPolling(false);
     void loadStatus();
   }, [examId, groupId, classId]);
 

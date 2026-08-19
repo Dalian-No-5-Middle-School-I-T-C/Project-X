@@ -10,13 +10,15 @@ import { getMysqlDb, buildUpsertSQL } from "../../../../server/db";
 import { AnalysisRepository } from "../../../../server/repositories/AnalysisRepository";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import { analysisCache } from "../../../../server/services/analysisCache";
-import { createAiAnalysisJob, enqueueAiAnalysisJob, getAiAnalysisJob } from "../../../../server/services/aiAnalysisJobs";
+import { createAiAnalysisJob, enqueueAiAnalysisJob, getAiAnalysisJobWithCreator } from "../../../../server/services/aiAnalysisJobs";
 import { suggestForCard } from "../../../../server/services/knowledgeSuggester";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
 import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../middleware";
 import { requirePermission, authMiddleware } from "../../../../server/middleware/auth";
 import { PERMISSIONS } from "../../../../server/auth/permissions";
+import { ScoreRepository } from "../../../../server/repositories/ScoreRepository";
+import { canReadGroup } from "../../../../server/routes/exam-groups-helpers";
 import {
   getAnalysisThresholds, validateThresholdsInput, invalidateAnalysisThresholdsCache,
   ANALYSIS_SETTING_KEYS, DEFAULT_ANALYSIS_THRESHOLDS
@@ -404,7 +406,9 @@ router.get("/exams/:examId/borderline-students", requireExamAccess, async (req, 
 });
 
 // ── 建议 3：学生个人跨考试成长曲线 ────────────────────
-router.get("/students/:studentId/trend", async (req, res, next) => {
+// 越权防护：学生只能看本人曲线；教师/管理员只能看可见考试范围内的数据，
+// 且目标学生在可见考试内无成绩时拒绝（防止拿任意学生 ID 枚举其他教师管辖的数据）。
+router.get("/students/:studentId/trend", authMiddleware, async (req, res, next) => {
   try {
     const studentId = Number(req.params.studentId);
     if (!Number.isInteger(studentId) || studentId <= 0) {
@@ -412,7 +416,38 @@ router.get("/students/:studentId/trend", async (req, res, next) => {
       return;
     }
     const analysisRepo = new AnalysisRepository();
-    const data = await analysisRepo.getStudentTrend(studentId);
+    const user = req.user;
+
+    // 学生角色：只能读取本人曲线
+    if (user?.role_name === "student") {
+      if (user.id !== studentId) {
+        res.status(403).json({ message: "权限不足：只能查看本人的成长曲线" });
+        return;
+      }
+      const data = await analysisRepo.getStudentTrend(studentId, null);
+      res.json(data satisfies StudentTrendPoint[]);
+      return;
+    }
+
+    // 管理员 / 年级组长 / 普通教师（后兼容）→ 全部可见
+    const visibleIds = await getVisibleExamIds(user);
+    if (visibleIds === null) {
+      const data = await analysisRepo.getStudentTrend(studentId, null);
+      res.json(data satisfies StudentTrendPoint[]);
+      return;
+    }
+
+    // 其余教师：仅返回可见考试内的数据；该生在可见范围内无成绩时拒绝访问
+    const hasAnyScore = await getMysqlDb().get("SELECT 1 FROM student_scores WHERE student_id = ? LIMIT 1", studentId);
+    const data = await analysisRepo.getStudentTrend(studentId, visibleIds);
+    if (data.length === 0) {
+      if (hasAnyScore) {
+        res.status(403).json({ message: "权限不足：无权访问该学生" });
+        return;
+      }
+      res.json([] satisfies StudentTrendPoint[]);
+      return;
+    }
     res.json(data satisfies StudentTrendPoint[]);
   } catch (error) {
     next(error);
@@ -656,9 +691,16 @@ router.get("/ai-analysis/jobs/:jobId", authMiddleware, async (req, res, next) =>
       res.status(400).json({ message: "无效的任务 ID" });
       return;
     }
-    const job = await getAiAnalysisJob(jobId);
-    if (!job) {
+    const entry = await getAiAnalysisJobWithCreator(jobId);
+    if (!entry) {
       res.status(404).json({ message: "任务不存在" });
+      return;
+    }
+    const { job, createdBy } = entry;
+    // 匿名开发模式（未强制鉴权且无 token）维持向后兼容放行；
+    // 其余用户按创建者 / 考试可见性二次校验，杜绝按自增 ID 遍历他人任务（IDOR）。
+    if (req.user && !(await canAccessAiJobContext(req.user, createdBy, job))) {
+      res.status(403).json({ message: "权限不足：无权访问该任务" });
       return;
     }
     res.json(job satisfies AiJobPollResponse);
@@ -666,6 +708,32 @@ router.get("/ai-analysis/jobs/:jobId", authMiddleware, async (req, res, next) =>
     next(error);
   }
 });
+
+/**
+ * 轮询接口的 IDOR 防护辅助：管理员 / 任务创建者放行；
+ * 其余按任务引用的考试（requireExamAccess 语义）或考试组（requireReadableGroup 语义）重新校验。
+ */
+async function canAccessAiJobContext(
+  user: NonNullable<express.Request["user"]>,
+  createdBy: number | null,
+  job: AiJobPollResponse
+): Promise<boolean> {
+  if (user.role_name === "admin") return true;
+  if (createdBy != null && createdBy === user.id) return true;
+
+  if (job.examId != null) {
+    if (user.role_name === "student") {
+      // 学生只能轮询自己参加过的考试对应的任务
+      return await new ScoreRepository().hasScore(user.id, job.examId);
+    }
+    const visibleIds = await getVisibleExamIds(user);
+    return visibleIds === null || visibleIds.includes(job.examId);
+  }
+  if (job.groupId != null) {
+    return await canReadGroup({ user } as express.Request, job.groupId);
+  }
+  return false;
+}
 
 // ── Export ──────────────────────────────────────────────
 
