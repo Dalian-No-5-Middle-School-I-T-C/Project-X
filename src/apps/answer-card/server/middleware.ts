@@ -206,4 +206,198 @@ export async function validateExamIdsAccess(req: express.Request, res: express.R
   return false;
 }
 
+// ── Grading scope (题块级正向授权 · 防 IDOR) ──────────────
+
+/**
+ * 特权阅卷人：管理员(role_id=1) 或 学年主任(grade_leader)。
+ * 与 submit/release 既有规则一致，可代交 / 强制处理任意题块。
+ */
+export function isPrivilegedGrader(user: express.Request["user"]): boolean {
+  if (!user) return false;
+  const u = user as { role_id?: number; role_name?: string; teacher_role?: string | null };
+  return u.role_id === 1 || (u.role_name === "teacher" && u.teacher_role === "grade_leader");
+}
+
+/**
+ * 题块级正向授权：校验教师是否被分配到 (examId, blockId)。
+ * - 特权阅卷人直接放行。
+ * - 该题块不存在任何分配记录时放行（向后兼容：避免未分配题块锁死所有人）。
+ * - 否则仅允许被分配到该题块的教师。
+ * 返回 true=允许。
+ */
+export async function canGradeBlock(
+  user: express.Request["user"],
+  examId: number,
+  blockId: string
+): Promise<boolean> {
+  if (!user) return false;
+  if (isPrivilegedGrader(user)) return true;
+  const teacherId = (user as { id?: number }).id;
+  if (!teacherId) return false;
+  const db = getMysqlDb();
+  const assigned = await db.get(
+    "SELECT 1 FROM review_assignments WHERE exam_id = ? AND block_id = ? AND teacher_id = ? LIMIT 1",
+    examId, blockId, teacherId
+  );
+  if (assigned) return true;
+  // v37: 细粒度权限授予 —— 作为追加放行路径（绝不引入新拒绝，确保既有部署零回归）。
+  // 匹配规则：can_grade=1 且 (block_id 为空或匹配) 且 (subject 为空或匹配考试学科) 且 (class_id 为空或匹配考试班级)。
+  if (await hasTable(db, "teacher_permissions")) {
+    const granted = await db.get(
+      `SELECT 1 FROM teacher_permissions
+       WHERE teacher_id = ? AND can_grade = 1
+         AND (block_id IS NULL OR block_id = ?)
+         AND (subject IS NULL OR subject = (SELECT subject FROM exams WHERE id = ?))
+         AND (class_id IS NULL OR class_id = (SELECT class_id FROM exams WHERE id = ?))
+       LIMIT 1`,
+      teacherId, blockId, examId, examId
+    );
+    if (granted) return true;
+  }
+  // 若该 (exam, block) 没有任何分配记录，放行（向后兼容旧部署 / 未分配题块）
+  const anyAssignment = await db.get(
+    "SELECT 1 FROM review_assignments WHERE exam_id = ? AND block_id = ? LIMIT 1",
+    examId, blockId
+  );
+  return !anyAssignment;
+}
+
+/**
+ * 返回教师在某考试中可阅卷的题块集合；null 表示不受限（全部可阅）。
+ * 综合：显式 review_assignments + 细粒度 teacher_permissions 授予。
+ * 向后兼容：若该考试既无分配记录也无任何权限授予，返回 null（全部可阅）。
+ * 供工作量分配（#24）与权限配置面板（#25）消费。
+ */
+export async function getPermittedBlocks(
+  user: express.Request["user"],
+  examId: number
+): Promise<string[] | null> {
+  if (!user) return null;
+  if (isPrivilegedGrader(user)) return null; // 特权阅卷人：全部
+  const teacherId = (user as { id?: number }).id;
+  if (!teacherId) return null;
+  const db = getMysqlDb();
+
+  // 1) 显式分配
+  const assignedRows = await db.all<{ block_id: string }>(
+    "SELECT DISTINCT block_id FROM review_assignments WHERE exam_id = ? AND teacher_id = ?",
+    examId, teacherId
+  );
+  const blocks = new Set(assignedRows.map((r) => r.block_id));
+
+  // 2) 细粒度权限授予（block_id 非空的行给出具体题块；NULL 表示该维度不限 → 全部）
+  let grantsAll = false;
+  if (await hasTable(db, "teacher_permissions")) {
+    const permRows = await db.all<{ block_id: string | null }>(
+      `SELECT DISTINCT block_id FROM teacher_permissions
+       WHERE teacher_id = ? AND can_grade = 1
+         AND (subject IS NULL OR subject = (SELECT subject FROM exams WHERE id = ?))
+         AND (class_id IS NULL OR class_id = (SELECT class_id FROM exams WHERE id = ?))`,
+      teacherId, examId, examId
+    );
+    for (const r of permRows) {
+      if (r.block_id == null) grantsAll = true;
+      else blocks.add(r.block_id);
+    }
+  }
+  if (grantsAll) return null;
+
+  // 3) 若该考试无任何分配且无任何权限授予 → 向后兼容视为全部可阅
+  if (blocks.size === 0) {
+    const anyAssignment = await db.get(
+      "SELECT 1 FROM review_assignments WHERE exam_id = ? LIMIT 1",
+      examId
+    );
+    const anyPermission = await db.get(
+      "SELECT 1 FROM teacher_permissions WHERE teacher_id = ? AND can_grade = 1 LIMIT 1",
+      teacherId
+    );
+    if (!anyAssignment && !anyPermission) return null;
+  }
+  return Array.from(blocks);
+}
+
+/**
+ * 教师权限矩阵校验（#24 分配绑定）。
+ * 判断某教师在授权矩阵内是否被允许对该考试执行 can_grade / can_assign 操作。
+ * 兼容策略：teacher_permissions 表不存在，或该教师无任何矩阵记录 → 放行（旧部署）。
+ * 维度匹配：subject 为空或等于考试学科；class_id 为空或等于考试班级。
+ */
+export async function isTeacherPermittedForExam(
+  examId: number,
+  teacherId: number,
+  perm: "can_grade" | "can_assign"
+): Promise<boolean> {
+  const db = getMysqlDb();
+  if (!(await hasTable(db, "teacher_permissions"))) return true;
+  const exam = await db.get<{ subject: string | null; class_id: number | null }>(
+    "SELECT subject, class_id FROM exams WHERE id = ?",
+    examId
+  );
+  if (!exam) return false;
+  const rows = await db.all<{
+    subject: string | null;
+    class_id: number | null;
+    can_grade: number;
+    can_assign: number;
+  }>(
+    "SELECT subject, class_id, can_grade, can_assign FROM teacher_permissions WHERE teacher_id = ?",
+    teacherId
+  );
+  if (rows.length === 0) return true; // 未配置矩阵 → 兼容放行
+  const flag = perm === "can_grade" ? "can_grade" : "can_assign";
+  return rows.some((r) =>
+    (r as Record<string, unknown>)[flag] === 1 &&
+    (r.subject == null || r.subject === exam.subject) &&
+    (r.class_id == null || r.class_id === exam.class_id)
+  );
+}
+
+/**
+ * 中间件：题块级操作授权（防 IDOR）。
+ * 读取 req.params.examId；blockId 优先取 req.params.blockId，
+ * 否则由 req.params.cropId 反查 answer_block_crops.block_id。
+ * 无法判定题块时放行（交由既有逻辑），避免误拦截。
+ */
+export async function requireGradingScope(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction
+): Promise<void> {
+  if (!req.user) {
+    if (authEnforced) {
+      res.status(401).json({ message: "未提供认证令牌" });
+      return;
+    }
+    next();
+    return;
+  }
+  try {
+    const examId = Number(req.params.examId);
+    if (!Number.isFinite(examId)) {
+      res.status(400).json({ message: "缺少 examId" });
+      return;
+    }
+    let blockId = typeof req.params.blockId === "string" ? req.params.blockId : "";
+    if (!blockId && typeof req.params.cropId === "string") {
+      const crop = await getMysqlDb().get(
+        "SELECT block_id FROM answer_block_crops WHERE id = ? AND exam_id = ?",
+        req.params.cropId, examId
+      ) as { block_id?: string } | undefined;
+      blockId = crop?.block_id ?? "";
+    }
+    if (!blockId) {
+      next();
+      return;
+    }
+    if (await canGradeBlock(req.user, examId, blockId)) {
+      next();
+      return;
+    }
+    res.status(403).json({ message: "权限不足：你未被分配批改该题块" });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export { PERMISSIONS };

@@ -46,6 +46,9 @@
     "verify:score-grid": "tsx scripts/verify-score-grid.ts",
     "verify:core-logic": "tsx scripts/verify-core-logic.ts",
     "verify:review-submit": "tsx scripts/verify-review-submit.ts",
+    "migrate:mariadb": "tsx scripts/migrate-to-mariadb.ts",
+    "migrate:mariadb:dry": "tsx scripts/migrate-to-mariadb.ts --dry-run",
+    "migrate:mariadb:verify": "tsx scripts/migrate-to-mariadb.ts --verify-only --sample=10",
     "typecheck": "tsc --noEmit"
   },
   "browserslist": [

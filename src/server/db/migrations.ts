@@ -906,6 +906,97 @@ const MIGRATIONS: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_ai_jobs_status ON ai_analysis_jobs(status);
       `);
     }
+  },
+  // v39 (控制台可观测性 + 教师权限细粒度地基):
+  // - users: ui_style(clarity/paper_edge) / color_scheme(light/dark) 主题拆分（账号级持久化）
+  // - teacher_permissions: 扩展 subject/class_id/block_id/can_grade/can_assign 维度
+  // - 新增 theme_change_events / ai_analysis_runs / ai_provider_calls / entity_lifecycle_events
+  {
+    version: 39,
+    name: "console-observability-and-permission-foundation",
+    up(db) {
+      // 1. users 主题字段拆分
+      addColumnIfMissing(db, "users", "ui_style", "TEXT DEFAULT 'paper_edge'");
+      addColumnIfMissing(db, "users", "color_scheme", "TEXT DEFAULT 'light'");
+
+      // 2. teacher_permissions 维度扩展
+      addColumnIfMissing(db, "teacher_permissions", "subject", "TEXT");
+      addColumnIfMissing(db, "teacher_permissions", "class_id", "INTEGER");
+      addColumnIfMissing(db, "teacher_permissions", "block_id", "TEXT");
+      addColumnIfMissing(db, "teacher_permissions", "can_grade", "INTEGER DEFAULT 1");
+      addColumnIfMissing(db, "teacher_permissions", "can_assign", "INTEGER DEFAULT 1");
+
+      // 3. 主题切换审计
+      if (!hasTable(db, "theme_change_events")) {
+        db.exec(`
+          CREATE TABLE theme_change_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            from_style  TEXT,
+            to_style    TEXT,
+            from_scheme TEXT,
+            to_scheme   TEXT,
+            changed_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_tce_user ON theme_change_events(user_id);
+        `);
+      }
+
+      // 4. AI 调用观测（逻辑任务层）
+      if (!hasTable(db, "ai_analysis_runs")) {
+        db.exec(`
+          CREATE TABLE ai_analysis_runs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            feature     TEXT NOT NULL,
+            model       TEXT,
+            stage       TEXT,
+            success     INTEGER DEFAULT 1,
+            latency_ms  INTEGER,
+            tokens_in   INTEGER,
+            tokens_out  INTEGER,
+            error_code  TEXT,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_aar_feature ON ai_analysis_runs(feature);
+          CREATE INDEX IF NOT EXISTS idx_aar_created ON ai_analysis_runs(created_at);
+        `);
+      }
+
+      // 5. AI 调用观测（实际模型调用层）
+      if (!hasTable(db, "ai_provider_calls")) {
+        db.exec(`
+          CREATE TABLE ai_provider_calls (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id      INTEGER REFERENCES ai_analysis_runs(id) ON DELETE CASCADE,
+            provider    TEXT,
+            model       TEXT,
+            stage       TEXT,
+            success     INTEGER DEFAULT 1,
+            latency_ms  INTEGER,
+            tokens      INTEGER,
+            error_code  TEXT,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_apc_run ON ai_provider_calls(run_id);
+        `);
+      }
+
+      // 6. 实体生命周期事件（历史累计）
+      if (!hasTable(db, "entity_lifecycle_events")) {
+        db.exec(`
+          CREATE TABLE entity_lifecycle_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL,
+            entity_id   TEXT NOT NULL,
+            action      TEXT NOT NULL,
+            actor_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_ele_type ON entity_lifecycle_events(entity_type, action);
+        `);
+      }
+    }
   }
 ];
 

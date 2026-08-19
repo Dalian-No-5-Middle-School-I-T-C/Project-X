@@ -2,6 +2,7 @@ import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { randomDistribute } from "./RandomDistributionService";
 import { getBlockConfig } from "./BlockGradingConfigService";
+import { getPermittedBlocks } from "../../apps/answer-card/server/middleware";
 import type { ReviewAssignment, TeacherBlockAssignment } from "../../shared/types";
 
 type AssignmentRow = {
@@ -267,6 +268,15 @@ export async function getAvailableBlocksForTeacher(
     examId
   ) as Array<{ block_id: string; block_title: string | null; block_type: string }>;
 
+  // #24: 教师可见题块与权限矩阵绑定 —— 有约束时仅保留该教师可阅的题块；
+  // getPermittedBlocks 在无任何分配/授予时返回 null（全部可见，向后兼容）。
+  let blocks = cropBlocks;
+  const permitted = await getPermittedBlocks({ id: teacherId } as any, examId);
+  if (permitted !== null) {
+    const set = new Set(permitted);
+    blocks = cropBlocks.filter((b) => set.has(b.block_id));
+  }
+
   // 获取教师分配
   const assignments = await getAssignmentsByTeacher(examId, teacherId, db);
 
@@ -286,7 +296,7 @@ export async function getAvailableBlocksForTeacher(
     reviewedMap = new Map(reviewedCounts.map(r => [r.block_id, r.cnt]));
   }
 
-  return cropBlocks.map((block) => {
+  return blocks.map((block) => {
     const assignment = assignments.find((a) => a.blockId === block.block_id);
     const totalCount = assignment?.studentCount ?? 0;
     const reviewed = reviewedMap.get(block.block_id) ?? 0;

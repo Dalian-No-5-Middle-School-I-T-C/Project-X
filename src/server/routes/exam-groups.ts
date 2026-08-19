@@ -2,6 +2,7 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
 import { getMysqlDb, buildInsertIgnore } from "../db";
+import { recordLifecycleEvent } from "../services/lifecycleEvents";
 import examGroupsAnalysisRouter from "./exam-groups-analysis";
 import {
   assertExamIdsVisible,
@@ -269,11 +270,13 @@ router.delete("/:groupId", requireGroupManager, async (req: Request, res: Respon
       if (deleteExams && memberExams.length > 0) {
         for (const exam of memberExams) {
           await tx.run("DELETE FROM exams WHERE id = ?", exam.id);
+          await recordLifecycleEvent({ entityType: "exam", entityId: exam.id, action: "delete", actorId: req.user?.id });
         }
       }
       // Delete the group (cascade deletes members)
       await tx.run("DELETE FROM exam_groups WHERE id = ?", groupId);
     });
+    await recordLifecycleEvent({ entityType: "exam_group", entityId: groupId, action: "delete", actorId: req.user?.id });
 
     res.json({ ok: true, deletedExams: deleteExams ? memberExams.length : 0, message: "大考已删除" });
   } catch (error) {

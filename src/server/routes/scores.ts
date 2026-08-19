@@ -7,6 +7,7 @@ import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS } from "../auth/permissions";
 import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
 import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
+import { trackAnalysisCall } from "../services/aiTelemetry";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 
@@ -224,18 +225,24 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
   try {
     // 复用统一的 llmclient 转发封装（自动拉起 sidecar + 内部鉴权头），
     // 避免与 llm-client.ts 的环境变量命名（LLMCLIENT_URL/LLMCLIENT_INTERNAL_API_KEY）不一致。
-    const response = await fetchLlmClient("/analysis/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        examId,
-        classId,
-        callerRole: "student",
-        studentId: req.user!.id,
-        model: typeof req.body?.model === "string" ? req.body.model : undefined,
-        locale: "zh-CN",
-      }),
-    }, 120_000);
+    const model = typeof req.body?.model === "string" ? req.body.model : undefined;
+    const response = await trackAnalysisCall({
+      userId: req.user!.id,
+      feature: "student_analysis",
+      model: model ?? null,
+      doCall: (runId) => fetchLlmClient("/analysis/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          examId,
+          classId,
+          callerRole: "student",
+          studentId: req.user!.id,
+          model,
+          locale: "zh-CN",
+        }),
+      }, 120_000, { runId, provider: "llmclient", model: model ?? null, stage: "analysis" })
+    });
 
     if (!response.ok) {
       let message = `LLM service returned ${response.status}`;

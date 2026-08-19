@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS users (
     is_active        TINYINT DEFAULT 1,
     show_tab_bar     TINYINT DEFAULT 0,             -- v1.9.0: 底部导航栏开关（MySQL 版此前缺失，与 mariadb 对齐补录）
     theme_skin       VARCHAR(32) DEFAULT 'paper-edge', -- v2.1.0: 前端皮肤 ID；v2.3.0 默认改为 'paper-edge'（纸锋；'flat'=明澈 可选）
+    ui_style         VARCHAR(16) DEFAULT 'paper_edge', -- v37: 皮肤风格 clarity/paper_edge（与 theme_skin 并存过渡）
+    color_scheme     VARCHAR(8)  DEFAULT 'light',     -- v37: 明暗 light/dark，账号级持久化
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at       DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -101,6 +103,11 @@ CREATE TABLE IF NOT EXISTS teacher_permissions (
     can_view_scores    TINYINT DEFAULT 1,
     can_view_charts    TINYINT DEFAULT 1,
     can_view_students  TINYINT DEFAULT 1,
+    subject            VARCHAR(50),                -- v37: 学科维度（NULL=不限）
+    class_id           INT,                         -- v37: 班级维度（NULL=不限）
+    block_id           VARCHAR(64),                 -- v37: 题块/阅卷任务维度（NULL=不限）
+    can_grade          TINYINT DEFAULT 1,           -- v37: 是否可阅卷操作
+    can_assign         TINYINT DEFAULT 1,           -- v37: 是否可被分配/分配阅卷任务
     created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -594,3 +601,61 @@ INSERT IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive,
     (1, '周测', 30, 1, 0),
     (2, '月考', 90, 1, 0),
     (3, '期中期末', 0, 1, 0);
+
+-- ============================================================
+-- 模块补充：控制台可观测性 + 教师权限细粒度地基 (v37)
+-- ============================================================
+
+-- 主题切换审计
+CREATE TABLE IF NOT EXISTS theme_change_events (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    user_id     INT,
+    from_style  VARCHAR(32),
+    to_style    VARCHAR(32),
+    from_scheme VARCHAR(8),
+    to_scheme   VARCHAR(8),
+    changed_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- AI 调用观测：逻辑任务层
+CREATE TABLE IF NOT EXISTS ai_analysis_runs (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    user_id     INT,
+    feature     VARCHAR(50) NOT NULL,
+    model       VARCHAR(50),
+    stage       VARCHAR(30),
+    success     TINYINT DEFAULT 1,
+    latency_ms  INT,
+    tokens_in   INT,
+    tokens_out  INT,
+    error_code  VARCHAR(30),
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- AI 调用观测：实际模型调用层
+CREATE TABLE IF NOT EXISTS ai_provider_calls (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    run_id      INT,
+    provider    VARCHAR(30),
+    model       VARCHAR(50),
+    stage       VARCHAR(30),
+    success     TINYINT DEFAULT 1,
+    latency_ms  INT,
+    tokens      INT,
+    error_code  VARCHAR(30),
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (run_id) REFERENCES ai_analysis_runs(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 实体生命周期事件：历史累计统计
+CREATE TABLE IF NOT EXISTS entity_lifecycle_events (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    entity_type VARCHAR(30) NOT NULL,
+    entity_id   VARCHAR(64) NOT NULL,
+    action      VARCHAR(20) NOT NULL,
+    actor_id    INT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

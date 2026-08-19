@@ -41,6 +41,7 @@ import type { AssignedFormula, StudentInfoSettings } from "../../../shared/types
 import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
 import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
+import { recordLifecycleEvent } from "../../../server/services/lifecycleEvents";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -68,6 +69,8 @@ import { scheduleWeeklyAuditRefresh } from "../../../server/services/WeeklyAudit
 import { cleanupInterruptedAiJobs } from "../../../server/services/aiAnalysisJobs";
 import adminPermissionsRoutes from "../../../server/routes/admin-permissions";
 import apiKeysRoutes from "../../../server/routes/api-keys";
+import dataRetentionRoutes from "../../../server/routes/data-retention";
+import consoleRoutes from "../../../server/routes/console";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
 import ladderRoutes from "../../../server/routes/ladder";
 import {
@@ -699,12 +702,20 @@ export async function createApp(): Promise<express.Express> {
       const userRepo = new UserRepository();
       const user = await userRepo.findById(userId);
       if (!user) { res.status(404).json({ message: "用户不存在" }); return; }
+      const themeSkinRaw = (user as any).theme_skin ?? "paper-edge";
+      const uiStyleRaw = (user as any).ui_style as string | null | undefined;
+      // ui_style 优先；缺失时由 theme_skin 反向推导（flat=clarity / paper-edge=paper_edge）
+      const uiStyle = uiStyleRaw && uiStyleRaw.length > 0
+        ? uiStyleRaw
+        : (themeSkinRaw === "flat" ? "clarity" : "paper_edge");
       res.json({
         scoreDisplayMode: (user as any).score_display_mode ?? "zscore",
         reviewConfidenceThreshold: (user as any).review_confidence_threshold ?? 0.12,
         backgroundOpacity: (user as any).background_opacity ?? 0,
         showTabBar: (user as any).show_tab_bar ?? 0,
-        themeSkin: (user as any).theme_skin ?? "paper-edge",
+        themeSkin: themeSkinRaw,
+        uiStyle,
+        colorScheme: (user as any).color_scheme ?? "light",
       });
     } catch (err) { next(err); }
   });
@@ -712,18 +723,57 @@ export async function createApp(): Promise<express.Express> {
     try {
       const userId = _req.user!.id;
       const body = _req.body as Record<string, unknown>;
+      const db = getMysqlDb();
+
+      // 读取切换前快照，用于主题审计（from_*）
+      const prev = await db.get(
+        "SELECT theme_skin, ui_style, color_scheme FROM users WHERE id = ?",
+        userId
+      ) as { theme_skin?: string | null; ui_style?: string | null; color_scheme?: string | null } | undefined;
+      const prevSkin = prev?.theme_skin ?? "paper-edge";
+      const prevStyle = prev?.ui_style && prev.ui_style.length > 0
+        ? prev.ui_style
+        : (prevSkin === "flat" ? "clarity" : "paper_edge");
+      const prevScheme = prev?.color_scheme ?? "light";
+
       const setClauses: string[] = [];
       const values: unknown[] = [];
       if (body.scoreDisplayMode !== undefined) { setClauses.push("score_display_mode = ?"); values.push(body.scoreDisplayMode); }
       if (body.reviewConfidenceThreshold !== undefined) { setClauses.push("review_confidence_threshold = ?"); values.push(body.reviewConfidenceThreshold); }
       if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
       if (body.showTabBar !== undefined) { setClauses.push("show_tab_bar = ?"); values.push(body.showTabBar ? 1 : 0); }
-      if (body.themeSkin !== undefined) { setClauses.push("theme_skin = ?"); values.push(body.themeSkin); }
+
+      // 皮肤风格：uiStyle 与 themeSkin 双向同步，避免双源不一致
+      if (body.uiStyle !== undefined) {
+        const uiStyle = body.uiStyle as string;
+        setClauses.push("ui_style = ?"); values.push(uiStyle);
+        setClauses.push("theme_skin = ?"); values.push(uiStyle === "clarity" ? "flat" : "paper-edge");
+      } else if (body.themeSkin !== undefined) {
+        const themeSkin = body.themeSkin as string;
+        setClauses.push("theme_skin = ?"); values.push(themeSkin);
+        setClauses.push("ui_style = ?"); values.push(themeSkin === "flat" ? "clarity" : "paper_edge");
+      }
+      if (body.colorScheme !== undefined) { setClauses.push("color_scheme = ?"); values.push(body.colorScheme); }
+
+      let nextStyle = prevStyle;
+      let nextScheme = prevScheme;
+      if (body.uiStyle !== undefined) nextStyle = body.uiStyle as string;
+      else if (body.themeSkin !== undefined) nextStyle = (body.themeSkin as string) === "flat" ? "clarity" : "paper_edge";
+      if (body.colorScheme !== undefined) nextScheme = body.colorScheme as string;
+
       if (setClauses.length > 0) {
         setClauses.push("updated_at = CURRENT_TIMESTAMP");
         values.push(userId);
-        const db = getMysqlDb();
         await db.run(`UPDATE users SET ${setClauses.join(", ")} WHERE id = ?`, ...values);
+      }
+
+      // 主题/明暗发生实际变化才写审计事件
+      if (nextStyle !== prevStyle || nextScheme !== prevScheme) {
+        await db.run(
+          `INSERT INTO theme_change_events (user_id, from_style, to_style, from_scheme, to_scheme, changed_at)
+           VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+          userId, prevStyle, nextStyle, prevScheme, nextScheme
+        );
       }
       res.json({ message: "已保存" });
     } catch (err) { next(err); }
@@ -807,6 +857,8 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/db", backupRoutes);
   app.use("/api/admin/api-keys", apiKeysRoutes);
   app.use("/api/admin/permissions", adminPermissionsRoutes);
+  app.use("/api/admin/data-retention-policies", dataRetentionRoutes);
+  app.use("/api/admin/console", consoleRoutes);
   if (scannerClientApiEnabled) {
     app.use("/api/scanner/upload", scannerUploadRoutes);
   } else {
@@ -983,6 +1035,7 @@ export async function createApp(): Promise<express.Express> {
       card.examDate = examDate;
       card = applySubjectTemplate(card, { englishListening, chineseChoicePlacement });
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
+      await recordLifecycleEvent({ entityType: "answer_card", entityId: saved.id, action: "create", actorId: req.user?.id });
       res.status(201).json(saved);
     } catch (error) {
       next(error);
@@ -1451,10 +1504,14 @@ export async function createApp(): Promise<express.Express> {
         const db = getMysqlDb();
         if (deleteReferencedExams) {
           await deleteExamRows(db, referenced.map((e: any) => Number(e.id)));
+          for (const e of referenced as Array<{ id: number }>) {
+            await recordLifecycleEvent({ entityType: "exam", entityId: e.id, action: "delete", actorId: req.user?.id });
+          }
         } else {
           await db.run("UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ?", cardId);
         }
         await cardRepo.deleteCard(cardId);
+        await recordLifecycleEvent({ entityType: "answer_card", entityId: cardId, action: "delete", actorId: req.user?.id });
         await deleteCardFiles(cardId);
         res.json({
           ok: true,
@@ -1758,6 +1815,7 @@ export async function createApp(): Promise<express.Express> {
         exam_mode: mode === "formal" ? "formal" : "quiz",
         created_by: req.user?.id
       });
+      await recordLifecycleEvent({ entityType: "exam", entityId: exam.id, action: "create", actorId: req.user?.id });
       res.status(201).json(exam);
     } catch (error) {
       next(error);
@@ -1879,8 +1937,10 @@ export async function createApp(): Promise<express.Express> {
         }
       }
       await deleteExamRows(db, [exam.id]);
+      await recordLifecycleEvent({ entityType: "exam", entityId: exam.id, action: "delete", actorId: req.user?.id });
       if (deleteLinkedCard && linkedCardId) {
         await cardRepo.deleteCard(linkedCardId);
+        await recordLifecycleEvent({ entityType: "answer_card", entityId: linkedCardId, action: "delete", actorId: req.user?.id });
       }
       if (deleteLinkedCard && linkedCardId) {
         await deleteCardFiles(linkedCardId);

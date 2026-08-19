@@ -768,6 +768,77 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       ]
     },
+    {
+      version: 39,
+      name: "admin-console-observability-and-teacher-permission-dims",
+      sqls: [
+        // users：主题偏好拆分（ui_style=clarity/paper_edge；color_scheme=light/dark）
+        `ALTER TABLE users ADD COLUMN ui_style VARCHAR(16) DEFAULT 'paper_edge'`,
+        `ALTER TABLE users ADD COLUMN color_scheme VARCHAR(8) DEFAULT 'light'`,
+        `UPDATE users SET ui_style = 'paper_edge' WHERE ui_style IS NULL`,
+        `UPDATE users SET color_scheme = 'light' WHERE color_scheme IS NULL`,
+        // teacher_permissions：科目/班级/题块/操作维度（NULL=该维度不限）
+        `ALTER TABLE teacher_permissions ADD COLUMN subject VARCHAR(50)`,
+        `ALTER TABLE teacher_permissions ADD COLUMN class_id INT`,
+        `ALTER TABLE teacher_permissions ADD COLUMN block_id VARCHAR(64)`,
+        `ALTER TABLE teacher_permissions ADD COLUMN can_grade TINYINT DEFAULT 1`,
+        `ALTER TABLE teacher_permissions ADD COLUMN can_assign TINYINT DEFAULT 1`,
+        // 主题切换审计
+        `CREATE TABLE IF NOT EXISTS theme_change_events (
+          id          INT AUTO_INCREMENT PRIMARY KEY,
+          user_id     INT,
+          from_style  VARCHAR(32),
+          to_style    VARCHAR(32),
+          from_scheme VARCHAR(8),
+          to_scheme   VARCHAR(8),
+          changed_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_tce_user ON theme_change_events(user_id)`,
+        // AI 调用观测：逻辑任务层
+        `CREATE TABLE IF NOT EXISTS ai_analysis_runs (
+          id          INT AUTO_INCREMENT PRIMARY KEY,
+          user_id     INT,
+          feature     VARCHAR(50) NOT NULL,
+          model       VARCHAR(50),
+          stage       VARCHAR(30),
+          success     TINYINT DEFAULT 1,
+          latency_ms  INT,
+          tokens_in   INT,
+          tokens_out  INT,
+          error_code  VARCHAR(30),
+          created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_aar_feature ON ai_analysis_runs(feature)`,
+        `CREATE INDEX IF NOT EXISTS idx_aar_created ON ai_analysis_runs(created_at)`,
+        // AI 调用观测：实际模型调用层
+        `CREATE TABLE IF NOT EXISTS ai_provider_calls (
+          id          INT AUTO_INCREMENT PRIMARY KEY,
+          run_id      INT,
+          provider    VARCHAR(30),
+          model       VARCHAR(50),
+          stage       VARCHAR(30),
+          success     TINYINT DEFAULT 1,
+          latency_ms  INT,
+          tokens      INT,
+          error_code  VARCHAR(30),
+          created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (run_id) REFERENCES ai_analysis_runs(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_apc_run ON ai_provider_calls(run_id)`,
+        // 实体生命周期事件：历史累计统计
+        `CREATE TABLE IF NOT EXISTS entity_lifecycle_events (
+          id          INT AUTO_INCREMENT PRIMARY KEY,
+          entity_type VARCHAR(30) NOT NULL,
+          entity_id   VARCHAR(64) NOT NULL,
+          action      VARCHAR(20) NOT NULL,
+          actor_id    INT,
+          created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

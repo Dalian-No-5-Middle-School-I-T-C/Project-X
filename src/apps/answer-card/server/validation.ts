@@ -138,6 +138,10 @@ export const UpdateUserSettingsSchema = z.object({
   showTabBar: flexibleBoolean.optional(),
   // v2.1.0: 前端皮肤 ID（字符串不枚举，为未来新增皮肤留空间；'flat'=明澈 Flat 2.0）
   themeSkin: z.string().min(1).max(32).optional(),
+  // v37: 规范化皮肤风格（替代 themeSkin 的 flat/paper-edge 命名）；与 theme_skin 双向同步
+  uiStyle: z.enum(["clarity", "paper_edge"]).optional(),
+  // v37: 明暗方案，账号级持久化（替代仅 localStorage 的 data-theme）
+  colorScheme: z.enum(["light", "dark"]).optional(),
 });
 export type UpdateUserSettingsInput = z.infer<typeof UpdateUserSettingsSchema>;
 

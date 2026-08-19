@@ -34,9 +34,14 @@ interface Permission {
   teacher_role: string;
   grade_id: number | null;
   grade_name: string | null;
+  subject: string | null;
+  class_id: number | null;
+  block_id: string | null;
   can_view_scores: number;
   can_view_charts: number;
   can_view_students: number;
+  can_grade: number;
+  can_assign: number;
 }
 
 interface Teacher {
@@ -65,9 +70,14 @@ export function PermissionManager({ onBack }: Props) {
   // New/edit form state
   const [selectedTeacher, setSelectedTeacher] = useState<number>(0);
   const [selectedGrade, setSelectedGrade] = useState<number | null>(null);
+  const [subject, setSubject] = useState("");
+  const [classId, setClassId] = useState("");
+  const [blockId, setBlockId] = useState("");
   const [canScores, setCanScores] = useState(true);
   const [canCharts, setCanCharts] = useState(true);
   const [canStudents, setCanStudents] = useState(true);
+  const [canGrade, setCanGrade] = useState(true);
+  const [canAssign, setCanAssign] = useState(true);
   const [editingId, setEditingId] = useState<number | null>(null);
 
   async function loadData() {
@@ -99,17 +109,27 @@ export function PermissionManager({ onBack }: Props) {
         body: JSON.stringify({
           teacher_id: selectedTeacher,
           grade_id: selectedGrade,
+          subject: subject.trim() || undefined,
+          class_id: classId.trim() ? Number(classId.trim()) : undefined,
+          block_id: blockId.trim() || undefined,
           can_view_scores: canScores,
           can_view_charts: canCharts,
           can_view_students: canStudents,
+          can_grade: canGrade,
+          can_assign: canAssign,
         }),
       });
       // Reset form
       setSelectedTeacher(0);
       setSelectedGrade(null);
+      setSubject("");
+      setClassId("");
+      setBlockId("");
       setCanScores(true);
       setCanCharts(true);
       setCanStudents(true);
+      setCanGrade(true);
+      setCanAssign(true);
       setEditingId(null);
       await loadData();
     } catch (err) {
@@ -130,9 +150,14 @@ export function PermissionManager({ onBack }: Props) {
   function editPermission(p: Permission) {
     setSelectedTeacher(p.teacher_id);
     setSelectedGrade(p.grade_id ?? null);
+    setSubject(p.subject ?? "");
+    setClassId(p.class_id != null ? String(p.class_id) : "");
+    setBlockId(p.block_id ?? "");
     setCanScores(p.can_view_scores === 1);
     setCanCharts(p.can_view_charts === 1);
     setCanStudents(p.can_view_students === 1);
+    setCanGrade(p.can_grade === 1);
+    setCanAssign(p.can_assign === 1);
     setEditingId(p.id);
   }
 
@@ -189,6 +214,33 @@ export function PermissionManager({ onBack }: Props) {
                 </SelectContent>
               </Select>
             </div>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted-foreground">科目 (空=不限)</span>
+              <input
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                placeholder="如：数学"
+                className="h-9 min-w-[110px] rounded-md border border-input bg-card px-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted-foreground">班级 ID (空=不限)</span>
+              <input
+                value={classId}
+                onChange={(e) => setClassId(e.target.value.replace(/[^\d]/g, ""))}
+                placeholder="如：3"
+                className="h-9 min-w-[110px] rounded-md border border-input bg-card px-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs text-muted-foreground">题块 ID (空=不限)</span>
+              <input
+                value={blockId}
+                onChange={(e) => setBlockId(e.target.value)}
+                placeholder="如：block-a"
+                className="h-9 min-w-[110px] rounded-md border border-input bg-card px-2.5 text-sm text-foreground outline-none placeholder:text-muted-foreground focus:border-ring"
+              />
+            </div>
             <label className="flex items-center gap-2 text-sm text-foreground">
               <Checkbox checked={canScores} onCheckedChange={(c) => setCanScores(c === true)} />
               查看成绩
@@ -201,6 +253,14 @@ export function PermissionManager({ onBack }: Props) {
               <Checkbox checked={canStudents} onCheckedChange={(c) => setCanStudents(c === true)} />
               查看学生
             </label>
+            <label className="flex items-center gap-2 text-sm text-foreground">
+              <Checkbox checked={canGrade} onCheckedChange={(c) => setCanGrade(c === true)} />
+              可阅卷
+            </label>
+            <label className="flex items-center gap-2 text-sm text-foreground">
+              <Checkbox checked={canAssign} onCheckedChange={(c) => setCanAssign(c === true)} />
+              可分配
+            </label>
             <Button variant="primary" size="sm" icon={<Save size={14} />} onClick={() => void handleSave()} disabled={!selectedTeacher}>
               {editingId ? "更新" : "添加"}
             </Button>
@@ -208,7 +268,7 @@ export function PermissionManager({ onBack }: Props) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => { setEditingId(null); setSelectedTeacher(0); setSelectedGrade(null); }}
+                onClick={() => { setEditingId(null); setSelectedTeacher(0); setSelectedGrade(null); setSubject(""); setClassId(""); setBlockId(""); setCanScores(true); setCanCharts(true); setCanStudents(true); setCanGrade(true); setCanAssign(true); }}
               >
                 取消
               </Button>
@@ -230,9 +290,14 @@ export function PermissionManager({ onBack }: Props) {
                 <TableHead>教师</TableHead>
                 <TableHead>角色</TableHead>
                 <TableHead>年级</TableHead>
+                <TableHead>科目</TableHead>
+                <TableHead>班级</TableHead>
+                <TableHead>题块</TableHead>
                 <TableHead className="text-center">成绩</TableHead>
                 <TableHead className="text-center">图表</TableHead>
                 <TableHead className="text-center">学生</TableHead>
+                <TableHead className="text-center">阅卷</TableHead>
+                <TableHead className="text-center">分配</TableHead>
                 <TableHead>操作</TableHead>
               </TableRow>
             </TableHeader>
@@ -242,6 +307,9 @@ export function PermissionManager({ onBack }: Props) {
                   <TableCell className="font-medium">{p.teacher_name}</TableCell>
                   <TableCell className="text-muted-foreground">{p.teacher_role || "教师"}</TableCell>
                   <TableCell className="text-muted-foreground">{p.grade_name || "全部"}</TableCell>
+                  <TableCell className="text-muted-foreground">{p.subject || "不限"}</TableCell>
+                  <TableCell className="text-muted-foreground">{p.class_id != null ? p.class_id : "不限"}</TableCell>
+                  <TableCell className="max-w-[140px] truncate text-muted-foreground" title={p.block_id ?? undefined}>{p.block_id || "不限"}</TableCell>
                   <TableCell className="text-center">
                     {p.can_view_scores ? <Check size={14} className="mx-auto text-foreground" /> : <X size={14} className="mx-auto text-muted-foreground" />}
                   </TableCell>
@@ -250,6 +318,12 @@ export function PermissionManager({ onBack }: Props) {
                   </TableCell>
                   <TableCell className="text-center">
                     {p.can_view_students ? <Check size={14} className="mx-auto text-foreground" /> : <X size={14} className="mx-auto text-muted-foreground" />}
+                  </TableCell>
+                  <TableCell className="text-center">
+                    {p.can_grade ? <Check size={14} className="mx-auto text-foreground" /> : <X size={14} className="mx-auto text-muted-foreground" />}
+                  </TableCell>
+                  <TableCell className="text-center">
+                    {p.can_assign ? <Check size={14} className="mx-auto text-foreground" /> : <X size={14} className="mx-auto text-muted-foreground" />}
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center justify-end gap-1">

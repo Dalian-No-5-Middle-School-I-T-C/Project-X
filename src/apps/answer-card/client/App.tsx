@@ -102,6 +102,7 @@ const SponsorRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) =>
 const PermissionsRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.PermissionsRoutePage })));
 const GuideRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.GuideRoutePage })));
 const GlobalSettingsRoutePage = lazy(() => import("./pages/GlobalSettingsRoutePage").then((m) => ({ default: m.GlobalSettingsRoutePage })));
+const AdminConsoleRoutePage = lazy(() => import("./pages/AdminConsoleRoutePage").then((m) => ({ default: m.AdminConsoleRoutePage })));
 const GradePanel = lazy(() => import("./components/GradePanel").then((m) => ({ default: m.GradePanel })));
 const PaperUploadPanel = lazy(() => import("./components/PaperUploadPanel").then((m) => ({ default: m.PaperUploadPanel })));
 
@@ -453,6 +454,7 @@ function App() {
       if (candidate === "account") return canManageAccounts;
       if (candidate === "account-settings") return true;
       if (candidate === "global-settings") return canManageGlobal;
+      if (candidate === "admin-console") return canManageGlobal;
       return false;
     },
     [appVariant.allowedModes, appVariant.id, hasPermission, canDesign, canManageExams, canAnalyze, canManageAccounts, canManageGlobal],
@@ -544,11 +546,19 @@ function App() {
     void refreshCards(canDesign);
   }, [user?.id, canDesign, canGrade]);
 
-  // 加载用户设置（背景图等）
+  // 加载用户设置（背景图、明暗方案等）
   useEffect(() => {
     if (!user) return;
-    fetchJson<{ backgroundOpacity: number }>("/api/users/me/settings")
-      .then((s) => { if (s) setShowBg(s.backgroundOpacity ?? 0); })
+    fetchJson<{ backgroundOpacity: number; colorScheme?: string; uiStyle?: string }>("/api/users/me/settings")
+      .then((s) => {
+        if (!s) return;
+        setShowBg(s.backgroundOpacity ?? 0);
+        // v37: 明暗方案账号级持久化 —— 仅当用户从未在本机显式选择过（无 localStorage 覆盖）时，
+        // 采用服务端 colorScheme；否则沿用本机偏好（保留 localStorage 回退，设备级优先）。
+        if (s.colorScheme && !localStorage.getItem("projectx-theme")) {
+          setTheme(s.colorScheme === "dark" ? "dark" : "light");
+        }
+      })
       .catch(() => {});
   }, [user?.id]);
 
@@ -1473,6 +1483,9 @@ function App() {
     if (canManageGlobal) {
       items.push({ type: "item", id: "global-settings", icon: <Settings />, label: "全局设置" });
     }
+    if (canManageGlobal) {
+      items.push({ type: "item", id: "admin-console", icon: <BarChart3 />, label: "控制台" });
+    }
     return items;
   }, [canOpenMode, canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, canManageGlobal, loadExams, loadExamGroups]);
 
@@ -1908,6 +1921,7 @@ function App() {
                 <Route path="/permissions" element={canOpenMode("account") ? <Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/guide" element={canOpenMode("home") ? <Suspense fallback={routeFallback}><GuideRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/global-settings" element={canOpenMode("global-settings") ? <Suspense fallback={routeFallback}><GlobalSettingsRoutePage onBack={() => void switchMode("home")} /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/admin-console" element={canOpenMode("admin-console") ? <Suspense fallback={routeFallback}><AdminConsoleRoutePage onBack={() => void switchMode("home")} /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="*" element={<NotFound to={MODE_PATH[fallbackMode]} />} />
               </Routes>
             </AppContent>
