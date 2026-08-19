@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { BrainCircuit, CalendarDays, ClipboardList } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { WeeklyAuditResponse, WeeklyAuditSummary } from "../../../../shared/types";
@@ -48,7 +48,14 @@ export function WeeklyAuditPanel({ onOpenAnalysisGroup }: Props) {
   const [error, setError] = useState("");
   const [showAi, setShowAi] = useState(false);
 
+  /**
+   * 请求序号（last-request-wins）：周/年级可连续切换，若较早的请求较晚返回，
+   * 其结果会被丢弃，只有用户最后一次选择的周/年级会被采纳。
+   */
+  const requestIdRef = useRef(0);
+
   const load = useCallback(async (week?: string, gradeId?: number | null) => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
     setError("");
     try {
@@ -59,13 +66,18 @@ export function WeeklyAuditPanel({ onOpenAnalysisGroup }: Props) {
       const res = await fetchJson<WeeklyAuditResponse>(
         `/api/weekly-audit/summary${query ? `?${query}` : ""}`,
       );
+      if (requestId !== requestIdRef.current) return; // 过期响应：已有更新的选择，丢弃
       setData(res);
-      setSelectedWeek(res.active?.weekStart ?? res.weeks[0]?.weekStart ?? "");
+      // 显式请求了某周（历史周）而该周无已发布报告（active=null）时，保留用户所选周，
+      // 让 selectedWeekOpt 命中该周选项以正确展示「顺延/无晨测」状态，避免跳回本周。
+      setSelectedWeek(week ?? res.active?.weekStart ?? res.weeks[0]?.weekStart ?? "");
       setSelectedGradeId(res.active?.gradeId ?? null);
     } catch (err) {
+      if (requestId !== requestIdRef.current) return; // 过期请求的错误不覆盖最新状态
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setLoading(false);
+      // loading 归属最新请求：过期请求不得提前结束（也不得拖长）最新请求的 loading
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   }, []);
   useEffect(() => { void load(); }, [load]);

@@ -162,6 +162,25 @@ export function ExamManagePage() {
     setSelectedExamIds(next);
   }
 
+  /** 日历日期切换：清空勾选，避免此前日期的隐藏选中误入批量删除 */
+  function handleCalendarDateChange(date: string) {
+    setSelectedCalendarDate(date);
+    setSelectedExamIds(new Set());
+  }
+
+  /** 列表/日历视图切换：清空勾选，避免列表选中的考试在日历视图不可见却仍计入批量删除 */
+  function handleExamViewChange(next: ExamView) {
+    setExamView(next);
+    setSelectedExamIds(new Set());
+  }
+
+  /** 单科/大考模式切换：大考视图无勾选 UI，切回单科时不应复活此前的隐藏选中 */
+  function handleManageModeChange(next: "single" | "group") {
+    setExamManageMode(next);
+    setSelectedExamIds(new Set());
+    if (next === "group") loadExamGroups();
+  }
+
   function handleCardPicked(selectedCardId: string) {
     if (selectedCardId === CARD_PLACEHOLDER) return;
     setNewExamCardId(selectedCardId);
@@ -215,7 +234,8 @@ export function ExamManagePage() {
 
   /** 考试列表渲染（移动端卡片 / 桌面表格），列表与日历视图共用 */
   function renderExamList(items: ExamRecord[], allItems: ExamRecord[]) {
-    const allSelected = allItems.length > 0 && selectedExamIds.size === allItems.length;
+    // 全选判定必须按考试 ID 逐一比对：仅比数量会让「两天各有相同场次」时的隐藏选中误判为全选
+    const allSelected = allItems.length > 0 && allItems.every((exam) => selectedExamIds.has(exam.id));
     if (isMobile) {
       return (
         <div className="flex flex-col gap-3">
@@ -373,17 +393,14 @@ export function ExamManagePage() {
                   size="sm"
                   aria-label="单科考试视图"
                   value={examView}
-                  onValueChange={setExamView}
+                  onValueChange={handleExamViewChange}
                   items={EXAM_VIEW_ITEMS}
                 />
               )}
               <SegmentedControl
                 aria-label="考试管理视图"
                 value={examManageMode}
-                onValueChange={(next) => {
-                  setExamManageMode(next);
-                  if (next === "group") loadExamGroups();
-                }}
+                onValueChange={handleManageModeChange}
                 items={MANAGE_MODE_ITEMS}
               />
             </div>
@@ -432,7 +449,7 @@ export function ExamManagePage() {
           {examManageMode === "single" && examView === "calendar" && (
             <>
               <Card className="mb-4 p-4">
-                <Calendar value={selectedCalendarDate} onValueChange={setSelectedCalendarDate} markedDates={examDateMarks} />
+                <Calendar value={selectedCalendarDate} onValueChange={handleCalendarDateChange} markedDates={examDateMarks} />
               </Card>
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-semibold text-foreground">
@@ -442,7 +459,7 @@ export function ExamManagePage() {
                   </span>
                 </h3>
                 {selectedCalendarDate !== todayDateString() && (
-                  <Button variant="ghost" size="sm" onClick={() => setSelectedCalendarDate(todayDateString())}>回到今天</Button>
+                  <Button variant="ghost" size="sm" onClick={() => handleCalendarDateChange(todayDateString())}>回到今天</Button>
                 )}
               </div>
               {examsOnDate.length === 0 ? (

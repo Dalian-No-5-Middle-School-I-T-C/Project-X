@@ -1,7 +1,9 @@
 import { AlertCircle, BrainCircuit, RefreshCw, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { fetchJson } from "../auth/api";
-import type { AiAnalysisResponse, AiAnalysisStatus, AiProviderConfig } from "../../../../shared/types";
+import type {
+  AiAnalysisResponse, AiAnalysisStatus, AiJobCreateResponse, AiJobPollResponse, AiProviderConfig,
+} from "../../../../shared/types";
 import {
   Badge,
   Button,
@@ -65,6 +67,9 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState("");
+  // 建议 5：异步任务化 —— 提交后轮询 job 直到 done/error
+  const [jobId, setJobId] = useState<number | null>(null);
+  const [polling, setPolling] = useState(false);
 
   const userProviders = useMemo(
     () => status?.providers ?? [],
@@ -116,8 +121,37 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
     }
   }
 
+  // 轮询任务状态（建议 5）：提交后每 1.5s 查询一次，直到 done/error
+  useEffect(() => {
+    if (jobId == null) return;
+    let cancelled = false;
+    setPolling(true);
+    const timer = setInterval(async () => {
+      try {
+        const job = await fetchJson<AiJobPollResponse>(`/api/analysis/ai-analysis/jobs/${jobId}`);
+        if (cancelled) return;
+        if (job.status === "done") {
+          setAnalysis(job.result ?? null);
+          setError("");
+          setPolling(false);
+          setJobId(null);
+        } else if (job.status === "error") {
+          setError(job.error ?? "AI 分析失败");
+          setAnalysis(null);
+          setPolling(false);
+          setJobId(null);
+        }
+      } catch {
+        // 网络抖动继续轮询
+      }
+    }, 1500);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [jobId]);
+
   useEffect(() => {
     setAnalysis(null);
+    setJobId(null);
+    setPolling(false);
     void loadStatus();
   }, [examId, groupId, classId]);
 
@@ -131,12 +165,13 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
       const endpoint = groupId
         ? `/api/exam-groups/${groupId}/ai-analysis`
         : `/api/analysis/exams/${examId}/ai-analysis`;
-      const result = await fetchJson<AiAnalysisResponse>(endpoint, {
+      // 立即拿到 jobId，不再同步等待 LLM（最长 120s 的阻塞移入后台串行队列）
+      const created = await fetchJson<AiJobCreateResponse>(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body)
       });
-      setAnalysis(result);
+      setJobId(created.jobId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -164,7 +199,8 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
   const noProviders = !hasBuiltinModels && !hasUserProviders;
   const aiAvailable = status?.available ?? false;
   const disabledReason = status?.available ? "" : (status?.reason || "AI service is not available.");
-  const canGenerate = Boolean(aiAvailable && selectedModel && !generating);
+  const busy = generating || polling;
+  const canGenerate = Boolean(aiAvailable && selectedModel && !busy);
 
   return (
     <div className="flex min-w-0 flex-col gap-3">
@@ -259,12 +295,19 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
             icon={<BrainCircuit className="size-4" />}
             onClick={() => void generateAnalysis()}
             disabled={!canGenerate}
-            loading={generating}
+            loading={busy}
           >
-            生成分析
+            {polling ? "AI 分析中…" : "生成分析"}
           </Button>
         </div>
       </div>
+
+      {polling && (
+        <div className="flex items-start gap-2 rounded-md border border-accent-border bg-accent-soft px-3 py-2 text-sm text-accent-foreground">
+          <Sparkles className="mt-0.5 size-4 shrink-0" />
+          <span>分析任务 #{jobId} 已提交，正在后台生成（异步执行，不再阻塞页面）。完成后自动展示报告。</span>
+        </div>
+      )}
 
       {!aiAvailable && (
         <div className="flex items-start gap-2 rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-foreground">

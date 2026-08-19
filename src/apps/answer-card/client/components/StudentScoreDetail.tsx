@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, ImageOff } from "lucide-react";
+import { ArrowLeft, ImageOff, Printer } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
 import { isManuallyModified } from "../util/score";
@@ -18,6 +18,8 @@ import {
   type ProgressTone,
 } from "./ui/v2";
 import { AnswerCardLightbox, type LightboxItem } from "./AnswerCardLightbox";
+import { StudentTrendBlock } from "./StudentTrendBlock";
+import { StudentReportPrint } from "./StudentReportPrint";
 import type { AnswerBlockCrop } from "../../../../shared/types";
 
 /**
@@ -72,6 +74,7 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
   const [enlargeIdx, setEnlargeIdx] = useState(-1);
   const [zoom, setZoomState] = useState(1);
   const [activeImageId, setActiveImageId] = useState("");
+  const [printOpen, setPrintOpen] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -136,6 +139,9 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
             <span className="text-base font-bold tabular-nums text-primary">{data.totalScore.totalScore}</span>
           </div>
         )}
+        <Button variant="outline" size="sm" icon={<Printer />} onClick={() => setPrintOpen(true)} disabled={!data?.totalScore}>
+          打印报告单
+        </Button>
       </div>
 
       {/* Content */}
@@ -251,6 +257,9 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
               </div>
             )}
           </div>
+
+          {/* 建议 3：跨考试成长趋势 */}
+          <StudentTrendBlock studentId={studentId} />
         </div>
 
         {/* Right: card images */}
@@ -302,6 +311,21 @@ export function StudentScoreDetail({ examId, studentId, studentName, studentNumb
         onZoomChange={setZoomState}
         onClose={() => setEnlargeIdx(-1)}
       />
+
+      {/* 建议 13：成绩报告单（打印 / 另存为 PDF） */}
+      {printOpen && data?.totalScore && (
+        <StudentReportPrint
+          examId={examId}
+          studentId={studentId}
+          studentName={studentName}
+          studentNumber={studentNumber}
+          examName={examName}
+          totalScore={data.totalScore.totalScore}
+          objectiveScore={data.totalScore.objectiveScore}
+          subjectiveScore={data.totalScore.subjectiveScore}
+          onClose={() => setPrintOpen(false)}
+        />
+      )}
     </div>
   );
 }

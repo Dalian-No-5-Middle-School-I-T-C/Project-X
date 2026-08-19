@@ -7,6 +7,7 @@
  *  - 若本周还有 quiz 考试未完成（未出分 = 没有任何 student_scores，草稿除外），
  *    则推迟发布，每小时重试直至全部完成。
  *  - 发布动作本身幂等：按年级 ensure 周晨测组（source='week'）并 diff 同步成员。
+ *  - 发布候选覆盖近 5 周（与读取侧展示窗口一致）：晚于一周才出分的历史周也会回补发布。
  *  - 读取侧（getSummary）只读已发布组，不随访问自动建组 —— 未到发布门槛的周
  *    在前端显示「报告未发布」状态，避免出现半成品周报。
  *
@@ -64,8 +65,16 @@ function isoWeekNumber(d: Date): number {
   return Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
 }
 
+/** ISO 周所属年份：所在周的周四所在的公历年（2025-12-29 属 ISO 2026 年第 1 周，年份应为 2026） */
+function isoWeekYear(d: Date): number {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+  return date.getUTCFullYear();
+}
+
 /** 某日期所在周的周一~周日窗口（服务器本地时区），offset 为周偏移（0=该日期所在周） */
-function weekWindowFor(ref: Date, offset = 0): WeekWindow {
+export function weekWindowFor(ref: Date, offset = 0): WeekWindow {
   const day = (ref.getDay() + 6) % 7; // 周一=0
   const monday = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - day + offset * 7);
   const sunday = new Date(monday);
@@ -73,11 +82,12 @@ function weekWindowFor(ref: Date, offset = 0): WeekWindow {
   const weekStart = fmt(monday);
   const weekEnd = fmt(sunday);
   const weekNumber = isoWeekNumber(monday);
+  const weekYear = isoWeekYear(monday); // 跨年周取 ISO 周所属年份，避免如 2025-12-29 被标成 2025 年第 1 周
   return {
     weekStart, weekEnd,
-    label: `${monday.getFullYear()}年第${weekNumber}周`,
+    label: `${weekYear}年第${weekNumber}周`,
     rangeLabel: `${weekStart.slice(5)} ~ ${weekEnd.slice(5)}`,
-    year: monday.getFullYear(),
+    year: weekYear,
     weekNumber
   };
 }
@@ -107,7 +117,7 @@ function countCoverageDays(exams: CrossExamTotalExam[], weekStart: string): numb
   return dates.size;
 }
 
-function buildClassSummaries(rows: CrossExamTotalRow[], totalFullScore: number): WeeklyAuditSummary["classSummaries"] {
+function buildClassSummaries(rows: CrossExamTotalRow[]): WeeklyAuditSummary["classSummaries"] {
   const byClass = new Map<number, { className: string; count: number; scoreRates: number[]; absent: number }>();
   for (const row of rows) {
     const cid = row.classId ?? 0;
@@ -161,21 +171,26 @@ export class WeeklyAuditService {
   }
 
   /**
-   * 发布到点的周报告（幂等）：候选周 = 当前周 + 上周；
+   * 发布到点的周报告（幂等）：候选周 = 近 5 周（本周 + 前 4 周，与 getSummary
+   * 展示窗口对齐）——超过一周才出分的历史周也能回补发布；
    * 仅当 已过该周周六 08:00 且 该周考试全部完成 时才 ensure 组（= 发布）。
    * 未完成则跳过，由定时器下轮重试（顺延到全部完成）。供定时任务与测试调用。
+   * published = 本轮 ensure 过的周（含空周/已有组的周）；created = 本轮新建了组的周
+   * （定时器只对 created 打日志，避免每小时重复输出）。
    */
-  async publishDueWeeks(now: Date): Promise<{ published: string[] }> {
+  async publishDueWeeks(now: Date): Promise<{ published: string[]; created: string[] }> {
     const published: string[] = [];
-    const candidates = [weekWindowFor(now, 0), weekWindowFor(now, -1)];
+    const created: string[] = [];
+    const candidates = [0, -1, -2, -3, -4].map((offset) => weekWindowFor(now, offset));
     for (const window of candidates) {
       if (now < weekPublishAt(window.weekStart)) continue; // 未到发布时刻
       const { complete } = await this.checkWeekComplete(window.weekStart);
       if (!complete) continue; // 顺延：等全部考试完成
-      await this.ensureWeeklyQuizGroups(window.weekStart);
+      const groups = await this.ensureWeeklyQuizGroups(window.weekStart);
       published.push(window.label);
+      if (groups.some((g) => g.created)) created.push(window.label);
     }
-    return { published };
+    return { published, created };
   }
 
   /**
@@ -183,8 +198,9 @@ export class WeeklyAuditService {
    *  - 按年级查询本周有出分的 quiz 考试；
    *  - 按 source='week' + grade_id + start_date + end_date 查找现有组，无则创建，有则 diff 同步成员；
    *  - 空周（该年级无晨测）不建组。
+   * created 标记该组是否为本轮新建（区分「新发布」与「幂等复核」）。
    */
-  async ensureWeeklyQuizGroups(weekStart: string): Promise<{ gradeId: number; gradeName: string; groupId: number }[]> {
+  async ensureWeeklyQuizGroups(weekStart: string): Promise<{ gradeId: number; gradeName: string; groupId: number; created: boolean }[]> {
     const db = getMysqlDb();
     const weekEnd = addDays(weekStart, 6);
     const rows = await db.all(`
@@ -210,16 +226,16 @@ export class WeeklyAuditService {
       item.examIds.push(row.exam_id);
     }
 
-    const groups: { gradeId: number; gradeName: string; groupId: number }[] = [];
+    const groups: { gradeId: number; gradeName: string; groupId: number; created: boolean }[] = [];
     for (const [gradeId, info] of Array.from(byGrade.entries()).sort((a, b) => a[1].sortOrder - b[1].sortOrder || a[1].gradeName.localeCompare(b[1].gradeName))) {
-      const groupId = await this.ensureGradeWeekGroup(weekStart, weekEnd, gradeId, info.gradeName, info.examIds);
-      groups.push({ gradeId, gradeName: info.gradeName, groupId });
+      const { groupId, created } = await this.ensureGradeWeekGroup(weekStart, weekEnd, gradeId, info.gradeName, info.examIds);
+      groups.push({ gradeId, gradeName: info.gradeName, groupId, created });
     }
     return groups;
   }
 
   /** 查/建某年级某周的晨测组（成员在事务内 diff 同步，sort_order 按考试日期） */
-  private async ensureGradeWeekGroup(weekStart: string, weekEnd: string, gradeId: number, gradeName: string, examIds: number[]): Promise<number> {
+  private async ensureGradeWeekGroup(weekStart: string, weekEnd: string, gradeId: number, gradeName: string, examIds: number[]): Promise<{ groupId: number; created: boolean }> {
     const db = getMysqlDb();
     const existing = await db.get(
       "SELECT id FROM exam_groups WHERE source = 'week' AND grade_id = ? AND start_date = ? AND end_date = ? LIMIT 1",
@@ -227,7 +243,7 @@ export class WeeklyAuditService {
     ) as { id: number } | null;
     if (existing) {
       await this.syncGroupMembers(existing.id, examIds);
-      return existing.id;
+      return { groupId: existing.id, created: false };
     }
     const window = weekWindowFor(toDate(weekStart));
     const name = `${window.year}年第${window.weekNumber}周晨测包（${window.rangeLabel}）`;
@@ -239,7 +255,7 @@ export class WeeklyAuditService {
       endDate: weekEnd,
       gradeId
     });
-    return group.id;
+    return { groupId: group.id, created: true };
   }
 
   /** diff 同步组成员：删除不在目标集合的、补齐缺失的、按考试日期重排 sort_order */
@@ -288,12 +304,11 @@ export class WeeklyAuditService {
     }));
   }
 
-  /** 单周单年级汇总（复用 getCrossExamTotal / getGroupQuestionAnalysis） */
-  private async buildSummary(window: WeekWindow, group: ReadGradeGroup): Promise<WeeklyAuditSummary> {
+  /** 核心汇总（跨考统计 + 班级摘要；不含逐题薄弱分析）——供 vsLastWeek 轻量复用，避免每请求多跑一次逐题分析 */
+  private async buildCoreSummary(window: WeekWindow, group: ReadGradeGroup): Promise<Omit<WeeklyAuditSummary, "weakPoints" | "vsLastWeek">> {
     const cross = await this.repo.getCrossExamTotal({ mode: "group", groupId: group.groupId });
     const totalFullScore = cross.summary.totalFullScore;
     const avgScoreRate = totalFullScore > 0 ? round1((cross.summary.avgTotalScore / totalFullScore) * 100) : 0;
-    const weakPoints = await this.getWeakPoints(group.groupId);
     return {
       weekStart: window.weekStart,
       weekEnd: window.weekEnd,
@@ -308,10 +323,14 @@ export class WeeklyAuditService {
       fullAttendanceCount: cross.summary.fullAttendanceCount,
       coverageDays: countCoverageDays(cross.exams, window.weekStart),
       coverageTargetDays: 5,
-      classSummaries: buildClassSummaries(cross.rows, totalFullScore),
-      weakPoints,
-      vsLastWeek: null
+      classSummaries: buildClassSummaries(cross.rows)
     };
+  }
+
+  /** 单周单年级汇总（核心指标 + 逐题薄弱分析；复用 getCrossExamTotal / getGroupQuestionAnalysis） */
+  private async buildSummary(window: WeekWindow, group: ReadGradeGroup): Promise<WeeklyAuditSummary> {
+    const core = await this.buildCoreSummary(window, group);
+    return { ...core, weakPoints: await this.getWeakPoints(group.groupId), vsLastWeek: null };
   }
 
   /** 得分率最低 Top 5 薄弱题（跨学科合并） */
@@ -334,13 +353,13 @@ export class WeeklyAuditService {
     return points.slice(0, 5);
   }
 
-  /** 较上周变化：上周同年级组不存在或为空时返回 null */
+  /** 较上周变化：上周同年级组不存在或为空时返回 null（轻量核心汇总，不跑逐题分析） */
   private async buildVsLastWeek(window: WeekWindow, gradeId: number, current: WeeklyAuditSummary): Promise<WeeklyAuditSummary["vsLastWeek"]> {
     const prevWindow = weekWindowFor(toDate(window.weekStart), -1);
     const prevGrades = await this.readWeeklyQuizGroups(prevWindow.weekStart);
     const prevGroup = prevGrades.find((g) => g.gradeId === gradeId);
     if (!prevGroup) return null;
-    const prevSummary = await this.buildSummary(prevWindow, prevGroup);
+    const prevSummary = await this.buildCoreSummary(prevWindow, prevGroup);
     if (prevSummary.examCount === 0) return null;
     return {
       avgScoreRateChange: round1(current.avgScoreRate - prevSummary.avgScoreRate),
@@ -401,19 +420,23 @@ export class WeeklyAuditService {
 
 /**
  * 每周六 08:00 发布周报告；若该周考试未全部完成则顺延（每小时重试直至完成）。
+ * 启动时立即执行一次（避免重启后最长 1 小时的发布空窗），之后每小时复核；
+ * 只对「本轮新建组」的周打日志，幂等复核保持静默。
  * setInterval + unref，不阻塞进程退出。
  */
 export function scheduleWeeklyAuditRefresh(): NodeJS.Timeout {
-  const timer = setInterval(() => {
+  const run = () => {
     void new WeeklyAuditService()
       .publishDueWeeks(new Date())
       .then((r) => {
-        if (r.published.length > 0) {
-          console.log(`[WeeklyAudit] 周报告已发布: ${r.published.join("、")}`);
+        if (r.created.length > 0) {
+          console.log(`[WeeklyAudit] 周报告已发布: ${r.created.join("、")}`);
         }
       })
       .catch((err) => console.error("[WeeklyAudit] 周报告发布失败:", err instanceof Error ? err.message : err));
-  }, 3600_000);
+  };
+  run();
+  const timer = setInterval(run, 3600_000);
   timer.unref();
   return timer;
 }

@@ -871,6 +871,41 @@ const MIGRATIONS: Migration[] = [
         "UPDATE answer_block_crops SET review_round = 0 WHERE score_breakdown IS NULL OR score_breakdown = '' OR score_breakdown = '[]'"
       );
     }
+  },
+  // v37: 逐题分析/下钻复合索引（computeQuestionAnalysis / getQuestionStudentScores / getOptionAnalysis
+  // 均按 exam_id (+ question_number) (+ score_type) 过滤）；CREATE INDEX IF NOT EXISTS 幂等。
+  {
+    version: 37,
+    name: "question-scores-exam-question-type-index",
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_question_scores_exam_question_type
+          ON question_scores(exam_id, question_number, score_type);
+      `);
+    }
+  },
+  // v38: AI 学情分析异步任务表（建议 5）——结果落库顺便作为 AI 分析持久缓存
+  {
+    version: 38,
+    name: "ai-analysis-jobs",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ai_analysis_jobs (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          exam_id    INTEGER,
+          group_id   INTEGER,
+          class_id   INTEGER,
+          status     TEXT NOT NULL DEFAULT 'queued',
+          result     TEXT,
+          error      TEXT,
+          model      TEXT,
+          created_by INTEGER,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_ai_jobs_status ON ai_analysis_jobs(status);
+      `);
+    }
   }
 ];
 

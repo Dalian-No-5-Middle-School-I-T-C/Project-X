@@ -65,6 +65,7 @@ import { startLlmClientSidecar, shutdownLlmClient } from "./llm-launcher";
 import dashboardRoutes from "../../../server/routes/dashboard";
 import weeklyAuditRoutes from "../../../server/routes/weekly-audit";
 import { scheduleWeeklyAuditRefresh } from "../../../server/services/WeeklyAuditService";
+import { cleanupInterruptedAiJobs } from "../../../server/services/aiAnalysisJobs";
 import adminPermissionsRoutes from "../../../server/routes/admin-permissions";
 import apiKeysRoutes from "../../../server/routes/api-keys";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
@@ -585,6 +586,8 @@ export async function createApp(): Promise<express.Express> {
   cleanupTimer.unref();
   // 每周考试审计：每日刷新当前周与上周的晨测组（懒加载 ensure 为主，定时兜底成员漂移）
   scheduleWeeklyAuditRefresh();
+  // 仅启动时清理一次上次进程残留的 AI 任务（不可放在每次创建任务的路径里，否则会把正在执行的任务误标为失败）
+  await cleanupInterruptedAiJobs();
   await ensureDataDirs();
   console.log("[Server] 数据库初始化完成");
 
