@@ -103,7 +103,8 @@ router.get(
       const teacherId = (req as any).user?.id;
       if (!teacherId) return res.status(401).json({ ok: false, error: "未登录" });
 
-      const blocks = await getAvailableBlocksForTeacher(examId, teacherId);
+      // 传入真实 user 身份：特权阅卷人（管理员/学年主任）不参与题块过滤，全部可见
+      const blocks = await getAvailableBlocksForTeacher(examId, teacherId, undefined, (req as any).user);
       res.json({ ok: true, data: blocks });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err.message });

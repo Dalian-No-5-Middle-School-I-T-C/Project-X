@@ -51,9 +51,16 @@ router.get("/summary", async (_req, res, next) => {
     const cardsActive = await countWhere(db, "answer_cards", "is_demo = 0");
 
     const usersTotal = await countWhere(db, "users");
-    const usersTeachers = await countWhere(db, "users", "role_name = 'teacher'");
-    const usersStudents = await countWhere(db, "users", "role_name = 'student'");
-    const usersAdmins = await countWhere(db, "users", "role_name = 'admin'");
+    // users 表无 role_name 列（角色名在 roles 表），须 JOIN 统计；一次查询取全部角色分布
+    const roleRows = await db.all<{ name: string; c: number }>(
+      `SELECT r.name, COUNT(*) AS c
+       FROM users u JOIN roles r ON r.id = u.role_id
+       GROUP BY r.name`
+    );
+    const roleMap = new Map(roleRows.map((r) => [r.name, r.c]));
+    const usersTeachers = roleMap.get("teacher") ?? 0;
+    const usersStudents = roleMap.get("student") ?? 0;
+    const usersAdmins = roleMap.get("admin") ?? 0;
 
     // 阅卷完成率（answer_block_crops：review_round>0 视为已评）
     let grading = { cropsTotal: 0, cropsGraded: 0, completionRate: 0 };

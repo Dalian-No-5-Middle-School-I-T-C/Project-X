@@ -2,7 +2,7 @@ import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { randomDistribute } from "./RandomDistributionService";
 import { getBlockConfig } from "./BlockGradingConfigService";
-import { getPermittedBlocks } from "../../apps/answer-card/server/middleware";
+import { getPermittedBlocks, isPrivilegedGrader } from "../../apps/answer-card/server/middleware";
 import type { ReviewAssignment, TeacherBlockAssignment } from "../../shared/types";
 
 type AssignmentRow = {
@@ -254,7 +254,8 @@ export async function deleteAssignment(
 export async function getAvailableBlocksForTeacher(
   examId: number,
   teacherId: number,
-  db: DbAdapter = getMysqlDb()
+  db: DbAdapter = getMysqlDb(),
+  user?: { role_id?: number; role_name?: string; teacher_role?: string | null }
 ): Promise<TeacherBlockAssignment[]> {
   // 获取该考试所有题块
   const examRow = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
@@ -270,11 +271,15 @@ export async function getAvailableBlocksForTeacher(
 
   // #24: 教师可见题块与权限矩阵绑定 —— 有约束时仅保留该教师可阅的题块；
   // getPermittedBlocks 在无任何分配/授予时返回 null（全部可见，向后兼容）。
+  // 特权阅卷人（管理员/学年主任）不参与过滤，全部可见（L5 修复：避免伪造 user 丢失特权身份）。
   let blocks = cropBlocks;
-  const permitted = await getPermittedBlocks({ id: teacherId } as any, examId);
-  if (permitted !== null) {
-    const set = new Set(permitted);
-    blocks = cropBlocks.filter((b) => set.has(b.block_id));
+  const isPrivileged = user ? isPrivilegedGrader(user as any) : false;
+  if (!isPrivileged) {
+    const permitted = await getPermittedBlocks({ id: teacherId } as any, examId);
+    if (permitted !== null) {
+      const set = new Set(permitted);
+      blocks = cropBlocks.filter((b) => set.has(b.block_id));
+    }
   }
 
   // 获取教师分配

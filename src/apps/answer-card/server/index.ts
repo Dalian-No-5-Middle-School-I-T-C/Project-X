@@ -743,17 +743,32 @@ export async function createApp(): Promise<express.Express> {
       if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
       if (body.showTabBar !== undefined) { setClauses.push("show_tab_bar = ?"); values.push(body.showTabBar ? 1 : 0); }
 
-      // 皮肤风格：uiStyle 与 themeSkin 双向同步，避免双源不一致
+      // 皮肤风格：uiStyle 与 themeSkin 双向同步，避免双源不一致（枚举校验，拒绝脏值）
       if (body.uiStyle !== undefined) {
         const uiStyle = body.uiStyle as string;
+        if (uiStyle !== "clarity" && uiStyle !== "paper_edge") {
+          res.status(400).json({ message: "uiStyle 仅支持 clarity / paper_edge" });
+          return;
+        }
         setClauses.push("ui_style = ?"); values.push(uiStyle);
         setClauses.push("theme_skin = ?"); values.push(uiStyle === "clarity" ? "flat" : "paper-edge");
       } else if (body.themeSkin !== undefined) {
         const themeSkin = body.themeSkin as string;
+        if (themeSkin !== "flat" && themeSkin !== "paper-edge") {
+          res.status(400).json({ message: "themeSkin 仅支持 flat / paper-edge" });
+          return;
+        }
         setClauses.push("theme_skin = ?"); values.push(themeSkin);
         setClauses.push("ui_style = ?"); values.push(themeSkin === "flat" ? "clarity" : "paper_edge");
       }
-      if (body.colorScheme !== undefined) { setClauses.push("color_scheme = ?"); values.push(body.colorScheme); }
+      if (body.colorScheme !== undefined) {
+        const colorScheme = body.colorScheme as string;
+        if (colorScheme !== "light" && colorScheme !== "dark") {
+          res.status(400).json({ message: "colorScheme 仅支持 light / dark" });
+          return;
+        }
+        setClauses.push("color_scheme = ?"); values.push(colorScheme);
+      }
 
       let nextStyle = prevStyle;
       let nextScheme = prevScheme;

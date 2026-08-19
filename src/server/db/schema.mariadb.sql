@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS teacher_permissions (
     updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (grade_id) REFERENCES grades(id) ON DELETE SET NULL,
-    UNIQUE KEY uk_teacher_grade (teacher_id, grade_id)
+    UNIQUE KEY uk_teacher_multidim (teacher_id, grade_id, subject, class_id, block_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE INDEX IF NOT EXISTS idx_tp_teacher ON teacher_permissions(teacher_id);

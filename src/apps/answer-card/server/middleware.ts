@@ -241,16 +241,18 @@ export async function canGradeBlock(
   );
   if (assigned) return true;
   // v37: 细粒度权限授予 —— 作为追加放行路径（绝不引入新拒绝，确保既有部署零回归）。
-  // 匹配规则：can_grade=1 且 (block_id 为空或匹配) 且 (subject 为空或匹配考试学科) 且 (class_id 为空或匹配考试班级)。
+  // 匹配规则：can_grade=1 且 (grade_id 为空或匹配考试年级) 且 (block_id 为空或匹配) 
+  // 且 (subject 为空或匹配考试学科) 且 (class_id 为空或匹配考试班级)。
   if (await hasTable(db, "teacher_permissions")) {
     const granted = await db.get(
       `SELECT 1 FROM teacher_permissions
        WHERE teacher_id = ? AND can_grade = 1
+         AND (grade_id IS NULL OR grade_id = (SELECT grade_id FROM exams WHERE id = ?))
          AND (block_id IS NULL OR block_id = ?)
          AND (subject IS NULL OR subject = (SELECT subject FROM exams WHERE id = ?))
          AND (class_id IS NULL OR class_id = (SELECT class_id FROM exams WHERE id = ?))
        LIMIT 1`,
-      teacherId, blockId, examId, examId
+      teacherId, examId, blockId, examId, examId
     );
     if (granted) return true;
   }
@@ -286,14 +288,16 @@ export async function getPermittedBlocks(
   const blocks = new Set(assignedRows.map((r) => r.block_id));
 
   // 2) 细粒度权限授予（block_id 非空的行给出具体题块；NULL 表示该维度不限 → 全部）
+  // 维度匹配含 grade_id：grade 为空（不限）或等于考试年级，防止跨年级越权。
   let grantsAll = false;
   if (await hasTable(db, "teacher_permissions")) {
     const permRows = await db.all<{ block_id: string | null }>(
       `SELECT DISTINCT block_id FROM teacher_permissions
        WHERE teacher_id = ? AND can_grade = 1
+         AND (grade_id IS NULL OR grade_id = (SELECT grade_id FROM exams WHERE id = ?))
          AND (subject IS NULL OR subject = (SELECT subject FROM exams WHERE id = ?))
          AND (class_id IS NULL OR class_id = (SELECT class_id FROM exams WHERE id = ?))`,
-      teacherId, examId, examId
+      teacherId, examId, examId, examId
     );
     for (const r of permRows) {
       if (r.block_id == null) grantsAll = true;
@@ -308,9 +312,14 @@ export async function getPermittedBlocks(
       "SELECT 1 FROM review_assignments WHERE exam_id = ? LIMIT 1",
       examId
     );
+    // 兼容判断须匹配本考试维度（含 grade_id），避免"他考试有权限 → 本考试被误锁"
     const anyPermission = await db.get(
-      "SELECT 1 FROM teacher_permissions WHERE teacher_id = ? AND can_grade = 1 LIMIT 1",
-      teacherId
+      `SELECT 1 FROM teacher_permissions WHERE teacher_id = ? AND can_grade = 1
+         AND (grade_id IS NULL OR grade_id = (SELECT grade_id FROM exams WHERE id = ?))
+         AND (subject IS NULL OR subject = (SELECT subject FROM exams WHERE id = ?))
+         AND (class_id IS NULL OR class_id = (SELECT class_id FROM exams WHERE id = ?))
+       LIMIT 1`,
+      teacherId, examId, examId, examId
     );
     if (!anyAssignment && !anyPermission) return null;
   }
@@ -321,7 +330,7 @@ export async function getPermittedBlocks(
  * 教师权限矩阵校验（#24 分配绑定）。
  * 判断某教师在授权矩阵内是否被允许对该考试执行 can_grade / can_assign 操作。
  * 兼容策略：teacher_permissions 表不存在，或该教师无任何矩阵记录 → 放行（旧部署）。
- * 维度匹配：subject 为空或等于考试学科；class_id 为空或等于考试班级。
+ * 维度匹配：grade_id 为空或等于考试年级；subject 为空或等于考试学科；class_id 为空或等于考试班级。
  */
 export async function isTeacherPermittedForExam(
   examId: number,
@@ -330,24 +339,26 @@ export async function isTeacherPermittedForExam(
 ): Promise<boolean> {
   const db = getMysqlDb();
   if (!(await hasTable(db, "teacher_permissions"))) return true;
-  const exam = await db.get<{ subject: string | null; class_id: number | null }>(
-    "SELECT subject, class_id FROM exams WHERE id = ?",
+  const exam = await db.get<{ grade_id: number | null; subject: string | null; class_id: number | null }>(
+    "SELECT grade_id, subject, class_id FROM exams WHERE id = ?",
     examId
   );
   if (!exam) return false;
   const rows = await db.all<{
+    grade_id: number | null;
     subject: string | null;
     class_id: number | null;
     can_grade: number;
     can_assign: number;
   }>(
-    "SELECT subject, class_id, can_grade, can_assign FROM teacher_permissions WHERE teacher_id = ?",
+    "SELECT grade_id, subject, class_id, can_grade, can_assign FROM teacher_permissions WHERE teacher_id = ?",
     teacherId
   );
   if (rows.length === 0) return true; // 未配置矩阵 → 兼容放行
   const flag = perm === "can_grade" ? "can_grade" : "can_assign";
   return rows.some((r) =>
     (r as Record<string, unknown>)[flag] === 1 &&
+    (r.grade_id == null || r.grade_id === exam.grade_id) &&
     (r.subject == null || r.subject === exam.subject) &&
     (r.class_id == null || r.class_id === exam.class_id)
   );

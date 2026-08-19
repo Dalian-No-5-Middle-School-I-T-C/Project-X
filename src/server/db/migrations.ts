@@ -997,6 +997,53 @@ const MIGRATIONS: Migration[] = [
         `);
       }
     }
+  },
+  // v40: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id）。
+  // SQLite 无法 ALTER 表级 UNIQUE 约束，采用"去重 + 重建表"：
+  //   - 旧 UNIQUE(teacher_id, grade_id) 在 NULL grade 下允许多行，先按五维组合保留最小 id 去重；
+  //   - 重建表时把 UNIQUE 扩展为五维，解除同教师多维度授权（多班级/多题块）的阻塞。
+  {
+    version: 40,
+    name: "teacher-permissions-multidim-unique",
+    up(db) {
+      if (!hasTable(db, "teacher_permissions")) return;
+      // 1) 去重：同五维组合仅保留最小 id（旧约束下 NULL 维度行可重复）
+      db.exec(`
+        DELETE FROM teacher_permissions
+        WHERE id NOT IN (
+          SELECT MIN(id) FROM teacher_permissions
+          GROUP BY teacher_id, COALESCE(grade_id, 0), COALESCE(subject, ''), COALESCE(class_id, 0), COALESCE(block_id, '')
+        )
+      `);
+      // 2) 重建表（含 v37 全部新列），UNIQUE 升级为五维
+      db.exec(`
+        CREATE TABLE teacher_permissions_v40 (
+          id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+          teacher_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          grade_id           INTEGER REFERENCES grades(id),
+          can_view_scores    INTEGER DEFAULT 1,
+          can_view_charts    INTEGER DEFAULT 1,
+          can_view_students  INTEGER DEFAULT 1,
+          subject            TEXT,
+          class_id           INTEGER,
+          block_id           TEXT,
+          can_grade          INTEGER DEFAULT 1,
+          can_assign         INTEGER DEFAULT 1,
+          created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(teacher_id, grade_id, subject, class_id, block_id)
+        );
+        INSERT INTO teacher_permissions_v40
+          (id, teacher_id, grade_id, can_view_scores, can_view_charts, can_view_students,
+           subject, class_id, block_id, can_grade, can_assign, created_at, updated_at)
+        SELECT id, teacher_id, grade_id, can_view_scores, can_view_charts, can_view_students,
+               subject, class_id, block_id, can_grade, can_assign, created_at, updated_at
+        FROM teacher_permissions;
+        DROP TABLE teacher_permissions;
+        ALTER TABLE teacher_permissions_v40 RENAME TO teacher_permissions;
+        CREATE INDEX IF NOT EXISTS idx_tp_teacher ON teacher_permissions(teacher_id);
+      `);
+    }
   }
 ];
 

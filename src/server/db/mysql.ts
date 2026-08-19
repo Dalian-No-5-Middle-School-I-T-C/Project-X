@@ -839,6 +839,24 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       ]
     },
+    {
+      // v40: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id），
+      // 解除旧 UNIQUE(teacher_id, grade_id) 对同教师多维度授权（多班级/多题块）的阻塞。
+      // 先按五维组合去重（旧约束下 NULL grade 可存在多行），再换索引；DROP INDEX IF EXISTS 兼容 MariaDB/MySQL 8.0.19+。
+      version: 40,
+      name: "teacher-permissions-multidim-unique",
+      sqls: [
+        `DELETE t1 FROM teacher_permissions t1 INNER JOIN teacher_permissions t2
+           ON t1.teacher_id = t2.teacher_id
+          AND COALESCE(t1.grade_id, 0) = COALESCE(t2.grade_id, 0)
+          AND COALESCE(t1.subject, '') = COALESCE(t2.subject, '')
+          AND COALESCE(t1.class_id, 0) = COALESCE(t2.class_id, 0)
+          AND COALESCE(t1.block_id, '') = COALESCE(t2.block_id, '')
+          AND t1.id > t2.id`,
+        `ALTER TABLE teacher_permissions DROP INDEX IF EXISTS uk_teacher_grade`,
+        `ALTER TABLE teacher_permissions ADD UNIQUE KEY uk_teacher_multidim (teacher_id, grade_id, subject, class_id, block_id)`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

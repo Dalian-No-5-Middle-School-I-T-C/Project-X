@@ -31,10 +31,9 @@ async function upsertTeacherPermission(
     can_view_students: boolean;
     can_grade: boolean;
     can_assign: boolean;
-    updated_at: string;
   },
 ): Promise<void> {
-  const { teacher_id, grade_id, subject, class_id, block_id, updated_at } = params;
+  const { teacher_id, grade_id, subject, class_id, block_id } = params;
   const gradeClause = grade_id == null ? "grade_id IS NULL" : "grade_id = ?";
   const gradeVals = grade_id == null ? [] : [grade_id];
   const dims: Array<{ col: string; val: string | number | null }> = [
@@ -63,9 +62,9 @@ async function upsertTeacherPermission(
   if (existing) {
     await db.run(
       `UPDATE teacher_permissions
-       SET can_view_scores = ?, can_view_charts = ?, can_view_students = ?, can_grade = ?, can_assign = ?, updated_at = ?
+       SET can_view_scores = ?, can_view_charts = ?, can_view_students = ?, can_grade = ?, can_assign = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      ...flags, updated_at, existing.id,
+      ...flags, existing.id,
     );
     return;
   }
@@ -75,13 +74,13 @@ async function upsertTeacherPermission(
       `INSERT INTO teacher_permissions
          (teacher_id, grade_id, subject, class_id, block_id,
           can_view_scores, can_view_charts, can_view_students, can_grade, can_assign, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      teacher_id, grade_id, subject, class_id, block_id, ...flags, updated_at,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      teacher_id, grade_id, subject, class_id, block_id, ...flags,
     );
   } catch (err: any) {
-    // 撞旧 UNIQUE(teacher_id, grade_id)：同教师同年级已存在旧行且维度不同（NULL 维度行不冲突）
+    // 撞唯一约束：同教师同一维度组合已存在授权记录（含旧 UNIQUE(teacher_id, grade_id) 升级场景）
     if (err?.code === "ER_DUP_ENTRY" || String(err?.message ?? "").includes("UNIQUE constraint")) {
-      throw new Error("同教师同年级已存在授权记录；如需按科目/班级/题块细分，请先删除该教师的原记录再添加");
+      throw new Error("该教师在此维度组合下已存在授权记录；如需覆盖请直接修改原记录");
     }
     throw err;
   }
@@ -138,7 +137,6 @@ router.put("/", async (req, res) => {
       can_view_students: toFlag(body.can_view_students),
       can_grade: toFlag(body.can_grade),
       can_assign: toFlag(body.can_assign),
-      updated_at: new Date().toISOString(),
     });
     res.json({ ok: true });
   } catch (error) {
