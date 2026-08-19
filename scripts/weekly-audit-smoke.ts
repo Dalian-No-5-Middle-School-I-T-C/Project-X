@@ -164,12 +164,14 @@ async function main(): Promise<void> {
 
   // ── 发布时刻门槛 ──
   section("发布时刻（每周六 08:00）");
-  // 注意：demo 数据自带「演示-第25周考试包」（source='week' 且 grade_id 为 NULL），
+  // 注意：demo 数据自带「演示-第25周考试包」（source='week' 且 grade_id 为 NULL，exam_mode=formal），
   // 周组计数一律按 start_date 定位；上周数据已完整，周五检查时会被补发（合法回填）。
+  // published = 本轮 ensure 过的周（含空周）；created = 本轮新建组的周。
   let result = await svc.publishDueWeeks(fridayBefore);
-  ok(result.published.length === 1 && result.published[0] === prevWeek.label, `周五 23:00：本周未到点不发布，仅补发上周（${result.published.join("、")}）`);
+  ok(!result.published.includes(week.label), "周五 23:00：本周未到点不发布");
+  ok(result.created.length === 1 && result.created[0] === prevWeek.label, `周五 23:00：仅补发上周（created: ${result.created.join("、")}）`);
   result = await svc.publishDueWeeks(saturday8);
-  ok(result.published.length === 1 && result.published[0] === prevWeek.label, "周六 08:00：本周化学未完成 → 顺延，仅上周已发布");
+  ok(!result.published.includes(week.label) && result.created.length === 0, "周六 08:00：本周化学未完成 → 顺延，无新发布");
   const currentWeekGroupCount = (db.prepare("SELECT COUNT(*) AS c FROM exam_groups WHERE source = 'week' AND start_date = ? AND end_date = ?").get(week.weekStart, week.weekEnd) as { c: number }).c;
   ok(currentWeekGroupCount === 0, `本周尚未建组（0 个，实际 ${currentWeekGroupCount}）`);
 
@@ -196,7 +198,7 @@ async function main(): Promise<void> {
   ok(check.complete === true, "化学出分后本周完成");
   result = await svc.publishDueWeeks(saturday8);
   const afterCount = (db.prepare("SELECT COUNT(*) AS c FROM exam_groups WHERE source = 'week' AND start_date IN (?, ?)").get(week.weekStart, prevWeek.weekStart) as { c: number }).c;
-  ok(result.published.length === 2, `发布本周 + 上周（${result.published.join("、")}）`);
+  ok(result.created.length === 1 && result.created[0] === week.label, `发布本周（created: ${result.created.join("、")}）`);
   ok(afterCount === 2, `本周+上周建组 2 个（实际 ${afterCount}，demo 自带周组另计）`);
 
   // ── 组落库检查 ──
@@ -232,7 +234,7 @@ async function main(): Promise<void> {
   // ── 幂等 ──
   section("幂等");
   const res2 = await svc.publishDueWeeks(new Date(saturday8.getTime() + 7200_000));
-  ok(res2.published.length === 2, "重复发布为幂等 no-op（不新建组，仅重复 ensure）");
+  ok(res2.created.length === 0, "重复发布为幂等 no-op（不新建组，仅重复 ensure）");
   const memberCount2 = (db.prepare("SELECT COUNT(*) AS c FROM exam_group_members WHERE group_id = ?").get(groupRow.id) as { c: number }).c;
   ok(memberCount2 === 4, `成员不变（${memberCount2}）`);
   const weekGroupCount = (db.prepare("SELECT COUNT(*) AS c FROM exam_groups WHERE source = 'week' AND start_date = ?").get(week.weekStart) as { c: number }).c;
@@ -251,9 +253,20 @@ async function main(): Promise<void> {
   section("跨周顺延");
   insertQuizExam("晨测-周六补测", "生物", addDaysLocal(week.weekStart, 5), "closed", []);
   const resDefer = await svc.publishDueWeeks(mondayAfter);
-  ok(resDefer.published.length === 0, "下周一复核：本周又出现未完成 → 顺延不发布");
+  ok(!resDefer.published.includes(week.label) && resDefer.created.length === 0, "下周一复核：本周又出现未完成 → 顺延不发布");
   const memberCount4 = (db.prepare("SELECT COUNT(*) AS c FROM exam_group_members WHERE group_id = ?").get(groupRow.id) as { c: number }).c;
   ok(memberCount4 === 5, "顺延期组不变（成员仍 5，实际不变才正确）");
+
+  // ── 历史周回补：晚于一周才出分的周（近 5 周窗口内）仍可补发 ──
+  section("历史周回补");
+  const backfillWeek = getWeekWindow(-2);
+  insertQuizExam("晨测-前周地理", "地理", backfillWeek.weekStart, "closed", BASE_TOTALS.map((t) => t - 20));
+  const resBackfill = await svc.publishDueWeeks(new Date(saturday8.getTime() + 3600_000));
+  ok(resBackfill.created.includes(backfillWeek.label), `晚出分的历史周回补发布（created: ${resBackfill.created.join("、")}）`);
+  const backfillGroupRow = db.prepare("SELECT id FROM exam_groups WHERE source = 'week' AND start_date = ? AND end_date = ?").get(backfillWeek.weekStart, backfillWeek.weekEnd) as { id: number } | undefined;
+  ok(backfillGroupRow != null, "回补周建组存在");
+  const resBackfillSummary = await svc.getSummary(backfillWeek.weekStart, undefined, new Date(saturday8.getTime() + 3600_000));
+  ok(resBackfillSummary.active != null && resBackfillSummary.active!.examCount === 1, `回补周可读取（场次 1，实际 ${resBackfillSummary.active?.examCount}）`);
 
   // ── 历史空周 ──
   section("历史空周");
