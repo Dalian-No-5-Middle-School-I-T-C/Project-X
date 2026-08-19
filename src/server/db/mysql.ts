@@ -716,6 +716,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `UPDATE answer_block_crops SET review_round = 0 WHERE score_breakdown IS NULL OR score_breakdown = '' OR score_breakdown = '[]'`,
       ]
     },
+    {
+      version: 37,
+      name: "question-scores-exam-question-type-index",
+      sqls: [
+        `CREATE INDEX IF NOT EXISTS idx_question_scores_exam_question_type ON question_scores(exam_id, question_number, score_type)`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

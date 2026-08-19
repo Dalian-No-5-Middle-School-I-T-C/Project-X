@@ -21,6 +21,16 @@ import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { gradeSessionStudentResults, type CombinedStudentResult } from "../../../../shared/grading";
 
+// persistScannerResultToMainDb 的串行队列（模块级，跨请求生效）：
+// better-sqlite3 是单连接,并发事务会在 BEGIN/COMMIT 之间互相穿插（见 SqliteAdapter.transaction 注释），
+// 因此所有「扫描 → 主库」持久化必须串行执行；MariaDB 下也能避免瞬时打满连接池。
+let persistQueue: Promise<void> = Promise.resolve();
+function enqueuePersist(task: () => Promise<void>): Promise<void> {
+  const run = persistQueue.then(() => task());
+  persistQueue = run.then(() => undefined, () => undefined);
+  return run;
+}
+
 /**
  * 创建扫描路由。
  * @param twainEnabled 是否启用 TWAIN 原生扫描（依赖本机 scanner-bridge.exe）。
@@ -65,30 +75,35 @@ export function createScannerRouter(twainEnabled = true): Router {
     const exams = await db.all("SELECT id FROM exams WHERE card_id = ? AND status != 'closed'", cardId) as Array<{ id: number }>;
     if (exams.length === 0) return;
 
-    for (const exam of exams) {
-      const obj = roundScore(result.objectiveScore);
-      const subj = roundScore(result.subjectiveScore);
-      const total = roundScore(result.totalScore);
-      await db.run(scoreUpsertSQL, exam.id, user.id, obj, subj, total, gradedAt);
+    // 事务化：一个学生跨所有关联考试的写构成一个原子单元，
+    // 避免中途崩溃留下 student_scores 已写、question_scores 缺行的脏数据污染后续分析
+    // （难度/区分度/逐题统计都依赖两表一致）。
+    await db.transaction(async (tx) => {
+      for (const exam of exams) {
+        const obj = roundScore(result.objectiveScore);
+        const subj = roundScore(result.subjectiveScore);
+        const total = roundScore(result.totalScore);
+        await tx.run(scoreUpsertSQL, exam.id, user.id, obj, subj, total, gradedAt);
 
-      for (const q of result.objectiveQuestions) {
-        await db.run(
-          questionUpsertSQL,
-          exam.id, user.id, q.questionNumber, "", q.score, q.maxScore, "objective"
+        for (const q of result.objectiveQuestions) {
+          await tx.run(
+            questionUpsertSQL,
+            exam.id, user.id, q.questionNumber, "", q.score, q.maxScore, "objective"
+          );
+        }
+        for (const sq of result.subjectiveQuestions) {
+          await tx.run(
+            questionUpsertSQL,
+            exam.id, user.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective"
+          );
+        }
+
+        await tx.run(
+          "UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'draft'",
+          exam.id
         );
       }
-      for (const sq of result.subjectiveQuestions) {
-        await db.run(
-          questionUpsertSQL,
-          exam.id, user.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective"
-        );
-      }
-
-      await db.run(
-        "UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'draft'",
-        exam.id
-      );
-    }
+    });
   }
 
   // Progress event emitters by sessionId (for WebSocket integration)
@@ -524,8 +539,8 @@ export function createScannerRouter(twainEnabled = true): Router {
             pageCount: combined.pageCount
           });
 
-          // Also persist to projectx.db for linked exams
-          persistScannerResultToMainDb(session.card_id, combined).catch((err) => {
+          // Also persist to projectx.db for linked exams (串行入队，事务原子写)
+          enqueuePersist(() => persistScannerResultToMainDb(session.card_id, combined)).catch((err) => {
             console.error(`[Scanner] Main DB persist failed for ${combined.studentId}:`, err);
           });
         } catch (err) {

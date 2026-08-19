@@ -871,6 +871,18 @@ const MIGRATIONS: Migration[] = [
         "UPDATE answer_block_crops SET review_round = 0 WHERE score_breakdown IS NULL OR score_breakdown = '' OR score_breakdown = '[]'"
       );
     }
+  },
+  // v37: 逐题分析/下钻复合索引（computeQuestionAnalysis / getQuestionStudentScores / getOptionAnalysis
+  // 均按 exam_id (+ question_number) (+ score_type) 过滤）；CREATE INDEX IF NOT EXISTS 幂等。
+  {
+    version: 37,
+    name: "question-scores-exam-question-type-index",
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_question_scores_exam_question_type
+          ON question_scores(exam_id, question_number, score_type);
+      `);
+    }
   }
 ];
 

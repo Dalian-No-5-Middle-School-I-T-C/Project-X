@@ -49,33 +49,35 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
       ? members
       : members.filter((m) => memberMatchesTrack(m.track_type, track));
 
-    // Calculate full score and std for each subject
+    // N+1 收敛：满分一次批量取；每科 std + 及格/优秀 合并为 1 条聚合（原各科 3 条 → 1 条）
+    const memberExamIds = trackMembers.map((m) => m.exam_id);
+    let fullByExam = new Map<number, number>();
+    if (memberExamIds.length > 0) {
+      const fullRows = await db.all(
+        `SELECT exam_id, SUM(max_score) AS total FROM (
+           SELECT exam_id, question_number, score_type, MAX(max_score) AS max_score
+           FROM question_scores WHERE exam_id IN (${memberExamIds.map(() => "?").join(",")})
+           GROUP BY exam_id, question_number, score_type
+         ) GROUP BY exam_id`,
+        ...memberExamIds
+      ) as Array<{ exam_id: number; total: number | null }>;
+      fullByExam = new Map(fullRows.map((r) => [Number(r.exam_id), r.total ?? 100]));
+    }
+
     const subjects = [];
     for (const m of trackMembers) {
-      const fullScoreRow = await db.get(`
-        SELECT SUM(max_score) as total FROM (
-          SELECT DISTINCT question_number, score_type, max_score FROM question_scores WHERE exam_id = ?
-        )
-      `, m.exam_id) as { total: number } | undefined;
-      const fullScore = fullScoreRow?.total ?? 100;
-
-      const stdRow = await db.get(`
-        SELECT ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as std
-        FROM student_scores ss
-        JOIN users u ON u.id = ss.student_id
-        WHERE ss.exam_id = ? ${trackStudentClause}
-      `, m.avg_score, m.avg_score, m.exam_id, ...(track !== "all" ? [track] : [])) as { std: number } | undefined;
-
+      const fullScore = fullByExam.get(m.exam_id) ?? 100;
       const passLine = fullScore * 0.6;
       const excellentLine = fullScore * 0.9;
-      const passRow = await db.get(`
+      const statRow = await db.get(`
         SELECT
+          ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as std,
           SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as pass_count,
           SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellent_count
         FROM student_scores ss
         JOIN users u ON u.id = ss.student_id
         WHERE ss.exam_id = ? ${trackStudentClause}
-      `, passLine, excellentLine, m.exam_id, ...(track !== "all" ? [track] : [])) as { pass_count: number; excellent_count: number } | undefined;
+      `, m.avg_score, m.avg_score, passLine, excellentLine, m.exam_id, ...(track !== "all" ? [track] : [])) as { std: number | null; pass_count: number | null; excellent_count: number | null } | undefined;
 
       subjects.push({
         examId: m.exam_id,
@@ -85,9 +87,9 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
         avgScore: m.avg_score || 0,
         maxScore: m.max_score || 0,
         minScore: m.min_score || 0,
-        stdDev: stdRow?.std ?? 0,
-        passRate: m.graded_count > 0 ? Math.round((passRow?.pass_count || 0) / m.graded_count * 100) : 0,
-        excellentRate: m.graded_count > 0 ? Math.round((passRow?.excellent_count || 0) / m.graded_count * 100) : 0,
+        stdDev: statRow?.std ?? 0,
+        passRate: m.graded_count > 0 ? Math.round((statRow?.pass_count || 0) / m.graded_count * 100) : 0,
+        excellentRate: m.graded_count > 0 ? Math.round((statRow?.excellent_count || 0) / m.graded_count * 100) : 0,
         fullScore,
         hasAssignedScore: !!(m.assigned_formula && m.assigned_formula !== ""),
         trackType: m.track_type || "common"
