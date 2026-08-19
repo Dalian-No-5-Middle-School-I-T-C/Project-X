@@ -60,7 +60,9 @@ export function WeeklyAuditPanel({ onOpenAnalysisGroup }: Props) {
         `/api/weekly-audit/summary${query ? `?${query}` : ""}`,
       );
       setData(res);
-      setSelectedWeek(res.active?.weekStart ?? res.weeks[0]?.weekStart ?? "");
+      // 显式请求了某周（历史周）而该周无已发布报告（active=null）时，保留用户所选周，
+      // 让 selectedWeekOpt 命中该周选项以正确展示「顺延/无晨测」状态，避免跳回本周。
+      setSelectedWeek(week ?? res.active?.weekStart ?? res.weeks[0]?.weekStart ?? "");
       setSelectedGradeId(res.active?.gradeId ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

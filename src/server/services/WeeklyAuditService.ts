@@ -65,8 +65,16 @@ function isoWeekNumber(d: Date): number {
   return Math.ceil(((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
 }
 
+/** ISO 周所属年份：所在周的周四所在的公历年（2025-12-29 属 ISO 2026 年第 1 周，年份应为 2026） */
+function isoWeekYear(d: Date): number {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+  return date.getUTCFullYear();
+}
+
 /** 某日期所在周的周一~周日窗口（服务器本地时区），offset 为周偏移（0=该日期所在周） */
-function weekWindowFor(ref: Date, offset = 0): WeekWindow {
+export function weekWindowFor(ref: Date, offset = 0): WeekWindow {
   const day = (ref.getDay() + 6) % 7; // 周一=0
   const monday = new Date(ref.getFullYear(), ref.getMonth(), ref.getDate() - day + offset * 7);
   const sunday = new Date(monday);
@@ -74,11 +82,12 @@ function weekWindowFor(ref: Date, offset = 0): WeekWindow {
   const weekStart = fmt(monday);
   const weekEnd = fmt(sunday);
   const weekNumber = isoWeekNumber(monday);
+  const weekYear = isoWeekYear(monday); // 跨年周取 ISO 周所属年份，避免如 2025-12-29 被标成 2025 年第 1 周
   return {
     weekStart, weekEnd,
-    label: `${monday.getFullYear()}年第${weekNumber}周`,
+    label: `${weekYear}年第${weekNumber}周`,
     rangeLabel: `${weekStart.slice(5)} ~ ${weekEnd.slice(5)}`,
-    year: monday.getFullYear(),
+    year: weekYear,
     weekNumber
   };
 }

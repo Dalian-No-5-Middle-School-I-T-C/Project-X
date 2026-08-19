@@ -79,7 +79,7 @@ async function main(): Promise<void> {
 
   const { initializeDatabase, ensureDefaultAdmin, getDatabase } = await import("../src/server/db/index");
   const { seedDemoData } = await import("../src/server/services/DemoDataService");
-  const { getWeekWindow, weekPublishAt, WeeklyAuditService } = await import("../src/server/services/WeeklyAuditService");
+  const { getWeekWindow, weekPublishAt, weekWindowFor, WeeklyAuditService } = await import("../src/server/services/WeeklyAuditService");
   const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
 
   initializeDatabase();
@@ -282,6 +282,14 @@ async function main(): Promise<void> {
   ok(cross.summary.studentCount === 16, `跨考参评 16（实际 ${cross.summary.studentCount}）`);
   const group = await repo.getExamGroup(resPub.grades[0]!.groupId);
   ok(group != null && group.gradeId === gradeId && group.source === "week", "getExamGroup 返回 gradeId 与 source");
+
+  // ── 跨年 ISO 周年份（回归：年标注必须取 ISO 周所属年份，而非周一所在公历年）──
+  section("跨年 ISO 周年份");
+  const isoLabel = (dateStr: string): string => weekWindowFor(new Date(`${dateStr}T00:00:00`)).label;
+  ok(isoLabel("2025-12-29") === "2026年第1周", `2025-12-29（ISO 2026-W01）→ ${isoLabel("2025-12-29")}`);
+  ok(isoLabel("2026-01-01") === "2026年第1周", `2026-01-01（同周）→ ${isoLabel("2026-01-01")}`);
+  ok(isoLabel("2025-12-28") === "2025年第52周", `2025-12-28（ISO 2025-W52）→ ${isoLabel("2025-12-28")}`);
+  ok(isoLabel("2027-01-01") === "2026年第53周", `2027-01-01（ISO 2026-W53）→ ${isoLabel("2027-01-01")}`);
 
   // ── 真实时钟（当前应处于周中） ──
   section("真实时钟 getSummary（本周未到周六）");
