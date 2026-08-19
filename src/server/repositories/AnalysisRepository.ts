@@ -111,11 +111,11 @@ export class AnalysisRepository {
     return row ? await this.hydrateExamGroup(row) : null;
   }
 
-  async createExamGroup(params: { name: string; examIds: number[]; source?: string; startDate?: string | null; endDate?: string | null; createdBy?: number | null }): Promise<CrossExamGroup> {
+  async createExamGroup(params: { name: string; examIds: number[]; source?: string; startDate?: string | null; endDate?: string | null; gradeId?: number | null; createdBy?: number | null }): Promise<CrossExamGroup> {
     const examIds = normalizeExamIds(params.examIds);
     if (examIds.length === 0) throw new Error("考试组至少需要一场考试");
     const groupId = await this.db.transaction(async (tx) => {
-      const info = await tx.run("INSERT INTO exam_groups (name, source, start_date, end_date, created_by) VALUES (?, ?, ?, ?, ?)", params.name.trim(), params.source ?? "manual", params.startDate ?? null, params.endDate ?? null, params.createdBy ?? null);
+      const info = await tx.run("INSERT INTO exam_groups (name, source, start_date, end_date, grade_id, created_by) VALUES (?, ?, ?, ?, ?, ?)", params.name.trim(), params.source ?? "manual", params.startDate ?? null, params.endDate ?? null, params.gradeId ?? null, params.createdBy ?? null);
       const gid = info.lastInsertRowid;
       for (let i = 0; i < examIds.length; i++) {
         await tx.run("INSERT INTO exam_group_members (group_id, exam_id, sort_order) VALUES (?, ?, ?)", gid, examIds[i], i);
@@ -1149,7 +1149,7 @@ export class AnalysisRepository {
   private async hydrateExamGroup(row: any): Promise<CrossExamGroup> {
     const items = await this.db.all("SELECT exam_id FROM exam_group_members WHERE group_id = ? ORDER BY sort_order ASC, exam_id ASC", row.id) as Array<{ exam_id: number }>;
     const examIds = items.map(i => i.exam_id);
-    return { id: row.id, name: row.name, source: row.source, startDate: row.start_date, endDate: row.end_date, examIds, exams: await this.getExamFilterItemsByIds(examIds), createdAt: row.created_at, updatedAt: row.updated_at };
+    return { id: row.id, name: row.name, source: row.source, startDate: row.start_date, endDate: row.end_date, gradeId: row.grade_id ?? null, examIds, exams: await this.getExamFilterItemsByIds(examIds), createdAt: row.created_at, updatedAt: row.updated_at };
   }
 
   private emptyCrossExamTotal(mode: CrossExamTotalMode, group: CrossExamGroup | null): CrossExamTotalResponse {

@@ -63,6 +63,8 @@ import reviewPoolRoutes from "../../../server/routes/review-pool";
 import systemSettingsRoutes from "../../../server/routes/system-settings";
 import { startLlmClientSidecar, shutdownLlmClient } from "./llm-launcher";
 import dashboardRoutes from "../../../server/routes/dashboard";
+import weeklyAuditRoutes from "../../../server/routes/weekly-audit";
+import { scheduleWeeklyAuditRefresh } from "../../../server/services/WeeklyAuditService";
 import adminPermissionsRoutes from "../../../server/routes/admin-permissions";
 import apiKeysRoutes from "../../../server/routes/api-keys";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
@@ -581,6 +583,8 @@ export async function createApp(): Promise<express.Express> {
   })();
   const cleanupTimer = scheduleCleanup(24, cleanupRetainDays);
   cleanupTimer.unref();
+  // 每周考试审计：每日刷新当前周与上周的晨测组（懒加载 ensure 为主，定时兜底成员漂移）
+  scheduleWeeklyAuditRefresh();
   await ensureDataDirs();
   console.log("[Server] 数据库初始化完成");
 
@@ -880,6 +884,7 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/review-pool", analysisGate, reviewPoolRoutes);
   app.use("/api/system-settings", systemSettingsRoutes);
   app.use("/api/dashboard", dashboardRoutes);
+  app.use("/api/weekly-audit", weeklyAuditRoutes);
   app.use(paperRoutes());
 
   const cardRepo = new CardRepository();

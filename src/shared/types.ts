@@ -792,6 +792,8 @@ export type ExamRecord = {
   end_time: string | null;
   status: string;
   assigned_formula: string | null;
+  /** 考试日期：答题卡 exam_date，缺省回退到创建日期（YYYY-MM-DD，日历视图/考试选择用） */
+  exam_date?: string | null;
   /** 考试模式（#178），缺省视为 formal */
   exam_mode?: ExamMode;
   created_at: string;
@@ -977,6 +979,8 @@ export interface CrossExamGroup {
   source: "cross-manual" | "week";
   startDate: string | null;
   endDate: string | null;
+  /** 关联年级（周晨测包按年级分组时写入） */
+  gradeId: number | null;
   examIds: number[];
   exams: ExamFilterItem[];
   createdAt: string;
@@ -1054,6 +1058,106 @@ export interface CrossExamTotalResponse {
     minTotalScore: number;
     fullAttendanceCount: number;
   };
+}
+
+// ============================================================
+// 每周考试审计（首页板块）
+// ============================================================
+
+/** 每周考试审计 —— 周切换选项 */
+export interface WeeklyAuditWeekOption {
+  /** 周一日期 YYYY-MM-DD */
+  weekStart: string;
+  /** 周日日期 YYYY-MM-DD */
+  weekEnd: string;
+  /** 如「2026年第34周」 */
+  label: string;
+  /** 如「08-17 ~ 08-23」 */
+  rangeLabel: string;
+  /** 报告是否已发布（已过发布时刻且本周考试全部完成） */
+  published: boolean;
+  /** 发布时刻（该周周六 08:00，本地时间 ISO 字符串） */
+  publishAt: string;
+  /** 发布时刻文案，如「2026-08-22 08:00」 */
+  publishAtLabel: string;
+  /** 到点但尚未完成的考试名（发布顺延原因） */
+  pendingExamNames: string[];
+}
+
+/** 每周考试审计 —— 某周某年级的周晨测包 */
+export interface WeeklyAuditGradeInfo {
+  gradeId: number;
+  gradeName: string;
+  /** 自动创建的考试组 id（source='week'） */
+  groupId: number;
+  /** 组内晨测场次（有出分） */
+  examCount: number;
+}
+
+/** 每周考试审计 —— 薄弱题目/知识点 */
+export interface WeeklyAuditWeakPoint {
+  examId: number;
+  examName: string;
+  subject: string;
+  questionNumber: string;
+  /** 得分率（0-100） */
+  scoreRate: number;
+  knowledgePoint: string | null;
+}
+
+/** 每周考试审计 —— 班级摘要行 */
+export interface WeeklyAuditClassSummary {
+  classId: number | null;
+  className: string;
+  /** 参评人数 */
+  count: number;
+  /** 平均得分率（0-100） */
+  avgScoreRate: number;
+  /** 缺考人次 */
+  absentCount: number;
+}
+
+/** 每周考试审计 —— 单周单年级汇总 */
+export interface WeeklyAuditSummary {
+  weekStart: string;
+  weekEnd: string;
+  weekLabel: string;
+  gradeId: number | null;
+  gradeName: string | null;
+  groupId: number | null;
+  /** 晨测场次 */
+  examCount: number;
+  /** 参评人数（至少一场有成绩的学生数） */
+  participantCount: number;
+  /** 平均得分率（0-100） */
+  avgScoreRate: number;
+  /** 出勤人次 */
+  attendedCount: number;
+  /** 全勤人数 */
+  fullAttendanceCount: number;
+  /** 覆盖工作日数 */
+  coverageDays: number;
+  /** 统计基准工作日数（周一~周五 = 5） */
+  coverageTargetDays: number;
+  classSummaries: WeeklyAuditClassSummary[];
+  /** 得分率最低 Top 5 薄弱题 */
+  weakPoints: WeeklyAuditWeakPoint[];
+  /** 较上周变化（无上周数据时为 null） */
+  vsLastWeek: {
+    avgScoreRateChange: number | null;
+    participantChange: number | null;
+    examCountChange: number | null;
+  } | null;
+}
+
+/** GET /api/weekly-audit/summary 响应 */
+export interface WeeklyAuditResponse {
+  /** 近 5 周选项（本周 + 最近 4 周） */
+  weeks: WeeklyAuditWeekOption[];
+  /** 当前周的年级列表（按年级排序） */
+  grades: WeeklyAuditGradeInfo[];
+  /** 当前选中周 + 年级的汇总（空周为 null） */
+  active: WeeklyAuditSummary | null;
 }
 
 /** 导出列定义 */
