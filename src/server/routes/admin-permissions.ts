@@ -123,9 +123,21 @@ router.put("/", async (req, res) => {
       const s = typeof v === "string" ? v.trim() : "";
       return s === "" ? null : s;
     };
-    const toFlag = (v: unknown, def = true): boolean => (v === undefined ? def : !!v);
+    const toFlag = (v: unknown, def = true): boolean => {
+      if (v === undefined || v === null) return def;
+      return v === true || v === 1 || v === "1" || v === "true";
+    };
 
     const db = getMysqlDb();
+    // 校验目标教师存在且为启用状态的教师角色（外键兜底之外给出明确错误）
+    const teacherRow = await db.get(
+      "SELECT id FROM users WHERE id = ? AND role_id = 2 AND is_active = 1",
+      teacher_id
+    );
+    if (!teacherRow) {
+      res.status(400).json({ message: "教师不存在或未启用（需 role_id=2 的启用状态用户）" });
+      return;
+    }
     await upsertTeacherPermission(db, {
       teacher_id,
       grade_id: toIntOrNull(body.grade_id),

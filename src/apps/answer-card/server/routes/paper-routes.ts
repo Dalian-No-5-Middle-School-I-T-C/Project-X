@@ -493,6 +493,7 @@ export function paperRoutes(): Router {
         mode = "direct";
         const files = await getPaperFiles(cardId);
         if (files.length === 0) {
+          await finalizeAiRun(runId, { success: false, errorCode: "NO_FILES" });
           res.status(400).json({ error: "NO_FILES", message: "未找到原卷文件" });
           return;
         }
@@ -524,6 +525,7 @@ export function paperRoutes(): Router {
           );
           const ocrProviderId = ocrRow?.value;
           if (!ocrProviderId) {
+            await finalizeAiRun(runId, { success: false, errorCode: "OCR_NOT_CONFIGURED" });
             res.status(400).json({ error: "OCR_NOT_CONFIGURED", message: "管理员未配置 OCR 视觉模型" });
             return;
           }
@@ -545,6 +547,7 @@ export function paperRoutes(): Router {
           mode = "auto";
           const extracted = await autoExtractPaperText(cardId);
           if (!extracted.text || extracted.text.length < 10) {
+            await finalizeAiRun(runId, { success: false, errorCode: "TEXT_EXTRACTION_FAILED" });
             res.status(400).json({
               error: "TEXT_EXTRACTION_FAILED",
               message: "无法从原卷提取文字。扫描件 PDF/图片可尝试 OCR 增强模式"
