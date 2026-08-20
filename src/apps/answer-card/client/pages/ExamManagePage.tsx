@@ -1,7 +1,7 @@
 // ExamManagePage — 从 App.tsx 抽出的「考试管理」页面（B2：改由 useWorkspace 消费共享状态）。
 // P4/T5：整页迁移到 v2 视觉体系（Button / SegmentedControl / Table / ExamStatusBadge / EmptyState）。
 // 行为与迁移前完全一致：API 端点、请求体、路由与权限判断零改动。
-import { ClipboardList, Layers, Plus, Search, Trash2 } from "lucide-react";
+import { CalendarDays, CalendarX2, ClipboardList, Layers, Plus, Search, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { fetchJson } from "../auth/api";
 import { useWorkspace } from "../WorkspaceContext";
@@ -10,6 +10,7 @@ import { useIsMobile } from "../hooks/useMediaQuery";
 import {
   Badge,
   Button,
+  Calendar,
   Card,
   Checkbox,
   EmptyState,
@@ -32,7 +33,7 @@ import {
   type SegmentedItem,
 } from "../components/ui/v2";
 import { cn } from "../lib/utils";
-import { EXAM_MODE_LABELS, type ExamMode } from "../../../../shared/types";
+import { EXAM_MODE_LABELS, type ExamMode, type ExamRecord } from "../../../../shared/types";
 
 /** 答题卡下拉「未选择」哨兵：Radix Select 不接受空字符串 value */
 const CARD_PLACEHOLDER = "__no_card__";
@@ -50,6 +51,26 @@ const MANAGE_MODE_ITEMS: ReadonlyArray<SegmentedItem<"single" | "group">> = [
   { value: "single", label: "单科考试" },
   { value: "group", label: "大考", icon: <Layers /> },
 ];
+
+type ExamView = "list" | "calendar";
+
+const EXAM_VIEW_ITEMS: ReadonlyArray<SegmentedItem<ExamView>> = [
+  { value: "list", label: "列表" },
+  { value: "calendar", label: "日历", icon: <CalendarDays /> },
+];
+
+/** 本地时区今天 "YYYY-MM-DD"（与后端考试日期语义一致） */
+function todayDateString(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+/** "YYYY-MM-DD" → "2026 年 8 月 18 日 · 星期二" */
+function formatExamDateLabel(dateStr: string): string {
+  const [year, month, day] = dateStr.split("-").map(Number);
+  const weekday = ["日", "一", "二", "三", "四", "五", "六"][new Date(year, month - 1, day).getDay()];
+  return `${year} 年 ${month} 月 ${day} 日 · 星期${weekday}`;
+}
 
 /** 后端 exam.status → v2 考试状态枚举（未开始 / 阅卷中 / 已完成 / 异常） */
 function toExamStatus(status: string): ExamStatus {
@@ -108,6 +129,8 @@ export function ExamManagePage() {
   const isMobile = useIsMobile();
   const [examSearch, setExamSearch] = useState("");
   const [examStatusFilter, setExamStatusFilter] = useState<ExamStatusFilter>("all");
+  const [examView, setExamView] = useState<ExamView>("list");
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => todayDateString());
   const [creating, setCreating] = useState(false);
   const [newExamMode, setNewExamMode] = useState<ExamMode>("formal");
 
@@ -116,13 +139,46 @@ export function ExamManagePage() {
     return matchesSearch && (examStatusFilter === "all" || exam.status === examStatusFilter);
   }), [exams, examSearch, examStatusFilter]);
 
+  /** 日历角标：日期 → 当天考试数 */
+  const examDateMarks = useMemo(() => {
+    const marks = new Map<string, number>();
+    for (const exam of exams) {
+      if (!exam.exam_date) continue;
+      marks.set(exam.exam_date, (marks.get(exam.exam_date) ?? 0) + 1);
+    }
+    return marks;
+  }, [exams]);
+
+  const examsOnDate = useMemo(
+    () => exams.filter((exam) => exam.exam_date === selectedCalendarDate),
+    [exams, selectedCalendarDate],
+  );
+
   const cardSelectValue = newExamCardId || card?.id || CARD_PLACEHOLDER;
-  const allSelected = selectedExamIds.size === exams.length && exams.length > 0;
 
   function toggleExamSelected(examId: number) {
     const next = new Set(selectedExamIds);
     if (next.has(examId)) next.delete(examId); else next.add(examId);
     setSelectedExamIds(next);
+  }
+
+  /** 日历日期切换：清空勾选，避免此前日期的隐藏选中误入批量删除 */
+  function handleCalendarDateChange(date: string) {
+    setSelectedCalendarDate(date);
+    setSelectedExamIds(new Set());
+  }
+
+  /** 列表/日历视图切换：清空勾选，避免列表选中的考试在日历视图不可见却仍计入批量删除 */
+  function handleExamViewChange(next: ExamView) {
+    setExamView(next);
+    setSelectedExamIds(new Set());
+  }
+
+  /** 单科/大考模式切换：大考视图无勾选 UI，切回单科时不应复活此前的隐藏选中 */
+  function handleManageModeChange(next: "single" | "group") {
+    setExamManageMode(next);
+    setSelectedExamIds(new Set());
+    if (next === "group") loadExamGroups();
   }
 
   function handleCardPicked(selectedCardId: string) {
@@ -176,6 +232,105 @@ export function ExamManagePage() {
     }
   }
 
+  /** 考试列表渲染（移动端卡片 / 桌面表格），列表与日历视图共用 */
+  function renderExamList(items: ExamRecord[], allItems: ExamRecord[]) {
+    // 全选判定必须按考试 ID 逐一比对：仅比数量会让「两天各有相同场次」时的隐藏选中误判为全选
+    const allSelected = allItems.length > 0 && allItems.every((exam) => selectedExamIds.has(exam.id));
+    if (isMobile) {
+      return (
+        <div className="flex flex-col gap-3">
+          {items.map((exam) => (
+            <Card key={exam.id} className="p-4">
+              <div className="flex items-start gap-3">
+                <Checkbox
+                  className="mt-1"
+                  aria-label={`选择考试 ${exam.name}`}
+                  checked={selectedExamIds.has(exam.id)}
+                  onCheckedChange={() => toggleExamSelected(exam.id)}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate text-base font-medium text-foreground">{exam.name}</span>
+                    <Badge tone={exam.exam_mode === "formal" ? "info" : "neutral"} className="shrink-0">
+                      {EXAM_MODE_LABELS[exam.exam_mode === "formal" ? "formal" : "quiz"]}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {exam.subject || "—"} · 答题卡 {exam.card_id ?? "未关联"}
+                  </div>
+                </div>
+                <ExamStatusBadge status={toExamStatus(exam.status)} label={examStatusLabel(exam.status)} />
+              </div>
+              <div className="mt-3 flex flex-wrap justify-end gap-2">
+                <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
+                <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
+                <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      );
+    }
+    return (
+      <TableWrap className="rounded-lg border border-border-subtle bg-card">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-10">
+                <Checkbox
+                  aria-label="全选考试"
+                  checked={allSelected}
+                  onCheckedChange={(checked) => {
+                    if (checked === true) setSelectedExamIds(new Set(allItems.map((ex) => ex.id)));
+                    else setSelectedExamIds(new Set());
+                  }}
+                />
+              </TableHead>
+              <TableHead className="min-w-40">考试名称</TableHead>
+              <TableHead className="w-20">科目</TableHead>
+              <TableHead className="w-28">答题卡</TableHead>
+              <TableHead className="w-20">状态</TableHead>
+              <TableHead className="w-52 text-right">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {items.map((exam) => (
+              <TableRow key={exam.id}>
+                <TableCell>
+                  <Checkbox
+                    aria-label={`选择考试 ${exam.name}`}
+                    checked={selectedExamIds.has(exam.id)}
+                    onCheckedChange={() => toggleExamSelected(exam.id)}
+                  />
+                </TableCell>
+                <TableCell>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{exam.name}</span>
+                    <Badge tone={exam.exam_mode === "formal" ? "info" : "neutral"} className="shrink-0">
+                      {EXAM_MODE_LABELS[exam.exam_mode === "formal" ? "formal" : "quiz"]}
+                    </Badge>
+                  </div>
+                </TableCell>
+                <TableCell className="text-muted-foreground">{exam.subject || "—"}</TableCell>
+                <TableCell className="text-xs text-muted-foreground">{exam.card_id ?? "未关联"}</TableCell>
+                <TableCell>
+                  <ExamStatusBadge status={toExamStatus(exam.status)} label={examStatusLabel(exam.status)} />
+                </TableCell>
+                <TableCell className="text-right whitespace-nowrap">
+                  <div className="flex justify-end gap-1">
+                    <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
+                    <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
+                    <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </TableWrap>
+    );
+  }
+
   return (
     <div className={cn("min-h-full w-full overflow-auto bg-background", !active && "hidden")}>
       {selectedExamId ? (
@@ -208,9 +363,9 @@ export function ExamManagePage() {
               </Button>
             )}
             <span className="text-sm text-muted-foreground">
-              共 <span className="tabular-nums">{examManageMode === "single" ? visibleExams.length : examGroups.length}</span> {examManageMode === "single" ? "个考试" : "个大考"}
+              共 <span className="tabular-nums">{examManageMode === "single" ? (examView === "calendar" ? exams.length : visibleExams.length) : examGroups.length}</span> {examManageMode === "single" ? "个考试" : "个大考"}
             </span>
-            {examManageMode === "single" && (
+            {examManageMode === "single" && examView === "list" && (
               <div className="order-last flex w-full flex-wrap items-center gap-3 lg:order-none lg:ml-4 lg:w-auto">
                 <SegmentedControl
                   size="sm"
@@ -232,16 +387,23 @@ export function ExamManagePage() {
               </div>
             )}
             {/* Single/Group toggle — right side */}
-            <SegmentedControl
-              className="ml-auto"
-              aria-label="考试管理视图"
-              value={examManageMode}
-              onValueChange={(next) => {
-                setExamManageMode(next);
-                if (next === "group") loadExamGroups();
-              }}
-              items={MANAGE_MODE_ITEMS}
-            />
+            <div className="ml-auto flex flex-wrap items-center gap-3">
+              {examManageMode === "single" && (
+                <SegmentedControl
+                  size="sm"
+                  aria-label="单科考试视图"
+                  value={examView}
+                  onValueChange={handleExamViewChange}
+                  items={EXAM_VIEW_ITEMS}
+                />
+              )}
+              <SegmentedControl
+                aria-label="考试管理视图"
+                value={examManageMode}
+                onValueChange={handleManageModeChange}
+                items={MANAGE_MODE_ITEMS}
+              />
+            </div>
           </div>
 
           {examManageMode === "single" && showCreateExam && (
@@ -283,7 +445,37 @@ export function ExamManagePage() {
             </Card>
           )}
 
-          {examManageMode === "single" && exams.length === 0 && !showCreateExam && (
+          {/* 日历视图：按日期筛选当天考试 */}
+          {examManageMode === "single" && examView === "calendar" && (
+            <>
+              <Card className="mb-4 p-4">
+                <Calendar value={selectedCalendarDate} onValueChange={handleCalendarDateChange} markedDates={examDateMarks} />
+              </Card>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-semibold text-foreground">
+                  {formatExamDateLabel(selectedCalendarDate)}
+                  <span className="text-muted-foreground">
+                    ，共 <span className="tabular-nums">{examsOnDate.length}</span> 场考试
+                  </span>
+                </h3>
+                {selectedCalendarDate !== todayDateString() && (
+                  <Button variant="ghost" size="sm" onClick={() => handleCalendarDateChange(todayDateString())}>回到今天</Button>
+                )}
+              </div>
+              {examsOnDate.length === 0 ? (
+                <EmptyState
+                  size="sm"
+                  icon={<CalendarX2 />}
+                  title="当天暂无考试"
+                  description="点击日历中带角标的日期，查看当天对应考试。"
+                />
+              ) : (
+                renderExamList(examsOnDate, examsOnDate)
+              )}
+            </>
+          )}
+
+          {examManageMode === "single" && examView === "list" && exams.length === 0 && !showCreateExam && (
             <EmptyState
               icon={<ClipboardList />}
               title="暂无考试"
@@ -291,97 +483,8 @@ export function ExamManagePage() {
             />
           )}
 
-          {examManageMode === "single" && exams.length > 0 && (
-            isMobile ? (
-              <div className="flex flex-col gap-3">
-                {visibleExams.map((exam) => (
-                  <Card key={exam.id} className="p-4">
-                    <div className="flex items-start gap-3">
-                      <Checkbox
-                        className="mt-1"
-                        aria-label={`选择考试 ${exam.name}`}
-                        checked={selectedExamIds.has(exam.id)}
-                        onCheckedChange={() => toggleExamSelected(exam.id)}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-base font-medium text-foreground">{exam.name}</span>
-                          <Badge tone={exam.exam_mode === "formal" ? "info" : "neutral"} className="shrink-0">
-                            {EXAM_MODE_LABELS[exam.exam_mode === "formal" ? "formal" : "quiz"]}
-                          </Badge>
-                        </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          {exam.subject || "—"} · 答题卡 {exam.card_id ?? "未关联"}
-                        </div>
-                      </div>
-                      <ExamStatusBadge status={toExamStatus(exam.status)} label={examStatusLabel(exam.status)} />
-                    </div>
-                    <div className="mt-3 flex flex-wrap justify-end gap-2">
-                      <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
-                      <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
-                      <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
-                    </div>
-                  </Card>
-                ))}
-              </div>
-            ) : (
-              <TableWrap className="rounded-lg border border-border-subtle bg-card">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-10">
-                        <Checkbox
-                          aria-label="全选考试"
-                          checked={allSelected}
-                          onCheckedChange={(checked) => {
-                            if (checked === true) setSelectedExamIds(new Set(exams.map((ex) => ex.id)));
-                            else setSelectedExamIds(new Set());
-                          }}
-                        />
-                      </TableHead>
-                      <TableHead className="min-w-40">考试名称</TableHead>
-                      <TableHead className="w-20">科目</TableHead>
-                      <TableHead className="w-28">答题卡</TableHead>
-                      <TableHead className="w-20">状态</TableHead>
-                      <TableHead className="w-52 text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {visibleExams.map((exam) => (
-                      <TableRow key={exam.id}>
-                        <TableCell>
-                          <Checkbox
-                            aria-label={`选择考试 ${exam.name}`}
-                            checked={selectedExamIds.has(exam.id)}
-                            onCheckedChange={() => toggleExamSelected(exam.id)}
-                          />
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium">{exam.name}</span>
-                            <Badge tone={exam.exam_mode === "formal" ? "info" : "neutral"} className="shrink-0">
-                              {EXAM_MODE_LABELS[exam.exam_mode === "formal" ? "formal" : "quiz"]}
-                            </Badge>
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">{exam.subject || "—"}</TableCell>
-                        <TableCell className="text-xs text-muted-foreground">{exam.card_id ?? "未关联"}</TableCell>
-                        <TableCell>
-                          <ExamStatusBadge status={toExamStatus(exam.status)} label={examStatusLabel(exam.status)} />
-                        </TableCell>
-                        <TableCell className="text-right whitespace-nowrap">
-                          <div className="flex justify-end gap-1">
-                            <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
-                            <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
-                            <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </TableWrap>
-            )
+          {examManageMode === "single" && examView === "list" && exams.length > 0 && (
+            renderExamList(visibleExams, exams)
           )}
 
           {/* Exam group list */}

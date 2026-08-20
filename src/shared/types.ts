@@ -588,6 +588,10 @@ export type StudentTrendPoint = {
   classSize: number;
   rank: number;
   percentile: number;
+  /** 该场满分（建议 3 教师端端点补充，用于得分率） */
+  fullScore?: number;
+  /** 得分率 0-100（totalScore / fullScore） */
+  scoreRate?: number;
 };
 
 /** 学科薄弱分析结果 */
@@ -792,6 +796,8 @@ export type ExamRecord = {
   end_time: string | null;
   status: string;
   assigned_formula: string | null;
+  /** 考试日期：答题卡 exam_date，缺省回退到创建日期（YYYY-MM-DD，日历视图/考试选择用） */
+  exam_date?: string | null;
   /** 考试模式（#178），缺省视为 formal */
   exam_mode?: ExamMode;
   created_at: string;
@@ -852,6 +858,180 @@ export type AiAnalysisResponse = {
   report: AiAnalysisReport;
   toolCalls: AiAnalysisToolCall[];
 };
+
+// ============================================================
+// 成绩分析优化清单 第 2-4 批新增类型
+// ============================================================
+
+// ── 建议 4：临界生（踩线生）名单 ──────────────────────
+export type BorderlineLineKind = "pass" | "excellent" | "custom" | "percent";
+
+export interface BorderlineStudentItem {
+  rank: number;
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  classId: number | null;
+  totalScore: number;
+  /** 阈值线绝对值 */
+  line: number;
+  /** |totalScore - line| */
+  distance: number;
+  /** totalScore - line（负 = 线下） */
+  distanceAbove: number;
+  /** "below" | "above" */
+  side: "below" | "above";
+}
+
+export interface BorderlineResponse {
+  examId: number;
+  lineKind: BorderlineLineKind;
+  lineLabel: string;
+  line: number;
+  margin: number;
+  fullScore: number;
+  items: BorderlineStudentItem[];
+}
+
+// ── 建议 7：偏科预警 ─────────────────────────────────
+export interface SubjectZScore {
+  examId: number;
+  subject: string;
+  score: number;
+  gradeAvg: number;
+  gradeStd: number;
+  z: number;
+}
+
+export interface SubjectDeviationItem {
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  subjects: SubjectZScore[];
+  /** 最低 Z（越负越偏科） */
+  lowestZ: number;
+  /** 最低 Z 对应科目名 */
+  lowestSubject: string;
+  /** 是否触发预警（lowestZ < -threshold） */
+  flagged: boolean;
+}
+
+export interface SubjectDeviationResponse {
+  examIds: number[];
+  threshold: number;
+  items: SubjectDeviationItem[];
+}
+
+// ── 建议 10：班级知识点掌握对比 ──────────────────────
+export interface ClassKnowledgeStat {
+  classId: number;
+  className: string;
+}
+
+export interface ClassKnowledgePointStat {
+  knowledgePoint: string;
+  byClass: Array<{ classId: number; scoreRate: number | null; questionCount: number }>;
+}
+
+export interface ClassKnowledgeResponse {
+  examId: number;
+  knowledgePoints: string[];
+  classes: ClassKnowledgeStat[];
+  matrix: ClassKnowledgePointStat[];
+  /** 已标注知识点题目覆盖率 0-100 */
+  coverageRate: number;
+  /** 无知识点标注时为空列表 */
+  empty: boolean;
+}
+
+// ── 建议 11：错题本导出行 ────────────────────────────
+export interface WrongQuestionRow {
+  studentId: number;
+  studentNumber: string;
+  studentName: string;
+  className: string;
+  totalScore: number;
+  wrongCount: number;
+  questionNumber: number;
+  maxScore: number;
+  score: number;
+  scoreRate: number;
+}
+
+// ── 建议 14：年级间同类考试对比 ──────────────────────
+export interface ComparableExamItem {
+  examId: number;
+  examName: string;
+  gradeName: string | null;
+  examDate: string | null;
+  gradedCount: number;
+  avgScore: number;
+  stdDev: number;
+  difficulty: number;
+  discrimination: number;
+  fullScore: number;
+}
+
+export interface ComparableResponse {
+  cardId: string | null;
+  cardTitle: string;
+  currentExamId: number;
+  exams: ComparableExamItem[];
+}
+
+// ── 建议 15：学科命题质量趋势 ────────────────────────
+export interface SubjectQualityPoint {
+  examId: number;
+  examName: string;
+  examDate: string | null;
+  difficulty: number;
+  discrimination: number;
+  avgScore: number;
+  fullScore: number;
+  gradedCount: number;
+}
+
+export interface SubjectQualityResponse {
+  subject: string;
+  points: SubjectQualityPoint[];
+}
+
+// ── 建议 5：AI 学情分析异步任务化 ────────────────────
+export type AiJobState = "queued" | "running" | "done" | "error";
+
+export interface AiJobCreateResponse {
+  jobId: number;
+  status: AiJobState;
+}
+
+export interface AiJobPollResponse {
+  id: number;
+  examId?: number | null;
+  groupId?: number | null;
+  classId?: number | null;
+  status: AiJobState;
+  result?: AiAnalysisResponse | null;
+  error?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ── 建议 8：知识点半自动标注 ──────────────────────────
+export interface KnowledgeSuggestionItem {
+  questionNumber: number;
+  /** 可用的题干/注释文本（用于展示） */
+  source: string;
+  /** 匹配到的候选知识点 */
+  matched: string[];
+}
+
+export interface KnowledgeSuggestResponse {
+  cardId: string | null;
+  subject: string | null;
+  suggestions: KnowledgeSuggestionItem[];
+}
 
 // ============================================================
 // v1.4.0 新增类型：成绩查看改造
@@ -977,6 +1157,8 @@ export interface CrossExamGroup {
   source: "cross-manual" | "week";
   startDate: string | null;
   endDate: string | null;
+  /** 关联年级（周晨测包按年级分组时写入） */
+  gradeId: number | null;
   examIds: number[];
   exams: ExamFilterItem[];
   createdAt: string;
@@ -1054,6 +1236,106 @@ export interface CrossExamTotalResponse {
     minTotalScore: number;
     fullAttendanceCount: number;
   };
+}
+
+// ============================================================
+// 每周考试审计（首页板块）
+// ============================================================
+
+/** 每周考试审计 —— 周切换选项 */
+export interface WeeklyAuditWeekOption {
+  /** 周一日期 YYYY-MM-DD */
+  weekStart: string;
+  /** 周日日期 YYYY-MM-DD */
+  weekEnd: string;
+  /** 如「2026年第34周」 */
+  label: string;
+  /** 如「08-17 ~ 08-23」 */
+  rangeLabel: string;
+  /** 报告是否已发布（已过发布时刻且本周考试全部完成） */
+  published: boolean;
+  /** 发布时刻（该周周六 08:00，本地时间 ISO 字符串） */
+  publishAt: string;
+  /** 发布时刻文案，如「2026-08-22 08:00」 */
+  publishAtLabel: string;
+  /** 到点但尚未完成的考试名（发布顺延原因） */
+  pendingExamNames: string[];
+}
+
+/** 每周考试审计 —— 某周某年级的周晨测包 */
+export interface WeeklyAuditGradeInfo {
+  gradeId: number;
+  gradeName: string;
+  /** 自动创建的考试组 id（source='week'） */
+  groupId: number;
+  /** 组内晨测场次（有出分） */
+  examCount: number;
+}
+
+/** 每周考试审计 —— 薄弱题目/知识点 */
+export interface WeeklyAuditWeakPoint {
+  examId: number;
+  examName: string;
+  subject: string;
+  questionNumber: string;
+  /** 得分率（0-100） */
+  scoreRate: number;
+  knowledgePoint: string | null;
+}
+
+/** 每周考试审计 —— 班级摘要行 */
+export interface WeeklyAuditClassSummary {
+  classId: number | null;
+  className: string;
+  /** 参评人数 */
+  count: number;
+  /** 平均得分率（0-100） */
+  avgScoreRate: number;
+  /** 缺考人次 */
+  absentCount: number;
+}
+
+/** 每周考试审计 —— 单周单年级汇总 */
+export interface WeeklyAuditSummary {
+  weekStart: string;
+  weekEnd: string;
+  weekLabel: string;
+  gradeId: number | null;
+  gradeName: string | null;
+  groupId: number | null;
+  /** 晨测场次 */
+  examCount: number;
+  /** 参评人数（至少一场有成绩的学生数） */
+  participantCount: number;
+  /** 平均得分率（0-100） */
+  avgScoreRate: number;
+  /** 出勤人次 */
+  attendedCount: number;
+  /** 全勤人数 */
+  fullAttendanceCount: number;
+  /** 覆盖工作日数 */
+  coverageDays: number;
+  /** 统计基准工作日数（周一~周五 = 5） */
+  coverageTargetDays: number;
+  classSummaries: WeeklyAuditClassSummary[];
+  /** 得分率最低 Top 5 薄弱题 */
+  weakPoints: WeeklyAuditWeakPoint[];
+  /** 较上周变化（无上周数据时为 null） */
+  vsLastWeek: {
+    avgScoreRateChange: number | null;
+    participantChange: number | null;
+    examCountChange: number | null;
+  } | null;
+}
+
+/** GET /api/weekly-audit/summary 响应 */
+export interface WeeklyAuditResponse {
+  /** 近 5 周选项（本周 + 最近 4 周） */
+  weeks: WeeklyAuditWeekOption[];
+  /** 当前周的年级列表（按年级排序） */
+  grades: WeeklyAuditGradeInfo[];
+  /** 当前选中周 + 年级的汇总（空周为 null） */
+  active: WeeklyAuditSummary | null;
 }
 
 /** 导出列定义 */
@@ -1536,6 +1818,12 @@ export interface DashboardData {
     examName: string;
     subject: string;
     scannedAt: string;
+  } | null;
+  latestReleasedExam: {
+    examId: number;
+    examName: string;
+    subject: string;
+    releasedAt: string;
   } | null;
   stats: {
     totalExams: number;

@@ -1,7 +1,7 @@
 ﻿# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.2.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -13,7 +13,7 @@
 
 本项目由信息化部成员 **1g NaOH、火箭、云墨丹心、近代先人、CH（往届学长）** 牵头推进，从零开始构建一套属于学校自己的、可自主可控的答题卡设计与阅卷解决方案。
 
-> **当前版本**：v2.0.0（CHANGELOG 的 v2.1.0~v2.3.0 为已合入但未发版的内部里程碑，见 [CHANGELOG.md](./readus/CHANGELOG.md)）
+> **当前版本**：v2.2.1（版本历史见 [CHANGELOG.md](./readus/CHANGELOG.md)）
 > **核心能力**：Home 仪表盘（快捷入口 + 模块卡片）→ 答题卡设计 → PDF 导出 → 扫描仪直扫 → 自动识别判分 → 大题作答图片切块 → 网上阅卷队列（2P/3P 多评 + 争议仲裁 + 断点续批 + PAD 优先 UI + 批注系统）→ 考试管理（含晨测/大考双模式）→ 大考组 → 成绩分析（难度 P / 区分度 D 双指标、总体分析、上次考试对比、学生学期成绩对比、知识点难度/区分度）→ 成绩修改 → 逐题得分明细 → 赋分引擎 → 导出模板 → 教师/学生/班级管理 → AI 成绩分析 → AI 知识点分析 → 知识点弱项诊断 → 并列排名 → 暗色主题 → 皮肤切换（明澈 Flat 2.0 + 纸锋 Paper Edge）→ MariaDB 双模（本地 SQLite / 远程 MariaDB 10.11）→ 服务器部署 → Web/Scanner 构建分离 → iOS 15 Safari Web 兼容 → 原卷上传 → 移动端响应式适配（480/768/1024 三档断点、底部导航 + 抽屉、表格卡片化、Home 页重构）
 > **下个里程碑**：TBD
 
@@ -233,8 +233,8 @@
 
 前往 [GitHub Releases](https://github.com/Dalian-No-5-Middle-School-I-T-C/Project-X/releases) 按需下载（版本号以 Releases 最新为准）：
 ```
-答题卡扫描端-2.0.0-x64.exe
-答题卡扫描端-2.0.0-ia32.exe
+答题卡扫描端-2.2.1-x64.exe
+答题卡扫描端-2.2.1-ia32.exe
 ```
 
 > 普通 64 位 Windows 请选择 `x64` 包；需要兼容 32 位 Windows 时选择 `ia32` 包。扫描端含 TWAIN 直扫 + 答题卡选择 + 结果预览。教师/学生功能请通过浏览器访问服务器部署的 Web 端。
@@ -327,7 +327,7 @@ npm run dev
 > ```
 > 不连扫描仪也可以访问 `index-scanner.html` 调试 UI（答题卡列表、按钮交互等均可正常渲染）。
 
-AI 成绩分析依赖单独手动启动的 Python 中转服务；配置方式见 **[AI成绩分析.md](./readus/AI成绩分析.md)**。
+AI 成绩分析依赖 Python 中转服务（可选功能）。服务端启动时会自动尝试拉起它，失败只影响 AI 分析、不影响其余功能。首次启用需 `py -m pip install -r llmclient/requirements.txt` 并配置 `llmclient/.env`（复制 `.env.example`），详见 **[AI成绩分析.md](./readus/AI成绩分析.md)**。
 
 #### 网阅功能演示数据（Demo 种子）
 
@@ -663,7 +663,7 @@ Project-X/
 | `GET/POST/PUT/DELETE` | `/api/ai/providers` | AI 服务商配置管理 |
 | `GET` | `/api/db/backup` | 导出全量数据 ZIP（SQLite: VACUUM / MariaDB: mysqldump） |
 | `POST` | `/api/db/restore` | 上传 ZIP 恢复数据库 |
-| `POST` | `/api/db/import-demo` | 一键导入演示数据（管理员，幂等、不覆盖现有数据） |  ← v1.9.4 |
+| `POST` | `/api/db/import-demo` | 一键重置并导入演示数据（管理员；会清空原有「演示-」前缀数据并更换考试 ID） |  ← v1.9.4 |
 | `POST` | `/api/db/clear-demo` | 一键清除「演示-」前缀数据（管理员） |  ← v1.9.4 |
 | `GET` | `/api/app/health` | 健康检查（含数据库状态与 `capabilities.scannerClientApi`） |
 | `GET/PATCH` | `/api/app/db-config` | 数据库配置读取/修改（管理员） |

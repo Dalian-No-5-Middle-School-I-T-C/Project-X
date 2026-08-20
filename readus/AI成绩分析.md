@@ -14,13 +14,20 @@ AI 报告只读取当前考试和当前班级筛选范围内的成绩统计数�
 
 ### A. 内置服务商（llmclient）
 
-先启动 Python 中转服务：
+先安装依赖并配置密钥（一次性）：
+
+```powershell
+py -m pip install -r llmclient/requirements.txt
+Copy-Item llmclient/.env.example llmclient/.env   # 然后填写至少一家服务商的 API Key
+```
+
+启动 Python 中转服务（v2.2.2 起后端启动时会自动尝试拉起，可省略本步）：
 
 ```powershell
 py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766
 ```
 
-进入「分析 → 成绩分析」，选择「内置 LLM 服务」→ 下拉选择模型 → 点击「生成分析」。**大考（考试组）详情页的「AI 分析」Tab 同样可用**，请求仅携带 `groupId`，由 Python 侧解析成员考试后逐科汇总。
+若出现 `No module named uvicorn`，说明依赖未安装，请先执行上一步 `pip install`。进入「分析 → 成绩分析」，选择「内置 LLM 服务」→ 下拉选择模型 → 点击「生成分析」。**大考（考试组）详情页的「AI 分析」Tab 同样可用**，请求仅携带 `groupId`，由 Python 侧解析成员考试后逐科汇总。
 
 Python 服务未启动、数据库路径不可访问、或当前 provider 没有配置 API Key 时，前端会禁用生成按钮并显示原因。
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { cn } from "../lib/utils";
+import { authFetch } from "../auth/api";
 import type { ThresholdBand } from "../../../../shared/stats";
 
 /**
@@ -24,7 +25,7 @@ export function useBands(): BandSet | null {
   const [bands, setBands] = useState<BandSet | null>(null);
   useEffect(() => {
     let active = true;
-    fetch("/api/analysis/config/bands")
+    authFetch("/api/analysis/config/bands")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (active && d && d.difficulty && d.discrimination) setBands(d); })
       .catch(() => {});

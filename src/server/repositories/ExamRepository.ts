@@ -12,12 +12,15 @@ export interface ExamRecord {
   start_time: string | null;
   end_time: string | null;
   status: string;
+  closed_at: string | null;
   assigned_formula: string | null;
   retention_policy_id: number | null;
   exam_mode?: string;
   created_by: number | null;
   created_at: string;
   updated_at: string;
+  /** 考试日期：答题卡 exam_date，缺省回退到创建日期（YYYY-MM-DD，仅列表查询填充） */
+  exam_date?: string | null;
 }
 
 export interface ScanRecordInput {
@@ -64,18 +67,22 @@ export class ExamRepository {
     status?: string; grade_id?: number; class_id?: number;
     subject?: string; created_by?: number; examIds?: number[];
   }): Promise<ExamRecord[]> {
-    let sql = "SELECT * FROM exams WHERE 1=1";
+    // 考试日期语义与 listExamsForSelection 保持一致：取答题卡 exam_date，缺省回退创建日期
+    let sql = `SELECT e.*, COALESCE(ac.exam_date, date(e.created_at)) as exam_date
+      FROM exams e
+      LEFT JOIN answer_cards ac ON ac.id = e.card_id
+      WHERE 1=1`;
     const params: unknown[] = [];
-    if (filters?.status) { sql += " AND status = ?"; params.push(filters.status); }
-    if (filters?.grade_id) { sql += " AND grade_id = ?"; params.push(filters.grade_id); }
-    if (filters?.class_id) { sql += " AND class_id = ?"; params.push(filters.class_id); }
-    if (filters?.subject) { sql += " AND subject = ?"; params.push(filters.subject); }
-    if (filters?.created_by) { sql += " AND created_by = ?"; params.push(filters.created_by); }
+    if (filters?.status) { sql += " AND e.status = ?"; params.push(filters.status); }
+    if (filters?.grade_id) { sql += " AND e.grade_id = ?"; params.push(filters.grade_id); }
+    if (filters?.class_id) { sql += " AND e.class_id = ?"; params.push(filters.class_id); }
+    if (filters?.subject) { sql += " AND e.subject = ?"; params.push(filters.subject); }
+    if (filters?.created_by) { sql += " AND e.created_by = ?"; params.push(filters.created_by); }
     if (filters?.examIds && filters.examIds.length > 0) {
-      sql += ` AND id IN (${filters.examIds.map(() => "?").join(",")})`;
+      sql += ` AND e.id IN (${filters.examIds.map(() => "?").join(",")})`;
       params.push(...filters.examIds);
     }
-    sql += " ORDER BY created_at DESC";
+    sql += " ORDER BY e.created_at DESC";
     return await this.db.all(sql, ...params);
   }
 
@@ -134,7 +141,20 @@ export class ExamRepository {
   }
 
   async updateStatus(id: number, status: string): Promise<void> {
-    await this.db.run("UPDATE exams SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", status, id);
+    if (status === "closed") {
+      // 出分时间语义：从非 closed 状态进入 closed（含重新阅卷后再次结考）视为一次新的出分，
+      // 刷新 closed_at；closed → closed（重复调用）保留首次出分时间。
+      await this.db.run(
+        `UPDATE exams
+         SET closed_at = CASE WHEN status = 'closed' THEN closed_at ELSE CURRENT_TIMESTAMP END,
+             status = 'closed',
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        id
+      );
+    } else {
+      await this.db.run("UPDATE exams SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", status, id);
+    }
   }
 
   async createScanBatch(examId: number, name: string, createdBy?: number): Promise<number> {

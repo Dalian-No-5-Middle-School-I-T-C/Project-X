@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   CalendarDays,
+  ClipboardList,
   Inbox,
   Layers,
   Save,
@@ -10,6 +11,7 @@ import {
 import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
 import { formatScore } from "../util/format";
+import { WeeklyAuditPanel } from "./WeeklyAuditPanel";
 import {
   Badge,
   Button,
@@ -66,7 +68,7 @@ interface Props {
   refreshKey?: number;
 }
 
-type MainMode = "single" | "group" | "cross";
+type MainMode = "single" | "group" | "cross" | "audit";
 type CrossMode = "week" | "selected" | "group";
 
 /** Radix Select 不接受空字符串 value，用哨兵值表示「全部」 */
@@ -76,6 +78,7 @@ const MAIN_MODES = [
   { value: "single" as const, label: "单科" },
   { value: "group" as const, label: "大考" },
   { value: "cross" as const, label: "跨考", icon: <Layers /> },
+  { value: "audit" as const, label: "周报", icon: <ClipboardList /> },
 ];
 
 const CROSS_MODES = [
@@ -172,7 +175,7 @@ export function ExamSelectPage({
 
   // Load single/group exams
   useEffect(() => {
-    if (mainMode === "cross") return;
+    if (mainMode === "cross" || mainMode === "audit") return;
     setLoading(true);
     const params = new URLSearchParams({ selection: "1" });
     if (academicYear) params.set("academic_year", academicYear);
@@ -645,7 +648,7 @@ export function ExamSelectPage({
 
   // ── Render ──
 
-  const showSingleGroup = mainMode !== "cross";
+  const showSingleGroup = mainMode !== "cross" && mainMode !== "audit";
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -658,7 +661,9 @@ export function ExamSelectPage({
             <p className="m-0 text-sm text-muted-foreground">
               {mainMode === "cross"
                 ? "按日期打包或手动选择考试计算总分排名"
-                : "选择单科考试或大考合集查看成绩"}
+                : mainMode === "audit"
+                  ? "每周晨测报告（每周六上午 8 点发布，考试未完成时顺延）"
+                  : "选择单科考试或大考合集查看成绩"}
             </p>
           </div>
           <SegmentedControl
@@ -1093,6 +1098,13 @@ export function ExamSelectPage({
               />
             )}
           </div>
+        )}
+
+        {/* ── Weekly audit report ── */}
+        {mainMode === "audit" && (
+          <WeeklyAuditPanel
+            onOpenAnalysisGroup={(groupId) => onSelectGroup?.(groupId)}
+          />
         )}
       </div>
     </div>

@@ -287,6 +287,7 @@ CREATE TABLE IF NOT EXISTS exams (
     start_time    DATETIME,
     end_time      DATETIME,
     status        TEXT DEFAULT 'draft',        -- draft / active / grading / closed
+    closed_at     DATETIME,                    -- 结考/出分时间 (v35)
     assigned_formula TEXT,                     -- JSON: 赋分公式配置 (v1.4.0)
     retention_policy_id INTEGER REFERENCES data_retention_policies(id),
     review_mode    INTEGER DEFAULT 1,            -- v1.9.0: 1=1P 2=2P 3=3P
@@ -433,7 +434,7 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     status           TEXT DEFAULT 'ready',
     reviewer_id      INTEGER REFERENCES users(id),
     reviewed_at      DATETIME,
-    review_round     INTEGER DEFAULT 1,
+    review_round     INTEGER DEFAULT 0,
     final_score      REAL,
     final_score_by   INTEGER REFERENCES users(id),
     score_breakdown  TEXT,
@@ -697,6 +698,8 @@ CREATE INDEX IF NOT EXISTS idx_student_scores_exam_assigned ON student_scores(ex
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam_student ON student_scores(exam_id, student_id);
 CREATE INDEX IF NOT EXISTS idx_question_scores_exam_student ON question_scores(exam_id, student_id);
 CREATE INDEX IF NOT EXISTS idx_question_scores_exam_type ON question_scores(exam_id, score_type);
+-- 逐题分析/下钻：按 exam_id + question_number (+ score_type) 过滤
+CREATE INDEX IF NOT EXISTS idx_question_scores_exam_question_type ON question_scores(exam_id, question_number, score_type);
 CREATE INDEX IF NOT EXISTS idx_exams_grade_class ON exams(grade_id, class_id);
 
 -- ============================================================

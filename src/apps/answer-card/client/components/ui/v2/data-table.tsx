@@ -6,6 +6,7 @@ import {
   getSortedRowModel,
   useReactTable,
   type ColumnDef,
+  type PaginationState,
   type SortingState,
   type Table as TanstackTable,
 } from "@tanstack/react-table";
@@ -96,8 +97,10 @@ export function DataTable<T>({
   tableRef,
 }: DataTableProps<T>) {
   const [sorting, setSorting] = React.useState<SortingState>(initialSorting);
-  const [pageIndex, setPageIndex] = React.useState(0);
-  const [size, setSize] = React.useState(pageSize ?? 0);
+  const [pagination, setPagination] = React.useState<PaginationState>({
+    pageIndex: 0,
+    pageSize: pageSize ?? 0,
+  });
 
   const paginated = Boolean(pageSize);
 
@@ -106,9 +109,12 @@ export function DataTable<T>({
     columns,
     state: {
       sorting,
-      ...(paginated ? { pagination: { pageIndex, pageSize: size } } : {}),
+      ...(paginated ? { pagination } : {}),
     },
     onSortingChange: setSorting,
+    // 受控分页 + onPaginationChange：data 变化时 TanStack 的 autoResetPageIndex
+    // 才能把页码写回组件状态（PR #239 评审 P1：搜索缩小结果后停留在空页）。
+    onPaginationChange: paginated ? setPagination : undefined,
     getRowId,
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -250,18 +256,17 @@ export function DataTable<T>({
         </Table>
       </TableWrap>
 
-      {paginated && !loading && !error && rows.length > 0 && (
+      {paginated && !loading && !error && data.length > 0 && (
         <Pagination
           total={data.length}
-          page={pageIndex + 1}
-          pageSize={size}
-          onPageChange={(p) => setPageIndex(p - 1)}
+          page={pagination.pageIndex + 1}
+          pageSize={pagination.pageSize}
+          onPageChange={(p) => setPagination((prev) => ({ ...prev, pageIndex: p - 1 }))}
           pageSizeOptions={pageSizeOptions}
           onPageSizeChange={
             pageSizeOptions
               ? (next) => {
-                  setSize(next);
-                  setPageIndex(0);
+                  setPagination({ pageIndex: 0, pageSize: next });
                 }
               : undefined
           }

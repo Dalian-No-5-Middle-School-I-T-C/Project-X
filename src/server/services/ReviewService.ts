@@ -253,6 +253,28 @@ export async function submitReviewCropScores(params: {
   }
   maxBlockScore = Array.from(maxScoreByQuestion.values()).reduce((a, b) => a + b, 0);
 
+  // 兜底：卡内题块缺失（演示数据 / 答题卡被编辑后旧切块未重建）时，
+  // 以落库的逐题满分作为权威满分，避免整块卷子因「题号不在范围」而无法提交。
+  if (maxScoreByQuestion.size === 0) {
+    const qsRows = await db.all(
+      `SELECT question_number, MAX(max_score) AS max_score
+       FROM question_scores
+       WHERE exam_id = ? AND student_id = ? AND block_id = ?
+       GROUP BY question_number`,
+      params.examId,
+      crop.student_id,
+      crop.block_id ?? ""
+    ) as Array<{ question_number: number; max_score: number | null }>;
+    for (const row of qsRows) {
+      const qNum = Number(row.question_number);
+      const max = Number(row.max_score);
+      if (Number.isFinite(qNum) && Number.isFinite(max) && max > 0) {
+        maxScoreByQuestion.set(qNum, max);
+      }
+    }
+    maxBlockScore = Array.from(maxScoreByQuestion.values()).reduce((a, b) => a + b, 0);
+  }
+
   const config = await getBlockConfig(params.examId, crop.block_id ?? "", blockType, maxBlockScore, db);
   const reviewMode = config.reviewMode;
   const scoringMode: ScoringMode = config.scoringMode === "per_question" ? "per_question" : "block_total";

@@ -106,7 +106,8 @@ interface TrendData {
   labels: string[];
   datasets: Array<{
     label: string;
-    data: number[];
+    /** null = 缺考断点（chart.js 断线显示，不误作 0 分） */
+    data: Array<number | null>;
     color?: string;
     dashed?: boolean;
   }>;
@@ -307,6 +308,66 @@ export function ClassRadar({
       data={chartData}
       height={height}
       ariaLabel="班级多维度对比雷达图"
+      options={{
+        scales: {
+          r: {
+            min: 0,
+            max: 100,
+            ticks: { stepSize: 20, font: { size: 10 }, backdropColor: "transparent" },
+            pointLabels: { font: { size: 11, weight: "bold" as const } },
+            grid: { color: theme.grid },
+            angleLines: { color: theme.axis },
+          },
+        },
+        plugins: { legend: { position: "bottom" as const } },
+      }}
+    />
+  );
+}
+
+/**
+ * 建议 10：班级知识点掌握雷达图。
+ * 轴 = 知识点，系列 = 班级，值为各班得分率（0-100，null 按 0 处理并由调用方提示覆盖率）。
+ */
+export function KnowledgeRadar({
+  points,
+  classes,
+  matrix,
+  height = 320,
+}: {
+  /** 知识点轴 */
+  points: string[];
+  classes: Array<{ classId: number; className: string }>;
+  /** 每个知识点的各班得分率（按 classId 匹配） */
+  matrix: Array<{ byClass: Array<{ classId: number; scoreRate: number | null }> }>;
+  height?: number;
+}) {
+  const theme = useChartTheme();
+  const chartData = {
+    labels: points,
+    datasets: classes.map((cls, ci) => {
+      const color = paletteColor(ci);
+      return {
+        label: cls.className,
+        data: points.map((_, pi) => {
+          const rate = matrix[pi]?.byClass.find((b) => b.classId === cls.classId)?.scoreRate;
+          return rate != null ? Math.round(rate * 10) / 10 : 0;
+        }),
+        backgroundColor: withAlpha(color, 0.15),
+        borderColor: color,
+        borderWidth: 2,
+        pointBackgroundColor: color,
+        pointRadius: 3,
+      };
+    }),
+  };
+
+  return (
+    <Chart
+      type="radar"
+      data={chartData}
+      height={height}
+      ariaLabel="班级知识点掌握雷达图"
       options={{
         scales: {
           r: {
