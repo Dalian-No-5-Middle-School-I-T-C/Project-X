@@ -4,6 +4,39 @@
 
 ---
 
+## [v2.4.0] — 2026-08-20 · 成绩公布与撤回管理
+
+> 版本定位：成绩发布流程重构版本。批改完成后成绩**默认不向学生公布**，由教师手动「公布分数」后学生方可查看；已公布成绩支持「撤回公布」并保留操作审计。
+> 包版本 `answer-card-designer` 同步升至 `2.4.0`。数据库迁移至 **v42**（SQLite + MariaDB 双后端）。
+
+### 新增功能（Features）
+
+| 模块 | 能力 | 说明 |
+|------|------|------|
+| 考试管理 | 单场公布 | 考试操作列新增「公布分数」按钮，弹确认框后调用 `POST /api/exams/:examId/publish`，学生端立即可见该场成绩。 |
+| 考试管理 | 批量公布 | 勾选多场考试后出现「批量公布 (N)」按钮，调用 `POST /api/exams/publish-batch`，发布后自动清空勾选。 |
+| 考试管理 | 撤回公布 | 已公布考试操作列显示「撤回公布」按钮，弹确认框（含撤回原因输入框，≤500 字），调用 `POST /api/exams/:examId/unpublish`，状态流转 `1→2`，学生端立即不可见。 |
+| 考试管理 | 重新公布 | 已撤回考试操作列显示「重新公布」，复用公布流程，状态流转 `2→1`。 |
+| 状态标识 | 三态徽章 | 考试状态列新增公布状态徽章：`已公布`(success) / `已撤回`(danger) / `未公布`(neutral)；桌面表格与移动卡片视图逻辑完全对齐。 |
+| 审计 | 公布事件日志 | 新增 `exam_publish_events` 表（exam_id / action / actor_id / reason / created_at），每次公布、批量公布、撤回均留痕，支持版本追溯。 |
+
+### 数据与安全
+
+- **学生端硬过滤（不依赖前端隐藏）**：`ScoreRepository.getStudentScores` / `getStudentTrendData` 加 `AND e.score_published = 1`；`/me/exams/:examId` 与单场 AI 分析接口补 `isExamScorePublished` 校验，未公布返回 404/403「成绩尚未公布」。教师端查分不受限。
+- **权限**：公布 / 撤回接口均受 `GRADE_WRITE` 权限门控，且校验考试归属可见范围。
+- **状态模型**：`score_published` 0=未公布 / 1=已公布 / 2=已撤回（数值列，无需 DDL 变更即可支持撤回）。
+
+### 数据库迁移
+
+- **v41**：`exams` 新增 `score_published`（默认 0），并对存量 `status='closed'` 考试回填为 1（已闭环考试视为历史已公布）。
+- **v42**：新建 `exam_publish_events` 表及索引 `idx_epe_exam`；SQLite（`migrations.ts`）与 MariaDB（`mysql.ts`）双端幂等迁移；三端 schema 同步。
+
+### 验证
+
+- 内存库实测：v41/v42 迁移成功；closed 回填正确；撤回 `1→2` 后学生不可见 + 审计日志（unpublish / actor / reason）正确；重新公布 `2→1` 后学生重见 + 事件表累计版本记录。
+- 后端 `tsc --noEmit` 零错误。
+
+
 ## [v1.9.7] — 2026-08-18 · 答题卡设计器实机缺陷修复
 
 > 版本定位：基于 `v1.9.6`（答题卡设计器子模块 `answer-card-designer` 对应包版本 `2.2.2`）的缺陷修复补丁。
