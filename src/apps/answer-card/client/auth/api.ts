@@ -1,5 +1,3 @@
-const TOKEN_KEY = "projectx_auth_token";
-
 // v1.6.0: API 基础地址支持运行时配置
 // Web 端优先级: localStorage > VITE_PROJECTX_API_BASE > 空（相对路径）
 // 扫描端始终使用本机相对路径；远端服务器仅供 scanner upload API 使用。
@@ -66,23 +64,14 @@ export function apiUrl(url: string): string {
 }
 
 export function getAuthToken(): string | null {
-  if (authToken) return authToken;
-  try {
-    authToken = localStorage.getItem(TOKEN_KEY);
-  } catch {
-    authToken = null;
-  }
+  // 安全审计（P1）：认证主通道为 HttpOnly Cookie。同源部署下登录响应不携带 token，
+  // 此处的内存 token 仅存在于跨域 API 模式（getApiBase() 非空、无法共享 Cookie）时，
+  // 从登录响应一次性取得并仅存于内存 —— 绝不写入 localStorage，避免 XSS 窃取长期令牌。
   return authToken;
 }
 
 export function setAuthToken(token: string | null): void {
   authToken = token;
-  try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // ignore storage errors
-  }
 }
 
 function notifyUnauthorized(): void {
@@ -90,12 +79,20 @@ function notifyUnauthorized(): void {
   window.dispatchEvent(new Event("projectx:unauthorized"));
 }
 
+/** 跨域 API 模式（getApiBase() 非空）：无法共享 HttpOnly Cookie，需用内存 token 兜底。 */
+function isCrossOriginApiMode(): boolean {
+  return Boolean(getApiBase());
+}
+
 export async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const token = getAuthToken();
+  const crossOrigin = isCrossOriginApiMode();
   // v1.6.0: 同时支持 Api-Key header
   const storedApiKey = import.meta.env.VITE_BUILD_TARGET === "scanner" ? null : getStoredApiKey();
   const headers = new Headers(options?.headers);
-  if (token && !headers.has("Authorization")) {
+  // 安全审计（P1）：同源部署下认证主通道 = HttpOnly Cookie（credentials: include），
+  // 不携带 Bearer；仅跨域 API 模式（Cookie 无法跨站点携带）才附加内存 token 的 Bearer。
+  if (token && crossOrigin && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
   }
   if (storedApiKey && !headers.has("X-Api-Key")) {
@@ -128,16 +125,17 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
 
 export function authFetch(url: string, options?: RequestInit): Promise<Response> {
   const token = getAuthToken();
+  const crossOrigin = isCrossOriginApiMode();
   const storedApiKey = import.meta.env.VITE_BUILD_TARGET === "scanner" ? null : getStoredApiKey();
   const headers = new Headers(options?.headers);
-  if (token && !headers.has("Authorization")) {
+  if (token && crossOrigin && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
   }
   if (storedApiKey && !headers.has("X-Api-Key")) {
     headers.set("X-Api-Key", storedApiKey);
   }
-  // 安全审计（F-6）：同源请求同时携带 HttpOnly Cookie（主通道），Authorization 头作为兼容回退。
-  // credentials include 使服务端 Set-Cookie 的 projectx_auth_token 自动随请求发送。
+  // 安全审计（F-6/P1）：认证主通道 = HttpOnly Cookie。credentials: include 使服务端
+  // Set-Cookie 的 projectx_auth_token 自动随请求发送；仅跨域 API 模式附加内存 token 的 Bearer。
   return fetch(apiUrl(url), { ...options, headers, credentials: "include" });
 }
 

@@ -34,10 +34,15 @@ export function apiKeyAuth(options: ApiKeyAuthOptions = {}) {
         hashSecret(apiKey)
       );
       if (!row) {
+        // 安全审计（P1）：明文兼容回退 —— 仅命中启动时未来得及迁移的存量明文行。
+        // 新签发/默认 key 一律哈希入库 + 启动迁移，此分支命中即说明仍有历史明文，记录告警便于跟进。
         row = await db.get<{ id: number; name: string; scope: string; is_active: number }>(
           "SELECT id, name, scope, is_active FROM api_keys WHERE api_key = ?",
           apiKey
         );
+        if (row) {
+          console.warn(`[api-key] 命中明文兼容回退（api_key id=${row.id}），建议重启服务触发历史明文哈希化迁移。`);
+        }
       }
 
       if (!row) {

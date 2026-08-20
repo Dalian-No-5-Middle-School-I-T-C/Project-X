@@ -420,7 +420,14 @@ router.get("/ai/status", async (req, res) => {
   try {
     const response = await fetchLlmClient("/health", { method: "GET" }, 2_500);
     const healthOk = response.ok;
-    let llmStatus: { ok?: boolean; dbExists?: boolean; defaultModel?: string; models?: Array<{ id: string; provider: string; label: string; available: boolean; thinking?: boolean }> } = {};
+    let llmStatus: {
+      ok?: boolean;
+      dbExists?: boolean;
+      defaultModel?: string;
+      /** 安全审计（P1）：llmclient 是否已配置 LLMCLIENT_INTERNAL_API_KEY（未配置则受保护端点全部 503） */
+      internalAuthConfigured?: boolean;
+      models?: Array<{ id: string; provider: string; label: string; available: boolean; thinking?: boolean }>;
+    } = {};
     if (healthOk) {
       llmStatus = await response.json() as any;
     }
@@ -430,16 +437,20 @@ router.get("/ai/status", async (req, res) => {
     const configuredModels = llmStatus.models ?? [];
     const hasAvailableModel = configuredModels.some((model) => model.available);
     const hasUserProvider = userProviders.length > 0;
+    // 内部密钥未配置时，走内置 llmclient 的请求必然 503 → 仅在用户自配服务商时视为可用
+    const internalAuthOk = llmStatus.internalAuthConfigured !== false;
 
     res.json({
-      available: Boolean((healthOk && llmStatus.dbExists && hasAvailableModel) || hasUserProvider),
+      available: Boolean((healthOk && llmStatus.dbExists && internalAuthOk && hasAvailableModel) || hasUserProvider),
       reason: !healthOk
         ? `LLM service returned ${response.status}`
         : !llmStatus.dbExists && !hasUserProvider
           ? "LLM service is running, but Project-X database was not found."
           : !hasAvailableModel && !hasUserProvider
             ? "LLM service is running, but no provider API key is configured."
-            : undefined,
+            : !internalAuthOk && !hasUserProvider
+              ? "LLMCLIENT_INTERNAL_API_KEY 未配置：llmclient 拒绝未鉴权请求，请按 llmclient/.env.example 配置后重启。"
+              : undefined,
       defaultModel: llmStatus.defaultModel ?? (hasUserProvider ? "auto" : null),
       models: configuredModels,
       providers: userProviders

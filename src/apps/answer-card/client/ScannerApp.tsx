@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "./auth/AuthContext";
-import { fetchJson, setAuthToken } from "./auth/api";
+import { fetchJson } from "./auth/api";
 import { LoginPageScanner } from "./components/LoginPageScanner";
 import { CardSelectPage } from "./components/CardSelectPage";
 import { ScannerWorkspace } from "./components/ScannerWorkspace";

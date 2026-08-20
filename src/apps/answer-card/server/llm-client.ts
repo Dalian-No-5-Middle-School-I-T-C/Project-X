@@ -4,15 +4,18 @@
  * Extracted from index.ts so the analysis router can import them.
  */
 import { ensureLlmClient } from "./llm-launcher";
+import { getLlmEnv } from "./llm-env";
 
 export function llmClientUrl(pathname = ""): string {
-  const base = (process.env.LLMCLIENT_URL || "http://127.0.0.1:8766").replace(/\/+$/, "");
+  const base = (getLlmEnv("LLMCLIENT_URL") || "http://127.0.0.1:8766").replace(/\/+$/, "");
   return `${base}${pathname.startsWith("/") ? pathname : `/${pathname}`}`;
 }
 
 export function llmClientHeaders(extra?: Record<string, string>): Record<string, string> {
   const headers: Record<string, string> = { ...(extra ?? {}) };
-  const internalKey = process.env.LLMCLIENT_INTERNAL_API_KEY;
+  // 安全审计（P1）：与 Python 侧同源读取内部密钥 —— 既认 shell 环境变量，
+  // 也认 llmclient/.env（config.py 的 load_dotenv 同款），避免配置后 Node 不发送鉴权。
+  const internalKey = getLlmEnv("LLMCLIENT_INTERNAL_API_KEY");
   if (internalKey && !headers.Authorization) {
     headers.Authorization = `Bearer ${internalKey}`;
   }

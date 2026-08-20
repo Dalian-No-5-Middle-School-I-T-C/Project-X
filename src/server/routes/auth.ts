@@ -58,6 +58,23 @@ function clearAuthCookie(req: Request, res: Response): void {
 }
 
 /**
+ * 安全审计（P1）：HttpOnly Cookie 是同源部署的认证主通道，登录响应不再返回 token。
+ * 仅当 Cookie 无法跨站点携带时（跨源浏览器 / 非浏览器客户端）才回传一次性 token：
+ *  - 同源浏览器：Origin 的 host == 请求 Host（登录 POST 浏览器必带 Origin）→ 不返回 token，
+ *    杜绝同源 XSS 直接从登录响应中窃取长期令牌；
+ *  - 跨源浏览器 / 无 Origin 的脚本客户端：Cookie 不可用或缺席 → 返回 token 保持兼容。
+ */
+function shouldReturnTokenInBody(req: Request): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true; // 非浏览器客户端（curl / node / 测试脚本）
+  try {
+    return new URL(origin).host !== req.get("host");
+  } catch {
+    return true;
+  }
+}
+
+/**
  * POST /api/auth/login
  * 登录接口
  * Body: { identifier: string, password: string }
@@ -83,8 +100,12 @@ router.post("/login", loginIpLimiter, loginAccountLimiter, async (req: Request, 
       setAuthCookie(req, res, result.token, !!isPersistent);
     }
 
+    // 安全审计（P1）：同源浏览器不返回 token（主通道 = HttpOnly Cookie）；
+    // 跨源/脚本客户端才回传，避免同源 XSS 从响应体中窃取长期令牌。
+    const includeToken = shouldReturnTokenInBody(req);
     res.json({
-      token: result.token,
+      ...(includeToken ? { token: result.token } : {}),
+      httpOnlyAuth: true,
       user: result.user,
       permissions: result.permissions,
       passwordChangeRequired: result.passwordChangeRequired ?? false,

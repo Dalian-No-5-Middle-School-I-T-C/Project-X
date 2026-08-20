@@ -43,6 +43,8 @@ def require_internal_key(authorization: str | None = Header(default=None)) -> No
 @app.get("/health")
 def health() -> dict[str, object]:
     # 安全审计（F-12-9）：脱敏 —— 不对外返回 dbHost/dbName/dbPath 等内网细节，仅暴露存活与可用性布尔值。
+    # 安全审计（P1）：internalAuthConfigured 如实反映内部密钥是否已配置 —— 未配置时受保护端点返回 503，
+    # 供 Node /ai/status 判断内置 LLM 是否真的可用，避免前端误判"服务可用"。
     db_path = default_db_path()
     models = configured_models()
     db_ok = False
@@ -58,6 +60,7 @@ def health() -> dict[str, object]:
         return {
             "ok": True,
             "dbDialect": "mariadb",
+            "internalAuthConfigured": bool(llmclient_api_key()),
             "dbExists": db_ok,
             "defaultModel": default_model_id(),
             "models": models,
@@ -65,6 +68,7 @@ def health() -> dict[str, object]:
     return {
         "ok": True,
         "dbDialect": "sqlite",
+        "internalAuthConfigured": bool(llmclient_api_key()),
         "dbExists": Path(db_path).exists(),
         "defaultModel": default_model_id(),
         "models": models,

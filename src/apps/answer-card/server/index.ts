@@ -29,7 +29,7 @@ function readServerVersion(): string {
   return "0.0.0";
 }
 const SERVER_VERSION = readServerVersion();
-import { ensureDefaultAdmin, getDatabase, getMysqlDb, buildUpsertSQL, initializeDatabase, initMariadbSchema, healthCheck, resolveProjectDbPath, detectDialect, encryptLegacyInitialPasswords, type DbAdapter } from "../../../server/db";
+import { ensureDefaultAdmin, getDatabase, getMysqlDb, buildUpsertSQL, initializeDatabase, initMariadbSchema, healthCheck, resolveProjectDbPath, detectDialect, encryptLegacyInitialPasswords, migrateLegacyPlaintextApiKeys, type DbAdapter } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
@@ -573,6 +573,9 @@ export async function createApp(): Promise<express.Express> {
   getMysqlDb();
   // 安全审计（F-2）：迁移历史明文 initial_password 为加密存储（幂等）
   await encryptLegacyInitialPasswords(getMysqlDb());
+  // 安全审计（P1）：迁移历史明文 api_keys 为 SHA-256 哈希存储（幂等），
+  // 让 API Key 哈希化安全目标对存量库同样生效
+  await migrateLegacyPlaintextApiKeys(getMysqlDb());
   await initMariadbSchema();
   const adminBootstrap = await ensureDefaultAdmin();
   if (adminBootstrap.rotated) authService.revokeUserTokens(adminBootstrap.adminId);
