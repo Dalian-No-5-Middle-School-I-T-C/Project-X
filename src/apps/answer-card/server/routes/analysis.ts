@@ -19,6 +19,7 @@ import {
   ANALYSIS_SETTING_KEYS, DEFAULT_ANALYSIS_THRESHOLDS
 } from "../../../../server/services/analysisConfig";
 import { maskApiKey } from "../../../../server/utils/maskApiKey";
+import { decryptField } from "../../../../server/lib/field-crypto";
 import { fetchLlmClient } from "../llm-client";
 import { CreateExamGroupSchema, validateBody } from "../validation";
 import type { CrossExamTotalRequest } from "../../../../shared/types";
@@ -93,7 +94,8 @@ function mapAiProvider(p: AiProviderRow) {
     name: p.name,
     providerType: p.provider_type,
     baseUrl: p.base_url,
-    apiKey: maskApiKey(p.api_key),
+    // api_key 已加密存储（F-7），脱敏前先解密
+    apiKey: maskApiKey(decryptField(p.api_key) ?? ""),
     models: p.models ? JSON.parse(p.models) : null,
     isActive: Boolean(p.is_active)
   };
@@ -497,7 +499,8 @@ router.post("/exams/:examId/ai-analysis", requireExamAccess, async (req, res, ne
         providerOverride = {
           provider_type: prov.provider_type,
           base_url: prov.base_url,
-          api_key: prov.api_key
+          // api_key 已加密存储（F-7），透传前解密
+          api_key: decryptField(prov.api_key) ?? ""
         };
       }
     }

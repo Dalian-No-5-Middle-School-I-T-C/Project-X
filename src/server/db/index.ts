@@ -9,6 +9,7 @@ import { resolveProjectDbPath } from "./paths";
 import { seedDefaultData } from "./seeds";
 import { detectDialect, getMysqlDb, initMariadbSchema, buildInsertIgnore } from "./mysql";
 import type { DbAdapter } from "./mysql";
+import { encryptField } from "../lib/field-crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -62,6 +63,28 @@ export function initializeDatabase(): void {
 
   runMigrations(db);
   seedDefaultData(db);
+}
+
+/**
+ * 安全审计（F-2）：把库中历史遗留的明文 initial_password 一次性加密为 enc:v1: 密文。
+ * 幂等（仅处理无 enc:v1: 前缀的旧数据）；SQLite / MariaDB 双模兼容。
+ */
+export async function encryptLegacyInitialPasswords(db: DbAdapter): Promise<void> {
+  try {
+    const rows = await db.all<{ id: number; initial_password: string }>(
+      "SELECT id, initial_password FROM users WHERE initial_password IS NOT NULL AND initial_password != '' AND initial_password NOT LIKE 'enc:v1:%'"
+    );
+    let count = 0;
+    for (const row of rows) {
+      await db.run("UPDATE users SET initial_password = ? WHERE id = ?", encryptField(row.initial_password), row.id);
+      count++;
+    }
+    if (count > 0) {
+      console.log(`[secrets] 已加密 ${count} 条历史明文 initial_password`);
+    }
+  } catch (err) {
+    console.warn("[secrets] 历史明文加密迁移失败（不影响启动，可稍后重试）:", err);
+  }
 }
 
 export async function hashPassword(password: string): Promise<string> {

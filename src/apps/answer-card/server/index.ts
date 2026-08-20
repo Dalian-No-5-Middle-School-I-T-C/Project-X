@@ -29,7 +29,7 @@ function readServerVersion(): string {
   return "0.0.0";
 }
 const SERVER_VERSION = readServerVersion();
-import { ensureDefaultAdmin, getDatabase, getMysqlDb, buildUpsertSQL, initializeDatabase, initMariadbSchema, healthCheck, resolveProjectDbPath, detectDialect, type DbAdapter } from "../../../server/db";
+import { ensureDefaultAdmin, getDatabase, getMysqlDb, buildUpsertSQL, initializeDatabase, initMariadbSchema, healthCheck, resolveProjectDbPath, detectDialect, encryptLegacyInitialPasswords, type DbAdapter } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
 import { ExamRepository } from "../../../server/repositories/ExamRepository";
@@ -559,6 +559,8 @@ function scannerEnabled(): boolean {
 
 export async function createApp(): Promise<express.Express> {
   const app = express();
+  // 安全审计（F-12-3）：关闭 X-Powered-By，避免暴露 Express 版本指纹
+  app.disable("x-powered-by");
   const scannerClientApiEnabled = isScannerClientApiEnabled();
 
   // 服务仅监听 127.0.0.1，公网流量必然经反代/隧道进入；
@@ -569,6 +571,8 @@ export async function createApp(): Promise<express.Express> {
   initializeDatabase();
   // 确保连接池在使用前已创建（MariaDB 模式下 initMariadbSchema / ensureDefaultAdmin 依赖）
   getMysqlDb();
+  // 安全审计（F-2）：迁移历史明文 initial_password 为加密存储（幂等）
+  await encryptLegacyInitialPasswords(getMysqlDb());
   await initMariadbSchema();
   const adminBootstrap = await ensureDefaultAdmin();
   if (adminBootstrap.rotated) authService.revokeUserTokens(adminBootstrap.adminId);
@@ -606,11 +610,20 @@ export async function createApp(): Promise<express.Express> {
     }
   }
 
-  // 最小安全响应头（不设 X-Frame-Options，避免破坏 iframe 嵌入场景）
-  // 注册在最前：OPTIONS 预检、JSON 解析失败、请求体超限等中间件错误响应也需携带
-  app.use((_req, res, next) => {
+  // 安全审计（F-10）：最小安全响应头。
+  // X-Frame-Options 不设（保留 iframe 嵌入场景）；由 CSP frame-ancestors 精确放行。
+  // HSTS 仅在 HTTPS 请求或显式开启时下发，避免本地 HTTP 调试被浏览器强制升级。
+  const hstsEnabled = process.env.PROJECTX_HSTS === "1";
+  app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'self' http://127.0.0.1:5173 http://localhost:5173; base-uri 'self'; form-action 'self'"
+    );
+    if (hstsEnabled || req.secure) {
+      res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+    }
     next();
   });
 
@@ -659,9 +672,10 @@ export async function createApp(): Promise<express.Express> {
 
   app.get("/api/app/health", async (_req, res) => {
     const db = await healthCheck();
+    // 安全审计（F-12-8）：脱敏 —— 只暴露存活布尔，不回传 dialect/latencyMs 等内网细节
     res.status(db.ok ? 200 : 503).json({
       ok: db.ok,
-      db,
+      db: { ok: db.ok },
       capabilities: {
         scannerClientApi: scannerClientApiEnabled,
         nativeScannerApi: scannerEnabled()

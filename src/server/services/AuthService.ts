@@ -4,7 +4,7 @@ import { permissionsForRole } from "../auth/permissions";
 import { validateUserChosenPassword } from "../auth/passwordPolicy";
 import { randomBytes, createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 
 export interface LoginResult {
@@ -30,7 +30,8 @@ const TOKEN_STORE_DIR = join(homedir(), ".projectx");
 const TOKEN_STORE_PATH = join(TOKEN_STORE_DIR, "tokens.json");
 
 const TOKEN_EXPIRE_MS = 8 * 60 * 60 * 1000; // 8小时
-const PERSISTENT_TOKEN_EXPIRE_MS = 180 * 24 * 60 * 60 * 1000; // 6个月
+// 安全审计（F-12-7）：持久 token 由 6 个月收敛为 30 天，降低泄漏窗口
+const PERSISTENT_TOKEN_EXPIRE_MS = 30 * 24 * 60 * 60 * 1000; // 30天
 
 // P2-1 (M-S3): token 不再明文存储，只存 SHA-256 哈希
 // 验证时对传入 token 哈希后比对，磁盘文件 tokens.json 也只存哈希
@@ -89,6 +90,8 @@ export class AuthService {
         data.tokens[token] = record;
       }
       writeFileSync(TOKEN_STORE_PATH, JSON.stringify(data, null, 2), "utf8");
+      // 安全审计（F-12-6）：token 文件权限收紧（POSIX 0600）；Windows 下 chmod 忽略
+      try { chmodSync(TOKEN_STORE_PATH, 0o600); } catch { /* ignore */ }
     } catch (error) {
       console.error("[Auth] 持久化 token 失败:", error);
     }
@@ -112,11 +115,16 @@ export class AuthService {
     }
 
     // 验证密码。兼容旧流程留下的学生空密码哈希：首次用学号登录时自动补齐为学号密码。
+    // 安全审计（F-11）：补齐的同时标记 password_change_required，强制该学生下次改密，
+    // 避免"密码即学号（可猜测）"长期有效。
     let valid = false;
     if (!user.password_hash && user.role_name === "student" && user.student_number && password === user.student_number) {
       const newHash = await hashPassword(user.student_number);
       const db = getMysqlDb();
-      await db.run("UPDATE users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", newHash, user.id);
+      await db.run(
+        "UPDATE users SET password_hash = ?, password_change_required = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        newHash, user.id
+      );
       user.password_hash = newHash;
       valid = true;
     } else {

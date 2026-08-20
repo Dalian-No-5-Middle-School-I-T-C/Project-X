@@ -26,7 +26,8 @@ router.use(authMiddleware);
 router.use(requirePermission(PERMISSIONS.USER_MANAGE));
 
 // 导入使用 raw body（避免 multpart/form-data 解析 corrupt ZIP 二进制数据）
-const rawBodyParser = expressRaw({ type: "application/zip", limit: "512mb" });
+// 安全审计（F-12-11）：512MB → 128MB，收紧管理员上传面（防内存 DoS）
+const rawBodyParser = expressRaw({ type: "application/zip", limit: "128mb" });
 
 /**
  * 计算备份中包含的所有目录和文件大小

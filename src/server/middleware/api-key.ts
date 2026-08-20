@@ -11,6 +11,7 @@
 
 import type { Request, Response, NextFunction } from "express";
 import { getMysqlDb } from "../db";
+import { hashSecret } from "../lib/field-crypto";
 
 interface ApiKeyAuthOptions {
   scope?: string; // 限制 key 的 scope，默认不限制
@@ -26,10 +27,18 @@ export function apiKeyAuth(options: ApiKeyAuthOptions = {}) {
 
     try {
       const db = await getMysqlDb();
-      const row = await db.get<{ id: number; name: string; scope: string; is_active: number }>(
+      // 安全审计（F-7）：新签发的 key 以 SHA-256 哈希入库。先按哈希匹配；
+      // 未命中再按明文匹配（兼容历史明文 key，平滑过渡；管理员可在界面重新签发）。
+      let row = await db.get<{ id: number; name: string; scope: string; is_active: number }>(
         "SELECT id, name, scope, is_active FROM api_keys WHERE api_key = ?",
-        apiKey
+        hashSecret(apiKey)
       );
+      if (!row) {
+        row = await db.get<{ id: number; name: string; scope: string; is_active: number }>(
+          "SELECT id, name, scope, is_active FROM api_keys WHERE api_key = ?",
+          apiKey
+        );
+      }
 
       if (!row) {
         res.status(401).json({ message: "无效的 API Key" });

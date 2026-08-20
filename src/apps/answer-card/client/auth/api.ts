@@ -12,11 +12,38 @@ function getApiBase(): string {
   return (import.meta.env.VITE_PROJECTX_API_BASE ?? "").replace(/\/+$/, "");
 }
 
-function getStoredApiKey(): string | null {
+// 安全审计（F-6）：API Key 本地存储带 30 天过期时间；兼容旧纯字符串格式（视为未过期，随下次保存升级）。
+const API_KEY_EXPIRE_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function getStoredApiKey(): string | null {
   try {
-    return localStorage.getItem("projectx_api_key");
+    const raw = localStorage.getItem("projectx_api_key");
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as { v?: number; k?: string; exp?: number };
+      if (parsed?.v === 1 && typeof parsed.k === "string") {
+        if (typeof parsed.exp === "number" && Date.now() > parsed.exp) {
+          localStorage.removeItem("projectx_api_key");
+          return null;
+        }
+        return parsed.k;
+      }
+    } catch { /* 旧格式纯字符串，按未过期处理 */ }
+    return raw;
   } catch {
     return null;
+  }
+}
+
+export function storeApiKey(key: string | null): void {
+  try {
+    if (!key) {
+      localStorage.removeItem("projectx_api_key");
+      return;
+    }
+    localStorage.setItem("projectx_api_key", JSON.stringify({ v: 1, k: key, exp: Date.now() + API_KEY_EXPIRE_MS }));
+  } catch {
+    /* ignore */
   }
 }
 
@@ -74,7 +101,7 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
   if (storedApiKey && !headers.has("X-Api-Key")) {
     headers.set("X-Api-Key", storedApiKey);
   }
-  const response = await fetch(apiUrl(url), { ...options, headers });
+  const response = await fetch(apiUrl(url), { ...options, headers, credentials: "include" });
   if (!response.ok) {
     let message = response.statusText;
     let body: Record<string, unknown> | null = null;
@@ -109,7 +136,9 @@ export function authFetch(url: string, options?: RequestInit): Promise<Response>
   if (storedApiKey && !headers.has("X-Api-Key")) {
     headers.set("X-Api-Key", storedApiKey);
   }
-  return fetch(apiUrl(url), { ...options, headers });
+  // 安全审计（F-6）：同源请求同时携带 HttpOnly Cookie（主通道），Authorization 头作为兼容回退。
+  // credentials include 使服务端 Set-Cookie 的 projectx_auth_token 自动随请求发送。
+  return fetch(apiUrl(url), { ...options, headers, credentials: "include" });
 }
 
 /** 扫描端专用：仅把远程上传请求发送到配置的 Project-X 服务器。 */

@@ -129,11 +129,21 @@ async function createWindow() {
     }
   });
 
+  // 安全审计（F-5）：新窗口仅放行同源（baseUrl 前缀）；其余 URL 仅允许 https:// 经系统浏览器打开，
+  // 拒绝 file://、smb:// 及自定义协议，防止远端页面被攻破后诱导打开本机文件/协议处理器。
+  const ALLOWED_EXTERNAL_SCHEMES = new Set(["https:"]);
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith(baseUrl)) {
       return { action: "allow" };
     }
-    shell.openExternal(url);
+    try {
+      const parsed = new URL(url);
+      if (ALLOWED_EXTERNAL_SCHEMES.has(parsed.protocol)) {
+        shell.openExternal(url);
+      }
+    } catch {
+      /* 非法 URL，忽略 */
+    }
     return { action: "deny" };
   });
 

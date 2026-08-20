@@ -9,6 +9,7 @@ import { competitionRank } from "../../shared/ranking";
 import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
+import { decryptField } from "../lib/field-crypto";
 
 interface AiProviderRow {
   id: number;
@@ -668,7 +669,8 @@ router.post("/:groupId/ai-analysis", requireReadableGroup, async (req: Request, 
     if (providerId && Number.isFinite(providerId)) {
       const prov = await getAiProviderForUser(providerId, req.user!.id);
       if (prov) {
-        providerOverride = { provider_type: prov.provider_type, base_url: prov.base_url, api_key: prov.api_key };
+        // api_key 已加密存储（F-7），透传前解密
+        providerOverride = { provider_type: prov.provider_type, base_url: prov.base_url, api_key: decryptField(prov.api_key) ?? "" };
       }
     }
     const response = await fetchLlmClient("/analysis/run", {
