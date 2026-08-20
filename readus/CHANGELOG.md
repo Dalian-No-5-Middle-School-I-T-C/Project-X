@@ -1,5 +1,29 @@
 # Project-X CHANGELOG
 
+## v2.2.5 (2026-08-20) — PR #246 检修修复（保留策略消费端 + 明暗账号级回写）
+
+> 针对 PR #246 评审提出的两项「功能未闭环」问题落地修复：数据保留策略此前仅写库不消费（定时清理只认环境变量），明暗方案此前只有读取链路没有回写链路。本次为纯补链路修复，不改变既有业务行为与数据格式。
+
+**修复 1：数据保留策略消费端（`src/server/db/cleanup.ts`）**
+- `runCleanup` 事务内新增「步骤 5」：每轮定时清理直接读取 `data_retention_policies`，仅处理 `status='closed'` 且 `retention_policy_id` 非空的考试，按 `COALESCE(closed_at, end_time)` 与策略 `retain_days` 判定到期。
+- `auto_archive=1` → 幂等写入 `exam_archives`（`INSERT … WHERE NOT EXISTS`，`scan_count` 取自 `scan_batches`）；`auto_delete=1` → 归档记录标记 `is_deleted=1`。
+- `CleanupResult` 新增 `archivedCount` / `markedDeletedCount`（向后兼容）；本轮跳过计数（永久保留 / 保留期内 / 无策略）写入汇总日志。
+- 顺带修正步骤 4 注释「超过90天」与实现不符的历史小问题。
+- **三条语义假设（经产品确认，均已在代码注释与运行日志标注）**：
+  - ① `retain_days=0` = 永久保留，跳过归档/删除；
+  - ② `auto_delete=1` = 软删除（仅标记 `is_deleted=1`，不物理销毁数据，可恢复）；
+  - ③ 未关联策略的考试维持默认行为（不归档不删除，仅按 `PROJECTX_SCAN_RETENTION_DAYS` 清理扫描原图）。
+
+**修复 2：明暗方案账号级回写链路（`src/apps/answer-card/client/App.tsx`）**
+- 新增 `serverColorScheme` 状态（`GET /api/users/me/settings` 时缓存服务端值）。
+- 新增写回 effect：`theme` 变更且已登录 → `PATCH /api/users/me/settings` body `{ colorScheme: theme }`（与皮肤同步对称、fire-and-forget；与读取值一致时跳过，成功后更新本地缓存防重复）。
+- 语义：设备级优先 + 账号回写——本机切换后账号 `users.color_scheme` 随之更新，跨设备可恢复；`theme_change_events` 审计表与控制台「明暗分布」统计恢复真实。
+- 服务端（`validation.ts` / `PATCH` 处理 / 审计写入）原已就绪，本次仅补齐客户端缺口；顺带更新 `App.tsx` 中「明暗为设备级偏好」的过时注释。
+
+**验证**
+- 保留策略集成验证（临时 SQLite 库，10/10 断言）：超期归档 / 保留期内跳过 / 永久保留跳过 / 未结考跳过 / 无策略跳过 / 幂等 / 软删除 / 不重复标记 / 其余考试零影响。
+- `npx tsc --noEmit` 零错误；`verify:auth` 70/70、`verify:core-logic` 55 PASS、`verify:security-critical` 61/61 全绿。
+
 ## v2.2.4 (2026-08-19) — 答题卡设计器实机修复 + 管理员控制台与教师权限细粒度
 
 > 基于 v2.2.3：实机调试 7 项缺陷修复 + PR #242 评审补丁 + 演示数据链路双后端化 + 管理员控制台可观测性与教师权限细粒度等功能更新。

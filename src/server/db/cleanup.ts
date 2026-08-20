@@ -11,6 +11,11 @@ import { rmSync } from "node:fs";
  * - scan_records：超过保留期（默认30天）的记录，删除原始图片文件，保留成绩数据
  * - objective_recognitions：同步清理过期的识别结果
  * - exam_archives：归档记录不自动删除，仅标记
+ * - 数据保留策略（v37+，控制台 data_retention_policies）：按策略自动归档/软删除已结考考试。
+ *   三条语义假设（经产品确认，2026-08-20）：
+ *     ① retain_days=0 = 永久保留，跳过归档/删除；
+ *     ② auto_delete=1 = 软删除（仅标记 exam_archives.is_deleted=1，不物理销毁数据，可恢复）；
+ *     ③ 未关联策略的考试维持默认行为（不归档不删除，仅按环境变量清理扫描原图）。
  *
  * 执行方式：
  * - 手动调用：npx tsx src/server/db/cleanup.ts
@@ -21,6 +26,10 @@ interface CleanupResult {
   scanRecordsDeleted: number;
   recognitionRecordsDeleted: number;
   filesDeleted: number;
+  /** v37+: 本次按 data_retention_policies.auto_archive 新归档的考试数 */
+  archivedCount: number;
+  /** v37+: 本次按 data_retention_policies.auto_delete 标记软删除（exam_archives.is_deleted=1）的考试数 */
+  markedDeletedCount: number;
   errors: string[];
 }
 
@@ -44,6 +53,8 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
     scanRecordsDeleted: 0,
     recognitionRecordsDeleted: 0,
     filesDeleted: 0,
+    archivedCount: 0,
+    markedDeletedCount: 0,
     errors: []
   };
 
@@ -94,7 +105,7 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
       );
       result.scanRecordsDeleted = clearedFiles.changes;
 
-      // 4. 检查超过90天的归档记录
+      // 4. 检查超过保留期（cutoffStr）的归档记录
       const archivedExpired = await tx.get(
         `SELECT COUNT(*) as cnt FROM exam_archives
          WHERE is_deleted = 0 AND archived_at < ?`,
@@ -103,6 +114,94 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
 
       if (archivedExpired.cnt > 0) {
         console.log(`[Cleanup] 有 ${archivedExpired.cnt} 条归档记录超过保留期，建议手动审查后删除`);
+      }
+
+      // 5. 数据保留策略消费（v37+）：管理员在控制台配置的 data_retention_policies 在此生效。
+      //    - 仅处理 已结考(status='closed') 且关联了策略(retention_policy_id) 的考试；
+      //    - 距结考时间（closed_at，缺省回退 end_time）超过策略 retain_days 才处理；
+      //    - 假设①：retain_days=0 视为永久保留，跳过归档/删除（可人工在控制台放开）；
+      //    - 假设②：auto_delete=1 为软删除——仅标记 exam_archives.is_deleted=1，不物理销毁数据，可恢复；
+      //    - 假设③：未关联策略的考试维持默认行为——不归档不删除，仅按环境变量
+      //      PROJECTX_SCAN_RETENTION_DAYS 清理扫描原图（本步骤之前的步骤 1-3）。
+      const policies = await tx.all(
+        "SELECT id, retain_days, auto_archive, auto_delete FROM data_retention_policies"
+      ) as Array<{ id: number; retain_days: number; auto_archive: number; auto_delete: number }>;
+
+      if (policies.length > 0) {
+        const policyExams = await tx.all(
+          `SELECT id, retention_policy_id, COALESCE(closed_at, end_time) AS anchor
+           FROM exams
+           WHERE status = 'closed' AND retention_policy_id IS NOT NULL
+             AND COALESCE(closed_at, end_time) IS NOT NULL`
+        ) as Array<{ id: number; retention_policy_id: number; anchor: string }>;
+
+        // 本轮跳过计数（用于汇总日志，便于运维核对三种假设的执行情况）
+        let skippedPermanent = 0;   // 假设①：永久保留（retain_days=0）
+        let skippedWithin = 0;      // 未到保留期
+        let skippedNoPolicy = 0;    // 假设③：未关联策略
+
+        const noPolicyCount = await tx.get(
+          `SELECT COUNT(*) AS cnt FROM exams
+           WHERE status = 'closed' AND retention_policy_id IS NULL`
+        ) as { cnt: number };
+        skippedNoPolicy = noPolicyCount.cnt;
+
+        if (skippedNoPolicy > 0) {
+          console.log(`[Cleanup] ${skippedNoPolicy} 场已结考考试未关联保留策略（假设③：维持默认行为，不归档不删除，仅按环境变量清理扫描原图）`);
+        }
+
+        const ensureArchive = async (examId: number): Promise<number> => {
+          const ins = await tx.run(
+            `INSERT INTO exam_archives (exam_id, scan_count)
+             SELECT ?, (SELECT COUNT(*) FROM scan_batches WHERE exam_id = ?)
+             WHERE NOT EXISTS (SELECT 1 FROM exam_archives WHERE exam_id = ?)`,
+            examId, examId, examId
+          );
+          return ins.changes;
+        };
+
+        for (const exam of policyExams) {
+          const policy = policies.find((p) => p.id === exam.retention_policy_id);
+          if (!policy) {
+            // 悬空引用：关联的策略已被删除（理论不可达，防御处理）
+            console.warn(`[Cleanup] 考试 #${exam.id} 关联的保留策略不存在，跳过`);
+            continue;
+          }
+          if (policy.retain_days <= 0) {
+            skippedPermanent++;
+            console.log(`[Cleanup] 考试 #${exam.id} 策略为永久保留（retain_days=0，假设①），跳过归档/删除`);
+            continue;
+          }
+          const policyCutoff = new Date(Date.now() - policy.retain_days * 24 * 60 * 60 * 1000).toISOString();
+          if (exam.anchor >= policyCutoff) {
+            skippedWithin++;
+            continue; // 未到保留期（ISO 文本按字典序比较，与现有步骤 1-3 同口径）
+          }
+
+          if (policy.auto_archive) {
+            const created = await ensureArchive(exam.id);
+            if (created > 0) {
+              result.archivedCount++;
+              console.log(`[Cleanup] 已归档考试 #${exam.id}（策略保留 ${policy.retain_days} 天）`);
+            }
+          }
+          if (policy.auto_delete) {
+            await ensureArchive(exam.id); // 仅删除未归档的也补建归档记录，保留痕迹
+            const upd = await tx.run(
+              `UPDATE exam_archives SET is_deleted = 1, deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP)
+               WHERE exam_id = ? AND is_deleted = 0`,
+              exam.id
+            );
+            if (upd.changes > 0) {
+              result.markedDeletedCount += upd.changes;
+              console.log(`[Cleanup] 考试 #${exam.id} 已按策略软删除（is_deleted=1，假设②：不物理销毁数据，可恢复）`);
+            }
+          }
+        }
+
+        console.log(`[Cleanup] 策略处理汇总：归档 ${result.archivedCount}、软删除 ${result.markedDeletedCount}；跳过 永久保留 ${skippedPermanent}、保留期内 ${skippedWithin}、无策略 ${skippedNoPolicy}`);
+      } else {
+        console.log("[Cleanup] 无数据保留策略（data_retention_policies 为空），跳过策略归档/删除");
       }
     });
 
@@ -121,7 +220,7 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
       }
     }
 
-    console.log(`[Cleanup] 完成：清除 ${result.scanRecordsDeleted} 条文件记录，${result.recognitionRecordsDeleted} 条识别记录，${result.filesDeleted} 个文件`);
+    console.log(`[Cleanup] 完成：清除 ${result.scanRecordsDeleted} 条文件记录，${result.recognitionRecordsDeleted} 条识别记录，${result.filesDeleted} 个文件，按策略归档 ${result.archivedCount} 个考试、标记删除 ${result.markedDeletedCount} 个考试`);
   } catch (error) {
     const msg = `清理事务失败: ${error instanceof Error ? error.message : String(error)}`;
     result.errors.push(msg);
