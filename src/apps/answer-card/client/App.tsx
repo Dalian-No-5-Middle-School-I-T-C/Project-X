@@ -2005,6 +2005,9 @@ function App() {
             <AppContent width={mode === "home" ? "wide" : "full"} bare={mode !== "home"}>
               {/* C 阶段（2026-07-21）：真实 URL 路由渲染 —— 仅当前路径对应的页面挂载。 */}
               <Routes>
+                {/* 根路径 → 兜底模式：登录页在任意 URL 渲染（App 级早退），登录后 URL 仍是 /，
+                    若缺此路由会落到下方 * 兜底渲染 404；教师/管理员落到 /home、学生落到 /scores。 */}
+                <Route path="/" element={<Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/home" element={canOpenMode("home") ? <HomeRoutePage /> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/design/*" element={canOpenMode("design") ? <Suspense fallback={routeFallback}><DesignPage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/exam-manage" element={canOpenMode("exam-manage") ? <Suspense fallback={routeFallback}><ExamManagePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />

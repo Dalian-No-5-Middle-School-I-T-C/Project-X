@@ -1,6 +1,6 @@
 # 演示考试数据包
 
-覆盖 Project-X **v1.9.4 ~ v1.9.9 / v2.0.0** 功能测试所需的完整数据集（含文理分科 #212、填空题升级 #211、网阅打分记录/双评仲裁/断点续批 #173/#177）。
+覆盖 Project-X **v1.9.4 ~ v2.3.0**（当前 v2.2.1，v2.3.0 已合入未发版）功能测试所需的完整数据集（含文理分科 #212、填空题升级 #211、网阅打分记录/双评仲裁/断点续批 #173/#177）。
 
 ## 内容
 
@@ -8,7 +8,7 @@
 |-----------|------|
 | `backup/projectx-demo.zip` | 全量数据库备份，通过 `POST /api/db/restore` 导入 |
 | `import/students.csv` | 16 名演示学生（可单独 CSV 导入） |
-| `import/teachers.csv` | 1 名演示教师 |
+| `import/teachers.csv` | 2 名演示教师（可单独 CSV 导入） |
 | `manifest.json` | 用例清单与预期结果（含账号、场景） |
 | `scripts/seed.ts` | 可重复运行的种子脚本（CLI 薄包装，核心逻辑在 `src/server/services/DemoDataService.ts`） |
 | `scripts/seed-review.ts` | 网阅演示种子（已并入 DemoDataService，本文件仅保留兼容占位） |
