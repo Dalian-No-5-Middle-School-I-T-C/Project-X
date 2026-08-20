@@ -309,6 +309,7 @@ CREATE TABLE IF NOT EXISTS exams (
     end_time      DATETIME,
     status        VARCHAR(20) DEFAULT 'draft',
     closed_at     DATETIME,                    -- 结考/出分时间 (v35)
+    score_published TINYINT DEFAULT 0,       -- v41: 0=未公布 1=已公布（教师手动公布后学生可见）
     assigned_formula TEXT,
     retention_policy_id INT,
     review_mode    INT DEFAULT 1,           -- v1.9.0: 1=1P 2=2P 3=3P
@@ -716,6 +717,19 @@ CREATE TABLE IF NOT EXISTS block_grading_config (
     FOREIGN KEY (arbitrator_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE INDEX IF NOT EXISTS idx_bgc_exam ON block_grading_config(exam_id);
+
+-- v42: 成绩公布操作日志（审计追踪）：publish / unpublish（含撤回原因）
+CREATE TABLE IF NOT EXISTS exam_publish_events (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    exam_id     INT NOT NULL,
+    action      VARCHAR(16) NOT NULL,
+    actor_id    INT,
+    reason      TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE INDEX IF NOT EXISTS idx_epe_exam ON exam_publish_events(exam_id);
 
 -- ============================================================
 -- 索引

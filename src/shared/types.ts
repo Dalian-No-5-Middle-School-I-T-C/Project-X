@@ -800,6 +800,8 @@ export type ExamRecord = {
   exam_date?: string | null;
   /** 考试模式（#178），缺省视为 formal */
   exam_mode?: ExamMode;
+  /** 成绩公布状态（v41/v42）：0=未公布 1=已公布 2=已撤回；缺省视为 0 */
+  score_published?: number;
   created_at: string;
 };
 

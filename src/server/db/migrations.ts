@@ -906,6 +906,38 @@ const MIGRATIONS: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_ai_jobs_status ON ai_analysis_jobs(status);
       `);
     }
+  },
+  // v41: 成绩公布开关 —— 批改完成后默认未公布，教师手动公布后学生方可查看。
+  // 存量兼容：历史已结考（status='closed'）的考试回填为已公布，避免升级后历史成绩对学生消失。
+  {
+    version: 41,
+    name: "exam-score-published",
+    up(db) {
+      addColumnIfMissing(db, "exams", "score_published", "INTEGER DEFAULT 0");
+      db.exec(`UPDATE exams SET score_published = 1 WHERE status = 'closed' AND score_published = 0`);
+    }
+  },
+  // v42: 成绩公布操作日志表（审计追踪）。
+  // 记录每次公布/撤回的执行人、时间与撤回原因；score_published 扩展三态：
+  // 0=未公布 1=已公布 2=已撤回（撤回后学生不可见，可再次公布重新公开）。
+  {
+    version: 42,
+    name: "exam-publish-events",
+    up(db) {
+      if (!hasTable(db, "exam_publish_events")) {
+        db.exec(`
+          CREATE TABLE exam_publish_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            exam_id     INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            action      TEXT NOT NULL,           -- publish / unpublish
+            actor_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            reason      TEXT,                     -- 撤回原因（unpublish 时记录）
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_epe_exam ON exam_publish_events(exam_id);
+        `);
+      }
+    }
   }
 ];
 

@@ -1927,6 +1927,112 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  // v41: 单场成绩公布 —— 教师手动公布后学生方可查看。幂等（已公布直接返回 ok）。
+  app.post("/api/exams/:examId/publish", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "无效的考试 ID" });
+        return;
+      }
+      const { getMysqlDb } = await import("../../../server/db");
+      const db = getMysqlDb();
+      const exam = await db.get("SELECT id FROM exams WHERE id = ?", examId) as { id: number } | undefined;
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      await db.run("UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", examId);
+      // v42: 审计日志（公布/重新公布都记录）
+      await db.run(
+        "INSERT INTO exam_publish_events (exam_id, action, actor_id) VALUES (?, 'publish', ?)",
+        examId, req.user?.id ?? null
+      ).catch(() => {});
+      res.json({ ok: true, scorePublished: 1 });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // v41: 批量成绩公布 —— body { examIds: number[] }，逐场校验存在性与数据权限范围。
+  app.post("/api/exams/publish-batch", requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as { examIds?: unknown };
+      const rawIds = Array.isArray(body.examIds) ? body.examIds : [];
+      const examIds = rawIds.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+      if (examIds.length === 0) {
+        res.status(400).json({ message: "examIds 必须为非空数字数组" });
+        return;
+      }
+      const { getMysqlDb } = await import("../../../server/db");
+      const db = getMysqlDb();
+      // 存在性校验
+      const existing = await db.all(
+        `SELECT id FROM exams WHERE id IN (${examIds.map(() => "?").join(",")})`,
+        ...examIds
+      ) as Array<{ id: number }>;
+      if (existing.length !== examIds.length) {
+        res.status(400).json({ message: "部分考试不存在" });
+        return;
+      }
+      // 数据范围校验（与 GET /api/exams 的可见性过滤一致）
+      const visibleIds = await getVisibleExamIds(req.user);
+      const denied = visibleIds === null ? [] : examIds.filter((id) => !visibleIds.includes(id));
+      if (denied.length > 0) {
+        res.status(403).json({ message: `以下考试超出你的数据权限范围，无法公布: ${denied.join(", ")}` });
+        return;
+      }
+      await db.run(
+        `UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id IN (${examIds.map(() => "?").join(",")})`,
+        ...examIds
+      );
+      // v42: 批量公布审计日志
+      for (const id of examIds) {
+        await db.run(
+          "INSERT INTO exam_publish_events (exam_id, action, actor_id) VALUES (?, 'publish', ?)",
+          id, req.user?.id ?? null
+        ).catch(() => {});
+      }
+      res.json({ ok: true, publishedCount: examIds.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // v42: 撤回成绩公布 —— 仅"已公布(1)"可撤回为"已撤回(2)"；学生立即不可见。
+  // body { reason? }：撤回原因写入审计日志；支持再次公布（保留版本记录）。
+  app.post("/api/exams/:examId/unpublish", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "无效的考试 ID" });
+        return;
+      }
+      const { getMysqlDb } = await import("../../../server/db");
+      const db = getMysqlDb();
+      const exam = await db.get("SELECT id, score_published FROM exams WHERE id = ?", examId) as { id: number; score_published?: number } | undefined;
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      if (exam.score_published !== 1) {
+        res.status(400).json({ message: "仅已公布的成绩可撤回" });
+        return;
+      }
+      const reason = typeof (req.body ?? {}).reason === "string"
+        ? (req.body as { reason?: string }).reason!.trim().slice(0, 500)
+        : "";
+      await db.run("UPDATE exams SET score_published = 2, updated_at = CURRENT_TIMESTAMP WHERE id = ?", examId);
+      await db.run(
+        "INSERT INTO exam_publish_events (exam_id, action, actor_id, reason) VALUES (?, 'unpublish', ?, ?)",
+        examId, req.user?.id ?? null, reason || null
+      ).catch(() => {});
+      res.json({ ok: true, scorePublished: 2 });
+    } catch (error) {
+      next(error);
+    }
+  });
+
 
   // TWAIN 扫描仅在显式启用时开放；答题卡图片预览等纯文件/存储路由始终可用
   // （Web 部署下成绩详情/改分页的整页预览依赖它们）。

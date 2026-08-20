@@ -768,6 +768,36 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       ]
     },
+    {
+      // v41: 成绩公布开关 —— 批改完成后默认未公布（0），教师手动公布（1）后学生方可查看。
+      // 存量兼容：历史已结考（status='closed'）的考试回填为已公布。
+      version: 41,
+      name: "exam-score-published",
+      sqls: [
+        `ALTER TABLE exams ADD COLUMN score_published TINYINT DEFAULT 0`,
+        `UPDATE exams SET score_published = 1 WHERE status = 'closed' AND score_published = 0`,
+      ]
+    },
+    {
+      // v42: 成绩公布操作日志表（审计追踪）。
+      // 记录每次公布/撤回的执行人、时间与撤回原因；score_published 扩展三态：
+      // 0=未公布 1=已公布 2=已撤回（撤回后学生不可见，可再次公布重新公开）。
+      version: 42,
+      name: "exam-publish-events",
+      sqls: [
+        `CREATE TABLE IF NOT EXISTS exam_publish_events (
+          id          INT AUTO_INCREMENT PRIMARY KEY,
+          exam_id     INT NOT NULL,
+          action      VARCHAR(16) NOT NULL,
+          actor_id    INT,
+          reason      TEXT,
+          created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+          FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_epe_exam ON exam_publish_events(exam_id)`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {
