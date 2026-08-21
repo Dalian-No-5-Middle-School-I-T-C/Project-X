@@ -98,6 +98,11 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
   if (storedApiKey && !headers.has("X-Api-Key")) {
     headers.set("X-Api-Key", storedApiKey);
   }
+  // 字符串 body 一律按 JSON 发送：fetch 对字符串默认给 text/plain，express.json()
+  // 只解析 application/json，缺此头会导致 req.body 为空、后端 400（如全局设置保存）。
+  if (typeof options?.body === "string" && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
   const response = await fetch(apiUrl(url), { ...options, headers, credentials: "include" });
   if (!response.ok) {
     let message = response.statusText;
@@ -105,6 +110,7 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
     try {
       body = (await response.json()) as Record<string, unknown>;
       if (typeof body.message === "string") message = body.message;
+      else if (typeof body.error === "string") message = body.error;
     } catch {
       const text = await response.text().catch(() => "");
       if (text) message = text;
