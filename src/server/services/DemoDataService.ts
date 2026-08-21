@@ -438,7 +438,8 @@ async function seedWeeklyQuizDemo(
     VALUES (?, ?, ?, ?, ?, 'closed', CURRENT_TIMESTAMP, 'quiz', (SELECT id FROM users WHERE username = 'admin'))`;
   const insertScore = `INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score)
     VALUES (?, ?, ?, 0, ?)`;
-  const insertKp = "INSERT INTO knowledge_points (card_id, question_number, point_text, category, track_type) VALUES (?, ?, ?, '客观题', 'common')";
+  // 不依赖 knowledge_points.track_type：旧库升级（迁移 v39 前）无该列；新库缺省 'common' 一致。
+  const insertKp = "INSERT INTO knowledge_points (card_id, question_number, point_text, category) VALUES (?, ?, ?, '客观题')";
 
   let count = 0;
   for (const spec of allExams) {

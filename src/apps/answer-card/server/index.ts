@@ -629,13 +629,16 @@ export async function createApp(): Promise<express.Express> {
   // 安全审计（F-10）：最小安全响应头。
   // X-Frame-Options 不设（保留 iframe 嵌入场景）；由 CSP frame-ancestors 精确放行。
   // HSTS 仅在 HTTPS 请求或显式开启时下发，避免本地 HTTP 调试被浏览器强制升级。
+  // connect-src 显式放行 http/https：扫描端页面由本机 serve，但会把识别结果 fetch 到
+  // 用户输入的任意远端服务器（连接测试/上传），strict 'self' 会阻断这类跨域请求；
+  // 同时兼容前端与 API 分离部署（跨域 Web 部署）。其余指令维持 'self' 收紧不变。
   const hstsEnabled = process.env.PROJECTX_HSTS === "1";
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
     res.setHeader(
       "Content-Security-Policy",
-      "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'self' http://127.0.0.1:5173 http://localhost:5173; base-uri 'self'; form-action 'self'"
+      "default-src 'self'; connect-src 'self' http: https:; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; frame-ancestors 'self' http://127.0.0.1:5173 http://localhost:5173; base-uri 'self'; form-action 'self'"
     );
     if (hstsEnabled || req.secure) {
       res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");

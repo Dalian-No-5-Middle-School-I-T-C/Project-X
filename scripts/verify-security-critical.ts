@@ -150,6 +150,11 @@ async function main(): Promise<void> {
         && scannerHealthBody.capabilities?.nativeScannerApi === false,
       "扫描客户端模式允许动态环回端口且不启用服务端 TWAIN"
     );
+    const csp = scannerHealth.headers.get("content-security-policy") ?? "";
+    check(
+      csp.includes("default-src 'self'") && csp.includes("connect-src 'self' http: https:"),
+      "CSP 保持 default-src 'self' 并显式放行 connect-src http/https（扫描远程上传/跨域部署不被阻断）"
+    );
     const untrustedOriginHealth = await fetch(`${base}/api/app/health`, {
       headers: { Origin: "https://untrusted.example" }
     });
