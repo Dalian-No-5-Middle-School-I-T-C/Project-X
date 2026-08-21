@@ -33,6 +33,17 @@ router.post("/grades", manage, async (req: Request, res: Response) => {
   res.status(201).json(await classRepo.createGrade(String(name), Number(sortOrder ?? 0)));
 });
 
+router.put("/grades/:id", manage, async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const { name } = req.body ?? {};
+  if (!name) {
+    res.status(400).json({ message: "缺少年级名称" });
+    return;
+  }
+  await classRepo.updateGrade(id, String(name));
+  res.json({ message: "年级已重命名" });
+});
+
 router.delete("/grades/:id", manage, async (req: Request, res: Response) => {
   await classRepo.deleteGrade(Number(req.params.id));
   res.json({ message: "年级已删除（含其下班级）" });
@@ -105,6 +116,37 @@ router.post("/:id/students", manage, async (req: Request, res: Response) => {
 
   const added = await classRepo.addStudents(cls.id, ids);
   res.json({ message: `已添加 ${added} 名学生`, added });
+});
+
+/** POST /api/classes/:id/students/:studentId/move — 学生迁移到目标班级（跨班级/跨年级） */
+router.post("/:id/students/:studentId/move", manage, async (req: Request, res: Response) => {
+  const fromId = Number(req.params.id);
+  const studentId = Number(req.params.studentId);
+  const { targetClassId } = req.body ?? {};
+
+  const source = await classRepo.findClassById(fromId);
+  if (!source) {
+    res.status(404).json({ message: "班级不存在" });
+    return;
+  }
+  const target = await classRepo.findClassById(Number(targetClassId));
+  if (!target) {
+    res.status(400).json({ message: "目标班级不存在" });
+    return;
+  }
+
+  const student = await userRepo.findByIdIncludingInactive(studentId);
+  if (!student || student.role_id !== ROLE_IDS.STUDENT) {
+    res.status(400).json({ message: "非有效学生账号" });
+    return;
+  }
+  if (!(await classRepo.isStudentInClass(fromId, studentId))) {
+    res.status(400).json({ message: "该学生不在当前班级" });
+    return;
+  }
+
+  await classRepo.moveStudent(fromId, target.id, studentId);
+  res.json({ message: `已迁移到 ${target.grade_name} · ${target.name}` });
 });
 
 router.delete("/:id/students/:studentId", manage, async (req: Request, res: Response) => {

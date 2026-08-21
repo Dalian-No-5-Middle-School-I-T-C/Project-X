@@ -64,11 +64,12 @@ export async function getDashboardData(
     `SELECT e.id, e.name, e.subject, MAX(abc.created_at) AS scanned_at
      FROM exams e
      JOIN answer_block_crops abc ON abc.exam_id = e.id
-     WHERE 1=1 ${scopeSql}
+     WHERE 1=1 ${scopeSql}${subjectFilter}
      GROUP BY e.id
      ORDER BY scanned_at DESC
      LIMIT 1`,
-    ...scopeParams
+    ...scopeParams,
+    ...subjectParams
   ) as { id: number; name: string; subject: string | null; scanned_at: string } | undefined;
 
   if (latestExam) {
@@ -78,8 +79,9 @@ export async function getDashboardData(
     };
   } else {
     const fallback = await db.get(
-      `SELECT e.id, e.name, e.subject, e.created_at FROM exams e WHERE 1=1 ${scopeSql} ORDER BY e.created_at DESC LIMIT 1`,
-      ...scopeParams
+      `SELECT e.id, e.name, e.subject, e.created_at FROM exams e WHERE 1=1 ${scopeSql}${subjectFilter} ORDER BY e.created_at DESC LIMIT 1`,
+      ...scopeParams,
+      ...subjectParams
     ) as { id: number; name: string; subject: string | null; created_at: string } | undefined;
     if (fallback) {
       data.latestScanExam = {
@@ -112,8 +114,9 @@ export async function getDashboardData(
       SUM(CASE WHEN e.status IN ('active', 'grading') THEN 1 ELSE 0 END) AS active,
       SUM(CASE WHEN e.status = 'closed' THEN 1 ELSE 0 END) AS completed
      FROM exams e
-     WHERE 1=1 ${scopeSql}`,
-    ...scopeParams
+     WHERE 1=1 ${scopeSql}${subjectFilter}`,
+    ...scopeParams,
+    ...subjectParams
   ) as { total: number; active: number; completed: number } | undefined;
   if (stats) {
     data.stats = { totalExams: stats.total, activeGradingExams: stats.active, completedExams: stats.completed };

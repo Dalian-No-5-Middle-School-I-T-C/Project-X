@@ -191,15 +191,13 @@ body { font-family: 'Noto Sans SC', sans-serif; background: #f1f5f9; }
 const urlParams = new URLSearchParams(location.search);
 const API_BASE = (urlParams.get('api_base') || urlParams.get('apiBase') || '').replace(/\/$/, '');
 let apiMode = urlParams.get('demo') === '1' ? 'demo' : 'live';
-let authToken = urlParams.get('token') || localStorage.getItem('px_token') || null;
+let authToken = localStorage.getItem('px_token') || null;
 let currentUser = null;
 let currentRole = null;
 let currentStudent = null;
 let appData = { exams: [], students: [], scores: [], classes: [] };
 let charts = {};
-let isWeixinWebView = false;
 let studentCache = new Map();
-try { if (window.__wxjs_environment === 'miniprogram' || /miniProgram/.test(navigator.userAgent)) { isWeixinWebView = true; } } catch(e) {}
 
 // ==================== HTTP 工具 ====================
 async function apiGet(path) {
@@ -1566,12 +1564,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       initSidebar(); initMobileTabBar(); await initExamFilter();
       if (currentRole === 'teacher') showSection('teacherOverview');
       else showSection('studentDashboard');
-      if (isWeixinWebView && window.wx && wx.miniProgram) {
-        wx.miniProgram.postMessage({ data: { event: 'pageReady', role: currentRole } });
-      }
       return;
     } catch (e) {
-      console.warn('[Init] URL token 登录失败，回退到登录页:', e);
+      console.warn('[Init] Token 自动登录失败，回退到登录页:', e);
       authToken = null;
     }
   }

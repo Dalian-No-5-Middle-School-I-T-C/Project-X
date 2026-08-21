@@ -466,7 +466,7 @@ CREATE TABLE IF NOT EXISTS answer_block_crops (
     status           VARCHAR(32) DEFAULT 'ready',
     reviewer_id      INT,                           -- v1.9.0: 审阅人
     reviewed_at      DATETIME,                      -- v1.9.0: 审阅时间
-    review_round     INT DEFAULT 1,                 -- v1.9.0: 第几轮审阅
+    review_round     INT DEFAULT 0,                 -- v1.9.0: 已完成审阅轮数（0=未评）
     final_score      DOUBLE,                        -- v1.9.0: 最终分
     final_score_by   INT,                           -- v1.9.0: 最终分判定人
     score_breakdown  LONGTEXT,                      -- v1.9.0: 各轮评分明细 JSON
@@ -759,6 +759,8 @@ CREATE INDEX IF NOT EXISTS idx_student_scores_exam_total ON student_scores(exam_
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam_assigned ON student_scores(exam_id, assigned_score);
 CREATE INDEX IF NOT EXISTS idx_student_scores_exam_student ON student_scores(exam_id, student_id);
 CREATE INDEX IF NOT EXISTS idx_question_scores_exam_type ON question_scores(exam_id, score_type);
+-- 逐题分析/下钻：按 exam_id + question_number (+ score_type) 过滤（对齐 SQLite v37）
+CREATE INDEX IF NOT EXISTS idx_question_scores_exam_question_type ON question_scores(exam_id, question_number, score_type);
 CREATE INDEX IF NOT EXISTS idx_exams_grade_class ON exams(grade_id, class_id);
 CREATE INDEX IF NOT EXISTS idx_answer_overrides_exam ON answer_overrides(exam_id);
 CREATE INDEX IF NOT EXISTS idx_export_templates_user ON export_templates(user_id, slot);

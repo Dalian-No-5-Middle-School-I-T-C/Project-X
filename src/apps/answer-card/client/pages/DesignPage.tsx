@@ -82,6 +82,12 @@ export function DesignPage() {
 
   const selectedBlock = card ? (card.bodyBlocks.find((b) => b.id === selectedBlockId) ?? null) : null;
 
+  // 右栏检查器：以标签页分离「基本信息」与「选中块设置」，避免同窄栏内堆叠混淆。
+  const [inspectorTab, setInspectorTab] = useState<"info" | "block">("info");
+  useEffect(() => {
+    setInspectorTab(selectedBlock ? "block" : "info");
+  }, [selectedBlock?.id]);
+
   const blockSubLabel = (block: typeof selectedBlock) => {
     if (!block) return "";
     if (block.type === "objective") {
@@ -352,29 +358,57 @@ export function DesignPage() {
         {/* Inspector */}
         <aside className="flex w-[300px] shrink-0 flex-col overflow-hidden border-l border-border-subtle bg-card">
           {card ? (
+            <>
+              <div className="flex shrink-0 border-b border-border-subtle">
+              <button
+                type="button"
+                onClick={() => setInspectorTab("info")}
+                className={cn(
+                  "flex-1 px-3 py-2 text-sm font-medium transition-colors",
+                  inspectorTab === "info" ? "border-b-2 border-primary text-foreground" : "text-secondary-foreground hover:text-foreground"
+                )}
+              >
+                基本信息
+              </button>
+              <button
+                type="button"
+                disabled={!selectedBlock}
+                onClick={() => setInspectorTab("block")}
+                className={cn(
+                  "flex-1 px-3 py-2 text-sm font-medium transition-colors",
+                  inspectorTab === "block" ? "border-b-2 border-primary text-foreground" : "text-secondary-foreground hover:text-foreground",
+                  !selectedBlock && "cursor-not-allowed opacity-50"
+                )}
+              >
+                选中块设置
+              </button>
+            </div>
             <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-              <BasicInfoPanel card={card} updateCard={updateCard} />
-              {selectedBlock && (
-                <Panel>
-                  <div className="border-b border-border-subtle px-3 py-2.5 text-sm font-semibold text-foreground">
-                    选中块设置
-                  </div>
-                  <div className="flex flex-col gap-3 p-3">
-                    {selectedBlock.type === "objective" ? (
-                      <ObjectiveEditor
-                        block={selectedBlock as ObjectiveBlock}
-                        onChange={(mutator) => updateBlock(selectedBlock.id, mutator)}
-                      />
-                    ) : (
-                      <SubjectiveEditor
-                        block={selectedBlock as SubjectiveBlock}
-                        layoutVersion={(card.layoutVersion ?? 1) as 1 | 2}
-                        onChange={(mutator) => updateBlock(selectedBlock.id, mutator)}
-                        onUpload={uploadImage}
-                      />
-                    )}
-                  </div>
-                </Panel>
+              {inspectorTab === "info" ? (
+                <BasicInfoPanel card={card} updateCard={updateCard} />
+              ) : (
+                selectedBlock && (
+                  <Panel>
+                    <div className="border-b border-border-subtle px-3 py-2.5 text-sm font-semibold text-foreground">
+                      选中块设置
+                    </div>
+                    <div className="flex flex-col gap-3 p-3">
+                      {selectedBlock.type === "objective" ? (
+                        <ObjectiveEditor
+                          block={selectedBlock as ObjectiveBlock}
+                          onChange={(mutator) => updateBlock(selectedBlock.id, mutator)}
+                        />
+                      ) : (
+                        <SubjectiveEditor
+                          block={selectedBlock as SubjectiveBlock}
+                          layoutVersion={(card.layoutVersion ?? 1) as 1 | 2}
+                          onChange={(mutator) => updateBlock(selectedBlock.id, mutator)}
+                          onUpload={uploadImage}
+                        />
+                      )}
+                    </div>
+                  </Panel>
+                )
               )}
               {layout && layout.warnings.length > 0 && (
                 <Panel>
@@ -394,6 +428,7 @@ export function DesignPage() {
                 </Panel>
               )}
             </div>
+            </>
           ) : (
             <EmptyState
               size="sm"

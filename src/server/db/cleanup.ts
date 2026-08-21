@@ -25,6 +25,17 @@ interface CleanupResult {
 }
 
 /**
+ * 保留期内的原始扫描图不能误删：还在阅卷中（active/grading）的考试即使超过
+ * 保留期也跳过，避免申诉/复核时缺原图。成绩数据本身从不清理。
+ */
+const PROTECT_ACTIVE_EXAMS_SQL = `
+  AND NOT EXISTS (
+    SELECT 1 FROM scan_batches b JOIN exams e ON e.id = b.exam_id
+    WHERE b.id = scan_records.batch_id AND e.status IN ('active', 'grading')
+  )
+`;
+
+/**
  * 清理过期的扫描记录和识别结果
  */
 export async function runCleanup(retainDays: number = 30): Promise<CleanupResult> {
@@ -50,7 +61,7 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
       // 1. 查找过期的扫描记录
       const expiredRecords = await tx.all(
         `SELECT id, file_path, batch_id FROM scan_records
-         WHERE expires_at IS NOT NULL AND expires_at < ?`,
+         WHERE expires_at IS NOT NULL AND expires_at < ?${PROTECT_ACTIVE_EXAMS_SQL}`,
         cutoffStr
       ) as Array<{ id: number; file_path: string | null; batch_id: number }>;
 
@@ -67,7 +78,8 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
       const deletedRecognitions = await tx.run(
         `DELETE FROM objective_recognitions
          WHERE record_id IN (
-           SELECT id FROM scan_records WHERE expires_at IS NOT NULL AND expires_at < ?
+           SELECT id FROM scan_records
+           WHERE expires_at IS NOT NULL AND expires_at < ?${PROTECT_ACTIVE_EXAMS_SQL}
          )`,
         cutoffStr
       );
@@ -77,7 +89,7 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
       const clearedFiles = await tx.run(
         `UPDATE scan_records
          SET file_path = NULL, status = 'expired'
-         WHERE expires_at IS NOT NULL AND expires_at < ? AND file_path IS NOT NULL`,
+         WHERE expires_at IS NOT NULL AND expires_at < ? AND file_path IS NOT NULL${PROTECT_ACTIVE_EXAMS_SQL}`,
         cutoffStr
       );
       result.scanRecordsDeleted = clearedFiles.changes;

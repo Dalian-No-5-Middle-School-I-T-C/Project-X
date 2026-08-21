@@ -2,6 +2,7 @@ import { getMysqlDb, buildInsertIgnore } from "../db";
 import type { DbAdapter } from "../db";
 import { hashPassword, verifyPassword } from "../db";
 import { validateInitialPassword, generateRandomInitialPassword } from "../auth/passwordPolicy";
+import { csvCell } from "../../shared/csv";
 import crypto from "node:crypto";
 
 export interface UserRecord {
@@ -227,15 +228,13 @@ export class UserRepository {
   async exportStudentsCsv(): Promise<string> {
     const rows = await this.listAllStudentsForExport();
     const header = "年级,班级,学号,姓名,账号,密码";
-    const csvEsc = (v: string | null) => v ? (v.includes(",") ? `"${v}"` : v) : "";
-    return "\uFEFF" + [header, ...rows.map((r: any) => [csvEsc(r.grade_name), csvEsc(r.class_name), csvEsc(r.student_number), csvEsc(r.name), csvEsc(r.username), csvEsc(r.initial_password)].join(","))].join("\n");
+    return "\uFEFF" + [header, ...rows.map((r: any) => [csvCell(r.grade_name), csvCell(r.class_name), csvCell(r.student_number), csvCell(r.name), csvCell(r.username), csvCell(r.initial_password)].join(","))].join("\n");
   }
 
   async exportTeachersCsv(): Promise<string> {
     const teachers = await this.listAllTeachersForExport();
     const header = "科目,姓名,账号,密码";
-    const csvEsc = (v: string | null) => v ? (v.includes(",") ? `"${v}"` : v) : "";
-    return "\uFEFF" + [header, ...teachers.map((t: any) => [csvEsc(t.subject), csvEsc(t.name), csvEsc(t.username), csvEsc(t.initial_password)].join(","))].join("\n");
+    return "\uFEFF" + [header, ...teachers.map((t: any) => [csvCell(t.subject), csvCell(t.name), csvCell(t.username), csvCell(t.initial_password)].join(","))].join("\n");
   }
 
   async batchImportFromCsv(rows: string[][]): Promise<{

@@ -125,25 +125,50 @@ export function buildInsertIgnore(
 class SqliteAdapter implements DbAdapter {
   readonly dialect = "sqlite" as const;
   private db: any; // better-sqlite3 Database, 懒加载避免循环引用
+  /** 慢查询阈值 ms（建议 12：先测量再优化，>50ms 记日志定位） */
+  private slowThresholdMs = 50;
 
   constructor() {
     this.db = getDatabase();
   }
 
+  /** 统一耗时日志：只报 > threshold 的异常语句，正常路径零开销 */
+  private logTiming(sql: string, elapsedMs: number): void {
+    if (elapsedMs <= this.slowThresholdMs) return;
+    const truncated = sql.replace(/\s+/g, " ").trim().slice(0, 200);
+    console.warn(`[DB] slow query ${elapsedMs}ms: ${truncated}`);
+  }
+
   async get<T>(sql: string, ...params: any[]): Promise<T | null> {
+    const start = Date.now();
     const row = this.db.prepare(sql).get(...params) as T | undefined;
+    this.logTiming(sql, Date.now() - start);
     return row ?? null;
   }
   async all<T>(sql: string, ...params: any[]): Promise<T[]> {
-    return this.db.prepare(sql).all(...params) as T[];
+    const start = Date.now();
+    const rows = this.db.prepare(sql).all(...params) as T[];
+    this.logTiming(sql, Date.now() - start);
+    return rows;
   }
   async run(sql: string, ...params: any[]): Promise<{ lastInsertRowid: number; changes: number }> {
+    const start = Date.now();
     const r = this.db.prepare(sql).run(...params);
+    this.logTiming(sql, Date.now() - start);
     return { lastInsertRowid: Number(r.lastInsertRowid), changes: r.changes };
   }
   async exec(sql: string): Promise<void> {
+    const start = Date.now();
     this.db.exec(sql);
+    this.logTiming(sql, Date.now() - start);
   }
+  /**
+   * 事务约束（建议 12）：
+   * 禁止在 `fn` 内做任何真正的异步 I/O（如 await fetch / 外部服务）。
+   * better-sqlite3 是单连接同步驱动，`await fn(this)` 会在 BEGIN/COMMIT 之间让出事件循环；
+   * 若并发事务穿插或外部 await 穿插，会破坏本事务的原子性/隔离性。
+   * 需要长任务的写请先收集 DB 只读数据，再一次性进事务提交。
+   */
   async transaction<T>(fn: (db: DbAdapter) => Promise<T>): Promise<T> {
     const begin = this.db.prepare("BEGIN");
     const commit = this.db.prepare("COMMIT");
@@ -546,7 +571,7 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         // 5. answer_block_crops 加列
         `ALTER TABLE answer_block_crops ADD COLUMN reviewer_id     INT`,
         `ALTER TABLE answer_block_crops ADD COLUMN reviewed_at     DATETIME`,
-        `ALTER TABLE answer_block_crops ADD COLUMN review_round    INT DEFAULT 1`,
+        `ALTER TABLE answer_block_crops ADD COLUMN review_round    INT DEFAULT 0`,
         `ALTER TABLE answer_block_crops ADD COLUMN final_score     DOUBLE`,
         `ALTER TABLE answer_block_crops ADD COLUMN final_score_by  INT`,
         `ALTER TABLE answer_block_crops ADD COLUMN score_breakdown LONGTEXT`,
@@ -707,6 +732,40 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       sqls: [
         `ALTER TABLE exams ADD COLUMN closed_at DATETIME`,
         `UPDATE exams SET closed_at = updated_at WHERE status = 'closed' AND closed_at IS NULL`,
+      ]
+    },
+    {
+      version: 36,
+      name: "review-round-fresh-crops-zero",
+      sqls: [
+        `UPDATE answer_block_crops SET review_round = 0 WHERE score_breakdown IS NULL OR score_breakdown = '' OR score_breakdown = '[]'`,
+      ]
+    },
+    {
+      version: 37,
+      name: "question-scores-exam-question-type-index",
+      sqls: [
+        `CREATE INDEX IF NOT EXISTS idx_question_scores_exam_question_type ON question_scores(exam_id, question_number, score_type)`,
+      ]
+    },
+    {
+      version: 38,
+      name: "ai-analysis-jobs",
+      sqls: [
+        `CREATE TABLE IF NOT EXISTS ai_analysis_jobs (
+          id         INT AUTO_INCREMENT PRIMARY KEY,
+          exam_id    INT,
+          group_id   INT,
+          class_id   INT,
+          status     VARCHAR(16) NOT NULL DEFAULT 'queued',
+          result     LONGTEXT,
+          error      TEXT,
+          model      VARCHAR(100),
+          created_by INT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          INDEX idx_ai_jobs_status (status)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       ]
     },
   ];

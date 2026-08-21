@@ -5,13 +5,22 @@
  *   npx tsx testdata/demo-exams/scripts/seed.ts
  *   PROJECTX_DB_PATH=/path/to.db npx tsx testdata/demo-exams/scripts/seed.ts
  *
+ * 支持 SQLite 与 MariaDB 双方言：默认写本地 SQLite；设置 PROJECTX_MARIADB_HOST 等
+ * 环境变量（或 config.yml database.mode: remote）后直接写入 MariaDB。
  * 可重复运行：会先清理「演示-」前缀数据。
  * 核心逻辑在 src/server/services/DemoDataService.ts（服务端 /api/db/import-demo 同款）。
  */
 
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { initializeDatabase, ensureDefaultAdmin, closeDatabase } from "../../../src/server/db/index.ts";
+import {
+  closeDatabase,
+  detectDialect,
+  ensureDefaultAdmin,
+  initializeDatabase,
+  initMariadbSchema,
+  resetAdapter
+} from "../../../src/server/db/index.ts";
 import { seedDemoData } from "../../../src/server/services/DemoDataService.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -25,14 +34,24 @@ export async function seedDemoExams(dbPath?: string): Promise<void> {
 
   console.log(`[seed] 数据库: ${process.env.PROJECTX_DB_PATH}`);
   initializeDatabase();
+  // The HTTP server initializes the remote schema during startup, but this
+  // standalone entry point must do so itself before querying/creating admin.
+  if (detectDialect() === "mariadb") {
+    await initMariadbSchema();
+  }
   await ensureDefaultAdmin();
 
   await seedDemoData();
 }
 
 async function main(): Promise<void> {
-  await seedDemoExams();
-  closeDatabase();
+  try {
+    await seedDemoExams();
+  } finally {
+    closeDatabase();
+    // Close the MariaDB pool as well; closeDatabase() only owns SQLite.
+    resetAdapter();
+  }
 }
 
 const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

@@ -1,5 +1,5 @@
 import type { DbAdapter } from "../db/mysql";
-import { getMysqlDb } from "../db/mysql";
+import { getMysqlDb, buildInsertIgnore } from "../db/mysql";
 import { getAnalysisThresholds } from "../services/analysisConfig";
 import { discriminationByExtremeGroup } from "../../shared/stats";
 import type { KnowledgeSeverity, KnowledgeWeaknessItem } from "../../shared/types";
@@ -61,6 +61,26 @@ export class KnowledgePointRepository {
 
   async deleteByCardId(cardId: string): Promise<void> {
     await this.db.run("DELETE FROM knowledge_points WHERE card_id = ?", cardId);
+  }
+
+  /** 建议 8：合并写入（已有 (card, question, point) 保留），不覆盖既有标注。 */
+  async mergeByCard(cardId: string, points: KnowledgePointInput[]): Promise<void> {
+    if (points.length === 0) return;
+    const insert = buildInsertIgnore(
+      this.db.dialect,
+      "knowledge_points",
+      ["card_id", "question_number", "point_text", "category", "sort_order"],
+    );
+    // 逐题去重、计数可作为 sort_order 的有序复现；已有相同 point 会被 IGNORE 跳过
+    await this.db.transaction(async (tx) => {
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        await tx.run(
+          insert,
+          cardId, p.question_number, p.point_text, p.category || null, p.sort_order ?? i
+        );
+      }
+    });
   }
 
   async getWeaknessesForExam(examId: number, classId?: number | null): Promise<Array<KnowledgeWeaknessItem>> {

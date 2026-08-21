@@ -42,6 +42,10 @@
     "verify:scoring-mode-config": "tsx scripts/scoring-mode-config-integration.ts",
     "verify:176-178": "tsx scripts/verify-176-178-smoke.ts",
     "verify:scanner-cancel": "tsx scripts/verify-scanner-cancel.ts",
+    "verify:grade-stage": "tsx src/apps/answer-card/client/util/gradeStage.ts",
+    "verify:score-grid": "tsx scripts/verify-score-grid.ts",
+    "verify:core-logic": "tsx scripts/verify-core-logic.ts",
+    "verify:review-submit": "tsx scripts/verify-review-submit.ts",
     "typecheck": "tsc --noEmit"
   },
   "browserslist": [

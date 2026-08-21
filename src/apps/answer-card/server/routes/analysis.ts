@@ -9,11 +9,16 @@ import express from "express";
 import { getMysqlDb, buildUpsertSQL } from "../../../../server/db";
 import { AnalysisRepository } from "../../../../server/repositories/AnalysisRepository";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
+import { analysisCache } from "../../../../server/services/analysisCache";
+import { createAiAnalysisJob, enqueueAiAnalysisJob, getAiAnalysisJobWithCreator } from "../../../../server/services/aiAnalysisJobs";
+import { suggestForCard } from "../../../../server/services/knowledgeSuggester";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
 import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../middleware";
 import { requirePermission, authMiddleware } from "../../../../server/middleware/auth";
 import { PERMISSIONS } from "../../../../server/auth/permissions";
+import { ScoreRepository } from "../../../../server/repositories/ScoreRepository";
+import { canReadGroup } from "../../../../server/routes/exam-groups-helpers";
 import {
   getAnalysisThresholds, validateThresholdsInput, invalidateAnalysisThresholdsCache,
   ANALYSIS_SETTING_KEYS, DEFAULT_ANALYSIS_THRESHOLDS
@@ -21,7 +26,11 @@ import {
 import { maskApiKey } from "../../../../server/utils/maskApiKey";
 import { fetchLlmClient } from "../llm-client";
 import { CreateExamGroupSchema, validateBody } from "../validation";
-import type { CrossExamTotalRequest } from "../../../../shared/types";
+import type {
+  AiJobCreateResponse, AiJobPollResponse, BorderlineLineKind, BorderlineResponse, ClassKnowledgeResponse,
+  ComparableResponse, CrossExamTotalRequest, KnowledgeSuggestResponse, StudentTrendPoint,
+  SubjectDeviationResponse, SubjectQualityResponse, WrongQuestionRow
+} from "../../../../shared/types";
 
 const router = express.Router();
 
@@ -55,6 +64,7 @@ router.put("/config/thresholds", requirePermission(PERMISSIONS.SYSTEM_MANAGE), a
       await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.errorTiers, t.errorTiers.join(","), now);
     });
     invalidateAnalysisThresholdsCache();
+    analysisCache.clear();
     res.json({ ok: true, data: await getAnalysisThresholds() });
   } catch (error) {
     next(error);
@@ -377,6 +387,161 @@ router.get("/exams/:examId/metrics", requireExamAccess, async (req, res, next) =
   }
 });
 
+// ── 建议 4：临界生（踩线生）名单 ─────────────────────
+router.get("/exams/:examId/borderline-students", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    const examId = Number(req.params.examId);
+    const classId = req.query.classId ? Number(req.query.classId) : undefined;
+    const lineKind = (["pass", "excellent", "custom", "percent"] as BorderlineLineKind[]).includes(req.query.lineKind as BorderlineLineKind)
+      ? (req.query.lineKind as BorderlineLineKind)
+      : "pass";
+    const lineValue = req.query.lineValue ? Number(req.query.lineValue) : undefined;
+    const margin = req.query.margin ? Number(req.query.margin) : undefined;
+    const data = await analysisRepo.getBorderlineStudents(examId, { classId, lineKind, lineValue, margin });
+    res.json(data satisfies BorderlineResponse);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 建议 3：学生个人跨考试成长曲线 ────────────────────
+// 越权防护：学生只能看本人曲线；教师/管理员只能看可见考试范围内的数据，
+// 且目标学生在可见考试内无成绩时拒绝（防止拿任意学生 ID 枚举其他教师管辖的数据）。
+router.get("/students/:studentId/trend", authMiddleware, async (req, res, next) => {
+  try {
+    const studentId = Number(req.params.studentId);
+    if (!Number.isInteger(studentId) || studentId <= 0) {
+      res.status(400).json({ message: "无效的学生 ID" });
+      return;
+    }
+    const analysisRepo = new AnalysisRepository();
+    const user = req.user;
+
+    // 学生角色：只能读取本人曲线
+    if (user?.role_name === "student") {
+      if (user.id !== studentId) {
+        res.status(403).json({ message: "权限不足：只能查看本人的成长曲线" });
+        return;
+      }
+      const data = await analysisRepo.getStudentTrend(studentId, null);
+      res.json(data satisfies StudentTrendPoint[]);
+      return;
+    }
+
+    // 管理员 / 年级组长 / 普通教师（后兼容）→ 全部可见
+    const visibleIds = await getVisibleExamIds(user);
+    if (visibleIds === null) {
+      const data = await analysisRepo.getStudentTrend(studentId, null);
+      res.json(data satisfies StudentTrendPoint[]);
+      return;
+    }
+
+    // 其余教师：仅返回可见考试内的数据；该生在可见范围内无成绩时拒绝访问
+    const hasAnyScore = await getMysqlDb().get("SELECT 1 FROM student_scores WHERE student_id = ? LIMIT 1", studentId);
+    const data = await analysisRepo.getStudentTrend(studentId, visibleIds);
+    if (data.length === 0) {
+      if (hasAnyScore) {
+        res.status(403).json({ message: "权限不足：无权访问该学生" });
+        return;
+      }
+      res.json([] satisfies StudentTrendPoint[]);
+      return;
+    }
+    res.json(data satisfies StudentTrendPoint[]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 建议 7：偏科预警（POST 多考试跨科 Z 分）───────────
+router.post("/subject-deviation", async (req, res, next) => {
+  try {
+    const examIds = numberArray(req.body?.examIds);
+    if (examIds.length === 0) {
+      res.status(400).json({ message: "请至少选择一场考试" });
+      return;
+    }
+    if (!(await validateExamIdsAccess(req, res, examIds))) return;
+    const classId = req.body?.classId ? Number(req.body.classId) : undefined;
+    const threshold = req.body?.threshold ? Number(req.body.threshold) : 0.8;
+    const analysisRepo = new AnalysisRepository();
+    const data = await analysisRepo.getSubjectDeviation(examIds, { classId, threshold });
+    res.json(data satisfies SubjectDeviationResponse);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 建议 10：班级知识点掌握对比 ───────────────────────
+router.get("/exams/:examId/class-knowledge", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    const examId = Number(req.params.examId);
+    let classIds: number[] | undefined;
+    if (typeof req.query.classIds === "string" && req.query.classIds.trim()) {
+      classIds = req.query.classIds.split(",").map(Number).filter((n) => Number.isFinite(n) && n > 0);
+    }
+    const data = await analysisRepo.getClassKnowledgeStats(examId, classIds);
+    res.json(data satisfies ClassKnowledgeResponse);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 建议 11：错题本 XLSX 导出 ────────────────────────
+router.get("/exams/:examId/export-wrong", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    const examId = Number(req.params.examId);
+    const classId = req.query.classId ? Number(req.query.classId) : undefined;
+    const threshold = req.query.threshold ? Number(req.query.threshold) : 0.6;
+    const rows: WrongQuestionRow[] = await analysisRepo.getWrongQuestionRows(examId, { classId, threshold });
+
+    const XLSX = await import("xlsx");
+    const header = ["班级", "考号", "姓名", "总分", "题号", "满分", "得分", "得分率%"];
+    const data = rows.map((r) => [r.className, r.studentNumber, r.studentName, r.totalScore, r.questionNumber, r.maxScore, r.score, r.scoreRate]);
+    const ws = XLSX.utils.aoa_to_sheet([header, ...data]);
+    ws["!cols"] = [
+      { wch: 10 }, { wch: 12 }, { wch: 10 }, { wch: 8 },
+      { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 8 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "错题本");
+    const buf = Buffer.from(XLSX.write(wb, { type: "buffer", bookType: "xlsx" }));
+    const exam = await analysisRepo.getExam(examId);
+    const filename = `${exam?.name ?? "成绩表"}_错题本.xlsx`;
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="wrong.xlsx"; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.send(buf);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 建议 14：年级间同类考试对比（同答题卡模板）────────
+router.get("/exams/:examId/comparable", requireExamAccess, async (req, res, next) => {
+  try {
+    const analysisRepo = new AnalysisRepository();
+    const data = await analysisRepo.getComparableExams(Number(req.params.examId));
+    res.json(data satisfies ComparableResponse);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 建议 15：学科命题质量趋势（历次 P/D）──────────────
+router.get("/subject-quality", async (req, res, next) => {
+  try {
+    const subject = typeof req.query.subject === "string" ? req.query.subject : "";
+    const analysisRepo = new AnalysisRepository();
+    const data = await analysisRepo.getSubjectQuality(subject);
+    res.json(data satisfies SubjectQualityResponse);
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ── B2: 逐题选项分析（v29）──────────────────────────
 router.get("/exams/:examId/option-analysis", requireExamAccess, async (req, res, next) => {
   try {
@@ -502,49 +667,73 @@ router.post("/exams/:examId/ai-analysis", requireExamAccess, async (req, res, ne
       }
     }
 
-    const response = await fetchLlmClient("/analysis/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        examId,
-        classId,
-        model: typeof req.body?.model === "string" ? req.body.model : undefined,
-        locale: "zh-CN",
-        providerOverride: providerOverride ?? undefined
-      })
-    }, 120_000);
-
-    if (!response.ok) {
-      let message = `AI 服务返回 ${response.status}`;
-      try {
-        const body = await response.json() as { detail?: string; message?: string };
-        message = body.detail || body.message || message;
-      } catch {
-        const text = await response.text().catch(() => "");
-        if (text) message = text;
-      }
-      if (message.includes("404") && providerOverride) {
-        const urlHint = providerOverride.base_url ? ` (base_url: ${providerOverride.base_url})` : "";
-        message = `自定义服务商 API 返回 404${urlHint}。请检查 Base URL 是否正确 — 它应该是 API 端点地址，而非网站首页。确保 Python llmclient 已启动。`;
-      }
-      res.status(response.status >= 400 && response.status < 500 ? response.status : 502)
-        .json({ code: ApiError.AI_SERVICE_ERROR, message });
-      return;
-    }
-
-    res.json(await response.json());
+    // 建议 5：先建任务立即返回 jobId，后台串行队列执行（不再同步阻塞最长 120s）
+    const jobId = await createAiAnalysisJob({
+      examId,
+      classId,
+      model: typeof req.body?.model === "string" ? req.body.model : undefined,
+      providerOverride,
+      createdBy: req.user?.id ?? null,
+    });
+    enqueueAiAnalysisJob(jobId, { examId, classId, model: typeof req.body?.model === "string" ? req.body.model : undefined, providerOverride })
+      .catch((err) => console.error(`[AiJob] #${jobId} failed:`, err));
+    res.status(202).json({ jobId, status: "queued" } satisfies AiJobCreateResponse);
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      res.status(504).json({ code: ApiError.AI_SERVICE_TIMEOUT, message: "AI 服务请求超时。请检查 llmclient 是否正常运行。" });
-      return;
-    }
-    if (error instanceof Error && (error.message.includes("fetch") || error.message.includes("ECONNREFUSED"))) {
-      res.status(503).json({ code: ApiError.AI_SERVICE_UNREACHABLE, message: "无法连接到 Python llmclient 中转服务。请先启动：py -m uvicorn llmclient.server:app --host 127.0.0.1 --port 8766" });
-      return;
-    }
     next(error);
   }
 });
+
+// GET /api/analysis/ai-analysis/jobs/:jobId — 轮询任务状态（建议 5）
+router.get("/ai-analysis/jobs/:jobId", authMiddleware, async (req, res, next) => {
+  try {
+    const jobId = Number(req.params.jobId);
+    if (!Number.isInteger(jobId) || jobId <= 0) {
+      res.status(400).json({ message: "无效的任务 ID" });
+      return;
+    }
+    const entry = await getAiAnalysisJobWithCreator(jobId);
+    if (!entry) {
+      res.status(404).json({ message: "任务不存在" });
+      return;
+    }
+    const { job, createdBy } = entry;
+    // 匿名开发模式（未强制鉴权且无 token）维持向后兼容放行；
+    // 其余用户按创建者 / 考试可见性二次校验，杜绝按自增 ID 遍历他人任务（IDOR）。
+    if (req.user && !(await canAccessAiJobContext(req.user, createdBy, job))) {
+      res.status(403).json({ message: "权限不足：无权访问该任务" });
+      return;
+    }
+    res.json(job satisfies AiJobPollResponse);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * 轮询接口的 IDOR 防护辅助：管理员 / 任务创建者放行；
+ * 其余按任务引用的考试（requireExamAccess 语义）或考试组（requireReadableGroup 语义）重新校验。
+ */
+async function canAccessAiJobContext(
+  user: NonNullable<express.Request["user"]>,
+  createdBy: number | null,
+  job: AiJobPollResponse
+): Promise<boolean> {
+  if (user.role_name === "admin") return true;
+  if (createdBy != null && createdBy === user.id) return true;
+
+  if (job.examId != null) {
+    if (user.role_name === "student") {
+      // 学生只能轮询自己参加过的考试对应的任务
+      return await new ScoreRepository().hasScore(user.id, job.examId);
+    }
+    const visibleIds = await getVisibleExamIds(user);
+    return visibleIds === null || visibleIds.includes(job.examId);
+  }
+  if (job.groupId != null) {
+    return await canReadGroup({ user } as express.Request, job.groupId);
+  }
+  return false;
+}
 
 // ── Export ──────────────────────────────────────────────
 
@@ -618,6 +807,51 @@ router.get("/knowledge-points/:examId/students/:studentId", requireExamAccess, a
     const repo = new KnowledgePointRepository();
     const weaknesses = await repo.getWeaknessesForStudent(examId, studentId);
     res.json({ weaknesses });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 建议 8：知识点半自动标注（静态词典匹配 + 人工应用）──
+// GET /api/analysis/knowledge-points/:examId/suggest — 该考试答题卡的逐题候选知识点
+router.get("/knowledge-points/:examId/suggest", requireExamAccess, async (req, res, next) => {
+  try {
+    const examId = parseInt(String(req.params.examId), 10);
+    const db = getMysqlDb();
+    const exam = await db.get("SELECT card_id, subject FROM exams WHERE id = ?", examId) as { card_id: string | null; subject: string | null } | undefined;
+    if (!exam?.card_id) {
+      res.json({ cardId: null, subject: null, suggestions: [] } satisfies KnowledgeSuggestResponse);
+      return;
+    }
+    const data = await suggestForCard(exam.card_id, exam.subject);
+    res.json(data satisfies KnowledgeSuggestResponse);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// POST /api/analysis/knowledge-points/:examId/apply-suggestions — 批量勾选应用标注
+router.post("/knowledge-points/:examId/apply-suggestions", requireExamAccess, async (req, res, next) => {
+  try {
+    const examId = parseInt(String(req.params.examId), 10);
+    const points = req.body?.points;
+    if (!Array.isArray(points)) {
+      res.status(400).json({ message: "缺少 points 数组" });
+      return;
+    }
+    const db = getMysqlDb();
+    const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
+    if (!exam?.card_id) {
+      res.status(404).json({ message: "考试无关联答题卡" });
+      return;
+    }
+    const cleaned = points
+      .filter((p: any) => p && Number.isInteger(Number(p.question_number)) && typeof p.point_text === "string" && p.point_text.trim())
+      .map((p: any) => ({ question_number: Number(p.question_number), point_text: p.point_text.trim(), category: p.category || null }));
+    const repo = new KnowledgePointRepository();
+    await repo.mergeByCard(exam.card_id, cleaned);
+    analysisCache.invalidateExam(examId);
+    res.json({ ok: true, applied: cleaned.length });
   } catch (error) {
     next(error);
   }

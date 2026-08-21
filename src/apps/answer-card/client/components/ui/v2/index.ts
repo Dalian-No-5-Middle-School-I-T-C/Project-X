@@ -128,6 +128,7 @@ export {
   type TaskProgressProps,
 } from "./progress";
 export { Pagination, type PaginationProps } from "./pagination";
+export { Calendar, type CalendarProps } from "./calendar";
 
 /* ── 数据展示 / 业务外壳（P2-3）──────────────────────────────────── */
 export {

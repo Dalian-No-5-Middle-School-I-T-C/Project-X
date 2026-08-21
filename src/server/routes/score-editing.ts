@@ -15,6 +15,7 @@ import { getMysqlDb, buildUpsertSQL } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 import { recomputeExamRankings, roundScore } from "../services/rankingUpdate";
+import { analysisCache } from "../services/analysisCache";
 import { resolveReviewConfidenceThreshold } from "../services/userSettings";
 import { requireExamAccess } from "../../apps/answer-card/server/middleware";
 import {
@@ -317,6 +318,9 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
     }
   });
 
+  // 分析结果缓存精准失效（建议 6）
+  analysisCache.invalidateExam(examId);
+
   res.json({
     ok: true,
     ...(assignedScoreWarning ? { warnings: { assignedScoreError: assignedScoreWarning } } : {})
@@ -538,6 +542,9 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
       assignedScoreWarning = recalc.assignedScoreError;
     }
   });
+
+  // 分析结果缓存精准失效（建议 6）
+  analysisCache.invalidateExam(examId);
 
   res.json({
     ok: true,
