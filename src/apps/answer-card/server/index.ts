@@ -1937,17 +1937,37 @@ export async function createApp(): Promise<express.Express> {
       }
       const { getMysqlDb } = await import("../../../server/db");
       const db = getMysqlDb();
-      const exam = await db.get("SELECT id FROM exams WHERE id = ?", examId) as { id: number } | undefined;
+      const exam = await db.get("SELECT id, status, score_published FROM exams WHERE id = ?", examId) as { id: number; status?: string; score_published?: number } | undefined;
       if (!exam) {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      await db.run("UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?", examId);
-      // v42: 审计日志（公布/重新公布都记录）
-      await db.run(
-        "INSERT INTO exam_publish_events (exam_id, action, actor_id) VALUES (?, 'publish', ?)",
-        examId, req.user?.id ?? null
-      ).catch(() => {});
+      // 仅已结考（阅卷完成出分）的考试可公布，防止草稿/未完成成绩提前暴露给学生
+      if (exam.status !== "closed") {
+        res.status(409).json({ message: "考试尚未结考（阅卷未完成），无法公布成绩" });
+        return;
+      }
+      // 幂等：已公布直接返回，不重复写审计事件
+      if (exam.score_published === 1) {
+        res.json({ ok: true, scorePublished: 1 });
+        return;
+      }
+      // 状态更新与审计日志在同一事务中保证原子性；
+      // WHERE 带状态条件，防止校验与写入之间考试被并发改回阅卷中（TOCTOU）
+      await db.transaction(async (tx) => {
+        const result = await tx.run(
+          "UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'closed' AND (score_published IS NULL OR score_published <> 1)",
+          examId
+        );
+        if (result.changes !== 1) {
+          throw Object.assign(new Error("考试状态已变更，公布失败，请刷新后重试"), { status: 409, code: ApiError.INVALID_VALUE });
+        }
+        // v42: 审计日志（首次公布/撤回后重新公布都记录）
+        await tx.run(
+          "INSERT INTO exam_publish_events (exam_id, action, actor_id) VALUES (?, 'publish', ?)",
+          examId, req.user?.id ?? null
+        );
+      });
       res.json({ ok: true, scorePublished: 1 });
     } catch (error) {
       next(error);
@@ -1959,20 +1979,26 @@ export async function createApp(): Promise<express.Express> {
     try {
       const body = (req.body ?? {}) as { examIds?: unknown };
       const rawIds = Array.isArray(body.examIds) ? body.examIds : [];
-      const examIds = rawIds.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+      // 去重：重复 ID 会导致存在性校验误判与审计重复插入
+      const examIds = [...new Set(rawIds.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
       if (examIds.length === 0) {
         res.status(400).json({ message: "examIds 必须为非空数字数组" });
         return;
       }
       const { getMysqlDb } = await import("../../../server/db");
       const db = getMysqlDb();
-      // 存在性校验
+      // 存在性与结考状态校验
       const existing = await db.all(
-        `SELECT id FROM exams WHERE id IN (${examIds.map(() => "?").join(",")})`,
+        `SELECT id, status, score_published FROM exams WHERE id IN (${examIds.map(() => "?").join(",")})`,
         ...examIds
-      ) as Array<{ id: number }>;
+      ) as Array<{ id: number; status?: string; score_published?: number }>;
       if (existing.length !== examIds.length) {
         res.status(400).json({ message: "部分考试不存在" });
+        return;
+      }
+      const notClosed = existing.filter((item) => item.status !== "closed").map((item) => item.id);
+      if (notClosed.length > 0) {
+        res.status(409).json({ message: `以下考试尚未结考（阅卷未完成），无法公布成绩: ${notClosed.join(", ")}` });
         return;
       }
       // 数据范围校验（与 GET /api/exams 的可见性过滤一致）
@@ -1982,18 +2008,29 @@ export async function createApp(): Promise<express.Express> {
         res.status(403).json({ message: `以下考试超出你的数据权限范围，无法公布: ${denied.join(", ")}` });
         return;
       }
-      await db.run(
-        `UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id IN (${examIds.map(() => "?").join(",")})`,
-        ...examIds
-      );
-      // v42: 批量公布审计日志
-      for (const id of examIds) {
-        await db.run(
-          "INSERT INTO exam_publish_events (exam_id, action, actor_id) VALUES (?, 'publish', ?)",
-          id, req.user?.id ?? null
-        ).catch(() => {});
-      }
-      res.json({ ok: true, publishedCount: examIds.length });
+      // 幂等：跳过已公布的考试，不重复写审计事件
+      const toPublish = existing
+        .filter((item) => item.score_published !== 1)
+        .map((item) => item.id);
+      // 状态更新与审计日志在同一事务中保证原子性；
+      // WHERE 带状态条件，防止校验与写入之间考试被并发改回阅卷中（TOCTOU）
+      await db.transaction(async (tx) => {
+        for (const id of toPublish) {
+          const result = await tx.run(
+            "UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'closed' AND (score_published IS NULL OR score_published <> 1)",
+            id
+          );
+          if (result.changes !== 1) {
+            throw Object.assign(new Error(`考试 ${id} 状态已变更，公布失败，请刷新后重试`), { status: 409, code: ApiError.INVALID_VALUE });
+          }
+          // v42: 审计日志（首次公布/撤回后重新公布都记录）
+          await tx.run(
+            "INSERT INTO exam_publish_events (exam_id, action, actor_id) VALUES (?, 'publish', ?)",
+            id, req.user?.id ?? null
+          );
+        }
+      });
+      res.json({ ok: true, publishedCount: toPublish.length });
     } catch (error) {
       next(error);
     }
@@ -2022,11 +2059,21 @@ export async function createApp(): Promise<express.Express> {
       const reason = typeof (req.body ?? {}).reason === "string"
         ? (req.body as { reason?: string }).reason!.trim().slice(0, 500)
         : "";
-      await db.run("UPDATE exams SET score_published = 2, updated_at = CURRENT_TIMESTAMP WHERE id = ?", examId);
-      await db.run(
-        "INSERT INTO exam_publish_events (exam_id, action, actor_id, reason) VALUES (?, 'unpublish', ?, ?)",
-        examId, req.user?.id ?? null, reason || null
-      ).catch(() => {});
+      // 状态更新与审计日志在同一事务中保证原子性；
+      // WHERE 带状态条件，防止校验与写入之间公布状态被并发修改（TOCTOU）
+      await db.transaction(async (tx) => {
+        const result = await tx.run(
+          "UPDATE exams SET score_published = 2, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND score_published = 1",
+          examId
+        );
+        if (result.changes !== 1) {
+          throw Object.assign(new Error("考试状态已变更，撤回失败，请刷新后重试"), { status: 409, code: ApiError.INVALID_VALUE });
+        }
+        await tx.run(
+          "INSERT INTO exam_publish_events (exam_id, action, actor_id, reason) VALUES (?, 'unpublish', ?, ?)",
+          examId, req.user?.id ?? null, reason || null
+        );
+      });
       res.json({ ok: true, scorePublished: 2 });
     } catch (error) {
       next(error);
