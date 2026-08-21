@@ -47,6 +47,7 @@
     "verify:score-grid": "tsx scripts/verify-score-grid.ts",
     "verify:core-logic": "tsx scripts/verify-core-logic.ts",
     "verify:review-submit": "tsx scripts/verify-review-submit.ts",
+    "verify:weekly-demo": "tsx scripts/weekly-demo-smoke.ts",
     "typecheck": "tsc --noEmit"
   },
   "browserslist": [

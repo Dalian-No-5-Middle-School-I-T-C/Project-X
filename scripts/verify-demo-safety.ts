@@ -58,7 +58,7 @@ async function main(): Promise<void> {
   const seedStats = await seedDemoData();
   ok(seedStats.studentsCreated === 16, `植入 16 名演示学生（实际 ${seedStats.studentsCreated}）`);
   ok(seedStats.exams >= 9, `植入 ≥ 9 场演示考试（实际 ${seedStats.exams}）`);
-  ok(seedStats.groups === 2, `植入 2 个演示考试组（实际 ${seedStats.groups}）`);
+  ok(seedStats.groups === 3, `植入 3 个演示考试组（实际 ${seedStats.groups}）`);
 
   // ── 2. 构造"假冲突"的真实数据（is_demo=0） ─────────────────────
   // 这些记录的学号、用户名、答题卡 ID、班级名、年级名都与演示数据完全相同，

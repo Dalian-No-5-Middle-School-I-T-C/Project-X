@@ -14,6 +14,7 @@ import { ClassRepository } from "../repositories/ClassRepository";
 import { ROLE_IDS } from "../auth/permissions";
 import { seedFillBlankDemo } from "./demo/fillBlankDemo";
 import { seedReviewDemo } from "./demo/reviewDemo";
+import { getWeekWindow, WeeklyAuditService } from "./WeeklyAuditService";
 
 const DEMO_PREFIX = "演示-";
 const CARD_ID_PREFIX = "88000";
@@ -116,6 +117,97 @@ const OUTSIDE_WEEK_EXAM: ExamSpec = {
   }
 };
 
+/* ── 周报演示晨测（exam_mode='quiz'）────────────────────────────────────
+ * 目的：让「首页 → 每周考试审计」导入演示数据后立即可测。
+ *  - 上上周（-2 周）3 场 + 上周（-1 周）5 场：日期按导入时动态计算（getWeekWindow），
+ *    全出分 → 周报自动发布（导入末尾触发 publishDueWeeks），并产生「较上周」对比数据。
+ *  - 本周（0 周）1 场未出分 → 展示「报告顺延」状态。
+ * 日期永不硬编码，任何时候导入都落在近 5 周窗口内。满分统一 100。
+ */
+interface QuizExamSpec {
+  cardId: string;
+  name: string;
+  subject: string;
+  /** 周窗口内偏移：0=周一 … 4=周五 */
+  weekDay: number;
+  /** 所在周偏移：-2=上上周、-1=上周、0=本周 */
+  weekOffset: -2 | -1 | 0;
+  /** 16 名学生分数（与 STUDENT_NUMBERS 顺序一致）；缺省表示不出分（顺延演示） */
+  scores?: Record<string, number>;
+}
+
+/** 上上周（-2）：整体偏高，制造「上周下滑」的较上周对比 */
+const QUIZ_PREV2_EXAMS: QuizExamSpec[] = [
+  { cardId: "89000001", name: `${DEMO_PREFIX}晨测数学`, subject: "数学", weekDay: 0, weekOffset: -2, scores: {
+    "20260101": 92, "20260102": 85, "20260103": 88, "20260104": 90,
+    "20260105": 82, "20260106": 80, "20260107": 86, "20260108": 94,
+    "20260109": 84, "20260110": 87, "20260111": 81, "20260112": 89,
+    "20260113": 83, "20260114": 91, "20260115": 80, "20260116": 86 } },
+  { cardId: "89000002", name: `${DEMO_PREFIX}晨测英语`, subject: "英语", weekDay: 1, weekOffset: -2, scores: {
+    "20260101": 90, "20260102": 84, "20260103": 86, "20260104": 91,
+    "20260105": 80, "20260106": 83, "20260107": 88, "20260108": 89,
+    "20260109": 82, "20260110": 85, "20260111": 81, "20260112": 87,
+    "20260113": 84, "20260114": 90, "20260115": 82, "20260116": 85 } },
+  { cardId: "89000003", name: `${DEMO_PREFIX}晨测物理`, subject: "物理", weekDay: 2, weekOffset: -2, scores: {
+    "20260101": 93, "20260102": 86, "20260103": 89, "20260104": 92,
+    "20260105": 84, "20260106": 82, "20260107": 88, "20260108": 95,
+    "20260109": 85, "20260110": 88, "20260111": 83, "20260112": 90,
+    "20260113": 86, "20260114": 92, "20260115": 81, "20260116": 87 } }
+];
+
+/** 上周（-1）：周一~周五每天一场；数学刻意偏低 → 薄弱题 Top5 以数学为主 */
+const QUIZ_PREV1_EXAMS: QuizExamSpec[] = [
+  { cardId: "89000004", name: `${DEMO_PREFIX}晨测语文`, subject: "语文", weekDay: 0, weekOffset: -1, scores: {
+    "20260101": 78, "20260102": 85, "20260103": 72, "20260104": 88,
+    "20260105": 80, "20260106": 76, "20260107": 82, "20260108": 90,
+    "20260109": 74, "20260110": 86, "20260111": 79, "20260112": 83,
+    "20260113": 77, "20260114": 84, "20260115": 81, "20260116": 75 } },
+  { cardId: "89000005", name: `${DEMO_PREFIX}晨测数学`, subject: "数学", weekDay: 1, weekOffset: -1, scores: {
+    "20260101": 68, "20260102": 72, "20260103": 65, "20260104": 78,
+    "20260105": 70, "20260106": 62, "20260107": 75, "20260108": 80,
+    "20260109": 66, "20260110": 73, "20260111": 69, "20260112": 76,
+    "20260113": 67, "20260114": 79, "20260115": 71, "20260116": 64 } },
+  { cardId: "89000006", name: `${DEMO_PREFIX}晨测英语`, subject: "英语", weekDay: 2, weekOffset: -1, scores: {
+    "20260101": 75, "20260102": 82, "20260103": 70, "20260104": 85,
+    "20260105": 77, "20260106": 73, "20260107": 79, "20260108": 86,
+    "20260109": 72, "20260110": 81, "20260111": 76, "20260112": 83,
+    "20260113": 74, "20260114": 84, "20260115": 78, "20260116": 71 } },
+  { cardId: "89000007", name: `${DEMO_PREFIX}晨测物理`, subject: "物理", weekDay: 3, weekOffset: -1, scores: {
+    "20260101": 80, "20260102": 86, "20260103": 74, "20260104": 90,
+    "20260105": 82, "20260106": 76, "20260107": 85, "20260108": 92,
+    "20260109": 77, "20260110": 87, "20260111": 79, "20260112": 88,
+    "20260113": 78, "20260114": 89, "20260115": 81, "20260116": 75 } },
+  { cardId: "89000008", name: `${DEMO_PREFIX}晨测化学`, subject: "化学", weekDay: 4, weekOffset: -1, scores: {
+    "20260101": 76, "20260102": 83, "20260103": 71, "20260104": 86,
+    "20260105": 78, "20260106": 72, "20260107": 80, "20260108": 88,
+    "20260109": 73, "20260110": 82, "20260111": 75, "20260112": 85,
+    "20260113": 74, "20260114": 84, "20260115": 77, "20260116": 70 } }
+];
+
+/** 本周（0）：未出分 → 周报展示「顺延」状态 */
+const QUIZ_PENDING_EXAM: QuizExamSpec = {
+  cardId: "89000009", name: `${DEMO_PREFIX}晨测数学(待出分)`, subject: "数学", weekDay: 0, weekOffset: 0
+};
+
+/** 晨测演示知识点（5 题 × 科目）——周报「薄弱题 Top5」可展示知识点名称 */
+const QUIZ_KNOWLEDGE: Record<string, string[]> = {
+  语文: ["现代文阅读", "文言文翻译", "古诗鉴赏", "名句默写", "作文"],
+  数学: ["函数性质", "三角函数", "数列", "立体几何", "解析几何"],
+  英语: ["听力理解", "语法填空", "完形填空", "阅读理解", "书面表达"],
+  物理: ["牛顿定律", "功能关系", "电场", "磁场", "实验设计"],
+  化学: ["氧化还原", "离子反应", "元素周期律", "化学平衡", "有机推断"]
+};
+
+/** 本地日期偏移（YYYY-MM-DD + n 天） */
+function addDaysLocal(dateStr: string, n: number): string {
+  const d = new Date(`${dateStr}T00:00:00`);
+  d.setDate(d.getDate() + n);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
 async function tableExists(db: DbAdapter, name: string): Promise<boolean> {
   if (db.dialect === "mariadb") {
     const row = await db.get(
@@ -179,6 +271,21 @@ async function cleanupDemoData(db: DbAdapter): Promise<ClearDemoStats> {
   const demoExamIds = (await db.all("SELECT id FROM exams WHERE name LIKE ?", `${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
   const demoGroupIds = (await db.all("SELECT id FROM exam_groups WHERE name LIKE ?", `${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
 
+  // v2.3.x: 周报动态组（source='week'，由 WeeklyAuditService 按周发布创建，名称不带「演示-」前缀）。
+  // 若组内不存在任何真实考试（成员为空或全为演示考试），随演示清理一并删除，避免残留空组。
+  const demoOnlyWeekGroupIds = (await db.all(
+    `SELECT eg.id FROM exam_groups eg
+     WHERE eg.source = 'week'
+       AND NOT EXISTS (SELECT 1 FROM exam_group_members egm
+                       JOIN exams e ON e.id = egm.exam_id
+                       WHERE egm.group_id = eg.id AND e.name NOT LIKE '演示-%')`
+  ) as Array<{ id: number }>).map((r) => r.id);
+  if (demoOnlyWeekGroupIds.length > 0) {
+    const ph = demoOnlyWeekGroupIds.map(() => "?").join(",");
+    await db.run(`DELETE FROM exam_group_members WHERE group_id IN (${ph})`, ...demoOnlyWeekGroupIds);
+    await db.run(`DELETE FROM exam_groups WHERE id IN (${ph})`, ...demoOnlyWeekGroupIds);
+  }
+
   if (demoGroupIds.length > 0) {
     const ph = demoGroupIds.map(() => "?").join(",");
     await db.run(`DELETE FROM exam_group_members WHERE group_id IN (${ph})`, ...demoGroupIds);
@@ -201,6 +308,8 @@ async function cleanupDemoData(db: DbAdapter): Promise<ClearDemoStats> {
 
   // v1.9.6: 答题卡 / 用户 / 班级 / 年级 按归属标记 is_demo=1 清理，不再依赖硬编码 ID /
   // 学号 / 用户名 / 名称，避免误删同名真实数据。安全语义：is_demo=0 的真实记录永不被清理。
+  // v2.3.x: 晨测演示卡关联 knowledge_points（知识点，MariaDB 无级联），先按 is_demo 卡 id 清理再删卡。
+  await db.run("DELETE FROM knowledge_points WHERE card_id IN (SELECT id FROM answer_cards WHERE is_demo = 1)");
   const removedCards = (await db.run("DELETE FROM answer_cards WHERE is_demo = 1")).changes;
 
   // 收集待清理的演示用户 id（学生 + 演示教师），先解除 class_students 关联再删用户
@@ -308,6 +417,52 @@ export interface SeedDemoStats {
   studentsSkipped: number;
   exams: number;
   groups: number;
+}
+
+/**
+ * 植入周报演示晨测（quiz）：上上周 3 场 + 上周 5 场全出分、本周 1 场未出分（顺延演示）。
+ * 日期按 getWeekWindow 动态计算，任何时刻导入都落在周报近 5 周窗口内。
+ * 周组不在此手动创建 —— 由 seedDemoData 末尾调用 WeeklyAuditService.publishDueWeeks 统一发布
+ * （与生产定时任务同一发布逻辑，保证导入后周报立即可见）。
+ */
+async function seedWeeklyQuizDemo(
+  db: DbAdapter,
+  gradeId: number,
+  studentIdByNumber: Map<string, number>
+): Promise<number> {
+  const weekStartByOffset = (offset: -2 | -1 | 0) => getWeekWindow(offset).weekStart;
+  const allExams = [...QUIZ_PREV2_EXAMS, ...QUIZ_PREV1_EXAMS, QUIZ_PENDING_EXAM];
+
+  const insertCard = buildInsertIgnore(db.dialect, "answer_cards", ["id", "title", "subject_label", "exam_date", "is_demo"]);
+  const insertExam = `INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, closed_at, exam_mode, created_by)
+    VALUES (?, ?, ?, ?, ?, 'closed', CURRENT_TIMESTAMP, 'quiz', (SELECT id FROM users WHERE username = 'admin'))`;
+  const insertScore = `INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score)
+    VALUES (?, ?, ?, 0, ?)`;
+  const insertKp = "INSERT INTO knowledge_points (card_id, question_number, point_text, category, track_type) VALUES (?, ?, ?, '客观题', 'common')";
+
+  let count = 0;
+  for (const spec of allExams) {
+    const examDate = addDaysLocal(weekStartByOffset(spec.weekOffset), spec.weekDay);
+    await db.run(insertCard, spec.cardId, spec.name, spec.subject, examDate, 1);
+    const info = await db.run(insertExam, spec.name, spec.cardId, gradeId, spec.subject, examDate);
+    const examId = Number(info.lastInsertRowid);
+    count += 1;
+
+    const kpList = QUIZ_KNOWLEDGE[spec.subject];
+    if (kpList) {
+      for (const [i, point] of kpList.entries()) {
+        await db.run(insertKp, spec.cardId, i + 1, point);
+      }
+    }
+
+    if (!spec.scores) continue; // 未出分考试（本周顺延演示），不写成绩
+    for (const [num, total] of Object.entries(spec.scores)) {
+      const sid = studentIdByNumber.get(num);
+      if (sid) await db.run(insertScore, examId, sid, total, total);
+    }
+    await seedQuestionScores(db, examId, spec.cardId, studentIdByNumber, spec.scores);
+  }
+  return count;
 }
 
 /**
@@ -421,6 +576,9 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   const historyExamId = await seedExam(OUTSIDE_WEEK_EXAM);
   await seedFillBlankDemo(db);
 
+  // v2.3.x: 周报演示晨测（quiz）——上上周/上周全出分 + 本周未出分（顺延演示）
+  examCount += await seedWeeklyQuizDemo(db, grade.id, studentIdByNumber);
+
   // 网阅打分面板 DEV 演示数据（v1.9.4 路径 B 测试入口）
   const teacherRow = await db.get("SELECT id FROM users WHERE username = 'demo-teacher'") as { id: number } | undefined;
   const teacher2Row = await db.get("SELECT id FROM users WHERE username = 'demo-teacher-2'") as { id: number } | undefined;
@@ -453,11 +611,18 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   await db.run(ensureSetting, "require_original_paper", "1");
   await db.run(ensureSetting, "highlight_missing_paper", "1");
 
-  console.log(`[seed] 完成: ${examCount} 场考试, 16 名学生(文理分科), 大考合集(7科) + 跨考已存组`);
+  // v2.3.x: 周报发布 —— 与生产定时任务同一逻辑（publishDueWeeks），
+  // 导入后上上周/上周报告立即可见（创建 source='week' 动态组），本周顺延状态随之呈现。
+  const published = await new WeeklyAuditService().publishDueWeeks(new Date());
+  if (published.created.length > 0) {
+    console.log(`[seed] 周报已发布: ${published.created.join("、")}`);
+  }
+
+  console.log(`[seed] 完成: ${examCount} 场考试, 16 名学生(文理分科), 大考合集(7科) + 跨考已存组 + 周报晨测`);
   return {
     studentsCreated: batch.created,
     studentsSkipped: batch.skipped,
     exams: examCount,
-    groups: 2
+    groups: 3
   };
 }
