@@ -456,22 +456,32 @@ export class AnalysisRepository {
     const fullScore = await this.resolveExamFullScore(examId);
     const qa = await this.getQuestionAnalysis(examId, classId);
     const disc = qa.length > 0 ? qa.reduce((s, q) => s + (q.discrimination ?? 0), 0) / qa.length : 0;
+    // 信度样本与参考人数/逐题区分度同口径：带班级筛选时按该班 student_scores 参与者集合过滤
+    const reliabilityParticipants = classId === undefined
+      ? undefined
+      : Array.from((await this.getExamTotalsMap(examId, classFilter(classId))).keys());
     return {
       difficulty: fullScore > 0 ? Math.round((ov.avgScore / fullScore) * 1000) / 1000 : 0,
       discrimination: Math.round(disc * 1000) / 1000,
       fullScore,
       avgScore: ov.avgScore,
       gradedCount: ov.gradedCount,
-      reliability: await this.getExamReliability(examId),
+      reliability: await this.getExamReliability(examId, reliabilityParticipants),
       cv: coefficientOfVariation(ov.stdDev, ov.avgScore)
     };
   }
 
   /** 单场考试信度：纯客观卷用 KR-20（二分计分），含主观题用 Cronbach α（原始得分）。
-   * 剔除作答不完整的学生；题数 <2 或有效样本 <2 时返回 null（无法评估）。 */
-  private async getExamReliability(examId: number): Promise<number | null> {
+   * 剔除作答不完整的学生；题数 <2 或有效样本 <2 时返回 null（无法评估）。
+   * participantIds：可选参与者集合（班级筛选/大考逐科按 totals 口径），缺省为全部作答学生。 */
+  private async getExamReliability(examId: number, participantIds?: Iterable<number>): Promise<number | null> {
+    const ids = participantIds === undefined ? undefined : Array.from(participantIds);
+    if (ids !== undefined && ids.length === 0) return null;
+    const idClause = ids !== undefined ? `AND qs.student_id IN (${placeholders(ids)})` : "";
     const rows = await this.db.all(
-      `SELECT student_id, question_number, score_type, score, max_score FROM question_scores WHERE exam_id = ?`, examId
+      `SELECT qs.student_id, qs.question_number, qs.score_type, qs.score, qs.max_score
+       FROM question_scores qs
+       WHERE qs.exam_id = ? ${idClause}`, examId, ...(ids ?? [])
     ) as Array<{ student_id: number; question_number: number; score_type: string; score: number; max_score: number }>;
     if (rows.length === 0) return null;
     const qKeys = Array.from(new Set(rows.map((r) => String(r.question_number)))).sort((a, b) => Number(a) - Number(b));
@@ -672,7 +682,7 @@ export class AnalysisRepository {
         passRate: stat?.passRate ?? 0, excellentRate: stat?.excellentRate ?? 0,
         fullScore, hasAssignedScore: false,
         difficulty: s.difficulty, discrimination: s.discrimination,
-        reliability: await this.getExamReliability(s.examId),
+        reliability: await this.getExamReliability(s.examId, totals.keys()),
         cv: coefficientOfVariation(stat?.stdDev ?? 0, stat?.avgScore ?? 0)
       });
     }
