@@ -1786,22 +1786,8 @@ function App() {
             >
               {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            {/* 宣传网站入口：外链 GitHub Pages 宣传站点（与暗色按钮同尺寸） */}
-            <a
-              href={PROMO_SITE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="访问宣传网站"
-              title="访问宣传网站"
-              className={cn(
-                "inline-flex items-center justify-center rounded-md text-secondary-foreground",
-                "transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground",
-                "h-control-md w-control-md",
-                effectiveRailCollapsed ? "self-center" : undefined,
-              )}
-            >
-              <ExternalLink size={18} />
-            </a>
+            {/* 宣传网站入口已挪到 PageHeader.actions 与暗色按钮并列（与暗色按钮同步 hidden lg:inline-flex），
+                侧栏底部腾出空间给账号名称完整展示。小屏用户从 AccountMenu 下拉里的"访问宣传网站"项访问 */}
             <AccountMenu
               compact={effectiveRailCollapsed}
               onOpenSponsor={() => {
@@ -1842,6 +1828,21 @@ function App() {
                 >
                   {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
                 </button>
+                {/* 宣传网站入口（与暗色按钮同步 lg 屏以上显示；小屏从 AccountMenu 下拉"访问宣传网站"项访问） */}
+                <a
+                  href={PROMO_SITE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="访问宣传网站"
+                  title="访问宣传网站"
+                  className={cn(
+                    "inline-flex size-8 items-center justify-center rounded-md text-secondary-foreground",
+                    "transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground",
+                    "hidden lg:inline-flex",
+                  )}
+                >
+                  <ExternalLink size={18} />
+                </a>
                 <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
                   <button
                     type="button"

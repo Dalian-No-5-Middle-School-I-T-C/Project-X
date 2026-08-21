@@ -3,6 +3,7 @@ import {
   BookOpen,
   ChevronDown,
   Download,
+  ExternalLink,
   Eye,
   FlaskConical,
   Heart,
@@ -17,6 +18,7 @@ import {
 import { useAuth, type AppPersona, type TeacherRoleOverride } from "../auth/AuthContext";
 import { fetchJson, authFetch } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
+import { PROMO_SITE_URL } from "../lib/external-links";
 import { cn } from "../lib/utils";
 import {
   Button,
@@ -357,6 +359,13 @@ export function AccountMenu({
               <Heart size={15} /> 支持项目
             </DropdownMenuItem>
           )}
+          {/* 宣传网站外链入口（小屏 PageHeader 隐藏宣传图标时，仍可从这里访问 GitHub Pages 宣传站） */}
+          <DropdownMenuItem
+            onSelect={(e) => e.preventDefault()}
+            onClick={() => window.open(PROMO_SITE_URL, "_blank", "noopener,noreferrer")}
+          >
+            <ExternalLink size={15} /> 访问宣传网站
+          </DropdownMenuItem>
           {onOpenPermissions && user.role_name === "admin" && (
             <DropdownMenuItem onClick={() => onOpenPermissions()}>
               <Shield size={15} /> 权限管理
