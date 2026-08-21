@@ -14,10 +14,22 @@
     content: "";
     position: fixed;
     inset: 0;
-    z-index: var(--z-lightbox);
+    /* 背景图必须是「最底层」：z-index:-1 让它落在内容之下、viewport canvas 之上。
+       pointer-events:none 保证不挡交互；卡片/按钮自身有不透明底色，自然叠在
+       背景图上且保持可读。原 z-index:var(--z-lightbox)(600) 会把图绘到所有内容
+       之上（含按钮），虽不挡点击但视觉压住 UI、破坏可读性。 */
+    z-index: -1;
     pointer-events: none;
     background: url(/api/app/background) center / cover no-repeat fixed;
     opacity: var(--bg-opacity, 0);
+  }
+
+  /* 背景图激活时，把「画布底色」令牌置空：所有消费 bg-background 的层
+     （AppShell 与各页面根容器）随之透明，背景图浮层(z-index:-1)得以透出；
+     卡片/按钮用 bg-card、bg-primary 等独立令牌，不受影响，依旧不透明、可读。
+     无背景图时令牌仍是 canvas 色，页面外观与改动前一致（无回归）。 */
+  body.has-bg-image {
+    --color-background: transparent;
   }
 
   /* 背景图暗色遮罩 */
