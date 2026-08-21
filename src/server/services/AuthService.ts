@@ -126,6 +126,8 @@ export class AuthService {
         newHash, user.id
       );
       user.password_hash = newHash;
+      // 同步内存副本：登录响应的 passwordChangeRequired 取自该对象，漏同步会让本次（最需强制的首次）登录不触发强制改密
+      user.password_change_required = 1;
       valid = true;
     } else {
       valid = await verifyPassword(password, user.password_hash);

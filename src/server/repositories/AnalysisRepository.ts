@@ -652,9 +652,10 @@ export class AnalysisRepository {
       const passLine = Math.round(fullScore * thresholds.passRate * 10) / 10;
       const excellentLine = Math.round(fullScore * thresholds.excellentRate * 10) / 10;
       const c = classFilterQs(undefined);
-      // B6：stdDev 改用 SQL 原生 STDDEV_POP（总体标准差），数值稳定，且与单科「减真实均值」公式结果一致（均为总体σ）
+      // B6：stdDev 用 E[X²]−E[X]² 总体σ公式（与单科「减真实均值」结果一致）。
+      // 不用 STDDEV_POP：SQLite 无此聚合函数（仅 MariaDB 有），会导致大考 metrics 接口在默认 SQLite 部署下报错。
       const stat = await this.db.get(
-        `SELECT COUNT(*) AS gradedCount, ROUND(AVG(ss.total_score), 1) AS avgScore, ROUND(MAX(ss.total_score), 1) AS maxScore, ROUND(MIN(ss.total_score), 1) AS minScore, ROUND(STDDEV_POP(ss.total_score), 1) AS stdDev,
+        `SELECT COUNT(*) AS gradedCount, ROUND(AVG(ss.total_score), 1) AS avgScore, ROUND(MAX(ss.total_score), 1) AS maxScore, ROUND(MIN(ss.total_score), 1) AS minScore, ROUND(SQRT(AVG(ss.total_score * ss.total_score) - AVG(ss.total_score) * AVG(ss.total_score)), 1) AS stdDev,
                 ROUND(SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 0) AS passRate,
                 ROUND(SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 0) AS excellentRate
          FROM student_scores ss ${c.join}
