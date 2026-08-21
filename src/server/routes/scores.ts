@@ -5,7 +5,7 @@ import { ScoreRepository } from "../repositories/ScoreRepository";
 import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS } from "../auth/permissions";
-import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
+import { getVisibleExamIds, isExamSoftDeleted } from "../../apps/answer-card/server/middleware";
 import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
 import { trackAnalysisCall } from "../services/aiTelemetry";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
@@ -111,6 +111,11 @@ router.get("/me", async (req: Request, res: Response) => {
 /** GET /api/scores/me/exams/:examId — 当前用户某场考试的逐题明细（含班级均分与原卷图块） */
 router.get("/me/exams/:examId", async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
+  // #246 auto_delete：软删除考试的逐题明细不可访问
+  if (await isExamSoftDeleted(examId)) {
+    res.status(404).json({ message: "未找到你在该场考试的成绩" });
+    return;
+  }
   if (!(await scoreRepo.hasScore(req.user!.id, examId))) {
     res.status(404).json({ message: "未找到你在该场考试的成绩" });
     return;
@@ -399,6 +404,11 @@ router.get(
   async (req: Request, res: Response) => {
     const studentId = Number(req.params.studentId);
     const examId = Number(req.params.examId);
+    // #246 auto_delete：软删除考试的代查明细不可访问
+    if (await isExamSoftDeleted(examId)) {
+      res.status(404).json({ message: "考试不存在或已按数据保留策略清理" });
+      return;
+    }
     const accessError = await assertStudentAccessible(studentId, req.user!);
     if (accessError) {
       res.status(accessError.status).json({ message: accessError.message });

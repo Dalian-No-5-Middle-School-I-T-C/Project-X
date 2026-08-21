@@ -51,6 +51,8 @@ export class ScoreRepository {
       FROM student_scores ss
       JOIN exams e ON e.id = ss.exam_id
       WHERE ss.student_id = ?
+        -- #246 auto_delete：软删除考试的成绩不再对学生可见
+        AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)
       ORDER BY ss.graded_at DESC
     `, studentId) as Array<Omit<StudentExamScore, "percentile">>;
 
@@ -105,6 +107,8 @@ export class ScoreRepository {
         SELECT student_id, MIN(class_id) AS class_id FROM class_students GROUP BY student_id
       ) cs ON cs.student_id = ss.student_id
       WHERE ss.student_id = ?
+        -- #246 auto_delete：软删除考试不进入成长曲线
+        AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)
       ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC
     `, studentId) as Array<Omit<StudentTrendPoint, "percentile">>;
 

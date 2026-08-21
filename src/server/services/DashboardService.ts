@@ -5,7 +5,7 @@
 import type express from "express";
 import { getMysqlDb, type DbAdapter } from "../db";
 import { getUnfinishedSessions } from "./ReviewSessionService";
-import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
+import { getVisibleExamIds, EXAM_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 import type { DashboardData } from "../../shared/types";
 
 export async function getDashboardData(
@@ -59,18 +59,19 @@ export async function getDashboardData(
     };
   }
 
-  // 2. 最新扫描考试（优先有切块的，fallback 到最新创建的考试）
-  const latestExam = await db.get(
-    `SELECT e.id, e.name, e.subject, MAX(abc.created_at) AS scanned_at
-     FROM exams e
-     JOIN answer_block_crops abc ON abc.exam_id = e.id
-     WHERE 1=1 ${scopeSql}${subjectFilter}
-     GROUP BY e.id
-     ORDER BY scanned_at DESC
-     LIMIT 1`,
-    ...scopeParams,
-    ...subjectParams
-  ) as { id: number; name: string; subject: string | null; scanned_at: string } | undefined;
+   // 2. 最新扫描考试（优先有切块的，fallback 到最新创建的考试）
+   // #246 auto_delete：软删除考试不进入仪表盘
+   const latestExam = await db.get(
+     `SELECT e.id, e.name, e.subject, MAX(abc.created_at) AS scanned_at
+      FROM exams e
+      JOIN answer_block_crops abc ON abc.exam_id = e.id
+      WHERE 1=1 AND ${EXAM_NOT_SOFT_DELETED_SQL} ${scopeSql}${subjectFilter}
+      GROUP BY e.id
+      ORDER BY scanned_at DESC
+      LIMIT 1`,
+     ...scopeParams,
+     ...subjectParams
+   ) as { id: number; name: string; subject: string | null; scanned_at: string } | undefined;
 
   if (latestExam) {
     data.latestScanExam = {
@@ -79,7 +80,7 @@ export async function getDashboardData(
     };
   } else {
     const fallback = await db.get(
-      `SELECT e.id, e.name, e.subject, e.created_at FROM exams e WHERE 1=1 ${scopeSql}${subjectFilter} ORDER BY e.created_at DESC LIMIT 1`,
+      `SELECT e.id, e.name, e.subject, e.created_at FROM exams e WHERE 1=1 AND ${EXAM_NOT_SOFT_DELETED_SQL} ${scopeSql}${subjectFilter} ORDER BY e.created_at DESC LIMIT 1`,
       ...scopeParams,
       ...subjectParams
     ) as { id: number; name: string; subject: string | null; created_at: string } | undefined;
@@ -91,11 +92,11 @@ export async function getDashboardData(
     }
   }
 
-  // 2.5 最新出分：最近 closed 的考试
+  // 2.5 最新出分：最近 closed 的考试（#246 auto_delete：排除软删除）
   const released = await db.get(
     `SELECT e.id, e.name, e.subject, e.closed_at AS released_at
      FROM exams e
-     WHERE e.status = 'closed' AND e.closed_at IS NOT NULL ${scopeSql}${subjectFilter}
+     WHERE e.status = 'closed' AND e.closed_at IS NOT NULL AND ${EXAM_NOT_SOFT_DELETED_SQL} ${scopeSql}${subjectFilter}
      ORDER BY e.closed_at DESC, e.id DESC
      LIMIT 1`,
     ...scopeParams, ...subjectParams
@@ -114,7 +115,7 @@ export async function getDashboardData(
       SUM(CASE WHEN e.status IN ('active', 'grading') THEN 1 ELSE 0 END) AS active,
       SUM(CASE WHEN e.status = 'closed' THEN 1 ELSE 0 END) AS completed
      FROM exams e
-     WHERE 1=1 ${scopeSql}${subjectFilter}`,
+     WHERE 1=1 AND ${EXAM_NOT_SOFT_DELETED_SQL} ${scopeSql}${subjectFilter}`,
     ...scopeParams,
     ...subjectParams
   ) as { total: number; active: number; completed: number } | undefined;

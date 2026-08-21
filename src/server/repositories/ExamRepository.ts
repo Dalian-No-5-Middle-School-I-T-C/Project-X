@@ -68,10 +68,12 @@ export class ExamRepository {
     subject?: string; created_by?: number; examIds?: number[];
   }): Promise<ExamRecord[]> {
     // 考试日期语义与 listExamsForSelection 保持一致：取答题卡 exam_date，缺省回退创建日期
+    // #246 auto_delete：按保留策略软删除（exam_archives.is_deleted=1）的考试不再出现在列表
     let sql = `SELECT e.*, COALESCE(ac.exam_date, date(e.created_at)) as exam_date
       FROM exams e
       LEFT JOIN answer_cards ac ON ac.id = e.card_id
-      WHERE 1=1`;
+      WHERE 1=1
+        AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)`;
     const params: unknown[] = [];
     if (filters?.status) { sql += " AND e.status = ?"; params.push(filters.status); }
     if (filters?.grade_id) { sql += " AND e.grade_id = ?"; params.push(filters.grade_id); }
@@ -94,6 +96,7 @@ export class ExamRepository {
     exam_date: string | null; status: string;
     graded_count: number; avg_score: number; has_assigned_score: number;
   }>> {
+    // #246 auto_delete：按保留策略软删除的考试不再出现在选择列表
     let sql = `SELECT e.id, e.name, e.subject, e.grade_id, g.name as grade_name,
         COALESCE(ac.exam_date, date(e.created_at)) as exam_date, e.status,
         COUNT(ss.exam_id) as graded_count, ROUND(AVG(ss.total_score), 1) as avg_score,
@@ -102,7 +105,8 @@ export class ExamRepository {
       LEFT JOIN answer_cards ac ON ac.id = e.card_id
       LEFT JOIN grades g ON g.id = e.grade_id
       LEFT JOIN student_scores ss ON ss.exam_id = e.id
-      WHERE 1=1`;
+      WHERE 1=1
+        AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)`;
     const params: unknown[] = [];
     if (filters?.grade_id) { sql += " AND e.grade_id = ?"; params.push(filters.grade_id); }
     if (filters?.subject) { sql += " AND e.subject = ?"; params.push(filters.subject); }
