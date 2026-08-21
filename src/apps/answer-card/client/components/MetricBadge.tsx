@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { CSSProperties } from "react";
 import { cn } from "../lib/utils";
 import { authFetch } from "../auth/api";
 import type { ThresholdBand } from "../../../../shared/stats";
@@ -13,6 +14,9 @@ import type { ThresholdBand } from "../../../../shared/stats";
  *    因此这里保留数据驱动的行内色值，不改成语义 class、也不塞进 theme.ts。
  *  · 无 bands 时的兜底色改用语义变量 `--color-muted-foreground`，不再硬编码灰值。
  *  · 合并 main：区分度 D 增加最小样本量守卫（MIN_D_SAMPLE_SIZE，极端组法样本不足时提示）。
+ *  · 2026-08 纸锋直角化评审：纸锋皮肤（data-skin="paper-edge"）下服务端档位色不生效，
+ *    按档位位置重映射到纸锋三族（最优→蓝软族 / 最差→绯红描边族 / 中间→墨描边族），
+ *    守住「蓝为主、绯红仅危险」的单色纪律；其余皮肤行为不变。圆角直角由 tokens.css 规则⑮承担。
  */
 
 export interface BandSet {
@@ -37,12 +41,55 @@ export function useBands(): BandSet | null {
 /** 无档位数据时的兜底色：走语义 token，避免硬编码灰 */
 const FALLBACK_BAND_COLOR = "var(--color-muted-foreground)";
 
-/** 依据档位数组判定归属（value ≤ max 归入该档） */
-export function classifyBand(value: number, bands: ThresholdBand[] | undefined): { label: string; color: string } {
-  if (!bands || bands.length === 0) return { label: "—", color: FALLBACK_BAND_COLOR };
-  for (const b of bands) if (value <= b.max) return { label: b.label, color: b.color };
+/** 依据档位数组判定归属（value ≤ max 归入该档）；index = 命中档位下标（升序，0 = 最差档），无档位时为 -1 */
+export function classifyBand(value: number, bands: ThresholdBand[] | undefined): { label: string; color: string; index: number } {
+  if (!bands || bands.length === 0) return { label: "—", color: FALLBACK_BAND_COLOR, index: -1 };
+  for (let i = 0; i < bands.length; i++) {
+    if (value <= bands[i].max) return { label: bands[i].label, color: bands[i].color, index: i };
+  }
   const last = bands[bands.length - 1];
-  return { label: last.label, color: last.color };
+  return { label: last.label, color: last.color, index: bands.length - 1 };
+}
+
+/** 当前是否纸锋皮肤（响应 SkinSwitcher 运行时切换；与 chart.tsx 同款 MutationObserver 模式） */
+function useIsPaperEdgeSkin(): boolean {
+  const [is, setIs] = useState(
+    () => typeof document !== "undefined" && document.documentElement.dataset.skin === "paper-edge",
+  );
+  useEffect(() => {
+    const el = document.documentElement;
+    const obs = new MutationObserver(() => setIs(el.dataset.skin === "paper-edge"));
+    obs.observe(el, { attributes: true, attributeFilter: ["data-skin"] });
+    return () => obs.disconnect();
+  }, []);
+  return is;
+}
+
+/**
+ * 纸锋三族重映射（仅 data-skin="paper-edge" 下调用）：服务端档位色让位于单色纪律——
+ * 最优档（末位）→ 蓝软族；最差档（index 0）→ 绯红描边族（D 低 / P 异常的关注语义）；
+ * 中间档 → 墨描边族。全部走 L2 语义变量，暗色主题自动适配。
+ */
+function paperEdgeBandStyle(index: number, total: number): CSSProperties {
+  if (total > 1 && index === total - 1) {
+    return {
+      color: "var(--px-success-fg)",
+      borderColor: "var(--px-success-border)",
+      backgroundColor: "var(--px-success-soft)",
+    };
+  }
+  if (total > 1 && index === 0) {
+    return {
+      color: "var(--px-danger-fg)",
+      borderColor: "var(--px-danger-fg)",
+      backgroundColor: "transparent",
+    };
+  }
+  return {
+    color: "var(--px-fg-primary)",
+    borderColor: "var(--px-border-strong)",
+    backgroundColor: "transparent",
+  };
 }
 
 /** 徽章版式：静态部分走工具类，仅「服务端档位色」保留数据驱动行内值（O-5） */
@@ -52,16 +99,21 @@ const BAND_BADGE_CLASS = cn(
 );
 
 function BandBadge({ value, bands, title }: { value: number; bands?: ThresholdBand[]; title: string }) {
-  const { label, color } = classifyBand(value, bands);
+  const paperEdge = useIsPaperEdgeSkin();
+  const { label, color, index } = classifyBand(value, bands);
+  const style: CSSProperties =
+    paperEdge && index >= 0
+      ? paperEdgeBandStyle(index, bands!.length)
+      // 数据驱动色：档位配色由服务端下发，不属于设计 token（O-5）
+      : { color, borderColor: color, backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)` };
   return (
     <span
       className={BAND_BADGE_CLASS}
       title={title}
-      // 数据驱动色：档位配色由服务端下发，不属于设计 token（O-5）
-      style={{ color, borderColor: color, backgroundColor: `color-mix(in srgb, ${color} 12%, transparent)` }}
+      style={style}
     >
       <span className="size-1.5 shrink-0 rounded-full bg-current" aria-hidden />
-      {label} · {value.toFixed(2)}
+      {label} {value.toFixed(2)}
     </span>
   );
 }

@@ -146,18 +146,19 @@ curl http://<host>:5174/api/users/me/settings -H "Authorization: Bearer <token>"
 
 > 注意：新增皮肤**不允许**引入新 CSS 文件或组件内手写样式（AGENTS.md 铁律）。全部差异必须落在 tokens.css 的 `[data-skin]` 覆盖块内；若某套风格需要组件结构变化（而非令牌可表达），说明该风格不适合走皮肤机制，需单独评审。
 >
-> **已评审豁免案例（纸锋 paper-edge，v2.3.0）**：纸锋皮肤块末尾含一组作用域规则（14 组），用于复刻 demo 的组件观感纪律——这些差异无法由纯令牌表达。规则全部以 `[data-skin="paper-edge"]` 限定作用域、不新建 CSS 文件、不改组件代码，默认皮肤零影响（纸锋为默认时其余皮肤零影响）：
+> **已评审豁免案例（纸锋 paper-edge，v2.3.0；2026-08 直角化修订）**：纸锋皮肤块末尾含一组作用域规则（15 组），用于复刻 demo 的组件观感纪律——这些差异无法由纯令牌表达。规则全部以 `[data-skin="paper-edge"]` 限定作用域、不新建 CSS 文件、不改组件代码，默认皮肤零影响（纸锋为默认时其余皮肤零影响）：
 >
-> 1. **胶囊圆角命中面**：Button 组件（`button[class~="rounded-md"][class~="whitespace-nowrap"]`，cva 基类特征）、分段选项（`button[class~="rounded-sm"]`）、徽章（`span[class~="rounded-sm"]`）；侧栏导航项、图标按钮、复选框不受影响（保持直角）。**注意一律用整词匹配 `[class~=]`**：子串匹配 `[class*=]` 会误命中 `data-[state=active]:after:bg-primary` 这类带 variant 前缀的工具类（曾导致选项卡全部被主按钮规则染墨）；
+> 1. **胶囊圆角命中面**：仅 Button 组件（`button[class~="rounded-md"][class~="whitespace-nowrap"]`，cva 基类特征）保留胶囊；徽章、分段选项、选项卡、计数徽标 2026-08 起一律直角方块（与卡片直角语言统一）。**注意一律用整词匹配 `[class~=]`**：子串匹配 `[class*=]` 会误命中 `data-[state=active]:after:bg-primary` 这类带 variant 前缀的工具类（曾导致选项卡全部被主按钮规则染墨）；
 > 2. **按钮观感**（demo `.btn` 纪律）：字重 700；主按钮墨底纸字、hover 转蓝（暗色下保持蓝底白字）；描边按钮墨描边、hover 墨底；原生角色控件（checkbox/radio/switch）显式排除；
-> 3. **选项卡**（demo `.tabs`）：下划线式改为独立描边胶囊组，选中墨底纸字；
-> 4. **分段控件**（demo `.seg`）：容器槽透明化（无槽独立胶囊，按 `bg-secondary` 类特征区分设置页单选组，不误伤），选中项墨底纸字；
+> 3. **选项卡**：下划线式改为独立细线描边**方块**组（2026-08 由胶囊改直角），选中墨底纸字；`[role="tablist"]` 加 `padding-block: 10px` 呼吸位，方块上下缘不贴标签栏分隔线/容器边缘；
+> 4. **分段控件**：容器槽透明化（无槽独立描边**方块**，按 `bg-secondary` 类特征区分设置页单选组，不误伤），选中项墨底纸字；2026-08 修正命中面——实际基座是 Radix ToggleGroup（`role="group"`），原 `role="radiogroup"` 选择器从未命中，现两者并列兜底；
 > 5. **进度条**（demo `.prog`）：`[role="progressbar"]` 轨道与填充直角；
 > 6. **统计大数字**（demo `.stat .v`）：800 重 + 紧缩字距；
 > 7. **纸纹网格**（demo `.paper-grid`）：`.paper-grid` 工具类复刻 64px 浅网格（repeating-linear-gradient），挂载到 AppShell 根 / 登录页根 / 扫描工作台 main；卡片与弹层有自身底色，自然无网格；
 > 8. **重点卡硬阴影**（demo `.login-card` / `.panel`）：`.brutal-hard` → `--px-shadow-hard`（纸锋下 `8px 8px 0`），仅登录卡 + 分数段分布卡 2 落点；`[class~="shadow-4"]`（dialog/sheet）归零并给 dialog 补墨边（demo modal 纪律）；
 > 9. **扫描台荧光绿**（demo `.dot--lime`）：`.scan-lime` 命中 Badge 前置状态点（`> span`），`--px-lime-strong`（亮底橄榄绿 / 暗底荧光绿），仅「服务器可达」与识别通过状态点 2 处；
-> 10. **区标题排印**（demo `.sec h2`）：`h2` 900 重 + `-0.02em` 字距（行高不动，防中文长标题挤压）。
+> 10. **区标题排印**（demo `.sec h2`）：`h2` 900 重 + `-0.02em` 字距（行高不动，防中文长标题挤压）；
+> 11. **徽章直角 + 档位三族重映射**（2026-08 评审）：`span[class~="rounded-full"][class~="tabular-nums"]` 归零圆角（BandBadge / TabsCount；内部状态点无 `tabular-nums`，保持圆形）；`MetricBadge.tsx` 在纸锋下将服务端档位色按档位位置重映射——最优档→蓝软族、最差档→绯红描边族、中间档→墨描边族（守住单色纪律；其余皮肤仍用服务端色）。此为豁免中唯一一处组件代码改动（行内色值无法被 CSS 覆盖），已用 MutationObserver 跟随 `data-skin` 运行时切换。
 >
 > 后续皮肤如需类似豁免，须同样在此登记评审。
 
