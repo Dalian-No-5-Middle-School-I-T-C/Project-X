@@ -352,3 +352,70 @@ export function classifyBand(value: number, bands: ThresholdBand[]): { label: st
   const last = bands[bands.length - 1];
   return last ? { label: last.label, color: last.color } : { label: "未知", color: "#888780" };
 }
+
+// ── 信度（Cronbach α / KR-20）与变异系数 CV ───────────
+
+/**
+ * Cronbach's α：内部一致性信度（含主观题/连续计分题时使用）。
+ * itemScores: 每行一个学生、每列一道题的得分；矩阵必须完整（缺行返回 null）。
+ * α = k/(k-1) × (1 − Σσ_i² / σ_total²)，两端裁剪到 [-1, 1]。
+ * 要求 ≥2 题、≥2 生且总分方差 > 0，否则返回 null（无法评估）。
+ */
+export function cronbachAlpha(itemScores: number[][]): number | null {
+  const n = itemScores.length;
+  const k = n > 0 ? itemScores[0].length : 0;
+  if (n < 2 || k < 2) return null;
+  for (const row of itemScores) if (row.length !== k) return null;
+  const itemVar: number[] = [];
+  for (let j = 0; j < k; j++) {
+    const col: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const v = itemScores[i][j];
+      if (!Number.isFinite(v)) return null;
+      col.push(v);
+    }
+    const m = col.reduce((a, b) => a + b, 0) / n;
+    itemVar.push(col.reduce((s, v) => s + (v - m) ** 2, 0) / n);
+  }
+  const totals = itemScores.map((row) => row.reduce((a, b) => a + b, 0));
+  const tm = totals.reduce((a, b) => a + b, 0) / n;
+  const totalVar = totals.reduce((s, v) => s + (v - tm) ** 2, 0) / n;
+  if (!(totalVar > 0)) return null;
+  const alpha = (k / (k - 1)) * (1 - itemVar.reduce((a, b) => a + b, 0) / totalVar);
+  return Math.round(Math.max(-1, Math.min(1, alpha)) * 1000) / 1000;
+}
+
+/**
+ * KR-20（Kuder-Richardson 20）：纯客观题（二分计分 0/1）信度。
+ * binaryMatrix: 每行一个学生、每列一题，1=得分等于该题满分（答对）。
+ * KR-20 = k/(k-1) × (1 − Σp_j q_j / σ_total²)。与二分数据上的 α 等价，是经典选择。
+ */
+export function kr20(binaryMatrix: number[][]): number | null {
+  const n = binaryMatrix.length;
+  const k = n > 0 ? binaryMatrix[0].length : 0;
+  if (n < 2 || k < 2) return null;
+  for (const row of binaryMatrix) if (row.length !== k) return null;
+  const pq: number[] = [];
+  for (let j = 0; j < k; j++) {
+    let ones = 0;
+    for (let i = 0; i < n; i++) {
+      const v = binaryMatrix[i][j];
+      if (v !== 0 && v !== 1) return null;
+      ones += v;
+    }
+    const p = ones / n;
+    pq.push(p * (1 - p));
+  }
+  const totals = binaryMatrix.map((row) => row.reduce((a, b) => a + b, 0));
+  const tm = totals.reduce((a, b) => a + b, 0) / n;
+  const totalVar = totals.reduce((s, v) => s + (v - tm) ** 2, 0) / n;
+  if (!(totalVar > 0)) return null;
+  const r20 = (k / (k - 1)) * (1 - pq.reduce((a, b) => a + b, 0) / totalVar);
+  return Math.round(Math.max(-1, Math.min(1, r20)) * 1000) / 1000;
+}
+
+/** 变异系数 CV = 标准差 / 均值（均值需 > 0），用于跨科/跨班离散度对比（消除满分差异），保留 3 位 */
+export function coefficientOfVariation(stdDev: number, mean: number): number | null {
+  if (!(mean > 0) || !Number.isFinite(stdDev) || !(stdDev >= 0)) return null;
+  return Math.round((stdDev / mean) * 1000) / 1000;
+}

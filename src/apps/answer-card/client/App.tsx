@@ -1631,52 +1631,56 @@ function App() {
       ? "首页"
       : mode === "scores"
         ? "我的成绩"
-        : mode === "exam-manage"
-          ? "考试管理"
-          : mode === "account"
-            ? "账号管理"
-            : mode === "account-settings"
-              ? "账号设置"
-              : mode === "sponsor"
-              ? "支持项目"
-              : mode === "guide"
-                ? "使用说明"
-                : mode === "global-settings"
-                  ? "全局设置"
-                  : mode === "permissions"
-                    ? "权限说明"
-                    : mode === "design" && designScreen === "select"
-                      ? "答题卡"
-                      : mode === "design" ? "答题卡设计器" : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统");
+        : mode === "analysis"
+          ? "成绩分析"
+          : mode === "exam-manage"
+            ? "考试管理"
+            : mode === "account"
+              ? "账号管理"
+              : mode === "account-settings"
+                ? "账号设置"
+                : mode === "sponsor"
+                ? "支持项目"
+                : mode === "guide"
+                  ? "使用说明"
+                  : mode === "global-settings"
+                    ? "全局设置"
+                    : mode === "permissions"
+                      ? "权限说明"
+                      : mode === "design" && designScreen === "select"
+                        ? "答题卡"
+                        : mode === "design" ? "答题卡设计器" : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统");
 
   const pageSubtitle =
     mode === "home"
       ? `欢迎，${user?.name ?? ""}`
       : mode === "scores"
         ? "仅展示本人成绩 · 只读"
-        : mode === "exam-manage"
-          ? "创建、管理考试与阅卷批次"
-          : mode === "account"
-            ? "管理用户、班级与花名册"
-            : mode === "account-settings"
-              ? "个人阅卷、客户端与 AI 服务偏好"
-              : mode === "sponsor"
-              ? "感谢您的信任与支持"
-              : mode === "guide"
-                ? "Project-X 操作指南与常见问题"
-                : mode === "global-settings"
-                  ? "系统级策略与服务商配置"
-                  : mode === "permissions"
-                    ? `${user.name} · ${user.role_display_name ?? user.role_name}`
-                    : mode === "design" && designScreen === "select"
-                      ? "选择或新建一张答题卡"
-                      : card && mode === "design"
-                        ? `${card.title} · ID:${card.id} · ${layout?.pages.length ?? 1} 页`
-                        : card
-                          ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
-                        : canDesign
-                          ? "创建答题卡后开始编辑"
-                          : `${user.name} · ${user.role_display_name ?? user.role_name}`;
+        : mode === "analysis"
+          ? "按考试查看成绩分布、题目分析与班级对比"
+          : mode === "exam-manage"
+            ? "创建、管理考试与阅卷批次"
+            : mode === "account"
+              ? "管理用户、班级与花名册"
+              : mode === "account-settings"
+                ? "个人阅卷、客户端与 AI 服务偏好"
+                : mode === "sponsor"
+                ? "感谢您的信任与支持"
+                : mode === "guide"
+                  ? "Project-X 操作指南与常见问题"
+                  : mode === "global-settings"
+                    ? "系统级策略与服务商配置"
+                    : mode === "permissions"
+                      ? `${user.name} · ${user.role_display_name ?? user.role_name}`
+                      : mode === "design" && designScreen === "select"
+                        ? "选择或新建一张答题卡"
+                        : card && mode === "design"
+                          ? `${card.title} · ID:${card.id} · ${layout?.pages.length ?? 1} 页`
+                          : card
+                            ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
+                          : canDesign
+                            ? "创建答题卡后开始编辑"
+                            : `${user.name} · ${user.role_display_name ?? user.role_name}`;
 
   const designActions = canDesign && mode === "design" && (
     designScreen === "select" ? (

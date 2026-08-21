@@ -63,6 +63,7 @@ router.put("/config/thresholds", requirePermission(PERMISSIONS.SYSTEM_MANAGE), a
       await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.excellentRate, String(t.excellentRate), now);
       await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.segmentSize, String(t.segmentSize), now);
       await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.errorTiers, t.errorTiers.join(","), now);
+      await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.subjectiveLowScoreRatio, String(t.subjectiveLowScoreRatio), now);
     });
     invalidateAnalysisThresholdsCache();
     analysisCache.clear();

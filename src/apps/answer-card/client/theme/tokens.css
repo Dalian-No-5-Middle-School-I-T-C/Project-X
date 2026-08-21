@@ -685,3 +685,22 @@
 [data-skin="paper-edge"] span[class~="rounded-full"][class~="tabular-nums"] {
   border-radius: 0;
 }
+
+/* ⑯ 页头 h1 字重（仅升 PageHeader h1 字重，副标题保持原样不动） */
+[data-skin="paper-edge"] [class~="h-page-header"] h1 {
+  font-weight: 900;
+  letter-spacing: -0.01em;            /* 与 ⑭ h2 的 900/-0.02em 同族，略收 */
+}
+
+/* ⑰ 表头眉题排印（demo eyebrow 等宽感；色系保持原状，仅加字重/字距/等宽，避免墨底反转突兀） */
+[data-skin="paper-edge"] th[class~="h-table-header"] {
+  font-family: var(--px-font-mono);
+  font-weight: 500;                    /* 保持原 500，不升 900 */
+  letter-spacing: 0.06em;
+  text-transform: uppercase;           /* 数字/英文生效，中文无副作用 */
+}
+
+/* ⑱ 正文斑马纹：data-selected 行（异常卷高亮）不参与；hover 特异性 (0,2,0) 高于本规则 (0,1,2)，自然覆盖 */
+[data-skin="paper-edge"] tbody tr:not([data-selected]):nth-child(even) {
+  background-color: var(--px-bg-subtle);    /* PAPER-2 轻纸底 */
+}
