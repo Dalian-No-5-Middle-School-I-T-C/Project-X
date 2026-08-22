@@ -93,9 +93,12 @@ export function DesignPage() {
 
   // 三栏工作台（react-resizable-panels v4）：左右栏可拖拽调宽、左栏可折叠，
   // 布局经 useDefaultLayout 记忆到 localStorage（key 前缀 react-resizable-panels:）。
+  // 面板尺寸统一用百分比字符串（评审 P2，2026-08-22）：此前左右栏为像素数值、
+  // 中间栏为百分比，混合单位导致真实浏览器首次加载左栏被压到 ~2.2% 并自动折叠；
+  // 布局 key 升到 -v2 使旧版已损坏的持久化布局失效（defaultLayout 优先级高于 defaultSize）。
   const blocksPanelRef = usePanelRef();
   const [blocksCollapsed, setBlocksCollapsed] = useState(false);
-  const designerPanelLayout = useDefaultLayout({ id: "designer-panels" });
+  const designerPanelLayout = useDefaultLayout({ id: "designer-panels-v2" });
   const toggleBlocksPanel = () => {
     const handle = blocksPanelRef.current;
     if (!handle) return;
@@ -253,7 +256,7 @@ export function DesignPage() {
       {/* 三栏工作台：Panel 宽度可拖拽（Separator），左栏可折叠；宽度记忆见 useDefaultLayout */}
       <Group
         orientation="horizontal"
-        id="designer-panels"
+        id="designer-panels-v2"
         className="min-h-0 flex-1"
         defaultLayout={designerPanelLayout.defaultLayout}
         onLayoutChanged={designerPanelLayout.onLayoutChanged}
@@ -261,11 +264,11 @@ export function DesignPage() {
         <ResizePanel
           id="blocks"
           className="flex h-full min-h-0 flex-col"
-          defaultSize={300}
-          minSize={220}
-          maxSize={440}
+          defaultSize="30%"
+          minSize="15%"
+          maxSize="40%"
           collapsible
-          collapsedSize={32}
+          collapsedSize="2%"
           panelRef={blocksPanelRef}
           onResize={(size) => setBlocksCollapsed(size.inPixels < 60)}
         >
@@ -378,7 +381,7 @@ export function DesignPage() {
         <Separator id="blocks-canvas" className="w-1 shrink-0 bg-border-subtle/70 transition-colors hover:bg-primary/60" />
 
         {/* Canvas */}
-        <ResizePanel id="canvas" className="flex h-full min-h-0 flex-col" minSize="40%">
+        <ResizePanel id="canvas" className="flex h-full min-h-0 flex-col" defaultSize="40%" minSize="40%">
         <section className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background">
           {layout?.warnings.length ? (
             <div className="mx-4 mt-3 rounded-md border border-warning-border bg-warning-soft p-2.5 text-xs text-warning-fg">
@@ -414,8 +417,8 @@ export function DesignPage() {
 
         <Separator id="canvas-inspector" className="w-1 shrink-0 bg-border-subtle/70 transition-colors hover:bg-primary/60" />
 
-        {/* Inspector：宽度可拖拽，默认 380px（原 300px 过窄） */}
-        <ResizePanel id="inspector" className="flex h-full min-h-0 flex-col" defaultSize={380} minSize={300} maxSize={560}>
+        {/* Inspector：宽度可拖拽，默认 30%（约为原 380px，按窗口比例自适应） */}
+        <ResizePanel id="inspector" className="flex h-full min-h-0 flex-col" defaultSize="30%" minSize="20%" maxSize="40%">
         <aside className="flex w-full min-h-0 flex-1 flex-col overflow-hidden bg-card">
           {card ? (
             <>
