@@ -17,7 +17,7 @@ import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropServi
 import { recomputeExamRankings, roundScore } from "../services/rankingUpdate";
 import { analysisCache } from "../services/analysisCache";
 import { resolveReviewConfidenceThreshold } from "../services/userSettings";
-import { requireExamAccess } from "../../apps/answer-card/server/middleware";
+import { requireExamAccess, makeViewPermissionGate } from "../../apps/answer-card/server/middleware";
 import {
   objectiveQuestionDefinitions,
   gradeObjectiveQuestion,
@@ -27,7 +27,9 @@ import type { AnswerCard, ObjectiveRecognitionQuestion } from "../../shared/type
 const router = express.Router();
 
 // ── 搜索考生（考号/姓名） ──────────────────────────
-router.get("/:examId/students/search", requireExamAccess, async (req: Request, res: Response) => {
+// 评审 P1：考生搜索返回姓名/考号（名单类），叠加 can_view_students 查看门，
+// 防止 can_view_scores=1 但学生查看被关闭的教师经此旁路读取学生名单
+router.get("/:examId/students/search", requireExamAccess, makeViewPermissionGate("can_view_students"), async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   const q = (req.query.q as string || "").trim();
   if (!Number.isFinite(examId) || !q) {

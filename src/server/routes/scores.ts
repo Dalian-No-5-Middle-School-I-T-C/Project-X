@@ -390,7 +390,9 @@ router.get("/students/:studentId", canQueryOthers, async (req: Request, res: Res
     res.status(404).json({ message: "学生不存在" });
     return;
   }
-  let scores = await scoreRepo.getStudentScores(studentId);
+  // 教师/管理员代查：公布门是学生端读门，代查须能看到未公布成绩（评审 P2，
+  // 与教师端考试详情/天梯接口行为一致）
+  let scores = await scoreRepo.getStudentScores(studentId, { publishedOnly: false });
   // 教师仅可见其任教范围内的考试成绩
   if (req.user!.role_name === "teacher") {
     const visibleIds = await getVisibleExamIds(req.user);

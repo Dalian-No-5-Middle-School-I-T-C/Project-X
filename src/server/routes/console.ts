@@ -193,33 +193,44 @@ router.get("/ai-usage", async (_req, res, next) => {
        FROM ai_analysis_runs`
     );
     const byFeature = await db.all<{
-      feature: string; cnt: number; success: number; avgLatency: number | null;
-      tin: number | null; tout: number | null;
+      feature: string; cnt: number; success: number; failed: number;
+      avgLatency: number | null; tin: number | null; tout: number | null;
     }>(
       `SELECT feature, COUNT(*) AS cnt,
               SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success,
+              SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS failed,
               AVG(latency_ms) AS avgLatency,
               SUM(tokens_in) AS tin, SUM(tokens_out) AS tout
        FROM ai_analysis_runs GROUP BY feature ORDER BY cnt DESC`
     );
+    // success 为 NULL 的行 = 进行中/被中断（pending）的调用：计入 count 不计入成功率
+    const runsTotal = totals?.runs ?? 0;
+    const successTotal = totals?.success ?? 0;
+    const failedTotal = totals?.failed ?? 0;
     res.json({
       available: true,
       totals: {
-        runs: totals?.runs ?? 0,
-        success: totals?.success ?? 0,
-        failed: totals?.failed ?? 0,
+        runs: runsTotal,
+        success: successTotal,
+        failed: failedTotal,
+        pending: Math.max(0, runsTotal - successTotal - failedTotal),
         totalTokensIn: totals?.tin ?? 0,
         totalTokensOut: totals?.tout ?? 0,
         avgLatencyMs: totals?.avgLatency != null ? Math.round(totals.avgLatency) : 0,
       },
-      byFeature: byFeature.map((r) => ({
-        feature: r.feature,
-        count: r.cnt,
-        success: r.success,
-        successRate: r.cnt > 0 ? Math.round((r.success / r.cnt) * 1000) / 10 : 0,
-        avgLatencyMs: r.avgLatency != null ? Math.round(r.avgLatency) : 0,
-        totalTokens: (r.tin ?? 0) + (r.tout ?? 0),
-      })),
+      byFeature: byFeature.map((r) => {
+        const completed = (r.success ?? 0) + (r.failed ?? 0);
+        return {
+          feature: r.feature,
+          count: r.cnt,
+          success: r.success,
+          failed: r.failed,
+          pending: Math.max(0, r.cnt - (r.success ?? 0) - (r.failed ?? 0)),
+          successRate: completed > 0 ? Math.round(((r.success ?? 0) / completed) * 1000) / 10 : 0,
+          avgLatencyMs: r.avgLatency != null ? Math.round(r.avgLatency) : 0,
+          totalTokens: (r.tin ?? 0) + (r.tout ?? 0),
+        };
+      }),
       generatedAt: new Date().toISOString(),
     });
   } catch (err) {

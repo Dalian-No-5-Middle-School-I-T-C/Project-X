@@ -111,7 +111,7 @@ import {
 } from "./helpers";
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
-  validateExamIdsAccess, setAuthEnforced
+  validateExamIdsAccess, setAuthEnforced, hasViewPermission
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
@@ -1830,10 +1830,27 @@ export async function createApp(): Promise<express.Express> {
 
   app.post("/api/exams", validateBody(CreateExamSchema), async (req, res, next) => {
     try {
-      const { name, cardId, gradeId, classId, subject, mode } = req.body as Record<string, unknown>;
+      const { name, cardId, gradeId, classId, subject, mode, retentionPolicyId } = req.body as Record<string, unknown>;
       if (!name || !cardId) {
         res.status(400).json({ message: "缺少 name 或 cardId" });
         return;
+      }
+      // 评审 P1：显式指定的保留策略必须先存在（防悬空引用），null=明确不绑定
+      let retentionPolicyIdValue: number | null | undefined;
+      if (retentionPolicyId !== undefined && retentionPolicyId !== null) {
+        const pid = Number(retentionPolicyId);
+        if (!Number.isInteger(pid) || pid <= 0) {
+          res.status(400).json({ message: "无效的保留策略 ID" });
+          return;
+        }
+        const policy = await getMysqlDb().get("SELECT id FROM data_retention_policies WHERE id = ?", pid);
+        if (!policy) {
+          res.status(400).json({ message: "保留策略不存在" });
+          return;
+        }
+        retentionPolicyIdValue = pid;
+      } else if (retentionPolicyId === null) {
+        retentionPolicyIdValue = null;
       }
       const examRepo = new ExamRepository();
       const existing = await examRepo.findExamByName(String(name));
@@ -1848,6 +1865,7 @@ export async function createApp(): Promise<express.Express> {
         class_id: classId ? Number(classId) : undefined,
         subject: subject ? String(subject) : undefined,
         exam_mode: mode === "formal" ? "formal" : "quiz",
+        retention_policy_id: retentionPolicyIdValue,
         created_by: req.user?.id
       });
       await recordLifecycleEvent({ entityType: "exam", entityId: exam.id, action: "create", actorId: req.user?.id });
@@ -1941,8 +1959,20 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      const results = await examRepo.getExamResults(exam.id);
-      res.json({ ...exam, results });
+      // 评审 P1：results 含学生姓名/考号/分数，属名单类数据：
+      // - 仅教师/管理员可获取，且须对本场考试仍有「查看学生名单」权限
+      //   （can_view_students，管理员/年级组长恒放行）；
+      // - 学生角色一律不返回 results（此前参加考试的学生可借本端点读全班成绩单，
+      //   与 hasViewPermission 的「未配置矩阵→兼容放行」教师语义一并收口）；
+      // 元数据（名称/状态/答题卡等）不受影响。
+      const role = req.user?.role_name;
+      const isStaff = role === "admin" || role === "teacher";
+      if (isStaff && await hasViewPermission(req.user, exam.id, "can_view_students")) {
+        const results = await examRepo.getExamResults(exam.id);
+        res.json({ ...exam, results });
+        return;
+      }
+      res.json(exam);
     } catch (error) {
       next(error);
     }
@@ -1994,15 +2024,38 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      const { cardId, name, subject, mode } = req.body as Record<string, unknown>;
+      const { cardId, name, subject, mode, retentionPolicyId } = req.body as Record<string, unknown>;
       const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (cardId !== undefined) updates.card_id = String(cardId);
       if (name !== undefined) updates.name = String(name);
       if (subject !== undefined) updates.subject = String(subject);
       if (mode === "quiz" || mode === "formal") updates.exam_mode = mode;
+      if (retentionPolicyId !== undefined) {
+        // 评审 P1：保留策略绑定/解绑是数据生命周期管理，仅管理员可操作
+        //（涉及自动归档/删除；SYSTEM_MANAGE 语义，与 data-retention-policies 路由一致）
+        if (req.user?.role_name !== "admin") {
+          res.status(403).json({ message: "权限不足：仅管理员可修改数据保留策略绑定" });
+          return;
+        }
+        if (retentionPolicyId === null) {
+          updates.retention_policy_id = null; // 解绑 = 恢复默认行为（不归档不删除）
+        } else {
+          const pid = Number(retentionPolicyId);
+          if (!Number.isInteger(pid) || pid <= 0) {
+            res.status(400).json({ message: "无效的保留策略 ID" });
+            return;
+          }
+          const policy = await getMysqlDb().get("SELECT id FROM data_retention_policies WHERE id = ?", pid);
+          if (!policy) {
+            res.status(400).json({ message: "保留策略不存在" });
+            return;
+          }
+          updates.retention_policy_id = pid;
+        }
+      }
 
       // Whitelist: only these columns may appear in a dynamic UPDATE
-      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode"]);
+      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode", "retention_policy_id"]);
       for (const col of Object.keys(updates)) {
         if (!ALLOWED_COLUMNS.has(col)) {
           res.status(400).json({ message: `不支持的更新字段：${col}` });
@@ -2010,7 +2063,7 @@ export async function createApp(): Promise<express.Express> {
         }
       }
 
-      const { getMysqlDb } = await import("../../../server/db");
+      // getMysqlDb 已在文件顶部静态导入（此处不再动态导入，避免遮蔽同名绑定）
       const db = getMysqlDb();
       const setClauses = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
       const values = Object.values(updates);

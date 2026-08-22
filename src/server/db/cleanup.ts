@@ -44,6 +44,16 @@ const PROTECT_ACTIVE_EXAMS_SQL = `
   )
 `;
 
+/** 是否存在数据保留策略行（决定是否进入策略消费步骤）。 */
+async function hasAnyRetentionPolicy(tx: DbAdapter): Promise<boolean> {
+  try {
+    const row = await tx.get("SELECT 1 FROM data_retention_policies LIMIT 1");
+    return !!row;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * 清理过期的扫描记录和识别结果
  */
@@ -123,22 +133,38 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
       //    - 假设②：auto_delete=1 为软删除——仅标记 exam_archives.is_deleted=1，不物理销毁数据，可恢复；
       //    - 假设③：未关联策略的考试维持默认行为——不归档不删除，仅按环境变量
       //      PROJECTX_SCAN_RETENTION_DAYS 清理扫描原图（本步骤之前的步骤 1-3）。
-      const policies = await tx.all(
-        "SELECT id, retain_days, auto_archive, auto_delete FROM data_retention_policies"
-      ) as Array<{ id: number; retain_days: number; auto_archive: number; auto_delete: number }>;
-
-      if (policies.length > 0) {
+      //    - 超期判定统一交给 SQL 日期函数（julianday）比较：closed_at/end_time 为
+      //      SQLite 'YYYY-MM-DD HH:mm:ss'（CURRENT_TIMESTAMP，UTC），与 JS toISOString()
+      //      'YYYY-MM-DDTHH:mm:ss.sssZ' 直接按字典序比较会在 ' ' < 'T' 处错位，导致
+      //      保留期未满的考试被提前归档/删除（评审 P1，2026-08-22 实测复现）。
+      if (await hasAnyRetentionPolicy(tx)) {
         const policyExams = await tx.all(
-          `SELECT id, retention_policy_id, COALESCE(closed_at, end_time) AS anchor
-           FROM exams
-           WHERE status = 'closed' AND retention_policy_id IS NOT NULL
-             AND COALESCE(closed_at, end_time) IS NOT NULL`
-        ) as Array<{ id: number; retention_policy_id: number; anchor: string }>;
+          `SELECT e.id, p.retain_days, p.auto_archive, p.auto_delete
+           FROM exams e
+           JOIN data_retention_policies p ON p.id = e.retention_policy_id
+           WHERE e.status = 'closed'
+             AND COALESCE(e.closed_at, e.end_time) IS NOT NULL
+             AND p.retain_days > 0
+             AND julianday(COALESCE(e.closed_at, e.end_time)) <= julianday('now', '-' || p.retain_days || ' days')`
+        ) as Array<{ id: number; retain_days: number; auto_archive: number; auto_delete: number }>;
 
         // 本轮跳过计数（用于汇总日志，便于运维核对三种假设的执行情况）
         let skippedPermanent = 0;   // 假设①：永久保留（retain_days=0）
         let skippedWithin = 0;      // 未到保留期
         let skippedNoPolicy = 0;    // 假设③：未关联策略
+        let skippedOrphan = 0;      // 悬空引用：关联的策略已被删除（理论不可达，防御处理）
+
+        const statRow = await tx.get(
+          `SELECT
+             SUM(CASE WHEN p.retain_days <= 0 THEN 1 ELSE 0 END) AS permanent,
+             SUM(CASE WHEN p.retain_days > 0 THEN 1 ELSE 0 END) AS bounded
+           FROM exams e
+           JOIN data_retention_policies p ON p.id = e.retention_policy_id
+           WHERE e.status = 'closed' AND COALESCE(e.closed_at, e.end_time) IS NOT NULL`
+        ) as { permanent: number | null; bounded: number | null } | undefined;
+        skippedPermanent = Number(statRow?.permanent ?? 0);
+        const boundedCount = Number(statRow?.bounded ?? 0);
+        skippedWithin = Math.max(0, boundedCount - policyExams.length);
 
         const noPolicyCount = await tx.get(
           `SELECT COUNT(*) AS cnt FROM exams
@@ -146,8 +172,21 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
         ) as { cnt: number };
         skippedNoPolicy = noPolicyCount.cnt;
 
+        const orphanRow = await tx.get(
+          `SELECT COUNT(*) AS cnt FROM exams e
+           WHERE e.status = 'closed' AND e.retention_policy_id IS NOT NULL
+             AND NOT EXISTS (SELECT 1 FROM data_retention_policies p WHERE p.id = e.retention_policy_id)`
+        ) as { cnt: number };
+        skippedOrphan = orphanRow.cnt;
+
         if (skippedNoPolicy > 0) {
           console.log(`[Cleanup] ${skippedNoPolicy} 场已结考考试未关联保留策略（假设③：维持默认行为，不归档不删除，仅按环境变量清理扫描原图）`);
+        }
+        if (skippedOrphan > 0) {
+          console.warn(`[Cleanup] ${skippedOrphan} 场已结考考试关联的保留策略不存在（悬空引用），跳过`);
+        }
+        if (skippedPermanent > 0) {
+          console.log(`[Cleanup] ${skippedPermanent} 场已结考考试绑定永久保留策略（retain_days=0，假设①），跳过归档/删除`);
         }
 
         const ensureArchive = async (examId: number): Promise<number> => {
@@ -160,32 +199,19 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
           return ins.changes;
         };
 
-        for (const exam of policyExams) {
-          const policy = policies.find((p) => p.id === exam.retention_policy_id);
-          if (!policy) {
-            // 悬空引用：关联的策略已被删除（理论不可达，防御处理）
-            console.warn(`[Cleanup] 考试 #${exam.id} 关联的保留策略不存在，跳过`);
-            continue;
-          }
-          if (policy.retain_days <= 0) {
-            skippedPermanent++;
-            console.log(`[Cleanup] 考试 #${exam.id} 策略为永久保留（retain_days=0，假设①），跳过归档/删除`);
-            continue;
-          }
-          const policyCutoff = new Date(Date.now() - policy.retain_days * 24 * 60 * 60 * 1000).toISOString();
-          if (exam.anchor >= policyCutoff) {
-            skippedWithin++;
-            continue; // 未到保留期（ISO 文本按字典序比较，与现有步骤 1-3 同口径）
-          }
+        const { recordLifecycleEvent } = await import("../services/lifecycleEvents");
 
-          if (policy.auto_archive) {
+        for (const exam of policyExams) {
+          if (exam.auto_archive) {
             const created = await ensureArchive(exam.id);
             if (created > 0) {
               result.archivedCount++;
-              console.log(`[Cleanup] 已归档考试 #${exam.id}（策略保留 ${policy.retain_days} 天）`);
+              console.log(`[Cleanup] 已归档考试 #${exam.id}（策略保留 ${exam.retain_days} 天）`);
+              // 生命周期事件：自动归档计入控制台「历史累计」（评审 P2）
+              await recordLifecycleEvent({ entityType: "exam", entityId: exam.id, action: "archive", actorId: null });
             }
           }
-          if (policy.auto_delete) {
+          if (exam.auto_delete) {
             await ensureArchive(exam.id); // 仅删除未归档的也补建归档记录，保留痕迹
             const upd = await tx.run(
               `UPDATE exam_archives SET is_deleted = 1, deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP)
@@ -195,11 +221,13 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
             if (upd.changes > 0) {
               result.markedDeletedCount += upd.changes;
               console.log(`[Cleanup] 考试 #${exam.id} 已按策略软删除（is_deleted=1，假设②：不物理销毁数据，可恢复）`);
+              // 生命周期事件：策略软删除计入控制台「历史累计」（评审 P2）
+              await recordLifecycleEvent({ entityType: "exam", entityId: exam.id, action: "delete", actorId: null });
             }
           }
         }
 
-        console.log(`[Cleanup] 策略处理汇总：归档 ${result.archivedCount}、软删除 ${result.markedDeletedCount}；跳过 永久保留 ${skippedPermanent}、保留期内 ${skippedWithin}、无策略 ${skippedNoPolicy}`);
+        console.log(`[Cleanup] 策略处理汇总：归档 ${result.archivedCount}、软删除 ${result.markedDeletedCount}；跳过 永久保留 ${skippedPermanent}、保留期内 ${skippedWithin}、无策略 ${skippedNoPolicy}、悬空引用 ${skippedOrphan}`);
       } else {
         console.log("[Cleanup] 无数据保留策略（data_retention_policies 为空），跳过策略归档/删除");
       }

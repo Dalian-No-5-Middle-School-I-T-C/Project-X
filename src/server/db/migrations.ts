@@ -1000,7 +1000,7 @@ const MIGRATIONS: Migration[] = [
             feature     TEXT NOT NULL,
             model       TEXT,
             stage       TEXT,
-            success     INTEGER DEFAULT 1,
+            success     INTEGER,
             latency_ms  INTEGER,
             tokens_in   INTEGER,
             tokens_out  INTEGER,
@@ -1021,7 +1021,7 @@ const MIGRATIONS: Migration[] = [
             provider    TEXT,
             model       TEXT,
             stage       TEXT,
-            success     INTEGER DEFAULT 1,
+            success     INTEGER,
             latency_ms  INTEGER,
             tokens      INTEGER,
             error_code  TEXT,
@@ -1092,6 +1092,23 @@ const MIGRATIONS: Migration[] = [
         ALTER TABLE teacher_permissions_v40 RENAME TO teacher_permissions;
         CREATE INDEX IF NOT EXISTS idx_tp_teacher ON teacher_permissions(teacher_id);
       `);
+    }
+  },
+  // v46: 评审修复 —— 数据保留策略按考试类型分配。
+  // 旧 createExam（v37-v45）对所有考试固定回退绑定 retention_policy_id=1（周测），
+  // 且创建接口不接受策略字段、无任何分配/切换入口：formal（月考/期中期末等大考）
+  // 全部误挂"周测"策略，管理员一旦开启该策略自动删除将波及全部考试，策略 2/3
+  // 无消费者。修复后 createExam 按类型分配（quiz→周测、formal→不绑定），本迁移
+  // 解除既有非 quiz 考试对策略 1 的默认绑定（quiz 晨测与周测策略的绑定符合按类型
+  // 分配语义，保留；显式绑定其它策略的考试不受影响）。
+  {
+    version: 46,
+    name: "retention-policy-by-exam-mode",
+    up(db) {
+      db.prepare(
+        `UPDATE exams SET retention_policy_id = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE retention_policy_id = 1 AND (exam_mode IS NULL OR exam_mode != 'quiz')`
+      ).run();
     }
   }
 ];

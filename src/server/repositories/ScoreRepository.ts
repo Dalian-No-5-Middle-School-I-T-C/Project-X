@@ -31,7 +31,25 @@ export class ScoreRepository {
     this.db = getMysqlDb();
   }
 
-  async getStudentScores(studentId: number): Promise<StudentExamScore[]> {
+  /**
+   * 学生全部考试成绩。
+   * @param options.publishedOnly 默认 true（学生自助查分：仅已公布考试）；
+   *   教师/管理员代查传 false —— 公布门是学生端读门，不应误伤教师端（评审 P2）。
+   */
+  async getStudentScores(studentId: number, options: { publishedOnly?: boolean } = {}): Promise<StudentExamScore[]> {
+    const publishedOnly = options.publishedOnly ?? true;
+    // 公布门是学生端读门：代查模式（教师/管理员）不受 score_published 限制（评审 P2）
+    const whereParts = [
+      "ss.student_id = ?",
+      "-- #246 auto_delete：软删除考试的成绩不再对学生可见",
+      "AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)",
+    ];
+    if (publishedOnly) {
+      whereParts.push(
+        "-- PR #256（v41）：成绩默认不公布，学生端仅见已公布考试",
+        "AND e.score_published = 1",
+      );
+    }
     const rows = await this.db.all(`
       SELECT
         ss.exam_id,
@@ -50,11 +68,7 @@ export class ScoreRepository {
         ) AS class_size
       FROM student_scores ss
       JOIN exams e ON e.id = ss.exam_id
-      WHERE ss.student_id = ?
-        -- #246 auto_delete：软删除考试的成绩不再对学生可见
-        AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)
-        -- PR #256（v41）：成绩默认不公布，学生端仅见已公布考试
-        AND e.score_published = 1
+      WHERE ${whereParts.join("\n        ")}
       ORDER BY ss.graded_at DESC
     `, studentId) as Array<Omit<StudentExamScore, "percentile">>;
 

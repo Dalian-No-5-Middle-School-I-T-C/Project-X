@@ -47,7 +47,9 @@ export interface ProviderCallInput {
   errorCode?: string | null;
 }
 
-/** 逻辑任务层：写入一条 AI 分析运行记录，返回自增 id（失败返回 null）。 */
+/** 逻辑任务层：写入一条 AI 分析运行记录，返回自增 id（失败返回 null）。
+ *  未传 success 时写入 NULL（pending）——调用尚未结束，不能预先记成功；
+ *  运行结束后由 finalizeAiRun 回填。控制台成功率只统计已完成（success 非空）的调用。 */
 export async function recordAiRun(input: AiRunInput): Promise<number | null> {
   try {
     const db = getMysqlDb();
@@ -59,7 +61,7 @@ export async function recordAiRun(input: AiRunInput): Promise<number | null> {
       input.feature,
       input.model ?? null,
       input.stage ?? null,
-      input.success === false ? 0 : 1,
+      input.success === undefined ? null : (input.success ? 1 : 0),
       input.latencyMs ?? null,
       input.tokensIn ?? null,
       input.tokensOut ?? null,

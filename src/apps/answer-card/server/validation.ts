@@ -53,6 +53,9 @@ export const CreateExamSchema = z.object({
   subject: z.string().optional(),
   // #178: quiz=晨测(全量权限) / formal=大考(精细权限)
   mode: z.enum(["quiz", "formal"]).optional().default("formal"),
+  // 数据保留策略（评审 P1）：显式指定时须为已存在的策略 id；null=明确不绑定；
+  // 缺省按考试类型自动分配（quiz→周测策略，formal→不绑定）
+  retentionPolicyId: z.number().int().positive().nullable().optional(),
 });
 export type CreateExamInput = z.infer<typeof CreateExamSchema>;
 
@@ -61,6 +64,8 @@ export const UpdateExamSchema = z.object({
   name: z.string().optional(),
   subject: z.string().optional(),
   mode: z.enum(["quiz", "formal"]).optional(),
+  // 评审 P1：保留策略绑定切换入口（仅管理员；null=解绑）
+  retentionPolicyId: z.number().int().positive().nullable().optional(),
 });
 export type UpdateExamInput = z.infer<typeof UpdateExamSchema>;
 

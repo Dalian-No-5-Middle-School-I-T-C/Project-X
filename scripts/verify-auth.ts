@@ -660,6 +660,62 @@ async function main(): Promise<void> {
   ok(!(await checkLadderPublished({ user: { role_name: "student" } } as never, fakeLadRes as never, [ladPub, ladUnpub])) && ladStatus === 403, "#246r4 学生天梯：含未公布考试被 403");
   ok(await checkLadderPublished({ user: { role_name: "student" } } as never, fakeLadRes as never, [ladPub, ladSoft]), "#246r4 学生天梯：所选考试全部已公布时放行");
 
+  // ── 12. 合并前评审修复：清理日期比较 / 策略按类型分配 / 代查公布门 / AI 遥测 pending / 生命周期事件 ──
+  section("12. review round-5: cleanup dates / strategy by mode / proxy published / ai pending / lifecycle events");
+
+  // 12.1 保留期日期比较（评审 P1）：结考仅 14 小时（< 1 天保留期）不得被提前归档/删除
+  {
+    const { runCleanup, listSoftDeletedExams } = await import("../src/server/db/cleanup");
+    const isoToSqlite = (d: Date): string => d.toISOString().slice(0, 19).replace("T", " ");
+    const polArchive = Number(db.prepare("INSERT INTO data_retention_policies (name, retain_days, auto_archive, auto_delete) VALUES ('r5归档', 1, 1, 0)").run().lastInsertRowid);
+    const polDelete = Number(db.prepare("INSERT INTO data_retention_policies (name, retain_days, auto_archive, auto_delete) VALUES ('r5删除', 1, 0, 1)").run().lastInsertRowid);
+    const freshId = Number(db.prepare("INSERT INTO exams (name, card_id, subject, status, closed_at, retention_policy_id) VALUES ('r5保留期内', '99999999', '数学', 'closed', ?, ?)").run(isoToSqlite(new Date(Date.now() - 14 * 3600 * 1000)), polDelete).lastInsertRowid);
+    const oldArchiveId = Number(db.prepare("INSERT INTO exams (name, card_id, subject, status, closed_at, retention_policy_id) VALUES ('r5超期归档', '99999999', '数学', 'closed', ?, ?)").run(isoToSqlite(new Date(Date.now() - 10 * 24 * 3600 * 1000)), polArchive).lastInsertRowid);
+    const oldDeleteId = Number(db.prepare("INSERT INTO exams (name, card_id, subject, status, closed_at, retention_policy_id) VALUES ('r5超期删除', '99999999', '数学', 'closed', ?, ?)").run(isoToSqlite(new Date(Date.now() - 10 * 24 * 3600 * 1000)), polDelete).lastInsertRowid);
+    await runCleanup(30);
+    ok(!(await listSoftDeletedExams()).some((r) => r.examId === freshId), "#r5 保留期内（结考14小时）考试未被提前软删除（SQLite/ISO 日期混比已修复）");
+    ok((await listSoftDeletedExams()).some((r) => r.examId === oldDeleteId), "#r5 超期考试按策略软删除");
+    ok(!!db.prepare("SELECT 1 FROM exam_archives WHERE exam_id = ? AND is_deleted = 0").get(oldArchiveId), "#r5 超期考试按策略归档");
+    ok(!!db.prepare("SELECT 1 FROM entity_lifecycle_events WHERE entity_type = 'exam' AND entity_id = ? AND action = 'archive'").get(String(oldArchiveId)), "#r5 自动归档写入 lifecycle archive 事件");
+    ok(!!db.prepare("SELECT 1 FROM entity_lifecycle_events WHERE entity_type = 'exam' AND entity_id = ? AND action = 'delete'").get(String(oldDeleteId)), "#r5 策略软删除写入 lifecycle delete 事件");
+    ok(!(await listSoftDeletedExams()).some((r) => r.examId === oldArchiveId), "#r5 仅归档（auto_delete=0）的考试不进入软删除列表");
+  }
+
+  // 12.2 保留策略按考试类型分配（评审 P1）：quiz→周测策略；formal→不绑定；显式指定优先
+  {
+    const examRepoR5 = new ExamRepository();
+    db.prepare("INSERT OR IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive, auto_delete) VALUES (1, '周测', 30, 1, 0)").run();
+    db.prepare("INSERT OR IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive, auto_delete) VALUES (2, '月考', 90, 1, 0)").run();
+    const quizR5 = await examRepoR5.createExam({ name: "r5晨测", card_id: "99999999", exam_mode: "quiz" });
+    ok(quizR5.retention_policy_id === 1, "#r5 quiz 考试默认绑定周测策略（按类型分配）");
+    const formalR5 = await examRepoR5.createExam({ name: "r5大考", card_id: "99999999", exam_mode: "formal" });
+    ok(formalR5.retention_policy_id === null, "#r5 formal 考试默认不绑定策略（不再统一挂周测）");
+    const explicitR5 = await examRepoR5.createExam({ name: "r5显式", card_id: "99999999", exam_mode: "formal", retention_policy_id: 2 });
+    ok(explicitR5.retention_policy_id === 2, "#r5 显式指定策略时按指定值绑定");
+    const explicitNoneR5 = await examRepoR5.createExam({ name: "r5显式解绑", card_id: "99999999", exam_mode: "quiz", retention_policy_id: null });
+    ok(explicitNoneR5.retention_policy_id === null, "#r5 显式 null 覆盖类型默认（quiz 也不绑定）");
+  }
+
+  // 12.3 代查公布门（评审 P2）：学生自助查分仅已公布；教师/管理员代查可见未公布
+  {
+    const unpubExamR5 = Number(db.prepare("INSERT INTO exams (name, card_id, subject, status, score_published) VALUES ('r5未公布', '99999999', '数学', 'closed', 0)").run().lastInsertRowid);
+    db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)").run(unpubExamR5, otherStudent.id, 40, 20, 60);
+    ok(!(await scoreRepo.getStudentScores(otherStudent.id)).some((s) => s.exam_id === unpubExamR5), "#r5 学生自助查分不含未公布考试（默认 publishedOnly）");
+    ok((await scoreRepo.getStudentScores(otherStudent.id, { publishedOnly: false })).some((s) => s.exam_id === unpubExamR5), "#r5 教师/管理员代查可见未公布成绩（公布门不误伤）");
+  }
+
+  // 12.4 AI 遥测 pending（评审 P2）：进行中调用 success=NULL，结束后回填
+  {
+    const { recordAiRun, finalizeAiRun } = await import("../src/server/services/aiTelemetry");
+    const pendingRunR5 = await recordAiRun({ userId: null, feature: "exam_analysis", stage: "request" });
+    ok(pendingRunR5 != null, "#r5 recordAiRun 返回 runId");
+    const pendingRowR5 = db.prepare("SELECT success FROM ai_analysis_runs WHERE id = ?").get(pendingRunR5) as { success: number | null };
+    ok(pendingRowR5.success === null, "#r5 进行中调用 success=NULL（pending，不预先记成功）");
+    await finalizeAiRun(pendingRunR5, { success: true, latencyMs: 123 });
+    const doneRowR5 = db.prepare("SELECT success, latency_ms FROM ai_analysis_runs WHERE id = ?").get(pendingRunR5) as { success: number | null; latency_ms: number | null };
+    ok(doneRowR5.success === 1 && doneRowR5.latency_ms === 123, "#r5 结束后回填 success=1 与延迟");
+  }
+
   closeDatabase();
 }
 

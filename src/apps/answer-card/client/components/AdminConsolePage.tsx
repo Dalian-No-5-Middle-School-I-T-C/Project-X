@@ -27,8 +27,8 @@ type Preferences = { scoreDisplayMode: Distribution; showTabBar: Distribution; t
 type AiUsage = {
   available: boolean;
   reason?: string;
-  totals?: { runs: number; success: number; failed: number; totalTokensIn: number; totalTokensOut: number; avgLatencyMs: number };
-  byFeature?: Array<{ feature: string; count: number; success: number; successRate: number; avgLatencyMs: number; totalTokens: number }>;
+  totals?: { runs: number; success: number; failed: number; pending: number; totalTokensIn: number; totalTokensOut: number; avgLatencyMs: number };
+  byFeature?: Array<{ feature: string; count: number; success: number; failed: number; pending: number; successRate: number; avgLatencyMs: number; totalTokens: number }>;
 };
 
 type DataQuality = {
@@ -52,6 +52,12 @@ function fmtPct(n: number | string | null | undefined): string {
   if (n === "not_available") return "—";
   if (typeof n !== "number") return "—";
   return `${n}%`;
+}
+
+/** 已完成调用（成功+失败）占比；无已完成调用时显示 —（进行中/中断不计入成功率） */
+function rateOf(success: number, failed: number): string {
+  const completed = success + failed;
+  return completed > 0 ? `${Math.round((success / completed) * 1000) / 10}%` : "—";
 }
 
 function DistBar({ label, dist }: { label: string; dist: Distribution }) {
@@ -280,7 +286,7 @@ export function AdminConsolePage({ onBack }: Props) {
             <div className="flex flex-col gap-4">
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
                 <StatTile label="调用次数" value={fmtNum(aiUsage.totals.runs)} />
-                <StatTile label="成功率" value={aiUsage.totals.runs > 0 ? `${Math.round((aiUsage.totals.success / aiUsage.totals.runs) * 1000) / 10}%` : "—"} hint={`成功 ${fmtNum(aiUsage.totals.success)} · 失败 ${fmtNum(aiUsage.totals.failed)}`} />
+                <StatTile label="成功率" value={rateOf(aiUsage.totals.success, aiUsage.totals.failed)} hint={`成功 ${fmtNum(aiUsage.totals.success)} · 失败 ${fmtNum(aiUsage.totals.failed)}${aiUsage.totals.pending > 0 ? ` · 进行中 ${fmtNum(aiUsage.totals.pending)}` : ""}`} />
                 <StatTile label="平均延迟" value={aiUsage.totals.avgLatencyMs > 0 ? `${fmtNum(aiUsage.totals.avgLatencyMs)} ms` : "—"} />
                 <StatTile label="输入 Token" value={fmtNum(aiUsage.totals.totalTokensIn)} />
                 <StatTile label="输出 Token" value={fmtNum(aiUsage.totals.totalTokensOut)} />

@@ -1,7 +1,7 @@
 import express from "express";
 import type { Request, Response } from "express";
 import { authMiddleware, requirePermission } from "../middleware/auth";
-import { requireExamAccess } from "../../apps/answer-card/server/middleware";
+import { requireExamAccess, makeViewPermissionGate } from "../../apps/answer-card/server/middleware";
 import { PERMISSIONS } from "../auth/permissions";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import XLSX from "xlsx";
@@ -84,10 +84,15 @@ router.get("/columns", (_req: Request, res: Response) => {
   res.json({ columns: ALL_COLUMNS });
 });
 
-/** POST /api/export/exams/:examId/scores — 按配置导出 Excel */
+/** POST /api/export/exams/:examId/scores — 按配置导出 Excel
+ *  评审 P1：导出表同时含分数与姓名/考号（名单），须叠加 can_view_scores 与
+ *  can_view_students 双查看门 —— 任一维度被管理员关闭即禁止整表导出，
+ *  防止「成绩可看但名单被关」的教师经导出旁路读取学生名单。 */
 router.post(
   "/exams/:examId/scores",
   requireExamAccess,
+  makeViewPermissionGate("can_view_scores"),
+  makeViewPermissionGate("can_view_students"),
   requirePermission(PERMISSIONS.GRADE_READ),
   async (req: Request, res: Response) => {
   try {

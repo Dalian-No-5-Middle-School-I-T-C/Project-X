@@ -264,6 +264,16 @@ router.post("/cross-exam/total", async (req, res, next) => {
     }, {
       visibleExamIds
     });
+    // 评审 P1：跨考总分每行含学生姓名/考号/班级（名单+分数），无论 selected/week/
+    // group 模式，统一按实际参与聚合的考试集合（data.exams）收敛 can_view_students：
+    // 任一考试在学生查看维度被关闭即整体 403（与 subject-deviation 的口径一致）。
+    if (data.exams.length > 0) {
+      const studentAllowed = await filterExamIdsByViewPermission(req.user, data.exams.map((e) => e.id), "can_view_students");
+      if (data.exams.some((e) => !studentAllowed.has(e.id))) {
+        res.status(403).json({ message: "权限不足：所选考试中存在管理员已关闭你「查看学生名单」权限的考试" });
+        return;
+      }
+    }
     res.json(data);
   } catch (error) {
     next(error);
@@ -777,7 +787,7 @@ async function canAccessAiJobContext(
 
 // ── Export ──────────────────────────────────────────────
 
-router.get("/exams/:examId/export-csv", requireExamAccess, requireViewScores, async (req, res, next) => {
+router.get("/exams/:examId/export-csv", requireExamAccess, requireViewScores, requireViewStudents, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
