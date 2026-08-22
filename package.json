@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "2.2.5",
+  "version": "2.4.0",
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
@@ -48,6 +48,9 @@
     "verify:score-grid": "tsx scripts/verify-score-grid.ts",
     "verify:core-logic": "tsx scripts/verify-core-logic.ts",
     "verify:review-submit": "tsx scripts/verify-review-submit.ts",
+    "migrate:mariadb": "tsx scripts/migrate-to-mariadb.ts",
+    "migrate:mariadb:dry": "tsx scripts/migrate-to-mariadb.ts --dry-run",
+    "migrate:mariadb:verify": "tsx scripts/migrate-to-mariadb.ts --verify-only --sample=10",
     "verify:weekly-demo": "tsx scripts/weekly-demo-smoke.ts",
     "verify:reliability-filter": "tsx scripts/verify-reliability-filter.ts",
     "typecheck": "tsc --noEmit"

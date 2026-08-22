@@ -907,14 +907,208 @@ const MIGRATIONS: Migration[] = [
       `);
     }
   },
-  // v39: 修复 schema 漂移 —— knowledge_points.track_type 仅存在于 schema.sql（全新建库），
+  // ── 迁移编号台账（多分支合并后，作废编号请勿复用）────────────────────
+  // v39/v40 作废：main 血统库把 v39 记为 knowledge_points.track_type 回补，本分支
+  // 早期版本（5db2a2d 及之前）把 v39/v40 记为控制台地基/权限唯一约束——任一侧已
+  // 初始化的库都会因版本号已记录而跳过另一侧内容。
+  // v41/v42 属成绩公布管理（PR #256「成绩公布更新」，分支已推送、血统已存在，保留原号）。
+  // v43–v45 为本分支三个迁移的最终编号，内容全部幂等（重复列/表自动跳过），
+  // 对 main 血统 / 本分支旧编号血统 / PR #256 血统 / 全新库均安全。
+  // v41 (PR #256): 成绩公布开关 —— 批改完成后默认未公布，教师手动公布后学生方可查看。
+  // 存量兼容：历史已结考（status='closed'）的考试回填为已公布，避免升级后历史成绩对学生消失。
+  {
+    version: 41,
+    name: "exam-score-published",
+    up(db) {
+      addColumnIfMissing(db, "exams", "score_published", "INTEGER DEFAULT 0");
+      db.exec(`UPDATE exams SET score_published = 1 WHERE status = 'closed' AND score_published = 0`);
+    }
+  },
+  // v42 (PR #256): 成绩公布操作日志表（审计追踪）。
+  // 记录每次公布/撤回的执行人、时间与撤回原因；score_published 扩展三态：
+  // 0=未公布 1=已公布 2=已撤回（撤回后学生不可见，可再次公布重新公开）。
+  {
+    version: 42,
+    name: "exam-publish-events",
+    up(db) {
+      if (!hasTable(db, "exam_publish_events")) {
+        db.exec(`
+          CREATE TABLE exam_publish_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            exam_id     INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            action      TEXT NOT NULL,           -- publish / unpublish
+            actor_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            reason      TEXT,                     -- 撤回原因（unpublish 时记录）
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_epe_exam ON exam_publish_events(exam_id);
+        `);
+      }
+    }
+  },
+  // v43 (main): 修复 schema 漂移 —— knowledge_points.track_type 仅存在于 schema.sql（全新建库），
   // 旧库升级从未补齐（#177 的 v31 只补了 users.track 与 exam_group_members.track_type）。
   // v2.3.x 演示数据 seed（周报晨测）会写入该列，缺列会导致导入在插入知识点时中断。
   {
-    version: 39,
+    version: 43,
     name: "knowledge-points-track-type-backfill",
     up(db) {
       addColumnIfMissing(db, "knowledge_points", "track_type", "TEXT NOT NULL DEFAULT 'common'");
+    }
+  },
+  // v44 (控制台可观测性 + 教师权限细粒度地基):
+  // - users: ui_style(clarity/paper_edge) / color_scheme(light/dark) 主题拆分（账号级持久化）
+  // - teacher_permissions: 扩展 subject/class_id/block_id/can_grade/can_assign 维度
+  // - 新增 theme_change_events / ai_analysis_runs / ai_provider_calls / entity_lifecycle_events
+  {
+    version: 44,
+    name: "console-observability-and-permission-foundation",
+    up(db) {
+      // 1. users 主题字段拆分
+      addColumnIfMissing(db, "users", "ui_style", "TEXT DEFAULT 'paper_edge'");
+      addColumnIfMissing(db, "users", "color_scheme", "TEXT DEFAULT 'light'");
+
+      // 2. teacher_permissions 维度扩展
+      addColumnIfMissing(db, "teacher_permissions", "subject", "TEXT");
+      addColumnIfMissing(db, "teacher_permissions", "class_id", "INTEGER");
+      addColumnIfMissing(db, "teacher_permissions", "block_id", "TEXT");
+      addColumnIfMissing(db, "teacher_permissions", "can_grade", "INTEGER DEFAULT 1");
+      addColumnIfMissing(db, "teacher_permissions", "can_assign", "INTEGER DEFAULT 1");
+
+      // 3. 主题切换审计
+      if (!hasTable(db, "theme_change_events")) {
+        db.exec(`
+          CREATE TABLE theme_change_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            from_style  TEXT,
+            to_style    TEXT,
+            from_scheme TEXT,
+            to_scheme   TEXT,
+            changed_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_tce_user ON theme_change_events(user_id);
+        `);
+      }
+
+      // 4. AI 调用观测（逻辑任务层）
+      if (!hasTable(db, "ai_analysis_runs")) {
+        db.exec(`
+          CREATE TABLE ai_analysis_runs (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            feature     TEXT NOT NULL,
+            model       TEXT,
+            stage       TEXT,
+            success     INTEGER,
+            latency_ms  INTEGER,
+            tokens_in   INTEGER,
+            tokens_out  INTEGER,
+            error_code  TEXT,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_aar_feature ON ai_analysis_runs(feature);
+          CREATE INDEX IF NOT EXISTS idx_aar_created ON ai_analysis_runs(created_at);
+        `);
+      }
+
+      // 5. AI 调用观测（实际模型调用层）
+      if (!hasTable(db, "ai_provider_calls")) {
+        db.exec(`
+          CREATE TABLE ai_provider_calls (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id      INTEGER REFERENCES ai_analysis_runs(id) ON DELETE CASCADE,
+            provider    TEXT,
+            model       TEXT,
+            stage       TEXT,
+            success     INTEGER,
+            latency_ms  INTEGER,
+            tokens      INTEGER,
+            error_code  TEXT,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_apc_run ON ai_provider_calls(run_id);
+        `);
+      }
+
+      // 6. 实体生命周期事件（历史累计）
+      if (!hasTable(db, "entity_lifecycle_events")) {
+        db.exec(`
+          CREATE TABLE entity_lifecycle_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL,
+            entity_id   TEXT NOT NULL,
+            action      TEXT NOT NULL,
+            actor_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_ele_type ON entity_lifecycle_events(entity_type, action);
+        `);
+      }
+    }
+  },
+  // v45: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id）。
+  // SQLite 无法 ALTER 表级 UNIQUE 约束，采用"去重 + 重建表"：
+  //   - 旧 UNIQUE(teacher_id, grade_id) 在 NULL grade 下允许多行，先按五维组合保留最小 id 去重；
+  //   - 重建表时把 UNIQUE 扩展为五维，解除同教师多维度授权（多班级/多题块）的阻塞。
+  {
+    version: 45,
+    name: "teacher-permissions-multidim-unique",
+    up(db) {
+      if (!hasTable(db, "teacher_permissions")) return;
+      // 1) 去重：同五维组合仅保留最小 id（旧约束下 NULL 维度行可重复）
+      db.exec(`
+        DELETE FROM teacher_permissions
+        WHERE id NOT IN (
+          SELECT MIN(id) FROM teacher_permissions
+          GROUP BY teacher_id, COALESCE(grade_id, 0), COALESCE(subject, ''), COALESCE(class_id, 0), COALESCE(block_id, '')
+        )
+      `);
+      // 2) 重建表（含 v44 全部新列），UNIQUE 升级为五维
+      db.exec(`
+        CREATE TABLE teacher_permissions_v40 (
+          id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+          teacher_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          grade_id           INTEGER REFERENCES grades(id),
+          can_view_scores    INTEGER DEFAULT 1,
+          can_view_charts    INTEGER DEFAULT 1,
+          can_view_students  INTEGER DEFAULT 1,
+          subject            TEXT,
+          class_id           INTEGER,
+          block_id           TEXT,
+          can_grade          INTEGER DEFAULT 1,
+          can_assign         INTEGER DEFAULT 1,
+          created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(teacher_id, grade_id, subject, class_id, block_id)
+        );
+        INSERT INTO teacher_permissions_v40
+          (id, teacher_id, grade_id, can_view_scores, can_view_charts, can_view_students,
+           subject, class_id, block_id, can_grade, can_assign, created_at, updated_at)
+        SELECT id, teacher_id, grade_id, can_view_scores, can_view_charts, can_view_students,
+               subject, class_id, block_id, can_grade, can_assign, created_at, updated_at
+        FROM teacher_permissions;
+        DROP TABLE teacher_permissions;
+        ALTER TABLE teacher_permissions_v40 RENAME TO teacher_permissions;
+        CREATE INDEX IF NOT EXISTS idx_tp_teacher ON teacher_permissions(teacher_id);
+      `);
+    }
+  },
+  // v46: 评审修复 —— 数据保留策略按考试类型分配。
+  // 旧 createExam（v37-v45）对所有考试固定回退绑定 retention_policy_id=1（周测），
+  // 且创建接口不接受策略字段、无任何分配/切换入口：formal（月考/期中期末等大考）
+  // 全部误挂"周测"策略，管理员一旦开启该策略自动删除将波及全部考试，策略 2/3
+  // 无消费者。修复后 createExam 按类型分配（quiz→周测、formal→不绑定），本迁移
+  // 解除既有非 quiz 考试对策略 1 的默认绑定（quiz 晨测与周测策略的绑定符合按类型
+  // 分配语义，保留；显式绑定其它策略的考试不受影响）。
+  {
+    version: 46,
+    name: "retention-policy-by-exam-mode",
+    up(db) {
+      db.prepare(
+        `UPDATE exams SET retention_policy_id = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE retention_policy_id = 1 AND (exam_mode IS NULL OR exam_mode != 'quiz')`
+      ).run();
     }
   }
 ];

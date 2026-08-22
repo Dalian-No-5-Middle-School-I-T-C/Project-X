@@ -1,6 +1,6 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
-import type { AnswerCard } from "../../shared/types";
+import type { AnswerCard, ObjectiveOptionLayout } from "../../shared/types";
 import { normalizeObjectiveQuestions } from "../../shared/grading";
 import { DEFAULT_STUDENT_INFO } from "../../shared/defaultCard";
 import type { StudentInfoSettings } from "../../shared/types";
@@ -41,8 +41,9 @@ export interface CardSummary {
   original_paper_filename?: string;
 }
 
-function normalizeOptionLayout(value: unknown): "horizontal" | "vertical" {
-  return value === "vertical" ? "vertical" : "horizontal";
+function normalizeOptionLayout(value: unknown): ObjectiveOptionLayout {
+  // 与前端 ObjectiveOptionLayout 联合类型保持一致：历史值仅 horizontal/vertical，新增 vertical-options。
+  return value === "vertical" || value === "vertical-options" ? value : "horizontal";
 }
 
 export class CardRepository {

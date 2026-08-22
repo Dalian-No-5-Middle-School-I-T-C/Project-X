@@ -2,6 +2,7 @@ import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
 import { getMysqlDb, buildInsertIgnore } from "../db";
+import { recordLifecycleEvent } from "../services/lifecycleEvents";
 import examGroupsAnalysisRouter from "./exam-groups-analysis";
 import {
   assertExamIdsVisible,
@@ -11,6 +12,7 @@ import {
   requireReadableGroup,
   visibleExamIdsForGroupRead,
 } from "./exam-groups-helpers";
+import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -31,10 +33,11 @@ router.get("/", async (req: Request, res: Response) => {
     let sql = `
       SELECT eg.*,
              g.name as grade_name,
-             (SELECT COUNT(*) FROM exam_group_members egm WHERE egm.group_id = eg.id) as member_count,
+             -- #246 auto_delete：成员数/出分数不含软删除考试
+             (SELECT COUNT(*) FROM exam_group_members egm WHERE egm.group_id = eg.id AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL}) as member_count,
              (SELECT COUNT(DISTINCT ss.student_id) FROM exam_group_members egm
               JOIN student_scores ss ON ss.exam_id = egm.exam_id
-              WHERE egm.group_id = eg.id) as has_results
+              WHERE egm.group_id = eg.id AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL}) as has_results
       FROM exam_groups eg
       LEFT JOIN grades g ON g.id = eg.grade_id
       WHERE eg.source IS NULL OR eg.source = 'manual'
@@ -142,6 +145,8 @@ router.get("/:groupId", requireReadableGroup, async (req: Request, res: Response
       LEFT JOIN answer_cards ac ON ac.id = e.card_id
       LEFT JOIN student_scores ss ON ss.exam_id = e.id
       WHERE egm.group_id = ?
+        -- #246 auto_delete：软删除成员考试不出现在大考详情（与统计口径一致）
+        AND ${EXAM_NOT_SOFT_DELETED_SQL}
       GROUP BY egm.id
       ORDER BY egm.sort_order, egm.id
     `, groupId) as any[];
@@ -269,11 +274,13 @@ router.delete("/:groupId", requireGroupManager, async (req: Request, res: Respon
       if (deleteExams && memberExams.length > 0) {
         for (const exam of memberExams) {
           await tx.run("DELETE FROM exams WHERE id = ?", exam.id);
+          await recordLifecycleEvent({ entityType: "exam", entityId: exam.id, action: "delete", actorId: req.user?.id });
         }
       }
       // Delete the group (cascade deletes members)
       await tx.run("DELETE FROM exam_groups WHERE id = ?", groupId);
     });
+    await recordLifecycleEvent({ entityType: "exam_group", entityId: groupId, action: "delete", actorId: req.user?.id });
 
     res.json({ ok: true, deletedExams: deleteExams ? memberExams.length : 0, message: "大考已删除" });
   } catch (error) {

@@ -14,7 +14,7 @@ import { createAiAnalysisJob, enqueueAiAnalysisJob, getAiAnalysisJobWithCreator 
 import { suggestForCard } from "../../../../server/services/knowledgeSuggester";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
-import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../middleware";
+import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess, makeViewPermissionGate, filterExamIdsByViewPermission } from "../middleware";
 import { requirePermission, authMiddleware } from "../../../../server/middleware/auth";
 import { PERMISSIONS } from "../../../../server/auth/permissions";
 import { ScoreRepository } from "../../../../server/repositories/ScoreRepository";
@@ -34,6 +34,13 @@ import type {
 } from "../../../../shared/types";
 
 const router = express.Router();
+
+// ── #246 权限矩阵查看门：叠加在 requireExamAccess 之后 ──
+// can_view_charts → 图表/分析类端点；can_view_students → 学生名单类端点；
+// can_view_scores → 成绩明细/导出类端点。矩阵未配置时全部兼容放行。
+const requireViewCharts = makeViewPermissionGate("can_view_charts");
+const requireViewStudents = makeViewPermissionGate("can_view_students");
+const requireViewScores = makeViewPermissionGate("can_view_scores");
 
 // ── 阈值配置（路线图 P0-1）─────────────────────────────
 // GET: 任何已登录用户可读（分析页需展示当前阈值）；PUT: 限管理员。
@@ -138,7 +145,9 @@ router.get("/trends", async (req, res, next) => {
     // 按教师可见考试范围过滤，避免学科老师/班主任拉取全校趋势
     const visibleExamIds = await getVisibleExamIds(req.user);
     const trend = await analysisRepo.getScoreTrend(subject, classId, visibleExamIds);
-    res.json(trend);
+    // #246：跨考试图表数据按 can_view_charts 收敛（与单场图表门同语义）
+    const chartAllowed = await filterExamIdsByViewPermission(req.user, trend.map((t) => t.examId), "can_view_charts");
+    res.json(trend.filter((t) => chartAllowed.has(t.examId)));
   } catch (error) {
     next(error);
   }
@@ -255,6 +264,16 @@ router.post("/cross-exam/total", async (req, res, next) => {
     }, {
       visibleExamIds
     });
+    // 评审 P1：跨考总分每行含学生姓名/考号/班级（名单+分数），无论 selected/week/
+    // group 模式，统一按实际参与聚合的考试集合（data.exams）收敛 can_view_students：
+    // 任一考试在学生查看维度被关闭即整体 403（与 subject-deviation 的口径一致）。
+    if (data.exams.length > 0) {
+      const studentAllowed = await filterExamIdsByViewPermission(req.user, data.exams.map((e) => e.id), "can_view_students");
+      if (data.exams.some((e) => !studentAllowed.has(e.id))) {
+        res.status(403).json({ message: "权限不足：所选考试中存在管理员已关闭你「查看学生名单」权限的考试" });
+        return;
+      }
+    }
     res.json(data);
   } catch (error) {
     next(error);
@@ -273,7 +292,7 @@ router.get("/exams/:examId/classes", requireExamAccess, async (req, res, next) =
   }
 });
 
-router.get("/exams/:examId/overview", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/overview", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -284,7 +303,7 @@ router.get("/exams/:examId/overview", requireExamAccess, async (req, res, next) 
   }
 });
 
-router.get("/exams/:examId/students", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/students", requireExamAccess, requireViewStudents, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -296,7 +315,7 @@ router.get("/exams/:examId/students", requireExamAccess, async (req, res, next) 
 });
 
 // v1.4.0: score table (rank change, deviation)
-router.get("/exams/:examId/score-table", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/score-table", requireExamAccess, requireViewScores, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -313,7 +332,7 @@ router.get("/exams/:examId/score-table", requireExamAccess, async (req, res, nex
 });
 
 // v1.7.0: previous exam comparison
-router.get("/exams/:examId/previous", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/previous", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -327,7 +346,7 @@ router.get("/exams/:examId/previous", requireExamAccess, async (req, res, next) 
   }
 });
 
-router.get("/exams/:examId/questions", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/questions", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -339,7 +358,7 @@ router.get("/exams/:examId/questions", requireExamAccess, async (req, res, next)
 });
 
 // ── 逐题下钻：全班每人得分（难度/区分度增强）─────────────
-router.get("/exams/:examId/question-students", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/question-students", requireExamAccess, requireViewStudents, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     // Bugfix: 严格校验 examId/questionNumber/classId，统一回正为有限正整数；无效值直接 400，
@@ -367,7 +386,7 @@ router.get("/exams/:examId/question-students", requireExamAccess, async (req, re
 });
 
 // ── 总体分析：单科/各班分布 ─────────────────────────
-router.get("/exams/:examId/distribution", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/distribution", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const mode = (req.query.mode as string) === "class" ? "class" : "subject";
@@ -379,7 +398,7 @@ router.get("/exams/:examId/distribution", requireExamAccess, async (req, res, ne
 });
 
 // ── 考试整体难度/区分度指标 ─────────────────────────
-router.get("/exams/:examId/metrics", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/metrics", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -391,7 +410,7 @@ router.get("/exams/:examId/metrics", requireExamAccess, async (req, res, next) =
 });
 
 // ── 建议 4：临界生（踩线生）名单 ─────────────────────
-router.get("/exams/:examId/borderline-students", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/borderline-students", requireExamAccess, requireViewStudents, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const examId = Number(req.params.examId);
@@ -436,13 +455,18 @@ router.get("/students/:studentId/trend", authMiddleware, async (req, res, next) 
     const visibleIds = await getVisibleExamIds(user);
     if (visibleIds === null) {
       const data = await analysisRepo.getStudentTrend(studentId, null);
-      res.json(data satisfies StudentTrendPoint[]);
+      // #246：跨考试学生数据按 can_view_students 收敛（管理员/年级组长恒放行）
+      const studentAllowed = await filterExamIdsByViewPermission(user, data.map((d) => d.examId), "can_view_students");
+      res.json(data.filter((d) => studentAllowed.has(d.examId)) satisfies StudentTrendPoint[]);
       return;
     }
 
     // 其余教师：仅返回可见考试内的数据；该生在可见范围内无成绩时拒绝访问
     const hasAnyScore = await getMysqlDb().get("SELECT 1 FROM student_scores WHERE student_id = ? LIMIT 1", studentId);
-    const data = await analysisRepo.getStudentTrend(studentId, visibleIds);
+    const raw = await analysisRepo.getStudentTrend(studentId, visibleIds);
+    // #246：可见范围内的考试再按 can_view_students 收敛
+    const studentAllowed = await filterExamIdsByViewPermission(user, raw.map((d) => d.examId), "can_view_students");
+    const data = raw.filter((d) => studentAllowed.has(d.examId));
     if (data.length === 0) {
       if (hasAnyScore) {
         res.status(403).json({ message: "权限不足：无权访问该学生" });
@@ -466,6 +490,13 @@ router.post("/subject-deviation", async (req, res, next) => {
       return;
     }
     if (!(await validateExamIdsAccess(req, res, examIds))) return;
+    // #246：偏科名单含学生姓名/考号/各科分数，按 can_view_students 对所选考试整体校验
+    // （与 validateExamIdsAccess 的「任一不可访问即 403」口径一致）
+    const studentAllowed = await filterExamIdsByViewPermission(req.user, examIds, "can_view_students");
+    if (examIds.some((id) => !studentAllowed.has(id))) {
+      res.status(403).json({ message: "权限不足：所选考试中存在管理员已关闭你「查看学生名单」权限的考试" });
+      return;
+    }
     const classId = req.body?.classId ? Number(req.body.classId) : undefined;
     const threshold = req.body?.threshold ? Number(req.body.threshold) : 0.8;
     const analysisRepo = new AnalysisRepository();
@@ -477,7 +508,7 @@ router.post("/subject-deviation", async (req, res, next) => {
 });
 
 // ── 建议 10：班级知识点掌握对比 ───────────────────────
-router.get("/exams/:examId/class-knowledge", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/class-knowledge", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const examId = Number(req.params.examId);
@@ -493,7 +524,7 @@ router.get("/exams/:examId/class-knowledge", requireExamAccess, async (req, res,
 });
 
 // ── 建议 11：错题本 XLSX 导出 ────────────────────────
-router.get("/exams/:examId/export-wrong", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/export-wrong", requireExamAccess, requireViewStudents, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const examId = Number(req.params.examId);
@@ -523,7 +554,7 @@ router.get("/exams/:examId/export-wrong", requireExamAccess, async (req, res, ne
 });
 
 // ── 建议 14：年级间同类考试对比（同答题卡模板）────────
-router.get("/exams/:examId/comparable", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/comparable", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const data = await analysisRepo.getComparableExams(Number(req.params.examId));
@@ -538,15 +569,19 @@ router.get("/subject-quality", async (req, res, next) => {
   try {
     const subject = typeof req.query.subject === "string" ? req.query.subject : "";
     const analysisRepo = new AnalysisRepository();
-    const data = await analysisRepo.getSubjectQuality(subject);
-    res.json(data satisfies SubjectQualityResponse);
+    // #246：按教师可见考试范围过滤（此前未过滤，学科老师可拉全校趋势），
+    // 并在取数后按 can_view_charts 收敛（图表数据）
+    const visibleExamIds = await getVisibleExamIds(req.user);
+    const raw = await analysisRepo.getSubjectQuality(subject, visibleExamIds);
+    const chartAllowed = await filterExamIdsByViewPermission(req.user, raw.points.map((p) => p.examId), "can_view_charts");
+    res.json({ ...raw, points: raw.points.filter((p) => chartAllowed.has(p.examId)) } satisfies SubjectQualityResponse);
   } catch (error) {
     next(error);
   }
 });
 
 // ── B2: 逐题选项分析（v29）──────────────────────────
-router.get("/exams/:examId/option-analysis", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/option-analysis", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -558,7 +593,7 @@ router.get("/exams/:examId/option-analysis", requireExamAccess, async (req, res,
 });
 
 // ── B3: 跨班对比（v29）─────────────────────────────
-router.get("/exams/:examId/class-comparison", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/class-comparison", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const raw = typeof req.query.classIds === "string" ? req.query.classIds : "";
     let classIds = raw.split(",").map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
@@ -644,7 +679,7 @@ router.get("/ai/status", async (req, res) => {
   }
 });
 
-router.post("/exams/:examId/ai-analysis", requireExamAccess, async (req, res, next) => {
+router.post("/exams/:examId/ai-analysis", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const examId = Number(req.params.examId);
     if (!Number.isFinite(examId) || examId <= 0) {
@@ -752,7 +787,7 @@ async function canAccessAiJobContext(
 
 // ── Export ──────────────────────────────────────────────
 
-router.get("/exams/:examId/export-csv", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/export-csv", requireExamAccess, requireViewScores, requireViewStudents, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -800,7 +835,7 @@ router.get("/exams/:examId/export-csv", requireExamAccess, async (req, res, next
 // ============================================================
 
 // GET /api/analysis/knowledge-points/:examId — 按知识点聚合全班得分率
-router.get("/knowledge-points/:examId", requireExamAccess, async (req, res, next) => {
+router.get("/knowledge-points/:examId", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const examId = parseInt(String(req.params.examId), 10);
     const classId = req.query.classId ? parseInt(String(req.query.classId), 10) : undefined;
@@ -814,7 +849,7 @@ router.get("/knowledge-points/:examId", requireExamAccess, async (req, res, next
 });
 
 // GET /api/analysis/knowledge-points/:examId/students/:studentId — 单个学生知识点弱项
-router.get("/knowledge-points/:examId/students/:studentId", requireExamAccess, async (req, res, next) => {
+router.get("/knowledge-points/:examId/students/:studentId", requireExamAccess, requireViewStudents, async (req, res, next) => {
   try {
     const examId = parseInt(String(req.params.examId), 10);
     const studentId = parseInt(String(req.params.studentId), 10);

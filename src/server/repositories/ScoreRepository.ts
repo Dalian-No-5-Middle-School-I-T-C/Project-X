@@ -31,7 +31,25 @@ export class ScoreRepository {
     this.db = getMysqlDb();
   }
 
-  async getStudentScores(studentId: number): Promise<StudentExamScore[]> {
+  /**
+   * 学生全部考试成绩。
+   * @param options.publishedOnly 默认 true（学生自助查分：仅已公布考试）；
+   *   教师/管理员代查传 false —— 公布门是学生端读门，不应误伤教师端（评审 P2）。
+   */
+  async getStudentScores(studentId: number, options: { publishedOnly?: boolean } = {}): Promise<StudentExamScore[]> {
+    const publishedOnly = options.publishedOnly ?? true;
+    // 公布门是学生端读门：代查模式（教师/管理员）不受 score_published 限制（评审 P2）
+    const whereParts = [
+      "ss.student_id = ?",
+      "-- #246 auto_delete：软删除考试的成绩不再对学生可见",
+      "AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)",
+    ];
+    if (publishedOnly) {
+      whereParts.push(
+        "-- PR #256（v41）：成绩默认不公布，学生端仅见已公布考试",
+        "AND e.score_published = 1",
+      );
+    }
     const rows = await this.db.all(`
       SELECT
         ss.exam_id,
@@ -50,7 +68,7 @@ export class ScoreRepository {
         ) AS class_size
       FROM student_scores ss
       JOIN exams e ON e.id = ss.exam_id
-      WHERE ss.student_id = ?
+      WHERE ${whereParts.join("\n        ")}
       ORDER BY ss.graded_at DESC
     `, studentId) as Array<Omit<StudentExamScore, "percentile">>;
 
@@ -105,6 +123,10 @@ export class ScoreRepository {
         SELECT student_id, MIN(class_id) AS class_id FROM class_students GROUP BY student_id
       ) cs ON cs.student_id = ss.student_id
       WHERE ss.student_id = ?
+        -- #246 auto_delete：软删除考试不进入成长曲线
+        AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)
+        -- PR #256（v41）：未公布考试不进入成长曲线
+        AND e.score_published = 1
       ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC
     `, studentId) as Array<Omit<StudentTrendPoint, "percentile">>;
 
@@ -215,5 +237,11 @@ export class ScoreRepository {
   async hasScore(studentId: number, examId: number): Promise<boolean> {
     const row = await this.db.get("SELECT 1 FROM student_scores WHERE student_id = ? AND exam_id = ? LIMIT 1", studentId, examId);
     return Boolean(row);
+  }
+
+  /** 成绩是否已公布（v41）：学生自助查分前必须为已公布。 */
+  async isExamScorePublished(examId: number): Promise<boolean> {
+    const row = await this.db.get("SELECT score_published FROM exams WHERE id = ?", examId) as { score_published?: number } | undefined;
+    return row?.score_published === 1;
   }
 }

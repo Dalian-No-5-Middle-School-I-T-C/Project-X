@@ -1,8 +1,8 @@
 // ExamManagePage — 从 App.tsx 抽出的「考试管理」页面（B2：改由 useWorkspace 消费共享状态）。
 // P4/T5：整页迁移到 v2 视觉体系（Button / SegmentedControl / Table / ExamStatusBadge / EmptyState）。
 // 行为与迁移前完全一致：API 端点、请求体、路由与权限判断零改动。
-import { CalendarDays, CalendarX2, ClipboardList, Layers, Plus, Search, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { CalendarDays, CalendarX2, ClipboardList, Layers, Megaphone, Plus, Search, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { fetchJson } from "../auth/api";
 import { useWorkspace } from "../WorkspaceContext";
 import { ExamDetailPage } from "../components/ExamDetailPage";
@@ -13,6 +13,13 @@ import {
   Calendar,
   Card,
   Checkbox,
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
   EmptyState,
   ExamStatusBadge,
   Input,
@@ -133,6 +140,25 @@ export function ExamManagePage() {
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => todayDateString());
   const [creating, setCreating] = useState(false);
   const [newExamMode, setNewExamMode] = useState<ExamMode>("formal");
+  // 保留策略（评审 P1）：仅管理员可见；"auto"= 按考试类型自动分配（quiz→周测、formal→不绑定）
+  const [availablePolicies, setAvailablePolicies] = useState<Array<{ id: number; name: string; retainDays: number }>>([]);
+  const [newExamRetentionPolicy, setNewExamRetentionPolicy] = useState<string>("auto");
+  // v41/v42: 成绩公布/撤回 —— 单场公布/撤回确认框、批量公布确认框、请求中标志
+  const [publishTarget, setPublishTarget] = useState<ExamRecord | null>(null);
+  const [batchPublishOpen, setBatchPublishOpen] = useState(false);
+  const [unpublishTarget, setUnpublishTarget] = useState<ExamRecord | null>(null);
+  const [unpublishReason, setUnpublishReason] = useState("");
+  const [publishing, setPublishing] = useState(false);
+
+  useEffect(() => {
+    // 保留策略列表为管理员接口（SYSTEM_MANAGE），仅管理员拉取
+    if (userRole !== "admin") return;
+    let active = true;
+    fetchJson<{ ok: boolean; data: Array<{ id: number; name: string; retainDays: number }> }>("/api/admin/data-retention-policies")
+      .then((res) => { if (active && res?.ok) setAvailablePolicies(res.data); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [userRole]);
 
   const visibleExams = useMemo(() => exams.filter((exam) => {
     const matchesSearch = !examSearch.trim() || exam.name.toLowerCase().includes(examSearch.trim().toLowerCase());
@@ -191,6 +217,65 @@ export function ExamManagePage() {
     }
   }
 
+  /** v41: 单场成绩公布（确认后调接口并刷新列表） */
+  async function handlePublishExam(examId: number) {
+    if (publishing) return;
+    setPublishing(true);
+    try {
+      await fetchJson(`/api/exams/${examId}/publish`, { method: "POST" });
+      setPublishTarget(null);
+      setStatus("成绩已公布，学生可查看");
+      await loadExams();
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "公布失败");
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  /** v41: 批量成绩公布 */
+  async function handlePublishBatch() {
+    if (publishing || selectedExamIds.size === 0) return;
+    const count = selectedExamIds.size;
+    setPublishing(true);
+    try {
+      await fetchJson("/api/exams/publish-batch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ examIds: Array.from(selectedExamIds) }),
+      });
+      setBatchPublishOpen(false);
+      setSelectedExamIds(new Set());
+      setStatus(`已批量公布 ${count} 场考试的成绩`);
+      await loadExams();
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "批量公布失败");
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  /** v42: 撤回成绩公布（确认后调接口，写审计日志） */
+  async function handleUnpublishExam(examId: number) {
+    if (publishing) return;
+    setPublishing(true);
+    try {
+      await fetchJson(`/api/exams/${examId}/unpublish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: unpublishReason.trim() || undefined }),
+      });
+      setUnpublishTarget(null);
+      setUnpublishReason("");
+      setStatus("成绩已撤回，学生不可再查看");
+      await loadExams();
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "撤回失败");
+    } finally {
+      setPublishing(false);
+    }
+  }
+
   async function handleCreateExam() {
     if (creating) return;
     const name = newExamName.trim();
@@ -222,8 +307,18 @@ export function ExamManagePage() {
         });
         cardId = cardRes.id;
       }
-      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId, subject: newExamSubject.trim() || undefined, mode: newExamMode }) });
-      setNewExamName(""); setNewExamSubject(""); setNewExamMode("formal"); setShowCreateExam(false);
+      const payload: Record<string, unknown> = {
+        name,
+        cardId,
+        subject: newExamSubject.trim() || undefined,
+        mode: newExamMode,
+      };
+      // 管理员显式指定策略时透传（"auto"=按类型自动分配，交给后端解析）
+      if (userRole === "admin" && newExamRetentionPolicy !== "auto") {
+        payload.retentionPolicyId = newExamRetentionPolicy === "none" ? null : Number(newExamRetentionPolicy);
+      }
+      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      setNewExamName(""); setNewExamSubject(""); setNewExamMode("formal"); setNewExamRetentionPolicy("auto"); setShowCreateExam(false);
       loadExams();
     } catch (err) {
       setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -259,12 +354,24 @@ export function ExamManagePage() {
                     {exam.subject || "—"} · 答题卡 {exam.card_id ?? "未关联"}
                   </div>
                 </div>
-                <ExamStatusBadge status={toExamStatus(exam.status)} label={examStatusLabel(exam.status)} />
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <ExamStatusBadge status={toExamStatus(exam.status)} label={examStatusLabel(exam.status)} />
+                  <Badge tone={exam.score_published === 1 ? "success" : exam.score_published === 2 ? "danger" : "neutral"} className="shrink-0">
+                    {exam.score_published === 1 ? "已公布" : exam.score_published === 2 ? "已撤回" : "未公布"}
+                  </Badge>
+                </div>
               </div>
               <div className="mt-3 flex flex-wrap justify-end gap-2">
                 <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
                 <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
                 <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
+                {exam.score_published === 1 ? (
+                  <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
+                ) : (
+                  <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setPublishTarget(exam)}>
+                    {exam.score_published === 2 ? "重新公布" : "公布分数"}
+                  </Button>
+                )}
               </div>
             </Card>
           ))}
@@ -290,7 +397,7 @@ export function ExamManagePage() {
               <TableHead className="w-20">科目</TableHead>
               <TableHead className="w-28">答题卡</TableHead>
               <TableHead className="w-20">状态</TableHead>
-              <TableHead className="w-52 text-right">操作</TableHead>
+              <TableHead className="w-72 text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -314,13 +421,25 @@ export function ExamManagePage() {
                 <TableCell className="text-muted-foreground">{exam.subject || "—"}</TableCell>
                 <TableCell className="text-xs text-muted-foreground">{exam.card_id ?? "未关联"}</TableCell>
                 <TableCell>
-                  <ExamStatusBadge status={toExamStatus(exam.status)} label={examStatusLabel(exam.status)} />
+                  <div className="flex items-center gap-1.5">
+                    <ExamStatusBadge status={toExamStatus(exam.status)} label={examStatusLabel(exam.status)} />
+                    <Badge tone={exam.score_published === 1 ? "success" : exam.score_published === 2 ? "danger" : "neutral"} className="shrink-0">
+                      {exam.score_published === 1 ? "已公布" : exam.score_published === 2 ? "已撤回" : "未公布"}
+                    </Badge>
+                  </div>
                 </TableCell>
                 <TableCell className="text-right whitespace-nowrap">
                   <div className="flex justify-end gap-1">
                     <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
                     <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
                     <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
+                    {exam.score_published === 1 ? (
+                      <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
+                    ) : (
+                      <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setPublishTarget(exam)}>
+                        {exam.score_published === 2 ? "重新公布" : "公布分数"}
+                      </Button>
+                    )}
                   </div>
                 </TableCell>
               </TableRow>
@@ -347,6 +466,16 @@ export function ExamManagePage() {
             ) : (
               <Button variant="primary" icon={<Plus />} onClick={() => setShowCreateGroup(true)}>
                 新建大考
+              </Button>
+            )}
+            {examManageMode === "single" && selectedExamIds.size > 0 && (
+              <Button
+                variant="ghost"
+                icon={<Megaphone />}
+                className="text-success-foreground"
+                onClick={() => setBatchPublishOpen(true)}
+              >
+                批量公布 ({selectedExamIds.size})
               </Button>
             )}
             {examManageMode === "single" && selectedExamIds.size > 0 && (
@@ -438,6 +567,22 @@ export function ExamManagePage() {
                   <SelectItem value="formal">{EXAM_MODE_LABELS.formal}（精细权限）</SelectItem>
                 </SelectContent>
               </Select>
+              {userRole === "admin" && (
+                <Select value={newExamRetentionPolicy} onValueChange={setNewExamRetentionPolicy}>
+                  <SelectTrigger aria-label="数据保留策略">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">保留策略：按考试类型自动分配</SelectItem>
+                    <SelectItem value="none">保留策略：不绑定</SelectItem>
+                    {availablePolicies.map((p) => (
+                      <SelectItem key={p.id} value={String(p.id)}>
+                        保留策略：{p.name}（{p.retainDays === 0 ? "永久" : `${p.retainDays} 天`}）
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
               <div className="flex gap-2">
                 <Button variant="primary" loading={creating} onClick={() => void handleCreateExam()}>确认创建</Button>
                 <Button variant="ghost" onClick={() => setShowCreateExam(false)}>取消</Button>
@@ -583,6 +728,63 @@ export function ExamManagePage() {
           )}
         </section>
       )}
+
+      {/* v41: 单场成绩公布确认框 */}
+      <Dialog open={publishTarget !== null} onOpenChange={(open: boolean) => { if (!open && !publishing) setPublishTarget(null); }}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>公布分数</DialogTitle>
+            <DialogDescription>
+              确认公布「{publishTarget?.name ?? ""}」的成绩？公布后学生可立即查看该场考试的分数与排名。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPublishTarget(null)} disabled={publishing}>取消</Button>
+            <Button variant="primary" loading={publishing} onClick={() => publishTarget && void handlePublishExam(publishTarget.id)}>确认公布</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* v41: 批量成绩公布确认框 */}
+      <Dialog open={batchPublishOpen} onOpenChange={(open: boolean) => { if (!open && !publishing) setBatchPublishOpen(false); }}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>批量公布成绩</DialogTitle>
+            <DialogDescription>
+              确认公布选中的 {selectedExamIds.size} 场考试的成绩？公布后学生可立即查看。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBatchPublishOpen(false)} disabled={publishing}>取消</Button>
+            <Button variant="primary" loading={publishing} onClick={() => void handlePublishBatch()}>确认批量公布</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* v42: 撤回成绩公布确认框（含原因输入，写入审计日志） */}
+      <Dialog open={unpublishTarget !== null} onOpenChange={(open: boolean) => { if (!open && !publishing) setUnpublishTarget(null); }}>
+        <DialogContent size="sm">
+          <DialogHeader>
+            <DialogTitle>撤回成绩公布</DialogTitle>
+            <DialogDescription>
+              确认撤回「{unpublishTarget?.name ?? ""}」的成绩公布？撤回后学生将无法查看该场考试成绩，可在后续重新公布。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="flex flex-col gap-3">
+            <Input
+              value={unpublishReason}
+              onChange={(event) => setUnpublishReason(event.target.value)}
+              placeholder="撤回原因（选填，将记录在审计日志中）"
+              maxLength={500}
+              aria-label="撤回原因"
+            />
+          </DialogBody>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setUnpublishTarget(null)} disabled={publishing}>取消</Button>
+            <Button variant="destructive" loading={publishing} onClick={() => unpublishTarget && void handleUnpublishExam(unpublishTarget.id)}>确认撤回</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

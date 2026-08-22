@@ -470,6 +470,87 @@ async function main(): Promise<void> {
       );
     }
 
+    // ── 评审 P1：can_view_students=0 名单旁路收口 ──
+    // 考试详情 results / 考生搜索 / 成绩导出 / 跨考总分，四入口在名单查看被关闭时全部收敛
+    section("评审：can_view_students 名单旁路收口");
+    {
+      // teacher（数学/classA）配置矩阵行：成绩与图表可看、学生名单关闭
+      db.prepare(
+        "INSERT INTO teacher_permissions (teacher_id, grade_id, subject, class_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?,?,?,?,1,1,0,1,1)"
+      ).run(teacher.id, grade.id, "数学", classA);
+      const detailResp = await fetch(`${base}/api/exams/${visibleExam}`, { headers: authHeaders(teacherToken) });
+      const detailBody = await detailResp.json() as Record<string, unknown>;
+      check(detailResp.status === 200 && !("results" in detailBody), "名单关闭教师：考试详情不再返回 results（学生名单+分数）");
+      check(
+        (await fetch(`${base}/api/exams/${visibleExam}/students/search?q=%E5%AD%A6`, { headers: authHeaders(teacherToken) })).status === 403,
+        "名单关闭教师：考生搜索被 can_view_students 门拦截"
+      );
+      check(
+        (await fetch(`${base}/api/export/exams/${visibleExam}/scores`, {
+          method: "POST",
+          headers: { ...authHeaders(teacherToken), "Content-Type": "application/json" },
+          body: JSON.stringify({ columns: ["studentName", "totalScore"] })
+        })).status === 403,
+        "名单关闭教师：成绩 Excel 导出被双查看门拦截"
+      );
+      check(
+        (await fetch(`${base}/api/analysis/cross-exam/total`, {
+          method: "POST",
+          headers: { ...authHeaders(teacherToken), "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "selected", examIds: [visibleExam] })
+        })).status === 403,
+        "名单关闭教师：跨考总分被 can_view_students 收敛拦截"
+      );
+      const adminDetailResp = await fetch(`${base}/api/exams/${visibleExam}`, { headers: authHeaders(adminToken) });
+      const adminDetailBody = await adminDetailResp.json() as Record<string, unknown>;
+      check(adminDetailResp.status === 200 && Array.isArray(adminDetailBody.results), "管理员不受名单门限制：考试详情仍返回 results");
+      // 学生角色：/api/exams 命名空间由 examGate（EXAM_READ）整体拦截，
+      // 无法借考试详情端点读取全班成绩单（handler 内亦保留 isStaff 纵深防御）
+      const studentDetailResp = await fetch(`${base}/api/exams/${visibleExam}`, { headers: authHeaders(studentToken) });
+      check(studentDetailResp.status === 403, "学生角色：考试详情端点被 examGate 拦截（无法读取全班成绩单）");
+      // 清理矩阵行（本段置于末尾，避免影响其它用例的可见性判定）
+      db.prepare("DELETE FROM teacher_permissions WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
+    }
+
+    // ── 评审 P1：创建考试显式指定保留策略仅管理员 ──
+    // POST /api/exams 此前只受 examGate（EXAM_WRITE）保护，普通教师可越权挂上
+    // 自动归档/删除策略；PATCH 更新接口已限定仅管理员，此处把创建接口校验对齐。
+    section("评审：创建考试显式保留策略仅管理员");
+    {
+      const policyRow = db.prepare("SELECT id FROM data_retention_policies ORDER BY id LIMIT 1").get() as { id: number } | undefined;
+      const policyId = policyRow?.id ?? 1;
+      db.prepare("INSERT OR IGNORE INTO answer_cards (id, title, subject, subject_label) VALUES ('CRITICALCARD001', '保留策略回归卡', 'shuxue', '数学')").run();
+
+      const teacherCreatePolicy = await fetch(`${base}/api/exams`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
+        body: JSON.stringify({ name: "crit-教师越权策略", cardId: "CRITICALCARD001", mode: "formal", retentionPolicyId: policyId })
+      });
+      const teacherCreatePolicyBody = await teacherCreatePolicy.json() as { message?: string };
+      check(
+        teacherCreatePolicy.status === 403 && (teacherCreatePolicyBody.message ?? "").includes("仅管理员"),
+        "教师创建考试时显式指定保留策略被 403 拒绝"
+      );
+
+      const teacherCreateDefault = await fetch(`${base}/api/exams`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
+        body: JSON.stringify({ name: "crit-教师默认策略", cardId: "CRITICALCARD001", mode: "formal" })
+      });
+      check(teacherCreateDefault.status === 201, "教师创建考试（未指定保留策略）仍可成功");
+
+      const adminCreatePolicy = await fetch(`${base}/api/exams`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({ name: "crit-管理员指定策略", cardId: "CRITICALCARD001", mode: "formal", retentionPolicyId: policyId })
+      });
+      const adminCreatePolicyBody = await adminCreatePolicy.json() as { id?: number; retention_policy_id?: number | null };
+      check(
+        adminCreatePolicy.status === 201 && adminCreatePolicyBody.retention_policy_id === policyId,
+        "管理员创建考试显式指定保留策略成功且绑定生效"
+      );
+    }
+
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);
     if (failures.length > 0) {
       for (const failure of failures) console.error(`  - ${failure}`);

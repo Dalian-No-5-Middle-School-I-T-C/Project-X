@@ -90,7 +90,9 @@ async function main(): Promise<void> {
   const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
   const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
   const { requirePermission, requireRole } = await import("../src/server/middleware/auth");
-  const { requireExamAccess } = await import("../src/apps/answer-card/server/middleware");
+  const { requireExamAccess, getVisibleExamIds, canGradeBlock, hasViewPermission, hasGroupViewPermission } = await import(
+    "../src/apps/answer-card/server/middleware"
+  );
   const perms = await import("../src/server/auth/permissions");
   const { PERMISSIONS, ROLE_IDS, roleHasPermission, permissionsForRole, loadRolePermissions } = perms;
 
@@ -204,11 +206,12 @@ async function main(): Promise<void> {
 
   // ── 6. 学生自助查分 ───────────────────────────────────
   section("6. 学生自助查分");
-  // 造一条考试 + 成绩
+  // 造一条考试 + 成绩（v2.4.0 起成绩默认不公布，学生端仅见 score_published=1 的考试；
+  // 此处显式置 1 模拟教师完成「公布分数」动作，符合新业务规则）
   db.prepare("INSERT INTO answer_cards (id, title) VALUES ('99999999', '验证卷')").run();
   const examId = (
     db
-      .prepare("INSERT INTO exams (name, card_id, subject, status) VALUES ('期中物理', '99999999', '物理', 'closed')")
+      .prepare("INSERT INTO exams (name, card_id, subject, status, score_published) VALUES ('期中物理', '99999999', '物理', 'closed', 1)")
       .run().lastInsertRowid as number
   );
   const otherStudent = await userRepo.createUser({
@@ -433,6 +436,285 @@ async function main(): Promise<void> {
     (await runExamAccess(studentUser, "PUT", "/api/exams/" + examId + "/student/" + student.id + "/scores", examId)).status === 403,
     "学生写操作（改分）被 403"
   );
+
+  // ── 8. #246 权限矩阵运行时消费 / 题块授权 / auto_delete 软删除 ──
+  section("8. #246 permission matrix runtime + canGradeBlock + auto_delete visibility");
+  const plainTeacherUser = { id: teacher.id, role_id: ROLE_IDS.TEACHER, role_name: "teacher", teacher_role: null, subject: null };
+
+  // 8.1 普通教师（无 teacher_role）此前在 getVisibleExamIds 入口提前返回 null，矩阵对其完全失效
+  ok((await getVisibleExamIds(plainTeacherUser)) === null, "#246 普通教师无矩阵记录 → 全可见（兼容保留）");
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, 0, 1, 1, 1, 1)"
+  ).run(teacher.id);
+  const quizExam246 = Number(
+    db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status, exam_mode) VALUES ('#246晨测', '99999999', '数学', ?, 'closed', 'quiz')").run(klass.id).lastInsertRowid
+  );
+  const plainVisible = await getVisibleExamIds(plainTeacherUser);
+  ok(Array.isArray(plainVisible), "#246 普通教师存在禁止行 → 可见集合收敛为列表（不再提前返回 null）");
+  ok(plainVisible != null && !plainVisible.includes(releasePhysicsA), "#246 普通教师矩阵禁止行生效：formal 考试被剔除");
+  ok(plainVisible != null && plainVisible.includes(quizExam246), "#246 晨测（quiz）不受矩阵限制仍可见");
+
+  // 8.2 can_view_charts / can_view_students 的运行时门（hasViewPermission）
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, class_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, ?, 1, 0, 1, 1, 1)"
+  ).run(headTeacher.id, klass.id);
+  ok(!(await hasViewPermission(dashHeadTeacherUser, releasePhysicsA, "can_view_charts")), "#246 班级维度关闭图表 → 匹配考试图表查看被拒");
+  ok(await hasViewPermission(dashHeadTeacherUser, releasePhysicsA, "can_view_students"), "#246 学生名单未关闭 → 仍允许");
+  ok(await hasViewPermission(dashAdminUser, releasePhysicsA, "can_view_charts"), "#246 管理员不受矩阵限制");
+
+  // 8.3 canGradeBlock：已配置矩阵但未命中授权的教师不能再借「无分配记录」回退越权
+  const matrixTeacher = await userRepo.createUser({ username: "t_mtx", password: "mtx123", name: "矩阵教师", role_id: ROLE_IDS.TEACHER });
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, subject, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, '化学', 1, 1, 1, 1, 1)"
+  ).run(matrixTeacher.id);
+  ok(!(await canGradeBlock({ id: matrixTeacher.id, role_name: "teacher" }, releaseMathB, "blk-246")), "#246 学科不匹配的矩阵教师批改未分配题块被拒（数学考试 vs 化学授权行）");
+  const noGradeTeacher = await userRepo.createUser({ username: "t_nog", password: "nog123", name: "禁阅教师", role_id: ROLE_IDS.TEACHER });
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, 1, 1, 1, 0, 1)"
+  ).run(noGradeTeacher.id);
+  ok(!(await canGradeBlock({ id: noGradeTeacher.id, role_name: "teacher" }, releaseMathB, "blk-246")), "#246 can_grade=0 的全维度行不放行批改");
+  const legacyTeacher = await userRepo.createUser({ username: "t_lgcy", password: "lg123", name: "旧部署教师", role_id: ROLE_IDS.TEACHER });
+  ok(await canGradeBlock({ id: legacyTeacher.id, role_name: "teacher" }, releaseMathB, "blk-246"), "#246 未配置矩阵的旧部署教师仍可批改（兼容回退保留）");
+  db.prepare("INSERT INTO review_assignments (exam_id, block_id, teacher_id) VALUES (?, ?, ?)").run(releaseMathB, "blk-246", matrixTeacher.id);
+  ok(await canGradeBlock({ id: matrixTeacher.id, role_name: "teacher" }, releaseMathB, "blk-246"), "#246 显式分配的教师可批改");
+
+  // 8.4 auto_delete 软删除可见性（可见集合 / 访问中间件 / 周审计 / 大考组统计）
+  db.prepare("INSERT INTO exam_archives (exam_id, is_deleted, deleted_at) VALUES (?, 1, CURRENT_TIMESTAMP)").run(releaseMathA);
+  const headVisibleAfter = await getVisibleExamIds(dashHeadTeacherUser);
+  ok(headVisibleAfter != null && !headVisibleAfter.includes(releaseMathA), "#246 软删除考试从教师可见集合消失");
+  ok((await runExamAccess(dashHeadTeacherUser, "GET", "/api/analysis/exams/" + releaseMathA, releaseMathA)).status === 404, "#246 非管理员直接访问软删除考试返回 404");
+  ok((await runExamAccess(dashAdminUser, "GET", "/api/analysis/exams/" + releaseMathA, releaseMathA)).allowed, "#246 管理员仍可访问软删除考试（恢复通道）");
+
+  const weekStart246 = "2026-07-06"; // 周一
+  const softPendingQuiz = Number(db.prepare("INSERT INTO exams (name, card_id, subject, grade_id, status, exam_mode, created_at) VALUES ('#246软删未出分', '99999999', '数学', ?, 'grading', 'quiz', '2026-07-07 09:00:00')").run(grade.id).lastInsertRowid);
+  db.prepare("INSERT INTO exam_archives (exam_id, is_deleted) VALUES (?, 1)").run(softPendingQuiz);
+  const { WeeklyAuditService } = await import("../src/server/services/WeeklyAuditService");
+  const weekly246 = new WeeklyAuditService();
+  const wkCheck = await weekly246.checkWeekComplete(weekStart246);
+  ok(wkCheck.complete && !wkCheck.pendingExamNames.includes("#246软删未出分"), "#246 软删除的未出分晨测不再阻塞周报发布");
+
+  const keptQuiz = Number(db.prepare("INSERT INTO exams (name, card_id, subject, grade_id, status, exam_mode, created_at) VALUES ('#246留晨测', '99999999', '数学', ?, 'closed', 'quiz', '2026-07-08 09:00:00')").run(grade.id).lastInsertRowid);
+  const softScoredQuiz = Number(db.prepare("INSERT INTO exams (name, card_id, subject, grade_id, status, exam_mode, created_at) VALUES ('#246软删有分', '99999999', '数学', ?, 'closed', 'quiz', '2026-07-09 09:00:00')").run(grade.id).lastInsertRowid);
+  insertScore.run(keptQuiz, student.id, 8, 2, 10);
+  insertScore.run(softScoredQuiz, student.id, 9, 1, 10);
+  db.prepare("INSERT INTO exam_archives (exam_id, is_deleted) VALUES (?, 1)").run(softScoredQuiz);
+  const ensured246 = await weekly246.ensureWeeklyQuizGroups(weekStart246);
+  const gradeGroup246 = ensured246.find((g: { gradeId: number }) => g.gradeId === grade.id);
+  ok(!!gradeGroup246, "#246 周报组已为该年级创建");
+  if (gradeGroup246) {
+    const memberRows246 = db.prepare("SELECT exam_id FROM exam_group_members WHERE group_id = ?").all(gradeGroup246.groupId) as Array<{ exam_id: number }>;
+    const memberIds246 = memberRows246.map((m) => m.exam_id);
+    ok(memberIds246.includes(keptQuiz) && !memberIds246.includes(softScoredQuiz), "#246 周报组收录留存晨测、不收录软删除晨测");
+    // 组内残留软删除成员行（软删除发生在建组之后）时，统计入口同样剔除
+    db.prepare("INSERT INTO exam_group_members (group_id, exam_id) VALUES (?, ?)").run(gradeGroup246.groupId, softScoredQuiz);
+    const memberMap246 = await (analysisRepo as unknown as { getGroupMemberTrackMap: (gid: number) => Promise<Map<number, string>> }).getGroupMemberTrackMap(gradeGroup246.groupId);
+    ok(memberMap246.has(keptQuiz) && !memberMap246.has(softScoredQuiz), "#246 大考组统计入口剔除软删除成员（即使组内残留成员行）");
+  }
+
+  // ── 9. #246 第二轮评审：编辑撤销旧授权 / 组级查看门 / 软删除组访问 / 恢复通道 ──
+  section("9. #246 round-2: edit revoke / group view gates / soft-deleted group / restore");
+
+  // 9.1 编辑权限范围按记录 ID 原地更新，旧维度授权不复残留
+  const { upsertTeacherPermission, updateTeacherPermissionById } = await import("../src/server/routes/admin-permissions");
+  const dbAdapter = (await import("../src/server/db")).getMysqlDb();
+  const editTeacher = await userRepo.createUser({ username: "t_edit", password: "edit123", name: "编辑教师", role_id: ROLE_IDS.TEACHER });
+  const editFlags = { can_view_scores: true, can_view_charts: true, can_view_students: true, can_grade: true, can_assign: true };
+  await upsertTeacherPermission(dbAdapter, { teacher_id: editTeacher.id, grade_id: null, subject: "物理", class_id: null, block_id: null, ...editFlags });
+  let matrixRows = db.prepare("SELECT * FROM teacher_permissions WHERE teacher_id = ?").all(editTeacher.id) as Array<Record<string, unknown>>;
+  ok(matrixRows.length === 1, "#246r2 upsert 建立单条授权记录");
+  const matrixRowId = Number(matrixRows[0].id);
+  await updateTeacherPermissionById(dbAdapter, matrixRowId, { teacher_id: editTeacher.id, grade_id: null, subject: "生物", class_id: null, block_id: null, ...editFlags, can_view_charts: false });
+  matrixRows = db.prepare("SELECT * FROM teacher_permissions WHERE teacher_id = ?").all(editTeacher.id) as Array<Record<string, unknown>>;
+  ok(
+    matrixRows.length === 1 && matrixRows[0].subject === "生物" && Number(matrixRows[0].can_view_charts) === 0,
+    "#246r2 按记录 ID 编辑：维度与标志原地更新，旧维度授权（物理/图表=开）不复残留"
+  );
+  await upsertTeacherPermission(dbAdapter, { teacher_id: editTeacher.id, grade_id: null, subject: "化学", class_id: null, block_id: null, ...editFlags });
+  let conflict409 = false;
+  try {
+    await updateTeacherPermissionById(dbAdapter, matrixRowId, { teacher_id: editTeacher.id, grade_id: null, subject: "化学", class_id: null, block_id: null, ...editFlags });
+  } catch (err: any) {
+    conflict409 = err?.status === 409;
+  }
+  ok(conflict409, "#246r2 编辑撞现有维度组合返回 409（不静默新增/保留）");
+  db.prepare("DELETE FROM teacher_permissions WHERE teacher_id = ? AND subject = '化学'").run(editTeacher.id);
+
+  // 9.2 大考组级查看门：任一有效成员考试未被 flag=1 授权覆盖即拒绝
+  const insertGroup = db.prepare("INSERT INTO exam_groups (name) VALUES (?)");
+  const insertGroupMember = db.prepare("INSERT INTO exam_group_members (group_id, exam_id) VALUES (?, ?)");
+  const groupView246 = Number(insertGroup.run("#246r2查看门组").lastInsertRowid);
+  insertGroupMember.run(groupView246, releasePhysicsA);
+  insertGroupMember.run(groupView246, releaseMathB);
+  ok(await hasGroupViewPermission(dashAdminUser, groupView246, "can_view_charts"), "#246r2 管理员组级查看不受限");
+  ok(!(await hasGroupViewPermission(dashHeadTeacherUser, groupView246, "can_view_charts")), "#246r2 班级维度关图表：未覆盖成员（他班数学）→ 组级图表被拒");
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, subject, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, '数学', 1, 1, 1, 1, 1)"
+  ).run(subjectTeacher.id);
+  ok(!(await hasGroupViewPermission(dashSubjectTeacherUser, groupView246, "can_view_charts")), "#246r2 仅数学授权行：未覆盖成员（物理）→ 组级图表被拒");
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, 1, 1, 1, 1, 1)"
+  ).run(subjectTeacher.id);
+  ok(await hasGroupViewPermission(dashSubjectTeacherUser, groupView246, "can_view_charts"), "#246r2 补充全维度授权行后全部成员被覆盖 → 组级图表放行");
+
+  // 9.3 软删除成员不再锁死整组（canReadGroup 与统计口径一致地过滤软删除成员）
+  const { canReadGroup } = await import("../src/server/routes/exam-groups-helpers");
+  const fakeReq = (u: unknown) => ({ user: u }) as never;
+  const groupLock246 = Number(insertGroup.run("#246r2软删成员组").lastInsertRowid);
+  insertGroupMember.run(groupLock246, releaseMathA);   // 已在 8.4 被软删除
+  insertGroupMember.run(groupLock246, releasePhysicsA); // 班主任可见
+  ok(await canReadGroup(fakeReq(dashHeadTeacherUser), groupLock246), "#246r2 组内含软删除成员：过滤后按有效成员判定，整组不再 403");
+  const groupOnly246 = Number(insertGroup.run("#246r2越权成员组").lastInsertRowid);
+  insertGroupMember.run(groupOnly246, releaseMathB);    // 他班考试，班主任不可见
+  ok(!(await canReadGroup(fakeReq(dashHeadTeacherUser), groupOnly246)), "#246r2 有效但不可见的成员仍拒绝整组访问");
+
+  // 9.4 软删除恢复通道（列表 + 恢复 + 审计 + 可见性回归 + 幂等）
+  const { listSoftDeletedExams, restoreSoftDeletedExam } = await import("../src/server/db/cleanup");
+  const softListBefore = await listSoftDeletedExams();
+  ok(softListBefore.some((r) => r.examId === releaseMathA), "#246r2 软删除列表包含被清理考试");
+  ok(await restoreSoftDeletedExam(releaseMathA, adminRow.id), "#246r2 恢复成功");
+  ok(!(await restoreSoftDeletedExam(releaseMathA, adminRow.id)), "#246r2 重复恢复返回 false（幂等）");
+  ok(
+    !!db.prepare("SELECT 1 FROM entity_lifecycle_events WHERE entity_type = 'exam' AND entity_id = ? AND action = 'restore'").get(String(releaseMathA)),
+    "#246r2 恢复写入 entity_lifecycle_events 审计"
+  );
+  const visRestored = await getVisibleExamIds(dashHeadTeacherUser);
+  ok(visRestored != null && visRestored.includes(releaseMathA), "#246r2 恢复后教师可见集合重新包含该考试");
+  ok((await listSoftDeletedExams()).every((r) => r.examId !== releaseMathA), "#246r2 软删除列表不再包含已恢复考试");
+
+  // ── 10. #246 第三轮评审：跨考试查看门 / 恢复解绑策略 ──
+  section("10. #246 round-3: cross-exam view gates / restore unbinds policy");
+
+  // 10.1 批量查看权限过滤（与单场门 hasViewPermission 同语义，allow-based）
+  const { filterExamIdsByViewPermission } = await import("../src/apps/answer-card/server/middleware");
+  const crossIds246 = [releasePhysicsA, releaseMathB];
+  ok((await filterExamIdsByViewPermission(dashAdminUser, crossIds246, "can_view_charts")).size === 2, "#246r3 管理员：跨考试图表全保留");
+  ok((await filterExamIdsByViewPermission(dashHeadTeacherUser, crossIds246, "can_view_charts")).size === 0, "#246r3 班级关图表教师：本班被禁行拦截、他班无匹配授权 → 全部剔除");
+  ok((await filterExamIdsByViewPermission(dashSubjectTeacherUser, crossIds246, "can_view_charts")).size === 2, "#246r3 全维度授权教师：跨考试图表全保留");
+  ok((await filterExamIdsByViewPermission(dashHeadTeacherUser, crossIds246, "can_view_students")).size === 1, "#246r3 学生门按班级维度：本班保留、他班剔除");
+
+  // 10.2 学科质量趋势：教师可见范围 + 软删除过滤
+  const qualityExam246 = Number(db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status, closed_at) VALUES ('#246r3质量数学', '99999999', '数学', ?, 'closed', '2026-05-01 09:00:00')").run(klass.id).lastInsertRowid);
+  insertScore.run(qualityExam246, student.id, 50, 0, 50);
+  ok((await analysisRepo.getSubjectQuality("数学")).points.some((p) => p.examId === qualityExam246), "#246r3 质量趋势（不限范围）包含新考试");
+  const qScoped = await analysisRepo.getSubjectQuality("数学", [qualityExam246]);
+  ok(qScoped.points.length === 1 && qScoped.points[0].examId === qualityExam246, "#246r3 质量趋势按可见范围过滤");
+  ok((await analysisRepo.getSubjectQuality("数学", [])).points.length === 0, "#246r3 空范围返回空");
+  db.prepare("INSERT INTO exam_archives (exam_id, is_deleted) VALUES (?, 1)").run(qualityExam246);
+  ok(!(await analysisRepo.getSubjectQuality("数学")).points.some((p) => p.examId === qualityExam246), "#246r3 质量趋势排除软删除考试");
+
+  // 10.3 恢复解绑保留策略：下一轮清理（含服务启动立即执行）不再软删除
+  const { runCleanup } = await import("../src/server/db/cleanup");
+  const pol246 = Number(db.prepare("INSERT INTO data_retention_policies (name, retain_days, auto_archive, auto_delete) VALUES ('r3策略', 1, 0, 1)").run().lastInsertRowid);
+  const restoreExam246 = Number(db.prepare("INSERT INTO exams (name, card_id, subject, status, closed_at, retention_policy_id) VALUES ('#246r3恢复考', '99999999', '数学', 'closed', '2020-01-01 09:00:00', ?)").run(pol246).lastInsertRowid);
+  await runCleanup(30);
+  ok((await listSoftDeletedExams()).some((r) => r.examId === restoreExam246), "#246r3 前置验证：绑定到期策略的考试被清理软删除");
+  ok(await restoreSoftDeletedExam(restoreExam246, adminRow.id), "#246r3 恢复成功");
+  const unbound246 = db.prepare("SELECT retention_policy_id FROM exams WHERE id = ?").get(restoreExam246) as { retention_policy_id: number | null };
+  ok(unbound246.retention_policy_id === null, "#246r3 恢复解除 retention_policy_id 绑定");
+  await runCleanup(30);
+  ok(!(await listSoftDeletedExams()).some((r) => r.examId === restoreExam246), "#246r3 下一轮清理不再软删除已恢复考试");
+
+  // ── 11. 合并前审核修复：天梯公布门与软删除收口 ──
+  section("11. ladder publication gate & soft-delete filtering");
+
+  const ladPub = Number(db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status, score_published, closed_at) VALUES ('#246r4天梯已公布', '99999999', '数学', ?, 'closed', 1, '2026-05-02 09:00:00')").run(klass.id).lastInsertRowid);
+  const ladUnpub = Number(db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status, score_published) VALUES ('#246r4天梯未公布', '99999999', '数学', ?, 'closed', 0)").run(klass.id).lastInsertRowid);
+  const ladSoft = Number(db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status, score_published, closed_at) VALUES ('#246r4天梯软删', '99999999', '数学', ?, 'closed', 1, '2026-05-03 09:00:00')").run(klass.id).lastInsertRowid);
+  insertScore.run(ladPub, student.id, 60, 0, 60);
+  insertScore.run(ladUnpub, student.id, 70, 0, 70);
+  insertScore.run(ladSoft, student.id, 80, 0, 80);
+  db.prepare("INSERT INTO exam_archives (exam_id, is_deleted) VALUES (?, 1)").run(ladSoft);
+
+  // 11.1 公布过滤助手：保留已公布（软删除由软删除收口另行处理）、剔除未公布
+  const pubFiltered = await analysisRepo.filterPublishedExamIds([ladPub, ladUnpub, ladSoft]);
+  ok(
+    pubFiltered.length === 2 && pubFiltered.includes(ladPub) && pubFiltered.includes(ladSoft) && !pubFiltered.includes(ladUnpub),
+    "#246r4 filterPublishedExamIds：剔除未公布考试、保持原顺序"
+  );
+
+  // 11.2 跨考聚合：学生（onlyPublished）= 已公布且未软删除；教师 = 含未公布、剔除软删除
+  const crossStudent = await analysisRepo.getCrossExamTotal(
+    { mode: "selected", examIds: [ladPub, ladUnpub, ladSoft] },
+    { onlyPublished: true },
+  );
+  ok(crossStudent.exams.length === 1 && crossStudent.exams[0].id === ladPub, "#246r4 学生跨考聚合：仅保留已公布且未软删除的考试");
+  const crossTeacher = await analysisRepo.getCrossExamTotal(
+    { mode: "selected", examIds: [ladPub, ladUnpub, ladSoft] },
+    { onlyPublished: false },
+  );
+  ok(
+    crossTeacher.exams.length === 2 && crossTeacher.exams.some((e) => e.id === ladUnpub) && !crossTeacher.exams.some((e) => e.id === ladSoft),
+    "#246r4 教师跨考聚合：含未公布、剔除软删除（getCrossExamTotalExams 收口）"
+  );
+
+  // 11.3 天梯公布门（checkLadderPublished）：教师放行；学生任一未公布 403；全公布放行
+  const { checkLadderPublished } = await import("../src/server/routes/ladder");
+  let ladStatus: number | null = null;
+  const fakeLadRes: unknown = {
+    status: (s: number) => { ladStatus = s; return fakeLadRes; },
+    json: () => fakeLadRes,
+  };
+  ok(await checkLadderPublished({ user: { role_name: "teacher" } } as never, fakeLadRes as never, [ladUnpub]), "#246r4 教师天梯不受公布限制");
+  ok(await checkLadderPublished({ user: { role_name: "admin" } } as never, fakeLadRes as never, [ladUnpub]), "#246r4 管理员天梯预览不受公布限制");
+  ladStatus = null;
+  ok(!(await checkLadderPublished({ user: { role_name: "student" } } as never, fakeLadRes as never, [ladPub, ladUnpub])) && ladStatus === 403, "#246r4 学生天梯：含未公布考试被 403");
+  ok(await checkLadderPublished({ user: { role_name: "student" } } as never, fakeLadRes as never, [ladPub, ladSoft]), "#246r4 学生天梯：所选考试全部已公布时放行");
+
+  // ── 12. 合并前评审修复：清理日期比较 / 策略按类型分配 / 代查公布门 / AI 遥测 pending / 生命周期事件 ──
+  section("12. review round-5: cleanup dates / strategy by mode / proxy published / ai pending / lifecycle events");
+
+  // 12.1 保留期日期比较（评审 P1）：结考仅 14 小时（< 1 天保留期）不得被提前归档/删除
+  {
+    const { runCleanup, listSoftDeletedExams } = await import("../src/server/db/cleanup");
+    const isoToSqlite = (d: Date): string => d.toISOString().slice(0, 19).replace("T", " ");
+    const polArchive = Number(db.prepare("INSERT INTO data_retention_policies (name, retain_days, auto_archive, auto_delete) VALUES ('r5归档', 1, 1, 0)").run().lastInsertRowid);
+    const polDelete = Number(db.prepare("INSERT INTO data_retention_policies (name, retain_days, auto_archive, auto_delete) VALUES ('r5删除', 1, 0, 1)").run().lastInsertRowid);
+    const freshId = Number(db.prepare("INSERT INTO exams (name, card_id, subject, status, closed_at, retention_policy_id) VALUES ('r5保留期内', '99999999', '数学', 'closed', ?, ?)").run(isoToSqlite(new Date(Date.now() - 14 * 3600 * 1000)), polDelete).lastInsertRowid);
+    const oldArchiveId = Number(db.prepare("INSERT INTO exams (name, card_id, subject, status, closed_at, retention_policy_id) VALUES ('r5超期归档', '99999999', '数学', 'closed', ?, ?)").run(isoToSqlite(new Date(Date.now() - 10 * 24 * 3600 * 1000)), polArchive).lastInsertRowid);
+    const oldDeleteId = Number(db.prepare("INSERT INTO exams (name, card_id, subject, status, closed_at, retention_policy_id) VALUES ('r5超期删除', '99999999', '数学', 'closed', ?, ?)").run(isoToSqlite(new Date(Date.now() - 10 * 24 * 3600 * 1000)), polDelete).lastInsertRowid);
+    await runCleanup(30);
+    ok(!(await listSoftDeletedExams()).some((r) => r.examId === freshId), "#r5 保留期内（结考14小时）考试未被提前软删除（SQLite/ISO 日期混比已修复）");
+    ok((await listSoftDeletedExams()).some((r) => r.examId === oldDeleteId), "#r5 超期考试按策略软删除");
+    ok(!!db.prepare("SELECT 1 FROM exam_archives WHERE exam_id = ? AND is_deleted = 0").get(oldArchiveId), "#r5 超期考试按策略归档");
+    ok(!!db.prepare("SELECT 1 FROM entity_lifecycle_events WHERE entity_type = 'exam' AND entity_id = ? AND action = 'archive'").get(String(oldArchiveId)), "#r5 自动归档写入 lifecycle archive 事件");
+    ok(!!db.prepare("SELECT 1 FROM entity_lifecycle_events WHERE entity_type = 'exam' AND entity_id = ? AND action = 'delete'").get(String(oldDeleteId)), "#r5 策略软删除写入 lifecycle delete 事件");
+    ok(!(await listSoftDeletedExams()).some((r) => r.examId === oldArchiveId), "#r5 仅归档（auto_delete=0）的考试不进入软删除列表");
+  }
+
+  // 12.2 保留策略按考试类型分配（评审 P1）：quiz→周测策略；formal→不绑定；显式指定优先
+  {
+    const examRepoR5 = new ExamRepository();
+    db.prepare("INSERT OR IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive, auto_delete) VALUES (1, '周测', 30, 1, 0)").run();
+    db.prepare("INSERT OR IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive, auto_delete) VALUES (2, '月考', 90, 1, 0)").run();
+    const quizR5 = await examRepoR5.createExam({ name: "r5晨测", card_id: "99999999", exam_mode: "quiz" });
+    ok(quizR5.retention_policy_id === 1, "#r5 quiz 考试默认绑定周测策略（按类型分配）");
+    const formalR5 = await examRepoR5.createExam({ name: "r5大考", card_id: "99999999", exam_mode: "formal" });
+    ok(formalR5.retention_policy_id === null, "#r5 formal 考试默认不绑定策略（不再统一挂周测）");
+    const explicitR5 = await examRepoR5.createExam({ name: "r5显式", card_id: "99999999", exam_mode: "formal", retention_policy_id: 2 });
+    ok(explicitR5.retention_policy_id === 2, "#r5 显式指定策略时按指定值绑定");
+    const explicitNoneR5 = await examRepoR5.createExam({ name: "r5显式解绑", card_id: "99999999", exam_mode: "quiz", retention_policy_id: null });
+    ok(explicitNoneR5.retention_policy_id === null, "#r5 显式 null 覆盖类型默认（quiz 也不绑定）");
+  }
+
+  // 12.3 代查公布门（评审 P2）：学生自助查分仅已公布；教师/管理员代查可见未公布
+  {
+    const unpubExamR5 = Number(db.prepare("INSERT INTO exams (name, card_id, subject, status, score_published) VALUES ('r5未公布', '99999999', '数学', 'closed', 0)").run().lastInsertRowid);
+    db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)").run(unpubExamR5, otherStudent.id, 40, 20, 60);
+    ok(!(await scoreRepo.getStudentScores(otherStudent.id)).some((s) => s.exam_id === unpubExamR5), "#r5 学生自助查分不含未公布考试（默认 publishedOnly）");
+    ok((await scoreRepo.getStudentScores(otherStudent.id, { publishedOnly: false })).some((s) => s.exam_id === unpubExamR5), "#r5 教师/管理员代查可见未公布成绩（公布门不误伤）");
+  }
+
+  // 12.4 AI 遥测 pending（评审 P2）：进行中调用 success=NULL，结束后回填
+  {
+    const { recordAiRun, finalizeAiRun } = await import("../src/server/services/aiTelemetry");
+    const pendingRunR5 = await recordAiRun({ userId: null, feature: "exam_analysis", stage: "request" });
+    ok(pendingRunR5 != null, "#r5 recordAiRun 返回 runId");
+    const pendingRowR5 = db.prepare("SELECT success FROM ai_analysis_runs WHERE id = ?").get(pendingRunR5) as { success: number | null };
+    ok(pendingRowR5.success === null, "#r5 进行中调用 success=NULL（pending，不预先记成功）");
+    await finalizeAiRun(pendingRunR5, { success: true, latencyMs: 123 });
+    const doneRowR5 = db.prepare("SELECT success, latency_ms FROM ai_analysis_runs WHERE id = ?").get(pendingRunR5) as { success: number | null; latency_ms: number | null };
+    ok(doneRowR5.success === 1 && doneRowR5.latency_ms === 123, "#r5 结束后回填 success=1 与延迟");
+  }
 
   closeDatabase();
 }
