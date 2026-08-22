@@ -14,7 +14,7 @@ import { createAiAnalysisJob, enqueueAiAnalysisJob, getAiAnalysisJobWithCreator 
 import { suggestForCard } from "../../../../server/services/knowledgeSuggester";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
-import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess, makeViewPermissionGate } from "../middleware";
+import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess, makeViewPermissionGate, filterExamIdsByViewPermission } from "../middleware";
 import { requirePermission, authMiddleware } from "../../../../server/middleware/auth";
 import { PERMISSIONS } from "../../../../server/auth/permissions";
 import { ScoreRepository } from "../../../../server/repositories/ScoreRepository";
@@ -145,7 +145,9 @@ router.get("/trends", async (req, res, next) => {
     // 按教师可见考试范围过滤，避免学科老师/班主任拉取全校趋势
     const visibleExamIds = await getVisibleExamIds(req.user);
     const trend = await analysisRepo.getScoreTrend(subject, classId, visibleExamIds);
-    res.json(trend);
+    // #246：跨考试图表数据按 can_view_charts 收敛（与单场图表门同语义）
+    const chartAllowed = await filterExamIdsByViewPermission(req.user, trend.map((t) => t.examId), "can_view_charts");
+    res.json(trend.filter((t) => chartAllowed.has(t.examId)));
   } catch (error) {
     next(error);
   }
@@ -443,13 +445,18 @@ router.get("/students/:studentId/trend", authMiddleware, async (req, res, next) 
     const visibleIds = await getVisibleExamIds(user);
     if (visibleIds === null) {
       const data = await analysisRepo.getStudentTrend(studentId, null);
-      res.json(data satisfies StudentTrendPoint[]);
+      // #246：跨考试学生数据按 can_view_students 收敛（管理员/年级组长恒放行）
+      const studentAllowed = await filterExamIdsByViewPermission(user, data.map((d) => d.examId), "can_view_students");
+      res.json(data.filter((d) => studentAllowed.has(d.examId)) satisfies StudentTrendPoint[]);
       return;
     }
 
     // 其余教师：仅返回可见考试内的数据；该生在可见范围内无成绩时拒绝访问
     const hasAnyScore = await getMysqlDb().get("SELECT 1 FROM student_scores WHERE student_id = ? LIMIT 1", studentId);
-    const data = await analysisRepo.getStudentTrend(studentId, visibleIds);
+    const raw = await analysisRepo.getStudentTrend(studentId, visibleIds);
+    // #246：可见范围内的考试再按 can_view_students 收敛
+    const studentAllowed = await filterExamIdsByViewPermission(user, raw.map((d) => d.examId), "can_view_students");
+    const data = raw.filter((d) => studentAllowed.has(d.examId));
     if (data.length === 0) {
       if (hasAnyScore) {
         res.status(403).json({ message: "权限不足：无权访问该学生" });
@@ -473,6 +480,13 @@ router.post("/subject-deviation", async (req, res, next) => {
       return;
     }
     if (!(await validateExamIdsAccess(req, res, examIds))) return;
+    // #246：偏科名单含学生姓名/考号/各科分数，按 can_view_students 对所选考试整体校验
+    // （与 validateExamIdsAccess 的「任一不可访问即 403」口径一致）
+    const studentAllowed = await filterExamIdsByViewPermission(req.user, examIds, "can_view_students");
+    if (examIds.some((id) => !studentAllowed.has(id))) {
+      res.status(403).json({ message: "权限不足：所选考试中存在管理员已关闭你「查看学生名单」权限的考试" });
+      return;
+    }
     const classId = req.body?.classId ? Number(req.body.classId) : undefined;
     const threshold = req.body?.threshold ? Number(req.body.threshold) : 0.8;
     const analysisRepo = new AnalysisRepository();
@@ -545,8 +559,12 @@ router.get("/subject-quality", async (req, res, next) => {
   try {
     const subject = typeof req.query.subject === "string" ? req.query.subject : "";
     const analysisRepo = new AnalysisRepository();
-    const data = await analysisRepo.getSubjectQuality(subject);
-    res.json(data satisfies SubjectQualityResponse);
+    // #246：按教师可见考试范围过滤（此前未过滤，学科老师可拉全校趋势），
+    // 并在取数后按 can_view_charts 收敛（图表数据）
+    const visibleExamIds = await getVisibleExamIds(req.user);
+    const raw = await analysisRepo.getSubjectQuality(subject, visibleExamIds);
+    const chartAllowed = await filterExamIdsByViewPermission(req.user, raw.points.map((p) => p.examId), "can_view_charts");
+    res.json({ ...raw, points: raw.points.filter((p) => chartAllowed.has(p.examId)) } satisfies SubjectQualityResponse);
   } catch (error) {
     next(error);
   }

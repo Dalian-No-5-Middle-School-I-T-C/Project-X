@@ -1,5 +1,21 @@
 # Project-X CHANGELOG
 
+## v2.2.9 (2026-08-22) — PR #246 第三轮评审闭环（跨考试查看门 / 恢复解绑策略）
+
+**1. [P1] 跨考试分析端点接入查看权限矩阵**
+- 新增 `filterExamIdsByViewPermission`（`middleware.ts`）：批量返回教师按矩阵拥有指定查看标志的考试子集，语义与单场门 `hasViewPermission` 一致（allow-based：admin / 年级主任 / 未配置矩阵全保留；否则仅保留存在 flag=1 且维度匹配授权行的考试）；批量实现（授权行 + 考试维度各查一次）。
+- 接入四个跨考试端点（此前仅消费 `can_view_scores` 可见范围或完全不过滤）：
+  - `GET /trends`：趋势结果按 `can_view_charts` 收敛；
+  - `GET /students/:studentId/trend`：教师读取学生成长曲线按 `can_view_students` 收敛（学生本人不受限）；
+  - `POST /subject-deviation`（偏科名单，含姓名/考号/各科分数）：所选考试按 `can_view_students` 整体校验，任一被关即 403（与 `validateExamIdsAccess` 的「任一不可访问即 403」口径一致）；
+  - `GET /subject-quality`：补齐教师可见考试范围过滤（此前任何教师可拉全校数据）+ 软删除排除（仓储 `getSubjectQuality` 新增 `examIds` 范围参数与 `EXAM_NOT_SOFT_DELETED_SQL`）+ 结果按 `can_view_charts` 收敛。
+**2. [P2] 恢复操作解除保留策略绑定，恢复真正持久**
+- `restoreSoftDeletedExam` 此前只重置 `exam_archives.is_deleted`，考试的 `retention_policy_id` 与旧结考时间不变——下一轮清理（含服务启动时的立即执行）会按原策略再次软删除同一场考试。现恢复时同步 `UPDATE exams SET retention_policy_id = NULL`（假设③：未关联策略 = 不归档不删除），恢复即人工豁免；审计与幂等语义不变。
+
+**验证**
+- `typecheck` 0 错误；`verify:auth` 115/115（新增第 10 节 12 项：批量过滤三态（管理员/班级禁行/全维度授权/学生门班级维度）、质量趋势范围+软删除过滤、**恢复→解绑→重跑 runCleanup 不再软删除**的端到端断言）。
+- 回归：`verify:security-critical` 62/62、`weekly-audit-smoke` 57/57、`verify:weekly-demo`、`verify:reliability-filter` 21/21、`verify:p1-security` 11/11、`verify:demo-safety` 23/23、`verify:score-grid` 全绿；`git diff --check` 干净。
+
 ## v2.2.8 (2026-08-22) — PR #246 第二轮评审闭环（4 项：编辑撤销 / 查看门全覆盖 / 软删除组访问 / 恢复通道）
 
 **1. [P1] 编辑权限范围现按记录 ID 原地更新（撤销旧授权）**

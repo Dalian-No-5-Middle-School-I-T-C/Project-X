@@ -1607,18 +1607,23 @@ export class AnalysisRepository {
   }
 
   // ── 建议 15：学科命题质量趋势追踪（历次 P/D）────────
-  async getSubjectQuality(subject?: string): Promise<SubjectQualityResponse> {
+  async getSubjectQuality(subject?: string, examIds?: number[] | null): Promise<SubjectQualityResponse> {
     const s = (subject ?? "").trim();
     if (!s) return { subject: "", points: [] };
-    const rows = await this.db.all(
-      `SELECT e.id, e.name, date(COALESCE(ac.exam_date, e.created_at)) as exam_date,
+    // #246：EXAM_NOT_SOFT_DELETED 排除软删除考试；examIds 为教师可见范围（null = 不限）
+    let sql = `SELECT e.id, e.name, date(COALESCE(ac.exam_date, e.created_at)) as exam_date,
               (SELECT COUNT(*) FROM student_scores ss WHERE ss.exam_id = e.id) as graded_count
        FROM exams e LEFT JOIN answer_cards ac ON ac.id = e.card_id
        WHERE e.subject = ? AND (SELECT COUNT(*) FROM student_scores ss WHERE ss.exam_id = e.id) > 0
-       ORDER BY date(COALESCE(ac.exam_date, e.created_at)) ASC, e.id ASC
-       LIMIT 60`,
-      s
-    ) as Array<{ id: number; name: string; exam_date: string | null; graded_count: number }>;
+         AND ${EXAM_NOT_SOFT_DELETED_SQL}`;
+    const params: unknown[] = [s];
+    if (examIds != null) {
+      if (examIds.length === 0) return { subject: s, points: [] };
+      sql += ` AND e.id IN (${examIds.map(() => "?").join(",")})`;
+      params.push(...examIds);
+    }
+    sql += ` ORDER BY date(COALESCE(ac.exam_date, e.created_at)) ASC, e.id ASC LIMIT 60`;
+    const rows = await this.db.all(sql, ...params) as Array<{ id: number; name: string; exam_date: string | null; graded_count: number }>;
     const points: SubjectQualityPoint[] = [];
     for (const r of rows) {
       const metrics = await this.getExamMetrics(Number(r.id));

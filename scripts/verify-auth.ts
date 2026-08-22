@@ -581,6 +581,39 @@ async function main(): Promise<void> {
   ok(visRestored != null && visRestored.includes(releaseMathA), "#246r2 恢复后教师可见集合重新包含该考试");
   ok((await listSoftDeletedExams()).every((r) => r.examId !== releaseMathA), "#246r2 软删除列表不再包含已恢复考试");
 
+  // ── 10. #246 第三轮评审：跨考试查看门 / 恢复解绑策略 ──
+  section("10. #246 round-3: cross-exam view gates / restore unbinds policy");
+
+  // 10.1 批量查看权限过滤（与单场门 hasViewPermission 同语义，allow-based）
+  const { filterExamIdsByViewPermission } = await import("../src/apps/answer-card/server/middleware");
+  const crossIds246 = [releasePhysicsA, releaseMathB];
+  ok((await filterExamIdsByViewPermission(dashAdminUser, crossIds246, "can_view_charts")).size === 2, "#246r3 管理员：跨考试图表全保留");
+  ok((await filterExamIdsByViewPermission(dashHeadTeacherUser, crossIds246, "can_view_charts")).size === 0, "#246r3 班级关图表教师：本班被禁行拦截、他班无匹配授权 → 全部剔除");
+  ok((await filterExamIdsByViewPermission(dashSubjectTeacherUser, crossIds246, "can_view_charts")).size === 2, "#246r3 全维度授权教师：跨考试图表全保留");
+  ok((await filterExamIdsByViewPermission(dashHeadTeacherUser, crossIds246, "can_view_students")).size === 1, "#246r3 学生门按班级维度：本班保留、他班剔除");
+
+  // 10.2 学科质量趋势：教师可见范围 + 软删除过滤
+  const qualityExam246 = Number(db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status, closed_at) VALUES ('#246r3质量数学', '99999999', '数学', ?, 'closed', '2026-05-01 09:00:00')").run(klass.id).lastInsertRowid);
+  insertScore.run(qualityExam246, student.id, 50, 0, 50);
+  ok((await analysisRepo.getSubjectQuality("数学")).points.some((p) => p.examId === qualityExam246), "#246r3 质量趋势（不限范围）包含新考试");
+  const qScoped = await analysisRepo.getSubjectQuality("数学", [qualityExam246]);
+  ok(qScoped.points.length === 1 && qScoped.points[0].examId === qualityExam246, "#246r3 质量趋势按可见范围过滤");
+  ok((await analysisRepo.getSubjectQuality("数学", [])).points.length === 0, "#246r3 空范围返回空");
+  db.prepare("INSERT INTO exam_archives (exam_id, is_deleted) VALUES (?, 1)").run(qualityExam246);
+  ok(!(await analysisRepo.getSubjectQuality("数学")).points.some((p) => p.examId === qualityExam246), "#246r3 质量趋势排除软删除考试");
+
+  // 10.3 恢复解绑保留策略：下一轮清理（含服务启动立即执行）不再软删除
+  const { runCleanup } = await import("../src/server/db/cleanup");
+  const pol246 = Number(db.prepare("INSERT INTO data_retention_policies (name, retain_days, auto_archive, auto_delete) VALUES ('r3策略', 1, 0, 1)").run().lastInsertRowid);
+  const restoreExam246 = Number(db.prepare("INSERT INTO exams (name, card_id, subject, status, closed_at, retention_policy_id) VALUES ('#246r3恢复考', '99999999', '数学', 'closed', '2020-01-01 09:00:00', ?)").run(pol246).lastInsertRowid);
+  await runCleanup(30);
+  ok((await listSoftDeletedExams()).some((r) => r.examId === restoreExam246), "#246r3 前置验证：绑定到期策略的考试被清理软删除");
+  ok(await restoreSoftDeletedExam(restoreExam246, adminRow.id), "#246r3 恢复成功");
+  const unbound246 = db.prepare("SELECT retention_policy_id FROM exams WHERE id = ?").get(restoreExam246) as { retention_policy_id: number | null };
+  ok(unbound246.retention_policy_id === null, "#246r3 恢复解除 retention_policy_id 绑定");
+  await runCleanup(30);
+  ok(!(await listSoftDeletedExams()).some((r) => r.examId === restoreExam246), "#246r3 下一轮清理不再软删除已恢复考试");
+
   closeDatabase();
 }
 

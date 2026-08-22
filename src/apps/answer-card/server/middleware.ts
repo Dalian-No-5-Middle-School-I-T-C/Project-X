@@ -332,6 +332,59 @@ export function makeGroupViewPermissionGate(flag: ViewPermissionFlag) {
 }
 
 /**
+ * #246 跨考试查看权限批量过滤：返回 examIds 中教师按矩阵拥有指定查看标志的子集。
+ * 语义与单考试门 hasViewPermission 一致（allow-based）：admin / grade_leader /
+ * 未配置矩阵 → 全部保留；否则仅保留存在 flag=1 且维度匹配授权行的考试。
+ * 批量实现（授权行 + 考试维度各查一次），供 /trends、/students/:id/trend、
+ * /subject-quality 等跨考试端点在取数后收敛结果集。
+ */
+export async function filterExamIdsByViewPermission(
+  user: express.Request["user"],
+  examIds: number[],
+  flag: ViewPermissionFlag
+): Promise<Set<number>> {
+  const unique = [...new Set(examIds.filter((id) => Number.isInteger(id) && id > 0))];
+  const all = new Set(unique);
+  if (!user) return all; // 未开启强制鉴权时与查看门一致放行
+  if (user.role_name === "admin") return all;
+  if (user.role_name === "teacher" && user.teacher_role === "grade_leader") return all;
+  const teacherId = (user as { id?: number }).id;
+  if (!teacherId) return new Set();
+  if (unique.length === 0) return all;
+  const db = getMysqlDb();
+  if (!(await hasTable(db, "teacher_permissions"))) return all;
+  const rows = await db.all<{
+    grade_id: number | null;
+    subject: string | null;
+    class_id: number | null;
+    flag: number;
+  }>(
+    `SELECT grade_id, subject, class_id, ${flag} AS flag FROM teacher_permissions
+     WHERE teacher_id = ? AND block_id IS NULL`,
+    teacherId
+  );
+  if (rows.length === 0) return all;
+  const placeholders = unique.map(() => "?").join(",");
+  const exams = await db.all<{ id: number; grade_id: number | null; subject: string | null; class_id: number | null }>(
+    `SELECT id, grade_id, subject, class_id FROM exams WHERE id IN (${placeholders})`,
+    ...unique
+  );
+  const allowed = new Map<number, boolean>();
+  for (const e of exams) {
+    allowed.set(
+      Number(e.id),
+      rows.some((r) =>
+        r.flag === 1 &&
+        (r.grade_id == null || r.grade_id === e.grade_id) &&
+        (r.subject == null || r.subject === e.subject) &&
+        (r.class_id == null || r.class_id === e.class_id)
+      )
+    );
+  }
+  return new Set(unique.filter((id) => allowed.get(id) === true));
+}
+
+/**
  * #246：按权限矩阵查看标志过滤考试 ID 集合。
  * 仅消费维度级禁止行（block_id IS NULL 且 flag=0），题块级行不影响整卷可见性；
  * 维度全空（NULL）的禁止行 = 全部禁止。矩阵表不存在或无禁止行时原样返回。

@@ -300,7 +300,14 @@ export async function restoreSoftDeletedExam(examId: number, actorId?: number | 
     examId
   );
   if (Number(result.changes) === 0) return false;
-  console.log(`[Cleanup] 考试 #${examId} 已从软删除恢复（操作人 ${actorId ?? "未知"}）`);
+  // 恢复即人工豁免：解除该考试的保留策略绑定（假设③：未关联策略 = 不归档不删除）。
+  // 否则考试仍满足原过期条件，下一轮清理（含服务启动时的立即执行）会按原策略
+  // 再次软删除同一场考试，恢复形同虚设。
+  await db.run(
+    "UPDATE exams SET retention_policy_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+    examId
+  );
+  console.log(`[Cleanup] 考试 #${examId} 已从软删除恢复并解除保留策略绑定（操作人 ${actorId ?? "未知"}）`);
   const { recordLifecycleEvent } = await import("../services/lifecycleEvents");
   await recordLifecycleEvent({ entityType: "exam", entityId: examId, action: "restore", actorId: actorId ?? null });
   return true;
