@@ -13,6 +13,7 @@ import { UserRepository } from "../repositories/UserRepository";
 import { ClassRepository } from "../repositories/ClassRepository";
 import { ROLE_IDS } from "../auth/permissions";
 import { seedFillBlankDemo } from "./demo/fillBlankDemo";
+import { seedEssayDemo } from "./demo/essayDemo";
 import { seedReviewDemo } from "./demo/reviewDemo";
 import { getWeekWindow, WeeklyAuditService } from "./WeeklyAuditService";
 
@@ -359,15 +360,18 @@ export async function clearDemoData(): Promise<ClearDemoStats> {
 // 演示客观题答案（5 道单选，4 个选项），供逐题选项分析演示
 const DEMO_ANSWER_KEYS: Record<number, string[]> = { 1: ["A"], 2: ["B"], 3: ["C"], 4: ["D"], 5: ["A"] };
 const DEMO_OPTIONS = ["A", "B", "C", "D"];
+// 答题卡设计器修复：演示-数学卡客观题块按新规范使用「选项竖排」（A/B/C/D 在题号下方纵向堆叠），
+// 其余演示卡保持默认横向——与 manifest 「选项竖排」用例一一对应。
+const DEMO_VERTICAL_OPTIONS_CARD_ID = "88000002";
 
 /** 为演示答题卡补一个客观题块 + 标准答案，使选项分析端点能解析题元数据 */
-async function ensureDemoObjectiveBlock(db: DbAdapter, cardId: string): Promise<void> {
+async function ensureDemoObjectiveBlock(db: DbAdapter, cardId: string, optionLayout: "horizontal" | "vertical" | "vertical-options" = "horizontal"): Promise<void> {
   const blockId = `${cardId}-obj`;
   await db.run(
     buildInsertIgnore(db.dialect, "objective_blocks", [
-      "id", "card_id", "sort_order", "title", "question_start", "question_count", "option_count", "mode", "score_per_question"
+      "id", "card_id", "sort_order", "title", "question_start", "question_count", "option_count", "mode", "score_per_question", "option_layout"
     ]),
-    blockId, cardId, 0, "选择题", 1, 5, 4, "single", 30
+    blockId, cardId, 0, "选择题", 1, 5, 4, "single", 30, optionLayout
   );
   const insertKey = buildInsertIgnore(db.dialect, "objective_answer_keys", ["block_id", "question_number", "correct_options"]);
   for (const [q, key] of Object.entries(DEMO_ANSWER_KEYS)) {
@@ -396,7 +400,7 @@ async function seedQuestionScores(
   studentIdByNumber: Map<string, number>,
   scores: Record<string, number>
 ): Promise<void> {
-  await ensureDemoObjectiveBlock(db, cardId);
+  await ensureDemoObjectiveBlock(db, cardId, cardId === DEMO_VERTICAL_OPTIONS_CARD_ID ? "vertical-options" : "horizontal");
   const insertQ = `INSERT INTO question_scores (exam_id, student_id, question_number, score, max_score, score_type, selected_options)
     VALUES (?, ?, ?, ?, ?, 'objective', ?)`;
   for (const [num, total] of Object.entries(scores)) {
@@ -576,6 +580,7 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   for (const spec of WEEK_EXAMS) weekExamIds.push(await seedExam(spec));
   const historyExamId = await seedExam(OUTSIDE_WEEK_EXAM);
   await seedFillBlankDemo(db);
+  await seedEssayDemo(db);
 
   // v2.3.x: 周报演示晨测（quiz）——上上周/上周全出分 + 本周未出分（顺延演示）
   examCount += await seedWeeklyQuizDemo(db, grade.id, studentIdByNumber);

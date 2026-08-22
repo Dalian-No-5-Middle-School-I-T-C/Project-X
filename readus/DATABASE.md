@@ -250,10 +250,11 @@ npm run server
 | `option_count` | INTEGER | 本题选项数 |
 | `score` | REAL | 本题满分 |
 | `scoring_rule_json` | TEXT | JSON：多选/不定项部分得分规则 |
+| `option_layout` | TEXT | 块级兼容字段（`objective_blocks`，默认 `horizontal`）与逐题覆盖（`objective_questions`）：`horizontal` / `vertical` / `vertical-options`（选项竖排，v2.2.9 起）；服务端 `CardRepository.normalizeOptionLayout` 白名单持久化 |
 
 #### `subjective_blocks` / `subjective_questions` — 主观题块与题目
 
-主观题块新增 `block_kind`，用于区分 `fill_blank`（填空题紧凑布局）与 `answer`（解答题布局）。
+主观题块新增 `block_kind`，用于区分 `fill_blank`（填空题紧凑布局）、`answer`（解答题布局）与 `essay`（作文格布局）。
 
 `subjective_questions` 支持填空题的逐空配置：
 
@@ -262,6 +263,7 @@ npm run server
 | `blanks_label_style` | TEXT | `none` / `arabic_parentheses` / `roman_parentheses` |
 | `blanks_items_json` | TEXT | JSON：每个空的标签、宽度、高度 |
 | `annotation` | TEXT | 填空题文字注释/题干说明（v1.10.1 起） |
+| `line_grid_json` / `essay_grid_json` / `score_grid_json` | TEXT | JSON：横线区 / 作文格 / 得分填涂格配置（`EssayGridConfig`、`ScoreGridConfig`、`LineGridConfig`）；作文格几何唯一事实源为 `src/shared/essayGrid.ts`，默认朱红格线 `#c00000` |
 
 ### 模块三：考试与扫描
 

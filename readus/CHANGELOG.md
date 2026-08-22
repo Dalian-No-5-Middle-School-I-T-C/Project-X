@@ -1,5 +1,23 @@
 # Project-X CHANGELOG
 
+## v2.2.9 (2026-08-22) — 答题卡设计器修复（六项）+ 演示数据对齐新规范
+
+**答题卡设计器修复（830c6a7，P0/P1 缺陷族）**
+**1. 「适合页面」无限放大（P0）** — `CardPreview` 的 ResizeObserver 观察高度随内容增长的包装层，与 fit-page 的 SVG 高度形成反馈环（每圈 +32px）。改为测量自身内部滚动区并删除 DesignPage 中间包装层；fit-page 宽度同时受宽高约束封顶。GUI 实测切换后 412×582 采样稳定。
+**2. 三栏布局重构** — 用 react-resizable-panels（v4：Group/Panel/Separator）重构：右栏默认 380px 可拖拽（300–560），左栏可折叠成 32px 细条（头部按钮 + 拖拽均可触发），布局记忆到 localStorage。
+**3. 填空题图片插入回归（#221 重构回归）** — 插图控件被 `!isFillBlankBlock` 条件误包导致填空题永不渲染；已拆出条件，填空题每题都有「插入图片 + 尺寸编辑 + 删除」；修复预览 404（href 缺 `/api` 前缀），恢复丢失的「文字注释」输入与预览渲染。
+**4. 得分填涂格开关** — 解答题开关常显，开启自动切到「带分数填涂区」样式；填空题得分格为块级，仅首题显示开关并加「计分题」徽章，非计分题显示说明而非无效开关，配合块级「满分」输入生效。
+**5. 作文格仿高考样式** — 新建 `src/shared/essayGrid.ts` 作为几何唯一事实源（排版引擎 layout.ts / SVG 预览 DesignEditors / PDF 导出 pdf.ts 三端行数行缝一致）；预览补齐粗边框、行间虚线、每 100 字刻度（含跨页续号）、题号右对齐；新建作文块默认朱红格线（`ESSAY_DEFAULT_LINE_COLOR=#c00000`，旧卡保留原色），面板新增「格线颜色」。实测 600 格红格 + 刻度 100–500 + 24 条行缝全部渲染。
+**6. 客观题「选项竖排」新模式** — 新增第三种排列（A/B/C/D 在题号下方纵向堆叠），行高模型按 span 预留、识别坐标自动跟随；`ObjectiveOptionLayout` 增加 `vertical-options`，服务端 `CardRepository.normalizeOptionLayout` 白名单同步（此前会把 `vertical-options` 静默存成 `horizontal`，实测持久化成功）。同时修复检查器滚动容器 Panel 子项缺 `shrink-0` 导致排版警告面板叠在溢出编辑器控件上的问题。
+
+**演示数据对齐新规范**
+- 演示-语文卡（88000001）新增「作文（演示）」块：60 分/目标 600 字/朱红格线 `#c00000`/每 100 字刻度/粗边框，与设计器新建作文块默认配置一致（`demo/essayDemo.ts` 种子）。
+- 演示-数学卡（88000002）客观题块 `option_layout='vertical-options'`，验证选项竖排与白名单持久化（其余演示卡保持 `horizontal` 对照）。
+- `verify.ts` 新增 5 项校验点（作文块存在/朱红格线/刻度+边框/600 字、数学卡选项竖排）；`manifest.json` 新增 essayCard / objectiveLayoutDemo 用例；`testdata/demo-exams/README.md` 与 `演示数据.md` 同步。
+
+**验证**
+- `typecheck` 0 错误；演示数据导入 + `verify.ts` 全绿（含新增设计器校验点）；`projectx-demo.zip` 备份包按新规范重建。
+
 ## v2.2.8 (2026-08-22) — PR #246 第二轮评审闭环（4 项：编辑撤销 / 查看门全覆盖 / 软删除组访问 / 恢复通道）
 
 **1. [P1] 编辑权限范围现按记录 ID 原地更新（撤销旧授权）**
