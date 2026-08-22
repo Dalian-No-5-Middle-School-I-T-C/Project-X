@@ -120,6 +120,11 @@ router.get("/me/exams/:examId", async (req: Request, res: Response) => {
     res.status(404).json({ message: "未找到你在该场考试的成绩" });
     return;
   }
+  // v41: 成绩未公布前学生不可查看（后端硬过滤）
+  if (!(await scoreRepo.isExamScorePublished(examId))) {
+    res.status(404).json({ message: "该场考试的成绩尚未公布" });
+    return;
+  }
 
   // 班级逐题均分 + 原卷图块：仅返回当前用户自己的数据，
   // 避免为小程序放开 /api/exams 教师接口造成越权（IDOR）
@@ -222,6 +227,11 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
   }
   if (!(await scoreRepo.hasScore(req.user!.id, examId))) {
     res.status(403).json({ message: "你未参加该考试" });
+    return;
+  }
+  // v41: 成绩未公布前学生不可请求 AI 分析（防止经由分析接口间接取分）
+  if (!(await scoreRepo.isExamScorePublished(examId))) {
+    res.status(403).json({ message: "该场考试的成绩尚未公布" });
     return;
   }
 

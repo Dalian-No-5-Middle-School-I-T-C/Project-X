@@ -93,8 +93,8 @@ export async function seedReviewDemo(
 
   // 2. 考试（review_enabled=1）
   const examInfo = await db.run(
-    `INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, closed_at, review_enabled, created_by)
-     VALUES (?, ?, ?, ?, ?, 'closed', CURRENT_TIMESTAMP, 1, (SELECT id FROM users WHERE username = 'admin'))`,
+    `INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, score_published, closed_at, review_enabled, created_by)
+     VALUES (?, ?, ?, ?, ?, 'closed', 1, CURRENT_TIMESTAMP, 1, (SELECT id FROM users WHERE username = 'admin'))`,
     REVIEW_EXAM_NAME, REVIEW_CARD_ID, grade.id, "数学", "2026-06-25"
   );
   const examId = Number(examInfo.lastInsertRowid);

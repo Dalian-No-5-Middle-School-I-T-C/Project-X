@@ -907,27 +907,61 @@ const MIGRATIONS: Migration[] = [
       `);
     }
   },
-  // v39/v40 编号在两条分支上被不同迁移占用过（main 把 v39 用于 knowledge_points.track_type
-  // 回补；本分支把 v39/v40 用于控制台地基与权限唯一约束）。任一侧已初始化的库都会因
-  // schema_migrations 已记录该版本号而跳过另一侧的内容（例如 main 血统库会整体跳过
-  // 控制台地基，随后权限重建引用缺失列而启动失败）。故 v39/v40 作废不再复用，三个迁移
-  // 统一顺延为 v41/v42/v43，对全部库血统（main 侧 / 分支侧 / 全新库）均幂等安全。
-  // v41 (main): 修复 schema 漂移 —— knowledge_points.track_type 仅存在于 schema.sql（全新建库），
+  // ── 迁移编号台账（多分支合并后，作废编号请勿复用）────────────────────
+  // v39/v40 作废：main 血统库把 v39 记为 knowledge_points.track_type 回补，本分支
+  // 早期版本（5db2a2d 及之前）把 v39/v40 记为控制台地基/权限唯一约束——任一侧已
+  // 初始化的库都会因版本号已记录而跳过另一侧内容。
+  // v41/v42 属成绩公布管理（PR #256「成绩公布更新」，分支已推送、血统已存在，保留原号）。
+  // v43–v45 为本分支三个迁移的最终编号，内容全部幂等（重复列/表自动跳过），
+  // 对 main 血统 / 本分支旧编号血统 / PR #256 血统 / 全新库均安全。
+  // v41 (PR #256): 成绩公布开关 —— 批改完成后默认未公布，教师手动公布后学生方可查看。
+  // 存量兼容：历史已结考（status='closed'）的考试回填为已公布，避免升级后历史成绩对学生消失。
+  {
+    version: 41,
+    name: "exam-score-published",
+    up(db) {
+      addColumnIfMissing(db, "exams", "score_published", "INTEGER DEFAULT 0");
+      db.exec(`UPDATE exams SET score_published = 1 WHERE status = 'closed' AND score_published = 0`);
+    }
+  },
+  // v42 (PR #256): 成绩公布操作日志表（审计追踪）。
+  // 记录每次公布/撤回的执行人、时间与撤回原因；score_published 扩展三态：
+  // 0=未公布 1=已公布 2=已撤回（撤回后学生不可见，可再次公布重新公开）。
+  {
+    version: 42,
+    name: "exam-publish-events",
+    up(db) {
+      if (!hasTable(db, "exam_publish_events")) {
+        db.exec(`
+          CREATE TABLE exam_publish_events (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            exam_id     INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+            action      TEXT NOT NULL,           -- publish / unpublish
+            actor_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            reason      TEXT,                     -- 撤回原因（unpublish 时记录）
+            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_epe_exam ON exam_publish_events(exam_id);
+        `);
+      }
+    }
+  },
+  // v43 (main): 修复 schema 漂移 —— knowledge_points.track_type 仅存在于 schema.sql（全新建库），
   // 旧库升级从未补齐（#177 的 v31 只补了 users.track 与 exam_group_members.track_type）。
   // v2.3.x 演示数据 seed（周报晨测）会写入该列，缺列会导致导入在插入知识点时中断。
   {
-    version: 41,
+    version: 43,
     name: "knowledge-points-track-type-backfill",
     up(db) {
       addColumnIfMissing(db, "knowledge_points", "track_type", "TEXT NOT NULL DEFAULT 'common'");
     }
   },
-  // v42 (控制台可观测性 + 教师权限细粒度地基):
+  // v44 (控制台可观测性 + 教师权限细粒度地基):
   // - users: ui_style(clarity/paper_edge) / color_scheme(light/dark) 主题拆分（账号级持久化）
   // - teacher_permissions: 扩展 subject/class_id/block_id/can_grade/can_assign 维度
   // - 新增 theme_change_events / ai_analysis_runs / ai_provider_calls / entity_lifecycle_events
   {
-    version: 42,
+    version: 44,
     name: "console-observability-and-permission-foundation",
     up(db) {
       // 1. users 主题字段拆分
@@ -1013,12 +1047,12 @@ const MIGRATIONS: Migration[] = [
       }
     }
   },
-  // v43: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id）。
+  // v45: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id）。
   // SQLite 无法 ALTER 表级 UNIQUE 约束，采用"去重 + 重建表"：
   //   - 旧 UNIQUE(teacher_id, grade_id) 在 NULL grade 下允许多行，先按五维组合保留最小 id 去重；
   //   - 重建表时把 UNIQUE 扩展为五维，解除同教师多维度授权（多班级/多题块）的阻塞。
   {
-    version: 43,
+    version: 45,
     name: "teacher-permissions-multidim-unique",
     up(db) {
       if (!hasTable(db, "teacher_permissions")) return;
@@ -1030,7 +1064,7 @@ const MIGRATIONS: Migration[] = [
           GROUP BY teacher_id, COALESCE(grade_id, 0), COALESCE(subject, ''), COALESCE(class_id, 0), COALESCE(block_id, '')
         )
       `);
-      // 2) 重建表（含 v42 全部新列），UNIQUE 升级为五维
+      // 2) 重建表（含 v44 全部新列），UNIQUE 升级为五维
       db.exec(`
         CREATE TABLE teacher_permissions_v40 (
           id                 INTEGER PRIMARY KEY AUTOINCREMENT,

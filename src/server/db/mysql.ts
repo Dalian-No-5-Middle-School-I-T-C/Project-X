@@ -768,12 +768,44 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       ]
     },
-    // v39/v40 作废不再复用：与 migrations.ts（SQLite 侧）合并时的编号冲突处理保持一致——
-    // main 侧 SQLite v39 是 track_type 回补，本侧 v39/v40 是控制台地基/权限唯一约束，
-    // 统一顺延为 v42/v43（本侧内容从未随 main 发布，仅分支本地库可能记录过 39/40，
-    // 重跑全部幂等：重复列/键被上方 catch 忽略）。
+    // v41/v42 属成绩公布管理（PR #256「成绩公布更新」，分支已推送、血统已存在，保留原号）。
+    // v39/v40 作废：main 侧 SQLite v39=track_type 回补、本侧旧版 v39/v40=控制台/权限唯一约束
+    // （与 migrations.ts 编号台账一致）。本分支控制台地基/权限唯一约束最终编号为 v43/v44，
+    // 重跑幂等：重复列/键被上方 catch 忽略。
     {
+      // v41: 成绩公布开关 —— 批改完成后默认未公布（0），教师手动公布（1）后学生方可查看。
+      // 存量兼容：历史已结考（status='closed'）的考试回填为已公布。
+      version: 41,
+      name: "exam-score-published",
+      sqls: [
+        `ALTER TABLE exams ADD COLUMN score_published TINYINT DEFAULT 0`,
+        `UPDATE exams SET score_published = 1 WHERE status = 'closed' AND score_published = 0`,
+      ]
+    },
+    {
+      // v42: 成绩公布操作日志表（审计追踪）。
+      // 记录每次公布/撤回的执行人、时间与撤回原因；score_published 扩展三态：
+      // 0=未公布 1=已公布 2=已撤回（撤回后学生不可见，可再次公布重新公开）。
       version: 42,
+      name: "exam-publish-events",
+      sqls: [
+        `CREATE TABLE IF NOT EXISTS exam_publish_events (
+          id          INT AUTO_INCREMENT PRIMARY KEY,
+          exam_id     INT NOT NULL,
+          action      VARCHAR(16) NOT NULL,
+          actor_id    INT,
+          reason      TEXT,
+          created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+          FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_epe_exam ON exam_publish_events(exam_id)`,
+      ]
+    },
+    {
+      // v43 (控制台可观测性 + 教师权限细粒度地基):
+      // users 主题偏好拆分 + teacher_permissions 五维扩展 + 观测四表。
+      version: 43,
       name: "admin-console-observability-and-teacher-permission-dims",
       sqls: [
         // users：主题偏好拆分（ui_style=clarity/paper_edge；color_scheme=light/dark）
@@ -844,10 +876,10 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       ]
     },
     {
-      // v43: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id），
+      // v44: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id），
       // 解除旧 UNIQUE(teacher_id, grade_id) 对同教师多维度授权（多班级/多题块）的阻塞。
       // 先按五维组合去重（旧约束下 NULL grade 可存在多行），再换索引；DROP INDEX IF EXISTS 兼容 MariaDB/MySQL 8.0.19+。
-      version: 43,
+      version: 44,
       name: "teacher-permissions-multidim-unique",
       sqls: [
         `DELETE t1 FROM teacher_permissions t1 INNER JOIN teacher_permissions t2
@@ -858,7 +890,7 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
           AND COALESCE(t1.block_id, '') = COALESCE(t2.block_id, '')
           AND t1.id > t2.id`,
         `ALTER TABLE teacher_permissions DROP INDEX IF EXISTS uk_teacher_grade`,
-        `ALTER TABLE teacher_permissions ADD UNIQUE KEY uk_teacher_multidim (teacher_id, grade_id, subject, class_id, block_id)`,
+        `ALTER TABLE teacher_permissions ADD UNIQUE KEY uk_teacher_multidim (teacher_id, grade_id, subject, class_id, block_id)`
       ]
     },
   ];

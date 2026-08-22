@@ -299,6 +299,7 @@ CREATE TABLE IF NOT EXISTS exams (
     start_time    DATETIME,
     end_time      DATETIME,
     status        VARCHAR(20) DEFAULT 'draft',
+    score_published TINYINT DEFAULT 0,       -- v41: 0=未公布 1=已公布（教师手动公布后学生可见）
     assigned_formula TEXT,
     retention_policy_id INT,
     exam_mode      VARCHAR(20) NOT NULL DEFAULT 'formal',  -- v34: quiz=晨测 formal=大考(默认)
@@ -587,6 +588,19 @@ CREATE INDEX idx_question_scores_exam_student ON question_scores(exam_id, studen
 CREATE INDEX idx_answer_overrides_exam ON answer_overrides(exam_id);
 CREATE INDEX idx_export_templates_user ON export_templates(user_id, slot);
 CREATE INDEX idx_ai_providers_user ON ai_providers(user_id, provider_type);
+
+-- v42: 成绩公布操作日志（审计追踪）：publish / unpublish（含撤回原因）
+CREATE TABLE IF NOT EXISTS exam_publish_events (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    exam_id     INT NOT NULL,
+    action      VARCHAR(16) NOT NULL,
+    actor_id    INT,
+    reason      TEXT,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+    FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+CREATE INDEX idx_epe_exam ON exam_publish_events(exam_id);
 
 -- ============================================================
 -- 初始数据

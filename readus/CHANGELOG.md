@@ -1,5 +1,27 @@
 # Project-X CHANGELOG
 
+## v2.2.7 (2026-08-22) — 合并 PR #256「成绩公布与撤回管理」（特性全量保留）
+
+> 将 `origin/成绩公布更新`（PR #256，包版本 v2.4.0）合入本分支，与既有 #246 权限矩阵/软删除体系融合。PR #256 特性零删减；main 已全量包含（此前合并）；`纸锋` 分支尖端与 main 文件树一致，无增量内容。
+
+**PR #256 特性（全部保留）**
+- 成绩公布流程：批改完成后默认不公布；`POST /api/exams/:examId/publish`（单场）/ `POST /api/exams/publish-batch`（批量，含可见性范围校验）/ `POST /api/exams/:examId/unpublish`（撤回，带原因 ≤500 字，状态 `1→2`；重新公布 `2→1`），全部 `GRADE_WRITE` 门控 + 考试可见范围校验。
+- 学生端硬过滤：`getStudentScores` / `getStudentTrendData` 增加 `score_published=1`；`/me/exams/:examId` 与学生单场 AI 分析接口公布前置校验（404/403）。教师端查分不受限。
+- 审计：`exam_publish_events` 表记录每次公布/撤回的执行人、时间与原因；考试管理页三态徽章（已公布/已撤回/未公布）+ 公布/撤回/重新公布按钮（桌面与移动卡片对齐）；演示数据种子显式 `score_published=1`。
+
+**迁移编号台账（二次撞号处理）**
+- PR #256 基于旧 main（迁移止于 v38）新增 **v41**（`exams.score_published` + 存量 closed 回填为已公布）/ **v42**（`exam_publish_events`）；与本分支上一轮重编号的 v41–v43 再次撞号。
+- 处理：**PR #256 保留 v41/v42 原号**（其分支已推送、库血统已存在）；本分支三个迁移最终编号 **v43**（track_type 回补）/ **v44**（控制台地基）/ **v45**（权限五维唯一约束）；MariaDB 侧对齐为 v41/v42 + v43/v44。v39/v40 维持作废。编号台账已写入 `migrations.ts` / `mysql.ts` 注释，作废编号请勿复用。
+- 四血统临时库端到端冒烟（全新 / main 血统真实库 / 本分支旧编号血统 / PR #256 血统）全部通过：任何存量库升级都不会因版本号已记录而漏掉另一侧内容。
+
+**语义融合点**
+- 学生成绩/成长曲线同时满足「未软删除 且 已公布」双条件（`ScoreRepository` 两处 WHERE 均保留两侧过滤）。
+- `/me/exams/:examId`：软删除 404 → 无成绩 404 → 未公布 404 三门共存。
+- 公布/撤回经 `requireExamAccess` 与 `getVisibleExamIds`——与本分支改造后的可见性体系（矩阵过滤 + 软删除剔除）天然协同，教师无法公布软删除或越权考试。
+- `verify-auth` 同时保留两侧适配：PR #256 的考试种子 `score_published=1` + 本分支第 8 节 18 项 #246 断言。
+
+**验证**：typecheck 0 错误（包版本 2.4.0）；verify:auth 88/88、security-critical 62/62、weekly-audit 57/57、weekly-demo 全过、reliability-filter 21/21、p1-security 11/11、demo-safety 23/23、score-grid 全过。
+
 ## v2.2.6 (2026-08-22) — PR #246 评审 P1 四项闭环（权限矩阵 / 控制台可达 / 题块授权 / 软删除可见性）
 
 > 针对 PR #246 评审提出的 4 项 P1「功能未闭环」缺陷收尾。其中控制台可达性与题块授权回退两项已在 5db2a2d 修复，本次复核确认并补齐剩余缺口，全部登记永久回归（`verify:auth` 新增第 8 节 18 项断言）。

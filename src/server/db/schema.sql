@@ -290,6 +290,7 @@ CREATE TABLE IF NOT EXISTS exams (
     end_time      DATETIME,
     status        TEXT DEFAULT 'draft',        -- draft / active / grading / closed
     closed_at     DATETIME,                    -- 结考/出分时间 (v35)
+    score_published INTEGER DEFAULT 0,         -- v41: 0=未公布 1=已公布（教师手动公布后学生可见）
     assigned_formula TEXT,                     -- JSON: 赋分公式配置 (v1.4.0)
     retention_policy_id INTEGER REFERENCES data_retention_policies(id),
     review_mode    INTEGER DEFAULT 1,            -- v1.9.0: 1=1P 2=2P 3=3P
@@ -664,6 +665,17 @@ CREATE TABLE IF NOT EXISTS block_grading_config (
     UNIQUE(exam_id, block_id)
 );
 CREATE INDEX IF NOT EXISTS idx_bgc_exam ON block_grading_config(exam_id);
+
+-- v42: 成绩公布操作日志（审计追踪）：publish / unpublish（含撤回原因）
+CREATE TABLE IF NOT EXISTS exam_publish_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    exam_id     INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    action      TEXT NOT NULL,           -- publish / unpublish
+    actor_id    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    reason      TEXT,                     -- 撤回原因（unpublish 时记录）
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_epe_exam ON exam_publish_events(exam_id);
 
 CREATE INDEX IF NOT EXISTS idx_users_student_number ON users(student_number);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role_id);

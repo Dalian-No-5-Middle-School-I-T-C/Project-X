@@ -549,8 +549,8 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   await classRepo.addStudents(class2.id, class2StudentIds);
 
   const insertCard = buildInsertIgnore(db.dialect, "answer_cards", ["id", "title", "subject_label", "exam_date", "is_demo"]);
-  const insertExam = `INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, closed_at, created_by)
-    VALUES (?, ?, ?, ?, ?, 'closed', CURRENT_TIMESTAMP, (SELECT id FROM users WHERE username = 'admin'))`;
+  const insertExam = `INSERT INTO exams (name, card_id, grade_id, subject, start_time, status, score_published, closed_at, created_by)
+    VALUES (?, ?, ?, ?, ?, 'closed', 1, CURRENT_TIMESTAMP, (SELECT id FROM users WHERE username = 'admin'))`;
   const insertScore = `INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score)
     VALUES (?, ?, ?, 0, ?)`;
 

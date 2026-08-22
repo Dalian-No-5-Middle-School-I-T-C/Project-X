@@ -206,11 +206,12 @@ async function main(): Promise<void> {
 
   // ── 6. 学生自助查分 ───────────────────────────────────
   section("6. 学生自助查分");
-  // 造一条考试 + 成绩
+  // 造一条考试 + 成绩（v2.4.0 起成绩默认不公布，学生端仅见 score_published=1 的考试；
+  // 此处显式置 1 模拟教师完成「公布分数」动作，符合新业务规则）
   db.prepare("INSERT INTO answer_cards (id, title) VALUES ('99999999', '验证卷')").run();
   const examId = (
     db
-      .prepare("INSERT INTO exams (name, card_id, subject, status) VALUES ('期中物理', '99999999', '物理', 'closed')")
+      .prepare("INSERT INTO exams (name, card_id, subject, status, score_published) VALUES ('期中物理', '99999999', '物理', 'closed', 1)")
       .run().lastInsertRowid as number
   );
   const otherStudent = await userRepo.createUser({
