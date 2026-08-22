@@ -1,8 +1,8 @@
-fastapi>=0.115.0
-uvicorn>=0.30.0
-openai>=1.60.0
-google-genai>=1.0.0
-python-dotenv>=1.0.1
-pydantic>=2.8.0
-PyMySQL>=1.1.1
-
+# 安全审计（F-12-10）：约束到主版本内，保证可复现构建，同时保留补丁升级空间。
+fastapi>=0.115.0,<1.0
+uvicorn>=0.30.0,<1.0
+openai>=1.60.0,<2.0
+google-genai>=1.0.0,<2.0
+python-dotenv>=1.0.1,<2.0
+pydantic>=2.8.0,<3.0
+PyMySQL>=1.1.1,<2.0

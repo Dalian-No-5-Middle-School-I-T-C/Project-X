@@ -15,6 +15,7 @@ from typing import Any
 from openai import OpenAI
 
 from llmclient.config import ModelConfig, env_value
+from llmclient.providers import validate_base_url
 from llmclient.prompts.knowledge_points import build_knowledge_points_prompt
 
 KP_SCHEMA: dict[str, Any] = {
@@ -105,14 +106,14 @@ def run_direct_multimodal(
 ) -> dict[str, Any]:
     """直传图片给多模态模型 (Gemini / GPT)."""
     if provider_override:
-        api_key = provider_override["api_key"]
-        base_url = provider_override.get("base_url", "").rstrip("/") or None
+        api_key = provider_override.get("api_key") or env_value("OPENAI_API_KEY")
+        base_url = validate_base_url(provider_override.get("base_url", "").rstrip("/") or None)
     elif model.provider == "gemini":
         api_key = env_value("GEMINI_API_KEY")
         base_url = None
     else:
         api_key = env_value("OPENAI_API_KEY")
-        base_url = env_value("OPENAI_BASE_URL") or None
+        base_url = validate_base_url(env_value("OPENAI_BASE_URL") or None)
 
     if model.provider == "gemini":
         return _run_gemini_direct(model, api_key, files, subject, question_range, extra_notes)
@@ -130,14 +131,14 @@ def run_text_only(
 ) -> dict[str, Any]:
     """纯文本模式 (DeepSeek / 兜底)."""
     if provider_override:
-        api_key = provider_override["api_key"]
-        base_url = provider_override.get("base_url", "").rstrip("/") or None
+        api_key = provider_override.get("api_key") or env_value("OPENAI_API_KEY")
+        base_url = validate_base_url(provider_override.get("base_url", "").rstrip("/") or None)
     elif model.provider == "deepseek":
         api_key = env_value("DEEPSEEK_API_KEY")
         base_url = "https://api.deepseek.com"
     else:
         api_key = env_value("OPENAI_API_KEY")
-        base_url = env_value("OPENAI_BASE_URL") or None
+        base_url = validate_base_url(env_value("OPENAI_BASE_URL") or None)
 
     system_prompt = _build_system_prompt(subject, question_range, extra_notes, ocr_mode=True)
 
@@ -192,11 +193,11 @@ B. 速度大的物体惯性大
         vision_api_key = vision_provider_override["api_key"] if vision_provider_override else env_value("GEMINI_API_KEY")
         vision_base_url = None
     elif vision_provider_override:
-        vision_api_key = vision_provider_override["api_key"]
-        vision_base_url = vision_provider_override.get("base_url", "").rstrip("/") or None
+        vision_api_key = vision_provider_override.get("api_key") or env_value("OPENAI_API_KEY")
+        vision_base_url = validate_base_url(vision_provider_override.get("base_url", "").rstrip("/") or None)
     else:
         vision_api_key = env_value("OPENAI_API_KEY")
-        vision_base_url = env_value("OPENAI_BASE_URL") or None
+        vision_base_url = validate_base_url(env_value("OPENAI_BASE_URL") or None)
 
     vision_client = OpenAI(api_key=vision_api_key, base_url=vision_base_url)
 

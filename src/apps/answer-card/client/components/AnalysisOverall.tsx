@@ -84,6 +84,8 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
   if (error) return <ErrorState description={error} onRetry={load} />;
 
   const isGroup = kind === "group";
+  const reliability = metrics && (isGroup ? (metrics as GroupMetrics).reliability : (metrics as ExamMetrics).reliability);
+  const cv = metrics && (isGroup ? (metrics as GroupMetrics).cv : (metrics as ExamMetrics).cv);
 
   return (
     <div className="flex flex-col gap-5 p-6">
@@ -94,6 +96,8 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
           <StatCardRow>
             <StatCard label="难度系数 P" value={metrics.difficulty.toFixed(3)} />
             <StatCard label="区分度 D" value={metrics.discrimination.toFixed(3)} />
+            <StatCard label="信度 α/KR-20" value={reliability == null ? "—" : reliability.toFixed(3)} />
+            <StatCard label="变异系数 CV" value={cv == null ? "—" : `${(cv * 100).toFixed(1)}%`} />
             {isGroup ? (
               <>
                 <StatCard label="大考总分满分" value={formatScore((metrics as GroupMetrics).totalFullScore)} />
@@ -119,6 +123,8 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
                   <TableHead numeric>均分</TableHead>
                   <TableHead numeric>难度系数 P</TableHead>
                   <TableHead numeric>区分度 D</TableHead>
+                  <TableHead numeric>信度</TableHead>
+                  <TableHead numeric>变异系数</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -133,6 +139,8 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
                     <TableCell numeric>
                       <DiscriminationBadge value={s.discrimination ?? 0} bands={bands?.discrimination} sampleSize={s.gradedCount} />
                     </TableCell>
+                    <TableCell numeric>{s.reliability == null ? "—" : s.reliability.toFixed(3)}</TableCell>
+                    <TableCell numeric>{s.cv == null ? "—" : `${(s.cv * 100).toFixed(1)}%`}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -175,7 +183,7 @@ function DistributionCard({ d, showTotalNote, bands }: { d: DistributionResult; 
 
       <p className="mt-2 text-xs text-muted-foreground">
         {d.assignedAvailable
-          ? "已启用赋分：赋分分布已并入上方直方图（橙色为赋分后）。"
+          ? "已启用赋分：以上分布为赋分后总分口径。"
           : (d.scope === "total" && showTotalNote ? "总分分布仅大考可用；本次为普通考试，已省略。" : "未启用赋分：以上为原始分分布。")}
       </p>
     </section>

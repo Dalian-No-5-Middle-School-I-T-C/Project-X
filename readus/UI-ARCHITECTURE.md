@@ -26,7 +26,7 @@
 |-------------|------|
 | `theme/app.css` | Tailwind v4 入口：`@import "tailwindcss/theme.css"` + `utilities.css`、`@layer base` 最小 reset、`@theme` 语义映射、`dark` 自定义 variant、`tw-animate-css` 动画工具类 |
 | `theme/tokens.css` | **令牌源**（`app.css` 内 import）：L1 原始 / L2 语义（亮·暗）/ L3 组件，三套全量落在本文件 |
-| `theme/backdrop.css` | 自定义背景图浮层（`body.has-bg-image::after`），功能性样式，非遗留装饰 |
+| `theme/backdrop.css` | 自定义背景图浮层（`body.has-bg-image::after`），功能性样式，非遗留装饰。**层级 = `z-index:-1`（内容之下、viewport canvas 之上）**；激活时置空 `--color-background` 让画布层透明、背景图透出，卡片/按钮用独立令牌不受影响 |
 | `theme.ts` | JS 侧令牌镜像（图表取色、动态样式、z-index 阶梯），与 tokens.css 同步 |
 | `components/ui/v2/` | 设计系统组件基座（**桶导出**，页面只准从这里具名 import） |
 | `components/` | 业务组件（页面各自私有，禁止跨页面互相 import） |
@@ -45,7 +45,9 @@
 |------|------|----------|
 | `theme/app.css` | 落地入口 | `@theme` 块把 `--px-*` 令牌映射为 Tailwind 语义工具类（`bg-background`/`text-foreground`/`border-border`/`bg-card`…）；`@layer base` 最小 reset（`box-sizing`/`html,body,#root` 尺寸/`body` 背景前景与主题过渡/`color-scheme`/原生控件 UA 收敛）——**Preflight 未启用**（架构师 D2 决策，启用另立 P7） |
 | `theme/tokens.css` | 令牌源 | L1 原始 / L2 语义 / L3 组件三层的唯一定义处 |
-| `theme/backdrop.css` | 功能样式 | 背景图浮层与暗色遮罩（JS 开关逻辑在 App.tsx，零改动） |
+| `theme/backdrop.css` | 功能样式 | 背景图浮层与暗色遮罩（JS 开关逻辑在 App.tsx，零改动）。**v2.x 修正**：浮层 `z-index` 由 `var(--z-lightbox)`(600) 降为 `-1`，使背景图落在所有内容之下；同时 `body.has-bg-image { --color-background: transparent }` 让所有消费 `bg-background` 的画布层透明、背景图得以透出，而 `bg-card`/`bg-primary` 等卡片与按钮令牌独立、始终保持不透明与可读性 |
+
+> **背景图层级决策（v2.x 修正说明）**：早期版本曾四次尝试把背景图放到内容之下（`body::before{z-index:-1}` → `body.style.background` → `insertBefore+#root z-index` → 最终改为 `body::after` 浮在最上层、`pointer-events:none` 半透明穿透），放弃"置于底层"是因为当时内容面板大量硬编码 `background:#fff` 把视口填满，背景图放哪层都被盖住（见 `CHANGELOG.md` v1.4.6 记录）。**v2.x 起底色全面令牌化**：所有画布层统一消费 `bg-background`（`=var(--color-background)`），故只需在 `body.has-bg-image` 下把该令牌置空，即可让全站画布层透明、背景图从 `z-index:-1` 透出；卡片/按钮用 `bg-card`/`bg-primary` 独立令牌，不受影响、依旧不透明可读。这一修正同时修复了"背景图压住按钮、破坏可读性"的问题（原 `z-index:600` 虽不挡点击但视觉压 UI）。无背景图时令牌仍是 canvas 色，外观无回归。
 
 **tokens.css 两层结构（实际分三层 + 密度/动效）：**
 

@@ -110,11 +110,13 @@ def mariadb_configured() -> bool:
 
 
 def mariadb_config() -> dict[str, object]:
+    # 安全审计（F-8）：删除 projectx/projectx 弱默认凭据，未配置时返回空串，
+    # 由上层（connect_db）在缺失凭据时拒绝连接，避免弱口令直连数据库。
     return {
         "host": env_value("PROJECTX_MARIADB_HOST") or env_value("PROJECTX_MYSQL_HOST") or "127.0.0.1",
         "port": int(env_value("PROJECTX_MARIADB_PORT") or env_value("PROJECTX_MYSQL_PORT") or "3306"),
-        "user": env_value("PROJECTX_MARIADB_USER") or env_value("PROJECTX_MYSQL_USER") or "projectx",
-        "password": env_value("PROJECTX_MARIADB_PASSWORD") or env_value("PROJECTX_MYSQL_PASSWORD") or "projectx",
+        "user": env_value("PROJECTX_MARIADB_USER") or env_value("PROJECTX_MYSQL_USER") or "",
+        "password": env_value("PROJECTX_MARIADB_PASSWORD") or env_value("PROJECTX_MYSQL_PASSWORD") or "",
         "database": env_value("PROJECTX_MARIADB_DATABASE") or env_value("PROJECTX_MYSQL_DATABASE") or "projectx",
     }
 

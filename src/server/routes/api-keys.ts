@@ -13,6 +13,7 @@ import crypto from "node:crypto";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { getMysqlDb } from "../db";
 import { PERMISSIONS } from "../auth/permissions";
+import { hashSecret } from "../lib/field-crypto";
 
 const router = Router();
 
@@ -50,7 +51,9 @@ router.get("/", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), asyn
       })),
     });
   } catch (err: any) {
-    res.status(500).json({ message: err.message });
+    // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
+    console.error("[api-keys] 请求处理失败:", err);
+    res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
   }
 });
 
@@ -66,12 +69,14 @@ router.post("/", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), asy
     const apiKey = generateApiKey();
     const db = await getMysqlDb();
 
+    // 安全审计（F-7）：库内只存 SHA-256 哈希，与登录 token 存储策略拉齐。
+    // 明文仅在创建响应中一次性返回（界面已提示"请立即复制"）。
     await db.run(
       "INSERT INTO api_keys (name, api_key, scope, created_by) VALUES (?, ?, ?, ?)",
-      name.trim(), apiKey, scope || "scanner", (req as any).user?.id ?? null
+      name.trim(), hashSecret(apiKey), scope || "scanner", (req as any).user?.id ?? null
     );
 
-    const inserted = await db.get<{ id: number }>("SELECT id FROM api_keys WHERE api_key = ?", apiKey);
+    const inserted = await db.get<{ id: number }>("SELECT id FROM api_keys WHERE api_key = ?", hashSecret(apiKey));
 
     res.status(201).json({
       id: inserted?.id,
@@ -81,7 +86,9 @@ router.post("/", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), asy
       message: "请立即复制此 Key，刷新后将不再完整显示",
     });
   } catch (err: any) {
-    res.status(500).json({ message: err.message });
+    // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
+    console.error("[api-keys] 请求处理失败:", err);
+    res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
   }
 });
 
@@ -109,7 +116,9 @@ router.put("/:id", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), a
 
     res.json({ ok: true, message: is_active ? "已启用" : "已停用" });
   } catch (err: any) {
-    res.status(500).json({ message: err.message });
+    // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
+    console.error("[api-keys] 请求处理失败:", err);
+    res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
   }
 });
 
@@ -128,7 +137,9 @@ router.delete("/:id", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE)
 
     res.json({ ok: true, message: "已删除" });
   } catch (err: any) {
-    res.status(500).json({ message: err.message });
+    // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
+    console.error("[api-keys] 请求处理失败:", err);
+    res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
   }
 });
 

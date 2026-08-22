@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="paper" x1="120" y1="72" x2="392" y2="440" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#edf4ef"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="#24493f"/>
+  <rect x="118" y="68" width="276" height="376" rx="28" fill="url(#paper)"/>
+  <rect x="154" y="112" width="204" height="24" rx="12" fill="#24493f"/>
+  <rect x="154" y="168" width="56" height="30" rx="6" fill="#ffffff" stroke="#24493f" stroke-width="12"/>
+  <rect x="228" y="168" width="56" height="30" rx="6" fill="#ffffff" stroke="#24493f" stroke-width="12"/>
+  <rect x="302" y="168" width="56" height="30" rx="6" fill="#ffffff" stroke="#24493f" stroke-width="12"/>
+  <rect x="154" y="232" width="204" height="18" rx="9" fill="#78938a"/>
+  <rect x="154" y="280" width="204" height="18" rx="9" fill="#78938a"/>
+  <rect x="154" y="328" width="204" height="18" rx="9" fill="#78938a"/>
+  <rect x="154" y="376" width="128" height="18" rx="9" fill="#78938a"/>
+  <rect x="352" y="396" width="74" height="28" rx="14" transform="rotate(-45 352 396)" fill="#f0c95a"/>
+</svg>

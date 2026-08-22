@@ -3,20 +3,19 @@ import {
   BookOpen,
   ChevronDown,
   Download,
+  ExternalLink,
   Eye,
-  FlaskConical,
   Heart,
   KeyRound,
   LogOut,
   Shield,
-  Terminal,
-  Trash2,
   Upload,
   User,
 } from "lucide-react";
 import { useAuth, type AppPersona, type TeacherRoleOverride } from "../auth/AuthContext";
 import { fetchJson, authFetch } from "../auth/api";
 import { ROLE_LABELS, TEACHER_ROLE_LABELS } from "../auth/types";
+import { PROMO_SITE_URL } from "../lib/external-links";
 import { cn } from "../lib/utils";
 import {
   Button,
@@ -54,8 +53,6 @@ export function AccountMenu({
   const [busy, setBusy] = useState(false);
   const [importMsg, setImportMsg] = useState("");
   const [importBusy, setImportBusy] = useState(false);
-  const [demoBusy, setDemoBusy] = useState(false);
-  const [showDevMode, setShowDevMode] = useState(false);
 
   if (!user) return null;
 
@@ -103,34 +100,6 @@ export function AccountMenu({
       URL.revokeObjectURL(url);
     } catch (err) {
       setImportMsg(err instanceof Error ? err.message : "导出失败");
-    }
-  }
-
-  async function handleImportDemo() {
-    if (!confirm("将导入演示测试数据（9 场考试、16 名学生、2 个合集，含网阅演示），不会覆盖现有数据。继续？")) return;
-    setImportMsg("");
-    setDemoBusy(true);
-    try {
-      const result = await fetchJson<{ ok: boolean; message?: string }>("/api/db/import-demo", { method: "POST" });
-      setImportMsg(result.message || "演示数据导入完成");
-    } catch (err) {
-      setImportMsg(err instanceof Error ? err.message : "演示数据导入失败");
-    } finally {
-      setDemoBusy(false);
-    }
-  }
-
-  async function handleClearDemo() {
-    if (!confirm("将清除全部「演示-」前缀的演示数据（不影响真实数据）。继续？")) return;
-    setImportMsg("");
-    setDemoBusy(true);
-    try {
-      const result = await fetchJson<{ ok: boolean; message?: string }>("/api/db/clear-demo", { method: "POST" });
-      setImportMsg(result.message || "演示数据已清除");
-    } catch (err) {
-      setImportMsg(err instanceof Error ? err.message : "演示数据清除失败");
-    } finally {
-      setDemoBusy(false);
     }
   }
 
@@ -306,44 +275,6 @@ export function AccountMenu({
                   if (file) handleImportDb(file);
                 }}
               />
-              {/* ── v1.9.6: 开发者模式子菜单（演示数据等高危功能，调研/导入演示用） ── */}
-              <DropdownMenuItem
-                onSelect={(e) => e.preventDefault()}
-                onClick={() => { setShowDevMode(!showDevMode); setImportMsg(""); }}
-                aria-expanded={showDevMode}
-              >
-                <Terminal size={15} /> 开发者模式
-                <ChevronDown
-                  size={14}
-                  className={cn("ml-auto transition-transform duration-(--px-dur-1)", showDevMode && "rotate-180")}
-                />
-              </DropdownMenuItem>
-              {showDevMode && (
-                <div className="mx-1 mb-1 flex flex-col gap-0.5 rounded-sm border-l-2 border-border-subtle bg-secondary px-1 py-1">
-                  <div className="px-2 py-0.5 text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
-                    演示数据
-                  </div>
-                  <DropdownMenuItem
-                    onClick={() => void handleImportDemo()}
-                    disabled={demoBusy}
-                    className="h-7 pl-4 text-sm"
-                  >
-                    <FlaskConical size={14} /> {demoBusy ? "处理中..." : "导入演示数据"}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => void handleClearDemo()}
-                    disabled={demoBusy}
-                    className="h-7 pl-4 text-sm"
-                  >
-                    <Trash2 size={14} /> 清除演示数据
-                  </DropdownMenuItem>
-                  {importMsg && (
-                    <div className={cn("px-2 py-0.5 text-xs", importMsg.includes("失败") ? "text-primary" : "text-success")}>
-                      {importMsg}
-                    </div>
-                  )}
-                </div>
-              )}
             </>
           )}
 
@@ -357,6 +288,13 @@ export function AccountMenu({
               <Heart size={15} /> 支持项目
             </DropdownMenuItem>
           )}
+          {/* 宣传网站外链入口（小屏 PageHeader 隐藏宣传图标时，仍可从这里访问 GitHub Pages 宣传站） */}
+          <DropdownMenuItem
+            onSelect={(e) => e.preventDefault()}
+            onClick={() => window.open(PROMO_SITE_URL, "_blank", "noopener,noreferrer")}
+          >
+            <ExternalLink size={15} /> 访问宣传网站
+          </DropdownMenuItem>
           {onOpenPermissions && user.role_name === "admin" && (
             <DropdownMenuItem onClick={() => onOpenPermissions()}>
               <Shield size={15} /> 权限管理

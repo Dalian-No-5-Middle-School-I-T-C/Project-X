@@ -9,6 +9,8 @@
  * ScoreDetailPage）无需改动；#218 新增的 ClassRadar 已适配为 v2 `Chart`。
  */
 import { Chart as ChartJS, RadialLinearScale } from "chart.js";
+import { classifyBand, type ThresholdBand } from "../../../../shared/stats";
+import { tokens } from "../theme";
 import { Chart, paletteColor, rampPalette, useChartTheme, withAlpha } from "./ui/v2";
 
 // v2 适配器只注册了折线/柱/环所需元素，radar（#218 ClassRadar）需补注册 RadialLinearScale
@@ -252,6 +254,60 @@ export function ClassDistributionBar({
 }
 
 /**
+ * 各班分数段 100% 堆叠图：x=班级，每班一列、各分数段占比归一化堆叠。
+ * 与 ClassDistributionBar（各段绝对人数分组柱）互补——突出班级分布形态差异（尖峰/偏态/两极）。
+ */
+export function ClassStackBar({
+  labels,
+  segments,
+  matrix,
+  height = 280,
+}: {
+  /** 班级名（x 轴类目） */
+  labels: string[];
+  /** 分数段标签（图例，按数组顺序自下而上堆叠） */
+  segments: string[];
+  /** matrix[segmentIndex][classIndex] = 人数 */
+  matrix: number[][];
+  height?: number;
+}) {
+  // 每班归一化到 100%，使各列等宽可比分布形态
+  const byClass = labels.map((_, ci) => matrix.map((row) => row[ci] ?? 0));
+  const pct = byClass.map((col) => {
+    const sum = col.reduce((a, b) => a + b, 0);
+    return sum > 0 ? col.map((v) => Math.round((v / sum) * 1000) / 10) : col.map(() => 0);
+  });
+  const colors = rampPalette(segments.length, undefined, 0.4, 1);
+
+  const chartData = {
+    labels,
+    datasets: segments.map((seg, si) => ({
+      label: seg,
+      data: byClass.map((_, ci) => pct[ci][si]),
+      backgroundColor: colors[si],
+      stack: "s",
+      borderRadius: 2,
+    })),
+  };
+
+  return (
+    <Chart
+      type="bar"
+      data={chartData}
+      height={height}
+      ariaLabel="各班分数段占比堆叠图"
+      options={{
+        scales: {
+          x: { stacked: true, grid: { display: false } },
+          y: { stacked: true, beginAtZero: true, max: 100, ticks: { precision: 0, callback: (v) => `${v}%` } },
+        },
+        plugins: { legend: { position: "bottom" } },
+      }}
+    />
+  );
+}
+
+/**
  * Issue #175: 班级对比雷达图（多维度）。
  * 维度：平均分率 / 中位分率 / 及格率 / 优秀率 / 难度系数 / 区分度 / 离散度（标准差占满分比）。
  * 除离散度外均为“越高越好”口径，便于直观比较。
@@ -329,6 +385,91 @@ export function ClassRadar({
  * 建议 10：班级知识点掌握雷达图。
  * 轴 = 知识点，系列 = 班级，值为各班得分率（0-100，null 按 0 处理并由调用方提示覆盖率）。
  */
+/**
+ * 难度-区分度散点（P-D 诊断四象限）。
+ * 横轴难度 P（0-1，越左越难），纵轴区分度 D；
+ * 点色 = 区分度档位（classifyBand），「高难度(高分组难) + 低区分度」标记为疑题（第二系列描边高亮）。
+ */
+export function PDScatter({
+  points,
+  discBands,
+  height = 280,
+}: {
+  /** 逐题 P/D 与题号信息 */
+  points: Array<{ questionNumber: string; x: number; y: number; scoreRate: number | null }>;
+  discBands?: ThresholdBand[];
+  height?: number;
+}) {
+  const theme = useChartTheme();
+  const colorOf = (d: number) =>
+    discBands && discBands.length > 0
+      ? classifyBand(d, discBands).color
+      : paletteColor(Math.max(0, Math.min(5, Math.floor(d * 10))));
+  // 疑题：难度 P < 0.5（偏难）且区分度 D < 0.3（区分能力弱）
+  const suspect = (p: { x: number; y: number }) => p.x < 0.5 && p.y < 0.3;
+  const normal = points.filter((p) => !suspect(p));
+  const flagged = points.filter((p) => suspect(p));
+
+  const chartData = {
+    datasets: [
+      {
+        label: "题目",
+        type: "scatter" as const,
+        data: normal.map((p) => ({ x: p.x, y: p.y, questionNumber: p.questionNumber, scoreRate: p.scoreRate })),
+        backgroundColor: normal.map((p) => colorOf(p.y)),
+        borderColor: theme.axis,
+        borderWidth: 1,
+        pointRadius: 5,
+        pointHoverRadius: 7,
+      },
+      {
+        label: "疑题（高难度+低区分度）",
+        type: "scatter" as const,
+        data: flagged.map((p) => ({ x: p.x, y: p.y, questionNumber: p.questionNumber, scoreRate: p.scoreRate })),
+        backgroundColor: flagged.map((p) => colorOf(p.y)),
+        borderColor: tokens.danger,
+        borderWidth: 2,
+        pointRadius: 7,
+        pointHoverRadius: 9,
+      },
+    ],
+  };
+
+  return (
+    <Chart
+      type="scatter"
+      data={chartData}
+      height={height}
+      ariaLabel="难度-区分度散点图"
+      options={{
+        scales: {
+          x: {
+            min: 0,
+            max: 1,
+            title: { display: true, text: "难度系数 P（越低越难）" },
+          },
+          y: {
+            min: -0.2,
+            max: 1,
+            title: { display: true, text: "区分度 D" },
+          },
+        },
+        plugins: {
+          legend: { position: "bottom" },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const q = ctx.raw as { questionNumber: string; x: number; y: number; scoreRate: number | null };
+                return `题 ${q.questionNumber}：难度 ${q.x.toFixed(3)}，区分度 ${q.y.toFixed(3)}${q.scoreRate != null ? `，得分率 ${q.scoreRate}%` : ""}`;
+              },
+            },
+          },
+        },
+      }}
+    />
+  );
+}
+
 export function KnowledgeRadar({
   points,
   classes,

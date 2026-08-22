@@ -4,6 +4,7 @@ import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
 import { getMysqlDb } from "../db";
 import { isMaskedApiKey, maskApiKey } from "../utils/maskApiKey";
+import { encryptField, decryptField } from "../lib/field-crypto";
 
 /**
  * AI 服务商配置管理
@@ -31,7 +32,7 @@ router.get("/system", requireSystemManage, async (_req, res) => {
     name: p.name,
     providerType: p.provider_type,
     baseUrl: p.base_url,
-    apiKey: maskApiKey(p.api_key),
+    apiKey: maskApiKey(decryptField(p.api_key) ?? ""),
     models: p.models ? JSON.parse(p.models) : null,
     isActive: !!p.is_active,
   })));
@@ -48,10 +49,11 @@ router.post("/system", requireSystemManage, async (req, res) => {
   const db = getMysqlDb();
   // 系统服务商 user_id 记创建者（管理员），以 is_system=1 标记为全局可用；
   // ai_providers.user_id 有 NOT NULL 外键约束，不能填 0/NULL。
+  // 安全审计（F-7）：api_key 加密存储，运行使用时再解密。
   const result = await db.run(`
     INSERT INTO ai_providers (user_id, name, provider_type, base_url, api_key, models, is_system)
     VALUES (?, ?, ?, ?, ?, ?, 1)
-  `, req.user!.id, name, providerType, normalizedUrl, apiKey, models ? JSON.stringify(models) : null);
+  `, req.user!.id, name, providerType, normalizedUrl, encryptField(String(apiKey)), models ? JSON.stringify(models) : null);
   res.status(201).json({ id: result.lastInsertRowid, baseUrl: normalizedUrl });
 });
 
@@ -65,7 +67,7 @@ router.put("/system/:id", requireSystemManage, async (req, res) => {
   }
   const effectiveType = providerType ?? provider.provider_type;
   const normalizedUrl = baseUrl ? normalizeBaseUrl(baseUrl, effectiveType) : null;
-  const effectiveApiKey = apiKey && !isMaskedApiKey(apiKey) ? apiKey : null;
+  const effectiveApiKey = apiKey && !isMaskedApiKey(apiKey) ? encryptField(String(apiKey)) : null;
   await db.run(`
     UPDATE ai_providers SET
       name = COALESCE(?, name),
@@ -105,7 +107,7 @@ router.get("/", async (req: Request, res: Response) => {
     name: p.name,
     providerType: p.provider_type,
     baseUrl: p.base_url,
-    apiKey: maskApiKey(p.api_key),
+    apiKey: maskApiKey(decryptField(p.api_key) ?? ""),
     models: p.models ? JSON.parse(p.models) : null,
     isActive: !!(p.is_active)
   })));
@@ -136,7 +138,7 @@ router.post("/", async (req: Request, res: Response) => {
   const result = await db.run(`
     INSERT INTO ai_providers (user_id, name, provider_type, base_url, api_key, models)
     VALUES (?, ?, ?, ?, ?, ?)
-  `, req.user!.id, name, providerType, normalizedUrl, apiKey, models ? JSON.stringify(models) : null);
+  `, req.user!.id, name, providerType, normalizedUrl, encryptField(String(apiKey)), models ? JSON.stringify(models) : null);
 
   res.status(201).json({ id: result.lastInsertRowid, baseUrl: normalizedUrl });
 });
@@ -158,8 +160,8 @@ router.put("/:id", async (req: Request, res: Response) => {
 
   const effectiveType = providerType ?? provider.provider_type;
   const normalizedUrl = baseUrl ? normalizeBaseUrl(baseUrl, effectiveType) : null;
-  // 脱敏值（••••••••xxxx）是 GET 返回的占位符，PUT 时不应覆盖真实 Key
-  const effectiveApiKey = apiKey && !isMaskedApiKey(apiKey) ? apiKey : null;
+  // 脱敏值（••••••••xxxx）是 GET 返回的占位符，PUT 时不应覆盖真实 Key；真实 Key 加密存储（F-7）
+  const effectiveApiKey = apiKey && !isMaskedApiKey(apiKey) ? encryptField(String(apiKey)) : null;
 
   await db.run(`
     UPDATE ai_providers SET

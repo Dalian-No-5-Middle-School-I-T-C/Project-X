@@ -907,6 +907,16 @@ const MIGRATIONS: Migration[] = [
       `);
     }
   },
+  // v39: 修复 schema 漂移 —— knowledge_points.track_type 仅存在于 schema.sql（全新建库），
+  // 旧库升级从未补齐（#177 的 v31 只补了 users.track 与 exam_group_members.track_type）。
+  // v2.3.x 演示数据 seed（周报晨测）会写入该列，缺列会导致导入在插入知识点时中断。
+  {
+    version: 39,
+    name: "knowledge-points-track-type-backfill",
+    up(db) {
+      addColumnIfMissing(db, "knowledge_points", "track_type", "TEXT NOT NULL DEFAULT 'common'");
+    }
+  },
   // v41: 成绩公布开关 —— 批改完成后默认未公布，教师手动公布后学生方可查看。
   // 存量兼容：历史已结考（status='closed'）的考试回填为已公布，避免升级后历史成绩对学生消失。
   {
