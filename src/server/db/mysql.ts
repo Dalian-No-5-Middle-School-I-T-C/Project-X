@@ -907,6 +907,17 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
          WHERE retention_policy_id = 1 AND (exam_mode IS NULL OR exam_mode != 'quiz')`,
       ]
     },
+    {
+      // v46: 与 SQLite v43（knowledge_points.track_type 回补，main 血统）对齐 ——
+      // schema.mariadb.sql 的全新建库语句含 track_type，但既有库从未经迁移补齐；
+      // v2.3.x 演示数据 seed（周报晨测）会写入该列，缺列会导致导入在插入知识点时中断。
+      // ALTER 幂等：重复列被上方 ER_DUP_FIELDNAME 忽略。
+      version: 46,
+      name: "knowledge-points-track-type-backfill",
+      sqls: [
+        `ALTER TABLE knowledge_points ADD COLUMN track_type VARCHAR(20) NOT NULL DEFAULT 'common'`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {
