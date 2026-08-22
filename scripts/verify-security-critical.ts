@@ -471,6 +471,87 @@ async function main(): Promise<void> {
       );
     }
 
+    section("成绩公布门控与审计原子性");
+    {
+      const seedPublishExam = (name: string, status: string, scorePublished: number): number => {
+        const cardId = `pub-card-${Math.random().toString(36).slice(2, 8)}`;
+        db.prepare("INSERT INTO answer_cards (id, title) VALUES (?, ?)").run(cardId, name);
+        return Number(db.prepare(
+          "INSERT INTO exams (name, card_id, grade_id, class_id, subject, status, score_published, created_by) VALUES (?,?,?,?,?,?,?,?)"
+        ).run(name, cardId, grade.id, classA, "数学", status, scorePublished, teacher.id).lastInsertRowid);
+      };
+      const draftExam = seedPublishExam("公布门控-草稿", "draft", 0);
+      const gradingExam = seedPublishExam("公布门控-阅卷中", "grading", 0);
+      const closedExam = seedPublishExam("公布门控-已结考", "closed", 0);
+      const closedExam2 = seedPublishExam("公布门控-已结考2", "closed", 0);
+      for (const examId of [draftExam, gradingExam, closedExam, closedExam2]) {
+        db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)")
+          .run(examId, student.id, 40, 20, 60);
+      }
+      const auditCount = (examId: number): number =>
+        (db.prepare("SELECT COUNT(*) AS c FROM exam_publish_events WHERE exam_id = ?").get(examId) as { c: number }).c;
+
+      // [P1] 草稿/阅卷中考试不可公布（防提前暴露）
+      const publishDraft = await fetch(`${base}/api/exams/${draftExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
+      const publishGrading = await fetch(`${base}/api/exams/${gradingExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
+      check(publishDraft.status === 409 && publishGrading.status === 409, "草稿/阅卷中考试公布被 409 拒绝");
+
+      // 未公布时学生端完全不可见（列表 + 逐题明细）
+      const meBefore = await fetch(`${base}/api/scores/me`, { headers: authHeaders(studentToken) });
+      const meBeforeBody = await meBefore.json() as { scores: Array<{ exam_id: number }> };
+      check(meBefore.status === 200 && !meBeforeBody.scores.some((s) => s.exam_id === closedExam), "未公布考试不出现在学生成绩列表");
+      const detailBefore = await fetch(`${base}/api/scores/me/exams/${closedExam}`, { headers: authHeaders(studentToken) });
+      check(detailBefore.status === 404, "未公布考试学生逐题明细 404");
+
+      // 已结考公布：状态与审计在同一事务（[P1] 原子性）
+      const publishClosed = await fetch(`${base}/api/exams/${closedExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
+      check(publishClosed.status === 200 && auditCount(closedExam) === 1, "已结考公布成功且写入 1 条审计");
+      const republish = await fetch(`${base}/api/exams/${closedExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
+      check(republish.status === 200 && auditCount(closedExam) === 1, "重复公布幂等且不重复写审计");
+
+      const meAfter = await fetch(`${base}/api/scores/me`, { headers: authHeaders(studentToken) });
+      const meAfterBody = await meAfter.json() as { scores: Array<{ exam_id: number }> };
+      check(meAfter.status === 200 && meAfterBody.scores.some((s) => s.exam_id === closedExam), "公布后考试出现在学生成绩列表");
+
+      // 批量：含未结考 → 整体 409 且不写任何审计
+      const auditBeforeFailBatch = auditCount(closedExam);
+      const batchFail = await fetch(`${base}/api/exams/publish-batch`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
+        body: JSON.stringify({ examIds: [draftExam, closedExam] })
+      });
+      check(batchFail.status === 409 && auditCount(closedExam) === auditBeforeFailBatch, "批量含未结考整体 409 且未写审计");
+
+      // 批量：已公布的跳过，只处理未公布并逐场写审计
+      const batchOk = await fetch(`${base}/api/exams/publish-batch`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
+        body: JSON.stringify({ examIds: [closedExam, closedExam2] })
+      });
+      const batchOkBody = await batchOk.json() as { publishedCount: number };
+      check(batchOk.status === 200 && batchOkBody.publishedCount === 1 && auditCount(closedExam2) === 1, "批量公布只处理未公布考试且逐场写审计");
+
+      // 撤回：状态与审计原子；学生立即不可见；未公布撤回 400
+      const unpublish = await fetch(`${base}/api/exams/${closedExam}/unpublish`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
+        body: JSON.stringify({ reason: "成绩有误" })
+      });
+      check(unpublish.status === 200 && auditCount(closedExam) === 2, "撤回成功且写入审计");
+      const detailAfterUnpublish = await fetch(`${base}/api/scores/me/exams/${closedExam}`, { headers: authHeaders(studentToken) });
+      check(detailAfterUnpublish.status === 404, "撤回后学生逐题明细立即 404");
+      const unpublishAgain = await fetch(`${base}/api/exams/${closedExam}/unpublish`, { method: "POST", headers: authHeaders(teacherToken) });
+      check(unpublishAgain.status === 400, "未公布状态撤回被 400 拒绝");
+
+      // 重新公布后触发重新阅卷：自动撤回并记审计，避免学生看到半成品
+      const republishAgain = await fetch(`${base}/api/exams/${closedExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
+      check(republishAgain.status === 200 && auditCount(closedExam) === 3, "撤回后重新公布成功继续记审计");
+      await persistGradingResults(String(closedExam), [], teacher.id);
+      const examRow = db.prepare("SELECT status, score_published FROM exams WHERE id = ?").get(closedExam) as { status: string; score_published: number };
+      const autoUnpublishAudit = db.prepare(
+        "SELECT reason FROM exam_publish_events WHERE exam_id = ? AND action = 'unpublish' AND reason = '重新阅卷自动撤回'"
+      ).get(closedExam);
+      check(examRow.score_published === 0 && examRow.status === "closed", "重新阅卷自动撤回已公布成绩（score_published=0）");
+      check(Boolean(autoUnpublishAudit), "自动撤回写入审计事件");
+    }
+
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);
     if (failures.length > 0) {
       for (const failure of failures) console.error(`  - ${failure}`);
