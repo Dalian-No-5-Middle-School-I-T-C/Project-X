@@ -1835,22 +1835,30 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "缺少 name 或 cardId" });
         return;
       }
-      // 评审 P1：显式指定的保留策略必须先存在（防悬空引用），null=明确不绑定
+      // 评审 P1：显式指定保留策略（含 null 解绑）是数据生命周期管理——绑定即挂上
+      // 自动归档/删除，与 PATCH /api/exams/:examId 的语义一致，仅管理员可操作。
+      // 教师不传该字段走按类型默认分配（quiz→周测策略），不受影响。
       let retentionPolicyIdValue: number | null | undefined;
-      if (retentionPolicyId !== undefined && retentionPolicyId !== null) {
-        const pid = Number(retentionPolicyId);
-        if (!Number.isInteger(pid) || pid <= 0) {
-          res.status(400).json({ message: "无效的保留策略 ID" });
+      if (retentionPolicyId !== undefined) {
+        if (req.user?.role_name !== "admin") {
+          res.status(403).json({ message: "权限不足：仅管理员可指定数据保留策略" });
           return;
         }
-        const policy = await getMysqlDb().get("SELECT id FROM data_retention_policies WHERE id = ?", pid);
-        if (!policy) {
-          res.status(400).json({ message: "保留策略不存在" });
-          return;
+        if (retentionPolicyId !== null) {
+          const pid = Number(retentionPolicyId);
+          if (!Number.isInteger(pid) || pid <= 0) {
+            res.status(400).json({ message: "无效的保留策略 ID" });
+            return;
+          }
+          const policy = await getMysqlDb().get("SELECT id FROM data_retention_policies WHERE id = ?", pid);
+          if (!policy) {
+            res.status(400).json({ message: "保留策略不存在" });
+            return;
+          }
+          retentionPolicyIdValue = pid;
+        } else {
+          retentionPolicyIdValue = null;
         }
-        retentionPolicyIdValue = pid;
-      } else if (retentionPolicyId === null) {
-        retentionPolicyIdValue = null;
       }
       const examRepo = new ExamRepository();
       const existing = await examRepo.findExamByName(String(name));

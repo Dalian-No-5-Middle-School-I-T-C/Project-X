@@ -133,11 +133,18 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
       //    - 假设②：auto_delete=1 为软删除——仅标记 exam_archives.is_deleted=1，不物理销毁数据，可恢复；
       //    - 假设③：未关联策略的考试维持默认行为——不归档不删除，仅按环境变量
       //      PROJECTX_SCAN_RETENTION_DAYS 清理扫描原图（本步骤之前的步骤 1-3）。
-      //    - 超期判定统一交给 SQL 日期函数（julianday）比较：closed_at/end_time 为
-      //      SQLite 'YYYY-MM-DD HH:mm:ss'（CURRENT_TIMESTAMP，UTC），与 JS toISOString()
-      //      'YYYY-MM-DDTHH:mm:ss.sssZ' 直接按字典序比较会在 ' ' < 'T' 处错位，导致
-      //      保留期未满的考试被提前归档/删除（评审 P1，2026-08-22 实测复现）。
+      //    - 超期判定按方言实现（评审 P1 两连，2026-08-22）：
+      //      ① 不能拿 JS toISOString()（'YYYY-MM-DDTHH:mm:ss.sssZ'）与库内
+      //         'YYYY-MM-DD HH:mm:ss' 直接做字典序比较，' ' < 'T' 会错位导致保留期
+      //         未满的考试被提前归档/删除；
+      //      ② julianday() 是 SQLite 专有函数，MariaDB 原样执行会报错并中止整轮
+      //         保留策略处理。SQLite 继续用 julianday（CURRENT_TIMESTAMP 为 UTC）；
+      //         MariaDB 用 DATE_SUB(NOW(), INTERVAL ... DAY)（CURRENT_TIMESTAMP 与
+      //         NOW() 同为会话时区，比较自洽）。
       if (await hasAnyRetentionPolicy(tx)) {
+        const expirySql = tx.dialect === "mariadb"
+          ? "COALESCE(e.closed_at, e.end_time) < DATE_SUB(NOW(), INTERVAL p.retain_days DAY)"
+          : "julianday(COALESCE(e.closed_at, e.end_time)) <= julianday('now', '-' || p.retain_days || ' days')";
         const policyExams = await tx.all(
           `SELECT e.id, p.retain_days, p.auto_archive, p.auto_delete
            FROM exams e
@@ -145,7 +152,7 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
            WHERE e.status = 'closed'
              AND COALESCE(e.closed_at, e.end_time) IS NOT NULL
              AND p.retain_days > 0
-             AND julianday(COALESCE(e.closed_at, e.end_time)) <= julianday('now', '-' || p.retain_days || ' days')`
+             AND ${expirySql}`
         ) as Array<{ id: number; retain_days: number; auto_archive: number; auto_delete: number }>;
 
         // 本轮跳过计数（用于汇总日志，便于运维核对三种假设的执行情况）

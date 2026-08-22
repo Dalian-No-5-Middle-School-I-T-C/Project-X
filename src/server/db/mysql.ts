@@ -893,6 +893,20 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE teacher_permissions ADD UNIQUE KEY uk_teacher_multidim (teacher_id, grade_id, subject, class_id, block_id)`
       ]
     },
+    {
+      // v45: 评审修复 —— 数据保留策略按考试类型分配（与 SQLite v46 对齐，2026-08-22）。
+      // 旧 createExam 对所有考试固定回退绑定 retention_policy_id=1（周测），formal
+      // （月考/期中期末等大考）全部误挂"周测"策略；管理员一旦开启该策略自动删除将
+      // 波及全部考试。修复后 createExam 按类型分配（quiz→周测、formal→不绑定），
+      // 本迁移解除既有非 quiz 考试对策略 1 的默认绑定（quiz 晨测与周测策略的绑定
+      // 符合按类型分配语义，保留；显式绑定其它策略的考试不受影响）。
+      version: 45,
+      name: "retention-policy-by-exam-mode",
+      sqls: [
+        `UPDATE exams SET retention_policy_id = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE retention_policy_id = 1 AND (exam_mode IS NULL OR exam_mode != 'quiz')`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {
