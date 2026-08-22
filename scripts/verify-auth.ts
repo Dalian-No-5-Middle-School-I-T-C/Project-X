@@ -614,6 +614,52 @@ async function main(): Promise<void> {
   await runCleanup(30);
   ok(!(await listSoftDeletedExams()).some((r) => r.examId === restoreExam246), "#246r3 下一轮清理不再软删除已恢复考试");
 
+  // ── 11. 合并前审核修复：天梯公布门与软删除收口 ──
+  section("11. ladder publication gate & soft-delete filtering");
+
+  const ladPub = Number(db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status, score_published, closed_at) VALUES ('#246r4天梯已公布', '99999999', '数学', ?, 'closed', 1, '2026-05-02 09:00:00')").run(klass.id).lastInsertRowid);
+  const ladUnpub = Number(db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status, score_published) VALUES ('#246r4天梯未公布', '99999999', '数学', ?, 'closed', 0)").run(klass.id).lastInsertRowid);
+  const ladSoft = Number(db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status, score_published, closed_at) VALUES ('#246r4天梯软删', '99999999', '数学', ?, 'closed', 1, '2026-05-03 09:00:00')").run(klass.id).lastInsertRowid);
+  insertScore.run(ladPub, student.id, 60, 0, 60);
+  insertScore.run(ladUnpub, student.id, 70, 0, 70);
+  insertScore.run(ladSoft, student.id, 80, 0, 80);
+  db.prepare("INSERT INTO exam_archives (exam_id, is_deleted) VALUES (?, 1)").run(ladSoft);
+
+  // 11.1 公布过滤助手：保留已公布（软删除由软删除收口另行处理）、剔除未公布
+  const pubFiltered = await analysisRepo.filterPublishedExamIds([ladPub, ladUnpub, ladSoft]);
+  ok(
+    pubFiltered.length === 2 && pubFiltered.includes(ladPub) && pubFiltered.includes(ladSoft) && !pubFiltered.includes(ladUnpub),
+    "#246r4 filterPublishedExamIds：剔除未公布考试、保持原顺序"
+  );
+
+  // 11.2 跨考聚合：学生（onlyPublished）= 已公布且未软删除；教师 = 含未公布、剔除软删除
+  const crossStudent = await analysisRepo.getCrossExamTotal(
+    { mode: "selected", examIds: [ladPub, ladUnpub, ladSoft] },
+    { onlyPublished: true },
+  );
+  ok(crossStudent.exams.length === 1 && crossStudent.exams[0].id === ladPub, "#246r4 学生跨考聚合：仅保留已公布且未软删除的考试");
+  const crossTeacher = await analysisRepo.getCrossExamTotal(
+    { mode: "selected", examIds: [ladPub, ladUnpub, ladSoft] },
+    { onlyPublished: false },
+  );
+  ok(
+    crossTeacher.exams.length === 2 && crossTeacher.exams.some((e) => e.id === ladUnpub) && !crossTeacher.exams.some((e) => e.id === ladSoft),
+    "#246r4 教师跨考聚合：含未公布、剔除软删除（getCrossExamTotalExams 收口）"
+  );
+
+  // 11.3 天梯公布门（checkLadderPublished）：教师放行；学生任一未公布 403；全公布放行
+  const { checkLadderPublished } = await import("../src/server/routes/ladder");
+  let ladStatus: number | null = null;
+  const fakeLadRes: unknown = {
+    status: (s: number) => { ladStatus = s; return fakeLadRes; },
+    json: () => fakeLadRes,
+  };
+  ok(await checkLadderPublished({ user: { role_name: "teacher" } } as never, fakeLadRes as never, [ladUnpub]), "#246r4 教师天梯不受公布限制");
+  ok(await checkLadderPublished({ user: { role_name: "admin" } } as never, fakeLadRes as never, [ladUnpub]), "#246r4 管理员天梯预览不受公布限制");
+  ladStatus = null;
+  ok(!(await checkLadderPublished({ user: { role_name: "student" } } as never, fakeLadRes as never, [ladPub, ladUnpub])) && ladStatus === 403, "#246r4 学生天梯：含未公布考试被 403");
+  ok(await checkLadderPublished({ user: { role_name: "student" } } as never, fakeLadRes as never, [ladPub, ladSoft]), "#246r4 学生天梯：所选考试全部已公布时放行");
+
   closeDatabase();
 }
 

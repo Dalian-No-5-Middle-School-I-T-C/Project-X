@@ -1,5 +1,19 @@
 # Project-X CHANGELOG
 
+## v2.2.10 (2026-08-22) — 合并前审核修复：天梯公布门与软删除收口 + 版本徽章
+
+> 合并前自审发现的两处 P1（均属本 PR 引入面：PR #256 公布 enforcement 的消费端缺口、#246 软删除可见性在天梯的残留）与一处 P3。
+
+**1. [P1] 天梯端点接入成绩公布门（PR #256 v41 消费端补齐）**
+- 此前三个天梯端点均不检查 `score_published`：学生可在教师公布前经「我的成绩 → 天梯 → 跨考累计」（周包聚合）看到本人分数与年级前十，单场/大考组路径也可直接调 API 取分——绕过「批改完成后默认不公布，学生端硬过滤」的核心承诺。
+- 修复：`ladder.ts` 新增 `checkLadderPublished`（教师/管理员豁免，与天梯开关的管理员预览语义一致）；单场天梯在 `requireExamAccess` 后校验、组天梯对全部成员校验（任一未公布 403）；跨考天梯经 `getCrossExamTotal` 新增 `onlyPublished` 选项在考试集合解析后统一过滤（新增 `filterPublishedExamIds` 助手，保持原顺序）。
+**2. [P1] 组天梯与跨考聚合的软删除收口**
+- 组天梯成员查询未过滤软删除成员（round-2 已修 `canReadGroup` 的同类残留）：教师侧经 `validateExamIdsAccess` 对含软删除成员的组整体 403；学生侧（可见集合为 null）聚合含已删考试成绩。修复：成员查询补 `GROUP_MEMBER_NOT_SOFT_DELETED_SQL`。
+- `getCrossExamTotalExams` 补 `EXAM_NOT_SOFT_DELETED_SQL`（selected 模式可经构造 examIds 触达软删除考试，此处统一收口）。
+**3. [P3]** README 版本徽章 2.2.1 → 2.4.0（与 package.json 对齐，仓库惯例）。
+
+**验证**：typecheck 0 错误；`verify:auth` 122/122（新增第 11 节 7 项：公布过滤助手、学生/教师跨考聚合三态、天梯门教师/管理员豁免与学生 403/放行）；security-critical 62、weekly-audit 57、weekly-demo、reliability-filter 21、p1-security 11、demo-safety 23、score-grid 全绿。
+
 ## v2.2.9 (2026-08-22) — PR #246 第三轮评审闭环（跨考试查看门 / 恢复解绑策略）
 
 **1. [P1] 跨考试分析端点接入查看权限矩阵**

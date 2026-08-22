@@ -15,7 +15,7 @@ import { getMysqlDb } from "../db";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { LadderService } from "../services/LadderService";
 import { competitionRank } from "../../shared/ranking";
-import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess } from "../../apps/answer-card/server/middleware";
+import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 import type { LadderResponse } from "../../shared/types";
 
 const router = express.Router();
@@ -34,6 +34,20 @@ async function checkLadderOpen(req: Request, res: Response): Promise<boolean> {
   if (await isLadderEnabled()) return true;
   if (req.user?.role_name === "admin") return true;
   res.status(403).json({ message: "成绩天梯暂未开放" });
+  return false;
+}
+
+/**
+ * PR #256（v41）：成绩公布前学生不可经天梯取分（教师端查分不受公布限制）。
+ * 返回 true=放行；false=已写 403 响应。
+ */
+export async function checkLadderPublished(req: Request, res: Response, examIds: number[]): Promise<boolean> {
+  // 教师/管理员不受公布限制（管理员与天梯开关的预览语义一致）
+  if (req.user && (req.user.role_name === "teacher" || req.user.role_name === "admin")) return true;
+  const analysisRepo = new AnalysisRepository();
+  const published = await analysisRepo.filterPublishedExamIds(examIds);
+  if (published.length === examIds.length) return true;
+  res.status(403).json({ message: "所选考试中存在尚未公布成绩的考试" });
   return false;
 }
 
@@ -73,6 +87,8 @@ router.get("/exams/:examId", requireExamAccess, async (req: Request, res: Respon
       res.status(400).json({ message: "无效的考试 ID" });
       return;
     }
+    // PR #256：成绩公布前学生不可经单场天梯取分
+    if (!(await checkLadderPublished(req, res, [examId]))) return;
 
     const analysisRepo = new AnalysisRepository();
     const scoreTable = await analysisRepo.getScoreTableData(examId, undefined, "percentile");
@@ -132,11 +148,13 @@ router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
       return;
     }
 
+    // #246：软删除成员与统计口径一致地排除——清理任务不删组成员关系，
+    // 不过滤会使教师侧 validateExamIdsAccess 对整组 403、学生侧聚合已删考试成绩
     const members = await db.all<{ exam_id: number; subject: string | null }>(
       `SELECT egm.exam_id, e.subject
          FROM exam_group_members egm
          JOIN exams e ON e.id = egm.exam_id
-         WHERE egm.group_id = ?
+         WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL}
          ORDER BY egm.sort_order, egm.id`,
       groupId,
     );
@@ -156,6 +174,8 @@ router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
 
     const memberIds = members.map((m) => m.exam_id);
     if (!(await validateExamIdsAccess(req, res, memberIds))) return;
+    // PR #256：组内任一成员考试未公布，学生不可经组天梯取分（教师端不受限）
+    if (!(await checkLadderPublished(req, res, memberIds))) return;
 
     const allScores = await db.all<{
       student_id: number;
@@ -329,8 +349,10 @@ router.get("/cross-exam", async (req: Request, res: Response) => {
     }
     if (requestedExamIds.length > 0 && !(await validateExamIdsAccess(req, res, requestedExamIds))) return;
 
+    // PR #256：学生端跨考天梯仅聚合已公布考试（教师/管理员不受限）
     const crossExamData = await analysisRepo.getCrossExamTotal(request, {
       visibleExamIds: await getVisibleExamIds(req.user),
+      onlyPublished: !(req.user && (req.user.role_name === "teacher" || req.user.role_name === "admin")),
     });
 
     if (!crossExamData || crossExamData.rows.length === 0) {
