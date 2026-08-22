@@ -513,6 +513,45 @@ async function main(): Promise<void> {
       db.prepare("DELETE FROM teacher_permissions WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
     }
 
+    // ── 评审 P1：创建考试显式指定保留策略仅管理员 ──
+    // POST /api/exams 此前只受 examGate（EXAM_WRITE）保护，普通教师可越权挂上
+    // 自动归档/删除策略；PATCH 更新接口已限定仅管理员，此处把创建接口校验对齐。
+    section("评审：创建考试显式保留策略仅管理员");
+    {
+      const policyRow = db.prepare("SELECT id FROM data_retention_policies ORDER BY id LIMIT 1").get() as { id: number } | undefined;
+      const policyId = policyRow?.id ?? 1;
+      db.prepare("INSERT OR IGNORE INTO answer_cards (id, title, subject, subject_label) VALUES ('CRITICALCARD001', '保留策略回归卡', 'shuxue', '数学')").run();
+
+      const teacherCreatePolicy = await fetch(`${base}/api/exams`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
+        body: JSON.stringify({ name: "crit-教师越权策略", cardId: "CRITICALCARD001", mode: "formal", retentionPolicyId: policyId })
+      });
+      const teacherCreatePolicyBody = await teacherCreatePolicy.json() as { message?: string };
+      check(
+        teacherCreatePolicy.status === 403 && (teacherCreatePolicyBody.message ?? "").includes("仅管理员"),
+        "教师创建考试时显式指定保留策略被 403 拒绝"
+      );
+
+      const teacherCreateDefault = await fetch(`${base}/api/exams`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
+        body: JSON.stringify({ name: "crit-教师默认策略", cardId: "CRITICALCARD001", mode: "formal" })
+      });
+      check(teacherCreateDefault.status === 201, "教师创建考试（未指定保留策略）仍可成功");
+
+      const adminCreatePolicy = await fetch(`${base}/api/exams`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({ name: "crit-管理员指定策略", cardId: "CRITICALCARD001", mode: "formal", retentionPolicyId: policyId })
+      });
+      const adminCreatePolicyBody = await adminCreatePolicy.json() as { id?: number; retention_policy_id?: number | null };
+      check(
+        adminCreatePolicy.status === 201 && adminCreatePolicyBody.retention_policy_id === policyId,
+        "管理员创建考试显式指定保留策略成功且绑定生效"
+      );
+    }
+
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);
     if (failures.length > 0) {
       for (const failure of failures) console.error(`  - ${failure}`);
