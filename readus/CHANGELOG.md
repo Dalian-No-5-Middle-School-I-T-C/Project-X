@@ -1,5 +1,23 @@
 # Project-X CHANGELOG
 
+## v2.2.4 (2026-08-21) — 背景图层级修复与 main 主干整合
+
+### 背景图层级修复（核心变更，分支 fix/background-image-layer）
+- 修复自定义背景图覆盖在按钮/卡片之上、破坏 UI 可读性的问题。根因为背景图浮层 `body.has-bg-image::after` 使用 `z-index: var(--z-lightbox)`（600，弹层级别），被绘制在所有内容之上；原作者在 `AppShell` 与页面根容器铺不透明 `bg-background`，导致背景图只能置于最顶层才可见，形成「看得见但压按钮」的矛盾。
+- 修复（仅改 CSS 唯一事实源 `src/apps/answer-card/client/theme/backdrop.css`）：
+  1. 浮层 `z-index` 由 `600` 降为 `-1`，落到内容之下、viewport canvas 之上，成为真正最底层。
+  2. 激活时新增 `body.has-bg-image { --color-background: transparent }`：所有消费 `bg-background` 的画布层（AppShell + 各页面根）随之透明、背景图透出；卡片/按钮使用 `bg-card`/`bg-primary` 等独立令牌，不受影响，依旧不透明、叠在背景图上且清晰可读。
+  3. 未设置背景图时令牌仍是 canvas 色，外观零回归。
+- 同步更新 `readus/UI-ARCHITECTURE.md`：说明层级决策，并补记早期四次「置于底层」失败的历史背景（当时内容面板硬编码 `background:#fff` 填满视口，v2.x 底色令牌化后该路径才成立）。
+
+### 整合 origin/main 最新
+- 本分支自 `codex/latest-score-release` 合并 `origin/main`，吸收其后继功能：周审计发布回补与考试日历视图（#245）、每周考试审计（#245 前序）、知识点分析与标注面板、大考分析路由/服务拆分与 N+1 收敛（#240/#241）、MariaDB 一键测试数据（#243）、首页「最新出分」按角色展示（#238）、学生跨班级/年级迁移（#237）、宣传网站入口（#233/#234）等。
+- 合并产生 4 处服务端冲突，均取 `origin/main` 方言无关/超集版本（经 diff 核实无独有功能丢失）：
+  - `migrations.ts` / `mysql.ts`：在 v35 基础上新增 v36 复习轮归零 / v37 逐题分析复合索引 / v38 AI 学情分析异步任务表；`mysql.ts` 另含 `SqliteAdapter.logTiming` 慢查询日志、`review_round` 默认值 1→0。
+  - `DashboardService.ts`：main 已含「最新出分」块，且三处查询统一应用 `subjectFilter` 角色过滤。
+  - `DemoDataService.ts`：改为 `buildInsertIgnore` + `db.run` 方言无关实现，并将 `seedFillBlankDemo` / `reviewDemo` / PNG 占位图生成抽到 `src/server/services/demo/` 子模块（合并自动带入，均为方言无关）。
+- 验证：`npm run typecheck` 与 `npx vite build --mode web` 均通过。
+
 ## v2.2.3 (2026-08-14) — 巨型文件拆分与大考查询批量化（未发版，基于 #239）
 
 - 路由拆分：`exam-groups.ts`（1204 行）拆为 CRUD 主路由 + `exam-groups-analysis.ts`（概览/指标/逐题/分布/班级对比/AI/排名/导出）+ `exam-groups-helpers.ts`（权限与文理分科公共逻辑），行为不变。
