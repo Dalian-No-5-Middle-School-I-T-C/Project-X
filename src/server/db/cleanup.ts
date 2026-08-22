@@ -262,6 +262,50 @@ export async function manualCleanup(retainDays?: number): Promise<CleanupResult>
   return runCleanup(retainDays ?? 30);
 }
 
+// ── 软删除恢复（#246 评审 P2：可恢复必须有产品通道，不能靠改库）──────
+
+export interface SoftDeletedExamRow {
+  examId: number;
+  examName: string | null;
+  subject: string | null;
+  status: string | null;
+  deletedAt: string | null;
+  archivedAt: string | null;
+}
+
+/** 列出当前被保留策略软删除（exam_archives.is_deleted=1）的考试。 */
+export async function listSoftDeletedExams(): Promise<SoftDeletedExamRow[]> {
+  const db = getMysqlDb();
+  return await db.all<SoftDeletedExamRow>(
+    `SELECT ea.exam_id AS examId, e.name AS examName, e.subject, e.status,
+            ea.deleted_at AS deletedAt, ea.archived_at AS archivedAt
+     FROM exam_archives ea LEFT JOIN exams e ON e.id = ea.exam_id
+     WHERE ea.is_deleted = 1
+     ORDER BY ea.deleted_at DESC, ea.exam_id DESC`
+  );
+}
+
+/**
+ * 恢复一场被保留策略软删除的考试（is_deleted 重置 0，deleted_at 清空）。
+ * 写入 entity_lifecycle_events('exam', id, 'restore') 审计。
+ * 返回 true=已恢复；false=该考试当前未被软删除（或归档记录不存在）。
+ */
+export async function restoreSoftDeletedExam(examId: number, actorId?: number | null): Promise<boolean> {
+  if (!Number.isInteger(examId) || examId <= 0) {
+    throw Object.assign(new Error("无效的考试 ID"), { status: 400 });
+  }
+  const db = getMysqlDb();
+  const result = await db.run(
+    `UPDATE exam_archives SET is_deleted = 0, deleted_at = NULL WHERE exam_id = ? AND is_deleted = 1`,
+    examId
+  );
+  if (Number(result.changes) === 0) return false;
+  console.log(`[Cleanup] 考试 #${examId} 已从软删除恢复（操作人 ${actorId ?? "未知"}）`);
+  const { recordLifecycleEvent } = await import("../services/lifecycleEvents");
+  await recordLifecycleEvent({ entityType: "exam", entityId: examId, action: "restore", actorId: actorId ?? null });
+  return true;
+}
+
 // 命令行直接执行（ESM 兼容写法）
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
 const isMain =

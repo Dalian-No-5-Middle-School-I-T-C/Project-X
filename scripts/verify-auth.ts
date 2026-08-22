@@ -90,7 +90,7 @@ async function main(): Promise<void> {
   const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
   const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
   const { requirePermission, requireRole } = await import("../src/server/middleware/auth");
-  const { requireExamAccess, getVisibleExamIds, canGradeBlock, hasViewPermission } = await import(
+  const { requireExamAccess, getVisibleExamIds, canGradeBlock, hasViewPermission, hasGroupViewPermission } = await import(
     "../src/apps/answer-card/server/middleware"
   );
   const perms = await import("../src/server/auth/permissions");
@@ -510,6 +510,76 @@ async function main(): Promise<void> {
     const memberMap246 = await (analysisRepo as unknown as { getGroupMemberTrackMap: (gid: number) => Promise<Map<number, string>> }).getGroupMemberTrackMap(gradeGroup246.groupId);
     ok(memberMap246.has(keptQuiz) && !memberMap246.has(softScoredQuiz), "#246 大考组统计入口剔除软删除成员（即使组内残留成员行）");
   }
+
+  // ── 9. #246 第二轮评审：编辑撤销旧授权 / 组级查看门 / 软删除组访问 / 恢复通道 ──
+  section("9. #246 round-2: edit revoke / group view gates / soft-deleted group / restore");
+
+  // 9.1 编辑权限范围按记录 ID 原地更新，旧维度授权不复残留
+  const { upsertTeacherPermission, updateTeacherPermissionById } = await import("../src/server/routes/admin-permissions");
+  const dbAdapter = (await import("../src/server/db")).getMysqlDb();
+  const editTeacher = await userRepo.createUser({ username: "t_edit", password: "edit123", name: "编辑教师", role_id: ROLE_IDS.TEACHER });
+  const editFlags = { can_view_scores: true, can_view_charts: true, can_view_students: true, can_grade: true, can_assign: true };
+  await upsertTeacherPermission(dbAdapter, { teacher_id: editTeacher.id, grade_id: null, subject: "物理", class_id: null, block_id: null, ...editFlags });
+  let matrixRows = db.prepare("SELECT * FROM teacher_permissions WHERE teacher_id = ?").all(editTeacher.id) as Array<Record<string, unknown>>;
+  ok(matrixRows.length === 1, "#246r2 upsert 建立单条授权记录");
+  const matrixRowId = Number(matrixRows[0].id);
+  await updateTeacherPermissionById(dbAdapter, matrixRowId, { teacher_id: editTeacher.id, grade_id: null, subject: "生物", class_id: null, block_id: null, ...editFlags, can_view_charts: false });
+  matrixRows = db.prepare("SELECT * FROM teacher_permissions WHERE teacher_id = ?").all(editTeacher.id) as Array<Record<string, unknown>>;
+  ok(
+    matrixRows.length === 1 && matrixRows[0].subject === "生物" && Number(matrixRows[0].can_view_charts) === 0,
+    "#246r2 按记录 ID 编辑：维度与标志原地更新，旧维度授权（物理/图表=开）不复残留"
+  );
+  await upsertTeacherPermission(dbAdapter, { teacher_id: editTeacher.id, grade_id: null, subject: "化学", class_id: null, block_id: null, ...editFlags });
+  let conflict409 = false;
+  try {
+    await updateTeacherPermissionById(dbAdapter, matrixRowId, { teacher_id: editTeacher.id, grade_id: null, subject: "化学", class_id: null, block_id: null, ...editFlags });
+  } catch (err: any) {
+    conflict409 = err?.status === 409;
+  }
+  ok(conflict409, "#246r2 编辑撞现有维度组合返回 409（不静默新增/保留）");
+  db.prepare("DELETE FROM teacher_permissions WHERE teacher_id = ? AND subject = '化学'").run(editTeacher.id);
+
+  // 9.2 大考组级查看门：任一有效成员考试未被 flag=1 授权覆盖即拒绝
+  const insertGroup = db.prepare("INSERT INTO exam_groups (name) VALUES (?)");
+  const insertGroupMember = db.prepare("INSERT INTO exam_group_members (group_id, exam_id) VALUES (?, ?)");
+  const groupView246 = Number(insertGroup.run("#246r2查看门组").lastInsertRowid);
+  insertGroupMember.run(groupView246, releasePhysicsA);
+  insertGroupMember.run(groupView246, releaseMathB);
+  ok(await hasGroupViewPermission(dashAdminUser, groupView246, "can_view_charts"), "#246r2 管理员组级查看不受限");
+  ok(!(await hasGroupViewPermission(dashHeadTeacherUser, groupView246, "can_view_charts")), "#246r2 班级维度关图表：未覆盖成员（他班数学）→ 组级图表被拒");
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, subject, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, '数学', 1, 1, 1, 1, 1)"
+  ).run(subjectTeacher.id);
+  ok(!(await hasGroupViewPermission(dashSubjectTeacherUser, groupView246, "can_view_charts")), "#246r2 仅数学授权行：未覆盖成员（物理）→ 组级图表被拒");
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, 1, 1, 1, 1, 1)"
+  ).run(subjectTeacher.id);
+  ok(await hasGroupViewPermission(dashSubjectTeacherUser, groupView246, "can_view_charts"), "#246r2 补充全维度授权行后全部成员被覆盖 → 组级图表放行");
+
+  // 9.3 软删除成员不再锁死整组（canReadGroup 与统计口径一致地过滤软删除成员）
+  const { canReadGroup } = await import("../src/server/routes/exam-groups-helpers");
+  const fakeReq = (u: unknown) => ({ user: u }) as never;
+  const groupLock246 = Number(insertGroup.run("#246r2软删成员组").lastInsertRowid);
+  insertGroupMember.run(groupLock246, releaseMathA);   // 已在 8.4 被软删除
+  insertGroupMember.run(groupLock246, releasePhysicsA); // 班主任可见
+  ok(await canReadGroup(fakeReq(dashHeadTeacherUser), groupLock246), "#246r2 组内含软删除成员：过滤后按有效成员判定，整组不再 403");
+  const groupOnly246 = Number(insertGroup.run("#246r2越权成员组").lastInsertRowid);
+  insertGroupMember.run(groupOnly246, releaseMathB);    // 他班考试，班主任不可见
+  ok(!(await canReadGroup(fakeReq(dashHeadTeacherUser), groupOnly246)), "#246r2 有效但不可见的成员仍拒绝整组访问");
+
+  // 9.4 软删除恢复通道（列表 + 恢复 + 审计 + 可见性回归 + 幂等）
+  const { listSoftDeletedExams, restoreSoftDeletedExam } = await import("../src/server/db/cleanup");
+  const softListBefore = await listSoftDeletedExams();
+  ok(softListBefore.some((r) => r.examId === releaseMathA), "#246r2 软删除列表包含被清理考试");
+  ok(await restoreSoftDeletedExam(releaseMathA, adminRow.id), "#246r2 恢复成功");
+  ok(!(await restoreSoftDeletedExam(releaseMathA, adminRow.id)), "#246r2 重复恢复返回 false（幂等）");
+  ok(
+    !!db.prepare("SELECT 1 FROM entity_lifecycle_events WHERE entity_type = 'exam' AND entity_id = ? AND action = 'restore'").get(String(releaseMathA)),
+    "#246r2 恢复写入 entity_lifecycle_events 审计"
+  );
+  const visRestored = await getVisibleExamIds(dashHeadTeacherUser);
+  ok(visRestored != null && visRestored.includes(releaseMathA), "#246r2 恢复后教师可见集合重新包含该考试");
+  ok((await listSoftDeletedExams()).every((r) => r.examId !== releaseMathA), "#246r2 软删除列表不再包含已恢复考试");
 
   closeDatabase();
 }

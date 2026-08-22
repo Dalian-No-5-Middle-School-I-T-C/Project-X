@@ -9,7 +9,7 @@ import { getAnalysisThresholds } from "../services/analysisConfig";
 import { decryptField } from "../lib/field-crypto";
 import { createAiAnalysisJob, enqueueAiAnalysisJob } from "../services/aiAnalysisJobs";
 import type { AiJobCreateResponse } from "../../shared/types";
-import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
+import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL, makeGroupViewPermissionGate } from "../../apps/answer-card/server/middleware";
 import {
   getAiProviderForUser,
   memberMatchesTrack,
@@ -18,9 +18,16 @@ import {
 } from "./exam-groups-helpers";
 
 const router = express.Router({ mergeParams: true });
+
+// #246 权限矩阵组级查看门：分析/图表类端点消费 can_view_charts，
+// 排名名单消费 can_view_students，成绩导出消费 can_view_scores。
+const requireGroupViewCharts = makeGroupViewPermissionGate("can_view_charts");
+const requireGroupViewStudents = makeGroupViewPermissionGate("can_view_students");
+const requireGroupViewScores = makeGroupViewPermissionGate("can_view_scores");
+
 // ── GET /api/exam-groups/:groupId/overview ── group overview ──
 
-router.get("/overview", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/overview", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -148,7 +155,7 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
 
 // ── GET /api/exam-groups/:groupId/metrics ── 大考整体+逐科难度/区分度 ──
 
-router.get("/metrics", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/metrics", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const metrics = await analysisRepo.getGroupMetrics(Number(req.params.groupId), normalizeTrackFilter(req.query.track));
@@ -160,7 +167,7 @@ router.get("/metrics", requireReadableGroup, async (req: Request, res: Response)
 
 // ── GET /api/exam-groups/:groupId/question-analysis ── 大考逐题分析 ──
 
-router.get("/question-analysis", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/question-analysis", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const data = await analysisRepo.getGroupQuestionAnalysis(Number(req.params.groupId), normalizeTrackFilter(req.query.track));
@@ -172,7 +179,7 @@ router.get("/question-analysis", requireReadableGroup, async (req: Request, res:
 
 // ── GET /api/exam-groups/:groupId/distribution ── 大考总体分析分布 ──
 
-router.get("/distribution", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/distribution", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const mode = (req.query.mode as string) === "total" ? "total" : (req.query.mode as string) === "class" ? "class" : "subject";
@@ -185,7 +192,7 @@ router.get("/distribution", requireReadableGroup, async (req: Request, res: Resp
 
 // ── GET /api/exam-groups/:groupId/class-comparison ── 大考班级对比 ──
 
-router.get("/class-comparison", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/class-comparison", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const data = await analysisRepo.getGroupClassComparison(Number(req.params.groupId), normalizeTrackFilter(req.query.track));
@@ -197,7 +204,7 @@ router.get("/class-comparison", requireReadableGroup, async (req: Request, res: 
 
 // ── POST /api/exam-groups/:groupId/ai-analysis ── 大考 AI 分析 ──
 
-router.post("/ai-analysis", requireReadableGroup, async (req: Request, res: Response, next: NextFunction) => {
+router.post("/ai-analysis", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const groupId = Number(req.params.groupId);
     if (!Number.isFinite(groupId) || groupId <= 0) {
@@ -233,7 +240,7 @@ router.post("/ai-analysis", requireReadableGroup, async (req: Request, res: Resp
 
 // ── GET /api/exam-groups/:groupId/rankings ── group rankings ──
 
-router.get("/rankings", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -451,7 +458,7 @@ router.get("/rankings", requireReadableGroup, async (req: Request, res: Response
 
 // ── POST /api/exam-groups/:groupId/export ── export ZIP ──
 
-router.post("/export", requireReadableGroup, async (req: Request, res: Response) => {
+router.post("/export", requireReadableGroup, requireGroupViewScores, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);

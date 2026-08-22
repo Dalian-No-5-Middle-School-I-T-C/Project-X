@@ -1,5 +1,25 @@
 # Project-X CHANGELOG
 
+## v2.2.8 (2026-08-22) — PR #246 第二轮评审闭环（4 项：编辑撤销 / 查看门全覆盖 / 软删除组访问 / 恢复通道）
+
+**1. [P1] 编辑权限范围现按记录 ID 原地更新（撤销旧授权）**
+- 此前前端保存不携带 `editingId`，后端按新维度 upsert——管理员修改教师/年级/科目/班级/题块后旧记录保留、另增一条，造成权限残留。
+- `PUT /api/admin/permissions` 支持可选 `id`：携带时按记录 ID 原地更新全部维度与 5 个标志（`updateTeacherPermissionById`）；编辑撞现有维度组合返回 409（含显式预检查——SQLite/MariaDB 的 UNIQUE 均视 NULL 为互异，纯 NULL 维度的逻辑重复不触发数据库约束，须应用层拦截；DB 约束捕获保留作并发兜底）；记录不存在返回 404。前端 `PermissionManager` 保存时携带 `editingId`。
+**2. [P1] 查看开关补齐剩余消费端**
+- 单考试：`/exams/:examId/metrics`（难度/区分度）补 `requireViewCharts`；知识点总体 `GET /knowledge-points/:examId` 补图表门；知识点单学生下钻补 `requireViewStudents`。
+- 大考组（新增 `hasGroupViewPermission` + `makeGroupViewPermissionGate`，语义与 canReadGroup「全部成员可见」模型一致：组内全部非软删除成员考试的维度均被 flag=1 授权行覆盖才放行）：overview / metrics / question-analysis / distribution / class-comparison / ai-analysis → 图表门；rankings（名单）→ 学生门；export（成绩导出）→ 成绩门。管理员/年级主任放行，未配置矩阵兼容放行。
+**3. [P1] 软删除成员不再锁死整个大考组**
+- `canReadGroup` 此前读取全部成员（含软删除）并要求 `every(...)` 可见——清理任务只标记 `exam_archives.is_deleted` 不删组成员关系，组内任一成员被软删除后整组对普通教师 403，统计端新加的排除逻辑根本执行不到。现与统计口径一致地过滤软删除成员（`GROUP_MEMBER_NOT_SOFT_DELETED_SQL`）。
+**4. [P2] 软删除恢复通道落地**
+- `cleanup.ts` 新增 `listSoftDeletedExams()` / `restoreSoftDeletedExam()`（is_deleted 重置 0 + `entity_lifecycle_events('exam',…,'restore')` 审计，幂等）。
+- 控制台新增 `GET /api/admin/console/soft-deleted-exams` 与 `POST /api/admin/console/exams/:examId/restore`（均 SYSTEM_MANAGE）；`AdminConsolePage` 新增「已清理考试（可恢复）」区，行内恢复按钮 + 成功提示。
+- 顺带修复 `middleware.ts` 一处行尾空格（评审 `git diff --check` 发现）。
+
+**验证**
+- `typecheck` 0 错误；`verify:auth` 103/103（新增第 9 节 15 项：upsert/按 ID 编辑维度迁移/409 冲突/组级图表门三态/软删除成员组放行与越权组拒绝/恢复列表-幂等-审计-可见性回归）。
+- 回归：`verify:security-critical` 62/62、`weekly-audit-smoke` 57/57、`verify:weekly-demo`、`verify:reliability-filter` 21/21、`verify:p1-security` 11/11、`verify:demo-safety` 23/23 全绿；`git diff --check` 干净。
+- 调试注记：`entity_lifecycle_events.entity_id` 为 TEXT 存储，消费方查询需以字符串绑定（数字绑定在 SQLite 不命中）。
+
 ## v2.2.7 (2026-08-22) — 合并 PR #256「成绩公布与撤回管理」（特性全量保留）
 
 > 将 `origin/成绩公布更新`（PR #256，包版本 v2.4.0）合入本分支，与既有 #246 权限矩阵/软删除体系融合。PR #256 特性零删减；main 已全量包含（此前合并）；`纸锋` 分支尖端与 main 文件树一致，无增量内容。

@@ -107,6 +107,9 @@ export function PermissionManager({ onBack }: Props) {
       await fetchJson("/api/admin/permissions", {
         method: "PUT",
         body: JSON.stringify({
+          // 编辑模式必须携带记录 ID：后端按 ID 原地更新维度与标志，
+          // 否则按新维度 upsert 会保留旧授权造成权限残留
+          id: editingId ?? undefined,
           teacher_id: selectedTeacher,
           grade_id: selectedGrade,
           subject: subject.trim() || undefined,

@@ -268,4 +268,42 @@ router.get("/data-quality", async (_req, res, next) => {
   }
 });
 
+// ── GET /api/admin/console/soft-deleted-exams ──────────
+// #246 评审 P2：软删除的「可恢复」必须有产品通道。列出被保留策略清理的考试，
+// 供控制台展示与恢复操作（不做任何物理数据变更）。
+router.get("/soft-deleted-exams", async (_req, res, next) => {
+  try {
+    if (!(await hasTable(getMysqlDb(), "exam_archives"))) {
+      res.json({ exams: [], notAvailable: true });
+      return;
+    }
+    const { listSoftDeletedExams } = await import("../db/cleanup");
+    res.json({ exams: await listSoftDeletedExams() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── POST /api/admin/console/exams/:examId/restore ──────
+// 恢复被保留策略软删除的考试（is_deleted 重置 0 + entity_lifecycle_events 审计）。
+router.post("/exams/:examId/restore", async (req, res, next) => {
+  try {
+    const examId = Number(req.params.examId);
+    if (!Number.isInteger(examId) || examId <= 0) {
+      res.status(400).json({ message: "无效的考试 ID" });
+      return;
+    }
+    const { restoreSoftDeletedExam } = await import("../db/cleanup");
+    const restored = await restoreSoftDeletedExam(examId, req.user?.id ?? null);
+    if (!restored) {
+      res.status(404).json({ message: "该考试未被软删除（或归档记录不存在），无需恢复" });
+      return;
+    }
+    res.json({ ok: true, examId });
+  } catch (err: any) {
+    const status = typeof err?.status === "number" ? err.status : 500;
+    res.status(status).json({ message: err instanceof Error ? err.message : "恢复失败" });
+  }
+});
+
 export default router;

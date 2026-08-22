@@ -257,6 +257,81 @@ export function makeViewPermissionGate(flag: ViewPermissionFlag) {
 }
 
 /**
+ * #246 权限矩阵查看标志校验（大考组级）：组内全部非软删除成员考试的维度
+ * 都被某条 flag=1 的授权行覆盖时才允许（与 canReadGroup 的「全部成员可见」
+ * 模型一致）；矩阵表不存在或教师无任何记录 → 兼容放行；组内无有效成员 → 放行
+ * （读取端此时返回空统计，无需查看门二次拦截）。
+ */
+export async function hasGroupViewPermission(
+  user: express.Request["user"],
+  groupId: number,
+  flag: ViewPermissionFlag
+): Promise<boolean> {
+  if (!user) return false;
+  if (user.role_name === "admin") return true;
+  if (user.role_name === "teacher" && user.teacher_role === "grade_leader") return true;
+  const teacherId = (user as { id?: number }).id;
+  if (!teacherId) return false;
+  const db = getMysqlDb();
+  if (!(await hasTable(db, "teacher_permissions"))) return true;
+  const rows = await db.all<{
+    grade_id: number | null;
+    subject: string | null;
+    class_id: number | null;
+    flag: number;
+  }>(
+    `SELECT grade_id, subject, class_id, ${flag} AS flag FROM teacher_permissions
+     WHERE teacher_id = ? AND block_id IS NULL`,
+    teacherId
+  );
+  if (rows.length === 0) return true; // 未配置矩阵 → 兼容放行
+  const exams = await db.all<{ grade_id: number | null; subject: string | null; class_id: number | null }>(
+    `SELECT e.grade_id, e.subject, e.class_id FROM exam_group_members egm
+     JOIN exams e ON e.id = egm.exam_id
+     WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL}`,
+    groupId
+  );
+  if (exams.length === 0) return true;
+  const granted = (exam: { grade_id: number | null; subject: string | null; class_id: number | null }): boolean =>
+    rows.some((r) =>
+      r.flag === 1 &&
+      (r.grade_id == null || r.grade_id === exam.grade_id) &&
+      (r.subject == null || r.subject === exam.subject) &&
+      (r.class_id == null || r.class_id === exam.class_id)
+    );
+  return exams.every(granted);
+}
+
+/**
+ * 大考组查看权限门（#246）：叠加在 requireReadableGroup 之后，
+ * 按矩阵查看标志对组级分析/名单端点二次过滤。
+ * 用法：router.get("/overview", requireReadableGroup, makeGroupViewPermissionGate("can_view_charts"), handler)
+ */
+export function makeGroupViewPermissionGate(flag: ViewPermissionFlag) {
+  const label = VIEW_FLAG_LABELS[flag];
+  return async (req: express.Request, res: express.Response, next: express.NextFunction): Promise<void> => {
+    if (!req.user) {
+      if (authEnforced) {
+        res.status(401).json({ message: "未提供认证令牌" });
+        return;
+      }
+      next();
+      return;
+    }
+    const groupId = Number(req.params.groupId);
+    if (!groupId) {
+      next();
+      return;
+    }
+    if (await hasGroupViewPermission(req.user, groupId, flag)) {
+      next();
+      return;
+    }
+    res.status(403).json({ message: `权限不足：管理员已关闭你对本大考「${label}」的查看权限` });
+  };
+}
+
+/**
  * #246：按权限矩阵查看标志过滤考试 ID 集合。
  * 仅消费维度级禁止行（block_id IS NULL 且 flag=0），题块级行不影响整卷可见性；
  * 维度全空（NULL）的禁止行 = 全部禁止。矩阵表不存在或无禁止行时原样返回。
@@ -391,7 +466,7 @@ export async function canGradeBlock(
   );
   if (assigned) return true;
   // v37: 细粒度权限授予 —— 作为追加放行路径（绝不引入新拒绝，确保既有部署零回归）。
-  // 匹配规则：can_grade=1 且 (grade_id 为空或匹配考试年级) 且 (block_id 为空或匹配) 
+  // 匹配规则：can_grade=1 且 (grade_id 为空或匹配考试年级) 且 (block_id 为空或匹配)
   // 且 (subject 为空或匹配考试学科) 且 (class_id 为空或匹配考试班级)。
   if (await hasTable(db, "teacher_permissions")) {
     const granted = await db.get(

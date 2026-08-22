@@ -386,7 +386,7 @@ router.get("/exams/:examId/distribution", requireExamAccess, requireViewCharts, 
 });
 
 // ── 考试整体难度/区分度指标 ─────────────────────────
-router.get("/exams/:examId/metrics", requireExamAccess, async (req, res, next) => {
+router.get("/exams/:examId/metrics", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const classId = req.query.classId ? Number(req.query.classId) : undefined;
@@ -807,7 +807,7 @@ router.get("/exams/:examId/export-csv", requireExamAccess, requireViewScores, as
 // ============================================================
 
 // GET /api/analysis/knowledge-points/:examId — 按知识点聚合全班得分率
-router.get("/knowledge-points/:examId", requireExamAccess, async (req, res, next) => {
+router.get("/knowledge-points/:examId", requireExamAccess, requireViewCharts, async (req, res, next) => {
   try {
     const examId = parseInt(String(req.params.examId), 10);
     const classId = req.query.classId ? parseInt(String(req.query.classId), 10) : undefined;
@@ -821,7 +821,7 @@ router.get("/knowledge-points/:examId", requireExamAccess, async (req, res, next
 });
 
 // GET /api/analysis/knowledge-points/:examId/students/:studentId — 单个学生知识点弱项
-router.get("/knowledge-points/:examId/students/:studentId", requireExamAccess, async (req, res, next) => {
+router.get("/knowledge-points/:examId/students/:studentId", requireExamAccess, requireViewStudents, async (req, res, next) => {
   try {
     const examId = parseInt(String(req.params.examId), 10);
     const studentId = parseInt(String(req.params.studentId), 10);

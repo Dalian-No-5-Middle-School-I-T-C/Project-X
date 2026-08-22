@@ -39,6 +39,7 @@ type DataQuality = {
 };
 
 type RetentionPolicy = { id: number; name: string; retainDays: number; autoArchive: number; autoDelete: number };
+type SoftDeletedExam = { examId: number; examName: string | null; subject: string | null; status: string | null; deletedAt: string | null; archivedAt: string | null };
 
 // ── 工具 ──
 
@@ -123,6 +124,7 @@ export function AdminConsolePage({ onBack }: Props) {
   const [aiUsage, setAiUsage] = useState<AiUsage | null>(null);
   const [dataQuality, setDataQuality] = useState<DataQuality | null>(null);
   const [policies, setPolicies] = useState<RetentionPolicy[]>([]);
+  const [softDeleted, setSoftDeleted] = useState<SoftDeletedExam[] | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
   const [msg, setMsg] = useState<{ tone: "success" | "error"; text: string } | null>(null);
 
@@ -137,13 +139,14 @@ export function AdminConsolePage({ onBack }: Props) {
       }
     };
 
-    const [s, a, p, ai, dq, pol] = await Promise.all([
+    const [s, a, p, ai, dq, pol, sd] = await Promise.all([
       tryFetch<Summary>("/api/admin/console/summary"),
       tryFetch<Activity>("/api/admin/console/activity"),
       tryFetch<Preferences>("/api/admin/console/preferences"),
       tryFetch<AiUsage>("/api/admin/console/ai-usage"),
       tryFetch<DataQuality>("/api/admin/console/data-quality"),
       tryFetch<{ ok: boolean; data: RetentionPolicy[] }>("/api/admin/data-retention-policies"),
+      tryFetch<{ exams: SoftDeletedExam[] }>("/api/admin/console/soft-deleted-exams"),
     ]);
     setSummary(s);
     setActivity(a);
@@ -151,6 +154,7 @@ export function AdminConsolePage({ onBack }: Props) {
     setAiUsage(ai);
     setDataQuality(dq);
     setPolicies(pol?.data ?? []);
+    setSoftDeleted(sd?.exams ?? null);
   }, []);
 
   useEffect(() => { load(); }, [load, refreshTick]);
@@ -170,6 +174,17 @@ export function AdminConsolePage({ onBack }: Props) {
       setRefreshTick((t) => t + 1);
     } catch (e: any) {
       setMsg({ tone: "error", text: e?.message || "保存失败" });
+    }
+  };
+
+  const restoreExam = async (examId: number) => {
+    setMsg(null);
+    try {
+      await fetchJson(`/api/admin/console/exams/${examId}/restore`, { method: "POST" });
+      setMsg({ tone: "success", text: `考试 #${examId} 已恢复，对师生重新可见` });
+      setRefreshTick((t) => t + 1);
+    } catch (e: any) {
+      setMsg({ tone: "error", text: e?.message || "恢复失败" });
     }
   };
 
@@ -316,6 +331,30 @@ export function AdminConsolePage({ onBack }: Props) {
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">数据质量加载失败。</p>
+        )}
+      </SectionCard>
+
+      {/* 已清理考试（软删除恢复，#246） */}
+      <SectionCard title="已清理考试（可恢复）" desc="被数据保留策略自动删除的考试（软删除）。点击恢复后对师生重新可见；恢复动作写入审计。">
+        {softDeleted == null ? (
+          <p className="text-xs text-muted-foreground">已清理考试列表加载失败。</p>
+        ) : softDeleted.length === 0 ? (
+          <p className="text-xs text-muted-foreground">当前没有被保留策略清理的考试。</p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {softDeleted.map((e) => (
+              <div key={e.examId} className="flex items-center justify-between rounded-md border border-border-subtle bg-secondary px-3 py-2 text-sm">
+                <span className="text-foreground">
+                  #{e.examId} {e.examName ?? "（已删除考试）"}
+                  {e.subject ? <span className="ml-2 text-xs text-muted-foreground">{e.subject}</span> : null}
+                </span>
+                <span className="flex items-center gap-3 text-xs text-muted-foreground">
+                  {e.deletedAt && <span className="tabular-nums">删除于 {String(e.deletedAt).slice(0, 10)}</span>}
+                  <Button variant="outline" size="sm" onClick={() => void restoreExam(e.examId)}>恢复</Button>
+                </span>
+              </div>
+            ))}
+          </div>
         )}
       </SectionCard>
 
