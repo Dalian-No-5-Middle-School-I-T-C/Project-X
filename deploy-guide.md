@@ -47,6 +47,12 @@ server {
     ssl_certificate /path/to/cert.pem;
     ssl_certificate_key /path/to/key.pem;
 
+    # 安全审计（F-12-2）：隐藏 Nginx 版本号
+    server_tokens off;
+
+    # 请求体上限与后端 8MB 保持一致（上传答题卡图片场景）
+    client_max_body_size 16m;
+
     location / {
         proxy_pass http://127.0.0.1:5174;
         proxy_set_header Host $host;
@@ -59,6 +65,9 @@ server {
 
 **关键配置项：**
 - `proxy_set_header` 必须保留，确保后端能读取到 `X-Forwarded-Proto` 用于 HTTPS 判断
+- `server_tokens off` 隐藏 Nginx 版本号；`client_max_body_size` 与后端上传限制保持一致
+- 静态站点若部署于 Nginx 根目录，**严禁将项目根目录或 `data/`（含 SQLite 库）作为站点根目录**，否则数据库文件可被直接下载
+- 如需 HSTS，可在 443 server 块内追加 `add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;`
 - 如果前端网页和后端使用**同一域名**，需要把前端静态文件也放到这个 Nginx 配置中（见下一节）
 
 ---

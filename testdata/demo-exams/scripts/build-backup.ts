@@ -4,7 +4,7 @@
  * 用法: npx tsx testdata/demo-exams/scripts/build-backup.ts
  */
 
-import { mkdirSync, writeFileSync, copyFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, copyFileSync, existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
@@ -28,6 +28,8 @@ async function main(): Promise<void> {
 
   const db = getDatabase();
   const vacuumPath = path.join(BACKUP_DIR, ".build", "projectx-clean.db");
+  // 上次构建的残留文件会导致 VACUUM INTO 报 "output file already exists"，构建前先清理
+  rmSync(vacuumPath, { force: true });
   db.exec(`VACUUM INTO '${vacuumPath.replace(/'/g, "''")}'`);
   closeDatabase();
 
@@ -41,6 +43,7 @@ async function main(): Promise<void> {
 
   mkdirSync(BACKUP_DIR, { recursive: true });
   const staging = path.join(BACKUP_DIR, ".build", "staging");
+  rmSync(staging, { recursive: true, force: true });
   mkdirSync(staging, { recursive: true });
   copyFileSync(vacuumPath, path.join(staging, "projectx.db"));
   writeFileSync(path.join(staging, "metadata.json"), JSON.stringify(metadata, null, 2));

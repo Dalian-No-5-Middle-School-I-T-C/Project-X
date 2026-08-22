@@ -14,6 +14,7 @@ import type {
 import { AnalysisDistribution } from "./AnalysisDistribution";
 import { AnalysisAiPanel } from "./AnalysisAiPanel";
 import { AnalysisQuestions } from "./AnalysisQuestions";
+import { PDScatterPanel } from "./PDScatterPanel";
 import { AnalysisOverall } from "./AnalysisOverall";
 import { QuestionStudentScoresModal } from "./QuestionStudentScoresModal";
 import { ScoreTable } from "./ScoreTable";
@@ -21,7 +22,7 @@ import { ExportModal } from "./ExportModal";
 import { ScoreFixPage } from "./ScoreFixPage";
 import { StudentScoreDetail } from "./StudentScoreDetail";
 import { AnalysisTrend } from "./AnalysisTrend";
-import { DistributionBar, ClassDistributionBar, ClassRadar, KnowledgeRadar } from "./AnalysisCharts";
+import { DistributionBar, ClassDistributionBar, ClassStackBar, ClassRadar, KnowledgeRadar } from "./AnalysisCharts";
 import { BorderlineDialog } from "./BorderlineDialog";
 import { SubjectDeviationPanel } from "./SubjectDeviationPanel";
 import { KnowledgeAnnotatePanel } from "./KnowledgeAnnotatePanel";
@@ -101,7 +102,7 @@ function toDelta(v: number | null | undefined): number | undefined {
 
 // ── Threshold settings dialog (admin only) ──────────────
 interface ThresholdField {
-  key: "passRate" | "excellentRate" | "segmentSize" | "errorTiers";
+  key: "passRate" | "excellentRate" | "segmentSize" | "errorTiers" | "subjectiveLowScoreRatio";
   label: string;
   hint: string;
 }
@@ -111,6 +112,7 @@ const THRESHOLD_FIELDS: readonly ThresholdField[] = [
   { key: "excellentRate", label: "优秀线比例", hint: "0-1" },
   { key: "segmentSize", label: "分数段粒度", hint: "1-100 分" },
   { key: "errorTiers", label: "错误率档位", hint: "高,中,低 %" },
+  { key: "subjectiveLowScoreRatio", label: "主观题低分比例", hint: "0-1，如 0.5" },
 ];
 
 function ThresholdSettingsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -140,6 +142,7 @@ function ThresholdSettingsDialog({ open, onClose }: { open: boolean; onClose: ()
             excellentRate: t.excellentRate,
             segmentSize: t.segmentSize,
             errorTiers: t.errorTiers.join(","),
+            subjectiveLowScoreRatio: t.subjectiveLowScoreRatio,
           }),
         },
       );
@@ -635,6 +638,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                 错题本导出（XLSX）
               </Button>
             </div>
+            <PDScatterPanel questions={questions} bands={bands ?? undefined} />
             <AnalysisQuestions
               questions={questions}
               bands={bands ?? undefined}
@@ -646,17 +650,6 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
 
             {/* Issue #175: 选择题各选项选择人数统计与分析 */}
             <OptionAnalysisPanel examId={examId} classId={classId || undefined} />
-
-            {/* 讲评模式快捷入口 */}
-            <div className="flex justify-center pt-1">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => window.open(`/analysis?examId=${examId}&tab=question-analysis&review=1`, "_blank")}
-              >
-                开启讲评模式（投屏逐题讲卷）
-              </Button>
-            </div>
           </TabsContent>
 
           {/* ====== 班级对比 Tab ====== */}
@@ -995,21 +988,73 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
                 matrix={knowledge.matrix}
                 height={340}
               />
+              {/* D2: 知识点×班级得分率热力表（知识点多时比雷达更可读；底色越深 = 得分率越高） */}
+              <div className="mt-2">
+                <TableWrap>
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="hover:bg-transparent">
+                        <TableHead>知识点</TableHead>
+                        {knowledge.classes.map((c) => (
+                          <TableHead key={c.classId} numeric>{c.className}</TableHead>
+                        ))}
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {knowledge.matrix.map((kp) => (
+                        <TableRow key={kp.knowledgePoint} className="hover:bg-transparent">
+                          <TableCell className="max-w-56 truncate">{kp.knowledgePoint}</TableCell>
+                          {knowledge.classes.map((c) => {
+                            const bc = kp.byClass.find((b) => b.classId === c.classId);
+                            const rate = bc?.scoreRate ?? null;
+                            return (
+                              <TableCell
+                                key={c.classId}
+                                numeric
+                                className="font-medium"
+                                style={{ backgroundColor: rate == null ? "transparent" : `color-mix(in srgb, var(--color-chart-1) ${(rate * 0.3).toFixed(1)}%, transparent)` }}
+                              >
+                                {rate == null ? "—" : formatPercent(rate)}
+                              </TableCell>
+                            );
+                          })}
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableWrap>
+              </div>
             </section>
           )}
 
-          {/* ③ 分段分布对比柱状图 */}
+          {/* ③ 分段分布对比柱状图（分组绝对人数 + 100% 堆叠占比双视图） */}
           {comparison.classes.length > 0 && comparison.classes[0].distribution && (
             <section className="flex flex-col gap-2">
               <h3 className="text-sm font-semibold text-foreground">分数段分布对比</h3>
-              <ClassDistributionBar
-                labels={comparison.classes[0].distribution.map((d) => d.range)}
-                classes={comparison.classes.map((c) => ({ className: c.className }))}
-                matrix={comparison.classes[0].distribution.map((_, gi) =>
-                  comparison.classes.map((c) => c.distribution?.[gi]?.count ?? 0),
-                )}
-                height={260}
-              />
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs font-medium text-secondary-foreground">分组柱状（各段人数）</span>
+                  <ClassDistributionBar
+                    labels={comparison.classes[0].distribution.map((d) => d.range)}
+                    classes={comparison.classes.map((c) => ({ className: c.className }))}
+                    matrix={comparison.classes[0].distribution.map((_, gi) =>
+                      comparison.classes.map((c) => c.distribution?.[gi]?.count ?? 0),
+                    )}
+                    height={260}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs font-medium text-secondary-foreground">各班占比（100% 堆叠）</span>
+                  <ClassStackBar
+                    labels={comparison.classes.map((c) => c.className)}
+                    segments={comparison.classes[0].distribution.map((d) => d.range)}
+                    matrix={comparison.classes[0].distribution.map((_, gi) =>
+                      comparison.classes.map((c) => c.distribution?.[gi]?.count ?? 0),
+                    )}
+                    height={260}
+                  />
+                </div>
+              </div>
             </section>
           )}
 

@@ -84,7 +84,9 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
       message: `会话已创建，共 ${totalPages} 页待上传`,
     });
   } catch (err: any) {
-    res.status(500).json({ message: err.message });
+    // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
+    console.error("[scanner-upload] 请求处理失败:", err);
+    res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
   }
 });
 
@@ -144,7 +146,9 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
 
     res.json({ ok: true, pageNum, side, fileName });
   } catch (err: any) {
-    res.status(500).json({ message: err.message });
+    // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
+    console.error("[scanner-upload] 请求处理失败:", err);
+    res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
   }
 });
 
@@ -203,7 +207,9 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array
 
     res.json({ ok: true, count: saved.length, crops: saved });
   } catch (err: any) {
-    res.status(500).json({ message: err.message });
+    // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
+    console.error("[scanner-upload] 请求处理失败:", err);
+    res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
   }
 });
 router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res: Response) => {
@@ -258,7 +264,9 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       pagesTotal: totalCount,
     });
   } catch (err: any) {
-    res.status(500).json({ message: err.message });
+    // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
+    console.error("[scanner-upload] 请求处理失败:", err);
+    res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
   }
 });
 
@@ -292,7 +300,9 @@ router.get("/sessions/:sessionId/status", dualAuth, async (req: Request, res: Re
       },
     });
   } catch (err: any) {
-    res.status(500).json({ message: err.message });
+    // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
+    console.error("[scanner-upload] 请求处理失败:", err);
+    res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
   }
 });
 

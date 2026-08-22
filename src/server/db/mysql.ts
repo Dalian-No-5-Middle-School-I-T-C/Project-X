@@ -768,8 +768,12 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       ]
     },
+    // v39/v40 作废不再复用：与 migrations.ts（SQLite 侧）合并时的编号冲突处理保持一致——
+    // main 侧 SQLite v39 是 track_type 回补，本侧 v39/v40 是控制台地基/权限唯一约束，
+    // 统一顺延为 v42/v43（本侧内容从未随 main 发布，仅分支本地库可能记录过 39/40，
+    // 重跑全部幂等：重复列/键被上方 catch 忽略）。
     {
-      version: 39,
+      version: 42,
       name: "admin-console-observability-and-teacher-permission-dims",
       sqls: [
         // users：主题偏好拆分（ui_style=clarity/paper_edge；color_scheme=light/dark）
@@ -840,10 +844,10 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       ]
     },
     {
-      // v40: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id），
+      // v43: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id），
       // 解除旧 UNIQUE(teacher_id, grade_id) 对同教师多维度授权（多班级/多题块）的阻塞。
       // 先按五维组合去重（旧约束下 NULL grade 可存在多行），再换索引；DROP INDEX IF EXISTS 兼容 MariaDB/MySQL 8.0.19+。
-      version: 40,
+      version: 43,
       name: "teacher-permissions-multidim-unique",
       sqls: [
         `DELETE t1 FROM teacher_permissions t1 INNER JOIN teacher_permissions t2

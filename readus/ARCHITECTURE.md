@@ -712,7 +712,16 @@ flowchart LR
 
 - 难度/区分度档位阈值由管理员在「全局设置」配置，持久化于 `system_settings.analysis_difficulty_bands` / `analysis_discrimination_bands`，缺省回退内置默认。
 
-### 13.5 跨班对比与选项分析 (Issue #175, v1.10.2)
+### 13.5 统计口径统一（v1.11 修复批次）
+
+- 及格/优秀线一律走可配置阈值（`analysis_pass_rate` / `analysis_excellent_rate`），大考概览（`exam-groups-analysis.ts overview`）已同步，不再有硬编码 0.6/0.9。
+- 大考各页面逐科统计一律按「大考参与者」口径过滤（`getGroupTotalsMap`，遵守 `only_full_participants`），概览与 metrics/分布/班级对比同分母。
+- 满分统一经 `getExamFullScoreMap`：question_scores 合计 → 缺失时 `MAX(total_score)` → 0（不再虚构 100）。
+- 标准差统一为总体 σ：单科与大考概览用「减真实均值」公式，大考 metrics 逐科用 `STDDEV_POP`（数值稳定，数学等价）。
+- 分数段分桶统一为 `histogram()` 半开区间语义（`floor(v/step)`），小数成绩（如 59.5）不再落段错位。
+- **有意保留的口径**：大考班级对比的及格/优秀按「大考总分 × 比例」判定（`getGroupClassComparison`），与逐科「单科满分 × 比例」（`getGroupMetrics`）各自自洽；各科满分不均时（如 150+100）两者语义不同，属设计而非缺陷。
+
+### 13.6 跨班对比与选项分析 (Issue #175, v1.10.2)
 
 - 班级对比支持「全部班级」：`GET /api/analysis/exams/:examId/class-comparison?all=1` 自动取本场考试全部班级，手工选择上限放宽到 30 个；响应新增 `fullScore`，每班新增 `difficulty`（P）与 `discrimination`（D，与 `getExamMetrics` 口径一致，逐题 D 均值）。
 - 前端班级对比页新增**多维度雷达图**（平均分率 / 中位分率 / 及格率 / 优秀率 / 难度系数 / 区分度 / 离散度）与**选择题选项对比表**（各班每选项选择人数与比例，✓ 标标准答案）；总分统计表新增难度/区分度列。

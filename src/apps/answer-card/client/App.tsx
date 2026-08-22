@@ -1664,52 +1664,56 @@ function App() {
       ? "首页"
       : mode === "scores"
         ? "我的成绩"
-        : mode === "exam-manage"
-          ? "考试管理"
-          : mode === "account"
-            ? "账号管理"
-            : mode === "account-settings"
-              ? "账号设置"
-              : mode === "sponsor"
-              ? "支持项目"
-              : mode === "guide"
-                ? "使用说明"
-                : mode === "global-settings"
-                  ? "全局设置"
-                  : mode === "permissions"
-                    ? "权限说明"
-                    : mode === "design" && designScreen === "select"
-                      ? "答题卡"
-                      : mode === "design" ? "答题卡设计器" : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统");
+        : mode === "analysis"
+          ? "成绩分析"
+          : mode === "exam-manage"
+            ? "考试管理"
+            : mode === "account"
+              ? "账号管理"
+              : mode === "account-settings"
+                ? "账号设置"
+                : mode === "sponsor"
+                ? "支持项目"
+                : mode === "guide"
+                  ? "使用说明"
+                  : mode === "global-settings"
+                    ? "全局设置"
+                    : mode === "permissions"
+                      ? "权限说明"
+                      : mode === "design" && designScreen === "select"
+                        ? "答题卡"
+                        : mode === "design" ? "答题卡设计器" : card?.title ?? (canDesign ? "答题卡设计器" : "答题卡系统");
 
   const pageSubtitle =
     mode === "home"
       ? `欢迎，${user?.name ?? ""}`
       : mode === "scores"
         ? "仅展示本人成绩 · 只读"
-        : mode === "exam-manage"
-          ? "创建、管理考试与阅卷批次"
-          : mode === "account"
-            ? "管理用户、班级与花名册"
-            : mode === "account-settings"
-              ? "个人阅卷、客户端与 AI 服务偏好"
-              : mode === "sponsor"
-              ? "感谢您的信任与支持"
-              : mode === "guide"
-                ? "Project-X 操作指南与常见问题"
-                : mode === "global-settings"
-                  ? "系统级策略与服务商配置"
-                  : mode === "permissions"
-                    ? `${user.name} · ${user.role_display_name ?? user.role_name}`
-                    : mode === "design" && designScreen === "select"
-                      ? "选择或新建一张答题卡"
-                      : card && mode === "design"
-                        ? `${card.title} · ID:${card.id} · ${layout?.pages.length ?? 1} 页`
-                        : card
-                          ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
-                        : canDesign
-                          ? "创建答题卡后开始编辑"
-                          : `${user.name} · ${user.role_display_name ?? user.role_name}`;
+        : mode === "analysis"
+          ? "按考试查看成绩分布、题目分析与班级对比"
+          : mode === "exam-manage"
+            ? "创建、管理考试与阅卷批次"
+            : mode === "account"
+              ? "管理用户、班级与花名册"
+              : mode === "account-settings"
+                ? "个人阅卷、客户端与 AI 服务偏好"
+                : mode === "sponsor"
+                ? "感谢您的信任与支持"
+                : mode === "guide"
+                  ? "Project-X 操作指南与常见问题"
+                  : mode === "global-settings"
+                    ? "系统级策略与服务商配置"
+                    : mode === "permissions"
+                      ? `${user.name} · ${user.role_display_name ?? user.role_name}`
+                      : mode === "design" && designScreen === "select"
+                        ? "选择或新建一张答题卡"
+                        : card && mode === "design"
+                          ? `${card.title} · ID:${card.id} · ${layout?.pages.length ?? 1} 页`
+                          : card
+                            ? `ID:${card.id} · ${layout?.pages.length ?? 1} 页`
+                          : canDesign
+                            ? "创建答题卡后开始编辑"
+                            : `${user.name} · ${user.role_display_name ?? user.role_name}`;
 
   const designActions = canDesign && mode === "design" && (
     designScreen === "select" ? (
@@ -1820,22 +1824,8 @@ function App() {
             >
               {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            {/* 宣传网站入口：外链 GitHub Pages 宣传站点（与暗色按钮同尺寸） */}
-            <a
-              href={PROMO_SITE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label="访问宣传网站"
-              title="访问宣传网站"
-              className={cn(
-                "inline-flex items-center justify-center rounded-md text-secondary-foreground",
-                "transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground",
-                "h-control-md w-control-md",
-                effectiveRailCollapsed ? "self-center" : undefined,
-              )}
-            >
-              <ExternalLink size={18} />
-            </a>
+            {/* 宣传网站入口已挪到 PageHeader.actions 与暗色按钮并列（与暗色按钮同步 hidden lg:inline-flex），
+                侧栏底部腾出空间给账号名称完整展示。小屏用户从 AccountMenu 下拉里的"访问宣传网站"项访问 */}
             <AccountMenu
               compact={effectiveRailCollapsed}
               onOpenSponsor={() => {
@@ -1876,6 +1866,21 @@ function App() {
                 >
                   {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
                 </button>
+                {/* 宣传网站入口（与暗色按钮同步 lg 屏以上显示；小屏从 AccountMenu 下拉"访问宣传网站"项访问） */}
+                <a
+                  href={PROMO_SITE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="访问宣传网站"
+                  title="访问宣传网站"
+                  className={cn(
+                    "inline-flex size-8 items-center justify-center rounded-md text-secondary-foreground",
+                    "transition-colors duration-(--px-dur-1) hover:bg-secondary hover:text-foreground",
+                    "hidden lg:inline-flex",
+                  )}
+                >
+                  <ExternalLink size={18} />
+                </a>
                 <Sheet open={drawerOpen} onOpenChange={setDrawerOpen}>
                   <button
                     type="button"
@@ -1931,6 +1936,9 @@ function App() {
             <AppContent width={mode === "home" ? "wide" : "full"} bare={mode !== "home"}>
               {/* C 阶段（2026-07-21）：真实 URL 路由渲染 —— 仅当前路径对应的页面挂载。 */}
               <Routes>
+                {/* 根路径 → 兜底模式：登录页在任意 URL 渲染（App 级早退），登录后 URL 仍是 /，
+                    若缺此路由会落到下方 * 兜底渲染 404；教师/管理员落到 /home、学生落到 /scores。 */}
+                <Route path="/" element={<Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/home" element={canOpenMode("home") ? <HomeRoutePage /> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/design/*" element={canOpenMode("design") ? <Suspense fallback={routeFallback}><DesignPage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/exam-manage" element={canOpenMode("exam-manage") ? <Suspense fallback={routeFallback}><ExamManagePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />

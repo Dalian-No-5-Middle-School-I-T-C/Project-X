@@ -366,6 +366,8 @@
    选项卡胶囊组、进度条直角、纸纹网格、仅 2 张重点卡硬影、扫描台荧光绿等）
    无法由纯令牌表达。规则全部限定在 [data-skin="paper-edge"] 作用域内，
    默认皮肤零影响。评审记录见 readus/SKIN-THEME.md §五。
+   2026-08 直角化评审：选项卡/分段控件/徽章由胶囊改为直角方块（与卡片直角
+   语言统一），胶囊仅保留给 Button 主/次/描边按钮（demo .btn 纪律）。
    ══════════════════════════════════════════════════════════════════════════ */
 [data-skin="paper-edge"] {
   /* ── L1 覆盖：圆角纪律 —— 卡片/输入/表格/弹层一律直角（胶囊见末尾作用域规则） ── */
@@ -545,10 +547,9 @@
    分段控件容器 = role=radiogroup + bg-secondary（设置页单选组无此类，不误伤）；
    原生角色控件（checkbox/radio/switch）显式排除。 */
 
-/* ① 圆角：胶囊命中面（Button 全变体 / 分段选项 / 徽章） */
-[data-skin="paper-edge"] button[class~="rounded-md"][class~="whitespace-nowrap"],
-[data-skin="paper-edge"] button[class~="rounded-sm"],
-[data-skin="paper-edge"] span[class~="rounded-sm"] {
+/* ① 圆角：胶囊命中面仅 Button 全变体（demo .btn 胶囊纪律保留）；
+   徽章 / 分段选项 / 选项卡 / 计数徽标一律直角方块（2026-08 直角化评审，见⑦⑧⑮） */
+[data-skin="paper-edge"] button[class~="rounded-md"][class~="whitespace-nowrap"] {
   border-radius: var(--px-radius-full);
 }
 
@@ -592,16 +593,18 @@
   border-radius: 0;
 }
 
-/* ⑦ 选项卡（demo .tabs：独立描边胶囊组，选中墨底纸字，无下划线） */
+/* ⑦ 选项卡（2026-08 直角化：独立细线方块组，选中墨底纸字，无下划线；
+   padding-block 10px 呼吸位——方块上下缘不贴标签栏分隔线与容器边缘） */
 [data-skin="paper-edge"] [role="tablist"] {
   border-bottom: 0;
   gap: 8px;
+  padding-block: 10px;
 }
 [data-skin="paper-edge"] [role="tab"] {
   height: 32px;
   padding: 0 16px;
   border: 1px solid var(--px-border-default);
-  border-radius: var(--px-radius-full);
+  border-radius: 0;
   font-size: 13px;
   color: var(--px-fg-secondary);
 }
@@ -617,18 +620,24 @@
   color: var(--px-bg-canvas);
 }
 
-/* ⑧ 分段控件（demo .seg：无槽独立描边胶囊，选中墨底纸字） */
-[data-skin="paper-edge"] [role="radiogroup"][class~="bg-secondary"] {
+/* ⑧ 分段控件（2026-08 直角化：无槽独立描边方块，选中墨底纸字；
+   实际基座 = Radix ToggleGroup（role=group），保留 radiogroup 选择器兜底；
+   按 bg-secondary 类特征区分设置页单选组，不误伤） */
+[data-skin="paper-edge"] [role="radiogroup"][class~="bg-secondary"],
+[data-skin="paper-edge"] [role="group"][class~="bg-secondary"] {
   background-color: transparent;
   padding: 0;
   gap: 8px;
   border-radius: 0;
 }
-[data-skin="paper-edge"] [role="radiogroup"][class~="bg-secondary"] button {
+[data-skin="paper-edge"] [role="radiogroup"][class~="bg-secondary"] button,
+[data-skin="paper-edge"] [role="group"][class~="bg-secondary"] button {
   border: 1px solid var(--px-border-default);
+  border-radius: 0;
   font-weight: 500;
 }
-[data-skin="paper-edge"] [role="radiogroup"][class~="bg-secondary"] button[data-state="on"] {
+[data-skin="paper-edge"] [role="radiogroup"][class~="bg-secondary"] button[data-state="on"],
+[data-skin="paper-edge"] [role="group"][class~="bg-secondary"] button[data-state="on"] {
   background-color: var(--px-fg-primary);
   border-color: var(--px-fg-primary);
   color: var(--px-bg-canvas);
@@ -669,4 +678,29 @@
 [data-skin="paper-edge"] h2 {
   font-weight: 900;
   letter-spacing: -0.02em;
+}
+
+/* ⑮ 徽章直角（2026-08 直角化：BandBadge / TabsCount 的 rounded-full 归零；
+   命中面 = rounded-full + tabular-nums 整词双特征，内部 8px 状态点无 tabular-nums、保持圆形） */
+[data-skin="paper-edge"] span[class~="rounded-full"][class~="tabular-nums"] {
+  border-radius: 0;
+}
+
+/* ⑯ 页头 h1 字重（仅升 PageHeader h1 字重，副标题保持原样不动） */
+[data-skin="paper-edge"] [class~="h-page-header"] h1 {
+  font-weight: 900;
+  letter-spacing: -0.01em;            /* 与 ⑭ h2 的 900/-0.02em 同族，略收 */
+}
+
+/* ⑰ 表头眉题排印（demo eyebrow 等宽感；色系保持原状，仅加字重/字距/等宽，避免墨底反转突兀） */
+[data-skin="paper-edge"] th[class~="h-table-header"] {
+  font-family: var(--px-font-mono);
+  font-weight: 500;                    /* 保持原 500，不升 900 */
+  letter-spacing: 0.06em;
+  text-transform: uppercase;           /* 数字/英文生效，中文无副作用 */
+}
+
+/* ⑱ 正文斑马纹：data-selected 行（异常卷高亮）不参与；hover 特异性 (0,2,0) 高于本规则 (0,1,2)，自然覆盖 */
+[data-skin="paper-edge"] tbody tr:not([data-selected]):nth-child(even) {
+  background-color: var(--px-bg-subtle);    /* PAPER-2 轻纸底 */
 }

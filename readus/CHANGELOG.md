@@ -1,5 +1,28 @@
 # Project-X CHANGELOG
 
+## v2.2.4 (2026-08-21) — 背景图层级修复与 main 主干整合
+
+### 背景图层级修复（核心变更，分支 fix/background-image-layer）
+- 修复自定义背景图覆盖在按钮/卡片之上、破坏 UI 可读性的问题。根因为背景图浮层 `body.has-bg-image::after` 使用 `z-index: var(--z-lightbox)`（600，弹层级别），被绘制在所有内容之上；原作者在 `AppShell` 与页面根容器铺不透明 `bg-background`，导致背景图只能置于最顶层才可见，形成「看得见但压按钮」的矛盾。
+- 修复（仅改 CSS 唯一事实源 `src/apps/answer-card/client/theme/backdrop.css`）：
+  1. 浮层 `z-index` 由 `600` 降为 `-1`，落到内容之下、viewport canvas 之上，成为真正最底层。
+  2. 激活时新增 `body.has-bg-image { --color-background: transparent }`：所有消费 `bg-background` 的画布层（AppShell + 各页面根）随之透明、背景图透出；卡片/按钮使用 `bg-card`/`bg-primary` 等独立令牌，不受影响，依旧不透明、叠在背景图上且清晰可读。
+  3. 未设置背景图时令牌仍是 canvas 色，外观零回归。
+- 同步更新 `readus/UI-ARCHITECTURE.md`：说明层级决策，并补记早期四次「置于底层」失败的历史背景（当时内容面板硬编码 `background:#fff` 填满视口，v2.x 底色令牌化后该路径才成立）。
+
+### 整合 origin/main 最新
+- 本分支自 `codex/latest-score-release` 合并 `origin/main`，吸收其后继功能：周审计发布回补与考试日历视图（#245）、每周考试审计（#245 前序）、知识点分析与标注面板、大考分析路由/服务拆分与 N+1 收敛（#240/#241）、MariaDB 一键测试数据（#243）、首页「最新出分」按角色展示（#238）、学生跨班级/年级迁移（#237）、宣传网站入口（#233/#234）等。
+- 合并产生 4 处服务端冲突，均取 `origin/main` 方言无关/超集版本（经 diff 核实无独有功能丢失）：
+  - `migrations.ts` / `mysql.ts`：在 v35 基础上新增 v36 复习轮归零 / v37 逐题分析复合索引 / v38 AI 学情分析异步任务表；`mysql.ts` 另含 `SqliteAdapter.logTiming` 慢查询日志、`review_round` 默认值 1→0。
+  - `DashboardService.ts`：main 已含「最新出分」块，且三处查询统一应用 `subjectFilter` 角色过滤。
+  - `DemoDataService.ts`：改为 `buildInsertIgnore` + `db.run` 方言无关实现，并将 `seedFillBlankDemo` / `reviewDemo` / PNG 占位图生成抽到 `src/server/services/demo/` 子模块（合并自动带入，均为方言无关）。
+- 验证：`npm run typecheck` 与 `npx vite build --mode web` 均通过。
+
+### 本次合入「管理员控制台与教师权限细粒度」分支的冲突处理（2026-08-22）
+- `package.json`：双方新增 npm scripts 取并集（`migrate:mariadb*` 三条 + `verify:weekly-demo` / `verify:reliability-filter`）。
+- `llm-client.ts` / `paper-routes.ts`：import 冲突取并集——main 侧 `getLlmEnv`（llmclient/.env 密钥同源读取）与 `decryptField`（ai_providers.api_key 加密存储透传前解密），本分支侧 `fetchLlmClient` / `recordAiRun` / `finalizeAiRun`（AI 调用双层埋点）；正文两侧逻辑本就共存。
+- `migrations.ts` / `mysql.ts`：**v39 编号两侧撞车**（main：knowledge_points.track_type 回补；本分支：控制台观测地基 + v40 权限五维唯一约束）。任一侧已初始化的库都会因 `schema_migrations` 已记录该版本号而整体跳过另一侧内容（main 血统库将缺控制台四表，随后权限重建引用缺失列导致启动失败）。处理：v39/v40 作废不再复用，统一顺延为 v41（track_type 回补）/ v42（控制台地基）/ v43（权限唯一约束），SQLite 与 MariaDB 双侧编号对齐；三个迁移对全部库血统幂等（重复列/表/键自动跳过）。
+
 ## v2.2.5 (2026-08-20) — PR #246 检修修复（保留策略消费端 + 明暗账号级回写）
 
 > 针对 PR #246 评审提出的两项「功能未闭环」问题落地修复：数据保留策略此前仅写库不消费（定时清理只认环境变量），明暗方案此前只有读取链路没有回写链路。本次为纯补链路修复，不改变既有业务行为与数据格式。

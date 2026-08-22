@@ -129,11 +129,29 @@ async function createWindow() {
     }
   });
 
+  // 安全审计（F-5）：新窗口仅放行同源；其余 URL 仅允许 https:// 经系统浏览器打开，
+  // 拒绝 file://、smb:// 及自定义协议，防止远端页面被攻破后诱导打开本机文件/协议处理器。
+  // 同源判定使用解析后 URL 的 origin（protocol+host+port）精确比较，不能用字符串前缀，
+  // 否则 https://example.com.attacker.test 会被 https://example.com 的前缀检查放行（P2 缺陷）。
+  const ALLOWED_EXTERNAL_SCHEMES = new Set(["https:"]);
+  let baseOrigin = null;
+  try {
+    baseOrigin = new URL(baseUrl).origin;
+  } catch {
+    /* baseUrl 非法时 loadURL 本身会失败，这里保持全部拒绝 */
+  }
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith(baseUrl)) {
-      return { action: "allow" };
+    try {
+      const parsed = new URL(url);
+      if (baseOrigin && parsed.origin === baseOrigin) {
+        return { action: "allow" };
+      }
+      if (ALLOWED_EXTERNAL_SCHEMES.has(parsed.protocol)) {
+        shell.openExternal(url);
+      }
+    } catch {
+      /* 非法 URL，忽略 */
     }
-    shell.openExternal(url);
     return { action: "deny" };
   });
 

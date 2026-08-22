@@ -907,12 +907,27 @@ const MIGRATIONS: Migration[] = [
       `);
     }
   },
-  // v39 (控制台可观测性 + 教师权限细粒度地基):
+  // v39/v40 编号在两条分支上被不同迁移占用过（main 把 v39 用于 knowledge_points.track_type
+  // 回补；本分支把 v39/v40 用于控制台地基与权限唯一约束）。任一侧已初始化的库都会因
+  // schema_migrations 已记录该版本号而跳过另一侧的内容（例如 main 血统库会整体跳过
+  // 控制台地基，随后权限重建引用缺失列而启动失败）。故 v39/v40 作废不再复用，三个迁移
+  // 统一顺延为 v41/v42/v43，对全部库血统（main 侧 / 分支侧 / 全新库）均幂等安全。
+  // v41 (main): 修复 schema 漂移 —— knowledge_points.track_type 仅存在于 schema.sql（全新建库），
+  // 旧库升级从未补齐（#177 的 v31 只补了 users.track 与 exam_group_members.track_type）。
+  // v2.3.x 演示数据 seed（周报晨测）会写入该列，缺列会导致导入在插入知识点时中断。
+  {
+    version: 41,
+    name: "knowledge-points-track-type-backfill",
+    up(db) {
+      addColumnIfMissing(db, "knowledge_points", "track_type", "TEXT NOT NULL DEFAULT 'common'");
+    }
+  },
+  // v42 (控制台可观测性 + 教师权限细粒度地基):
   // - users: ui_style(clarity/paper_edge) / color_scheme(light/dark) 主题拆分（账号级持久化）
   // - teacher_permissions: 扩展 subject/class_id/block_id/can_grade/can_assign 维度
   // - 新增 theme_change_events / ai_analysis_runs / ai_provider_calls / entity_lifecycle_events
   {
-    version: 39,
+    version: 42,
     name: "console-observability-and-permission-foundation",
     up(db) {
       // 1. users 主题字段拆分
@@ -998,12 +1013,12 @@ const MIGRATIONS: Migration[] = [
       }
     }
   },
-  // v40: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id）。
+  // v43: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id）。
   // SQLite 无法 ALTER 表级 UNIQUE 约束，采用"去重 + 重建表"：
   //   - 旧 UNIQUE(teacher_id, grade_id) 在 NULL grade 下允许多行，先按五维组合保留最小 id 去重；
   //   - 重建表时把 UNIQUE 扩展为五维，解除同教师多维度授权（多班级/多题块）的阻塞。
   {
-    version: 40,
+    version: 43,
     name: "teacher-permissions-multidim-unique",
     up(db) {
       if (!hasTable(db, "teacher_permissions")) return;
@@ -1015,7 +1030,7 @@ const MIGRATIONS: Migration[] = [
           GROUP BY teacher_id, COALESCE(grade_id, 0), COALESCE(subject, ''), COALESCE(class_id, 0), COALESCE(block_id, '')
         )
       `);
-      // 2) 重建表（含 v37 全部新列），UNIQUE 升级为五维
+      // 2) 重建表（含 v42 全部新列），UNIQUE 升级为五维
       db.exec(`
         CREATE TABLE teacher_permissions_v40 (
           id                 INTEGER PRIMARY KEY AUTOINCREMENT,

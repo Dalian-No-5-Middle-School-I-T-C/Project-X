@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
+import { decryptField } from "../lib/field-crypto";
 import XLSX from "xlsx";
 
 /**
@@ -26,7 +27,7 @@ router.get("/students", async (_req: Request, res: Response) => {
       "学号": r.student_number ?? "",
       "姓名": r.name,
       "账号": r.username,
-      "密码": r.initial_password ?? ""
+      "密码": decryptField(r.initial_password) ?? ""
     }));
 
     const ws = XLSX.utils.json_to_sheet(data);
@@ -53,7 +54,7 @@ router.get("/teachers", async (_req: Request, res: Response) => {
       "科目": t.subject ?? "",
       "姓名": t.name,
       "账号": t.username,
-      "密码": t.initial_password ?? ""
+      "密码": decryptField(t.initial_password) ?? ""
     }));
 
     const ws = XLSX.utils.json_to_sheet(data);
