@@ -13,6 +13,8 @@ export interface ExamRecord {
   end_time: string | null;
   status: string;
   closed_at: string | null;
+  /** v41: 0=未公布 1=已公布 2=已撤回（学生端仅见 1） */
+  score_published?: number;
   assigned_formula: string | null;
   retention_policy_id: number | null;
   exam_mode?: string;

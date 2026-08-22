@@ -345,7 +345,7 @@ export function ExamManagePage() {
                 {exam.score_published === 1 ? (
                   <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
                 ) : (
-                  <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setPublishTarget(exam)}>
+                  <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed"} onClick={() => setPublishTarget(exam)}>
                     {exam.score_published === 2 ? "重新公布" : "公布分数"}
                   </Button>
                 )}
@@ -413,7 +413,7 @@ export function ExamManagePage() {
                     {exam.score_published === 1 ? (
                       <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
                     ) : (
-                      <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setPublishTarget(exam)}>
+                      <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed"} onClick={() => setPublishTarget(exam)}>
                         {exam.score_published === 2 ? "重新公布" : "公布分数"}
                       </Button>
                     )}

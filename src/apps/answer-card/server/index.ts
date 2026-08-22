@@ -405,7 +405,22 @@ export async function persistGradingResults(
   }
   const previousExamStatus = exam.status;
 
-  await examRepo.updateStatus(examId, "grading");
+  // v43: 重新阅卷会逐学生改写 student_scores —— 已公布的考试先自动撤下（记审计），
+  // 避免学生看到阅卷中途的半成品成绩；阅卷完成结考后需教师重新公布。
+  await db.transaction(async (tx) => {
+    const txExamRepo = new ExamRepository(tx);
+    await txExamRepo.updateStatus(examId, "grading");
+    if (exam.score_published === 1) {
+      await tx.run(
+        "UPDATE exams SET score_published = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND score_published = 1",
+        examId
+      );
+      await tx.run(
+        "INSERT INTO exam_publish_events (exam_id, action, actor_id, reason) VALUES (?, 'unpublish', ?, ?)",
+        examId, createdBy ?? null, "重新阅卷自动撤回"
+      );
+    }
+  });
   const batchId = await examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
   await db.run("UPDATE scan_batches SET status = 'processing' WHERE id = ?", batchId);
 
