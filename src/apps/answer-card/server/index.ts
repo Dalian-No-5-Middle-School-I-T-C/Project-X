@@ -405,8 +405,8 @@ export async function persistGradingResults(
   }
   const previousExamStatus = exam.status;
 
-  // v43: 重新阅卷会逐学生改写 student_scores —— 已公布的考试先自动撤下（记审计），
-  // 避免学生看到阅卷中途的半成品成绩；阅卷完成结考后需教师重新公布。
+  // 重新阅卷会逐学生改写 student_scores —— 已公布的考试先自动撤下（记审计），
+  // 避免学生看到阅卷中途的半成品成绩（与 v41 公布门控配套）；阅卷完成结考后需教师重新公布。
   await db.transaction(async (tx) => {
     const txExamRepo = new ExamRepository(tx);
     await txExamRepo.updateStatus(examId, "grading");
