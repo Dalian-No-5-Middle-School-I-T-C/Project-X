@@ -77,6 +77,10 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 
 const BOOTSTRAP_ADMIN_FILE = "bootstrap-admin.txt";
 
+// v2.x: 初始/恢复密码固定为 admin123（部署便利优先，主理人决策）。
+// 生产环境暴露网络端口时，部署完成后请立即在界面中修改 admin 密码。
+const BOOTSTRAP_ADMIN_PASSWORD = "admin123";
+
 export function getBootstrapAdminPath(): string {
   return path.join(path.dirname(resolveProjectDbPath()), BOOTSTRAP_ADMIN_FILE);
 }
@@ -94,7 +98,7 @@ function writeBootstrapAdminPassword(password: string): void {
     renameSync(temp, target);
   }
   try { chmodSync(target, 0o600); } catch { /* Windows ACLs may ignore POSIX modes. */ }
-  console.warn(`[SECURITY] 管理员一次性密码已写入受保护文件: ${target}`);
+  console.warn(`[DB] 管理员初始密码已写入引导文件（生产环境请尽快修改）: ${target}`);
 }
 
 export function removeBootstrapAdminFile(): void {
@@ -119,43 +123,38 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
   const passwordFile = getBootstrapAdminPath();
 
   if (existing) {
-    const usesLegacyDefault = await verifyPassword("admin123", existing.password_hash);
-    const lostBootstrapSecret = Boolean(existing.password_change_required) && !existsSync(passwordFile);
-    if (usesLegacyDefault || lostBootstrapSecret) {
-      const password = randomBytes(24).toString("base64url");
-      await db.run(
-        "UPDATE users SET password_hash = ?, password_change_required = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        await hashPassword(password), existing.id
-      );
-      writeBootstrapAdminPassword(password);
+    if (!existing.password_change_required) {
+      // 已完成首次改密（或显式沿用初始密码）的在用账号：不做任何变更
       await (dialect === "mariadb" ? ensureDefaultApiKey(db) : ensureDefaultApiKeySqlite(getDatabase()));
-      return { adminId: existing.id, rotated: true, passwordFile };
+      return { adminId: existing.id, rotated: false, passwordFile };
     }
+    // 停留在引导态的存量库（旧随机一次性密码残留、改密标记未清除等）：统一重置为固定初始密码
+    await db.run(
+      "UPDATE users SET password_hash = ?, password_change_required = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), existing.id
+    );
+    writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
     await (dialect === "mariadb" ? ensureDefaultApiKey(db) : ensureDefaultApiKeySqlite(getDatabase()));
-    return { adminId: existing.id, rotated: false, passwordFile };
+    return { adminId: existing.id, rotated: true, passwordFile };
   }
 
   if (dialect === "mariadb") {
-    const password = randomBytes(24).toString("base64url");
-    const passwordHash = await hashPassword(password);
     const insertAdminSql = buildInsertIgnore("mariadb", "users", [
       "username", "password_hash", "name", "role_id", "is_active", "password_change_required",
     ]);
-    const result = await db.run(insertAdminSql, "admin", passwordHash, "系统管理员", 1, 1, 1);
-    writeBootstrapAdminPassword(password);
+    const result = await db.run(insertAdminSql, "admin", await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), "系统管理员", 1, 1, 0);
+    writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
     await ensureDefaultApiKey(db);
     return { adminId: result.lastInsertRowid, rotated: true, passwordFile };
   }
 
   // SQLite 模式
   const sqlite = getDatabase();
-  const password = randomBytes(24).toString("base64url");
-  const passwordHash = await hashPassword(password);
   const result = sqlite.prepare(
     `INSERT INTO users (username, password_hash, name, role_id, is_active, password_change_required)
      VALUES (?, ?, ?, ?, ?, ?)`
-  ).run("admin", passwordHash, "系统管理员", 1, 1, 1);
-  writeBootstrapAdminPassword(password);
+  ).run("admin", await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), "系统管理员", 1, 1, 0);
+  writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
   await ensureDefaultApiKeySqlite(sqlite);
   return { adminId: Number(result.lastInsertRowid), rotated: true, passwordFile };
 }
