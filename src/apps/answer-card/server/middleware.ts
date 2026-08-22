@@ -51,7 +51,8 @@ export function makeGate(enforce: boolean, readPerm: string, writePerm: string) 
  * - admin / grade_leader → null (all visible)
  * - head_teacher → own classes + created exams
  * - subject_teacher → own subject + classes + created exams
- * - plain teacher (no teacher_role) → null (back-compat)
+ * - plain teacher (no teacher_role) → 权限矩阵禁止的考试被剔除（#246：此前提前返回
+ *   null 导致矩阵对该类教师完全失效）；无任何禁止行 → null（back-compat 全可见）
  *
  * #178 双模式：quiz（晨测）考试对教师全量可见（放开精细权限），
  * formal（大考）继续按 teacher_role + teacher_permissions 精细过滤。
@@ -59,7 +60,6 @@ export function makeGate(enforce: boolean, readPerm: string, writePerm: string) 
 export async function getVisibleExamIds(user: express.Request["user"]): Promise<number[] | null> {
   if (!user || user.role_name === "admin") return null;
   if (user.role_name !== "teacher") return null;
-  if (!user.teacher_role) return null; // plain teacher: all visible (back-compat)
 
   if (user.teacher_role === "grade_leader") return null;
 
@@ -125,21 +125,20 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
     return await withQuizExamIds(await filterExamsByViewRestrictions(db, user.id, rows.map((r) => r.id)));
   }
 
-  // Check teacher_permissions for additional restrictions
-  if (user.role_name === "teacher") {
-    if (await hasTable(db, "teacher_permissions")) {
-      const restrictions = await db.all<unknown>(
-        "SELECT 1 FROM teacher_permissions WHERE teacher_id = ? AND can_view_scores = 0 AND block_id IS NULL LIMIT 1",
-        user.id
+  // 普通教师（无 teacher_role，不属任何精细分支）：同样消费权限矩阵的查看禁止行。
+  // #246：此前该类教师在函数入口即提前返回 null（全可见），矩阵对其完全失效。
+  if (await hasTable(db, "teacher_permissions")) {
+    const restrictions = await db.all<unknown>(
+      "SELECT 1 FROM teacher_permissions WHERE teacher_id = ? AND can_view_scores = 0 AND block_id IS NULL LIMIT 1",
+      user.id
+    );
+    if (restrictions.length > 0) {
+      // 存在禁止行 → 可见集合 = 全部考试 − 矩阵禁止的考试（含 subject/class 维度匹配）
+      const allRows = await db.all<{ id: number }>(
+        `SELECT id FROM exams e WHERE ${EXAM_NOT_SOFT_DELETED_SQL}`
       );
-      if (restrictions.length > 0) {
-        // #246：存在禁止行 → 可见集合 = 全部考试 − 矩阵禁止的考试（含 subject/class 维度匹配）
-        const allRows = await db.all<{ id: number }>(
-          `SELECT id FROM exams e WHERE ${EXAM_NOT_SOFT_DELETED_SQL}`
-        );
-        const allowed = await filterExamsByViewRestrictions(db, user.id, allRows.map((r) => r.id));
-        return await withQuizExamIds(allowed);
-      }
+      const allowed = await filterExamsByViewRestrictions(db, user.id, allRows.map((r) => r.id));
+      return await withQuizExamIds(allowed);
     }
   }
 
@@ -159,6 +158,10 @@ async function hasTable(db: DbAdapter, table: string): Promise<boolean> {
 /** 软删除考试（exam_archives.is_deleted=1）过滤片段：别名须为 e。 */
 export const EXAM_NOT_SOFT_DELETED_SQL =
   "NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)";
+
+/** 同上，用于 exam_group_members 别名 egm 的查询（大考组成员统计，可无 exams 表 JOIN）。 */
+export const GROUP_MEMBER_NOT_SOFT_DELETED_SQL =
+  "NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = egm.exam_id AND ea.is_deleted = 1)";
 
 export async function isExamSoftDeleted(examId: number): Promise<boolean> {
   try {

@@ -90,7 +90,9 @@ async function main(): Promise<void> {
   const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
   const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
   const { requirePermission, requireRole } = await import("../src/server/middleware/auth");
-  const { requireExamAccess } = await import("../src/apps/answer-card/server/middleware");
+  const { requireExamAccess, getVisibleExamIds, canGradeBlock, hasViewPermission } = await import(
+    "../src/apps/answer-card/server/middleware"
+  );
   const perms = await import("../src/server/auth/permissions");
   const { PERMISSIONS, ROLE_IDS, roleHasPermission, permissionsForRole, loadRolePermissions } = perms;
 
@@ -433,6 +435,80 @@ async function main(): Promise<void> {
     (await runExamAccess(studentUser, "PUT", "/api/exams/" + examId + "/student/" + student.id + "/scores", examId)).status === 403,
     "学生写操作（改分）被 403"
   );
+
+  // ── 8. #246 权限矩阵运行时消费 / 题块授权 / auto_delete 软删除 ──
+  section("8. #246 permission matrix runtime + canGradeBlock + auto_delete visibility");
+  const plainTeacherUser = { id: teacher.id, role_id: ROLE_IDS.TEACHER, role_name: "teacher", teacher_role: null, subject: null };
+
+  // 8.1 普通教师（无 teacher_role）此前在 getVisibleExamIds 入口提前返回 null，矩阵对其完全失效
+  ok((await getVisibleExamIds(plainTeacherUser)) === null, "#246 普通教师无矩阵记录 → 全可见（兼容保留）");
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, 0, 1, 1, 1, 1)"
+  ).run(teacher.id);
+  const quizExam246 = Number(
+    db.prepare("INSERT INTO exams (name, card_id, subject, class_id, status, exam_mode) VALUES ('#246晨测', '99999999', '数学', ?, 'closed', 'quiz')").run(klass.id).lastInsertRowid
+  );
+  const plainVisible = await getVisibleExamIds(plainTeacherUser);
+  ok(Array.isArray(plainVisible), "#246 普通教师存在禁止行 → 可见集合收敛为列表（不再提前返回 null）");
+  ok(plainVisible != null && !plainVisible.includes(releasePhysicsA), "#246 普通教师矩阵禁止行生效：formal 考试被剔除");
+  ok(plainVisible != null && plainVisible.includes(quizExam246), "#246 晨测（quiz）不受矩阵限制仍可见");
+
+  // 8.2 can_view_charts / can_view_students 的运行时门（hasViewPermission）
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, class_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, ?, 1, 0, 1, 1, 1)"
+  ).run(headTeacher.id, klass.id);
+  ok(!(await hasViewPermission(dashHeadTeacherUser, releasePhysicsA, "can_view_charts")), "#246 班级维度关闭图表 → 匹配考试图表查看被拒");
+  ok(await hasViewPermission(dashHeadTeacherUser, releasePhysicsA, "can_view_students"), "#246 学生名单未关闭 → 仍允许");
+  ok(await hasViewPermission(dashAdminUser, releasePhysicsA, "can_view_charts"), "#246 管理员不受矩阵限制");
+
+  // 8.3 canGradeBlock：已配置矩阵但未命中授权的教师不能再借「无分配记录」回退越权
+  const matrixTeacher = await userRepo.createUser({ username: "t_mtx", password: "mtx123", name: "矩阵教师", role_id: ROLE_IDS.TEACHER });
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, subject, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, '化学', 1, 1, 1, 1, 1)"
+  ).run(matrixTeacher.id);
+  ok(!(await canGradeBlock({ id: matrixTeacher.id, role_name: "teacher" }, releaseMathB, "blk-246")), "#246 学科不匹配的矩阵教师批改未分配题块被拒（数学考试 vs 化学授权行）");
+  const noGradeTeacher = await userRepo.createUser({ username: "t_nog", password: "nog123", name: "禁阅教师", role_id: ROLE_IDS.TEACHER });
+  db.prepare(
+    "INSERT INTO teacher_permissions (teacher_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?, 1, 1, 1, 0, 1)"
+  ).run(noGradeTeacher.id);
+  ok(!(await canGradeBlock({ id: noGradeTeacher.id, role_name: "teacher" }, releaseMathB, "blk-246")), "#246 can_grade=0 的全维度行不放行批改");
+  const legacyTeacher = await userRepo.createUser({ username: "t_lgcy", password: "lg123", name: "旧部署教师", role_id: ROLE_IDS.TEACHER });
+  ok(await canGradeBlock({ id: legacyTeacher.id, role_name: "teacher" }, releaseMathB, "blk-246"), "#246 未配置矩阵的旧部署教师仍可批改（兼容回退保留）");
+  db.prepare("INSERT INTO review_assignments (exam_id, block_id, teacher_id) VALUES (?, ?, ?)").run(releaseMathB, "blk-246", matrixTeacher.id);
+  ok(await canGradeBlock({ id: matrixTeacher.id, role_name: "teacher" }, releaseMathB, "blk-246"), "#246 显式分配的教师可批改");
+
+  // 8.4 auto_delete 软删除可见性（可见集合 / 访问中间件 / 周审计 / 大考组统计）
+  db.prepare("INSERT INTO exam_archives (exam_id, is_deleted, deleted_at) VALUES (?, 1, CURRENT_TIMESTAMP)").run(releaseMathA);
+  const headVisibleAfter = await getVisibleExamIds(dashHeadTeacherUser);
+  ok(headVisibleAfter != null && !headVisibleAfter.includes(releaseMathA), "#246 软删除考试从教师可见集合消失");
+  ok((await runExamAccess(dashHeadTeacherUser, "GET", "/api/analysis/exams/" + releaseMathA, releaseMathA)).status === 404, "#246 非管理员直接访问软删除考试返回 404");
+  ok((await runExamAccess(dashAdminUser, "GET", "/api/analysis/exams/" + releaseMathA, releaseMathA)).allowed, "#246 管理员仍可访问软删除考试（恢复通道）");
+
+  const weekStart246 = "2026-07-06"; // 周一
+  const softPendingQuiz = Number(db.prepare("INSERT INTO exams (name, card_id, subject, grade_id, status, exam_mode, created_at) VALUES ('#246软删未出分', '99999999', '数学', ?, 'grading', 'quiz', '2026-07-07 09:00:00')").run(grade.id).lastInsertRowid);
+  db.prepare("INSERT INTO exam_archives (exam_id, is_deleted) VALUES (?, 1)").run(softPendingQuiz);
+  const { WeeklyAuditService } = await import("../src/server/services/WeeklyAuditService");
+  const weekly246 = new WeeklyAuditService();
+  const wkCheck = await weekly246.checkWeekComplete(weekStart246);
+  ok(wkCheck.complete && !wkCheck.pendingExamNames.includes("#246软删未出分"), "#246 软删除的未出分晨测不再阻塞周报发布");
+
+  const keptQuiz = Number(db.prepare("INSERT INTO exams (name, card_id, subject, grade_id, status, exam_mode, created_at) VALUES ('#246留晨测', '99999999', '数学', ?, 'closed', 'quiz', '2026-07-08 09:00:00')").run(grade.id).lastInsertRowid);
+  const softScoredQuiz = Number(db.prepare("INSERT INTO exams (name, card_id, subject, grade_id, status, exam_mode, created_at) VALUES ('#246软删有分', '99999999', '数学', ?, 'closed', 'quiz', '2026-07-09 09:00:00')").run(grade.id).lastInsertRowid);
+  insertScore.run(keptQuiz, student.id, 8, 2, 10);
+  insertScore.run(softScoredQuiz, student.id, 9, 1, 10);
+  db.prepare("INSERT INTO exam_archives (exam_id, is_deleted) VALUES (?, 1)").run(softScoredQuiz);
+  const ensured246 = await weekly246.ensureWeeklyQuizGroups(weekStart246);
+  const gradeGroup246 = ensured246.find((g: { gradeId: number }) => g.gradeId === grade.id);
+  ok(!!gradeGroup246, "#246 周报组已为该年级创建");
+  if (gradeGroup246) {
+    const memberRows246 = db.prepare("SELECT exam_id FROM exam_group_members WHERE group_id = ?").all(gradeGroup246.groupId) as Array<{ exam_id: number }>;
+    const memberIds246 = memberRows246.map((m) => m.exam_id);
+    ok(memberIds246.includes(keptQuiz) && !memberIds246.includes(softScoredQuiz), "#246 周报组收录留存晨测、不收录软删除晨测");
+    // 组内残留软删除成员行（软删除发生在建组之后）时，统计入口同样剔除
+    db.prepare("INSERT INTO exam_group_members (group_id, exam_id) VALUES (?, ?)").run(gradeGroup246.groupId, softScoredQuiz);
+    const memberMap246 = await (analysisRepo as unknown as { getGroupMemberTrackMap: (gid: number) => Promise<Map<number, string>> }).getGroupMemberTrackMap(gradeGroup246.groupId);
+    ok(memberMap246.has(keptQuiz) && !memberMap246.has(softScoredQuiz), "#246 大考组统计入口剔除软删除成员（即使组内残留成员行）");
+  }
 
   closeDatabase();
 }

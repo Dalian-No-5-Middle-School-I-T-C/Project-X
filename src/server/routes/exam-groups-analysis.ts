@@ -9,6 +9,7 @@ import { getAnalysisThresholds } from "../services/analysisConfig";
 import { decryptField } from "../lib/field-crypto";
 import { createAiAnalysisJob, enqueueAiAnalysisJob } from "../services/aiAnalysisJobs";
 import type { AiJobCreateResponse } from "../../shared/types";
+import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 import {
   getAiProviderForUser,
   memberMatchesTrack,
@@ -55,7 +56,9 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
       JOIN exams e ON e.id = egm.exam_id
       LEFT JOIN student_scores ss ON ss.exam_id = e.id
       LEFT JOIN users u ON u.id = ss.student_id
-      WHERE egm.group_id = ? ${trackStudentClause} ${participantClause}
+      WHERE egm.group_id = ?
+        -- #246 auto_delete：软删除成员考试不进大考统计
+        AND ${EXAM_NOT_SOFT_DELETED_SQL} ${trackStudentClause} ${participantClause}
       GROUP BY e.id
       ORDER BY egm.sort_order, egm.id
     `, ...memberParams, ...participantParams) as any[];
@@ -109,14 +112,14 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
         SELECT ss.student_id FROM exam_group_members egm
         JOIN student_scores ss ON ss.exam_id = egm.exam_id
         JOIN users u ON u.id = ss.student_id
-        WHERE egm.group_id = ? ${trackStudentClause}
+        WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL} ${trackStudentClause}
       ) s
     `, ...totalParams) as { cnt: number };
 
     const fullParams: unknown[] = [groupId];
-    let memberCountClause = "(SELECT COUNT(*) FROM exam_group_members WHERE group_id = ?)";
+    let memberCountClause = `(SELECT COUNT(*) FROM exam_group_members egm WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL})`;
     if (track !== "all") {
-      memberCountClause = "(SELECT COUNT(*) FROM exam_group_members WHERE group_id = ? AND (track_type = 'common' OR track_type = ?))";
+      memberCountClause = `(SELECT COUNT(*) FROM exam_group_members egm WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL} AND (egm.track_type = 'common' OR egm.track_type = ?))`;
       fullParams.push(track);
     }
     const fullRow = await db.get(`
@@ -125,7 +128,7 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
         FROM exam_group_members egm
         JOIN student_scores ss ON ss.exam_id = egm.exam_id
         JOIN users u ON u.id = ss.student_id
-        WHERE egm.group_id = ? ${trackStudentClause}
+        WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL} ${trackStudentClause}
         GROUP BY ss.student_id
         HAVING exam_count = ${memberCountClause}
       )
@@ -248,7 +251,7 @@ router.get("/rankings", requireReadableGroup, async (req: Request, res: Response
       SELECT egm.exam_id, e.subject, e.assigned_formula, egm.sort_order, egm.track_type
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
-      WHERE egm.group_id = ?
+      WHERE egm.group_id = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}
       ORDER BY egm.sort_order, egm.id
     `, groupId) as Array<{ exam_id: number; subject: string | null; assigned_formula: string | null; sort_order: number; track_type: string | null }>;
 
@@ -468,7 +471,7 @@ router.post("/export", requireReadableGroup, async (req: Request, res: Response)
       SELECT egm.exam_id, e.name as exam_name, e.subject as subject, egm.sort_order
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
-      WHERE egm.group_id = ?
+      WHERE egm.group_id = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}
       ORDER BY egm.sort_order, egm.id
     `, groupId) as Array<{ exam_id: number; exam_name: string; subject: string | null; sort_order: number }>;
 

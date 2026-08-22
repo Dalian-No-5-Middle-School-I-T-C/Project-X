@@ -1,5 +1,22 @@
 # Project-X CHANGELOG
 
+## v2.2.6 (2026-08-22) — PR #246 评审 P1 四项闭环（权限矩阵 / 控制台可达 / 题块授权 / 软删除可见性）
+
+> 针对 PR #246 评审提出的 4 项 P1「功能未闭环」缺陷收尾。其中控制台可达性与题块授权回退两项已在 5db2a2d 修复，本次复核确认并补齐剩余缺口，全部登记永久回归（`verify:auth` 新增第 8 节 18 项断言）。
+
+**1. 权限矩阵查看标志运行时消费（补缺口：普通教师）**
+- `getVisibleExamIds`（`middleware.ts`）：普通教师（无 `teacher_role`）此前在函数入口即提前返回 `null`（全可见），使「无 teacher_role 分支的矩阵限制」成为死代码——管理员对该类教师关闭「查看成绩」完全不生效。现删除该提前返回，普通教师同样消费 `can_view_scores=0` 禁止行（可见集合 = 全部考试 − 矩阵禁止，quiz 晨测仍豁免）；无任何矩阵记录 → 仍全可见（旧部署兼容）。班主任/学科教师提前返回问题、`can_view_charts`/`can_view_students` 查看门（`makeViewPermissionGate` → analysis 路由 16 处接线）已由 5db2a2d 落地，本次复核确认。
+**2. `/admin-console` 可达性（已由 5db2a2d 修复，复核确认）**：两教师端变体 `allowedModes` 已含 `admin-console`，路由守卫先过变体白名单再过 `canManageGlobal`（SYSTEM_MANAGE），侧栏入口与直达路由均可达。
+**3. 题块正向授权不被兼容回退绕过（已由 5db2a2d 修复，复核确认）**：`canGradeBlock` 对已配置矩阵的教师不再享受「题块无分配记录 → 放行」回退（学科/年级/班级不匹配或 `can_grade=0` 一律拒绝）；仅「完全未配置矩阵」的旧部署教师保留回退，避免未分配部署锁死。
+**4. `auto_delete` 软删除可见性（补缺口：周审计与大考组链路）**：此前已覆盖考试列表（`listExams`/`listExamsForSelection`）、访问中间件（非管理员 404）、学生成绩/趋势、仪表盘、单科趋势。本次补齐：
+- `WeeklyAuditService`：软删除的晨测不再计入周报发布门槛（未出分不再阻塞发布）、不再被自动收进周报组。
+- `AnalysisRepository.getGroupMemberTrackMap`（大考组全部统计的成员唯一入口）：软删除成员考试不参与组指标/逐题/分布/班级对比；`exam-groups-analysis.ts` 四处成员查询、`exam-groups.ts` 列表成员数/出分数与详情成员列表、跨场对比组 `hydrateExamGroup`、赋分可用性探测同步过滤。组内残留软删除成员行（先建组后删除的场景）在读取口径统一剔除。
+- 新增 `GROUP_MEMBER_NOT_SOFT_DELETED_SQL` 常量（`exam_group_members` 别名 `egm` 场景），与既有 `EXAM_NOT_SOFT_DELETED_SQL` 并列。
+
+**验证**
+- `npm run typecheck` 零错误；`verify:auth` 88/88（新增 #246 第 8 节 18 项：普通教师矩阵收敛 / quiz 豁免 / 图表与学生门 / 学科不匹配与 can_grade=0 拒绝 / 兼容回退保留 / 显式分配放行 / 软删除 404 与管理员恢复通道 / 周审计门槛与收录 / 大考组统计剔除）。
+- 回归：`verify:security-critical` 62/62、`weekly-audit-smoke` 57/57、`verify:weekly-demo`、`verify:reliability-filter` 21/21、`verify:p1-security` 11/11、`verify:demo-safety` 23/23 全绿。
+
 ## v2.2.4 (2026-08-21) — 背景图层级修复与 main 主干整合
 
 ### 背景图层级修复（核心变更，分支 fix/background-image-layer）

@@ -1,6 +1,6 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
-import { EXAM_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
+import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 import { competitionRank } from "../../shared/ranking";
 import { rankPercentile } from "../services/rankingUpdate";
 import { getAnalysisThresholds, DEFAULT_ANALYSIS_THRESHOLDS } from "../services/analysisConfig";
@@ -626,8 +626,10 @@ export class AnalysisRepository {
   /** 大考整体 + 逐科难度/区分度 */
   /** 文理分科（Issue #177）：考试组内科目归属映射 */
   private async getGroupMemberTrackMap(groupId: number): Promise<Map<number, string>> {
+    // #246 auto_delete：软删除成员考试不参与大考组全部统计（该方法是组指标的成员唯一入口）
     const rows = await this.db.all<{ exam_id: number; track_type: string | null }>(
-      "SELECT exam_id, track_type FROM exam_group_members WHERE group_id = ?",
+      `SELECT egm.exam_id, egm.track_type FROM exam_group_members egm
+       WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL}`,
       groupId
     );
     const map = new Map<number, string>();
@@ -858,6 +860,7 @@ export class AnalysisRepository {
            JOIN exams e ON e.id = egm.exam_id
            WHERE egm.group_id = ? AND e.assigned_formula IS NOT NULL AND e.assigned_formula != ''
              AND EXISTS (SELECT 1 FROM student_scores ss2 WHERE ss2.exam_id = e.id AND ss2.assigned_score IS NOT NULL)
+             AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL}
            LIMIT 1`, groupId
         ) as any;
         assignedAvailable = !!hasAssigned;
@@ -1660,7 +1663,8 @@ export class AnalysisRepository {
   }
 
   private async hydrateExamGroup(row: any): Promise<CrossExamGroup> {
-    const items = await this.db.all("SELECT exam_id FROM exam_group_members WHERE group_id = ? ORDER BY sort_order ASC, exam_id ASC", row.id) as Array<{ exam_id: number }>;
+    // #246 auto_delete：软删除考试不进跨场对比组的成员列表
+    const items = await this.db.all(`SELECT exam_id FROM exam_group_members egm WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL} ORDER BY egm.sort_order ASC, egm.exam_id ASC`, row.id) as Array<{ exam_id: number }>;
     const examIds = items.map(i => i.exam_id);
     return { id: row.id, name: row.name, source: row.source, startDate: row.start_date, endDate: row.end_date, gradeId: row.grade_id ?? null, examIds, exams: await this.getExamFilterItemsByIds(examIds), createdAt: row.created_at, updatedAt: row.updated_at };
   }
