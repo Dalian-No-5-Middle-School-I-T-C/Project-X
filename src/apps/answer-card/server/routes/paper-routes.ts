@@ -2,7 +2,7 @@ import { Router } from "express";
 import multer from "multer";
 import path from "node:path";
 import { existsSync, unlinkSync } from "node:fs";
-import { ensurePaperDir, paperDir, safeId } from "../storage";
+import { ensurePaperDir, paperDir, papersDir, safeId } from "../storage";
 import {
   validatePaperFile,
 
@@ -31,7 +31,7 @@ type AiProviderRow = {
 };
 
 const paperUpload = multer({
-  dest: path.resolve(process.cwd(), "data", "answer-card", "papers", "_tmp"),
+  dest: path.join(papersDir, "_tmp"),
   limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const err = validatePaperFile(file.originalname, 50 * 1024 * 1024);

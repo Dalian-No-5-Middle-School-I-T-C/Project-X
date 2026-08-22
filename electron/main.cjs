@@ -19,7 +19,16 @@ function getAppRoot() {
 
 function configureAppIdentity() {
   app.setName(PRODUCT_NAME);
-  app.setPath("userData", path.join(app.getPath("appData"), "answer-card-designer"));
+  const userDataDir = path.join(app.getPath("appData"), "answer-card-designer");
+  app.setPath("userData", userDataDir);
+  // 打包后快捷方式启动时 CWD 是 C:\Windows\System32，服务端仍有按 cwd 解析的
+  // 相对路径（config.yml、cleanup 兜底等），统一切到可写目录，避免 EPERM。
+  try {
+    fs.mkdirSync(userDataDir, { recursive: true });
+    process.chdir(userDataDir);
+  } catch (error) {
+    console.warn(`[Electron] Failed to switch CWD to userData: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function startLocalServer() {
