@@ -13,6 +13,7 @@ import type {
 } from "../../../shared/types";
 import { buildLayout } from "../../../shared/layout";
 import { formatBlankLabel } from "../../../shared/blankLabels";
+import { ESSAY_GRID_INSET_X, essayGridGeometry, essayWordScaleMarks } from "../../../shared/essayGrid";
 import { shouldRenderScoreGrid } from "../../../shared/scoreGrid";
 import { cardAssetsDir } from "./storage";
 
@@ -264,79 +265,60 @@ function drawEssayGrid(
   const q = originalBlock.questions[0];
   const g = q?.essayGrid ?? { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15, showFrame: true, showWordScale: true };
 
-  const cellW = g.cellWidthMm || 7;
-  const cellH = g.cellHeightMm || 7;
   const lineColor = g.lineColor || "#222";
   const lineW = g.lineWidthMm ?? 0.15;
   const showTitle = g.showTitle !== false;
   const showFrame = g.showFrame !== false;
   const showWordScale = g.showWordScale !== false;
-  const insetX = 4;
-
-  const bodyW = block.rect.width;
-  const usableW = bodyW - insetX * 2;
-  const columns = g.columns > 0 ? g.columns : Math.max(1, Math.floor(usableW / cellW));
-  const gridW = columns * cellW;
-  const offsetX = block.rect.x + (bodyW - gridW) / 2;
-
-  const gap = 1.6; // 行间窄溜宽度（mm），仅作为格间空隙，格子本身保持完整高度
-  const gridTop = showTitle ? 9 : 2;
-  const bottomPad = 2;
-  const gridH = block.rect.height - gridTop - bottomPad;
-  const rows = Math.max(0, Math.floor((gridH + gap) / (cellH + gap)));
-  const startY = block.rect.y + gridTop;
+  // 几何唯一事实源：shared/essayGrid（与 SVG 预览、排版引擎共用，行数/行缝/刻度一致）
+  const geo = essayGridGeometry(block.rect, g);
+  const marks = showWordScale ? essayWordScaleMarks(geo, block.essayStartCell ?? 0, g.targetChars || 600) : [];
 
   // 粗边框（仿考试卷作文格外框）
   if (showFrame && block.frameRect) {
     drawRect(doc, block.frameRect, { stroke: "#111", lineWidth: 0.4 });
   }
 
-  // 标题（置于边框内左上角）
+  // 标题（置于边框内左上角）；题号右对齐，与 SVG 预览一致
   if (showTitle) {
-    drawText(doc, block.title, block.rect.x + insetX, block.rect.y + 1.5, 9);
+    drawText(doc, block.title, block.rect.x + ESSAY_GRID_INSET_X, block.rect.y + 1.5, 9, { lineBreak: false });
+    drawText(
+      doc,
+      `题：（${String(q?.number ?? 1).padStart(3, "0")}）`,
+      block.rect.x + block.rect.width - ESSAY_GRID_INSET_X - 30,
+      block.rect.y + 1.5,
+      7,
+      { align: "right", width: pt(30), lineBreak: false }
+    );
   }
 
   // 格子：保持完整高度，行间留出较宽窄溜用于横向标注字数刻度
-  for (let row = 0; row < rows; row++) {
-    const cy = startY + row * (cellH + gap);
-    for (let col = 0; col < columns; col++) {
-      const cx = offsetX + col * cellW;
-      drawRect(doc, { x: cx, y: cy, width: cellW, height: cellH }, {
+  for (let row = 0; row < geo.rows; row++) {
+    const cy = geo.rowY(row);
+    for (let col = 0; col < geo.columns; col++) {
+      const cx = geo.offsetX + col * geo.cellW;
+      drawRect(doc, { x: cx, y: cy, width: geo.cellW, height: geo.cellH }, {
         stroke: lineColor, lineWidth: lineW, fill: "#fff"
       });
     }
     // 行间窄溜：淡虚线贯穿整栏（末行不画）
-    if (row < rows - 1) {
-      const lineY = startY + (row + 1) * (cellH + gap) - gap / 2;
+    if (row < geo.rows - 1) {
+      const lineY = geo.rowSeamY(row);
       doc.lineWidth(pt(0.08));
       doc.strokeColor("#ddd");
       doc.dash(pt(1), { space: pt(1) });
-      doc.moveTo(pt(offsetX), pt(lineY)).lineTo(pt(offsetX + gridW), pt(lineY)).stroke();
+      doc.moveTo(pt(geo.offsetX), pt(lineY)).lineTo(pt(geo.offsetX + geo.gridW), pt(lineY)).stroke();
       doc.undash();
     }
   }
 
   // 字数刻度：每 100 字里程碑数字置于该行下方窄缝、右对齐到对应格右边线（格子右下角的窄溜里，不进格内）
-  if (showWordScale && columns > 0) {
-    const startCell = block.essayStartCell ?? 0;
-    const targetCells = g.targetChars || 600;
-    const padX = 0.6; // 距格右边线内缩
-    for (let row = 0; row < rows; row++) {
-      const rowStart = startCell + row * columns;
-      const rowEnd = rowStart + columns - 1;
-      const milestone = Math.ceil((rowStart + 1) / 100) * 100;
-      if (milestone <= rowEnd && milestone <= targetCells) {
-        const cellIndex = milestone - rowStart - 1;
-        const cellRight = offsetX + (cellIndex + 1) * cellW;       // 该格右边线
-        const seamY = startY + (row + 1) * (cellH + gap) - gap / 2; // 该行下方窄缝中心（保持正下方）
-        const boxW = cellW + 1; // 容错宽度，右对齐落在格右边线内缩处
-        // 右对齐：数字贴该格右边线（内缩 padX），竖直仍在该行下方窄缝
-        drawText(doc, String(milestone), cellRight - padX - boxW, seamY - 1.1, 4.5, {
-          width: boxW, align: "right", lineBreak: false
-        });
-      }
-    }
-  }
+  marks.forEach((mark) => {
+    const boxW = geo.cellW + 1; // 容错宽度，右对齐落在格右边线内缩处
+    drawText(doc, String(mark.milestone), mark.x - 0.6 - boxW, mark.seamY - 1.1, 4.5, {
+      width: boxW, align: "right", lineBreak: false
+    });
+  });
 }
 
 function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, question: SubjectiveRenderItem, frameRect?: Rect) {

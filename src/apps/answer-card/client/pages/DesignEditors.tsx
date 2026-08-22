@@ -30,6 +30,7 @@ import {
   X
 } from "lucide-react";
 import {
+  Badge,
   Button,
   Field,
   Input,
@@ -66,6 +67,7 @@ import {
   optionLabelsForQuestion
 } from "../../../../shared/grading";
 import { createBlockId } from "../../../../shared/defaultCard";
+import { ESSAY_DEFAULT_LINE_COLOR, ESSAY_GRID_INSET_X, essayGridGeometry, essayWordScaleMarks } from "../../../../shared/essayGrid";
 import { formatBlankLabel } from "../../../../shared/blankLabels";
 import { shouldRenderScoreGrid } from "../../../../shared/scoreGrid";
 import {
@@ -469,7 +471,7 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
       )}
 
       <p className="rounded-md bg-secondary p-2.5 text-xs text-muted-foreground">
-        横向模式少于 15 题按行排列、15 题及以上按 5 题小组网格排列；竖向模式按高考 AB 卡式 4 题一组纵向排布，每题选项仍保持横向小组选项。超过 5 个选项的题目独占一行。
+        横向模式少于 15 题按行排列、15 题及以上按 5 题小组网格排列；竖向模式按高考 AB 卡式 4 题一组纵向排布，每题选项仍保持横向小组选项；选项竖排模式下每题的 A/B/C/D 在题号下方纵向堆叠。超过 5 个选项的题目独占一行。
       </p>
     </div>
   );}
@@ -546,7 +548,11 @@ export function SubjectiveEditor({
         {!isEssayBlock && block.questions.map((question) => (
           <Panel key={question.id} className="gap-2 p-3">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold text-foreground">第 {question.number} 题</span>
+              <span className="flex items-center gap-1.5">
+                <span className="text-xs font-semibold text-foreground">第 {question.number} 题</span>
+                {/* 填空题块的得分填涂格是块级的：只有首题（计分题）承载整块得分格 */}
+                {isFillBlankBlock && block.questions[0]?.id === question.id && <Badge>计分题</Badge>}
+              </span>
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -655,39 +661,44 @@ export function SubjectiveEditor({
                     </Select>
                   </Field>
                 </div>
-                <div className="border-l-2 border-border-subtle pl-2">
-                  <label className="flex items-center gap-2 text-xs text-secondary-foreground">
-                    <input
-                      type="checkbox"
-                      checked={question.scoreGrid?.enabled !== false}
-                      onChange={(event) => updateQuestion(question.id, (draft) => {
-                        draft.scoreGrid = {
-                          enabled: event.target.checked,
-                          strokeColor: draft.scoreGrid?.strokeColor ?? "#999",
-                          strokeWidthMm: draft.scoreGrid?.strokeWidthMm ?? 0.15,
-                          fillColor: draft.scoreGrid?.fillColor ?? "#fff",
-                          fontSize: draft.scoreGrid?.fontSize ?? 2.8,
-                          dividerColor: draft.scoreGrid?.dividerColor ?? "#ccc",
-                          dividerWidthMm: draft.scoreGrid?.dividerWidthMm ?? 0.1,
-                          showLabel: draft.scoreGrid?.showLabel !== false,
-                        };
-                      })}
-                    />
-                    显示得分填涂格
-                  </label>
-                  {question.scoreGrid?.enabled !== false && (
-                    <label className="mt-2 flex items-center gap-2 text-xs text-secondary-foreground">
+                {block.questions[0]?.id === question.id ? (
+                  <div className="border-l-2 border-border-subtle pl-2">
+                    <label className="flex items-center gap-2 text-xs text-secondary-foreground">
                       <input
                         type="checkbox"
-                        checked={question.scoreGrid?.showLabel !== false}
+                        checked={question.scoreGrid?.enabled !== false}
                         onChange={(event) => updateQuestion(question.id, (draft) => {
-                          if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, showLabel: event.target.checked };
+                          draft.scoreGrid = {
+                            enabled: event.target.checked,
+                            strokeColor: draft.scoreGrid?.strokeColor ?? "#999",
+                            strokeWidthMm: draft.scoreGrid?.strokeWidthMm ?? 0.15,
+                            fillColor: draft.scoreGrid?.fillColor ?? "#fff",
+                            fontSize: draft.scoreGrid?.fontSize ?? 2.8,
+                            dividerColor: draft.scoreGrid?.dividerColor ?? "#ccc",
+                            dividerWidthMm: draft.scoreGrid?.dividerWidthMm ?? 0.1,
+                            showLabel: draft.scoreGrid?.showLabel !== false,
+                          };
                         })}
                       />
-                      显示"得分"标签
+                      显示得分填涂格
                     </label>
-                  )}
-                </div>
+                    {question.scoreGrid?.enabled !== false && (
+                      <label className="mt-2 flex items-center gap-2 text-xs text-secondary-foreground">
+                        <input
+                          type="checkbox"
+                          checked={question.scoreGrid?.showLabel !== false}
+                          onChange={(event) => updateQuestion(question.id, (draft) => {
+                            if (draft.scoreGrid) draft.scoreGrid = { ...draft.scoreGrid, showLabel: event.target.checked };
+                          })}
+                        />
+                        显示"得分"标签
+                      </label>
+                    )}
+                    <p className="mt-1.5 text-xs text-muted-foreground">填空题块整块共用一组得分格，由块首题（计分题）与「填空题块满分」控制。</p>
+                  </div>
+                ) : (
+                  <p className="border-l-2 border-border-subtle pl-2 text-xs text-muted-foreground">得分填涂格由块首题（计分题）统一控制，本题不单独显示。</p>
+                )}
                 <div className="flex flex-col gap-2 border-l-2 border-border-subtle pl-2">
                   {answerBlankItems(question).map((item, blankIndex) => (
                     <Field key={blankIndex} label={`空${blankIndex + 1} 右侧批注`}>
@@ -718,28 +729,30 @@ export function SubjectiveEditor({
                     </SelectContent>
                   </Select>
                 </Field>
-                {question.style === "manual_score_grid" && (
-                  <div className="border-l-2 border-border-subtle pl-2">
-                    <label className="flex items-center gap-2 text-xs text-secondary-foreground">
-                      <input
-                        type="checkbox"
-                        checked={question.scoreGrid?.enabled !== false}
-                        onChange={(event) => updateQuestion(question.id, (draft) => {
-                          draft.scoreGrid = {
-                            enabled: event.target.checked,
-                            strokeColor: draft.scoreGrid?.strokeColor ?? "#999",
-                            strokeWidthMm: draft.scoreGrid?.strokeWidthMm ?? 0.15,
-                            fillColor: draft.scoreGrid?.fillColor ?? "#fff",
-                            fontSize: draft.scoreGrid?.fontSize ?? 2.8,
-                            dividerColor: draft.scoreGrid?.dividerColor ?? "#ccc",
-                            dividerWidthMm: draft.scoreGrid?.dividerWidthMm ?? 0.1,
-                            showLabel: draft.scoreGrid?.showLabel !== false,
-                          };
-                        })}
+                <div className="border-l-2 border-border-subtle pl-2">
+                  <label className="flex items-center gap-2 text-xs text-secondary-foreground">
+                    <input
+                      type="checkbox"
+                      checked={question.style === "manual_score_grid" && question.scoreGrid?.enabled !== false}
+                      onChange={(event) => updateQuestion(question.id, (draft) => {
+                        const enabled = event.target.checked;
+                        // 开启即切到带分数填涂区的样式，避免「开关开着却因样式不匹配而不渲染」
+                        if (enabled) draft.style = "manual_score_grid";
+                        draft.scoreGrid = {
+                          enabled,
+                          strokeColor: draft.scoreGrid?.strokeColor ?? "#999",
+                          strokeWidthMm: draft.scoreGrid?.strokeWidthMm ?? 0.15,
+                          fillColor: draft.scoreGrid?.fillColor ?? "#fff",
+                          fontSize: draft.scoreGrid?.fontSize ?? 2.8,
+                          dividerColor: draft.scoreGrid?.dividerColor ?? "#ccc",
+                          dividerWidthMm: draft.scoreGrid?.dividerWidthMm ?? 0.1,
+                          showLabel: draft.scoreGrid?.showLabel !== false,
+                        };
+                      })}
                       />
                       显示得分填涂格
                     </label>
-                    {question.scoreGrid?.enabled !== false && (
+                    {question.style === "manual_score_grid" && question.scoreGrid?.enabled !== false && (
                       <div className="mt-2 grid grid-cols-2 gap-2">
                         <Field label="格线色">
                           <Input type="color" value={question.scoreGrid?.strokeColor ?? "#999"}
@@ -764,8 +777,7 @@ export function SubjectiveEditor({
                         </label>
                       </div>
                     )}
-                  </div>
-                )}
+                </div>
                 <Field label="作答区类型">
                   <Select
                     value={question.kind}
@@ -886,32 +898,30 @@ export function SubjectiveEditor({
                 </Button>
               </div>
             )}
-            {!isFillBlankBlock && (
+            {!isFillBlankBlock && question.kind !== "blank" && (
               <>
-                {question.kind !== "blank" && (
-                  <>
-                    <label className="flex items-center gap-2 text-xs text-secondary-foreground">
-                      <input
-                        type="checkbox"
-                        checked={question.lineGrid?.enabled ?? false}
-                        onChange={(event) => updateQuestion(question.id, (draft) => {
-                          const wasOn = draft.lineGrid?.enabled;
-                          const enabled = event.target.checked;
-                          draft.lineGrid = {
-                            lineSpacingMm: draft.lineGrid?.lineSpacingMm ?? 8,
-                            lineColor: draft.lineGrid?.lineColor ?? "#222",
-                            lineWidthMm: draft.lineGrid?.lineWidthMm ?? 0.15,
-                            insetLeftMm: draft.lineGrid?.insetLeftMm ?? 8,
-                            insetRightMm: draft.lineGrid?.insetRightMm ?? 6,
-                            lineStyle: draft.lineGrid?.lineStyle ?? "solid",
-                            fixedLineCount: draft.lineGrid?.fixedLineCount,
-                            enabled,
-                          };
-                          if (!wasOn && enabled) {
-                            draft.kind = "lined_answer";
-                            draft.lineGrid = { ...draft.lineGrid, fixedLineCount: answerLineCount(draft) };
-                            draft.minHeightMm = heightForAnswerLines(draft.lineGrid.fixedLineCount!, draft.lineGrid.lineSpacingMm);
-                          }
+                <label className="flex items-center gap-2 text-xs text-secondary-foreground">
+                  <input
+                    type="checkbox"
+                    checked={question.lineGrid?.enabled ?? false}
+                    onChange={(event) => updateQuestion(question.id, (draft) => {
+                      const wasOn = draft.lineGrid?.enabled;
+                      const enabled = event.target.checked;
+                      draft.lineGrid = {
+                        lineSpacingMm: draft.lineGrid?.lineSpacingMm ?? 8,
+                        lineColor: draft.lineGrid?.lineColor ?? "#222",
+                        lineWidthMm: draft.lineGrid?.lineWidthMm ?? 0.15,
+                        insetLeftMm: draft.lineGrid?.insetLeftMm ?? 8,
+                        insetRightMm: draft.lineGrid?.insetRightMm ?? 6,
+                        lineStyle: draft.lineGrid?.lineStyle ?? "solid",
+                        fixedLineCount: draft.lineGrid?.fixedLineCount,
+                        enabled,
+                      };
+                      if (!wasOn && enabled) {
+                        draft.kind = "lined_answer";
+                        draft.lineGrid = { ...draft.lineGrid, fixedLineCount: answerLineCount(draft) };
+                        draft.minHeightMm = heightForAnswerLines(draft.lineGrid.fixedLineCount!, draft.lineGrid.lineSpacingMm);
+                      }
                         })}
                       />
                       启用横线格
@@ -982,30 +992,47 @@ export function SubjectiveEditor({
                         </Field>
                       </div>
                     )}
-                  </>
-                )}
-                <label className="relative inline-flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-border-strong bg-card px-3 py-2 text-xs text-secondary-foreground transition-colors hover:border-primary hover:text-accent-foreground">
-                  <ImagePlus size={16} /> 插入图片
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="absolute inset-0 cursor-pointer opacity-0"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      if (file) void onUpload(block.id, question.id, file);
-                      event.currentTarget.value = "";
-                    }}
+                </>
+              )}
+              {isFillBlankBlock && (
+                <Field label="文字注释">
+                  <Input
+                    value={question.annotation ?? ""}
+                    placeholder="填空横线上方的说明文字"
+                    onChange={(event) => updateQuestion(question.id, (draft) => void (draft.annotation = event.target.value || undefined))}
                   />
-                </label>
-                {(question.images ?? []).map((image, index) => (
-                  <div className="flex items-center gap-2 text-xs text-secondary-foreground" key={`${image.assetId}_${index}`}>
-                    <span className="min-w-0 flex-1 truncate">{image.originalName ?? image.assetId}</span>
-                    <Input type="number" min={10} value={image.widthMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))} className="w-20" />
-                    <Input type="number" min={10} value={image.heightMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))} className="w-20" />
-                  </div>
-                ))}
-              </>
-            )}
+                </Field>
+              )}
+              {/* 图片插入对所有主观题小题可用（含填空题块，#221 重构曾误将此控件随横线格一起隐藏） */}
+              <label className="relative inline-flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-border-strong bg-card px-3 py-2 text-xs text-secondary-foreground transition-colors hover:border-primary hover:text-accent-foreground">
+                <ImagePlus size={16} /> 插入图片
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="absolute inset-0 cursor-pointer opacity-0"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void onUpload(block.id, question.id, file);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+              {(question.images ?? []).map((image, index) => (
+                <div className="flex items-center gap-2 text-xs text-secondary-foreground" key={`${image.assetId}_${index}`}>
+                  <span className="min-w-0 flex-1 truncate" title={image.originalName ?? image.assetId}>{image.originalName ?? image.assetId}</span>
+                  <Input type="number" min={10} aria-label="图片宽度(mm)" value={image.widthMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))} className="w-16" />
+                  <Input type="number" min={10} aria-label="图片高度(mm)" value={image.heightMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))} className="w-16" />
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="删除图片"
+                    className="text-destructive-fg hover:bg-destructive-soft"
+                    onClick={() => updateQuestion(question.id, (draft) => void (draft.images = (draft.images ?? []).filter((_, i) => i !== index)))}
+                  >
+                    <Trash2 size={14} />
+                  </Button>
+                </div>
+              ))}
           </Panel>
         ))}
         {isFillBlankBlock && (
@@ -1027,7 +1054,7 @@ export function SubjectiveEditor({
                 value={block.questions[0]?.essayGrid?.targetChars ?? 600}
                 min={100} max={2000} step={50}
                 onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: ESSAY_DEFAULT_LINE_COLOR, lineWidthMm: 0.15 };
                   draft.essayGrid.targetChars = Number(event.target.value) || 600;
                 })}
               />
@@ -1039,7 +1066,7 @@ export function SubjectiveEditor({
                   value={block.questions[0]?.essayGrid?.cellWidthMm ?? 7}
                   min={4} max={12} step={0.5}
                   onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                    if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                    if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: ESSAY_DEFAULT_LINE_COLOR, lineWidthMm: 0.15 };
                     draft.essayGrid.cellWidthMm = Number(event.target.value) || 7;
                   })}
                 />
@@ -1050,18 +1077,29 @@ export function SubjectiveEditor({
                   value={block.questions[0]?.essayGrid?.cellHeightMm ?? 7}
                   min={4} max={12} step={0.5}
                   onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                    if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                    if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: ESSAY_DEFAULT_LINE_COLOR, lineWidthMm: 0.15 };
                     draft.essayGrid.cellHeightMm = Number(event.target.value) || 7;
                   })}
                 />
               </Field>
             </div>
+            <Field label="格线颜色">
+              <Input
+                type="color"
+                value={block.questions[0]?.essayGrid?.lineColor ?? ESSAY_DEFAULT_LINE_COLOR}
+                onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
+                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: ESSAY_DEFAULT_LINE_COLOR, lineWidthMm: 0.15 };
+                  draft.essayGrid.lineColor = event.target.value;
+                })}
+                className="h-7 px-1 py-0.5"
+              />
+            </Field>
             <label className="flex items-center gap-2 text-xs text-secondary-foreground">
               <input
                 type="checkbox"
                 checked={block.questions[0]?.essayGrid?.showTitle !== false}
                 onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: ESSAY_DEFAULT_LINE_COLOR, lineWidthMm: 0.15 };
                   draft.essayGrid.showTitle = event.target.checked;
                 })}
               /> 显示"题：（000）"标题
@@ -1071,7 +1109,7 @@ export function SubjectiveEditor({
                 type="checkbox"
                 checked={block.questions[0]?.essayGrid?.showFrame !== false}
                 onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: ESSAY_DEFAULT_LINE_COLOR, lineWidthMm: 0.15 };
                   draft.essayGrid.showFrame = event.target.checked;
                 })}
               /> 显示粗边框
@@ -1081,7 +1119,7 @@ export function SubjectiveEditor({
                 type="checkbox"
                 checked={block.questions[0]?.essayGrid?.showWordScale !== false}
                 onChange={(event) => updateQuestion(block.questions[0].id, (draft) => {
-                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: "#222", lineWidthMm: 0.15 };
+                  if (!draft.essayGrid) draft.essayGrid = { columns: 0, rows: 0, cellWidthMm: 7, cellHeightMm: 7, targetChars: 600, showTitle: true, lineColor: ESSAY_DEFAULT_LINE_COLOR, lineWidthMm: 0.15 };
                   draft.essayGrid.showWordScale = event.target.checked;
                 })}
               /> 显示字数刻度
@@ -1097,7 +1135,7 @@ export function SubjectiveEditor({
 
 export function CardPreview({ card, layout, firstPageOnly = false }: { card: AnswerCard; layout: LayoutDocument; firstPageOnly?: boolean }) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const toolbarRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState({ width: 760, height: 560 });
   // 每次进入编辑器先按 demo 的默认状态展示完整纸面；缩放操作仍可在本次编辑中使用。
   const [{ mode, customPercent }, setPreviewSettings] = useState<{ mode: PreviewMode; customPercent: number }>({
@@ -1112,20 +1150,22 @@ export function CardPreview({ card, layout, firstPageOnly = false }: { card: Ans
   }, [mode, customPercent]);
 
   useEffect(() => {
-    const root = rootRef.current;
-    const parent = root?.parentElement;
-    if (!root || !parent) return;
+    // 只测量自身滚动区（高度由 flex 链决定、不随内容增长）；
+    // 观察外层内容自适应容器会与 fit-page 的 SVG 高度形成反馈环（无限放大）。
+    const el = scrollRef.current;
+    if (!el) return;
     const measure = () => {
-      const style = getComputedStyle(parent);
+      const style = getComputedStyle(el);
+      const horizontalPadding = Number.parseFloat(style.paddingLeft) + Number.parseFloat(style.paddingRight);
       const verticalPadding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom);
       setViewport({
-        width: Math.max(1, root.clientWidth),
-        height: Math.max(1, parent.clientHeight - verticalPadding - (toolbarRef.current?.offsetHeight ?? 0) - 16)
+        width: Math.max(1, el.clientWidth - horizontalPadding),
+        height: Math.max(1, el.clientHeight - verticalPadding)
       });
     };
     measure();
     const observer = new ResizeObserver(measure);
-    observer.observe(parent);
+    observer.observe(el);
     return () => observer.disconnect();
   }, []);
 
@@ -1134,28 +1174,22 @@ export function CardPreview({ card, layout, firstPageOnly = false }: { card: Ans
   const panelRatio = firstPage?.panels[0]?.rect.width
     ? firstPage.width / firstPage.panels[0].rect.width
     : 1;
-  const fitPagePercent = Math.max(
-    PREVIEW_MIN_PERCENT,
-    Math.min(100, viewport.height * paperRatio / viewport.width * 100)
-  );
+  // Fit width fills the usable canvas; fit page must show the whole paper,
+  // so it is bounded by both the usable width and the usable height.
+  const pageWidth = mode === "fit-page"
+    ? Math.min(viewport.width, viewport.height * paperRatio)
+    : mode === "fit-panel"
+      ? viewport.width * Math.min(PREVIEW_MAX_PERCENT, panelRatio * 100) / 100
+      : mode === "custom"
+        ? viewport.width * customPercent / 100
+        : viewport.width;
   const effectivePercent = Math.max(
     PREVIEW_MIN_PERCENT,
     Math.min(
       PREVIEW_MAX_PERCENT,
-      mode === "fit-page"
-        ? fitPagePercent
-        : mode === "fit-panel"
-          ? panelRatio * 100
-          : mode === "custom"
-            ? customPercent
-            : 100
+      mode === "custom" ? customPercent : (pageWidth / viewport.width) * 100
     )
   );
-  // Fit width fills the usable canvas; fit page fills its usable height.
-  // Do not cap this value: the paper must follow the current work area.
-  const pageWidth = mode === "fit-page"
-    ? viewport.height * paperRatio
-    : viewport.width * effectivePercent / 100;
 
   const changeZoom = (delta: number) => {
     const next = Math.max(PREVIEW_MIN_PERCENT, Math.min(PREVIEW_MAX_PERCENT, Math.round(effectivePercent / 10) * 10 + delta));
@@ -1169,7 +1203,7 @@ export function CardPreview({ card, layout, firstPageOnly = false }: { card: Ans
 
   return (
     <div className={cn("flex h-full min-h-0 w-full min-w-0 flex-col", isThumbnail && "card-preview-thumbnail")} ref={rootRef}>
-      {!isThumbnail && <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-4" ref={toolbarRef} aria-label="预览缩放工具栏">
+      {!isThumbnail && <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-4" aria-label="预览缩放工具栏">
         <SegmentedControl<PreviewMode>
           value={mode}
           onValueChange={(value) => setPreviewSettings({ mode: value, customPercent })}
@@ -1191,12 +1225,12 @@ export function CardPreview({ card, layout, firstPageOnly = false }: { card: Ans
           <Plus size={14} />
         </Button>
       </div>}
-      <div className={cn("flex min-h-0 flex-1 flex-col items-center gap-6 overflow-auto p-6", isThumbnail && "gap-0 p-0") }>
+      <div className={cn("flex min-h-0 flex-1 flex-col items-center gap-6 overflow-auto p-6", isThumbnail && "gap-0 p-0")} ref={scrollRef}>
         {(firstPageOnly ? layout.pages.slice(0, 1) : layout.pages).map((page) => (
           <svg
             key={page.pageNumber}
             viewBox={`0 0 ${page.width} ${page.height}`}
-             className="paper-a4-preview rounded-xs bg-paper shadow-2"
+             className="paper-a4-preview shrink-0 rounded-xs bg-paper shadow-2"
              style={{ aspectRatio: `${page.width} / ${page.height}`, width: `${thumbnailPageWidth}px`, height: `${thumbnailPageWidth * page.height / page.width}px` }}
             role="img"
             aria-label={`第${page.pageNumber}页预览`}
@@ -1306,49 +1340,59 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
     const q = originalBlock && originalBlock.type === "subjective" ? originalBlock.questions[0] : null;
     const g = q?.essayGrid;
     if (!g) return null;
-    const cellW = g.cellWidthMm || 7;
-    const cellH = g.cellHeightMm || 7;
+    // 几何（列/行/行缝/刻度）唯一事实源：shared/essayGrid，预览与 PDF、排版共用
+    const geo = essayGridGeometry(block.rect, g);
     const lineColor = g.lineColor || "#222";
     const lineW = g.lineWidthMm ?? 0.15;
     const showTitle = g.showTitle !== false;
-
-    // 计算栏宽和列数
-    const bodyW = block.rect.width;
-    const insetX = 4;
-    const usableW = bodyW - insetX * 2;
-    const columns = g.columns > 0 ? g.columns : Math.max(1, Math.floor(usableW / cellW));
-    const gridW = columns * cellW;
-    const offsetX = block.rect.x + (bodyW - gridW) / 2;
-
-    // 高度内能放的行数
-    const gridH = block.rect.height - (showTitle ? 9 : 2);
-    const rows = Math.floor(gridH / cellH);
-    const startY = block.rect.y + (showTitle ? 9 : 2);
+    const showFrame = g.showFrame !== false;
+    const showWordScale = g.showWordScale !== false;
+    const marks = showWordScale ? essayWordScaleMarks(geo, block.essayStartCell ?? 0, g.targetChars || 600) : [];
 
     return (
       <g>
+        {showFrame && block.frameRect && <rect {...block.frameRect} fill="none" stroke="#111" strokeWidth={0.4} />}
         {showTitle && block.title && (
           <>
-            <text x={block.rect.x + insetX} y={block.rect.y + 5} fontSize={3.4} fontWeight={600} fill="#1a1a1a">{block.title}（{q?.score}分）</text>
-            <text x={block.rect.x + insetX + 64} y={block.rect.y + 5} fontSize={2.4} fill="#888">
+            <text x={block.rect.x + ESSAY_GRID_INSET_X} y={block.rect.y + 5} fontSize={3.4} fontWeight={600} fill="#1a1a1a">{block.title}（{q?.score}分）</text>
+            <text x={block.rect.x + block.rect.width - ESSAY_GRID_INSET_X} y={block.rect.y + 5} textAnchor="end" fontSize={2.4} fill="#888">
               题：（{String(q?.number ?? 1).padStart(3, "0")}）
             </text>
           </>
         )}
-        {[...Array(rows)].map((_, row) =>
-          [...Array(columns)].map((_, col) => (
+        {[...Array(geo.rows)].map((_, row) =>
+          [...Array(geo.columns)].map((_, col) => (
             <rect
               key={`${row}_${col}`}
-              x={offsetX + col * cellW}
-              y={startY + row * cellH}
-              width={cellW}
-              height={cellH}
+              x={geo.offsetX + col * geo.cellW}
+              y={geo.rowY(row)}
+              width={geo.cellW}
+              height={geo.cellH}
               fill="#fff"
               stroke={lineColor}
               strokeWidth={lineW}
             />
           ))
         )}
+        {/* 行间淡虚线（末行不画），与 PDF 导出一致 */}
+        {[...Array(Math.max(0, geo.rows - 1))].map((_, row) => (
+          <line
+            key={`seam_${row}`}
+            x1={geo.offsetX}
+            y1={geo.rowSeamY(row)}
+            x2={geo.offsetX + geo.gridW}
+            y2={geo.rowSeamY(row)}
+            stroke="#ddd"
+            strokeWidth={0.08}
+            strokeDasharray="1 1"
+          />
+        ))}
+        {/* 每 100 字刻度：右对齐落在里程碑格右边线的下方窄缝（跨栏续号） */}
+        {marks.map((mark) => (
+          <text key={`mark_${mark.milestone}`} x={mark.x - 0.6} y={mark.seamY + 0.9} textAnchor="end" fontSize={1.6} fill="#888">
+            {mark.milestone}
+          </text>
+        ))}
       </g>
     );
   }
@@ -1452,9 +1496,15 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
               </g>
             );
           })}
+          {(question.annotationLines ?? []).map((line, index) => (
+            <text key={`anno_${index}`} x={line.rect.x} y={line.rect.y} fontSize={2.5} fill="#1a1a1a">
+              {line.text}
+            </text>
+          ))}
           {question.images.map((image) => (
             <g key={image.assetId}>
-              <image href={apiUrl(`/assets/${card.id}/${image.assetId}`)} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
+              {/* 受控资源路由在 /api 下（#202 移除了公开 /assets 静态目录），少了 /api 前缀会 404 */}
+              <image href={apiUrl(`/api/assets/${card.id}/${image.assetId}`)} x={image.rect.x} y={image.rect.y} width={image.rect.width} height={image.rect.height} preserveAspectRatio="xMidYMid meet" />
               <rect {...image.rect} fill="none" stroke="#666" strokeWidth="0.18" />
             </g>
           ))}

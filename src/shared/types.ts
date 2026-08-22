@@ -2,7 +2,7 @@ import type { HistogramBin, NormalityResult, QQPoint, ThresholdBand } from "./st
 
 export type ObjectiveMode = "single" | "multiple" | "indefinite";
 export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
-export type ObjectiveOptionLayout = "horizontal" | "vertical";
+export type ObjectiveOptionLayout = "horizontal" | "vertical" | "vertical-options";
 export type SubjectiveStyle = "manual_score_grid" | "plain_subjective";
 export type SubjectiveKind = "blank" | "lined_answer" | "plain_box";
 export type SubjectiveBlockKind = "fill_blank" | "answer" | "essay";

@@ -9,12 +9,15 @@ import {
   FileUp,
   ListPlus,
   MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   Save,
   SquarePen,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
+import { Group, Panel as ResizePanel, Separator, useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { useWorkspace } from "../WorkspaceContext";
 import type { ObjectiveBlock, SubjectiveBlock } from "../../../../shared/types";
 import type { AnswerCard, LayoutDocument } from "../../../../shared/types";
@@ -87,6 +90,23 @@ export function DesignPage() {
   useEffect(() => {
     setInspectorTab(selectedBlock ? "block" : "info");
   }, [selectedBlock?.id]);
+
+  // 三栏工作台（react-resizable-panels v4）：左右栏可拖拽调宽、左栏可折叠，
+  // 布局经 useDefaultLayout 记忆到 localStorage（key 前缀 react-resizable-panels:）。
+  const blocksPanelRef = usePanelRef();
+  const [blocksCollapsed, setBlocksCollapsed] = useState(false);
+  const designerPanelLayout = useDefaultLayout({ id: "designer-panels" });
+  const toggleBlocksPanel = () => {
+    const handle = blocksPanelRef.current;
+    if (!handle) return;
+    if (handle.isCollapsed()) {
+      handle.expand();
+      setBlocksCollapsed(false);
+    } else {
+      handle.collapse();
+      setBlocksCollapsed(true);
+    }
+  };
 
   const blockSubLabel = (block: typeof selectedBlock) => {
     if (!block) return "";
@@ -230,14 +250,44 @@ export function DesignPage() {
   // ── 编辑器 ──
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* ContextPanel: 题块列表 */}
-      <div className="flex min-h-0 flex-1">
-        <ContextPanel>
-          <ContextPanelHeader>
-            <span className="text-sm font-semibold text-foreground">正文题块</span>
-            <span className="text-xs tabular-nums text-muted-foreground">{card?.bodyBlocks.length ?? 0} 块</span>
-          </ContextPanelHeader>
-          <ContextPanelBody>
+      {/* 三栏工作台：Panel 宽度可拖拽（Separator），左栏可折叠；宽度记忆见 useDefaultLayout */}
+      <Group
+        orientation="horizontal"
+        id="designer-panels"
+        className="min-h-0 flex-1"
+        defaultLayout={designerPanelLayout.defaultLayout}
+        onLayoutChanged={designerPanelLayout.onLayoutChanged}
+      >
+        <ResizePanel
+          id="blocks"
+          className="flex h-full min-h-0 flex-col"
+          defaultSize={300}
+          minSize={220}
+          maxSize={440}
+          collapsible
+          collapsedSize={32}
+          panelRef={blocksPanelRef}
+          onResize={(size) => setBlocksCollapsed(size.inPixels < 60)}
+        >
+          <ContextPanel className="w-full min-h-0 flex-1 border-r-0">
+            {blocksCollapsed ? (
+              <div className="flex flex-col items-center gap-1 pt-2">
+                <Button variant="ghost" size="icon-sm" aria-label="展开题块面板" onClick={toggleBlocksPanel}>
+                  <PanelLeftOpen size={14} />
+                </Button>
+              </div>
+            ) : (
+              <>
+                <ContextPanelHeader>
+                  <span className="text-sm font-semibold text-foreground">正文题块</span>
+                  <span className="flex items-center gap-1">
+                    <span className="text-xs tabular-nums text-muted-foreground">{card?.bodyBlocks.length ?? 0} 块</span>
+                    <Button variant="ghost" size="icon-sm" aria-label="折叠题块面板" onClick={toggleBlocksPanel}>
+                      <PanelLeftClose size={14} />
+                    </Button>
+                  </span>
+                </ContextPanelHeader>
+                <ContextPanelBody>
             {card?.bodyBlocks.length ? (
               card.bodyBlocks.map((block, idx) => (
                 <ContextItem
@@ -320,10 +370,16 @@ export function DesignPage() {
               </Button>
             </div>
           </ContextPanelBody>
-        </ContextPanel>
+              </>
+            )}
+          </ContextPanel>
+        </ResizePanel>
+
+        <Separator id="blocks-canvas" className="w-1 shrink-0 bg-border-subtle/70 transition-colors hover:bg-primary/60" />
 
         {/* Canvas */}
-        <section className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
+        <ResizePanel id="canvas" className="flex h-full min-h-0 flex-col" minSize="40%">
+        <section className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background">
           {layout?.warnings.length ? (
             <div className="mx-4 mt-3 rounded-md border border-warning-border bg-warning-soft p-2.5 text-xs text-warning-fg">
               {layout.warnings.map((w, i) => (
@@ -335,11 +391,11 @@ export function DesignPage() {
             </div>
           ) : null}
 
-          <div className="flex min-h-0 flex-1 flex-col items-center gap-6 overflow-auto p-6">
+          {/* CardPreview 直接置于高度确定的滚动容器内：若再包一层高度随内容增长的
+              包装层，fit-page 的 ResizeObserver 测量会与 SVG 高度互相反馈导致无限放大。 */}
+          <div className="flex min-h-0 flex-1 flex-col overflow-auto p-6">
             {card && layout ? (
-              <div className="flex w-full flex-col items-center gap-6">
-                <CardPreview card={card} layout={layout} />
-              </div>
+              <CardPreview card={card} layout={layout} />
             ) : (
               <EmptyState
                 icon={<SquarePen />}
@@ -354,9 +410,13 @@ export function DesignPage() {
             )}
           </div>
         </section>
+        </ResizePanel>
 
-        {/* Inspector */}
-        <aside className="flex w-[300px] shrink-0 flex-col overflow-hidden border-l border-border-subtle bg-card">
+        <Separator id="canvas-inspector" className="w-1 shrink-0 bg-border-subtle/70 transition-colors hover:bg-primary/60" />
+
+        {/* Inspector：宽度可拖拽，默认 380px（原 300px 过窄） */}
+        <ResizePanel id="inspector" className="flex h-full min-h-0 flex-col" defaultSize={380} minSize={300} maxSize={560}>
+        <aside className="flex w-full min-h-0 flex-1 flex-col overflow-hidden bg-card">
           {card ? (
             <>
               <div className="flex shrink-0 border-b border-border-subtle">
@@ -388,7 +448,7 @@ export function DesignPage() {
                 <BasicInfoPanel card={card} updateCard={updateCard} />
               ) : (
                 selectedBlock && (
-                  <Panel>
+                  <Panel className="shrink-0">
                     <div className="border-b border-border-subtle px-3 py-2.5 text-sm font-semibold text-foreground">
                       选中块设置
                     </div>
@@ -411,7 +471,7 @@ export function DesignPage() {
                 )
               )}
               {layout && layout.warnings.length > 0 && (
-                <Panel>
+                <Panel className="shrink-0">
                   <details className="group" open>
                     <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2.5 text-sm font-semibold text-foreground">
                       排版警告
@@ -438,7 +498,8 @@ export function DesignPage() {
             />
           )}
         </aside>
-      </div>
+        </ResizePanel>
+      </Group>
     </div>
   );
 }
@@ -471,7 +532,7 @@ function BasicInfoPanel({
   updateCard: ReturnType<typeof useWorkspace>["updateCard"];
 }) {
   return (
-    <Panel>
+    <Panel className="shrink-0">
       <div className="border-b border-border-subtle px-3 py-2.5 text-sm font-semibold text-foreground">基本信息</div>
       <div className="flex flex-col gap-3 p-3">
         <Field label="标题">
