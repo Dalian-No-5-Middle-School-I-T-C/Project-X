@@ -2,6 +2,7 @@ import { getMysqlDb, buildInsertIgnore } from "../db";
 import type { DbAdapter } from "../db";
 import { hashPassword, verifyPassword } from "../db";
 import { validateInitialPassword, generateRandomInitialPassword } from "../auth/passwordPolicy";
+import { encryptField, decryptField } from "../lib/field-crypto";
 import { csvCell } from "../../shared/csv";
 import crypto from "node:crypto";
 
@@ -56,7 +57,7 @@ export class UserRepository {
     const result = await this.db.run(
       `INSERT INTO users (username, password_hash, name, role_id, student_number, track, subject, teacher_role, initial_password, email, phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       params.username, passwordHash, params.name, params.role_id, params.student_number ?? null,
-      params.track ?? null, params.subject ?? null, params.teacher_role ?? null, params.initial_password ?? null,
+      params.track ?? null, params.subject ?? null, params.teacher_role ?? null, encryptField(params.initial_password ?? null),
       params.email ?? null, params.phone ?? null
     );
     return (await this.findById(result.lastInsertRowid))!;
@@ -66,7 +67,7 @@ export class UserRepository {
     const updates: string[] = [];
     const values: unknown[] = [];
     if (params.name !== undefined) { updates.push("name = ?"); values.push(params.name); }
-    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); /* initial_password 用于管理员导出/发放密码，密码变更时同步保持可追溯 */ updates.push("initial_password = ?"); values.push(params.password); }
+    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); /* initial_password 用于管理员导出/发放密码，密码变更时同步保持可追溯（加密存储，防库泄漏即口令全量暴露） */ updates.push("initial_password = ?"); values.push(encryptField(params.password)); }
     if (params.email !== undefined) { updates.push("email = ?"); values.push(params.email); }
     if (params.phone !== undefined) { updates.push("phone = ?"); values.push(params.phone); }
     if (params.is_active !== undefined) { updates.push("is_active = ?"); values.push(params.is_active); }
@@ -155,7 +156,7 @@ export class UserRepository {
     await this.db.transaction(async (tx) => {
       for (const item of prepared) {
         try {
-          const insertResult = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", item.username, item.hash, item.row.name, item.row.student_number, item.initialPassword);
+          const insertResult = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", item.username, item.hash, item.row.name, item.row.student_number, encryptField(item.initialPassword));
           result.created++;
           result.createdIds.push(insertResult.lastInsertRowid);
         } catch (err) { result.errors.push({ row: item.row, message: err instanceof Error ? err.message : String(err) }); }
@@ -203,7 +204,7 @@ export class UserRepository {
     if (params.name !== undefined) { updates.push("name = ?"); values.push(params.name); }
     if (params.subject !== undefined) { updates.push("subject = ?"); values.push(params.subject); }
     if (params.teacher_role !== undefined) { updates.push("teacher_role = ?"); values.push(params.teacher_role); }
-    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); /* initial_password 用于管理员导出/发放密码，密码变更时同步 */ updates.push("initial_password = ?"); values.push(params.password); }
+    if (params.password !== undefined) { updates.push("password_hash = ?"); values.push(await hashPassword(params.password)); /* initial_password 用于管理员导出/发放密码，密码变更时同步（加密存储） */ updates.push("initial_password = ?"); values.push(encryptField(params.password)); }
     updates.push("updated_at = CURRENT_TIMESTAMP"); values.push(id);
     await this.db.run(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`, ...values);
     return await this.findById(id);
@@ -228,13 +229,13 @@ export class UserRepository {
   async exportStudentsCsv(): Promise<string> {
     const rows = await this.listAllStudentsForExport();
     const header = "年级,班级,学号,姓名,账号,密码";
-    return "\uFEFF" + [header, ...rows.map((r: any) => [csvCell(r.grade_name), csvCell(r.class_name), csvCell(r.student_number), csvCell(r.name), csvCell(r.username), csvCell(r.initial_password)].join(","))].join("\n");
+    return "\uFEFF" + [header, ...rows.map((r: any) => [csvCell(r.grade_name), csvCell(r.class_name), csvCell(r.student_number), csvCell(r.name), csvCell(r.username), csvCell(decryptField(r.initial_password))].join(","))].join("\n");
   }
 
   async exportTeachersCsv(): Promise<string> {
     const teachers = await this.listAllTeachersForExport();
     const header = "科目,姓名,账号,密码";
-    return "\uFEFF" + [header, ...teachers.map((t: any) => [csvCell(t.subject), csvCell(t.name), csvCell(t.username), csvCell(t.initial_password)].join(","))].join("\n");
+    return "\uFEFF" + [header, ...teachers.map((t: any) => [csvCell(t.subject), csvCell(t.name), csvCell(t.username), csvCell(decryptField(t.initial_password))].join(","))].join("\n");
   }
 
   async batchImportFromCsv(rows: string[][]): Promise<{
@@ -295,7 +296,7 @@ export class UserRepository {
             if (!grade) { const gr = await tx.run("INSERT INTO grades (name) VALUES (?)", gradeName); grade = { id: gr.lastInsertRowid }; }
             let cls = await tx.get("SELECT id FROM classes WHERE grade_id = ? AND name = ?", grade.id, className) as { id: number } | null;
             if (!cls) { const cr = await tx.run("INSERT INTO classes (grade_id, name) VALUES (?, ?)", grade.id, className); cls = { id: cr.lastInsertRowid }; }
-            const ins = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", username, hash, studentName, studentNumber, password);
+            const ins = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", username, hash, studentName, studentNumber, encryptField(password));
             const linkSql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
             await tx.run(linkSql, cls.id, ins.lastInsertRowid);
           });
@@ -311,7 +312,7 @@ export class UserRepository {
           const subject = (row[subjectIdx] ?? "").trim(), teacherName = (row[nameIdx] ?? "").trim();
           if (!subject || !teacherName) { result.teachers.errors.push({ row, message: "缺少科目或姓名" }); continue; }
           const username = await this.generateTeacherUsername(), password = this.generateTeacherPassword();
-          await this.db.run("INSERT INTO users (username, password_hash, name, role_id, subject, initial_password) VALUES (?, ?, ?, 2, ?, ?)", username, await hashPassword(password), teacherName, subject, password);
+          await this.db.run("INSERT INTO users (username, password_hash, name, role_id, subject, initial_password) VALUES (?, ?, ?, 2, ?, ?)", username, await hashPassword(password), teacherName, subject, encryptField(password));
           result.teachers.created++;
         } catch (err) { result.teachers.errors.push({ row, message: err instanceof Error ? err.message : String(err) }); }
       }

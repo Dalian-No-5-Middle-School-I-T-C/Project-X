@@ -54,10 +54,10 @@ export function HomePage({ userRole, teacherRole, userName, onNavigate, onEnterE
     },
     dashboard?.latestReleasedExam ? {
       icon: Award, title: "最新出分", description: `${dashboard.latestReleasedExam.examName}${dashboard.latestReleasedExam.subject ? ` · ${dashboard.latestReleasedExam.subject}` : ""}`,
-      tone: "border-success-border bg-success-soft text-success-foreground", onClick: () => onOpenAnalysis(dashboard.latestReleasedExam!.examId),
+      tone: "border-warning-border bg-warning-soft text-warning-foreground", onClick: () => onOpenAnalysis(dashboard.latestReleasedExam!.examId),
     } : {
       icon: Award, title: "最新出分", description: "暂无出分记录",
-      tone: "border-success-border bg-success-soft text-success-foreground", onClick: () => onNavigate("analysis"),
+      tone: "border-warning-border bg-warning-soft text-warning-foreground", onClick: () => onNavigate("analysis"),
     },
     { icon: ClipboardList, title: "考试管理", description: "查看和管理所有考试", tone: "border-border bg-card text-secondary-foreground", onClick: () => onNavigate("exam-manage") },
   ] as Array<{ icon: typeof ClipboardList; title: string; description: string; tone: string; onClick: () => void }>;

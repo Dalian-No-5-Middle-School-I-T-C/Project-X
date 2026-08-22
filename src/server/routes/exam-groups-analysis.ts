@@ -5,6 +5,8 @@ import { ZipArchive } from "archiver";
 import XLSX from "xlsx";
 import { competitionRank } from "../../shared/ranking";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
+import { getAnalysisThresholds } from "../services/analysisConfig";
+import { decryptField } from "../lib/field-crypto";
 import { createAiAnalysisJob, enqueueAiAnalysisJob } from "../services/aiAnalysisJobs";
 import type { AiJobCreateResponse } from "../../shared/types";
 import {
@@ -30,46 +32,48 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
     const trackStudentClause = track === "all" ? "" : "AND u.track = ?";
     const memberParams: unknown[] = [groupId];
     if (track !== "all") memberParams.push(track);
+
+    // 口径对齐（P1-2）：逐科统计与 metrics/分布/班级对比同口径，
+    // 按大考参与者集合过滤（与 getGroupTotalsMap 同口径，遵守 only_full_participants 与 track）
+    const analysisRepo = new AnalysisRepository();
+    const participantIds = Array.from(await analysisRepo.getGroupParticipantIds(groupId, track));
+    const participantClause = participantIds.length > 0
+      ? `AND ss.student_id IN (${participantIds.map(() => "?").join(",")})`
+      : `AND 1=0`;
+    const participantParams: unknown[] = [...participantIds];
+    const thresholds = await getAnalysisThresholds();
+
     const members = await db.all(`
       SELECT e.id as exam_id, e.name as exam_name, e.subject,
              e.assigned_formula,
              egm.track_type,
              COUNT(ss.exam_id) as graded_count,
-             ROUND(AVG(ss.total_score), 1) as avg_score,
+             AVG(ss.total_score) as avg_score_raw,
              ROUND(MAX(ss.total_score), 1) as max_score,
              ROUND(MIN(ss.total_score), 1) as min_score
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
       LEFT JOIN student_scores ss ON ss.exam_id = e.id
       LEFT JOIN users u ON u.id = ss.student_id
-      WHERE egm.group_id = ? ${trackStudentClause}
+      WHERE egm.group_id = ? ${trackStudentClause} ${participantClause}
       GROUP BY e.id
       ORDER BY egm.sort_order, egm.id
-    `, ...memberParams) as any[];
+    `, ...memberParams, ...participantParams) as any[];
     const trackMembers = track === "all"
       ? members
       : members.filter((m) => memberMatchesTrack(m.track_type, track));
 
     // N+1 收敛：满分一次批量取；每科 std + 及格/优秀 合并为 1 条聚合（原各科 3 条 → 1 条）
     const memberExamIds = trackMembers.map((m) => m.exam_id);
-    let fullByExam = new Map<number, number>();
-    if (memberExamIds.length > 0) {
-      const fullRows = await db.all(
-        `SELECT exam_id, SUM(max_score) AS total FROM (
-           SELECT exam_id, question_number, score_type, MAX(max_score) AS max_score
-           FROM question_scores WHERE exam_id IN (${memberExamIds.map(() => "?").join(",")})
-           GROUP BY exam_id, question_number, score_type
-         ) GROUP BY exam_id`,
-        ...memberExamIds
-      ) as Array<{ exam_id: number; total: number | null }>;
-      fullByExam = new Map(fullRows.map((r) => [Number(r.exam_id), r.total ?? 100]));
-    }
+    const fullByExam = memberExamIds.length > 0 ? await analysisRepo.getExamFullScoreMap(memberExamIds) : new Map<number, number>();
 
     const subjects = [];
     for (const m of trackMembers) {
-      const fullScore = fullByExam.get(m.exam_id) ?? 100;
-      const passLine = fullScore * 0.6;
-      const excellentLine = fullScore * 0.9;
+      const fullScore = fullByExam.get(m.exam_id) ?? 0;
+      // P1-1：及格/优秀线走可配置阈值（与 metrics/班级对比/单科 overview 同口径），不再硬编码 0.6/0.9
+      const passLine = Math.round(fullScore * thresholds.passRate * 10) / 10;
+      const excellentLine = Math.round(fullScore * thresholds.excellentRate * 10) / 10;
+      // P2-5：标准差减数用未四舍五入的真实均值（avg_score_raw）
       const statRow = await db.get(`
         SELECT
           ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as std,
@@ -77,15 +81,15 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
           SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellent_count
         FROM student_scores ss
         JOIN users u ON u.id = ss.student_id
-        WHERE ss.exam_id = ? ${trackStudentClause}
-      `, m.avg_score, m.avg_score, passLine, excellentLine, m.exam_id, ...(track !== "all" ? [track] : [])) as { std: number | null; pass_count: number | null; excellent_count: number | null } | undefined;
+        WHERE ss.exam_id = ? ${trackStudentClause} ${participantClause}
+      `, m.avg_score_raw ?? 0, m.avg_score_raw ?? 0, passLine, excellentLine, m.exam_id, ...(track !== "all" ? [track] : []), ...participantParams) as { std: number | null; pass_count: number | null; excellent_count: number | null } | undefined;
 
       subjects.push({
         examId: m.exam_id,
         examName: m.exam_name,
         subject: m.subject || "",
         gradedCount: m.graded_count,
-        avgScore: m.avg_score || 0,
+        avgScore: m.avg_score_raw == null ? 0 : Math.round(m.avg_score_raw * 10) / 10,
         maxScore: m.max_score || 0,
         minScore: m.min_score || 0,
         stdDev: statRow?.std ?? 0,
@@ -202,7 +206,8 @@ router.post("/ai-analysis", requireReadableGroup, async (req: Request, res: Resp
     if (providerId && Number.isFinite(providerId)) {
       const prov = await getAiProviderForUser(providerId, req.user!.id);
       if (prov) {
-        providerOverride = { provider_type: prov.provider_type, base_url: prov.base_url, api_key: prov.api_key };
+        // api_key 已加密存储（F-7），透传前解密
+        providerOverride = { provider_type: prov.provider_type, base_url: prov.base_url, api_key: decryptField(prov.api_key) ?? "" };
       }
     }
     // 建议 5：先建任务立即返回 jobId，后台串行队列执行

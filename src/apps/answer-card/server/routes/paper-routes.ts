@@ -16,6 +16,7 @@ import { KnowledgePointRepository } from "../../../../server/repositories/Knowle
 import type { Request, Response } from "express";
 import { readFile, readdir } from "node:fs/promises";
 import { llmClientUrl, llmClientHeaders } from "../llm-client";
+import { decryptField } from "../../../../server/lib/field-crypto";
 
 type AiProviderRow = {
   id: number;
@@ -82,7 +83,8 @@ async function getKnowledgePointProvider(db: ReturnType<typeof getMysqlDb>, user
       providerOverride: {
         provider_type: provider.provider_type,
         base_url: provider.base_url || "",
-        api_key: provider.api_key,
+        // api_key 已加密存储（F-7），透传前解密
+        api_key: decryptField(provider.api_key) ?? "",
       },
     };
   }

@@ -6,9 +6,11 @@
 
 ## 公网访问地址
 
-- **前端页面**: https://plaintiff-spears-weapon-mining.trycloudflare.com
-- **后端 API**: https://plaintiff-spears-weapon-mining.trycloudflare.com/api/...
-- **健康检查**: https://plaintiff-spears-weapon-mining.trycloudflare.com/api/app/health
+> ⚠️ **安全提醒（2026-08 审计）**：此前的真实隧道 URL 已从文档移除。Quick Tunnel 随机 URL 本身就是访问凭据，**切勿将运行中的公网地址写入本仓库**（仓库为公开 GitHub 仓库）。当前地址请通过 `cloudflared tunnel` 日志或服务器端查询获取。
+
+- **前端页面**: `https://<your-current-tunnel-url>.trycloudflare.com`
+- **后端 API**: `https://<your-current-tunnel-url>.trycloudflare.com/api/...`
+- **健康检查**: `https://<your-current-tunnel-url>.trycloudflare.com/api/app/health`
 
 ## 默认账号
 
@@ -21,7 +23,7 @@
 ### 浏览器直接访问
 在浏览器中打开：
 ```
-https://plaintiff-spears-weapon-mining.trycloudflare.com/Grade-Analysis-System-mobile.html?api_base=https://plaintiff-spears-weapon-mining.trycloudflare.com
+https://<your-current-tunnel-url>.trycloudflare.com
 ```
 
 ### 微信小程序接入
@@ -58,7 +60,7 @@ bash update.sh
 ### 手动更新
 
 ```bash
-cd /c/Users/Administrator/Desktop/Project-X-main
+cd <项目在服务器上的实际路径，例如 /c/Users/<服务器用户名>/Desktop/Project-X>
 
 # 1. 保存本地修改
 git stash
@@ -81,6 +83,25 @@ bash start-server.sh
 
 ---
 
+## 生产安全配置（2026-08 安全审计建议，F-9）
+
+以下为安全审计给出的生产环境加固要求，**正式部署时请逐条落实**：
+
+1. **专用低权账户**：不要用 `Administrator` / `root` 运行后端服务。为服务创建独立账户（如 `projectx-svc`），仅授予项目目录与数据目录权限。RCE 等风险发生时可显著降低影响范围。
+2. **进程托管**：不要裸开 `tsx` 窗口直跑。Windows 用 NSSM（`nssm install ProjectX ...`）或计划任务，Linux 用 systemd unit，配置崩溃自动重启 + 开机自启。
+3. **运行构建产物**：生产运行构建产物而非 dev 模式：
+   ```bash
+   npm run build            # 编译 TS → dist/server
+   node dist/server/apps/answer-card/server/index.js
+   ```
+4. **鉴权强制开启**：确保环境变量 `PROJECTX_AUTH_ENFORCE=1`（未设置时默认即强制，勿显式设 `0`）。
+5. **llmclient 密钥必填**：设置 `LLMCLIENT_INTERNAL_API_KEY`（强随机值），未设置服务将拒绝启动。
+6. **数据库口令**：MariaDB 使用强随机口令并通过环境变量注入，禁止使用默认 `projectx/projectx`。
+7. **日志脱敏**：Nginx 访问日志会记录 URL 中的查询参数，`?token=` 类敏感参数请配置日志脱敏或避免使用。
+8. **敏感信息不进仓库**：公网 URL、服务器路径、真实密码一律不得写入 README/脚本并提交 GitHub（仓库为公开仓库）。
+
+---
+
 ## 重启服务
 
 如果服务意外停止，请按以下步骤重启：
@@ -94,7 +115,7 @@ bash start-server.sh
 打开 **Git Bash**，进入项目目录：
 
 ```bash
-cd /c/Users/Administrator/Desktop/Project-X-main
+cd <项目在服务器上的实际路径，例如 /c/Users/<服务器用户名>/Desktop/Project-X>
 ```
 
 **步骤 1：启动后端**
@@ -105,7 +126,7 @@ node node_modules/tsx/dist/cli.mjs src/apps/answer-card/server/index.ts
 
 **步骤 2：另开一个 Git Bash 窗口，启动 Cloudflare 隧道**
 ```bash
-cd /c/Users/Administrator/Desktop/Project-X-main
+cd <项目在服务器上的实际路径，例如 /c/Users/<服务器用户名>/Desktop/Project-X>
 ./cloudflared.exe tunnel --url http://127.0.0.1:5174
 ```
 （保持这个窗口运行，不要关闭）
@@ -141,7 +162,7 @@ Cloudflare Quick Tunnel 每次重启会分配一个新的随机 URL（例如 `ht
 # 3. 创建配置文件 config.yml
 # 内容示例：
 # tunnel: a1b2c3d4-e5f6-7890-abcd-ef1234567890
-# credentials-file: C:\Users\Administrator\.cloudflared\a1b2c3d4-e5f6-7890-abcd-ef1234567890.json
+# credentials-file: <服务器用户主目录>\.cloudflared\a1b2c3d4-e5f6-7890-abcd-ef1234567890.json
 # ingress:
 #   - hostname: projectx.your-domain.com
 #     service: http://localhost:5174

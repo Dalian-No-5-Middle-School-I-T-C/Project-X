@@ -1,5 +1,3 @@
-const TOKEN_KEY = "projectx_auth_token";
-
 // v1.6.0: API 基础地址支持运行时配置
 // Web 端优先级: localStorage > VITE_PROJECTX_API_BASE > 空（相对路径）
 // 扫描端始终使用本机相对路径；远端服务器仅供 scanner upload API 使用。
@@ -12,11 +10,38 @@ function getApiBase(): string {
   return (import.meta.env.VITE_PROJECTX_API_BASE ?? "").replace(/\/+$/, "");
 }
 
-function getStoredApiKey(): string | null {
+// 安全审计（F-6）：API Key 本地存储带 30 天过期时间；兼容旧纯字符串格式（视为未过期，随下次保存升级）。
+const API_KEY_EXPIRE_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function getStoredApiKey(): string | null {
   try {
-    return localStorage.getItem("projectx_api_key");
+    const raw = localStorage.getItem("projectx_api_key");
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as { v?: number; k?: string; exp?: number };
+      if (parsed?.v === 1 && typeof parsed.k === "string") {
+        if (typeof parsed.exp === "number" && Date.now() > parsed.exp) {
+          localStorage.removeItem("projectx_api_key");
+          return null;
+        }
+        return parsed.k;
+      }
+    } catch { /* 旧格式纯字符串，按未过期处理 */ }
+    return raw;
   } catch {
     return null;
+  }
+}
+
+export function storeApiKey(key: string | null): void {
+  try {
+    if (!key) {
+      localStorage.removeItem("projectx_api_key");
+      return;
+    }
+    localStorage.setItem("projectx_api_key", JSON.stringify({ v: 1, k: key, exp: Date.now() + API_KEY_EXPIRE_MS }));
+  } catch {
+    /* ignore */
   }
 }
 
@@ -39,23 +64,14 @@ export function apiUrl(url: string): string {
 }
 
 export function getAuthToken(): string | null {
-  if (authToken) return authToken;
-  try {
-    authToken = localStorage.getItem(TOKEN_KEY);
-  } catch {
-    authToken = null;
-  }
+  // 安全审计（P1）：认证主通道为 HttpOnly Cookie。同源部署下登录响应不携带 token，
+  // 此处的内存 token 仅存在于跨域 API 模式（getApiBase() 非空、无法共享 Cookie）时，
+  // 从登录响应一次性取得并仅存于内存 —— 绝不写入 localStorage，避免 XSS 窃取长期令牌。
   return authToken;
 }
 
 export function setAuthToken(token: string | null): void {
   authToken = token;
-  try {
-    if (token) localStorage.setItem(TOKEN_KEY, token);
-    else localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    // ignore storage errors
-  }
 }
 
 function notifyUnauthorized(): void {
@@ -63,24 +79,38 @@ function notifyUnauthorized(): void {
   window.dispatchEvent(new Event("projectx:unauthorized"));
 }
 
+/** 跨域 API 模式（getApiBase() 非空）：无法共享 HttpOnly Cookie，需用内存 token 兜底。 */
+function isCrossOriginApiMode(): boolean {
+  return Boolean(getApiBase());
+}
+
 export async function fetchJson<T>(url: string, options?: RequestInit): Promise<T> {
   const token = getAuthToken();
+  const crossOrigin = isCrossOriginApiMode();
   // v1.6.0: 同时支持 Api-Key header
   const storedApiKey = import.meta.env.VITE_BUILD_TARGET === "scanner" ? null : getStoredApiKey();
   const headers = new Headers(options?.headers);
-  if (token && !headers.has("Authorization")) {
+  // 安全审计（P1）：同源部署下认证主通道 = HttpOnly Cookie（credentials: include），
+  // 不携带 Bearer；仅跨域 API 模式（Cookie 无法跨站点携带）才附加内存 token 的 Bearer。
+  if (token && crossOrigin && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
   }
   if (storedApiKey && !headers.has("X-Api-Key")) {
     headers.set("X-Api-Key", storedApiKey);
   }
-  const response = await fetch(apiUrl(url), { ...options, headers });
+  // 字符串 body 一律按 JSON 发送：fetch 对字符串默认给 text/plain，express.json()
+  // 只解析 application/json，缺此头会导致 req.body 为空、后端 400（如全局设置保存）。
+  if (typeof options?.body === "string" && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  const response = await fetch(apiUrl(url), { ...options, headers, credentials: "include" });
   if (!response.ok) {
     let message = response.statusText;
     let body: Record<string, unknown> | null = null;
     try {
       body = (await response.json()) as Record<string, unknown>;
       if (typeof body.message === "string") message = body.message;
+      else if (typeof body.error === "string") message = body.error;
     } catch {
       const text = await response.text().catch(() => "");
       if (text) message = text;
@@ -101,15 +131,18 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
 
 export function authFetch(url: string, options?: RequestInit): Promise<Response> {
   const token = getAuthToken();
+  const crossOrigin = isCrossOriginApiMode();
   const storedApiKey = import.meta.env.VITE_BUILD_TARGET === "scanner" ? null : getStoredApiKey();
   const headers = new Headers(options?.headers);
-  if (token && !headers.has("Authorization")) {
+  if (token && crossOrigin && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
   }
   if (storedApiKey && !headers.has("X-Api-Key")) {
     headers.set("X-Api-Key", storedApiKey);
   }
-  return fetch(apiUrl(url), { ...options, headers });
+  // 安全审计（F-6/P1）：认证主通道 = HttpOnly Cookie。credentials: include 使服务端
+  // Set-Cookie 的 projectx_auth_token 自动随请求发送；仅跨域 API 模式附加内存 token 的 Bearer。
+  return fetch(apiUrl(url), { ...options, headers, credentials: "include" });
 }
 
 /** 扫描端专用：仅把远程上传请求发送到配置的 Project-X 服务器。 */

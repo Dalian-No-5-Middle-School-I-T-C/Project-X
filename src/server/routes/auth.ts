@@ -5,7 +5,8 @@ import { AUTH_COOKIE_NAME, extractToken, getCurrentUserHandler, authMiddleware }
 import type { Request, Response } from "express";
 
 const router = express.Router();
-const PERSISTENT_TOKEN_COOKIE_MAX_AGE_MS = 180 * 24 * 60 * 60 * 1000;
+// 安全审计（F-12-7）：与 AuthService 持久 token 期限保持一致（30 天）
+const PERSISTENT_TOKEN_COOKIE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 // P1-1 (H-S9): 登录接口双层速率限制，防止暴力破解。
 // IP 维度：防单出口泛洪。阈值放宽，反代/隧道部署下全校共享出口 IP 时不互相误伤。
@@ -35,20 +36,42 @@ const loginAccountLimiter = rateLimit({
   message: { message: "该账号登录尝试过于频繁，请 15 分钟后重试" }
 });
 
-function setAuthCookie(res: Response, token: string, isPersistent: boolean): void {
+function setAuthCookie(req: Request, res: Response, token: string, isPersistent: boolean): void {
+  // 安全审计（F-12-5）：线上 HTTPS（含 Nginx 反代 X-Forwarded-Proto，trust proxy 已开启）自动加 Secure；
+  // 本地 HTTP 调试（req.secure=false）不加，避免浏览器直接丢弃 Cookie。
   res.cookie(AUTH_COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: "lax",
+    secure: req.secure,
     path: "/",
     ...(isPersistent ? { maxAge: PERSISTENT_TOKEN_COOKIE_MAX_AGE_MS } : {})
   });
 }
 
-function clearAuthCookie(res: Response): void {
+function clearAuthCookie(req: Request, res: Response): void {
+  // Secure 属性须与写入时一致，否则浏览器不删除
   res.clearCookie(AUTH_COOKIE_NAME, {
     path: "/",
-    sameSite: "lax"
+    sameSite: "lax",
+    secure: req.secure
   });
+}
+
+/**
+ * 安全审计（P1）：HttpOnly Cookie 是同源部署的认证主通道，登录响应不再返回 token。
+ * 仅当 Cookie 无法跨站点携带时（跨源浏览器 / 非浏览器客户端）才回传一次性 token：
+ *  - 同源浏览器：Origin 的 host == 请求 Host（登录 POST 浏览器必带 Origin）→ 不返回 token，
+ *    杜绝同源 XSS 直接从登录响应中窃取长期令牌；
+ *  - 跨源浏览器 / 无 Origin 的脚本客户端：Cookie 不可用或缺席 → 返回 token 保持兼容。
+ */
+function shouldReturnTokenInBody(req: Request): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true; // 非浏览器客户端（curl / node / 测试脚本）
+  try {
+    return new URL(origin).host !== req.get("host");
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -74,11 +97,15 @@ router.post("/login", loginIpLimiter, loginAccountLimiter, async (req: Request, 
     }
 
     if (result.token) {
-      setAuthCookie(res, result.token, !!isPersistent);
+      setAuthCookie(req, res, result.token, !!isPersistent);
     }
 
+    // 安全审计（P1）：同源浏览器不返回 token（主通道 = HttpOnly Cookie）；
+    // 跨源/脚本客户端才回传，避免同源 XSS 从响应体中窃取长期令牌。
+    const includeToken = shouldReturnTokenInBody(req);
     res.json({
-      token: result.token,
+      ...(includeToken ? { token: result.token } : {}),
+      httpOnlyAuth: true,
       user: result.user,
       permissions: result.permissions,
       passwordChangeRequired: result.passwordChangeRequired ?? false,
@@ -99,7 +126,7 @@ router.post("/logout", (req: Request, res: Response) => {
   if (token) {
     authService.logout(token);
   }
-  clearAuthCookie(res);
+  clearAuthCookie(req, res);
   res.json({ message: "已退出登录" });
 });
 
