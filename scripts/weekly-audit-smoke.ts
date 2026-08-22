@@ -87,6 +87,25 @@ async function main(): Promise<void> {
   await seedDemoData();
   const db = getDatabase();
 
+  // ── 隔离演示晨测数据（v2.3.x） ──────────────────────────────────────
+  // seedDemoData 现自带周报演示：上上周 3 场 + 上周 5 场全出分、本周 1 场「演示-晨测数学(待出分)」
+  // 未出分，并在 seed 末尾触发 publishDueWeeks 建好上周/上上周动态周组（名称不带「演示-」前缀）。
+  // 本脚本需要纯净的「仅自身构造考试」环境来验证发布规则，故先清理演示晨测考试与其动态周组，
+  // 回到 seed 仅含 6 月大考 + 演示-第25周考试包的基线。
+  const demoQuizExamIds = (db.prepare("SELECT id FROM exams WHERE card_id LIKE '890000%'").all() as Array<{ id: number }>).map((r) => r.id);
+  for (const id of demoQuizExamIds) {
+    db.prepare("DELETE FROM question_scores WHERE exam_id = ?").run(id);
+    db.prepare("DELETE FROM student_scores WHERE exam_id = ?").run(id);
+    db.prepare("DELETE FROM exam_group_members WHERE exam_id = ?").run(id);
+  }
+  db.prepare("DELETE FROM exams WHERE card_id LIKE '890000%'").run();
+  db.prepare("DELETE FROM knowledge_points WHERE card_id LIKE '890000%'").run();
+  db.prepare("DELETE FROM answer_cards WHERE id LIKE '890000%'").run();
+  db.prepare(
+    "DELETE FROM exam_group_members WHERE group_id IN (SELECT id FROM exam_groups WHERE source = 'week' AND name NOT LIKE '演示-%')"
+  ).run();
+  db.prepare("DELETE FROM exam_groups WHERE source = 'week' AND name NOT LIKE '演示-%'").run();
+
   const gradeId = (db.prepare("SELECT id FROM grades WHERE name = '高一(演示)'").get() as { id: number }).id;
   const studentIds = STUDENT_NUMS.map((num) => (db.prepare("SELECT id FROM users WHERE student_number = ?").get(num) as { id: number }).id);
 

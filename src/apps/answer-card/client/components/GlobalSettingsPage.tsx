@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, type ReactNode } from "react";
-import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FlaskConical, Terminal, Trash2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
 import { tokens } from "../theme";
@@ -126,6 +126,42 @@ export function GlobalSettingsPage({ onBack }: Props) {
   const [aiEditor, setAiEditor] = useState<{ open: boolean; id?: number; name: string; providerType: string; baseUrl: string; apiKey: string; models: string }>({ open: false, name: "", providerType: "openai", baseUrl: "", apiKey: "", models: "" });
   const [aiMsg, setAiMsg] = useState<string | null>(null);
   const [aiMsgTone, setAiMsgTone] = useState<"success" | "error">("error");
+  // v1.9.6+: 开发者工具段（演示数据导入/清除，即时执行，不参与底部"保存全局设置"）
+  const [devBusy, setDevBusy] = useState(false);
+  const [devMsg, setDevMsg] = useState<string | null>(null);
+  const [devMsgTone, setDevMsgTone] = useState<"success" | "error">("error");
+
+  async function handleImportDemo() {
+    if (!confirm("将导入演示测试数据（9 场考试、16 名学生、2 个合集，含网阅演示），不会覆盖现有数据。继续？")) return;
+    setDevMsg(null);
+    setDevBusy(true);
+    try {
+      const result = await fetchJson<{ ok: boolean; message?: string }>("/api/db/import-demo", { method: "POST" });
+      setDevMsg(result.message || "演示数据导入完成");
+      setDevMsgTone("success");
+    } catch (err: any) {
+      setDevMsg(err?.message || "演示数据导入失败");
+      setDevMsgTone("error");
+    } finally {
+      setDevBusy(false);
+    }
+  }
+
+  async function handleClearDemo() {
+    if (!confirm("将清除全部「演示-」前缀的演示数据（不影响真实数据）。继续？")) return;
+    setDevMsg(null);
+    setDevBusy(true);
+    try {
+      const result = await fetchJson<{ ok: boolean; message?: string }>("/api/db/clear-demo", { method: "POST" });
+      setDevMsg(result.message || "演示数据已清除");
+      setDevMsgTone("success");
+    } catch (err: any) {
+      setDevMsg(err?.message || "演示数据清除失败");
+      setDevMsgTone("error");
+    } finally {
+      setDevBusy(false);
+    }
+  }
 
   const loadAi = useCallback(async () => {
     try {
@@ -301,6 +337,39 @@ export function GlobalSettingsPage({ onBack }: Props) {
         {aiMsg && (
           <Banner tone={aiMsgTone}>{aiMsg}</Banner>
         )}
+      </div>
+
+      {/* v1.9.6+: 开发者工具（演示数据导入/清除）。即时执行，不参与底部保存。 */}
+      <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
+        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <Terminal size={15} className="shrink-0" />
+          开发者工具
+        </div>
+        <p className="text-xs text-muted-foreground">
+          用于演示与调研场景的快速数据操作。即时执行，<strong className="font-semibold text-foreground">不会保存到全局设置中</strong>，也不影响已有的真实考试数据。
+        </p>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="primary"
+            size="sm"
+            icon={<FlaskConical />}
+            loading={devBusy}
+            onClick={() => void handleImportDemo()}
+          >
+            导入演示数据
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<Trash2 />}
+            disabled={devBusy}
+            onClick={() => void handleClearDemo()}
+            className="text-destructive-fg"
+          >
+            清除演示数据
+          </Button>
+        </div>
+        {devMsg && <Banner tone={devMsgTone}>{devMsg}</Banner>}
       </div>
 
       {/* 难度/区分度档位设置 */}

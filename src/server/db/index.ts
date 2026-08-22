@@ -9,6 +9,7 @@ import { resolveProjectDbPath } from "./paths";
 import { seedDefaultData } from "./seeds";
 import { detectDialect, getMysqlDb, initMariadbSchema, buildInsertIgnore } from "./mysql";
 import type { DbAdapter } from "./mysql";
+import { encryptField, hashSecret } from "../lib/field-crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -62,6 +63,28 @@ export function initializeDatabase(): void {
 
   runMigrations(db);
   seedDefaultData(db);
+}
+
+/**
+ * 安全审计（F-2）：把库中历史遗留的明文 initial_password 一次性加密为 enc:v1: 密文。
+ * 幂等（仅处理无 enc:v1: 前缀的旧数据）；SQLite / MariaDB 双模兼容。
+ */
+export async function encryptLegacyInitialPasswords(db: DbAdapter): Promise<void> {
+  try {
+    const rows = await db.all<{ id: number; initial_password: string }>(
+      "SELECT id, initial_password FROM users WHERE initial_password IS NOT NULL AND initial_password != '' AND initial_password NOT LIKE 'enc:v1:%'"
+    );
+    let count = 0;
+    for (const row of rows) {
+      await db.run("UPDATE users SET initial_password = ? WHERE id = ?", encryptField(row.initial_password), row.id);
+      count++;
+    }
+    if (count > 0) {
+      console.log(`[secrets] 已加密 ${count} 条历史明文 initial_password`);
+    }
+  } catch (err) {
+    console.warn("[secrets] 历史明文加密迁移失败（不影响启动，可稍后重试）:", err);
+  }
 }
 
 export async function hashPassword(password: string): Promise<string> {
@@ -160,21 +183,78 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
 }
 
 // v1.6.0: 确保至少有一条扫描用的 API Key
+// 安全审计（P1）：库内只存 SHA-256 哈希（与管理员签发接口一致），不打印完整明文；
+// 明文一次性写入受保护文件（0600，随 data/ 目录一起 gitignore），供运维配置扫描端。
+const SCANNER_API_KEY_FILE = "scanner-api-key.txt";
+
+export function getScannerApiKeyPath(): string {
+  return path.join(path.dirname(resolveProjectDbPath()), SCANNER_API_KEY_FILE);
+}
+
+function writeScannerApiKeyFile(key: string): void {
+  const target = getScannerApiKeyPath();
+  const dir = path.dirname(target);
+  const temp = path.join(dir, `.${SCANNER_API_KEY_FILE}.${process.pid}.${Date.now()}.tmp`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(temp, `${key}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  try {
+    renameSync(temp, target);
+  } catch {
+    rmSync(target, { force: true });
+    renameSync(temp, target);
+  }
+  try { chmodSync(target, 0o600); } catch { /* Windows ACLs may ignore POSIX modes. */ }
+  console.warn(`[SECURITY] 默认扫描端密钥已写入受保护文件: ${target}`);
+}
+
+function maskKey(key: string): string {
+  if (key.length <= 12) return "****";
+  return `${key.slice(0, 7)}****${key.slice(-4)}`;
+}
+
 async function ensureDefaultApiKey(db: any): Promise<void> {
   const existing = await db.get("SELECT id FROM api_keys WHERE scope = 'scanner' AND is_active = 1 LIMIT 1");
   if (existing) return;
   const key = `sk-${randomBytes(16).toString("hex")}`;
-  await db.run("INSERT INTO api_keys (name, api_key, scope) VALUES (?, ?, ?)", "默认扫描端密钥", key, "scanner");
-  console.log(`[DB] Default scanner API key created: ${key}`);
+  await db.run("INSERT INTO api_keys (name, api_key, scope) VALUES (?, ?, ?)", "默认扫描端密钥", hashSecret(key), "scanner");
+  writeScannerApiKeyFile(key);
+  console.log(`[DB] Default scanner API key created (masked): ${maskKey(key)}`);
 }
 
 function ensureDefaultApiKeySqlite(db: any): Promise<void> {
   const existing = db.prepare("SELECT id FROM api_keys WHERE scope = 'scanner' AND is_active = 1 LIMIT 1").get();
   if (existing) return Promise.resolve();
   const key = `sk-${randomBytes(16).toString("hex")}`;
-  db.prepare("INSERT INTO api_keys (name, api_key, scope) VALUES (?, ?, ?)").run("默认扫描端密钥", key, "scanner");
-  console.log(`[DB] Default scanner API key created: ${key}`);
+  db.prepare("INSERT INTO api_keys (name, api_key, scope) VALUES (?, ?, ?)").run("默认扫描端密钥", hashSecret(key), "scanner");
+  writeScannerApiKeyFile(key);
+  console.log(`[DB] Default scanner API key created (masked): ${maskKey(key)}`);
   return Promise.resolve();
+}
+
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * 安全审计（P1）：把历史遗留的明文 api_keys 一次性哈希化，使明文兼容回退不再兜底生效。
+ * 幂等：仅处理 64 位十六进制（sha256 hex）以外的旧值；SQLite / MariaDB 双模兼容。
+ * 全表扫描后按正则过滤（避免 SQLite GLOB 字符类差异导致的兼容问题）。
+ */
+export async function migrateLegacyPlaintextApiKeys(db: DbAdapter): Promise<void> {
+  try {
+    const rows = await db.all<{ id: number; api_key: string }>(
+      "SELECT id, api_key FROM api_keys WHERE api_key IS NOT NULL AND api_key != ''"
+    );
+    let count = 0;
+    for (const row of rows) {
+      if (!row.api_key || SHA256_HEX_RE.test(row.api_key)) continue;
+      await db.run("UPDATE api_keys SET api_key = ? WHERE id = ?", hashSecret(row.api_key), row.id);
+      count++;
+    }
+    if (count > 0) {
+      console.log(`[secrets] 已哈希化 ${count} 条历史明文 api_keys`);
+    }
+  } catch (err) {
+    console.warn("[secrets] 历史明文 api_keys 哈希化迁移失败（不影响启动，可稍后重试）:", err);
+  }
 }
 
 export { runMigrations };

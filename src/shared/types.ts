@@ -773,6 +773,8 @@ export type AnalysisThresholds = {
   excellentRate: number;
   segmentSize: number;
   errorTiers: [number, number, number];
+  /** 主观题低分判定比例（0-1）：得分 < 该题满分 × 此比例 记为低分，默认 0.5 */
+  subjectiveLowScoreRatio: number;
 };
 
 /** 考试模式（#178 双权限模式）：quiz=晨测（全量权限），formal=大考（精细权限，默认） */
@@ -1667,6 +1669,10 @@ export type DiscriminationBand = ThresholdBand;
 export interface GroupSubjectMetric extends GroupSubjectSummary {
   difficulty?: number;
   discrimination?: number;
+  /** 该科内部一致性信度（KR-20/α，样本不足为 null） */
+  reliability?: number | null;
+  /** 该科变异系数（std/mean，均值≤0 为 null） */
+  cv?: number | null;
 }
 
 /** 普通考试整体难度/区分度指标 */
@@ -1676,6 +1682,10 @@ export interface ExamMetrics {
   fullScore: number;
   avgScore: number;
   gradedCount: number;
+  /** 内部一致性信度（KR-20/α，样本不足为 null） */
+  reliability: number | null;
+  /** 变异系数（std/mean，均值≤0 为 null） */
+  cv: number | null;
 }
 
 /** 大考整体 + 逐科难度/区分度指标 */
@@ -1687,6 +1697,10 @@ export interface GroupMetrics {
   memberCount: number;
   /** 大考参与人数（小样本判断用） */
   participantCount: number;
+  /** 大考总体信度：以各科总分为题目的 Cronbach α（科目<2 或样本不足为 null） */
+  reliability: number | null;
+  /** 大考总体变异系数（std/mean，均值≤0 为 null） */
+  cv: number | null;
   subjects: GroupSubjectMetric[];
 }
 

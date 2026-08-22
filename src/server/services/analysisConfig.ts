@@ -22,13 +22,16 @@ export interface AnalysisThresholds {
   segmentSize: number;
   /** 题目错误率档位 [高, 中, 低]（百分比），如 [70, 50, 30] */
   errorTiers: [number, number, number];
+  /** 主观题低分判定比例（0-1），默认 0.5：得分 < 该题满分 × 此比例 记为低分 */
+  subjectiveLowScoreRatio: number;
 }
 
 export const DEFAULT_ANALYSIS_THRESHOLDS: AnalysisThresholds = {
   passRate: 0.6,
   excellentRate: 0.9,
   segmentSize: 10,
-  errorTiers: [70, 50, 30]
+  errorTiers: [70, 50, 30],
+  subjectiveLowScoreRatio: 0.5
 };
 
 export const ANALYSIS_SETTING_KEYS = {
@@ -36,6 +39,7 @@ export const ANALYSIS_SETTING_KEYS = {
   excellentRate: "analysis_excellent_rate",
   segmentSize: "analysis_segment_size",
   errorTiers: "analysis_error_tiers",
+  subjectiveLowScoreRatio: "analysis_low_score_ratio",
   difficultyBands: "analysis_difficulty_bands",
   discriminationBands: "analysis_discrimination_bands"
 } as const;
@@ -133,11 +137,12 @@ export async function getAnalysisThresholds(): Promise<AnalysisThresholds> {
   let rows: Array<{ key: string; value: string }> = [];
   try {
     rows = (await db.all(
-      "SELECT `key`, value FROM system_settings WHERE `key` IN (?, ?, ?, ?)",
+      "SELECT `key`, value FROM system_settings WHERE `key` IN (?, ?, ?, ?, ?)",
       ANALYSIS_SETTING_KEYS.passRate,
       ANALYSIS_SETTING_KEYS.excellentRate,
       ANALYSIS_SETTING_KEYS.segmentSize,
-      ANALYSIS_SETTING_KEYS.errorTiers
+      ANALYSIS_SETTING_KEYS.errorTiers,
+      ANALYSIS_SETTING_KEYS.subjectiveLowScoreRatio
     )) as Array<{ key: string; value: string }>;
   } catch {
     // system_settings 表缺失等异常 → 使用默认值
@@ -150,7 +155,8 @@ export async function getAnalysisThresholds(): Promise<AnalysisThresholds> {
     passRate: clamp(Number(map[ANALYSIS_SETTING_KEYS.passRate]), 0.01, 1, d.passRate),
     excellentRate: clamp(Number(map[ANALYSIS_SETTING_KEYS.excellentRate]), 0.01, 1, d.excellentRate),
     segmentSize: Math.round(clamp(Number(map[ANALYSIS_SETTING_KEYS.segmentSize]), 1, 100, d.segmentSize)),
-    errorTiers: parseErrorTiers(map[ANALYSIS_SETTING_KEYS.errorTiers])
+    errorTiers: parseErrorTiers(map[ANALYSIS_SETTING_KEYS.errorTiers]),
+    subjectiveLowScoreRatio: clamp(Number(map[ANALYSIS_SETTING_KEYS.subjectiveLowScoreRatio]), 0.01, 1, d.subjectiveLowScoreRatio)
   };
   return cache;
 }
@@ -183,8 +189,16 @@ export function validateThresholdsInput(body: unknown): { ok: true; value: Analy
   if (!tiers) {
     return { ok: false, message: "错误率档位必须是 3 个位于 (0, 100] 且严格递减的数值，如 \"70,50,30\"" };
   }
+  // 主观题低分比例可选（旧客户端不传时保持默认 0.5），传入则必须在 (0, 1]
+  let lowScoreRatio = DEFAULT_ANALYSIS_THRESHOLDS.subjectiveLowScoreRatio;
+  if (b.subjectiveLowScoreRatio !== undefined && b.subjectiveLowScoreRatio !== null && b.subjectiveLowScoreRatio !== "") {
+    lowScoreRatio = Number(b.subjectiveLowScoreRatio);
+    if (!Number.isFinite(lowScoreRatio) || lowScoreRatio <= 0 || lowScoreRatio > 1) {
+      return { ok: false, message: "主观题低分比例必须在 (0, 1] 之间，如 0.5" };
+    }
+  }
   return {
     ok: true,
-    value: { passRate, excellentRate, segmentSize, errorTiers: tiers }
+    value: { passRate, excellentRate, segmentSize, errorTiers: tiers, subjectiveLowScoreRatio: lowScoreRatio }
   };
 }

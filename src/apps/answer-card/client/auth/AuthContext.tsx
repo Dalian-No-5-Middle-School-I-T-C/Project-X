@@ -127,7 +127,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ identifier, password, isPersistent: !!isPersistent })
     });
-    setAuthToken(result.token);
+    // 安全审计（P1）：同源登录响应不含 token（主通道 = HttpOnly Cookie），
+    // 仅在跨域 API 模式才取得内存 token；不落 localStorage。
+    setAuthToken(result.token ?? null);
     const nextUser: AuthUser = {
       ...result.user,
       // v2.1.0: 登录响应 user 来自 SELECT u.*（snake_case theme_skin），

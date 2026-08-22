@@ -4,7 +4,7 @@ import { competitionRank } from "../../shared/ranking";
 import { rankPercentile } from "../services/rankingUpdate";
 import { getAnalysisThresholds, DEFAULT_ANALYSIS_THRESHOLDS } from "../services/analysisConfig";
 import { analysisCache } from "../services/analysisCache";
-import { discriminationByExtremeGroup, difficulty, histogram, mean, stdDev, normality, qqPlot } from "../../shared/stats";
+import { coefficientOfVariation, cronbachAlpha, discriminationByExtremeGroup, difficulty, histogram, kr20, mean, stdDev, normality, qqPlot } from "../../shared/stats";
 import { CardRepository } from "./CardRepository";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
 import type {
@@ -199,10 +199,9 @@ export class AnalysisRepository {
     const c = classFilter(classId);
     const thresholds = await getAnalysisThresholds();
     // Bugfix: 使用 GROUP BY + MAX 代替 DISTINCT，避免同一题 max_score 不一致时 fullScore 膨胀
-    const totalMax = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
-    const fullScore = totalMax?.total ?? 100;
+    const fullScore = await this.resolveExamFullScore(examId);
     const passLine = fullScore * thresholds.passRate, excellentLine = fullScore * thresholds.excellentRate;
-    const stats = await this.db.get(`SELECT COUNT(*) as gradedCount, ROUND(AVG(ss.total_score), 1) as avgScore, ROUND(MAX(ss.total_score), 1) as maxScore, ROUND(MIN(ss.total_score), 1) as minScore, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as passCount, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellentCount FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where}`, passLine, excellentLine, examId, ...c.params) as any;
+    const stats = await this.db.get(`SELECT COUNT(*) as gradedCount, ROUND(AVG(ss.total_score), 1) as avgScore, AVG(ss.total_score) as avgScoreRaw, ROUND(MAX(ss.total_score), 1) as maxScore, ROUND(MIN(ss.total_score), 1) as minScore, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as passCount, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellentCount FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where}`, passLine, excellentLine, examId, ...c.params) as any;
     // N+1 收敛：分布/整体分位数/各班汇总一次取分后 JS 分桶，替代逐段 COUNT 与逐班 getScoreSummary
     const filteredScores = await this.fetchExamScores(examId, c);
     const overallScores = classId === undefined ? filteredScores : await this.fetchExamScores(examId, classFilter(undefined));
@@ -210,13 +209,14 @@ export class AnalysisRepository {
     if (!stats || stats.gradedCount === 0) {
       return { totalStudents: 0, gradedCount: 0, avgScore: 0, maxScore: 0, minScore: 0, stdDev: 0, passRate: 0, excellentRate: 0, passScore: round1(passLine), excellentScore: round1(excellentLine), distribution: [], scoreSummary: null, overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: 0, errorRateBuckets: emptyErrorRateBuckets() };
     }
-    const stdDevRow = await this.db.get(`SELECT ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as stdDev FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where}`, stats.avgScore, stats.avgScore, examId, ...c.params) as any;
-    const ranges = generateDistributionRanges(fullScore, thresholds.segmentSize);
-    // JS 分桶，语义与旧 SQL `COUNT(*) ... BETWEEN r.min AND r.max` 一致
-    const distribution = ranges.map((r) => ({ ...r, count: filteredScores.filter((s) => s >= r.min && s <= r.max).length }));
+    // 标准差减数用未四舍五入的真实均值，避免 0.1 舍入对小样本方差的系统性偏差
+    const meanBase = stats.avgScoreRaw ?? stats.avgScore;
+    const stdDevRow = await this.db.get(`SELECT ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as stdDev FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where}`, meanBase, meanBase, examId, ...c.params) as any;
+    // 分桶统一走 histogram 的半开区间语义（floor(v/step)），与分布接口口径一致，避免 59.5 这类小数落段错位
+    const distribution = histogram(filteredScores, fullScore, thresholds.segmentSize);
     const qa = await this.getQuestionAnalysis(examId, classId);
     const eb = countErrorRateBuckets(qa);
-    return { totalStudents: stats.gradedCount, gradedCount: stats.gradedCount, avgScore: stats.avgScore, maxScore: stats.maxScore, minScore: stats.minScore, stdDev: stdDevRow?.stdDev ?? 0, passRate: Math.round((stats.passCount / stats.gradedCount) * 100), excellentRate: Math.round((stats.excellentCount / stats.gradedCount) * 100), passScore: round1(passLine), excellentScore: round1(excellentLine), distribution, scoreSummary: this.buildScoreSummary(filteredScores), overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: eb.low + eb.medium + eb.high, errorRateBuckets: eb };
+    return { totalStudents: stats.gradedCount, gradedCount: stats.gradedCount, avgScore: stats.avgScore, maxScore: stats.maxScore, minScore: stats.minScore, stdDev: stdDevRow?.stdDev ?? 0, passRate: Math.round((stats.passCount / stats.gradedCount) * 100), excellentRate: Math.round((stats.excellentCount / stats.gradedCount) * 100), passScore: round1(passLine), excellentScore: round1(excellentLine), distribution, scoreSummary: this.buildScoreSummary(filteredScores), overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: eb.high, errorRateBuckets: eb };
   }
 
   async getClassScoreSummaries(examId: number): Promise<ClassScoreSummary[]> {
@@ -341,7 +341,9 @@ export class AnalysisRepository {
 
   async getStudentRanking(examId: number, classId?: number): Promise<StudentRankingItem[]> {
     const c = classFilter(classId);
-    const tiers = (await getAnalysisThresholds()).errorTiers;
+    const thresholds = await getAnalysisThresholds();
+    const tiers = thresholds.errorTiers;
+    const lowRatio = thresholds.subjectiveLowScoreRatio;
     // N+1 收敛：把逐行 2 个相关子查询改为「每题聚合派生表 LEFT JOIN + 主查询 GROUP BY」。
     // 派生表按 (exam_id, student_id) 每生一行，避免因 class_students 多班级行导致误乘计数。
     const rows = await this.db.all(`
@@ -352,7 +354,7 @@ export class AnalysisRepository {
       JOIN users u ON u.id = ss.student_id
       LEFT JOIN (
         SELECT exam_id, student_id,
-               SUM(CASE WHEN score < max_score * 0.5 THEN 1 ELSE 0 END) as low_count,
+               SUM(CASE WHEN score < max_score * ? THEN 1 ELSE 0 END) as low_count,
                COUNT(*) as q_count
         FROM question_scores
         WHERE exam_id = ?
@@ -362,7 +364,7 @@ export class AnalysisRepository {
       WHERE ss.exam_id = ? ${c.where}
       GROUP BY ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score
       ORDER BY ss.total_score DESC
-    `, examId, examId, ...c.params) as any[];
+    `, lowRatio, examId, examId, ...c.params) as any[];
     const items = rows.map((r: any) => ({ rank: 0, studentNumber: r.student_number, studentName: r.name, totalScore: r.total_score, objectiveScore: r.objective_score, subjectiveScore: r.subjective_score, lowScoreCount: r.low_score_count ?? 0, questionCount: r.question_count ?? 0, errorRate: (r.question_count ?? 0) > 0 ? Math.round((r.low_score_count ?? 0) / (r.question_count ?? 1) * 100) : 0, errorRateLevel: errorRateLevel((r.question_count ?? 0) > 0 ? Math.round((r.low_score_count ?? 0) / (r.question_count ?? 1) * 100) : 0, tiers) }));
     competitionRank(items, r => r.totalScore, (r, rank) => { r.rank = rank; });
     return items;
@@ -397,8 +399,10 @@ export class AnalysisRepository {
 
   /** 计算逐题分析（含难度 P 与区分度 D），D 的分组基准由 totalsMap 决定 */
   private async computeQuestionAnalysis(examId: number, c: { join: string; where: string; params: unknown[] }, totalsMap: Map<number, number>): Promise<QuestionAnalysisItem[]> {
-    const tiers = (await getAnalysisThresholds()).errorTiers;
-    const rows = await this.db.all(`SELECT qs.question_number, qs.score_type as question_type, ROUND(AVG(qs.score), 1) as avgScore, MAX(qs.max_score) as maxScore, COUNT(*) as totalCount, SUM(CASE WHEN qs.score >= qs.max_score THEN 1 ELSE 0 END) as correctCount, SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) as objectiveErrorCount, SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) as subjectiveLowScoreCount FROM question_scores qs ${c.join} WHERE qs.exam_id = ? ${c.where} GROUP BY qs.question_number, qs.score_type ORDER BY CASE WHEN MAX(qs.max_score) > 0 THEN AVG(qs.score) / MAX(qs.max_score) ELSE 1 END ASC`, examId, ...c.params) as any[];
+    const thresholds = await getAnalysisThresholds();
+    const tiers = thresholds.errorTiers;
+    const lowRatio = thresholds.subjectiveLowScoreRatio;
+    const rows = await this.db.all(`SELECT qs.question_number, qs.score_type as question_type, ROUND(AVG(qs.score), 1) as avgScore, MAX(qs.max_score) as maxScore, COUNT(*) as totalCount, SUM(CASE WHEN qs.score >= qs.max_score THEN 1 ELSE 0 END) as correctCount, SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) as objectiveErrorCount, SUM(CASE WHEN qs.score < qs.max_score * ? THEN 1 ELSE 0 END) as subjectiveLowScoreCount FROM question_scores qs ${c.join} WHERE qs.exam_id = ? ${c.where} GROUP BY qs.question_number, qs.score_type ORDER BY CASE WHEN MAX(qs.max_score) > 0 THEN AVG(qs.score) / MAX(qs.max_score) ELSE 1 END ASC`, lowRatio, examId, ...c.params) as any[];
     // 逐学生小题得分（用于区分度极端组法）
     const qsRows = await this.db.all(`SELECT qs.student_id, qs.question_number, qs.score_type, qs.score FROM question_scores qs ${c.join} WHERE qs.exam_id = ? ${c.where}`, examId, ...c.params) as Array<{ student_id: number; question_number: number; score_type: string; score: number }>;
     const byQuestion = new Map<string, { studentIds: number[]; scores: Map<number, number> }>();
@@ -449,17 +453,89 @@ export class AnalysisRepository {
   /** 普通考试整体难度/区分度指标（D = 逐题区分度均值） */
   async getExamMetrics(examId: number, classId?: number): Promise<ExamMetrics> {
     const ov = await this.getExamOverview(examId, classId);
-    const fullRow = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
-    const fullScore = fullRow?.total ?? 100;
+    const fullScore = await this.resolveExamFullScore(examId);
     const qa = await this.getQuestionAnalysis(examId, classId);
     const disc = qa.length > 0 ? qa.reduce((s, q) => s + (q.discrimination ?? 0), 0) / qa.length : 0;
+    // 信度样本与参考人数/逐题区分度同口径：带班级筛选时按该班 student_scores 参与者集合过滤
+    const reliabilityParticipants = classId === undefined
+      ? undefined
+      : Array.from((await this.getExamTotalsMap(examId, classFilter(classId))).keys());
     return {
       difficulty: fullScore > 0 ? Math.round((ov.avgScore / fullScore) * 1000) / 1000 : 0,
       discrimination: Math.round(disc * 1000) / 1000,
       fullScore,
       avgScore: ov.avgScore,
-      gradedCount: ov.gradedCount
+      gradedCount: ov.gradedCount,
+      reliability: await this.getExamReliability(examId, reliabilityParticipants),
+      cv: coefficientOfVariation(ov.stdDev, ov.avgScore)
     };
+  }
+
+  /** 单场考试信度：纯客观卷用 KR-20（二分计分），含主观题用 Cronbach α（原始得分）。
+   * 剔除作答不完整的学生；题数 <2 或有效样本 <2 时返回 null（无法评估）。
+   * participantIds：可选参与者集合（班级筛选/大考逐科按 totals 口径），缺省为全部作答学生。 */
+  private async getExamReliability(examId: number, participantIds?: Iterable<number>): Promise<number | null> {
+    const ids = participantIds === undefined ? undefined : Array.from(participantIds);
+    if (ids !== undefined && ids.length === 0) return null;
+    const idClause = ids !== undefined ? `AND qs.student_id IN (${placeholders(ids)})` : "";
+    const rows = await this.db.all(
+      `SELECT qs.student_id, qs.question_number, qs.score_type, qs.score, qs.max_score
+       FROM question_scores qs
+       WHERE qs.exam_id = ? ${idClause}`, examId, ...(ids ?? [])
+    ) as Array<{ student_id: number; question_number: number; score_type: string; score: number; max_score: number }>;
+    if (rows.length === 0) return null;
+    const qKeys = Array.from(new Set(rows.map((r) => String(r.question_number)))).sort((a, b) => Number(a) - Number(b));
+    if (qKeys.length < 2) return null;
+    const byStudent = new Map<number, Map<string, { score: number; maxScore: number; isObjective: boolean }>>();
+    let hasSubjective = false;
+    for (const r of rows) {
+      if (r.score_type !== "objective") hasSubjective = true;
+      const m = byStudent.get(Number(r.student_id)) ?? new Map();
+      if (!m.has(String(r.question_number))) {
+        m.set(String(r.question_number), { score: Number(r.score), maxScore: Number(r.max_score), isObjective: r.score_type === "objective" });
+      }
+      byStudent.set(Number(r.student_id), m);
+    }
+    const matrix: number[][] = [];
+    for (const m of byStudent.values()) {
+      if (m.size !== qKeys.length) continue; // 作答不完整的学生剔除
+      const row: number[] = [];
+      let complete = true;
+      for (const key of qKeys) {
+        const qv = m.get(key);
+        if (!qv) { complete = false; break; }
+        row.push(hasSubjective ? qv.score : (qv.maxScore > 0 && qv.score >= qv.maxScore ? 1 : 0));
+      }
+      if (complete) matrix.push(row);
+    }
+    if (matrix.length < 2) return null;
+    return hasSubjective ? cronbachAlpha(matrix) : kr20(matrix);
+  }
+
+  /** 大考总体信度：以「各科总分为题目、参与者为样本」的 Cronbach α（须 ≥2 科、≥2 生） */
+  private async getGroupReliability(examIds: number[], participantIds: number[], track: "all" | "arts" | "science" = "all"): Promise<number | null> {
+    if (examIds.length < 2 || participantIds.length < 2) return null;
+    const trackClause = track === "all" ? "" : "AND u.track = ?";
+    const rows = await this.db.all(
+      `SELECT ss.student_id, ss.exam_id, ss.total_score
+       FROM student_scores ss
+       JOIN users u ON u.id = ss.student_id
+       WHERE ss.exam_id IN (${placeholders(examIds)}) AND ss.student_id IN (${placeholders(participantIds)}) ${trackClause}`,
+      ...examIds, ...participantIds, ...(track !== "all" ? [track] : [])
+    ) as Array<{ student_id: number; exam_id: number; total_score: number }>;
+    const byStudent = new Map<number, Map<number, number>>();
+    for (const r of rows) {
+      const m = byStudent.get(Number(r.student_id)) ?? new Map();
+      m.set(Number(r.exam_id), Number(r.total_score));
+      byStudent.set(Number(r.student_id), m);
+    }
+    const matrix: number[][] = [];
+    for (const m of byStudent.values()) {
+      if (m.size !== examIds.length) continue; // 缺科学生剔除（与 only_full 口径一致）
+      matrix.push(examIds.map((id) => m.get(id) ?? 0));
+    }
+    if (matrix.length < 2) return null;
+    return cronbachAlpha(matrix);
   }
 
   /** 逐题下钻：全班每人得分（联表 users/classes/knowledge_points） */
@@ -502,8 +578,7 @@ export class AnalysisRepository {
   /** 普通考试分布（subject=全卷；class=各班） */
   async getExamDistribution(examId: number, mode: "subject" | "class"): Promise<DistributionResult[]> {
     const thresholds = await getAnalysisThresholds();
-    const totalMax = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
-    const fullScore = totalMax?.total ?? 100;
+    const fullScore = await this.resolveExamFullScore(examId);
     if (mode === "subject") {
       const rows = await this.db.all(`SELECT total_score FROM student_scores WHERE exam_id = ? ORDER BY total_score ASC`, examId) as any[];
       const scores = rows.map((r: any) => Number(r.total_score)).filter(Number.isFinite);
@@ -568,15 +643,16 @@ export class AnalysisRepository {
 
   async getGroupMetrics(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<GroupMetrics> {
     const group = await this.getExamGroup(groupId);
-    if (!group) return { difficulty: 0, discrimination: 0, totalFullScore: 0, totalAvg: 0, memberCount: 0, participantCount: 0, subjects: [] };
+    if (!group) return { difficulty: 0, discrimination: 0, totalFullScore: 0, totalAvg: 0, memberCount: 0, participantCount: 0, reliability: null, cv: null, subjects: [] };
     const memberMap = await this.getGroupMemberTrackMap(groupId);
     const examIds = this.groupMemberIdsForTrack(memberMap, track);
-    if (examIds.length === 0) return { difficulty: 0, discrimination: 0, totalFullScore: 0, totalAvg: 0, memberCount: 0, participantCount: 0, subjects: [] };
+    if (examIds.length === 0) return { difficulty: 0, discrimination: 0, totalFullScore: 0, totalAvg: 0, memberCount: 0, participantCount: 0, reliability: null, cv: null, subjects: [] };
     const qa = await this.getGroupQuestionAnalysis(groupId, track);
     const fullScores = await this.getExamFullScoreMap(examIds);
     const totalFullScore = examIds.reduce((s, id) => s + (fullScores.get(id) ?? 0), 0);
     const totals = await this.getGroupTotalsMap(groupId, track);
     const totalAvg = totals.size > 0 ? mean(Array.from(totals.values())) : 0;
+    const totalScores = Array.from(totals.values());
     // 逐科参数：复用各科的统计（按大考参与者口径），不再硬编码为 0
     const thresholds = await getAnalysisThresholds();
     const subjects: GroupSubjectMetric[] = [];
@@ -586,6 +662,8 @@ export class AnalysisRepository {
       const passLine = Math.round(fullScore * thresholds.passRate * 10) / 10;
       const excellentLine = Math.round(fullScore * thresholds.excellentRate * 10) / 10;
       const c = classFilterQs(undefined);
+      // B6：stdDev 用 E[X²]−E[X]² 总体σ公式（与单科「减真实均值」结果一致）。
+      // 不用 STDDEV_POP：SQLite 无此聚合函数（仅 MariaDB 有），会导致大考 metrics 接口在默认 SQLite 部署下报错。
       const stat = await this.db.get(
         `SELECT COUNT(*) AS gradedCount, ROUND(AVG(ss.total_score), 1) AS avgScore, ROUND(MAX(ss.total_score), 1) AS maxScore, ROUND(MIN(ss.total_score), 1) AS minScore, ROUND(SQRT(AVG(ss.total_score * ss.total_score) - AVG(ss.total_score) * AVG(ss.total_score)), 1) AS stdDev,
                 ROUND(SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 0) AS passRate,
@@ -603,10 +681,13 @@ export class AnalysisRepository {
         stdDev: stat?.stdDev ?? 0,
         passRate: stat?.passRate ?? 0, excellentRate: stat?.excellentRate ?? 0,
         fullScore, hasAssignedScore: false,
-        difficulty: s.difficulty, discrimination: s.discrimination
+        difficulty: s.difficulty, discrimination: s.discrimination,
+        reliability: await this.getExamReliability(s.examId, totals.keys()),
+        cv: coefficientOfVariation(stat?.stdDev ?? 0, stat?.avgScore ?? 0)
       });
     }
     const disc = subjects.length > 0 ? subjects.reduce((s, x) => s + (x.discrimination ?? 0), 0) / subjects.length : 0;
+    const overallStd = stdDev(totalScores);
     return {
       difficulty: totalFullScore > 0 ? Math.round((totalAvg / totalFullScore) * 1000) / 1000 : 0,
       discrimination: Math.round(disc * 1000) / 1000,
@@ -614,6 +695,8 @@ export class AnalysisRepository {
       totalAvg: Math.round(totalAvg * 10) / 10,
       memberCount: examIds.length,
       participantCount: totals.size,
+      reliability: await this.getGroupReliability(examIds, Array.from(totals.keys()), track),
+      cv: coefficientOfVariation(overallStd, totalAvg),
       subjects
     };
   }
@@ -631,16 +714,8 @@ export class AnalysisRepository {
     const participantFilter = participantIds.length > 0
       ? { join: "", where: `AND qs.student_id IN (${participantIds.map(() => "?").join(",")})`, params: participantIds }
       : { join: "", where: "AND 1=0", params: [] };
-    // N+1 收敛：满分与考试元信息一次性批量取（缺题分数据的考试沿用旧兜底满分 100）
-    const fullRows = await this.db.all(
-      `SELECT exam_id, SUM(max_score) AS total FROM (
-         SELECT exam_id, question_number, score_type, MAX(max_score) AS max_score
-         FROM question_scores WHERE exam_id IN (${placeholders(examIds)})
-         GROUP BY exam_id, question_number, score_type
-       ) GROUP BY exam_id`,
-      ...examIds
-    ) as Array<{ exam_id: number; total: number | null }>;
-    const fullByExam = new Map<number, number>(fullRows.map((r) => [Number(r.exam_id), r.total ?? 100]));
+    // N+1 收敛：满分与考试元信息一次性批量取（缺题分数据时按统一兜底口径，见 getExamFullScoreMap）
+    const fullByExam = await this.getExamFullScoreMap(examIds);
     const examRows = await this.db.all(
       `SELECT id, name, subject FROM exams WHERE id IN (${placeholders(examIds)})`,
       ...examIds
@@ -668,7 +743,7 @@ export class AnalysisRepository {
     // 年级规模无碍；若一场大考科目数变多且出现慢查询，再把 qs 聚合按 exam_id 批量化。
     for (const examId of examIds) {
       const items = await this.computeQuestionAnalysis(examId, participantFilter, totals);
-      const fullScore = fullByExam.get(examId) ?? 100;
+      const fullScore = fullByExam.get(examId) ?? 0;
       const avgRow = avgByExam.get(examId) ?? { sampleSize: 0, avg: 0 };
       const avgScore = avgRow.avg;
       const subjectSampleSize = avgRow.sampleSize;
@@ -735,8 +810,8 @@ export class AnalysisRepository {
   }
 
   /** 大考参与者集合：与 getGroupTotalsMap 保持同一口径（用于 getGroupDistribution/ClassComparison
-   * 等需要按参与者过滤的查询）。 */
-  private async getGroupParticipantIds(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<Set<number>> {
+   * 与 exam-groups-analysis 路由的概览/班级查询按参与者过滤）。 */
+  async getGroupParticipantIds(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<Set<number>> {
     const totals = await this.getGroupTotalsMap(groupId, track);
     return new Set(totals.keys());
   }
@@ -763,16 +838,49 @@ export class AnalysisRepository {
         LEFT JOIN class_students cs ON cs.student_id = ss.student_id
         LEFT JOIN classes c ON c.id = cs.class_id
         WHERE ss.exam_id IN (${examIds.map(() => "?").join(",")}) ${participantClause}
+        ORDER BY c.id IS NULL ASC, c.id ASC
       `, ...examIds, ...participants) as Array<{ student_id: number; class_id: number | null; class_name: string | null }>;
+      // B11：多班学生归班统一口径——按 class_id 升序取首个（等价 MIN(class_id)，与偏科/临界生查询的 MIN 口径一致）
       const classOf = new Map<number, { classId: number; className: string }>();
-      for (const r of classRows) classOf.set(r.student_id, { classId: r.class_id ?? 0, className: r.class_name ?? "未知班级" });
+      for (const r of classRows) if (!classOf.has(r.student_id)) classOf.set(r.student_id, { classId: r.class_id ?? 0, className: r.class_name ?? "未知班级" });
       const fullScoreMap = await this.getExamFullScoreMap(examIds);
       const totalFull = examIds.reduce((s, id) => s + (fullScoreMap.get(id) ?? 0), 0);
+      // B9：赋分可用性——模式为 assigned 且存在「带赋分公式并已落库 assigned_score」的成员考试才算点亮
+      const assignedCfg = await this.db.get(
+        `SELECT COALESCE(total_score_mode, 'raw') AS mode FROM exam_groups WHERE id = ?`, groupId
+      ) as { mode: string } | undefined;
+      let assignedAvailable = false;
+      if (assignedCfg?.mode === "assigned" && totals.size > 0) {
+        const hasAssigned = await this.db.get(
+          `SELECT 1 FROM exam_group_members egm
+           JOIN exams e ON e.id = egm.exam_id
+           WHERE egm.group_id = ? AND e.assigned_formula IS NOT NULL AND e.assigned_formula != ''
+             AND EXISTS (SELECT 1 FROM student_scores ss2 WHERE ss2.exam_id = e.id AND ss2.assigned_score IS NOT NULL)
+           LIMIT 1`, groupId
+        ) as any;
+        assignedAvailable = !!hasAssigned;
+      }
       if (mode === "total") {
         const scores = Array.from(totals.values());
         const disc = await this.groupOverallDiscrimination(groupId, track);
-        results.push(this.buildDistribution("total", "total", "大考总分分布", totalFull, thresholds.segmentSize, scores, disc));
+        const res = this.buildDistribution("total", "total", "大考总分分布", totalFull, thresholds.segmentSize, scores, disc);
+        if (assignedAvailable) {
+          // 赋分模式下 bins 已为赋分后总分（getGroupTotalsMap 口径）；附原始分分布作对照
+          const rawRows = await this.db.all(`
+            SELECT ss.student_id, SUM(ss.total_score) AS total
+            FROM student_scores ss
+            JOIN users u ON u.id = ss.student_id
+            WHERE ss.exam_id IN (${placeholders(examIds)}) AND ss.student_id IN (${participants.map(() => "?").join(",")})
+            ${track === "all" ? "" : "AND u.track = ?"}
+            GROUP BY ss.student_id
+          `, ...examIds, ...participants, ...(track !== "all" ? [track] : [])) as Array<{ student_id: number; total: number }>;
+          res.assignedAvailable = true;
+          res.assignedBins = histogram(rawRows.map((r) => Number(r.total)), totalFull, thresholds.segmentSize);
+        }
+        results.push(res);
       } else {
+        // B8：班级分布纳入真实区分度——与 subject/total 模式一致，使用大考整体区分度（原硬编码 0）
+        const classDisc = await this.groupOverallDiscrimination(groupId, track);
         const byClass = new Map<number, { className: string; scores: number[] }>();
         for (const [sid, t] of totals) {
           const cls = classOf.get(sid) ?? { classId: 0, className: "未知班级" };
@@ -780,7 +888,9 @@ export class AnalysisRepository {
           byClass.get(cls.classId)!.scores.push(t);
         }
         for (const [classId, info] of byClass) {
-          results.push(this.buildDistribution("class", String(classId), info.className, totalFull, thresholds.segmentSize, info.scores, 0));
+          const classRes = this.buildDistribution("class", String(classId), info.className, totalFull, thresholds.segmentSize, info.scores, classDisc);
+          classRes.assignedAvailable = assignedAvailable;
+          results.push(classRes);
         }
       }
       return results;
@@ -803,15 +913,7 @@ export class AnalysisRepository {
       list.push(Number(r.total_score));
       scoresByExam.set(Number(r.exam_id), list);
     }
-    const fullRows = await this.db.all(
-      `SELECT exam_id, SUM(max_score) AS total FROM (
-         SELECT exam_id, question_number, score_type, MAX(max_score) AS max_score
-         FROM question_scores WHERE exam_id IN (${placeholders(examIds)})
-         GROUP BY exam_id, question_number, score_type
-       ) GROUP BY exam_id`,
-      ...examIds
-    ) as Array<{ exam_id: number; total: number | null }>;
-    const fullByExam = new Map<number, number>(fullRows.map((r) => [Number(r.exam_id), r.total ?? 100]));
+    const fullByExam = await this.getExamFullScoreMap(examIds);
     const examRows = await this.db.all(
       `SELECT id, name, subject FROM exams WHERE id IN (${placeholders(examIds)})`,
       ...examIds
@@ -821,7 +923,7 @@ export class AnalysisRepository {
     );
     for (const examId of examIds) {
       const scores = (scoresByExam.get(examId) ?? []).filter(Number.isFinite);
-      const fullScore = fullByExam.get(examId) ?? 100;
+      const fullScore = fullByExam.get(examId) ?? 0;
       const exam = examById.get(examId);
       const disc = qa.subjects.find((s) => s.examId === examId)?.discrimination ?? 0;
       results.push(this.buildDistribution("subject", String(examId), exam?.subject ?? exam?.name ?? String(examId), fullScore, thresholds.segmentSize, scores, disc));
@@ -853,11 +955,13 @@ export class AnalysisRepository {
       LEFT JOIN classes c ON c.id = cs.class_id
       LEFT JOIN grades g ON g.id = c.grade_id
       WHERE ss.exam_id IN (${examIds.map(() => "?").join(",")})
+      ORDER BY c.id IS NULL ASC, c.id ASC
     `, ...examIds) as Array<{ student_id: number; class_id: number | null; class_name: string | null; grade_name: string | null }>;
     const classMeta = new Map<number, { className: string; gradeName?: string }>();
     for (const r of classRows) classMeta.set(r.class_id ?? 0, { className: r.class_name ?? "未知班级", gradeName: r.grade_name ?? undefined });
+    // B11：多班学生归班统一口径——按 class_id 升序取首个（等价 MIN(class_id)，与偏科/临界生查询的 MIN 口径一致）
     const classOf = new Map<number, number>();
-    for (const r of classRows) classOf.set(r.student_id, r.class_id ?? 0);
+    for (const r of classRows) if (!classOf.has(r.student_id)) classOf.set(r.student_id, r.class_id ?? 0);
 
     const byClass = new Map<number, number[]>();
     for (const [sid, t] of totals) {
@@ -894,15 +998,7 @@ export class AnalysisRepository {
       : `AND 1=0`;
     const subjectClassSummaries: GroupClassComparisonResponse["subjectClassSummaries"] = [];
     // N+1 收敛：逐科成绩行 / 满分 / 考试名批量查询，内存按科分组；结果与逐科查询一致。
-    const fullRows = await this.db.all(
-      `SELECT exam_id, SUM(max_score) AS total FROM (
-         SELECT exam_id, question_number, score_type, MAX(max_score) AS max_score
-         FROM question_scores WHERE exam_id IN (${placeholders(examIds)})
-         GROUP BY exam_id, question_number, score_type
-       ) GROUP BY exam_id`,
-      ...examIds
-    ) as Array<{ exam_id: number; total: number | null }>;
-    const fullByExam = new Map<number, number>(fullRows.map((r) => [Number(r.exam_id), r.total ?? 100]));
+    const fullByExam = await this.getExamFullScoreMap(examIds);
     const examRows = await this.db.all(
       `SELECT id, name, subject FROM exams WHERE id IN (${placeholders(examIds)})`,
       ...examIds
@@ -928,7 +1024,7 @@ export class AnalysisRepository {
       subjectRowsByExam.set(Number(r.exam_id), list);
     }
     for (const examId of examIds) {
-      const fullScore = fullByExam.get(examId) ?? 100;
+      const fullScore = fullByExam.get(examId) ?? 0;
       const exam = examById.get(examId);
       const rows = subjectRowsByExam.get(examId) ?? [];
       const byCls = new Map<number, number[]>();
@@ -1023,8 +1119,7 @@ export class AnalysisRepository {
   async getClassComparison(examId: number, classIds: number[], includeOptions: boolean): Promise<ClassComparisonResponse> {
     const thresholds = await getAnalysisThresholds();
     // Bugfix: 使用 GROUP BY + MAX 代替 DISTINCT，避免同一题 max_score 不一致时 fullScore 膨胀
-    const totalMax = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
-    const fullScore = totalMax?.total ?? 100;
+    const fullScore = await this.resolveExamFullScore(examId);
     const passLine = fullScore * thresholds.passRate, excellentLine = fullScore * thresholds.excellentRate;
     const ranges = generateDistributionRanges(fullScore, thresholds.segmentSize);
 
@@ -1298,8 +1393,7 @@ export class AnalysisRepository {
     examId: number,
     options: { classId?: number; lineKind?: BorderlineLineKind; lineValue?: number; margin?: number } = {}
   ): Promise<BorderlineResponse> {
-    const totalMax = await this.db.get(`SELECT SUM(max_score) as total FROM (SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type)`, examId) as any;
-    const fullScore = totalMax?.total ?? 100;
+    const fullScore = await this.resolveExamFullScore(examId);
     const thresholds = await getAnalysisThresholds();
     const lineKind: BorderlineLineKind = options.lineKind ?? "pass";
     const rawLine = options.lineValue ?? 60;
@@ -1579,7 +1673,12 @@ export class AnalysisRepository {
     return rows.map((r: any) => ({ id: r.id, name: r.name, subject: r.subject, gradeName: r.gradeName, examDate: dateOnly(r.examDate), fullScore: round1(fullScores.get(r.id) ?? 0), gradedCount: r.gradedCount, avgScore: r.avgScore }));
   }
 
-  private async getExamFullScoreMap(examIds: number[]): Promise<Map<number, number>> {
+  /** 单场满分统一解析：question_scores 合计 → 缺失时 MAX(total_score) → 0（B7，与批量 Map 同一兜底口径，消除虚构 100） */
+  private async resolveExamFullScore(examId: number): Promise<number> {
+    return (await this.getExamFullScoreMap([examId])).get(examId) ?? 0;
+  }
+
+  async getExamFullScoreMap(examIds: number[]): Promise<Map<number, number>> {
     const result = new Map<number, number>();
     const qRows = await this.db.all(`SELECT exam_id, SUM(max_score) as fullScore FROM (SELECT exam_id, question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id IN (${placeholders(examIds)}) GROUP BY exam_id, question_number, score_type) GROUP BY exam_id`, ...examIds) as any[];
     for (const r of qRows) if (r.fullScore != null && r.fullScore > 0) result.set(r.exam_id, Number(r.fullScore));

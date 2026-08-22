@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
+import socket
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from openai import OpenAI
 
@@ -13,6 +16,71 @@ from llmclient.tools.registry import call_tool, gemini_function_declarations, op
 from llmclient.prompt import system
 
 SYSTEM_PROMPT = system
+
+# 安全审计（F-4 / P1）：base_url 白名单 —— 仅允许：
+#   - https:// 任意公网域名（主流 LLM 服务商均为 HTTPS），且必须解析到公网地址
+#   - http:// 仅回环地址（本机 Ollama / vLLM 等本地推理服务）
+# 拒绝 http/https 解析到私网/回环/链路本地/保留地址的 base_url，
+# 防止 providerOverride 被用于 SSRF 探测内网（含 https://127.0.0.1、云元数据 169.254.169.254 等）。
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+
+
+def _ip_is_unsafe(ip_str: str) -> bool:
+    """判断 IP 是否属于 SSRF 高危段（回环/私网/链路本地/保留/组播/未指定）。"""
+    try:
+        addr = ipaddress.ip_address(ip_str.strip("[]"))
+    except ValueError:
+        return True  # 非合法 IP 一律视为危险
+    return (
+        addr.is_loopback
+        or addr.is_private
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr.is_unspecified
+    )
+
+
+def _resolve_host_ips(hostname: str) -> list[str]:
+    """解析 hostname 的全部地址；直接写 IP（含十进制/IPv6 等变体编码）时归一化返回。"""
+    candidate = hostname.strip("[]")
+    try:
+        ipaddress.ip_address(candidate)
+        return [candidate]
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return []
+    return sorted({info[4][0] for info in infos})
+
+
+def _hostname_is_unsafe(hostname: str) -> bool:
+    """hostname 解析出的任一地址落在高危段即判定为不安全（防 IP 变体编码与 DNS 多记录重绑定）。"""
+    return any(_ip_is_unsafe(ip) for ip in _resolve_host_ips(hostname))
+
+
+def validate_base_url(base_url: str | None) -> str | None:
+    if not base_url:
+        return None
+    parsed = urlparse(base_url)
+    hostname = (parsed.hostname or "").lower()
+    if not hostname:
+        raise ValueError("base_url must include a host; refused to avoid SSRF")
+    if parsed.scheme == "https":
+        # 安全审计（P1）：https 不再无条件放行 —— 逐一解析并校验地址，
+        # 拒绝回环/私网/链路本地/保留地址及其变体（https://127.0.0.1、169.254.169.254 等）。
+        # 注：解析在连接前执行；对「解析到公网但在本进程重连瞬间改指内网」的 DNS 重绑定，
+        # 由沙箱/防火墙在网络边界兜底，且此处会拒绝任何同时含私网记录的多记录域名。
+        if _hostname_is_unsafe(hostname):
+            raise ValueError(
+                "base_url resolves to a loopback/private/link-local/reserved address; refused to avoid SSRF"
+            )
+        return base_url
+    if parsed.scheme == "http" and hostname in LOOPBACK_HOSTS:
+        return base_url
+    raise ValueError("base_url must be https:// (public host) or http://127.0.0.1 (loopback only); refused to avoid SSRF")
 
 
 class _GeminiNonTextWarningFilter(logging.Filter):
@@ -110,14 +178,19 @@ def run_openai_compatible_analysis(
 ) -> AnalysisRunResponse:
     # Use provider override if provided, else fall back to env vars
     if provider_override:
-        api_key = provider_override["api_key"]
-        base_url = provider_override["base_url"].rstrip("/") if provider_override.get("base_url") else None
+        api_key = provider_override.get("api_key") or env_value("OPENAI_API_KEY")
+        raw_base_url = provider_override.get("base_url")
+        # 安全审计（F-4）：SSRF 防护 —— 拒绝非 https / 非回环 http 的 base_url
+        try:
+            base_url = validate_base_url(raw_base_url.rstrip("/") if raw_base_url else None)
+        except ValueError as exc:
+            raise ValueError(f"Invalid provider base_url: {exc}") from exc
     elif model.provider == "deepseek":
         api_key = env_value("DEEPSEEK_API_KEY")
         base_url = "https://api.deepseek.com"
     else:
         api_key = env_value("OPENAI_API_KEY")
-        base_url = env_value("OPENAI_BASE_URL") or None
+        base_url = validate_base_url(env_value("OPENAI_BASE_URL") or None)
 
     client = OpenAI(api_key=api_key, base_url=base_url)
     messages: list[dict[str, Any]] = [

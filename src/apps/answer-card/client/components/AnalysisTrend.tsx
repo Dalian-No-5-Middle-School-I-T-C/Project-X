@@ -349,9 +349,9 @@ export function AnalysisTrend({
                     strokeWidth={2}
                   />
                   <text
-                    x={point.x}
-                    y={point.y - 10}
-                    textAnchor="middle"
+                    x={point.x + 10}
+                    y={point.y - 8}
+                    textAnchor="start"
                     className="fill-chart-1 text-xs font-bold tabular-nums"
                   >
                     {formatScore(point.value)}
@@ -368,9 +368,9 @@ export function AnalysisTrend({
                     strokeWidth={2}
                   />
                   <text
-                    x={point.x}
+                    x={point.x + 10}
                     y={point.y + 18}
-                    textAnchor="middle"
+                    textAnchor="start"
                     className="fill-chart-3 text-xs font-bold tabular-nums"
                   >
                     {formatScore(point.value)}

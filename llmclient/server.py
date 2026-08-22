@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+
+logger = logging.getLogger("llmclient")
 
 from llmclient.config import (
     MODEL_CATALOG,
@@ -29,14 +32,19 @@ app = FastAPI(title="Project-X LLM Client", version="0.2.0")
 
 def require_internal_key(authorization: str | None = Header(default=None)) -> None:
     expected = llmclient_api_key()
+    # 安全审计（F-4）：内部密钥未配置时拒绝所有请求（而非放行），
+    # 避免服务被端口转发/改绑 0.0.0.0 后完全开放。
     if not expected:
-        return
+        raise HTTPException(status_code=503, detail="LLMCLIENT_INTERNAL_API_KEY not configured; server refuses to serve requests")
     if authorization != f"Bearer {expected}":
         raise HTTPException(status_code=401, detail="Invalid llmclient internal API key")
 
 
 @app.get("/health")
 def health() -> dict[str, object]:
+    # 安全审计（F-12-9）：脱敏 —— 不对外返回 dbHost/dbName/dbPath 等内网细节，仅暴露存活与可用性布尔值。
+    # 安全审计（P1）：internalAuthConfigured 如实反映内部密钥是否已配置 —— 未配置时受保护端点返回 503，
+    # 供 Node /ai/status 判断内置 LLM 是否真的可用，避免前端误判"服务可用"。
     db_path = default_db_path()
     models = configured_models()
     db_ok = False
@@ -49,12 +57,10 @@ def health() -> dict[str, object]:
             db_ok = bool(row and row["ok"] == 1)
         except Exception:
             db_ok = False
-        db_config = mariadb_config()
         return {
             "ok": True,
             "dbDialect": "mariadb",
-            "dbHost": db_config["host"],
-            "dbName": db_config["database"],
+            "internalAuthConfigured": bool(llmclient_api_key()),
             "dbExists": db_ok,
             "defaultModel": default_model_id(),
             "models": models,
@@ -62,7 +68,7 @@ def health() -> dict[str, object]:
     return {
         "ok": True,
         "dbDialect": "sqlite",
-        "dbPath": str(db_path),
+        "internalAuthConfigured": bool(llmclient_api_key()),
         "dbExists": Path(db_path).exists(),
         "defaultModel": default_model_id(),
         "models": models,
@@ -124,7 +130,9 @@ def analysis_run(request: AnalysisRunRequest, _: None = Depends(require_internal
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"{model.provider} analysis failed: {exc}") from exc
+        # 安全审计（F-12-1）：异常原文仅写日志，响应返回通用信息，避免泄漏 URL/密钥片段
+        logger.exception("analysis/run failed for model %s", model.id)
+        raise HTTPException(status_code=502, detail="analysis failed; see server logs") from exc
 
 
 @app.post("/analysis/knowledge-points")
@@ -183,7 +191,8 @@ def knowledge_points(
             )
             return result
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Direct analysis failed: {exc}") from exc
+            logger.exception("knowledge-points direct analysis failed for model %s", model.id)
+            raise HTTPException(status_code=502, detail="Direct analysis failed; see server logs") from exc
 
     if mode == "ocr":
         ocr_provider_id = request.get("ocrProviderId")
@@ -201,7 +210,8 @@ def knowledge_points(
             )
             return result
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"OCR analysis failed: {exc}") from exc
+            logger.exception("knowledge-points OCR analysis failed for model %s", model.id)
+            raise HTTPException(status_code=502, detail="OCR analysis failed; see server logs") from exc
 
     # Text mode (default)
     if not paper_text:
@@ -217,7 +227,8 @@ def knowledge_points(
         )
         return result
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Text analysis failed: {exc}") from exc
+        logger.exception("knowledge-points text analysis failed for model %s", model.id)
+        raise HTTPException(status_code=502, detail="Text analysis failed; see server logs") from exc
 
 
 @app.get("/debug/config")

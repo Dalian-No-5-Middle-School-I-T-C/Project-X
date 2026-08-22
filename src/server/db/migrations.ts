@@ -906,6 +906,16 @@ const MIGRATIONS: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_ai_jobs_status ON ai_analysis_jobs(status);
       `);
     }
+  },
+  // v39: 修复 schema 漂移 —— knowledge_points.track_type 仅存在于 schema.sql（全新建库），
+  // 旧库升级从未补齐（#177 的 v31 只补了 users.track 与 exam_group_members.track_type）。
+  // v2.3.x 演示数据 seed（周报晨测）会写入该列，缺列会导致导入在插入知识点时中断。
+  {
+    version: 39,
+    name: "knowledge-points-track-type-backfill",
+    up(db) {
+      addColumnIfMissing(db, "knowledge_points", "track_type", "TEXT NOT NULL DEFAULT 'common'");
+    }
   }
 ];
 

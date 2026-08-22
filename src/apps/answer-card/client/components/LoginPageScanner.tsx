@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { BookOpen, ChevronDown, ChevronRight, Globe, LogIn, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
+import { getStoredApiKey, storeApiKey } from "../auth/api";
 import { BeianFooter } from "./BeianFooter";
 import { UserGuideModal } from "./UserGuideModal";
 import {
@@ -15,7 +16,6 @@ import {
 
 // v1.6.0: 远端服务器配置（仅扫描端需要）
 const SERVER_URL_STORAGE = "projectx_server_url";
-const API_KEY_STORAGE = "projectx_api_key";
 
 function loadServerUrl(): string {
   try {
@@ -31,19 +31,12 @@ function saveServerUrl(url: string): void {
     /* ignore */
   }
 }
+// 安全审计（F-6）：API Key 存取统一走 api.ts 的带过期实现（30 天）
 function loadApiKey(): string {
-  try {
-    return localStorage.getItem(API_KEY_STORAGE) ?? "";
-  } catch {
-    return "";
-  }
+  return getStoredApiKey() ?? "";
 }
 function saveApiKey(key: string): void {
-  try {
-    localStorage.setItem(API_KEY_STORAGE, key);
-  } catch {
-    /* ignore */
-  }
+  storeApiKey(key || null);
 }
 
 export function LoginPageScanner() {

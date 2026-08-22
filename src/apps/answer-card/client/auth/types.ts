@@ -17,7 +17,9 @@ export interface AuthUser {
 }
 
 export interface LoginResponse {
-  token: string;
+  // 安全审计（P1）：同源部署下认证主通道为 HttpOnly Cookie，登录响应不返回 token；
+  // 仅跨域 API 模式（Cookie 无法跨站点携带）才返回一次性 token 供内存使用。因此为可选。
+  token?: string;
   user: Omit<AuthUser, "permissions"> & { permissions?: string[] };
   permissions: string[];
   passwordChangeRequired: boolean;

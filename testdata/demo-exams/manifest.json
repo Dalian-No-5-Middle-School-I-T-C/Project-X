@@ -1,8 +1,8 @@
 {
   "name": "projectx-demo-exams",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "演示考试数据集 — 覆盖单科/大考(文理分科)/跨考/并列排名/缺考/导出/名次变化/学期对比/网阅打分(双评仲裁·断点续批)/填空题升级(自定义横线·注释·图片)/P-D统计与正态性检验等测试场景",
-  "compatibleWith": ["v1.9.4", "v1.9.5", "v1.9.6", "v1.9.7", "v1.9.8", "v1.9.9", "v2.0.0"],
+  "compatibleWith": ["v1.9.4", "v1.9.5", "v1.9.6", "v1.9.7", "v1.9.8", "v1.9.9", "v2.0.0", "v2.1.0", "v2.2.0", "v2.2.1", "v2.3.0"],
   "prefix": "演示-",
   "accounts": {
     "admin": { "identifier": "admin", "password": "见数据库旁 bootstrap-admin.txt（#185 起为随机一次性密码，首次登录强制改密；seed 后 verify 会自动改密为 Admin@Demo2026 并回写文件）" },
