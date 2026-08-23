@@ -153,7 +153,7 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
     }
     // 停留在引导态的存量库（旧随机一次性密码残留、改密标记未清除等）：统一重置为固定初始密码
     await db.run(
-      "UPDATE users SET password_hash = ?, password_change_required = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+      "UPDATE users SET password_hash = ?, password_change_required = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
       await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), existing.id
     );
     writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
@@ -165,7 +165,7 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
     const insertAdminSql = buildInsertIgnore("mariadb", "users", [
       "username", "password_hash", "name", "role_id", "is_active", "password_change_required",
     ]);
-    const result = await db.run(insertAdminSql, "admin", await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), "系统管理员", 1, 1, 0);
+    const result = await db.run(insertAdminSql, "admin", await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), "系统管理员", 1, 1, 1);
     writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
     await ensureDefaultApiKey(db);
     return { adminId: result.lastInsertRowid, rotated: true, passwordFile };
@@ -176,7 +176,7 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
   const result = sqlite.prepare(
     `INSERT INTO users (username, password_hash, name, role_id, is_active, password_change_required)
      VALUES (?, ?, ?, ?, ?, ?)`
-  ).run("admin", await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), "系统管理员", 1, 1, 0);
+  ).run("admin", await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), "系统管理员", 1, 1, 1);
   writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
   await ensureDefaultApiKeySqlite(sqlite);
   return { adminId: Number(result.lastInsertRowid), rotated: true, passwordFile };

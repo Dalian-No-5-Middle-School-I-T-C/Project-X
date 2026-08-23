@@ -126,10 +126,10 @@
 - 此前皮肤引导层只挂在 web 端登录页，扫描端从未出现。现复用 `SkinOnboarding`（明澈 / 纸锋大预览二选一、必须选择才能进入登录），复用同一一次性标志 `projectx-skin-onboarded`。
 - 补齐与 web 一致的同步语义：会话内显式选择优先于账号偏好；登录后自动 PATCH 同步到账号 `theme_skin`，换设备/重装不再被默认皮肤打回。文案按扫描端场景调整（组件新增可选 props，web 端零改动）。
 
-### 4. 管理员初始密码固定为 admin123
-- `ensureDefaultAdmin()` 由「随机一次性密码写入 bootstrap-admin.txt + 强制首次改密」改为固定初始密码 `admin123`：
-  - 全新库直接以 admin/admin123 登录，不再强制改密；
-  - 停留在待改密引导态的存量库下次启动自动重置为 admin123（旧会话全部吊销）；
+### 4. 管理员初始密码固定为 admin123（首次登录仍强制改密）
+- 初始密码由「随机一次性密码」改为固定值 `admin123`，降低学校现场部署门槛，同时保留防呆：
+  - 全新库以 admin/admin123 初始化，**首次登录强制修改密码**；
+  - 停留在待改密引导态的存量库下次启动自动重置为 admin123（旧会话全部吊销，改密标记保留）；
   - 已自行修改过密码的在用库完全不受影响。
 - bootstrap-admin.txt 仍会生成（内容即 admin123），备份还原与演示数据脚本等下游流程零改动。同步更新 `verify-security-critical` / `bugfix-summary-verification` 断言与 AGENTS.md / README / SERVER-README 文档事实。
 - ⚠️ 公网部署请在装机完成后立即修改 admin 密码（登录限速 15 分钟 10 次兜底）。

@@ -75,12 +75,12 @@ async function main(): Promise<void> {
     body: JSON.stringify({ identifier: "admin", password: bootstrapPassword }),
   });
   const loginBody = (await loginRes.json().catch(() => ({}))) as { passwordChangeRequired?: boolean; token?: string };
-  ok(loginRes.status === 200 && loginBody.passwordChangeRequired === false, "P0-8 固定初始密码登录不触发强制改密");
+  ok(loginRes.status === 200 && loginBody.passwordChangeRequired === true, "P0-8 固定初始密码登录后强制改密");
   const oldAdminToken = loginBody.token;
   const protectedRes = await fetch(`${base}/api/cards`, {
     headers: oldAdminToken ? { Authorization: `Bearer ${oldAdminToken}` } : {}
   });
-  ok(protectedRes.status === 200, "P0-8 初始密码会话可直接访问业务 API");
+  ok(protectedRes.status === 428, "P0-8 强制改密会话访问业务 API → 428");
   const changedRes = await fetch(`${base}/api/auth/change-password`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(oldAdminToken ? { Authorization: `Bearer ${oldAdminToken}` } : {}) },

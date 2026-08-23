@@ -22,8 +22,27 @@ function platformPackagesFor(arch) {
   return [`sharp-win32-${arch}`];
 }
 
+/** 已安装的平台包版本：目录存在但 package.json 缺失/损坏/版本不匹配时返回 null（视为需要重装）。 */
+function installedPackageVersion(name) {
+  const pkgPath = path.join(imgDir, name, "package.json");
+  if (!existsSync(pkgPath)) return null;
+  try {
+    return JSON.parse(readFileSync(pkgPath, "utf8")).version ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function missingPackages(arch) {
-  return platformPackagesFor(arch).filter((name) => !existsSync(path.join(imgDir, name)));
+  return platformPackagesFor(arch).filter((name) => {
+    const installed = installedPackageVersion(name);
+    if (installed === null) return true;
+    if (installed !== sharpVersion) {
+      console.warn(`[sharp] ${name}@${installed} 与 sharp@${sharpVersion} 版本不一致，将重新拉取。`);
+      return true;
+    }
+    return false;
+  });
 }
 
 function copyPlatformPackages(stagingNodeModules, arch) {

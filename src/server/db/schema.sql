@@ -713,7 +713,7 @@ INSERT OR IGNORE INTO roles (id, name, display_name, permissions) VALUES
     (3, 'student', '学生', '["score:read"]');
 
 -- 注意：默认管理员账号由应用程序在启动时通过 ensureDefaultAdmin() 自动创建
--- 账号: admin / 固定初始密码 admin123（同步写入数据库旁的 bootstrap-admin.txt，首次登录不再强制改密，生产环境请尽快修改）
+-- 账号: admin / 固定初始密码 admin123（同步写入数据库旁的 bootstrap-admin.txt；首次登录强制改密）
 
 -- 插入默认数据保留策略
 INSERT OR IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive, auto_delete) VALUES

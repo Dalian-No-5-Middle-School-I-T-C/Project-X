@@ -113,7 +113,7 @@ async function main(): Promise<void> {
     check(firstPassword === "admin123", "新库使用固定初始密码 admin123");
     check(existsSync(getBootstrapAdminPath()), "初始密码写入数据库同目录引导文件");
     const initialAdmin = db.prepare("SELECT password_change_required FROM users WHERE username='admin'").get() as { password_change_required: number };
-    check(initialAdmin.password_change_required === 0, "新管理员无强制改密标记");
+    check(initialAdmin.password_change_required === 1, "新管理员被标记为强制改密");
 
     // 存量库迁移：停留在强制改密引导态的旧随机密码（含引导文件丢失）→ 启动时重置为固定初始密码
     db.prepare("UPDATE users SET password_hash=?, password_change_required=1 WHERE username='admin'").run(await hashPassword("Legacy-Random-Pw"));
@@ -123,7 +123,7 @@ async function main(): Promise<void> {
     const recoveredHash = (db.prepare("SELECT password_hash FROM users WHERE username='admin'").get() as { password_hash: string }).password_hash;
     check(
       recoveredBootstrap.rotated && recoveredPassword === "admin123"
-        && (db.prepare("SELECT password_change_required FROM users WHERE username='admin'").get() as { password_change_required: number }).password_change_required === 0
+        && (db.prepare("SELECT password_change_required FROM users WHERE username='admin'").get() as { password_change_required: number }).password_change_required === 1
         && await verifyPassword("admin123", recoveredHash),
       "强制改密状态的存量库启动时重置为固定初始密码"
     );
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
       body: JSON.stringify({ identifier: "admin", password: recoveredPassword })
     });
     const bootstrapBody = await bootstrapLogin.json() as { token: string; passwordChangeRequired: boolean };
-    check(bootstrapLogin.status === 200 && bootstrapBody.passwordChangeRequired === false, "固定初始密码登录不触发强制改密");
+    check(bootstrapLogin.status === 200 && bootstrapBody.passwordChangeRequired === true, "固定初始密码登录后强制改密");
     const badTypeLogin = await fetch(`${base}/api/auth/login`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ identifier: 12345, password: "x" })
@@ -224,15 +224,16 @@ async function main(): Promise<void> {
     );
     const meResponse = await fetch(`${base}/api/auth/me`, { headers: authHeaders(bootstrapBody.token) });
     const meBody = await meResponse.json() as { passwordChangeRequired?: boolean };
-    check(meResponse.status === 200 && meBody.passwordChangeRequired === false, "/api/auth/me 无强制改密状态");
-    const cardsAllowed = await fetch(`${base}/api/cards`, { headers: authHeaders(bootstrapBody.token) });
-    check(cardsAllowed.status === 200, "固定初始密码会话可直接访问业务 API");
+    check(meResponse.status === 200 && meBody.passwordChangeRequired === true, "/api/auth/me 返回强制改密状态");
+    const cardsBlocked = await fetch(`${base}/api/cards`, { headers: authHeaders(bootstrapBody.token) });
+    const cardsBlockedBody = await cardsBlocked.json() as { code?: string };
+    check(cardsBlocked.status === 428 && cardsBlockedBody.code === "PASSWORD_CHANGE_REQUIRED", "强制改密会话访问业务 API 被 428 拒绝");
     const changed = await fetch(`${base}/api/auth/change-password`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders(bootstrapBody.token) },
       body: JSON.stringify({ oldPassword: recoveredPassword, newPassword: "CriticalAdmin-2026!" })
     });
-    check(changed.status === 200 && !existsSync(getBootstrapAdminPath()), "改密成功后清除引导文件");
+    check(changed.status === 200 && !existsSync(getBootstrapAdminPath()), "改密成功后清除强制标记和引导文件");
     const staleSession = await fetch(`${base}/api/auth/me`, { headers: authHeaders(bootstrapBody.token) });
     check(staleSession.status === 401, "改密后旧管理员会话失效");
     const adminLogin = await authService.login("admin", "CriticalAdmin-2026!");
