@@ -2098,6 +2098,47 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  /**
+   * 统一的「批改完整性」校验（评审 P1）：成绩公布前必须确认批改已完成。
+   * - 成绩记录：该考试至少保存了一条 student_scores（无成绩 = 未批改）；
+   * - 应考学生：exams.class_id 已知 → 名册 = 该班学生数；否则 exams.grade_id 已知 →
+   *   名册 = 该年级所有班级学生数（去重）；两者皆无 → 名册不可知，仅校验成绩记录非空。
+   * - 已录入学生低于名册人数 → 视为批改未完，拒绝公布（防止半成品成绩暴露给学生）。
+   * 不满足时抛 { status: 409 }，由路由统一映射为 409 响应。
+   */
+  async function assertGradingComplete(
+    db: DbAdapter,
+    exam: { id: number; class_id?: number | null; grade_id?: number | null }
+  ): Promise<{ scoredCount: number; expected: number | null }> {
+    const scoreRow = await db.get(
+      "SELECT COUNT(DISTINCT student_id) AS count FROM student_scores WHERE exam_id = ?",
+      exam.id
+    ) as { count: number } | undefined;
+    const scoredCount = Number(scoreRow?.count ?? 0);
+    if (scoredCount === 0) {
+      throw Object.assign(new Error("该考试尚无成绩记录（批改未完成），无法公布成绩"), { status: 409, code: ApiError.INVALID_VALUE });
+    }
+    let expected: number | null = null;
+    if (exam.class_id != null) {
+      const roster = await db.get("SELECT COUNT(*) AS count FROM class_students WHERE class_id = ?", exam.class_id) as { count: number } | undefined;
+      expected = Number(roster?.count ?? 0);
+    } else if (exam.grade_id != null) {
+      const roster = await db.get(
+        `SELECT COUNT(DISTINCT cs.student_id) AS count FROM class_students cs
+         JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ?`,
+        exam.grade_id
+      ) as { count: number } | undefined;
+      expected = Number(roster?.count ?? 0);
+    }
+    if (expected != null && expected > 0 && scoredCount < expected) {
+      throw Object.assign(
+        new Error(`该考试成绩记录不完整（已录入 ${scoredCount}/${expected} 名学生），无法公布成绩`),
+        { status: 409, code: ApiError.INVALID_VALUE }
+      );
+    }
+    return { scoredCount, expected };
+  }
+
   // v41: 单场成绩公布 —— 教师手动公布后学生方可查看。幂等（已公布直接返回 ok）。
   app.post("/api/exams/:examId/publish", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
     try {
@@ -2108,7 +2149,7 @@ export async function createApp(): Promise<express.Express> {
       }
       const { getMysqlDb } = await import("../../../server/db");
       const db = getMysqlDb();
-      const exam = await db.get("SELECT id, status, score_published FROM exams WHERE id = ?", examId) as { id: number; status?: string; score_published?: number } | undefined;
+      const exam = await db.get("SELECT id, status, score_published, class_id, grade_id FROM exams WHERE id = ?", examId) as { id: number; status?: string; score_published?: number; class_id?: number | null; grade_id?: number | null } | undefined;
       if (!exam) {
         res.status(404).json({ message: "考试不存在" });
         return;
@@ -2123,6 +2164,8 @@ export async function createApp(): Promise<express.Express> {
         res.json({ ok: true, scorePublished: 1 });
         return;
       }
+      // 评审 P1：结考状态不等于批改完成 —— 无成绩/成绩不完整（低于应考学生）均拒绝公布
+      await assertGradingComplete(db, exam);
       // 状态更新与审计日志在同一事务中保证原子性；
       // WHERE 带状态条件，防止校验与写入之间考试被并发改回阅卷中（TOCTOU）
       await db.transaction(async (tx) => {
@@ -2160,9 +2203,9 @@ export async function createApp(): Promise<express.Express> {
       const db = getMysqlDb();
       // 存在性与结考状态校验
       const existing = await db.all(
-        `SELECT id, status, score_published FROM exams WHERE id IN (${examIds.map(() => "?").join(",")})`,
+        `SELECT id, status, score_published, class_id, grade_id FROM exams WHERE id IN (${examIds.map(() => "?").join(",")})`,
         ...examIds
-      ) as Array<{ id: number; status?: string; score_published?: number }>;
+      ) as Array<{ id: number; status?: string; score_published?: number; class_id?: number | null; grade_id?: number | null }>;
       if (existing.length !== examIds.length) {
         res.status(400).json({ message: "部分考试不存在" });
         return;
@@ -2183,6 +2226,20 @@ export async function createApp(): Promise<express.Express> {
       const toPublish = existing
         .filter((item) => item.score_published !== 1)
         .map((item) => item.id);
+      // 评审 P1：逐个校验「批改完整性」——任一场不完整（无成绩/低于应考学生）则整体 409，
+      // 且不影响其它场次（不写任何审计），由教师补完批改后重试
+      const incompleteReasons: string[] = [];
+      for (const exam of existing.filter((item) => item.score_published !== 1)) {
+        try {
+          await assertGradingComplete(db, exam);
+        } catch (error) {
+          incompleteReasons.push(`考试 ${exam.id}：${error instanceof Error ? error.message : "批改未完成"}`);
+        }
+      }
+      if (incompleteReasons.length > 0) {
+        res.status(409).json({ message: `以下考试因批改未完成无法公布成绩：${incompleteReasons.join("；")}` });
+        return;
+      }
       // 状态更新与审计日志在同一事务中保证原子性；
       // WHERE 带状态条件，防止校验与写入之间考试被并发改回阅卷中（TOCTOU）
       await db.transaction(async (tx) => {
