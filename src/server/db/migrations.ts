@@ -29,9 +29,28 @@ function addColumnIfMissing(
   columnName: string,
   definition: string
 ): void {
+  if (!hasTable(db, tableName)) return;
   if (!hasColumn(db, tableName, columnName)) {
     db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
+}
+
+function ensureTeacherPermissionsTable(db: Database.Database): void {
+  if (hasTable(db, "teacher_permissions")) return;
+  db.exec(`
+    CREATE TABLE teacher_permissions (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      teacher_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      grade_id           INTEGER REFERENCES grades(id),
+      can_view_scores    INTEGER DEFAULT 1,
+      can_view_charts    INTEGER DEFAULT 1,
+      can_view_students  INTEGER DEFAULT 1,
+      created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(teacher_id, grade_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_tp_teacher ON teacher_permissions(teacher_id);
+  `);
 }
 
 function createObjectiveQuestionsIfMissing(db: Database.Database): void {
@@ -915,6 +934,15 @@ const MIGRATIONS: Migration[] = [
     name: "knowledge-points-track-type-backfill",
     up(db) {
       addColumnIfMissing(db, "knowledge_points", "track_type", "TEXT NOT NULL DEFAULT 'common'");
+    }
+  },
+  // v40: 修复存量 SQLite 库 teacher_permissions 缺失（BUG-1）—— 旧 schema.sql 未包含该表，
+  // 若旧库曾跳过 v16（历史版本错乱），此处幂等补建，后续 v44 扩列不再 no such table。
+  {
+    version: 40,
+    name: "teacher-permissions-backfill-sqlite",
+    up(db) {
+      ensureTeacherPermissionsTable(db);
     }
   }
 ];
