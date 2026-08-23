@@ -1,118 +1,8 @@
 # Project-X CHANGELOG
 
-
-## v2.2.10 (2026-08-22) — 合并前审核修复：天梯公布门与软删除收口 + 版本徽章
-
-> 合并前自审发现的两处 P1（均属本 PR 引入面：PR #256 公布 enforcement 的消费端缺口、#246 软删除可见性在天梯的残留）与一处 P3。
-
-**1. [P1] 天梯端点接入成绩公布门（PR #256 v41 消费端补齐）**
-- 此前三个天梯端点均不检查 `score_published`：学生可在教师公布前经「我的成绩 → 天梯 → 跨考累计」（周包聚合）看到本人分数与年级前十，单场/大考组路径也可直接调 API 取分——绕过「批改完成后默认不公布，学生端硬过滤」的核心承诺。
-- 修复：`ladder.ts` 新增 `checkLadderPublished`（教师/管理员豁免，与天梯开关的管理员预览语义一致）；单场天梯在 `requireExamAccess` 后校验、组天梯对全部成员校验（任一未公布 403）；跨考天梯经 `getCrossExamTotal` 新增 `onlyPublished` 选项在考试集合解析后统一过滤（新增 `filterPublishedExamIds` 助手，保持原顺序）。
-**2. [P1] 组天梯与跨考聚合的软删除收口**
-- 组天梯成员查询未过滤软删除成员（round-2 已修 `canReadGroup` 的同类残留）：教师侧经 `validateExamIdsAccess` 对含软删除成员的组整体 403；学生侧（可见集合为 null）聚合含已删考试成绩。修复：成员查询补 `GROUP_MEMBER_NOT_SOFT_DELETED_SQL`。
-- `getCrossExamTotalExams` 补 `EXAM_NOT_SOFT_DELETED_SQL`（selected 模式可经构造 examIds 触达软删除考试，此处统一收口）。
-**3. [P3]** README 版本徽章 2.2.1 → 2.4.0（与 package.json 对齐，仓库惯例）。
-
-**验证**：typecheck 0 错误；`verify:auth` 122/122（新增第 11 节 7 项：公布过滤助手、学生/教师跨考聚合三态、天梯门教师/管理员豁免与学生 403/放行）；security-critical 62、weekly-audit 57、weekly-demo、reliability-filter 21、p1-security 11、demo-safety 23、score-grid 全绿。
-
-## v2.2.9 (2026-08-22) — PR #246 第三轮评审闭环（跨考试查看门 / 恢复解绑策略）
-
-**1. [P1] 跨考试分析端点接入查看权限矩阵**
-- 新增 `filterExamIdsByViewPermission`（`middleware.ts`）：批量返回教师按矩阵拥有指定查看标志的考试子集，语义与单场门 `hasViewPermission` 一致（allow-based：admin / 年级主任 / 未配置矩阵全保留；否则仅保留存在 flag=1 且维度匹配授权行的考试）；批量实现（授权行 + 考试维度各查一次）。
-- 接入四个跨考试端点（此前仅消费 `can_view_scores` 可见范围或完全不过滤）：
-  - `GET /trends`：趋势结果按 `can_view_charts` 收敛；
-  - `GET /students/:studentId/trend`：教师读取学生成长曲线按 `can_view_students` 收敛（学生本人不受限）；
-  - `POST /subject-deviation`（偏科名单，含姓名/考号/各科分数）：所选考试按 `can_view_students` 整体校验，任一被关即 403（与 `validateExamIdsAccess` 的「任一不可访问即 403」口径一致）；
-  - `GET /subject-quality`：补齐教师可见考试范围过滤（此前任何教师可拉全校数据）+ 软删除排除（仓储 `getSubjectQuality` 新增 `examIds` 范围参数与 `EXAM_NOT_SOFT_DELETED_SQL`）+ 结果按 `can_view_charts` 收敛。
-**2. [P2] 恢复操作解除保留策略绑定，恢复真正持久**
-- `restoreSoftDeletedExam` 此前只重置 `exam_archives.is_deleted`，考试的 `retention_policy_id` 与旧结考时间不变——下一轮清理（含服务启动时的立即执行）会按原策略再次软删除同一场考试。现恢复时同步 `UPDATE exams SET retention_policy_id = NULL`（假设③：未关联策略 = 不归档不删除），恢复即人工豁免；审计与幂等语义不变。
-
-**验证**
-- `typecheck` 0 错误；`verify:auth` 115/115（新增第 10 节 12 项：批量过滤三态（管理员/班级禁行/全维度授权/学生门班级维度）、质量趋势范围+软删除过滤、**恢复→解绑→重跑 runCleanup 不再软删除**的端到端断言）。
-- 回归：`verify:security-critical` 62/62、`weekly-audit-smoke` 57/57、`verify:weekly-demo`、`verify:reliability-filter` 21/21、`verify:p1-security` 11/11、`verify:demo-safety` 23/23、`verify:score-grid` 全绿；`git diff --check` 干净。
-
-## v2.2.9 (2026-08-22) — 答题卡设计器修复（六项）+ 演示数据对齐新规范（并行分支条目，合并时纳入）
-> 该条目由并行分支「答题卡设计器修复」撰写（830c6a7 / 1a99d5f），合并进本 PR 时与上方 #246 条目并存。
-
-**答题卡设计器修复（830c6a7，P0/P1 缺陷族）**
-**1. 「适合页面」无限放大（P0）** — `CardPreview` 的 ResizeObserver 观察高度随内容增长的包装层，与 fit-page 的 SVG 高度形成反馈环（每圈 +32px）。改为测量自身内部滚动区并删除 DesignPage 中间包装层；fit-page 宽度同时受宽高约束封顶。GUI 实测切换后 412×582 采样稳定。
-**2. 三栏布局重构** — 用 react-resizable-panels（v4：Group/Panel/Separator）重构：右栏默认 380px 可拖拽（300–560），左栏可折叠成 32px 细条（头部按钮 + 拖拽均可触发），布局记忆到 localStorage。
-**3. 填空题图片插入回归（#221 重构回归）** — 插图控件被 `!isFillBlankBlock` 条件误包导致填空题永不渲染；已拆出条件，填空题每题都有「插入图片 + 尺寸编辑 + 删除」；修复预览 404（href 缺 `/api` 前缀），恢复丢失的「文字注释」输入与预览渲染。
-**4. 得分填涂格开关** — 解答题开关常显，开启自动切到「带分数填涂区」样式；填空题得分格为块级，仅首题显示开关并加「计分题」徽章，非计分题显示说明而非无效开关，配合块级「满分」输入生效。
-**5. 作文格仿高考样式** — 新建 `src/shared/essayGrid.ts` 作为几何唯一事实源（排版引擎 layout.ts / SVG 预览 DesignEditors / PDF 导出 pdf.ts 三端行数行缝一致）；预览补齐粗边框、行间虚线、每 100 字刻度（含跨页续号）、题号右对齐；新建作文块默认朱红格线（`ESSAY_DEFAULT_LINE_COLOR=#c00000`，旧卡保留原色），面板新增「格线颜色」。实测 600 格红格 + 刻度 100–500 + 24 条行缝全部渲染。
-**6. 客观题「选项竖排」新模式** — 新增第三种排列（A/B/C/D 在题号下方纵向堆叠），行高模型按 span 预留、识别坐标自动跟随；`ObjectiveOptionLayout` 增加 `vertical-options`，服务端 `CardRepository.normalizeOptionLayout` 白名单同步（此前会把 `vertical-options` 静默存成 `horizontal`，实测持久化成功）。同时修复检查器滚动容器 Panel 子项缺 `shrink-0` 导致排版警告面板叠在溢出编辑器控件上的问题。
-
-**演示数据对齐新规范**
-- 演示-语文卡（88000001）新增「作文（演示）」块：60 分/目标 600 字/朱红格线 `#c00000`/每 100 字刻度/粗边框，与设计器新建作文块默认配置一致（`demo/essayDemo.ts` 种子）。
-- 演示-数学卡（88000002）客观题块 `option_layout='vertical-options'`，验证选项竖排与白名单持久化（其余演示卡保持 `horizontal` 对照）。
-- `verify.ts` 新增 5 项校验点（作文块存在/朱红格线/刻度+边框/600 字、数学卡选项竖排）；`manifest.json` 新增 essayCard / objectiveLayoutDemo 用例；`testdata/demo-exams/README.md` 与 `演示数据.md` 同步。
-
-**验证**
-- `typecheck` 0 错误；演示数据导入 + `verify.ts` 全绿（含新增设计器校验点）；`projectx-demo.zip` 备份包按新规范重建。
-
-
-## v2.2.8 (2026-08-22) — PR #246 第二轮评审闭环（4 项：编辑撤销 / 查看门全覆盖 / 软删除组访问 / 恢复通道）
-
-**1. [P1] 编辑权限范围现按记录 ID 原地更新（撤销旧授权）**
-- 此前前端保存不携带 `editingId`，后端按新维度 upsert——管理员修改教师/年级/科目/班级/题块后旧记录保留、另增一条，造成权限残留。
-- `PUT /api/admin/permissions` 支持可选 `id`：携带时按记录 ID 原地更新全部维度与 5 个标志（`updateTeacherPermissionById`）；编辑撞现有维度组合返回 409（含显式预检查——SQLite/MariaDB 的 UNIQUE 均视 NULL 为互异，纯 NULL 维度的逻辑重复不触发数据库约束，须应用层拦截；DB 约束捕获保留作并发兜底）；记录不存在返回 404。前端 `PermissionManager` 保存时携带 `editingId`。
-**2. [P1] 查看开关补齐剩余消费端**
-- 单考试：`/exams/:examId/metrics`（难度/区分度）补 `requireViewCharts`；知识点总体 `GET /knowledge-points/:examId` 补图表门；知识点单学生下钻补 `requireViewStudents`。
-- 大考组（新增 `hasGroupViewPermission` + `makeGroupViewPermissionGate`，语义与 canReadGroup「全部成员可见」模型一致：组内全部非软删除成员考试的维度均被 flag=1 授权行覆盖才放行）：overview / metrics / question-analysis / distribution / class-comparison / ai-analysis → 图表门；rankings（名单）→ 学生门；export（成绩导出）→ 成绩门。管理员/年级主任放行，未配置矩阵兼容放行。
-**3. [P1] 软删除成员不再锁死整个大考组**
-- `canReadGroup` 此前读取全部成员（含软删除）并要求 `every(...)` 可见——清理任务只标记 `exam_archives.is_deleted` 不删组成员关系，组内任一成员被软删除后整组对普通教师 403，统计端新加的排除逻辑根本执行不到。现与统计口径一致地过滤软删除成员（`GROUP_MEMBER_NOT_SOFT_DELETED_SQL`）。
-**4. [P2] 软删除恢复通道落地**
-- `cleanup.ts` 新增 `listSoftDeletedExams()` / `restoreSoftDeletedExam()`（is_deleted 重置 0 + `entity_lifecycle_events('exam',…,'restore')` 审计，幂等）。
-- 控制台新增 `GET /api/admin/console/soft-deleted-exams` 与 `POST /api/admin/console/exams/:examId/restore`（均 SYSTEM_MANAGE）；`AdminConsolePage` 新增「已清理考试（可恢复）」区，行内恢复按钮 + 成功提示。
-- 顺带修复 `middleware.ts` 一处行尾空格（评审 `git diff --check` 发现）。
-
-**验证**
-- `typecheck` 0 错误；`verify:auth` 103/103（新增第 9 节 15 项：upsert/按 ID 编辑维度迁移/409 冲突/组级图表门三态/软删除成员组放行与越权组拒绝/恢复列表-幂等-审计-可见性回归）。
-- 回归：`verify:security-critical` 62/62、`weekly-audit-smoke` 57/57、`verify:weekly-demo`、`verify:reliability-filter` 21/21、`verify:p1-security` 11/11、`verify:demo-safety` 23/23 全绿；`git diff --check` 干净。
-- 调试注记：`entity_lifecycle_events.entity_id` 为 TEXT 存储，消费方查询需以字符串绑定（数字绑定在 SQLite 不命中）。
-
-## v2.2.7 (2026-08-22) — 合并 PR #256「成绩公布与撤回管理」（特性全量保留）
-
-> 将 `origin/成绩公布更新`（PR #256，包版本 v2.4.0）合入本分支，与既有 #246 权限矩阵/软删除体系融合。PR #256 特性零删减；main 已全量包含（此前合并）；`纸锋` 分支尖端与 main 文件树一致，无增量内容。
-
-**PR #256 特性（全部保留）**
-- 成绩公布流程：批改完成后默认不公布；`POST /api/exams/:examId/publish`（单场）/ `POST /api/exams/publish-batch`（批量，含可见性范围校验）/ `POST /api/exams/:examId/unpublish`（撤回，带原因 ≤500 字，状态 `1→2`；重新公布 `2→1`），全部 `GRADE_WRITE` 门控 + 考试可见范围校验。
-- 学生端硬过滤：`getStudentScores` / `getStudentTrendData` 增加 `score_published=1`；`/me/exams/:examId` 与学生单场 AI 分析接口公布前置校验（404/403）。教师端查分不受限。
-- 审计：`exam_publish_events` 表记录每次公布/撤回的执行人、时间与原因；考试管理页三态徽章（已公布/已撤回/未公布）+ 公布/撤回/重新公布按钮（桌面与移动卡片对齐）；演示数据种子显式 `score_published=1`。
-
-**迁移编号台账（二次撞号处理）**
-- PR #256 基于旧 main（迁移止于 v38）新增 **v41**（`exams.score_published` + 存量 closed 回填为已公布）/ **v42**（`exam_publish_events`）；与本分支上一轮重编号的 v41–v43 再次撞号。
-- 处理：**PR #256 保留 v41/v42 原号**（其分支已推送、库血统已存在）；本分支三个迁移最终编号 **v43**（track_type 回补）/ **v44**（控制台地基）/ **v45**（权限五维唯一约束）；MariaDB 侧对齐为 v41/v42 + v43/v44。v39/v40 维持作废。编号台账已写入 `migrations.ts` / `mysql.ts` 注释，作废编号请勿复用。
-- 四血统临时库端到端冒烟（全新 / main 血统真实库 / 本分支旧编号血统 / PR #256 血统）全部通过：任何存量库升级都不会因版本号已记录而漏掉另一侧内容。
-
-**语义融合点**
-- 学生成绩/成长曲线同时满足「未软删除 且 已公布」双条件（`ScoreRepository` 两处 WHERE 均保留两侧过滤）。
-- `/me/exams/:examId`：软删除 404 → 无成绩 404 → 未公布 404 三门共存。
-- 公布/撤回经 `requireExamAccess` 与 `getVisibleExamIds`——与本分支改造后的可见性体系（矩阵过滤 + 软删除剔除）天然协同，教师无法公布软删除或越权考试。
-- `verify-auth` 同时保留两侧适配：PR #256 的考试种子 `score_published=1` + 本分支第 8 节 18 项 #246 断言。
-
-**验证**：typecheck 0 错误（包版本 2.4.0）；verify:auth 88/88、security-critical 62/62、weekly-audit 57/57、weekly-demo 全过、reliability-filter 21/21、p1-security 11/11、demo-safety 23/23、score-grid 全过。
-
-## v2.2.6 (2026-08-22) — PR #246 评审 P1 四项闭环（权限矩阵 / 控制台可达 / 题块授权 / 软删除可见性）
-
-> 针对 PR #246 评审提出的 4 项 P1「功能未闭环」缺陷收尾。其中控制台可达性与题块授权回退两项已在 5db2a2d 修复，本次复核确认并补齐剩余缺口，全部登记永久回归（`verify:auth` 新增第 8 节 18 项断言）。
-
-**1. 权限矩阵查看标志运行时消费（补缺口：普通教师）**
-- `getVisibleExamIds`（`middleware.ts`）：普通教师（无 `teacher_role`）此前在函数入口即提前返回 `null`（全可见），使「无 teacher_role 分支的矩阵限制」成为死代码——管理员对该类教师关闭「查看成绩」完全不生效。现删除该提前返回，普通教师同样消费 `can_view_scores=0` 禁止行（可见集合 = 全部考试 − 矩阵禁止，quiz 晨测仍豁免）；无任何矩阵记录 → 仍全可见（旧部署兼容）。班主任/学科教师提前返回问题、`can_view_charts`/`can_view_students` 查看门（`makeViewPermissionGate` → analysis 路由 16 处接线）已由 5db2a2d 落地，本次复核确认。
-**2. `/admin-console` 可达性（已由 5db2a2d 修复，复核确认）**：两教师端变体 `allowedModes` 已含 `admin-console`，路由守卫先过变体白名单再过 `canManageGlobal`（SYSTEM_MANAGE），侧栏入口与直达路由均可达。
-**3. 题块正向授权不被兼容回退绕过（已由 5db2a2d 修复，复核确认）**：`canGradeBlock` 对已配置矩阵的教师不再享受「题块无分配记录 → 放行」回退（学科/年级/班级不匹配或 `can_grade=0` 一律拒绝）；仅「完全未配置矩阵」的旧部署教师保留回退，避免未分配部署锁死。
-**4. `auto_delete` 软删除可见性（补缺口：周审计与大考组链路）**：此前已覆盖考试列表（`listExams`/`listExamsForSelection`）、访问中间件（非管理员 404）、学生成绩/趋势、仪表盘、单科趋势。本次补齐：
-- `WeeklyAuditService`：软删除的晨测不再计入周报发布门槛（未出分不再阻塞发布）、不再被自动收进周报组。
-- `AnalysisRepository.getGroupMemberTrackMap`（大考组全部统计的成员唯一入口）：软删除成员考试不参与组指标/逐题/分布/班级对比；`exam-groups-analysis.ts` 四处成员查询、`exam-groups.ts` 列表成员数/出分数与详情成员列表、跨场对比组 `hydrateExamGroup`、赋分可用性探测同步过滤。组内残留软删除成员行（先建组后删除的场景）在读取口径统一剔除。
-- 新增 `GROUP_MEMBER_NOT_SOFT_DELETED_SQL` 常量（`exam_group_members` 别名 `egm` 场景），与既有 `EXAM_NOT_SOFT_DELETED_SQL` 并列。
-
-**验证**
-- `npm run typecheck` 零错误；`verify:auth` 88/88（新增 #246 第 8 节 18 项：普通教师矩阵收敛 / quiz 豁免 / 图表与学生门 / 学科不匹配与 can_grade=0 拒绝 / 兼容回退保留 / 显式分配放行 / 软删除 404 与管理员恢复通道 / 周审计门槛与收录 / 大考组统计剔除）。
-- 回归：`verify:security-critical` 62/62、`weekly-audit-smoke` 57/57、`verify:weekly-demo`、`verify:reliability-filter` 21/21、`verify:p1-security` 11/11、`verify:demo-safety` 23/23 全绿。
-
 ## v2.4.1 (2026-08-22) — 扫描端（Electron ia32）打包与使用体验修复
 
-> 分支 `feature/scanner-2.2.5`，基于 main（含 #247 安全更新、#249）整合后开发。
+> 分支 `feature/scanner-2.4.1`，基于 main（含 #247 安全更新、#249）整合后开发。
 
 ### 1. ia32 打包链路修复（sharp 原生模块）
 - 新增自愈脚本 `scripts/ensure-sharp-platform-binaries.cjs`：按已安装的 sharp 版本精确拉取 `@img/sharp-win32-ia32` 到 `node_modules/@img/`（幂等；普通 `npm install` 若将其清除会自动补回），并接入全部 ia32 打包脚本（新 npm script `native:sharp:ia32`）。此前打包产物只含 x64 二进制，扫描端一启动即报「Could not load the 'sharp' module using the win32-ia32 runtime」。
@@ -123,7 +13,7 @@
 - 修复：multer 上传目录改用 `storage.papersDir/_tmp`、相对路径基准改用 `storage.dataDir`（两者均遵循 `ANSWER_CARD_DATA_DIR`，dev 行为不变）；Electron 主进程启动时把 CWD 切到 userData（`%APPDATA%\answer-card-designer`），兜底其余遗留的 cwd 相对路径查找。
 
 ### 3. 首次进入强制选肤（对齐 web 端）
-- 此前皮肤引导层只挂在 web 端登录页，扫描端从未出现。现复用 `SkinOnboarding`（明澈 / 纸锋大预览二选一、必须选择才能进入登录），复用同一一次性标志 `projectx-skin-onboarded`。
+- 此前皮肤引导层只挂在 web 端登录页，扫描端从未出现。现复用 `SkinOnboarding`（明澈/纸锋大预览二选一、必须选择才能进入登录），复用同一一次性标志 `projectx-skin-onboarded`。
 - 补齐与 web 一致的同步语义：会话内显式选择优先于账号偏好；登录后自动 PATCH 同步到账号 `theme_skin`，换设备/重装不再被默认皮肤打回。文案按扫描端场景调整（组件新增可选 props，web 端零改动）。
 
 ### 4. 管理员初始密码固定为 admin123（首次登录仍强制改密）
@@ -132,11 +22,7 @@
   - 停留在待改密引导态的存量库下次启动自动重置为 admin123（旧会话全部吊销，改密标记保留）；
   - 已自行修改过密码的在用库完全不受影响。
 - bootstrap-admin.txt 仍会生成（内容即 admin123），备份还原与演示数据脚本等下游流程零改动。同步更新 `verify-security-critical` / `bugfix-summary-verification` 断言与 AGENTS.md / README / SERVER-README 文档事实。
-- ⚠️ 公网部署请在装机完成后立即修改 admin 密码（登录限速 15 分钟 10 次兜底）。
-
-### 5. 整合 origin/main 与验证
-- 合并 #247 安全更新（field-crypto 对 initial_password 加密等）与 #249，自动合并无冲突；加密逻辑与固定初始密码正交共存。
-- 验证：typecheck ✓、verify:security-critical 61/61 ✓、verify:auth 70/70 ✓。
+- 桥接失败错误码人性化映射（VC++ 缺失/TWAIN 驱动崩溃）与指南补充密钥文件位置亦在本版本一并落地。
 
 ## v2.2.4 (2026-08-21) — 背景图层级修复与 main 主干整合
 
