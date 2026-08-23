@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "./auth/AuthContext";
-import { fetchJson } from "./auth/api";
+import { fetchJson, getStoredApiKey, remoteScannerFetch } from "./auth/api";
 import { LoginPageScanner } from "./components/LoginPageScanner";
 import { CardSelectPage } from "./components/CardSelectPage";
 import { ScannerWorkspace } from "./components/ScannerWorkspace";
@@ -37,6 +37,54 @@ export function ScannerApp() {
   useEffect(() => {
     document.documentElement.dataset.density = "compact";
     return () => { delete document.documentElement.dataset.density; };
+  }, []);
+
+  // 心跳：配置了主站地址 + API Key 后，每 60s 向主站上报在线状态（X-Api-Key 鉴权，无需登录）。
+  useEffect(() => {
+    let serverUrl = "";
+    try {
+      serverUrl = (localStorage.getItem("projectx_server_url") ?? "").trim().replace(/\/+$/, "");
+    } catch {
+      return;
+    }
+    if (!serverUrl) return;
+    const apiKey = getStoredApiKey();
+    if (!apiKey) return;
+
+    let clientId = "";
+    try {
+      clientId = localStorage.getItem("projectx_scanner_client_id") ?? "";
+    } catch {
+      /* ignore */
+    }
+    if (!clientId) {
+      clientId =
+        (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `sc-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+      try {
+        localStorage.setItem("projectx_scanner_client_id", clientId);
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const payload = {
+      clientId,
+      name: `扫描端-${clientId.slice(0, 4)}`,
+      version: "",
+    };
+    const beat = () => {
+      void remoteScannerFetch("/api/scanner/heartbeat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }).catch(() => { /* 主站不可达时静默，不打扰用户 */ });
+    };
+    beat();
+    const timer = setInterval(beat, 60_000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 皮肤同步：始终落盘 + 设 data-skin（默认 paper-edge 的 CSS 覆盖块依赖该属性）。

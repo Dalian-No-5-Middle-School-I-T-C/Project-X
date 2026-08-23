@@ -10,7 +10,7 @@ import {
   Square,
   Upload,
 } from "lucide-react";
-import { authFetch, mediaUrl, remoteScannerFetch, urlWithToken } from "../auth/api";
+import { authFetch, getStoredApiKey, mediaUrl, urlWithToken } from "../auth/api";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 import { ScanPreviewModal } from "./ScanPreviewModal";
 import type { AnswerCard } from "../../../../shared/types";
@@ -88,6 +88,20 @@ interface StudentResult {
   pages: PageResult[];
 }
 
+/** 上传队列任务（本机服务端 remote_upload_queue 的行） */
+interface QueueTask {
+  id: number;
+  local_session_id: string;
+  remote_session_id: string | null;
+  server_url: string;
+  card_id: string;
+  page_count: number;
+  uploaded_pages: number;
+  status: "pending" | "uploading" | "done" | "failed";
+  retry_count: number;
+  last_error: string | null;
+}
+
 // UI-5: SSE 自动重连参数
 const MAX_RECONNECT = 5;
 const RECONNECT_DELAY = 5000;
@@ -113,6 +127,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const pagesRef = useRef<ScanPage[]>([]);
   const sessionIdRef = useRef("");
   const uploadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 上传队列轮询
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // UI-5: SSE 断开重连状态
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -131,6 +147,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const scannerModeRef = useRef(scannerMode);
   const [uploadState, setUploadState] = useState<"" | "uploading" | "done" | "error">("");
   const [uploadMsg, setUploadMsg] = useState("");
+  const [queueTaskId, setQueueTaskId] = useState<number | null>(null);
 
   function setMode(m: "local" | "remote") {
     setScannerMode(m);
@@ -175,6 +192,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     return () => {
       eventSourceRef.current?.close();
       if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -279,10 +297,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             onScansComplete?.(sid, pagesRef.current.length);
             // Fetch combined results after scan completes
             fetchCombinedResults(sid);
-            // v1.6.0: 远程模式下自动上传
+            // 远程模式下加入上传队列（断线重传，由本机服务端后台上传）
             if (scannerModeRef.current === "remote") {
               if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
-              uploadTimerRef.current = setTimeout(() => void uploadToRemote(), 500);
+              uploadTimerRef.current = setTimeout(() => void enqueueUpload(sid), 500);
             }
             break;
         }
@@ -323,81 +341,90 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     }
   }
 
-  // v1.6.0: 上传扫描结果到远程服务器
-  async function uploadToRemote() {
-    // 使用 ref 读取最新值，避免闭包捕获扫描开始时的空 pages / 空 sessionId
-    const currentPages = pagesRef.current;
-    if (!sessionIdRef.current || scannerModeRef.current !== "remote") return;
-    setUploadState("uploading");
-    setUploadMsg("正在上传到服务器...");
-
+  // 上传队列（断线重传）— 入队到本机服务端，由后台串行上传主站
+  async function enqueueUpload(sid: string) {
+    let serverUrl = "";
     try {
-      // Step 1: 创建远程扫描会话
-      const createRes = await remoteScannerFetch("/api/scanner/upload/sessions", {
+      serverUrl = (localStorage.getItem("projectx_server_url") ?? "").trim().replace(/\/+$/, "");
+    } catch {
+      /* ignore */
+    }
+    const apiKey = getStoredApiKey();
+    if (!serverUrl || !apiKey) {
+      setUploadState("error");
+      setUploadMsg("未配置服务器地址或 API Key（请到登录页「服务器连接」填写）");
+      return;
+    }
+    try {
+      const res = await authFetch("/api/scanner/queue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          localSessionId: sid,
+          serverUrl,
+          apiKey,
           cardId,
-          name: `扫描_${cardId}_${new Date().toISOString().slice(0, 10)}`,
           dpi,
           paperSize,
-          pageCount: currentPages.length,
+          pageCount: pagesRef.current.length,
         }),
       });
-      if (!createRes.ok) {
-        const body = (await createRes.json().catch(() => null)) as { message?: string } | null;
-        throw new Error(body?.message || `创建远程会话失败（HTTP ${createRes.status}）`);
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(body?.message || `加入上传队列失败（HTTP ${res.status}）`);
       }
-      const { sessionId: remoteSessionId, uploadTokens } = (await createRes.json()) as {
-        sessionId: string;
-        uploadTokens: string[];
-      };
-
-      // Step 2: 逐页上传图片
-      for (let i = 0; i < currentPages.length; i++) {
-        const page = currentPages[i];
-        const token = uploadTokens[i];
-        setUploadMsg(`正在上传第 ${page.pageNum} 页 (${i + 1}/${currentPages.length})...`);
-
-        // 获取本地图片并上传
-        const imageRes = await authFetch(`/api/scanner/scan-image/${page.recordId}`);
-        if (!imageRes.ok) continue;
-        const blob = await imageRes.blob();
-
-        const form = new FormData();
-        form.append("image", blob, `page_${page.pageNum}.jpg`);
-        form.append("token", token);
-        form.append("pageNum", String(page.pageNum));
-        form.append("side", page.side);
-
-        const uploadRes = await remoteScannerFetch(
-          `/api/scanner/upload/sessions/${remoteSessionId}/pages`,
-          {
-            method: "POST",
-            body: form,
-          }
-        );
-        if (!uploadRes.ok) {
-          const body = (await uploadRes.json().catch(() => null)) as { message?: string } | null;
-          throw new Error(body?.message || `第 ${page.pageNum} 页上传失败（HTTP ${uploadRes.status}）`);
-        }
-      }
-
-      // Step 3: 标记完成
-      const completeRes = await remoteScannerFetch(
-        `/api/scanner/upload/sessions/${remoteSessionId}/complete`,
-        { method: "POST" }
-      );
-      if (!completeRes.ok) {
-        const body = (await completeRes.json().catch(() => null)) as { message?: string } | null;
-        throw new Error(body?.message || `提交扫描会话失败（HTTP ${completeRes.status}）`);
-      }
-
-      setUploadState("done");
-      setUploadMsg(`上传完成！${currentPages.length} 页已提交到服务器`);
+      const data = (await res.json()) as { item?: QueueTask };
+      if (data.item) setQueueTaskId(data.item.id);
+      setUploadState("uploading");
+      setUploadMsg("已加入上传队列，等待上传...");
+      if (data.item) pollQueue(data.item.id);
     } catch (err) {
       setUploadState("error");
-      setUploadMsg(err instanceof Error ? err.message : "上传失败");
+      setUploadMsg(err instanceof Error ? err.message : "加入上传队列失败");
+    }
+  }
+
+  // 轮询队列任务状态（每 2s，任务进入终态后停止）
+  function pollQueue(taskId: number) {
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    pollTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await authFetch("/api/scanner/queue");
+        if (!res.ok) return;
+        const tasks = (await res.json()) as QueueTask[];
+        const task = tasks.find((t) => t.id === taskId);
+        if (!task) return;
+        if (task.status === "done") {
+          setUploadState("done");
+          setUploadMsg(`上传完成！${task.uploaded_pages}/${task.page_count || task.uploaded_pages} 页已提交到服务器`);
+        } else if (task.status === "failed") {
+          setUploadState("error");
+          setUploadMsg(task.last_error || "上传失败，可点击重试");
+        } else {
+          setUploadState("uploading");
+          setUploadMsg(
+            task.status === "pending"
+              ? `排队中（重试 ${task.retry_count} 次）...`
+              : `正在上传 ${task.uploaded_pages}/${task.page_count || "?"} 页...`
+          );
+          pollQueue(taskId);
+        }
+      } catch {
+        // 忽略瞬时错误，下次轮询继续
+      }
+    }, 2000);
+  }
+
+  // 手动重试失败的上传任务
+  async function retryQueue(taskId: number) {
+    try {
+      const res = await authFetch(`/api/scanner/queue/${taskId}/retry`, { method: "POST" });
+      if (!res.ok) return;
+      setUploadState("uploading");
+      setUploadMsg("已重新提交队列...");
+      pollQueue(taskId);
+    } catch {
+      /* ignore */
     }
   }
 
@@ -636,7 +663,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
               开始扫描
             </Button>
 
-            {/* 上传状态指示 */}
+            {/* 上传状态指示（上传队列） */}
             {uploadState && (
               <div
                 className={`flex items-center gap-2 rounded-md border px-3 py-2 text-xs ${
@@ -650,7 +677,18 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                 {uploadState === "uploading" && <Spinner size={14} />}
                 {uploadState === "done" && <Check size={14} className="shrink-0" />}
                 {uploadState === "error" && <AlertTriangle size={14} className="shrink-0" />}
-                <span className="min-w-0 break-words">{uploadMsg}</span>
+                <span className="min-w-0 flex-1 break-words">{uploadMsg}</span>
+                {uploadState === "error" && queueTaskId != null && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    icon={<RefreshCw size={12} />}
+                    onClick={() => void retryQueue(queueTaskId)}
+                  >
+                    重试
+                  </Button>
+                )}
               </div>
             )}
 

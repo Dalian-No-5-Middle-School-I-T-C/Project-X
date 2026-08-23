@@ -40,6 +40,17 @@ type DataQuality = {
 
 type RetentionPolicy = { id: number; name: string; retainDays: number; autoArchive: number; autoDelete: number };
 type SoftDeletedExam = { examId: number; examName: string | null; subject: string | null; status: string | null; deletedAt: string | null; archivedAt: string | null };
+type ScannerClient = {
+  id: number;
+  client_id: string;
+  name: string;
+  version: string;
+  host: string;
+  last_seen_at: string | null;
+  first_seen_at: string;
+  online: boolean;
+  last_seen_ms: number | null;
+};
 
 // ── 工具 ──
 
@@ -52,6 +63,16 @@ function fmtPct(n: number | string | null | undefined): string {
   if (n === "not_available") return "—";
   if (typeof n !== "number") return "—";
   return `${n}%`;
+}
+
+function fmtTime(iso: string): string {
+  try {
+    return new Date(iso).toLocaleString("zh-CN", {
+      month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
 }
 
 /** 已完成调用（成功+失败）占比；无已完成调用时显示 —（进行中/中断不计入成功率） */
@@ -131,6 +152,8 @@ export function AdminConsolePage({ onBack }: Props) {
   const [dataQuality, setDataQuality] = useState<DataQuality | null>(null);
   const [policies, setPolicies] = useState<RetentionPolicy[]>([]);
   const [softDeleted, setSoftDeleted] = useState<SoftDeletedExam[] | null>(null);
+  const [scannerClients, setScannerClients] = useState<ScannerClient[] | null>(null);
+  const [scannerClientsError, setScannerClientsError] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
   const [msg, setMsg] = useState<{ tone: "success" | "error"; text: string } | null>(null);
 
@@ -145,7 +168,7 @@ export function AdminConsolePage({ onBack }: Props) {
       }
     };
 
-    const [s, a, p, ai, dq, pol, sd] = await Promise.all([
+    const [s, a, p, ai, dq, pol, sd, sc] = await Promise.all([
       tryFetch<Summary>("/api/admin/console/summary"),
       tryFetch<Activity>("/api/admin/console/activity"),
       tryFetch<Preferences>("/api/admin/console/preferences"),
@@ -153,6 +176,7 @@ export function AdminConsolePage({ onBack }: Props) {
       tryFetch<DataQuality>("/api/admin/console/data-quality"),
       tryFetch<{ ok: boolean; data: RetentionPolicy[] }>("/api/admin/data-retention-policies"),
       tryFetch<{ exams: SoftDeletedExam[] }>("/api/admin/console/soft-deleted-exams"),
+      tryFetch<{ clients: ScannerClient[] }>("/api/admin/console/scanner-clients"),
     ]);
     setSummary(s);
     setActivity(a);
@@ -161,6 +185,13 @@ export function AdminConsolePage({ onBack }: Props) {
     setDataQuality(dq);
     setPolicies(pol?.data ?? []);
     setSoftDeleted(sd?.exams ?? null);
+    // scanner-clients 端点可能因后端版本未含新路由而 404 —— 与其余分区解耦，失败仅影响本区
+    if (sc) {
+      setScannerClients(sc.clients ?? []);
+      setScannerClientsError(false);
+    } else {
+      setScannerClientsError(true);
+    }
   }, []);
 
   useEffect(() => { load(); }, [load, refreshTick]);
@@ -227,6 +258,44 @@ export function AdminConsolePage({ onBack }: Props) {
           </div>
         ) : (
           <p className="text-xs text-muted-foreground">概览加载失败或暂无数据。</p>
+        )}
+      </SectionCard>
+
+      {/* 在线扫描端 */}
+      <SectionCard title="在线扫描端" desc="已配置主站连接的扫描端心跳状态：最后心跳距今 3 分钟内为在线（心跳间隔 60 秒）。">
+        {scannerClientsError ? (
+          <p className="m-0 text-xs text-muted-foreground">
+            在线扫描端数据加载失败（后端未启用该端点，请确认已重启服务并应用最新代码）。
+          </p>
+        ) : scannerClients === null ? (
+          <p className="m-0 text-xs text-muted-foreground">加载中...</p>
+        ) : scannerClients.length === 0 ? (
+          <p className="m-0 text-xs text-muted-foreground">
+            暂无扫描端上报。扫描端需在登录页「服务器连接（可选）」填入地址与 API Key，保存后自动开始心跳。
+          </p>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {scannerClients.map((c) => (
+              <div
+                key={c.id}
+                className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-md border border-border-subtle bg-secondary px-3 py-2 text-sm"
+              >
+                <span className="font-medium text-foreground">{c.name || c.client_id}</span>
+                {c.version && <span className="text-xs text-muted-foreground">v{c.version}</span>}
+                <span className="text-xs text-muted-foreground">{c.host || "—"}</span>
+                <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
+                  {c.last_seen_at ? `最后心跳 ${fmtTime(c.last_seen_at)}` : "从未上报"}
+                  <span
+                    className={`inline-block h-2 w-2 rounded-full ${c.online ? "bg-[#2E44FF]" : "bg-[#B4B2A9]"}`}
+                    title={c.online ? "在线" : "离线"}
+                  />
+                  <span className={c.online ? "text-foreground" : "text-muted-foreground"}>
+                    {c.online ? "在线" : "离线"}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
         )}
       </SectionCard>
 

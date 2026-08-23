@@ -918,6 +918,25 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE knowledge_points ADD COLUMN track_type VARCHAR(20) NOT NULL DEFAULT 'common'`,
       ]
     },
+    {
+      // v47: 主站侧扫描端在线状态表（心跳上报；扫描端经 /api/scanner/heartbeat 上报后在此落库）。
+      // 与 SQLite v48（scanner-client-heartbeat）语义对齐。
+      version: 47,
+      name: "scanner-client-heartbeat",
+      sqls: [
+        `CREATE TABLE IF NOT EXISTS scanner_clients (
+          id           INT AUTO_INCREMENT PRIMARY KEY,
+          client_id    VARCHAR(64) NOT NULL,
+          name         VARCHAR(128) NOT NULL DEFAULT '',
+          version      VARCHAR(32) DEFAULT '',
+          host         VARCHAR(128) DEFAULT '',
+          last_seen_at DATETIME,
+          first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uq_sc_client (client_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_sc_last_seen ON scanner_clients(last_seen_at)`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

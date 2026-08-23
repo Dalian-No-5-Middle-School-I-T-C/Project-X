@@ -1,6 +1,38 @@
 # Project-X CHANGELOG
 
-## v2.4.1 (2026-08-22) — 扫描端（Electron ia32）打包与使用体验修复
+## v2.3.1 (2026-08-24) — 扫描端「连接主站」完整功能：上传队列 / 心跳在线 / 答题卡同步
+
+> 分支 `扫描端远程优化`，基于 main（含 v2.3.0 扫描端修复）开发；代码由维护者本人提交。
+
+### 1. 上传队列：断线重传 / 断点续传 / 自动重试
+- 扫描完成不再"一次尽力上传"，改为**入队**（本机 SQLite 新表 `remote_upload_queue`，迁移 v47），由本机服务端后台**串行**上传主站：创建会话 → 逐页上传 → complete。
+- **断点续传**：`uploaded_pages` + 主站会话 `remote_session_id` / 逐页 `upload_tokens` 落库，重传跳过已传页、复用同一会话。
+- **自动重试**：失败指数退避（1s/5s/15s/45s/120s，最多 5 次）→ 标记 `failed` 保留队列，界面可手动重试；**应用重启自动恢复**中断项续传。
+- **清理策略**：队列项超 3 天自动删除；上传成功会话 3 天后释放本地扫描图片与记录。
+- 上传协议沿用每页独立上传 + `POST /sessions/:id/complete` 完整性校验（已传 N/M），天然支持补传。
+- 触发时机：扫描完成自动入队（remote 模式）；登录页「服务器连接（可选）」配置地址 + API Key 并支持测试连接。
+- 新增本地路由 `/api/scanner/queue`（入队 / 列表 / 重试 / 删除，authMiddleware 保护）。
+
+### 2. 心跳与在线状态
+- 扫描端配置主站连接后每 **60s** 上报心跳（`POST /api/scanner/heartbeat`，X-Api-Key 鉴权），`clientId` 为本地持久化 UUID。
+- 主站新表 `scanner_clients`（SQLite 迁移 v48 / MariaDB schema 对齐）：`last_seen_at` 距今 **3 分钟内**判定在线。
+- 管理端控制台新增「在线扫描端」分区（`GET /api/admin/console/scanner-clients`），展示全部已上报扫描端及在线/离线状态。
+
+### 3. 答题卡同步（主站 → 扫描端）
+- 选卡页新增「从主站同步答题卡」：拉取主站答题卡列表 → 勾选 → 导入完整配置包（表级 REPLACE 幂等），导入后本机可直接扫描。
+- 边界说明：答题卡**资产图片**（原卷/背景图）不随包传输（仅元数据）；主站须开启 `PROJECTX_ENABLE_SCANNER_CLIENT_API=1`。
+
+### 4. 控制台与前端修复
+- 管理端控制台「在线扫描端」区区分**加载失败态**：后端未启用该端点时明确提示（不再无限"加载中…"）。
+- 移除 `index.html` / `index-scanner.html` 的 Google Fonts 外链，规避 CSP `style-src 'self'` 拦截报错；字体回落微软雅黑（字体栈 Noto Sans SC 语义保留）。
+
+### 5. 数据层
+- SQLite 迁移 **v47**（`remote_upload_queue`）/ **v48**（`scanner_clients`）；MariaDB 侧同步对齐迁移与建表。
+- 队列表仅扫描端本地 SQLite 生效，主站 MariaDB 下为空操作，零影响。
+
+> 验证：typecheck 0 错误；`verify:auth` 137/137、`verify:security-critical` 84/84；mock 主站端到端（断线重试 + 断点续传 / 心跳在线与离线 / 答题卡导出导入 / 3 天清理）全部通过。
+
+## v2.3.0 (2026-08-22) — 扫描端（Electron ia32）打包与使用体验修复
 
 > 分支 `feature/scanner-2.4.1`，基于 main（含 #247 安全更新、#249）整合后开发。
 

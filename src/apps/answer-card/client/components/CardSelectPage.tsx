@@ -1,14 +1,15 @@
 /// <reference types="vite/client" />
 
 import { useEffect, useMemo, useState } from "react";
-import { Layers, Search, ClipboardList } from "lucide-react";
-import { fetchJson } from "../auth/api";
+import { Layers, RefreshCw, Search, ClipboardList } from "lucide-react";
+import { fetchJson, getStoredApiKey, remoteScannerFetch } from "../auth/api";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import type { CardSummary, ExamGroupFilterItem } from "../../../../shared/types";
 import {
   Badge,
   Button,
   Card,
+  Checkbox,
   EmptyState,
   Input,
   SegmentedControl,
@@ -38,6 +39,14 @@ interface GroupMember {
   examName: string;
   subject: string;
   cardId: string | null;
+}
+
+/** 主站答题卡同步 */
+interface SyncCard {
+  id: string;
+  title: string;
+  subject_label: string | null;
+  updated_at: string | null;
 }
 
 export function CardSelectPage({ onSelectCard }: Props) {
@@ -154,6 +163,78 @@ export function CardSelectPage({ onSelectCard }: Props) {
 
   const showSingleGroup = true;
 
+  // ── 主站答题卡同步（仅扫描端构建显示） ──
+  const isScannerBuild = import.meta.env.VITE_BUILD_TARGET === "scanner";
+  const [syncOpen, setSyncOpen] = useState(false);
+  const [syncCards, setSyncCards] = useState<SyncCard[] | null>(null);
+  const [syncBusy, setSyncBusy] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+  const [syncError, setSyncError] = useState("");
+  const [syncSelected, setSyncSelected] = useState<Set<string>>(new Set());
+
+  async function openSync() {
+    setSyncError("");
+    setSyncMsg("");
+    setSyncOpen(true);
+    setSyncBusy(true);
+    setSyncCards(null);
+    try {
+      const res = await remoteScannerFetch("/api/scanner/sync/cards");
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { message?: string } | null;
+        throw new Error(body?.message || `获取主站答题卡失败（HTTP ${res.status}）`);
+      }
+      const data = (await res.json()) as { cards: SyncCard[] };
+      setSyncCards(data.cards || []);
+      setSyncSelected(new Set((data.cards || []).map((c) => c.id)));
+    } catch (err) {
+      setSyncError(err instanceof Error ? err.message : "获取主站答题卡失败");
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
+  function toggleSyncCard(id: string) {
+    setSyncSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function importSelected() {
+    if (syncSelected.size === 0) return;
+    setSyncBusy(true);
+    setSyncError("");
+    setSyncMsg("正在导入...");
+    let okCount = 0;
+    let failCount = 0;
+    try {
+      for (const id of syncSelected) {
+        try {
+          const pkgRes = await remoteScannerFetch(`/api/scanner/sync/cards/${id}`);
+          if (!pkgRes.ok) throw new Error(`拉取 ${id} 失败（HTTP ${pkgRes.status}）`);
+          const pkg = await pkgRes.json();
+          const impRes = await fetchJson(`/api/scanner/sync/import`, {
+            method: "POST",
+            body: JSON.stringify(pkg),
+          });
+          if (!impRes || (impRes as any).ok !== true) throw new Error(`导入 ${id} 失败`);
+          okCount++;
+        } catch {
+          failCount++;
+        }
+      }
+      setSyncMsg(`导入完成：成功 ${okCount}，失败 ${failCount}`);
+      if (okCount > 0 && failCount === 0) {
+        setTimeout(() => window.location.reload(), 800);
+      }
+    } finally {
+      setSyncBusy(false);
+    }
+  }
+
   return (
     <main className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background text-foreground">
       <section className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
@@ -168,7 +249,65 @@ export function CardSelectPage({ onSelectCard }: Props) {
               选择答题卡或大考组，进入扫描工作台
             </p>
           </div>
+          {isScannerBuild && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="ml-auto shrink-0"
+              icon={<RefreshCw size={14} />}
+              onClick={() => (syncOpen ? setSyncOpen(false) : void openSync())}
+            >
+              {syncOpen ? "收起同步" : "从主站同步答题卡"}
+            </Button>
+          )}
         </header>
+
+        {/* 主站答题卡同步面板（仅扫描端） */}
+        {isScannerBuild && syncOpen && (
+          <div className="shrink-0 border-b border-border-subtle bg-secondary/50 px-8 py-4">
+            {syncBusy && syncCards === null ? (
+              <p className="m-0 text-sm text-muted-foreground">正在获取主站答题卡列表...</p>
+            ) : syncError ? (
+              <p className="m-0 text-sm text-destructive-fg">
+                同步失败：{syncError}（请确认登录页「服务器连接」已配置主站地址与 API Key，且主站已开启远程扫描接入）
+              </p>
+            ) : syncCards && syncCards.length === 0 ? (
+              <p className="m-0 text-sm text-muted-foreground">主站暂无可用答题卡。</p>
+            ) : syncCards ? (
+              <div className="flex flex-col gap-3">
+                <p className="m-0 text-xs text-muted-foreground">
+                  已从主站获取 {syncCards.length} 张答题卡（勾选后导入本机，导入后可直接扫描；本地已有同名卡将被覆盖）。
+                </p>
+                <div className="flex max-h-52 flex-col gap-1 overflow-y-auto rounded-md border border-border-subtle bg-card p-2">
+                  {syncCards.map((c) => (
+                    <label
+                      key={c.id}
+                      className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-secondary"
+                    >
+                      <Checkbox
+                        checked={syncSelected.has(c.id)}
+                        onCheckedChange={() => toggleSyncCard(c.id)}
+                      />
+                      <span className="min-w-0 flex-1 truncate text-foreground">{c.title || c.id}</span>
+                      <span className="shrink-0 text-xs text-muted-foreground">{c.subject_label || "—"}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={syncBusy || syncSelected.size === 0}
+                    onClick={() => void importSelected()}
+                  >
+                    {syncBusy ? "导入中..." : `导入所选（${syncSelected.size}）`}
+                  </Button>
+                  {syncMsg && <span className="text-xs text-muted-foreground">{syncMsg}</span>}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
 
         <div className="flex min-h-0 flex-col overflow-hidden">
           {/* ── Filter header ── */}

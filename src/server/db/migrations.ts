@@ -1134,6 +1134,61 @@ const MIGRATIONS: Migration[] = [
          WHERE retention_policy_id = 1 AND (exam_mode IS NULL OR exam_mode != 'quiz')`
       ).run();
     }
+  },
+  // v47: 扫描端远程上传队列（仅扫描端使用；主站侧为无害空表）。
+  // 断线重传：扫描完成入队，由本机服务端串行上传主站；失败指数退避重试；
+  // 超过 3 天的 pending/failed/done 项自动清理，done 项同时释放本地扫描数据。
+  {
+    version: 47,
+    name: "scanner-remote-upload-queue",
+    up(db) {
+      if (!hasTable(db, "remote_upload_queue")) {
+        db.exec(`
+          CREATE TABLE remote_upload_queue (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            local_session_id  TEXT NOT NULL,           -- 本地扫描会话 (twain_scan_sessions.id)
+            remote_session_id TEXT,                    -- 主站会话，创建后回填
+            server_url        TEXT NOT NULL,           -- 主站服务器地址
+            api_key           TEXT,                    -- 主站 API Key（本机 SQLite，随队列持久化）
+            card_id           TEXT NOT NULL,
+            dpi               INTEGER DEFAULT 300,
+            paper_size        TEXT DEFAULT 'A4',
+            page_count        INTEGER DEFAULT 0,
+            uploaded_pages    INTEGER DEFAULT 0,       -- 已成功上传页数（断点续传）
+            upload_tokens     TEXT,                    -- 主站逐页令牌 JSON 数组（断点续传复用）
+            status            TEXT DEFAULT 'pending',  -- pending/uploading/done/failed
+            retry_count       INTEGER DEFAULT 0,
+            last_error        TEXT,
+            created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at        DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_uq_status ON remote_upload_queue(status);
+          CREATE INDEX IF NOT EXISTS idx_uq_local_session ON remote_upload_queue(local_session_id);
+        `);
+      }
+    }
+  },
+  // v48: 主站侧扫描端在线状态（心跳上报；扫描端与主站共用本表定义，
+  // MariaDB 侧由 mysql.ts 迁移对齐，SQLite 主站/扫描端本地均由本迁移建表）。
+  {
+    version: 48,
+    name: "scanner-client-heartbeat",
+    up(db) {
+      if (!hasTable(db, "scanner_clients")) {
+        db.exec(`
+          CREATE TABLE scanner_clients (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id    TEXT UNIQUE NOT NULL,        -- 扫描端唯一标识（本机生成 UUID，持久化）
+            name         TEXT NOT NULL DEFAULT '',    -- 扫描端名称（主机名）
+            version      TEXT DEFAULT '',             -- 扫描端版本号
+            host         TEXT DEFAULT '',             -- 上报来源地址（请求方 IP / 主机名）
+            last_seen_at DATETIME,                    -- 最后心跳时间
+            first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE INDEX IF NOT EXISTS idx_sc_last_seen ON scanner_clients(last_seen_at);
+        `);
+      }
+    }
   }
 ];
 

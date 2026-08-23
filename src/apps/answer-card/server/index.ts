@@ -72,6 +72,11 @@ import apiKeysRoutes from "../../../server/routes/api-keys";
 import dataRetentionRoutes from "../../../server/routes/data-retention";
 import consoleRoutes from "../../../server/routes/console";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
+import scannerQueueRoutes from "../../../server/routes/scanner-queue";
+import scannerHeartbeatRoutes from "../../../server/routes/scanner-heartbeat";
+import scannerSyncRoutes from "../../../server/routes/scanner-sync";
+import scannerSyncImportRoutes from "./routes/scanner-sync-import";
+import { startUploadQueue, cleanupExpiredUploads } from "../../../server/services/uploadQueue";
 import ladderRoutes from "../../../server/routes/ladder";
 import {
   getAnswerBlockCropFile,
@@ -919,6 +924,13 @@ export async function createApp(): Promise<express.Express> {
       });
     });
   }
+  // 扫描端远程上传队列（断线重传）：入队/查询/重试/删除（仅扫描端本机 SQLite 生效）
+  app.use("/api/scanner/queue", scannerQueueRoutes);
+  // 主站侧：扫描端心跳上报 + 答题卡同步导出
+  app.use("/api/scanner/heartbeat", scannerHeartbeatRoutes);
+  app.use("/api/scanner/sync", scannerSyncRoutes);
+  // 扫描端本机：答题卡同步包导入
+  app.use("/api/scanner/sync", scannerSyncImportRoutes);
   app.use("/api/ai/providers", aiProviderRoutes);
   app.use("/api/ladder", ladderRoutes);
 
@@ -2334,7 +2346,14 @@ export async function startServer(port = Number(process.env.PORT ?? 5174)): Prom
       (server as ProjectXServer).localUrl = `http://127.0.0.1:${actualPort}`;
       console.log(`Answer card designer API running at http://127.0.0.1:${actualPort}`);
       startLlmClientSidecar();
+      // 扫描端远程上传队列：恢复中断项 + 清理超期项；每 6 小时再清一次
+      startUploadQueue();
+      const uploadCleanupTimer = setInterval(() => {
+        void cleanupExpiredUploads().catch(() => undefined);
+      }, 6 * 60 * 60 * 1000);
+      uploadCleanupTimer.unref?.();
       const shutdown = () => {
+        clearInterval(uploadCleanupTimer);
         shutdownLlmClient();
         server.close(() => process.exit(0));
       };

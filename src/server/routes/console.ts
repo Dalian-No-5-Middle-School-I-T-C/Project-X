@@ -317,4 +317,16 @@ router.post("/exams/:examId/restore", async (req, res, next) => {
   }
 });
 
+// ── GET /api/admin/console/scanner-clients ────────────
+// 在线扫描端列表（心跳上报状态：最后心跳距今 < 3 分钟 = 在线）。
+router.get("/scanner-clients", async (_req, res, next) => {
+  try {
+    const { listScannerClients } = await import("../services/scannerHeartbeat");
+    res.json({ clients: await listScannerClients() });
+  } catch (err: any) {
+    const status = typeof err?.status === "number" ? err.status : 500;
+    res.status(status).json({ message: err instanceof Error ? err.message : "查询失败" });
+  }
+});
+
 export default router;
