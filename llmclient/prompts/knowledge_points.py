@@ -33,13 +33,13 @@ KP_SYSTEM_PROMPT = """你是试卷知识点分析专家。请仔细分析以下�
 ## 输出格式（严格遵守，不要包含任何额外内容）
 
 ```json
-{
+{{
   "knowledgePoints": [
-    {"questionNumber": 1, "points": ["牛顿第一定律", "惯性"]},
-    {"questionNumber": 2, "points": ["匀变速直线运动", "位移公式"]},
-    {"questionNumber": 3, "points": ["勾股定理"]}
+    {{"questionNumber": 1, "points": ["牛顿第一定律", "惯性"]}},
+    {{"questionNumber": 2, "points": ["匀变速直线运动", "位移公式"]}},
+    {{"questionNumber": 3, "points": ["勾股定理"]}}
   ]
-}
+}}
 ```
 
 ## 注意
