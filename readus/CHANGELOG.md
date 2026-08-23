@@ -1,5 +1,115 @@
 # Project-X CHANGELOG
 
+
+## v2.2.10 (2026-08-22) — 合并前审核修复：天梯公布门与软删除收口 + 版本徽章
+
+> 合并前自审发现的两处 P1（均属本 PR 引入面：PR #256 公布 enforcement 的消费端缺口、#246 软删除可见性在天梯的残留）与一处 P3。
+
+**1. [P1] 天梯端点接入成绩公布门（PR #256 v41 消费端补齐）**
+- 此前三个天梯端点均不检查 `score_published`：学生可在教师公布前经「我的成绩 → 天梯 → 跨考累计」（周包聚合）看到本人分数与年级前十，单场/大考组路径也可直接调 API 取分——绕过「批改完成后默认不公布，学生端硬过滤」的核心承诺。
+- 修复：`ladder.ts` 新增 `checkLadderPublished`（教师/管理员豁免，与天梯开关的管理员预览语义一致）；单场天梯在 `requireExamAccess` 后校验、组天梯对全部成员校验（任一未公布 403）；跨考天梯经 `getCrossExamTotal` 新增 `onlyPublished` 选项在考试集合解析后统一过滤（新增 `filterPublishedExamIds` 助手，保持原顺序）。
+**2. [P1] 组天梯与跨考聚合的软删除收口**
+- 组天梯成员查询未过滤软删除成员（round-2 已修 `canReadGroup` 的同类残留）：教师侧经 `validateExamIdsAccess` 对含软删除成员的组整体 403；学生侧（可见集合为 null）聚合含已删考试成绩。修复：成员查询补 `GROUP_MEMBER_NOT_SOFT_DELETED_SQL`。
+- `getCrossExamTotalExams` 补 `EXAM_NOT_SOFT_DELETED_SQL`（selected 模式可经构造 examIds 触达软删除考试，此处统一收口）。
+**3. [P3]** README 版本徽章 2.2.1 → 2.4.0（与 package.json 对齐，仓库惯例）。
+
+**验证**：typecheck 0 错误；`verify:auth` 122/122（新增第 11 节 7 项：公布过滤助手、学生/教师跨考聚合三态、天梯门教师/管理员豁免与学生 403/放行）；security-critical 62、weekly-audit 57、weekly-demo、reliability-filter 21、p1-security 11、demo-safety 23、score-grid 全绿。
+
+## v2.2.9 (2026-08-22) — PR #246 第三轮评审闭环（跨考试查看门 / 恢复解绑策略）
+
+**1. [P1] 跨考试分析端点接入查看权限矩阵**
+- 新增 `filterExamIdsByViewPermission`（`middleware.ts`）：批量返回教师按矩阵拥有指定查看标志的考试子集，语义与单场门 `hasViewPermission` 一致（allow-based：admin / 年级主任 / 未配置矩阵全保留；否则仅保留存在 flag=1 且维度匹配授权行的考试）；批量实现（授权行 + 考试维度各查一次）。
+- 接入四个跨考试端点（此前仅消费 `can_view_scores` 可见范围或完全不过滤）：
+  - `GET /trends`：趋势结果按 `can_view_charts` 收敛；
+  - `GET /students/:studentId/trend`：教师读取学生成长曲线按 `can_view_students` 收敛（学生本人不受限）；
+  - `POST /subject-deviation`（偏科名单，含姓名/考号/各科分数）：所选考试按 `can_view_students` 整体校验，任一被关即 403（与 `validateExamIdsAccess` 的「任一不可访问即 403」口径一致）；
+  - `GET /subject-quality`：补齐教师可见考试范围过滤（此前任何教师可拉全校数据）+ 软删除排除（仓储 `getSubjectQuality` 新增 `examIds` 范围参数与 `EXAM_NOT_SOFT_DELETED_SQL`）+ 结果按 `can_view_charts` 收敛。
+**2. [P2] 恢复操作解除保留策略绑定，恢复真正持久**
+- `restoreSoftDeletedExam` 此前只重置 `exam_archives.is_deleted`，考试的 `retention_policy_id` 与旧结考时间不变——下一轮清理（含服务启动时的立即执行）会按原策略再次软删除同一场考试。现恢复时同步 `UPDATE exams SET retention_policy_id = NULL`（假设③：未关联策略 = 不归档不删除），恢复即人工豁免；审计与幂等语义不变。
+
+**验证**
+- `typecheck` 0 错误；`verify:auth` 115/115（新增第 10 节 12 项：批量过滤三态（管理员/班级禁行/全维度授权/学生门班级维度）、质量趋势范围+软删除过滤、**恢复→解绑→重跑 runCleanup 不再软删除**的端到端断言）。
+- 回归：`verify:security-critical` 62/62、`weekly-audit-smoke` 57/57、`verify:weekly-demo`、`verify:reliability-filter` 21/21、`verify:p1-security` 11/11、`verify:demo-safety` 23/23、`verify:score-grid` 全绿；`git diff --check` 干净。
+
+## v2.2.9 (2026-08-22) — 答题卡设计器修复（六项）+ 演示数据对齐新规范（并行分支条目，合并时纳入）
+> 该条目由并行分支「答题卡设计器修复」撰写（830c6a7 / 1a99d5f），合并进本 PR 时与上方 #246 条目并存。
+
+**答题卡设计器修复（830c6a7，P0/P1 缺陷族）**
+**1. 「适合页面」无限放大（P0）** — `CardPreview` 的 ResizeObserver 观察高度随内容增长的包装层，与 fit-page 的 SVG 高度形成反馈环（每圈 +32px）。改为测量自身内部滚动区并删除 DesignPage 中间包装层；fit-page 宽度同时受宽高约束封顶。GUI 实测切换后 412×582 采样稳定。
+**2. 三栏布局重构** — 用 react-resizable-panels（v4：Group/Panel/Separator）重构：右栏默认 380px 可拖拽（300–560），左栏可折叠成 32px 细条（头部按钮 + 拖拽均可触发），布局记忆到 localStorage。
+**3. 填空题图片插入回归（#221 重构回归）** — 插图控件被 `!isFillBlankBlock` 条件误包导致填空题永不渲染；已拆出条件，填空题每题都有「插入图片 + 尺寸编辑 + 删除」；修复预览 404（href 缺 `/api` 前缀），恢复丢失的「文字注释」输入与预览渲染。
+**4. 得分填涂格开关** — 解答题开关常显，开启自动切到「带分数填涂区」样式；填空题得分格为块级，仅首题显示开关并加「计分题」徽章，非计分题显示说明而非无效开关，配合块级「满分」输入生效。
+**5. 作文格仿高考样式** — 新建 `src/shared/essayGrid.ts` 作为几何唯一事实源（排版引擎 layout.ts / SVG 预览 DesignEditors / PDF 导出 pdf.ts 三端行数行缝一致）；预览补齐粗边框、行间虚线、每 100 字刻度（含跨页续号）、题号右对齐；新建作文块默认朱红格线（`ESSAY_DEFAULT_LINE_COLOR=#c00000`，旧卡保留原色），面板新增「格线颜色」。实测 600 格红格 + 刻度 100–500 + 24 条行缝全部渲染。
+**6. 客观题「选项竖排」新模式** — 新增第三种排列（A/B/C/D 在题号下方纵向堆叠），行高模型按 span 预留、识别坐标自动跟随；`ObjectiveOptionLayout` 增加 `vertical-options`，服务端 `CardRepository.normalizeOptionLayout` 白名单同步（此前会把 `vertical-options` 静默存成 `horizontal`，实测持久化成功）。同时修复检查器滚动容器 Panel 子项缺 `shrink-0` 导致排版警告面板叠在溢出编辑器控件上的问题。
+
+**演示数据对齐新规范**
+- 演示-语文卡（88000001）新增「作文（演示）」块：60 分/目标 600 字/朱红格线 `#c00000`/每 100 字刻度/粗边框，与设计器新建作文块默认配置一致（`demo/essayDemo.ts` 种子）。
+- 演示-数学卡（88000002）客观题块 `option_layout='vertical-options'`，验证选项竖排与白名单持久化（其余演示卡保持 `horizontal` 对照）。
+- `verify.ts` 新增 5 项校验点（作文块存在/朱红格线/刻度+边框/600 字、数学卡选项竖排）；`manifest.json` 新增 essayCard / objectiveLayoutDemo 用例；`testdata/demo-exams/README.md` 与 `演示数据.md` 同步。
+
+**验证**
+- `typecheck` 0 错误；演示数据导入 + `verify.ts` 全绿（含新增设计器校验点）；`projectx-demo.zip` 备份包按新规范重建。
+
+
+## v2.2.8 (2026-08-22) — PR #246 第二轮评审闭环（4 项：编辑撤销 / 查看门全覆盖 / 软删除组访问 / 恢复通道）
+
+**1. [P1] 编辑权限范围现按记录 ID 原地更新（撤销旧授权）**
+- 此前前端保存不携带 `editingId`，后端按新维度 upsert——管理员修改教师/年级/科目/班级/题块后旧记录保留、另增一条，造成权限残留。
+- `PUT /api/admin/permissions` 支持可选 `id`：携带时按记录 ID 原地更新全部维度与 5 个标志（`updateTeacherPermissionById`）；编辑撞现有维度组合返回 409（含显式预检查——SQLite/MariaDB 的 UNIQUE 均视 NULL 为互异，纯 NULL 维度的逻辑重复不触发数据库约束，须应用层拦截；DB 约束捕获保留作并发兜底）；记录不存在返回 404。前端 `PermissionManager` 保存时携带 `editingId`。
+**2. [P1] 查看开关补齐剩余消费端**
+- 单考试：`/exams/:examId/metrics`（难度/区分度）补 `requireViewCharts`；知识点总体 `GET /knowledge-points/:examId` 补图表门；知识点单学生下钻补 `requireViewStudents`。
+- 大考组（新增 `hasGroupViewPermission` + `makeGroupViewPermissionGate`，语义与 canReadGroup「全部成员可见」模型一致：组内全部非软删除成员考试的维度均被 flag=1 授权行覆盖才放行）：overview / metrics / question-analysis / distribution / class-comparison / ai-analysis → 图表门；rankings（名单）→ 学生门；export（成绩导出）→ 成绩门。管理员/年级主任放行，未配置矩阵兼容放行。
+**3. [P1] 软删除成员不再锁死整个大考组**
+- `canReadGroup` 此前读取全部成员（含软删除）并要求 `every(...)` 可见——清理任务只标记 `exam_archives.is_deleted` 不删组成员关系，组内任一成员被软删除后整组对普通教师 403，统计端新加的排除逻辑根本执行不到。现与统计口径一致地过滤软删除成员（`GROUP_MEMBER_NOT_SOFT_DELETED_SQL`）。
+**4. [P2] 软删除恢复通道落地**
+- `cleanup.ts` 新增 `listSoftDeletedExams()` / `restoreSoftDeletedExam()`（is_deleted 重置 0 + `entity_lifecycle_events('exam',…,'restore')` 审计，幂等）。
+- 控制台新增 `GET /api/admin/console/soft-deleted-exams` 与 `POST /api/admin/console/exams/:examId/restore`（均 SYSTEM_MANAGE）；`AdminConsolePage` 新增「已清理考试（可恢复）」区，行内恢复按钮 + 成功提示。
+- 顺带修复 `middleware.ts` 一处行尾空格（评审 `git diff --check` 发现）。
+
+**验证**
+- `typecheck` 0 错误；`verify:auth` 103/103（新增第 9 节 15 项：upsert/按 ID 编辑维度迁移/409 冲突/组级图表门三态/软删除成员组放行与越权组拒绝/恢复列表-幂等-审计-可见性回归）。
+- 回归：`verify:security-critical` 62/62、`weekly-audit-smoke` 57/57、`verify:weekly-demo`、`verify:reliability-filter` 21/21、`verify:p1-security` 11/11、`verify:demo-safety` 23/23 全绿；`git diff --check` 干净。
+- 调试注记：`entity_lifecycle_events.entity_id` 为 TEXT 存储，消费方查询需以字符串绑定（数字绑定在 SQLite 不命中）。
+
+## v2.2.7 (2026-08-22) — 合并 PR #256「成绩公布与撤回管理」（特性全量保留）
+
+> 将 `origin/成绩公布更新`（PR #256，包版本 v2.4.0）合入本分支，与既有 #246 权限矩阵/软删除体系融合。PR #256 特性零删减；main 已全量包含（此前合并）；`纸锋` 分支尖端与 main 文件树一致，无增量内容。
+
+**PR #256 特性（全部保留）**
+- 成绩公布流程：批改完成后默认不公布；`POST /api/exams/:examId/publish`（单场）/ `POST /api/exams/publish-batch`（批量，含可见性范围校验）/ `POST /api/exams/:examId/unpublish`（撤回，带原因 ≤500 字，状态 `1→2`；重新公布 `2→1`），全部 `GRADE_WRITE` 门控 + 考试可见范围校验。
+- 学生端硬过滤：`getStudentScores` / `getStudentTrendData` 增加 `score_published=1`；`/me/exams/:examId` 与学生单场 AI 分析接口公布前置校验（404/403）。教师端查分不受限。
+- 审计：`exam_publish_events` 表记录每次公布/撤回的执行人、时间与原因；考试管理页三态徽章（已公布/已撤回/未公布）+ 公布/撤回/重新公布按钮（桌面与移动卡片对齐）；演示数据种子显式 `score_published=1`。
+
+**迁移编号台账（二次撞号处理）**
+- PR #256 基于旧 main（迁移止于 v38）新增 **v41**（`exams.score_published` + 存量 closed 回填为已公布）/ **v42**（`exam_publish_events`）；与本分支上一轮重编号的 v41–v43 再次撞号。
+- 处理：**PR #256 保留 v41/v42 原号**（其分支已推送、库血统已存在）；本分支三个迁移最终编号 **v43**（track_type 回补）/ **v44**（控制台地基）/ **v45**（权限五维唯一约束）；MariaDB 侧对齐为 v41/v42 + v43/v44。v39/v40 维持作废。编号台账已写入 `migrations.ts` / `mysql.ts` 注释，作废编号请勿复用。
+- 四血统临时库端到端冒烟（全新 / main 血统真实库 / 本分支旧编号血统 / PR #256 血统）全部通过：任何存量库升级都不会因版本号已记录而漏掉另一侧内容。
+
+**语义融合点**
+- 学生成绩/成长曲线同时满足「未软删除 且 已公布」双条件（`ScoreRepository` 两处 WHERE 均保留两侧过滤）。
+- `/me/exams/:examId`：软删除 404 → 无成绩 404 → 未公布 404 三门共存。
+- 公布/撤回经 `requireExamAccess` 与 `getVisibleExamIds`——与本分支改造后的可见性体系（矩阵过滤 + 软删除剔除）天然协同，教师无法公布软删除或越权考试。
+- `verify-auth` 同时保留两侧适配：PR #256 的考试种子 `score_published=1` + 本分支第 8 节 18 项 #246 断言。
+
+**验证**：typecheck 0 错误（包版本 2.4.0）；verify:auth 88/88、security-critical 62/62、weekly-audit 57/57、weekly-demo 全过、reliability-filter 21/21、p1-security 11/11、demo-safety 23/23、score-grid 全过。
+
+## v2.2.6 (2026-08-22) — PR #246 评审 P1 四项闭环（权限矩阵 / 控制台可达 / 题块授权 / 软删除可见性）
+
+> 针对 PR #246 评审提出的 4 项 P1「功能未闭环」缺陷收尾。其中控制台可达性与题块授权回退两项已在 5db2a2d 修复，本次复核确认并补齐剩余缺口，全部登记永久回归（`verify:auth` 新增第 8 节 18 项断言）。
+
+**1. 权限矩阵查看标志运行时消费（补缺口：普通教师）**
+- `getVisibleExamIds`（`middleware.ts`）：普通教师（无 `teacher_role`）此前在函数入口即提前返回 `null`（全可见），使「无 teacher_role 分支的矩阵限制」成为死代码——管理员对该类教师关闭「查看成绩」完全不生效。现删除该提前返回，普通教师同样消费 `can_view_scores=0` 禁止行（可见集合 = 全部考试 − 矩阵禁止，quiz 晨测仍豁免）；无任何矩阵记录 → 仍全可见（旧部署兼容）。班主任/学科教师提前返回问题、`can_view_charts`/`can_view_students` 查看门（`makeViewPermissionGate` → analysis 路由 16 处接线）已由 5db2a2d 落地，本次复核确认。
+**2. `/admin-console` 可达性（已由 5db2a2d 修复，复核确认）**：两教师端变体 `allowedModes` 已含 `admin-console`，路由守卫先过变体白名单再过 `canManageGlobal`（SYSTEM_MANAGE），侧栏入口与直达路由均可达。
+**3. 题块正向授权不被兼容回退绕过（已由 5db2a2d 修复，复核确认）**：`canGradeBlock` 对已配置矩阵的教师不再享受「题块无分配记录 → 放行」回退（学科/年级/班级不匹配或 `can_grade=0` 一律拒绝）；仅「完全未配置矩阵」的旧部署教师保留回退，避免未分配部署锁死。
+**4. `auto_delete` 软删除可见性（补缺口：周审计与大考组链路）**：此前已覆盖考试列表（`listExams`/`listExamsForSelection`）、访问中间件（非管理员 404）、学生成绩/趋势、仪表盘、单科趋势。本次补齐：
+- `WeeklyAuditService`：软删除的晨测不再计入周报发布门槛（未出分不再阻塞发布）、不再被自动收进周报组。
+- `AnalysisRepository.getGroupMemberTrackMap`（大考组全部统计的成员唯一入口）：软删除成员考试不参与组指标/逐题/分布/班级对比；`exam-groups-analysis.ts` 四处成员查询、`exam-groups.ts` 列表成员数/出分数与详情成员列表、跨场对比组 `hydrateExamGroup`、赋分可用性探测同步过滤。组内残留软删除成员行（先建组后删除的场景）在读取口径统一剔除。
+- 新增 `GROUP_MEMBER_NOT_SOFT_DELETED_SQL` 常量（`exam_group_members` 别名 `egm` 场景），与既有 `EXAM_NOT_SOFT_DELETED_SQL` 并列。
+
+**验证**
+- `npm run typecheck` 零错误；`verify:auth` 88/88（新增 #246 第 8 节 18 项：普通教师矩阵收敛 / quiz 豁免 / 图表与学生门 / 学科不匹配与 can_grade=0 拒绝 / 兼容回退保留 / 显式分配放行 / 软删除 404 与管理员恢复通道 / 周审计门槛与收录 / 大考组统计剔除）。
+- 回归：`verify:security-critical` 62/62、`weekly-audit-smoke` 57/57、`verify:weekly-demo`、`verify:reliability-filter` 21/21、`verify:p1-security` 11/11、`verify:demo-safety` 23/23 全绿。
+
 ## v2.2.4 (2026-08-21) — 背景图层级修复与 main 主干整合
 
 ### 背景图层级修复（核心变更，分支 fix/background-image-layer）
@@ -17,6 +127,93 @@
   - `DashboardService.ts`：main 已含「最新出分」块，且三处查询统一应用 `subjectFilter` 角色过滤。
   - `DemoDataService.ts`：改为 `buildInsertIgnore` + `db.run` 方言无关实现，并将 `seedFillBlankDemo` / `reviewDemo` / PNG 占位图生成抽到 `src/server/services/demo/` 子模块（合并自动带入，均为方言无关）。
 - 验证：`npm run typecheck` 与 `npx vite build --mode web` 均通过。
+
+### 本次合入「管理员控制台与教师权限细粒度」分支的冲突处理（2026-08-22）
+- `package.json`：双方新增 npm scripts 取并集（`migrate:mariadb*` 三条 + `verify:weekly-demo` / `verify:reliability-filter`）。
+- `llm-client.ts` / `paper-routes.ts`：import 冲突取并集——main 侧 `getLlmEnv`（llmclient/.env 密钥同源读取）与 `decryptField`（ai_providers.api_key 加密存储透传前解密），本分支侧 `fetchLlmClient` / `recordAiRun` / `finalizeAiRun`（AI 调用双层埋点）；正文两侧逻辑本就共存。
+- `migrations.ts` / `mysql.ts`：**v39 编号两侧撞车**（main：knowledge_points.track_type 回补；本分支：控制台观测地基 + v40 权限五维唯一约束）。任一侧已初始化的库都会因 `schema_migrations` 已记录该版本号而整体跳过另一侧内容（main 血统库将缺控制台四表，随后权限重建引用缺失列导致启动失败）。处理：v39/v40 作废不再复用，统一顺延为 v41（track_type 回补）/ v42（控制台地基）/ v43（权限唯一约束），SQLite 与 MariaDB 双侧编号对齐；三个迁移对全部库血统幂等（重复列/表/键自动跳过）。
+
+## v2.2.5 (2026-08-20) — PR #246 检修修复（保留策略消费端 + 明暗账号级回写）
+
+> 针对 PR #246 评审提出的两项「功能未闭环」问题落地修复：数据保留策略此前仅写库不消费（定时清理只认环境变量），明暗方案此前只有读取链路没有回写链路。本次为纯补链路修复，不改变既有业务行为与数据格式。
+
+**修复 1：数据保留策略消费端（`src/server/db/cleanup.ts`）**
+- `runCleanup` 事务内新增「步骤 5」：每轮定时清理直接读取 `data_retention_policies`，仅处理 `status='closed'` 且 `retention_policy_id` 非空的考试，按 `COALESCE(closed_at, end_time)` 与策略 `retain_days` 判定到期。
+- `auto_archive=1` → 幂等写入 `exam_archives`（`INSERT … WHERE NOT EXISTS`，`scan_count` 取自 `scan_batches`）；`auto_delete=1` → 归档记录标记 `is_deleted=1`。
+- `CleanupResult` 新增 `archivedCount` / `markedDeletedCount`（向后兼容）；本轮跳过计数（永久保留 / 保留期内 / 无策略）写入汇总日志。
+- 顺带修正步骤 4 注释「超过90天」与实现不符的历史小问题。
+- **三条语义假设（经产品确认，均已在代码注释与运行日志标注）**：
+  - ① `retain_days=0` = 永久保留，跳过归档/删除；
+  - ② `auto_delete=1` = 软删除（仅标记 `is_deleted=1`，不物理销毁数据，可恢复）；
+  - ③ 未关联策略的考试维持默认行为（不归档不删除，仅按 `PROJECTX_SCAN_RETENTION_DAYS` 清理扫描原图）。
+
+**修复 2：明暗方案账号级回写链路（`src/apps/answer-card/client/App.tsx`）**
+- 新增 `serverColorScheme` 状态（`GET /api/users/me/settings` 时缓存服务端值）。
+- 新增写回 effect：`theme` 变更且已登录 → `PATCH /api/users/me/settings` body `{ colorScheme: theme }`（与皮肤同步对称、fire-and-forget；与读取值一致时跳过，成功后更新本地缓存防重复）。
+- 语义：设备级优先 + 账号回写——本机切换后账号 `users.color_scheme` 随之更新，跨设备可恢复；`theme_change_events` 审计表与控制台「明暗分布」统计恢复真实。
+- 服务端（`validation.ts` / `PATCH` 处理 / 审计写入）原已就绪，本次仅补齐客户端缺口；顺带更新 `App.tsx` 中「明暗为设备级偏好」的过时注释。
+
+**验证**
+- 保留策略集成验证（临时 SQLite 库，10/10 断言）：超期归档 / 保留期内跳过 / 永久保留跳过 / 未结考跳过 / 无策略跳过 / 幂等 / 软删除 / 不重复标记 / 其余考试零影响。
+- `npx tsc --noEmit` 零错误；`verify:auth` 70/70、`verify:core-logic` 55 PASS、`verify:security-critical` 61/61 全绿。
+
+## v2.2.4 (2026-08-19) — 答题卡设计器实机修复 + 管理员控制台与教师权限细粒度
+
+> 基于 v2.2.3：实机调试 7 项缺陷修复 + PR #242 评审补丁 + 演示数据链路双后端化 + 管理员控制台可观测性与教师权限细粒度等功能更新。
+> **含数据库 Schema 变更**：`users` / `teacher_permissions` 加列，新增 `theme_change_events` / `ai_analysis_runs` / `ai_provider_calls` / `entity_lifecycle_events` 四表。SQLite 由迁移 v37 自动执行；已初始化的 MariaDB/MySQL 生产库经服务启动时的运行期迁移自动补齐（零停机）。
+
+**修复（实机调试 7 项）**
+- **P0 保存答题卡报错**（`Bind parameters must not contain undefined`）：`CardRepository.ts` 主观题 INSERT 的 `blanks` 相关四列 `?? null`、四处 JSON 列 `undefined→null`——任何含主观题块（填空/解答/作文）的卡保存必崩，且直接拖垮 PDF。
+- **P0 PDF 导出完全无法使用**：主因系保存阻断（`flushPendingCardSave` 抛错提前 return），随保存修复打通；附带 `pdf.ts` 得分格绘制显式受 `scoreGrid.enabled` 控制（V1/V2 均生效）。
+- **P1 作文格编辑器功能列表混乱**：`DesignEditors.tsx` 对 `blockKind === "essay"` 跳过通用逐题编辑器，仅保留作文专属控件；补全「显示粗边框（showFrame）」「显示字数刻度（showWordScale）」开关。
+- **P1 填空题缺少得分栏显隐开关**：填空题分支新增「显示得分填涂格」「显示"得分"标签」开关，与解答题语义一致。
+- **P2 右栏「选中块设置」与「基本信息」视觉混淆**：`DesignPage.tsx` 检查器改为标签页（基本信息 / 选中块设置），选中题块自动切换。
+- **P2 填空题右侧批注与答题横线齐平**：`DesignEditors.tsx` SVG 左空号标签与右批注上移 1.8mm，与 PDF 端 -2.35mm 视觉对齐。
+- **P3 「横线高度（MM）」标签换行**：缩短为「横线高(mm)」。
+
+**评审补丁（PR #242）**
+- 抽取共享判定 `src/shared/scoreGrid.ts` 的 `shouldRenderScoreGrid(question, isV2)`，SVG 预览（`SubjectiveSvg`）与 PDF 导出（`pdf.ts`）统一消费，消除口径漂移；`enabled` 缺省视为开启（旧数据向后兼容）；`showLabel=false` 仅隐藏「得分」标签、不影响方格。
+- 新增 `npm run verify:score-grid`（`scripts/verify-score-grid.ts`，沿用项目 `verify:*` tsx 冒烟体系，零新增依赖）：判定函数 8 组单元用例 + 3 组布局链路集成 + PDF 冒烟，全部通过。
+
+**1. 管理员控制台（可观测性）**
+- 聚合 API `/api/admin/console/{summary,activity,preferences,ai-usage,data-quality}`（`src/server/routes/console.ts`），全部复用 `SYSTEM_MANAGE`、仅聚合值、无 PII；防御式：新表未迁移时返回 `not_available` 而非报错；扫描成功率/人工修改率无 `scans` 表沉淀，如实 `not_available`（不编造）。
+- 前端 `/admin-console` 页面（`AdminConsolePage.tsx`，管理菜单「控制台」入口）：平台概览瓦片（现存答题卡 / 当前考试数 / 用户角色分布 / 阅卷完成率）、实体生命周期事件流、用户偏好分布条（成绩显示模式 / 底部导航 / 皮肤 / 明暗 / 文理分科）、AI 调用观测（成功率 / 延迟 / Token 按功能表）、数据质量、数据保留策略行内编辑。零图表依赖、防御式加载。
+- 历史累计：新增 `entity_lifecycle_events` 表 + `src/server/services/lifecycleEvents.ts`（`recordLifecycleEvent`，无 PII）；写入点 5 处（答题卡创建/删除含联动删考试、考试创建/删除含联动删答题卡、大考组删除事务内联动）；archive/restore 写入函数已就绪，待归档动作路由落地后接入。
+- 数据保留策略：新增 `/api/admin/data-retention-policies` GET 列表 + PUT 更新（`SYSTEM_MANAGE`；`retain_days` 非负整数校验，0=永久保留）。
+
+**2. 教师权限细粒度（科目 / 班级 / 题块维度）**
+- `teacher_permissions` 扩展 `subject` / `class_id` / `block_id` / `can_grade` / `can_assign`（NULL=该维度不限），保留原 `UNIQUE(teacher_id, grade_id)`（未做破坏性约束重构，NULL 维度行与唯一索引 NULL 语义兼容）。
+- 网阅题块级操作授权（防 IDOR）：新增 `requireGradingScope` / `canGradeBlock` / `isPrivilegedGrader`（`middleware.ts`），覆盖评分提交（submit）、领卷/退卷（claim ×2 / release）、断点续批（session get/put/delete）；题块无分配记录时全员放行（未分配部署不锁死）；crop 图片查看端点因仲裁流程特殊性（仲裁人未必被分配题块）未硬接入，留待权限矩阵统一处理。
+- 正向授权查询：`getPermittedBlocks(user, examId)`（综合显式分配 + 细粒度授予，无约束时返回全部）、`isTeacherPermittedForExam(examId, teacherId, perm)`（表不存在或无记录 → 放行，兼容旧部署）。
+- 工作量分配与权限矩阵绑定：创建分配前逐一校验目标教师 `can_assign`，被拒 403 明确列出；可分配教师列表仅返回矩阵内教师并加 `requireGradeLeaderOrAdmin` 门控；教师端可见题块列表按矩阵过滤（`getAvailableBlocksForTeacher` 接入 `getPermittedBlocks`）。
+- 权限配置面板：`/api/admin/permissions` PUT upsert 扩展至全维度（四维精确匹配 IS NULL/=，撞旧唯一约束返回 409 明确提示）；前端教师权限管理页（`PermissionManager.tsx`）新增科目 / 班级 ID / 题块 ID 输入与「可阅卷」「可分配」开关及对应列表列，支持按科目、班级、阅卷任务维度分配与回收。
+
+**3. AI 调用观测（双层埋点，服务端写入）**
+- 新表：`ai_analysis_runs`（逻辑任务层：feature/model/stage/success/latency/tokens/error_code）、`ai_provider_calls`（实际模型调用层，`run_id` 关联）。
+- 新模块 `src/server/services/aiTelemetry.ts`（`recordAiRun` / `finalizeAiRun` / `recordProviderCall` / `trackAnalysisCall`）——仅服务端调用，不暴露任何客户端路由；埋点全部 try/catch 兜底，失败绝不影响业务。
+- 接入 4 个调用点：考试分析（`exam_analysis`）、大考分析（`exam_group_analysis`）、学生单场分析（`student_analysis`）、原卷知识点分析（`knowledge_points`，一次任务对应多次边车调用）。
+- 安全约束：仅记录聚合字段，不保存 API Key / 完整提示词 / 学生姓名 / 完整回答；`/health` 探测不计入。
+
+**4. 账号级主题持久化**
+- `users` 新增 `ui_style`（`clarity` / `paper_edge`，与既有 `theme_skin` 双向同步过渡）、`color_scheme`（`light` / `dark`，替代仅存 localStorage 的设备级明暗）。
+- `GET/PATCH /api/users/me/settings` 扩展 `uiStyle` / `colorScheme`；主题/明暗实际变化写入 `theme_change_events` 审计表；前端明暗在无本机覆盖时由服务端 `colorScheme` 种子化（设备级优先回退）。
+
+**5. MariaDB 运行期迁移体系（含验证与回滚）**
+- 运行期结构迁移：`runMariadbMigrations` 新增 v37（`users` 加 2 列含历史 NULL 回填、`teacher_permissions` 加 5 列、新建 4 张观测表 + 索引），服务启动 `initMariadbSchema()` 自动执行、对比 `schema_migrations` 执行缺失版本——已初始化的生产库重启即自动补齐、零停机；新装库幂等（重复列/表自动忽略）。
+- 数据迁移工具 `scripts/migrate-to-mariadb.ts` 重写为 v2：补全 11 张此前缺失的迁移表（`system_settings` / `teacher_permissions` / `original_paper_pages` / 网阅 4 表 / 观测 4 表）；默认先调 `runMariadbMigrations` 自动补齐目标库结构（`--skip-schema` 关闭）；**迁移前自动 mysqldump 完整备份**（`--single-transaction`，找不到 mysqldump 时拒绝继续，可 `--skip-backup` 显式跳过）；迁移后三重验证（逐表行数对比 + 列结构对比 + `--sample=N` 抽样逐字段比对）；验证不通过打印回滚命令（`mysql < backup.sql`）并退出码非 0；新增 `--dry-run` / `--verify-only` / `--help` 与 npm 脚本 `migrate:mariadb` / `migrate:mariadb:dry` / `migrate:mariadb:verify`。
+
+**增强**
+- 演示数据链路双后端化（SQLite + MariaDB）：`DemoDataService.ts` 与 `demo/fillBlankDemo.ts`、`demo/reviewDemo.ts` 改造为 `DbAdapter`（`getMysqlDb()`），约 11 处 `INSERT OR IGNORE` → `buildInsertIgnore`、方言化 `tableExists`/事务/`datetime('now')`；`POST /api/db/import-demo`、`POST /api/db/clear-demo` 移除 MariaDB 400 门控，MariaDB 部署可一键导入/清除演示数据。附带修正：`reviewDemo.ts` 演示时间戳改为 MariaDB 可接受的 `2026-06-25 09:30:00`；`clearDemoData()` 异步化并同步调用点。验证：`scripts/verify-demo-safety.ts` 23 项断言全过。
+
+**部署注意事项**
+- PDF 中文渲染：`pdf.ts` 内置多平台 CJK 字体候选（Windows `simsun.ttc` / macOS `PingFang` / Linux `Noto Sans CJK`）与系统字体扫描回退；生产环境（浪潮 5220 / Linux）需存在可用 CJK 字体或显式设置 `PROJECTX_PDF_FONT_PATH`。
+- MariaDB 生产库：重启服务即自动补 v37 结构（零停机）。全量数据搬迁按序执行 `npm run migrate:mariadb:dry` → `migrate:mariadb:verify` → `migrate:mariadb`（自动备份 + 补结构 + 三重验证；备份落盘 `data/backups/mariadb-pre-migration-<时间戳>.sql`，失败回滚命令见输出）。
+
+**验证**
+- 增量 tsc 零新增错误模式（全量 610 = 基线 605 + 新增 5 处与基线同类的 `Button variant` / 回调参数类型缺口，均属既有 ui/v2 组件类型技术债，不阻断 Vite/esbuild 构建）；迁移脚本单文件 tsc 零错误（`--help` 实测 EXIT=0）。
+- v37 与 schema 一致性：四张观测表列级比对（7/11/10/6 列 ALL_MATCH）、`users` / `teacher_permissions` 默认值与 `schema.mariadb.sql` 完全一致；`requireGradingScope` 接线完整（review 2 / review-pool 4 / review-session 4）；四端 schema 一致。
+- 回归冒烟：`verify:demo-safety` 23 项断言全过、`verify:score-grid` 全过。
+- 本机无 MariaDB 实例，真连库 dry-run 未执行（连接失败路径表现正常）；真库验证命令见「部署注意事项」。
 
 ## v2.2.3 (2026-08-14) — 巨型文件拆分与大考查询批量化（未发版，基于 #239）
 

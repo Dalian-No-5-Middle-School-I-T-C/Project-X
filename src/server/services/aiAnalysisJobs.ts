@@ -11,6 +11,7 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
+import { trackAnalysisCall } from "./aiTelemetry";
 import type { AiAnalysisResponse, AiJobPollResponse, AiJobState } from "../../shared/types";
 
 export interface AiJobSpec {
@@ -19,6 +20,8 @@ export interface AiJobSpec {
   classId?: number;
   model?: string;
   providerOverride?: Record<string, unknown>;
+  /** 任务创建者（AI 调用观测写入 ai_analysis_runs.user_id）。 */
+  userId?: number | null;
 }
 
 export interface AiJobCreateInput extends AiJobSpec {
@@ -51,22 +54,30 @@ function rowToPoll(row: any): AiJobPollResponse {
 
 /** 执行一次 LLM 学情分析（同步阻塞，由后台队列串行调用）。 */
 export async function runAiAnalysis(spec: AiJobSpec): Promise<AiAnalysisResponse> {
-  const response = await fetchLlmClient(
-    "/analysis/run",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        examId: spec.examId,
-        groupId: spec.groupId,
-        classId: spec.classId,
-        model: spec.model,
-        locale: "zh-CN",
-        providerOverride: spec.providerOverride ?? undefined,
-      }),
-    },
-    120_000,
-  );
+  const model = spec.model ?? null;
+  // AI 调用观测（逻辑任务层 + 实际模型调用层双层埋点），埋点失败不影响业务调用
+  const response = await trackAnalysisCall({
+    userId: spec.userId ?? null,
+    feature: spec.groupId != null ? "exam_group_analysis" : "exam_analysis",
+    model,
+    doCall: (runId) => fetchLlmClient(
+      "/analysis/run",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          examId: spec.examId,
+          groupId: spec.groupId,
+          classId: spec.classId,
+          model,
+          locale: "zh-CN",
+          providerOverride: spec.providerOverride ?? undefined,
+        }),
+      },
+      120_000,
+      { runId, provider: "llmclient", model, stage: "analysis" },
+    ),
+  });
 
   if (!response.ok) {
     let message = `AI 服务返回 ${response.status}`;
@@ -120,7 +131,9 @@ export function enqueueAiAnalysisJob(jobId: number, spec: AiJobSpec): Promise<Ai
     await db.run("UPDATE ai_analysis_jobs SET status = 'running', updated_at = CURRENT_TIMESTAMP WHERE id = ?", jobId);
     try {
       const startedAt = Date.now();
-      const result = await runAiAnalysis(spec);
+      // 任务创建者从任务表读取，注入遥测（AI 调用观测 user_id 归属）
+      const createdBy = spec.userId ?? await db.get("SELECT created_by FROM ai_analysis_jobs WHERE id = ?", jobId).then((r: any) => r?.created_by ?? null);
+      const result = await runAiAnalysis({ ...spec, userId: createdBy ?? null });
       await db.run(
         `UPDATE ai_analysis_jobs SET status = 'done', result = ?, error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
         JSON.stringify(result),

@@ -1,8 +1,8 @@
 {
   "name": "projectx-demo-exams",
   "version": "1.4.0",
-  "description": "演示考试数据集 — 覆盖单科/大考(文理分科)/跨考/并列排名/缺考/导出/名次变化/学期对比/网阅打分(双评仲裁·断点续批)/填空题升级(自定义横线·注释·图片)/P-D统计与正态性检验等测试场景",
-  "compatibleWith": ["v1.9.4", "v1.9.5", "v1.9.6", "v1.9.7", "v1.9.8", "v1.9.9", "v2.0.0", "v2.1.0", "v2.2.0", "v2.2.1", "v2.3.0"],
+  "description": "演示考试数据集 — 覆盖单科/大考(文理分科)/跨考/并列排名/缺考/导出/名次变化/学期对比/网阅打分(双评仲裁·断点续批)/填空题升级(自定义横线·注释·图片)/作文格仿高考样式(朱红格线·100字刻度)/客观题选项竖排/P-D统计与正态性检验等测试场景",
+  "compatibleWith": ["v1.9.4", "v1.9.5", "v1.9.6", "v1.9.7", "v1.9.8", "v1.9.9", "v2.0.0", "v2.1.0", "v2.2.0", "v2.2.1", "v2.3.0", "v2.2.9"],
   "prefix": "演示-",
   "accounts": {
     "admin": { "identifier": "admin", "password": "见数据库旁 bootstrap-admin.txt（#185 起为随机一次性密码，首次登录强制改密；seed 后 verify 会自动改密为 Admin@Demo2026 并回写文件）" },
@@ -35,6 +35,18 @@
     "blockKind": "fill_blank",
     "questions": 3,
     "features": ["逐空自定义横线(宽度/高度/右侧批注)", "文字注释", "插入图片(居中)"]
+  },
+  "essayCard": {
+    "cardId": "88000001",
+    "blockKind": "essay",
+    "questions": 1,
+    "features": ["仿高考样式作文格(目标600字)", "朱红格线 #c00000", "每100字字数刻度", "粗边框+行间虚线", "题号右对齐"]
+  },
+  "objectiveLayoutDemo": {
+    "cardId": "88000002",
+    "blockIdPattern": "88000002-obj",
+    "optionLayout": "vertical-options",
+    "feature": "客观题选项竖排（A/B/C/D 在题号下方纵向堆叠，识别坐标自动跟随；服务端 normalizeOptionLayout 白名单可持久化）"
   },
   "reviewExam": {
     "name": "演示-网阅测试",
@@ -107,6 +119,18 @@
       "feature": "填空题升级",
       "steps": "答题卡设计 → 演示-语文(88000001) → 填空题（演示）块",
       "expect": "3 道填空题：Q1 两空宽度/高度不同+右侧批注+文字注释；Q2 插入居中图片；Q3 普通横线；PDF 预览可渲染"
+    },
+    {
+      "id": "essay-grid-demo",
+      "feature": "作文格仿高考样式",
+      "steps": "答题卡设计 → 演示-语文(88000001) → 作文（演示）块",
+      "expect": "600 格朱红格线 + 每 100 字刻度(100~500) + 行间虚线 + 粗边框 + 题号右对齐；预览与导出 PDF 行数一致（essayGrid.ts 几何唯一事实源）"
+    },
+    {
+      "id": "objective-vertical-options",
+      "feature": "客观题选项竖排",
+      "steps": "答题卡设计 → 演示-数学(88000002) → 选择题块",
+      "expect": "选项排列为「选项竖排」（A/B/C/D 纵向堆叠）；保存后重新打开布局保持 vertical-options 不被降级为 horizontal"
     },
     {
       "id": "online-review-2p",

@@ -2,7 +2,7 @@
 // P4/T5：整页迁移到 v2 视觉体系（Button / SegmentedControl / Table / ExamStatusBadge / EmptyState）。
 // 行为与迁移前完全一致：API 端点、请求体、路由与权限判断零改动。
 import { CalendarDays, CalendarX2, ClipboardList, Layers, Megaphone, Plus, Search, Trash2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { fetchJson } from "../auth/api";
 import { useWorkspace } from "../WorkspaceContext";
 import { ExamDetailPage } from "../components/ExamDetailPage";
@@ -140,12 +140,25 @@ export function ExamManagePage() {
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => todayDateString());
   const [creating, setCreating] = useState(false);
   const [newExamMode, setNewExamMode] = useState<ExamMode>("formal");
+  // 保留策略（评审 P1）：仅管理员可见；"auto"= 按考试类型自动分配（quiz→周测、formal→不绑定）
+  const [availablePolicies, setAvailablePolicies] = useState<Array<{ id: number; name: string; retainDays: number }>>([]);
+  const [newExamRetentionPolicy, setNewExamRetentionPolicy] = useState<string>("auto");
   // v41/v42: 成绩公布/撤回 —— 单场公布/撤回确认框、批量公布确认框、请求中标志
   const [publishTarget, setPublishTarget] = useState<ExamRecord | null>(null);
   const [batchPublishOpen, setBatchPublishOpen] = useState(false);
   const [unpublishTarget, setUnpublishTarget] = useState<ExamRecord | null>(null);
   const [unpublishReason, setUnpublishReason] = useState("");
   const [publishing, setPublishing] = useState(false);
+
+  useEffect(() => {
+    // 保留策略列表为管理员接口（SYSTEM_MANAGE），仅管理员拉取
+    if (userRole !== "admin") return;
+    let active = true;
+    fetchJson<{ ok: boolean; data: Array<{ id: number; name: string; retainDays: number }> }>("/api/admin/data-retention-policies")
+      .then((res) => { if (active && res?.ok) setAvailablePolicies(res.data); })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [userRole]);
 
   const visibleExams = useMemo(() => exams.filter((exam) => {
     const matchesSearch = !examSearch.trim() || exam.name.toLowerCase().includes(examSearch.trim().toLowerCase());
@@ -294,8 +307,18 @@ export function ExamManagePage() {
         });
         cardId = cardRes.id;
       }
-      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, cardId, subject: newExamSubject.trim() || undefined, mode: newExamMode }) });
-      setNewExamName(""); setNewExamSubject(""); setNewExamMode("formal"); setShowCreateExam(false);
+      const payload: Record<string, unknown> = {
+        name,
+        cardId,
+        subject: newExamSubject.trim() || undefined,
+        mode: newExamMode,
+      };
+      // 管理员显式指定策略时透传（"auto"=按类型自动分配，交给后端解析）
+      if (userRole === "admin" && newExamRetentionPolicy !== "auto") {
+        payload.retentionPolicyId = newExamRetentionPolicy === "none" ? null : Number(newExamRetentionPolicy);
+      }
+      await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      setNewExamName(""); setNewExamSubject(""); setNewExamMode("formal"); setNewExamRetentionPolicy("auto"); setShowCreateExam(false);
       loadExams();
     } catch (err) {
       setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -544,6 +567,22 @@ export function ExamManagePage() {
                   <SelectItem value="formal">{EXAM_MODE_LABELS.formal}（精细权限）</SelectItem>
                 </SelectContent>
               </Select>
+              {userRole === "admin" && (
+                <Select value={newExamRetentionPolicy} onValueChange={setNewExamRetentionPolicy}>
+                  <SelectTrigger aria-label="数据保留策略">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="auto">保留策略：按考试类型自动分配</SelectItem>
+                    <SelectItem value="none">保留策略：不绑定</SelectItem>
+                    {availablePolicies.map((p) => (
+                      <SelectItem key={p.id} value={String(p.id)}>
+                        保留策略：{p.name}（{p.retainDays === 0 ? "永久" : `${p.retainDays} 天`}）
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
               <div className="flex gap-2">
                 <Button variant="primary" loading={creating} onClick={() => void handleCreateExam()}>确认创建</Button>
                 <Button variant="ghost" onClick={() => setShowCreateExam(false)}>取消</Button>

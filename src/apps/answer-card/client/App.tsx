@@ -102,6 +102,7 @@ const SponsorRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) =>
 const PermissionsRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.PermissionsRoutePage })));
 const GuideRoutePage = lazy(() => import("./pages/InfoRoutePages").then((m) => ({ default: m.GuideRoutePage })));
 const GlobalSettingsRoutePage = lazy(() => import("./pages/GlobalSettingsRoutePage").then((m) => ({ default: m.GlobalSettingsRoutePage })));
+const AdminConsoleRoutePage = lazy(() => import("./pages/AdminConsoleRoutePage").then((m) => ({ default: m.AdminConsoleRoutePage })));
 const GradePanel = lazy(() => import("./components/GradePanel").then((m) => ({ default: m.GradePanel })));
 const PaperUploadPanel = lazy(() => import("./components/PaperUploadPanel").then((m) => ({ default: m.PaperUploadPanel })));
 
@@ -365,6 +366,9 @@ function App() {
       return "light";
     }
   });
+  // v37: 服务端账号级明暗方案（users.color_scheme）。读取后存此状态，
+  // 供「明暗变更 → PATCH 回写」effect 做差异判断，避免挂载期无谓写入。
+  const [serverColorScheme, setServerColorScheme] = useState<string | null>(null);
   // v2.1.0: 皮肤 = 风格维度（与明暗正交）。'flat'=明澈 Flat 2.0（默认），
   // 未来新增皮肤在 tokens.css 加 [data-skin="xxx"] 覆盖块 + SkinSwitcher 注册表登记。
   const [skin, setSkin] = useState<string>(() => {
@@ -453,6 +457,7 @@ function App() {
       if (candidate === "account") return canManageAccounts;
       if (candidate === "account-settings") return true;
       if (candidate === "global-settings") return canManageGlobal;
+      if (candidate === "admin-console") return canManageGlobal;
       return false;
     },
     [appVariant.allowedModes, appVariant.id, hasPermission, canDesign, canManageExams, canAnalyze, canManageAccounts, canManageGlobal],
@@ -544,11 +549,21 @@ function App() {
     void refreshCards(canDesign);
   }, [user?.id, canDesign, canGrade]);
 
-  // 加载用户设置（背景图等）
+  // 加载用户设置（背景图、明暗方案等）
   useEffect(() => {
     if (!user) return;
-    fetchJson<{ backgroundOpacity: number }>("/api/users/me/settings")
-      .then((s) => { if (s) setShowBg(s.backgroundOpacity ?? 0); })
+    fetchJson<{ backgroundOpacity: number; colorScheme?: string; uiStyle?: string }>("/api/users/me/settings")
+      .then((s) => {
+        if (!s) return;
+        setShowBg(s.backgroundOpacity ?? 0);
+        setServerColorScheme(s.colorScheme ?? null);
+        // v37: 明暗方案账号级持久化 —— 仅当用户从未在本机显式选择过（无 localStorage 覆盖）时，
+        // 采用服务端 colorScheme；否则沿用本机偏好（保留 localStorage 回退，设备级优先）。
+        // 本机一旦切换即触发下方「明暗变更→PATCH」回写，账号值随之更新（跨设备可恢复）。
+        if (s.colorScheme && !localStorage.getItem("projectx-theme")) {
+          setTheme(s.colorScheme === "dark" ? "dark" : "light");
+        }
+      })
       .catch(() => {});
   }, [user?.id]);
 
@@ -581,6 +596,21 @@ function App() {
       body: JSON.stringify({ themeSkin: skin }),
     }).catch(() => { /* 皮肤偏好同步失败不打扰用户 */ });
   }, [skin, user?.id, user?.themeSkin]);
+
+  // v37: 明暗变更 → 同步到账号（与皮肤同步对称）。仅在与服务端读取值不一致时写入；
+  // fire-and-forget，离线/失败静默。账号值更新后，theme_change_events 审计与
+  // 控制台「明暗（color_scheme）分布」统计自动恢复真实。
+  useEffect(() => {
+    if (!user) return;
+    if (serverColorScheme !== null && theme === serverColorScheme) return;
+    void fetchJson("/api/users/me/settings", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ colorScheme: theme }),
+    })
+      .then(() => setServerColorScheme(theme))
+      .catch(() => { /* 明暗偏好同步失败不打扰用户 */ });
+  }, [theme, user?.id, serverColorScheme]);
 
   // 背景图：body::after 半透明浮层 (pointer-events:none 不挡交互)
   useEffect(() => {
@@ -1473,6 +1503,9 @@ function App() {
     if (canManageGlobal) {
       items.push({ type: "item", id: "global-settings", icon: <Settings />, label: "全局设置" });
     }
+    if (canManageGlobal) {
+      items.push({ type: "item", id: "admin-console", icon: <BarChart3 />, label: "控制台" });
+    }
     return items;
   }, [canOpenMode, canDesign, canManageExams, canAnalyze, showScoresTab, canManageAccounts, canManageGlobal, loadExams, loadExamGroups]);
 
@@ -1775,7 +1808,8 @@ function App() {
           </AppRailNav>
           <AppRailFooter className={effectiveRailCollapsed ? "flex-col" : undefined}>
             {/* v2.1.0 前常驻的暗色模式一键按钮：原被皮肤菜单取代，本版恢复。
-                明暗为设备级偏好（data-theme + localStorage projectx-theme），与皮肤正交。 */}
+                明暗为设备级优先 + 账号级回写（data-theme + localStorage projectx-theme
+                即时生效，切换经上方 effect 同步 users.color_scheme，跨设备可恢复）。 */}
             <button
               type="button"
               aria-label={theme === "dark" ? "切换到亮色模式" : "切换到暗色模式"}
@@ -1916,6 +1950,7 @@ function App() {
                 <Route path="/permissions" element={canOpenMode("account") ? <Suspense fallback={routeFallback}><PermissionsRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/guide" element={canOpenMode("home") ? <Suspense fallback={routeFallback}><GuideRoutePage /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="/global-settings" element={canOpenMode("global-settings") ? <Suspense fallback={routeFallback}><GlobalSettingsRoutePage onBack={() => void switchMode("home")} /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
+                <Route path="/admin-console" element={canOpenMode("admin-console") ? <Suspense fallback={routeFallback}><AdminConsoleRoutePage onBack={() => void switchMode("home")} /></Suspense> : <Navigate to={MODE_PATH[fallbackMode]} replace />} />
                 <Route path="*" element={<NotFound to={MODE_PATH[fallbackMode]} />} />
               </Routes>
             </AppContent>

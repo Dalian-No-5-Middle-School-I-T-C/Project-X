@@ -14,6 +14,7 @@ export const MODE_PATH: Record<ProjectXAppMode, string> = {
   account: "/account",
   "account-settings": "/account-settings",
   "global-settings": "/global-settings",
+  "admin-console": "/admin-console",
   sponsor: "/sponsor",
   guide: "/guide",
   permissions: "/permissions",

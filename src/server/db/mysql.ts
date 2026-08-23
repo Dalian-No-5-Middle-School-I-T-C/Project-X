@@ -768,6 +768,10 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
       ]
     },
+    // v41/v42 属成绩公布管理（PR #256「成绩公布更新」，分支已推送、血统已存在，保留原号）。
+    // v39/v40 作废：main 侧 SQLite v39=track_type 回补、本侧旧版 v39/v40=控制台/权限唯一约束
+    // （与 migrations.ts 编号台账一致）。本分支控制台地基/权限唯一约束最终编号为 v43/v44，
+    // 重跑幂等：重复列/键被上方 catch 忽略。
     {
       // v41: 成绩公布开关 —— 批改完成后默认未公布（0），教师手动公布（1）后学生方可查看。
       // 存量兼容：历史已结考（status='closed'）的考试回填为已公布。
@@ -796,6 +800,122 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
           FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
         `CREATE INDEX IF NOT EXISTS idx_epe_exam ON exam_publish_events(exam_id)`,
+      ]
+    },
+    {
+      // v43 (控制台可观测性 + 教师权限细粒度地基):
+      // users 主题偏好拆分 + teacher_permissions 五维扩展 + 观测四表。
+      version: 43,
+      name: "admin-console-observability-and-teacher-permission-dims",
+      sqls: [
+        // users：主题偏好拆分（ui_style=clarity/paper_edge；color_scheme=light/dark）
+        `ALTER TABLE users ADD COLUMN ui_style VARCHAR(16) DEFAULT 'paper_edge'`,
+        `ALTER TABLE users ADD COLUMN color_scheme VARCHAR(8) DEFAULT 'light'`,
+        `UPDATE users SET ui_style = 'paper_edge' WHERE ui_style IS NULL`,
+        `UPDATE users SET color_scheme = 'light' WHERE color_scheme IS NULL`,
+        // teacher_permissions：科目/班级/题块/操作维度（NULL=该维度不限）
+        `ALTER TABLE teacher_permissions ADD COLUMN subject VARCHAR(50)`,
+        `ALTER TABLE teacher_permissions ADD COLUMN class_id INT`,
+        `ALTER TABLE teacher_permissions ADD COLUMN block_id VARCHAR(64)`,
+        `ALTER TABLE teacher_permissions ADD COLUMN can_grade TINYINT DEFAULT 1`,
+        `ALTER TABLE teacher_permissions ADD COLUMN can_assign TINYINT DEFAULT 1`,
+        // 主题切换审计
+        `CREATE TABLE IF NOT EXISTS theme_change_events (
+          id          INT AUTO_INCREMENT PRIMARY KEY,
+          user_id     INT,
+          from_style  VARCHAR(32),
+          to_style    VARCHAR(32),
+          from_scheme VARCHAR(8),
+          to_scheme   VARCHAR(8),
+          changed_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_tce_user ON theme_change_events(user_id)`,
+        // AI 调用观测：逻辑任务层
+        `CREATE TABLE IF NOT EXISTS ai_analysis_runs (
+          id          INT AUTO_INCREMENT PRIMARY KEY,
+          user_id     INT,
+          feature     VARCHAR(50) NOT NULL,
+          model       VARCHAR(50),
+          stage       VARCHAR(30),
+          success     TINYINT DEFAULT NULL,
+          latency_ms  INT,
+          tokens_in   INT,
+          tokens_out  INT,
+          error_code  VARCHAR(30),
+          created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_aar_feature ON ai_analysis_runs(feature)`,
+        `CREATE INDEX IF NOT EXISTS idx_aar_created ON ai_analysis_runs(created_at)`,
+        // AI 调用观测：实际模型调用层
+        `CREATE TABLE IF NOT EXISTS ai_provider_calls (
+          id          INT AUTO_INCREMENT PRIMARY KEY,
+          run_id      INT,
+          provider    VARCHAR(30),
+          model       VARCHAR(50),
+          stage       VARCHAR(30),
+          success     TINYINT DEFAULT NULL,
+          latency_ms  INT,
+          tokens      INT,
+          error_code  VARCHAR(30),
+          created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (run_id) REFERENCES ai_analysis_runs(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_apc_run ON ai_provider_calls(run_id)`,
+        // 实体生命周期事件：历史累计统计
+        `CREATE TABLE IF NOT EXISTS entity_lifecycle_events (
+          id          INT AUTO_INCREMENT PRIMARY KEY,
+          entity_type VARCHAR(30) NOT NULL,
+          entity_id   VARCHAR(64) NOT NULL,
+          action      VARCHAR(20) NOT NULL,
+          actor_id    INT,
+          created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+      ]
+    },
+    {
+      // v44: teacher_permissions 唯一约束升级为五维（teacher_id, grade_id, subject, class_id, block_id），
+      // 解除旧 UNIQUE(teacher_id, grade_id) 对同教师多维度授权（多班级/多题块）的阻塞。
+      // 先按五维组合去重（旧约束下 NULL grade 可存在多行），再换索引；DROP INDEX IF EXISTS 兼容 MariaDB/MySQL 8.0.19+。
+      version: 44,
+      name: "teacher-permissions-multidim-unique",
+      sqls: [
+        `DELETE t1 FROM teacher_permissions t1 INNER JOIN teacher_permissions t2
+           ON t1.teacher_id = t2.teacher_id
+          AND COALESCE(t1.grade_id, 0) = COALESCE(t2.grade_id, 0)
+          AND COALESCE(t1.subject, '') = COALESCE(t2.subject, '')
+          AND COALESCE(t1.class_id, 0) = COALESCE(t2.class_id, 0)
+          AND COALESCE(t1.block_id, '') = COALESCE(t2.block_id, '')
+          AND t1.id > t2.id`,
+        `ALTER TABLE teacher_permissions DROP INDEX IF EXISTS uk_teacher_grade`,
+        `ALTER TABLE teacher_permissions ADD UNIQUE KEY uk_teacher_multidim (teacher_id, grade_id, subject, class_id, block_id)`
+      ]
+    },
+    {
+      // v45: 评审修复 —— 数据保留策略按考试类型分配（与 SQLite v46 对齐，2026-08-22）。
+      // 旧 createExam 对所有考试固定回退绑定 retention_policy_id=1（周测），formal
+      // （月考/期中期末等大考）全部误挂"周测"策略；管理员一旦开启该策略自动删除将
+      // 波及全部考试。修复后 createExam 按类型分配（quiz→周测、formal→不绑定），
+      // 本迁移解除既有非 quiz 考试对策略 1 的默认绑定（quiz 晨测与周测策略的绑定
+      // 符合按类型分配语义，保留；显式绑定其它策略的考试不受影响）。
+      version: 45,
+      name: "retention-policy-by-exam-mode",
+      sqls: [
+        `UPDATE exams SET retention_policy_id = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE retention_policy_id = 1 AND (exam_mode IS NULL OR exam_mode != 'quiz')`,
+      ]
+    },
+    {
+      // v46: 与 SQLite v43（knowledge_points.track_type 回补，main 血统）对齐 ——
+      // schema.mariadb.sql 的全新建库语句含 track_type，但既有库从未经迁移补齐；
+      // v2.3.x 演示数据 seed（周报晨测）会写入该列，缺列会导致导入在插入知识点时中断。
+      // ALTER 幂等：重复列被上方 ER_DUP_FIELDNAME 忽略。
+      version: 46,
+      name: "knowledge-points-track-type-backfill",
+      sqls: [
+        `ALTER TABLE knowledge_points ADD COLUMN track_type VARCHAR(20) NOT NULL DEFAULT 'common'`,
       ]
     },
   ];

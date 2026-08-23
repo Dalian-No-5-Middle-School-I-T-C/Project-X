@@ -107,9 +107,9 @@ async function main(): Promise<void> {
   ok(cross.summary?.examCount === 6, `跨考按周 6 场`);
   ok(cross.summary?.studentCount === 16, `跨考 16 人`);
 
-  // 仅选周考数学（排除"数学月考"与"网阅测试"）
+  // 仅选周考数学（排除"数学月考"与"网阅测试"；按名称精确匹配，避免命中动态日期的"晨测数学"）
   const math = exams.find((e: { subject: string; name: string }) =>
-    e.subject === "数学" && !e.name.includes("月考") && !e.name.includes("网阅"));
+    e.subject === "数学" && e.name === "演示-数学");
   if (math) {
     const table = await fetch(`${BASE}/api/analysis/exams/${math.id}/score-table`, { headers }).then((r) => r.json());
     const t128 = (table.rows ?? []).filter((r: { totalScore: number }) => r.totalScore === 128);
@@ -246,6 +246,22 @@ async function main(): Promise<void> {
     const q2 = fbQuestions.find((q: { id: string }) => q.id === "fb-q2");
     ok(q2?.images?.length === 1 && q2.images[0].assetId === "fig-demo.png", "语文卡: 插入图片存在");
   }
+
+  // ── 答题卡设计器修复：作文格仿高考样式 + 客观题选项竖排 ──
+  const essayBlock = (chineseCard?.bodyBlocks ?? []).find((b: { blockKind?: string }) => b.blockKind === "essay");
+  ok(Boolean(essayBlock), "语文卡: 作文块存在（blockKind=essay）");
+  if (essayBlock) {
+    const essayQ = (essayBlock.questions ?? [])[0];
+    const grid = essayQ?.essayGrid ?? {};
+    ok(grid.lineColor === "#c00000", `语文卡: 作文格朱红格线 (${String(grid.lineColor)})`);
+    ok(grid.showWordScale === true && grid.showFrame === true, "语文卡: 作文格字数刻度 + 粗边框开启");
+    ok(grid.targetChars === 600, `语文卡: 作文目标 600 字 (${String(grid.targetChars)})`);
+  }
+
+  const mathCard = await fetch(`${BASE}/api/cards/88000002`, { headers }).then((r) => r.json().catch(() => null));
+  const mathObjBlock = (mathCard?.bodyBlocks ?? []).find((b: { type?: string }) => b.type === "objective");
+  ok(mathObjBlock?.optionLayout === "vertical-options",
+    `数学卡: 客观题块选项竖排 (${String(mathObjBlock?.optionLayout)})`);
 
   console.log(`\n结果: ${passed} 通过, ${failed} 失败`);
   process.exit(failed > 0 ? 1 : 0);

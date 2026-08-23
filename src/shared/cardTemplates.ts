@@ -9,6 +9,7 @@ import type {
   SubjectiveBlock,
   SubjectiveQuestion
 } from "./types";
+import { ESSAY_DEFAULT_LINE_COLOR } from "./essayGrid";
 
 export type SubjectTemplateOptions = {
   englishListening?: boolean;
@@ -133,7 +134,7 @@ function essayBlock(number: number | string, score = 60, targetChars = 600): Sub
         cellHeightMm: 7,
         targetChars,
         showTitle: true,
-        lineColor: "#222",
+        lineColor: ESSAY_DEFAULT_LINE_COLOR,
         lineWidthMm: 0.15,
       },
     }],

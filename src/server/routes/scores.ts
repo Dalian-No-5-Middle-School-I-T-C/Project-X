@@ -5,8 +5,9 @@ import { ScoreRepository } from "../repositories/ScoreRepository";
 import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS } from "../auth/permissions";
-import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
+import { getVisibleExamIds, isExamSoftDeleted } from "../../apps/answer-card/server/middleware";
 import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
+import { trackAnalysisCall } from "../services/aiTelemetry";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 
@@ -110,6 +111,11 @@ router.get("/me", async (req: Request, res: Response) => {
 /** GET /api/scores/me/exams/:examId — 当前用户某场考试的逐题明细（含班级均分与原卷图块） */
 router.get("/me/exams/:examId", async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
+  // #246 auto_delete：软删除考试的逐题明细不可访问
+  if (await isExamSoftDeleted(examId)) {
+    res.status(404).json({ message: "未找到你在该场考试的成绩" });
+    return;
+  }
   if (!(await scoreRepo.hasScore(req.user!.id, examId))) {
     res.status(404).json({ message: "未找到你在该场考试的成绩" });
     return;
@@ -234,18 +240,24 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
   try {
     // 复用统一的 llmclient 转发封装（自动拉起 sidecar + 内部鉴权头），
     // 避免与 llm-client.ts 的环境变量命名（LLMCLIENT_URL/LLMCLIENT_INTERNAL_API_KEY）不一致。
-    const response = await fetchLlmClient("/analysis/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        examId,
-        classId,
-        callerRole: "student",
-        studentId: req.user!.id,
-        model: typeof req.body?.model === "string" ? req.body.model : undefined,
-        locale: "zh-CN",
-      }),
-    }, 120_000);
+    const model = typeof req.body?.model === "string" ? req.body.model : undefined;
+    const response = await trackAnalysisCall({
+      userId: req.user!.id,
+      feature: "student_analysis",
+      model: model ?? null,
+      doCall: (runId) => fetchLlmClient("/analysis/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          examId,
+          classId,
+          callerRole: "student",
+          studentId: req.user!.id,
+          model,
+          locale: "zh-CN",
+        }),
+      }, 120_000, { runId, provider: "llmclient", model: model ?? null, stage: "analysis" })
+    });
 
     if (!response.ok) {
       let message = `LLM service returned ${response.status}`;
@@ -378,7 +390,9 @@ router.get("/students/:studentId", canQueryOthers, async (req: Request, res: Res
     res.status(404).json({ message: "学生不存在" });
     return;
   }
-  let scores = await scoreRepo.getStudentScores(studentId);
+  // 教师/管理员代查：公布门是学生端读门，代查须能看到未公布成绩（评审 P2，
+  // 与教师端考试详情/天梯接口行为一致）
+  let scores = await scoreRepo.getStudentScores(studentId, { publishedOnly: false });
   // 教师仅可见其任教范围内的考试成绩
   if (req.user!.role_name === "teacher") {
     const visibleIds = await getVisibleExamIds(req.user);
@@ -402,6 +416,11 @@ router.get(
   async (req: Request, res: Response) => {
     const studentId = Number(req.params.studentId);
     const examId = Number(req.params.examId);
+    // #246 auto_delete：软删除考试的代查明细不可访问
+    if (await isExamSoftDeleted(examId)) {
+      res.status(404).json({ message: "考试不存在或已按数据保留策略清理" });
+      return;
+    }
     const accessError = await assertStudentAccessible(studentId, req.user!);
     if (accessError) {
       res.status(accessError.status).json({ message: accessError.message });

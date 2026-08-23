@@ -5,7 +5,7 @@
 import { Router } from "express";
 import { requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { requireExamAccess } from "../../apps/answer-card/server/middleware";
+import { requireExamAccess, requireGradingScope } from "../../apps/answer-card/server/middleware";
 import { optionalPositiveNumber } from "../../apps/answer-card/server/helpers";
 import {
   listReviewBlockCropItems,
@@ -94,6 +94,7 @@ router.post(
   "/exams/:examId/block-crops/:cropId/submit",
   requireExamAccess,
   requirePermission(PERMISSIONS.GRADE_WRITE),
+  requireGradingScope,
   async (req, res, next) => {
     try {
       const examId = Number(req.params.examId);

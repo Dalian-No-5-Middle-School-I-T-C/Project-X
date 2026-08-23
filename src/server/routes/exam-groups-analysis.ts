@@ -9,6 +9,7 @@ import { getAnalysisThresholds } from "../services/analysisConfig";
 import { decryptField } from "../lib/field-crypto";
 import { createAiAnalysisJob, enqueueAiAnalysisJob } from "../services/aiAnalysisJobs";
 import type { AiJobCreateResponse } from "../../shared/types";
+import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL, makeGroupViewPermissionGate } from "../../apps/answer-card/server/middleware";
 import {
   getAiProviderForUser,
   memberMatchesTrack,
@@ -17,9 +18,16 @@ import {
 } from "./exam-groups-helpers";
 
 const router = express.Router({ mergeParams: true });
+
+// #246 权限矩阵组级查看门：分析/图表类端点消费 can_view_charts，
+// 排名名单消费 can_view_students，成绩导出消费 can_view_scores。
+const requireGroupViewCharts = makeGroupViewPermissionGate("can_view_charts");
+const requireGroupViewStudents = makeGroupViewPermissionGate("can_view_students");
+const requireGroupViewScores = makeGroupViewPermissionGate("can_view_scores");
+
 // ── GET /api/exam-groups/:groupId/overview ── group overview ──
 
-router.get("/overview", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/overview", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -55,7 +63,9 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
       JOIN exams e ON e.id = egm.exam_id
       LEFT JOIN student_scores ss ON ss.exam_id = e.id
       LEFT JOIN users u ON u.id = ss.student_id
-      WHERE egm.group_id = ? ${trackStudentClause} ${participantClause}
+      WHERE egm.group_id = ?
+        -- #246 auto_delete：软删除成员考试不进大考统计
+        AND ${EXAM_NOT_SOFT_DELETED_SQL} ${trackStudentClause} ${participantClause}
       GROUP BY e.id
       ORDER BY egm.sort_order, egm.id
     `, ...memberParams, ...participantParams) as any[];
@@ -109,14 +119,14 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
         SELECT ss.student_id FROM exam_group_members egm
         JOIN student_scores ss ON ss.exam_id = egm.exam_id
         JOIN users u ON u.id = ss.student_id
-        WHERE egm.group_id = ? ${trackStudentClause}
+        WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL} ${trackStudentClause}
       ) s
     `, ...totalParams) as { cnt: number };
 
     const fullParams: unknown[] = [groupId];
-    let memberCountClause = "(SELECT COUNT(*) FROM exam_group_members WHERE group_id = ?)";
+    let memberCountClause = `(SELECT COUNT(*) FROM exam_group_members egm WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL})`;
     if (track !== "all") {
-      memberCountClause = "(SELECT COUNT(*) FROM exam_group_members WHERE group_id = ? AND (track_type = 'common' OR track_type = ?))";
+      memberCountClause = `(SELECT COUNT(*) FROM exam_group_members egm WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL} AND (egm.track_type = 'common' OR egm.track_type = ?))`;
       fullParams.push(track);
     }
     const fullRow = await db.get(`
@@ -125,7 +135,7 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
         FROM exam_group_members egm
         JOIN student_scores ss ON ss.exam_id = egm.exam_id
         JOIN users u ON u.id = ss.student_id
-        WHERE egm.group_id = ? ${trackStudentClause}
+        WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL} ${trackStudentClause}
         GROUP BY ss.student_id
         HAVING exam_count = ${memberCountClause}
       )
@@ -145,7 +155,7 @@ router.get("/overview", requireReadableGroup, async (req: Request, res: Response
 
 // ── GET /api/exam-groups/:groupId/metrics ── 大考整体+逐科难度/区分度 ──
 
-router.get("/metrics", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/metrics", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const metrics = await analysisRepo.getGroupMetrics(Number(req.params.groupId), normalizeTrackFilter(req.query.track));
@@ -157,7 +167,7 @@ router.get("/metrics", requireReadableGroup, async (req: Request, res: Response)
 
 // ── GET /api/exam-groups/:groupId/question-analysis ── 大考逐题分析 ──
 
-router.get("/question-analysis", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/question-analysis", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const data = await analysisRepo.getGroupQuestionAnalysis(Number(req.params.groupId), normalizeTrackFilter(req.query.track));
@@ -169,7 +179,7 @@ router.get("/question-analysis", requireReadableGroup, async (req: Request, res:
 
 // ── GET /api/exam-groups/:groupId/distribution ── 大考总体分析分布 ──
 
-router.get("/distribution", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/distribution", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const mode = (req.query.mode as string) === "total" ? "total" : (req.query.mode as string) === "class" ? "class" : "subject";
@@ -182,7 +192,7 @@ router.get("/distribution", requireReadableGroup, async (req: Request, res: Resp
 
 // ── GET /api/exam-groups/:groupId/class-comparison ── 大考班级对比 ──
 
-router.get("/class-comparison", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/class-comparison", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response) => {
   try {
     const analysisRepo = new AnalysisRepository();
     const data = await analysisRepo.getGroupClassComparison(Number(req.params.groupId), normalizeTrackFilter(req.query.track));
@@ -194,7 +204,7 @@ router.get("/class-comparison", requireReadableGroup, async (req: Request, res: 
 
 // ── POST /api/exam-groups/:groupId/ai-analysis ── 大考 AI 分析 ──
 
-router.post("/ai-analysis", requireReadableGroup, async (req: Request, res: Response, next: NextFunction) => {
+router.post("/ai-analysis", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const groupId = Number(req.params.groupId);
     if (!Number.isFinite(groupId) || groupId <= 0) {
@@ -230,7 +240,7 @@ router.post("/ai-analysis", requireReadableGroup, async (req: Request, res: Resp
 
 // ── GET /api/exam-groups/:groupId/rankings ── group rankings ──
 
-router.get("/rankings", requireReadableGroup, async (req: Request, res: Response) => {
+router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -248,7 +258,7 @@ router.get("/rankings", requireReadableGroup, async (req: Request, res: Response
       SELECT egm.exam_id, e.subject, e.assigned_formula, egm.sort_order, egm.track_type
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
-      WHERE egm.group_id = ?
+      WHERE egm.group_id = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}
       ORDER BY egm.sort_order, egm.id
     `, groupId) as Array<{ exam_id: number; subject: string | null; assigned_formula: string | null; sort_order: number; track_type: string | null }>;
 
@@ -448,7 +458,7 @@ router.get("/rankings", requireReadableGroup, async (req: Request, res: Response
 
 // ── POST /api/exam-groups/:groupId/export ── export ZIP ──
 
-router.post("/export", requireReadableGroup, async (req: Request, res: Response) => {
+router.post("/export", requireReadableGroup, requireGroupViewScores, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);
@@ -468,7 +478,7 @@ router.post("/export", requireReadableGroup, async (req: Request, res: Response)
       SELECT egm.exam_id, e.name as exam_name, e.subject as subject, egm.sort_order
       FROM exam_group_members egm
       JOIN exams e ON e.id = egm.exam_id
-      WHERE egm.group_id = ?
+      WHERE egm.group_id = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}
       ORDER BY egm.sort_order, egm.id
     `, groupId) as Array<{ exam_id: number; exam_name: string; subject: string | null; sort_order: number }>;
 

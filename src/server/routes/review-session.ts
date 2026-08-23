@@ -5,7 +5,7 @@
 import { Router } from "express";
 import { requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { requireExamAccess } from "../../apps/answer-card/server/middleware";
+import { requireExamAccess, requireGradingScope } from "../../apps/answer-card/server/middleware";
 import { getSession, saveSession, clearSession } from "../services/ReviewSessionService";
 
 const router = Router();
@@ -15,6 +15,7 @@ router.get(
   "/exams/:examId/blocks/:blockId",
   requireExamAccess,
   requirePermission(PERMISSIONS.GRADE_READ),
+  requireGradingScope,
   async (req, res) => {
     try {
       const teacherId = (req as any).user?.id;
@@ -35,6 +36,7 @@ router.put(
   "/exams/:examId/blocks/:blockId",
   requireExamAccess,
   requirePermission(PERMISSIONS.GRADE_WRITE),
+  requireGradingScope,
   async (req, res) => {
     try {
       const teacherId = (req as any).user?.id;
@@ -57,6 +59,7 @@ router.delete(
   "/exams/:examId/blocks/:blockId",
   requireExamAccess,
   requirePermission(PERMISSIONS.GRADE_WRITE),
+  requireGradingScope,
   async (req, res) => {
     try {
       const teacherId = (req as any).user?.id;

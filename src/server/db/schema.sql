@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS users (
     is_active        INTEGER DEFAULT 1,      -- 0=禁用 1=启用
     show_tab_bar     INTEGER DEFAULT 0,      -- v1.9.0: 0=隐藏底部导航 1=显示
     theme_skin       TEXT DEFAULT 'paper-edge', -- v2.1.0: 前端皮肤 ID；v2.3.0 默认改为 'paper-edge'（纸锋；'flat'=明澈 可选）
+    ui_style         TEXT DEFAULT 'paper_edge', -- v37: 皮肤风格 clarity/paper_edge（与 theme_skin 并存过渡）
+    color_scheme     TEXT DEFAULT 'light',     -- v37: 明暗 light/dark，账号级持久化
     is_demo          INTEGER NOT NULL DEFAULT 0,  -- v1.9.6: 1=演示数据（clearDemoData 仅按此标记清理，避免误删真实账号）
     last_login_at    DATETIME,
     created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,

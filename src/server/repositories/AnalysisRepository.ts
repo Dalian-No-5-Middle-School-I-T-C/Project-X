@@ -1,5 +1,6 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
+import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 import { competitionRank } from "../../shared/ranking";
 import { rankPercentile } from "../services/rankingUpdate";
 import { getAnalysisThresholds, DEFAULT_ANALYSIS_THRESHOLDS } from "../services/analysisConfig";
@@ -140,7 +141,8 @@ export class AnalysisRepository {
     const endDate = params.endDate || new Date().toISOString().slice(0, 10);
     const startDate = params.startDate || addDays(endDate, -6);
     if (params.visibleExamIds && params.visibleExamIds.length === 0) return [];
-    let sql = `SELECT e.id FROM exams e LEFT JOIN answer_cards ac ON ac.id = e.card_id WHERE date(COALESCE(ac.exam_date, e.created_at)) >= date(?) AND date(COALESCE(ac.exam_date, e.created_at)) <= date(?)`;
+    // #246 auto_delete：软删除考试不进入周包/跨考统计
+    let sql = `SELECT e.id FROM exams e LEFT JOIN answer_cards ac ON ac.id = e.card_id WHERE date(COALESCE(ac.exam_date, e.created_at)) >= date(?) AND date(COALESCE(ac.exam_date, e.created_at)) <= date(?) AND ${EXAM_NOT_SOFT_DELETED_SQL}`;
     const q: unknown[] = [startDate, endDate];
     if (params.gradeId) { sql += " AND e.grade_id = ?"; q.push(params.gradeId); }
     if (params.subject) { sql += " AND e.subject = ?"; q.push(params.subject); }
@@ -149,7 +151,7 @@ export class AnalysisRepository {
     return (await this.db.all(sql, ...q) as Array<{ id: number }>).map(r => r.id);
   }
 
-  async getCrossExamTotal(request: CrossExamTotalRequest, options?: { visibleExamIds?: number[] | null }): Promise<CrossExamTotalResponse> {
+  async getCrossExamTotal(request: CrossExamTotalRequest, options?: { visibleExamIds?: number[] | null; onlyPublished?: boolean }): Promise<CrossExamTotalResponse> {
     const mode = request.mode;
     const group = mode === "group" && request.groupId ? await this.getExamGroup(request.groupId) : null;
     let examIds = mode === "week"
@@ -157,6 +159,8 @@ export class AnalysisRepository {
       : mode === "group" ? group?.examIds ?? []
       : normalizeExamIds(request.examIds);
     if (options?.visibleExamIds) { const v = new Set(options.visibleExamIds); examIds = examIds.filter(id => v.has(id)); }
+    // PR #256（v41）：学生端跨考聚合仅统计已公布考试（教师端不受限），在考试集合解析后统一过滤
+    if (options?.onlyPublished) { examIds = await this.filterPublishedExamIds(examIds); }
     examIds = normalizeExamIds(examIds);
     if (examIds.length === 0) return this.emptyCrossExamTotal(mode, group);
     const exams = await this.getCrossExamTotalExams(examIds);
@@ -330,11 +334,11 @@ export class AnalysisRepository {
       ? ""
       : ` AND e.id IN (${visibleExamIds.map(() => "?").join(",")})`;
     const scopeParams = visibleExamIds ?? [];
-    const gradeRows = await this.db.all(`SELECT e.id as examId, e.name as examName, e.subject as subject, COALESCE(e.start_time, e.end_time, e.created_at) as examTime, ROUND(AVG(ss.total_score), 1) as gradeAvg, COUNT(*) as gradeCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id WHERE e.subject = ?${scopeSql} GROUP BY e.id ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC, e.id ASC`, s, ...scopeParams) as any[];
+    const gradeRows = await this.db.all(`SELECT e.id as examId, e.name as examName, e.subject as subject, COALESCE(e.start_time, e.end_time, e.created_at) as examTime, ROUND(AVG(ss.total_score), 1) as gradeAvg, COUNT(*) as gradeCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id WHERE e.subject = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql} GROUP BY e.id ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC, e.id ASC`, s, ...scopeParams) as any[];
     if (classId === undefined) return gradeRows.map(r => ({ examId: r.examId, examName: r.examName, subject: r.subject, examTime: r.examTime, gradeAvg: r.gradeAvg, gradeCount: r.gradeCount }));
     const classRows = classId === 0
-      ? await this.db.all(`SELECT e.id as examId, ROUND(AVG(ss.total_score), 1) as classAvg, COUNT(*) as classCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id WHERE e.subject = ?${scopeSql} AND NOT EXISTS (SELECT 1 FROM class_students cs_scope WHERE cs_scope.student_id = ss.student_id) GROUP BY e.id`, s, ...scopeParams) as any[]
-      : await this.db.all(`SELECT e.id as examId, ROUND(AVG(ss.total_score), 1) as classAvg, COUNT(*) as classCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id JOIN class_students cs ON cs.student_id = ss.student_id WHERE e.subject = ?${scopeSql} AND cs.class_id = ? GROUP BY e.id`, s, ...scopeParams, classId) as any[];
+      ? await this.db.all(`SELECT e.id as examId, ROUND(AVG(ss.total_score), 1) as classAvg, COUNT(*) as classCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id WHERE e.subject = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql} AND NOT EXISTS (SELECT 1 FROM class_students cs_scope WHERE cs_scope.student_id = ss.student_id) GROUP BY e.id`, s, ...scopeParams) as any[]
+      : await this.db.all(`SELECT e.id as examId, ROUND(AVG(ss.total_score), 1) as classAvg, COUNT(*) as classCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id JOIN class_students cs ON cs.student_id = ss.student_id WHERE e.subject = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql} AND cs.class_id = ? GROUP BY e.id`, s, ...scopeParams, classId) as any[];
     const m = new Map(classRows.map(r => [r.examId, r]));
     return gradeRows.map(r => ({ ...r, classAvg: m.get(r.examId)?.classAvg ?? null, classCount: m.get(r.examId)?.classCount ?? 0 }));
   }
@@ -624,8 +628,10 @@ export class AnalysisRepository {
   /** 大考整体 + 逐科难度/区分度 */
   /** 文理分科（Issue #177）：考试组内科目归属映射 */
   private async getGroupMemberTrackMap(groupId: number): Promise<Map<number, string>> {
+    // #246 auto_delete：软删除成员考试不参与大考组全部统计（该方法是组指标的成员唯一入口）
     const rows = await this.db.all<{ exam_id: number; track_type: string | null }>(
-      "SELECT exam_id, track_type FROM exam_group_members WHERE group_id = ?",
+      `SELECT egm.exam_id, egm.track_type FROM exam_group_members egm
+       WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL}`,
       groupId
     );
     const map = new Map<number, string>();
@@ -856,6 +862,7 @@ export class AnalysisRepository {
            JOIN exams e ON e.id = egm.exam_id
            WHERE egm.group_id = ? AND e.assigned_formula IS NOT NULL AND e.assigned_formula != ''
              AND EXISTS (SELECT 1 FROM student_scores ss2 WHERE ss2.exam_id = e.id AND ss2.assigned_score IS NOT NULL)
+             AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL}
            LIMIT 1`, groupId
         ) as any;
         assignedAvailable = !!hasAssigned;
@@ -1602,18 +1609,23 @@ export class AnalysisRepository {
   }
 
   // ── 建议 15：学科命题质量趋势追踪（历次 P/D）────────
-  async getSubjectQuality(subject?: string): Promise<SubjectQualityResponse> {
+  async getSubjectQuality(subject?: string, examIds?: number[] | null): Promise<SubjectQualityResponse> {
     const s = (subject ?? "").trim();
     if (!s) return { subject: "", points: [] };
-    const rows = await this.db.all(
-      `SELECT e.id, e.name, date(COALESCE(ac.exam_date, e.created_at)) as exam_date,
+    // #246：EXAM_NOT_SOFT_DELETED 排除软删除考试；examIds 为教师可见范围（null = 不限）
+    let sql = `SELECT e.id, e.name, date(COALESCE(ac.exam_date, e.created_at)) as exam_date,
               (SELECT COUNT(*) FROM student_scores ss WHERE ss.exam_id = e.id) as graded_count
        FROM exams e LEFT JOIN answer_cards ac ON ac.id = e.card_id
        WHERE e.subject = ? AND (SELECT COUNT(*) FROM student_scores ss WHERE ss.exam_id = e.id) > 0
-       ORDER BY date(COALESCE(ac.exam_date, e.created_at)) ASC, e.id ASC
-       LIMIT 60`,
-      s
-    ) as Array<{ id: number; name: string; exam_date: string | null; graded_count: number }>;
+         AND ${EXAM_NOT_SOFT_DELETED_SQL}`;
+    const params: unknown[] = [s];
+    if (examIds != null) {
+      if (examIds.length === 0) return { subject: s, points: [] };
+      sql += ` AND e.id IN (${examIds.map(() => "?").join(",")})`;
+      params.push(...examIds);
+    }
+    sql += ` ORDER BY date(COALESCE(ac.exam_date, e.created_at)) ASC, e.id ASC LIMIT 60`;
+    const rows = await this.db.all(sql, ...params) as Array<{ id: number; name: string; exam_date: string | null; graded_count: number }>;
     const points: SubjectQualityPoint[] = [];
     for (const r of rows) {
       const metrics = await this.getExamMetrics(Number(r.id));
@@ -1658,7 +1670,8 @@ export class AnalysisRepository {
   }
 
   private async hydrateExamGroup(row: any): Promise<CrossExamGroup> {
-    const items = await this.db.all("SELECT exam_id FROM exam_group_members WHERE group_id = ? ORDER BY sort_order ASC, exam_id ASC", row.id) as Array<{ exam_id: number }>;
+    // #246 auto_delete：软删除考试不进跨场对比组的成员列表
+    const items = await this.db.all(`SELECT exam_id FROM exam_group_members egm WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL} ORDER BY egm.sort_order ASC, egm.exam_id ASC`, row.id) as Array<{ exam_id: number }>;
     const examIds = items.map(i => i.exam_id);
     return { id: row.id, name: row.name, source: row.source, startDate: row.start_date, endDate: row.end_date, gradeId: row.grade_id ?? null, examIds, exams: await this.getExamFilterItemsByIds(examIds), createdAt: row.created_at, updatedAt: row.updated_at };
   }
@@ -1667,9 +1680,21 @@ export class AnalysisRepository {
     return { mode, group, exams: [], rows: [], classSummaries: [], summary: { examCount: 0, studentCount: 0, totalFullScore: 0, avgTotalScore: 0, maxTotalScore: 0, minTotalScore: 0, fullAttendanceCount: 0 } };
   }
 
+  /** PR #256（v41）：仅保留已公布（score_published=1）考试，保持原顺序；供学生端聚合过滤。 */
+  async filterPublishedExamIds(examIds: number[]): Promise<number[]> {
+    if (examIds.length === 0) return [];
+    const rows = await this.db.all<{ id: number }>(
+      `SELECT id FROM exams WHERE id IN (${placeholders(examIds)}) AND score_published = 1`,
+      ...examIds
+    );
+    const pub = new Set(rows.map((r) => Number(r.id)));
+    return examIds.filter((id) => pub.has(id));
+  }
+
   private async getCrossExamTotalExams(examIds: number[]): Promise<CrossExamTotalExam[]> {
     const fullScores = await this.getExamFullScoreMap(examIds);
-    const rows = await this.db.all(`SELECT e.id, e.name, e.subject, g.name as gradeName, date(COALESCE(ac.exam_date, e.created_at)) as examDate, COUNT(ss.exam_id) as gradedCount, ROUND(AVG(ss.total_score), 1) as avgScore FROM exams e LEFT JOIN answer_cards ac ON ac.id = e.card_id LEFT JOIN grades g ON g.id = e.grade_id LEFT JOIN student_scores ss ON ss.exam_id = e.id WHERE e.id IN (${placeholders(examIds)}) GROUP BY e.id ORDER BY date(COALESCE(ac.exam_date, e.created_at)) ASC, e.id ASC`, ...examIds) as any[];
+    // #246：软删除考试不进跨考聚合（selected 模式可经构造 examIds 触达，此处为统一收口）
+    const rows = await this.db.all(`SELECT e.id, e.name, e.subject, g.name as gradeName, date(COALESCE(ac.exam_date, e.created_at)) as examDate, COUNT(ss.exam_id) as gradedCount, ROUND(AVG(ss.total_score), 1) as avgScore FROM exams e LEFT JOIN answer_cards ac ON ac.id = e.card_id LEFT JOIN grades g ON g.id = e.grade_id LEFT JOIN student_scores ss ON ss.exam_id = e.id WHERE e.id IN (${placeholders(examIds)}) AND ${EXAM_NOT_SOFT_DELETED_SQL} GROUP BY e.id ORDER BY date(COALESCE(ac.exam_date, e.created_at)) ASC, e.id ASC`, ...examIds) as any[];
     return rows.map((r: any) => ({ id: r.id, name: r.name, subject: r.subject, gradeName: r.gradeName, examDate: dateOnly(r.examDate), fullScore: round1(fullScores.get(r.id) ?? 0), gradedCount: r.gradedCount, avgScore: r.avgScore }));
   }
 

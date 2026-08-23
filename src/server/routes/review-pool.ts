@@ -5,7 +5,7 @@
 import { Router } from "express";
 import { requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { requireExamAccess } from "../../apps/answer-card/server/middleware";
+import { requireExamAccess, requireGradingScope } from "../../apps/answer-card/server/middleware";
 import {
   getPoolSummary,
   getPoolEntries,
@@ -54,6 +54,7 @@ router.post(
   "/exams/:examId/blocks/:blockId/claim",
   requireExamAccess,
   requirePermission(PERMISSIONS.GRADE_WRITE),
+  requireGradingScope,
   async (req, res) => {
     try {
       const examId = Number(req.params.examId);
@@ -76,6 +77,7 @@ router.post(
   "/exams/:examId/blocks/:blockId/crops/:cropId/claim",
   requireExamAccess,
   requirePermission(PERMISSIONS.GRADE_WRITE),
+  requireGradingScope,
   async (req, res) => {
     try {
       const examId = Number(req.params.examId);
@@ -96,6 +98,7 @@ router.post(
   "/exams/:examId/blocks/:blockId/crops/:cropId/release",
   requireExamAccess,
   requirePermission(PERMISSIONS.GRADE_WRITE),
+  requireGradingScope,
   async (req, res) => {
     try {
       const examId = Number(req.params.examId);
