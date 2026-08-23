@@ -1,5 +1,28 @@
 # Project-X CHANGELOG
 
+## v2.4.1 (2026-08-22) — 扫描端（Electron ia32）打包与使用体验修复
+
+> 分支 `feature/scanner-2.4.1`，基于 main（含 #247 安全更新、#249）整合后开发。
+
+### 1. ia32 打包链路修复（sharp 原生模块）
+- 新增自愈脚本 `scripts/ensure-sharp-platform-binaries.cjs`：按已安装的 sharp 版本精确拉取 `@img/sharp-win32-ia32` 到 `node_modules/@img/`（幂等；普通 `npm install` 若将其清除会自动补回），并接入全部 ia32 打包脚本（新 npm script `native:sharp:ia32`）。此前打包产物只含 x64 二进制，扫描端一启动即报「Could not load the 'sharp' module using the win32-ia32 runtime」。
+- 打包机建议设置镜像环境变量避免 GitHub 直连超时：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`、`ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`。
+
+### 2. 运行时路径修复（快捷方式启动 EPERM）
+- 根因：MSI 快捷方式启动时进程 CWD 是 `C:\Windows\System32`，而原卷上传临时目录（multer dest）与入库相对路径基准均按 `process.cwd()` 解析 → `EPERM ... System32\data\answer-card\papers\_tmp` 启动失败。
+- 修复：multer 上传目录改用 `storage.papersDir/_tmp`、相对路径基准改用 `storage.dataDir`（两者均遵循 `ANSWER_CARD_DATA_DIR`，dev 行为不变）；Electron 主进程启动时把 CWD 切到 userData（`%APPDATA%\answer-card-designer`），兜底其余遗留的 cwd 相对路径查找。
+
+### 3. 首次进入强制选肤（对齐 web 端）
+- 此前皮肤引导层只挂在 web 端登录页，扫描端从未出现。现复用 `SkinOnboarding`（明澈/纸锋大预览二选一、必须选择才能进入登录），复用同一一次性标志 `projectx-skin-onboarded`。
+- 补齐与 web 一致的同步语义：会话内显式选择优先于账号偏好；登录后自动 PATCH 同步到账号 `theme_skin`，换设备/重装不再被默认皮肤打回。文案按扫描端场景调整（组件新增可选 props，web 端零改动）。
+
+### 4. 管理员初始密码固定为 admin123（首次登录仍强制改密）
+- 初始密码由「随机一次性密码」改为固定值 `admin123`，降低学校现场部署门槛，同时保留防呆：
+  - 全新库以 admin/admin123 初始化，**首次登录强制修改密码**；
+  - 停留在待改密引导态的存量库下次启动自动重置为 admin123（旧会话全部吊销，改密标记保留）；
+  - 已自行修改过密码的在用库完全不受影响。
+- bootstrap-admin.txt 仍会生成（内容即 admin123），备份还原与演示数据脚本等下游流程零改动。同步更新 `verify-security-critical` / `bugfix-summary-verification` 断言与 AGENTS.md / README / SERVER-README 文档事实。
+- 桥接失败错误码人性化映射（VC++ 缺失/TWAIN 驱动崩溃）与指南补充密钥文件位置亦在本版本一并落地。
 
 ## v2.2.10 (2026-08-22) — 合并前审核修复：天梯公布门与软删除收口 + 版本徽章
 
@@ -109,7 +132,6 @@
 **验证**
 - `npm run typecheck` 零错误；`verify:auth` 88/88（新增 #246 第 8 节 18 项：普通教师矩阵收敛 / quiz 豁免 / 图表与学生门 / 学科不匹配与 can_grade=0 拒绝 / 兼容回退保留 / 显式分配放行 / 软删除 404 与管理员恢复通道 / 周审计门槛与收录 / 大考组统计剔除）。
 - 回归：`verify:security-critical` 62/62、`weekly-audit-smoke` 57/57、`verify:weekly-demo`、`verify:reliability-filter` 21/21、`verify:p1-security` 11/11、`verify:demo-safety` 23/23 全绿。
-
 ## v2.2.4 (2026-08-21) — 背景图层级修复与 main 主干整合
 
 ### 背景图层级修复（核心变更，分支 fix/background-image-layer）

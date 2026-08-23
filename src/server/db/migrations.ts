@@ -29,9 +29,28 @@ function addColumnIfMissing(
   columnName: string,
   definition: string
 ): void {
+  if (!hasTable(db, tableName)) return;
   if (!hasColumn(db, tableName, columnName)) {
     db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
   }
+}
+
+function ensureTeacherPermissionsTable(db: Database.Database): void {
+  if (hasTable(db, "teacher_permissions")) return;
+  db.exec(`
+    CREATE TABLE teacher_permissions (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      teacher_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      grade_id           INTEGER REFERENCES grades(id),
+      can_view_scores    INTEGER DEFAULT 1,
+      can_view_charts    INTEGER DEFAULT 1,
+      can_view_students  INTEGER DEFAULT 1,
+      created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(teacher_id, grade_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_tp_teacher ON teacher_permissions(teacher_id);
+  `);
 }
 
 function createObjectiveQuestionsIfMissing(db: Database.Database): void {
@@ -911,6 +930,8 @@ const MIGRATIONS: Migration[] = [
   // v39/v40 作废：main 血统库把 v39 记为 knowledge_points.track_type 回补，本分支
   // 早期版本（5db2a2d 及之前）把 v39/v40 记为控制台地基/权限唯一约束——任一侧已
   // 初始化的库都会因版本号已记录而跳过另一侧内容。
+  // main（#253 BUG-1/2）的 v39/v40 内容已并入本分支最终编号：v39 → v43（track_type 回补）、
+  // v40 → v44 前置 ensureTeacherPermissionsTable（存量库 teacher_permissions 缺失补建，BUG-1）。
   // v41/v42 属成绩公布管理（PR #256「成绩公布更新」，分支已推送、血统已存在，保留原号）。
   // v43–v45 为本分支三个迁移的最终编号，内容全部幂等（重复列/表自动跳过），
   // 对 main 血统 / 本分支旧编号血统 / PR #256 血统 / 全新库均安全。
@@ -964,6 +985,9 @@ const MIGRATIONS: Migration[] = [
     version: 44,
     name: "console-observability-and-permission-foundation",
     up(db) {
+      // 0. 存量库 teacher_permissions 缺失补建（main #253 BUG-1，原 v40 内容并入本迁移，
+      //    否则历史版本错乱跳过了 v16 的库在下方扩列时会 no such table）
+      ensureTeacherPermissionsTable(db);
       // 1. users 主题字段拆分
       addColumnIfMissing(db, "users", "ui_style", "TEXT DEFAULT 'paper_edge'");
       addColumnIfMissing(db, "users", "color_scheme", "TEXT DEFAULT 'light'");

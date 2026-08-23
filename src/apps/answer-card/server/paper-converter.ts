@@ -4,6 +4,7 @@ import sharp from "sharp";
 import PDFDocument from "pdfkit";
 import type { ReadStream } from "node:fs";
 import { createWriteStream } from "node:fs";
+import { dataDir } from "./storage";
 
 export const ALLOWED_EXTENSIONS = new Set([
   ".docx", ".pdf", ".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"
@@ -137,7 +138,7 @@ export async function storePaperPageFile(
   const ext = path.extname(filename).toLowerCase();
   const baseName = pageIndex === 1 ? "original" : `original-${pageIndex}`;
   const originalPath = path.join(paperDirPath, `${baseName}${ext}`);
-  const relRoot = path.resolve(process.cwd(), "data", "answer-card");
+  const relRoot = dataDir;
 
   if (isDocx(filename)) {
     await copyFile(sourcePath, originalPath);
