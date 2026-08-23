@@ -52,8 +52,7 @@ function parseRecognizerOutput(stdout: string): RecognitionResult | null {
   return JSON.parse(text) as RecognitionResult;
 }
 
-export async function recognizeObjectiveAnswers(request: RecognitionRequest): Promise<RecognitionResult> {
-  const exePath = resolveRecognizerExe();
+function buildBaseArgs(request: RecognitionRequest): string[] {
   const args = [
     "--image",
     request.imagePath,
@@ -67,10 +66,15 @@ export async function recognizeObjectiveAnswers(request: RecognitionRequest): Pr
   if (request.debugDir) {
     args.push("--debug-dir", request.debugDir);
   }
-  if (request.cropsDir) {
-    args.push("--crops-dir", request.cropsDir);
-  }
+  return args;
+}
 
+function isCropsDirUnsupportedError(result: RecognitionResult | null, errorMessage: string): boolean {
+  const msg = (result as any)?.message ?? errorMessage ?? "";
+  return typeof msg === "string" && msg.includes("Unknown argument: --crops-dir");
+}
+
+function execRecognizer(exePath: string, args: string[]): Promise<RecognitionResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(exePath, args, {
       windowsHide: true,
@@ -114,69 +118,38 @@ export async function recognizeObjectiveAnswers(request: RecognitionRequest): Pr
       reject(new Error(`Native recognizer exited with code ${code ?? "unknown"}${stderr ? `: ${stderr}` : ""}`));
     });
   });
+}
+
+async function runWithCropsFallback(request: RecognitionRequest, exePath: string, baseArgs: string[]): Promise<RecognitionResult> {
+  if (!request.cropsDir) {
+    return execRecognizer(exePath, baseArgs);
+  }
+  const argsWithCrops = [...baseArgs, "--crops-dir", request.cropsDir];
+  try {
+    const result = await execRecognizer(exePath, argsWithCrops);
+    if (isCropsDirUnsupportedError(result, "")) {
+      console.warn("[recognizer] old exe does not support --crops-dir, retrying without it");
+      return execRecognizer(exePath, baseArgs);
+    }
+    return result;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    if (msg.includes("Unknown argument: --crops-dir") || msg.includes("--crops-dir")) {
+      console.warn("[recognizer] old exe fallback without --crops-dir after error:", msg);
+      return execRecognizer(exePath, baseArgs);
+    }
+    throw error;
+  }
+}
+
+export async function recognizeObjectiveAnswers(request: RecognitionRequest): Promise<RecognitionResult> {
+  const exePath = resolveRecognizerExe();
+  const baseArgs = buildBaseArgs(request);
+  return runWithCropsFallback(request, exePath, baseArgs);
 }
 
 export async function recognizeAnswerCard(request: RecognitionRequest): Promise<RecognitionResult> {
   const exePath = resolveRecognizerExe();
-  const args = [
-    "--image",
-    request.imagePath,
-    "--layout",
-    request.layoutPath,
-    "--page",
-    String(request.pageNumber),
-    "--dpi",
-    String(request.dpi)
-  ];
-  if (request.debugDir) {
-    args.push("--debug-dir", request.debugDir);
-  }
-  if (request.cropsDir) {
-    args.push("--crops-dir", request.cropsDir);
-  }
-
-  return new Promise((resolve, reject) => {
-    const child = spawn(exePath, args, {
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, 30_000);
-
-    child.stdout.on("data", (chunk: Buffer) => stdoutChunks.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
-    child.on("error", (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timeout);
-      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
-      const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
-      if (timedOut) {
-        reject(new Error("Native recognizer timed out after 30000ms."));
-        return;
-      }
-
-      try {
-        const parsed = parseRecognizerOutput(stdout);
-        if (parsed) {
-          resolve(parsed);
-          return;
-        }
-      } catch (error) {
-        reject(new Error(`Native recognizer returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
-        return;
-      }
-
-      reject(new Error(`Native recognizer exited with code ${code ?? "unknown"}${stderr ? `: ${stderr}` : ""}`));
-    });
-  });
+  const baseArgs = buildBaseArgs(request);
+  return runWithCropsFallback(request, exePath, baseArgs);
 }
-

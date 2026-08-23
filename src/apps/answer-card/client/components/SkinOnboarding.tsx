@@ -46,8 +46,20 @@ export function shouldShowSkinOnboarding(): boolean {
   }
 }
 
-export function SkinOnboarding({ onComplete }: { onComplete: () => void }) {
+export function SkinOnboarding({
+  onComplete,
+  subtitle,
+  footerNote,
+}: {
+  onComplete: () => void;
+  /** 引导层副标题（不传用 web 端默认文案） */
+  subtitle?: string;
+  /** 底部说明文字（不传用 web 端默认文案） */
+  footerNote?: string;
+}) {
   const [selected, setSelected] = useState<string | null>(null);
+  const subtitleText = subtitle ?? "请选择一套视觉风格后再进入登录；选定后仍可前往账号设置随时改回";
+  const footerNoteText = footerNote ?? "标准设置后，仍可前往「账号设置 → 客户端设置」修改外观与皮肤。";
 
   function handleConfirm() {
     if (!selected) return;
@@ -75,7 +87,7 @@ export function SkinOnboarding({ onComplete }: { onComplete: () => void }) {
           <div className="mb-8 text-center">
             <h1 className="mb-2 text-2xl font-bold text-foreground md:text-3xl">选择界面风格</h1>
             <p className="text-sm text-muted-foreground md:text-base">
-              请选择一套视觉风格后再进入登录；选定后仍可前往账号设置随时改回
+              {subtitleText}
             </p>
           </div>
 
@@ -124,7 +136,7 @@ export function SkinOnboarding({ onComplete }: { onComplete: () => void }) {
 
           <div className="flex flex-col items-center justify-between gap-4 pt-2 sm:flex-row">
             <p className="text-center text-xs text-muted-foreground sm:text-left">
-              标准设置后，仍可前往「账号设置 → 客户端设置」修改外观与皮肤。
+              {footerNoteText}
             </p>
             <Button variant="primary" size="lg" disabled={!selected} onClick={handleConfirm}>
               {selected === "flat"

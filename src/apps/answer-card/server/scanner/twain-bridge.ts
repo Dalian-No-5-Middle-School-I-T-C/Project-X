@@ -121,7 +121,7 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
       }
 
       if (code !== 0 && !stdout.trim()) {
-        reject(new Error(`扫描仪桥接程序退出，错误码：${code}${stderr ? `，错误信息：${stderr}` : ""}`));
+        reject(new Error(describeBridgeFailure(code, stderr)));
         return;
       }
 
@@ -134,6 +134,26 @@ function parseBridgeJson(stdout: string): Record<string, unknown> {
   const text = stdout.trim();
   if (!text) throw new Error("扫描仪桥接程序返回空数据");
   return JSON.parse(text) as Record<string, unknown>;
+}
+
+/** 把桥接进程的常见 Windows 退出码翻译成可操作的中文提示（探测/扫描共用）。 */
+export function describeBridgeFailure(code: number | null, stderr: string): string {
+  if (code === null || code === undefined) {
+    return `扫描仪桥接程序被异常终止${stderr ? `：${stderr}` : ""}`;
+  }
+  const unsigned = code >>> 0;
+  // 0xC0000135 STATUS_DLL_NOT_FOUND：目标机缺 VC++ 运行库（vcruntime140/msvcp140 的对应位数版本）
+  if (unsigned === 0xc0000135) {
+    return "扫描桥接程序无法启动：系统缺少 VC++ 运行库（vcruntime140.dll / msvcp140.dll）。" +
+      "请安装 Visual C++ 2015-2022 可再发行程序包（32 位系统装 x86 版）后重试；" +
+      "在此之前可先用「导入阅卷」导入图片完成判分。";
+  }
+  // 0xC0000005 ACCESS_VIOLATION：多为 TWAIN 驱动与 32 位进程不兼容或驱动损坏
+  if (unsigned === 0xc0000005) {
+    return "扫描桥接程序在访问 TWAIN 设备时崩溃（常见原因：扫描仪驱动与 32 位进程不兼容或驱动损坏）。" +
+      "请重装/更新扫描仪驱动后重试，期间可用「导入阅卷」方式导入已扫好的图片判分。";
+  }
+  return `扫描仪桥接程序退出，错误码：${code}${stderr ? `，错误信息：${stderr}` : ""}`;
 }
 
 export async function listSources(): Promise<ScannerSourcesResult> {

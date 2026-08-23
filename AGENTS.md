@@ -14,7 +14,7 @@ Project-X (答题卡设计阅卷系统): an answer-card designer, OMR grading, a
 
 ### Running (dev)
 - `npm run dev` starts backend + frontend together (via `concurrently`). The `predev` hook (`scripts/ensure-native-modules.cjs`) auto-rebuilds `better-sqlite3` if its binary is missing/mismatched, so `npm run dev` self-heals native module issues.
-- Open `http://127.0.0.1:5173/`. First DB initialization creates username `admin` with a random one-time password in `bootstrap-admin.txt` beside the database; login requires an immediate password change.
+- Open `http://127.0.0.1:5173/`. First DB initialization creates username `admin` with the fixed bootstrap password `admin123` (mirrored into `bootstrap-admin.txt` beside the database). First login requires an immediate password change.
 - The login API (`POST /api/auth/login`) expects `{ "identifier": ..., "password": ... }` — the field is `identifier` (username/student-no/staff-no), NOT `username`.
 - Health check: `GET http://127.0.0.1:5174/api/app/health` → `{"ok":true,...}`.
 

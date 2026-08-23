@@ -103,6 +103,20 @@ CREATE TABLE IF NOT EXISTS teacher_classes (
     PRIMARY KEY (teacher_id, class_id)
 );
 
+-- 教师数据可见性权限 (v16) —— 旧 SQLite schema 遗漏此表，存量库升级在 v44 扩列时 no such table
+CREATE TABLE IF NOT EXISTS teacher_permissions (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    teacher_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    grade_id           INTEGER REFERENCES grades(id),
+    can_view_scores    INTEGER DEFAULT 1,
+    can_view_charts    INTEGER DEFAULT 1,
+    can_view_students  INTEGER DEFAULT 1,
+    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(teacher_id, grade_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tp_teacher ON teacher_permissions(teacher_id);
+
 -- ============================================================
 -- 模块二：答题卡设计
 -- ============================================================
@@ -725,7 +739,7 @@ INSERT OR IGNORE INTO roles (id, name, display_name, permissions) VALUES
     (3, 'student', '学生', '["score:read"]');
 
 -- 注意：默认管理员账号由应用程序在启动时通过 ensureDefaultAdmin() 自动创建
--- 账号: admin / 随机一次性密码（写入数据库旁的 bootstrap-admin.txt，权限 0600，首次登录强制改密）
+-- 账号: admin / 固定初始密码 admin123（同步写入数据库旁的 bootstrap-admin.txt；首次登录强制改密）
 
 -- 插入默认数据保留策略
 INSERT OR IGNORE INTO data_retention_policies (id, name, retain_days, auto_archive, auto_delete) VALUES

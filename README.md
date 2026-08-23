@@ -1,7 +1,7 @@
-﻿# Project-X | 五中智能试卷管理系统
+# Project-X | 五中智能试卷管理系统
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.2.1-blue.svg" alt="Version">
+  <img src="https://img.shields.io/badge/version-2.4.1-blue.svg" alt="Version">
   <img src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20MariaDB-green.svg" alt="Platform">
   <img src="https://img.shields.io/badge/license-GPLV3.0-yellow.svg" alt="License">
   <img src="https://img.shields.io/badge/tech-React%20%7C%20Node.js%20%7C%20C%2B%2B%20%7C%20SQLite%20%7C%20MariaDB%20%7C%20Electron-9cf.svg" alt="Tech Stack">
@@ -354,7 +354,7 @@ npx tsx testdata/demo-exams/scripts/seed.ts
 |------|------|--------|
 | `demo-teacher` | `teacher123` | 题块 A 枚举模式 + 0.5 底部行；题块 B 位值模式；本人块 `has_half_point` 可改 |
 | `demo-teacher-2` | `teacher123` | 工作量均衡后被追加的卷（`auto_assigned`）；教师改局部设置的 403/200 边界 |
-| `admin` | 见数据库旁 `bootstrap-admin.txt`（首次登录强制改密） | Home → 全局设置（仅管理员可见）；仲裁人留空自动改派争议卷 |
+| `admin` | 固定初始密码 `admin123`（同步写入数据库旁 `bootstrap-admin.txt`；生产环境部署后请尽快修改） | Home → 全局设置（仅管理员可见）；仲裁人留空自动改派争议卷 |
 
 清理 / 重置演示数据：脚本每次运行会先执行 `cleanupDemoData`（删除「演示-」前缀的考试、答题卡、演示账号等），再重建，因此**重复运行即自动重置**，无需单独 clean 子命令：
 
