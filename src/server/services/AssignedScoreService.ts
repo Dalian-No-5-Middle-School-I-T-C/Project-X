@@ -53,13 +53,14 @@ export class AssignedScoreService {
 
   /**
    * 删除赋分公式（禁用赋分）
+   * 传入外部 db（如事务适配器）时在调用方事务内执行；未传时使用自身连接。
    */
-  async disableFormula(examId: number): Promise<void> {
-    await this.db.run(
+  async disableFormula(examId: number, db: DbAdapter = this.db): Promise<void> {
+    await db.run(
       "UPDATE exams SET assigned_formula = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
       examId
     );
-    await this.db.run("UPDATE student_scores SET assigned_score = NULL WHERE exam_id = ?", examId);
+    await db.run("UPDATE student_scores SET assigned_score = NULL WHERE exam_id = ?", examId);
   }
 
   /**

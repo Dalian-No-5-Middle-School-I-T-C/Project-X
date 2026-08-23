@@ -10,6 +10,7 @@ import { getDisputes, getEligibleArbitrators } from "../services/ArbitrationServ
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import { recomputeExamRankings, roundScore } from "../services/rankingUpdate";
 import { getBlockConfig } from "../services/BlockGradingConfigService";
+import { markScoreMutated } from "../services/examPublishEvents";
 
 const router = Router();
 
@@ -193,6 +194,8 @@ router.post(
            WHERE exam_id = ? AND student_id = ?`,
           totalObj, totalSubj, newTotal, userId, now, crop.exam_id, crop.student_id
         );
+        // 评审 P1：仲裁写入最终分属于成绩变更 → 已公布考试同一事务内自动撤回并写审计
+        await markScoreMutated(tx, Number(crop.exam_id), userId, "arbitration");
       });
 
       // 重算排名（在事务外，失败不影响仲裁结果）

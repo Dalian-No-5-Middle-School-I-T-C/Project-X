@@ -18,6 +18,7 @@ import { recomputeExamRankings, roundScore } from "../services/rankingUpdate";
 import { analysisCache } from "../services/analysisCache";
 import { resolveReviewConfidenceThreshold } from "../services/userSettings";
 import { requireExamAccess, makeViewPermissionGate } from "../../apps/answer-card/server/middleware";
+import { markScoreMutated } from "../services/examPublishEvents";
 import {
   objectiveQuestionDefinitions,
   gradeObjectiveQuestion,
@@ -270,6 +271,7 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
 
   let assignedScoreWarning: string | undefined;
   await db.transaction(async (tx) => {
+    let scoresChanged = false;
     for (const u of updates) {
       const existing = await tx.get(
         "SELECT id, score, max_score FROM question_scores WHERE exam_id = ? AND student_id = ? AND question_number = ? AND score_type = ?",
@@ -279,6 +281,7 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
       if (existing) {
         // P1-7: 分数未变时不标记 manually_modified
         const scoreChanged = existing.score !== u.score;
+        if (scoreChanged) scoresChanged = true;
         await tx.run(
           `UPDATE question_scores SET score = ?, manually_modified = ?, modified_by = ?, modified_at = ?
            WHERE exam_id = ? AND student_id = ? AND question_number = ? AND score_type = ?`,
@@ -313,6 +316,10 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
       WHERE exam_id = ? AND student_id = ?
     `, totalObjective, totalSubjective, newTotal, userId, now, examId, studentId);
 
+    // 评审 P1：已公布考试的成绩被实际修改（有分数变化）→ 同一事务内自动撤回并写审计
+    if (scoresChanged) {
+      await markScoreMutated(tx, examId, userId, "score_edit");
+    }
     // P1-8: 排名重算在事务内执行，确保数据一致性
     const recalc = await recomputeExamRankings(tx, examId);
     if (recalc.assignedScoresRecalculated === false) {
@@ -436,6 +443,12 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
     }
   }
 
+  // 评审 P1：仅当题目实际存在且答案确实被改写时才视为「成绩变更」（触发自动撤回）；
+  // 题号不匹配答案（旧答案未收集到）或答案相同均不算变更，避免误撤回。
+  const hasAnswerChange = answerEntries.some(
+    ([key, newKey]) => key in oldAnswers && JSON.stringify(oldAnswers[key]) !== JSON.stringify(newKey)
+  );
+
   const students = await db.all("SELECT student_id FROM student_scores WHERE exam_id = ?", examId) as Array<{ student_id: number }>;
   let updatedCount = 0;
   const confidenceThreshold = await resolveReviewConfidenceThreshold(req.user?.id);
@@ -542,6 +555,10 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
     const recalc = await recomputeExamRankings(tx, examId);
     if (recalc.assignedScoresRecalculated === false) {
       assignedScoreWarning = recalc.assignedScoreError;
+    }
+    // 评审 P1：已公布考试的答案被修改（全体重评）→ 同一事务内自动撤回并写审计
+    if (hasAnswerChange) {
+      await markScoreMutated(tx, examId, userId, "answer_edit");
     }
   });
 

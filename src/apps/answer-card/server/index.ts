@@ -42,6 +42,7 @@ import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
 import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
 import { recordLifecycleEvent } from "../../../server/services/lifecycleEvents";
+import { markScoreMutated } from "../../../server/services/examPublishEvents";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -1957,15 +1958,25 @@ export async function createApp(): Promise<express.Express> {
           return;
         }
 
+        const db = getMysqlDb();
         if (!formula?.enabled) {
-          await assignedScoreService.disableFormula(examId);
+          // 评审 P1：禁用赋分会清空全场合计赋分（成绩变更）→ 已公布考试同一事务内自动撤回并写审计
+          await db.transaction(async (tx) => {
+            await assignedScoreService.disableFormula(examId, tx);
+            await markScoreMutated(tx, examId, req.user?.id ?? null, "assigned_disable");
+          });
           res.json({ ok: true, updated: 0, skipped: 0 });
           return;
         }
 
         await assignedScoreService.saveFormula(examId, formula);
         const result = recalculate
-          ? await assignedScoreService.recalculateAll(examId)
+          // 评审 P1：赋分重算改写全部 assigned_score（成绩变更）→ 已公布考试同一事务内自动撤回并写审计
+          ? await db.transaction(async (tx) => {
+              const recalcResult = await assignedScoreService.recalculateAll(examId, tx);
+              await markScoreMutated(tx, examId, req.user?.id ?? null, "assigned_recalc");
+              return recalcResult;
+            })
           : { updated: 0, skipped: 0 };
         res.json({ ok: true, ...result });
       } catch (error) {
@@ -2201,7 +2212,29 @@ export async function createApp(): Promise<express.Express> {
       }
       const { getMysqlDb } = await import("../../../server/db");
       const db = getMysqlDb();
-      // 存在性与结考状态校验
+      // 评审 P1：软删除考试（exam_archives.is_deleted=1）对任何人（含管理员）不可批量公布
+      // —— 与单场访问/列表/成绩查询的软删除规则一致（管理员恢复需走恢复通道）
+      try {
+        const softDeleted = await db.all(
+          `SELECT DISTINCT exam_id FROM exam_archives WHERE exam_id IN (${examIds.map(() => "?").join(",")}) AND is_deleted = 1`,
+          ...examIds
+        ) as Array<{ exam_id: number }>;
+        if (softDeleted.length > 0) {
+          res.status(400).json({ message: "部分考试不存在" });
+          return;
+        }
+      } catch {
+        // exam_archives 表不可用时视为无软删除记录（与 isExamSoftDeleted 的容错一致）
+      }
+      // 评审 P1：数据范围校验前置到「存在性/结考状态」之前 —— 未授权（含不存在/软删除）的
+      // 考试 ID 一律 403，避免教师借错误响应枚举无权访问考试的 ID 与状态
+      const visibleIds = await getVisibleExamIds(req.user);
+      const denied = visibleIds === null ? [] : examIds.filter((id) => !visibleIds.includes(id));
+      if (denied.length > 0) {
+        res.status(403).json({ message: `以下考试超出你的数据权限范围，无法公布: ${denied.join(", ")}` });
+        return;
+      }
+      // 存在性与结考状态校验（此时仅剩可见范围内的考试）
       const existing = await db.all(
         `SELECT id, status, score_published, class_id, grade_id FROM exams WHERE id IN (${examIds.map(() => "?").join(",")})`,
         ...examIds
@@ -2213,13 +2246,6 @@ export async function createApp(): Promise<express.Express> {
       const notClosed = existing.filter((item) => item.status !== "closed").map((item) => item.id);
       if (notClosed.length > 0) {
         res.status(409).json({ message: `以下考试尚未结考（阅卷未完成），无法公布成绩: ${notClosed.join(", ")}` });
-        return;
-      }
-      // 数据范围校验（与 GET /api/exams 的可见性过滤一致）
-      const visibleIds = await getVisibleExamIds(req.user);
-      const denied = visibleIds === null ? [] : examIds.filter((id) => !visibleIds.includes(id));
-      if (denied.length > 0) {
-        res.status(403).json({ message: `以下考试超出你的数据权限范围，无法公布: ${denied.join(", ")}` });
         return;
       }
       // 幂等：跳过已公布的考试，不重复写审计事件
