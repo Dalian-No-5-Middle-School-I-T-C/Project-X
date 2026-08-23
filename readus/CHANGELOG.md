@@ -110,7 +110,7 @@
 - `npm run typecheck` 零错误；`verify:auth` 88/88（新增 #246 第 8 节 18 项：普通教师矩阵收敛 / quiz 豁免 / 图表与学生门 / 学科不匹配与 can_grade=0 拒绝 / 兼容回退保留 / 显式分配放行 / 软删除 404 与管理员恢复通道 / 周审计门槛与收录 / 大考组统计剔除）。
 - 回归：`verify:security-critical` 62/62、`weekly-audit-smoke` 57/57、`verify:weekly-demo`、`verify:reliability-filter` 21/21、`verify:p1-security` 11/11、`verify:demo-safety` 23/23 全绿。
 
-## v2.2.5 (2026-08-22) — 扫描端（Electron ia32）打包与使用体验修复
+## v2.4.1 (2026-08-22) — 扫描端（Electron ia32）打包与使用体验修复
 
 > 分支 `feature/scanner-2.2.5`，基于 main（含 #247 安全更新、#249）整合后开发。
 
