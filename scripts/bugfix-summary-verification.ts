@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     "P1-2 白名单 origin 正确回显 ACAO 头"
   );
 
-  // ── P0-8：默认管理员改为一次性密码并强制改密 ──
+  // ── P0-8：管理员初始密码为固定值，登录后可直接使用 ──
   const bootstrapPassword = readFileSync(bootstrap.passwordFile, "utf8").trim();
   const loginRes = await fetch(`${base}/api/auth/login`, {
     method: "POST",
@@ -75,7 +75,7 @@ async function main(): Promise<void> {
     body: JSON.stringify({ identifier: "admin", password: bootstrapPassword }),
   });
   const loginBody = (await loginRes.json().catch(() => ({}))) as { passwordChangeRequired?: boolean; token?: string };
-  ok(loginRes.status === 200 && loginBody.passwordChangeRequired === true, "P0-8 一次性管理员密码登录后强制改密");
+  ok(loginRes.status === 200 && loginBody.passwordChangeRequired === true, "P0-8 固定初始密码登录后强制改密");
   const oldAdminToken = loginBody.token;
   const protectedRes = await fetch(`${base}/api/cards`, {
     headers: oldAdminToken ? { Authorization: `Bearer ${oldAdminToken}` } : {}
@@ -86,7 +86,7 @@ async function main(): Promise<void> {
     headers: { "Content-Type": "application/json", ...(oldAdminToken ? { Authorization: `Bearer ${oldAdminToken}` } : {}) },
     body: JSON.stringify({ oldPassword: bootstrapPassword, newPassword: "VerifyAdmin-2026!" })
   });
-  ok(changedRes.status === 200, "P0-8 管理员完成首次改密");
+  ok(changedRes.status === 200, "P0-8 管理员完成改密");
   const reloginRes = await fetch(`${base}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
