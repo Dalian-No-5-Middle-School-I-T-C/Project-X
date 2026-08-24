@@ -541,7 +541,7 @@ export type CombinedGradingBatchResult = {
 export type GradingPersistenceFailure = {
   fileName: string;
   studentId?: string;
-  code: "RECOGNITION_FAILED" | "STUDENT_ID_MISSING" | "STUDENT_NOT_FOUND" | "PERSISTENCE_FAILED";
+  code: "RECOGNITION_FAILED" | "STUDENT_ID_MISSING" | "STUDENT_NOT_FOUND" | "PERSISTENCE_FAILED" | "OUT_OF_ROSTER" | "STUDENT_ID_DIGITS_MISMATCH";
   message: string;
 };
 

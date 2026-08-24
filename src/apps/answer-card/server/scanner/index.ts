@@ -76,6 +76,25 @@ export function createScannerRouter(twainEnabled = true): Router {
     const exams = await db.all("SELECT id FROM exams WHERE card_id = ? AND status != 'closed'", cardId) as Array<{ id: number }>;
     if (exams.length === 0) return;
 
+    // 评审 P07：识别端按卡配置校验填涂学号位数（student_number_digits，默认 5）。
+    // 位数不匹配时识别匹配必失败，此处提前拦截并告警，避免静默丢成绩。
+    const { validateStudentIdDigits } = await import("../helpers");
+    let expectedStudentDigits: number | null = null;
+    try {
+      const cardRow = await db.get("SELECT student_number_digits FROM answer_cards WHERE id = ?", cardId) as
+        { student_number_digits?: number } | undefined;
+      expectedStudentDigits = cardRow?.student_number_digits != null && cardRow.student_number_digits > 0
+        ? Number(cardRow.student_number_digits)
+        : null;
+    } catch { /* 卡不存在时跳过位数校验 */ }
+    if (expectedStudentDigits != null) {
+      const digitsErr = validateStudentIdDigits(result.studentId, expectedStudentDigits);
+      if (digitsErr) {
+        console.warn(`[Scanner] Skip student ${result.studentId}: ${digitsErr}`);
+        return;
+      }
+    }
+
     // 事务化：一个学生跨所有关联考试的写构成一个原子单元，
     // 避免中途崩溃留下 student_scores 已写、question_scores 缺行的脏数据污染后续分析
     // （难度/区分度/逐题统计都依赖两表一致）。

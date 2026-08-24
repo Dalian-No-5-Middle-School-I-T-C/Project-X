@@ -18,6 +18,10 @@ import { readFile, readdir } from "node:fs/promises";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "../llm-client";
 import { recordAiRun, finalizeAiRun } from "../../../../server/services/aiTelemetry";
 import { decryptField } from "../../../../server/lib/field-crypto";
+import { fixMultipartName } from "../helpers";
+
+// 评审 P10：知识点分析特别备注（extraNotes）长度上限（与 paperText 32000 截断对齐）
+export const MAX_EXTRA_NOTES_LENGTH = 32000;
 
 type AiProviderRow = {
   id: number;
@@ -36,6 +40,8 @@ const paperUpload = multer({
   dest: path.join(papersDir, "_tmp"),
   limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
+    // 评审 P03：multipart 中文文件名 latin1 mojibake 修复（回写 originalname，全链路受益）
+    file.originalname = fixMultipartName(file.originalname);
     const err = validatePaperFile(file.originalname, 50 * 1024 * 1024);
     if (err) {
       cb(new Error(err));
@@ -437,6 +443,15 @@ export function paperRoutes(): Router {
         return;
       }
 
+      // 评审 P10：特别备注超长直接 400 拒绝（不静默截断），防止超长文本注入 prompt
+      if (extraNotes != null && extraNotes.length > MAX_EXTRA_NOTES_LENGTH) {
+        res.status(400).json({
+          error: "EXTRA_NOTES_TOO_LONG",
+          message: `特别备注不能超过 ${MAX_EXTRA_NOTES_LENGTH} 字（当前 ${extraNotes.length} 字）`
+        });
+        return;
+      }
+
       const db = getMysqlDb();
       await db.run(
         "UPDATE answer_cards SET question_range = ?, extra_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -459,6 +474,15 @@ export function paperRoutes(): Router {
         questionRange?: string;
         extraNotes?: string;
       };
+
+      // 评审 P10：特别备注超长直接 400 拒绝（与保存接口同一上限）
+      if (extraNotes != null && extraNotes.length > MAX_EXTRA_NOTES_LENGTH) {
+        res.status(400).json({
+          error: "EXTRA_NOTES_TOO_LONG",
+          message: `特别备注不能超过 ${MAX_EXTRA_NOTES_LENGTH} 字（当前 ${extraNotes.length} 字）`
+        });
+        return;
+      }
 
       // 1. 获取系统 AI 配置
       const db = getMysqlDb();
@@ -550,9 +574,17 @@ export function paperRoutes(): Router {
           const extracted = await autoExtractPaperText(cardId);
           if (!extracted.text || extracted.text.length < 10) {
             await finalizeAiRun(runId, { success: false, errorCode: "TEXT_EXTRACTION_FAILED" });
+            // 评审 P04：鲜明注明失败原因 —— 扫描版 PDF（无文字层）/图片原卷
+            // 本期不做自动 OCR 降级，明确引导用户切换「OCR 增强」模式或改传文本型文件
+            const reasonMsg = extracted.reason === "pdf_no_text_layer"
+              ? "当前原卷为扫描版 PDF（无文字层），无法自动提取文字。请切换到「OCR 增强」模式，或上传文本型 PDF / DOCX 原卷。"
+              : extracted.reason === "not_found"
+                ? "未找到原卷文件，请先上传原卷再分析。"
+                : "无法从原卷提取文字（可能为图片/公式型内容）。请切换到「OCR 增强」模式，或上传文本型 PDF / DOCX 原卷。";
             res.status(400).json({
               error: "TEXT_EXTRACTION_FAILED",
-              message: "无法从原卷提取文字。扫描件 PDF/图片可尝试 OCR 增强模式"
+              message: `【文字提取失败】${reasonMsg}`,
+              reason: extracted.reason ?? null
             });
             return;
           }

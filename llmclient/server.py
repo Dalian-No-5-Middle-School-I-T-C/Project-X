@@ -173,8 +173,10 @@ def knowledge_points(
         model = find_model(model_id) or MODEL_CATALOG[0]
 
     # Get primary provider
+    # 评审 P02：providerId 允许为 0（Node 端在无 ai_providers 配置、使用边车默认模型时的
+    # fallback 值）；只有「未传」才拒绝。此字段当前仅作门禁，实际模型来自 model/env 配置。
     provider_id = request.get("providerId")
-    if not provider_id:
+    if provider_id is None:
         raise HTTPException(status_code=400, detail="providerId required")
 
     # TODO: Read provider from ai_providers table via DB

@@ -78,14 +78,17 @@ export function getFileMime(filename: string): string {
 /**
  * 自动提取试卷文本（根据文件类型选择策略）
  * 1. DOCX → mammoth
- * 2. PDF → pdf-parse（返回 null 则无文字层）
+ * 2. PDF → pdf-parse（无文字层返回 reason=pdf_no_text_layer）
  * 3. 图片 → Tesseract.js OCR
  *
- * 返回 { text, source: "docx"|"pdf"|"ocr"|null }
+ * 返回 { text, source, reason }；reason 仅在提取失败时给出便于前端/后端
+ * 给出「鲜明」提示的失败分类：
+ *   - pdf_no_text_layer：扫描版 PDF 无文字层（本期不降级 OCR，提示改用 OCR 增强）
+ *   - docx_extract_failed / ocr_failed / not_found
  */
 export async function autoExtractPaperText(
   cardId: string
-): Promise<{ text: string | null; source: "docx" | "pdf" | "ocr" | null }> {
+): Promise<{ text: string | null; source: "docx" | "pdf" | "ocr" | null; reason?: string }> {
   const dir = paperDir(cardId);
 
   // 查找原始文件（original.docx/original.pdf/original.jpg 等）
@@ -99,7 +102,7 @@ export async function autoExtractPaperText(
       if (!text) {
         // DOCX 提取失败（含大量图片/公式），回退 OCR
         const ocrText = await extractImageText(filePath);
-        return { text: ocrText, source: ocrText ? "ocr" : null };
+        return { text: ocrText, source: ocrText ? "ocr" : null, reason: ocrText ? undefined : "docx_extract_failed" };
       }
       return { text, source: "docx" };
     }
@@ -107,14 +110,14 @@ export async function autoExtractPaperText(
     if (ext === ".pdf") {
       const text = await extractPdfText(filePath);
       if (text) return { text, source: "pdf" };
-      // 无文字层 → 需要 OCR（但 Tesseract 不支持直接处理 PDF，Skip）
-      return { text: null, source: null };
+      // 无文字层 → 需要 OCR（但 Tesseract 不支持直接处理 PDF，本期仅给出鲜明提示）
+      return { text: null, source: null, reason: "pdf_no_text_layer" };
     }
 
     // 图片 → Tesseract.js OCR
     const ocrText = await extractImageText(filePath);
-    return { text: ocrText, source: ocrText ? "ocr" : null };
+    return { text: ocrText, source: ocrText ? "ocr" : null, reason: ocrText ? undefined : "ocr_failed" };
   }
 
-  return { text: null, source: null };
+  return { text: null, source: null, reason: "not_found" };
 }

@@ -3,6 +3,7 @@ import type { Request, Response } from "express";
 import { raw as expressRaw } from "express";
 import { ZipArchive } from "archiver";
 import AdmZip from "adm-zip";
+import Database from "better-sqlite3";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, copyFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -16,8 +17,14 @@ import { closeDb } from "../../apps/answer-card/server/database";
 import { seedDemoData, clearDemoData } from "../services/DemoDataService";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { beginRestore, finishRestore } from "../services/restoreGuard";
 
 const execFileAsync = promisify(execFile);
+
+// 评审 P01：备份兼容性校验 —— 可接受的备份最低版本号。
+// v1.x 备份（无 schema_migrations 表）会导致恢复后服务无法启动，恢复前直接 400 拒绝。
+const MIN_BACKUP_VERSION = 2;
+const MIN_BACKUP_VERSION_MSG = "备份版本过旧（v1.x）或缺少 schema_migrations 表，与当前系统不兼容，无法安全恢复。请使用当前版本（v2.x）重新导出的备份文件。";
 
 const router = Router();
 
@@ -62,9 +69,9 @@ router.get("/backup", async (_req: Request, res: Response) => {
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 
-    // 0. 写入 metadata.json
+    // 0. 写入 metadata.json（评审 P01：版本号用于恢复前置校验，v2.x 起为 2）
     const metadata = {
-      version: 1,
+      version: 2,
       format: "projectx-backup",
       generatedAt: new Date().toISOString(),
       files: [] as Array<{ name: string; size: number }>
@@ -210,6 +217,39 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
       return;
     }
 
+    // 评审 P01：恢复前置校验 —— 不兼容的老备份（v1.x / 无 schema_migrations）直接 400 拒绝，
+    // 避免「假成功」后服务数据库检查失败（恢复流程会替换当前库，校验必须前置且可回退）。
+    let metadataVersion: number | null = null;
+    try {
+      const metadata = JSON.parse(await import("node:fs/promises").then((fs) => fs.readFile(metadataPath, "utf8"))) as { version?: unknown };
+      if (typeof metadata.version === "number" && Number.isFinite(metadata.version)) {
+        metadataVersion = metadata.version;
+      }
+    } catch { /* metadata 解析失败按不兼容处理 */ }
+    let backupHasSchemaMigrations = false;
+    try {
+      const backupDb = new Database(projectxBak, { readonly: true });
+      try {
+        const row = backupDb.prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations' LIMIT 1"
+        ).get();
+        backupHasSchemaMigrations = Boolean(row);
+      } finally {
+        backupDb.close();
+      }
+    } catch { /* 备份库无法打开按不兼容处理 */ }
+
+    if (metadataVersion == null || metadataVersion < MIN_BACKUP_VERSION || !backupHasSchemaMigrations) {
+      res.status(400).json({
+        message: MIN_BACKUP_VERSION_MSG,
+        detail: { metadataVersion, backupHasSchemaMigrations }
+      });
+      return;
+    }
+
+    // 评审 P09：恢复开始前标记维护模式（业务 API 503），完成后清理；失败路径由 finally 兜底
+    beginRestore();
+
     // 1. 备份当前数据
     const backupSuffix = Date.now();
     const projectxDbPath = getProjectXDbPath();
@@ -288,6 +328,9 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
     console.error("[Restore] Import failed:", error);
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
+  } finally {
+    // 评审 P09：无论成功/失败都清理维护标志，避免服务永久停留在维护模式
+    finishRestore();
   }
 });
 
@@ -448,6 +491,41 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // 评审 P01（MariaDB 分支）：校验 metadata.version 与 dump 内容含 schema_migrations，
+    // 不兼容备份直接 400 拒绝（防「假成功」后生产库结构漂移）。
+    let metadataVersion: number | null = null;
+    try {
+      const metadataPath = path.join(tmpDir, "metadata.json");
+      if (existsSync(metadataPath)) {
+        const metadata = JSON.parse(await import("node:fs/promises").then((fs) => fs.readFile(metadataPath, "utf8"))) as { version?: unknown };
+        if (typeof metadata.version === "number" && Number.isFinite(metadata.version)) {
+          metadataVersion = metadata.version;
+        }
+      }
+    } catch { /* 按不兼容处理 */ }
+    let dumpHasSchemaMigrations = false;
+    try {
+      const { open } = await import("node:fs/promises");
+      const fd = await open(dumpFile, "r");
+      try {
+        const head = Buffer.alloc(2 * 1024 * 1024);
+        const { bytesRead } = await fd.read(head, 0, head.length, 0);
+        dumpHasSchemaMigrations = head.toString("latin1").slice(0, bytesRead).includes("schema_migrations");
+      } finally {
+        await fd.close();
+      }
+    } catch { /* dump 无法读取按不兼容处理 */ }
+    if (metadataVersion == null || metadataVersion < MIN_BACKUP_VERSION || !dumpHasSchemaMigrations) {
+      res.status(400).json({
+        message: MIN_BACKUP_VERSION_MSG,
+        detail: { metadataVersion, dumpHasSchemaMigrations }
+      });
+      return;
+    }
+
+    // 评审 P09：导入开始前标记维护模式，完成/失败后由 finally 清理
+    beginRestore();
+
     // 读取配置
     const cfg = getMariadbConfig();
     const host = cfg?.host || "127.0.0.1";
@@ -480,6 +558,8 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
     } catch (err: any) {
       await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
       res.status(500).json({ message: `mysql 导入失败: ${err.message}` });
+    } finally {
+      finishRestore();
     }
   } catch (error) {
     console.error("[Restore] MariaDB import failed:", error);

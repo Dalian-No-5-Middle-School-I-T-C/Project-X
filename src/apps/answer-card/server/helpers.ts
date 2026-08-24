@@ -68,6 +68,43 @@ export function optionalPositiveNumber(value: unknown): number | undefined {
   return Number.isInteger(num) && num >= 0 ? num : undefined;
 }
 
+/**
+ * 评审 P07：校验填涂学号位数是否与答题卡配置（student_number_digits）一致。
+ * 返回错误消息；一致返回 null。纯函数，便于单测与两处写入链路复用。
+ */
+export function validateStudentIdDigits(studentId: string, expectedDigits: number): string | null {
+  if (expectedDigits <= 0) return null;
+  const len = String(studentId).length;
+  if (len !== expectedDigits) {
+    return `填涂学号 ${studentId} 位数(${len})与答题卡配置位数(${expectedDigits})不符，请检查填涂或卡配置`;
+  }
+  return null;
+}
+
+/**
+ * 评审 P03：修复 multipart 上传中文文件名的 latin1 mojibake。
+ *
+ * busboy 默认按 latin1 解码 multipart 文件名，中文 UTF-8 字节被逐字节映射到
+ * U+00C0–U+00FF（如「微信图片.jpg」→「å¾®ä¿¡å¾ç‰‡.jpg」）。本函数：
+ * - 仅当文件名含 latin1 扩展字符（U+0080–U+00FF）且不含 CJK 时尝试重解码；
+ * - 重解码后必须出现 CJK 且无 U+FFFD 替换符才采用，否则保留原名（避免误伤
+ *   真实的欧洲语言文件名）。
+ */
+export function fixMultipartName(name: string): string {
+  if (!name || typeof name !== "string") return name;
+  if (name.length === 0 || /[\u4e00-\u9fff]/.test(name)) return name;
+  if (!/[\u0080-\u00ff]/.test(name)) return name;
+  try {
+    const fixed = Buffer.from(name, "latin1").toString("utf8");
+    if (/[\u4e00-\u9fff]/.test(fixed) && !fixed.includes("\uFFFD")) {
+      return fixed;
+    }
+  } catch {
+    // 解码失败保持原名
+  }
+  return name;
+}
+
 export function parsePositiveNumber(value: unknown, fallback: number): number {
   const parsed = Number(fieldValue(value) || String(fallback));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;

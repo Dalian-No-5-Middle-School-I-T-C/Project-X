@@ -41,6 +41,7 @@ import type { AssignedFormula, StudentInfoSettings } from "../../../shared/types
 import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
 import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
+import { isRestoring } from "../../../server/services/restoreGuard";
 import { recordLifecycleEvent } from "../../../server/services/lifecycleEvents";
 import { markScoreMutated } from "../../../server/services/examPublishEvents";
 import authRoutes from "../../../server/routes/auth";
@@ -108,7 +109,8 @@ import { assertImageFile } from "./validate-upload";
 import {
   paramValue, fieldValue, boolField, isValidExamDate,
   MIN_EXAM_YEAR, MAX_EXAM_YEAR, requestFlag, numberArray,
-  optionalPositiveNumber, parsePositiveNumber, deleteExamRows, deleteCardFiles
+  optionalPositiveNumber, parsePositiveNumber, deleteExamRows, deleteCardFiles,
+  fixMultipartName, validateStudentIdDigits
 } from "./helpers";
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
@@ -432,6 +434,19 @@ export async function persistGradingResults(
     SELECT id FROM users WHERE student_number = ? AND role_id = 3 LIMIT 1
   `;
 
+  // 评审 P07：识别端按卡配置校验填涂学号位数（student_number_digits，默认 5）。
+  // 学号位数与卡配置不联动时识别匹配会失败，此处提前给出明确错误，避免静默丢成绩。
+  let expectedStudentDigits: number | null = null;
+  if (exam.card_id) {
+    const cardDigits = await db.get(
+      "SELECT student_number_digits FROM answer_cards WHERE id = ?",
+      exam.card_id
+    ) as { student_number_digits?: number } | undefined;
+    expectedStudentDigits = cardDigits?.student_number_digits != null && cardDigits.student_number_digits > 0
+      ? Number(cardDigits.student_number_digits)
+      : null;
+  }
+
   // Bugfix: 使用 ON CONFLICT upsert 代替 REPLACE INTO，避免重新阅卷时
   // 静默清除 manually_modified/modified_by/modified_at 等手动改分标记。
   // 冲突时仅更新分数相关列，保留手动修改元数据。
@@ -465,6 +480,14 @@ export async function persistGradingResults(
       continue;
     }
     const studentId = row.studentId;
+    // 评审 P07：填涂号位数与卡配置不符 → 单独归类报错，不入库
+    if (expectedStudentDigits != null) {
+      const digitsErr = validateStudentIdDigits(studentId, expectedStudentDigits);
+      if (digitsErr) {
+        failedStudents.push({ fileName: row.fileName, studentId, code: "STUDENT_ID_DIGITS_MISMATCH", message: digitsErr });
+        continue;
+      }
+    }
     const stu = await db.get(findStudentSql, studentId) as { id: number } | undefined;
     if (!stu) {
       failedStudents.push({ fileName: row.fileName, studentId, code: "STUDENT_NOT_FOUND", message: "学生不存在" });
@@ -724,6 +747,25 @@ export async function createApp(): Promise<express.Express> {
   // 在所有 /api 路由前解析身份（有 token 即挂载 req.user，无 token 放行）
   app.use("/api", optionalAuth);
 
+  // 评审 P09：备份恢复期间维护模式 —— 恢复流程写 .restoring 标志（见 restoreGuard），
+  // 期间除管理面（/api/db/*）与健康检查外，业务 API 一律 503，避免并发读到
+  // 旧连接/半替换状态的数据库。
+  app.use("/api", (req, res, next) => {
+    const p = req.path;
+    if (p === "/app/health" || p === "/db" || p.startsWith("/db/")) {
+      next();
+      return;
+    }
+    if (isRestoring()) {
+      res.status(503).json({
+        code: "MAINTENANCE",
+        message: "系统维护中：正在恢复备份，数据暂不可用，请稍后刷新页面重试"
+      });
+      return;
+    }
+    next();
+  });
+
   // 认证与账号控制系统路由
   app.use("/api/auth", authRoutes);
   // 强制改密账号的自助认证端点已在上方处理；其它 API 一律拒绝。
@@ -861,12 +903,15 @@ export async function createApp(): Promise<express.Express> {
         cb(null, backgroundsDir);
       },
       filename: (_req, file, cb) => {
+        // 评审 P03：multipart 中文文件名 latin1 mojibake 修复（回写 originalname，全链路受益）
+        file.originalname = fixMultipartName(file.originalname);
         const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
         cb(null, `upload_${Date.now()}${ext}`);
       }
     }),
     limits: { fileSize: 5 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
+      file.originalname = fixMultipartName(file.originalname);
       const ext = path.extname(file.originalname).toLowerCase();
       const allowedExts = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
       if (!allowedExts.includes(ext)) {
@@ -1004,6 +1049,8 @@ export async function createApp(): Promise<express.Express> {
         cb(null, dir);
       },
       filename: (_req, file, cb) => {
+        // 评审 P03：中文文件名 mojibake 修复
+        file.originalname = fixMultipartName(file.originalname);
         const ext = path.extname(file.originalname).toLowerCase() || ".png";
         const name = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
         cb(null, name);
@@ -1011,6 +1058,7 @@ export async function createApp(): Promise<express.Express> {
     }),
     limits: { fileSize: 12 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
+      file.originalname = fixMultipartName(file.originalname);
       const ext = path.extname(file.originalname).toLowerCase();
       const allowedExts = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
       if (!allowedExts.includes(ext)) {
@@ -1025,6 +1073,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  // 评审 P08：识别上传限制文件数量上限（对齐原卷上传 40 张），防止超大批量并发识别占资源
   const recognitionUpload = multer({
     storage: multer.diskStorage({
       destination: async (req, _file, cb) => {
@@ -1034,12 +1083,14 @@ export async function createApp(): Promise<express.Express> {
         cb(null, dir);
       },
       filename: (_req, file, cb) => {
+        // 评审 P03：中文文件名 mojibake 修复
+        file.originalname = fixMultipartName(file.originalname);
         const ext = path.extname(file.originalname).toLowerCase() || ".png";
         const name = `scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
         cb(null, name);
       }
     }),
-    limits: { fileSize: 20 * 1024 * 1024 }
+    limits: { fileSize: 20 * 1024 * 1024, files: 40 }
   });
 
   app.get("/api/cards", async (_req, res, next) => {
@@ -1240,7 +1291,7 @@ export async function createApp(): Promise<express.Express> {
     });
   });
 
-  app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files", 40), async (req, res, next) => {
     let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
@@ -1331,7 +1382,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/grading", recognitionUpload.array("files"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading", recognitionUpload.array("files", 40), async (req, res, next) => {
     let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
@@ -2381,6 +2432,11 @@ export async function createApp(): Promise<express.Express> {
     if (error && typeof error === "object" && (error as any)?.name === "MulterError") {
       const multerCode = String((error as any)?.code ?? "");
       const isSizeLimit = multerCode === "LIMIT_FILE_SIZE";
+      // 评审 P08：文件数量超限给出明确提示（对齐原卷上传 40 张上限）
+      if (multerCode === "LIMIT_FILE_COUNT") {
+        res.status(400).json({ code: "UPLOAD_TOO_MANY_FILES", message: "一次最多上传 40 张图片，超出部分请分批上传" });
+        return;
+      }
       res.status(isSizeLimit ? 413 : 400).json({
         code: "UPLOAD_ERROR",
         message: isSizeLimit ? "上传文件超过大小限制" : `上传错误：${multerCode}`

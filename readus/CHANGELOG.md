@@ -1,5 +1,35 @@
 # Project-X CHANGELOG
 
+## v2.4.2 (2026-08-24) — 全链路测试 Bug 批量修复（评审 P1 完整性 + 输入/边界加固）
+
+> 来源：实机本地全链路测试（PX-TEST-2026-0001）Bug 清单待修复项批量落地；
+> 环境类问题（缺扫描仪/缺 VS 工具链）不计入程序缺陷。分支：`修复井号256`（本地改动，未提交，由负责人统一提交）。
+
+### 1. 备份恢复加固（BUG-P01 / BUG-P09）
+- **恢复前置校验**：restore 在替换数据库前校验备份 `metadata.version`（≥2）与备份库内 `schema_migrations` 表存在性（MariaDB 分支校验 dump.sql 头部含 `schema_migrations`），不兼容的老备份（v1.x）直接 400 拒绝并给出鲜明提示，杜绝「假成功」后服务数据库检查失败。
+- **恢复期维护模式**：restore 开始/结束写入 `.restoring` 维护标志，期间业务 API 一律 503「系统维护中」（管理面 `/api/db/*` 与健康检查放行），失败路径由 finally 清理标志，避免并发读到旧连接/半替换状态的数据库。
+
+### 2. AI 分析输入加固（BUG-P02 / BUG-P10）
+- **providerId=0 放行**：llmclient `/analysis/knowledge-points` 由 `if not provider_id` 改为 `if provider_id is None`，允许 Node 端在无 ai_providers 配置、走边车默认模型时传 `providerId: 0`（此前被误拒 400 `providerId required`）。
+- **特别备注长度上限**：原卷信息保存（PUT /paper/info）与知识点分析（analyze）两处对 `extraNotes` 统一校验 ≤32000 字，超长 400 拒绝（不静默截断），防止超长文本注入 prompt。
+
+### 3. 上传与识别加固（BUG-P03 / P07 / P08）
+- **中文文件名乱码修复**：multer 层新增 `fixMultipartName`（latin1→UTF-8 mojibake 检测重解码），覆盖背景图/答题卡资源/识别上传/原卷上传四类 multipart，`scan_records.file_name`、网阅与导出链路的中文文件名不再乱码（仅对疑似乱码名转换，不影响正常 UTF-8 / 欧洲语言文件名）。
+- **识别端学号位数校验**：按答题卡 `student_number_digits`（默认 5）校验填涂学号位数，位数不符的卷不进库、按 `STUDENT_ID_DIGITS_MISMATCH` 单独归类返回，识别/扫描双链路（grading 上传 + TWAIN 扫描）一致生效。
+- **识别上传数量上限**：`recognitionUpload` 增加 `files: 40` 上限（与原卷上传对齐），超限返回 400 `UPLOAD_TOO_MANY_FILES`「一次最多上传 40 张图片」。
+
+### 4. 原卷文字提取友好提示（BUG-P04）
+- 知识点分析「自动模式」提取失败时按失败原因（扫描版 PDF 无文字层 / 未找到原卷 / 其它）给出鲜明分级提示：扫描版 PDF/图片明确引导切换「OCR 增强」模式或上传文本型 PDF/DOCX；本期不做自动 OCR 降级（依赖图像渲染与中文语言包，二期评估）。
+
+### 5. 待复现项（BUG-P05）
+- 答题卡设计器视觉 BUG 缺 TC-04 截图与具体现象，本期排除，标记「待复现」，待补图后单独处理。
+
+### 6. 验证
+- 新增 `scripts/verify-bugfix-242.ts`（临时库 + HTTP 回归）：P01 不兼容备份 400 拒绝 / P08 超 40 张 400 / P10 超长备注 400 / P09 维护标志 503 与恢复 / P03 文件名解码单测 / P07 位数校验单测。
+- `tsc --noEmit` 全量类型检查通过。
+
+---
+
 ## v2.4.1 (2026-08-22) — 扫描端（Electron ia32）打包与使用体验修复
 
 > 分支 `feature/scanner-2.4.1`，基于 main（含 #247 安全更新、#249）整合后开发。
