@@ -50,6 +50,7 @@ export function createScannerRouter(twainEnabled = true): Router {
     const { getMysqlDb, buildUpsertSQL } = await import("../../../../server/db");
     const { roundScore } = await import("../../../../server/services/rankingUpdate");
     const { analysisCache } = await import("../../../../server/services/analysisCache");
+    const { ensureExamParticipants, isExamParticipant } = await import("../../../../server/services/examParticipants");
     const db = getMysqlDb();
 
     const scoreUpsertSQL = buildUpsertSQL(
@@ -76,11 +77,24 @@ export function createScannerRouter(twainEnabled = true): Router {
     const exams = await db.all("SELECT id FROM exams WHERE card_id = ? AND status != 'closed'", cardId) as Array<{ id: number }>;
     if (exams.length === 0) return;
 
+    // P1-1: 扫描入库拒绝非应考学生（名单可知时）
+    const filteredExams: Array<{ id: number }> = [];
+    for (const exam of exams) {
+      const snap = await ensureExamParticipants(db, exam.id);
+      const enforced = snap.rosterKnown && snap.participantCount > 0;
+      if (enforced && !(await isExamParticipant(db, exam.id, user.id))) {
+        console.warn(`[Scanner] skip exam ${exam.id}: student ${result.studentId} not in roster snapshot`);
+        continue;
+      }
+      filteredExams.push(exam);
+    }
+    if (filteredExams.length === 0) return;
+
     // 事务化：一个学生跨所有关联考试的写构成一个原子单元，
     // 避免中途崩溃留下 student_scores 已写、question_scores 缺行的脏数据污染后续分析
     // （难度/区分度/逐题统计都依赖两表一致）。
     await db.transaction(async (tx) => {
-      for (const exam of exams) {
+      for (const exam of filteredExams) {
         const obj = roundScore(result.objectiveScore);
         const subj = roundScore(result.subjectiveScore);
         const total = roundScore(result.totalScore);
@@ -107,7 +121,7 @@ export function createScannerRouter(twainEnabled = true): Router {
     });
 
     // 分析结果缓存精准失效（建议 6）
-    for (const exam of exams) analysisCache.invalidateExam(exam.id);
+    for (const exam of filteredExams) analysisCache.invalidateExam(exam.id);
   }
 
   // Progress event emitters by sessionId (for WebSocket integration)

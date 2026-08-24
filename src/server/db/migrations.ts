@@ -1134,6 +1134,24 @@ const MIGRATIONS: Migration[] = [
          WHERE retention_policy_id = 1 AND (exam_mode IS NULL OR exam_mode != 'quiz')`
       ).run();
     }
+  },
+  // v47: 评审 P1-1 —— 考试参与者快照（应考名单固化，避免发布完整性被外班/误识别凑数绕过）。
+  // 原校验只比人数（COUNT scored vs COUNT roster），名册 A/B + 成绩 A/C（外班）以 2/2 绕过。
+  // 改为集合校验：应考集合 ⊆ 已评分集合；并在首次入库/公布时固化名册，之后调班不改历史判断。
+  {
+    version: 47,
+    name: "exam-participants-snapshot",
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS exam_participants (
+          exam_id    INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+          student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (exam_id, student_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ep_student ON exam_participants(student_id);
+      `);
+    }
   }
 ];
 

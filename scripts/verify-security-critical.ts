@@ -602,6 +602,82 @@ async function main(): Promise<void> {
       check(publishCompleted.status === 200 && auditCount(partialScoreExam) === 1, "补全成绩后单场公布成功并写入审计");
     }
 
+    // ── 评审 P1-1：发布完整性集合校验与扫描入库拒识（A/B 名册 + A/C 成绩绕过）──
+    // 原逻辑只比人数（COUNT scored vs COUNT roster），外班/误识别 C 可凑数绕过 B 缺失；
+    // 现改为集合校验：应考集合 ⊆ 已评分集合；扫描入库拒绝非应考学生；快照在首次入库/公布时固化。
+    section("评审 P1-1：发布完整性集合校验与扫描入库拒识（A/B + A/C 绕过回归）");
+    {
+      const auditCnt = (examId: number): number =>
+        (db.prepare("SELECT COUNT(*) AS c FROM exam_publish_events WHERE exam_id = ?").get(examId) as { c: number }).c;
+      const p1Class = Number(db.prepare("INSERT INTO classes (grade_id,name) VALUES (?,?)").run(grade.id, "安全P1班").lastInsertRowid);
+      const p1OtherClass = Number(db.prepare("INSERT INTO classes (grade_id,name) VALUES (?,?)").run(grade.id, "安全P1外班").lastInsertRowid);
+      const p1A = await users.createUser({ username: "crit-p1-A", password: "student-pass", name: "P1-A", role_id: 3, student_number: "SP1A" });
+      const p1B = await users.createUser({ username: "crit-p1-B", password: "student-pass", name: "P1-B", role_id: 3, student_number: "SP1B" });
+      const p1C = await users.createUser({ username: "crit-p1-C", password: "student-pass", name: "P1-C外班", role_id: 3, student_number: "SP1C" });
+      db.prepare("INSERT INTO class_students (class_id,student_id) VALUES (?,?)").run(p1Class, p1A.id);
+      db.prepare("INSERT INTO class_students (class_id,student_id) VALUES (?,?)").run(p1Class, p1B.id);
+      db.prepare("INSERT INTO class_students (class_id,student_id) VALUES (?,?)").run(p1OtherClass, p1C.id);
+      const p1Card = `p1-card-${Math.random().toString(36).slice(2,6)}`;
+      db.prepare("INSERT INTO answer_cards (id,title) VALUES (?,?)").run(p1Card, "P1绕过卡");
+      const p1ExamBypass = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,score_published,created_by) VALUES (?,?,?,?,?,'closed',0,?)").run("P1-绕过单场", p1Card, grade.id, p1Class, "数学", teacher.id).lastInsertRowid);
+      db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)").run(p1ExamBypass, p1A.id, 40,20,60);
+      db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)").run(p1ExamBypass, p1C.id, 30,20,50);
+      const pubBypass = await fetch(`${base}/api/exams/${p1ExamBypass}/publish`, { method:"POST", headers: authHeaders(teacherToken) });
+      const pubBypassBody = await pubBypass.json() as { message?: string };
+      check(pubBypass.status === 409 && auditCnt(p1ExamBypass)===0 && String(pubBypassBody.message||"").includes("SP1B"), "A/C 凑数绕过：单场公布被 409 拒绝且提示缺 B");
+
+      const p1Complete = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,score_published,created_by) VALUES (?,?,?,?,?,'closed',0,?)").run("P1-完整", p1Card, grade.id, p1Class, "数学", teacher.id).lastInsertRowid);
+      db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)").run(p1Complete, p1A.id, 40,20,60);
+      db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)").run(p1Complete, p1B.id, 40,20,60);
+      const batchBypass = await fetch(`${base}/api/exams/publish-batch`, { method:"POST", headers:{ "Content-Type":"application/json", ...authHeaders(teacherToken)}, body: JSON.stringify({ examIds:[p1ExamBypass, p1Complete] })});
+      check(batchBypass.status === 409 && auditCnt(p1ExamBypass)===0 && auditCnt(p1Complete)===0, "A/C 凑数绕过：批量公布整体 409 且无部分写入");
+
+      // 扫描入库拒识：persistGradingResults 对同一班级考试录入外班学生 C 应被拒绝
+      const p1IngestExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,score_published,created_by) VALUES (?,?,?,?,?,'active',0,?)").run("P1-入库拒识", p1Card, grade.id, p1Class, "数学", teacher.id).lastInsertRowid);
+      const ingestRes = await persistGradingResults(String(p1IngestExam), [gradingRow("a.png","SP1A"), gradingRow("c.png","SP1C")], teacher.id);
+      const hasCScore = (db.prepare("SELECT 1 FROM student_scores WHERE exam_id=? AND student_id=?").get(p1IngestExam, p1C.id) as any);
+      check(ingestRes.persisted===1 && ingestRes.failedCount===1 && ingestRes.failed.some(f=>f.code==="STUDENT_NOT_IN_EXAM") && !hasCScore, "扫描入库拒识：外班学生 C 的入库被拒绝，仅 A 持久化");
+
+      // 快照语义：首次入库后调班（新增 D）不应改变历史判断
+      const snapClass = Number(db.prepare("INSERT INTO classes (grade_id,name) VALUES (?,?)").run(grade.id, "安全P1快照班").lastInsertRowid);
+      const sSnapA = await users.createUser({ username: "crit-snap-A", password:"student-pass", name:"SnapA", role_id:3, student_number:"SSNA"});
+      const sSnapB = await users.createUser({ username: "crit-snap-B", password:"student-pass", name:"SnapB", role_id:3, student_number:"SSNB"});
+      const sSnapD = await users.createUser({ username: "crit-snap-D", password:"student-pass", name:"SnapD新增", role_id:3, student_number:"SSND"});
+      db.prepare("INSERT INTO class_students (class_id,student_id) VALUES (?,?)").run(snapClass, sSnapA.id);
+      db.prepare("INSERT INTO class_students (class_id,student_id) VALUES (?,?)").run(snapClass, sSnapB.id);
+      const snapCard = `snap-card-${Math.random().toString(36).slice(2,6)}`;
+      db.prepare("INSERT INTO answer_cards (id,title) VALUES (?,?)").run(snapCard, "快照卡");
+      const snapExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,score_published,created_by) VALUES (?,?,?,?,?,'active',0,?)").run("P1-快照", snapCard, grade.id, snapClass, "数学", teacher.id).lastInsertRowid);
+      // 首次入库仅 A（固化快照为 A/B 2 人）
+      const snapFirst = await persistGradingResults(String(snapExam), [gradingRow("snap-a.png","SSNA")], teacher.id);
+      void snapFirst;
+      // 调班：新增 D 到班级（快照应仍为 2 人，不含 D）
+      db.prepare("INSERT INTO class_students (class_id,student_id) VALUES (?,?)").run(snapClass, sSnapD.id);
+      const snapRows = db.prepare("SELECT COUNT(*) AS c FROM exam_participants WHERE exam_id=?").get(snapExam) as { c:number };
+      check(Number(snapRows.c)===2, "快照固化：入库后调班新增不改快照（仍为 2 人）");
+      // 补录 B 后应可公布（D 不要求）
+      db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)").run(snapExam, sSnapB.id, 40,20,60);
+      db.prepare("UPDATE exams SET status='closed' WHERE id=?").run(snapExam);
+      const snapPublish = await fetch(`${base}/api/exams/${snapExam}/publish`, { method:"POST", headers: authHeaders(teacherToken) });
+      check(snapPublish.status===200, "快照语义：补录 B 后公布成功（新增 D 不要求）");
+      // 反向：调班移除后仍要求已快照学生（再建一门测试移除）
+      const snap2Class = Number(db.prepare("INSERT INTO classes (grade_id,name) VALUES (?,?)").run(grade.id, "安全P1移除班").lastInsertRowid);
+      const sRemA = await users.createUser({ username:"crit-rem-A", password:"student-pass", name:"RemA", role_id:3, student_number:"SRMA"});
+      const sRemB = await users.createUser({ username:"crit-rem-B", password:"student-pass", name:"RemB", role_id:3, student_number:"SRMB"});
+      db.prepare("INSERT INTO class_students (class_id,student_id) VALUES (?,?)").run(snap2Class, sRemA.id);
+      db.prepare("INSERT INTO class_students (class_id,student_id) VALUES (?,?)").run(snap2Class, sRemB.id);
+      const remCard = `rem-card-${Math.random().toString(36).slice(2,6)}`;
+      db.prepare("INSERT INTO answer_cards (id,title) VALUES (?,?)").run(remCard, "移除卡");
+      const remExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,score_published,created_by) VALUES (?,?,?,?,?,'active',0,?)").run("P1-移除仍要求", remCard, grade.id, snap2Class, "数学", teacher.id).lastInsertRowid);
+      // 首次入库固化快照（A/B 2 人）
+      await persistGradingResults(String(remExam), [gradingRow("rem-a.png","SRMA")], teacher.id);
+      // 调班移除 B（快照应仍保留 B）
+      db.prepare("DELETE FROM class_students WHERE class_id=? AND student_id=?").run(snap2Class, sRemB.id);
+      db.prepare("UPDATE exams SET status='closed' WHERE id=?").run(remExam);
+      const remPublish = await fetch(`${base}/api/exams/${remExam}/publish`, { method:"POST", headers: authHeaders(teacherToken) });
+      check(remPublish.status===409, "快照语义：调班移除后仍要求已固化学生（缺 B 仍 409）");
+    }
+
     // ── 评审 P1：发布后手动改分/改答案/仲裁/网阅/赋分不会自动撤回并写审计 ──
     // 所有写分路径统一接 markScoreMutated：已公布（score_published=1）考试一有
     // 真实成绩变更 → 同一事务自动置 0 + 写 unpublish 审计（reason 标识变更来源）。

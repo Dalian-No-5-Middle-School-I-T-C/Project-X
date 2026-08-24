@@ -178,6 +178,13 @@ export class ExamRepository {
     } else {
       await this.db.run("UPDATE exams SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", status, id);
     }
+    // P1-1 快照固化：阅卷开始/结考时冻结应考名单，之后调班不改历史判断
+    if (status === "grading" || status === "closed") {
+      try {
+        const { ensureExamParticipants } = await import("../services/examParticipants");
+        await ensureExamParticipants(this.db, id);
+      } catch {}
+    }
   }
 
   async createScanBatch(examId: number, name: string, createdBy?: number): Promise<number> {

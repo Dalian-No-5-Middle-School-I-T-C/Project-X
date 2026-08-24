@@ -918,6 +918,23 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `ALTER TABLE knowledge_points ADD COLUMN track_type VARCHAR(20) NOT NULL DEFAULT 'common'`,
       ]
     },
+    {
+      // v47: 评审 P1-1 —— 考试参与者快照（应考名单固化，避免发布完整性被外班/误识别凑数绕过）。
+      // 原校验只比人数，名册 A/B + 成绩 A/C 以 2/2 绕过；改为集合校验 required ⊆ scored，并在首次入库/公布时固化名册。
+      version: 47,
+      name: "exam-participants-snapshot",
+      sqls: [
+        `CREATE TABLE IF NOT EXISTS exam_participants (
+          exam_id     INT NOT NULL,
+          student_id  INT NOT NULL,
+          created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (exam_id, student_id),
+          FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+          FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+        `CREATE INDEX IF NOT EXISTS idx_ep_student ON exam_participants(student_id)`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

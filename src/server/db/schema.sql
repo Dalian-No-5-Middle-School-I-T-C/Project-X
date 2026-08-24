@@ -691,6 +691,15 @@ CREATE TABLE IF NOT EXISTS exam_publish_events (
 );
 CREATE INDEX IF NOT EXISTS idx_epe_exam ON exam_publish_events(exam_id);
 
+-- v47: 考试参与者快照（应考名单固化，应考集合 ⊆ 已评分集合；首次入库/公布时固化，之后调班不改历史判断）
+CREATE TABLE IF NOT EXISTS exam_participants (
+    exam_id    INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (exam_id, student_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ep_student ON exam_participants(student_id);
+
 CREATE INDEX IF NOT EXISTS idx_users_student_number ON users(student_number);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role_id);
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);

@@ -43,6 +43,7 @@ import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
 import { recordLifecycleEvent } from "../../../server/services/lifecycleEvents";
 import { markScoreMutated } from "../../../server/services/examPublishEvents";
+import { ensureExamParticipants, isExamParticipant, listMissingParticipants } from "../../../server/services/examParticipants";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -428,6 +429,10 @@ export async function persistGradingResults(
   const batchId = await examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
   await db.run("UPDATE scan_batches SET status = 'processing' WHERE id = ?", batchId);
 
+  // P1-1: 固化应考名单（首次入库时冻结，之后调班不改历史判断）
+  const snapshot = await ensureExamParticipants(db, examId);
+  const rosterEnforced = snapshot.rosterKnown && snapshot.participantCount > 0;
+
   const findStudentSql = `
     SELECT id FROM users WHERE student_number = ? AND role_id = 3 LIMIT 1
   `;
@@ -468,6 +473,10 @@ export async function persistGradingResults(
     const stu = await db.get(findStudentSql, studentId) as { id: number } | undefined;
     if (!stu) {
       failedStudents.push({ fileName: row.fileName, studentId, code: "STUDENT_NOT_FOUND", message: "学生不存在" });
+      continue;
+    }
+    if (rosterEnforced && !(await isExamParticipant(db, examId, stu.id))) {
+      failedStudents.push({ fileName: row.fileName, studentId, code: "STUDENT_NOT_IN_EXAM", message: "学生不属于本次考试应考名单，已拒绝入库" });
       continue;
     }
     try {
@@ -2110,25 +2119,39 @@ export async function createApp(): Promise<express.Express> {
   });
 
   /**
-   * 统一的「批改完整性」校验（评审 P1）：成绩公布前必须确认批改已完成。
+   * 统一的「批改完整性」校验（评审 P1-1）：成绩公布前必须确认批改已完成。
    * - 成绩记录：该考试至少保存了一条 student_scores（无成绩 = 未批改）；
-   * - 应考学生：exams.class_id 已知 → 名册 = 该班学生数；否则 exams.grade_id 已知 →
-   *   名册 = 该年级所有班级学生数（去重）；两者皆无 → 名册不可知，仅校验成绩记录非空。
-   * - 已录入学生低于名册人数 → 视为批改未完，拒绝公布（防止半成品成绩暴露给学生）。
-   * 不满足时抛 { status: 409 }，由路由统一映射为 409 响应。
+   * - 应考学生：优先以 exam_participants 快照为准（阅卷入库/首次公布时固化当前名册，之后调班不改历史判断）；
+   *   快照不存在或为空班级（0 行）时回退到班级/年级实时计数（兼容空名册测试库）；均无则仅校验非空。
+   * - 集合校验：应考集合 ⊆ 已评分集合；缺任何一名应考学生即 409（不再只比人数，防止外班/误识别凑数绕过）。
+   * 不满足时抛 { status: 409 }，由路由统一映射为 409 响应。单场/批量共用。
    */
   async function assertGradingComplete(
     db: DbAdapter,
     exam: { id: number; class_id?: number | null; grade_id?: number | null }
   ): Promise<{ scoredCount: number; expected: number | null }> {
-    const scoreRow = await db.get(
-      "SELECT COUNT(DISTINCT student_id) AS count FROM student_scores WHERE exam_id = ?",
-      exam.id
-    ) as { count: number } | undefined;
-    const scoredCount = Number(scoreRow?.count ?? 0);
+    const scoredRows = await db.all("SELECT DISTINCT student_id FROM student_scores WHERE exam_id = ?", exam.id) as Array<{ student_id: number }>;
+    const scoredCount = scoredRows.length;
     if (scoredCount === 0) {
       throw Object.assign(new Error("该考试尚无成绩记录（批改未完成），无法公布成绩"), { status: 409, code: ApiError.INVALID_VALUE });
     }
+
+    // 优先集合校验：固化快照（存量库首次公布时固化）
+    const snap = await ensureExamParticipants(db, exam.id);
+    if (snap.rosterKnown && snap.participantCount > 0) {
+      const missing = await listMissingParticipants(db, exam.id);
+      if (missing.length > 0) {
+        const sample = missing.slice(0, 5).map((m) => (m.student_number ? `${m.name}(${m.student_number})` : m.name)).join("、");
+        const detail = sample ? `，缺：${sample}${missing.length > 5 ? ` 等 ${missing.length} 人` : ""}` : "";
+        throw Object.assign(
+          new Error(`该考试成绩记录不完整（缺 ${missing.length} 名应考学生成绩${detail}），无法公布成绩`),
+          { status: 409, code: ApiError.INVALID_VALUE }
+        );
+      }
+      return { scoredCount, expected: snap.participantCount };
+    }
+
+    // 快照为空或不可知（空班级/无 class_id+grade_id/表未迁移）：回退到实时人数计数（兼容旧库）
     let expected: number | null = null;
     if (exam.class_id != null) {
       const roster = await db.get("SELECT COUNT(*) AS count FROM class_students WHERE class_id = ?", exam.class_id) as { count: number } | undefined;

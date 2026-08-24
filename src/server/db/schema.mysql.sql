@@ -602,6 +602,17 @@ CREATE TABLE IF NOT EXISTS exam_publish_events (
 ) ENGINE=InnoDB;
 CREATE INDEX idx_epe_exam ON exam_publish_events(exam_id);
 
+-- v47: 考试参与者快照（应考名单固化，应考集合 ⊆ 已评分集合；首次入库/公布时固化，之后调班不改历史判断）
+CREATE TABLE IF NOT EXISTS exam_participants (
+    exam_id     INT NOT NULL,
+    student_id  INT NOT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (exam_id, student_id),
+    FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+    FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+CREATE INDEX IF NOT EXISTS idx_ep_student ON exam_participants(student_id);
+
 -- ============================================================
 -- 初始数据
 -- ============================================================
