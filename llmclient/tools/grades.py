@@ -397,9 +397,9 @@ def get_review_risks(examId: int, classId: int | None = None, limit: int = 12) -
     return {"risks": risks}
 
 
-def get_knowledge_point_weaknesses(exam_id: int, class_id: int | None = None) -> dict[str, object]:
+def get_knowledge_point_weaknesses(examId: int, classId: int | None = None) -> dict[str, object]:
     """获取按知识点聚合的得分率排名（弱→强），v1.7.0."""
-    db = _connect()
+    db = connect_db()
     try:
         sql = (
             "SELECT kp.point_text, "
@@ -411,10 +411,10 @@ def get_knowledge_point_weaknesses(exam_id: int, class_id: int | None = None) ->
             "JOIN knowledge_points kp ON kp.card_id = e.card_id AND kp.question_number = qs.question_number "
             "WHERE qs.exam_id = ?"
         )
-        params: list[object] = [exam_id]
-        if class_id is not None:
+        params: list[object] = [examId]
+        if classId is not None:
             sql += " AND qs.student_id IN (SELECT student_id FROM class_students WHERE class_id = ?)"
-            params.append(class_id)
+            params.append(classId)
         sql += " GROUP BY kp.point_text ORDER BY avg_rate ASC LIMIT 20"
 
         rows = db.execute(sql, params).fetchall()

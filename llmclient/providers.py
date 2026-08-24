@@ -205,7 +205,9 @@ def run_openai_compatible_analysis(
             "messages": messages,
             "tools": openai_tools(),
             "response_format": {"type": "json_object"},
-            "max_tokens": 4096,
+            # 2026-08-24：4096 → 8192（成绩分析报告含 7 个工具结果 + 多段结构化字段，
+            # 4096 时常在字符串中间截断导致 "Unterminated string" JSON 解析失败）
+            "max_tokens": 8192,
             "stream": False,
         }
         if model.provider in ("deepseek", "openai") and model.thinking:
