@@ -2248,6 +2248,8 @@ export async function createApp(): Promise<express.Express> {
   });
 
   // v41: 批量成绩公布 —— body { examIds: number[] }，逐场校验存在性与数据权限范围。
+  // 评审（合并审查 M1）：examIds 数量上限 200，防止超大 IN 子句与逐场完整性校验耗尽资源。
+  const PUBLISH_BATCH_MAX_EXAMS = 200;
   app.post("/api/exams/publish-batch", requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
     try {
       const body = (req.body ?? {}) as { examIds?: unknown };
@@ -2256,6 +2258,10 @@ export async function createApp(): Promise<express.Express> {
       const examIds = [...new Set(rawIds.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
       if (examIds.length === 0) {
         res.status(400).json({ message: "examIds 必须为非空数字数组" });
+        return;
+      }
+      if (examIds.length > PUBLISH_BATCH_MAX_EXAMS) {
+        res.status(400).json({ message: `一次最多批量公布 ${PUBLISH_BATCH_MAX_EXAMS} 场考试（当前 ${examIds.length} 场），请分批操作` });
         return;
       }
       const { getMysqlDb } = await import("../../../server/db");
