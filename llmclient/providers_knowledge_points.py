@@ -48,11 +48,12 @@ def _build_system_prompt(
     extra_notes: str,
     ocr_mode: bool = False,
 ) -> str:
+    # 注意：build_knowledge_points_prompt 内部已完成一次 str.format()
+    # （占位符 {question_range}/{extra_notes_section} 已替换，JSON 示例花括号已转义）。
+    # 此处【不得再次调用 .format()】—— 转义还原后的字面花括号会触发 KeyError。
+    # 科目信息以拼接方式补充到 prompt 末尾。
     base = build_knowledge_points_prompt(question_range, extra_notes, ocr_mode)
-    return base.format(
-        question_range=question_range,
-        extra_notes_section=f"\n科目: {subject}\n教师特别说明: {extra_notes}" if extra_notes else f"\n科目: {subject}",
-    )
+    return base + f"\n\n## 科目\n{subject}"
 
 
 def _parse_knowledge_points(text: str) -> dict[str, Any]:
