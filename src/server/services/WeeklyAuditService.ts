@@ -17,6 +17,7 @@
 
 import { getMysqlDb } from "../db";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
+import { EXAM_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 import type {
   CrossExamTotalExam, CrossExamTotalRow, WeeklyAuditGradeInfo,
   WeeklyAuditResponse, WeeklyAuditSummary, WeeklyAuditWeakPoint,
@@ -162,6 +163,8 @@ export class WeeklyAuditService {
       WHERE e.exam_mode = 'quiz'
         AND date(COALESCE(ac.exam_date, e.created_at)) >= date(?)
         AND date(COALESCE(ac.exam_date, e.created_at)) <= date(?)
+        -- #246 auto_delete：软删除考试不计入发布门槛
+        AND ${EXAM_NOT_SOFT_DELETED_SQL}
       ORDER BY date(COALESCE(ac.exam_date, e.created_at)) ASC, e.id ASC
     `, weekStart, weekEnd) as Array<{ id: number; name: string; status: string; score_count: number }>;
     const pending = rows
@@ -212,6 +215,8 @@ export class WeeklyAuditService {
         AND date(COALESCE(ac.exam_date, e.created_at)) >= date(?)
         AND date(COALESCE(ac.exam_date, e.created_at)) <= date(?)
         AND EXISTS (SELECT 1 FROM student_scores ss WHERE ss.exam_id = e.id)
+        -- #246 auto_delete：软删除考试不进周报组
+        AND ${EXAM_NOT_SOFT_DELETED_SQL}
       ORDER BY date(COALESCE(ac.exam_date, e.created_at)) ASC, e.id ASC
     `, weekStart, weekEnd) as Array<{ grade_id: number | null; grade_name: string | null; sort_order: number | null; exam_id: number }>;
 

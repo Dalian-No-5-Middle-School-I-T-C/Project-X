@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { Calendar, ChevronLeft, ChevronRight, X } from "lucide-react";
 import { SUBJECT_OPTIONS, subjectToKey, isPredefinedSubject } from "../../../../shared/pinyin";
+import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
 import {
   Button,
@@ -28,6 +29,9 @@ export interface NewCardFormData {
   examAction: "none" | "create" | "link";
   examName?: string;
   linkExamId?: number;
+  // 评审 P1-2：同步创建考试时须提供应考范围（年级或班级至少其一）
+  gradeId?: number;
+  classId?: number;
   englishListening?: boolean;
   chineseChoicePlacement?: "front" | "inline";
   paperSize: "A4" | "A3";
@@ -187,6 +191,27 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
   const [englishListening, setEnglishListening] = useState(true);
   const [chineseChoicePlacement, setChineseChoicePlacement] = useState<"front" | "inline">("front");
   const [paperSize, setPaperSize] = useState<"A4" | "A3">("A4");
+  // 评审 P1-2：同步创建考试需应考范围（年级/班级）
+  const [createGradeId, setCreateGradeId] = useState<string>("__none__");
+  const [createClassId, setCreateClassId] = useState<string>("__none__");
+  const [createGrades, setCreateGrades] = useState<Array<{ id: number; name: string }>>([]);
+  const [createClasses, setCreateClasses] = useState<Array<{ id: number; name: string }>>([]);
+
+  useEffect(() => {
+    if (!open) return;
+    fetchJson<Array<{ id: number; name: string }>>("/api/classes/grades")
+      .then((grades) => { if (Array.isArray(grades)) setCreateGrades(grades); })
+      .catch(() => {});
+  }, [open]);
+  useEffect(() => {
+    if (!open || !createGradeId || createGradeId === "__none__") {
+      setCreateClasses([]);
+      return;
+    }
+    fetchJson<Array<{ id: number; name: string }>>(`/api/classes?gradeId=${Number(createGradeId)}`)
+      .then((cls) => { if (Array.isArray(cls)) setCreateClasses(cls); })
+      .catch(() => setCreateClasses([]));
+  }, [open, createGradeId]);
 
   useEffect(() => {
     if (open) {
@@ -203,6 +228,9 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
       setEnglishListening(true);
       setChineseChoicePlacement("front");
       setPaperSize("A4");
+      setCreateGradeId("__none__");
+      setCreateClassId("__none__");
+      setCreateClasses([]);
     }
   }, [open]);
 
@@ -232,6 +260,15 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
     if (!titleTrimmed) { setError("请输入考试名称（题目）"); return; }
     if (examAction === "create" && !examName.trim()) { setError("请输入关联考试的考试名称"); return; }
     if (examAction === "link" && !linkExamId) { setError("请选择要关联的已有考试"); return; }
+    // 评审 P1-2：同步创建考试必须指定应考范围（年级或班级至少其一）
+    if (examAction === "create") {
+      const gradeId = createGradeId && createGradeId !== "__none__" ? Number(createGradeId) : undefined;
+      const classId = createClassId && createClassId !== "__none__" ? Number(createClassId) : undefined;
+      if (!gradeId && !classId) {
+        setError("【完整性校验】请选择应考范围（年级或班级至少其一）");
+        return;
+      }
+    }
     const normalizedExamDate = examDate.trim();
     if (!normalizedExamDate) { setError("请选择考试时间"); return; }
     if (!isValidExamDate(normalizedExamDate)) { setError(`请输入 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效考试时间（YYYY-MM-DD）`); return; }
@@ -244,6 +281,8 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
       examAction,
       examName: examAction === "create" ? examName.trim() || titleTrimmed : undefined,
       linkExamId: examAction === "link" && linkExamId ? linkExamId : undefined,
+      gradeId: examAction === "create" && createGradeId && createGradeId !== "__none__" ? Number(createGradeId) : undefined,
+      classId: examAction === "create" && createClassId && createClassId !== "__none__" ? Number(createClassId) : undefined,
       englishListening,
       chineseChoicePlacement,
       paperSize,
@@ -366,6 +405,23 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
                 <span className="text-xs text-muted-foreground">
                   科目「{subjectLabel === "其他" ? (customSubject || "—") : subjectLabel}」从答题卡继承
                 </span>
+                {/* 评审 P1-2：同步创建考试需应考范围（年级或班级至少其一） */}
+                <div className="flex flex-wrap gap-2">
+                  <Select value={createGradeId} onValueChange={(v) => { setCreateGradeId(v); setCreateClassId("__none__"); }}>
+                    <SelectTrigger className="w-40"><SelectValue placeholder="应考年级（必选其一）" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__" disabled>应考年级（必选其一）</SelectItem>
+                      {createGrades.map((g) => (<SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={createClassId} onValueChange={setCreateClassId} disabled={createClasses.length === 0}>
+                    <SelectTrigger className="w-40"><SelectValue placeholder={createClasses.length === 0 ? "先选年级" : "应考班级（可选）"} /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__none__" disabled>应考班级（可选，不选=整个年级）</SelectItem>
+                      {createClasses.map((c) => (<SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             )}
             {examAction === "link" && (

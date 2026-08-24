@@ -16,6 +16,7 @@ import type {
 } from "../../../shared/types";
 import { createBlockId } from "../../../shared/defaultCard";
 import { formatBlankLabel } from "../../../shared/blankLabels";
+import { ESSAY_DEFAULT_LINE_COLOR } from "../../../shared/essayGrid";
 
 const modeLabels: Record<ObjectiveMode, string> = {
   single: "单选",
@@ -25,7 +26,8 @@ const modeLabels: Record<ObjectiveMode, string> = {
 
 const optionLayoutLabels: Record<ObjectiveOptionLayout, string> = {
   horizontal: "横向",
-  vertical: "竖向（4题一组）"
+  vertical: "竖向（4题一组）",
+  "vertical-options": "选项竖排（A/B/C/D 纵向）"
 };
 
 const styleLabels: Record<SubjectiveStyle, string> = {
@@ -163,7 +165,7 @@ function defaultEssayBlock(nextNumber: number): SubjectiveBlock {
         cellHeightMm: 7,
         targetChars: 600,
         showTitle: true,
-        lineColor: "#222",
+        lineColor: ESSAY_DEFAULT_LINE_COLOR,
         lineWidthMm: 0.15,
         showFrame: true,
         showWordScale: true,

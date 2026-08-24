@@ -41,6 +41,9 @@ import type { AssignedFormula, StudentInfoSettings } from "../../../shared/types
 import { asyncHandler, wrapRouter } from "../../../server/lib/asyncHandler";
 import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
+import { recordLifecycleEvent } from "../../../server/services/lifecycleEvents";
+import { markScoreMutated } from "../../../server/services/examPublishEvents";
+import { ensureExamParticipants, isExamParticipant, listMissingParticipants, listParticipants, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants } from "../../../server/services/examParticipants";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -68,6 +71,8 @@ import { scheduleWeeklyAuditRefresh } from "../../../server/services/WeeklyAudit
 import { cleanupInterruptedAiJobs } from "../../../server/services/aiAnalysisJobs";
 import adminPermissionsRoutes from "../../../server/routes/admin-permissions";
 import apiKeysRoutes from "../../../server/routes/api-keys";
+import dataRetentionRoutes from "../../../server/routes/data-retention";
+import consoleRoutes from "../../../server/routes/console";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
 import ladderRoutes from "../../../server/routes/ladder";
 import {
@@ -108,7 +113,7 @@ import {
 } from "./helpers";
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
-  validateExamIdsAccess, setAuthEnforced
+  validateExamIdsAccess, setAuthEnforced, hasViewPermission
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
@@ -405,9 +410,28 @@ export async function persistGradingResults(
   }
   const previousExamStatus = exam.status;
 
-  await examRepo.updateStatus(examId, "grading");
+  // 重新阅卷会逐学生改写 student_scores —— 已公布的考试先自动撤下（记审计），
+  // 避免学生看到阅卷中途的半成品成绩（与 v41 公布门控配套）；阅卷完成结考后需教师重新公布。
+  await db.transaction(async (tx) => {
+    const txExamRepo = new ExamRepository(tx);
+    await txExamRepo.updateStatus(examId, "grading");
+    if (exam.score_published === 1) {
+      await tx.run(
+        "UPDATE exams SET score_published = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND score_published = 1",
+        examId
+      );
+      await tx.run(
+        "INSERT INTO exam_publish_events (exam_id, action, actor_id, reason) VALUES (?, 'unpublish', ?, ?)",
+        examId, createdBy ?? null, "重新阅卷自动撤回"
+      );
+    }
+  });
   const batchId = await examRepo.createScanBatch(examId, `阅卷_${new Date().toLocaleDateString("zh-CN")}`, createdBy);
   await db.run("UPDATE scan_batches SET status = 'processing' WHERE id = ?", batchId);
+
+  // P1-1: 固化应考名单（首次入库时冻结，之后调班不改历史判断）
+  const snapshot = await ensureExamParticipants(db, examId);
+  const rosterEnforced = snapshot.rosterKnown && snapshot.participantCount > 0;
 
   const findStudentSql = `
     SELECT id FROM users WHERE student_number = ? AND role_id = 3 LIMIT 1
@@ -449,6 +473,10 @@ export async function persistGradingResults(
     const stu = await db.get(findStudentSql, studentId) as { id: number } | undefined;
     if (!stu) {
       failedStudents.push({ fileName: row.fileName, studentId, code: "STUDENT_NOT_FOUND", message: "学生不存在" });
+      continue;
+    }
+    if (rosterEnforced && !(await isExamParticipant(db, examId, stu.id))) {
+      failedStudents.push({ fileName: row.fileName, studentId, code: "STUDENT_NOT_IN_EXAM", message: "学生不属于本次考试应考名单，已拒绝入库" });
       continue;
     }
     try {
@@ -719,12 +747,20 @@ export async function createApp(): Promise<express.Express> {
       const userRepo = new UserRepository();
       const user = await userRepo.findById(userId);
       if (!user) { res.status(404).json({ message: "用户不存在" }); return; }
+      const themeSkinRaw = (user as any).theme_skin ?? "paper-edge";
+      const uiStyleRaw = (user as any).ui_style as string | null | undefined;
+      // ui_style 优先；缺失时由 theme_skin 反向推导（flat=clarity / paper-edge=paper_edge）
+      const uiStyle = uiStyleRaw && uiStyleRaw.length > 0
+        ? uiStyleRaw
+        : (themeSkinRaw === "flat" ? "clarity" : "paper_edge");
       res.json({
         scoreDisplayMode: (user as any).score_display_mode ?? "zscore",
         reviewConfidenceThreshold: (user as any).review_confidence_threshold ?? 0.12,
         backgroundOpacity: (user as any).background_opacity ?? 0,
         showTabBar: (user as any).show_tab_bar ?? 0,
-        themeSkin: (user as any).theme_skin ?? "paper-edge",
+        themeSkin: themeSkinRaw,
+        uiStyle,
+        colorScheme: (user as any).color_scheme ?? "light",
       });
     } catch (err) { next(err); }
   });
@@ -732,18 +768,72 @@ export async function createApp(): Promise<express.Express> {
     try {
       const userId = _req.user!.id;
       const body = _req.body as Record<string, unknown>;
+      const db = getMysqlDb();
+
+      // 读取切换前快照，用于主题审计（from_*）
+      const prev = await db.get(
+        "SELECT theme_skin, ui_style, color_scheme FROM users WHERE id = ?",
+        userId
+      ) as { theme_skin?: string | null; ui_style?: string | null; color_scheme?: string | null } | undefined;
+      const prevSkin = prev?.theme_skin ?? "paper-edge";
+      const prevStyle = prev?.ui_style && prev.ui_style.length > 0
+        ? prev.ui_style
+        : (prevSkin === "flat" ? "clarity" : "paper_edge");
+      const prevScheme = prev?.color_scheme ?? "light";
+
       const setClauses: string[] = [];
       const values: unknown[] = [];
       if (body.scoreDisplayMode !== undefined) { setClauses.push("score_display_mode = ?"); values.push(body.scoreDisplayMode); }
       if (body.reviewConfidenceThreshold !== undefined) { setClauses.push("review_confidence_threshold = ?"); values.push(body.reviewConfidenceThreshold); }
       if (body.backgroundOpacity !== undefined) { setClauses.push("background_opacity = ?"); values.push(body.backgroundOpacity); }
       if (body.showTabBar !== undefined) { setClauses.push("show_tab_bar = ?"); values.push(body.showTabBar ? 1 : 0); }
-      if (body.themeSkin !== undefined) { setClauses.push("theme_skin = ?"); values.push(body.themeSkin); }
+
+      // 皮肤风格：uiStyle 与 themeSkin 双向同步，避免双源不一致（枚举校验，拒绝脏值）
+      if (body.uiStyle !== undefined) {
+        const uiStyle = body.uiStyle as string;
+        if (uiStyle !== "clarity" && uiStyle !== "paper_edge") {
+          res.status(400).json({ message: "uiStyle 仅支持 clarity / paper_edge" });
+          return;
+        }
+        setClauses.push("ui_style = ?"); values.push(uiStyle);
+        setClauses.push("theme_skin = ?"); values.push(uiStyle === "clarity" ? "flat" : "paper-edge");
+      } else if (body.themeSkin !== undefined) {
+        const themeSkin = body.themeSkin as string;
+        if (themeSkin !== "flat" && themeSkin !== "paper-edge") {
+          res.status(400).json({ message: "themeSkin 仅支持 flat / paper-edge" });
+          return;
+        }
+        setClauses.push("theme_skin = ?"); values.push(themeSkin);
+        setClauses.push("ui_style = ?"); values.push(themeSkin === "flat" ? "clarity" : "paper_edge");
+      }
+      if (body.colorScheme !== undefined) {
+        const colorScheme = body.colorScheme as string;
+        if (colorScheme !== "light" && colorScheme !== "dark") {
+          res.status(400).json({ message: "colorScheme 仅支持 light / dark" });
+          return;
+        }
+        setClauses.push("color_scheme = ?"); values.push(colorScheme);
+      }
+
+      let nextStyle = prevStyle;
+      let nextScheme = prevScheme;
+      if (body.uiStyle !== undefined) nextStyle = body.uiStyle as string;
+      else if (body.themeSkin !== undefined) nextStyle = (body.themeSkin as string) === "flat" ? "clarity" : "paper_edge";
+      if (body.colorScheme !== undefined) nextScheme = body.colorScheme as string;
+
       if (setClauses.length > 0) {
         setClauses.push("updated_at = CURRENT_TIMESTAMP");
         values.push(userId);
-        const db = getMysqlDb();
         await db.run(`UPDATE users SET ${setClauses.join(", ")} WHERE id = ?`, ...values);
+      }
+
+      // 主题/明暗发生实际变化才写审计事件
+      if (nextStyle !== prevStyle || nextScheme !== prevScheme) {
+        await db.run(
+          `INSERT INTO theme_change_events (user_id, from_style, to_style, from_scheme, to_scheme, changed_at)
+           VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+          userId, prevStyle, nextStyle, prevScheme, nextScheme
+        );
       }
       res.json({ message: "已保存" });
     } catch (err) { next(err); }
@@ -827,6 +917,8 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/db", backupRoutes);
   app.use("/api/admin/api-keys", apiKeysRoutes);
   app.use("/api/admin/permissions", adminPermissionsRoutes);
+  app.use("/api/admin/data-retention-policies", dataRetentionRoutes);
+  app.use("/api/admin/console", consoleRoutes);
   if (scannerClientApiEnabled) {
     app.use("/api/scanner/upload", scannerUploadRoutes);
   } else {
@@ -1003,6 +1095,7 @@ export async function createApp(): Promise<express.Express> {
       card.examDate = examDate;
       card = applySubjectTemplate(card, { englishListening, chineseChoicePlacement });
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
+      await recordLifecycleEvent({ entityType: "answer_card", entityId: saved.id, action: "create", actorId: req.user?.id });
       res.status(201).json(saved);
     } catch (error) {
       next(error);
@@ -1471,10 +1564,14 @@ export async function createApp(): Promise<express.Express> {
         const db = getMysqlDb();
         if (deleteReferencedExams) {
           await deleteExamRows(db, referenced.map((e: any) => Number(e.id)));
+          for (const e of referenced as Array<{ id: number }>) {
+            await recordLifecycleEvent({ entityType: "exam", entityId: e.id, action: "delete", actorId: req.user?.id });
+          }
         } else {
           await db.run("UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ?", cardId);
         }
         await cardRepo.deleteCard(cardId);
+        await recordLifecycleEvent({ entityType: "answer_card", entityId: cardId, action: "delete", actorId: req.user?.id });
         await deleteCardFiles(cardId);
         res.json({
           ok: true,
@@ -1758,10 +1855,44 @@ export async function createApp(): Promise<express.Express> {
 
   app.post("/api/exams", validateBody(CreateExamSchema), async (req, res, next) => {
     try {
-      const { name, cardId, gradeId, classId, subject, mode } = req.body as Record<string, unknown>;
+      const { name, cardId, gradeId, classId, subject, mode, retentionPolicyId } = req.body as Record<string, unknown>;
       if (!name || !cardId) {
         res.status(400).json({ message: "缺少 name 或 cardId" });
         return;
+      }
+      // 评审 P1-2：创建考试必须确定应考范围（年级或班级至少其一），否则发布完整性无法校验
+      // （此前 UI 创建的无范围考试会退化为「仅校验非空」，导致部分成绩可公布）。
+      if (!gradeId && !classId) {
+        res.status(400).json({
+          code: "SCOPE_REQUIRED",
+          message: "【完整性校验】创建考试必须指定应考范围（年级或班级至少其一），否则无法保证成绩公布完整性"
+        });
+        return;
+      }
+      // 评审 P1：显式指定保留策略（含 null 解绑）是数据生命周期管理——绑定即挂上
+      // 自动归档/删除，与 PATCH /api/exams/:examId 的语义一致，仅管理员可操作。
+      // 教师不传该字段走按类型默认分配（quiz→周测策略），不受影响。
+      let retentionPolicyIdValue: number | null | undefined;
+      if (retentionPolicyId !== undefined) {
+        if (req.user?.role_name !== "admin") {
+          res.status(403).json({ message: "权限不足：仅管理员可指定数据保留策略" });
+          return;
+        }
+        if (retentionPolicyId !== null) {
+          const pid = Number(retentionPolicyId);
+          if (!Number.isInteger(pid) || pid <= 0) {
+            res.status(400).json({ message: "无效的保留策略 ID" });
+            return;
+          }
+          const policy = await getMysqlDb().get("SELECT id FROM data_retention_policies WHERE id = ?", pid);
+          if (!policy) {
+            res.status(400).json({ message: "保留策略不存在" });
+            return;
+          }
+          retentionPolicyIdValue = pid;
+        } else {
+          retentionPolicyIdValue = null;
+        }
       }
       const examRepo = new ExamRepository();
       const existing = await examRepo.findExamByName(String(name));
@@ -1776,8 +1907,10 @@ export async function createApp(): Promise<express.Express> {
         class_id: classId ? Number(classId) : undefined,
         subject: subject ? String(subject) : undefined,
         exam_mode: mode === "formal" ? "formal" : "quiz",
+        retention_policy_id: retentionPolicyIdValue,
         created_by: req.user?.id
       });
+      await recordLifecycleEvent({ entityType: "exam", entityId: exam.id, action: "create", actorId: req.user?.id });
       res.status(201).json(exam);
     } catch (error) {
       next(error);
@@ -1843,15 +1976,25 @@ export async function createApp(): Promise<express.Express> {
           return;
         }
 
+        const db = getMysqlDb();
         if (!formula?.enabled) {
-          await assignedScoreService.disableFormula(examId);
+          // 评审 P1：禁用赋分会清空全场合计赋分（成绩变更）→ 已公布考试同一事务内自动撤回并写审计
+          await db.transaction(async (tx) => {
+            await assignedScoreService.disableFormula(examId, tx);
+            await markScoreMutated(tx, examId, req.user?.id ?? null, "assigned_disable");
+          });
           res.json({ ok: true, updated: 0, skipped: 0 });
           return;
         }
 
         await assignedScoreService.saveFormula(examId, formula);
         const result = recalculate
-          ? await assignedScoreService.recalculateAll(examId)
+          // 评审 P1：赋分重算改写全部 assigned_score（成绩变更）→ 已公布考试同一事务内自动撤回并写审计
+          ? await db.transaction(async (tx) => {
+              const recalcResult = await assignedScoreService.recalculateAll(examId, tx);
+              await markScoreMutated(tx, examId, req.user?.id ?? null, "assigned_recalc");
+              return recalcResult;
+            })
           : { updated: 0, skipped: 0 };
         res.json({ ok: true, ...result });
       } catch (error) {
@@ -1868,8 +2011,20 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      const results = await examRepo.getExamResults(exam.id);
-      res.json({ ...exam, results });
+      // 评审 P1：results 含学生姓名/考号/分数，属名单类数据：
+      // - 仅教师/管理员可获取，且须对本场考试仍有「查看学生名单」权限
+      //   （can_view_students，管理员/年级组长恒放行）；
+      // - 学生角色一律不返回 results（此前参加考试的学生可借本端点读全班成绩单，
+      //   与 hasViewPermission 的「未配置矩阵→兼容放行」教师语义一并收口）；
+      // 元数据（名称/状态/答题卡等）不受影响。
+      const role = req.user?.role_name;
+      const isStaff = role === "admin" || role === "teacher";
+      if (isStaff && await hasViewPermission(req.user, exam.id, "can_view_students")) {
+        const results = await examRepo.getExamResults(exam.id);
+        res.json({ ...exam, results });
+        return;
+      }
+      res.json(exam);
     } catch (error) {
       next(error);
     }
@@ -1899,8 +2054,10 @@ export async function createApp(): Promise<express.Express> {
         }
       }
       await deleteExamRows(db, [exam.id]);
+      await recordLifecycleEvent({ entityType: "exam", entityId: exam.id, action: "delete", actorId: req.user?.id });
       if (deleteLinkedCard && linkedCardId) {
         await cardRepo.deleteCard(linkedCardId);
+        await recordLifecycleEvent({ entityType: "answer_card", entityId: linkedCardId, action: "delete", actorId: req.user?.id });
       }
       if (deleteLinkedCard && linkedCardId) {
         await deleteCardFiles(linkedCardId);
@@ -1919,15 +2076,61 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      const { cardId, name, subject, mode } = req.body as Record<string, unknown>;
+      const { cardId, name, subject, mode, gradeId, classId, retentionPolicyId } = req.body as Record<string, unknown>;
       const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (cardId !== undefined) updates.card_id = String(cardId);
       if (name !== undefined) updates.name = String(name);
       if (subject !== undefined) updates.subject = String(subject);
       if (mode === "quiz" || mode === "formal") updates.exam_mode = mode;
+      // 评审 P1-2：补设/修改应考范围（年级/班级）。不允许清空（无范围考试无法通过完整性校验）；
+      // 与显式应考名单互斥：已有显式名单时须先清除（DELETE /participants）再设置班级范围。
+      if (gradeId !== undefined || classId !== undefined) {
+        const g = gradeId != null ? Number(gradeId) : undefined;
+        const c = classId != null ? Number(classId) : undefined;
+        if ((g !== undefined && !Number.isInteger(g)) || (c !== undefined && !Number.isInteger(c))) {
+          res.status(400).json({ message: "无效的年级/班级 ID" });
+          return;
+        }
+        if (g === undefined && c === undefined) {
+          res.status(400).json({ message: "【完整性校验】不允许清空应考范围；年级或班级至少保留其一" });
+          return;
+        }
+        if (await hasExplicitParticipants(getMysqlDb(), exam.id)) {
+          res.status(409).json({
+            code: "EXPLICIT_LIST_CONFLICT",
+            message: "【完整性校验】该考试已设置显式应考名单，请先清除显式名单（应考名单管理→清除）后再设置年级/班级范围"
+          });
+          return;
+        }
+        if (g !== undefined) updates.grade_id = g;
+        if (c !== undefined) updates.class_id = c;
+      }
+      if (retentionPolicyId !== undefined) {
+        // 评审 P1：保留策略绑定/解绑是数据生命周期管理，仅管理员可操作
+        //（涉及自动归档/删除；SYSTEM_MANAGE 语义，与 data-retention-policies 路由一致）
+        if (req.user?.role_name !== "admin") {
+          res.status(403).json({ message: "权限不足：仅管理员可修改数据保留策略绑定" });
+          return;
+        }
+        if (retentionPolicyId === null) {
+          updates.retention_policy_id = null; // 解绑 = 恢复默认行为（不归档不删除）
+        } else {
+          const pid = Number(retentionPolicyId);
+          if (!Number.isInteger(pid) || pid <= 0) {
+            res.status(400).json({ message: "无效的保留策略 ID" });
+            return;
+          }
+          const policy = await getMysqlDb().get("SELECT id FROM data_retention_policies WHERE id = ?", pid);
+          if (!policy) {
+            res.status(400).json({ message: "保留策略不存在" });
+            return;
+          }
+          updates.retention_policy_id = pid;
+        }
+      }
 
       // Whitelist: only these columns may appear in a dynamic UPDATE
-      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode"]);
+      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode", "grade_id", "class_id", "retention_policy_id"]);
       for (const col of Object.keys(updates)) {
         if (!ALLOWED_COLUMNS.has(col)) {
           res.status(400).json({ message: `不支持的更新字段：${col}` });
@@ -1935,13 +2138,380 @@ export async function createApp(): Promise<express.Express> {
         }
       }
 
-      const { getMysqlDb } = await import("../../../server/db");
+      // getMysqlDb 已在文件顶部静态导入（此处不再动态导入，避免遮蔽同名绑定）
       const db = getMysqlDb();
       const setClauses = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
       const values = Object.values(updates);
       await db.run(`UPDATE exams SET ${setClauses} WHERE id = ?`, ...values, exam.id);
       const updated = await examRepo.findExamById(exam.id);
       res.json(updated);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  /**
+   * 统一的「批改完整性」校验（评审 P1-1 / P1-2）：成绩公布前必须确认批改已完成，且学号身份无误。
+   * - 应考名单来源（v48）：管理员显式名单（exam_participants.source='explicit'）优先；
+   *   否则按考试 class_id/grade_id 从 class_students 固化名册快照（source='roster'）；
+   * - 名单可知且非空 → 集合校验「应考集合 ⊆ 已评分集合」，缺任何一名应考学生即 409；
+   * - 名单不可知（无 class_id/grade_id 且未设置显式名单）→ 409 拒绝公布（v48 起删除
+   *   「仅校验非空」退化路径——正常 UI 创建的无范围考试不得再以部分成绩发布）；
+   * - 名单为空（班级暂无学生 / 显式名单为空）→ 409，同样不得发布。
+   * 不满足时抛 { status: 409 }，由路由统一映射为 409 响应。单场/批量共用。
+   */
+  async function assertGradingComplete(
+    db: DbAdapter,
+    exam: { id: number; class_id?: number | null; grade_id?: number | null }
+  ): Promise<{ scoredCount: number; expected: number | null }> {
+    const scoredRows = await db.all("SELECT DISTINCT student_id FROM student_scores WHERE exam_id = ?", exam.id) as Array<{ student_id: number }>;
+    const scoredCount = scoredRows.length;
+    if (scoredCount === 0) {
+      throw Object.assign(new Error("该考试尚无成绩记录（批改未完成），无法公布成绩"), { status: 409, code: ApiError.INVALID_VALUE });
+    }
+
+    // 名单判定：显式名单优先；否则按班级/年级名册快照
+    const snap = await ensureExamParticipants(db, exam.id);
+    if (!snap.rosterKnown) {
+      throw Object.assign(
+        new Error("【完整性校验】该考试未确定应考范围（未指定年级/班级且未设置应考名单），无法公布成绩；请先在考试管理中设置应考范围"),
+        { status: 409, code: ApiError.INVALID_VALUE }
+      );
+    }
+    if (snap.participantCount === 0) {
+      throw Object.assign(
+        new Error("【完整性校验】该考试应考名单为空（班级暂无学生或应考名单未添加学生），无法公布成绩；请先录入学生或设置应考名单"),
+        { status: 409, code: ApiError.INVALID_VALUE }
+      );
+    }
+
+    // 集合校验：应考集合 ⊆ 已评分集合
+    const missing = await listMissingParticipants(db, exam.id);
+    if (missing.length > 0) {
+      const sample = missing.slice(0, 5).map((m) => (m.student_number ? `${m.name}(${m.student_number})` : m.name)).join("、");
+      const detail = sample ? `，缺：${sample}${missing.length > 5 ? ` 等 ${missing.length} 人` : ""}` : "";
+      throw Object.assign(
+        new Error(`该考试成绩记录不完整（缺 ${missing.length} 名应考学生成绩${detail}），无法公布成绩`),
+        { status: 409, code: ApiError.INVALID_VALUE }
+      );
+    }
+    return { scoredCount, expected: snap.participantCount };
+  }
+
+  // v41: 单场成绩公布 —— 教师手动公布后学生方可查看。幂等（已公布直接返回 ok）。
+  app.post("/api/exams/:examId/publish", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "无效的考试 ID" });
+        return;
+      }
+      const { getMysqlDb } = await import("../../../server/db");
+      const db = getMysqlDb();
+      const exam = await db.get("SELECT id, status, score_published, class_id, grade_id FROM exams WHERE id = ?", examId) as { id: number; status?: string; score_published?: number; class_id?: number | null; grade_id?: number | null } | undefined;
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      // 仅已结考（阅卷完成出分）的考试可公布，防止草稿/未完成成绩提前暴露给学生
+      if (exam.status !== "closed") {
+        res.status(409).json({ message: "考试尚未结考（阅卷未完成），无法公布成绩" });
+        return;
+      }
+      // 幂等：已公布直接返回，不重复写审计事件
+      if (exam.score_published === 1) {
+        res.json({ ok: true, scorePublished: 1 });
+        return;
+      }
+      // 评审 P1：结考状态不等于批改完成 —— 无成绩/成绩不完整（低于应考学生）均拒绝公布
+      await assertGradingComplete(db, exam);
+      // 状态更新与审计日志在同一事务中保证原子性；
+      // WHERE 带状态条件，防止校验与写入之间考试被并发改回阅卷中（TOCTOU）
+      await db.transaction(async (tx) => {
+        const result = await tx.run(
+          "UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'closed' AND (score_published IS NULL OR score_published <> 1)",
+          examId
+        );
+        if (result.changes !== 1) {
+          throw Object.assign(new Error("考试状态已变更，公布失败，请刷新后重试"), { status: 409, code: ApiError.INVALID_VALUE });
+        }
+        // v42: 审计日志（首次公布/撤回后重新公布都记录）
+        await tx.run(
+          "INSERT INTO exam_publish_events (exam_id, action, actor_id) VALUES (?, 'publish', ?)",
+          examId, req.user?.id ?? null
+        );
+      });
+      res.json({ ok: true, scorePublished: 1 });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // v41: 批量成绩公布 —— body { examIds: number[] }，逐场校验存在性与数据权限范围。
+  // 评审（合并审查 M1）：examIds 数量上限 200，防止超大 IN 子句与逐场完整性校验耗尽资源。
+  const PUBLISH_BATCH_MAX_EXAMS = 200;
+  app.post("/api/exams/publish-batch", requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+    try {
+      const body = (req.body ?? {}) as { examIds?: unknown };
+      const rawIds = Array.isArray(body.examIds) ? body.examIds : [];
+      // 去重：重复 ID 会导致存在性校验误判与审计重复插入
+      const examIds = [...new Set(rawIds.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+      if (examIds.length === 0) {
+        res.status(400).json({ message: "examIds 必须为非空数字数组" });
+        return;
+      }
+      if (examIds.length > PUBLISH_BATCH_MAX_EXAMS) {
+        res.status(400).json({ message: `一次最多批量公布 ${PUBLISH_BATCH_MAX_EXAMS} 场考试（当前 ${examIds.length} 场），请分批操作` });
+        return;
+      }
+      const { getMysqlDb } = await import("../../../server/db");
+      const db = getMysqlDb();
+      // 评审 P1：软删除考试（exam_archives.is_deleted=1）对任何人（含管理员）不可批量公布
+      // —— 与单场访问/列表/成绩查询的软删除规则一致（管理员恢复需走恢复通道）
+      try {
+        const softDeleted = await db.all(
+          `SELECT DISTINCT exam_id FROM exam_archives WHERE exam_id IN (${examIds.map(() => "?").join(",")}) AND is_deleted = 1`,
+          ...examIds
+        ) as Array<{ exam_id: number }>;
+        if (softDeleted.length > 0) {
+          res.status(400).json({ message: "部分考试不存在" });
+          return;
+        }
+      } catch {
+        // exam_archives 表不可用时视为无软删除记录（与 isExamSoftDeleted 的容错一致）
+      }
+      // 评审 P1：数据范围校验前置到「存在性/结考状态」之前 —— 未授权（含不存在/软删除）的
+      // 考试 ID 一律 403，避免教师借错误响应枚举无权访问考试的 ID 与状态
+      const visibleIds = await getVisibleExamIds(req.user);
+      const denied = visibleIds === null ? [] : examIds.filter((id) => !visibleIds.includes(id));
+      if (denied.length > 0) {
+        res.status(403).json({ message: `以下考试超出你的数据权限范围，无法公布: ${denied.join(", ")}` });
+        return;
+      }
+      // 存在性与结考状态校验（此时仅剩可见范围内的考试）
+      const existing = await db.all(
+        `SELECT id, status, score_published, class_id, grade_id FROM exams WHERE id IN (${examIds.map(() => "?").join(",")})`,
+        ...examIds
+      ) as Array<{ id: number; status?: string; score_published?: number; class_id?: number | null; grade_id?: number | null }>;
+      if (existing.length !== examIds.length) {
+        res.status(400).json({ message: "部分考试不存在" });
+        return;
+      }
+      const notClosed = existing.filter((item) => item.status !== "closed").map((item) => item.id);
+      if (notClosed.length > 0) {
+        res.status(409).json({ message: `以下考试尚未结考（阅卷未完成），无法公布成绩: ${notClosed.join(", ")}` });
+        return;
+      }
+      // 幂等：跳过已公布的考试，不重复写审计事件
+      const toPublish = existing
+        .filter((item) => item.score_published !== 1)
+        .map((item) => item.id);
+      // 评审 P1：逐个校验「批改完整性」——任一场不完整（无成绩/低于应考学生）则整体 409，
+      // 且不影响其它场次（不写任何审计），由教师补完批改后重试
+      const incompleteReasons: string[] = [];
+      for (const exam of existing.filter((item) => item.score_published !== 1)) {
+        try {
+          await assertGradingComplete(db, exam);
+        } catch (error) {
+          incompleteReasons.push(`考试 ${exam.id}：${error instanceof Error ? error.message : "批改未完成"}`);
+        }
+      }
+      if (incompleteReasons.length > 0) {
+        res.status(409).json({ message: `以下考试因批改未完成无法公布成绩：${incompleteReasons.join("；")}` });
+        return;
+      }
+      // 状态更新与审计日志在同一事务中保证原子性；
+      // WHERE 带状态条件，防止校验与写入之间考试被并发改回阅卷中（TOCTOU）
+      await db.transaction(async (tx) => {
+        for (const id of toPublish) {
+          const result = await tx.run(
+            "UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'closed' AND (score_published IS NULL OR score_published <> 1)",
+            id
+          );
+          if (result.changes !== 1) {
+            throw Object.assign(new Error(`考试 ${id} 状态已变更，公布失败，请刷新后重试`), { status: 409, code: ApiError.INVALID_VALUE });
+          }
+          // v42: 审计日志（首次公布/撤回后重新公布都记录）
+          await tx.run(
+            "INSERT INTO exam_publish_events (exam_id, action, actor_id) VALUES (?, 'publish', ?)",
+            id, req.user?.id ?? null
+          );
+        }
+      });
+      res.json({ ok: true, publishedCount: toPublish.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // v42: 撤回成绩公布 —— 仅"已公布(1)"可撤回为"已撤回(2)"；学生立即不可见。
+  // body { reason? }：撤回原因写入审计日志；支持再次公布（保留版本记录）。
+  app.post("/api/exams/:examId/unpublish", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "无效的考试 ID" });
+        return;
+      }
+      const { getMysqlDb } = await import("../../../server/db");
+      const db = getMysqlDb();
+      const exam = await db.get("SELECT id, score_published FROM exams WHERE id = ?", examId) as { id: number; score_published?: number } | undefined;
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      if (exam.score_published !== 1) {
+        res.status(400).json({ message: "仅已公布的成绩可撤回" });
+        return;
+      }
+      const reason = typeof (req.body ?? {}).reason === "string"
+        ? (req.body as { reason?: string }).reason!.trim().slice(0, 500)
+        : "";
+      // 状态更新与审计日志在同一事务中保证原子性；
+      // WHERE 带状态条件，防止校验与写入之间公布状态被并发修改（TOCTOU）
+      await db.transaction(async (tx) => {
+        const result = await tx.run(
+          "UPDATE exams SET score_published = 2, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND score_published = 1",
+          examId
+        );
+        if (result.changes !== 1) {
+          throw Object.assign(new Error("考试状态已变更，撤回失败，请刷新后重试"), { status: 409, code: ApiError.INVALID_VALUE });
+        }
+        await tx.run(
+          "INSERT INTO exam_publish_events (exam_id, action, actor_id, reason) VALUES (?, 'unpublish', ?, ?)",
+          examId, req.user?.id ?? null, reason || null
+        );
+      });
+      res.json({ ok: true, scorePublished: 2 });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── 评审 P1-2：显式应考名单管理（跨班/跨年级联考、补救无范围考试）──
+  // 名单来源二选一：显式名单（source='explicit'）优先；否则按 class_id/grade_id 名册快照。
+  // 无范围考试必须设置显式名单后才能通过发布完整性校验。
+
+  // GET /api/exams/:examId/participants — 查看当前应考名单（含来源标记）
+  app.get("/api/exams/:examId/participants", requireExamAccess, async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "无效的考试 ID" });
+        return;
+      }
+      const db = getMysqlDb();
+      const exam = await db.get("SELECT id, class_id, grade_id FROM exams WHERE id = ?", examId) as { id: number; class_id: number | null; grade_id: number | null } | undefined;
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      const students = await listParticipants(db, examId);
+      const explicit = students.some((s) => s.source === "explicit");
+      const snap = await ensureExamParticipants(db, examId);
+      res.json({
+        examId,
+        scope: { classId: exam.class_id, gradeId: exam.grade_id },
+        source: explicit ? "explicit" : (snap.source ?? null),
+        known: snap.rosterKnown,
+        total: explicit ? students.filter((s) => s.source === "explicit").length : snap.participantCount,
+        students: students.map((s) => ({ studentId: s.student_id, studentNumber: s.student_number, name: s.name, source: s.source })),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // PUT /api/exams/:examId/participants — 设置（整体替换）显式应考名单；空数组 = 清除显式名单
+  // body: { studentIds?: number[] } 或 { studentNumbers?: string[] }（二选一）
+  app.put("/api/exams/:examId/participants", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "无效的考试 ID" });
+        return;
+      }
+      const body = (req.body ?? {}) as { studentIds?: unknown; studentNumbers?: unknown };
+      const db = getMysqlDb();
+      const exam = await db.get("SELECT id FROM exams WHERE id = ?", examId) as { id: number } | undefined;
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      const hasIds = Array.isArray(body.studentIds);
+      const hasNumbers = Array.isArray(body.studentNumbers);
+      if (hasIds && hasNumbers) {
+        res.status(400).json({ message: "studentIds 与 studentNumbers 只能二选一" });
+        return;
+      }
+      if (!hasIds && !hasNumbers) {
+        res.status(400).json({ message: "请提供 studentIds 或 studentNumbers（空数组 = 清除显式名单）" });
+        return;
+      }
+
+      let ids: number[];
+      if (hasIds) {
+        ids = [...new Set((body.studentIds as unknown[]).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+        if (ids.length === 0 && (body.studentIds as unknown[]).length > 0) {
+          res.status(400).json({ message: "studentIds 包含无效项" });
+          return;
+        }
+      } else {
+        const numbers = (body.studentNumbers as unknown[]).map(String).map((s) => s.trim()).filter(Boolean);
+        if (numbers.length === 0) {
+          ids = [];
+        } else {
+          const placeholders = numbers.map(() => "?").join(",");
+          const rows = await db.all(
+            `SELECT id, student_number FROM users WHERE role_id = 3 AND student_number IN (${placeholders})`,
+            ...numbers
+          ) as Array<{ id: number; student_number: string | null }>;
+          const foundNumbers = new Set(rows.map((r) => r.student_number));
+          const missingNumbers = numbers.filter((n) => !foundNumbers.has(n));
+          if (missingNumbers.length > 0) {
+            res.status(400).json({ message: `以下学号不存在或非学生账号：${missingNumbers.join("、")}` });
+            return;
+          }
+          ids = [...new Set(rows.map((r) => r.id))];
+        }
+      }
+
+      // 校验显式名单中的学生身份（studentIds 路径：确保全部为学生账号）
+      if (hasIds && ids.length > 0) {
+        const placeholders = ids.map(() => "?").join(",");
+        const rows = await db.all(`SELECT id FROM users WHERE role_id = 3 AND id IN (${placeholders})`, ...ids) as Array<{ id: number }>;
+        const found = new Set(rows.map((r) => r.id));
+        const missingIds = ids.filter((id) => !found.has(id));
+        if (missingIds.length > 0) {
+          res.status(400).json({ message: `以下学生不存在或非学生账号：${missingIds.join("、")}` });
+          return;
+        }
+      }
+
+      const count = await setExplicitParticipants(db, examId, ids);
+      const students = (await listParticipants(db, examId)).filter((s) => s.source === "explicit");
+      res.json({ ok: true, source: "explicit", total: count, students: students.map((s) => ({ studentId: s.student_id, studentNumber: s.student_number, name: s.name })) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // DELETE /api/exams/:examId/participants — 清除显式应考名单（回落班级/年级名册快照）
+  app.delete("/api/exams/:examId/participants", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "无效的考试 ID" });
+        return;
+      }
+      const db = getMysqlDb();
+      const exam = await db.get("SELECT id FROM exams WHERE id = ?", examId) as { id: number } | undefined;
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      await clearExplicitParticipants(db, examId);
+      res.json({ ok: true, message: "显式应考名单已清除（考试将按年级/班级名册校验）" });
     } catch (error) {
       next(error);
     }

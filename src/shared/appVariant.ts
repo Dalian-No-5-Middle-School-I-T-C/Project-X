@@ -1,4 +1,4 @@
-export type ProjectXAppMode = "home" | "design" | "exam-manage" | "analysis" | "scores" | "account" | "account-settings" | "global-settings" | "sponsor" | "guide" | "permissions";
+export type ProjectXAppMode = "home" | "design" | "exam-manage" | "analysis" | "scores" | "account" | "account-settings" | "global-settings" | "admin-console" | "sponsor" | "guide" | "permissions";
 
 export type ProjectXVariant = "student" | "teacher" | "teacher-scanner";
 
@@ -40,7 +40,8 @@ export const PROJECTX_VARIANTS: Record<ProjectXVariant, ProjectXVariantConfig> =
     appId: "cn.projectx.teacher",
     userDataDir: "answer-card-designer",
     defaultMode: "home",
-    allowedModes: ["home", "design", "exam-manage", "analysis", "account", "account-settings", "global-settings"],
+    // admin-console：变体层面放行路由，实际访问由 SYSTEM_MANAGE 权限守卫把关（#246）
+    allowedModes: ["home", "design", "exam-manage", "analysis", "account", "account-settings", "global-settings", "admin-console"],
     enableScanner: false,
     nativeResources: "recognizer"
   },
@@ -52,7 +53,8 @@ export const PROJECTX_VARIANTS: Record<ProjectXVariant, ProjectXVariantConfig> =
     appId: "cn.projectx.teacher-scanner",
     userDataDir: "answer-card-designer",
     defaultMode: "home",
-    allowedModes: ["home", "design", "exam-manage", "analysis", "account", "account-settings", "global-settings"],
+    // admin-console：变体层面放行路由，实际访问由 SYSTEM_MANAGE 权限守卫把关（#246）
+    allowedModes: ["home", "design", "exam-manage", "analysis", "account", "account-settings", "global-settings", "admin-console"],
     enableScanner: true,
     nativeResources: "scanner"
   }

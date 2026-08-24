@@ -5,8 +5,14 @@ import { ScoreRepository } from "../repositories/ScoreRepository";
 import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS } from "../auth/permissions";
-import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
+import {
+  getVisibleExamIds,
+  isExamSoftDeleted,
+  filterExamIdsByViewPermission,
+  hasViewPermission
+} from "../../apps/answer-card/server/middleware";
 import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
+import { trackAnalysisCall } from "../services/aiTelemetry";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 
@@ -110,8 +116,18 @@ router.get("/me", async (req: Request, res: Response) => {
 /** GET /api/scores/me/exams/:examId — 当前用户某场考试的逐题明细（含班级均分与原卷图块） */
 router.get("/me/exams/:examId", async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
+  // #246 auto_delete：软删除考试的逐题明细不可访问
+  if (await isExamSoftDeleted(examId)) {
+    res.status(404).json({ message: "未找到你在该场考试的成绩" });
+    return;
+  }
   if (!(await scoreRepo.hasScore(req.user!.id, examId))) {
     res.status(404).json({ message: "未找到你在该场考试的成绩" });
+    return;
+  }
+  // v41: 成绩未公布前学生不可查看（后端硬过滤）
+  if (!(await scoreRepo.isExamScorePublished(examId))) {
+    res.status(404).json({ message: "该场考试的成绩尚未公布" });
     return;
   }
 
@@ -218,24 +234,35 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
     res.status(403).json({ message: "你未参加该考试" });
     return;
   }
+  // v41: 成绩未公布前学生不可请求 AI 分析（防止经由分析接口间接取分）
+  if (!(await scoreRepo.isExamScorePublished(examId))) {
+    res.status(403).json({ message: "该场考试的成绩尚未公布" });
+    return;
+  }
 
   const classId = await resolveStudentPrimaryClassId(req.user!.id);
 
   try {
     // 复用统一的 llmclient 转发封装（自动拉起 sidecar + 内部鉴权头），
     // 避免与 llm-client.ts 的环境变量命名（LLMCLIENT_URL/LLMCLIENT_INTERNAL_API_KEY）不一致。
-    const response = await fetchLlmClient("/analysis/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        examId,
-        classId,
-        callerRole: "student",
-        studentId: req.user!.id,
-        model: typeof req.body?.model === "string" ? req.body.model : undefined,
-        locale: "zh-CN",
-      }),
-    }, 120_000);
+    const model = typeof req.body?.model === "string" ? req.body.model : undefined;
+    const response = await trackAnalysisCall({
+      userId: req.user!.id,
+      feature: "student_analysis",
+      model: model ?? null,
+      doCall: (runId) => fetchLlmClient("/analysis/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          examId,
+          classId,
+          callerRole: "student",
+          studentId: req.user!.id,
+          model,
+          locale: "zh-CN",
+        }),
+      }, 120_000, { runId, provider: "llmclient", model: model ?? null, stage: "analysis" })
+    });
 
     if (!response.ok) {
       let message = `LLM service returned ${response.status}`;
@@ -368,14 +395,33 @@ router.get("/students/:studentId", canQueryOthers, async (req: Request, res: Res
     res.status(404).json({ message: "学生不存在" });
     return;
   }
-  let scores = await scoreRepo.getStudentScores(studentId);
-  // 教师仅可见其任教范围内的考试成绩
+  // 教师/管理员代查：公布门是学生端读门，代查须能看到未公布成绩（评审 P2，
+  // 与教师端考试详情/天梯接口行为一致）
+  let scores = await scoreRepo.getStudentScores(studentId, { publishedOnly: false });
+  // 评审 P1：教师代查同样消费 #246 权限矩阵 —— 先按可见范围收敛（含软删除剔除），
+  // 再逐场叠加 can_view_scores（成绩）与 can_view_students（姓名/考号）查看门；
+  // 普通教师（无 teacher_role）此前回到全校可见、矩阵行完全失效的旁路由此收口。
   if (req.user!.role_name === "teacher") {
     const visibleIds = await getVisibleExamIds(req.user);
-    if (visibleIds !== null) {
-      const visible = new Set(visibleIds);
-      scores = scores.filter((s) => visible.has(s.exam_id));
+    const visible = visibleIds === null ? null : new Set(visibleIds);
+    let inScope = visible === null ? scores : scores.filter((s) => visible.has(s.exam_id));
+    const scopeExamIds = [...new Set(inScope.map((s) => s.exam_id))];
+    if (scopeExamIds.length === 0 && scores.length > 0) {
+      // 学生有成绩但教师可见范围内一场都没有 → 不借「空列表+姓名」泄露其身份
+      res.status(403).json({ message: "权限不足：该学生的所有考试成绩都不在你的查看范围内" });
+      return;
     }
+    const scoreAllowed = await filterExamIdsByViewPermission(req.user, scopeExamIds, "can_view_scores");
+    if (scopeExamIds.length > 0 && scoreAllowed.size === 0) {
+      res.status(403).json({ message: "权限不足：管理员已关闭你对相关考试的「成绩」查看权限" });
+      return;
+    }
+    const studentAllowed = await filterExamIdsByViewPermission(req.user, scopeExamIds, "can_view_students");
+    if (studentAllowed.size !== scopeExamIds.length) {
+      res.status(403).json({ message: "权限不足：管理员已关闭你对相关考试的「学生名单」查看权限" });
+      return;
+    }
+    scores = inScope.filter((s) => scoreAllowed.has(s.exam_id));
   }
   res.json({
     studentId,
@@ -392,6 +438,11 @@ router.get(
   async (req: Request, res: Response) => {
     const studentId = Number(req.params.studentId);
     const examId = Number(req.params.examId);
+    // #246 auto_delete：软删除考试的代查明细不可访问
+    if (await isExamSoftDeleted(examId)) {
+      res.status(404).json({ message: "考试不存在或已按数据保留策略清理" });
+      return;
+    }
     const accessError = await assertStudentAccessible(studentId, req.user!);
     if (accessError) {
       res.status(accessError.status).json({ message: accessError.message });
@@ -401,6 +452,14 @@ router.get(
       const visible = await getVisibleExamIds(req.user);
       if (visible !== null && !visible.includes(examId)) {
         res.status(403).json({ message: "无权访问此考试" });
+        return;
+      }
+      // 评审 P1：代查逐题明细叠加 can_view_scores + can_view_students 矩阵门
+      if (
+        !(await hasViewPermission(req.user, examId, "can_view_scores")) ||
+        !(await hasViewPermission(req.user, examId, "can_view_students"))
+      ) {
+        res.status(403).json({ message: "权限不足：管理员已关闭你对本场考试的「成绩」或「学生名单」查看权限" });
         return;
       }
     }

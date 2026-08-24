@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import { getMysqlDb } from "../db";
-import { getVisibleExamIds } from "../../apps/answer-card/server/middleware";
+import { getVisibleExamIds, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 
 // Issue #177 文理分科：科目归属 / 筛选
 export type TrackType = "common" | "arts" | "science";
@@ -76,8 +76,11 @@ export async function canReadGroup(req: Request, groupId: number): Promise<boole
   const visibleIds = await visibleExamIdsForGroupRead(req);
   if (visibleIds === null) return true;
   if (visibleIds.length === 0) return false;
+  // #246：软删除成员与统计口径一致地排除——清理任务只标记 exam_archives.is_deleted、
+  // 不删组成员关系，若此处不过滤，组内任一成员被保留策略软删除后整个组对普通教师 403。
   const rows = await getMysqlDb().all<{ exam_id: number }>(
-    "SELECT exam_id FROM exam_group_members WHERE group_id = ?",
+    `SELECT egm.exam_id FROM exam_group_members egm
+     WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL}`,
     groupId
   );
   if (rows.length === 0) return false;

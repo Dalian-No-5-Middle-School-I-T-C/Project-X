@@ -2,6 +2,7 @@ import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
 import { recomputeExamRankings, roundScore } from "./rankingUpdate";
+import { markScoreMutated } from "./examPublishEvents";
 import {
   listReviewBlockCrops
 } from "./AnswerBlockCropService";
@@ -449,7 +450,12 @@ export async function submitReviewCropScores(params: {
             await tx.run(upsertSQL, params.examId, crop.student_id, resolved.item.questionNumber, null, crop.block_id, resolved.score, resolved.item.maxScore, resolved.item.scoreType, 1, params.userId, now);
           }
         }
-        if (!disputed) totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!);
+        if (!disputed) {
+          totalScore = await recomputeStudentTotals(tx, params.examId, crop.student_id!);
+          // 评审 P1：仅当本轮评阅写下正式分数并重算总分时才视为成绩变更 →
+          // 已公布考试同一事务内自动撤回并写审计
+          await markScoreMutated(tx, params.examId, params.userId, "review_submit");
+        }
       }
     }
 

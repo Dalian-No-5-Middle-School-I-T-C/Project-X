@@ -53,6 +53,9 @@ export const CreateExamSchema = z.object({
   subject: z.string().optional(),
   // #178: quiz=晨测(全量权限) / formal=大考(精细权限)
   mode: z.enum(["quiz", "formal"]).optional().default("formal"),
+  // 数据保留策略（评审 P1）：显式指定时须为已存在的策略 id；null=明确不绑定；
+  // 缺省按考试类型自动分配（quiz→周测策略，formal→不绑定）
+  retentionPolicyId: z.number().int().positive().nullable().optional(),
 });
 export type CreateExamInput = z.infer<typeof CreateExamSchema>;
 
@@ -61,6 +64,11 @@ export const UpdateExamSchema = z.object({
   name: z.string().optional(),
   subject: z.string().optional(),
   mode: z.enum(["quiz", "formal"]).optional(),
+  // 评审 P1-2：补设/修改应考范围（年级/班级；不允许显式 null 清空——无范围考试无法通过完整性校验）
+  gradeId: z.number().int().positive().optional(),
+  classId: z.number().int().positive().optional(),
+  // 评审 P1：保留策略绑定切换入口（仅管理员；null=解绑）
+  retentionPolicyId: z.number().int().positive().nullable().optional(),
 });
 export type UpdateExamInput = z.infer<typeof UpdateExamSchema>;
 
@@ -138,6 +146,10 @@ export const UpdateUserSettingsSchema = z.object({
   showTabBar: flexibleBoolean.optional(),
   // v2.1.0: 前端皮肤 ID（字符串不枚举，为未来新增皮肤留空间；'flat'=明澈 Flat 2.0）
   themeSkin: z.string().min(1).max(32).optional(),
+  // v37: 规范化皮肤风格（替代 themeSkin 的 flat/paper-edge 命名）；与 theme_skin 双向同步
+  uiStyle: z.enum(["clarity", "paper_edge"]).optional(),
+  // v37: 明暗方案，账号级持久化（替代仅 localStorage 的 data-theme）
+  colorScheme: z.enum(["light", "dark"]).optional(),
 });
 export type UpdateUserSettingsInput = z.infer<typeof UpdateUserSettingsSchema>;
 

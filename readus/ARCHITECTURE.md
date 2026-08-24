@@ -304,8 +304,9 @@ data/answer-card/
 定义完整领域模型：
 
 - `AnswerCard` / `BodyBlock`（客观题、主观题）
-- `ObjectiveQuestionConfig` / `ObjectiveScoringRule`（题级题型、选项数、分值、部分得分规则）
+- `ObjectiveQuestionConfig` / `ObjectiveScoringRule`（题级题型、选项数、分值、部分得分规则）；`ObjectiveOptionLayout` 三种排列：`horizontal` / `vertical`（4 题一组）/ `vertical-options`（选项竖排，A/B/C/D 在题号下方纵向堆叠）
 - `SubjectiveBlockKind` / `BlankItem`（填空题块、解答题块、逐空尺寸与标签）
+- `EssayGridConfig` / `ScoreGridConfig` / `LineGridConfig`（作文格、得分填涂格、横线区配置，`essayGrid` 几何唯一事实源见 `../src/shared/essayGrid.ts`）
 - `LayoutDocument`（毫米级坐标）
 - 识别结果、判分结果、分析统计等 DTO
 
@@ -317,6 +318,8 @@ data/answer-card/
 - 六点定位标记、学号填涂格、客观选项框、主观书写区
 - 密度档位（loose/normal/compact/dense）
 - 支持非连续客观题号、同一题块内混合选项数/分值、填空题多列紧凑排版
+- 客观题三种排列（横向 / 竖向一组 / 选项竖排）：选项竖排题按内容高度计算 rowSpan，识别坐标自动跟随
+- 作文格行数/行缝几何与 `essayGrid.ts`（`essayGridGeometry`）互为逆运算：`blockHeight = 标题高 + n×(cellH+行缝) − 行缝 + 底部留白`，保证预览/PDF/排版引擎三端一致
 - 输出供 **PDF 渲染** 和 **C++ 识别** 共用
 
 ### 5.3 判分引擎 (`grading.ts`)

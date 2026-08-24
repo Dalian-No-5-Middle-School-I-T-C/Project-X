@@ -2,7 +2,7 @@ import type { HistogramBin, NormalityResult, QQPoint, ThresholdBand } from "./st
 
 export type ObjectiveMode = "single" | "multiple" | "indefinite";
 export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
-export type ObjectiveOptionLayout = "horizontal" | "vertical";
+export type ObjectiveOptionLayout = "horizontal" | "vertical" | "vertical-options";
 export type SubjectiveStyle = "manual_score_grid" | "plain_subjective";
 export type SubjectiveKind = "blank" | "lined_answer" | "plain_box";
 export type SubjectiveBlockKind = "fill_blank" | "answer" | "essay";
@@ -541,7 +541,7 @@ export type CombinedGradingBatchResult = {
 export type GradingPersistenceFailure = {
   fileName: string;
   studentId?: string;
-  code: "RECOGNITION_FAILED" | "STUDENT_ID_MISSING" | "STUDENT_NOT_FOUND" | "PERSISTENCE_FAILED";
+  code: "RECOGNITION_FAILED" | "STUDENT_ID_MISSING" | "STUDENT_NOT_FOUND" | "STUDENT_NOT_IN_EXAM" | "PERSISTENCE_FAILED";
   message: string;
 };
 
@@ -802,6 +802,8 @@ export type ExamRecord = {
   exam_date?: string | null;
   /** 考试模式（#178），缺省视为 formal */
   exam_mode?: ExamMode;
+  /** 成绩公布状态（v41/v42）：0=未公布 1=已公布 2=已撤回；缺省视为 0 */
+  score_published?: number;
   created_at: string;
 };
 

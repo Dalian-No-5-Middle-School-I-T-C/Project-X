@@ -15,6 +15,7 @@ import type {
 } from "./types";
 import { formatBlankLabel } from "./blankLabels";
 import { DEFAULT_STUDENT_NOTES } from "./defaultCard";
+import { ESSAY_ROW_GAP_MM } from "./essayGrid";
 import { objectiveQuestionDefinitions, type ObjectiveQuestionDefinition } from "./grading";
 
 let PAGE_WIDTH = 210;
@@ -59,14 +60,19 @@ const OBJECTIVE_LABEL_TO_OPTION_GAP = 6.3;
 let OBJECTIVE_STANDARD_COLUMNS = 4;
 const OBJECTIVE_GRID_CELL_QUESTIONS = 5;
 const OBJECTIVE_VERTICAL_GROUP_QUESTIONS = 4;
+const OBJECTIVE_VERTICAL_OPTION_GAP_MM = 1.4;
+const OBJECTIVE_VERTICAL_OPTIONS_CELL_SLOTS = 6;
 const OBJECTIVE_WIDE_OPTION_THRESHOLD = 5;
 const OBJECTIVE_GRID_ROW_GAP = 0.4;
 
-type ObjectiveArrangementMode = "rows" | "grid" | "vertical-grid";
+type ObjectiveArrangementMode = "rows" | "grid" | "vertical-grid" | "vertical-options";
+
+/** 网格单元格槽位：span = 该题占据的物理行数（选项竖排题为多行）。 */
+type ObjectiveGridSlot = { question: ObjectiveQuestionDefinition; span: number };
 
 type ObjectiveRow =
   | { type: "standard"; questions: ObjectiveQuestionDefinition[] }
-  | { type: "grid"; cells: ObjectiveQuestionDefinition[][] }
+  | { type: "grid"; cells: ObjectiveGridSlot[][] }
   | { type: "wide"; question: ObjectiveQuestionDefinition };
 
 function rect(x: number, y: number, width: number, height: number): Rect {
@@ -269,6 +275,9 @@ function objectiveArrangementMode(questions: ObjectiveQuestionDefinition[]): Obj
   if (questions.some(isVerticalQuestion)) {
     return "vertical-grid";
   }
+  if (questions.some(isVerticalOptionsQuestion)) {
+    return "vertical-options";
+  }
   return questions.length >= 15 ? "grid" : "rows";
 }
 
@@ -280,12 +289,33 @@ function isVerticalQuestion(question: ObjectiveQuestionDefinition): boolean {
   return question.optionLayout === "vertical";
 }
 
+function isVerticalOptionsQuestion(question: ObjectiveQuestionDefinition): boolean {
+  return question.optionLayout === "vertical-options";
+}
+
+/** 选项竖排题（A/B/C/D 纵向堆叠）自所在物理行顶部起占用的高度。 */
+function objectiveQuestionContentHeight(question: ObjectiveQuestionDefinition): number {
+  const settings = OBJECTIVE_SETTINGS;
+  if (isVerticalOptionsQuestion(question)) {
+    return OBJECTIVE_OPTION_TOP_OFFSET + question.optionCount * (settings.optionHeight + OBJECTIVE_VERTICAL_OPTION_GAP_MM);
+  }
+  return OBJECTIVE_OPTION_TOP_OFFSET + settings.optionHeight;
+}
+
+/** 该题需要预留的物理行数（行高 = rowHeight；竖排选项题按内容高度向上取整）。 */
+function objectiveQuestionRowSpan(question: ObjectiveQuestionDefinition): number {
+  if (!isVerticalOptionsQuestion(question)) return 1;
+  return Math.max(1, Math.ceil(objectiveQuestionContentHeight(question) / OBJECTIVE_SETTINGS.rowHeight));
+}
+
 function isSoloRowQuestion(question: ObjectiveQuestionDefinition): boolean {
   return isWideObjectiveQuestion(question);
 }
 
 function objectiveGridCellQuestions(mode: ObjectiveArrangementMode): number {
-  return mode === "vertical-grid" ? OBJECTIVE_VERTICAL_GROUP_QUESTIONS : OBJECTIVE_GRID_CELL_QUESTIONS;
+  if (mode === "vertical-grid") return OBJECTIVE_VERTICAL_GROUP_QUESTIONS;
+  if (mode === "vertical-options") return OBJECTIVE_VERTICAL_OPTIONS_CELL_SLOTS;
+  return OBJECTIVE_GRID_CELL_QUESTIONS;
 }
 
 function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mode: ObjectiveArrangementMode): ObjectiveRow[] {
@@ -317,7 +347,7 @@ function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mod
   }
 
   const gridCellQuestions = objectiveGridCellQuestions(mode);
-  let gridCells: ObjectiveQuestionDefinition[][] = [[]];
+  let gridCells: ObjectiveGridSlot[][] = [[]];
   const flushGridRow = () => {
     const nonEmptyCells = gridCells.filter((cell) => cell.length > 0);
     if (nonEmptyCells.length > 0) {
@@ -333,8 +363,10 @@ function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mod
       continue;
     }
 
+    const span = objectiveQuestionRowSpan(question);
     let currentCell = gridCells[gridCells.length - 1];
-    if (currentCell.length === gridCellQuestions) {
+    const cellUsed = currentCell.reduce((sum, slot) => sum + slot.span, 0);
+    if (cellUsed + span > gridCellQuestions) {
       if (gridCells.length === OBJECTIVE_STANDARD_COLUMNS) {
         flushGridRow();
       } else {
@@ -343,19 +375,14 @@ function objectiveRowsForQuestions(questions: ObjectiveQuestionDefinition[], mod
       currentCell = gridCells[gridCells.length - 1];
     }
 
-    currentCell.push(question);
+    currentCell.push({ question, span });
   }
   flushGridRow();
   return rows;
 }
 
 function objectivePhysicalRowsForRows(rows: ObjectiveRow[]): number {
-  return rows.reduce((sum, row) => {
-    if (row.type === "grid") {
-      return sum + Math.max(...row.cells.map((cell) => cell.length));
-    }
-    return sum + 1;
-  }, 0);
+  return rows.reduce((sum, row) => sum + objectiveRowHeight(row), 0);
 }
 
 function objectivePhysicalRowsForQuestions(questions: ObjectiveQuestionDefinition[], mode: ObjectiveArrangementMode): number {
@@ -364,7 +391,7 @@ function objectivePhysicalRowsForQuestions(questions: ObjectiveQuestionDefinitio
 
 function objectiveRowHeight(row: ObjectiveRow): number {
   if (row.type === "grid") {
-    return Math.max(...row.cells.map((cell) => cell.length));
+    return Math.max(...row.cells.map((cell) => cell.reduce((sum, slot) => sum + slot.span, 0)));
   }
   return 1;
 }
@@ -415,11 +442,28 @@ function objectiveHeightForQuestions(questions: ObjectiveQuestionDefinition[], m
   const settings = OBJECTIVE_SETTINGS;
   let contentBottom = 0;
   let physicalRow = 0;
+  // 逐题取「题所在物理行偏移 + 题内容高度」，选项竖排题的内容高度远超单行，需按题计算
+  const noteQuestionBottom = (question: ObjectiveQuestionDefinition, slot: number) => {
+    const slotOffset = rowOffsets[slot] ?? slot * settings.rowHeight;
+    contentBottom = Math.max(contentBottom, slotOffset + objectiveQuestionContentHeight(question));
+  };
   for (const row of rows) {
-    const heightInRows = objectiveRowHeight(row);
-    const lastOffset = rowOffsets[physicalRow + heightInRows - 1] ?? (physicalRow + heightInRows - 1) * settings.rowHeight;
-    contentBottom = Math.max(contentBottom, lastOffset + OBJECTIVE_OPTION_TOP_OFFSET + settings.optionHeight);
-    physicalRow += heightInRows;
+    if (row.type === "wide") {
+      noteQuestionBottom(row.question, physicalRow);
+      physicalRow += objectiveQuestionRowSpan(row.question);
+    } else if (row.type === "standard") {
+      row.questions.forEach((question) => noteQuestionBottom(question, physicalRow));
+      physicalRow += 1;
+    } else {
+      row.cells.forEach((cell) => {
+        let slotOffset = physicalRow;
+        for (const slot of cell) {
+          noteQuestionBottom(slot.question, slotOffset);
+          slotOffset += slot.span;
+        }
+      });
+      physicalRow += objectiveRowHeight(row);
+    }
   }
   return OBJECTIVE_FRAME_TOP + OBJECTIVE_INNER_TOP + contentBottom + OBJECTIVE_INNER_BOTTOM;
 }
@@ -490,12 +534,20 @@ function addObjectiveSegment(
     const labelY = itemAreaY + rowOffset + 2.9;
     const optionStartX = labelTextX + OBJECTIVE_LABEL_TO_OPTION_GAP;
     const options = OPTIONS.slice(0, question.optionCount).map((label, optionIndex) => {
-      const optionRect = rect(
-        optionStartX + optionIndex * settings.optionGap,
-        itemAreaY + rowOffset + OBJECTIVE_OPTION_TOP_OFFSET,
-        settings.optionWidth,
-        settings.optionHeight
-      );
+      // 横排：选项沿 X 展开；选项竖排：A/B/C/D 在题号下方纵向堆叠
+      const optionRect = isVerticalOptionsQuestion(question)
+        ? rect(
+            optionStartX,
+            itemAreaY + rowOffset + OBJECTIVE_OPTION_TOP_OFFSET + optionIndex * (settings.optionHeight + OBJECTIVE_VERTICAL_OPTION_GAP_MM),
+            settings.optionWidth,
+            settings.optionHeight
+          )
+        : rect(
+            optionStartX + optionIndex * settings.optionGap,
+            itemAreaY + rowOffset + OBJECTIVE_OPTION_TOP_OFFSET,
+            settings.optionWidth,
+            settings.optionHeight
+          );
       page.elements.push({
         id: `p${page.pageNumber}_obj_${block.id}_${questionNumber}_${label}`,
         type: "objective_option",
@@ -514,7 +566,7 @@ function addObjectiveSegment(
   for (const objectiveRow of objectiveRows) {
     if (objectiveRow.type === "wide") {
       addObjectiveQuestion(objectiveRow.question, 0, physicalRow);
-      physicalRow += 1;
+      physicalRow += objectiveQuestionRowSpan(objectiveRow.question);
       continue;
     }
 
@@ -524,9 +576,13 @@ function addObjectiveSegment(
       continue;
     }
 
-    const rowHeight = Math.max(...objectiveRow.cells.map((cell) => cell.length));
+    const rowHeight = objectiveRowHeight(objectiveRow);
     objectiveRow.cells.forEach((cell, column) => {
-      cell.forEach((question, offset) => addObjectiveQuestion(question, column, physicalRow + offset));
+      let slotOffset = 0;
+      for (const slot of cell) {
+        addObjectiveQuestion(slot.question, column, physicalRow + slotOffset);
+        slotOffset += slot.span;
+      }
     });
     physicalRow += rowHeight;
   }
@@ -1279,7 +1335,9 @@ function layoutEssayBlock(
   while (produced < targetCells) {
     const startY = getY();
     const availableH = availableHeight(startY) - gridTopBase - bottomPad - 4;
-    let rowsThisPanel = Math.max(0, Math.floor(availableH / cellH));
+    // 行缝（essayGrid.ts）计入高度分配：blockHeight = gridTop + n*(cellH+gap) - gap + bottomPad，
+    // 与 essayGridGeometry 的行数公式互为逆运算，保证预览/PDF 解出的行数与分配一致。
+    let rowsThisPanel = Math.max(0, Math.floor((availableH + ESSAY_ROW_GAP_MM) / (cellH + ESSAY_ROW_GAP_MM)));
     if (rowsThisPanel <= 0) {
       nextPhysicalPage();
       continue;
@@ -1287,7 +1345,7 @@ function layoutEssayBlock(
 
     const minRowsNeeded = Math.ceil((targetCells - produced) / (columns * panelCount));
     const rowsToDraw = Math.min(rowsThisPanel, minRowsNeeded);
-    const blockHeight = gridTopBase + rowsToDraw * cellH + bottomPad;
+    const blockHeight = gridTopBase + rowsToDraw * (cellH + ESSAY_ROW_GAP_MM) - ESSAY_ROW_GAP_MM + bottomPad;
 
     for (let p = 0; p < panelCount; p++) {
       const startCellThisPanel = produced + p * columns * rowsToDraw;  // 该栏首格全局序号

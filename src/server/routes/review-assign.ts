@@ -6,6 +6,7 @@ import { Router, type Request, type Response, type NextFunction } from "express"
 import { requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
 import { requireExamAccess } from "../../apps/answer-card/server/middleware";
+import { isTeacherPermittedForExam } from "../../apps/answer-card/server/middleware";
 import { optionalPositiveNumber } from "../../apps/answer-card/server/helpers";
 import { getMysqlDb } from "../db";
 import {
@@ -34,11 +35,12 @@ function requireGradeLeaderOrAdmin(req: Request, res: Response, next: NextFuncti
   next();
 }
 
-// GET /api/review-assign/exams/:examId/eligible-teachers — 可分配教师列表（同科同年级）
+// GET /api/review-assign/exams/:examId/eligible-teachers — 可分配教师列表（同科同年级 + 权限矩阵内）
 router.get(
   "/exams/:examId/eligible-teachers",
   requireExamAccess,
   requirePermission(PERMISSIONS.GRADE_READ),
+  requireGradeLeaderOrAdmin,
   async (req, res) => {
     try {
       const examId = Number(req.params.examId);
@@ -60,7 +62,13 @@ router.get(
         ...(exam.subject ? [exam.subject] : []),
         ...(exam.grade_id !== null ? [exam.grade_id] : [])
       );
-      res.json({ ok: true, data: rows });
+
+      // #24: 分配与权限矩阵绑定 —— 仅显示授权矩阵内可被分配（can_assign）的教师
+      const permitted: Array<{ id: number; name: string; subject: string | null }> = [];
+      for (const row of rows as Array<{ id: number; name: string; subject: string | null }>) {
+        if (await isTeacherPermittedForExam(examId, row.id, "can_assign")) permitted.push(row);
+      }
+      res.json({ ok: true, data: permitted });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err.message });
     }
@@ -95,7 +103,8 @@ router.get(
       const teacherId = (req as any).user?.id;
       if (!teacherId) return res.status(401).json({ ok: false, error: "未登录" });
 
-      const blocks = await getAvailableBlocksForTeacher(examId, teacherId);
+      // 传入真实 user 身份：特权阅卷人（管理员/学年主任）不参与题块过滤，全部可见
+      const blocks = await getAvailableBlocksForTeacher(examId, teacherId, undefined, (req as any).user);
       res.json({ ok: true, data: blocks });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err.message });
@@ -135,6 +144,18 @@ router.post(
       ) as Array<{ id: number }>;
       if (teacherRows.length !== teacherIds.length) {
         return res.status(400).json({ ok: false, error: "分配列表包含不存在的教师" });
+      }
+
+      // #24: 分配与权限矩阵绑定 —— 目标教师必须在授权矩阵内（can_assign），否则拒绝
+      const denied: number[] = [];
+      for (const id of teacherIds) {
+        if (!(await isTeacherPermittedForExam(examId, id, "can_assign"))) denied.push(id);
+      }
+      if (denied.length > 0) {
+        return res.status(403).json({
+          ok: false,
+          error: `以下教师不在授权矩阵内（无 can_assign 权限），不可分配阅卷任务: ${denied.join(", ")}`
+        });
       }
 
       const userId = (req as any).user?.id;
