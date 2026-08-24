@@ -935,6 +935,15 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
         `CREATE INDEX IF NOT EXISTS idx_ep_student ON exam_participants(student_id)`,
       ]
     },
+    {
+      // v48: 评审 P1-2 —— exam_participants 增加来源标记（roster=名册快照 / explicit=管理员显式名单）。
+      // 无范围考试不再退化为「仅校验非空」：必须通过显式名单确定应考集合，否则公布一律 409。
+      version: 48,
+      name: "exam-participants-source",
+      sqls: [
+        `ALTER TABLE exam_participants ADD COLUMN source VARCHAR(16) NOT NULL DEFAULT 'roster'`,
+      ]
+    },
   ];
 
   for (const m of mariadbMigrations) {

@@ -1,7 +1,7 @@
 // ExamManagePage — 从 App.tsx 抽出的「考试管理」页面（B2：改由 useWorkspace 消费共享状态）。
 // P4/T5：整页迁移到 v2 视觉体系（Button / SegmentedControl / Table / ExamStatusBadge / EmptyState）。
 // 行为与迁移前完全一致：API 端点、请求体、路由与权限判断零改动。
-import { CalendarDays, CalendarX2, ClipboardList, Layers, Megaphone, Plus, Search, Trash2 } from "lucide-react";
+import { CalendarDays, CalendarX2, ClipboardList, Layers, Megaphone, Plus, Search, Trash2, UserRoundPlus, Users } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { fetchJson } from "../auth/api";
 import { useWorkspace } from "../WorkspaceContext";
@@ -140,6 +140,21 @@ export function ExamManagePage() {
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(() => todayDateString());
   const [creating, setCreating] = useState(false);
   const [newExamMode, setNewExamMode] = useState<ExamMode>("formal");
+  // 评审 P1-2：创建考试必须确定应考范围（年级或班级至少其一）
+  const [newExamGradeId, setNewExamGradeId] = useState<string>(CARD_PLACEHOLDER);
+  const [newExamClassId, setNewExamClassId] = useState<string>(CARD_PLACEHOLDER);
+  const [gradesList, setGradesList] = useState<Array<{ id: number; name: string }>>([]);
+  const [classesList, setClassesList] = useState<Array<{ id: number; name: string }>>([]);
+  // 评审 P1-2：显式应考名单管理（跨班/跨年级联考、补救无范围考试）
+  const [rosterExam, setRosterExam] = useState<ExamRecord | null>(null);
+  const [rosterData, setRosterData] = useState<{ source: string | null; known: boolean; total: number; students: Array<{ studentId: number; studentNumber: string | null; name: string; source?: string }> } | null>(null);
+  const [rosterGradeId, setRosterGradeId] = useState<string>(CARD_PLACEHOLDER);
+  const [rosterClassOptions, setRosterClassOptions] = useState<Array<{ id: number; name: string }>>([]);
+  const [rosterClassId, setRosterClassId] = useState<string>(CARD_PLACEHOLDER);
+  const [rosterClassStudents, setRosterClassStudents] = useState<Array<{ student_id: number; name: string; student_number: string | null }>>([]);
+  const [rosterKeyword, setRosterKeyword] = useState("");
+  const [rosterSearchResults, setRosterSearchResults] = useState<Array<{ id: number; name: string; studentNumber?: string; student_number?: string | null }>>([]);
+  const [rosterSaving, setRosterSaving] = useState(false);
   // 保留策略（评审 P1）：仅管理员可见；"auto"= 按考试类型自动分配（quiz→周测、formal→不绑定）
   const [availablePolicies, setAvailablePolicies] = useState<Array<{ id: number; name: string; retainDays: number }>>([]);
   const [newExamRetentionPolicy, setNewExamRetentionPolicy] = useState<string>("auto");
@@ -159,6 +174,119 @@ export function ExamManagePage() {
       .catch(() => {});
     return () => { active = false; };
   }, [userRole]);
+
+  // 评审 P1-2：加载年级/班级（创建考试应考范围必选其一）
+  useEffect(() => {
+    fetchJson<Array<{ id: number; name: string }>>("/api/classes/grades")
+      .then((grades) => { if (Array.isArray(grades)) setGradesList(grades); })
+      .catch(() => {});
+  }, []);
+  useEffect(() => {
+    if (!newExamGradeId || newExamGradeId === CARD_PLACEHOLDER) {
+      setClassesList([]);
+      return;
+    }
+    fetchJson<Array<{ id: number; name: string }>>(`/api/classes?gradeId=${Number(newExamGradeId)}`)
+      .then((cls) => { if (Array.isArray(cls)) setClassesList(cls); })
+      .catch(() => setClassesList([]));
+  }, [newExamGradeId]);
+
+  /** 评审 P1-2：打开应考名单管理（拉取当前名单） */
+  async function openRosterModal(exam: ExamRecord) {
+    setRosterExam(exam);
+    setRosterData(null);
+    setRosterGradeId(CARD_PLACEHOLDER);
+    setRosterClassOptions([]);
+    setRosterClassId(CARD_PLACEHOLDER);
+    setRosterClassStudents([]);
+    setRosterKeyword("");
+    setRosterSearchResults([]);
+    try {
+      const data = await fetchJson<{ source: string | null; known: boolean; total: number; students: Array<{ studentId: number; studentNumber: string | null; name: string; source?: string }> }>(`/api/exams/${exam.id}/participants`);
+      setRosterData(data ?? { source: null, known: false, total: 0, students: [] });
+    } catch {
+      setRosterData({ source: null, known: false, total: 0, students: [] });
+    }
+  }
+
+  /** 评审 P1-2：选择年级 → 加载班级列表 */
+  async function loadRosterClasses(gradeId: string) {
+    setRosterGradeId(gradeId);
+    setRosterClassId(CARD_PLACEHOLDER);
+    setRosterClassStudents([]);
+    if (!gradeId || gradeId === CARD_PLACEHOLDER) {
+      setRosterClassOptions([]);
+      return;
+    }
+    try {
+      const cls = await fetchJson<Array<{ id: number; name: string }>>(`/api/classes?gradeId=${Number(gradeId)}`);
+      setRosterClassOptions(Array.isArray(cls) ? cls : []);
+    } catch {
+      setRosterClassOptions([]);
+    }
+  }
+
+  /** 评审 P1-2：选择班级 → 加载学生（供添加到显式名单） */
+  async function loadRosterClassStudents(classId: string) {
+    setRosterClassId(classId);
+    if (!classId || classId === CARD_PLACEHOLDER) {
+      setRosterClassStudents([]);
+      return;
+    }
+    try {
+      const rows = await fetchJson<Array<{ student_id: number; name: string; student_number: string | null }>>(`/api/classes/${Number(classId)}/students`);
+      setRosterClassStudents(Array.isArray(rows) ? rows : []);
+    } catch {
+      setRosterClassStudents([]);
+    }
+  }
+
+  /** 评审 P1-2：搜索学生（学号/姓名） */
+  async function searchRosterStudents(keyword: string) {
+    setRosterKeyword(keyword);
+    if (!keyword.trim()) {
+      setRosterSearchResults([]);
+      return;
+    }
+    try {
+      const res = await fetchJson<{ users?: Array<{ id: number; name: string; student_number?: string | null; studentNumber?: string | null }> }>(`/api/users?keyword=${encodeURIComponent(keyword.trim())}&pageSize=20`);
+      setRosterSearchResults((res?.users ?? []).map((u) => ({ id: u.id, name: u.name, student_number: u.student_number ?? u.studentNumber ?? null })));
+    } catch {
+      setRosterSearchResults([]);
+    }
+  }
+
+  /** 评审 P1-2：保存显式名单（整体替换） */
+  async function handleSaveRoster() {
+    if (!rosterExam || rosterSaving) return;
+    setRosterSaving(true);
+    try {
+      const ids = (rosterData?.students ?? []).map((s) => s.studentId);
+      await fetchJson(`/api/exams/${rosterExam.id}/participants`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ studentIds: ids }),
+      });
+      setStatus("应考名单已保存（发布完整性将按此名单校验）");
+      await openRosterModal(rosterExam);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "保存名单失败");
+    } finally {
+      setRosterSaving(false);
+    }
+  }
+
+  /** 评审 P1-2：清除显式名单（回落班级/年级名册） */
+  async function handleClearRoster() {
+    if (!rosterExam) return;
+    try {
+      await fetchJson(`/api/exams/${rosterExam.id}/participants`, { method: "DELETE" });
+      setStatus("显式应考名单已清除（将按年级/班级名册校验）");
+      await openRosterModal(rosterExam);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : "清除名单失败");
+    }
+  }
 
   const visibleExams = useMemo(() => exams.filter((exam) => {
     const matchesSearch = !examSearch.trim() || exam.name.toLowerCase().includes(examSearch.trim().toLowerCase());
@@ -280,6 +408,13 @@ export function ExamManagePage() {
     if (creating) return;
     const name = newExamName.trim();
     if (!name) { setStatus("请填写考试名称"); return; }
+    // 评审 P1-2：创建考试必须确定应考范围（年级或班级至少其一）
+    const gradeId = newExamGradeId && newExamGradeId !== CARD_PLACEHOLDER ? Number(newExamGradeId) : undefined;
+    const classId = newExamClassId && newExamClassId !== CARD_PLACEHOLDER ? Number(newExamClassId) : undefined;
+    if (!gradeId && !classId) {
+      setStatus("【完整性校验】请选择应考范围（年级或班级至少其一）");
+      return;
+    }
     setCreating(true);
     try {
       let cardId = newExamCardId || card?.id;
@@ -312,13 +447,16 @@ export function ExamManagePage() {
         cardId,
         subject: newExamSubject.trim() || undefined,
         mode: newExamMode,
+        gradeId,
+        classId,
       };
       // 管理员显式指定策略时透传（"auto"=按类型自动分配，交给后端解析）
       if (userRole === "admin" && newExamRetentionPolicy !== "auto") {
         payload.retentionPolicyId = newExamRetentionPolicy === "none" ? null : Number(newExamRetentionPolicy);
       }
       await fetchJson("/api/exams", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      setNewExamName(""); setNewExamSubject(""); setNewExamMode("formal"); setNewExamRetentionPolicy("auto"); setShowCreateExam(false);
+      setNewExamName(""); setNewExamSubject(""); setNewExamMode("formal"); setNewExamRetentionPolicy("auto");
+      setNewExamGradeId(CARD_PLACEHOLDER); setNewExamClassId(CARD_PLACEHOLDER); setShowCreateExam(false);
       loadExams();
     } catch (err) {
       setStatus(`创建失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -363,6 +501,7 @@ export function ExamManagePage() {
               </div>
               <div className="mt-3 flex flex-wrap justify-end gap-2">
                 <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
+                <Button variant="ghost" size="sm" className="text-info-foreground" icon={<Users />} onClick={() => void openRosterModal(exam)}>应考名单</Button>
                 <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
                 <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
                 {exam.score_published === 1 ? (
@@ -431,6 +570,7 @@ export function ExamManagePage() {
                 <TableCell className="text-right whitespace-nowrap">
                   <div className="flex justify-end gap-1">
                     <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
+                    <Button variant="ghost" size="sm" className="text-info-foreground" icon={<Users />} onClick={() => void openRosterModal(exam)}>应考名单</Button>
                     <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
                     <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
                     {exam.score_published === 1 ? (
@@ -565,6 +705,25 @@ export function ExamManagePage() {
                 <SelectContent>
                   <SelectItem value="quiz">{EXAM_MODE_LABELS.quiz}（教师全量可见）</SelectItem>
                   <SelectItem value="formal">{EXAM_MODE_LABELS.formal}（精细权限）</SelectItem>
+                </SelectContent>
+              </Select>
+              {/* 评审 P1-2：应考范围（年级或班级至少其一）—— 发布完整性校验的必要条件 */}
+              <Select value={newExamGradeId} onValueChange={(v) => { setNewExamGradeId(v); setNewExamClassId(CARD_PLACEHOLDER); }}>
+                <SelectTrigger aria-label="应考年级（必选其一）">
+                  <SelectValue placeholder="应考年级" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={CARD_PLACEHOLDER} disabled>应考年级（必选其一）</SelectItem>
+                  {gradesList.map((g) => (<SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>))}
+                </SelectContent>
+              </Select>
+              <Select value={newExamClassId} onValueChange={setNewExamClassId} disabled={classesList.length === 0}>
+                <SelectTrigger aria-label="应考班级（可选）">
+                  <SelectValue placeholder={classesList.length === 0 ? "先选年级" : "应考班级（可选）"} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={CARD_PLACEHOLDER} disabled>应考班级（可选，不选=整个年级）</SelectItem>
+                  {classesList.map((c) => (<SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>))}
                 </SelectContent>
               </Select>
               {userRole === "admin" && (
@@ -782,6 +941,128 @@ export function ExamManagePage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setUnpublishTarget(null)} disabled={publishing}>取消</Button>
             <Button variant="destructive" loading={publishing} onClick={() => unpublishTarget && void handleUnpublishExam(unpublishTarget.id)}>确认撤回</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 评审 P1-2: 应考名单管理（显式名单；无范围考试须设置后方可公布） */}
+      <Dialog open={rosterExam !== null} onOpenChange={(open: boolean) => { if (!open && !rosterSaving) setRosterExam(null); }}>
+        <DialogContent size="lg">
+          <DialogHeader>
+            <DialogTitle>应考名单 — {rosterExam?.name ?? ""}</DialogTitle>
+            <DialogDescription>
+              发布完整性将按此名单校验：应考学生必须全部有成绩，名单外学号不允许入库。
+              来源：{rosterData?.source === "explicit" ? "管理员显式名单" : rosterData?.source === "roster" ? "年级/班级名册（自动）" : "未确定"}
+              （共 {rosterData?.total ?? 0} 人）
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody className="flex flex-col gap-4">
+            {!rosterData?.known && (
+              <div className="rounded border border-warning bg-warning/10 px-3 py-2 text-sm text-warning-fg">
+                该考试未确定应考范围（无年级/班级且无显式名单），当前无法公布成绩。请从下方添加学生并保存显式名单。
+              </div>
+            )}
+
+            {/* 添加区：按班级加载（年级 → 班级 → 学生） */}
+            <div className="flex flex-wrap items-end gap-2">
+              <Select value={rosterGradeId} onValueChange={(v) => void loadRosterClasses(v)}>
+                <SelectTrigger aria-label="选择年级" className="w-40">
+                  <SelectValue placeholder="选择年级" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={CARD_PLACEHOLDER} disabled>选择年级</SelectItem>
+                  {gradesList.map((g) => (<SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>))}
+                </SelectContent>
+              </Select>
+              <Select value={rosterClassId} onValueChange={(v) => void loadRosterClassStudents(v)} disabled={rosterClassOptions.length === 0}>
+                <SelectTrigger aria-label="选择班级" className="w-40">
+                  <SelectValue placeholder={rosterClassOptions.length === 0 ? "先选年级" : "选择班级"} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={CARD_PLACEHOLDER} disabled>选择班级</SelectItem>
+                  {rosterClassOptions.map((c) => (<SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                icon={<UserRoundPlus />}
+                disabled={rosterClassStudents.length === 0}
+                onClick={() => {
+                  const existing = new Set((rosterData?.students ?? []).map((s) => s.studentId));
+                  const additions = rosterClassStudents.filter((s) => !existing.has(s.student_id)).map((s) => ({ studentId: s.student_id, studentNumber: s.student_number, name: s.name }));
+                  if (additions.length === 0) return;
+                  setRosterData((prev) => ({ ...(prev ?? { source: null, known: true, total: 0 }), known: true, source: "explicit", total: (prev?.students?.length ?? 0) + additions.length, students: [...(prev?.students ?? []), ...additions] }));
+                }}
+              >
+                添加该班未选学生（{rosterClassStudents.filter((s) => !(rosterData?.students ?? []).some((x) => x.studentId === s.student_id)).length}）
+              </Button>
+            </div>
+
+            {/* 添加区：搜索学号/姓名 */}
+            <div className="flex flex-wrap items-end gap-2">
+              <Input
+                value={rosterKeyword}
+                onChange={(e) => void searchRosterStudents(e.target.value)}
+                placeholder="搜索学生（学号/姓名）"
+                aria-label="搜索学生"
+                className="w-64"
+              />
+              {rosterSearchResults.length > 0 && (
+                <div className="max-h-40 w-full overflow-auto rounded border p-2">
+                  {rosterSearchResults.map((u) => {
+                    const added = (rosterData?.students ?? []).some((s) => s.studentId === u.id);
+                    return (
+                      <div key={u.id} className="flex items-center justify-between py-1">
+                        <span className="text-sm">{u.name}（{u.student_number ?? u.studentNumber ?? u.id}）</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={added}
+                          onClick={() => {
+                            if (added) return;
+                            setRosterData((prev) => ({ ...(prev ?? { source: null, known: true, total: 0 }), known: true, source: "explicit", total: (prev?.students?.length ?? 0) + 1, students: [...(prev?.students ?? []), { studentId: u.id, studentNumber: u.student_number ?? u.studentNumber ?? null, name: u.name }] }));
+                          }}
+                        >
+                          {added ? "已在名单" : "添加"}
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* 当前名单 */}
+            <div className="max-h-64 overflow-auto rounded border p-2">
+              {(rosterData?.students?.length ?? 0) === 0 ? (
+                <div className="py-6 text-center text-sm text-muted-foreground">名单为空</div>
+              ) : (
+                (rosterData?.students ?? []).map((s) => (
+                  <div key={s.studentId} className="flex items-center justify-between py-1">
+                    <span className="text-sm">
+                      {s.name}（{s.studentNumber ?? "无学号"}）
+                      {s.source === "roster" && <span className="ml-2 text-xs text-muted-foreground">名册自动</span>}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive-fg"
+                      onClick={() => setRosterData((prev) => {
+                        const cur = prev?.students ?? [];
+                        return { ...(prev ?? { source: null, known: true, total: 0 }), total: Math.max(0, cur.length - 1), students: cur.filter((x) => x.studentId !== s.studentId) };
+                      })}
+                    >
+                      移除
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          </DialogBody>
+          <DialogFooter className="flex-wrap gap-2">
+            <Button variant="outline" onClick={() => setRosterExam(null)} disabled={rosterSaving}>关闭</Button>
+            <Button variant="ghost" className="text-destructive-fg" loading={rosterSaving} onClick={() => void handleClearRoster()}>清除显式名单</Button>
+            <Button variant="primary" icon={<UserRoundPlus />} loading={rosterSaving} onClick={() => void handleSaveRoster()}>保存名单</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

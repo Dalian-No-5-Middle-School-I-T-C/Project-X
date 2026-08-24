@@ -835,7 +835,8 @@ function App() {
           await fetchJson<any>("/api/exams", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: examName, cardId: created.id, subject: formData.subjectLabel })
+            // 评审 P1-2：同步创建考试须带应考范围（年级/班级），后端强制至少其一
+            body: JSON.stringify({ name: examName, cardId: created.id, subject: formData.subjectLabel, gradeId: formData.gradeId, classId: formData.classId })
           });
           statusExtra = "，已同步创建考试";
           await loadExams();

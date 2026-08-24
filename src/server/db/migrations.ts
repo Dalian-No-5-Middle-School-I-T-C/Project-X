@@ -1152,6 +1152,17 @@ const MIGRATIONS: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_ep_student ON exam_participants(student_id);
       `);
     }
+  },
+  // v48: 评审 P1-2 —— exam_participants 增加来源标记。
+  // source='roster'：按班级/年级名册自动快照（默认）；source='explicit'：管理员显式指定的应考名单
+  // （跨班/跨年级联考或补救用）。无范围（class_id/grade_id 皆空）考试不再退化为「仅校验非空」，
+  // 必须通过显式名单（PUT /participants）确定应考集合；否则公布一律 409。
+  {
+    version: 48,
+    name: "exam-participants-source",
+    up(db) {
+      addColumnIfMissing(db, "exam_participants", "source", "TEXT NOT NULL DEFAULT 'roster'");
+    }
   }
 ];
 

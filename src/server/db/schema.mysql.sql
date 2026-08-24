@@ -603,9 +603,11 @@ CREATE TABLE IF NOT EXISTS exam_publish_events (
 CREATE INDEX idx_epe_exam ON exam_publish_events(exam_id);
 
 -- v47: 考试参与者快照（应考名单固化，应考集合 ⊆ 已评分集合；首次入库/公布时固化，之后调班不改历史判断）
+-- v48: source 列区分 roster（名册快照）/ explicit（管理员显式名单，无范围考试据此确定应考集合）
 CREATE TABLE IF NOT EXISTS exam_participants (
     exam_id     INT NOT NULL,
     student_id  INT NOT NULL,
+    source      VARCHAR(16) NOT NULL DEFAULT 'roster',   -- v48: roster=名册快照 / explicit=管理员显式名单
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (exam_id, student_id),
     FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,

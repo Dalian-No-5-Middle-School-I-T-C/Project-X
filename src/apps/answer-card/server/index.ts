@@ -43,7 +43,7 @@ import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
 import { recordLifecycleEvent } from "../../../server/services/lifecycleEvents";
 import { markScoreMutated } from "../../../server/services/examPublishEvents";
-import { ensureExamParticipants, isExamParticipant, listMissingParticipants } from "../../../server/services/examParticipants";
+import { ensureExamParticipants, isExamParticipant, listMissingParticipants, listParticipants, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants } from "../../../server/services/examParticipants";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -1860,6 +1860,15 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "缺少 name 或 cardId" });
         return;
       }
+      // 评审 P1-2：创建考试必须确定应考范围（年级或班级至少其一），否则发布完整性无法校验
+      // （此前 UI 创建的无范围考试会退化为「仅校验非空」，导致部分成绩可公布）。
+      if (!gradeId && !classId) {
+        res.status(400).json({
+          code: "SCOPE_REQUIRED",
+          message: "【完整性校验】创建考试必须指定应考范围（年级或班级至少其一），否则无法保证成绩公布完整性"
+        });
+        return;
+      }
       // 评审 P1：显式指定保留策略（含 null 解绑）是数据生命周期管理——绑定即挂上
       // 自动归档/删除，与 PATCH /api/exams/:examId 的语义一致，仅管理员可操作。
       // 教师不传该字段走按类型默认分配（quiz→周测策略），不受影响。
@@ -2067,12 +2076,35 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      const { cardId, name, subject, mode, retentionPolicyId } = req.body as Record<string, unknown>;
+      const { cardId, name, subject, mode, gradeId, classId, retentionPolicyId } = req.body as Record<string, unknown>;
       const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
       if (cardId !== undefined) updates.card_id = String(cardId);
       if (name !== undefined) updates.name = String(name);
       if (subject !== undefined) updates.subject = String(subject);
       if (mode === "quiz" || mode === "formal") updates.exam_mode = mode;
+      // 评审 P1-2：补设/修改应考范围（年级/班级）。不允许清空（无范围考试无法通过完整性校验）；
+      // 与显式应考名单互斥：已有显式名单时须先清除（DELETE /participants）再设置班级范围。
+      if (gradeId !== undefined || classId !== undefined) {
+        const g = gradeId != null ? Number(gradeId) : undefined;
+        const c = classId != null ? Number(classId) : undefined;
+        if ((g !== undefined && !Number.isInteger(g)) || (c !== undefined && !Number.isInteger(c))) {
+          res.status(400).json({ message: "无效的年级/班级 ID" });
+          return;
+        }
+        if (g === undefined && c === undefined) {
+          res.status(400).json({ message: "【完整性校验】不允许清空应考范围；年级或班级至少保留其一" });
+          return;
+        }
+        if (await hasExplicitParticipants(getMysqlDb(), exam.id)) {
+          res.status(409).json({
+            code: "EXPLICIT_LIST_CONFLICT",
+            message: "【完整性校验】该考试已设置显式应考名单，请先清除显式名单（应考名单管理→清除）后再设置年级/班级范围"
+          });
+          return;
+        }
+        if (g !== undefined) updates.grade_id = g;
+        if (c !== undefined) updates.class_id = c;
+      }
       if (retentionPolicyId !== undefined) {
         // 评审 P1：保留策略绑定/解绑是数据生命周期管理，仅管理员可操作
         //（涉及自动归档/删除；SYSTEM_MANAGE 语义，与 data-retention-policies 路由一致）
@@ -2098,7 +2130,7 @@ export async function createApp(): Promise<express.Express> {
       }
 
       // Whitelist: only these columns may appear in a dynamic UPDATE
-      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode", "retention_policy_id"]);
+      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode", "grade_id", "class_id", "retention_policy_id"]);
       for (const col of Object.keys(updates)) {
         if (!ALLOWED_COLUMNS.has(col)) {
           res.status(400).json({ message: `不支持的更新字段：${col}` });
@@ -2119,11 +2151,13 @@ export async function createApp(): Promise<express.Express> {
   });
 
   /**
-   * 统一的「批改完整性」校验（评审 P1-1）：成绩公布前必须确认批改已完成。
-   * - 成绩记录：该考试至少保存了一条 student_scores（无成绩 = 未批改）；
-   * - 应考学生：优先以 exam_participants 快照为准（阅卷入库/首次公布时固化当前名册，之后调班不改历史判断）；
-   *   快照不存在或为空班级（0 行）时回退到班级/年级实时计数（兼容空名册测试库）；均无则仅校验非空。
-   * - 集合校验：应考集合 ⊆ 已评分集合；缺任何一名应考学生即 409（不再只比人数，防止外班/误识别凑数绕过）。
+   * 统一的「批改完整性」校验（评审 P1-1 / P1-2）：成绩公布前必须确认批改已完成，且学号身份无误。
+   * - 应考名单来源（v48）：管理员显式名单（exam_participants.source='explicit'）优先；
+   *   否则按考试 class_id/grade_id 从 class_students 固化名册快照（source='roster'）；
+   * - 名单可知且非空 → 集合校验「应考集合 ⊆ 已评分集合」，缺任何一名应考学生即 409；
+   * - 名单不可知（无 class_id/grade_id 且未设置显式名单）→ 409 拒绝公布（v48 起删除
+   *   「仅校验非空」退化路径——正常 UI 创建的无范围考试不得再以部分成绩发布）；
+   * - 名单为空（班级暂无学生 / 显式名单为空）→ 409，同样不得发布。
    * 不满足时抛 { status: 409 }，由路由统一映射为 409 响应。单场/批量共用。
    */
   async function assertGradingComplete(
@@ -2136,41 +2170,32 @@ export async function createApp(): Promise<express.Express> {
       throw Object.assign(new Error("该考试尚无成绩记录（批改未完成），无法公布成绩"), { status: 409, code: ApiError.INVALID_VALUE });
     }
 
-    // 优先集合校验：固化快照（存量库首次公布时固化）
+    // 名单判定：显式名单优先；否则按班级/年级名册快照
     const snap = await ensureExamParticipants(db, exam.id);
-    if (snap.rosterKnown && snap.participantCount > 0) {
-      const missing = await listMissingParticipants(db, exam.id);
-      if (missing.length > 0) {
-        const sample = missing.slice(0, 5).map((m) => (m.student_number ? `${m.name}(${m.student_number})` : m.name)).join("、");
-        const detail = sample ? `，缺：${sample}${missing.length > 5 ? ` 等 ${missing.length} 人` : ""}` : "";
-        throw Object.assign(
-          new Error(`该考试成绩记录不完整（缺 ${missing.length} 名应考学生成绩${detail}），无法公布成绩`),
-          { status: 409, code: ApiError.INVALID_VALUE }
-        );
-      }
-      return { scoredCount, expected: snap.participantCount };
-    }
-
-    // 快照为空或不可知（空班级/无 class_id+grade_id/表未迁移）：回退到实时人数计数（兼容旧库）
-    let expected: number | null = null;
-    if (exam.class_id != null) {
-      const roster = await db.get("SELECT COUNT(*) AS count FROM class_students WHERE class_id = ?", exam.class_id) as { count: number } | undefined;
-      expected = Number(roster?.count ?? 0);
-    } else if (exam.grade_id != null) {
-      const roster = await db.get(
-        `SELECT COUNT(DISTINCT cs.student_id) AS count FROM class_students cs
-         JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ?`,
-        exam.grade_id
-      ) as { count: number } | undefined;
-      expected = Number(roster?.count ?? 0);
-    }
-    if (expected != null && expected > 0 && scoredCount < expected) {
+    if (!snap.rosterKnown) {
       throw Object.assign(
-        new Error(`该考试成绩记录不完整（已录入 ${scoredCount}/${expected} 名学生），无法公布成绩`),
+        new Error("【完整性校验】该考试未确定应考范围（未指定年级/班级且未设置应考名单），无法公布成绩；请先在考试管理中设置应考范围"),
         { status: 409, code: ApiError.INVALID_VALUE }
       );
     }
-    return { scoredCount, expected };
+    if (snap.participantCount === 0) {
+      throw Object.assign(
+        new Error("【完整性校验】该考试应考名单为空（班级暂无学生或应考名单未添加学生），无法公布成绩；请先录入学生或设置应考名单"),
+        { status: 409, code: ApiError.INVALID_VALUE }
+      );
+    }
+
+    // 集合校验：应考集合 ⊆ 已评分集合
+    const missing = await listMissingParticipants(db, exam.id);
+    if (missing.length > 0) {
+      const sample = missing.slice(0, 5).map((m) => (m.student_number ? `${m.name}(${m.student_number})` : m.name)).join("、");
+      const detail = sample ? `，缺：${sample}${missing.length > 5 ? ` 等 ${missing.length} 人` : ""}` : "";
+      throw Object.assign(
+        new Error(`该考试成绩记录不完整（缺 ${missing.length} 名应考学生成绩${detail}），无法公布成绩`),
+        { status: 409, code: ApiError.INVALID_VALUE }
+      );
+    }
+    return { scoredCount, expected: snap.participantCount };
   }
 
   // v41: 单场成绩公布 —— 教师手动公布后学生方可查看。幂等（已公布直接返回 ok）。
@@ -2352,6 +2377,135 @@ export async function createApp(): Promise<express.Express> {
         );
       });
       res.json({ ok: true, scorePublished: 2 });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── 评审 P1-2：显式应考名单管理（跨班/跨年级联考、补救无范围考试）──
+  // 名单来源二选一：显式名单（source='explicit'）优先；否则按 class_id/grade_id 名册快照。
+  // 无范围考试必须设置显式名单后才能通过发布完整性校验。
+
+  // GET /api/exams/:examId/participants — 查看当前应考名单（含来源标记）
+  app.get("/api/exams/:examId/participants", requireExamAccess, async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "无效的考试 ID" });
+        return;
+      }
+      const db = getMysqlDb();
+      const exam = await db.get("SELECT id, class_id, grade_id FROM exams WHERE id = ?", examId) as { id: number; class_id: number | null; grade_id: number | null } | undefined;
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      const students = await listParticipants(db, examId);
+      const explicit = students.some((s) => s.source === "explicit");
+      const snap = await ensureExamParticipants(db, examId);
+      res.json({
+        examId,
+        scope: { classId: exam.class_id, gradeId: exam.grade_id },
+        source: explicit ? "explicit" : (snap.source ?? null),
+        known: snap.rosterKnown,
+        total: explicit ? students.filter((s) => s.source === "explicit").length : snap.participantCount,
+        students: students.map((s) => ({ studentId: s.student_id, studentNumber: s.student_number, name: s.name, source: s.source })),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // PUT /api/exams/:examId/participants — 设置（整体替换）显式应考名单；空数组 = 清除显式名单
+  // body: { studentIds?: number[] } 或 { studentNumbers?: string[] }（二选一）
+  app.put("/api/exams/:examId/participants", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "无效的考试 ID" });
+        return;
+      }
+      const body = (req.body ?? {}) as { studentIds?: unknown; studentNumbers?: unknown };
+      const db = getMysqlDb();
+      const exam = await db.get("SELECT id FROM exams WHERE id = ?", examId) as { id: number } | undefined;
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      const hasIds = Array.isArray(body.studentIds);
+      const hasNumbers = Array.isArray(body.studentNumbers);
+      if (hasIds && hasNumbers) {
+        res.status(400).json({ message: "studentIds 与 studentNumbers 只能二选一" });
+        return;
+      }
+      if (!hasIds && !hasNumbers) {
+        res.status(400).json({ message: "请提供 studentIds 或 studentNumbers（空数组 = 清除显式名单）" });
+        return;
+      }
+
+      let ids: number[];
+      if (hasIds) {
+        ids = [...new Set((body.studentIds as unknown[]).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+        if (ids.length === 0 && (body.studentIds as unknown[]).length > 0) {
+          res.status(400).json({ message: "studentIds 包含无效项" });
+          return;
+        }
+      } else {
+        const numbers = (body.studentNumbers as unknown[]).map(String).map((s) => s.trim()).filter(Boolean);
+        if (numbers.length === 0) {
+          ids = [];
+        } else {
+          const placeholders = numbers.map(() => "?").join(",");
+          const rows = await db.all(
+            `SELECT id, student_number FROM users WHERE role_id = 3 AND student_number IN (${placeholders})`,
+            ...numbers
+          ) as Array<{ id: number; student_number: string | null }>;
+          const foundNumbers = new Set(rows.map((r) => r.student_number));
+          const missingNumbers = numbers.filter((n) => !foundNumbers.has(n));
+          if (missingNumbers.length > 0) {
+            res.status(400).json({ message: `以下学号不存在或非学生账号：${missingNumbers.join("、")}` });
+            return;
+          }
+          ids = [...new Set(rows.map((r) => r.id))];
+        }
+      }
+
+      // 校验显式名单中的学生身份（studentIds 路径：确保全部为学生账号）
+      if (hasIds && ids.length > 0) {
+        const placeholders = ids.map(() => "?").join(",");
+        const rows = await db.all(`SELECT id FROM users WHERE role_id = 3 AND id IN (${placeholders})`, ...ids) as Array<{ id: number }>;
+        const found = new Set(rows.map((r) => r.id));
+        const missingIds = ids.filter((id) => !found.has(id));
+        if (missingIds.length > 0) {
+          res.status(400).json({ message: `以下学生不存在或非学生账号：${missingIds.join("、")}` });
+          return;
+        }
+      }
+
+      const count = await setExplicitParticipants(db, examId, ids);
+      const students = (await listParticipants(db, examId)).filter((s) => s.source === "explicit");
+      res.json({ ok: true, source: "explicit", total: count, students: students.map((s) => ({ studentId: s.student_id, studentNumber: s.student_number, name: s.name })) });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // DELETE /api/exams/:examId/participants — 清除显式应考名单（回落班级/年级名册快照）
+  app.delete("/api/exams/:examId/participants", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "无效的考试 ID" });
+        return;
+      }
+      const db = getMysqlDb();
+      const exam = await db.get("SELECT id FROM exams WHERE id = ?", examId) as { id: number } | undefined;
+      if (!exam) {
+        res.status(404).json({ message: "考试不存在" });
+        return;
+      }
+      await clearExplicitParticipants(db, examId);
+      res.json({ ok: true, message: "显式应考名单已清除（考试将按年级/班级名册校验）" });
     } catch (error) {
       next(error);
     }

@@ -53,6 +53,7 @@
     "migrate:mariadb:verify": "tsx scripts/migrate-to-mariadb.ts --verify-only --sample=10",
     "verify:weekly-demo": "tsx scripts/weekly-demo-smoke.ts",
     "verify:reliability-filter": "tsx scripts/verify-reliability-filter.ts",
+    "verify:p1-scope": "tsx scripts/verify-p1-scope.ts",
     "typecheck": "tsc --noEmit"
   },
   "browserslist": [

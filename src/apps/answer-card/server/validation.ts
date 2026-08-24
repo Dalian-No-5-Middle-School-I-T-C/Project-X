@@ -64,6 +64,9 @@ export const UpdateExamSchema = z.object({
   name: z.string().optional(),
   subject: z.string().optional(),
   mode: z.enum(["quiz", "formal"]).optional(),
+  // 评审 P1-2：补设/修改应考范围（年级/班级；不允许显式 null 清空——无范围考试无法通过完整性校验）
+  gradeId: z.number().int().positive().optional(),
+  classId: z.number().int().positive().optional(),
   // 评审 P1：保留策略绑定切换入口（仅管理员；null=解绑）
   retentionPolicyId: z.number().int().positive().nullable().optional(),
 });
