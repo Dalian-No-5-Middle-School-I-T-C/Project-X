@@ -403,6 +403,8 @@ export function paperRoutes(): Router {
         "SELECT page_index AS pageIndex, filename FROM original_paper_pages WHERE card_id = ? ORDER BY page_index",
         cardId
       ) as Array<{ pageIndex: number; filename: string }>;
+      // P2: 每页附带 MIME 类型，前端按 图片/PDF/DOCX 分别渲染缩略/嵌入/链接
+      const pagesWithMime = pages.map((pg) => ({ ...pg, mime_type: getFileMime(pg.filename) }));
 
       const dbHas = !!(row as any).has_original_paper || pages.length > 0;
       const filenameOnDisk = fileOnDisk?.filename || (row as any).original_paper_filename || pages[0]?.filename;
@@ -425,7 +427,7 @@ export function paperRoutes(): Router {
         mime_type: fileOnDisk?.mimeType,
         question_range: (row as any).question_range,
         extra_notes: (row as any).extra_notes,
-        pages,
+        pages: pagesWithMime,
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message || "获取失败" });

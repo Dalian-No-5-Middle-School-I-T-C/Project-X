@@ -206,7 +206,7 @@ type PdfWarningState = {
   validation: CardScoreValidationResult;
   pdfUrl: string;
   step: "score" | "paper" | "knowledge";  // 当前步骤
-  paperInfo?: { hasPaper: boolean; filename?: string; mimeType?: string; pages?: Array<{ pageIndex: number; filename: string }> };
+  paperInfo?: { hasPaper: boolean; filename?: string; mimeType?: string; pages?: Array<{ pageIndex: number; filename: string; mime_type?: string }> };
   knowledgeReady?: boolean;   // 知识点是否已分析
   knowledgePoints?: Array<{ question_number: number; points: string[] }>;  // 知识点列表
   cardId?: string;
@@ -2110,13 +2110,24 @@ function App() {
                   {exportCheck.paperInfo?.hasPaper ? (
                     <div>
                       <p className="mb-1.5 flex items-center gap-1 text-sm"><CheckCircle2 size={15} aria-hidden="true" /> 已上传：<strong>{exportCheck.paperInfo.filename}</strong>{(exportCheck.paperInfo.pages?.length ?? 0) > 1 ? `（共 ${exportCheck.paperInfo.pages!.length} 页）` : ""}</p>
-                      {/* 真多图：pages>1 时列多页；PDF → iframe, 图片 → img, DOCX → 文字 */}
+                      {/* 真多图：pages>1 时按每页 MIME 分别渲染（图片缩略 / PDF 链接 / DOCX 链接） */}
                       {(exportCheck.paperInfo.pages?.length ?? 0) > 1 ? (
                         <div className="flex max-h-60 flex-col gap-2 overflow-auto rounded-md border border-border bg-card p-2">
                           {exportCheck.paperInfo.pages!.map((pg) => (
                             <div key={pg.pageIndex} className="flex items-center gap-2 text-xs">
-                              <img src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper?page=${pg.pageIndex}&format=image`)} alt={`原卷 ${pg.pageIndex}`} className="h-16 w-16 shrink-0 object-contain rounded-sm border border-border-subtle" onError={(e) => {(e.target as HTMLImageElement).style.display='none'}} />
+                              {pg.mime_type?.startsWith("image/") ? (
+                                <img src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper?page=${pg.pageIndex}&format=image`)} alt={`原卷 ${pg.pageIndex}`} className="h-16 w-16 shrink-0 object-contain rounded-sm border border-border-subtle" onError={(e) => {(e.target as HTMLImageElement).style.display='none'}} />
+                              ) : (
+                                <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-sm border border-border-subtle bg-secondary text-[10px] text-muted-foreground">
+                                  {pg.mime_type === "application/pdf" ? "PDF" : "DOCX"}
+                                </span>
+                              )}
                               <span className="truncate text-foreground">第 {pg.pageIndex} 页 · {pg.filename}</span>
+                              {!pg.mime_type?.startsWith("image/") && (
+                                <a href={urlWithToken(`/api/cards/${exportCheck.cardId}/paper?page=${pg.pageIndex}`)} target="_blank" rel="noreferrer" className="ml-auto shrink-0 text-primary hover:underline">
+                                  {pg.mime_type === "application/pdf" ? "打开 PDF" : "在 Office 中打开"}
+                                </a>
+                              )}
                             </div>
                           ))}
                         </div>

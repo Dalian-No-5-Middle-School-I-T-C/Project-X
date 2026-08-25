@@ -1043,16 +1043,31 @@ export function SubjectiveEditor({
               {(question.images ?? []).map((image, index) => (
                   <div
                     draggable
-                    onDragStart={(e) => { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(index)); }}
+                    onDragStart={(e) => {
+                      e.dataTransfer.effectAllowed = "move";
+                      // P1: 拖拽数据绑定来源小题，防止跨题 drop 把越界下标 splice 进目标数组
+                      e.dataTransfer.setData("application/x-px-image-move", JSON.stringify({ questionId: question.id, index }));
+                      e.dataTransfer.setData("text/plain", JSON.stringify({ questionId: question.id, index }));
+                    }}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => {
                       e.preventDefault();
-                      const from = Number(e.dataTransfer.getData("text/plain"));
+                      let from = -1;
+                      let sourceQuestionId = "";
+                      try {
+                        const raw = e.dataTransfer.getData("application/x-px-image-move") || e.dataTransfer.getData("text/plain");
+                        const parsed = JSON.parse(raw) as { questionId?: string; index?: number };
+                        sourceQuestionId = String(parsed.questionId ?? "");
+                        from = Number(parsed.index);
+                      } catch { return; }
+                      // 拒绝跨小题拖放 + 校验下标范围
+                      if (sourceQuestionId !== question.id || !Number.isInteger(from) || from < 0) return;
                       const to = index;
-                      if (Number.isNaN(from) || from === to) return;
                       updateQuestion(question.id, (draft) => {
                         const arr = draft.images ?? [];
+                        if (from >= arr.length || to >= arr.length || from === to) return;
                         const [moved] = arr.splice(from, 1);
+                        if (!moved) return;
                         arr.splice(to, 0, moved);
                       });
                     }}
