@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Layers, Search, ClipboardList } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { useIsMobile } from "../hooks/useMediaQuery";
+import { SkinSwitcher } from "./SkinSwitcher";
 import type { CardSummary, ExamGroupFilterItem } from "../../../../shared/types";
 import {
   Badge,
@@ -29,6 +30,9 @@ import {
 
 interface Props {
   onSelectCard: (cardId: string) => void;
+  /** v2.5.0: 受控皮肤（由 ScannerApp 下发；未传时不渲染切换器，保持组件独立可用） */
+  skin?: string;
+  onSkinChange?: (skin: string) => void;
 }
 
 type MainMode = "single" | "group";
@@ -40,7 +44,7 @@ interface GroupMember {
   cardId: string | null;
 }
 
-export function CardSelectPage({ onSelectCard }: Props) {
+export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
   const [mainMode, setMainMode] = useState<MainMode>("single");
 
   // ── Card list states ──
@@ -168,6 +172,11 @@ export function CardSelectPage({ onSelectCard }: Props) {
               选择答题卡或大考组，进入扫描工作台
             </p>
           </div>
+          {skin !== undefined && onSkinChange && (
+            <div className="ml-auto flex items-center gap-2">
+              <SkinSwitcher skin={skin} onSkinChange={onSkinChange} />
+            </div>
+          )}
         </header>
 
         <div className="flex min-h-0 flex-col overflow-hidden">
