@@ -473,6 +473,8 @@ async function main(): Promise<void> {
 
     section("成绩公布门控与审计原子性");
     {
+      // v48 发布完整性要求应考范围非空；本段只验证公布门控/审计，先准备最小班级名册。
+      db.prepare("INSERT OR IGNORE INTO class_students (class_id, student_id) VALUES (?, ?)").run(classA, student.id);
       const seedPublishExam = (name: string, status: string, scorePublished: number): number => {
         const cardId = `pub-card-${Math.random().toString(36).slice(2, 8)}`;
         db.prepare("INSERT INTO answer_cards (id, title) VALUES (?, ?)").run(cardId, name);
@@ -875,7 +877,7 @@ async function main(): Promise<void> {
       // 评审 P1：成绩代查接口（/api/scores/students/:studentId 及逐题明细）此前只查
       // 班级/年级关系与考试可见范围，叠加 #246 矩阵门 —— 名单关闭的教师不能借代查
       // 旁路读取学生姓名/考号与（未公布）成绩
-      db.prepare("INSERT INTO class_students (class_id, student_id) VALUES (?, ?)").run(classA, student.id);
+      db.prepare("INSERT OR IGNORE INTO class_students (class_id, student_id) VALUES (?, ?)").run(classA, student.id);
       const proxyListResp = await fetch(`${base}/api/scores/students/${student.id}`, { headers: authHeaders(teacherToken) });
       const proxyDetailResp = await fetch(`${base}/api/scores/students/${student.id}/exams/${visibleExam}`, { headers: authHeaders(teacherToken) });
       check(proxyListResp.status === 403 && proxyDetailResp.status === 403, "名单关闭教师：成绩代查列表/逐题明细被矩阵门 403 拒绝");
@@ -915,7 +917,7 @@ async function main(): Promise<void> {
       const teacherCreatePolicy = await fetch(`${base}/api/exams`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
-        body: JSON.stringify({ name: "crit-教师越权策略", cardId: "CRITICALCARD001", mode: "formal", retentionPolicyId: policyId })
+        body: JSON.stringify({ name: "crit-教师越权策略", cardId: "CRITICALCARD001", gradeId: grade.id, classId: classA, mode: "formal", retentionPolicyId: policyId })
       });
       const teacherCreatePolicyBody = await teacherCreatePolicy.json() as { message?: string };
       check(
@@ -926,14 +928,14 @@ async function main(): Promise<void> {
       const teacherCreateDefault = await fetch(`${base}/api/exams`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
-        body: JSON.stringify({ name: "crit-教师默认策略", cardId: "CRITICALCARD001", mode: "formal" })
+        body: JSON.stringify({ name: "crit-教师默认策略", cardId: "CRITICALCARD001", gradeId: grade.id, classId: classA, mode: "formal" })
       });
       check(teacherCreateDefault.status === 201, "教师创建考试（未指定保留策略）仍可成功");
 
       const adminCreatePolicy = await fetch(`${base}/api/exams`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
-        body: JSON.stringify({ name: "crit-管理员指定策略", cardId: "CRITICALCARD001", mode: "formal", retentionPolicyId: policyId })
+        body: JSON.stringify({ name: "crit-管理员指定策略", cardId: "CRITICALCARD001", gradeId: grade.id, classId: classA, mode: "formal", retentionPolicyId: policyId })
       });
       const adminCreatePolicyBody = await adminCreatePolicy.json() as { id?: number; retention_policy_id?: number | null };
       check(
