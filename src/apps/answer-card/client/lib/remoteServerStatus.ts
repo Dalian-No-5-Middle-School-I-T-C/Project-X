@@ -71,9 +71,18 @@ export function createServerStatusMonitor(deps: ServerStatusDeps = {}) {
   const listeners = new Set<() => void>();
   let stopped = true;
   let cancelTimer: (() => void) | null = null;
+  // 代际计数：refresh()/stop() 时自增，使仍在飞行中的旧探测完成后不再续排定时器，
+  // 避免 refresh 中途探测分叉出第二条永久轮询链。
+  let epoch = 0;
 
   function emit(): void {
-    for (const l of listeners) l();
+    for (const l of listeners) {
+      try {
+        l();
+      } catch {
+        /* 订阅方异常不阻断轮询 */
+      }
+    }
   }
 
   /** 探测一次，返回下一次轮询间隔 */
@@ -96,6 +105,16 @@ export function createServerStatusMonitor(deps: ServerStatusDeps = {}) {
       if (res.ok && res.body?.capabilities?.scannerClientApi === true) {
         state = { kind: "online", serverUrl, lastCheckedAt: Date.now(), detail: "扫描客户端 API 已启用" };
         return INTERVAL_OK_MS;
+      }
+      if (res.ok && res.body === null) {
+        // 200 但响应体非 JSON：与「不可达」区分，避免出现「服务器无响应（HTTP 200）」的误导文案
+        state = {
+          kind: "offline",
+          serverUrl,
+          lastCheckedAt: Date.now(),
+          detail: `响应格式异常（HTTP ${res.status ?? "?"}）`,
+        };
+        return INTERVAL_FAIL_MS;
       }
       if (res.ok) {
         state = {
@@ -128,8 +147,9 @@ export function createServerStatusMonitor(deps: ServerStatusDeps = {}) {
 
   function loop(): void {
     if (stopped) return;
+    const my = epoch;
     void probeOnce().then((nextMs) => {
-      if (stopped) return;
+      if (stopped || my !== epoch) return;
       cancelTimer = schedule(loop, nextMs);
     });
   }
@@ -148,11 +168,13 @@ export function createServerStatusMonitor(deps: ServerStatusDeps = {}) {
     getState: (): ServerStatusSnapshot => state,
     /** 立即重新探测（如登录页保存了新地址后调用） */
     refresh(): void {
+      epoch += 1;
       cancelTimer?.();
       cancelTimer = null;
       if (!stopped) loop();
     },
     stop(): void {
+      epoch += 1;
       stopped = true;
       cancelTimer?.();
       cancelTimer = null;
