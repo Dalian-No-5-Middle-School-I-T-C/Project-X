@@ -11,6 +11,7 @@ import {
   Upload,
 } from "lucide-react";
 import { authFetch, mediaUrl, remoteScannerFetch, urlWithToken } from "../auth/api";
+import { useScannerMode, getScannerMode } from "../lib/scannerMode";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 import { ScanPreviewModal } from "./ScanPreviewModal";
 import type { AnswerCard } from "../../../../shared/types";
@@ -120,26 +121,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const completedRef = useRef(false);
   const [disconnected, setDisconnected] = useState(false);
 
-  // v1.6.0: 扫描模式 — 本地存储 或 上传服务器
-  const [scannerMode, setScannerMode] = useState<"local" | "remote">(() => {
-    try {
-      return (localStorage.getItem("projectx_scanner_mode") as "local" | "remote") || "local";
-    } catch {
-      return "local";
-    }
-  });
-  const scannerModeRef = useRef(scannerMode);
+  // v2.5.1: 扫描存储模式共享 hook（与导入阅卷卡片共用同一记忆）
+  const [scannerMode, setScannerMode] = useScannerMode();
+  // v1.6.0 遗留：上传状态条（Task 6 将随内联 uploadToRemote 一并移除）
   const [uploadState, setUploadState] = useState<"" | "uploading" | "done" | "error">("");
   const [uploadMsg, setUploadMsg] = useState("");
-
-  function setMode(m: "local" | "remote") {
-    setScannerMode(m);
-    try {
-      localStorage.setItem("projectx_scanner_mode", m);
-    } catch {
-      /* ignore */
-    }
-  }
 
   // 保持 ref 与 state 同步
   useEffect(() => {
@@ -148,9 +134,6 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   useEffect(() => {
     sessionIdRef.current = sessionId;
   }, [sessionId]);
-  useEffect(() => {
-    scannerModeRef.current = scannerMode;
-  }, [scannerMode]);
 
   useEffect(() => {
     let active = true;
@@ -280,7 +263,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             // Fetch combined results after scan completes
             fetchCombinedResults(sid);
             // v1.6.0: 远程模式下自动上传
-            if (scannerModeRef.current === "remote") {
+            if (getScannerMode() === "remote") {
               if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
               uploadTimerRef.current = setTimeout(() => void uploadToRemote(), 500);
             }
@@ -327,7 +310,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   async function uploadToRemote() {
     // 使用 ref 读取最新值，避免闭包捕获扫描开始时的空 pages / 空 sessionId
     const currentPages = pagesRef.current;
-    if (!sessionIdRef.current || scannerModeRef.current !== "remote") return;
+    if (!sessionIdRef.current || getScannerMode() !== "remote") return;
     setUploadState("uploading");
     setUploadMsg("正在上传到服务器...");
 
@@ -613,7 +596,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
               <SegmentedControl
                 aria-label="扫描存储模式"
                 value={scannerMode}
-                onValueChange={(m) => setMode(m)}
+                onValueChange={setScannerMode}
                 block
                 items={[
                   {
