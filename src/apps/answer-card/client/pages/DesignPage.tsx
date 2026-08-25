@@ -131,8 +131,16 @@ export function DesignPage() {
     const today = new Date();
     const examDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
     try {
+      // 257-08: 避免固定标题 409，去重后缀“空格+数字”（如 未命名答题卡 2）
+      const baseTitle = "未命名答题卡";
+      const existing = new Set(cards.map((c) => c.title));
+      let title = baseTitle;
+      let seq = 2;
+      while (existing.has(title)) {
+        title = `${baseTitle} ${seq++}`;
+      }
       await createCard({
-        title: "未命名答题卡",
+        title,
         subject: "other",
         subjectLabel: "",
         examDate,

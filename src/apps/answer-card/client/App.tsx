@@ -206,7 +206,7 @@ type PdfWarningState = {
   validation: CardScoreValidationResult;
   pdfUrl: string;
   step: "score" | "paper" | "knowledge";  // 当前步骤
-  paperInfo?: { hasPaper: boolean; filename?: string; mimeType?: string };
+  paperInfo?: { hasPaper: boolean; filename?: string; mimeType?: string; pages?: Array<{ pageIndex: number; filename: string }> };
   knowledgeReady?: boolean;   // 知识点是否已分析
   knowledgePoints?: Array<{ question_number: number; points: string[] }>;  // 知识点列表
   cardId?: string;
@@ -1023,15 +1023,28 @@ function App() {
   }
 
   async function showExportCheck(savedCard: AnswerCard, pdfUrl: string) {
-    let paperInfo: { hasPaper: boolean; filename?: string; mimeType?: string } = { hasPaper: false };
+    // 257-05: 非强制时直接跳过纸检，视为已满足，避免“取消强制仍锁导出”
+    if (globalPaper.requireOriginalPaper === 0) {
+      setExportCheck({
+        validation: createEmptyValidation(),
+        pdfUrl,
+        step: "knowledge",
+        paperInfo: { hasPaper: true },
+        knowledgeReady: true,
+        knowledgePoints: [],
+        cardId: savedCard.id,
+      });
+      return;
+    }
+    let paperInfo: { hasPaper: boolean; filename?: string; mimeType?: string; pages?: Array<{ pageIndex: number; filename: string }> } = { hasPaper: false };
     let knowledgeReady = false;
     let knowledgePoints: Array<{ question_number: number; points: string[] }> = [];
 
     // 受全局「强制要求上传原卷」控制
     if (globalPaper.requireOriginalPaper !== 0) {
       try {
-        const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string }>(`/api/cards/${savedCard.id}/paper/info`);
-        paperInfo = { hasPaper: !!info?.has_original_paper, filename: info?.filename, mimeType: info?.mime_type };
+        const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string; pages?: Array<{ pageIndex: number; filename: string }> }>(`/api/cards/${savedCard.id}/paper/info`);
+        paperInfo = { hasPaper: !!info?.has_original_paper, filename: info?.filename, mimeType: info?.mime_type, pages: (info as any)?.pages };
         // 检查知识点
         if (info?.has_original_paper) {
           try {
@@ -2096,9 +2109,18 @@ function App() {
                 <div>
                   {exportCheck.paperInfo?.hasPaper ? (
                     <div>
-                      <p className="mb-1.5 flex items-center gap-1 text-sm"><CheckCircle2 size={15} aria-hidden="true" /> 已上传：<strong>{exportCheck.paperInfo.filename}</strong></p>
-                      {/* PDF → iframe, 图片 → img, DOCX → 文字 */}
-                      {exportCheck.paperInfo.mimeType?.startsWith("image/") ? (
+                      <p className="mb-1.5 flex items-center gap-1 text-sm"><CheckCircle2 size={15} aria-hidden="true" /> 已上传：<strong>{exportCheck.paperInfo.filename}</strong>{(exportCheck.paperInfo.pages?.length ?? 0) > 1 ? `（共 ${exportCheck.paperInfo.pages!.length} 页）` : ""}</p>
+                      {/* 真多图：pages>1 时列多页；PDF → iframe, 图片 → img, DOCX → 文字 */}
+                      {(exportCheck.paperInfo.pages?.length ?? 0) > 1 ? (
+                        <div className="flex max-h-60 flex-col gap-2 overflow-auto rounded-md border border-border bg-card p-2">
+                          {exportCheck.paperInfo.pages!.map((pg) => (
+                            <div key={pg.pageIndex} className="flex items-center gap-2 text-xs">
+                              <img src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper?page=${pg.pageIndex}&format=image`)} alt={`原卷 ${pg.pageIndex}`} className="h-16 w-16 shrink-0 object-contain rounded-sm border border-border-subtle" onError={(e) => {(e.target as HTMLImageElement).style.display='none'}} />
+                              <span className="truncate text-foreground">第 {pg.pageIndex} 页 · {pg.filename}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : exportCheck.paperInfo.mimeType?.startsWith("image/") ? (
                         <div className="cursor-pointer overflow-hidden rounded-md border border-border bg-card"
                           onClick={() => { if (exportCheck.cardId) setPaperPreviewOpen(exportCheck.cardId); }} title="点击放大">
                           <img src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper?format=image`)} alt="原卷"

@@ -19,6 +19,14 @@ import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "../llm-client";
 import { recordAiRun, finalizeAiRun } from "../../../../server/services/aiTelemetry";
 import { decryptField } from "../../../../server/lib/field-crypto";
 
+function decodeMultipartFilename(name: string): string {
+  try {
+    const decoded = Buffer.from(name, "latin1").toString("utf8");
+    if (Buffer.from(decoded, "utf8").toString("latin1") === name) return decoded;
+    return name;
+  } catch { return name; }
+}
+
 type AiProviderRow = {
   id: number;
   user_id?: number;
@@ -36,7 +44,8 @@ const paperUpload = multer({
   dest: path.join(papersDir, "_tmp"),
   limits: { fileSize: 50 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const err = validatePaperFile(file.originalname, 50 * 1024 * 1024);
+    const name = decodeMultipartFilename(file.originalname);
+    const err = validatePaperFile(name, 50 * 1024 * 1024);
     if (err) {
       cb(new Error(err));
     } else {
@@ -141,7 +150,7 @@ export function paperRoutes(): Router {
       const validFiles: Array<{ file: Express.Multer.File; originalname: string }> = [];
       const failed: Array<{ filename: string; error: string }> = [];
       for (const file of files) {
-        const name = file.originalname;
+        const name = decodeMultipartFilename(file.originalname);
         const errMsg = validatePaperFile(name, file.size);
         if (errMsg) {
           failed.push({ filename: name, error: errMsg });
