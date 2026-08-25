@@ -87,7 +87,7 @@ export function ScannerApp() {
             setShowOnboarding(false);
           }}
           subtitle="请选择一套视觉风格后再进入登录；选定后将保存到本机并同步到账号偏好"
-          footerNote="如需更改皮肤，可随时在教师端网页的「账号设置 → 客户端设置」中切换。"
+          footerNote="如需更改皮肤，可随时在登录页右上角的调色盘按钮切换；登录后也可在各页面顶栏右侧切换。"
         />
       );
     }
@@ -100,12 +100,16 @@ export function ScannerApp() {
         cardId={selectedCardId}
         cardTitle={selectedCardTitle}
         onBack={() => setPage("select")}
+        skin={skin}
+        onSkinChange={setSkin}
       />
     );
   }
 
   return (
     <CardSelectPage
+      skin={skin}
+      onSkinChange={setSkin}
       onSelectCard={(cardId) => {
         // Fetch card title before entering workspace
         fetchJson<CardSummary>(`/api/cards/${cardId}`)
