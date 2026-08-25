@@ -14,6 +14,7 @@ import {
 import { fetchJson, mediaUrl } from "../auth/api";
 import { downloadGradingCsv } from "../lib/gradingCsv";
 import { ScannerPanel } from "./ScannerPanel";
+import { SkinSwitcher } from "./SkinSwitcher";
 import type { CombinedGradingBatchResult, CombinedGradingRow } from "../../../../shared/types";
 import {
   Badge,
@@ -36,6 +37,9 @@ interface Props {
   cardId: string;
   cardTitle: string;
   onBack: () => void;
+  /** v2.5.0: 受控皮肤（由 ScannerApp 下发；未传时不渲染切换器，保持组件独立可用） */
+  skin?: string;
+  onSkinChange?: (skin: string) => void;
 }
 
 const directoryInputProps = {
@@ -47,7 +51,7 @@ function isImageFile(file: File): boolean {
   return file.type.startsWith("image/") || /\.(png|jpe?g|bmp|webp|tiff?)$/i.test(file.name);
 }
 
-export function ScannerWorkspace({ cardId, cardTitle, onBack }: Props) {
+export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange }: Props) {
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState("");
 
@@ -102,6 +106,11 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack }: Props) {
         <header className="flex h-page-header shrink-0 items-center gap-3 border-b border-border-subtle bg-card px-5">
           <Button variant="ghost" size="icon-sm" onClick={onBack} aria-label="返回答题卡列表"><ArrowLeft size={18} /></Button>
           <div className="flex min-w-0 flex-1 flex-col"><strong className="truncate text-base font-semibold">{cardTitle}</strong><span className="truncate text-xs text-muted-foreground">扫描仪直扫或导入图片进行阅卷判分 · ID:{cardId}</span></div>
+          {skin !== undefined && onSkinChange && (
+            <div className="ml-auto flex shrink-0 items-center gap-2">
+              <SkinSwitcher skin={skin} onSkinChange={onSkinChange} />
+            </div>
+          )}
         </header>
 
         <div className="flex min-h-0 flex-1 flex-row-reverse">
