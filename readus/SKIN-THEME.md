@@ -87,7 +87,7 @@
 | `client/components/SkinOnboarding.tsx` | 首次登录前强制引导层：明澈 / 纸锋预览卡二选一（无默认），确认时写 `projectx-skin-chosen` + `writeLocalSkin` + `projectx-skin-onboarded` 一次性标志；纯语义令牌，无手写 CSS |
 | `client/pages/AccountSettingsPage.tsx` | 「客户端设置」Tab →「外观 / 皮肤」区（SegmentedControl 亮/暗 + SkinSwitcher）；明暗文案标注「设备级偏好」 |
 | `client/main.tsx` / `main-scanner.tsx` | 渲染前预置 `data-skin`（读 `projectx-skin`，有记录即设置，防白闪） |
-| `client/ScannerApp.tsx` | 登录页/登录后按本地或账号 `themeSkin` 落盘 + 设 `data-skin`（账号 flat 显式写入覆盖残留，换账号不继承）；不提供切换按钮 |
+| `client/ScannerApp.tsx` | 登录页/登录后按本地或账号 `themeSkin` 落盘 + 设 `data-skin`（账号 flat 显式写入覆盖残留，换账号不继承）；v2.5.0 起向 `CardSelectPage`/`ScannerWorkspace` 下发受控 `skin` props（顶栏右侧 SkinSwitcher），登录页为自管入口 |
 | `client/components/ui/v2/chart.tsx` | MutationObserver `attributeFilter` 已含 `data-skin`，皮肤切换图表自动重绘 |
 | `client/theme/tokens.css` | L1 加 `--px-font-serif`；L2 加 `--px-shadow-hard`；paper-edge 块加 `--px-lime`/`--px-lime-strong`、焦点环单条、`--px-fg-tertiary` 对比度 ≥4.5:1；作用域规则 ⑩-⑭（纸纹/硬影/荧光绿/弹层/区标题） |
 
@@ -188,7 +188,7 @@ A：不会。登出/会话失效时清除 `projectx-skin-chosen`，B 登录以 B
 A：设计决策——皮肤（风格）是身份偏好走账号级；明暗是设备使用习惯，沿用设备级 `projectx-theme`（账号设置页文案已标注「明暗为设备级偏好」）。如需改变，可在 `theme_skin` 存组合值（如 `flat-dark`）或新增列，前端 `App.tsx` 两个同步 effect 稍作扩展即可。
 
 **Q：扫描端（scanner）能切换皮肤吗？**
-A：扫描端不提供切换按钮（工作台场景），但登录页/登录后按本地记录或账号 `themeSkin` 设置 `data-skin`（账号为 flat 时显式写入覆盖上一账号残留），换账号登录不会继承旧皮肤。
+A：能（v2.5.0 起）。登录页右上角为自管模式入口（登录前直接读写 localStorage + data-skin）；登录后答题卡选择页与扫描工作台顶栏右侧均为受控模式入口（由 ScannerApp 下发，即时生效并 PATCH 同步到账号偏好）。数据面行为不变：登录页/登录后按本地记录或账号 `themeSkin` 设置 `data-skin`（账号为 flat 时显式写入覆盖上一账号残留），换账号登录不会继承旧皮肤。
 
 **Q：皮肤切换后图表/打印预览会受影响吗？**
 A：图表经 `useChartTheme` 实时读 CSS 变量并监听 `data-skin` 自动重绘；答题卡纸面走 `--px-paper-*` 语义（纸面恒白，ADR-6），除非皮肤块显式覆盖，否则打印预览保持白纸。
