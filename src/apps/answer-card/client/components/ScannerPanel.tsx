@@ -259,7 +259,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             // Fetch combined results after scan completes
             fetchCombinedResults(sid);
             // v2.5.1: 远程模式交由全局上传管理器（脱离面板生命周期，卸载不再能取消上传）
-            if (getScannerMode() === "remote") {
+            if (pagesRef.current.length > 0 && getScannerMode() === "remote") {
               scannerUploadManager.startUpload({
                 kind: "scan",
                 cardId,
