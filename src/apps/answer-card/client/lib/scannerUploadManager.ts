@@ -113,6 +113,13 @@ const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(r
 
 const errMsg = (err: unknown): string => (err instanceof Error ? err.message : String(err));
 
+/** 面向用户的错误文案：超时中止映射为可读提示，其余原样透出 */
+const friendlyErr = (err: unknown): string => {
+  if (err instanceof DOMException && err.name === "AbortError") return "上传超时";
+  if (err instanceof Error && err.name === "TimeoutError") return "上传超时";
+  return errMsg(err);
+};
+
 function isConfigError(err: unknown): boolean {
   const status = (err as { status?: number }).status;
   return typeof status === "number" && status >= 400 && status < 500;
@@ -129,6 +136,11 @@ async function httpError(res: Response): Promise<Error & { status?: number }> {
   const err = new Error(message) as Error & { status?: number };
   err.status = res.status;
   return err;
+}
+
+/** 页面数据用后即弃：ia32 目标内存有限，Blob/File 闭包不能整场滞留 */
+function releasePage(page: PageRecord): void {
+  page.input.getBlob = () => Promise.reject(new Error("页面数据已释放"));
 }
 
 export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
@@ -156,7 +168,9 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         uploaded: j.pages.filter((p) => p.done).length,
         total: j.pages.length,
         currentPageNum:
-          j.status === "uploading" ? (j.pages.find((p) => !p.done)?.input.pageNum ?? null) : null,
+          j.status === "uploading"
+            ? (j.pages.find((p) => !p.done && !p.failed)?.input.pageNum ?? null)
+            : null,
         failedPages: j.pages.filter((p) => p.failed).map((p) => p.input.pageNum),
         message: j.message,
         createdAt: j.createdAt,
@@ -165,7 +179,13 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         jobs.find((j) => !["queued", "done", "error"].includes(j.status))?.id ?? null,
       queuedCount: jobs.filter((j) => j.status === "queued").length,
     };
-    for (const l of listeners) l();
+    for (const l of listeners) {
+      try {
+        l();
+      } catch {
+        /* 订阅方异常不阻断通知 */
+      }
+    }
   }
 
   function setStatus(j: JobRecord, status: UploadJobStatus, message?: string): void {
@@ -243,8 +263,9 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   /**
    * 单阶段重试执行器：
    * - 每轮循环开头检查断线（离线/api_disabled）→ 转 paused 并挂起等待恢复；
-   * - 失败按退避自动重试至多 AUTO_RETRY_EXTRA 次；
-   * - 重试耗尽：api_disabled 或网络仍不通 → 转入暂停（保留重试机会）；配置类 4xx → 上抛；
+   * - 配置类 4xx（isConfigError）确定性失败，不消耗重试直接上抛；
+   * - 其余失败按退避自动重试至多 AUTO_RETRY_EXTRA 次；耗尽后：api_disabled/离线 →
+   *   转入暂停（保留重试机会），否则上抛；
    * - 恢复后从当前操作原地继续（resumePhase 由调用方维护）。
    */
   async function runWithRetry<T>(j: JobRecord, phaseLabel: string, fn: () => Promise<T>): Promise<T> {
@@ -259,17 +280,17 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       try {
         return await fn();
       } catch (err) {
+        if (isConfigError(err)) throw err;
         tries += 1;
         if (tries > AUTO_RETRY_EXTRA) {
           const kind = getServerKind();
           if (kind === "api_disabled" || !isOnline() || kind === "offline") {
             tries = 0; // 暂停后恢复重新给满重试预算
-            setStatus(j, "paused", `${phaseLabel}失败：${errMsg(err)}，已断线等待恢复…`);
+            setStatus(j, "paused", `${phaseLabel}失败：${friendlyErr(err)}，已断线等待恢复…`);
             await waitForResume(j);
             setStatus(j, j.resumePhase, `网络已恢复，继续${phaseLabel}`);
             continue;
           }
-          if (isConfigError(err)) throw err;
           throw err;
         }
         await sleep(RETRY_BACKOFF_MS[Math.min(tries - 1, RETRY_BACKOFF_MS.length - 1)]);
@@ -289,7 +310,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
           p.token = tokens[i];
         });
       } catch (err) {
-        setStatus(j, "error", `创建会话失败：${errMsg(err)}`);
+        setStatus(j, "error", `创建会话失败：${friendlyErr(err)}`);
         return;
       }
     }
@@ -303,10 +324,11 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       try {
         await runWithRetry(j, "上传", () => uploadPageOnce(j, page));
         page.done = true;
+        releasePage(page);
         notify();
       } catch (err) {
         page.failed = true;
-        lastErrMsg = errMsg(err);
+        lastErrMsg = friendlyErr(err);
         notify();
       }
     }
@@ -314,6 +336,9 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     const failedPages = j.pages.filter((p) => p.failed);
     if (failedPages.length > 0) {
       const nums = failedPages.map((p) => p.input.pageNum).join("、");
+      for (const p of j.pages) {
+        if (p.done && !p.failed) releasePage(p); // 失败页保留数据以供重试，成功页即刻释放
+      }
       setStatus(
         j,
         "error",
@@ -327,13 +352,18 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     setStatus(j, "completing", "正在提交上传会话…");
     try {
       await runWithRetry(j, "提交会话", () => completeSession(j));
+      for (const p of j.pages) releasePage(p);
       setStatus(j, "done", `上传完成，${j.pages.length} 页已提交到服务器`);
     } catch (err) {
-      setStatus(j, "error", `提交会话失败：${errMsg(err)}`);
+      for (const p of j.pages) {
+        if (p.done && !p.failed) releasePage(p);
+      }
+      setStatus(j, "error", `提交会话失败：${friendlyErr(err)}`);
     }
   }
 
-  /** 全局串行泵：同一时刻只跑一个任务，避免带宽争抢 */
+  /** 全局串行泵：同一时刻只跑一个任务，避免带宽争抢；
+   * 暂停中的活动任务会占住串行泵（后续任务本也会立即暂停），恢复后继续排空 */
   async function pump(): Promise<void> {
     if (running) return;
     running = true;
@@ -341,7 +371,16 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       for (;;) {
         const next = jobs.find((x) => x.status === "queued");
         if (!next) break;
-        await runJob(next);
+        try {
+          await runJob(next);
+        } catch (err) {
+          // 兜底：runJob 内部异常不应卡死队列
+          if (next.status !== "done" && next.status !== "error") {
+            next.status = "error";
+            next.message = `上传任务异常中断：${err instanceof Error ? err.message : String(err)}`;
+          }
+          notify();
+        }
       }
     } finally {
       running = false;
