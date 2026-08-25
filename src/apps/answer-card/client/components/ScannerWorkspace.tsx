@@ -91,6 +91,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
     setIsBusy(true);
     // v2.5.1: remote 档位时图片同时后台排队上传（不阻塞判分）
     let uploadQueued = false;
+    let serverUnconfigured = false;
     if (getScannerMode() === "remote") {
       if (isRemoteServerConfigured()) {
         scannerUploadManager.startUpload({
@@ -105,7 +106,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
         });
         uploadQueued = true;
       } else {
-        setStatus("未配置服务器地址，请先在登录页配置；本次仅本地判分");
+        serverUnconfigured = true;
       }
     }
     setStatus("正在识别答题卡...");
@@ -120,9 +121,11 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
       });
       setGradingResult(result);
       const reviewCount = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
-      setStatus(`阅卷完成：${result.rows.length} 张，${reviewCount} 题待复核${uploadQueued ? "；图片已后台排队上传到服务器" : ""}`);
+      setStatus(
+        `阅卷完成：${result.rows.length} 张，${reviewCount} 题待复核${uploadQueued ? "；图片已后台排队上传到服务器" : ""}${serverUnconfigured ? "；未配置服务器地址，本次仅本地判分" : ""}`,
+      );
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "阅卷失败");
+      setStatus(`${err instanceof Error ? err.message : "阅卷失败"}${serverUnconfigured ? "；未配置服务器地址，仅本地判分" : ""}`);
     } finally {
       setIsBusy(false);
     }
