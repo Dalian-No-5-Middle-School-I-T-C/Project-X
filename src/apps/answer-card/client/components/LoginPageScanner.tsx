@@ -3,6 +3,7 @@ import { BookOpen, ChevronDown, ChevronRight, Globe, LogIn, Shield } from "lucid
 import { useAuth } from "../auth/AuthContext";
 import { getStoredApiKey, storeApiKey } from "../auth/api";
 import { BeianFooter } from "./BeianFooter";
+import { SkinSwitcher } from "./SkinSwitcher";
 import { UserGuideModal } from "./UserGuideModal";
 import {
   Badge,
@@ -111,7 +112,12 @@ export function LoginPageScanner() {
   }
 
   return (
-    <div className="flex min-h-[100dvh] w-full flex-col items-center justify-center gap-4 bg-background p-4">
+    <div className="relative flex min-h-[100dvh] w-full flex-col items-center justify-center gap-4 bg-background p-4">
+      {/* v2.5.0: 扫描端登录页皮肤入口（自管模式：登录前直接读写 localStorage + data-* 属性；
+          登录后由 ScannerApp 接管，会话显式选择优先并同步到账号偏好） */}
+      <div className="absolute right-4 top-4 z-10">
+        <SkinSwitcher />
+      </div>
       <Card className="w-full max-w-[420px] p-6">
         <div className="flex items-center gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-accent text-accent-foreground">
