@@ -7,13 +7,18 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardCheck,
+  Database,
   Download,
   FolderOpen,
   ImagePlus,
+  Upload as UploadIcon,
 } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
+import { getScannerMode, isRemoteServerConfigured, useScannerMode } from "../lib/scannerMode";
 import { downloadGradingCsv } from "../lib/gradingCsv";
+import { scannerUploadManager } from "../lib/scannerUploadManager";
 import { ScannerPanel } from "./ScannerPanel";
+import { ServerStatusIndicator } from "./ServerStatusIndicator";
 import { SkinSwitcher } from "./SkinSwitcher";
 import type { CombinedGradingBatchResult, CombinedGradingRow } from "../../../../shared/types";
 import {
@@ -31,6 +36,7 @@ import {
   TableHeader,
   TableRow,
   TableWrap,
+  SegmentedControl,
 } from "./ui/v2";
 
 interface Props {
@@ -59,6 +65,8 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
   const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  // v2.5.1: 导入阅卷的图片去向档位（与直扫面板共用同一记忆，hook 内置跨实例同步）
+  const [importMode, setImportMode] = useScannerMode();
 
   function addGradingFiles(files: FileList | null) {
     if (!files) return;
@@ -81,6 +89,25 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
   async function gradeAnswerCardFiles() {
     if (gradingFiles.length === 0) return;
     setIsBusy(true);
+    // v2.5.1: remote 档位时图片同时后台排队上传（不阻塞判分）
+    let uploadQueued = false;
+    if (getScannerMode() === "remote") {
+      if (isRemoteServerConfigured()) {
+        scannerUploadManager.startUpload({
+          kind: "import",
+          cardId,
+          name: `导入_${cardTitle}_${new Date().toISOString().slice(0, 10)}`,
+          pages: gradingFiles.map((file, i) => ({
+            pageNum: i + 1,
+            side: "front" as const,
+            getBlob: () => Promise.resolve(file),
+          })),
+        });
+        uploadQueued = true;
+      } else {
+        setStatus("未配置服务器地址，请先在登录页配置；本次仅本地判分");
+      }
+    }
     setStatus("正在识别答题卡...");
     try {
       const form = new FormData();
@@ -93,7 +120,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
       });
       setGradingResult(result);
       const reviewCount = result.rows.reduce((sum, row) => sum + row.needsReviewCount, 0);
-      setStatus(`阅卷完成：${result.rows.length} 张，${reviewCount} 题待复核`);
+      setStatus(`阅卷完成：${result.rows.length} 张，${reviewCount} 题待复核${uploadQueued ? "；图片已后台排队上传到服务器" : ""}`);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : "阅卷失败");
     } finally {
@@ -108,6 +135,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
           <div className="flex min-w-0 flex-1 flex-col"><strong className="truncate text-base font-semibold">{cardTitle}</strong><span className="truncate text-xs text-muted-foreground">扫描仪直扫或导入图片进行阅卷判分 · ID:{cardId}</span></div>
           {skin !== undefined && onSkinChange && (
             <div className="ml-auto flex shrink-0 items-center gap-2">
+              <ServerStatusIndicator />
               <SkinSwitcher skin={skin} onSkinChange={onSkinChange} />
             </div>
           )}
@@ -119,9 +147,9 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
             {scanning ? (
               <ScannerPanel
                 cardId={cardId}
-                onScansComplete={(sId, pageCount) => {
+                onScansComplete={(_sId, pageCount) => {
+                  // v2.5.1: 保持面板挂在 done 视图（成绩表可见、上传由全局卡片接管）；退出走面板内按钮
                   setStatus(`扫描完成：${pageCount} 张`);
-                  setScanning(false);
                 }}
                 onClose={() => setScanning(false)}
               />
@@ -166,6 +194,23 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
             <Card>
               <CardHeader><CardTitle className="flex items-center gap-2 text-base"><ImagePlus size={17} /> 导入阅卷</CardTitle></CardHeader>
               <CardContent>
+
+                <div className="mb-3 flex flex-col gap-1.5">
+                  <span className="text-sm font-medium text-secondary-foreground">图片去向</span>
+                  <SegmentedControl
+                    aria-label="导入图片去向"
+                    value={importMode}
+                    onValueChange={setImportMode}
+                    block
+                    items={[
+                      { value: "local", label: "仅本地", icon: <Database size={14} />, tip: "只在本地识别判分" },
+                      { value: "remote", label: "本地判分+上传服务器", icon: <UploadIcon size={14} />, tip: "判分照旧，图片同时上传到远端服务器存档" },
+                    ]}
+                  />
+                  {importMode === "remote" && !isRemoteServerConfigured() && (
+                    <span className="text-xs text-warning-foreground">尚未配置服务器地址，请先在登录页配置</span>
+                  )}
+                </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <Button variant="outline" size="sm" asChild>
