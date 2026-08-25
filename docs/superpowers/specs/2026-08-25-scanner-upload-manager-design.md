@@ -127,7 +127,7 @@ getState(): UploadManagerSnapshot;
 ### 5.2 ScannerWorkspace（直扫卸载行为 + 导入路径）
 - `onScansComplete`：去掉 `setScanning(false)`，仅更新 status 文案——面板留在 done 视图展示成绩表（顺带修复该视图从未显示的问题）；退出依赖面板既有的关闭按钮/「开始新扫描」。
 - 「导入阅卷」卡片新增 SegmentedControl「本地存储 / 上传服务器」：读写同一个 localStorage key `projectx_scanner_mode`（与直扫档位语义一致、共享记忆）。
-- `gradeAnswerCardFiles`：判分流程不动；若 mode=remote 且已配置服务器，把 `gradingFiles` 组装为 pages（`getBlob: () => file.arrayBuffer().then(Buffer→Blob)` 或直接 File 作 BlobPart）调 `startUpload({kind:'import'})`，fire-and-forget 不 await。未配置服务器/API Key 时给出与直扫一致的引导提示，不上传。
+- `gradeAnswerCardFiles`：判分流程不动；若 mode=remote 且已配置服务器，把 `gradingFiles` 组装为 pages（File 本身是 Blob，`getBlob: () => Promise.resolve(file)`）调 `startUpload({kind:'import'})`，fire-and-forget 不 await。未配置服务器/API Key 时给出与直扫一致的引导提示，不上传。
 
 ### 5.3 ScannerApp
 - 根部挂载 `<UploadProgressCard />`。
@@ -137,7 +137,7 @@ getState(): UploadManagerSnapshot;
 | 场景 | 行为 |
 |---|---|
 | 单页瞬时失败（网络抖动） | 自动重试 ×2（1s/3s），用户无感 |
-| 本机断网 / 服务器不可达 / API 未启用 | job → paused（橙），恢复后自动续传；api_disabled 不自动重试（等人工开启后点重试） |
+| 本机断网 / 服务器不可达 / API 未启用 | job → paused（橙）；探活回到 online 后自动续传——含 api_disabled 场景（管理员在服务器开启开关后无需手动操作） |
 | 重试耗尽仍失败 | 该页标 failed，批次继续；终态 error 卡片保留，列页码，手动「重试失败页」（同 token 续传，已成功页不重传） |
 | 创建会话失败（404 SCANNER_CLIENT_API_DISABLED / 401 Key 无效 / 400） | job 直接 error，透出服务端 message 原文 |
 | complete 失败 | 同单页错误路径处理（complete 可重入） |
@@ -149,7 +149,7 @@ getState(): UploadManagerSnapshot;
 1. `npm run typecheck` 通过。
 2. 新增 `scripts/scanner-upload-manager-smoke.ts`（mock fetch + mock remoteServerStatus，驱动管理器状态机）：①全成功路径（含 complete）；②中途 offline → paused → 恢复续传；③单页 3 次失败 → error → retryFailed 补发 complete。`npx tsx` 运行通过。
 3. 手动验收清单（随交付给出）：直扫 remote 全流程、导入 remote 双线并行、拔网线/关服务器模拟断线、失败重试、状态指示四种态切换。
-4. 打包交付：**ia32 安装版（MSI）**，实现完成并通过验证后执行（对应 package.json 的 ia32 MSI 打包链路，实施阶段核实确切 script 名并按需补齐）。
+4. 打包交付：**ia32 安装版（MSI）**，实现完成并通过验证后执行 `npm run electron:msi:ia32`（package.json:31，含 ia32 原生模块重建与 sharp 平台二进制补齐）。
 
 ## 八、风险与备注
 
