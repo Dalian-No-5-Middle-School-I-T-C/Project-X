@@ -271,7 +271,30 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
             onChange={(event) =>
               onChange((draft) => {
                 const objective = draft as ObjectiveBlock;
-                objective.questionCount = Number(event.target.value);
+                const nextCount = Math.max(1, Math.min(120, Number(event.target.value) || 1));
+                objective.questionCount = nextCount;
+                if (objective.questions && objective.questions.length > 0) {
+                  const normalized = normalizeObjectiveQuestions(objective);
+                  if (normalized.length !== nextCount) {
+                    if (normalized.length > nextCount) {
+                      objective.questions = normalized.slice(0, nextCount);
+                    } else {
+                      const toAdd = nextCount - normalized.length;
+                      const startNum = (objective.questionStart ?? 1) + normalized.length;
+                      for (let i = 0; i < toAdd; i++) {
+                        normalized.push({
+                          questionNumber: startNum + i,
+                          mode: objective.mode,
+                          optionCount: objective.optionCount,
+                          score: objective.scorePerQuestion,
+                        });
+                      }
+                      objective.questions = normalized;
+                    }
+                  } else {
+                    objective.questions = normalized;
+                  }
+                }
                 objective.answerKey = normalizeObjectiveAnswerKey(objective);
               })
             }
@@ -1018,21 +1041,48 @@ export function SubjectiveEditor({
                 />
               </label>
               {(question.images ?? []).map((image, index) => (
-                <div className="flex items-center gap-2 text-xs text-secondary-foreground" key={`${image.assetId}_${index}`}>
-                  <span className="min-w-0 flex-1 truncate" title={image.originalName ?? image.assetId}>{image.originalName ?? image.assetId}</span>
-                  <Input type="number" min={10} aria-label="图片宽度(mm)" value={image.widthMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))} className="w-16" />
-                  <Input type="number" min={10} aria-label="图片高度(mm)" value={image.heightMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))} className="w-16" />
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="删除图片"
-                    className="text-destructive-fg hover:bg-destructive-soft"
-                    onClick={() => updateQuestion(question.id, (draft) => void (draft.images = (draft.images ?? []).filter((_, i) => i !== index)))}
+                  <div
+                    draggable
+                    onDragStart={(e) => {
+                      e.dataTransfer.effectAllowed = "move";
+                      // P1: 拖拽数据绑定来源小题，防止跨题 drop 把越界下标 splice 进目标数组
+                      e.dataTransfer.setData("application/x-px-image-move", JSON.stringify({ questionId: question.id, index }));
+                      e.dataTransfer.setData("text/plain", JSON.stringify({ questionId: question.id, index }));
+                    }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      let from = -1;
+                      let sourceQuestionId = "";
+                      try {
+                        const raw = e.dataTransfer.getData("application/x-px-image-move") || e.dataTransfer.getData("text/plain");
+                        const parsed = JSON.parse(raw) as { questionId?: string; index?: number };
+                        sourceQuestionId = String(parsed.questionId ?? "");
+                        from = Number(parsed.index);
+                      } catch { return; }
+                      // 拒绝跨小题拖放 + 校验下标范围
+                      if (sourceQuestionId !== question.id || !Number.isInteger(from) || from < 0) return;
+                      const to = index;
+                      updateQuestion(question.id, (draft) => {
+                        const arr = draft.images ?? [];
+                        if (from >= arr.length || to >= arr.length || from === to) return;
+                        const [moved] = arr.splice(from, 1);
+                        if (!moved) return;
+                        arr.splice(to, 0, moved);
+                      });
+                    }}
+                    className="flex items-center gap-1.5 rounded-md border border-transparent px-1 py-1 text-xs text-secondary-foreground hover:border-border-subtle hover:bg-secondary"
+                    key={`${image.assetId}_${index}`}
                   >
-                    <Trash2 size={14} />
-                  </Button>
-                </div>
-              ))}
+                    <span className="cursor-grab select-none text-muted-foreground" title="拖拽排序">⋮⋮</span>
+                    <span className="min-w-0 flex-1 truncate" title={image.originalName ?? image.assetId}>{image.originalName ?? image.assetId}</span>
+                    <Input type="number" min={10} value={image.widthMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].widthMm = Number(event.target.value))))} className="w-20" />
+                    <Input type="number" min={10} value={image.heightMm} onChange={(event) => updateQuestion(question.id, (draft) => void ((draft.images![index].heightMm = Number(event.target.value))))} className="w-20" />
+                    <Button variant="ghost" size="icon-sm" aria-label="上移" disabled={index === 0} onClick={() => updateQuestion(question.id, (draft) => { const arr = draft.images ?? []; if (index>0) { const t=arr[index-1]; arr[index-1]=arr[index]; arr[index]=t; } })}><ArrowUp size={14} /></Button>
+                    <Button variant="ghost" size="icon-sm" aria-label="下移" disabled={index === (question.images?.length ?? 0)-1} onClick={() => updateQuestion(question.id, (draft) => { const arr = draft.images ?? []; if (index < arr.length-1) { const t=arr[index+1]; arr[index+1]=arr[index]; arr[index]=t; } })}><ArrowDown size={14} /></Button>
+                    <Button variant="ghost" size="icon-sm" aria-label="删除图片" className="text-destructive-fg hover:bg-destructive-soft" onClick={() => updateQuestion(question.id, (draft) => void (draft.images = (draft.images ?? []).filter((_, i) => i !== index)))}><Trash2 size={14} /></Button>
+                  </div>
+                ))}
           </Panel>
         ))}
         {isFillBlankBlock && (

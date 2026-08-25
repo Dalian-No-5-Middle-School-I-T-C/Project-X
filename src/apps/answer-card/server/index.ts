@@ -29,6 +29,13 @@ function readServerVersion(): string {
   return "0.0.0";
 }
 const SERVER_VERSION = readServerVersion();
+function decodeMultipartFilename(name: string): string {
+  try {
+    const decoded = Buffer.from(name, "latin1").toString("utf8");
+    if (Buffer.from(decoded, "utf8").toString("latin1") === name) return decoded;
+    return name;
+  } catch { return name; }
+}
 import { ensureDefaultAdmin, getDatabase, getMysqlDb, buildUpsertSQL, initializeDatabase, initMariadbSchema, healthCheck, resolveProjectDbPath, detectDialect, encryptLegacyInitialPasswords, migrateLegacyPlaintextApiKeys, type DbAdapter } from "../../../server/db";
 import { scheduleCleanup } from "../../../server/db/cleanup";
 import { CardRepository } from "../../../server/repositories/CardRepository";
@@ -870,13 +877,13 @@ export async function createApp(): Promise<express.Express> {
         cb(null, backgroundsDir);
       },
       filename: (_req, file, cb) => {
-        const ext = path.extname(file.originalname).toLowerCase() || ".jpg";
+        const ext = path.extname(decodeMultipartFilename(file.originalname)).toLowerCase() || ".jpg";
         cb(null, `upload_${Date.now()}${ext}`);
       }
     }),
     limits: { fileSize: 5 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase();
+      const ext = path.extname(decodeMultipartFilename(file.originalname)).toLowerCase();
       const allowedExts = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
       if (!allowedExts.includes(ext)) {
         cb(new Error("仅支持图片文件"));
@@ -1080,9 +1087,17 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ error: `考试时间为必填项，需为 ${MIN_EXAM_YEAR}-${MAX_EXAM_YEAR} 范围内的有效日期（YYYY-MM-DD）` });
         return;
       }
-      if (await cardRepo.findByTitle(title)) {
-        res.status(409).json({ error: `已存在同名答题卡「${title}」，请修改名称后重试` });
-        return;
+      // 257-08: 后端兜底自动后缀“空格+数字”，避免并发/旧前端 409（与 DesignPage 前端去重一致）
+      let finalTitle = title;
+      if (await cardRepo.findByTitle(finalTitle)) {
+        let seq = 2;
+        while (await cardRepo.findByTitle(`${title} ${seq}`) && seq < 1000) seq++;
+        if (seq < 1000 && !(await cardRepo.findByTitle(`${title} ${seq}`))) {
+          finalTitle = `${title} ${seq}`;
+        } else {
+          res.status(409).json({ error: `已存在同名答题卡「${title}」，请修改名称后重试` });
+          return;
+        }
       }
       let id = generateCardId(subject);
       let retry = 0;
@@ -1090,7 +1105,7 @@ export async function createApp(): Promise<express.Express> {
         id = generateCardId(subject + "_" + String(retry++));
       }
       let card = createDefaultCard(id, subject, paperSize);
-      card.title = title;
+      card.title = finalTitle;
       card.subjectLabel = subjectLabel || undefined;
       card.examDate = examDate;
       card = applySubjectTemplate(card, { englishListening, chineseChoicePlacement });
@@ -1261,6 +1276,7 @@ export async function createApp(): Promise<express.Express> {
       }
 
       const files = Array.isArray(req.files) ? req.files : [];
+      files.forEach((f: any) => { try { (f as any).originalname = decodeMultipartFilename((f as any).originalname); } catch {} });
       if (files.length === 0) {
         res.status(400).json({ message: "没有收到答题卡图片" });
         return;
@@ -1269,7 +1285,7 @@ export async function createApp(): Promise<express.Express> {
       // Single-sided card: filter out back-side images
       const backSidePattern = /B\.(jpg|jpeg|png|bmp|tiff|tif)$/i;
       const gradingFiles = card.sided === "single"
-        ? files.filter((f) => !backSidePattern.test(f.originalname))
+        ? files.filter((f) => !backSidePattern.test((f as any).originalname))
         : files;
 
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
@@ -1352,6 +1368,7 @@ export async function createApp(): Promise<express.Express> {
       }
 
       const files = Array.isArray(req.files) ? req.files : [];
+      files.forEach((f: any) => { try { (f as any).originalname = decodeMultipartFilename((f as any).originalname); } catch {} });
       if (files.length === 0) {
         res.status(400).json({ message: "没有收到答题卡图片" });
         return;
@@ -1360,7 +1377,7 @@ export async function createApp(): Promise<express.Express> {
       // Single-sided card: filter out back-side images
       const backSidePattern = /B\.(jpg|jpeg|png|bmp|tiff|tif)$/i;
       const gradingFiles = card.sided === "single"
-        ? files.filter((f) => !backSidePattern.test(f.originalname))
+        ? files.filter((f) => !backSidePattern.test((f as any).originalname))
         : files;
 
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
@@ -1504,7 +1521,7 @@ export async function createApp(): Promise<express.Express> {
       if (!await assertImageFile(req.file.path, res)) return;
       res.status(201).json({
         assetId: req.file.filename,
-        originalName: req.file.originalname,
+        originalName: decodeMultipartFilename(req.file.originalname),
         url: `/api/assets/${cardId}/${req.file.filename}`
       });
     } catch (error) {
