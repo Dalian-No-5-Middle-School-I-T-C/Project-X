@@ -61,5 +61,8 @@ jobs:
       - name: Rebuild native module
         run: npm rebuild better-sqlite3
 
-      - name: Build
+      - name: Build (web)
         run: npm run build
+
+      - name: Build (scanner)
+        run: npm run build:scanner:full

@@ -3,6 +3,7 @@ import { BookOpen, ChevronDown, ChevronRight, Globe, LogIn, Shield } from "lucid
 import { useAuth } from "../auth/AuthContext";
 import { getStoredApiKey, storeApiKey } from "../auth/api";
 import { BeianFooter } from "./BeianFooter";
+import { SkinSwitcher } from "./SkinSwitcher";
 import { UserGuideModal } from "./UserGuideModal";
 import {
   Badge,
@@ -39,7 +40,13 @@ function saveApiKey(key: string): void {
   storeApiKey(key || null);
 }
 
-export function LoginPageScanner() {
+interface Props {
+  /** v2.5.0: 受控皮肤（由 ScannerApp 下发；未传时回退自管模式，保持组件独立可用） */
+  skin?: string;
+  onSkinChange?: (skin: string) => void;
+}
+
+export function LoginPageScanner({ skin, onSkinChange }: Props) {
   const { login } = useAuth();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -111,7 +118,17 @@ export function LoginPageScanner() {
   }
 
   return (
-    <div className="flex min-h-[100dvh] w-full flex-col items-center justify-center gap-4 bg-background p-4">
+    <div className="relative flex min-h-[100dvh] w-full flex-col items-center justify-center gap-4 bg-background p-4">
+      {/* v2.5.0: 扫描端登录页皮肤入口（受控模式：由 ScannerApp 下发 skin/onSkinChange，
+          登录前切换即更新 App state——避免自管模式下认证完成时以陈旧闭包 skin 误发 PATCH
+          覆盖账号偏好；未传 props 时回退自管模式） */}
+      <div className="absolute right-4 top-4 z-10">
+        {skin !== undefined && onSkinChange ? (
+          <SkinSwitcher skin={skin} onSkinChange={onSkinChange} />
+        ) : (
+          <SkinSwitcher />
+        )}
+      </div>
       <Card className="w-full max-w-[420px] p-6">
         <div className="flex items-center gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-md bg-accent text-accent-foreground">

@@ -17,14 +17,14 @@
   - `paper-edge`（纸锋 Paper Edge，v2.3.0 起为**默认皮肤**）——设计来源 `demo-brutalist.html`（editorial-brutalist 技能）：纸面米底 #F1EFE9、墨色文字阶、品牌亮蓝 #2E44FF 替换默认绯红 accent；卡片/输入/表格直角 + 按钮/徽章胶囊；**纸纹网格**（`.paper-grid`，64px 浅网格铺内容区）、**硬偏移阴影仅 2 张重点卡**（登录卡 + 分数段分布卡，`.brutal-hard` → `--px-shadow-hard`）、**扫描台荧光绿状态点**（`--px-lime` / `--px-lime-strong`，`.scan-lime`）；状态语义重映射（已完成→蓝软族 / 阅卷中→墨描边族 / 异常→绯红族 / 信息→实蓝族）；图表单色纪律（chart-1 蓝 = 当前主体，绯红仅异常）。
   - `flat`（明澈 Flat 2.0，v2.3.0 前为默认设计系统）。
 - **默认皮肤也设 `data-skin` 属性**：默认 `paper-edge` 的 CSS 覆盖块依赖 `[data-skin="paper-edge"]` 属性选择器，故 `<html>` 上始终出现 `data-skin`（默认纸锋；显式选 flat 时为 `data-skin="flat"`，无覆盖块回退 `:root` 明澈基准）。
-- 皮肤切换入口（2 处）：
+- 皮肤切换入口（下表为 **Web 教师端** 2 处；扫描端 v2.5.0 起另有登录页 + 选择页/工作台顶栏共 3 处，均由 ScannerApp 受控下发，见 §六 FAQ）：
 
 | 入口 | 位置 | 说明 |
 |------|------|------|
 | 登录页 | 卡片右上角 Palette 按钮 | 未登录即可切换（自管模式，直接写 localStorage），登录后保留 |
-| 账号设置 | 「客户端设置」Tab → 「外观 / 皮肤」区 | **应用内唯一入口**：皮肤 + 明暗分段选择，即时生效 |
+| 账号设置 | 「客户端设置」Tab → 「外观 / 皮肤」区 | **Web 端应用内唯一入口**：皮肤 + 明暗分段选择，即时生效 |
 
-> **入口收敛说明（本版回退）**：v2.1.0 曾在「侧栏底部」与「页头」放置皮肤菜单（Palette 按钮），本版已回退——这两处恢复为原先的**暗色模式一键按钮（Sun/Moon）**，仅切换明暗（设备级 `projectx-theme` / `data-theme`），不再承载皮肤选择。皮肤切换因此收敛为上述两处（登录页自管 + 账号设置受控）。
+> **入口收敛说明（本版回退）**：v2.1.0 曾在「侧栏底部」与「页头」放置皮肤菜单（Palette 按钮），本版已回退——这两处恢复为原先的**暗色模式一键按钮（Sun/Moon）**，仅切换明暗（设备级 `projectx-theme` / `data-theme`），不再承载皮肤选择。皮肤切换因此收敛为上述两处（登录页自管 + 账号设置受控）；此收敛针对 Web 教师端，扫描端入口于 v2.5.0 单独放开（见 §三 ScannerApp 行与 §六 FAQ）。
 
 **首次强制引导层（新增）**：首次进入登录页前（`localStorage["projectx-skin-onboarded"]` 缺失的设备级一次性标志），先弹出全屏引导层（`components/SkinOnboarding.tsx`），**明澈 / 纸锋两张大预览卡并排、带简介、必须二选一**——初始无预选、确认按钮禁用，点选其一后才可「进入登录」。确认时写入 sessionStorage `projectx-skin-chosen`（走登录同步 effect 的本地优先分支，登录后保留选择）+ 自管落盘 `projectx-skin` / `data-skin`（复用 `writeLocalSkin`）+ 写一次性 `onboarded` 标志。该引导仅覆盖未登录态（登录后登录页卸载），与登录页右上角 `SkinSwitcher` 自管入口并存（后者为登录前的备用切换）。
 
@@ -87,7 +87,7 @@
 | `client/components/SkinOnboarding.tsx` | 首次登录前强制引导层：明澈 / 纸锋预览卡二选一（无默认），确认时写 `projectx-skin-chosen` + `writeLocalSkin` + `projectx-skin-onboarded` 一次性标志；纯语义令牌，无手写 CSS |
 | `client/pages/AccountSettingsPage.tsx` | 「客户端设置」Tab →「外观 / 皮肤」区（SegmentedControl 亮/暗 + SkinSwitcher）；明暗文案标注「设备级偏好」 |
 | `client/main.tsx` / `main-scanner.tsx` | 渲染前预置 `data-skin`（读 `projectx-skin`，有记录即设置，防白闪） |
-| `client/ScannerApp.tsx` | 登录页/登录后按本地或账号 `themeSkin` 落盘 + 设 `data-skin`（账号 flat 显式写入覆盖残留，换账号不继承）；不提供切换按钮 |
+| `client/ScannerApp.tsx` | 登录页/登录后按本地或账号 `themeSkin` 落盘 + 设 `data-skin`（账号 flat 显式写入覆盖残留，换账号不继承）；v2.5.0 起向登录页与 `CardSelectPage`/`ScannerWorkspace` 下发受控 `skin` props（三处 SkinSwitcher）；PATCH 回写经 `lib/skinPatchGuard.ts` 护栏——登录瞬态不信任闭包旧 skin，防止本机旧值覆盖账号偏好 |
 | `client/components/ui/v2/chart.tsx` | MutationObserver `attributeFilter` 已含 `data-skin`，皮肤切换图表自动重绘 |
 | `client/theme/tokens.css` | L1 加 `--px-font-serif`；L2 加 `--px-shadow-hard`；paper-edge 块加 `--px-lime`/`--px-lime-strong`、焦点环单条、`--px-fg-tertiary` 对比度 ≥4.5:1；作用域规则 ⑩-⑭（纸纹/硬影/荧光绿/弹层/区标题） |
 
@@ -188,7 +188,7 @@ A：不会。登出/会话失效时清除 `projectx-skin-chosen`，B 登录以 B
 A：设计决策——皮肤（风格）是身份偏好走账号级；明暗是设备使用习惯，沿用设备级 `projectx-theme`（账号设置页文案已标注「明暗为设备级偏好」）。如需改变，可在 `theme_skin` 存组合值（如 `flat-dark`）或新增列，前端 `App.tsx` 两个同步 effect 稍作扩展即可。
 
 **Q：扫描端（scanner）能切换皮肤吗？**
-A：扫描端不提供切换按钮（工作台场景），但登录页/登录后按本地记录或账号 `themeSkin` 设置 `data-skin`（账号为 flat 时显式写入覆盖上一账号残留），换账号登录不会继承旧皮肤。
+A：能（v2.5.0 起）。登录页右上角与登录后答题卡选择页/扫描工作台顶栏右侧共 3 处入口，均为受控模式（由 ScannerApp 下发 `skin` props，切换即更新 App state，认证完成后按显式选择 PATCH 同步到账号偏好）；回写经 `skinPatchDecision` 护栏，登录瞬态（冷启动恢复会话/重登/换账号）不会以陈旧闭包 skin 误写账号偏好。数据面行为不变：登录页/登录后按本地记录或账号 `themeSkin` 设置 `data-skin`（账号为 flat 时显式写入覆盖上一账号残留），换账号登录不会继承旧皮肤。
 
 **Q：皮肤切换后图表/打印预览会受影响吗？**
 A：图表经 `useChartTheme` 实时读 CSS 变量并监听 `data-skin` 自动重绘；答题卡纸面走 `--px-paper-*` 语义（纸面恒白，ADR-6），除非皮肤块显式覆盖，否则打印预览保持白纸。
