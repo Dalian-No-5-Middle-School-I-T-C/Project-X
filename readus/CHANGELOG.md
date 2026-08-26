@@ -7,6 +7,7 @@
 ### 上传管理器重构（v2.5.1）
 - 新增 `client/lib/scannerUploadManager.ts` 纯 TS 单例：上传生命周期完全脱离 React 组件树，根治「面板卸载取消上传」竞态；封装既有服务端三步协议（建会话→逐页 multipart→complete），直扫与导入共用同一实现。
 - 直扫路径：SSE done 后交由管理器上传；删除 ScannerPanel 内联 uploadToRemote/定时器/上传状态条；工作台扫完不再立即卸载面板（done 成绩表视图顺带恢复可见）。
+- 终态权威取页（审查修复）：SSE 订阅晚到/中途断线重连时服务端只补发 done、不回放 page_done，本地上传前改为以 `GET /api/scanner/scan/:sessionId` 的权威记录重建页列表（权威源不可用才回退本地已知页）；page_done 同步推进本地 ref 消除空窗——杜绝"静默不上传/只传部分页"。
 - 导入阅卷新增「上传服务器」档位（与直扫共享 `projectx_scanner_mode` 记忆）：本地判分照旧出成绩，图片同时后台上传，两线互不阻塞。
 
 ### 弱网韧性（v2.5.1）
