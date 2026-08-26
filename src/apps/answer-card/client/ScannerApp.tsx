@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth } from "./auth/AuthContext";
 import { fetchJson } from "./auth/api";
 import { LoginPageScanner } from "./components/LoginPageScanner";
@@ -9,6 +9,7 @@ import { ScannerWorkspace } from "./components/ScannerWorkspace";
 import { SkinOnboarding, shouldShowSkinOnboarding } from "./components/SkinOnboarding";
 import { Spinner } from "./components/ui/v2";
 import { DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
+import { skinPatchDecision } from "./lib/skinPatchGuard";
 import type { CardSummary } from "../../../shared/types";
 
 // ── ScannerApp：双屏容器 ──
@@ -33,6 +34,8 @@ export function ScannerApp() {
   });
   // 首次进入强制选肤（与 web 端一致）：未走过引导时先二选一，确认后才进登录页。
   const [showOnboarding, setShowOnboarding] = useState<boolean>(() => shouldShowSkinOnboarding());
+  // PATCH 回写护栏状态：记录上一轮见到的 user.id（见 lib/skinPatchGuard.ts）。
+  const skinPatchPrevUserRef = useRef<string | number | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.density = "compact";
@@ -58,10 +61,16 @@ export function ScannerApp() {
   }, [user?.id, user?.themeSkin]);
 
   // 皮肤变更（含首次引导的选择）→ 登录状态下 PATCH 同步到账号偏好。fire-and-forget。
+  // 经 skinPatchDecision 护栏：登录瞬态（冷启动恢复会话/重登/换账号）不信任本轮
+  // 闭包里的陈旧 skin，防止「登录前切换的本机旧皮肤」覆盖账号偏好（PR #260 缺陷）。
   useEffect(() => {
-    if (!user) return;
-    const serverSkin = user.themeSkin || DEFAULT_SKIN;
-    if (skin === serverSkin) return;
+    const userId = user?.id ?? null;
+    const serverSkin = user?.themeSkin || DEFAULT_SKIN;
+    let chosen: string | null = null;
+    try { chosen = sessionStorage.getItem(SKIN_CHOSEN_KEY); } catch { /* ignore */ }
+    const decision = skinPatchDecision(skinPatchPrevUserRef.current, userId, skin, serverSkin, chosen);
+    skinPatchPrevUserRef.current = decision.nextPrevUserId;
+    if (!decision.patch) return;
     void fetchJson("/api/users/me/settings", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
@@ -91,7 +100,7 @@ export function ScannerApp() {
         />
       );
     }
-    return <LoginPageScanner />;
+    return <LoginPageScanner skin={skin} onSkinChange={setSkin} />;
   }
 
   if (page === "workspace" && selectedCardId) {

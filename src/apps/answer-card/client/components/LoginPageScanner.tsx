@@ -40,7 +40,13 @@ function saveApiKey(key: string): void {
   storeApiKey(key || null);
 }
 
-export function LoginPageScanner() {
+interface Props {
+  /** v2.5.0: 受控皮肤（由 ScannerApp 下发；未传时回退自管模式，保持组件独立可用） */
+  skin?: string;
+  onSkinChange?: (skin: string) => void;
+}
+
+export function LoginPageScanner({ skin, onSkinChange }: Props) {
   const { login } = useAuth();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -113,10 +119,15 @@ export function LoginPageScanner() {
 
   return (
     <div className="relative flex min-h-[100dvh] w-full flex-col items-center justify-center gap-4 bg-background p-4">
-      {/* v2.5.0: 扫描端登录页皮肤入口（自管模式：登录前直接读写 localStorage + data-* 属性；
-          登录后由 ScannerApp 接管，会话显式选择优先并同步到账号偏好） */}
+      {/* v2.5.0: 扫描端登录页皮肤入口（受控模式：由 ScannerApp 下发 skin/onSkinChange，
+          登录前切换即更新 App state——避免自管模式下认证完成时以陈旧闭包 skin 误发 PATCH
+          覆盖账号偏好；未传 props 时回退自管模式） */}
       <div className="absolute right-4 top-4 z-10">
-        <SkinSwitcher />
+        {skin !== undefined && onSkinChange ? (
+          <SkinSwitcher skin={skin} onSkinChange={onSkinChange} />
+        ) : (
+          <SkinSwitcher />
+        )}
       </div>
       <Card className="w-full max-w-[420px] p-6">
         <div className="flex items-center gap-3">
