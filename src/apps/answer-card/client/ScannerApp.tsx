@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import { useAuth } from "./auth/AuthContext";
 import { fetchJson } from "./auth/api";
 import { LoginPageScanner } from "./components/LoginPageScanner";
+import { UploadProgressCard } from "./components/UploadProgressCard";
 import { CardSelectPage } from "./components/CardSelectPage";
 import { ScannerWorkspace } from "./components/ScannerWorkspace";
 import { SkinOnboarding, shouldShowSkinOnboarding } from "./components/SkinOnboarding";
@@ -18,7 +19,7 @@ import type { CardSummary } from "../../../shared/types";
 
 type Page = "select" | "workspace";
 
-export function ScannerApp() {
+function ScannerAppInner() {
   const { user, loading } = useAuth();
 
   const [page, setPage] = useState<Page>("select");
@@ -134,5 +135,15 @@ export function ScannerApp() {
           });
       }}
     />
+  );
+}
+
+/** v2.5.1: 对外入口 = 原双屏容器 + 全局上传进度卡（右上角下弹） */
+export function ScannerApp() {
+  return (
+    <>
+      <ScannerAppInner />
+      <UploadProgressCard />
+    </>
   );
 }
