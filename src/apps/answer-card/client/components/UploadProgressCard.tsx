@@ -17,6 +17,7 @@ const BORDER_BY_STATUS: Record<UploadJobSnapshot["status"], string> = {
   paused: "border-warning-border",
   done: "border-success-border",
   error: "border-destructive-border",
+  cancelled: "border-border-subtle",
 };
 
 export function UploadProgressCard() {
@@ -118,7 +119,7 @@ function UploadJobCard({
       {job.status === "queued" && (
         <p className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
           <span>排队等待上传…</span>
-          <Button variant="ghost" size="sm" onClick={() => scannerUploadManager.cancelQueued(job.id)}>
+          <Button variant="ghost" size="sm" onClick={() => scannerUploadManager.cancelJob(job.id)}>
             取消
           </Button>
         </p>
@@ -137,7 +138,23 @@ function UploadJobCard({
           >
             立即重试
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0 text-destructive-fg"
+            icon={<X size={12} />}
+            onClick={() => scannerUploadManager.cancelJob(job.id)}
+          >
+            取消
+          </Button>
         </div>
+      )}
+
+      {job.status === "cancelled" && (
+        <p className="mt-2 flex items-center gap-1.5 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
+          <X size={13} className="shrink-0" />
+          <span className="min-w-0 break-words">任务已取消</span>
+        </p>
       )}
 
       {job.status === "done" && (
