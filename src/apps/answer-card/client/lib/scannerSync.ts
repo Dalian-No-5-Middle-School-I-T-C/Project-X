@@ -17,10 +17,20 @@ async function fetchSynced<T>(path: string): Promise<{ data: T; source: SyncSour
       const res = await remoteScannerFetch(path, {
         headers: getStoredApiKey() ? { "X-Api-Key": getStoredApiKey()! } : undefined,
       });
-      if (!res.ok) throw Object.assign(new Error(((await res.json().catch(() => ({})) as any).message) || res.statusText), { status: res.status });
+      if (!res.ok) {
+        const status = res.status;
+        // 401/403 鉴权失败不静默回退，需显式暴露，避免 401 假绿回退本地库
+        if (status === 401 || status === 403) {
+          let msg = res.statusText;
+          try { const body = (await res.clone().json()) as any; msg = body?.message || body?.error || msg; } catch {}
+          throw Object.assign(new Error(msg), { status, remoteAuthFailed: true });
+        }
+        throw Object.assign(new Error(((await res.json().catch(() => ({})) as any).message) || res.statusText), { status });
+      }
       return { data: (await res.json()) as T, source: "remote" };
-    } catch (e) {
-      // 回退 local
+    } catch (e: any) {
+      // 鉴权失败向上透出，不回退；网络/其他错误才回退本地
+      if (e?.remoteAuthFailed || e?.status === 401 || e?.status === 403) throw e;
     }
   }
   const data = await fetchJson<T>(path);

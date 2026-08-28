@@ -122,6 +122,7 @@ import {
   makeGate, getVisibleExamIds, requireExamAccess,
   validateExamIdsAccess, setAuthEnforced, hasViewPermission
 } from "./middleware";
+import { optionalApiKeyAuth } from "../../../server/middleware/api-key";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
 import { paperRoutes } from "./routes/paper-routes";
@@ -987,14 +988,17 @@ export async function createApp(): Promise<express.Express> {
 
   console.log("[Server] v" + SERVER_VERSION + " routes mounted");
 
-  // 业务路由 RBAC 网关
+  // 业务路由 RBAC 网关（扫描端只读放权：有 scanner Key 的 GET/HEAD 先经 optionalApiKeyAuth 标记 isApiClient，makeGate 对该标记直接放行）
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
   const examGate = makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_WRITE);
   const analysisGate = makeGate(enforceAuth, PERMISSIONS.GRADE_READ, PERMISSIONS.GRADE_READ);
   const scannerAuth = makeScannerAuth(enforceAuth);
   const cropGate = answerBlockCropGate(enforceAuth);
-  app.use("/api/cards", cardGate);
-  app.use("/api/exams", examGate);
+  const scannerReadAuth = optionalApiKeyAuth({ scope: "scanner" });
+  app.use("/api/cards", scannerReadAuth, cardGate);
+  app.use("/api/exams", scannerReadAuth, examGate);
+  app.use("/api/exam-groups", scannerReadAuth, makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_WRITE));
+  app.use("/api/classes", scannerReadAuth, makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_READ));
   app.use("/api/analysis", analysisGate, analysisRoutes);
   app.use("/api/answer-block-crops", cropGate);
   app.use("/api/review", analysisGate, reviewRoutes);

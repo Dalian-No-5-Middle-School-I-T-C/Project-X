@@ -31,6 +31,11 @@ export function makeGate(enforce: boolean, readPerm: string, writePerm: string) 
       next();
       return;
     }
+    // 扫描端只读放权：携带有效 X-Api-Key (scope=scanner/full) 的 GET/HEAD 直接放行，不走 RBAC
+    if ((req as any).isApiClient && (req.method === "GET" || req.method === "HEAD")) {
+      next();
+      return;
+    }
     if (!req.user) {
       res.status(401).json({ message: "未提供认证令牌" });
       return;

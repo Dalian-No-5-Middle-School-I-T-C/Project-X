@@ -1,6 +1,7 @@
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { authMiddleware } from "../middleware/auth";
+import { optionalApiKeyAuth } from "../middleware/api-key";
 import { getMysqlDb, buildInsertIgnore } from "../db";
 import { recordLifecycleEvent } from "../services/lifecycleEvents";
 import examGroupsAnalysisRouter from "./exam-groups-analysis";
@@ -15,9 +16,14 @@ import {
 import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 
 const router = express.Router();
-router.use(authMiddleware);
+router.use(optionalApiKeyAuth({ scope: "scanner" }));
+router.use((req, res, next) => {
+  if ((req as any).isApiClient && (req.method === "GET" || req.method === "HEAD")) return next();
+  return (authMiddleware as any)(req, res, next);
+});
 
 router.use((req: Request, res: Response, next: NextFunction) => {
+  if ((req as any).isApiClient && (req.method === "GET" || req.method === "HEAD")) return next();
   if (req.user?.role_name === "student") {
     res.status(403).json({ message: "学生无权访问考试组管理接口" });
     return;
@@ -122,7 +128,10 @@ router.post("/", requireGroupManager, async (req: Request, res: Response) => {
 
 // ── GET /api/exam-groups/:groupId ── get group detail ──
 
-router.get("/:groupId", requireReadableGroup, async (req: Request, res: Response) => {
+const allowScannerOrReadableGroup = (req: Request, res: Response, next: NextFunction) =>
+  (req as any).isApiClient ? next() : (requireReadableGroup as any)(req, res, next);
+
+router.get("/:groupId", allowScannerOrReadableGroup, async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.groupId);

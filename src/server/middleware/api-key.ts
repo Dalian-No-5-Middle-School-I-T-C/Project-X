@@ -17,6 +17,19 @@ interface ApiKeyAuthOptions {
   scope?: string; // 限制 key 的 scope，默认不限制
 }
 
+/** 可选鉴权：有 X-Api-Key 则校验，无则放行（供读接口双鉴权） */
+export function optionalApiKeyAuth(options: ApiKeyAuthOptions = {}) {
+  const required = apiKeyAuth(options);
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const apiKey = req.headers["x-api-key"] as string | undefined;
+    if (!apiKey) {
+      next();
+      return;
+    }
+    await required(req, res, next);
+  };
+}
+
 export function apiKeyAuth(options: ApiKeyAuthOptions = {}) {
   return async (req: Request, res: Response, next: NextFunction) => {
     const apiKey = req.headers["x-api-key"] as string | undefined;
