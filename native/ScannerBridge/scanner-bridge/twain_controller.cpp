@@ -230,19 +230,36 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     m_config = config;
     m_cancelRequested = false;
     
-    // 1. Open DSM
+    // 1. Open DSM（幂等：已打开则直接复用，避免二次 OPENDSM 导致 SEQERROR）
     if (!openDSM()) {
         result.errorMessage = "Failed to open TWAIN Data Source Manager";
         return result;
     }
     
-    // 2. Find and open source
-    auto sources = listSources();
-    
-    // Re-open DSM since listSources closed it
-    if (!openDSM()) {
-        result.errorMessage = "Failed to re-open TWAIN DSM";
-        return result;
+    // 2. Find and open source — DSM 已打开，直接枚举，不再经过 listSources() 的 open/close
+    // 避免 scan() 中 openDSM -> listSources().openDSM 二次 OPENDSM 失败，
+    // 随后 re-open 也因状态不一致而触发视频中的 "Failed to re-open TWAIN DSM"
+    std::vector<SourceInfo> sources;
+    {
+        TW_IDENTITY sourceId;
+        memset(&sourceId, 0, sizeof(sourceId));
+        TW_UINT16 rc = DSM_Entry(
+            &m_appId, nullptr,
+            DG_CONTROL, DAT_IDENTITY, MSG_GETFIRST,
+            (TW_MEMREF)&sourceId
+        );
+        while (rc == TWRC_SUCCESS) {
+            SourceInfo info;
+            info.name = sourceId.ProductName;
+            info.identity = sourceId;
+            sources.push_back(info);
+            memset(&sourceId, 0, sizeof(sourceId));
+            rc = DSM_Entry(
+                &m_appId, nullptr,
+                DG_CONTROL, DAT_IDENTITY, MSG_GETNEXT,
+                (TW_MEMREF)&sourceId
+            );
+        }
     }
     
     TW_IDENTITY* targetSource = nullptr;
@@ -436,6 +453,7 @@ void TwainController::cancel() {
 // ── TWAIN State Machine Internals ─────────────────────
 
 bool TwainController::openDSM() {
+    if (m_state >= 1) return true;
     TW_UINT16 rc = DSM_Entry(
         &m_appId, nullptr,
         DG_CONTROL, DAT_PARENT, MSG_OPENDSM,
@@ -446,6 +464,11 @@ bool TwainController::openDSM() {
         return true;
     }
     logError("DSM_Entry MSG_OPENDSM failed: " + twainResultToString(rc));
+    // 查询 Condition Code，便于诊断 SEQERROR 等时序错误（对应视频中 Failed to re-open TWAIN DSM）
+    TW_STATUS status;
+    memset(&status, 0, sizeof(status));
+    DSM_Entry(&m_appId, nullptr, DG_CONTROL, DAT_STATUS, MSG_GET, (TW_MEMREF)&status);
+    logError("DSM OPENDSM ConditionCode=" + std::to_string(status.ConditionCode));
     return false;
 }
 
