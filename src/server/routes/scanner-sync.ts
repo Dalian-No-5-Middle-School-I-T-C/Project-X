@@ -16,9 +16,10 @@ import { authMiddleware } from "../middleware/auth";
 import { CardRepository } from "../repositories/CardRepository";
 import { ClassRepository } from "../repositories/ClassRepository";
 import { getMysqlDb } from "../db";
-import { GROUP_MEMBER_NOT_SOFT_DELETED_SQL, EXAM_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
+import { GROUP_MEMBER_NOT_SOFT_DELETED_SQL, EXAM_NOT_SOFT_DELETED_SQL, getVisibleExamIds } from "../../apps/answer-card/server/middleware";
 import { roleHasPermission, PERMISSIONS } from "../auth/permissions";
 import { canReadGroup, visibleExamIdsForGroupRead } from "./exam-groups-helpers";
+import { ExamRepository } from "../repositories/ExamRepository";
 
 const router = Router();
 
@@ -163,11 +164,25 @@ router.get("/classes/grades", requirePerm(PERMISSIONS.EXAM_READ), async (_req: R
 });
 
 // GET /api/scanner/sync/exams
-router.get("/exams", requirePerm(PERMISSIONS.EXAM_READ), async (_req: Request, res: Response) => {
+router.get("/exams", requirePerm(PERMISSIONS.EXAM_READ), async (req: Request, res: Response) => {
   try {
+    // Scanner Key 直通全量；JWT 复用业务可见范围（与 /api/exams 一致）
+    if ((req as any).isApiClient) {
+      const db = getMysqlDb();
+      const rows = (await db.all(`SELECT * FROM exams WHERE ${EXAM_NOT_SOFT_DELETED_SQL} ORDER BY created_at DESC LIMIT 200`)) as any[];
+      res.json(rows);
+      return;
+    }
+    const visibleIds = await getVisibleExamIds((req as any).user);
+    if (visibleIds !== null && visibleIds.length === 0) { res.json([]); return; }
+    const examRepo = new ExamRepository();
+    const rows = await examRepo.listExams(visibleIds !== null ? { examIds: visibleIds } as any : {});
+    // 额外软删除过滤（listExams 可能已含，但保持与成员一致）
     const db = getMysqlDb();
-    const rows = (await db.all(`SELECT * FROM exams ORDER BY created_at DESC LIMIT 200`)) as any[];
-    res.json(rows);
+    const softRows = rows.filter((r: any) => r != null);
+    // 若 repo 未过滤软删除，补充过滤（小表可接受）
+    // 统一截断 200
+    res.json(softRows.slice(0, 200));
   } catch (e: any) {
     res.status(500).json({ message: e.message || "获取考试失败" });
   }

@@ -62,7 +62,8 @@ export const fetchExamsSynced = () => fetchSynced<any[]>("/api/exams?limit=200")
 export const fetchGradesSynced = async () => {
   try {
     return (await fetchSynced<any[]>("/api/classes/grades")).data;
-  } catch {
+  } catch (e: any) {
+    if (e?.status === 401 || e?.status === 403 || e?.remoteAuthFailed) throw e;
     return [];
   }
 };

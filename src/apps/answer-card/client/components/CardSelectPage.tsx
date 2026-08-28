@@ -87,7 +87,7 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
       const { data, source } = await fetchCardsSynced();
       setCards(Array.isArray(data as unknown as CardSummary[]) ? (data as unknown as CardSummary[]) : []);
       setSyncSource(source);
-      setSyncError(null);
+      if (!silent) setSyncError(null);
     } catch (e: any) {
       if (isAuthError(e)) {
         setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
@@ -103,7 +103,7 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
     try {
       const data = await fetchExamGroupsSynced();
       setGroups(Array.isArray(data as unknown as ExamGroupFilterItem[]) ? (data as unknown as ExamGroupFilterItem[]) : []);
-      setSyncError(null);
+      if (!silent) setSyncError(null);
     } catch (e: any) {
       if (isAuthError(e)) {
         setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
@@ -117,7 +117,7 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
     try {
       const d = await fetchGradesSynced();
       setGrades(Array.isArray(d) ? d : []);
-      setSyncError(null);
+      if (!opts?.silent) setSyncError(null);
     } catch (e: any) {
       if (isAuthError(e)) {
         setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
