@@ -47,6 +47,16 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
   const [testStatus, setTestStatus] = useState<"" | "testing" | "ok" | "fail">("");
   const [testMessage, setTestMessage] = useState("");
 
+  const hasActiveJobs = (() => {
+    try {
+      const st = scannerUploadManager.getState();
+      return st.jobs.some((j) => !["done", "error"].includes(j.status));
+    } catch {
+      return false;
+    }
+  })();
+  const urlChanged = serverUrl.trim().replace(/\/+$/, "") !== loadUrl().replace(/\/+$/, "");
+
   async function handleTest() {
     if (!serverUrl.trim()) return;
     setTestStatus("testing");
@@ -82,6 +92,7 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
   }
 
   function handleSave() {
+    // P1: 已有上传任务时仍允许切服，但进行中的任务已快照旧地址/Key，不会把 A 的 session 发往 B
     saveUrl(serverUrl);
     storeApiKey(apiKey.trim() || null);
     serverStatus.refresh();
@@ -95,6 +106,11 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
       <p className="m-0 text-xs text-muted-foreground">
         扫描、识别和账号登录始终在本机完成。填入服务器地址和 API Key 后，可将扫描结果上传到远端服务器。
       </p>
+      {hasActiveJobs && urlChanged && (
+        <p className="m-0 rounded border border-warning-border bg-warning-soft px-2 py-1 text-xs text-warning-foreground">
+          检测到有进行中的上传任务，切服后该任务仍发往原服务器，新任务将发往新服务器；如需迁移请等待当前任务完成。
+        </p>
+      )}
       <Field label="服务器地址">
         <Input
           value={serverUrl}

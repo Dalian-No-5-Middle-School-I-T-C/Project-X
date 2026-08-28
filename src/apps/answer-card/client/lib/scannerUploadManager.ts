@@ -3,7 +3,8 @@
 // 协议沿用服务端既有三步接口：POST sessions → POST pages(逐页 multipart) → POST complete。
 // 韧性：单页自动重试 2 次（退避 1s/3s，同 token 服务端幂等覆盖）；断线/api_disabled 转 paused，
 // 网络恢复自动续传；存在彻底失败页时不发 complete（服务端会话保持可续传态）。
-import { remoteScannerFetch } from "../auth/api";
+import { getStoredApiKey, remoteScannerFetch } from "../auth/api";
+import { SERVER_URL_KEY } from "./scannerMode";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 
 export type UploadJobKind = "scan" | "import";
@@ -76,6 +77,9 @@ interface JobRecord {
   message: string;
   createdAt: number;
   pauseWaiter: (() => void) | null;
+  /** 快照：创建时的远端地址与 Key，后续 page/complete 始终发往同一服务器，避免切服后把 A 的 session 发往 B */
+  remoteBase: string;
+  apiKey: string | null;
 }
 
 export interface UploadManagerDeps {
@@ -94,6 +98,14 @@ function defaultIsOnline(): boolean {
     return navigator.onLine !== false;
   } catch {
     return true;
+  }
+}
+
+function readRemoteBase(): string {
+  try {
+    return (localStorage.getItem(SERVER_URL_KEY) ?? "").trim().replace(/\/+$/, "");
+  } catch {
+    return "";
   }
 }
 
@@ -144,13 +156,26 @@ function releasePage(page: PageRecord): void {
 }
 
 export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
-  const remoteFetch = deps.remoteFetch ?? remoteScannerFetch;
+  const baseRemoteFetch = deps.remoteFetch ?? remoteScannerFetch;
   const isOnline = deps.isOnline ?? defaultIsOnline;
   const getServerKind = deps.getServerKind ?? (() => serverStatus.getState().kind);
   const timeoutSignal = deps.timeoutSignal ?? defaultTimeoutSignal;
   const sleep = deps.sleep ?? defaultSleep;
   const pageTimeoutMs = deps.pageTimeoutMs ?? 120_000;
   const genId = deps.genId ?? defaultGenId;
+
+  function jobFetch(j: JobRecord): (url: string, init?: RequestInit) => Promise<Response> {
+    // 注入的 mock（冒烟测试）直接使用，不走快照
+    if (baseRemoteFetch !== remoteScannerFetch) return baseRemoteFetch;
+    // 快照：用创建时的 base/key，避免切服后把 A 的 session 发往 B
+    if (!j.remoteBase) return baseRemoteFetch;
+    return (url: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      if (j.apiKey && !headers.has("X-Api-Key")) headers.set("X-Api-Key", j.apiKey);
+      const resolved = /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `${j.remoteBase}${url.startsWith("/") ? url : `/${url}`}`;
+      return fetch(resolved, { ...init, headers });
+    };
+  }
 
   const jobs: JobRecord[] = [];
   const listeners = new Set<() => void>();
@@ -217,7 +242,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   }
 
   async function createSession(j: JobRecord): Promise<{ sessionId: string; tokens: string[] }> {
-    const res = await remoteFetch("/api/scanner/upload/sessions", {
+    const fetcher = jobFetch(j);
+    const res = await fetcher("/api/scanner/upload/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -244,7 +270,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     form.append("token", page.token);
     form.append("pageNum", String(page.input.pageNum));
     form.append("side", page.input.side);
-    const res = await remoteFetch(`/api/scanner/upload/sessions/${j.remoteSessionId}/pages`, {
+    const fetcher = jobFetch(j);
+    const res = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/pages`, {
       method: "POST",
       body: form,
       signal: timeoutSignal(pageTimeoutMs),
@@ -253,7 +280,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   }
 
   async function completeSession(j: JobRecord): Promise<void> {
-    const res = await remoteFetch(`/api/scanner/upload/sessions/${j.remoteSessionId}/complete`, {
+    const fetcher = jobFetch(j);
+    const res = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/complete`, {
       method: "POST",
       signal: timeoutSignal(pageTimeoutMs),
     });
@@ -403,6 +431,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       message: "",
       createdAt: Date.now(),
       pauseWaiter: null,
+      remoteBase: readRemoteBase(),
+      apiKey: getStoredApiKey(),
     };
     jobs.push(job);
     notify();
