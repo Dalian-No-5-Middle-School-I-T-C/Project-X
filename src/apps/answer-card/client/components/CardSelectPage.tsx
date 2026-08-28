@@ -10,6 +10,7 @@ import {
   fetchExamGroupsSynced,
   fetchExamGroupDetailSynced,
   fetchGradesSynced,
+  fetchExamsSynced,
   startPolling,
 } from "../lib/scannerSync";
 import type { SyncSource } from "../lib/scannerSync";
@@ -72,55 +73,86 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
 
   const [syncSource, setSyncSource] = useState<SyncSource | null>(null);
 
-  // ── Load cards (remote-first) ──
-  const loadCards = async () => {
-    setLoading(true);
+  // ── Load helpers (silent=false 为首次加载带 Spinner，silent=true 为后台静默刷新) ──
+  const loadCards = async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent;
+    if (!silent) setLoading(true);
     try {
       const { data, source } = await fetchCardsSynced();
       setCards(Array.isArray(data as unknown as CardSummary[]) ? (data as unknown as CardSummary[]) : []);
       setSyncSource(source);
     } catch {
-      setCards([]);
+      if (!silent) setCards([]);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
-  // ── Load groups (remote-first) ──
-  const loadGroups = async () => {
-    setGroupLoading(true);
+  const loadGroups = async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent;
+    if (!silent) setGroupLoading(true);
     try {
       const data = await fetchExamGroupsSynced();
       setGroups(Array.isArray(data as unknown as ExamGroupFilterItem[]) ? (data as unknown as ExamGroupFilterItem[]) : []);
     } catch {
-      setGroups([]);
+      if (!silent) setGroups([]);
     } finally {
-      setGroupLoading(false);
+      if (!silent) setGroupLoading(false);
     }
   };
 
-  // ── Load grades (remote-first) ──
+  const loadGrades = async (opts?: { silent?: boolean }) => {
+    try {
+      const d = await fetchGradesSynced();
+      setGrades(Array.isArray(d) ? d : []);
+    } catch {
+      if (!opts?.silent) setGrades([]);
+    }
+  };
+
+  const loadExpandedGroup = async (groupId: number, opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setMembersLoading(true);
+    try {
+      const data: any = await fetchExamGroupDetailSynced(groupId);
+      const members: GroupMember[] = (data.members || []).map((m: any) => ({
+        examId: m.examId ?? m.exam_id,
+        examName: m.examName ?? m.exam_name ?? `考试${m.examId ?? m.exam_id}`,
+        subject: m.subject ?? "",
+        cardId: m.cardId ?? m.card_id ?? null,
+      }));
+      setGroupMembers(members);
+    } catch {
+      if (!opts?.silent) setGroupMembers([]);
+    } finally {
+      if (!opts?.silent) setMembersLoading(false);
+    }
+  };
+
+  // 考试列表静默同步（设计声明的 grades/考试覆盖，即使当前页未直接展示 exam 列表，仍保持与服务端一致）
+  const refreshExamsSilent = async () => {
+    try { await fetchExamsSynced(); } catch {}
+  };
+
+  // ── Initial load ──
   useEffect(() => {
-    fetchGradesSynced()
-      .then((d) => setGrades(Array.isArray(d) ? d : []))
-      .catch(() => setGrades([]));
+    void loadCards();
+    void loadGroups();
+    void loadGrades();
   }, []);
 
-  useEffect(() => {
-    loadCards();
-    loadGroups();
-  }, []);
-
-  // 30s polling + visibilitychange refresh (Task 2)
+  // 30s polling + visibilitychange 静默刷新（不触发 Spinner，不遮列表）
   useEffect(() => {
     return startPolling({
       intervalMs: 30000,
       onUpdate: () => {
-        loadCards();
-        loadGroups();
+        void loadCards({ silent: true });
+        void loadGroups({ silent: true });
+        void loadGrades({ silent: true });
+        void refreshExamsSilent();
+        if (expandedGroupId != null) void loadExpandedGroup(expandedGroupId, { silent: true });
       },
     });
-  }, []);
+  }, [expandedGroupId]);
 
   // ── Load group members on expand (remote-first) ──
   useEffect(() => {
@@ -128,19 +160,7 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
       setGroupMembers([]);
       return;
     }
-    setMembersLoading(true);
-    fetchExamGroupDetailSynced(expandedGroupId)
-      .then((data: any) => {
-        const members: GroupMember[] = (data.members || []).map((m: any) => ({
-          examId: m.examId ?? m.exam_id,
-          examName: m.examName ?? m.exam_name ?? `考试${m.examId ?? m.exam_id}`,
-          subject: m.subject ?? "",
-          cardId: m.cardId ?? m.card_id ?? null,
-        }));
-        setGroupMembers(members);
-      })
-      .catch(() => setGroupMembers([]))
-      .finally(() => setMembersLoading(false));
+    void loadExpandedGroup(expandedGroupId);
   }, [expandedGroupId]);
 
   // ── Extract subjects from cards ──

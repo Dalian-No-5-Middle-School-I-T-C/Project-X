@@ -10,30 +10,48 @@ function getRemoteBase(): string {
 
 export type SyncSource = "remote" | "local" | "offline-cache";
 
-async function fetchSynced<T>(path: string): Promise<{ data: T; source: SyncSource }> {
+const REMOTE_SYNC_PREFIX = "/api/scanner/sync";
+
+function toRemotePath(localPath: string): string {
+  // local /api/cards?limit=500 -> remote /api/scanner/sync/cards?limit=500
+  // local /api/cards/:id -> remote /api/scanner/sync/cards/:id
+  // local /api/exam-groups -> remote /api/scanner/sync/exam-groups
+  // local /api/classes/grades -> remote /api/scanner/sync/classes/grades
+  if (localPath.startsWith("/api/cards")) return localPath.replace("/api/cards", `${REMOTE_SYNC_PREFIX}/cards`);
+  if (localPath.startsWith("/api/exam-groups")) return localPath.replace("/api/exam-groups", `${REMOTE_SYNC_PREFIX}/exam-groups`);
+  if (localPath.startsWith("/api/classes/grades")) return localPath.replace("/api/classes/grades", `${REMOTE_SYNC_PREFIX}/classes/grades`);
+  if (localPath.startsWith("/api/exams")) return localPath.replace("/api/exams", `${REMOTE_SYNC_PREFIX}/exams`);
+  return `${REMOTE_SYNC_PREFIX}${localPath}`;
+}
+
+async function fetchSynced<T>(localPath: string): Promise<{ data: T; source: SyncSource }> {
   const base = getRemoteBase();
   if (base) {
+    const remotePath = toRemotePath(localPath);
     try {
-      const res = await remoteScannerFetch(path, {
+      const res = await remoteScannerFetch(remotePath, {
         headers: getStoredApiKey() ? { "X-Api-Key": getStoredApiKey()! } : undefined,
       });
       if (!res.ok) {
         const status = res.status;
-        // 401/403 鉴权失败不静默回退，需显式暴露，避免 401 假绿回退本地库
+        let msg = res.statusText;
+        try { const body = (await res.clone().json()) as any; msg = body?.message || body?.error || msg; } catch {}
+        // 401/403 鉴权失败不回退；404 权威删除不回退；网络/5xx 才回退
         if (status === 401 || status === 403) {
-          let msg = res.statusText;
-          try { const body = (await res.clone().json()) as any; msg = body?.message || body?.error || msg; } catch {}
           throw Object.assign(new Error(msg), { status, remoteAuthFailed: true });
         }
-        throw Object.assign(new Error(((await res.json().catch(() => ({})) as any).message) || res.statusText), { status });
+        if (status === 404) {
+          throw Object.assign(new Error(msg), { status, remoteNotFound: true });
+        }
+        throw Object.assign(new Error(msg), { status });
       }
       return { data: (await res.json()) as T, source: "remote" };
     } catch (e: any) {
-      // 鉴权失败向上透出，不回退；网络/其他错误才回退本地
-      if (e?.remoteAuthFailed || e?.status === 401 || e?.status === 403) throw e;
+      if (e?.remoteAuthFailed || e?.remoteNotFound || e?.status === 401 || e?.status === 403 || e?.status === 404) throw e;
+      // 网络错误 / 5xx / 超时 -> 静默回退本地
     }
   }
-  const data = await fetchJson<T>(path);
+  const data = await fetchJson<T>(localPath);
   return { data, source: base ? "offline-cache" : "local" };
 }
 

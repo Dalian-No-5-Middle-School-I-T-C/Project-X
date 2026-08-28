@@ -81,6 +81,7 @@ import apiKeysRoutes from "../../../server/routes/api-keys";
 import dataRetentionRoutes from "../../../server/routes/data-retention";
 import consoleRoutes from "../../../server/routes/console";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
+import scannerSyncRoutes from "../../../server/routes/scanner-sync";
 import ladderRoutes from "../../../server/routes/ladder";
 import {
   getAnswerBlockCropFile,
@@ -122,7 +123,6 @@ import {
   makeGate, getVisibleExamIds, requireExamAccess,
   validateExamIdsAccess, setAuthEnforced, hasViewPermission
 } from "./middleware";
-import { optionalApiKeyAuth } from "../../../server/middleware/api-key";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
 import { paperRoutes } from "./routes/paper-routes";
@@ -929,8 +929,15 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/admin/console", consoleRoutes);
   if (scannerClientApiEnabled) {
     app.use("/api/scanner/upload", scannerUploadRoutes);
+    app.use("/api/scanner/sync", scannerSyncRoutes);
   } else {
     app.use("/api/scanner/upload", (_req, res) => {
+      res.status(404).json({
+        code: "SCANNER_CLIENT_API_DISABLED",
+        message: "Remote scanner client API is disabled on this server."
+      });
+    });
+    app.use("/api/scanner/sync", (_req, res) => {
       res.status(404).json({
         code: "SCANNER_CLIENT_API_DISABLED",
         message: "Remote scanner client API is disabled on this server."
@@ -988,17 +995,14 @@ export async function createApp(): Promise<express.Express> {
 
   console.log("[Server] v" + SERVER_VERSION + " routes mounted");
 
-  // 业务路由 RBAC 网关（扫描端只读放权：有 scanner Key 的 GET/HEAD 先经 optionalApiKeyAuth 标记 isApiClient，makeGate 对该标记直接放行）
+  // 业务路由 RBAC 网关
   const cardGate = makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.GRADE_WRITE);
   const examGate = makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_WRITE);
   const analysisGate = makeGate(enforceAuth, PERMISSIONS.GRADE_READ, PERMISSIONS.GRADE_READ);
   const scannerAuth = makeScannerAuth(enforceAuth);
   const cropGate = answerBlockCropGate(enforceAuth);
-  const scannerReadAuth = optionalApiKeyAuth({ scope: "scanner" });
-  app.use("/api/cards", scannerReadAuth, cardGate);
-  app.use("/api/exams", scannerReadAuth, examGate);
-  app.use("/api/exam-groups", scannerReadAuth, makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_WRITE));
-  app.use("/api/classes", scannerReadAuth, makeGate(enforceAuth, PERMISSIONS.EXAM_READ, PERMISSIONS.EXAM_READ));
+  app.use("/api/cards", cardGate);
+  app.use("/api/exams", examGate);
   app.use("/api/analysis", analysisGate, analysisRoutes);
   app.use("/api/answer-block-crops", cropGate);
   app.use("/api/review", analysisGate, reviewRoutes);

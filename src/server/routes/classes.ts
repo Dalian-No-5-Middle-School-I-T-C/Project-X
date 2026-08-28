@@ -3,7 +3,6 @@ import type { Request, Response } from "express";
 import { ClassRepository } from "../repositories/ClassRepository";
 import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission, requireRole } from "../middleware/auth";
-import { optionalApiKeyAuth } from "../middleware/api-key";
 import { PERMISSIONS, ROLE_IDS, ROLE_NAMES } from "../auth/permissions";
 
 /**
@@ -14,19 +13,14 @@ const router = express.Router();
 const classRepo = new ClassRepository();
 const userRepo = new UserRepository();
 
-router.use(optionalApiKeyAuth({ scope: "scanner" }));
-router.use((req, res, next) => {
-  if ((req as any).isApiClient && (req.method === "GET" || req.method === "HEAD")) return next();
-  return (authMiddleware as any)(req, res, next);
-});
+router.use(authMiddleware);
 
 const readRoles = requireRole(ROLE_NAMES.ADMIN, ROLE_NAMES.TEACHER);
 const manage = requirePermission(PERMISSIONS.CLASS_MANAGE);
-const allowScannerRead = (req: any, _res: any, next: any) => ((req as any).isApiClient ? next() : readRoles(req, _res, next));
 
 // ── 年级 ──────────────────────────────────────────────
 
-router.get("/grades", allowScannerRead, async (_req: Request, res: Response) => {
+router.get("/grades", readRoles, async (_req: Request, res: Response) => {
   res.json(await classRepo.listGrades());
 });
 
@@ -57,7 +51,7 @@ router.delete("/grades/:id", manage, async (req: Request, res: Response) => {
 
 // ── 班级 ──────────────────────────────────────────────
 
-router.get("/", allowScannerRead, async (req: Request, res: Response) => {
+router.get("/", readRoles, async (req: Request, res: Response) => {
   const gradeId = req.query.gradeId ? Number(req.query.gradeId) : undefined;
   res.json(await classRepo.listClasses(gradeId));
 });
@@ -83,7 +77,7 @@ router.delete("/:id", manage, async (req: Request, res: Response) => {
 
 // ── 花名册 ────────────────────────────────────────────
 
-router.get("/:id/students", allowScannerRead, async (req: Request, res: Response) => {
+router.get("/:id/students", readRoles, async (req: Request, res: Response) => {
   const cls = await classRepo.findClassById(Number(req.params.id));
   if (!cls) {
     res.status(404).json({ message: "班级不存在" });

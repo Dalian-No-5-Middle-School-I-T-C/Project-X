@@ -120,6 +120,7 @@ async function main() {
     fetchHandler = async (url, init) => {
       if (url.startsWith("http://remote.test")) {
         sawRemote = true;
+        assert.ok(url.includes("/api/scanner/sync/cards"), `remote url should use /api/scanner/sync prefix got ${url}`);
         sawKey = getHeader(init, "X-Api-Key") ?? "";
         assert.strictEqual(sawKey, "test-key-123", `expected X-Api-Key test-key-123 got ${sawKey}`);
         return mockResponse([{ id: "r1", title: "RemoteCard" }]);
@@ -266,6 +267,44 @@ async function main() {
     const exams = await fetchExamsSynced();
     assert.deepStrictEqual(exams, [{ id: 1, name: "e1" }]);
     console.log("  ✓ scenario 7 passed");
+  }
+
+  console.log("== Scenario 8: remote 401/404 不回退本地（权威失败） ==");
+  {
+    store.clear();
+    store.set("projectx_server_url", "http://remote.test");
+    store.set("projectx_api_key", "bad-key");
+    let remoteHit = 0;
+    let localHit = 0;
+    // 401 should throw, not fallback
+    fetchHandler = async (url) => {
+      if (url.startsWith("http://remote.test")) {
+        remoteHit++;
+        return mockResponse({ message: "无效的 API Key" }, { status: 401, ok: false });
+      }
+      localHit++;
+      return mockResponse([{ id: "local" }]);
+    };
+    let threw401 = false;
+    try { await fetchCardsSynced(); } catch (e: any) { threw401 = e.status === 401; }
+    assert.ok(threw401, "401 should throw");
+    assert.strictEqual(localHit, 0, "401 should not fallback to local");
+
+    // 404 for single card should throw, not fallback
+    remoteHit = 0; localHit = 0;
+    fetchHandler = async (url) => {
+      if (url.startsWith("http://remote.test")) {
+        remoteHit++;
+        return mockResponse({ message: "答题卡不存在" }, { status: 404, ok: false });
+      }
+      localHit++;
+      return mockResponse([{ id: "localCard" }]);
+    };
+    let threw404 = false;
+    try { await fetchCardByIdSynced("gone-id"); } catch (e: any) { threw404 = e.status === 404; }
+    assert.ok(threw404, "404 should throw");
+    assert.strictEqual(localHit, 0, "404 single card should not fallback");
+    console.log("  ✓ scenario 8 passed");
   }
 
   console.log("scanner-sync-smoke: 全部通过");
