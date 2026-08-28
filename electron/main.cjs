@@ -17,17 +17,60 @@ function getAppRoot() {
   return app.getAppPath();
 }
 
+function getLogFilePath() {
+  try {
+    return path.join(app.getPath("userData"), "logs", "main.log");
+  } catch {
+    return path.join(app.getPath("appData"), "answer-card-designer", "logs", "main.log");
+  }
+}
+
+function appendLog(level, message) {
+  const line = `[${new Date().toISOString()}] [${level}] ${message}\n`;
+  try {
+    const file = getLogFilePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, line, "utf8");
+  } catch {
+    /* 日志落盘失败不影响主流程 */
+  }
+  if (level === "ERROR") console.error(line.trim());
+  else if (level === "WARN") console.warn(line.trim());
+  else console.log(line.trim());
+}
+
+function setupMainProcessLogging() {
+  const logFile = getLogFilePath();
+  try {
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    fs.appendFileSync(logFile, `\n===== ${PRODUCT_NAME} start ${new Date().toISOString()} arch=${process.arch} electron=${process.versions.electron} =====\n`, "utf8");
+  } catch {
+    /* ignore */
+  }
+  process.on("uncaughtException", (error) => {
+    appendLog("ERROR", `[Main] uncaughtException: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+  });
+  process.on("unhandledRejection", (reason) => {
+    const msg = reason instanceof Error ? reason.stack || reason.message : String(reason);
+    appendLog("ERROR", `[Main] unhandledRejection: ${msg}`);
+  });
+}
+
 function configureAppIdentity() {
   app.setName(PRODUCT_NAME);
   const userDataDir = path.join(app.getPath("appData"), "answer-card-designer");
   app.setPath("userData", userDataDir);
+  setupMainProcessLogging();
+  appendLog("INFO", `[Electron] userData=${userDataDir} arch=${process.arch}`);
   // 打包后快捷方式启动时 CWD 是 C:\Windows\System32，服务端仍有按 cwd 解析的
   // 相对路径（config.yml、cleanup 兜底等），统一切到可写目录，避免 EPERM。
   try {
     fs.mkdirSync(userDataDir, { recursive: true });
     process.chdir(userDataDir);
   } catch (error) {
-    console.warn(`[Electron] Failed to switch CWD to userData: ${error instanceof Error ? error.message : String(error)}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[Electron] Failed to switch CWD to userData: ${msg}`);
+    appendLog("WARN", `[Electron] Failed to switch CWD to userData: ${msg}`);
   }
 }
 
@@ -50,7 +93,9 @@ async function startLocalServer() {
       server = await serverModule.startServer(preferredPort);
     } catch (error) {
       if (error && (error.code === "EADDRINUSE" || error.code === "EACCES")) {
-        console.warn(`[Electron] Port ${preferredPort} is unavailable (${error.code}); falling back to a random port.`);
+        const msg = `Port ${preferredPort} is unavailable (${error.code}); falling back to a random port.`;
+        console.warn(`[Electron] ${msg}`);
+        appendLog("WARN", `[Electron] ${msg}`);
         server = await serverModule.startServer(0);
       } else {
         throw error;
@@ -59,6 +104,7 @@ async function startLocalServer() {
   } catch (importError) {
     const msg = importError instanceof Error ? importError.message : String(importError);
     console.error(`[Electron] Failed to load server bundle: ${msg}`);
+    appendLog("ERROR", `[Electron] Failed to load server bundle: ${msg}`);
     if (msg.includes("better-sqlite3") || msg.includes("node_sqlite3") || msg.includes(".node")) {
       throw new Error(
         `后端原生模块加载失败，可能是本机架构（${process.arch}）与已编译模块不匹配。` +
@@ -164,7 +210,31 @@ async function createWindow() {
     return { action: "deny" };
   });
 
+  // ── 黑匣子诊断：渲染进程日志落盘 ──
+  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    const lvl = level === 0 ? "INFO" : level === 1 ? "WARN" : "ERROR";
+    appendLog(lvl, `[Renderer][console] ${message} (${sourceId}:${line})`);
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    appendLog("ERROR", `[Renderer] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    appendLog("ERROR", `[Renderer] did-fail-load code=${errorCode} desc=${errorDescription} url=${validatedURL}`);
+  });
+  mainWindow.webContents.on("preload-error", (_event, preloadPath, error) => {
+    const msg = error instanceof Error ? error.stack || error.message : String(error);
+    appendLog("ERROR", `[Renderer] preload-error path=${preloadPath} error=${msg}`);
+  });
+  mainWindow.webContents.on("unresponsive", () => {
+    appendLog("ERROR", "[Renderer] unresponsive");
+  });
+  mainWindow.webContents.on("responsive", () => {
+    appendLog("INFO", "[Renderer] responsive (recovered)");
+  });
+
+  appendLog("INFO", `[Electron] loadURL ${baseUrl}`);
   await mainWindow.loadURL(baseUrl);
+  appendLog("INFO", `[Electron] loadURL done status=${mainWindow.webContents.getURL()}`);
 }
 
 configureAppIdentity();
@@ -173,7 +243,9 @@ app.whenReady().then(async () => {
   try {
     await createWindow();
   } catch (error) {
-    dialog.showErrorBox("启动失败", error instanceof Error ? error.message : String(error));
+    const msg = error instanceof Error ? error.message : String(error);
+    appendLog("ERROR", `[Electron] createWindow failed: ${error instanceof Error ? error.stack || msg : msg}`);
+    dialog.showErrorBox("启动失败", msg);
     app.quit();
   }
 
