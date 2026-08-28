@@ -169,7 +169,7 @@ router.get("/exams", requirePerm(PERMISSIONS.EXAM_READ), async (req: Request, re
     // Scanner Key 直通全量；JWT 复用业务可见范围（与 /api/exams 一致）
     if ((req as any).isApiClient) {
       const db = getMysqlDb();
-      const rows = (await db.all(`SELECT * FROM exams WHERE ${EXAM_NOT_SOFT_DELETED_SQL} ORDER BY created_at DESC LIMIT 200`)) as any[];
+      const rows = (await db.all(`SELECT * FROM exams e WHERE ${EXAM_NOT_SOFT_DELETED_SQL} ORDER BY e.created_at DESC LIMIT 200`)) as any[];
       res.json(rows);
       return;
     }
