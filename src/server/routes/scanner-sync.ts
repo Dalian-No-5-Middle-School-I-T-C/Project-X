@@ -10,28 +10,56 @@
  * GET /api/scanner/sync/classes/grades
  * GET /api/scanner/sync/exams
  */
-import { Router, type Request, type Response } from "express";
+import { Router, type Request, type Response, type NextFunction } from "express";
 import { apiKeyAuth } from "../middleware/api-key";
 import { authMiddleware } from "../middleware/auth";
 import { CardRepository } from "../repositories/CardRepository";
 import { ClassRepository } from "../repositories/ClassRepository";
 import { getMysqlDb } from "../db";
-import { GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
+import { GROUP_MEMBER_NOT_SOFT_DELETED_SQL, EXAM_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
+import { roleHasPermission, PERMISSIONS } from "../auth/permissions";
+import { canReadGroup, visibleExamIdsForGroupRead } from "./exam-groups-helpers";
 
 const router = Router();
 
-async function scannerSyncAuth(req: Request, res: Response, next: any) {
+async function scannerSyncAuth(req: Request, res: Response, next: NextFunction) {
   const apiKey = req.headers["x-api-key"] as string | undefined;
   if (apiKey) {
     return (apiKeyAuth({ scope: "scanner" }) as any)(req, res, next);
   }
-  return (authMiddleware as any)(req, res, next);
+  // JWT 路径：强制要求有效令牌，不受全局 enforce 关闭影响；学生一律 403
+  await (authMiddleware as any)(req, res, (err?: any) => {
+    if (err) return next(err);
+    if ((res as any).headersSent) return;
+    if (!(req as any).user) {
+      res.status(401).json({ message: "未提供认证令牌" });
+      return;
+    }
+    if ((req as any).user?.role_name === "student") {
+      res.status(403).json({ message: "学生无权访问同步接口" });
+      return;
+    }
+    next();
+  });
+}
+
+function requirePerm(perm: string) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if ((req as any).isApiClient) return next();
+    const user = (req as any).user;
+    if (!user) { res.status(401).json({ message: "未认证" }); return; }
+    if (!roleHasPermission(user.role_id, perm)) {
+      res.status(403).json({ message: `权限不足：缺少 ${perm}` });
+      return;
+    }
+    next();
+  };
 }
 
 router.use(scannerSyncAuth);
 
 // GET /api/scanner/sync/cards
-router.get("/cards", async (_req: Request, res: Response) => {
+router.get("/cards", requirePerm(PERMISSIONS.CARD_READ), async (_req: Request, res: Response) => {
   try {
     const cardRepo = new CardRepository();
     const rows = await cardRepo.listCards();
@@ -50,7 +78,7 @@ router.get("/cards", async (_req: Request, res: Response) => {
 });
 
 // GET /api/scanner/sync/cards/:id
-router.get("/cards/:id", async (req: Request, res: Response) => {
+router.get("/cards/:id", requirePerm(PERMISSIONS.CARD_READ), async (req: Request, res: Response) => {
   try {
     const cardRepo = new CardRepository();
     const card = await cardRepo.findById(String(req.params.id));
@@ -62,7 +90,7 @@ router.get("/cards/:id", async (req: Request, res: Response) => {
 });
 
 // GET /api/scanner/sync/exam-groups
-router.get("/exam-groups", async (_req: Request, res: Response) => {
+router.get("/exam-groups", requirePerm(PERMISSIONS.EXAM_READ), async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     let rows = (await db.all(
@@ -73,6 +101,17 @@ router.get("/exam-groups", async (_req: Request, res: Response) => {
        WHERE eg.source IS NULL OR eg.source = 'manual'
        ORDER BY eg.created_at DESC`
     )) as any[];
+    // 受限教师范围过滤（JWT 路径）；Scanner Key 直通
+    if (!(req as any).isApiClient) {
+      const visibleIds = await visibleExamIdsForGroupRead(req);
+      if (visibleIds !== null) {
+        const filtered: any[] = [];
+        for (const row of rows) {
+          if (await canReadGroup(req, Number(row.id))) filtered.push(row);
+        }
+        rows = filtered;
+      }
+    }
     res.json(rows.map((r: any) => ({
       id: r.id, name: r.name, description: r.description, tag: r.tag, grade_id: r.grade_id, grade_name: r.grade_name || null,
       status: r.status, is_official: r.is_official, total_score_mode: r.total_score_mode, only_full_participants: r.only_full_participants,
@@ -84,16 +123,21 @@ router.get("/exam-groups", async (_req: Request, res: Response) => {
 });
 
 // GET /api/scanner/sync/exam-groups/:id
-router.get("/exam-groups/:id", async (req: Request, res: Response) => {
+router.get("/exam-groups/:id", requirePerm(PERMISSIONS.EXAM_READ), async (req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const groupId = Number(req.params.id);
     const group = await db.get(`SELECT eg.*, g.name as grade_name FROM exam_groups eg LEFT JOIN grades g ON g.id = eg.grade_id WHERE eg.id = ?`, groupId) as any;
     if (!group) { res.status(404).json({ message: "大考不存在" }); return; }
+    if (!(req as any).isApiClient && !(await canReadGroup(req, groupId))) {
+      res.status(403).json({ message: "无权查看该大考" });
+      return;
+    }
     const members = (await db.all(
-      `SELECT egm.id, egm.exam_id, egm.sort_order, egm.track_type, e.name as exam_name, e.subject
+      `SELECT egm.id, egm.exam_id, egm.sort_order, egm.track_type, e.name as exam_name, e.subject, e.card_id
        FROM exam_group_members egm JOIN exams e ON e.id = egm.exam_id
-       WHERE egm.group_id = ? ORDER BY egm.sort_order, egm.id`, groupId
+       WHERE egm.group_id = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}
+       ORDER BY egm.sort_order, egm.id`, groupId
     )) as any[];
     res.json({
       id: group.id, name: group.name, description: group.description, grade_id: group.grade_id, grade_name: group.grade_name || null,
@@ -101,7 +145,7 @@ router.get("/exam-groups/:id", async (req: Request, res: Response) => {
       total_score_mode: group.total_score_mode, only_full_participants: group.only_full_participants,
       created_by: group.created_by, created_at: group.created_at, updated_at: group.updated_at,
       memberTracks: Object.fromEntries(members.map((m: any) => [String(m.exam_id), m.track_type || "common"])),
-      members: members.map((m: any) => ({ id: m.id, examId: m.exam_id, examName: m.exam_name, subject: m.subject, sortOrder: m.sort_order, trackType: m.track_type || "common" })),
+      members: members.map((m: any) => ({ id: m.id, examId: m.exam_id, examName: m.exam_name, subject: m.subject, cardId: m.card_id ?? null, sortOrder: m.sort_order, trackType: m.track_type || "common" })),
     });
   } catch (e: any) {
     res.status(500).json({ message: e.message || "获取大考详情失败" });
@@ -109,7 +153,7 @@ router.get("/exam-groups/:id", async (req: Request, res: Response) => {
 });
 
 // GET /api/scanner/sync/classes/grades
-router.get("/classes/grades", async (_req: Request, res: Response) => {
+router.get("/classes/grades", requirePerm(PERMISSIONS.EXAM_READ), async (_req: Request, res: Response) => {
   try {
     const classRepo = new ClassRepository();
     res.json(await classRepo.listGrades());
@@ -119,7 +163,7 @@ router.get("/classes/grades", async (_req: Request, res: Response) => {
 });
 
 // GET /api/scanner/sync/exams
-router.get("/exams", async (_req: Request, res: Response) => {
+router.get("/exams", requirePerm(PERMISSIONS.EXAM_READ), async (_req: Request, res: Response) => {
   try {
     const db = getMysqlDb();
     const rows = (await db.all(`SELECT * FROM exams ORDER BY created_at DESC LIMIT 200`)) as any[];

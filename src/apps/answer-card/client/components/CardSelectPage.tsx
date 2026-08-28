@@ -72,6 +72,12 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
   const [membersLoading, setMembersLoading] = useState(false);
 
   const [syncSource, setSyncSource] = useState<SyncSource | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  function isAuthError(e: any): boolean {
+    const s = e?.status;
+    return s === 401 || s === 403 || !!e?.remoteAuthFailed;
+  }
 
   // ── Load helpers (silent=false 为首次加载带 Spinner，silent=true 为后台静默刷新) ──
   const loadCards = async (opts?: { silent?: boolean }) => {
@@ -81,8 +87,11 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
       const { data, source } = await fetchCardsSynced();
       setCards(Array.isArray(data as unknown as CardSummary[]) ? (data as unknown as CardSummary[]) : []);
       setSyncSource(source);
-    } catch {
-      if (!silent) setCards([]);
+      setSyncError(null);
+    } catch (e: any) {
+      if (isAuthError(e)) {
+        setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
+      } else if (!silent) setCards([]);
     } finally {
       if (!silent) setLoading(false);
     }
@@ -94,8 +103,11 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
     try {
       const data = await fetchExamGroupsSynced();
       setGroups(Array.isArray(data as unknown as ExamGroupFilterItem[]) ? (data as unknown as ExamGroupFilterItem[]) : []);
-    } catch {
-      if (!silent) setGroups([]);
+      setSyncError(null);
+    } catch (e: any) {
+      if (isAuthError(e)) {
+        setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
+      } else if (!silent) setGroups([]);
     } finally {
       if (!silent) setGroupLoading(false);
     }
@@ -105,8 +117,11 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
     try {
       const d = await fetchGradesSynced();
       setGrades(Array.isArray(d) ? d : []);
-    } catch {
-      if (!opts?.silent) setGrades([]);
+      setSyncError(null);
+    } catch (e: any) {
+      if (isAuthError(e)) {
+        setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
+      } else if (!opts?.silent) setGrades([]);
     }
   };
 
@@ -221,6 +236,11 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
         </header>
 
         <div className="flex min-h-0 flex-col overflow-hidden">
+          {syncError && (
+            <div className="mx-8 mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+              {syncError}
+            </div>
+          )}
           {/* ── Filter header ── */}
           <div className="shrink-0 px-8 pt-6">
             <div className="flex items-end justify-between gap-4">

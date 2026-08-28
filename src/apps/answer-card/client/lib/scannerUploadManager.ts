@@ -61,6 +61,10 @@ interface PageRecord {
   failed: boolean;
 }
 
+function getCurrentRemoteBase(): string {
+  try { return (localStorage.getItem("projectx_server_url") ?? "").trim().replace(/\/+$/, ""); } catch { return ""; }
+}
+
 interface JobRecord {
   id: string;
   kind: UploadJobKind;
@@ -73,6 +77,8 @@ interface JobRecord {
   /** paused 恢复后回到的阶段 */
   resumePhase: "creating" | "uploading" | "completing";
   remoteSessionId: string | null;
+  /** 任务创建时快照的远端地址，用于隔离多服务器切换 */
+  remoteBase: string;
   message: string;
   createdAt: number;
   pauseWaiter: (() => void) | null;
@@ -194,9 +200,12 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     notify();
   }
 
-  function shouldPauseNow(): boolean {
+  function shouldPauseNow(job?: JobRecord): boolean {
+    if (!isOnline()) return true;
+    // 若任务已绑定远端且当前全局地址已切走，则视为仍需暂停，避免 B 的在线状态误唤醒 A 的任务
+    if (job && job.remoteBase !== getCurrentRemoteBase()) return true;
     const kind = getServerKind();
-    return !isOnline() || kind === "offline" || kind === "api_disabled";
+    return kind === "offline" || kind === "api_disabled";
   }
 
   function waitForResume(j: JobRecord): Promise<void> {
@@ -205,10 +214,11 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     });
   }
 
-  /** 网络/探活变化时由接线层调用：放行满足恢复条件的暂停任务 */
+  /** 网络/探活变化时由接线层调用：仅放行与当前全局地址一致的暂停任务，避免跨服误唤醒 */
   function notifyNetworkChanged(): void {
+    const currentBase = getCurrentRemoteBase();
     for (const j of jobs) {
-      if (j.status === "paused" && !shouldPauseNow()) {
+      if (j.status === "paused" && j.remoteBase === currentBase && !shouldPauseNow(j)) {
         const w = j.pauseWaiter;
         j.pauseWaiter = null;
         w?.();
@@ -271,7 +281,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   async function runWithRetry<T>(j: JobRecord, phaseLabel: string, fn: () => Promise<T>): Promise<T> {
     let tries = 0;
     for (;;) {
-      if (shouldPauseNow()) {
+      if (shouldPauseNow(j)) {
         setStatus(j, "paused", `${phaseLabel}中断：已断线，网络恢复后将自动续传`);
         await waitForResume(j);
         setStatus(j, j.resumePhase, `网络已恢复，继续${phaseLabel}`);
@@ -283,8 +293,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         if (isConfigError(err)) throw err;
         tries += 1;
         if (tries > AUTO_RETRY_EXTRA) {
-          const kind = getServerKind();
-          if (kind === "api_disabled" || !isOnline() || kind === "offline") {
+          if (shouldPauseNow(j)) {
             tries = 0; // 暂停后恢复重新给满重试预算
             setStatus(j, "paused", `${phaseLabel}失败：${friendlyErr(err)}，已断线等待恢复…`);
             await waitForResume(j);
@@ -400,6 +409,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       status: "queued",
       resumePhase: "creating",
       remoteSessionId: null,
+      remoteBase: getCurrentRemoteBase(),
       message: "",
       createdAt: Date.now(),
       pauseWaiter: null,
