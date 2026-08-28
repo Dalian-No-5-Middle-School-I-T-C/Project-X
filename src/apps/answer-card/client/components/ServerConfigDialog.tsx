@@ -47,6 +47,13 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
   const [testStatus, setTestStatus] = useState<"" | "testing" | "ok" | "fail">("");
   const [testMessage, setTestMessage] = useState("");
 
+  const initialKey = (() => {
+    try {
+      return getStoredApiKey() ?? "";
+    } catch {
+      return "";
+    }
+  })();
   const hasActiveJobs = (() => {
     try {
       const st = scannerUploadManager.getState();
@@ -56,6 +63,8 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
     }
   })();
   const urlChanged = serverUrl.trim().replace(/\/+$/, "") !== loadUrl().replace(/\/+$/, "");
+  const keyChanged = apiKey.trim() !== initialKey.trim();
+  const blockedByActiveJobs = hasActiveJobs && (urlChanged || keyChanged);
 
   async function handleTest() {
     if (!serverUrl.trim()) return;
@@ -92,7 +101,7 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
   }
 
   function handleSave() {
-    // P1: 已有上传任务时仍允许切服，但进行中的任务已快照旧地址/Key，不会把 A 的 session 发往 B
+    if (blockedByActiveJobs) return;
     saveUrl(serverUrl);
     storeApiKey(apiKey.trim() || null);
     serverStatus.refresh();
@@ -106,9 +115,14 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
       <p className="m-0 text-xs text-muted-foreground">
         扫描、识别和账号登录始终在本机完成。填入服务器地址和 API Key 后，可将扫描结果上传到远端服务器。
       </p>
-      {hasActiveJobs && urlChanged && (
+      {blockedByActiveJobs && (
+        <p className="m-0 rounded border border-destructive-border bg-destructive-soft px-2 py-1 text-xs text-destructive-fg">
+          存在进行中的上传任务，禁止切服。请等待任务完成或取消后再修改服务器配置；已有任务已快照原服务器，新任务需重建会话。
+        </p>
+      )}
+      {hasActiveJobs && !blockedByActiveJobs && (
         <p className="m-0 rounded border border-warning-border bg-warning-soft px-2 py-1 text-xs text-warning-foreground">
-          检测到有进行中的上传任务，切服后该任务仍发往原服务器，新任务将发往新服务器；如需迁移请等待当前任务完成。
+          存在进行中的上传任务，切服将影响新任务，已有任务仍发往原服务器。
         </p>
       )}
       <Field label="服务器地址">
@@ -160,7 +174,15 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
           </Badge>
         )}
         {testStatus === "fail" && <Badge tone="danger" dot>{testMessage || "连接失败"}</Badge>}
-        <Button variant="primary" size="sm" type="button" className="ml-auto" onClick={handleSave}>
+        <Button
+          variant="primary"
+          size="sm"
+          type="button"
+          className="ml-auto"
+          onClick={handleSave}
+          disabled={blockedByActiveJobs}
+          title={blockedByActiveJobs ? "存在进行中任务，禁止切服" : undefined}
+        >
           保存配置
         </Button>
       </div>
