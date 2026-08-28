@@ -1,9 +1,11 @@
 /// <reference types="vite/client" />
 
 import { useEffect, useMemo, useState } from "react";
-import { Layers, Search, ClipboardList } from "lucide-react";
+import { Globe, Layers, Search, ClipboardList } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { useIsMobile } from "../hooks/useMediaQuery";
+import { ServerConfigDialog } from "./ServerConfigDialog";
+import { ServerStatusIndicator } from "./ServerStatusIndicator";
 import { SkinSwitcher } from "./SkinSwitcher";
 import type { CardSummary, ExamGroupFilterItem } from "../../../../shared/types";
 import {
@@ -45,6 +47,7 @@ interface GroupMember {
 }
 
 export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
+  const [cfgOpen, setCfgOpen] = useState(false);
   const [mainMode, setMainMode] = useState<MainMode>("single");
 
   // ── Card list states ──
@@ -174,7 +177,17 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
           </div>
           {skin !== undefined && onSkinChange && (
             <div className="ml-auto flex items-center gap-2">
+              <ServerStatusIndicator />
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="服务器连接"
+                onClick={() => setCfgOpen(true)}
+              >
+                <Globe size={16} />
+              </Button>
               <SkinSwitcher skin={skin} onSkinChange={onSkinChange} />
+              <ServerConfigDialog mode="dialog" open={cfgOpen} onOpenChange={setCfgOpen} />
             </div>
           )}
         </header>
