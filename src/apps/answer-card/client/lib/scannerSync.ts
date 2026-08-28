@@ -39,6 +39,9 @@ export const fetchGradesSynced = async () => {
   }
 };
 
+export const fetchExamGroupDetailSynced = (id: number | string) =>
+  fetchSynced<any>(`/api/exam-groups/${encodeURIComponent(String(id))}`).then((r) => r.data);
+
 export function startPolling(opts: { intervalMs?: number; onUpdate: () => void }): () => void {
   const ms = opts.intervalMs ?? 30000;
   const id = setInterval(opts.onUpdate, ms);

@@ -2,10 +2,17 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Layers, Search, ClipboardList } from "lucide-react";
-import { fetchJson } from "../auth/api";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { SkinSwitcher } from "./SkinSwitcher";
 import type { CardSummary, ExamGroupFilterItem } from "../../../../shared/types";
+import {
+  fetchCardsSynced,
+  fetchExamGroupsSynced,
+  fetchExamGroupDetailSynced,
+  fetchGradesSynced,
+  startPolling,
+} from "../lib/scannerSync";
+import type { SyncSource } from "../lib/scannerSync";
 import {
   Badge,
   Button,
@@ -63,12 +70,15 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
   const [groupMembers, setGroupMembers] = useState<GroupMember[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
 
-  // ── Load cards ──
+  const [syncSource, setSyncSource] = useState<SyncSource | null>(null);
+
+  // ── Load cards (remote-first) ──
   const loadCards = async () => {
     setLoading(true);
     try {
-      const data = await fetchJson<CardSummary[]>("/api/cards?limit=500");
-      setCards(Array.isArray(data) ? data : []);
+      const { data, source } = await fetchCardsSynced();
+      setCards(Array.isArray(data as unknown as CardSummary[]) ? (data as unknown as CardSummary[]) : []);
+      setSyncSource(source);
     } catch {
       setCards([]);
     } finally {
@@ -76,12 +86,12 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
     }
   };
 
-  // ── Load groups ──
+  // ── Load groups (remote-first) ──
   const loadGroups = async () => {
     setGroupLoading(true);
     try {
-      const data = await fetchJson<ExamGroupFilterItem[]>("/api/exam-groups");
-      setGroups(Array.isArray(data) ? data : []);
+      const data = await fetchExamGroupsSynced();
+      setGroups(Array.isArray(data as unknown as ExamGroupFilterItem[]) ? (data as unknown as ExamGroupFilterItem[]) : []);
     } catch {
       setGroups([]);
     } finally {
@@ -89,10 +99,10 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
     }
   };
 
-  // ── Load grades ──
+  // ── Load grades (remote-first) ──
   useEffect(() => {
-    fetchJson<Array<{ id: number; name: string }>>("/api/classes/grades")
-      .then(setGrades)
+    fetchGradesSynced()
+      .then((d) => setGrades(Array.isArray(d) ? d : []))
       .catch(() => setGrades([]));
   }, []);
 
@@ -101,15 +111,26 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
     loadGroups();
   }, []);
 
-  // ── Load group members on expand ──
+  // 30s polling + visibilitychange refresh (Task 2)
+  useEffect(() => {
+    return startPolling({
+      intervalMs: 30000,
+      onUpdate: () => {
+        loadCards();
+        loadGroups();
+      },
+    });
+  }, []);
+
+  // ── Load group members on expand (remote-first) ──
   useEffect(() => {
     if (expandedGroupId == null) {
       setGroupMembers([]);
       return;
     }
     setMembersLoading(true);
-    fetchJson<any>(`/api/exam-groups/${expandedGroupId}`)
-      .then((data) => {
+    fetchExamGroupDetailSynced(expandedGroupId)
+      .then((data: any) => {
         const members: GroupMember[] = (data.members || []).map((m: any) => ({
           examId: m.examId ?? m.exam_id,
           examName: m.examName ?? m.exam_name ?? `考试${m.examId ?? m.exam_id}`,
@@ -305,8 +326,19 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
           </div>
         </div>
 
-        {/* ── Statusbar ── */}
-        <footer className="flex h-statusbar shrink-0 items-center border-t border-border-subtle bg-card px-4 text-xs text-muted-foreground" />
+        {/* ── Statusbar (sync source hint) ── */}
+        <footer className="flex h-statusbar shrink-0 items-center justify-between border-t border-border-subtle bg-card px-4 text-xs text-muted-foreground">
+          <span>
+            {syncSource === "remote"
+              ? "已同步远端"
+              : syncSource === "offline-cache"
+                ? "离线·显示缓存"
+                : syncSource === "local"
+                  ? "本地数据"
+                  : ""}
+          </span>
+          <span>{syncSource ? "30s 自动刷新 · 切回窗口即刷新" : ""}</span>
+        </footer>
       </section>
     </main>
   );
