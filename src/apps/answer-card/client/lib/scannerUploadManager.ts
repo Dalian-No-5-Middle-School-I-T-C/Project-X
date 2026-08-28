@@ -15,7 +15,8 @@ export type UploadJobStatus =
   | "completing"   // 提交 complete 中
   | "paused"       // 断线暂停（自动恢复）
   | "done"         // 全部完成
-  | "error";       // 会话创建失败 / 存在彻底失败页
+  | "error"        // 会话创建失败 / 存在彻底失败页
+  | "cancelled";   // 用户取消（队列中或暂停中）
 
 export interface UploadPageInput {
   pageNum: number;
@@ -80,6 +81,8 @@ interface JobRecord {
   /** 快照：创建时的远端地址与 Key，后续 page/complete 始终发往同一服务器，避免切服后把 A 的 session 发往 B */
   remoteBase: string;
   apiKey: string | null;
+  /** 用户取消标志：暂停/队列中任务被取消后置真，使挂起的 runWithRetry 原地退出 */
+  cancelled: boolean;
 }
 
 export interface UploadManagerDeps {
@@ -219,7 +222,17 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     notify();
   }
 
-  function shouldPauseNow(): boolean {
+  /**
+   * 是否应暂停某任务：
+   * - 任务的快照服务器地址与当前配置不一致（已切到另一台服务器）→ 视为孤悬任务，
+   *   不能靠全局在线状态判断其可达性，恒保持暂停（避免「重试又暂停」死循环）。
+   * - 否则按全局探活判定（离线 / 未启用远端 API / 断网）。
+   */
+  function shouldPauseNow(j?: JobRecord): boolean {
+    if (j && j.remoteBase) {
+      const currentBase = readRemoteBase();
+      if (currentBase && j.remoteBase !== currentBase) return true;
+    }
     const kind = getServerKind();
     return !isOnline() || kind === "offline" || kind === "api_disabled";
   }
@@ -230,10 +243,10 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     });
   }
 
-  /** 网络/探活变化时由接线层调用：放行满足恢复条件的暂停任务 */
+  /** 网络/探活变化时由接线层调用：放行满足恢复条件的暂停任务（孤悬任务维持暂停） */
   function notifyNetworkChanged(): void {
     for (const j of jobs) {
-      if (j.status === "paused" && !shouldPauseNow()) {
+      if (j.status === "paused" && !shouldPauseNow(j)) {
         const w = j.pauseWaiter;
         j.pauseWaiter = null;
         w?.();
@@ -296,18 +309,32 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
    *   转入暂停（保留重试机会），否则上抛；
    * - 恢复后从当前操作原地继续（resumePhase 由调用方维护）。
    */
+  /** 用户取消后让挂起的死跑退出：抛出可识别的取消错误 */
+  function cancelledError(j: JobRecord): Error {
+    return Object.assign(new Error(`上传任务 ${j.id} 已取消`), { isJobCancelled: true });
+  }
+
   async function runWithRetry<T>(j: JobRecord, phaseLabel: string, fn: () => Promise<T>): Promise<T> {
     let tries = 0;
     for (;;) {
-      if (shouldPauseNow()) {
-        setStatus(j, "paused", `${phaseLabel}中断：已断线，网络恢复后将自动续传`);
+      if (j.cancelled) throw cancelledError(j);
+      if (shouldPauseNow(j)) {
+        setStatus(
+          j,
+          "paused",
+          j.remoteBase && readRemoteBase() && j.remoteBase !== readRemoteBase()
+            ? `${phaseLabel}暂停：服务器已切换，原任务需取消后重新上传`
+            : `${phaseLabel}中断：已断线，网络恢复后将自动续传`,
+        );
         await waitForResume(j);
+        if (j.cancelled) throw cancelledError(j);
         setStatus(j, j.resumePhase, `网络已恢复，继续${phaseLabel}`);
         continue;
       }
       try {
         return await fn();
       } catch (err) {
+        if (j.cancelled) throw cancelledError(j);
         if (isConfigError(err)) throw err;
         tries += 1;
         if (tries > AUTO_RETRY_EXTRA) {
@@ -316,6 +343,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
             tries = 0; // 暂停后恢复重新给满重试预算
             setStatus(j, "paused", `${phaseLabel}失败：${friendlyErr(err)}，已断线等待恢复…`);
             await waitForResume(j);
+            if (j.cancelled) throw cancelledError(j);
             setStatus(j, j.resumePhase, `网络已恢复，继续${phaseLabel}`);
             continue;
           }
@@ -338,6 +366,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
           p.token = tokens[i];
         });
       } catch (err) {
+        if ((err as { isJobCancelled?: boolean }).isJobCancelled) return;
         setStatus(j, "error", `创建会话失败：${friendlyErr(err)}`);
         return;
       }
@@ -355,6 +384,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         releasePage(page);
         notify();
       } catch (err) {
+        if ((err as { isJobCancelled?: boolean }).isJobCancelled) return;
         page.failed = true;
         lastErrMsg = friendlyErr(err);
         notify();
@@ -383,6 +413,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       for (const p of j.pages) releasePage(p);
       setStatus(j, "done", `上传完成，${j.pages.length} 页已提交到服务器`);
     } catch (err) {
+      if ((err as { isJobCancelled?: boolean }).isJobCancelled) return;
       for (const p of j.pages) {
         if (p.done && !p.failed) releasePage(p);
       }
@@ -403,7 +434,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
           await runJob(next);
         } catch (err) {
           // 兜底：runJob 内部异常不应卡死队列
-          if (next.status !== "done" && next.status !== "error") {
+          if ((err as { isJobCancelled?: boolean }).isJobCancelled) continue;
+          if (next.status !== "done" && next.status !== "error" && next.status !== "cancelled") {
             next.status = "error";
             next.message = `上传任务异常中断：${err instanceof Error ? err.message : String(err)}`;
           }
@@ -433,6 +465,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       pauseWaiter: null,
       remoteBase: readRemoteBase(),
       apiKey: getStoredApiKey(),
+      cancelled: false,
     };
     jobs.push(job);
     notify();
@@ -460,12 +493,34 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     w?.();
   }
 
-  /** 仅允许取消还在排队的任务 */
-  function cancelQueued(jobId: string): void {
+  /**
+   * 取消任务（队列中或已暂停）：
+   * - 队列中：直接从数组移除；
+   * - 已暂停：置 cancelled 并唤醒挂起的 runWithRetry 使其原地退出，同时解除串行泵占用；
+   * - 其余状态（mid-flight / done / error）不允许取消，避免打断在途上传或已完成结果。
+   */
+  function cancelJob(jobId: string): void {
     const idx = jobs.findIndex((x) => x.id === jobId);
-    if (idx >= 0 && jobs[idx].status === "queued") {
+    if (idx < 0) return;
+    const j = jobs[idx];
+    if (j.status === "queued") {
+      for (const p of j.pages) releasePage(p);
       jobs.splice(idx, 1);
       notify();
+      return;
+    }
+    if (j.status === "paused") {
+      j.cancelled = true;
+      for (const p of j.pages) {
+        if (p.done && !p.failed) releasePage(p);
+      }
+      const w = j.pauseWaiter;
+      j.pauseWaiter = null;
+      j.status = "cancelled";
+      j.message = "任务已取消";
+      w?.();
+      notify();
+      return;
     }
   }
 
@@ -484,7 +539,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     startUpload,
     retryFailed,
     retryPaused,
-    cancelQueued,
+    cancelJob,
     notifyNetworkChanged,
     subscribe,
     getState,

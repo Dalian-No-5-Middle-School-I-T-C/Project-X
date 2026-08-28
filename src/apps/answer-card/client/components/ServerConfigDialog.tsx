@@ -54,17 +54,23 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
       return "";
     }
   })();
-  const hasActiveJobs = (() => {
+  const { hasMidFlight, hasPending } = (() => {
     try {
       const st = scannerUploadManager.getState();
-      return st.jobs.some((j) => !["done", "error"].includes(j.status));
+      const s = st.jobs.map((j) => j.status);
+      return {
+        // 只在真正在途（创建中/上传中/提交中）且确实改了配置时阻止切服；暂停/队列/失败/完成均可取消或忽略
+        hasMidFlight: s.some((x) => x === "creating" || x === "uploading" || x === "completing"),
+        hasPending: s.some((x) => x === "queued" || x === "paused"),
+      };
     } catch {
-      return false;
+      return { hasMidFlight: false, hasPending: false };
     }
   })();
   const urlChanged = serverUrl.trim().replace(/\/+$/, "") !== loadUrl().replace(/\/+$/, "");
   const keyChanged = apiKey.trim() !== initialKey.trim();
-  const blockedByActiveJobs = hasActiveJobs && (urlChanged || keyChanged);
+  const configChanged = urlChanged || keyChanged;
+  const blockedByActiveJobs = hasMidFlight && configChanged;
 
   async function handleTest() {
     if (!serverUrl.trim()) return;
@@ -117,12 +123,12 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
       </p>
       {blockedByActiveJobs && (
         <p className="m-0 rounded border border-destructive-border bg-destructive-soft px-2 py-1 text-xs text-destructive-fg">
-          存在进行中的上传任务，禁止切服。请等待任务完成或取消后再修改服务器配置；已有任务已快照原服务器，新任务需重建会话。
+          上传任务正在在途（创建/上传/提交），暂不能切服。可稍候重试，或在进度卡「取消」已暂停/排队的任务。
         </p>
       )}
-      {hasActiveJobs && !blockedByActiveJobs && (
+      {!blockedByActiveJobs && hasPending && configChanged && (
         <p className="m-0 rounded border border-warning-border bg-warning-soft px-2 py-1 text-xs text-warning-foreground">
-          存在进行中的上传任务，切服将影响新任务，已有任务仍发往原服务器。
+          存在排队/暂停的上传任务：它们已快照原服务器，切服后仍发往原服务器；新任务将发往新服务器。可先到进度卡取消后再切。
         </p>
       )}
       <Field label="服务器地址">
