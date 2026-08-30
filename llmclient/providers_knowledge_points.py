@@ -14,6 +14,7 @@ from typing import Any
 from openai import OpenAI
 
 from llmclient.config import ModelConfig, env_value
+from llmclient.pdf_to_images import normalize_direct_files
 from llmclient.providers import validate_base_url
 from llmclient.prompts.knowledge_points import build_knowledge_points_prompt
 from llmclient.usage import gemini_usage, openai_usage, usage_dict
@@ -109,6 +110,9 @@ def run_direct_multimodal(
     provider_override: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """直传图片给多模态模型 (Gemini / GPT)."""
+    # PDF 原卷先转压缩页图（OpenAI 兼容接口不接受 PDF data URL）
+    files = normalize_direct_files(files)
+
     if provider_override:
         api_key = provider_override.get("api_key") or env_value("OPENAI_API_KEY")
         base_url = validate_base_url(provider_override.get("base_url", "").rstrip("/") or None)

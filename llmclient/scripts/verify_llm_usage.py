@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
 import sys
 import unittest
 from pathlib import Path
+
+import pymupdf
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
@@ -113,6 +116,49 @@ class KnowledgePointsPromptContextTest(unittest.TestCase):
     def test_build_prompt_omits_section_when_empty(self):
         prompt = build_knowledge_points_prompt("全部", "")
         self.assertNotIn("答题卡客观题结构", prompt)
+
+
+class PdfToImagesTest(unittest.TestCase):
+    @staticmethod
+    def make_pdf(pages: int = 1) -> bytes:
+        doc = pymupdf.open()
+        for i in range(pages):
+            page = doc.new_page()
+            page.insert_text((72, 72), f"page {i + 1} test")
+        return doc.tobytes()
+
+    def test_pdf_converted_to_compressed_jpeg_within_2048(self):
+        from llmclient.pdf_to_images import normalize_direct_files
+
+        pdf_b64 = base64.b64encode(self.make_pdf()).decode()
+        out = normalize_direct_files([{"mimeType": "application/pdf", "base64": pdf_b64}])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["mimeType"], "image/jpeg")
+        img = base64.b64decode(out[0]["base64"])
+        self.assertTrue(img.startswith(b"\xff\xd8"))
+        doc = pymupdf.open(stream=img, filetype="jpeg")
+        self.assertLessEqual(max(doc[0].rect.width, doc[0].rect.height), 2048.0)
+
+    def test_mixed_files_keep_images_unchanged(self):
+        from llmclient.pdf_to_images import normalize_direct_files
+
+        img_b64 = base64.b64encode(b"\xff\xd8\xff\xe0fakejpeg").decode()
+        pdf_b64 = base64.b64encode(self.make_pdf()).decode()
+        out = normalize_direct_files(
+            [
+                {"mimeType": "image/jpeg", "base64": img_b64},
+                {"mimeType": "application/pdf", "base64": pdf_b64},
+            ]
+        )
+        self.assertEqual(out[0]["base64"], img_b64)
+        self.assertEqual(out[1]["mimeType"], "image/jpeg")
+
+    def test_page_limit_raises(self):
+        from llmclient.pdf_to_images import PdfPageLimitError, normalize_direct_files
+
+        pdf_b64 = base64.b64encode(self.make_pdf(3)).decode()
+        with self.assertRaises(PdfPageLimitError):
+            normalize_direct_files([{"mimeType": "application/pdf", "base64": pdf_b64}], max_pages=2)
 
 
 if __name__ == "__main__":
