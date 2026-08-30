@@ -9,6 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from llmclient.config import configured_models, find_model
+from llmclient.prompts.knowledge_points import build_knowledge_points_prompt
 from llmclient.schemas import AnalysisRunResponse, TokenUsage, empty_report
 from llmclient.usage import gemini_usage, merge_usage, openai_usage, usage_dict
 
@@ -97,6 +98,21 @@ class AnalysisRunResponseUsageTest(unittest.TestCase):
         )
         self.assertEqual(resp.usage.tokensIn, 7)
         self.assertEqual(resp.usage.tokensOut, 8)
+
+
+class KnowledgePointsPromptContextTest(unittest.TestCase):
+    def test_build_prompt_includes_answer_card_json(self):
+        prompt = build_knowledge_points_prompt(
+            "全部",
+            "",
+            answer_card_json='{"objectiveQuestions":[{"questionNumber":1,"answerKey":["A"]}]}',
+        )
+        self.assertIn("答题卡客观题结构", prompt)
+        self.assertIn('"questionNumber"', prompt)
+
+    def test_build_prompt_omits_section_when_empty(self):
+        prompt = build_knowledge_points_prompt("全部", "")
+        self.assertNotIn("答题卡客观题结构", prompt)
 
 
 if __name__ == "__main__":

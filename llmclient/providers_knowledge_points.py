@@ -47,11 +47,14 @@ def _build_system_prompt(
     question_range: str,
     extra_notes: str,
     ocr_mode: bool = False,
+    answer_card_json: str = "",
 ) -> str:
-    base = build_knowledge_points_prompt(question_range, extra_notes, ocr_mode)
-    return base.format(
-        question_range=question_range,
-        extra_notes_section=f"\n科目: {subject}\n教师特别说明: {extra_notes}" if extra_notes else f"\n科目: {subject}",
+    return build_knowledge_points_prompt(
+        question_range,
+        extra_notes,
+        ocr_mode,
+        answer_card_json=answer_card_json,
+        subject=subject,
     )
 
 
@@ -102,6 +105,7 @@ def run_direct_multimodal(
     subject: str,
     question_range: str,
     extra_notes: str,
+    answer_card_json: str = "",
     provider_override: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """直传图片给多模态模型 (Gemini / GPT)."""
@@ -130,6 +134,7 @@ def run_text_only(
     subject: str,
     question_range: str,
     extra_notes: str,
+    answer_card_json: str = "",
     provider_override: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """纯文本模式 (DeepSeek / 兜底)."""
@@ -143,7 +148,13 @@ def run_text_only(
         api_key = env_value("OPENAI_API_KEY")
         base_url = validate_base_url(env_value("OPENAI_BASE_URL") or None)
 
-    system_prompt = _build_system_prompt(subject, question_range, extra_notes, ocr_mode=True)
+    system_prompt = _build_system_prompt(
+        subject,
+        question_range,
+        extra_notes,
+        ocr_mode=True,
+        answer_card_json=answer_card_json,
+    )
 
     client = OpenAI(api_key=api_key, base_url=base_url)
     response = client.chat.completions.create(

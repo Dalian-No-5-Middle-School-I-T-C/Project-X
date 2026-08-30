@@ -151,6 +151,7 @@ def knowledge_points(
     extra_notes = request.get("extraNotes", "")
     files = request.get("files", [])
     paper_text = request.get("paperText", "")
+    answer_card_json = (request.get("answerCardJson") or "").strip()[:8000]
     provider_override = request.get("providerOverride")
     model_id = request.get("model") or default_model_id()
 
@@ -185,6 +186,7 @@ def knowledge_points(
                 subject=subject,
                 question_range=question_range,
                 extra_notes=extra_notes,
+                answer_card_json=answer_card_json,
                 provider_override=provider_override,
             )
             return result
@@ -202,6 +204,7 @@ def knowledge_points(
             subject=subject,
             question_range=question_range,
             extra_notes=extra_notes,
+            answer_card_json=answer_card_json,
             provider_override=provider_override,
         )
         return result

@@ -12,6 +12,7 @@ import {
 import { autoExtractPaperText, getFileMime } from "../paper-ocr";
 import type { DbAdapter } from "../../../../server/db/mysql";
 import { getMysqlDb } from "../../../../server/db/mysql";
+import { CardRepository } from "../../../../server/repositories/CardRepository";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import type { Request, Response } from "express";
 import { readFile, readdir } from "node:fs/promises";
@@ -19,6 +20,7 @@ import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "../llm-client";
 import { recordAiRun, finalizeAiRun } from "../../../../server/services/aiTelemetry";
 import { decryptField } from "../../../../server/lib/field-crypto";
 import { isVisionProvider } from "../llm-capabilities";
+import { buildObjectiveContext } from "../objective-context";
 
 function decodeMultipartFilename(name: string): string {
   try {
@@ -498,6 +500,13 @@ export function paperRoutes(): Router {
       const cardRow = await db.get("SELECT subject_label FROM answer_cards WHERE id = ?", cardId);
       const subject = cardRow?.subject_label || "";
 
+      // 3.5 答题卡客观题结构化上下文（题号/题型/分值/标准答案），供 AI 核对题号与答案
+      const card = await new CardRepository().findById(cardId);
+      const objectiveItems = buildObjectiveContext(card);
+      const answerCardJson = objectiveItems.length > 0
+        ? JSON.stringify({ objectiveQuestions: objectiveItems })
+        : "";
+
       // 4. 构建对 llmclient 的请求
       let knowledgePoints: any[] = [];
       let mode = "text";
@@ -517,7 +526,7 @@ export function paperRoutes(): Router {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             mode, providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
-            subject, questionRange: range, extraNotes: notes, files,
+            subject, questionRange: range, extraNotes: notes, files, answerCardJson,
           }),
         }, 60_000, { runId, provider: "llmclient", model: provider.model ?? null, stage: "knowledge_points" });
 
@@ -541,7 +550,7 @@ export function paperRoutes(): Router {
           body: JSON.stringify({
             mode: "text", providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
             subject,
-            questionRange: range, extraNotes: notes, paperText: extracted.text,
+            questionRange: range, extraNotes: notes, paperText: extracted.text, answerCardJson,
           }),
         }, 60_000, { runId, provider: "llmclient", model: provider.model ?? null, stage: "knowledge_points" });
 

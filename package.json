@@ -54,6 +54,7 @@
     "verify:weekly-demo": "tsx scripts/weekly-demo-smoke.ts",
     "verify:reliability-filter": "tsx scripts/verify-reliability-filter.ts",
     "verify:llm-usage": "tsx scripts/verify-llm-usage.ts",
+    "verify:objective-context": "tsx scripts/verify-objective-context.ts",
     "verify:p1-integrity": "tsx scripts/verify-p1-integrity.ts",
     "verify:p1-scope": "tsx scripts/verify-p1-scope.ts",
     "verify:p1-readgate": "tsx scripts/verify-p1-readgate.ts",
