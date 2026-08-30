@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { BookOpen, ChevronDown, ChevronRight, Globe, LogIn, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { BeianFooter } from "./BeianFooter";
@@ -33,6 +33,9 @@ export function LoginPageScanner({ skin, onSkinChange }: Props) {
 
   // 远端连接配置（表单已抽至 ServerConfigDialog:embedded）
   const [showRemote, setShowRemote] = useState(hasStoredServerUrl);
+  // ServerConfigDialog(embedded) 会把最新「保存配置」挂进来：登录提交前兜底落盘，
+  // 避免用户填好服务器地址/API Key 后直接登录导致配置静默丢失（回归自 v2.5.1 提交时自动保存）。
+  const saveConfigRef = useRef<(() => void) | null>(null);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -40,6 +43,12 @@ export function LoginPageScanner({ skin, onSkinChange }: Props) {
     if (!identifier.trim() || !password) {
       setError("请输入用户名和密码");
       return;
+    }
+
+    try {
+      saveConfigRef.current?.();
+    } catch {
+      /* 保存失败不阻断登录 */
     }
 
     setBusy(true);
@@ -88,7 +97,7 @@ export function LoginPageScanner({ skin, onSkinChange }: Props) {
             >
               服务器连接（可选）
             </Button>
-            {showRemote && <ServerConfigDialog mode="embedded" />}
+            {showRemote && <ServerConfigDialog mode="embedded" saveRef={saveConfigRef} />}
           </div>
 
           <Field label="用户名 / 学号 / 职工号">

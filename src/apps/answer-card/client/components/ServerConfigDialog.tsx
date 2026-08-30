@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useSyncExternalStore, useState } from "react";
 import { Eye, EyeOff, Globe } from "lucide-react";
 import { SERVER_URL_KEY } from "../lib/scannerMode";
 import { getStoredApiKey, storeApiKey } from "../auth/api";
@@ -22,6 +22,11 @@ interface Props {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   onSaved?: () => void;
+  /**
+   * embedded 模式由宿主(如登录页)注入：登录提交前兜底落盘当前表单，
+   * 避免用户填好地址/Key 后直接登录导致配置静默丢失。
+   */
+  saveRef?: { current: (() => void) | null };
 }
 
 function loadUrl(): string {
@@ -40,7 +45,7 @@ function saveUrl(url: string): void {
   }
 }
 
-export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props) {
+export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef }: Props) {
   const [serverUrl, setServerUrl] = useState(loadUrl);
   const [apiKey, setApiKey] = useState(() => getStoredApiKey() ?? "");
   const [showKey, setShowKey] = useState(false);
@@ -54,19 +59,14 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
       return "";
     }
   })();
-  const { hasMidFlight, hasPending } = (() => {
-    try {
-      const st = scannerUploadManager.getState();
-      const s = st.jobs.map((j) => j.status);
-      return {
-        // 只在真正在途（创建中/上传中/提交中）且确实改了配置时阻止切服；暂停/队列/失败/完成均可取消或忽略
-        hasMidFlight: s.some((x) => x === "creating" || x === "uploading" || x === "completing"),
-        hasPending: s.some((x) => x === "queued" || x === "paused"),
-      };
-    } catch {
-      return { hasMidFlight: false, hasPending: false };
-    }
-  })();
+  // 订阅上传任务状态：在途/暂停判定随任务流转实时更新，切服守卫不滞后
+  const uploadSnap = useSyncExternalStore(
+    scannerUploadManager.subscribe,
+    scannerUploadManager.getState,
+  );
+  const jobStatuses = uploadSnap.jobs.map((j) => j.status);
+  const hasMidFlight = jobStatuses.some((x) => x === "creating" || x === "uploading" || x === "completing");
+  const hasPending = jobStatuses.some((x) => x === "queued" || x === "paused");
   const urlChanged = serverUrl.trim().replace(/\/+$/, "") !== loadUrl().replace(/\/+$/, "");
   const keyChanged = apiKey.trim() !== initialKey.trim();
   const configChanged = urlChanged || keyChanged;
@@ -115,6 +115,15 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved }: Props)
     if (mode === "dialog") onOpenChange?.(false);
     onSaved?.();
   }
+
+  // embedded 模式：把最新 handleSave 挂到宿主 ref，登录提交前可兜底落盘
+  useEffect(() => {
+    if (mode !== "embedded" || !saveRef) return;
+    saveRef.current = handleSave;
+    return () => {
+      saveRef.current = null;
+    };
+  });
 
   const form = (
     <div className="flex flex-col gap-3">

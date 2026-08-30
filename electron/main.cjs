@@ -25,11 +25,37 @@ function getLogFilePath() {
   }
 }
 
+// 黑匣子日志轮转：超过 MAX_LOG_BYTES 时滚动 main.log -> main.log.1 -> main.log.2，
+// 最多保留 3 份（含当前），避免学校扫描机常开导致日志无限增长。
+const MAX_LOG_BYTES = 5 * 1024 * 1024;
+const LOG_KEEP_GENERATIONS = 2;
+
+function rotateLogIfNeeded(file) {
+  try {
+    const st = fs.statSync(file);
+    if (st.size <= MAX_LOG_BYTES) return;
+    for (let i = LOG_KEEP_GENERATIONS - 1; i >= 0; i--) {
+      const from = i === 0 ? file : `${file}.${i}`;
+      const to = `${file}.${i + 1}`;
+      try {
+        fs.rmSync(to, { force: true });
+      } catch { /* ignore */ }
+      try {
+        if (i === 0) fs.renameSync(from, to);
+        else if (fs.existsSync(from)) fs.renameSync(from, to);
+      } catch { /* ignore */ }
+    }
+  } catch {
+    /* 首次写入无文件，无需轮转 */
+  }
+}
+
 function appendLog(level, message) {
   const line = `[${new Date().toISOString()}] [${level}] ${message}\n`;
   try {
     const file = getLogFilePath();
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    rotateLogIfNeeded(file);
     fs.appendFileSync(file, line, "utf8");
   } catch {
     /* 日志落盘失败不影响主流程 */
