@@ -8,6 +8,20 @@ const { pathToFileURL } = require("node:url");
 // Teacher/student features are deployed via the web build (dist/web/).
 // Single variant: scanner-only, always enabled.
 
+// ── 单实例锁：扫描机常会重复双击启动。第二个实例直接退出并聚焦已有窗口，
+// 避免 5174 被占回退随机端口、同一 userData 上跑两个内嵌服务（实测日志 EADDRINUSE + auth/me 401）。
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.exit(0);
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 let server;
 let mainWindow;
 
