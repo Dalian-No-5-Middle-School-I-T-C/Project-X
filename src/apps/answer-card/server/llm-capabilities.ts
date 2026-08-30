@@ -16,3 +16,11 @@ export function isVisionProvider(
   }
   return false;
 }
+
+/**
+ * 知识点分析请求模式（纯函数）：多模态模型直传图片，其余先本地提取文字。
+ * 请求体与响应中的 mode 必须同源，避免发送与回报不一致。
+ */
+export function resolveKnowledgePointMode(isMultimodal: boolean): "text" | "direct" {
+  return isMultimodal ? "direct" : "text";
+}

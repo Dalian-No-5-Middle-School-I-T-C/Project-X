@@ -4,7 +4,8 @@
  */
 import assert from "node:assert/strict";
 import { parseUsagePayload } from "../src/apps/answer-card/server/llm-usage";
-import { isVisionProvider } from "../src/apps/answer-card/server/llm-capabilities";
+import { isVisionProvider, resolveKnowledgePointMode } from "../src/apps/answer-card/server/llm-capabilities";
+import { sanitizeForwardHeaders } from "../src/apps/answer-card/server/llm-client";
 
 function testParseUsagePayload() {
   assert.deepEqual(
@@ -25,6 +26,26 @@ function testIsVisionProvider() {
   assert.equal(isVisionProvider("deepseek", null), false);
 }
 
+function testResolveKnowledgePointMode() {
+  assert.equal(resolveKnowledgePointMode(true), "direct");
+  assert.equal(resolveKnowledgePointMode(false), "text");
+}
+
+function testSanitizeForwardHeaders() {
+  const headers = new Headers();
+  headers.set("content-length", "7");
+  headers.set("content-encoding", "gzip");
+  headers.set("content-type", "application/json");
+  headers.set("x-custom", "keep");
+  const out = sanitizeForwardHeaders(headers);
+  assert.equal(out.has("content-length"), false);
+  assert.equal(out.has("content-encoding"), false);
+  assert.equal(out.get("content-type"), "application/json");
+  assert.equal(out.get("x-custom"), "keep");
+}
+
 testParseUsagePayload();
 testIsVisionProvider();
+testResolveKnowledgePointMode();
+testSanitizeForwardHeaders();
 console.log("verify:llm-usage OK");

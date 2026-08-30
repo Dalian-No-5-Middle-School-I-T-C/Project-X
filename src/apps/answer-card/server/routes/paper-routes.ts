@@ -19,7 +19,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "../llm-client";
 import { recordAiRun, finalizeAiRun } from "../../../../server/services/aiTelemetry";
 import { decryptField } from "../../../../server/lib/field-crypto";
-import { isVisionProvider } from "../llm-capabilities";
+import { isVisionProvider, resolveKnowledgePointMode } from "../llm-capabilities";
 import { buildObjectiveContext } from "../objective-context";
 
 function decodeMultipartFilename(name: string): string {
@@ -509,11 +509,11 @@ export function paperRoutes(): Router {
 
       // 4. 构建对 llmclient 的请求
       let knowledgePoints: any[] = [];
-      let mode = "text";
+      // 请求体与响应回报同源：多模态=direct，其余=text（本地提取文字）
+      const mode = resolveKnowledgePointMode(isMultimodal);
 
       if (isMultimodal) {
         // 多模态：读取文件 → base64 → 直传
-        mode = "direct";
         const files = await getPaperFiles(cardId);
         if (files.length === 0) {
           await finalizeAiRun(runId, { success: false, errorCode: "NO_FILES" });
@@ -533,7 +533,6 @@ export function paperRoutes(): Router {
         knowledgePoints = await readKnowledgePointResponse(resp);
       } else {
         // 纯文本模型：本地提取文字后发送
-        mode = "auto";
         const extracted = await autoExtractPaperText(cardId);
         if (!extracted.text || extracted.text.length < 10) {
           await finalizeAiRun(runId, { success: false, errorCode: "TEXT_EXTRACTION_FAILED" });
@@ -548,7 +547,7 @@ export function paperRoutes(): Router {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            mode: "text", providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
+            mode, providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
             subject,
             questionRange: range, extraNotes: notes, paperText: extracted.text, answerCardJson,
           }),

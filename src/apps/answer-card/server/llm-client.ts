@@ -32,6 +32,20 @@ export function llmClientHeaders(extra?: Record<string, string>): Record<string,
 }
 
 /**
+ * 转发给调用方的响应头剔除实体长度/编码头：响应体已被消费并以文本重建，
+ * 原 content-length/content-encoding 与重建后的 body 不再匹配（可能截断/二次解码）。
+ */
+export function sanitizeForwardHeaders(headers: Headers): Headers {
+  const out = new Headers();
+  for (const [name, value] of headers.entries()) {
+    const lower = name.toLowerCase();
+    if (lower === "content-length" || lower === "content-encoding") continue;
+    out.set(name, value);
+  }
+  return out;
+}
+
+/**
  * 发送一次 AI 请求到 Python llmclient 边车。
  * @param telemetry 可选埋点上下文：传入时在本函数内自动记录一次 ai_provider_calls
  *                  （实际模型调用层）。/health 探测不计入。埋点失败不影响业务返回。
@@ -87,7 +101,7 @@ export async function fetchLlmClient(
       return new Response(bodyText, {
         status: response.status,
         statusText: response.statusText,
-        headers: response.headers,
+        headers: sanitizeForwardHeaders(response.headers),
       });
     }
     return response;

@@ -127,9 +127,9 @@ def run_direct_multimodal(
         base_url = validate_base_url(env_value("OPENAI_BASE_URL") or None)
 
     if model.provider == "gemini":
-        return _run_gemini_direct(model, api_key, files, subject, question_range, extra_notes)
+        return _run_gemini_direct(model, api_key, files, subject, question_range, extra_notes, answer_card_json=answer_card_json)
 
-    return _run_openai_direct(model, api_key, base_url, files, subject, question_range, extra_notes)
+    return _run_openai_direct(model, api_key, base_url, files, subject, question_range, extra_notes, answer_card_json=answer_card_json)
 
 
 def run_text_only(
@@ -184,12 +184,13 @@ def _run_gemini_direct(
     subject: str,
     question_range: str,
     extra_notes: str,
+    answer_card_json: str = "",
 ) -> dict[str, Any]:
     """Gemini multimodal direct analysis."""
     from google import genai
     from google.genai import types
 
-    system_prompt = _build_system_prompt(subject, question_range, extra_notes)
+    system_prompt = _build_system_prompt(subject, question_range, extra_notes, answer_card_json=answer_card_json)
 
     client = genai.Client(api_key=api_key)
     config = types.GenerateContentConfig(
@@ -234,9 +235,10 @@ def _run_openai_direct(
     subject: str,
     question_range: str,
     extra_notes: str,
+    answer_card_json: str = "",
 ) -> dict[str, Any]:
     """OpenAI/GPT multimodal direct analysis."""
-    system_prompt = _build_system_prompt(subject, question_range, extra_notes)
+    system_prompt = _build_system_prompt(subject, question_range, extra_notes, answer_card_json=answer_card_json)
 
     client = OpenAI(api_key=api_key, base_url=base_url)
 
