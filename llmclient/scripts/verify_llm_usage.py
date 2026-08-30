@@ -117,6 +117,11 @@ class KnowledgePointsPromptContextTest(unittest.TestCase):
         prompt = build_knowledge_points_prompt("全部", "")
         self.assertNotIn("答题卡客观题结构", prompt)
 
+    def test_prompt_requires_specific_mechanism_tags(self):
+        prompt = build_knowledge_points_prompt("全部", "")
+        self.assertIn("核心解题机制", prompt)
+        self.assertIn("允许标签相同", prompt)
+
 
 class PdfToImagesTest(unittest.TestCase):
     @staticmethod
