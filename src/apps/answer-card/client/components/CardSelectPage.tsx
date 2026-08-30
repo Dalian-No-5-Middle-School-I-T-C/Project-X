@@ -5,12 +5,12 @@ import { Layers, Search, ClipboardList } from "lucide-react";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { SkinSwitcher } from "./SkinSwitcher";
 import type { CardSummary, ExamGroupFilterItem } from "../../../../shared/types";
+import { fetchJson } from "../auth/api";
 import {
   fetchCardsSynced,
   fetchExamGroupsSynced,
   fetchExamGroupDetailSynced,
   fetchGradesSynced,
-  fetchExamsSynced,
   startPolling,
 } from "../lib/scannerSync";
 import type { SyncSource } from "../lib/scannerSync";
@@ -91,6 +91,13 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
     } catch (e: any) {
       if (isAuthError(e)) {
         setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
+      } else if (e?.status === 404 && !silent) {
+        // 列表接口 404 = 服务端未启用 scannerClientApi / 旧版服务器：
+        // 不再静默清空，明确提示并回退本机数据
+        setSyncError("远端服务器未启用扫描客户端同步接口，已回退显示本机数据");
+        const localData = await fetchJson<any[]>("/api/cards?limit=500");
+        setCards(Array.isArray(localData) ? localData : []);
+        setSyncSource("local");
       } else if (!silent) setCards([]);
     } finally {
       if (!silent) setLoading(false);
@@ -107,6 +114,10 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
     } catch (e: any) {
       if (isAuthError(e)) {
         setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
+      } else if (e?.status === 404 && !silent) {
+        setSyncError("远端服务器未启用扫描客户端同步接口，已回退显示本机数据");
+        const localData = await fetchJson<any[]>("/api/exam-groups");
+        setGroups(Array.isArray(localData) ? localData : []);
       } else if (!silent) setGroups([]);
     } finally {
       if (!silent) setGroupLoading(false);
@@ -143,11 +154,6 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
     }
   };
 
-  // 考试列表静默同步（设计声明的 grades/考试覆盖，即使当前页未直接展示 exam 列表，仍保持与服务端一致）
-  const refreshExamsSilent = async () => {
-    try { await fetchExamsSynced(); } catch {}
-  };
-
   // ── Initial load ──
   useEffect(() => {
     void loadCards();
@@ -163,7 +169,6 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
         void loadCards({ silent: true });
         void loadGroups({ silent: true });
         void loadGrades({ silent: true });
-        void refreshExamsSilent();
         if (expandedGroupId != null) void loadExpandedGroup(expandedGroupId, { silent: true });
       },
     });

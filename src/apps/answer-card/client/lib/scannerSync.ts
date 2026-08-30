@@ -1,8 +1,9 @@
-import { fetchJson, remoteScannerFetch, getStoredApiKey } from "../auth/api";
+import { fetchJson, remoteScannerFetch, getStoredApiKey, authFetch } from "../auth/api";
+import { SERVER_URL_KEY } from "./scannerMode";
 
 function getRemoteBase(): string {
   try {
-    return (localStorage.getItem("projectx_server_url") ?? "").trim().replace(/\/+$/, "");
+    return (localStorage.getItem(SERVER_URL_KEY) ?? "").trim().replace(/\/+$/, "");
   } catch {
     return "";
   }
@@ -57,6 +58,27 @@ async function fetchSynced<T>(localPath: string): Promise<{ data: T; source: Syn
 
 export const fetchCardsSynced = () => fetchSynced<any[]>("/api/cards?limit=500");
 export const fetchCardByIdSynced = async (id: string) => (await fetchSynced<any>(`/api/cards/${encodeURIComponent(id)}`)).data;
+
+/**
+ * 选中卡片时把完整卡 upsert 进本机库（幂等，保留原 id）。
+ * 直扫/阅卷只读本机 127.0.0.1 内嵌服务（PUT /api/cards/:id 已支持不存在时创建），
+ * 因此远端新建的卡必须先进本机库才能真的「可直接扫描」。
+ */
+export async function importCardLocally(card: { id: string }): Promise<void> {
+  const res = await authFetch(`/api/cards/${encodeURIComponent(card.id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(card),
+  });
+  if (!res.ok) {
+    let message = res.statusText;
+    try {
+      const body = (await res.json()) as { message?: string; error?: string };
+      message = body?.message || body?.error || message;
+    } catch { /* keep statusText */ }
+    throw Object.assign(new Error(message || "导入答题卡到本机失败"), { status: res.status });
+  }
+}
 export const fetchExamGroupsSynced = () => fetchSynced<any[]>("/api/exam-groups").then((r) => r.data);
 export const fetchExamsSynced = () => fetchSynced<any[]>("/api/exams?limit=200").then((r) => r.data);
 export const fetchGradesSynced = async () => {
@@ -64,6 +86,10 @@ export const fetchGradesSynced = async () => {
     return (await fetchSynced<any[]>("/api/classes/grades")).data;
   } catch (e: any) {
     if (e?.status === 401 || e?.status === 403 || e?.remoteAuthFailed) throw e;
+    if (e?.status === 404) {
+      // 服务端未启用同步面/旧版服务器：回退本机年级列表
+      try { return await fetchJson<any[]>("/api/classes/grades"); } catch { /* fall through */ }
+    }
     return [];
   }
 };

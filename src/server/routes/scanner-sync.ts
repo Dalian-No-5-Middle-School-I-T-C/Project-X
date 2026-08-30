@@ -177,10 +177,8 @@ router.get("/exams", requirePerm(PERMISSIONS.EXAM_READ), async (req: Request, re
     if (visibleIds !== null && visibleIds.length === 0) { res.json([]); return; }
     const examRepo = new ExamRepository();
     const rows = await examRepo.listExams(visibleIds !== null ? { examIds: visibleIds } as any : {});
-    // 额外软删除过滤（listExams 可能已含，但保持与成员一致）
-    const db = getMysqlDb();
+    // listExams 已按保留策略过滤软删除（#246 auto_delete），此处仅剔除 null 行
     const softRows = rows.filter((r: any) => r != null);
-    // 若 repo 未过滤软删除，补充过滤（小表可接受）
     // 统一截断 200
     res.json(softRows.slice(0, 200));
   } catch (e: any) {

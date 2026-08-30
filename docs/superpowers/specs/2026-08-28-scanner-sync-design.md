@@ -56,7 +56,7 @@ export async function fetchExamsSynced(): Promise<any[]>; // 覆盖“考试”�
 export function startPolling(opts: { intervalMs?: number; onUpdate: () => void }): () => void;
 ```
 
-- **择路**：`getRemoteScannerBase()` 非空 → `remoteScannerFetch`，否则 `fetchJson`；remote 失败（网络/401/404）→ 回退本地并返回 `source` 供 UI 显“离线·显示缓存”。
+- **择路**：`getRemoteScannerBase()` 非空 → `remoteScannerFetch`，否则 `fetchJson`；remote 网络错误/5xx/超时 → 回退本地并返回 `source` 供 UI 显“离线·显示缓存”；**401/403/404 为权威失败，不回退**（调用方提示：鉴权失败需重配 Key；单卡 404 视为已删除；列表 404 视为服务端未启用同步面，列表回退本机数据并横幅提示）。
 - **鉴权**：remote 分支带 `X-Api-Key`（`getStoredApiKey()`），沿用上传链路已验证的鉴权。
 - **轮询**：`intervalMs=30_000`，`document.visibilitychange` 回前台立即拉一次；Electron 常驻窗口亦受益。
 

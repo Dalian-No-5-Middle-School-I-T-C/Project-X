@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "./auth/AuthContext";
 import { fetchJson } from "./auth/api";
-import { fetchCardByIdSynced } from "./lib/scannerSync";
+import { fetchCardByIdSynced, importCardLocally } from "./lib/scannerSync";
 import { LoginPageScanner } from "./components/LoginPageScanner";
 import { UploadProgressCard } from "./components/UploadProgressCard";
 import { CardSelectPage } from "./components/CardSelectPage";
@@ -130,6 +130,10 @@ function ScannerAppInner() {
           setValidatingCardId(cardId);
           try {
             const card = (await fetchCardByIdSynced(cardId)) as { title?: string };
+            // 远端新建的卡不在本机库：直扫/阅卷只读本机服务，先进本机库（幂等 upsert）
+            if (card && typeof (card as { id?: string }).id === "string") {
+              await importCardLocally(card as { id: string });
+            }
             setSelectedCardId(cardId);
             setSelectedCardTitle(card?.title || cardId);
             setPage("workspace");

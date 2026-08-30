@@ -91,7 +91,7 @@ function sleep(ms: number) { return new Promise<void>((r) => setTimeout(r, ms));
 async function main() {
   // Dynamic import after mocks
   const mod = await import("../src/apps/answer-card/client/lib/scannerSync.ts");
-  const { fetchCardsSynced, fetchCardByIdSynced, fetchExamGroupsSynced, fetchExamsSynced, fetchGradesSynced, startPolling } = mod as any;
+  const { fetchCardsSynced, fetchCardByIdSynced, fetchExamGroupsSynced, fetchExamsSynced, fetchGradesSynced, startPolling, importCardLocally } = mod as any;
 
   console.log("== Scenario 1: 未配 serverUrl → local 分支 ==");
   {
@@ -305,6 +305,33 @@ async function main() {
     assert.ok(threw404, "404 should throw");
     assert.strictEqual(localHit, 0, "404 single card should not fallback");
     console.log("  ✓ scenario 8 passed");
+  }
+
+  console.log("== Scenario 9: importCardLocally 把(远端)卡 upsert 进本机库 ==");
+  {
+    // 成功：PUT /api/cards/:id 携带完整卡 JSON（幂等 upsert，保留原 id）
+    let putUrl = "";
+    let putMethod = "";
+    let putBody: any = null;
+    fetchHandler = async (url, init) => {
+      putUrl = url;
+      putMethod = init?.method ?? "GET";
+      putBody = init?.body ? JSON.parse(String(init.body)) : null;
+      return mockResponse({ id: "CARD-A" });
+    };
+    const card = { id: "CARD-A", title: "远端新建卡", subject: "math" };
+    await importCardLocally(card as any);
+    assert.ok(putUrl.startsWith("/api/cards/CARD-A"), `PUT url 应为本机卡路径, got ${putUrl}`);
+    assert.strictEqual(putMethod, "PUT");
+    assert.strictEqual(putBody?.id, "CARD-A");
+    assert.strictEqual(putBody?.title, "远端新建卡");
+
+    // 失败：500 → 抛 status=500（调用方留在选择页提示，避免进工作台后阅卷 404）
+    fetchHandler = async () => mockResponse({ message: "导入失败" }, { status: 500, ok: false });
+    let threw500 = false;
+    try { await importCardLocally(card as any); } catch (e: any) { threw500 = e.status === 500; }
+    assert.ok(threw500, "导入失败应抛 status=500");
+    console.log("  ✓ scenario 9 passed");
   }
 
   console.log("scanner-sync-smoke: 全部通过");
