@@ -25,6 +25,7 @@ class ModelConfig(BaseModel):
     key_env: str
     thinking: bool = True
     reasoning_effort: str | None = None
+    vision: bool = False
 
 
 MODEL_CATALOG: list[ModelConfig] = [
@@ -34,6 +35,7 @@ MODEL_CATALOG: list[ModelConfig] = [
         label="Gemini 3.1 Flash-Lite",
         key_env="GEMINI_API_KEY",
         thinking=True,
+        vision=True,
     ),
     ModelConfig(
         id="gemini-3.5-flash",
@@ -41,6 +43,7 @@ MODEL_CATALOG: list[ModelConfig] = [
         label="Gemini 3.5 Flash",
         key_env="GEMINI_API_KEY",
         thinking=True,
+        vision=True,
     ),
     ModelConfig(
         id="deepseek-v4-flash",
@@ -59,12 +62,22 @@ MODEL_CATALOG: list[ModelConfig] = [
         reasoning_effort="high",
     ),
     ModelConfig(
+        id="deepseek-v4-flash-vision-exp",
+        provider="deepseek",
+        label="DeepSeek V4 Flash Vision (Exp)",
+        key_env="DEEPSEEK_API_KEY",
+        thinking=True,
+        reasoning_effort="high",
+        vision=True,
+    ),
+    ModelConfig(
         id="gpt-5.5",
         provider="openai",
         label="GPT 5.5",
         key_env="OPENAI_API_KEY",
         thinking=True,
         reasoning_effort="high",
+        vision=True,
     ),
     ModelConfig(
         id="gpt-5.5-pro",
@@ -73,6 +86,7 @@ MODEL_CATALOG: list[ModelConfig] = [
         key_env="OPENAI_API_KEY",
         thinking=True,
         reasoning_effort="xhigh",
+        vision=True,
     ),
     ModelConfig(
         id="gpt-5.4",
@@ -81,6 +95,7 @@ MODEL_CATALOG: list[ModelConfig] = [
         key_env="OPENAI_API_KEY",
         thinking=True,
         reasoning_effort="high",
+        vision=True,
     ),
     ModelConfig(
         id="gpt-5.4-mini",
@@ -89,6 +104,7 @@ MODEL_CATALOG: list[ModelConfig] = [
         key_env="OPENAI_API_KEY",
         thinking=True,
         reasoning_effort="high",
+        vision=True,
     ),
 ]
 
@@ -147,6 +163,7 @@ def configured_models() -> list[dict[str, object]]:
                 "label": model.label,
                 "available": available,
                 "thinking": model.thinking,
+                "vision": model.vision,
             }
         )
     return models

@@ -23,7 +23,6 @@ from llmclient.schemas import AnalysisRunRequest, AnalysisRunResponse
 from llmclient.providers_knowledge_points import (
     run_direct_multimodal,
     run_text_only,
-    run_ocr_enhanced,
 )
 
 
@@ -142,10 +141,9 @@ def knowledge_points(
 ) -> dict:
     """Analyze exam paper for knowledge points per question (v1.7.0).
 
-    Supports three modes:
+    Supports two modes:
     - direct: multimodal model reads images directly
     - text: pre-extracted text sent to model
-    - ocr: vision model transcribes → reasoning model analyzes
     """
     mode = request.get("mode", "text")
     subject = request.get("subject", "")
@@ -193,25 +191,6 @@ def knowledge_points(
         except Exception as exc:
             logger.exception("knowledge-points direct analysis failed for model %s", model.id)
             raise HTTPException(status_code=502, detail="Direct analysis failed; see server logs") from exc
-
-    if mode == "ocr":
-        ocr_provider_id = request.get("ocrProviderId")
-        if not ocr_provider_id:
-            raise HTTPException(status_code=400, detail="ocrProviderId required for OCR mode")
-        try:
-            result = run_ocr_enhanced(
-                vision_model=find_model("gemini-3.1-flash-lite") or MODEL_CATALOG[0],
-                reasoning_model=model,
-                files=files,
-                subject=subject,
-                question_range=question_range,
-                extra_notes=extra_notes,
-                reasoning_provider_override=provider_override,
-            )
-            return result
-        except Exception as exc:
-            logger.exception("knowledge-points OCR analysis failed for model %s", model.id)
-            raise HTTPException(status_code=502, detail="OCR analysis failed; see server logs") from exc
 
     # Text mode (default)
     if not paper_text:

@@ -14,6 +14,7 @@ from llmclient.config import ModelConfig, env_value
 from llmclient.schemas import AiAnalysisReport, AnalysisRunResponse, REPORT_SCHEMA, ToolCallTrace, empty_report
 from llmclient.tools.registry import call_tool, gemini_function_declarations, openai_tools
 from llmclient.prompt import system
+from llmclient.usage import gemini_usage, merge_usage, openai_usage, usage_dict
 
 SYSTEM_PROMPT = system
 
@@ -198,6 +199,7 @@ def run_openai_compatible_analysis(
         {"role": "user", "content": _user_prompt(exam_id, class_id, locale, group_exam_ids)},
     ]
     traces: list[ToolCallTrace] = []
+    usage_total: tuple[int, int] | None = None
 
     for _ in range(8):
         kwargs: dict[str, Any] = {
@@ -216,6 +218,7 @@ def run_openai_compatible_analysis(
             kwargs["temperature"] = 0.7
 
         response = client.chat.completions.create(**kwargs)
+        usage_total = merge_usage(usage_total, openai_usage(response))
         message = response.choices[0].message
         tool_calls = message.tool_calls or []
         assistant_message: dict[str, Any] = {
@@ -245,7 +248,13 @@ def run_openai_compatible_analysis(
                 report = _parse_report(content)
             except Exception as exc:
                 report = empty_report(f"AI report JSON parse failed: {exc}")
-            return AnalysisRunResponse(generatedAt=_now_iso(), model=model.id, report=report, toolCalls=traces)
+            return AnalysisRunResponse(
+                generatedAt=_now_iso(),
+                model=model.id,
+                report=report,
+                toolCalls=traces,
+                usage=usage_dict(usage_total),
+            )
 
         for tool in tool_calls:
             try:
@@ -267,6 +276,7 @@ def run_openai_compatible_analysis(
         model=model.id,
         report=empty_report("AI tool loop reached the maximum number of steps."),
         toolCalls=traces,
+        usage=usage_dict(usage_total),
     )
 
 
@@ -302,16 +312,24 @@ def run_gemini_analysis(
         )
     ]
     traces: list[ToolCallTrace] = []
+    usage_total: tuple[int, int] | None = None
 
     for _ in range(8):
         response = client.models.generate_content(model=model.id, contents=contents, config=config)
+        usage_total = merge_usage(usage_total, gemini_usage(response))
         function_calls = _gemini_function_calls(response)
         if not function_calls:
             try:
                 report = _parse_report(_gemini_text(response) or "{}")
             except Exception as exc:
                 report = empty_report(f"AI report JSON parse failed: {exc}")
-            return AnalysisRunResponse(generatedAt=_now_iso(), model=model.id, report=report, toolCalls=traces)
+            return AnalysisRunResponse(
+                generatedAt=_now_iso(),
+                model=model.id,
+                report=report,
+                toolCalls=traces,
+                usage=usage_dict(usage_total),
+            )
 
         content = response.candidates[0].content
         contents.append(content)
@@ -336,6 +354,7 @@ def run_gemini_analysis(
         model=model.id,
         report=empty_report("AI tool loop reached the maximum number of steps."),
         toolCalls=traces,
+        usage=usage_dict(usage_total),
     )
 
 
