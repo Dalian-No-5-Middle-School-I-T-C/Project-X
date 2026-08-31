@@ -74,9 +74,32 @@ function appendLog(level, message) {
   } catch {
     /* 日志落盘失败不影响主流程 */
   }
-  if (level === "ERROR") console.error(line.trim());
-  else if (level === "WARN") console.warn(line.trim());
-  else console.log(line.trim());
+  // 注意：此处必须用原始 console 方法（重定向后调用会递归）
+  if (level === "ERROR") _origError(line.trim());
+  else if (level === "WARN") _origWarn(line.trim());
+  else _origLog(line.trim());
+}
+
+// 主进程（含内嵌服务端模块）console 输出一并落盘 main.log：
+// 服务端 [checkpoint] 诊断日志由此写入黑匣子日志，实机取证只需收 main.log。
+// _orig* 在重定向前绑定，appendLog 内部继续用原始方法避免递归。
+const _origLog = console.log.bind(console);
+const _origWarn = console.warn.bind(console);
+const _origError = console.error.bind(console);
+
+function formatLogArgs(args) {
+  return args.map((a) => {
+    if (a instanceof Error) return a.stack || a.message;
+    if (typeof a === "string") return a;
+    if (typeof a === "undefined") return "undefined";
+    try { return JSON.stringify(a); } catch { return String(a); }
+  }).join(" ");
+}
+
+function redirectMainProcessConsole() {
+  console.log = (...args) => { appendLog("INFO", formatLogArgs(args)); _origLog(...args); };
+  console.warn = (...args) => { appendLog("WARN", formatLogArgs(args)); _origWarn(...args); };
+  console.error = (...args) => { appendLog("ERROR", formatLogArgs(args)); _origError(...args); };
 }
 
 function setupMainProcessLogging() {
@@ -101,6 +124,8 @@ function configureAppIdentity() {
   const userDataDir = path.join(app.getPath("appData"), "answer-card-designer");
   app.setPath("userData", userDataDir);
   setupMainProcessLogging();
+  // 主进程 console(含内嵌服务端 checkpoint 日志)落盘 main.log
+  redirectMainProcessConsole();
   appendLog("INFO", `[Electron] userData=${userDataDir} arch=${process.arch}`);
   // 打包后快捷方式启动时 CWD 是 C:\Windows\System32，服务端仍有按 cwd 解析的
   // 相对路径（config.yml、cleanup 兜底等），统一切到可写目录，避免 EPERM。
