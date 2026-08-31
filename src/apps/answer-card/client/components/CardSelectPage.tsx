@@ -2,10 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Layers, Search, ClipboardList } from "lucide-react";
-import { fetchJson } from "../auth/api";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import { SkinSwitcher } from "./SkinSwitcher";
 import type { CardSummary, ExamGroupFilterItem } from "../../../../shared/types";
+import { fetchJson } from "../auth/api";
+import {
+  fetchCardsSynced,
+  fetchExamGroupsSynced,
+  fetchExamGroupDetailSynced,
+  fetchGradesSynced,
+  startPolling,
+} from "../lib/scannerSync";
+import type { SyncSource } from "../lib/scannerSync";
 import {
   Badge,
   Button,
@@ -63,63 +71,116 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
   const [groupMembers, setGroupMembers] = useState<GroupMember[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
 
-  // ── Load cards ──
-  const loadCards = async () => {
-    setLoading(true);
+  const [syncSource, setSyncSource] = useState<SyncSource | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  function isAuthError(e: any): boolean {
+    const s = e?.status;
+    return s === 401 || s === 403 || !!e?.remoteAuthFailed;
+  }
+
+  // ── Load helpers (silent=false 为首次加载带 Spinner，silent=true 为后台静默刷新) ──
+  const loadCards = async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent;
+    if (!silent) setLoading(true);
     try {
-      const data = await fetchJson<CardSummary[]>("/api/cards?limit=500");
-      setCards(Array.isArray(data) ? data : []);
-    } catch {
-      setCards([]);
+      const { data, source } = await fetchCardsSynced();
+      setCards(Array.isArray(data as unknown as CardSummary[]) ? (data as unknown as CardSummary[]) : []);
+      setSyncSource(source);
+      if (!silent) setSyncError(null);
+    } catch (e: any) {
+      if (isAuthError(e)) {
+        setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
+      } else if (e?.status === 404 && !silent) {
+        // 列表接口 404 = 服务端未启用 scannerClientApi / 旧版服务器：
+        // 不再静默清空，明确提示并回退本机数据
+        setSyncError("远端服务器未启用扫描客户端同步接口，已回退显示本机数据");
+        const localData = await fetchJson<any[]>("/api/cards?limit=500");
+        setCards(Array.isArray(localData) ? localData : []);
+        setSyncSource("local");
+      } else if (!silent) setCards([]);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
-  // ── Load groups ──
-  const loadGroups = async () => {
-    setGroupLoading(true);
+  const loadGroups = async (opts?: { silent?: boolean }) => {
+    const silent = !!opts?.silent;
+    if (!silent) setGroupLoading(true);
     try {
-      const data = await fetchJson<ExamGroupFilterItem[]>("/api/exam-groups");
-      setGroups(Array.isArray(data) ? data : []);
-    } catch {
-      setGroups([]);
+      const data = await fetchExamGroupsSynced();
+      setGroups(Array.isArray(data as unknown as ExamGroupFilterItem[]) ? (data as unknown as ExamGroupFilterItem[]) : []);
+      if (!silent) setSyncError(null);
+    } catch (e: any) {
+      if (isAuthError(e)) {
+        setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
+      } else if (e?.status === 404 && !silent) {
+        setSyncError("远端服务器未启用扫描客户端同步接口，已回退显示本机数据");
+        const localData = await fetchJson<any[]>("/api/exam-groups");
+        setGroups(Array.isArray(localData) ? localData : []);
+      } else if (!silent) setGroups([]);
     } finally {
-      setGroupLoading(false);
+      if (!silent) setGroupLoading(false);
     }
   };
 
-  // ── Load grades ──
+  const loadGrades = async (opts?: { silent?: boolean }) => {
+    try {
+      const d = await fetchGradesSynced();
+      setGrades(Array.isArray(d) ? d : []);
+      if (!opts?.silent) setSyncError(null);
+    } catch (e: any) {
+      if (isAuthError(e)) {
+        setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
+      } else if (!opts?.silent) setGrades([]);
+    }
+  };
+
+  const loadExpandedGroup = async (groupId: number, opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setMembersLoading(true);
+    try {
+      const data: any = await fetchExamGroupDetailSynced(groupId);
+      const members: GroupMember[] = (data.members || []).map((m: any) => ({
+        examId: m.examId ?? m.exam_id,
+        examName: m.examName ?? m.exam_name ?? `考试${m.examId ?? m.exam_id}`,
+        subject: m.subject ?? "",
+        cardId: m.cardId ?? m.card_id ?? null,
+      }));
+      setGroupMembers(members);
+    } catch {
+      if (!opts?.silent) setGroupMembers([]);
+    } finally {
+      if (!opts?.silent) setMembersLoading(false);
+    }
+  };
+
+  // ── Initial load ──
   useEffect(() => {
-    fetchJson<Array<{ id: number; name: string }>>("/api/classes/grades")
-      .then(setGrades)
-      .catch(() => setGrades([]));
+    void loadCards();
+    void loadGroups();
+    void loadGrades();
   }, []);
 
+  // 30s polling + visibilitychange 静默刷新（不触发 Spinner，不遮列表）
   useEffect(() => {
-    loadCards();
-    loadGroups();
-  }, []);
+    return startPolling({
+      intervalMs: 30000,
+      onUpdate: () => {
+        void loadCards({ silent: true });
+        void loadGroups({ silent: true });
+        void loadGrades({ silent: true });
+        if (expandedGroupId != null) void loadExpandedGroup(expandedGroupId, { silent: true });
+      },
+    });
+  }, [expandedGroupId]);
 
-  // ── Load group members on expand ──
+  // ── Load group members on expand (remote-first) ──
   useEffect(() => {
     if (expandedGroupId == null) {
       setGroupMembers([]);
       return;
     }
-    setMembersLoading(true);
-    fetchJson<any>(`/api/exam-groups/${expandedGroupId}`)
-      .then((data) => {
-        const members: GroupMember[] = (data.members || []).map((m: any) => ({
-          examId: m.examId ?? m.exam_id,
-          examName: m.examName ?? m.exam_name ?? `考试${m.examId ?? m.exam_id}`,
-          subject: m.subject ?? "",
-          cardId: m.cardId ?? m.card_id ?? null,
-        }));
-        setGroupMembers(members);
-      })
-      .catch(() => setGroupMembers([]))
-      .finally(() => setMembersLoading(false));
+    void loadExpandedGroup(expandedGroupId);
   }, [expandedGroupId]);
 
   // ── Extract subjects from cards ──
@@ -180,6 +241,11 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
         </header>
 
         <div className="flex min-h-0 flex-col overflow-hidden">
+          {syncError && (
+            <div className="mx-8 mt-4 rounded-md border border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+              {syncError}
+            </div>
+          )}
           {/* ── Filter header ── */}
           <div className="shrink-0 px-8 pt-6">
             <div className="flex items-end justify-between gap-4">
@@ -305,8 +371,19 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
           </div>
         </div>
 
-        {/* ── Statusbar ── */}
-        <footer className="flex h-statusbar shrink-0 items-center border-t border-border-subtle bg-card px-4 text-xs text-muted-foreground" />
+        {/* ── Statusbar (sync source hint) ── */}
+        <footer className="flex h-statusbar shrink-0 items-center justify-between border-t border-border-subtle bg-card px-4 text-xs text-muted-foreground">
+          <span>
+            {syncSource === "remote"
+              ? "已同步远端"
+              : syncSource === "offline-cache"
+                ? "离线·显示缓存"
+                : syncSource === "local"
+                  ? "本地数据"
+                  : ""}
+          </span>
+          <span>{syncSource ? "30s 自动刷新 · 切回窗口即刷新" : ""}</span>
+        </footer>
       </section>
     </main>
   );

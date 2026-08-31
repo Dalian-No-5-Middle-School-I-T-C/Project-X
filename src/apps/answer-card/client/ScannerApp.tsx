@@ -3,15 +3,15 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "./auth/AuthContext";
 import { fetchJson } from "./auth/api";
+import { fetchCardByIdSynced, importCardLocally } from "./lib/scannerSync";
 import { LoginPageScanner } from "./components/LoginPageScanner";
 import { UploadProgressCard } from "./components/UploadProgressCard";
 import { CardSelectPage } from "./components/CardSelectPage";
 import { ScannerWorkspace } from "./components/ScannerWorkspace";
 import { SkinOnboarding, shouldShowSkinOnboarding } from "./components/SkinOnboarding";
-import { Spinner } from "./components/ui/v2";
+import { notify, Spinner } from "./components/ui/v2";
 import { DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
 import { skinPatchDecision } from "./lib/skinPatchGuard";
-import type { CardSummary } from "../../../shared/types";
 
 // ── ScannerApp：双屏容器 ──
 // page="select" → CardSelectPage（答题卡选择，含单科/大考双Tab）
@@ -33,6 +33,9 @@ function ScannerAppInner() {
       return DEFAULT_SKIN;
     }
   });
+  // Task3: 先校验后切页 — 校验期间按钮 loading 防重 + 404 阻断切页并刷新列表
+  const [validatingCardId, setValidatingCardId] = useState<string | null>(null);
+  const [listRefreshKey, setListRefreshKey] = useState(0);
   // 首次进入强制选肤（与 web 端一致）：未走过引导时先二选一，确认后才进登录页。
   const [showOnboarding, setShowOnboarding] = useState<boolean>(() => shouldShowSkinOnboarding());
   // PATCH 回写护栏状态：记录上一轮见到的 user.id（见 lib/skinPatchGuard.ts）。
@@ -117,24 +120,45 @@ function ScannerAppInner() {
   }
 
   return (
-    <CardSelectPage
-      skin={skin}
-      onSkinChange={setSkin}
-      onSelectCard={(cardId) => {
-        // Fetch card title before entering workspace
-        fetchJson<CardSummary>(`/api/cards/${cardId}`)
-          .then((card) => {
+    <>
+      <CardSelectPage
+        key={listRefreshKey}
+        skin={skin}
+        onSkinChange={setSkin}
+        onSelectCard={async (cardId) => {
+          if (validatingCardId) return;
+          setValidatingCardId(cardId);
+          try {
+            const card = (await fetchCardByIdSynced(cardId)) as { title?: string };
+            // 远端新建的卡不在本机库：直扫/阅卷只读本机服务，先进本机库（幂等 upsert）
+            if (card && typeof (card as { id?: string }).id === "string") {
+              await importCardLocally(card as { id: string });
+            }
             setSelectedCardId(cardId);
-            setSelectedCardTitle(card.title || cardId);
+            setSelectedCardTitle(card?.title || cardId);
             setPage("workspace");
-          })
-          .catch(() => {
-            setSelectedCardId(cardId);
-            setSelectedCardTitle(cardId);
-            setPage("workspace");
-          });
-      }}
-    />
+          } catch (e: unknown) {
+            const err = e as { status?: number; message?: string };
+            if (err?.status === 404) {
+              notify.error("该答题卡已在服务器删除，已刷新列表");
+              setListRefreshKey((k) => k + 1);
+              return;
+            }
+            notify.error(err?.message || "加载答题卡失败，请重试");
+          } finally {
+            setValidatingCardId(null);
+          }
+        }}
+      />
+      {validatingCardId && (
+        <div className="fixed inset-0 z-10 flex items-center justify-center bg-background/60 backdrop-blur-[2px]">
+          <div className="flex items-center gap-2 rounded-md border bg-card px-4 py-2 shadow-2">
+            <Spinner size={16} />
+            <span className="text-sm">校验答题卡…</span>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

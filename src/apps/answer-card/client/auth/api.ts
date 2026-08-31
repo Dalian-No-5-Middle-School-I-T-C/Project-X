@@ -1,13 +1,21 @@
 // v1.6.0: API 基础地址支持运行时配置
 // Web 端优先级: localStorage > VITE_PROJECTX_API_BASE > 空（相对路径）
 // 扫描端始终使用本机相对路径；远端服务器仅供 scanner upload API 使用。
+function getViteEnv(): Record<string, string | undefined> | undefined {
+  try { return (import.meta as unknown as { env?: Record<string, string | undefined> })?.env; } catch { return undefined; }
+}
+function isScannerBuild(): boolean {
+  const env = getViteEnv();
+  if (!env) return true; // Node/tsx 无 env 时视为 scanner：本地优先，保证离线回退与冒烟可用
+  return env.VITE_BUILD_TARGET === "scanner";
+}
 function getApiBase(): string {
-  if (import.meta.env.VITE_BUILD_TARGET === "scanner") return "";
+  if (isScannerBuild()) return "";
   try {
     const stored = localStorage.getItem("projectx_server_url");
     if (stored) return stored.replace(/\/+$/, "");
   } catch { /* ignore */ }
-  return (import.meta.env.VITE_PROJECTX_API_BASE ?? "").replace(/\/+$/, "");
+  return (getViteEnv()?.VITE_PROJECTX_API_BASE ?? "").replace(/\/+$/, "");
 }
 
 // 安全审计（F-6）：API Key 本地存储带 30 天过期时间；兼容旧纯字符串格式（视为未过期，随下次保存升级）。
@@ -88,7 +96,7 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
   const token = getAuthToken();
   const crossOrigin = isCrossOriginApiMode();
   // v1.6.0: 同时支持 Api-Key header
-  const storedApiKey = import.meta.env.VITE_BUILD_TARGET === "scanner" ? null : getStoredApiKey();
+  const storedApiKey = isScannerBuild() ? null : getStoredApiKey();
   const headers = new Headers(options?.headers);
   // 安全审计（P1）：同源部署下认证主通道 = HttpOnly Cookie（credentials: include），
   // 不携带 Bearer；仅跨域 API 模式（Cookie 无法跨站点携带）才附加内存 token 的 Bearer。
@@ -132,7 +140,7 @@ export async function fetchJson<T>(url: string, options?: RequestInit): Promise<
 export function authFetch(url: string, options?: RequestInit): Promise<Response> {
   const token = getAuthToken();
   const crossOrigin = isCrossOriginApiMode();
-  const storedApiKey = import.meta.env.VITE_BUILD_TARGET === "scanner" ? null : getStoredApiKey();
+  const storedApiKey = isScannerBuild() ? null : getStoredApiKey();
   const headers = new Headers(options?.headers);
   if (token && crossOrigin && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);

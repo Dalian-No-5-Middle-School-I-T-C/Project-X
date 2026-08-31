@@ -171,6 +171,8 @@ export async function scan(config: {
   filePrefix: string;
   maxPages: number;
   showUi?: boolean;
+  /** 等下一页(ADF 送纸)的空闲超时,默认 15000ms,native 侧兜底 */
+  pageTimeoutMs?: number;
 }, sessionId?: string): Promise<BridgeScanResult> {
   const args: string[] = [
     "scan",
@@ -182,6 +184,10 @@ export async function scan(config: {
     "--prefix", config.filePrefix,
     "--max-pages", String(config.maxPages)   // 0 = 不限（native 侧 maxPages>0 才限制）
   ];
+
+  if (config.pageTimeoutMs && config.pageTimeoutMs > 0) {
+    args.push("--page-timeout-ms", String(config.pageTimeoutMs));
+  }
 
   if (config.duplex) {
     args.push("--duplex");
