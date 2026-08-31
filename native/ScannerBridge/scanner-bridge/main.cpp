@@ -20,6 +20,7 @@ static void printUsage() {
     fprintf(stderr, "  --output <dir>      Output directory (required for scan)\n");
     fprintf(stderr, "  --prefix <str>      File name prefix (default: scan)\n");
     fprintf(stderr, "  --max-pages <num>   Max pages to scan (default: unlimited)\n");
+    fprintf(stderr, "  --page-timeout-ms <num>  Idle timeout waiting for next page (default: 15000)\n");
     fprintf(stderr, "  --show-ui           Show scanner's native UI\n");
 }
 
@@ -89,6 +90,9 @@ int wmain(int argc, wchar_t* argv[]) {
                 config.filePrefix = args[++i];
             } else if (arg == "--max-pages" && i + 1 < argc) {
                 config.maxPages = atoi(args[++i].c_str());
+            } else if (arg == "--page-timeout-ms" && i + 1 < argc) {
+                int ms = atoi(args[++i].c_str());
+                if (ms > 0) config.pageTimeoutMs = ms;
             } else if (arg == "--show-ui") {
                 config.showUi = true;
             } else if (arg == "--help" || arg == "-h") {
