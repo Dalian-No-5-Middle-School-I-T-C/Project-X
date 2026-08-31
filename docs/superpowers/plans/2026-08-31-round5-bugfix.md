@@ -1142,6 +1142,12 @@ git commit -m "fix(scanner): SegmentedControl 选中态不显示修复 (五轮B3
 
 > 若 Step 1 实测为情况 D（已正常），本 Task 无需代码改动，直接在 Task 10 的回归清单标注"B3 实证已修复"，并在会话记录附截图证据。
 
+**执行结果（2026-08-31）**：取证完成 → **情况 D，无代码变更**。
+- `dist/scanner/assets/*.css` 完整含选中态规则：`data-[state=on]:bg-card`（含 `!` 与常规两版本）、`text-foreground`、`shadow-1`，以及 `[data-skin=paper-edge]` 皮肤增强规则 —— 样式层无缺失；
+- Radix ToggleGroup 受控 `value` 恒非空（`useScannerMode` 默认 `local`），`data-state="on"` 由 Radix 契约保证；
+- 录像包时间戳 08-31 19:52，但 main.log 同机构建 hash 显示测试包 < 08-30 15:00（fee1cac 前）；且 ScannerPanel 模式切换区 08-31 12:37 又被 60f606b 重构 —— 录像的"4 按钮无选中态"判为过期包视觉差异。
+- **保留动作**：新包发布后在扫描端实机复查（Task 10 回归表已列"扫描端 4 个切换按钮选中态"）。
+
 ---
 
 ### Task 7: B4 — 扫描端移除 Google Fonts 外链
