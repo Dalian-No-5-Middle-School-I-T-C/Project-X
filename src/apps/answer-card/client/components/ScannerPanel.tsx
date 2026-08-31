@@ -11,7 +11,7 @@ import {
   Upload,
 } from "lucide-react";
 import { authFetch, mediaUrl, urlWithToken } from "../auth/api";
-import { useScannerMode, getScannerMode } from "../lib/scannerMode";
+import { useScannerMode, getScannerMode, isRemoteServerConfigured } from "../lib/scannerMode";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
 import { mergeAuthoritativePages } from "../lib/scanSessionPages";
 import type { ScanPageRef } from "../lib/scanSessionPages";
@@ -579,6 +579,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                   },
                 ]}
               />
+              {scannerMode === "remote" && !isRemoteServerConfigured() && (
+                <p className="m-0 rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-xs text-warning-foreground">
+                  未配置远端服务器：扫描结果无法上传。请先在页面右上角「服务器连接」中填写服务器地址与 API Key。
+                </p>
+              )}
             </div>
 
             <Button variant="primary" block icon={<Play size={17} />} onClick={startScan}>

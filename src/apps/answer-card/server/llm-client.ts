@@ -4,8 +4,9 @@
  * Extracted from index.ts so the analysis router can import them.
  */
 import { ensureLlmClient } from "./llm-launcher";
-import { recordProviderCall } from "../../../server/services/aiTelemetry";
+import { recordProviderCall, finalizeAiRun } from "../../../server/services/aiTelemetry";
 import { getLlmEnv } from "./llm-env";
+import { parseUsagePayload } from "./llm-usage";
 
 export interface LlmCallTelemetry {
   runId?: number | null;
@@ -28,6 +29,20 @@ export function llmClientHeaders(extra?: Record<string, string>): Record<string,
     headers.Authorization = `Bearer ${internalKey}`;
   }
   return headers;
+}
+
+/**
+ * 转发给调用方的响应头剔除实体长度/编码头：响应体已被消费并以文本重建，
+ * 原 content-length/content-encoding 与重建后的 body 不再匹配（可能截断/二次解码）。
+ */
+export function sanitizeForwardHeaders(headers: Headers): Headers {
+  const out = new Headers();
+  for (const [name, value] of headers.entries()) {
+    const lower = name.toLowerCase();
+    if (lower === "content-length" || lower === "content-encoding") continue;
+    out.set(name, value);
+  }
+  return out;
 }
 
 /**
@@ -55,6 +70,7 @@ export async function fetchLlmClient(
   const startedAt = Date.now();
   let success = false;
   let errorCode: string | null = null;
+  let tokens: number | null = null;
   try {
     const response = await fetch(llmClientUrl(pathname), {
       ...init,
@@ -63,6 +79,31 @@ export async function fetchLlmClient(
     });
     success = response.ok;
     if (!success) errorCode = `HTTP_${response.status}`;
+
+    // 观测：成功响应中提取 usage 落库（逻辑任务层 tokens_in/tokens_out + 实际模型调用层 tokens）。
+    // 需要消费一次响应体，因此重包 Response 返回，保证调用方仍可 json()/text()。
+    if (telemetry && pathname !== "/health") {
+      let bodyText = "";
+      try {
+        bodyText = await response.text();
+        const parsed = bodyText ? JSON.parse(bodyText) : null;
+        const usage = parseUsagePayload(parsed);
+        if (usage) {
+          tokens = usage.tokensIn + usage.tokensOut;
+          await finalizeAiRun(telemetry.runId ?? null, {
+            tokensIn: usage.tokensIn,
+            tokensOut: usage.tokensOut,
+          }).catch(() => {});
+        }
+      } catch {
+        // 读取/解析失败不影响业务返回；调用方拿到的是已读取的文本（可能为空）。
+      }
+      return new Response(bodyText, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: sanitizeForwardHeaders(response.headers),
+      });
+    }
     return response;
   } catch (err) {
     success = false;
@@ -80,7 +121,8 @@ export async function fetchLlmClient(
         stage: telemetry.stage ?? null,
         success,
         latencyMs: latency,
-        errorCode
+        errorCode,
+        tokens
       }).catch(() => {});
     }
   }

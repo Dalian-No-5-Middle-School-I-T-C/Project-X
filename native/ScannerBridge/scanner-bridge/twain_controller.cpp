@@ -341,8 +341,10 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         if (config.maxPages > 0 && pageNum >= config.maxPages) break;
         
         // Check if transfer is ready
-        if (!waitForState(6, 60000)) {
-            // No more pages or timeout
+        if (!waitForState(6, config.pageTimeoutMs)) {
+            // ADF 无纸或空闲超时：立即结束，不再干等固定 60s
+            fprintf(stderr, "[ScannerBridge] Scan ended: no more pages after %dms idle (pages=%d)\n",
+                config.pageTimeoutMs, pageNum);
             hasMorePages = false;
             break;
         }
@@ -386,7 +388,7 @@ ScanResult TwainController::scan(const ScanConfig& config) {
         
         // Back side (duplex) — 由 pending.Count 决定是否还有背面，避免干等 30 秒
         if (config.duplex && pending.Count > 0) {
-            if (!waitForState(6, 30000)) {
+            if (!waitForState(6, config.pageTimeoutMs)) {
                 result.errorMessage = "Timeout waiting for back side of page " + std::to_string(pageNum);
                 break;
             }

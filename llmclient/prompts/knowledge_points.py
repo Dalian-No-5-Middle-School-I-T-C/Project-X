@@ -18,6 +18,8 @@ KP_SYSTEM_PROMPT = """你是试卷知识点分析专家。请仔细分析以下�
 
 6. **题目范围**: {question_range}
 
+7. **标签特异性**：每题的标签必须体现本题的核心解题机制（如恒成立、参数范围、新定义、递推、对称性、零点、不等式证明等）；不得只写过于宽泛的通用标签（如“导数”“函数最值”）。若两题确实考查同一知识点，允许标签相同。
+
 ## 学科知识点分类参考
 
 - 物理: 力学、电磁学、热学、光学、原子物理、实验
@@ -33,16 +35,18 @@ KP_SYSTEM_PROMPT = """你是试卷知识点分析专家。请仔细分析以下�
 ## 输出格式（严格遵守，不要包含任何额外内容）
 
 ```json
-{
+{{
   "knowledgePoints": [
-    {"questionNumber": 1, "points": ["牛顿第一定律", "惯性"]},
-    {"questionNumber": 2, "points": ["匀变速直线运动", "位移公式"]},
-    {"questionNumber": 3, "points": ["勾股定理"]}
+    {{"questionNumber": 1, "points": ["牛顿第一定律", "惯性"]}},
+    {{"questionNumber": 2, "points": ["匀变速直线运动", "位移公式"]}},
+    {{"questionNumber": 3, "points": ["勾股定理"]}}
   ]
-}
+}}
 ```
 
 ## 注意
+
+{answer_card_section}
 
 {extra_notes_section}"""
 
@@ -56,14 +60,24 @@ def build_knowledge_points_prompt(
     question_range: str,
     extra_notes: str,
     ocr_mode: bool = False,
+    answer_card_json: str = "",
+    subject: str = "",
 ) -> str:
-    notes = ""
+    notes = f"\n科目: {subject}"
     if extra_notes:
-        notes = f"教师特别说明: {extra_notes}"
+        notes += f"\n教师特别说明: {extra_notes}"
     if ocr_mode:
         notes = KP_OCR_TOLERANT_NOTE + notes
+
+    answer_card_section = ""
+    if answer_card_json.strip():
+        answer_card_section = (
+            "\n## 答题卡客观题结构（标准答案与分值，用于核对题号；如与试卷不符，以试卷为准）\n\n"
+            + answer_card_json.strip()
+        )
 
     return KP_SYSTEM_PROMPT.format(
         question_range=question_range,
         extra_notes_section=notes,
+        answer_card_section=answer_card_section,
     )

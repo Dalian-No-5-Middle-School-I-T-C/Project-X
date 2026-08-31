@@ -79,6 +79,7 @@ Python 服务未启动、数据库路径不可访问、或当前 provider 没有
 | `gemini-3.5-flash` | Gemini | 开启，`thinking_level=high` |
 | `deepseek-v4-flash` | DeepSeek | 开启，`reasoning_effort=high` |
 | `deepseek-v4-pro` | DeepSeek | 开启，`reasoning_effort=high` |
+| `deepseek-v4-flash-vision-exp` | DeepSeek | 开启，`reasoning_effort=high`（支持图像直读，用于原卷扫描件知识点分析） |
 | `gpt-5.5` | OpenAI | 开启，`reasoning_effort=high` |
 | `gpt-5.4-mini` | OpenAI | 开启，`reasoning_effort=high` |
 

@@ -223,7 +223,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
                     ]}
                   />
                   {importMode === "remote" && !isRemoteServerConfigured() && (
-                    <span className="text-xs text-warning-foreground">尚未配置服务器地址，请先在登录页配置</span>
+                    <span className="text-xs text-warning-foreground">尚未配置服务器地址，请先在工作台右上角「服务器连接」中填写</span>
                   )}
                 </div>
 
