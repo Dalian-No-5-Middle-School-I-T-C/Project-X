@@ -268,8 +268,24 @@ export interface ClearDemoStats {
 }
 
 async function cleanupDemoData(db: DbAdapter): Promise<ClearDemoStats> {
-  // 演示考试 / 考试组仍按「演示-」前缀识别（前缀独特，不存在与真实数据冲突的风险）。
-  const demoExamIds = (await db.all("SELECT id FROM exams WHERE name LIKE ?", `${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
+  // ── 收集待清理集合（五轮A3：两套口径统一）──
+  // 考试：名字带「演示-」前缀，或引用 is_demo=1 答题卡的（不论名称前缀——用户可能用
+  // 演示卡自建考试并改名，此类考试的学生/成绩/卡片均为演示资产，一并清理）。
+  const prefixExamIds = (await db.all("SELECT id FROM exams WHERE name LIKE ?", `${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
+  const cardRefExamIds = (await db.all(
+    `SELECT e.id FROM exams e JOIN answer_cards ac ON ac.id = e.card_id WHERE ac.is_demo = 1`
+  ) as Array<{ id: number }>).map((r) => r.id);
+  const referencingOnly = cardRefExamIds.filter((id) => !prefixExamIds.includes(id));
+  if (referencingOnly.length > 0) {
+    const names = await db.all(
+      `SELECT name FROM exams WHERE id IN (${referencingOnly.map(() => "?").join(",")})`,
+      ...referencingOnly
+    ) as Array<{ name: string }>;
+    console.warn(
+      `[clearDemoData] ${names.length} 场非演示名前缀考试引用了演示答题卡，视作演示资产一并清理：${names.map((n) => n.name).join("、")}`
+    );
+  }
+  const demoExamIds = [...new Set([...prefixExamIds, ...cardRefExamIds])];
   const demoGroupIds = (await db.all("SELECT id FROM exam_groups WHERE name LIKE ?", `${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
 
   // v2.3.x: 周报动态组（source='week'，由 WeeklyAuditService 按周发布创建，名称不带「演示-」前缀）。
@@ -281,75 +297,82 @@ async function cleanupDemoData(db: DbAdapter): Promise<ClearDemoStats> {
                        JOIN exams e ON e.id = egm.exam_id
                        WHERE egm.group_id = eg.id AND e.name NOT LIKE '演示-%')`
   ) as Array<{ id: number }>).map((r) => r.id);
-  if (demoOnlyWeekGroupIds.length > 0) {
-    const ph = demoOnlyWeekGroupIds.map(() => "?").join(",");
-    await db.run(`DELETE FROM exam_group_members WHERE group_id IN (${ph})`, ...demoOnlyWeekGroupIds);
-    await db.run(`DELETE FROM exam_groups WHERE id IN (${ph})`, ...demoOnlyWeekGroupIds);
-  }
 
-  if (demoGroupIds.length > 0) {
-    const ph = demoGroupIds.map(() => "?").join(",");
-    await db.run(`DELETE FROM exam_group_members WHERE group_id IN (${ph})`, ...demoGroupIds);
-    if (await tableExists(db, "exam_group_items")) {
-      await db.run(`DELETE FROM exam_group_items WHERE group_id IN (${ph})`, ...demoGroupIds);
+  // ── 全程事务（五轮A3：任一步失败不得留下半删状态，MariaDB 外键约束下保证原子性）──
+  return db.transaction(async (tx) => {
+    if (demoOnlyWeekGroupIds.length > 0) {
+      const ph = demoOnlyWeekGroupIds.map(() => "?").join(",");
+      await tx.run(`DELETE FROM exam_group_members WHERE group_id IN (${ph})`, ...demoOnlyWeekGroupIds);
+      await tx.run(`DELETE FROM exam_groups WHERE id IN (${ph})`, ...demoOnlyWeekGroupIds);
     }
-    await db.run(`DELETE FROM exam_groups WHERE id IN (${ph})`, ...demoGroupIds);
-  }
 
-  if (demoExamIds.length > 0) {
-    const ph = demoExamIds.map(() => "?").join(",");
-    await db.run(`DELETE FROM question_scores WHERE exam_id IN (${ph})`, ...demoExamIds);
-    await db.run(`DELETE FROM student_scores WHERE exam_id IN (${ph})`, ...demoExamIds);
-    await db.run(`DELETE FROM answer_block_crops WHERE exam_id IN (${ph})`, ...demoExamIds);
-    await db.run(`DELETE FROM review_assignments WHERE exam_id IN (${ph})`, ...demoExamIds);
-    await db.run(`DELETE FROM review_sessions WHERE exam_id IN (${ph})`, ...demoExamIds);
-    await db.run(`DELETE FROM block_grading_config WHERE exam_id IN (${ph})`, ...demoExamIds);
-    await db.run(`DELETE FROM exams WHERE id IN (${ph})`, ...demoExamIds);
-  }
+    if (demoGroupIds.length > 0) {
+      const ph = demoGroupIds.map(() => "?").join(",");
+      await tx.run(`DELETE FROM exam_group_members WHERE group_id IN (${ph})`, ...demoGroupIds);
+      if (await tableExists(tx, "exam_group_items")) {
+        await tx.run(`DELETE FROM exam_group_items WHERE group_id IN (${ph})`, ...demoGroupIds);
+      }
+      await tx.run(`DELETE FROM exam_groups WHERE id IN (${ph})`, ...demoGroupIds);
+    }
 
-  // v1.9.6: 答题卡 / 用户 / 班级 / 年级 按归属标记 is_demo=1 清理，不再依赖硬编码 ID /
-  // 学号 / 用户名 / 名称，避免误删同名真实数据。安全语义：is_demo=0 的真实记录永不被清理。
-  // v2.3.x: 晨测演示卡关联 knowledge_points（知识点，MariaDB 无级联），先按 is_demo 卡 id 清理再删卡。
-  await db.run("DELETE FROM knowledge_points WHERE card_id IN (SELECT id FROM answer_cards WHERE is_demo = 1)");
-  const removedCards = (await db.run("DELETE FROM answer_cards WHERE is_demo = 1")).changes;
+    if (demoExamIds.length > 0) {
+      const ph = demoExamIds.map(() => "?").join(",");
+      // 先清所有引用（exam_participants 依赖外键级联，但 SQLite 可能外键关闭/旧库无级联，显式删除最稳）
+      await tx.run(`DELETE FROM exam_participants WHERE exam_id IN (${ph})`, ...demoExamIds);
+      await tx.run(`DELETE FROM question_scores WHERE exam_id IN (${ph})`, ...demoExamIds);
+      await tx.run(`DELETE FROM student_scores WHERE exam_id IN (${ph})`, ...demoExamIds);
+      await tx.run(`DELETE FROM answer_block_crops WHERE exam_id IN (${ph})`, ...demoExamIds);
+      await tx.run(`DELETE FROM review_assignments WHERE exam_id IN (${ph})`, ...demoExamIds);
+      await tx.run(`DELETE FROM review_sessions WHERE exam_id IN (${ph})`, ...demoExamIds);
+      await tx.run(`DELETE FROM block_grading_config WHERE exam_id IN (${ph})`, ...demoExamIds);
+      await tx.run(`DELETE FROM exams WHERE id IN (${ph})`, ...demoExamIds);
+    }
 
-  // 收集待清理的演示用户 id（学生 + 演示教师），先解除 class_students 关联再删用户
-  const demoStudentIds = (await db.all("SELECT id FROM users WHERE is_demo = 1") as Array<{ id: number }>).map((r) => r.id);
-  const removedStudents = demoStudentIds.length;
+    // v1.9.6: 答题卡 / 用户 / 班级 / 年级 按归属标记 is_demo=1 清理，不再依赖硬编码 ID /
+    // 学号 / 用户名 / 名称，避免误删同名真实数据。安全语义：is_demo=0 的真实记录永不被清理。
+    // v2.3.x: 晨测演示卡关联 knowledge_points（知识点，MariaDB 无级联），先按 is_demo 卡 id 清理再删卡。
+    await tx.run("DELETE FROM knowledge_points WHERE card_id IN (SELECT id FROM answer_cards WHERE is_demo = 1)");
+    const removedCards = (await tx.run("DELETE FROM answer_cards WHERE is_demo = 1")).changes;
 
-  if (demoStudentIds.length > 0) {
-    const ph = demoStudentIds.map(() => "?").join(",");
-    await db.run(`DELETE FROM class_students WHERE student_id IN (${ph})`, ...demoStudentIds);
-    await db.run(`DELETE FROM teacher_classes WHERE teacher_id IN (${ph})`, ...demoStudentIds);
-    await db.run(`DELETE FROM users WHERE id IN (${ph})`, ...demoStudentIds);
-  }
+    // 收集待清理的演示用户 id（学生 + 演示教师），先解除关联再删用户
+    const demoStudentIds = (await tx.all("SELECT id FROM users WHERE is_demo = 1") as Array<{ id: number }>).map((r) => r.id);
+    const removedStudents = demoStudentIds.length;
 
-  // 删演示班级在前，删演示年级在后（classes.grade_id → grades.id 外键级联）。
-  // v1.9.6 安全收窄：仅当演示年级下不存在 is_demo=0 的真实班级时才删除演示年级，
-  // 避免外键 ON DELETE CASCADE 顺带扫掉挂在演示年级下的真实班级。
-  await db.run("DELETE FROM classes WHERE is_demo = 1");
-  const hasRealClassUnderDemoGrade = Boolean(
-    await db.get(
-      "SELECT 1 AS x FROM classes WHERE is_demo = 0 AND grade_id IN (SELECT id FROM grades WHERE is_demo = 1) LIMIT 1"
-    )
-  );
-  if (!hasRealClassUnderDemoGrade) {
-    await db.run("DELETE FROM grades WHERE is_demo = 1");
-  } else {
-    // 边界保护：保留有真实班级挂靠的演示年级，避免级联误删真实数据。
-    console.warn(
-      "[clearDemoData] 检测到真实班级挂靠在演示年级下，已保留该演示年级以避免级联删除真实班级，请手动迁移真实班级后再次清理。"
+    if (demoStudentIds.length > 0) {
+      const ph = demoStudentIds.map(() => "?").join(",");
+      await tx.run(`DELETE FROM class_students WHERE student_id IN (${ph})`, ...demoStudentIds);
+      await tx.run(`DELETE FROM teacher_classes WHERE teacher_id IN (${ph})`, ...demoStudentIds);
+      await tx.run(`DELETE FROM exam_participants WHERE student_id IN (${ph})`, ...demoStudentIds);
+      await tx.run(`DELETE FROM users WHERE id IN (${ph})`, ...demoStudentIds);
+    }
+
+    // 删演示班级在前，删演示年级在后（classes.grade_id → grades.id 外键级联）。
+    // v1.9.6 安全收窄：仅当演示年级下不存在 is_demo=0 的真实班级时才删除演示年级，
+    // 避免外键 ON DELETE CASCADE 顺带扫掉挂在演示年级下的真实班级。
+    await tx.run("DELETE FROM classes WHERE is_demo = 1");
+    const hasRealClassUnderDemoGrade = Boolean(
+      await tx.get(
+        "SELECT 1 AS x FROM classes WHERE is_demo = 0 AND grade_id IN (SELECT id FROM grades WHERE is_demo = 1) LIMIT 1"
+      )
     );
-  }
+    if (!hasRealClassUnderDemoGrade) {
+      await tx.run("DELETE FROM grades WHERE is_demo = 1");
+    } else {
+      // 边界保护：保留有真实班级挂靠的演示年级，避免级联误删真实数据。
+      console.warn(
+        "[clearDemoData] 检测到真实班级挂靠在演示年级下，已保留该演示年级以避免级联删除真实班级，请手动迁移真实班级后再次清理。"
+      );
+    }
 
-  // removedCards 不在返回值中体现（仅作日志用），避免改动 ClearDemoStats 接口签名
-  void removedCards;
+    // removedCards 不在返回值中体现（仅作日志用），避免改动 ClearDemoStats 接口签名
+    void removedCards;
 
-  return {
-    removedExams: demoExamIds.length,
-    removedGroups: demoGroupIds.length,
-    removedStudents
-  };
+    return {
+      removedExams: demoExamIds.length,
+      removedGroups: demoGroupIds.length,
+      removedStudents
+    };
+  });
 }
 
 /** 清除全部「演示-」前缀数据（不动真实数据）。假定 DB 已初始化。 */
@@ -613,7 +636,7 @@ export async function seedDemoData(): Promise<SeedDemoStats> {
   await linkGroupExams(db, Number(crossInfo.lastInsertRowid), weekExamIds);
 
   // 保险写入全局设置默认键（迁移 v26 已写入；若库为空或被清理则补齐），便于 verify 校验
-  const ensureSetting = buildInsertIgnore(db.dialect, "system_settings", ["`key`", "value"]);
+  const ensureSetting = buildInsertIgnore(db.dialect, "system_settings", ["key", "value"]);
   await db.run(ensureSetting, "require_original_paper", "1");
   await db.run(ensureSetting, "highlight_missing_paper", "1");
 
