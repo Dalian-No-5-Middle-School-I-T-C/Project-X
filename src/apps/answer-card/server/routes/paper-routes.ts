@@ -12,12 +12,15 @@ import {
 import { autoExtractPaperText, getFileMime } from "../paper-ocr";
 import type { DbAdapter } from "../../../../server/db/mysql";
 import { getMysqlDb } from "../../../../server/db/mysql";
+import { CardRepository } from "../../../../server/repositories/CardRepository";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import type { Request, Response } from "express";
 import { readFile, readdir } from "node:fs/promises";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "../llm-client";
 import { recordAiRun, finalizeAiRun } from "../../../../server/services/aiTelemetry";
 import { decryptField } from "../../../../server/lib/field-crypto";
+import { isVisionProvider, resolveKnowledgePointMode } from "../llm-capabilities";
+import { buildObjectiveContext } from "../objective-context";
 
 function decodeMultipartFilename(name: string): string {
   try {
@@ -491,19 +494,26 @@ export function paperRoutes(): Router {
       // 2. 判断提供商类型 → 选择分析模式
       const range = questionRange || "全部";
       const notes = extraNotes || "";
-      const isMultimodal = provider.providerType === "gemini" || provider.providerType === "openai";
+      const isMultimodal = isVisionProvider(provider.providerType, provider.model);
 
       // 3. 获取答题卡科目
       const cardRow = await db.get("SELECT subject_label FROM answer_cards WHERE id = ?", cardId);
       const subject = cardRow?.subject_label || "";
 
+      // 3.5 答题卡客观题结构化上下文（题号/题型/分值/标准答案），供 AI 核对题号与答案
+      const card = await new CardRepository().findById(cardId);
+      const objectiveItems = buildObjectiveContext(card);
+      const answerCardJson = objectiveItems.length > 0
+        ? JSON.stringify({ objectiveQuestions: objectiveItems })
+        : "";
+
       // 4. 构建对 llmclient 的请求
       let knowledgePoints: any[] = [];
-      let mode = "text";
+      // 请求体与响应回报同源：多模态=direct，其余=text（本地提取文字）
+      const mode = resolveKnowledgePointMode(isMultimodal);
 
       if (isMultimodal) {
         // 多模态：读取文件 → base64 → 直传
-        mode = "direct";
         const files = await getPaperFiles(cardId);
         if (files.length === 0) {
           await finalizeAiRun(runId, { success: false, errorCode: "NO_FILES" });
@@ -516,70 +526,34 @@ export function paperRoutes(): Router {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             mode, providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
-            subject, questionRange: range, extraNotes: notes, files,
+            subject, questionRange: range, extraNotes: notes, files, answerCardJson,
           }),
         }, 60_000, { runId, provider: "llmclient", model: provider.model ?? null, stage: "knowledge_points" });
 
         knowledgePoints = await readKnowledgePointResponse(resp);
       } else {
-        // 纯文本提供商：读配置 → 自动/OCR增强
-        const textModeRow = await db.get(
-          "SELECT value FROM system_settings WHERE `key` = ?",
-          "ai_knowledge_points_text_mode"
-        );
-        const textMode = textModeRow?.value || "auto";
-
-        if (textMode === "ocr") {
-          // OCR 增强
-          mode = "ocr";
-          const ocrRow = await db.get(
-            "SELECT value FROM system_settings WHERE `key` = ?",
-            "ai_knowledge_points_ocr_provider_id"
-          );
-          const ocrProviderId = ocrRow?.value;
-          if (!ocrProviderId) {
-            await finalizeAiRun(runId, { success: false, errorCode: "OCR_NOT_CONFIGURED" });
-            res.status(400).json({ error: "OCR_NOT_CONFIGURED", message: "管理员未配置 OCR 视觉模型" });
-            return;
-          }
-
-          const files = await getPaperFiles(cardId);
-          const resp = await fetchLlmClient("/analysis/knowledge-points", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              mode, providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
-              ocrProviderId: Number(ocrProviderId),
-              subject, questionRange: range, extraNotes: notes, files,
-            }),
-          }, 120_000, { runId, provider: "llmclient", model: provider.model ?? null, stage: "knowledge_points" });
-
-          knowledgePoints = await readKnowledgePointResponse(resp);
-        } else {
-          // 自动模式
-          mode = "auto";
-          const extracted = await autoExtractPaperText(cardId);
-          if (!extracted.text || extracted.text.length < 10) {
-            await finalizeAiRun(runId, { success: false, errorCode: "TEXT_EXTRACTION_FAILED" });
-            res.status(400).json({
-              error: "TEXT_EXTRACTION_FAILED",
-              message: "无法从原卷提取文字。扫描件 PDF/图片可尝试 OCR 增强模式"
-            });
-            return;
-          }
-
-          const resp = await fetchLlmClient("/analysis/knowledge-points", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              mode: "text", providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
-              subject,
-              questionRange: range, extraNotes: notes, paperText: extracted.text,
-            }),
-          }, 60_000, { runId, provider: "llmclient", model: provider.model ?? null, stage: "knowledge_points" });
-
-          knowledgePoints = await readKnowledgePointResponse(resp);
+        // 纯文本模型：本地提取文字后发送
+        const extracted = await autoExtractPaperText(cardId);
+        if (!extracted.text || extracted.text.length < 10) {
+          await finalizeAiRun(runId, { success: false, errorCode: "TEXT_EXTRACTION_FAILED" });
+          res.status(400).json({
+            error: "TEXT_EXTRACTION_FAILED",
+            message: "无法从原卷提取文字。请上传带文字层的 DOCX/PDF，或改用具备视觉能力的模型（如 deepseek-v4-flash-vision-exp / Gemini / GPT）直读扫描件"
+          });
+          return;
         }
+
+        const resp = await fetchLlmClient("/analysis/knowledge-points", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode, providerId: provider.providerId, model: provider.model, providerOverride: provider.providerOverride,
+            subject,
+            questionRange: range, extraNotes: notes, paperText: extracted.text, answerCardJson,
+          }),
+        }, 60_000, { runId, provider: "llmclient", model: provider.model ?? null, stage: "knowledge_points" });
+
+        knowledgePoints = await readKnowledgePointResponse(resp);
       }
 
       await finalizeAiRun(runId, { success: true });

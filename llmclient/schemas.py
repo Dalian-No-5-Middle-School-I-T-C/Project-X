@@ -43,11 +43,17 @@ class ToolCallTrace(BaseModel):
     summary: str
 
 
+class TokenUsage(BaseModel):
+    tokensIn: int
+    tokensOut: int
+
+
 class AnalysisRunResponse(BaseModel):
     generatedAt: str
     model: str
     report: AiAnalysisReport
     toolCalls: list[ToolCallTrace]
+    usage: TokenUsage | None = None
 
 
 REPORT_SCHEMA: dict[str, Any] = {
