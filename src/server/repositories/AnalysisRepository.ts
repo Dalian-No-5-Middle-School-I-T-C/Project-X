@@ -357,12 +357,12 @@ export class AnalysisRepository {
       FROM student_scores ss
       JOIN users u ON u.id = ss.student_id
       LEFT JOIN (
-        SELECT exam_id, student_id,
-               SUM(CASE WHEN score < max_score * ? THEN 1 ELSE 0 END) as low_count,
+        SELECT qs.exam_id, qs.student_id,
+               SUM(CASE WHEN qs.score < qs.max_score * ? THEN 1 ELSE 0 END) as low_count,
                COUNT(*) as q_count
-        FROM question_scores
-        WHERE exam_id = ?
-        GROUP BY exam_id, student_id
+        FROM question_scores qs
+        WHERE qs.exam_id = ?
+        GROUP BY qs.exam_id, qs.student_id
       ) qsum ON qsum.exam_id = ss.exam_id AND qsum.student_id = ss.student_id
       ${c.join}
       WHERE ss.exam_id = ? ${c.where}
@@ -1335,8 +1335,9 @@ export class AnalysisRepository {
     const examIds = s.map((r) => r.examId);
 
     const gradeRows = await this.db.all(
-      `SELECT exam_id, ROUND(AVG(total_score), 1) as gradeAvg, COUNT(*) as classSize
-       FROM student_scores WHERE exam_id IN (${placeholders(examIds)}) GROUP BY exam_id`,
+      `SELECT ss.exam_id, ROUND(AVG(ss.total_score), 1) as gradeAvg, COUNT(*) as classSize
+       FROM student_scores ss
+       WHERE ss.exam_id IN (${placeholders(examIds)}) GROUP BY ss.exam_id`,
       ...examIds
     ) as Array<{ exam_id: number; gradeAvg: number | null; classSize: number }>;
     const gradeByExam = new Map<number, { gradeAvg: number; classSize: number }>();
@@ -1705,12 +1706,28 @@ export class AnalysisRepository {
 
   async getExamFullScoreMap(examIds: number[]): Promise<Map<number, number>> {
     const result = new Map<number, number>();
-    const qRows = await this.db.all(`SELECT exam_id, SUM(max_score) as fullScore FROM (SELECT exam_id, question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id IN (${placeholders(examIds)}) GROUP BY exam_id, question_number, score_type) GROUP BY exam_id`, ...examIds) as any[];
-    for (const r of qRows) if (r.fullScore != null && r.fullScore > 0) result.set(r.exam_id, Number(r.fullScore));
-    const missing = examIds.filter(id => !result.has(id));
+    // 空数组早退：IN () 空表在 MySQL/MariaDB 均 1064（五轮A2 加固）
+    if (examIds.length === 0) return result;
+    // 五轮A2: 原两层嵌套派生表（内层 MAX 分组 + 外层 SUM 按 exam 归并）改为单层
+    // 分组 + JS 侧归并，行为等价且无嵌套聚合的方言差异。
+    const qRows = await this.db.all(
+      `SELECT qs.exam_id, qs.question_number, qs.score_type, MAX(qs.max_score) AS max_score
+       FROM question_scores qs
+       WHERE qs.exam_id IN (${placeholders(examIds)})
+       GROUP BY qs.exam_id, qs.question_number, qs.score_type`,
+      ...examIds
+    ) as any[];
+    const perExam = new Map<number, number>();
+    for (const r of qRows) {
+      const examId = Number(r.exam_id);
+      const val = Number(r.max_score ?? 0);
+      perExam.set(examId, (perExam.get(examId) ?? 0) + val);
+    }
+    for (const [examId, sum] of perExam) if (sum > 0) result.set(examId, sum);
+    const missing = examIds.filter((id) => !result.has(id));
     if (missing.length > 0) {
       const fb = await this.db.all(`SELECT exam_id, MAX(total_score) as fullScore FROM student_scores WHERE exam_id IN (${placeholders(missing)}) GROUP BY exam_id`, ...missing) as any[];
-      for (const r of fb) result.set(r.exam_id, Number(r.fullScore ?? 0));
+      for (const r of fb) result.set(Number(r.exam_id), Number(r.fullScore ?? 0));
     }
     for (const id of examIds) if (!result.has(id)) result.set(id, 0);
     return result;

@@ -36,6 +36,7 @@
     "verify:demo-safety": "tsx scripts/verify-demo-safety.ts",
     "verify:a3": "tsx scripts/verify-a3.ts",
     "verify:round5-db-upsert": "tsx scripts/verify-round5-db-upsert.ts",
+    "verify:round5-groupby": "tsx scripts/verify-round5-groupby.ts",
     "verify:block-total": "tsx scripts/block-total-split-smoke.ts",
     "verify:block-total-coverage": "tsx scripts/block-total-coverage-smoke.ts",
     "verify:fill-blank-upgrade": "tsx scripts/fill-blank-upgrade-smoke.ts",
