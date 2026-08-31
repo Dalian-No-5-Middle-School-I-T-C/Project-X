@@ -35,6 +35,7 @@
     "verify:p1-security": "tsx scripts/verify-p1-fixes.ts",
     "verify:demo-safety": "tsx scripts/verify-demo-safety.ts",
     "verify:a3": "tsx scripts/verify-a3.ts",
+    "verify:round5-db-upsert": "tsx scripts/verify-round5-db-upsert.ts",
     "verify:block-total": "tsx scripts/block-total-split-smoke.ts",
     "verify:block-total-coverage": "tsx scripts/block-total-coverage-smoke.ts",
     "verify:fill-blank-upgrade": "tsx scripts/fill-blank-upgrade-smoke.ts",
