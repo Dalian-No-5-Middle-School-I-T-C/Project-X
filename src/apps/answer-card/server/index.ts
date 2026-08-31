@@ -50,7 +50,7 @@ import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
 import { recordLifecycleEvent } from "../../../server/services/lifecycleEvents";
 import { markScoreMutated } from "../../../server/services/examPublishEvents";
-import { ensureExamParticipants, isExamParticipant, listMissingParticipants, listParticipants, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants } from "../../../server/services/examParticipants";
+import { ensureExamParticipants, isExamParticipant, listMissingParticipants, listParticipants, searchStudentsForExam, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants } from "../../../server/services/examParticipants";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -2434,14 +2434,39 @@ export async function createApp(): Promise<express.Express> {
       const students = await listParticipants(db, examId);
       const explicit = students.some((s) => s.source === "explicit");
       const snap = await ensureExamParticipants(db, examId);
+      // 五轮B2：total 改为与实际可管理列表一致（快照中无账号记录的悬空行并入 missing，避免"共50人只显示6人"）
+      const missingCount = Math.max(0, snap.participantCount - students.length);
       res.json({
         examId,
         scope: { classId: exam.class_id, gradeId: exam.grade_id },
         source: explicit ? "explicit" : (snap.source ?? null),
         known: snap.rosterKnown,
-        total: explicit ? students.filter((s) => s.source === "explicit").length : snap.participantCount,
+        total: students.length,
+        missing: missingCount,
         students: students.map((s) => ({ studentId: s.student_id, studentNumber: s.student_number, name: s.name, source: s.source })),
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // GET /api/exams/:examId/participant-search — 应考名单添加学生搜索（五轮B2）
+  // 原实现走 /api/users（USER_MANAGE 管理员专属），教师 403 后前端静默空白；
+  // 此接口对可读考试的教师开放，只搜学生角色且启用中的账号。
+  app.get("/api/exams/:examId/participant-search", requireExamAccess, requirePermission(PERMISSIONS.GRADE_READ), async (req, res, next) => {
+    try {
+      const examId = Number(req.params.examId);
+      if (!Number.isInteger(examId) || examId <= 0) {
+        res.status(400).json({ message: "无效的考试 ID" });
+        return;
+      }
+      const q = (req.query.q as string ?? "").trim();
+      if (!q) {
+        res.json({ ok: true, students: [] });
+        return;
+      }
+      const students = await searchStudentsForExam(getMysqlDb(), examId, q);
+      res.json({ ok: true, students });
     } catch (error) {
       next(error);
     }

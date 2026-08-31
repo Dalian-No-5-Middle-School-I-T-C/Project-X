@@ -39,6 +39,7 @@
     "verify:round5-groupby": "tsx scripts/verify-round5-groupby.ts",
     "verify:round5-demo-cleanup": "tsx scripts/verify-round5-demo-cleanup.ts",
     "verify:round5-llm-launcher": "tsx scripts/verify-round5-llm-launcher.ts",
+    "verify:round5-participant-search": "tsx scripts/verify-round5-participant-search.ts",
     "verify:block-total": "tsx scripts/block-total-split-smoke.ts",
     "verify:block-total-coverage": "tsx scripts/block-total-coverage-smoke.ts",
     "verify:fill-blank-upgrade": "tsx scripts/fill-blank-upgrade-smoke.ts",

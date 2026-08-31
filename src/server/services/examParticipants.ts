@@ -17,6 +17,7 @@
  * 单场/批量公布共用同一谓词 assertGradingComplete。
  */
 import type { DbAdapter } from "../db";
+import { ROLE_IDS } from "../auth/permissions";
 
 export type ParticipantSource = "roster" | "explicit";
 
@@ -28,6 +29,31 @@ export interface ExamParticipantSnapshot {
 
 function isSqlite(db: DbAdapter): boolean {
   return db.dialect === "sqlite";
+}
+
+/**
+ * 应考名单添加用学生搜索（五轮B2：原 /api/users 为管理员接口，教师 403 后前端静默空白）。
+ * 只搜学生角色（role_id=3）且启用（is_active=1）的账号：学号精确或姓名模糊；
+ * LIKE 通配符转义，避免 % / _ 命中无关学生。
+ */
+export async function searchStudentsForExam(
+  db: DbAdapter,
+  _examId: number,
+  q: string
+): Promise<Array<{ id: number; name: string; student_number: string | null }>> {
+  const keyword = (q ?? "").trim();
+  if (!keyword) return [];
+  const escaped = keyword.replace(/[\\%_]/g, (m) => `\\${m}`);
+  const rows = await db.all(
+    `SELECT u.id, u.name, u.student_number
+     FROM users u
+     WHERE u.role_id = ? AND u.is_active = 1
+       AND (u.student_number LIKE ? ESCAPE '\\' OR u.name LIKE ? ESCAPE '\\')
+     ORDER BY u.student_number
+     LIMIT 20`,
+    ROLE_IDS.STUDENT, `${escaped}%`, `%${escaped}%`
+  ) as Array<{ id: number; name: string; student_number: string | null }>;
+  return rows.map((r) => ({ id: r.id, name: r.name, student_number: r.student_number }));
 }
 
 /** 读取考试应考名单（含学生学号/姓名），按 source 优先返回：显式名单 → 名册快照 */
@@ -84,16 +110,18 @@ export async function ensureExamParticipants(
   }
 
   // 冻结当前名册（幂等：重复插入由主键忽略）
+  // 五轮B2：快照 JOIN users，杜绝把已删除/无账号的 class_students 行快照进名单，
+  // 否则清演示数据 / 删用户后 exam_participants 留悬空引用，列表 JOIN users 丢行 → "共50人只显示6人"。
   try {
     if (exam.class_id != null) {
       const sql = isSqlite(db)
-        ? "INSERT OR IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, student_id, 'roster' FROM class_students WHERE class_id = ?"
-        : "INSERT IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, student_id, 'roster' FROM class_students WHERE class_id = ?";
+        ? "INSERT OR IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id WHERE cs.class_id = ?"
+        : "INSERT IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id WHERE cs.class_id = ?";
       await db.run(sql, examId, exam.class_id);
     } else if (exam.grade_id != null) {
       const sql = isSqlite(db)
-        ? "INSERT OR IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ?"
-        : "INSERT IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ?";
+        ? "INSERT OR IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ?"
+        : "INSERT IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ?";
       await db.run(sql, examId, exam.grade_id);
     }
   } catch {
