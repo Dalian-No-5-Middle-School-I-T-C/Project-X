@@ -20,6 +20,7 @@ const runtimeDependencies = [
   "better-sqlite3",
   "express",
   "express-rate-limit",
+  "fontkit",
   "mammoth",
   "multer",
   "mysql2",
@@ -78,7 +79,7 @@ function createRuntimePackageJson() {
     type: "module",
     description: "Project-X Ubuntu 24 web server package. Supports local SQLite and remote MariaDB 10.11 without Electron dependencies.",
     scripts: {
-      start: "PROJECTX_AUTH_ENFORCE=${PROJECTX_AUTH_ENFORCE:-1} PROJECTX_ENABLE_SCANNER=${PROJECTX_ENABLE_SCANNER:-0} PROJECTX_ENABLE_SCANNER_CLIENT_API=${PROJECTX_ENABLE_SCANNER_CLIENT_API:-1} PROJECTX_MARIADB_HOST=${PROJECTX_MARIADB_HOST:-} PROJECTX_MARIADB_PORT=${PROJECTX_MARIADB_PORT:-3306} PROJECTX_MARIADB_USER=${PROJECTX_MARIADB_USER:-} PROJECTX_MARIADB_PASSWORD=${PROJECTX_MARIADB_PASSWORD:-} PROJECTX_MARIADB_DATABASE=${PROJECTX_MARIADB_DATABASE:-projectx} node dist/server/index.mjs"
+      start: "PROJECTX_AUTH_ENFORCE=${PROJECTX_AUTH_ENFORCE:-1} PROJECTX_ENABLE_SCANNER=${PROJECTX_ENABLE_SCANNER:-0} PROJECTX_ENABLE_SCANNER_CLIENT_API=${PROJECTX_ENABLE_SCANNER_CLIENT_API:-1} PROJECTX_MARIADB_HOST=${PROJECTX_MARIADB_HOST:-} PROJECTX_MARIADB_PORT=${PROJECTX_MARIADB_PORT:-3306} PROJECTX_MARIADB_USER=${PROJECTX_MARIADB_USER:-} PROJECTX_MARIADB_PASSWORD=${PROJECTX_MARIADB_PASSWORD:-} PROJECTX_MARIADB_DATABASE=${PROJECTX_MARIADB_DATABASE:-projectx} PROJECTX_PDF_FONT_PATH=${PROJECTX_PDF_FONT_PATH:-/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc} PROJECTX_PDF_FONT_POSTSCRIPT_NAME=${PROJECTX_PDF_FONT_POSTSCRIPT_NAME:-NotoSansCJKsc-Regular} node dist/server/index.mjs"
     },
     engines: {
       node: ">=22"
@@ -97,6 +98,8 @@ export PORT="\${PORT:-5174}"
 export PROJECTX_AUTH_ENFORCE="\${PROJECTX_AUTH_ENFORCE:-1}"
 export PROJECTX_ENABLE_SCANNER="\${PROJECTX_ENABLE_SCANNER:-0}"
 export PROJECTX_ENABLE_SCANNER_CLIENT_API="\${PROJECTX_ENABLE_SCANNER_CLIENT_API:-1}"
+export PROJECTX_PDF_FONT_PATH="\${PROJECTX_PDF_FONT_PATH:-/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc}"
+export PROJECTX_PDF_FONT_POSTSCRIPT_NAME="\${PROJECTX_PDF_FONT_POSTSCRIPT_NAME:-NotoSansCJKsc-Regular}"
 
 # MariaDB remote mode. Leave empty for local SQLite.
 export PROJECTX_MARIADB_HOST="\${PROJECTX_MARIADB_HOST:-}"
@@ -165,7 +168,15 @@ export ANSWER_CARD_DATA_DIR=/var/lib/project-x/answer-card
 ./start.sh
 \`\`\`
 
-Optional PDF font override:
+## PDF Chinese Font
+
+The PDF exporter requires a font with Chinese glyphs and refuses to generate a broken tofu-glyph PDF. The prerequisite command above installs Noto Sans CJK. Verify the file before starting:
+
+\`\`\`bash
+test -r /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+\`\`\`
+
+To use another CJK font, override the defaults:
 
 \`\`\`bash
 export PROJECTX_PDF_FONT_PATH=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
@@ -235,6 +246,8 @@ Environment=PROJECTX_MARIADB_DATABASE=projectx
 Environment=PROJECTX_DB_PATH=/var/lib/project-x/projectx.db
 Environment=ANSWER_CARD_DATA_DIR=/var/lib/project-x/answer-card
 Environment=ANSWER_CARD_CLIENT_DIST=/opt/project-x-server/dist/web
+Environment=PROJECTX_PDF_FONT_PATH=/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+Environment=PROJECTX_PDF_FONT_POSTSCRIPT_NAME=NotoSansCJKsc-Regular
 ExecStart=/usr/bin/node /opt/project-x-server/dist/server/index.mjs
 Restart=always
 RestartSec=5
