@@ -5,6 +5,7 @@ _build_system_prompt 在直传路径拿不到客观题结构(题号映射),AI �
 """
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -15,6 +16,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from llmclient import providers_knowledge_points as pkp
+from llmclient.server import clip_answer_card_json
 
 CARD_JSON = '{"objectiveQuestions":[{"questionNumber":1,"options":["A","B","C","D"]}]}'
 
@@ -113,6 +115,35 @@ class DirectMultimodalContextTest(unittest.TestCase):
             answer_card_json=CARD_JSON,
         )
         self.assertEqual(seen, CARD_JSON)
+
+
+class AnswerCardJsonClipTest(unittest.TestCase):
+    """超长客观题 JSON 必须按完整题目保持合法,不得硬截断成畸形 JSON。"""
+
+    def _make_card_json(self, count: int) -> str:
+        items = [{"questionNumber": i, "points": [f"考点{i}-甲", f"考点{i}-乙"]} for i in range(1, count + 1)]
+        return json.dumps({"objectiveQuestions": items}, ensure_ascii=False)
+
+    def test_short_json_passthrough(self):
+        raw = self._make_card_json(3)
+        self.assertEqual(clip_answer_card_json(raw), raw)
+
+    def test_long_json_clips_by_complete_items(self):
+        raw = self._make_card_json(500)  # 远超 8000 字符
+        clipped = clip_answer_card_json(raw)
+        self.assertLessEqual(len(clipped), 8000)
+        parsed = json.loads(clipped)  # 必须仍是合法 JSON
+        questions = parsed["objectiveQuestions"]
+        self.assertGreater(len(questions), 0)
+        # 被裁掉的必须是完整题目:裁剪点不应切在题目中间
+        for item in questions:
+            self.assertIsInstance(item["questionNumber"], int)
+            self.assertIsInstance(item["points"], list)
+
+    def test_invalid_json_falls_back_to_hard_clip(self):
+        raw = "{" + "x" * 9000
+        clipped = clip_answer_card_json(raw)
+        self.assertLessEqual(len(clipped), 8000)
 
 
 if __name__ == "__main__":

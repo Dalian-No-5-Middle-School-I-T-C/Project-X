@@ -1,11 +1,46 @@
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 
 logger = logging.getLogger("llmclient")
+
+
+def clip_answer_card_json(raw: str, char_limit: int = 8000) -> str:
+    """按完整题目保持 JSON 合法地压缩答题卡客观题结构。
+
+    旧实现硬截断 [:8000]，较长答题卡会切出畸形 JSON 且后半段题号丢失；
+    这里按 objectiveQuestions 数组逐题保留，超出预算即裁掉剩余题目，
+    输出始终是合法 JSON（长卡被裁剪属于预期降级）。
+    """
+    raw = (raw or "").strip()
+    if len(raw) <= char_limit:
+        return raw
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return raw[:char_limit]
+    items = data.get("objectiveQuestions")
+    if not isinstance(items, list):
+        return raw[:char_limit]
+    # 统一紧凑分隔符（默认 ", " 带空格，预算会漏算）
+    separators = (",", ":")
+    header_len = len('{"objectiveQuestions":[]}')
+    kept = []
+    used = header_len
+    for item in items:
+        item_json = json.dumps(item, ensure_ascii=False, separators=separators)
+        # 数组元素间有一个分隔逗号;首元素无
+        sep = 1 if kept else 0
+        if used + len(item_json) + sep > char_limit:
+            break
+        kept.append(item)
+        used += len(item_json) + sep
+    data["objectiveQuestions"] = kept
+    return json.dumps(data, ensure_ascii=False, separators=separators)
 
 from llmclient.config import (
     MODEL_CATALOG,
@@ -151,7 +186,7 @@ def knowledge_points(
     extra_notes = request.get("extraNotes", "")
     files = request.get("files", [])
     paper_text = request.get("paperText", "")
-    answer_card_json = (request.get("answerCardJson") or "").strip()[:8000]
+    answer_card_json = clip_answer_card_json(request.get("answerCardJson") or "")
     provider_override = request.get("providerOverride")
     model_id = request.get("model") or default_model_id()
 
