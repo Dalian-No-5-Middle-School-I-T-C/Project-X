@@ -81,6 +81,7 @@ import apiKeysRoutes from "../../../server/routes/api-keys";
 import dataRetentionRoutes from "../../../server/routes/data-retention";
 import consoleRoutes from "../../../server/routes/console";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
+import scannerSyncRoutes from "../../../server/routes/scanner-sync";
 import ladderRoutes from "../../../server/routes/ladder";
 import {
   getAnswerBlockCropFile,
@@ -928,8 +929,15 @@ export async function createApp(): Promise<express.Express> {
   app.use("/api/admin/console", consoleRoutes);
   if (scannerClientApiEnabled) {
     app.use("/api/scanner/upload", scannerUploadRoutes);
+    app.use("/api/scanner/sync", scannerSyncRoutes);
   } else {
     app.use("/api/scanner/upload", (_req, res) => {
+      res.status(404).json({
+        code: "SCANNER_CLIENT_API_DISABLED",
+        message: "Remote scanner client API is disabled on this server."
+      });
+    });
+    app.use("/api/scanner/sync", (_req, res) => {
       res.status(404).json({
         code: "SCANNER_CLIENT_API_DISABLED",
         message: "Remote scanner client API is disabled on this server."

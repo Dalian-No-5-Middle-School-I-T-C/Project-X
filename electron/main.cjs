@@ -8,6 +8,20 @@ const { pathToFileURL } = require("node:url");
 // Teacher/student features are deployed via the web build (dist/web/).
 // Single variant: scanner-only, always enabled.
 
+// ── 单实例锁：扫描机常会重复双击启动。第二个实例直接退出并聚焦已有窗口，
+// 避免 5174 被占回退随机端口、同一 userData 上跑两个内嵌服务（实测日志 EADDRINUSE + auth/me 401）。
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.exit(0);
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 let server;
 let mainWindow;
 
@@ -17,17 +31,111 @@ function getAppRoot() {
   return app.getAppPath();
 }
 
+function getLogFilePath() {
+  try {
+    return path.join(app.getPath("userData"), "logs", "main.log");
+  } catch {
+    return path.join(app.getPath("appData"), "answer-card-designer", "logs", "main.log");
+  }
+}
+
+// 黑匣子日志轮转：超过 MAX_LOG_BYTES 时滚动 main.log -> main.log.1 -> main.log.2，
+// 最多保留 3 份（含当前），避免学校扫描机常开导致日志无限增长。
+const MAX_LOG_BYTES = 5 * 1024 * 1024;
+const LOG_KEEP_GENERATIONS = 2;
+
+function rotateLogIfNeeded(file) {
+  try {
+    const st = fs.statSync(file);
+    if (st.size <= MAX_LOG_BYTES) return;
+    for (let i = LOG_KEEP_GENERATIONS - 1; i >= 0; i--) {
+      const from = i === 0 ? file : `${file}.${i}`;
+      const to = `${file}.${i + 1}`;
+      try {
+        fs.rmSync(to, { force: true });
+      } catch { /* ignore */ }
+      try {
+        if (i === 0) fs.renameSync(from, to);
+        else if (fs.existsSync(from)) fs.renameSync(from, to);
+      } catch { /* ignore */ }
+    }
+  } catch {
+    /* 首次写入无文件，无需轮转 */
+  }
+}
+
+function appendLog(level, message) {
+  const line = `[${new Date().toISOString()}] [${level}] ${message}\n`;
+  try {
+    const file = getLogFilePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    rotateLogIfNeeded(file);
+    fs.appendFileSync(file, line, "utf8");
+  } catch {
+    /* 日志落盘失败不影响主流程 */
+  }
+  // 注意：此处必须用原始 console 方法（重定向后调用会递归）
+  if (level === "ERROR") _origError(line.trim());
+  else if (level === "WARN") _origWarn(line.trim());
+  else _origLog(line.trim());
+}
+
+// 主进程（含内嵌服务端模块）console 输出一并落盘 main.log：
+// 服务端 [checkpoint] 诊断日志由此写入黑匣子日志，实机取证只需收 main.log。
+// _orig* 在重定向前绑定，appendLog 内部继续用原始方法避免递归。
+const _origLog = console.log.bind(console);
+const _origWarn = console.warn.bind(console);
+const _origError = console.error.bind(console);
+
+function formatLogArgs(args) {
+  return args.map((a) => {
+    if (a instanceof Error) return a.stack || a.message;
+    if (typeof a === "string") return a;
+    if (typeof a === "undefined") return "undefined";
+    try { return JSON.stringify(a); } catch { return String(a); }
+  }).join(" ");
+}
+
+function redirectMainProcessConsole() {
+  console.log = (...args) => { appendLog("INFO", formatLogArgs(args)); _origLog(...args); };
+  console.warn = (...args) => { appendLog("WARN", formatLogArgs(args)); _origWarn(...args); };
+  console.error = (...args) => { appendLog("ERROR", formatLogArgs(args)); _origError(...args); };
+}
+
+function setupMainProcessLogging() {
+  const logFile = getLogFilePath();
+  try {
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    fs.appendFileSync(logFile, `\n===== ${PRODUCT_NAME} start ${new Date().toISOString()} arch=${process.arch} electron=${process.versions.electron} =====\n`, "utf8");
+  } catch {
+    /* ignore */
+  }
+  process.on("uncaughtException", (error) => {
+    appendLog("ERROR", `[Main] uncaughtException: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+  });
+  process.on("unhandledRejection", (reason) => {
+    const msg = reason instanceof Error ? reason.stack || reason.message : String(reason);
+    appendLog("ERROR", `[Main] unhandledRejection: ${msg}`);
+  });
+}
+
 function configureAppIdentity() {
   app.setName(PRODUCT_NAME);
   const userDataDir = path.join(app.getPath("appData"), "answer-card-designer");
   app.setPath("userData", userDataDir);
+  setupMainProcessLogging();
+  // 主进程 console(含内嵌服务端 checkpoint 日志)落盘 main.log
+  redirectMainProcessConsole();
+  appendLog("INFO", `[Electron] userData=${userDataDir} arch=${process.arch}`);
   // 打包后快捷方式启动时 CWD 是 C:\Windows\System32，服务端仍有按 cwd 解析的
   // 相对路径（config.yml、cleanup 兜底等），统一切到可写目录，避免 EPERM。
   try {
     fs.mkdirSync(userDataDir, { recursive: true });
     process.chdir(userDataDir);
   } catch (error) {
-    console.warn(`[Electron] Failed to switch CWD to userData: ${error instanceof Error ? error.message : String(error)}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.warn(`[Electron] Failed to switch CWD to userData: ${msg}`);
+    appendLog("WARN", `[Electron] Failed to switch CWD to userData: ${msg}`);
   }
 }
 
@@ -50,7 +158,9 @@ async function startLocalServer() {
       server = await serverModule.startServer(preferredPort);
     } catch (error) {
       if (error && (error.code === "EADDRINUSE" || error.code === "EACCES")) {
-        console.warn(`[Electron] Port ${preferredPort} is unavailable (${error.code}); falling back to a random port.`);
+        const msg = `Port ${preferredPort} is unavailable (${error.code}); falling back to a random port.`;
+        console.warn(`[Electron] ${msg}`);
+        appendLog("WARN", `[Electron] ${msg}`);
         server = await serverModule.startServer(0);
       } else {
         throw error;
@@ -59,6 +169,7 @@ async function startLocalServer() {
   } catch (importError) {
     const msg = importError instanceof Error ? importError.message : String(importError);
     console.error(`[Electron] Failed to load server bundle: ${msg}`);
+    appendLog("ERROR", `[Electron] Failed to load server bundle: ${msg}`);
     if (msg.includes("better-sqlite3") || msg.includes("node_sqlite3") || msg.includes(".node")) {
       throw new Error(
         `后端原生模块加载失败，可能是本机架构（${process.arch}）与已编译模块不匹配。` +
@@ -164,7 +275,31 @@ async function createWindow() {
     return { action: "deny" };
   });
 
+  // ── 黑匣子诊断：渲染进程日志落盘 ──
+  mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+    const lvl = level === 0 ? "INFO" : level === 1 ? "WARN" : "ERROR";
+    appendLog(lvl, `[Renderer][console] ${message} (${sourceId}:${line})`);
+  });
+  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+    appendLog("ERROR", `[Renderer] render-process-gone reason=${details.reason} exitCode=${details.exitCode}`);
+  });
+  mainWindow.webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL) => {
+    appendLog("ERROR", `[Renderer] did-fail-load code=${errorCode} desc=${errorDescription} url=${validatedURL}`);
+  });
+  mainWindow.webContents.on("preload-error", (_event, preloadPath, error) => {
+    const msg = error instanceof Error ? error.stack || error.message : String(error);
+    appendLog("ERROR", `[Renderer] preload-error path=${preloadPath} error=${msg}`);
+  });
+  mainWindow.webContents.on("unresponsive", () => {
+    appendLog("ERROR", "[Renderer] unresponsive");
+  });
+  mainWindow.webContents.on("responsive", () => {
+    appendLog("INFO", "[Renderer] responsive (recovered)");
+  });
+
+  appendLog("INFO", `[Electron] loadURL ${baseUrl}`);
   await mainWindow.loadURL(baseUrl);
+  appendLog("INFO", `[Electron] loadURL done status=${mainWindow.webContents.getURL()}`);
 }
 
 configureAppIdentity();
@@ -173,7 +308,9 @@ app.whenReady().then(async () => {
   try {
     await createWindow();
   } catch (error) {
-    dialog.showErrorBox("启动失败", error instanceof Error ? error.message : String(error));
+    const msg = error instanceof Error ? error.message : String(error);
+    appendLog("ERROR", `[Electron] createWindow failed: ${error instanceof Error ? error.stack || msg : msg}`);
+    dialog.showErrorBox("启动失败", msg);
     app.quit();
   }
 
