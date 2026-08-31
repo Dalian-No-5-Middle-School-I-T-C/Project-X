@@ -1,43 +1,19 @@
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { BookOpen, ChevronDown, ChevronRight, Globe, LogIn, Shield } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
-import { getStoredApiKey, storeApiKey } from "../auth/api";
 import { BeianFooter } from "./BeianFooter";
+import { ServerConfigDialog } from "./ServerConfigDialog";
 import { SkinSwitcher } from "./SkinSwitcher";
 import { UserGuideModal } from "./UserGuideModal";
-import {
-  Badge,
-  Button,
-  Card,
-  Checkbox,
-  ControlRow,
-  Field,
-  Input,
-} from "./ui/v2";
+import { Button, Card, Checkbox, ControlRow, Field, Input } from "./ui/v2";
 
-// v1.6.0: 远端服务器配置（仅扫描端需要）
-const SERVER_URL_STORAGE = "projectx_server_url";
-
-function loadServerUrl(): string {
+// 远端服务器配置已抽至 ServerConfigDialog（复用 SERVER_URL_KEY / getStoredApiKey/storeApiKey）
+function hasStoredServerUrl(): boolean {
   try {
-    return localStorage.getItem(SERVER_URL_STORAGE) ?? "";
+    return (localStorage.getItem("projectx_server_url") ?? "").trim().length > 0;
   } catch {
-    return "";
+    return false;
   }
-}
-function saveServerUrl(url: string): void {
-  try {
-    localStorage.setItem(SERVER_URL_STORAGE, url);
-  } catch {
-    /* ignore */
-  }
-}
-// 安全审计（F-6）：API Key 存取统一走 api.ts 的带过期实现（30 天）
-function loadApiKey(): string {
-  return getStoredApiKey() ?? "";
-}
-function saveApiKey(key: string): void {
-  storeApiKey(key || null);
 }
 
 interface Props {
@@ -55,45 +31,11 @@ export function LoginPageScanner({ skin, onSkinChange }: Props) {
   const [busy, setBusy] = useState(false);
   const [showGuide, setShowGuide] = useState(false);
 
-  // v1.6.0: 远端连接配置
-  const [showRemote, setShowRemote] = useState(!!loadServerUrl());
-  const [serverUrl, setServerUrl] = useState(loadServerUrl());
-  const [apiKey, setApiKey] = useState(loadApiKey());
-  const [testStatus, setTestStatus] = useState<"" | "testing" | "ok" | "fail">("");
-  const [testMessage, setTestMessage] = useState("");
-
-  async function handleTestConnection() {
-    if (!serverUrl.trim()) return;
-    setTestStatus("testing");
-    setTestMessage("");
-    try {
-      const url = serverUrl.replace(/\/+$/, "") + "/api/app/health";
-      const res = await fetch(url, { method: "GET", signal: AbortSignal.timeout(5000) });
-      const body = (await res.json()) as {
-        ok?: boolean;
-        capabilities?: { scannerClientApi?: boolean };
-      };
-      if (res.ok && body.ok === true && body.capabilities?.scannerClientApi === true) {
-        setTestStatus("ok");
-        setTimeout(() => setTestStatus(""), 3000);
-      } else {
-        setTestStatus("fail");
-        setTestMessage(
-          res.ok ? "服务器在线，但未启用远程扫描客户端 API" : `服务器返回 ${res.status}`
-        );
-      }
-    } catch (err) {
-      setTestStatus("fail");
-      setTestMessage(err instanceof Error ? err.message : "连接失败");
-    }
-  }
-
-  function handleSaveRemoteConfig() {
-    const url = serverUrl.trim().replace(/\/+$/, "");
-    saveServerUrl(url);
-    saveApiKey(apiKey.trim());
-    setShowRemote(false);
-  }
+  // 远端连接配置（表单已抽至 ServerConfigDialog:embedded）
+  const [showRemote, setShowRemote] = useState(hasStoredServerUrl);
+  // ServerConfigDialog(embedded) 会把最新「保存配置」挂进来：登录提交前兜底落盘，
+  // 避免用户填好服务器地址/API Key 后直接登录导致配置静默丢失（回归自 v2.5.1 提交时自动保存）。
+  const saveConfigRef = useRef<(() => void) | null>(null);
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -102,10 +44,12 @@ export function LoginPageScanner({ skin, onSkinChange }: Props) {
       setError("请输入用户名和密码");
       return;
     }
-    // 每次提交前同步服务器URL到localStorage
-    const url = serverUrl.trim().replace(/\/+$/, "");
-    if (url) saveServerUrl(url);
-    saveApiKey(apiKey.trim());
+
+    try {
+      saveConfigRef.current?.();
+    } catch {
+      /* 保存失败不阻断登录 */
+    }
 
     setBusy(true);
     try {
@@ -141,7 +85,7 @@ export function LoginPageScanner({ skin, onSkinChange }: Props) {
         </div>
 
         <form className="mt-5 flex flex-col gap-4" onSubmit={(e) => void handleSubmit(e)}>
-          {/* ── v1.6.0: 远端服务器配置 ── */}
+          {/* ── 远端服务器配置（已抽共用组件） ── */}
           <div>
             <Button
               variant="outline"
@@ -153,61 +97,7 @@ export function LoginPageScanner({ skin, onSkinChange }: Props) {
             >
               服务器连接（可选）
             </Button>
-            {showRemote && (
-              <div className="mt-2 flex flex-col gap-3 rounded-md border border-border-subtle bg-secondary p-3">
-                <p className="m-0 text-xs text-muted-foreground">
-                  扫描、识别和账号登录始终在本机完成。填入服务器地址和 API Key 后，可将扫描结果上传到远端服务器。
-                </p>
-                <Field label="服务器地址">
-                  <Input
-                    value={serverUrl}
-                    onChange={(e) => {
-                      setServerUrl(e.target.value);
-                      setTestStatus("");
-                      setTestMessage("");
-                    }}
-                    placeholder="http://192.168.1.100:5174"
-                    autoComplete="off"
-                  />
-                </Field>
-                <Field label="API Key">
-                  <Input
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="sk-xxx..."
-                    autoComplete="off"
-                  />
-                </Field>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    type="button"
-                    loading={testStatus === "testing"}
-                    onClick={() => void handleTestConnection()}
-                    disabled={!serverUrl.trim() || testStatus === "testing"}
-                  >
-                    {testStatus === "testing" ? "测试中..." : "测试连接"}
-                  </Button>
-                  {testStatus === "ok" && <Badge tone="success" dot className="scan-lime">服务器可达</Badge>}
-                  {testStatus === "fail" && (
-                    <Badge tone="danger" dot>
-                      {testMessage || "连接失败"}
-                    </Badge>
-                  )}
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    type="button"
-                    className="ml-auto"
-                    onClick={handleSaveRemoteConfig}
-                  >
-                    保存配置
-                  </Button>
-                </div>
-              </div>
-            )}
+            {showRemote && <ServerConfigDialog mode="embedded" saveRef={saveConfigRef} />}
           </div>
 
           <Field label="用户名 / 学号 / 职工号">

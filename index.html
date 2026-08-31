@@ -12,9 +12,8 @@
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="icon" href="/favicon.ico" sizes="any" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <!-- 移除 Google Fonts：服务端 CSP style-src 'self' 本就拦截，校园内网也连不上；
+         字体栈自带系统回退（PingFang SC / Microsoft YaHei），不再产生启动期 CSP 报错 -->
   </head>
   <body>
     <div id="root"></div>

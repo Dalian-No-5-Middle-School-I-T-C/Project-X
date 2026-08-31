@@ -17,6 +17,7 @@ const BORDER_BY_STATUS: Record<UploadJobSnapshot["status"], string> = {
   paused: "border-warning-border",
   done: "border-success-border",
   error: "border-destructive-border",
+  cancelled: "border-border-subtle",
 };
 
 export function UploadProgressCard() {
@@ -63,13 +64,15 @@ export function UploadProgressCard() {
           key={job.id}
           job={job}
           queuedCount={snap.queuedCount}
-          onDismiss={(id) =>
+          onDismiss={(id) => {
+            // 审查 P2:关闭需真正移除任务并释放页面资源,不能只从视图收起
+            scannerUploadManager.dismissJob(id);
             setDismissed((prev) => {
               const next = new Set(prev);
               next.add(id);
               return next;
-            })
-          }
+            });
+          }}
         />
       ))}
     </div>
@@ -96,7 +99,7 @@ function UploadJobCard({
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
           {kindLabel} · {job.name}
         </span>
-        {(job.status === "done" || job.status === "error") && (
+        {(job.status === "cancelled" || job.status === "done" || job.status === "error") && (
           <Button variant="ghost" size="icon-sm" aria-label="关闭" onClick={() => onDismiss(job.id)}>
             <X size={14} />
           </Button>
@@ -118,7 +121,7 @@ function UploadJobCard({
       {job.status === "queued" && (
         <p className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
           <span>排队等待上传…</span>
-          <Button variant="ghost" size="sm" onClick={() => scannerUploadManager.cancelQueued(job.id)}>
+          <Button variant="ghost" size="sm" onClick={() => scannerUploadManager.cancelJob(job.id)}>
             取消
           </Button>
         </p>
@@ -137,7 +140,23 @@ function UploadJobCard({
           >
             立即重试
           </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="shrink-0 text-destructive-fg"
+            icon={<X size={12} />}
+            onClick={() => scannerUploadManager.cancelJob(job.id)}
+          >
+            取消
+          </Button>
         </div>
+      )}
+
+      {job.status === "cancelled" && (
+        <p className="mt-2 flex items-center gap-1.5 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
+          <X size={13} className="shrink-0" />
+          <span className="min-w-0 break-words">任务已取消</span>
+        </p>
       )}
 
       {job.status === "done" && (
