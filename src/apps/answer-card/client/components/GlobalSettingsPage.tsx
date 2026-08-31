@@ -57,19 +57,6 @@ export function GlobalSettingsPage({ onBack }: Props) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [messageTone, setMessageTone] = useState<"success" | "error">("error");
-  const [railAutoExpand, setRailAutoExpand] = useState(false);
-
-  useEffect(() => {
-    // v2.1.0: 自动展开默认关闭（与 App.tsx 默认值保持一致）
-    try { setRailAutoExpand(localStorage.getItem("projectx-rail-auto-expand") === "true"); } catch { /* ignore */ }
-  }, []);
-
-  const toggleRailAutoExpand = () => {
-    const next = !railAutoExpand;
-    setRailAutoExpand(next);
-    try { localStorage.setItem("projectx-rail-auto-expand", String(next)); } catch { /* ignore */ }
-    window.dispatchEvent(new CustomEvent("projectx:rail-auto-expand", { detail: next }));
-  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -230,13 +217,6 @@ export function GlobalSettingsPage({ onBack }: Props) {
           以下为系统级策略，对所有考试与教师统一生效。网阅相关默认（0.5、分差阈值、取整、自动重分配、均衡阈值）请在各考试「网阅设置」中配置。
         </p>
       </div>
-
-      <ControlRow
-        reverse
-        control={<Switch checked={railAutoExpand} onCheckedChange={toggleRailAutoExpand} />}
-        label="侧边栏自动展开"
-        description="收起后鼠标移到侧边栏时自动展开；关闭后仍可点击圆形按钮展开并正常导航。"
-      />
 
       <div className="flex flex-col gap-3 rounded-lg border border-border-subtle bg-secondary p-4">
         {FIELDS.map((f) => (
