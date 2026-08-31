@@ -204,7 +204,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         createdAt: j.createdAt,
       })),
       activeJobId:
-        jobs.find((j) => !["queued", "done", "error"].includes(j.status))?.id ?? null,
+        // cancelled 是终态:不再算“活动任务”（审查 P2:此前注销后仍被算）
+        jobs.find((j) => !["queued", "done", "error", "cancelled"].includes(j.status))?.id ?? null,
       queuedCount: jobs.filter((j) => j.status === "queued").length,
     };
     for (const l of listeners) {
@@ -510,9 +511,9 @@ if (j.cancelled) throw cancelledError(j);
     }
     if (j.status === "paused") {
       j.cancelled = true;
-      for (const p of j.pages) {
-        if (p.done && !p.failed) releasePage(p);
-      }
+      // 全部页面释放（含未上传页）：getBlob 闭包持有 File/Blob，ia32 内存有限，
+      // 取消后不得再被任务引用（审查 P2：此前只释放已完成页）
+      for (const p of j.pages) releasePage(p);
       const w = j.pauseWaiter;
       j.pauseWaiter = null;
       j.status = "cancelled";
@@ -521,6 +522,23 @@ if (j.cancelled) throw cancelledError(j);
       notify();
       return;
     }
+  }
+
+  /**
+   * 移除终态任务（cancelled/done/error）并释放其页面资源。
+   * 供进度卡「关闭」按钮调用——取消后的卡片不再悬浮到重启（审查 P2）。
+   */
+  function dismissJob(jobId: string): boolean {
+    const idx = jobs.findIndex((x) => x.id === jobId);
+    if (idx < 0) return false;
+    const j = jobs[idx];
+    if (j.status !== "cancelled" && j.status !== "done" && j.status !== "error") {
+      return false;
+    }
+    for (const p of j.pages) releasePage(p);
+    jobs.splice(idx, 1);
+    notify();
+    return true;
   }
 
   function subscribe(listener: () => void): () => void {
@@ -539,6 +557,7 @@ if (j.cancelled) throw cancelledError(j);
     retryFailed,
     retryPaused,
     cancelJob,
+    dismissJob,
     notifyNetworkChanged,
     subscribe,
     getState,

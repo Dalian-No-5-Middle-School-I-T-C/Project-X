@@ -64,13 +64,15 @@ export function UploadProgressCard() {
           key={job.id}
           job={job}
           queuedCount={snap.queuedCount}
-          onDismiss={(id) =>
+          onDismiss={(id) => {
+            // 审查 P2:关闭需真正移除任务并释放页面资源,不能只从视图收起
+            scannerUploadManager.dismissJob(id);
             setDismissed((prev) => {
               const next = new Set(prev);
               next.add(id);
               return next;
-            })
-          }
+            });
+          }}
         />
       ))}
     </div>
@@ -97,7 +99,7 @@ function UploadJobCard({
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
           {kindLabel} · {job.name}
         </span>
-        {(job.status === "done" || job.status === "error") && (
+        {(job.status === "cancelled" || job.status === "done" || job.status === "error") && (
           <Button variant="ghost" size="icon-sm" aria-label="关闭" onClick={() => onDismiss(job.id)}>
             <X size={14} />
           </Button>
