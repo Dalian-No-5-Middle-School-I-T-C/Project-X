@@ -10,7 +10,6 @@ import {
   Database,
   Download,
   FolderOpen,
-  Globe,
   ImagePlus,
   Upload as UploadIcon,
 } from "lucide-react";
@@ -19,7 +18,6 @@ import { getScannerMode, isRemoteServerConfigured, useScannerMode } from "../lib
 import { downloadGradingCsv } from "../lib/gradingCsv";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
 import { ScannerPanel } from "./ScannerPanel";
-import { ServerConfigDialog } from "./ServerConfigDialog";
 import { ServerStatusIndicator } from "./ServerStatusIndicator";
 import { SkinSwitcher } from "./SkinSwitcher";
 import type { CombinedGradingBatchResult, CombinedGradingRow } from "../../../../shared/types";
@@ -60,7 +58,6 @@ function isImageFile(file: File): boolean {
 }
 
 export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange }: Props) {
-  const [cfgOpen, setCfgOpen] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [status, setStatus] = useState("");
 
@@ -142,16 +139,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
           {skin !== undefined && onSkinChange && (
             <div className="ml-auto flex shrink-0 items-center gap-2">
               <ServerStatusIndicator />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="服务器连接"
-                onClick={() => setCfgOpen(true)}
-              >
-                <Globe size={16} />
-              </Button>
               <SkinSwitcher skin={skin} onSkinChange={onSkinChange} />
-              <ServerConfigDialog mode="dialog" open={cfgOpen} onOpenChange={setCfgOpen} />
             </div>
           )}
         </header>
