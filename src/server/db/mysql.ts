@@ -76,9 +76,17 @@ export interface DbAdapter {
 // ── 跨方言 SQL 工具函数 ──────────────────────────────
 
 /**
+ * 跨方言标识符引用：MariaDB 用反引号（key/value 等保留字必引），SQLite 用双引号。
+ * 仅用于代码内拼写的列名（非用户输入），调用方不需要预转义。
+ */
+function quoteIdent(dialect: "sqlite" | "mariadb", col: string): string {
+  return dialect === "mariadb" ? `\`${col}\`` : `"${col}"`;
+}
+
+/**
  * 构建跨方言 UPSERT 语句
  * SQLite:  INSERT INTO ... ON CONFLICT(...) DO UPDATE SET ...
- * MariaDB: INSERT INTO ... ON DUPLICATE KEY UPDATE ...
+ * MariaDB: INSERT INTO ... ON DUPLICATE KEY UPDATE ...（列名统一引用，防保留字 1064）
  *
  * 注意：简单的全行替换请直接用 REPLACE INTO（SQLite + MariaDB 都支持）
  * 此函数用于需要"仅更新部分列"或"COALESCE 保留旧值"的场景
@@ -90,21 +98,21 @@ export function buildUpsertSQL(
   conflictCols: string[],
   updateCols?: string[]
 ): string {
-  const cols = insertCols.join(", ");
+  const cols = insertCols.map((c) => quoteIdent(dialect, c)).join(", ");
   const placeholders = insertCols.map(() => "?").join(", ");
-  const updCols = updateCols ?? insertCols.filter(c => !conflictCols.includes(c));
+  const updCols = updateCols ?? insertCols.filter((c) => !conflictCols.includes(c));
 
   if (dialect === "sqlite") {
-    const setClause = updCols.map(c => `${c} = excluded.${c}`).join(", ");
-    return `INSERT INTO ${table} (${cols}) VALUES (${placeholders}) ON CONFLICT(${conflictCols.join(", ")}) DO UPDATE SET ${setClause}`;
+    const setClause = updCols.map((c) => `${quoteIdent(dialect, c)} = excluded.${quoteIdent(dialect, c)}`).join(", ");
+    return `INSERT INTO ${table} (${cols}) VALUES (${placeholders}) ON CONFLICT(${conflictCols.map((c) => quoteIdent(dialect, c)).join(", ")}) DO UPDATE SET ${setClause}`;
   } else {
-    const setClause = updCols.map(c => `${c} = VALUES(${c})`).join(", ");
+    const setClause = updCols.map((c) => `${quoteIdent(dialect, c)} = VALUES(${quoteIdent(dialect, c)})`).join(", ");
     return `INSERT INTO ${table} (${cols}) VALUES (${placeholders}) ON DUPLICATE KEY UPDATE ${setClause}`;
   }
 }
 
 /**
- * 跨方言 INSERT … ON CONFLICT 忽略
+ * 跨方言 INSERT … ON CONFLICT 忽略（列名统一引用）
  * SQLite: INSERT OR IGNORE, MariaDB: INSERT IGNORE
  */
 export function buildInsertIgnore(
@@ -113,10 +121,11 @@ export function buildInsertIgnore(
   cols: string[]
 ): string {
   const placeholders = cols.map(() => "?").join(", ");
+  const quoted = cols.map((c) => quoteIdent(dialect, c)).join(", ");
   if (dialect === "sqlite") {
-    return `INSERT OR IGNORE INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`;
+    return `INSERT OR IGNORE INTO ${table} (${quoted}) VALUES (${placeholders})`;
   }
-  return `INSERT IGNORE INTO ${table} (${cols.join(", ")}) VALUES (${placeholders})`;
+  return `INSERT IGNORE INTO ${table} (${quoted}) VALUES (${placeholders})`;
 }
 
 // ── SQLite Adapter ─────────────────────────────────────

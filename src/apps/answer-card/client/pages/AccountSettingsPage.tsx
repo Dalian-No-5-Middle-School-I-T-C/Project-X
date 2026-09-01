@@ -19,6 +19,7 @@ import {
   Button,
   Checkbox,
   ControlRow,
+  Switch,
   Dialog,
   DialogBody,
   DialogContent,
@@ -163,6 +164,10 @@ export function AccountSettingsPage() {
   });
   const [showHelpCard, setShowHelpCard] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("grading");
+  // 五轮C1：侧边栏自动展开（客户端级 localStorage 设置，原误放系统级配置页，迁至此「外观/皮肤」区）
+  const [railAutoExpand, setRailAutoExpand] = useState(() => {
+    try { return localStorage.getItem("projectx-rail-auto-expand") === "true"; } catch { return false; }
+  });
   // v1.9.0: Tab 栏开关
   const [showTabBar, setShowTabBar] = useState(false);
 
@@ -470,6 +475,21 @@ export function AccountSettingsPage() {
                   }
                   label="明暗模式"
                   description="亮色/暗色即时生效，为设备级偏好（仅皮肤随账号同步）"
+                />
+                <ControlRow
+                  reverse
+                  control={
+                    <Switch
+                      checked={railAutoExpand}
+                      onCheckedChange={(next) => {
+                        setRailAutoExpand(next === true);
+                        try { localStorage.setItem("projectx-rail-auto-expand", String(next === true)); } catch { /* ignore storage failures */ }
+                        window.dispatchEvent(new CustomEvent("projectx:rail-auto-expand", { detail: next === true }));
+                      }}
+                    />
+                  }
+                  label="侧边栏自动展开"
+                  description="收起后鼠标移到侧边栏时自动展开；关闭后仍可点击圆形按钮展开并正常导航（仅本机当前浏览器生效）"
                 />
               </section>
 

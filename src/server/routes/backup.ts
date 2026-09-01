@@ -324,9 +324,12 @@ router.post("/import-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async 
 router.post("/clear-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async (_req: Request, res: Response) => {
   try {
     const stats = await clearDemoData();
+    const preserved = stats.preservedCards > 0
+      ? `；为保护 ${stats.preservedExams} 场非演示考试，保留了 ${stats.preservedCards} 张仍被引用的演示答题卡`
+      : "";
     res.json({
       ok: true,
-      message: `演示数据已清除：${stats.removedExams} 场考试 / ${stats.removedStudents} 名学生 / ${stats.removedGroups} 个合集`,
+      message: `演示数据已清除：${stats.removedExams} 场考试 / ${stats.removedStudents} 名学生 / ${stats.removedGroups} 个合集${preserved}`,
       stats
     });
   } catch (error) {

@@ -29,20 +29,40 @@ const AUTOSTART_ENABLED = rawAutostart !== "false" && rawAutostart !== "0";
 let child: ChildProcess | null = null;
 let startPromise: Promise<boolean> | null = null;
 
+// 五轮B1：sidecar 启动/健康失败后的快速失败窗口。窗口期内 ensureLlmClient 只做
+// 一次 2s 健康探测直接返回，不再触发 30s 的 spawn+waitForHealth 拖尾（用户看到
+// "分析中…" 30s+ 才报错即由此而来）。
+let lastFailAt = 0;
+const FAIL_WINDOW_MS = 10_000;
+
 function llmClientBaseUrl(): string {
   const base = (process.env.LLMCLIENT_URL || "http://127.0.0.1:8766").replace(/\/+$/, "");
   return base.startsWith("http") ? base : `http://${base}`;
 }
 
-function repoRoot(): string {
-  const candidates = [
+/**
+ * 查找含 llmclient/server.py 的根目录（spawn cwd 与 PYTHONPATH 基准）。
+ * 候选（可注入便于单测）：
+ * 1. 当前源码布局（__dirname 上溯 4 层）
+ * 2. process.resourcesPath（Electron 打包：extraResources 将 llmclient 放入 <resources>/llmclient）
+ * 3. 进程 cwd
+ * 五轮B1：原实现仅覆盖 1/3，打包后 Electron 的 cwd 是 userData，llmclient 永不可达。
+ */
+export function repoRootCandidates(explicitCandidates?: string[]): string {
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  const candidates = explicitCandidates ?? [
     path.resolve(__dirname, "../../../../.."),
+    resourcesPath,
     process.cwd(),
-  ];
+  ].filter((c): c is string => Boolean(c));
   for (const c of candidates) {
     if (existsSync(path.join(c, "llmclient", "server.py"))) return c;
   }
-  return process.cwd();
+  return candidates[0];
+}
+
+function repoRoot(): string {
+  return repoRootCandidates();
 }
 
 /** Candidate Python interpreters, in priority order. */
@@ -155,6 +175,11 @@ export function isLlmClientRunning(): boolean {
 
 export async function ensureLlmClient(maxWaitMs = 30_000): Promise<boolean> {
   if (!AUTOSTART_ENABLED) return ping();
+
+  // 快速失败窗口（五轮B1）：刚失败过（如打包缺失 llmclient）→ 10s 内只探测一次。
+  if (Date.now() - lastFailAt < FAIL_WINDOW_MS) {
+    return ping();
+  }
   if (await ping()) return true;
 
   if (child && !child.killed) {
@@ -163,8 +188,9 @@ export async function ensureLlmClient(maxWaitMs = 30_000): Promise<boolean> {
 
   if (!startPromise) {
     startPromise = (async () => {
-      spawnInternal();
-      return waitForHealth(maxWaitMs);
+      const ok = spawnInternal() ? await waitForHealth(maxWaitMs) : false;
+      lastFailAt = ok ? 0 : Date.now();
+      return ok;
     })();
     startPromise.finally(() => {
       startPromise = null;

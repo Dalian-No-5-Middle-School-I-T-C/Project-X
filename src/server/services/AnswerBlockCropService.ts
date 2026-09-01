@@ -104,21 +104,44 @@ function targetFileName(crop: RecognitionBlockCrop, index: number): string {
   return `p${crop.pageNumber}_s${crop.segmentIndex}_${String(index + 1).padStart(2, "0")}_${block}.png`;
 }
 
+/** 切块持久化统计（五轮D1：空/无效切块不再静默，返回统计 + 日志定位） */
+export interface CropPersistenceStats {
+  /** 成功落库的切块数 */
+  persisted: number;
+  /** 因字段缺失/文件不存在被跳过的切块数 */
+  skipped: number;
+  /** 识别结果根本没产出切块 */
+  empty: boolean;
+}
+
 export async function persistAnswerBlockCrops(
   params: PersistAnswerBlockCropsParams,
   db: DbAdapter = getMysqlDb()
-): Promise<AnswerBlockCrop[]> {
+): Promise<CropPersistenceStats> {
   const crops = params.crops ?? [];
   const sourceRecordId = String(params.sourceRecordId);
+
+  // 五轮D1：无切块产出不再静默。扫描端/批量阅卷常因识别器版本差异（不支持 --crops-dir）
+  // 致 blockCrops 恒空，留一行日志便于定位「有扫描无切块」而网阅队列为空的问题。
+  if (crops.length === 0) {
+    await db.run(
+      "DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?",
+      params.sourceType,
+      sourceRecordId
+    );
+    console.warn(
+      `[crop] 无切块产出 (cardId=${params.cardId}, source=${params.sourceType}:${sourceRecordId}); OCR 未返回 blockCrops，网阅队列将为空`
+    );
+    return { persisted: 0, skipped: 0, empty: true };
+  }
+
   await db.run(
     "DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?",
     params.sourceType,
     sourceRecordId
   );
 
-  if (crops.length === 0) return [];
-
-  const finalRows: AnswerBlockCrop[] = [];
+  const stats: CropPersistenceStats = { persisted: 0, skipped: 0, empty: false };
   const movedPaths: string[] = [];
   const targetDir = path.join(blockCropsDir, safeId(params.cardId), `${params.sourceType}_${safeId(sourceRecordId)}`);
   await mkdir(targetDir, { recursive: true });
@@ -127,6 +150,10 @@ export async function persistAnswerBlockCrops(
     for (let index = 0; index < crops.length; index += 1) {
       const crop = crops[index];
       if (!crop?.path || !existsSync(crop.path) || !crop.blockId || !Array.isArray(crop.questionNumbers) || crop.questionNumbers.length === 0) {
+        stats.skipped += 1;
+        console.warn(
+          `[crop] 跳过无效切块 #${index} (blockId=${crop?.blockId ?? "?"}, path=${crop?.path ?? "?"}, questionNumbers=${JSON.stringify(crop?.questionNumbers ?? null)})`
+        );
         continue;
       }
 
@@ -162,34 +189,14 @@ export async function persistAnswerBlockCrops(
         "ready"
       );
 
-      finalRows.push(toAnswerBlockCrop({
-        id,
-        card_id: params.cardId,
-        exam_id: params.examId ?? null,
-        student_id: params.studentId ?? null,
-        student_number: params.studentNumber ?? null,
-        source_type: params.sourceType,
-        source_record_id: sourceRecordId,
-        block_id: crop.blockId,
-        block_title: crop.blockTitle ?? "",
-        block_type: crop.blockType,
-        page_number: crop.pageNumber,
-        segment_index: crop.segmentIndex,
-        question_numbers: JSON.stringify(crop.questionNumbers),
-        rect_json: JSON.stringify(crop.rect),
-        image_path: targetPath,
-        width_px: crop.widthPx,
-        height_px: crop.heightPx,
-        dpi: crop.dpi,
-        status: "ready"
-      }));
+      stats.persisted += 1;
     }
   } catch (error) {
     await Promise.all(movedPaths.map((targetPath) => unlink(targetPath).catch(() => {})));
     throw error;
   }
 
-  return finalRows;
+  return stats;
 }
 
 export async function getAnswerBlockCropFile(id: string, db: DbAdapter = getMysqlDb()): Promise<string | null> {

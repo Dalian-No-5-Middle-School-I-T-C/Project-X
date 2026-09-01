@@ -147,7 +147,7 @@ export function ExamManagePage() {
   const [classesList, setClassesList] = useState<Array<{ id: number; name: string }>>([]);
   // 评审 P1-2：显式应考名单管理（跨班/跨年级联考、补救无范围考试）
   const [rosterExam, setRosterExam] = useState<ExamRecord | null>(null);
-  const [rosterData, setRosterData] = useState<{ source: string | null; known: boolean; total: number; students: Array<{ studentId: number; studentNumber: string | null; name: string; source?: string }> } | null>(null);
+  const [rosterData, setRosterData] = useState<{ source: string | null; known: boolean; total: number; missing?: number; students: Array<{ studentId: number; studentNumber: string | null; name: string; source?: string }> } | null>(null);
   const [rosterGradeId, setRosterGradeId] = useState<string>(CARD_PLACEHOLDER);
   const [rosterClassOptions, setRosterClassOptions] = useState<Array<{ id: number; name: string }>>([]);
   const [rosterClassId, setRosterClassId] = useState<string>(CARD_PLACEHOLDER);
@@ -155,6 +155,8 @@ export function ExamManagePage() {
   const [rosterKeyword, setRosterKeyword] = useState("");
   const [rosterSearchResults, setRosterSearchResults] = useState<Array<{ id: number; name: string; studentNumber?: string; student_number?: string | null }>>([]);
   const [rosterSaving, setRosterSaving] = useState(false);
+  // 五轮B2：应考名单弹窗错误提示（原实现全部 catch 静默吞错，教师搜索/加载失败界面无任何反馈）
+  const [rosterErr, setRosterErr] = useState<string | null>(null);
   // 保留策略（评审 P1）：仅管理员可见；"auto"= 按考试类型自动分配（quiz→周测、formal→不绑定）
   const [availablePolicies, setAvailablePolicies] = useState<Array<{ id: number; name: string; retainDays: number }>>([]);
   const [newExamRetentionPolicy, setNewExamRetentionPolicy] = useState<string>("auto");
@@ -201,11 +203,13 @@ export function ExamManagePage() {
     setRosterClassStudents([]);
     setRosterKeyword("");
     setRosterSearchResults([]);
+    setRosterErr(null);
     try {
-      const data = await fetchJson<{ source: string | null; known: boolean; total: number; students: Array<{ studentId: number; studentNumber: string | null; name: string; source?: string }> }>(`/api/exams/${exam.id}/participants`);
-      setRosterData(data ?? { source: null, known: false, total: 0, students: [] });
-    } catch {
-      setRosterData({ source: null, known: false, total: 0, students: [] });
+      const data = await fetchJson<{ source: string | null; known: boolean; total: number; missing?: number; students: Array<{ studentId: number; studentNumber: string | null; name: string; source?: string }> }>(`/api/exams/${exam.id}/participants`);
+      setRosterData(data ?? { source: null, known: false, total: 0, missing: 0, students: [] });
+    } catch (err) {
+      setRosterData({ source: null, known: false, total: 0, missing: 0, students: [] });
+      setRosterErr(err instanceof Error ? err.message : "加载应考名单失败");
     }
   }
 
@@ -214,6 +218,7 @@ export function ExamManagePage() {
     setRosterGradeId(gradeId);
     setRosterClassId(CARD_PLACEHOLDER);
     setRosterClassStudents([]);
+    setRosterErr(null);
     if (!gradeId || gradeId === CARD_PLACEHOLDER) {
       setRosterClassOptions([]);
       return;
@@ -221,14 +226,16 @@ export function ExamManagePage() {
     try {
       const cls = await fetchJson<Array<{ id: number; name: string }>>(`/api/classes?gradeId=${Number(gradeId)}`);
       setRosterClassOptions(Array.isArray(cls) ? cls : []);
-    } catch {
+    } catch (err) {
       setRosterClassOptions([]);
+      setRosterErr(err instanceof Error ? err.message : "加载班级列表失败，请确认账号有读班级权限");
     }
   }
 
   /** 评审 P1-2：选择班级 → 加载学生（供添加到显式名单） */
   async function loadRosterClassStudents(classId: string) {
     setRosterClassId(classId);
+    setRosterErr(null);
     if (!classId || classId === CARD_PLACEHOLDER) {
       setRosterClassStudents([]);
       return;
@@ -236,23 +243,30 @@ export function ExamManagePage() {
     try {
       const rows = await fetchJson<Array<{ student_id: number; name: string; student_number: string | null }>>(`/api/classes/${Number(classId)}/students`);
       setRosterClassStudents(Array.isArray(rows) ? rows : []);
-    } catch {
+    } catch (err) {
       setRosterClassStudents([]);
+      setRosterErr(err instanceof Error ? err.message : "加载班级学生失败");
     }
   }
 
-  /** 评审 P1-2：搜索学生（学号/姓名） */
+  /** 评审 P1-2：搜索学生（学号/姓名）/ 五轮B2：改用教师可用的考试内搜索接口（原 /api/users 为管理员专属） */
   async function searchRosterStudents(keyword: string) {
     setRosterKeyword(keyword);
+    setRosterErr(null);
     if (!keyword.trim()) {
       setRosterSearchResults([]);
       return;
     }
     try {
-      const res = await fetchJson<{ users?: Array<{ id: number; name: string; student_number?: string | null; studentNumber?: string | null }> }>(`/api/users?keyword=${encodeURIComponent(keyword.trim())}&pageSize=20`);
-      setRosterSearchResults((res?.users ?? []).map((u) => ({ id: u.id, name: u.name, student_number: u.student_number ?? u.studentNumber ?? null })));
-    } catch {
+      if (!rosterExam) return;
+      const res = await fetchJson<{ ok?: boolean; students?: Array<{ id: number; name: string; student_number?: string | null }> }>(
+        `/api/exams/${rosterExam.id}/participant-search?q=${encodeURIComponent(keyword.trim())}`
+      );
+      setRosterSearchResults((res?.students ?? []).map((u) => ({ id: u.id, name: u.name, student_number: u.student_number ?? null })));
+      if (!res?.students?.length) setRosterErr("未找到匹配的学生（仅搜索启用中的学生账号）");
+    } catch (err) {
       setRosterSearchResults([]);
+      setRosterErr(err instanceof Error ? err.message : "搜索学生失败");
     }
   }
 
@@ -953,10 +967,13 @@ export function ExamManagePage() {
             <DialogDescription>
               发布完整性将按此名单校验：应考学生必须全部有成绩，名单外学号不允许入库。
               来源：{rosterData?.source === "explicit" ? "管理员显式名单" : rosterData?.source === "roster" ? "年级/班级名册（自动）" : "未确定"}
-              （共 {rosterData?.total ?? 0} 人）
+              （共 {rosterData?.total ?? 0} 人{rosterData?.missing ? `，${rosterData.missing} 人无账号记录` : ""}）
             </DialogDescription>
           </DialogHeader>
           <DialogBody className="flex flex-col gap-4">
+            {rosterErr && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{rosterErr}</div>
+            )}
             {!rosterData?.known && (
               <div className="rounded border border-warning bg-warning/10 px-3 py-2 text-sm text-warning-fg">
                 该考试未确定应考范围（无年级/班级且无显式名单），当前无法公布成绩。请从下方添加学生并保存显式名单。
@@ -1009,25 +1026,26 @@ export function ExamManagePage() {
               />
               {rosterSearchResults.length > 0 && (
                 <div className="max-h-40 w-full overflow-auto rounded border p-2">
-                  {rosterSearchResults.map((u) => {
-                    const added = (rosterData?.students ?? []).some((s) => s.studentId === u.id);
-                    return (
-                      <div key={u.id} className="flex items-center justify-between py-1">
-                        <span className="text-sm">{u.name}（{u.student_number ?? u.studentNumber ?? u.id}）</span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={added}
-                          onClick={() => {
-                            if (added) return;
-                            setRosterData((prev) => ({ ...(prev ?? { source: null, known: true, total: 0 }), known: true, source: "explicit", total: (prev?.students?.length ?? 0) + 1, students: [...(prev?.students ?? []), { studentId: u.id, studentNumber: u.student_number ?? u.studentNumber ?? null, name: u.name }] }));
-                          }}
-                        >
-                          {added ? "已在名单" : "添加"}
-                        </Button>
-                      </div>
-                    );
-                  })}
+                  {/* 五轮B2：结果区只显示可添加学生，已在名单的只给一行汇总（避免同一学生上下两区重复出现） */}
+                  {rosterSearchResults.filter((u) => !(rosterData?.students ?? []).some((s) => s.studentId === u.id)).map((u) => (
+                    <div key={u.id} className="flex items-center justify-between py-1">
+                      <span className="text-sm">{u.name}（{u.student_number ?? u.studentNumber ?? u.id}）</span>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => {
+                          setRosterData((prev) => ({ ...(prev ?? { source: null, known: true, total: 0, missing: 0 }), known: true, source: "explicit", total: (prev?.students?.length ?? 0) + 1, students: [...(prev?.students ?? []), { studentId: u.id, studentNumber: u.student_number ?? null, name: u.name }] }));
+                        }}
+                      >
+                        添加
+                      </Button>
+                    </div>
+                  ))}
+                  {rosterSearchResults.filter((u) => (rosterData?.students ?? []).some((s) => s.studentId === u.id)).length > 0 && (
+                    <p className="border-t px-1 pt-1 text-xs text-muted-foreground">
+                      {rosterSearchResults.filter((u) => (rosterData?.students ?? []).some((s) => s.studentId === u.id)).length} 名搜索结果已在名单中（见下方名单）
+                    </p>
+                  )}
                 </div>
               )}
             </div>

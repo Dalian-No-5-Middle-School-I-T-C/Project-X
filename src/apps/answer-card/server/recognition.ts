@@ -129,6 +129,8 @@ async function runWithCropsFallback(request: RecognitionRequest, exePath: string
     const result = await execRecognizer(exePath, argsWithCrops);
     if (isCropsDirUnsupportedError(result, "")) {
       console.warn("[recognizer] old exe does not support --crops-dir, retrying without it");
+      // 五轮D1：降级后切块必然为空，明示提示（配合 persistAnswerBlockCrops 的 empty 日志）
+      console.warn("[recognizer] crops-dir 不受支持：本次识别不会产出大题切块（网阅队列将为空）");
       return execRecognizer(exePath, baseArgs);
     }
     return result;
@@ -136,6 +138,7 @@ async function runWithCropsFallback(request: RecognitionRequest, exePath: string
     const msg = error instanceof Error ? error.message : String(error);
     if (msg.includes("Unknown argument: --crops-dir") || msg.includes("--crops-dir")) {
       console.warn("[recognizer] old exe fallback without --crops-dir after error:", msg);
+      console.warn("[recognizer] crops-dir 不受支持：本次识别不会产出大题切块（网阅队列将为空）");
       return execRecognizer(exePath, baseArgs);
     }
     throw error;

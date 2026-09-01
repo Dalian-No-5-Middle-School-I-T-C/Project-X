@@ -205,7 +205,7 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array
       crops
     }, db);
 
-    res.json({ ok: true, count: saved.length, crops: saved });
+    res.json({ ok: true, count: saved.persisted, skipped: saved.skipped, crops: [] });
   } catch (err: any) {
     // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
     console.error("[scanner-upload] 请求处理失败:", err);
