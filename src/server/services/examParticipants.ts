@@ -67,6 +67,13 @@ export async function listParticipants(
        FROM exam_participants ep
        JOIN users u ON u.id = ep.student_id
        WHERE ep.exam_id = ?
+         AND (
+           ep.source = 'explicit'
+           OR NOT EXISTS (
+             SELECT 1 FROM exam_participants ep_exp
+             WHERE ep_exp.exam_id = ep.exam_id AND ep_exp.source = 'explicit'
+           )
+         )
        ORDER BY COALESCE(u.student_number, ''), u.name`,
       examId
     ) as Array<{ student_id: number; student_number: string | null; name: string; source: string }>;
@@ -151,11 +158,11 @@ export async function setExplicitParticipants(
 ): Promise<number> {
   const uniq = [...new Set(studentIds)];
   return db.transaction(async (tx) => {
-    await tx.run("DELETE FROM exam_participants WHERE exam_id = ? AND source = 'explicit'", examId);
+    // 显式名单是考试参与者的唯一有效集合。必须先移除 roster 快照及旧 explicit 行，
+    // 否则 (exam_id, student_id) 主键会让重叠学生的 INSERT IGNORE 静默失败，形成混合名单。
+    await tx.run("DELETE FROM exam_participants WHERE exam_id = ?", examId);
     if (uniq.length === 0) return 0;
-    const insertSQL = isSqlite(tx)
-      ? "INSERT OR IGNORE INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'explicit')"
-      : "INSERT IGNORE INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'explicit')";
+    const insertSQL = "INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'explicit')";
     for (const sid of uniq) {
       await tx.run(insertSQL, examId, sid);
     }
@@ -179,7 +186,21 @@ export async function hasExplicitParticipants(db: DbAdapter, examId: number): Pr
 
 export async function isExamParticipant(db: DbAdapter, examId: number, studentId: number): Promise<boolean> {
   try {
-    const row = await db.get("SELECT 1 AS ok FROM exam_participants WHERE exam_id = ? AND student_id = ? LIMIT 1", examId, studentId) as
+    const row = await db.get(
+      `SELECT 1 AS ok
+       FROM exam_participants ep
+       WHERE ep.exam_id = ? AND ep.student_id = ?
+         AND (
+           ep.source = 'explicit'
+           OR NOT EXISTS (
+             SELECT 1 FROM exam_participants ep_exp
+             WHERE ep_exp.exam_id = ep.exam_id AND ep_exp.source = 'explicit'
+           )
+         )
+       LIMIT 1`,
+      examId,
+      studentId
+    ) as
       | { ok: number }
       | undefined;
     return Boolean(row);
@@ -198,6 +219,13 @@ export async function listMissingParticipants(
        FROM exam_participants ep
        JOIN users u ON u.id = ep.student_id
        WHERE ep.exam_id = ?
+         AND (
+           ep.source = 'explicit'
+           OR NOT EXISTS (
+             SELECT 1 FROM exam_participants ep_exp
+             WHERE ep_exp.exam_id = ep.exam_id AND ep_exp.source = 'explicit'
+           )
+         )
          AND NOT EXISTS (SELECT 1 FROM student_scores ss WHERE ss.exam_id = ep.exam_id AND ss.student_id = ep.student_id)
        ORDER BY COALESCE(u.student_number, ''), u.name`,
       examId
