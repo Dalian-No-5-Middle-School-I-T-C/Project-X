@@ -265,27 +265,33 @@ export interface ClearDemoStats {
   removedExams: number;
   removedGroups: number;
   removedStudents: number;
+  preservedCards: number;
+  preservedExams: number;
 }
 
 async function cleanupDemoData(db: DbAdapter): Promise<ClearDemoStats> {
-  // ── 收集待清理集合（五轮A3：两套口径统一）──
-  // 考试：名字带「演示-」前缀，或引用 is_demo=1 答题卡的（不论名称前缀——用户可能用
-  // 演示卡自建考试并改名，此类考试的学生/成绩/卡片均为演示资产，一并清理）。
-  const prefixExamIds = (await db.all("SELECT id FROM exams WHERE name LIKE ?", `${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
-  const cardRefExamIds = (await db.all(
-    `SELECT e.id FROM exams e JOIN answer_cards ac ON ac.id = e.card_id WHERE ac.is_demo = 1`
+  // ── 收集待清理集合（五轮A3：只按明确的演示归属删除）──
+  // 非「演示-」前缀考试可能由用户在 UI 中选择演示答题卡后创建，属于真实考试；
+  // 不得因其引用 is_demo=1 的卡而连同成绩、切块和网阅记录一起删除。
+  const demoExamIds = (await db.all(
+    "SELECT id FROM exams WHERE name LIKE ?",
+    `${DEMO_PREFIX}%`
   ) as Array<{ id: number }>).map((r) => r.id);
-  const referencingOnly = cardRefExamIds.filter((id) => !prefixExamIds.includes(id));
-  if (referencingOnly.length > 0) {
-    const names = await db.all(
-      `SELECT name FROM exams WHERE id IN (${referencingOnly.map(() => "?").join(",")})`,
-      ...referencingOnly
-    ) as Array<{ name: string }>;
+  const protectedRefs = await db.all(
+    `SELECT DISTINCT ac.id AS card_id, e.id AS exam_id, e.name AS exam_name
+     FROM answer_cards ac
+     JOIN exams e ON e.card_id = ac.id
+     WHERE ac.is_demo = 1 AND e.name NOT LIKE ?`,
+    `${DEMO_PREFIX}%`
+  ) as Array<{ card_id: string; exam_id: number; exam_name: string }>;
+  const protectedCardIds = new Set(protectedRefs.map((r) => String(r.card_id)));
+  const protectedExamIds = new Set(protectedRefs.map((r) => Number(r.exam_id)));
+  if (protectedRefs.length > 0) {
+    const names = [...new Set(protectedRefs.map((r) => r.exam_name))];
     console.warn(
-      `[clearDemoData] ${names.length} 场非演示名前缀考试引用了演示答题卡，视作演示资产一并清理：${names.map((n) => n.name).join("、")}`
+      `[clearDemoData] ${protectedExamIds.size} 场非演示考试仍引用 ${protectedCardIds.size} 张演示答题卡；已保留考试及答题卡：${names.join("、")}`
     );
   }
-  const demoExamIds = [...new Set([...prefixExamIds, ...cardRefExamIds])];
   const demoGroupIds = (await db.all("SELECT id FROM exam_groups WHERE name LIKE ?", `${DEMO_PREFIX}%`) as Array<{ id: number }>).map((r) => r.id);
 
   // v2.3.x: 周报动态组（source='week'，由 WeeklyAuditService 按周发布创建，名称不带「演示-」前缀）。
@@ -328,11 +334,20 @@ async function cleanupDemoData(db: DbAdapter): Promise<ClearDemoStats> {
       await tx.run(`DELETE FROM exams WHERE id IN (${ph})`, ...demoExamIds);
     }
 
-    // v1.9.6: 答题卡 / 用户 / 班级 / 年级 按归属标记 is_demo=1 清理，不再依赖硬编码 ID /
-    // 学号 / 用户名 / 名称，避免误删同名真实数据。安全语义：is_demo=0 的真实记录永不被清理。
-    // v2.3.x: 晨测演示卡关联 knowledge_points（知识点，MariaDB 无级联），先按 is_demo 卡 id 清理再删卡。
-    await tx.run("DELETE FROM knowledge_points WHERE card_id IN (SELECT id FROM answer_cards WHERE is_demo = 1)");
-    const removedCards = (await tx.run("DELETE FROM answer_cards WHERE is_demo = 1")).changes;
+    // v1.9.6: 答题卡 / 用户 / 班级 / 年级按归属标记 is_demo=1 清理，不依赖硬编码 ID。
+    // 若演示卡仍被非演示考试引用，必须保留该卡；只删除已无任何考试引用的演示卡。
+    // v2.3.x: 晨测演示卡关联 knowledge_points（MariaDB 无级联），先清可删除卡的知识点。
+    const deletableDemoCardIds = (await tx.all(
+      `SELECT ac.id FROM answer_cards ac
+       WHERE ac.is_demo = 1
+         AND NOT EXISTS (SELECT 1 FROM exams e WHERE e.card_id = ac.id)`
+    ) as Array<{ id: string }>).map((r) => r.id);
+    let removedCards = 0;
+    if (deletableDemoCardIds.length > 0) {
+      const ph = deletableDemoCardIds.map(() => "?").join(",");
+      await tx.run(`DELETE FROM knowledge_points WHERE card_id IN (${ph})`, ...deletableDemoCardIds);
+      removedCards = (await tx.run(`DELETE FROM answer_cards WHERE id IN (${ph})`, ...deletableDemoCardIds)).changes;
+    }
 
     // 收集待清理的演示用户 id（学生 + 演示教师），先解除关联再删用户
     const demoStudentIds = (await tx.all("SELECT id FROM users WHERE is_demo = 1") as Array<{ id: number }>).map((r) => r.id);
@@ -364,13 +379,15 @@ async function cleanupDemoData(db: DbAdapter): Promise<ClearDemoStats> {
       );
     }
 
-    // removedCards 不在返回值中体现（仅作日志用），避免改动 ClearDemoStats 接口签名
+    // removedCards 当前仅用于确保删除语句执行并保留后续统计扩展点。
     void removedCards;
 
     return {
       removedExams: demoExamIds.length,
       removedGroups: demoGroupIds.length,
-      removedStudents
+      removedStudents,
+      preservedCards: protectedCardIds.size,
+      preservedExams: protectedExamIds.size
     };
   });
 }
