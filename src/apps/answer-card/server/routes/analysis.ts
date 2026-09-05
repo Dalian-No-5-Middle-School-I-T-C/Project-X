@@ -1,3 +1,4 @@
+import { databaseTimestamp } from "../../../../server/db/timestamp";
 /**
  * Analysis API routes (extracted from index.ts).
  *
@@ -64,7 +65,7 @@ router.put("/config/thresholds", requirePermission(PERMISSIONS.SYSTEM_MANAGE), a
       db.dialect, "system_settings",
       ["key", "value", "updated_at"], ["key"], ["value", "updated_at"]
     );
-    const now = new Date().toISOString();
+    const now = databaseTimestamp();
     await db.transaction(async (tx) => {
       await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.passRate, String(t.passRate), now);
       await tx.run(upsertSQL, ANALYSIS_SETTING_KEYS.excellentRate, String(t.excellentRate), now);
@@ -642,14 +643,14 @@ router.get("/ai/status", async (req, res) => {
     const internalAuthOk = llmStatus.internalAuthConfigured !== false;
 
     res.json({
-      available: Boolean((healthOk && llmStatus.dbExists && internalAuthOk && hasAvailableModel) || hasUserProvider),
+      available: Boolean(healthOk && llmStatus.dbExists && internalAuthOk && (hasAvailableModel || hasUserProvider)),
       reason: !healthOk
         ? `LLM service returned ${response.status}`
-        : !llmStatus.dbExists && !hasUserProvider
+        : !llmStatus.dbExists
           ? "LLM service is running, but Project-X database was not found."
           : !hasAvailableModel && !hasUserProvider
             ? "LLM service is running, but no provider API key is configured."
-            : !internalAuthOk && !hasUserProvider
+            : !internalAuthOk
               ? "LLMCLIENT_INTERNAL_API_KEY 未配置：llmclient 拒绝未鉴权请求，请按 llmclient/.env.example 配置后重启。"
               : undefined,
       defaultModel: llmStatus.defaultModel ?? (hasUserProvider ? "auto" : null),
@@ -661,8 +662,8 @@ router.get("/ai/status", async (req, res) => {
       const userProviders = await getActiveAiProviders(req.user!.id);
 
       res.json({
-        available: userProviders.length > 0,
-        reason: userProviders.length > 0 ? undefined : "LLM service is not reachable and no local providers configured.",
+        available: false,
+        reason: "LLM service is not reachable.",
         defaultModel: userProviders.length > 0 ? "auto" : null,
         models: [],
         providers: userProviders

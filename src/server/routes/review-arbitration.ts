@@ -1,3 +1,4 @@
+import { databaseTimestamp } from "../db/timestamp";
 /**
  * 争议仲裁 API
  * 挂载点: /api/review-arbitration
@@ -66,7 +67,7 @@ router.post(
         return res.status(400).json({ ok: false, error: "score 必填" });
       }
 
-      const now = new Date().toISOString();
+      const now = databaseTimestamp();
 
       // P0-3: 全部操作在事务内执行，含 CAS 并发保护
       await db.transaction(async (tx) => {

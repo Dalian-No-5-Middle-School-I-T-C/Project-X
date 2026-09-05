@@ -20,6 +20,29 @@ import { getMysqlDb } from "../db";
 import { persistAnswerBlockCrops } from "../services/AnswerBlockCropService";
 import { isValidImageBuffer } from "../../apps/answer-card/server/validate-upload";
 import type { RecognitionBlockCrop } from "../../shared/types";
+import { z } from "zod";
+import { CardRepository } from "../repositories/CardRepository";
+import { ExamRepository } from "../repositories/ExamRepository";
+import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
+import { recomputeExamRankings } from "../services/rankingUpdate";
+import { gradeSessionStudentResults } from "../../shared/grading";
+import { persistScannerResultToMainDb } from "../services/scannerResultPersistence";
+import { listScanRecordsGroupedByStudent, upsertRecognitionResult } from "../../apps/answer-card/server/database/scan-store";
+
+const recognitionSchema = z.object({
+  status: z.enum(["ok", "partial"]),
+  studentId: z.object({ status: z.string(), value: z.string().min(1).max(64) }),
+  questions: z.array(z.object({
+    questionNumber: z.number().int().positive(), selectedOptions: z.array(z.string().max(8)),
+    confidence: z.number().finite(),
+  })).max(1000),
+  subjectiveQuestions: z.array(z.object({
+    blockId: z.string().optional(), questionId: z.string(), questionNumber: z.union([z.number(), z.string()]),
+    score: z.number().finite().nonnegative(), maxScore: z.number().finite().nonnegative(),
+    status: z.string(), confidence: z.number().finite(),
+    validCells: z.array(z.any()), invalidCells: z.array(z.any()),
+  })).max(1000),
+});
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
@@ -126,6 +149,13 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
       res.status(404).json({ message: "会话不存在" });
       return;
     }
+    const record = await db.get("SELECT id FROM twain_scan_records WHERE id = ? AND session_id = ?", token, sessionId);
+    if (!record) { res.status(400).json({ message: "扫描页不属于当前会话" }); return; }
+    let recognition: z.infer<typeof recognitionSchema> | undefined;
+    if (req.body.recognition) {
+      try { recognition = recognitionSchema.parse(JSON.parse(req.body.recognition)); }
+      catch { res.status(400).json({ message: "识别结果格式无效，请更新扫描端后重试" }); return; }
+    }
 
     // 保存图片（对扩展名做白名单，session id 用 basename 兜底，避免路径遍历）
     const rawExt = path.extname(req.file.originalname).toLowerCase();
@@ -142,6 +172,14 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
          WHERE id = ? AND session_id = ?`,
         filePath, pageNum, side, token, sessionId
       );
+    }
+
+    if (recognition) {
+      await upsertRecognitionResult({ scanRecordId: token,
+        objectiveJson: JSON.stringify(recognition.questions),
+        subjectiveJson: JSON.stringify(recognition.subjectiveQuestions), gradeStatus: "recognized" });
+      await db.run("UPDATE twain_scan_records SET student_id = ?, recognized_at = CURRENT_TIMESTAMP WHERE id = ? AND session_id = ?",
+        recognition.studentId.value, token, sessionId);
     }
 
     res.json({ ok: true, pageNum, side, fileName });
@@ -217,12 +255,16 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     const { sessionId } = req.params;
     const db = await getMysqlDb();
 
-    const session = await db.get<{ id: string; page_count: number }>(
-      "SELECT id, page_count FROM twain_scan_sessions WHERE id = ?",
+    const session = await db.get<{ id: string; page_count: number; status: string }>(
+      "SELECT id, page_count, status FROM twain_scan_sessions WHERE id = ?",
       sessionId
     );
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
+      return;
+    }
+    if (session.status === "completed") {
+      res.json({ ok: true, message: "扫描会话已提交", pagesUploaded: session.page_count, pagesTotal: session.page_count });
       return;
     }
 
@@ -242,10 +284,54 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     const complete = uploadedCount >= totalCount && totalCount > 0;
     const status = complete ? "completed" : "incomplete";
 
+    if (complete) {
+      const fullSession = await db.get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", sessionId);
+      const card = await new CardRepository().findById(fullSession!.card_id);
+      if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+      const activeExams = await db.all<{ id: number }>("SELECT e.id FROM exams e WHERE e.card_id = ? AND e.status != 'closed' AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)", fullSession!.card_id);
+      if (activeExams.length !== 1) {
+        res.status(409).json({ message: activeExams.length === 0
+          ? "答题卡没有进行中的考试，请先创建考试后重试提交"
+          : "答题卡关联了多个进行中的考试，无法确定成绩和图块归属；请先保留一个目标考试后重试提交" });
+        return;
+      }
+      const groups = await listScanRecordsGroupedByStudent(String(sessionId));
+      if (groups.some(group => group.records.some(record => !record.recognition || !record.student_id))) {
+        res.status(409).json({ message: "图片已保存，但缺少本机识别结果；请使用新版扫描端重试上传，成绩尚未入库" });
+        return;
+      }
+      for (const group of groups) {
+        const result = gradeSessionStudentResults(card, group.records.map(record => ({
+          recordId: record.id, pageNum: record.page_num, side: record.side, imagePath: record.image_path,
+          ocrStatus: "done", recognition: { status: "ok", studentId: { status: "ok", value: record.student_id },
+            questions: JSON.parse(record.recognition!.objective_json || "[]"),
+            subjectiveQuestions: JSON.parse(record.recognition!.subjective_json || "[]") },
+        })));
+        await persistScannerResultToMainDb(fullSession!.card_id, result, true);
+        const student = await db.get<{ id: number }>("SELECT id FROM users WHERE student_number = ?", result.studentId);
+        // Bind uploaded blocks to the same active exams as the persisted scores.
+        const exams = await db.all<{ id: number }>("SELECT e.id FROM exams e JOIN student_scores ss ON ss.exam_id = e.id WHERE e.card_id = ? AND ss.student_id = ? AND e.status != 'closed' AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)", fullSession!.card_id, student!.id);
+        for (const record of group.records) {
+          // A scan block represents one exam attempt. Do not silently bind a
+          // shared card's crop to an arbitrary exam when several are active.
+          if (exams.length === 1) await db.run("UPDATE answer_block_crops SET exam_id = ?, student_id = ? WHERE source_type = 'twain_scan_record' AND source_record_id = ?", exams[0].id, student!.id, record.id);
+        }
+      }
+      const linkedExams = await db.all<{ id: number }>("SELECT e.id FROM exams e WHERE e.card_id = ? AND e.status = 'grading' AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)", fullSession!.card_id);
+      for (const exam of linkedExams) {
+        await recomputeExamRankings(db, exam.id);
+        const roster = await ensureExamParticipants(db, exam.id);
+        if (roster.rosterKnown && roster.participantCount > 0 && (await listMissingParticipants(db, exam.id)).length === 0) {
+          await new ExamRepository(db).updateStatus(exam.id, "closed");
+        }
+      }
+    }
+
     await db.run(
       "UPDATE twain_scan_sessions SET status = ?, page_count = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
       status, uploadedCount, sessionId
     );
+    if (complete) await db.run("UPDATE twain_scan_records SET ocr_status = 'completed' WHERE session_id = ?", sessionId);
 
     if (!complete) {
       res.status(400).json({
@@ -259,7 +345,7 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
 
     res.json({
       ok: true,
-      message: `扫描完成：${uploadedCount}/${totalCount} 页全部上传，等待服务端识别`,
+      message: `扫描完成：${uploadedCount}/${totalCount} 页已上传并完成服务端判分`,
       pagesUploaded: uploadedCount,
       pagesTotal: totalCount,
     });

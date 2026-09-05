@@ -19,6 +19,8 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { randomBytes } from "node:crypto";
+import { getLlmEnv } from "./llm-env";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -53,6 +55,7 @@ export function repoRootCandidates(explicitCandidates?: string[]): string {
   const candidates = explicitCandidates ?? [
     path.resolve(__dirname, "../../../../.."),
     resourcesPath,
+    path.resolve(__dirname, "../.."),
     process.cwd(),
   ].filter((c): c is string => Boolean(c));
   for (const c of candidates) {
@@ -68,6 +71,8 @@ function repoRoot(): string {
 /** Candidate Python interpreters, in priority order. */
 function pythonCandidates(): string[] {
   if (process.env.LLMCLIENT_PYTHON) return [process.env.LLMCLIENT_PYTHON];
+  const venvPython = path.join(repoRoot(), ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+  if (existsSync(venvPython)) return [venvPython];
   return process.platform === "win32"
     ? ["py", "python", "python3"]
     : ["python3", "python", "py"];
@@ -129,6 +134,9 @@ function spawnInternal(): ChildProcess | null {
     return null;
   }
   const { host, port } = targetHostPort();
+  // Internally managed Node/Python processes share a per-launch secret. Existing
+  // deployment configuration takes precedence; provider keys are never changed.
+  process.env.LLMCLIENT_INTERNAL_API_KEY = getLlmEnv("LLMCLIENT_INTERNAL_API_KEY") || randomBytes(32).toString("hex");
   const args = ["-m", "uvicorn", "llmclient.server:app", "--host", host, "--port", port];
   console.log(`[llmclient] launching sidecar: ${py} ${args.join(" ")} (cwd=${root})`);
   try {

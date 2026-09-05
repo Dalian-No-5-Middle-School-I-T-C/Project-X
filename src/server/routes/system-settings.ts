@@ -1,3 +1,4 @@
+import { databaseTimestamp } from "../db/timestamp";
 /**
  * 系统级全局设置 API（仅管理员）
  * 挂载点: /api/system-settings
@@ -82,7 +83,7 @@ router.put(
       );
       await db.transaction(async (tx) => {
         for (const [key, value] of entries) {
-          await tx.run(upsertSQL, key, String(value), new Date().toISOString());
+          await tx.run(upsertSQL, key, String(value), databaseTimestamp());
         }
       });
 

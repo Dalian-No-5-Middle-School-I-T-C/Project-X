@@ -46,6 +46,7 @@ function baseInput(pages: number): StartUploadInput {
 
 function deps(overrides: Partial<Parameters<typeof createScannerUploadManager>[0]> = {}) {
   return {
+    localFetch: async () => jsonRes({ status: "ok", studentId: { status: "ok", value: "82048" }, questions: [], subjectiveQuestions: [] }),
     isOnline: () => true,
     getServerKind: () => "online" as const,
     sleep: () => Promise.resolve(),
@@ -111,6 +112,7 @@ async function main() {
     const mgr = createScannerUploadManager(deps({
       remoteFetch: mock.fn,
       isOnline: () => online,
+      getServerKind: () => online ? "online" : "offline",
     }));
     const id = mgr.startUpload(baseInput(1));
     const deadline = Date.now() + 3_000;
@@ -154,6 +156,29 @@ async function main() {
     assert(mock.calls.some((u) => u.endsWith(COMPLETE)), "场景3: 重试成功后应补发 complete");
   }
 
+  // Duplex backs inherit only their paired successfully uploaded front.
+  {
+    const input = baseInput(2);
+    input.pages[1].side = "back";
+    const students: string[] = [];
+    const mgr = createScannerUploadManager(deps({
+      localFetch: async (_url, init) => jsonRes({ status: "partial",
+        studentId: (init?.body as FormData).get("page") === "1"
+          ? { status: "ok", value: "82048" } : { status: "missing", value: null },
+        questions: [], subjectiveQuestions: [] }),
+      remoteFetch: async (url, init) => {
+        if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "duplex", uploadTokens: ["a", "b"] });
+        if (url.endsWith(PAGES)) students.push(JSON.parse(String((init?.body as FormData).get("recognition"))).studentId.value);
+        return jsonRes({ ok: true });
+      },
+    }));
+    const result = await waitTerminal(mgr, mgr.startUpload(input));
+    assert(result.status === "done" && students.join(",") === "82048,82048", "双面学号继承失败");
+    const orphan = baseInput(1);
+    orphan.pages[0].side = "back";
+    const failed = await waitTerminal(mgr, mgr.startUpload(orphan));
+    assert(failed.status === "error", "孤立背面不得继承上个任务的学号");
+  }
   console.log("scanner-upload-manager-smoke: 全部通过");
 }
 
