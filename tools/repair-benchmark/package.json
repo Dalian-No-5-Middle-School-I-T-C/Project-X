@@ -1,0 +1,8 @@
+{
+  "name": "projectx-repair-benchmark",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22"},
+  "dependencies": {"adm-zip": "0.5.16", "mysql2": "3.14.1", "playwright": "1.55.0", "sharp": "0.34.3"}
+}

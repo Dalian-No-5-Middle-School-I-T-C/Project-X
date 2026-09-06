@@ -1,3 +1,4 @@
+import { databaseTimestamp } from "../db/timestamp";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
 import type { ReviewSession } from "../../shared/types";
@@ -52,7 +53,7 @@ export async function saveSession(
   draftScores: Record<number, number> | null,
   db: DbAdapter = getMysqlDb()
 ): Promise<void> {
-  const now = new Date().toISOString();
+  const now = databaseTimestamp();
   const posStr = positionJson ? JSON.stringify(positionJson) : null;
   const draftStr = draftScores ? JSON.stringify(draftScores) : null;
 

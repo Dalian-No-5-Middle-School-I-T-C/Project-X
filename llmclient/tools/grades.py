@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 import sqlite3
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -11,7 +13,12 @@ from llmclient.config import default_db_path, mariadb_config, mariadb_configured
 
 class QueryResult:
     def __init__(self, rows: list[dict[str, Any]]):
-        self._rows = rows
+        self._rows = [
+            {key: value.isoformat() if isinstance(value, (date, datetime))
+             else float(value) if isinstance(value, Decimal) else value
+             for key, value in row.items()}
+            for row in rows
+        ]
 
     def fetchall(self) -> list[dict[str, Any]]:
         return self._rows
@@ -58,7 +65,7 @@ def connect_db(db_path: Path | None = None) -> sqlite3.Connection | MariaDbConne
 def _round1(value: float | int | None) -> float:
     if value is None:
         return 0.0
-    return round(float(value), 1)
+    return math.floor(float(value) * 10 + 0.5) / 10
 
 
 def _class_filter(alias: str, class_id: int | None) -> tuple[str, str, list[Any]]:
@@ -99,7 +106,33 @@ def _percentile(sorted_scores: list[float], p: float) -> float:
     return sorted_scores[lower] + (sorted_scores[upper] - sorted_scores[lower]) * (index - lower)
 
 
-def _score_summary(scores: list[float]) -> dict[str, Any]:
+def _score_context(conn: Any, exam_id: int) -> dict[str, float]:
+    row = conn.execute(
+        "SELECT SUM(max_score) AS total FROM (SELECT question_number, score_type, "
+        "MAX(max_score) AS max_score FROM question_scores WHERE exam_id = ? "
+        "GROUP BY question_number, score_type) AS question_maxima", [exam_id]
+    ).fetchone()
+    full = float(row["total"] or 0)
+    if full <= 0:
+        fallback = conn.execute("SELECT MAX(total_score) AS total FROM student_scores WHERE exam_id = ?", [exam_id]).fetchone()
+        full = float(fallback["total"] or 0)
+    settings = {r["key"]: r["value"] for r in conn.execute(
+        "SELECT `key`, value FROM system_settings WHERE `key` IN "
+        "('analysis_pass_rate', 'analysis_excellent_rate', 'analysis_segment_size')"
+    ).fetchall()}
+    def number(key: str, fallback: float, lower: float, upper: float) -> float:
+        try:
+            value = float(settings[key])
+            return min(upper, max(lower, value)) if math.isfinite(value) else fallback
+        except (KeyError, TypeError, ValueError):
+            return fallback
+    return {"fullScore": full,
+            "passScore": full * number("analysis_pass_rate", 0.6, 0.01, 1),
+            "excellentScore": full * number("analysis_excellent_rate", 0.9, 0.01, 1),
+            "segmentSize": math.floor(number("analysis_segment_size", 10, 1, 100) + 0.5)}
+
+
+def _score_summary(scores: list[float], context: dict[str, float]) -> dict[str, Any]:
     if not scores:
         return {"count": 0}
     ordered = sorted(scores)
@@ -114,8 +147,9 @@ def _score_summary(scores: list[float]) -> dict[str, Any]:
         "max": _round1(ordered[-1]),
         "avg": _round1(avg),
         "stdDev": _round1(std_dev),
-        "passRate": round(sum(1 for score in ordered if score >= 60) / len(ordered) * 100),
-        "excellentRate": round(sum(1 for score in ordered if score >= 85) / len(ordered) * 100),
+        **context,
+        "passRate": round(sum(1 for score in ordered if score >= context["passScore"]) / len(ordered) * 100),
+        "excellentRate": round(sum(1 for score in ordered if score >= context["excellentScore"]) / len(ordered) * 100),
     }
 
 
@@ -192,14 +226,9 @@ def get_exam_overview(examId: int, classId: int | None = None) -> dict[str, Any]
             return {"error": f"exam {examId} not found"}
         scores = _scores(conn, examId, classId)
         totals = _totals_by_student(conn, examId, classId)
-        full_row = conn.execute(
-            "SELECT SUM(max_score) AS total FROM ("
-            "SELECT question_number, score_type, MAX(max_score) AS max_score FROM question_scores "
-            "WHERE exam_id = ? GROUP BY question_number, score_type)",
-            [examId],
-        ).fetchone()
-        full = float(full_row["total"] or 0)
-        summary = _score_summary(scores)
+        context = _score_context(conn, examId)
+        full = context["fullScore"]
+        summary = _score_summary(scores, context)
         # 难度 P = 均分（保留 1 位）/ 满分，与 Web 端 getExamMetrics 一致
         difficulty = round(summary["avg"] / full, 3) if full > 0 and summary.get("count", 0) > 0 else 0.0
         # 考试级 D = 各题 D 的算术平均（逐题 D 为极端组法 27%），与 Web 端 getExamMetrics 一致
@@ -215,26 +244,27 @@ def get_exam_overview(examId: int, classId: int | None = None) -> dict[str, Any]
 
 
 def get_score_distribution(examId: int, classId: int | None = None) -> dict[str, Any]:
-    ranges = [
-        {"range": "0-59", "min": 0, "max": 59},
-        {"range": "60-69", "min": 60, "max": 69},
-        {"range": "70-79", "min": 70, "max": 79},
-        {"range": "80-89", "min": 80, "max": 89},
-        {"range": "90-100", "min": 90, "max": 100},
-    ]
     with connect_db() as conn:
         scores = _scores(conn, examId, classId)
+        context = _score_context(conn, examId)
+    step = int(context["segmentSize"])
+    upper = max(context["fullScore"], max(scores, default=0), step)
+    ranges = []
+    for lower in range(0, math.ceil(upper / step) * step, step):
+        high = min(lower + step, upper)
+        inclusive = high == upper
+        ranges.append({"range": f"[{lower}, {high:g}{']' if inclusive else ')'}",
+                       "min": lower, "max": high, "maxInclusive": inclusive,
+                       "count": sum(lower <= score and (score <= high if inclusive else score < high) for score in scores)})
     return {
-        "summary": _score_summary(scores),
-        "distribution": [
-            {**item, "count": sum(1 for score in scores if item["min"] <= score <= item["max"])}
-            for item in ranges
-        ],
+        "summary": _score_summary(scores, context),
+        "distribution": ranges,
     }
 
 
 def get_class_summaries(examId: int) -> dict[str, Any]:
     with connect_db() as conn:
+        context = _score_context(conn, examId)
         classes = conn.execute(
             """
             SELECT DISTINCT c.id AS classId, c.name AS className
@@ -253,12 +283,12 @@ def get_class_summaries(examId: int) -> dict[str, Any]:
                 {
                     "classId": class_id,
                     "className": row["className"],
-                    "summary": _score_summary(_scores(conn, examId, class_id)),
+                    "summary": _score_summary(_scores(conn, examId, class_id), context),
                 }
             )
         unknown_scores = _scores(conn, examId, 0)
         if unknown_scores:
-            summaries.append({"classId": 0, "className": "Unknown class", "summary": _score_summary(unknown_scores)})
+            summaries.append({"classId": 0, "className": "Unknown class", "summary": _score_summary(unknown_scores, context)})
         return {"classes": summaries}
 
 
@@ -273,7 +303,7 @@ def get_question_analysis(examId: int, classId: int | None = None, limit: int = 
             SELECT
               qs.question_number AS questionNumber,
               qs.score_type AS questionType,
-              ROUND(AVG(qs.score), 1) AS avgScore,
+              AVG(qs.score) AS avgScore,
               MAX(qs.max_score) AS maxScore,
               COUNT(*) AS totalCount,
               SUM(CASE WHEN qs.score >= qs.max_score THEN 1 ELSE 0 END) AS correctCount,
@@ -329,6 +359,7 @@ def get_group_exam_ids(group_id: int) -> list[int]:
 def get_rank_segments(examId: int, classId: int | None = None) -> dict[str, Any]:
     with connect_db() as conn:
         scores = _scores(conn, examId, classId)
+        context = _score_context(conn, examId)
     if not scores:
         return {"segments": [], "count": 0}
     ordered = sorted(scores, reverse=True)
@@ -342,7 +373,7 @@ def get_rank_segments(examId: int, classId: int | None = None) -> dict[str, Any]
     segments = []
     for name, start, end in buckets:
         values = ordered[start:end]
-        segments.append({"segment": name, "summary": _score_summary(values)})
+        segments.append({"segment": name, "summary": _score_summary(values, context)})
     return {"count": n, "segments": segments}
 
 
@@ -358,19 +389,19 @@ def get_review_risks(examId: int, classId: int | None = None, limit: int = 12) -
               SUM(CASE WHEN qs.score >= qs.max_score THEN 1 ELSE 0 END) AS correctCount,
               SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) AS objectiveErrorCount,
               SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) AS subjectiveLowScoreCount,
-              ROUND(AVG(qs.score), 1) AS avgScore,
+              AVG(qs.score) AS avgScore,
               MAX(qs.max_score) AS maxScore
             FROM question_scores qs
             {join}
             WHERE qs.exam_id = ? {where}
             GROUP BY qs.question_number, qs.score_type
             HAVING CASE
-              WHEN qs.score_type = 'objective' THEN CAST(SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) AS REAL) / COUNT(*)
-              ELSE CAST(SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) AS REAL) / COUNT(*)
+              WHEN qs.score_type = 'objective' THEN 1.0 * SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) / COUNT(*)
+              ELSE 1.0 * SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) / COUNT(*)
             END >= 0.3
             ORDER BY CASE
-              WHEN qs.score_type = 'objective' THEN CAST(SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) AS REAL) / COUNT(*)
-              ELSE CAST(SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) AS REAL) / COUNT(*)
+              WHEN qs.score_type = 'objective' THEN 1.0 * SUM(CASE WHEN qs.score < qs.max_score THEN 1 ELSE 0 END) / COUNT(*)
+              ELSE 1.0 * SUM(CASE WHEN qs.score < qs.max_score * 0.5 THEN 1 ELSE 0 END) / COUNT(*)
             END DESC, questionNumber ASC
             LIMIT ?
             """,
@@ -397,9 +428,9 @@ def get_review_risks(examId: int, classId: int | None = None, limit: int = 12) -
     return {"risks": risks}
 
 
-def get_knowledge_point_weaknesses(exam_id: int, class_id: int | None = None) -> dict[str, object]:
+def get_knowledge_point_weaknesses(examId: int, classId: int | None = None) -> dict[str, object]:
     """获取按知识点聚合的得分率排名（弱→强），v1.7.0."""
-    db = _connect()
+    db = connect_db()
     try:
         sql = (
             "SELECT kp.point_text, "
@@ -411,10 +442,12 @@ def get_knowledge_point_weaknesses(exam_id: int, class_id: int | None = None) ->
             "JOIN knowledge_points kp ON kp.card_id = e.card_id AND kp.question_number = qs.question_number "
             "WHERE qs.exam_id = ?"
         )
-        params: list[object] = [exam_id]
-        if class_id is not None:
+        params: list[object] = [examId]
+        if classId == 0:
+            sql += " AND NOT EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = qs.student_id)"
+        elif classId is not None:
             sql += " AND qs.student_id IN (SELECT student_id FROM class_students WHERE class_id = ?)"
-            params.append(class_id)
+            params.append(classId)
         sql += " GROUP BY kp.point_text ORDER BY avg_rate ASC LIMIT 20"
 
         rows = db.execute(sql, params).fetchall()

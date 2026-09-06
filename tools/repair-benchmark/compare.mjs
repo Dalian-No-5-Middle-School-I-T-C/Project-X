@@ -1,0 +1,22 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+
+const [baselinePath,candidatePath,output='修复评分.md']=process.argv.slice(2);
+assert(baselinePath&&candidatePath,'Usage: node compare.mjs baseline/results.json candidate/results.json [report.md]');
+const baseline=JSON.parse(await fs.readFile(baselinePath,'utf8'));
+const candidate=JSON.parse(await fs.readFile(candidatePath,'utf8'));
+assert(!baseline.metadata.fatal&&!candidate.metadata.fatal,'Incomplete run cannot receive a repair score');
+assert(baseline.metadata.harnessHash&&baseline.metadata.harnessHash===candidate.metadata.harnessHash,'Baseline and candidate must use the same harness version');
+const defects=baseline.results.filter(r=>r.id.startsWith('B')&&r.status==='FAIL');
+assert(defects.length>=15,'Baseline must reproduce at least 15 product defects');
+const lookup=new Map(candidate.results.map(r=>[r.id,r]));
+const fixed=defects.filter(r=>lookup.get(r.id)?.status==='PASS');
+const families=[...new Set(defects.map(r=>r.family))];
+const fixedFamilies=families.filter(f=>defects.filter(r=>r.family===f).every(r=>lookup.get(r.id)?.status==='PASS'));
+const regressions=baseline.results.filter(r=>r.status==='PASS'&&lookup.get(r.id)?.status!=='PASS');
+const flows=baseline.results.filter(r=>r.id.startsWith('F'));
+const flowPass=flows.filter(r=>lookup.get(r.id)?.status==='PASS').length;
+const text=`# 修复评分\n\n基线：${baseline.metadata.sha}\n\n候选：${candidate.metadata.sha}（${candidate.metadata.ref}）\n\n修复用例：${fixed.length}/${defects.length}；完整修复根因族：${fixedFamilies.length}/${families.length}；回归：${regressions.length} 项。\n\n业务链路：${flowPass}/${flows.length} 项通过。业务链路仍失败时，不能判定整体修复完成。\n\n| 编号 | 已知问题或业务链路 | 候选结果 |\n|---|---|---|\n${[...defects,...flows].map(r=>`| ${r.id} | ${r.title} | ${lookup.get(r.id)?.status||'MISSING'} |`).join('\n')}\n\n缺失、阻塞和环境错误均不算修复成功。日期兼容相关的多个业务用例共享同一根因族，家族分避免重复加权。\n`;
+await fs.writeFile(path.resolve(output),text);
+console.log(text);process.exitCode=fixed.length===defects.length&&!regressions.length&&flowPass===flows.length&&candidate.results.every(r=>r.status==='PASS')?0:1;

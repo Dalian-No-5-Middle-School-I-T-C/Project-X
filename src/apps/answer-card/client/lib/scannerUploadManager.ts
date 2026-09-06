@@ -3,7 +3,7 @@
 // 协议沿用服务端既有三步接口：POST sessions → POST pages(逐页 multipart) → POST complete。
 // 韧性：单页自动重试 2 次（退避 1s/3s，同 token 服务端幂等覆盖）；断线/api_disabled 转 paused，
 // 网络恢复自动续传；存在彻底失败页时不发 complete（服务端会话保持可续传态）。
-import { getStoredApiKey, remoteScannerFetch } from "../auth/api";
+import { authFetch, getStoredApiKey, remoteScannerFetch } from "../auth/api";
 import { SERVER_URL_KEY } from "./scannerMode";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 
@@ -61,6 +61,7 @@ interface PageRecord {
   token: string;
   done: boolean;
   failed: boolean;
+  studentId?: { status: string; value: string };
 }
 
 interface JobRecord {
@@ -86,6 +87,7 @@ interface JobRecord {
 }
 
 export interface UploadManagerDeps {
+  localFetch?: typeof authFetch;
   remoteFetch?: (url: string, init?: RequestInit) => Promise<Response>;
   isOnline?: () => boolean;
   getServerKind?: () => ServerStatusKind;
@@ -279,11 +281,38 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
 
   async function uploadPageOnce(j: JobRecord, page: PageRecord): Promise<void> {
     const blobData = await page.input.getBlob();
+    // Linux receives recognition data; the Windows client owns the native recognizer.
+    const localForm = new FormData();
+    localForm.append("file", blobData, `page_${page.input.pageNum}.jpg`);
+    localForm.append("page", String(page.input.side === "back" ? 2 : 1));
+    localForm.append("dpi", String(j.dpi));
+    localForm.append("includeCrops", "1");
+    const recognized = await (deps.localFetch ?? authFetch)(`/api/cards/${encodeURIComponent(j.cardId)}/recognition`, {
+      method: "POST", body: localForm,
+    });
+    if (!recognized.ok) throw new Error(`本机识别失败（HTTP ${recognized.status}）`);
+    const recognition = await recognized.json();
+    // A duplex back page may omit the ID area. Inherit only from its immediate
+    // front page in this job, never from another student or an earlier job.
+    if (!recognition.studentId?.value && page.input.side === "back") {
+      const previous = j.pages[j.pages.indexOf(page) - 1];
+      if (previous?.input.side === "front" && previous.done && previous.studentId) {
+        recognition.studentId = { ...previous.studentId, status: "inherited" };
+      }
+    }
+    if (recognition.status === "failed" || !recognition.studentId?.value) {
+      throw new Error("本机未识别到有效学号，请检查答题卡后重试上传");
+    }
+    page.studentId = recognition.studentId;
     const form = new FormData();
     form.append("image", blobData, `page_${page.input.pageNum}.jpg`);
     form.append("token", page.token);
     form.append("pageNum", String(page.input.pageNum));
     form.append("side", page.input.side);
+    form.append("recognition", JSON.stringify({
+      status: recognition.status, studentId: recognition.studentId,
+      questions: recognition.questions, subjectiveQuestions: recognition.subjectiveQuestions,
+    }));
     const fetcher = jobFetch(j);
     const res = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/pages`, {
       method: "POST",
@@ -291,6 +320,23 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       signal: timeoutSignal(pageTimeoutMs),
     });
     if (!res.ok) throw await httpError(res);
+    const cropImages = recognition.cropImages ?? [];
+    if (cropImages.length > 0) {
+      const cropForm = new FormData();
+      const manifest = cropImages.map(({ dataBase64, ...crop }: any, index: number) => {
+        const fileName = `crop_${index}.png`;
+        const bytes = Uint8Array.from(atob(dataBase64), c => c.charCodeAt(0));
+        cropForm.append("crops", new Blob([bytes], { type: "image/png" }), fileName);
+        return { ...crop, fileName };
+      });
+      cropForm.append("manifest", JSON.stringify(manifest));
+      const cropResponse = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/pages/${page.token}/crops`, {
+        method: "POST", body: cropForm, signal: timeoutSignal(pageTimeoutMs),
+      });
+      if (!cropResponse.ok) throw await httpError(cropResponse);
+      const saved = await cropResponse.json();
+      if (saved.skipped || saved.count !== cropImages.length) throw new Error("部分阅卷图块保存失败，请重试上传");
+    }
   }
 
   async function completeSession(j: JobRecord): Promise<void> {

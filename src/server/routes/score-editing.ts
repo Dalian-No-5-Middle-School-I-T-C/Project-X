@@ -1,3 +1,4 @@
+import { databaseTimestamp } from "../db/timestamp";
 /**
  * 成绩修改 API
  * 挂载点: /api/exams (由 server/index.ts 的业务路由 RBAC 网关保护)
@@ -245,7 +246,7 @@ router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
 
   const db = getMysqlDb();
   const userId = req.user!.id;
-  const now = new Date().toISOString();
+  const now = databaseTimestamp();
 
   const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
   if (!exam) { res.status(404).json({ message: "考试不存在" }); return; }
@@ -409,7 +410,7 @@ router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
 
   const db = getMysqlDb();
   const userId = req.user!.id;
-  const now = new Date().toISOString();
+  const now = databaseTimestamp();
 
   const exam = await db.get("SELECT card_id FROM exams WHERE id = ?", examId) as { card_id: string | null } | undefined;
   if (!exam || !exam.card_id) { res.status(404).json({ message: "考试不存在或未关联答题卡" }); return; }

@@ -10,6 +10,12 @@ import {
   PointElement,
   LineElement,
   Filler,
+  BarController,
+  DoughnutController,
+  LineController,
+  RadarController,
+  ScatterController,
+  RadialLinearScale,
   type ChartData,
   type ChartOptions,
   type ChartType,
@@ -33,6 +39,12 @@ import { tokens } from "../../../theme";
  */
 
 ChartJS.register(
+  BarController,
+  DoughnutController,
+  LineController,
+  RadarController,
+  ScatterController,
+  RadialLinearScale,
   ArcElement,
   Tooltip,
   Legend,

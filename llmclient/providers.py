@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from openai import OpenAI
 
 from llmclient.config import ModelConfig, env_value
-from llmclient.schemas import AiAnalysisReport, AnalysisRunResponse, REPORT_SCHEMA, ToolCallTrace, empty_report
+from llmclient.schemas import AiAnalysisReport, AnalysisRunResponse, REPORT_SCHEMA, ToolCallTrace
 from llmclient.tools.registry import call_tool, gemini_function_declarations, openai_tools
 from llmclient.prompt import system
 from llmclient.usage import gemini_usage, merge_usage, openai_usage, usage_dict
@@ -124,7 +124,10 @@ def _parse_report(text: str) -> AiAnalysisReport:
             data = json.loads(text[start : end + 1])
         else:
             raise
-    return AiAnalysisReport.model_validate(data)
+    report = AiAnalysisReport.model_validate(data)
+    if not report.overallJudgement.strip() or not report.distributionInsight.strip():
+        raise ValueError("AI report is missing its overall judgement or distribution insight")
+    return report
 
 
 def _trace(name: str, arguments: dict[str, Any], result: dict[str, Any]) -> ToolCallTrace:
@@ -200,6 +203,7 @@ def run_openai_compatible_analysis(
     ]
     traces: list[ToolCallTrace] = []
     usage_total: tuple[int, int] | None = None
+    report_retries = 0
 
     for _ in range(8):
         kwargs: dict[str, Any] = {
@@ -207,13 +211,15 @@ def run_openai_compatible_analysis(
             "messages": messages,
             "tools": openai_tools(),
             "response_format": {"type": "json_object"},
-            "max_tokens": 4096,
+            "max_tokens": 8192,
             "stream": False,
         }
         if model.provider in ("deepseek", "openai") and model.thinking:
             kwargs["reasoning_effort"] = model.reasoning_effort or "high"
         if model.provider == "deepseek" and model.thinking:
             kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+        elif model.provider == "deepseek":
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         elif not model.thinking:
             kwargs["temperature"] = 0.7
 
@@ -245,9 +251,18 @@ def run_openai_compatible_analysis(
         if not tool_calls:
             content = message.content or "{}"
             try:
+                if response.choices[0].finish_reason == "length":
+                    raise ValueError("AI report exceeded the output token limit")
                 report = _parse_report(content)
             except Exception as exc:
-                report = empty_report(f"AI report JSON parse failed: {exc}")
+                if report_retries < 1:
+                    report_retries += 1
+                    messages.append({"role": "user", "content":
+                        "Return the final report now using the previously retrieved data. "
+                        "Use the exact required JSON keys, including nonempty overallJudgement "
+                        "and distributionInsight. Keep the report concise and do not call more tools."})
+                    continue
+                raise ValueError(f"AI report generation failed: {exc}") from exc
             return AnalysisRunResponse(
                 generatedAt=_now_iso(),
                 model=model.id,
@@ -271,13 +286,7 @@ def run_openai_compatible_analysis(
                 }
             )
 
-    return AnalysisRunResponse(
-        generatedAt=_now_iso(),
-        model=model.id,
-        report=empty_report("AI tool loop reached the maximum number of steps."),
-        toolCalls=traces,
-        usage=usage_dict(usage_total),
-    )
+    raise RuntimeError("AI tool loop reached the maximum number of steps without a report")
 
 
 def run_gemini_analysis(
@@ -322,7 +331,7 @@ def run_gemini_analysis(
             try:
                 report = _parse_report(_gemini_text(response) or "{}")
             except Exception as exc:
-                report = empty_report(f"AI report JSON parse failed: {exc}")
+                raise ValueError(f"AI report generation failed: {exc}") from exc
             return AnalysisRunResponse(
                 generatedAt=_now_iso(),
                 model=model.id,
@@ -349,13 +358,7 @@ def run_gemini_analysis(
             )
         contents.append(types.Content(role="user", parts=response_parts))
 
-    return AnalysisRunResponse(
-        generatedAt=_now_iso(),
-        model=model.id,
-        report=empty_report("AI tool loop reached the maximum number of steps."),
-        toolCalls=traces,
-        usage=usage_dict(usage_total),
-    )
+    raise RuntimeError("AI tool loop reached the maximum number of steps without a report")
 
 
 def run_analysis(

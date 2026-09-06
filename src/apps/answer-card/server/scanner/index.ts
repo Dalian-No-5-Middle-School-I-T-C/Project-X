@@ -1,3 +1,4 @@
+import { persistScannerResultToMainDb } from "../../../../server/services/scannerResultPersistence";
 import { Router } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -41,89 +42,6 @@ export function createScannerRouter(twainEnabled = true): Router {
   const router = Router();
 
   // Write scanner result to projectx.db for linked exams
-  async function persistScannerResultToMainDb(
-    cardId: string,
-    result: CombinedStudentResult
-  ): Promise<void> {
-    if (!result.studentId || result.studentId === "未识别") return;
-
-    const { getMysqlDb, buildUpsertSQL } = await import("../../../../server/db");
-    const { roundScore } = await import("../../../../server/services/rankingUpdate");
-    const { analysisCache } = await import("../../../../server/services/analysisCache");
-    const { ensureExamParticipants, isExamParticipant } = await import("../../../../server/services/examParticipants");
-    const db = getMysqlDb();
-
-    const scoreUpsertSQL = buildUpsertSQL(
-      db.dialect,
-      "student_scores",
-      ["exam_id", "student_id", "objective_score", "subjective_score", "total_score", "graded_at"],
-      ["exam_id", "student_id"],
-      ["objective_score", "subjective_score", "total_score", "graded_at"]
-    );
-    const questionUpsertSQL = buildUpsertSQL(
-      db.dialect,
-      "question_scores",
-      ["exam_id", "student_id", "question_number", "question_id", "score", "max_score", "score_type"],
-      ["exam_id", "student_id", "question_number", "score_type"],
-      ["question_id", "score", "max_score"]
-    );
-    const gradedAt = new Date().toISOString();
-
-    // Find user by student_number
-    const user = await db.get("SELECT id FROM users WHERE student_number = ?", result.studentId) as { id: number } | undefined;
-    if (!user) return;
-
-    // Find exams linked to this card
-    const exams = await db.all("SELECT id FROM exams WHERE card_id = ? AND status != 'closed'", cardId) as Array<{ id: number }>;
-    if (exams.length === 0) return;
-
-    // P1-1: 扫描入库拒绝非应考学生（名单可知时）
-    const filteredExams: Array<{ id: number }> = [];
-    for (const exam of exams) {
-      const snap = await ensureExamParticipants(db, exam.id);
-      const enforced = snap.rosterKnown && snap.participantCount > 0;
-      if (enforced && !(await isExamParticipant(db, exam.id, user.id))) {
-        console.warn(`[Scanner] skip exam ${exam.id}: student ${result.studentId} not in roster snapshot`);
-        continue;
-      }
-      filteredExams.push(exam);
-    }
-    if (filteredExams.length === 0) return;
-
-    // 事务化：一个学生跨所有关联考试的写构成一个原子单元，
-    // 避免中途崩溃留下 student_scores 已写、question_scores 缺行的脏数据污染后续分析
-    // （难度/区分度/逐题统计都依赖两表一致）。
-    await db.transaction(async (tx) => {
-      for (const exam of filteredExams) {
-        const obj = roundScore(result.objectiveScore);
-        const subj = roundScore(result.subjectiveScore);
-        const total = roundScore(result.totalScore);
-        await tx.run(scoreUpsertSQL, exam.id, user.id, obj, subj, total, gradedAt);
-
-        for (const q of result.objectiveQuestions) {
-          await tx.run(
-            questionUpsertSQL,
-            exam.id, user.id, q.questionNumber, "", q.score, q.maxScore, "objective"
-          );
-        }
-        for (const sq of result.subjectiveQuestions) {
-          await tx.run(
-            questionUpsertSQL,
-            exam.id, user.id, String(sq.questionNumber), sq.questionId, sq.score, sq.maxScore, "subjective"
-          );
-        }
-
-        await tx.run(
-          "UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'draft'",
-          exam.id
-        );
-      }
-    });
-
-    // 分析结果缓存精准失效（建议 6）
-    for (const exam of filteredExams) analysisCache.invalidateExam(exam.id);
-  }
-
   // Progress event emitters by sessionId (for WebSocket integration)
   const progressEmitters = new Map<string, Set<(event: ScanProgressEvent) => void>>();
 
@@ -549,20 +467,21 @@ export function createScannerRouter(twainEnabled = true): Router {
           results.push(combined);
 
           // Cache the result in scanner.db
-          upsertStudentGradingResult({
+          await enqueuePersist(async () => { await persistScannerResultToMainDb(session.card_id, combined); });
+          await upsertStudentGradingResult({
             sessionId,
             studentId: combined.studentId,
+            objectiveJson: JSON.stringify(combined.objectiveQuestions),
+            subjectiveJson: JSON.stringify(combined.subjectiveQuestions),
             totalScore: combined.totalScore,
             maxScore: combined.totalMaxScore,
             pageCount: combined.pageCount
           });
 
           // Also persist to projectx.db for linked exams (串行入队，事务原子写)
-          enqueuePersist(() => persistScannerResultToMainDb(session.card_id, combined)).catch((err) => {
-            console.error(`[Scanner] Main DB persist failed for ${combined.studentId}:`, err);
-          });
         } catch (err) {
           console.error(`[Scanner] Combined grading failed for student ${group.studentId}:`, err);
+          throw err;
         }
       }
 

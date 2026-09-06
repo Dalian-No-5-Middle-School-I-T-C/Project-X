@@ -1,3 +1,4 @@
+import { databaseTimestamp } from "../db/timestamp";
 /**
  * Issue #174: 网阅试卷池
  *
@@ -177,7 +178,7 @@ export async function claimNextPaper(
     });
     if (!candidate) throw new ReviewPoolError("试卷池暂无可用试卷");
 
-    const now = new Date().toISOString();
+    const now = databaseTimestamp();
     const result = await tx.run(
       `UPDATE answer_block_crops
        SET claimed_by = ?, claimed_at = ?, claim_count = claim_count + 1
@@ -216,7 +217,7 @@ export async function claimSpecificPaper(
       if (error instanceof ReviewPoolError) throw error;
     }
   }
-  const now = new Date().toISOString();
+  const now = databaseTimestamp();
   const result = await db.run(
     `UPDATE answer_block_crops
      SET claimed_by = ?, claimed_at = ?, claim_count = claim_count + 1

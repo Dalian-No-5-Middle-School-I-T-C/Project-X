@@ -59,23 +59,21 @@ router.post("/", requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res) =>
 
     const annotationData = {
       ...dataJson,
-      x: positionX ?? 0,
-      y: positionY ?? 0,
+      x: positionX ?? dataJson.x ?? 0,
+      y: positionY ?? dataJson.y ?? 0,
+      width: width ?? dataJson.width ?? null,
+      height: height ?? dataJson.height ?? null,
+      color: color ?? dataJson.color ?? "#FF3B30",
     };
 
     await db.run(
-      `INSERT INTO review_annotations (id, crop_id, reviewer_id, type, data_json, position_x, position_y, width, height, color)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO review_annotations (id, crop_id, reviewer_id, type, data_json)
+       VALUES (?, ?, ?, ?, ?)`,
       id,
       cropId,
       userId,
       type,
-      JSON.stringify(annotationData),
-      positionX ?? 0,
-      positionY ?? 0,
-      width ?? null,
-      height ?? null,
-      color ?? "#FF3B30"
+      JSON.stringify(annotationData)
     );
 
     res.json({

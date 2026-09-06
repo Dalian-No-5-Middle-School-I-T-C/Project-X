@@ -1,3 +1,4 @@
+import { databaseTimestamp } from "../db/timestamp";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
@@ -307,7 +308,7 @@ export async function submitReviewCropScores(params: {
     }
   }
 
-  const now = new Date().toISOString();
+  const now = databaseTimestamp();
   const upsertCols = [
     "exam_id", "student_id", "question_number", "question_id", "block_id",
     "score", "max_score", "score_type", "manually_modified", "modified_by", "modified_at"
