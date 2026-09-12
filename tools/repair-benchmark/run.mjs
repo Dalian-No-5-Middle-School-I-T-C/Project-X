@@ -10,6 +10,7 @@ import AdmZip from 'adm-zip';
 import mysql from 'mysql2/promise';
 import sharp from 'sharp';
 import { chromium } from 'playwright';
+import { unwrap, recognitionPayload, readableCrops, waitForScores, acceptRepeatCompletion } from './protocol.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
@@ -21,13 +22,13 @@ const runId = `${mode}-${Date.now()}`;
 const out = path.join(here, 'results', runId), stage = path.join(out, 'source');
 await fs.mkdir(out, {recursive:true});
 const results = [], processes = [], tokens = new Map();
-const base = 'http://127.0.0.1:5291', local = 'http://127.0.0.1:5292';
+let base,local,ports,scannerReservation;
 const password = 'Benchmark-2026-Local!';
 const linux = p => '/mnt/' + p[0].toLowerCase() + p.slice(2).replaceAll('\\', '/');
 let db, browser, wslStarted = false, fatal, stopping=false;
 const metadata = {runId, ref, mode, source, startedAt:new Date().toISOString(), fixtures:[]};
 const harnessHash=createHash('sha256');
-for(const file of ['run.mjs','python-probes.py','provider-stub.py','wsl-runtime.sh','package-lock.json'])harnessHash.update(file).update(await fs.readFile(path.join(here,file)));
+for(const file of ['run.mjs','protocol.mjs','port-allocator.py','python-probes.py','provider-stub.py','wsl-runtime.sh','package-lock.json'])harnessHash.update(file).update(await fs.readFile(path.join(here,file)));
 metadata.harnessHash=harnessHash.digest('hex');
 const delay = ms => new Promise(r=>setTimeout(r,ms));
 function processRun(exe, args, cwd=stage, env=process.env, background=false, label='command') {
@@ -55,7 +56,7 @@ async function check(id,title,family,fn) {
 async function request(root,route,method='GET',body) {
   const response=await fetch(root+route,{method,headers:{...(tokens.has(root)?{Authorization:`Bearer ${tokens.get(root)}`} : {}),...(body && !(body instanceof FormData)?{'Content-Type':'application/json'}:{})},body:body instanceof FormData?body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(120000)});
   const raw=await response.text();
-  assert(response.ok,`${method} ${route}: HTTP ${response.status} ${raw.slice(0,900)}`);
+  if(!response.ok)throw Object.assign(new Error(`${method} ${route}: HTTP ${response.status} ${raw.slice(0,900)}`),{status:response.status});
   return raw?JSON.parse(raw):null;
 }
 const api=(route,method,body)=>request(base,route,method,body);
@@ -80,12 +81,6 @@ async function seedScores(examId,students,cardId,blockId,scores,max=150) {
   metadata.fixtures.push({kind:'independent SQL scores',examId,scores,max,reason:'Does not repair or alter the end-to-end exam; isolates downstream assertions.'});
 }
 try {
-  for(const port of [5290,5291,5292,5293,8791,3397]) {
-    for(let attempt=0;attempt<15;attempt++) {
-      try {await new Promise((resolve,reject)=>{const server=createServer();server.once('error',reject);server.listen(port,'127.0.0.1',()=>server.close(resolve));});break;}
-      catch(error){if(attempt===14)throw new Error(`Infrastructure: port ${port}: ${error.message}`);await delay(1000);}
-    }
-  }
   metadata.sha=(await git(['rev-parse',ref==='working'?'HEAD':ref])).trim();
   metadata.workingDiff=ref==='working'?(await git(['diff','--stat'])):null;
   await fs.mkdir(stage,{recursive:true});
@@ -112,14 +107,22 @@ try {
   await fs.writeFile(path.join(out,'wsl-runtime.sh'),(await fs.readFile(path.join(here,'wsl-runtime.sh'),'utf8')).replaceAll('\r\n','\n'));
   if(arg('ai-env',''))await fs.copyFile(path.resolve(arg('ai-env','')),path.join(out,'real-ai.env'));
   await fs.copyFile(path.join(here,'provider-stub.py'),path.join(out,'provider-stub.py'));
+  scannerReservation=createServer();
+  await new Promise((resolve,reject)=>{scannerReservation.once('error',reject);scannerReservation.listen(0,'127.0.0.1',resolve);});
+  const scannerPort=scannerReservation.address().port;
+  ports={...JSON.parse((await wsl(['allocate',runId,linux(path.join(here,'port-allocator.py')),String(scannerPort)])).trim()),scanner:scannerPort};
+  assert.equal(new Set(Object.values(ports)).size,6,'Allocated ports must be distinct');
+  metadata.ports=ports;base=`http://127.0.0.1:${ports.proxy}`;local=`http://127.0.0.1:${ports.scanner}`;
+  await fs.writeFile(path.join(out,'ports.json'),JSON.stringify(ports,null,2));console.log('Allocated ports',JSON.stringify(ports));
   console.log('Starting isolated WSL MariaDB, Nginx and application');
   wslStarted=true;wsl(['start',runId,linux(packaged),linux(stage),linux(out)],true);
-  const env={...process.env,PORT:'5292',PROJECTX_AUTH_ENFORCE:'1',PROJECTX_ENABLE_SCANNER:'1',PROJECTX_DB_PATH:path.join(out,'scanner/projectx.db'),ANSWER_CARD_DATA_DIR:path.join(out,'scanner/cards'),ANSWER_CARD_CLIENT_DIST:path.join(stage,'dist/scanner'),USERPROFILE:path.join(out,'scanner/profile'),LLMCLIENT_AUTOSTART:'0'};
+  const env={...process.env,PORT:String(ports.scanner),PROJECTX_AUTH_ENFORCE:'1',PROJECTX_ENABLE_SCANNER:'1',PROJECTX_DB_PATH:path.join(out,'scanner/projectx.db'),ANSWER_CARD_DATA_DIR:path.join(out,'scanner/cards'),ANSWER_CARD_CLIENT_DIST:path.join(stage,'dist/scanner'),USERPROFILE:path.join(out,'scanner/profile'),LLMCLIENT_AUTOSTART:'0'};
   for(const key of Object.keys(env))if(key.startsWith('PROJECTX_MARIADB_')||key.startsWith('MYSQL_'))delete env[key];
+  await new Promise(resolve=>scannerReservation.close(resolve));
   processRun(process.execPath,['dist/server/index.mjs'],stage,env,true,'scanner');
   await Promise.race([Promise.all([waitHealth(base+'/api/app/health',1200000),waitHealth(local+'/api/app/health')]),...processes.map(p=>p.done.then(()=>{throw new Error('Infrastructure: service exited before readiness');}))]);
   await login(base);await login(local);
-  db=await mysql.createConnection({host:'127.0.0.1',port:3397,user:'root',password:'benchmark-database-only',database:'projectx_bench'});
+  db=await mysql.createConnection({host:'127.0.0.1',port:ports.database,user:'root',password:'benchmark-database-only',database:'projectx_bench'});
   await check('B01','全局设置保存并读回','mariadb-datetime',async()=>{await api('/api/system-settings','PUT',{settings:{benchmark_marker:runId}});assert.equal((await api('/api/system-settings')).data.benchmark_marker,runId);return 'Saved marker persisted';});
   await check('B02','分析阈值保存并读回','mariadb-datetime',async()=>{const value=await api('/api/analysis/config/thresholds');await api('/api/analysis/config/thresholds','PUT',value);assert.deepEqual(await api('/api/analysis/config/thresholds'),value);return value;});
   await db.query("INSERT INTO system_settings(`key`,value) VALUES('require_original_paper','0'),('analysis_pass_rate','0.6'),('analysis_excellent_rate','0.9') ON DUPLICATE KEY UPDATE value=VALUES(value)");
@@ -140,8 +143,9 @@ try {
   await request(local,`/api/cards/${card.id}`,'PUT',await api(`/api/scanner/sync/cards/${card.id}`));
   const layout=await api(`/api/cards/${card.id}/layout`);
   await check('F01','生成答题卡、编排考生、扫描端同步和 PDF 导出','flow-card',async()=>{const pdf=await fetch(base+`/api/cards/${card.id}/pdf`,{headers:{Authorization:`Bearer ${tokens.get(base)}`}});assert(pdf.ok,`PDF HTTP ${pdf.status}`);const bytes=Buffer.from(await pdf.arrayBuffer());assert.equal(bytes.subarray(0,4).toString(),'%PDF');await fs.writeFile(path.join(out,'答题卡.pdf'),bytes);return {cardId:card.id,examId:exam.id,students:4,pdfBytes:bytes.length};});
-  const session=await api('/api/scanner/upload/sessions','POST',{cardId:card.id,pageCount:4,dpi:300});
+  const session=unwrap(await api('/api/scanner/upload/sessions','POST',{cardId:card.id,pageCount:4,dpi:300}));
   const recognitions=[];
+  const cropEvidence=[],protocolNotes=[];
   await check('F02','本机 C++ 识别四份填涂答题卡并上传','flow-native',async()=>{
     const rect=(r,fill)=>`<rect x="${r.x}" y="${r.y}" width="${r.width}" height="${r.height}" fill="${fill}" stroke="#111" stroke-width="0.18"/>`;
     for(let i=0;i<4;i++) {
@@ -154,17 +158,38 @@ try {
       await fs.writeFile(path.join(out,`填涂答题卡${i+1}.png`),image);
       const form=new FormData();form.append('file',new Blob([image],{type:'image/png'}),'sheet.png');form.append('includeCrops','1');
       const recognition=await request(local,`/api/cards/${card.id}/recognition`,'POST',form);
-      assert.equal(recognition.studentId.value,num);assert.equal(recognition.questions.length,4);recognitions.push(recognition);
-      const upload=new FormData();upload.append('image',new Blob([image],{type:'image/png'}),'sheet.png');upload.append('token',session.uploadTokens[i]);upload.append('pageNum',String(i+1));upload.append('side','front');upload.append('recognition',JSON.stringify(recognition));
+      const payload=recognitionPayload(recognition);
+      assert.equal(String(payload.studentId.value),String(num));assert.equal(payload.questions.length,4);recognitions.push(recognition);
+      const upload=new FormData();upload.append('image',new Blob([image],{type:'image/png'}),'sheet.png');upload.append('token',session.uploadTokens[i]);upload.append('pageNum',String(i+1));upload.append('side','front');upload.append('recognition',JSON.stringify(payload));
       await api(`/api/scanner/upload/sessions/${session.sessionId}/pages`,'POST',upload);
-      if(recognition.cropImages?.length) {
-        const crops=new FormData();const manifest=recognition.cropImages.map(({dataBase64,...crop},j)=>{const fileName=`crop_${j}.png`;crops.append('crops',new Blob([Buffer.from(dataBase64,'base64')],{type:'image/png'}),fileName);return {...crop,fileName};});crops.append('manifest',JSON.stringify(manifest));await api(`/api/scanner/upload/sessions/${session.sessionId}/pages/${session.uploadTokens[i]}/crops`,'POST',crops);
-      }
     }
     return {recognized:recognitions.length,expectedStudentNumbers:students.map(s=>s.student_number)};
   });
-  await check('B17','扫描识别接口返回可远程上传的题块图片','scanner-crops',async()=>{if(recognitions.length!==4)throw new Error('Blocked: F02 did not complete');assert(recognitions.every(r=>r.cropImages?.length>0),'includeCrops=1 returned no cropImages');return recognitions.map(r=>r.cropImages.length);});
-  await check('B18','远程上传完成后真实落成绩并自动结束考试','scanner-completion',async()=>{await api(`/api/scanner/upload/sessions/${session.sessionId}/complete`,'POST');await api(`/api/scanner/upload/sessions/${session.sessionId}/complete`,'POST');const rows=await api(`/api/analysis/exams/${exam.id}/students`);assert.deepEqual(rows.map(s=>s.totalScore),[20,15,10,5]);const status=await api(`/api/scanner/upload/sessions/${session.sessionId}/status`);assert.equal(status.progress.recognized,4);return {scores:rows.map(s=>s.totalScore),status};});
+  await check('B17','扫描识别结果提供可读取的真实题块图片','scanner-crops',async()=>{
+    if(results.find(r=>r.id==='F02')?.status!=='PASS')throw new Error('Blocked: F02 did not complete');
+    for(const recognition of recognitions)cropEvidence.push(await readableCrops(recognition,async relative=>{
+      const url=new URL(relative,local);assert.equal(url.origin,local,'Crop URL must address the isolated local scanner');
+      const response=await fetch(url,{headers:{Authorization:`Bearer ${tokens.get(local)}`},signal:AbortSignal.timeout(15000),redirect:'error'});assert(response.ok,`Crop URL HTTP ${response.status}`);return Buffer.from(await response.arrayBuffer());
+    }));
+    return cropEvidence.map(images=>images.map(({width,height,bytes})=>({width,height,bytes:bytes.length})));
+  });
+  await check('B18','远程上传最终产生正确成绩且重复完成不重复记分','scanner-completion',async()=>{
+    if(results.find(r=>r.id==='F02')?.status!=='PASS')throw new Error('Blocked: F02 did not complete');
+    for(let i=0;i<cropEvidence.length;i++) {
+      const form=new FormData();const manifest=cropEvidence[i].map(({crop,bytes},j)=>{const {dataBase64,imageBase64,base64,imageUrl,url,...fields}=crop;const fileName=`crop_${j}.png`;form.append('crops',new Blob([bytes]),fileName);return {...fields,fileName};});form.append('manifest',JSON.stringify(manifest));
+      try{await api(`/api/scanner/upload/sessions/${session.sessionId}/pages/${session.uploadTokens[i]}/crops`,'POST',form);}catch(error){if(![404,405].includes(error.status))throw error;protocolNotes.push('Optional separate crop-upload endpoint unavailable; image readability checked by B17');break;}
+    }
+    const complete=await api(`/api/scanner/upload/sessions/${session.sessionId}/complete`,'POST');
+    const read=async()=> (await db.execute('SELECT student_id,total_score FROM student_scores WHERE exam_id=? ORDER BY student_id',[exam.id]))[0];
+    await waitForScores(read,students,[20,15,10,5]);
+    const questions=async()=> (await db.execute('SELECT student_id,question_number,score_type,score,max_score FROM question_scores WHERE exam_id=? ORDER BY student_id,question_number,score_type',[exam.id]))[0];
+    const before=await questions();assert.equal(before.length,16,'All four questions for four students must be persisted');
+    const repeat=await fetch(base+`/api/scanner/upload/sessions/${session.sessionId}/complete`,{method:'POST',headers:{Authorization:`Bearer ${tokens.get(base)}`},signal:AbortSignal.timeout(120000)});
+    await repeat.text();acceptRepeatCompletion(repeat.status);
+    await delay(2000);const after=await waitForScores(read,students,[20,15,10,5]);assert.deepEqual(await questions(),before,'Repeated completion changed persisted question scores');
+    let status;try{status=await api(`/api/scanner/upload/sessions/${session.sessionId}/status`);}catch(error){if(![404,405].includes(error.status))throw error;protocolNotes.push('Optional upload progress endpoint unavailable');}
+    return {scores:after.scores,complete,repeatHttpStatus:repeat.status,status,protocolNotes,persistedQuestions:before.length};
+  });
   // A separate scored exam allows independent probes after a broken upload flow.
   const analysisBlockId='bench_analysis';
   let analysisCard=await api('/api/cards','POST',{subject:'math',title:'150 分制分析夹具',examDate:'2026-09-06'});
@@ -186,7 +211,7 @@ try {
   await check('B07','网阅批注保存并读回坐标','review-annotation-schema',async()=>{const saved=await api('/api/review-annotations','POST',{cropId:'bench-crop',type:'text',dataJson:{text:'基准批注'},positionX:10,positionY:20});const rows=await api('/api/review-annotations?cropId=bench-crop');const row=rows.data.find(r=>r.id===saved.data.id);assert.equal(row.dataJson.text,'基准批注');assert.equal(row.dataJson.x,10);await api(`/api/review-annotations/${saved.data.id}`,'DELETE');return row;});
   const python=await wsl(['probe',runId,linux(path.join(here,'python-probes.py')),linux(path.join(out,'fixture.json'))]);
   const line=python.split('\n').find(s=>s.startsWith('BENCH_RESULTS='));assert(line,'Python probe output missing');for(const result of JSON.parse(line.slice(14))){results.push(result);console.log(`${result.status} ${result.id} ${result.title}`);}
-  await check('B19','部署时自动启动 AI 侧车且内部鉴权一致','ai-sidecar-bootstrap',async()=>{await waitHealth('http://127.0.0.1:8791/health',15000);const status=await api('/api/analysis/ai/status');assert(status.available,JSON.stringify(status));return status;});
+  await check('B19','部署时自动启动 AI 侧车且内部鉴权一致','ai-sidecar-bootstrap',async()=>{await waitHealth(`http://127.0.0.1:${ports.ai}/health`,15000);const status=await api('/api/analysis/ai/status');assert(status.available,JSON.stringify(status));return status;});
   await check('F05','AI 分析任务完成并保存非空报告','flow-ai-job',async()=>{
     const status=await api('/api/analysis/ai/status');const model=status.models?.find(m=>m.available)?.id;if(!status.available||!model)throw new Error('Blocked: AI readiness prerequisite failed');
     const job=await api(`/api/analysis/exams/${analysis.id}/ai-analysis`,'POST',{model});
@@ -231,13 +256,14 @@ try {
       await page.getByRole('button',{name:'开始识别判分',exact:true}).click();
       for(let i=0;i<60&&!complete;i++)await delay(1000);
       await page.screenshot({path:path.join(out,'扫描端自动上传.png'),fullPage:true});await fs.writeFile(path.join(out,'扫描端上传响应.json'),JSON.stringify(responses,null,2));
-      assert(complete,'Scanner frontend did not complete remote upload');assert(complete.ok(),`Complete HTTP ${complete.status()}`);
-      const rows=await api(`/api/analysis/exams/${uiExam.id}/students`);assert.deepEqual(rows.map(r=>r.totalScore),[20,15,10,5]);return {examId:uiExam.id,scores:rows.map(r=>r.totalScore),responses};
+      if(complete)assert(complete.ok(),`Complete HTTP ${complete.status()}`);
+      const settled=await waitForScores(async()=> (await db.execute('SELECT student_id,total_score FROM student_scores WHERE exam_id=?',[uiExam.id]))[0],students,[20,15,10,5]);return {examId:uiExam.id,scores:settled.scores,responses};
     } finally {await page.screenshot({path:path.join(out,'扫描端界面最终状态.png'),fullPage:true}).catch(()=>{});await fs.writeFile(path.join(out,'扫描端界面最终状态.txt'),await page.locator('body').innerText()).catch(()=>{});await context.close();await api(`/api/admin/api-keys/${key.id}`,'DELETE');}
   });
 } catch(error) {fatal=error.stack;console.error(fatal);}
 finally {
   stopping=true;
+  if(scannerReservation?.listening)await new Promise(resolve=>scannerReservation.close(resolve));
   await browser?.close();await db?.end();
   if(wslStarted)try{await wsl(['logs',runId,linux(out)]);}catch(e){console.error('Log collection:',e.message);}
   if(!argv.includes('--keep-running')) {

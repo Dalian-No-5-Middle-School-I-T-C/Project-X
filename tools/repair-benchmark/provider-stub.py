@@ -25,4 +25,4 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-ThreadingHTTPServer(("127.0.0.1", 5293), Handler).serve_forever()
+ThreadingHTTPServer(("127.0.0.1", int(sys.argv[2])), Handler).serve_forever()

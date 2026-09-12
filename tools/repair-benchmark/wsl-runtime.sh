@@ -7,6 +7,10 @@ run_id=$2
 root=/var/tmp/projectx-repair-benchmark
 run=$root/runs/$run_id
 cache=$root/cache
+if [[ "$action" == allocate ]]; then
+  mkdir -p "$run"
+  exec python3 "$3" "$run/ports.env" "$4"
+fi
 if [[ "$action" == logs ]]; then
   for name in node mysql nginx-error provider npm pip; do
     if [[ -f "$run/$name.log" ]]; then cp "$run/$name.log" "$3/wsl-$name.log"; fi
@@ -33,8 +37,9 @@ if [[ "$action" == stop ]]; then
   exit 0
 fi
 if [[ "$action" == probe ]]; then
+  source "$run/ports.env"
   cd "$run/server"
-  export PROJECTX_MARIADB_HOST=127.0.0.1 PROJECTX_MARIADB_PORT=3397 PROJECTX_MARIADB_USER=root PROJECTX_MARIADB_DATABASE=projectx_bench PROJECTX_MARIADB_PASSWORD=benchmark-database-only
+  export PROJECTX_MARIADB_HOST=127.0.0.1 PROJECTX_MARIADB_PORT="$database_port" PROJECTX_MARIADB_USER=root PROJECTX_MARIADB_DATABASE=projectx_bench PROJECTX_MARIADB_PASSWORD=benchmark-database-only
   export PYTHONPATH="$run/server"
   exec "$cache/venv/bin/python" "$3" "$4"
 fi
@@ -42,6 +47,7 @@ fi
 package=$3
 source=$4
 probe_dir=$5
+source "$run/ports.env"
 mkdir -p "$run" "$cache"
 export PROJECTX_BENCH_RUN=$run_id
 if ! command -v mariadbd >/dev/null || ! command -v nginx >/dev/null || ! python3 -m venv --help >/dev/null 2>&1; then
@@ -77,7 +83,7 @@ fi
 if [[ -f "$probe_dir/real-ai.env" ]]; then cp "$probe_dir/real-ai.env" "$run/server/llmclient/.env"; chmod 600 "$run/server/llmclient/.env"; fi
 mkdir -p "$run/mysql"
 mariadb-install-db --no-defaults --datadir="$run/mysql" --auth-root-authentication-method=normal > "$run/mysql-init.log" 2>&1
-mariadbd --no-defaults --user=root --datadir="$run/mysql" --bind-address=127.0.0.1 --port=3397 --socket="$run/mysql.sock" --pid-file="$run/mysql.pid" --log-error="$run/mysql.log" &
+mariadbd --no-defaults --user=root --datadir="$run/mysql" --bind-address=127.0.0.1 --port="$database_port" --socket="$run/mysql.sock" --pid-file="$run/mysql.pid" --log-error="$run/mysql.log" &
 for attempt in {1..60}; do [[ -S "$run/mysql.sock" ]] && mariadb --no-defaults --socket="$run/mysql.sock" -uroot -e 'SELECT 1' >/dev/null 2>&1 && break; sleep 1; done
 mariadb --no-defaults --socket="$run/mysql.sock" -uroot -e 'CREATE DATABASE projectx_bench CHARACTER SET utf8mb4'
 mariadb --no-defaults --socket="$run/mysql.sock" -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'benchmark-database-only'"
@@ -87,19 +93,19 @@ pid $run/nginx.pid;
 error_log $run/nginx-error.log;
 events { worker_connections 128; }
 http { access_log $run/nginx-access.log; client_max_body_size 100m;
- server { listen 127.0.0.1:5291; location / { proxy_pass http://127.0.0.1:5290; proxy_set_header Host \$http_host; proxy_read_timeout 300s; proxy_buffering off; } } }
+ server { listen 127.0.0.1:$proxy_port; location / { proxy_pass http://127.0.0.1:$backend_port; proxy_set_header Host \$http_host; proxy_read_timeout 300s; proxy_buffering off; } } }
 NGINX
 nginx -c "$run/nginx.conf"
 cd "$run/server"
-export PORT=5290 PROJECTX_AUTH_ENFORCE=1 PROJECTX_ENABLE_SCANNER=0 PROJECTX_ENABLE_SCANNER_CLIENT_API=1
-export PROJECTX_MARIADB_HOST=127.0.0.1 PROJECTX_MARIADB_PORT=3397 PROJECTX_MARIADB_USER=root PROJECTX_MARIADB_DATABASE=projectx_bench PROJECTX_MARIADB_PASSWORD=benchmark-database-only
+export PORT="$backend_port" PROJECTX_AUTH_ENFORCE=1 PROJECTX_ENABLE_SCANNER=0 PROJECTX_ENABLE_SCANNER_CLIENT_API=1
+export PROJECTX_MARIADB_HOST=127.0.0.1 PROJECTX_MARIADB_PORT="$database_port" PROJECTX_MARIADB_USER=root PROJECTX_MARIADB_DATABASE=projectx_bench PROJECTX_MARIADB_PASSWORD=benchmark-database-only
 export PROJECTX_DB_PATH="$run/server/data/projectx.db" ANSWER_CARD_DATA_DIR="$run/server/data/answer-card" ANSWER_CARD_CLIENT_DIST="$run/server/dist/web"
-export LLMCLIENT_URL=http://127.0.0.1:8791 LLMCLIENT_PYTHON="$cache/venv/bin/python"
+export LLMCLIENT_URL="http://127.0.0.1:$ai_port" LLMCLIENT_PYTHON="$cache/venv/bin/python"
 export NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost
 # Deterministic provider fixture: no real key, no billable requests by default.
 if [[ ! -f llmclient/.env ]]; then
-  export OPENAI_API_KEY=benchmark-fixture-only OPENAI_BASE_URL=http://127.0.0.1:5293
-  "$cache/venv/bin/python" "$probe_dir/provider-stub.py" "$probe_dir/fixture.json" > "$run/provider.log" 2>&1 &
+  export OPENAI_API_KEY=benchmark-fixture-only OPENAI_BASE_URL="http://127.0.0.1:$provider_port"
+  "$cache/venv/bin/python" "$probe_dir/provider-stub.py" "$probe_dir/fixture.json" "$provider_port" > "$run/provider.log" 2>&1 &
 fi
 id projectx-bench >/dev/null 2>&1 || useradd --system --create-home --home-dir "$cache/home" projectx-bench
 mkdir -p "$run/home"
