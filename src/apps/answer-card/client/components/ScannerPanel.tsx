@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   AlertTriangle,
   Camera,
@@ -13,8 +13,7 @@ import {
 import { authFetch, mediaUrl, urlWithToken } from "../auth/api";
 import { useScannerMode, getScannerMode, isRemoteServerConfigured } from "../lib/scannerMode";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
-import { mergeAuthoritativePages } from "../lib/scanSessionPages";
-import type { ScanPageRef } from "../lib/scanSessionPages";
+import type { ScanBatchResponse, ScanBatchFailure, ScanBatchResult } from "../../../../shared/scanPages";
 import type { ScannerSourcesResult, ScanProgressEvent } from "../../server/scanner/scanner-types";
 import { ScanPreviewModal } from "./ScanPreviewModal";
 import type { AnswerCard } from "../../../../shared/types";
@@ -69,28 +68,7 @@ interface ScanPage {
   ocrStatus: string;
 }
 
-interface PageResult {
-  recordId: string;
-  pageNum: number;
-  side: string;
-  imagePath: string;
-  objectiveScore: number;
-  subjectiveScore: number;
-  totalScore: number;
-  totalMaxScore: number;
-  needsReviewCount: number;
-}
-
-interface StudentResult {
-  studentId: string;
-  totalScore: number;
-  maxScore: number;
-  pageCount: number;
-  objectiveScore: number;
-  subjectiveScore: number;
-  needsReviewCount: number;
-  pages: PageResult[];
-}
+type StudentResult = ScanBatchResult;
 
 // UI-5: SSE 自动重连参数
 const MAX_RECONNECT = 5;
@@ -111,6 +89,14 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [pages, setPages] = useState<ScanPage[]>([]);
   const [errorMessage, setErrorMessage] = useState("");
   const [studentResults, setStudentResults] = useState<StudentResult[]>([]);
+  const [failures, setFailures] = useState<ScanBatchFailure[]>([]);
+  const [activeFailure, setActiveFailure] = useState<ScanBatchFailure | null>(null);
+  const [corrections, setCorrections] = useState<Record<string, string>>({});
+  const [resultsBusy, setResultsBusy] = useState(false);
+  const resultsBusyRef = useRef(false);
+  const [resultMessage, setResultMessage] = useState("");
+  const [uploadJobs, setUploadJobs] = useState<Record<string, string>>({});
+  const uploadState = useSyncExternalStore(scannerUploadManager.subscribe, scannerUploadManager.getState);
   const [activeStudent, setActiveStudent] = useState<StudentResult | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   // 用 ref 追踪最新值，避免 SSE onmessage / setTimeout 闭包捕获到过期的 state
@@ -259,58 +245,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             setState("done");
             // 通过 ref 读取最新页数，避免闭包捕获扫描开始时的空数组
             onScansComplete?.(sid, pagesRef.current.length);
-            // Fetch combined results after scan completes
-            fetchCombinedResults(sid);
-            // v2.5.1 审查修复：SSE 订阅晚到/重连只补发 done 不回放 page_done，本地页列表可能缺页甚至为空。
-            // 终态先取服务端权威扫描记录（GET /api/scanner/scan/:sid）重建页列表，
-            // 权威源不可用时回退本地 ref，再交全局管理器上传。
-            if (getScannerMode() === "remote") {
-              void (async () => {
-                let pageRefs: ScanPageRef[] = [];
-                try {
-                  const res = await authFetch(`/api/scanner/scan/${sid}`);
-                  if (res.ok) {
-                    const data = (await res.json()) as {
-                      records?: Array<{ id: string; pageNum: number; side: string }>;
-                    };
-                    pageRefs = mergeAuthoritativePages(
-                      data.records ?? [],
-                      pagesRef.current.map((p) => ({
-                        recordId: p.recordId,
-                        pageNum: p.pageNum,
-                        side: p.side,
-                      })),
-                    );
-                  }
-                } catch {
-                  /* 权威源不可用，走本地回退 */
-                }
-                if (pageRefs.length === 0) {
-                  pageRefs = pagesRef.current.map((p) => ({
-                    recordId: p.recordId,
-                    pageNum: p.pageNum,
-                    side: p.side === "back" ? ("back" as const) : ("front" as const),
-                  }));
-                }
-                if (pageRefs.length === 0) return; // 空会话无页可传
-                scannerUploadManager.startUpload({
-                  kind: "scan",
-                  cardId,
-                  name: `扫描_${cardId}_${new Date().toISOString().slice(0, 10)}`,
-                  dpi,
-                  paperSize,
-                  pages: pageRefs.map((pr) => ({
-                    pageNum: pr.pageNum,
-                    side: pr.side,
-                    getBlob: async () => {
-                      const r = await authFetch(`/api/scanner/scan-image/${pr.recordId}`);
-                      if (!r.ok) throw new Error(`读取本机扫描图失败（HTTP ${r.status}）`);
-                      return r.blob();
-                    },
-                  })),
-                });
-              })();
-            }
+            // Wait for teacher review before saving or uploading successful cards.
+            void fetchCombinedResults(sid);
             break;
         }
       };
@@ -338,16 +274,85 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     open();
   }
 
+  function applyResults(data: ScanBatchResponse) {
+    setStudentResults(data.results);
+    setFailures(data.failures);
+  }
+
+  async function readResults(sid: string, save = false): Promise<ScanBatchResponse> {
+    const res = await authFetch(`/api/scanner/session/${sid}/results`, { method: save ? "POST" : "GET" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || `汇总失败（HTTP ${res.status}）`);
+    return data as ScanBatchResponse;
+  }
+
   async function fetchCombinedResults(sid: string) {
+    if (resultsBusyRef.current) return;
+    resultsBusyRef.current = true;
+    setResultsBusy(true);
+    setErrorMessage("");
+    try { applyResults(await readResults(sid)); }
+    catch (err) { setErrorMessage(err instanceof Error ? err.message : "汇总失败，请重试"); }
+    finally { resultsBusyRef.current = false; setResultsBusy(false); }
+  }
+
+  async function saveSuccessful() {
+    if (resultsBusyRef.current) return;
+    resultsBusyRef.current = true;
+    setResultsBusy(true);
+    setErrorMessage("");
     try {
-      const res = await authFetch(`/api/scanner/session/${sid}/results`);
-      if (res.ok) {
-        const data = await res.json();
-        setStudentResults(data as StudentResult[]);
+      const remote = getScannerMode() === "remote";
+      if (remote && !isRemoteServerConfigured()) throw new Error("请先配置服务器地址");
+      const data = await readResults(sessionId, !remote);
+      applyResults(data);
+      if (remote) {
+        const nextJobs = { ...uploadJobs };
+        for (const result of data.results) {
+          if (nextJobs[result.groupId]) continue;
+          // Independent cards can finish even when another card fails remotely.
+          nextJobs[result.groupId] = scannerUploadManager.startUpload({
+            kind: "scan", cardId, name: `扫描_${result.studentId}`, dpi, paperSize,
+            pages: result.pages.map(page => ({
+              pageNum: page.pageNum, side: page.side, groupId: result.groupId,
+              layoutPage: page.layoutPage, studentId: result.studentId,
+              getBlob: async () => {
+                const res = await authFetch(`/api/scanner/scan-image/${page.recordId}`);
+                if (!res.ok) throw new Error(`读取本机扫描图失败（HTTP ${res.status}）`);
+                return res.blob();
+              },
+            })),
+          });
+        }
+        setUploadJobs(nextJobs);
+        setResultMessage("成功答题卡已加入上传队列；失败答题卡保留在本机，可继续订正。");
+      } else {
+        setResultMessage(`已保存 ${data.results.filter(r => r.saved).length} 份；${data.failures.length} 份失败，可继续处理。`);
       }
-    } catch (err) {
-      console.error("Failed to fetch combined results:", err);
-    }
+    } catch (err) { setErrorMessage(err instanceof Error ? err.message : "保存失败"); }
+    finally { resultsBusyRef.current = false; setResultsBusy(false); }
+  }
+
+  async function retryCard(failure: ScanBatchFailure) {
+    if (resultsBusyRef.current) return;
+    resultsBusyRef.current = true;
+    setResultsBusy(true);
+    setErrorMessage("");
+    try {
+      if (failure.stage === "saving") {
+        applyResults(await readResults(sessionId));
+      } else {
+        const res = await authFetch(`/api/scanner/session/${sessionId}/retry`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ groupId: failure.groupId, studentId: corrections[failure.groupId]?.trim() || undefined }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.message || "重新识别失败");
+        applyResults(data as ScanBatchResponse);
+      }
+      setResultMessage("已重新汇总，请核对后保存成功部分。");
+    } catch (err) { setErrorMessage(err instanceof Error ? err.message : "重试失败"); }
+    finally { resultsBusyRef.current = false; setResultsBusy(false); }
   }
 
   async function startScan() {
@@ -358,6 +363,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setPages([]);
     pagesRef.current = [];
     setStudentResults([]);
+    setFailures([]);
+    setCorrections({});
+    setUploadJobs({});
+    setResultMessage("");
     reconnectAttemptsRef.current = 0;
     completedRef.current = false;
     setDisconnected(false);
@@ -422,6 +431,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setPages([]);
     pagesRef.current = [];
     setStudentResults([]);
+    setFailures([]);
+    setCorrections({});
+    setUploadJobs({});
+    setResultMessage("");
     setActiveStudent(null);
     setProgressMessage("");
     setErrorMessage("");
@@ -646,9 +659,34 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           <div className="flex items-center gap-2 rounded-md border border-success-border bg-success-soft px-3 py-3 text-sm text-success-foreground">
             <Check size={20} className="shrink-0" />
             <span>
-              扫描完成 — 共 {studentResults.length > 0 ? `${studentResults.length} 名学生` : `${pages.length} 张`}
+              扫描完成 — {resultsBusy ? "正在汇总…" : `${studentResults.length} 份成功，${failures.length} 份失败`}
             </span>
           </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="primary" disabled={resultsBusy || !studentResults.some(r => scannerMode === "remote" ? !uploadJobs[r.groupId] : !r.saved)} onClick={() => void saveSuccessful()}>
+              {scannerMode === "remote" ? "保存成功部分到服务器" : "保存成功部分"}
+            </Button>
+            <Button variant="outline" disabled={resultsBusy} onClick={() => void fetchCombinedResults(sessionId)}>刷新汇总</Button>
+          </div>
+          {resultMessage && <p role="status" className="text-sm text-muted-foreground">{resultMessage}</p>}
+          {errorMessage && <p role="alert" className="text-sm text-destructive-fg">{errorMessage}</p>}
+          {failures.length > 0 && (
+            <div className="flex flex-col gap-3 rounded-md border border-warning-border bg-warning-soft p-3">
+              <strong>以下答题卡未保存</strong>
+              <p className="text-sm">可查看图片，订正学号后重新识别。缺页、错页或图像不清时，请整理原卷后重新扫描整份答题卡。</p>
+              {failures.map(failure => (
+                <div key={failure.groupId} className="flex flex-col gap-2 border-t border-border-subtle pt-2">
+                  <span className="text-sm">{failure.studentId || "未识别学号"} · {failure.pages.map(p => `第 ${p.pageNum} 张${p.side === "front" ? "正面" : "背面"}`).join("、")}：{failure.message}</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setActiveFailure(failure)}>查看失败卡</Button>
+                    {failure.stage !== "saving" && <Input aria-label={`第 ${Number(failure.groupId) + 1} 份答题卡订正学号`} placeholder="订正学号（可选）" value={corrections[failure.groupId] ?? ""} onChange={e => setCorrections(current => ({ ...current, [failure.groupId]: e.target.value }))} disabled={resultsBusy} />}
+                    <Button variant="outline" size="sm" disabled={resultsBusy} onClick={() => void retryCard(failure)}>{failure.stage === "saving" ? "重新汇总" : "重新识别此卡"}</Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Combined student result list */}
           {studentResults.length > 0 ? (
@@ -674,10 +712,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                       <TableCell numeric>
                         {sr.totalScore}/{sr.maxScore}
                       </TableCell>
-                      <TableCell numeric>
-                        {sr.objectiveScore}/{sr.maxScore - sr.subjectiveScore} · {sr.subjectiveScore}/
-                        {sr.subjectiveScore}
-                      </TableCell>
+                      <TableCell numeric>{sr.objectiveScore}/{sr.objectiveMaxScore} · {sr.subjectiveScore}/{sr.subjectiveMaxScore}</TableCell>
                       <TableCell numeric>
                         {sr.needsReviewCount > 0 ? (
                           <span className="text-warning-foreground">{sr.needsReviewCount}</span>
@@ -686,6 +721,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                         )}
                       </TableCell>
                       <TableCell>
+                        <span className="mr-2 text-xs text-muted-foreground">{scannerMode === "remote" ? (uploadState.jobs.find(j => j.id === uploadJobs[sr.groupId])?.message || (uploadJobs[sr.groupId] ? "已加入上传队列" : "待上传")) : (sr.saved ? "已保存" : "待保存")}</span>
                         <Button
                           variant="ghost"
                           size="sm"
@@ -737,7 +773,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             </TableWrap>
           )}
 
-          <Button variant="primary" block icon={<RefreshCw size={16} />} onClick={reset}>
+          <Button variant="primary" block disabled={resultsBusy} icon={<RefreshCw size={16} />} onClick={reset}>
             开始新扫描
           </Button>
         </div>
@@ -754,6 +790,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         </div>
       )}
 
+      {activeFailure && <ScanPreviewModal title="失败答题卡" subtitle={activeFailure.message} pages={activeFailure.pages.map(p => ({ ...p, imageUrl: imageUrl(p.recordId) }))} onClose={() => setActiveFailure(null)} />}
       {/* ── PDF-Style Student Detail Modal ──────────────── */}
       {activeStudent && (
         <ScanPreviewModal

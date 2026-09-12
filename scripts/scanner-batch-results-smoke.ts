@@ -1,0 +1,163 @@
+/** Isolated HTTP/DB regression. Set SCANNER_BATCH_MARIADB=1 with a fresh
+ * projectx_scanner_batch_* database to exercise MariaDB; otherwise uses temp SQLite. */
+import assert from "node:assert/strict";
+import { mkdtemp, mkdir } from "node:fs/promises";
+import path from "node:path";
+import express from "express";
+import { createDefaultCard } from "../src/shared/defaultCard";
+import { buildLayout } from "../src/shared/layout";
+import { collectSessionResults } from "../src/apps/answer-card/server/scanner/session-results";
+import { applyScanStudentId, type ScanBatchResponse } from "../src/shared/scanPages";
+import type { CombinedRecognitionResult } from "../src/shared/types";
+
+await mkdir("data", { recursive: true });
+const root = await mkdtemp(path.resolve("data/scanner-batch-"));
+process.env.ANSWER_CARD_DATA_DIR = path.join(root, "cards");
+process.env.PROJECTX_DB_PATH = path.join(root, "scanner.db");
+// config.yml is resolved from cwd; isolate it as well as the DB and card files.
+process.chdir(root);
+if (process.env.SCANNER_BATCH_MARIADB === "1") {
+  assert.equal(process.env.PROJECTX_MARIADB_HOST, "127.0.0.1");
+  assert.match(process.env.PROJECTX_MARIADB_DATABASE ?? "", /^projectx_scanner_batch_[a-z0-9_]+$/);
+} else {
+  for (const name of Object.keys(process.env)) if (/^PROJECTX_(MARIADB|MYSQL)_/.test(name)) delete process.env[name];
+}
+
+const { initializeDatabase, getMysqlDb, closeDatabase, initMariadbSchema } = await import("../src/server/db");
+const { resetAdapter } = await import("../src/server/db/mysql");
+initializeDatabase();
+const db = getMysqlDb();
+if (process.env.SCANNER_BATCH_MARIADB === "1") await initMariadbSchema();
+const store = await import("../src/apps/answer-card/server/database/scan-store");
+const { saveCard } = await import("../src/apps/answer-card/server/storage");
+const { CardRepository } = await import("../src/server/repositories/CardRepository");
+const { createScannerRouter } = await import("../src/apps/answer-card/server/scanner");
+const card = createDefaultCard("91512001");
+card.title = "扫描失败恢复验证";
+card.bodyBlocks = [{ id: "batch_q", type: "objective", title: "选择题", questionStart: 1, questionCount: 1,
+  optionCount: 4, mode: "single", scorePerQuestion: 5, answerKey: { "1": ["A"] }, density: "normal" }];
+assert.equal(buildLayout(card).pages.length, 1);
+await new CardRepository().createCard(card);
+await new CardRepository().updateCard(card);
+await saveCard(card);
+const role = await db.get<{ id: number }>("SELECT id FROM roles WHERE name = 'student'");
+assert(role);
+const users: number[] = [];
+for (const studentNumber of ["91001", "91002", "91003"]) {
+  const row = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)",
+    `batch_${studentNumber}`, "test-no-login", `测试${studentNumber}`, role.id, studentNumber);
+  users.push(row.lastInsertRowid);
+}
+const exam = await db.run("INSERT INTO exams (name,card_id,status) VALUES (?,?,'draft')", "扫描验证", card.id);
+for (const id of users) await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, id);
+const session = await store.createSession(card.id, "batch");
+const records = [];
+for (let i = 0; i < users.length; i++) {
+  const record = await store.createScanRecord({ sessionId: session.id, cardId: card.id, pageNum: i + 1, imagePath: path.join(root, `page_${i}.png`) });
+  await store.updateScanOcrResult(record.id, `9100${i + 1}`, 1, "done");
+  await store.upsertRecognitionResult({ scanRecordId: record.id,
+    objectiveJson: JSON.stringify([{ questionNumber: 1, selectedOptions: ["A"], confidence: 1 }]),
+    subjectiveJson: "[]", gradeStatus: "done" });
+  records.push(record);
+}
+await store.updateSessionStatus(session.id, "completed");
+const app = express();
+app.use(express.json());
+app.use("/api/scanner", createScannerRouter(false));
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.status(500).json({ message: err.message }));
+const server = app.listen(0, "127.0.0.1");
+await new Promise<void>(resolve => server.once("listening", resolve));
+const address = server.address() as { port: number };
+const url = `http://127.0.0.1:${address.port}/api/scanner/session/${session.id}/results`;
+async function request(method = "GET") {
+  const res = await fetch(url, { method });
+  const body = await res.json();
+  assert(res.ok, JSON.stringify(body));
+  return body as ScanBatchResponse;
+}
+async function scoreCount() { return Number((await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM student_scores WHERE exam_id = ?", exam.lastInsertRowid))!.n); }
+try {
+  const initial = await request();
+  assert.equal(initial.results.length, 3);
+  assert.equal(await scoreCount(), 0, "Preview must not save grades");
+
+  // Malformed JSON is isolated inside the card loop; later students still grade.
+  await db.run("UPDATE twain_recognition_results SET objective_json = ? WHERE scan_record_id = ?", "{broken", records[1].id);
+  const broken = await request();
+  assert.deepEqual(broken.results.map(r => r.studentId), ["91001", "91003"]);
+  assert.equal(broken.failures[0].pages[0].recordId, records[1].id);
+  const partial = await request("POST");
+  assert.equal(partial.failures.length, 1);
+  assert.equal(await scoreCount(), 2, "Save all successful cards while keeping the failure");
+  assert.equal((await request()).failures.length, 1, "Partial cache must not hide the failure");
+
+  await db.run("UPDATE twain_recognition_results SET objective_json = ? WHERE scan_record_id = ?",
+    JSON.stringify([{ questionNumber: 1, selectedOptions: ["A"], confidence: 1 }]), records[1].id);
+  // A successful card manually adjusted after saving must not be overwritten by retrying others.
+  await db.run("UPDATE student_scores SET total_score = 4 WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, users[0]);
+  const recovered = await request("POST");
+  assert.equal(recovered.results.length, 3);
+  assert.equal(await scoreCount(), 3);
+  assert.equal((await db.get<{ total_score: number }>("SELECT total_score FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, users[0]))!.total_score, 4);
+
+  // Force an actual DB failure for the first student, then check that later cards commit.
+  await db.run("DELETE FROM twain_student_grading_results WHERE session_id = ?", session.id);
+  await db.run("DELETE FROM question_scores WHERE exam_id = ?", exam.lastInsertRowid);
+  await db.run("DELETE FROM student_scores WHERE exam_id = ?", exam.lastInsertRowid);
+  if (db.dialect === "sqlite") {
+    await db.exec(`CREATE TRIGGER scanner_batch_failure BEFORE INSERT ON student_scores WHEN NEW.student_id = ${users[0]} BEGIN SELECT RAISE(ABORT, 'injected card failure'); END`);
+  } else {
+    await db.exec(`CREATE TRIGGER scanner_batch_failure BEFORE INSERT ON student_scores FOR EACH ROW BEGIN IF NEW.student_id = ${users[0]} THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'injected card failure'; END IF; END`);
+  }
+  const saved = await request("POST");
+  assert.equal(saved.failures[0].stage, "saving");
+  assert.deepEqual(saved.results.map(r => r.studentId), ["91002", "91003"]);
+  assert.equal(await scoreCount(), 2);
+  await db.exec("DROP TRIGGER scanner_batch_failure");
+  assert.equal((await request("POST")).failures.length, 0);
+  assert.equal(await scoreCount(), 3);
+
+  const raw = (await store.listScanRecordsGroupedByStudent(session.id)).flatMap(g => g.records);
+  const missing = structuredClone(raw);
+  missing[1].recognition = null; missing[1].student_id = null; missing[1].ocr_status = "failed";
+  const result = await collectSessionResults(card, missing, []);
+  assert.equal(result.results.length, 2);
+  assert.equal(result.failures[0].pages[0].recordId, records[1].id, "Unrecognized cards must be listed");
+  const duplicate = structuredClone(raw); duplicate[1].student_id = duplicate[0].student_id;
+  assert.equal((await collectSessionResults(card, duplicate, [])).failures.length, 2, "Duplicate student cards must not silently merge");
+  const duplex = structuredClone(card); duplex.sided = "double";
+  const objective = duplex.bodyBlocks[0];
+  assert(objective.type === "objective");
+  for (let count = 10; count <= 400 && buildLayout(duplex).pages.length < 2; count += 10) objective.questionCount = count;
+  assert.equal(buildLayout(duplex).pages.length, 2, "Duplex fixture should span two layout pages");
+  const twoCards = [
+    { ...raw[0], id: "front1", page_num: 1, side: "front" as const },
+    { ...raw[0], id: "back1", page_num: 1, side: "back" as const, student_id: null },
+    { ...raw[2], id: "front2", page_num: 2, side: "front" as const },
+    { ...raw[2], id: "back2", page_num: 2, side: "back" as const, student_id: null },
+  ];
+  const paired = await collectSessionResults(duplex, [...twoCards].reverse(), []);
+  assert.equal(paired.results.length, 2, "Sort actual same-number front/back records and inherit within card");
+  assert.deepEqual(paired.results[0].pages.map(p => p.layoutPage), [1, 2]);
+  const missingBack = await collectSessionResults(duplex, twoCards.filter(r => r.id !== "back1"), []);
+  assert.equal(missingBack.failures.length, 1, "Missing back must not become a partial successful grade");
+  assert.equal(missingBack.results[0].studentId, "91003", "Missing back must not shift the next card's pairing");
+  const conflict = structuredClone(twoCards); conflict[1].student_id = "99999";
+  assert.equal((await collectSessionResults(duplex, conflict, [])).failures.length, 1, "Conflicting IDs must not split a physical card into students");
+
+  const idOnly: CombinedRecognitionResult = { status: "failed", message: "Student ID recognition failed.",
+    quality: { matchCount: 6, missingRoles: [] }, studentId: { status: "failed", value: null }, questions: [], subjectiveQuestions: [] };
+  applyScanStudentId(idOnly, "91002");
+  assert.equal(idOnly.status, "ok", "Manual ID correction resolves only an ID-only native failure");
+  for (const message of ["Unable to find enough layout markers", "Cannot read image", "Student ID recognition failed."]) {
+    const damaged: CombinedRecognitionResult = { status: "failed", message, quality: {}, questions: [], subjectiveQuestions: [] };
+    applyScanStudentId(damaged, "91002");
+    assert.equal(damaged.status, "failed", "ID correction must not clear image/marker failures or absent quality evidence");
+  }
+  console.log(`PASS scanner batch HTTP + ${db.dialect}: preview, bad JSON, partial save, cache retry, DB failure continuation, preserved saved grades, missing ID, duplicate cards, duplex gaps/conflicts, ID-only correction`);
+} finally {
+  await db.exec("DROP TRIGGER IF EXISTS scanner_batch_failure");
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  resetAdapter();
+  closeDatabase();
+}

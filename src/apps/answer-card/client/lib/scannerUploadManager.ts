@@ -6,6 +6,7 @@
 import { authFetch, getStoredApiKey, remoteScannerFetch } from "../auth/api";
 import { SERVER_URL_KEY } from "./scannerMode";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
+import { applyScanStudentId } from "../../../../shared/scanPages";
 
 export type UploadJobKind = "scan" | "import";
 export type UploadJobStatus =
@@ -22,6 +23,10 @@ export interface UploadPageInput {
   pageNum: number;
   side: "front" | "back";
   getBlob: () => Promise<Blob>;
+  /** Stable card group and layout page from the local session summary. */
+  groupId?: string;
+  layoutPage?: number;
+  studentId?: string;
 }
 
 export interface StartUploadInput {
@@ -62,6 +67,8 @@ interface PageRecord {
   done: boolean;
   failed: boolean;
   studentId?: { status: string; value: string };
+  anchor?: PageRecord;
+  pairingError?: string;
 }
 
 interface JobRecord {
@@ -284,7 +291,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     // Linux receives recognition data; the Windows client owns the native recognizer.
     const localForm = new FormData();
     localForm.append("file", blobData, `page_${page.input.pageNum}.jpg`);
-    localForm.append("page", String(page.input.side === "back" ? 2 : 1));
+    localForm.append("page", String(page.input.layoutPage ?? (page.input.side === "back" ? 2 : 1)));
     localForm.append("dpi", String(j.dpi));
     localForm.append("includeCrops", "1");
     const recognized = await (deps.localFetch ?? authFetch)(`/api/cards/${encodeURIComponent(j.cardId)}/recognition`, {
@@ -292,13 +299,16 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     });
     if (!recognized.ok) throw new Error(`本机识别失败（HTTP ${recognized.status}）`);
     const recognition = await recognized.json();
-    // A duplex back page may omit the ID area. Inherit only from its immediate
-    // front page in this job, never from another student or an earlier job.
-    if (!recognition.studentId?.value && page.input.side === "back") {
-      const previous = j.pages[j.pages.indexOf(page) - 1];
-      if (previous?.input.side === "front" && previous.done && previous.studentId) {
-        recognition.studentId = { ...previous.studentId, status: "inherited" };
+    // Dependencies are fixed when the job is created, independent of array adjacency,
+    // retry counts or network latency. Never borrow an ID across physical cards.
+    if (page.input.studentId) {
+      applyScanStudentId(recognition, page.input.studentId);
+    } else if (page.anchor) {
+      const inherited = page.anchor.studentId;
+      if (recognition.studentId?.value && recognition.studentId.value !== inherited?.value) {
+        throw new Error("同一份答题卡正反面学号不一致，请核对后重新上传");
       }
+      if (!recognition.studentId?.value && inherited) applyScanStudentId(recognition, inherited.value, true);
     }
     if (recognition.status === "failed" || !recognition.studentId?.value) {
       throw new Error("本机未识别到有效学号，请检查答题卡后重试上传");
@@ -423,8 +433,10 @@ if (j.cancelled) throw cancelledError(j);
     let lastErrMsg = "";
     for (const page of j.pages) {
       if (page.done || page.failed) continue;
-      setStatus(j, "uploading", `正在上传第 ${page.input.pageNum}/${j.pages.length} 页`);
+      setStatus(j, "uploading", `正在上传第 ${j.pages.indexOf(page) + 1}/${j.pages.length} 面（第 ${page.input.pageNum} 张${page.input.side === "front" ? "正面" : "背面"}）`);
       try {
+        if (page.pairingError) throw new Error(page.pairingError);
+        if (page.anchor && !page.anchor.done) throw new Error("同份答题卡的首页尚未成功，请重试失败页；背面不会借用其他学生的学号");
         await runWithRetry(j, "上传", () => uploadPageOnce(j, page));
         page.done = true;
         releasePage(page);
@@ -439,14 +451,14 @@ if (j.cancelled) throw cancelledError(j);
 
     const failedPages = j.pages.filter((p) => p.failed);
     if (failedPages.length > 0) {
-      const nums = failedPages.map((p) => p.input.pageNum).join("、");
+      const nums = failedPages.map(p => `第 ${p.input.pageNum} 张${p.input.side === "front" ? "正面" : "背面"}`).join("、");
       for (const p of j.pages) {
         if (p.done && !p.failed) releasePage(p); // 失败页保留数据以供重试，成功页即刻释放
       }
       setStatus(
         j,
         "error",
-        `${failedPages.length} 页上传失败（第 ${nums} 页）：${lastErrMsg}。可点「重试失败页」续传`,
+        `${failedPages.length} 面上传失败（${nums}）：${lastErrMsg}。可点「重试失败页」续传`,
       );
       return; // 有失败页不发 complete：服务端会话保持 uploading 可续传
     }
@@ -495,6 +507,31 @@ if (j.cancelled) throw cancelledError(j);
 
   function startUpload(input: StartUploadInput): string {
     if (input.pages.length === 0) throw new Error("没有可上传的页面");
+    const pages: PageRecord[] = input.pages.map(p => ({ input: { ...p }, token: "", done: false, failed: false }));
+    // TWAIN front/back use the same physical pageNum. Sort deterministically even
+    // when the database or reconnect delivers the back before the front.
+    pages.sort((a, b) => a.input.pageNum - b.input.pageNum || (a.input.side === b.input.side ? 0 : a.input.side === "front" ? -1 : 1));
+    const groups = new Map<string, PageRecord[]>();
+    for (const page of pages) {
+      const key = page.input.groupId ?? `sheet:${page.input.pageNum}`;
+      const group = groups.get(key) ?? [];
+      group.push(page);
+      groups.set(key, group);
+    }
+    for (const group of groups.values()) {
+      const anchor = group.find(p => (p.input.layoutPage ?? (p.input.side === "front" ? 1 : 2)) === 1);
+      const seen = new Set<number>();
+      const duplicate = group.some(p => {
+        const position = p.input.layoutPage ?? (p.input.side === "front" ? 1 : 2);
+        if (seen.has(position)) return true;
+        seen.add(position); return false;
+      });
+      for (const page of group) {
+        if (duplicate) page.pairingError = "同份答题卡存在重复页面，请核对页序后重新上传";
+        else if (!anchor) page.pairingError = "未找到同份答题卡的首页，请补齐正面后重新上传";
+        else if (page !== anchor) page.anchor = anchor;
+      }
+    }
     const job: JobRecord = {
       id: genId(),
       kind: input.kind,
@@ -502,7 +539,7 @@ if (j.cancelled) throw cancelledError(j);
       cardId: input.cardId,
       dpi: input.dpi ?? 300,
       paperSize: input.paperSize ?? "A4",
-      pages: input.pages.map((p) => ({ input: p, token: "", done: false, failed: false })),
+      pages,
       status: "queued",
       resumePhase: "creating",
       remoteSessionId: null,

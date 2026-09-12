@@ -1,8 +1,8 @@
 import { persistScannerResultToMainDb } from "../../../../server/services/scannerResultPersistence";
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { listSources, runScanSession, createScanSession, scansDir, getCardScansWithStudents } from "./scanner-service";
+import { listSources, runScanSession, createScanSession, runOcrOnSession, getCardScansWithStudents } from "./scanner-service";
 import { cancelScan } from "./twain-bridge";
 import {
   listScanRecords,
@@ -14,13 +14,11 @@ import {
   deleteSession,
   listScanRecordsGroupedByStudent,
   upsertStudentGradingResult,
-  listStudentGradingResults,
-  type ScanRecordWithResult
+  listStudentGradingResults
 } from "../database/scan-store";
 import { safeId, readCard, dataDir } from "../storage";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
-import type { CombinedRecognitionResult } from "../../../../shared/types";
-import { gradeSessionStudentResults, type CombinedStudentResult } from "../../../../shared/grading";
+import { collectSessionResults, groupSessionPages } from "./session-results";
 
 // persistScannerResultToMainDb 的串行队列（模块级，跨请求生效）：
 // better-sqlite3 是单连接,并发事务会在 BEGIN/COMMIT 之间互相穿插（见 SqliteAdapter.transaction 注释），
@@ -410,104 +408,67 @@ export function createScannerRouter(twainEnabled = true): Router {
 
   // ── Combined Student Results (Session-level) ─────────
 
-  router.get("/session/:sessionId/results", async (req, res, next) => {
+  // Preview is read-only. Saving is explicit and each card is isolated from failures in others.
+  router.route("/session/:sessionId/results")
+    .get(async (req, res, next) => {
+      try { await sessionResults(req.params.sessionId, false, res); } catch (error) { next(error); }
+    })
+    .post(async (req, res, next) => {
+      try {
+        await enqueuePersist(async () => { await sessionResults(req.params.sessionId, true, res); });
+      } catch (error) { next(error); }
+    });
+
+  async function sessionResults(id: string, save: boolean, res: Response) {
+    const sessionId = safeId(id);
+    const session = await getSession(sessionId);
+    if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
+    if (session.status !== "completed") { res.status(409).json({ message: "请等待扫描和识别全部完成" }); return; }
+    const card = await readCard(session.card_id);
+    if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+    const groups = await listScanRecordsGroupedByStudent(sessionId);
+    const cached = await listStudentGradingResults(sessionId);
+    const result = await collectSessionResults(card, groups.flatMap(g => g.records), cached, save ? async combined => {
+      await persistScannerResultToMainDb(session.card_id, combined);
+      await upsertStudentGradingResult({
+        sessionId, studentId: combined.studentId,
+        objectiveJson: JSON.stringify(combined.objectiveQuestions),
+        subjectiveJson: JSON.stringify(combined.subjectiveQuestions),
+        totalScore: combined.totalScore, maxScore: combined.totalMaxScore, pageCount: combined.pageCount,
+      });
+    } : undefined);
+    res.json(result);
+  }
+
+  router.post("/session/:sessionId/retry", async (req, res, next) => {
     try {
+      if (!twainEnabled) { res.status(409).json({ message: "请在 Windows 扫描端重新识别" }); return; }
       const sessionId = safeId(req.params.sessionId);
-      const session = await getSession(sessionId);
-      if (!session) {
-        res.status(404).json({ message: "扫描会话不存在" });
-        return;
-      }
-
-      // Check cached results first
-      const cached = await listStudentGradingResults(sessionId);
-      if (cached.length > 0) {
-        res.json(cached.map((r) => ({
-          studentId: r.student_id,
-          totalScore: r.total_score,
-          maxScore: r.max_score,
-          pageCount: r.page_count,
-          objectiveJson: r.objective_json ? JSON.parse(r.objective_json) : null,
-          subjectiveJson: r.subjective_json ? JSON.parse(r.subjective_json) : null
-        })));
-        return;
-      }
-
-      // Compute combined results if not cached
-      const card = await readCard(session.card_id);
-      if (!card) {
-        res.status(404).json({ message: "答题卡不存在" });
-        return;
-      }
-
-      const groups = await listScanRecordsGroupedByStudent(sessionId);
-      const results: CombinedStudentResult[] = [];
-
-      for (const group of groups) {
-        const pages = group.records.filter((r) => r.recognition)
-          .map((r) => ({
-            recordId: r.id,
-            pageNum: r.page_num,
-            side: r.side,
-            imagePath: r.image_path,
-            recognition: {
-              status: "ok",
-              studentId: { status: "ok" as const, value: r.student_id },
-              questions: r.recognition?.objective_json ? JSON.parse(r.recognition.objective_json) : [],
-              subjectiveQuestions: r.recognition?.subjective_json ? JSON.parse(r.recognition.subjective_json) : [],
-              message: r.ocr_error ?? undefined
-            } as CombinedRecognitionResult,
-            ocrStatus: r.ocr_status
-          }));
-
-        if (pages.length === 0) continue;
-
-        try {
-          const combined = gradeSessionStudentResults(card, pages);
-          results.push(combined);
-
-          // Cache the result in scanner.db
-          await enqueuePersist(async () => { await persistScannerResultToMainDb(session.card_id, combined); });
-          await upsertStudentGradingResult({
-            sessionId,
-            studentId: combined.studentId,
-            objectiveJson: JSON.stringify(combined.objectiveQuestions),
-            subjectiveJson: JSON.stringify(combined.subjectiveQuestions),
-            totalScore: combined.totalScore,
-            maxScore: combined.totalMaxScore,
-            pageCount: combined.pageCount
-          });
-
-          // Also persist to projectx.db for linked exams (串行入队，事务原子写)
-        } catch (err) {
-          console.error(`[Scanner] Combined grading failed for student ${group.studentId}:`, err);
-          throw err;
+      // Share the save queue: corrections cannot race a save or another retry.
+      await enqueuePersist(async () => {
+        const session = await getSession(sessionId);
+        if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
+        if (session.status !== "completed") { res.status(409).json({ message: "请等待扫描完成" }); return; }
+        const card = await readCard(session.card_id);
+        if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+        const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
+        const cached = await listStudentGradingResults(sessionId);
+        const preview = await collectSessionResults(card, records, cached);
+        const groupId = String(req.body?.groupId ?? "");
+        if (!preview.failures.some(f => f.groupId === groupId)) {
+          res.status(409).json({ message: "此答题卡未失败，请刷新结果后重试" }); return;
         }
-      }
-
-      res.json(results.map((r) => ({
-        studentId: r.studentId,
-        totalScore: r.totalScore,
-        maxScore: r.totalMaxScore,
-        pageCount: r.pageCount,
-        objectiveScore: r.objectiveScore,
-        subjectiveScore: r.subjectiveScore,
-        needsReviewCount: r.needsReviewCount,
-        pages: r.pages.map((p) => ({
-          recordId: p.recordId,
-          pageNum: p.pageNum,
-          side: p.side,
-          imagePath: p.imagePath,
-          objectiveScore: p.objectiveScore,
-          subjectiveScore: p.subjectiveScore,
-          totalScore: p.totalScore,
-          totalMaxScore: p.totalMaxScore,
-          needsReviewCount: p.needsReviewCount
-        }))
-      })));
-    } catch (error) {
-      next(error);
-    }
+        const studentId = req.body?.studentId;
+        if (studentId !== undefined && (typeof studentId !== "string" || !/^[0-9A-Za-z_-]{1,64}$/.test(studentId))) {
+          res.status(400).json({ message: "请输入有效学号（1–64 位字母、数字、下划线或短横线）" }); return;
+        }
+        const rows = groupSessionPages(card, records).groups.get(groupId)!;
+        await runOcrOnSession(sessionId, session.card_id, () => {}, {
+          recordIds: new Set(rows.map(r => r.record.id)), studentId,
+        });
+        await sessionResults(sessionId, false, res);
+      });
+    } catch (error) { next(error); }
   });
 
   // ── Scan Image Serving ────────────────────────────────

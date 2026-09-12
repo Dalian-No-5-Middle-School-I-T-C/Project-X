@@ -33,8 +33,9 @@ const rec = (id: string, pageNum: number, side = "front") => ({ id, pageNum, sid
 
 // 场景 ④：双面扫描同页码双记录均保留
 {
-  const merged = mergeAuthoritativePages([rec("a", 1, "front"), rec("b", 1, "back")], []);
+  const merged = mergeAuthoritativePages([rec("b", 1, "back"), rec("a", 1, "front")], []);
   assert(merged.length === 2, "④: 同页码正反面两条记录都保留");
+  assert(merged[0].recordId === "a", "④: 即使数据库先返回背面，也必须先处理正面");
   assert(merged.filter((p) => p.side === "back").length === 1, "④: back 页保留");
 }
 

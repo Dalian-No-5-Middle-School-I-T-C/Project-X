@@ -664,7 +664,7 @@ router.get("/ai/status", async (req, res) => {
       res.json({
         available: false,
         reason: "LLM service is not reachable.",
-        defaultModel: userProviders.length > 0 ? "auto" : null,
+        defaultModel: null,
         models: [],
         providers: userProviders
       });

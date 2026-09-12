@@ -160,6 +160,8 @@ async function main() {
   {
     const input = baseInput(2);
     input.pages[1].side = "back";
+    input.pages[1].pageNum = 1;
+    input.pages.reverse(); // Real database ORDER BY side can return the back first.
     const students: string[] = [];
     const mgr = createScannerUploadManager(deps({
       localFetch: async (_url, init) => jsonRes({ status: "partial",
@@ -178,6 +180,127 @@ async function main() {
     orphan.pages[0].side = "back";
     const failed = await waitTerminal(mgr, mgr.startUpload(orphan));
     assert(failed.status === "error", "孤立背面不得继承上个任务的学号");
+  }
+  // Slow front upload exceeds the old 1s+3s retry window. A second pump request
+  // must not start its back or another job; no dependency retry budget is spent.
+  {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const recognized: string[] = [];
+    const uploaded: string[] = [];
+    let blocked = false;
+    const input = baseInput(2);
+    input.pages[1].pageNum = 1;
+    input.pages[1].side = "back";
+    input.pages.reverse();
+    const mgr = createScannerUploadManager(deps({
+      localFetch: async (_url, init) => {
+        const side = String((init?.body as FormData).get("page"));
+        recognized.push(side);
+        return jsonRes({ status: "ok", studentId: { status: "ok", value: side === "1" ? "81001" : null }, questions: [], subjectiveQuestions: [] });
+      },
+      remoteFetch: async (url, init) => {
+        if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "slow", uploadTokens: ["s1", "s2"] });
+        if (url.endsWith(PAGES)) {
+          const form = init!.body as FormData;
+          if (form.get("side") === "front" && !blocked) { blocked = true; await gate; }
+          uploaded.push(JSON.parse(String(form.get("recognition"))).studentId.value);
+        }
+        return jsonRes({ ok: true });
+      },
+    }));
+    const id = mgr.startUpload(input);
+    const other = mgr.startUpload(baseInput(1));
+    await sleepReal(4_200);
+    assert(recognized.join(",") === "1", "慢首页未完成时，背面与其他任务必须等待");
+    assert(mgr.getState().jobs[0].failedPages.length === 0, "等待首页不得耗尽重试预算");
+    release();
+    assert((await waitTerminal(mgr, id)).status === "done", "慢网络恢复后双面应完成");
+    assert((await waitTerminal(mgr, other)).status === "done", "全局队列应继续");
+    assert(uploaded.join(",") === "81001,81001,81001", "慢网络继承学号应稳定");
+  }
+
+  // A failed front blocks only its own back. Manual retry repairs the dependency
+  // before retrying the back, reuses tokens, and leaves other successful cards alone.
+  {
+    let frontFails = true;
+    let backRecognitions = 0;
+    let thirdRecognitions = 0;
+    const uploaded: string[] = [];
+    const input = baseInput(3);
+    input.pages[1].pageNum = 1; input.pages[1].side = "back";
+    input.pages[2].pageNum = 2;
+    const mgr = createScannerUploadManager(deps({
+      localFetch: async (_url, init) => {
+        const form = init!.body as FormData;
+        const file = form.get("file") as File;
+        const back = form.get("page") === "2";
+        if (back) backRecognitions++;
+        if (file.name === "page_2.jpg") thirdRecognitions++;
+        return jsonRes({ status: "ok", studentId: { status: "ok", value: back ? null : file.name === "page_1.jpg" ? "81001" : "81002" }, questions: [], subjectiveQuestions: [] });
+      },
+      remoteFetch: async (url, init) => {
+        if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "retry-pair", uploadTokens: ["f", "b", "third"] });
+        if (url.endsWith(PAGES)) {
+          const form = init!.body as FormData;
+          if (form.get("token") === "f" && frontFails) throw new Error("network unavailable for first card");
+          uploaded.push(`${form.get("token")}:${JSON.parse(String(form.get("recognition"))).studentId.value}`);
+        }
+        return jsonRes({ ok: true });
+      },
+    }));
+    const id = mgr.startUpload(input);
+    assert((await waitTerminal(mgr, id)).status === "error", "失败首页应记录错误");
+    assert(backRecognitions === 0 && thirdRecognitions === 1, "只阻断依赖背面，其他卡继续");
+    frontFails = false;
+    mgr.retryFailed(id);
+    assert((await waitTerminal(mgr, id)).status === "done", "首页修复后依赖页应自动恢复");
+    assert(uploaded.join(",") === "third:81002,f:81001,b:81001", "重试应维持卡片和 token 配对");
+    assert(thirdRecognitions === 1, "已成功卡不得重新识别上传");
+  }
+
+  // A page-number gap is not a pair, even if array elements are adjacent.
+  {
+    const input = baseInput(2); input.pages[1].pageNum = 9; input.pages[1].side = "back";
+    const mock = makeRemoteMock({
+      [SESSIONS]: [() => jsonRes({ sessionId: "gap", uploadTokens: ["a", "b"] })],
+      [PAGES]: [() => jsonRes({ ok: true })], [COMPLETE]: [() => jsonRes({ ok: true })],
+    });
+    const mgr = createScannerUploadManager(deps({ remoteFetch: mock.fn }));
+    const r = await waitTerminal(mgr, mgr.startUpload(input));
+    assert(r.status === "error" && r.failedPages.includes(9), "不连续纸张不得配对");
+    assert(mock.counters[PAGES] === 1 && !mock.counters[COMPLETE], "孤立背面不得上传或触发 complete");
+  }
+  // Three-page cards keep one anchor across physical sheets and send the actual
+  // layout page to native OMR; a teacher-confirmed ID survives re-recognition.
+  {
+    const input = baseInput(3);
+    input.pages = [
+      { pageNum: 1, side: "front", layoutPage: 1, groupId: "card-a", studentId: "91002", getBlob: async () => blob() },
+      { pageNum: 1, side: "back", layoutPage: 2, groupId: "card-a", studentId: "91002", getBlob: async () => blob() },
+      { pageNum: 2, side: "front", layoutPage: 3, groupId: "card-a", studentId: "91002", getBlob: async () => blob() },
+    ];
+    const localPages: string[] = [];
+    const uploadedIds: string[] = [];
+    const mgr = createScannerUploadManager(deps({
+      localFetch: async (_url, init) => {
+        localPages.push(String((init!.body as FormData).get("page")));
+        return jsonRes({ status: "failed", message: "Student ID recognition failed.", quality: { matchCount: 6, missingRoles: [] },
+          studentId: { status: "failed", value: null }, questions: [], subjectiveQuestions: [] });
+      },
+      remoteFetch: async (url, init) => {
+        if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "multi", uploadTokens: ["a", "b", "c"] });
+        if (url.endsWith(PAGES)) {
+          const recognition = JSON.parse(String((init!.body as FormData).get("recognition")));
+          assert(recognition.status === "ok", "订正的学号应仅修复 ID 错误");
+          uploadedIds.push(recognition.studentId.value);
+        }
+        return jsonRes({ ok: true });
+      },
+    }));
+    assert((await waitTerminal(mgr, mgr.startUpload(input))).status === "done", "跨纸张多页卡应完成");
+    assert(localPages.join(",") === "1,2,3", "必须使用真实布局页码");
+    assert(uploadedIds.join(",") === "91002,91002,91002", "订正后的学号必须贯穿上传链路");
   }
   console.log("scanner-upload-manager-smoke: 全部通过");
 }
