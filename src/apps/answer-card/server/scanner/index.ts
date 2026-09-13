@@ -1,4 +1,5 @@
-import { persistScannerResultToMainDb } from "../../../../server/services/scannerResultPersistence";
+import { processScannerSession } from "../../../../server/services/scannerSubmissions";
+import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
 import { Router, type Response } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -12,9 +13,7 @@ import {
   updateSessionStatus,
   listSessions,
   deleteSession,
-  listScanRecordsGroupedByStudent,
-  upsertStudentGradingResult,
-  listStudentGradingResults
+  listScanRecordsGroupedByStudent
 } from "../database/scan-store";
 import { safeId, readCard, dataDir } from "../storage";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
@@ -38,6 +37,7 @@ function enqueuePersist(task: () => Promise<void>): Promise<void> {
  */
 export function createScannerRouter(twainEnabled = true): Router {
   const router = Router();
+  router.use(scannerLegacyRecoveryRouter());
 
   // Write scanner result to projectx.db for linked exams
   // Progress event emitters by sessionId (for WebSocket integration)
@@ -411,7 +411,7 @@ export function createScannerRouter(twainEnabled = true): Router {
   // Preview is read-only. Saving is explicit and each card is isolated from failures in others.
   router.route("/session/:sessionId/results")
     .get(async (req, res, next) => {
-      try { await sessionResults(req.params.sessionId, false, res); } catch (error) { next(error); }
+      try { await sessionResults(req.params.sessionId, false, res, false, req.query.previewOnly === "1"); } catch (error) { next(error); }
     })
     .post(async (req, res, next) => {
       try {
@@ -419,24 +419,21 @@ export function createScannerRouter(twainEnabled = true): Router {
       } catch (error) { next(error); }
     });
 
-  async function sessionResults(id: string, save: boolean, res: Response) {
+  router.post("/session/:sessionId/validate", async (req, res, next) => {
+    try { await enqueuePersist(() => sessionResults(req.params.sessionId, false, res, true)); }
+    catch (error) { next(error); }
+  });
+
+  async function sessionResults(id: string, save: boolean, res: Response, validate = false, previewOnly = false) {
     const sessionId = safeId(id);
     const session = await getSession(sessionId);
     if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
     if (session.status !== "completed") { res.status(409).json({ message: "请等待扫描和识别全部完成" }); return; }
     const card = await readCard(session.card_id);
     if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
-    const groups = await listScanRecordsGroupedByStudent(sessionId);
-    const cached = await listStudentGradingResults(sessionId);
-    const result = await collectSessionResults(card, groups.flatMap(g => g.records), cached, save ? async combined => {
-      await persistScannerResultToMainDb(session.card_id, combined);
-      await upsertStudentGradingResult({
-        sessionId, studentId: combined.studentId,
-        objectiveJson: JSON.stringify(combined.objectiveQuestions),
-        subjectiveJson: JSON.stringify(combined.subjectiveQuestions),
-        totalScore: combined.totalScore, maxScore: combined.totalMaxScore, pageCount: combined.pageCount,
-      });
-    } : undefined);
+    const result = previewOnly
+      ? await collectSessionResults(card, (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records), [])
+      : await processScannerSession(card, sessionId, save ? "save" : validate ? "validate" : "preview");
     res.json(result);
   }
 
@@ -452,10 +449,10 @@ export function createScannerRouter(twainEnabled = true): Router {
         const card = await readCard(session.card_id);
         if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
         const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
-        const cached = await listStudentGradingResults(sessionId);
-        const preview = await collectSessionResults(card, records, cached);
+        const preview = await processScannerSession(card, sessionId);
         const groupId = String(req.body?.groupId ?? "");
-        if (!preview.failures.some(f => f.groupId === groupId)) {
+        if (!preview.failures.some(f => f.groupId === groupId)
+          && !preview.reviewCards?.some(c => c.sessionId === sessionId && c.groupId === groupId)) {
           res.status(409).json({ message: "此答题卡未失败，请刷新结果后重试" }); return;
         }
         const studentId = req.body?.studentId;
@@ -466,7 +463,7 @@ export function createScannerRouter(twainEnabled = true): Router {
         await runOcrOnSession(sessionId, session.card_id, () => {}, {
           recordIds: new Set(rows.map(r => r.record.id)), studentId,
         });
-        await sessionResults(sessionId, false, res);
+        await sessionResults(sessionId, false, res, true);
       });
     } catch (error) { next(error); }
   });

@@ -64,6 +64,10 @@ await store.updateSessionStatus(session.id, "completed");
 const app = express();
 app.use(express.json());
 app.use("/api/scanner", createScannerRouter(false));
+const { default: uploadRouter } = await import("../src/server/routes/scanner-upload");
+const { hashSecret } = await import("../src/server/lib/field-crypto");
+await db.run("INSERT INTO api_keys (name, api_key, scope, is_active) VALUES (?,?,?,1)", "isolated-test", hashSecret("scanner-test-only"), "scanner");
+app.use("/api/scanner/upload", uploadRouter);
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => res.status(500).json({ message: err.message }));
 const server = app.listen(0, "127.0.0.1");
 await new Promise<void>(resolve => server.once("listening", resolve));
@@ -154,7 +158,97 @@ try {
     applyScanStudentId(damaged, "91002");
     assert.equal(damaged.status, "failed", "ID correction must not clear image/marker failures or absent quality evidence");
   }
-  console.log(`PASS scanner batch HTTP + ${db.dialect}: preview, bad JSON, partial save, cache retry, DB failure continuation, preserved saved grades, missing ID, duplicate cards, duplex gaps/conflicts, ID-only correction`);
+  const { processScannerSession } = await import("../src/server/services/scannerSubmissions");
+  async function makeSession(numbers: string[]) {
+    const s = await store.createSession(card.id, "duplicate-test");
+    for (const [index, number] of numbers.entries()) {
+      const record = await store.createScanRecord({ sessionId: s.id, cardId: card.id, pageNum: index + 1, imagePath: path.join(root, `retained-${s.id}-${index}.png`) });
+      await store.updateScanOcrResult(record.id, number, 1, "uploaded");
+      await store.upsertRecognitionResult({ scanRecordId: record.id, objectiveJson: JSON.stringify([{ questionNumber: 1, selectedOptions: [index ? "B" : "A"], confidence: 1 }]), subjectiveJson: "[]", gradeStatus: "recognized" });
+    }
+    await store.updateSessionStatus(s.id, "completed");
+    return s;
+  }
+  async function remote(sid: string, endpoint = "complete", body?: unknown) {
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/scanner/upload/sessions/${sid}/${endpoint}`, {
+      method: "POST", headers: { "X-Api-Key": "scanner-test-only", "Content-Type": "application/json" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    return { status: response.status, data: await response.json() as ScanBatchResponse };
+  }
+  const unmatched = await makeSession(["91999"]);
+  // Simulate a misleading cache from the old implementation: it must not suppress saving.
+  await store.upsertStudentGradingResult({ sessionId: unmatched.id, studentId: "91999", objectiveJson: "[]", subjectiveJson: "[]", totalScore: 5, maxScore: 5 });
+  assert.equal((await processScannerSession(card, unmatched.id, "save")).failures[0].stage, "saving");
+  const outsider = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", "outsider", "test", "外班", role.id, "91999");
+  assert.equal((await processScannerSession(card, unmatched.id, "save")).failures[0].stage, "saving", "Out-of-roster scores cannot claim saved");
+  await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, outsider.lastInsertRowid);
+  assert.equal((await processScannerSession(card, unmatched.id, "save")).results[0].saved, true, "Roster repair must really retry persistence");
+
+  const newCard = createDefaultCard("91512002");
+  const noExam = await store.createSession(newCard.id, "unlinked");
+  const unlinkedRecord = await store.createScanRecord({ sessionId: noExam.id, cardId: newCard.id, pageNum: 1, imagePath: "unlinked.png" });
+  await store.updateScanOcrResult(unlinkedRecord.id, "91001", 1, "done");
+  await store.upsertRecognitionResult({ scanRecordId: unlinkedRecord.id, objectiveJson: "[]", subjectiveJson: "[]" });
+  newCard.bodyBlocks = card.bodyBlocks;
+  assert.equal((await processScannerSession(newCard, noExam.id, "save")).failures[0].stage, "saving", "Unlinked cards must not be saved");
+
+  await db.run("UPDATE exams SET status = 'closed', score_published = 1 WHERE id = ?", exam.lastInsertRowid);
+  const duplicateSession = await makeSession(["91001", "91001"]);
+  const rejected = await remote(duplicateSession.id);
+  assert.equal(rejected.status, 409);
+  assert.equal(rejected.data.failures.length, 2);
+  assert.equal(rejected.data.results.length, 0, "Never merge best answers across duplicate attempts");
+  assert.equal(rejected.data.failures[0].conflicts!.length, 3, "Both new attempts and the previously saved original are shown");
+  assert(rejected.data.failures[0].conflicts!.some(c => c.sessionId === session.id && c.previouslySaved && c.pages[0].recordId === records[0].id));
+  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, users[0]), null);
+  assert.equal((await db.all("SELECT id FROM question_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, users[0])).length, 0);
+  assert(await store.getScanRecordWithResult(records[0].id), "Keep original recognition for correction");
+  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id = ?", exam.lastInsertRowid))!.score_published, 0);
+  assert(await db.get("SELECT id FROM exam_publish_events WHERE exam_id = ? AND reason = ?", exam.lastInsertRowid, "扫描重复学号自动撤回"), "Withdrawal must retain publication audit");
+  assert((await request()).failures.some(f => f.studentId === "91001"), "Old session must show the saved original as a problem too");
+  for (const [groupId, number] of ["91991", "91992"].entries()) {
+    const student = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", number, "test", number, role.id, number);
+    await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, student.lastInsertRowid);
+    assert.equal((await remote(duplicateSession.id, "correct", { groupId: String(groupId), studentId: number })).status, 200);
+  }
+  const corrected = await remote(duplicateSession.id);
+  assert.equal(corrected.status, 200);
+  const oldPreview = await request();
+  assert(oldPreview.results.some(r => r.studentId === "91001" && !r.saved), "Resolved old attempt needs explicit saving");
+  assert(oldPreview.reviewCards?.some(c => c.sessionId === session.id && c.previouslySaved), "Do not lose withdrawn old cards when new IDs are corrected");
+  assert.equal((await request("POST")).failures.length, 0);
+  assert.equal((await remote(duplicateSession.id)).status, 200, "Reposting same submission is idempotent, not a duplicate");
+
+  const parallelNumber = "91993";
+  const parallelUser = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", parallelNumber, "test", parallelNumber, role.id, parallelNumber);
+  await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, parallelUser.lastInsertRowid);
+  const first = await makeSession([parallelNumber]); const second = await makeSession([parallelNumber]);
+  await Promise.all([remote(first.id), remote(second.id)]);
+  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, parallelUser.lastInsertRowid), null, "Concurrent duplicate sessions must not leave a normal score");
+  // Existing installations: a verified cache belongs to the same original, not a duplicate.
+  await db.run("DELETE FROM scanner_submissions WHERE session_id = ?", unmatched.id);
+  assert.equal((await processScannerSession(card, unmatched.id, "save")).failures.length, 0, "Upgrade a verified legacy original without withdrawing it");
+  const legacyUser = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", "legacy", "test", "legacy", role.id, "91994");
+  const legacyCorrected = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", "legacy-fixed", "test", "legacy-fixed", role.id, "91995");
+  for (const id of [legacyUser.lastInsertRowid, legacyCorrected.lastInsertRowid]) await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, id);
+  await db.run("INSERT INTO student_scores (exam_id,student_id,objective_score,subjective_score,total_score) VALUES (?,?,3,0,3)", exam.lastInsertRowid, legacyUser.lastInsertRowid);
+  await db.run("INSERT INTO question_scores (exam_id,student_id,question_number,score,max_score,score_type) VALUES (?,?,1,3,5,'objective')", exam.lastInsertRowid, legacyUser.lastInsertRowid);
+  const legacyNew = await makeSession(["91994"]);
+  const legacyConflict = await remote(legacyNew.id);
+  assert.equal(legacyConflict.status, 409);
+  assert(legacyConflict.data.failures[0].conflicts?.some(c => c.sessionId.startsWith("legacy:") && c.totalScore === 3));
+  const { recoverLegacyScannerSubmission } = await import("../src/server/services/scannerSubmissions");
+  await recoverLegacyScannerSubmission(Number(exam.lastInsertRowid), String(legacyUser.lastInsertRowid), "91995");
+  await recoverLegacyScannerSubmission(Number(exam.lastInsertRowid), String(legacyUser.lastInsertRowid));
+  assert.equal((await db.get<{ total_score: number }>("SELECT total_score FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, legacyCorrected.lastInsertRowid))!.total_score, 3, "Restore exactly the teacher-reviewed legacy snapshot");
+  assert.equal((await remote(legacyNew.id)).status, 200);
+  const repeatedPage = await store.createScanRecord({ sessionId: session.id, cardId: card.id, pageNum: 1, imagePath: "duplicate-page.png" });
+  await store.updateScanOcrResult(repeatedPage.id, "91001", 1, "done");
+  await store.upsertRecognitionResult({ scanRecordId: repeatedPage.id, objectiveJson: "[]", subjectiveJson: "[]" });
+  assert((await processScannerSession(card, session.id, "validate")).failures.some(f => f.message.includes("重复页")));
+  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, users[0]), null, "Repeated pages cannot leave an older score normal");
+  console.log(`PASS scanner batch HTTP + ${db.dialect}: isolated saving, missing users/exams/roster, duplicate old/new withdrawal, retained evidence, correction, idempotency, concurrent submissions`);
 } finally {
   await db.exec("DROP TRIGGER IF EXISTS scanner_batch_failure");
   await new Promise<void>(resolve => server.close(() => resolve()));

@@ -41,6 +41,17 @@ export interface ScanBatchFailure {
   stage: "recognition" | "grading" | "saving";
   message: string;
   pages: ScanBatchPage[];
+  /** Other attempts, including withdrawn saved attempts, requiring teacher review. */
+  conflicts?: ScanConflictCard[];
+}
+
+export interface ScanConflictCard {
+  sessionId: string;
+  groupId: string;
+  studentId: string;
+  previouslySaved: boolean;
+  totalScore?: number;
+  pages: ScanBatchPage[];
 }
 
 export interface ScanBatchResult {
@@ -66,4 +77,5 @@ export interface ScanBatchResult {
 export interface ScanBatchResponse {
   results: ScanBatchResult[];
   failures: ScanBatchFailure[];
+  reviewCards?: ScanConflictCard[];
 }

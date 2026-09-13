@@ -7,6 +7,7 @@ import { authFetch, getStoredApiKey, remoteScannerFetch } from "../auth/api";
 import { SERVER_URL_KEY } from "./scannerMode";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId } from "../../../../shared/scanPages";
+import type { ScanBatchFailure, ScanConflictCard } from "../../../../shared/scanPages";
 
 export type UploadJobKind = "scan" | "import";
 export type UploadJobStatus =
@@ -39,6 +40,7 @@ export interface StartUploadInput {
 }
 
 export interface UploadJobSnapshot {
+  reviewCards?: ScanConflictCard[];
   id: string;
   kind: UploadJobKind;
   name: string;
@@ -50,6 +52,7 @@ export interface UploadJobSnapshot {
   failedPages: number[];
   message: string;
   createdAt: number;
+  failures?: ScanBatchFailure[];
 }
 
 export interface UploadManagerSnapshot {
@@ -72,6 +75,7 @@ interface PageRecord {
 }
 
 interface JobRecord {
+  reviewCards?: ScanConflictCard[];
   id: string;
   kind: UploadJobKind;
   name: string;
@@ -91,6 +95,7 @@ interface JobRecord {
   apiKey: string | null;
   /** 用户取消标志：暂停/队列中任务被取消后置真，使挂起的 runWithRetry 原地退出 */
   cancelled: boolean;
+  failures?: ScanBatchFailure[];
 }
 
 export interface UploadManagerDeps {
@@ -211,6 +216,8 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         failedPages: j.pages.filter((p) => p.failed).map((p) => p.input.pageNum),
         message: j.message,
         createdAt: j.createdAt,
+        failures: j.failures,
+        reviewCards: j.reviewCards,
       })),
       activeJobId:
         // cancelled 是终态:不再算“活动任务”（审查 P2:此前注销后仍被算）
@@ -355,7 +362,23 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
       method: "POST",
       signal: timeoutSignal(pageTimeoutMs),
     });
-    if (!res.ok) throw await httpError(res);
+    if (!res.ok) {
+      const body = await res.clone().json().catch(() => ({}));
+      if (Array.isArray(body.failures)) {
+        j.failures = body.failures;
+        const affected = new Set<string>(body.failures.flatMap((f: ScanBatchFailure) => f.conflicts?.map(c => c.sessionId) ?? []));
+        for (const other of jobs) if (other !== j && other.remoteBase === j.remoteBase && other.remoteSessionId && affected.has(other.remoteSessionId)) {
+          other.status = "error";
+          other.message = "重复学号：原已保存成绩已撤出，请核对新旧卷";
+          other.failures = body.failures;
+        }
+        notify();
+      }
+      throw await httpError(res);
+    }
+    j.failures = undefined;
+    const body = await res.json().catch(() => ({}));
+    j.reviewCards = body.reviewCards;
   }
 
   /**
@@ -636,6 +659,21 @@ if (j.cancelled) throw cancelledError(j);
   }
 
   return {
+    refreshResults: async (id: string) => {
+      const job = jobs.find(j => j.id === id);
+      if (!job?.remoteSessionId) return;
+      const response = await jobFetch(job)(`/api/scanner/upload/sessions/${job.remoteSessionId}/results`);
+      if (!response.ok) return;
+      const body = await response.json();
+      job.reviewCards = body.reviewCards;
+      job.failures = body.failures;
+      notify();
+    },
+    requestJob: (id: string, url: string, init?: RequestInit) => {
+      const job = jobs.find(j => j.id === id);
+      if (!job) return Promise.reject(new Error("上传任务已关闭"));
+      return jobFetch(job)(url, init);
+    },
     startUpload,
     retryFailed,
     retryPaused,

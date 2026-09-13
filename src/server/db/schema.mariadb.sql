@@ -886,3 +886,14 @@ CREATE TABLE IF NOT EXISTS entity_lifecycle_events (
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (actor_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- v49: durable scanner receipts and withdrawn duplicate evidence
+CREATE TABLE IF NOT EXISTS scanner_submissions (
+    exam_id INT NOT NULL,
+    session_id VARCHAR(128) NOT NULL, group_id VARCHAR(128) NOT NULL, student_number VARCHAR(128) NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'pending', previously_saved INT NOT NULL DEFAULT 0,
+    pages_json TEXT NOT NULL, result_json LONGTEXT, score_snapshot LONGTEXT,
+    PRIMARY KEY (exam_id, session_id, group_id),
+    INDEX idx_scanner_submission_student (exam_id, student_number),
+    FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
+);

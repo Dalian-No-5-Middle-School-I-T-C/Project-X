@@ -25,8 +25,9 @@ import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
-import { gradeSessionStudentResults } from "../../shared/grading";
-import { persistScannerResultToMainDb } from "../services/scannerResultPersistence";
+import { processScannerSession, enqueueScannerSubmission } from "../services/scannerSubmissions";
+import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
+import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
 import { listScanRecordsGroupedByStudent, upsertRecognitionResult } from "../../apps/answer-card/server/database/scan-store";
 
 const recognitionSchema = z.object({
@@ -47,6 +48,8 @@ const recognitionSchema = z.object({
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 const router = Router();
+router.use("/legacy", dualAuth);
+router.use(scannerLegacyRecoveryRouter());
 
 // v1.6.0: 双鉴权 — API Key 优先，无 Key 时强制 JWT（见 scanner-auth.ts）
 
@@ -250,6 +253,51 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array
     res.status(500).json({ message: "请求处理失败，请查看服务器日志" });
   }
 });
+// The Linux service edits uploaded metadata only; it never invokes native recognition.
+router.get("/records/:recordId/image", dualAuth, async (req, res, next) => {
+  try {
+    const row = await getMysqlDb().get<{ image_path: string }>("SELECT image_path FROM twain_scan_records WHERE id = ?", req.params.recordId);
+    if (!row || !existsSync(row.image_path)) { res.status(404).json({ message: "原卷图片不存在" }); return; }
+    res.setHeader("Cache-Control", "private, no-store");
+    res.sendFile(path.resolve(row.image_path));
+  } catch (error) { next(error); }
+});
+router.get("/sessions/:sessionId/results", dualAuth, async (req, res, next) => {
+  try {
+    const session = await getMysqlDb().get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", req.params.sessionId);
+    const card = session && await new CardRepository().findById(session.card_id);
+    if (!card) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
+    res.json(await processScannerSession(card, String(req.params.sessionId)));
+  } catch (error) { next(error); }
+});
+router.post("/sessions/:sessionId/correct", dualAuth, async (req, res, next) => {
+  try {
+    const sessionId = String(req.params.sessionId);
+    const studentId = req.body?.studentId;
+    if (typeof studentId !== "string" || !/^[0-9A-Za-z_-]{1,64}$/.test(studentId)) {
+      res.status(400).json({ message: "请输入有效学号（1–64 位字母、数字、下划线或短横线）" }); return;
+    }
+    const session = await getMysqlDb().get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", sessionId);
+    const card = session && await new CardRepository().findById(session.card_id);
+    if (!card) { res.status(404).json({ message: "扫描会话或答题卡不存在" }); return; }
+    const preview = await processScannerSession(card, sessionId);
+    const groupId = String(req.body?.groupId ?? "");
+    if (!preview.failures.some(f => f.groupId === groupId && f.conflicts?.length)
+      && !preview.reviewCards?.some(c => c.sessionId === sessionId && c.groupId === groupId)) {
+      res.status(409).json({ message: "此卷没有重复学号冲突，请刷新结果" }); return;
+    }
+    await enqueueScannerSubmission(async () => {
+      const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
+      const group = groupSessionPages(card, records).groups.get(groupId);
+      if (!group) throw new Error("答题卡分组不存在");
+      await getMysqlDb().transaction(async tx => {
+        for (const { record } of group) await tx.run("UPDATE twain_scan_records SET student_id = ? WHERE id = ? AND session_id = ?", studentId, record.id, sessionId);
+      });
+    });
+    res.json(await processScannerSession(card, sessionId, "validate"));
+  } catch (error) { next(error); }
+});
+
 router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
@@ -263,13 +311,9 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       res.status(404).json({ message: "会话不存在" });
       return;
     }
-    if (session.status === "completed") {
-      res.json({ ok: true, message: "扫描会话已提交", pagesUploaded: session.page_count, pagesTotal: session.page_count });
-      return;
-    }
 
     const uploaded = await db.get<{ cnt: number }>(
-      "SELECT COUNT(*) as cnt FROM twain_scan_records WHERE session_id = ? AND ocr_status = 'uploaded'",
+      "SELECT COUNT(*) as cnt FROM twain_scan_records WHERE session_id = ? AND ocr_status IN ('uploaded', 'completed')",
       sessionId
     );
     const total = await db.get<{ cnt: number }>(
@@ -283,38 +327,31 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     // v1.6.0: 检查完整性 — 未全部上传完成时阻止标记 completed
     const complete = uploadedCount >= totalCount && totalCount > 0;
     const status = complete ? "completed" : "incomplete";
+    let reviewCards: import("../../shared/scanPages").ScanConflictCard[] = [];
 
     if (complete) {
       const fullSession = await db.get<{ card_id: string }>("SELECT card_id FROM twain_scan_sessions WHERE id = ?", sessionId);
       const card = await new CardRepository().findById(fullSession!.card_id);
       if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
-      const activeExams = await db.all<{ id: number }>("SELECT e.id FROM exams e WHERE e.card_id = ? AND e.status != 'closed' AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)", fullSession!.card_id);
-      if (activeExams.length !== 1) {
-        res.status(409).json({ message: activeExams.length === 0
-          ? "答题卡没有进行中的考试，请先创建考试后重试提交"
-          : "答题卡关联了多个进行中的考试，无法确定成绩和图块归属；请先保留一个目标考试后重试提交" });
-        return;
-      }
       const groups = await listScanRecordsGroupedByStudent(String(sessionId));
       if (groups.some(group => group.records.some(record => !record.recognition || !record.student_id))) {
         res.status(409).json({ message: "图片已保存，但缺少本机识别结果；请使用新版扫描端重试上传，成绩尚未入库" });
         return;
       }
-      for (const group of groups) {
-        const result = gradeSessionStudentResults(card, group.records.map(record => ({
-          recordId: record.id, pageNum: record.page_num, side: record.side, imagePath: record.image_path,
-          ocrStatus: "done", recognition: { status: "ok", studentId: { status: "ok", value: record.student_id },
-            questions: JSON.parse(record.recognition!.objective_json || "[]"),
-            subjectiveQuestions: JSON.parse(record.recognition!.subjective_json || "[]") },
-        })));
-        await persistScannerResultToMainDb(fullSession!.card_id, result, true);
+      const batch = await processScannerSession(card, String(sessionId), "save");
+      reviewCards = batch.reviewCards ?? [];
+      if (batch.failures.length) {
+        res.status(409).json({ ok: false, message: "部分答题卡未入库，请处理以下问题后重试", ...batch });
+        return;
+      }
+      for (const result of batch.results) {
         const student = await db.get<{ id: number }>("SELECT id FROM users WHERE student_number = ?", result.studentId);
         // Bind uploaded blocks to the same active exams as the persisted scores.
         const exams = await db.all<{ id: number }>("SELECT e.id FROM exams e JOIN student_scores ss ON ss.exam_id = e.id WHERE e.card_id = ? AND ss.student_id = ? AND e.status != 'closed' AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)", fullSession!.card_id, student!.id);
-        for (const record of group.records) {
+        for (const record of result.pages) {
           // A scan block represents one exam attempt. Do not silently bind a
           // shared card's crop to an arbitrary exam when several are active.
-          if (exams.length === 1) await db.run("UPDATE answer_block_crops SET exam_id = ?, student_id = ? WHERE source_type = 'twain_scan_record' AND source_record_id = ?", exams[0].id, student!.id, record.id);
+          if (exams.length === 1) await db.run("UPDATE answer_block_crops SET exam_id = ?, student_id = ? WHERE source_type = 'twain_scan_record' AND source_record_id = ?", exams[0].id, student!.id, record.recordId);
         }
       }
       const linkedExams = await db.all<{ id: number }>("SELECT e.id FROM exams e WHERE e.card_id = ? AND e.status = 'grading' AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)", fullSession!.card_id);
@@ -346,6 +383,7 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
     res.json({
       ok: true,
       message: `扫描完成：${uploadedCount}/${totalCount} 页已上传并完成服务端判分`,
+      reviewCards,
       pagesUploaded: uploadedCount,
       pagesTotal: totalCount,
     });

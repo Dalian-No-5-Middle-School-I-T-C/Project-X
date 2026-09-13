@@ -302,6 +302,23 @@ async function main() {
     assert(localPages.join(",") === "1,2,3", "必须使用真实布局页码");
     assert(uploadedIds.join(",") === "91002,91002,91002", "订正后的学号必须贯穿上传链路");
   }
+  {
+    let sessionCount = 0;
+    const failures = [{ groupId: "0", studentId: "91001", stage: "recognition", pages: [], message: "重复学号",
+      conflicts: [{ sessionId: "s1", groupId: "0", studentId: "91001", previouslySaved: true, pages: [] },
+        { sessionId: "s2", groupId: "0", studentId: "91001", previouslySaved: false, pages: [] }] }];
+    const mgr = createScannerUploadManager(deps({ remoteFetch: async url => {
+      if (url.endsWith("/sessions")) return jsonRes({ sessionId: `s${++sessionCount}`, uploadTokens: ["token"] });
+      if (url.endsWith("s2/complete")) return jsonRes({ message: "重复学号", failures }, 409);
+      return jsonRes({ ok: true });
+    } }));
+    const old = mgr.startUpload(baseInput(1));
+    assert((await waitTerminal(mgr, old)).status === "done", "旧卷先正常完成");
+    const duplicate = mgr.startUpload(baseInput(1));
+    assert((await waitTerminal(mgr, duplicate)).status === "error", "新卷重复时应显示失败");
+    assert(mgr.getState().jobs.find(j => j.id === old)?.status === "error", "旧卷不能继续显示正常完成");
+    assert(mgr.getState().jobs.every(j => j.failures?.[0].conflicts?.length === 2), "新旧任务均保留所有冲突原卷");
+  }
   console.log("scanner-upload-manager-smoke: 全部通过");
 }
 

@@ -1,9 +1,11 @@
 import { databaseTimestamp } from "../db/timestamp";
 import type { CombinedStudentResult } from "../../shared/grading";
+import type { DbAdapter } from "../db";
 export async function persistScannerResultToMainDb(
     cardId: string,
     result: CombinedStudentResult,
-    requireExam = false
+    requireExam = false,
+    context?: { db: DbAdapter; examId: number }
   ): Promise<number> {
     if (!result.studentId || result.studentId === "未识别") { if (requireExam) throw new Error("学号未识别，成绩未入库"); return 0; }
 
@@ -11,7 +13,7 @@ export async function persistScannerResultToMainDb(
     const { roundScore } = await import("./rankingUpdate");
     const { analysisCache } = await import("./analysisCache");
     const { ensureExamParticipants, isExamParticipant } = await import("./examParticipants");
-    const db = getMysqlDb();
+    const db = context?.db ?? getMysqlDb();
 
     const scoreUpsertSQL = buildUpsertSQL(
       db.dialect,
@@ -34,7 +36,7 @@ export async function persistScannerResultToMainDb(
     if (!user) { if (requireExam) throw new Error(`学号 ${result.studentId} 不在学生名单中，成绩未入库`); return 0; }
 
     // Find exams linked to this card
-    const exams = await db.all("SELECT e.id FROM exams e WHERE e.card_id = ? AND e.status != 'closed' AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)", cardId) as Array<{ id: number }>;
+    const exams = await db.all("SELECT e.id FROM exams e WHERE e.card_id = ? AND e.status != 'closed' AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)" + (context ? " AND e.id = ?" : ""), ...[cardId, ...(context ? [context.examId] : [])]) as Array<{ id: number }>;
     if (exams.length === 0) { if (requireExam) throw new Error("答题卡未关联可阅卷的考试，成绩未入库"); return 0; }
 
     // P1-1: 扫描入库拒绝非应考学生（名单可知时）
@@ -53,7 +55,7 @@ export async function persistScannerResultToMainDb(
     // 事务化：一个学生跨所有关联考试的写构成一个原子单元，
     // 避免中途崩溃留下 student_scores 已写、question_scores 缺行的脏数据污染后续分析
     // （难度/区分度/逐题统计都依赖两表一致）。
-    await db.transaction(async (tx) => {
+    const write = async (tx: DbAdapter) => {
       for (const exam of filteredExams) {
         const obj = roundScore(result.objectiveScore);
         const subj = roundScore(result.subjectiveScore);
@@ -78,7 +80,9 @@ export async function persistScannerResultToMainDb(
           exam.id
         );
       }
-    });
+    };
+    if (context) await write(db);
+    else await db.transaction(write);
 
     // 分析结果缓存精准失效（建议 6）
     for (const exam of filteredExams) analysisCache.invalidateExam(exam.id);

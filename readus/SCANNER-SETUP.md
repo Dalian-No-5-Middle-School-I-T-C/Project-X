@@ -71,3 +71,15 @@
 
 - 打包命令：`npm run electron:msi:ia32`（MSI）/ `electron:pack:ia32`（目录）/ `electron:dist:ia32`（便携版）。脚本已自动串联：构建 → better-sqlite3 ia32 重编译 → sharp ia32 二进制补齐 → electron-builder。
 - 打包机建议设置镜像变量加速下载：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`、`ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`。
+
+## 重复学号与保存状态
+
+Windows 扫描端执行扫描及原生识别；Linux 服务端接收原图和识别结果，校验答题卡完整性并判分入库。远端不执行 OMR。
+
+“已保存”需要主库成绩及对应考试、原卷的入库凭据；仅有汇总缓存不算入库。学号未匹配、未关联考试或不在应考名单时会显示失败，修正后可重新保存。
+
+同一考试出现重复学号时，不合并多份卷的较优答案，也不覆盖旧成绩。新旧卷一并显示待核对；已入库的总分和逐题分数撤出，原图、识别结果和成绩快照保留，排名重算，考试恢复未公布状态。订正后需要明确重新保存，旧卷不会自动恢复。重复提交同一原卷不算重复学号。
+
+历史数据优先核对缓存、原卷及逐题成绩，能够唯一确认的来源会补登记。无法确认来源的历史成绩显示快照及匹配的历史图片，需人工核对、订正后恢复。
+
+数据库迁移 v49 为 SQLite 和 MariaDB 增加 `scanner_submissions` 入库凭据及冲突证据表；不会在迁移时批量撤出已有成绩，校验相关扫描会话时才核查处理。
