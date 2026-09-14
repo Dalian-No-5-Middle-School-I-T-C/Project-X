@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDatabase } from "./index";
 import { readDbConfig } from "./config";
+import { scannerSubmissionSchema } from "./scannerSubmissionSchema";
 
 // ── 模式检测 ───────────────────────────────────────────
 // 优先级：环境变量 > config.yml > 默认 SQLite
@@ -955,6 +956,10 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     },
   ];
 
+  mariadbMigrations.push({ version: 49, name: "scanner-submission-receipts", sqls: [
+    scannerSubmissionSchema("mariadb"),
+    "CREATE INDEX IF NOT EXISTS idx_scanner_submission_student ON scanner_submissions(exam_id, student_number)",
+  ] });
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

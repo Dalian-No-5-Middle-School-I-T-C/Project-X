@@ -1,3 +1,4 @@
+import { databaseTimestamp } from "../../../server/db/timestamp";
 import express from "express";
 import multer from "multer";
 import { cpus } from "node:os";
@@ -610,12 +611,12 @@ export async function createApp(): Promise<express.Express> {
   initializeDatabase();
   // 确保连接池在使用前已创建（MariaDB 模式下 initMariadbSchema / ensureDefaultAdmin 依赖）
   getMysqlDb();
+  await initMariadbSchema();
   // 安全审计（F-2）：迁移历史明文 initial_password 为加密存储（幂等）
   await encryptLegacyInitialPasswords(getMysqlDb());
   // 安全审计（P1）：迁移历史明文 api_keys 为 SHA-256 哈希存储（幂等），
   // 让 API Key 哈希化安全目标对存量库同样生效
   await migrateLegacyPlaintextApiKeys(getMysqlDb());
-  await initMariadbSchema();
   const adminBootstrap = await ensureDefaultAdmin();
   if (adminBootstrap.rotated) authService.revokeUserTokens(adminBootstrap.adminId);
   await initPermissionCache();
@@ -1223,14 +1224,24 @@ export async function createApp(): Promise<express.Express> {
         await mkdir(debugDir, { recursive: true });
       }
 
-      const result = await recognizeAnswerCard({
-        imagePath: req.file.path,
-        layoutPath: await prepareLayoutForCard(cardRepo, card),
-        pageNumber,
-        dpi,
-        debugDir
-      });
-      res.json(result);
+      const cropsDir = boolField(req.body.includeCrops) ? await createRecognitionCropTempDir(cardId) : undefined;
+      try {
+        const result = await recognizeAnswerCard({
+          imagePath: req.file.path,
+          layoutPath: await prepareLayoutForCard(cardRepo, card),
+          pageNumber,
+          dpi,
+          debugDir,
+          cropsDir
+        });
+        const cropImages = cropsDir ? await Promise.all(((result as CombinedRecognitionResult).blockCrops ?? []).map(async crop => ({
+          ...crop, dataBase64: (await readFile(crop.path)).toString("base64")
+        }))) : undefined;
+        res.json({ ...result, ...(cropImages ? { cropImages } : {}) });
+      } finally {
+        // Only remove the scratch directory created for this inline response.
+        if (cropsDir) await rm(cropsDir, { recursive: true, force: true }).catch(error => console.warn("[Recognition] crop temp cleanup failed", error));
+      }
     } catch (error) {
       next(error);
     }
@@ -2102,7 +2113,7 @@ export async function createApp(): Promise<express.Express> {
         return;
       }
       const { cardId, name, subject, mode, gradeId, classId, retentionPolicyId } = req.body as Record<string, unknown>;
-      const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+      const updates: Record<string, unknown> = { updated_at: databaseTimestamp() };
       if (cardId !== undefined) updates.card_id = String(cardId);
       if (name !== undefined) updates.name = String(name);
       if (subject !== undefined) updates.subject = String(subject);

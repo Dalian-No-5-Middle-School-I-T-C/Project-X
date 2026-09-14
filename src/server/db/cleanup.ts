@@ -1,3 +1,4 @@
+import { databaseTimestamp } from "./timestamp";
 import { getMysqlDb } from "./index";
 import type { DbAdapter } from "./mysql";
 import path from "node:path";
@@ -70,7 +71,7 @@ export async function runCleanup(retainDays: number = 30): Promise<CleanupResult
 
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - retainDays);
-  const cutoffStr = cutoffDate.toISOString();
+  const cutoffStr = databaseTimestamp(cutoffDate);
 
   console.log(`[Cleanup] 开始清理 ${retainDays} 天前的数据（截止：${cutoffDate.toLocaleDateString()}）`);
 

@@ -1,0 +1,35 @@
+import assert from "node:assert/strict";
+import { readFile, writeFile } from "node:fs/promises";
+const state = JSON.parse(await readFile("data/e2e-business/state.json", "utf8"));
+const base = state.base;
+assert(["127.0.0.1", "localhost"].includes(new URL(base).hostname));
+let token = "";
+async function call(route: string, method="GET", body?:unknown) {
+  const response=await fetch(base+route,{method,headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},body:body?JSON.stringify(body):undefined});
+  assert(response.ok, `${method} ${route}: ${response.status}`);
+  return await response.json() as any;
+}
+token=(await call("/api/auth/login","POST",{identifier:"admin",password:"E2e-Local-2026!"})).token;
+const crops=await call(`/api/review/exams/${state.examId}/block-crops`);
+assert.equal(crops.rows.length,4,"Uploaded crops must be visible for online review");
+const crop=crops.rows[0];
+const route=`/api/review-session/exams/${state.examId}/blocks/${encodeURIComponent(crop.blockId)}`;
+await call(route,"PUT",{currentIndex:2,draftScores:{"1":3}});
+const saved=await call(route);
+assert.equal(saved.data.currentIndex,2);
+await call(route,"DELETE");
+const annotation=await call('/api/review-annotations','POST',{cropId:crop.id,type:'text',dataJson:{text:'业务验证批注'},positionX:10,positionY:20});
+assert(annotation.data.id);
+const annotations=await call(`/api/review-annotations?cropId=${encodeURIComponent(crop.id)}`);
+const readBack=annotations.data.find((item:any)=>item.id===annotation.data.id);
+assert.equal(readBack.dataJson.text,'业务验证批注');
+assert.equal(readBack.dataJson.x,10);
+assert.equal(readBack.dataJson.y,20);
+await call(`/api/review-annotations/${annotation.data.id}`,'DELETE');
+const backup=await fetch(base+'/api/db/backup',{headers:{Authorization:`Bearer ${token}`}});
+assert(backup.ok,`MariaDB backup failed: ${backup.status}`);
+const buffer=Buffer.from(await backup.arrayBuffer());
+assert.equal(buffer.subarray(0,2).toString(),'PK');
+await writeFile('data/e2e-business/隔离测试库备份.zip',buffer);
+await writeFile('data/e2e-business/网阅及备份验证.json',JSON.stringify({examId:state.examId,crops:crops.rows.length,sessionSaved:true,annotationSaved:true,backupBytes:buffer.length},null,2));
+console.log('PASS remote crop visibility, review draft save/read/delete, annotation save/delete and MariaDB backup');

@@ -6,6 +6,7 @@ import { Button, Progress, Spinner } from "./ui/v2";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
 import type { UploadJobSnapshot } from "../lib/scannerUploadManager";
 import { ServerStatusIndicator } from "./ServerStatusIndicator";
+import { ScannerConflictCards } from "./ScannerConflictCards";
 
 const DONE_AUTO_HIDE_MS = 3_000;
 
@@ -33,7 +34,7 @@ export function UploadProgressCard() {
 
   // done 任务 3 秒后自动收起
   useEffect(() => {
-    const doneIds = snap.jobs.filter((j) => j.status === "done").map((j) => j.id);
+    const doneIds = snap.jobs.filter((j) => j.status === "done" && !j.reviewCards?.length).map((j) => j.id);
     if (doneIds.length === 0) return;
     const timers = doneIds.map((id) =>
       window.setTimeout(() => {
@@ -47,12 +48,12 @@ export function UploadProgressCard() {
     return () => timers.forEach((t) => window.clearTimeout(t));
   }, [snap.jobs]);
 
-  const visible = snap.jobs.filter((j) => !dismissed.has(j.id));
+  const visible = snap.jobs.filter((j) => !dismissed.has(j.id) || j.status === "error");
   if (visible.length === 0) return null;
 
   return (
     <div
-      className={`fixed right-4 top-14 z-50 flex w-80 flex-col gap-2 transition-all duration-200 ${
+      className={`fixed right-4 top-14 z-50 flex max-h-[calc(100vh-5rem)] w-80 flex-col gap-2 overflow-y-auto transition-all duration-200 ${
         entered ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
       }`}
     >
@@ -105,6 +106,10 @@ function UploadJobCard({
           </Button>
         )}
       </div>
+
+      {!!job.reviewCards?.length && <ScannerConflictCards cards={job.reviewCards} remote
+        request={(url, init) => scannerUploadManager.requestJob(job.id, url, init)}
+        onChanged={() => void scannerUploadManager.refreshResults(job.id)} />}
 
       {busy && (
         <>
@@ -172,6 +177,12 @@ function UploadJobCard({
             <XCircle size={13} className="mt-px shrink-0" />
             <span className="min-w-0 flex-1 break-words">{job.message}</span>
           </p>
+          {job.failures?.map(failure => <div key={failure.groupId} className="mt-2">
+            <p>{failure.studentId}：{failure.message}</p>
+            {failure.conflicts && <ScannerConflictCards cards={failure.conflicts} remote
+              request={(url, init) => scannerUploadManager.requestJob(job.id, url, init)}
+              onChanged={() => scannerUploadManager.retryFailed(job.id)} />}
+          </div>)}
           <div className="mt-1.5">
             <Button
               variant="outline"

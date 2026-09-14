@@ -25,7 +25,7 @@ export function mergeAuthoritativePages(
   serverRecords: ScanRecordLike[],
   knownPages: Array<{ recordId: string; pageNum: number; side: string }>,
 ): ScanPageRef[] {
-  const dedupeSorted = <T extends { pageNum: number }>(
+  const dedupeSorted = <T extends { pageNum: number; side: string }>(
     items: T[],
     keyOf: (item: T) => string,
     toPage: (item: T) => ScanPageRef,
@@ -33,7 +33,7 @@ export function mergeAuthoritativePages(
     const seen = new Set<string>();
     return items
       .slice()
-      .sort((a, b) => a.pageNum - b.pageNum)
+      .sort((a, b) => a.pageNum - b.pageNum || (a.side === b.side ? 0 : a.side === "front" ? -1 : 1))
       .filter((item) => {
         const key = keyOf(item);
         if (!key || seen.has(key)) return false;

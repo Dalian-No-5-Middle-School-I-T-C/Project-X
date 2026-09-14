@@ -14,6 +14,7 @@ import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { getMysqlDb } from "../../../../server/db";
 import { persistAnswerBlockCrops } from "../../../../server/services/AnswerBlockCropService";
 import { prepareCardLayoutById } from "../card-layout";
+import { mapScanPageToLayout, applyScanStudentId } from "../../../../shared/scanPages";
 
 export { listSources };
 
@@ -29,27 +30,8 @@ async function createRecognitionCropTempDir(cardId: string, recordId: string): P
 
 export type ProgressHandler = (event: ScanProgressEvent) => void;
 
-export type ScanPageMapping = {
-  groupIndex: number;
-  layoutPage: number;
-  unusedSide: boolean;
-};
-
-export function mapScanPageToLayout(
-  physicalPage: number,
-  side: "front" | "back",
-  layoutPageCount: number,
-  sided: "single" | "double"
-): ScanPageMapping {
-  const sidesPerSheet = sided === "single" ? 1 : 2;
-  const sheetsPerStudent = Math.max(1, Math.ceil(layoutPageCount / sidesPerSheet));
-  const sheetIndex = Math.max(0, physicalPage - 1);
-  const groupIndex = Math.floor(sheetIndex / sheetsPerStudent);
-  const sheetWithinGroup = sheetIndex % sheetsPerStudent;
-  const sideOffset = sidesPerSheet === 1 || side === "front" ? 1 : 2;
-  const layoutPage = sheetWithinGroup * sidesPerSheet + sideOffset;
-  return { groupIndex, layoutPage, unusedSide: layoutPage > layoutPageCount };
-}
+export { mapScanPageToLayout } from "../../../../shared/scanPages";
+export type ScanPageMapping = ReturnType<typeof mapScanPageToLayout>;
 
 /** 创建扫描会话并立即返回 sessionId（POST /scan 先调它拿 id 提前返回 202） */
 export async function createScanSession(config: ScanSessionConfig): Promise<string> {
@@ -186,16 +168,18 @@ export async function runScanSession(
 export async function runOcrOnSession(
   sessionId: string,
   cardId: string,
-  onProgress: ProgressHandler
+  onProgress: ProgressHandler,
+  retry?: { recordIds: Set<string>; studentId?: string },
 ): Promise<void> {
-  const records = await listScanRecords(sessionId);
+  const records = (await listScanRecords(sessionId))
+    .filter(r => !retry || retry.recordIds.has(r.id))
+    .sort((a, b) => a.page_num - b.page_num || (a.side === b.side ? 0 : a.side === "front" ? -1 : 1));
   const prepared = await prepareCardLayoutById(cardId);
   if (!prepared) {
     throw new Error("答题卡不存在，无法识别扫描结果");
   }
   const { card, layout, layoutPath: currentLayoutPath } = prepared;
   const session = await getSession(sessionId);
-  const isSingleSided = card.sided === "single";
   const studentIdsByGroup = new Map<number, string>();
 
   for (const record of records) {
@@ -230,7 +214,8 @@ export async function runOcrOnSession(
         cropsDir: await createRecognitionCropTempDir(cardId, record.id)
       })) as CombinedRecognitionResult;
 
-      const recognizedStudentId = recognition.studentId?.status === "ok" ? recognition.studentId.value : null;
+      const recognizedStudentId = retry?.studentId ?? (recognition.studentId?.status === "ok" ? recognition.studentId.value : null);
+      if (retry?.studentId) applyScanStudentId(recognition, retry.studentId);
       if (recognizedStudentId) {
         studentIdsByGroup.set(groupIndex, recognizedStudentId);
       }
@@ -238,7 +223,7 @@ export async function runOcrOnSession(
       const studentId = recognizedStudentId ?? inheritedStudentId;
       const inherited = !recognizedStudentId && Boolean(inheritedStudentId);
       if (inherited) {
-        recognition.studentId = { status: "inherited", value: inheritedStudentId, source: "inherited" };
+        applyScanStudentId(recognition, inheritedStudentId!, true);
       }
       const studentConf = recognizedStudentId ? 0.9 : inherited ? 0.9 : 0.0;
       const ocrStatus = recognition.status === "ok" ? "done" : recognition.status === "failed" ? "failed" : "review";
@@ -299,7 +284,7 @@ export async function runOcrOnSession(
 
       onProgress({
         sessionId, type: "ocr_page_done",
-        pageNum: record.page_num, side: record.side,
+        recordId: record.id, pageNum: record.page_num, side: record.side,
         studentId: null, message: msg
       });
     }

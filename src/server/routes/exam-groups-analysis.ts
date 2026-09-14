@@ -138,7 +138,7 @@ router.get("/overview", requireReadableGroup, requireGroupViewCharts, async (req
         WHERE egm.group_id = ? AND ${GROUP_MEMBER_NOT_SOFT_DELETED_SQL} ${trackStudentClause}
         GROUP BY ss.student_id
         HAVING exam_count = ${memberCountClause}
-      )
+      ) AS full_participants
     `, ...fullParams, ...fullParams.slice(0)) as { cnt: number } | undefined;
 
     res.json({

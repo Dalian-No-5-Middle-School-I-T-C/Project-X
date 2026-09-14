@@ -1,3 +1,4 @@
+import { databaseTimestamp } from "../db/timestamp";
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import type { BlockGradingConfig, RoundingMode, ReviewMode } from "../../shared/types";
@@ -74,7 +75,7 @@ export async function getBlockConfig(
     "__default__"
   ) as ConfigRow | undefined;
 
-  const now = new Date().toISOString();
+  const now = databaseTimestamp();
   return {
     id: 0,
     examId,
@@ -200,7 +201,7 @@ export async function upsertBlockConfig(
     }
 
     setClauses.push("updated_at = ?");
-    values.push(new Date().toISOString());
+    values.push(databaseTimestamp());
     values.push(examId, blockId);
 
     await db.run(

@@ -124,6 +124,7 @@ This is the browser-accessible web server package. It includes dist/web for the 
 - dist/server/index.mjs: Node API + static server.
 - dist/server/schema.sql: SQLite initialization schema.
 - dist/server/schema.mariadb.sql: MariaDB 10.11 schema.
+- llmclient/: Python AI sidecar source and requirements (no local credentials).
 - resources/background.jpg: runtime resource used by the background API.
 - package.json: production runtime dependencies only.
 - systemd/project-x-server.service: systemd unit file.
@@ -137,6 +138,24 @@ sudo apt install -y nodejs npm build-essential python3 make g++ fonts-noto-cjk
 \`\`\`
 
 Node.js 22 LTS or newer is recommended. better-sqlite3 is installed on the Ubuntu host for the local ABI.
+
+Ubuntu 24's default nodejs package is older than 22; install Node.js 22 or newer before running npm install.
+
+## AI Service
+
+Install the bundled sidecar dependencies in a virtual environment:
+
+\`\`\`bash
+sudo apt install -y python3-venv
+python3 -m venv .venv
+.venv/bin/python -m pip install -r llmclient/requirements.txt
+export LLMCLIENT_PYTHON="$(pwd)/.venv/bin/python"
+./start.sh
+\`\`\`
+
+The launcher discovers .venv automatically. Configure providers in Global Settings
+or supply a deployment-specific llmclient/.env; credentials are never packaged.
+For an independently managed sidecar, set LLMCLIENT_AUTOSTART=false and LLMCLIENT_URL.
 
 ## Quick Start (local SQLite)
 
@@ -285,6 +304,14 @@ mkdirSync(packageDir, { recursive: true });
 
 copyDirectoryIfExists(path.join(rootDir, "dist", "web"), path.join(packageDir, "dist", "web"));
 copyDirectoryIfExists(path.join(rootDir, "dist", "server"), path.join(packageDir, "dist", "server"));
+cpSync(path.join(rootDir, "llmclient"), path.join(packageDir, "llmclient"), {
+  recursive: true,
+  filter: (source) => {
+    const name = path.basename(source);
+    return ![".env", ".venv", "venv", "__pycache__"].includes(name)
+      && !/\.(?:pyc|pyo|log)$/.test(name);
+  }
+});
 copyFileIfExists(path.join(rootDir, "resources", "background.jpg"), path.join(packageDir, "resources", "background.jpg"));
 mkdirSync(path.join(packageDir, "data", "answer-card"), { recursive: true });
 
