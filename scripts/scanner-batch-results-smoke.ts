@@ -176,6 +176,32 @@ try {
     });
     return { status: response.status, data: await response.json() as ScanBatchResponse };
   }
+  // A saved receipt owns its crops even after closure or reuse of the card.
+  const cropId = "receipt-bound-crop";
+  await db.run(`INSERT INTO answer_block_crops
+    (id, card_id, source_type, source_record_id, block_id, block_type, page_number,
+     segment_index, question_numbers, rect_json, image_path, width_px, height_px, dpi)
+    VALUES (?, ?, 'twain_scan_record', ?, 'batch_q', 'objective', 1, 0, '[1]', '{}', 'test.png', 1, 1, 300)`,
+    cropId, card.id, records[0].id);
+  await db.run("UPDATE twain_scan_records SET ocr_status = 'uploaded' WHERE session_id = ?", session.id);
+  await db.run("UPDATE exams SET status = 'closed' WHERE id = ?", exam.lastInsertRowid);
+  async function assertCropOwner(message: string) {
+    const response = await remote(session.id);
+    assert.equal(response.status, 200, JSON.stringify(response.data));
+    const crop = await db.get<{ exam_id: number; student_id: number }>("SELECT exam_id, student_id FROM answer_block_crops WHERE id = ?", cropId);
+    assert.equal(Number(crop?.exam_id), Number(exam.lastInsertRowid), message);
+    assert.equal(Number(crop?.student_id), users[0]);
+  }
+  await assertCropOwner("Closed-exam retries must bind previously unbound crops to the saved receipt");
+  const otherExam = await db.run("INSERT INTO exams (name,card_id,status) VALUES (?,?,'grading')", "复用答题卡", card.id);
+  await db.run("INSERT INTO student_scores (exam_id,student_id,total_score) VALUES (?,?,2)", otherExam.lastInsertRowid, users[0]);
+  await assertCropOwner("Retrying exam A must not move its crops to active exam B");
+  await db.run("UPDATE exams SET status = 'grading' WHERE id = ?", exam.lastInsertRowid);
+  await db.run("UPDATE answer_block_crops SET exam_id = NULL, student_id = NULL WHERE id = ?", cropId);
+  await assertCropOwner("Multiple active exams must not suppress binding to the saved receipt");
+  await db.run("DELETE FROM exams WHERE id = ?", otherExam.lastInsertRowid);
+  await db.run("UPDATE exams SET status = 'grading' WHERE id = ?", exam.lastInsertRowid);
+
   const unmatched = await makeSession(["91999"]);
   // Simulate a misleading cache from the old implementation: it must not suppress saving.
   await store.upsertStudentGradingResult({ sessionId: unmatched.id, studentId: "91999", objectiveJson: "[]", subjectiveJson: "[]", totalScore: 5, maxScore: 5 });
