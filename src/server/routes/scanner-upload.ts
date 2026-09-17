@@ -16,6 +16,8 @@ import path from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import crypto from "node:crypto";
 import { dualAuth } from "../middleware/scanner-auth";
+import { requireScannerExamScope } from "../middleware/scanner-scope";
+import { resolveScannerExam } from "../services/scannerExam";
 import { getMysqlDb } from "../db";
 import { persistAnswerBlockCrops } from "../services/AnswerBlockCropService";
 import { isValidImageBuffer } from "../../apps/answer-card/server/validate-upload";
@@ -48,6 +50,7 @@ const recognitionSchema = z.object({
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 const router = Router();
+router.use("/sessions/:sessionId", dualAuth, requireScannerExamScope);
 router.use("/legacy", dualAuth);
 router.use(scannerLegacyRecoveryRouter());
 
@@ -362,7 +365,8 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
           await db.run("UPDATE answer_block_crops SET exam_id = ?, student_id = ? WHERE source_type = 'twain_scan_record' AND source_record_id = ?", owner.exam_id, owner.student_id, record.recordId);
         }
       }
-      const linkedExams = await db.all<{ id: number }>("SELECT e.id FROM exams e WHERE e.card_id = ? AND e.status = 'grading' AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)", fullSession!.card_id);
+      const { exam: savedExam } = await resolveScannerExam(fullSession!.card_id, String(sessionId));
+      const linkedExams = savedExam?.status === "grading" ? [savedExam] : [];
       for (const exam of linkedExams) {
         await recomputeExamRankings(db, exam.id);
         const roster = await ensureExamParticipants(db, exam.id);

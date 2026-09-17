@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { recoverLegacyScannerSubmission } from "../services/scannerSubmissions";
+import { requireScannerExamScope } from "../middleware/scanner-scope";
 /** Mount behind the scanner route's existing authentication boundary. */
 export function scannerLegacyRecoveryRouter() {
   const router = Router();
-  router.post("/legacy/:examId/:groupId/:action", async (req, res) => {
+  router.post("/legacy/:examId/:groupId/:action", requireScannerExamScope, async (req, res) => {
     const examId = Number(req.params.examId);
-    const action = req.params.action;
+    const action = String(req.params.action);
     const studentId = req.body?.studentId;
     if (!Number.isSafeInteger(examId) || examId < 1 || !["correct", "save"].includes(action)
       || (action === "correct" && (typeof studentId !== "string" || !/^[0-9A-Za-z_-]{1,64}$/.test(studentId)))) {

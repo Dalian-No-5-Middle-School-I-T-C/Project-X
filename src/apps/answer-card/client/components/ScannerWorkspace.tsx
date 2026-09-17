@@ -22,7 +22,9 @@ import { ScannerPanel } from "./ScannerPanel";
 import { ServerConfigDialog } from "./ServerConfigDialog";
 import { ServerStatusIndicator } from "./ServerStatusIndicator";
 import { SkinSwitcher } from "./SkinSwitcher";
-import type { CombinedGradingBatchResult, CombinedGradingRow } from "../../../../shared/types";
+import type { AnswerCard, CombinedGradingBatchResult, CombinedGradingRow } from "../../../../shared/types";
+import { buildLayout } from "../../../../shared/layout";
+import { mapImportedScanPages } from "../../../../shared/scanPages";
 import {
   Badge,
   Button,
@@ -95,25 +97,27 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
     // v2.5.1: remote 档位时图片同时后台排队上传（不阻塞判分）
     let uploadQueued = false;
     let serverUnconfigured = false;
-    if (getScannerMode() === "remote") {
-      if (isRemoteServerConfigured()) {
-        scannerUploadManager.startUpload({
-          kind: "import",
-          cardId,
-          name: `导入_${cardTitle}_${new Date().toISOString().slice(0, 10)}`,
-          pages: gradingFiles.map((file, i) => ({
-            pageNum: i + 1,
-            side: "front" as const,
-            getBlob: () => Promise.resolve(file),
-          })),
-        });
-        uploadQueued = true;
-      } else {
-        serverUnconfigured = true;
-      }
-    }
-    setStatus("正在识别答题卡...");
     try {
+      if (getScannerMode() === "remote") {
+        if (isRemoteServerConfigured()) {
+          const card = await fetchJson<AnswerCard>(`/api/cards/${encodeURIComponent(cardId)}`);
+          const pages = mapImportedScanPages(gradingFiles.length, buildLayout(card).pages.length, card.sided);
+          scannerUploadManager.startUpload({
+            kind: "import",
+            cardId,
+            name: `导入_${cardTitle}_${new Date().toISOString().slice(0, 10)}`,
+            paperSize: card.paper.size,
+            pages: gradingFiles.map((file, i) => ({
+              ...pages[i],
+              getBlob: () => Promise.resolve(file),
+            })),
+          });
+          uploadQueued = true;
+        } else {
+          serverUnconfigured = true;
+        }
+      }
+      setStatus("正在识别答题卡...");
       const form = new FormData();
       for (const file of gradingFiles) {
         form.append("files", file);
@@ -227,6 +231,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
                   )}
                 </div>
 
+              <p className="mb-2 text-xs text-muted-foreground">多页答题卡请按学生逐份添加，每份按布局页序排列；双面卡无需导入末尾空白背面。</p>
               <div className="grid grid-cols-2 gap-2">
                 <Button variant="outline" size="sm" asChild>
                   <label className="cursor-pointer">

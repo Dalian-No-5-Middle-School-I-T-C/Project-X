@@ -14,6 +14,7 @@ await mkdir("data", { recursive: true });
 const root = await mkdtemp(path.resolve("data/scanner-batch-"));
 process.env.ANSWER_CARD_DATA_DIR = path.join(root, "cards");
 process.env.PROJECTX_DB_PATH = path.join(root, "scanner.db");
+process.env.PROJECTX_AUTH_ENFORCE = "0"; // Existing local-mode scenarios below.
 // config.yml is resolved from cwd; isolate it as well as the DB and card files.
 process.chdir(root);
 if (process.env.SCANNER_BATCH_MARIADB === "1") {
@@ -63,6 +64,8 @@ for (let i = 0; i < users.length; i++) {
 await store.updateSessionStatus(session.id, "completed");
 const app = express();
 app.use(express.json());
+const { makeScannerAuth } = await import("../src/server/middleware/scanner-auth");
+app.use("/secured/scanner", makeScannerAuth(true), createScannerRouter(false));
 app.use("/api/scanner", createScannerRouter(false));
 const { default: uploadRouter } = await import("../src/server/routes/scanner-upload");
 const { hashSecret } = await import("../src/server/lib/field-crypto");
@@ -81,6 +84,56 @@ async function request(method = "GET") {
 }
 async function scoreCount() { return Number((await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM student_scores WHERE exam_id = ?", exam.lastInsertRowid))!.n); }
 try {
+  // Real bearer authentication on both route mounts; denials precede any mutation.
+  const { authService } = await import("../src/server/services/AuthService");
+  // Keep ephemeral login tokens in memory; never write the operator's token store.
+  Reflect.set(authService, "scheduleSave", () => {});
+  const { hashPassword } = await import("../src/server/db");
+  const teacherRole = await db.get<{ id: number }>("SELECT id FROM roles WHERE name = 'teacher'");
+  assert(teacherRole);
+  const password = "isolated-scanner-test-password";
+  const teacher = await db.run("INSERT INTO users (username,password_hash,name,role_id,teacher_role,subject,password_change_required) VALUES (?,?,?,?,?,?,0)",
+    "scanner-restricted", await hashPassword(password), "Restricted", teacherRole.id, "subject_teacher", "math");
+  const login = await authService.login("scanner-restricted", password);
+  assert(login.token);
+  const base = `http://127.0.0.1:${address.port}`;
+  const headers = { Authorization: `Bearer ${login.token}`, "Content-Type": "application/json" };
+  const snapshot = async () => JSON.stringify(await Promise.all([
+    db.all("SELECT * FROM student_scores"), db.all("SELECT * FROM question_scores"),
+    db.all("SELECT * FROM exams"), db.all("SELECT * FROM scanner_submissions"),
+    db.all("SELECT * FROM twain_scan_records"),
+  ]));
+  const protectedPaths = [
+    `/secured/scanner/session/${session.id}/results`,
+    `/secured/scanner/session/${session.id}/validate`,
+    `/secured/scanner/session/${session.id}/retry`,
+    `/secured/scanner/legacy/${exam.lastInsertRowid}/1/save`,
+    `/api/scanner/upload/sessions/${session.id}/complete`,
+    `/api/scanner/upload/sessions/${session.id}/correct`,
+    `/api/scanner/upload/sessions/${session.id}/pages`,
+    `/api/scanner/upload/sessions/${session.id}/pages/${records[0].id}/crops`,
+    `/api/scanner/upload/legacy/${exam.lastInsertRowid}/1/save`,
+  ];
+  process.env.PROJECTX_AUTH_ENFORCE = "1";
+  const beforeDenied = await snapshot();
+  for (const route of protectedPaths) {
+    const response = await fetch(base + route, { method: "POST", headers, body: JSON.stringify({ groupId: "0", studentId: "91002" }) });
+    assert.equal(response.status, 403, `${route}: deny out-of-scope teacher`);
+  }
+  assert.equal(await snapshot(), beforeDenied, "Denied requests leave all scores, publication, receipts and recognition unchanged");
+  // A visible exam still requires grading permission for every scored block.
+  await db.run("UPDATE exams SET created_by = ? WHERE id = ?", teacher.lastInsertRowid, exam.lastInsertRowid);
+  await db.run("INSERT INTO teacher_permissions (teacher_id,block_id,can_grade) VALUES (?,?,1)", teacher.lastInsertRowid, "other-block");
+  const deniedBlock = await fetch(base + protectedPaths[0], { method: "POST", headers });
+  assert.equal(deniedBlock.status, 403, "Visibility does not grant whole-paper write access");
+  await db.run("UPDATE teacher_permissions SET block_id = ? WHERE teacher_id = ?", "batch_q", teacher.lastInsertRowid);
+  assert.equal((await fetch(`${base}/secured/scanner/session/${session.id}/validate`, { method: "POST", headers })).status, 200, "Whole-paper grader is allowed");
+  assert.equal((await fetch(base + protectedPaths[0], { method: "POST", headers: { ...headers, "X-Api-Key": "invalid" } })).status, 401, "Unverified API key cannot bypass scope");
+  assert.equal((await fetch(base + protectedPaths[0], { method: "POST" })).status, 401, "Anonymous enforced requests denied");
+  await db.run("UPDATE exams SET created_by = NULL WHERE id = ?", exam.lastInsertRowid);
+  await db.run("DELETE FROM teacher_permissions WHERE teacher_id = ?", teacher.lastInsertRowid);
+  process.env.PROJECTX_AUTH_ENFORCE = "0";
+
   const initial = await request();
   assert.equal(initial.results.length, 3);
   assert.equal(await scoreCount(), 0, "Preview must not save grades");

@@ -2,6 +2,7 @@
 // ①全成功 ②断线暂停→恢复续传 ③重试耗尽→error→手动 retryFailed 补发 complete
 import { createScannerUploadManager } from "../src/apps/answer-card/client/lib/scannerUploadManager";
 import type { StartUploadInput } from "../src/apps/answer-card/client/lib/scannerUploadManager";
+import { mapImportedScanPages, mapScanPageToLayout } from "../src/shared/scanPages";
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(`断言失败: ${msg}`);
@@ -75,6 +76,41 @@ async function main() {
   const SESSIONS = "/api/scanner/upload/sessions";
   const PAGES = "/pages";
   const COMPLETE = "/complete";
+
+  // Exercise the same metadata builder as file import, through recognition and upload.
+  for (const sided of ["single", "double"] as const) {
+    for (const count of [1, 2, 3, 4]) {
+      const mapping = mapImportedScanPages(count * 2, count, sided);
+      const recognizedPages: number[] = [];
+      const received: string[] = [];
+      const mgr = createScannerUploadManager(deps({
+        localFetch: async (_url, init) => {
+          const page = Number((init!.body as FormData).get("page"));
+          const index = recognizedPages.length;
+          recognizedPages.push(page);
+          return jsonRes({ status: "ok", studentId: page === 1 ? { value: `student_${Math.floor(index / count)}` } : {}, questions: [], subjectiveQuestions: [] });
+        },
+        remoteFetch: async (url, init) => {
+          if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "import", uploadTokens: mapping.map((_, i) => `t${i}`) });
+          if (url.endsWith(PAGES)) {
+            const form = init!.body as FormData;
+            const actual = mapScanPageToLayout(Number(form.get("pageNum")), form.get("side") as "front" | "back", count, sided);
+            const recognition = JSON.parse(String(form.get("recognition")));
+            received.push(`${actual.groupIndex}:${actual.layoutPage}:${recognition.studentId.value}`);
+          }
+          return jsonRes({ ok: true });
+        },
+      }));
+      const input = baseInput(count * 2);
+      input.pages = mapping.map(page => ({ ...page, getBlob: async () => blob() }));
+      assert((await waitTerminal(mgr, mgr.startUpload(input))).status === "done", `${sided}/${count} imported pages finish`);
+      assert(recognizedPages.join() === mapping.map(p => p.layoutPage).join(), "Recognize actual layout pages");
+      assert(received.join() === mapping.map(p => `${p.groupId}:${p.layoutPage}:student_${p.groupId}`).join(), "Server regrouping and inherited IDs agree for both students");
+    }
+  }
+  let rejectedIncomplete = false;
+  try { mapImportedScanPages(5, 3, "double"); } catch { rejectedIncomplete = true; }
+  assert(rejectedIncomplete, "Reject incomplete imports before creating remote sessions");
 
   // ── 场景 1：全成功（2 页）──
   {

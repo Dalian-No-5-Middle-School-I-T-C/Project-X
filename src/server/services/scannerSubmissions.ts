@@ -1,3 +1,4 @@
+import { resolveScannerExam } from "./scannerExam";
 import { getMysqlDb, buildUpsertSQL, type DbAdapter } from "../db";
 import type { AnswerCard } from "../../shared/types";
 import type { CombinedStudentResult } from "../../shared/grading";
@@ -124,13 +125,7 @@ export async function processScannerSession(card: AnswerCard, sessionId: string,
       const ids = [...new Set(rows.map(r => r.record.student_id).filter((id): id is string => Boolean(id)))];
       return ids.length === 1 ? [{ groupId, studentNumber: ids[0], pages: rows.map(r => r.page) }] : [];
     });
-    const exams = await db.all<{ id: number; status: string }>(
-      "SELECT e.id, e.status FROM exams e WHERE e.card_id = ? AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)", card.id);
-    const bound = await db.all<{ exam_id: number }>("SELECT DISTINCT exam_id FROM scanner_submissions WHERE session_id = ?", sessionId);
-    const active = exams.filter(e => e.status !== "closed");
-    // A retry keeps its exam even if completion closed it. Never choose an arbitrary exam.
-    const exam = bound.length === 1 ? exams.find(e => e.id === bound[0].exam_id)
-      : active.length === 1 ? active[0] : active.length === 0 && exams.length === 1 ? exams[0] : undefined;
+    const { exams, exam } = await resolveScannerExam(card.id, sessionId);
     if (!exam) {
       return collectSessionResults(card, records, [], mode === "save" ? async () => {
         throw new Error(exams.length === 0 ? "答题卡未关联可阅卷的考试，成绩未入库" : "答题卡关联多个考试，无法确定成绩归属");

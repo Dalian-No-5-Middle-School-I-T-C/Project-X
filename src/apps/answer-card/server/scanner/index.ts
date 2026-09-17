@@ -1,5 +1,6 @@
 import { processScannerSession } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
+import { requireScannerExamScope } from "../../../../server/middleware/scanner-scope";
 import { Router, type Response } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -37,6 +38,7 @@ function enqueuePersist(task: () => Promise<void>): Promise<void> {
  */
 export function createScannerRouter(twainEnabled = true): Router {
   const router = Router();
+  router.use("/session/:sessionId", requireScannerExamScope);
   router.use(scannerLegacyRecoveryRouter());
 
   // Write scanner result to projectx.db for linked exams
