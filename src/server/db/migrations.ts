@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { scannerSubmissionSchema } from "./scannerSubmissionSchema";
 
 type ColumnInfo = { name: string; notnull?: number; dflt_value?: unknown };
 type Migration = {
@@ -1165,6 +1166,11 @@ const MIGRATIONS: Migration[] = [
     }
   }
 ];
+
+MIGRATIONS.push({ version: 49, name: "scanner-submission-receipts", up(db) {
+  db.exec(scannerSubmissionSchema("sqlite"));
+  db.exec("CREATE INDEX IF NOT EXISTS idx_scanner_submission_student ON scanner_submissions(exam_id, student_number)");
+} });
 
 export function runMigrations(db: Database.Database): void {
   db.exec(`

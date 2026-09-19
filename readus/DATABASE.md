@@ -23,6 +23,22 @@
 
 ## 两种数据库模式
 
+### CI 数据库验证
+
+`.github/workflows/ci.yml` 的 `MariaDB 10.11 Integration` 任务使用独立的
+`mariadb:10.11` 服务容器，健康检查通过后运行 `npm run verify:mariadb`。
+该任务与现有 SQLite / 核心逻辑测试并行，全部通过后才执行构建。
+
+当前覆盖真实 MariaDB 上的全新 schema 初始化、增量迁移执行、重复初始化、
+参数绑定与中文 / emoji 保存、UPSERT、INSERT IGNORE、事务提交 / 回滚和删除。
+这不是完整业务 API 回归，也尚未覆盖历史版本数据库快照升级。
+
+本地运行需准备一次性的空数据库 `projectx_ci`，并显式设置
+`PROJECTX_MARIADB_HOST`、`PROJECTX_MARIADB_USER`、`PROJECTX_MARIADB_PASSWORD`、
+`PROJECTX_MARIADB_DATABASE=projectx_ci`；端口通过 `PROJECTX_MARIADB_PORT` 设置（默认 3306）。
+然后运行 `npm run verify:mariadb`。脚本会拒绝其他库名及非空数据库，不读取业务连接配置，
+也不自动清空已有数据库。重跑需重新准备空的测试库；CI 容器在任务结束后销毁。
+
 | 特性 | 本地 SQLite | 远程 MariaDB |
 |------|------------|-------------|
 | **适用场景** | 单机部署、离线考试、开发测试 | 多用户生产环境、集中管理 |

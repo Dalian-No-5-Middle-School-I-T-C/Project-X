@@ -31,6 +31,7 @@
     "electron:msi:ia32": "npm run build:scanner:full && npm run native:rebuild:electron:ia32 && npm run native:sharp:ia32 && electron-builder --win msi --ia32",
     "server": "tsx src/apps/answer-card/server/index.ts",
     "verify:auth": "tsx scripts/verify-auth.ts",
+    "verify:mariadb": "tsx scripts/verify-mariadb.ts",
     "verify:security-critical": "tsx scripts/verify-security-critical.ts",
     "verify:p1-security": "tsx scripts/verify-p1-fixes.ts",
     "verify:demo-safety": "tsx scripts/verify-demo-safety.ts",

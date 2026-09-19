@@ -759,3 +759,13 @@ INSERT OR IGNORE INTO data_retention_policies (id, name, retain_days, auto_archi
     (1, '周测', 30, 1, 0),
     (2, '月考', 90, 1, 0),
     (3, '期中期末', 0, 1, 0);
+
+-- v49: durable scanner receipts and withdrawn duplicate evidence
+CREATE TABLE IF NOT EXISTS scanner_submissions (
+    exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL, group_id TEXT NOT NULL, student_number TEXT NOT NULL,
+    state VARCHAR(16) NOT NULL DEFAULT 'pending', previously_saved INTEGER NOT NULL DEFAULT 0,
+    pages_json TEXT NOT NULL, result_json TEXT, score_snapshot TEXT,
+    PRIMARY KEY (exam_id, session_id, group_id)
+);
+CREATE INDEX IF NOT EXISTS idx_scanner_submission_student ON scanner_submissions(exam_id, student_number);

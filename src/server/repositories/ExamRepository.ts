@@ -1,3 +1,4 @@
+import { databaseTimestamp } from "../db/timestamp";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
 import { roundScore } from "../services/rankingUpdate";
@@ -198,7 +199,7 @@ export class ExamRepository {
     if (!expiresAt) {
       const d = new Date();
       d.setDate(d.getDate() + 30);
-      expiresAt = d.toISOString();
+      expiresAt = databaseTimestamp(d);
     }
     const result = await this.db.run(
       "INSERT INTO scan_records (batch_id, file_path, file_name, student_number, student_id, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -229,7 +230,7 @@ export class ExamRepository {
     const obj = roundScore(objectiveScore);
     const subj = roundScore(subjectiveScore);
     const total = roundScore(obj + subj);
-    const gradedAt = new Date().toISOString();
+    const gradedAt = databaseTimestamp();
     const upsertSQL = buildUpsertSQL(
       this.db.dialect,
       "student_scores",

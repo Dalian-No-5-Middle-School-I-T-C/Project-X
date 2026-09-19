@@ -40,10 +40,48 @@ jobs:
       - name: Core logic verify suite
         run: npm run verify:core-logic
 
+  mariadb-test:
+    name: MariaDB 10.11 Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: ci-root-password
+          MARIADB_DATABASE: projectx_ci
+          MARIADB_USER: projectx_ci
+          MARIADB_PASSWORD: ci-test-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      PROJECTX_MARIADB_HOST: 127.0.0.1
+      PROJECTX_MARIADB_PORT: 3306
+      PROJECTX_MARIADB_USER: projectx_ci
+      PROJECTX_MARIADB_PASSWORD: ci-test-password
+      PROJECTX_MARIADB_DATABASE: projectx_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm install --ignore-scripts
+      - name: Install Linux platform binaries (npm bug #4828)
+        run: npm install --no-save --ignore-scripts @rollup/rollup-linux-x64-gnu @esbuild/linux-x64
+      - name: MariaDB integration tests
+        run: npm run verify:mariadb
+
   build:
     name: Build
     runs-on: ubuntu-latest
-    needs: typecheck-and-test
+    needs: [typecheck-and-test, mariadb-test]
     steps:
       - uses: actions/checkout@v4
 
