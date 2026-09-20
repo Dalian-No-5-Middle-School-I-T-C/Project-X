@@ -110,6 +110,9 @@ export interface HistogramBin {
   count: number;
 }
 
+/** Keep analysis response size and synchronous binning work bounded for persisted scores. */
+export const MAX_HISTOGRAM_BINS = 100;
+
 /** 按固定段长生成直方图
  *
  * 桶为半开区间 [min, min+step)，最后一段闭区间收尾（包含 fullScore）。
@@ -117,19 +120,21 @@ export interface HistogramBin {
  * - 数值字段 min/max：前 N-1 段 max = min+step-1（适配 SQL `BETWEEN r.min AND r.max` 过滤整数成绩），
  *   末段 max = fullScore（闭区间，含满分；保证 JS 桶计数与 SQL 计数一致）。 */
 export function histogram(values: number[], fullScore: number, segmentSize: number): HistogramBin[] {
-  const step = Math.max(1, Math.round(segmentSize));
+  const safeFullScore = Number.isFinite(fullScore) && fullScore > 0 ? fullScore : 0;
+  const configuredStep = Number.isFinite(segmentSize) ? Math.max(1, Math.round(segmentSize)) : 1;
+  const step = Math.max(configuredStep, Math.ceil(safeFullScore / MAX_HISTOGRAM_BINS));
   const bins: HistogramBin[] = [];
-  for (let min = 0; min < fullScore; min += step) {
+  for (let min = 0; min < safeFullScore; min += step) {
     const upperExclusive = min + step;
-    const isLast = upperExclusive >= fullScore;
-    const max = isLast ? fullScore : Math.min(upperExclusive - 1, fullScore);
-    const range = isLast ? `${min}-${fullScore}` : `${min}-<${upperExclusive}`;
+    const isLast = upperExclusive >= safeFullScore;
+    const max = isLast ? safeFullScore : Math.min(upperExclusive - 1, safeFullScore);
+    const range = isLast ? `${min}-${safeFullScore}` : `${min}-<${upperExclusive}`;
     bins.push({ range, min, max, count: 0 });
   }
-  if (bins.length === 0) bins.push({ range: `0-${fullScore}`, min: 0, max: fullScore, count: 0 });
+  if (bins.length === 0) bins.push({ range: "0-0", min: 0, max: 0, count: 0 });
   for (const v of values) {
     if (!Number.isFinite(v)) continue;
-    const bi = Math.min(bins.length - 1, Math.floor(v / step));
+    const bi = Math.max(0, Math.min(bins.length - 1, Math.floor(v / step)));
     bins[bi].count++;
   }
   return bins;

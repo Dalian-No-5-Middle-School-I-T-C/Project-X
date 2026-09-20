@@ -188,6 +188,11 @@ ok(bins[0].count === 1, "9.5 → bin 1 (0-<10)");
 ok(bins[1].count === 2, "10 + 19.99 → bin 2 (10-<20)");
 ok(bins[2].count === 1, "20 → bin 3 (20-<30)");
 ok(bins[bins.length - 1].count === 1, "100 → 末段 (90-100)");
+const hugeBins = histogram([0, 1_000_000_000], 1_000_000_000, 10);
+ok(hugeBins.length <= 100, "异常大满分的直方图桶数有固定上限", hugeBins.length);
+ok(hugeBins.reduce((sum, bin) => sum + bin.count, 0) === 2, "自适应分段仍统计全部成绩", hugeBins);
+const invalidBins = histogram([0], Number.POSITIVE_INFINITY, Number.NaN);
+ok(invalidBins.length === 1 && invalidBins[0].range === "0-0", "非有限满分和段长安全降级", invalidBins);
 
 // 清理
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
