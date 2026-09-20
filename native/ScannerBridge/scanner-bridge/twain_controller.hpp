@@ -45,13 +45,36 @@ struct ScanResult {
     std::vector<PageResult> pages;
 };
 
+/**
+ * 数据源枚举的「带因诊断」结果。
+ *
+ * 旧实现里 listSources() 返回空数组时无法区分 5 种根因（DSM 未加载 / 窗口创建失败 /
+ * OPENDSM 失败 / 位宽不匹配 / 真的没接扫描仪），上层只能笼统提示「未检测到扫描仪」，
+ * 现场无法自证。这里把每一步的真实结果带出来，供 UI 直接展示可操作的建议。
+ */
+struct SourceEnumeration {
+    std::vector<SourceInfo> sources;
+    // "OK" | "WINDOW_CREATE_FAILED" | "DSM_LOAD_FAILED" | "OPENDSM_FAILED" | "NO_SOURCES"
+    std::string code = "OK";
+    std::string message;          // 面向用户的中文说明
+    std::string hint;             // 可操作建议（按位宽给出）
+    std::string dsmPath;          // 实际成功加载的 TWAINDSM.dll 路径，空表示未加载
+    std::string dsmSearchLog;     // 加载失败时各候选路径的探试记录
+    int openDsmRc = -1;           // DSM_Entry(MSG_OPENDSM) 返回码，-1 = 未执行
+    int conditionCode = -1;       // DAT_STATUS ConditionCode，-1 = 未取得
+    bool windowCreated = false;   // 隐藏窗口是否创建成功（OPENDSM 需要有效 hParent）
+};
+
 class TwainController {
 public:
     TwainController();
     ~TwainController();
 
-    // Enumerate available TWAIN sources
+    // Enumerate available TWAIN sources（仅返回数据源，失败原因丢失；保留给内部调用方）
     std::vector<SourceInfo> listSources();
+
+    // Enumerate with full diagnostics（list 命令与 UI 用它）
+    SourceEnumeration listSourceDetails();
 
     // Execute a scan session
     ScanResult scan(const ScanConfig& config);
@@ -109,6 +132,11 @@ private:
     int m_state;  // 1=DSM open, 2=DS open, 3=DS enabled, 4=transferring, 5=transfer done
     bool m_cancelRequested;
     HWND m_hwnd;
+
+    // 最近一次 OPENDSM 失败的真实返回码与条件码（诊断用，避免只报「失败」）
+    TW_UINT16 m_lastOpenDsmRc;
+    TW_UINT16 m_lastConditionCode;
+    bool m_hasOpenDsmAttempt;
     
     // Callbacks
     ProgressCallback m_progressCallback;
@@ -124,6 +152,20 @@ private:
 
 std::string escapeJson(const std::string& s);
 std::string sourcesToJson(const std::vector<SourceInfo>& sources);
+std::string sourceEnumerationToJson(const SourceEnumeration& snapshot, const char* arch);
 std::string scanResultToJson(const ScanResult& result);
+
+// ── DSM 加载诊断 ──────────────────────────────────────
+
+/** 当前扫描桥接进程的位宽（"ia32" / "x64"），用于位宽不匹配提示 */
+const char* bridgeArchName();
+/** TWAINDSM.dll 是否已成功加载（含 DSM_Entry 导出解析成功） */
+bool dsmLoaded();
+/** 成功加载的 DSM 路径；未加载时为空 */
+const std::string& dsmLoadedPath();
+/** 加载失败时的候选路径探试记录（含 LoadLibraryA 错误码） */
+const std::string& dsmLoadLog();
+/** 面向用户的一句话 DSM 状态说明（含位宽提示），用于拼进 scan 错误信息 */
+std::string dsmDiagnosticSuffix();
 
 } // namespace ScannerBridge

@@ -55,13 +55,16 @@ int wmain(int argc, wchar_t* argv[]) {
 
     if (command == "list") {
         TwainController controller;
-        auto sources = controller.listSources();
-        
-        std::string json = sourcesToJson(sources);
+        // 带因枚举：DSM 未加载 / 窗口创建失败 / OPENDSM 失败 / 无驱动 各自有独立 code 与提示，
+        // 上层不必再把所有失败压成一句「未检测到扫描仪」
+        SourceEnumeration details = controller.listSourceDetails();
+
+        std::string json = sourceEnumerationToJson(details, bridgeArchName());
         printf("%s\n", json.c_str());
         fflush(stdout);
-        
-        return sources.empty() ? 1 : 0;
+
+        // 退出码仅保留信息性语义（0=有源，1=无源）；权威诊断在 JSON 的 code 字段
+        return details.sources.empty() ? 1 : 0;
     }
 
     if (command == "scan") {
@@ -112,14 +115,14 @@ int wmain(int argc, wchar_t* argv[]) {
         // If no source specified, list and pick first
         if (config.sourceName.empty()) {
             TwainController listController;
-            auto sources = listController.listSources();
-            if (sources.empty()) {
-                fprintf(stderr, "Error: No TWAIN scanners found\n");
-                std::string json = "{\"status\":\"error\",\"message\":\"No TWAIN scanners found\"}";
-                printf("%s\n", json.c_str());
+            SourceEnumeration details = listController.listSourceDetails();
+            if (details.sources.empty()) {
+                fprintf(stderr, "Error: No usable TWAIN source (%s)\n", details.code.c_str());
+                printf("%s\n", sourceEnumerationToJson(details, bridgeArchName()).c_str());
+                fflush(stdout);
                 return 1;
             }
-            config.sourceName = sources[0].name;
+            config.sourceName = details.sources[0].name;
             fprintf(stderr, "[ScannerBridge] Auto-selected source: %s\n", config.sourceName.c_str());
         }
 

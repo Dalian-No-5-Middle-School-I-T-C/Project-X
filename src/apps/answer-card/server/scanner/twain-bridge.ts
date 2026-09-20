@@ -67,7 +67,18 @@ export function resolveScannerBridgeExe(): string {
   return found;
 }
 
-function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Promise<{ stdout: string; stderr: string }> {
+/** runBridge 失败时携带的桥接进程信息，供上层给出可定位的结论 */
+export interface BridgeFailure extends Error {
+  bridgeExitCode?: number | null;
+  bridgeStderr?: string;
+  bridgeStdout?: string;
+}
+
+function bridgeFailure(message: string, fields: Omit<BridgeFailure, keyof Error>): BridgeFailure {
+  return Object.assign(new Error(message), fields);
+}
+
+function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
   const exePath = resolveScannerBridgeExe();
 
   // 取消检查：用户已请求取消（可能早于本函数执行），直接拒绝启动扫描
@@ -104,7 +115,12 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
       if (sessionId) {
         activeScans.delete(sessionId);
       }
-      reject(error);
+      // spawn 级失败：exe 不存在、无权执行等。0xC0000135/0xC000007B 这类
+      // DLL 加载失败会在 close 事件里以退出码形式出现，不走这里。
+      reject(bridgeFailure(`无法启动扫描桥接程序（${error.message}）`, {
+        bridgeExitCode: null,
+        bridgeStderr: Buffer.concat(stderrChunks).toString("utf8").trim()
+      }));
     });
 
     child.on("close", (code) => {
@@ -116,16 +132,26 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
       const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
 
       if (timedOut) {
-        reject(new Error(`扫描仪桥接程序超时（${timeoutMs}ms）`));
+        reject(bridgeFailure(`扫描仪桥接程序超时（${timeoutMs}ms）`, {
+          bridgeExitCode: code,
+          bridgeStderr: stderr,
+          bridgeStdout: stdout
+        }));
         return;
       }
 
       if (code !== 0 && !stdout.trim()) {
-        reject(new Error(describeBridgeFailure(code, stderr)));
+        reject(bridgeFailure(describeBridgeFailure(code, stderr), {
+          bridgeExitCode: code,
+          bridgeStderr: stderr,
+          bridgeStdout: stdout
+        }));
         return;
       }
 
-      resolve({ stdout, stderr });
+      // 注意：非零退出码但 stdout 有内容属于正常路径——native 的 list/scan 在
+      // 「没有可用数据源」时也会输出结构化 JSON 并返回 1，stderr 里的细节由调用方取用。
+      resolve({ stdout, stderr, code });
     });
   });
 }
@@ -144,9 +170,19 @@ export function describeBridgeFailure(code: number | null, stderr: string): stri
   const unsigned = code >>> 0;
   // 0xC0000135 STATUS_DLL_NOT_FOUND：目标机缺 VC++ 运行库（vcruntime140/msvcp140 的对应位数版本）
   if (unsigned === 0xc0000135) {
-    return "扫描桥接程序无法启动：系统缺少 VC++ 运行库（vcruntime140.dll / msvcp140.dll）。" +
-      "请安装 Visual C++ 2015-2022 可再发行程序包（32 位系统装 x86 版）后重试；" +
-      "在此之前可先用「导入阅卷」导入图片完成判分。";
+    return "扫描桥接程序无法启动：缺少 VC++ 运行库（vcruntime140.dll / msvcp140.dll / concrt140.dll）。" +
+      "单文件分发时请确认安装目录 resources/native/" + nativeResourceDir() + " 下的运行库文件完整；" +
+      "也可安装 Visual C++ 2015-2022 可再发行程序包（32 位扫描端装 x86 版）后重试。";
+  }
+  // 0xC000007B STATUS_INVALID_IMAGE_FORMAT：位宽不匹配或 DLL 损坏
+  if (unsigned === 0xc000007b) {
+    return "扫描桥接程序无法加载（映像格式无效，通常为 32/64 位不匹配）。" +
+      "请确认当前安装包位数与扫描仪驱动位数一致：老旧扫描仪多为 32 位驱动，需使用 ia32 版扫描端。";
+  }
+  // 0xC0000142 STATUS_DLL_INIT_FAILED：DLL 初始化失败（运行库被安全软件拦截或版本冲突）
+  if (unsigned === 0xc0000142) {
+    return "扫描桥接程序启动失败（DLL 初始化失败）。" +
+      "常见原因是安全软件拦截了安装目录下的运行库，或将安装目录放入了受限路径。请调整后重试。";
   }
   // 0xC0000005 ACCESS_VIOLATION：多为 TWAIN 驱动与 32 位进程不兼容或驱动损坏
   if (unsigned === 0xc0000005) {
@@ -156,9 +192,129 @@ export function describeBridgeFailure(code: number | null, stderr: string): stri
   return `扫描仪桥接程序退出，错误码：${code}${stderr ? `，错误信息：${stderr}` : ""}`;
 }
 
+/** 当前扫描端进程位宽对应的原生资源目录名（与 nativeResourceDir 一致的对外可读形式）。 */
+function runtimeArch(): string {
+  return process.arch === "ia32" ? "ia32" : process.arch === "x64" ? "x64" : process.arch;
+}
+
+/** 位宽不匹配是「检测不到扫描仪」的高频根因，且从现象上无法与「没接设备」区分，故显式提示。 */
+export function archMismatchHint(): string {
+  if (process.arch === "ia32") {
+    return "当前为 32 位扫描端，只能枚举 32 位 TWAIN 驱动；若该扫描仪仅提供 64 位驱动，请改用 x64 版扫描端。";
+  }
+  if (process.arch === "x64") {
+    return "当前为 64 位扫描端，只能枚举 64 位 TWAIN 驱动；老旧扫描仪多为 32 位驱动，此时请改用 ia32 版扫描端。";
+  }
+  return "";
+}
+
+const FALLBACK_SOURCES_MESSAGE: Record<string, string> = {
+  DSM_LOAD_FAILED: "无法加载 TWAIN 数据源管理器（TWAINDSM.dll）",
+  OPENDSM_FAILED: "TWAIN 数据源管理器打开失败",
+  WINDOW_CREATE_FAILED: "扫描桥接程序无法创建 TWAIN 宿主窗口",
+  NO_SOURCES: "未枚举到任何扫描仪驱动",
+  BRIDGE_EXIT_NONZERO: "扫描桥接程序异常退出",
+  BRIDGE_NO_OUTPUT: "扫描桥接程序未返回可解析的结果",
+  BRIDGE_MISSING: "未找到扫描桥接程序",
+  UNKNOWN: "扫描仪检测失败"
+};
+
+/**
+ * 从桥接输出反推根因。新版 exe 直接给出 `code`；旧版 exe 只有字段缺失的 JSON，
+ * 用 stderr 关键字与退出码兜底推断——保证不重编译 exe 也能拿到可定位的结论。
+ */
+function deriveSourcesCode(
+  payload: Record<string, unknown>,
+  stderr: string,
+  exitCode: number | null
+): string {
+  const explicit = payload.code;
+  if (typeof explicit === "string" && explicit) return explicit;
+
+  const log = `${stderr}\n${typeof payload.message === "string" ? payload.message : ""}`;
+  if (/OPENDSM/i.test(log) || /ConditionCode/i.test(log)) return "OPENDSM_FAILED";
+  if (/TWAINDSM|twain_32|LoadLibrary|DSM/i.test(log) && /fail|无法|失败|缺少|错误|error/i.test(log)) {
+    return "DSM_LOAD_FAILED";
+  }
+  if (Array.isArray(payload.sources) && payload.sources.length > 0) return "OK";
+  if (exitCode !== null && exitCode !== 0) return "BRIDGE_EXIT_NONZERO";
+  return "NO_SOURCES";
+}
+
 export async function listSources(): Promise<ScannerSourcesResult> {
-  const { stdout } = await runBridge(["list"], 15_000);
-  return parseBridgeJson(stdout) as unknown as ScannerSourcesResult;
+  let stdout = "";
+  let stderr = "";
+  let exitCode: number | null = null;
+
+  try {
+    const outcome = await runBridge(["list"], 15_000);
+    stdout = outcome.stdout;
+    stderr = outcome.stderr;
+    exitCode = outcome.code;
+  } catch (error) {
+    // 桥接程序压根起不来（exe 缺失 / 缺运行库 / 位宽错误）：describeBridgeFailure 已给出中文原因
+    const failure = error as BridgeFailure;
+    const startedButExited = failure.bridgeExitCode !== undefined && failure.bridgeExitCode !== null;
+    const code = startedButExited ? "BRIDGE_EXIT_NONZERO" : "BRIDGE_MISSING";
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      status: "error",
+      sources: [],
+      code,
+      message,
+      hint: startedButExited
+        ? "桥接程序已启动但立即退出，通常是运行库缺失或位数不匹配；详见下方原始输出。"
+        : "请确认安装包完整（resources/native 目录存在）后重新安装。",
+      arch: runtimeArch(),
+      exitCode: failure.bridgeExitCode ?? null,
+      bridgeStderr: failure.bridgeStderr
+    };
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = parseBridgeJson(stdout);
+  } catch (error) {
+    return {
+      status: "error",
+      sources: [],
+      code: "BRIDGE_NO_OUTPUT",
+      message: `${FALLBACK_SOURCES_MESSAGE.BRIDGE_NO_OUTPUT}：${error instanceof Error ? error.message : String(error)}`,
+      hint: "这通常意味着安装的扫描端与本机不兼容（位数或运行库）。请附上下方原始输出以便定位。",
+      arch: runtimeArch(),
+      exitCode,
+      bridgeStderr: stderr
+    };
+  }
+
+  const code = deriveSourcesCode(payload, stderr, exitCode);
+  const rawSources = Array.isArray(payload.sources) ? payload.sources : [];
+  const sources = rawSources
+    .map((item) => (item && typeof item === "object" && typeof (item as { name?: unknown }).name === "string"
+      ? { name: (item as { name: string }).name }
+      : null))
+    .filter((item): item is { name: string } => item !== null && item.name.length > 0);
+
+  const ok = code === "OK" && sources.length > 0;
+
+  return {
+    status: ok ? "ok" : "error",
+    sources,
+    code: code as ScannerSourcesResult["code"],
+    message: ok
+      ? undefined
+      : (typeof payload.message === "string" && payload.message) || FALLBACK_SOURCES_MESSAGE[code] || FALLBACK_SOURCES_MESSAGE.UNKNOWN,
+    hint: ok ? undefined : (typeof payload.hint === "string" && payload.hint) || archMismatchHint(),
+    arch: typeof payload.arch === "string" ? payload.arch : runtimeArch(),
+    dsmLoaded: typeof payload.dsm_loaded === "boolean" ? payload.dsm_loaded : undefined,
+    dsmPath: typeof payload.dsm_path === "string" ? payload.dsm_path : undefined,
+    dsmSearch: typeof payload.dsm_search === "string" ? payload.dsm_search : undefined,
+    openDsmRc: typeof payload.open_dsm_rc === "number" ? payload.open_dsm_rc : undefined,
+    conditionCode: typeof payload.condition_code === "number" ? payload.condition_code : undefined,
+    windowCreated: typeof payload.window_created === "boolean" ? payload.window_created : undefined,
+    bridgeStderr: stderr || undefined,
+    exitCode
+  };
 }
 
 export async function scan(config: {

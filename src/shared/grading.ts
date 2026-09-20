@@ -295,7 +295,28 @@ export function gradeSubjectiveRecognition(
   recognition: SubjectiveRecognitionQuestion
 ): SubjectiveQuestionGrade {
   const question = findSubjectiveQuestion(card, recognition.questionId);
-  const maxScore = question?.score ?? recognition.maxScore;
+
+  // 小题不在当前答题卡上：禁止回退到识别结果自带的 maxScore。
+  // 远程上传路径的 subjectiveQuestions 由客户端提供（scanner-upload.ts 只做形状校验），
+  // 一旦回退，伪造 questionId 即可让 maxScore 与总分被任意放大并写入 question_scores
+  // （审计 #03「扫描端载荷可注入任意主观题成绩」）。
+  // 与客观题同一策略：maxScore 记 0、标记待复核，交教师订正，绝不采信客户端分值。
+  if (!question) {
+    return {
+      questionId: recognition.questionId,
+      questionNumber: recognition.questionNumber,
+      score: 0,
+      maxScore: 0,
+      status: "missing_score_grid",
+      needsReview: true,
+      confidence: recognition.confidence,
+      validCells: recognition.validCells,
+      invalidCells: recognition.invalidCells,
+      message: "题号不在当前答题卡的主观题范围内，已按 0 分计入并标记待复核"
+    };
+  }
+
+  const maxScore = question.score;
   const needsReview = recognition.status !== "ok";
 
   let status: SubjectiveQuestionGradeStatus = "ok";

@@ -63,13 +63,16 @@
 |---|---|
 | 启动报 `Could not load the 'sharp' module ... win32-ia32` | 使用 v2.4.1+ 安装包（已内置全部 ia32 原生依赖）；旧包请重装升级 |
 | 启动报 `EPERM ... C:\Windows\system32\data\...` | v2.4.1 前的已知缺陷，升级即可 |
-| 点「检测/开始扫描」提示**缺少 VC++ 运行库（vcruntime140.dll）** | 目标机未装 VC++ 运行库：安装 Visual C++ 2015-2022 可再发行程序包（32 位系统选 x86 版）后重试；期间可用「导入阅卷」导入图片判分 |
+| 点「检测/开始扫描」提示**缺少 VC++ 运行库（vcruntime140.dll / 报错码 0xC0000135）** | **v2.5.4+ 安装包已把 VC++ 运行库随包分发**（随应用放在 `resources/native/win-ia32`、`resources/native/win-x64`），目标机**无需再单独安装**「Visual C++ 可再发行程序包」。若升级后仍报此错，多为安装目录文件被安全软件隔离或安装包被精简，重装即可；期间可用「导入阅卷」导入图片判分 |
 | 点「检测/开始扫描」提示**桥接程序在访问 TWAIN 设备时崩溃** | 多为扫描仪驱动与 32 位进程不兼容或驱动损坏：重装/更新扫描仪驱动；期间用「导入阅卷」方式判分 |
+| 点「检测」提示**未检测到扫描仪** | v2.5.4+ 起该提示附带**可展开的技术细节**（TWAIN DSM 加载路径与搜索记录、OPENDSM 返回码、条件码、进程位数、桥接退出码），可直接截图反馈。常见原因：驱动未安装、**32 位驱动与 64 位进程位数不匹配**（老旧扫描仪多为 32 位驱动，须用 ia32 安装包）、或数据源被其它 TWAIN 程序独占 |
+| 扫描推进到某张后长时间不动 | 在工作台「扫描设置」中调整**等纸超时（秒）**（默认 15 秒，可设 2–120）：老机器进纸慢可调大，调小可更快跳过空位 |
 | 登录页样式与预期不符 | 清除浏览器数据不适用——检查是否首次进入被引导层拦截，二选一确认即可 |
 
 ## 附：维护者打包备忘（开发者向）
 
-- 打包命令：`npm run electron:msi:ia32`（MSI）/ `electron:pack:ia32`（目录）/ `electron:dist:ia32`（便携版）。脚本已自动串联：构建 → better-sqlite3 ia32 重编译 → sharp ia32 二进制补齐 → electron-builder。
+- 打包命令：`npm run electron:msi:ia32`（MSI）/ `electron:pack:ia32`（目录）/ `electron:dist:ia32`（便携版）。脚本已自动串联：构建 → better-sqlite3 ia32 重编译 → sharp ia32 二进制补齐 → **VC++ 运行库落位** → electron-builder。
+- VC++ 运行库由 `scripts/stage-vc-runtime.cjs`（`npm run native:runtime[:ia32]`）从本机 VS 安装中提取，落地到 `resources/native/<arch>/`，随后由 `extraResources` 整目录带入安装包（app-local 部署，免管理员权限）。因此 `resources/native/win-ia32`、`resources/native/win-x64` 下的 `msvcp140*.dll` / `vcruntime140*.dll` / `concrt140.dll` **属于随包资产，必须提交到仓库**。
 - 打包机建议设置镜像变量加速下载：`ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/`、`ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/`。
 
 ## 重复学号与保存状态

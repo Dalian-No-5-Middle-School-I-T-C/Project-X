@@ -85,6 +85,11 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [colorMode, setColorMode] = useState<"gray" | "color" | "bw">("gray");
   const [paperSize, setPaperSize] = useState<"A4" | "Letter" | "A3">("A4");
   const [maxPages, setMaxPages] = useState(0);
+  // 等纸空闲超时（秒）：0=用 native 默认 15s。厚纸/慢速 ADF 进纸间隔大时需要调高，
+  // 否则会出现「扫到一半提前收尾」。
+  const [pageTimeoutSec, setPageTimeoutSec] = useState(0);
+  // 检测诊断（根因/建议/原始输出）：把「未检测到扫描仪」这一类笼统文案拆成可操作结论
+  const [sourcesDiag, setSourcesDiag] = useState<ScannerSourcesResult | null>(null);
   const [sessionId, setSessionId] = useState("");
   const [progressMessage, setProgressMessage] = useState("");
   const [pages, setPages] = useState<ScanPage[]>([]);
@@ -151,9 +156,18 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
   async function detectSources() {
     setState("detecting");
+    setSourcesDiag(null);
     try {
       const res = await authFetch("/api/scanner/sources");
-      const data: ScannerSourcesResult = await res.json();
+      const data = (await res.json()) as ScannerSourcesResult;
+      // 先判 HTTP 状态：服务端异常时 body 可能没有 status 字段，
+      // 旧代码直接读 data.status 会走到通用兜底文案，丢掉真正的错误
+      if (!res.ok) {
+        setSourcesDiag(data);
+        setErrorMessage(data?.message || `检测扫描仪失败（HTTP ${res.status}）`);
+        setState("error");
+        return;
+      }
       if (data.status === "ok" && data.sources.length > 0) {
         setSources(data.sources.map((s) => s.name));
         const kodak = data.sources.find(
@@ -162,6 +176,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         setSelectedSource(kodak?.name || data.sources[0].name);
         setState("ready");
       } else {
+        setSourcesDiag(data);
         setErrorMessage(data.message || "未检测到扫描仪");
         setState("error");
       }
@@ -169,6 +184,22 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       setErrorMessage(err instanceof Error ? err.message : "检测扫描仪失败");
       setState("error");
     }
+  }
+
+  /** 诊断原始细节：现场截图即可自证，不必再让老师翻日志 */
+  function diagnosticLines(diag: ScannerSourcesResult): string[] {
+    const lines: string[] = [];
+    if (diag.code) lines.push(`根因代码：${diag.code}`);
+    if (diag.arch) lines.push(`扫描端位数：${diag.arch}`);
+    if (diag.dsmLoaded !== undefined) lines.push(`TWAIN 管理器已加载：${diag.dsmLoaded ? "是" : "否"}`);
+    if (diag.dsmPath) lines.push(`TWAIN 管理器：${diag.dsmPath}`);
+    if (diag.dsmSearch) lines.push(`加载探试：${diag.dsmSearch}`);
+    if (diag.openDsmRc !== undefined && diag.openDsmRc >= 0) lines.push(`OPENDSM 返回码：${diag.openDsmRc}`);
+    if (diag.conditionCode !== undefined && diag.conditionCode >= 0) lines.push(`条件码：${diag.conditionCode}`);
+    if (diag.windowCreated !== undefined) lines.push(`宿主窗口创建成功：${diag.windowCreated ? "是" : "否"}`);
+    if (diag.exitCode !== undefined) lines.push(`桥接进程退出码：${diag.exitCode ?? "无"}`);
+    if (diag.bridgeStderr) lines.push(`桥接进程原始输出：\n${diag.bridgeStderr}`);
+    return lines;
   }
 
   // UI-5: 监听扫描进度，连接中断时自动重连（封顶 MAX_RECONNECT 次）
@@ -389,6 +420,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           paperSize,
           maxPages,
           showUi,
+          // 0 表示沿用 native 默认（15000ms）
+          pageTimeoutMs: pageTimeoutSec > 0 ? Math.round(pageTimeoutSec * 1000) : undefined,
         }),
       });
 
@@ -442,6 +475,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     setActiveStudent(null);
     setProgressMessage("");
     setErrorMessage("");
+    setSourcesDiag(null);
     detectSources();
   }
 
@@ -480,12 +514,25 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
       {/* State: error */}
       {state === "error" && (
-        <div className="flex items-center gap-2 rounded-md border border-destructive-border bg-destructive-soft px-3 py-3 text-sm text-destructive-fg">
-          <AlertTriangle size={20} className="shrink-0" />
-          <span className="min-w-0 flex-1 break-words">{errorMessage}</span>
-          <Button variant="outline" size="sm" className="ml-auto shrink-0" icon={<RefreshCw size={14} />} onClick={detectSources}>
-            重试
-          </Button>
+        <div className="flex flex-col gap-2 rounded-md border border-destructive-border bg-destructive-soft px-3 py-3 text-sm text-destructive-fg">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={20} className="shrink-0" />
+            <span className="min-w-0 flex-1 break-words">{errorMessage}</span>
+            <Button variant="outline" size="sm" className="ml-auto shrink-0" icon={<RefreshCw size={14} />} onClick={detectSources}>
+              重试
+            </Button>
+          </div>
+          {sourcesDiag?.hint && (
+            <p className="m-0 text-xs leading-relaxed">{sourcesDiag.hint}</p>
+          )}
+          {sourcesDiag && diagnosticLines(sourcesDiag).length > 0 && (
+            <details className="text-xs">
+              <summary className="cursor-pointer select-none opacity-80">技术细节（反馈问题时请附上）</summary>
+              <pre className="m-0 mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-card px-2 py-2 text-[11px] leading-relaxed">
+                {diagnosticLines(sourcesDiag).join("\n")}
+              </pre>
+            </details>
+          )}
         </div>
       )}
 
@@ -563,6 +610,21 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                 />
               </Field>
             </div>
+
+            <Field label="等纸超时（秒）">
+              <Input
+                type="number"
+                min={0}
+                max={120}
+                value={pageTimeoutSec}
+                onChange={(e) => setPageTimeoutSec(Math.max(0, Math.min(120, Math.trunc(Number(e.target.value)) || 0)))}
+                placeholder="0=默认 15 秒"
+              />
+            </Field>
+            <p className="m-0 text-xs text-muted-foreground">
+              进纸后若超过该时长没有下一张，扫描即视为结束。厚纸或慢速进纸器可调到 20–30 秒；
+              留 0 使用默认值 15 秒（有效范围 2–120 秒）。
+            </p>
 
             <ControlRow
               control={<Checkbox checked={duplex} onCheckedChange={(c) => setDuplex(c === true)} />}
