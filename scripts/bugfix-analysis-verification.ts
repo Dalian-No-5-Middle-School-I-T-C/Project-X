@@ -24,7 +24,7 @@ delete process.env.PROJECTX_MYSQL_HOST;
 const { initializeDatabase, getDatabase } = await import("../src/server/db/index");
 const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
 const { invalidateAnalysisThresholdsCache } = await import("../src/server/services/analysisConfig");
-const { normality, histogram } = await import("../src/shared/stats");
+const { normality, histogram, MAX_HISTOGRAM_BINS } = await import("../src/shared/stats");
 
 let pass = 0, fail = 0;
 function ok(cond: boolean, label: string, info?: unknown) {
@@ -188,6 +188,10 @@ ok(bins[0].count === 1, "9.5 → bin 1 (0-<10)");
 ok(bins[1].count === 2, "10 + 19.99 → bin 2 (10-<20)");
 ok(bins[2].count === 1, "20 → bin 3 (20-<30)");
 ok(bins[bins.length - 1].count === 1, "100 → 末段 (90-100)");
+const boundedBins = histogram([0, 1_000_000_000], 1_000_000_000, 10);
+ok(boundedBins.length === MAX_HISTOGRAM_BINS, "异常大满分的分数段数量受硬上限约束", boundedBins.length);
+ok(boundedBins[0].count === 1 && boundedBins[boundedBins.length - 1].count === 1,
+  "扩大段长后仍正确统计首段与末段成绩");
 
 // 清理
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
