@@ -1,0 +1,314 @@
+[
+  {
+    "n": 1,
+    "title": "固定初始化密码可导致远程管理员接管",
+    "sev": "Critical",
+    "filename": "01-固定初始化密码可导致远程管理员接管.md"
+  },
+  {
+    "n": 2,
+    "title": "登录页指南暴露初始化管理员凭据",
+    "sev": "Critical",
+    "filename": "02-登录页指南暴露初始化管理员凭据.md"
+  },
+  {
+    "n": 3,
+    "title": "扫描端载荷可注入任意主观题成绩",
+    "sev": "High",
+    "filename": "03-扫描端载荷可注入任意主观题成绩.md"
+  },
+  {
+    "n": 4,
+    "title": "PDF渲染可耗尽已认证模型辅助服务资源",
+    "sev": "High",
+    "filename": "04-PDF渲染可耗尽已认证模型辅助服务资源.md"
+  },
+  {
+    "n": 5,
+    "title": "越权阅卷上传可撤回任意考试发布",
+    "sev": "High",
+    "filename": "05-越权阅卷上传可撤回任意考试发布.md"
+  },
+  {
+    "n": 6,
+    "title": "小测可见性赋予所有教师破坏性考试权限",
+    "sev": "High",
+    "filename": "06-小测可见性赋予所有教师破坏性考试权限.md"
+  },
+  {
+    "n": 7,
+    "title": "缺少范围校验的领取可垄断并批改任意阅卷题块",
+    "sev": "High",
+    "filename": "07-缺少范围校验的领取可垄断并批改任意阅卷题块.md"
+  },
+  {
+    "n": 8,
+    "title": "无上限批注可持续阻断布局与PDF生成",
+    "sev": "High",
+    "filename": "08-无上限批注可持续阻断布局与PDF生成.md"
+  },
+  {
+    "n": 9,
+    "title": "多页试卷可耗尽磁盘和堆内存",
+    "sev": "High",
+    "filename": "09-多页试卷可耗尽磁盘和堆内存.md"
+  },
+  {
+    "n": 10,
+    "title": "阅卷上传绕过考试范围授权",
+    "sev": "High",
+    "filename": "10-阅卷上传绕过考试范围授权.md"
+  },
+  {
+    "n": 11,
+    "title": "试卷转换失败遗留近50MB临时上传文件",
+    "sev": "High",
+    "filename": "11-试卷转换失败遗留近50MB临时上传文件.md"
+  },
+  {
+    "n": 12,
+    "title": "所有有效教师角色均绕过教师权限记录",
+    "sev": "High",
+    "filename": "12-所有有效教师角色均绕过教师权限记录.md"
+  },
+  {
+    "n": 13,
+    "title": "网上阅卷接受伪造题目及满分",
+    "sev": "High",
+    "filename": "13-网上阅卷接受伪造题目及满分.md"
+  },
+  {
+    "n": 14,
+    "title": "天梯API绕过考试范围和发布控制",
+    "sev": "High",
+    "filename": "14-天梯API绕过考试范围和发布控制.md"
+  },
+  {
+    "n": 15,
+    "title": "无上限自动备份允许教师耗尽服务器磁盘",
+    "sev": "High",
+    "filename": "15-无上限自动备份允许教师耗尽服务器磁盘.md"
+  },
+  {
+    "n": 16,
+    "title": "天梯端点暴露任意学生成绩",
+    "sev": "High",
+    "filename": "16-天梯端点暴露任意学生成绩.md"
+  },
+  {
+    "n": 17,
+    "title": "学生AI端点允许无限计费模型请求",
+    "sev": "High",
+    "filename": "17-学生AI端点允许无限计费模型请求.md"
+  },
+  {
+    "n": 18,
+    "title": "查询参数指定API主机会泄露本地Bearer令牌",
+    "sev": "High",
+    "filename": "18-查询参数指定API主机会泄露本地Bearer令牌.md"
+  },
+  {
+    "n": 19,
+    "title": "无上限分数区间导致已认证服务器拒绝服务",
+    "sev": "High",
+    "filename": "19-无上限分数区间导致已认证服务器拒绝服务.md"
+  },
+  {
+    "n": 20,
+    "title": "无上限分数区间可耗尽整个服务资源",
+    "sev": "High",
+    "filename": "20-无上限分数区间可耗尽整个服务资源.md"
+  },
+  {
+    "n": 21,
+    "title": "AI分析端点允许无限付费模型调用",
+    "sev": "High",
+    "filename": "21-AI分析端点允许无限付费模型调用.md"
+  },
+  {
+    "n": 22,
+    "title": "无上限阅卷进度流可耗尽连接",
+    "sev": "High",
+    "filename": "22-无上限阅卷进度流可耗尽连接.md"
+  },
+  {
+    "n": 23,
+    "title": "批量判分允许未认证资源耗尽",
+    "sev": "High",
+    "filename": "23-批量判分允许未认证资源耗尽.md"
+  },
+  {
+    "n": 24,
+    "title": "无上限OCR分辨率允许未认证内存耗尽",
+    "sev": "High",
+    "filename": "24-无上限OCR分辨率允许未认证内存耗尽.md"
+  },
+  {
+    "n": 25,
+    "title": "考生搜索绕过教师学生列表范围",
+    "sev": "Medium",
+    "filename": "25-考生搜索绕过教师学生列表范围.md"
+  },
+  {
+    "n": 26,
+    "title": "远程同步失败允许使用陈旧答题卡判分",
+    "sev": "Medium",
+    "filename": "26-远程同步失败允许使用陈旧答题卡判分.md"
+  },
+  {
+    "n": 27,
+    "title": "MariaDB演示导入创建固定密码高权限用户",
+    "sev": "Medium",
+    "filename": "27-MariaDB演示导入创建固定密码高权限用户.md"
+  },
+  {
+    "n": 28,
+    "title": "演示导入安装公开的全校教师凭据",
+    "sev": "Medium",
+    "filename": "28-演示导入安装公开的全校教师凭据.md"
+  },
+  {
+    "n": 29,
+    "title": "缺页可将下一名学生页面归入前一名学生",
+    "sev": "Medium",
+    "filename": "29-缺页可将下一名学生页面归入前一名学生.md"
+  },
+  {
+    "n": 30,
+    "title": "扫描端远程模式指南推荐HTTP传输凭据",
+    "sev": "Medium",
+    "filename": "30-扫描端远程模式指南推荐HTTP传输凭据.md"
+  },
+  {
+    "n": 31,
+    "title": "基于工作目录的数据库路径可能重建默认管理员",
+    "sev": "Medium",
+    "filename": "31-基于工作目录的数据库路径可能重建默认管理员.md"
+  },
+  {
+    "n": 32,
+    "title": "删除答题卡绕过考试写入授权",
+    "sev": "Medium",
+    "filename": "32-删除答题卡绕过考试写入授权.md"
+  },
+  {
+    "n": 33,
+    "title": "阅卷预览将任意上传文件作为同源HTML提供",
+    "sev": "Medium",
+    "filename": "33-阅卷预览将任意上传文件作为同源HTML提供.md"
+  },
+  {
+    "n": 34,
+    "title": "可伪造红色标记被接受为主观题成绩",
+    "sev": "Medium",
+    "filename": "34-可伪造红色标记被接受为主观题成绩.md"
+  },
+  {
+    "n": 35,
+    "title": "取消扫描的兜底可能终止被复用的Windows进程号",
+    "sev": "Low",
+    "filename": "35-取消扫描的兜底可能终止被复用的Windows进程号.md"
+  },
+  {
+    "n": 36,
+    "title": "打包systemd服务以root运行且数据权限公开",
+    "sev": "Low",
+    "filename": "36-打包systemd服务以root运行且数据权限公开.md"
+  },
+  {
+    "n": 37,
+    "title": "成绩API暴露扫描文件绝对路径",
+    "sev": "Low",
+    "filename": "37-成绩API暴露扫描文件绝对路径.md"
+  },
+  {
+    "n": 38,
+    "title": "成绩API暴露扫描文件完整路径",
+    "sev": "Low",
+    "filename": "38-成绩API暴露扫描文件完整路径.md"
+  },
+  {
+    "n": 39,
+    "title": "赞助二维码API绕过身份认证",
+    "sev": "Low",
+    "filename": "39-赞助二维码API绕过身份认证.md"
+  },
+  {
+    "n": 40,
+    "title": "已知初始化密码允许取得管理员身份",
+    "sev": "Low",
+    "filename": "40-已知初始化密码允许取得管理员身份.md"
+  },
+  {
+    "n": 41,
+    "title": "恢复扫描端皮肤选择后未持久化",
+    "sev": "Informational",
+    "filename": "41-恢复扫描端皮肤选择后未持久化.md"
+  },
+  {
+    "n": 42,
+    "title": "演示导入可能静默修改真实答题卡",
+    "sev": "Informational",
+    "filename": "42-演示导入可能静默修改真实答题卡.md"
+  },
+  {
+    "n": 43,
+    "title": "阅卷人可对争议答题图重复投票",
+    "sev": "Informational",
+    "filename": "43-阅卷人可对争议答题图重复投票.md"
+  },
+  {
+    "n": 44,
+    "title": "演示导入安装已公开的高权限凭据",
+    "sev": "Informational",
+    "filename": "44-演示导入安装已公开的高权限凭据.md"
+  },
+  {
+    "n": 45,
+    "title": "客观题模式拼写错误阻断构建并删除部分得分规则",
+    "sev": "Informational",
+    "filename": "45-客观题模式拼写错误阻断构建并删除部分得分规则.md"
+  },
+  {
+    "n": 46,
+    "title": "自动保存竞争使打印答题卡与判分布局不同步",
+    "sev": "Informational",
+    "filename": "46-自动保存竞争使打印答题卡与判分布局不同步.md"
+  },
+  {
+    "n": 47,
+    "title": "答题卡持久化时丢失纵向选项布局",
+    "sev": "Informational",
+    "filename": "47-答题卡持久化时丢失纵向选项布局.md"
+  },
+  {
+    "n": 48,
+    "title": "备份恢复允许ZIP炸弹耗尽资源",
+    "sev": "Informational",
+    "filename": "48-备份恢复允许ZIP炸弹耗尽资源.md"
+  },
+  {
+    "n": 49,
+    "title": "Windows应用可执行文件签名被禁用",
+    "sev": "Informational",
+    "filename": "49-Windows应用可执行文件签名被禁用.md"
+  },
+  {
+    "n": 50,
+    "title": "非法await使独立分析页面无法加载",
+    "sev": "Informational",
+    "filename": "50-非法await使独立分析页面无法加载.md"
+  },
+  {
+    "n": 51,
+    "title": "不可信DLL搜索可能劫持扫描桥",
+    "sev": "Informational",
+    "filename": "51-不可信DLL搜索可能劫持扫描桥.md"
+  },
+  {
+    "n": 52,
+    "title": "数据目录迁移使既有答题卡不可见",
+    "sev": "Informational",
+    "filename": "52-数据目录迁移使既有答题卡不可见.md"
+  }
+]

@@ -1,0 +1,118 @@
+编辑
+暂停
+安全扫描
+Dalian-No-5-Middle-School-I-T-C/Project-X
+状态
+等待新提交
+结果
+2
+22
+10
+6
+已扫描的提交
+218
+所有者
+chuh060315@gmail.com
+编辑者
+No editors
+环境
+Project-X
+分支
+main
+扫描历史提交记录，起始时间：
+2 个月前
+最近扫描的提交
+96dc520d
+上次扫描提交的时间
+9:27 PM Sep 19, 2026
+通知规则
+暂无规则
+威胁模型
+
+编辑以提高后续扫描的准确性
+
+复制
+1. Overview
+
+Project-X is a school-operated examination platform covering answer-card design, scanner ingestion, native OCR, objective and subjective grading, multi-review/arbitration, score publication, analytics, account management, exports, and optional LLM analysis. It has a React web client, an Express server, SQLite or MariaDB storage, an Electron scanner client, C++ TWAIN/OCR executables, and a Python LLM sidecar.
+
+Production guidance exposes the loopback-only Node server through a reverse proxy or Cloudflare tunnel. Consequently, Internet attackers may reach the web/API surface even though startServer() binds 127.0.0.1 (src/apps/answer-card/server/index.ts). The Electron scanner normally runs an embedded local server but can upload to a remote school server using a scanner API key.
+
+The highest-value assets are administrator and teacher credentials, scanner API keys, LLM keys, student identity/class membership, scores and rankings, unpublished exams, handwritten answer images, original papers, annotations, audit history, and database backups. Integrity is especially important: subtle grading, page-pairing, ranking, publication, or authorization errors can affect academic outcomes without looking like a conventional attack. Availability during scanning and grading windows is also operationally important.
+
+This is a single-school system, not a hostile multi-tenant SaaS platform. Cards and some teacher resources are intentionally shared within an installation. Findings should therefore focus on crossing student/teacher/admin, exam, class, subject, block, publication, or scanner-key boundaries—not on absent per-customer tenancy.
+
+2. Threat model, Trust boundaries and assumptions
+Actors and trust boundaries
+Unauthenticated network users: control login requests, headers, origins, URL parameters, health checks, and any accidentally exposed route. A public tunnel makes fresh-install takeover and denial of service realistic.
+Students: have legitimate low-privilege accounts and may manipulate IDs, exam/group IDs, query parameters, AI requests, and concurrency. They must see only their own published results and associated answer crops.
+Teachers: are partially trusted insiders. Subject teachers, head teachers, grade leaders, and legacy “plain” teachers have different scopes. They control card definitions, imports, papers, scans, grades, annotations, formulas, and AI content where authorized. A compromised teacher account is a primary threat.
+Administrators: intentionally control users, permission matrices, backups/restores, providers, database configuration, and global settings. Admin compromise is effectively installation compromise, but destructive actions should remain auditable and resistant to mistakes.
+Scanner/API-key clients: scanner/full keys are machine credentials, not user identities. They can synchronize broad exam/card data and submit scans; possession should be treated as a powerful service role.
+Untrusted files and content: card JSON, CSV/XLSX data, images, PDFs, DOCX files, ZIP backups, filenames, OCR results, handwritten content, annotations, and LLM output are attacker-controlled when supplied by a malicious authorized user or compromised scanner.
+External services: configured LLM endpoints receive paper content or anonymized aggregate score data and return untrusted model output. DNS, provider availability, billing, retention, and prompt behavior are outside Project-X’s control.
+Operator-controlled inputs: environment variables, tunnel/proxy configuration, config.yml, database credentials, PROJECTX_AUTH_ENFORCE, CORS origins, data paths, recognizer paths, retention settings, and LLM sidecar configuration. These are trusted only against remote attackers, not against a malicious host administrator.
+Developer-controlled inputs: migrations, schemas, build/package scripts, native binaries, dependencies, test fixtures, and demo-data tooling. Exploitation generally requires repository/build-chain compromise and is lower priority for runtime review.
+Security assumptions
+
+Production must leave authentication enabled, use HTTPS at the proxy, run under a dedicated OS account, protect the data directory, and change bootstrap credentials before distributing the URL. MariaDB and the LLM sidecar should not be independently Internet-accessible. Scanner workstations and API-key provisioning channels are assumed physically managed.
+
+Authentication uses random opaque bearer tokens, preferably an HttpOnly, SameSite=Lax cookie; cross-origin mode holds the token only in memory. Tokens are SHA-256 hashed on disk and expire after 8 hours or 30 days. There is no MFA, password complexity is only six characters, and tokens are not device-bound.
+
+The fixed bootstrap administrator password admin123 is written to bootstrap-admin.txt and forced through password change (src/server/db/index.ts). On an exposed fresh or restored deployment, an attacker can log in with the documented password and immediately satisfy the change-password flow. This is a critical deployment race, despite forced-change and login throttling.
+
+RBAC is server-side and defaults on. However, compatibility semantics intentionally grant broad access to teachers without a fine-grained role or permission rows, and quiz-mode exams are visible to all teachers (server/middleware.ts). These are not vulnerabilities when matching school policy, but become serious if operators assume deny-by-default formal separation.
+
+3. Attack surface, mitigations and attacker stories
+Authentication, sessions, and authorization
+
+routes/auth.ts, AuthService.ts, and middleware/auth.ts implement bcrypt hashing, generic login errors, IP/account login limits, HttpOnly cookies, session revocation after password changes, forced initial-password replacement, and inactive-user checks. API keys are randomly generated, hashed, scoped, revocable, and returned in plaintext only on creation.
+
+Review every route for both capability permission and object scope. requireExamAccess, teacher visibility, publication gates, and block-level requireGradingScope are important controls. Potential bypass surfaces include routes keyed only by crop/annotation/assignment ID. For example, review-annotations.ts checks generic grade permission but does not establish the crop’s exam/block scope or annotation ownership; review crop listing similarly uses exam access without block scope. A teacher could attempt to enumerate crop IDs, read other blocks, create annotations on unauthorized work, or delete another reviewer’s annotation. Arbitration performs additional designated-arbitrator and exam checks, but these must remain consistent across all alternate routes.
+
+Attacker stories include a student changing an ID to read an unpublished peer score; a subject teacher accessing another class through a group, export, crop, dashboard, or scanner route; a teacher modifying scores outside an assigned block; and a scanner key being used to submit fabricated recognition data. UI persona/role overrides are presentation-only and must never influence authorization.
+
+Grading and semantic integrity
+
+Core risk lies in shared/grading.ts, score editing, scanner persistence, review services, arbitration, ranking updates, and exam publication. Test duplicate student numbers, single/double-sided page grouping, retries, partial uploads, card edits after scanning, changed answer keys, decimal/half-point rules, total-versus-per-question modes, missing participants, multi-review outliers, concurrent claims, arbitration eligibility, assigned-score formulas, ties, and SQLite/MariaDB equivalence.
+
+Existing robustness includes score/max-score validation, authoritative question coverage checks, transactions, upserts, optimistic/CAS arbitration updates, claim ownership, reassignment restrictions, automatic ranking recomputation, cache invalidation, and automatic unpublishing when scores mutate. Researchers should still look for partial commits between files and database rows, stale card layouts, retries attaching crops to the wrong exam, or race conditions in SQLite’s asynchronous transaction wrapper. A logic flaw that silently assigns one student’s pages or marks to another can be more severe than a limited information leak.
+
+Uploads, parsers, native processes, and availability
+
+Image, paper, recognition, scanner, and restore endpoints process complex attacker-controlled formats through Sharp, PDF.js, Mammoth, Tesseract, AdmZip, OpenCV, PDFKit, and native executables. Image routes often use extension/MIME checks plus magic-byte validation, safe basenames, generated filenames, and file-size limits. Native commands use argument arrays rather than a shell and have recognition timeouts.
+
+Coverage is uneven: paper validation primarily trusts extensions; recognition upload has no equivalent file filter in its Multer declaration; parser-level decompression/pixel limits need review. Per-file limits do not necessarily cap aggregate requests: up to 40 papers at 50 MB or 50 in-memory crop uploads can cause CPU, memory, or disk exhaustion. There is no general API or AI rate limit beyond login. Malformed images reaching C++/OpenCV could turn a parser bug into server or scanner RCE. ZIP restore has traversal checks and is admin-only, but decompressed-size/entry-count limits and ZIP bombs remain relevant.
+
+AI and privacy
+
+Provider keys are AES-256-GCM encrypted, while API keys and sessions are hashed. The Python sidecar requires an internal bearer key, exposes no raw-SQL tool, constrains tool calls to the selected exam/group/class, and validates provider URLs to reduce SSRF. Public HTTPS providers and loopback HTTP inference are supported.
+
+Custom provider URLs remain an egress and DNS-rebinding concern; enforce network-layer controls. Uploaded papers and prompts may contain prompt injection. Model output must remain display-only and must never authorize operations or directly mutate grades. Verify that student AI requests remain student-scoped: fields such as callerRole and studentId are not part of the Python request schema, while tools return class/exam aggregates. Also assess small-class re-identification and whether operators clearly consent to sending original papers or educational records to third parties.
+
+Browser, Electron, storage, and operations
+
+React escaping and ReactMarkdown without raw-HTML support reduce XSS risk. Security headers, nosniff, referrer suppression, exact-origin Electron window handling, context isolation, disabled Node integration, and sandboxing are positive controls. CSP nevertheless permits inline scripts/styles and broad HTTP(S) connections, reducing its value after injection. Scanner API keys are kept in localStorage for 30 days, so scanner-origin XSS or local profile theft can disclose them. Cross-origin bearer tokens may appear in query strings for media/SSE, creating proxy/history leakage risk.
+
+CORS uses an allowlist, cookies are SameSite=Lax, and disallowed origins cannot read responses, but there is no explicit CSRF token. Reassess if trusted origins, same-site subdomains, or cookie policy change. Uploaded names/annotations should be tested for stored XSS in every renderer and spreadsheet exports for formula injection.
+
+Backups contain databases, images, and credentials/initial passwords. Field encryption protects a database copied without its key, not a compromised host; depending on ANSWER_CARD_DATA_DIR, secret.key may be included alongside backup data. Initial passwords remain reversibly encrypted to support administrator exports. Restrict backup access, retention, filesystem ACLs, logs, and service-account home files. Build scripts and committed native binaries are supply-chain surfaces, but are not remotely reachable absent update/build compromise.
+
+4. Criticality calibration (critical, high, medium, low)
+Critical
+Unauthenticated or student-level takeover of an administrator, including winning the exposed admin/admin123 bootstrap race, leading to full records and score control.
+Remote code execution in the Node/Python/native parser context from a reachable upload, or extraction of the complete database plus usable decryption/session/API-key material.
+Silent, scalable corruption or reassignment of scores across many exams/students, especially if published as authoritative results.
+High
+A teacher or scanner key crossing class/subject/exam/block boundaries to read a large population’s identifiable papers or alter grades.
+Bypassing publication controls to disclose broad unpublished results or answer keys to students.
+Authenticated low-privilege requests causing sustained memory, disk, native-process, or AI-cost exhaustion during school operations.
+SSRF reaching sensitive internal services or cloud metadata; public LLM calls alone are expected behavior when configured.
+Medium
+IDOR exposing one exam/class, answer crop, annotation set, or limited student records without grade modification.
+Stored XSS requiring a teacher to view attacker-supplied content, CSRF for meaningful state change under realistic cookie/origin conditions, or formula injection in exported files.
+Logic errors causing recoverable incorrect ranking, rounding, review assignment, or one-student score changes with audit evidence and administrative correction.
+Low
+Version/path/timing metadata leakage, bounded unauthenticated health probing, minor log leakage, or logout CSRF.
+Local-only issues requiring an already privileged workstation user, or insecure behavior that occurs only when an operator deliberately disables authentication.
+Cross-tenant isolation concerns are out of scope because deployments are single-school; developer scripts and fixtures are low risk unless incorporated into production or the build chain.
