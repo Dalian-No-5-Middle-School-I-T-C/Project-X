@@ -122,7 +122,7 @@ import {
 } from "./helpers";
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
-  validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate
+  validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForExam
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
@@ -1486,6 +1486,12 @@ export async function createApp(): Promise<express.Express> {
           return;
         }
         if (!await validateExamIdsAccess(req, res, [targetExamId])) return;
+        // 可见性 ≠ 写权限：管理员在权限矩阵里显式 can_grade=0 时必须拦住判分入库
+        // （validateExamIdsAccess 只查 getVisibleExamIds，矩阵禁止行拦不住写）。
+        if (req.user && !await isTeacherPermittedForExam(targetExamId, req.user.id, "can_grade")) {
+          res.status(403).json({ message: "权限不足：该考试未授予判分入库权限" });
+          return;
+        }
         const targetExam = await getMysqlDb().get<{ card_id: string | null }>(
           "SELECT card_id FROM exams WHERE id = ?",
           targetExamId

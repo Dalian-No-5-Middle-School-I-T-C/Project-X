@@ -991,6 +991,18 @@ async function main(): Promise<void> {
       const plainProxyRestoredResp = await fetch(`${base}/api/scores/students/${student.id}`, { headers: authHeaders(plainToken) });
       check(plainProxyRestoredResp.status === 200, "普通教师矩阵移除后代查恢复可用（未配置矩阵兼容放行）");
 
+      // PR280 第四轮评审 P1：可见性 ≠ 写权限 —— 矩阵 can_grade=0 必须拦住判分入库
+      db.prepare("UPDATE teacher_permissions SET can_grade = 0 WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
+      const deniedGradeUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(visibleExam)
+      });
+      check(deniedGradeUpload.status === 403, "判分禁止教师：矩阵 can_grade=0 时判分上传被 403 拒绝");
+      db.prepare("UPDATE teacher_permissions SET can_grade = 1 WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
+      const allowedGradeUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(visibleExam)
+      });
+      check(allowedGradeUpload.status !== 403, "恢复 can_grade=1 后判分上传不再被矩阵门拒绝");
+
       // 清理矩阵行（本段置于末尾，避免影响其它用例的可见性判定）
       db.prepare("DELETE FROM teacher_permissions WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
       // 矩阵移除后（未配置矩阵兼容放行）代查恢复正常
