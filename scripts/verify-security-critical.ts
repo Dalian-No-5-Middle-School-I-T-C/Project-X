@@ -464,6 +464,25 @@ async function main(): Promise<void> {
     check(errorResult.status === "error" && errorResult.persisted === 0 && errorResult.failedCount === 2, "未知学生和识别失败均计入失败");
     check(errorExamState.status === "active" && errorBatch.status === "error" && errorBatch.success_count === 0 && errorBatch.failure_count === 2, "全部失败：批次 error、考试恢复调用前状态");
 
+    section("并发判分只产生一次结考备份（PR280 评审 P1：结考判断必须原子）");
+    {
+      const parallelExam = createExam("并发判分备份");
+      const [parallelA, parallelB] = await Promise.all([
+        persistGradingResults(String(parallelExam), [gradingRow("parallel-a.png", "S1001")], teacher.id),
+        persistGradingResults(String(parallelExam), [gradingRow("parallel-b.png", "S1001")], teacher.id)
+      ]);
+      check(parallelA.status === "done" && parallelB.status === "done", "并发两次判分均完成");
+      const backupDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "backups");
+      const parallelBackups = (): string[] => existsSync(backupDir)
+        ? readdirSync(backupDir).filter((name) => name.startsWith(`projectx_exam${parallelExam}_`))
+        : [];
+      for (let i = 0; i < 40 && parallelBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+      // 备份是 fire-and-forget：再等一拍，让可能出现的重复备份有机会落盘
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      check(parallelBackups().length === 1,
+        `并发判分只产生 1 份结考备份（实际 ${parallelBackups().length}：${parallelBackups().join(",") || "无"}）`);
+    }
+
     section("扫描原图保留期与阅卷保护");
     {
       const { runCleanup } = await import("../src/server/db/cleanup");

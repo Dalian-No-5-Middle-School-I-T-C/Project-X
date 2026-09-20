@@ -414,8 +414,31 @@ async function autoBackupOnExamClose(examId: number): Promise<void> {
   }
 }
 
+// 同一考试的判分落库串行化：并发判分各自会读到「未结考」快照，从而重复创建整库自动备份
+// （磁盘耗尽）并互相覆盖成绩与考试状态。SQLite 部署为单进程单连接，进程内串行即可覆盖；
+// MariaDB 部署本身跳过本地备份，行锁由 lockExam 承担。
+const gradingRunChains = new Map<number, Promise<unknown>>();
+function enqueueGradingRun<T>(examId: number, work: () => Promise<T>): Promise<T> {
+  const previous = gradingRunChains.get(examId) ?? Promise.resolve();
+  const run = previous.then(work, work);
+  const tail = run.then(() => undefined, () => undefined);
+  gradingRunChains.set(examId, tail);
+  void tail.then(() => {
+    if (gradingRunChains.get(examId) === tail) gradingRunChains.delete(examId);
+  });
+  return run;
+}
+
 /** Persist grading results before responding; each student is atomic. */
 export async function persistGradingResults(
+  examIdParam: string,
+  rows: CombinedGradingRow[],
+  createdBy?: number
+): Promise<GradingPersistenceResult> {
+  return enqueueGradingRun(Number(examIdParam), () => persistGradingResultsLocked(examIdParam, rows, createdBy));
+}
+
+async function persistGradingResultsLocked(
   examIdParam: string,
   rows: CombinedGradingRow[],
   createdBy?: number
