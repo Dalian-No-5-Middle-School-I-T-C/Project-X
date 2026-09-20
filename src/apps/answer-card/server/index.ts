@@ -122,7 +122,7 @@ import {
 } from "./helpers";
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
-  validateExamIdsAccess, setAuthEnforced, hasViewPermission
+  validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
@@ -1451,8 +1451,10 @@ export async function createApp(): Promise<express.Express> {
           res.status(404).json({ message: "考试不存在" });
           return;
         }
-        if (targetExam.card_id && targetExam.card_id !== cardId) {
-          res.status(400).json({ message: "考试与答题卡不匹配，成绩未入库" });
+        // 必须严格相等：card_id 为 NULL 的考试（答题卡被删除时经 unlinkExams 产生）
+        // 不得用 URL 中的任意答题卡写入成绩与逐题行。
+        if (targetExam.card_id !== cardId) {
+          res.status(400).json({ message: "考试未关联该答题卡，成绩未入库" });
           return;
         }
       }
@@ -2521,7 +2523,8 @@ export async function createApp(): Promise<express.Express> {
   // GET /api/exams/:examId/participant-search — 应考名单添加学生搜索（五轮B2）
   // 原实现走 /api/users（USER_MANAGE 管理员专属），教师 403 后前端静默空白；
   // 此接口对可读考试的教师开放，只搜学生角色且启用中的账号。
-  app.get("/api/exams/:examId/participant-search", requireExamAccess, requirePermission(PERMISSIONS.GRADE_READ), async (req, res, next) => {
+  // 安全：与其它学生检索端点一致，叠加 can_view_students 矩阵门（名单被关闭时不得检索学生）。
+  app.get("/api/exams/:examId/participant-search", requireExamAccess, requirePermission(PERMISSIONS.GRADE_READ), makeViewPermissionGate("can_view_students"), async (req, res, next) => {
     try {
       const examId = Number(req.params.examId);
       if (!Number.isInteger(examId) || examId <= 0) {

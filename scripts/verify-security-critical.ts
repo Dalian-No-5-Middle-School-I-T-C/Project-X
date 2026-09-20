@@ -337,8 +337,17 @@ async function main(): Promise<void> {
       method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(otherCardExam)
     });
     const mismatchBody = await mismatchUpload.json() as { message?: string };
-    check(mismatchUpload.status === 400 && (mismatchBody.message ?? "").includes("答题卡不匹配"),
+    check(mismatchUpload.status === 400 && (mismatchBody.message ?? "").includes("未关联该答题卡"),
       "考试与答题卡不匹配的判分上传被 400 拒绝");
+    // card_id 为 NULL 的考试（答题卡删除后 unlinkExams 产生）同样必须拒绝，不得用 URL 里的卡写入成绩
+    const unlinkedExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,NULL,?,?,?,'active',?)")
+      .run("未关联答题卡的考试", grade.id, classA, "数学", teacher.id).lastInsertRowid);
+    const unlinkedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+      method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(unlinkedExam)
+    });
+    const unlinkedBody = await unlinkedUpload.json() as { message?: string };
+    check(unlinkedUpload.status === 400 && (unlinkedBody.message ?? "").includes("未关联该答题卡"),
+      "考试未关联答题卡（card_id 为 NULL）的判分上传被 400 拒绝");
 
     async function createGroup(name: string, examIds: number[]): Promise<number> {
       const response = await fetch(`${base}/api/exam-groups`, {
@@ -896,6 +905,10 @@ async function main(): Promise<void> {
       check(
         (await fetch(`${base}/api/exams/${visibleExam}/students/search?q=%E5%AD%A6`, { headers: authHeaders(teacherToken) })).status === 403,
         "名单关闭教师：考生搜索被 can_view_students 门拦截"
+      );
+      check(
+        (await fetch(`${base}/api/exams/${visibleExam}/participant-search?q=%E5%AD%A6`, { headers: authHeaders(teacherToken) })).status === 403,
+        "名单关闭教师：应考名单搜索同样被 can_view_students 门拦截"
       );
       check(
         (await fetch(`${base}/api/export/exams/${visibleExam}/scores`, {

@@ -14,6 +14,7 @@ import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { getMysqlDb } from "../../../../server/db";
 import { persistAnswerBlockCrops } from "../../../../server/services/AnswerBlockCropService";
 import { prepareCardLayoutById } from "../card-layout";
+import { parseRecognitionDpi } from "../helpers";
 import { mapScanPageToLayout, applyScanStudentId } from "../../../../shared/scanPages";
 
 export { listSources };
@@ -210,7 +211,8 @@ export async function runOcrOnSession(
         imagePath: record.image_path,
         layoutPath: currentLayoutPath,
         pageNumber: layoutPage,
-        dpi: session?.dpi || 300,
+        // 安全（#24）：会话里可能是修复前落库的超大 DPI，识别前统一夹紧。
+        dpi: parseRecognitionDpi(session?.dpi),
         cropsDir: await createRecognitionCropTempDir(cardId, record.id)
       })) as CombinedRecognitionResult;
 
