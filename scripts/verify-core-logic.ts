@@ -20,8 +20,11 @@ import {
   numberArray,
   optionalPositiveNumber,
   parsePositiveNumber,
+  parseRecognitionDpi,
   isValidExamDate
 } from "../src/apps/answer-card/server/helpers";
+import { isImageExtension, safeImageExtension } from "../src/apps/answer-card/server/validate-upload";
+import { gradeCombinedRecognition, gradeSubjectiveRecognition } from "../src/shared/grading";
 import {
   CreateCardSchema,
   UpdateUserSettingsSchema,
@@ -120,6 +123,23 @@ function answerBlock(score: number): SubjectiveBlock {
       }
     ]
   };
+}
+
+/** 含一道 10 分主观题（id=s1）的答题卡：用于主观题身份校验断言。 */
+function subjectiveCard(): AnswerCard {
+  return card("shuxue", [{
+    id: "subj",
+    type: "subjective",
+    title: "解答题",
+    questions: [{
+      id: "s1",
+      number: 28,
+      score: 10,
+      style: "manual_score_grid",
+      kind: "plain_box",
+      minHeightMm: 30
+    }]
+  }]);
 }
 
 section("1. validateCardScores —— 总分与科目");
@@ -238,6 +258,69 @@ section("8. shared/csv —— 名册/成绩导出统一转义");
   check("公式注入加单引号前缀", csvCell("=1+1") === `"'=1+1"`);
   check("日期型加制表符防 Excel 转日期", csvCell("8/10").includes("\t8/10"));
   check("空值输出空单元格", csvCell(null) === '""');
+}
+
+section("9. 云端安全检查 —— 上传扩展名白名单（#33）");
+{
+  check("图片扩展名原样保留", safeImageExtension("scan.PNG") === ".png" && safeImageExtension("a.jpeg") === ".jpeg");
+  check("HTML/SVG 扩展名回落 .png", safeImageExtension("payload.html") === ".png"
+    && safeImageExtension("payload.svg") === ".png" && safeImageExtension("payload") === ".png");
+  check("预览扩展名白名单判定", isImageExtension(".PNG") && !isImageExtension(".html")
+    && !isImageExtension(".svg") && !isImageExtension(""));
+}
+
+section("10. 云端安全检查 —— 识别 DPI 夹紧（#24）");
+{
+  check("默认 300", parseRecognitionDpi(undefined) === 300 && parseRecognitionDpi("") === 300);
+  check("正常值保留", parseRecognitionDpi(600) === 600 && parseRecognitionDpi("150") === 150);
+  check("超大 DPI 夹紧到 1200", parseRecognitionDpi(1e9) === 1200 && parseRecognitionDpi("99999999") === 1200);
+  check("过小/非法值回落", parseRecognitionDpi(1) === 50 && parseRecognitionDpi("abc") === 300);
+}
+
+section("11. 云端安全检查 —— 主观题身份以卡面为准（#03）");
+{
+  const card = subjectiveCard();
+  const forged = gradeSubjectiveRecognition(card, {
+    questionId: "s-forged",
+    questionNumber: 999999,
+    score: 1_000_000,
+    maxScore: 1_000_000,
+    status: "ok",
+    confidence: 1,
+    validCells: [],
+    invalidCells: []
+  });
+  check("卡面外主观题返回 null（不采用自报满分）", forged === null);
+
+  const real = gradeSubjectiveRecognition(card, {
+    questionId: "s1",
+    questionNumber: 1,
+    score: 99,
+    maxScore: 1_000_000,
+    status: "ok",
+    confidence: 1,
+    validCells: [],
+    invalidCells: []
+  });
+  check("卡面内主观题按卡面满分裁剪", real?.maxScore === 10 && real?.score === 10);
+
+  const combined = gradeCombinedRecognition(card, "forged.png", {
+    status: "ok",
+    studentId: { status: "ok", value: "20231" },
+    questions: [],
+    subjectiveQuestions: [{
+      questionId: "s-forged",
+      questionNumber: 999999,
+      score: 1_000_000,
+      maxScore: 1_000_000,
+      status: "ok",
+      confidence: 1,
+      validCells: [],
+      invalidCells: []
+    }]
+  });
+  check("伪造主观题不进入总分/满分", combined.subjectiveQuestions.length === 0
+    && combined.subjectiveScore === 0 && combined.subjectiveMaxScore === 0);
 }
 
 async function runValidate(

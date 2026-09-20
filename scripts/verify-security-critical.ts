@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
@@ -296,6 +296,49 @@ async function main(): Promise<void> {
     db.prepare("INSERT INTO answer_cards (id,title,subject,subject_label) VALUES (?,?,?,?)").run("critical-card", "安全验收卡", "shuxue", "数学");
     const visibleExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,?,?,?,?,'active',?)").run("可见考试", "critical-card", grade.id, classA, "数学", teacher.id).lastInsertRowid);
     const hiddenExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,?,?,?,?,'active',?)").run("越权考试", "critical-card", grade.id, classB, "语文", leader.id).lastInsertRowid);
+
+    section("判分上传文件类型（云端安全检查 #33）");
+    const recognitionUploadDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "recognition", "uploads", "critical-card");
+    const forgedForm = new FormData();
+    forgedForm.append("files", new Blob(
+      [Buffer.from("<html><script>fetch('/api/users')</script></html>")],
+      { type: "text/html" }
+    ), "payload.html");
+    const forgedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+      method: "POST",
+      headers: authHeaders(teacherToken),
+      body: forgedForm
+    });
+    check(forgedUpload.status === 400, "判分上传拒绝非图片文件（魔数校验）");
+    const leftoverUploads = existsSync(recognitionUploadDir) ? readdirSync(recognitionUploadDir) : [];
+    check(leftoverUploads.length === 0, `被拒绝的上传不残留文件 (实际 ${leftoverUploads.join(",") || "无"})`);
+
+    section("判分上传考试范围（云端安全检查 #05/#10）");
+    const pngUploadForm = (examId: number): FormData => {
+      const form = new FormData();
+      form.append("files", new Blob(
+        [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+        { type: "image/png" }
+      ), "page.png");
+      form.append("examId", String(examId));
+      return form;
+    };
+    const outOfScopeUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+      method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(hiddenExam)
+    });
+    const outOfScopeBody = await outOfScopeUpload.json() as { message?: string };
+    check(outOfScopeUpload.status === 403 && (outOfScopeBody.message ?? "").includes("权限不足"),
+      "越权考试的判分上传被 403 拒绝（不再静默改状态/写成绩）");
+    db.prepare("INSERT INTO answer_cards (id,title,subject,subject_label) VALUES (?,?,?,?)")
+      .run("other-card", "另一张答题卡", "shuxue", "数学");
+    const otherCardExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,?,?,?,?,'active',?)")
+      .run("他卡考试", "other-card", grade.id, classA, "数学", teacher.id).lastInsertRowid);
+    const mismatchUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+      method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(otherCardExam)
+    });
+    const mismatchBody = await mismatchUpload.json() as { message?: string };
+    check(mismatchUpload.status === 400 && (mismatchBody.message ?? "").includes("答题卡不匹配"),
+      "考试与答题卡不匹配的判分上传被 400 拒绝");
 
     async function createGroup(name: string, examIds: number[]): Promise<number> {
       const response = await fetch(`${base}/api/exam-groups`, {

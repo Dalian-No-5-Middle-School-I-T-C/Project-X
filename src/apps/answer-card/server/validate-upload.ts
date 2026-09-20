@@ -11,6 +11,7 @@
  * Supported image types: PNG, JPEG, BMP, TIFF, WebP.
  */
 import { open, rm } from "node:fs/promises";
+import path from "node:path";
 
 const MAGIC_BYTES: Array<{ signature: Buffer; label: string }> = [
   { signature: Buffer.from([0x89, 0x50, 0x4e, 0x47]), label: "PNG" },
@@ -22,6 +23,23 @@ const MAGIC_BYTES: Array<{ signature: Buffer; label: string }> = [
 ];
 
 const MAX_HEADER_BYTES = 12;
+
+/** 允许落盘并对外提供的图片扩展名（预览按扩展名推导 Content-Type）。 */
+export const IMAGE_EXTENSIONS: readonly string[] = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
+
+/**
+ * 白名单化上传扩展名：非图片扩展名一律回落为 .png。
+ * 防止上传 payload.html 后由同源预览端点按 text/html 提供（存储型 XSS）。
+ */
+export function safeImageExtension(originalName: string): string {
+  const ext = path.extname(originalName || "").toLowerCase();
+  return IMAGE_EXTENSIONS.includes(ext) ? ext : ".png";
+}
+
+/** 判断扩展名是否允许由图片端点提供。 */
+export function isImageExtension(ext: string): boolean {
+  return IMAGE_EXTENSIONS.includes(ext.toLowerCase());
+}
 
 /** Reads the first N bytes of a file and checks magic signatures. */
 export async function isValidImageFile(filePath: string): Promise<boolean> {

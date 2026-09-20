@@ -68,6 +68,16 @@ async function main(): Promise<void> {
   const listed = await listParticipants(db, 1);
   ok(listed.length === 2 && listed[0].name === "赵可为", "listParticipants 与总数一致");
 
+  // 云端安全检查 #25：教师可见班级范围必须生效，不能借应考名单搜索枚举全校学生。
+  section("按可见班级范围过滤 — 不越范围枚举全校学生");
+  const scoped = await searchStudentsForExam(db, 1, "2410", [1]);
+  ok(scoped.length === 2 && !scoped.some((s) => s.student_number === "24105"),
+    `只返回本班学生（1 班 2 人，5 号不在 1 班）(实际 ${scoped.map((s) => s.student_number).join(",")})`);
+  const noClass = await searchStudentsForExam(db, 1, "2410", []);
+  ok(noClass.length === 0, "无可见班级时返回空结果");
+  const schoolWide = await searchStudentsForExam(db, 1, "2410", null);
+  ok(schoolWide.length === 3, `全校范围（null）保持原有行为 (实际 ${schoolWide.length})`);
+
   section("显式名单整体替换 — roster A/B 改为 explicit B/C");
   const explicitCount = await setExplicitParticipants(db, 1, [2, 5]);
   ok(explicitCount === 2, `写入 2 名显式参与者（实际 ${explicitCount}）`);
