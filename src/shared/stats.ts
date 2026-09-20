@@ -113,6 +113,13 @@ export interface HistogramBin {
 /** 防止损坏或恶意的满分数据让分析接口分配无界数量的分数段。 */
 export const MAX_HISTOGRAM_BINS = 200;
 
+/** 分桶和分布曲线共用实际段长，避免扩大分桶后仍按配置段长缩放曲线。 */
+export function histogramSegmentSize(fullScore: number, segmentSize: number): number {
+  const safeFullScore = Number.isFinite(fullScore) && fullScore > 0 ? fullScore : 0;
+  const requestedStep = Number.isFinite(segmentSize) ? Math.max(1, Math.round(segmentSize)) : 1;
+  return Math.max(requestedStep, Math.ceil(safeFullScore / MAX_HISTOGRAM_BINS));
+}
+
 /** 按固定段长生成直方图
  *
  * 桶为半开区间 [min, min+step)，最后一段闭区间收尾（包含 fullScore）。
@@ -121,18 +128,19 @@ export const MAX_HISTOGRAM_BINS = 200;
  *   末段 max = fullScore（闭区间，含满分；保证 JS 桶计数与 SQL 计数一致）。 */
 export function histogram(values: number[], fullScore: number, segmentSize: number): HistogramBin[] {
   const safeFullScore = Number.isFinite(fullScore) && fullScore > 0 ? fullScore : 0;
-  const requestedStep = Number.isFinite(segmentSize) ? Math.max(1, Math.round(segmentSize)) : 1;
   // 正常满分仍使用配置的段长；异常大的历史/攻击数据则自动扩大段长并限制工作量。
-  const step = Math.max(requestedStep, Math.ceil(safeFullScore / MAX_HISTOGRAM_BINS));
+  const step = histogramSegmentSize(safeFullScore, segmentSize);
+  const binCount = Math.max(1, Math.min(MAX_HISTOGRAM_BINS, Math.ceil(safeFullScore / step)));
   const bins: HistogramBin[] = [];
-  for (let min = 0; min < safeFullScore; min += step) {
-    const upperExclusive = min + step;
-    const isLast = upperExclusive >= safeFullScore;
+  // 用整数索引和显式上限，避免极大有限数的浮点累加误差多生成一桶。
+  for (let i = 0; i < binCount; i++) {
+    const min = i * step;
+    const upperExclusive = (i + 1) * step;
+    const isLast = i === binCount - 1;
     const max = isLast ? safeFullScore : Math.min(upperExclusive - 1, safeFullScore);
     const range = isLast ? `${min}-${safeFullScore}` : `${min}-<${upperExclusive}`;
     bins.push({ range, min, max, count: 0 });
   }
-  if (bins.length === 0) bins.push({ range: `0-${safeFullScore}`, min: 0, max: safeFullScore, count: 0 });
   for (const v of values) {
     if (!Number.isFinite(v)) continue;
     const bi = Math.max(0, Math.min(bins.length - 1, Math.floor(v / step)));

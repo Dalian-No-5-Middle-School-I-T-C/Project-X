@@ -5,7 +5,7 @@ import { competitionRank } from "../../shared/ranking";
 import { rankPercentile } from "../services/rankingUpdate";
 import { getAnalysisThresholds, DEFAULT_ANALYSIS_THRESHOLDS } from "../services/analysisConfig";
 import { analysisCache } from "../services/analysisCache";
-import { coefficientOfVariation, cronbachAlpha, discriminationByExtremeGroup, difficulty, histogram, kr20, mean, stdDev, normality, qqPlot } from "../../shared/stats";
+import { coefficientOfVariation, cronbachAlpha, discriminationByExtremeGroup, difficulty, histogram, histogramSegmentSize, kr20, mean, stdDev, normality, qqPlot } from "../../shared/stats";
 import { CardRepository } from "./CardRepository";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
 import type {
@@ -597,7 +597,7 @@ export class AnalysisRepository {
     const norm = normality(scores);
     const P = scores.length > 0 ? difficulty(m, fullScore) : 0;
     return {
-      scope, scopeId, label, fullScore, segmentSize,
+      scope, scopeId, label, fullScore, segmentSize: histogramSegmentSize(fullScore, segmentSize),
       bins,
       mean: round1(m),
       stdDev: round1(sd),

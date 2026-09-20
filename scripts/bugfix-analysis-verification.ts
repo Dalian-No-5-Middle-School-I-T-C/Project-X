@@ -24,7 +24,8 @@ delete process.env.PROJECTX_MYSQL_HOST;
 const { initializeDatabase, getDatabase } = await import("../src/server/db/index");
 const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
 const { invalidateAnalysisThresholdsCache } = await import("../src/server/services/analysisConfig");
-const { normality, histogram, MAX_HISTOGRAM_BINS } = await import("../src/shared/stats");
+const { analysisCache } = await import("../src/server/services/analysisCache");
+const { normality, histogram, histogramSegmentSize, MAX_HISTOGRAM_BINS } = await import("../src/shared/stats");
 
 let pass = 0, fail = 0;
 function ok(cond: boolean, label: string, info?: unknown) {
@@ -192,6 +193,50 @@ const boundedBins = histogram([0, 1_000_000_000], 1_000_000_000, 10);
 ok(boundedBins.length === MAX_HISTOGRAM_BINS, "异常大满分的分数段数量受硬上限约束", boundedBins.length);
 ok(boundedBins[0].count === 1 && boundedBins[boundedBins.length - 1].count === 1,
   "扩大段长后仍正确统计首段与末段成绩");
+
+// 浮点边界必须仍然服从硬上限，最后一桶完整收尾。
+for (const fullScore of [2000, 2001, 3000, 1e30, 1e100, Number.MAX_VALUE]) {
+  const extremeBins = histogram([0, fullScore], fullScore, 10);
+  ok(extremeBins.length <= MAX_HISTOGRAM_BINS && extremeBins.at(-1)?.max === fullScore
+    && extremeBins.every((b) => Number.isFinite(b.min) && Number.isFinite(b.max))
+    && extremeBins.reduce((sum, b) => sum + b.count, 0) === 2,
+  `满分 ${fullScore}：桶数有界、边界有限、满分被计入`);
+}
+for (const fullScore of [0, -1, NaN, Infinity]) {
+  const invalidBins = histogram([-1, 0, NaN, Infinity], fullScore, NaN);
+  ok(invalidBins.length === 1 && invalidBins[0].max === 0 && invalidBins[0].count === 2,
+    `无效满分 ${fullScore} 安全退化`);
+}
+ok(histogramSegmentSize(100, 10) === 10 && histogramSegmentSize(3000, 10) === 15,
+  "普通考试保持配置段长，3000 分扩大为 15 分");
+
+// 验证持久化满分经过实际仓储入口后，返回给曲线的段长与桶宽一致。
+db.prepare("UPDATE question_scores SET max_score = 150 WHERE exam_id IN (?, ?)").run(e1, e2);
+const normalDistribution = await repo.getExamDistribution(e1, "subject");
+ok(normalDistribution[0].segmentSize === 10 && normalDistribution[0].bins.length === 150,
+  "1500 分单科分布保持 10 分段长");
+for (const mode of ["total", "class"] as const) {
+  const distributions = await repo.getGroupDistribution(grp, mode);
+  ok(distributions.length > 0 && distributions.every((d) => d.fullScore === 3000
+    && d.segmentSize === 15 && d.bins.length === MAX_HISTOGRAM_BINS
+    && d.bins[1].min - d.bins[0].min === d.segmentSize),
+  `3000 分大考 ${mode} 分布返回真实 15 分段长`);
+}
+
+db.prepare("UPDATE question_scores SET max_score = 100000000 WHERE exam_id = ?").run(e1);
+// 直接写测试数据库后模拟生产写入口的缓存失效。
+analysisCache.invalidateExam(e1);
+const hugeOverview = await repo.getExamOverview(e1);
+const hugeComparison = await repo.getClassComparison(e1, [classId], false);
+ok(hugeOverview.distribution.length === MAX_HISTOGRAM_BINS,
+  "持久化十亿满分：总览分布有界");
+ok(hugeComparison.classes.length > 0 && hugeComparison.classes.every((c) =>
+  c.distribution.length === MAX_HISTOGRAM_BINS), "持久化十亿满分：班级对比分布有界");
+for (const mode of ["subject", "class"] as const) {
+  const distributions = await repo.getExamDistribution(e1, mode);
+  ok(distributions.length > 0 && distributions.every((d) => d.segmentSize === 5_000_000
+    && d.bins.length === MAX_HISTOGRAM_BINS), `十亿满分 ${mode} 分布返回实际段长`);
+}
 
 // 清理
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
