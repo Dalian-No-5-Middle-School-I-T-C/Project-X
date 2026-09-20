@@ -307,7 +307,9 @@ export function gradeSubjectiveRecognition(
 
   return {
     questionId: recognition.questionId,
-    questionNumber: recognition.questionNumber,
+    // 题号同样以卡面定义为准：question_scores 以题号作为冲突键，
+    // 采用上报题号会让伪造值覆盖/串写其它小题的逐题成绩。
+    questionNumber: question.number,
     score: Math.max(0, Math.min(recognition.score, maxScore)),
     maxScore,
     status,

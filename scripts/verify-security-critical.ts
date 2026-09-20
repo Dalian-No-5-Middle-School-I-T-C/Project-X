@@ -11,6 +11,8 @@ process.env.USERPROFILE = path.join(tempDir, "home");
 process.env.PROJECTX_AUTH_ENFORCE = "1";
 process.env.PROJECTX_ENABLE_SCANNER = "false";
 process.env.PROJECTX_ENABLE_SCANNER_CLIENT_API = "true";
+// 单账号并发进度流上限收紧到 2，便于断言「换 batchId 也绕不过」（PR280 评审 P1）
+process.env.ANSWER_CARD_MAX_PROGRESS_STREAMS_PER_USER = "2";
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST"
@@ -348,6 +350,19 @@ async function main(): Promise<void> {
     const unlinkedBody = await unlinkedUpload.json() as { message?: string };
     check(unlinkedUpload.status === 400 && (unlinkedBody.message ?? "").includes("未关联该答题卡"),
       "考试未关联答题卡（card_id 为 NULL）的判分上传被 400 拒绝");
+
+    section("阅卷进度流订阅上限（云端安全检查 #22 / PR280 评审 P1）");
+    const streamAbort = new AbortController();
+    const openStream = (batchId: string): Promise<Response> => fetch(
+      `${base}/api/cards/critical-card/grading/progress/${batchId}`,
+      { headers: authHeaders(teacherToken), signal: streamAbort.signal }
+    );
+    const streamA = await openStream("review-stream-a");
+    const streamB = await openStream("review-stream-b");
+    check(streamA.status === 200 && streamB.status === 200, "限额内可建立进度流（2/2）");
+    const streamC = await openStream("review-stream-c");
+    check(streamC.status === 429, "第 3 条进度流即使换 batchId 也被 429 拒绝（单账号配额）");
+    streamAbort.abort();
 
     async function createGroup(name: string, examIds: number[]): Promise<number> {
       const response = await fetch(`${base}/api/exam-groups`, {

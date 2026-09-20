@@ -311,6 +311,12 @@ type GradingProgressEvent = {
 const gradingProgressListeners = new Map<string, Set<(event: GradingProgressEvent) => void>>();
 const gradingProgressSnapshots = new Map<string, GradingProgressEvent>();
 const MAX_PROGRESS_LISTENERS_PER_BATCH = 50;
+// 单账号（或匿名）并发进度流上限；ANSWER_CARD_MAX_PROGRESS_STREAMS_PER_USER 可按部署规模收紧。
+const MAX_PROGRESS_STREAMS_PER_OWNER = (() => {
+  const configured = Number(process.env.ANSWER_CARD_MAX_PROGRESS_STREAMS_PER_USER);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 20;
+})();
+const gradingProgressStreamsByOwner = new Map<string, number>();
 
 function recognitionConcurrency(): number {
   const configured = Number(process.env.ANSWER_CARD_RECOGNITION_CONCURRENCY);
@@ -1266,7 +1272,13 @@ export async function createApp(): Promise<express.Express> {
   app.get("/api/cards/:cardId/grading/progress/:batchId", (req, res) => {
     const batchId = safeId(paramValue(req.params.batchId));
 
-    // ponytail: 单批次订阅上限，防一个账号反复开流耗尽连接；真有更高并发查看需求时改为按用户配额。
+    // 安全（#22 / PR280 评审 P1）：batchId 由客户端自选，仅限制「单批次」可被
+    // 换 ID 绕过，因此按调用者身份限流，单批次上限作为第二道闸。
+    const streamOwner = req.user ? `user:${req.user.id}` : "anonymous";
+    if ((gradingProgressStreamsByOwner.get(streamOwner) ?? 0) >= MAX_PROGRESS_STREAMS_PER_OWNER) {
+      res.status(429).json({ message: "进度订阅过多，请稍后重试" });
+      return;
+    }
     const current = gradingProgressListeners.get(batchId);
     if (current && current.size >= MAX_PROGRESS_LISTENERS_PER_BATCH) {
       res.status(429).json({ message: "进度订阅过多，请稍后重试" });
@@ -1279,6 +1291,8 @@ export async function createApp(): Promise<express.Express> {
       Connection: "keep-alive",
       "X-Accel-Buffering": "no"
     });
+    // 立即下发响应头：首个进度事件到达前订阅端也应拿到已建立的流（否则 body 未写入前一直挂着）。
+    res.flushHeaders?.();
 
     const handler = (event: GradingProgressEvent) => {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -1291,6 +1305,7 @@ export async function createApp(): Promise<express.Express> {
       gradingProgressListeners.set(batchId, new Set());
     }
     gradingProgressListeners.get(batchId)!.add(handler);
+    gradingProgressStreamsByOwner.set(streamOwner, (gradingProgressStreamsByOwner.get(streamOwner) ?? 0) + 1);
 
     const snapshot = gradingProgressSnapshots.get(batchId);
     if (snapshot) {
@@ -1298,6 +1313,11 @@ export async function createApp(): Promise<express.Express> {
     }
 
     req.on("close", () => {
+      if ((gradingProgressStreamsByOwner.get(streamOwner) ?? 0) > 0) {
+        const remaining = gradingProgressStreamsByOwner.get(streamOwner)! - 1;
+        if (remaining > 0) gradingProgressStreamsByOwner.set(streamOwner, remaining);
+        else gradingProgressStreamsByOwner.delete(streamOwner);
+      }
       const listeners = gradingProgressListeners.get(batchId);
       if (listeners) {
         listeners.delete(handler);

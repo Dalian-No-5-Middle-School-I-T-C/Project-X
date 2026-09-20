@@ -48,11 +48,11 @@ export async function isValidImageFile(filePath: string): Promise<boolean> {
     fd = await open(filePath, "r");
     const buf = Buffer.alloc(MAX_HEADER_BYTES);
     const { bytesRead } = await fd.read(buf, 0, MAX_HEADER_BYTES, 0);
-    if (bytesRead < 4) return false;
-    const header = buf.subarray(0, bytesRead);
-    return MAGIC_BYTES.some(({ signature }) =>
-      header.subarray(0, signature.length).equals(signature)
-    );
+    // 与内存态共用同一判定：RIFF 容器还必须带 WEBP 标识，
+    // 否则 AVI/WAV 改名 .webp 会被当作图片送进原生识别器。
+    // 与内存态共用同一判定：RIFF 容器还必须带 WEBP 标识，
+    // 否则 AVI/WAV 改名 .webp 会被当作图片送进原生识别器。
+    return isValidImageBuffer(buf.subarray(0, bytesRead));
   } catch {
     return false;
   } finally {

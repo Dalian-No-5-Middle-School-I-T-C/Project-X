@@ -23,7 +23,12 @@ import {
   parseRecognitionDpi,
   isValidExamDate
 } from "../src/apps/answer-card/server/helpers";
-import { isImageExtension, safeImageExtension } from "../src/apps/answer-card/server/validate-upload";
+import {
+  isImageExtension, isValidImageBuffer, isValidImageFile, safeImageExtension
+} from "../src/apps/answer-card/server/validate-upload";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { gradeCombinedRecognition, gradeSubjectiveRecognition } from "../src/shared/grading";
 import {
   CreateCardSchema,
@@ -294,7 +299,7 @@ section("11. 云端安全检查 —— 主观题身份以卡面为准（#03）")
 
   const real = gradeSubjectiveRecognition(card, {
     questionId: "s1",
-    questionNumber: 1,
+    questionNumber: 999999,
     score: 99,
     maxScore: 1_000_000,
     status: "ok",
@@ -303,6 +308,7 @@ section("11. 云端安全检查 —— 主观题身份以卡面为准（#03）")
     invalidCells: []
   });
   check("卡面内主观题按卡面满分裁剪", real?.maxScore === 10 && real?.score === 10);
+  check("题号以卡面定义为准（伪造 questionNumber 被忽略）", real?.questionNumber === 28);
 
   const combined = gradeCombinedRecognition(card, "forged.png", {
     status: "ok",
@@ -321,6 +327,26 @@ section("11. 云端安全检查 —— 主观题身份以卡面为准（#03）")
   });
   check("伪造主观题不进入总分/满分", combined.subjectiveQuestions.length === 0
     && combined.subjectiveScore === 0 && combined.subjectiveMaxScore === 0);
+}
+
+section("12. 云端安全检查 —— 磁盘文件魔数校验（RIFF 需带 WEBP，PR280 评审 P2）");
+{
+  const uploadTmpDir = mkdtempSync(path.join(tmpdir(), "projectx-upload-check-"));
+  const riffHeader = (tag: string): Buffer =>
+    Buffer.concat([Buffer.from("RIFF"), Buffer.from([0, 0, 0, 0]), Buffer.from(tag, "ascii"), Buffer.from([0, 0, 0, 0])]);
+  const writeSample = (name: string, bytes: Buffer): string => {
+    const target = path.join(uploadTmpDir, name);
+    writeFileSync(target, bytes);
+    return target;
+  };
+  check("内存态：RIFF/WEBP 通过", isValidImageBuffer(riffHeader("WEBP")));
+  check("内存态：RIFF/AVI 拒绝", !isValidImageBuffer(riffHeader("AVI ")));
+  check("磁盘态：PNG 通过", await isValidImageFile(writeSample("ok.png", Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))));
+  check("磁盘态：RIFF/WEBP 通过", await isValidImageFile(writeSample("ok.webp", riffHeader("WEBP"))));
+  check("磁盘态：AVI 改名 .webp 拒绝", !await isValidImageFile(writeSample("fake.webp", riffHeader("AVI "))));
+  check("磁盘态：HTML 改名 .png 拒绝", !await isValidImageFile(writeSample("fake.png", Buffer.from("<html><script>1</script>"))));
+  check("磁盘态：过短文件拒绝", !await isValidImageFile(writeSample("short.png", Buffer.from([0x89, 0x50]))));
+  rmSync(uploadTmpDir, { recursive: true, force: true });
 }
 
 async function runValidate(
