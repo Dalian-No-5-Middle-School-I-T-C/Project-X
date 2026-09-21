@@ -4,7 +4,7 @@
 // 韧性：单页自动重试 2 次（退避 1s/3s，同 token 服务端幂等覆盖）；断线/api_disabled 转 paused，
 // 网络恢复自动续传；存在彻底失败页时不发 complete（服务端会话保持可续传态）。
 import { authFetch, getStoredApiKey, remoteScannerFetch } from "../auth/api";
-import { SERVER_URL_KEY } from "./scannerMode";
+import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId } from "../../../../shared/scanPages";
 import type { ScanBatchFailure, ScanConflictCard } from "../../../../shared/scanPages";
@@ -119,11 +119,9 @@ function defaultIsOnline(): boolean {
 }
 
 function readRemoteBase(): string {
-  try {
-    return (localStorage.getItem(SERVER_URL_KEY) ?? "").trim().replace(/\/+$/, "");
-  } catch {
-    return "";
-  }
+  // v2.5.6：统一归一化（缺 scheme 自动补 http://）。任务快照也依赖它，
+  // 否则快照出来的 base 是非法 URL，所有远程请求都会在 fetch 层直接抛错。
+  return readServerUrl();
 }
 
 function defaultTimeoutSignal(ms: number): AbortSignal {

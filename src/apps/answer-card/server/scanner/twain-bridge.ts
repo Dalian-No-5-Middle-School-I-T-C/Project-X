@@ -168,11 +168,16 @@ export function describeBridgeFailure(code: number | null, stderr: string): stri
     return `扫描仪桥接程序被异常终止${stderr ? `：${stderr}` : ""}`;
   }
   const unsigned = code >>> 0;
-  // 0xC0000135 STATUS_DLL_NOT_FOUND：目标机缺 VC++ 运行库（vcruntime140/msvcp140 的对应位数版本）
+  // 0xC0000135 STATUS_DLL_NOT_FOUND：进程启动时未能解析到某个依赖 DLL。
+  // v2.5.6：2.5.5 起运行库已随包分发，故"缺少 VC++ 运行库"不再是唯一解释——
+  // 现场实测 DLL 齐全却仍报此码时，多为安装不完整或文件被安全软件隔离。
+  // 文案改为并列可能原因，不再一口断定缺运行库（避免误导排查方向）。
   if (unsigned === 0xc0000135) {
-    return "扫描桥接程序无法启动：缺少 VC++ 运行库（vcruntime140.dll / msvcp140.dll / concrt140.dll）。" +
-      "单文件分发时请确认安装目录 resources/native/" + nativeResourceDir() + " 下的运行库文件完整；" +
-      "也可安装 Visual C++ 2015-2022 可再发行程序包（32 位扫描端装 x86 版）后重试。";
+    return "扫描桥接程序无法启动（0xC0000135：加载依赖 DLL 失败）。" +
+      "v2.5.5 起运行库已随包分发，因此通常是安装不完整或文件被安全软件隔离：" +
+      "请确认安装目录 resources/native/" + nativeResourceDir() +
+      " 下存在 msvcp140.dll / vcruntime140.dll / concrt140.dll，并把安装目录加入安全软件白名单；" +
+      "该错误由 Windows 报告，并不表示扫描仪或驱动有问题。";
   }
   // 0xC000007B STATUS_INVALID_IMAGE_FORMAT：位宽不匹配或 DLL 损坏
   if (unsigned === 0xc000007b) {

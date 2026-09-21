@@ -1,6 +1,6 @@
 import { useEffect, useSyncExternalStore, useState } from "react";
 import { Eye, EyeOff, Globe } from "lucide-react";
-import { SERVER_URL_KEY } from "../lib/scannerMode";
+import { isValidServerUrl, normalizeServerUrl, readServerUrl, writeServerUrl } from "../lib/scannerMode";
 import { getStoredApiKey, storeApiKey } from "../auth/api";
 import { serverStatus } from "../lib/remoteServerStatus";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
@@ -30,19 +30,12 @@ interface Props {
 }
 
 function loadUrl(): string {
-  try {
-    return (localStorage.getItem(SERVER_URL_KEY) ?? "").trim();
-  } catch {
-    return "";
-  }
+  // v2.5.6：读出即归一化，存量里"缺 http://"的地址会被自动补全并回显
+  return readServerUrl();
 }
 
 function saveUrl(url: string): void {
-  try {
-    localStorage.setItem(SERVER_URL_KEY, url.trim().replace(/\/+$/, ""));
-  } catch {
-    /* ignore */
-  }
+  writeServerUrl(url);
 }
 
 export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef }: Props) {
@@ -76,8 +69,15 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
     if (!serverUrl.trim()) return;
     setTestStatus("testing");
     setTestMessage("");
+    // v2.5.6：先校验/归一化，避免「地址少写 http://」被误报成"连接失败"而查不到原因
+    const base = normalizeServerUrl(serverUrl);
+    if (!isValidServerUrl(serverUrl)) {
+      setTestStatus("fail");
+      setTestMessage(`地址格式不正确：${serverUrl.trim()}。请填写形如 http://192.168.1.100:5174 的完整地址`);
+      return;
+    }
+    setServerUrl(base);
     try {
-      const base = serverUrl.trim().replace(/\/+$/, "");
       const url = `${base}/api/app/health`;
       const headers: Record<string, string> = {};
       const key = apiKey.trim();
@@ -93,22 +93,31 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
       };
       if (res.ok && body.ok === true && body.capabilities?.scannerClientApi === true) {
         setTestStatus("ok");
+        setTestMessage(`已连通 ${base}`);
         setTimeout(() => setTestStatus(""), 3000);
       } else {
         setTestStatus("fail");
         setTestMessage(
-          res.ok ? "服务器在线，但未启用远程扫描客户端 API" : `服务器返回 ${res.status}`
+          res.ok
+            ? `服务器 ${base} 在线，但未启用远程扫描客户端 API（需在服务器设置 PROJECTX_ENABLE_SCANNER_CLIENT_API=1 并重启）`
+            : `服务器 ${base} 返回 ${res.status}`
         );
       }
     } catch (err) {
       setTestStatus("fail");
-      setTestMessage(err instanceof Error ? err.message : "连接失败");
+      setTestMessage(`${base} 连接失败：${err instanceof Error ? err.message : "未知错误"}`);
     }
   }
 
   function handleSave() {
     if (blockedByActiveJobs) return;
+    if (serverUrl.trim() && !isValidServerUrl(serverUrl)) {
+      setTestStatus("fail");
+      setTestMessage(`地址格式不正确：${serverUrl.trim()}。请填写形如 http://192.168.1.100:5174 的完整地址`);
+      return;
+    }
     saveUrl(serverUrl);
+    setServerUrl(loadUrl()); // 回显归一化后的实际生效地址
     storeApiKey(apiKey.trim() || null);
     serverStatus.refresh();
     scannerUploadManager.notifyNetworkChanged();
@@ -152,6 +161,11 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
           autoComplete="off"
         />
       </Field>
+      {serverUrl.trim() && normalizeServerUrl(serverUrl) !== serverUrl.trim() && (
+        <p className="m-0 -mt-1 text-xs text-muted-foreground">
+          将按 <code className="font-mono">{normalizeServerUrl(serverUrl)}</code> 使用（已自动补全协议头）
+        </p>
+      )}
       <Field label="API Key">
         <div className="relative">
           <Input

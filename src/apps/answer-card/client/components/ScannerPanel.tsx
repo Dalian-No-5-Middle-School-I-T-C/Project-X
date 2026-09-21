@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Camera,
   Check,
+  Copy,
   Database,
   Eye,
   Play,
@@ -115,6 +116,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const reconnectAttemptsRef = useRef(0);
   const completedRef = useRef(false);
   const [disconnected, setDisconnected] = useState(false);
+  // v2.5.6：诊断复制反馈（老师现场无法翻日志，一键复制即可反馈）
+  const [diagCopied, setDiagCopied] = useState(false);
 
   // v2.5.1: 扫描存储模式共享 hook（与导入阅卷卡片共用同一记忆）
   const [scannerMode, setScannerMode] = useScannerMode();
@@ -200,6 +203,39 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
     if (diag.exitCode !== undefined) lines.push(`桥接进程退出码：${diag.exitCode ?? "无"}`);
     if (diag.bridgeStderr) lines.push(`桥接进程原始输出：\n${diag.bridgeStderr}`);
     return lines;
+  }
+
+  /** 诊断原文：现场截图或一键复制即可自证，不必再让老师翻日志 */
+  function diagnosticText(): string {
+    return [
+      `Project-X 扫描端诊断 @ ${new Date().toLocaleString("zh-CN")}`,
+      `答题卡 ID：${cardId}`,
+      `错误信息：${errorMessage || "（无）"}`,
+      ...(sourcesDiag ? diagnosticLines(sourcesDiag) : ["（无检测诊断数据）"]),
+    ].join("\n");
+  }
+
+  /** v2.5.6：一键复制诊断（剪贴板不可用时回退到隐藏 textarea 选中复制） */
+  async function copyDiagnostics(): Promise<void> {
+    const text = diagnosticText();
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setDiagCopied(true);
+      setTimeout(() => setDiagCopied(false), 2000);
+    } catch {
+      setDiagCopied(false);
+    }
   }
 
   // UI-5: 监听扫描进度，连接中断时自动重连（封顶 MAX_RECONNECT 次）
@@ -391,8 +427,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }
 
   async function startScan() {
-    if (!selectedSource) return;
-
+    // v2.5.6：不再因「没选到数据源」静默 return——那会把老师直接挡在门外且毫无反馈。
+    // 留空是合法输入：服务端 sourceName 缺省为 ""，桥接在枚举为空或名称无匹配时
+    // 回退 MSG_GETDEFAULT（系统默认数据源）；真失败时由 bridge 返回可诊断的错误。
     setState("scanning");
     setErrorMessage("");
     setPages([]);
@@ -518,7 +555,16 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           <div className="flex items-center gap-2">
             <AlertTriangle size={20} className="shrink-0" />
             <span className="min-w-0 flex-1 break-words">{errorMessage}</span>
-            <Button variant="outline" size="sm" className="ml-auto shrink-0" icon={<RefreshCw size={14} />} onClick={detectSources}>
+            <Button
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              icon={diagCopied ? <Check size={14} /> : <Copy size={14} />}
+              onClick={() => void copyDiagnostics()}
+            >
+              {diagCopied ? "已复制" : "复制诊断"}
+            </Button>
+            <Button variant="outline" size="sm" className="shrink-0" icon={<RefreshCw size={14} />} onClick={detectSources}>
               重试
             </Button>
           </div>
@@ -527,7 +573,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           )}
           {sourcesDiag && diagnosticLines(sourcesDiag).length > 0 && (
             <details className="text-xs">
-              <summary className="cursor-pointer select-none opacity-80">技术细节（反馈问题时请附上）</summary>
+              <summary className="cursor-pointer select-none opacity-80">
+                技术细节（可点「复制诊断」一键反馈，无需翻日志）
+              </summary>
               <pre className="m-0 mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-card px-2 py-2 text-[11px] leading-relaxed">
                 {diagnosticLines(sourcesDiag).join("\n")}
               </pre>
@@ -536,27 +584,61 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         </div>
       )}
 
-      {/* State: ready / idle (有扫描仪源时显示配置) */}
-      {(state === "ready" || state === "idle") && sources.length > 0 && (
+      {/* State: ready / idle / error —— v2.5.6：设置与「开始扫描」不再依赖检测结果。
+          此前整块设置（含图片去向与「开始扫描」）被 sources.length > 0 门控，
+          一旦扫描仪检测失败，老师就被应用拦住、完全没有扫描入口——这正是现场
+          「扫描端阻止我扫」的直接原因，而设备本身在厂商软件里可以正常扫描。 */}
+      {(state === "ready" || state === "idle" || state === "error") && (
         <Card>
           <CardHeader>
             <CardTitle className="text-base">扫描设置</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
-            <Field label="扫描仪">
-              <Select value={selectedSource} onValueChange={setSelectedSource}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {sources.map((name) => (
-                    <SelectItem key={name} value={name}>
-                      {name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
+            {sources.length > 0 ? (
+              <Field label="扫描仪">
+                <Select value={selectedSource} onValueChange={setSelectedSource}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {sources.map((name) => (
+                      <SelectItem key={name} value={name}>
+                        {name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            ) : (
+              <>
+                <Field
+                  label="扫描仪数据源名称（可留空）"
+                  hint="未枚举到 TWAIN 数据源时的兜底入口：留空即由桥接改用系统默认数据源；也可直接填入厂商扫描软件中显示的「数据源名称」。"
+                >
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={selectedSource}
+                      onChange={(e) => setSelectedSource(e.target.value)}
+                      placeholder="留空 = 使用系统默认扫描仪"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      type="button"
+                      className="shrink-0"
+                      icon={<RefreshCw size={14} />}
+                      onClick={() => void detectSources()}
+                    >
+                      重新检测
+                    </Button>
+                  </div>
+                </Field>
+                <p className="m-0 rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-xs text-warning-foreground">
+                  未检测到扫描仪列表，但不阻止扫描：若扫描仪厂商软件能正常扫描，直接留空点下方「开始扫描」即可
+                  （桥接会请求系统默认数据源）。若仍失败，请展开上方错误信息中的「技术细节」并复制反馈。
+                </p>
+              </>
+            )}
 
             <div className="grid grid-cols-2 gap-3">
               <Field label="DPI">
@@ -847,16 +929,9 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
         </div>
       )}
 
-      {/* State: no sources */}
-      {state === "idle" && sources.length === 0 && !errorMessage && (
-        <div className="flex items-center gap-2 rounded-md border border-border-subtle bg-secondary px-3 py-3 text-sm text-muted-foreground">
-          <Camera size={20} className="shrink-0" />
-          <span className="flex-1">点击上方按钮检测扫描仪</span>
-          <Button variant="outline" size="sm" className="shrink-0" icon={<RefreshCw size={14} />} onClick={detectSources}>
-            检测
-          </Button>
-        </div>
-      )}
+      {/* v2.5.6：原「点击上方按钮检测扫描仪」独立提示块已移除——
+          同一状态（idle 且无数据源）下，「扫描设置」内已含手填数据源与「重新检测」，
+          保留两块入口只会让老师分不清该点哪个。 */}
 
       {activeFailure && <ScanPreviewModal title="失败答题卡" subtitle={activeFailure.message} pages={activeFailure.pages.map(p => ({ ...p, imageUrl: imageUrl(p.recordId) }))} onClose={() => setActiveFailure(null)} />}
       {/* ── PDF-Style Student Detail Modal ──────────────── */}
