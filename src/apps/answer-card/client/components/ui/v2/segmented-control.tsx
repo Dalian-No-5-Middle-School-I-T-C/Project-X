@@ -74,7 +74,9 @@ export function SegmentedControl<T extends string>({
               "outline-none focus-visible:shadow-focus",
               "disabled:pointer-events-none disabled:opacity-50",
               // 选中态：浮起一层（亮色=白面，暗色=升面），仅 shadow-1，不做位移
-              "data-[state=on]:bg-card data-[state=on]:text-foreground data-[state=on]:shadow-1",
+              // TooltipTrigger also writes data-state (open/closed). Selection
+              // uses the radio's own aria-checked so both primitives can coexist.
+              "aria-checked:bg-card aria-checked:text-foreground aria-checked:shadow-1",
               size === "sm"
                 ? "h-7 px-2 text-sm"
                 : "h-8 px-3 text-base",
