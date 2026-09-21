@@ -9,7 +9,8 @@ import {
 
   storePaperPageFile,
 } from "../paper-converter";
-import { autoExtractPaperText, getFileMime } from "../paper-ocr";
+import { autoExtractPaperText, getFileMime, getPaperInputKind } from "../paper-ocr";
+import { PaperInputError } from "../paper-docx";
 import type { DbAdapter } from "../../../../server/db/mysql";
 import { getMysqlDb } from "../../../../server/db/mysql";
 import { CardRepository } from "../../../../server/repositories/CardRepository";
@@ -511,12 +512,11 @@ export function paperRoutes(): Router {
       let knowledgePoints: any[] = [];
       // DOCX is a ZIP document, not an image input. Even vision models need its
       // extracted text when there are no image/PDF inputs.
-      const files = isMultimodal ? await getPaperFiles(cardId) : [];
-      const hasDocx = (await readdir(paperDir(cardId)).catch(() => []))
-        .some((name) => /^original(-\d+)?\.docx$/i.test(name));
-      const mode = resolveKnowledgePointMode(isMultimodal && (files.length > 0 || !hasDocx));
+      const kind = await getPaperInputKind(cardId);
+      const mode = resolveKnowledgePointMode(isMultimodal && kind !== "docx");
 
       if (mode === "direct") {
+        const files = await getPaperFiles(cardId);
         // 多模态：读取文件 → base64 → 直传
         if (files.length === 0) {
           await finalizeAiRun(runId, { success: false, errorCode: "NO_FILES" });
@@ -562,6 +562,11 @@ export function paperRoutes(): Router {
       await finalizeAiRun(runId, { success: true });
       res.json({ mode, knowledgePoints });
     } catch (err: any) {
+      if (err instanceof PaperInputError) {
+        await finalizeAiRun(runId, { success: false, errorCode: err.code });
+        res.status(err.status).json({ error: err.code, message: err.message });
+        return;
+      }
       console.error("[knowledge-points] analyze failed:", err);
       await finalizeAiRun(runId, { success: false, errorCode: "EXCEPTION" });
       res.status(500).json({ error: err.message || "分析失败" });

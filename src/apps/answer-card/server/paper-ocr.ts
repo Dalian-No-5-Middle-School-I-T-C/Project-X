@@ -1,6 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import mammoth from "mammoth";
+import { extractDocxFiles, PaperInputError } from "./paper-docx";
 import * as path from "node:path";
 import { paperDir } from "./storage";
 
@@ -9,8 +9,18 @@ import { paperDir } from "./storage";
  */
 export async function extractDocxText(filePath: string): Promise<string | null> {
   if (!existsSync(filePath)) return null;
-  const result = await mammoth.extractRawText({ path: filePath });
-  return result.value?.trim() || null;
+  return extractDocxFiles([filePath]);
+}
+
+/** Refuse a partial analysis, including when a vision model would skip DOCX. */
+export async function getPaperInputKind(cardId: string): Promise<"docx" | "other"> {
+  const entries = (await readdir(paperDir(cardId)).catch(() => []))
+    .filter(name => /^original(-\d+)?\.[^.]+$/i.test(name));
+  const hasDocx = entries.some(name => /\.docx$/i.test(name));
+  if (hasDocx && entries.some(name => !/\.docx$/i.test(name))) {
+    throw new PaperInputError("MIXED_PAPER_FORMATS", "DOCX 与 PDF/图片混合原卷暂不支持完整分析。请将整份原卷统一为 DOCX，或统一转为 PDF/图片后重新上传。");
+  }
+  return hasDocx ? "docx" : "other";
 }
 
 /**
@@ -87,6 +97,7 @@ export async function autoExtractPaperText(
   cardId: string
 ): Promise<{ text: string | null; source: "docx" | "pdf" | "ocr" | null }> {
   const dir = paperDir(cardId);
+  await getPaperInputKind(cardId);
 
   // Multi-file uploads use original-2.docx, original-3.docx, etc. Read every
   // document in page order; never hand a DOCX ZIP to the image OCR engine.
@@ -94,10 +105,8 @@ export async function autoExtractPaperText(
     .filter((name) => /^original(-\d+)?\.docx$/i.test(name))
     .sort((a, b) => Number(a.match(/-(\d+)/)?.[1] ?? 1) - Number(b.match(/-(\d+)/)?.[1] ?? 1));
   if (docxFiles.length > 0) {
-    const texts = await Promise.all(docxFiles.map((name) => extractDocxText(path.join(dir, name))));
-    // Do not silently analyze a partial paper when a document has no text.
-    if (texts.some((text) => !text)) return { text: null, source: null };
-    return { text: texts.join("\n\n"), source: "docx" };
+    const text = await extractDocxFiles(docxFiles.map(name => path.join(dir, name)));
+    return { text, source: text ? "docx" : null };
   }
 
   // 查找原始文件（original.docx/original.pdf/original.jpg 等）

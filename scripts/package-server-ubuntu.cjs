@@ -29,6 +29,7 @@ const runtimeDependencies = [
   "sharp",
   "tesseract.js",
   "xlsx",
+  "yauzl",
   "zod"
 ];
 

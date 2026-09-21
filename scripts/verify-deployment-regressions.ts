@@ -6,6 +6,7 @@ import path from "node:path";
 import { createServer, type Server } from "node:http";
 import express from "express";
 import AdmZip from "adm-zip";
+import { randomBytes } from "node:crypto";
 
 const temp = await mkdtemp(path.join(tmpdir(), "projectx-deployment-regression-"));
 process.env.PROJECTX_DB_PATH = path.join(temp, "test.db");
@@ -43,6 +44,8 @@ const { initializeDatabase, closeDatabase } = await import("../src/server/db/ind
 const { getMysqlDb } = await import("../src/server/db/mysql");
 const { paperDir } = await import("../src/apps/answer-card/server/storage");
 const { paperRoutes } = await import("../src/apps/answer-card/server/routes/paper-routes");
+const { autoExtractPaperText } = await import("../src/apps/answer-card/server/paper-ocr");
+const { extractDocxFiles, PaperInputError, DOCX_LIMITS } = await import("../src/apps/answer-card/server/paper-docx");
 const { default: uploadRoutes } = await import("../src/server/routes/scanner-upload");
 const { hashSecret } = await import("../src/server/lib/field-crypto");
 await initializeDatabase();
@@ -81,6 +84,75 @@ try {
   assert.equal(captured[1].mode, "direct");
   assert.equal(captured[1].files?.length, 1);
   console.log("PASS: multi-DOCX text, numeric page order, empty/missing input, image direct mode");
+
+  const makeCard = async (id: string, files: Record<string, Buffer>) => {
+    await db.run("INSERT INTO answer_cards (id, title) VALUES (?, ?)", id, id);
+    await mkdir(paperDir(id), { recursive: true });
+    for (const [name, data] of Object.entries(files)) await writeFile(path.join(paperDir(id), name), data);
+  };
+  const inputError = (code: string) => (error: unknown) => error instanceof PaperInputError && error.code === code;
+  await makeCard("mixed-image", { "original.png": Buffer.from("image"), "original-2.docx": docx("后页文字不能代替完整原卷") });
+  await makeCard("mixed-pdf", { "original.pdf": Buffer.from("pdf"), "original-2.docx": docx("后页文字不能代替完整原卷") });
+  await makeCard("mixed-reverse", { "original.docx": docx("首页文字不能代替完整原卷"), "original-2.png": Buffer.from("image") });
+  const beforeRejected = captured.length;
+  for (const model of ["gpt-4o", "gpt-3.5-turbo"]) {
+    await db.run("UPDATE ai_providers SET models = ?", JSON.stringify([model]));
+    for (const id of ["mixed-image", "mixed-pdf", "mixed-reverse"]) {
+      const response = await analyze(id);
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).error, "MIXED_PAPER_FORMATS");
+      await assert.rejects(autoExtractPaperText(id), inputError("MIXED_PAPER_FORMATS"));
+    }
+  }
+  await db.run("UPDATE ai_providers SET models = '[\"gpt-4o\"]'");
+  console.log("PASS: mixed DOCX/image/PDF rejected in both model modes and extraction entry point");
+
+  // Real compressed data; no need to risk expanding the review's 128 MiB payload.
+  const largeZip = new AdmZip(docx("有效数学原卷内容用于资源限制测试"));
+  largeZip.addFile("padding.bin", Buffer.alloc(DOCX_LIMITS.expandedBytes + 1, 65));
+  const oversized = largeZip.toBuffer();
+  assert(oversized.length < 100_000, "fixture must exercise high compression ratio");
+  await makeCard("oversized", { "original.docx": oversized });
+  const tooLarge = await analyze("oversized");
+  assert.equal(tooLarge.status, 413);
+  assert.equal((await tooLarge.json()).error, "PAPER_TOO_LARGE");
+
+  // Forge the central-directory size; streaming validation must still reject.
+  const forged = Buffer.from(oversized);
+  let offset = forged.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+  let patched = false;
+  while (offset >= 0 && forged.readUInt32LE(offset) === 0x02014b50) {
+    const nameLength = forged.readUInt16LE(offset + 28);
+    const name = forged.subarray(offset + 46, offset + 46 + nameLength).toString();
+    if (name === "padding.bin") { forged.writeUInt32LE(1, offset + 24); patched = true; break; }
+    offset += 46 + nameLength + forged.readUInt16LE(offset + 30) + forged.readUInt16LE(offset + 32);
+  }
+  assert(patched);
+  await makeCard("forged", { "original.docx": forged });
+  assert.equal((await analyze("forged")).status, 422);
+
+  const expandedZip = new AdmZip(docx("有效数学原卷内容用于累计资源测试"));
+  expandedZip.addFile("padding.bin", Buffer.alloc(17 * 1024 * 1024, 65));
+  const expandedPart = expandedZip.toBuffer();
+  await makeCard("expanded-total", { "original.docx": expandedPart, "original-2.docx": expandedPart });
+  assert.equal((await analyze("expanded-total")).status, 413);
+  const compressedZip = new AdmZip(docx("有效数学原卷内容用于累计压缩测试"));
+  compressedZip.addFile("padding.bin", randomBytes(11 * 1024 * 1024));
+  const compressedPart = compressedZip.toBuffer();
+  await makeCard("compressed-total", { "original.docx": compressedPart, "original-2.docx": compressedPart });
+  assert.equal((await analyze("compressed-total")).status, 413);
+  const textPart = docx("字".repeat(DOCX_LIMITS.textCharacters / 2 + 1));
+  await makeCard("text-total", { "original.docx": textPart, "original-2.docx": textPart });
+  assert.equal((await analyze("text-total")).status, 413);
+  assert.equal(captured.length, beforeRejected, "rejected papers must never reach the model");
+
+  const validPaths = [path.join(paperDir("docx"), "original.docx")];
+  await assert.rejects(extractDocxFiles(Array(41).fill(validPaths[0])), inputError("PAPER_TOO_LARGE"));
+  const pendingExtraction = extractDocxFiles(validPaths);
+  await assert.rejects(extractDocxFiles(validPaths), inputError("PAPER_ANALYSIS_BUSY"));
+  assert.match((await pendingExtraction)!, /数学原卷/);
+  assert.equal((await analyze("docx")).status, 200, "failures must release the extraction slot");
+  console.log("PASS: high expansion, forged size, aggregate compressed/expanded/text budgets, concurrency and recovery");
 
   for (const [key, scope, active] of [["valid", "scanner", 1], ["disabled", "scanner", 0], ["wrong-scope", "other", 1]] as const) {
     await db.run("INSERT INTO api_keys (name, api_key, scope, is_active) VALUES (?, ?, ?, ?)", key, hashSecret(key), scope, active);
