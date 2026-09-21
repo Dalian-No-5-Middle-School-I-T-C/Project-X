@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import mammoth from "mammoth";
 import * as path from "node:path";
@@ -88,21 +88,23 @@ export async function autoExtractPaperText(
 ): Promise<{ text: string | null; source: "docx" | "pdf" | "ocr" | null }> {
   const dir = paperDir(cardId);
 
+  // Multi-file uploads use original-2.docx, original-3.docx, etc. Read every
+  // document in page order; never hand a DOCX ZIP to the image OCR engine.
+  const docxFiles = (await readdir(dir).catch(() => []))
+    .filter((name) => /^original(-\d+)?\.docx$/i.test(name))
+    .sort((a, b) => Number(a.match(/-(\d+)/)?.[1] ?? 1) - Number(b.match(/-(\d+)/)?.[1] ?? 1));
+  if (docxFiles.length > 0) {
+    const texts = await Promise.all(docxFiles.map((name) => extractDocxText(path.join(dir, name))));
+    // Do not silently analyze a partial paper when a document has no text.
+    if (texts.some((text) => !text)) return { text: null, source: null };
+    return { text: texts.join("\n\n"), source: "docx" };
+  }
+
   // 查找原始文件（original.docx/original.pdf/original.jpg 等）
-  const extensions = [".docx", ".pdf", ".jpg", ".jpeg", ".png"];
+  const extensions = [".pdf", ".jpg", ".jpeg", ".png"];
   for (const ext of extensions) {
     const filePath = path.join(dir, `original${ext}`);
     if (!existsSync(filePath)) continue;
-
-    if (ext === ".docx" || ext === ".doc") {
-      const text = await extractDocxText(filePath);
-      if (!text) {
-        // DOCX 提取失败（含大量图片/公式），回退 OCR
-        const ocrText = await extractImageText(filePath);
-        return { text: ocrText, source: ocrText ? "ocr" : null };
-      }
-      return { text, source: "docx" };
-    }
 
     if (ext === ".pdf") {
       const text = await extractPdfText(filePath);

@@ -509,12 +509,15 @@ export function paperRoutes(): Router {
 
       // 4. 构建对 llmclient 的请求
       let knowledgePoints: any[] = [];
-      // 请求体与响应回报同源：多模态=direct，其余=text（本地提取文字）
-      const mode = resolveKnowledgePointMode(isMultimodal);
+      // DOCX is a ZIP document, not an image input. Even vision models need its
+      // extracted text when there are no image/PDF inputs.
+      const files = isMultimodal ? await getPaperFiles(cardId) : [];
+      const hasDocx = (await readdir(paperDir(cardId)).catch(() => []))
+        .some((name) => /^original(-\d+)?\.docx$/i.test(name));
+      const mode = resolveKnowledgePointMode(isMultimodal && (files.length > 0 || !hasDocx));
 
-      if (isMultimodal) {
+      if (mode === "direct") {
         // 多模态：读取文件 → base64 → 直传
-        const files = await getPaperFiles(cardId);
         if (files.length === 0) {
           await finalizeAiRun(runId, { success: false, errorCode: "NO_FILES" });
           res.status(400).json({ error: "NO_FILES", message: "未找到原卷文件" });

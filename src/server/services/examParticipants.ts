@@ -43,12 +43,14 @@ export async function searchStudentsForExam(
 ): Promise<Array<{ id: number; name: string; student_number: string | null }>> {
   const keyword = (q ?? "").trim();
   if (!keyword) return [];
-  const escaped = keyword.replace(/[\\%_]/g, (m) => `\\${m}`);
+  // Use a non-backslash escape: SQL string parsing differs between SQLite and
+  // MariaDB (and MariaDB's NO_BACKSLASH_ESCAPES mode).
+  const escaped = keyword.replace(/[!%_]/g, (m) => `!${m}`);
   const rows = await db.all(
     `SELECT u.id, u.name, u.student_number
      FROM users u
      WHERE u.role_id = ? AND u.is_active = 1
-       AND (u.student_number LIKE ? ESCAPE '\\' OR u.name LIKE ? ESCAPE '\\')
+       AND (u.student_number LIKE ? ESCAPE '!' OR u.name LIKE ? ESCAPE '!')
      ORDER BY u.student_number
      LIMIT 20`,
     ROLE_IDS.STUDENT, `${escaped}%`, `%${escaped}%`

@@ -2442,9 +2442,9 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
+      const snap = await ensureExamParticipants(db, examId);
       const students = await listParticipants(db, examId);
       const explicit = students.some((s) => s.source === "explicit");
-      const snap = await ensureExamParticipants(db, examId);
       // 五轮B2：total 改为与实际可管理列表一致（快照中无账号记录的悬空行并入 missing，避免"共50人只显示6人"）
       const missingCount = Math.max(0, snap.participantCount - students.length);
       res.json({
