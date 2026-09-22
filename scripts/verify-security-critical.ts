@@ -1047,6 +1047,19 @@ async function main(): Promise<void> {
       check(blockScopedUpload.status === 403, "仅单题块授权（block_id 非空）：整卷判分上传被 403 拒绝");
       db.prepare("UPDATE teacher_permissions SET block_id = NULL WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
 
+      // PR280 第五轮评审 P1：仅有题块级网阅分配（review_assignments）、未配置矩阵的教师
+      // 同样只是题块级授权，不得借整卷判分接口覆盖其它题块
+      db.prepare("INSERT INTO review_assignments (exam_id, block_id, teacher_id) VALUES (?, 'crit-block-a', ?)").run(visibleExam, plainTeacher.id);
+      const blockAssignedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(plainToken), body: pngUploadForm(visibleExam)
+      });
+      check(blockAssignedUpload.status === 403, "仅题块级网阅分配（review_assignments）未配置矩阵：整卷判分上传被 403 拒绝");
+      db.prepare("DELETE FROM review_assignments WHERE exam_id = ? AND teacher_id = ?").run(visibleExam, plainTeacher.id);
+      const blockAssignmentClearedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(plainToken), body: pngUploadForm(visibleExam)
+      });
+      check(blockAssignmentClearedUpload.status !== 403, "题块分配移除后整卷判分上传不再被题块门拒绝");
+
       // PR280 第五轮评审 P2：修改用户角色不会清理历史矩阵行，遗留 can_grade=0
       // 不得把管理员与学年主任等特权阅卷人挡在门外
       const adminId = (db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: number }).id;

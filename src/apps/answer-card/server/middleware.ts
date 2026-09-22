@@ -656,7 +656,9 @@ export async function isTeacherPermittedForExam(
  *
  * 特权阅卷人（管理员 / 学年主任）先放行：修改用户角色不会清理历史 teacher_permissions
  * 行，遗留的 can_grade=0 记录不应把管理员与学年主任挡在门外（评审 P2）。
- * 兼容策略同 isTeacherPermittedForExam：表不存在或该教师无任何矩阵记录 → 放行。
+ * 兼容策略同 isTeacherPermittedForExam：表不存在或该教师无任何矩阵记录 → 放行；
+ * 但该教师若在本考试只有题块级网阅分配（review_assignments），授权范围仅是题块，
+ * 不得借整卷接口覆盖其它题块（PR #280 第五轮评审 P1）。
  */
 export async function isTeacherPermittedForWholeExam(
   user: express.Request["user"],
@@ -668,32 +670,41 @@ export async function isTeacherPermittedForWholeExam(
   const teacherId = (user as { id?: number }).id;
   if (!teacherId) return false;
   const db = getMysqlDb();
-  if (!(await hasTable(db, "teacher_permissions"))) return true;
   const exam = await db.get<{ grade_id: number | null; subject: string | null; class_id: number | null }>(
     "SELECT grade_id, subject, class_id FROM exams WHERE id = ?",
     examId
   );
   if (!exam) return false;
-  const rows = await db.all<{
-    grade_id: number | null;
-    subject: string | null;
-    class_id: number | null;
-    block_id: string | null;
-    can_grade: number;
-    can_assign: number;
-  }>(
-    "SELECT grade_id, subject, class_id, block_id, can_grade, can_assign FROM teacher_permissions WHERE teacher_id = ?",
+  if (await hasTable(db, "teacher_permissions")) {
+    const rows = await db.all<{
+      grade_id: number | null;
+      subject: string | null;
+      class_id: number | null;
+      block_id: string | null;
+      can_grade: number;
+      can_assign: number;
+    }>(
+      "SELECT grade_id, subject, class_id, block_id, can_grade, can_assign FROM teacher_permissions WHERE teacher_id = ?",
+      teacherId
+    );
+    if (rows.length > 0) {
+      const flag = perm === "can_grade" ? "can_grade" : "can_assign";
+      return rows.some((r) =>
+        (r as Record<string, unknown>)[flag] === 1 &&
+        r.block_id == null &&
+        (r.grade_id == null || r.grade_id === exam.grade_id) &&
+        (r.subject == null || r.subject === exam.subject) &&
+        (r.class_id == null || r.class_id === exam.class_id)
+      );
+    }
+  }
+  // 未配置矩阵 → 兼容放行；但仅被分配到单个题块的教师仍属题块级授权
+  const blockScoped = await db.get(
+    "SELECT 1 FROM review_assignments WHERE exam_id = ? AND teacher_id = ? AND block_id IS NOT NULL LIMIT 1",
+    examId,
     teacherId
   );
-  if (rows.length === 0) return true; // 未配置矩阵 → 兼容放行
-  const flag = perm === "can_grade" ? "can_grade" : "can_assign";
-  return rows.some((r) =>
-    (r as Record<string, unknown>)[flag] === 1 &&
-    r.block_id == null &&
-    (r.grade_id == null || r.grade_id === exam.grade_id) &&
-    (r.subject == null || r.subject === exam.subject) &&
-    (r.class_id == null || r.class_id === exam.class_id)
-  );
+  return !blockScoped;
 }
 
 /**
