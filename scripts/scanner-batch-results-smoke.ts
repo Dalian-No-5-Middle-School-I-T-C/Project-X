@@ -1,7 +1,8 @@
 /** Isolated HTTP/DB regression. Set SCANNER_BATCH_MARIADB=1 with a fresh
  * projectx_scanner_batch_* database to exercise MariaDB; otherwise uses temp SQLite. */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdtemp, mkdir, unlink } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import express from "express";
 import { createDefaultCard } from "../src/shared/defaultCard";
@@ -30,7 +31,7 @@ initializeDatabase();
 const db = getMysqlDb();
 if (process.env.SCANNER_BATCH_MARIADB === "1") await initMariadbSchema();
 const store = await import("../src/apps/answer-card/server/database/scan-store");
-const { saveCard } = await import("../src/apps/answer-card/server/storage");
+const { saveCard, cardPath } = await import("../src/apps/answer-card/server/storage");
 const { CardRepository } = await import("../src/server/repositories/CardRepository");
 const { createScannerRouter } = await import("../src/apps/answer-card/server/scanner");
 const card = createDefaultCard("91512001");
@@ -40,7 +41,7 @@ card.bodyBlocks = [{ id: "batch_q", type: "objective", title: "选择题", quest
 assert.equal(buildLayout(card).pages.length, 1);
 await new CardRepository().createCard(card);
 await new CardRepository().updateCard(card);
-await saveCard(card);
+assert.equal(existsSync(cardPath(card.id)), false, "Database cards need no legacy JSON copy");
 const role = await db.get<{ id: number }>("SELECT id FROM roles WHERE name = 'student'");
 assert(role);
 const users: number[] = [];
@@ -67,6 +68,7 @@ app.use(express.json());
 const { makeScannerAuth } = await import("../src/server/middleware/scanner-auth");
 app.use("/secured/scanner", makeScannerAuth(true), createScannerRouter(false));
 app.use("/api/scanner", createScannerRouter(false));
+app.use("/twain/scanner", createScannerRouter(true));
 const { default: uploadRouter } = await import("../src/server/routes/scanner-upload");
 const { hashSecret } = await import("../src/server/lib/field-crypto");
 await db.run("INSERT INTO api_keys (name, api_key, scope, is_active) VALUES (?,?,?,1)", "isolated-test", hashSecret("scanner-test-only"), "scanner");
@@ -84,6 +86,27 @@ async function request(method = "GET") {
 }
 async function scoreCount() { return Number((await db.get<{ n: number }>("SELECT COUNT(*) AS n FROM student_scores WHERE exam_id = ?", exam.lastInsertRowid))!.n); }
 try {
+  // Synced cards exist only in the DB, just as in the desktop scanner.
+  const previewResponse = await fetch(`${url}?previewOnly=1`);
+  assert.equal(previewResponse.status, 200, await previewResponse.clone().text());
+  const preview = await previewResponse.json() as ScanBatchResponse;
+  assert.equal(preview.results.length, 3);
+  assert.equal(preview.results[0].totalScore, 5);
+  assert.equal(await scoreCount(), 0, "Remote upload preview must not save grades");
+  const retryResponse = await fetch(`http://127.0.0.1:${address.port}/twain/scanner/session/${session.id}/retry`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ groupId: "missing" }),
+  });
+  assert.equal(retryResponse.status, 409, "Retry must find the DB card before validating the failed group");
+  assert.match((await retryResponse.json()).message, /此答题卡未失败/);
+  // A stale file must never override the current database answer key.
+  const staleCard = structuredClone(card);
+  const staleBlock = staleCard.bodyBlocks[0];
+  assert.equal(staleBlock.type, "objective");
+  if (staleBlock.type === "objective") staleBlock.answerKey = { "1": ["B"] };
+  await saveCard(staleCard);
+  assert.equal((await request()).results[0].totalScore, 5, "Ignore stale JSON answer keys");
+  await unlink(cardPath(card.id));
+
   // Real bearer authentication on both route mounts; denials precede any mutation.
   const { authService } = await import("../src/server/services/AuthService");
   // Keep ephemeral login tokens in memory; never write the operator's token store.

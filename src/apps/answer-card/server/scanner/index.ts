@@ -16,7 +16,8 @@ import {
   deleteSession,
   listScanRecordsGroupedByStudent
 } from "../database/scan-store";
-import { safeId, readCard, dataDir } from "../storage";
+import { safeId, dataDir } from "../storage";
+import { findCardForLayout } from "../card-layout";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import { collectSessionResults, groupSessionPages } from "./session-results";
 
@@ -431,7 +432,8 @@ export function createScannerRouter(twainEnabled = true): Router {
     const session = await getSession(sessionId);
     if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
     if (session.status !== "completed") { res.status(409).json({ message: "请等待扫描和识别全部完成" }); return; }
-    const card = await readCard(session.card_id);
+    // Use the same database card as scan/OCR; synced cards have no legacy JSON file.
+    const card = await findCardForLayout(session.card_id);
     if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
     const result = previewOnly
       ? await collectSessionResults(card, (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records), [])
@@ -448,7 +450,7 @@ export function createScannerRouter(twainEnabled = true): Router {
         const session = await getSession(sessionId);
         if (!session) { res.status(404).json({ message: "扫描会话不存在" }); return; }
         if (session.status !== "completed") { res.status(409).json({ message: "请等待扫描完成" }); return; }
-        const card = await readCard(session.card_id);
+        const card = await findCardForLayout(session.card_id);
         if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
         const records = (await listScanRecordsGroupedByStudent(sessionId)).flatMap(g => g.records);
         const preview = await processScannerSession(card, sessionId);
