@@ -110,6 +110,7 @@ import type {
   GradingPersistenceResult
 } from "../../../shared/types";
 import { createPdf } from "./pdf";
+import { assertActiveClassScope } from "../../../server/services/activeClassScope";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
 import { makeScannerAuth } from "../../../server/middleware/scanner-auth";
@@ -2138,6 +2139,7 @@ export async function createApp(): Promise<express.Express> {
           });
           return;
         }
+        await assertActiveClassScope(getMysqlDb(), g, c);
         if (g !== undefined) updates.grade_id = g;
         if (c !== undefined) updates.class_id = c;
       }

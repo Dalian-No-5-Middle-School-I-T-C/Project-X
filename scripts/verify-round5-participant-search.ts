@@ -36,7 +36,7 @@ async function main(): Promise<void> {
   await db.exec(`
     CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, student_number TEXT, role_id INTEGER, is_active INTEGER DEFAULT 1);
     CREATE TABLE exams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, class_id INTEGER, grade_id INTEGER);
-    CREATE TABLE classes (id INTEGER PRIMARY KEY, name TEXT, grade_id INTEGER);
+    CREATE TABLE classes (id INTEGER PRIMARY KEY, name TEXT, grade_id INTEGER, archived_at DATETIME);
     CREATE TABLE class_students (class_id INTEGER, student_id INTEGER);
     CREATE TABLE exam_participants (exam_id INTEGER, student_id INTEGER, source TEXT,
       PRIMARY KEY (exam_id, student_id));

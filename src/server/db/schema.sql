@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS grades (
     name         TEXT NOT NULL,              -- 高一 / 高二 / 高三
     sort_order   INTEGER DEFAULT 0,         -- 排序
     is_demo      INTEGER NOT NULL DEFAULT 0, -- v1.9.6: 1=演示年级
+    archived_at  DATETIME DEFAULT NULL,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -85,6 +86,7 @@ CREATE TABLE IF NOT EXISTS classes (
     name         TEXT NOT NULL,              -- 1班 / 2班
     sort_order   INTEGER DEFAULT 0,
     is_demo      INTEGER NOT NULL DEFAULT 0, -- v1.9.6: 1=演示班级
+    archived_at  DATETIME DEFAULT NULL,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

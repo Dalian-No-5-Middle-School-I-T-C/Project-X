@@ -129,8 +129,8 @@ export async function ensureExamParticipants(
       await db.run(sql, examId, exam.class_id);
     } else if (exam.grade_id != null) {
       const sql = isSqlite(db)
-        ? "INSERT OR IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ?"
-        : "INSERT IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ?";
+        ? "INSERT OR IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ? AND c.archived_at IS NULL"
+        : "INSERT IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ? AND c.archived_at IS NULL";
       await db.run(sql, examId, exam.grade_id);
     }
   } catch {
