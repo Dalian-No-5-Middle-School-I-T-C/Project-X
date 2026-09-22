@@ -112,18 +112,18 @@ int wmain(int argc, wchar_t* argv[]) {
             return 1;
         }
 
-        // If no source specified, list and pick first
+        // If no source specified, prefer the first enumerated source. 枚举为空时不再直接失败：
+        // 留空交给 scan() 请求系统默认数据源（MSG_GETDEFAULT），否则「检测失败但设备可用」时
+        // 教师按界面提示留空数据源也无法开扫（评审 P1）。
         if (config.sourceName.empty()) {
             TwainController listController;
             SourceEnumeration details = listController.listSourceDetails();
-            if (details.sources.empty()) {
-                fprintf(stderr, "Error: No usable TWAIN source (%s)\n", details.code.c_str());
-                printf("%s\n", sourceEnumerationToJson(details, bridgeArchName()).c_str());
-                fflush(stdout);
-                return 1;
+            if (!details.sources.empty()) {
+                config.sourceName = details.sources[0].name;
+                fprintf(stderr, "[ScannerBridge] Auto-selected source: %s\n", config.sourceName.c_str());
+            } else {
+                fprintf(stderr, "[ScannerBridge] No source enumerated (%s); requesting system default source\n", details.code.c_str());
             }
-            config.sourceName = details.sources[0].name;
-            fprintf(stderr, "[ScannerBridge] Auto-selected source: %s\n", config.sourceName.c_str());
         }
 
         TwainController controller;

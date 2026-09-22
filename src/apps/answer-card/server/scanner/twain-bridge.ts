@@ -228,7 +228,7 @@ const FALLBACK_SOURCES_MESSAGE: Record<string, string> = {
  * 从桥接输出反推根因。新版 exe 直接给出 `code`；旧版 exe 只有字段缺失的 JSON，
  * 用 stderr 关键字与退出码兜底推断——保证不重编译 exe 也能拿到可定位的结论。
  */
-function deriveSourcesCode(
+export function deriveSourcesCode(
   payload: Record<string, unknown>,
   stderr: string,
   exitCode: number | null
@@ -241,7 +241,9 @@ function deriveSourcesCode(
   if (/TWAINDSM|twain_32|LoadLibrary|DSM/i.test(log) && /fail|无法|失败|缺少|错误|error/i.test(log)) {
     return "DSM_LOAD_FAILED";
   }
-  if (Array.isArray(payload.sources) && payload.sources.length > 0) return "OK";
+  // 旧版 exe 的 list 会输出合法 JSON（可能是空的 sources 数组）并以 1 退出（1 = 无源）：
+  // 先按输出判定，避免把「正常但无驱动」误报成「桥接程序异常退出」（评审 P2）。
+  if (Array.isArray(payload.sources)) return payload.sources.length > 0 ? "OK" : "NO_SOURCES";
   if (exitCode !== null && exitCode !== 0) return "BRIDGE_EXIT_NONZERO";
   return "NO_SOURCES";
 }
