@@ -211,6 +211,7 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
       <DialogContent size="md">
         <DialogHeader>
           <DialogTitle>原卷信息</DialogTitle>
+          <p className="m-0 text-sm text-muted-foreground">原卷上传与知识点分析均为可选，不影响答题卡导出。可关闭此窗口，稍后再补充。</p>
         </DialogHeader>
 
         <DialogBody className="flex flex-col gap-6">

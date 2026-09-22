@@ -58,7 +58,6 @@ export type GroupDeleteTarget = {
 export type PdfWarningState = {
   validation: CardScoreValidationResult;
   pdfUrl: string;
-  step: "score" | "paper" | "knowledge";
   paperInfo?: { hasPaper: boolean; filename?: string; mimeType?: string; pages?: Array<{ pageIndex: number; filename: string; mime_type?: string }> };
   knowledgeReady?: boolean;
   knowledgePoints?: Array<{ question_number: number; points: string[] }>;

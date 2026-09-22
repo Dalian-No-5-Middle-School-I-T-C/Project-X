@@ -1,5 +1,6 @@
 import { buildInsertIgnore, getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
+import { ensureExamParticipants } from "../services/examParticipants";
 
 export interface GradeRecord {
   id: number;
@@ -35,14 +36,14 @@ export interface ClassStudent {
 export class ClassRepository {
   private db: DbAdapter;
 
-  constructor() {
-    this.db = getMysqlDb();
+  constructor(db: DbAdapter = getMysqlDb()) {
+    this.db = db;
   }
 
   // ── 年级 ──────────────────────────────────────────────
 
   async listGrades(): Promise<GradeRecord[]> {
-    return await this.db.all("SELECT * FROM grades ORDER BY sort_order ASC, id ASC");
+    return await this.db.all("SELECT * FROM grades WHERE archived_at IS NULL ORDER BY sort_order ASC, id ASC");
   }
 
   async createGrade(name: string, sortOrder = 0): Promise<GradeRecord> {
@@ -55,7 +56,23 @@ export class ClassRepository {
   }
 
   async deleteGrade(id: number): Promise<void> {
-    await this.db.run("DELETE FROM grades WHERE id = ?", id);
+    await this.db.transaction(async (tx) => {
+      await this.freezeGradeParticipants(tx, id);
+      await tx.run("UPDATE classes SET archived_at = CURRENT_TIMESTAMP WHERE grade_id = ? AND archived_at IS NULL", id);
+      await tx.run("UPDATE grades SET archived_at = CURRENT_TIMESTAMP WHERE id = ? AND archived_at IS NULL", id);
+    });
+  }
+
+  private async freezeGradeParticipants(tx: DbAdapter, gradeId: number): Promise<void> {
+    // Keep existing exam rosters before archived classes disappear from new grade rosters.
+    const exams = await tx.all<{ id: number }>(
+      "SELECT id FROM exams WHERE grade_id = ? OR class_id IN (SELECT id FROM classes WHERE grade_id = ?)",
+      gradeId, gradeId,
+    );
+    for (const exam of exams) {
+      const snapshot = await ensureExamParticipants(tx, exam.id);
+      if (!snapshot.rosterKnown) throw new Error("无法保留考试应考名单，未归档班级");
+    }
   }
 
   // ── 班级 ──────────────────────────────────────────────
@@ -66,10 +83,11 @@ export class ClassRepository {
         (SELECT COUNT(*) FROM class_students cs WHERE cs.class_id = c.id) as student_count
       FROM classes c
       JOIN grades g ON g.id = c.grade_id
+      WHERE c.archived_at IS NULL AND g.archived_at IS NULL
     `;
     const params: unknown[] = [];
     if (gradeId) {
-      sql += " WHERE c.grade_id = ?";
+      sql += " AND c.grade_id = ?";
       params.push(gradeId);
     }
     sql += " ORDER BY g.sort_order ASC, c.sort_order ASC, c.id ASC";
@@ -80,17 +98,26 @@ export class ClassRepository {
     return await this.db.get(`
       SELECT c.*, g.name as grade_name
       FROM classes c JOIN grades g ON g.id = c.grade_id
-      WHERE c.id = ?
+      WHERE c.id = ? AND c.archived_at IS NULL AND g.archived_at IS NULL
     `, id);
   }
 
   async createClass(gradeId: number, name: string, sortOrder = 0): Promise<ClassRecord> {
+    if (!await this.db.get("SELECT id FROM grades WHERE id = ? AND archived_at IS NULL", gradeId)) {
+      throw Object.assign(new Error("年级不存在或已归档"), { status: 400 });
+    }
     const result = await this.db.run("INSERT INTO classes (grade_id, name, sort_order) VALUES (?, ?, ?)", gradeId, name, sortOrder);
     return (await this.findClassById(result.lastInsertRowid))!;
   }
 
   async deleteClass(id: number): Promise<void> {
-    await this.db.run("DELETE FROM classes WHERE id = ?", id);
+    await this.db.transaction(async (tx) => {
+      const cls = await tx.get<{ grade_id: number }>("SELECT grade_id FROM classes WHERE id = ? AND archived_at IS NULL", id);
+      if (!cls) return;
+      await this.freezeGradeParticipants(tx, cls.grade_id);
+      // Retain exam foreign keys, rosters, scores and historical teacher access.
+      await tx.run("UPDATE classes SET archived_at = CURRENT_TIMESTAMP WHERE id = ?", id);
+    });
   }
 
   // ── 花名册 ────────────────────────────────────────────
@@ -159,7 +186,7 @@ export class ClassRepository {
       FROM teacher_classes tc
       JOIN classes c ON c.id = tc.class_id
       JOIN grades g ON g.id = c.grade_id
-      WHERE tc.teacher_id = ?
+      WHERE tc.teacher_id = ? AND c.archived_at IS NULL AND g.archived_at IS NULL
       ORDER BY g.sort_order ASC, c.sort_order ASC
     `, teacherId);
   }
@@ -171,6 +198,7 @@ export class ClassRepository {
       SELECT c.id as class_id, c.name as class_name, g.id as grade_id, g.name as grade_name
       FROM classes c
       JOIN grades g ON g.id = c.grade_id
+      WHERE c.archived_at IS NULL AND g.archived_at IS NULL
       ORDER BY g.sort_order ASC, c.sort_order ASC
     `);
   }

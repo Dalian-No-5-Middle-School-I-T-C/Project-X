@@ -636,7 +636,7 @@
   border-radius: 0;
   font-weight: 500;
 }
-[data-skin="paper-edge"] [role="radiogroup"][class~="bg-secondary"] button[data-state="on"],
+[data-skin="paper-edge"] [role="radiogroup"][class~="bg-secondary"] button[aria-checked="true"],
 [data-skin="paper-edge"] [role="group"][class~="bg-secondary"] button[data-state="on"] {
   background-color: var(--px-fg-primary);
   border-color: var(--px-fg-primary);

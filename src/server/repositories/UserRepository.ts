@@ -100,7 +100,7 @@ export class UserRepository {
   }
 
   async getUserClasses(userId: number): Promise<Array<{ class_id: number; class_name: string; grade_name: string }>> {
-    return await this.db.all(`SELECT cs.class_id, c.name as class_name, g.name as grade_name FROM class_students cs JOIN classes c ON c.id = cs.class_id JOIN grades g ON g.id = c.grade_id WHERE cs.student_id = ?`, userId);
+    return await this.db.all(`SELECT cs.class_id, c.name as class_name, g.name as grade_name FROM class_students cs JOIN classes c ON c.id = cs.class_id JOIN grades g ON g.id = c.grade_id WHERE cs.student_id = ? AND c.archived_at IS NULL AND g.archived_at IS NULL`, userId);
   }
 
   async findByIdIncludingInactive(id: number): Promise<UserRecord | null> {
@@ -194,7 +194,7 @@ export class UserRepository {
   async findTeacherById(id: number): Promise<(UserRecord & { classes?: Array<{ class_id: number; class_name: string; grade_name: string; subject: string | null }> }) | null> {
     const teacher = await this.db.get(`SELECT u.*, r.name as role_name, r.display_name as role_display_name FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ? AND u.role_id = 2`, id) as UserRecord | null;
     if (!teacher) return null;
-    const classes = await this.db.all(`SELECT tc.class_id, c.name as class_name, g.name as grade_name, tc.subject FROM teacher_classes tc JOIN classes c ON c.id = tc.class_id JOIN grades g ON g.id = c.grade_id WHERE tc.teacher_id = ? ORDER BY g.sort_order ASC, c.sort_order ASC`, id);
+    const classes = await this.db.all(`SELECT tc.class_id, c.name as class_name, g.name as grade_name, tc.subject FROM teacher_classes tc JOIN classes c ON c.id = tc.class_id JOIN grades g ON g.id = c.grade_id WHERE tc.teacher_id = ? AND c.archived_at IS NULL AND g.archived_at IS NULL ORDER BY g.sort_order ASC, c.sort_order ASC`, id);
     return { ...teacher, classes };
   }
 
@@ -211,15 +211,15 @@ export class UserRepository {
   }
 
   async listStudentsByClass(classId?: number): Promise<Array<any>> {
-    let sql = `SELECT cs.student_id, u.username, u.name, u.student_number, u.track, u.initial_password, c.id as class_id, c.name as class_name, g.id as grade_id, g.name as grade_name, cs.joined_at FROM class_students cs JOIN users u ON u.id = cs.student_id AND u.is_active = 1 JOIN classes c ON c.id = cs.class_id JOIN grades g ON g.id = c.grade_id`;
+    let sql = `SELECT cs.student_id, u.username, u.name, u.student_number, u.track, u.initial_password, c.id as class_id, c.name as class_name, g.id as grade_id, g.name as grade_name, cs.joined_at FROM class_students cs JOIN users u ON u.id = cs.student_id AND u.is_active = 1 JOIN classes c ON c.id = cs.class_id JOIN grades g ON g.id = c.grade_id WHERE c.archived_at IS NULL AND g.archived_at IS NULL`;
     const params: unknown[] = [];
-    if (classId) { sql += " WHERE cs.class_id = ?"; params.push(classId); }
+    if (classId) { sql += " AND cs.class_id = ?"; params.push(classId); }
     sql += " ORDER BY g.sort_order ASC, c.sort_order ASC, u.student_number ASC";
     return await this.db.all(sql, ...params);
   }
 
   async listAllStudentsForExport(): Promise<Array<any>> {
-    return await this.db.all(`SELECT cs.student_id, u.username, u.name, u.student_number, u.initial_password, c.name as class_name, g.name as grade_name FROM class_students cs JOIN users u ON u.id = cs.student_id AND u.is_active = 1 JOIN classes c ON c.id = cs.class_id JOIN grades g ON g.id = c.grade_id ORDER BY g.sort_order ASC, c.sort_order ASC, u.student_number ASC`);
+    return await this.db.all(`SELECT cs.student_id, u.username, u.name, u.student_number, u.initial_password, c.name as class_name, g.name as grade_name FROM class_students cs JOIN users u ON u.id = cs.student_id AND u.is_active = 1 JOIN classes c ON c.id = cs.class_id JOIN grades g ON g.id = c.grade_id WHERE c.archived_at IS NULL AND g.archived_at IS NULL ORDER BY g.sort_order ASC, c.sort_order ASC, u.student_number ASC`);
   }
 
   async listAllTeachersForExport(): Promise<Array<any>> {
@@ -277,9 +277,9 @@ export class UserRepository {
           if (existingStudent) {
             if (existingStudent.role_id !== 3) { result.students.skipped++; result.students.errors.push({ row, message: "学号已被非学生账号占用" }); continue; }
             await this.db.transaction(async (tx) => {
-              let grade = await tx.get("SELECT id FROM grades WHERE name = ?", gradeName) as { id: number } | null;
+              let grade = await tx.get("SELECT id FROM grades WHERE name = ? AND archived_at IS NULL", gradeName) as { id: number } | null;
               if (!grade) { const gr = await tx.run("INSERT INTO grades (name) VALUES (?)", gradeName); grade = { id: gr.lastInsertRowid }; }
-              let cls = await tx.get("SELECT id FROM classes WHERE grade_id = ? AND name = ?", grade.id, className) as { id: number } | null;
+              let cls = await tx.get("SELECT id FROM classes WHERE grade_id = ? AND name = ? AND archived_at IS NULL", grade.id, className) as { id: number } | null;
               if (!cls) { const cr = await tx.run("INSERT INTO classes (grade_id, name) VALUES (?, ?)", grade.id, className); cls = { id: cr.lastInsertRowid }; }
               await tx.run("UPDATE users SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND role_id = 3", studentName, existingStudent.id);
               const linkSql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
@@ -292,9 +292,9 @@ export class UserRepository {
           const hash = await hashPassword(password);
 
           await this.db.transaction(async (tx) => {
-            let grade = await tx.get("SELECT id FROM grades WHERE name = ?", gradeName) as { id: number } | null;
+            let grade = await tx.get("SELECT id FROM grades WHERE name = ? AND archived_at IS NULL", gradeName) as { id: number } | null;
             if (!grade) { const gr = await tx.run("INSERT INTO grades (name) VALUES (?)", gradeName); grade = { id: gr.lastInsertRowid }; }
-            let cls = await tx.get("SELECT id FROM classes WHERE grade_id = ? AND name = ?", grade.id, className) as { id: number } | null;
+            let cls = await tx.get("SELECT id FROM classes WHERE grade_id = ? AND name = ? AND archived_at IS NULL", grade.id, className) as { id: number } | null;
             if (!cls) { const cr = await tx.run("INSERT INTO classes (grade_id, name) VALUES (?, ?)", grade.id, className); cls = { id: cr.lastInsertRowid }; }
             const ins = await tx.run("INSERT INTO users (username, password_hash, name, role_id, student_number, initial_password) VALUES (?, ?, ?, 3, ?, ?)", username, hash, studentName, studentNumber, encryptField(password));
             const linkSql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);

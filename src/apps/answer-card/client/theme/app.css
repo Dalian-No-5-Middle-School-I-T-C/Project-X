@@ -190,6 +190,8 @@
      组件一律写 `z-(--px-z-dropdown)` 这类变量简写直接消费 L1 阶梯令牌。
      阶梯：base 0 / raised 10 / sticky 50 / header 100 / drawer 200 /
      dropdown 300 / modal 400 / toast 500 / lightbox 600（见 tokens.css）。 */
+  /* 表单浮层 Portal 必须高于弹窗，但低于通知。 */
+  --px-z-popover: 450;
 
   /* 字体 */
   --font-sans: var(--px-font-sans);

@@ -31,6 +31,32 @@ async function main(): Promise<void> {
     assert.deepEqual(await db.all("SELECT version, name FROM schema_migrations ORDER BY version"), migrations);
     console.log("PASS: fresh schema, migrations, repeated initialization");
 
+    const { searchStudentsForExam } = await import("../src/server/services/examParticipants");
+    const student = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id, student_number) VALUES (?, ?, ?, 3, ?)",
+      "search_regression", "test-only", "搜索!_%\\测试", "09210001",
+    );
+    for (const keyword of ["0921", "搜索", "!", "_", "%", "\\"]) {
+      const matches = await searchStudentsForExam(db, 1, keyword);
+      assert.equal(matches.length, 1);
+      assert.equal(matches[0].id, student.lastInsertRowid);
+    }
+    assert.equal((await searchStudentsForExam(db, 1, "不存在")).length, 0);
+    const { findSavedScannerOwners } = await import("../src/server/services/scannerSubmissions");
+    await db.exec("ALTER TABLE scanner_submissions MODIFY student_number VARCHAR(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL");
+    await db.run("INSERT INTO answer_cards (id, title) VALUES ('receipt_ci', '回执测试')");
+    const exam = await db.run("INSERT INTO exams (name, card_id) VALUES ('回执测试', 'receipt_ci')");
+    await db.run("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?, ?, 50)", exam.lastInsertRowid, student.lastInsertRowid);
+    await db.run("INSERT INTO scanner_submissions (exam_id, session_id, group_id, student_number, state, pages_json) VALUES (?, 'session_ci', 'group_ci', '09210001', 'saved', '[]')", exam.lastInsertRowid);
+    assert.deepEqual(await findSavedScannerOwners(db, "session_ci", "group_ci", "09210001", "receipt_ci"),
+      [{ exam_id: exam.lastInsertRowid, student_id: student.lastInsertRowid }]);
+    assert.equal((await findSavedScannerOwners(db, "session_ci", "group_ci", "09210002", "receipt_ci")).length, 0);
+    assert.equal((await findSavedScannerOwners(db, "session_ci", "group_ci", "09210001", "other_card")).length, 0);
+    await db.run("DELETE FROM exams WHERE id = ?", exam.lastInsertRowid);
+    await db.run("DELETE FROM answer_cards WHERE id = 'receipt_ci'");
+    await db.run("DELETE FROM users WHERE id = ?", student.lastInsertRowid);
+    console.log("PASS: participant search, literal wildcard escaping, mixed-collation scanner receipts");
+
     const upsert = buildUpsertSQL(db.dialect, "system_settings", ["key", "value"], ["key"]);
     const readValue = () => db.get<{ value: string }>("SELECT `value` FROM system_settings WHERE `key` = ?", "ci_test");
     const initial = "中文与 emoji 🧪 ' ?";

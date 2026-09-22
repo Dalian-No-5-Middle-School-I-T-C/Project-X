@@ -960,6 +960,10 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     scannerSubmissionSchema("mariadb"),
     "CREATE INDEX IF NOT EXISTS idx_scanner_submission_student ON scanner_submissions(exam_id, student_number)",
   ] });
+  mariadbMigrations.push({ version: 50, name: "archive-class-and-grade", sqls: [
+    "ALTER TABLE classes ADD COLUMN archived_at DATETIME DEFAULT NULL",
+    "ALTER TABLE grades ADD COLUMN archived_at DATETIME DEFAULT NULL",
+  ] });
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

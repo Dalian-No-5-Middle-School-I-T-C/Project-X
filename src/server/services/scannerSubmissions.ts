@@ -12,6 +12,23 @@ import { ensureExamParticipants, isExamParticipant } from "./examParticipants";
 import { databaseTimestamp } from "../db/timestamp";
 import { markScoreMutated } from "./examPublishEvents";
 
+/** Resolve persisted receipt ownership, including retries after exam closure. */
+export async function findSavedScannerOwners(db: DbAdapter, sessionId: string, groupId: string,
+  studentNumber: string, cardId: string): Promise<Array<{ exam_id: number; student_id: number }>> {
+  return db.all<{ exam_id: number; student_id: number }>(
+    `SELECT s.exam_id, ss.student_id FROM scanner_submissions s
+     JOIN exams e ON e.id = s.exam_id
+     JOIN users u ON u.student_number = ?
+     JOIN student_scores ss ON ss.exam_id = s.exam_id AND ss.student_id = u.id
+     WHERE s.session_id = ? AND s.group_id = ? AND s.student_number = ? AND s.state = 'saved'
+       AND e.card_id = ?
+       AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)`,
+    // Bind the same number to both columns. Older MariaDB installations can have
+    // different collations on users and the later-created receipts table;
+    // comparing those two columns directly fails before any row is returned.
+    studentNumber, sessionId, groupId, studentNumber, cardId);
+}
+
 interface Receipt {
   exam_id: number; session_id: string; group_id: string; student_number: string;
   state: string; previously_saved: number; pages_json: string;
