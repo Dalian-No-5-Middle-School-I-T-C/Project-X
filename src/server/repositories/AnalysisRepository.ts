@@ -8,7 +8,6 @@ import { analysisCache } from "../services/analysisCache";
 import { coefficientOfVariation, cronbachAlpha, discriminationByExtremeGroup, difficulty, histogram, histogramSegmentSize, kr20, mean, stdDev, normality, qqPlot } from "../../shared/stats";
 import { CardRepository } from "./CardRepository";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
-import { validateCardScores } from "../../shared/cardScoreValidation";
 import type {
   BorderlineLineKind, BorderlineResponse, BorderlineStudentItem, ClassComparisonClassSummary,
   ClassComparisonOptionStat, ClassComparisonQuestionStat, ClassComparisonResponse, ClassKnowledgeResponse,
@@ -1701,14 +1700,10 @@ export class AnalysisRepository {
     const exams = await this.db.all<{ id: number; card_id: string | null }>(
       `SELECT id, card_id FROM exams WHERE id IN (${placeholders(examIds)})`, ...examIds
     );
-    const cardScores = new Map<string, number>();
+    const cardScores = await this.cardRepo.getFullScoreMap(exams.flatMap(exam => exam.card_id ? [exam.card_id] : []));
     for (const exam of exams) {
       if (!exam.card_id) continue;
-      if (!cardScores.has(exam.card_id)) {
-        const card = await this.cardRepo.findById(exam.card_id);
-        cardScores.set(exam.card_id, card ? validateCardScores(card).totalScore : 0);
-      }
-      const fullScore = cardScores.get(exam.card_id)!;
+      const fullScore = cardScores.get(exam.card_id) ?? 0;
       if (Number.isFinite(fullScore) && fullScore > 0) result.set(Number(exam.id), fullScore);
     }
     // 历史考试可能没有答题卡，保留逐题满分汇总；不使用实际得分兜底。

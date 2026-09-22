@@ -687,7 +687,8 @@ router.get("/exams/:examId/ai-analysis", requireExamAccess, requireViewCharts, a
       res.status(400).json({ message: "无效的班级 ID" });
       return;
     }
-    const job = await getLatestAiAnalysisJob({ examId: Number(req.params.examId) }, req.user!.id, classId);
+    if (!req.user) { res.json({ job: null }); return; }
+    const job = await getLatestAiAnalysisJob({ examId: Number(req.params.examId) }, req.user.id, classId);
     res.json({ job });
   } catch (error) { next(error); }
 });
