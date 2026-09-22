@@ -122,7 +122,7 @@ import {
 } from "./helpers";
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
-  validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForExam
+  validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
@@ -584,7 +584,15 @@ async function persistGradingResultsLocked(
     await examRepo.updateStatus(examId, "closed");
     // 安全：只在「首次结考」转换时备份。重复对已结考考试判分不再产生新备份，
     // 避免教师反复提交判分把 data/backups 撑满磁盘（每次备份都是一个完整库副本）。
-    if (previousExamStatus !== "closed") {
+    // 「首次」以持久化的历史判分批次为准：重新阅卷会走 closed → grading → partial → done
+    // 循环，只看本次运行读到的 previousExamStatus 会让每轮重试都被当成首次结考
+    // （顺序执行下备份数量仍会 1→2→3 无上限增长）。存在早于本批次的 done 批次，
+    // 即说明该考试此前已完整判分并结考过（并发场景另由 enqueueGradingRun 串行兜底）。
+    const earlierClosedBatch = await db.get<{ id: number }>(
+      "SELECT id FROM scan_batches WHERE exam_id = ? AND status = 'done' AND id <> ? LIMIT 1",
+      examId, batchId
+    );
+    if (previousExamStatus !== "closed" && !earlierClosedBatch) {
       autoBackupOnExamClose(examId).catch((e) => console.error("[AutoBackup] Failed:", e));
     }
   } else if (status === "error") {
@@ -1488,8 +1496,11 @@ export async function createApp(): Promise<express.Express> {
         if (!await validateExamIdsAccess(req, res, [targetExamId])) return;
         // 可见性 ≠ 写权限：管理员在权限矩阵里显式 can_grade=0 时必须拦住判分入库
         // （validateExamIdsAccess 只查 getVisibleExamIds，矩阵禁止行拦不住写）。
-        if (req.user && !await isTeacherPermittedForExam(targetExamId, req.user.id, "can_grade")) {
-          res.status(403).json({ message: "权限不足：该考试未授予判分入库权限" });
+        // 整卷上传会写入本场考试全部客观题与主观题成绩并撤回已公布状态，因此只接受
+        // 「不限题块」的授权：仅有单题块授权（block_id 非空）的教师走题块级网阅接口，
+        // 不得借整卷接口覆盖其它题块；管理员/学年主任等特权阅卷人不受遗留矩阵行影响。
+        if (req.user && !await isTeacherPermittedForWholeExam(req.user, targetExamId, "can_grade")) {
+          res.status(403).json({ message: "权限不足：该考试未授予整卷判分入库权限" });
           return;
         }
         const targetExam = await getMysqlDb().get<{ card_id: string | null }>(

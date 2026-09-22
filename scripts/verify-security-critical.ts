@@ -483,6 +483,41 @@ async function main(): Promise<void> {
         `并发判分只产生 1 份结考备份（实际 ${parallelBackups().length}：${parallelBackups().join(",") || "无"}）`);
     }
 
+    section("顺序重判（closed → partial → done 循环）不重复产生结考备份（PR280 第五轮评审 P1）");
+    {
+      const rerunExam = createExam("顺序重判备份");
+      const backupDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "backups");
+      const rerunBackups = (): string[] => existsSync(backupDir)
+        ? readdirSync(backupDir).filter((name) => name.startsWith(`projectx_exam${rerunExam}_`))
+        : [];
+      const waitForBackup = async (): Promise<void> => {
+        for (let i = 0; i < 40 && rerunBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+        // 备份是 fire-and-forget：再等一拍，让可能出现的重复备份有机会落盘
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      };
+
+      // 第一次完整判分：结考并备份
+      const firstRun = await persistGradingResults(String(rerunExam), [gradingRow("rerun-1.png", "S1001")], teacher.id);
+      await waitForBackup();
+      check(firstRun.status === "done" && rerunBackups().length === 1,
+        `首次结考产生 1 份备份（实际 ${rerunBackups().length}）`);
+
+      // 重新阅卷部分失败：状态回到 grading（下一轮若只看紧邻状态就会被当成首次结考）
+      db.exec(`CREATE TRIGGER critical_rerun_failure BEFORE INSERT ON question_scores WHEN NEW.student_id = ${rollbackStudent.id} BEGIN SELECT RAISE(ABORT, 'forced student rollback'); END;`);
+      const partialRun = await persistGradingResults(String(rerunExam), [
+        gradingRow("rerun-2.png", "S1001"), gradingRow("rerun-2-bad.png", "S1002")
+      ], teacher.id);
+      db.exec("DROP TRIGGER critical_rerun_failure");
+      const rerunState = db.prepare("SELECT status FROM exams WHERE id=?").get(rerunExam) as { status: string };
+      check(partialRun.status === "partial" && rerunState.status === "grading", "重判部分失败：批次 partial、考试回到 grading");
+
+      // 重试成功：此前已有 done 批次（持久化标记），不得再产生第二份备份
+      const retryRun = await persistGradingResults(String(rerunExam), [gradingRow("rerun-3.png", "S1001")], teacher.id);
+      await waitForBackup();
+      check(retryRun.status === "done" && rerunBackups().length === 1,
+        `partial → done 重试后仍只有 1 份结考备份（实际 ${rerunBackups().length}：${rerunBackups().join(",") || "无"}）`);
+    }
+
     section("扫描原图保留期与阅卷保护");
     {
       const { runCleanup } = await import("../src/server/db/cleanup");
@@ -1002,6 +1037,31 @@ async function main(): Promise<void> {
         method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(visibleExam)
       });
       check(allowedGradeUpload.status !== 403, "恢复 can_grade=1 后判分上传不再被矩阵门拒绝");
+
+      // PR280 第五轮评审 P1：整卷上传会写入全部客观题与主观题成绩并撤回已公布状态，
+      // 因此只接受「不限题块」的授权 —— 仅有单个题块授权的教师不得借整卷接口覆盖其它题块
+      db.prepare("UPDATE teacher_permissions SET block_id = 'crit-block-a' WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
+      const blockScopedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(visibleExam)
+      });
+      check(blockScopedUpload.status === 403, "仅单题块授权（block_id 非空）：整卷判分上传被 403 拒绝");
+      db.prepare("UPDATE teacher_permissions SET block_id = NULL WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
+
+      // PR280 第五轮评审 P2：修改用户角色不会清理历史矩阵行，遗留 can_grade=0
+      // 不得把管理员与学年主任等特权阅卷人挡在门外
+      const adminId = (db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: number }).id;
+      const stalePermSql = "INSERT INTO teacher_permissions (teacher_id, grade_id, subject, class_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?,?,?,?,1,1,1,0,0)";
+      db.prepare(stalePermSql).run(adminId, grade.id, "数学", classA);
+      db.prepare(stalePermSql).run(leader.id, grade.id, "数学", classA);
+      const adminStaleUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(adminToken), body: pngUploadForm(visibleExam)
+      });
+      const leaderStaleUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(leaderToken), body: pngUploadForm(visibleExam)
+      });
+      check(adminStaleUpload.status !== 403 && leaderStaleUpload.status !== 403,
+        `管理员/学年主任遗留 can_grade=0 矩阵行时仍可判分上传（实际 admin=${adminStaleUpload.status}/leader=${leaderStaleUpload.status}）`);
+      db.prepare("DELETE FROM teacher_permissions WHERE teacher_id IN (?, ?)").run(adminId, leader.id);
 
       // 清理矩阵行（本段置于末尾，避免影响其它用例的可见性判定）
       db.prepare("DELETE FROM teacher_permissions WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
