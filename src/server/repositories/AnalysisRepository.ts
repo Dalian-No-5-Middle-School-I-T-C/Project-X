@@ -191,7 +191,11 @@ export class AnalysisRepository {
     const thresholds = await getAnalysisThresholds();
     // Bugfix: 使用 GROUP BY + MAX 代替 DISTINCT，避免同一题 max_score 不一致时 fullScore 膨胀
     const fullScore = await this.resolveExamFullScore(examId);
-    const passLine = fullScore * thresholds.passRate, excellentLine = fullScore * thresholds.excellentRate;
+    // 满分不可知（历史考试既无答题卡又无逐题满分）时，0 只是占位而不是真实满分：
+    // 按 0 算及格/优秀线会让所有非负分数同时算及格与优秀（评审 P1），也不出分桶。
+    const scoreKnown = fullScore > 0;
+    const passLine = scoreKnown ? fullScore * thresholds.passRate : 0;
+    const excellentLine = scoreKnown ? fullScore * thresholds.excellentRate : 0;
     const stats = await this.db.get(`SELECT COUNT(*) as gradedCount, ROUND(AVG(ss.total_score), 1) as avgScore, AVG(ss.total_score) as avgScoreRaw, ROUND(MAX(ss.total_score), 1) as maxScore, ROUND(MIN(ss.total_score), 1) as minScore, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as passCount, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellentCount FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where}`, passLine, excellentLine, examId, ...c.params) as any;
     // N+1 收敛：分布/整体分位数/各班汇总一次取分后 JS 分桶，替代逐段 COUNT 与逐班 getScoreSummary
     const filteredScores = await this.fetchExamScores(examId, c);
@@ -204,9 +208,12 @@ export class AnalysisRepository {
     const meanBase = stats.avgScoreRaw ?? stats.avgScore;
     const stdDevRow = await this.db.get(`SELECT ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as stdDev FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where}`, meanBase, meanBase, examId, ...c.params) as any;
     // 分桶统一走 histogram 的半开区间语义（floor(v/step)），与分布接口口径一致，避免 59.5 这类小数落段错位
-    const distribution = histogram(filteredScores, fullScore, thresholds.segmentSize);
+    const distribution = scoreKnown ? histogram(filteredScores, fullScore, thresholds.segmentSize) : [];
     const qa = await this.getQuestionAnalysis(examId, classId);
     const eb = countErrorRateBuckets(qa);
+    if (!scoreKnown) {
+      return { fullScore: 0, totalStudents: stats.gradedCount, gradedCount: stats.gradedCount, avgScore: stats.avgScore, maxScore: stats.maxScore, minScore: stats.minScore, stdDev: stdDevRow?.stdDev ?? 0, passRate: 0, excellentRate: 0, passScore: 0, excellentScore: 0, distribution: [], scoreSummary: this.buildScoreSummary(filteredScores), overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: eb.high, errorRateBuckets: eb };
+    }
     return { fullScore, totalStudents: stats.gradedCount, gradedCount: stats.gradedCount, avgScore: stats.avgScore, maxScore: stats.maxScore, minScore: stats.minScore, stdDev: stdDevRow?.stdDev ?? 0, passRate: Math.round((stats.passCount / stats.gradedCount) * 100), excellentRate: Math.round((stats.excellentCount / stats.gradedCount) * 100), passScore: round1(passLine), excellentScore: round1(excellentLine), distribution, scoreSummary: this.buildScoreSummary(filteredScores), overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: eb.high, errorRateBuckets: eb };
   }
 
@@ -591,7 +598,8 @@ export class AnalysisRepository {
   }
 
   private buildDistribution(scope: "subject" | "total" | "class", scopeId: string, label: string, fullScore: number, segmentSize: number, scores: number[], discrimination: number): DistributionResult {
-    const bins = histogram(scores, fullScore, segmentSize);
+    // 满分不可知时不出分桶：按 0 分桶只会得到误导性的「0-0」一段（评审 P1）。
+    const bins = fullScore > 0 ? histogram(scores, fullScore, segmentSize) : [];
     const m = mean(scores);
     const sd = stdDev(scores);
     const norm = normality(scores);
@@ -652,8 +660,10 @@ export class AnalysisRepository {
     for (const s of qa.subjects) {
       const fullScore = s.fullScore;
       // 科的及格/优秀线 = 该科满分 × 全局阈值（与 getGroupClassComparison 对总分用 totalFull × 阈值口径一致）
-      const passLine = Math.round(fullScore * thresholds.passRate * 10) / 10;
-      const excellentLine = Math.round(fullScore * thresholds.excellentRate * 10) / 10;
+      // 该科满分不可知时不按 0 算线（否则全部算及格且优秀），只回 0 表示无依据
+      const subjectScoreKnown = fullScore > 0;
+      const passLine = subjectScoreKnown ? Math.round(fullScore * thresholds.passRate * 10) / 10 : 0;
+      const excellentLine = subjectScoreKnown ? Math.round(fullScore * thresholds.excellentRate * 10) / 10 : 0;
       const c = classFilterQs(undefined);
       // B6：stdDev 用 E[X²]−E[X]² 总体σ公式（与单科「减真实均值」结果一致）。
       // 不用 STDDEV_POP：SQLite 无此聚合函数（仅 MariaDB 有），会导致大考 metrics 接口在默认 SQLite 部署下报错。
@@ -672,7 +682,8 @@ export class AnalysisRepository {
         maxScore: stat?.maxScore ?? 0,
         minScore: stat?.minScore ?? 0,
         stdDev: stat?.stdDev ?? 0,
-        passRate: stat?.passRate ?? 0, excellentRate: stat?.excellentRate ?? 0,
+        passRate: subjectScoreKnown ? (stat?.passRate ?? 0) : 0,
+        excellentRate: subjectScoreKnown ? (stat?.excellentRate ?? 0) : 0,
         fullScore, hasAssignedScore: false,
         difficulty: s.difficulty, discrimination: s.discrimination,
         reliability: await this.getExamReliability(s.examId, totals.keys()),
@@ -970,7 +981,10 @@ export class AnalysisRepository {
       const sum = sArr.reduce((a, b) => a + b, 0);
       const avg = sum / sArr.length;
       const variance = sArr.reduce((a, b) => a + (b - avg) ** 2, 0) / sArr.length;
-      const bins = histogram(sArr, totalFull, thresholds.segmentSize);
+      // 大考满分不可知（成员里有缺满分依据的考试）时不出分桶、不算及格/优秀率，
+      // 否则线=0 会把所有非负分数算成及格且优秀（评审 P1）。
+      const totalKnown = totalFull > 0;
+      const bins = totalKnown ? histogram(sArr, totalFull, thresholds.segmentSize) : [];
       const meta = classMeta.get(classId) ?? { className: "未知班级" };
       classes.push({
         classId, className: meta.className, gradeName: meta.gradeName,
@@ -981,8 +995,8 @@ export class AnalysisRepository {
         median: round1(percentile(sArr, 0.5)),
         stdDev: round1(Math.sqrt(variance)),
         // Bugfix: 遵守 getAnalysisThresholds() 配置，不再硬编码 0.6 / 0.9
-        passRate: Math.round((sArr.filter((x) => x >= totalFull * thresholds.passRate).length / sArr.length) * 100),
-        excellentRate: Math.round((sArr.filter((x) => x >= totalFull * thresholds.excellentRate).length / sArr.length) * 100),
+        passRate: totalKnown ? Math.round((sArr.filter((x) => x >= totalFull * thresholds.passRate).length / sArr.length) * 100) : 0,
+        excellentRate: totalKnown ? Math.round((sArr.filter((x) => x >= totalFull * thresholds.excellentRate).length / sArr.length) * 100) : 0,
         distribution: bins
       });
     }
@@ -1114,8 +1128,11 @@ export class AnalysisRepository {
     const thresholds = await getAnalysisThresholds();
     // Bugfix: 使用 GROUP BY + MAX 代替 DISTINCT，避免同一题 max_score 不一致时 fullScore 膨胀
     const fullScore = await this.resolveExamFullScore(examId);
-    const passLine = fullScore * thresholds.passRate, excellentLine = fullScore * thresholds.excellentRate;
-    const ranges = histogram([], fullScore, thresholds.segmentSize);
+    // 满分不可知时 0 是占位：按 0 算线会让所有非负分数同时算及格与优秀，分桶也只剩误导性的「0-0」。
+    const scoreKnown = fullScore > 0;
+    const passLine = scoreKnown ? fullScore * thresholds.passRate : 0;
+    const excellentLine = scoreKnown ? fullScore * thresholds.excellentRate : 0;
+    const ranges = scoreKnown ? histogram([], fullScore, thresholds.segmentSize) : [];
 
     const examClasses = await this.getExamClasses(examId);
     const selected = examClasses.filter((cls) => classIds.includes(cls.classId));
@@ -1147,8 +1164,8 @@ export class AnalysisRepository {
         minScore: round1(scores[0]),
         median: round1(percentile(scores, 0.5)),
         stdDev: round1(Math.sqrt(variance)),
-        passRate: Math.round((scores.filter((s) => s >= passLine).length / scores.length) * 100),
-        excellentRate: Math.round((scores.filter((s) => s >= excellentLine).length / scores.length) * 100),
+        passRate: scoreKnown ? Math.round((scores.filter((s) => s >= passLine).length / scores.length) * 100) : 0,
+        excellentRate: scoreKnown ? Math.round((scores.filter((s) => s >= excellentLine).length / scores.length) * 100) : 0,
         difficulty: fullScore > 0 ? Math.round((avg / fullScore) * 1000) / 1000 : 0,
         discrimination: Math.round(disc * 1000) / 1000,
         distribution

@@ -65,6 +65,16 @@ try {
   assert.equal((await analysis.getExamOverview(second)).fullScore, 50);
   assert.equal((await analysis.getExamFullScoreMap([exam, second])).get(exam), 50);
 
+  // 评审 P1：满分不可知（无答题卡、无逐题满分）不得按 0 算及格/优秀线与分桶
+  const legacy = Number((await db.run("INSERT INTO exams (name,status) VALUES ('legacy-no-card','closed')")).lastInsertRowid);
+  await db.run("INSERT INTO student_scores (exam_id,student_id,objective_score,subjective_score,total_score) VALUES (?,?,80,0,80)", legacy, student);
+  const legacyOverview = await analysis.getExamOverview(legacy);
+  assert.equal(legacyOverview.fullScore, 0, "缺满分依据时 fullScore 回 0（占位，不是真实满分）");
+  assert.equal(legacyOverview.passRate, 0, "缺满分依据时不得把所有非负分数算成及格");
+  assert.equal(legacyOverview.excellentRate, 0, "缺满分依据时不得把所有非负分数算成优秀");
+  assert.equal(legacyOverview.passScore, 0);
+  assert.deepEqual(legacyOverview.distribution, [], "缺满分依据时不出「0-0」误导分桶");
+
   const ids = [card.id];
   for (let i = 0; i < 12; i++) {
     const c = createDefaultCard(`batch${i}`);
@@ -97,6 +107,34 @@ try {
   assert.deepEqual(await batchCards.getFullScoreMap([...ids, card.id, "missing"]), expected);
   assert.equal(queries.length, 5, "Many cards use five queries, not N+1");
   assert(!queries.some(sql => /images|answer_keys|scoring_rule_json/.test(sql)));
+
+  // 评审 P1：改绑答题卡（PATCH /api/exams/:examId）后分析缓存必须失效，
+  // 否则 overview 继续返回旧满分/旧阈值（缓存无 TTL，只按 LRU 淘汰）。
+  const { createApp } = await import("../src/apps/answer-card/server/index");
+  const app2 = await createApp();
+  const server2 = app2.listen(0, "127.0.0.1");
+  await new Promise<void>(resolve => server2.once("listening", resolve));
+  const base2 = `http://127.0.0.1:${(server2.address() as { port: number }).port}`;
+  try {
+    const altCard = createDefaultCard("review285-alt");
+    altCard.bodyBlocks = [{ id: "review285_alt_obj", type: "objective", title: "选择", questionStart: 1, questionCount: 1,
+      optionCount: 4, mode: "single", scorePerQuestion: 5, density: "normal",
+      questions: [{ questionNumber: 1, score: 5 }] }];
+    await cards.createCard(altCard);
+    await cards.updateCard(altCard);
+    analysisCache.set(`overview:${exam}:all`, { fullScore: 50 });
+    const relink = await fetch(`${base2}/api/exams/${exam}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cardId: altCard.id }),
+    });
+    assert.equal(relink.status, 200, await relink.clone().text());
+    assert.equal(analysisCache.get(`overview:${exam}:all`), undefined, "改绑答题卡后分析缓存必须失效");
+    assert.equal((await analysis.getExamOverview(exam)).fullScore, 5, "改绑后满分随新卡更新");
+  } finally {
+    server2.closeAllConnections();
+    await new Promise<void>(resolve => server2.close(() => resolve()));
+  }
 
   const paths = [`/analysis/exams/${exam}/ai-analysis`];
   for (const route of paths) {

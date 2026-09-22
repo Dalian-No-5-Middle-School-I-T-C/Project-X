@@ -441,15 +441,15 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                   />
                   <StatCard
                     label="及格率"
-                    value={formatPercent(overview.passRate)}
-                    hint={`及格线 ${formatScore(overview.passScore)} 分`}
+                    value={overview.fullScore > 0 ? formatPercent(overview.passRate) : "—"}
+                    hint={overview.fullScore > 0 ? `及格线 ${formatScore(overview.passScore)} 分` : "缺少满分依据"}
                     delta={toDelta(previousComparison?.passRateChange)}
                     deltaLabel="较上届"
                   />
                   <StatCard
                     label="优秀率"
-                    value={formatPercent(overview.excellentRate)}
-                    hint={`优秀线 ${formatScore(overview.excellentScore)} 分`}
+                    value={overview.fullScore > 0 ? formatPercent(overview.excellentRate) : "—"}
+                    hint={overview.fullScore > 0 ? `优秀线 ${formatScore(overview.excellentScore)} 分` : "缺少满分依据"}
                   />
                   <StatCard label="标准差" value={formatScore(overview.stdDev)} suffix="分" hint="越大越分散" />
                   <StatCard label="参考人数" value={String(overview.gradedCount)} />
@@ -953,8 +953,8 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
                       <TableCell numeric>{formatScore(c.maxScore)}</TableCell>
                       <TableCell numeric>{formatScore(c.minScore)}</TableCell>
                       <TableCell numeric>{formatScore(c.stdDev)}</TableCell>
-                      <TableCell numeric>{formatPercent(c.passRate)}</TableCell>
-                      <TableCell numeric>{formatPercent(c.excellentRate)}</TableCell>
+                      <TableCell numeric>{comparison.fullScore > 0 ? formatPercent(c.passRate) : "—"}</TableCell>
+                      <TableCell numeric>{comparison.fullScore > 0 ? formatPercent(c.excellentRate) : "—"}</TableCell>
                       <TableCell numeric>{c.difficulty.toFixed(3)}</TableCell>
                       <TableCell numeric>{c.discrimination.toFixed(3)}</TableCell>
                     </TableRow>
