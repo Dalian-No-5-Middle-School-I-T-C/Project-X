@@ -7,7 +7,7 @@ import { competitionRank } from "../../shared/ranking";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { getAnalysisThresholds } from "../services/analysisConfig";
 import { decryptField } from "../lib/field-crypto";
-import { createAiAnalysisJob, enqueueAiAnalysisJob } from "../services/aiAnalysisJobs";
+import { createAiAnalysisJob, enqueueAiAnalysisJob, getLatestAiAnalysisJob } from "../services/aiAnalysisJobs";
 import type { AiJobCreateResponse } from "../../shared/types";
 import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL, makeGroupViewPermissionGate } from "../../apps/answer-card/server/middleware";
 import {
@@ -203,6 +203,13 @@ router.get("/class-comparison", requireReadableGroup, requireGroupViewCharts, as
 });
 
 // ── POST /api/exam-groups/:groupId/ai-analysis ── 大考 AI 分析 ──
+
+router.get("/ai-analysis", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const job = await getLatestAiAnalysisJob({ groupId: Number(req.params.groupId) }, req.user!.id);
+    res.json({ job });
+  } catch (error) { next(error); }
+});
 
 router.post("/ai-analysis", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response, next: NextFunction) => {
   try {

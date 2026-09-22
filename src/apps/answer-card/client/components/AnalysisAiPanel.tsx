@@ -59,7 +59,11 @@ function ListBlock({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
+export function AnalysisAiPanel(props: Props) {
+  return <AnalysisAiPanelContent key={`${props.examId ?? ""}:${props.groupId ?? ""}:${props.classId ?? ""}`} {...props} />;
+}
+
+function AnalysisAiPanelContent({ examId, groupId, classId = "" }: Props) {
   const [status, setStatus] = useState<AiAnalysisStatus | null>(null);
   const [selectedModel, setSelectedModel] = useState("");
   const [selectedProviderId, setSelectedProviderId] = useState(0); // 0 = 内置 llmclient
@@ -70,6 +74,7 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
   // 建议 5：异步任务化 —— 提交后轮询 job 直到 done/error
   const [jobId, setJobId] = useState<number | null>(null);
   const [polling, setPolling] = useState(false);
+  const [restoring, setRestoring] = useState(true);
 
   const userProviders = useMemo(
     () => status?.providers ?? [],
@@ -149,10 +154,26 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
   }, [jobId]);
 
   useEffect(() => {
-    setAnalysis(null);
-    setJobId(null);
-    setPolling(false);
+    let cancelled = false;
     void loadStatus();
+    const endpoint = groupId
+      ? `/api/exam-groups/${groupId}/ai-analysis`
+      : `/api/analysis/exams/${examId}/ai-analysis${classId !== "" ? `?classId=${encodeURIComponent(classId)}` : ""}`;
+    void fetchJson<{ job: AiJobPollResponse | null }>(endpoint)
+      .then(({ job }) => {
+        if (cancelled || !job) return;
+        if (job.status === "done") setAnalysis(job.result ?? null);
+        else if (job.status === "error") setError(job.error ?? "AI 分析失败");
+        else {
+          setPolling(true);
+          setJobId(job.id);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setError(`恢复分析失败：${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => { if (!cancelled) setRestoring(false); });
+    return () => { cancelled = true; };
   }, [examId, groupId, classId]);
 
   async function generateAnalysis() {
@@ -199,7 +220,7 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
   const noProviders = !hasBuiltinModels && !hasUserProviders;
   const aiAvailable = status?.available ?? false;
   const disabledReason = status?.available ? "" : (status?.reason || "AI service is not available.");
-  const busy = generating || polling;
+  const busy = generating || polling || restoring;
   const canGenerate = Boolean(aiAvailable && selectedModel && !busy);
 
   return (
@@ -297,7 +318,7 @@ export function AnalysisAiPanel({ examId, groupId, classId = "" }: Props) {
             disabled={!canGenerate}
             loading={busy}
           >
-            {polling ? "AI 分析中…" : "生成分析"}
+            {restoring ? "正在恢复分析…" : polling ? "AI 分析中…" : "生成分析"}
           </Button>
         </div>
       </div>

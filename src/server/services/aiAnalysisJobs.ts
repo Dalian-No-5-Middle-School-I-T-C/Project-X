@@ -159,6 +159,24 @@ export async function getAiAnalysisJob(jobId: number): Promise<AiJobPollResponse
   return row ? rowToPoll(row) : null;
 }
 
+/** 恢复当前用户在同一考试/合集及班级范围内最近的分析任务。 */
+export async function getLatestAiAnalysisJob(
+  context: { examId: number; groupId?: never } | { groupId: number; examId?: never },
+  createdBy: number,
+  classId?: number,
+): Promise<AiJobPollResponse | null> {
+  const isGroup = context.groupId != null;
+  const params: unknown[] = [isGroup ? context.groupId : context.examId, createdBy];
+  if (classId != null) params.push(classId);
+  const row = await getMysqlDb().get(
+    `SELECT * FROM ai_analysis_jobs
+     WHERE ${isGroup ? "group_id = ? AND exam_id IS NULL" : "exam_id = ? AND group_id IS NULL"}
+       AND created_by = ? AND ${classId == null ? "class_id IS NULL" : "class_id = ?"}
+     ORDER BY id DESC LIMIT 1`, ...params,
+  );
+  return row ? rowToPoll(row) : null;
+}
+
 /**
  * 读取任务及其创建者（供轮询接口的 IDOR 校验）。
  * 不把 created_by 放进 AiJobPollResponse，避免向客户端暴露任务归属。
