@@ -36,7 +36,7 @@ async function main(): Promise<void> {
   await db.exec(`
     CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, student_number TEXT, role_id INTEGER, is_active INTEGER DEFAULT 1);
     CREATE TABLE exams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, class_id INTEGER, grade_id INTEGER);
-    CREATE TABLE classes (id INTEGER PRIMARY KEY, name TEXT, grade_id INTEGER);
+    CREATE TABLE classes (id INTEGER PRIMARY KEY, name TEXT, grade_id INTEGER, archived_at DATETIME);
     CREATE TABLE class_students (class_id INTEGER, student_id INTEGER);
     CREATE TABLE exam_participants (exam_id INTEGER, student_id INTEGER, source TEXT,
       PRIMARY KEY (exam_id, student_id));
@@ -58,6 +58,11 @@ async function main(): Promise<void> {
   ok(r3.length === 0, "通配符 % 被转义，不命中全部");
   const r4 = await searchStudentsForExam(db, 1, "  ");
   ok(r4.length === 0, "空关键字返回空");
+  await db.run("INSERT INTO users (id, name, student_number, role_id) VALUES (6, '测试!_%\\路径', 'special', 3)");
+  for (const literal of ["!", "_", "%", "\\"]) {
+    const matches = await searchStudentsForExam(db, 1, literal);
+    ok(matches.length === 1 && matches[0].id === 6, `特殊字符 ${literal} 按字面量搜索`);
+  }
 
   section("快照防悬空引用 — 被删用户不进名册快照");
   await db.run("INSERT INTO classes (id, name, grade_id) VALUES (1, '一班', NULL)");

@@ -1714,6 +1714,7 @@ export interface DistributionResult {
   scopeId: string;
   label: string;
   fullScore: number;
+  /** 实际分桶段长；为限制桶数，可能大于配置的段长。 */
   segmentSize: number;
   bins: HistogramBin[];
   mean: number;

@@ -49,12 +49,14 @@ export async function searchStudentsForExam(
   if (!keyword) return [];
   const scoped = Array.isArray(classIds);
   if (scoped && classIds!.length === 0) return [];
-  const escaped = keyword.replace(/[\\%_]/g, (m) => `\\${m}`);
+  // Use a non-backslash escape: SQL string parsing differs between SQLite and
+  // MariaDB (and MariaDB's NO_BACKSLASH_ESCAPES mode).
+  const escaped = keyword.replace(/[!%_]/g, (m) => `!${m}`);
   const rows = await db.all(
     `SELECT u.id, u.name, u.student_number
      FROM users u
      WHERE u.role_id = ? AND u.is_active = 1
-       AND (u.student_number LIKE ? ESCAPE '\\' OR u.name LIKE ? ESCAPE '\\')
+       AND (u.student_number LIKE ? ESCAPE '!' OR u.name LIKE ? ESCAPE '!')
        ${scoped
         ? `AND EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = u.id AND cs.class_id IN (${classIds!.map(() => "?").join(",")}))`
         : ""}
@@ -136,8 +138,8 @@ export async function ensureExamParticipants(
       await db.run(sql, examId, exam.class_id);
     } else if (exam.grade_id != null) {
       const sql = isSqlite(db)
-        ? "INSERT OR IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ?"
-        : "INSERT IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ?";
+        ? "INSERT OR IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ? AND c.archived_at IS NULL"
+        : "INSERT IGNORE INTO exam_participants (exam_id, student_id, source) SELECT ?, cs.student_id, 'roster' FROM class_students cs JOIN users u ON u.id = cs.student_id JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ? AND c.archived_at IS NULL";
       await db.run(sql, examId, exam.grade_id);
     }
   } catch {

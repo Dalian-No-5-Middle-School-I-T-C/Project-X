@@ -272,7 +272,12 @@ export function ExamManagePage() {
 
   /** 评审 P1-2：保存显式名单（整体替换） */
   async function handleSaveRoster() {
-    if (!rosterExam || rosterSaving) return;
+    if (!rosterExam || rosterSaving || !rosterData) return;
+    if (rosterData.students.length === 0) {
+      setRosterErr("请先添加实际应考学生再保存；如需使用考试预设范围，请点击恢复班级/年级名册。");
+      return;
+    }
+    setRosterErr(null);
     setRosterSaving(true);
     try {
       const ids = (rosterData?.students ?? []).map((s) => s.studentId);
@@ -282,9 +287,9 @@ export function ExamManagePage() {
         body: JSON.stringify({ studentIds: ids }),
       });
       setStatus("应考名单已保存（发布完整性将按此名单校验）");
-      await openRosterModal(rosterExam);
+      setRosterExam(null);
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "保存名单失败");
+      setRosterErr(err instanceof Error ? err.message : "保存名单失败");
     } finally {
       setRosterSaving(false);
     }
@@ -292,13 +297,17 @@ export function ExamManagePage() {
 
   /** 评审 P1-2：清除显式名单（回落班级/年级名册） */
   async function handleClearRoster() {
-    if (!rosterExam) return;
+    if (!rosterExam || rosterSaving) return;
+    setRosterSaving(true);
+    setRosterErr(null);
     try {
       await fetchJson(`/api/exams/${rosterExam.id}/participants`, { method: "DELETE" });
       setStatus("显式应考名单已清除（将按年级/班级名册校验）");
       await openRosterModal(rosterExam);
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "清除名单失败");
+      setRosterErr(err instanceof Error ? err.message : "恢复班级/年级名册失败");
+    } finally {
+      setRosterSaving(false);
     }
   }
 
@@ -974,6 +983,9 @@ export function ExamManagePage() {
             {rosterErr && (
               <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">{rosterErr}</div>
             )}
+            <p className="m-0 text-sm text-muted-foreground">
+              默认显示考试预设年级/班级的名册。若实际应考人员不同，可清空待选名单后按班级或搜索添加；保存后以所选人员为准。
+            </p>
             {!rosterData?.known && (
               <div className="rounded border border-warning bg-warning/10 px-3 py-2 text-sm text-warning-fg">
                 该考试未确定应考范围（无年级/班级且无显式名单），当前无法公布成绩。请从下方添加学生并保存显式名单。
@@ -1079,8 +1091,12 @@ export function ExamManagePage() {
           </DialogBody>
           <DialogFooter className="flex-wrap gap-2">
             <Button variant="outline" onClick={() => setRosterExam(null)} disabled={rosterSaving}>关闭</Button>
-            <Button variant="ghost" className="text-destructive-fg" loading={rosterSaving} onClick={() => void handleClearRoster()}>清除显式名单</Button>
-            <Button variant="primary" icon={<UserRoundPlus />} loading={rosterSaving} onClick={() => void handleSaveRoster()}>保存名单</Button>
+            <Button variant="ghost" className="text-destructive-fg" disabled={rosterSaving || !rosterData?.students.length} onClick={() => {
+              setRosterData((prev) => prev ? { ...prev, source: "explicit", total: 0, missing: 0, students: [] } : prev);
+              setRosterErr(null);
+            }}>清空待选名单</Button>
+            <Button variant="outline" disabled={rosterSaving || !rosterData} onClick={() => void handleClearRoster()}>恢复班级/年级名册</Button>
+            <Button variant="primary" icon={<UserRoundPlus />} loading={rosterSaving} disabled={!rosterData?.students.length} onClick={() => void handleSaveRoster()}>保存名单</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

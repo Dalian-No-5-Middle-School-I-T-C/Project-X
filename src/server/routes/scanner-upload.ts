@@ -27,7 +27,7 @@ import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
-import { processScannerSession, enqueueScannerSubmission } from "../services/scannerSubmissions";
+import { processScannerSession, enqueueScannerSubmission, findSavedScannerOwners } from "../services/scannerSubmissions";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
@@ -51,6 +51,10 @@ const recognitionSchema = z.object({
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 const router = Router();
+// Same authorization as an upload, without creating a session or touching scans.
+router.get("/check", dualAuth, (_req, res) => {
+  res.json({ ok: true });
+});
 router.use("/sessions/:sessionId", dualAuth, requireScannerExamScope);
 router.use("/legacy", dualAuth);
 router.use(scannerLegacyRecoveryRouter());
@@ -352,15 +356,7 @@ router.post("/sessions/:sessionId/complete", dualAuth, async (req: Request, res:
       for (const result of batch.results) {
         // The saved receipt owns this attempt, including retries after closure.
         // Reusing the card for another exam must never move the original crops.
-        const owners = await db.all<{ exam_id: number; student_id: number }>(
-          `SELECT s.exam_id, ss.student_id FROM scanner_submissions s
-           JOIN exams e ON e.id = s.exam_id
-           JOIN users u ON u.student_number = s.student_number
-           JOIN student_scores ss ON ss.exam_id = s.exam_id AND ss.student_id = u.id
-           WHERE s.session_id = ? AND s.group_id = ? AND s.student_number = ? AND s.state = 'saved'
-             AND e.card_id = ?
-             AND NOT EXISTS (SELECT 1 FROM exam_archives ea WHERE ea.exam_id = e.id AND ea.is_deleted = 1)`,
-          sessionId, result.groupId, result.studentId, fullSession!.card_id);
+        const owners = await findSavedScannerOwners(db, String(sessionId), result.groupId, result.studentId, fullSession!.card_id);
         if (owners.length !== 1) throw new Error("扫描成绩回执归属缺失或不唯一，切图关联未完成");
         const owner = owners[0];
         for (const record of result.pages) {

@@ -27,7 +27,7 @@ type Settings = {
 };
 
 const FIELDS: Array<{ key: keyof Settings; label: string; desc: string; type: "toggle" | "number" | "select"; options?: Array<{ value: string; label: string }> }> = [
-  { key: "require_original_paper", label: "强制要求上传原卷", desc: "创建答题卡后必须上传原卷才能导出（全平台统一）", type: "toggle" },
+  { key: "require_original_paper", label: "创建后提示上传原卷", desc: "创建答题卡后打开原卷面板，可关闭并稍后补充；不限制答题卡或 PDF 导出", type: "toggle" },
   { key: "highlight_missing_paper", label: "侧边栏高亮未上传原卷", desc: "左侧列表用颜色标记缺少原卷的考试（全平台统一）", type: "toggle" },
 ];
 

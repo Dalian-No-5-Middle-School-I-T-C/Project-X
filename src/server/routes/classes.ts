@@ -46,7 +46,7 @@ router.put("/grades/:id", manage, async (req: Request, res: Response) => {
 
 router.delete("/grades/:id", manage, async (req: Request, res: Response) => {
   await classRepo.deleteGrade(Number(req.params.id));
-  res.json({ message: "年级已删除（含其下班级）" });
+  res.json({ message: "年级及其下班级已归档，历史记录保留" });
 });
 
 // ── 班级 ──────────────────────────────────────────────
@@ -72,7 +72,7 @@ router.delete("/:id", manage, async (req: Request, res: Response) => {
     return;
   }
   await classRepo.deleteClass(cls.id);
-  res.json({ message: "班级已删除" });
+  res.json({ message: "班级已归档，历史记录保留" });
 });
 
 // ── 花名册 ────────────────────────────────────────────

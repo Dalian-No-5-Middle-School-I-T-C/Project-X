@@ -77,6 +77,50 @@ async function main() {
   const PAGES = "/pages";
   const COMPLETE = "/complete";
 
+  // Use the actual snapshot fetch path: changing a mistyped key before session
+  // creation must allow manual retry, without leaking a different server's key.
+  {
+    const originalFetch = globalThis.fetch;
+    const originalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    const values = new Map<string, string>([
+      ["projectx_server_url", "https://scanner-test.invalid"], ["projectx_api_key", "wrong-key"],
+    ]);
+    Object.defineProperty(globalThis, "localStorage", { configurable: true, value: {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    } });
+    const sentKeys: string[] = [];
+    globalThis.fetch = async (_url, init) => {
+      const key = new Headers(init?.headers).get("X-Api-Key") ?? "";
+      sentKeys.push(key);
+      return key !== "correct-key" ? jsonRes({ message: "无效的 API Key" }, 401)
+        : String(_url).endsWith(SESSIONS) ? jsonRes({ sessionId: "recovered", uploadTokens: ["t"] })
+        : jsonRes({ ok: true });
+    };
+    try {
+      const mgr = createScannerUploadManager(deps());
+      const id = mgr.startUpload(baseInput(1));
+      assert((await waitTerminal(mgr, id)).status === "error", "错误 Key 必须失败");
+      assert(sentKeys.length === 1, "401 不应自动重试");
+      values.set("projectx_api_key", "correct-key");
+      mgr.retryFailed(id);
+      assert((await waitTerminal(mgr, id)).status === "done", "改正 Key 后可重试未创建的会话");
+      values.set("projectx_api_key", "wrong-key");
+      const other = mgr.startUpload(baseInput(1));
+      await waitTerminal(mgr, other);
+      values.set("projectx_server_url", "https://other-server.invalid");
+      values.set("projectx_api_key", "other-server-key");
+      mgr.retryFailed(other);
+      assert(!sentKeys.includes("other-server-key"), "切服后不得向旧服务器泄露新 Key");
+      mgr.cancelJob(other);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalStorage) Object.defineProperty(globalThis, "localStorage", originalStorage);
+      else Reflect.deleteProperty(globalThis, "localStorage");
+    }
+  }
+
   // Exercise the same metadata builder as file import, through recognition and upload.
   for (const sided of ["single", "double"] as const) {
     for (const count of [1, 2, 3, 4]) {

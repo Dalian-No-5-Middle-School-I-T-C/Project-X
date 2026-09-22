@@ -30,9 +30,9 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
     static DsmEntryProc dsmEntry = nullptr;
 
     if (!dsmEntry) {
-        char envPath[MAX_PATH] = {};
-        DWORD envLen = GetEnvironmentVariableA("TWAIN_DSM_DLL", envPath, static_cast<DWORD>(sizeof(envPath)));
-        const char* envCandidate = (envLen > 0 && envLen < sizeof(envPath)) ? envPath : nullptr;
+        wchar_t envPath[MAX_PATH] = {};
+        DWORD envLen = GetEnvironmentVariableW(L"TWAIN_DSM_DLL", envPath, MAX_PATH);
+        const wchar_t* envCandidate = (envLen > 0 && envLen < MAX_PATH) ? envPath : nullptr;
 
         // exe 同目录的 TWAINDSM.dll（build-scanner-bridge.bat 会把仓库内
         // third_party 的 DSM 复制到产物目录）；不再硬编码 D:\ 绝对路径
@@ -41,20 +41,22 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
         if (wchar_t* slash = wcsrchr(exeDir, L'\\')) *slash = L'\0';
         wchar_t dsmPathW[MAX_PATH] = {};
         wsprintfW(dsmPathW, L"%s\\TWAINDSM.dll", exeDir);
-        char dsmPath[MAX_PATH] = {};
-        WideCharToMultiByte(CP_UTF8, 0, dsmPathW, -1, dsmPath, static_cast<int>(sizeof(dsmPath)), nullptr, nullptr);
-
-        const char* candidates[] = {
+        // Windows paths stay UTF-16. LoadLibraryA interprets UTF-8 bytes as the
+        // system ANSI code page and cannot load a bundled DLL from Chinese paths.
+        const wchar_t* candidates[] = {
             envCandidate,
-            dsmPath,
-            "TWAINDSM.dll",
-            "twain_32.dll"
+            dsmPathW,
+            L"TWAINDSM.dll",
+            L"twain_32.dll"
         };
 
-        for (const char* candidate : candidates) {
+        for (const wchar_t* candidate : candidates) {
             if (!candidate || !candidate[0]) continue;
-            dsmModule = LoadLibraryA(candidate);
-            if (!dsmModule) continue;
+            dsmModule = LoadLibraryW(candidate);
+            if (!dsmModule) {
+                fprintf(stderr, "[ScannerBridge] DSM library load failed (Win32 error %lu)\n", GetLastError());
+                continue;
+            }
 
             dsmEntry = reinterpret_cast<DsmEntryProc>(GetProcAddress(dsmModule, "DSM_Entry"));
             if (dsmEntry) break;

@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS grades (
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
     is_demo      TINYINT NOT NULL DEFAULT 0,
+    archived_at  DATETIME DEFAULT NULL,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS classes (
     name         VARCHAR(50) NOT NULL,
     sort_order   INT DEFAULT 0,
     is_demo      TINYINT NOT NULL DEFAULT 0,
+    archived_at  DATETIME DEFAULT NULL,
     created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (grade_id) REFERENCES grades(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
