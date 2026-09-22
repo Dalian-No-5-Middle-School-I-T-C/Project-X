@@ -8,6 +8,7 @@ import { analysisCache } from "../services/analysisCache";
 import { coefficientOfVariation, cronbachAlpha, discriminationByExtremeGroup, difficulty, histogram, histogramSegmentSize, kr20, mean, stdDev, normality, qqPlot } from "../../shared/stats";
 import { CardRepository } from "./CardRepository";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
+import { validateCardScores } from "../../shared/cardScoreValidation";
 import type {
   BorderlineLineKind, BorderlineResponse, BorderlineStudentItem, ClassComparisonClassSummary,
   ClassComparisonOptionStat, ClassComparisonQuestionStat, ClassComparisonResponse, ClassKnowledgeResponse,
@@ -198,7 +199,7 @@ export class AnalysisRepository {
     const overallScores = classId === undefined ? filteredScores : await this.fetchExamScores(examId, classFilter(undefined));
     const classSummaries = await this.getClassScoreSummaries(examId);
     if (!stats || stats.gradedCount === 0) {
-      return { totalStudents: 0, gradedCount: 0, avgScore: 0, maxScore: 0, minScore: 0, stdDev: 0, passRate: 0, excellentRate: 0, passScore: round1(passLine), excellentScore: round1(excellentLine), distribution: [], scoreSummary: null, overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: 0, errorRateBuckets: emptyErrorRateBuckets() };
+      return { fullScore, totalStudents: 0, gradedCount: 0, avgScore: 0, maxScore: 0, minScore: 0, stdDev: 0, passRate: 0, excellentRate: 0, passScore: round1(passLine), excellentScore: round1(excellentLine), distribution: [], scoreSummary: null, overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: 0, errorRateBuckets: emptyErrorRateBuckets() };
     }
     // 标准差减数用未四舍五入的真实均值，避免 0.1 舍入对小样本方差的系统性偏差
     const meanBase = stats.avgScoreRaw ?? stats.avgScore;
@@ -207,7 +208,7 @@ export class AnalysisRepository {
     const distribution = histogram(filteredScores, fullScore, thresholds.segmentSize);
     const qa = await this.getQuestionAnalysis(examId, classId);
     const eb = countErrorRateBuckets(qa);
-    return { totalStudents: stats.gradedCount, gradedCount: stats.gradedCount, avgScore: stats.avgScore, maxScore: stats.maxScore, minScore: stats.minScore, stdDev: stdDevRow?.stdDev ?? 0, passRate: Math.round((stats.passCount / stats.gradedCount) * 100), excellentRate: Math.round((stats.excellentCount / stats.gradedCount) * 100), passScore: round1(passLine), excellentScore: round1(excellentLine), distribution, scoreSummary: this.buildScoreSummary(filteredScores), overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: eb.high, errorRateBuckets: eb };
+    return { fullScore, totalStudents: stats.gradedCount, gradedCount: stats.gradedCount, avgScore: stats.avgScore, maxScore: stats.maxScore, minScore: stats.minScore, stdDev: stdDevRow?.stdDev ?? 0, passRate: Math.round((stats.passCount / stats.gradedCount) * 100), excellentRate: Math.round((stats.excellentCount / stats.gradedCount) * 100), passScore: round1(passLine), excellentScore: round1(excellentLine), distribution, scoreSummary: this.buildScoreSummary(filteredScores), overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: eb.high, errorRateBuckets: eb };
   }
 
   async getClassScoreSummaries(examId: number): Promise<ClassScoreSummary[]> {
@@ -1504,12 +1505,14 @@ export class AnalysisRepository {
 
   // ── 建议 10：班级知识点掌握对比 ────────────────────
   async getClassKnowledgeStats(examId: number, classIds?: number[]): Promise<ClassKnowledgeResponse> {
-    // 覆盖率基准：不带班级连接统计「已标注题目作答」——避免多班级学生（class_students 多行）翻倍计数
+    // 分子、分母均按题目作答计数；EXISTS 避免一题多知识点扩行，也不连接学生班级表。
     const taggedRow = await this.db.get(
       `SELECT COUNT(*) as cnt FROM question_scores qs
        JOIN exams e ON e.id = qs.exam_id
-       JOIN knowledge_points kp ON kp.card_id = e.card_id AND kp.question_number = qs.question_number
-       WHERE qs.exam_id = ?`,
+       WHERE qs.exam_id = ? AND EXISTS (
+         SELECT 1 FROM knowledge_points kp
+         WHERE kp.card_id = e.card_id AND kp.question_number = qs.question_number
+       )`,
       examId
     ) as { cnt: number } | undefined;
     const taggedTotal = taggedRow?.cnt ?? 0;
@@ -1686,7 +1689,7 @@ export class AnalysisRepository {
     return rows.map((r: any) => ({ id: r.id, name: r.name, subject: r.subject, gradeName: r.gradeName, examDate: dateOnly(r.examDate), fullScore: round1(fullScores.get(r.id) ?? 0), gradedCount: r.gradedCount, avgScore: r.avgScore }));
   }
 
-  /** 单场满分统一解析：question_scores 合计 → 缺失时 MAX(total_score) → 0（B7，与批量 Map 同一兜底口径，消除虚构 100） */
+  /** 单场满分与批量解析保持一致，不以学生最高得分推断考试满分。 */
   private async resolveExamFullScore(examId: number): Promise<number> {
     return (await this.getExamFullScoreMap([examId])).get(examId) ?? 0;
   }
@@ -1695,6 +1698,20 @@ export class AnalysisRepository {
     const result = new Map<number, number>();
     // 空数组早退：IN () 空表在 MySQL/MariaDB 均 1064（五轮A2 加固）
     if (examIds.length === 0) return result;
+    const exams = await this.db.all<{ id: number; card_id: string | null }>(
+      `SELECT id, card_id FROM exams WHERE id IN (${placeholders(examIds)})`, ...examIds
+    );
+    const cardScores = new Map<string, number>();
+    for (const exam of exams) {
+      if (!exam.card_id) continue;
+      if (!cardScores.has(exam.card_id)) {
+        const card = await this.cardRepo.findById(exam.card_id);
+        cardScores.set(exam.card_id, card ? validateCardScores(card).totalScore : 0);
+      }
+      const fullScore = cardScores.get(exam.card_id)!;
+      if (Number.isFinite(fullScore) && fullScore > 0) result.set(Number(exam.id), fullScore);
+    }
+    // 历史考试可能没有答题卡，保留逐题满分汇总；不使用实际得分兜底。
     // 五轮A2: 原两层嵌套派生表（内层 MAX 分组 + 外层 SUM 按 exam 归并）改为单层
     // 分组 + JS 侧归并，行为等价且无嵌套聚合的方言差异。
     const qRows = await this.db.all(
@@ -1710,12 +1727,7 @@ export class AnalysisRepository {
       const val = Number(r.max_score ?? 0);
       perExam.set(examId, (perExam.get(examId) ?? 0) + val);
     }
-    for (const [examId, sum] of perExam) if (sum > 0) result.set(examId, sum);
-    const missing = examIds.filter((id) => !result.has(id));
-    if (missing.length > 0) {
-      const fb = await this.db.all(`SELECT exam_id, MAX(total_score) as fullScore FROM student_scores WHERE exam_id IN (${placeholders(missing)}) GROUP BY exam_id`, ...missing) as any[];
-      for (const r of fb) result.set(Number(r.exam_id), Number(r.fullScore ?? 0));
-    }
+    for (const [examId, sum] of perExam) if (!result.has(examId) && Number.isFinite(sum) && sum > 0) result.set(examId, sum);
     for (const id of examIds) if (!result.has(id)) result.set(id, 0);
     return result;
   }

@@ -435,7 +435,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                     label="均分"
                     value={formatScore(overview.avgScore)}
                     suffix="分"
-                    hint={`满分：${overview.overallScoreSummary?.max ?? "—"} 分`}
+                    hint={`满分：${overview.fullScore > 0 ? formatScore(overview.fullScore) : "—"} 分`}
                     delta={toDelta(previousComparison?.avgScoreChange)}
                     deltaLabel="较上届"
                   />
@@ -968,7 +968,7 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
           {comparison.classes.length >= 2 && (
             <section className="flex flex-col gap-2">
               <h3 className="text-sm font-semibold text-foreground">
-                多维度雷达对比（平均分率/中位分率/及格率/优秀率/难度/区分度/离散度）
+                多维度雷达对比
               </h3>
               <ClassRadar classes={comparison.classes} fullScore={comparison.fullScore} height={340} />
             </section>
@@ -978,7 +978,7 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
           {knowledge && !knowledge.empty && knowledge.knowledgePoints.length >= 2 && (
             <section className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <h3 className="text-sm font-semibold text-foreground">班级知识点掌握对比（得分率）</h3>
+                <h3 className="text-sm font-semibold text-foreground">班级知识点得分率对比</h3>
                 <Badge tone="neutral">覆盖 {knowledge.coverageRate}% 题目（已标注知识点）</Badge>
                 <span className="text-xs text-muted-foreground">「3 班函数弱、5 班立体几何弱」这类维度对比</span>
               </div>

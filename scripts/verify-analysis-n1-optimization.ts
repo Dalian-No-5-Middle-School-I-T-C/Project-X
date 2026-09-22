@@ -199,6 +199,37 @@ ok((newStat.std ?? 0) === (oldStd?.std ?? 0), "std 合并查询与旧查询一�
 ok((newStat.p ?? 0) === (oldPass?.p ?? 0) && (newStat.e ?? 0) === (oldPass?.e ?? 0), "pass/excellent 合并查询与旧查询一致", newStat);
 
 // ============================================================
+console.log("\n== 5. 考试满分不受实际最高分、班级或阅卷进度影响 ==");
+const { createDefaultCard } = await import("../src/shared/defaultCard");
+const { CardRepository } = await import("../src/server/repositories/CardRepository");
+const cardRepo = new CardRepository();
+const card = createDefaultCard("full-score-regression", "英语");
+card.bodyBlocks = [{
+  id: "full-score-block", type: "subjective", title: "解答题",
+  questions: [{ id: "full-score-question", number: "1", score: 30, minHeightMm: 20 }],
+}];
+await cardRepo.createCard(card);
+await cardRepo.updateCard(card);
+const fullExam = db.prepare("INSERT INTO exams (name, card_id) VALUES (?, ?)").run("满分回归", card.id).lastInsertRowid as number;
+const emptyOverview = await repo.getExamOverview(fullExam);
+ok(emptyOverview.fullScore === 30 && emptyOverview.maxScore === 0, "未产生任何成绩时仍有考试满分 30");
+insertS.run(fullExam, uA, 12, 12);
+const { analysisCache } = await import("../src/server/services/analysisCache");
+analysisCache.invalidateExam(fullExam);
+const fullOverview = await repo.getExamOverview(fullExam);
+ok(fullOverview.fullScore === 30 && fullOverview.overallScoreSummary?.max === 12, "满分 30 与最高分 12 分离");
+ok(fullOverview.passScore === 18 && fullOverview.excellentScore === 27, "阈值使用考试满分");
+insertQ.run(fullExam, uA, 1, 5, 10);
+ok((await repo.getExamFullScoreMap([fullExam])).get(fullExam) === 30, "部分逐题成绩不覆盖答题卡满分");
+ok((await repo.getExamOverview(fullExam, class1)).fullScore === 30, "班级筛选不改变满分");
+ok((await repo.getExamOverview(fullExam, class2)).fullScore === 30, "空班级筛选保留满分");
+const legacyExam = db.prepare("INSERT INTO exams (name) VALUES (?)").run("无答题卡历史考试").lastInsertRowid as number;
+insertS.run(legacyExam, uA, 12, 12);
+ok((await repo.getExamFullScoreMap([legacyExam])).get(legacyExam) === 0, "缺少满分依据时不把最高分 12 当作满分");
+insertQ.run(legacyExam, uA, 1, 12, 30);
+ok((await repo.getExamFullScoreMap([legacyExam])).get(legacyExam) === 30, "历史考试保留逐题满分兜底");
+ok((await repo.getExamFullScoreMap([])).size === 0, "空考试列表安全返回");
+
 // 清理
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 

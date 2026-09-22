@@ -304,7 +304,7 @@ async function fetchClassStats(examId) {
     });
   }
   // 后端没有直接的 class stats 接口，从 overview + students 推导
-  const overview = await API.getOverview(examId);
+  const oveSrview = await API.getOverview(examId);
   const students = await API.getStudents(examId);
   // 按班级分组计算
   const classes = [...new Set(students.map(s => s.className))];

@@ -621,6 +621,8 @@ export type ClassScoreSummary = {
 };
 
 export type ExamOverview = {
+  /** 考试满分，与参考学生最高得分无关；0 表示缺少满分依据。 */
+  fullScore: number;
   /** 已阅人数（当前版本等同 gradedCount，因无独立“注册学生”表；后续迭代可对接学籍名册） */
   totalStudents: number;
   gradedCount: number;
