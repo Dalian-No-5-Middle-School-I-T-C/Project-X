@@ -2,6 +2,7 @@ import { databaseTimestamp } from "../db/timestamp";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import type { DbAdapter } from "../db";
 import { roundScore } from "../services/rankingUpdate";
+import { assertActiveClassScope } from "../services/activeClassScope";
 
 export interface ExamRecord {
   id: number;
@@ -48,6 +49,7 @@ export class ExamRepository {
     retention_policy_id?: number | null; created_by?: number;
     exam_mode?: "quiz" | "formal";
   }): Promise<ExamRecord> {
+    await assertActiveClassScope(this.db, params.grade_id, params.class_id);
     // 按考试类型分配数据保留策略（评审 P1，2026-08-22）：
     // - 显式传入 retention_policy_id 时原样采用（null = 明确不绑定）；
     // - 未显式指定时：quiz（晨测/周测）→ 默认绑定「周测」策略（存在则绑定）；

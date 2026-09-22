@@ -8,7 +8,7 @@ export function KnowledgeAnalysisInline({ cardId, onDone }: {
   cardId: string;
   onDone: (points: Array<{ question_number: number; points: string[] }>) => void;
 }) {
-  const [questionRange, setQuestionRange] = useState("全部");
+  const [questionRange, setQuestionRange] = useState<"all" | "custom">("all");
   const [customRange, setCustomRange] = useState("");
   const [extraNotes, setExtraNotes] = useState("");
   const [analyzing, setAnalyzing] = useState(false);

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Route, Routes, Navigate, useBlocker, useLocation, useNavigate } from "react-router-dom";
 import { MODE_PATH, pathToMode } from "./modeRoutes";
-import { WorkspaceProvider, type WorkspaceValue } from "./WorkspaceContext";
+import { WorkspaceProvider, type WorkspaceValue, type PdfWarningState } from "./WorkspaceContext";
 import {
   ArrowDown,
   ArrowUp,
@@ -28,11 +28,8 @@ import {
   Home,
   SquarePen,
   Sun,
-  Upload,
   Users,
   AlertTriangle,
-  CheckCircle2,
-  Check,
   X,
   ArrowLeft,
 } from "lucide-react";
@@ -47,7 +44,7 @@ import { DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
 import { BeianFooter } from "./components/BeianFooter";
 import { NotFound } from "./components/NotFound";
 import { NewCardModal, type NewCardFormData } from "./components/NewCardModal";
-import { KnowledgeAnalysisInline } from "./components/KnowledgeAnalysisInline";
+import { PdfExportDialog } from "./components/PdfExportDialog";
 import { AssignedFormulaModal } from "./components/AssignedFormulaModal";
 import { CreateExamGroupModal } from "./components/CreateExamGroupModal";
 import { GroupExportModal } from "./components/GroupExportModal";
@@ -139,8 +136,7 @@ import {
   optionLabelsForQuestion
 } from "../../../shared/grading";
 import {
-  validateCardScores,
-  type CardScoreValidationResult
+  validateCardScores
 } from "../../../shared/cardScoreValidation";
 import { buildLayout } from "../../../shared/layout";
 import { createBlockId } from "../../../shared/defaultCard";
@@ -202,15 +198,6 @@ type GroupDeleteTarget = {
 
 type AutoSaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
-type PdfWarningState = {
-  validation: CardScoreValidationResult;
-  pdfUrl: string;
-  step: "score" | "paper" | "knowledge";  // 当前步骤
-  paperInfo?: { hasPaper: boolean; filename?: string; mimeType?: string; pages?: Array<{ pageIndex: number; filename: string; mime_type?: string }> };
-  knowledgeReady?: boolean;   // 知识点是否已分析
-  knowledgePoints?: Array<{ question_number: number; points: string[] }>;  // 知识点列表
-  cardId?: string;
-};
 
 
 
@@ -859,7 +846,7 @@ function App() {
 
       setStatus(`已创建答题卡 「${created.title}」 (${created.id})${statusExtra}`);
 
-      // v1.8.0: 自动弹出原卷上传面板（受全局「强制要求上传原卷」控制）
+      // v1.8.0: 自动弹出原卷上传面板（受全局「创建后提示上传原卷」控制）
       if (globalPaper.requireOriginalPaper !== 0) {
         setPaperPanelCardId(created.id);
         setShowPaperPanel(true);
@@ -988,18 +975,6 @@ function App() {
   }
 
   async function exportCard(cardId: string) {
-    // v1.8.0: 检查原卷是否上传（受全局「强制要求上传原卷」控制）
-    try {
-      const cardInfo = await fetchJson<{ has_original_paper?: number }>(`/api/cards/${cardId}/paper/info`);
-      if (globalPaper.requireOriginalPaper !== 0 && !cardInfo?.has_original_paper) {
-        if (confirm("此答题卡尚未上传原卷，根据当前设置不允许导出。是否现在上传原卷？")) {
-          setPaperPanelCardId(cardId);
-          setShowPaperPanel(true);
-        }
-        return;
-      }
-    } catch { /* fall through */ }
-
     const a = document.createElement("a");
     a.href = urlWithToken(`/api/cards/${cardId}/export`);
     a.download = `答题卡_${cardId}.projectx-card.json`;
@@ -1023,54 +998,22 @@ function App() {
   }
 
   async function showExportCheck(savedCard: AnswerCard, pdfUrl: string) {
-    // 257-05: 非强制时直接跳过纸检，视为已满足，避免“取消强制仍锁导出”
-    if (globalPaper.requireOriginalPaper === 0) {
-      setExportCheck({
-        validation: createEmptyValidation(),
-        pdfUrl,
-        step: "knowledge",
-        paperInfo: { hasPaper: true },
-        knowledgeReady: true,
-        knowledgePoints: [],
-        cardId: savedCard.id,
-      });
-      return;
-    }
-    let paperInfo: { hasPaper: boolean; filename?: string; mimeType?: string; pages?: Array<{ pageIndex: number; filename: string }> } = { hasPaper: false };
-    let knowledgeReady = false;
-    let knowledgePoints: Array<{ question_number: number; points: string[] }> = [];
-
-    // 受全局「强制要求上传原卷」控制
-    if (globalPaper.requireOriginalPaper !== 0) {
-      try {
-        const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string; pages?: Array<{ pageIndex: number; filename: string }> }>(`/api/cards/${savedCard.id}/paper/info`);
-        paperInfo = { hasPaper: !!info?.has_original_paper, filename: info?.filename, mimeType: info?.mime_type, pages: (info as any)?.pages };
-        // 检查知识点
-        if (info?.has_original_paper) {
-          try {
-            const kp = await fetchJson<{ points?: Array<{ question_number: number; points: string[] }> }>(`/api/cards/${savedCard.id}/knowledge-points`);
-            if (kp?.points && kp.points.length > 0) {
-              knowledgeReady = true;
-              knowledgePoints = kp.points;
-            }
-          } catch { /* ignore */ }
-        }
-      } catch { /* ignore */ }
-    }
-
-    setExportCheck({
-      validation: createEmptyValidation(),
-      pdfUrl,
-      step: "paper",
-      paperInfo,
-      knowledgeReady,
-      knowledgePoints,
-      cardId: savedCard.id,
-    });
-  }
-
-  function createEmptyValidation(): CardScoreValidationResult {
-    return { totalScore: 0, objectiveScore: 0, subjectiveScore: 0, expectedTotals: [], flexibleTotalSubject: false, issues: [] };
+    // Optional metadata must never hold up exporting or invent a completed analysis.
+    const pending: PdfWarningState = {
+      validation: validateCardScores(savedCard), pdfUrl, cardId: savedCard.id,
+    };
+    setExportCheck(pending);
+    const [info, kp] = await Promise.all([
+      fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string }>(
+        '/api/cards/' + savedCard.id + '/paper/info').catch(() => null),
+      fetchJson<{ points?: Array<{ question_number: number; points: string[] }> }>(
+        '/api/cards/' + savedCard.id + '/knowledge-points').catch(() => null),
+    ]);
+    setExportCheck(current => current === pending ? {
+      ...pending,
+      paperInfo: info ? { hasPaper: !!info.has_original_paper, filename: info.filename, mimeType: info.mime_type } : undefined,
+      knowledgePoints: kp?.points ?? [],
+    } : current);
   }
 
   function doFinalPdfExport(pdfUrl: string) {
@@ -1088,16 +1031,7 @@ function App() {
     }
     if (!savedCard) return;
 
-    const validation = validateCardScores(savedCard);
     const pdfUrl = urlWithToken(`/api/cards/${savedCard.id}/pdf?v=${encodeURIComponent(savedCard.updatedAt)}`);
-
-    if (validation.issues.length > 0) {
-      // Step 1: 显示分值检查
-      setExportCheck({ validation, pdfUrl, step: "score", cardId: savedCard.id });
-      return;
-    }
-
-    // 分值无问题 → 直接进原卷检查
     await showExportCheck(savedCard, pdfUrl);
   }
 
@@ -2034,210 +1968,13 @@ function App() {
         onClose={() => { setShowImportCardModal(false); setImportCardData(null); setIsBusy(false); }}
       />
       {exportCheck && (
-        <Dialog open onOpenChange={(next) => { if (!next) setExportCheck(null); }}>
-          <DialogContent size="sm" className="max-w-[560px]">
-            <DialogHeader>
-              <DialogTitle>导出检查</DialogTitle>
-            </DialogHeader>
-
-            {/* 进度条：当前步骤品牌红加粗，已完成步骤 success，未开始 muted */}
-            <div className="flex flex-wrap items-center gap-1.5 border-b border-border-subtle px-5 py-2.5 text-sm">
-              <span className="inline-flex items-center gap-1 font-semibold text-success-foreground"><Check size={14} /> 分值</span>
-              <span className="text-muted-foreground">→</span>
-              <span
-                className={cn(
-                  exportCheck.step === "paper"
-                    ? "font-semibold text-primary"
-                    : exportCheck.paperInfo?.hasPaper
-                      ? "text-success-foreground"
-                      : "text-muted-foreground",
-                )}
-              >
-                {exportCheck.step === "paper" ? (
-                  <span className="inline-flex items-center gap-1">▶ 原卷</span>
-                ) : exportCheck.paperInfo?.hasPaper ? (
-                  <span className="inline-flex items-center gap-1"><Check size={14} /> 原卷</span>
-                ) : (
-                  <span className="inline-flex items-center gap-1">○ 原卷</span>
-                )}
-              </span>
-              <span className="text-muted-foreground">→</span>
-              <span
-                className={cn(
-                  exportCheck.step === "knowledge"
-                    ? "font-semibold text-primary"
-                    : exportCheck.knowledgeReady
-                      ? "text-success-foreground"
-                      : "text-muted-foreground",
-                )}
-              >
-                {exportCheck.step === "knowledge" ? (
-                  <span className="inline-flex items-center gap-1">▶ 知识点</span>
-                ) : exportCheck.knowledgeReady ? (
-                  <span className="inline-flex items-center gap-1"><Check size={14} /> 知识点</span>
-                ) : (
-                  <span className="inline-flex items-center gap-1">○ 知识点</span>
-                )}
-              </span>
-              <span className="text-muted-foreground">→</span>
-              <span className="text-muted-foreground">○ 导出</span>
-            </div>
-
-            <DialogBody>
-              {/* Step 1: 分值检查 */}
-              {exportCheck.step === "score" && exportCheck.validation.issues.length > 0 && (
-                <div className="flex flex-col gap-3">
-                  <div className="flex flex-col gap-1.5 rounded-lg border border-warning-border bg-warning-soft p-3 text-sm text-foreground">
-                    <strong className="text-base tabular-nums">当前总分：{exportCheck.validation.totalScore} 分</strong>
-                    <span className="tabular-nums">客观题 {exportCheck.validation.objectiveScore} 分 / 主观题 {exportCheck.validation.subjectiveScore} 分</span>
-                    <span className="tabular-nums">{exportCheck.validation.flexibleTotalSubject ? "语文、英语或外语科目不检查 100/150 总分规则" : `期望总分：${exportCheck.validation.expectedTotals.join(" 或 ")} 分`}</span>
-                  </div>
-                  <ul className="m-0 flex max-h-80 list-none flex-col gap-2 overflow-auto p-0">
-                    {exportCheck.validation.issues.slice(0, 6).map((issue, i) => (
-                      <li key={`s_${i}`} className="flex flex-col gap-1 rounded-md border border-border bg-card p-2.5 text-sm">
-                        <span>{issue.message}</span>
-                        {issue.questionRefs?.length ? <small className="text-xs text-muted-foreground"> 涉及：{issue.questionRefs.join("、")}</small> : null}
-                      </li>
-                    ))}
-                  </ul>
-                  {exportCheck.validation.issues.length > 6 && <p className="m-0 text-xs text-muted-foreground tabular-nums">还有 {exportCheck.validation.issues.length - 6} 条提示</p>}
-                </div>
-              )}
-
-              {/* Step 2: 原卷检查 */}
-              {exportCheck.step === "paper" && (
-                <div>
-                  {exportCheck.paperInfo?.hasPaper ? (
-                    <div>
-                      <p className="mb-1.5 flex items-center gap-1 text-sm"><CheckCircle2 size={15} aria-hidden="true" /> 已上传：<strong>{exportCheck.paperInfo.filename}</strong>{(exportCheck.paperInfo.pages?.length ?? 0) > 1 ? `（共 ${exportCheck.paperInfo.pages!.length} 页）` : ""}</p>
-                      {/* 真多图：pages>1 时按每页 MIME 分别渲染（图片缩略 / PDF 链接 / DOCX 链接） */}
-                      {(exportCheck.paperInfo.pages?.length ?? 0) > 1 ? (
-                        <div className="flex max-h-60 flex-col gap-2 overflow-auto rounded-md border border-border bg-card p-2">
-                          {exportCheck.paperInfo.pages!.map((pg) => (
-                            <div key={pg.pageIndex} className="flex items-center gap-2 text-xs">
-                              {pg.mime_type?.startsWith("image/") ? (
-                                <img src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper?page=${pg.pageIndex}&format=image`)} alt={`原卷 ${pg.pageIndex}`} className="h-16 w-16 shrink-0 object-contain rounded-sm border border-border-subtle" onError={(e) => {(e.target as HTMLImageElement).style.display='none'}} />
-                              ) : (
-                                <span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-sm border border-border-subtle bg-secondary text-[10px] text-muted-foreground">
-                                  {pg.mime_type === "application/pdf" ? "PDF" : "DOCX"}
-                                </span>
-                              )}
-                              <span className="truncate text-foreground">第 {pg.pageIndex} 页 · {pg.filename}</span>
-                              {!pg.mime_type?.startsWith("image/") && (
-                                <a href={urlWithToken(`/api/cards/${exportCheck.cardId}/paper?page=${pg.pageIndex}`)} target="_blank" rel="noreferrer" className="ml-auto shrink-0 text-primary hover:underline">
-                                  {pg.mime_type === "application/pdf" ? "打开 PDF" : "在 Office 中打开"}
-                                </a>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      ) : exportCheck.paperInfo.mimeType?.startsWith("image/") ? (
-                        <div className="cursor-pointer overflow-hidden rounded-md border border-border bg-card"
-                          onClick={() => { if (exportCheck.cardId) setPaperPreviewOpen(exportCheck.cardId); }} title="点击放大">
-                          <img src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper?format=image`)} alt="原卷"
-                            className="mx-auto block max-h-60 max-w-full object-contain"
-                            onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                          <p className="px-0 pt-1 pb-2 text-center text-xs text-muted-foreground">点击放大查看</p>
-                        </div>
-                      ) : exportCheck.paperInfo.mimeType === "application/pdf" ? (
-                        <iframe src={mediaUrl(`/api/cards/${exportCheck.cardId}/paper`)} className="h-95 w-full rounded-md border border-border" title="原卷PDF" />
-                      ) : (
-                        <div className="rounded-md border border-border bg-card p-4 text-center">
-                          <p className="m-0 font-semibold">{exportCheck.paperInfo.filename}</p>
-                          <p className="mt-1 mb-0 text-xs text-muted-foreground">DOCX 文件不支持内联预览</p>
-                          <a href={urlWithToken(`/api/cards/${exportCheck.cardId}/paper`)} target="_blank" rel="noreferrer" className="mt-1 inline-block text-xs text-primary hover:underline">在 Office 中打开</a>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="rounded-md bg-accent p-4 text-center">
-                      <p className="m-0 mb-2 flex items-center justify-center gap-1 font-semibold text-primary"><AlertTriangle size={15} aria-hidden="true" /> 尚未上传原卷</p>
-                      <Button variant="primary" type="button" icon={<Upload size={15} aria-hidden="true" />} onClick={() => {
-                        setExportCheck(null);
-                        if (exportCheck.cardId) { setPaperPanelCardId(exportCheck.cardId); setShowPaperPanel(true); }
-                      }}>立即上传原卷</Button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Step 3: 知识点分析 */}
-              {exportCheck.step === "knowledge" && (
-                <div>
-                  {exportCheck.knowledgeReady && exportCheck.knowledgePoints?.length ? (
-                    <div>
-                      <p className="mb-1.5 flex items-center gap-1 text-sm tabular-nums"><CheckCircle2 size={15} aria-hidden="true" /> 已分析 {exportCheck.knowledgePoints.length} 道题：</p>
-                      <div className="max-h-55 overflow-y-auto rounded-md border border-border bg-card p-2">
-                        {exportCheck.knowledgePoints.map((q) => (
-                          <div key={q.question_number} className="mb-1 text-sm leading-relaxed">
-                            <strong className="text-muted-foreground tabular-nums">第{q.question_number}题：</strong>
-                            {q.points.map((p, i) => (
-                              <span key={i} className="m-0.5 inline-block rounded-full bg-info px-2 py-px text-xs text-primary-foreground">{p}</span>
-                            ))}
-                          </div>
-                        ))}
-                      </div>
-                      <Button variant="ghost" type="button" className="mt-2" onClick={() => {
-                        if (exportCheck.cardId) { setPaperPanelCardId(exportCheck.cardId); setShowPaperPanel(true); }
-                      }}>编辑或重新分析</Button>
-                    </div>
-                  ) : (
-                    <KnowledgeAnalysisInline cardId={exportCheck.cardId!}
-                      onDone={(points) => {
-                        setExportCheck({ ...exportCheck, knowledgeReady: true, knowledgePoints: points });
-                      }} />
-                  )}
-                </div>
-              )}
-            </DialogBody>
-
-            {/* 底部按钮：左「上一步」，右侧为取消 + 主操作 */}
-            <DialogFooter className="justify-between">
-              <div>
-                {exportCheck.step !== "score" && (
-                  <Button variant="ghost" type="button" onClick={() => {
-                    const prev = exportCheck.step === "paper" ? "score" : "paper";
-                    setExportCheck({ ...exportCheck, step: prev as "score" | "paper" });
-                  }}>← 上一步</Button>
-                )}
-              </div>
-              <div className="flex gap-2">
-              <Button variant="ghost" type="button" onClick={() => setExportCheck(null)}>取消</Button>
-              {exportCheck.step === "score" && (
-                <Button variant="primary" type="button" onClick={async () => {
-                  const cardId = exportCheck.cardId;
-                  if (cardId) {
-                    const info = await fetchJson<{ has_original_paper?: number; filename?: string; mime_type?: string }>(`/api/cards/${cardId}/paper/info`).catch((): { has_original_paper?: number; filename?: string; mime_type?: string } => ({}));
-                    setExportCheck({
-                      ...exportCheck, step: "paper",
-                      paperInfo: { hasPaper: !!(info as any)?.has_original_paper, filename: (info as any)?.filename, mimeType: (info as any)?.mime_type }
-                    });
-                  } else { setExportCheck({ ...exportCheck, step: "paper" }); }
-                }}>
-                  确认分值 → 原卷检查
-                </Button>
-              )}
-              {exportCheck.step === "paper" && (
-                <>
-                  {!exportCheck.paperInfo?.hasPaper && (
-                    <Button variant="ghost" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
-                      跳过 → 知识点检查
-                    </Button>
-                  )}
-                  <Button variant="primary" type="button" onClick={() => setExportCheck({ ...exportCheck, step: "knowledge" })}>
-                    原卷 OK → 知识点检查
-                  </Button>
-                </>
-              )}
-              {exportCheck.step === "knowledge" && exportCheck.knowledgeReady && (
-                <Button variant="primary" type="button" icon={<CheckCircle2 size={15} aria-hidden="true" />} onClick={() => doFinalPdfExport(exportCheck.pdfUrl)}>
-                  确认导出 PDF
-                </Button>
-              )}
-              </div>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <PdfExportDialog check={exportCheck}
+          onClose={() => setExportCheck(null)}
+          onExport={() => doFinalPdfExport(exportCheck.pdfUrl)}
+          onManagePaper={() => {
+            setExportCheck(null);
+            if (exportCheck.cardId) { setPaperPanelCardId(exportCheck.cardId); setShowPaperPanel(true); }
+          }} />
       )}
       {paperPreviewOpen && (
         <Dialog

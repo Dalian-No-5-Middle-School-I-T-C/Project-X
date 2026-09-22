@@ -581,6 +581,12 @@ if (j.cancelled) throw cancelledError(j);
   function retryFailed(jobId: string): void {
     const j = jobs.find((x) => x.id === jobId);
     if (!j || j.status !== "error") return;
+    // Before session creation, a corrected key can safely replace the failed
+    // snapshot. Existing sessions remain owned by the original key, and a key
+    // configured for another server must never be sent to this job's server.
+    if (!j.remoteSessionId && j.remoteBase === readRemoteBase()) {
+      j.apiKey = getStoredApiKey();
+    }
     for (const p of j.pages) p.failed = false;
     j.message = "";
     j.status = "queued";

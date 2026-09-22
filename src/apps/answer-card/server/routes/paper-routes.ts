@@ -9,7 +9,8 @@ import {
 
   storePaperPageFile,
 } from "../paper-converter";
-import { autoExtractPaperText, getFileMime } from "../paper-ocr";
+import { autoExtractPaperText, getFileMime, getPaperInputKind } from "../paper-ocr";
+import { PaperInputError } from "../paper-docx";
 import type { DbAdapter } from "../../../../server/db/mysql";
 import { getMysqlDb } from "../../../../server/db/mysql";
 import { CardRepository } from "../../../../server/repositories/CardRepository";
@@ -509,12 +510,14 @@ export function paperRoutes(): Router {
 
       // 4. 构建对 llmclient 的请求
       let knowledgePoints: any[] = [];
-      // 请求体与响应回报同源：多模态=direct，其余=text（本地提取文字）
-      const mode = resolveKnowledgePointMode(isMultimodal);
+      // DOCX is a ZIP document, not an image input. Even vision models need its
+      // extracted text when there are no image/PDF inputs.
+      const kind = await getPaperInputKind(cardId);
+      const mode = resolveKnowledgePointMode(isMultimodal && kind !== "docx");
 
-      if (isMultimodal) {
-        // 多模态：读取文件 → base64 → 直传
+      if (mode === "direct") {
         const files = await getPaperFiles(cardId);
+        // 多模态：读取文件 → base64 → 直传
         if (files.length === 0) {
           await finalizeAiRun(runId, { success: false, errorCode: "NO_FILES" });
           res.status(400).json({ error: "NO_FILES", message: "未找到原卷文件" });
@@ -559,6 +562,11 @@ export function paperRoutes(): Router {
       await finalizeAiRun(runId, { success: true });
       res.json({ mode, knowledgePoints });
     } catch (err: any) {
+      if (err instanceof PaperInputError) {
+        await finalizeAiRun(runId, { success: false, errorCode: err.code });
+        res.status(err.status).json({ error: err.code, message: err.message });
+        return;
+      }
       console.error("[knowledge-points] analyze failed:", err);
       await finalizeAiRun(runId, { success: false, errorCode: "EXCEPTION" });
       res.status(500).json({ error: err.message || "分析失败" });

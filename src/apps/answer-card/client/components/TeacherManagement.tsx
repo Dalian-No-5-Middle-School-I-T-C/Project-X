@@ -33,6 +33,9 @@ export function TeacherManagement() {
   const [total, setTotal] = useState(0);
   const [keyword, setKeyword] = useState("");
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [teacherDetail, setTeacherDetail] = useState<TeacherRecord | null>(null);
+  const [detailError, setDetailError] = useState("");
+  const [detailRevision, setDetailRevision] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -53,7 +56,7 @@ export function TeacherManagement() {
   const [newTeacherName, setNewTeacherName] = useState("");
   const [newTeacherSubject, setNewTeacherSubject] = useState("");
 
-  const selected = teachers.find((t) => t.id === selectedId) ?? null;
+  const selected = teacherDetail?.id === selectedId ? teacherDetail : null;
 
   const loadTeachers = useCallback(async () => {
     setBusy(true);
@@ -63,15 +66,14 @@ export function TeacherManagement() {
       setTeachers(data.teachers);
       setTotal(data.total);
       // 保持选中或默认第一个
-      if (selectedId === null || !data.teachers.some((t) => t.id === selectedId)) {
-        if (data.teachers.length > 0) setSelectedId(data.teachers[0].id);
-      }
+      setSelectedId((current) => data.teachers.some((t) => t.id === current)
+        ? current : (data.teachers[0]?.id ?? null));
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载教师失败");
     } finally {
       setBusy(false);
     }
-  }, [keyword, selectedId]);
+  }, [keyword]);
 
   const loadGrades = useCallback(async () => {
     try {
@@ -95,6 +97,23 @@ export function TeacherManagement() {
   useEffect(() => { void loadClasses(selectedGradeId); }, [selectedGradeId, loadClasses]);
 
   useEffect(() => {
+    setTeacherDetail(null);
+    setDetailError("");
+    if (selectedId === null) return;
+    const controller = new AbortController();
+    void fetchJson<TeacherRecord>(`/api/teachers/${selectedId}`, { signal: controller.signal })
+      .then((detail) => {
+        if (!controller.signal.aborted) setTeacherDetail(detail);
+      })
+      .catch((err) => {
+        if (!controller.signal.aborted) {
+          setDetailError(err instanceof Error ? err.message : "加载教师详情失败");
+        }
+      });
+    return () => controller.abort();
+  }, [selectedId, detailRevision]);
+
+  useEffect(() => {
     if (selected) {
       setEditName(selected.name);
       setEditSubject(selected.subject ?? "");
@@ -104,12 +123,7 @@ export function TeacherManagement() {
 
   async function handleRefresh() {
     await loadTeachers();
-    if (selected) {
-      try {
-        const detail = await fetchJson<TeacherRecord>(`/api/teachers/${selected.id}`);
-        setTeachers((prev) => prev.map((t) => (t.id === selected.id ? detail : t)));
-      } catch {}
-    }
+    setDetailRevision((revision) => revision + 1);
   }
 
   async function handleSave() {
@@ -142,7 +156,7 @@ export function TeacherManagement() {
       });
       // 直接更新当前教师详情（关联班级即时可见，无需手动刷新）
       if (resp.teacher) {
-        setTeachers((prev) => prev.map((t) => (t.id === selected.id ? resp.teacher! : t)));
+        setTeacherDetail((prev) => prev?.id === selected.id ? resp.teacher : prev);
       }
       setSelectedClassId(null);
     } catch (err) {
@@ -159,7 +173,7 @@ export function TeacherManagement() {
       const resp = await fetchJson<{ teacher: TeacherRecord }>(`/api/teachers/${selected.id}/classes/${classId}`, { method: "DELETE" });
       // 直接更新当前教师详情（即时可见）
       if (resp.teacher) {
-        setTeachers((prev) => prev.map((t) => (t.id === selected.id ? resp.teacher! : t)));
+        setTeacherDetail((prev) => prev?.id === selected.id ? resp.teacher : prev);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "解除失败");
@@ -409,7 +423,11 @@ export function TeacherManagement() {
               </div>
             </>
           ) : (
-            <p className="p-4 text-sm text-muted-foreground">请选择一名教师查看详情</p>
+            <p className={cn("p-4 text-sm", detailError ? "text-destructive-fg" : "text-muted-foreground")} role="status">
+              {selectedId === null ? "请选择一名教师查看详情"
+                : detailError ? `加载教师详情失败：${detailError}，请点击刷新重试`
+                : "正在加载教师详情…"}
+            </p>
           )}
         </section>
       </div>

@@ -92,6 +92,18 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
         capabilities?: { scannerClientApi?: boolean };
       };
       if (res.ok && body.ok === true && body.capabilities?.scannerClientApi === true) {
+        if (!key) throw new Error("服务器可达，请填写 API Key 后验证上传权限");
+        const authRes = await fetch(`${base}/api/scanner/upload/check`, {
+          headers,
+          signal: AbortSignal.timeout(5000),
+          credentials: "omit",
+        });
+        const authBody = await authRes.json().catch(() => ({})) as { ok?: boolean; message?: string };
+        if (!authRes.ok || authBody.ok !== true) {
+          throw new Error(authRes.status === 404
+            ? "服务器可达，但不支持上传权限检测，请升级服务器后重试"
+            : authBody.message || `上传权限验证失败（HTTP ${authRes.status}）`);
+        }
         setTestStatus("ok");
         setTestMessage(`已连通 ${base}`);
         setTimeout(() => setTestStatus(""), 3000);
@@ -152,6 +164,7 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
       <Field label="服务器地址">
         <Input
           value={serverUrl}
+          disabled={testStatus === "testing"}
           onChange={(e) => {
             setServerUrl(e.target.value);
             setTestStatus("");
@@ -171,7 +184,12 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
           <Input
             type={showKey ? "text" : "password"}
             value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
+            disabled={testStatus === "testing"}
+            onChange={(e) => {
+              setApiKey(e.target.value);
+              setTestStatus("");
+              setTestMessage("");
+            }}
             placeholder="sk-xxx..."
             autoComplete="off"
             className="pr-8"
@@ -199,7 +217,7 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
         </Button>
         {testStatus === "ok" && (
           <Badge tone="success" dot className="scan-lime">
-            服务器可达
+            服务器可达，上传权限有效
           </Badge>
         )}
         {testStatus === "fail" && <Badge tone="danger" dot>{testMessage || "连接失败"}</Badge>}

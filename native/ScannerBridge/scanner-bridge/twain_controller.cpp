@@ -24,6 +24,16 @@ static std::string g_dsmLoadedPath;
 static std::string g_dsmLoadLog;
 static bool g_dsmLoaded = false;
 
+/** 宽字符路径转 UTF-8，仅供诊断日志使用（加载一律走 LoadLibraryW）。 */
+static std::string wideToUtf8(const wchar_t* w) {
+    if (!w) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string out(static_cast<size_t>(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), len, nullptr, nullptr);
+    return out;
+}
+
 namespace ScannerBridge {
 bool dsmLoaded() { return g_dsmLoaded; }
 const std::string& dsmLoadedPath() { return g_dsmLoadedPath; }
@@ -64,9 +74,9 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
     static DsmEntryProc dsmEntry = nullptr;
 
     if (!dsmEntry) {
-        char envPath[MAX_PATH] = {};
-        DWORD envLen = GetEnvironmentVariableA("TWAIN_DSM_DLL", envPath, static_cast<DWORD>(sizeof(envPath)));
-        const char* envCandidate = (envLen > 0 && envLen < sizeof(envPath)) ? envPath : nullptr;
+        wchar_t envPath[MAX_PATH] = {};
+        DWORD envLen = GetEnvironmentVariableW(L"TWAIN_DSM_DLL", envPath, MAX_PATH);
+        const wchar_t* envCandidate = (envLen > 0 && envLen < MAX_PATH) ? envPath : nullptr;
 
         // exe 同目录的 TWAINDSM.dll（build-scanner-bridge.bat 会把仓库内
         // third_party 的 DSM 复制到产物目录）；不再硬编码 D:\ 绝对路径
@@ -75,39 +85,38 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
         if (wchar_t* slash = wcsrchr(exeDir, L'\\')) *slash = L'\0';
         wchar_t dsmPathW[MAX_PATH] = {};
         wsprintfW(dsmPathW, L"%s\\TWAINDSM.dll", exeDir);
-        char dsmPath[MAX_PATH] = {};
-        WideCharToMultiByte(CP_UTF8, 0, dsmPathW, -1, dsmPath, static_cast<int>(sizeof(dsmPath)), nullptr, nullptr);
-
-        const char* candidates[] = {
+        // Windows paths stay UTF-16. LoadLibraryA interprets UTF-8 bytes as the
+        // system ANSI code page and cannot load a bundled DLL from Chinese paths.
+        const wchar_t* candidates[] = {
             envCandidate,
-            dsmPath,
-            "TWAINDSM.dll",
-            "twain_32.dll"
+            dsmPathW,
+            L"TWAINDSM.dll",
+            L"twain_32.dll"
         };
 
         std::string tried;
-        for (const char* candidate : candidates) {
+        for (const wchar_t* candidate : candidates) {
             if (!candidate || !candidate[0]) continue;
             SetLastError(0);
-            dsmModule = LoadLibraryA(candidate);
+            dsmModule = LoadLibraryW(candidate);
             if (!dsmModule) {
                 DWORD err = GetLastError();
                 char line[64] = {};
                 sprintf_s(line, "err=%lu", static_cast<unsigned long>(err));
                 if (!tried.empty()) tried += "; ";
-                tried += std::string(candidate) + " -> LoadLibrary 失败(" + line + ")";
+                tried += wideToUtf8(candidate) + " -> LoadLibrary 失败(" + line + ")";
                 continue;
             }
 
             dsmEntry = reinterpret_cast<DsmEntryProc>(GetProcAddress(dsmModule, "DSM_Entry"));
             if (dsmEntry) {
-                g_dsmLoadedPath = candidate;
+                g_dsmLoadedPath = wideToUtf8(candidate);
                 g_dsmLoaded = true;
                 break;
             }
 
             if (!tried.empty()) tried += "; ";
-            tried += std::string(candidate) + " -> 已加载但缺少 DSM_Entry 导出";
+            tried += wideToUtf8(candidate) + " -> 已加载但缺少 DSM_Entry 导出";
             FreeLibrary(dsmModule);
             dsmModule = nullptr;
         }
@@ -250,16 +259,6 @@ SourceEnumeration TwainController::listSourceDetails() {
     result.windowCreated = (m_hwnd != nullptr);
     result.dsmPath = g_dsmLoadedPath;
 
-    if (!g_dsmLoaded) {
-        result.code = "DSM_LOAD_FAILED";
-        result.message = "无法加载 TWAIN 数据源管理器（TWAINDSM.dll）";
-        result.dsmSearchLog = g_dsmLoadLog;
-        result.hint = "通常是 TWAINDSM.dll 缺失或被安全软件隔离。"
-                      "请确认安装目录下 resources/native/" + std::string(bridgeArchName()) +
-                      "/TWAINDSM.dll 存在；仍失败时重装扫描端安装包。";
-        return result;
-    }
-
     if (!result.windowCreated) {
         result.code = "WINDOW_CREATE_FAILED";
         result.message = "扫描桥接程序无法创建 TWAIN 所需的宿主窗口（常见于会话被限制的远程/服务环境）";
@@ -267,7 +266,19 @@ SourceEnumeration TwainController::listSourceDetails() {
         return result;
     }
 
+    // DSM 由 DSM_Entry 惰性加载：只有真正调用过 DSM_Entry 才能区分「DLL 加载失败」与
+    // 「DSM 打开失败」。此前在调用前就按 g_dsmLoaded 判定，DLL/设备完全正常时检测也会
+    // 一律报 DSM_LOAD_FAILED（评审 P1）。先 openDSM()（内部即触发加载）再按状态归类。
     if (!openDSM()) {
+        if (!g_dsmLoaded) {
+            result.code = "DSM_LOAD_FAILED";
+            result.message = "无法加载 TWAIN 数据源管理器（TWAINDSM.dll）";
+            result.dsmSearchLog = g_dsmLoadLog;
+            result.hint = "通常是 TWAINDSM.dll 缺失或被安全软件隔离。"
+                          "请确认安装目录下 resources/native/" + std::string(bridgeArchName()) +
+                          "/TWAINDSM.dll 存在；仍失败时重装扫描端安装包。";
+            return result;
+        }
         result.code = "OPENDSM_FAILED";
         result.openDsmRc = m_hasOpenDsmAttempt ? static_cast<int>(m_lastOpenDsmRc) : -1;
         result.conditionCode = m_hasOpenDsmAttempt ? static_cast<int>(m_lastConditionCode) : -1;
@@ -277,6 +288,7 @@ SourceEnumeration TwainController::listSourceDetails() {
         result.hint = archHint() + " 若提示扫描仪离线，请确认设备已开机并已连接。";
         return result;
     }
+    result.dsmPath = g_dsmLoadedPath;
 
     // DSM 已打开：直接枚举，避免二次 OPEN/CLOSE 引发 SEQERROR（与 scan() 保持一致）
     {
@@ -801,7 +813,36 @@ bool TwainController::setPaperSize(const std::string& size) {
     } else {
         paperSize = TWSS_A4;
     }
-    return setCapability(ICAP_SUPPORTEDSIZES, TWTY_UINT16, &paperSize);
+    if (!setCapability(ICAP_SUPPORTEDSIZES, TWTY_UINT16, &paperSize)) return false;
+
+    // TWRC_CHECKSTATUS 是驱动正常的协商结果，但驱动可能改用自己的取值（请求 A3 却
+    // 替代为 A4）。版面与识别按请求尺寸进行，静默继续会得到裁切/错位的识别结果
+    // （评审 P2），故核对 MSG_GETCURRENT 确认实际生效值；读取失败时按旧行为放行。
+    TW_CAPABILITY current;
+    memset(&current, 0, sizeof(current));
+    current.Cap = ICAP_SUPPORTEDSIZES;
+    TW_UINT16 rc = DSM_Entry(
+        &m_appId, &m_sourceId,
+        DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT,
+        (TW_MEMREF)&current
+    );
+    if (rc == TWRC_SUCCESS && current.hContainer) {
+        TW_UINT16 effective = paperSize;
+        bool readable = false;
+        pTW_ONEVALUE value = static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer));
+        if (value && value->ItemType == TWTY_UINT16) {
+            effective = static_cast<TW_UINT16>(value->Item);
+            readable = true;
+        }
+        if (value) GlobalUnlock(current.hContainer);
+        GlobalFree(current.hContainer);
+        if (readable && effective != paperSize) {
+            fprintf(stderr, "[ScannerBridge] Driver substituted paper size (requested %u, effective %u); aborting to avoid misaligned recognition\n",
+                    static_cast<unsigned>(paperSize), static_cast<unsigned>(effective));
+            return false;
+        }
+    }
+    return true;
 }
 
 bool TwainController::enableADF() {

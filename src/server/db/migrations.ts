@@ -1172,6 +1172,11 @@ MIGRATIONS.push({ version: 49, name: "scanner-submission-receipts", up(db) {
   db.exec("CREATE INDEX IF NOT EXISTS idx_scanner_submission_student ON scanner_submissions(exam_id, student_number)");
 } });
 
+MIGRATIONS.push({ version: 50, name: "archive-class-and-grade", up(db) {
+  addColumnIfMissing(db, "classes", "archived_at", "DATETIME DEFAULT NULL");
+  addColumnIfMissing(db, "grades", "archived_at", "DATETIME DEFAULT NULL");
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

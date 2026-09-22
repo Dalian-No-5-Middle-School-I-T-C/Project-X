@@ -212,7 +212,7 @@ export function ClassManagement() {
   }
 
   async function deleteGrade(id: number, name: string) {
-    if (!confirm(`删除年级「${name}」及其下所有班级？`)) return;
+    if (!confirm(`从当前列表移除年级「${name}」及其下所有班级？历史考试、成绩及班级记录将保留。`)) return;
     setBusy(true);
     try {
       await fetchJson(`/api/classes/grades/${id}`, { method: "DELETE" });
@@ -271,7 +271,7 @@ export function ClassManagement() {
   }
 
   async function deleteClass(id: number, name: string) {
-    if (!confirm(`删除班级「${name}」？`)) return;
+    if (!confirm(`从当前列表移除班级「${name}」？历史考试、成绩及班级记录将保留。`)) return;
     setBusy(true);
     try {
       await fetchJson(`/api/classes/${id}`, { method: "DELETE" });

@@ -6,7 +6,7 @@ import { cn } from "../../../lib/utils";
 /**
  * Select —— DESIGN-SYSTEM §6
  * 高 36（紧凑 32）· 边框 --input · focus=全局焦点环
- * 弹层 z-index 走令牌 --px-z-dropdown（300），杜绝 9999 魔法数。
+ * Select 的 Portal 需在 Dialog 之上，使用 --px-z-popover。
  */
 
 export const Select = SelectPrimitive.Root;
@@ -59,7 +59,7 @@ export const SelectContent = React.forwardRef<
         className={cn(
           "relative max-h-80 min-w-32 overflow-hidden",
           "rounded-md border border-border bg-popover text-popover-foreground shadow-3",
-          "z-(--px-z-dropdown)",
+          "z-(--px-z-popover)",
           // §4.4 弹层进出 240ms fade + scale 0.98→1
           "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
           "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",

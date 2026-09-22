@@ -5,7 +5,7 @@ import { competitionRank } from "../../shared/ranking";
 import { rankPercentile } from "../services/rankingUpdate";
 import { getAnalysisThresholds, DEFAULT_ANALYSIS_THRESHOLDS } from "../services/analysisConfig";
 import { analysisCache } from "../services/analysisCache";
-import { coefficientOfVariation, cronbachAlpha, discriminationByExtremeGroup, difficulty, histogram, kr20, mean, stdDev, normality, qqPlot } from "../../shared/stats";
+import { coefficientOfVariation, cronbachAlpha, discriminationByExtremeGroup, difficulty, histogram, histogramSegmentSize, kr20, mean, stdDev, normality, qqPlot } from "../../shared/stats";
 import { CardRepository } from "./CardRepository";
 import { objectiveQuestionDefinitions } from "../../shared/grading";
 import type {
@@ -62,19 +62,6 @@ function normalizeExamIds(v: Array<number | string | null | undefined> | undefin
 }
 function dateOnly(v: string | null | undefined): string | null { if (!v) return null; return String(v).slice(0, 10); }
 function addDays(d: string, n: number): string { return new Date(new Date(`${d}T00:00:00.000Z`).getTime() + n * 86400000).toISOString().slice(0, 10); }
-function generateDistributionRanges(fullScore: number, segmentSize: number = DEFAULT_ANALYSIS_THRESHOLDS.segmentSize) {
-  const step = Math.max(1, Math.round(segmentSize));
-  const r: Array<{ range: string; min: number; max: number }> = [];
-  for (let min = 0; min < fullScore; min += step) {
-    const upperExclusive = min + step;
-    const isLast = upperExclusive >= fullScore;
-    const max = isLast ? fullScore : Math.min(upperExclusive - 1, fullScore);
-    const range = isLast ? `${min}-${fullScore}` : `${min}-<${upperExclusive}`;
-    r.push({ range, min, max });
-  }
-  return r;
-}
-
 const OPTION_LABELS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 type ObjectiveDef = { mode: string; optionCount: number; maxScore: number; answerKey: string[] };
@@ -610,7 +597,7 @@ export class AnalysisRepository {
     const norm = normality(scores);
     const P = scores.length > 0 ? difficulty(m, fullScore) : 0;
     return {
-      scope, scopeId, label, fullScore, segmentSize,
+      scope, scopeId, label, fullScore, segmentSize: histogramSegmentSize(fullScore, segmentSize),
       bins,
       mean: round1(m),
       stdDev: round1(sd),
@@ -1128,7 +1115,7 @@ export class AnalysisRepository {
     // Bugfix: 使用 GROUP BY + MAX 代替 DISTINCT，避免同一题 max_score 不一致时 fullScore 膨胀
     const fullScore = await this.resolveExamFullScore(examId);
     const passLine = fullScore * thresholds.passRate, excellentLine = fullScore * thresholds.excellentRate;
-    const ranges = generateDistributionRanges(fullScore, thresholds.segmentSize);
+    const ranges = histogram([], fullScore, thresholds.segmentSize);
 
     const examClasses = await this.getExamClasses(examId);
     const selected = examClasses.filter((cls) => classIds.includes(cls.classId));
