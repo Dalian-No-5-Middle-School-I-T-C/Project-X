@@ -12,6 +12,7 @@
 
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { MAX_SCAN_IMAGE_BYTES } from "../../shared/scanUploadLimits";
 import path from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import crypto from "node:crypto";
@@ -47,7 +48,7 @@ const recognitionSchema = z.object({
   })).max(1000),
 });
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_SCAN_IMAGE_BYTES } });
 
 const router = Router();
 // Same authorization as an upload, without creating a session or touching scans.

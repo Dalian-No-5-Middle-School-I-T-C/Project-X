@@ -77,6 +77,40 @@ async function main() {
   const PAGES = "/pages";
   const COMPLETE = "/complete";
 
+  // A local 413 must retain its status: retrying the same oversized image cannot
+  // help. Other pages still finish, and manual retry may use a corrected image.
+  for (const htmlError of [false, true]) {
+    let rejected = true;
+    const attempts = [0, 0];
+    let completions = 0;
+    const mgr = createScannerUploadManager(deps({
+      localFetch: async (_url, init) => {
+        const file = (init!.body as FormData).get("file") as File;
+        const index = file.name === "page_1.jpg" ? 0 : 1;
+        attempts[index]++;
+        if (index === 0 && rejected) {
+          return htmlError ? new Response("<html>Payload Too Large</html>", { status: 413 })
+            : jsonRes({ message: "上传文件超过大小限制" }, 413);
+        }
+        return jsonRes({ status: "ok", studentId: { status: "ok", value: `8204${index}` }, questions: [], subjectiveQuestions: [] });
+      },
+      remoteFetch: async url => {
+        if (url.endsWith(SESSIONS)) return jsonRes({ sessionId: "size-limit", uploadTokens: ["a", "b"] });
+        if (url.endsWith(COMPLETE)) completions++;
+        return jsonRes({ ok: true });
+      },
+    }));
+    const id = mgr.startUpload(baseInput(2));
+    const failed = await waitTerminal(mgr, id);
+    assert(failed.status === "error" && failed.failedPages.join(",") === "1", "413 只标记超限页");
+    assert(attempts.join(",") === "1,1" && completions === 0, "413 不自动重传，正常页继续上传但不提交残缺会话");
+    assert(failed.message.includes("单张图片") && failed.message.includes("413"), "超限提示应区分单张大小与批次数量");
+    rejected = false;
+    mgr.retryFailed(id);
+    assert((await waitTerminal(mgr, id)).status === "done", "修正图片后允许手动续传");
+    assert(attempts.join(",") === "2,1" && Number(completions) === 1, "续传不重复已成功页");
+  }
+
   // Use the actual snapshot fetch path: changing a mistyped key before session
   // creation must allow manual retry, without leaking a different server's key.
   {

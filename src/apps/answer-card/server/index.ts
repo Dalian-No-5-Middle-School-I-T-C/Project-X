@@ -1,6 +1,7 @@
 import { databaseTimestamp } from "../../../server/db/timestamp";
 import express from "express";
 import multer from "multer";
+import { MAX_SCAN_IMAGE_BYTES } from "../../../shared/scanUploadLimits";
 import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -1065,7 +1066,7 @@ export async function createApp(): Promise<express.Express> {
         cb(null, name);
       }
     }),
-    limits: { fileSize: 20 * 1024 * 1024 }
+    limits: { fileSize: MAX_SCAN_IMAGE_BYTES }
   });
 
   app.get("/api/cards", async (_req, res, next) => {
