@@ -14,7 +14,7 @@ process.env.ANSWER_CARD_DATA_DIR = path.join(temp, "data");
 process.env.PROJECTX_AUTH_ENFORCE = "0";
 if (process.env.REVIEW_285_MARIADB === "1") {
   assert.equal(process.env.PROJECTX_MARIADB_HOST, "127.0.0.1");
-  assert.equal(process.env.PROJECTX_MARIADB_DATABASE, "projectx_review_285");
+  assert.match(process.env.PROJECTX_MARIADB_DATABASE ?? "", /^projectx_review_285(?:_[a-z0-9]+)*$/);
 } else {
   for (const key of Object.keys(process.env)) if (/^PROJECTX_(MYSQL|MARIADB)_/.test(key)) delete process.env[key];
 }
@@ -65,6 +65,62 @@ try {
   assert.equal((await analysis.getExamOverview(second)).fullScore, 50);
   assert.equal((await analysis.getExamFullScoreMap([exam, second])).get(exam), 50);
 
+  // 评审 P1：满分不可知（无答题卡、无逐题满分）不得按 0 算及格/优秀线与分桶
+  const legacy = Number((await db.run("INSERT INTO exams (name,status) VALUES ('legacy-no-card','closed')")).lastInsertRowid);
+  await db.run("INSERT INTO student_scores (exam_id,student_id,objective_score,subjective_score,total_score) VALUES (?,?,80,0,80)", legacy, student);
+  const legacyOverview = await analysis.getExamOverview(legacy);
+  assert.equal(legacyOverview.fullScore, 0, "缺满分依据时 fullScore 回 0（占位，不是真实满分）");
+  assert.equal(legacyOverview.passRate, 0, "缺满分依据时不得把所有非负分数算成及格");
+  assert.equal(legacyOverview.excellentRate, 0, "缺满分依据时不得把所有非负分数算成优秀");
+  assert.equal(legacyOverview.passScore, 0);
+  assert.deepEqual(legacyOverview.distribution, [], "缺满分依据时不出「0-0」误导分桶");
+
+  // An aggregate with one known and one unknown full score must not use a partial denominator.
+  const groupId = Number((await db.run("INSERT INTO exam_groups (name) VALUES ('mixed-full-score')")).lastInsertRowid);
+  await db.run("INSERT INTO exam_group_members (group_id, exam_id) VALUES (?, ?)", groupId, exam);
+  await db.run("INSERT INTO exam_group_members (group_id, exam_id, track_type) VALUES (?, ?, 'science')", groupId, legacy);
+  const comparison = await analysis.getGroupClassComparison(groupId);
+  assert.equal(comparison.fullScore, 0);
+  assert.equal(comparison.classes[0].avgScore, 100, "Actual totals remain available");
+  assert.equal(comparison.classes[0].passRate, 0);
+  assert.equal(comparison.classes[0].excellentRate, 0);
+  assert.deepEqual(comparison.classes[0].distribution, []);
+  const metrics = await analysis.getGroupMetrics(groupId);
+  assert.equal(metrics.totalFullScore, 0);
+  assert.equal(metrics.difficulty, 0);
+  assert.equal((await analysis.getGroupQuestionAnalysis(groupId)).overall.difficulty, 0);
+  for (const mode of ["total", "class"] as const) {
+    const distributions = await analysis.getGroupDistribution(groupId, mode);
+    assert(distributions.length > 0);
+    for (const distribution of distributions) {
+      assert.equal(distribution.fullScore, 0);
+      assert.deepEqual(distribution.bins, []);
+    }
+  }
+  const cross = await analysis.getCrossExamTotal({ mode: "group", groupId });
+  assert.equal(cross.summary.totalFullScore, 0);
+  assert.equal(cross.rows[0].totalScore, 100);
+  assert.equal(cross.rows[0].scoreRate, null);
+  assert.equal((await analysis.getGroupMetrics(groupId, "arts")).totalFullScore, 50,
+    "An excluded unknown subject must not invalidate the selected track");
+  await db.run("UPDATE exam_groups SET total_score_mode = 'assigned' WHERE id = ?", groupId);
+  await db.run("UPDATE exams SET assigned_formula = '{}' WHERE id = ?", exam);
+  await db.run("UPDATE student_scores SET assigned_score = 20 WHERE exam_id = ?", exam);
+  const assigned = (await analysis.getGroupDistribution(groupId, "total"))[0];
+  assert.equal(assigned.assignedAvailable, true);
+  assert.deepEqual(assigned.bins, []);
+  assert.deepEqual(assigned.assignedBins, [], "Raw comparison bins also require all full scores");
+  await db.run("UPDATE exam_groups SET total_score_mode = 'raw' WHERE id = ?", groupId);
+  await db.run("INSERT INTO question_scores (exam_id,student_id,question_number,score,max_score,score_type) VALUES (?,?,1,80,100,'objective')", legacy, student);
+  const known = await analysis.getGroupClassComparison(groupId);
+  assert.equal(known.fullScore, 150);
+  assert.equal(known.classes[0].passRate, 100);
+  assert.equal(known.classes[0].excellentRate, 0);
+  assert(known.classes[0].distribution.length > 0);
+  assert.equal((await analysis.getCrossExamTotal({ mode: "group", groupId })).rows[0].scoreRate, 66.7);
+  const emptyGroup = Number((await db.run("INSERT INTO exam_groups (name) VALUES ('empty-full-score')")).lastInsertRowid);
+  assert.equal((await analysis.getGroupClassComparison(emptyGroup)).fullScore, 0);
+
   const ids = [card.id];
   for (let i = 0; i < 12; i++) {
     const c = createDefaultCard(`batch${i}`);
@@ -97,6 +153,34 @@ try {
   assert.deepEqual(await batchCards.getFullScoreMap([...ids, card.id, "missing"]), expected);
   assert.equal(queries.length, 5, "Many cards use five queries, not N+1");
   assert(!queries.some(sql => /images|answer_keys|scoring_rule_json/.test(sql)));
+
+  // 评审 P1：改绑答题卡（PATCH /api/exams/:examId）后分析缓存必须失效，
+  // 否则 overview 继续返回旧满分/旧阈值（缓存无 TTL，只按 LRU 淘汰）。
+  const { createApp } = await import("../src/apps/answer-card/server/index");
+  const app2 = await createApp();
+  const server2 = app2.listen(0, "127.0.0.1");
+  await new Promise<void>(resolve => server2.once("listening", resolve));
+  const base2 = `http://127.0.0.1:${(server2.address() as { port: number }).port}`;
+  try {
+    const altCard = createDefaultCard("review285-alt");
+    altCard.bodyBlocks = [{ id: "review285_alt_obj", type: "objective", title: "选择", questionStart: 1, questionCount: 1,
+      optionCount: 4, mode: "single", scorePerQuestion: 5, density: "normal",
+      questions: [{ questionNumber: 1, score: 5 }] }];
+    await cards.createCard(altCard);
+    await cards.updateCard(altCard);
+    analysisCache.set(`overview:${exam}:all`, { fullScore: 50 });
+    const relink = await fetch(`${base2}/api/exams/${exam}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cardId: altCard.id }),
+    });
+    assert.equal(relink.status, 200, await relink.clone().text());
+    assert.equal(analysisCache.get(`overview:${exam}:all`), undefined, "改绑答题卡后分析缓存必须失效");
+    assert.equal((await analysis.getExamOverview(exam)).fullScore, 5, "改绑后满分随新卡更新");
+  } finally {
+    server2.closeAllConnections();
+    await new Promise<void>(resolve => server2.close(() => resolve()));
+  }
 
   const paths = [`/analysis/exams/${exam}/ai-analysis`];
   for (const route of paths) {

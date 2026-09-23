@@ -1767,6 +1767,8 @@ export interface GroupQuestionAnalysisResponse {
 
 /** 大考班级对比响应 */
 export interface GroupClassComparisonResponse {
+  /** 0 means at least one included exam has no known full score. */
+  fullScore: number;
   classes: Array<{
     classId: number;
     className: string;
@@ -1784,6 +1786,7 @@ export interface GroupClassComparisonResponse {
   /** 逐科 × 班级的均分/得分率对比 */
   subjectClassSummaries: Array<{
     examId: number;
+    fullScore: number;
     subject: string;
     byClass: Array<{ classId: number; avgScore: number; scoreRate: number }>;
   }>;
