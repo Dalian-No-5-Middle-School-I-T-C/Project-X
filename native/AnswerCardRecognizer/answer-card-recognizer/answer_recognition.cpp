@@ -23,6 +23,9 @@ constexpr double MIN_SELECTED_OVER_BACKGROUND = 0.10;
 constexpr double MAX_DYNAMIC_SELECTION_THRESHOLD = 0.75;
 constexpr double MIN_LEAD_GAP = 0.06;
 constexpr double OPTION_INNER_MARGIN_RATIO = 0.18;
+// A filled cell contains pencil gray and darker printed glyphs. Local Otsu can
+// separate those two instead of separating ink from paper, losing the pencil.
+constexpr double MIN_INK_GRAY_THRESHOLD = 160.0;
 constexpr double SCORE_CELL_MARGIN_RATIO = 0.03;
 constexpr double MIN_RED_RATIO = 0.012;
 constexpr double MIN_LINE_EXTENT_RATIO = 0.52;
@@ -137,7 +140,7 @@ json sample_rect(const cv::Mat& warped, const Rect& rect, int dpi, double margin
     double fill_ratio = 0.0;
     double dark_ratio = 0.0;
     double mean_gray = 255.0;
-    double threshold = 180.0;
+    double threshold = MIN_INK_GRAY_THRESHOLD;
 
     if (!roi.empty()) {
         cv::Scalar mean;
@@ -147,10 +150,10 @@ json sample_rect(const cv::Mat& warped, const Rect& rect, int dpi, double margin
         if (stddev[0] >= 4.0) {
             cv::Mat binary;
             const double otsu_threshold = cv::threshold(roi, binary, 0, 255, cv::THRESH_BINARY_INV | cv::THRESH_OTSU);
-            threshold = std::min(190.0, std::max(95.0, otsu_threshold));
+            threshold = std::min(190.0, std::max(MIN_INK_GRAY_THRESHOLD, otsu_threshold));
         }
         fill_ratio = count_less_than_ratio(roi, threshold);
-        dark_ratio = count_less_than_ratio(roi, 180.0);
+        dark_ratio = count_less_than_ratio(roi, MIN_INK_GRAY_THRESHOLD);
     }
 
     return {

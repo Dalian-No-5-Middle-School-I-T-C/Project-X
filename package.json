@@ -59,6 +59,7 @@
     "verify:pdf-font": "tsx scripts/verify-pdf-font.ts",
     "verify:card-identity": "tsx scripts/verify-card-identity.ts",
     "verify:recognizer-layout": "tsx scripts/verify-recognizer-layout.ts",
+    "verify:recognizer-pencil": "tsx scripts/verify-recognizer-pencil.ts",
     "verify:core-logic": "tsx scripts/verify-core-logic.ts",
     "verify:review-submit": "tsx scripts/verify-review-submit.ts",
     "migrate:mariadb": "tsx scripts/migrate-to-mariadb.ts",
