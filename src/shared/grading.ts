@@ -293,29 +293,11 @@ function findSubjectiveQuestion(card: AnswerCard, questionId: string): Subjectiv
 export function gradeSubjectiveRecognition(
   card: AnswerCard,
   recognition: SubjectiveRecognitionQuestion
-): SubjectiveQuestionGrade {
+): SubjectiveQuestionGrade | null {
   const question = findSubjectiveQuestion(card, recognition.questionId);
-
-  // 小题不在当前答题卡上：禁止回退到识别结果自带的 maxScore。
-  // 远程上传路径的 subjectiveQuestions 由客户端提供（scanner-upload.ts 只做形状校验），
-  // 一旦回退，伪造 questionId 即可让 maxScore 与总分被任意放大并写入 question_scores
-  // （审计 #03「扫描端载荷可注入任意主观题成绩」）。
-  // 与客观题同一策略：maxScore 记 0、标记待复核，交教师订正，绝不采信客户端分值。
-  if (!question) {
-    return {
-      questionId: recognition.questionId,
-      questionNumber: recognition.questionNumber,
-      score: 0,
-      maxScore: 0,
-      status: "missing_score_grid",
-      needsReview: true,
-      confidence: recognition.confidence,
-      validCells: recognition.validCells,
-      invalidCells: recognition.invalidCells,
-      message: "题号不在当前答题卡的主观题范围内，已按 0 分计入并标记待复核"
-    };
-  }
-
+  // 安全：题目必须存在于答题卡定义中。识别结果可由扫描端/上传方构造，
+  // 未知 questionId 的自报分数与满分一律丢弃，不得计入成绩。
+  if (!question) return null;
   const maxScore = question.score;
   const needsReview = recognition.status !== "ok";
 
@@ -325,7 +307,9 @@ export function gradeSubjectiveRecognition(
 
   return {
     questionId: recognition.questionId,
-    questionNumber: recognition.questionNumber,
+    // 题号同样以卡面定义为准：question_scores 以题号作为冲突键，
+    // 采用上报题号会让伪造值覆盖/串写其它小题的逐题成绩。
+    questionNumber: question.number,
     score: Math.max(0, Math.min(recognition.score, maxScore)),
     maxScore,
     status,
@@ -345,9 +329,9 @@ export function gradeCombinedRecognition(
 ): CombinedGradingRow {
   const objectiveRow = gradeObjectiveRecognition(card, fileName, recognition, confidenceThreshold);
 
-  const subjectiveQuestions: SubjectiveQuestionGrade[] = (recognition.subjectiveQuestions ?? []).map((sq) =>
-    gradeSubjectiveRecognition(card, sq)
-  );
+  const subjectiveQuestions: SubjectiveQuestionGrade[] = (recognition.subjectiveQuestions ?? [])
+    .map((sq) => gradeSubjectiveRecognition(card, sq))
+    .filter((grade): grade is SubjectiveQuestionGrade => grade !== null);
 
   const objectiveScore = objectiveRow.score;
   const objectiveMaxScore = objectiveRow.maxScore;

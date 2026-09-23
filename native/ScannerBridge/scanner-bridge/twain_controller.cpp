@@ -275,7 +275,7 @@ SourceEnumeration TwainController::listSourceDetails() {
             result.message = "无法加载 TWAIN 数据源管理器（TWAINDSM.dll）";
             result.dsmSearchLog = g_dsmLoadLog;
             result.hint = "通常是 TWAINDSM.dll 缺失或被安全软件隔离。"
-                          "请确认安装目录下 resources/native/" + std::string(bridgeArchName()) +
+                          "请确认安装目录下 resources/native/win-" + std::string(bridgeArchName()) +
                           "/TWAINDSM.dll 存在；仍失败时重装扫描端安装包。";
             return result;
         }

@@ -1,3 +1,4 @@
+import "./verify-subjective-identity";
 /**
  * 核心业务逻辑单元验证（纯函数 + 请求校验，不依赖数据库/服务器）。
  *

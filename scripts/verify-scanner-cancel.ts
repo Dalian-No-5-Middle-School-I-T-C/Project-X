@@ -16,6 +16,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 // 必须在导入任何 db 模块前设置数据库路径（getDatabase 在模块求值期读取该变量）
 const tmpDir = mkdtempSync(path.join(tmpdir(), "projectx-scanverify-"));
@@ -170,9 +172,9 @@ async function main(): Promise<void> {
 
   // startUpload 对入参做浅拷贝（input: { ...p }），releasePage 释放的是 manager 自有副本，
   // 调用方持有的原对象不会（也不应）被改写——原断言「调用方 getBlob 必须失效」自 v2.5.1
-  // 起就与实现语义不符。改为断言 manager 侧释放的可观察效果：取消后不再读取任何页面数据。
+  // 起就与实现语义不符。不再读取和不再保留引用分别验证。
   await new Promise((r) => setTimeout(r, 300));
-  ok(blobReads === 0, `取消后不再读取页面数据（不残留 File/Blob 闭包，实际读取 ${blobReads} 次）`);
+  ok(blobReads === 0, `取消后不再读取页面数据（实际读取 ${blobReads} 次）`);
   ok(st.activeJobId === null, "activeJobId 不再指向已取消任务");
 
   const { dismissJob } = um;
@@ -180,6 +182,10 @@ async function main(): Promise<void> {
   ok(dismissJob(jobId) === true, "dismissJob 移除取消中的任务");
   ok(um.getState().jobs.length === 0, "dismissJob 后任务列表为空");
   ok(dismissJob("missing") === false, "dismissJob 对不存在任务返回 false");
+  execFileSync(process.execPath, ["--expose-gc", "--import", "tsx",
+    fileURLToPath(new URL("./scanner-upload-release-smoke.ts", import.meta.url))],
+  { stdio: "inherit", windowsHide: true, timeout: 30_000 });
+  ok(true, "取消后 manager 保留终态任务，但不再保留图片闭包引用（独立 GC 验证）");
 
   // ── 4. 桥接输出分类（PR #282 评审 P2） ────────────────
   section("4. 桥接 list 输出分类");
