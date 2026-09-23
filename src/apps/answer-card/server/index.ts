@@ -532,6 +532,9 @@ async function persistGradingResultsLocked(
     }
     try {
       await db.transaction(async (tx) => {
+        // Publication may occur after an earlier student in this same batch.
+        // Revoke it atomically before every subsequent student's score write.
+        await markScoreMutated(tx, examId, createdBy ?? null, "grading_save");
         const txExamRepo = new ExamRepository(tx);
         const recordId = await txExamRepo.addScanRecord({
           batch_id: batchId,

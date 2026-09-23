@@ -275,6 +275,36 @@ try {
     });
     return { status: response.status, data: await response.json() as ScanBatchResponse };
   }
+  // A scanner key can save a new student's result after partial publication,
+  // but cannot expose that score without a fresh teacher publication.
+  const laterStudent = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)",
+    "later-scanner-result", "test", "后续扫描", role.id, "91888");
+  await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, laterStudent.lastInsertRowid);
+  await db.run("UPDATE exams SET status='grading', score_published=1 WHERE id=?", exam.lastInsertRowid);
+  const laterSession = await makeSession(["91888"]);
+  const laterSaved = await remote(laterSession.id);
+  assert.equal(laterSaved.status, 200);
+  assert(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, laterStudent.lastInsertRowid));
+  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))!.score_published, 0);
+  assert.equal((await db.all("SELECT id FROM exam_publish_events WHERE exam_id=? AND reason=?", exam.lastInsertRowid, "扫描成绩入库自动撤回")).length, 1);
+  const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
+  assert.equal((await new ScoreRepository().getStudentScores(Number(laterStudent.lastInsertRowid))).length, 0, "New scanner score stays hidden from students");
+  await db.run("UPDATE exams SET score_published=1 WHERE id=?", exam.lastInsertRowid);
+  assert.equal((await remote(laterSession.id)).status, 200);
+  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))!.score_published, 1, "Saved receipt replay does not mutate scores or withdraw publication");
+  const { persistScannerResultToMainDb } = await import("../src/server/services/scannerResultPersistence");
+  const savedResult = (await processScannerSession(card, laterSession.id)).results[0];
+  await db.run("UPDATE exams SET status='grading' WHERE id=?", exam.lastInsertRowid);
+  const beforeScore = await db.get("SELECT total_score FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, laterStudent.lastInsertRowid);
+  await assert.rejects(db.transaction(async tx => {
+    await persistScannerResultToMainDb(card.id, { ...savedResult, totalScore: 123, totalMaxScore: savedResult.maxScore,
+      pages: [], objectiveQuestions: [], subjectiveQuestions: [] }, true, { db: tx, examId: Number(exam.lastInsertRowid) });
+    throw new Error("forced scanner save rollback");
+  }), /forced scanner save rollback/);
+  assert.deepEqual(await db.get("SELECT total_score FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, laterStudent.lastInsertRowid), beforeScore);
+  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))!.score_published, 1, "Failed save rolls back publication withdrawal too");
+  assert.equal((await db.all("SELECT id FROM exam_publish_events WHERE exam_id=? AND reason=?", exam.lastInsertRowid, "扫描成绩入库自动撤回")).length, 1, "Failed save leaves no withdrawal audit");
+  await db.run("UPDATE exams SET score_published=0 WHERE id=?", exam.lastInsertRowid);
   // A saved receipt owns its crops even after closure or reuse of the card.
   const cropId = "receipt-bound-crop";
   await db.run(`INSERT INTO answer_block_crops

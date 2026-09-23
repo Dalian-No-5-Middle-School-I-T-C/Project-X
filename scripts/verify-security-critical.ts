@@ -455,6 +455,39 @@ async function main(): Promise<void> {
     check(partialResult.persisted === 1 && partialResult.failedCount === 1 && keptScores === 1 && rolledBackRecords === 0, "失败学生的扫描、总分和题目分整体回滚，成功学生保留");
     check(partialResult.failed[0]?.code === "PERSISTENCE_FAILED" && Boolean(partialBatch.error_summary), "partial 返回稳定错误码并保存脱敏 error_summary");
 
+    // Publish through the real HTTP routes between two student transactions.
+    // The next student must withdraw that publication in its own transaction.
+    const { getMysqlDb } = await import("../src/server/db");
+    const adapter = getMysqlDb();
+    for (const batchPublish of [false, true]) {
+      const raceExam = createExam(`写分期间公布-${batchPublish}`);
+      const originalTransaction = adapter.transaction.bind(adapter);
+      let publishedBetweenRows = false;
+      adapter.transaction = async (fn) => {
+        const value = await originalTransaction(fn);
+        const count = (db.prepare("SELECT COUNT(*) AS n FROM student_scores WHERE exam_id=?").get(raceExam) as { n: number }).n;
+        if (!publishedBetweenRows && count === 1) {
+          publishedBetweenRows = true;
+          const response = await fetch(`${base}/api/exams/${batchPublish ? "publish-batch" : `${raceExam}/publish`}`, {
+            method: "POST", headers: { ...authHeaders(teacherToken), "Content-Type": "application/json" },
+            ...(batchPublish ? { body: JSON.stringify({ examIds: [raceExam] }) } : {}),
+          });
+          check(response.status === 200, `写分间隙${batchPublish ? "批量" : "单场"}公布成功`);
+        }
+        return value;
+      };
+      try {
+        const outcome = await persistGradingResults(String(raceExam), [gradingRow("first.png", "S1001"), gradingRow("second.png", "S1002")], teacher.id);
+        check(publishedBetweenRows && outcome.persisted === 2, "真实两学生写入经过公布间隙");
+        const state = db.prepare("SELECT score_published FROM exams WHERE id=?").get(raceExam) as { score_published: number };
+        check(state.score_published === 0, "后续学生写入原子撤回中途公布");
+        const audit = db.prepare("SELECT actor_id FROM exam_publish_events WHERE exam_id=? AND action='unpublish' AND reason=?").get(raceExam, "批量成绩入库自动撤回") as { actor_id: number } | undefined;
+        check(audit?.actor_id === teacher.id, "逐学生撤回保留操作者审计");
+      } finally {
+        adapter.transaction = originalTransaction;
+      }
+    }
+
     const errorExam = createExam("全部失败阅卷", "active");
     const errorResult = await persistGradingResults(String(errorExam), [
       gradingRow("unknown.png", "UNKNOWN"), gradingRow("recognition.png", null, "failed")
