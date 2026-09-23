@@ -39,6 +39,9 @@ export function isValidServerUrl(raw: string | null | undefined): boolean {
   try {
     const url = new URL(normalized);
     if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+    // API 路径通过字符串拼接到 base 后面；查询串、片段和内嵌凭据
+    // 会让请求落在错误路径，或被 fetch 直接拒绝。
+    if (normalized.includes("?") || normalized.includes("#") || url.username || url.password) return false;
     return url.hostname.length > 0;
   } catch {
     return false;

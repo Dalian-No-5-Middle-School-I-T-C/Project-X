@@ -158,6 +158,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   }, []);
 
   async function detectSources() {
+    // 重新检测前丢弃上次枚举的列表；否则本次失败后仍会显示旧下拉框，
+    // 老师无法使用留空或手填数据源的兜底入口。
+    if (sources.length > 0) setSelectedSource("");
+    setSources([]);
     setState("detecting");
     setSourcesDiag(null);
     try {

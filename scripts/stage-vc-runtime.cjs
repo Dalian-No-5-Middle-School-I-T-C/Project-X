@@ -14,7 +14,7 @@
  * 用法：
  *   node scripts/stage-vc-runtime.cjs            # 同时部署 x64 与 ia32
  *   node scripts/stage-vc-runtime.cjs ia32       # 只部署 ia32
- *   node scripts/stage-vc-runtime.cjs --source="D:\path\to\Microsoft.VC145.CRT" [x64|ia32]
+ *   node scripts/stage-vc-runtime.cjs ia32 --source="D:\path\to\Microsoft.VC145.CRT"
  *
  * 说明：UCRT（api-ms-win-crt-*.dll / ucrtbase.dll）自 Windows 10 起属于操作系统组件，
  * 无需 app-local 部署；本仓库扫描端最低支持 Windows 10，因此只部署 MSVC 部分。
@@ -37,6 +37,7 @@ const ARCH_TARGETS = {
   x64: "win-x64",
   ia32: "win-ia32"
 };
+const PE_MACHINES = { x64: 0x8664, ia32: 0x014c };
 
 function log(message) {
   process.stdout.write(`[stage-vc-runtime] ${message}\n`);
@@ -53,7 +54,7 @@ function parseArgs(argv) {
   for (const arg of argv) {
     if (arg === "--help" || arg === "-h") {
       process.stdout.write(
-        "用法: node scripts/stage-vc-runtime.cjs [x64] [ia32] [--source=<CRT 目录>]\n"
+        "用法: node scripts/stage-vc-runtime.cjs [x64] [ia32] [--source=<CRT 目录>（需指定单一架构）]\n"
       );
       process.exit(0);
     }
@@ -67,6 +68,9 @@ function parseArgs(argv) {
       continue;
     }
     fail(`无法识别的参数: ${arg}（可用: x64 | ia32 | --source=<目录>）`);
+  }
+  if (source && arches.length !== 1) {
+    fail("使用 --source 时必须且只能指定一个架构（x64 或 ia32）");
   }
   return { arches: arches.length > 0 ? arches : ["x64", "ia32"], source };
 }
@@ -165,6 +169,15 @@ function isRequired(name) {
   return REQUIRED_PREFIXES.some((prefix) => lower.startsWith(prefix));
 }
 
+/** 仅读取 PE 头中的 Machine 字段，在任何复制发生前排除错位数 DLL。 */
+function peMachine(file) {
+  const bytes = fs.readFileSync(file);
+  if (bytes.length < 0x40 || bytes.toString("ascii", 0, 2) !== "MZ") return null;
+  const peOffset = bytes.readUInt32LE(0x3c);
+  if (peOffset + 6 > bytes.length || bytes.toString("ascii", peOffset, peOffset + 4) !== "PE\0\0") return null;
+  return bytes.readUInt16LE(peOffset + 4);
+}
+
 /** 拷贝时先比大小与内容，内容一致就跳过，避免每次打包都刷新 mtime 触发无谓 diff。 */
 function copyIfChanged(from, to) {
   const fromBuf = fs.readFileSync(from);
@@ -194,6 +207,12 @@ function stageArch(arch, explicitSource) {
   const names = new Set(files.map((f) => f.name.toLowerCase()));
   for (const core of ["msvcp140.dll", "vcruntime140.dll", "concrt140.dll"]) {
     if (!names.has(core)) fail(`${crtDir} 缺少 ${core}，不是有效的 CRT 可再发行目录`);
+  }
+  for (const entry of files) {
+    const machine = peMachine(path.join(crtDir, entry.name));
+    if (machine !== PE_MACHINES[arch]) {
+      fail(`${crtDir} 中的 ${entry.name} 不是 ${arch} 版 PE DLL（Machine=${machine === null ? "无效" : `0x${machine.toString(16)}`}）`);
+    }
   }
 
   log(`${arch}: 源 ${crtDir}`);
