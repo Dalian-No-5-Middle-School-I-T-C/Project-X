@@ -1,6 +1,7 @@
 import { processScannerSession } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
 import { requireScannerExamScope } from "../../../../server/middleware/scanner-scope";
+import { parseRecognitionDpi } from "../helpers";
 import { Router, type Response } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -17,7 +18,6 @@ import {
   listScanRecordsGroupedByStudent
 } from "../database/scan-store";
 import { safeId, readCard, dataDir } from "../storage";
-import { parseRecognitionDpi } from "../helpers";
 import type { ScanSessionConfig, ScanProgressEvent } from "./scanner-types";
 import { collectSessionResults, groupSessionPages } from "./session-results";
 

@@ -657,8 +657,8 @@ export async function isTeacherPermittedForExam(
  * 特权阅卷人（管理员 / 学年主任）先放行：修改用户角色不会清理历史 teacher_permissions
  * 行，遗留的 can_grade=0 记录不应把管理员与学年主任挡在门外（评审 P2）。
  * 兼容策略同 isTeacherPermittedForExam：表不存在或该教师无任何矩阵记录 → 放行；
- * 但该教师若在本考试只有题块级网阅分配（review_assignments），授权范围仅是题块，
- * 不得借整卷接口覆盖其它题块（PR #280 第五轮评审 P1）。
+ * 但本考试一旦配置题块分配，未获显式整卷授权的教师不得走兼容回退，
+ * 包括只分配了部分题块和完全未获分配的教师。
  */
 export async function isTeacherPermittedForWholeExam(
   user: express.Request["user"],
@@ -698,11 +698,10 @@ export async function isTeacherPermittedForWholeExam(
       );
     }
   }
-  // 未配置矩阵 → 兼容放行；但仅被分配到单个题块的教师仍属题块级授权
+  // 仅完全没有题块分配的旧考试允许兼容回退；不能只检查调用者本人的分配。
   const blockScoped = await db.get(
-    "SELECT 1 FROM review_assignments WHERE exam_id = ? AND teacher_id = ? AND block_id IS NOT NULL LIMIT 1",
-    examId,
-    teacherId
+    "SELECT 1 FROM review_assignments WHERE exam_id = ? AND block_id IS NOT NULL LIMIT 1",
+    examId
   );
   return !blockScoped;
 }
