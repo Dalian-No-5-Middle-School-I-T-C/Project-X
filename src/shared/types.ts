@@ -1107,8 +1107,10 @@ export interface PreviousExamComparison {
   prevExamId: number | null;
   prevExamName: string | null;
   prevAvgScore: number | null;
+  /** 上届无成绩或满分未知时不可用。 */
   prevPassRate: number | null;
   avgScoreChange: number | null;
+  /** 任一届无成绩或满分未知时不可用。 */
   passRateChange: number | null;
 }
 

@@ -230,6 +230,26 @@ insertQ.run(legacyExam, uA, 1, 12, 30);
 ok((await repo.getExamFullScoreMap([legacyExam])).get(legacyExam) === 30, "历史考试保留逐题满分兜底");
 ok((await repo.getExamFullScoreMap([])).size === 0, "空考试列表安全返回");
 
+console.log("\n== 6. 上届及格率对比要求两届满分均已知 ==");
+for (const [currentKnown, previousKnown] of [[true, true], [true, false], [false, true], [false, false]]) {
+  const subject = `delta-${currentKnown}-${previousKnown}`;
+  const addExam = db.prepare("INSERT INTO exams (name, subject, start_time) VALUES (?, ?, ?)");
+  const previousId = Number(addExam.run("上届", subject, "2026-01-01").lastInsertRowid);
+  const currentId = Number(addExam.run("本届", subject, "2026-02-01").lastInsertRowid);
+  insertS.run(previousId, uA, 40, 40);
+  insertS.run(currentId, uA, 80, 80);
+  if (previousKnown) insertQ.run(previousId, uA, 1, 40, 100);
+  if (currentKnown) insertQ.run(currentId, uA, 1, 80, 100);
+  const comparison = await repo.getPreviousExamComparison(currentId);
+  ok(comparison.prevExamId === previousId && comparison.avgScoreChange === 40, `${subject}: 正确关联上届并保留均分变化`);
+  ok(comparison.prevPassRate === (previousKnown ? 0 : null), `${subject}: 区分上届真实零及格率与不可用`);
+  ok(comparison.passRateChange === (currentKnown && previousKnown ? 100 : null), `${subject}: 只有双边满分已知才计算及格率变化`);
+  db.prepare("DELETE FROM student_scores WHERE exam_id = ?").run(currentId);
+  analysisCache.invalidateExam(currentId);
+  const emptyCurrent = await repo.getPreviousExamComparison(currentId);
+  ok(emptyCurrent.passRateChange === null && emptyCurrent.prevPassRate === (previousKnown ? 0 : null), `${subject}: 本届无成绩时也不泄漏上届未知及格率`);
+}
+
 // 清理
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 

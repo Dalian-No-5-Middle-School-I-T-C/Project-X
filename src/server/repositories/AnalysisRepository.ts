@@ -312,7 +312,7 @@ export class AnalysisRepository {
         prevExamId: prevExam.id,
         prevExamName: prevExam.name,
         prevAvgScore: previous.gradedCount > 0 ? previous.avgScore : null,
-        prevPassRate: previous.gradedCount > 0 ? previous.passRate : null
+        prevPassRate: previous.gradedCount > 0 && previous.fullScore > 0 ? previous.passRate : null
       };
     }
 
@@ -320,9 +320,12 @@ export class AnalysisRepository {
       prevExamId: prevExam.id,
       prevExamName: prevExam.name,
       prevAvgScore: previous.avgScore,
-      prevPassRate: previous.passRate,
+      prevPassRate: previous.fullScore > 0 ? previous.passRate : null,
       avgScoreChange: round1(current.avgScore - previous.avgScore),
-      passRateChange: current.passRate - previous.passRate
+      // 缺少任一届满分时，及格率没有可比较的基准；均分变化仍然有效。
+      passRateChange: current.fullScore > 0 && previous.fullScore > 0
+        ? current.passRate - previous.passRate
+        : null
     };
   }
 
