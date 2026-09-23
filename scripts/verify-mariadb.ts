@@ -56,6 +56,20 @@ async function main(): Promise<void> {
     await db.run("INSERT INTO answer_cards (id, title) VALUES ('receipt_ci', '回执测试')");
     const exam = await db.run("INSERT INTO exams (name, card_id) VALUES ('回执测试', 'receipt_ci')");
     await db.run("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?, ?, 50)", exam.lastInsertRowid, student.lastInsertRowid);
+    const { assertScoresPublishable } = await import("../src/server/services/examPublication");
+    const publicationExam = { id: Number(exam.lastInsertRowid) };
+    await assertScoresPublishable(db, publicationExam); // No roster required.
+    const absent = await db.run("INSERT INTO users (username, password_hash, name, role_id) VALUES ('absent_publish', 'test-only', '尚未出分', 3)");
+    await db.run("INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'explicit'), (?, ?, 'explicit')",
+      publicationExam.id, student.lastInsertRowid, publicationExam.id, absent.lastInsertRowid);
+    await assertScoresPublishable(db, publicationExam); // One of two students has scores.
+    await db.run("DELETE FROM exam_participants WHERE exam_id = ? AND student_id = ?", publicationExam.id, student.lastInsertRowid);
+    await assert.rejects(assertScoresPublishable(db, publicationExam), /非应考学生/);
+    await db.run("DELETE FROM exam_participants WHERE exam_id = ?", publicationExam.id);
+    await db.run("DELETE FROM student_scores WHERE exam_id = ?", publicationExam.id);
+    await assert.rejects(assertScoresPublishable(db, publicationExam), /尚无成绩/);
+    await db.run("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?, ?, 50)", publicationExam.id, student.lastInsertRowid);
+    console.log("PASS: partial score publication, unknown roster, outsider and empty-score rejection");
     await db.run("INSERT INTO scanner_submissions (exam_id, session_id, group_id, student_number, state, pages_json) VALUES (?, 'session_ci', 'group_ci', '09210001', 'saved', '[]')", exam.lastInsertRowid);
     assert.deepEqual(await findSavedScannerOwners(db, "session_ci", "group_ci", "09210001", "receipt_ci"),
       [{ exam_id: exam.lastInsertRowid, student_id: student.lastInsertRowid }]);

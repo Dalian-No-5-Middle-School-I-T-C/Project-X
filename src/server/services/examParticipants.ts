@@ -1,20 +1,7 @@
 /**
- * 考试参与者快照服务（评审 P1-1 / P1-2）。
- *
- * 背景：原发布完整性只比人数（COUNT scored vs COUNT roster），外班/误识别学生可凑数绕过
- *       "部分成绩禁止公布"的门控（例：名册 A/B，只录 A + 外班 C，计数 2/2 放行）。
- *
- * 设计（v47 + v48）：
- * - 快照表 exam_participants (exam_id, student_id, source) 固化应考名单，之后调班不再改变历史判断。
- *   - source='roster'：按考试 class_id/grade_id 从 class_students 自动快照（默认）；
- *   - source='explicit'：管理员显式指定的应考名单（跨班/跨年级联考、补救无范围考试）。
- * - 名单来源优先级：显式名单（explicit）优先；无显式名单时回落班级/年级名册快照；
- *   两者皆无（考试无 class_id/grade_id 且未设置显式名单）→ rosterKnown=false，公布一律 409
- *   （v48 起删除「仅校验非空」退化路径，杜绝部分成绩公布）。
- * - 发布校验：应考学生集合 ⊆ 已评分学生集合（required ⊆ scored）。缺任何一人即 409。
- * - 阅卷入库时拒绝不属于参与者名单的学生（名单不可知时不拦截）。
- *
- * 单场/批量公布共用同一谓词 assertGradingComplete。
+ * 考试参与者快照：显式名单优先，否则按班级/年级冻结名册。
+ * 名单用于核对录入学生身份和展示缺考/未出分学生。
+ * 公布允许部分学生先出分，不要求名单齐全或已设置名单。
  */
 import type { DbAdapter } from "../db";
 import { ROLE_IDS } from "../auth/permissions";

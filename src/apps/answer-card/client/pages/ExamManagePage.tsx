@@ -530,7 +530,7 @@ export function ExamManagePage() {
                 {exam.score_published === 1 ? (
                   <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
                 ) : (
-                  <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed"} onClick={() => setPublishTarget(exam)}>
+                  <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed" && exam.status !== "grading"} onClick={() => setPublishTarget(exam)}>
                     {exam.score_published === 2 ? "重新公布" : "公布分数"}
                   </Button>
                 )}
@@ -599,7 +599,7 @@ export function ExamManagePage() {
                     {exam.score_published === 1 ? (
                       <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
                     ) : (
-                      <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed"} onClick={() => setPublishTarget(exam)}>
+                      <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed" && exam.status !== "grading"} onClick={() => setPublishTarget(exam)}>
                         {exam.score_published === 2 ? "重新公布" : "公布分数"}
                       </Button>
                     )}
@@ -917,7 +917,7 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>公布分数</DialogTitle>
             <DialogDescription>
-              确认公布「{publishTarget?.name ?? ""}」的成绩？公布后学生可立即查看该场考试的分数与排名。
+              确认公布「{publishTarget?.name ?? ""}」的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分后需重新公布。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -933,7 +933,7 @@ export function ExamManagePage() {
           <DialogHeader>
             <DialogTitle>批量公布成绩</DialogTitle>
             <DialogDescription>
-              确认公布选中的 {selectedExamIds.size} 场考试的成绩？公布后学生可立即查看。
+              确认公布选中的 {selectedExamIds.size} 场考试的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分后需重新公布。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -968,7 +968,7 @@ export function ExamManagePage() {
         </DialogContent>
       </Dialog>
 
-      {/* 评审 P1-2: 应考名单管理（显式名单；无范围考试须设置后方可公布） */}
+      {/* 评审 P1-2: 应考名单管理（用于核对录入学生身份） */}
       <Dialog open={rosterExam !== null} onOpenChange={(open: boolean) => { if (!open && !rosterSaving) setRosterExam(null); }}>
         <DialogContent size="lg">
           <DialogHeader>
@@ -988,7 +988,7 @@ export function ExamManagePage() {
             </p>
             {!rosterData?.known && (
               <div className="rounded border border-warning bg-warning/10 px-3 py-2 text-sm text-warning-fg">
-                该考试未确定应考范围（无年级/班级且无显式名单），当前无法公布成绩。请从下方添加学生并保存显式名单。
+                该考试尚未设置应考范围，不影响公布已有成绩。可从下方添加学生并保存名单，用于核对后续录入的学生身份。
               </div>
             )}
 
