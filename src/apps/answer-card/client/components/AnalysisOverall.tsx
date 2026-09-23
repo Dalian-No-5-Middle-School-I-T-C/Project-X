@@ -84,6 +84,9 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
   if (error) return <ErrorState description={error} onRetry={load} />;
 
   const isGroup = kind === "group";
+  const hasFullScore = metrics && (isGroup
+    ? (metrics as GroupMetrics).totalFullScore > 0 && (metrics as GroupMetrics).subjects.every((s) => s.fullScore > 0)
+    : (metrics as ExamMetrics).fullScore > 0);
   const reliability = metrics && (isGroup ? (metrics as GroupMetrics).reliability : (metrics as ExamMetrics).reliability);
   const cv = metrics && (isGroup ? (metrics as GroupMetrics).cv : (metrics as ExamMetrics).cv);
 
@@ -94,19 +97,19 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
         <h3 className="text-sm font-semibold text-foreground">难度系数与区分度</h3>
         {metrics && (
           <StatCardRow>
-            <StatCard label="难度系数 P" value={metrics.difficulty.toFixed(3)} />
+            <StatCard label="难度系数 P" value={hasFullScore ? metrics.difficulty.toFixed(3) : "—"} />
             <StatCard label="区分度 D" value={metrics.discrimination.toFixed(3)} />
             <StatCard label="信度 α/KR-20" value={reliability == null ? "—" : reliability.toFixed(3)} />
             <StatCard label="变异系数 CV" value={cv == null ? "—" : `${(cv * 100).toFixed(1)}%`} />
             {isGroup ? (
               <>
-                <StatCard label="大考总分满分" value={formatScore((metrics as GroupMetrics).totalFullScore)} />
+                <StatCard label="大考总分满分" value={hasFullScore ? formatScore((metrics as GroupMetrics).totalFullScore) : "—"} />
                 <StatCard label="大考总均分" value={formatScore((metrics as GroupMetrics).totalAvg)} />
                 <StatCard label="成员考试数" value={String((metrics as GroupMetrics).memberCount)} />
               </>
             ) : (
               <>
-                <StatCard label="本卷满分" value={formatScore((metrics as ExamMetrics).fullScore)} />
+                <StatCard label="本卷满分" value={hasFullScore ? formatScore((metrics as ExamMetrics).fullScore) : "—"} />
                 <StatCard label="平均得分" value={formatScore((metrics as ExamMetrics).avgScore)} />
                 <StatCard label="参考人数" value={String((metrics as ExamMetrics).gradedCount)} />
               </>
@@ -131,10 +134,10 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
                 {(metrics as GroupMetrics).subjects.map((s) => (
                   <TableRow key={s.examId}>
                     <TableCell>{s.subject}</TableCell>
-                    <TableCell numeric>{formatScore(s.fullScore)}</TableCell>
+                    <TableCell numeric>{s.fullScore > 0 ? formatScore(s.fullScore) : "—"}</TableCell>
                     <TableCell numeric>{formatScore(s.avgScore)}</TableCell>
                     <TableCell numeric>
-                      <DifficultyBadge value={s.difficulty ?? 0} bands={bands?.difficulty} />
+                      {s.fullScore > 0 ? <DifficultyBadge value={s.difficulty ?? 0} bands={bands?.difficulty} /> : "—"}
                     </TableCell>
                     <TableCell numeric>
                       <DiscriminationBadge value={s.discrimination ?? 0} bands={bands?.discrimination} sampleSize={s.gradedCount} />
@@ -151,7 +154,7 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
 
       {/* 分布卡片列表 */}
       {distributions.map((d) => (
-        <DistributionCard key={`${d.scope}-${d.scopeId}`} d={d} showTotalNote={!isGroup} bands={bands} />
+        <DistributionCard key={`${d.scope}-${d.scopeId}`} d={d} showTotalNote={!isGroup} bands={bands} hasFullScore={d.fullScore > 0 && (!isGroup || d.scope === "subject" || !!hasFullScore)} />
       ))}
       {distributions.length === 0 && <EmptyState size="sm" title="暂无分布数据" description="完成阅卷后即可查看总体分布。" />}
     </div>
@@ -159,14 +162,14 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
 }
 
 // ── 单个分布卡片：直方图+正态曲线、Q-Q、正态性检验表 ──
-function DistributionCard({ d, showTotalNote, bands }: { d: DistributionResult; showTotalNote: boolean; bands?: { difficulty: ThresholdBand[]; discrimination: ThresholdBand[] } }) {
+function DistributionCard({ d, showTotalNote, bands, hasFullScore }: { d: DistributionResult; showTotalNote: boolean; bands?: { difficulty: ThresholdBand[]; discrimination: ThresholdBand[] }; hasFullScore: boolean }) {
   const n = d.sampleSize;
   const smallSample = n > 0 && n < 30;
   return (
     <section className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-card p-4">
       <div className="flex flex-wrap items-center gap-3">
         <h3 className="text-sm font-semibold text-foreground">{d.label} 分布</h3>
-        <DifficultyBadge value={d.difficulty} bands={bands?.difficulty} />
+        {hasFullScore ? <DifficultyBadge value={d.difficulty} bands={bands?.difficulty} /> : <span className="text-xs text-muted-foreground">难度系数 P：—（满分未知）</span>}
         <DiscriminationBadge value={d.discrimination} bands={bands?.discrimination} sampleSize={n} />
         <span className="text-xs tabular-nums text-muted-foreground">
           样本 {n} · 均分 {formatScore(d.mean)} · 标准差 {formatScore(d.stdDev)}
@@ -175,7 +178,9 @@ function DistributionCard({ d, showTotalNote, bands }: { d: DistributionResult; 
       </div>
 
       <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <HistogramChart bins={d.bins} mean={d.mean} stdDev={d.stdDev} sampleSize={n} segmentSize={d.segmentSize} />
+        {hasFullScore
+          ? <HistogramChart bins={d.bins} mean={d.mean} stdDev={d.stdDev} sampleSize={n} segmentSize={d.segmentSize} />
+          : <EmptyState size="sm" title="满分未知，暂无分数段分布" />}
         <QQChart qq={d.qq ?? []} />
       </div>
 

@@ -441,15 +441,15 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                   />
                   <StatCard
                     label="及格率"
-                    value={formatPercent(overview.passRate)}
-                    hint={`及格线 ${formatScore(overview.passScore)} 分`}
-                    delta={toDelta(previousComparison?.passRateChange)}
+                    value={overview.fullScore > 0 ? formatPercent(overview.passRate) : "—"}
+                    hint={overview.fullScore > 0 ? `及格线 ${formatScore(overview.passScore)} 分` : "满分未知"}
+                    delta={overview.fullScore > 0 ? toDelta(previousComparison?.passRateChange) : undefined}
                     deltaLabel="较上届"
                   />
                   <StatCard
                     label="优秀率"
-                    value={formatPercent(overview.excellentRate)}
-                    hint={`优秀线 ${formatScore(overview.excellentScore)} 分`}
+                    value={overview.fullScore > 0 ? formatPercent(overview.excellentRate) : "—"}
+                    hint={overview.fullScore > 0 ? `优秀线 ${formatScore(overview.excellentScore)} 分` : "满分未知"}
                   />
                   <StatCard label="标准差" value={formatScore(overview.stdDev)} suffix="分" hint="越大越分散" />
                   <StatCard label="参考人数" value={String(overview.gradedCount)} />
@@ -463,7 +463,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                   {previousComparison?.prevExamName && (
                     <StatCard
                       label="较上届及格率变化"
-                      value={formatChange(previousComparison.passRateChange, "%")}
+                      value={overview.fullScore > 0 ? formatChange(previousComparison.passRateChange, "%") : "—"}
                       hint={`上届：${previousComparison.prevExamName}`}
                     />
                   )}
@@ -477,8 +477,8 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                     <div className="flex flex-col gap-1 rounded-lg border border-border-subtle bg-card px-5 py-4">
                       <span className="text-xs text-muted-foreground">难度系数 P（平均得分 / 满分）</span>
                       <div className="flex items-center gap-2">
-                        <span className="text-2xl font-bold tabular-nums text-foreground">{metrics.difficulty.toFixed(3)}</span>
-                        <DifficultyBadge value={metrics.difficulty} bands={bands?.difficulty} />
+                        <span className="text-2xl font-bold tabular-nums text-foreground">{metrics.fullScore > 0 ? metrics.difficulty.toFixed(3) : "—"}</span>
+                        {metrics.fullScore > 0 && <DifficultyBadge value={metrics.difficulty} bands={bands?.difficulty} />}
                       </div>
                     </div>
                     <div className="flex flex-col gap-1 rounded-lg border border-border-subtle bg-card px-5 py-4">
@@ -493,7 +493,7 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
 
                 {/* 分数段柱状图 + 班级箱线图 */}
                 <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2">
-                  {overview.distribution.length > 0 && (
+                  {overview.fullScore > 0 && overview.distribution.length > 0 && (
                     <section className="brutal-hard flex min-w-0 flex-col gap-2">
                       <h3 className="text-sm font-semibold text-foreground">分数段分布</h3>
                       <DistributionBar
@@ -568,7 +568,8 @@ export function ScoreDetailPage({ examId, examName, subject, onBack }: Props) {
                 </div>
 
                 {/* 临界生名单 */}
-                {criticalList.length > 0 && (
+                {!(overview.fullScore > 0) && <p className="text-sm text-muted-foreground">满分未知，无法计算临界生名单</p>}
+                {overview.fullScore > 0 && criticalList.length > 0 && (
                   <RankPanel title={`临界生（及格/优秀线 ±${Math.round(overview.passScore * 0.05)} 分）`}>
                     {criticalList.map((r) => {
                       const excellent = r.totalScore >= overview.excellentScore;
@@ -953,9 +954,9 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
                       <TableCell numeric>{formatScore(c.maxScore)}</TableCell>
                       <TableCell numeric>{formatScore(c.minScore)}</TableCell>
                       <TableCell numeric>{formatScore(c.stdDev)}</TableCell>
-                      <TableCell numeric>{formatPercent(c.passRate)}</TableCell>
-                      <TableCell numeric>{formatPercent(c.excellentRate)}</TableCell>
-                      <TableCell numeric>{c.difficulty.toFixed(3)}</TableCell>
+                      <TableCell numeric>{comparison.fullScore > 0 ? formatPercent(c.passRate) : "—"}</TableCell>
+                      <TableCell numeric>{comparison.fullScore > 0 ? formatPercent(c.excellentRate) : "—"}</TableCell>
+                      <TableCell numeric>{comparison.fullScore > 0 ? c.difficulty.toFixed(3) : "—"}</TableCell>
                       <TableCell numeric>{c.discrimination.toFixed(3)}</TableCell>
                     </TableRow>
                   ))}
@@ -1028,7 +1029,7 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
           )}
 
           {/* ③ 分段分布对比柱状图（分组绝对人数 + 100% 堆叠占比双视图） */}
-          {comparison.classes.length > 0 && comparison.classes[0].distribution && (
+          {comparison.fullScore > 0 && comparison.classes.length > 0 && comparison.classes[0].distribution && (
             <section className="flex flex-col gap-2">
               <h3 className="text-sm font-semibold text-foreground">分数段分布对比</h3>
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
