@@ -346,15 +346,15 @@ function OverviewTab({
         <StatCardRow className="mb-5">
           <StatCard
             label="整体难度系数 P"
-            value={overallMetrics.difficulty.toFixed(3)}
-            hint={<DifficultyBadge value={overallMetrics.difficulty} bands={bands?.difficulty} />}
+            value={overallMetrics.totalFullScore > 0 ? overallMetrics.difficulty.toFixed(3) : "—"}
+            hint={overallMetrics.totalFullScore > 0 ? <DifficultyBadge value={overallMetrics.difficulty} bands={bands?.difficulty} /> : "缺少满分依据"}
           />
           <StatCard
             label="整体区分度 D"
             value={overallMetrics.discrimination.toFixed(3)}
             hint={<DiscriminationBadge value={overallMetrics.discrimination} bands={bands?.discrimination} sampleSize={overallMetrics.participantCount} />}
           />
-          <StatCard label="大考总分满分" value={overallMetrics.totalFullScore} />
+          <StatCard label="大考总分满分" value={overallMetrics.totalFullScore > 0 ? overallMetrics.totalFullScore : "—"} />
           <StatCard label="大考总均分" value={overallMetrics.totalAvg} />
         </StatCardRow>
       )}
@@ -367,7 +367,7 @@ function OverviewTab({
               <span className="text-muted-foreground">人数</span>
               <span className="text-right font-medium tabular-nums">{sub.gradedCount}</span>
               <span className="text-muted-foreground">满分</span>
-              <span className="text-right font-medium tabular-nums">{sub.fullScore}</span>
+              <span className="text-right font-medium tabular-nums">{sub.fullScore > 0 ? sub.fullScore : "—"}</span>
               <span className="text-muted-foreground">均分</span>
               <span className="text-right font-semibold text-primary tabular-nums">{sub.avgScore}</span>
               <span className="text-muted-foreground">最高</span>
@@ -377,12 +377,12 @@ function OverviewTab({
               <span className="text-muted-foreground">标准差</span>
               <span className="text-right font-medium tabular-nums">{sub.stdDev}</span>
               <span className="text-muted-foreground">及格率</span>
-              <span className="text-right font-medium tabular-nums">{sub.passRate}%</span>
+              <span className="text-right font-medium tabular-nums">{sub.fullScore > 0 ? `${sub.passRate}%` : "—"}</span>
               <span className="text-muted-foreground">优秀率</span>
-              <span className="text-right font-medium tabular-nums">{sub.excellentRate}%</span>
+              <span className="text-right font-medium tabular-nums">{sub.fullScore > 0 ? `${sub.excellentRate}%` : "—"}</span>
               <span className="text-muted-foreground">难度 P</span>
               <span className="text-right font-medium">
-                {metricsByExam.get(sub.examId)?.difficulty != null
+                {sub.fullScore > 0 && metricsByExam.get(sub.examId)?.difficulty != null
                   ? <DifficultyBadge value={metricsByExam.get(sub.examId)!.difficulty!} bands={bands?.difficulty} />
                   : "—"}
               </span>
@@ -434,14 +434,14 @@ function OverviewTab({
                       )}
                     </TableCell>
                     <TableCell numeric>{sub.gradedCount}</TableCell>
-                    <TableCell numeric>{sub.fullScore}</TableCell>
+                    <TableCell numeric>{sub.fullScore > 0 ? sub.fullScore : "—"}</TableCell>
                     <TableCell numeric className="font-semibold text-primary">{sub.avgScore}</TableCell>
                     <TableCell numeric>{sub.maxScore}</TableCell>
                     <TableCell numeric>{sub.minScore}</TableCell>
                     <TableCell numeric>{sub.stdDev}</TableCell>
-                    <TableCell numeric>{sub.passRate}%</TableCell>
-                    <TableCell numeric>{sub.excellentRate}%</TableCell>
-                    <TableCell numeric>{m?.difficulty != null ? <DifficultyBadge value={m.difficulty} bands={bands?.difficulty} /> : "—"}</TableCell>
+                    <TableCell numeric>{sub.fullScore > 0 ? `${sub.passRate}%` : "—"}</TableCell>
+                    <TableCell numeric>{sub.fullScore > 0 ? `${sub.excellentRate}%` : "—"}</TableCell>
+                    <TableCell numeric>{sub.fullScore > 0 && m?.difficulty != null ? <DifficultyBadge value={m.difficulty} bands={bands?.difficulty} /> : "—"}</TableCell>
                     <TableCell numeric>{m?.discrimination != null ? <DiscriminationBadge value={m.discrimination} bands={bands?.discrimination} /> : "—"}</TableCell>
                   </TableRow>
                 );
@@ -609,8 +609,8 @@ function GroupQuestionAnalysisTab({
       <Panel className="p-4">
         <div className="mb-2 text-sm font-semibold">大考整体难度 / 区分度</div>
         <div className="flex flex-wrap items-center gap-3">
-          <MetricLine label="难度系数 P" value={qa.overall.difficulty.toFixed(3)} />
-          <DifficultyBadge value={qa.overall.difficulty} bands={bands?.difficulty} />
+          <MetricLine label="难度系数 P" value={qa.subjects.length > 0 && qa.subjects.every(s => s.fullScore > 0) ? qa.overall.difficulty.toFixed(3) : "—"} />
+          {qa.subjects.length > 0 && qa.subjects.every(s => s.fullScore > 0) && <DifficultyBadge value={qa.overall.difficulty} bands={bands?.difficulty} />}
           <MetricLine label="区分度 D" value={qa.overall.discrimination.toFixed(3)} />
           <DiscriminationBadge value={qa.overall.discrimination} bands={bands?.discrimination} sampleSize={qa.overall.sampleSize} />
         </div>
@@ -620,8 +620,8 @@ function GroupQuestionAnalysisTab({
         <Panel key={s.examId} className="p-4">
           <div className="flex flex-wrap items-center gap-2.5">
             <div className="text-sm font-semibold">{s.subject}（{s.examName}）</div>
-            <span className="text-xs text-muted-foreground tabular-nums">满分 {s.fullScore} · 均分 {s.avgScore}</span>
-            <DifficultyBadge value={s.difficulty} bands={bands?.difficulty} />
+            <span className="text-xs text-muted-foreground tabular-nums">满分 {s.fullScore > 0 ? s.fullScore : "—"} · 均分 {s.avgScore}</span>
+            {s.fullScore > 0 && <DifficultyBadge value={s.difficulty} bands={bands?.difficulty} />}
             <DiscriminationBadge value={s.discrimination} bands={bands?.discrimination} sampleSize={s.sampleSize} />
           </div>
           <div className="mt-3">
@@ -693,8 +693,8 @@ function GroupClassCompareTab({
                   <TableCell numeric>{c.maxScore}</TableCell>
                   <TableCell numeric>{c.minScore}</TableCell>
                   <TableCell numeric>{c.stdDev}</TableCell>
-                  <TableCell numeric>{c.passRate}%</TableCell>
-                  <TableCell numeric>{c.excellentRate}%</TableCell>
+                  <TableCell numeric>{cc.fullScore > 0 ? `${c.passRate}%` : "—"}</TableCell>
+                  <TableCell numeric>{cc.fullScore > 0 ? `${c.excellentRate}%` : "—"}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -724,7 +724,7 @@ function GroupClassCompareTab({
                     <TableRow key={c.classId}>
                       <TableCell>{c.className}</TableCell>
                       <TableCell numeric>{bc ? bc.avgScore : "—"}</TableCell>
-                      <TableCell numeric>{bc ? `${bc.scoreRate}%` : "—"}</TableCell>
+                      <TableCell numeric>{bc && x.fullScore > 0 ? `${bc.scoreRate}%` : "—"}</TableCell>
                     </TableRow>
                   );
                 })}

@@ -2,7 +2,7 @@ import { AlertCircle, BrainCircuit, RefreshCw, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { fetchJson } from "../auth/api";
 import type {
-  AiAnalysisResponse, AiAnalysisStatus, AiJobCreateResponse, AiJobPollResponse, AiProviderConfig,
+  AiAnalysisResponse, AiAnalysisStatus, AiJobCreateResponse, AiJobPollResponse,
 } from "../../../../shared/types";
 import {
   Badge,
@@ -29,11 +29,6 @@ const BUILTIN_PROVIDER = "0";
 function modelLabel(status: AiAnalysisStatus | null, modelId: string): string {
   const model = status?.models.find((item) => item.id === modelId);
   return model ? model.label : modelId;
-}
-
-function providerLabel(providers: AiProviderConfig[], providerId: number): string {
-  const p = providers.find((item) => item.id === providerId);
-  return p ? p.name : "未知服务商";
 }
 
 /** 报告里的一个列表小节（薄弱点 / 教学建议 …）。 */
@@ -351,9 +346,8 @@ function AnalysisAiPanelContent({ examId, groupId, classId = "" }: Props) {
               {analysis.report.overallJudgement}
             </strong>
             <span className="text-xs text-muted-foreground">
-              {selectedProviderId > 0
-                ? `${providerLabel(userProviders, selectedProviderId)} / `
-                : ""}
+              {/* Saved reports carry a model, but no provider identity. The current
+                  selector only configures the next run and cannot label this report. */}
               {modelLabel(status, analysis.model)} ·{" "}
               <span className="tabular-nums">
                 {new Date(analysis.generatedAt).toLocaleString()}

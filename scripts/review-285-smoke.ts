@@ -14,7 +14,7 @@ process.env.ANSWER_CARD_DATA_DIR = path.join(temp, "data");
 process.env.PROJECTX_AUTH_ENFORCE = "0";
 if (process.env.REVIEW_285_MARIADB === "1") {
   assert.equal(process.env.PROJECTX_MARIADB_HOST, "127.0.0.1");
-  assert.equal(process.env.PROJECTX_MARIADB_DATABASE, "projectx_review_285");
+  assert.match(process.env.PROJECTX_MARIADB_DATABASE ?? "", /^projectx_review_285(?:_[a-z0-9]+)*$/);
 } else {
   for (const key of Object.keys(process.env)) if (/^PROJECTX_(MYSQL|MARIADB)_/.test(key)) delete process.env[key];
 }
@@ -74,6 +74,52 @@ try {
   assert.equal(legacyOverview.excellentRate, 0, "缺满分依据时不得把所有非负分数算成优秀");
   assert.equal(legacyOverview.passScore, 0);
   assert.deepEqual(legacyOverview.distribution, [], "缺满分依据时不出「0-0」误导分桶");
+
+  // An aggregate with one known and one unknown full score must not use a partial denominator.
+  const groupId = Number((await db.run("INSERT INTO exam_groups (name) VALUES ('mixed-full-score')")).lastInsertRowid);
+  await db.run("INSERT INTO exam_group_members (group_id, exam_id) VALUES (?, ?)", groupId, exam);
+  await db.run("INSERT INTO exam_group_members (group_id, exam_id, track_type) VALUES (?, ?, 'science')", groupId, legacy);
+  const comparison = await analysis.getGroupClassComparison(groupId);
+  assert.equal(comparison.fullScore, 0);
+  assert.equal(comparison.classes[0].avgScore, 100, "Actual totals remain available");
+  assert.equal(comparison.classes[0].passRate, 0);
+  assert.equal(comparison.classes[0].excellentRate, 0);
+  assert.deepEqual(comparison.classes[0].distribution, []);
+  const metrics = await analysis.getGroupMetrics(groupId);
+  assert.equal(metrics.totalFullScore, 0);
+  assert.equal(metrics.difficulty, 0);
+  assert.equal((await analysis.getGroupQuestionAnalysis(groupId)).overall.difficulty, 0);
+  for (const mode of ["total", "class"] as const) {
+    const distributions = await analysis.getGroupDistribution(groupId, mode);
+    assert(distributions.length > 0);
+    for (const distribution of distributions) {
+      assert.equal(distribution.fullScore, 0);
+      assert.deepEqual(distribution.bins, []);
+    }
+  }
+  const cross = await analysis.getCrossExamTotal({ mode: "group", groupId });
+  assert.equal(cross.summary.totalFullScore, 0);
+  assert.equal(cross.rows[0].totalScore, 100);
+  assert.equal(cross.rows[0].scoreRate, null);
+  assert.equal((await analysis.getGroupMetrics(groupId, "arts")).totalFullScore, 50,
+    "An excluded unknown subject must not invalidate the selected track");
+  await db.run("UPDATE exam_groups SET total_score_mode = 'assigned' WHERE id = ?", groupId);
+  await db.run("UPDATE exams SET assigned_formula = '{}' WHERE id = ?", exam);
+  await db.run("UPDATE student_scores SET assigned_score = 20 WHERE exam_id = ?", exam);
+  const assigned = (await analysis.getGroupDistribution(groupId, "total"))[0];
+  assert.equal(assigned.assignedAvailable, true);
+  assert.deepEqual(assigned.bins, []);
+  assert.deepEqual(assigned.assignedBins, [], "Raw comparison bins also require all full scores");
+  await db.run("UPDATE exam_groups SET total_score_mode = 'raw' WHERE id = ?", groupId);
+  await db.run("INSERT INTO question_scores (exam_id,student_id,question_number,score,max_score,score_type) VALUES (?,?,1,80,100,'objective')", legacy, student);
+  const known = await analysis.getGroupClassComparison(groupId);
+  assert.equal(known.fullScore, 150);
+  assert.equal(known.classes[0].passRate, 100);
+  assert.equal(known.classes[0].excellentRate, 0);
+  assert(known.classes[0].distribution.length > 0);
+  assert.equal((await analysis.getCrossExamTotal({ mode: "group", groupId })).rows[0].scoreRate, 66.7);
+  const emptyGroup = Number((await db.run("INSERT INTO exam_groups (name) VALUES ('empty-full-score')")).lastInsertRowid);
+  assert.equal((await analysis.getGroupClassComparison(emptyGroup)).fullScore, 0);
 
   const ids = [card.id];
   for (let i = 0; i < 12; i++) {

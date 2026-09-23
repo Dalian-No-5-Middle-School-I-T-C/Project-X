@@ -41,6 +41,12 @@ function classFilterQs(classId?: number): { join: string; where: string; params:
 }
 
 function round1(v: number): number { return Math.round(v * 10) / 10; }
+/** Zero denotes unavailable: a partial sum is not the full score of an aggregate. */
+function sumKnownFullScores(scores: number[]): number {
+  return scores.length > 0 && scores.every(score => Number.isFinite(score) && score > 0)
+    ? scores.reduce((sum, score) => sum + score, 0)
+    : 0;
+}
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0; if (sorted.length === 1) return sorted[0];
   const index = (sorted.length - 1) * p; const lower = Math.floor(index), upper = Math.ceil(index);
@@ -152,7 +158,7 @@ export class AnalysisRepository {
     if (examIds.length === 0) return this.emptyCrossExamTotal(mode, group);
     const exams = await this.getCrossExamTotalExams(examIds);
     const examOrder = new Map(exams.map((e, i) => [e.id, i]));
-    const totalFullScore = round1(exams.reduce((s, e) => s + e.fullScore, 0));
+    const totalFullScore = round1(sumKnownFullScores(exams.map(e => e.fullScore)));
     const scores = await this.getCrossExamScoreRows(examIds, request.gradeId, request.classId);
     const byStudent = new Map<number, CrossExamTotalRow>();
     for (const score of scores) {
@@ -650,7 +656,7 @@ export class AnalysisRepository {
     if (examIds.length === 0) return { difficulty: 0, discrimination: 0, totalFullScore: 0, totalAvg: 0, memberCount: 0, participantCount: 0, reliability: null, cv: null, subjects: [] };
     const qa = await this.getGroupQuestionAnalysis(groupId, track);
     const fullScores = await this.getExamFullScoreMap(examIds);
-    const totalFullScore = examIds.reduce((s, id) => s + (fullScores.get(id) ?? 0), 0);
+    const totalFullScore = sumKnownFullScores(examIds.map(id => fullScores.get(id) ?? 0));
     const totals = await this.getGroupTotalsMap(groupId, track);
     const totalAvg = totals.size > 0 ? mean(Array.from(totals.values())) : 0;
     const totalScores = Array.from(totals.values());
@@ -761,7 +767,7 @@ export class AnalysisRepository {
       });
     }
     const overallDisc = subjects.length > 0 ? discSum / subjects.length : 0;
-    const totalFullScore = subjects.reduce((s, x) => s + x.fullScore, 0);
+    const totalFullScore = sumKnownFullScores(subjects.map(x => x.fullScore));
     const totalAvg = subjects.reduce((s, x) => s + x.avgScore, 0);
     return {
       overall: {
@@ -848,7 +854,7 @@ export class AnalysisRepository {
       const classOf = new Map<number, { classId: number; className: string }>();
       for (const r of classRows) if (!classOf.has(r.student_id)) classOf.set(r.student_id, { classId: r.class_id ?? 0, className: r.class_name ?? "未知班级" });
       const fullScoreMap = await this.getExamFullScoreMap(examIds);
-      const totalFull = examIds.reduce((s, id) => s + (fullScoreMap.get(id) ?? 0), 0);
+      const totalFull = sumKnownFullScores(examIds.map(id => fullScoreMap.get(id) ?? 0));
       // B9：赋分可用性——模式为 assigned 且存在「带赋分公式并已落库 assigned_score」的成员考试才算点亮
       const assignedCfg = await this.db.get(
         `SELECT COALESCE(total_score_mode, 'raw') AS mode FROM exam_groups WHERE id = ?`, groupId
@@ -880,7 +886,7 @@ export class AnalysisRepository {
             GROUP BY ss.student_id
           `, ...examIds, ...participants, ...(track !== "all" ? [track] : [])) as Array<{ student_id: number; total: number }>;
           res.assignedAvailable = true;
-          res.assignedBins = histogram(rawRows.map((r) => Number(r.total)), totalFull, thresholds.segmentSize);
+          res.assignedBins = totalFull > 0 ? histogram(rawRows.map((r) => Number(r.total)), totalFull, thresholds.segmentSize) : [];
         }
         results.push(res);
       } else {
@@ -944,7 +950,7 @@ export class AnalysisRepository {
   /** 大考班级对比（班级总分统计 + 逐科班级均分对比） */
   async getGroupClassComparison(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<GroupClassComparisonResponse> {
     const group = await this.getExamGroup(groupId);
-    const empty: GroupClassComparisonResponse = { classes: [], subjectClassSummaries: [] };
+    const empty: GroupClassComparisonResponse = { fullScore: 0, classes: [], subjectClassSummaries: [] };
     if (!group) return empty;
     const memberMap = await this.getGroupMemberTrackMap(groupId);
     const examIds = this.groupMemberIdsForTrack(memberMap, track);
@@ -952,7 +958,7 @@ export class AnalysisRepository {
     const thresholds = await getAnalysisThresholds();
     const totals = await this.getGroupTotalsMap(groupId, track);
     const fullScoreMap = await this.getExamFullScoreMap(examIds);
-    const totalFull = examIds.reduce((s, id) => s + (fullScoreMap.get(id) ?? 0), 0);
+    const totalFull = sumKnownFullScores(examIds.map(id => fullScoreMap.get(id) ?? 0));
     const classRows = await this.db.all(`
       SELECT ss.student_id, c.id as class_id, c.name as class_name, g.name as grade_name
       FROM student_scores ss
@@ -1046,9 +1052,9 @@ export class AnalysisRepository {
         avgScore: round1(sc.reduce((a, b) => a + b, 0) / sc.length),
         scoreRate: fullScore > 0 ? Math.round((sc.reduce((a, b) => a + b, 0) / sc.length / fullScore) * 100) : 0
       }));
-      subjectClassSummaries.push({ examId, subject: exam?.subject ?? exam?.name ?? String(examId), byClass });
+      subjectClassSummaries.push({ examId, fullScore, subject: exam?.subject ?? exam?.name ?? String(examId), byClass });
     }
-    return { classes, subjectClassSummaries };
+    return { fullScore: totalFull, classes, subjectClassSummaries };
   }
 
   /** 从答题卡解析客观题元数据（题号 → 模式/选项数/满分/标准答案） */
