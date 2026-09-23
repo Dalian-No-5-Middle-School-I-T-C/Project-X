@@ -15,7 +15,7 @@ import {
   Upload as UploadIcon,
 } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
-import { getScannerMode, isRemoteServerConfigured, useScannerMode } from "../lib/scannerMode";
+import { getScannerMode, isRemoteServerConfigured, readServerUrl, useScannerMode } from "../lib/scannerMode";
 import { downloadGradingCsv } from "../lib/gradingCsv";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
 import { ScannerPanel } from "./ScannerPanel";
@@ -71,7 +71,8 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
   const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   // v2.5.1: 导入阅卷的图片去向档位（与直扫面板共用同一记忆，hook 内置跨实例同步）
-  const [importMode, setImportMode] = useScannerMode();
+  // v2.5.6: 提升为工作台级常驻选择器（见侧栏「图片去向」卡），直扫与导入共用同一份状态
+  const [imageMode, setImageMode] = useScannerMode();
 
   function addGradingFiles(files: FileList | null) {
     if (!files) return;
@@ -155,9 +156,10 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
                 <Globe size={16} />
               </Button>
               <SkinSwitcher skin={skin} onSkinChange={onSkinChange} />
-              <ServerConfigDialog mode="dialog" open={cfgOpen} onOpenChange={setCfgOpen} />
             </div>
           )}
+          {/* v2.5.6：对话框移出皮肤条件块——「图片去向」卡的「去配置」入口必须在任何情况下都能打开它 */}
+          <ServerConfigDialog mode="dialog" open={cfgOpen} onOpenChange={setCfgOpen} />
         </header>
 
         <div className="flex min-h-0 flex-1 flex-row-reverse">
@@ -188,6 +190,56 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
 
           {/* ── Sidebar: Scan settings + File import ── */}
           <aside className="flex w-[340px] shrink-0 flex-col gap-4 overflow-auto border-r border-border-subtle bg-card p-4">
+            {/* ── 图片去向（v2.5.6 提升为常驻首位）────────────────────────
+                现场反馈「依旧无法选择本地阅卷与上传服务器」：此前直扫的档位藏在
+                ScannerPanel 的「扫描设置」里，而该设置卡又被"检测到扫描仪"门控，
+                检测一失败就整个消失，老师根本找不到选择入口。现固定在侧栏首位，
+                直扫与导入共用，且与扫描仪检测结果完全解耦。 */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <UploadIcon size={17} /> 图片去向
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <SegmentedControl
+                  aria-label="图片去向"
+                  value={imageMode}
+                  onValueChange={setImageMode}
+                  block
+                  items={[
+                    { value: "local", label: "仅本地", icon: <Database size={14} />, tip: "图片与成绩只留在本机" },
+                    { value: "remote", label: "本地判分+上传服务器", icon: <UploadIcon size={14} />, tip: "本地照常判分，图片与识别结果同时上传到远端服务器" },
+                  ]}
+                />
+                {imageMode === "remote" ? (
+                  isRemoteServerConfigured() ? (
+                    <p className="mt-2 m-0 rounded-md bg-secondary p-2 text-xs text-muted-foreground">
+                      已连接服务器：<code className="font-mono">{readServerUrl()}</code>。扫描与导入的图片都会上传。
+                    </p>
+                  ) : (
+                    <div className="mt-2 flex flex-col gap-2 rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-xs text-warning-foreground">
+                      <span>尚未配置可用的服务器地址，图片无法上传。请先填写地址与 API Key。</span>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        type="button"
+                        className="self-start"
+                        icon={<Globe size={14} />}
+                        onClick={() => setCfgOpen(true)}
+                      >
+                        去配置
+                      </Button>
+                    </div>
+                  )
+                ) : (
+                  <p className="mt-2 m-0 rounded-md bg-secondary p-2 text-xs text-muted-foreground">
+                    图片与成绩只留在本机，不上传服务器。
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
             {/* ── TWAIN Scanner ── */}
             <Card>
               <CardHeader><CardTitle className="flex items-center gap-2 text-base"><Camera size={17} /> 扫描仪直扫</CardTitle></CardHeader>
@@ -214,22 +266,14 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
               <CardHeader><CardTitle className="flex items-center gap-2 text-base"><ImagePlus size={17} /> 导入阅卷</CardTitle></CardHeader>
               <CardContent>
 
-                <div className="mb-3 flex flex-col gap-1.5">
-                  <span className="text-sm font-medium text-secondary-foreground">图片去向</span>
-                  <SegmentedControl
-                    aria-label="导入图片去向"
-                    value={importMode}
-                    onValueChange={setImportMode}
-                    block
-                    items={[
-                      { value: "local", label: "仅本地", icon: <Database size={14} />, tip: "只在本地识别判分" },
-                      { value: "remote", label: "本地判分+上传服务器", icon: <UploadIcon size={14} />, tip: "判分照旧，图片同时上传到远端服务器存档" },
-                    ]}
-                  />
-                  {importMode === "remote" && !isRemoteServerConfigured() && (
-                    <span className="text-xs text-warning-foreground">尚未配置服务器地址，请先在工作台右上角「服务器连接」中填写</span>
+                {/* v2.5.6：此处不再放第二个档位控件——侧栏首位的「图片去向」是唯一选择入口，
+                    同栏相邻两个同名控件只会让人分不清哪个生效。仅回显当前档位。 */}
+                <p className="mb-3 m-0 rounded-md bg-secondary p-2 text-xs text-muted-foreground">
+                  图片去向：{imageMode === "remote" ? "本地判分 + 上传服务器" : "仅本地"}
+                  {imageMode === "remote" && !isRemoteServerConfigured() && (
+                    <span className="text-warning-foreground">（未配置服务器地址，本次仅本地判分）</span>
                   )}
-                </div>
+                </p>
 
               <p className="mb-2 text-xs text-muted-foreground">多页答题卡请按学生逐份添加，每份按布局页序排列；双面卡无需导入末尾空白背面。</p>
               <div className="grid grid-cols-2 gap-2">

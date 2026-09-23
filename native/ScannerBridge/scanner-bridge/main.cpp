@@ -55,13 +55,16 @@ int wmain(int argc, wchar_t* argv[]) {
 
     if (command == "list") {
         TwainController controller;
-        auto sources = controller.listSources();
-        
-        std::string json = sourcesToJson(sources);
+        // 带因枚举：DSM 未加载 / 窗口创建失败 / OPENDSM 失败 / 无驱动 各自有独立 code 与提示，
+        // 上层不必再把所有失败压成一句「未检测到扫描仪」
+        SourceEnumeration details = controller.listSourceDetails();
+
+        std::string json = sourceEnumerationToJson(details, bridgeArchName());
         printf("%s\n", json.c_str());
         fflush(stdout);
-        
-        return sources.empty() ? 1 : 0;
+
+        // 退出码仅保留信息性语义（0=有源，1=无源）；权威诊断在 JSON 的 code 字段
+        return details.sources.empty() ? 1 : 0;
     }
 
     if (command == "scan") {
@@ -109,18 +112,18 @@ int wmain(int argc, wchar_t* argv[]) {
             return 1;
         }
 
-        // If no source specified, list and pick first
+        // If no source specified, prefer the first enumerated source. 枚举为空时不再直接失败：
+        // 留空交给 scan() 请求系统默认数据源（MSG_GETDEFAULT），否则「检测失败但设备可用」时
+        // 教师按界面提示留空数据源也无法开扫（评审 P1）。
         if (config.sourceName.empty()) {
             TwainController listController;
-            auto sources = listController.listSources();
-            if (sources.empty()) {
-                fprintf(stderr, "Error: No TWAIN scanners found\n");
-                std::string json = "{\"status\":\"error\",\"message\":\"No TWAIN scanners found\"}";
-                printf("%s\n", json.c_str());
-                return 1;
+            SourceEnumeration details = listController.listSourceDetails();
+            if (!details.sources.empty()) {
+                config.sourceName = details.sources[0].name;
+                fprintf(stderr, "[ScannerBridge] Auto-selected source: %s\n", config.sourceName.c_str());
+            } else {
+                fprintf(stderr, "[ScannerBridge] No source enumerated (%s); requesting system default source\n", details.code.c_str());
             }
-            config.sourceName = sources[0].name;
-            fprintf(stderr, "[ScannerBridge] Auto-selected source: %s\n", config.sourceName.c_str());
         }
 
         TwainController controller;

@@ -83,7 +83,10 @@ export async function runScanSession(
       outputDir,
       filePrefix,
       maxPages: config.maxPages || 0,
-      showUi: config.showUi
+      showUi: config.showUi,
+      // 等纸空闲超时：不传则由 native 侧用默认 15000ms。
+      // 厚纸/慢速 ADF 进纸间隔可能超过 15s，若不透传就会出现「扫了一半提前收尾」。
+      pageTimeoutMs: config.pageTimeoutMs
     };
 
     const result = await scan(scanConfig, sessionId);

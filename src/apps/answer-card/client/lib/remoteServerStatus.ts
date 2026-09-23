@@ -2,6 +2,9 @@
 // 订阅即自动轮询：成功后 20s 慢节奏，失败后 5s 加速以快速发现恢复。
 // 工厂依赖可注入（serverUrl/fetchHealth/schedule），Node 冒烟脚本用手动时钟驱动。
 import { remoteScannerFetch } from "../auth/api";
+// v2.5.6：探活也走统一归一化——缺 scheme 的地址会让 fetch 直接抛错，
+// 若不归一化，探活会一直停在 offline，掩盖「地址写错了」这一真实原因。
+import { readServerUrl } from "./scannerMode";
 
 export type ServerStatusKind =
   | "unconfigured" // 未配置服务器地址
@@ -31,14 +34,8 @@ export interface HealthProbeResult {
 const INTERVAL_OK_MS = 20_000;
 const INTERVAL_FAIL_MS = 5_000;
 
-function readServerUrl(): string {
-  try {
-    return (localStorage.getItem("projectx_server_url") ?? "").trim().replace(/\/+$/, "");
-  } catch {
-    return "";
-  }
-}
-
+// v2.5.6：探活也走统一归一化——缺 scheme 的地址会让 fetch 直接抛错，
+// 若不归一化，探活会一直停在 offline，掩盖「地址写错了」这一真实原因。
 async function defaultFetchHealth(): Promise<HealthProbeResult> {
   const res = await remoteScannerFetch("/api/app/health");
   let body: HealthBody | null = null;

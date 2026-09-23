@@ -18,6 +18,50 @@ using DsmEntryProc = TW_UINT16(TW_CALLINGSTYLE*)(
     TW_MEMREF
 );
 
+// DSM 加载诊断（文件级静态）：供 list 诊断与 scan 错误信息复用。
+// 旧实现只看「枚举结果为空」，无法区分「DSM 没加载」和「DSM 正常但这台机器没装扫描仪驱动」。
+static std::string g_dsmLoadedPath;
+static std::string g_dsmLoadLog;
+static bool g_dsmLoaded = false;
+
+/** 宽字符路径转 UTF-8，仅供诊断日志使用（加载一律走 LoadLibraryW）。 */
+static std::string wideToUtf8(const wchar_t* w) {
+    if (!w) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string out(static_cast<size_t>(len - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, out.data(), len, nullptr, nullptr);
+    return out;
+}
+
+namespace ScannerBridge {
+bool dsmLoaded() { return g_dsmLoaded; }
+const std::string& dsmLoadedPath() { return g_dsmLoadedPath; }
+const std::string& dsmLoadLog() { return g_dsmLoadLog; }
+
+/** 当前进程位宽：决定能枚举到 32 位还是 64 位 TWAIN 驱动。 */
+const char* bridgeArchName() {
+    return sizeof(void*) == 4 ? "ia32" : "x64";
+}
+
+/** 位宽相关的可操作提示：32 位驱动只能被 32 位 DSM 枚举，反之亦然。 */
+static std::string archHint() {
+    if (sizeof(void*) == 4) {
+        return "当前为 32 位扫描端，只能枚举 32 位 TWAIN 驱动。"
+               "若扫描仪只提供 64 位驱动，请改装 x64 版扫描端。";
+    }
+    return "当前为 64 位扫描端，只能枚举 64 位 TWAIN 驱动。"
+           "老旧扫描仪多为 32 位驱动，此时请改装 ia32 版扫描端（资源目录 win-ia32）。";
+}
+
+std::string dsmDiagnosticSuffix() {
+    if (g_dsmLoaded) {
+        return "（TWAIN 数据源管理器已加载：" + g_dsmLoadedPath + "）";
+    }
+    return "（TWAIN 数据源管理器未加载：" + (g_dsmLoadLog.empty() ? "未找到可用 TWAINDSM.dll" : g_dsmLoadLog) + "）";
+}
+} // namespace ScannerBridge
+
 extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
     pTW_IDENTITY pOrigin,
     pTW_IDENTITY pDest,
@@ -50,20 +94,33 @@ extern "C" TW_UINT16 TW_CALLINGSTYLE DSM_Entry(
             L"twain_32.dll"
         };
 
+        std::string tried;
         for (const wchar_t* candidate : candidates) {
             if (!candidate || !candidate[0]) continue;
+            SetLastError(0);
             dsmModule = LoadLibraryW(candidate);
             if (!dsmModule) {
-                fprintf(stderr, "[ScannerBridge] DSM library load failed (Win32 error %lu)\n", GetLastError());
+                DWORD err = GetLastError();
+                char line[64] = {};
+                sprintf_s(line, "err=%lu", static_cast<unsigned long>(err));
+                if (!tried.empty()) tried += "; ";
+                tried += wideToUtf8(candidate) + " -> LoadLibrary 失败(" + line + ")";
                 continue;
             }
 
             dsmEntry = reinterpret_cast<DsmEntryProc>(GetProcAddress(dsmModule, "DSM_Entry"));
-            if (dsmEntry) break;
+            if (dsmEntry) {
+                g_dsmLoadedPath = wideToUtf8(candidate);
+                g_dsmLoaded = true;
+                break;
+            }
 
+            if (!tried.empty()) tried += "; ";
+            tried += wideToUtf8(candidate) + " -> 已加载但缺少 DSM_Entry 导出";
             FreeLibrary(dsmModule);
             dsmModule = nullptr;
         }
+        g_dsmLoadLog = tried;
     }
 
     if (!dsmEntry) {
@@ -119,7 +176,8 @@ static HWND createHiddenWindow(HINSTANCE hInstance) {
 // ── TwainController ───────────────────────────────────
 
 TwainController::TwainController()
-    : m_state(0), m_cancelRequested(false), m_hwnd(nullptr)
+    : m_state(0), m_cancelRequested(false), m_hwnd(nullptr),
+      m_lastOpenDsmRc(0), m_lastConditionCode(0), m_hasOpenDsmAttempt(false)
 {
     s_instance = this;
     
@@ -147,6 +205,10 @@ TwainController::TwainController()
     HINSTANCE hInstance = GetModuleHandle(nullptr);
     m_hwnd = createHiddenWindow(hInstance);
     ShowWindow(m_hwnd, SW_HIDE);
+    if (!m_hwnd) {
+        // OPENDSM 的 hParent 必须有效，否则 DSM 直接返回失败且原因不可见
+        logError("CreateWindowExA failed: TWAIN OPENDSM 需要有效父窗口，检测将无法进行");
+    }
 }
 
 TwainController::~TwainController() {
@@ -192,36 +254,82 @@ TW_UINT16 TwainController::processTwainEvent(MSG& msg) {
 
 // ── Source Enumeration ────────────────────────────────
 
-std::vector<SourceInfo> TwainController::listSources() {
-    std::vector<SourceInfo> sources;
-    
-    if (!openDSM()) return sources;
-    
-    TW_IDENTITY sourceId;
-    memset(&sourceId, 0, sizeof(sourceId));
-    
-    TW_UINT16 rc = DSM_Entry(
-        &m_appId, nullptr,
-        DG_CONTROL, DAT_IDENTITY, MSG_GETFIRST,
-        (TW_MEMREF)&sourceId
-    );
-    
-    while (rc == TWRC_SUCCESS) {
-        SourceInfo info;
-        info.name = sourceId.ProductName;
-        info.identity = sourceId;
-        sources.push_back(info);
-        
+SourceEnumeration TwainController::listSourceDetails() {
+    SourceEnumeration result;
+    result.windowCreated = (m_hwnd != nullptr);
+    result.dsmPath = g_dsmLoadedPath;
+
+    if (!result.windowCreated) {
+        result.code = "WINDOW_CREATE_FAILED";
+        result.message = "扫描桥接程序无法创建 TWAIN 所需的宿主窗口（常见于会话被限制的远程/服务环境）";
+        result.hint = "请在教师的桌面会话中直接运行扫描端，不要通过远程会话或计划任务启动。";
+        return result;
+    }
+
+    // DSM 由 DSM_Entry 惰性加载：只有真正调用过 DSM_Entry 才能区分「DLL 加载失败」与
+    // 「DSM 打开失败」。此前在调用前就按 g_dsmLoaded 判定，DLL/设备完全正常时检测也会
+    // 一律报 DSM_LOAD_FAILED（评审 P1）。先 openDSM()（内部即触发加载）再按状态归类。
+    if (!openDSM()) {
+        if (!g_dsmLoaded) {
+            result.code = "DSM_LOAD_FAILED";
+            result.message = "无法加载 TWAIN 数据源管理器（TWAINDSM.dll）";
+            result.dsmSearchLog = g_dsmLoadLog;
+            result.hint = "通常是 TWAINDSM.dll 缺失或被安全软件隔离。"
+                          "请确认安装目录下 resources/native/win-" + std::string(bridgeArchName()) +
+                          "/TWAINDSM.dll 存在；仍失败时重装扫描端安装包。";
+            return result;
+        }
+        result.code = "OPENDSM_FAILED";
+        result.openDsmRc = m_hasOpenDsmAttempt ? static_cast<int>(m_lastOpenDsmRc) : -1;
+        result.conditionCode = m_hasOpenDsmAttempt ? static_cast<int>(m_lastConditionCode) : -1;
+        result.message = "TWAIN 数据源管理器打开失败"
+                         "（DSM_Entry 返回 " + twainResultToString(m_lastOpenDsmRc) +
+                         "，条件码 " + std::to_string(m_lastConditionCode) + "）";
+        result.hint = archHint() + " 若提示扫描仪离线，请确认设备已开机并已连接。";
+        return result;
+    }
+    result.dsmPath = g_dsmLoadedPath;
+
+    // DSM 已打开：直接枚举，避免二次 OPEN/CLOSE 引发 SEQERROR（与 scan() 保持一致）
+    {
+        TW_IDENTITY sourceId;
         memset(&sourceId, 0, sizeof(sourceId));
-        rc = DSM_Entry(
+        TW_UINT16 rc = DSM_Entry(
             &m_appId, nullptr,
-            DG_CONTROL, DAT_IDENTITY, MSG_GETNEXT,
+            DG_CONTROL, DAT_IDENTITY, MSG_GETFIRST,
             (TW_MEMREF)&sourceId
         );
+        while (rc == TWRC_SUCCESS) {
+            SourceInfo info;
+            info.name = sourceId.ProductName;
+            info.identity = sourceId;
+            result.sources.push_back(info);
+
+            memset(&sourceId, 0, sizeof(sourceId));
+            rc = DSM_Entry(
+                &m_appId, nullptr,
+                DG_CONTROL, DAT_IDENTITY, MSG_GETNEXT,
+                (TW_MEMREF)&sourceId
+            );
+        }
     }
-    
+
     closeDSM();
-    return sources;
+
+    if (result.sources.empty()) {
+        result.code = "NO_SOURCES";
+        result.message = "TWAIN 数据源管理器正常，但未枚举到任何扫描仪驱动";
+        result.hint = archHint() + " 也可能是扫描仪驱动未安装或设备未连接。";
+        return result;
+    }
+
+    result.code = "OK";
+    result.message = "";
+    return result;
+}
+
+std::vector<SourceInfo> TwainController::listSources() {
+    return listSourceDetails().sources;
 }
 
 // ── Scan Execution ────────────────────────────────────
@@ -234,7 +342,9 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     
     // 1. Open DSM（幂等：已打开则直接复用，避免二次 OPENDSM 导致 SEQERROR）
     if (!openDSM()) {
-        result.errorMessage = "Failed to open TWAIN Data Source Manager";
+        result.errorMessage = "无法打开 TWAIN 数据源管理器（DSM_Entry 返回 " +
+            twainResultToString(m_lastOpenDsmRc) + "，条件码 " +
+            std::to_string(m_lastConditionCode) + "）" + dsmDiagnosticSuffix();
         return result;
     }
     
@@ -287,7 +397,9 @@ ScanResult TwainController::scan(const ScanConfig& config) {
             (TW_MEMREF)&defaultSource
         );
         if (rc != TWRC_SUCCESS) {
-            result.errorMessage = "Scanner not found: " + config.sourceName;
+            result.errorMessage = "未找到可用扫描仪：请求「" + config.sourceName +
+                "」，DSM 本次枚举到 " + std::to_string(sources.size()) + " 台设备" +
+                (sources.empty() ? "（" + archHint() + "）" : "");
             closeDSM();
             return result;
         }
@@ -298,7 +410,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     
     // 3. Open source
     if (!openSource(m_sourceId)) {
-        result.errorMessage = "Failed to open scanner: " + std::string(m_sourceId.ProductName);
+        result.errorMessage = "无法打开扫描仪：" + std::string(m_sourceId.ProductName) +
+            "（可能被其他程序占用，请关闭其它扫描软件后重试）";
         closeDSM();
         return result;
     }
@@ -315,8 +428,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     }
     if (!setPaperSize(config.paperSize)) {
         result.errorMessage = config.paperSize == "A3"
-            ? "Scanner does not support native A3 paper size"
-            : "Scanner rejected requested paper size: " + config.paperSize;
+            ? "该扫描仪不支持 A3 原稿（请在扫描设置中改选 A4）"
+            : "该扫描仪不接受所请求的纸张尺寸：" + config.paperSize;
         disableSource();
         closeSource();
         closeDSM();
@@ -326,7 +439,8 @@ ScanResult TwainController::scan(const ScanConfig& config) {
     
     // 5. Enable source (shows scanner UI or goes to ready state)
     if (!enableSource(m_config.showUi)) {
-        result.errorMessage = "Failed to enable scanner";
+        result.errorMessage = "扫描仪拒绝启动（MSG_ENABLEDS 失败）。"
+                              "常见原因：设备离线、被其它程序占用，或驱动与当前扫描端位宽不匹配";
         closeSource();
         closeDSM();
         return result;
@@ -458,11 +572,13 @@ void TwainController::cancel() {
 
 bool TwainController::openDSM() {
     if (m_state >= 1) return true;
+    m_hasOpenDsmAttempt = true;
     TW_UINT16 rc = DSM_Entry(
         &m_appId, nullptr,
         DG_CONTROL, DAT_PARENT, MSG_OPENDSM,
         (TW_MEMREF)&m_hwnd
     );
+    m_lastOpenDsmRc = rc;
     if (rc == TWRC_SUCCESS) {
         m_state = 1;
         return true;
@@ -472,6 +588,7 @@ bool TwainController::openDSM() {
     TW_STATUS status;
     memset(&status, 0, sizeof(status));
     DSM_Entry(&m_appId, nullptr, DG_CONTROL, DAT_STATUS, MSG_GET, (TW_MEMREF)&status);
+    m_lastConditionCode = status.ConditionCode;
     logError("DSM OPENDSM ConditionCode=" + std::to_string(status.ConditionCode));
     return false;
 }
@@ -629,7 +746,21 @@ bool TwainController::setCapability(TW_UINT16 cap, TW_UINT16 type, void* value) 
     );
     
     GlobalFree(twCap.hContainer);
-    
+
+    // TWRC_CHECKSTATUS 表示「能力被接受，但驱动改用了它自己的取值」（条件码
+    // TWCC_CAPGREATER/CAPLOWER/CAPBADVALUE 之一），按 TWAIN 规范属于成功。
+    // 旧实现只认 TWRC_SUCCESS，把驱动正常的协商结果当失败 → setPaperSize 返回 false
+    // → 整个扫描会话被中止，报「Scanner rejected requested paper size」，这是
+    // 「换一台扫描仪就扫不动」的高频根因。
+    if (rc == TWRC_CHECKSTATUS) {
+        TW_STATUS status;
+        memset(&status, 0, sizeof(status));
+        DSM_Entry(&m_appId, &m_sourceId,
+            DG_CONTROL, DAT_STATUS, MSG_GET,
+            (TW_MEMREF)&status);
+        return true;
+    }
+
     if (rc != TWRC_SUCCESS) {
         // Try MSG_RESET to check if cap is settable
         TW_CAPABILITY checkCap;
@@ -682,7 +813,36 @@ bool TwainController::setPaperSize(const std::string& size) {
     } else {
         paperSize = TWSS_A4;
     }
-    return setCapability(ICAP_SUPPORTEDSIZES, TWTY_UINT16, &paperSize);
+    if (!setCapability(ICAP_SUPPORTEDSIZES, TWTY_UINT16, &paperSize)) return false;
+
+    // TWRC_CHECKSTATUS 是驱动正常的协商结果，但驱动可能改用自己的取值（请求 A3 却
+    // 替代为 A4）。版面与识别按请求尺寸进行，静默继续会得到裁切/错位的识别结果
+    // （评审 P2），故核对 MSG_GETCURRENT 确认实际生效值；读取失败时按旧行为放行。
+    TW_CAPABILITY current;
+    memset(&current, 0, sizeof(current));
+    current.Cap = ICAP_SUPPORTEDSIZES;
+    TW_UINT16 rc = DSM_Entry(
+        &m_appId, &m_sourceId,
+        DG_CONTROL, DAT_CAPABILITY, MSG_GETCURRENT,
+        (TW_MEMREF)&current
+    );
+    if (rc == TWRC_SUCCESS && current.hContainer) {
+        TW_UINT16 effective = paperSize;
+        bool readable = false;
+        pTW_ONEVALUE value = static_cast<pTW_ONEVALUE>(GlobalLock(current.hContainer));
+        if (value && value->ItemType == TWTY_UINT16) {
+            effective = static_cast<TW_UINT16>(value->Item);
+            readable = true;
+        }
+        if (value) GlobalUnlock(current.hContainer);
+        GlobalFree(current.hContainer);
+        if (readable && effective != paperSize) {
+            fprintf(stderr, "[ScannerBridge] Driver substituted paper size (requested %u, effective %u); aborting to avoid misaligned recognition\n",
+                    static_cast<unsigned>(paperSize), static_cast<unsigned>(effective));
+            return false;
+        }
+    }
+    return true;
 }
 
 bool TwainController::enableADF() {
@@ -950,10 +1110,41 @@ std::string escapeJson(const std::string& s) {
 }
 
 std::string sourcesToJson(const std::vector<SourceInfo>& sources) {
-    std::string json = "{\n  \"status\": \"ok\",\n  \"sources\": [\n";
-    for (size_t i = 0; i < sources.size(); ++i) {
-        json += "    { \"name\": \"" + escapeJson(sources[i].name) + "\" }";
-        if (i < sources.size() - 1) json += ",";
+    SourceEnumeration snapshot;
+    snapshot.sources = sources;
+    snapshot.code = sources.empty() ? "NO_SOURCES" : "OK";
+    snapshot.message = sources.empty() ? "未枚举到任何 TWAIN 扫描仪" : "";
+    snapshot.windowCreated = true;
+    snapshot.dsmPath = dsmLoadedPath();
+    return sourceEnumerationToJson(snapshot, bridgeArchName());
+}
+
+std::string sourceEnumerationToJson(const SourceEnumeration& snapshot, const char* arch) {
+    const bool ok = (snapshot.code == "OK");
+    std::string json = "{\n";
+    json += "  \"status\": \"" + std::string(ok ? "ok" : "error") + "\",\n";
+    json += "  \"code\": \"" + escapeJson(snapshot.code) + "\",\n";
+    if (!snapshot.message.empty()) {
+        json += "  \"message\": \"" + escapeJson(snapshot.message) + "\",\n";
+    }
+    if (!snapshot.hint.empty()) {
+        json += "  \"hint\": \"" + escapeJson(snapshot.hint) + "\",\n";
+    }
+    json += "  \"arch\": \"" + escapeJson(arch ? arch : "unknown") + "\",\n";
+    json += "  \"dsm_loaded\": " + std::string(g_dsmLoaded ? "true" : "false") + ",\n";
+    if (!snapshot.dsmPath.empty()) {
+        json += "  \"dsm_path\": \"" + escapeJson(snapshot.dsmPath) + "\",\n";
+    }
+    if (!snapshot.dsmSearchLog.empty()) {
+        json += "  \"dsm_search\": \"" + escapeJson(snapshot.dsmSearchLog) + "\",\n";
+    }
+    json += "  \"open_dsm_rc\": " + std::to_string(snapshot.openDsmRc) + ",\n";
+    json += "  \"condition_code\": " + std::to_string(snapshot.conditionCode) + ",\n";
+    json += "  \"window_created\": " + std::string(snapshot.windowCreated ? "true" : "false") + ",\n";
+    json += "  \"sources\": [\n";
+    for (size_t i = 0; i < snapshot.sources.size(); ++i) {
+        json += "    { \"name\": \"" + escapeJson(snapshot.sources[i].name) + "\" }";
+        if (i < snapshot.sources.size() - 1) json += ",";
         json += "\n";
     }
     json += "  ]\n}";

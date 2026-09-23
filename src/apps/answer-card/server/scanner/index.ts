@@ -32,6 +32,21 @@ function enqueuePersist(task: () => Promise<void>): Promise<void> {
   return run;
 }
 
+/** 等纸空闲超时的合法区间：下限 2s（慢于此值几乎必然截断正常进纸），上限 2min。 */
+const PAGE_TIMEOUT_MIN_MS = 2_000;
+const PAGE_TIMEOUT_MAX_MS = 120_000;
+
+/**
+ * 规范化前端传入的等纸超时。
+ * 未传/非有限数/越界一律返回 undefined，由 native 侧使用默认 15000ms——
+ * 避免把 0 或负数透传下去导致 native 行为不可预期。
+ */
+function normalizePageTimeoutMs(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  if (value < PAGE_TIMEOUT_MIN_MS || value > PAGE_TIMEOUT_MAX_MS) return undefined;
+  return Math.round(value);
+}
+
 /**
  * 创建扫描路由。
  * @param twainEnabled 是否启用 TWAIN 原生扫描（依赖本机 scanner-bridge.exe）。
@@ -84,7 +99,8 @@ export function createScannerRouter(twainEnabled = true): Router {
           colorMode: body.colorMode || "gray",
           paperSize: body.paperSize || "A4",
           maxPages: body.maxPages || 0,
-          showUi: body.showUi === true
+          showUi: body.showUi === true,
+          pageTimeoutMs: normalizePageTimeoutMs(body.pageTimeoutMs)
         };
 
         // 先建会话拿 sessionId，立即返回 202；扫描 + OCR 后台执行。

@@ -10,6 +10,57 @@
 
 详细原因、配置、验证边界和部署状态见 [部署问题复现与修复验证](../docs/部署问题复现与修复验证.md)。
 
+## v2.5.6 (2026-09-21) — 扫描端「检测失败即无法扫描」解封 + 图片去向常驻 + 服务器地址归一化
+
+> 分支 `fix-scanner-ia32-runtime-diagnostics`（PR #282 续）。现场（ia32 安装包 + 远程上传模式）新反馈三条 P0：① TWAIN ERROR 报错但**实测 DLL 组件正常、设备在厂商软件里能扫**；② 扫描端→主站链路受阻；③ 依旧无法选择「本地阅卷 / 上传服务器」。三条均已在代码层定位到确定成因。
+
+### 1. 检测失败不再阻止扫描（「扫描端阻止我扫」的直接原因）
+- 根因：`ScannerPanel` 的「扫描设置」整卡（含图片去向档位与「开始扫描」按钮）被 `sources.length > 0` 门控，且 `detectSources()` 任何非 ok 都置 `error` 态——**扫描仪一旦检测失败，界面连扫描入口都不存在**，而设备本身可用。这与「DLL 正常、能扫码」的现场实测完全吻合。
+- 修复：设置卡与「开始扫描」在 `ready / idle / error` 三态**始终渲染**；数据源字段在无枚举结果时退化为**可手工输入**（留空 = 交由桥接请求系统默认数据源 `MSG_GETDEFAULT`），并附「重新检测」；`startScan()` 不再因「未选到数据源」静默 return（服务端 `sourceName` 本就缺省为 `""`）。
+- 移除「点击上方按钮检测扫描仪」独立提示块（与新设置卡内入口重复，易误导）。
+
+### 2. 「图片去向」提升为工作台常驻首位
+- 此前直扫档位藏在扫描面板的「扫描设置」里（见第 1 条，检测失败即消失），导入档位在「导入阅卷」卡内，两处入口深浅不一、老师找不到。
+- 现固定在扫描工作台**左侧首位**新增「图片去向」卡（仅本地 / 本地判分+上传服务器），直扫与导入共用同一 `useScannerMode` 记忆与实时同步；未配置可用服务器时给出明确警示与**「去配置」**按钮（`ServerConfigDialog` 移出皮肤条件块，保证任何情况下都能打开）。
+- 「导入阅卷」卡内的重复档位控件改为**只读回显**（同一栏相邻两个同名控件会让人分不清哪个生效）；扫描面板内保留同源镜像控件并统一标题为「图片去向」。
+
+### 3. 服务器地址归一化与校验（「扫描端→主站链路受阻」的根因）
+- 根因：服务器地址全程只做 `trim()` + 去尾斜杠，**从不补协议头**。教师按习惯填 `192.168.1.100:5174`（省略 `http://`）时，`fetch("192.168.1.100:5174/api/...")` 的 scheme 以数字开头不是合法 URL，浏览器直接抛 TypeError——**请求根本没发出去，服务端日志零痕迹**；而 `isRemoteServerConfigured()` 只判非空，界面仍显示"已配置"，于是上传永远失败且无从排查。
+- 修复：新增 `normalizeServerUrl()` / `isValidServerUrl()` / `readServerUrl()` / `writeServerUrl()`，**四个读取点全部收敛**（`auth/api.ts` 的 `getApiBase`/`getRemoteScannerBase`、`remoteServerStatus.ts` 探活、`scannerUploadManager.ts` 任务快照 base）；配置对话框保存前校验并**回显实际生效地址**，输入缺协议头时实时提示"将按 http://… 使用"。
+- `isRemoteServerConfigured()` 改为**要求归一化后是合法 http(s) 地址**，杜绝「填了但发不出去」被判为已配置而静默失败。
+- `测试连接`/上传失败文案带上具体 base 与 HTTP 状态；「未启用远程扫描客户端 API」明确指向 `PROJECTX_ENABLE_SCANNER_CLIENT_API=1`。
+
+### 4. 诊断可一键复制 · 错误文案校正
+- 检测失败处新增**「复制诊断」**按钮（含时间戳、答题卡 ID、错误信息与全部技术细节；剪贴板不可用时回退隐藏 textarea），老师现场无法翻日志也可直接粘贴反馈。
+- `describeBridgeFailure` 的 `0xC0000135` 文案**不再一口断定"缺少 VC++ 运行库"**：v2.5.5 起运行库已随包分发，现场实测 DLL 齐全却仍报此码，故改为并列可能原因（安装不完整 / 被安全软件隔离）并明确「该错误由 Windows 报告，不代表扫描仪或驱动有问题」。
+- 文档：`readus/SCANNER-SETUP.md` 更新流程说明与 FAQ（检测失败不阻止扫描、图片去向位置、上传不通三步排查、0xC0000135 新解释），版本号统一为 v2.5.5+。
+
+## v2.5.5 (2026-09-20) — 扫描端 ia32 运行库随包分发 + TWAIN 检测诊断
+
+> 分支 `fix-scanner-ia32-runtime-diagnostics`（PR #282），基于 main（含 #276）。现场（ia32 安装包 + 远程上传模式）反馈「识别失败 / 结果没传到服务器 / 扫描不自动终止 / 检测提示笼统」，其中上传丢页已由 #276 修复，本版本处理其余三项并关闭一项审计发现。
+
+### 1. ia32 包补齐 VC++ 运行库（识别失败根因）
+- 根因：`answer-card-recognizer.exe` 与 `opencv_world4130.dll` 为 **/MD 动态 CRT**，而 `resources/native/win-ia32` 此前未随包携带运行库 → 未安装 VC++ 可再发行包的目标机上识别链整体启动失败（`0xC0000135` / `0xC0000142`），表现为「识别失败」（`scanner-bridge.exe` / `TWAINDSM.dll` 是 /MT 静态 CRT，故扫描能起、识别全灭）。
+- 新增 `scripts/stage-vc-runtime.cjs`（`npm run native:runtime[:ia32]`）：从本机 VS 安装提取 `msvcp140*` / `vcruntime140*` / `concrt140`，以 **app-local** 方式落位到 `resources/native/<arch>/`，由 `extraResources` 整目录进包。目标机免装可再发行包、免管理员权限，MSI / 目录 / 便携三种形态行为一致；内容未变则跳过复制以避免无谓 diff。
+- 全部 `electron:pack / dist / msi` 脚本接入（两架构统一 `native:runtime`）。不改编译配置，无需重编译识别器。
+
+### 2. TWAIN 检测诊断（可定位）
+- `scanner-bridge list` 改为结构化输出：`code / message / hint / arch / dsm_loaded / dsm_path / dsm_search / open_dsm_rc / condition_code / window_created`，可区分 **DSM 加载失败 / OPENDSM 失败 / 窗口创建失败 / 无数据源** 四类根因（此前一律「未检测到扫描仪」）。判定顺序复用 OPENDSM 后的枚举结果，避免二次 OPENDSM 触发 SEQERROR。
+- `listSources()` 捕获桥接启动失败（`BRIDGE_MISSING` / `BRIDGE_EXIT_NONZERO`）与输出不可解析（`BRIDGE_NO_OUTPUT`），并对旧版 exe 由 stderr 关键字与退出码反推根因；`describeBridgeFailure` 补充 `0xC000007B`（位数不匹配）、`0xC0000142`（DLL 初始化失败），`0xC0000135` 文案改为指向包内运行库文件。
+- 前端检测失败展示根因提示 + 可折叠技术细节，便于远程截图反馈。
+
+### 3. 扫描中止与等纸超时
+- `setCapability` 接受 `TWRC_CHECKSTATUS`：该值是驱动正常协商结果，旧代码按失败处理 → `setPaperSize` 返回 false → 中止整次扫描（「换台扫描仪就扫不动」的高频根因）。
+- `pageTimeoutMs` 端到端打通：前端「扫描设置」→ `POST /scan` → `normalizePageTimeoutMs`（2s–120s，非法值回退 native 默认 15s）→ `scanConfig` → `scanner-bridge --page-timeout-ms`。
+
+### 4. 安全：主观题分值注入（审计编号 03）
+- `gradeSubjectiveRecognition` 在题号不在当前答题卡上时不再回退 `recognition.maxScore`（远程上传路径的 `subjectiveQuestions` 由客户端提供且仅做形状校验，回退即等于允许伪造 `questionId` 注入任意主观题成绩并写入 `question_scores`），改为 `score: 0 / maxScore: 0 / status: missing_score_grid / needsReview: true`，交教师订正。
+
+### 打包说明
+- `resources/native/win-ia32`、`win-x64` 下的 CRT 运行库 DLL 属**随包资产，必须入库**。
+- ia32 打包若遇 Electron 下载超时，可设 `ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR` 镜像变量，或以 `-c.electronDist=<本地 ia32 electron 目录>` 直接复用已解压的 Electron。
+- 文档：`readus/SCANNER-SETUP.md` 更新 FAQ（运行库随包 / 检测诊断 / 等纸超时）与打包备忘。
+
 ## v2.5.1 (2026-08-25) — 扫描端图片上传修复与进度可视化
 
 > 分支 `feat/scanner-upload-progress`。此前扫描端连接服务器后传图链路形同虚设：直扫自动上传被组件卸载竞态取消（扫描完成即卸载面板，清理逻辑取消了刚排定的上传定时器）、导入阅卷完全没有上传能力、上传过程无任何可见反馈。本版本根治竞态并补齐全套上传可视化与弱网韧性。

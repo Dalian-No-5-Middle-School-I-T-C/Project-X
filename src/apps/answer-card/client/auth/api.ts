@@ -1,6 +1,7 @@
 // v1.6.0: API 基础地址支持运行时配置
 // Web 端优先级: localStorage > VITE_PROJECTX_API_BASE > 空（相对路径）
 // 扫描端始终使用本机相对路径；远端服务器仅供 scanner upload API 使用。
+import { readServerUrl } from "../lib/scannerMode";
 function getViteEnv(): Record<string, string | undefined> | undefined {
   try { return (import.meta as unknown as { env?: Record<string, string | undefined> })?.env; } catch { return undefined; }
 }
@@ -11,11 +12,7 @@ function isScannerBuild(): boolean {
 }
 function getApiBase(): string {
   if (isScannerBuild()) return "";
-  try {
-    const stored = localStorage.getItem("projectx_server_url");
-    if (stored) return stored.replace(/\/+$/, "");
-  } catch { /* ignore */ }
-  return (getViteEnv()?.VITE_PROJECTX_API_BASE ?? "").replace(/\/+$/, "");
+  return readServerUrl() || (getViteEnv()?.VITE_PROJECTX_API_BASE ?? "").replace(/\/+$/, "");
 }
 
 // 安全审计（F-6）：API Key 本地存储带 30 天过期时间；兼容旧纯字符串格式（视为未过期，随下次保存升级）。
@@ -54,11 +51,9 @@ export function storeApiKey(key: string | null): void {
 }
 
 function getRemoteScannerBase(): string {
-  try {
-    return (localStorage.getItem("projectx_server_url") ?? "").trim().replace(/\/+$/, "");
-  } catch {
-    return "";
-  }
+  // v2.5.6：统一归一化，杜绝「192.168.1.100:5174」这类缺 scheme 的地址
+  // 让 fetch 抛 TypeError、请求发不出去却让服务端无日志可查。
+  return readServerUrl();
 }
 
 let authToken: string | null = null;

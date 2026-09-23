@@ -36,16 +36,16 @@ set "VSWHERE_INSTALL=%TEMP%\vswhere-install-%RANDOM%.txt"
 if exist "%VSWHERE%" (
     rem for /f 内嵌命令会剥离引号导致带空格路径拆开，改用临时文件读取；
     rem MSBUILD 检查必须放在 if 块外（块内 %MSBUILD% 在解析时仍是空值）
-    "%VSWHERE%" -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" > "%MSBUILD_LIST%" 2>nul
+    "%VSWHERE%" -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" > "%MSBUILD_LIST%" 2>nul
     set /p MSBUILD=<"%MSBUILD_LIST%"
     del "%MSBUILD_LIST%" >nul 2>&1
     rem 安装根由 vswhere 直接给出：MSBuild 路径上溯层数随安装布局（Program Files\2022\Community vs D:\apps\vs-s-c）变化，不可靠
-    "%VSWHERE%" -latest -property installationPath > "%VSWHERE_INSTALL%" 2>nul
+    "%VSWHERE%" -latest -products * -property installationPath > "%VSWHERE_INSTALL%" 2>nul
     set /p VS_INSTALL_RAW=<"%VSWHERE_INSTALL%"
     del "%VSWHERE_INSTALL%" >nul 2>&1
 )
 if defined MSBUILD if exist "%MSBUILD%" (
-    echo [vswhere] Found MSBuild: %MSBUILD%
+    echo [vswhere] Found MSBuild: !MSBUILD!
     goto :found_msbuild
 )
 
@@ -76,16 +76,17 @@ exit /b 1
 :found_msbuild
 for /f "delims=" %%i in ("%MSBUILD%") do set "MSBUILD_DIR=%%~dpi"
 if defined VS_INSTALL_RAW (
-    set "VS_INSTALL=%VS_INSTALL_RAW%"
-    echo [vswhere] VS install: %VS_INSTALL%
+    rem Delayed expansion only: the path may contain "(x86)", which would close the block if expanded at parse time.
+    set "VS_INSTALL=!VS_INSTALL_RAW!"
+    echo [vswhere] VS install: !VS_INSTALL!
 ) else (
-    set "VS_INSTALL=%MSBUILD_DIR%..\..\..\.."
+    set "VS_INSTALL=!MSBUILD_DIR!..\..\..\.."
 )
 
 set "VCVARS="
 for %%f in (
-    "%VS_INSTALL%\Common7\Tools\VsDevCmd.bat"
-    "%VS_INSTALL%\VC\Auxiliary\Build\vcvarsall.bat"
+    "!VS_INSTALL!\Common7\Tools\VsDevCmd.bat"
+    "!VS_INSTALL!\VC\Auxiliary\Build\vcvarsall.bat"
 ) do (
     if exist "%%~f" set "VCVARS=%%~f"
 )
