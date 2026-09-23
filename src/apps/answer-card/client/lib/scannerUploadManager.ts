@@ -31,6 +31,7 @@ export interface UploadPageInput {
 }
 
 export interface StartUploadInput {
+  identityMode?: "strict" | "legacy";
   kind: UploadJobKind;
   cardId: string;
   name: string;
@@ -82,6 +83,7 @@ interface JobRecord {
   cardId: string;
   dpi: number;
   paperSize: string;
+  identityMode: "strict" | "legacy";
   pages: PageRecord[];
   status: UploadJobStatus;
   /** paused 恢复后回到的阶段 */
@@ -279,6 +281,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
         name: j.name,
         dpi: j.dpi,
         paperSize: j.paperSize,
+        identityMode: j.identityMode,
         pageCount: j.pages.length,
       }),
       signal: timeoutSignal(pageTimeoutMs),
@@ -299,6 +302,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     localForm.append("page", String(page.input.layoutPage ?? (page.input.side === "back" ? 2 : 1)));
     localForm.append("dpi", String(j.dpi));
     localForm.append("includeCrops", "1");
+    localForm.append("identityMode", j.identityMode);
     const recognized = await (deps.localFetch ?? authFetch)(`/api/cards/${encodeURIComponent(j.cardId)}/recognition`, {
       method: "POST", body: localForm,
     });
@@ -333,7 +337,7 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     form.append("pageNum", String(page.input.pageNum));
     form.append("side", page.input.side);
     form.append("recognition", JSON.stringify({
-      status: recognition.status, studentId: recognition.studentId,
+      status: recognition.status, studentId: recognition.studentId, identity: recognition.identity,
       questions: recognition.questions, subjectiveQuestions: recognition.subjectiveQuestions,
     }));
     const fetcher = jobFetch(j);
@@ -568,6 +572,7 @@ if (j.cancelled) throw cancelledError(j);
       cardId: input.cardId,
       dpi: input.dpi ?? 300,
       paperSize: input.paperSize ?? "A4",
+      identityMode: input.identityMode ?? "strict",
       pages,
       status: "queued",
       resumePhase: "creating",

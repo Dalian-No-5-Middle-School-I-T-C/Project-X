@@ -41,6 +41,8 @@ import {
   TableRow,
   TableWrap,
   SegmentedControl,
+  Checkbox,
+  ControlRow,
 } from "./ui/v2";
 
 interface Props {
@@ -70,6 +72,8 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
   const [gradingFiles, setGradingFiles] = useState<File[]>([]);
   const [gradingResult, setGradingResult] = useState<CombinedGradingBatchResult | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const [legacyIdentity, setLegacyIdentity] = useState(false);
+  const [lastLegacyIdentity, setLastLegacyIdentity] = useState(false);
   // v2.5.1: 导入阅卷的图片去向档位（与直扫面板共用同一记忆，hook 内置跨实例同步）
   // v2.5.6: 提升为工作台级常驻选择器（见侧栏「图片去向」卡），直扫与导入共用同一份状态
   const [imageMode, setImageMode] = useScannerMode();
@@ -95,6 +99,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
   async function gradeAnswerCardFiles() {
     if (gradingFiles.length === 0) return;
     setIsBusy(true);
+    setLastLegacyIdentity(legacyIdentity);
     // v2.5.1: remote 档位时图片同时后台排队上传（不阻塞判分）
     let uploadQueued = false;
     let serverUnconfigured = false;
@@ -105,6 +110,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
           const pages = mapImportedScanPages(gradingFiles.length, buildLayout(card).pages.length, card.sided);
           scannerUploadManager.startUpload({
             kind: "import",
+            identityMode: legacyIdentity ? "legacy" : "strict",
             cardId,
             name: `导入_${cardTitle}_${new Date().toISOString().slice(0, 10)}`,
             paperSize: card.paper.size,
@@ -120,6 +126,8 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
       }
       setStatus("正在识别答题卡...");
       const form = new FormData();
+      form.append("identityMode", legacyIdentity ? "legacy" : "strict");
+      form.append("pageOrder", "sequential");
       for (const file of gradingFiles) {
         form.append("files", file);
       }
@@ -136,6 +144,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
       setStatus(`${err instanceof Error ? err.message : "阅卷失败"}${serverUnconfigured ? "；未配置服务器地址，仅本地判分" : ""}`);
     } finally {
       setIsBusy(false);
+      setLegacyIdentity(false);
     }
   }
 
@@ -165,6 +174,8 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
         <div className="flex min-h-0 flex-1 flex-row-reverse">
           {/* ── Main area: ScannerPanel or GradingResults ── */}
           <section className="min-w-0 flex-1 overflow-auto bg-background p-6">
+            {!scanning && <ControlRow label="导入时兼容旧卡（无可读二维码时未校验卡 ID）" control={<Checkbox checked={legacyIdentity} disabled={isBusy} onCheckedChange={c => setLegacyIdentity(c === true)} />} />}
+            {!scanning && lastLegacyIdentity && <p role="status" className="text-sm text-muted-foreground">本批次兼容旧卡：无可读二维码的页面未校验卡 ID，请人工核对。</p>}
             {scanning ? (
               <ScannerPanel
                 cardId={cardId}

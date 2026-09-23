@@ -14,6 +14,7 @@ import type {
   SubjectiveQuestion
 } from "./types";
 import { formatBlankLabel } from "./blankLabels";
+import { createCardQrCode } from "./cardIdentity";
 import { DEFAULT_STUDENT_NOTES } from "./defaultCard";
 import { ESSAY_ROW_GAP_MM } from "./essayGrid";
 import { objectiveQuestionDefinitions, type ObjectiveQuestionDefinition } from "./grading";
@@ -122,7 +123,7 @@ function activatePanel(panel: PageLayout["panels"][number]): void {
 function createPage(card: AnswerCard, pageNumber: number, includeTitle: boolean): PageLayout {
   const panels = pagePanels();
   const headerPanel = panels[0].rect;
-  const codeBoxes = Array.from({ length: 6 }, (_, index) => rect(headerPanel.x + 41 + index * 6.1, 22, 4.8, 3.4));
+  const qrCode = createCardQrCode(card.id, pageNumber, rect(headerPanel.x + 41, 12, 18, 18));
   const markers = markerRects();
   const elements: LayoutElement[] = markers.map((marker) => ({
     id: `p${pageNumber}_marker_${marker.role}`,
@@ -141,7 +142,7 @@ function createPage(card: AnswerCard, pageNumber: number, includeTitle: boolean)
       title: includeTitle ? card.title : undefined,
       idTextX: headerPanel.x + 4,
       idTextY: 26,
-      codeBoxes,
+      qrCode,
       titleX: includeTitle ? headerPanel.x + headerPanel.width / 2 : undefined,
       titleY: includeTitle ? 37 : undefined
     },

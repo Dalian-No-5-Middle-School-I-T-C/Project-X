@@ -31,6 +31,12 @@ initializeDatabase();
 const db = getMysqlDb();
 if (process.env.SCANNER_BATCH_MARIADB === "1") await initMariadbSchema();
 const store = await import("../src/apps/answer-card/server/database/scan-store");
+async function createVerifiedRecord(params: Parameters<typeof store.createScanRecord>[0]) {
+  const record = await store.createScanRecord(params);
+  const identity_json = JSON.stringify({ status: "verified", code: "QR_VERIFIED", cardId: params.cardId, pageNumber: 1 });
+  await db.run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", identity_json, record.id);
+  return { ...record, identity_json };
+}
 const { saveCard, cardPath } = await import("../src/apps/answer-card/server/storage");
 const { CardRepository } = await import("../src/server/repositories/CardRepository");
 const { createScannerRouter } = await import("../src/apps/answer-card/server/scanner");
@@ -55,7 +61,7 @@ for (const id of users) await db.run("INSERT INTO exam_participants (exam_id,stu
 const session = await store.createSession(card.id, "batch");
 const records = [];
 for (let i = 0; i < users.length; i++) {
-  const record = await store.createScanRecord({ sessionId: session.id, cardId: card.id, pageNum: i + 1, imagePath: path.join(root, `page_${i}.png`) });
+  const record = await createVerifiedRecord({ sessionId: session.id, cardId: card.id, pageNum: i + 1, imagePath: path.join(root, `page_${i}.png`) });
   await store.updateScanOcrResult(record.id, `9100${i + 1}`, 1, "done");
   await store.upsertRecognitionResult({ scanRecordId: record.id,
     objectiveJson: JSON.stringify([{ questionNumber: 1, selectedOptions: ["A"], confidence: 1 }]),
@@ -198,6 +204,22 @@ try {
   assert.equal(await scoreCount(), 3);
 
   const raw = (await store.listScanRecordsGroupedByStudent(session.id)).flatMap(g => g.records);
+  for (const identity of [null, { status: "rejected", code: "CARD_MISMATCH" },
+    { status: "verified", cardId: "wrong", pageNumber: 1 }, { status: "verified", cardId: card.id, pageNumber: 2 }]) {
+    const invalid = structuredClone(raw);
+    invalid[0].identity_json = identity ? JSON.stringify(identity) : null;
+    let saved = 0;
+    const checked = await collectSessionResults(card, invalid, [], async () => { saved++; });
+    assert.equal(checked.failures.length, 1, "Wrong/missing identity must block cached grades even with manual student ID");
+    assert.equal(saved, 2);
+  }
+  const compatible = structuredClone(raw);
+  compatible[0].identity_json = JSON.stringify({ status: "unverified", code: "QR_MISSING" });
+  assert.equal((await collectSessionResults(card, compatible, [])).failures.length, 1);
+  compatible[0].identity_mode = "legacy";
+  assert.equal((await collectSessionResults(card, compatible, [])).failures.length, 0);
+  assert.equal((await store.createSession(card.id, "strict default")).identity_mode, "strict");
+  assert.equal((await store.createSession(card.id, "legacy explicit", { identityMode: "legacy" })).identity_mode, "legacy");
   const missing = structuredClone(raw);
   missing[1].recognition = null; missing[1].student_id = null; missing[1].ocr_status = "failed";
   const result = await collectSessionResults(card, missing, []);
@@ -216,6 +238,7 @@ try {
     { ...raw[2], id: "front2", page_num: 2, side: "front" as const },
     { ...raw[2], id: "back2", page_num: 2, side: "back" as const, student_id: null },
   ];
+  for (const record of twoCards) record.identity_json = JSON.stringify({ status: "verified", code: "QR_VERIFIED", cardId: duplex.id, pageNumber: record.side === "back" ? 2 : 1 });
   const paired = await collectSessionResults(duplex, [...twoCards].reverse(), []);
   assert.equal(paired.results.length, 2, "Sort actual same-number front/back records and inherit within card");
   assert.deepEqual(paired.results[0].pages.map(p => p.layoutPage), [1, 2]);
@@ -238,7 +261,7 @@ try {
   async function makeSession(numbers: string[]) {
     const s = await store.createSession(card.id, "duplicate-test");
     for (const [index, number] of numbers.entries()) {
-      const record = await store.createScanRecord({ sessionId: s.id, cardId: card.id, pageNum: index + 1, imagePath: path.join(root, `retained-${s.id}-${index}.png`) });
+      const record = await createVerifiedRecord({ sessionId: s.id, cardId: card.id, pageNum: index + 1, imagePath: path.join(root, `retained-${s.id}-${index}.png`) });
       await store.updateScanOcrResult(record.id, number, 1, "uploaded");
       await store.upsertRecognitionResult({ scanRecordId: record.id, objectiveJson: JSON.stringify([{ questionNumber: 1, selectedOptions: [index ? "B" : "A"], confidence: 1 }]), subjectiveJson: "[]", gradeStatus: "recognized" });
     }
@@ -252,6 +275,36 @@ try {
     });
     return { status: response.status, data: await response.json() as ScanBatchResponse };
   }
+  // A scanner key can save a new student's result after partial publication,
+  // but cannot expose that score without a fresh teacher publication.
+  const laterStudent = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)",
+    "later-scanner-result", "test", "后续扫描", role.id, "91888");
+  await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, laterStudent.lastInsertRowid);
+  await db.run("UPDATE exams SET status='grading', score_published=1 WHERE id=?", exam.lastInsertRowid);
+  const laterSession = await makeSession(["91888"]);
+  const laterSaved = await remote(laterSession.id);
+  assert.equal(laterSaved.status, 200);
+  assert(await db.get("SELECT id FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, laterStudent.lastInsertRowid));
+  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))!.score_published, 0);
+  assert.equal((await db.all("SELECT id FROM exam_publish_events WHERE exam_id=? AND reason=?", exam.lastInsertRowid, "扫描成绩入库自动撤回")).length, 1);
+  const { ScoreRepository } = await import("../src/server/repositories/ScoreRepository");
+  assert.equal((await new ScoreRepository().getStudentScores(Number(laterStudent.lastInsertRowid))).length, 0, "New scanner score stays hidden from students");
+  await db.run("UPDATE exams SET score_published=1 WHERE id=?", exam.lastInsertRowid);
+  assert.equal((await remote(laterSession.id)).status, 200);
+  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))!.score_published, 1, "Saved receipt replay does not mutate scores or withdraw publication");
+  const { persistScannerResultToMainDb } = await import("../src/server/services/scannerResultPersistence");
+  const savedResult = (await processScannerSession(card, laterSession.id)).results[0];
+  await db.run("UPDATE exams SET status='grading' WHERE id=?", exam.lastInsertRowid);
+  const beforeScore = await db.get("SELECT total_score FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, laterStudent.lastInsertRowid);
+  await assert.rejects(db.transaction(async tx => {
+    await persistScannerResultToMainDb(card.id, { ...savedResult, totalScore: 123, totalMaxScore: savedResult.maxScore,
+      pages: [], objectiveQuestions: [], subjectiveQuestions: [] }, true, { db: tx, examId: Number(exam.lastInsertRowid) });
+    throw new Error("forced scanner save rollback");
+  }), /forced scanner save rollback/);
+  assert.deepEqual(await db.get("SELECT total_score FROM student_scores WHERE exam_id=? AND student_id=?", exam.lastInsertRowid, laterStudent.lastInsertRowid), beforeScore);
+  assert.equal((await db.get<{ score_published: number }>("SELECT score_published FROM exams WHERE id=?", exam.lastInsertRowid))!.score_published, 1, "Failed save rolls back publication withdrawal too");
+  assert.equal((await db.all("SELECT id FROM exam_publish_events WHERE exam_id=? AND reason=?", exam.lastInsertRowid, "扫描成绩入库自动撤回")).length, 1, "Failed save leaves no withdrawal audit");
+  await db.run("UPDATE exams SET score_published=0 WHERE id=?", exam.lastInsertRowid);
   // A saved receipt owns its crops even after closure or reuse of the card.
   const cropId = "receipt-bound-crop";
   await db.run(`INSERT INTO answer_block_crops
@@ -289,7 +342,7 @@ try {
 
   const newCard = createDefaultCard("91512002");
   const noExam = await store.createSession(newCard.id, "unlinked");
-  const unlinkedRecord = await store.createScanRecord({ sessionId: noExam.id, cardId: newCard.id, pageNum: 1, imagePath: "unlinked.png" });
+  const unlinkedRecord = await createVerifiedRecord({ sessionId: noExam.id, cardId: newCard.id, pageNum: 1, imagePath: "unlinked.png" });
   await store.updateScanOcrResult(unlinkedRecord.id, "91001", 1, "done");
   await store.upsertRecognitionResult({ scanRecordId: unlinkedRecord.id, objectiveJson: "[]", subjectiveJson: "[]" });
   newCard.bodyBlocks = card.bodyBlocks;
@@ -345,11 +398,66 @@ try {
   await recoverLegacyScannerSubmission(Number(exam.lastInsertRowid), String(legacyUser.lastInsertRowid));
   assert.equal((await db.get<{ total_score: number }>("SELECT total_score FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, legacyCorrected.lastInsertRowid))!.total_score, 3, "Restore exactly the teacher-reviewed legacy snapshot");
   assert.equal((await remote(legacyNew.id)).status, 200);
-  const repeatedPage = await store.createScanRecord({ sessionId: session.id, cardId: card.id, pageNum: 1, imagePath: "duplicate-page.png" });
+  const repeatedPage = await createVerifiedRecord({ sessionId: session.id, cardId: card.id, pageNum: 1, imagePath: "duplicate-page.png" });
   await store.updateScanOcrResult(repeatedPage.id, "91001", 1, "done");
   await store.upsertRecognitionResult({ scanRecordId: repeatedPage.id, objectiveJson: "[]", subjectiveJson: "[]" });
   assert((await processScannerSession(card, session.id, "validate")).failures.some(f => f.message.includes("重复页")));
   assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, users[0]), null, "Repeated pages cannot leave an older score normal");
+  // Remote ingress rejects missing/wrong evidence and invalidates a previous successful upload.
+  const uploadSession = await store.createSession(card.id, "qr-upload");
+  const uploadRecord = await createVerifiedRecord({ sessionId: uploadSession.id, cardId: card.id, pageNum: 1, imagePath: "pending.png" });
+  const { default: sharp } = await import("sharp");
+  const image = await sharp({ create: { width: 20, height: 20, channels: 3, background: "white" } }).png().toBuffer();
+  async function uploadIdentity(identity: unknown) {
+    const form = new FormData();
+    form.append("image", new Blob([image]), "scan.png"); form.append("token", uploadRecord.id);
+    form.append("pageNum", "1"); form.append("side", "front");
+    form.append("recognition", JSON.stringify({ status: "ok", studentId: { status: "ok", value: "91001" }, questions: [], subjectiveQuestions: [], identity }));
+    return fetch(`${base}/api/scanner/upload/sessions/${uploadSession.id}/pages`, { method: "POST", headers: { "X-Api-Key": "scanner-test-only" }, body: form });
+  }
+  assert.equal((await uploadIdentity({ status: "verified", code: "QR_VERIFIED", cardId: card.id, pageNumber: 1 })).status, 200);
+  assert(await store.getScanRecordWithResult(uploadRecord.id));
+  assert.equal((await uploadIdentity({ status: "verified", code: "QR_VERIFIED", cardId: "wrong-card", pageNumber: 1 })).status, 409);
+  assert.equal((await store.getScanRecordWithResult(uploadRecord.id))?.recognition, null);
+  assert.equal((await uploadIdentity(undefined)).status, 400);
+  assert.equal((await uploadIdentity({ status: "unverified", code: "QR_MISSING" })).status, 409);
+  await db.run("UPDATE twain_scan_sessions SET identity_mode = 'legacy' WHERE id = ?", uploadSession.id);
+  assert.equal((await uploadIdentity({ status: "unverified", code: "QR_MISSING" })).status, 200);
+  assert.equal((await uploadIdentity({ status: "verified", code: "QR_VERIFIED", cardId: card.id, pageNumber: 2 })).status, 409);
+
+  // A failed retry invalidates all cached recognition before manual ID correction.
+  const retrySession = await store.createSession(card.id, "qr retry");
+  const retryRecord = await createVerifiedRecord({ sessionId: retrySession.id, cardId: card.id, pageNum: 1, imagePath: path.join(root, "missing-scan.png") });
+  await store.updateScanOcrResult(retryRecord.id, "91001", 1, "done");
+  await store.upsertRecognitionResult({ scanRecordId: retryRecord.id, objectiveJson: "[]", subjectiveJson: "[]", totalScore: 5 });
+  await store.upsertStudentGradingResult({ sessionId: retrySession.id, studentId: "91001", totalScore: 5, pageCount: 1 });
+  await db.run(`INSERT INTO answer_block_crops (id,card_id,source_type,source_record_id,block_id,block_type,page_number,segment_index,question_numbers,rect_json,image_path,width_px,height_px,dpi)
+    VALUES (?,?,'twain_scan_record',?,'test','objective',1,0,'[1]','{}','stale.png',10,10,200)`, "qr-stale-crop", card.id, retryRecord.id);
+  const { runOcrOnSession } = await import("../src/apps/answer-card/server/scanner/scanner-service");
+  await runOcrOnSession(retrySession.id, card.id, () => {}, { recordIds: new Set([retryRecord.id]), studentId: "91001" });
+  const failedRetry = await store.getScanRecordWithResult(retryRecord.id);
+  assert.equal(failedRetry?.ocr_status, "failed");
+  assert.equal(failedRetry?.recognition, null);
+  assert.equal(failedRetry?.identity_json, null);
+  assert.equal(await db.get("SELECT id FROM answer_block_crops WHERE id = ?", "qr-stale-crop"), null);
+  assert.equal((await db.all("SELECT * FROM twain_student_grading_results WHERE session_id = ?", retrySession.id)).length, 0);
+  const savedRetryUser = await db.run("INSERT INTO users (username,password_hash,name,role_id,student_number) VALUES (?,?,?,?,?)", "qr-retry-student", "test", "二维码重试", role.id, "91996");
+  await db.run("INSERT INTO exam_participants (exam_id,student_id,source) VALUES (?,?,'explicit')", exam.lastInsertRowid, savedRetryUser.lastInsertRowid);
+  const savedRetry = await makeSession(["91996"]);
+  assert.equal((await remote(savedRetry.id)).status, 200);
+  assert(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, savedRetryUser.lastInsertRowid));
+  await db.run("UPDATE exams SET score_published = 1 WHERE id = ?", exam.lastInsertRowid);
+  const savedRetryRecord = (await store.listScanRecords(savedRetry.id))[0];
+  await runOcrOnSession(savedRetry.id, card.id, () => {}, { recordIds: new Set([savedRetryRecord.id]), studentId: "91996" });
+  assert.equal(await db.get("SELECT id FROM student_scores WHERE exam_id = ? AND student_id = ?", exam.lastInsertRowid, savedRetryUser.lastInsertRowid), null, "Failed retry withdraws its previously saved score");
+  assert.equal((await store.getScanRecordWithResult(savedRetryRecord.id))?.ocr_status, "failed");
+  assert(await db.get("SELECT id FROM exam_publish_events WHERE exam_id = ? AND reason = ?", exam.lastInsertRowid, "扫描重新识别自动撤回"));
+  assert.equal((await db.get<{ result_json: string | null }>("SELECT result_json FROM scanner_submissions WHERE session_id = ?", savedRetry.id))?.result_json, null);
+  const identityRejected: CombinedRecognitionResult = { status: "failed", message: "Student ID recognition failed.", identity: { status: "rejected", code: "CARD_MISMATCH" },
+    quality: { matchCount: 6, missingRoles: [] }, questions: [], subjectiveQuestions: [] };
+  applyScanStudentId(identityRejected, "91001");
+  assert.equal(identityRejected.status, "failed");
+  assert.equal(identityRejected.studentId, undefined);
   console.log(`PASS scanner batch HTTP + ${db.dialect}: isolated saving, missing users/exams/roster, duplicate old/new withdrawal, retained evidence, correction, idempotency, concurrent submissions`);
 } finally {
   await db.exec("DROP TRIGGER IF EXISTS scanner_batch_failure");

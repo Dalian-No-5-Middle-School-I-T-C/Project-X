@@ -64,6 +64,7 @@ struct LayoutPage {
     std::vector<StudentDigit> student_digits;
     std::vector<SubjectiveScoreCell> subjective_score_cells;
     std::vector<LayoutBlockCrop> block_crops;
+    Rect qr_rect{58, 12, 18, 18};
 };
 
 LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_number);

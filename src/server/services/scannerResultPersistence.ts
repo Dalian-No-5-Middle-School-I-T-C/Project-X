@@ -1,6 +1,7 @@
 import { databaseTimestamp } from "../db/timestamp";
 import type { CombinedStudentResult } from "../../shared/grading";
 import type { DbAdapter } from "../db";
+import { markScoreMutated } from "./examPublishEvents";
 export async function persistScannerResultToMainDb(
     cardId: string,
     result: CombinedStudentResult,
@@ -57,6 +58,9 @@ export async function persistScannerResultToMainDb(
     // （难度/区分度/逐题统计都依赖两表一致）。
     const write = async (tx: DbAdapter) => {
       for (const exam of filteredExams) {
+        // Also covers publication between successive scanner uploads. The
+        // withdrawal and score changes must commit or roll back together.
+        await markScoreMutated(tx, exam.id, null, "scanner_save");
         const obj = roundScore(result.objectiveScore);
         const subj = roundScore(result.subjectiveScore);
         const total = roundScore(result.totalScore);

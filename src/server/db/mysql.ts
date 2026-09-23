@@ -964,6 +964,10 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE classes ADD COLUMN archived_at DATETIME DEFAULT NULL",
     "ALTER TABLE grades ADD COLUMN archived_at DATETIME DEFAULT NULL",
   ] });
+  mariadbMigrations.push({ version: 51, name: "scanner-card-identity", sqls: [
+    "ALTER TABLE twain_scan_sessions ADD COLUMN identity_mode VARCHAR(16) NOT NULL DEFAULT 'strict'",
+    "ALTER TABLE twain_scan_records ADD COLUMN identity_json TEXT",
+  ] });
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

@@ -364,6 +364,8 @@ LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_n
         student_digits_from_page(*page_data),
         subjective_score_cells_from_page(*page_data),
         block_crops_from_page(*page_data),
+        page_data->contains("header") && page_data->at("header").contains("qrCode")
+            ? rect_from_json(page_data->at("header").at("qrCode").at("rect")) : Rect{58, 12, 18, 18},
     };
 }
 

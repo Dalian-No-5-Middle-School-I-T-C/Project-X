@@ -1,3 +1,4 @@
+import { qrDarkRects } from "../../../../shared/cardIdentity";
 // DesignEditors.tsx —— 答题卡设计器的三个编辑器与 SVG 预览子组件。
 // 从 App.tsx 抽出（B1），仅依赖 cardModel（设计 helper）与 props，行为不变。
 import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
@@ -1293,8 +1294,9 @@ export function CardPreview({ card, layout, firstPageOnly = false }: { card: Ans
             <text x={page.header.idTextX} y={page.header.idTextY} fontSize={3} fill="#1a1a1a">
               ID:{page.header.id}
             </text>
-            {page.header.codeBoxes.map((box, index) => (
-              <rect key={index} {...box} fill={index === 0 || index === page.header.codeBoxes.length - 1 ? "#20342f" : "#fff"} stroke="#222" strokeWidth="0.25" />
+            <rect {...page.header.qrCode.rect} fill="#fff" />
+            {qrDarkRects(page.header.qrCode).map((box, index) => (
+              <rect key={index} {...box} fill="#000" />
             ))}
             {page.header.title && (
               <text x={page.header.titleX} y={page.header.titleY} textAnchor="middle" dominantBaseline="middle" fontSize={5} fontWeight={700} fill="#1a1a1a">

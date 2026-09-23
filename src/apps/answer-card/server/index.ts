@@ -52,7 +52,7 @@ import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
 import { recordLifecycleEvent } from "../../../server/services/lifecycleEvents";
 import { markScoreMutated } from "../../../server/services/examPublishEvents";
-import { ensureExamParticipants, isExamParticipant, listMissingParticipants, listParticipants, searchStudentsForExam, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants } from "../../../server/services/examParticipants";
+import { ensureExamParticipants, isExamParticipant, listParticipants, searchStudentsForExam, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants } from "../../../server/services/examParticipants";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -113,6 +113,7 @@ import type {
 } from "../../../shared/types";
 import { createPdf } from "./pdf";
 import { assertActiveClassScope } from "../../../server/services/activeClassScope";
+import { parseIdentityMode } from "../../../shared/cardIdentity";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
 import { makeScannerAuth } from "../../../server/middleware/scanner-auth";
@@ -137,6 +138,7 @@ import {
   UpdateUserSettingsSchema,
   validateBody
 } from "./validation";
+import { assertScoresPublishable } from "../../../server/services/examPublication";
 import { ApiError } from "../../../server/api-error";
 import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
 
@@ -530,6 +532,9 @@ async function persistGradingResultsLocked(
     }
     try {
       await db.transaction(async (tx) => {
+        // Publication may occur after an earlier student in this same batch.
+        // Revoke it atomically before every subsequent student's score write.
+        await markScoreMutated(tx, examId, createdBy ?? null, "grading_save");
         const txExamRepo = new ExamRepository(tx);
         const recordId = await txExamRepo.addScanRecord({
           batch_id: batchId,
@@ -1246,6 +1251,7 @@ export async function createApp(): Promise<express.Express> {
       }
 
       const result = await recognizeObjectiveAnswers({
+        identityMode: parseIdentityMode(req.body?.identityMode),
         imagePath: req.file.path,
         layoutPath: await prepareLayoutForCard(cardRepo, card),
         pageNumber,
@@ -1283,6 +1289,7 @@ export async function createApp(): Promise<express.Express> {
       const cropsDir = boolField(req.body.includeCrops) ? await createRecognitionCropTempDir(cardId) : undefined;
       try {
         const result = await recognizeAnswerCard({
+          identityMode: parseIdentityMode(req.body?.identityMode),
           imagePath: req.file.path,
           layoutPath: await prepareLayoutForCard(cardRepo, card),
           pageNumber,
@@ -1400,6 +1407,7 @@ export async function createApp(): Promise<express.Express> {
       const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file) => {
         try {
           const recognition = (await recognizeObjectiveAnswers({
+            identityMode: parseIdentityMode(req.body?.identityMode),
             imagePath: file.path,
             layoutPath: currentLayoutPath,
             pageNumber,
@@ -1527,13 +1535,17 @@ export async function createApp(): Promise<express.Express> {
         emitGradingProgress({ type: "start", batchId: progressId, finished, total: gradingFiles.length });
       }
 
-      const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file) => {
+      const layoutPageCount = buildLayout(card).pages.length;
+      const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file, fileIndex) => {
+        const expectedPage = req.body.pageOrder === "sequential"
+          ? fileIndex % layoutPageCount + 1 : pageNumber;
         try {
           const cropsDir = await createRecognitionCropTempDir(cardId);
           const recognition = (await recognizeAnswerCard({
+            identityMode: parseIdentityMode(req.body?.identityMode),
             imagePath: file.path,
             layoutPath: currentLayoutPath,
-            pageNumber,
+            pageNumber: expectedPage,
             dpi,
             cropsDir
           })) as CombinedRecognitionResult;
@@ -1547,7 +1559,7 @@ export async function createApp(): Promise<express.Express> {
           const recognition: CombinedRecognitionResult = {
             status: "failed",
             imagePath: file.path,
-            pageNumber,
+            pageNumber: expectedPage,
             message: error instanceof Error ? error.message : String(error),
             questions: [],
             subjectiveQuestions: []
@@ -2020,12 +2032,12 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "缺少 name 或 cardId" });
         return;
       }
-      // 评审 P1-2：创建考试必须确定应考范围（年级或班级至少其一），否则发布完整性无法校验
+      // 评审 P1-2：创建考试必须确定应考范围（年级或班级至少其一），用于组织考试和限制录入学生范围
       // （此前 UI 创建的无范围考试会退化为「仅校验非空」，导致部分成绩可公布）。
       if (!gradeId && !classId) {
         res.status(400).json({
           code: "SCOPE_REQUIRED",
-          message: "【完整性校验】创建考试必须指定应考范围（年级或班级至少其一），否则无法保证成绩公布完整性"
+          message: "【完整性校验】创建考试必须指定应考范围（年级或班级至少其一），用于确定考试归属与录入学生范围"
         });
         return;
       }
@@ -2242,7 +2254,7 @@ export async function createApp(): Promise<express.Express> {
       if (name !== undefined) updates.name = String(name);
       if (subject !== undefined) updates.subject = String(subject);
       if (mode === "quiz" || mode === "formal") updates.exam_mode = mode;
-      // 评审 P1-2：补设/修改应考范围（年级/班级）。不允许清空（无范围考试无法通过完整性校验）；
+      // 评审 P1-2：补设/修改应考范围（年级/班级）。不允许清空（创建后的考试需保留所属范围）；
       // 与显式应考名单互斥：已有显式名单时须先清除（DELETE /participants）再设置班级范围。
       if (gradeId !== undefined || classId !== undefined) {
         const g = gradeId != null ? Number(gradeId) : undefined;
@@ -2313,54 +2325,6 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  /**
-   * 统一的「批改完整性」校验（评审 P1-1 / P1-2）：成绩公布前必须确认批改已完成，且学号身份无误。
-   * - 应考名单来源（v48）：管理员显式名单（exam_participants.source='explicit'）优先；
-   *   否则按考试 class_id/grade_id 从 class_students 固化名册快照（source='roster'）；
-   * - 名单可知且非空 → 集合校验「应考集合 ⊆ 已评分集合」，缺任何一名应考学生即 409；
-   * - 名单不可知（无 class_id/grade_id 且未设置显式名单）→ 409 拒绝公布（v48 起删除
-   *   「仅校验非空」退化路径——正常 UI 创建的无范围考试不得再以部分成绩发布）；
-   * - 名单为空（班级暂无学生 / 显式名单为空）→ 409，同样不得发布。
-   * 不满足时抛 { status: 409 }，由路由统一映射为 409 响应。单场/批量共用。
-   */
-  async function assertGradingComplete(
-    db: DbAdapter,
-    exam: { id: number; class_id?: number | null; grade_id?: number | null }
-  ): Promise<{ scoredCount: number; expected: number | null }> {
-    const scoredRows = await db.all("SELECT DISTINCT student_id FROM student_scores WHERE exam_id = ?", exam.id) as Array<{ student_id: number }>;
-    const scoredCount = scoredRows.length;
-    if (scoredCount === 0) {
-      throw Object.assign(new Error("该考试尚无成绩记录（批改未完成），无法公布成绩"), { status: 409, code: ApiError.INVALID_VALUE });
-    }
-
-    // 名单判定：显式名单优先；否则按班级/年级名册快照
-    const snap = await ensureExamParticipants(db, exam.id);
-    if (!snap.rosterKnown) {
-      throw Object.assign(
-        new Error("【完整性校验】该考试未确定应考范围（未指定年级/班级且未设置应考名单），无法公布成绩；请先在考试管理中设置应考范围"),
-        { status: 409, code: ApiError.INVALID_VALUE }
-      );
-    }
-    if (snap.participantCount === 0) {
-      throw Object.assign(
-        new Error("【完整性校验】该考试应考名单为空（班级暂无学生或应考名单未添加学生），无法公布成绩；请先录入学生或设置应考名单"),
-        { status: 409, code: ApiError.INVALID_VALUE }
-      );
-    }
-
-    // 集合校验：应考集合 ⊆ 已评分集合
-    const missing = await listMissingParticipants(db, exam.id);
-    if (missing.length > 0) {
-      const sample = missing.slice(0, 5).map((m) => (m.student_number ? `${m.name}(${m.student_number})` : m.name)).join("、");
-      const detail = sample ? `，缺：${sample}${missing.length > 5 ? ` 等 ${missing.length} 人` : ""}` : "";
-      throw Object.assign(
-        new Error(`该考试成绩记录不完整（缺 ${missing.length} 名应考学生成绩${detail}），无法公布成绩`),
-        { status: 409, code: ApiError.INVALID_VALUE }
-      );
-    }
-    return { scoredCount, expected: snap.participantCount };
-  }
-
   // v41: 单场成绩公布 —— 教师手动公布后学生方可查看。幂等（已公布直接返回 ok）。
   app.post("/api/exams/:examId/publish", requireExamAccess, requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
     try {
@@ -2376,9 +2340,9 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      // 仅已结考（阅卷完成出分）的考试可公布，防止草稿/未完成成绩提前暴露给学生
-      if (exam.status !== "closed") {
-        res.status(409).json({ message: "考试尚未结考（阅卷未完成），无法公布成绩" });
+      // 阅卷中已有成绩也可先公布，无需等待全场结考。
+      if (exam.status !== "closed" && exam.status !== "grading") {
+        res.status(409).json({ message: "考试尚未进入阅卷阶段，无法公布成绩" });
         return;
       }
       // 幂等：已公布直接返回，不重复写审计事件
@@ -2386,13 +2350,13 @@ export async function createApp(): Promise<express.Express> {
         res.json({ ok: true, scorePublished: 1 });
         return;
       }
-      // 评审 P1：结考状态不等于批改完成 —— 无成绩/成绩不完整（低于应考学生）均拒绝公布
-      await assertGradingComplete(db, exam);
+      // 已有成绩即可公布，不要求应考名单全部出分。
+      await assertScoresPublishable(db, exam);
       // 状态更新与审计日志在同一事务中保证原子性；
       // WHERE 带状态条件，防止校验与写入之间考试被并发改回阅卷中（TOCTOU）
       await db.transaction(async (tx) => {
         const result = await tx.run(
-          "UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'closed' AND (score_published IS NULL OR score_published <> 1)",
+          "UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('grading', 'closed') AND (score_published IS NULL OR score_published <> 1)",
           examId
         );
         if (result.changes !== 1) {
@@ -2411,7 +2375,7 @@ export async function createApp(): Promise<express.Express> {
   });
 
   // v41: 批量成绩公布 —— body { examIds: number[] }，逐场校验存在性与数据权限范围。
-  // 评审（合并审查 M1）：examIds 数量上限 200，防止超大 IN 子句与逐场完整性校验耗尽资源。
+  // 评审（合并审查 M1）：examIds 数量上限 200，防止超大 IN 子句与逐场成绩校验耗尽资源。
   const PUBLISH_BATCH_MAX_EXAMS = 200;
   app.post("/api/exams/publish-batch", requirePermission(PERMISSIONS.GRADE_WRITE), async (req, res, next) => {
     try {
@@ -2460,27 +2424,26 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "部分考试不存在" });
         return;
       }
-      const notClosed = existing.filter((item) => item.status !== "closed").map((item) => item.id);
-      if (notClosed.length > 0) {
-        res.status(409).json({ message: `以下考试尚未结考（阅卷未完成），无法公布成绩: ${notClosed.join(", ")}` });
+      const notPublishable = existing.filter((item) => item.status !== "closed" && item.status !== "grading").map((item) => item.id);
+      if (notPublishable.length > 0) {
+        res.status(409).json({ message: `以下考试尚未进入阅卷阶段，无法公布成绩: ${notPublishable.join(", ")}` });
         return;
       }
       // 幂等：跳过已公布的考试，不重复写审计事件
       const toPublish = existing
         .filter((item) => item.score_published !== 1)
         .map((item) => item.id);
-      // 评审 P1：逐个校验「批改完整性」——任一场不完整（无成绩/低于应考学生）则整体 409，
-      // 且不影响其它场次（不写任何审计），由教师补完批改后重试
+      // 任一场无成绩或存在身份异常时整体拒绝，部分学生尚未出分不阻塞公布。
       const incompleteReasons: string[] = [];
       for (const exam of existing.filter((item) => item.score_published !== 1)) {
         try {
-          await assertGradingComplete(db, exam);
+          await assertScoresPublishable(db, exam);
         } catch (error) {
           incompleteReasons.push(`考试 ${exam.id}：${error instanceof Error ? error.message : "批改未完成"}`);
         }
       }
       if (incompleteReasons.length > 0) {
-        res.status(409).json({ message: `以下考试因批改未完成无法公布成绩：${incompleteReasons.join("；")}` });
+        res.status(409).json({ message: `以下考试无法公布成绩：${incompleteReasons.join("；")}` });
         return;
       }
       // 状态更新与审计日志在同一事务中保证原子性；
@@ -2488,7 +2451,7 @@ export async function createApp(): Promise<express.Express> {
       await db.transaction(async (tx) => {
         for (const id of toPublish) {
           const result = await tx.run(
-            "UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'closed' AND (score_published IS NULL OR score_published <> 1)",
+            "UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('grading', 'closed') AND (score_published IS NULL OR score_published <> 1)",
             id
           );
           if (result.changes !== 1) {
@@ -2553,7 +2516,7 @@ export async function createApp(): Promise<express.Express> {
 
   // ── 评审 P1-2：显式应考名单管理（跨班/跨年级联考、补救无范围考试）──
   // 名单来源二选一：显式名单（source='explicit'）优先；否则按 class_id/grade_id 名册快照。
-  // 无范围考试必须设置显式名单后才能通过发布完整性校验。
+  // 显式名单用于核对学生身份，不作为公布已有成绩的前置条件。
 
   // GET /api/exams/:examId/participants — 查看当前应考名单（含来源标记）
   app.get("/api/exams/:examId/participants", requireExamAccess, async (req, res, next) => {

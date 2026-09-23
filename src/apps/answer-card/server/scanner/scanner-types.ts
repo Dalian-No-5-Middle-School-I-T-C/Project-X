@@ -64,6 +64,7 @@ export interface BridgeScanResult {
 }
 
 export interface ScanSessionConfig {
+  identityMode?: "strict" | "legacy";
   cardId: string;
   sessionName: string;
   sourceName: string;
@@ -78,6 +79,7 @@ export interface ScanSessionConfig {
 }
 
 export interface ScanProgressEvent {
+  ocrStatus?: string;
   sessionId: string;
   type: "scanning" | "page_done" | "ocr_start" | "ocr_page_done" | "ocr_done" | "error" | "done" | "cancelled";
   recordId?: string;

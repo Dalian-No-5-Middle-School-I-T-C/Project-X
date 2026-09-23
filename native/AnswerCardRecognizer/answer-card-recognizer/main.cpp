@@ -13,6 +13,7 @@
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
+#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #endif
 
@@ -25,6 +26,7 @@ struct CliOptions {
     int page = 1;
     int dpi = 300;
     bool debug = false;
+    bool legacy = false;
 };
 
 void configure_utf8_output() {
@@ -55,6 +57,10 @@ CliOptions parse_args(int argc, wchar_t* argv[]) {
             options.image_path = std::filesystem::path(require_value(name));
         } else if (name == L"--layout") {
             options.layout_path = std::filesystem::path(require_value(name));
+        } else if (name == L"--identity-mode") {
+            const auto mode = require_value(name);
+            if (mode != L"strict" && mode != L"legacy") throw std::runtime_error("Invalid identity mode");
+            options.legacy = mode == L"legacy";
         } else if (name == L"--page") {
             options.page = std::stoi(require_value(name));
         } else if (name == L"--dpi") {
@@ -101,7 +107,8 @@ int wmain(int argc, wchar_t* argv[]) {
             options.dpi,
             options.debug,
             options.debug_dir,
-            options.crops_dir
+            options.crops_dir,
+            options.legacy
         );
         std::cout << result.dump(2) << '\n';
         return result.value("status", "failed") == "failed" ? 2 : 0;

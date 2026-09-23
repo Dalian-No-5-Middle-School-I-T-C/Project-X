@@ -1,3 +1,4 @@
+import { qrDarkRects } from "../../../shared/cardIdentity";
 import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { openSync } from "fontkit";
@@ -188,9 +189,11 @@ function drawHeader(doc: PDFKit.PDFDocument, page: PageLayout) {
   }
 
   drawText(doc, `ID:${page.header.id}`, page.header.idTextX, page.header.idTextY - 4.3, 10);
-  page.header.codeBoxes.forEach((box, index) => {
-    drawRect(doc, box, { fill: index === 0 || index === page.header.codeBoxes.length - 1 ? "#1f302c" : undefined });
-  });
+  const qr = page.header.qrCode;
+  doc.rect(pt(qr.rect.x), pt(qr.rect.y), pt(qr.rect.width), pt(qr.rect.height)).fill("#fff");
+  for (const box of qrDarkRects(qr)) {
+    doc.rect(pt(box.x), pt(box.y), pt(box.width), pt(box.height)).fill("#000");
+  }
 
   if (page.header.title && page.header.titleX && page.header.titleY) {
     const titleWidth = Math.max(40, page.panels[0]?.rect.width ?? page.width - 70);
