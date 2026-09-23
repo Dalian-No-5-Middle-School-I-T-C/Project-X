@@ -11,6 +11,7 @@
  * Supported image types: PNG, JPEG, BMP, TIFF, WebP.
  */
 import { open, rm } from "node:fs/promises";
+import path from "node:path";
 
 const MAGIC_BYTES: Array<{ signature: Buffer; label: string }> = [
   { signature: Buffer.from([0x89, 0x50, 0x4e, 0x47]), label: "PNG" },
@@ -23,6 +24,23 @@ const MAGIC_BYTES: Array<{ signature: Buffer; label: string }> = [
 
 const MAX_HEADER_BYTES = 12;
 
+/** 允许落盘并对外提供的图片扩展名（预览按扩展名推导 Content-Type）。 */
+export const IMAGE_EXTENSIONS: readonly string[] = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
+
+/**
+ * 白名单化上传扩展名：非图片扩展名一律回落为 .png。
+ * 防止上传 payload.html 后由同源预览端点按 text/html 提供（存储型 XSS）。
+ */
+export function safeImageExtension(originalName: string): string {
+  const ext = path.extname(originalName || "").toLowerCase();
+  return IMAGE_EXTENSIONS.includes(ext) ? ext : ".png";
+}
+
+/** 判断扩展名是否允许由图片端点提供。 */
+export function isImageExtension(ext: string): boolean {
+  return IMAGE_EXTENSIONS.includes(ext.toLowerCase());
+}
+
 /** Reads the first N bytes of a file and checks magic signatures. */
 export async function isValidImageFile(filePath: string): Promise<boolean> {
   let fd;
@@ -30,11 +48,11 @@ export async function isValidImageFile(filePath: string): Promise<boolean> {
     fd = await open(filePath, "r");
     const buf = Buffer.alloc(MAX_HEADER_BYTES);
     const { bytesRead } = await fd.read(buf, 0, MAX_HEADER_BYTES, 0);
-    if (bytesRead < 4) return false;
-    const header = buf.subarray(0, bytesRead);
-    return MAGIC_BYTES.some(({ signature }) =>
-      header.subarray(0, signature.length).equals(signature)
-    );
+    // 与内存态共用同一判定：RIFF 容器还必须带 WEBP 标识，
+    // 否则 AVI/WAV 改名 .webp 会被当作图片送进原生识别器。
+    // 与内存态共用同一判定：RIFF 容器还必须带 WEBP 标识，
+    // 否则 AVI/WAV 改名 .webp 会被当作图片送进原生识别器。
+    return isValidImageBuffer(buf.subarray(0, bytesRead));
   } catch {
     return false;
   } finally {

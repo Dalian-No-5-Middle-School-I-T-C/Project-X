@@ -73,6 +73,16 @@ export function parsePositiveNumber(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+/**
+ * 识别用 DPI 解析：夹紧到 [50, 1200]。
+ * 识别进程按 DPI 反推像素尺寸，超大 DPI（如 1e9）会让原生识别器分配巨量内存。
+ */
+export function parseRecognitionDpi(value: unknown, fallback = 300): number {
+  const parsed = Number(fieldValue(value) || String(fallback));
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(1200, Math.max(50, Math.round(parsed)));
+}
+
 export async function deleteExamRows(db: DbAdapter, examIds: number[]): Promise<void> {
   for (const examId of examIds) {
     await db.run("DELETE FROM question_scores WHERE exam_id = ?", examId);

@@ -35,14 +35,20 @@ function isSqlite(db: DbAdapter): boolean {
  * 应考名单添加用学生搜索（五轮B2：原 /api/users 为管理员接口，教师 403 后前端静默空白）。
  * 只搜学生角色（role_id=3）且启用（is_active=1）的账号：学号精确或姓名模糊；
  * LIKE 通配符转义，避免 % / _ 命中无关学生。
+ *
+ * classIds 为调用者可见班级范围（null = 全校可见，[] = 无可见班级）。
+ * 云端安全检查 #25：此前忽略考试直接搜全校学生，等于绕过教师学生列表范围。
  */
 export async function searchStudentsForExam(
   db: DbAdapter,
   _examId: number,
-  q: string
+  q: string,
+  classIds?: number[] | null
 ): Promise<Array<{ id: number; name: string; student_number: string | null }>> {
   const keyword = (q ?? "").trim();
   if (!keyword) return [];
+  const scoped = Array.isArray(classIds);
+  if (scoped && classIds!.length === 0) return [];
   // Use a non-backslash escape: SQL string parsing differs between SQLite and
   // MariaDB (and MariaDB's NO_BACKSLASH_ESCAPES mode).
   const escaped = keyword.replace(/[!%_]/g, (m) => `!${m}`);
@@ -51,9 +57,12 @@ export async function searchStudentsForExam(
      FROM users u
      WHERE u.role_id = ? AND u.is_active = 1
        AND (u.student_number LIKE ? ESCAPE '!' OR u.name LIKE ? ESCAPE '!')
+       ${scoped
+        ? `AND EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = u.id AND cs.class_id IN (${classIds!.map(() => "?").join(",")}))`
+        : ""}
      ORDER BY u.student_number
      LIMIT 20`,
-    ROLE_IDS.STUDENT, `${escaped}%`, `%${escaped}%`
+    ROLE_IDS.STUDENT, `${escaped}%`, `%${escaped}%`, ...(scoped ? classIds! : [])
   ) as Array<{ id: number; name: string; student_number: string | null }>;
   return rows.map((r) => ({ id: r.id, name: r.name, student_number: r.student_number }));
 }

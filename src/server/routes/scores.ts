@@ -41,8 +41,8 @@ type AccessibleError = { status: number; message: string };
  * - subject_teacher → teacher_classes 中科目匹配的班级
  * - 其他 → []（零可见）
  */
-async function getAccessibleClassIds(
-  user: NonNullable<express.Request["user"]>
+export async function getAccessibleClassIds(
+  user: express.Request["user"]
 ): Promise<number[] | null> {
   if (!user || user.role_name === "admin") return null;
   if (user.role_name !== "teacher") return [];

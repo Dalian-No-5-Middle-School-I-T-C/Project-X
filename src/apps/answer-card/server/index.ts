@@ -57,7 +57,7 @@ import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
 import teacherRoutes from "../../../server/routes/teachers";
 import exportRoutes from "../../../server/routes/export";
-import scoreRoutes from "../../../server/routes/scores";
+import scoreRoutes, { getAccessibleClassIds } from "../../../server/routes/scores";
 import sponsorRoutes from "../../../server/routes/sponsor";
 import backupRoutes from "../../../server/routes/backup";
 import exportScoresRoutes from "../../../server/routes/export-scores";
@@ -115,15 +115,15 @@ import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
 import { makeScannerAuth } from "../../../server/middleware/scanner-auth";
 
-import { assertImageFile } from "./validate-upload";
+import { assertImageFile, isImageExtension, safeImageExtension } from "./validate-upload";
 import {
   paramValue, fieldValue, boolField, isValidExamDate,
   MIN_EXAM_YEAR, MAX_EXAM_YEAR, requestFlag, numberArray,
-  optionalPositiveNumber, parsePositiveNumber, deleteExamRows, deleteCardFiles
+  optionalPositiveNumber, parsePositiveNumber, parseRecognitionDpi, deleteExamRows, deleteCardFiles
 } from "./helpers";
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
-  validateExamIdsAccess, setAuthEnforced, hasViewPermission
+  validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
@@ -162,6 +162,9 @@ function clampInt(value: unknown, min: number, max: number, fallback: number = 0
   const n = typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
   return Math.min(max, Math.max(min, n));
 }
+
+/** 主观题文字注释上限（服务端权威值；客户端输入框使用同一上限）。 */
+const MAX_ANNOTATION_CHARS = 200;
 
 function normalizeStudentInfo(info: StudentInfoSettings | undefined, paperSize: "A4" | "A3"): StudentInfoSettings {
   const legacyFields = Array.isArray(info?.fields) ? info!.fields : [];
@@ -204,6 +207,10 @@ function normalizeCard(card: AnswerCard, cardId: string): AnswerCard {
               ...q,
               score: typeof q.score === "number" ? q.score : 0,
               minHeightMm: typeof q.minHeightMm === "number" ? q.minHeightMm : 68,
+              // 注释参与布局按字宽切行：服务端限长，避免超大注释撑爆布局/PDF 生成。
+              annotation: typeof q.annotation === "string"
+                ? q.annotation.slice(0, MAX_ANNOTATION_CHARS)
+                : undefined,
             };
             // 作文格参数上限校验，防止 targetChars/rows/columns 过大导致布局与 PDF 生成 DoS。
             if (q.essayGrid) {
@@ -304,6 +311,13 @@ type GradingProgressEvent = {
 
 const gradingProgressListeners = new Map<string, Set<(event: GradingProgressEvent) => void>>();
 const gradingProgressSnapshots = new Map<string, GradingProgressEvent>();
+const MAX_PROGRESS_LISTENERS_PER_BATCH = 50;
+// 单账号（或匿名）并发进度流上限；ANSWER_CARD_MAX_PROGRESS_STREAMS_PER_USER 可按部署规模收紧。
+const MAX_PROGRESS_STREAMS_PER_OWNER = (() => {
+  const configured = Number(process.env.ANSWER_CARD_MAX_PROGRESS_STREAMS_PER_USER);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 20;
+})();
+const gradingProgressStreamsByOwner = new Map<string, number>();
 
 function recognitionConcurrency(): number {
   const configured = Number(process.env.ANSWER_CARD_RECOGNITION_CONCURRENCY);
@@ -401,8 +415,31 @@ async function autoBackupOnExamClose(examId: number): Promise<void> {
   }
 }
 
+// 同一考试的判分落库串行化：并发判分各自会读到「未结考」快照，从而重复创建整库自动备份
+// （磁盘耗尽）并互相覆盖成绩与考试状态。SQLite 部署为单进程单连接，进程内串行即可覆盖；
+// MariaDB 部署本身跳过本地备份，行锁由 lockExam 承担。
+const gradingRunChains = new Map<number, Promise<unknown>>();
+function enqueueGradingRun<T>(examId: number, work: () => Promise<T>): Promise<T> {
+  const previous = gradingRunChains.get(examId) ?? Promise.resolve();
+  const run = previous.then(work, work);
+  const tail = run.then(() => undefined, () => undefined);
+  gradingRunChains.set(examId, tail);
+  void tail.then(() => {
+    if (gradingRunChains.get(examId) === tail) gradingRunChains.delete(examId);
+  });
+  return run;
+}
+
 /** Persist grading results before responding; each student is atomic. */
 export async function persistGradingResults(
+  examIdParam: string,
+  rows: CombinedGradingRow[],
+  createdBy?: number
+): Promise<GradingPersistenceResult> {
+  return enqueueGradingRun(Number(examIdParam), () => persistGradingResultsLocked(examIdParam, rows, createdBy));
+}
+
+async function persistGradingResultsLocked(
   examIdParam: string,
   rows: CombinedGradingRow[],
   createdBy?: number
@@ -546,7 +583,19 @@ export async function persistGradingResults(
 
   if (status === "done") {
     await examRepo.updateStatus(examId, "closed");
-    autoBackupOnExamClose(examId).catch((e) => console.error("[AutoBackup] Failed:", e));
+    // 安全：只在「首次结考」转换时备份。重复对已结考考试判分不再产生新备份，
+    // 避免教师反复提交判分把 data/backups 撑满磁盘（每次备份都是一个完整库副本）。
+    // 「首次」以持久化的历史判分批次为准：重新阅卷会走 closed → grading → partial → done
+    // 循环，只看本次运行读到的 previousExamStatus 会让每轮重试都被当成首次结考
+    // （顺序执行下备份数量仍会 1→2→3 无上限增长）。存在早于本批次的 done 批次，
+    // 即说明该考试此前已完整判分并结考过（并发场景另由 enqueueGradingRun 串行兜底）。
+    const earlierClosedBatch = await db.get<{ id: number }>(
+      "SELECT id FROM scan_batches WHERE exam_id = ? AND status = 'done' AND id <> ? LIMIT 1",
+      examId, batchId
+    );
+    if (previousExamStatus !== "closed" && !earlierClosedBatch) {
+      autoBackupOnExamClose(examId).catch((e) => console.error("[AutoBackup] Failed:", e));
+    }
   } else if (status === "error") {
     await examRepo.updateStatus(examId, previousExamStatus);
   } else {
@@ -1060,7 +1109,8 @@ export async function createApp(): Promise<express.Express> {
         cb(null, dir);
       },
       filename: (_req, file, cb) => {
-        const ext = path.extname(file.originalname).toLowerCase() || ".png";
+        // 安全：扩展名白名单，非图片一律回落 .png，避免同源预览按 text/html 提供上传内容。
+        const ext = safeImageExtension(file.originalname);
         const name = `scan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
         cb(null, name);
       }
@@ -1182,9 +1232,11 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "没有收到答题卡图片" });
         return;
       }
+      // 安全：魔数校验，拒绝把任意文件交给原生识别器/预览端点。
+      if (!await assertImageFile(req.file.path, res)) return;
 
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
-      const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
+      const dpi = parseRecognitionDpi(req.body.dpi || req.query.dpi);
       const debug = boolField(req.body.debug || req.query.debug);
       const debugDir = debug ? path.join(dataDir, "processed", "recognition-debug", cardId, String(Date.now())) : undefined;
       if (debugDir) {
@@ -1216,9 +1268,10 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "没有收到答题卡图片" });
         return;
       }
+      if (!await assertImageFile(req.file.path, res)) return;
 
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
-      const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
+      const dpi = parseRecognitionDpi(req.body.dpi || req.query.dpi);
       const debug = boolField(req.body.debug || req.query.debug);
       const debugDir = debug ? path.join(dataDir, "processed", "recognition-debug", cardId, String(Date.now())) : undefined;
       if (debugDir) {
@@ -1251,12 +1304,27 @@ export async function createApp(): Promise<express.Express> {
   app.get("/api/cards/:cardId/grading/progress/:batchId", (req, res) => {
     const batchId = safeId(paramValue(req.params.batchId));
 
+    // 安全（#22 / PR280 评审 P1）：batchId 由客户端自选，仅限制「单批次」可被
+    // 换 ID 绕过，因此按调用者身份限流，单批次上限作为第二道闸。
+    const streamOwner = req.user ? `user:${req.user.id}` : "anonymous";
+    if ((gradingProgressStreamsByOwner.get(streamOwner) ?? 0) >= MAX_PROGRESS_STREAMS_PER_OWNER) {
+      res.status(429).json({ message: "进度订阅过多，请稍后重试" });
+      return;
+    }
+    const current = gradingProgressListeners.get(batchId);
+    if (current && current.size >= MAX_PROGRESS_LISTENERS_PER_BATCH) {
+      res.status(429).json({ message: "进度订阅过多，请稍后重试" });
+      return;
+    }
+
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no"
     });
+    // 立即下发响应头：首个进度事件到达前订阅端也应拿到已建立的流（否则 body 未写入前一直挂着）。
+    res.flushHeaders?.();
 
     const handler = (event: GradingProgressEvent) => {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
@@ -1269,6 +1337,7 @@ export async function createApp(): Promise<express.Express> {
       gradingProgressListeners.set(batchId, new Set());
     }
     gradingProgressListeners.get(batchId)!.add(handler);
+    gradingProgressStreamsByOwner.set(streamOwner, (gradingProgressStreamsByOwner.get(streamOwner) ?? 0) + 1);
 
     const snapshot = gradingProgressSnapshots.get(batchId);
     if (snapshot) {
@@ -1276,6 +1345,11 @@ export async function createApp(): Promise<express.Express> {
     }
 
     req.on("close", () => {
+      if ((gradingProgressStreamsByOwner.get(streamOwner) ?? 0) > 0) {
+        const remaining = gradingProgressStreamsByOwner.get(streamOwner)! - 1;
+        if (remaining > 0) gradingProgressStreamsByOwner.set(streamOwner, remaining);
+        else gradingProgressStreamsByOwner.delete(streamOwner);
+      }
       const listeners = gradingProgressListeners.get(batchId);
       if (listeners) {
         listeners.delete(handler);
@@ -1307,9 +1381,12 @@ export async function createApp(): Promise<express.Express> {
       const gradingFiles = card.sided === "single"
         ? files.filter((f) => !backSidePattern.test((f as any).originalname))
         : files;
+      for (const file of gradingFiles) {
+        if (!await assertImageFile((file as Express.Multer.File).path, res)) return;
+      }
 
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
-      const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
+      const dpi = parseRecognitionDpi(req.body.dpi || req.query.dpi);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
       const confidenceThreshold = await resolveConfidenceThreshold(req);
 
@@ -1399,13 +1476,49 @@ export async function createApp(): Promise<express.Express> {
       const gradingFiles = card.sided === "single"
         ? files.filter((f) => !backSidePattern.test((f as any).originalname))
         : files;
+      for (const file of gradingFiles) {
+        if (!await assertImageFile((file as Express.Multer.File).path, res)) return;
+      }
 
       const pageNumber = parsePositiveNumber(req.body.page || req.query.page, 1);
-      const dpi = parsePositiveNumber(req.body.dpi || req.query.dpi, 300);
+      const dpi = parseRecognitionDpi(req.body.dpi || req.query.dpi);
       const currentLayoutPath = await prepareLayoutForCard(cardRepo, card);
       const confidenceThreshold = await resolveConfidenceThreshold(req);
 
       const examIdParam = fieldValue(req.body.examId);
+      // 安全（云端安全检查 #05/#10）：判分上传会把成绩写入 examId 并从已公布状态撤回，
+      // 因此在做任何识别/落库前先校验考试范围，且目标考试必须关联当前答题卡。
+      if (examIdParam) {
+        const targetExamId = Number(examIdParam);
+        if (!Number.isInteger(targetExamId) || targetExamId <= 0) {
+          res.status(400).json({ message: "无效的考试 ID" });
+          return;
+        }
+        if (!await validateExamIdsAccess(req, res, [targetExamId])) return;
+        // 可见性 ≠ 写权限：管理员在权限矩阵里显式 can_grade=0 时必须拦住判分入库
+        // （validateExamIdsAccess 只查 getVisibleExamIds，矩阵禁止行拦不住写）。
+        // 整卷上传会写入本场考试全部客观题与主观题成绩并撤回已公布状态，因此只接受
+        // 「不限题块」的授权：仅有单题块授权（block_id 非空）的教师走题块级网阅接口，
+        // 不得借整卷接口覆盖其它题块；管理员/学年主任等特权阅卷人不受遗留矩阵行影响。
+        if (req.user && !await isTeacherPermittedForWholeExam(req.user, targetExamId, "can_grade")) {
+          res.status(403).json({ message: "权限不足：该考试未授予整卷判分入库权限" });
+          return;
+        }
+        const targetExam = await getMysqlDb().get<{ card_id: string | null }>(
+          "SELECT card_id FROM exams WHERE id = ?",
+          targetExamId
+        );
+        if (!targetExam) {
+          res.status(404).json({ message: "考试不存在" });
+          return;
+        }
+        // 必须严格相等：card_id 为 NULL 的考试（答题卡被删除时经 unlinkExams 产生）
+        // 不得用 URL 中的任意答题卡写入成绩与逐题行。
+        if (targetExam.card_id !== cardId) {
+          res.status(400).json({ message: "考试未关联该答题卡，成绩未入库" });
+          return;
+        }
+      }
 
       let finished = 0;
       if (progressId) {
@@ -1485,12 +1598,18 @@ export async function createApp(): Promise<express.Express> {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const fileName = path.basename(paramValue(req.params.fileName));
+      const ext = path.extname(fileName).toLowerCase();
+      // 安全：只按图片类型提供内容，历史遗留的非图片上传文件不得按 HTML 同源执行。
+      if (!isImageExtension(ext)) {
+        res.status(404).json({ message: "答题卡图片不存在" });
+        return;
+      }
       const targetPath = path.join(dataDir, "recognition", "uploads", cardId, fileName);
       if (!existsSync(targetPath)) {
         res.status(404).json({ message: "答题卡图片不存在" });
         return;
       }
-      res.sendFile(targetPath);
+      res.type(ext).sendFile(targetPath);
     } catch (error) {
       next(error);
     }
@@ -2466,7 +2585,8 @@ export async function createApp(): Promise<express.Express> {
   // GET /api/exams/:examId/participant-search — 应考名单添加学生搜索（五轮B2）
   // 原实现走 /api/users（USER_MANAGE 管理员专属），教师 403 后前端静默空白；
   // 此接口对可读考试的教师开放，只搜学生角色且启用中的账号。
-  app.get("/api/exams/:examId/participant-search", requireExamAccess, requirePermission(PERMISSIONS.GRADE_READ), async (req, res, next) => {
+  // 安全：与其它学生检索端点一致，叠加 can_view_students 矩阵门（名单被关闭时不得检索学生）。
+  app.get("/api/exams/:examId/participant-search", requireExamAccess, requirePermission(PERMISSIONS.GRADE_READ), makeViewPermissionGate("can_view_students"), async (req, res, next) => {
     try {
       const examId = Number(req.params.examId);
       if (!Number.isInteger(examId) || examId <= 0) {
@@ -2478,7 +2598,8 @@ export async function createApp(): Promise<express.Express> {
         res.json({ ok: true, students: [] });
         return;
       }
-      const students = await searchStudentsForExam(getMysqlDb(), examId, q);
+      // 安全：搜索结果限定在调用者可见班级范围内，避免学科教师/班主任枚举全校学生名册。
+      const students = await searchStudentsForExam(getMysqlDb(), examId, q, await getAccessibleClassIds(req.user));
       res.json({ ok: true, students });
     } catch (error) {
       next(error);

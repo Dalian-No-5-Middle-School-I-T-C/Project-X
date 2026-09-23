@@ -28,6 +28,7 @@ import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
 import { processScannerSession, enqueueScannerSubmission, findSavedScannerOwners } from "../services/scannerSubmissions";
+import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
 import { listScanRecordsGroupedByStudent, upsertRecognitionResult } from "../../apps/answer-card/server/database/scan-store";
@@ -91,7 +92,8 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
       sessionId,
       String(cardId),
       name || `扫描_${new Date().toISOString().slice(0, 10)}`,
-      dpi || 300,
+      // 安全（#24）：远端扫描端上报的 DPI 同样夹紧后再落库。
+      parseRecognitionDpi(dpi),
       1,            // duplex
       "gray",       // color_mode
       paperSize || "A4",

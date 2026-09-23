@@ -12,6 +12,7 @@ import { databaseTimestamp } from "../db/timestamp";
 
 import express from "express";
 import type { Request, Response } from "express";
+import path from "node:path";
 import { getMysqlDb, buildUpsertSQL } from "../db";
 import { CardRepository } from "../repositories/CardRepository";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
@@ -102,8 +103,9 @@ router.get("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
       WHERE sb.exam_id = ? AND sr.student_id = ?
       ORDER BY sr.id
     `, examId, studentId) as Array<{ recordId: number; fileName: string | null }>;
+    // 安全：只回传文件名，不回传服务器绝对路径（图片端点本身按 basename 取图）。
     scans.push(...scanRows.filter((r) => r.fileName).map((r, idx) => ({
-      recordId: r.recordId, fileName: r.fileName!, pageNum: idx + 1
+      recordId: r.recordId, fileName: path.basename(r.fileName!), pageNum: idx + 1
     })));
   } catch {
     // scan_records may not have expected columns in all DB versions

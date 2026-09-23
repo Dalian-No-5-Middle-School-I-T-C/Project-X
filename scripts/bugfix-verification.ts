@@ -14,7 +14,8 @@ import type {
   AnswerCard,
   CombinedRecognitionResult,
   ObjectiveBlock,
-  ObjectiveQuestionConfig
+  ObjectiveQuestionConfig,
+  SubjectiveBlock
 } from "../src/shared/types";
 
 let passed = 0;
@@ -63,6 +64,24 @@ const q1: ObjectiveQuestionConfig = {
 };
 const testCard = card([q1]);
 
+/** 含一道 10 分主观题（id=s1）的答题卡：主观题评分必须以卡面定义为基准。 */
+function subjectiveCard(): AnswerCard {
+  const base = card([q1]);
+  const subjBlock: SubjectiveBlock = {
+    id: "subj_test",
+    type: "subjective",
+    title: "Subjective",
+    questions: [{
+      id: "s1",
+      number: 1,
+      score: 10,
+      style: "manual_score_grid",
+      kind: "plain_box"
+    }]
+  };
+  return { ...base, bodyBlocks: [...base.bodyBlocks, subjBlock] };
+}
+
 // ── H-L1: 复核置信度阈值应生效 ────────────────────────
 {
   const lowConf = { questionNumber: 1, selectedOptions: ["A"], confidence: 0.1 };
@@ -78,7 +97,8 @@ const testCard = card([q1]);
 
 // ── M-L6: 主观题负分应裁剪为 0 ────────────────────────
 {
-  const graded = gradeSubjectiveRecognition(testCard, {
+  const subjTestCard = subjectiveCard();
+  const graded = gradeSubjectiveRecognition(subjTestCard, {
     questionId: "s1",
     questionNumber: 1,
     score: -5,
@@ -88,9 +108,9 @@ const testCard = card([q1]);
     validCells: [],
     invalidCells: []
   });
-  check("M-L6 负分裁剪为 0", graded.score === 0);
+  check("M-L6 负分裁剪为 0", graded?.score === 0);
 
-  const overflow = gradeSubjectiveRecognition(testCard, {
+  const overflow = gradeSubjectiveRecognition(subjTestCard, {
     questionId: "s1",
     questionNumber: 1,
     score: 99,
@@ -100,7 +120,45 @@ const testCard = card([q1]);
     validCells: [],
     invalidCells: []
   });
-  check("M-L6 超上限裁剪为 maxScore", overflow.score === 10);
+  check("M-L6 超上限裁剪为卡面满分", overflow?.score === 10 && overflow.maxScore === 10);
+
+  // 卡面外题目：客户端自报满分不得成为成绩（云端安全检查 #03）
+  const forged = gradeSubjectiveRecognition(subjTestCard, {
+    questionId: "s9",
+    questionNumber: 999999,
+    score: 1_000_000,
+    maxScore: 1_000_000,
+    status: "ok",
+    confidence: 1,
+    validCells: [],
+    invalidCells: []
+  });
+  check("未知主观题被丢弃（不采用客户端自报满分）", forged === null);
+
+  const forgedSession = gradeSessionStudentResults(subjTestCard, [{
+    recordId: "r-forged",
+    pageNum: 1,
+    side: "front",
+    imagePath: "forged.png",
+    ocrStatus: "ok",
+    recognition: {
+      status: "ok",
+      studentId: { status: "ok", value: "20231" },
+      questions: [],
+      subjectiveQuestions: [{
+        questionId: "s9",
+        questionNumber: 999999,
+        score: 1_000_000,
+        maxScore: 1_000_000,
+        status: "ok",
+        confidence: 1,
+        validCells: [],
+        invalidCells: []
+      }]
+    } as CombinedRecognitionResult
+  }]);
+  check("伪造主观题不进入总分与满分", forgedSession.subjectiveQuestions.length === 0
+    && forgedSession.subjectiveScore === 0 && forgedSession.subjectiveMaxScore === 0);
 }
 
 // ── M-L3 / M-L2: 多页阅卷学号与去重择优 ──────────────

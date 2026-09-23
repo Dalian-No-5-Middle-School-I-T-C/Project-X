@@ -1022,6 +1022,7 @@ export function SubjectiveEditor({
                   <Input
                     value={question.annotation ?? ""}
                     placeholder="填空横线上方的说明文字"
+                    maxLength={200}
                     onChange={(event) => updateQuestion(question.id, (draft) => void (draft.annotation = event.target.value || undefined))}
                   />
                 </Field>

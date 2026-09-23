@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
@@ -11,6 +11,8 @@ process.env.USERPROFILE = path.join(tempDir, "home");
 process.env.PROJECTX_AUTH_ENFORCE = "1";
 process.env.PROJECTX_ENABLE_SCANNER = "false";
 process.env.PROJECTX_ENABLE_SCANNER_CLIENT_API = "true";
+// 单账号并发进度流上限收紧到 2，便于断言「换 batchId 也绕不过」（PR280 评审 P1）
+process.env.ANSWER_CARD_MAX_PROGRESS_STREAMS_PER_USER = "2";
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST"
@@ -297,6 +299,71 @@ async function main(): Promise<void> {
     const visibleExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,?,?,?,?,'active',?)").run("可见考试", "critical-card", grade.id, classA, "数学", teacher.id).lastInsertRowid);
     const hiddenExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,?,?,?,?,'active',?)").run("越权考试", "critical-card", grade.id, classB, "语文", leader.id).lastInsertRowid);
 
+    section("判分上传文件类型（云端安全检查 #33）");
+    const recognitionUploadDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "recognition", "uploads", "critical-card");
+    const forgedForm = new FormData();
+    forgedForm.append("files", new Blob(
+      [Buffer.from("<html><script>fetch('/api/users')</script></html>")],
+      { type: "text/html" }
+    ), "payload.html");
+    const forgedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+      method: "POST",
+      headers: authHeaders(teacherToken),
+      body: forgedForm
+    });
+    check(forgedUpload.status === 400, "判分上传拒绝非图片文件（魔数校验）");
+    const leftoverUploads = existsSync(recognitionUploadDir) ? readdirSync(recognitionUploadDir) : [];
+    check(leftoverUploads.length === 0, `被拒绝的上传不残留文件 (实际 ${leftoverUploads.join(",") || "无"})`);
+
+    section("判分上传考试范围（云端安全检查 #05/#10）");
+    const pngUploadForm = (examId: number): FormData => {
+      const form = new FormData();
+      form.append("files", new Blob(
+        [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+        { type: "image/png" }
+      ), "page.png");
+      form.append("examId", String(examId));
+      return form;
+    };
+    const outOfScopeUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+      method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(hiddenExam)
+    });
+    const outOfScopeBody = await outOfScopeUpload.json() as { message?: string };
+    check(outOfScopeUpload.status === 403 && (outOfScopeBody.message ?? "").includes("权限不足"),
+      "越权考试的判分上传被 403 拒绝（不再静默改状态/写成绩）");
+    db.prepare("INSERT INTO answer_cards (id,title,subject,subject_label) VALUES (?,?,?,?)")
+      .run("other-card", "另一张答题卡", "shuxue", "数学");
+    const otherCardExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,?,?,?,?,'active',?)")
+      .run("他卡考试", "other-card", grade.id, classA, "数学", teacher.id).lastInsertRowid);
+    const mismatchUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+      method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(otherCardExam)
+    });
+    const mismatchBody = await mismatchUpload.json() as { message?: string };
+    check(mismatchUpload.status === 400 && (mismatchBody.message ?? "").includes("未关联该答题卡"),
+      "考试与答题卡不匹配的判分上传被 400 拒绝");
+    // card_id 为 NULL 的考试（答题卡删除后 unlinkExams 产生）同样必须拒绝，不得用 URL 里的卡写入成绩
+    const unlinkedExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,NULL,?,?,?,'active',?)")
+      .run("未关联答题卡的考试", grade.id, classA, "数学", teacher.id).lastInsertRowid);
+    const unlinkedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+      method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(unlinkedExam)
+    });
+    const unlinkedBody = await unlinkedUpload.json() as { message?: string };
+    check(unlinkedUpload.status === 400 && (unlinkedBody.message ?? "").includes("未关联该答题卡"),
+      "考试未关联答题卡（card_id 为 NULL）的判分上传被 400 拒绝");
+
+    section("阅卷进度流订阅上限（云端安全检查 #22 / PR280 评审 P1）");
+    const streamAbort = new AbortController();
+    const openStream = (batchId: string): Promise<Response> => fetch(
+      `${base}/api/cards/critical-card/grading/progress/${batchId}`,
+      { headers: authHeaders(teacherToken), signal: streamAbort.signal }
+    );
+    const streamA = await openStream("review-stream-a");
+    const streamB = await openStream("review-stream-b");
+    check(streamA.status === 200 && streamB.status === 200, "限额内可建立进度流（2/2）");
+    const streamC = await openStream("review-stream-c");
+    check(streamC.status === 429, "第 3 条进度流即使换 batchId 也被 429 拒绝（单账号配额）");
+    streamAbort.abort();
+
     async function createGroup(name: string, examIds: number[]): Promise<number> {
       const response = await fetch(`${base}/api/exam-groups`, {
         method: "POST", headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
@@ -396,6 +463,60 @@ async function main(): Promise<void> {
     const errorBatch = db.prepare("SELECT status,success_count,failure_count FROM scan_batches WHERE id=?").get(errorResult.batchId) as { status: string; success_count: number; failure_count: number };
     check(errorResult.status === "error" && errorResult.persisted === 0 && errorResult.failedCount === 2, "未知学生和识别失败均计入失败");
     check(errorExamState.status === "active" && errorBatch.status === "error" && errorBatch.success_count === 0 && errorBatch.failure_count === 2, "全部失败：批次 error、考试恢复调用前状态");
+
+    section("并发判分只产生一次结考备份（PR280 评审 P1：结考判断必须原子）");
+    {
+      const parallelExam = createExam("并发判分备份");
+      const [parallelA, parallelB] = await Promise.all([
+        persistGradingResults(String(parallelExam), [gradingRow("parallel-a.png", "S1001")], teacher.id),
+        persistGradingResults(String(parallelExam), [gradingRow("parallel-b.png", "S1001")], teacher.id)
+      ]);
+      check(parallelA.status === "done" && parallelB.status === "done", "并发两次判分均完成");
+      const backupDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "backups");
+      const parallelBackups = (): string[] => existsSync(backupDir)
+        ? readdirSync(backupDir).filter((name) => name.startsWith(`projectx_exam${parallelExam}_`))
+        : [];
+      for (let i = 0; i < 40 && parallelBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+      // 备份是 fire-and-forget：再等一拍，让可能出现的重复备份有机会落盘
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      check(parallelBackups().length === 1,
+        `并发判分只产生 1 份结考备份（实际 ${parallelBackups().length}：${parallelBackups().join(",") || "无"}）`);
+    }
+
+    section("顺序重判（closed → partial → done 循环）不重复产生结考备份（PR280 第五轮评审 P1）");
+    {
+      const rerunExam = createExam("顺序重判备份");
+      const backupDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "backups");
+      const rerunBackups = (): string[] => existsSync(backupDir)
+        ? readdirSync(backupDir).filter((name) => name.startsWith(`projectx_exam${rerunExam}_`))
+        : [];
+      const waitForBackup = async (): Promise<void> => {
+        for (let i = 0; i < 40 && rerunBackups().length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+        // 备份是 fire-and-forget：再等一拍，让可能出现的重复备份有机会落盘
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      };
+
+      // 第一次完整判分：结考并备份
+      const firstRun = await persistGradingResults(String(rerunExam), [gradingRow("rerun-1.png", "S1001")], teacher.id);
+      await waitForBackup();
+      check(firstRun.status === "done" && rerunBackups().length === 1,
+        `首次结考产生 1 份备份（实际 ${rerunBackups().length}）`);
+
+      // 重新阅卷部分失败：状态回到 grading（下一轮若只看紧邻状态就会被当成首次结考）
+      db.exec(`CREATE TRIGGER critical_rerun_failure BEFORE INSERT ON question_scores WHEN NEW.student_id = ${rollbackStudent.id} BEGIN SELECT RAISE(ABORT, 'forced student rollback'); END;`);
+      const partialRun = await persistGradingResults(String(rerunExam), [
+        gradingRow("rerun-2.png", "S1001"), gradingRow("rerun-2-bad.png", "S1002")
+      ], teacher.id);
+      db.exec("DROP TRIGGER critical_rerun_failure");
+      const rerunState = db.prepare("SELECT status FROM exams WHERE id=?").get(rerunExam) as { status: string };
+      check(partialRun.status === "partial" && rerunState.status === "grading", "重判部分失败：批次 partial、考试回到 grading");
+
+      // 重试成功：此前已有 done 批次（持久化标记），不得再产生第二份备份
+      const retryRun = await persistGradingResults(String(rerunExam), [gradingRow("rerun-3.png", "S1001")], teacher.id);
+      await waitForBackup();
+      check(retryRun.status === "done" && rerunBackups().length === 1,
+        `partial → done 重试后仍只有 1 份结考备份（实际 ${rerunBackups().length}：${rerunBackups().join(",") || "无"}）`);
+    }
 
     section("扫描原图保留期与阅卷保护");
     {
@@ -855,6 +976,10 @@ async function main(): Promise<void> {
         "名单关闭教师：考生搜索被 can_view_students 门拦截"
       );
       check(
+        (await fetch(`${base}/api/exams/${visibleExam}/participant-search?q=%E5%AD%A6`, { headers: authHeaders(teacherToken) })).status === 403,
+        "名单关闭教师：应考名单搜索同样被 can_view_students 门拦截"
+      );
+      check(
         (await fetch(`${base}/api/export/exams/${visibleExam}/scores`, {
           method: "POST",
           headers: { ...authHeaders(teacherToken), "Content-Type": "application/json" },
@@ -900,6 +1025,70 @@ async function main(): Promise<void> {
       db.prepare("DELETE FROM teacher_permissions WHERE teacher_id = ?").run(plainTeacher.id);
       const plainProxyRestoredResp = await fetch(`${base}/api/scores/students/${student.id}`, { headers: authHeaders(plainToken) });
       check(plainProxyRestoredResp.status === 200, "普通教师矩阵移除后代查恢复可用（未配置矩阵兼容放行）");
+
+      // PR280 第四轮评审 P1：可见性 ≠ 写权限 —— 矩阵 can_grade=0 必须拦住判分入库
+      db.prepare("UPDATE teacher_permissions SET can_grade = 0 WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
+      const deniedGradeUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(visibleExam)
+      });
+      check(deniedGradeUpload.status === 403, "判分禁止教师：矩阵 can_grade=0 时判分上传被 403 拒绝");
+      db.prepare("UPDATE teacher_permissions SET can_grade = 1 WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
+      const allowedGradeUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(visibleExam)
+      });
+      check(allowedGradeUpload.status !== 403, "恢复 can_grade=1 后判分上传不再被矩阵门拒绝");
+
+      // PR280 第五轮评审 P1：整卷上传会写入全部客观题与主观题成绩并撤回已公布状态，
+      // 因此只接受「不限题块」的授权 —— 仅有单个题块授权的教师不得借整卷接口覆盖其它题块
+      db.prepare("UPDATE teacher_permissions SET block_id = 'crit-block-a' WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
+      const blockScopedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(teacherToken), body: pngUploadForm(visibleExam)
+      });
+      check(blockScopedUpload.status === 403, "仅单题块授权（block_id 非空）：整卷判分上传被 403 拒绝");
+      db.prepare("UPDATE teacher_permissions SET block_id = NULL WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);
+
+      // PR280 第五轮评审 P1：仅有题块级网阅分配（review_assignments）、未配置矩阵的教师
+      // 同样只是题块级授权，不得借整卷判分接口覆盖其它题块
+      db.prepare("INSERT INTO review_assignments (exam_id, block_id, teacher_id) VALUES (?, 'crit-block-a', ?)").run(visibleExam, plainTeacher.id);
+      const blockAssignedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(plainToken), body: pngUploadForm(visibleExam)
+      });
+      check(blockAssignedUpload.status === 403, "仅题块级网阅分配（review_assignments）未配置矩阵：整卷判分上传被 403 拒绝");
+      db.prepare("DELETE FROM review_assignments WHERE exam_id = ? AND teacher_id = ?").run(visibleExam, plainTeacher.id);
+      const blockAssignmentClearedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(plainToken), body: pngUploadForm(visibleExam)
+      });
+      check(blockAssignmentClearedUpload.status !== 403, "题块分配移除后整卷判分上传不再被题块门拒绝");
+
+      // 分配给别人时，未获分配的教师同样不能借整卷上传覆盖该题块。
+      db.prepare("INSERT INTO review_assignments (exam_id, block_id, teacher_id) VALUES (?, 'crit-block-a', ?)").run(visibleExam, teacher.id);
+      const unassignedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(plainToken), body: pngUploadForm(visibleExam)
+      });
+      check(unassignedUpload.status === 403, "题块分配给他人：无矩阵且未获分配的教师整卷上传被拒绝");
+      db.prepare("INSERT INTO teacher_permissions (teacher_id, can_grade, block_id) VALUES (?, 1, NULL)").run(plainTeacher.id);
+      const explicitlyGrantedUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(plainToken), body: pngUploadForm(visibleExam)
+      });
+      check(explicitlyGrantedUpload.status !== 403, "题块分配存在时，显式整卷授权仍可上传");
+      db.prepare("DELETE FROM teacher_permissions WHERE teacher_id = ?").run(plainTeacher.id);
+      db.prepare("DELETE FROM review_assignments WHERE exam_id = ? AND teacher_id = ?").run(visibleExam, teacher.id);
+
+      // PR280 第五轮评审 P2：修改用户角色不会清理历史矩阵行，遗留 can_grade=0
+      // 不得把管理员与学年主任等特权阅卷人挡在门外
+      const adminId = (db.prepare("SELECT id FROM users WHERE username = 'admin'").get() as { id: number }).id;
+      const stalePermSql = "INSERT INTO teacher_permissions (teacher_id, grade_id, subject, class_id, can_view_scores, can_view_charts, can_view_students, can_grade, can_assign) VALUES (?,?,?,?,1,1,1,0,0)";
+      db.prepare(stalePermSql).run(adminId, grade.id, "数学", classA);
+      db.prepare(stalePermSql).run(leader.id, grade.id, "数学", classA);
+      const adminStaleUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(adminToken), body: pngUploadForm(visibleExam)
+      });
+      const leaderStaleUpload = await fetch(`${base}/api/cards/critical-card/grading`, {
+        method: "POST", headers: authHeaders(leaderToken), body: pngUploadForm(visibleExam)
+      });
+      check(adminStaleUpload.status !== 403 && leaderStaleUpload.status !== 403,
+        `管理员/学年主任遗留 can_grade=0 矩阵行时仍可判分上传（实际 admin=${adminStaleUpload.status}/leader=${leaderStaleUpload.status}）`);
+      db.prepare("DELETE FROM teacher_permissions WHERE teacher_id IN (?, ?)").run(adminId, leader.id);
 
       // 清理矩阵行（本段置于末尾，避免影响其它用例的可见性判定）
       db.prepare("DELETE FROM teacher_permissions WHERE teacher_id = ? AND subject = '数学' AND class_id = ?").run(teacher.id, classA);

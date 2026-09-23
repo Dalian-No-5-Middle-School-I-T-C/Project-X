@@ -1,6 +1,7 @@
 import { processScannerSession } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
 import { requireScannerExamScope } from "../../../../server/middleware/scanner-scope";
+import { parseRecognitionDpi } from "../helpers";
 import { Router, type Response } from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
@@ -76,7 +77,8 @@ export function createScannerRouter(twainEnabled = true): Router {
           cardId: safeId(body.cardId),
           sessionName: body.sessionName || `扫描_${new Date().toLocaleDateString("zh-CN")}`,
           sourceName: body.sourceName || "",
-          dpi: body.dpi && body.dpi > 0 ? body.dpi : 300,
+          // 安全（#24）：本机 TWAIN 入口同样夹紧 DPI，避免超大 DPI 传给 scanner-bridge / 识别器。
+          dpi: parseRecognitionDpi(body.dpi),
           duplex: body.duplex === true,
           colorMode: body.colorMode || "gray",
           paperSize: body.paperSize || "A4",

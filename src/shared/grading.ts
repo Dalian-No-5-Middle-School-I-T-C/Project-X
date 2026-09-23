@@ -293,9 +293,12 @@ function findSubjectiveQuestion(card: AnswerCard, questionId: string): Subjectiv
 export function gradeSubjectiveRecognition(
   card: AnswerCard,
   recognition: SubjectiveRecognitionQuestion
-): SubjectiveQuestionGrade {
+): SubjectiveQuestionGrade | null {
   const question = findSubjectiveQuestion(card, recognition.questionId);
-  const maxScore = question?.score ?? recognition.maxScore;
+  // 安全：题目必须存在于答题卡定义中。识别结果可由扫描端/上传方构造，
+  // 未知 questionId 的自报分数与满分一律丢弃，不得计入成绩。
+  if (!question) return null;
+  const maxScore = question.score;
   const needsReview = recognition.status !== "ok";
 
   let status: SubjectiveQuestionGradeStatus = "ok";
@@ -304,7 +307,9 @@ export function gradeSubjectiveRecognition(
 
   return {
     questionId: recognition.questionId,
-    questionNumber: recognition.questionNumber,
+    // 题号同样以卡面定义为准：question_scores 以题号作为冲突键，
+    // 采用上报题号会让伪造值覆盖/串写其它小题的逐题成绩。
+    questionNumber: question.number,
     score: Math.max(0, Math.min(recognition.score, maxScore)),
     maxScore,
     status,
@@ -324,9 +329,9 @@ export function gradeCombinedRecognition(
 ): CombinedGradingRow {
   const objectiveRow = gradeObjectiveRecognition(card, fileName, recognition, confidenceThreshold);
 
-  const subjectiveQuestions: SubjectiveQuestionGrade[] = (recognition.subjectiveQuestions ?? []).map((sq) =>
-    gradeSubjectiveRecognition(card, sq)
-  );
+  const subjectiveQuestions: SubjectiveQuestionGrade[] = (recognition.subjectiveQuestions ?? [])
+    .map((sq) => gradeSubjectiveRecognition(card, sq))
+    .filter((grade): grade is SubjectiveQuestionGrade => grade !== null);
 
   const objectiveScore = objectiveRow.score;
   const objectiveMaxScore = objectiveRow.maxScore;
