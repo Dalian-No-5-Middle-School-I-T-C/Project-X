@@ -41,6 +41,12 @@ function classFilterQs(classId?: number): { join: string; where: string; params:
 }
 
 function round1(v: number): number { return Math.round(v * 10) / 10; }
+/** Zero denotes unavailable: a partial sum is not the full score of an aggregate. */
+function sumKnownFullScores(scores: number[]): number {
+  return scores.length > 0 && scores.every(score => Number.isFinite(score) && score > 0)
+    ? scores.reduce((sum, score) => sum + score, 0)
+    : 0;
+}
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return 0; if (sorted.length === 1) return sorted[0];
   const index = (sorted.length - 1) * p; const lower = Math.floor(index), upper = Math.ceil(index);
@@ -152,7 +158,7 @@ export class AnalysisRepository {
     if (examIds.length === 0) return this.emptyCrossExamTotal(mode, group);
     const exams = await this.getCrossExamTotalExams(examIds);
     const examOrder = new Map(exams.map((e, i) => [e.id, i]));
-    const totalFullScore = round1(exams.reduce((s, e) => s + e.fullScore, 0));
+    const totalFullScore = round1(sumKnownFullScores(exams.map(e => e.fullScore)));
     const scores = await this.getCrossExamScoreRows(examIds, request.gradeId, request.classId);
     const byStudent = new Map<number, CrossExamTotalRow>();
     for (const score of scores) {
@@ -191,23 +197,30 @@ export class AnalysisRepository {
     const thresholds = await getAnalysisThresholds();
     // Bugfix: 使用 GROUP BY + MAX 代替 DISTINCT，避免同一题 max_score 不一致时 fullScore 膨胀
     const fullScore = await this.resolveExamFullScore(examId);
-    const passLine = fullScore * thresholds.passRate, excellentLine = fullScore * thresholds.excellentRate;
+    // 满分不可知（历史考试既无答题卡又无逐题满分）时，0 只是占位而不是真实满分：
+    // 按 0 算及格/优秀线会让所有非负分数同时算及格与优秀（评审 P1），也不出分桶。
+    const scoreKnown = fullScore > 0;
+    const passLine = scoreKnown ? fullScore * thresholds.passRate : 0;
+    const excellentLine = scoreKnown ? fullScore * thresholds.excellentRate : 0;
     const stats = await this.db.get(`SELECT COUNT(*) as gradedCount, ROUND(AVG(ss.total_score), 1) as avgScore, AVG(ss.total_score) as avgScoreRaw, ROUND(MAX(ss.total_score), 1) as maxScore, ROUND(MIN(ss.total_score), 1) as minScore, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as passCount, SUM(CASE WHEN ss.total_score >= ? THEN 1 ELSE 0 END) as excellentCount FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where}`, passLine, excellentLine, examId, ...c.params) as any;
     // N+1 收敛：分布/整体分位数/各班汇总一次取分后 JS 分桶，替代逐段 COUNT 与逐班 getScoreSummary
     const filteredScores = await this.fetchExamScores(examId, c);
     const overallScores = classId === undefined ? filteredScores : await this.fetchExamScores(examId, classFilter(undefined));
     const classSummaries = await this.getClassScoreSummaries(examId);
     if (!stats || stats.gradedCount === 0) {
-      return { totalStudents: 0, gradedCount: 0, avgScore: 0, maxScore: 0, minScore: 0, stdDev: 0, passRate: 0, excellentRate: 0, passScore: round1(passLine), excellentScore: round1(excellentLine), distribution: [], scoreSummary: null, overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: 0, errorRateBuckets: emptyErrorRateBuckets() };
+      return { fullScore, totalStudents: 0, gradedCount: 0, avgScore: 0, maxScore: 0, minScore: 0, stdDev: 0, passRate: 0, excellentRate: 0, passScore: round1(passLine), excellentScore: round1(excellentLine), distribution: [], scoreSummary: null, overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: 0, errorRateBuckets: emptyErrorRateBuckets() };
     }
     // 标准差减数用未四舍五入的真实均值，避免 0.1 舍入对小样本方差的系统性偏差
     const meanBase = stats.avgScoreRaw ?? stats.avgScore;
     const stdDevRow = await this.db.get(`SELECT ROUND(SQRT(AVG((ss.total_score - ?) * (ss.total_score - ?))), 1) as stdDev FROM student_scores ss ${c.join} WHERE ss.exam_id = ? ${c.where}`, meanBase, meanBase, examId, ...c.params) as any;
     // 分桶统一走 histogram 的半开区间语义（floor(v/step)），与分布接口口径一致，避免 59.5 这类小数落段错位
-    const distribution = histogram(filteredScores, fullScore, thresholds.segmentSize);
+    const distribution = scoreKnown ? histogram(filteredScores, fullScore, thresholds.segmentSize) : [];
     const qa = await this.getQuestionAnalysis(examId, classId);
     const eb = countErrorRateBuckets(qa);
-    return { totalStudents: stats.gradedCount, gradedCount: stats.gradedCount, avgScore: stats.avgScore, maxScore: stats.maxScore, minScore: stats.minScore, stdDev: stdDevRow?.stdDev ?? 0, passRate: Math.round((stats.passCount / stats.gradedCount) * 100), excellentRate: Math.round((stats.excellentCount / stats.gradedCount) * 100), passScore: round1(passLine), excellentScore: round1(excellentLine), distribution, scoreSummary: this.buildScoreSummary(filteredScores), overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: eb.high, errorRateBuckets: eb };
+    if (!scoreKnown) {
+      return { fullScore: 0, totalStudents: stats.gradedCount, gradedCount: stats.gradedCount, avgScore: stats.avgScore, maxScore: stats.maxScore, minScore: stats.minScore, stdDev: stdDevRow?.stdDev ?? 0, passRate: 0, excellentRate: 0, passScore: 0, excellentScore: 0, distribution: [], scoreSummary: this.buildScoreSummary(filteredScores), overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: eb.high, errorRateBuckets: eb };
+    }
+    return { fullScore, totalStudents: stats.gradedCount, gradedCount: stats.gradedCount, avgScore: stats.avgScore, maxScore: stats.maxScore, minScore: stats.minScore, stdDev: stdDevRow?.stdDev ?? 0, passRate: Math.round((stats.passCount / stats.gradedCount) * 100), excellentRate: Math.round((stats.excellentCount / stats.gradedCount) * 100), passScore: round1(passLine), excellentScore: round1(excellentLine), distribution, scoreSummary: this.buildScoreSummary(filteredScores), overallScoreSummary: this.buildScoreSummary(overallScores), classSummaries, highErrorQuestionCount: eb.high, errorRateBuckets: eb };
   }
 
   async getClassScoreSummaries(examId: number): Promise<ClassScoreSummary[]> {
@@ -299,7 +312,7 @@ export class AnalysisRepository {
         prevExamId: prevExam.id,
         prevExamName: prevExam.name,
         prevAvgScore: previous.gradedCount > 0 ? previous.avgScore : null,
-        prevPassRate: previous.gradedCount > 0 ? previous.passRate : null
+        prevPassRate: previous.gradedCount > 0 && previous.fullScore > 0 ? previous.passRate : null
       };
     }
 
@@ -307,9 +320,12 @@ export class AnalysisRepository {
       prevExamId: prevExam.id,
       prevExamName: prevExam.name,
       prevAvgScore: previous.avgScore,
-      prevPassRate: previous.passRate,
+      prevPassRate: previous.fullScore > 0 ? previous.passRate : null,
       avgScoreChange: round1(current.avgScore - previous.avgScore),
-      passRateChange: current.passRate - previous.passRate
+      // 缺少任一届满分时，及格率没有可比较的基准；均分变化仍然有效。
+      passRateChange: current.fullScore > 0 && previous.fullScore > 0
+        ? current.passRate - previous.passRate
+        : null
     };
   }
 
@@ -591,7 +607,8 @@ export class AnalysisRepository {
   }
 
   private buildDistribution(scope: "subject" | "total" | "class", scopeId: string, label: string, fullScore: number, segmentSize: number, scores: number[], discrimination: number): DistributionResult {
-    const bins = histogram(scores, fullScore, segmentSize);
+    // 满分不可知时不出分桶：按 0 分桶只会得到误导性的「0-0」一段（评审 P1）。
+    const bins = fullScore > 0 ? histogram(scores, fullScore, segmentSize) : [];
     const m = mean(scores);
     const sd = stdDev(scores);
     const norm = normality(scores);
@@ -642,7 +659,7 @@ export class AnalysisRepository {
     if (examIds.length === 0) return { difficulty: 0, discrimination: 0, totalFullScore: 0, totalAvg: 0, memberCount: 0, participantCount: 0, reliability: null, cv: null, subjects: [] };
     const qa = await this.getGroupQuestionAnalysis(groupId, track);
     const fullScores = await this.getExamFullScoreMap(examIds);
-    const totalFullScore = examIds.reduce((s, id) => s + (fullScores.get(id) ?? 0), 0);
+    const totalFullScore = sumKnownFullScores(examIds.map(id => fullScores.get(id) ?? 0));
     const totals = await this.getGroupTotalsMap(groupId, track);
     const totalAvg = totals.size > 0 ? mean(Array.from(totals.values())) : 0;
     const totalScores = Array.from(totals.values());
@@ -652,8 +669,10 @@ export class AnalysisRepository {
     for (const s of qa.subjects) {
       const fullScore = s.fullScore;
       // 科的及格/优秀线 = 该科满分 × 全局阈值（与 getGroupClassComparison 对总分用 totalFull × 阈值口径一致）
-      const passLine = Math.round(fullScore * thresholds.passRate * 10) / 10;
-      const excellentLine = Math.round(fullScore * thresholds.excellentRate * 10) / 10;
+      // 该科满分不可知时不按 0 算线（否则全部算及格且优秀），只回 0 表示无依据
+      const subjectScoreKnown = fullScore > 0;
+      const passLine = subjectScoreKnown ? Math.round(fullScore * thresholds.passRate * 10) / 10 : 0;
+      const excellentLine = subjectScoreKnown ? Math.round(fullScore * thresholds.excellentRate * 10) / 10 : 0;
       const c = classFilterQs(undefined);
       // B6：stdDev 用 E[X²]−E[X]² 总体σ公式（与单科「减真实均值」结果一致）。
       // 不用 STDDEV_POP：SQLite 无此聚合函数（仅 MariaDB 有），会导致大考 metrics 接口在默认 SQLite 部署下报错。
@@ -672,7 +691,8 @@ export class AnalysisRepository {
         maxScore: stat?.maxScore ?? 0,
         minScore: stat?.minScore ?? 0,
         stdDev: stat?.stdDev ?? 0,
-        passRate: stat?.passRate ?? 0, excellentRate: stat?.excellentRate ?? 0,
+        passRate: subjectScoreKnown ? (stat?.passRate ?? 0) : 0,
+        excellentRate: subjectScoreKnown ? (stat?.excellentRate ?? 0) : 0,
         fullScore, hasAssignedScore: false,
         difficulty: s.difficulty, discrimination: s.discrimination,
         reliability: await this.getExamReliability(s.examId, totals.keys()),
@@ -750,7 +770,7 @@ export class AnalysisRepository {
       });
     }
     const overallDisc = subjects.length > 0 ? discSum / subjects.length : 0;
-    const totalFullScore = subjects.reduce((s, x) => s + x.fullScore, 0);
+    const totalFullScore = sumKnownFullScores(subjects.map(x => x.fullScore));
     const totalAvg = subjects.reduce((s, x) => s + x.avgScore, 0);
     return {
       overall: {
@@ -837,7 +857,7 @@ export class AnalysisRepository {
       const classOf = new Map<number, { classId: number; className: string }>();
       for (const r of classRows) if (!classOf.has(r.student_id)) classOf.set(r.student_id, { classId: r.class_id ?? 0, className: r.class_name ?? "未知班级" });
       const fullScoreMap = await this.getExamFullScoreMap(examIds);
-      const totalFull = examIds.reduce((s, id) => s + (fullScoreMap.get(id) ?? 0), 0);
+      const totalFull = sumKnownFullScores(examIds.map(id => fullScoreMap.get(id) ?? 0));
       // B9：赋分可用性——模式为 assigned 且存在「带赋分公式并已落库 assigned_score」的成员考试才算点亮
       const assignedCfg = await this.db.get(
         `SELECT COALESCE(total_score_mode, 'raw') AS mode FROM exam_groups WHERE id = ?`, groupId
@@ -869,7 +889,7 @@ export class AnalysisRepository {
             GROUP BY ss.student_id
           `, ...examIds, ...participants, ...(track !== "all" ? [track] : [])) as Array<{ student_id: number; total: number }>;
           res.assignedAvailable = true;
-          res.assignedBins = histogram(rawRows.map((r) => Number(r.total)), totalFull, thresholds.segmentSize);
+          res.assignedBins = totalFull > 0 ? histogram(rawRows.map((r) => Number(r.total)), totalFull, thresholds.segmentSize) : [];
         }
         results.push(res);
       } else {
@@ -933,7 +953,7 @@ export class AnalysisRepository {
   /** 大考班级对比（班级总分统计 + 逐科班级均分对比） */
   async getGroupClassComparison(groupId: number, track: "all" | "arts" | "science" = "all"): Promise<GroupClassComparisonResponse> {
     const group = await this.getExamGroup(groupId);
-    const empty: GroupClassComparisonResponse = { classes: [], subjectClassSummaries: [] };
+    const empty: GroupClassComparisonResponse = { fullScore: 0, classes: [], subjectClassSummaries: [] };
     if (!group) return empty;
     const memberMap = await this.getGroupMemberTrackMap(groupId);
     const examIds = this.groupMemberIdsForTrack(memberMap, track);
@@ -941,7 +961,7 @@ export class AnalysisRepository {
     const thresholds = await getAnalysisThresholds();
     const totals = await this.getGroupTotalsMap(groupId, track);
     const fullScoreMap = await this.getExamFullScoreMap(examIds);
-    const totalFull = examIds.reduce((s, id) => s + (fullScoreMap.get(id) ?? 0), 0);
+    const totalFull = sumKnownFullScores(examIds.map(id => fullScoreMap.get(id) ?? 0));
     const classRows = await this.db.all(`
       SELECT ss.student_id, c.id as class_id, c.name as class_name, g.name as grade_name
       FROM student_scores ss
@@ -970,7 +990,10 @@ export class AnalysisRepository {
       const sum = sArr.reduce((a, b) => a + b, 0);
       const avg = sum / sArr.length;
       const variance = sArr.reduce((a, b) => a + (b - avg) ** 2, 0) / sArr.length;
-      const bins = histogram(sArr, totalFull, thresholds.segmentSize);
+      // 大考满分不可知（成员里有缺满分依据的考试）时不出分桶、不算及格/优秀率，
+      // 否则线=0 会把所有非负分数算成及格且优秀（评审 P1）。
+      const totalKnown = totalFull > 0;
+      const bins = totalKnown ? histogram(sArr, totalFull, thresholds.segmentSize) : [];
       const meta = classMeta.get(classId) ?? { className: "未知班级" };
       classes.push({
         classId, className: meta.className, gradeName: meta.gradeName,
@@ -981,8 +1004,8 @@ export class AnalysisRepository {
         median: round1(percentile(sArr, 0.5)),
         stdDev: round1(Math.sqrt(variance)),
         // Bugfix: 遵守 getAnalysisThresholds() 配置，不再硬编码 0.6 / 0.9
-        passRate: Math.round((sArr.filter((x) => x >= totalFull * thresholds.passRate).length / sArr.length) * 100),
-        excellentRate: Math.round((sArr.filter((x) => x >= totalFull * thresholds.excellentRate).length / sArr.length) * 100),
+        passRate: totalKnown ? Math.round((sArr.filter((x) => x >= totalFull * thresholds.passRate).length / sArr.length) * 100) : 0,
+        excellentRate: totalKnown ? Math.round((sArr.filter((x) => x >= totalFull * thresholds.excellentRate).length / sArr.length) * 100) : 0,
         distribution: bins
       });
     }
@@ -1032,9 +1055,9 @@ export class AnalysisRepository {
         avgScore: round1(sc.reduce((a, b) => a + b, 0) / sc.length),
         scoreRate: fullScore > 0 ? Math.round((sc.reduce((a, b) => a + b, 0) / sc.length / fullScore) * 100) : 0
       }));
-      subjectClassSummaries.push({ examId, subject: exam?.subject ?? exam?.name ?? String(examId), byClass });
+      subjectClassSummaries.push({ examId, fullScore, subject: exam?.subject ?? exam?.name ?? String(examId), byClass });
     }
-    return { classes, subjectClassSummaries };
+    return { fullScore: totalFull, classes, subjectClassSummaries };
   }
 
   /** 从答题卡解析客观题元数据（题号 → 模式/选项数/满分/标准答案） */
@@ -1114,8 +1137,11 @@ export class AnalysisRepository {
     const thresholds = await getAnalysisThresholds();
     // Bugfix: 使用 GROUP BY + MAX 代替 DISTINCT，避免同一题 max_score 不一致时 fullScore 膨胀
     const fullScore = await this.resolveExamFullScore(examId);
-    const passLine = fullScore * thresholds.passRate, excellentLine = fullScore * thresholds.excellentRate;
-    const ranges = histogram([], fullScore, thresholds.segmentSize);
+    // 满分不可知时 0 是占位：按 0 算线会让所有非负分数同时算及格与优秀，分桶也只剩误导性的「0-0」。
+    const scoreKnown = fullScore > 0;
+    const passLine = scoreKnown ? fullScore * thresholds.passRate : 0;
+    const excellentLine = scoreKnown ? fullScore * thresholds.excellentRate : 0;
+    const ranges = scoreKnown ? histogram([], fullScore, thresholds.segmentSize) : [];
 
     const examClasses = await this.getExamClasses(examId);
     const selected = examClasses.filter((cls) => classIds.includes(cls.classId));
@@ -1147,8 +1173,8 @@ export class AnalysisRepository {
         minScore: round1(scores[0]),
         median: round1(percentile(scores, 0.5)),
         stdDev: round1(Math.sqrt(variance)),
-        passRate: Math.round((scores.filter((s) => s >= passLine).length / scores.length) * 100),
-        excellentRate: Math.round((scores.filter((s) => s >= excellentLine).length / scores.length) * 100),
+        passRate: scoreKnown ? Math.round((scores.filter((s) => s >= passLine).length / scores.length) * 100) : 0,
+        excellentRate: scoreKnown ? Math.round((scores.filter((s) => s >= excellentLine).length / scores.length) * 100) : 0,
         difficulty: fullScore > 0 ? Math.round((avg / fullScore) * 1000) / 1000 : 0,
         discrimination: Math.round(disc * 1000) / 1000,
         distribution
@@ -1504,12 +1530,14 @@ export class AnalysisRepository {
 
   // ── 建议 10：班级知识点掌握对比 ────────────────────
   async getClassKnowledgeStats(examId: number, classIds?: number[]): Promise<ClassKnowledgeResponse> {
-    // 覆盖率基准：不带班级连接统计「已标注题目作答」——避免多班级学生（class_students 多行）翻倍计数
+    // 分子、分母均按题目作答计数；EXISTS 避免一题多知识点扩行，也不连接学生班级表。
     const taggedRow = await this.db.get(
       `SELECT COUNT(*) as cnt FROM question_scores qs
        JOIN exams e ON e.id = qs.exam_id
-       JOIN knowledge_points kp ON kp.card_id = e.card_id AND kp.question_number = qs.question_number
-       WHERE qs.exam_id = ?`,
+       WHERE qs.exam_id = ? AND EXISTS (
+         SELECT 1 FROM knowledge_points kp
+         WHERE kp.card_id = e.card_id AND kp.question_number = qs.question_number
+       )`,
       examId
     ) as { cnt: number } | undefined;
     const taggedTotal = taggedRow?.cnt ?? 0;
@@ -1686,7 +1714,7 @@ export class AnalysisRepository {
     return rows.map((r: any) => ({ id: r.id, name: r.name, subject: r.subject, gradeName: r.gradeName, examDate: dateOnly(r.examDate), fullScore: round1(fullScores.get(r.id) ?? 0), gradedCount: r.gradedCount, avgScore: r.avgScore }));
   }
 
-  /** 单场满分统一解析：question_scores 合计 → 缺失时 MAX(total_score) → 0（B7，与批量 Map 同一兜底口径，消除虚构 100） */
+  /** 单场满分与批量解析保持一致，不以学生最高得分推断考试满分。 */
   private async resolveExamFullScore(examId: number): Promise<number> {
     return (await this.getExamFullScoreMap([examId])).get(examId) ?? 0;
   }
@@ -1695,6 +1723,16 @@ export class AnalysisRepository {
     const result = new Map<number, number>();
     // 空数组早退：IN () 空表在 MySQL/MariaDB 均 1064（五轮A2 加固）
     if (examIds.length === 0) return result;
+    const exams = await this.db.all<{ id: number; card_id: string | null }>(
+      `SELECT id, card_id FROM exams WHERE id IN (${placeholders(examIds)})`, ...examIds
+    );
+    const cardScores = await this.cardRepo.getFullScoreMap(exams.flatMap(exam => exam.card_id ? [exam.card_id] : []));
+    for (const exam of exams) {
+      if (!exam.card_id) continue;
+      const fullScore = cardScores.get(exam.card_id) ?? 0;
+      if (Number.isFinite(fullScore) && fullScore > 0) result.set(Number(exam.id), fullScore);
+    }
+    // 历史考试可能没有答题卡，保留逐题满分汇总；不使用实际得分兜底。
     // 五轮A2: 原两层嵌套派生表（内层 MAX 分组 + 外层 SUM 按 exam 归并）改为单层
     // 分组 + JS 侧归并，行为等价且无嵌套聚合的方言差异。
     const qRows = await this.db.all(
@@ -1710,12 +1748,7 @@ export class AnalysisRepository {
       const val = Number(r.max_score ?? 0);
       perExam.set(examId, (perExam.get(examId) ?? 0) + val);
     }
-    for (const [examId, sum] of perExam) if (sum > 0) result.set(examId, sum);
-    const missing = examIds.filter((id) => !result.has(id));
-    if (missing.length > 0) {
-      const fb = await this.db.all(`SELECT exam_id, MAX(total_score) as fullScore FROM student_scores WHERE exam_id IN (${placeholders(missing)}) GROUP BY exam_id`, ...missing) as any[];
-      for (const r of fb) result.set(Number(r.exam_id), Number(r.fullScore ?? 0));
-    }
+    for (const [examId, sum] of perExam) if (!result.has(examId) && Number.isFinite(sum) && sum > 0) result.set(examId, sum);
     for (const id of examIds) if (!result.has(id)) result.set(id, 0);
     return result;
   }

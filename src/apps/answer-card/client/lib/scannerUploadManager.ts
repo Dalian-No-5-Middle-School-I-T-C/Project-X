@@ -304,7 +304,15 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     const recognized = await (deps.localFetch ?? authFetch)(`/api/cards/${encodeURIComponent(j.cardId)}/recognition`, {
       method: "POST", body: localForm,
     });
-    if (!recognized.ok) throw new Error(`本机识别失败（HTTP ${recognized.status}）`);
+    if (!recognized.ok) {
+      const error = await httpError(recognized);
+      const detail = recognized.status === 413
+        ? `单张图片 ${(blobData.size / 1024 / 1024).toFixed(1)} MiB 超过接收限制，请降低扫描分辨率或转换为 PNG/JPEG 后重试`
+        : error.message;
+      error.message = `本机识别失败（HTTP ${recognized.status}）：${detail}`;
+      // Preserve the status so deterministic 4xx failures are not uploaded repeatedly.
+      throw error;
+    }
     const recognition = await recognized.json();
     // Dependencies are fixed when the job is created, independent of array adjacency,
     // retry counts or network latency. Never borrow an ID across physical cards.

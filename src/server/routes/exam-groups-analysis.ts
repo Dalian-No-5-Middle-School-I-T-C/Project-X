@@ -7,7 +7,7 @@ import { competitionRank } from "../../shared/ranking";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { getAnalysisThresholds } from "../services/analysisConfig";
 import { decryptField } from "../lib/field-crypto";
-import { createAiAnalysisJob, enqueueAiAnalysisJob } from "../services/aiAnalysisJobs";
+import { createAiAnalysisJob, enqueueAiAnalysisJob, getLatestAiAnalysisJob } from "../services/aiAnalysisJobs";
 import type { AiJobCreateResponse } from "../../shared/types";
 import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL, makeGroupViewPermissionGate } from "../../apps/answer-card/server/middleware";
 import {
@@ -81,8 +81,10 @@ router.get("/overview", requireReadableGroup, requireGroupViewCharts, async (req
     for (const m of trackMembers) {
       const fullScore = fullByExam.get(m.exam_id) ?? 0;
       // P1-1：及格/优秀线走可配置阈值（与 metrics/班级对比/单科 overview 同口径），不再硬编码 0.6/0.9
-      const passLine = Math.round(fullScore * thresholds.passRate * 10) / 10;
-      const excellentLine = Math.round(fullScore * thresholds.excellentRate * 10) / 10;
+      // 满分不可知时 0 只是占位：按 0 算线会让所有非负分数同时算及格与优秀（评审 P1）
+      const scoreKnown = fullScore > 0;
+      const passLine = scoreKnown ? Math.round(fullScore * thresholds.passRate * 10) / 10 : 0;
+      const excellentLine = scoreKnown ? Math.round(fullScore * thresholds.excellentRate * 10) / 10 : 0;
       // P2-5：标准差减数用未四舍五入的真实均值（avg_score_raw）
       const statRow = await db.get(`
         SELECT
@@ -103,8 +105,8 @@ router.get("/overview", requireReadableGroup, requireGroupViewCharts, async (req
         maxScore: m.max_score || 0,
         minScore: m.min_score || 0,
         stdDev: statRow?.std ?? 0,
-        passRate: m.graded_count > 0 ? Math.round((statRow?.pass_count || 0) / m.graded_count * 100) : 0,
-        excellentRate: m.graded_count > 0 ? Math.round((statRow?.excellent_count || 0) / m.graded_count * 100) : 0,
+        passRate: scoreKnown && m.graded_count > 0 ? Math.round((statRow?.pass_count || 0) / m.graded_count * 100) : 0,
+        excellentRate: scoreKnown && m.graded_count > 0 ? Math.round((statRow?.excellent_count || 0) / m.graded_count * 100) : 0,
         fullScore,
         hasAssignedScore: !!(m.assigned_formula && m.assigned_formula !== ""),
         trackType: m.track_type || "common"
@@ -203,6 +205,13 @@ router.get("/class-comparison", requireReadableGroup, requireGroupViewCharts, as
 });
 
 // ── POST /api/exam-groups/:groupId/ai-analysis ── 大考 AI 分析 ──
+
+router.get("/ai-analysis", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const job = await getLatestAiAnalysisJob({ groupId: Number(req.params.groupId) }, req.user!.id);
+    res.json({ job });
+  } catch (error) { next(error); }
+});
 
 router.post("/ai-analysis", requireReadableGroup, requireGroupViewCharts, async (req: Request, res: Response, next: NextFunction) => {
   try {

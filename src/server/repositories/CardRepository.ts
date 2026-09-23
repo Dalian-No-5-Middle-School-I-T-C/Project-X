@@ -4,6 +4,9 @@ import type { AnswerCard, ObjectiveOptionLayout } from "../../shared/types";
 import { normalizeObjectiveQuestions } from "../../shared/grading";
 import { DEFAULT_STUDENT_INFO } from "../../shared/defaultCard";
 import type { StudentInfoSettings } from "../../shared/types";
+import { createDefaultCard } from "../../shared/defaultCard";
+import { validateCardScores } from "../../shared/cardScoreValidation";
+import { analysisCache } from "../services/analysisCache";
 
 function parseStudentInfo(raw: string | null | undefined, digits: number): StudentInfoSettings {
   let parsed: unknown;
@@ -66,6 +69,54 @@ export class CardRepository {
 
   async updateCard(card: AnswerCard): Promise<void> {
     await this.db.transaction((tx) => this.updateCardInTx(card, tx));
+    // Invalidate only after commit, including every exam sharing this card.
+    const exams = await this.db.all<{ id: number }>("SELECT id FROM exams WHERE card_id = ?", card.id);
+    for (const exam of exams) analysisCache.invalidateExam(Number(exam.id));
+  }
+
+  /** Score-only projection: bounded queries, no answers, images or layout payloads. */
+  async getFullScoreMap(cardIds: string[]): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    const ids = [...new Set(cardIds)];
+    // Bound parameter counts for SQLite as well as MariaDB.
+    for (let offset = 0; offset < ids.length; offset += 400) {
+      const batch = ids.slice(offset, offset + 400);
+      const marks = batch.map(() => "?").join(",");
+      const cards = await this.db.all<{ id: string }>(`SELECT id FROM answer_cards WHERE id IN (${marks})`, ...batch);
+      const objectives = await this.db.all(`SELECT id, card_id, title, question_start, question_count, option_count, mode, score_per_question, density FROM objective_blocks WHERE card_id IN (${marks})`, ...batch);
+      const objectiveQuestions = await this.db.all(`SELECT q.block_id, q.question_number, q.score FROM objective_questions q JOIN objective_blocks b ON b.id = q.block_id WHERE b.card_id IN (${marks}) ORDER BY q.sort_order, q.question_number`, ...batch);
+      const subjectives = await this.db.all(`SELECT id, card_id, title, block_kind FROM subjective_blocks WHERE card_id IN (${marks})`, ...batch);
+      const subjectiveQuestions = await this.db.all(`SELECT q.block_id, q.id, q.number, q.score, q.style, q.kind FROM subjective_questions q JOIN subjective_blocks b ON b.id = q.block_id WHERE b.card_id IN (${marks}) ORDER BY q.sort_order, q.number`, ...batch);
+      const byBlock = (rows: Record<string, any>[]) => {
+        const groups = new Map<string, Record<string, any>[]>();
+        for (const row of rows) {
+          const group = groups.get(row.block_id) ?? [];
+          group.push(row);
+          groups.set(row.block_id, group);
+        }
+        return groups;
+      };
+      const oq = byBlock(objectiveQuestions);
+      const sq = byBlock(subjectiveQuestions);
+      const projections = new Map(cards.map(row => {
+        const card = createDefaultCard(row.id);
+        card.bodyBlocks = [];
+        return [row.id, card] as const;
+      }));
+      for (const b of objectives) projections.get(b.card_id)?.bodyBlocks.push({
+        id: b.id, type: "objective", title: b.title, questionStart: b.question_start,
+        questionCount: b.question_count, optionCount: b.option_count, mode: b.mode,
+        scorePerQuestion: b.score_per_question, density: b.density,
+        questions: oq.get(b.id)?.map(q => ({ questionNumber: q.question_number, score: q.score })),
+      });
+      for (const b of subjectives) projections.get(b.card_id)?.bodyBlocks.push({
+        id: b.id, type: "subjective", title: b.title,
+        blockKind: b.block_kind ?? (String(b.title ?? "").includes("填空") ? "fill_blank" : "answer"),
+        questions: (sq.get(b.id) ?? []).map(q => ({ id: q.id, number: q.number, score: q.score, style: q.style, kind: q.kind, minHeightMm: 0 })),
+      });
+      for (const [id, card] of projections) result.set(id, validateCardScores(card).totalScore);
+    }
+    return result;
   }
 
   /** 在调用方已开启的事务内保存答题卡（供「改答案 + 重算成绩」等原子流程复用）。 */

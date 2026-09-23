@@ -31,7 +31,7 @@ const { initializeDatabase, getDatabase } = await import("../src/server/db/index
 const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
 const { KnowledgePointRepository } = await import("../src/server/repositories/KnowledgePointRepository");
 const { analysisCache } = await import("../src/server/services/analysisCache");
-const { createAiAnalysisJob, getAiAnalysisJob, enqueueAiAnalysisJob } = await import("../src/server/services/aiAnalysisJobs");
+const { createAiAnalysisJob, getAiAnalysisJob, enqueueAiAnalysisJob, cleanupInterruptedAiJobs } = await import("../src/server/services/aiAnalysisJobs");
 const { mean, stdDev } = await import("../src/shared/stats");
 
 initializeDatabase();
@@ -163,6 +163,25 @@ ok(c2Deriv.scoreRate === 0, "2班(戊) 导数得分率 0（q5-8 全 0 分）", c
 const kpAll = await repo.getClassKnowledgeStats(e1);
 ok(kpAll.coverageRate === 80 && kpAll.classes.length === 2, "无 classIds 时默认全部班级", kpAll.classes);
 
+// 一题多知识点只增加雷达维度，不增加已覆盖作答数；数据中已含多班级学生。
+const extraPoint = "多知识点覆盖率回归";
+const addPoint = db.prepare("INSERT INTO knowledge_points (card_id, question_number, point_text) VALUES (?, ?, ?)");
+addPoint.run(cardId, 1, extraPoint);
+const kpMulti = await repo.getClassKnowledgeStats(e1, [class1, class2]);
+ok(kpMulti.coverageRate === 80, "已标注题目新增知识点后覆盖率仍为 80%", kpMulti.coverageRate);
+ok(JSON.stringify(kpMulti.matrix.filter((row) => row.knowledgePoint !== extraPoint)) === JSON.stringify(kp.matrix), "原知识点得分率与题数不变");
+const extraClass = kpMulti.matrix.find((row) => row.knowledgePoint === extraPoint)?.byClass.find((row) => row.classId === class1);
+ok(extraClass?.questionCount === 1 && extraClass.scoreRate === 77.5, "新增知识点独立统计：1 题、1 班得分率 77.5%", extraClass);
+for (let q = 2; q <= 10; q++) addPoint.run(cardId, q, extraPoint);
+const kpFull = await repo.getClassKnowledgeStats(e1);
+ok(kpFull.coverageRate === 100, "全部题目覆盖且一题多知识点时为 100%，不超过上限", kpFull.coverageRate);
+ok((await repo.getClassKnowledgeStats(e1, [class2])).coverageRate === 100, "班级筛选和多班级归属不放大覆盖率");
+const kpUntagged = await repo.getClassKnowledgeStats(e2);
+ok(kpUntagged.coverageRate === 0 && kpUntagged.empty, "无知识点标注时覆盖率为 0");
+const kpNoScores = await repo.getClassKnowledgeStats(-1);
+ok(kpNoScores.coverageRate === 0 && kpNoScores.empty, "无作答时覆盖率为 0");
+db.prepare("DELETE FROM knowledge_points WHERE card_id = ? AND point_text = ?").run(cardId, extraPoint);
+
 // ============================================================
 console.log("\n== 建议 14/15：同卡对比 + 命题质量趋势 ==");
 const cmp = await repo.getComparableExams(e1);
@@ -181,11 +200,27 @@ ok(job0 !== null && job0.status === "queued", "创建任务为 queued", job0?.st
 await enqueueAiAnalysisJob(jobId, { examId: e1 }).catch(() => {});
 const job1 = await getAiAnalysisJob(jobId);
 ok(job1 !== null && job1.status === "error", "执行失败落 error", job1?.error);
-// 遗留任务清理：创建下一个任务时，之前的 queued 被标记中断
+// 模拟服务启动前数据库中的遗留任务，仅调用启动清理入口时标记中断。
 const staleId = await createAiAnalysisJob({ examId: e1 });
-await createAiAnalysisJob({ examId: e1 });
+const runningId = await createAiAnalysisJob({ examId: e1 });
+db.prepare("UPDATE ai_analysis_jobs SET status = 'running' WHERE id = ?").run(runningId);
+const doneId = await createAiAnalysisJob({ examId: e1 });
+db.prepare("UPDATE ai_analysis_jobs SET status = 'done', result = ? WHERE id = ?").run('{"summary":"saved"}', doneId);
+const doneBefore = await getAiAnalysisJob(doneId);
+await cleanupInterruptedAiJobs();
 const stale = await getAiAnalysisJob(staleId);
-ok(stale !== null && stale.status === "error" && (stale.error ?? "").includes("服务重启中断"), "残留 queued 任务被标记中断", stale?.error);
+const running = await getAiAnalysisJob(runningId);
+ok(stale?.status === "error" && (stale.error ?? "").includes("服务重启中断"), "启动时清理残留 queued 任务", stale);
+ok(running?.status === "error" && (running.error ?? "").includes("服务重启中断"), "启动时清理残留 running 任务", running);
+ok(JSON.stringify(await getAiAnalysisJob(doneId)) === JSON.stringify(doneBefore), "启动清理保留已完成任务及结果");
+ok(JSON.stringify(await getAiAnalysisJob(jobId)) === JSON.stringify(job1), "启动清理保留已有失败任务及错误原因");
+
+const queuedId = await createAiAnalysisJob({ examId: e1 });
+const newId = await createAiAnalysisJob({ examId: e1 });
+ok((await getAiAnalysisJob(queuedId))?.status === "queued" && (await getAiAnalysisJob(newId))?.status === "queued", "正常创建新任务不会取消已有排队任务");
+db.prepare("UPDATE ai_analysis_jobs SET status = 'running' WHERE id = ?").run(newId);
+await cleanupInterruptedAiJobs();
+ok((await getAiAnalysisJob(queuedId))?.status === "queued" && (await getAiAnalysisJob(newId))?.status === "running", "启动清理只执行一次，重复调用不影响本进程的新任务");
 
 // ============================================================
 console.log("\n== 建议 8：知识点合并写入 mergeByCard ==");

@@ -52,6 +52,35 @@ async function main(): Promise<void> {
       [{ exam_id: exam.lastInsertRowid, student_id: student.lastInsertRowid }]);
     assert.equal((await findSavedScannerOwners(db, "session_ci", "group_ci", "09210002", "receipt_ci")).length, 0);
     assert.equal((await findSavedScannerOwners(db, "session_ci", "group_ci", "09210001", "other_card")).length, 0);
+    // 使用真实成绩修改路由，防止另一条学生搜索路径重新引入反斜杠 ESCAPE。
+    const { default: express } = await import("express");
+    const { default: scoreEditingRouter } = await import("../src/server/routes/score-editing");
+    const app = express();
+    app.use((req, _res, next) => { req.user = { id: student.lastInsertRowid, role_name: "admin" } as any; next(); });
+    app.use("/api/exams", scoreEditingRouter);
+    const httpServer = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => httpServer.once("listening", resolve));
+    try {
+      const address = httpServer.address() as { port: number };
+      for (const keyword of ["09210001", "搜索", "!", "_", "%", "\\"]) {
+        const response = await fetch(`http://127.0.0.1:${address.port}/api/exams/${exam.lastInsertRowid}/students/search?q=${encodeURIComponent(keyword)}`);
+        assert.equal(response.status, 200);
+        const matches = await response.json() as Array<{ id: number }>;
+        assert.deepEqual(matches.map(row => row.id), [student.lastInsertRowid]);
+      }
+    } finally { await new Promise<void>((resolve, reject) => httpServer.close(error => error ? reject(error) : resolve())); }
+
+    const { createAiAnalysisJob, getLatestAiAnalysisJob } = await import("../src/server/services/aiAnalysisJobs");
+    const jobId = await createAiAnalysisJob({ examId: exam.lastInsertRowid, createdBy: student.lastInsertRowid });
+    const savedReport = { model: "test", report: { overallJudgement: "持久化报告" } };
+    await db.run("UPDATE ai_analysis_jobs SET status = 'done', result = ? WHERE id = ?", JSON.stringify(savedReport), jobId);
+    const restored = await getLatestAiAnalysisJob({ examId: exam.lastInsertRowid }, student.lastInsertRowid);
+    assert.equal(restored?.id, jobId);
+    assert.deepEqual(restored?.result, savedReport);
+    assert.equal(await getLatestAiAnalysisJob({ examId: exam.lastInsertRowid }, student.lastInsertRowid, 0), null);
+    assert.equal(await getLatestAiAnalysisJob({ examId: exam.lastInsertRowid }, -1), null);
+    await db.run("DELETE FROM ai_analysis_jobs WHERE id = ?", jobId);
+    console.log("PASS: score-editing search route and persisted AI report recovery");
     await db.run("DELETE FROM exams WHERE id = ?", exam.lastInsertRowid);
     await db.run("DELETE FROM answer_cards WHERE id = 'receipt_ci'");
     await db.run("DELETE FROM users WHERE id = ?", student.lastInsertRowid);

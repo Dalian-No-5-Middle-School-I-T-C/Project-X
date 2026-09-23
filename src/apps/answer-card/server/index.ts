@@ -1,6 +1,7 @@
 import { databaseTimestamp } from "../../../server/db/timestamp";
 import express from "express";
 import multer from "multer";
+import { MAX_SCAN_IMAGE_BYTES } from "../../../shared/scanUploadLimits";
 import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -77,6 +78,7 @@ import dashboardRoutes from "../../../server/routes/dashboard";
 import weeklyAuditRoutes from "../../../server/routes/weekly-audit";
 import { scheduleWeeklyAuditRefresh } from "../../../server/services/WeeklyAuditService";
 import { cleanupInterruptedAiJobs } from "../../../server/services/aiAnalysisJobs";
+import { analysisCache } from "../../../server/services/analysisCache";
 import adminPermissionsRoutes from "../../../server/routes/admin-permissions";
 import apiKeysRoutes from "../../../server/routes/api-keys";
 import dataRetentionRoutes from "../../../server/routes/data-retention";
@@ -1115,7 +1117,7 @@ export async function createApp(): Promise<express.Express> {
         cb(null, name);
       }
     }),
-    limits: { fileSize: 20 * 1024 * 1024 }
+    limits: { fileSize: MAX_SCAN_IMAGE_BYTES }
   });
 
   app.get("/api/cards", async (_req, res, next) => {
@@ -1726,6 +1728,8 @@ export async function createApp(): Promise<express.Express> {
         } else {
           await db.run("UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ?", cardId);
         }
+        // 解绑/删除关联考试后满分依据失效，清掉这些考试的分析缓存（评审 P1）
+        for (const e of referenced as Array<{ id: number }>) analysisCache.invalidateExam(Number(e.id));
         await cardRepo.deleteCard(cardId);
         await recordLifecycleEvent({ entityType: "answer_card", entityId: cardId, action: "delete", actorId: req.user?.id });
         await deleteCardFiles(cardId);
@@ -2300,6 +2304,8 @@ export async function createApp(): Promise<express.Express> {
       const setClauses = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
       const values = Object.values(updates);
       await db.run(`UPDATE exams SET ${setClauses} WHERE id = ?`, ...values, exam.id);
+      // 改绑答题卡/改考试范围会改变满分依据与统计口径，缓存必须失效（评审 P1）
+      analysisCache.invalidateExam(exam.id);
       const updated = await examRepo.findExamById(exam.id);
       res.json(updated);
     } catch (error) {

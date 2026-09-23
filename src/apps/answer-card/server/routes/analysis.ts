@@ -11,7 +11,7 @@ import { getMysqlDb, buildUpsertSQL } from "../../../../server/db";
 import { AnalysisRepository } from "../../../../server/repositories/AnalysisRepository";
 import { KnowledgePointRepository } from "../../../../server/repositories/KnowledgePointRepository";
 import { analysisCache } from "../../../../server/services/analysisCache";
-import { createAiAnalysisJob, enqueueAiAnalysisJob, getAiAnalysisJobWithCreator } from "../../../../server/services/aiAnalysisJobs";
+import { createAiAnalysisJob, enqueueAiAnalysisJob, getAiAnalysisJobWithCreator, getLatestAiAnalysisJob } from "../../../../server/services/aiAnalysisJobs";
 import { suggestForCard } from "../../../../server/services/knowledgeSuggester";
 import { ApiError } from "../../../../server/api-error";
 import { numberArray, optionalPositiveNumber } from "../helpers";
@@ -678,6 +678,19 @@ router.get("/ai/status", async (req, res) => {
       });
     }
   }
+});
+
+router.get("/exams/:examId/ai-analysis", requireExamAccess, requireViewCharts, async (req, res, next) => {
+  try {
+    const classId = req.query.classId === undefined || req.query.classId === "" ? undefined : Number(req.query.classId);
+    if (classId !== undefined && (!Number.isInteger(classId) || classId < 0)) {
+      res.status(400).json({ message: "无效的班级 ID" });
+      return;
+    }
+    if (!req.user) { res.json({ job: null }); return; }
+    const job = await getLatestAiAnalysisJob({ examId: Number(req.params.examId) }, req.user.id, classId);
+    res.json({ job });
+  } catch (error) { next(error); }
 });
 
 router.post("/exams/:examId/ai-analysis", requireExamAccess, requireViewCharts, async (req, res, next) => {

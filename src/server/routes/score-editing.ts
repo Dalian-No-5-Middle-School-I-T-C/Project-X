@@ -42,12 +42,12 @@ router.get("/:examId/students/search", requireExamAccess, makeViewPermissionGate
 
   const db = getMysqlDb();
   // 转义 LIKE 通配符，避免用户输入 % / _ 时匹配到无关学生
-  const escaped = q.replace(/[\\%_]/g, (m) => `\\${m}`);
+  const escaped = q.replace(/[!%_]/g, (m) => `!${m}`);
   const students = await db.all(`
     SELECT DISTINCT u.id, u.name, u.student_number
     FROM student_scores ss
     JOIN users u ON u.id = ss.student_id
-    WHERE ss.exam_id = ? AND (u.student_number = ? OR u.name LIKE ? ESCAPE '\\')
+    WHERE ss.exam_id = ? AND (u.student_number = ? OR u.name LIKE ? ESCAPE '!')
     ORDER BY u.student_number
     LIMIT 20
   `, examId, q, `%${escaped}%`) as Array<{ id: number; name: string; student_number: string | null }>;

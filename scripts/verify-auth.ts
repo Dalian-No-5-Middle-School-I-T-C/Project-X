@@ -314,7 +314,7 @@ async function main(): Promise<void> {
 
   const prevComparison = await analysisRepo.getPreviousExamComparison(trendExam2);
   ok(prevComparison.prevExamId === trendExam1 && prevComparison.prevExamName === "Trend 1", "previous exam comparison resolves prior exam");
-  ok(prevComparison.avgScoreChange === 10 && prevComparison.passRateChange === 0, "previous exam comparison computes deltas");
+  ok(prevComparison.avgScoreChange === 10 && prevComparison.passRateChange === null && prevComparison.prevPassRate === null, "previous exam comparison preserves average delta but omits pass-rate delta without full scores");
 
   const { listReviewBlocks } = await import("../src/server/services/ReviewService");
   ok((await listReviewBlocks(trendExam1)).length === 0, "review block list empty without crops");

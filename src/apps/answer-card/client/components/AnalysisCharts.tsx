@@ -331,7 +331,10 @@ export function ClassRadar({
   height?: number;
 }) {
   const theme = useChartTheme();
-  const score = (value: number) => (fullScore > 0 ? (value / fullScore) * 100 : 0);
+  if (!(fullScore > 0)) {
+    return <p className="py-5 text-center text-sm text-muted-foreground">满分未知，无法计算班级多维度雷达图</p>;
+  }
+  const score = (value: number) => (value / fullScore) * 100;
   const dims = [
     { label: "平均分率", get: (c: (typeof classes)[number]) => score(c.avgScore) },
     { label: "中位分率", get: (c: (typeof classes)[number]) => score(c.median) },
