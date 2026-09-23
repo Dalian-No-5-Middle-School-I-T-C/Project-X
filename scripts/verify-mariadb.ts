@@ -21,6 +21,15 @@ async function main(): Promise<void> {
     console.log(`Testing ${server!.version}`);
 
     await initMariadbSchema();
+    assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'identity_mode'"));
+    assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
+    // Simulate a pre-QR installation and exercise the incremental migration too.
+    await db.exec("ALTER TABLE twain_scan_sessions DROP COLUMN identity_mode");
+    await db.exec("ALTER TABLE twain_scan_records DROP COLUMN identity_json");
+    await db.run("DELETE FROM schema_migrations WHERE version = 51");
+    await initMariadbSchema();
+    assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_sessions LIKE 'identity_mode'"));
+    assert.ok(await db.get("SHOW COLUMNS FROM twain_scan_records LIKE 'identity_json'"));
     const migrations = await db.all<{ version: number; name: string }>(
       "SELECT version, name FROM schema_migrations ORDER BY version",
     );

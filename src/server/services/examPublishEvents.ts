@@ -12,7 +12,7 @@
  */
 import type { DbAdapter } from "../db";
 
-export type ScoreMutationReason = "score_edit" | "answer_edit" | "arbitration" | "review_submit" | "assigned_recalc" | "assigned_disable" | "scanner_duplicate";
+export type ScoreMutationReason = "score_edit" | "answer_edit" | "arbitration" | "review_submit" | "assigned_recalc" | "assigned_disable" | "scanner_duplicate" | "scanner_retry";
 
 const REASON_TEXT: Record<ScoreMutationReason, string> = {
   score_edit: "手动改分自动撤回",
@@ -21,7 +21,8 @@ const REASON_TEXT: Record<ScoreMutationReason, string> = {
   review_submit: "网阅评分自动撤回",
   assigned_recalc: "赋分重算自动撤回",
   assigned_disable: "赋分禁用自动撤回",
-  scanner_duplicate: "扫描重复学号自动撤回"
+  scanner_duplicate: "扫描重复学号自动撤回",
+  scanner_retry: "扫描重新识别自动撤回"
 };
 
 export async function markScoreMutated(

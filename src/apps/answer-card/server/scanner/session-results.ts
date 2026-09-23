@@ -42,6 +42,13 @@ export async function collectSessionResults(
     const studentId = studentIds.length === 1 ? studentIds[0] : null;
     let stage: "recognition" | "grading" | "saving" = "recognition";
     try {
+      for (const { record, page } of rows) {
+        if (record.ocr_status === "failed") throw new Error(record.ocr_error || "页面识别失败");
+        const identity = record.identity_json ? JSON.parse(record.identity_json) : null;
+        const verified = identity?.status === "verified" && identity.cardId === card.id && identity.pageNumber === page.layoutPage;
+        const legacy = record.identity_mode === "legacy" && identity?.status === "unverified" && ["QR_MISSING", "QR_UNREADABLE"].includes(identity.code);
+        if (!verified && !legacy) throw new Error(`第 ${page.layoutPage} 页未通过二维码身份校验，请在 Windows 扫描端重新识别`);
+      }
       if (studentIds.length > 1) throw new Error("同一份答题卡的学号不一致，请核对正反面后订正");
       if (!studentId) throw new Error("未识别到学号，请核对图片并填写正确学号后重试");
       if ((studentGroups.get(studentId)?.size ?? 0) > 1) throw new Error("同一学号出现多份答题卡，请核对后重新扫描");

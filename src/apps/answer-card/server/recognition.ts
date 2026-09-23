@@ -2,8 +2,11 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { rootDir } from "./storage";
+import { readFile } from "node:fs/promises";
+import { parseIdentityMode, type CardIdentity, type IdentityMode } from "../../../shared/cardIdentity";
 
 export type RecognitionRequest = {
+  identityMode?: IdentityMode;
   imagePath: string;
   layoutPath: string;
   pageNumber: number;
@@ -54,6 +57,7 @@ function parseRecognizerOutput(stdout: string): RecognitionResult | null {
 
 function buildBaseArgs(request: RecognitionRequest): string[] {
   const args = [
+    "--identity-mode", parseIdentityMode(request.identityMode),
     "--image",
     request.imagePath,
     "--layout",
@@ -148,11 +152,40 @@ async function runWithCropsFallback(request: RecognitionRequest, exePath: string
 export async function recognizeObjectiveAnswers(request: RecognitionRequest): Promise<RecognitionResult> {
   const exePath = resolveRecognizerExe();
   const baseArgs = buildBaseArgs(request);
-  return runWithCropsFallback(request, exePath, baseArgs);
+  return validateIdentity(await runWithCropsFallback(request, exePath, baseArgs), request);
 }
 
 export async function recognizeAnswerCard(request: RecognitionRequest): Promise<RecognitionResult> {
   const exePath = resolveRecognizerExe();
   const baseArgs = buildBaseArgs(request);
-  return runWithCropsFallback(request, exePath, baseArgs);
+  return validateIdentity(await runWithCropsFallback(request, exePath, baseArgs), request);
+}
+
+export class CardIdentityError extends Error {
+  readonly status = 422;
+  constructor(message: string, readonly code = "CARD_IDENTITY_REJECTED") { super(message); }
+}
+
+/** Enforce the native contract before any caller can grade, inherit IDs, or save crops. */
+export async function validateIdentity(result: RecognitionResult, request: RecognitionRequest): Promise<RecognitionResult> {
+  const identity = result.identity as CardIdentity | undefined;
+  if (!identity) {
+    const message = String(result.message ?? "");
+    if (result.status === "failed" && !message.includes("Unknown argument") && !message.includes("identity")) {
+      throw new Error(message || "答题卡识别失败");
+    }
+    throw new CardIdentityError("识别器不支持二维码身份校验，请升级 Windows 扫描端原生识别器", "RECOGNIZER_UPGRADE_REQUIRED");
+  }
+  const layout = JSON.parse(await readFile(request.layoutPath, "utf8")) as { cardId: string };
+  if (identity.status === "verified" && identity.cardId === layout.cardId && identity.pageNumber === request.pageNumber) return result;
+  if (identity.status === "unverified" && request.identityMode === "legacy"
+    && ["QR_MISSING", "QR_UNREADABLE"].includes(identity.code)) {
+    if (result.status !== "failed") result.message = "未校验卡 ID（兼容旧卡模式）";
+    return result;
+  }
+  const reasons: Record<string, string> = {
+    QR_MISSING: "未找到二维码", QR_UNREADABLE: "二维码无法读取", QR_INVALID: "二维码协议或内容无效",
+    QR_CONFLICT: "检测到多个不同二维码", CARD_MISMATCH: "答题卡 ID 不匹配", PAGE_MISMATCH: "答题卡页码不匹配",
+  };
+  throw new CardIdentityError(`${reasons[identity.code] ?? "二维码身份校验失败"}；预期 ${layout.cardId} 第 ${request.pageNumber} 页，实际 ${identity.cardId ?? "未知"} 第 ${identity.pageNumber ?? "未知"} 页`);
 }

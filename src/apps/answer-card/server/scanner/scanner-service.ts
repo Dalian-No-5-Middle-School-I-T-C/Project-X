@@ -9,6 +9,7 @@ import {
 import type { ScanProgressEvent, ScanSessionConfig } from "./scanner-types";
 import { listSources, scan } from "./twain-bridge";
 import { recognizeAnswerCard } from "../recognition";
+import { invalidateScanRecognition } from "../../../../server/services/scannerSubmissions";
 import { gradeCombinedRecognition } from "../../../../shared/grading";
 import type { CombinedRecognitionResult } from "../../../../shared/types";
 import { getMysqlDb } from "../../../../server/db";
@@ -44,7 +45,8 @@ export async function createScanSession(config: ScanSessionConfig): Promise<stri
     dpi: config.dpi,
     duplex: config.duplex,
     colorMode: config.colorMode,
-    paperSize: config.paperSize
+    paperSize: config.paperSize,
+    identityMode: config.identityMode
   });
   return session.id;
 }
@@ -210,7 +212,10 @@ export async function runOcrOnSession(
     }
 
     try {
+      // Invalidate before retry: a failed new attempt must not expose old grades/crops.
+      await invalidateScanRecognition(sessionId, record.id);
       const recognition = (await recognizeAnswerCard({
+        identityMode: session?.identity_mode ?? "strict",
         imagePath: record.image_path,
         layoutPath: currentLayoutPath,
         pageNumber: layoutPage,
@@ -219,6 +224,7 @@ export async function runOcrOnSession(
         cropsDir: await createRecognitionCropTempDir(cardId, record.id)
       })) as CombinedRecognitionResult;
 
+      await getMysqlDb().run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), record.id);
       const recognizedStudentId = retry?.studentId ?? (recognition.studentId?.status === "ok" ? recognition.studentId.value : null);
       if (retry?.studentId) applyScanStudentId(recognition, retry.studentId);
       if (recognizedStudentId) {
@@ -240,7 +246,7 @@ export async function runOcrOnSession(
       await updateScanOcrResult(record.id, studentId, studentConf,
         ocrStatus as "done" | "failed" | "review", recognition.message);
 
-      if (card) {
+      if (card && recognition.status !== "failed") {
         try {
           const graded = gradeCombinedRecognition(card, record.image_path, recognition);
           await upsertRecognitionResult({
@@ -268,7 +274,7 @@ export async function runOcrOnSession(
           studentNumber: studentId,
           sourceType: "twain_scan_record",
           sourceRecordId: record.id,
-          crops: recognition.blockCrops ?? []
+          crops: recognition.status === "failed" ? [] : recognition.blockCrops ?? []
         }, getMysqlDb());
       } catch (cropError) {
         console.error(`[Scanner] Block crop persistence failed for record ${record.id}:`, cropError);
@@ -281,7 +287,7 @@ export async function runOcrOnSession(
       onProgress({
         sessionId, type: "ocr_page_done",
         recordId: record.id, pageNum: record.page_num, side: record.side,
-        studentId, studentConf
+        studentId, studentConf, ocrStatus, message: recognition.message
       });
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -290,7 +296,7 @@ export async function runOcrOnSession(
       onProgress({
         sessionId, type: "ocr_page_done",
         recordId: record.id, pageNum: record.page_num, side: record.side,
-        studentId: null, message: msg
+        studentId: null, ocrStatus: "failed", message: msg
       });
     }
   }

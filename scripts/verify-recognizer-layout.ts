@@ -1,3 +1,4 @@
+import { qrDarkRects } from "../src/shared/cardIdentity";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -58,7 +59,8 @@ async function main(): Promise<void> {
     .flatMap((block) => block.type === "objective" ? block.items : [])
     .flatMap((item) => item.options.map((option) => svgRect(distort(option.rect), option.label === "A" ? "#000" : "#fff")))
     .join("");
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${page.width} ${page.height}"><rect width="100%" height="100%" fill="#fff"/>${markers}${digits}${options}</svg>`;
+  const qr = qrDarkRects(page.header.qrCode).map(r => svgRect(distort(r), "#000", "#000", 0)).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${page.width} ${page.height}"><rect width="100%" height="100%" fill="#fff"/>${markers}${digits}${options}${qr}</svg>`;
 
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "projectx-recognizer-layout-"));
   try {

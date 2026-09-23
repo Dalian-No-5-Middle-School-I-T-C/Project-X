@@ -12,6 +12,9 @@
 
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
+import { parseIdentityMode } from "../../shared/cardIdentity";
+import { buildLayout } from "../../shared/layout";
+import { mapScanPageToLayout } from "../../shared/scanPages";
 import { MAX_SCAN_IMAGE_BYTES } from "../../shared/scanUploadLimits";
 import path from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -28,13 +31,14 @@ import { CardRepository } from "../repositories/CardRepository";
 import { ExamRepository } from "../repositories/ExamRepository";
 import { ensureExamParticipants, listMissingParticipants } from "../services/examParticipants";
 import { recomputeExamRankings } from "../services/rankingUpdate";
-import { processScannerSession, enqueueScannerSubmission, findSavedScannerOwners } from "../services/scannerSubmissions";
+import { processScannerSession, enqueueScannerSubmission, findSavedScannerOwners, invalidateScanRecognition } from "../services/scannerSubmissions";
 import { parseRecognitionDpi } from "../../apps/answer-card/server/helpers";
 import { groupSessionPages } from "../../apps/answer-card/server/scanner/session-results";
 import { scannerLegacyRecoveryRouter } from "./scanner-legacy-recovery";
 import { listScanRecordsGroupedByStudent, upsertRecognitionResult } from "../../apps/answer-card/server/database/scan-store";
 
 const recognitionSchema = z.object({
+  identity: z.object({ status: z.enum(["verified", "unverified"]), code: z.string(), cardId: z.string().optional(), pageNumber: z.number().int().positive().optional() }),
   status: z.enum(["ok", "partial"]),
   studentId: z.object({ status: z.string(), value: z.string().min(1).max(64) }),
   questions: z.array(z.object({
@@ -88,8 +92,8 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
     const db = await getMysqlDb();
 
     await db.run(
-      `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
+      `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
       sessionId,
       String(cardId),
       name || `扫描_${new Date().toISOString().slice(0, 10)}`,
@@ -99,6 +103,7 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
       "gray",       // color_mode
       paperSize || "A4",
       pageCount || 0,
+      parseIdentityMode(req.body?.identityMode),
     );
 
     // 给每页生成上传 token（简单防篡改）
@@ -157,7 +162,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
     const db = await getMysqlDb();
 
     // 验证 session
-    const session = await db.get("SELECT id FROM twain_scan_sessions WHERE id = ?", sessionId);
+    const session = await db.get<{ id: string; card_id: string; identity_mode: string }>("SELECT id, card_id, identity_mode FROM twain_scan_sessions WHERE id = ?", sessionId);
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
       return;
@@ -167,7 +172,23 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
     let recognition: z.infer<typeof recognitionSchema> | undefined;
     if (req.body.recognition) {
       try { recognition = recognitionSchema.parse(JSON.parse(req.body.recognition)); }
-      catch { res.status(400).json({ message: "识别结果格式无效，请更新扫描端后重试" }); return; }
+      catch {
+        await invalidateScanRecognition(String(sessionId), token);
+        await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "识别结果格式无效，请更新扫描端后重试", token);
+        res.status(400).json({ message: "识别结果格式无效，请更新扫描端后重试" }); return;
+      }
+    }
+
+    const card = await new CardRepository().findById(session.card_id);
+    if (!card) { res.status(404).json({ message: "答题卡不存在" }); return; }
+    const mapped = mapScanPageToLayout(pageNum, side, buildLayout(card).pages.length, card.sided);
+    const identity = recognition?.identity;
+    const verified = identity?.status === "verified" && identity.cardId === card.id && identity.pageNumber === mapped.layoutPage;
+    const legacy = session.identity_mode === "legacy" && identity?.status === "unverified" && ["QR_MISSING", "QR_UNREADABLE"].includes(identity.code);
+    if (mapped.unusedSide || (!verified && !legacy)) {
+      await invalidateScanRecognition(String(sessionId), token);
+      await db.run("UPDATE twain_scan_records SET ocr_status = 'failed', ocr_error = ? WHERE id = ?", "页面未通过二维码身份校验", token);
+      res.status(409).json({ message: "页面未通过二维码身份校验，请在 Windows 扫描端重新识别" }); return;
     }
 
     // 保存图片（对扩展名做白名单，session id 用 basename 兜底，避免路径遍历）
@@ -188,6 +209,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
     }
 
     if (recognition) {
+      await db.run("UPDATE twain_scan_records SET identity_json = ? WHERE id = ?", JSON.stringify(recognition.identity), token);
       await upsertRecognitionResult({ scanRecordId: token,
         objectiveJson: JSON.stringify(recognition.questions),
         subjectiveJson: JSON.stringify(recognition.subjectiveQuestions), gradeStatus: "recognized" });
@@ -210,7 +232,7 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array
     const recordId = String(req.params.recordId);
     const db = await getMysqlDb();
     const record = await db.get<any>(
-      "SELECT id, card_id, student_id FROM twain_scan_records WHERE id = ? AND session_id = ?",
+      "SELECT id, card_id, student_id, identity_json, ocr_status FROM twain_scan_records WHERE id = ? AND session_id = ?",
       recordId,
       sessionId
     );
@@ -219,6 +241,9 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array
       return;
     }
 
+    if (!record.identity_json || !["uploaded", "completed"].includes(record.ocr_status)) {
+      res.status(409).json({ message: "页面尚未通过身份校验，不能上传切块" }); return;
+    }
     const manifestRaw = typeof req.body?.manifest === "string" ? req.body.manifest : "[]";
     let manifest: Array<RecognitionBlockCrop & { fileName?: string }>;
     try {

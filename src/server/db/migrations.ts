@@ -1177,6 +1177,11 @@ MIGRATIONS.push({ version: 50, name: "archive-class-and-grade", up(db) {
   addColumnIfMissing(db, "grades", "archived_at", "DATETIME DEFAULT NULL");
 } });
 
+MIGRATIONS.push({ version: 51, name: "scanner-card-identity", up(db) {
+  addColumnIfMissing(db, "twain_scan_sessions", "identity_mode", "TEXT NOT NULL DEFAULT 'strict'");
+  addColumnIfMissing(db, "twain_scan_records", "identity_json", "TEXT");
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

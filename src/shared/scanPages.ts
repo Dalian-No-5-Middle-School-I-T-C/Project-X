@@ -3,6 +3,7 @@ import type { CombinedRecognitionResult } from "./types";
 /** Resolve only the native recognizer's ID-only failure after a verified pairing
  * or an explicit teacher correction. Image/marker failures stay failed. */
 export function applyScanStudentId(result: CombinedRecognitionResult, value: string, inherited = false): void {
+  if (result.identity?.status === "rejected") return;
   result.studentId = { status: inherited ? "inherited" : "ok", value };
   if (inherited) result.studentId.source = "inherited";
   if (result.status === "failed" && result.message === "Student ID recognition failed."

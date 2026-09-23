@@ -3,6 +3,7 @@
 #include "common.hpp"
 #include "layout_io.hpp"
 #include "vision_utils.hpp"
+#include "card_identity.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -722,7 +723,8 @@ json recognize_objective_answers(
     int output_dpi,
     bool debug,
     const std::filesystem::path& debug_dir,
-    const std::filesystem::path& crops_dir
+    const std::filesystem::path& crops_dir,
+    bool legacy
 ) {
     try {
         const LayoutPage layout_page = load_layout_page(layout_path, page_number);
@@ -731,6 +733,12 @@ json recognize_objective_answers(
         }
 
         cv::Mat source_image = read_image(image_path);
+        const auto identity = check_card_identity(source_image, layout_page, legacy);
+        if (identity.identity.at("status") == "rejected") {
+            auto failure = failed_result("Answer card QR identity check failed.", image_path, layout_path, page_number);
+            failure["identity"] = identity.identity;
+            return failure;
+        }
         cv::Mat image = source_image;
         std::vector<MarkerCandidate> candidates;
         std::vector<MarkerMatch> matches;
@@ -739,10 +747,7 @@ json recognize_objective_answers(
         std::vector<int> inliers;
         int rotation_degrees = 0;
 
-        const bool try_orientation = layout_page.width_mm > 300.0 && layout_page.width_mm > layout_page.height_mm;
-        const std::vector<int> rotations = try_orientation
-            ? std::vector<int>{0, 90, 180, 270}
-            : std::vector<int>{0};
+        const std::vector<int> rotations{0, 90, 180, 270};
         double best_score = std::numeric_limits<double>::infinity();
         bool found_orientation = false;
 
@@ -765,6 +770,17 @@ json recognize_objective_answers(
                     continue;
                 }
                 auto [orientation_homography, orientation_errors, orientation_inliers] = estimate_homography(orientation_matches);
+                if (identity.center) {
+                    cv::Point2f center = *identity.center;
+                    if (rotation == 90) center = {source_image.rows - 1.0f - center.y, center.x};
+                    else if (rotation == 180) center = {source_image.cols - 1.0f - center.x, source_image.rows - 1.0f - center.y};
+                    else if (rotation == 270) center = {center.y, source_image.cols - 1.0f - center.x};
+                    std::vector<cv::Point2f> projected;
+                    cv::perspectiveTransform(std::vector<cv::Point2f>{center}, projected, orientation_homography);
+                    const auto expected = layout_page.qr_rect.center();
+                    const cv::Point2f expected_px(static_cast<float>(expected.first * output_dpi / 25.4), static_cast<float>(expected.second * output_dpi / 25.4));
+                    if (cv::norm(projected[0] - expected_px) > 8.0 * output_dpi / 25.4) continue;
+                }
                 const double marker_cost = std::accumulate(
                     orientation_matches.begin(), orientation_matches.end(), 0.0,
                     [](double sum, const MarkerMatch& match) { return sum + match.cost; }
@@ -849,6 +865,7 @@ json recognize_objective_answers(
             {"pageNumber", layout_page.page_number},
             {"output", {{"dpi", output_dpi}, {"widthPx", output_size.first}, {"heightPx", output_size.second}}},
             {"quality", quality},
+            {"identity", identity.identity},
             {"studentId", student_id},
             {"questions", build_questions(option_results)},
             {"subjectiveQuestions", build_subjective_questions(score_cell_results)},
@@ -856,6 +873,7 @@ json recognize_objective_answers(
         if (!crops_dir.empty()) {
             result["blockCrops"] = build_block_crops(warped, layout_page, output_dpi, crops_dir);
         }
+        if (identity.identity.at("status") == "unverified") result["message"] = "未校验卡 ID（兼容旧卡模式）";
         if (message) {
             result["message"] = *message;
         }

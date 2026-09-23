@@ -269,7 +269,7 @@ export type PageLayout = {
     title?: string;
     idTextX: number;
     idTextY: number;
-    codeBoxes: Rect[];
+    qrCode: import("./cardIdentity").CardQrCode;
     titleX?: number;
     titleY?: number;
   };
@@ -300,6 +300,7 @@ export type ObjectiveRecognitionQuestion = {
 };
 
 export type ObjectiveRecognitionResult = {
+  identity?: import("./cardIdentity").CardIdentity;
   status: "ok" | "partial" | "failed" | string;
   cardId?: string;
   imagePath?: string;

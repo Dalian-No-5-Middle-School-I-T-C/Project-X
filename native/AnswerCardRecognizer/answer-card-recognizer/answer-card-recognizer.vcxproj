@@ -171,6 +171,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="answer_recognition.hpp" />
+    <ClInclude Include="card_identity.hpp" />
     <ClInclude Include="common.hpp" />
     <ClInclude Include="layout_io.hpp" />
     <ClInclude Include="vision_utils.hpp" />

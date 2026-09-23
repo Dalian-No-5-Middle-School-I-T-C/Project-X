@@ -54,12 +54,12 @@ function conflictCard(row: Receipt): ScanConflictCard {
     previouslySaved: Boolean(row.previously_saved), totalScore: snapshot?.score?.total_score ?? result?.totalScore,
     pages: JSON.parse(row.pages_json) as ScanBatchPage[] };
 }
-async function withdraw(db: DbAdapter, examId: number, studentNumber: string) {
+async function withdraw(db: DbAdapter, examId: number, studentNumber: string, reason: "scanner_duplicate" | "scanner_retry" = "scanner_duplicate") {
   const user = await db.get<{ id: number }>("SELECT id FROM users WHERE student_number = ?", studentNumber);
   if (!user) return;
   const score = await db.get("SELECT * FROM student_scores WHERE exam_id = ? AND student_id = ?", examId, user.id);
   if (score) {
-    await markScoreMutated(db, examId, null, "scanner_duplicate");
+    await markScoreMutated(db, examId, null, reason);
     const questions = await db.all("SELECT * FROM question_scores WHERE exam_id = ? AND student_id = ?", examId, user.id);
     await db.run("UPDATE scanner_submissions SET score_snapshot = ?, previously_saved = 1 WHERE exam_id = ? AND student_number = ? AND state = 'saved'",
       JSON.stringify({ score, questions }), examId, studentNumber);
@@ -73,6 +73,35 @@ async function withdraw(db: DbAdapter, examId: number, studentNumber: string) {
     await db.run("UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ?", examId);
   }
   await db.run("UPDATE scanner_submissions SET state = 'conflict' WHERE exam_id = ? AND student_number = ? AND state != 'superseded'", examId, studentNumber);
+}
+
+/** Invalidate a page before retry; saved grades are withdrawn only through their owning receipt. */
+export async function invalidateScanRecognition(sessionId: string, recordId: string): Promise<void> {
+  return enqueueScannerSubmission(async () => {
+    const db = getMysqlDb();
+    const changedExams = new Set<number>();
+    await db.transaction(async tx => {
+      const owned = await tx.all<Receipt>("SELECT * FROM scanner_submissions WHERE session_id = ? AND state != 'superseded'", sessionId);
+      for (const receipt of owned) {
+        if (!(JSON.parse(receipt.pages_json) as ScanBatchPage[]).some(p => p.recordId === recordId)) continue;
+        await lockExam(tx, receipt.exam_id);
+        if (receipt.state === "saved") {
+          await withdraw(tx, receipt.exam_id, receipt.student_number, "scanner_retry");
+          changedExams.add(receipt.exam_id);
+        }
+        await tx.run("UPDATE scanner_submissions SET state = 'pending', result_json = NULL, score_snapshot = NULL WHERE exam_id = ? AND session_id = ? AND group_id = ?",
+          receipt.exam_id, sessionId, receipt.group_id);
+      }
+      await tx.run("UPDATE twain_scan_records SET identity_json = NULL, student_id = NULL, student_conf = NULL, ocr_status = 'processing', ocr_error = NULL WHERE id = ? AND session_id = ?", recordId, sessionId);
+      await tx.run("DELETE FROM twain_recognition_results WHERE scan_record_id = ?", recordId);
+      await tx.run("DELETE FROM answer_block_crops WHERE source_type = ? AND source_record_id = ?", "twain_scan_record", recordId);
+      await tx.run("DELETE FROM twain_student_grading_results WHERE session_id = ?", sessionId);
+    });
+    for (const examId of changedExams) {
+      analysisCache.invalidateExam(examId);
+      await recomputeExamRankings(db, examId);
+    }
+  });
 }
 
 /** Teacher-directed recovery for pre-receipt grades; never infer a new owner from old images. */

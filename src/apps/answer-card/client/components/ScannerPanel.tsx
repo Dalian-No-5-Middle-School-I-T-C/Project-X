@@ -82,6 +82,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
   const [selectedSource, setSelectedSource] = useState("");
   const [dpi, setDpi] = useState(300);
   const [duplex, setDuplex] = useState(false);
+  const [legacyIdentity, setLegacyIdentity] = useState(false);
+  const [sessionLegacyIdentity, setSessionLegacyIdentity] = useState(false);
   const [showUi, setShowUi] = useState(false);
   const [colorMode, setColorMode] = useState<"gray" | "color" | "bw">("gray");
   const [paperSize, setPaperSize] = useState<"A4" | "Letter" | "A3">("A4");
@@ -296,7 +298,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                       ...p,
                       studentId: data.studentId ?? null,
                       studentConf: data.studentConf ?? null,
-                      ocrStatus: data.studentId ? "done" : "review",
+                      ocrStatus: data.ocrStatus ?? (data.studentId ? "done" : "review"),
                     }
                   : p
               )
@@ -387,6 +389,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           if (nextJobs[result.groupId]) continue;
           // Independent cards can finish even when another card fails remotely.
           nextJobs[result.groupId] = scannerUploadManager.startUpload({
+            identityMode: sessionLegacyIdentity ? "legacy" : "strict",
             kind: "scan", cardId, name: `扫描_${result.studentId}`, dpi, paperSize,
             pages: result.pages.map(page => ({
               pageNum: page.pageNum, side: page.side, groupId: result.groupId,
@@ -457,6 +460,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           sessionName: `扫描_${cardId}_${new Date().toLocaleString("zh-CN")}`,
           dpi,
           duplex,
+          identityMode: legacyIdentity ? "legacy" : "strict",
           colorMode,
           paperSize,
           maxPages,
@@ -474,6 +478,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
       const data = await res.json();
       sessionIdRef.current = data.sessionId;
       setSessionId(data.sessionId);
+      setSessionLegacyIdentity(legacyIdentity);
+      setLegacyIdentity(false);
       listenProgress(data.sessionId);
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : "扫描失败");
@@ -526,6 +532,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
   return (
     <div className="flex flex-col gap-4">
+      {sessionLegacyIdentity && <p role="status" className="m-0 rounded-md bg-warning-soft p-3 text-sm text-foreground">本次会话兼容旧卡：无可读二维码的页面未校验卡 ID，请人工核对。</p>}
       {/* UI-5: SSE 断开重连提示横幅（顶部，红色） */}
       {disconnected && (
         <div className="flex items-center gap-2 rounded-md border border-destructive-border bg-destructive-soft px-3 py-2 text-sm text-destructive-fg">
@@ -712,6 +719,10 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
               留 0 使用默认值 15 秒（有效范围 2–120 秒）。
             </p>
 
+            <ControlRow
+              control={<Checkbox checked={legacyIdentity} onCheckedChange={(c) => setLegacyIdentity(c === true)} />}
+              label="兼容旧卡（无可读二维码时未校验卡 ID）"
+            />
             <ControlRow
               control={<Checkbox checked={duplex} onCheckedChange={(c) => setDuplex(c === true)} />}
               label="双面扫描"

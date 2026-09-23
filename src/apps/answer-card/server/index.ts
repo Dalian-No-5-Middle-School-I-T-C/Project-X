@@ -113,6 +113,7 @@ import type {
 } from "../../../shared/types";
 import { createPdf } from "./pdf";
 import { assertActiveClassScope } from "../../../server/services/activeClassScope";
+import { parseIdentityMode } from "../../../shared/cardIdentity";
 import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
 import { makeScannerAuth } from "../../../server/middleware/scanner-auth";
@@ -1246,6 +1247,7 @@ export async function createApp(): Promise<express.Express> {
       }
 
       const result = await recognizeObjectiveAnswers({
+        identityMode: parseIdentityMode(req.body?.identityMode),
         imagePath: req.file.path,
         layoutPath: await prepareLayoutForCard(cardRepo, card),
         pageNumber,
@@ -1283,6 +1285,7 @@ export async function createApp(): Promise<express.Express> {
       const cropsDir = boolField(req.body.includeCrops) ? await createRecognitionCropTempDir(cardId) : undefined;
       try {
         const result = await recognizeAnswerCard({
+          identityMode: parseIdentityMode(req.body?.identityMode),
           imagePath: req.file.path,
           layoutPath: await prepareLayoutForCard(cardRepo, card),
           pageNumber,
@@ -1400,6 +1403,7 @@ export async function createApp(): Promise<express.Express> {
       const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file) => {
         try {
           const recognition = (await recognizeObjectiveAnswers({
+            identityMode: parseIdentityMode(req.body?.identityMode),
             imagePath: file.path,
             layoutPath: currentLayoutPath,
             pageNumber,
@@ -1527,13 +1531,17 @@ export async function createApp(): Promise<express.Express> {
         emitGradingProgress({ type: "start", batchId: progressId, finished, total: gradingFiles.length });
       }
 
-      const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file) => {
+      const layoutPageCount = buildLayout(card).pages.length;
+      const rows = await mapWithConcurrency(gradingFiles, recognitionConcurrency(), async (file, fileIndex) => {
+        const expectedPage = req.body.pageOrder === "sequential"
+          ? fileIndex % layoutPageCount + 1 : pageNumber;
         try {
           const cropsDir = await createRecognitionCropTempDir(cardId);
           const recognition = (await recognizeAnswerCard({
+            identityMode: parseIdentityMode(req.body?.identityMode),
             imagePath: file.path,
             layoutPath: currentLayoutPath,
-            pageNumber,
+            pageNumber: expectedPage,
             dpi,
             cropsDir
           })) as CombinedRecognitionResult;
@@ -1547,7 +1555,7 @@ export async function createApp(): Promise<express.Express> {
           const recognition: CombinedRecognitionResult = {
             status: "failed",
             imagePath: file.path,
-            pageNumber,
+            pageNumber: expectedPage,
             message: error instanceof Error ? error.message : String(error),
             questions: [],
             subjectiveQuestions: []

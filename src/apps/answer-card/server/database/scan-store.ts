@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 // ── Types ──────────────────────────────────────────────
 
 export interface ScanSession {
+  identity_mode: "strict" | "legacy";
   id: string;
   card_id: string;
   name: string;
@@ -20,6 +21,8 @@ export interface ScanSession {
 }
 
 export interface ScanRecord {
+  identity_json?: string | null;
+  identity_mode?: "strict" | "legacy";
   id: string;
   session_id: string;
   card_id: string;
@@ -76,14 +79,14 @@ function generateId(): string {
 export async function createSession(
   cardId: string,
   name: string,
-  config: { dpi?: number; duplex?: boolean; colorMode?: string; paperSize?: string } = {}
+  config: { dpi?: number; duplex?: boolean; colorMode?: string; paperSize?: string; identityMode?: "strict" | "legacy" } = {}
 ): Promise<ScanSession> {
   const id = generateId();
   await db().run(`
-    INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+    INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, identity_mode, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
   `, id, cardId, name, config.dpi ?? 300, config.duplex ? 1 : 0,
-    config.colorMode ?? "gray", config.paperSize ?? "A4");
+    config.colorMode ?? "gray", config.paperSize ?? "A4", config.identityMode ?? "strict");
   return (await getSession(id))!;
 }
 
@@ -278,7 +281,7 @@ export async function listScanRecordsGroupedByStudent(sessionId: string): Promis
 }>> {
   const d = db();
   const records = await d.all(
-    "SELECT * FROM twain_scan_records WHERE session_id = ? ORDER BY student_id, page_num, side",
+    "SELECT r.*, s.identity_mode FROM twain_scan_records r JOIN twain_scan_sessions s ON s.id = r.session_id WHERE r.session_id = ? ORDER BY r.student_id, r.page_num, r.side",
     sessionId
   ) as ScanRecord[];
 
