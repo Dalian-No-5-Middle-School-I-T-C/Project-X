@@ -270,9 +270,9 @@ export function GradingConfigPage({ examId }: Props) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="1">单评（1轮）</SelectItem>
-                <SelectItem value="2">双评（2轮）</SelectItem>
-                <SelectItem value="3">三评（3轮）</SelectItem>
+                <SelectItem value="1">单评</SelectItem>
+                <SelectItem value="2">双评</SelectItem>
+                <SelectItem value="3">三评</SelectItem>
               </SelectContent>
             </Select>
           </Field>
@@ -287,8 +287,8 @@ export function GradingConfigPage({ examId }: Props) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="block_total">题块总分（合计分，后端按比例拆分）</SelectItem>
-                <SelectItem value="per_question">逐题评分（每题独立输入，GradePanel 不可用）</SelectItem>
+                <SelectItem value="block_total">题块总分</SelectItem>
+                <SelectItem value="per_question">逐题评分</SelectItem>
               </SelectContent>
             </Select>
           </Field>
@@ -489,9 +489,9 @@ export function GradingConfigPage({ examId }: Props) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={KEEP}>不修改</SelectItem>
-                  <SelectItem value="1">单评（1轮）</SelectItem>
-                  <SelectItem value="2">双评（2轮）</SelectItem>
-                  <SelectItem value="3">三评（3轮）</SelectItem>
+                  <SelectItem value="1">单评</SelectItem>
+                  <SelectItem value="2">双评</SelectItem>
+                  <SelectItem value="3">三评</SelectItem>
                 </SelectContent>
               </Select>
             </Field>
