@@ -33,8 +33,8 @@ import {
 
 /** 皮肤注册表 —— 新增皮肤在此登记（id 同时是 data-skin 属性值） */
 export const SKIN_OPTIONS: ReadonlyArray<{ id: string; label: string; description: string }> = [
-  { id: "paper-edge", label: "纸锋 Paper Edge", description: "默认风格 · 纸面墨蓝 · 直角硬影" },
-  { id: "flat", label: "明澈 Flat 2.0", description: "可选风格 · 白底绯红" },
+  { id: "paper-edge", label: "纸锋 Paper Edge", description: "纸面墨蓝 · 直角硬影" },
+  { id: "flat", label: "明澈 Flat 2.0", description: "白底绯红 · 活泼圆角" },
 ];
 
 export const DEFAULT_SKIN = "paper-edge";

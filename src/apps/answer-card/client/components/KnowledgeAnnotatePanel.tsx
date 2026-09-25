@@ -89,7 +89,7 @@ export function KnowledgeAnnotatePanel({ examId, onApplied }: { examId: number; 
         <EmptyState
           size="sm"
           title="暂无匹配候选"
-          description="客观题没有独立题干文本；解答题请在答题卡设计页补充题干注释（annotation）后重新匹配。"
+          description="客观题没有独立题干文本；解答题请在答题卡设计页补充题干注释后重新匹配。"
         />
       ) : (
         <ul className="flex flex-col gap-1.5">

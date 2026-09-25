@@ -163,7 +163,7 @@ export function GradeLadder() {
         <EmptyState
           icon={<Power />}
           title="成绩天梯暂未开放"
-          description="管理员已关闭天梯功能，开放后可在此查看年级前十名榜单。"
+          description="管理员已关闭天梯功能。"
         />
       </div>
     );
@@ -175,7 +175,7 @@ export function GradeLadder() {
       {isAdmin && (
         <div className="flex items-center justify-between rounded-lg border border-border-subtle bg-card px-4 py-3">
           <span className="text-sm text-muted-foreground">
-            {ladderEnabled ? "成绩天梯已开放" : "成绩天梯已关闭（仅管理员可见）"}
+            {ladderEnabled ? "成绩天梯已开放" : "成绩天梯已关闭"}
           </span>
           <Button
             variant={ladderEnabled ? "outline" : "primary"}

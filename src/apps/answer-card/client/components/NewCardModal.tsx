@@ -257,7 +257,7 @@ export function NewCardModal({ open, onCreate, onClose, exams = [] }: Props) {
     const finalLabel = subjectLabel === "其他" ? customSubject.trim() : subjectLabel;
     if (!finalLabel) { setError("请选择科目或手动输入科目名"); return; }
     const titleTrimmed = title.trim();
-    if (!titleTrimmed) { setError("请输入考试名称（题目）"); return; }
+    if (!titleTrimmed) { setError("请输入考试名称"); return; }
     if (examAction === "create" && !examName.trim()) { setError("请输入关联考试的考试名称"); return; }
     if (examAction === "link" && !linkExamId) { setError("请选择要关联的已有考试"); return; }
     // 评审 P1-2：同步创建考试必须指定应考范围（年级或班级至少其一）

@@ -78,14 +78,14 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-semibold text-foreground">
-          偏科预警（跨科 Z 分，Z &lt; −0.8 预警）
+          偏科预警
         </h3>
         {!includeCurrent && (
           <Button variant="ghost" size="sm" onClick={() => toggleExam(examId)}>+ 加入本场考试</Button>
         )}
       </div>
       <p className="text-xs text-muted-foreground">
-        Z = (个人分 − 年级均分) / 年级标准差；同一学生跨科比较，单科显著低于本人整体水平即预警。已自动选取同学科最近 {examOptions.length > 0 ? Math.min(8, examOptions.length) : 0} 场：
+        Z = (个人分 − 年级均分) / 年级标准差。已自动选取同学科最近 {examOptions.length > 0 ? Math.min(8, examOptions.length) : 0} 场：
       </p>
       <div className="flex flex-wrap gap-2">
         {examOptions.map((r) => {

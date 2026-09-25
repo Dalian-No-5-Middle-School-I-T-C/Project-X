@@ -41,7 +41,7 @@ export function PDScatterPanel({
       </div>
       <PDScatter points={points} discBands={bands?.discrimination} />
       <p className="text-xs text-muted-foreground">
-        每点一题：横轴难度系数 P（越低越难），纵轴区分度 D；点色按区分度档位着色，红圈为疑似问题题（P&lt;0.5 且 D&lt;0.3，可能出偏或超纲）。
+        每点一题：横轴难度系数 P，纵轴区分度 D；点色按区分度档位着色，红圈为疑似问题题，可能出偏或超纲。
       </p>
     </section>
   );

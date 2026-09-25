@@ -585,7 +585,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
           {sourcesDiag && diagnosticLines(sourcesDiag).length > 0 && (
             <details className="text-xs">
               <summary className="cursor-pointer select-none opacity-80">
-                技术细节（可点「复制诊断」一键反馈，无需翻日志）
+                技术细节
               </summary>
               <pre className="m-0 mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-card px-2 py-2 text-[11px] leading-relaxed">
                 {diagnosticLines(sourcesDiag).join("\n")}
@@ -624,7 +624,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
               <>
                 <Field
                   label="扫描仪数据源名称（可留空）"
-                  hint="未枚举到 TWAIN 数据源时的兜底入口：留空即由桥接改用系统默认数据源；也可直接填入厂商扫描软件中显示的「数据源名称」。"
+                  hint="未枚举到 TWAIN 数据源：留空即由桥接改用系统默认数据源；也可直接填入厂商扫描软件中显示的「数据源名称」。"
                 >
                   <div className="flex items-center gap-2">
                     <Input
@@ -645,8 +645,8 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
                   </div>
                 </Field>
                 <p className="m-0 rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-xs text-warning-foreground">
-                  未检测到扫描仪列表，但不阻止扫描：若扫描仪厂商软件能正常扫描，直接留空点下方「开始扫描」即可
-                  （桥接会请求系统默认数据源）。若仍失败，请展开上方错误信息中的「技术细节」并复制反馈。
+                  未检测到扫描仪列表，但不阻止扫描：若扫描仪厂商软件能正常扫描，直接留空点下方「开始扫描」即可。
+                  若仍失败，请展开上方错误信息中的「技术细节」并复制反馈。
                 </p>
               </>
             )}
@@ -721,7 +721,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
 
             <ControlRow
               control={<Checkbox checked={legacyIdentity} onCheckedChange={(c) => setLegacyIdentity(c === true)} />}
-              label="兼容旧卡（无可读二维码时未校验卡 ID）"
+              label="兼容旧卡"
             />
             <ControlRow
               control={<Checkbox checked={duplex} onCheckedChange={(c) => setDuplex(c === true)} />}
@@ -729,7 +729,7 @@ export function ScannerPanel({ cardId, onScansComplete, onClose }: ScannerPanelP
             />
             <ControlRow
               control={<Checkbox checked={showUi} onCheckedChange={(c) => setShowUi(c === true)} />}
-              label="显示扫描仪界面（调试）"
+              label="显示扫描仪界面"
             />
 
             {/* ── v1.6.0: 扫描存储模式切换 ── */}
