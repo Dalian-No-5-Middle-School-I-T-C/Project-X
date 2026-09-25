@@ -163,7 +163,7 @@ export function GradeLadder() {
         <EmptyState
           icon={<Power />}
           title="成绩天梯暂未开放"
-          description="管理员已关闭天梯功能，开放后可在此查看年级前十名榜单。"
+          description="管理员已关闭天梯功能，开放后可在此查看年级前十榜单。"
         />
       </div>
     );
@@ -312,14 +312,14 @@ export function GradeLadder() {
         </div>
       )}
 
-      {/* 前十名阶梯榜单 */}
+      {/* 前十阶梯榜单：截断处同分并列者一并返回，条数可能超过 10 */}
       {busy && <EmptyState icon={<TrendingUp />} title="加载中…" />}
 
       {!busy && !hasSelection && (
         <EmptyState
           icon={<TrendingUp />}
-          title="年级前十名"
-          description="请在上方选择考试范围，查看年级前十名榜单。"
+          title="年级前十"
+          description="请在上方选择考试范围，查看年级前十榜单；截断处的同分并列者会一并显示。"
         />
       )}
 

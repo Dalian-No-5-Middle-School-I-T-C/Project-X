@@ -23,3 +23,21 @@ export function competitionRank<T>(
     prevScore = s;
   }
 }
+
+/** 天梯榜单常规长度 */
+export const LADDER_TOP_N = 10;
+
+/**
+ * 天梯截断：取前 LADDER_TOP_N 名，但截断线不切开任何并列区间——
+ * 第 10 条若与后一条同名次，就顺延到该并列组结束，同分学生不会被拆成「上榜 / 落榜」两半。
+ * rows 需已按名次升序排列（与 competitionRank 的降序入参约定一致）。
+ */
+export function takeLadder<T>(
+  rows: T[],
+  rankOf: (row: T) => number,
+  topN: number = LADDER_TOP_N
+): T[] {
+  let end = Math.min(topN, rows.length);
+  while (end < rows.length && rankOf(rows[end]) === rankOf(rows[end - 1])) end += 1;
+  return rows.slice(0, end);
+}

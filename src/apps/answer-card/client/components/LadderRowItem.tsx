@@ -58,7 +58,13 @@ export function LadderRowItem({ row, maxScore }: Props) {
     maxScore > 0 ? Math.min(100, Math.round((row.totalScore / maxScore) * 100)) : 0;
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-border bg-card p-4">
+    <div
+      className={cn(
+        "flex flex-col gap-2 rounded-lg border p-4",
+        // 本人行：客户端只拿到榜单子集，认不出哪一条是自己，由后端 isCurrentUser 标记
+        row.isCurrentUser ? "border-accent-border bg-accent" : "border-border bg-card",
+      )}
+    >
       {/* 排名号 + 主体 */}
       <div className="flex items-center gap-3">
         <div

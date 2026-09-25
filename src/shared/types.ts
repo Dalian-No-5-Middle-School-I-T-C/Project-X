@@ -1538,10 +1538,12 @@ export interface UserSettings {
 /** 排名趋势方向 */
 export type RankTrend = "up" | "down" | "same" | "new";
 
-/** 天梯单行（前十名榜单条目） */
+/** 天梯单行（默认前十条目；截断线不切开同分并列，故可能多于十条） */
 export interface LadderRow {
   rank: number;
   studentId: number;
+  /** 本人标记：客户端只拿到榜单子集，无法自行判断哪一条是自己 */
+  isCurrentUser?: boolean;
   studentNumber: string;
   studentName: string;
   className: string;
@@ -1571,7 +1573,7 @@ export interface LadderResponse {
   studentCount: number;
   myRank: number | null;            // 当前学生在全量中的排名
   myScore: number | null;           // 当前学生的总分
-  rows: LadderRow[];                // 前十名
+  rows: LadderRow[];                // 默认前十；截断处同分并列者一并返回
 }
 
 // ============================================================
