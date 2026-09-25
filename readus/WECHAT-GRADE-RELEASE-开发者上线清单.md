@@ -205,6 +205,14 @@ SHOW INDEX FROM wechat_subscription_bindings;
 
 `GET /api/wechat/subscriptions/diagnostic`（仅管理员）会**绕过 token 缓存实取一次 access_token**，并把配置、环境变量缺失项、绑定人数一起返回。响应只含布尔值、错误码与聚合计数，**不回显任何密钥或 openid**。
 
+### 4.0 首选：网页端「微信订阅消息」卡片（零命令行）
+
+管理员登录 Web 端 → 全局设置 → **微信订阅消息** → 「开始自检」。面板直接给出四行：环境变量（已就绪 / 缺少哪几项，只列变量名）、access_token（可取 / 失败 + 错误码解释）、推送环境（`miniprogram_state · page`）、已绑定学生人数。
+
+- 面板**不会自动拉取**，必须点「开始自检」。原因见上面的「绕过 token 缓存」——`cgi-bin/token` 有日调用上限，每次打开设置页都烧一次额度不合理。
+- 自检报出 HTML 而非 JSON 时，面板会提示「多半是这一版后端还没部署到本服务器」，即 SPA 兜底把未注册的 GET 请求接住了，回到 1.2。
+- 需要脚本化、或浏览器进不去服务器时才用下面的 curl 路径。
+
 ### 4.1 取一个管理员 Bearer
 
 ```bash
@@ -284,7 +292,7 @@ journalctl -u project-x-server --since -1h --no-pager | grep -i 'wechat grade re
 - [ ] `POST /api/wechat/subscriptions/grade-release` 返回 **401**（不是 404）
 - [ ] 启动日志出现 `[wechat] 成绩发布订阅推送已启用`
 - [ ] `SHOW INDEX` 里 openid 不是唯一索引，唯一键是 `(student_id, template_id)`
-- [ ] `diagnostic` 的 `accessToken.ok: true`
+- [ ] 全局设置「微信订阅消息」自检面板四项齐全，`access_token` 一行显示「可取」（等价：`diagnostic` 的 `accessToken.ok: true`）
 - [ ] 测试学生打开开关看到「已开启成绩提醒」，且 `boundStudents ≥ 1`
 - [ ] `trial` 下公布一场成绩，测试学生微信收到「考试成绩通知」，点进去落在成绩页
 - [ ] 撤回 → 重新公布，**不**重复收到

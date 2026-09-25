@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, type ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, FlaskConical, Terminal, Trash2 } from "lucide-react";
+import { AlertTriangle, Bell, CheckCircle2, FlaskConical, RefreshCw, Terminal, Trash2 } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import { cn } from "../lib/utils";
 import { tokens } from "../theme";
 import {
+  Badge,
   Button,
   Input,
   Field,
@@ -33,6 +34,26 @@ const FIELDS: Array<{ key: keyof Settings; label: string; desc: string; type: "t
 
 // 难度/区分度档位（与后端 analysisConfig 默认一致）
 type Band = { max: number; label: string; color: string };
+
+// 微信成绩发布订阅消息的部署自检响应（与 /api/wechat/subscriptions/diagnostic 对齐，
+// 只含布尔值、错误码与聚合计数，服务端不会回显任何密钥或 openid）
+type WechatDiagnostic = {
+  configured: boolean;
+  missing?: string[];
+  page?: string;
+  miniprogramState?: string;
+  accessToken?: { ok: boolean; errcode: number | null };
+  boundStudents?: number;
+};
+
+// 只列本项目部署会踩到的错误码，其余原样回显供查微信返回码表
+const WECHAT_ERRCODE_HINTS: Record<number, string> = {
+  40001: "AppSecret 错误或 access_token 已失效，改完环境变量要重启服务",
+  40013: "AppID 不合法，核对 WECHAT_MINIPROGRAM_APP_ID",
+  40164: "服务器出口 IP 未加入小程序后台的 IP 白名单",
+  41001: "缺少 access_token 参数",
+  42001: "access_token 超时，服务端会自动重取，偶发可忽略",
+};
 const BAND_KEY_DIFF = "analysis_difficulty_bands";
 const BAND_KEY_DISC = "analysis_discrimination_bands";
 const DEFAULT_DIFFICULTY_BANDS: Band[] = [
@@ -117,6 +138,25 @@ export function GlobalSettingsPage({ onBack }: Props) {
   const [devBusy, setDevBusy] = useState(false);
   const [devMsg, setDevMsg] = useState<string | null>(null);
   const [devMsgTone, setDevMsgTone] = useState<"success" | "error">("error");
+
+  // 微信订阅消息部署自检。不自动拉取：诊断接口会绕过服务端 token 缓存向微信实取一次
+  // access_token，而该接口有日调用上限，管理员每次打开设置都烧一次不合适。
+  const [wechat, setWechat] = useState<WechatDiagnostic | null>(null);
+  const [wechatBusy, setWechatBusy] = useState(false);
+  const [wechatErr, setWechatErr] = useState<string | null>(null);
+
+  const loadWechat = useCallback(async () => {
+    setWechatBusy(true);
+    setWechatErr(null);
+    try {
+      setWechat(await fetchJson<WechatDiagnostic>("/api/wechat/subscriptions/diagnostic"));
+    } catch (err: any) {
+      setWechat(null);
+      setWechatErr(err?.message ? String(err.message) : "自检请求失败");
+    } finally {
+      setWechatBusy(false);
+    }
+  }, []);
 
   async function handleImportDemo() {
     if (!confirm("将导入演示测试数据（9 场考试、16 名学生、2 个合集，含网阅演示），不会覆盖现有数据。继续？")) return;
@@ -319,6 +359,70 @@ export function GlobalSettingsPage({ onBack }: Props) {
         )}
       </div>
 
+      {/* 微信订阅消息部署自检（只读，不参与底部"保存全局设置"） */}
+      <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <Bell size={15} className="shrink-0" />
+            微信订阅消息
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            icon={<RefreshCw />}
+            loading={wechatBusy}
+            onClick={() => void loadWechat()}
+          >
+            {wechat || wechatErr ? "重新自检" : "开始自检"}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          学生端「我的 → 成绩发布提醒」开不起来时先看这里：环境变量是否齐、能否取到 access_token、有没有人已绑定。
+          三项都不涉及小程序发布状态——发布状态只影响后面的推送环节。
+        </p>
+
+        {!wechat && !wechatErr && !wechatBusy && (
+          <p className="text-xs text-muted-foreground">尚未自检。首次部署、改过环境变量或轮换过 AppSecret 后点「开始自检」。</p>
+        )}
+        {wechatErr && (
+          <Banner tone="error">
+            {wechatErr}
+            {wechatErr.trimStart().startsWith("<") ? "——多半是这一版后端还没部署到本服务器" : ""}
+          </Banner>
+        )}
+        {wechat && (
+          <div className="flex flex-col gap-2 rounded-lg border border-border-subtle bg-secondary p-4">
+            <WechatRow label="环境变量">
+              {wechat.configured
+                ? <Badge tone="success">已就绪</Badge>
+                : <Badge tone="danger">缺少 {wechat.missing?.length ?? 1} 项</Badge>}
+            </WechatRow>
+            {!wechat.configured && !!wechat.missing?.length && (
+              <p className="text-xs text-muted-foreground">未配置：{wechat.missing.join("、")} —— 写入服务端环境变量后重启服务。</p>
+            )}
+            <WechatRow label="access_token">
+              {!wechat.accessToken
+                ? <Badge tone="neutral">未检测</Badge>
+                : wechat.accessToken.ok
+                  ? <Badge tone="success">可取</Badge>
+                  : <Badge tone="danger">失败</Badge>}
+            </WechatRow>
+            {wechat.accessToken && !wechat.accessToken.ok && (
+              <p className="text-xs text-muted-foreground">{accessTokenText(wechat.accessToken)}</p>
+            )}
+            <WechatRow label="推送环境">
+              <span className="text-xs text-foreground">{wechat.miniprogramState ?? "—"} · {wechat.page ?? "—"}</span>
+            </WechatRow>
+            <WechatRow label="已绑定学生">
+              <span className="text-sm font-semibold tabular-nums text-foreground">{wechat.boundStudents ?? 0} 人</span>
+            </WechatRow>
+            {!wechat.boundStudents && (
+              <p className="text-xs text-muted-foreground">还没有学生绑定成功。让测试学生用体验版打开开关，看到「已开启成绩提醒」后再回来重新自检。</p>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* v1.9.6+: 开发者工具（演示数据导入/清除）。即时执行，不参与底部保存。 */}
       <div className="flex flex-col gap-3 border-t border-border-subtle pt-5">
         <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -389,6 +493,20 @@ function Banner({ tone, children }: { tone: "success" | "error"; children: React
       {children}
     </div>
   );
+}
+
+function WechatRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-right">{children}</span>
+    </div>
+  );
+}
+
+function accessTokenText(a: { errcode: number | null }): string {
+  if (a.errcode == null) return "取 access_token 失败：服务器出网不通或微信系统繁忙。";
+  return WECHAT_ERRCODE_HINTS[a.errcode] ?? `微信返回 errcode ${a.errcode}，按微信返回码表处理。`;
 }
 
 function BandEditor({ title, desc, bands, onChange }: { title: string; desc: string; bands: Band[]; onChange: (b: Band[]) => void }) {
