@@ -264,3 +264,15 @@ export type PreviewMode = "fit-width" | "fit-page" | "fit-panel" | "custom";
 export const PREVIEW_SETTINGS_KEY = "projectx-card-preview-settings-v1";
 export const PREVIEW_MIN_PERCENT = 50;
 export const PREVIEW_MAX_PERCENT = 400;
+
+/** 新建题块的默认名（未人工命名时由自动命名接管）。 */
+const FACTORY_BLOCK_TITLES = new Set(["客观题", "解答题", "填空题", "作文", "未命名块"]);
+
+/**
+ * 题块标题是否仍处于「自动命名」状态：默认名、空标题，或上一轮自动生成的
+ * `N、类型（共x题，共y分）`。其余标题视为人工命名，自动命名不再覆盖。
+ */
+export function isAutoBlockTitle(title: string): boolean {
+  const trimmed = title.trim();
+  return !trimmed || FACTORY_BLOCK_TITLES.has(trimmed) || /^[一二三四五六七八九十]+、.*（共\d+题，共\d+分）$/.test(trimmed);
+}

@@ -171,6 +171,7 @@ import {
   heightForAnswerLines,
   numericQuestionValue,
   findNextQuestionNumber,
+  isAutoBlockTitle,
   defaultBlankQuestion
 } from "./cardModel";
 
@@ -1128,6 +1129,11 @@ function App() {
     };
     let index = 0;
     for (const block of draft.bodyBlocks) {
+      // 人工命名的标题不再被自动命名覆盖（问题反馈 2026-09-23 第 2 条）
+      if (!isAutoBlockTitle(block.title)) {
+        index++;
+        continue;
+      }
       if (block.type === "objective") {
         const obj = block as ObjectiveBlock;
         const typeName = modeName[obj.mode] ?? "客观题";
