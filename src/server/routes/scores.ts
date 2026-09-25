@@ -15,6 +15,12 @@ import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
 import { trackAnalysisCall } from "../services/aiTelemetry";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
+import {
+  groupAnswersByPage,
+  listExamAnswerKeys,
+  listExamPaperPages,
+  resolvePaperPageFile,
+} from "../services/ExamPaperViewService";
 
 /**
  * 成绩查询 API
@@ -156,7 +162,9 @@ router.get("/me/exams/:examId", async (req: Request, res: Response) => {
     examId,
     questions: await scoreRepo.getStudentQuestionScores(req.user!.id, examId),
     classQuestionStats,
-    answerBlocks
+    answerBlocks,
+    // v53: 详情页「查看答案解析」入口，与 /paper 复用同一道门（已公布 + 教师开启显示原卷）
+    paperVisible: (await assertStudentPaperVisible(examId, req.user!.id)).ok ? 1 : 0
   });
 });
 
@@ -376,6 +384,111 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
     },
     toolCalls: [],
   });
+});
+
+// ── v53: 学生「查看原卷 / 查看答案解析」 ────────────────────
+
+type StudentPaperAccess =
+  | { ok: true; exam: { id: number; card_id: string | null; name: string | null; subject: string | null } }
+  | { ok: false; status: number; message: string };
+
+/**
+ * 学生查看原卷的四重硬门（后端强制，前端隐藏按钮不等于授权）：
+ * 考试未被软删除 → 本人有成绩 → 成绩已公布 → 教师开启「显示原卷」。
+ * 未开放原卷统一回 404：避免通过状态码区分「没成绩/没公布/没开放」泄露他人信息。
+ */
+async function assertStudentPaperVisible(examId: number, studentId: number): Promise<StudentPaperAccess> {
+  if (!Number.isInteger(examId) || examId <= 0) {
+    return { ok: false, status: 400, message: "无效的考试 ID" };
+  }
+  if (await isExamSoftDeleted(examId)) {
+    return { ok: false, status: 404, message: "未找到你在该场考试的成绩" };
+  }
+  if (!(await scoreRepo.hasScore(studentId, examId))) {
+    return { ok: false, status: 404, message: "未找到你在该场考试的成绩" };
+  }
+  if (!(await scoreRepo.isExamScorePublished(examId))) {
+    return { ok: false, status: 404, message: "该场考试的成绩尚未公布" };
+  }
+  const exam = await getMysqlDb().get<{ id: number; card_id: string | null; name: string | null; subject: string | null; show_original_paper: number | null }>(
+    "SELECT id, card_id, name, subject, show_original_paper FROM exams WHERE id = ?",
+    examId
+  );
+  if (!exam) {
+    return { ok: false, status: 404, message: "未找到你在该场考试的成绩" };
+  }
+  if (exam.show_original_paper !== 1) {
+    return { ok: false, status: 404, message: "本场考试未开放原卷查看" };
+  }
+  return { ok: true, exam: { id: exam.id, card_id: exam.card_id, name: exam.name, subject: exam.subject } };
+}
+
+/** GET /api/scores/me/exams/:examId/paper — 原卷页 + 逐题正确答案（文字）+ 本人作答图块 */
+router.get("/me/exams/:examId/paper", async (req: Request, res: Response) => {
+  const examId = Number(req.params.examId);
+  const access = await assertStudentPaperVisible(examId, req.user!.id);
+  if (!access.ok) {
+    res.status(access.status).json({ message: access.message });
+    return;
+  }
+
+  const db = getMysqlDb();
+  const [paperPages, answers, answerBlocks] = await Promise.all([
+    listExamPaperPages(access.exam.card_id, db),
+    listExamAnswerKeys(examId, db),
+    listAnswerBlockCropsForStudent(examId, req.user!.id, db),
+  ]);
+  const grouped = groupAnswersByPage(answers, paperPages.length);
+
+  res.json({
+    examId,
+    examName: access.exam.name,
+    subject: access.exam.subject,
+    // 从未上传过原卷图片时为空数组，客户端据此显示「原卷未上传」
+    hasOriginalPaper: paperPages.length > 0,
+    pages: paperPages.map((page) => ({
+      pageIndex: page.pageIndex,
+      filename: page.filename,
+      mimeType: page.mimeType,
+      isImage: page.isImage,
+      imageUrl: `/api/scores/me/exams/${examId}/paper/pages/${page.pageIndex}/image`,
+      answers: grouped.get(page.pageIndex) ?? [],
+    })),
+    // 全量逐题答案（题号升序）：供「只看答案」列表视图使用
+    answers,
+    // 学生自己的作答图块：产品口径为「先看卷、再看作答」，故排在原卷之后
+    answerBlocks,
+  });
+});
+
+/** GET /api/scores/me/exams/:examId/paper/pages/:pageIndex/image — 原卷页字节（同套门校验，页码只走 DB 解析） */
+router.get("/me/exams/:examId/paper/pages/:pageIndex/image", async (req: Request, res: Response) => {
+  const examId = Number(req.params.examId);
+  const pageIndex = Number(req.params.pageIndex);
+  const access = await assertStudentPaperVisible(examId, req.user!.id);
+  if (!access.ok) {
+    res.status(access.status).json({ message: access.message });
+    return;
+  }
+  if (!Number.isInteger(pageIndex) || pageIndex < 1) {
+    res.status(400).json({ message: "无效的页码" });
+    return;
+  }
+  // 只允许该考试原卷分页表里的页码：URL 不含文件名，无法构造路径穿越
+  const pages = await listExamPaperPages(access.exam.card_id);
+  const page = pages.find((item) => item.pageIndex === pageIndex);
+  if (!page) {
+    res.status(404).json({ message: "原卷页不存在" });
+    return;
+  }
+  const resolved = resolvePaperPageFile(access.exam.card_id!, pageIndex);
+  if (!resolved) {
+    res.status(404).json({ message: "原卷页不存在" });
+    return;
+  }
+  res.contentType(resolved.mimeType);
+  res.setHeader("Cache-Control", "private, max-age=300");
+  res.sendFile(resolved.filePath);
 });
 
 // ── 教师/管理员代查 ──────────────────────────────────────

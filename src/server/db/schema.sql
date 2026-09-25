@@ -312,6 +312,7 @@ CREATE TABLE IF NOT EXISTS exams (
     review_mode    INTEGER DEFAULT 1,            -- v1.9.0: 1=1P 2=2P 3=3P
     review_enabled INTEGER DEFAULT 0,            -- v1.9.0: 0=未开启网阅 1=已开启
     exam_mode      TEXT NOT NULL DEFAULT 'formal', -- v34: quiz=晨测(全量权限) formal=大考(精细权限，默认)
+    show_original_paper INTEGER DEFAULT 0,         -- v53: 0=不向学生展示原卷 1=成绩发布后可查看原卷与答案解析
     created_by    INTEGER REFERENCES users(id),
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -773,3 +774,50 @@ CREATE TABLE IF NOT EXISTS scanner_submissions (
     PRIMARY KEY (exam_id, session_id, group_id)
 );
 CREATE INDEX IF NOT EXISTS idx_scanner_submission_student ON scanner_submissions(exam_id, student_number);
+
+-- v52: 微信小程序成绩发布订阅消息 —— 学生绑定关系 + 首次发布去重记录
+CREATE TABLE IF NOT EXISTS wechat_subscription_bindings (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    openid      TEXT NOT NULL,
+    template_id TEXT NOT NULL,
+    accepted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(student_id, template_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wsb_student ON wechat_subscription_bindings(student_id);
+-- 一个 openid 可绑定多个学生（共用设备/同一家长多孩），故 openid 仅普通索引
+CREATE INDEX IF NOT EXISTS idx_wsb_openid ON wechat_subscription_bindings(openid);
+
+CREATE TABLE IF NOT EXISTS wechat_grade_release_notifications (
+    exam_id       INTEGER PRIMARY KEY REFERENCES exams(id) ON DELETE CASCADE,
+    status        TEXT NOT NULL DEFAULT 'sending',
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- v53: 逐题「文字」正确答案（考试级，跟随考试而非答题卡；仅原样展示，不参与判分）
+CREATE TABLE IF NOT EXISTS exam_answer_keys (
+    exam_id         INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    question_number INTEGER NOT NULL,
+    answer_text     TEXT NOT NULL,
+    page_index      INTEGER,                                  -- 归属原卷页码，可空；用于把答案渲染在对应页图片下方
+    updated_by      INTEGER REFERENCES users(id),
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (exam_id, question_number)
+);
+
+-- v53: 教师上传的「本次正确答案」图片页（仅教师/管理员可见，供 OCR 识别与人工核对）
+CREATE TABLE IF NOT EXISTS exam_answer_key_pages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    exam_id     INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    page_index  INTEGER NOT NULL,
+    filename    TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(exam_id, page_index)
+);

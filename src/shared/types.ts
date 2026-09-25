@@ -807,6 +807,8 @@ export type ExamRecord = {
   exam_mode?: ExamMode;
   /** 成绩公布状态（v41/v42）：0=未公布 1=已公布 2=已撤回；缺省视为 0 */
   score_published?: number;
+  /** 原卷/答案解析可见性（v53）：0=不向学生展示 1=成绩公布后可查看；缺省视为 0 */
+  show_original_paper?: number;
   created_at: string;
 };
 

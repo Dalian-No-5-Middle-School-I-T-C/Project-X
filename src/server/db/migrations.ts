@@ -1182,6 +1182,58 @@ MIGRATIONS.push({ version: 51, name: "scanner-card-identity", up(db) {
   addColumnIfMissing(db, "twain_scan_records", "identity_json", "TEXT");
 } });
 
+MIGRATIONS.push({ version: 52, name: "wechat-grade-release-notifications", up(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wechat_subscription_bindings (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      student_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      openid      TEXT NOT NULL,
+      template_id TEXT NOT NULL,
+      accepted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(student_id, template_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wsb_student ON wechat_subscription_bindings(student_id);
+    -- 一个 openid 可绑定多个学生（共用设备/同一家长多孩），故 openid 仅普通索引
+    CREATE INDEX IF NOT EXISTS idx_wsb_openid ON wechat_subscription_bindings(openid);
+
+    CREATE TABLE IF NOT EXISTS wechat_grade_release_notifications (
+      exam_id       INTEGER PRIMARY KEY REFERENCES exams(id) ON DELETE CASCADE,
+      status        TEXT NOT NULL DEFAULT 'sending',
+      success_count INTEGER NOT NULL DEFAULT 0,
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+} });
+
+MIGRATIONS.push({ version: 53, name: "exam-original-paper-and-answer-keys", up(db) {
+  addColumnIfMissing(db, "exams", "show_original_paper", "INTEGER DEFAULT 0");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS exam_answer_keys (
+      exam_id         INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+      question_number INTEGER NOT NULL,
+      answer_text     TEXT NOT NULL,
+      page_index      INTEGER,
+      updated_by      INTEGER REFERENCES users(id),
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (exam_id, question_number)
+    );
+    CREATE TABLE IF NOT EXISTS exam_answer_key_pages (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      exam_id     INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+      page_index  INTEGER NOT NULL,
+      filename    TEXT NOT NULL,
+      stored_path TEXT NOT NULL,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(exam_id, page_index)
+    );
+  `);
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

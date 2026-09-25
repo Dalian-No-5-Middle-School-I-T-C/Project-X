@@ -1,5 +1,24 @@
 # Project-X CHANGELOG
 
+## v2.6.0 (2026-09-25) — 原卷展示与逐题正确答案 + 成绩发布微信订阅消息
+
+- **开关（需求 1）**：`exams.show_original_paper`（0/1，默认 0）。考试编辑页「显示原卷」跟随考试保存；成绩公布表单新增「公布后显示原卷」勾选，勾选 → `score_published=1 且 show_original_paper=1`，取消 → `score_published=1 但 show_original_paper=0`。公布接口用 `COALESCE(?, show_original_paper)`，**旧客户端不带该字段时不改写开关**，避免历史调用方误公开含答案的原卷；批量公布对整批统一生效。Web 端重新公布时沿用教师上一次的选择（已公布/撤回过的考试不再默认勾上）。
+- **本次正确答案（需求 2）**：新建考试级 `exam_answer_keys(exam_id, question_number, answer_text, page_index, updated_by)` 与 `exam_answer_key_pages(exam_id, page_index, filename, stored_path)`，行形制镜像 `objective_answer_keys`（复用结构不复用表，避免客观题判分逻辑被牵连）。教师端「原卷答案」面板可上传答案页（图片 / PDF / DOCX，≤50MB，多页），本地 tesseract.js OCR 出草稿后**只填空白单元格、不覆盖老师手改**，逐题可改题号/答案文字/归属原卷页；保存是整场全量替换，须点「保存答案」学生才可见。答案只存文字，服务端与客户端都不判对错。
+- **迁移 `53 / exam-answer-key`**：SQLite（`schema.sql` + `migrations.ts`）与 MariaDB（`schema.mariadb.sql` + `mysql.ts`）同步建表加列；文件落 `dataDir/answer-keys/<safeId(examId)>/answerkey[-N].<ext>`。
+- **学生端门与接口（需求 3/4）**：`GET /api/scores/me/exams/:examId/paper`、`.../paper/pages/:pageIndex/image` 与列表逐条 `paper_visible`、详情 `paperVisible` **共用同一道门**（未软删除 ∧ 本人本场有成绩 ∧ `score_published=1` ∧ `show_original_paper=1`），任一不满足 → 404，前端不自行推断可见性。URL 不含文件名，页码只走 DB 解析后 `sendFile`，路径穿越式页码直接 400/404。原卷图片是**答题卡级**资产（`original_paper_pages` 以 `card_id` 为键），经 `exams.card_id` 关联；DB 有记录但磁盘文件已被清理的页不返回，从未上传过原卷则 `hasOriginalPaper=false`，客户端显示「原卷未上传」。
+- **小程序**：新增 `pages/exam-paper/exam-paper`，先看卷再看作答——逐题答案列表、每张原卷页图片下方按题号渲染本页答案、末尾本人作答图块。图片走 `wx.downloadFile` + `Authorization: Bearer`（token 不进 URL），并发 3、页面卸载即取消且不再回写；下载失败不留破图，逐题答案仍照常显示。入口两处：成绩列表卡片「查看原卷 ›」（`catchtap` 独立事件，不与整卡跳转混流）与详情页「查看答案解析」。
+- **网页学生端**：新增 `StudentExamPaper.tsx`（v2 组件、语义色、无手写 CSS），成绩卡片与逐题明细页各有入口，同样受 `paper_visible` 控制；非图片页给出「打开原文件」而非坏图。
+- **学生订阅绑定**：新增 `POST /api/wechat/subscriptions/grade-release`（Bearer 鉴权，学生身份只取自 token，不接受前端传入的 studentId）。小程序 `wx.requestSubscribeMessage` 授权后用 `wx.login` 取 code，服务端 `jscode2session` 换 openid 并写入 `wechat_subscription_bindings`。同一 openid 允许绑定多个学生（共用设备 / 一个家长多个孩子），仅保留 `UNIQUE(student_id, template_id)`。
+- **首次正式发布推送**：单场与批量公布的成绩发布事务提交后异步调用 `notifyGradeReleaseSubscribers(examId)`，只通知「已绑定且本场有成绩」的学生；`thing1` = 科目 · 考试名（超 20 字截断），`number2` = 成绩（赋分优先，一位小数）。推送失败绝不回滚成绩发布，只记日志与计数。
+- **去重与重推语义**：`wechat_grade_release_notifications.exam_id` 主键 + INSERT IGNORE 认领，保证每场只推一次、成绩修订不重推。新增「失败不占用去重」：该场零送达（无收件人、非公布态、token / 网络故障、流程异常）时删除认领行并记 `slot released for retry`，管理员「撤回 → 重新公布」即可重推；只要有 1 条送达就保留去重位。`sending` 行超过 10 分钟视为进程崩溃遗留并自动重新认领；`40001 / 42001` 时清空 access_token 缓存。
+- **迁移 `52 / wechat-grade-release-notifications`**：SQLite（`schema.sql` + `migrations.ts`）与 MariaDB（`schema.mariadb.sql` + `mysql.ts`）同步建表，openid 使用普通索引 `idx_wsb_openid`。
+- **部署自检**：`GET /api/wechat/subscriptions/diagnostic`（仅管理员）绕过 token 缓存实取一次 access_token，只返回布尔值、微信错误码与绑定人数，不回显 AppSecret、errmsg 原文或 openid；启动日志报告推送是否启用及缺失的变量名。`WECHAT_MINIPROGRAM_APP_ID` / `WECHAT_MINIPROGRAM_APP_SECRET` / `WECHAT_GRADE_RELEASE_TEMPLATE_ID` / `WECHAT_SUBSCRIBE_PAGE` / `WECHAT_MINIPROGRAM_STATE` 仅存在于部署环境，不入库、不入 Git。
+- **一次性订阅边界**：微信侧不提供长期订阅，小程序每场成绩公布前重新引导订阅；学生未重新授权时该场发送返回 `43101`，属预期行为而非故障。
+
+本版同时包含 2026-09-22 条目中的 PDF 字体、教师详情与班级归档修复。
+
+验证情况：`npm run typecheck` 与 `npm run build:web` 通过（v2.6.0 首稿记录的 `@types/fontkit`、本地缺 `qrcode` 两条既有报错已不复现，`qrcode` 本就在依赖清单中）；新增 `npm run verify:wechat-grade-release`（临时 SQLite + 打桩 fetch，18 项断言通过，不访问微信服务器）；新增 `npm run verify:exam-paper`（临时 SQLite + 真实 HTTP，51 项断言通过，覆盖开关与三种公布情形、四重硬门、入口标记与 `/paper` 同步、答案全量保存与按页归集、答案页上传/删除、OCR 文本解析，接口调用统一带 `?ocr=0` 不打真实 OCR）；小程序侧 `npm test` 通过（含原卷页归一化、图片下载并发与取消、以及「入口受 `paper_visible` 控制」的接线校验）。四项**未执行**，需部署前补：① `scripts/verify-mariadb.ts` 的 v52 索引与「一 openid 多学生」、v53 建表加列断言尚未在真实 MariaDB 上跑过，需一次性空的 `projectx_ci` 库执行 `npm run verify:mariadb`；② tesseract.js 真实识别未跑端到端；③ 服务端微信环境变量配置与小程序发布、真机推送验收；④ 原卷页在小程序真机与网页端的界面验收。部署步骤与错误码对照见 [WECHAT-GRADE-RELEASE-部署与排错](./WECHAT-GRADE-RELEASE-部署与排错.md)，原卷与逐题答案的配置流程、可见性矩阵与接口清单见 [原卷与逐题答案-使用说明](./原卷与逐题答案-使用说明.md)。
+
 ## 2026-09-22 — PDF 中文字体、教师详情与旧班级归档修复
 
 - **PDF 导出中文字体错误**：确认生产服务器缺少中文字体，安装 `fonts-noto-cjk`、`fontconfig`，并通过 systemd 配置 `PROJECTX_PDF_FONT_PATH` 和 TTC 的 `PROJECTX_PDF_FONT_POSTSCRIPT_NAME`。沿用现有 PDF 逻辑，服务器实际生成文件、文字提取和渲染检查通过；此环境修复已在生产完成。
