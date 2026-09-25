@@ -449,7 +449,7 @@ export function PDScatter({
           x: {
             min: 0,
             max: 1,
-            title: { display: true, text: "难度系数 P（越低越难）" },
+            title: { display: true, text: "难度系数 P" },
           },
           y: {
             min: -0.2,

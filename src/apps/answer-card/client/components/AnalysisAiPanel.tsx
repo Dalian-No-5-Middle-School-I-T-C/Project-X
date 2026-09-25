@@ -321,7 +321,7 @@ function AnalysisAiPanelContent({ examId, groupId, classId = "" }: Props) {
       {polling && (
         <div className="flex items-start gap-2 rounded-md border border-accent-border bg-accent-soft px-3 py-2 text-sm text-accent-foreground">
           <Sparkles className="mt-0.5 size-4 shrink-0" />
-          <span>分析任务 #{jobId} 已提交，正在后台生成（异步执行，不再阻塞页面）。完成后自动展示报告。</span>
+          <span>分析任务 #{jobId} 已提交，正在后台生成，完成后自动展示报告。</span>
         </div>
       )}
 

@@ -29,7 +29,7 @@ type Settings = {
 
 const FIELDS: Array<{ key: keyof Settings; label: string; desc: string; type: "toggle" | "number" | "select"; options?: Array<{ value: string; label: string }> }> = [
   { key: "require_original_paper", label: "创建后提示上传原卷", desc: "创建答题卡后打开原卷面板，可关闭并稍后补充；不限制答题卡或 PDF 导出", type: "toggle" },
-  { key: "highlight_missing_paper", label: "侧边栏高亮未上传原卷", desc: "左侧列表用颜色标记缺少原卷的考试（全平台统一）", type: "toggle" },
+  { key: "highlight_missing_paper", label: "侧边栏高亮未上传原卷", desc: "左侧列表用颜色标记缺少原卷的考试", type: "toggle" },
 ];
 
 // 难度/区分度档位（与后端 analysisConfig 默认一致）
@@ -159,7 +159,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
   }, []);
 
   async function handleImportDemo() {
-    if (!confirm("将导入演示测试数据（9 场考试、16 名学生、2 个合集，含网阅演示），不会覆盖现有数据。继续？")) return;
+    if (!confirm("将导入演示测试数据（9 场考试、16 名学生、2 个合集，含网阅演示），大概率不会覆盖现有数据。是否继续？")) return;
     setDevMsg(null);
     setDevBusy(true);
     try {
@@ -175,7 +175,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
   }
 
   async function handleClearDemo() {
-    if (!confirm("将清除全部「演示-」前缀的演示数据（不影响真实数据）。继续？")) return;
+    if (!confirm("将清除全部「演示-」前缀的演示数据（大概率不影响真实数据）。是否继续？")) return;
     setDevMsg(null);
     setDevBusy(true);
     try {
@@ -344,7 +344,7 @@ export function GlobalSettingsPage({ onBack }: Props) {
             <Field label={<>API Key{aiEditor.id ? "（留空则不修改）" : ""}</>}>
               <Input type="password" value={aiEditor.apiKey} onChange={(e) => setAiEditor({ ...aiEditor, apiKey: e.target.value })} />
             </Field>
-            <Field label='模型（JSON 数组，如 ["gpt-4o"]）'>
+            <Field label='模型（JSON 数组，如 ["gpt-6-astra"]）'>
               <Input value={aiEditor.models} onChange={(e) => setAiEditor({ ...aiEditor, models: e.target.value })} />
             </Field>
             <div className="flex justify-end gap-2">

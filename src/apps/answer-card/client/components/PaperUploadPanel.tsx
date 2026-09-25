@@ -211,20 +211,20 @@ export function PaperUploadPanel({ cardId, open, onClose, hasExistingPaper, exis
       <DialogContent size="md">
         <DialogHeader>
           <DialogTitle>原卷信息</DialogTitle>
-          <p className="m-0 text-sm text-muted-foreground">原卷上传与知识点分析均为可选，不影响答题卡导出。可关闭此窗口，稍后再补充。</p>
+          <p className="m-0 text-sm text-muted-foreground">原卷上传与知识点分析均为可选，不影响答题卡导出。可稍后再补充。</p>
         </DialogHeader>
 
         <DialogBody className="flex flex-col gap-6">
           {/* 导入文件区（支持多页） */}
           <section className="flex flex-col gap-2">
-            <h4 className="m-0 text-base font-medium text-foreground">导入文件（支持多页）</h4>
+            <h4 className="m-0 text-base font-medium text-foreground">导入文件</h4>
             <UploadZone
               accept=".docx,.pdf,image/*"
               maxSize={50 * 1024 * 1024}
               multiple
               onFiles={handleFiles}
               disabled={uploading}
-              label={uploading ? "上传中..." : "拖拽文件到此处，或点击选择（可多选多页）"}
+              label={uploading ? "上传中..." : "拖拽文件到此处，或点击选择"}
               sublabel="DOCX / PDF / 图片，最大 50MB，可一次选择多页"
             />
             {pages.length > 0 && (
