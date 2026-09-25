@@ -4,6 +4,7 @@ import { ClassRepository } from "../repositories/ClassRepository";
 import { UserRepository } from "../repositories/UserRepository";
 import { authMiddleware, requirePermission, requireRole } from "../middleware/auth";
 import { PERMISSIONS, ROLE_IDS, ROLE_NAMES } from "../auth/permissions";
+import { isTeacherSubject } from "../../shared/subjects";
 
 /**
  * 年级 / 班级 / 花名册管理 API
@@ -65,6 +66,21 @@ router.post("/", manage, async (req: Request, res: Response) => {
   res.status(201).json(await classRepo.createClass(Number(gradeId), String(name), Number(sortOrder ?? 0)));
 });
 
+router.put("/:id", manage, async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const name = String(req.body?.name ?? "").trim();
+  if (!name) {
+    res.status(400).json({ message: "缺少班级名称" });
+    return;
+  }
+  if (!await classRepo.findClassById(id)) {
+    res.status(404).json({ message: "班级不存在" });
+    return;
+  }
+  await classRepo.updateClass(id, name);
+  res.json({ message: "班级已重命名" });
+});
+
 router.delete("/:id", manage, async (req: Request, res: Response) => {
   const cls = await classRepo.findClassById(Number(req.params.id));
   if (!cls) {
@@ -73,6 +89,103 @@ router.delete("/:id", manage, async (req: Request, res: Response) => {
   }
   await classRepo.deleteClass(cls.id);
   res.json({ message: "班级已归档，历史记录保留" });
+});
+
+// ── 班级教师（班主任 + 分科任课教师）────────────────────
+
+/**
+ * GET /api/classes/:id/teachers — 班级教师配置。
+ * 班主任 = 该班关联里「未设科目 + 教师角色为班主任」的那位；任课教师 = 关联里带科目的记录。
+ */
+router.get("/:id/teachers", manage, async (req: Request, res: Response) => {
+  const classId = Number(req.params.id);
+  if (!await classRepo.findClassById(classId)) {
+    res.status(404).json({ message: "班级不存在" });
+    return;
+  }
+  const rows = await classRepo.listClassTeachers(classId);
+  const head = rows.find((row) => row.subject === null && row.teacher_role === "head_teacher");
+  res.json({
+    headTeacherId: head?.teacher_id ?? null,
+    headTeacherName: head?.name ?? null,
+    assignments: rows
+      .filter((row) => row.subject !== null)
+      .map((row) => ({
+        teacherId: row.teacher_id,
+        name: row.name,
+        subject: row.subject,
+        teacherSubject: row.teacher_subject,
+        teacherRole: row.teacher_role
+      }))
+  });
+});
+
+/** POST /api/classes/:id/teachers — 指定某学科的任课教师 */
+router.post("/:id/teachers", manage, async (req: Request, res: Response) => {
+  const classId = Number(req.params.id);
+  const teacherId = Number(req.body?.teacherId);
+  const subject = String(req.body?.subject ?? "");
+  if (!teacherId || !isTeacherSubject(subject)) {
+    res.status(400).json({ message: "请提供有效的 teacherId 与学科" });
+    return;
+  }
+  if (!await classRepo.findClassById(classId)) {
+    res.status(404).json({ message: "班级不存在" });
+    return;
+  }
+  const teacher = await userRepo.findByIdIncludingInactive(teacherId);
+  if (!teacher || teacher.role_id !== ROLE_IDS.TEACHER) {
+    res.status(404).json({ message: "教师不存在" });
+    return;
+  }
+  await classRepo.setClassTeacher(teacherId, classId, subject);
+  res.json({ message: "已设置任课教师" });
+});
+
+/** DELETE /api/classes/:id/teachers/:teacherId — 解除该教师与班级的关联 */
+router.delete("/:id/teachers/:teacherId", manage, async (req: Request, res: Response) => {
+  await classRepo.removeTeacherFromClass(Number(req.params.teacherId), Number(req.params.id));
+  res.json({ message: "已解除关联" });
+});
+
+/**
+ * PUT /api/classes/:id/head-teacher — 设置 / 清除班主任（可在全部教师中选择，不限学科）。
+ * 复用既有教师角色「班主任」+ 关联班级：写入 teacher_classes（不设科目）并把该教师标记为班主任。
+ */
+router.put("/:id/head-teacher", manage, async (req: Request, res: Response) => {
+  const classId = Number(req.params.id);
+  if (!await classRepo.findClassById(classId)) {
+    res.status(404).json({ message: "班级不存在" });
+    return;
+  }
+  const raw = req.body?.teacherId;
+  const teacherId = raw === null || raw === undefined || raw === "" ? null : Number(raw);
+  if (teacherId !== null && !Number.isFinite(teacherId)) {
+    res.status(400).json({ message: "teacherId 不合法" });
+    return;
+  }
+
+  const rows = await classRepo.listClassTeachers(classId);
+  for (const row of rows) {
+    const isHead = row.subject === null && row.teacher_role === "head_teacher";
+    if (!isHead || row.teacher_id === teacherId) continue;
+    await classRepo.removeTeacherFromClass(row.teacher_id, classId);
+  }
+
+  if (teacherId !== null) {
+    const teacher = await userRepo.findByIdIncludingInactive(teacherId);
+    if (!teacher || teacher.role_id !== ROLE_IDS.TEACHER) {
+      res.status(404).json({ message: "教师不存在" });
+      return;
+    }
+    await classRepo.setClassTeacher(teacherId, classId, null);
+    if (teacher.teacher_role !== "head_teacher") {
+      // 复用既有角色：班主任身份记在 users.teacher_role 上，班级归属记在 teacher_classes
+      await userRepo.updateTeacher(teacherId, { teacher_role: "head_teacher" });
+    }
+  }
+
+  res.json({ message: teacherId === null ? "已清除班主任" : "已设置班主任" });
 });
 
 // ── 花名册 ────────────────────────────────────────────

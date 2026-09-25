@@ -1,5 +1,15 @@
 # Project-X CHANGELOG
 
+## 2026-09-25 — 班级改名 + 班主任 + 分科任课教师（2026-09-23 反馈第 8 条）
+
+- **班级改名**：此前只有年级能改名，班级没有入口。新增 `PUT /api/classes/:id`（`class:manage`）与班级列表行的重命名按钮，仅改当前未归档班级名称，历史数据不动。
+- **班主任**：班级页新增「班主任」下拉，可在全部教师中选择、不限学科；保存时复用既有模型——`teacher_classes` 写入不带科目的关联，并把该教师的 `users.teacher_role` 置为 `head_teacher`。换班主任时旧班主任解除该班关联，不影响其他班的任课记录。
+- **分科任课教师**：班级页按 9 个学科各列一行，只列出「教师本人任教学科 = 该学科」的教师，选中即 `POST /api/classes/:id/teachers`（带科目）。`teacher_classes` 主键是 (teacher_id, class_id)，同一教师改科目走 upsert 原地更新，不会产生重复行；已设置的教师以标签展示，可单独解除。
+- 学科列表收敛到 `src/shared/subjects.ts`，教师管理页与服务端校验共用同一份，避免多处硬编码漂移。
+
+验证：`npm run verify:class-teachers`（新增，隔离 SQLite 走真实 HTTP：建年级/班级 → 改名 → 设班主任并回读 `users.teacher_role`/`teacher_classes` → 分科设置、改科目只保留一行 → 非法学科 400、不存在教师 404 → 换班主任不影响任课教师 → 解除关联与清除班主任）、`npm run typecheck`、`npm run build`、`npm run verify:core-logic`（73 passed）。
+未覆盖：MariaDB 实例本机不可用，MariaDB 侧未实跑（本次无 schema 变更，新增 SQL 走 `buildUpsertSQL` 双方言构造）；管理页界面未做浏览器视觉验收。
+
 ## 2026-09-22 — PDF 中文字体、教师详情与旧班级归档修复
 
 - **PDF 导出中文字体错误**：确认生产服务器缺少中文字体，安装 `fonts-noto-cjk`、`fontconfig`，并通过 systemd 配置 `PROJECTX_PDF_FONT_PATH` 和 TTC 的 `PROJECTX_PDF_FONT_POSTSCRIPT_NAME`。沿用现有 PDF 逻辑，服务器实际生成文件、文字提取和渲染检查通过；此环境修复已在生产完成。

@@ -1,4 +1,4 @@
-import { buildInsertIgnore, getMysqlDb } from "../db";
+import { buildInsertIgnore, buildUpsertSQL, getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { ensureExamParticipants } from "../services/examParticipants";
 
@@ -27,6 +27,16 @@ export interface ClassStudent {
   /** 文理分科：arts 文科 / science 理科（Issue #177） */
   track: string | null;
   joined_at: string;
+}
+
+export interface ClassTeacherRow {
+  teacher_id: number;
+  name: string;
+  /** 该教师在此班级的科目覆盖（空 = 未指定，例如班主任） */
+  subject: string | null;
+  /** 教师本人任教学科 */
+  teacher_subject: string | null;
+  teacher_role: string | null;
 }
 
 /**
@@ -110,6 +120,11 @@ export class ClassRepository {
     return (await this.findClassById(result.lastInsertRowid))!;
   }
 
+  /** 班级改名（仅改当前未归档班级的名称，历史数据不动）。 */
+  async updateClass(id: number, name: string): Promise<void> {
+    await this.db.run("UPDATE classes SET name = ? WHERE id = ? AND archived_at IS NULL", name, id);
+  }
+
   async deleteClass(id: number): Promise<void> {
     await this.db.transaction(async (tx) => {
       const cls = await tx.get<{ grade_id: number }>("SELECT grade_id FROM classes WHERE id = ? AND archived_at IS NULL", id);
@@ -176,6 +191,32 @@ export class ClassRepository {
 
   async removeTeacherFromClass(teacherId: number, classId: number): Promise<void> {
     await this.db.run("DELETE FROM teacher_classes WHERE teacher_id = ? AND class_id = ?", teacherId, classId);
+  }
+
+  /**
+   * 班级下的教师关联。teacher_classes 主键是 (teacher_id, class_id)，每位教师每班一行；
+   * subject 为该教师在此班级的科目覆盖，subject 为空且教师角色为班主任时即该班班主任。
+   */
+  async listClassTeachers(classId: number): Promise<ClassTeacherRow[]> {
+    return await this.db.all(`
+      SELECT tc.teacher_id, u.name, tc.subject, u.subject as teacher_subject, u.teacher_role
+      FROM teacher_classes tc
+      JOIN users u ON u.id = tc.teacher_id
+      WHERE tc.class_id = ? AND u.is_active = 1
+      ORDER BY u.name ASC, u.id ASC
+    `, classId);
+  }
+
+  /** 关联教师到班级并写入科目（subject 为空 = 不设科目覆盖，用于班主任）。 */
+  async setClassTeacher(teacherId: number, classId: number, subject: string | null): Promise<void> {
+    const sql = buildUpsertSQL(
+      this.db.dialect,
+      "teacher_classes",
+      ["teacher_id", "class_id", "subject"],
+      ["teacher_id", "class_id"],
+      ["subject"]
+    );
+    await this.db.run(sql, teacherId, classId, subject);
   }
 
   async listTeacherClasses(teacherId: number): Promise<Array<{
