@@ -2072,12 +2072,20 @@ export async function createApp(): Promise<express.Express> {
         res.status(409).json({ message: `已存在同名考试「${name}」（ID: ${existing.id}），请修改名称后重试` });
         return;
       }
+      // Issue #302：未显式传学科时从所选答题卡继承（考试学科用中文名，与识别/分析侧一致）
+      let examSubject = subject ? String(subject) : undefined;
+      if (!examSubject) {
+        const card = await getMysqlDb().get<{ subject_label: string | null; subject: string | null }>(
+          "SELECT subject, subject_label FROM answer_cards WHERE id = ?", String(cardId)
+        );
+        examSubject = card?.subject_label || card?.subject || undefined;
+      }
       const exam = await examRepo.createExam({
         name: String(name),
         card_id: String(cardId),
         grade_id: gradeId ? Number(gradeId) : undefined,
         class_id: classId ? Number(classId) : undefined,
-        subject: subject ? String(subject) : undefined,
+        subject: examSubject,
         exam_mode: mode === "formal" ? "formal" : "quiz",
         retention_policy_id: retentionPolicyIdValue,
         created_by: req.user?.id
