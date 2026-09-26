@@ -117,17 +117,20 @@ export async function listExamAnswerKeys(
 
 /**
  * 按页归集答案文字：客户端在每张原卷图片下方渲染本页题号的答案。
- * page_index 为空（教师未指定）时统一落到最后一页，无原卷页则落到第 1 页，
+ * pageIndexes 传原卷「真实页码集合」而不是页数：删掉中间页后会留下稀疏页码（如 [1,3]），
+ * 按页数当上界会把归属第 3 页的答案塞进不存在的第 2 页，学生端永远看不到。
+ * page_index 为空（教师未指定）或不在集合内时统一落到最后一页，无原卷页则落到第 1 页，
  * 保证「有答案就一定渲染得出来」，不静默丢数据。
  */
 export function groupAnswersByPage(
   answers: ExamAnswerKeyRow[],
-  pageCount: number
+  pageIndexes: number[]
 ): Map<number, ExamAnswerKeyRow[]> {
-  const fallbackPage = Math.max(pageCount, 1);
+  const pages = new Set(pageIndexes);
+  const fallbackPage = pageIndexes.length > 0 ? Math.max(...pageIndexes) : 1;
   const grouped = new Map<number, ExamAnswerKeyRow[]>();
   for (const answer of answers) {
-    const page = answer.pageIndex && answer.pageIndex >= 1 && answer.pageIndex <= fallbackPage
+    const page = answer.pageIndex && pages.has(answer.pageIndex)
       ? answer.pageIndex
       : fallbackPage;
     const bucket = grouped.get(page);

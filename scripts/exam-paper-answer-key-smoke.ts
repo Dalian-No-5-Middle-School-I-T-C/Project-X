@@ -7,15 +7,16 @@
  *   B. 学生端四重硬门：软删除 / 本人成绩 / 成绩已公布 / 开关开启；
  *      未上传原卷图片 → hasOriginalPaper=false（客户端据此显示「原卷未上传」）；
  *      列表 paper_visible 与详情 paperVisible 两处入口标记必须与门同步。
- *   C. 逐题文字答案全量保存与按页归集；答案页上传/删除（OCR 显式关闭）。
+ *   C. 逐题文字答案全量保存与按页归集（含稀疏原卷页码）；答案页上传/删除/累计上限（OCR 显式关闭）。
  *   D. OCR 文本解析器（区间式/单题式/全角数字/混合行）—— 纯函数断言。
+ *   E. 删除考试后清理答案页文件目录。
  *
  * 不覆盖：tesseract.js 真实识别（需要 WASM 与数秒耗时，接口以 ?ocr=0 调用）、
  *         MariaDB 方言（见 scripts/verify-mariadb.ts 的 v53 断言）。
  *
  * 运行：npm run verify:exam-paper
  */
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -93,7 +94,7 @@ async function main() {
   const { createApp } = await import("../src/apps/answer-card/server/index");
   const { getMysqlDb } = await import("../src/server/db");
   const { parseAnswerKeyText } = await import("../src/apps/answer-card/server/answer-key-ocr");
-  const { paperDir, answerKeyDir } = await import("../src/apps/answer-card/server/storage");
+  const { answerKeyDir, answerKeysDir, paperDir } = await import("../src/apps/answer-card/server/storage");
 
   initializeDatabase();
   const sqlite = getDatabase();
@@ -297,6 +298,18 @@ async function main() {
   ok(keptPage?.page_index === 1, "删除答案扫描页不动答案的原卷页归属（两种页码分属不同资产，不联动清空）");
   const farPaper = await putAnswers({ answers: [{ questionNumber: 9, answerText: "A", pageIndex: 11 }] });
   ok(farPaper.status === 200, "答案归属原卷第 11 页不被答案上传上限（10）截断");
+
+  // 稀疏原卷页码（删掉中间页后可能只剩 [1,3]）：归属第 3 页的答案不能被塞进不存在的第 2 页
+  await writeFile(path.join(dir, "original-3.jpg"), await jpegBuffer());
+  await getMysqlDb().run("INSERT INTO original_paper_pages (card_id, page_index, filename, stored_path) VALUES (?, 3, 'original-3.jpg', ?)", cardId, `papers/${cardId}/original-3.jpg`);
+  await putAnswers({ answers: [{ questionNumber: 4, answerText: "第三页答案", pageIndex: 3 }] });
+  const sparse = await studentPaper(stuToken);
+  const sparsePages = (sparse.body?.pages ?? []) as Array<{ pageIndex: number; answers: Array<{ questionNumber: number }> }>;
+  const pageThree = sparsePages.find((item) => item.pageIndex === 3);
+  ok(
+    sparsePages.length === 2 && (pageThree?.answers ?? []).some((a) => a.questionNumber === 4),
+    "原卷页码稀疏 [1,3] → 归属第 3 页的答案仍渲染在真实存在的第 3 页"
+  );
   await putAnswers({ answers: [] });
 
   // 累计容量：分多次上传不能堆出第 11 页；页码始终保持最小空闲分配
@@ -316,6 +329,10 @@ async function main() {
       method: "POST", headers: { Authorization: `Bearer ${adminToken}` }, body: overflowForm,
     });
     ok(overflow.status === 400, "累计第 11 页上传 → 400（上限按累计而非单批计）");
+    ok(
+      readdirSync(path.join(answerKeysDir, "_tmp")).length === 0,
+      "累计超限被拒后不留 _tmp 暂存文件（重试不会堆积垃圾）"
+    );
     const delMid = await jsonFetch(base, `/api/exams/${examId}/answer-key/pages/5`, { method: "DELETE" }, adminToken);
     ok(delMid.status === 200 && (delMid.body?.answerPages ?? []).length === 9, "中途页可删除（页码 1..10 全程可查看/删除）");
     const reuseForm = new FormData();
@@ -339,6 +356,12 @@ async function main() {
   ok(mixed.map((m) => m.questionNumber).join(",") === "1,2,3,11,12,13", "同一行多题 + 区间混排");
   ok(parseAnswerKeyText("1-5 BACD\n完全无关的一段说明文字").length === 0, "区间长度与选项数不匹配时不猜答案");
   ok(parseAnswerKeyText("").length === 0, "空文本 → 空草稿");
+
+  // ── E. 删除考试时的文件清理 ──────────────────────────
+  section("E. 删除考试清理答案页文件");
+  ok(existsSync(answerKeyDir(examId)), "上传过答案页 → 考试答案目录存在");
+  const delExam = await jsonFetch(base, `/api/exams/${examId}`, { method: "DELETE" }, adminToken);
+  ok(delExam.status === 200 && !existsSync(answerKeyDir(examId)), "删除考试 → 答案页文件目录一并清理（机密原图不滞留磁盘）");
 
   console.log(`\n通过 ${passed} 项，失败 ${failed} 项`);
   await new Promise<void>((resolve) => server.close(() => resolve()));

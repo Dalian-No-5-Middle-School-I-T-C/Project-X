@@ -438,7 +438,7 @@ router.get("/me/exams/:examId/paper", async (req: Request, res: Response) => {
     listExamAnswerKeys(examId, db),
     listAnswerBlockCropsForStudent(examId, req.user!.id, db),
   ]);
-  const grouped = groupAnswersByPage(answers, paperPages.length);
+  const grouped = groupAnswersByPage(answers, paperPages.map((page) => page.pageIndex));
 
   res.json({
     examId,
