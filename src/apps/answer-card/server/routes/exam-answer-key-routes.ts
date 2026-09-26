@@ -29,7 +29,7 @@ import { extractDocxText, extractPdfText, extractImageText } from "../paper-ocr"
 import { MAX_ANSWER_TEXT_LENGTH, MAX_QUESTION_NUMBER, parseAnswerKeyText } from "../answer-key-ocr";
 import { requireExamAccess } from "../middleware";
 
-/** 一次上传的答案页上限（OCR 串行执行，页数过多会让请求超时） */
+/** 答案页上限：既是单批上传上限，也是单场考试的累计上限（页码查看/重识别/删除接口只认 1..该值） */
 const MAX_ANSWER_KEY_PAGES = 10;
 /** 单场考试可配置的题数上限 */
 const MAX_ANSWER_ROWS = MAX_QUESTION_NUMBER;
@@ -172,7 +172,8 @@ export function examAnswerKeyRoutes(): Router {
           res.status(400).json({ message: `第 ${questionNumber} 题答案不能为空` });
           return;
         }
-        const pageIndex = normalizePageIndex(row.pageIndex, MAX_ANSWER_KEY_PAGES);
+        // pageIndex 是「原卷页码」（card 级资产），与答案上传页无关，不能用 MAX_ANSWER_KEY_PAGES 截断
+        const pageIndex = normalizePageIndex(row.pageIndex);
         if (row.pageIndex != null && row.pageIndex !== "" && pageIndex === null) {
           res.status(400).json({ message: `第 ${questionNumber} 题页码无效` });
           return;
@@ -249,15 +250,30 @@ export function examAnswerKeyRoutes(): Router {
       const runOcr = req.query.ocr !== "0" && req.query.ocr !== "false";
       const uploaded: Array<{ pageIndex: number; filename: string }> = [];
 
+      // 累计容量校验：只限单批文件数挡不住分多次上传堆出第 11 页，
+      // 而页码查看/重识别/删除接口只认 1..MAX_ANSWER_KEY_PAGES。
+      const existingRows = (await db.all<{ page_index: number }>(
+        "SELECT page_index FROM exam_answer_key_pages WHERE exam_id = ?",
+        exam.id
+      )) as Array<{ page_index: number }>;
+      const usedIndexes = new Set(existingRows.map((row) => Number(row.page_index)));
+      if (usedIndexes.size + valid.length > MAX_ANSWER_KEY_PAGES) {
+        res.status(400).json({
+          message: `累计最多上传 ${MAX_ANSWER_KEY_PAGES} 页答案：当前已有 ${usedIndexes.size} 页，本次 ${valid.length} 页`,
+        });
+        return;
+      }
+
       await db.transaction(async (tx) => {
-        const maxRow = await tx.get(
-          "SELECT COALESCE(MAX(page_index), 0) AS mx FROM exam_answer_key_pages WHERE exam_id = ?",
-          exam.id
-        ) as { mx: number } | undefined;
-        let nextIndex = (maxRow?.mx ?? 0) + 1;
+        // 取最小空闲页码，保证新页码始终落在 1..MAX（MAX+1 递增会让删过页的考试越界）
+        let nextFree = 1;
+        const takeIndex = (): number => {
+          while (usedIndexes.has(nextFree)) nextFree += 1;
+          usedIndexes.add(nextFree);
+          return nextFree;
+        };
         for (const { file, originalname } of valid) {
-          const pageIndex = nextIndex;
-          nextIndex += 1;
+          const pageIndex = takeIndex();
           const stored = await storeAnswerKeyPageFile(file.path, originalname, dir, pageIndex);
           try { unlinkSync(file.path); } catch {}
           await tx.run(
@@ -353,11 +369,8 @@ export function examAnswerKeyRoutes(): Router {
         if (existsSync(filePath)) { try { unlinkSync(filePath); } catch {} }
       }
       await db.run("DELETE FROM exam_answer_key_pages WHERE exam_id = ? AND page_index = ?", examId, pageIndex);
-      // 答案行里指向该页的归属清空，避免学生端出现「答案挂在看不到的页下面」
-      await db.run(
-        "UPDATE exam_answer_keys SET page_index = NULL WHERE exam_id = ? AND page_index = ?",
-        examId, pageIndex
-      );
+      // 注意：exam_answer_keys.page_index 存的是「原卷页码」（card 级资产，见答案配置面板），
+      // 与这里删除的「答案扫描页码」是两套坐标系，不能按同一数字联动清空。
       res.json({ success: true, answerPages: await listAnswerKeyPages(examId, db) });
     } catch (err: any) {
       console.error("[answer-key] delete page failed:", err);

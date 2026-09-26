@@ -293,8 +293,39 @@ async function main() {
   ok(list.body?.hasOriginalPaper === true && list.body?.showOriginalPaper === 1, "面板回显开关与原卷状态");
   const deleted = await jsonFetch(base, `/api/exams/${examId}/answer-key/pages/1`, { method: "DELETE" }, adminToken);
   ok(deleted.status === 200 && (deleted.body?.answerPages ?? []).length === 0, "答案页删除后列表为空");
-  const orphanPage = await getMysqlDb().get("SELECT page_index FROM exam_answer_keys WHERE exam_id = ? AND question_number = 1", examId) as { page_index: number | null };
-  ok(orphanPage?.page_index === null, "指向已删页的答案行改为无归属（不挂在看不见的页下面）");
+  const keptPage = await getMysqlDb().get("SELECT page_index FROM exam_answer_keys WHERE exam_id = ? AND question_number = 1", examId) as { page_index: number | null };
+  ok(keptPage?.page_index === 1, "删除答案扫描页不动答案的原卷页归属（两种页码分属不同资产，不联动清空）");
+  const farPaper = await putAnswers({ answers: [{ questionNumber: 9, answerText: "A", pageIndex: 11 }] });
+  ok(farPaper.status === 200, "答案归属原卷第 11 页不被答案上传上限（10）截断");
+  await putAnswers({ answers: [] });
+
+  // 累计容量：分多次上传不能堆出第 11 页；页码始终保持最小空闲分配
+  let filled = true;
+  for (let i = 1; i <= 10; i++) {
+    const f = new FormData();
+    f.append("files", new Blob([await jpegBuffer()], { type: "image/jpeg" }), `累计第${i}页.jpg`);
+    const r = await fetch(`${base}/api/exams/${examId}/answer-key/pages?ocr=0`, {
+      method: "POST", headers: { Authorization: `Bearer ${adminToken}` }, body: f,
+    });
+    if (r.status !== 200) { ok(false, `分次补传到 10 页应全部成功（第 ${i} 次返回 ${r.status}）`); filled = false; break; }
+  }
+  if (filled) {
+    const overflowForm = new FormData();
+    overflowForm.append("files", new Blob([await jpegBuffer()], { type: "image/jpeg" }), "第11页.jpg");
+    const overflow = await fetch(`${base}/api/exams/${examId}/answer-key/pages?ocr=0`, {
+      method: "POST", headers: { Authorization: `Bearer ${adminToken}` }, body: overflowForm,
+    });
+    ok(overflow.status === 400, "累计第 11 页上传 → 400（上限按累计而非单批计）");
+    const delMid = await jsonFetch(base, `/api/exams/${examId}/answer-key/pages/5`, { method: "DELETE" }, adminToken);
+    ok(delMid.status === 200 && (delMid.body?.answerPages ?? []).length === 9, "中途页可删除（页码 1..10 全程可查看/删除）");
+    const reuseForm = new FormData();
+    reuseForm.append("files", new Blob([await jpegBuffer()], { type: "image/jpeg" }), "补位第5页.jpg");
+    const reused = await fetch(`${base}/api/exams/${examId}/answer-key/pages?ocr=0`, {
+      method: "POST", headers: { Authorization: `Bearer ${adminToken}` }, body: reuseForm,
+    });
+    const reusedBody = await reused.json().catch(() => ({}));
+    ok(reused.status === 200 && (reusedBody?.pages ?? [])[0]?.pageIndex === 5, "删除后重传补位最小空闲页码（不再 MAX+1 越界）");
+  }
 
   // ── D. OCR 文本解析（纯函数）──────────────────────────
   section("D. OCR 文本解析");
