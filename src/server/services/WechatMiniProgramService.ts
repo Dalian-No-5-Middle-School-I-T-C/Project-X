@@ -47,6 +47,12 @@ export class WechatApiError extends Error {
 }
 
 let cachedAccessToken: { token: string; expiresAt: number } | null = null;
+/**
+ * 并发单飞：批量公布会让多场考试在同一时刻取 token，而微信每次下发新 token 都会让上一个失效
+ * （旧 token 发送报 40001，本场推送就此作废且去重位已被占用）。同一时刻只允许一次 token 请求，
+ * 其余调用等待同一个 promise。
+ */
+let accessTokenInFlight: Promise<string> | null = null;
 
 function getRequiredEnv(name: string): string {
   const value = process.env[name];
@@ -137,12 +143,7 @@ export async function getOpenIdByLoginCode(code: string): Promise<string> {
   return data.openid;
 }
 
-async function getAccessToken(forceRefresh = false): Promise<string> {
-  const now = Date.now();
-  if (!forceRefresh && cachedAccessToken && cachedAccessToken.expiresAt > now + 60_000) {
-    return cachedAccessToken.token;
-  }
-
+async function requestAccessToken(): Promise<string> {
   const url = new URL("https://api.weixin.qq.com/cgi-bin/token");
   url.searchParams.set("grant_type", "client_credential");
   url.searchParams.set("appid", getAppId());
@@ -154,8 +155,16 @@ async function getAccessToken(forceRefresh = false): Promise<string> {
   }
 
   const expiresInSec = Math.max(0, (data.expires_in ?? 7200) - 300);
-  cachedAccessToken = { token: data.access_token, expiresAt: now + expiresInSec * 1000 };
+  cachedAccessToken = { token: data.access_token, expiresAt: Date.now() + expiresInSec * 1000 };
   return data.access_token;
+}
+
+async function getAccessToken(forceRefresh = false): Promise<string> {
+  if (!forceRefresh && cachedAccessToken && cachedAccessToken.expiresAt > Date.now() + 60_000) {
+    return cachedAccessToken.token;
+  }
+  accessTokenInFlight ??= requestAccessToken().finally(() => { accessTokenInFlight = null; });
+  return accessTokenInFlight;
 }
 
 /**

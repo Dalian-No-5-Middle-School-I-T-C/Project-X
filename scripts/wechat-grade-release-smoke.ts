@@ -10,6 +10,7 @@
  *      → 释放认领行；有 1 条送达 → 保留并写 completed。
  *   5. 首次发布只推一次：已 completed 的场次再次调用不产生任何发送。
  *   6. 进程崩溃遗留的 sending 超时行可被重新认领。
+ *   7. access_token 并发刷新单飞：批量公布同时取 token 只请求一次（重复刷新会互相作废旧 token）。
  *
  * 运行：npm run verify:wechat-grade-release
  * 说明：全程使用临时 SQLite 库与打桩 fetch，不访问微信服务器。
@@ -52,6 +53,8 @@ type SendResult = { errcode: number; errmsg?: string };
 const calls = { token: 0, send: 0, session: 0 };
 let sendResults: SendResult[] = [];
 let tokenResult: SendResult | null = null;
+let tokenTtlSeconds = 7200;
+let tokenDelayMs = 0;
 let sendIndex = 0;
 
 /** 每个场景前重置，按调用顺序依次返回 sendResults 中的错误码。 */
@@ -65,8 +68,9 @@ function installFetchStub(): void {
     const url = String(typeof input === "string" ? input : input?.url ?? input);
     if (url.includes("/cgi-bin/token")) {
       calls.token++;
+      if (tokenDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, tokenDelayMs));
       if (tokenResult) return jsonResponse({ errcode: tokenResult.errcode, errmsg: "stub" });
-      return jsonResponse({ access_token: "stub-token", expires_in: 7200 });
+      return jsonResponse({ access_token: "stub-token", expires_in: tokenTtlSeconds });
     }
     if (url.includes("/message/subscribe/send")) {
       const result = sendResults[sendIndex++] ?? sendResults[sendResults.length - 1] ?? { errcode: 0 };
@@ -190,6 +194,30 @@ async function main(): Promise<void> {
   // ── 3. 推送：失败不占用去重位 ─────────────────────────
   section("去重位释放策略");
   installFetchStub();
+
+  // 冷缓存（此时进程内还没有 token）+ token 接口慢 30ms：
+  // 复刻「批量公布多场考试同时取 token」——没有单飞就会各刷一次，微信会让先发的 token 失效
+  tokenTtlSeconds = 0;
+  tokenDelayMs = 30;
+  const batchB = await makeExam("并发公布-乙", 1);
+  const batchC = await makeExam("并发公布-丙", 1);
+  await db.run("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?, ?, 81)", batchB, studentA);
+  await db.run("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?, ?, 82)", batchC, studentB);
+  nextScenario([{ errcode: 0 }, { errcode: 0 }]);
+  await Promise.all([
+    notifyGradeReleaseSubscribers(batchB),
+    notifyGradeReleaseSubscribers(batchC),
+  ]);
+  ok(calls.token === 1, "两场考试并发推送只取一次 access_token（重复刷新会互相作废旧 token）");
+  ok(
+    (await db.get<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM wechat_grade_release_notifications WHERE exam_id IN (?, ?)",
+      batchB, batchC,
+    ))?.c === 2,
+    "并发的两场都完成推送并各自占用去重位",
+  );
+  tokenTtlSeconds = 7200;
+  tokenDelayMs = 0;
 
   tokenResult = { errcode: 40013 }; // appsecret 错 / IP 未白名单一类的基建故障
   nextScenario([{ errcode: 0 }]);
