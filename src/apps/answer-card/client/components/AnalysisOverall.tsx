@@ -51,37 +51,52 @@ function normalPdf(x: number, mean: number, sd: number): number {
 }
 
 export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }: Props) {
+  // Issue #275：分布与指标各自独立加载/独立报错，任一模块 fetch 失败不再拖垮整页。
   const [distributions, setDistributions] = useState<DistributionResult[]>([]);
+  const [distLoading, setDistLoading] = useState(true);
+  const [distError, setDistError] = useState("");
+  const [distPartialWarn, setDistPartialWarn] = useState("");
   const [metrics, setMetrics] = useState<ExamMetrics | GroupMetrics | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [metricsLoading, setMetricsLoading] = useState(true);
+  const [metricsError, setMetricsError] = useState("");
 
   const load = useCallback(() => {
-    setLoading(true); setError("");
     const base = kind === "exam" ? `/api/analysis/exams/${examId}` : `/api/exam-groups/${groupId}`;
     const trackSuffix = kind === "group" ? `&track=${track}` : "";
-    const distPromises = kind === "exam"
-      ? Promise.all([
-          fetchJson<DistributionResult[]>(`${base}/distribution?mode=subject`),
-          fetchJson<DistributionResult[]>(`${base}/distribution?mode=class`),
-        ]).then(([s, c]) => [...s, ...c])
-      : Promise.all([
-          fetchJson<DistributionResult[]>(`${base}/distribution?mode=total${trackSuffix}`),
-          fetchJson<DistributionResult[]>(`${base}/distribution?mode=subject${trackSuffix}`),
-          fetchJson<DistributionResult[]>(`${base}/distribution?mode=class${trackSuffix}`),
-        ]).then(([t, s, c]) => [...t, ...s, ...c]);
-    const metricPromise = fetchJson<ExamMetrics | GroupMetrics>(`${base}/metrics${kind === "group" ? `?track=${track}` : ""}`);
 
-    Promise.all([distPromises, metricPromise])
-      .then(([d, m]) => { setDistributions(Array.isArray(d) ? d : []); setMetrics(m as ExamMetrics | GroupMetrics); })
-      .catch((e) => setError(e instanceof Error ? e.message : "加载失败"))
-      .finally(() => setLoading(false));
+    // ① 分布：各 mode 并发但互不牵连，用 allSettled 容忍单个失败
+    setDistLoading(true); setDistError(""); setDistPartialWarn("");
+    const distModes = kind === "exam"
+      ? ["subject", "class"]
+      : ["total", "subject", "class"];
+    void Promise.allSettled(
+      distModes.map((mode) => fetchJson<DistributionResult[]>(`${base}/distribution?mode=${mode}${trackSuffix}`))
+    ).then((results) => {
+      const merged: DistributionResult[] = [];
+      const failures: string[] = [];
+      results.forEach((r) => {
+        if (r.status === "fulfilled" && Array.isArray(r.value)) merged.push(...r.value);
+        else if (r.status === "rejected") failures.push(r.reason instanceof Error ? r.reason.message : "加载失败");
+        // fulfilled 但非数组：视为空，不计失败
+      });
+      setDistributions(merged);
+      if (merged.length === 0) {
+        setDistError(failures[0] ?? "加载失败");
+      } else if (failures.length > 0) {
+        setDistPartialWarn(`部分分布加载失败：${failures.join("；")}`);
+      }
+      setDistLoading(false);
+    });
+
+    // ② 指标：独立于分布
+    setMetricsLoading(true); setMetricsError("");
+    void fetchJson<ExamMetrics | GroupMetrics>(`${base}/metrics${kind === "group" ? `?track=${track}` : ""}`)
+      .then((m) => setMetrics(m as ExamMetrics | GroupMetrics))
+      .catch((e) => setMetricsError(e instanceof Error ? e.message : "加载失败"))
+      .finally(() => setMetricsLoading(false));
   }, [kind, examId, groupId, track]);
 
   useEffect(() => { load(); }, [load]);
-
-  if (loading) return <div className="p-8 text-center text-sm text-muted-foreground">正在加载总体分析...</div>;
-  if (error) return <ErrorState description={error} onRetry={load} />;
 
   const isGroup = kind === "group";
   const hasFullScore = metrics && (isGroup
@@ -92,71 +107,88 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
 
   return (
     <div className="flex flex-col gap-5 p-6">
-      {/* 难度/区分度总览卡 */}
+      {/* 难度/区分度总览卡（指标独立加载） */}
       <section className="flex flex-col gap-2">
         <h3 className="text-sm font-semibold text-foreground">难度系数与区分度</h3>
-        {metrics && (
-          <StatCardRow>
-            <StatCard label="难度系数 P" value={hasFullScore ? metrics.difficulty.toFixed(3) : "—"} />
-            <StatCard label="区分度 D" value={metrics.discrimination.toFixed(3)} />
-            <StatCard label="信度 α/KR-20" value={reliability == null ? "—" : reliability.toFixed(3)} />
-            <StatCard label="变异系数 CV" value={cv == null ? "—" : `${(cv * 100).toFixed(1)}%`} />
-            {isGroup ? (
-              <>
-                <StatCard label="大考总分满分" value={hasFullScore ? formatScore((metrics as GroupMetrics).totalFullScore) : "—"} />
-                <StatCard label="大考总均分" value={formatScore((metrics as GroupMetrics).totalAvg)} />
-                <StatCard label="成员考试数" value={String((metrics as GroupMetrics).memberCount)} />
-              </>
-            ) : (
-              <>
-                <StatCard label="本卷满分" value={hasFullScore ? formatScore((metrics as ExamMetrics).fullScore) : "—"} />
-                <StatCard label="平均得分" value={formatScore((metrics as ExamMetrics).avgScore)} />
-                <StatCard label="参考人数" value={String((metrics as ExamMetrics).gradedCount)} />
-              </>
+        {metricsLoading ? (
+          <div className="p-4 text-center text-sm text-muted-foreground">正在加载指标…</div>
+        ) : metricsError ? (
+          <ErrorState description={metricsError} onRetry={load} />
+        ) : (
+          <>
+            {metrics && (
+              <StatCardRow>
+                <StatCard label="难度系数 P" value={hasFullScore ? metrics.difficulty.toFixed(3) : "—"} />
+                <StatCard label="区分度 D" value={metrics.discrimination.toFixed(3)} />
+                <StatCard label="信度 α/KR-20" value={reliability == null ? "—" : reliability.toFixed(3)} />
+                <StatCard label="变异系数 CV" value={cv == null ? "—" : `${(cv * 100).toFixed(1)}%`} />
+                {isGroup ? (
+                  <>
+                    <StatCard label="大考总分满分" value={hasFullScore ? formatScore((metrics as GroupMetrics).totalFullScore) : "—"} />
+                    <StatCard label="大考总均分" value={formatScore((metrics as GroupMetrics).totalAvg)} />
+                    <StatCard label="成员考试数" value={String((metrics as GroupMetrics).memberCount)} />
+                  </>
+                ) : (
+                  <>
+                    <StatCard label="本卷满分" value={hasFullScore ? formatScore((metrics as ExamMetrics).fullScore) : "—"} />
+                    <StatCard label="平均得分" value={formatScore((metrics as ExamMetrics).avgScore)} />
+                    <StatCard label="参考人数" value={String((metrics as ExamMetrics).gradedCount)} />
+                  </>
+                )}
+              </StatCardRow>
             )}
-          </StatCardRow>
-        )}
-        {isGroup && metrics && (metrics as GroupMetrics).subjects.length > 0 && (
-          <TableWrap className="mt-3">
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead>科目</TableHead>
-                  <TableHead numeric>满分</TableHead>
-                  <TableHead numeric>均分</TableHead>
-                  <TableHead numeric>难度系数 P</TableHead>
-                  <TableHead numeric>区分度 D</TableHead>
-                  <TableHead numeric>信度</TableHead>
-                  <TableHead numeric>变异系数</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {(metrics as GroupMetrics).subjects.map((s) => (
-                  <TableRow key={s.examId}>
-                    <TableCell>{s.subject}</TableCell>
-                    <TableCell numeric>{s.fullScore > 0 ? formatScore(s.fullScore) : "—"}</TableCell>
-                    <TableCell numeric>{formatScore(s.avgScore)}</TableCell>
-                    <TableCell numeric>
-                      {s.fullScore > 0 ? <DifficultyBadge value={s.difficulty ?? 0} bands={bands?.difficulty} /> : "—"}
-                    </TableCell>
-                    <TableCell numeric>
-                      <DiscriminationBadge value={s.discrimination ?? 0} bands={bands?.discrimination} sampleSize={s.gradedCount} />
-                    </TableCell>
-                    <TableCell numeric>{s.reliability == null ? "—" : s.reliability.toFixed(3)}</TableCell>
-                    <TableCell numeric>{s.cv == null ? "—" : `${(s.cv * 100).toFixed(1)}%`}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </TableWrap>
+            {isGroup && metrics && (metrics as GroupMetrics).subjects.length > 0 && (
+              <TableWrap className="mt-3">
+                <Table>
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent">
+                      <TableHead>科目</TableHead>
+                      <TableHead numeric>满分</TableHead>
+                      <TableHead numeric>均分</TableHead>
+                      <TableHead numeric>难度系数 P</TableHead>
+                      <TableHead numeric>区分度 D</TableHead>
+                      <TableHead numeric>信度</TableHead>
+                      <TableHead numeric>变异系数</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(metrics as GroupMetrics).subjects.map((s) => (
+                      <TableRow key={s.examId}>
+                        <TableCell>{s.subject}</TableCell>
+                        <TableCell numeric>{s.fullScore > 0 ? formatScore(s.fullScore) : "—"}</TableCell>
+                        <TableCell numeric>{formatScore(s.avgScore)}</TableCell>
+                        <TableCell numeric>
+                          {s.fullScore > 0 ? <DifficultyBadge value={s.difficulty ?? 0} bands={bands?.difficulty} /> : "—"}
+                        </TableCell>
+                        <TableCell numeric>
+                          <DiscriminationBadge value={s.discrimination ?? 0} bands={bands?.discrimination} sampleSize={s.gradedCount} />
+                        </TableCell>
+                        <TableCell numeric>{s.reliability == null ? "—" : s.reliability.toFixed(3)}</TableCell>
+                        <TableCell numeric>{s.cv == null ? "—" : `${(s.cv * 100).toFixed(1)}%`}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </TableWrap>
+            )}
+          </>
         )}
       </section>
 
-      {/* 分布卡片列表 */}
-      {distributions.map((d) => (
-        <DistributionCard key={`${d.scope}-${d.scopeId}`} d={d} showTotalNote={!isGroup} bands={bands} hasFullScore={d.fullScore > 0 && (!isGroup || d.scope === "subject" || !!hasFullScore)} />
-      ))}
-      {distributions.length === 0 && <EmptyState size="sm" title="暂无分布数据" description="完成阅卷后即可查看总体分布。" />}
+      {/* 分布卡片列表（分布独立加载） */}
+      {distLoading ? (
+        <div className="p-4 text-center text-sm text-muted-foreground">正在加载分布…</div>
+      ) : distError ? (
+        <ErrorState description={distError} onRetry={load} />
+      ) : (
+        <>
+          {distPartialWarn && <p className="text-xs text-warning-foreground">{distPartialWarn}</p>}
+          {distributions.map((d) => (
+            <DistributionCard key={`${d.scope}-${d.scopeId}`} d={d} showTotalNote={!isGroup} bands={bands} hasFullScore={d.fullScore > 0 && (!isGroup || d.scope === "subject" || !!hasFullScore)} />
+          ))}
+          {distributions.length === 0 && <EmptyState size="sm" title="暂无分布数据" description="完成阅卷后即可查看总体分布。" />}
+        </>
+      )}
     </div>
   );
 }
