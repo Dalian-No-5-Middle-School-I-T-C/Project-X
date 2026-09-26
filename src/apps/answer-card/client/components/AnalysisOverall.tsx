@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchJson } from "../auth/api";
 import type {
   DistributionResult, ExamMetrics, GroupMetrics
@@ -59,10 +59,16 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
   const [metrics, setMetrics] = useState<ExamMetrics | GroupMetrics | null>(null);
   const [metricsLoading, setMetricsLoading] = useState(true);
   const [metricsError, setMetricsError] = useState("");
+  const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(() => {
     const base = kind === "exam" ? `/api/analysis/exams/${examId}` : `/api/exam-groups/${groupId}`;
     const trackSuffix = kind === "group" ? `&track=${track}` : "";
+    // 快速切换考试/年级时取消上一条请求链，避免旧响应覆盖新状态
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const aborted = () => controller.signal.aborted;
 
     // ① 分布：各 mode 并发但互不牵连，用 allSettled 容忍单个失败
     setDistLoading(true); setDistError(""); setDistPartialWarn("");
@@ -70,8 +76,9 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
       ? ["subject", "class"]
       : ["total", "subject", "class"];
     void Promise.allSettled(
-      distModes.map((mode) => fetchJson<DistributionResult[]>(`${base}/distribution?mode=${mode}${trackSuffix}`))
+      distModes.map((mode) => fetchJson<DistributionResult[]>(`${base}/distribution?mode=${mode}${trackSuffix}`, { signal: controller.signal }))
     ).then((results) => {
+      if (aborted()) return;
       const merged: DistributionResult[] = [];
       const failures: string[] = [];
       results.forEach((r) => {
@@ -80,8 +87,9 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
         // fulfilled 但非数组：视为空，不计失败
       });
       setDistributions(merged);
-      if (merged.length === 0) {
-        setDistError(failures[0] ?? "加载失败");
+      // 全部请求成功但结果为空（如大考组无成员考试）是合法空态，交给 EmptyState 渲染
+      if (failures.length > 0 && merged.length === 0) {
+        setDistError(failures[0]);
       } else if (failures.length > 0) {
         setDistPartialWarn(`部分分布加载失败：${failures.join("；")}`);
       }
@@ -90,13 +98,16 @@ export function AnalysisOverall({ kind, examId, groupId, track = "all", bands }:
 
     // ② 指标：独立于分布
     setMetricsLoading(true); setMetricsError("");
-    void fetchJson<ExamMetrics | GroupMetrics>(`${base}/metrics${kind === "group" ? `?track=${track}` : ""}`)
-      .then((m) => setMetrics(m as ExamMetrics | GroupMetrics))
-      .catch((e) => setMetricsError(e instanceof Error ? e.message : "加载失败"))
-      .finally(() => setMetricsLoading(false));
+    void fetchJson<ExamMetrics | GroupMetrics>(`${base}/metrics${kind === "group" ? `?track=${track}` : ""}`, { signal: controller.signal })
+      .then((m) => { if (!aborted()) setMetrics(m as ExamMetrics | GroupMetrics); })
+      .catch((e) => { if (!aborted()) setMetricsError(e instanceof Error ? e.message : "加载失败"); })
+      .finally(() => { if (!aborted()) setMetricsLoading(false); });
   }, [kind, examId, groupId, track]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    return () => abortRef.current?.abort();
+  }, [load]);
 
   const isGroup = kind === "group";
   const hasFullScore = metrics && (isGroup

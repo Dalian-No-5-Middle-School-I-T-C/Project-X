@@ -1,5 +1,13 @@
 # Project-X CHANGELOG
 
+## 2026-09-26 — PR #303 审查意见修复（分支 `fix/issues-triage`）
+
+- **[P1] 偏科预警在唯一 UI 入口恒不触发**：`SubjectDeviationPanel` 的考试集合取自 `/api/analysis/trends?subject=<当前科目>`（后端 `WHERE e.subject = ?`），提交给偏科分析的 examIds 因此永远只有一个学科，`bySubject.size >= 2` 永不成立，所有人的相对落差恒为 0。新增 `GET /api/analysis/subject-deviation/exam-options`（`AnalysisRepository.getLatestExamPerSubject`，默认每科最近一场、`perSubject` 最多 5）作为跨科数据源，权限与 `/trends` 同口径（可见考试范围 + `can_view_charts`）；面板默认勾选每科一场、学科标签前置，勾选覆盖不足 2 科时禁用分析并给出补充提示。
+- **[P2] 合法空分布被误报为加载失败**：`AnalysisOverall` 分布链路改为「仅在有失败且无数据」时进入错误态，大考组无成员考试等全成功但为空的场景回到 `EmptyState`（原先该分支为死代码）。
+- **[P3] 三处**：分析页两条请求链接入 `AbortController`（重试/切换考试时取消旧请求，丢弃迟到响应）；`TeacherManagement` 记录班级列表所属年级，年级切换空窗期不再可勾选并提交旧年级班级；校验脚本中 `stdDev` 口径注释由「样本标准差」更正为总体口径（÷ n）。
+
+验证：`npm run typecheck` 通过；`scripts/verify-analysis-batches-2-4.ts` 67 项全过（新增 7 项跨科管道回归：exam-options 跨科取数、单科输入恒不触发、可见范围约束）。
+
 ## 2026-09-26 — Issues 分诊与修复批次（分支 `fix/issues-triage`）
 
 > 逐个核对 GitHub issues：确认修复 5 条、判定 4 条已被现有代码解决/虚报（待关闭）、其余需硬件或运行时复现。本条只记录已合入代码的改动。

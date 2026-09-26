@@ -346,6 +346,39 @@ export class AnalysisRepository {
     return gradeRows.map(r => ({ ...r, classAvg: m.get(r.examId)?.classAvg ?? null, classCount: m.get(r.examId)?.classCount ?? 0 }));
   }
 
+  /**
+   * Issue #264 / PR #303 审查 P1：偏科分析需要「跨科」考试集合。
+   * 取每个学科最近的一场（可按 perSubject 取多场）供面板默认勾选；
+   * 单科考试集合会让相对个人基线的算法永远无法成立（bySubject.size 恒为 1）。
+   */
+  async getLatestExamPerSubject(options: { perSubject?: number; visibleExamIds?: number[] | null } = {}): Promise<ScoreTrendPoint[]> {
+    const perSubject = Math.max(1, options.perSubject ?? 1);
+    const visibleExamIds = options.visibleExamIds;
+    if (visibleExamIds != null && visibleExamIds.length === 0) return [];
+    const scopeSql = visibleExamIds == null ? "" : ` AND e.id IN (${visibleExamIds.map(() => "?").join(",")})`;
+    const scopeParams = visibleExamIds ?? [];
+    // 与 getScoreTrend 同口径：只取已有成绩的未删除考试，时间升序后各学科截取尾部
+    const rows = await this.db.all(
+      `SELECT e.id as examId, e.name as examName, e.subject as subject,
+              COALESCE(e.start_time, e.end_time, e.created_at) as examTime,
+              ROUND(AVG(ss.total_score), 1) as gradeAvg, COUNT(*) as gradeCount
+       FROM exams e
+       JOIN student_scores ss ON ss.exam_id = e.id
+       WHERE e.subject IS NOT NULL AND e.subject <> '' AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql}
+       GROUP BY e.id
+       ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC, e.id ASC`,
+      ...scopeParams
+    ) as Array<{ examId: number; examName: string; subject: string; examTime: string; gradeAvg: number; gradeCount: number }>;
+    const bySubject = new Map<string, ScoreTrendPoint[]>();
+    for (const r of rows) {
+      const list = bySubject.get(r.subject) ?? [];
+      list.push({ examId: r.examId, examName: r.examName, subject: r.subject, examTime: r.examTime, gradeAvg: r.gradeAvg, gradeCount: r.gradeCount });
+      if (list.length > perSubject) list.shift();
+      bySubject.set(r.subject, list);
+    }
+    return Array.from(bySubject.values()).flat().sort((a, b) => a.subject.localeCompare(b.subject, "zh-CN") || a.examTime.localeCompare(b.examTime));
+  }
+
   async getStudentRanking(examId: number, classId?: number): Promise<StudentRankingItem[]> {
     const c = classFilter(classId);
     const thresholds = await getAnalysisThresholds();

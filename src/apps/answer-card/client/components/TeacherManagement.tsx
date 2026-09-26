@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, Link, Plus, RefreshCw, Search, Unlink, Upload, X } from "lucide-react";
 import { fetchJson, authFetch } from "../auth/api";
 import { TEACHER_ROLE_LABELS } from "../auth/types";
@@ -48,6 +48,9 @@ export function TeacherManagement() {
   const [grades, setGrades] = useState<GradeRecord[]>([]);
   const [allClasses, setAllClasses] = useState<ClassRecord[]>([]);
   const [selectedGradeId, setSelectedGradeId] = useState<number | null>(null);
+  // PR #303 审查 P3：记录 allClasses 实际属于哪个年级，切换年级的空窗期不放行旧年级班级
+  const [classesGradeId, setClassesGradeId] = useState<number | null>(null);
+  const requestedGradeRef = useRef<number | null>(null);
   // Issue #291：班级多选 + 全选 + 排序
   const [selectedClassIds, setSelectedClassIds] = useState<number[]>([]);
   const [classSort, setClassSort] = useState<"default" | "nameAsc" | "nameDesc">("default");
@@ -86,11 +89,19 @@ export function TeacherManagement() {
   }, [selectedGradeId]);
 
   const loadClasses = useCallback(async (gradeId: number | null) => {
+    requestedGradeRef.current = gradeId;
+    setClassesGradeId(null); // 年级已切换：新列表到达前视为「过期」
     if (!gradeId) { setAllClasses([]); return; }
     try {
       const data = await fetchJson<ClassRecord[]>(`/api/classes?gradeId=${gradeId}`);
+      if (requestedGradeRef.current !== gradeId) return; // 已再次切换，丢弃旧年级响应
       setAllClasses(data);
-    } catch {}
+      setClassesGradeId(gradeId);
+    } catch {
+      if (requestedGradeRef.current !== gradeId) return;
+      setAllClasses([]);
+      setClassesGradeId(gradeId);
+    }
   }, []);
 
   useEffect(() => { void loadTeachers(); }, [loadTeachers]);
@@ -237,8 +248,10 @@ export function TeacherManagement() {
 
   // ── Issue #291：班级多选辅助 ──────────────────────────
   const linkedClassIds = new Set((selected?.classes ?? []).map((c) => c.class_id));
+  // 年级切换中（列表尚未对应当前年级）：视为无可选班级，避免把旧年级 id 提交给新科目
+  const classesStale = classesGradeId !== selectedGradeId;
   const selectableClasses = (() => {
-    const list = [...allClasses];
+    const list = classesStale ? [] : [...allClasses];
     if (classSort === "nameAsc") list.sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
     else if (classSort === "nameDesc") list.sort((a, b) => b.name.localeCompare(a.name, "zh-CN", { numeric: true }));
     else list.sort((a, b) => a.sort_order - b.sort_order || a.id - b.id); // 默认：后台手动排序
@@ -441,8 +454,8 @@ export function TeacherManagement() {
                     )}
                   </div>
 
-                  {allClasses.length === 0 ? (
-                    <p className="px-2 py-1 text-sm text-muted-foreground">{selectedGradeId == null ? "请先选择年级" : "该年级暂无班级"}</p>
+                  {selectableClasses.length === 0 ? (
+                    <p className="px-2 py-1 text-sm text-muted-foreground">{selectedGradeId == null ? "请先选择年级" : classesStale ? "正在加载该年级班级…" : "该年级暂无班级"}</p>
                   ) : (
                     <div className="flex max-h-[220px] flex-col overflow-auto rounded-md border border-border-subtle">
                       <label className={cn(

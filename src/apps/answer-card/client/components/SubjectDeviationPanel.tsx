@@ -18,7 +18,7 @@ import {
 
 /**
  * 建议 7：偏科预警 —— 跨科 Z 分识别「单科显著低于本人整体水平」的学生。
- * 数据源：POST /api/analysis/subject-deviation（examIds 来自同学科趋势端点自动选取）。
+ * 数据源：GET /api/analysis/subject-deviation/exam-options（每科最近一场）→ POST /api/analysis/subject-deviation。
  */
 export function SubjectDeviationPanel({ examId, subject, classId }: { examId: number; subject: string | null; classId: string; }) {
   const [examOptions, setExamOptions] = useState<ScoreTrendPoint[]>([]);
@@ -27,23 +27,32 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  // 默认选取同学科最近的 8 场考试（跨科比较需要多场考试）
+  // 偏科判定需要多个学科的成绩，故取「每科最近一场」的跨科考试集合。
+  // 不能复用按单科过滤的 /trends：单科集合会让相对个人基线的算法永远无法成立。
   useEffect(() => {
-    if (!subject) return;
-    fetchJson<ScoreTrendPoint[]>(`/api/analysis/trends?subject=${encodeURIComponent(subject)}`)
+    const controller = new AbortController();
+    fetchJson<ScoreTrendPoint[]>("/api/analysis/subject-deviation/exam-options?perSubject=1", { signal: controller.signal })
       .then((rows) => {
         const list = Array.isArray(rows) ? rows : [];
         setExamOptions(list);
-        setSelectedIds(list.slice(-8).map((r) => r.examId));
+        setSelectedIds(list.map((r) => r.examId));
       })
-      .catch(() => setExamOptions([]));
-  }, [subject]);
+      .catch(() => { if (!controller.signal.aborted) setExamOptions([]); });
+    return () => controller.abort();
+  }, []);
 
   const includeCurrent = useMemo(() => {
     if (selectedIds.includes(examId)) return true;
     if (examOptions.some((r) => r.examId === examId)) return true; // 已在列表里
     return false;
   }, [selectedIds, examOptions, examId]);
+
+  // 勾选覆盖的学科数 < 2 时相对落差恒为 0，此时不展示结果而是提示补充科目
+  const selectedSubjects = useMemo(
+    () => new Set(examOptions.filter((r) => selectedIds.includes(r.examId)).map((r) => r.subject)),
+    [examOptions, selectedIds],
+  );
+  const crossSubjectReady = selectedSubjects.size >= 2;
 
   function toggleExam(id: number) {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -85,7 +94,8 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
         )}
       </div>
       <p className="text-xs text-muted-foreground">
-        先算各科年级 Z =（个人分 − 年级均分）/ 年级标准差，再与本人跨科平均 Z 比较，相对落差 &lt; -{data?.threshold ?? 0.8} 触发预警。已自动选取同学科最近 {examOptions.length > 0 ? Math.min(8, examOptions.length) : 0} 场：
+        先算各科年级 Z =（个人分 − 年级均分）/ 年级标准差，再与本人跨科平均 Z 比较，相对落差 &lt; -{data?.threshold ?? 0.8} 触发预警。
+        已按学科各取最近一场考试（共 {new Set(examOptions.map((r) => r.subject)).size} 个学科 / {examOptions.length} 场）：
       </p>
       <div className="flex flex-wrap gap-2">
         {examOptions.map((r) => {
@@ -107,16 +117,22 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
                 checked={active}
                 onChange={() => toggleExam(r.examId)}
               />
-              {r.examName}{isCurrent ? "（本场）" : ""}
+              <span className="text-muted-foreground">{r.subject}</span>
+              · {r.examName}{isCurrent ? "（本场）" : ""}
             </label>
           );
         })}
-        {examOptions.length === 0 && <span className="text-xs text-muted-foreground">暂无同学科历史考试</span>}
+        {examOptions.length === 0 && <span className="text-xs text-muted-foreground">暂无含成绩的历史考试</span>}
       </div>
-      <div>
-        <Button variant="primary" size="sm" icon={<BrainCircuit />} onClick={() => void analyze()} loading={loading} disabled={selectedIds.length === 0}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="primary" size="sm" icon={<BrainCircuit />} onClick={() => void analyze()} loading={loading} disabled={selectedIds.length === 0 || !crossSubjectReady}>
           分析偏科
         </Button>
+        {crossSubjectReady ? null : (
+          <span className="text-xs text-muted-foreground">
+            偏科需要至少 2 个学科的成绩，当前仅 {selectedSubjects.size} 个——请勾选其他学科的考试，或先在「+ 加入本场考试」中并入本场。
+          </span>
+        )}
       </div>
 
       {error && <p className="text-sm text-destructive-fg">{error}</p>}

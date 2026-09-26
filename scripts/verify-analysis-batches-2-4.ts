@@ -155,7 +155,7 @@ ok(Math.abs(itemA.lowestZ - subj2A.relativeZ) <= 0.01 && itemA.lowestZ < 0, "甲
 const itemB2 = dev.items.find((i) => i.studentId === uB)!;
 ok(itemB2.lowestZ === 0 && itemB2.flagged === false && itemB2.lowestSubject === "数学", "乙单科：相对落差恒 0，不判偏科", itemB2);
 const itemC = dev.items.find((i) => i.studentId === uC)!;
-// 丙 数学 z≈-0.41、语文 z≈-1.36（样本标准差口径），个人基线 ≈ -0.88 → 语文相对 ≈ -0.47；
+// 丙 数学 z≈-0.41、语文 z≈-1.36（stdDev 为总体口径 ÷n，见 src/shared/stats.ts），个人基线 ≈ -0.88 → 语文相对 ≈ -0.47；
 // 裸年级 Z 达 -1.36 却因语文卷整体偏难，相对个人只偏 -0.47 —— 阈值 0.4 应预警、默认 0.8 不应预警
 ok(Math.abs(itemC.lowestZ + 0.47) < 0.02 && itemC.lowestSubject === "语文", "丙语文相对落差 ≈ -0.47（裸 Z -1.36 是卷难，不是偏科）", itemC);
 ok(itemC.flagged === false, "丙默认阈值 0.8 不预警", itemC.flagged);
@@ -164,6 +164,22 @@ const itemCT = devTight.items.find((i) => i.studentId === uC)!;
 ok(itemCT.flagged === true, "丙在阈值 0.4 下触发预警（相对个人基线判定）", itemCT);
 const devClass = await repo.getSubjectDeviation([e1, e2], { classId: class1 });
 ok(devClass.items.every((i) => i.className === "1班"), "班级过滤只输出 1 班学生", devClass.items.map((i) => i.className));
+
+// PR #303 审查 P1 回归：面板数据源必须是「跨科」考试集合。
+// 旧版复用 /trends?subject=<当前科目>，提交给 getSubjectDeviation 的 examIds 永远只有一个学科，
+// bySubject.size 恒为 1 → 相对落差恒 0 → 预警在唯一 UI 入口永不触发。
+const uiOpts = await repo.getLatestExamPerSubject();
+ok(uiOpts.length === 2 && new Set(uiOpts.map((o) => o.subject)).size === 2, "exam-options 每科最近一场（数学 e3 + 语文 e2）", uiOpts.map((o) => `${o.subject}/${o.examName}`));
+ok(new Set(uiOpts.map((o) => o.examId)).has(e3) && new Set(uiOpts.map((o) => o.examId)).has(e2), "exam-options 取到各学科最新一场", uiOpts.map((o) => o.examId));
+const uiOptsMulti = await repo.getLatestExamPerSubject({ perSubject: 5 });
+ok(uiOptsMulti.length === 3, "perSubject=5 时同学科可给多场", uiOptsMulti.map((o) => o.examName));
+const devViaUi = await repo.getSubjectDeviation(uiOptsMulti.map((o) => o.examId));
+ok(devViaUi.items.some((i) => new Set(i.subjects.map((s) => s.subject)).size >= 2), "UI 管道输入可产出多科相对落差", devViaUi.items.map((i) => i.subjects.map((s) => s.subject)));
+const devSingleSubject = await repo.getSubjectDeviation(uiOptsMulti.filter((o) => o.subject === "数学").map((o) => o.examId));
+ok(devSingleSubject.items.every((i) => i.lowestZ === 0 && i.flagged === false), "单科输入恒不触发（P1 成因，故面板不再用 /trends）", devSingleSubject.items.length);
+const devScoped = await repo.getLatestExamPerSubject({ visibleExamIds: [e2] });
+ok(devScoped.length === 1 && devScoped[0].examId === e2, "exam-options 受可见考试范围约束", devScoped.map((o) => o.examId));
+ok((await repo.getLatestExamPerSubject({ visibleExamIds: [] })).length === 0, "无可见考试时 exam-options 返回空");
 
 // ============================================================
 console.log("\n== 建议 10：班级知识点掌握 getClassKnowledgeStats ==");
