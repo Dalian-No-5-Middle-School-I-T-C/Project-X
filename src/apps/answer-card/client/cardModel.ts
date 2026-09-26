@@ -274,5 +274,5 @@ const FACTORY_BLOCK_TITLES = new Set(["客观题", "解答题", "填空题", "�
  */
 export function isAutoBlockTitle(title: string): boolean {
   const trimmed = title.trim();
-  return !trimmed || FACTORY_BLOCK_TITLES.has(trimmed) || /^[一二三四五六七八九十]+、.*（共\d+题，共\d+分）$/.test(trimmed);
+  return !trimmed || FACTORY_BLOCK_TITLES.has(trimmed) || /^[一二三四五六七八九十]+、.*（共\d+题，共\d+(?:\.\d+)?分）$/.test(trimmed);
 }

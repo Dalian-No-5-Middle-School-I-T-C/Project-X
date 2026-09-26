@@ -108,6 +108,7 @@ function verifyBlockTitleEditability(): void {
   assert.equal(isAutoBlockTitle(""), true, "空标题由自动命名接管");
   assert.equal(isAutoBlockTitle("客观题"), true, "新建默认名由自动命名接管");
   assert.equal(isAutoBlockTitle("三、解答题（共1题，共12分）"), true, "上一轮自动标题可继续跟随题量/分值刷新");
+  assert.equal(isAutoBlockTitle("一、单选（共3题，共7.5分）"), true, "自动生成的小数总分标题必须继续跟随刷新");
   assert.equal(isAutoBlockTitle("第一部分 现代文阅读"), false, "人工改过的标题必须保留，不被自动命名覆盖");
   assert.equal(isAutoBlockTitle("三、解答题（共1题，共12分）补充"), false, "人工追加文字的标题必须保留");
 }
@@ -217,6 +218,27 @@ function verifyAnnotationAboveAnswerLines(): void {
   assert.equal(lines.map((line) => line.text).join(""), "续写要求：至少 80 词", "注记纯文本不应包含标记符");
 }
 
+function verifyFixedAnswerLinesKeepCountWithAnnotation(): void {
+  // 注记把横线起点下移后，固定行数的末尾行不得被边界检查丢弃
+  const spacing = 8;
+  const fixedCount = 5;
+  const annotation = "注意：本题为选考题，请从所给两题中任选一题作答，如果多做，则按所做的第一题计分。作答前请先用2B铅笔在答题卡上把所选题目对应的题号涂黑，超出答题区域书写的答案无效";
+  for (const layoutVersion of [1, 2] as const) {
+    const card = baseCard();
+    card.paper = { size: "A4", orientation: "portrait" };
+    card.layoutVersion = layoutVersion;
+    const block = answerBlock(annotation);
+    const question = block.questions[0];
+    question.lineGrid = { enabled: true, lineSpacingMm: spacing, fixedLineCount: fixedCount };
+    question.minHeightMm = 14 + fixedCount * spacing; // 界面「按行数设高度」的公式
+    card.bodyBlocks = [block];
+    const laidOut = buildLayout(card).pages[0].blocks.find((item) => item.type === "subjective")?.questions[0];
+    assert.ok(laidOut, `v${layoutVersion} 解答题必须排版成功`);
+    assert.ok((laidOut.annotationLines ?? []).length >= 2, `v${layoutVersion} 注记应占两行以上以复现问题`);
+    assert.equal(laidOut.lineYs.length, fixedCount, `v${layoutVersion} 加多行注记后固定作答横线仍须为 ${fixedCount} 条`);
+  }
+}
+
 function main(): void {
   verifyBlockTitleEditability();
   verifyRichTextParsing();
@@ -224,7 +246,8 @@ function main(): void {
   verifyObjectiveThreePerRowOnA3();
   verifyA4KeepsFourPerRow();
   verifyAnnotationAboveAnswerLines();
-  console.log("verify:feedback-260923 通过（题块标题可改名 / 富文本解析 / 作文格单栏换行 / 客观题一行 3 题 / 解答题注记）");
+  verifyFixedAnswerLinesKeepCountWithAnnotation();
+  console.log("verify:feedback-260923 通过（题块标题可改名 / 富文本解析 / 作文格单栏换行 / 客观题一行 3 题 / 解答题注记 / 固定行数不随注记减少）");
 }
 
 main();

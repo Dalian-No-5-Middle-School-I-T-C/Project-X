@@ -955,7 +955,31 @@ function subjectiveQuestionHeight(question: SubjectiveQuestion): number {
   const scoreHeader = !IS_LAYOUT_V2 && question.style === "manual_score_grid" ? 11 : 0;
   const blanksHeight = question.kind === "blank" ? answerBlankLinesHeight(question) : 0;
   const imageHeight = (question.images ?? []).reduce((sum, image) => sum + image.heightMm + 3, 0);
-  return Math.max(question.minHeightMm, 18 + scoreHeader + blanksHeight + imageHeight + answerAnnotationHeight(question));
+  const annotationHeight = answerAnnotationHeight(question);
+  const fixedLinesHeight = fixedAnswerLinesHeight(question);
+  return Math.max(
+    question.minHeightMm,
+    18 + scoreHeader + blanksHeight + imageHeight + annotationHeight,
+    fixedLinesHeight > 0 ? fixedLinesHeight + annotationHeight : 0
+  );
+}
+
+/**
+ * 固定行数全部排出所需的题目高度（不含注记）。V1 的题块高度包含标题占位，
+ * V2 标题另行叠加；与 addSubjectiveQuestion 里 firstLineY / lineBottom 的排布公式对齐。
+ */
+function fixedAnswerLinesHeight(question: SubjectiveQuestion): number {
+  if (question.kind !== "lined_answer" || !question.lineGrid?.enabled) return 0;
+  const count = Math.min(question.lineGrid.fixedLineCount ?? 0, 30);
+  if (count <= 0) return 0;
+  const spacing = question.lineGrid.lineSpacingMm || 8;
+  const linesHeight = (count - 1) * spacing;
+  if (IS_LAYOUT_V2) {
+    const hasHeader = question.style === "manual_score_grid" && question.scoreGrid?.enabled !== false;
+    return (hasHeader ? 14 : 10) + linesHeight + 4;
+  }
+  const header = question.style === "manual_score_grid" ? V1_SCORE_HEADER_HEIGHT : 0;
+  return titleHeight() + header + 12 + linesHeight + 5;
 }
 
 /** 注记文字（横线上方说明）占用的高度：行数按整幅栏宽估算，与 addSubjectiveQuestion 的排布一致。 */
