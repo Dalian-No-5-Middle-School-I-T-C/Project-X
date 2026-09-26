@@ -289,6 +289,15 @@ async function main() {
   ok(teacherImage.status === 200 && existsjpeg(teacherImage.headers.get("content-type")), "教师可核对答案页图片");
   const studentHitsAnswerKey = await fetch(`${base}/api/exams/${examId}/answer-key`, { headers: { Authorization: `Bearer ${stuToken}` } });
   ok(studentHitsAnswerKey.status === 403, "学生访问教师答案配置接口 → 403（权限不放开）");
+  const ghostForm = new FormData();
+  ghostForm.append("files", new Blob([await jpegBuffer()], { type: "image/jpeg" }), "不存在考试.jpg");
+  const ghost = await fetch(`${base}/api/exams/999999/answer-key/pages?ocr=0`, {
+    method: "POST", headers: { Authorization: `Bearer ${adminToken}` }, body: ghostForm,
+  });
+  ok(
+    ghost.status === 404 && readdirSync(path.join(answerKeysDir, "_tmp")).length === 0,
+    "考试不存在时上传 → 404 且不留 _tmp 暂存文件（multer 已落盘的文件同样要清）"
+  );
   const list = await jsonFetch(base, `/api/exams/${examId}/answer-key`, {}, adminToken);
   ok(list.status === 200 && (list.body?.paperPages ?? []).length === 1 && (list.body?.answerPages ?? []).length === 1, "配置面板同时返回原卷页与答案页");
   ok(list.body?.hasOriginalPaper === true && list.body?.showOriginalPaper === 1, "面板回显开关与原卷状态");

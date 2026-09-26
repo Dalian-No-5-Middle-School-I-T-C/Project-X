@@ -233,13 +233,13 @@ export function examAnswerKeyRoutes(): Router {
     });
   }, async (req: Request, res: Response) => {
     const db = getMysqlDb();
+    const staged = ((req.files as Express.Multer.File[]) || []).filter(Boolean);
     try {
       if (invalidExamId(res, req.params.examId)) return;
       const exam = await loadExam(Number(req.params.examId));
       if (!exam) { res.status(404).json({ message: "考试不存在" }); return; }
 
-      const files = ((req.files as Express.Multer.File[]) || []).filter(Boolean);
-      if (files.length === 0) { res.status(400).json({ message: "未选择文件" }); return; }
+      if (staged.length === 0) { res.status(400).json({ message: "未选择文件" }); return; }
 
       await ensureAnswerKeyDir(exam.id);
       const dir = answerKeyDir(exam.id);
@@ -247,15 +247,11 @@ export function examAnswerKeyRoutes(): Router {
       // 逐个校验，不静默跳过（与 /api/cards/:cardId/paper 行为一致）
       const valid: Array<{ file: Express.Multer.File; originalname: string }> = [];
       const failed: Array<{ filename: string; error: string }> = [];
-      for (const file of files) {
+      for (const file of staged) {
         const name = decodeMultipartFilename(file.originalname);
         const errMsg = validatePaperFile(name, file.size);
-        if (errMsg) {
-          failed.push({ filename: name, error: errMsg });
-          try { unlinkSync(file.path); } catch {}
-        } else {
-          valid.push({ file, originalname: name });
-        }
+        if (errMsg) failed.push({ filename: name, error: errMsg });
+        else valid.push({ file, originalname: name });
       }
       if (valid.length === 0) {
         res.status(400).json({ message: "文件校验失败，未上传任何答案页", failed });
@@ -265,67 +261,58 @@ export function examAnswerKeyRoutes(): Router {
       const runOcr = req.query.ocr !== "0" && req.query.ocr !== "false";
       const uploaded: Array<{ pageIndex: number; filename: string }> = [];
 
-      // multer 已经把这些文件写进 _tmp，任何提前 return 都要负责清理，否则每次重试都留一份垃圾
-      const stagedPaths = valid.map((item) => item.file.path);
-
-      try {
-        const rejected = await enqueueExamUpload(exam.id, async (): Promise<boolean> => {
-          // 累计容量校验：只限单批文件数挡不住分多次上传堆出第 11 页，
-          // 而页码查看/重识别/删除接口只认 1..MAX_ANSWER_KEY_PAGES。
-          const existingRows = (await db.all<{ page_index: number }>(
-            "SELECT page_index FROM exam_answer_key_pages WHERE exam_id = ?",
-            exam.id
-          )) as Array<{ page_index: number }>;
-          const usedIndexes = new Set(existingRows.map((row) => Number(row.page_index)));
-          if (usedIndexes.size + valid.length > MAX_ANSWER_KEY_PAGES) {
-            res.status(400).json({
-              message: `累计最多上传 ${MAX_ANSWER_KEY_PAGES} 页答案：当前已有 ${usedIndexes.size} 页，本次 ${valid.length} 页`,
-            });
-            return true;
-          }
-
-          // 取最小空闲页码，保证新页码始终落在 1..MAX（MAX+1 递增会让删过页的考试越界）
-          let nextFree = 1;
-          const takeIndex = (): number => {
-            while (usedIndexes.has(nextFree)) nextFree += 1;
-            usedIndexes.add(nextFree);
-            return nextFree;
-          };
-
-          // 先落盘再写库：压缩/写文件是真异步 I/O，放进事务会跨过 BEGIN/COMMIT 让出事件循环
-          // （SQLite 单连接下并发上传会撞 "cannot start a transaction within a transaction"）。
-          const planned: Array<{ pageIndex: number; diskFilename: string; relPath: string }> = [];
-          for (const { file, originalname } of valid) {
-            const pageIndex = takeIndex();
-            const stored = await storeAnswerKeyPageFile(file.path, originalname, dir, pageIndex);
-            planned.push({ pageIndex, diskFilename: stored.diskFilename, relPath: stored.relPath });
-          }
-
-          try {
-            await db.transaction(async (tx) => {
-              for (const page of planned) {
-                await tx.run(
-                  "INSERT INTO exam_answer_key_pages (exam_id, page_index, filename, stored_path) VALUES (?, ?, ?, ?)",
-                  exam.id, page.pageIndex, page.diskFilename, page.relPath
-                );
-              }
-            });
-          } catch (err) {
-            // 入库失败 → 刚写下的文件没有任何记录引用，直接清掉，不留孤儿
-            for (const page of planned) {
-              try { unlinkSync(path.join(dir, page.diskFilename)); } catch {}
-            }
-            throw err;
-          }
-          uploaded.push(...planned.map((page) => ({ pageIndex: page.pageIndex, filename: page.diskFilename })));
-          return false;
-        });
-        if (rejected) return;
-      } finally {
-        for (const stagedPath of stagedPaths) {
-          try { unlinkSync(stagedPath); } catch {}
+      const rejected = await enqueueExamUpload(exam.id, async (): Promise<boolean> => {
+        // 累计容量校验：只限单批文件数挡不住分多次上传堆出第 11 页，
+        // 而页码查看/重识别/删除接口只认 1..MAX_ANSWER_KEY_PAGES。
+        const existingRows = (await db.all<{ page_index: number }>(
+          "SELECT page_index FROM exam_answer_key_pages WHERE exam_id = ?",
+          exam.id
+        )) as Array<{ page_index: number }>;
+        const usedIndexes = new Set(existingRows.map((row) => Number(row.page_index)));
+        if (usedIndexes.size + valid.length > MAX_ANSWER_KEY_PAGES) {
+          res.status(400).json({
+            message: `累计最多上传 ${MAX_ANSWER_KEY_PAGES} 页答案：当前已有 ${usedIndexes.size} 页，本次 ${valid.length} 页`,
+          });
+          return true;
         }
-      }
+
+        // 取最小空闲页码，保证新页码始终落在 1..MAX（MAX+1 递增会让删过页的考试越界）
+        let nextFree = 1;
+        const takeIndex = (): number => {
+          while (usedIndexes.has(nextFree)) nextFree += 1;
+          usedIndexes.add(nextFree);
+          return nextFree;
+        };
+
+        // 先落盘再写库：压缩/写文件是真异步 I/O，放进事务会跨过 BEGIN/COMMIT 让出事件循环
+        // （SQLite 单连接下并发上传会撞 "cannot start a transaction within a transaction"）。
+        const planned: Array<{ pageIndex: number; diskFilename: string; relPath: string }> = [];
+        for (const { file, originalname } of valid) {
+          const pageIndex = takeIndex();
+          const stored = await storeAnswerKeyPageFile(file.path, originalname, dir, pageIndex);
+          planned.push({ pageIndex, diskFilename: stored.diskFilename, relPath: stored.relPath });
+        }
+
+        try {
+          await db.transaction(async (tx) => {
+            for (const page of planned) {
+              await tx.run(
+                "INSERT INTO exam_answer_key_pages (exam_id, page_index, filename, stored_path) VALUES (?, ?, ?, ?)",
+                exam.id, page.pageIndex, page.diskFilename, page.relPath
+              );
+            }
+          });
+        } catch (err) {
+          // 入库失败 → 刚写下的文件没有任何记录引用，直接清掉，不留孤儿
+          for (const page of planned) {
+            try { unlinkSync(path.join(dir, page.diskFilename)); } catch {}
+          }
+          throw err;
+        }
+        uploaded.push(...planned.map((page) => ({ pageIndex: page.pageIndex, filename: page.diskFilename })));
+        return false;
+      });
+      if (rejected) return;
 
       // OCR 串行：tesseract 每页起一个 WASM worker，并发会瞬间吃满内存
       const ocrResults: Array<{ pageIndex: number; text?: string; drafts?: Array<{ questionNumber: number; answerText: string }>; recognized?: boolean; error?: string }> = [];
@@ -353,6 +340,11 @@ export function examAnswerKeyRoutes(): Router {
     } catch (err: any) {
       console.error("[answer-key] upload failed:", err);
       res.status(500).json({ message: err.message || "答案上传失败" });
+    } finally {
+      // multer 已把文件写进 _tmp：任何返回路径（404 考试不存在 / 400 校验失败 / 500）都要清干净
+      for (const file of staged) {
+        try { unlinkSync(file.path); } catch {}
+      }
     }
   });
 
