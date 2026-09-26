@@ -172,6 +172,8 @@ import {
   numericQuestionValue,
   findNextQuestionNumber,
   isAutoBlockTitle,
+  buildAutoBlockTitle,
+  toChineseBlockIndex,
   defaultBlankQuestion
 } from "./cardModel";
 
@@ -1114,16 +1116,8 @@ function App() {
     scheduleAutoSave();
   }
 
-  /** 根据题块顺序和类型自动生成标题，如 "一. 单选（10题 50分）" */
+  /** 根据题块顺序和类型自动生成标题，如 "一、单选（共10题，共50分）"；格式与识别共用 cardModel */
   function autoNameBlocks(draft: AnswerCard) {
-    const digits = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
-    const tens = ["", "十", "二十", "三十", "四十", "五十", "六十", "七十", "八十", "九十"];
-    function toChinese(n: number): string {
-      if (n < 1 || n > 100) return String(n);
-      if (n < 10) return digits[n];
-      if (n < 20) return `十${n === 10 ? "" : digits[n % 10]}`;
-      return `${tens[Math.floor(n / 10)]}${n % 10 === 0 ? "" : digits[n % 10]}`;
-    }
     const modeName: Record<string, string> = {
       single: "单选", multiple: "多选", indeterminate: "不定项"
     };
@@ -1137,10 +1131,10 @@ function App() {
       if (block.type === "objective") {
         const obj = block as ObjectiveBlock;
         const typeName = modeName[obj.mode] ?? "客观题";
-        const prefix = toChinese(index + 1);
+        const prefix = toChineseBlockIndex(index + 1);
         const count = obj.questionCount ?? 0;
         const total = count * (obj.scorePerQuestion ?? 0);
-        block.title = `${prefix}、${typeName}（共${count}题，共${total}分）`;
+        block.title = buildAutoBlockTitle(prefix, typeName, count, total);
       } else if (block.type === "subjective") {
         const sub = block as SubjectiveBlock;
         let typeName = "解答题";
@@ -1152,10 +1146,10 @@ function App() {
           const isFillBlank = sub.questions.length > 0 && sub.questions[0]?.style === "manual_score_grid" && sub.questions.every((q) => q.kind === "blank");
           typeName = isFillBlank ? "填空题" : "解答题";
         }
-        const prefix = toChinese(index + 1);
+        const prefix = toChineseBlockIndex(index + 1);
         const count = sub.questions.length;
         const total = sub.questions.reduce((sum, q) => sum + (q.score || 0), 0);
-        block.title = `${prefix}、${typeName}（共${count}题，共${total}分）`;
+        block.title = buildAutoBlockTitle(prefix, typeName, count, total);
       }
       index++;
     }

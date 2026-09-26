@@ -17,7 +17,7 @@ import { formatBlankLabel } from "./blankLabels";
 import { createCardQrCode } from "./cardIdentity";
 import { DEFAULT_STUDENT_NOTES } from "./defaultCard";
 import { ESSAY_ROW_GAP_MM } from "./essayGrid";
-import { richTextPlain, sliceRichText, type RichTextRun } from "./richText";
+import { compactRichTextRuns, parseRichText, sliceRichTextRuns, type RichTextRun } from "./richText";
 import { objectiveQuestionDefinitions, type ObjectiveQuestionDefinition } from "./grading";
 
 let PAGE_WIDTH = 210;
@@ -782,16 +782,18 @@ function blankScoreQuestion(questions: SubjectiveQuestion[]): SubjectiveQuestion
 
 /**
  * 按单元格宽度把注记文字按字符折行（中文按全角字符估算宽度）。
- * 折行按去掉 `**`/`*` 标记后的纯文本长度切，并同步切出每行的加粗/斜体片段。
+ * 折行按去掉 `**`/`*` 标记并折叠空白后的纯文本长度切，行文本与加粗/斜体片段
+ * 都从同一个折叠后的 run 序列切片，保证两者严格同窗口（不因 trim/折叠错位）。
  */
 function wrapAnnotationLines(text: string, maxWidthMm: number): Array<{ text: string; runs: RichTextRun[] }> {
-  const plain = richTextPlain(text).trim();
+  const runs = compactRichTextRuns(parseRichText(text));
+  const plain = runs.map((run) => run.text).join("");
   if (!plain) return [];
   const charsPerLine = Math.max(1, Math.floor(maxWidthMm / BLANK_ANNOTATION_CHAR_WIDTH));
   const lines: Array<{ text: string; runs: RichTextRun[] }> = [];
   for (let i = 0; i < plain.length; i += charsPerLine) {
     const end = Math.min(i + charsPerLine, plain.length);
-    lines.push({ text: plain.slice(i, end), runs: sliceRichText(text, i, end) });
+    lines.push({ text: plain.slice(i, end), runs: sliceRichTextRuns(runs, i, end) });
   }
   return lines;
 }

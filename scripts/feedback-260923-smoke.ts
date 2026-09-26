@@ -7,8 +7,8 @@
 import assert from "node:assert/strict";
 import { createDefaultCard } from "../src/shared/defaultCard";
 import { buildLayout } from "../src/shared/layout";
-import { isAutoBlockTitle } from "../src/apps/answer-card/client/cardModel";
-import { parseRichText, richTextPlain, sliceRichText } from "../src/shared/richText";
+import { buildAutoBlockTitle, isAutoBlockTitle, toChineseBlockIndex } from "../src/apps/answer-card/client/cardModel";
+import { compactRichTextRuns, parseRichText, richTextPlain, sliceRichText } from "../src/shared/richText";
 import type { AnswerCard, ObjectiveBlock, Rect, SubjectiveBlock } from "../src/shared/types";
 
 const PANEL_WIDTH = (420 - 17 * 2 - 8 * 2) / 3;
@@ -113,6 +113,24 @@ function verifyBlockTitleEditability(): void {
   assert.equal(isAutoBlockTitle("三、解答题（共1题，共12分）补充"), false, "人工追加文字的标题必须保留");
 }
 
+function verifyAutoTitleSharedFormat(): void {
+  // 生成与识别共用 cardModel 的同一份格式约定：任一侧漂移在这里立即失败
+  const samples: Array<[number, string, number, number]> = [
+    [1, "单选", 10, 50],
+    [11, "解答题", 1, 12],
+    [99, "填空题", 20, 10],
+    [100, "单选", 3, 7.5],
+    [128, "作文", 1, 60]
+  ];
+  for (const [index, typeName, count, total] of samples) {
+    const title = buildAutoBlockTitle(toChineseBlockIndex(index), typeName, count, total);
+    assert.equal(isAutoBlockTitle(title), true, `自动生成的标题必须被识别为自动：${title}`);
+  }
+  assert.equal(toChineseBlockIndex(99), "九十九", "99 仍输出中文序号");
+  assert.equal(toChineseBlockIndex(100), "100", "超过 99 回退阿拉伯数字，不再产出 undefined 前缀");
+  assert.equal(isAutoBlockTitle("100、单选（共3题，共7.5分）"), true, "阿拉伯序号标题也必须跟随刷新");
+}
+
 function verifyRichTextParsing(): void {
   assert.deepEqual(parseRichText("**加粗**"), [{ text: "加粗", bold: true, italic: false }]);
   assert.deepEqual(parseRichText("*斜体*"), [{ text: "斜体", bold: false, italic: true }]);
@@ -123,6 +141,12 @@ function verifyRichTextParsing(): void {
   // 折行时按纯文本下标切片，行首行尾的标记样式必须跟随
   assert.deepEqual(sliceRichText("**续写要求**：至少 *80* 词", 0, 4), [{ text: "续写要求", bold: true, italic: false }]);
   assert.deepEqual(sliceRichText("**续写要求**：至少 *80* 词", 8, 10), [{ text: "80", bold: false, italic: true }]);
+  // 折叠连续空白为单个空格（与旧排版 replace(/\s+/g," ").trim() 口径一致），样式跟随保留
+  assert.deepEqual(compactRichTextRuns(parseRichText("　　**注意**：  a   b　")), [
+    { text: "注意", bold: true, italic: false },
+    { text: "： a b", bold: false, italic: false }
+  ]);
+  assert.deepEqual(compactRichTextRuns(parseRichText("")), []);
 }
 
 function verifyEssayGridStaysInOnePanel(): void {
@@ -239,15 +263,36 @@ function verifyFixedAnswerLinesKeepCountWithAnnotation(): void {
   }
 }
 
+function verifyAnnotationWrapWithLeadingIndent(): void {
+  // 前导全角空格缩进曾使 runs 相对行文本整体右移、末行内容丢失：行文本与 runs 必须取自同一窗口
+  const card = baseCard();
+  card.bodyBlocks = [answerBlock("　　**注意**：本题为选考题，请从所给两题中任选一题作答，如果多做，则按所做的第一题计分。作答前请先用2B铅笔在答题卡上把所选题目对应的题号涂黑，超出答题区域书写的答案无效")];
+  const layout = buildLayout(card);
+  const question = layout.pages[0].blocks.find((block) => block.type === "subjective")?.questions[0];
+  assert.ok(question, "解答题必须排版成功");
+  const lines = question.annotationLines ?? [];
+  assert.ok(lines.length >= 2, "注记应折成多行以复现错位场景");
+  assert.ok(lines[0].text.startsWith("注意"), "行首缩进空白应被去除且正文从行首开始");
+  lines.forEach((line, index) => {
+    const joined = (line.runs ?? []).map((run) => run.text).join("");
+    assert.equal(joined, line.text, `第 ${index + 1} 行 runs 与行文本错位`);
+  });
+  assert.equal(lines[0].runs?.[0]?.bold, true, "首行应以加粗片段开头");
+  const allText = lines.map((line) => line.text).join("");
+  assert.ok(allText.endsWith("答案无效"), `末行内容不得丢失，实际结尾「${allText.slice(-6)}」`);
+}
+
 function main(): void {
   verifyBlockTitleEditability();
+  verifyAutoTitleSharedFormat();
   verifyRichTextParsing();
   verifyEssayGridStaysInOnePanel();
   verifyObjectiveThreePerRowOnA3();
   verifyA4KeepsFourPerRow();
   verifyAnnotationAboveAnswerLines();
   verifyFixedAnswerLinesKeepCountWithAnnotation();
-  console.log("verify:feedback-260923 通过（题块标题可改名 / 富文本解析 / 作文格单栏换行 / 客观题一行 3 题 / 解答题注记 / 固定行数不随注记减少）");
+  verifyAnnotationWrapWithLeadingIndent();
+  console.log("verify:feedback-260923 通过（题块标题可改名与自动命名同源 / 富文本解析与折叠 / 作文格单栏换行 / 客观题一行 3 题 / 解答题注记 / 固定行数不随注记减少 / 缩进注记不串行）");
 }
 
 main();

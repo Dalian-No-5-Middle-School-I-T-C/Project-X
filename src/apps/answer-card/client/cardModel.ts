@@ -268,11 +268,37 @@ export const PREVIEW_MAX_PERCENT = 400;
 /** 新建题块的默认名（未人工命名时由自动命名接管）。 */
 const FACTORY_BLOCK_TITLES = new Set(["客观题", "解答题", "填空题", "作文", "未命名块"]);
 
+const CN_DIGITS = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+const CN_TENS = ["", "十", "二十", "三十", "四十", "五十", "六十", "七十", "八十", "九十"];
+
+/**
+ * 题块序号转中文（1–99）；超过 99 回退阿拉伯数字。
+ * 回退前缀（阿拉伯数字）必须落在 AUTO_TITLE_PATTERN 的前缀字符集内，
+ * 否则下一轮自动命名会把「100、…」误判为人工命名而停止刷新。
+ */
+export function toChineseBlockIndex(n: number): string {
+  if (!Number.isInteger(n) || n < 1 || n > 99) return String(n);
+  if (n < 10) return CN_DIGITS[n];
+  if (n < 20) return `十${n === 10 ? "" : CN_DIGITS[n % 10]}`;
+  return `${CN_TENS[Math.floor(n / 10)]}${n % 10 === 0 ? "" : CN_DIGITS[n % 10]}`;
+}
+
+/**
+ * 自动题块标题的统一格式：`N、类型（共x题，共y分）`。
+ * 生成（buildAutoBlockTitle / toChineseBlockIndex）与识别（isAutoBlockTitle）
+ * 都以本文件为唯一事实源，改动格式时两侧必须同步。
+ */
+export function buildAutoBlockTitle(prefix: string, typeName: string, count: number, total: number): string {
+  return `${prefix}、${typeName}（共${count}题，共${total}分）`;
+}
+
+const AUTO_TITLE_PATTERN = /^[一二三四五六七八九十\d]+、.*（共\d+题，共\d+(?:\.\d+)?分）$/;
+
 /**
  * 题块标题是否仍处于「自动命名」状态：默认名、空标题，或上一轮自动生成的
  * `N、类型（共x题，共y分）`。其余标题视为人工命名，自动命名不再覆盖。
  */
 export function isAutoBlockTitle(title: string): boolean {
   const trimmed = title.trim();
-  return !trimmed || FACTORY_BLOCK_TITLES.has(trimmed) || /^[一二三四五六七八九十]+、.*（共\d+题，共\d+(?:\.\d+)?分）$/.test(trimmed);
+  return !trimmed || FACTORY_BLOCK_TITLES.has(trimmed) || AUTO_TITLE_PATTERN.test(trimmed);
 }
