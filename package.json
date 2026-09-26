@@ -38,6 +38,7 @@
     "verify:p1-security": "tsx scripts/verify-p1-fixes.ts",
     "verify:demo-safety": "tsx scripts/verify-demo-safety.ts",
     "verify:a3": "tsx scripts/verify-a3.ts",
+    "verify:feedback-260923": "tsx scripts/feedback-260923-smoke.ts",
     "verify:round5-db-upsert": "tsx scripts/verify-round5-db-upsert.ts",
     "verify:round5-groupby": "tsx scripts/verify-round5-groupby.ts",
     "verify:round5-demo-cleanup": "tsx scripts/verify-round5-demo-cleanup.ts",

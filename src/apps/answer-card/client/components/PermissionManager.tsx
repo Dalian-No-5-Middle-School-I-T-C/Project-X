@@ -86,11 +86,13 @@ export function PermissionManager({ onBack }: Props) {
     try {
       const [perms, teacherList, gradeList] = await Promise.all([
         fetchJson<Permission[]>("/api/admin/permissions"),
-        fetchJson<{ users: Teacher[] }>("/api/teachers").then((r) => r.users || []),
+        // /api/teachers 返回 { teachers, total, page, pageSize }；此前误读 users 导致教师下拉恒为空
+        fetchJson<{ teachers: Teacher[] }>("/api/teachers?pageSize=500").then((r) => r.teachers || []),
         fetchJson<Grade[]>("/api/classes/grades"),
       ]);
       setPermissions(perms);
-      setTeachers(teacherList.filter((t) => t.role_name === "teacher"));
+      // 教师权限应覆盖全部教师账号（含班主任/年级主任等角色）
+      setTeachers(teacherList);
       setGrades(gradeList);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
