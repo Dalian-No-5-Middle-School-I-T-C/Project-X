@@ -30,7 +30,7 @@ import { fetchLlmClient } from "../llm-client";
 import { CreateExamGroupSchema, validateBody } from "../validation";
 import type {
   AiJobCreateResponse, AiJobPollResponse, BorderlineLineKind, BorderlineResponse, ClassKnowledgeResponse,
-  ComparableResponse, CrossExamTotalRequest, KnowledgeSuggestResponse, StudentTrendPoint,
+  ComparableResponse, CrossExamTotalRequest, KnowledgeSuggestResponse, ScoreTrendPoint, StudentTrendPoint,
   SubjectDeviationResponse, SubjectQualityResponse, WrongQuestionRow
 } from "../../../../shared/types";
 
@@ -477,6 +477,25 @@ router.get("/students/:studentId/trend", authMiddleware, async (req, res, next) 
       return;
     }
     res.json(data satisfies StudentTrendPoint[]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 建议 7 / Issue #264：偏科可选考试（跨科，每科最近一场）──
+// 偏科判定需要多个学科的成绩，故不能复用按单科过滤的 /trends（见 PR #303 审查 P1）。
+router.get("/subject-deviation/exam-options", async (req, res, next) => {
+  try {
+    const perSubject = req.query.perSubject ? Number(req.query.perSubject) : 1;
+    const analysisRepo = new AnalysisRepository();
+    const visibleExamIds = await getVisibleExamIds(req.user);
+    const options = await analysisRepo.getLatestExamPerSubject({
+      perSubject: Number.isInteger(perSubject) && perSubject > 0 ? Math.min(perSubject, 5) : 1,
+      visibleExamIds,
+    });
+    // #246：与 /trends 同口径，跨考试图表数据按 can_view_charts 收敛
+    const chartAllowed = await filterExamIdsByViewPermission(req.user, options.map((t) => t.examId), "can_view_charts");
+    res.json(options.filter((t) => chartAllowed.has(t.examId)) satisfies ScoreTrendPoint[]);
   } catch (error) {
     next(error);
   }
