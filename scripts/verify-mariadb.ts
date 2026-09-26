@@ -34,11 +34,90 @@ async function main(): Promise<void> {
       "SELECT version, name FROM schema_migrations ORDER BY version",
     );
     assert.ok(migrations.some((row) => row.version === 49), "Scanner receipts migration must be applied");
+    assert.ok(migrations.some((row) => row.version === 52), "WeChat grade-release subscription migration must be applied");
+    assert.ok(migrations.some((row) => row.version === 53), "Exam original-paper + answer-key migration must be applied");
     assert.ok(await db.get("SHOW COLUMNS FROM scanner_submissions LIKE 'exam_id'"));
     assert.ok(await db.get("SHOW COLUMNS FROM answer_block_crops LIKE 'claimed_by'"));
     await initMariadbSchema();
     assert.deepEqual(await db.all("SELECT version, name FROM schema_migrations ORDER BY version"), migrations);
     console.log("PASS: fresh schema, migrations, repeated initialization");
+
+    // v52 微信订阅：一个 openid 允许绑定多个学生，去重位是 exam_id 主键
+    const wsbTables = await db.all<{ table_name: string }>(
+      "SELECT TABLE_NAME AS table_name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('wechat_subscription_bindings','wechat_grade_release_notifications')",
+    );
+    assert.equal(wsbTables.length, 2, "wechat 订阅两张表必须存在");
+    const wsbIndexes = await db.all<{ index_name: string; non_unique: number }>(
+      "SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wechat_subscription_bindings'",
+    );
+    assert.ok(wsbIndexes.some((i) => i.index_name === "uk_wsb_student_template" && !Number(i.non_unique)),
+      "UNIQUE(student_id, template_id) 必须保留");
+    assert.ok(wsbIndexes.some((i) => i.index_name === "idx_wsb_openid" && Number(i.non_unique) === 1),
+      "idx_wsb_openid 必须是普通索引");
+    assert.ok(!wsbIndexes.some((i) => i.index_name.includes("openid") && !Number(i.non_unique)),
+      "openid 不得再有唯一索引（一 openid 可绑多学生）");
+    const wxA = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id, student_number) VALUES ('wechat_ci_a', 'test-only', '微信订阅甲', 3, 'WX0000001')",
+    );
+    const wxB = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id, student_number) VALUES ('wechat_ci_b', 'test-only', '微信订阅乙', 3, 'WX0000002')",
+    );
+    for (const id of [wxA.lastInsertRowid, wxB.lastInsertRowid]) {
+      await db.run("INSERT INTO wechat_subscription_bindings (student_id, openid, template_id) VALUES (?, 'openid_shared_ci', 'TPL_CI')", id);
+    }
+    assert.equal((await db.all("SELECT id FROM wechat_subscription_bindings WHERE openid = 'openid_shared_ci'")).length, 2,
+      "同一 openid 绑定两个学生应各存一行");
+    await assert.rejects(
+      db.run("INSERT INTO wechat_subscription_bindings (student_id, openid, template_id) VALUES (?, 'openid_dup_ci', 'TPL_CI')", wxA.lastInsertRowid),
+      /Duplicate entry/,
+    );
+    console.log("PASS: wechat subscription bindings index semantics");
+
+    // v53 原卷/答案：exams.show_original_paper 列 + 考试级答案表的复合主键与 UPSERT
+    assert.ok(await db.get("SHOW COLUMNS FROM exams LIKE 'show_original_paper'"),
+      "exams.show_original_paper 必须存在");
+    const akTables = await db.all<{ table_name: string }>(
+      "SELECT TABLE_NAME AS table_name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('exam_answer_keys','exam_answer_key_pages')",
+    );
+    assert.equal(akTables.length, 2, "exam_answer_keys / exam_answer_key_pages 必须存在");
+    const akColumns = await db.all<{ column_name: string }>(
+      "SELECT COLUMN_NAME AS column_name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exam_answer_keys'",
+    );
+    for (const column of ["exam_id", "question_number", "answer_text", "page_index", "updated_by"]) {
+      assert.ok(akColumns.some((c) => c.column_name === column), `exam_answer_keys.${column} 必须存在`);
+    }
+    const akIndexes = await db.all<{ index_name: string; seq: number; column_name: string }>(
+      "SELECT INDEX_NAME AS index_name, SEQ_IN_INDEX AS seq, COLUMN_NAME AS column_name FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exam_answer_keys' AND INDEX_NAME = 'PRIMARY'",
+    );
+    assert.deepEqual(akIndexes.map((i) => `${i.seq}:${i.column_name}`).sort(), ["1:exam_id", "2:question_number"],
+      "PRIMARY KEY(exam_id, question_number)：答案跟随考试而非答题卡");
+    const akPageIndexes = await db.all<{ index_name: string; non_unique: number }>(
+      "SELECT INDEX_NAME AS index_name, NON_UNIQUE AS non_unique FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'exam_answer_key_pages' AND INDEX_NAME = 'uq_exam_answer_key_pages'",
+    );
+    assert.ok(akPageIndexes.length === 2 && akPageIndexes.every((i) => !Number(i.non_unique)),
+      "UNIQUE(exam_id, page_index) 保证同场考试页码不重复");
+    const akExam = await db.run("INSERT INTO exams (name, score_published, show_original_paper) VALUES ('原卷答案CI', 1, 1)");
+    assert.equal((await db.get<{ c: number }>("SELECT COUNT(*) AS c FROM exams WHERE id = ? AND show_original_paper = 1", akExam.lastInsertRowid))?.c, 1);
+    const akUpsert = buildUpsertSQL(db.dialect, "exam_answer_keys",
+      ["exam_id", "question_number", "answer_text", "page_index", "updated_by"],
+      ["exam_id", "question_number"],
+      ["answer_text", "page_index", "updated_by"]);
+    await db.run(akUpsert, akExam.lastInsertRowid, 1, "BACD 中文 🧪", 1, null);
+    assert.equal((await db.get<{ answer_text: string }>("SELECT answer_text FROM exam_answer_keys WHERE exam_id = ? AND question_number = 1", akExam.lastInsertRowid))?.answer_text, "BACD 中文 🧪",
+      "utf8mb4 答案文字原样存取");
+    await db.run(akUpsert, akExam.lastInsertRowid, 1, "AB", 2, null);
+    assert.equal((await db.all("SELECT question_number FROM exam_answer_keys WHERE exam_id = ?", akExam.lastInsertRowid)).length, 1,
+      "UPSERT 命中复合主键而非追加重复题号");
+    assert.equal((await db.get<{ page_index: number }>("SELECT page_index FROM exam_answer_keys WHERE exam_id = ? AND question_number = 1", akExam.lastInsertRowid))?.page_index, 2);
+    await assert.rejects(
+      db.run("INSERT INTO exam_answer_key_pages (exam_id, page_index, filename, stored_path) VALUES (?, 1, 'answerkey.jpg', 'x')", akExam.lastInsertRowid)
+        .then(() => db.run("INSERT INTO exam_answer_key_pages (exam_id, page_index, filename, stored_path) VALUES (?, 1, 'answerkey.jpg', 'x')", akExam.lastInsertRowid)),
+      /Duplicate entry/,
+    );
+    await db.run("DELETE FROM exam_answer_key_pages WHERE exam_id = ?", akExam.lastInsertRowid);
+    await db.run("DELETE FROM exam_answer_keys WHERE exam_id = ?", akExam.lastInsertRowid);
+    await db.run("DELETE FROM exams WHERE id = ?", akExam.lastInsertRowid);
+    console.log("PASS: exam show_original_paper, exam-scoped answer keys, page uniqueness");
 
     const { searchStudentsForExam } = await import("../src/server/services/examParticipants");
     const student = await db.run(

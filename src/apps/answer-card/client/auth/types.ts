@@ -95,6 +95,8 @@ export interface StudentExamScore {
   percentile: number | null;
   class_size: number;
   graded_at: string;
+  /** v53: 1 = 成绩已公布且教师开启「显示原卷」，可进入原卷/逐题答案页 */
+  paper_visible?: number;
 }
 
 export interface StudentQuestionScore {

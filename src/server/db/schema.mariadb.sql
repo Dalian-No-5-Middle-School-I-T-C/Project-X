@@ -324,6 +324,7 @@ CREATE TABLE IF NOT EXISTS exams (
     review_mode    INT DEFAULT 1,           -- v1.9.0: 1=1P 2=2P 3=3P
     review_enabled TINYINT DEFAULT 0,       -- v1.9.0: 网阅开关
     exam_mode      VARCHAR(20) NOT NULL DEFAULT 'formal',  -- v34: quiz=晨测 formal=大考(默认)
+    show_original_paper TINYINT DEFAULT 0,  -- v53: 0=不向学生展示原卷 1=成绩发布后可查看原卷与答案解析
     created_by    INT,
     created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -901,3 +902,54 @@ CREATE TABLE IF NOT EXISTS scanner_submissions (
     INDEX idx_scanner_submission_student (exam_id, student_number),
     FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
 );
+
+-- v52: 微信小程序成绩发布订阅消息 —— 学生绑定关系 + 首次发布去重记录
+CREATE TABLE IF NOT EXISTS wechat_subscription_bindings (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    student_id  INT NOT NULL,
+    openid      VARCHAR(128) NOT NULL,
+    template_id VARCHAR(128) NOT NULL,
+    accepted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_wsb_student_template (student_id, template_id),
+    INDEX idx_wsb_student (student_id),
+    INDEX idx_wsb_openid (openid),
+    FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS wechat_grade_release_notifications (
+    exam_id       INT PRIMARY KEY,
+    status        VARCHAR(32) NOT NULL DEFAULT 'sending',
+    success_count INT NOT NULL DEFAULT 0,
+    failure_count INT NOT NULL DEFAULT 0,
+    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- v53: 逐题「文字」正确答案（考试级，跟随考试而非答题卡；仅原样展示，不参与判分）
+CREATE TABLE IF NOT EXISTS exam_answer_keys (
+    exam_id         INT NOT NULL,
+    question_number INT NOT NULL,
+    answer_text     TEXT NOT NULL,
+    page_index      INT,                      -- 归属原卷页码，可空
+    updated_by      INT,
+    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (exam_id, question_number),
+    FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+    FOREIGN KEY (updated_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- v53: 教师上传的「本次正确答案」图片页（仅教师/管理员可见，供 OCR 识别与人工核对）
+CREATE TABLE IF NOT EXISTS exam_answer_key_pages (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    exam_id     INT NOT NULL,
+    page_index  INT NOT NULL,
+    filename    VARCHAR(255) NOT NULL,
+    stored_path VARCHAR(500) NOT NULL,
+    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_exam_answer_key_pages (exam_id, page_index),
+    FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

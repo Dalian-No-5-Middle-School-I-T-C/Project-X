@@ -86,6 +86,9 @@ import consoleRoutes from "../../../server/routes/console";
 import scannerUploadRoutes from "../../../server/routes/scanner-upload";
 import scannerSyncRoutes from "../../../server/routes/scanner-sync";
 import ladderRoutes from "../../../server/routes/ladder";
+import wechatSubscriptionRoutes from "../../../server/routes/wechat-subscriptions";
+import { notifyGradeReleaseSubscribers } from "../../../server/services/gradeReleaseNotifications";
+import { logWechatSubscriptionStatus } from "../../../server/services/WechatMiniProgramService";
 import {
   getAnswerBlockCropFile,
   persistAnswerBlockCrops
@@ -131,6 +134,7 @@ import {
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
 import { paperRoutes } from "./routes/paper-routes";
+import { examAnswerKeyRoutes } from "./routes/exam-answer-key-routes";
 import {
   CreateCardSchema,
   CreateExamSchema,
@@ -169,6 +173,17 @@ function clampInt(value: unknown, min: number, max: number, fallback: number = 0
 
 /** 主观题文字注释上限（服务端权威值；客户端输入框使用同一上限）。 */
 const MAX_ANNOTATION_CHARS = 200;
+
+/**
+ * v53: 解析公布表单的「公布后显示原卷」勾选。
+ * 返回 1/0 表示要写入 exams.show_original_paper；返回 null 表示不改写。
+ * 只认严格布尔值 —— 旧客户端不带该字段公布时，绝不能默认把原卷（含答案）公开出去。
+ */
+function parseShowOriginalPaperFlag(body: unknown): number | null {
+  const value = (body ?? {}) as { showOriginalPaper?: unknown };
+  if (typeof value.showOriginalPaper !== "boolean") return null;
+  return value.showOriginalPaper ? 1 : 0;
+}
 
 function normalizeStudentInfo(info: StudentInfoSettings | undefined, paperSize: "A4" | "A3"): StudentInfoSettings {
   const legacyFields = Array.isArray(info?.fields) ? info!.fields : [];
@@ -1004,6 +1019,7 @@ export async function createApp(): Promise<express.Express> {
   }
   app.use("/api/ai/providers", aiProviderRoutes);
   app.use("/api/ladder", ladderRoutes);
+  app.use("/api/wechat/subscriptions", wechatSubscriptionRoutes);
 
   // ── 应用配置（管理员） ──────────────────────────────────
   app.get("/api/app/db-config", authMiddleware, requirePermission(PERMISSIONS.USER_MANAGE), async (req: express.Request, res: express.Response) => {
@@ -1061,6 +1077,8 @@ export async function createApp(): Promise<express.Express> {
   const cropGate = answerBlockCropGate(enforceAuth);
   app.use("/api/cards", cardGate);
   app.use("/api/exams", examGate);
+  // v53: 考试级「本次正确答案」配置（挂在 examGate 之后，继承 EXAM_READ/EXAM_WRITE 再叠加数据范围校验）
+  app.use(examAnswerKeyRoutes());
   app.use("/api/analysis", analysisGate, analysisRoutes);
   app.use("/api/answer-block-crops", cropGate);
   app.use("/api/review", analysisGate, reviewRoutes);
@@ -2248,12 +2266,21 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      const { cardId, name, subject, mode, gradeId, classId, retentionPolicyId } = req.body as Record<string, unknown>;
+      const { cardId, name, subject, mode, gradeId, classId, retentionPolicyId, showOriginalPaper } = req.body as Record<string, unknown>;
       const updates: Record<string, unknown> = { updated_at: databaseTimestamp() };
       if (cardId !== undefined) updates.card_id = String(cardId);
       if (name !== undefined) updates.name = String(name);
       if (subject !== undefined) updates.subject = String(subject);
       if (mode === "quiz" || mode === "formal") updates.exam_mode = mode;
+      // v53: 「显示原卷」开关。原卷含教师题目与（开启后）逐题正确答案，属于答案泄露面，
+      // 因此只接受显式布尔值；撤回公布不会自动关闭它（教师可能只想临时隐藏成绩）。
+      if (showOriginalPaper !== undefined) {
+        if (typeof showOriginalPaper !== "boolean") {
+          res.status(400).json({ message: "showOriginalPaper 必须为布尔值" });
+          return;
+        }
+        updates.show_original_paper = showOriginalPaper ? 1 : 0;
+      }
       // 评审 P1-2：补设/修改应考范围（年级/班级）。不允许清空（创建后的考试需保留所属范围）；
       // 与显式应考名单互斥：已有显式名单时须先清除（DELETE /participants）再设置班级范围。
       if (gradeId !== undefined || classId !== undefined) {
@@ -2303,7 +2330,7 @@ export async function createApp(): Promise<express.Express> {
       }
 
       // Whitelist: only these columns may appear in a dynamic UPDATE
-      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode", "grade_id", "class_id", "retention_policy_id"]);
+      const ALLOWED_COLUMNS = new Set(["updated_at", "card_id", "name", "subject", "exam_mode", "grade_id", "class_id", "retention_policy_id", "show_original_paper"]);
       for (const col of Object.keys(updates)) {
         if (!ALLOWED_COLUMNS.has(col)) {
           res.status(400).json({ message: `不支持的更新字段：${col}` });
@@ -2333,9 +2360,12 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "无效的考试 ID" });
         return;
       }
+      // v53: 公布表单的「公布后显示原卷」勾选。表单默认勾选 → 前端显式传 true/false；
+      // 未传该字段的旧客户端不改写开关，避免一次普通公布把原卷（含答案）意外公开。
+      const showOriginalPaper = parseShowOriginalPaperFlag(req.body);
       const { getMysqlDb } = await import("../../../server/db");
       const db = getMysqlDb();
-      const exam = await db.get("SELECT id, status, score_published, class_id, grade_id FROM exams WHERE id = ?", examId) as { id: number; status?: string; score_published?: number; class_id?: number | null; grade_id?: number | null } | undefined;
+      const exam = await db.get("SELECT id, status, score_published, show_original_paper, class_id, grade_id FROM exams WHERE id = ?", examId) as { id: number; status?: string; score_published?: number; show_original_paper?: number | null; class_id?: number | null; grade_id?: number | null } | undefined;
       if (!exam) {
         res.status(404).json({ message: "考试不存在" });
         return;
@@ -2347,7 +2377,7 @@ export async function createApp(): Promise<express.Express> {
       }
       // 幂等：已公布直接返回，不重复写审计事件
       if (exam.score_published === 1) {
-        res.json({ ok: true, scorePublished: 1 });
+        res.json({ ok: true, scorePublished: 1, showOriginalPaper: exam.show_original_paper === 1 ? 1 : 0 });
         return;
       }
       // 已有成绩即可公布，不要求应考名单全部出分。
@@ -2356,8 +2386,8 @@ export async function createApp(): Promise<express.Express> {
       // WHERE 带状态条件，防止校验与写入之间考试被并发改回阅卷中（TOCTOU）
       await db.transaction(async (tx) => {
         const result = await tx.run(
-          "UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('grading', 'closed') AND (score_published IS NULL OR score_published <> 1)",
-          examId
+          "UPDATE exams SET score_published = 1, show_original_paper = COALESCE(?, show_original_paper), updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('grading', 'closed') AND (score_published IS NULL OR score_published <> 1)",
+          showOriginalPaper, examId
         );
         if (result.changes !== 1) {
           throw Object.assign(new Error("考试状态已变更，公布失败，请刷新后重试"), { status: 409, code: ApiError.INVALID_VALUE });
@@ -2368,7 +2398,13 @@ export async function createApp(): Promise<express.Express> {
           examId, req.user?.id ?? null
         );
       });
-      res.json({ ok: true, scorePublished: 1 });
+      // 成绩首次正式发布后异步推送微信订阅消息（内部按 exam_id 去重，失败不影响发布）
+      void notifyGradeReleaseSubscribers(examId);
+      res.json({
+        ok: true,
+        scorePublished: 1,
+        showOriginalPaper: showOriginalPaper ?? (exam.show_original_paper === 1 ? 1 : 0),
+      });
     } catch (error) {
       next(error);
     }
@@ -2381,6 +2417,8 @@ export async function createApp(): Promise<express.Express> {
     try {
       const body = (req.body ?? {}) as { examIds?: unknown };
       const rawIds = Array.isArray(body.examIds) ? body.examIds : [];
+      // v53: 批量公布共用同一个「公布后显示原卷」勾选（表单级而非逐场）
+      const showOriginalPaper = parseShowOriginalPaperFlag(req.body);
       // 去重：重复 ID 会导致存在性校验误判与审计重复插入
       const examIds = [...new Set(rawIds.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
       if (examIds.length === 0) {
@@ -2451,8 +2489,8 @@ export async function createApp(): Promise<express.Express> {
       await db.transaction(async (tx) => {
         for (const id of toPublish) {
           const result = await tx.run(
-            "UPDATE exams SET score_published = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('grading', 'closed') AND (score_published IS NULL OR score_published <> 1)",
-            id
+            "UPDATE exams SET score_published = 1, show_original_paper = COALESCE(?, show_original_paper), updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status IN ('grading', 'closed') AND (score_published IS NULL OR score_published <> 1)",
+            showOriginalPaper, id
           );
           if (result.changes !== 1) {
             throw Object.assign(new Error(`考试 ${id} 状态已变更，公布失败，请刷新后重试`), { status: 409, code: ApiError.INVALID_VALUE });
@@ -2464,7 +2502,14 @@ export async function createApp(): Promise<express.Express> {
           );
         }
       });
-      res.json({ ok: true, publishedCount: toPublish.length });
+      // 逐场异步推送微信订阅消息（内部按 exam_id 去重，失败不影响发布）
+      for (const id of toPublish) void notifyGradeReleaseSubscribers(id);
+      res.json({
+        ok: true,
+        publishedCount: toPublish.length,
+        // null = 本次未改动「显示原卷」开关（请求未带该字段）
+        showOriginalPaper: showOriginalPaper,
+      });
     } catch (error) {
       next(error);
     }
@@ -2752,6 +2797,7 @@ export async function startServer(port = Number(process.env.PORT ?? 5174)): Prom
       (server as ProjectXServer).actualPort = actualPort;
       (server as ProjectXServer).localUrl = `http://127.0.0.1:${actualPort}`;
       console.log(`Answer card designer API running at http://127.0.0.1:${actualPort}`);
+      logWechatSubscriptionStatus();
       startLlmClientSidecar();
       const shutdown = () => {
         shutdownLlmClient();

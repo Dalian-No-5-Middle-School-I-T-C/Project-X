@@ -8,7 +8,7 @@ import path from "node:path";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import type { DbAdapter } from "../../../server/db/mysql";
-import { assetsDir, cardAssetsDir, dataDir, layoutPath, safeId } from "./storage";
+import { answerKeyDir, assetsDir, cardAssetsDir, dataDir, layoutPath, safeId } from "./storage";
 
 export function paramValue(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] : value ?? "";
@@ -83,12 +83,18 @@ export function parseRecognitionDpi(value: unknown, fallback = 300): number {
   return Math.min(1200, Math.max(50, Math.round(parsed)));
 }
 
+/** 删除考试时清理教师答案页文件目录：文件不在 DB 里，不删目录会让机密答案原图长期滞留磁盘 */
+export async function removeExamAnswerKeyFiles(examId: number | string): Promise<void> {
+  try { await rm(answerKeyDir(examId), { recursive: true, force: true }); } catch {}
+}
+
 export async function deleteExamRows(db: DbAdapter, examIds: number[]): Promise<void> {
   for (const examId of examIds) {
     await db.run("DELETE FROM question_scores WHERE exam_id = ?", examId);
     await db.run("DELETE FROM student_scores WHERE exam_id = ?", examId);
     await db.run("DELETE FROM scan_batches WHERE exam_id = ?", examId);
     await db.run("DELETE FROM exams WHERE id = ?", examId);
+    await removeExamAnswerKeyFiles(examId);
   }
 }
 

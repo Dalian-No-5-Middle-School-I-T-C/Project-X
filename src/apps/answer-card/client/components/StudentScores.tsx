@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, BarChart3, BrainCircuit, CalendarRange, ChevronDown, LineChart, Radar, RefreshCw, Shield, Sparkles, TrendingUp } from "lucide-react";
+import { ArrowLeft, BarChart3, BrainCircuit, CalendarRange, ChevronDown, FileText, LineChart, Radar, RefreshCw, Shield, Sparkles, TrendingUp } from "lucide-react";
 import { fetchJson } from "../auth/api";
 import type { StudentExamScore, StudentQuestionScore } from "../auth/types";
 import type { StudentTrendPoint, AiAnalysisResponse } from "../../../../shared/types";
@@ -8,6 +8,7 @@ import { StudentTrendChart } from "./StudentTrendChart";
 import { StudentSubjectRadar } from "./StudentSubjectRadar";
 import { StudentAiPanel } from "./StudentAiPanel";
 import { StudentSemesterComparison } from "./StudentSemesterComparison";
+import { StudentExamPaper } from "./StudentExamPaper";
 import { Button, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, EmptyState, Table, TableBody, TableCell, TableHead, TableHeader, TableRow, Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/v2";
 
 interface ScoresResponse {
@@ -40,7 +41,8 @@ function fmtDate(iso: string): string {
 }
 
 export function StudentScores() {
-  const [screen, setScreen] = useState<"list" | "detail">("list");
+  const [screen, setScreen] = useState<"list" | "detail" | "paper">("list");
+  const [paperFrom, setPaperFrom] = useState<"list" | "detail">("list");
   const [activeTab, setActiveTab] = useState<TabId>("trend");
   const [data, setData] = useState<ScoresResponse | null>(null);
   const [expandedExamId, setExpandedExamId] = useState<number | null>(null);
@@ -118,6 +120,15 @@ export function StudentScores() {
   };
   const backToList = () => setScreen("list");
 
+  /** v53: 原卷/答案入口只在后端 paper_visible=1 时出现，前端不再自行判断公布状态 */
+  const openPaper = (examId: number, from: "list" | "detail") => {
+    setSelectedExamId(examId);
+    setExpandedExamId(null);
+    setPaperFrom(from);
+    setScreen("paper");
+  };
+  const backFromPaper = () => setScreen(paperFrom === "detail" ? "detail" : "list");
+
   // ── 列表页：考试卡片画廊（第一级）──
   if (screen === "list") {
     return (
@@ -153,9 +164,21 @@ export function StudentScores() {
                       </div>
                       <Badge tone={rate >= 85 ? "success" : rate >= 60 ? "neutral" : "danger"} dot>{rate >= 85 ? "优势" : rate >= 60 ? "稳定" : "待提升"}</Badge>
                     </div>
-                    <div className="flex items-baseline gap-1">
-                      <strong className="text-3xl font-bold tabular-nums text-foreground">{exam.total_score}</strong>
-                      <span className="text-sm text-muted-foreground">/ {full}</span>
+                    <div className="flex items-end justify-between gap-2">
+                      <div className="flex items-baseline gap-1">
+                        <strong className="text-3xl font-bold tabular-nums text-foreground">{exam.total_score}</strong>
+                        <span className="text-sm text-muted-foreground">/ {full}</span>
+                      </div>
+                      {exam.paper_visible === 1 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-1"
+                          onClick={(event) => { event.stopPropagation(); openPaper(exam.exam_id, "list"); }}
+                        >
+                          <FileText size={14} />查看原卷
+                        </Button>
+                      )}
                     </div>
                   </Card>
                 );
@@ -180,6 +203,18 @@ export function StudentScores() {
     );
   }
 
+  // ── 原卷页：原卷图片 + 逐题正确答案（第三级，列表或详情均可进入）──
+  if (screen === "paper" && selectedExamId !== null) {
+    const paperExam = data?.scores.find((s) => s.exam_id === selectedExamId);
+    return (
+      <StudentExamPaper
+        examId={selectedExamId}
+        examName={paperExam?.exam_name ?? ""}
+        onBack={backFromPaper}
+      />
+    );
+  }
+
   // ── 详情页：单场考试逐科/逐题（第二级）──
   const selectedExam = data?.scores.find((s) => s.exam_id === selectedExamId);
   if (!selectedExam) {
@@ -196,7 +231,14 @@ export function StudentScores() {
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between rounded-lg border border-border-subtle bg-card px-4 py-3">
         <Button variant="ghost" size="sm" onClick={backToList} className="gap-1.5"><ArrowLeft size={16} />返回考试列表</Button>
-        <Badge tone="neutral" dot>仅本人</Badge>
+        <div className="flex items-center gap-2">
+          {selectedExam.paper_visible === 1 && (
+            <Button variant="outline" size="sm" onClick={() => openPaper(selectedExam.exam_id, "detail")} className="gap-1.5">
+              <FileText size={16} />查看答案解析
+            </Button>
+          )}
+          <Badge tone="neutral" dot>仅本人</Badge>
+        </div>
       </div>
       {error && <div className="rounded-md border border-destructive-border bg-destructive-soft px-3 py-2 text-sm text-destructive-fg">{error}</div>}
 

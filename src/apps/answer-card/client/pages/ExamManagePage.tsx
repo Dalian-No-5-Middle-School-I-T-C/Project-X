@@ -1,11 +1,12 @@
 // ExamManagePage — 从 App.tsx 抽出的「考试管理」页面（B2：改由 useWorkspace 消费共享状态）。
 // P4/T5：整页迁移到 v2 视觉体系（Button / SegmentedControl / Table / ExamStatusBadge / EmptyState）。
 // 行为与迁移前完全一致：API 端点、请求体、路由与权限判断零改动。
-import { CalendarDays, CalendarX2, ClipboardList, Layers, Megaphone, Plus, Search, Trash2, UserRoundPlus, Users } from "lucide-react";
+import { CalendarDays, CalendarX2, ClipboardList, FileText, Layers, Megaphone, Plus, Search, Trash2, UserRoundPlus, Users } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { fetchJson } from "../auth/api";
 import { useWorkspace } from "../WorkspaceContext";
 import { ExamDetailPage } from "../components/ExamDetailPage";
+import { ExamAnswerKeyPanel } from "../components/ExamAnswerKeyPanel";
 import { useIsMobile } from "../hooks/useMediaQuery";
 import {
   Badge,
@@ -13,6 +14,7 @@ import {
   Calendar,
   Card,
   Checkbox,
+  ControlRow,
   Dialog,
   DialogBody,
   DialogContent,
@@ -166,6 +168,10 @@ export function ExamManagePage() {
   const [unpublishTarget, setUnpublishTarget] = useState<ExamRecord | null>(null);
   const [unpublishReason, setUnpublishReason] = useState("");
   const [publishing, setPublishing] = useState(false);
+  // v53: 公布表单的「公布后显示原卷」勾选（默认勾选，随公布请求一并提交）+ 原卷/答案配置面板
+  const [publishShowPaper, setPublishShowPaper] = useState(true);
+  const [batchPublishShowPaper, setBatchPublishShowPaper] = useState(true);
+  const [answerKeyExam, setAnswerKeyExam] = useState<ExamRecord | null>(null);
 
   useEffect(() => {
     // 保留策略列表为管理员接口（SYSTEM_MANAGE），仅管理员拉取
@@ -373,7 +379,12 @@ export function ExamManagePage() {
     if (publishing) return;
     setPublishing(true);
     try {
-      await fetchJson(`/api/exams/${examId}/publish`, { method: "POST" });
+      // v53: 公布与「显示原卷」一并提交，勾选状态跟随本次公布写入
+      await fetchJson(`/api/exams/${examId}/publish`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ showOriginalPaper: publishShowPaper }),
+      });
       setPublishTarget(null);
       setStatus("成绩已公布，学生可查看");
       await loadExams();
@@ -393,7 +404,7 @@ export function ExamManagePage() {
       await fetchJson("/api/exams/publish-batch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ examIds: Array.from(selectedExamIds) }),
+        body: JSON.stringify({ examIds: Array.from(selectedExamIds), showOriginalPaper: batchPublishShowPaper }),
       });
       setBatchPublishOpen(false);
       setSelectedExamIds(new Set());
@@ -404,6 +415,13 @@ export function ExamManagePage() {
     } finally {
       setPublishing(false);
     }
+  }
+
+  /** v53: 打开公布表单时的「公布后显示原卷」初值 —— 首次公布默认勾选；
+   * 已公布/已撤回过的考试沿用教师上一次的选择，避免重新公布时把原卷意外公开 */
+  function openPublishDialog(exam: ExamRecord) {
+    setPublishShowPaper(exam.score_published ? exam.show_original_paper === 1 : true);
+    setPublishTarget(exam);
   }
 
   /** v42: 撤回成绩公布（确认后调接口，写审计日志） */
@@ -520,17 +538,19 @@ export function ExamManagePage() {
                   <Badge tone={exam.score_published === 1 ? "success" : exam.score_published === 2 ? "danger" : "neutral"} className="shrink-0">
                     {exam.score_published === 1 ? "已公布" : exam.score_published === 2 ? "已撤回" : "未公布"}
                   </Badge>
+                  {exam.show_original_paper === 1 && <Badge tone="info" className="shrink-0">原卷开放</Badge>}
                 </div>
               </div>
               <div className="mt-3 flex flex-wrap justify-end gap-2">
                 <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
                 <Button variant="ghost" size="sm" className="text-info-foreground" icon={<Users />} onClick={() => void openRosterModal(exam)}>应考名单</Button>
+                <Button variant="ghost" size="sm" className="text-info-foreground" icon={<FileText />} onClick={() => setAnswerKeyExam(exam)}>原卷答案</Button>
                 <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
                 <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
                 {exam.score_published === 1 ? (
                   <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
                 ) : (
-                  <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed" && exam.status !== "grading"} onClick={() => setPublishTarget(exam)}>
+                  <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed" && exam.status !== "grading"} onClick={() => openPublishDialog(exam)}>
                     {exam.score_published === 2 ? "重新公布" : "公布分数"}
                   </Button>
                 )}
@@ -588,18 +608,20 @@ export function ExamManagePage() {
                     <Badge tone={exam.score_published === 1 ? "success" : exam.score_published === 2 ? "danger" : "neutral"} className="shrink-0">
                       {exam.score_published === 1 ? "已公布" : exam.score_published === 2 ? "已撤回" : "未公布"}
                     </Badge>
+                    {exam.show_original_paper === 1 && <Badge tone="info" className="shrink-0">原卷开放</Badge>}
                   </div>
                 </TableCell>
                 <TableCell className="text-right whitespace-nowrap">
                   <div className="flex justify-end gap-1">
                     <Button variant="ghost" size="sm" className="text-info-foreground" onClick={() => setSelectedExamId(exam.id)}>网阅</Button>
                     <Button variant="ghost" size="sm" className="text-info-foreground" icon={<Users />} onClick={() => void openRosterModal(exam)}>应考名单</Button>
+                    <Button variant="ghost" size="sm" className="text-info-foreground" icon={<FileText />} onClick={() => setAnswerKeyExam(exam)}>原卷答案</Button>
                     <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => setExamDeleteTarget({ exams: [exam], deleteLinkedCards: false })}>删除</Button>
                     <Button variant="ghost" size="sm" className="text-success-foreground" onClick={() => setAssignedFormulaExamId(exam.id)}>赋分</Button>
                     {exam.score_published === 1 ? (
                       <Button variant="ghost" size="sm" className="text-destructive-fg" onClick={() => { setUnpublishReason(""); setUnpublishTarget(exam); }}>撤回公布</Button>
                     ) : (
-                      <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed" && exam.status !== "grading"} onClick={() => setPublishTarget(exam)}>
+                      <Button variant="ghost" size="sm" className="text-success-foreground" disabled={exam.status !== "closed" && exam.status !== "grading"} onClick={() => openPublishDialog(exam)}>
                         {exam.score_published === 2 ? "重新公布" : "公布分数"}
                       </Button>
                     )}
@@ -636,7 +658,7 @@ export function ExamManagePage() {
                 variant="ghost"
                 icon={<Megaphone />}
                 className="text-success-foreground"
-                onClick={() => setBatchPublishOpen(true)}
+                onClick={() => { setBatchPublishShowPaper(true); setBatchPublishOpen(true); }}
               >
                 批量公布 ({selectedExamIds.size})
               </Button>
@@ -920,6 +942,21 @@ export function ExamManagePage() {
               确认公布「{publishTarget?.name ?? ""}」的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分后需重新公布。
             </DialogDescription>
           </DialogHeader>
+          {/* v53: 公布表单的「公布后显示原卷」，勾选状态随本次公布写入 exams.show_original_paper */}
+          <DialogBody className="flex flex-col gap-3">
+            <ControlRow
+              htmlFor="publish-show-paper"
+              control={
+                <Checkbox
+                  id="publish-show-paper"
+                  checked={publishShowPaper}
+                  onCheckedChange={(checked) => setPublishShowPaper(checked === true)}
+                />
+              }
+              label="公布后显示原卷"
+              description="勾选后学生可在成绩里查看原卷与逐题正确答案；取消勾选则只公布成绩，原卷保持隐藏。"
+            />
+          </DialogBody>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPublishTarget(null)} disabled={publishing}>取消</Button>
             <Button variant="primary" loading={publishing} onClick={() => publishTarget && void handlePublishExam(publishTarget.id)}>确认公布</Button>
@@ -936,6 +973,20 @@ export function ExamManagePage() {
               确认公布选中的 {selectedExamIds.size} 场考试的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分后需重新公布。
             </DialogDescription>
           </DialogHeader>
+          <DialogBody className="flex flex-col gap-3">
+            <ControlRow
+              htmlFor="batch-publish-show-paper"
+              control={
+                <Checkbox
+                  id="batch-publish-show-paper"
+                  checked={batchPublishShowPaper}
+                  onCheckedChange={(checked) => setBatchPublishShowPaper(checked === true)}
+                />
+              }
+              label="公布后显示原卷"
+              description={`对本批 ${selectedExamIds.size} 场考试统一生效；未上传原卷的考试即使勾选，学生侧仍显示「原卷未上传」。`}
+            />
+          </DialogBody>
           <DialogFooter>
             <Button variant="outline" onClick={() => setBatchPublishOpen(false)} disabled={publishing}>取消</Button>
             <Button variant="primary" loading={publishing} onClick={() => void handlePublishBatch()}>确认批量公布</Button>
@@ -1100,6 +1151,16 @@ export function ExamManagePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {/* v53: 原卷开关 + 逐题「本次正确答案」配置 */}
+      {answerKeyExam && (
+        <ExamAnswerKeyPanel
+          examId={answerKeyExam.id}
+          examName={answerKeyExam.name}
+          open={answerKeyExam !== null}
+          onClose={() => setAnswerKeyExam(null)}
+          onExamChanged={() => void loadExams()}
+        />
+      )}
     </div>
   );
 }

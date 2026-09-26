@@ -17,6 +17,8 @@ export interface ExamRecord {
   closed_at: string | null;
   /** v41: 0=未公布 1=已公布 2=已撤回（学生端仅见 1） */
   score_published?: number;
+  /** v53: 0=不向学生展示原卷 1=成绩公布后可查看原卷与逐题答案解析 */
+  show_original_paper?: number;
   assigned_formula: string | null;
   retention_policy_id: number | null;
   exam_mode?: string;

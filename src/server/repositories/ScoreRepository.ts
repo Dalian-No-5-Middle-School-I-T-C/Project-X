@@ -13,6 +13,8 @@ export interface StudentExamScore {
   percentile: number | null;
   class_size: number;
   graded_at: string;
+  /** v53: 原卷/答案解析是否对该学生开放（exams.show_original_paper=1 且成绩已公布） */
+  paper_visible?: number;
 }
 
 export interface StudentQuestionScore {
@@ -65,7 +67,9 @@ export class ScoreRepository {
         ) AS rank,
         (
           SELECT COUNT(*) FROM student_scores s3 WHERE s3.exam_id = ss.exam_id
-        ) AS class_size
+        ) AS class_size,
+        -- v53: 学生端「查看原卷」入口条件（已公布 + 教师开启显示原卷），与 /paper 接口同一道门
+        CASE WHEN e.score_published = 1 AND e.show_original_paper = 1 THEN 1 ELSE 0 END AS paper_visible
       FROM student_scores ss
       JOIN exams e ON e.id = ss.exam_id
       WHERE ${whereParts.join("\n        ")}

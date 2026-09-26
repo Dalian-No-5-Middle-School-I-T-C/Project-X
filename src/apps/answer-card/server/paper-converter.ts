@@ -160,3 +160,39 @@ export async function storePaperPageFile(
 
   return { diskFilename: jpgName, relPath: path.relative(relRoot, path.join(paperDirPath, jpgName)), pdfAvailable: true };
 }
+
+export type AnswerKeyPageKind = "image" | "pdf" | "docx";
+
+/**
+ * v53: 按页码存储考试级「本次正确答案」上传件。
+ * 与 storePaperPageFile 的区别：答案页只用于教师核对与 OCR，学生端只展示文字答案，
+ * 因此图片不生成配对 PDF，也使用独立文件名前缀避免与原卷混淆。
+ */
+export async function storeAnswerKeyPageFile(
+  sourcePath: string,
+  filename: string,
+  targetDir: string,
+  pageIndex: number
+): Promise<{ diskFilename: string; relPath: string; kind: AnswerKeyPageKind }> {
+  const ext = path.extname(filename).toLowerCase();
+  const baseName = pageIndex === 1 ? "answerkey" : `answerkey-${pageIndex}`;
+  const targetPath = path.join(targetDir, `${baseName}${ext}`);
+
+  if (isDocx(filename)) {
+    await copyFile(sourcePath, targetPath);
+    return { diskFilename: `${baseName}${ext}`, relPath: path.relative(dataDir, targetPath), kind: "docx" };
+  }
+  if (isPdf(filename)) {
+    await copyFile(sourcePath, targetPath);
+    return { diskFilename: `${baseName}${ext}`, relPath: path.relative(dataDir, targetPath), kind: "pdf" };
+  }
+  if (!isImageFormat(filename)) throw new Error(`不支持 ${ext} 格式的答案文件`);
+
+  const diskFilename = `${baseName}.jpg`;
+  await writeFile(path.join(targetDir, diskFilename), await compressImage(sourcePath));
+  return {
+    diskFilename,
+    relPath: path.relative(dataDir, path.join(targetDir, diskFilename)),
+    kind: "image",
+  };
+}

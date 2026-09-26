@@ -11,6 +11,8 @@ import "./verify-subjective-identity";
  * 运行：npm run verify:core-logic
  */
 import { validateCardScores } from "../src/shared/cardScoreValidation";
+import { takeLadder } from "../src/shared/ranking";
+import { LadderService } from "../src/server/services/LadderService";
 import { formatBlankLabel } from "../src/shared/blankLabels";
 import { csvCell } from "../src/shared/csv";
 import {
@@ -348,6 +350,83 @@ section("12. 云端安全检查 —— 磁盘文件魔数校验（RIFF 需带 WE
   check("磁盘态：HTML 改名 .png 拒绝", !await isValidImageFile(writeSample("fake.png", Buffer.from("<html><script>1</script>"))));
   check("磁盘态：过短文件拒绝", !await isValidImageFile(writeSample("short.png", Buffer.from([0x89, 0x50]))));
   rmSync(uploadTmpDir, { recursive: true, force: true });
+}
+
+section("13. shared/ranking —— 天梯截断不切开同分并列");
+{
+  const picked = (ranks: number[]) =>
+    takeLadder(ranks.map((rank) => ({ rank })), (r) => r.rank).map((r) => r.rank);
+  const tiedFirst = (n: number, tail: number[]) =>
+    Array.from({ length: n }, () => 1).concat(tail);
+
+  check("空榜返回空", picked([]).length === 0);
+  check("不足 10 人时全量返回", picked([1, 2, 3]).length === 3);
+  check("无并列时仍只取前十", picked([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]).length === 10);
+  check("恰好 10 人并列第 1 时不扩表", picked(tiedFirst(10, [11, 12])).length === 10);
+  check("12 人并列第 1 全部保留", picked(tiedFirst(12, [13, 14])).length === 12);
+  check("23 人并列第 1 全部保留且都是第 1 名",
+    picked(tiedFirst(23, [24, 25])).length === 23 && picked(tiedFirst(23, [24, 25])).every((r) => r === 1));
+  check("第 9 名并列 5 人跨截断线时顺延到 13 条", picked([1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 9, 9]).length === 13);
+  check("第 10 名并列 2 人时顺延到 11 条", picked([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10]).length === 11);
+  check("并列组完全落在前十之内时不扩表", picked([1, 2, 2, 2, 4, 5, 6, 7, 8, 9, 10, 11]).length === 10);
+  check("顺延只覆盖跨线的那一组，不吞掉后续不同名次",
+    picked([1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13]).length === 11);
+
+  // LadderService.fromScoreTableRows 的入参形态：analysis 的 score-table 只产出 gradeRank
+  const scoreTableRows = (ranks: number[]) =>
+    ranks.map((gradeRank, i) => ({
+      gradeRank,
+      classRank: i + 1,
+      totalScore: 150 - gradeRank,
+      assignedScore: null,
+      rankChange: null,
+      prevRank: null,
+      studentId: i + 1,
+      studentNumber: String(i + 1).padStart(4, "0"),
+      studentName: `学生${i + 1}`,
+      className: "高一(1)班",
+      classId: 1,
+      gradeName: "高一",
+    })) as any[];
+  const plainRanks = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+
+  const plainBoard = LadderService.fromScoreTableRows(scoreTableRows(plainRanks), 13, 5);
+  check("单场天梯无并列时仍只取前十", plainBoard.board.length === 10 && plainBoard.board[0].rank === 1);
+  check("单场天梯名次与百分位来自 gradeRank（不再丢失 rank 字段）",
+    plainBoard.board.every((r) => Number.isFinite(r.rank) && Number.isFinite(r.percentile)));
+  check("单场天梯 myRank 取年排、不再为空", plainBoard.myRank === 5 && plainBoard.myScore === 145);
+  check("单场天梯只给本人那一条打标记",
+    plainBoard.board.filter((r) => r.isCurrentUser).length === 1 &&
+    plainBoard.board.some((r) => r.isCurrentUser && r.studentId === 5));
+
+  const outsideBoard = LadderService.fromScoreTableRows(scoreTableRows(plainRanks), 13, 13);
+  check("本人在榜外时不打标记、但 myRank 仍是全量年排",
+    outsideBoard.board.every((r) => !r.isCurrentUser) && outsideBoard.myRank === 13);
+
+  const firstTie = LadderService.fromScoreTableRows(
+    scoreTableRows([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 13, 14, 15]), 15, 1);
+  check("单场天梯 12 人并列第 1 全部返回",
+    firstTie.board.length === 12 && firstTie.board.every((r) => r.rank === 1));
+
+  const midTie = LadderService.fromScoreTableRows(
+    scoreTableRows([1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 9, 9]), 13, 9);
+  check("单场天梯第 9 名并列跨线时顺延到 13 条",
+    midTie.board.length === 13 && midTie.board[12].rank === 9);
+  check("跨榜本人的年排与榜单名次一致",
+    midTie.board.filter((r) => r.isCurrentUser).length === 1 &&
+    midTie.board.every((r) => !r.isCurrentUser || r.rank === 9) && midTie.myRank === 9);
+
+  const crossTie = LadderService.fromCrossExamRows(
+    scoreTableRows([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 13, 14, 15]).map((r: any) => ({
+      studentId: r.studentId, studentNumber: r.studentNumber, studentName: r.studentName,
+      className: r.className, classId: r.classId, gradeName: r.gradeName,
+      totalScore: r.totalScore, totalFullScore: 150, scoreRate: 1,
+      attendedCount: 1, absentCount: 0, gradeRank: r.gradeRank, classRank: r.classRank, scores: [],
+    })), 15, 3);
+  check("跨考天梯同样不切开并列第 1",
+    crossTie.board.length === 12 && crossTie.board.every((r) => r.rank === 1));
+  check("跨考天梯 myRank 与本人标记一致",
+    crossTie.myRank === 1 && crossTie.board.filter((r) => r.isCurrentUser).length === 1);
 }
 
 async function runValidate(

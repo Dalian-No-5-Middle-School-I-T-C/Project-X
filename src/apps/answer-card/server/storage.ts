@@ -16,6 +16,7 @@ export const assetsDir = path.join(dataDir, "assets");
 export const layoutsDir = path.join(dataDir, "layouts");
 export const blockCropsDir = path.join(dataDir, "recognition", "crops");
 export const papersDir = path.join(dataDir, "papers");
+export const answerKeysDir = path.join(dataDir, "answer-keys");
 
 export async function ensureDataDirs(): Promise<void> {
   await mkdir(cardsDir, { recursive: true });
@@ -23,6 +24,7 @@ export async function ensureDataDirs(): Promise<void> {
   await mkdir(layoutsDir, { recursive: true });
   await mkdir(blockCropsDir, { recursive: true });
   await mkdir(papersDir, { recursive: true });
+  await mkdir(answerKeysDir, { recursive: true });
 }
 
 export function cardPath(cardId: string): string {
@@ -47,6 +49,15 @@ export function paperDir(cardId: string): string {
 
 export async function ensurePaperDir(cardId: string): Promise<void> {
   await mkdir(paperDir(cardId), { recursive: true });
+}
+
+/** v53: 考试级「本次正确答案」上传目录（教师/管理员可见，学生只看文字答案） */
+export function answerKeyDir(examId: string | number): string {
+  return path.join(answerKeysDir, safeId(String(examId)));
+}
+
+export async function ensureAnswerKeyDir(examId: string | number): Promise<void> {
+  await mkdir(answerKeyDir(examId), { recursive: true });
 }
 
 export async function createCard(): Promise<AnswerCard> {
