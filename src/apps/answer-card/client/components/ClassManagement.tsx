@@ -7,6 +7,7 @@ import { cn } from "../lib/utils";
 import { currentStage } from "../util/gradeStage";
 import {
   Button,
+  ConfirmDialog,
   Input,
   Field,
   Dialog,
@@ -139,6 +140,8 @@ export function ClassManagement() {
   // 班级教师配置（班主任 + 分科任课教师）
   const [teachers, setTeachers] = useState<TeacherRecord[]>([]);
   const [classTeachers, setClassTeachers] = useState<ClassTeacherConfig>({ headTeacherId: null, headTeacherName: null, assignments: [] });
+  // 待确认的班主任解除：解除关联会连带摘掉班主任标记，需显式确认
+  const [pendingUnlink, setPendingUnlink] = useState<{ teacherId: number; name: string } | null>(null);
 
   const loadGrades = useCallback(async () => {
     const data = await fetchJson<GradeRecord[]>("/api/classes/grades");
@@ -932,7 +935,19 @@ export function ClassManagement() {
                     {assigned.map((item) => (
                       <span key={item.teacherId} className="inline-flex items-center gap-1 rounded-md border border-border-subtle bg-secondary px-2 py-1 text-xs text-secondary-foreground">
                         {item.name}
-                        <button type="button" aria-label={`移除${item.name}`} title="解除关联" onClick={() => void removeSubjectTeacher(item.teacherId)} disabled={busy}>
+                        <button
+                          type="button"
+                          aria-label={`移除${item.name}`}
+                          title="解除关联"
+                          onClick={() => {
+                            if (item.teacherId === classTeachers.headTeacherId) {
+                              setPendingUnlink({ teacherId: item.teacherId, name: item.name });
+                            } else {
+                              void removeSubjectTeacher(item.teacherId);
+                            }
+                          }}
+                          disabled={busy}
+                        >
                           <X size={12} />
                         </button>
                       </span>
@@ -1054,6 +1069,21 @@ export function ClassManagement() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ── 解除班主任关联确认（解除任课会连带摘掉按班班主任标记） ── */}
+      <ConfirmDialog
+        open={pendingUnlink !== null}
+        onOpenChange={(open) => { if (!open) setPendingUnlink(null); }}
+        title="解除班主任关联"
+        description={`${pendingUnlink?.name ?? "该教师"} 是本班班主任，解除任课关联将同时移除其班主任身份。确定继续？`}
+        confirmLabel="解除关联"
+        tone="danger"
+        onConfirm={() => {
+          const target = pendingUnlink;
+          setPendingUnlink(null);
+          if (target) void removeSubjectTeacher(target.teacherId);
+        }}
+      />
     </div>
   );
 }

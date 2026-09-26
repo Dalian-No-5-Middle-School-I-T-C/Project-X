@@ -225,9 +225,13 @@ export class ClassRepository {
    * 事务内原子替换该班班主任：撤销旧班主任的按班标记（纯班主任关联则整行删除，
    * 兼任任课教师只撤标记保留科目），再为新教师置标记。teacherId 为 null 表示仅清除。
    * 新教师是否存在必须由调用方在写入前校验完成。
+   *
+   * 一班一班主任靠两层保障：事务开头对班级行做一次哑更新取写锁（MariaDB 行锁把
+   * 并发替换排成串行，SQLite 本就单连接串行），提交前再断言标记唯一，破坏即回滚。
    */
   async replaceClassHeadTeacher(classId: number, teacherId: number | null): Promise<void> {
     await this.db.transaction(async (tx) => {
+      await tx.run("UPDATE classes SET name = name WHERE id = ?", classId);
       const heads = await tx.all<{ teacher_id: number; subject: string | null }>(
         "SELECT teacher_id, subject FROM teacher_classes WHERE class_id = ? AND is_head_teacher = 1",
         classId
@@ -244,6 +248,14 @@ export class ClassRepository {
         const insert = buildInsertIgnore(tx.dialect, "teacher_classes", ["teacher_id", "class_id"]);
         await tx.run(insert, teacherId, classId);
         await tx.run("UPDATE teacher_classes SET is_head_teacher = 1 WHERE teacher_id = ? AND class_id = ?", teacherId, classId);
+      }
+      const expected = teacherId === null ? 0 : 1;
+      const marked = await tx.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM teacher_classes WHERE class_id = ? AND is_head_teacher = 1",
+        classId
+      );
+      if (Number(marked?.n ?? 0) !== expected) {
+        throw new Error(`班级 ${classId} 班主任标记唯一性校验失败（期望 ${expected}，实际 ${Number(marked?.n ?? 0)}），事务回滚`);
       }
     });
   }

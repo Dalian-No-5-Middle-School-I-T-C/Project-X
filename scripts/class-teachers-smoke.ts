@@ -129,6 +129,14 @@ async function main(): Promise<void> {
     const badTeacher = await post(`/api/classes/${classId}/teachers`, { teacherId: 999999, subject: "物理" });
     assert.equal(badTeacher.status, 404, "不存在的教师必须被拒绝");
 
+    // 已停用教师不可被指派（与 listClassTeachers 只列在职教师的口径一致）
+    const zhou = await users.createUser({ username: "smoke-zhou", password: "pw-123456", name: "周敏", role_id: 2, teacher_role: "subject_teacher", subject: "英语" });
+    await users.deactivateUser(zhou.id);
+    const inactiveSubject = await post(`/api/classes/${classId}/teachers`, { teacherId: zhou.id, subject: "英语" });
+    assert.equal(inactiveSubject.status, 404, "已停用教师不可被指派任课");
+    const inactiveHead = await post(`/api/classes/${classId}/head-teacher`, { teacherId: zhou.id }, "PUT");
+    assert.equal(inactiveHead.status, 404, "已停用教师不可被指派班主任");
+
     // ── 4. 换班主任：旧班主任解绑，任课教师不受影响 ────
     assert.equal((await post(`/api/classes/${classId}/head-teacher`, { teacherId: han.id }, "PUT")).status, 200, "换班主任失败");
     config = (await (await get(`/api/classes/${classId}/teachers`)).json()) as ClassTeachers;
@@ -181,7 +189,18 @@ async function main(): Promise<void> {
     const stillPlain = db.prepare("SELECT teacher_role FROM users WHERE id = ?").get(wang.id) as { teacher_role: string };
     assert.equal(stillPlain.teacher_role, "subject_teacher", "全流程不得触碰全局教师角色");
 
-    console.log("verify:class-teachers 通过（班级改名 / 按班班主任 / 分科任课教师 / 权限范围不扩散 / 更换失败保留现任）");
+    // ── 7. scores 侧消费者 getAccessibleClassIds 与 getVisibleExamIds 同口径 ──
+    const { getAccessibleClassIds } = await import("../src/server/routes/scores");
+    const baseClasses = await getAccessibleClassIds(wangUser);
+    assert.ok(baseClasses && baseClasses.includes(classB) && !baseClasses.includes(classId), "成绩侧可见班级应只含任教的乙班");
+    assert.equal((await post(`/api/classes/${classId}/head-teacher`, { teacherId: wang.id }, "PUT")).status, 200, "重设甲班班主任失败");
+    const headClasses = await getAccessibleClassIds(wangUser);
+    assert.ok(headClasses && headClasses.includes(classId) && headClasses.includes(classB), "成绩侧必须看到班主任班级与任教班级");
+    assert.equal((await post(`/api/classes/${classId}/head-teacher`, { teacherId: null }, "PUT")).status, 200, "再清除班主任失败");
+    const clearedClasses = await getAccessibleClassIds(wangUser);
+    assert.ok(clearedClasses && !clearedClasses.includes(classId), "清除后成绩侧不应再看到甲班");
+
+    console.log("verify:class-teachers 通过（班级改名 / 按班班主任 / 分科任课教师 / 权限范围不扩散 / 更换失败保留现任 / 成绩侧口径一致 / 停用教师拒指派）");
   } finally {
     if (server) {
       server.closeAllConnections?.();

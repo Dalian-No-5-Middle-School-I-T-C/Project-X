@@ -134,8 +134,8 @@ router.post("/:id/teachers", manage, async (req: Request, res: Response) => {
     return;
   }
   const teacher = await userRepo.findByIdIncludingInactive(teacherId);
-  if (!teacher || teacher.role_id !== ROLE_IDS.TEACHER) {
-    res.status(404).json({ message: "教师不存在" });
+  if (!teacher || teacher.role_id !== ROLE_IDS.TEACHER || teacher.is_active !== 1) {
+    res.status(404).json({ message: "教师不存在或已停用" });
     return;
   }
   await classRepo.setClassTeacher(teacherId, classId, subject);
@@ -166,9 +166,11 @@ router.put("/:id/head-teacher", manage, async (req: Request, res: Response) => {
     return;
   }
   if (teacherId !== null) {
+    // 与 listClassTeachers（只列在职教师）口径一致：已停用教师不可被指派，
+    // 否则指派后从配置列表消失、难以发现和移除
     const teacher = await userRepo.findByIdIncludingInactive(teacherId);
-    if (!teacher || teacher.role_id !== ROLE_IDS.TEACHER) {
-      res.status(404).json({ message: "教师不存在" });
+    if (!teacher || teacher.role_id !== ROLE_IDS.TEACHER || teacher.is_active !== 1) {
+      res.status(404).json({ message: "教师不存在或已停用" });
       return;
     }
   }
