@@ -51,6 +51,7 @@ export function makeGate(enforce: boolean, readPerm: string, writePerm: string) 
  * - admin / grade_leader → null (all visible)
  * - head_teacher → own classes + created exams
  * - subject_teacher → own subject + classes + created exams
+ *   （按班班主任 teacher_classes.is_head_teacher 的班级对全科可见）
  * - plain teacher (no teacher_role) → 权限矩阵禁止的考试被剔除（#246：此前提前返回
  *   null 导致矩阵对该类教师完全失效）；无任何禁止行 → null（back-compat 全可见）
  *
@@ -99,27 +100,34 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
   }
 
   if (user.teacher_role === "subject_teacher") {
-    // 学科教师未配置学科时，至少仍应看到晨测（quiz=全量权限）
-    if (!user.subject) return await withQuizExamIds([]);
-    const classRows = await db.all<{ class_id: number }>(
-      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
-      user.id,
-      user.subject
-    );
+    // 按班班主任（teacher_classes.is_head_teacher）：其担任班主任的班级看全科，其余班级仍按学科过滤
+    const headClassIds = (await db.all<{ class_id: number }>(
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND is_head_teacher = 1",
+      user.id
+    )).map((r) => r.class_id);
+    // 学科教师未配置学科时，至少仍应看到晨测（quiz=全量权限）与担任班主任的班级
+    if (!user.subject && headClassIds.length === 0) return await withQuizExamIds([]);
+    const classRows = user.subject
+      ? await db.all<{ class_id: number }>(
+          "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
+          user.id,
+          user.subject
+        )
+      : [];
     const classIds = classRows.map((r) => r.class_id);
-    if (classIds.length === 0) {
-      const ownRows = await db.all<{ id: number }>(
-        `SELECT DISTINCT id FROM exams e WHERE e.created_by = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}`,
-        user.id
-      );
-      return await withQuizExamIds(await filterExamsByViewRestrictions(db, user.id, ownRows.map((r) => r.id)));
+    const parts: string[] = ["e.created_by = ?"];
+    const params: unknown[] = [user.id];
+    if (classIds.length > 0) {
+      parts.push(`(e.subject = ? AND e.class_id IN (${classIds.map(() => "?").join(",")}))`);
+      params.push(user.subject, ...classIds);
+    }
+    if (headClassIds.length > 0) {
+      parts.push(`e.class_id IN (${headClassIds.map(() => "?").join(",")})`);
+      params.push(...headClassIds);
     }
     const rows = await db.all<{ id: number }>(
-      `SELECT DISTINCT e.id FROM exams e
-       WHERE (e.created_by = ? OR (e.subject = ? AND e.class_id IN (${classIds.map(() => "?").join(",")}))) AND ${EXAM_NOT_SOFT_DELETED_SQL}`,
-      user.id,
-      user.subject,
-      ...classIds
+      `SELECT DISTINCT e.id FROM exams e WHERE (${parts.join(" OR ")}) AND ${EXAM_NOT_SOFT_DELETED_SQL}`,
+      ...params
     );
     // #246：学科教师同样受权限矩阵查看标志约束（此前提前返回导致矩阵失效）
     return await withQuizExamIds(await filterExamsByViewRestrictions(db, user.id, rows.map((r) => r.id)));

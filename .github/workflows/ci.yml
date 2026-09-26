@@ -40,6 +40,9 @@ jobs:
       - name: Core logic verify suite
         run: npm run verify:core-logic
 
+      - name: Class teacher verify suite
+        run: npm run verify:class-teachers
+
   mariadb-test:
     name: MariaDB 10.11 Integration
     runs-on: ubuntu-latest

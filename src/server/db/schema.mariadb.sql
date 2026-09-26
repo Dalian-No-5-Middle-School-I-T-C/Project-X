@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS teacher_classes (
     teacher_id  INT NOT NULL,
     class_id    INT NOT NULL,
     subject     VARCHAR(50),
+    is_head_teacher TINYINT NOT NULL DEFAULT 0,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (teacher_id, class_id),
     FOREIGN KEY (teacher_id) REFERENCES users(id) ON DELETE CASCADE,

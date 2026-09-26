@@ -72,6 +72,7 @@
     "verify:p1-integrity": "tsx scripts/verify-p1-integrity.ts",
     "verify:p1-scope": "tsx scripts/verify-p1-scope.ts",
     "verify:p1-readgate": "tsx scripts/verify-p1-readgate.ts",
+    "verify:class-teachers": "tsx scripts/class-teachers-smoke.ts",
     "typecheck": "tsc --noEmit",
     "verify:scanner-skin-patch": "tsx scripts/verify-scanner-skin-patch-guard.ts"
   },

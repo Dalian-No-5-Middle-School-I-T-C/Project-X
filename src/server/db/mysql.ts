@@ -968,6 +968,9 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE twain_scan_sessions ADD COLUMN identity_mode VARCHAR(16) NOT NULL DEFAULT 'strict'",
     "ALTER TABLE twain_scan_records ADD COLUMN identity_json TEXT",
   ] });
+  mariadbMigrations.push({ version: 52, name: "class-head-teacher", sqls: [
+    "ALTER TABLE teacher_classes ADD COLUMN is_head_teacher TINYINT NOT NULL DEFAULT 0",
+  ] });
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

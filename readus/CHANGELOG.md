@@ -1,5 +1,17 @@
 # Project-X CHANGELOG
 
+## 2026-09-25 — 班级改名 + 班主任 + 分科任课教师（2026-09-23 反馈第 8 条）
+
+- **班级改名**：此前只有年级能改名，班级没有入口。新增 `PUT /api/classes/:id`（`class:manage`）与班级列表行的重命名按钮，仅改当前未归档班级名称，历史数据不动。
+- **班主任**：班级页新增「班主任」下拉，可在全部教师中选择、不限学科。班主任是**按班关系**：迁移 `52 / class-head-teacher` 为 `teacher_classes` 增加 `is_head_teacher` 列，设置班主任只在该班的关联行上置标记（兼任任课的只撤/置标记保留科目，纯班主任则增删整行），**不改动教师的全局 `users.teacher_role`**——否则会把该教师在其它任课班级的可见范围一并放大且清除后不恢复。权限消费者（`getVisibleExamIds`、成绩侧 `getAccessibleClassIds`）同步改为「任教学科匹配的班级 + 按班班主任班级全科可见」。更换班主任先校验后替换，事务内原子完成，并以「事务首行锁班级行 + 提交前唯一性断言」保障一班至多一名班主任；清除班主任不影响其他班任课记录。
+- **分科任课教师**：班级页按 9 个学科各列一行，只列出「教师本人任教学科 = 该学科」的教师，选中即 `POST /api/classes/:id/teachers`（带科目）。`teacher_classes` 主键是 (teacher_id, class_id)，同一教师改科目走 upsert 原地更新，不会产生重复行；已设置的教师以标签展示，可单独解除——解除的是班主任本人时界面会先确认（该操作会连带移除班主任身份）。已停用教师与配置列表口径一致，指派任课/班主任一律拒绝。
+- 学科列表收敛到 `src/shared/subjects.ts`，教师管理页与服务端校验共用同一份，避免多处硬编码漂移。
+
+复审修订（2026-09-26）：初版曾按全局角色实现班主任并声称无 schema 变更，评审指出会扩大其它任教班级权限后改为上述按班方案（迁移 `52 / class-head-teacher`）；本条目按最终实现重写。
+
+验证：`npm run verify:class-teachers`（新增并已接入 CI，隔离 SQLite 走真实 HTTP：建年级/班级 → 改名 → 设/换/清班主任并回读 `teacher_classes.is_head_teacher` 与全局角色 → 分科设置、改科目只保留一行 → 非法学科 400、不存在或已停用教师 404 → 换班主任失败保留现任 → 按班班主任不扩大其它任教班级的可见范围（`getVisibleExamIds` 与成绩侧 `getAccessibleClassIds` 双口径断言））、`npm run typecheck`、`npm run build`、`npm run verify:core-logic`（73 passed）。
+未覆盖：本机无 MariaDB，`is_head_teacher` 行为断言仅在 SQLite 实跑，MariaDB 侧由 CI 作业覆盖建库与迁移；管理页界面未做浏览器视觉验收。
+
 ## 2026-09-22 — PDF 中文字体、教师详情与旧班级归档修复
 
 - **PDF 导出中文字体错误**：确认生产服务器缺少中文字体，安装 `fonts-noto-cjk`、`fontconfig`，并通过 systemd 配置 `PROJECTX_PDF_FONT_PATH` 和 TTC 的 `PROJECTX_PDF_FONT_POSTSCRIPT_NAME`。沿用现有 PDF 逻辑，服务器实际生成文件、文字提取和渲染检查通过；此环境修复已在生产完成。

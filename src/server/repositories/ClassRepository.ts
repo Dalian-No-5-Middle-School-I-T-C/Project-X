@@ -1,4 +1,4 @@
-import { buildInsertIgnore, getMysqlDb } from "../db";
+import { buildInsertIgnore, buildUpsertSQL, getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { ensureExamParticipants } from "../services/examParticipants";
 
@@ -27,6 +27,18 @@ export interface ClassStudent {
   /** 文理分科：arts 文科 / science 理科（Issue #177） */
   track: string | null;
   joined_at: string;
+}
+
+export interface ClassTeacherRow {
+  teacher_id: number;
+  name: string;
+  /** 该教师在此班级的科目覆盖（空 = 未指定，例如班主任） */
+  subject: string | null;
+  /** 是否该班班主任（按班标记，v52） */
+  is_head_teacher: number;
+  /** 教师本人任教学科 */
+  teacher_subject: string | null;
+  teacher_role: string | null;
 }
 
 /**
@@ -110,6 +122,11 @@ export class ClassRepository {
     return (await this.findClassById(result.lastInsertRowid))!;
   }
 
+  /** 班级改名（仅改当前未归档班级的名称，历史数据不动）。 */
+  async updateClass(id: number, name: string): Promise<void> {
+    await this.db.run("UPDATE classes SET name = ? WHERE id = ? AND archived_at IS NULL", name, id);
+  }
+
   async deleteClass(id: number): Promise<void> {
     await this.db.transaction(async (tx) => {
       const cls = await tx.get<{ grade_id: number }>("SELECT grade_id FROM classes WHERE id = ? AND archived_at IS NULL", id);
@@ -176,6 +193,71 @@ export class ClassRepository {
 
   async removeTeacherFromClass(teacherId: number, classId: number): Promise<void> {
     await this.db.run("DELETE FROM teacher_classes WHERE teacher_id = ? AND class_id = ?", teacherId, classId);
+  }
+
+  /**
+   * 班级下的教师关联。teacher_classes 主键是 (teacher_id, class_id)，每位教师每班一行；
+   * subject 为该教师在此班级的科目覆盖，is_head_teacher 按班标记班主任。
+   */
+  async listClassTeachers(classId: number): Promise<ClassTeacherRow[]> {
+    return await this.db.all(`
+      SELECT tc.teacher_id, u.name, tc.subject, tc.is_head_teacher, u.subject as teacher_subject, u.teacher_role
+      FROM teacher_classes tc
+      JOIN users u ON u.id = tc.teacher_id
+      WHERE tc.class_id = ? AND u.is_active = 1
+      ORDER BY u.name ASC, u.id ASC
+    `, classId);
+  }
+
+  /** 关联教师到班级并写入科目（不触碰 is_head_teacher 标记）。 */
+  async setClassTeacher(teacherId: number, classId: number, subject: string | null): Promise<void> {
+    const sql = buildUpsertSQL(
+      this.db.dialect,
+      "teacher_classes",
+      ["teacher_id", "class_id", "subject"],
+      ["teacher_id", "class_id"],
+      ["subject"]
+    );
+    await this.db.run(sql, teacherId, classId, subject);
+  }
+
+  /**
+   * 事务内原子替换该班班主任：撤销旧班主任的按班标记（纯班主任关联则整行删除，
+   * 兼任任课教师只撤标记保留科目），再为新教师置标记。teacherId 为 null 表示仅清除。
+   * 新教师是否存在必须由调用方在写入前校验完成。
+   *
+   * 一班一班主任靠两层保障：事务开头对班级行做一次哑更新取写锁（MariaDB 行锁把
+   * 并发替换排成串行，SQLite 本就单连接串行），提交前再断言标记唯一，破坏即回滚。
+   */
+  async replaceClassHeadTeacher(classId: number, teacherId: number | null): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx.run("UPDATE classes SET name = name WHERE id = ?", classId);
+      const heads = await tx.all<{ teacher_id: number; subject: string | null }>(
+        "SELECT teacher_id, subject FROM teacher_classes WHERE class_id = ? AND is_head_teacher = 1",
+        classId
+      );
+      for (const head of heads) {
+        if (head.teacher_id === teacherId) continue;
+        if (head.subject === null) {
+          await tx.run("DELETE FROM teacher_classes WHERE teacher_id = ? AND class_id = ?", head.teacher_id, classId);
+        } else {
+          await tx.run("UPDATE teacher_classes SET is_head_teacher = 0 WHERE teacher_id = ? AND class_id = ?", head.teacher_id, classId);
+        }
+      }
+      if (teacherId !== null) {
+        const insert = buildInsertIgnore(tx.dialect, "teacher_classes", ["teacher_id", "class_id"]);
+        await tx.run(insert, teacherId, classId);
+        await tx.run("UPDATE teacher_classes SET is_head_teacher = 1 WHERE teacher_id = ? AND class_id = ?", teacherId, classId);
+      }
+      const expected = teacherId === null ? 0 : 1;
+      const marked = await tx.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM teacher_classes WHERE class_id = ? AND is_head_teacher = 1",
+        classId
+      );
+      if (Number(marked?.n ?? 0) !== expected) {
+        throw new Error(`班级 ${classId} 班主任标记唯一性校验失败（期望 ${expected}，实际 ${Number(marked?.n ?? 0)}），事务回滚`);
+      }
+    });
   }
 
   async listTeacherClasses(teacherId: number): Promise<Array<{
