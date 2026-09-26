@@ -216,7 +216,11 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
     for (const row of rows) {
       const text = row.answerText.trim();
       if (!text) {
-        if (row.questionNumber.trim()) setPanelError(`第 ${row.questionNumber} 题答案为空，请填写或删除该行`);
+        // 服务端是全量替换：跳过空行 = 删掉该题已保存的答案，所以带题号的空行必须中止保存
+        if (row.questionNumber.trim()) {
+          setPanelError(`第 ${row.questionNumber} 题答案为空，请填写或删除该行`);
+          return;
+        }
         continue;
       }
       const questionNumber = Number(row.questionNumber);
