@@ -38,7 +38,7 @@ type AccessibleError = { status: number; message: string };
  * 返回教师可访问的班级 ID 集合。与 getVisibleExamIds 保持同源：
  * - admin / grade_leader / 普通教师(无 teacher_role) → null（全校可见）
  * - head_teacher → teacher_classes 关联所有班级
- * - subject_teacher → teacher_classes 中科目匹配的班级
+ * - subject_teacher → teacher_classes 中科目匹配的班级 + 按班班主任（is_head_teacher）班级
  * - 其他 → []（零可见）
  */
 export async function getAccessibleClassIds(
@@ -56,9 +56,15 @@ export async function getAccessibleClassIds(
     return rows.length > 0 ? rows.map((r) => r.class_id) : [];
   }
   if (user.teacher_role === "subject_teacher") {
-    if (!user.subject) return [];
+    // 按班班主任（is_head_teacher）：其担任班主任的班级可见，不受任教学科限制
+    if (!user.subject) {
+      const headRows = await db.all<{ class_id: number }>(
+        "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND is_head_teacher = 1", user.id
+      );
+      return headRows.map((r) => r.class_id);
+    }
     const rows = await db.all<{ class_id: number }>(
-      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL OR is_head_teacher = 1)",
       user.id, user.subject
     );
     return rows.length > 0 ? rows.map((r) => r.class_id) : [];

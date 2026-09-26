@@ -95,7 +95,7 @@ router.delete("/:id", manage, async (req: Request, res: Response) => {
 
 /**
  * GET /api/classes/:id/teachers — 班级教师配置。
- * 班主任 = 该班关联里「未设科目 + 教师角色为班主任」的那位；任课教师 = 关联里带科目的记录。
+ * 班主任 = 该班关联里 is_head_teacher=1 的那位；任课教师 = 关联里带科目的记录。
  */
 router.get("/:id/teachers", manage, async (req: Request, res: Response) => {
   const classId = Number(req.params.id);
@@ -104,7 +104,7 @@ router.get("/:id/teachers", manage, async (req: Request, res: Response) => {
     return;
   }
   const rows = await classRepo.listClassTeachers(classId);
-  const head = rows.find((row) => row.subject === null && row.teacher_role === "head_teacher");
+  const head = rows.find((row) => Number(row.is_head_teacher) === 1);
   res.json({
     headTeacherId: head?.teacher_id ?? null,
     headTeacherName: head?.name ?? null,
@@ -150,7 +150,8 @@ router.delete("/:id/teachers/:teacherId", manage, async (req: Request, res: Resp
 
 /**
  * PUT /api/classes/:id/head-teacher — 设置 / 清除班主任（可在全部教师中选择，不限学科）。
- * 复用既有教师角色「班主任」+ 关联班级：写入 teacher_classes（不设科目）并把该教师标记为班主任。
+ * 班主任是按班关系（teacher_classes.is_head_teacher），不改动教师的全局 users.teacher_role，
+ * 否则会波及该教师在其它班级的权限范围。先完成全部校验，再在事务内替换。
  */
 router.put("/:id/head-teacher", manage, async (req: Request, res: Response) => {
   const classId = Number(req.params.id);
@@ -164,27 +165,15 @@ router.put("/:id/head-teacher", manage, async (req: Request, res: Response) => {
     res.status(400).json({ message: "teacherId 不合法" });
     return;
   }
-
-  const rows = await classRepo.listClassTeachers(classId);
-  for (const row of rows) {
-    const isHead = row.subject === null && row.teacher_role === "head_teacher";
-    if (!isHead || row.teacher_id === teacherId) continue;
-    await classRepo.removeTeacherFromClass(row.teacher_id, classId);
-  }
-
   if (teacherId !== null) {
     const teacher = await userRepo.findByIdIncludingInactive(teacherId);
     if (!teacher || teacher.role_id !== ROLE_IDS.TEACHER) {
       res.status(404).json({ message: "教师不存在" });
       return;
     }
-    await classRepo.setClassTeacher(teacherId, classId, null);
-    if (teacher.teacher_role !== "head_teacher") {
-      // 复用既有角色：班主任身份记在 users.teacher_role 上，班级归属记在 teacher_classes
-      await userRepo.updateTeacher(teacherId, { teacher_role: "head_teacher" });
-    }
   }
 
+  await classRepo.replaceClassHeadTeacher(classId, teacherId);
   res.json({ message: teacherId === null ? "已清除班主任" : "已设置班主任" });
 });
 

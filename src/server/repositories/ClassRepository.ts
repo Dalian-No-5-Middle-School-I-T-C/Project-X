@@ -34,6 +34,8 @@ export interface ClassTeacherRow {
   name: string;
   /** 该教师在此班级的科目覆盖（空 = 未指定，例如班主任） */
   subject: string | null;
+  /** 是否该班班主任（按班标记，v52） */
+  is_head_teacher: number;
   /** 教师本人任教学科 */
   teacher_subject: string | null;
   teacher_role: string | null;
@@ -195,11 +197,11 @@ export class ClassRepository {
 
   /**
    * 班级下的教师关联。teacher_classes 主键是 (teacher_id, class_id)，每位教师每班一行；
-   * subject 为该教师在此班级的科目覆盖，subject 为空且教师角色为班主任时即该班班主任。
+   * subject 为该教师在此班级的科目覆盖，is_head_teacher 按班标记班主任。
    */
   async listClassTeachers(classId: number): Promise<ClassTeacherRow[]> {
     return await this.db.all(`
-      SELECT tc.teacher_id, u.name, tc.subject, u.subject as teacher_subject, u.teacher_role
+      SELECT tc.teacher_id, u.name, tc.subject, tc.is_head_teacher, u.subject as teacher_subject, u.teacher_role
       FROM teacher_classes tc
       JOIN users u ON u.id = tc.teacher_id
       WHERE tc.class_id = ? AND u.is_active = 1
@@ -207,7 +209,7 @@ export class ClassRepository {
     `, classId);
   }
 
-  /** 关联教师到班级并写入科目（subject 为空 = 不设科目覆盖，用于班主任）。 */
+  /** 关联教师到班级并写入科目（不触碰 is_head_teacher 标记）。 */
   async setClassTeacher(teacherId: number, classId: number, subject: string | null): Promise<void> {
     const sql = buildUpsertSQL(
       this.db.dialect,
@@ -217,6 +219,33 @@ export class ClassRepository {
       ["subject"]
     );
     await this.db.run(sql, teacherId, classId, subject);
+  }
+
+  /**
+   * 事务内原子替换该班班主任：撤销旧班主任的按班标记（纯班主任关联则整行删除，
+   * 兼任任课教师只撤标记保留科目），再为新教师置标记。teacherId 为 null 表示仅清除。
+   * 新教师是否存在必须由调用方在写入前校验完成。
+   */
+  async replaceClassHeadTeacher(classId: number, teacherId: number | null): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      const heads = await tx.all<{ teacher_id: number; subject: string | null }>(
+        "SELECT teacher_id, subject FROM teacher_classes WHERE class_id = ? AND is_head_teacher = 1",
+        classId
+      );
+      for (const head of heads) {
+        if (head.teacher_id === teacherId) continue;
+        if (head.subject === null) {
+          await tx.run("DELETE FROM teacher_classes WHERE teacher_id = ? AND class_id = ?", head.teacher_id, classId);
+        } else {
+          await tx.run("UPDATE teacher_classes SET is_head_teacher = 0 WHERE teacher_id = ? AND class_id = ?", head.teacher_id, classId);
+        }
+      }
+      if (teacherId !== null) {
+        const insert = buildInsertIgnore(tx.dialect, "teacher_classes", ["teacher_id", "class_id"]);
+        await tx.run(insert, teacherId, classId);
+        await tx.run("UPDATE teacher_classes SET is_head_teacher = 1 WHERE teacher_id = ? AND class_id = ?", teacherId, classId);
+      }
+    });
   }
 
   async listTeacherClasses(teacherId: number): Promise<Array<{

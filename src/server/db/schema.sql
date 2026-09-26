@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS teacher_classes (
     teacher_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     class_id    INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
     subject     TEXT,                                    -- 可选：该教师在此班级的科目覆盖
+    is_head_teacher INTEGER NOT NULL DEFAULT 0,          -- 按班班主任标记（v52）
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (teacher_id, class_id)
 );

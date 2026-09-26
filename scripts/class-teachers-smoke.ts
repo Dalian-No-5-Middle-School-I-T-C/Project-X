@@ -2,7 +2,8 @@
  * 第 8 条（2026-09-23 反馈）回归：班级改名 + 班主任 + 分科任课教师。
  *
  * 走真实 HTTP：建年级/班级 → 改名 → 设班主任（不限学科）→ 按学科设任课教师 → 改科目/解除，
- * 并回读数据库确认持久化结果（teacher_classes 一行一人一班、users.teacher_role）。
+ * 并回读数据库确认持久化结果（teacher_classes 一行一人一班、按班 is_head_teacher）。
+ * 复审回归（2026-09-26）：按班班主任不得扩大其它任教班级的权限、更换失败不删除现任。
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -109,9 +110,9 @@ async function main(): Promise<void> {
     assert.equal(config.headTeacherId, wang.id, "班主任未生效");
     const db = getDatabase();
     const headRole = db.prepare("SELECT teacher_role FROM users WHERE id = ?").get(wang.id) as { teacher_role: string };
-    assert.equal(headRole.teacher_role, "head_teacher", "班主任教师角色未写入 users.teacher_role");
-    const headLink = db.prepare("SELECT subject FROM teacher_classes WHERE teacher_id = ? AND class_id = ?").get(wang.id, classId) as { subject: string | null };
-    assert.equal(headLink.subject, null, "班主任关联不应带科目");
+    assert.equal(headRole.teacher_role, "subject_teacher", "设班主任不得改动教师的全局 users.teacher_role");
+    const headLink = db.prepare("SELECT subject, is_head_teacher FROM teacher_classes WHERE teacher_id = ? AND class_id = ?").get(wang.id, classId) as { subject: string | null; is_head_teacher: number };
+    assert.equal(headLink.is_head_teacher, 1, "班主任必须按班记在 teacher_classes.is_head_teacher");
 
     // ── 3. 分科任课教师 ───────────────────────────────
     assert.equal((await post(`/api/classes/${classId}/teachers`, { teacherId: li.id, subject: "物理" })).status, 200, "设置物理任课教师失败");
@@ -144,7 +145,43 @@ async function main(): Promise<void> {
     config = (await (await get(`/api/classes/${classId}/teachers`)).json()) as ClassTeachers;
     assert.equal(config.headTeacherId, null, "清除班主任未生效");
 
-    console.log("verify:class-teachers 通过（班级改名 / 班主任 / 分科任课教师）");
+    // ── 6. 按班班主任不扩大其它任教班级的权限 / 更换失败保留现任 ──
+    const { getVisibleExamIds } = await import("../src/apps/answer-card/server/middleware");
+    const wangUser = { id: wang.id, role_name: "teacher", teacher_role: "subject_teacher", subject: "物理" } as never;
+    const insertExam = (targetClassId: number, subject: string) => {
+      const info = db.prepare("INSERT INTO exams (name, grade_id, class_id, subject, exam_mode) VALUES (?, ?, ?, ?, 'formal')")
+        .run(`${subject}考试-${targetClassId}`, gradeId, targetClassId, subject);
+      return Number(info.lastInsertRowid);
+    };
+    const classB = ((await (await post("/api/classes", { gradeId, name: "一班" })).json()) as { id: number }).id;
+    assert.equal((await post(`/api/classes/${classB}/teachers`, { teacherId: wang.id, subject: "物理" })).status, 200, "为乙班设置物理任课教师失败");
+    const examBPhysics = insertExam(classB, "物理");
+    const examBChinese = insertExam(classB, "语文");
+    const examAPhysics = insertExam(classId, "物理");
+    const examAChinese = insertExam(classId, "语文");
+
+    const before = await getVisibleExamIds(wangUser);
+    assert.ok(before && before.includes(examBPhysics) && !before.includes(examBChinese), "任教班级只应看到任教学科考试");
+    assert.ok(before && !before.includes(examAChinese) && !before.includes(examAPhysics), "无关联班级应完全不可见");
+
+    assert.equal((await post(`/api/classes/${classId}/head-teacher`, { teacherId: wang.id }, "PUT")).status, 200, "设置甲班班主任失败");
+    const during = await getVisibleExamIds(wangUser);
+    assert.ok(during && during.includes(examAChinese) && during.includes(examAPhysics), "班主任应看到本班全科考试");
+    assert.ok(during && !during.includes(examBChinese), "仅任教的乙班语文考试必须仍不可见（复审第 1 条）");
+
+    const badReplace = await post(`/api/classes/${classId}/head-teacher`, { teacherId: 999999 }, "PUT");
+    assert.equal(badReplace.status, 404, "不存在的教师必须被拒绝");
+    config = (await (await get(`/api/classes/${classId}/teachers`)).json()) as ClassTeachers;
+    assert.equal(config.headTeacherId, wang.id, "更换失败不得删除现任班主任（复审第 2 条）");
+
+    assert.equal((await post(`/api/classes/${classId}/head-teacher`, { teacherId: null }, "PUT")).status, 200, "清除甲班班主任失败");
+    const after = await getVisibleExamIds(wangUser);
+    assert.ok(after && !after.includes(examAChinese) && !after.includes(examAPhysics), "清除班主任后本班考试恢复不可见");
+    assert.ok(after && after.includes(examBPhysics) && !after.includes(examBChinese), "清除后任教范围权限保持原样");
+    const stillPlain = db.prepare("SELECT teacher_role FROM users WHERE id = ?").get(wang.id) as { teacher_role: string };
+    assert.equal(stillPlain.teacher_role, "subject_teacher", "全流程不得触碰全局教师角色");
+
+    console.log("verify:class-teachers 通过（班级改名 / 按班班主任 / 分科任课教师 / 权限范围不扩散 / 更换失败保留现任）");
   } finally {
     if (server) {
       server.closeAllConnections?.();
