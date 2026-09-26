@@ -308,9 +308,13 @@ export function ClassStackBar({
 }
 
 /**
- * Issue #175: 班级对比雷达图（多维度）。
+ * Issue #175 / #263: 班级对比雷达图（多维度）。
  * 维度：平均分率 / 中位分率 / 及格率 / 优秀率 / 难度系数 / 区分度 / 离散度（标准差占满分比）。
- * 除离散度外均为“越高越好”口径，便于直观比较。
+ *
+ * Issue #263 修复：七个维度的天然量纲差异极大（及格率 0-100、区分度 ~0.1-0.4、离散度 ~10-20%），
+ * 此前共用一根固定 0-100 半径轴 → 区分度/离散度被压缩到圆心附近、及格/优秀率挤在边缘无法比较。
+ * 现对每个维度按「本班集合内的最小/最大值」独立归一化到 0-100，让每根轴都用满半径、班级间差异可读；
+ * 某维度各班数值全相等（无区分度）时取中性中点 50，避免整条轴塌陷到圆心。真实数值通过悬浮 tooltip 展示。
  */
 export function ClassRadar({
   classes,
@@ -335,15 +339,25 @@ export function ClassRadar({
     return <p className="py-5 text-center text-sm text-muted-foreground">满分未知，无法计算班级多维度雷达图</p>;
   }
   const score = (value: number) => (value / fullScore) * 100;
-  const dims = [
-    { label: "平均分率", get: (c: (typeof classes)[number]) => score(c.avgScore) },
-    { label: "中位分率", get: (c: (typeof classes)[number]) => score(c.median) },
-    { label: "及格率", get: (c: (typeof classes)[number]) => c.passRate },
-    { label: "优秀率", get: (c: (typeof classes)[number]) => c.excellentRate },
-    { label: "难度系数", get: (c: (typeof classes)[number]) => Math.max(0, Math.min(100, c.difficulty * 100)) },
-    { label: "区分度", get: (c: (typeof classes)[number]) => Math.max(0, Math.min(100, c.discrimination * 100)) },
-    { label: "离散度", get: (c: (typeof classes)[number]) => Math.max(0, Math.min(100, score(c.stdDev))) },
+  // raw = 该维度的真实数值（tooltip 展示）；fmt = 真实数值的可读串
+  const dims: Array<{ label: string; raw: (c: (typeof classes)[number]) => number; fmt: (v: number) => string }> = [
+    { label: "平均分率", raw: (c) => score(c.avgScore), fmt: (v) => `${v.toFixed(1)}%` },
+    { label: "中位分率", raw: (c) => score(c.median), fmt: (v) => `${v.toFixed(1)}%` },
+    { label: "及格率", raw: (c) => c.passRate, fmt: (v) => `${v.toFixed(0)}%` },
+    { label: "优秀率", raw: (c) => c.excellentRate, fmt: (v) => `${v.toFixed(0)}%` },
+    { label: "难度系数", raw: (c) => c.difficulty, fmt: (v) => v.toFixed(3) },
+    { label: "区分度", raw: (c) => c.discrimination, fmt: (v) => v.toFixed(3) },
+    { label: "离散度", raw: (c) => score(c.stdDev), fmt: (v) => `${v.toFixed(1)}%` },
   ];
+  // 每维度独立求 [min,max] 后归一化到 0-100（数据驱动，充分利用半径）
+  const perDimRaw = dims.map((d) => classes.map((c) => d.raw(c)));
+  const norm = (dimIndex: number, classIndex: number): number => {
+    const list = perDimRaw[dimIndex];
+    const min = Math.min(...list);
+    const max = Math.max(...list);
+    if (max - min < 1e-9) return 50; // 各班相同 → 中性中点，不塌陷
+    return ((list[classIndex] - min) / (max - min)) * 100;
+  };
 
   const chartData = {
     labels: dims.map((d) => d.label),
@@ -351,7 +365,7 @@ export function ClassRadar({
       const color = paletteColor(ci);
       return {
         label: cls.className,
-        data: dims.map((d) => Math.round(d.get(cls) * 10) / 10),
+        data: dims.map((_, di) => Math.round(norm(di, ci) * 10) / 10),
         backgroundColor: withAlpha(color, 0.15),
         borderColor: color,
         borderWidth: 2,
@@ -372,13 +386,25 @@ export function ClassRadar({
           r: {
             min: 0,
             max: 100,
-            ticks: { stepSize: 20, font: { size: 10 }, backdropColor: "transparent" },
+            ticks: { display: false },
             pointLabels: { font: { size: 11, weight: "bold" as const } },
             grid: { color: theme.grid },
             angleLines: { color: theme.axis },
           },
         },
-        plugins: { legend: { position: "bottom" as const } },
+        plugins: {
+          legend: { position: "bottom" as const },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const cls = classes[ctx.datasetIndex];
+                const dim = dims[ctx.dataIndex];
+                if (cls == null || dim == null) return "";
+                return `${cls.className}：${dim.fmt(dim.raw(cls))}`;
+              },
+            },
+          },
+        },
       }}
     />
   );

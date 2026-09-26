@@ -971,6 +971,7 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
               <h3 className="text-sm font-semibold text-foreground">
                 多维度雷达对比
               </h3>
+              <p className="text-xs text-muted-foreground">各维度按本班集合内最大/最小值独立缩放，用于比较班级相对高低；悬停查看真实数值。</p>
               <ClassRadar classes={comparison.classes} fullScore={comparison.fullScore} height={340} />
             </section>
           )}
