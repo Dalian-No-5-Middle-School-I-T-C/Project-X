@@ -48,7 +48,9 @@ export function TeacherManagement() {
   const [grades, setGrades] = useState<GradeRecord[]>([]);
   const [allClasses, setAllClasses] = useState<ClassRecord[]>([]);
   const [selectedGradeId, setSelectedGradeId] = useState<number | null>(null);
-  const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
+  // Issue #291：班级多选 + 全选 + 排序
+  const [selectedClassIds, setSelectedClassIds] = useState<number[]>([]);
+  const [classSort, setClassSort] = useState<"default" | "nameAsc" | "nameDesc">("default");
 
   // 弹窗
   const [showImport, setShowImport] = useState(false);
@@ -88,7 +90,6 @@ export function TeacherManagement() {
     try {
       const data = await fetchJson<ClassRecord[]>(`/api/classes?gradeId=${gradeId}`);
       setAllClasses(data);
-      setSelectedClassId(data.length > 0 ? data[0].id : null);
     } catch {}
   }, []);
 
@@ -98,6 +99,7 @@ export function TeacherManagement() {
 
   useEffect(() => {
     setTeacherDetail(null);
+    setSelectedClassIds([]);
     setDetailError("");
     if (selectedId === null) return;
     const controller = new AbortController();
@@ -145,20 +147,20 @@ export function TeacherManagement() {
   }
 
   async function handleLinkClass() {
-    if (!selected || !selectedClassId) return;
+    if (!selected || selectedClassIds.length === 0) return;
     setBusy(true);
     setError("");
     try {
       const resp = await fetchJson<{ teacher: TeacherRecord }>(`/api/teachers/${selected.id}/classes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ classIds: [selectedClassId], subject: editSubject.trim() || null })
+        body: JSON.stringify({ classIds: selectedClassIds, subject: editSubject.trim() || null })
       });
       // 直接更新当前教师详情（关联班级即时可见，无需手动刷新）
       if (resp.teacher) {
         setTeacherDetail((prev) => prev?.id === selected.id ? resp.teacher : prev);
       }
-      setSelectedClassId(null);
+      setSelectedClassIds([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "关联失败");
     } finally {
@@ -231,6 +233,26 @@ export function TeacherManagement() {
     } finally {
       setBusy(false);
     }
+  }
+
+  // ── Issue #291：班级多选辅助 ──────────────────────────
+  const linkedClassIds = new Set((selected?.classes ?? []).map((c) => c.class_id));
+  const selectableClasses = (() => {
+    const list = [...allClasses];
+    if (classSort === "nameAsc") list.sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
+    else if (classSort === "nameDesc") list.sort((a, b) => b.name.localeCompare(a.name, "zh-CN", { numeric: true }));
+    else list.sort((a, b) => a.sort_order - b.sort_order || a.id - b.id); // 默认：后台手动排序
+    return list;
+  })();
+  // 可关联（尚未关联）的班级
+  const linkableClasses = selectableClasses.filter((c) => !linkedClassIds.has(c.id));
+  const allSelected = linkableClasses.length > 0 && linkableClasses.every((c) => selectedClassIds.includes(c.id));
+
+  function toggleClass(classId: number) {
+    setSelectedClassIds((prev) => (prev.includes(classId) ? prev.filter((x) => x !== classId) : [...prev, classId]));
+  }
+  function toggleAllClasses() {
+    setSelectedClassIds(allSelected ? [] : linkableClasses.map((c) => c.id));
   }
 
   return (
@@ -388,37 +410,90 @@ export function TeacherManagement() {
                   )}
                 </div>
 
-                {/* 添加关联 */}
-                <div className="flex items-center gap-2">
-                  <Select
-                    value={selectedGradeId != null ? String(selectedGradeId) : NONE}
-                    onValueChange={(v) => setSelectedGradeId(v === NONE ? null : Number(v))}
-                    disabled={busy}
-                  >
-                    <SelectTrigger className="w-auto">
-                      <SelectValue placeholder="选年级" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={NONE}>选年级</SelectItem>
-                      {grades.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={selectedClassId != null ? String(selectedClassId) : NONE}
-                    onValueChange={(v) => setSelectedClassId(v === NONE ? null : Number(v))}
-                    disabled={busy}
-                  >
-                    <SelectTrigger className="w-auto">
-                      <SelectValue placeholder="选班级" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={NONE}>选班级</SelectItem>
-                      {allClasses.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                  <Button variant="outline" size="sm" icon={<Link size={14} />} onClick={handleLinkClass} disabled={busy || !selectedClassId}>
-                    关联
-                  </Button>
+                {/* 添加关联（Issue #291：多选 + 全选 + 排序） */}
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={selectedGradeId != null ? String(selectedGradeId) : NONE}
+                      onValueChange={(v) => { setSelectedGradeId(v === NONE ? null : Number(v)); setSelectedClassIds([]); }}
+                      disabled={busy}
+                    >
+                      <SelectTrigger className="w-auto">
+                        <SelectValue placeholder="选年级" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NONE}>选年级</SelectItem>
+                        {grades.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <Select value={classSort} onValueChange={(v) => setClassSort(v as typeof classSort)} disabled={busy}>
+                      <SelectTrigger className="w-auto">
+                        <SelectValue placeholder="排序" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">默认顺序</SelectItem>
+                        <SelectItem value="nameAsc">班级名 A→Z</SelectItem>
+                        <SelectItem value="nameDesc">班级名 Z→A</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {selectedClassIds.length > 0 && (
+                      <span className="text-xs text-muted-foreground">已选 {selectedClassIds.length} 个班级</span>
+                    )}
+                  </div>
+
+                  {allClasses.length === 0 ? (
+                    <p className="px-2 py-1 text-sm text-muted-foreground">{selectedGradeId == null ? "请先选择年级" : "该年级暂无班级"}</p>
+                  ) : (
+                    <div className="flex max-h-[220px] flex-col overflow-auto rounded-md border border-border-subtle">
+                      <label className={cn(
+                        "flex items-center gap-2 border-b border-border-subtle bg-secondary/40 px-3 py-2 text-sm",
+                        linkableClasses.length > 0 ? "cursor-pointer" : "opacity-50"
+                      )}>
+                        <input
+                          type="checkbox"
+                          className="accent-(--color-primary)"
+                          checked={allSelected}
+                          onChange={toggleAllClasses}
+                          disabled={busy || linkableClasses.length === 0}
+                        />
+                        <span className="font-medium text-foreground">全选</span>
+                      </label>
+                      <div className="flex flex-col">
+                        {selectableClasses.map((c) => {
+                          const linked = linkedClassIds.has(c.id);
+                          const checked = selectedClassIds.includes(c.id);
+                          return (
+                            <label key={c.id} className={cn(
+                              "flex items-center gap-2 border-b border-border-subtle px-3 py-2 text-sm last:border-b-0",
+                              linked ? "opacity-50" : "cursor-pointer hover:bg-secondary/40"
+                            )}>
+                              <input
+                                type="checkbox"
+                                className="accent-(--color-primary)"
+                                checked={linked || checked}
+                                onChange={() => toggleClass(c.id)}
+                                disabled={busy || linked}
+                              />
+                              <span className="text-foreground">{c.name}</span>
+                              {linked && <small className="text-xs text-muted-foreground">已关联</small>}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      icon={<Link size={14} />}
+                      onClick={handleLinkClass}
+                      disabled={busy || selectedClassIds.length === 0}
+                    >
+                      关联所选班级
+                    </Button>
+                  </div>
                 </div>
               </div>
             </>
