@@ -909,6 +909,8 @@ export interface SubjectZScore {
   gradeAvg: number;
   gradeStd: number;
   z: number;
+  /** 相对个人整体水平的落差：本场 Z − 本人跨科平均 Z（Issue #264） */
+  relativeZ: number;
 }
 
 export interface SubjectDeviationItem {
@@ -917,11 +919,13 @@ export interface SubjectDeviationItem {
   studentName: string;
   className: string;
   subjects: SubjectZScore[];
-  /** 最低 Z（越负越偏科） */
+  /** 本人跨科平均 Z（个人整体水平基线） */
+  ownMeanZ: number;
+  /** 最弱科目相对个人的落差（相对 Z，越负越偏科；Issue #264 前为裸年级 Z） */
   lowestZ: number;
-  /** 最低 Z 对应科目名 */
+  /** 最低相对 Z 对应科目名 */
   lowestSubject: string;
-  /** 是否触发预警（lowestZ < -threshold） */
+  /** 是否触发预警（最弱科相对个人基线 < -threshold） */
   flagged: boolean;
 }
 

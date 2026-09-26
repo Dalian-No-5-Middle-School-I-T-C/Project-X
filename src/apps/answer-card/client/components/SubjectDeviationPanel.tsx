@@ -85,7 +85,7 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
         )}
       </div>
       <p className="text-xs text-muted-foreground">
-        Z = (个人分 − 年级均分) / 年级标准差。已自动选取同学科最近 {examOptions.length > 0 ? Math.min(8, examOptions.length) : 0} 场：
+        先算各科年级 Z =（个人分 − 年级均分）/ 年级标准差，再与本人跨科平均 Z 比较，相对落差 &lt; -{data?.threshold ?? 0.8} 触发预警。已自动选取同学科最近 {examOptions.length > 0 ? Math.min(8, examOptions.length) : 0} 场：
       </p>
       <div className="flex flex-wrap gap-2">
         {examOptions.map((r) => {
@@ -138,8 +138,8 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
                     <TableHead>考号</TableHead>
                     <TableHead>班级</TableHead>
                     <TableHead>最弱科目</TableHead>
-                    <TableHead numeric>最低 Z</TableHead>
-                    <TableHead>各科 Z 分</TableHead>
+                    <TableHead numeric>相对落差</TableHead>
+                    <TableHead>各科相对 Z（年级 Z）</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -163,17 +163,17 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
                           {item.subjects.map((s) => (
                             <span
                               key={s.examId}
-                              title={`${s.subject}：${s.score} 分（年级均分 ${s.gradeAvg}）`}
+                              title={`${s.subject}：${s.score} 分（年级均分 ${s.gradeAvg}，年级 Z ${s.z.toFixed(2)}，个人基线 ${item.ownMeanZ.toFixed(2)}）`}
                               className={cn(
                                 "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs tabular-nums",
-                                s.z < -0.8
+                                s.relativeZ < -(data?.threshold ?? 0.8)
                                   ? "border-destructive-border bg-destructive-soft text-destructive-fg"
-                                  : s.z > 0.8
+                                  : s.relativeZ > (data?.threshold ?? 0.8)
                                     ? "border-success-border bg-success-soft text-success-foreground"
                                     : "border-border bg-card text-muted-foreground",
                               )}
                             >
-                              {s.subject} {s.z.toFixed(2)}
+                              {s.subject} {s.relativeZ.toFixed(2)}
                             </span>
                           ))}
                         </div>
