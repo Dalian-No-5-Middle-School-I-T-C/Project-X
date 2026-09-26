@@ -296,6 +296,29 @@ async function main() {
   ok(deleted.status === 200 && (deleted.body?.answerPages ?? []).length === 0, "答案页删除后列表为空");
   const keptPage = await getMysqlDb().get("SELECT page_index FROM exam_answer_keys WHERE exam_id = ? AND question_number = 1", examId) as { page_index: number | null };
   ok(keptPage?.page_index === 1, "删除答案扫描页不动答案的原卷页归属（两种页码分属不同资产，不联动清空）");
+
+  // 并发上传同一场考试：页码分配必须串行，否则两请求抢同一页码 + 同一 answerkey-<n> 文件名，
+  // 失败方的回滚会删掉成功方的文件（或留下指向别人字节的记录）
+  const concurrent = await Promise.all([1, 2].map(async (i) => {
+    const f = new FormData();
+    f.append("files", new Blob([await jpegBuffer()], { type: "image/jpeg" }), `并发第${i}页.jpg`);
+    const r = await fetch(`${base}/api/exams/${examId}/answer-key/pages?ocr=0`, {
+      method: "POST", headers: { Authorization: `Bearer ${adminToken}` }, body: f,
+    });
+    return { status: r.status, body: await r.json().catch(() => ({})) };
+  }));
+  const concurrentPages = ((await jsonFetch(base, `/api/exams/${examId}/answer-key`, {}, adminToken)).body?.answerPages ?? []) as Array<{ pageIndex: number; filename: string }>;
+  ok(
+    concurrent.every((r) => r.status === 200)
+      && concurrentPages.length === 2
+      && new Set(concurrentPages.map((p) => p.pageIndex)).size === 2
+      && new Set(concurrentPages.map((p) => p.filename)).size === 2,
+    "并发上传 → 两页各得独立页码与文件（不互相覆盖/回滚删除）"
+  );
+  for (const page of concurrentPages) {
+    await jsonFetch(base, `/api/exams/${examId}/answer-key/pages/${page.pageIndex}`, { method: "DELETE" }, adminToken);
+  }
+
   const farPaper = await putAnswers({ answers: [{ questionNumber: 9, answerText: "A", pageIndex: 11 }] });
   ok(farPaper.status === 200, "答案归属原卷第 11 页不被答案上传上限（10）截断");
 

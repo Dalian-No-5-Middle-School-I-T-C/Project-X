@@ -105,6 +105,21 @@ function draftPayload(text: string | null) {
   };
 }
 
+/**
+ * 同场考试的答案页上传串行队列（沿用 scanner 模块的队列写法）。
+ * 最小空闲页码是「读 DB → 写文件 → 插行」，并发上传会抢到同一页码并写同一个
+ * answerkey-<n>.* 文件名，失败一方回滚时可能删掉成功一方的文件（或两行共用一份字节）。
+ * 进程内按 examId 排队消除该窗口；跨进程仍由 uq_exam_answer_key_pages 兜底。
+ * ponytail: 队列项不回收，每场考试一个已 resolve 的 promise，量级可忽略。
+ */
+const uploadQueues = new Map<number, Promise<void>>();
+function enqueueExamUpload<T>(examId: number, task: () => Promise<T>): Promise<T> {
+  const prev = uploadQueues.get(examId) ?? Promise.resolve();
+  const run = prev.then(task, task);
+  uploadQueues.set(examId, run.then(() => undefined, () => undefined));
+  return run;
+}
+
 export function examAnswerKeyRoutes(): Router {
   const router = Router();
 
@@ -253,56 +268,59 @@ export function examAnswerKeyRoutes(): Router {
       // multer 已经把这些文件写进 _tmp，任何提前 return 都要负责清理，否则每次重试都留一份垃圾
       const stagedPaths = valid.map((item) => item.file.path);
 
-      // 累计容量校验：只限单批文件数挡不住分多次上传堆出第 11 页，
-      // 而页码查看/重识别/删除接口只认 1..MAX_ANSWER_KEY_PAGES。
-      const existingRows = (await db.all<{ page_index: number }>(
-        "SELECT page_index FROM exam_answer_key_pages WHERE exam_id = ?",
-        exam.id
-      )) as Array<{ page_index: number }>;
-      const usedIndexes = new Set(existingRows.map((row) => Number(row.page_index)));
-      // 取最小空闲页码，保证新页码始终落在 1..MAX（MAX+1 递增会让删过页的考试越界）
-      let nextFree = 1;
-      const takeIndex = (): number => {
-        while (usedIndexes.has(nextFree)) nextFree += 1;
-        usedIndexes.add(nextFree);
-        return nextFree;
-      };
-
       try {
-        if (usedIndexes.size + valid.length > MAX_ANSWER_KEY_PAGES) {
-          res.status(400).json({
-            message: `累计最多上传 ${MAX_ANSWER_KEY_PAGES} 页答案：当前已有 ${usedIndexes.size} 页，本次 ${valid.length} 页`,
-          });
-          return;
-        }
-
-        // 先落盘再写库：压缩/写文件是真异步 I/O，放进事务会跨过 BEGIN/COMMIT 让出事件循环
-        // （SQLite 单连接下并发上传会撞 "cannot start a transaction within a transaction"）。
-        const planned: Array<{ pageIndex: number; diskFilename: string; relPath: string }> = [];
-        for (const { file, originalname } of valid) {
-          const pageIndex = takeIndex();
-          const stored = await storeAnswerKeyPageFile(file.path, originalname, dir, pageIndex);
-          planned.push({ pageIndex, diskFilename: stored.diskFilename, relPath: stored.relPath });
-        }
-
-        try {
-          await db.transaction(async (tx) => {
-            for (const page of planned) {
-              await tx.run(
-                "INSERT INTO exam_answer_key_pages (exam_id, page_index, filename, stored_path) VALUES (?, ?, ?, ?)",
-                exam.id, page.pageIndex, page.diskFilename, page.relPath
-              );
-            }
-          });
-        } catch (err) {
-          // 入库失败 → 刚写下的文件没有任何记录引用，直接清掉，不留孤儿
-          for (const page of planned) {
-            try { unlinkSync(path.join(dir, page.diskFilename)); } catch {}
+        const rejected = await enqueueExamUpload(exam.id, async (): Promise<boolean> => {
+          // 累计容量校验：只限单批文件数挡不住分多次上传堆出第 11 页，
+          // 而页码查看/重识别/删除接口只认 1..MAX_ANSWER_KEY_PAGES。
+          const existingRows = (await db.all<{ page_index: number }>(
+            "SELECT page_index FROM exam_answer_key_pages WHERE exam_id = ?",
+            exam.id
+          )) as Array<{ page_index: number }>;
+          const usedIndexes = new Set(existingRows.map((row) => Number(row.page_index)));
+          if (usedIndexes.size + valid.length > MAX_ANSWER_KEY_PAGES) {
+            res.status(400).json({
+              message: `累计最多上传 ${MAX_ANSWER_KEY_PAGES} 页答案：当前已有 ${usedIndexes.size} 页，本次 ${valid.length} 页`,
+            });
+            return true;
           }
-          throw err;
-        }
-        // ponytail: 同场考试并发上传时最小空闲页码可能被抢，由 uq_exam_answer_key_pages 挡住后者并回滚其文件
-        uploaded.push(...planned.map((page) => ({ pageIndex: page.pageIndex, filename: page.diskFilename })));
+
+          // 取最小空闲页码，保证新页码始终落在 1..MAX（MAX+1 递增会让删过页的考试越界）
+          let nextFree = 1;
+          const takeIndex = (): number => {
+            while (usedIndexes.has(nextFree)) nextFree += 1;
+            usedIndexes.add(nextFree);
+            return nextFree;
+          };
+
+          // 先落盘再写库：压缩/写文件是真异步 I/O，放进事务会跨过 BEGIN/COMMIT 让出事件循环
+          // （SQLite 单连接下并发上传会撞 "cannot start a transaction within a transaction"）。
+          const planned: Array<{ pageIndex: number; diskFilename: string; relPath: string }> = [];
+          for (const { file, originalname } of valid) {
+            const pageIndex = takeIndex();
+            const stored = await storeAnswerKeyPageFile(file.path, originalname, dir, pageIndex);
+            planned.push({ pageIndex, diskFilename: stored.diskFilename, relPath: stored.relPath });
+          }
+
+          try {
+            await db.transaction(async (tx) => {
+              for (const page of planned) {
+                await tx.run(
+                  "INSERT INTO exam_answer_key_pages (exam_id, page_index, filename, stored_path) VALUES (?, ?, ?, ?)",
+                  exam.id, page.pageIndex, page.diskFilename, page.relPath
+                );
+              }
+            });
+          } catch (err) {
+            // 入库失败 → 刚写下的文件没有任何记录引用，直接清掉，不留孤儿
+            for (const page of planned) {
+              try { unlinkSync(path.join(dir, page.diskFilename)); } catch {}
+            }
+            throw err;
+          }
+          uploaded.push(...planned.map((page) => ({ pageIndex: page.pageIndex, filename: page.diskFilename })));
+          return false;
+        });
+        if (rejected) return;
       } finally {
         for (const stagedPath of stagedPaths) {
           try { unlinkSync(stagedPath); } catch {}
