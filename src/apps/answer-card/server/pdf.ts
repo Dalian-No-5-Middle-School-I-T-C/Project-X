@@ -17,6 +17,7 @@ import { buildLayout } from "../../../shared/layout";
 import { formatBlankLabel } from "../../../shared/blankLabels";
 import { ESSAY_GRID_INSET_X, essayGridGeometry, essayWordScaleMarks } from "../../../shared/essayGrid";
 import { shouldRenderScoreGrid } from "../../../shared/scoreGrid";
+import type { RichTextRun } from "../../../shared/richText";
 import { cardAssetsDir } from "./storage";
 
 const MM_TO_PT = 72 / 25.4;
@@ -145,6 +146,31 @@ function drawRect(doc: PDFKit.PDFDocument, rect: Rect, options: { fill?: string;
     doc.rect(pt(rect.x), pt(rect.y), pt(rect.width), pt(rect.height)).fill(options.fill);
   } else {
     doc.rect(pt(rect.x), pt(rect.y), pt(rect.width), pt(rect.height)).stroke(options.stroke ?? "#222");
+  }
+}
+
+/**
+ * 注记行：支持 `**加粗**` / `*斜体*`（shared/richText 解析）。
+ * 中文只有一套字重，加粗用描边近似；pdfkit 的 oblique 选项做倾斜。
+ */
+function drawAnnotationLine(
+  doc: PDFKit.PDFDocument,
+  line: { text: string; rect: Rect; runs?: RichTextRun[] },
+  size = 7
+) {
+  const runs = line.runs && line.runs.length > 0 ? line.runs : [{ text: line.text, bold: false, italic: false }];
+  doc.font(regularFont(doc)).fontSize(size).fillColor("#111");
+  let cursorX = line.rect.x;
+  for (const run of runs) {
+    if (!run.text) continue;
+    const widthMm = doc.widthOfString(run.text) * (25.4 / 72);
+    if (run.bold) doc.lineWidth(0.3);
+    doc.text(run.text, pt(cursorX), pt(line.rect.y), {
+      lineBreak: false,
+      stroke: run.bold,
+      oblique: run.italic ? 12 : undefined
+    });
+    cursorX += widthMm;
   }
 }
 
@@ -424,7 +450,7 @@ function drawSubjectiveQuestion(doc: PDFKit.PDFDocument, card: AnswerCard, quest
   });
 
   (question.annotationLines ?? []).forEach((line) => {
-    drawText(doc, line.text, line.rect.x, line.rect.y, 7);
+    drawAnnotationLine(doc, line, 7);
   });
 
   question.images.forEach((image) => {
