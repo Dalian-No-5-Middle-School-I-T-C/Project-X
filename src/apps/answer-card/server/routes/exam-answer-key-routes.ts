@@ -21,6 +21,7 @@ import {
   listAnswerKeyPages,
   listExamAnswerKeys,
   listExamPaperPages,
+  purgeAnswerKeyPageSiblings,
   resolveAnswerKeyPageFile,
 } from "../../../../server/services/ExamPaperViewService";
 import { answerKeyDir, answerKeysDir, ensureAnswerKeyDir } from "../storage";
@@ -103,6 +104,20 @@ function draftPayload(text: string | null) {
     recognized: Boolean(text),
     drafts: drafts.map((d) => ({ questionNumber: d.questionNumber, answerText: d.answerText })),
   };
+}
+
+/**
+ * 取某页在 DB 登记的磁盘文件名。
+ * 只有走过上传流程的页才会有行记录，因此「无行 = 该页不存在」：
+ * 以此为准可以同时挡掉两类问题——按页码猜测文件（早期失败上传遗留的孤儿文件）
+ * 被当作已上传页读取或预览（PR 审查 P2）。
+ */
+async function loadAnswerKeyPageFilename(examId: number, pageIndex: number): Promise<string | null> {
+  const row = await getMysqlDb().get<{ filename: string | null }>(
+    "SELECT filename FROM exam_answer_key_pages WHERE exam_id = ? AND page_index = ?",
+    examId, pageIndex
+  );
+  return row?.filename ?? null;
 }
 
 /**
@@ -286,14 +301,24 @@ export function examAnswerKeyRoutes(): Router {
 
         // 先落盘再写库：压缩/写文件是真异步 I/O，放进事务会跨过 BEGIN/COMMIT 让出事件循环
         // （SQLite 单连接下并发上传会撞 "cannot start a transaction within a transaction"）。
+        // 落盘循环必须与入库同处一个 try：转换（compressImage）抛错时本轮已写下的文件
+        // 还没有任何 DB 记录引用，若只兜入库失败就会留下「无记录占文件名」的孤儿，
+        // 后续同名页会被扩展名探测顺序遮蔽（PR 审查 P2）。
         const planned: Array<{ pageIndex: number; diskFilename: string; relPath: string }> = [];
-        for (const { file, originalname } of valid) {
-          const pageIndex = takeIndex();
-          const stored = await storeAnswerKeyPageFile(file.path, originalname, dir, pageIndex);
-          planned.push({ pageIndex, diskFilename: stored.diskFilename, relPath: stored.relPath });
-        }
+        const discardPlannedFiles = (): void => {
+          for (const page of planned) {
+            try { unlinkSync(path.join(dir, page.diskFilename)); } catch {}
+          }
+          planned.length = 0;
+        };
 
         try {
+          for (const { file, originalname } of valid) {
+            const pageIndex = takeIndex();
+            const stored = await storeAnswerKeyPageFile(file.path, originalname, dir, pageIndex);
+            planned.push({ pageIndex, diskFilename: stored.diskFilename, relPath: stored.relPath });
+          }
+
           await db.transaction(async (tx) => {
             for (const page of planned) {
               await tx.run(
@@ -303,11 +328,14 @@ export function examAnswerKeyRoutes(): Router {
             }
           });
         } catch (err) {
-          // 入库失败 → 刚写下的文件没有任何记录引用，直接清掉，不留孤儿
-          for (const page of planned) {
-            try { unlinkSync(path.join(dir, page.diskFilename)); } catch {}
-          }
+          // 转换失败或入库失败 → 本轮没有一行记录落地，已写下的文件全部清掉，不留孤儿
+          discardPlannedFiles();
           throw err;
+        }
+
+        // 入库成功后收掉同页的历史残留（早期版本失败上传遗留的旧扩展名文件），保证一页一文件
+        for (const page of planned) {
+          purgeAnswerKeyPageSiblings(exam.id, page.pageIndex, page.diskFilename);
         }
         uploaded.push(...planned.map((page) => ({ pageIndex: page.pageIndex, filename: page.diskFilename })));
         return false;
@@ -318,7 +346,7 @@ export function examAnswerKeyRoutes(): Router {
       const ocrResults: Array<{ pageIndex: number; text?: string; drafts?: Array<{ questionNumber: number; answerText: string }>; recognized?: boolean; error?: string }> = [];
       if (runOcr) {
         for (const page of uploaded) {
-          const resolved = resolveAnswerKeyPageFile(exam.id, page.pageIndex);
+          const resolved = resolveAnswerKeyPageFile(exam.id, page.pageIndex, page.filename);
           if (!resolved) { ocrResults.push({ pageIndex: page.pageIndex, error: "文件不存在" }); continue; }
           try {
             const text = await ocrAnswerKeyFile(resolved.filePath);
@@ -356,7 +384,9 @@ export function examAnswerKeyRoutes(): Router {
       const pageIndex = normalizePageIndex(req.params.pageIndex, MAX_ANSWER_KEY_PAGES);
       if (pageIndex === null) { res.status(400).json({ message: "无效的页码" }); return; }
 
-      const resolved = resolveAnswerKeyPageFile(examId, pageIndex);
+      const filename = await loadAnswerKeyPageFilename(examId, pageIndex);
+      if (!filename) { res.status(404).json({ message: "答案页不存在" }); return; }
+      const resolved = resolveAnswerKeyPageFile(examId, pageIndex, filename);
       if (!resolved) { res.status(404).json({ message: "答案页不存在" }); return; }
       const text = await ocrAnswerKeyFile(resolved.filePath);
       res.json({ pageIndex, ...draftPayload(text) });
@@ -372,7 +402,10 @@ export function examAnswerKeyRoutes(): Router {
       if (invalidExamId(res, req.params.examId)) return;
       const pageIndex = normalizePageIndex(req.params.pageIndex, MAX_ANSWER_KEY_PAGES);
       if (pageIndex === null) { res.status(400).json({ message: "无效的页码" }); return; }
-      const resolved = resolveAnswerKeyPageFile(Number(req.params.examId), pageIndex);
+      const examId = Number(req.params.examId);
+      const filename = await loadAnswerKeyPageFilename(examId, pageIndex);
+      if (!filename) { res.status(404).json({ message: "答案页不存在" }); return; }
+      const resolved = resolveAnswerKeyPageFile(examId, pageIndex, filename);
       if (!resolved) { res.status(404).json({ message: "答案页不存在" }); return; }
       res.contentType(resolved.mimeType);
       res.sendFile(resolved.filePath);

@@ -211,6 +211,13 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
 
   async function handleSave() {
     if (saving) return;
+    // 服务端 PUT 是全量替换（先 DELETE 再 upsert），而 rows 在 GET 失败时仍是初始空数组。
+    // 没有这道守卫，一次加载失败后点「保存答案」就会以 answers:[] 清空该考试全部既有答案
+    // （PR 审查 P1）。
+    if (!data || loadError) {
+      setPanelError("答案配置尚未成功加载，无法保存（避免以空答案覆盖既有数据），请先重试加载");
+      return;
+    }
     const cleaned: Array<{ questionNumber: number; answerText: string; pageIndex: number | null }> = [];
     const seen = new Set<number>();
     for (const row of rows) {
@@ -265,7 +272,12 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
 
         <DialogBody className="flex flex-col gap-6">
           {loading && <p className="m-0 text-sm text-muted-foreground">加载中…</p>}
-          {loadError && <p className="m-0 text-sm text-destructive-fg">{loadError}</p>}
+          {loadError && (
+            <div className="flex items-center gap-2">
+              <p className="m-0 text-sm text-destructive-fg">{loadError}</p>
+              <Button size="sm" variant="outline" onClick={() => void load()}>重试加载</Button>
+            </div>
+          )}
           {panelError && <p className="m-0 text-sm text-destructive-fg">{panelError}</p>}
 
           {!loading && (
@@ -453,10 +465,17 @@ export function ExamAnswerKeyPanel({ examId, examName, open, onClose, onExamChan
 
         <DialogFooter>
           <span className="mr-auto text-xs text-muted-foreground">
-            {savedCount !== null ? `已保存 ${savedCount} 题答案` : "尚未保存"}
+            {loadError
+              ? "答案配置加载失败，保存已禁用"
+              : savedCount !== null ? `已保存 ${savedCount} 题答案` : "尚未保存"}
           </span>
           <Button variant="outline" onClick={onClose} disabled={saving || uploading}>关闭</Button>
-          <Button variant="primary" loading={saving} disabled={loading} onClick={() => void handleSave()}>
+          <Button
+            variant="primary"
+            loading={saving}
+            disabled={loading || !!loadError || !data}
+            onClick={() => void handleSave()}
+          >
             保存答案
           </Button>
         </DialogFooter>

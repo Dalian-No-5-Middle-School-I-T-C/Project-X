@@ -9,7 +9,7 @@
  *    避免把 404 图片链接交给客户端。
  * 3. 答案文字按教师保存的原样输出，本服务不做任何对错判断或选项归一化。
  */
-import { existsSync } from "node:fs";
+import { existsSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { getMysqlDb, type DbAdapter } from "../db/mysql";
 import { answerKeyDir, paperDir } from "../../apps/answer-card/server/storage";
@@ -151,14 +151,32 @@ export function answerKeyBaseName(pageIndex: number): string {
   return pageIndex === 1 ? "answerkey" : `answerkey-${pageIndex}`;
 }
 
-/** 解析教师上传的「本次正确答案」某一页的实际文件 */
+/**
+ * 解析教师上传的「本次正确答案」某一页的实际文件。
+ *
+ * preferredFilename 为 DB 已登记的文件名（`exam_answer_key_pages.filename`），必须优先使用：
+ * 同一 baseName 下可能存在历史残留（早期上传中途失败遗留的 `answerkey.jpg`），
+ * 若只按 ANSWER_KEY_EXTENSIONS 顺序探测，`.jpg` 会遮蔽已登记的 `answerkey.pdf`，
+ * 导致列表/预览/重识别三处一起读到旧图（PR 审查 P2）。
+ * 仅当登记文件在磁盘上不存在时（外部清理/历史脏数据）才回退到扩展名探测。
+ */
 export function resolveAnswerKeyPageFile(
   examId: number | string,
-  pageIndex: number
+  pageIndex: number,
+  preferredFilename?: string | null
 ): { filePath: string; filename: string; mimeType: string; isImage: boolean } | null {
   if (!Number.isInteger(pageIndex) || pageIndex < 1) return null;
-  const baseName = answerKeyBaseName(Number(pageIndex));
   const dir = answerKeyDir(examId);
+
+  if (preferredFilename) {
+    const filename = path.basename(preferredFilename);
+    const filePath = path.join(dir, filename);
+    if (existsSync(filePath)) {
+      return { filePath, filename, mimeType: getFileMime(filename), isImage: isImageFile(filename) };
+    }
+  }
+
+  const baseName = answerKeyBaseName(Number(pageIndex));
   for (const ext of ANSWER_KEY_EXTENSIONS) {
     const filename = `${baseName}${ext}`;
     const filePath = path.join(dir, filename);
@@ -168,19 +186,41 @@ export function resolveAnswerKeyPageFile(
   return null;
 }
 
+/**
+ * 清掉某页除 keepFilename 之外的同 baseName 残留。
+ * 早期版本上传中途失败会留下「无 DB 记录但占着正式文件名」的孤儿文件，
+ * 成功写页后调用本函数可把这类残留就地收干净，保证一页一文件。
+ */
+export function purgeAnswerKeyPageSiblings(
+  examId: number | string,
+  pageIndex: number,
+  keepFilename: string
+): void {
+  const dir = answerKeyDir(examId);
+  const baseName = answerKeyBaseName(Number(pageIndex));
+  for (const ext of ANSWER_KEY_EXTENSIONS) {
+    const filename = `${baseName}${ext}`;
+    if (filename === keepFilename) continue;
+    const filePath = path.join(dir, filename);
+    if (existsSync(filePath)) {
+      try { unlinkSync(filePath); } catch {}
+    }
+  }
+}
+
 /** 答案页列表（按 DB 记录顺序，仅保留磁盘上存在的页） */
 export async function listAnswerKeyPages(
   examId: number,
   db: DbAdapter = getMysqlDb()
 ): Promise<AnswerKeyPageRow[]> {
   const rows = await db.all(
-    "SELECT page_index FROM exam_answer_key_pages WHERE exam_id = ? ORDER BY page_index",
+    "SELECT page_index, filename FROM exam_answer_key_pages WHERE exam_id = ? ORDER BY page_index",
     examId
-  ) as Array<{ page_index: number }>;
+  ) as Array<{ page_index: number; filename: string | null }>;
   const pages: AnswerKeyPageRow[] = [];
   for (const row of rows) {
     const pageIndex = Number(row.page_index);
-    const resolved = resolveAnswerKeyPageFile(examId, pageIndex);
+    const resolved = resolveAnswerKeyPageFile(examId, pageIndex, row.filename);
     if (!resolved) continue;
     pages.push({
       pageIndex,

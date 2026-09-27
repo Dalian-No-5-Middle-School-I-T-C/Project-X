@@ -376,6 +376,69 @@ async function main() {
     ok(reused.status === 200 && (reusedBody?.pages ?? [])[0]?.pageIndex === 5, "删除后重传补位最小空闲页码（不再 MAX+1 越界）");
   }
 
+  // ── C2. 失败上传残留与解析优先级（评审 P2 回归）────────
+  section("C2. 答案页残留清理与解析优先级");
+  const orphanExamId = insertExam("残留清理考试", 0);
+  const orphanDir = answerKeyDir(orphanExamId);
+  const answerKeyPageRows = (id: number): number =>
+    Number(sqlite.prepare("SELECT COUNT(*) AS c FROM exam_answer_key_pages WHERE exam_id = ?").get(id).c);
+  const residueFiles = (dir: string): string[] =>
+    existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith("answerkey")) : [];
+
+  // 「正常 JPG + 损坏 JPG」：整批失败，且已转好的那一页不能留在磁盘上当孤儿
+  const mixedForm = new FormData();
+  mixedForm.append("files", new Blob([await jpegBuffer()], { type: "image/jpeg" }), "正常页.jpg");
+  mixedForm.append("files", new Blob([Buffer.from("definitely not a jpeg")], { type: "image/jpeg" }), "损坏页.jpg");
+  const mixedUpload = await fetch(`${base}/api/exams/${orphanExamId}/answer-key/pages?ocr=0`, {
+    method: "POST", headers: { Authorization: `Bearer ${adminToken}` }, body: mixedForm,
+  });
+  ok(mixedUpload.status >= 400, `含损坏图片的上传整体失败（返回 ${mixedUpload.status}）`);
+  ok(answerKeyPageRows(orphanExamId) === 0, "失败上传不写入任何答案页记录");
+  ok(
+    residueFiles(orphanDir).length === 0,
+    `失败上传不留孤儿文件（实际残留：${residueFiles(orphanDir).join("、") || "无"}）`
+  );
+
+  // 重试：同页成功上传 PDF，并登记为 answerkey.pdf
+  const pdfForm = new FormData();
+  pdfForm.append("files", new Blob([Buffer.from("%PDF-1.4\n% smoke fixture\n")], { type: "application/pdf" }), "答案.pdf");
+  const pdfUpload = await fetch(`${base}/api/exams/${orphanExamId}/answer-key/pages?ocr=0`, {
+    method: "POST", headers: { Authorization: `Bearer ${adminToken}` }, body: pdfForm,
+  });
+  const pdfBody = await pdfUpload.json().catch(() => ({}));
+  const pdfPage = (pdfBody?.pages ?? [])[0];
+  ok(
+    pdfUpload.status === 200 && pdfPage?.pageIndex === 1 && pdfPage?.filename === "answerkey.pdf",
+    `重试上传 PDF 登记为 answerkey.pdf（实际 ${pdfPage?.filename ?? "无"}）`
+  );
+
+  // 手动植入修复前失败上传会留下的 answerkey.jpg：解析必须以 DB 登记文件为准
+  await writeFile(path.join(orphanDir, "answerkey.jpg"), await jpegBuffer());
+  const previewAfterResidue = await fetch(`${base}/api/exams/${orphanExamId}/answer-key/pages/1/image`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  const previewType = previewAfterResidue.headers.get("content-type") ?? "";
+  ok(
+    previewAfterResidue.status === 200 && previewType.includes("pdf"),
+    `同页存在 .jpg 残留时预览仍返回登记页（content-type=${previewType}）`
+  );
+  const orphanCfg = await jsonFetch(base, `/api/exams/${orphanExamId}/answer-key`, {}, adminToken);
+  ok(
+    (orphanCfg.body?.answerPages ?? [])[0]?.filename === "answerkey.pdf",
+    "答案页列表同样以登记文件名为准，不被同页残留遮蔽"
+  );
+
+  // 有文件无 DB 记录 = 孤儿：预览与重识别都必须 404，不能再被当作已上传页读取
+  await writeFile(path.join(orphanDir, "answerkey-9.jpg"), await jpegBuffer());
+  const ghostPreview = await fetch(`${base}/api/exams/${orphanExamId}/answer-key/pages/9/image`, {
+    headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  ok(ghostPreview.status === 404, `无 DB 记录的残留文件不可预览（返回 ${ghostPreview.status}）`);
+  const ghostReocr = await fetch(`${base}/api/exams/${orphanExamId}/answer-key/pages/9/ocr`, {
+    method: "POST", headers: { Authorization: `Bearer ${adminToken}` },
+  });
+  ok(ghostReocr.status === 404, `无 DB 记录的残留文件不可重识别（返回 ${ghostReocr.status}）`);
+
   // ── D. OCR 文本解析（纯函数）──────────────────────────
   section("D. OCR 文本解析");
   const range = parseAnswerKeyText("1-5 BACDB\n6~10: CCBDA");
