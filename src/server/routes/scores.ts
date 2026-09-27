@@ -51,10 +51,14 @@ export async function getAccessibleClassIds(
   if (user.teacher_role === "grade_leader") return null;
   const db = getMysqlDb();
   if (user.teacher_role === "head_teacher" || user.teacher_role === "subject_teacher") {
+    // 遗留数据兼容：全局 head_teacher 角色 + 不带科目的班级关联 = 旧模型的班主任（见 middleware.ts 同款说明）
+    const headWhere = user.teacher_role === "head_teacher"
+      ? "(is_head_teacher = 1 OR subject IS NULL)"
+      : "is_head_teacher = 1";
     // 按班班主任（is_head_teacher）：其担任班主任的班级可见，不受任教学科限制
     if (!user.subject) {
       const headRows = await db.all<{ class_id: number }>(
-        "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND is_head_teacher = 1", user.id
+        `SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND ${headWhere}`, user.id
       );
       return headRows.map((r) => r.class_id);
     }

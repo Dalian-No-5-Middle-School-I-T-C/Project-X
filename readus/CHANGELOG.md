@@ -11,8 +11,16 @@
 
 复审修订（2026-09-27）：补上存量库的模型迁移缺口。迁移 `52` 只加列（`is_head_teacher` 默认 0）**不回填**，历史班主任（旧模型 = 全局 `users.teacher_role='head_teacher'` + 一条班级关联）全部落在「有关联、无标记」状态——班级页显示「未设置班主任」、换班主任时旧关联也清不掉；而旧教师仍凭全局角色对其**关联的全部班级全科可见**，且新版 setter 不再写该角色，该状态无法自愈。现新增迁移 `53 / backfill-class-head-teacher`（SQLite 用 TS 逻辑回填；MariaDB 因逐班取唯一班主任的 SQL 易踩 `ER_UPDATE_TABLE_USED`，在迁移清单外用一次同口径 TS 步骤执行并照常写入 `schema_migrations`，幂等且只补齐无标记的班级，不覆盖新版界面的显式设置），并把 `getVisibleExamIds` / `getAccessibleClassIds` 的 `head_teacher` 分支收敛为与学科教师同一套「按班标记 + 学科匹配」判定——全局角色不再单独放大范围，换人后旧关联行即使因带科目而保留，也不会再越权看到非任教学科考试。
 
+复审修订（2026-09-27，二轮 · Codex 评审 + CI）：CI 的 `verify:auth` 有 3 项失败，根因是**遗留班主任的读时推导**缺失。
+
+- **遗留班主任改为读时推导**：旧模型用「全局 `teacher_role='head_teacher'` + 一条不带科目的班级关联」表达班主任，且 `verify:auth` 的夹具正按此形态直接插库构造。一轮只补了迁移回填，按旧形态构造的库仍会失去本班全科可见（3 项失败：班主任仅本班最新出分 / #246r2 组内含软删除成员 / #246r2 恢复后可见集合）。现在 `getVisibleExamIds` 与 `getAccessibleClassIds` 在 `teacher_role='head_teacher'` 时把「不带科目的关联行」也视为班主任标记（带科目的关联不算，因此「班主任同时任课该班后被换下」仍不会凭全局角色看到非任教学科）。`verify:auth` 137 项全过。
+- **看板补上班主任豁免**：`DashboardService` 对 `subject_teacher` 一律追加 `e.subject = user.subject`，导致兼任班主任的教师在首页统计与「最新出卷 / 最新出分」里漏掉班主任班级的其它学科（与 `getVisibleExamIds` 的全科口径不一致）。现对 `is_head_teacher=1` 的班级豁免该学科过滤。
+- **教师选择器分页取全**：班级页原先只取 `/api/teachers?pageSize=500` 的第一页，教师规模较大的部署里靠后的教师无法被选为班主任或任课教师。改为按 `total` 翻页取全（上限 20 页），兑现「在全部教师中选择」。
+- 已确认无需改动（对应 Codex 同类意见）：`PUT /api/classes/:id/head-teacher` 一轮即为「先校验后替换」，失败不删现任；班级页解除班主任本人的任课标签已有显式确认弹窗（文案「解除任课会连带摘掉按班班主任标记」），非静默行为。
+- 待产品决策（未改）：`POST /api/classes/:id/teachers` 不校验「任课学科 == 教师本人学科」。收紧会移除既有的「同一教师按班改科目」能力（`verify:class-teachers` 有对应用例、本条目亦记该能力）；若改为按班科目参与可见性判定，属语义升级而非本次修缺范围。
+
 验证：`npm run verify:class-teachers`（新增并已接入 CI，隔离 SQLite 走真实 HTTP：建年级/班级 → 改名 → 设/换/清班主任并回读 `teacher_classes.is_head_teacher` 与全局角色 → 分科设置、改科目只保留一行 → 非法学科 400、不存在或已停用教师 404 → 换班主任失败保留现任 → 按班班主任不扩大其它任教班级的可见范围（`getVisibleExamIds` 与成绩侧 `getAccessibleClassIds` 双口径断言））、`npm run typecheck`、`npm run build`、`npm run verify:core-logic`（73 passed）。
-复审补充（2026-09-27）：`verify:class-teachers` 增加第 8 节存量库回归——模拟未执行迁移 53 的库（全局 `head_teacher` 角色 + 不带科目的班级关联）→ 回填后配置面板可识别出班主任 → 重复执行保持幂等；再让该教师兼任本班学科后被换下班主任，断言其**看不到本班非任教学科考试**、仍保有任教学科范围。反向对照（撤掉迁移 53 / 撤掉分支收敛）分别精确失败于「回填」与「角色收敛」两组断言。
+复审补充（2026-09-27）：`verify:class-teachers` 增加第 8 节存量库回归——模拟未执行迁移 53 的库（全局 `head_teacher` 角色 + 不带科目的班级关联）→ 回填后配置面板可识别出班主任 → 重复执行保持幂等；再让该教师兼任本班学科后被换下班主任，断言其**看不到本班非任教学科考试**、仍保有任教学科范围。反向对照（撤掉迁移 53 / 撤掉分支收敛）分别精确失败于「回填」与「角色收敛」两组断言。二轮修完遗留班主任读时推导后，`npm run verify:auth` **137 项全过**（一轮提交时为 134 通过 / 3 失败），`npm run verify:class-teachers` 与 `npm run typecheck` 保持通过。
 未覆盖：本机无 MariaDB，`is_head_teacher` 回填与行为断言仅在 SQLite 实跑，MariaDB 侧由 CI 作业覆盖建库与迁移；管理页界面未做浏览器视觉验收。
 
 ## 2026-09-25 — 2026-09-23 问题反馈修复（题块命名 / 作文格 / 客观题横排 / 注记 / 权限 / 图表）

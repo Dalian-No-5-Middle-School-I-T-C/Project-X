@@ -79,12 +79,18 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
     return Array.from(merged);
   }
 
-  // 班主任与学科教师共用同一套「按班 + 按学科」判定：班主任身份只体现在
-  // teacher_classes.is_head_teacher 标记上，全局 head_teacher 角色不再单独放大范围。
+  // 班主任与学科教师共用同一套「按班 + 按学科」判定：班主任身份体现在 teacher_classes.is_head_teacher 上。
+  // 兼容遗留数据：旧模型用「全局 head_teacher 角色 + 一条不带科目的班级关联」表达班主任。
+  // 迁移 53 会为存量行补标记，但**读时同样把这类关联视为班主任**——否则按旧模型构造的库
+  // （以及设置角色后直接关联班级的遗留流程）会突然失去本班全科可见（verify:auth 即按此形态构造夹具）。
+  // 只认「不带科目」的关联：带科目的关联说明是任课关系，即便教师角色是 head_teacher 也不据此放大到全科。
   if (user.teacher_role === "head_teacher" || user.teacher_role === "subject_teacher") {
-    // 按班班主任（teacher_classes.is_head_teacher）：其担任班主任的班级看全科，其余班级仍按学科过滤
+    const headWhere = user.teacher_role === "head_teacher"
+      ? "(is_head_teacher = 1 OR subject IS NULL)"
+      : "is_head_teacher = 1";
+    // 按班班主任：其担任班主任的班级看全科，其余班级仍按学科过滤
     const headClassIds = (await db.all<{ class_id: number }>(
-      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND is_head_teacher = 1",
+      `SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND ${headWhere}`,
       user.id
     )).map((r) => r.class_id);
     // 学科教师未配置学科时，至少仍应看到晨测（quiz=全量权限）与担任班主任的班级

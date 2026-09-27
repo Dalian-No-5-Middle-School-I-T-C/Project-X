@@ -175,9 +175,21 @@ export function ClassManagement() {
     });
   }, []);
 
+  // 班主任与任课教师都要「在全部教师中选择」，因此必须把全部在职教师取回，
+  // 不能只取第一页：单页 500 条在教师规模较大的部署下会让靠后的教师无法被选中（评审 P2）。
   const loadTeachers = useCallback(async () => {
-    const data = await fetchJson<{ teachers: TeacherRecord[] }>("/api/teachers?pageSize=500");
-    setTeachers(data.teachers ?? []);
+    const pageSize = 500;
+    const all: TeacherRecord[] = [];
+    for (let page = 1; page <= 20; page++) {
+      const data = await fetchJson<{ teachers: TeacherRecord[]; total?: number }>(
+        `/api/teachers?page=${page}&pageSize=${pageSize}`
+      );
+      const batch = data.teachers ?? [];
+      all.push(...batch);
+      const total = Number(data.total ?? all.length);
+      if (batch.length === 0 || all.length >= total) break;
+    }
+    setTeachers(all);
   }, []);
 
   useEffect(() => {
