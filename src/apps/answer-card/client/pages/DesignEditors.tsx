@@ -500,6 +500,55 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
     </div>
   );}
 
+/**
+ * 作答区上方注记文字：标记式富文本（`**加粗**`、`*斜体*`），排版/预览/PDF 共用 shared/richText 解析。
+ */
+function AnnotationField({ value, onChange }: { value: string; onChange: (next: string) => void }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const wrapSelection = (marker: string) => {
+    const element = inputRef.current;
+    const start = element?.selectionStart ?? value.length;
+    const end = element?.selectionEnd ?? value.length;
+    const selected = value.slice(start, end) || "文字";
+    onChange(`${value.slice(0, start)}${marker}${selected}${marker}${value.slice(end)}`);
+    requestAnimationFrame(() => element?.focus());
+  };
+
+  return (
+    <Field label="文字注释">
+      <div className="flex items-center gap-1.5">
+        <Input
+          ref={inputRef}
+          value={value}
+          placeholder="作答区上方说明，如：**续写要求** 至少 *80* 词"
+          maxLength={200}
+          onChange={(event) => onChange(event.target.value)}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          aria-label="加粗"
+          title="加粗选中文字"
+          onMouseDown={(event) => { event.preventDefault(); wrapSelection("**"); }}
+        >
+          <strong>B</strong>
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          aria-label="斜体"
+          title="斜体选中文字"
+          onMouseDown={(event) => { event.preventDefault(); wrapSelection("*"); }}
+        >
+          <em>I</em>
+        </Button>
+      </div>
+    </Field>
+  );
+}
+
 export function SubjectiveEditor({
   block,
   layoutVersion,
@@ -1018,15 +1067,12 @@ export function SubjectiveEditor({
                     )}
                 </>
               )}
-              {isFillBlankBlock && (
-                <Field label="文字注释">
-                  <Input
-                    value={question.annotation ?? ""}
-                    placeholder="填空横线上方的说明文字"
-                    maxLength={200}
-                    onChange={(event) => updateQuestion(question.id, (draft) => void (draft.annotation = event.target.value || undefined))}
-                  />
-                </Field>
+              {/* 作文块的格线区没有注记排布，其余主观题（填空题横线/解答题横线）都支持 */}
+              {!isEssayBlock && (
+                <AnnotationField
+                  value={question.annotation ?? ""}
+                  onChange={(next) => updateQuestion(question.id, (draft) => void (draft.annotation = next || undefined))}
+                />
               )}
               {/* 图片插入对所有主观题小题可用（含填空题块，#221 重构曾误将此控件随横线格一起隐藏） */}
               <label className="relative inline-flex cursor-pointer items-center justify-center gap-2 rounded-md border border-dashed border-border-strong bg-card px-3 py-2 text-xs text-secondary-foreground transition-colors hover:border-primary hover:text-accent-foreground">
@@ -1551,7 +1597,15 @@ export function SubjectiveSvg({ card, block }: { card: AnswerCard; block: Extrac
           })}
           {(question.annotationLines ?? []).map((line, index) => (
             <text key={`anno_${index}`} x={line.rect.x} y={line.rect.y} fontSize={2.5} fill="#1a1a1a">
-              {line.text}
+              {(line.runs && line.runs.length > 0 ? line.runs : [{ text: line.text, bold: false, italic: false }]).map((run, runIndex) => (
+                <tspan
+                  key={runIndex}
+                  fontWeight={run.bold ? "bold" : undefined}
+                  fontStyle={run.italic ? "italic" : undefined}
+                >
+                  {run.text}
+                </tspan>
+              ))}
             </text>
           ))}
           {question.images.map((image) => (
