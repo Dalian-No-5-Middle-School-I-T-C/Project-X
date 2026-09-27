@@ -495,12 +495,19 @@ router.get("/subject-deviation/exam-options", async (req, res, next) => {
     // 本班候选整批顶掉，面板再带 classId 过滤就静默算成空集。
     const anchorExamId = req.query.examId ? Number(req.query.examId) : null;
     const explicitClassId = req.query.classId ? Number(req.query.classId) : null;
+    const hasExplicitClass = Number.isInteger(explicitClassId) && explicitClassId! > 0;
     let gradeId: number | null = null;
-    let classId: number | null = Number.isInteger(explicitClassId) && explicitClassId! > 0 ? explicitClassId : null;
+    let classId: number | null = hasExplicitClass ? explicitClassId : null;
+    // 「全部班级」视图（锚点本身是年级统考、且未显式选班）只能取统考：
+    // 否则某个班的最新考试会顶掉统考候选，他班学生只覆盖到部分学科。
+    let gradeWideOnly = false;
     if (anchorExamId != null && Number.isInteger(anchorExamId) && anchorExamId > 0) {
       const scope = await analysisRepo.getExamScope(anchorExamId);
       gradeId = scope?.gradeId ?? null;
-      if (classId == null) classId = scope?.classId ?? null;
+      if (!hasExplicitClass && scope) {
+        classId = scope.classId;
+        gradeWideOnly = scope.classId == null;
+      }
     }
 
     const options = await analysisRepo.getLatestExamPerSubject({
@@ -508,10 +515,12 @@ router.get("/subject-deviation/exam-options", async (req, res, next) => {
       visibleExamIds,
       gradeId,
       classId,
+      gradeWideOnly,
     });
-    // #246：与 /trends 同口径，跨考试图表数据按 can_view_charts 收敛
-    const chartAllowed = await filterExamIdsByViewPermission(req.user, options.map((t) => t.examId), "can_view_charts");
-    res.json(options.filter((t) => chartAllowed.has(t.examId)) satisfies ScoreTrendPoint[]);
+    // 与 POST /subject-deviation 同门：该端点消费的是学生名单/成绩，按 can_view_students 收敛
+    // （用 can_view_charts 会让「允许看学生名单、禁用图表」的教师拿到空候选而无法分析）。
+    const allowed = await filterExamIdsByViewPermission(req.user, options.map((t) => t.examId), "can_view_students");
+    res.json(options.filter((t) => allowed.has(t.examId)) satisfies ScoreTrendPoint[]);
   } catch (error) {
     next(error);
   }

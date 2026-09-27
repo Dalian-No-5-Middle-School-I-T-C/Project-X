@@ -360,6 +360,12 @@ export class AnalysisRepository {
     visibleExamIds?: number[] | null;
     gradeId?: number | null;
     classId?: number | null;
+    /**
+     * true 时只取年级统考（class_id 为空）。
+     * 用于「全部班级」视图：锚点考试本身就是年级统考时，不能放任某个班的最新考试
+     * 顶掉统考候选——否则他班学生只覆盖到部分学科，相对落差恒 0、预警静默丢失。
+     */
+    gradeWideOnly?: boolean;
   } = {}): Promise<ScoreTrendPoint[]> {
     const perSubject = Math.max(1, options.perSubject ?? 1);
     const visibleExamIds = options.visibleExamIds;
@@ -380,6 +386,9 @@ export class AnalysisRepository {
       // 班级维度：本班考试 + 年级统考（class_id 为空），不把同年级其它班的考试算进候选
       conditions.push("(e.class_id = ? OR e.class_id IS NULL)");
       params.push(options.classId);
+    } else if (options.gradeWideOnly) {
+      // 全部班级视图：只认年级统考，避免单个班的最新考试顶掉统考候选
+      conditions.push("e.class_id IS NULL");
     }
     const scopeSql = conditions.length > 0 ? ` AND ${conditions.join(" AND ")}` : "";
     // 与 getScoreTrend 同口径：只取已有成绩的未删除考试，时间升序后各学科截取尾部

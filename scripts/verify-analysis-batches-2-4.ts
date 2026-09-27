@@ -321,6 +321,24 @@ ok(
 const scopedDev = await repo.getSubjectDeviation(scopedOpts.map((o) => o.examId), { classId: class1 });
 ok(scopedDev.items.length > 0, "限定作用域后班级维度偏科分析不再算成空集", scopedDev.items.length);
 
+// 「全部班级」视图（锚点是年级统考）只能取统考：否则某个班的最新考试会顶掉统考候选，
+// 他班学生只覆盖到部分学科、相对落差恒 0，预警静默丢失。
+const gradeWideAnchor = db.prepare("INSERT INTO exams (name, subject, status, grade_id, class_id) VALUES (?, ?, 'closed', ?, NULL)")
+  .run("高一统考锚点", "物理", gradeId).lastInsertRowid as number;
+const scopeGw = await repo.getExamScope(gradeWideAnchor);
+ok(scopeGw?.gradeId === gradeId && scopeGw?.classId === null, "年级统考锚点：年级有效、班级锚点为空", scopeGw);
+const eClassMathNew = db.prepare("INSERT INTO exams (name, subject, status, grade_id, class_id, start_time) VALUES (?, ?, 'closed', ?, ?, ?)")
+  .run("1班数学新卷", "数学", gradeId, class1, "2099-03-01 08:00:00").lastInsertRowid as number;
+insertS.run(eClassMathNew, uA, 95, 95);
+const gwOpts = await repo.getLatestExamPerSubject({ gradeId, gradeWideOnly: true });
+ok(
+  !gwOpts.some((o) => o.examId === eClassMathNew),
+  "全部班级视图不取某个班的最新考试（P2 修复）",
+  gwOpts.map((o) => `${o.subject}/${o.examName}`)
+);
+const classOpts = await repo.getLatestExamPerSubject({ gradeId, classId: class1 });
+ok(classOpts.some((o) => o.examId === eClassMathNew), "具体班级视图仍可取本班最新考试", classOpts.map((o) => o.examId));
+
 // 清理
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 

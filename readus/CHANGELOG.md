@@ -7,7 +7,12 @@
 - **[P3] 三处**：分析页两条请求链接入 `AbortController`（重试/切换考试时取消旧请求，丢弃迟到响应）；`TeacherManagement` 记录班级列表所属年级，年级切换空窗期不再可勾选并提交旧年级班级；校验脚本中 `stdDev` 口径注释由「样本标准差」更正为总体口径（÷ n）。
 - **[P2·二轮] `exam-options` 跨科候选未限定年级 / 班级**：`getLatestExamPerSubject` 此前只按「可见考试」收敛，对视全可见的账号（admin / 学年主任 / 无 `teacher_role` 的普通教师，`getVisibleExamIds` 返回 `null`）等于「全校每科最近一场」。他年级更新的数学 / 语文考试会把这些学科的候选整批顶掉，而面板随后带上 `classId` 过滤——所选考试在本班没有成绩，班级维度就静默算成空集（不报错、不给提示，用户无法判断是「本班确无偏科」还是「候选被顶替」）。现新增 `AnalysisRepository.getExamScope(examId)` 取锚点考试的年级 / 班级，`GET /analysis/subject-deviation/exam-options` 接受 `examId`（锚点）与 `classId`（显式优先），仓库侧按「同年级 + 本班或其年级统考」过滤；未标注年级 / 班级的历史考试不参与排除，避免静默丢候选。前端 `SubjectDeviationPanel` 把自身的 `examId` / `classId` 一并下传，并纳入 effect 依赖。
 
-验证：`npm run typecheck` 通过；`scripts/verify-analysis-batches-2-4.ts` 73 项全过（新增 7 项跨科管道回归：exam-options 跨科取数、单科输入恒不触发、可见范围约束；以及二轮 6 项作用域回归：无作用域时他年级考试确实会顶掉本年级候选（成因复现）、`getExamScope` 取锚点、限定年级后他年级考试不再入列、本年级候选仍在、限定作用域后班级维度偏科分析不再算成空集。反向对照——仅停用作用域应用——精确失败于作用域相关断言）。该脚本在全部断言通过后不主动退出，须由外层超时收尾，属既有行为，非本次改动引入。
+- **[P1·三轮] 全部班级视图被某个班的最新考试顶掉**：锚点是年级统考（`class_id` 为空）时路由算出 `classId: null`，作用域随即失效，某个班的新考试会把统考候选挤掉；他班学生只覆盖到部分学科、相对落差恒 0，预警静默丢失。现区分「具体班级」「全部班级」两种视图：`gradeWideOnly` 时只取年级统考（`class_id IS NULL`），显式选班或锚点是班考时仍按「本班 + 统考」。
+- **[P2·三轮] `exam-options` 与提交端权限门不一致**：候选按 `can_view_charts` 收敛，而 `POST /subject-deviation` 要的是 `can_view_students`——「允许看学生名单、禁用图表」的教师会拿到空候选、面板直接不可用。现统一按 `can_view_students`。
+- **[P2·三轮] 手动加入的「本场考试」不可见也不可取消**：`toggleExam(examId)` 只把它塞进 `selectedIds`，而渲染源是 `examOptions`，于是它持续参与提交却看不见、删不掉。现为它补一条可勾选条目（标注「本场考试」），并纳入学科覆盖计数。
+- **[P2·三轮] 切换考试 / 班级的空窗期用旧 ID 配新 `classId` 提交**：effect 换作用域后仍保留上一轮 `examOptions` / `selectedIds`，期间 `crossSubjectReady` 仍成立、分析按钮可点，提交的是他班考试 ID。现在 effect 起点即清空候选、勾选与旧结果并置 `optionsLoading`，加载期间禁用分析。
+
+验证：`npm run typecheck` 通过；`scripts/verify-analysis-batches-2-4.ts` **76 项全过**（新增 7 项跨科管道回归：exam-options 跨科取数、单科输入恒不触发、可见范围约束；二轮 6 项作用域回归：无作用域时他年级考试确实会顶掉本年级候选（成因复现）、`getExamScope` 取锚点、限定年级后他年级考试不再入列、本年级候选仍在、限定作用域后班级维度偏科分析不再算成空集；三轮 3 项统考回归：年级统考锚点、全部班级视图不取某个班的最新考试、具体班级视图仍可取本班最新考试。反向对照——仅停用作用域应用——精确失败于作用域相关断言）。该脚本在全部断言通过后不主动退出，须由外层超时收尾，属既有行为，非本次改动引入。
 
 ## 2026-09-26 — Issues 分诊与修复批次（分支 `fix/issues-triage`）
 

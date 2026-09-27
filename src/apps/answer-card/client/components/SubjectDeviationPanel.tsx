@@ -23,6 +23,7 @@ import {
 export function SubjectDeviationPanel({ examId, subject, classId }: { examId: number; subject: string | null; classId: string; }) {
   const [examOptions, setExamOptions] = useState<ScoreTrendPoint[]>([]);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [optionsLoading, setOptionsLoading] = useState(true);
   const [data, setData] = useState<SubjectDeviationResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -30,8 +31,14 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
   // 偏科判定需要多个学科的成绩，故取「每科最近一场」的跨科考试集合。
   // 不能复用按单科过滤的 /trends：单科集合会让相对个人基线的算法永远无法成立。
   // 必须带 examId（锚点年级）与 classId 作用域，否则他年级更新的考试会顶掉本班候选（评审 P2）。
+  // 切换考试 / 班级时先清空候选、勾选与旧结果再发请求：否则空窗期会用上一轮（可能属于他班）
+  // 的 examIds 配新的 classId 提交，产出无效队列比较或静默空结果（评审 P2）。
   useEffect(() => {
     const controller = new AbortController();
+    setOptionsLoading(true);
+    setExamOptions([]);
+    setSelectedIds([]);
+    setData(null);
     const params = new URLSearchParams({ perSubject: "1", examId: String(examId) });
     if (classId) params.set("classId", classId);
     fetchJson<ScoreTrendPoint[]>(`/api/analysis/subject-deviation/exam-options?${params.toString()}`, { signal: controller.signal })
@@ -40,20 +47,29 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
         setExamOptions(list);
         setSelectedIds(list.map((r) => r.examId));
       })
-      .catch(() => { if (!controller.signal.aborted) setExamOptions([]); });
+      .catch(() => { if (!controller.signal.aborted) setExamOptions([]); })
+      .finally(() => { if (!controller.signal.aborted) setOptionsLoading(false); });
     return () => controller.abort();
   }, [examId, classId]);
 
-  const includeCurrent = useMemo(() => {
-    if (selectedIds.includes(examId)) return true;
-    if (examOptions.some((r) => r.examId === examId)) return true; // 已在列表里
-    return false;
-  }, [selectedIds, examOptions, examId]);
+  const hasCurrentInOptions = examOptions.some((r) => r.examId === examId);
+  // 手动加入的本场考试不在候选接口结果里，需补一条可勾选条目——否则它只进 selectedIds、
+  // 界面上既看不见也无法取消，却持续参与提交（评审 P2）。
+  const manualCurrentOption = useMemo<ScoreTrendPoint>(
+    () => ({ examId, examName: "本场考试", subject: subject ?? "", examTime: "", gradeAvg: 0, gradeCount: 0 }),
+    [examId, subject],
+  );
+  const renderOptions = useMemo(
+    () => (!hasCurrentInOptions && selectedIds.includes(examId) ? [...examOptions, manualCurrentOption] : examOptions),
+    [examOptions, hasCurrentInOptions, selectedIds, examId, manualCurrentOption],
+  );
+
+  const includeCurrent = hasCurrentInOptions || selectedIds.includes(examId);
 
   // 勾选覆盖的学科数 < 2 时相对落差恒为 0，此时不展示结果而是提示补充科目
   const selectedSubjects = useMemo(
-    () => new Set(examOptions.filter((r) => selectedIds.includes(r.examId)).map((r) => r.subject)),
-    [examOptions, selectedIds],
+    () => new Set(renderOptions.filter((r) => selectedIds.includes(r.examId)).map((r) => r.subject)),
+    [renderOptions, selectedIds],
   );
   const crossSubjectReady = selectedSubjects.size >= 2;
 
@@ -62,6 +78,7 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
   }
 
   async function analyze() {
+    if (optionsLoading) return; // 候选仍在重载：此时提交会拿旧 examIds 配新 classId（评审 P2）
     setLoading(true);
     setError("");
     try {
@@ -92,7 +109,7 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
         <h3 className="text-sm font-semibold text-foreground">
           偏科预警
         </h3>
-        {!includeCurrent && (
+        {!includeCurrent && !optionsLoading && (
           <Button variant="ghost" size="sm" onClick={() => toggleExam(examId)}>+ 加入本场考试</Button>
         )}
       </div>
@@ -101,7 +118,7 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
         已按学科各取最近一场考试（共 {new Set(examOptions.map((r) => r.subject)).size} 个学科 / {examOptions.length} 场）：
       </p>
       <div className="flex flex-wrap gap-2">
-        {examOptions.map((r) => {
+        {renderOptions.map((r) => {
           const active = selectedIds.includes(r.examId);
           const isCurrent = r.examId === examId;
           return (
@@ -125,10 +142,18 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
             </label>
           );
         })}
-        {examOptions.length === 0 && <span className="text-xs text-muted-foreground">暂无含成绩的历史考试</span>}
+        {optionsLoading && <span className="text-xs text-muted-foreground">正在按本场考试的年级 / 班级重载候选…</span>}
+        {!optionsLoading && renderOptions.length === 0 && <span className="text-xs text-muted-foreground">暂无含成绩的历史考试</span>}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="primary" size="sm" icon={<BrainCircuit />} onClick={() => void analyze()} loading={loading} disabled={selectedIds.length === 0 || !crossSubjectReady}>
+        <Button
+          variant="primary"
+          size="sm"
+          icon={<BrainCircuit />}
+          onClick={() => void analyze()}
+          loading={loading}
+          disabled={optionsLoading || selectedIds.length === 0 || !crossSubjectReady}
+        >
           分析偏科
         </Button>
         {crossSubjectReady ? null : (
