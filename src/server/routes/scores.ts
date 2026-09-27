@@ -37,8 +37,9 @@ type AccessibleError = { status: number; message: string };
 /**
  * 返回教师可访问的班级 ID 集合。与 getVisibleExamIds 保持同源：
  * - admin / grade_leader / 普通教师(无 teacher_role) → null（全校可见）
- * - head_teacher → teacher_classes 关联所有班级
- * - subject_teacher → teacher_classes 中科目匹配的班级 + 按班班主任（is_head_teacher）班级
+ * - head_teacher / subject_teacher → 任教学科匹配的班级 + 按班班主任（is_head_teacher）班级
+ *   （班主任自 v54 起是「按班关系」，全局 head_teacher 角色不再等同于「关联的全部班级」，
+ *   否则旧角色教师在全班范围可见且换人时无法收回，见评审 P1）
  * - 其他 → []（零可见）
  */
 export async function getAccessibleClassIds(
@@ -49,13 +50,7 @@ export async function getAccessibleClassIds(
   if (!user.teacher_role) return null; // plain teacher: back-compat 全部可见
   if (user.teacher_role === "grade_leader") return null;
   const db = getMysqlDb();
-  if (user.teacher_role === "head_teacher") {
-    const rows = await db.all<{ class_id: number }>(
-      "SELECT class_id FROM teacher_classes WHERE teacher_id = ?", user.id
-    );
-    return rows.length > 0 ? rows.map((r) => r.class_id) : [];
-  }
-  if (user.teacher_role === "subject_teacher") {
+  if (user.teacher_role === "head_teacher" || user.teacher_role === "subject_teacher") {
     // 按班班主任（is_head_teacher）：其担任班主任的班级可见，不受任教学科限制
     if (!user.subject) {
       const headRows = await db.all<{ class_id: number }>(

@@ -985,5 +985,35 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     await conn.execute("INSERT INTO schema_migrations (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)", [m.version, m.name]);
     console.log(`[MariaDB] Migration ${m.version}: ${m.name}`);
   }
+
+  // 迁移 53（与 SQLite 侧 backfill-class-head-teacher 同口径）：
+  // 把历史「全局 head_teacher 角色」表达的班主任回填成按班标记 is_head_teacher。
+  // 逐班只保留一名班主任需要先聚合再写，SQL 直写会踩 MySQL「不能在子查询中引用被更新的表」，
+  // 故用一次 TS 步骤完成；版本号照常写入 schema_migrations 以保证幂等。
+  const BACKFILL_HEAD_TEACHER_VERSION = 53;
+  if (!applied.has(BACKFILL_HEAD_TEACHER_VERSION)) {
+    const [headRows] = await conn.execute(
+      `SELECT tc.class_id AS class_id, MIN(tc.teacher_id) AS teacher_id
+         FROM teacher_classes tc
+         JOIN users u ON u.id = tc.teacher_id
+        WHERE u.teacher_role = 'head_teacher'
+          AND NOT EXISTS (
+            SELECT 1 FROM teacher_classes h
+             WHERE h.class_id = tc.class_id AND h.is_head_teacher = 1
+          )
+        GROUP BY tc.class_id`
+    ) as [RowDataPacket[], any];
+    for (const row of headRows as Array<{ class_id: number; teacher_id: number }>) {
+      await conn.execute(
+        "UPDATE teacher_classes SET is_head_teacher = 1 WHERE teacher_id = ? AND class_id = ?",
+        [row.teacher_id, row.class_id]
+      );
+    }
+    await conn.execute(
+      "INSERT INTO schema_migrations (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)",
+      [BACKFILL_HEAD_TEACHER_VERSION, "backfill-class-head-teacher"]
+    );
+    console.log(`[MariaDB] Migration ${BACKFILL_HEAD_TEACHER_VERSION}: backfill-class-head-teacher（回填 ${headRows.length} 个班级）`);
+  }
 }
 export { getMariadbConfig };

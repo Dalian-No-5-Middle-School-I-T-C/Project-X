@@ -1186,6 +1186,36 @@ MIGRATIONS.push({ version: 52, name: "class-head-teacher", up(db) {
   addColumnIfMissing(db, "teacher_classes", "is_head_teacher", "INTEGER NOT NULL DEFAULT 0");
 } });
 
+/**
+ * 迁移 53：把「全局 head_teacher 角色」表达的历史班主任回填成按班标记。
+ *
+ * 迁移 52 只加列、默认 0，历史数据全部落在「有班主任教师、但班里没有任何班主任标记」的
+ * 状态：配置面板显示「未设置班主任」，换班主任时旧关联也清不掉，而旧教师仍凭
+ * users.teacher_role='head_teacher' 对其关联班级全科可见（评审 P1）。此处一次性补齐标记。
+ *
+ * 一班至多一名班主任：同班有多名历史班主任时保留 teacher_id 最小者，其余交由管理员在
+ * 班级页显式重设（不做猜测，避免把权限分配给非预期的教师）。
+ * 已经有班主任标记的班级不动，保证幂等且不覆盖新版界面的显式设置。
+ */
+MIGRATIONS.push({ version: 53, name: "backfill-class-head-teacher", up(db) {
+  const rows = db.prepare(`
+    SELECT tc.class_id AS classId, MIN(tc.teacher_id) AS teacherId
+      FROM teacher_classes tc
+      JOIN users u ON u.id = tc.teacher_id
+     WHERE u.teacher_role = 'head_teacher'
+       AND NOT EXISTS (
+         SELECT 1 FROM teacher_classes h
+          WHERE h.class_id = tc.class_id AND h.is_head_teacher = 1
+       )
+     GROUP BY tc.class_id
+  `).all() as Array<{ classId: number; teacherId: number }>;
+  if (rows.length === 0) return;
+  const mark = db.prepare(
+    "UPDATE teacher_classes SET is_head_teacher = 1 WHERE teacher_id = ? AND class_id = ?"
+  );
+  for (const row of rows) mark.run(row.teacherId, row.classId);
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

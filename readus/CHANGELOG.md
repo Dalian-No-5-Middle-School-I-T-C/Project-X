@@ -9,8 +9,11 @@
 
 复审修订（2026-09-26）：初版曾按全局角色实现班主任并声称无 schema 变更，评审指出会扩大其它任教班级权限后改为上述按班方案（迁移 `52 / class-head-teacher`）；本条目按最终实现重写。
 
+复审修订（2026-09-27）：补上存量库的模型迁移缺口。迁移 `52` 只加列（`is_head_teacher` 默认 0）**不回填**，历史班主任（旧模型 = 全局 `users.teacher_role='head_teacher'` + 一条班级关联）全部落在「有关联、无标记」状态——班级页显示「未设置班主任」、换班主任时旧关联也清不掉；而旧教师仍凭全局角色对其**关联的全部班级全科可见**，且新版 setter 不再写该角色，该状态无法自愈。现新增迁移 `53 / backfill-class-head-teacher`（SQLite 用 TS 逻辑回填；MariaDB 因逐班取唯一班主任的 SQL 易踩 `ER_UPDATE_TABLE_USED`，在迁移清单外用一次同口径 TS 步骤执行并照常写入 `schema_migrations`，幂等且只补齐无标记的班级，不覆盖新版界面的显式设置），并把 `getVisibleExamIds` / `getAccessibleClassIds` 的 `head_teacher` 分支收敛为与学科教师同一套「按班标记 + 学科匹配」判定——全局角色不再单独放大范围，换人后旧关联行即使因带科目而保留，也不会再越权看到非任教学科考试。
+
 验证：`npm run verify:class-teachers`（新增并已接入 CI，隔离 SQLite 走真实 HTTP：建年级/班级 → 改名 → 设/换/清班主任并回读 `teacher_classes.is_head_teacher` 与全局角色 → 分科设置、改科目只保留一行 → 非法学科 400、不存在或已停用教师 404 → 换班主任失败保留现任 → 按班班主任不扩大其它任教班级的可见范围（`getVisibleExamIds` 与成绩侧 `getAccessibleClassIds` 双口径断言））、`npm run typecheck`、`npm run build`、`npm run verify:core-logic`（73 passed）。
-未覆盖：本机无 MariaDB，`is_head_teacher` 行为断言仅在 SQLite 实跑，MariaDB 侧由 CI 作业覆盖建库与迁移；管理页界面未做浏览器视觉验收。
+复审补充（2026-09-27）：`verify:class-teachers` 增加第 8 节存量库回归——模拟未执行迁移 53 的库（全局 `head_teacher` 角色 + 不带科目的班级关联）→ 回填后配置面板可识别出班主任 → 重复执行保持幂等；再让该教师兼任本班学科后被换下班主任，断言其**看不到本班非任教学科考试**、仍保有任教学科范围。反向对照（撤掉迁移 53 / 撤掉分支收敛）分别精确失败于「回填」与「角色收敛」两组断言。
+未覆盖：本机无 MariaDB，`is_head_teacher` 回填与行为断言仅在 SQLite 实跑，MariaDB 侧由 CI 作业覆盖建库与迁移；管理页界面未做浏览器视觉验收。
 
 ## 2026-09-25 — 2026-09-23 问题反馈修复（题块命名 / 作文格 / 客观题横排 / 注记 / 权限 / 图表）
 

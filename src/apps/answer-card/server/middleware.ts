@@ -49,11 +49,14 @@ export function makeGate(enforce: boolean, readPerm: string, writePerm: string) 
 /**
  * Returns the set of exam IDs visible to the current teacher.
  * - admin / grade_leader → null (all visible)
- * - head_teacher → own classes + created exams
- * - subject_teacher → own subject + classes + created exams
- *   （按班班主任 teacher_classes.is_head_teacher 的班级对全科可见）
+ * - head_teacher / subject_teacher → created exams + 任教学科匹配的班级
+ *   + **担任班主任的班级全科可见**（按班标记 teacher_classes.is_head_teacher）
  * - plain teacher (no teacher_role) → 权限矩阵禁止的考试被剔除（#246：此前提前返回
  *   null 导致矩阵对该类教师完全失效）；无任何禁止行 → null（back-compat 全可见）
+ *
+ * 班主任自 v54 起是「按班关系」而非全局角色：全局 head_teacher 不再直接把
+ * teacher_classes 关联的所有班级放大成全科可见（否则旧角色教师既无法在配置面板被识别，
+ * 也无法在换人时被收回权限，见评审 P1）。
  *
  * #178 双模式：quiz（晨测）考试对教师全量可见（放开精细权限），
  * formal（大考）继续按 teacher_role + teacher_permissions 精细过滤。
@@ -76,30 +79,9 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
     return Array.from(merged);
   }
 
-  if (user.teacher_role === "head_teacher") {
-    const classRows = await db.all<{ class_id: number }>(
-      "SELECT class_id FROM teacher_classes WHERE teacher_id = ?",
-      user.id
-    );
-    const classIds = classRows.map((r) => r.class_id);
-    if (classIds.length === 0) {
-      const ownRows = await db.all<{ id: number }>(
-        `SELECT DISTINCT id FROM exams e WHERE e.created_by = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}`,
-        user.id
-      );
-      return await withQuizExamIds(await filterExamsByViewRestrictions(db, user.id, ownRows.map((r) => r.id)));
-    }
-    const rows = await db.all<{ id: number }>(
-      `SELECT DISTINCT e.id FROM exams e
-       WHERE (e.created_by = ? OR e.class_id IN (${classIds.map(() => "?").join(",")})) AND ${EXAM_NOT_SOFT_DELETED_SQL}`,
-      user.id,
-      ...classIds
-    );
-    // #246：班主任同样受权限矩阵查看标志约束（此前提前返回导致矩阵失效）
-    return await withQuizExamIds(await filterExamsByViewRestrictions(db, user.id, rows.map((r) => r.id)));
-  }
-
-  if (user.teacher_role === "subject_teacher") {
+  // 班主任与学科教师共用同一套「按班 + 按学科」判定：班主任身份只体现在
+  // teacher_classes.is_head_teacher 标记上，全局 head_teacher 角色不再单独放大范围。
+  if (user.teacher_role === "head_teacher" || user.teacher_role === "subject_teacher") {
     // 按班班主任（teacher_classes.is_head_teacher）：其担任班主任的班级看全科，其余班级仍按学科过滤
     const headClassIds = (await db.all<{ class_id: number }>(
       "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND is_head_teacher = 1",

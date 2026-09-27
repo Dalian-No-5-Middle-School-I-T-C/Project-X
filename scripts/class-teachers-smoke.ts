@@ -4,6 +4,8 @@
  * 走真实 HTTP：建年级/班级 → 改名 → 设班主任（不限学科）→ 按学科设任课教师 → 改科目/解除，
  * 并回读数据库确认持久化结果（teacher_classes 一行一人一班、按班 is_head_teacher）。
  * 复审回归（2026-09-26）：按班班主任不得扩大其它任教班级的权限、更换失败不删除现任。
+ * 复审回归（2026-09-27）：存量库的全局 head_teacher 角色需回填为按班标记，
+ * 回填后旧角色不再对其关联班级放大可见范围（评审 P1）。
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -200,7 +202,57 @@ async function main(): Promise<void> {
     const clearedClasses = await getAccessibleClassIds(wangUser);
     assert.ok(clearedClasses && !clearedClasses.includes(classId), "清除后成绩侧不应再看到甲班");
 
-    console.log("verify:class-teachers 通过（班级改名 / 按班班主任 / 分科任课教师 / 权限范围不扩散 / 更换失败保留现任 / 成绩侧口径一致 / 停用教师拒指派）");
+    // ── 8. 存量库：全局 head_teacher 角色回填 + 旧角色不再放大可见范围 ──
+    // 迁移 52 只加列（默认 0），历史班主任全落在「有关联、无按班标记」；
+    // 迁移 53 必须回填，否则面板显示「未设置班主任」、换人也清不掉旧关联。
+    const { runMigrations } = await import("../src/server/db/migrations");
+    const legacy = await users.createUser({
+      username: "smoke-legacy", password: "pw-123456", name: "旧班主任", role_id: 2,
+      teacher_role: "head_teacher", subject: "数学"
+    });
+    // 旧模型：班主任身份 = 全局角色 + 一条不带科目的班级关联
+    db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject, is_head_teacher) VALUES (?, ?, NULL, 0)")
+      .run(legacy.id, classB);
+    db.prepare("DELETE FROM schema_migrations WHERE version = 53").run();
+    runMigrations(db);
+    const legacyLink = db.prepare("SELECT is_head_teacher FROM teacher_classes WHERE teacher_id = ? AND class_id = ?")
+      .get(legacy.id, classB) as { is_head_teacher: number };
+    assert.equal(legacyLink.is_head_teacher, 1, "存量库历史班主任必须被迁移 53 回填为按班标记");
+    config = (await (await get(`/api/classes/${classB}/teachers`)).json()) as ClassTeachers;
+    assert.equal(config.headTeacherId, legacy.id, "回填后配置面板必须能识别出历史班主任");
+
+    // 幂等：再次执行不得改变结果（不重复分配、不覆盖新版界面的显式设置）
+    db.prepare("DELETE FROM schema_migrations WHERE version = 53").run();
+    runMigrations(db);
+    const markedCount = db.prepare("SELECT COUNT(*) AS n FROM teacher_classes WHERE class_id = ? AND is_head_teacher = 1")
+      .get(classB) as { n: number };
+    assert.equal(Number(markedCount.n), 1, "回填必须幂等：一班至多一名班主任");
+
+    const examBMath = insertExam(classB, "数学");
+    const legacyUser = { id: legacy.id, role_name: "teacher", teacher_role: "head_teacher", subject: "数学" } as never;
+    const legacyHead = await getVisibleExamIds(legacyUser);
+    assert.ok(
+      legacyHead && legacyHead.includes(examBChinese) && legacyHead.includes(examBPhysics) && legacyHead.includes(examBMath),
+      "回填后历史班主任应看到本班全科考试"
+    );
+
+    // 关键场景：该教师同时是本班数学任课教师（同一关联行改为带科目），随后被换下班主任。
+    // 关联行因带科目而保留、只把 is_head_teacher 置 0 —— 若权限仍走「全局 head_teacher → 关联即全科」，
+    // 他会继续看到本班语文考试（评审 P1）。此处用语文不可见 + 数学仍可见双向卡住。
+    assert.equal(
+      (await post(`/api/classes/${classB}/teachers`, { teacherId: legacy.id, subject: "数学" })).status, 200,
+      "为历史班主任指派数学任课失败"
+    );
+    assert.equal((await post(`/api/classes/${classB}/head-teacher`, { teacherId: han.id }, "PUT")).status, 200, "替换历史班主任失败");
+    const legacyAfter = await getVisibleExamIds(legacyUser);
+    assert.ok(legacyAfter && !legacyAfter.includes(examBChinese), "被换下后不得再凭全局 head_teacher 角色看到本班语文考试（评审 P1）");
+    assert.ok(legacyAfter && !legacyAfter.includes(examBPhysics), "被换下后不得再看到本班非任教学科考试");
+    assert.ok(legacyAfter && legacyAfter.includes(examBMath), "被换下后仍应保有本人任教学科的可见范围");
+    const legacyClasses = await getAccessibleClassIds(legacyUser);
+    assert.ok(legacyClasses && legacyClasses.includes(classB), "被换下后成绩侧仍应保有任教班级");
+    assert.equal((await post(`/api/classes/${classB}/head-teacher`, { teacherId: null }, "PUT")).status, 200, "清除乙班班主任失败");
+
+    console.log("verify:class-teachers 通过（班级改名 / 按班班主任 / 分科任课教师 / 权限范围不扩散 / 更换失败保留现任 / 成绩侧口径一致 / 停用教师拒指派 / 存量库回填与旧角色收敛）");
   } finally {
     if (server) {
       server.closeAllConnections?.();
