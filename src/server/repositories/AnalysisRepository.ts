@@ -350,13 +350,38 @@ export class AnalysisRepository {
    * Issue #264 / PR #303 审查 P1：偏科分析需要「跨科」考试集合。
    * 取每个学科最近的一场（可按 perSubject 取多场）供面板默认勾选；
    * 单科考试集合会让相对个人基线的算法永远无法成立（bySubject.size 恒为 1）。
+   *
+   * PR #303 审查 P2：必须限定到「当前年级 / 当前班级」的作用域。此前只按可见性收敛，
+   * 对视全可见的账号等于全校范围取卷——他年级更新的考试会把本班候选整批顶掉，
+   * 而面板又会带上 classId 过滤，结果是班级维度静默算成空集。作用域由 getExamScope 提供。
    */
-  async getLatestExamPerSubject(options: { perSubject?: number; visibleExamIds?: number[] | null } = {}): Promise<ScoreTrendPoint[]> {
+  async getLatestExamPerSubject(options: {
+    perSubject?: number;
+    visibleExamIds?: number[] | null;
+    gradeId?: number | null;
+    classId?: number | null;
+  } = {}): Promise<ScoreTrendPoint[]> {
     const perSubject = Math.max(1, options.perSubject ?? 1);
     const visibleExamIds = options.visibleExamIds;
     if (visibleExamIds != null && visibleExamIds.length === 0) return [];
-    const scopeSql = visibleExamIds == null ? "" : ` AND e.id IN (${visibleExamIds.map(() => "?").join(",")})`;
-    const scopeParams = visibleExamIds ?? [];
+
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (visibleExamIds != null) {
+      conditions.push(`e.id IN (${visibleExamIds.map(() => "?").join(",")})`);
+      params.push(...visibleExamIds);
+    }
+    if (options.gradeId != null) {
+      // 未标注年级的历史考试（grade_id 为空）不参与排除，避免静默丢掉候选
+      conditions.push("(e.grade_id = ? OR e.grade_id IS NULL)");
+      params.push(options.gradeId);
+    }
+    if (options.classId != null) {
+      // 班级维度：本班考试 + 年级统考（class_id 为空），不把同年级其它班的考试算进候选
+      conditions.push("(e.class_id = ? OR e.class_id IS NULL)");
+      params.push(options.classId);
+    }
+    const scopeSql = conditions.length > 0 ? ` AND ${conditions.join(" AND ")}` : "";
     // 与 getScoreTrend 同口径：只取已有成绩的未删除考试，时间升序后各学科截取尾部
     const rows = await this.db.all(
       `SELECT e.id as examId, e.name as examName, e.subject as subject,
@@ -367,7 +392,7 @@ export class AnalysisRepository {
        WHERE e.subject IS NOT NULL AND e.subject <> '' AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql}
        GROUP BY e.id
        ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC, e.id ASC`,
-      ...scopeParams
+      ...params
     ) as Array<{ examId: number; examName: string; subject: string; examTime: string; gradeAvg: number; gradeCount: number }>;
     const bySubject = new Map<string, ScoreTrendPoint[]>();
     for (const r of rows) {
@@ -377,6 +402,22 @@ export class AnalysisRepository {
       bySubject.set(r.subject, list);
     }
     return Array.from(bySubject.values()).flat().sort((a, b) => a.subject.localeCompare(b.subject, "zh-CN") || a.examTime.localeCompare(b.examTime));
+  }
+
+  /**
+   * 取某场考试的年级 / 班级锚点，供跨科候选按同年级收敛。
+   * 班级为空（年级统考）时只锚年级，避免把年级统考排除在候选之外。
+   */
+  async getExamScope(examId: number): Promise<{ gradeId: number | null; classId: number | null } | null> {
+    const row = await this.db.get<{ grade_id: number | null; class_id: number | null }>(
+      "SELECT grade_id, class_id FROM exams WHERE id = ?",
+      examId
+    );
+    if (!row) return null;
+    return {
+      gradeId: row.grade_id == null ? null : Number(row.grade_id),
+      classId: row.class_id == null ? null : Number(row.class_id),
+    };
   }
 
   async getStudentRanking(examId: number, classId?: number): Promise<StudentRankingItem[]> {

@@ -280,6 +280,47 @@ ok(analysisCache.size === 0, "invalidateExam 清空该场考试全部缓存", an
 const ov3 = await repo.getExamOverview(e1);
 ok(ov3.avgScore === ov1.avgScore, "失效后重算结果一致", { a: ov3.avgScore, b: ov1.avgScore });
 
+// ============================================================
+console.log("\n== PR #303 审查 P2：exam-options 作用域（放末尾，避免新增考试污染前序统计）==");
+// 跨科候选必须限定在锚点考试的年级 / 班级。此前只按可见性收敛，对视全可见的账号等于
+// 「全校每科最近一场」——他年级更新的考试会把本年级候选整批顶掉，而面板随后带上 classId
+// 过滤，班级维度就静默算成空集。
+const otherGrade = db.prepare("INSERT INTO grades (name) VALUES (?)").run("高二").lastInsertRowid as number;
+const otherClass = db.prepare("INSERT INTO classes (grade_id, name) VALUES (?, ?)").run(otherGrade, "9班").lastInsertRowid as number;
+const eOtherMath = db.prepare("INSERT INTO exams (name, subject, status, grade_id, class_id, start_time) VALUES (?, ?, 'closed', ?, ?, ?)")
+  .run("G2-数学新卷", "数学", otherGrade, otherClass, "2099-01-01 08:00:00").lastInsertRowid as number;
+const eOtherChinese = db.prepare("INSERT INTO exams (name, subject, status, grade_id, class_id, start_time) VALUES (?, ?, 'closed', ?, ?, ?)")
+  .run("G2-语文新卷", "语文", otherGrade, otherClass, "2099-01-02 08:00:00").lastInsertRowid as number;
+insertS.run(eOtherMath, uA, 88, 88);
+insertS.run(eOtherChinese, uA, 77, 77);
+
+const unscopedOpts = await repo.getLatestExamPerSubject();
+ok(
+  unscopedOpts.some((o) => o.examId === eOtherMath) && unscopedOpts.some((o) => o.examId === eOtherChinese),
+  "无作用域时他年级更新的考试会顶掉本年级候选（P2 成因）",
+  unscopedOpts.map((o) => `${o.subject}/${o.examName}`)
+);
+
+const anchorExam = db.prepare("INSERT INTO exams (name, subject, status, grade_id, class_id) VALUES (?, ?, 'closed', ?, ?)")
+  .run("高一锚点考试", "物理", gradeId, class1).lastInsertRowid as number;
+const anchorScope = await repo.getExamScope(anchorExam);
+ok(anchorScope?.gradeId === gradeId && anchorScope?.classId === class1, "getExamScope 取到年级 / 班级锚点", anchorScope);
+ok((await repo.getExamScope(999999)) === null, "不存在的考试返回 null");
+
+const scopedOpts = await repo.getLatestExamPerSubject({ gradeId, classId: class1 });
+ok(
+  !scopedOpts.some((o) => o.examId === eOtherMath || o.examId === eOtherChinese),
+  "限定锚点年级后他年级考试不再进入候选（P2 修复）",
+  scopedOpts.map((o) => `${o.subject}/${o.examName}`)
+);
+ok(
+  scopedOpts.some((o) => o.examId === e2),
+  "本年级语文候选仍在（未标注年级的历史考试不被误排除）",
+  scopedOpts.map((o) => o.examId)
+);
+const scopedDev = await repo.getSubjectDeviation(scopedOpts.map((o) => o.examId), { classId: class1 });
+ok(scopedDev.items.length > 0, "限定作用域后班级维度偏科分析不再算成空集", scopedDev.items.length);
+
 // 清理
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 

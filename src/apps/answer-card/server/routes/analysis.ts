@@ -489,9 +489,25 @@ router.get("/subject-deviation/exam-options", async (req, res, next) => {
     const perSubject = req.query.perSubject ? Number(req.query.perSubject) : 1;
     const analysisRepo = new AnalysisRepository();
     const visibleExamIds = await getVisibleExamIds(req.user);
+
+    // 作用域（PR #303 审查 P2）：优先显式 classId，其次由锚点考试 examId 反查年级 / 班级。
+    // 不限定作用域时，对视全可见的账号等于「全校每科最近一场」——他年级更新的考试会把
+    // 本班候选整批顶掉，面板再带 classId 过滤就静默算成空集。
+    const anchorExamId = req.query.examId ? Number(req.query.examId) : null;
+    const explicitClassId = req.query.classId ? Number(req.query.classId) : null;
+    let gradeId: number | null = null;
+    let classId: number | null = Number.isInteger(explicitClassId) && explicitClassId! > 0 ? explicitClassId : null;
+    if (anchorExamId != null && Number.isInteger(anchorExamId) && anchorExamId > 0) {
+      const scope = await analysisRepo.getExamScope(anchorExamId);
+      gradeId = scope?.gradeId ?? null;
+      if (classId == null) classId = scope?.classId ?? null;
+    }
+
     const options = await analysisRepo.getLatestExamPerSubject({
       perSubject: Number.isInteger(perSubject) && perSubject > 0 ? Math.min(perSubject, 5) : 1,
       visibleExamIds,
+      gradeId,
+      classId,
     });
     // #246：与 /trends 同口径，跨考试图表数据按 can_view_charts 收敛
     const chartAllowed = await filterExamIdsByViewPermission(req.user, options.map((t) => t.examId), "can_view_charts");

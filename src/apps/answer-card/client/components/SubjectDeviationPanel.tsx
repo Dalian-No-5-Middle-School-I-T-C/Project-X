@@ -29,9 +29,12 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
 
   // 偏科判定需要多个学科的成绩，故取「每科最近一场」的跨科考试集合。
   // 不能复用按单科过滤的 /trends：单科集合会让相对个人基线的算法永远无法成立。
+  // 必须带 examId（锚点年级）与 classId 作用域，否则他年级更新的考试会顶掉本班候选（评审 P2）。
   useEffect(() => {
     const controller = new AbortController();
-    fetchJson<ScoreTrendPoint[]>("/api/analysis/subject-deviation/exam-options?perSubject=1", { signal: controller.signal })
+    const params = new URLSearchParams({ perSubject: "1", examId: String(examId) });
+    if (classId) params.set("classId", classId);
+    fetchJson<ScoreTrendPoint[]>(`/api/analysis/subject-deviation/exam-options?${params.toString()}`, { signal: controller.signal })
       .then((rows) => {
         const list = Array.isArray(rows) ? rows : [];
         setExamOptions(list);
@@ -39,7 +42,7 @@ export function SubjectDeviationPanel({ examId, subject, classId }: { examId: nu
       })
       .catch(() => { if (!controller.signal.aborted) setExamOptions([]); });
     return () => controller.abort();
-  }, []);
+  }, [examId, classId]);
 
   const includeCurrent = useMemo(() => {
     if (selectedIds.includes(examId)) return true;

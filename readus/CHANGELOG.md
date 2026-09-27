@@ -5,8 +5,9 @@
 - **[P1] 偏科预警在唯一 UI 入口恒不触发**：`SubjectDeviationPanel` 的考试集合取自 `/api/analysis/trends?subject=<当前科目>`（后端 `WHERE e.subject = ?`），提交给偏科分析的 examIds 因此永远只有一个学科，`bySubject.size >= 2` 永不成立，所有人的相对落差恒为 0。新增 `GET /api/analysis/subject-deviation/exam-options`（`AnalysisRepository.getLatestExamPerSubject`，默认每科最近一场、`perSubject` 最多 5）作为跨科数据源，权限与 `/trends` 同口径（可见考试范围 + `can_view_charts`）；面板默认勾选每科一场、学科标签前置，勾选覆盖不足 2 科时禁用分析并给出补充提示。
 - **[P2] 合法空分布被误报为加载失败**：`AnalysisOverall` 分布链路改为「仅在有失败且无数据」时进入错误态，大考组无成员考试等全成功但为空的场景回到 `EmptyState`（原先该分支为死代码）。
 - **[P3] 三处**：分析页两条请求链接入 `AbortController`（重试/切换考试时取消旧请求，丢弃迟到响应）；`TeacherManagement` 记录班级列表所属年级，年级切换空窗期不再可勾选并提交旧年级班级；校验脚本中 `stdDev` 口径注释由「样本标准差」更正为总体口径（÷ n）。
+- **[P2·二轮] `exam-options` 跨科候选未限定年级 / 班级**：`getLatestExamPerSubject` 此前只按「可见考试」收敛，对视全可见的账号（admin / 学年主任 / 无 `teacher_role` 的普通教师，`getVisibleExamIds` 返回 `null`）等于「全校每科最近一场」。他年级更新的数学 / 语文考试会把这些学科的候选整批顶掉，而面板随后带上 `classId` 过滤——所选考试在本班没有成绩，班级维度就静默算成空集（不报错、不给提示，用户无法判断是「本班确无偏科」还是「候选被顶替」）。现新增 `AnalysisRepository.getExamScope(examId)` 取锚点考试的年级 / 班级，`GET /analysis/subject-deviation/exam-options` 接受 `examId`（锚点）与 `classId`（显式优先），仓库侧按「同年级 + 本班或其年级统考」过滤；未标注年级 / 班级的历史考试不参与排除，避免静默丢候选。前端 `SubjectDeviationPanel` 把自身的 `examId` / `classId` 一并下传，并纳入 effect 依赖。
 
-验证：`npm run typecheck` 通过；`scripts/verify-analysis-batches-2-4.ts` 67 项全过（新增 7 项跨科管道回归：exam-options 跨科取数、单科输入恒不触发、可见范围约束）。
+验证：`npm run typecheck` 通过；`scripts/verify-analysis-batches-2-4.ts` 73 项全过（新增 7 项跨科管道回归：exam-options 跨科取数、单科输入恒不触发、可见范围约束；以及二轮 6 项作用域回归：无作用域时他年级考试确实会顶掉本年级候选（成因复现）、`getExamScope` 取锚点、限定年级后他年级考试不再入列、本年级候选仍在、限定作用域后班级维度偏科分析不再算成空集。反向对照——仅停用作用域应用——精确失败于作用域相关断言）。该脚本在全部断言通过后不主动退出，须由外层超时收尾，属既有行为，非本次改动引入。
 
 ## 2026-09-26 — Issues 分诊与修复批次（分支 `fix/issues-triage`）
 
