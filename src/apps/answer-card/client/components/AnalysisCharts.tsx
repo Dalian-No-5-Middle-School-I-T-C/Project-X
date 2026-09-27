@@ -10,7 +10,6 @@
  */
 import { Chart as ChartJS, RadialLinearScale } from "chart.js";
 import { classifyBand, type ThresholdBand } from "../../../../shared/stats";
-import { tokens } from "../theme";
 import { Chart, paletteColor, rampPalette, useChartTheme, withAlpha } from "./ui/v2";
 
 // v2 适配器只注册了折线/柱/环所需元素，radar（#218 ClassRadar）需补注册 RadialLinearScale
@@ -404,10 +403,14 @@ export function PDScatter({
   height?: number;
 }) {
   const theme = useChartTheme();
+  // 深色模式下档位色在暗底上几乎不可见，数据点统一改用提亮红；亮色模式仍按区分度档位着色。
+  const isDark = typeof document !== "undefined" && document.documentElement.dataset.theme === "dark";
   const colorOf = (d: number) =>
-    discBands && discBands.length > 0
-      ? classifyBand(d, discBands).color
-      : paletteColor(Math.max(0, Math.min(5, Math.floor(d * 10))));
+    isDark
+      ? theme.danger
+      : discBands && discBands.length > 0
+        ? classifyBand(d, discBands).color
+        : paletteColor(Math.max(0, Math.min(5, Math.floor(d * 10))));
   // 疑题：难度 P < 0.5（偏难）且区分度 D < 0.3（区分能力弱）
   const suspect = (p: { x: number; y: number }) => p.x < 0.5 && p.y < 0.3;
   const normal = points.filter((p) => !suspect(p));
@@ -430,7 +433,7 @@ export function PDScatter({
         type: "scatter" as const,
         data: flagged.map((p) => ({ x: p.x, y: p.y, questionNumber: p.questionNumber, scoreRate: p.scoreRate })),
         backgroundColor: flagged.map((p) => colorOf(p.y)),
-        borderColor: tokens.danger,
+        borderColor: theme.danger,
         borderWidth: 2,
         pointRadius: 7,
         pointHoverRadius: 9,

@@ -1,4 +1,5 @@
 import type { HistogramBin, NormalityResult, QQPoint, ThresholdBand } from "./stats";
+import type { RichTextRun } from "./richText";
 
 export type ObjectiveMode = "single" | "multiple" | "indefinite";
 export type ObjectiveDensity = "loose" | "normal" | "compact" | "dense";
@@ -208,8 +209,8 @@ export type SubjectiveRenderItem = {
   blanks: Rect[];
   blankLabels?: string[];
   blankRightAnnotations?: string[];
-  /** 逐行排布后的文字注释，text 已按单元格宽度换行。 */
-  annotationLines?: Array<{ text: string; rect: Rect }>;
+  /** 逐行排布后的文字注释，text 已按单元格宽度换行；runs 保留加粗/斜体片段。 */
+  annotationLines?: Array<{ text: string; rect: Rect; runs?: RichTextRun[] }>;
   blankLabelStyle?: BlankLabelStyle;
   blankLabelSlotWidth?: number;
   images: Array<{ assetId: string; originalName?: string; rect: Rect }>;
