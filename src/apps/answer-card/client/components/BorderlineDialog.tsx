@@ -109,7 +109,7 @@ export function BorderlineDialog({
     <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
       <DialogContent size="lg">
         <DialogHeader>
-          <DialogTitle>临界生名单（培优补差）</DialogTitle>
+          <DialogTitle>临界生名单</DialogTitle>
         </DialogHeader>
         <DialogBody>
           <div className="flex flex-wrap items-end gap-3">

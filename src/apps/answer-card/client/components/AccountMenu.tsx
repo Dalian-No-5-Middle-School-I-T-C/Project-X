@@ -127,7 +127,7 @@ export function AccountMenu({
   }
 
   const roleLabel = TEACHER_ROLE_LABELS[user.teacher_role ?? ""] ?? ROLE_LABELS[user.role_name] ?? user.role_name;
-  const personaLabels: Record<string, string> = { "teacher-scanner": "扫描端（全功能）", teacher: "教师端", student: "学生端（预览）" };
+  const personaLabels: Record<string, string> = { "teacher-scanner": "扫描端", teacher: "教师端", student: "学生端" };
 
   return (
     <>
@@ -244,7 +244,7 @@ export function AccountMenu({
                       onChange={(e) => setTeacherRoleOverride((e.target.value || null) as TeacherRoleOverride)}
                       className="rounded-sm border border-border bg-card px-1.5 py-0.5 text-xs text-foreground outline-none focus-visible:shadow-focus"
                     >
-                      <option value="">教师角色（实际）</option>
+                      <option value="">教师角色</option>
                       <option value="subject_teacher">学科老师</option>
                       <option value="head_teacher">班主任</option>
                       <option value="grade_leader">学年主任</option>

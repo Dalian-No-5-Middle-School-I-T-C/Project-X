@@ -188,7 +188,7 @@ function DistributionCard({ d, showTotalNote, bands, hasFullScore }: { d: Distri
 
       <p className="mt-2 text-xs text-muted-foreground">
         {d.assignedAvailable
-          ? "已启用赋分：以上分布为赋分后总分口径。"
+          ? "已启用赋分：以上分布为赋分后总分。"
           : (d.scope === "total" && showTotalNote ? "总分分布仅大考可用；本次为普通考试，已省略。" : "未启用赋分：以上为原始分分布。")}
       </p>
     </section>
@@ -334,7 +334,7 @@ function NormalityTable({ normality }: { normality: NormalityResult }) {
           </TableBody>
         </Table>
       </TableWrap>
-      <p className="mt-1 text-xs text-muted-foreground">注：p≥0.05 视为不拒绝正态假设（常规阈值）。</p>
+      <p className="mt-1 text-xs text-muted-foreground">注：p≥0.05 视为不拒绝正态假设。</p>
     </div>
   );
 }

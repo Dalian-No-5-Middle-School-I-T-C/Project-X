@@ -123,7 +123,7 @@ export function StudentScores() {
     return (
       <div className="flex flex-col gap-5">
         <div className="flex items-center justify-between rounded-lg border border-border-subtle bg-card px-4 py-3 text-xs text-muted-foreground">
-          <span className="inline-flex items-center gap-2"><Shield size={14} />仅展示本人成绩 · 只读</span>
+          <span className="inline-flex items-center gap-2"><Shield size={14} />仅展示本人成绩</span>
           <Button variant="ghost" size="sm" onClick={() => void loadScores()} disabled={busy}><RefreshCw size={16} />刷新</Button>
         </div>
         {error && <div className="rounded-md border border-destructive-border bg-destructive-soft px-3 py-2 text-sm text-destructive-fg">{error}</div>}

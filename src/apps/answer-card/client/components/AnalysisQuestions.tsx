@@ -217,7 +217,7 @@ export function AnalysisQuestions({ questions, bands, onRowClick }: Props) {
   return (
     <section className="my-4 flex flex-col gap-2">
       <h3 className="text-sm font-semibold text-foreground">
-        题目得分率排行{onRowClick ? "（点击题目可下钻全班得分）" : ""}
+        题目得分率排行{onRowClick ? "（点击题目可查看本题全班得分）" : ""}
       </h3>
       <DataTable<QuestionAnalysisItem>
         columns={columns}

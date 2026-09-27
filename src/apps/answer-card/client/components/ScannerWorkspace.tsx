@@ -174,7 +174,7 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
         <div className="flex min-h-0 flex-1 flex-row-reverse">
           {/* ── Main area: ScannerPanel or GradingResults ── */}
           <section className="min-w-0 flex-1 overflow-auto bg-background p-6">
-            {!scanning && <ControlRow label="导入时兼容旧卡（无可读二维码时未校验卡 ID）" control={<Checkbox checked={legacyIdentity} disabled={isBusy} onCheckedChange={c => setLegacyIdentity(c === true)} />} />}
+            {!scanning && <ControlRow label="导入时兼容旧卡（无可读二维码时不校验卡 ID）" control={<Checkbox checked={legacyIdentity} disabled={isBusy} onCheckedChange={c => setLegacyIdentity(c === true)} />} />}
             {!scanning && lastLegacyIdentity && <p role="status" className="text-sm text-muted-foreground">本批次兼容旧卡：无可读二维码的页面未校验卡 ID，请人工核对。</p>}
             {scanning ? (
               <ScannerPanel

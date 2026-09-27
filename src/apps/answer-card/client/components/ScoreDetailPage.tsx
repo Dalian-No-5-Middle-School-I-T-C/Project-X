@@ -980,8 +980,8 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
             <section className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-sm font-semibold text-foreground">班级知识点得分率对比</h3>
-                <Badge tone="neutral">覆盖 {knowledge.coverageRate}% 题目（已标注知识点）</Badge>
-                <span className="text-xs text-muted-foreground">「3 班函数弱、5 班立体几何弱」这类维度对比</span>
+                <Badge tone="neutral">覆盖 {knowledge.coverageRate}% 题目</Badge>
+                <span className="text-xs text-muted-foreground">详细维度对比</span>
               </div>
               <KnowledgeRadar
                 points={knowledge.knowledgePoints}
@@ -1034,7 +1034,7 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
               <h3 className="text-sm font-semibold text-foreground">分数段分布对比</h3>
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 <div className="flex flex-col gap-1">
-                  <span className="text-xs font-medium text-secondary-foreground">分组柱状（各段人数）</span>
+                  <span className="text-xs font-medium text-secondary-foreground">分组柱状</span>
                   <ClassDistributionBar
                     labels={comparison.classes[0].distribution.map((d) => d.range)}
                     classes={comparison.classes.map((c) => ({ className: c.className }))}
@@ -1045,7 +1045,7 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
                   />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <span className="text-xs font-medium text-secondary-foreground">各班占比（100% 堆叠）</span>
+                  <span className="text-xs font-medium text-secondary-foreground">各班占比</span>
                   <ClassStackBar
                     labels={comparison.classes.map((c) => c.className)}
                     segments={comparison.classes[0].distribution.map((d) => d.range)}
@@ -1107,7 +1107,7 @@ function ClassComparePanel({ examId, classGroups }: { examId: number; classGroup
           {comparison.optionStats && comparison.optionStats.length > 0 && (
             <section className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <h3 className="text-sm font-semibold text-foreground">选择题选项对比（各班选择人数/比例）</h3>
+                <h3 className="text-sm font-semibold text-foreground">选择题选项对比</h3>
                 <Badge tone="success">✓ = 标准答案</Badge>
               </div>
               {comparison.optionStats.map((q) => (

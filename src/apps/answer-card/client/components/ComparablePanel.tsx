@@ -55,7 +55,7 @@ export function ComparablePanel({ examId }: { examId: number }) {
           />
         </div>
         <div className="flex min-w-0 flex-col gap-2">
-          <h4 className="text-xs font-semibold text-muted-foreground">难度系数 P / 区分度 D（0-100%）</h4>
+          <h4 className="text-xs font-semibold text-muted-foreground">难度系数 P / 区分度 D</h4>
           <TrendLine
             data={{
               labels: data.exams.map(labelOf),

@@ -147,6 +147,8 @@ export interface ChartTheme {
   foreground: string;
   /** 提示气泡底色 */
   surface: string;
+  /** 危险/警示色（按当前主题解析，暗色主题下为提亮红） */
+  danger: string;
 }
 
 const FALLBACK_THEME: ChartTheme = {
@@ -156,6 +158,7 @@ const FALLBACK_THEME: ChartTheme = {
   tick: tokens.muted,
   foreground: tokens.text,
   surface: tokens.surfaceRaised,
+  danger: tokens.danger,
 };
 
 /** 读取 documentElement 上的 CSS 变量；SSR / 读不到时回落 */
@@ -179,6 +182,7 @@ function resolveChartTheme(): ChartTheme {
     tick: readCssVar("--px-fg-tertiary", FALLBACK_THEME.tick),
     foreground: readCssVar("--px-fg-primary", FALLBACK_THEME.foreground),
     surface: readCssVar("--px-bg-raised", FALLBACK_THEME.surface),
+    danger: readCssVar("--px-danger-bg", FALLBACK_THEME.danger),
   };
 }
 

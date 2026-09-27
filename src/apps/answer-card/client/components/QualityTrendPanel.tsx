@@ -32,7 +32,7 @@ export function QualityTrendPanel({ subject }: { subject: string | null }) {
     <section className="flex flex-col gap-3 rounded-lg border border-border-subtle bg-card p-4">
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-semibold text-foreground">命题质量趋势（{data.subject}）</h3>
-        <Badge tone="neutral">难度系数 P = 得分率（越高越容易）；区分度 D &lt; 0.3 需关注</Badge>
+        <Badge tone="neutral">难度系数 P = 得分率；区分度 D &lt; 0.3 需关注</Badge>
       </div>
       <TrendLine
         data={{

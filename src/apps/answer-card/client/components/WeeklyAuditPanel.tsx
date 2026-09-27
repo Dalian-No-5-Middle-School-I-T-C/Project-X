@@ -163,7 +163,7 @@ export function WeeklyAuditPanel({ onOpenAnalysisGroup }: Props) {
             <EmptyState
               size="sm"
               title="该周暂无晨测记录"
-              description="该周没有已发布的晨测报告（模式为「晨测」的考试）。"
+              description="该周没有已发布的晨测报告。"
             />
           )
         ) : (
@@ -260,7 +260,7 @@ export function WeeklyAuditPanel({ onOpenAnalysisGroup }: Props) {
                   <span className="text-xs text-muted-foreground">按得分率最低排序</span>
                 </div>
                 {active.weakPoints.length === 0 ? (
-                  <p className="px-4 py-6 text-center text-sm text-muted-foreground">暂无逐题数据（该周考试未配置题目得分）</p>
+                  <p className="px-4 py-6 text-center text-sm text-muted-foreground">暂无逐题数据</p>
                 ) : (
                   <ul className="flex flex-col">
                     {active.weakPoints.map((point, index) => (

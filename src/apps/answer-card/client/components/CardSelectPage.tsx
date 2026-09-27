@@ -97,7 +97,7 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
       } else if (e?.status === 404 && !silent) {
         // 列表接口 404 = 服务端未启用 scannerClientApi / 旧版服务器：
         // 不再静默清空，明确提示并回退本机数据
-        setSyncError("远端服务器未启用扫描客户端同步接口，已回退显示本机数据");
+        setSyncError("远端服务器未启用扫描客户端同步接口，仅显示本机数据");
         const localData = await fetchJson<any[]>("/api/cards?limit=500");
         setCards(Array.isArray(localData) ? localData : []);
         setSyncSource("local");
@@ -118,7 +118,7 @@ export function CardSelectPage({ onSelectCard, skin, onSkinChange }: Props) {
       if (isAuthError(e)) {
         setSyncError(e.message || "同步失败：API Key 无效或无权限，请检查服务器配置");
       } else if (e?.status === 404 && !silent) {
-        setSyncError("远端服务器未启用扫描客户端同步接口，已回退显示本机数据");
+        setSyncError("远端服务器未启用扫描客户端同步接口，仅显示本机数据");
         const localData = await fetchJson<any[]>("/api/exam-groups");
         setGroups(Array.isArray(localData) ? localData : []);
       } else if (!silent) setGroups([]);

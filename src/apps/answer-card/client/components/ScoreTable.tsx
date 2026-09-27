@@ -76,7 +76,7 @@ export function ScoreTable({ examId, classId, displayMode: propDisplayMode, onRo
         cardId: string;
       }>(`/api/scanner/exam/${examId}/student/${studentId}/scans`);
       if (data.pages.length === 0) {
-        setPreviewSubtitle("暂无答题卡扫描记录（旧考试需重新阅卷）");
+        setPreviewSubtitle("暂无答题卡扫描记录");
       } else {
         setPreviewSubtitle(`${data.pages.length} 页`);
         const pages: ScanPage[] = data.pages.map((p) => ({

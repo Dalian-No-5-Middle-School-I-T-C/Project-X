@@ -259,7 +259,7 @@ export function CreateExamGroupModal({ onClose, onCreated, existingGroup, existi
                 </SelectContent>
               </Select>
               <span className="text-xs text-muted-foreground">
-                （仅对化学/生物/地理/政治等赋分科目生效）
+                （仅对赋分科目生效）
               </span>
             </div>
           </div>

@@ -1234,7 +1234,7 @@ function CrossResultTable({
               size="sm"
               icon={<Inbox />}
               title="没有匹配的学生"
-              description="换个关键字，或清空搜索框查看全部。"
+              description="请更换关键字重试，或清空搜索框查看全部。"
             />
           }
         />

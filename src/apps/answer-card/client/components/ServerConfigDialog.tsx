@@ -153,12 +153,12 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
       </p>
       {blockedByActiveJobs && (
         <p className="m-0 rounded border border-destructive-border bg-destructive-soft px-2 py-1 text-xs text-destructive-fg">
-          上传任务正在在途（创建/上传/提交），暂不能切服。可稍候重试，或在进度卡「取消」已暂停/排队的任务。
+          上传任务正在进行，暂不能切换服务器。可稍候重试，或在进度卡「取消」已暂停/排队的任务。
         </p>
       )}
       {!blockedByActiveJobs && hasPending && configChanged && (
         <p className="m-0 rounded border border-warning-border bg-warning-soft px-2 py-1 text-xs text-warning-foreground">
-          存在排队/暂停的上传任务：它们已快照原服务器，切服后仍发往原服务器；新任务将发往新服务器。可先到进度卡取消后再切。
+          存在排队/暂停的上传任务：它们在切换服务器后仍发往原服务器；新任务将发往新服务器。可先到进度卡取消后再切换。
         </p>
       )}
       <Field label="服务器地址">
@@ -176,7 +176,7 @@ export function ServerConfigDialog({ mode, open, onOpenChange, onSaved, saveRef 
       </Field>
       {serverUrl.trim() && normalizeServerUrl(serverUrl) !== serverUrl.trim() && (
         <p className="m-0 -mt-1 text-xs text-muted-foreground">
-          将按 <code className="font-mono">{normalizeServerUrl(serverUrl)}</code> 使用（已自动补全协议头）
+          将按 <code className="font-mono">{normalizeServerUrl(serverUrl)}</code> 使用
         </p>
       )}
       <Field label="API Key">

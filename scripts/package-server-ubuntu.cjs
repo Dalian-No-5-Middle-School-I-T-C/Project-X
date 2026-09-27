@@ -26,6 +26,7 @@ const runtimeDependencies = [
   "mysql2",
   "pdfjs-dist",
   "pdfkit",
+  "qrcode",
   "sharp",
   "tesseract.js",
   "xlsx",
@@ -310,6 +311,7 @@ cpSync(path.join(rootDir, "llmclient"), path.join(packageDir, "llmclient"), {
   filter: (source) => {
     const name = path.basename(source);
     return ![".env", ".venv", "venv", "__pycache__"].includes(name)
+      && !name.endsWith(".env") && !name.startsWith(".env.")
       && !/\.(?:pyc|pyo|log)$/.test(name);
   }
 });

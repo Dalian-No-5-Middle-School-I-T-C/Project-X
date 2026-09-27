@@ -218,11 +218,11 @@ export function AdminConsolePage({ onBack }: Props) {
       <SectionCard title="平台概览" desc="现存答题卡指剔除演示数据后的有效答题卡；阅卷完成率按已评切块数统计。">
         {summary ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-            <StatTile label="考试总数" value={fmtNum(summary.exams.total)} hint={`大考 ${fmtNum(summary.exams.formal)} · 晨测 ${fmtNum(summary.exams.quiz)}`} />
-            <StatTile label="当前考试数（网阅）" value={fmtNum(summary.exams.reviewEnabled)} hint="已开启网上阅卷" />
+            <StatTile label="考试总数" value={fmtNum(summary.exams.total)} hint={`${fmtNum(summary.exams.formal)} 大考，${fmtNum(summary.exams.quiz)} 晨测`} />
+            <StatTile label="网阅考试数" value={fmtNum(summary.exams.reviewEnabled)} />
             <StatTile label="答题卡总数" value={fmtNum(summary.answerCards.total)} />
-            <StatTile label="现存答题卡" value={fmtNum(summary.answerCards.active)} hint="剔除演示数据" />
-            <StatTile label="用户总数" value={fmtNum(summary.users.total)} hint={`教师 ${fmtNum(summary.users.teachers)} · 学生 ${fmtNum(summary.users.students)} · 管理员 ${fmtNum(summary.users.admins)}`} />
+            <StatTile label="现存答题卡" value={fmtNum(summary.answerCards.active)} />
+            <StatTile label="用户总数" value={fmtNum(summary.users.total)} hint={`${fmtNum(summary.users.teachers)} 教师，${fmtNum(summary.users.students)} 学生，${fmtNum(summary.users.admins)} 管理员`} />
             <StatTile label="阅卷完成率" value={fmtPct(summary.grading.completionRate)} hint={`${fmtNum(summary.grading.cropsGraded)} / ${fmtNum(summary.grading.cropsTotal)} 切块`} />
           </div>
         ) : (
@@ -231,11 +231,11 @@ export function AdminConsolePage({ onBack }: Props) {
       </SectionCard>
 
       {/* 近期活动 */}
-      <SectionCard title="实体生命周期（历史累计）" desc="基于 entity_lifecycle_events 的创建/归档/删除/恢复事件计数；数据源缺失时回退为近 14 日创建统计。">
+      <SectionCard title="实体生命周期" >
         {activity ? (
           activity.source === "entity_lifecycle_events" && activity.events ? (
             activity.events.length === 0 ? (
-              <p className="text-xs text-muted-foreground">暂无生命周期事件（自迁移启用后开始累计）。</p>
+              <p className="text-xs text-muted-foreground">暂无生命周期事件。</p>
             ) : (
               <div className="flex flex-col gap-1.5">
                 {activity.events.map((e) => (
@@ -253,7 +253,7 @@ export function AdminConsolePage({ onBack }: Props) {
             )
           ) : (
             <div className="flex flex-col gap-1.5">
-              <p className="text-xs text-muted-foreground">事件表尚未启用，展示近 14 日创建统计（兜底）。</p>
+              <p className="text-xs text-muted-foreground">事件表尚未启用，仅展示近 14 日创建统计。</p>
               {[...(activity.recentExams ?? []), ...(activity.recentCards ?? [])].length === 0 && (
                 <p className="text-xs text-muted-foreground">暂无创建记录。</p>
               )}
@@ -265,7 +265,7 @@ export function AdminConsolePage({ onBack }: Props) {
       </SectionCard>
 
       {/* 偏好分布 */}
-      <SectionCard title="用户偏好分布" desc="各设置项在全部用户中的取值分布（不包含个人明细）。">
+      <SectionCard title="用户偏好分布" desc="各设置项在全部用户中的取值分布。">
         {preferences ? (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
             <DistBar label="成绩显示模式（score_display_mode）" dist={preferences.scoreDisplayMode} />
@@ -280,7 +280,7 @@ export function AdminConsolePage({ onBack }: Props) {
       </SectionCard>
 
       {/* AI 用量 */}
-      <SectionCard title="AI 调用观测" desc="逻辑任务层聚合：成功率 / 延迟 / Token 用量（不保存提示词与回答内容）。">
+      <SectionCard title="AI 调用观测" desc="逻辑任务层聚合：成功率 / 延迟 / Token 用量。">
         {aiUsage ? (
           aiUsage.available && aiUsage.totals ? (
             <div className="flex flex-col gap-4">
@@ -326,8 +326,8 @@ export function AdminConsolePage({ onBack }: Props) {
         )}
       </SectionCard>
 
-      {/* 数据质量 */}
-      <SectionCard title="数据质量" desc="原卷附着率与阅卷完成率；扫描成功率/人工修改率因后端无独立扫描表沉淀，暂不可用（不编造）。">
+      {/* 数据质量，扫描成功率/人工修改率因后端无独立扫描表沉淀，暂不可用 */}
+      <SectionCard title="数据质量">
         {dataQuality ? (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
             <StatTile label="原卷附着率" value={fmtPct(dataQuality.originalPaperAttachment.rate)} hint={`${fmtNum(dataQuality.originalPaperAttachment.withOriginal)} / ${fmtNum(dataQuality.originalPaperAttachment.total)} 答题卡`} />
@@ -341,7 +341,7 @@ export function AdminConsolePage({ onBack }: Props) {
       </SectionCard>
 
       {/* 已清理考试（软删除恢复，#246） */}
-      <SectionCard title="已清理考试（可恢复）" desc="被数据保留策略自动删除的考试（软删除）。点击恢复后对师生重新可见；恢复动作写入审计。">
+      <SectionCard title="已清理考试" desc="被数据保留策略自动删除的考试，点击恢复后对师生重新可见。">
         {softDeleted == null ? (
           <p className="text-xs text-muted-foreground">已清理考试列表加载失败。</p>
         ) : softDeleted.length === 0 ? (
@@ -365,7 +365,7 @@ export function AdminConsolePage({ onBack }: Props) {
       </SectionCard>
 
       {/* 数据保留策略 */}
-      <SectionCard title="数据保留策略" desc="各考试类型的数据保留天数与自动归档/删除策略（0 = 永久保留）。">
+      <SectionCard title="数据保留策略" desc="各考试类型的数据保留天数与自动归档/删除策略。">
         {policies.length === 0 ? (
           <p className="text-xs text-muted-foreground">暂无保留策略或加载失败。</p>
         ) : (
