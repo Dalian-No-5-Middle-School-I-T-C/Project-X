@@ -120,7 +120,7 @@ export function StudentScores() {
   };
   const backToList = () => setScreen("list");
 
-  /** v53: 原卷/答案入口只在后端 paper_visible=1 时出现，前端不再自行判断公布状态 */
+  /** v54: 原卷/答案入口只在后端 paper_visible=1 时出现，前端不再自行判断公布状态 */
   const openPaper = (examId: number, from: "list" | "detail") => {
     setSelectedExamId(examId);
     setExpandedExamId(null);

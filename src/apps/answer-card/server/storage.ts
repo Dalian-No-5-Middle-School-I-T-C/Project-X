@@ -51,7 +51,7 @@ export async function ensurePaperDir(cardId: string): Promise<void> {
   await mkdir(paperDir(cardId), { recursive: true });
 }
 
-/** v53: 考试级「本次正确答案」上传目录（教师/管理员可见，学生只看文字答案） */
+/** v54: 考试级「本次正确答案」上传目录（教师/管理员可见，学生只看文字答案） */
 export function answerKeyDir(examId: string | number): string {
   return path.join(answerKeysDir, safeId(String(examId)));
 }

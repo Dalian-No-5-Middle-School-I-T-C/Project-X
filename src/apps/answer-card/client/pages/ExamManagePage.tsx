@@ -168,7 +168,7 @@ export function ExamManagePage() {
   const [unpublishTarget, setUnpublishTarget] = useState<ExamRecord | null>(null);
   const [unpublishReason, setUnpublishReason] = useState("");
   const [publishing, setPublishing] = useState(false);
-  // v53: 公布表单的「公布后显示原卷」勾选（默认勾选，随公布请求一并提交）+ 原卷/答案配置面板
+  // v54: 公布表单的「公布后显示原卷」勾选（默认勾选，随公布请求一并提交）+ 原卷/答案配置面板
   const [publishShowPaper, setPublishShowPaper] = useState(true);
   const [batchPublishShowPaper, setBatchPublishShowPaper] = useState(true);
   const [answerKeyExam, setAnswerKeyExam] = useState<ExamRecord | null>(null);
@@ -379,7 +379,7 @@ export function ExamManagePage() {
     if (publishing) return;
     setPublishing(true);
     try {
-      // v53: 公布与「显示原卷」一并提交，勾选状态跟随本次公布写入
+      // v54: 公布与「显示原卷」一并提交，勾选状态跟随本次公布写入
       await fetchJson(`/api/exams/${examId}/publish`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -417,7 +417,7 @@ export function ExamManagePage() {
     }
   }
 
-  /** v53: 打开公布表单时的「公布后显示原卷」初值 —— 首次公布默认勾选；
+  /** v54: 打开公布表单时的「公布后显示原卷」初值 —— 首次公布默认勾选；
    * 已公布/已撤回过的考试沿用教师上一次的选择，避免重新公布时把原卷意外公开 */
   function openPublishDialog(exam: ExamRecord) {
     setPublishShowPaper(exam.score_published ? exam.show_original_paper === 1 : true);
@@ -942,7 +942,7 @@ export function ExamManagePage() {
               确认公布「{publishTarget?.name ?? ""}」的成绩？将公布当前已录入的成绩，无需等待所有应考学生出分；后续补录或改分后需重新公布。
             </DialogDescription>
           </DialogHeader>
-          {/* v53: 公布表单的「公布后显示原卷」，勾选状态随本次公布写入 exams.show_original_paper */}
+          {/* v54: 公布表单的「公布后显示原卷」，勾选状态随本次公布写入 exams.show_original_paper */}
           <DialogBody className="flex flex-col gap-3">
             <ControlRow
               htmlFor="publish-show-paper"
@@ -1151,7 +1151,7 @@ export function ExamManagePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      {/* v53: 原卷开关 + 逐题「本次正确答案」配置 */}
+      {/* v54: 原卷开关 + 逐题「本次正确答案」配置 */}
       {answerKeyExam && (
         <ExamAnswerKeyPanel
           examId={answerKeyExam.id}

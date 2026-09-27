@@ -1,5 +1,5 @@
 /**
- * v53: 教师/管理员端「本次正确答案」配置接口
+ * v54: 教师/管理员端「本次正确答案」配置接口
  * 挂载点：/api/exams/:examId/answer-key（路径前缀 /api/exams 已被 examGate 覆盖：
  * GET 需 EXAM_READ，写操作需 EXAM_WRITE；再叠加 requireExamAccess 的数据范围校验）
  *

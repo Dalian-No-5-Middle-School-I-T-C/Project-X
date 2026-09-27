@@ -968,7 +968,7 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE twain_scan_sessions ADD COLUMN identity_mode VARCHAR(16) NOT NULL DEFAULT 'strict'",
     "ALTER TABLE twain_scan_records ADD COLUMN identity_json TEXT",
   ] });
-  mariadbMigrations.push({ version: 52, name: "wechat-grade-release-notifications", sqls: [
+  mariadbMigrations.push({ version: 53, name: "wechat-grade-release-notifications", sqls: [
     `CREATE TABLE IF NOT EXISTS wechat_subscription_bindings (
       id          INT AUTO_INCREMENT PRIMARY KEY,
       student_id  INT NOT NULL,
@@ -992,7 +992,7 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   ] });
-  mariadbMigrations.push({ version: 53, name: "exam-original-paper-and-answer-keys", sqls: [
+  mariadbMigrations.push({ version: 54, name: "exam-original-paper-and-answer-keys", sqls: [
     "ALTER TABLE exams ADD COLUMN show_original_paper TINYINT DEFAULT 0",
     `CREATE TABLE IF NOT EXISTS exam_answer_keys (
       exam_id         INT NOT NULL,

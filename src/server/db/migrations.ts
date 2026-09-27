@@ -1182,7 +1182,8 @@ MIGRATIONS.push({ version: 51, name: "scanner-card-identity", up(db) {
   addColumnIfMissing(db, "twain_scan_records", "identity_json", "TEXT");
 } });
 
-MIGRATIONS.push({ version: 52, name: "wechat-grade-release-notifications", up(db) {
+// 52 留给 class-head-teacher（另一分支并行开发）：执行器按 version 判重并跳过已记版本，撞号会让其中一套 DDL 永不执行。
+MIGRATIONS.push({ version: 53, name: "wechat-grade-release-notifications", up(db) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS wechat_subscription_bindings (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1209,7 +1210,7 @@ MIGRATIONS.push({ version: 52, name: "wechat-grade-release-notifications", up(db
   `);
 } });
 
-MIGRATIONS.push({ version: 53, name: "exam-original-paper-and-answer-keys", up(db) {
+MIGRATIONS.push({ version: 54, name: "exam-original-paper-and-answer-keys", up(db) {
   addColumnIfMissing(db, "exams", "show_original_paper", "INTEGER DEFAULT 0");
   db.exec(`
     CREATE TABLE IF NOT EXISTS exam_answer_keys (

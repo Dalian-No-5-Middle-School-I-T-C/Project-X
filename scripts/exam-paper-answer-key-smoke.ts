@@ -1,5 +1,5 @@
 /**
- * v53「显示原卷 + 逐题正确答案」冒烟验证（临时 SQLite 库 + 真实 HTTP）
+ * v54「显示原卷 + 逐题正确答案」冒烟验证（临时 SQLite 库 + 真实 HTTP）
  * ----------------------------------------------------------------
  * 覆盖：
  *   A. exams.show_original_paper 开关：编辑页 PATCH、公布表单「公布后显示原卷」
@@ -12,7 +12,7 @@
  *   E. 删除考试后清理答案页文件目录。
  *
  * 不覆盖：tesseract.js 真实识别（需要 WASM 与数秒耗时，接口以 ?ocr=0 调用）、
- *         MariaDB 方言（见 scripts/verify-mariadb.ts 的 v53 断言）。
+ *         MariaDB 方言（见 scripts/verify-mariadb.ts 的 v54 断言）。
  *
  * 运行：npm run verify:exam-paper
  */

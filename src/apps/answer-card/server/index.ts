@@ -175,7 +175,7 @@ function clampInt(value: unknown, min: number, max: number, fallback: number = 0
 const MAX_ANNOTATION_CHARS = 200;
 
 /**
- * v53: 解析公布表单的「公布后显示原卷」勾选。
+ * v54: 解析公布表单的「公布后显示原卷」勾选。
  * 返回 1/0 表示要写入 exams.show_original_paper；返回 null 表示不改写。
  * 只认严格布尔值 —— 旧客户端不带该字段公布时，绝不能默认把原卷（含答案）公开出去。
  */
@@ -1077,7 +1077,7 @@ export async function createApp(): Promise<express.Express> {
   const cropGate = answerBlockCropGate(enforceAuth);
   app.use("/api/cards", cardGate);
   app.use("/api/exams", examGate);
-  // v53: 考试级「本次正确答案」配置（挂在 examGate 之后，继承 EXAM_READ/EXAM_WRITE 再叠加数据范围校验）
+  // v54: 考试级「本次正确答案」配置（挂在 examGate 之后，继承 EXAM_READ/EXAM_WRITE 再叠加数据范围校验）
   app.use(examAnswerKeyRoutes());
   app.use("/api/analysis", analysisGate, analysisRoutes);
   app.use("/api/answer-block-crops", cropGate);
@@ -2272,7 +2272,7 @@ export async function createApp(): Promise<express.Express> {
       if (name !== undefined) updates.name = String(name);
       if (subject !== undefined) updates.subject = String(subject);
       if (mode === "quiz" || mode === "formal") updates.exam_mode = mode;
-      // v53: 「显示原卷」开关。原卷含教师题目与（开启后）逐题正确答案，属于答案泄露面，
+      // v54: 「显示原卷」开关。原卷含教师题目与（开启后）逐题正确答案，属于答案泄露面，
       // 因此只接受显式布尔值；撤回公布不会自动关闭它（教师可能只想临时隐藏成绩）。
       if (showOriginalPaper !== undefined) {
         if (typeof showOriginalPaper !== "boolean") {
@@ -2360,7 +2360,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "无效的考试 ID" });
         return;
       }
-      // v53: 公布表单的「公布后显示原卷」勾选。表单默认勾选 → 前端显式传 true/false；
+      // v54: 公布表单的「公布后显示原卷」勾选。表单默认勾选 → 前端显式传 true/false；
       // 未传该字段的旧客户端不改写开关，避免一次普通公布把原卷（含答案）意外公开。
       const showOriginalPaper = parseShowOriginalPaperFlag(req.body);
       const { getMysqlDb } = await import("../../../server/db");
@@ -2417,7 +2417,7 @@ export async function createApp(): Promise<express.Express> {
     try {
       const body = (req.body ?? {}) as { examIds?: unknown };
       const rawIds = Array.isArray(body.examIds) ? body.examIds : [];
-      // v53: 批量公布共用同一个「公布后显示原卷」勾选（表单级而非逐场）
+      // v54: 批量公布共用同一个「公布后显示原卷」勾选（表单级而非逐场）
       const showOriginalPaper = parseShowOriginalPaperFlag(req.body);
       // 去重：重复 ID 会导致存在性校验误判与审计重复插入
       const examIds = [...new Set(rawIds.map(Number).filter((n) => Number.isInteger(n) && n > 0))];

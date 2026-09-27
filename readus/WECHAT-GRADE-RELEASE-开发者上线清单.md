@@ -180,15 +180,15 @@ journalctl -u project-x-server -n 100 --no-pager | grep -i wechat
 
 日志只打印变量名和状态，绝不打印值——这条约束别破。
 
-### 3.2 v52 迁移
+### 3.2 v53 迁移
 
-启动时自动执行，SQLite 与 MariaDB 双方言均已覆盖（`src/server/db/migrations.ts` 中 `version: 52, name: "wechat-grade-release-notifications"`），建两张表：
+启动时自动执行，SQLite 与 MariaDB 双方言均已覆盖（`src/server/db/migrations.ts` 中 `version: 53, name: "wechat-grade-release-notifications"`），建两张表：
 
 - `wechat_subscription_bindings` —— 学生 ↔ openid ↔ 模板
 - `wechat_grade_release_notifications` —— 每场考试的推送认领与计数
 
-生产库此前没跑过 v52 → 直接按新 DDL 建表，无需人工干预。
-**只有按第一版 v52 建过表的开发库**要手工修（旧 DDL 把 openid 建成了唯一索引，共用设备/一个家长多孩会互相顶掉），SQL 见 `WECHAT-GRADE-RELEASE-部署与排错.md` 第 6 节。
+生产库此前没跑过这一版迁移 → 直接按新 DDL 建表，无需人工干预。
+**只有按本功能早期草案（`version = 52`）建过表的开发库**要手工修（旧 DDL 把 openid 建成了唯一索引，共用设备/一个家长多孩会互相顶掉；52 这个号现在属于班主任分支的迁移，清理时按 name 删），SQL 见 `WECHAT-GRADE-RELEASE-部署与排错.md` 第 6 节。
 
 结构自检（MariaDB）：
 
@@ -265,7 +265,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```bash
 npm run verify:wechat-grade-release   # 临时 SQLite + 打桩 fetch，不打真实微信接口
-npm run verify:mariadb                # 需一次性空 projectx_ci 库，含 v52 索引断言
+npm run verify:mariadb                # 需一次性空 projectx_ci 库，含 v53 索引断言
 npm run typecheck
 ```
 

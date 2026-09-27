@@ -34,15 +34,15 @@ async function main(): Promise<void> {
       "SELECT version, name FROM schema_migrations ORDER BY version",
     );
     assert.ok(migrations.some((row) => row.version === 49), "Scanner receipts migration must be applied");
-    assert.ok(migrations.some((row) => row.version === 52), "WeChat grade-release subscription migration must be applied");
-    assert.ok(migrations.some((row) => row.version === 53), "Exam original-paper + answer-key migration must be applied");
+    assert.ok(migrations.some((row) => row.version === 53), "WeChat grade-release subscription migration must be applied");
+    assert.ok(migrations.some((row) => row.version === 54), "Exam original-paper + answer-key migration must be applied");
     assert.ok(await db.get("SHOW COLUMNS FROM scanner_submissions LIKE 'exam_id'"));
     assert.ok(await db.get("SHOW COLUMNS FROM answer_block_crops LIKE 'claimed_by'"));
     await initMariadbSchema();
     assert.deepEqual(await db.all("SELECT version, name FROM schema_migrations ORDER BY version"), migrations);
     console.log("PASS: fresh schema, migrations, repeated initialization");
 
-    // v52 微信订阅：一个 openid 允许绑定多个学生，去重位是 exam_id 主键
+    // v53 微信订阅：一个 openid 允许绑定多个学生，去重位是 exam_id 主键
     const wsbTables = await db.all<{ table_name: string }>(
       "SELECT TABLE_NAME AS table_name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('wechat_subscription_bindings','wechat_grade_release_notifications')",
     );
@@ -73,7 +73,7 @@ async function main(): Promise<void> {
     );
     console.log("PASS: wechat subscription bindings index semantics");
 
-    // v53 原卷/答案：exams.show_original_paper 列 + 考试级答案表的复合主键与 UPSERT
+    // v54 原卷/答案：exams.show_original_paper 列 + 考试级答案表的复合主键与 UPSERT
     assert.ok(await db.get("SHOW COLUMNS FROM exams LIKE 'show_original_paper'"),
       "exams.show_original_paper 必须存在");
     const akTables = await db.all<{ table_name: string }>(

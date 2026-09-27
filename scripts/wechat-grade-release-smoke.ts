@@ -2,7 +2,7 @@
  * 成绩发布微信订阅消息 —— 冒烟验证（SQLite 方言 + 打桩 fetch）
  * ----------------------------------------------------------------
  * 覆盖：
- *   1. v52 建表：UNIQUE(student_id, template_id) 生效；openid 为普通索引，
+ *   1. v53 建表：UNIQUE(student_id, template_id) 生效；openid 为普通索引，
  *      允许同一 openid 绑定多个学生（共用设备 / 一个家长多个孩子）。
  *   2. 绑定写入语义（路由的 DELETE + INSERT）：同一学生重复订阅只保留一条。
  *   3. 收件人查询：COALESCE(assigned_score, total_score) 取分。
@@ -100,7 +100,7 @@ async function main(): Promise<void> {
   ok(detectDialect() === "sqlite", "冒烟测试运行在 SQLite 方言（未接触 MariaDB）");
 
   // ── 1. 建表与索引 ────────────────────────────────────
-  section("v52 表结构");
+  section("v53 表结构");
   const indexes = await db.all<{ name: string; uniq: number; origin: string }>(
     "SELECT name, \"unique\" AS uniq, origin FROM pragma_index_list('wechat_subscription_bindings')",
   );

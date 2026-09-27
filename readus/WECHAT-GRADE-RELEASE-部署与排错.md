@@ -71,14 +71,15 @@ systemctl restart project-x
 后台改模板（换字段名、换模板 ID）后，必须同步：服务端 `WECHAT_GRADE_RELEASE_TEMPLATE_ID`、
 小程序 `utils/subscribe.js` 的模板 ID 常量，并清空 `wechat_subscription_bindings` 中旧模板的绑定。
 
-## 6. 数据库迁移（v52）
+## 6. 数据库迁移（v53）
 
 代码启动时自动执行；SQLite 与 MariaDB 双方言均已提供 `schema` + 增量迁移。
 
 - 全新库：`schema.sql` / `schema.mariadb.sql` 直接建表。
-- 已有库：`52 / wechat-grade-release-notifications` 建 `wechat_subscription_bindings` 与 `wechat_grade_release_notifications`。
+- 已有库：`53 / wechat-grade-release-notifications` 建 `wechat_subscription_bindings` 与 `wechat_grade_release_notifications`。
+- 编号说明：本迁移早期草案占的是 `version = 52`，后因与班主任分支的 `52 / class-head-teacher` 撞号（同号会被执行器静默跳过，导致其中一套 DDL 永不执行）让位为 53。**跑过草案的开发库**里记的是 52，需要手工清一次；`52` 这个号现在属于别的迁移，清理时**按 name 删、不要按 version 删**。
 
-**已按第一版 v52 建过表的开发库需要手工修一次**（旧版把 `openid` 建成了唯一索引，会让共用设备 / 一个家长绑多个孩子互相顶掉）：
+**已按旧草案（version 52）建过表的开发库需要手工修一次**（旧版把 `openid` 建成了唯一索引，会让共用设备 / 一个家长绑多个孩子互相顶掉）：
 
 ```sql
 -- MariaDB
@@ -91,11 +92,11 @@ ALTER TABLE wechat_subscription_bindings
 -- SQLite（表内 UNIQUE 无法 ALTER；本地开发库可直接重建）
 DROP TABLE IF EXISTS wechat_subscription_bindings;
 DROP TABLE IF EXISTS wechat_grade_release_notifications;
-DELETE FROM schema_migrations WHERE version = 52;
--- 重启服务，迁移会按新 DDL 重建
+DELETE FROM schema_migrations WHERE name = 'wechat-grade-release-notifications';
+-- 重启服务，迁移 53 会按新 DDL 重建
 ```
 
-生产库尚未跑过 v52，按新 DDL 直接建表，无需处理。
+生产库尚未跑过这一版迁移，按新 DDL 直接建表，无需处理。
 
 ## 7. 上线自检
 
@@ -118,7 +119,7 @@ DELETE FROM schema_migrations WHERE version = 52;
 
    其余错误码以微信官方[返回码说明](https://developers.weixin.qq.com/doc/oplatform/Return_codes/Return_code_descriptions_new.html)为准，诊断接口只回显错误码，不回显 errmsg 原文与任何密钥。
 3. 回归脚本（不打真实微信接口）：`npm run verify:wechat-grade-release`（临时 SQLite + 打桩 fetch）。
-   MariaDB 侧结构校验：`npm run verify:mariadb`（需一次性空的 `projectx_ci` 库，含 v52 索引断言）。
+   MariaDB 侧结构校验：`npm run verify:mariadb`（需一次性空的 `projectx_ci` 库，含 v53 索引断言）。
 
 ## 8. 端到端验收（一场真实考试）
 
@@ -149,4 +150,4 @@ DELETE FROM schema_migrations WHERE version = 52;
 - **一次性订阅**：微信侧不提供长期订阅，学生每次「允许」只够发一条，因此每场发布前需重新引导；未重新订阅的学生该场收不到（`43101`），这是产品既定取舍。
 - 同一 openid 绑定多个学生时，一次授权只够发一条：该设备上排在后面的学生该场可能收不到，需其本人重新订阅。
 - 订阅消息内容仅含课程名与分数，不传姓名/学号；openid 不出服务端。
-- `src/server/db/schema.mysql.sql`（早期 MySQL 草稿，不参与运行时初始化，且缺少 v47 之后的多张表）未同步 v52。
+- `src/server/db/schema.mysql.sql`（早期 MySQL 草稿，不参与运行时初始化，且缺少 v47 之后的多张表）未同步 v53。

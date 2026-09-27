@@ -164,7 +164,7 @@ export async function storePaperPageFile(
 export type AnswerKeyPageKind = "image" | "pdf" | "docx";
 
 /**
- * v53: 按页码存储考试级「本次正确答案」上传件。
+ * v54: 按页码存储考试级「本次正确答案」上传件。
  * 与 storePaperPageFile 的区别：答案页只用于教师核对与 OCR，学生端只展示文字答案，
  * 因此图片不生成配对 PDF，也使用独立文件名前缀避免与原卷混淆。
  */

@@ -163,7 +163,7 @@ router.get("/me/exams/:examId", async (req: Request, res: Response) => {
     questions: await scoreRepo.getStudentQuestionScores(req.user!.id, examId),
     classQuestionStats,
     answerBlocks,
-    // v53: 详情页「查看答案解析」入口，与 /paper 复用同一道门（已公布 + 教师开启显示原卷）
+    // v54: 详情页「查看答案解析」入口，与 /paper 复用同一道门（已公布 + 教师开启显示原卷）
     paperVisible: (await assertStudentPaperVisible(examId, req.user!.id)).ok ? 1 : 0
   });
 });
@@ -386,7 +386,7 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
   });
 });
 
-// ── v53: 学生「查看原卷 / 查看答案解析」 ────────────────────
+// ── v54: 学生「查看原卷 / 查看答案解析」 ────────────────────
 
 type StudentPaperAccess =
   | { ok: true; exam: { id: number; card_id: string | null; name: string | null; subject: string | null } }

@@ -1,4 +1,4 @@
-// v53: 教师/管理员端「原卷与答案解析」配置面板（考试管理页打开）。
+// v54: 教师/管理员端「原卷与答案解析」配置面板（考试管理页打开）。
 // 三件事：显示原卷开关（跟随考试保存）、上传本次正确答案并 OCR、逐题文字答案人工修正后保存。
 // 只做文字：面板不判对错，也不与 question_scores 交互。
 import { useCallback, useEffect, useMemo, useState } from "react";
