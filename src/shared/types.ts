@@ -65,6 +65,8 @@ export type ObjectiveBlock = {
   id: string;
   type: "objective";
   title: string;
+  /** 用户手动改过标题：置 true 后 autoNameBlocks 不再覆盖 */
+  titleLocked?: boolean;
   questionStart: number;
   questionCount: number;
   optionCount: number;
@@ -142,6 +144,8 @@ export type SubjectiveBlock = {
   type: "subjective";
   blockKind?: SubjectiveBlockKind;
   title: string;
+  /** 用户手动改过标题：置 true 后 autoNameBlocks 不再覆盖 */
+  titleLocked?: boolean;
   questions: SubjectiveQuestion[];
 };
 
@@ -1153,6 +1157,8 @@ export interface ExamFilterItem {
   grade_name: string | null;
   exam_date: string | null;
   status: string;
+  /** 0=未公布 1=已公布 2=已撤回；分析页据此优先显示「已公布」，避免与考试管理页状态不一致 */
+  score_published: number;
   graded_count: number;
   avg_score: number;
   has_assigned_score: number;

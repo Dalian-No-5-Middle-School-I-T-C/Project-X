@@ -33,6 +33,8 @@ export async function markScoreMutated(
   actorId: number | null,
   reason: ScoreMutationReason
 ): Promise<boolean> {
+  // 置 0（未公布）：成绩一有变动即视为「尚未公布」，学生读门只认 =1，改后立即不可见。
+  // 保持与既有约定一致（verify:security-critical 断言 score_published===0）。
   const result = await tx.run(
     "UPDATE exams SET score_published = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND score_published = 1",
     examId

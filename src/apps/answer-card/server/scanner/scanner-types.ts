@@ -74,7 +74,7 @@ export interface ScanSessionConfig {
   paperSize: "A4" | "Letter" | "A3";
   maxPages: number;
   showUi?: boolean;
-  /** 等待下一页（ADF 送纸）的空闲超时，毫秒。留空走 native 默认 15000。 */
+  /** 等待下一页（ADF 送纸）的空闲超时，毫秒。留空走 native 默认 60000。 */
   pageTimeoutMs?: number;
 }
 

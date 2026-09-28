@@ -86,8 +86,8 @@ export async function runScanSession(
       filePrefix,
       maxPages: config.maxPages || 0,
       showUi: config.showUi,
-      // 等纸空闲超时：不传则由 native 侧用默认 15000ms。
-      // 厚纸/慢速 ADF 进纸间隔可能超过 15s，若不透传就会出现「扫了一半提前收尾」。
+      // 等纸空闲超时：不传则由 native 侧用默认 60000ms。
+      // 厚纸/慢速 ADF 进纸间隔可能超过更短超时，若不透传就会出现「扫了一半提前收尾」。
       pageTimeoutMs: config.pageTimeoutMs
     };
 
@@ -107,10 +107,18 @@ export async function runScanSession(
     }
 
     const recordIds: string[] = [];
-    for (const page of filteredPages) {
+    // B13：page_num 必须按「会话内累计页序」落库，而不是直接用 native 的 pageNumber。
+    // native 的 pageNumber 是「单次进程内」递增（twain_controller.cpp 里 int pageNum=0 起），
+    // 每次重启扫描都是新进程、必然从 1 重来；若原样落库，mapScanPageToLayout 的
+    // groupIndex = floor((page_num-1)/sheetsPerStudent) 会把所有页都算成第 0 组，
+    // 表现为「扫进 100 张只显示 1 份答题卡」。
+    // 这里改为自本会话已有页数续排，使同一会话的多张答题卡各自归组。
+    const existingPageCount = (await listScanRecords(sessionId)).length;
+    for (const [index, page] of filteredPages.entries()) {
+      const cumulativePageNum = existingPageCount + index + 1;
       const record = await createScanRecord({
         sessionId, cardId: config.cardId,
-        imagePath: page.path, pageNum: page.page,
+        imagePath: page.path, pageNum: cumulativePageNum,
         side: page.side as "front" | "back"
       });
       recordIds.push(record.id);
@@ -118,7 +126,7 @@ export async function runScanSession(
 
       onProgress({
         sessionId, type: "page_done",
-        recordId: record.id, pageNum: page.page, side: page.side,
+        recordId: record.id, pageNum: cumulativePageNum, side: page.side,
         totalPages: filteredPages.length
       });
     }

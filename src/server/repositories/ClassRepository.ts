@@ -133,20 +133,44 @@ export class ClassRepository {
   }
 
   async addStudent(classId: number, studentId: number): Promise<void> {
-    const sql = buildInsertIgnore(this.db.dialect, "class_students", ["class_id", "student_id"]);
-    await this.db.run(sql, classId, studentId);
+    await this.db.transaction(async (tx) => {
+      await this.replaceStudentClassLink(tx, classId, studentId);
+    });
   }
 
   async addStudents(classId: number, studentIds: number[]): Promise<number> {
     let added = 0;
     await this.db.transaction(async (tx) => {
-      const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
       for (const sid of studentIds) {
-        const r = await tx.run(sql, classId, sid);
-        added += r.changes;
+        const changed = await this.replaceStudentClassLink(tx, classId, sid);
+        if (changed) added++;
       }
     });
     return added;
+  }
+
+  /**
+   * B12：统一「一名学生一份班级关联」不变量（issue：调班后名单回到旧班级）。
+   *
+   * 历史缺陷：class_students 主键是 (class_id, student_id)，各写入路径只 INSERT IGNORE
+   * 新关联、从不删除旧行。于是学生被「加入」到新班级后，旧班级的关联行仍在，形成多行残留；
+   * 而成绩分析的部分查询按 MIN(class_id) 取班，必然命中旧班。
+   *
+   * 本方法在绑定新班级前先清掉该学生的全部分班关联，使 class_students 恒为一人一行。
+   *
+   * @returns 是否产生了新的班级绑定（原本已在目标班则返回 false）
+   */
+  private async replaceStudentClassLink(tx: DbAdapter, classId: number, studentId: number): Promise<boolean> {
+    const existing = await tx.get(
+      "SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ? LIMIT 1",
+      classId, studentId
+    );
+    // 不变量：无论是否已在目标班，都先清掉该生的全部分班关联，再单调写回目标班，
+    // 从而顺带清掉历史残留的其它班关联行。
+    await tx.run("DELETE FROM class_students WHERE student_id = ?", studentId);
+    const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
+    await tx.run(sql, classId, studentId);
+    return !existing;
   }
 
   async removeStudent(classId: number, studentId: number): Promise<void> {
@@ -156,7 +180,8 @@ export class ClassRepository {
   /** 学生迁移：从原班级移除并加入目标班级（目标班级所属年级即学生的新年级）。 */
   async moveStudent(fromClassId: number, toClassId: number, studentId: number): Promise<void> {
     await this.db.transaction(async (tx) => {
-      await tx.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", fromClassId, studentId);
+      // B12：直接清掉该生全部分班关联再绑新班，避免旧行残留（一人一行不变量）
+      await tx.run("DELETE FROM class_students WHERE student_id = ?", studentId);
       const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
       await tx.run(sql, toClassId, studentId);
     });

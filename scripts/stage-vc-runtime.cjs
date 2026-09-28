@@ -16,8 +16,12 @@
  *   node scripts/stage-vc-runtime.cjs ia32       # 只部署 ia32
  *   node scripts/stage-vc-runtime.cjs ia32 --source="D:\path\to\Microsoft.VC145.CRT"
  *
- * 说明：UCRT（api-ms-win-crt-*.dll / ucrtbase.dll）自 Windows 10 起属于操作系统组件，
- * 无需 app-local 部署；本仓库扫描端最低支持 Windows 10，因此只部署 MSVC 部分。
+ * UCRT 说明（2026-09-28 修正）：
+ *   原注释假设「UCRT 自 Windows 10 起属 OS 组件，无需 app-local 部署」。实测在
+ *   老旧的 ia32 扫描工作站上，识别器以 0xC0000142（STATUS_DLL_INIT_FAILED）退出——
+ *   即 api-ms-win-crt-* 系列在目标机解析不到（系统过旧 / 运行库被精简）。
+ *   为保证「拷过去就能跑」，现在把 api-ms-win-crt-*.dll 与 ucrtbase.dll 一并随包分发，
+ *   UCRT 属 Windows SDK 的 Redist\ucrt\DLLs\<arch> 目录。
  */
 "use strict";
 
@@ -29,6 +33,10 @@ const ROOT = path.resolve(__dirname, "..");
 
 /** 每个架构实际需要的 DLL 前辍（按工具集给出的完整 CRT 集合部署，避免传递依赖漏项）。 */
 const REQUIRED_PREFIXES = ["msvcp140", "vcruntime140", "concrt140"];
+
+/** UCRT：api-ms-win-crt-*.dll 与 ucrtbase.dll，老目标机上必须 app-local。 */
+const UCRT_FILE_PATTERN = /^api-ms-win-crt-.*\.dll$/i;
+const UCRT_BASE = "ucrtbase.dll";
 
 /** vccorlib140.dll 仅用于 WinRT/C++ 组件扩展，原生 exe 不依赖，部署会白占体积。 */
 const EXCLUDED = new Set(["vccorlib140.dll"]);
@@ -189,6 +197,46 @@ function copyIfChanged(from, to) {
   return true;
 }
 
+/**
+ * 定位 UCRT 可再发行目录：<Windows SDK>\Redist\ucrt\DLLs\<x64|x86>。
+ * 逐级探测常见 SDK 安装位置；找不到时回退到本机系统目录（同机打包通常可用）。
+ */
+function findUcrtDir(arch, explicitSource) {
+  const redistArch = arch === "x64" ? "x64" : "x86";
+  if (explicitSource) {
+    // --source 显式指向 CRT 目录时，尝试同级的 ..\..\ucrt\DLLs\<arch>
+    const guess = path.resolve(explicitSource, "..", "..", "ucrt", "DLLs", redistArch);
+    if (fs.existsSync(guess)) return guess;
+  }
+
+  const roots = [];
+  for (const base of [
+    process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
+    process.env.ProgramFiles || "C:\\Program Files"
+  ]) {
+    const kitsRoot = path.join(base, "Windows Kits", "10", "Redist", "ucrt", "DLLs");
+    if (fs.existsSync(kitsRoot)) {
+      for (const entry of safeReaddir(kitsRoot)) {
+        if (entry.isDirectory()) roots.push(path.join(kitsRoot, entry.name, redistArch));
+      }
+    }
+  }
+  const found = roots.find((dir) => fs.existsSync(dir));
+  if (found) return found;
+
+  // 回退：直接取本机系统目录中的 UCRT（注意 SysWOW64 才是 32 位）
+  const sysDir = arch === "ia32"
+    ? path.join(process.env.SystemRoot || "C:\\Windows", "SysWOW64")
+    : path.join(process.env.SystemRoot || "C:\\Windows", "System32");
+  if (fs.existsSync(path.join(sysDir, UCRT_BASE))) return sysDir;
+  return null;
+}
+
+function isUcrtFile(name) {
+  const lower = name.toLowerCase();
+  return lower === UCRT_BASE || UCRT_FILE_PATTERN.test(lower);
+}
+
 function stageArch(arch, explicitSource) {
   const destDir = path.join(ROOT, "resources", "native", ARCH_TARGETS[arch]);
   if (!fs.existsSync(destDir)) fail(`目标目录不存在: ${destDir}`);
@@ -215,12 +263,25 @@ function stageArch(arch, explicitSource) {
     }
   }
 
-  log(`${arch}: 源 ${crtDir}`);
+  // UCRT：老目标机必需，缺失会导致 0xC0000142（STATUS_DLL_INIT_FAILED）
+  const ucrtDir = findUcrtDir(arch, explicitSource);
+  const ucrtFiles = ucrtDir
+    ? safeReaddir(ucrtDir).filter((entry) => entry.isFile() && isUcrtFile(entry.name))
+    : [];
+  if (ucrtFiles.length === 0) {
+    log(`${arch}: 警告——未找到 UCRT 源目录（api-ms-win-crt-*.dll / ucrtbase.dll），老目标机可能启动失败`);
+  }
+
+  log(`${arch}: MSVC 源 ${crtDir}`);
+  if (ucrtDir) log(`${arch}: UCRT 源 ${ucrtDir}`);
+
   let copied = 0;
   const staged = [];
-  for (const entry of files) {
-    const from = path.join(crtDir, entry.name);
+  for (const entry of [...files, ...ucrtFiles]) {
+    const sourceDir = isUcrtFile(entry.name) ? ucrtDir : crtDir;
+    const from = path.join(sourceDir, entry.name);
     const to = path.join(destDir, entry.name);
+    if (!fs.existsSync(from)) continue;
     if (copyIfChanged(from, to)) copied += 1;
     staged.push(`${entry.name}(${(fs.statSync(to).size / 1024).toFixed(0)}KB)`);
   }

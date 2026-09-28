@@ -70,7 +70,13 @@ async function withdraw(db: DbAdapter, examId: number, studentNumber: string, re
       await db.run("UPDATE answer_block_crops SET exam_id = NULL, student_id = NULL WHERE source_type = 'twain_scan_record' AND source_record_id = ? AND exam_id = ?", page.recordId, examId);
     }
     // A withdrawn score invalidates completeness/publication as well as rankings.
-    await db.run("UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ?", examId);
+    // 与撤回同事务写入 status + score_published，避免单写 status 后两字段永久错位
+    // （「已公布」徽章仍在而分析页显示「阅卷中」）。
+    // score_published 沿用既有约定置 0（未公布），与 markScoreMutated 一致。
+    await db.transaction(async (tx) => {
+      await tx.run("UPDATE exams SET score_published = CASE WHEN score_published = 1 THEN 0 ELSE score_published END, updated_at = CURRENT_TIMESTAMP WHERE id = ?", examId);
+      await tx.run("UPDATE exams SET status = 'grading', updated_at = CURRENT_TIMESTAMP WHERE id = ?", examId);
+    });
   }
   await db.run("UPDATE scanner_submissions SET state = 'conflict' WHERE exam_id = ? AND student_number = ? AND state != 'superseded'", examId, studentNumber);
 }

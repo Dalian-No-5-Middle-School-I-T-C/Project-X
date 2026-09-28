@@ -24,6 +24,44 @@
 
 详细原因、配置、验证边界和部署状态见 [部署问题复现与修复验证](../docs/部署问题复现与修复验证.md)。
 
+## v2.5.7 (2026-09-28) — 扫描链路「扫多张只进一张 / 全员未识别」+ 成绩展示三处错乱
+
+> 分支 `fix-scanner-twain-adf-and-draft-card`（PR #304）。依据现场回传的 QQ 邮箱反馈与 `main.log`（含 `[checkpoint] scan ... pages=1` 全量证据、`Native recognizer exited with code 3221225794`）。共闭合 6 项，全部先在代码层定位到确定成因再改。
+>
+> **合并调整（2026-09-28）**：本 PR 的基座 PR #282 此前已以 squash 形式并入 main（`b2b8e03`），branch 上仍留有原始三提交，故与 main 产生整片冲突。本次改动已**重放到最新 main（`86256b4`，含 #282/#284/#285/#296/#299）之上**：迁移号顺延为 **v52/v53/v54**（main 已占用 v50 `archive-class-and-grade`、v51 `scanner-card-identity`）；第 4 条「题组名称改不了」与 #299 的 `isAutoBlockTitle` 启发式实现合并为**两级保护**。
+
+### 1. 扫进 100 张只显示 1 份（双因叠加）
+- **成因 A（页间超时过短）**：`twain_controller.hpp` 的 `pageTimeoutMs` 默认 **15000ms**，而 UI「等纸超时」留 0 时整条链路回落到该值。300/600dpi 的 ADF 页间机械进纸 + 高分辨率传输常超过 15s，第 2 页起 `waitForState(6)` 提前超时 → 每会话恒 `pages=1`（日志中 `pages=` 只出现过 `1`）。**修复**：native 默认提到 **60s**，UI 文案、服务端注释与 `scanner-types` 同步；仍可经 UI/`--page-timeout-ms` 覆盖。
+- **成因 B（归组口径错误，真正让「1 份」可见的原因）**：`scanPages.ts:26` `groupIndex = floor((page_num-1)/sheetsPerStudent)`，而 `page_num` 来自 native **单进程内**递增的 `pageNum`（`twain_controller.cpp` 里 `int pageNum=0` 起），每次重启扫描都是新进程、必然从 1 重来 → 所有页 `groupIndex=0`，100 张塌缩成 1 组。**修复**：`scanner-service.ts` 落库时改用**会话内累计页序**（`已有页数 + index + 1`），同一会话的多份答题卡各自归组。已用最小用例验证：5 张 / 每份 2 页，旧行为恒 1 组、新行为正确得 3 组。
+
+### 2. 扫描结果全部「未识别」（`0xC0000142`）
+- 根因：`main.log` 报 `Native recognizer exited with code 3221225794`，即 **`0xC0000142` STATUS_DLL_INIT_FAILED** —— 识别器是 `/MD` 动态 CRT 原生 exe，加载期因缺 `api-ms-win-crt-*`（UCRT）系列而初始化失败。**进程根本没跑起来，故 stderr 必然为空**，这正是旧错误信息一片空白的原因（`recognition.ts` 旧实现只报裸码）。此前 `stage-vc-runtime.cjs` 明确假设「UCRT 自 Win10 起属 OS 组件，无需 app-local」——该假设在老旧 ia32 扫描工作站上不成立。
+- **修复（三层）**：① `stage-vc-runtime.cjs` 增加 UCRT 发现与投放（`api-ms-win-crt-*.dll` 15 个 + `ucrtbase.dll`），x64/ia32 各自从 Windows SDK `Redist\ucrt\DLLs\<arch>` 取源、回退系统目录；② 已实际投放，PE 导入表复核 `answer-card-recognizer.exe` 与 `opencv_world4130.dll` 的**全部依赖均已由包内文件满足**；③ `recognition.ts` 新增 NTSTATUS 退出码翻译，把 `0xC0000142` / `0xC0000135` / `0xC000007B` 转成带处置建议的中文文案，后续现场可直接自证。
+
+### 3. 已公布成绩仍显示「阅卷中」
+- 根因：`score_published`（0 未公布 / 1 已公布）与 `status`（draft/grading/closed）是**两个字段**。`ExamManagePage` 渲染两个徽章故显示正确，而 `ExamSelectPage` 只渲染 `status` 单徽章；更要命的是 `listExamsForSelection` 是显式列清单、**漏选 `score_published`**，导致选择页永远拿不到发布标志 → 已公布仍显示「阅卷中」。另有若干路径单独把 `status` 改回 `grading` 而不同步发布标志。
+- **修复**：`listExamsForSelection` 补选 `COALESCE(score_published,0)`；`toExamStatus()` 改为**发布标志优先**（1→已公布，再回落到 status）；`retry-grading` 改为事务内重读而非事务外快照，避免并发公布被漏撤；扫描撤回路径改为**同一事务同时写 `status` 与 `score_published`**，杜绝「只改 status、两字段永久错位」；新增迁移 **v53** 以发布标志为准把存量错位的 `status` 推回 `closed`。`score_published` 的取值约定（撤回置 `0`）保持不变，`verify:security-critical` 117 项全绿。
+
+### 4. 题组名称改不了
+- 根因：`App.tsx` 的 `updateCard()` **无条件**调用 `autoNameBlocks(draft)`，按「序号+类型+题数分值」重写 `block.title`，把用户手改的名称覆盖掉（后端与输入框本身无辜）。
+- **与 #299 的关系**：#299（2026-09-23 反馈第 2 条）已用 `cardModel.isAutoBlockTitle()` 启发式解决同一问题——「标题不像自动串」就跳过重命名。两者互补：启发式**兜住历史数据**（无需迁移即刻生效），但存在边界——用户若恰好手写成标准格式（如「一、单选（共10题，共50分）」）仍会被覆盖。
+- **修复**：在 #299 实现之上叠加**显式 `titleLocked` 标记**（`types.ts`），两个标题输入框 onChange 时置位；`autoNameBlocks` 判定改为 `locked || !isAutoBlockTitle(title)` 即跳过。保留 main 的 `toChineseBlockIndex` / `buildAutoBlockTitle` 单一事实源（不再使用分支自带的本地 `toChinese`）。配套迁移 **v52**（SQLite `objective_blocks`/`subjective_blocks` 加 `title_locked`，MariaDB 同步），`CardRepository` 读写贯通。
+
+### 5. 学生名单回到调班前的班级
+- 根因：`class_students` 主键是 `(class_id, student_id)`，**一人可多行**。各写入路径（重新导入 / 加入班级）只 `INSERT IGNORE` 新关联、**从不删旧行**，于是调班后旧班关联残留；而成绩分析部分查询按 `MIN(class_id)`（最旧）取班，必然命中旧班。与下钻详情的 `joined_at DESC`（最新）口径不一致，导致同一学生在不同页面显示不同班级。（另已排除「考号重复」：`users.student_number` 为 UNIQUE，且现场确认无多班就读学生。）
+- **修复**：① `AnalysisRepository` 新增 `CURRENT_CLASS_SUBQUERY` / `CURRENT_CLASS_JOIN_SUBQUERY` 统一「当前班 = `joined_at DESC, class_id DESC`」，并替换全部 `MIN(class_id)` 站点（含 `ScoreRepository` 成长曲线），两处排序改为 `cs.joined_at DESC`；② `ClassRepository.addStudent/addStudents` 与 `UserRepository` 重导入路径**先清该生全部分班关联再绑新班**，恢复「一人一行」不变量，`moveStudent` 同样归一；③ 新增迁移 **v54** 清理存量残留（保留 `joined_at` 最新行、同刻取 `class_id` 最大，与查询口径一致），SQLite/MariaDB 双方言各一版。
+
+### 6. 学校网络传不到服务器
+- 判定为**现场网络问题**（非代码缺陷），未改代码。附带发现上传 `413 File too large` 会触发约 40 次**无上限重试**，已记录为后续待办。
+
+### 未决
+- 反馈中「科目设置有些逆天，测试是哪一科」信息不足以定位，**保持未动**，待补充具体期望值。
+
+### 验证
+- `npm run typecheck` 全绿。
+- v54 去重 SQL 与 `CURRENT_CLASS_SUBQUERY` 两种形态均以隔离 x64 better-sqlite3 实测通过；B13 归组用例反向对照确认旧行为复现 bug、新行为修复。
+
+
 ## v2.5.6 (2026-09-21) — 扫描端「检测失败即无法扫描」解封 + 图片去向常驻 + 服务器地址归一化
 
 > 分支 `fix-scanner-ia32-runtime-diagnostics`（PR #282 续）。现场（ia32 安装包 + 远程上传模式）新反馈三条 P0：① TWAIN ERROR 报错但**实测 DLL 组件正常、设备在厂商软件里能扫**；② 扫描端→主站链路受阻；③ 依旧无法选择「本地阅卷 / 上传服务器」。三条均已在代码层定位到确定成因。

@@ -98,7 +98,10 @@ function addDays(date: string, days: number): string {
 }
 
 /** 后端 exam.status → v2 ExamStatusBadge 语义（文案与旧实现逐字一致） */
-function toExamStatus(status: string): { status: ExamStatus; label: string } {
+function toExamStatus(status: string, scorePublished?: number): { status: ExamStatus; label: string } {
+  // 发布标志优先：成绩已公布/已撤回时以发布状态为准，避免与考试管理页「已公布」徽章不一致
+  if (scorePublished === 1) return { status: "done", label: "已公布" };
+  if (scorePublished === 2) return { status: "error", label: "已撤回" };
   if (status === "closed") return { status: "done", label: "已完成" };
   if (status === "grading") return { status: "grading", label: "阅卷中" };
   if (status === "draft") return { status: "pending", label: "草稿" };
@@ -384,7 +387,7 @@ export function ExamSelectPage({
         header: "状态",
         enableSorting: false,
         cell: ({ row }) => {
-          const mapped = toExamStatus(row.original.status);
+          const mapped = toExamStatus(row.original.status, row.original.score_published);
           return <ExamStatusBadge status={mapped.status} label={mapped.label} />;
         },
         meta: { widthClass: "w-24" },

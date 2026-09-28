@@ -168,6 +168,7 @@ CREATE TABLE IF NOT EXISTS objective_blocks (
     card_id          TEXT NOT NULL REFERENCES answer_cards(id) ON DELETE CASCADE,
     sort_order       INTEGER DEFAULT 0,
     title            TEXT,
+    title_locked     INTEGER DEFAULT 0,             -- 用户手改过标题（1=不再自动命名）
     question_start   INTEGER NOT NULL,
     question_count   INTEGER NOT NULL,
     option_count     INTEGER NOT NULL,
@@ -214,6 +215,7 @@ CREATE TABLE IF NOT EXISTS subjective_blocks (
     sort_order  INTEGER DEFAULT 0,
     block_kind  TEXT DEFAULT 'answer',           -- fill_blank / answer
     title       TEXT,
+    title_locked INTEGER DEFAULT 0,              -- 用户手改过标题（1=不再自动命名）
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

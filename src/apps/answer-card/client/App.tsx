@@ -1123,8 +1123,13 @@ function App() {
     };
     let index = 0;
     for (const block of draft.bodyBlocks) {
-      // 人工命名的标题不再被自动命名覆盖（问题反馈 2026-09-23 第 2 条）
-      if (!isAutoBlockTitle(block.title)) {
+      // 两级保护，缺一不可：
+      // ① 人工命名的标题不再被自动命名覆盖（问题反馈 2026-09-23 第 2 条）——启发式，
+      //    兜住历史数据里「手改后看起来不像自动串」的块，无需迁移即可生效；
+      // ② titleLocked 显式标记——用户在编辑器里手改过标题就一定置位，比模式匹配更可靠，
+      //    即使标题恰好长得像自动串（例如用户就爱写「一、单选（共10题，共50分）」）也不会被覆盖。
+      const locked = (block as { titleLocked?: boolean }).titleLocked === true;
+      if (locked || !isAutoBlockTitle(block.title)) {
         index++;
         continue;
       }

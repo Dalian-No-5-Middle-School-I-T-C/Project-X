@@ -466,7 +466,11 @@ async function persistGradingResultsLocked(
   await db.transaction(async (tx) => {
     const txExamRepo = new ExamRepository(tx);
     await txExamRepo.updateStatus(examId, "grading");
-    if (exam.score_published === 1) {
+    // 用事务内实时读取代替事务外快照，避免「校验与写入之间被并发公布」导致漏撤
+    const stillPublished = await tx.get(
+      "SELECT score_published FROM exams WHERE id = ?", examId
+    ) as { score_published?: number } | undefined;
+    if (stillPublished?.score_published === 1) {
       await tx.run(
         "UPDATE exams SET score_published = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND score_published = 1",
         examId
