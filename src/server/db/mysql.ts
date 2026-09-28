@@ -986,11 +986,13 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     console.log(`[MariaDB] Migration ${m.version}: ${m.name}`);
   }
 
-  // 迁移 53（与 SQLite 侧 backfill-class-head-teacher 同口径）：
+  // 迁移 55（与 SQLite 侧 backfill-class-head-teacher 同口径）：版本号取 55 而非 53/54，
+  // 后者已被并行分支 #301 的 wechat / exam-original-paper 迁移占用——执行器按已记录版本判重，
+  // 同号会让其中一套永久跳过。
   // 把历史「全局 head_teacher 角色」表达的班主任回填成按班标记 is_head_teacher。
   // 逐班只保留一名班主任需要先聚合再写，SQL 直写会踩 MySQL「不能在子查询中引用被更新的表」，
   // 故用一次 TS 步骤完成；版本号照常写入 schema_migrations 以保证幂等。
-  const BACKFILL_HEAD_TEACHER_VERSION = 53;
+  const BACKFILL_HEAD_TEACHER_VERSION = 55;
   if (!applied.has(BACKFILL_HEAD_TEACHER_VERSION)) {
     const [headRows] = await conn.execute(
       `SELECT tc.class_id AS class_id, MIN(tc.teacher_id) AS teacher_id

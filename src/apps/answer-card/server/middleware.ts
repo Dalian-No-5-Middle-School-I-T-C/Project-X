@@ -81,23 +81,32 @@ export async function getVisibleExamIds(user: express.Request["user"]): Promise<
 
   // 班主任与学科教师共用同一套「按班 + 按学科」判定：班主任身份体现在 teacher_classes.is_head_teacher 上。
   // 兼容遗留数据：旧模型用「全局 head_teacher 角色 + 一条不带科目的班级关联」表达班主任。
-  // 迁移 53 会为存量行补标记，但**读时同样把这类关联视为班主任**——否则按旧模型构造的库
-  // （以及设置角色后直接关联班级的遗留流程）会突然失去本班全科可见（verify:auth 即按此形态构造夹具）。
-  // 只认「不带科目」的关联：带科目的关联说明是任课关系，即便教师角色是 head_teacher 也不据此放大到全科。
+  // 迁移 55 会为存量班级补一位标记，但**同班可能有多条这样的遗留关联**，因此读时也要接受它们——
+  // 条件是「该班尚无按班标记」：一旦某班经新版界面/替换流程指定了班主任，该班的遗留关联就不再算班主任。
+  // 这条「NOT EXISTS 按班标记」是权限与配置/替换流程一致的关键：替换流程只清 is_head_teacher=1 的行，
+  // 若读时无条件认可遗留关联，被换下的旧班主任会凭 is_head_teacher=0 + subject=NULL 继续全科可见（评审 P1）。
+  // 只认「不带科目」的关联：带科目的关联说明是任课关系，即便角色是 head_teacher 也不据此放大到全科。
   if (user.teacher_role === "head_teacher" || user.teacher_role === "subject_teacher") {
     const headWhere = user.teacher_role === "head_teacher"
-      ? "(is_head_teacher = 1 OR subject IS NULL)"
-      : "is_head_teacher = 1";
+      ? `(tc.is_head_teacher = 1 OR (tc.subject IS NULL AND NOT EXISTS (
+           SELECT 1 FROM teacher_classes h
+            WHERE h.class_id = tc.class_id AND h.is_head_teacher = 1)))`
+      : "tc.is_head_teacher = 1";
     // 按班班主任：其担任班主任的班级看全科，其余班级仍按学科过滤
     const headClassIds = (await db.all<{ class_id: number }>(
-      `SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND ${headWhere}`,
+      `SELECT tc.class_id FROM teacher_classes tc WHERE tc.teacher_id = ? AND ${headWhere}`,
       user.id
     )).map((r) => r.class_id);
     // 学科教师未配置学科时，至少仍应看到晨测（quiz=全量权限）与担任班主任的班级
     if (!user.subject && headClassIds.length === 0) return await withQuizExamIds([]);
     const classRows = user.subject
       ? await db.all<{ class_id: number }>(
-          "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
+          // 全局 head_teacher：不带科目的关联是「旧班主任标记」而不是任课关系（班级配置页也
+          // 只把带科目的行列为任课），因此这里不接受 `subject IS NULL` 的宽松匹配——否则被换下
+          // 的旧班主任仍会看到本人学科在本班的考试，与配置/替换流程不一致（评审 P1）。
+          user.teacher_role === "head_teacher"
+            ? "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND subject = ?"
+            : "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
           user.id,
           user.subject
         )
