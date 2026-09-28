@@ -1,7 +1,19 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import type { StudentTrendPoint, StudentSemesterComparison, SemesterSummary } from "../../shared/types";
-import { CURRENT_CLASS_JOIN_SUBQUERY } from "./AnalysisRepository";
+import { CURRENT_CLASS_JOIN_SUBQUERY, AnalysisRepository } from "./AnalysisRepository";
+
+/**
+ * 日期归一化为 YYYY-MM-DD。
+ * 正常的 MariaDB（已设 dateStrings: true）与 SQLite 均返回字符串；
+ * 但仍兼容驱动/配置异常时返回 Date 对象的情况，避免 `.slice is not a function`
+ * 把整个「学期对比」接口打崩（评审 P1）。
+ */
+function dateOnly(v: unknown): string {
+  if (v == null) return "";
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? "" : v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+}
 
 export interface StudentExamScore {
   exam_id: number;
@@ -10,6 +22,8 @@ export interface StudentExamScore {
   objective_score: number;
   subjective_score: number;
   total_score: number;
+  /** 该场考试满分（来自答题卡分值投影 / 逐题满分合计）；无法解析时为 null，不虚构 */
+  full_score: number | null;
   rank: number | null;
   percentile: number | null;
   class_size: number;
@@ -29,6 +43,8 @@ export interface StudentQuestionScore {
 
 export class ScoreRepository {
   private db: DbAdapter;
+  /** 复用 AnalysisRepository 的满分口径（getExamFullScoreMap），避免各端各算一套 */
+  private analysisRepo = new AnalysisRepository();
 
   constructor() {
     this.db = getMysqlDb();
@@ -75,10 +91,22 @@ export class ScoreRepository {
       JOIN exams e ON e.id = ss.exam_id
       WHERE ${whereParts.join("\n        ")}
       ORDER BY ss.graded_at DESC
-    `, studentId) as Array<Omit<StudentExamScore, "percentile">>;
+    `, studentId) as Array<Omit<StudentExamScore, "percentile" | "full_score">>;
+
+    // 满分必须来自答题卡分值投影 / 逐题满分合计（getExamFullScoreMap），
+    // 不能用「学生实际得分」推断、也不能硬编码 100 —— 否则 30 分卷会显示成 "30 / 100"。
+    // 该函数在无答题卡且无逐题满分时返回 0，此处转为 null，表示「未知」而非「100 分」。
+    const examIds = [...new Set(rows.map((r) => Number(r.exam_id)))];
+    const fullScoreMap = await this.analysisRepo.getExamFullScoreMap(examIds);
 
     return rows.map((r) => ({
       ...r,
+      // graded_at 归一化：SQLite 返字符串，个别驱动配置可能返 Date
+      graded_at: dateOnly(r.graded_at),
+      full_score: (() => {
+        const fs = fullScoreMap.get(Number(r.exam_id)) ?? 0;
+        return Number.isFinite(fs) && fs > 0 ? fs : null;
+      })(),
       percentile:
         r.class_size > 1 && r.rank != null
           ? Math.round(((r.class_size - r.rank) / (r.class_size - 1)) * 1000) / 10
@@ -137,6 +165,8 @@ export class ScoreRepository {
 
     return rows.map((r) => ({
       ...r,
+      // 归一化 examTime：正常为字符串，个别驱动配置可能返 Date（见文件头 dateOnly 注释）
+      examTime: dateOnly(r.examTime),
       percentile:
         r.classSize > 1 && r.rank != null
           ? Math.round(((r.classSize - r.rank) / (r.classSize - 1)) * 1000) / 10
@@ -145,7 +175,7 @@ export class ScoreRepository {
   }
 
   private buildSemesterSummary(label: string, points: StudentTrendPoint[]): SemesterSummary {
-    const dates = points.map((p) => p.examTime.slice(0, 10)).sort();
+    const dates = points.map((p) => dateOnly(p.examTime)).sort();
     const scores = points.map((p) => p.totalScore);
     const bySubject = new Map<string, StudentTrendPoint[]>();
     for (const point of points) {
@@ -193,7 +223,7 @@ export class ScoreRepository {
 
     const grouped = new Map<string, { label: string; order: number; points: StudentTrendPoint[] }>();
     for (const point of trends) {
-      const date = point.examTime.slice(0, 10);
+      const date = dateOnly(point.examTime);
       const month = Number(date.slice(5, 7));
       const year = Number(date.slice(0, 4));
       const academicStartYear = month >= 8 ? year : year - 1;
