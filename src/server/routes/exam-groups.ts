@@ -13,6 +13,7 @@ import {
   visibleExamIdsForGroupRead,
 } from "./exam-groups-helpers";
 import { EXAM_NOT_SOFT_DELETED_SQL, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
+import { removeExamAnswerKeyFiles } from "../../apps/answer-card/server/helpers";
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -280,6 +281,10 @@ router.delete("/:groupId", requireGroupManager, async (req: Request, res: Respon
       // Delete the group (cascade deletes members)
       await tx.run("DELETE FROM exam_groups WHERE id = ?", groupId);
     });
+    // 事务外清理被删考试的答案页文件（文件不在 DB 里，SQLite 事务内不做异步 I/O）
+    if (deleteExams) {
+      for (const exam of memberExams) await removeExamAnswerKeyFiles(exam.id);
+    }
     await recordLifecycleEvent({ entityType: "exam_group", entityId: groupId, action: "delete", actorId: req.user?.id });
 
     res.json({ ok: true, deletedExams: deleteExams ? memberExams.length : 0, message: "大考已删除" });

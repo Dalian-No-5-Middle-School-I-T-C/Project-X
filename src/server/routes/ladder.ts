@@ -1,5 +1,5 @@
 /**
- * 成绩天梯 API —— 仅返回年级前十名，不展示段位/分层
+ * 成绩天梯 API —— 返回年级前十（截断线不切开同分并列），不展示段位/分层
  *
  * GET /api/ladder/exams/:examId        单场考试
  * GET /api/ladder/exam-groups/:groupId  大考组
@@ -14,7 +14,7 @@ import { authMiddleware } from "../middleware/auth";
 import { getMysqlDb } from "../db";
 import { AnalysisRepository } from "../repositories/AnalysisRepository";
 import { LadderService } from "../services/LadderService";
-import { competitionRank } from "../../shared/ranking";
+import { competitionRank, takeLadder } from "../../shared/ranking";
 import { requireExamAccess, getVisibleExamIds, validateExamIdsAccess, GROUP_MEMBER_NOT_SOFT_DELETED_SQL } from "../../apps/answer-card/server/middleware";
 import type { LadderResponse } from "../../shared/types";
 
@@ -106,7 +106,7 @@ router.get("/exams/:examId", requireExamAccess, async (req: Request, res: Respon
       return;
     }
 
-    const { top10, myRank, myScore } = LadderService.fromScoreTableRows(
+    const { board, myRank, myScore } = LadderService.fromScoreTableRows(
       scoreTable.rows,
       scoreTable.totalCount,
       req.user!.id,
@@ -118,7 +118,7 @@ router.get("/exams/:examId", requireExamAccess, async (req: Request, res: Respon
       studentCount: scoreTable.totalCount,
       myRank,
       myScore,
-      rows: top10,
+      rows: board,
     };
     res.json(resp);
   } catch (err: any) {
@@ -274,9 +274,10 @@ router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
     }
 
     const totalCount = rows.length;
-    const top10 = rows.slice(0, 10).map((r) => ({
+    const board = takeLadder(rows, (r) => (r as any)._gradeRank as number).map((r) => ({
       rank: (r as any)._gradeRank as number,
       studentId: r.studentId,
+      isCurrentUser: r.studentId === req.user!.id,
       studentNumber: r.studentNumber,
       studentName: r.studentName,
       className: r.className,
@@ -302,7 +303,7 @@ router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
       studentCount: totalCount,
       myRank,
       myScore,
-      rows: top10,
+      rows: board,
     };
     res.json(resp);
   } catch (err: any) {
@@ -368,7 +369,7 @@ router.get("/cross-exam", async (req: Request, res: Response) => {
       return;
     }
 
-    const { top10, myRank, myScore } = LadderService.fromCrossExamRows(
+    const { board, myRank, myScore } = LadderService.fromCrossExamRows(
       crossExamData.rows,
       crossExamData.rows.length,
       req.user!.id,
@@ -380,7 +381,7 @@ router.get("/cross-exam", async (req: Request, res: Response) => {
       studentCount: crossExamData.rows.length,
       myRank,
       myScore,
-      rows: top10,
+      rows: board,
     };
     res.json(resp);
   } catch (err: any) {
