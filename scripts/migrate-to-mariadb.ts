@@ -64,6 +64,7 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
   --skip-tables=t1,t2    跳过指定表
   --skip-schema          跳过自动结构补齐（默认先跑 runMariadbMigrations）
   --skip-backup          跳过迁移前 mysqldump 备份（默认备份，找不到 mysqldump 时拒绝继续）
+  --allow-uncovered      允许迁移 SQLite 中未登记到 MIGRATION_ORDER 的表（默认拒绝，防漏迁）
   -h, --help             显示本帮助
 
 环境变量:
@@ -90,6 +91,9 @@ const SQLITE_ONLY_VERSIONS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
 // v2 补全：+teacher_permissions / system_settings / original_paper_pages /
 //         review_assignments / review_sessions / review_annotations / block_grading_config /
 //         theme_change_events / ai_analysis_runs / ai_provider_calls / entity_lifecycle_events
+// v3 补全：+answer_block_crops / scanner_submissions / exam_publish_events / exam_participants /
+//         wechat_subscription_bindings / wechat_grade_release_notifications / exam_answer_keys /
+//         exam_answer_key_pages（漏登记的表会被静默丢数据，见 assertMigrationCoverage）
 
 const MIGRATION_ORDER: Array<{ table: string; primaryKey: string }> = [
   // 独立表（无外键依赖）
@@ -102,6 +106,7 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string }> = [
   // 用户与权限层
   { table: "users", primaryKey: "id" },
   { table: "teacher_permissions", primaryKey: "id" },
+  { table: "wechat_subscription_bindings", primaryKey: "id" },
 
   // 班级层
   { table: "classes", primaryKey: "id" },
@@ -126,10 +131,16 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string }> = [
   { table: "exam_groups", primaryKey: "id" },
   { table: "exam_group_members", primaryKey: "id" },
   { table: "exam_archives", primaryKey: "id" },
+  { table: "exam_publish_events", primaryKey: "id" },
+  { table: "exam_participants", primaryKey: "exam_id, student_id" },
+  { table: "exam_answer_keys", primaryKey: "exam_id, question_number" },
+  { table: "exam_answer_key_pages", primaryKey: "id" },
+  { table: "wechat_grade_release_notifications", primaryKey: "exam_id" },
 
   // 扫描工作流
   { table: "scan_batches", primaryKey: "id" },
   { table: "scan_records", primaryKey: "id" },
+  { table: "scanner_submissions", primaryKey: "exam_id, session_id, group_id" },
   { table: "objective_recognitions", primaryKey: "id" },
   { table: "objective_grades", primaryKey: "id" },
   { table: "subjective_grades", primaryKey: "id" },
@@ -146,6 +157,7 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string }> = [
   { table: "answer_overrides", primaryKey: "id" },
 
   // 网阅（依赖 exams/users/answer_block_crops）
+  { table: "answer_block_crops", primaryKey: "id" },
   { table: "review_assignments", primaryKey: "id" },
   { table: "review_sessions", primaryKey: "id" },
   { table: "review_annotations", primaryKey: "id" },
@@ -157,9 +169,28 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string }> = [
   { table: "api_keys", primaryKey: "id" },     // v1.6.0
   { table: "theme_change_events", primaryKey: "id" },
   { table: "ai_analysis_runs", primaryKey: "id" },
+  { table: "ai_analysis_jobs", primaryKey: "id" },
   { table: "ai_provider_calls", primaryKey: "id" },
   { table: "entity_lifecycle_events", primaryKey: "id" },
 ];
+
+/**
+ * 覆盖自检：schema.sql 新增表若忘记登记到 MIGRATION_ORDER，runMariadbMigrations 只会在目标库建空表，
+ * 本工具又只迁 MIGRATION_ORDER 里的表，于是「迁移成功」却静默丢数据。默认拒绝继续；
+ * 旧库残留的历史表确实无需迁移时，用 --allow-uncovered 显式跳过。
+ */
+function assertMigrationCoverage(sqlite: Database.Database): void {
+  if (process.argv.includes("--allow-uncovered")) return;
+  const known = new Set(MIGRATION_ORDER.map((item) => item.table));
+  const tables = (sqlite.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+  ).all() as Array<{ name: string }>).map((row) => row.name);
+  const uncovered = tables.filter((name) => !known.has(name));
+  if (uncovered.length === 0) return;
+  console.error(`❌ 以下 SQLite 表未登记到 MIGRATION_ORDER，继续迁移会漏迁数据: ${uncovered.join(", ")}`);
+  console.error("   请按父表在前补进 MIGRATION_ORDER；确认这些表无需迁移时，加 --allow-uncovered 跳过本检查。");
+  process.exit(1);
+}
 
 // ── 备份 ─────────────────────────────────────────────
 
@@ -288,6 +319,7 @@ async function main() {
   // 打开 SQLite
   const sqlite = new Database(SQLITE_PATH, { readonly: true });
   console.log("✅ SQLite 已连接");
+  assertMigrationCoverage(sqlite);
 
   // 连接 MariaDB
   let mysqlConn: mariadb.Connection;

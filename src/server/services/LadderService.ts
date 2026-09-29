@@ -1,5 +1,5 @@
 /**
- * 成绩天梯服务 —— 将现有排名数据转换为天梯前十榜单格式。
+ * 成绩天梯服务 —— 将现有排名数据转换为天梯榜单（默认前十，截断处同分并列者一并保留）。
  */
 import type {
   LadderRow,
@@ -7,7 +7,7 @@ import type {
   ScoreTableRow,
   CrossExamTotalRow,
 } from "../../shared/types.js";
-import { competitionRank } from "../../shared/ranking.js";
+import { competitionRank, takeLadder } from "../../shared/ranking.js";
 
 export class LadderService {
   /** 计算排名趋势 */
@@ -30,10 +30,12 @@ export class LadderService {
     rows: ScoreTableRow[],
     totalCount: number,
     currentStudentId?: number,
-  ): { top10: LadderRow[]; myRank: number | null; myScore: number | null } {
-    const top10: LadderRow[] = rows.slice(0, 10).map((r) => ({
-      rank: r.rank,
+  ): { board: LadderRow[]; myRank: number | null; myScore: number | null } {
+    // 天梯名次取年级排名：score-table 的产出字段是 gradeRank，类型里的 rank 并不落数据
+    const board: LadderRow[] = takeLadder(rows, (r) => r.gradeRank).map((r) => ({
+      rank: r.gradeRank,
       studentId: r.studentId,
+      isCurrentUser: r.studentId === currentStudentId,
       studentNumber: r.studentNumber,
       studentName: r.studentName,
       className: r.className,
@@ -45,7 +47,7 @@ export class LadderService {
       rankTrend: LadderService.getRankTrend(r.rankChange),
       rankChange: r.rankChange,
       prevRank: r.prevRank,
-      percentile: LadderService.percentile(r.rank, totalCount),
+      percentile: LadderService.percentile(r.gradeRank, totalCount),
     }));
 
     const my = currentStudentId
@@ -53,8 +55,8 @@ export class LadderService {
       : undefined;
 
     return {
-      top10,
-      myRank: my ? my.rank : null,
+      board,
+      myRank: my ? my.gradeRank : null,
       myScore: my ? my.totalScore : null,
     };
   }
@@ -65,7 +67,7 @@ export class LadderService {
     rows: CrossExamTotalRow[],
     totalCount: number,
     currentStudentId?: number,
-  ): { top10: LadderRow[]; myRank: number | null; myScore: number | null } {
+  ): { board: LadderRow[]; myRank: number | null; myScore: number | null } {
     // 按总分降序、学号升序稳定排序
     const sorted = [...rows].sort(
       (a, b) => b.totalScore - a.totalScore || a.studentNumber.localeCompare(b.studentNumber),
@@ -74,11 +76,12 @@ export class LadderService {
       r._rank = rank;
     });
 
-    const top10: LadderRow[] = sorted.slice(0, 10).map((r) => {
+    const board: LadderRow[] = takeLadder(sorted, (r) => (r as any)._rank as number).map((r) => {
       const rank = (r as any)._rank as number;
       return {
         rank,
         studentId: r.studentId,
+        isCurrentUser: r.studentId === currentStudentId,
         studentNumber: r.studentNumber,
         studentName: r.studentName,
         className: r.className,
@@ -100,6 +103,6 @@ export class LadderService {
     const myRank = my ? (my as any)._rank as number : null;
     const myScore = my ? my.totalScore : null;
 
-    return { top10, myRank, myScore };
+    return { board, myRank, myScore };
   }
 }

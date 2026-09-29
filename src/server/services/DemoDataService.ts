@@ -16,6 +16,7 @@ import { seedFillBlankDemo } from "./demo/fillBlankDemo";
 import { seedEssayDemo } from "./demo/essayDemo";
 import { seedReviewDemo } from "./demo/reviewDemo";
 import { getWeekWindow, WeeklyAuditService } from "./WeeklyAuditService";
+import { removeExamAnswerKeyFiles } from "../../apps/answer-card/server/helpers";
 
 const DEMO_PREFIX = "演示-";
 const CARD_ID_PREFIX = "88000";
@@ -305,7 +306,7 @@ async function cleanupDemoData(db: DbAdapter): Promise<ClearDemoStats> {
   ) as Array<{ id: number }>).map((r) => r.id);
 
   // ── 全程事务（五轮A3：任一步失败不得留下半删状态，MariaDB 外键约束下保证原子性）──
-  return db.transaction(async (tx) => {
+  const stats = await db.transaction(async (tx) => {
     if (demoOnlyWeekGroupIds.length > 0) {
       const ph = demoOnlyWeekGroupIds.map(() => "?").join(",");
       await tx.run(`DELETE FROM exam_group_members WHERE group_id IN (${ph})`, ...demoOnlyWeekGroupIds);
@@ -390,6 +391,10 @@ async function cleanupDemoData(db: DbAdapter): Promise<ClearDemoStats> {
       preservedExams: protectedExamIds.size
     };
   });
+
+  // 事务外清理磁盘上的教师答案页文件（SQLite 单连接下事务内做真异步 I/O 会破坏原子性）
+  for (const examId of demoExamIds) await removeExamAnswerKeyFiles(examId);
+  return stats;
 }
 
 /** 清除全部「演示-」前缀数据（不动真实数据）。假定 DB 已初始化。 */
