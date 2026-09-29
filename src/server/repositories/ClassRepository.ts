@@ -232,8 +232,17 @@ export class ClassRepository {
   async replaceClassHeadTeacher(classId: number, teacherId: number | null): Promise<void> {
     await this.db.transaction(async (tx) => {
       await tx.run("UPDATE classes SET name = name WHERE id = ?", classId);
+      // 显式替换/清空时一并收掉纯旧班主任关联，避免最后一个标记移除后读时兼容重新授权。
+      // 带科目的任课关系仍保留；仅操作当前班，不改全局角色。
       const heads = await tx.all<{ teacher_id: number; subject: string | null }>(
-        "SELECT teacher_id, subject FROM teacher_classes WHERE class_id = ? AND is_head_teacher = 1",
+        `SELECT tc.teacher_id, tc.subject FROM teacher_classes tc
+         WHERE tc.class_id = ? AND (
+           tc.is_head_teacher = 1 OR (
+             tc.subject IS NULL AND EXISTS (
+               SELECT 1 FROM users u WHERE u.id = tc.teacher_id AND u.teacher_role = 'head_teacher'
+             )
+           )
+         )`,
         classId
       );
       for (const head of heads) {

@@ -287,6 +287,23 @@ async function main(): Promise<void> {
     const replacedVisible = await getVisibleExamIds(legacyUserOf(keptId));
     assert.ok(replacedVisible && !replacedVisible.includes(examCChinese) && !replacedVisible.includes(examCMath), "被替换的旧班主任必须失去本班全科可见（评审 P1）");
 
+    // 清空新班主任后，任何未标记的旧关系都不能再次获得全科权限。
+    assert.equal((await post(`/api/classes/${classC}/head-teacher`, { teacherId: null }, "PUT")).status, 200);
+    for (const id of [keptId, droppedId]) {
+      const visible = await getVisibleExamIds(legacyUserOf(id));
+      assert.ok(visible && !visible.includes(examCChinese) && !visible.includes(examCMath), "清空班主任不得恢复旧教师的考试权限");
+      const accessible = await getAccessibleClassIds(legacyUserOf(id));
+      assert.ok(accessible && !accessible.includes(classC), "清空班主任不得恢复旧教师的班级权限");
+    }
+    // 未经过回填的新旧关系混合状态，也必须能直接清除；保留其他班及真正的任课关系。
+    for (const id of [legacyB.id, legacyC.id]) {
+      db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject, is_head_teacher) VALUES (?, ?, NULL, 0)").run(id, classC);
+    }
+    db.prepare("INSERT INTO teacher_classes (teacher_id, class_id, subject, is_head_teacher) VALUES (?, ?, NULL, 0)").run(legacyB.id, classB);
+    assert.equal((await post(`/api/classes/${classC}/head-teacher`, { teacherId: null }, "PUT")).status, 200);
+    assert.equal(Number((db.prepare("SELECT COUNT(*) AS n FROM teacher_classes WHERE class_id = ?").get(classC) as { n: number }).n), 0, "直接清除必须删除所有纯旧班主任关联");
+    assert.ok(db.prepare("SELECT 1 FROM teacher_classes WHERE teacher_id = ? AND class_id = ?").get(legacyB.id, classB), "不得删除其他班关联");
+    assert.equal((await getVisibleExamIds(legacyUser))?.includes(examBMath), true, "不得删除兼任教师的学科权限");
     console.log("verify:class-teachers 通过（班级改名 / 按班班主任 / 分科任课教师 / 权限范围不扩散 / 更换失败保留现任 / 成绩侧口径一致 / 停用教师拒指派 / 存量库回填与旧角色收敛 / 同班多名遗留班主任可撤权）");
   } finally {
     if (server) {
