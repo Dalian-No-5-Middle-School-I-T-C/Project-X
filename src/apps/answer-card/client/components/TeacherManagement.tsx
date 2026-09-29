@@ -21,7 +21,9 @@ import {
   DialogFooter,
 } from "./ui/v2";
 import { ImportModal } from "./ImportModal";
-import { TEACHER_SUBJECTS } from "../../../../shared/subjects";
+
+/** 9科固定科目列表 */
+const SUBJECTS = ["语文", "数学", "英语", "物理", "化学", "生物", "历史", "地理", "政治"];
 
 /** Radix Select 不允许空字符串 value，用哨兵值表达「未设置」 */
 const NONE = "__none__";
@@ -324,7 +326,7 @@ export function TeacherManagement() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value={NONE}>— 未设置 —</SelectItem>
-                      {TEACHER_SUBJECTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                      {SUBJECTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </Field>
@@ -468,7 +470,7 @@ export function TeacherManagement() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={NONE}>— 请选择科目 —</SelectItem>
-                  {TEACHER_SUBJECTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                  {SUBJECTS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
                 </SelectContent>
               </Select>
             </Field>
