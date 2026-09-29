@@ -1,5 +1,37 @@
 # Project-X CHANGELOG
 
+## 2026-09-26 — PR #303 审查意见修复（分支 `fix/issues-triage`）
+
+- **[P1] 偏科预警在唯一 UI 入口恒不触发**：`SubjectDeviationPanel` 的考试集合取自 `/api/analysis/trends?subject=<当前科目>`（后端 `WHERE e.subject = ?`），提交给偏科分析的 examIds 因此永远只有一个学科，`bySubject.size >= 2` 永不成立，所有人的相对落差恒为 0。新增 `GET /api/analysis/subject-deviation/exam-options`（`AnalysisRepository.getLatestExamPerSubject`，默认每科最近一场、`perSubject` 最多 5）作为跨科数据源，权限与 `/trends` 同口径（可见考试范围 + `can_view_charts`）；面板默认勾选每科一场、学科标签前置，勾选覆盖不足 2 科时禁用分析并给出补充提示。
+- **[P2] 合法空分布被误报为加载失败**：`AnalysisOverall` 分布链路改为「仅在有失败且无数据」时进入错误态，大考组无成员考试等全成功但为空的场景回到 `EmptyState`（原先该分支为死代码）。
+- **[P3] 三处**：分析页两条请求链接入 `AbortController`（重试/切换考试时取消旧请求，丢弃迟到响应）；`TeacherManagement` 记录班级列表所属年级，年级切换空窗期不再可勾选并提交旧年级班级；校验脚本中 `stdDev` 口径注释由「样本标准差」更正为总体口径（÷ n）。
+- **[P2·二轮] `exam-options` 跨科候选未限定年级 / 班级**：`getLatestExamPerSubject` 此前只按「可见考试」收敛，对视全可见的账号（admin / 学年主任 / 无 `teacher_role` 的普通教师，`getVisibleExamIds` 返回 `null`）等于「全校每科最近一场」。他年级更新的数学 / 语文考试会把这些学科的候选整批顶掉，而面板随后带上 `classId` 过滤——所选考试在本班没有成绩，班级维度就静默算成空集（不报错、不给提示，用户无法判断是「本班确无偏科」还是「候选被顶替」）。现新增 `AnalysisRepository.getExamScope(examId)` 取锚点考试的年级 / 班级，`GET /analysis/subject-deviation/exam-options` 接受 `examId`（锚点）与 `classId`（显式优先），仓库侧按「同年级 + 本班或其年级统考」过滤；未标注年级 / 班级的历史考试不参与排除，避免静默丢候选。前端 `SubjectDeviationPanel` 把自身的 `examId` / `classId` 一并下传，并纳入 effect 依赖。
+
+- **[P1·三轮] 全部班级视图被某个班的最新考试顶掉**：锚点是年级统考（`class_id` 为空）时路由算出 `classId: null`，作用域随即失效，某个班的新考试会把统考候选挤掉；他班学生只覆盖到部分学科、相对落差恒 0，预警静默丢失。现区分「具体班级」「全部班级」两种视图：`gradeWideOnly` 时只取年级统考（`class_id IS NULL`），显式选班或锚点是班考时仍按「本班 + 统考」。
+- **[P2·三轮] `exam-options` 与提交端权限门不一致**：候选按 `can_view_charts` 收敛，而 `POST /subject-deviation` 要的是 `can_view_students`——「允许看学生名单、禁用图表」的教师会拿到空候选、面板直接不可用。现统一按 `can_view_students`。
+- **[P2·三轮] 手动加入的「本场考试」不可见也不可取消**：`toggleExam(examId)` 只把它塞进 `selectedIds`，而渲染源是 `examOptions`，于是它持续参与提交却看不见、删不掉。现为它补一条可勾选条目（标注「本场考试」），并纳入学科覆盖计数。
+- **[P2·三轮] 切换考试 / 班级的空窗期用旧 ID 配新 `classId` 提交**：effect 换作用域后仍保留上一轮 `examOptions` / `selectedIds`，期间 `crossSubjectReady` 仍成立、分析按钮可点，提交的是他班考试 ID。现在 effect 起点即清空候选、勾选与旧结果并置 `optionsLoading`，加载期间禁用分析。
+
+验证：`npm run typecheck` 通过；`scripts/verify-analysis-batches-2-4.ts` **76 项全过**（新增 7 项跨科管道回归：exam-options 跨科取数、单科输入恒不触发、可见范围约束；二轮 6 项作用域回归：无作用域时他年级考试确实会顶掉本年级候选（成因复现）、`getExamScope` 取锚点、限定年级后他年级考试不再入列、本年级候选仍在、限定作用域后班级维度偏科分析不再算成空集；三轮 3 项统考回归：年级统考锚点、全部班级视图不取某个班的最新考试、具体班级视图仍可取本班最新考试。反向对照——仅停用作用域应用——精确失败于作用域相关断言）。该脚本在全部断言通过后不主动退出，须由外层超时收尾，属既有行为，非本次改动引入。
+
+## 2026-09-26 — Issues 分诊与修复批次（分支 `fix/issues-triage`）
+
+> 逐个核对 GitHub issues：确认修复 5 条、判定 4 条已被现有代码解决/虚报（待关闭）、其余需硬件或运行时复现。本条只记录已合入代码的改动。
+
+### 已修复
+- **#302 创建考试缺学科**：`POST /api/exams` 未显式传 `subject` 时回读答题卡的 `subject_label`（中文名）/`subject` 作为考试学科，避免无学科考试导致偏科、趋势等跨科分析不可用。
+- **#264 偏科预警算法**：由「各科各自比年级均分的裸 Z」改为「相对个人跨科基线」——同科多场先求平均年级 Z，个人基线 = 各科平均 Z 的均值，`relativeZ = 本场 Z − 个人基线`，最弱科相对落差 < -threshold 才预警（≥2 科）。整套卷子偏难/偏易不再全员误触发或集体漏报。前端 `SubjectDeviationPanel` 同步展示相对落差（悬浮保留年级 Z/个人基线）。
+- **#263 班级对比雷达图**：七个维度量纲差异大，此前共用固定 0-100 半径轴把区分度/离散度压到圆心、及格/优秀率挤在边缘。改为每维度按本班集合内 min/max 独立归一化到 0-100（无差异时取中性中点 50），真实数值移入悬浮 tooltip，并关闭 r 轴刻度。
+- **#291 教师关联班级**：单选下拉升级为可勾选班级列表，支持多选批量关联（后端早已接收 `classIds[]`）、一键全选未关联班级、班级名排序（默认/升/降，中文数字感知），已关联班级置灰标注。
+- **#275 总体分析多模块 fetch 失败**：分布与指标此前共用一个 `Promise.all`，任一接口失败即整页 `ErrorState` 空白。拆成两条独立链路——分布用 `Promise.allSettled` 容忍单个 mode 失败（全失败才报错、部分失败给警告行），指标独立 loading/error，两区块各自渲染骨架/错误态。
+
+### 判定为已解决/虚报（关闭说明见 PR 描述，代码未改动）
+- **#294 / #281 / #289 / #292**：现有代码路径已覆盖所报问题，经复核无对应缺陷，按虚报/已解决关闭。
+
+### 需硬件或运行时复现（暂不处理，附排查入口）
+- **#293 / #288 / #262**：依赖扫描仪/TWAIN 现场，排查入口 `GET /api/analysis/ai/status` 与 `twain_controller.cpp`；**#295** 年级按入学年份排序本轮不纳入。
+
+验证：`npm run typecheck` 通过；`scripts/verify-analysis-batches-2-4.ts`（含新增相对 Z 回归断言，60 项全过）、`verify:auth`、`verify:p1-scope`、`verify:p1-readgate` 通过。纯前端图表/交互改动本环境无法跑可视化回归。
 ## v2.6.0 (2026-09-25) — 原卷展示与逐题正确答案 + 成绩发布微信订阅消息
 
 - **开关（需求 1）**：`exams.show_original_paper`（0/1，默认 0）。考试编辑页「显示原卷」跟随考试保存；成绩公布表单新增「公布后显示原卷」勾选，勾选 → `score_published=1 且 show_original_paper=1`，取消 → `score_published=1 但 show_original_paper=0`。公布接口用 `COALESCE(?, show_original_paper)`，**旧客户端不带该字段时不改写开关**，避免历史调用方误公开含答案的原卷；批量公布对整批统一生效。Web 端重新公布时沿用教师上一次的选择（已公布/撤回过的考试不再默认勾上）。

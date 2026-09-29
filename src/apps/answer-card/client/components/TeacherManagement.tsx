@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, Link, Plus, RefreshCw, Search, Unlink, Upload, X } from "lucide-react";
 import { fetchJson, authFetch } from "../auth/api";
 import { TEACHER_ROLE_LABELS } from "../auth/types";
@@ -48,7 +48,12 @@ export function TeacherManagement() {
   const [grades, setGrades] = useState<GradeRecord[]>([]);
   const [allClasses, setAllClasses] = useState<ClassRecord[]>([]);
   const [selectedGradeId, setSelectedGradeId] = useState<number | null>(null);
-  const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
+  // PR #303 审查 P3：记录 allClasses 实际属于哪个年级，切换年级的空窗期不放行旧年级班级
+  const [classesGradeId, setClassesGradeId] = useState<number | null>(null);
+  const requestedGradeRef = useRef<number | null>(null);
+  // Issue #291：班级多选 + 全选 + 排序
+  const [selectedClassIds, setSelectedClassIds] = useState<number[]>([]);
+  const [classSort, setClassSort] = useState<"default" | "nameAsc" | "nameDesc">("default");
 
   // 弹窗
   const [showImport, setShowImport] = useState(false);
@@ -84,12 +89,19 @@ export function TeacherManagement() {
   }, [selectedGradeId]);
 
   const loadClasses = useCallback(async (gradeId: number | null) => {
+    requestedGradeRef.current = gradeId;
+    setClassesGradeId(null); // 年级已切换：新列表到达前视为「过期」
     if (!gradeId) { setAllClasses([]); return; }
     try {
       const data = await fetchJson<ClassRecord[]>(`/api/classes?gradeId=${gradeId}`);
+      if (requestedGradeRef.current !== gradeId) return; // 已再次切换，丢弃旧年级响应
       setAllClasses(data);
-      setSelectedClassId(data.length > 0 ? data[0].id : null);
-    } catch {}
+      setClassesGradeId(gradeId);
+    } catch {
+      if (requestedGradeRef.current !== gradeId) return;
+      setAllClasses([]);
+      setClassesGradeId(gradeId);
+    }
   }, []);
 
   useEffect(() => { void loadTeachers(); }, [loadTeachers]);
@@ -98,6 +110,7 @@ export function TeacherManagement() {
 
   useEffect(() => {
     setTeacherDetail(null);
+    setSelectedClassIds([]);
     setDetailError("");
     if (selectedId === null) return;
     const controller = new AbortController();
@@ -145,20 +158,20 @@ export function TeacherManagement() {
   }
 
   async function handleLinkClass() {
-    if (!selected || !selectedClassId) return;
+    if (!selected || selectedClassIds.length === 0) return;
     setBusy(true);
     setError("");
     try {
       const resp = await fetchJson<{ teacher: TeacherRecord }>(`/api/teachers/${selected.id}/classes`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ classIds: [selectedClassId], subject: editSubject.trim() || null })
+        body: JSON.stringify({ classIds: selectedClassIds, subject: editSubject.trim() || null })
       });
       // 直接更新当前教师详情（关联班级即时可见，无需手动刷新）
       if (resp.teacher) {
         setTeacherDetail((prev) => prev?.id === selected.id ? resp.teacher : prev);
       }
-      setSelectedClassId(null);
+      setSelectedClassIds([]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "关联失败");
     } finally {
@@ -231,6 +244,28 @@ export function TeacherManagement() {
     } finally {
       setBusy(false);
     }
+  }
+
+  // ── Issue #291：班级多选辅助 ──────────────────────────
+  const linkedClassIds = new Set((selected?.classes ?? []).map((c) => c.class_id));
+  // 年级切换中（列表尚未对应当前年级）：视为无可选班级，避免把旧年级 id 提交给新科目
+  const classesStale = classesGradeId !== selectedGradeId;
+  const selectableClasses = (() => {
+    const list = classesStale ? [] : [...allClasses];
+    if (classSort === "nameAsc") list.sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
+    else if (classSort === "nameDesc") list.sort((a, b) => b.name.localeCompare(a.name, "zh-CN", { numeric: true }));
+    else list.sort((a, b) => a.sort_order - b.sort_order || a.id - b.id); // 默认：后台手动排序
+    return list;
+  })();
+  // 可关联（尚未关联）的班级
+  const linkableClasses = selectableClasses.filter((c) => !linkedClassIds.has(c.id));
+  const allSelected = linkableClasses.length > 0 && linkableClasses.every((c) => selectedClassIds.includes(c.id));
+
+  function toggleClass(classId: number) {
+    setSelectedClassIds((prev) => (prev.includes(classId) ? prev.filter((x) => x !== classId) : [...prev, classId]));
+  }
+  function toggleAllClasses() {
+    setSelectedClassIds(allSelected ? [] : linkableClasses.map((c) => c.id));
   }
 
   return (
@@ -388,37 +423,90 @@ export function TeacherManagement() {
                   )}
                 </div>
 
-                {/* 添加关联 */}
-                <div className="flex items-center gap-2">
-                  <Select
-                    value={selectedGradeId != null ? String(selectedGradeId) : NONE}
-                    onValueChange={(v) => setSelectedGradeId(v === NONE ? null : Number(v))}
-                    disabled={busy}
-                  >
-                    <SelectTrigger className="w-auto">
-                      <SelectValue placeholder="选年级" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={NONE}>选年级</SelectItem>
-                      {grades.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                  <Select
-                    value={selectedClassId != null ? String(selectedClassId) : NONE}
-                    onValueChange={(v) => setSelectedClassId(v === NONE ? null : Number(v))}
-                    disabled={busy}
-                  >
-                    <SelectTrigger className="w-auto">
-                      <SelectValue placeholder="选班级" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={NONE}>选班级</SelectItem>
-                      {allClasses.map((c) => <SelectItem key={c.id} value={String(c.id)}>{c.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                  <Button variant="outline" size="sm" icon={<Link size={14} />} onClick={handleLinkClass} disabled={busy || !selectedClassId}>
-                    关联
-                  </Button>
+                {/* 添加关联（Issue #291：多选 + 全选 + 排序） */}
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <Select
+                      value={selectedGradeId != null ? String(selectedGradeId) : NONE}
+                      onValueChange={(v) => { setSelectedGradeId(v === NONE ? null : Number(v)); setSelectedClassIds([]); }}
+                      disabled={busy}
+                    >
+                      <SelectTrigger className="w-auto">
+                        <SelectValue placeholder="选年级" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NONE}>选年级</SelectItem>
+                        {grades.map((g) => <SelectItem key={g.id} value={String(g.id)}>{g.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                    <Select value={classSort} onValueChange={(v) => setClassSort(v as typeof classSort)} disabled={busy}>
+                      <SelectTrigger className="w-auto">
+                        <SelectValue placeholder="排序" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="default">默认顺序</SelectItem>
+                        <SelectItem value="nameAsc">班级名 A→Z</SelectItem>
+                        <SelectItem value="nameDesc">班级名 Z→A</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {selectedClassIds.length > 0 && (
+                      <span className="text-xs text-muted-foreground">已选 {selectedClassIds.length} 个班级</span>
+                    )}
+                  </div>
+
+                  {selectableClasses.length === 0 ? (
+                    <p className="px-2 py-1 text-sm text-muted-foreground">{selectedGradeId == null ? "请先选择年级" : classesStale ? "正在加载该年级班级…" : "该年级暂无班级"}</p>
+                  ) : (
+                    <div className="flex max-h-[220px] flex-col overflow-auto rounded-md border border-border-subtle">
+                      <label className={cn(
+                        "flex items-center gap-2 border-b border-border-subtle bg-secondary/40 px-3 py-2 text-sm",
+                        linkableClasses.length > 0 ? "cursor-pointer" : "opacity-50"
+                      )}>
+                        <input
+                          type="checkbox"
+                          className="accent-(--color-primary)"
+                          checked={allSelected}
+                          onChange={toggleAllClasses}
+                          disabled={busy || linkableClasses.length === 0}
+                        />
+                        <span className="font-medium text-foreground">全选</span>
+                      </label>
+                      <div className="flex flex-col">
+                        {selectableClasses.map((c) => {
+                          const linked = linkedClassIds.has(c.id);
+                          const checked = selectedClassIds.includes(c.id);
+                          return (
+                            <label key={c.id} className={cn(
+                              "flex items-center gap-2 border-b border-border-subtle px-3 py-2 text-sm last:border-b-0",
+                              linked ? "opacity-50" : "cursor-pointer hover:bg-secondary/40"
+                            )}>
+                              <input
+                                type="checkbox"
+                                className="accent-(--color-primary)"
+                                checked={linked || checked}
+                                onChange={() => toggleClass(c.id)}
+                                disabled={busy || linked}
+                              />
+                              <span className="text-foreground">{c.name}</span>
+                              {linked && <small className="text-xs text-muted-foreground">已关联</small>}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      icon={<Link size={14} />}
+                      onClick={handleLinkClass}
+                      disabled={busy || selectedClassIds.length === 0}
+                    >
+                      关联所选班级
+                    </Button>
+                  </div>
                 </div>
               </div>
             </>
