@@ -639,9 +639,10 @@ async function persistGradingResultsLocked(
 /**
  * 根据当前用户的教师角色和所教班级，返回可见的考试ID列表。
  * - admin / grade_leader → 全部可见（返回 null）
- * - head_teacher → 只看自己班级的考试（全科目，本年级）
- * - subject_teacher → 只看自己教的科目 + 自己教的班级
+ * - head_teacher / subject_teacher → 任教学科匹配的班级 + 担任班主任（按班 is_head_teacher）的班级全科可见
  * - 普通 teacher（无 teacher_role）→ 全部可见（向后兼容）
+ *
+ * 实现已迁至 middleware.ts 的 getVisibleExamIds，此处仅保留说明。
  */
 
 /**

@@ -214,6 +214,31 @@ async function main(): Promise<void> {
     assert.equal((await db.run("DELETE FROM system_settings WHERE `key` = ?", "ci_test")).changes, 1);
     assert.equal(await readValue(), null);
     console.log("PASS: transaction commit, rollback, delete");
+    // Real MariaDB: replacing/clearing a head must also remove unmarked legacy links.
+    const { ClassRepository } = await import("../src/server/repositories/ClassRepository");
+    const classRepo = new ClassRepository();
+    const headGrade = await db.run("INSERT INTO grades (name) VALUES ('head_cleanup_grade')");
+    const headClass = await db.run("INSERT INTO classes (grade_id, name) VALUES (?, 'head_cleanup_class')", headGrade.lastInsertRowid);
+    const otherHeadClass = await db.run("INSERT INTO classes (grade_id, name) VALUES (?, 'head_cleanup_other')", headGrade.lastInsertRowid);
+    const headIds: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const teacher = await db.run("INSERT INTO users (username, password_hash, name, role_id, teacher_role, subject) VALUES (?, 'test-only', ?, 2, 'head_teacher', '数学')", `head_cleanup_${i}`, `head_cleanup_${i}`);
+      headIds.push(Number(teacher.lastInsertRowid));
+    }
+    const headClassId = Number(headClass.lastInsertRowid);
+    await db.run("INSERT INTO teacher_classes (teacher_id, class_id, subject, is_head_teacher) VALUES (?, ?, NULL, 1), (?, ?, NULL, 0), (?, ?, '数学', 0)", headIds[0], headClassId, headIds[1], headClassId, headIds[2], headClassId);
+    await db.run("INSERT INTO teacher_classes (teacher_id, class_id, subject) VALUES (?, ?, NULL)", headIds[1], otherHeadClass.lastInsertRowid);
+    await classRepo.replaceClassHeadTeacher(headClassId, headIds[2]);
+    assert.equal((await db.all("SELECT teacher_id FROM teacher_classes WHERE class_id = ?", headClassId)).length, 1);
+    await classRepo.replaceClassHeadTeacher(headClassId, null);
+    const retainedTeacher = await db.get<{ subject: string; is_head_teacher: number }>("SELECT subject, is_head_teacher FROM teacher_classes WHERE teacher_id = ? AND class_id = ?", headIds[2], headClassId);
+    assert.equal(retainedTeacher?.subject, "数学");
+    assert.equal(Number(retainedTeacher?.is_head_teacher), 0);
+    assert.ok(await db.get("SELECT 1 FROM teacher_classes WHERE teacher_id = ? AND class_id = ?", headIds[1], otherHeadClass.lastInsertRowid));
+    // A class with only unmarked old relationships can be cleared directly, too.
+    await classRepo.replaceClassHeadTeacher(Number(otherHeadClass.lastInsertRowid), null);
+    assert.equal((await db.all("SELECT teacher_id FROM teacher_classes WHERE class_id = ?", otherHeadClass.lastInsertRowid)).length, 0);
+    console.log("PASS: head teacher cleanup preserves subject/other-class links and removes legacy links");
   } finally {
     resetAdapter();
   }

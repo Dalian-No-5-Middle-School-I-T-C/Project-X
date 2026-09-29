@@ -1,5 +1,40 @@
 # Project-X CHANGELOG
 
+## 2026-09-29：班主任清空后的遗留权限撤销
+
+- 班主任替换和清空在同一事务内处理按班标记及全局 `head_teacher` 的无科目旧关联，防止清空最后一个标记后旧关系重新获得全科权限；保留带科目的任课关系及其他班关系，不新增迁移。
+- SQLite HTTP 回归覆盖更换后清空、直接清空多条旧关联和两个权限消费者；MariaDB 集成回归覆盖同一仓储写入及关联保留。
+
+
+## 2026-09-25 — 班级改名 + 班主任 + 分科任课教师（2026-09-23 反馈第 8 条）
+
+- **班级改名**：此前只有年级能改名，班级没有入口。新增 `PUT /api/classes/:id`（`class:manage`）与班级列表行的重命名按钮，仅改当前未归档班级名称，历史数据不动。
+- **班主任**：班级页新增「班主任」下拉，可在全部教师中选择、不限学科。班主任是**按班关系**：迁移 `52 / class-head-teacher` 为 `teacher_classes` 增加 `is_head_teacher` 列，设置班主任只在该班的关联行上置标记（兼任任课的只撤/置标记保留科目，纯班主任则增删整行），**不改动教师的全局 `users.teacher_role`**——否则会把该教师在其它任课班级的可见范围一并放大且清除后不恢复。权限消费者（`getVisibleExamIds`、成绩侧 `getAccessibleClassIds`）同步改为「任教学科匹配的班级 + 按班班主任班级全科可见」。更换班主任先校验后替换，事务内原子完成，并以「事务首行锁班级行 + 提交前唯一性断言」保障一班至多一名班主任；清除班主任不影响其他班任课记录。
+- **分科任课教师**：班级页按 9 个学科各列一行，只列出「教师本人任教学科 = 该学科」的教师，选中即 `POST /api/classes/:id/teachers`（带科目）。`teacher_classes` 主键是 (teacher_id, class_id)，同一教师改科目走 upsert 原地更新，不会产生重复行；已设置的教师以标签展示，可单独解除——解除的是班主任本人时界面会先确认（该操作会连带移除班主任身份）。已停用教师与配置列表口径一致，指派任课/班主任一律拒绝。
+- 学科列表收敛到 `src/shared/subjects.ts`，教师管理页与服务端校验共用同一份，避免多处硬编码漂移。
+
+复审修订（2026-09-26）：初版曾按全局角色实现班主任并声称无 schema 变更，评审指出会扩大其它任教班级权限后改为上述按班方案（迁移 `52 / class-head-teacher`）；本条目按最终实现重写。
+
+复审修订（2026-09-27）：补上存量库的模型迁移缺口。迁移 `52` 只加列（`is_head_teacher` 默认 0）**不回填**，历史班主任（旧模型 = 全局 `users.teacher_role='head_teacher'` + 一条班级关联）全部落在「有关联、无标记」状态——班级页显示「未设置班主任」、换班主任时旧关联也清不掉；而旧教师仍凭全局角色对其**关联的全部班级全科可见**，且新版 setter 不再写该角色，该状态无法自愈。现新增迁移 `55 / backfill-class-head-teacher`（SQLite 用 TS 逻辑回填；MariaDB 因逐班取唯一班主任的 SQL 易踩 `ER_UPDATE_TABLE_USED`，在迁移清单外用一次同口径 TS 步骤执行并照常写入 `schema_migrations`，幂等且只补齐无标记的班级，不覆盖新版界面的显式设置），并把 `getVisibleExamIds` / `getAccessibleClassIds` 的 `head_teacher` 分支收敛为与学科教师同一套「按班标记 + 学科匹配」判定——全局角色不再单独放大范围，换人后旧关联行即使因带科目而保留，也不会再越权看到非任教学科考试。
+
+复审修订（2026-09-27，二轮 · Codex 评审 + CI）：CI 的 `verify:auth` 有 3 项失败，根因是**遗留班主任的读时推导**缺失。
+
+- **遗留班主任改为读时推导**：旧模型用「全局 `teacher_role='head_teacher'` + 一条不带科目的班级关联」表达班主任，且 `verify:auth` 的夹具正按此形态直接插库构造。一轮只补了迁移回填，按旧形态构造的库仍会失去本班全科可见（3 项失败：班主任仅本班最新出分 / #246r2 组内含软删除成员 / #246r2 恢复后可见集合）。现在 `getVisibleExamIds` 与 `getAccessibleClassIds` 在 `teacher_role='head_teacher'` 时把「不带科目的关联行」也视为班主任标记（带科目的关联不算，因此「班主任同时任课该班后被换下」仍不会凭全局角色看到非任教学科）——**三轮已把该兼容收窄为「该班尚无按班标记时」才认可，见下**。`verify:auth` 137 项全过。
+- **看板补上班主任豁免**：`DashboardService` 对 `subject_teacher` 一律追加 `e.subject = user.subject`，导致兼任班主任的教师在首页统计与「最新出卷 / 最新出分」里漏掉班主任班级的其它学科（与 `getVisibleExamIds` 的全科口径不一致）。现对 `is_head_teacher=1` 的班级豁免该学科过滤。
+- **教师选择器分页取全**：班级页原先只取 `/api/teachers?pageSize=500` 的第一页，教师规模较大的部署里靠后的教师无法被选为班主任或任课教师。改为按 `total` 翻页取全（上限 20 页），兑现「在全部教师中选择」。
+- 已确认无需改动（对应 Codex 同类意见）：`PUT /api/classes/:id/head-teacher` 一轮即为「先校验后替换」，失败不删现任；班级页解除班主任本人的任课标签已有显式确认弹窗（文案「解除任课会连带摘掉按班班主任标记」），非静默行为。
+- 待产品决策（未改）：`POST /api/classes/:id/teachers` 不校验「任课学科 == 教师本人学科」。收紧会移除既有的「同一教师按班改科目」能力（`verify:class-teachers` 有对应用例、本条目亦记该能力）；若改为按班科目参与可见性判定，属语义升级而非本次修缺范围。
+
+复审修订（2026-09-28，三轮）：两条 P1（第二条为跨 PR 的合并风险）。
+
+- **[P1] 同班多名遗留班主任无法被替换流程撤权**：迁移每班只标一位（`teacher_id` 最小者），其余遗留关联仍是 `is_head_teacher=0 + subject=NULL`；二轮的读时兼容却把这类关联**无条件**视为班主任，于是通过界面更换班主任后，未被标记的那位旧教师继续全科可见——权限判断与配置/替换流程不一致。现把读时兼容收窄为「**该班尚无按班标记**时才认可遗留关联」（`NOT EXISTS (… h.is_head_teacher = 1)`），并把全局 `head_teacher` 的**任课班级**判定一并收紧（不再接受 `subject IS NULL` 的宽松匹配——这类行是旧班主任标记，配置页也只把带科目的行列作任课）。效果：替换流程清掉标记即等于权限即时失效；同时旧库仍可用（班里没有标记时按遗留语义全科可见），`verify:auth` 137 项保持全过。
+- **[P1] 迁移编号与 #301 撞号**：本 PR 原用 `53 / backfill-class-head-teacher`，而并行分支 #301 已占 `53 / wechat-grade-release-notifications` 与 `54 / exam-original-paper-and-answer-keys`。执行器只按 `schema_migrations` 已记录的 version 判重，**同号会让其中一套永久跳过**——这是部署顺序问题，不是文本冲突，所以必须实测两种顺序。现改号 `55 / backfill-class-head-teacher`（SQLite 与 MariaDB 两侧同步）；并写了一个合并顺序探针：把两套**真实**迁移函数跑在同一内存 SQLite 上，按 `#300→#301` 与 `#301→#300` 两种部署顺序断言 52/53/54/55 四个版本都记账、#301 的微信 2 表与原卷答案 2 表齐全、#300 的班主任回填生效（两种顺序各 6 项，共 12 项全过）。反向对照把编号改回 `53` 后精确复现两侧失败：顺序一微信表缺失、顺序二回填未生效（8 通过 / 4 失败）。
+
+验证：`npm run verify:class-teachers`（新增并已接入 CI，隔离 SQLite 走真实 HTTP：建年级/班级 → 改名 → 设/换/清班主任并回读 `teacher_classes.is_head_teacher` 与全局角色 → 分科设置、改科目只保留一行 → 非法学科 400、不存在或已停用教师 404 → 换班主任失败保留现任 → 按班班主任不扩大其它任教班级的可见范围（`getVisibleExamIds` 与成绩侧 `getAccessibleClassIds` 双口径断言））、`npm run typecheck`、`npm run build`、`npm run verify:core-logic`（73 passed）。
+复审补充（2026-09-27 / 09-28）：`verify:class-teachers` 增加第 8、9 节存量库回归——第 8 节：模拟未执行迁移 55 的库（全局 `head_teacher` 角色 + 不带科目的班级关联）→ 回填后配置面板可识别出班主任 → 重复执行保持幂等；再让该教师兼任本班学科后被换下班主任，断言其**看不到本班非任教学科考试**、仍保有任教学科范围。第 9 节：同班两名遗留班主任时迁移只标一位，未获标记者不得再被权限认可，且通过 HTTP 替换班主任后获标记者立即失去本班全科可见。反向对照分别精确失败于「回填」、「角色收敛」与「未获标记的遗留关联不再算班主任」三组断言（第三组的对照需保留括号的正确写法，否则 `OR` 优先级会让谓词命中全表，测出的是另一个 bug）。二轮修完遗留班主任读时推导后 `npm run verify:auth` **137 项全过**（一轮提交时为 134 通过 / 3 失败）；三轮的迁移编号合并顺序探针两种部署顺序各 6 项、共 **12 项全过**。`npm run typecheck`、`npm run verify:class-teachers` 全程保持通过。
+未覆盖：本机无 MariaDB，`is_head_teacher` 回填与行为断言仅在 SQLite 实跑，MariaDB 侧由 CI 作业覆盖建库与迁移；管理页界面未做浏览器视觉验收。
+
+
 ## 2026-09-26 — PR #303 审查意见修复（分支 `fix/issues-triage`）
 
 - **[P1] 偏科预警在唯一 UI 入口恒不触发**：`SubjectDeviationPanel` 的考试集合取自 `/api/analysis/trends?subject=<当前科目>`（后端 `WHERE e.subject = ?`），提交给偏科分析的 examIds 因此永远只有一个学科，`bySubject.size >= 2` 永不成立，所有人的相对落差恒为 0。新增 `GET /api/analysis/subject-deviation/exam-options`（`AnalysisRepository.getLatestExamPerSubject`，默认每科最近一场、`perSubject` 最多 5）作为跨科数据源，权限与 `/trends` 同口径（可见考试范围 + `can_view_charts`）；面板默认勾选每科一场、学科标签前置，勾选覆盖不足 2 科时禁用分析并给出补充提示。
@@ -60,6 +95,7 @@
 - **[P2] 失败上传遗留文件 + 同页残留遮蔽新件**：`validatePaperFile` 只校验扩展名与体积，损坏 JPG 能进转换环节；转换抛错时该批已写下的文件还没有任何 DB 记录引用，而清理 `try` 只包住了入库语句（转换循环在其之外），于是留下孤儿 `answerkey.jpg`；`resolveAnswerKeyPageFile` 又按扩展名顺序探测、`.jpg` 先于 `.pdf`，孤儿会把已登记的 `answerkey.pdf` 遮蔽掉，列表 / 预览 / 重识别三处一起读到旧图。现将「落盘 + 入库」纳入同一回滚范围、成功后清掉同页其它扩展名残留，解析改为**优先 DB 登记的 `filename`**（磁盘探测仅作兜底），并让预览 / 重识别在无 DB 记录时直接 404——「有文件无记录」的孤儿不再可读。
 
 验证情况：`npm run typecheck` 与 `npm run build:web` 通过（v2.6.0 首稿记录的 `@types/fontkit`、本地缺 `qrcode` 两条既有报错已不复现，`qrcode` 本就在依赖清单中）；新增 `npm run verify:wechat-grade-release`（临时 SQLite + 打桩 fetch，18 项断言通过，不访问微信服务器）；新增 `npm run verify:exam-paper`（临时 SQLite + 真实 HTTP，69 项断言通过，覆盖开关与三种公布情形、四重硬门、入口标记与 `/paper` 同步、答案全量保存与按页归集、答案页上传/删除、OCR 文本解析，接口调用统一带 `?ocr=0` 不打真实 OCR；其中 C2 节 8 项为 2026-09-27 复审新增的残留回归：失败上传不留孤儿且不写记录、重试上传 PDF 登记为 `answerkey.pdf`、同页存在 `.jpg` 残留时预览与列表仍以登记文件为准、无 DB 记录的残留文件预览/重识别一律 404。反向对照——仅撤掉源码修复保留用例——精确失败于其中 5 项，与上报症状逐条对应）；小程序侧 `npm test` 通过（含原卷页归一化、图片下载并发与取消、以及「入口受 `paper_visible` 控制」的接线校验）；`npm run verify:core-logic` 新增「天梯截断不切开同分并列」段，覆盖 `takeLadder` 的边界（恰好 10 人并列不扩表、并列组完全落在前十内不扩表、第 9 / 第 10 名跨线顺延、只覆盖跨线那一组）与单场、跨考天梯服务的 `rank` / `percentile` / `myRank` / `isCurrentUser` 取值；自检面板落地后 `npm run typecheck`、`npm run build:web` 复跑通过，面板只读消费 `diagnostic` 的既有字段，未新增接口。四项**未执行**，需部署前补：① `scripts/verify-mariadb.ts` 的 v53 索引与「一 openid 多学生」、v54 建表加列断言尚未在真实 MariaDB 上跑过，需一次性空的 `projectx_ci` 库执行 `npm run verify:mariadb`；② tesseract.js 真实识别未跑端到端；③ 服务端微信环境变量配置、小程序发布与真机推送验收，含「微信订阅消息」面板对着已部署后端真点一次「开始自检」（本地无凭证，四行状态与 HTML 兜底提示均未走过真实响应）；④ 原卷页在小程序真机与网页端的界面验收，含天梯领奖台的「第 1 名 N 人」分支与「保存天梯卡」海报（小程序侧仅以 `node:test` + 画布代理断言绘制分支写出的文字，未跑真机离屏 Canvas）。部署步骤与错误码对照见 [WECHAT-GRADE-RELEASE-部署与排错](./WECHAT-GRADE-RELEASE-部署与排错.md)，服务器上逐项要做的动作与判据见 [WECHAT-GRADE-RELEASE-开发者上线清单](./WECHAT-GRADE-RELEASE-开发者上线清单.md)，原卷与逐题答案的配置流程、可见性矩阵与接口清单见 [原卷与逐题答案-使用说明](./原卷与逐题答案-使用说明.md)。
+
 ## 2026-09-25 — 2026-09-23 问题反馈修复（题块命名 / 作文格 / 客观题横排 / 注记 / 权限 / 图表）
 
 依据 2026-09-23 邮件反馈（含 A3 测试卡 PDF 与 4 张截图）修复，分支 `codex/feedback-260925`：
