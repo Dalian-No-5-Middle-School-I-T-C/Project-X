@@ -34,6 +34,68 @@
 复审补充（2026-09-27 / 09-28）：`verify:class-teachers` 增加第 8、9 节存量库回归——第 8 节：模拟未执行迁移 55 的库（全局 `head_teacher` 角色 + 不带科目的班级关联）→ 回填后配置面板可识别出班主任 → 重复执行保持幂等；再让该教师兼任本班学科后被换下班主任，断言其**看不到本班非任教学科考试**、仍保有任教学科范围。第 9 节：同班两名遗留班主任时迁移只标一位，未获标记者不得再被权限认可，且通过 HTTP 替换班主任后获标记者立即失去本班全科可见。反向对照分别精确失败于「回填」、「角色收敛」与「未获标记的遗留关联不再算班主任」三组断言（第三组的对照需保留括号的正确写法，否则 `OR` 优先级会让谓词命中全表，测出的是另一个 bug）。二轮修完遗留班主任读时推导后 `npm run verify:auth` **137 项全过**（一轮提交时为 134 通过 / 3 失败）；三轮的迁移编号合并顺序探针两种部署顺序各 6 项、共 **12 项全过**。`npm run typecheck`、`npm run verify:class-teachers` 全程保持通过。
 未覆盖：本机无 MariaDB，`is_head_teacher` 回填与行为断言仅在 SQLite 实跑，MariaDB 侧由 CI 作业覆盖建库与迁移；管理页界面未做浏览器视觉验收。
 
+
+## 2026-09-26 — PR #303 审查意见修复（分支 `fix/issues-triage`）
+
+- **[P1] 偏科预警在唯一 UI 入口恒不触发**：`SubjectDeviationPanel` 的考试集合取自 `/api/analysis/trends?subject=<当前科目>`（后端 `WHERE e.subject = ?`），提交给偏科分析的 examIds 因此永远只有一个学科，`bySubject.size >= 2` 永不成立，所有人的相对落差恒为 0。新增 `GET /api/analysis/subject-deviation/exam-options`（`AnalysisRepository.getLatestExamPerSubject`，默认每科最近一场、`perSubject` 最多 5）作为跨科数据源，权限与 `/trends` 同口径（可见考试范围 + `can_view_charts`）；面板默认勾选每科一场、学科标签前置，勾选覆盖不足 2 科时禁用分析并给出补充提示。
+- **[P2] 合法空分布被误报为加载失败**：`AnalysisOverall` 分布链路改为「仅在有失败且无数据」时进入错误态，大考组无成员考试等全成功但为空的场景回到 `EmptyState`（原先该分支为死代码）。
+- **[P3] 三处**：分析页两条请求链接入 `AbortController`（重试/切换考试时取消旧请求，丢弃迟到响应）；`TeacherManagement` 记录班级列表所属年级，年级切换空窗期不再可勾选并提交旧年级班级；校验脚本中 `stdDev` 口径注释由「样本标准差」更正为总体口径（÷ n）。
+- **[P2·二轮] `exam-options` 跨科候选未限定年级 / 班级**：`getLatestExamPerSubject` 此前只按「可见考试」收敛，对视全可见的账号（admin / 学年主任 / 无 `teacher_role` 的普通教师，`getVisibleExamIds` 返回 `null`）等于「全校每科最近一场」。他年级更新的数学 / 语文考试会把这些学科的候选整批顶掉，而面板随后带上 `classId` 过滤——所选考试在本班没有成绩，班级维度就静默算成空集（不报错、不给提示，用户无法判断是「本班确无偏科」还是「候选被顶替」）。现新增 `AnalysisRepository.getExamScope(examId)` 取锚点考试的年级 / 班级，`GET /analysis/subject-deviation/exam-options` 接受 `examId`（锚点）与 `classId`（显式优先），仓库侧按「同年级 + 本班或其年级统考」过滤；未标注年级 / 班级的历史考试不参与排除，避免静默丢候选。前端 `SubjectDeviationPanel` 把自身的 `examId` / `classId` 一并下传，并纳入 effect 依赖。
+
+- **[P1·三轮] 全部班级视图被某个班的最新考试顶掉**：锚点是年级统考（`class_id` 为空）时路由算出 `classId: null`，作用域随即失效，某个班的新考试会把统考候选挤掉；他班学生只覆盖到部分学科、相对落差恒 0，预警静默丢失。现区分「具体班级」「全部班级」两种视图：`gradeWideOnly` 时只取年级统考（`class_id IS NULL`），显式选班或锚点是班考时仍按「本班 + 统考」。
+- **[P2·三轮] `exam-options` 与提交端权限门不一致**：候选按 `can_view_charts` 收敛，而 `POST /subject-deviation` 要的是 `can_view_students`——「允许看学生名单、禁用图表」的教师会拿到空候选、面板直接不可用。现统一按 `can_view_students`。
+- **[P2·三轮] 手动加入的「本场考试」不可见也不可取消**：`toggleExam(examId)` 只把它塞进 `selectedIds`，而渲染源是 `examOptions`，于是它持续参与提交却看不见、删不掉。现为它补一条可勾选条目（标注「本场考试」），并纳入学科覆盖计数。
+- **[P2·三轮] 切换考试 / 班级的空窗期用旧 ID 配新 `classId` 提交**：effect 换作用域后仍保留上一轮 `examOptions` / `selectedIds`，期间 `crossSubjectReady` 仍成立、分析按钮可点，提交的是他班考试 ID。现在 effect 起点即清空候选、勾选与旧结果并置 `optionsLoading`，加载期间禁用分析。
+
+验证：`npm run typecheck` 通过；`scripts/verify-analysis-batches-2-4.ts` **76 项全过**（新增 7 项跨科管道回归：exam-options 跨科取数、单科输入恒不触发、可见范围约束；二轮 6 项作用域回归：无作用域时他年级考试确实会顶掉本年级候选（成因复现）、`getExamScope` 取锚点、限定年级后他年级考试不再入列、本年级候选仍在、限定作用域后班级维度偏科分析不再算成空集；三轮 3 项统考回归：年级统考锚点、全部班级视图不取某个班的最新考试、具体班级视图仍可取本班最新考试。反向对照——仅停用作用域应用——精确失败于作用域相关断言）。该脚本在全部断言通过后不主动退出，须由外层超时收尾，属既有行为，非本次改动引入。
+
+## 2026-09-26 — Issues 分诊与修复批次（分支 `fix/issues-triage`）
+
+> 逐个核对 GitHub issues：确认修复 5 条、判定 4 条已被现有代码解决/虚报（待关闭）、其余需硬件或运行时复现。本条只记录已合入代码的改动。
+
+### 已修复
+- **#302 创建考试缺学科**：`POST /api/exams` 未显式传 `subject` 时回读答题卡的 `subject_label`（中文名）/`subject` 作为考试学科，避免无学科考试导致偏科、趋势等跨科分析不可用。
+- **#264 偏科预警算法**：由「各科各自比年级均分的裸 Z」改为「相对个人跨科基线」——同科多场先求平均年级 Z，个人基线 = 各科平均 Z 的均值，`relativeZ = 本场 Z − 个人基线`，最弱科相对落差 < -threshold 才预警（≥2 科）。整套卷子偏难/偏易不再全员误触发或集体漏报。前端 `SubjectDeviationPanel` 同步展示相对落差（悬浮保留年级 Z/个人基线）。
+- **#263 班级对比雷达图**：七个维度量纲差异大，此前共用固定 0-100 半径轴把区分度/离散度压到圆心、及格/优秀率挤在边缘。改为每维度按本班集合内 min/max 独立归一化到 0-100（无差异时取中性中点 50），真实数值移入悬浮 tooltip，并关闭 r 轴刻度。
+- **#291 教师关联班级**：单选下拉升级为可勾选班级列表，支持多选批量关联（后端早已接收 `classIds[]`）、一键全选未关联班级、班级名排序（默认/升/降，中文数字感知），已关联班级置灰标注。
+- **#275 总体分析多模块 fetch 失败**：分布与指标此前共用一个 `Promise.all`，任一接口失败即整页 `ErrorState` 空白。拆成两条独立链路——分布用 `Promise.allSettled` 容忍单个 mode 失败（全失败才报错、部分失败给警告行），指标独立 loading/error，两区块各自渲染骨架/错误态。
+
+### 判定为已解决/虚报（关闭说明见 PR 描述，代码未改动）
+- **#294 / #281 / #289 / #292**：现有代码路径已覆盖所报问题，经复核无对应缺陷，按虚报/已解决关闭。
+
+### 需硬件或运行时复现（暂不处理，附排查入口）
+- **#293 / #288 / #262**：依赖扫描仪/TWAIN 现场，排查入口 `GET /api/analysis/ai/status` 与 `twain_controller.cpp`；**#295** 年级按入学年份排序本轮不纳入。
+
+验证：`npm run typecheck` 通过；`scripts/verify-analysis-batches-2-4.ts`（含新增相对 Z 回归断言，60 项全过）、`verify:auth`、`verify:p1-scope`、`verify:p1-readgate` 通过。纯前端图表/交互改动本环境无法跑可视化回归。
+## v2.6.0 (2026-09-25) — 原卷展示与逐题正确答案 + 成绩发布微信订阅消息
+
+- **开关（需求 1）**：`exams.show_original_paper`（0/1，默认 0）。考试编辑页「显示原卷」跟随考试保存；成绩公布表单新增「公布后显示原卷」勾选，勾选 → `score_published=1 且 show_original_paper=1`，取消 → `score_published=1 但 show_original_paper=0`。公布接口用 `COALESCE(?, show_original_paper)`，**旧客户端不带该字段时不改写开关**，避免历史调用方误公开含答案的原卷；批量公布对整批统一生效。Web 端重新公布时沿用教师上一次的选择（已公布/撤回过的考试不再默认勾上）。
+- **本次正确答案（需求 2）**：新建考试级 `exam_answer_keys(exam_id, question_number, answer_text, page_index, updated_by)` 与 `exam_answer_key_pages(exam_id, page_index, filename, stored_path)`，行形制镜像 `objective_answer_keys`（复用结构不复用表，避免客观题判分逻辑被牵连）。教师端「原卷答案」面板可上传答案页（图片 / PDF / DOCX，≤50MB，多页），本地 tesseract.js OCR 出草稿后**只填空白单元格、不覆盖老师手改**，逐题可改题号/答案文字/归属原卷页；保存是整场全量替换，须点「保存答案」学生才可见。答案只存文字，服务端与客户端都不判对错。
+- **迁移 `54 / exam-original-paper-and-answer-keys`**：SQLite（`schema.sql` + `migrations.ts`）与 MariaDB（`schema.mariadb.sql` + `mysql.ts`）同步建表加列；文件落 `dataDir/answer-keys/<safeId(examId)>/answerkey[-N].<ext>`。
+- **学生端门与接口（需求 3/4）**：`GET /api/scores/me/exams/:examId/paper`、`.../paper/pages/:pageIndex/image` 与列表逐条 `paper_visible`、详情 `paperVisible` **共用同一道门**（未软删除 ∧ 本人本场有成绩 ∧ `score_published=1` ∧ `show_original_paper=1`），任一不满足 → 404，前端不自行推断可见性。URL 不含文件名，页码只走 DB 解析后 `sendFile`，路径穿越式页码直接 400/404。原卷图片是**答题卡级**资产（`original_paper_pages` 以 `card_id` 为键），经 `exams.card_id` 关联；DB 有记录但磁盘文件已被清理的页不返回，从未上传过原卷则 `hasOriginalPaper=false`，客户端显示「原卷未上传」。
+- **小程序**：新增 `pages/exam-paper/exam-paper`，先看卷再看作答——逐题答案列表、每张原卷页图片下方按题号渲染本页答案、末尾本人作答图块。图片走 `wx.downloadFile` + `Authorization: Bearer`（token 不进 URL），并发 3、页面卸载即取消且不再回写；下载失败不留破图，逐题答案仍照常显示。入口两处：成绩列表卡片「查看原卷 ›」（`catchtap` 独立事件，不与整卡跳转混流）与详情页「查看答案解析」。
+- **网页学生端**：新增 `StudentExamPaper.tsx`（v2 组件、语义色、无手写 CSS），成绩卡片与逐题明细页各有入口，同样受 `paper_visible` 控制；非图片页给出「打开原文件」而非坏图。
+- **学生订阅绑定**：新增 `POST /api/wechat/subscriptions/grade-release`（Bearer 鉴权，学生身份只取自 token，不接受前端传入的 studentId）。小程序 `wx.requestSubscribeMessage` 授权后用 `wx.login` 取 code，服务端 `jscode2session` 换 openid 并写入 `wechat_subscription_bindings`。同一 openid 允许绑定多个学生（共用设备 / 一个家长多个孩子），仅保留 `UNIQUE(student_id, template_id)`。
+- **首次正式发布推送**：单场与批量公布的成绩发布事务提交后异步调用 `notifyGradeReleaseSubscribers(examId)`，只通知「已绑定且本场有成绩」的学生；`thing1` = 科目 · 考试名（超 20 字截断），`number2` = 成绩（赋分优先，一位小数）。推送失败绝不回滚成绩发布，只记日志与计数。
+- **去重与重推语义**：`wechat_grade_release_notifications.exam_id` 主键 + INSERT IGNORE 认领，保证每场只推一次、成绩修订不重推。新增「失败不占用去重」：该场零送达（无收件人、非公布态、token / 网络故障、流程异常）时删除认领行并记 `slot released for retry`，管理员「撤回 → 重新公布」即可重推；只要有 1 条送达就保留去重位。`sending` 行超过 10 分钟视为进程崩溃遗留并自动重新认领；`40001 / 42001` 时清空 access_token 缓存。
+- **迁移 `53 / wechat-grade-release-notifications`**：SQLite（`schema.sql` + `migrations.ts`）与 MariaDB（`schema.mariadb.sql` + `mysql.ts`）同步建表，openid 使用普通索引 `idx_wsb_openid`。
+- **迁移编号避让**：本分支原占 `52 / 53`，与并行分支的 `52 / class-head-teacher` 撞号——迁移执行器按 `schema_migrations.version` 判重并**静默跳过**已记版本，同号会让其中一套 DDL 永不执行（与 v25 补记 v23 那次同因）。现改记 `53 / wechat-grade-release-notifications`、`54 / exam-original-paper-and-answer-keys`，`52` 留给班主任分支，两种合并顺序下都不撞号；两套建表/加列语句本身幂等。
+- **部署自检**：`GET /api/wechat/subscriptions/diagnostic`（仅管理员）绕过 token 缓存实取一次 access_token，只返回布尔值、微信错误码与绑定人数，不回显 AppSecret、errmsg 原文或 openid；启动日志报告推送是否启用及缺失的变量名。`WECHAT_MINIPROGRAM_APP_ID` / `WECHAT_MINIPROGRAM_APP_SECRET` / `WECHAT_GRADE_RELEASE_TEMPLATE_ID` / `WECHAT_SUBSCRIBE_PAGE` / `WECHAT_MINIPROGRAM_STATE` 仅存在于部署环境，不入库、不入 Git。
+- **管理端自检面板**：全局设置新增「微信订阅消息」段（`GlobalSettingsPage.tsx`），把上述 `diagnostic` 渲染成四行只读状态——环境变量（已就绪 / 缺少 N 项并列出变量名）、access_token（未检测 / 可取 / 失败并释义 `40001` `40013` `40164` `42001`，其余错误码原样回显）、推送环境（`miniprogram_state · page`）、已绑定学生人数（为 0 时点明「学生端开关仍会失败」）。**面板不自动拉取**，必须点「开始自检」：诊断接口刻意绕过 token 缓存实取一次 access_token，而 `cgi-bin/token` 有日调用上限，每开一次设置页就烧一次额度不合理。自检返回 HTML 时提示「多半是这一版后端还没部署到本服务器」——SPA 兜底会把未注册的 GET 变成 200 + index.html，这是唯一能看出部署没到位的信号。复用 v2 组件桶与语义色，无新增 CSS、无手写业务样式；密钥与 openid 依然不出服务端。
+- **一次性订阅边界**：微信侧不提供长期订阅，小程序每场成绩公布前重新引导订阅；学生未重新授权时该场发送返回 `43101`，属预期行为而非故障。
+- **天梯截断不切开同分并列**：天梯仍默认只返回年级前十，但截断线落在某个并列组中间时该组一并返回（`src/shared/ranking.ts` 新增 `takeLadder`，以名次为并列判据），单场 / 大考组 / 跨考累计三条天梯接口统一走该规则。既不会出现「12 人并列第 1 只列 10 人」，也不会把第 9 名的 5 人并列拆成上榜 2 人、落榜 3 人；顺延只覆盖跨线的那一组，后续不同名次照常截断。
+- **天梯下发本人标记**：`LadderRow` 新增可选 `isCurrentUser`，三条接口按 token 身份逐条比对 `studentId` 打标。客户端只拿到榜单子集，无法自判哪一条是自己——小程序天梯里「我」的高亮此前因此从不生效。
+- **单场天梯名次修复**：`LadderService.fromScoreTableRows` 读的是 `ScoreTableRow.rank`，而 `getScoreTableData` 只产出 `gradeRank`——`rank` 恒为 `undefined`，经 `JSON.stringify` 后 `rows[].rank`、`myRank`、`myScore` 与 `percentile` 一起被丢弃；而 `LadderRow` 从不携带 `isCurrentUser`，客户端无从回退，小程序单场天梯的「我的排名」卡因此一直不显示。现统一以 `gradeRank` 作为天梯名次。
+- **网页天梯面板同步**：`GradeLadder` 的前十面板本就整表渲染接口 `rows`、不自行截断，后端放宽截断后它会自动多出条目，故补上榜单上方的「前十 · 同分并列全显（共 N 人）」说明并把「年级前十名」文案改为不承诺恰好十条；同时首次消费 `isCurrentUser`，本人行以 `bg-accent` + `border-accent-border` 高亮——该面板经 `StudentScores` 也面向学生，不只是教师端。
+
+本版同时包含 2026-09-22 条目中的 PDF 字体、教师详情与班级归档修复。
+
+复审修订（2026-09-27）：两处数据安全 / 一致性缺口。
+- **[P1] 加载失败后保存可清空既有答案**：面板 `load()` 失败时仍走 `finally setLoading(false)`，保存按钮只由 `loading` 控制而恒恢复可点，且 `handleSave` 没有「已成功加载」前置断言——此时 `rows` 仍是初始空数组，提交 `answers: []` 正好命中服务端「全量替换」语义（先 `DELETE FROM exam_answer_keys` 再 upsert），把该考试既有答案整批清空。现保存入口增加 `!data || loadError` 守卫（按钮同步禁用、页脚给出「加载失败，保存已禁用」文案），并补「重试加载」按钮恢复可用性。
+- **[P2] 失败上传遗留文件 + 同页残留遮蔽新件**：`validatePaperFile` 只校验扩展名与体积，损坏 JPG 能进转换环节；转换抛错时该批已写下的文件还没有任何 DB 记录引用，而清理 `try` 只包住了入库语句（转换循环在其之外），于是留下孤儿 `answerkey.jpg`；`resolveAnswerKeyPageFile` 又按扩展名顺序探测、`.jpg` 先于 `.pdf`，孤儿会把已登记的 `answerkey.pdf` 遮蔽掉，列表 / 预览 / 重识别三处一起读到旧图。现将「落盘 + 入库」纳入同一回滚范围、成功后清掉同页其它扩展名残留，解析改为**优先 DB 登记的 `filename`**（磁盘探测仅作兜底），并让预览 / 重识别在无 DB 记录时直接 404——「有文件无记录」的孤儿不再可读。
+
+验证情况：`npm run typecheck` 与 `npm run build:web` 通过（v2.6.0 首稿记录的 `@types/fontkit`、本地缺 `qrcode` 两条既有报错已不复现，`qrcode` 本就在依赖清单中）；新增 `npm run verify:wechat-grade-release`（临时 SQLite + 打桩 fetch，18 项断言通过，不访问微信服务器）；新增 `npm run verify:exam-paper`（临时 SQLite + 真实 HTTP，69 项断言通过，覆盖开关与三种公布情形、四重硬门、入口标记与 `/paper` 同步、答案全量保存与按页归集、答案页上传/删除、OCR 文本解析，接口调用统一带 `?ocr=0` 不打真实 OCR；其中 C2 节 8 项为 2026-09-27 复审新增的残留回归：失败上传不留孤儿且不写记录、重试上传 PDF 登记为 `answerkey.pdf`、同页存在 `.jpg` 残留时预览与列表仍以登记文件为准、无 DB 记录的残留文件预览/重识别一律 404。反向对照——仅撤掉源码修复保留用例——精确失败于其中 5 项，与上报症状逐条对应）；小程序侧 `npm test` 通过（含原卷页归一化、图片下载并发与取消、以及「入口受 `paper_visible` 控制」的接线校验）；`npm run verify:core-logic` 新增「天梯截断不切开同分并列」段，覆盖 `takeLadder` 的边界（恰好 10 人并列不扩表、并列组完全落在前十内不扩表、第 9 / 第 10 名跨线顺延、只覆盖跨线那一组）与单场、跨考天梯服务的 `rank` / `percentile` / `myRank` / `isCurrentUser` 取值；自检面板落地后 `npm run typecheck`、`npm run build:web` 复跑通过，面板只读消费 `diagnostic` 的既有字段，未新增接口。四项**未执行**，需部署前补：① `scripts/verify-mariadb.ts` 的 v53 索引与「一 openid 多学生」、v54 建表加列断言尚未在真实 MariaDB 上跑过，需一次性空的 `projectx_ci` 库执行 `npm run verify:mariadb`；② tesseract.js 真实识别未跑端到端；③ 服务端微信环境变量配置、小程序发布与真机推送验收，含「微信订阅消息」面板对着已部署后端真点一次「开始自检」（本地无凭证，四行状态与 HTML 兜底提示均未走过真实响应）；④ 原卷页在小程序真机与网页端的界面验收，含天梯领奖台的「第 1 名 N 人」分支与「保存天梯卡」海报（小程序侧仅以 `node:test` + 画布代理断言绘制分支写出的文字，未跑真机离屏 Canvas）。部署步骤与错误码对照见 [WECHAT-GRADE-RELEASE-部署与排错](./WECHAT-GRADE-RELEASE-部署与排错.md)，服务器上逐项要做的动作与判据见 [WECHAT-GRADE-RELEASE-开发者上线清单](./WECHAT-GRADE-RELEASE-开发者上线清单.md)，原卷与逐题答案的配置流程、可见性矩阵与接口清单见 [原卷与逐题答案-使用说明](./原卷与逐题答案-使用说明.md)。
+
 ## 2026-09-25 — 2026-09-23 问题反馈修复（题块命名 / 作文格 / 客观题横排 / 注记 / 权限 / 图表）
 
 依据 2026-09-23 邮件反馈（含 A3 测试卡 PDF 与 4 张截图）修复，分支 `codex/feedback-260925`：

@@ -808,6 +808,8 @@ export type ExamRecord = {
   exam_mode?: ExamMode;
   /** 成绩公布状态（v41/v42）：0=未公布 1=已公布 2=已撤回；缺省视为 0 */
   score_published?: number;
+  /** 原卷/答案解析可见性（v54）：0=不向学生展示 1=成绩公布后可查看；缺省视为 0 */
+  show_original_paper?: number;
   created_at: string;
 };
 
@@ -910,6 +912,8 @@ export interface SubjectZScore {
   gradeAvg: number;
   gradeStd: number;
   z: number;
+  /** 相对个人整体水平的落差：本场 Z − 本人跨科平均 Z（Issue #264） */
+  relativeZ: number;
 }
 
 export interface SubjectDeviationItem {
@@ -918,11 +922,13 @@ export interface SubjectDeviationItem {
   studentName: string;
   className: string;
   subjects: SubjectZScore[];
-  /** 最低 Z（越负越偏科） */
+  /** 本人跨科平均 Z（个人整体水平基线） */
+  ownMeanZ: number;
+  /** 最弱科目相对个人的落差（相对 Z，越负越偏科；Issue #264 前为裸年级 Z） */
   lowestZ: number;
-  /** 最低 Z 对应科目名 */
+  /** 最低相对 Z 对应科目名 */
   lowestSubject: string;
-  /** 是否触发预警（lowestZ < -threshold） */
+  /** 是否触发预警（最弱科相对个人基线 < -threshold） */
   flagged: boolean;
 }
 
@@ -1537,10 +1543,12 @@ export interface UserSettings {
 /** 排名趋势方向 */
 export type RankTrend = "up" | "down" | "same" | "new";
 
-/** 天梯单行（前十名榜单条目） */
+/** 天梯单行（默认前十条目；截断线不切开同分并列，故可能多于十条） */
 export interface LadderRow {
   rank: number;
   studentId: number;
+  /** 本人标记：客户端只拿到榜单子集，无法自行判断哪一条是自己 */
+  isCurrentUser?: boolean;
   studentNumber: string;
   studentName: string;
   className: string;
@@ -1570,7 +1578,7 @@ export interface LadderResponse {
   studentCount: number;
   myRank: number | null;            // 当前学生在全量中的排名
   myScore: number | null;           // 当前学生的总分
-  rows: LadderRow[];                // 前十名
+  rows: LadderRow[];                // 默认前十；截断处同分并列者一并返回
 }
 
 // ============================================================

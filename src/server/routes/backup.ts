@@ -396,12 +396,26 @@ async function backupMariadb(res: Response): Promise<void> {
     const fstat = await stat(dumpFile);
     console.log(`[Backup] MariaDB dump: ${(fstat.size / 1024 / 1024).toFixed(1)} MB`);
 
+    // MariaDB 模式下答题卡原卷（papers/）与教师答案页（answer-keys/）仍落磁盘，
+    // 只导 dump.sql 会让恢复后的 exams 指向已不存在的文件（学生端原卷/答案页全空）。
+    const dataDir = getDataDir();
+    const dataBakDir = path.join(tmpDir, "data", "answer-card");
+    if (existsSync(dataDir)) {
+      await copyDirectory(dataDir, dataBakDir, (filePath: string) => {
+        const base = path.basename(filePath);
+        return !(base.endsWith(".db") || base.endsWith(".db-shm") || base.endsWith(".db-wal"));
+      });
+    }
+
     // 元数据
     const metadata = {
       version: 2,
       format: "projectx-backup-mariadb",
       generatedAt: new Date().toISOString(),
-      files: [{ name: "dump.sql", size: fstat.size }]
+      files: [
+        { name: "dump.sql", size: fstat.size },
+        ...(existsSync(dataBakDir) ? [{ name: "data/answer-card/", size: 0 }] : []),
+      ]
     };
     await writeFile(path.join(tmpDir, "metadata.json"), JSON.stringify(metadata, null, 2));
 
@@ -414,6 +428,9 @@ async function backupMariadb(res: Response): Promise<void> {
     archive.pipe(res);
     archive.file(path.join(tmpDir, "metadata.json"), { name: "metadata.json" });
     archive.file(dumpFile, { name: "dump.sql" });
+    if (existsSync(dataBakDir)) {
+      archive.directory(dataBakDir, "data/answer-card");
+    }
     await archive.finalize();
 
     cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
@@ -477,6 +494,16 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
         child.stdin!.write(dumpContent);
         child.stdin!.end();
       });
+
+      // 恢复磁盘资产（原卷 / 教师答案页）：备份里没有该目录时保持现状（兼容旧备份）
+      const bakDataDir = path.join(tmpDir, "data", "answer-card");
+      if (existsSync(bakDataDir)) {
+        const dataDir = getDataDir();
+        if (existsSync(dataDir)) {
+          await moveDir(dataDir, path.join(path.dirname(dataDir), `answer-card.bak.${Date.now()}`));
+        }
+        await copyDirectory(bakDataDir, dataDir, () => true);
+      }
 
       await cleanupDir(tmpDir);
       res.json({ ok: true, message: "数据已恢复！请重启服务器以使更改完全生效。" });

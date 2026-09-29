@@ -30,7 +30,7 @@ import { fetchLlmClient } from "../llm-client";
 import { CreateExamGroupSchema, validateBody } from "../validation";
 import type {
   AiJobCreateResponse, AiJobPollResponse, BorderlineLineKind, BorderlineResponse, ClassKnowledgeResponse,
-  ComparableResponse, CrossExamTotalRequest, KnowledgeSuggestResponse, StudentTrendPoint,
+  ComparableResponse, CrossExamTotalRequest, KnowledgeSuggestResponse, ScoreTrendPoint, StudentTrendPoint,
   SubjectDeviationResponse, SubjectQualityResponse, WrongQuestionRow
 } from "../../../../shared/types";
 
@@ -477,6 +477,50 @@ router.get("/students/:studentId/trend", authMiddleware, async (req, res, next) 
       return;
     }
     res.json(data satisfies StudentTrendPoint[]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ── 建议 7 / Issue #264：偏科可选考试（跨科，每科最近一场）──
+// 偏科判定需要多个学科的成绩，故不能复用按单科过滤的 /trends（见 PR #303 审查 P1）。
+router.get("/subject-deviation/exam-options", async (req, res, next) => {
+  try {
+    const perSubject = req.query.perSubject ? Number(req.query.perSubject) : 1;
+    const analysisRepo = new AnalysisRepository();
+    const visibleExamIds = await getVisibleExamIds(req.user);
+
+    // 作用域（PR #303 审查 P2）：优先显式 classId，其次由锚点考试 examId 反查年级 / 班级。
+    // 不限定作用域时，对视全可见的账号等于「全校每科最近一场」——他年级更新的考试会把
+    // 本班候选整批顶掉，面板再带 classId 过滤就静默算成空集。
+    const anchorExamId = req.query.examId ? Number(req.query.examId) : null;
+    const explicitClassId = req.query.classId ? Number(req.query.classId) : null;
+    const hasExplicitClass = Number.isInteger(explicitClassId) && explicitClassId! > 0;
+    let gradeId: number | null = null;
+    let classId: number | null = hasExplicitClass ? explicitClassId : null;
+    // 「全部班级」视图（锚点本身是年级统考、且未显式选班）只能取统考：
+    // 否则某个班的最新考试会顶掉统考候选，他班学生只覆盖到部分学科。
+    let gradeWideOnly = false;
+    if (anchorExamId != null && Number.isInteger(anchorExamId) && anchorExamId > 0) {
+      const scope = await analysisRepo.getExamScope(anchorExamId);
+      gradeId = scope?.gradeId ?? null;
+      if (!hasExplicitClass && scope) {
+        classId = scope.classId;
+        gradeWideOnly = scope.classId == null;
+      }
+    }
+
+    const options = await analysisRepo.getLatestExamPerSubject({
+      perSubject: Number.isInteger(perSubject) && perSubject > 0 ? Math.min(perSubject, 5) : 1,
+      visibleExamIds,
+      gradeId,
+      classId,
+      gradeWideOnly,
+    });
+    // 与 POST /subject-deviation 同门：该端点消费的是学生名单/成绩，按 can_view_students 收敛
+    // （用 can_view_charts 会让「允许看学生名单、禁用图表」的教师拿到空候选而无法分析）。
+    const allowed = await filterExamIdsByViewPermission(req.user, options.map((t) => t.examId), "can_view_students");
+    res.json(options.filter((t) => allowed.has(t.examId)) satisfies ScoreTrendPoint[]);
   } catch (error) {
     next(error);
   }
