@@ -37,9 +37,8 @@ type AccessibleError = { status: number; message: string };
 /**
  * 返回教师可访问的班级 ID 集合。与 getVisibleExamIds 保持同源：
  * - admin / grade_leader / 普通教师(无 teacher_role) → null（全校可见）
- * - head_teacher / subject_teacher → 任教学科匹配的班级 + 按班班主任（is_head_teacher）班级
- *   （班主任自 v54 起是「按班关系」，全局 head_teacher 角色不再等同于「关联的全部班级」，
- *   否则旧角色教师在全班范围可见且换人时无法收回，见评审 P1）
+ * - head_teacher → teacher_classes 关联所有班级
+ * - subject_teacher → teacher_classes 中科目匹配的班级
  * - 其他 → []（零可见）
  */
 export async function getAccessibleClassIds(
@@ -50,29 +49,16 @@ export async function getAccessibleClassIds(
   if (!user.teacher_role) return null; // plain teacher: back-compat 全部可见
   if (user.teacher_role === "grade_leader") return null;
   const db = getMysqlDb();
-  if (user.teacher_role === "head_teacher" || user.teacher_role === "subject_teacher") {
-    // 遗留数据兼容：全局 head_teacher 角色 + 不带科目的班级关联 = 旧模型的班主任；
-    // 但仅限「该班尚无按班标记」——否则被替换流程换下的旧班主任会继续全科可见（见 middleware.ts 同款说明）
-    const headWhere = user.teacher_role === "head_teacher"
-      ? `(tc.is_head_teacher = 1 OR (tc.subject IS NULL AND NOT EXISTS (
-           SELECT 1 FROM teacher_classes h
-            WHERE h.class_id = tc.class_id AND h.is_head_teacher = 1)))`
-      : "tc.is_head_teacher = 1";
-    // 按班班主任（is_head_teacher）：其担任班主任的班级可见，不受任教学科限制
-    if (!user.subject) {
-      const headRows = await db.all<{ class_id: number }>(
-        `SELECT tc.class_id FROM teacher_classes tc WHERE tc.teacher_id = ? AND ${headWhere}`, user.id
-      );
-      return headRows.map((r) => r.class_id);
-    }
-    // 任课班级：与 middleware 同口径——head_teacher 的「不带科目关联」是旧班主任标记而非任课，
-    // 不接受 subject IS NULL 的宽松匹配，否则被换下的旧班主任仍能在成绩侧看到该班（评审 P1）
-    const subjectWhere = user.teacher_role === "head_teacher"
-      ? "tc.subject = ?"
-      : "(tc.subject = ? OR tc.subject IS NULL)";
+  if (user.teacher_role === "head_teacher") {
     const rows = await db.all<{ class_id: number }>(
-      `SELECT tc.class_id FROM teacher_classes tc
-        WHERE tc.teacher_id = ? AND (${subjectWhere} OR ${headWhere})`,
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ?", user.id
+    );
+    return rows.length > 0 ? rows.map((r) => r.class_id) : [];
+  }
+  if (user.teacher_role === "subject_teacher") {
+    if (!user.subject) return [];
+    const rows = await db.all<{ class_id: number }>(
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND (subject = ? OR subject IS NULL)",
       user.id, user.subject
     );
     return rows.length > 0 ? rows.map((r) => r.class_id) : [];
