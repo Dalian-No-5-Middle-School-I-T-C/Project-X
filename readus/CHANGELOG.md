@@ -172,8 +172,15 @@
   - `npm run verify:grading-published-exam`——重复执行全部迁移后 `grading + score_published=1` 的考试状态不变、仍被 `resolveScannerExam` 选为入库目标；并静态校验两套方言迁移版本号无重复、v57 在两侧均空置、强制结考语句已彻底移除。
   - `npm run verify:class-archive`（新增 `--mariadb` 变体并接入 CI 的 `mariadb-test` 作业）——归档旧班后把学生加入新班、`moveStudent`、以及重跑 v58 三条路径都**必须保留归档班级的历史关联**，同时维持当前归属一人一行。
   - `npm run verify:stage-vc-runtime`——用临时目录搭出 SDK 的两种真实布局，断言 x64/ia32 分别命中 `DLLs\x64` / `DLLs\x86`（而非旧拼法的 `DLLs\x86\x86`）、多版本取最新、缺转发桩的目录不采用。
+  - `scripts/verify-ladder-students.ts`（随 #308 一并进入本分支）改为**双方言**：默认仍是临时 SQLite，`--mariadb` 走与归档套件相同的空库门禁；另加夹具自检（多班学生在库里必须真的落成 5 行关联），避免断言在空场景假绿。
   - `npm run verify:scanner-batch-results`——重复卷/重试撤回路径返修前 **500**、返修后回到 **409**（已做反向对照：把嵌套事务写回去即精确复现 500）。
-- **仍未在本机覆盖**：本机无 MariaDB 与 Docker，v56/v58 与 `verify:class-archive --mariadb` 的 MariaDB 实跑依赖 CI 作业；扫描现场行为（ADF 慢速进纸、双面实际进纸顺序）仍需实机验收。
+- **MariaDB 实跑（2026-10-03 追加，更正上一条「本机无 MariaDB」的说法）**：本机装有 MariaDB 12.3.2。已用**独立临时实例**（专用 datadir、`127.0.0.1:13306`、一次性 `projectx_ci` / `projectx_class_archive_test` / `projectx_ladder_test` 三库，跑完销毁；只复用本机已安装的二进制，既有的 MariaDB 服务与其中数据未读取、未写入）把 MariaDB 侧一次补齐：
+  - `npm run verify:mariadb` 九段全通过；`schema_migrations` 落库 43 行、`COUNT(*) = COUNT(DISTINCT version)`，50–58 区间实到 50/51/52/53/54/55/56/58——**v57 空置与「不撞号」在真实 MariaDB 上得到确认**。
+  - `npm run verify:class-archive:mariadb` 全通过，含「重跑 v58 去重只作用于当前归属、归档班级的历史关联保留」。
+  - `npx tsx scripts/verify-ladder-students.ts --mariadb`（#308 评审 P1 新增的双方言变体）全通过。
+  - 两条根因取证：在真 MariaDB 的已开启事务里再调 `transaction()` → `TypeError: this.executor.getConnection is not a function`（CR②，与 SQLite 侧的 `cannot start a transaction within a transaction` 各对应一条失败路径）；未设 `dateStrings` 时 `DATETIME` 返回 JS `Date`、`.slice(0,10)` 抛 `v.slice is not a function`，设 `dateStrings: true` 后返回 `'2026-10-03'` 字符串（#305 修复的机制在真库上成立）。
+  - **版本差异不可忽略**：本机 12.3.2 比 CI 的 `mariadb:10.11` 新，优化器与部分 SQL 行为不同源，CI 仍是最终裁判。这次实跑排除的是「MariaDB 分支从未执行过」这一档风险，不替代 CI 作业。
+- **仍未在本机覆盖**：扫描现场行为（ADF 慢速进纸、双面实际进纸顺序）需实机验收；`verify:student-score-fullscore-examtime` 只有 SQLite 变体，其 E1–E3 在 SQLite 下天然成立，真正的 `dateStrings` 验证目前靠上面的取证与线上抽查。
 
 
 ## v2.5.6 (2026-09-21) — 扫描端「检测失败即无法扫描」解封 + 图片去向常驻 + 服务器地址归一化
