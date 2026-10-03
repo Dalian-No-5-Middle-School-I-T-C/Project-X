@@ -89,35 +89,44 @@ try {
   assert.equal((await ensureExamParticipants(db, next)).participantCount, 1);
   console.log('PASS: archive hides active entries, retains exams/scores/relations and frozen rosters; new rosters exclude archived classes');
 
-  // ── 评审 P1(4)：归档关系必须在「转班 / 复用重新导入 / v58 去重」之后仍然保留 ──
-  // 原实现（replaceStudentClassLink / moveStudent / 导入复用 / v58 迁移）无条件执行
-  // `DELETE FROM class_students WHERE student_id = ?`，会把上面刚断言保留的归档关联当场抹掉，
-  // 两条测试互为矛盾。修复后删除只作用于「当前归属」（班级与年级均未归档）。
+  // ── 评审修订（#304/#305/#308 复核）：归档关系必须在「加入班级 / 调班 / v58」之后保留，
+  // 且在读多班关联是合法状态（#308 按学生去重排名、保留各班完整成员），
+  // 任何路径不得以「一人一个在读班」为由清掉另一条在读关联。──
   await repo.addStudent(current.id, student);
   assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', old.id, student),
-    '转班不得删除已归档班级的历史关联');
+    '加入班级不得删除已归档班级的历史关联');
   assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', current.id, student));
+  console.log('PASS: 加入班级保留归档历史关联');
+
+  // 多班在读合法：已在一个在读班的学生加入第二个在读班，两条在读关联都必须保留。
+  const second = await repo.createClass(g.id, '高二8班');
+  await repo.addStudent(second.id, student);
+  assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', current.id, student),
+    '加入第二个在读班不得清空第一个在读班的关联');
+  assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', second.id, student));
   assert.equal((await db.get<{ n: number }>(
     `SELECT COUNT(*) AS n FROM class_students cs
        JOIN classes c ON c.id = cs.class_id
-       JOIN grades g ON g.id = c.grade_id
-      WHERE cs.student_id = ? AND c.archived_at IS NULL AND g.archived_at IS NULL`, student))?.n, 1,
-    '当前归属仍须严格一人一行');
-  assert.equal((await users.getUserClasses(student)).length, 1, '学生可见班级只算未归档的当前归属');
-  console.log('PASS: 转班保留归档历史关联，同时维持当前归属一人一行');
+       JOIN grades gr ON gr.id = c.grade_id
+      WHERE cs.student_id = ? AND c.archived_at IS NULL AND gr.archived_at IS NULL`, student))?.n, 2,
+    '两条在读关联都保留（多班成员合法）');
+  assert.equal((await users.getUserClasses(student)).length, 2, '学生可见班级包含全部在读班');
+  console.log('PASS: 加入班级纯增量，在读多班关联不被清空');
 
-  // moveStudent 与导入复用共用 clearActiveStudentClassLinks，同样只清当前归属。
+  // moveStudent 是显式调班：只移除原班关联，其他在读班与归档班级的历史关联保留。
   const residue = await repo.createClass(g.id, '高二9班');
   await db.run('INSERT INTO class_students(class_id, student_id, joined_at) VALUES (?,?,?)', residue.id, student, '2020-01-01 00:00:00');
   await repo.moveStudent(current.id, residue.id, student);
   assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', old.id, student),
     'moveStudent 不得删除归档关联');
-  assert.equal((await db.get<{ n: number }>(
-    'SELECT COUNT(*) AS n FROM class_students WHERE student_id = ? AND class_id <> ?', student, old.id))?.n, 1,
-    'moveStudent 后当前关联只剩目标班一条');
-  assert.equal(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', current.id, student), null);
+  assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', second.id, student),
+    'moveStudent 不得删除其他在读关联');
+  assert.equal(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', current.id, student), null,
+    'moveStudent 移除原班关联');
+  assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', residue.id, student));
+  console.log('PASS: moveStudent 只移除原班关联，其他在读与归档关联保留');
 
-  // v58 去重迁移：制造「两条当前归属 + 一条归档历史」，重跑迁移后只应留下最新的当前归属。
+  // v58 已停用删除（号位保留）：制造「三条在读 + 一条归档」后重跑迁移，必须全部原样保留。
   await db.run('INSERT INTO class_students(class_id, student_id, joined_at) VALUES (?,?,?)', current.id, student, '2021-01-01 00:00:00');
   await db.run('DELETE FROM schema_migrations WHERE version = 58');
   if (maria) await initMariadbSchema();
@@ -125,19 +134,36 @@ try {
     const { runMigrations } = await import('../src/server/db/migrations');
     runMigrations(getDatabase());
   }
-  assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', old.id, student),
-    'v58 不得删除归档关联');
-  assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', residue.id, student),
-    'v58 应保留 joined_at 最新的当前归属');
-  assert.equal(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', current.id, student), null,
-    'v58 应清除较旧的当前归属残留');
-  console.log('PASS: v58 去重只作用于当前归属，归档历史关联保留');
+  for (const cls of [old, residue, second, current]) {
+    assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', cls.id, student),
+      'v58 不得删除任何关联（归档历史与在读多班都保留）');
+  }
+  console.log('PASS: v58 已停用删除，在读多班与归档历史关联全部保留');
+
+  // 「当前班级」读取口径（评审 P2）：在读优先——归档班 joined_at 同刻、id 更大时也不得选中。
+  const { AnalysisRepository } = await import('../src/server/repositories/AnalysisRepository');
+  const analysis = new AnalysisRepository();
+  const archBig = await repo.createClass(g.id, '高二10班'); // 晚于 second 创建 → id 更大
+  await db.run('INSERT INTO class_students(class_id, student_id, joined_at) VALUES (?,?,CURRENT_TIMESTAMP)', archBig.id, student);
+  await repo.deleteClass(archBig.id);
+  const currentClassId = (await db.get<{ class_id: number | null }>(
+    `SELECT (SELECT cs_cur.class_id FROM class_students cs_cur
+       JOIN classes c_cur ON c_cur.id = cs_cur.class_id
+       JOIN grades g_cur ON g_cur.id = c_cur.grade_id
+       WHERE cs_cur.student_id = ?
+       ORDER BY (c_cur.archived_at IS NULL AND g_cur.archived_at IS NULL) DESC,
+                cs_cur.joined_at DESC, cs_cur.class_id DESC LIMIT 1) as class_id`, student))?.class_id;
+  assert.equal(currentClassId, second.id,
+    '归档班（id 更大、joined_at 同刻）不得成为当前班级，在读关联优先');
+  assert.equal((await analysis.getStudentTrend(student)).length > 0, true,
+    '当前班级口径可正常驱动成长曲线查询');
+  console.log('PASS: 当前班级在读优先，归档班（id 更大、同刻）不选中');
   await repo.deleteClass(residue.id);
 
   // Reusing the name must create a new identity, never revive history.
   const replacement = await repo.createClass(g.id, '高二1班');
   assert.notEqual(replacement.id, old.id);
-  await repo.deleteClass(current.id); await repo.deleteClass(replacement.id);
+  await repo.deleteClass(current.id); await repo.deleteClass(second.id); await repo.deleteClass(replacement.id);
   assert.equal((await repo.listClasses(g.id)).length, 0);
   await repo.deleteGrade(g.id);
   assert.equal((await repo.listGrades()).some(x => x.id === g.id), false);

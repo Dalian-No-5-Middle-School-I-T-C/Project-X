@@ -95,21 +95,28 @@ try {
   assert.equal(applied.includes(57), false, "④: 全新库不应记录 v57");
   assert.match(sqliteSrc, /v57：\*\*故意留空\*\*/, "④: SQLite 侧要留下 v57 空置的理由");
   assert.match(mariaSrc, /v57：\*\*故意留空\*\*/, "④: MariaDB 侧要留下 v57 空置的理由");
+  // v58 同样空置（二次评审 ⑦）：多班在读成员合法（#308），「一人一班」去重迁移停用删除，
+  // 号位保留避免现场已记录 58 的库出现语义漂移。
+  assert.equal(sqliteVersions.includes(58), false, "④: SQLite 不得复用 v58");
+  assert.equal(mariaVersions.includes(58), false, "④: MariaDB 不得复用 v58");
+  assert.equal(applied.includes(58), false, "④: 全新库不应记录 v58");
+  assert.match(sqliteSrc, /v58：\*\*故意留空（不执行任何删除）\*\*/, "④: SQLite 侧要留下 v58 停用删除的理由");
+  assert.match(mariaSrc, /v58：\*\*故意留空（不执行任何删除）\*\*/, "④: MariaDB 侧要留下 v58 停用删除的理由");
+  for (const src of [sqliteSrc, mariaSrc]) {
+    assert.equal(/DELETE\s+(FROM\s+class_students|cs\s+FROM\s+class_students)/.test(src), false,
+      "④: 迁移源不得再删除 class_students（多班在读成员合法，见 #308）");
+  }
   for (const src of [sqliteSrc, mariaSrc]) {
     assert.equal(/repair-published-status-desync/.test(src), false, "④: 强制结考迁移必须彻底移除");
     assert.equal(/UPDATE exams SET status = 'closed'[^]*score_published = 1/.test(src), false,
       "④: 不得留下按发布标志批量改 status 的语句");
   }
-  // 56/58 两套方言都在，且归档保护口径一致（评审 P1(4)）。
+  // 56 两套方言都在；v57/v58 均为注释占号（v58 自二次评审起停用删除）。
   for (const [name, list] of [["sqlite", sqliteVersions], ["mariadb", mariaVersions]] as const) {
-    assert.ok(list.includes(56) && list.includes(58), `④: ${name} 应包含 v56 与 v58`);
+    assert.ok(list.includes(56), `④: ${name} 应包含 v56`);
   }
-  assert.match(sqliteSrc, /dedupe-class-students[\s\S]{0,700}archived_at IS NULL[\s\S]{0,400}JOIN grades/,
-    "④: SQLite v58 必须只清理未归档班级与年级的当前归属");
-  assert.match(mariaSrc, /dedupe-class-students[\s\S]{0,900}archived_at IS NULL[\s\S]{0,600}JOIN grades/,
-    "④: MariaDB v58 必须与 SQLite 同口径");
 
-  console.log(`verify-grading-published-exam: 全部通过（sqlite 迁移 ${sqliteVersions.length} 条 / mariadb ${mariaVersions.length} 条，v57 空置，同号 58 归档保护一致）`);
+  console.log(`verify-grading-published-exam: 全部通过（sqlite 迁移 ${sqliteVersions.length} 条 / mariadb ${mariaVersions.length} 条，v57/v58 均空置）`);
 } finally {
   const { closeDatabase } = await import("../src/server/db/index");
   closeDatabase();

@@ -30,26 +30,38 @@ export interface ExportRow {
 export interface ExportData { students: ExportRow[]; questionHeaders: string[]; }
 
 /**
- * 「当前班级」统一口径（B12 修复「学生名单回到调班前班级」）。
+ * 「当前班级」统一口径（B12 修复「学生名单回到调班前班级」；评审修订：排除归档关系）。
  *
  * 历史问题：归班口径不一致 —— 下钻详情用 joined_at DESC（最新），而偏科/临界生/跨考等
  * 查询用 MIN(class_id)（最旧）。学生只有一次调班记录时两者等价；但 class_students 主键是
- * (class_id, student_id)，导入路径只 INSERT IGNORE 不删旧行，会残留多行关联，
- * 此时 MIN(class_id) 必然命中旧班，表现为「调班后仍显示旧班级」。
+ * (class_id, student_id)，多班/残留会产生多行关联，此时 MIN(class_id) 必然命中旧班，
+ * 表现为「调班后仍显示旧班级」。
  *
- * 统一为「最近加入的班级」（joined_at DESC, class_id DESC 兜底），与下钻详情保持一致。
+ * 统一为：**在读班级优先**（班级与其所属年级均未归档），再取 joined_at 最新（同刻并列
+ * 取 class_id 最大），学生的关联全部归档时回落到最新归档归属。此前只按 joined_at DESC、
+ * class_id DESC 选取，加入时间相同且归档班 id 更大时会选中归档班——学生成长曲线的
+ * 班均分因此取到归档班（评审实测：应为 30 却显示 73.3）。与 DISPLAY_CLASS_ORDER
+ * （成绩表/导出展示班级）同一优先级。
  */
 export const CURRENT_CLASS_SUBQUERY = (studentColumn: string): string =>
   `(SELECT cs_cur.class_id FROM class_students cs_cur
+     JOIN classes c_cur ON c_cur.id = cs_cur.class_id
+     JOIN grades g_cur ON g_cur.id = c_cur.grade_id
      WHERE cs_cur.student_id = ${studentColumn}
-     ORDER BY cs_cur.joined_at DESC, cs_cur.class_id DESC LIMIT 1)`;
+     ORDER BY (c_cur.archived_at IS NULL AND g_cur.archived_at IS NULL) DESC,
+              cs_cur.joined_at DESC, cs_cur.class_id DESC
+     LIMIT 1)`;
 
 /** 生成「每生一行当前班级」的可 LEFT JOIN 子查询（MariaDB 兼容：ORDER BY + 子查询取首条）。 */
 export const CURRENT_CLASS_JOIN_SUBQUERY =
   `SELECT cs_pick.student_id, cs_pick.class_id FROM class_students cs_pick
      WHERE cs_pick.class_id = (SELECT cs_inner.class_id FROM class_students cs_inner
+       JOIN classes c_in ON c_in.id = cs_inner.class_id
+       JOIN grades g_in ON g_in.id = c_in.grade_id
        WHERE cs_inner.student_id = cs_pick.student_id
-       ORDER BY cs_inner.joined_at DESC, cs_inner.class_id DESC LIMIT 1)`;
+       ORDER BY (c_in.archived_at IS NULL AND g_in.archived_at IS NULL) DESC,
+                cs_inner.joined_at DESC, cs_inner.class_id DESC
+       LIMIT 1)`;
 
 function classFilter(classId?: number): { join: string; where: string; params: unknown[] } {
   if (classId === undefined) return { join: "", where: "", params: [] };
@@ -678,8 +690,11 @@ export class AnalysisRepository {
     const rows = await this.db.all(`
       SELECT qs.student_id, qs.score, qs.max_score, u.student_number, u.name,
              (SELECT c.name FROM class_students cs_display JOIN classes c ON c.id = cs_display.class_id
+               JOIN grades g_disp ON g_disp.id = c.grade_id
               WHERE cs_display.student_id = qs.student_id ${displayClassConstraint}
-              ORDER BY cs_display.joined_at DESC, cs_display.class_id DESC LIMIT 1) as class_name
+              ORDER BY (c.archived_at IS NULL AND g_disp.archived_at IS NULL) DESC,
+                       cs_display.joined_at DESC, cs_display.class_id DESC
+              LIMIT 1) as class_name
       FROM question_scores qs
       JOIN users u ON u.id = qs.student_id
       WHERE qs.exam_id = ? AND qs.question_number = ? ${classScope.where}
@@ -971,10 +986,12 @@ export class AnalysisRepository {
         FROM student_scores ss
         LEFT JOIN class_students cs ON cs.student_id = ss.student_id
         LEFT JOIN classes c ON c.id = cs.class_id
+        LEFT JOIN grades g ON g.id = c.grade_id
         WHERE ss.exam_id IN (${examIds.map(() => "?").join(",")}) ${participantClause}
-        ORDER BY c.id IS NULL ASC, cs.joined_at DESC, c.id DESC
+        ORDER BY c.id IS NULL ASC, (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, cs.joined_at DESC, c.id DESC
       `, ...examIds, ...participants) as Array<{ student_id: number; class_id: number | null; class_name: string | null }>;
-      // B12：归班统一口径——取「最近加入的班级」（joined_at DESC），与下钻详情一致
+      // B12：归班统一口径——在读班级优先，再取最近加入（joined_at DESC），
+      // 与 CURRENT_CLASS_SUBQUERY 一致；归档班 id 更大且同刻时不得选中归档班（评审 P2）。
       const classOf = new Map<number, { classId: number; className: string }>();
       for (const r of classRows) if (!classOf.has(r.student_id)) classOf.set(r.student_id, { classId: r.class_id ?? 0, className: r.class_name ?? "未知班级" });
       const fullScoreMap = await this.getExamFullScoreMap(examIds);
@@ -1090,11 +1107,12 @@ export class AnalysisRepository {
       LEFT JOIN classes c ON c.id = cs.class_id
       LEFT JOIN grades g ON g.id = c.grade_id
       WHERE ss.exam_id IN (${examIds.map(() => "?").join(",")})
-      ORDER BY c.id IS NULL ASC, cs.joined_at DESC, c.id DESC
+      ORDER BY c.id IS NULL ASC, (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, cs.joined_at DESC, c.id DESC
     `, ...examIds) as Array<{ student_id: number; class_id: number | null; class_name: string | null; grade_name: string | null }>;
     const classMeta = new Map<number, { className: string; gradeName?: string }>();
     for (const r of classRows) classMeta.set(r.class_id ?? 0, { className: r.class_name ?? "未知班级", gradeName: r.grade_name ?? undefined });
-    // B12：多班学生归班统一口径——按 joined_at DESC 取首条（等价 CURRENT_CLASS_SUBQUERY，与下钻详情一致）
+    // B12：多班学生归班统一口径——在读班级优先，再按 joined_at DESC 取首条
+    // （等价 CURRENT_CLASS_SUBQUERY，与下钻详情一致；归档班同刻 id 更大时不得选中）。
     const classOf = new Map<number, number>();
     for (const r of classRows) if (!classOf.has(r.student_id)) classOf.set(r.student_id, r.class_id ?? 0);
 
