@@ -46,6 +46,10 @@ jobs:
       - name: Class teacher verify suite
         run: npm run verify:class-teachers
 
+      # 学生端满分口径与 examTime 归一化（PR #305 自带脚本，此前只在本地跑过）
+      - name: Student score full-score / examTime regression
+        run: npm run verify:student-score-display
+
       - name: Class archive / student link regression
         run: npm run verify:class-archive
 
