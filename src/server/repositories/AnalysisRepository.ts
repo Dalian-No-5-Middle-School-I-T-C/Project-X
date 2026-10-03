@@ -1373,20 +1373,34 @@ export class AnalysisRepository {
   }
 
   async getExportData(examId: number, classId?: number): Promise<ExportData> {
-    const allStudents = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, c.name as class_name, c.id as class_id FROM student_scores ss JOIN users u ON u.id = ss.student_id LEFT JOIN class_students cs ON cs.student_id = ss.student_id LEFT JOIN classes c ON c.id = cs.class_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC`, examId) as any[];
-    if (allStudents.length === 0) return { students: [], questionHeaders: [] };
+    // 与 getScoreTableData 同口径：一名学生可有多行班级关联，导出必须按学生去重，
+    // 且排序补齐 student_id / class_id，避免同一学生每次导出落到不同班级行上。
+    const memberships = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, c.name as class_name, c.id as class_id FROM student_scores ss JOIN users u ON u.id = ss.student_id LEFT JOIN class_students cs ON cs.student_id = ss.student_id LEFT JOIN classes c ON c.id = cs.class_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC, ss.student_id ASC, c.id ASC`, examId) as any[];
+    if (memberships.length === 0) return { students: [], questionHeaders: [] };
     const questionList = await this.db.all(`SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type ORDER BY question_number`, examId) as any[];
     const qHeaders = questionList.map((q: any) => String(q.question_number));
     const allQS = await this.db.all(`SELECT student_id, question_number, score FROM question_scores WHERE exam_id = ?`, examId) as any[];
     const qsLookup = new Map<number, Map<number, number>>();
     for (const qs of allQS) { if (!qsLookup.has(qs.student_id)) qsLookup.set(qs.student_id, new Map()); qsLookup.get(qs.student_id)!.set(qs.question_number, qs.score); }
     type R = any;
-    const graded: R[] = allStudents.map((s: any) => ({ ...s, gradeRank: 0, classRank: "" }));
-    competitionRank(graded, (r: R) => r.total_score, (r: R, rank: number) => { r.gradeRank = rank; });
-    const cg = new Map<string, R[]>();
-    for (const s of graded) { const k = s.class_name ?? "__unassigned__"; if (!cg.has(k)) cg.set(k, []); cg.get(k)!.push(s); }
+    // 年排按「每生一名考生」计算，班排仍用各班完整成员；班级分组键用 class_id 而非 class_name，
+    // 否则两个同名班（不同年级的「一班」）会被并成一个班排名，班排整体失真。
+    const uniqueStudents = new Map<number, any>();
+    for (const s of memberships) if (!uniqueStudents.has(s.student_id)) uniqueStudents.set(s.student_id, s);
+    const allStudents = [...uniqueStudents.values()];
+    const gradeRanks = new Map<number, number>();
+    competitionRank(allStudents, (r: R) => r.total_score, (r: R, rank: number) => { gradeRanks.set(r.student_id, rank); });
+    const graded: R[] = memberships.map((s: any) => ({ ...s, gradeRank: gradeRanks.get(s.student_id)!, classRank: "" }));
+    const cg = new Map<number | null, R[]>();
+    for (const s of graded) { const k = s.class_id ?? null; if (!cg.has(k)) cg.set(k, []); cg.get(k)!.push(s); }
     for (const g of cg.values()) competitionRank(g, (r: R) => r.total_score, (r: R, rank: number) => { r.classRank = rank; });
-    const filtered = classId === undefined ? graded : classId === 0 ? graded.filter((s: any) => s.class_id == null) : graded.filter((s: any) => s.class_id === classId);
+    let filtered = graded;
+    if (classId === 0) filtered = graded.filter((s: any) => s.class_id == null);
+    else if (classId !== undefined) filtered = graded.filter((s: any) => s.class_id === classId);
+    else {
+      const seen = new Set<number>();
+      filtered = graded.filter((s: R) => { if (seen.has(s.student_id)) return false; seen.add(s.student_id); return true; });
+    }
     return { students: filtered.map((s: any) => ({ className: s.class_name ?? "未知班级", studentNumber: s.student_number ?? "", name: s.name ?? "", totalScore: s.total_score, classRank: s.classRank, gradeRank: s.gradeRank, objectiveScore: s.objective_score, subjectiveScore: s.subjective_score, questionScores: questionList.map((q: any) => { const m = qsLookup.get(s.student_id); if (!m) return ""; const sc = m.get(q.question_number); return sc !== undefined ? sc : ""; }) })), questionHeaders: qHeaders };
   }
 
@@ -1394,18 +1408,32 @@ export class AnalysisRepository {
     const exam = await this.db.get(`SELECT e.name, e.subject, ac.exam_date, e.assigned_formula FROM exams e LEFT JOIN answer_cards ac ON ac.id = e.card_id WHERE e.id = ?`, examId) as any;
     if (!exam) throw new Error("考试不存在");
     const hasAssigned = !!(exam.assigned_formula && exam.assigned_formula !== "");
-    const allStudents = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, ss.assigned_score, c.name as class_name, c.id as class_id, g.name as grade_name FROM student_scores ss JOIN users u ON u.id = ss.student_id LEFT JOIN class_students cs ON cs.student_id = ss.student_id LEFT JOIN classes c ON c.id = cs.class_id LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC`, examId) as any[];
-    if (allStudents.length === 0) return { examName: exam.name, subject: exam.subject, examDate: exam.exam_date, hasAssignedScore: hasAssigned, rows: [], totalCount: 0 };
-    const gradeRanked = allStudents.map((s: any) => ({ ...s, gradeRank: 0, classRank: 0 }));
-    competitionRank(gradeRanked, (r: any) => r.total_score, (r: any, rank: number) => { r.gradeRank = rank; });
-    const cg = new Map<string, any[]>();
-    for (const s of gradeRanked) { const k = s.class_name ?? "__unassigned__"; if (!cg.has(k)) cg.set(k, []); cg.get(k)!.push(s); }
+    const memberships = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, ss.assigned_score, c.name as class_name, c.id as class_id, g.name as grade_name FROM student_scores ss JOIN users u ON u.id = ss.student_id LEFT JOIN class_students cs ON cs.student_id = ss.student_id LEFT JOIN classes c ON c.id = cs.class_id LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC, ss.student_id ASC, c.id ASC`, examId) as any[];
+    if (memberships.length === 0) return { examName: exam.name, subject: exam.subject, examDate: exam.exam_date, hasAssignedScore: hasAssigned, rows: [], totalCount: 0 };
+    // 一名学生可属于多个班级：年排/人数/分布按学生计算，班排仍使用各班完整成员。
+    // SQL 按班级 ID 排序，无班级筛选时沿用 MIN(class_id) 的展示口径。
+    const uniqueStudents = new Map<number, any>();
+    for (const s of memberships) if (!uniqueStudents.has(s.student_id)) uniqueStudents.set(s.student_id, s);
+    const allStudents = [...uniqueStudents.values()];
+    const gradeRanks = new Map<number, number>();
+    competitionRank(allStudents, (r: any) => r.total_score, (r: any, rank: number) => { gradeRanks.set(r.student_id, rank); });
+    const gradeRanked = memberships.map((s: any) => ({ ...s, gradeRank: gradeRanks.get(s.student_id)!, classRank: 0 }));
+    const cg = new Map<number | null, typeof gradeRanked>();
+    for (const s of gradeRanked) { const k = s.class_id ?? null; if (!cg.has(k)) cg.set(k, []); cg.get(k)!.push(s); }
     for (const g of cg.values()) competitionRank(g, (r: any) => r.total_score, (r: any, rank: number) => { r.classRank = rank; });
     let filtered = gradeRanked;
     if (classId === 0) filtered = gradeRanked.filter((s: any) => s.class_id == null);
     else if (classId !== undefined) filtered = gradeRanked.filter((s: any) => s.class_id === classId);
+    else {
+      const seen = new Set<number>();
+      filtered = gradeRanked.filter(s => {
+        if (seen.has(s.student_id)) return false;
+        seen.add(s.student_id);
+        return true;
+      });
+    }
     // P1-6: 偏差值/Z值的均值与标准差应基于全体考生，而非筛选后的班级
-    const allScores = gradeRanked.map((s: any) => s.total_score);
+    const allScores = allStudents.map((s: any) => s.total_score);
     const populationMean = allScores.reduce((a: number, b: number) => a + b, 0) / allScores.length;
     const populationVariance = allScores.reduce((a: number, b: number) => a + (b - populationMean) ** 2, 0) / allScores.length;
     const populationStd = Math.sqrt(populationVariance);

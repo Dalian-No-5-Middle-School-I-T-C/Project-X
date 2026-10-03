@@ -40,6 +40,9 @@ jobs:
       - name: Core logic verify suite
         run: npm run verify:core-logic
 
+      - name: Ladder student identity regression
+        run: npx tsx scripts/verify-ladder-students.ts
+
       - name: Class teacher verify suite
         run: npm run verify:class-teachers
 
