@@ -55,6 +55,33 @@ function parseRecognizerOutput(stdout: string): RecognitionResult | null {
   return JSON.parse(text) as RecognitionResult;
 }
 
+/**
+ * Windows NTSTATUS 退出码 → 可操作的中文诊断。
+ *
+ * 识别器是 /MD 动态 CRT 的原生 exe，加载期若缺少运行库依赖会直接以 NTSTATUS
+ * 退出（进程根本没跑起来，因此 stderr 必然为空）。旧实现只报裸码
+ * 「Native recognizer exited with code 3221225794」，现场无从下手；此处翻译成
+ * 带处置建议的文案。十进制码对照：0xC0000000 + 低位。
+ */
+function describeRecognizerExitCode(code: number | null): string | null {
+  if (code === null) return null;
+  // 有些环境回传的是无符号十进制，先归一到 32 位无符号语义再比对
+  const unsigned = code >>> 0;
+  const table: Record<number, string> = {
+    0xc0000135: // STATUS_DLL_NOT_FOUND
+      "缺少 VC++ 运行库：识别器依赖的 msvcp140/vcruntime140 等 DLL 未找到，" +
+      "且 opencv_world4130.dll 的依赖也未满足。请确认 resources/native/<arch>/ 下的运行库随包分发完整。",
+    0xc0000142: // STATUS_DLL_INIT_FAILED
+      "运行库初始化失败（STATUS_DLL_INIT_FAILED，0xC0000142）：识别器或其依赖的 DLL 在加载期初始化失败，" +
+      "通常是运行库版本不匹配或环境不完整（常见于扫描端未正确打包 UCRT/VC++ 运行库、或系统过旧）。" +
+      "请重新安装扫描端安装包（务必包含 resources/native 下的运行库），必要时在目标机安装 VC++ 运行库后重试。",
+    0xc000007b: // STATUS_INVALID_IMAGE_FORMAT
+      "位宽或格式不匹配（0xC000007B）：识别器与扫描端进程位宽不一致（例如 ia32 包内混入 x64 组件），" +
+      "请确认安装包与扫描仪驱动位宽一致。",
+  };
+  return table[unsigned] ?? null;
+}
+
 function buildBaseArgs(request: RecognitionRequest): string[] {
   const args = [
     "--identity-mode", parseIdentityMode(request.identityMode),
@@ -116,6 +143,13 @@ function execRecognizer(exePath: string, args: string[]): Promise<RecognitionRes
         }
       } catch (error) {
         reject(new Error(`Native recognizer returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
+        return;
+      }
+
+      // 加载期失败（缺运行库/位宽不符）不会有 stderr，优先给可操作的中文诊断
+      const diagnosis = describeRecognizerExitCode(code);
+      if (diagnosis) {
+        reject(new Error(`Native recognizer exited with code ${code ?? "unknown"}: ${diagnosis}`));
         return;
       }
 

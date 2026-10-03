@@ -213,7 +213,14 @@ export function ObjectiveEditor({ block, onChange }: { block: ObjectiveBlock; on
     <div className="flex flex-col gap-3">
       <div className="text-sm font-semibold text-foreground">客观题机器阅卷块</div>
       <Field label="标题">
-        <Input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
+        <Input
+          value={block.title}
+          onChange={(event) => onChange((draft) => {
+            draft.title = event.target.value;
+            // 用户手改标题后锁定，避免被 autoNameBlocks 覆盖回自动生成的「一、单选（共N题，共M分）」
+            draft.titleLocked = true;
+          })}
+        />
       </Field>
 
       <Panel className="gap-2 p-3">
@@ -591,7 +598,14 @@ export function SubjectiveEditor({
       <div className="flex flex-col gap-3">
         <div className="text-sm font-semibold text-foreground">{isFillBlankBlock ? "填空题块" : isEssayBlock ? "作文块" : "解答题块"}</div>
         <Field label="标题">
-          <Input value={block.title} onChange={(event) => onChange((draft) => void (draft.title = event.target.value))} />
+          <Input
+            value={block.title}
+            onChange={(event) => onChange((draft) => {
+              draft.title = event.target.value;
+              // 用户手改标题后锁定，避免被 autoNameBlocks 覆盖
+              draft.titleLocked = true;
+            })}
+          />
         </Field>
         {isFillBlankBlock && (
           <>

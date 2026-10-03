@@ -334,7 +334,7 @@ export async function scan(config: {
   filePrefix: string;
   maxPages: number;
   showUi?: boolean;
-  /** 等下一页(ADF 送纸)的空闲超时,默认 15000ms,native 侧兜底 */
+  /** 等下一页(ADF 送纸)的空闲超时;路由层恒会传规范化后的值(默认 60s),不要指望 exe 内部默认(旧包为 15s) */
   pageTimeoutMs?: number;
 }, sessionId?: string): Promise<BridgeScanResult> {
   const args: string[] = [

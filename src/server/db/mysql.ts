@@ -1020,6 +1020,25 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
       FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
   ] });
+
+  // v56: 题组标题锁定（与 SQLite v56 对齐）
+  mariadbMigrations.push({ version: 56, name: "block-title-locked", sqls: [
+    "ALTER TABLE objective_blocks ADD COLUMN title_locked TINYINT DEFAULT 0",
+    "ALTER TABLE subjective_blocks ADD COLUMN title_locked TINYINT DEFAULT 0",
+  ] });
+
+  // v57：**故意留空**（与 SQLite v57 同号注释对齐）。原「以 score_published 为准把 status 推回 closed」
+  // 会把主线允许的正常状态当脏数据改写：公布接口本身是 `status IN ('grading','closed')`，
+  // 阅卷期间可以先公布部分成绩。改成 closed 后该考试不再接受扫描入库，
+  // 展示层口径已由 `toExamStatus()` 的发布标志优先解决，无需改数据。留注释占号避免复用歧义。
+
+  // v58：**故意留空（不执行任何删除）**，与 SQLite v58 同号注释对齐。原方案按
+  // 「保留 joined_at 最新一行」清理学生在读班级的多份关联，但多班在读成员本身是
+  // 合法状态（#308 排名/导出按学生去重并保留各班完整成员），调班残留与有意的
+  // 多班关联在数据上不可区分，删除会破坏多班场景（评审实测：执行后同一学生的
+  // 两条在读关联变成一条）。归班歧义由读取侧「在读优先 → joined_at 最新 →
+  // class_id 最大」口径消解（AnalysisRepository 的 CURRENT_CLASS_* 与
+  // DISPLAY_CLASS_ORDER）；显式调班走 moveStudent 只移除原班关联。留注释占号。
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

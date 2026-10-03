@@ -25,10 +25,14 @@ struct ScanConfig {
     std::string outputDir;
     std::string filePrefix = "scan";
     int maxPages = 0;  // 0 = unlimited (use ADF until empty)
-    // 等下一页 XFERREADY(ADF 送纸)的超时。ADF 无纸时驱动不再发事件,
-    // 旧实现固定 60s 干等,实测「扫描仪没纸停了软件还不知道」;
-    // 默认 15s(连续进纸间隔通常 <3s),可经 --page-timeout-ms 覆盖。
-    int pageTimeoutMs = 15000;
+    // 等下一页 XFERREADY(ADF 送纸)的超时。ADF 无纸时驱动不再发事件，
+    // 旧实现固定 60s 干等,实测「扫描仪没纸停了软件还不知道」。
+    //
+    // 2026-09-28 修正：原默认 15s 对 300/600dpi 的 ADF 偏短——页间机械进纸 +
+    // 高分辨率传输常超过 15s，导致第 2 页起 waitForState(6) 提前超时、每会话
+    // 恒 pages=1（表现为「扫进 100 张只进 1 张」）。默认提到 60s，让慢速 ADF
+    // 有足够余量；仍可经 --page-timeout-ms / UI「等纸超时（秒）」覆盖。
+    int pageTimeoutMs = 60000;
 };
 
 struct PageResult {

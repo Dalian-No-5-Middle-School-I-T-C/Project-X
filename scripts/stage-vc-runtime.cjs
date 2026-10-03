@@ -16,8 +16,14 @@
  *   node scripts/stage-vc-runtime.cjs ia32       # 只部署 ia32
  *   node scripts/stage-vc-runtime.cjs ia32 --source="D:\path\to\Microsoft.VC145.CRT"
  *
- * 说明：UCRT（api-ms-win-crt-*.dll / ucrtbase.dll）自 Windows 10 起属于操作系统组件，
- * 无需 app-local 部署；本仓库扫描端最低支持 Windows 10，因此只部署 MSVC 部分。
+ * UCRT 说明（2026-09-28 修正）：
+ *   原注释假设「UCRT 自 Windows 10 起属 OS 组件，无需 app-local 部署」。实测在
+ *   老旧的 ia32 扫描工作站上，识别器以 0xC0000142（STATUS_DLL_INIT_FAILED）退出——
+ *   即 api-ms-win-crt-* 系列在目标机解析不到（系统过旧 / 运行库被精简）。
+ *   为保证「拷过去就能跑」，现在把 api-ms-win-crt-*.dll 与 ucrtbase.dll 一并随包分发。
+ *   UCRT 在 Windows 10 SDK 里有两种可再发行布局，两者都要探测：
+ *     新版 <Kits>\10\Redist\<SDK版本>\ucrt\DLLs\<arch>
+ *     旧版 <Kits>\10\Redist\ucrt\DLLs\<arch>
  */
 "use strict";
 
@@ -29,6 +35,10 @@ const ROOT = path.resolve(__dirname, "..");
 
 /** 每个架构实际需要的 DLL 前辍（按工具集给出的完整 CRT 集合部署，避免传递依赖漏项）。 */
 const REQUIRED_PREFIXES = ["msvcp140", "vcruntime140", "concrt140"];
+
+/** UCRT：api-ms-win-crt-*.dll 与 ucrtbase.dll，老目标机上必须 app-local。 */
+const UCRT_FILE_PATTERN = /^api-ms-win-crt-.*\.dll$/i;
+const UCRT_BASE = "ucrtbase.dll";
 
 /** vccorlib140.dll 仅用于 WinRT/C++ 组件扩展，原生 exe 不依赖，部署会白占体积。 */
 const EXCLUDED = new Set(["vccorlib140.dll"]);
@@ -189,6 +199,104 @@ function copyIfChanged(from, to) {
   return true;
 }
 
+/**
+ * 定位 UCRT 可再发行目录。SDK 里存在两种布局，必须都探测：
+ *   新版（当前 SDK，如 10.0.26100.0）：<Kits>\10\Redist\<SDK版本>\ucrt\DLLs\<x64|x86>
+ *   旧版（早期 Windows 10 SDK）　　　　：<Kits>\10\Redist\ucrt\DLLs\<x64|x86>
+ *
+ * 原实现把 `Redist\ucrt\DLLs` 的第一层子项当成 SDK 版本目录，在其后再追加一次架构，
+ * 于是实际查找 `Redist\ucrt\DLLs\x86\x86`、`...\x64\x64` 这类不存在的目录，
+ * 评审用标准目录结构模拟即返回 null，只能回退系统目录——而 System32 里只有
+ * ucrtbase.dll，没有 api-ms-win-crt-* 转发桩，恰好是老目标机 0xC0000142 的成因。
+ *
+ * 候选目录还要通过 {@link ucrtMissingFiles} 的完整性校验才可采用，避免把裁剪过的
+ * 目录当成可用源。
+ *
+ * @param {string} arch "x64" | "ia32"
+ * @param {string} [explicitSource] --source 指定的 CRT 目录
+ * @param {string[]} [kitsBases] Program Files 根列表，测试时注入临时目录
+ */
+function findUcrtDir(arch, explicitSource, kitsBases) {
+  const redistArch = arch === "x64" ? "x64" : "x86";
+  const candidates = [];
+  if (explicitSource) {
+    // --source 显式指向 CRT 目录时，尝试同级的 ..\..\ucrt\DLLs\<arch>
+    candidates.push(path.resolve(explicitSource, "..", "..", "ucrt", "DLLs", redistArch));
+  }
+
+  const bases = kitsBases || [
+    process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
+    process.env.ProgramFiles || "C:\\Program Files"
+  ];
+  for (const base of bases) {
+    const redistRoot = path.join(base, "Windows Kits", "10", "Redist");
+    // 新布局：Redist\<SDK版本>\ucrt\DLLs\<arch>，版本号高者优先（与所链 MSVC 运行库同期）
+    const versioned = safeReaddir(redistRoot)
+      .filter((entry) => entry.isDirectory() && /^\d+\.\d+\.\d+/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+    for (const version of versioned) {
+      candidates.push(path.join(redistRoot, version, "ucrt", "DLLs", redistArch));
+    }
+    // 旧布局：Redist\ucrt\DLLs\<arch>
+    candidates.push(path.join(redistRoot, "ucrt", "DLLs", redistArch));
+  }
+
+  const found = candidates.find(isCompleteUcrtDir);
+  if (found) return found;
+
+  // 回退：直接取本机系统目录中的 UCRT（注意 SysWOW64 才是 32 位）。
+  // 这一层只保证 ucrtbase.dll，转发桩通常缺全，因此显式告警而不是静默。
+  const sysDir = arch === "ia32"
+    ? path.join(process.env.SystemRoot || "C:\\Windows", "SysWOW64")
+    : path.join(process.env.SystemRoot || "C:\\Windows", "System32");
+  if (fs.existsSync(path.join(sysDir, UCRT_BASE))) {
+    log(`${arch}: 警告——SDK 未提供完整 UCRT 可再发行目录，回退 ${sysDir}`);
+    return sysDir;
+  }
+  return null;
+}
+
+/**
+ * UCRT 一套完整可再发行集合：ucrtbase.dll + 15 个 api-ms-win-crt-* 转发桩。
+ * 名单在旧 `Redist\ucrt\DLLs` 与新 `Redist\<版本>\ucrt\DLLs` 两种布局下实测一致。
+ */
+const UCRT_STUB_NAMES = [
+  "api-ms-win-crt-conio-l1-1-0.dll",
+  "api-ms-win-crt-convert-l1-1-0.dll",
+  "api-ms-win-crt-environment-l1-1-0.dll",
+  "api-ms-win-crt-filesystem-l1-1-0.dll",
+  "api-ms-win-crt-heap-l1-1-0.dll",
+  "api-ms-win-crt-locale-l1-1-0.dll",
+  "api-ms-win-crt-math-l1-1-0.dll",
+  "api-ms-win-crt-multibyte-l1-1-0.dll",
+  "api-ms-win-crt-private-l1-1-0.dll",
+  "api-ms-win-crt-process-l1-1-0.dll",
+  "api-ms-win-crt-runtime-l1-1-0.dll",
+  "api-ms-win-crt-stdio-l1-1-0.dll",
+  "api-ms-win-crt-string-l1-1-0.dll",
+  "api-ms-win-crt-time-l1-1-0.dll",
+  "api-ms-win-crt-utility-l1-1-0.dll"
+];
+
+/** 返回该目录缺少的 UCRT 文件名；空数组即「完整可用」。 */
+function ucrtMissingFiles(dir) {
+  if (!dir || !fs.existsSync(dir)) return [UCRT_BASE, ...UCRT_STUB_NAMES];
+  const present = new Set(
+    safeReaddir(dir).filter((entry) => entry.isFile()).map((entry) => entry.name.toLowerCase())
+  );
+  return [UCRT_BASE, ...UCRT_STUB_NAMES].filter((name) => !present.has(name));
+}
+
+function isCompleteUcrtDir(dir) {
+  return ucrtMissingFiles(dir).length === 0;
+}
+
+function isUcrtFile(name) {
+  const lower = name.toLowerCase();
+  return lower === UCRT_BASE || UCRT_FILE_PATTERN.test(lower);
+}
+
 function stageArch(arch, explicitSource) {
   const destDir = path.join(ROOT, "resources", "native", ARCH_TARGETS[arch]);
   if (!fs.existsSync(destDir)) fail(`目标目录不存在: ${destDir}`);
@@ -215,12 +323,32 @@ function stageArch(arch, explicitSource) {
     }
   }
 
-  log(`${arch}: 源 ${crtDir}`);
+  // UCRT：老目标机必需，缺失会导致 0xC0000142（STATUS_DLL_INIT_FAILED）
+  const ucrtDir = findUcrtDir(arch, explicitSource);
+  const ucrtFiles = ucrtDir
+    ? safeReaddir(ucrtDir).filter((entry) => entry.isFile() && isUcrtFile(entry.name))
+    : [];
+  if (ucrtFiles.length === 0) {
+    log(`${arch}: 警告——未找到 UCRT 源目录（api-ms-win-crt-*.dll / ucrtbase.dll），老目标机可能启动失败`);
+  } else {
+    // 系统目录回退只有 ucrtbase.dll，转发桩缺全等同于没补，必须点名告警
+    const missing = ucrtMissingFiles(ucrtDir);
+    if (missing.length > 0) {
+      log(`${arch}: 警告——UCRT 源 ${ucrtDir} 不完整，缺 ${missing.join(", ")}；`
+        + "干净的老目标机仍会 0xC0000142，请安装带 C++ 工作负载的 Visual Studio 或 Windows 10 SDK");
+    }
+  }
+
+  log(`${arch}: MSVC 源 ${crtDir}`);
+  if (ucrtDir) log(`${arch}: UCRT 源 ${ucrtDir}`);
+
   let copied = 0;
   const staged = [];
-  for (const entry of files) {
-    const from = path.join(crtDir, entry.name);
+  for (const entry of [...files, ...ucrtFiles]) {
+    const sourceDir = isUcrtFile(entry.name) ? ucrtDir : crtDir;
+    const from = path.join(sourceDir, entry.name);
     const to = path.join(destDir, entry.name);
+    if (!fs.existsSync(from)) continue;
     if (copyIfChanged(from, to)) copied += 1;
     staged.push(`${entry.name}(${(fs.statSync(to).size / 1024).toFixed(0)}KB)`);
   }
@@ -239,4 +367,9 @@ function main() {
   log("完成：识别器/OpenCV 的 /MD 运行库依赖已随包分发，目标机无需安装 VC++ 可再发行包。");
 }
 
-main();
+// 直接执行为打包步骤；被 require 时只暴露纯函数供回归脚本单测（见 scripts/verify-stage-vc-runtime.ts）。
+if (require.main === module) {
+  main();
+}
+
+module.exports = { findUcrtDir, isCompleteUcrtDir, ucrtMissingFiles, UCRT_STUB_NAMES, UCRT_BASE };

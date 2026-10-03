@@ -1273,6 +1273,32 @@ MIGRATIONS.push({ version: 55, name: "backfill-class-head-teacher", up(db) {
   );
   for (const row of rows) mark.run(row.teacherId, row.classId);
 } });
+// v56: 题组标题锁定。autoNameBlocks 每次改卡都会按「序号+类型+题数分值」重写 block.title，
+// 导致用户手改的题组名称被覆盖回自动串（表现为「题组名称改不了」）。
+// 加 title_locked 标记：用户手改后置 1，自动命名跳过该块。
+// 与 #299 的 isAutoBlockTitle 启发式互补：启发式兜住存量数据，显式标记保证后续手改必不被覆盖。
+MIGRATIONS.push({ version: 56, name: "block-title-locked", up(db) {
+  addColumnIfMissing(db, "objective_blocks", "title_locked", "INTEGER DEFAULT 0");
+  addColumnIfMissing(db, "subjective_blocks", "title_locked", "INTEGER DEFAULT 0");
+} });
+
+// v57：**故意留空**。此号原先是「以 score_published 为准把 status 推回 closed」的存量修补，
+// 但 `grading + score_published = 1` 是主线允许的正常状态——公布接口本身就是
+// `WHERE ... status IN ('grading','closed')`（apps/answer-card/server/index.ts:2402、:2505），
+// 阅卷期间可以先公布部分成绩。把这种行当成脏数据改写为 closed，会让该考试从此不再接受扫描入库
+// （`答题卡未关联可阅卷的考试，成绩未入库`），并可能被按结考执行的保留策略提前处理。
+// 「已公布仍显示阅卷中」属展示层口径，由 `toExamStatus()` 的发布标志优先已修复，无需改数据。
+// 留此注释占号，避免后续复用同号造成判重歧义。
+
+// v58：**故意留空（不执行任何删除）**。原方案是清理「一名学生在读班级上有多份关联」，
+// 按「保留 joined_at 最新一行」收缩当前归属；但**多班在读成员本身是合法状态**——
+// #308 的排名/导出口径明确按学生去重人数、同时保留各班完整成员，调班残留与有意
+// 加入的第二个在读班在数据上不可区分，把后者当脏数据删除会破坏多班场景
+// （评审实测：执行后同一学生的两条在读班级关联变成一条）。
+// 多行关联的归班歧义改由**读取侧**统一消解：当前班级/展示班级按「在读优先
+// （班级与年级均未归档）→ joined_at 最新 → class_id 最大」选取
+// （repositories/AnalysisRepository.ts 的 CURRENT_CLASS_* 与 DISPLAY_CLASS_ORDER），
+// 显式调班走 moveStudent 只移除原班关联。号位保留，避免复用造成判重歧义。
 
 export function runMigrations(db: Database.Database): void {
   db.exec(`

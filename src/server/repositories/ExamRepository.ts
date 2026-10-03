@@ -117,12 +117,13 @@ export class ExamRepository {
   }): Promise<Array<{
     id: number; name: string; subject: string | null;
     grade_id: number | null; grade_name: string | null;
-    exam_date: string | null; status: string;
+    exam_date: string | null; status: string; score_published: number;
     graded_count: number; avg_score: number; has_assigned_score: number;
   }>> {
     // #246 auto_delete：按保留策略软删除的考试不再出现在选择列表
     let sql = `SELECT e.id, e.name, e.subject, e.grade_id, g.name as grade_name,
         COALESCE(ac.exam_date, date(e.created_at)) as exam_date, e.status,
+        COALESCE(e.score_published, 0) as score_published,
         COUNT(ss.exam_id) as graded_count, ROUND(AVG(ss.total_score), 1) as avg_score,
         CASE WHEN e.assigned_formula IS NOT NULL AND e.assigned_formula != '' THEN 1 ELSE 0 END as has_assigned_score
       FROM exams e

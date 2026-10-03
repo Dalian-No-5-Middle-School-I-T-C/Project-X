@@ -150,20 +150,43 @@ export class ClassRepository {
   }
 
   async addStudent(classId: number, studentId: number): Promise<void> {
-    const sql = buildInsertIgnore(this.db.dialect, "class_students", ["class_id", "student_id"]);
-    await this.db.run(sql, classId, studentId);
+    await this.db.transaction(async (tx) => {
+      await this.insertStudentClassLink(tx, classId, studentId);
+    });
   }
 
   async addStudents(classId: number, studentIds: number[]): Promise<number> {
     let added = 0;
     await this.db.transaction(async (tx) => {
-      const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
       for (const sid of studentIds) {
-        const r = await tx.run(sql, classId, sid);
-        added += r.changes;
+        const changed = await this.insertStudentClassLink(tx, classId, sid);
+        if (changed) added++;
       }
     });
     return added;
+  }
+
+  /**
+   * B12（评审修订）：「加入班级」是**纯增量**写入（INSERT IGNORE）。
+   *
+   * 此前本方法在绑定前清掉该生的全部「当前归属」关联，强制「一人一个在读班」；
+   * 但多班在读成员是合法状态（#308 的排名/导出按学生去重人数、保留各班完整成员），
+   * 调班残留与有意加入的第二个在读班在数据上不可区分，清空会把后者当脏数据删除
+   * （评审 P1 实测：加入班级后同一学生的两条在读关联只剩一条）。
+   * 多行关联的归班歧义由读取侧统一消解——当前班级/展示班级按「在读优先 →
+   * joined_at 最新 → class_id 最大」选取（AnalysisRepository:CURRENT_CLASS_* /
+   * DISPLAY_CLASS_ORDER）。显式调班走 {@link moveStudent}，退出班级走 {@link removeStudent}。
+   *
+   * @returns 是否产生了新的班级绑定（原本已在目标班则返回 false）
+   */
+  private async insertStudentClassLink(tx: DbAdapter, classId: number, studentId: number): Promise<boolean> {
+    const existing = await tx.get(
+      "SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ? LIMIT 1",
+      classId, studentId
+    );
+    const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
+    await tx.run(sql, classId, studentId);
+    return !existing;
   }
 
   async removeStudent(classId: number, studentId: number): Promise<void> {
@@ -173,6 +196,8 @@ export class ClassRepository {
   /** 学生迁移：从原班级移除并加入目标班级（目标班级所属年级即学生的新年级）。 */
   async moveStudent(fromClassId: number, toClassId: number, studentId: number): Promise<void> {
     await this.db.transaction(async (tx) => {
+      // 调班语义只移除**原班**关联；其他在读班（合法多班）与归档班级的历史关联一律保留。
+      // 此前「清空全部当前归属再绑新班」会把学生同时就读的其他在读班一并抹掉（评审 P1）。
       await tx.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", fromClassId, studentId);
       const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
       await tx.run(sql, toClassId, studentId);

@@ -74,7 +74,11 @@ export interface ScanSessionConfig {
   paperSize: "A4" | "Letter" | "A3";
   maxPages: number;
   showUi?: boolean;
-  /** 等待下一页（ADF 送纸）的空闲超时，毫秒。留空走 native 默认 15000。 */
+  /**
+   * 等待下一页（ADF 送纸）的空闲超时，毫秒。
+   * 由路由层 normalizePageTimeoutMs 兜底为 PAGE_TIMEOUT_DEFAULT_MS（60s）后必定带上——
+   * 随包预编译 exe 的内部默认仍是 15s，所以「留空」不能依赖 native。
+   */
   pageTimeoutMs?: number;
 }
 

@@ -77,7 +77,14 @@
     "verify:p1-readgate": "tsx scripts/verify-p1-readgate.ts",
     "verify:class-teachers": "tsx scripts/class-teachers-smoke.ts",
     "typecheck": "tsc --noEmit",
-    "verify:scanner-skin-patch": "tsx scripts/verify-scanner-skin-patch-guard.ts"
+    "verify:scanner-skin-patch": "tsx scripts/verify-scanner-skin-patch-guard.ts",
+    "verify:class-archive": "tsx scripts/verify-class-archive.ts",
+    "verify:class-archive:mariadb": "tsx scripts/verify-class-archive.ts --mariadb",
+    "verify:scan-page-numbering": "tsx scripts/verify-scan-page-numbering.ts",
+    "verify:scanner-page-timeout": "tsx scripts/verify-scanner-page-timeout.ts",
+    "verify:stage-vc-runtime": "tsx scripts/verify-stage-vc-runtime.ts",
+    "verify:grading-published-exam": "tsx scripts/verify-grading-published-exam.ts",
+    "verify:scanner-batch-results": "tsx scripts/scanner-batch-results-smoke.ts"
   },
   "browserslist": [
     "iOS >= 15",

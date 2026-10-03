@@ -122,6 +122,72 @@
 
 详细原因、配置、验证边界和部署状态见 [部署问题复现与修复验证](../docs/部署问题复现与修复验证.md)。
 
+## v2.5.7 (2026-09-28) — 扫描链路「扫多张只进一张 / 全员未识别」+ 成绩展示三处错乱
+
+> 分支 `fix-scanner-twain-adf-and-draft-card`（PR #304）。依据现场回传的 QQ 邮箱反馈与 `main.log`（含 `[checkpoint] scan ... pages=1` 全量证据、`Native recognizer exited with code 3221225794`）。共闭合 6 项，全部先在代码层定位到确定成因再改。
+>
+> **合并调整（2026-09-28 / 2026-10-03 二次顺延）**：本 PR 的基座 PR #282 此前已以 squash 形式并入 main（`b2b8e03`），branch 上仍留有原始三提交，故与 main 产生整片冲突。本次改动已**重放到最新 main（`86256b4`，含 #282/#284/#285/#296/#299）之上**：第 4 条「题组名称改不了」与 #299 的 `isAutoBlockTitle` 启发式实现合并为**两级保护**。迁移号原定 v52/v53/v54，但并行 PR #301 已把 **v52 `class-head-teacher`、v53 `wechat-grade-release-notifications`、v54 `exam-original-paper-and-answer-keys`、v55 `backfill-class-head-teacher`** 带进 main，同号会被执行器静默跳过（按 `schema_migrations` 版本判重），故本 PR 三条**再次顺延为 v56 `block-title-locked` / v57 / v58 `dedupe-class-students`**（下文已按新号标注），SQLite 与 MariaDB 双方言同步。
+>
+> **评审返修（2026-10-03，针对 PR #304 的 6 条 change request）**：逐条对当前代码复核后全部确认成立并已修复，其中两条是本人此前判断出错——
+> ① **v57 已删除并永久空置**：原「以 `score_published` 为准把 `status` 推回 `closed`」把主线允许的合法状态当脏数据改写（阅卷期间可先公布部分成绩，公布接口本就接受 `status IN ('grading','closed')`）。实测升级后再次扫描入库直接报「答题卡未关联可阅卷的考试，成绩未入库」，因为 `scannerExam.ts:9` 的取考试条件会过滤 `closed`。展示层错位早由 `toExamStatus()` 的发布标志优先解决，不需要改数据。
+> ② **双面扫描页码被改坏**：原 B13 修法「已有页数 + index + 1」把偏移按**图片**累加，而 native 的 `page` 是**物理纸张号**（`twain_controller.cpp:473`/`:513` 正反写同一个 `pageNum`），两份双面卷的分组从 `[0,0,1,1]` 变成 `[0,1,2,3]`，正反面被拆到相邻两张纸上，学号继承与完整性校验随之失效。现改为「偏移按纸累加」，见 `scanPages.ts:assignScanRecordPageNums`。
+> ③ **撤回路径的嵌套事务**：`withdraw()` 收到的恒为调用方事务适配器，再开 `transaction()` 在 SQLite 抛 `cannot start a transaction within a transaction`、在 MariaDB 会对 `PoolConnection` 调用不存在的 `getConnection()`；实测原有 `scripts/scanner-batch-results-smoke.ts` 主线通过、返修前在重复卷接口 **500（本应 409）**。现合并为传入适配器上的单条 UPDATE，原子性由外层事务保证。另更正本人此前的说法：主线 `withdraw()` 开头早已调用 `markScoreMutated()`，不存在「漏撤公布」。
+> ④ **「一人一班」的全量删除会抹掉历史班级**：写入路径与 v58 迁移都无条件 `DELETE FROM class_students WHERE student_id = ?`，而归档班级的关联是刻意保留的历史关系（`verify-class-archive.ts:84` 就断言归档后该行仍在）。当时的收窄方案是只清「当前归属」（`clearActiveStudentClassLinks`）；**该方案已被二次评审 ⑦ 进一步推翻**——在读多班关联同样不得清，写入侧改为纯增量、v58 停用删除，函数已移除。
+> ⑤ **60 秒默认超时没进安装包**：只改了 `twain_controller.hpp`，而两个随包 `resources/native/win-{ia32,x64}/scanner-bridge.exe` 与主线逐字节相同，打包链路不重编扫描桥且优先使用这些二进制 → 现场仍跑旧 exe 的 15s。现由服务端调用链恒定传 `--page-timeout-ms`（已检出两个 exe 内含该开关字串，故无需重编译即可生效）。
+> ⑥ **UCRT 查找路径拼错**：`findUcrtDir()` 把 `Redist\ucrt\DLLs` 的第一层（其实是 `x64`/`x86`/`arm` 架构目录）当 SDK 版本目录，再追加一次架构去找 `DLLs\x86\x86` 这种不存在的路径，返回 null 后只能回退系统目录——而 System32 只有 `ucrtbase.dll`、没有 15 个转发桩，正好补不齐第 2 条要解决的问题。现同时探测 `Redist\<版本>\ucrt\DLLs\<arch>` 与 `Redist\ucrt\DLLs\<arch>` 两种真实布局，并按完整性（`ucrtbase.dll` + 15 个 `api-ms-win-crt-*`）筛目录。
+>
+> **二次评审返修（2026-10-03，针对 #304/#305/#308 三 PR 复核的 3 条发现）**：
+> ⑦ **[P1]「一人一个在读班」与 #308 明确保留多班成员的行为冲突**：v58 迁移与加入班级/重导入/调班写入仍把在读关联收缩成一条，会把合法的多班在读成员当脏数据删除（评审实测：执行 v58 后同一学生的两条在读班级关联变成一条）。现放弃该不变量：v58 **停用删除（号位保留，与 v57 同款占号注释）**；`addStudent`/`addStudents` 与重导入改为**纯增量** INSERT IGNORE，`moveStudent`（显式调班）只移除原班关联；`activeClassScope.ts` 的 `clearActiveStudentClassLinks` 随之删除。多行关联的归班歧义全部由读取侧口径消解（见 ⑧⑨）。
+> ⑧ **[P2] 成绩表和导出的去重仍会选中归档旧班**：`getScoreTableData`/`getExportData` 按 `c.id ASC` 取每生首行，已转入新班的学生命中 id 更小的归档旧班，未筛选成绩表与导出显示旧班及其班排（评审实测：旧班班排 2，筛选新班才是 1）。排序键改为 `DISPLAY_CLASS_ORDER`：**在读班级优先**（班级与年级均未归档）→ `joined_at` 最新 → 同刻取 `class_id` 最大；学生关联全部归档时回落最新归档归属，毕业班级的历史导出仍有班级可看。班排仍按各班完整成员计算。修复落在 #308 分支（缺陷由其引入），本分支经合并继承。
+> ⑨ **[P2] 「当前班级」查询没有排除归档关系**：`CURRENT_CLASS_SUBQUERY` / `CURRENT_CLASS_JOIN_SUBQUERY`、大考归班两处排序与逐题下钻展示班，原只按 `joined_at DESC, class_id DESC` 选取——加入时间相同且归档班 id 更大时会选中归档班，学生成长曲线的班均分因此取到归档班（评审实测：应为 30 显示 73.3）。现统一为「在读优先（班级与其年级均未归档）→ joined_at 最新 → class_id 最大」，与 ⑧ 的展示班级同优先级。
+
+### 1. 扫进 100 张只显示 1 份（双因叠加）
+- **成因 A（页间超时过短）**：`twain_controller.hpp` 的 `pageTimeoutMs` 默认 **15000ms**，而 UI「等纸超时」留 0 时整条链路回落到该值。300/600dpi 的 ADF 页间机械进纸 + 高分辨率传输常超过 15s，第 2 页起 `waitForState(6)` 提前超时 → 每会话恒 `pages=1`（日志中 `pages=` 只出现过 `1`）。**修复（返修后）**：默认值改由**服务端调用链恒定给出**——`scanner/index.ts` 的 `normalizePageTimeoutMs()` 把缺省/非法/越界一律兜底为 `PAGE_TIMEOUT_DEFAULT_MS = 60_000` 并始终传 `--page-timeout-ms`；`twain_controller.hpp` 的 60s 只作为重编译后的同源默认值保留。之所以不能只改头文件：随包的 `resources/native/win-{ia32,x64}/scanner-bridge.exe` 是预编译二进制、打包链路不重编它，而两个 exe 内都检得到 `--page-timeout-ms` 开关，显式传参无需重编译即可生效。仍可经 UI 覆盖。
+- **成因 B（归组口径错误，真正让「1 份」可见的原因）**：`scanPages.ts:26` `groupIndex = floor((page_num-1)/sheetsPerStudent)`，而 `page_num` 来自 native **单进程内**递增的 `pageNum`（`twain_controller.cpp` 里 `int pageNum=0` 起），每次重启扫描都是新进程、必然从 1 重来 → 所有页 `groupIndex=0`，100 张塌缩成 1 组。**修复（返修后）**：落库页号 = 本会话已落库的**最大纸张号** + native 的纸张号（`shared/scanPages.ts:assignScanRecordPageNums`，由 `scanner-service.ts` 调用）。累计单位是**纸**而非图片：同一张纸的正反面共享 `page`（`twain_controller.cpp:473` 与 `:513` 写同一个 `pageNum`），按图片下标递增会把双面卷拆散（见上「评审返修」第 ② 条）。native 未给有效纸张号时按 `floor(index/sidesPerSheet)+1` 兜底。用例见 `scripts/verify-scan-page-numbering.ts`。
+
+### 2. 扫描结果全部「未识别」（`0xC0000142`）
+- 根因：`main.log` 报 `Native recognizer exited with code 3221225794`，即 **`0xC0000142` STATUS_DLL_INIT_FAILED** —— 识别器是 `/MD` 动态 CRT 原生 exe，加载期因缺 `api-ms-win-crt-*`（UCRT）系列而初始化失败。**进程根本没跑起来，故 stderr 必然为空**，这正是旧错误信息一片空白的原因（`recognition.ts` 旧实现只报裸码）。此前 `stage-vc-runtime.cjs` 明确假设「UCRT 自 Win10 起属 OS 组件，无需 app-local」——该假设在老旧 ia32 扫描工作站上不成立。
+- **修复（三层）**：① `stage-vc-runtime.cjs` 增加 UCRT 发现与投放（`api-ms-win-crt-*.dll` 15 个 + `ucrtbase.dll`），x64/ia32 各自从 Windows SDK 取源——**返修后**同时探测 `Redist\<SDK版本>\ucrt\DLLs\<arch>`（当前 SDK 布局，本机 `10.0.26100.0`）与 `Redist\ucrt\DLLs\<arch>`（旧布局），版本号目录降序优先，并按「`ucrtbase.dll` + 15 个转发桩齐全」筛选候选目录，不完整的目录一律不采用；取不到才回退系统目录并**显式告警列出缺失项**（旧实现把架构目录当版本目录再追加一次架构，实际找 `DLLs\x86\x86`，必然落空）；② 已实际投放，PE 导入表复核 `answer-card-recognizer.exe` 与 `opencv_world4130.dll` 的**全部依赖均已由包内文件满足**；③ `recognition.ts` 新增 NTSTATUS 退出码翻译，把 `0xC0000142` / `0xC0000135` / `0xC000007B` 转成带处置建议的中文文案，后续现场可直接自证。
+
+### 3. 已公布成绩仍显示「阅卷中」
+- 根因：`score_published`（0 未公布 / 1 已公布）与 `status`（draft/grading/closed）是**两个字段**。`ExamManagePage` 渲染两个徽章故显示正确，而 `ExamSelectPage` 只渲染 `status` 单徽章；更要命的是 `listExamsForSelection` 是显式列清单、**漏选 `score_published`**，导致选择页永远拿不到发布标志 → 已公布仍显示「阅卷中」。另有若干路径单独把 `status` 改回 `grading` 而不同步发布标志。
+- **修复**：`listExamsForSelection` 补选 `COALESCE(score_published,0)`；`toExamStatus()` 改为**发布标志优先**（1→已公布，再回落到 status）；`retry-grading` 改为事务内重读而非事务外快照，避免并发公布被漏撤；扫描撤回路径改为**同一事务同时写 `status` 与 `score_published`**（单条 UPDATE 写在调用方传入的事务适配器上，**不再嵌套开事务**），杜绝「只改 status、两字段永久错位」。`score_published` 的取值约定（撤回置 `0`）保持不变，`verify:security-critical` 117 项全绿。**原计划的迁移 v57 已删除并空置**：`grading + score_published = 1` 是主线允许的正常状态（阅卷期间可先公布部分成绩），按发布标志批量改 `status='closed'` 会让这些考试从此不再接受扫描入库，属展示层口径而非数据层错乱。
+
+### 4. 题组名称改不了
+- 根因：`App.tsx` 的 `updateCard()` **无条件**调用 `autoNameBlocks(draft)`，按「序号+类型+题数分值」重写 `block.title`，把用户手改的名称覆盖掉（后端与输入框本身无辜）。
+- **与 #299 的关系**：#299（2026-09-23 反馈第 2 条）已用 `cardModel.isAutoBlockTitle()` 启发式解决同一问题——「标题不像自动串」就跳过重命名。两者互补：启发式**兜住历史数据**（无需迁移即刻生效），但存在边界——用户若恰好手写成标准格式（如「一、单选（共10题，共50分）」）仍会被覆盖。
+- **修复**：在 #299 实现之上叠加**显式 `titleLocked` 标记**（`types.ts`），两个标题输入框 onChange 时置位；`autoNameBlocks` 判定改为 `locked || !isAutoBlockTitle(title)` 即跳过。保留 main 的 `toChineseBlockIndex` / `buildAutoBlockTitle` 单一事实源（不再使用分支自带的本地 `toChinese`）。配套迁移 **v56**（原 v52；SQLite `objective_blocks`/`subjective_blocks` 加 `title_locked`，MariaDB 同步），`CardRepository` 读写贯通。
+
+### 5. 学生名单回到调班前的班级
+- 根因：`class_students` 主键是 `(class_id, student_id)`，**一人可多行**。各写入路径（重新导入 / 加入班级）只 `INSERT IGNORE` 新关联、**从不删旧行**，于是调班后旧班关联残留；而成绩分析部分查询按 `MIN(class_id)`（最旧）取班，必然命中旧班。与下钻详情的 `joined_at DESC`（最新）口径不一致，导致同一学生在不同页面显示不同班级。（另已排除「考号重复」：`users.student_number` 为 UNIQUE，且现场确认无多班就读学生。）
+- **修复（二次评审后定稿）**：① `AnalysisRepository` 新增 `CURRENT_CLASS_SUBQUERY` / `CURRENT_CLASS_JOIN_SUBQUERY` 统一归班口径，并替换全部 `MIN(class_id)` 站点（含 `ScoreRepository` 成长曲线）；口径为**「在读优先（班级与年级均未归档）→ joined_at 最新 → 同刻取 class_id 最大」**，全部关联归档时回落最新归档归属（见二次评审 ⑨，先前只按 `joined_at DESC` 会在同刻被 id 更大的归档班抢先）；② 写入侧**不再删除任何班级关联**（见二次评审 ⑦）：`ClassRepository.addStudent/addStudents` 与 `UserRepository` 重导入为纯增量 INSERT IGNORE（多班在读合法），`moveStudent` 只移除原班关联，显式退班走 `removeStudent`；③ 原定的清理迁移 **v58 停用删除**（SQLite/MariaDB 双侧均改为占号注释，号位保留）——多班在读成员合法（#308 按学生去重排名、保留各班完整成员），调班残留与有意的多班关联在数据上不可区分，不得按「一人一班」批量删除；成绩表/导出的展示班级去重见二次评审 ⑧（`DISPLAY_CLASS_ORDER`，#308 分支修复、本分支继承）。
+
+### 6. 学校网络传不到服务器
+- 判定为**现场网络问题**（非代码缺陷），未改代码。附带发现上传 `413 File too large` 会触发约 40 次**无上限重试**，已记录为后续待办。
+
+### 未决
+- 反馈中「科目设置有些逆天，测试是哪一科」信息不足以定位，**保持未动**，待补充具体期望值。
+
+### 验证
+- `npm run typecheck` 全绿。
+- `CURRENT_CLASS_SUBQUERY` / `DISPLAY_CLASS_ORDER` 两种口径形态均以隔离 x64 better-sqlite3 实测通过；B13 归组用例反向对照确认旧行为复现 bug、新行为修复。（v58 自二次评审起停用删除，见返修 ⑦。）
+- 返修新增/扩展的回归（2026-10-03，本机 SQLite 全绿，并已接入 CI `typecheck-and-test`）：
+  - `npm run verify:scan-page-numbering`——双面共享纸张号、跨进程按纸累计、单面逐张递增、无效纸张号兜底，并含「按图片下标递增会把分组拆成 `[0,1,2,3]`」的反向对照与调用点静态接线检查。
+  - `npm run verify:scanner-page-timeout`——缺省/非法值兜底 60s、合法区间透传、调用链恒定传参，并**直接扫描两个随包 exe 确认内含 `--page-timeout-ms` 开关**（这是「无需重编译也能生效」的证据），同时断言 `twain_controller.hpp` 默认值与服务端同源。
+  - `npm run verify:grading-published-exam`——重复执行全部迁移后 `grading + score_published=1` 的考试状态不变、仍被 `resolveScannerExam` 选为入库目标；并静态校验两套方言迁移版本号无重复、v57 在两侧均空置、强制结考语句已彻底移除。
+  - `npm run verify:class-archive`（新增 `--mariadb` 变体并接入 CI 的 `mariadb-test` 作业）——归档旧班后把学生加入新班、`moveStudent`、以及重跑 v58 的路径都**必须保留归档班级的历史关联**；同时断言在读多班关联不被清空（加入第二个在读班两条都保留）、`moveStudent` 只移除原班、v58 重跑不删任何行、「当前班级」在归档班 id 更大且同刻时仍选中在读班（二次评审 ⑦⑨）。
+  - `npm run verify:stage-vc-runtime`——用临时目录搭出 SDK 的两种真实布局，断言 x64/ia32 分别命中 `DLLs\x64` / `DLLs\x86`（而非旧拼法的 `DLLs\x86\x86`）、多版本取最新、缺转发桩的目录不采用。
+  - `scripts/verify-ladder-students.ts`（随 #308 一并进入本分支）改为**双方言**：默认仍是临时 SQLite，`--mariadb` 走与归档套件相同的空库门禁；另加夹具自检（多班学生在库里必须真的落成 5 行关联），避免断言在空场景假绿。
+  - `npm run verify:scanner-batch-results`——重复卷/重试撤回路径返修前 **500**、返修后回到 **409**（已做反向对照：把嵌套事务写回去即精确复现 500）。
+- **MariaDB 实跑（2026-10-03 追加，更正上一条「本机无 MariaDB」的说法）**：本机装有 MariaDB 12.3.2。已用**独立临时实例**（专用 datadir、`127.0.0.1:13306`、一次性 `projectx_ci` / `projectx_class_archive_test` / `projectx_ladder_test` 三库，跑完销毁；只复用本机已安装的二进制，既有的 MariaDB 服务与其中数据未读取、未写入）把 MariaDB 侧一次补齐：
+  - `npm run verify:mariadb` 九段全通过；`schema_migrations` 落库 43 行、`COUNT(*) = COUNT(DISTINCT version)`，50–58 区间实到 50/51/52/53/54/55/56/58——**v57 空置与「不撞号」在真实 MariaDB 上得到确认**。
+  - `npm run verify:class-archive:mariadb` 全通过（针对二次评审**前**的「只清当前归属」行为；该行为已被 ⑦ 推翻，MariaDB 侧结论以本轮之后的 CI `mariadb-test` 作业为准）。
+  - `npx tsx scripts/verify-ladder-students.ts --mariadb`（#308 评审 P1 新增的双方言变体）全通过。
+  - 两条根因取证：在真 MariaDB 的已开启事务里再调 `transaction()` → `TypeError: this.executor.getConnection is not a function`（CR②，与 SQLite 侧的 `cannot start a transaction within a transaction` 各对应一条失败路径）；未设 `dateStrings` 时 `DATETIME` 返回 JS `Date`、`.slice(0,10)` 抛 `v.slice is not a function`，设 `dateStrings: true` 后返回 `'2026-10-03'` 字符串（#305 修复的机制在真库上成立）。
+  - **版本差异不可忽略**：本机 12.3.2 比 CI 的 `mariadb:10.11` 新，优化器与部分 SQL 行为不同源，CI 仍是最终裁判。这次实跑排除的是「MariaDB 分支从未执行过」这一档风险，不替代 CI 作业。
+- **仍未在本机覆盖**：扫描现场行为（ADF 慢速进纸、双面实际进纸顺序）需实机验收；`verify:student-score-fullscore-examtime` 只有 SQLite 变体，其 E1–E3 在 SQLite 下天然成立，真正的 `dateStrings` 验证目前靠上面的取证与线上抽查。
+
+
 ## v2.5.6 (2026-09-21) — 扫描端「检测失败即无法扫描」解封 + 图片去向常驻 + 服务器地址归一化
 
 > 分支 `fix-scanner-ia32-runtime-diagnostics`（PR #282 续）。现场（ia32 安装包 + 远程上传模式）新反馈三条 P0：① TWAIN ERROR 报错但**实测 DLL 组件正常、设备在厂商软件里能扫**；② 扫描端→主站链路受阻；③ 依旧无法选择「本地阅卷 / 上传服务器」。三条均已在代码层定位到确定成因。

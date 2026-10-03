@@ -1,6 +1,7 @@
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import type { StudentTrendPoint, StudentSemesterComparison, SemesterSummary } from "../../shared/types";
+import { CURRENT_CLASS_JOIN_SUBQUERY } from "./AnalysisRepository";
 
 export interface StudentExamScore {
   exam_id: number;
@@ -124,7 +125,7 @@ export class ScoreRepository {
       FROM student_scores ss
       JOIN exams e ON e.id = ss.exam_id
       LEFT JOIN (
-        SELECT student_id, MIN(class_id) AS class_id FROM class_students GROUP BY student_id
+        ${CURRENT_CLASS_JOIN_SUBQUERY}
       ) cs ON cs.student_id = ss.student_id
       WHERE ss.student_id = ?
         -- #246 auto_delete：软删除考试不进入成长曲线

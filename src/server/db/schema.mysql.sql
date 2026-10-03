@@ -164,6 +164,7 @@ CREATE TABLE IF NOT EXISTS objective_blocks (
     card_id          VARCHAR(20) NOT NULL,
     sort_order       INT DEFAULT 0,
     title            VARCHAR(255),
+    title_locked     TINYINT DEFAULT 0,
     question_start   INT NOT NULL,
     question_count   INT NOT NULL,
     option_count     INT NOT NULL,
@@ -211,6 +212,7 @@ CREATE TABLE IF NOT EXISTS subjective_blocks (
     sort_order  INT DEFAULT 0,
     block_kind  VARCHAR(20) DEFAULT 'answer',
     title       VARCHAR(255),
+    title_locked TINYINT DEFAULT 0,
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (card_id) REFERENCES answer_cards(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;

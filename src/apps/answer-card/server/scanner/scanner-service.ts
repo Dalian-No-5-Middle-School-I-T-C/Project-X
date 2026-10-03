@@ -16,7 +16,7 @@ import { getMysqlDb } from "../../../../server/db";
 import { persistAnswerBlockCrops } from "../../../../server/services/AnswerBlockCropService";
 import { prepareCardLayoutById } from "../card-layout";
 import { parseRecognitionDpi } from "../helpers";
-import { mapScanPageToLayout, applyScanStudentId } from "../../../../shared/scanPages";
+import { mapScanPageToLayout, applyScanStudentId, assignScanRecordPageNums } from "../../../../shared/scanPages";
 
 export { listSources };
 
@@ -51,6 +51,11 @@ export async function createScanSession(config: ScanSessionConfig): Promise<stri
   return session.id;
 }
 
+/**
+ * B13 的页号换算见 shared/scanPages.ts:assignScanRecordPageNums（纯函数，便于单测）。
+ * 落库页号必须同时满足「跨扫描进程按会话累计」与「正反两面共享纸张号」两条约束，
+ * 任一条写反都会分别表现为「100 张塌缩成 1 组」与「双面卷正反面被拆散」。
+ */
 /** Full scan + OCR workflow（后台运行；sessionId 由 createScanSession 预先创建） */
 export async function runScanSession(
   sessionId: string,
@@ -86,8 +91,9 @@ export async function runScanSession(
       filePrefix,
       maxPages: config.maxPages || 0,
       showUi: config.showUi,
-      // 等纸空闲超时：不传则由 native 侧用默认 15000ms。
-      // 厚纸/慢速 ADF 进纸间隔可能超过 15s，若不透传就会出现「扫了一半提前收尾」。
+      // 等纸空闲超时：路由层已把它规范化为恒定正数（默认 PAGE_TIMEOUT_DEFAULT_MS=60s），
+      // 因此这里总要透传——随包预编译 exe 的内部默认值仍是 15s，不传就等于没改。
+      // 厚纸/慢速 ADF 进纸间隔可能超过更短超时，若不透传就会出现「扫了一半提前收尾」。
       pageTimeoutMs: config.pageTimeoutMs
     };
 
@@ -107,10 +113,28 @@ export async function runScanSession(
     }
 
     const recordIds: string[] = [];
-    for (const page of filteredPages) {
+    // B13：page_num 必须按「会话内累计**纸张序号**」落库，而不是直接用 native 的 page。
+    // native 的 page 是「单次进程内」递增（twain_controller.cpp 里 int pageNum=0 起），
+    // 每次重启扫描都是新进程、必然从 1 重来；若原样落库，mapScanPageToLayout 的
+    // groupIndex = floor((page_num-1)/sheetsPerStudent) 会把所有页都算成第 0 组，
+    // 表现为「扫进 100 张只显示 1 份答题卡」。
+    //
+    // 但累计的单位是**纸**，不是**张图**：ScanPage.page 是物理纸张号，同一张纸的正反两面
+    // 共享同一个 page（twain_controller.cpp:473 与 :513 写的是同一个 pageNum），
+    // mapScanPageToLayout 也按「physicalPage + side」还原布局页与正反面
+    // （src/shared/scanPages.ts:17 「TWAIN pageNum identifies a physical sheet: its front
+    // and back share the number」）。若按图片下标递增，两份双面卷的分组会从 [0,0,1,1]
+    // 变成 [0,1,2,3]：正反面被拆到相邻两张「纸」上，首页学号继承与完整性校验随之失效。
+    // 故偏移量取「本会话已落库的最大纸张号」，同一批内沿用 native 的 page 不变。
+    const existingRecords = await listScanRecords(sessionId);
+    const sheetOffset = existingRecords.reduce((max, record) => Math.max(max, Number(record.page_num) || 0), 0);
+    const sidesPerSheet = isSingleSided ? 1 : 2;
+    const pageNums = assignScanRecordPageNums(filteredPages, { sheetOffset, sidesPerSheet });
+    for (const [index, page] of filteredPages.entries()) {
+      const cumulativePageNum = pageNums[index];
       const record = await createScanRecord({
         sessionId, cardId: config.cardId,
-        imagePath: page.path, pageNum: page.page,
+        imagePath: page.path, pageNum: cumulativePageNum,
         side: page.side as "front" | "back"
       });
       recordIds.push(record.id);
@@ -118,7 +142,7 @@ export async function runScanSession(
 
       onProgress({
         sessionId, type: "page_done",
-        recordId: record.id, pageNum: page.page, side: page.side,
+        recordId: record.id, pageNum: cumulativePageNum, side: page.side,
         totalPages: filteredPages.length
       });
     }

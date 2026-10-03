@@ -145,9 +145,9 @@ export class CardRepository {
     const firstQuestion = questions[0];
     const blockOptionLayout = normalizeOptionLayout(block.optionLayout);
     await tx.run(
-      `INSERT INTO objective_blocks (id, card_id, sort_order, title, question_start, question_count, option_count, mode, score_per_question, density, option_layout, wrong_or_extra_score)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      block.id, cardId, 0, block.title ?? "", firstQuestion?.questionNumber ?? block.questionStart ?? 1,
+      `INSERT INTO objective_blocks (id, card_id, sort_order, title, title_locked, question_start, question_count, option_count, mode, score_per_question, density, option_layout, wrong_or_extra_score)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      block.id, cardId, 0, block.title ?? "", block.titleLocked ? 1 : 0, firstQuestion?.questionNumber ?? block.questionStart ?? 1,
       questions.length || block.questionCount || 0, firstQuestion?.optionCount ?? block.optionCount ?? 4,
       firstQuestion?.mode ?? block.mode ?? "single", firstQuestion?.score ?? block.scorePerQuestion ?? 0,
       block.density ?? "compact", blockOptionLayout, firstQuestion?.scoringRule?.wrongOrExtraScore ?? block.multipleScoring?.wrongOrExtraScore ?? 0
@@ -184,8 +184,8 @@ export class CardRepository {
 
   private async insertSubjectiveBlock(block: any, cardId: string, tx: DbAdapter): Promise<void> {
     await tx.run(
-      `INSERT INTO subjective_blocks (id, card_id, sort_order, block_kind, title) VALUES (?, ?, ?, ?, ?)`,
-      block.id, cardId, 0, block.blockKind ?? (block.title?.includes("填空") ? "fill_blank" : "answer"), block.title ?? ""
+      `INSERT INTO subjective_blocks (id, card_id, sort_order, block_kind, title, title_locked) VALUES (?, ?, ?, ?, ?, ?)`,
+      block.id, cardId, 0, block.blockKind ?? (block.title?.includes("填空") ? "fill_blank" : "answer"), block.title ?? "", block.titleLocked ? 1 : 0
     );
 
     if (block.questions) {
@@ -254,7 +254,7 @@ export class CardRepository {
       const questionRows = await this.db.all("SELECT * FROM objective_questions WHERE block_id = ? ORDER BY sort_order, question_number", b.id);
       const blockOptionLayout = normalizeOptionLayout(b.option_layout);
       const block: any = {
-        id: b.id, type: "objective", title: b.title, questionStart: b.question_start,
+        id: b.id, type: "objective", title: b.title, titleLocked: b.title_locked === 1, questionStart: b.question_start,
         questionCount: b.question_count, optionCount: b.option_count, mode: b.mode,
         scorePerQuestion: b.score_per_question, density: b.density, optionLayout: blockOptionLayout,
         answerKey: answerKeys, multipleScoring: { partialScores, wrongOrExtraScore: b.wrong_or_extra_score },
@@ -293,7 +293,7 @@ export class CardRepository {
           images: images.map((img: any) => ({ assetId: img.asset_id, originalName: img.original_name, widthMm: img.width_mm, heightMm: img.height_mm, align: img.align }))
         };
       }));
-      card.bodyBlocks.push({ id: b.id, type: "subjective", blockKind: b.block_kind ?? (String(b.title ?? "").includes("填空") ? "fill_blank" : "answer"), title: b.title, questions: questionsWithImages } as any);
+      card.bodyBlocks.push({ id: b.id, type: "subjective", blockKind: b.block_kind ?? (String(b.title ?? "").includes("填空") ? "fill_blank" : "answer"), title: b.title, titleLocked: b.title_locked === 1, questions: questionsWithImages } as any);
     }
 
     return card;
