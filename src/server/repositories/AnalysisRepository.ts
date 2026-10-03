@@ -83,6 +83,22 @@ function countErrorRateBuckets(qs: QuestionAnalysisItem[]) {
   return qs.reduce((b, q) => { if (q.errorRateLevel !== "none") b[q.errorRateLevel]++; return b; }, emptyErrorRateBuckets());
 }
 function placeholders(v: unknown[]): string { return v.map(() => "?").join(","); }
+
+/**
+ * 成绩表 / 导出「展示班级」的排序键（配合每生取首行去重使用）。
+ *
+ * 评审 P2：只按 c.id ASC 去重时，已转入新班的学生会命中 id 更小的归档旧班，
+ * 未筛选成绩表/导出显示旧班与其班排。展示班级必须**先选在读班级**（班级与其年级
+ * 均未归档），再按 joined_at 最新、同刻取 class_id 最大——与「当前班级」子查询
+ * （CURRENT_CLASS_*，v2.5.7 分支引入）同一口径。学生的关联全部归档时（毕业班级）
+ * 回落到最新归档归属，保证历史考试的导出仍有班级可看。
+ * 注意 c.id IS NOT NULL 守卫：LEFT JOIN 产生的「无班级」行不得按在读参与竞选。
+ */
+const DISPLAY_CLASS_ORDER = `
+      (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC,
+      cs.joined_at DESC,
+      c.id DESC`;
+
 function normalizeExamIds(v: Array<number | string | null | undefined> | undefined): number[] {
   const s = new Set<number>(); const r: number[] = [];
   for (const raw of v ?? []) { const id = Number(raw); if (Number.isInteger(id) && id > 0 && !s.has(id)) { s.add(id); r.push(id); } }
@@ -1373,9 +1389,9 @@ export class AnalysisRepository {
   }
 
   async getExportData(examId: number, classId?: number): Promise<ExportData> {
-    // 与 getScoreTableData 同口径：一名学生可有多行班级关联，导出必须按学生去重，
-    // 且排序补齐 student_id / class_id，避免同一学生每次导出落到不同班级行上。
-    const memberships = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, c.name as class_name, c.id as class_id FROM student_scores ss JOIN users u ON u.id = ss.student_id LEFT JOIN class_students cs ON cs.student_id = ss.student_id LEFT JOIN classes c ON c.id = cs.class_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC, ss.student_id ASC, c.id ASC`, examId) as any[];
+    // 与 getScoreTableData 同口径：一名学生可有多行班级关联，导出必须按学生去重；
+    // 每生首行由 DISPLAY_CLASS_ORDER 选出「展示班级」（在读优先），不得落到归档旧班。
+    const memberships = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, c.name as class_name, c.id as class_id FROM student_scores ss JOIN users u ON u.id = ss.student_id LEFT JOIN class_students cs ON cs.student_id = ss.student_id LEFT JOIN classes c ON c.id = cs.class_id LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC, ss.student_id ASC,${DISPLAY_CLASS_ORDER}`, examId) as any[];
     if (memberships.length === 0) return { students: [], questionHeaders: [] };
     const questionList = await this.db.all(`SELECT question_number, score_type, MAX(max_score) as max_score FROM question_scores WHERE exam_id = ? GROUP BY question_number, score_type ORDER BY question_number`, examId) as any[];
     const qHeaders = questionList.map((q: any) => String(q.question_number));
@@ -1408,10 +1424,11 @@ export class AnalysisRepository {
     const exam = await this.db.get(`SELECT e.name, e.subject, ac.exam_date, e.assigned_formula FROM exams e LEFT JOIN answer_cards ac ON ac.id = e.card_id WHERE e.id = ?`, examId) as any;
     if (!exam) throw new Error("考试不存在");
     const hasAssigned = !!(exam.assigned_formula && exam.assigned_formula !== "");
-    const memberships = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, ss.assigned_score, c.name as class_name, c.id as class_id, g.name as grade_name FROM student_scores ss JOIN users u ON u.id = ss.student_id LEFT JOIN class_students cs ON cs.student_id = ss.student_id LEFT JOIN classes c ON c.id = cs.class_id LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC, ss.student_id ASC, c.id ASC`, examId) as any[];
+    const memberships = await this.db.all(`SELECT ss.student_id, u.student_number, u.name, ss.total_score, ss.objective_score, ss.subjective_score, ss.assigned_score, c.name as class_name, c.id as class_id, g.name as grade_name FROM student_scores ss JOIN users u ON u.id = ss.student_id LEFT JOIN class_students cs ON cs.student_id = ss.student_id LEFT JOIN classes c ON c.id = cs.class_id LEFT JOIN grades g ON g.id = c.grade_id WHERE ss.exam_id = ? ORDER BY ss.total_score DESC, ss.student_id ASC,${DISPLAY_CLASS_ORDER}`, examId) as any[];
     if (memberships.length === 0) return { examName: exam.name, subject: exam.subject, examDate: exam.exam_date, hasAssignedScore: hasAssigned, rows: [], totalCount: 0 };
     // 一名学生可属于多个班级：年排/人数/分布按学生计算，班排仍使用各班完整成员。
-    // SQL 按班级 ID 排序，无班级筛选时沿用 MIN(class_id) 的展示口径。
+    // 无班级筛选时每生取 SQL 首行 = DISPLAY_CLASS_ORDER 选出的「展示班级」（在读优先），
+    // 已转入新班的学生不再显示归档旧班。
     const uniqueStudents = new Map<number, any>();
     for (const s of memberships) if (!uniqueStudents.has(s.student_id)) uniqueStudents.set(s.student_id, s);
     const allStudents = [...uniqueStudents.values()];
