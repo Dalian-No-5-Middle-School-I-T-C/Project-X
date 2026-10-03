@@ -40,6 +40,9 @@ jobs:
       - name: Core logic verify suite
         run: npm run verify:core-logic
 
+      - name: Ladder student identity regression
+        run: npx tsx scripts/verify-ladder-students.ts
+
       - name: Class teacher verify suite
         run: npm run verify:class-teachers
 
@@ -80,6 +83,27 @@ jobs:
         run: npm install --no-save --ignore-scripts @rollup/rollup-linux-x64-gnu @esbuild/linux-x64
       - name: MariaDB integration tests
         run: npm run verify:mariadb
+      # 天梯回归改的是排名 SQL（getScoreTableData / getExportData），生产方言是 MariaDB，
+      # 只在 SQLite 上跑等于没验证。用一个独立的一次性库跑同一套断言：
+      # verify:mariadb 会在 projectx_ci 里留下建表与成绩数据，
+      # 而脚本要求「空库」并自行写入夹具，因此不能复用 projectx_ci。
+      - name: Create disposable ladder test database
+        env:
+          MARIADB_ROOT_PASSWORD: ci-root-password
+        run: |
+          mysql -h127.0.0.1 -uroot -p"$MARIADB_ROOT_PASSWORD" <<'SQL'
+          CREATE DATABASE IF NOT EXISTS projectx_ladder_test CHARACTER SET utf8mb4;
+          GRANT ALL PRIVILEGES ON projectx_ladder_test.* TO 'projectx_ci'@'%';
+          FLUSH PRIVILEGES;
+          SQL
+      - name: Ladder student identity regression (MariaDB)
+        env:
+          PROJECTX_MARIADB_HOST: 127.0.0.1
+          PROJECTX_MARIADB_PORT: 3306
+          PROJECTX_MARIADB_USER: projectx_ci
+          PROJECTX_MARIADB_PASSWORD: ci-test-password
+          PROJECTX_MARIADB_DATABASE: projectx_ladder_test
+        run: npx tsx scripts/verify-ladder-students.ts --mariadb
 
   build:
     name: Build
