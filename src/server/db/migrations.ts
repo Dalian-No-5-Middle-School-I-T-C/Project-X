@@ -1182,30 +1182,30 @@ MIGRATIONS.push({ version: 51, name: "scanner-card-identity", up(db) {
   addColumnIfMissing(db, "twain_scan_records", "identity_json", "TEXT");
 } });
 
-// v52: 题组标题锁定。autoNameBlocks 每次改卡都会按「序号+类型+题数分值」重写 block.title，
+// v56: 题组标题锁定。autoNameBlocks 每次改卡都会按「序号+类型+题数分值」重写 block.title，
 // 导致用户手改的题组名称被覆盖回自动串（表现为「题组名称改不了」）。
 // 加 title_locked 标记：用户手改后置 1，自动命名跳过该块。
 // 与 #299 的 isAutoBlockTitle 启发式互补：启发式兜住存量数据，显式标记保证后续手改必不被覆盖。
-MIGRATIONS.push({ version: 52, name: "block-title-locked", up(db) {
+MIGRATIONS.push({ version: 56, name: "block-title-locked", up(db) {
   addColumnIfMissing(db, "objective_blocks", "title_locked", "INTEGER DEFAULT 0");
   addColumnIfMissing(db, "subjective_blocks", "title_locked", "INTEGER DEFAULT 0");
 } });
 
-// v53: 修复存量「已公布但仍显示阅卷中」的两字段错位。
+// v57: 修复存量「已公布但仍显示阅卷中」的两字段错位。
 // 历史上有几条路径会把 exams.status 单独改回 'grading' 而未同步 score_published，
 // 导致考试管理页「已公布」徽章仍在、成绩分析页却显示「阅卷中」。
 // 以发布标志为准把 status 推回 'closed'（score_published=1 语义上必然已结考）。
-MIGRATIONS.push({ version: 53, name: "repair-published-status-desync", up(db) {
+MIGRATIONS.push({ version: 57, name: "repair-published-status-desync", up(db) {
   db.exec(`UPDATE exams SET status = 'closed', updated_at = CURRENT_TIMESTAMP
            WHERE score_published = 1 AND (status IS NULL OR status <> 'closed')`);
 } });
 
-// v54: 清理存量「一名学生多份班级关联」残留，恢复一人一行不变量。
+// v58: 清理存量「一名学生多份班级关联」残留，恢复一人一行不变量。
 // 历史缺陷：UserRepository 重新导入已存在学生、ClassRepository.addStudent(s) 只 INSERT IGNORE
 // 新关联、从不删除旧行，导致调班后 class_students 残留旧班行；成绩分析按 MIN(class_id) 归班时
 // 会命中旧班，表现为「名单回到调班前的班级」。
 // 保留策略：保留 joined_at 最新的一行（同刻并列时取 class_id 最大者），与 CURRENT_CLASS_SUBQUERY 口径一致。
-MIGRATIONS.push({ version: 54, name: "dedupe-class-students", up(db) {
+MIGRATIONS.push({ version: 58, name: "dedupe-class-students", up(db) {
   db.exec(`DELETE FROM class_students
            WHERE EXISTS (
              SELECT 1 FROM class_students newer

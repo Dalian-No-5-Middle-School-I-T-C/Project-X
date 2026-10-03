@@ -969,21 +969,21 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE twain_scan_records ADD COLUMN identity_json TEXT",
   ] });
 
-  // v52: 题组标题锁定（与 SQLite v52 对齐）
-  mariadbMigrations.push({ version: 52, name: "block-title-locked", sqls: [
+  // v56: 题组标题锁定（与 SQLite v56 对齐）
+  mariadbMigrations.push({ version: 56, name: "block-title-locked", sqls: [
     "ALTER TABLE objective_blocks ADD COLUMN title_locked TINYINT DEFAULT 0",
     "ALTER TABLE subjective_blocks ADD COLUMN title_locked TINYINT DEFAULT 0",
   ] });
 
-  // v53: 修复存量「已公布但仍显示阅卷中」的两字段错位（与 SQLite v53 对齐）
-  mariadbMigrations.push({ version: 53, name: "repair-published-status-desync", sqls: [
+  // v57: 修复存量「已公布但仍显示阅卷中」的两字段错位（与 SQLite v57 对齐）
+  mariadbMigrations.push({ version: 57, name: "repair-published-status-desync", sqls: [
     "UPDATE exams SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE score_published = 1 AND (status IS NULL OR status <> 'closed')",
   ] });
 
-  // v54: 清理存量「一名学生多份班级关联」残留（与 SQLite v54 对齐）
+  // v58: 清理存量「一名学生多份班级关联」残留（与 SQLite v58 对齐）
   // 保留 joined_at 最新的一行（同刻并列取 class_id 最大者），与 CURRENT_CLASS_SUBQUERY 口径一致。
   // MariaDB 不允许直接在 DELETE 的子查询里引用被删表，故用派生表包一层。
-  mariadbMigrations.push({ version: 54, name: "dedupe-class-students", sqls: [
+  mariadbMigrations.push({ version: 58, name: "dedupe-class-students", sqls: [
     `DELETE cs FROM class_students cs
      JOIN (
        SELECT student_id,
