@@ -1182,6 +1182,97 @@ MIGRATIONS.push({ version: 51, name: "scanner-card-identity", up(db) {
   addColumnIfMissing(db, "twain_scan_records", "identity_json", "TEXT");
 } });
 
+MIGRATIONS.push({ version: 52, name: "class-head-teacher", up(db) {
+  addColumnIfMissing(db, "teacher_classes", "is_head_teacher", "INTEGER NOT NULL DEFAULT 0");
+} });
+
+MIGRATIONS.push({ version: 53, name: "wechat-grade-release-notifications", up(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wechat_subscription_bindings (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      student_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      openid      TEXT NOT NULL,
+      template_id TEXT NOT NULL,
+      accepted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(student_id, template_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_wsb_student ON wechat_subscription_bindings(student_id);
+    -- 一个 openid 可绑定多个学生（共用设备/同一家长多孩），故 openid 仅普通索引
+    CREATE INDEX IF NOT EXISTS idx_wsb_openid ON wechat_subscription_bindings(openid);
+
+    CREATE TABLE IF NOT EXISTS wechat_grade_release_notifications (
+      exam_id       INTEGER PRIMARY KEY REFERENCES exams(id) ON DELETE CASCADE,
+      status        TEXT NOT NULL DEFAULT 'sending',
+      success_count INTEGER NOT NULL DEFAULT 0,
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+} });
+
+MIGRATIONS.push({ version: 54, name: "exam-original-paper-and-answer-keys", up(db) {
+  addColumnIfMissing(db, "exams", "show_original_paper", "INTEGER DEFAULT 0");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS exam_answer_keys (
+      exam_id         INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+      question_number INTEGER NOT NULL,
+      answer_text     TEXT NOT NULL,
+      page_index      INTEGER,
+      updated_by      INTEGER REFERENCES users(id),
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (exam_id, question_number)
+    );
+    CREATE TABLE IF NOT EXISTS exam_answer_key_pages (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      exam_id     INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+      page_index  INTEGER NOT NULL,
+      filename    TEXT NOT NULL,
+      stored_path TEXT NOT NULL,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(exam_id, page_index)
+    );
+  `);
+} });
+
+/**
+ * 迁移 55：把「全局 head_teacher 角色」表达的历史班主任回填成按班标记。
+ *
+ * 迁移 52 只加列、默认 0，历史数据全部落在「有班主任教师、但班里没有任何班主任标记」的
+ * 状态：配置面板显示「未设置班主任」，换班主任时旧关联也清不掉，而旧教师仍凭
+ * users.teacher_role='head_teacher' 对其关联班级全科可见（评审 P1）。此处一次性补齐标记。
+ *
+ * 一班至多一名班主任：同班有多名历史班主任时保留 teacher_id 最小者，其余交由管理员在
+ * 班级页显式重设（不做猜测，避免把权限分配给非预期的教师）。权限读取侧同步只在「该班
+ * 尚无按班标记」时才把不带科目的遗留关联视同班主任（见 middleware.ts），保证被替换流程
+ * 撤下来的旧班主任不会凭遗留关联继续全科可见。
+ * 已经有班主任标记的班级不动，保证幂等且不覆盖新版界面的显式设置。
+ *
+ * 版本号取 55：53 / 54 已被并行分支 #301（wechat-grade-release-notifications /
+ * exam-original-paper-and-answer-keys）占用。迁移执行器把「已记录的 version」视为已完成，
+ * 同号会让其中一套 DDL 永久跳过（不是文本冲突问题），因此合并前后都必须唯一。
+ */
+MIGRATIONS.push({ version: 55, name: "backfill-class-head-teacher", up(db) {
+  const rows = db.prepare(`
+    SELECT tc.class_id AS classId, MIN(tc.teacher_id) AS teacherId
+      FROM teacher_classes tc
+      JOIN users u ON u.id = tc.teacher_id
+     WHERE u.teacher_role = 'head_teacher'
+       AND NOT EXISTS (
+         SELECT 1 FROM teacher_classes h
+          WHERE h.class_id = tc.class_id AND h.is_head_teacher = 1
+       )
+     GROUP BY tc.class_id
+  `).all() as Array<{ classId: number; teacherId: number }>;
+  if (rows.length === 0) return;
+  const mark = db.prepare(
+    "UPDATE teacher_classes SET is_head_teacher = 1 WHERE teacher_id = ? AND class_id = ?"
+  );
+  for (const row of rows) mark.run(row.teacherId, row.classId);
+} });
 // v56: 题组标题锁定。autoNameBlocks 每次改卡都会按「序号+类型+题数分值」重写 block.title，
 // 导致用户手改的题组名称被覆盖回自动串（表现为「题组名称改不了」）。
 // 加 title_locked 标记：用户手改后置 1，自动命名跳过该块。

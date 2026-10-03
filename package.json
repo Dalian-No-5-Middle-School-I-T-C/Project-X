@@ -1,6 +1,6 @@
 {
   "name": "answer-card-designer",
-  "version": "2.5.7",
+  "version": "2.6.0",
   "description": "Project-X answer card scanning desktop app; Web version deployed separately via dist/web/.",
   "author": "Project-X",
   "private": true,
@@ -59,6 +59,8 @@
     "verify:score-grid": "tsx scripts/verify-score-grid.ts",
     "verify:pdf-font": "tsx scripts/verify-pdf-font.ts",
     "verify:card-identity": "tsx scripts/verify-card-identity.ts",
+    "verify:wechat-grade-release": "tsx scripts/wechat-grade-release-smoke.ts",
+    "verify:exam-paper": "tsx scripts/exam-paper-answer-key-smoke.ts",
     "verify:recognizer-layout": "tsx scripts/verify-recognizer-layout.ts",
     "verify:recognizer-pencil": "tsx scripts/verify-recognizer-pencil.ts",
     "verify:core-logic": "tsx scripts/verify-core-logic.ts",
@@ -73,6 +75,7 @@
     "verify:p1-integrity": "tsx scripts/verify-p1-integrity.ts",
     "verify:p1-scope": "tsx scripts/verify-p1-scope.ts",
     "verify:p1-readgate": "tsx scripts/verify-p1-readgate.ts",
+    "verify:class-teachers": "tsx scripts/class-teachers-smoke.ts",
     "typecheck": "tsc --noEmit",
     "verify:scanner-skin-patch": "tsx scripts/verify-scanner-skin-patch-guard.ts"
   },

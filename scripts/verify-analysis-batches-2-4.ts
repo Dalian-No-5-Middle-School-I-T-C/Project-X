@@ -4,7 +4,7 @@
  * 用真实 SQLite + 迁移（含 v38 ai_analysis_jobs）搭数据，逐项断言：
  *  - 学生成长曲线 getStudentTrend（排名兜底/得分率）
  *  - 临界生名单 getBorderlineStudents（线/浮动区间语义）
- *  - 偏科预警 getSubjectDeviation（Z 分与手工计算一致）
+ *  - 偏科预警 getSubjectDeviation（年级 Z 与手工一致 + 相对个人基线判定，Issue #264）
  *  - 班级知识点雷达 getClassKnowledgeStats（聚合/覆盖率）
  *  - 同卡对比 getComparableExams / 命题质量 getSubjectQuality
  *  - AI 异步任务流（创建→排队清理→执行失败落 error）
@@ -130,7 +130,7 @@ const blClass = await repo.getBorderlineStudents(e1, { lineKind: "pass", margin:
 ok(blClass.items.length === 1 && blClass.items[0].studentName === "戊", "班级过滤：2 班只戊在 ±30 内", blClass.items);
 
 // ============================================================
-console.log("\n== 建议 7：偏科预警 getSubjectDeviation ==");
+console.log("\n== 建议 7 / Issue #264：偏科预警 getSubjectDeviation ==");
 const dev = await repo.getSubjectDeviation([e1, e2]);
 const e1Scores = [100, 56, 60, 90, 40];
 const e2Scores = [70, 50, 80];
@@ -145,8 +145,41 @@ ok(subj1.z === zA1 && subj1.gradeAvg === Math.round(m1 * 10) / 10, "甲数学 Z 
 const itemB = dev.items.find((i) => i.studentId === uB)!;
 ok(itemB.subjects.length === 1 && itemB.subjects[0].subject === "数学", "乙只有数学（缺语文场不参与 Z 比较）", itemB.subjects);
 ok(itemA.flagged === false && itemA.lowestSubject === "语文", "甲两科都强，不预警", itemA);
+// Issue #264：偏科以「单科相对个人跨科基线」判定，而非各科各自比年级均分
+const subj2A = itemA.subjects.find((s) => s.examId === e2)!;
+const ownMeanZ1 = (subj1.z + subj2A.z) / 2;
+ok(Math.abs(itemA.ownMeanZ - ownMeanZ1) < 0.02, "甲个人基线 = 两科年级 Z 的均值", { got: itemA.ownMeanZ, expect: ownMeanZ1 });
+// ±0.01 容差：relativeZ/ownMeanZ 由未修约值算出，展示字段（z/gradeStd 等）已修约，两者可能差 0.01
+ok(Math.abs(subj2A.relativeZ - (subj2A.z - itemA.ownMeanZ)) <= 0.02, "语文相对落差 = 本场 Z − 个人基线", { relativeZ: subj2A.relativeZ, z: subj2A.z, ownMeanZ: itemA.ownMeanZ });
+ok(Math.abs(itemA.lowestZ - subj2A.relativeZ) <= 0.01 && itemA.lowestZ < 0, "甲最低为相对落差（语文），非裸年级 Z", itemA.lowestZ);
+const itemB2 = dev.items.find((i) => i.studentId === uB)!;
+ok(itemB2.lowestZ === 0 && itemB2.flagged === false && itemB2.lowestSubject === "数学", "乙单科：相对落差恒 0，不判偏科", itemB2);
+const itemC = dev.items.find((i) => i.studentId === uC)!;
+// 丙 数学 z≈-0.41、语文 z≈-1.36（stdDev 为总体口径 ÷n，见 src/shared/stats.ts），个人基线 ≈ -0.88 → 语文相对 ≈ -0.47；
+// 裸年级 Z 达 -1.36 却因语文卷整体偏难，相对个人只偏 -0.47 —— 阈值 0.4 应预警、默认 0.8 不应预警
+ok(Math.abs(itemC.lowestZ + 0.47) < 0.02 && itemC.lowestSubject === "语文", "丙语文相对落差 ≈ -0.47（裸 Z -1.36 是卷难，不是偏科）", itemC);
+ok(itemC.flagged === false, "丙默认阈值 0.8 不预警", itemC.flagged);
+const devTight = await repo.getSubjectDeviation([e1, e2], { threshold: 0.4 });
+const itemCT = devTight.items.find((i) => i.studentId === uC)!;
+ok(itemCT.flagged === true, "丙在阈值 0.4 下触发预警（相对个人基线判定）", itemCT);
 const devClass = await repo.getSubjectDeviation([e1, e2], { classId: class1 });
 ok(devClass.items.every((i) => i.className === "1班"), "班级过滤只输出 1 班学生", devClass.items.map((i) => i.className));
+
+// PR #303 审查 P1 回归：面板数据源必须是「跨科」考试集合。
+// 旧版复用 /trends?subject=<当前科目>，提交给 getSubjectDeviation 的 examIds 永远只有一个学科，
+// bySubject.size 恒为 1 → 相对落差恒 0 → 预警在唯一 UI 入口永不触发。
+const uiOpts = await repo.getLatestExamPerSubject();
+ok(uiOpts.length === 2 && new Set(uiOpts.map((o) => o.subject)).size === 2, "exam-options 每科最近一场（数学 e3 + 语文 e2）", uiOpts.map((o) => `${o.subject}/${o.examName}`));
+ok(new Set(uiOpts.map((o) => o.examId)).has(e3) && new Set(uiOpts.map((o) => o.examId)).has(e2), "exam-options 取到各学科最新一场", uiOpts.map((o) => o.examId));
+const uiOptsMulti = await repo.getLatestExamPerSubject({ perSubject: 5 });
+ok(uiOptsMulti.length === 3, "perSubject=5 时同学科可给多场", uiOptsMulti.map((o) => o.examName));
+const devViaUi = await repo.getSubjectDeviation(uiOptsMulti.map((o) => o.examId));
+ok(devViaUi.items.some((i) => new Set(i.subjects.map((s) => s.subject)).size >= 2), "UI 管道输入可产出多科相对落差", devViaUi.items.map((i) => i.subjects.map((s) => s.subject)));
+const devSingleSubject = await repo.getSubjectDeviation(uiOptsMulti.filter((o) => o.subject === "数学").map((o) => o.examId));
+ok(devSingleSubject.items.every((i) => i.lowestZ === 0 && i.flagged === false), "单科输入恒不触发（P1 成因，故面板不再用 /trends）", devSingleSubject.items.length);
+const devScoped = await repo.getLatestExamPerSubject({ visibleExamIds: [e2] });
+ok(devScoped.length === 1 && devScoped[0].examId === e2, "exam-options 受可见考试范围约束", devScoped.map((o) => o.examId));
+ok((await repo.getLatestExamPerSubject({ visibleExamIds: [] })).length === 0, "无可见考试时 exam-options 返回空");
 
 // ============================================================
 console.log("\n== 建议 10：班级知识点掌握 getClassKnowledgeStats ==");
@@ -246,6 +279,65 @@ analysisCache.invalidateExam(e1);
 ok(analysisCache.size === 0, "invalidateExam 清空该场考试全部缓存", analysisCache.size);
 const ov3 = await repo.getExamOverview(e1);
 ok(ov3.avgScore === ov1.avgScore, "失效后重算结果一致", { a: ov3.avgScore, b: ov1.avgScore });
+
+// ============================================================
+console.log("\n== PR #303 审查 P2：exam-options 作用域（放末尾，避免新增考试污染前序统计）==");
+// 跨科候选必须限定在锚点考试的年级 / 班级。此前只按可见性收敛，对视全可见的账号等于
+// 「全校每科最近一场」——他年级更新的考试会把本年级候选整批顶掉，而面板随后带上 classId
+// 过滤，班级维度就静默算成空集。
+const otherGrade = db.prepare("INSERT INTO grades (name) VALUES (?)").run("高二").lastInsertRowid as number;
+const otherClass = db.prepare("INSERT INTO classes (grade_id, name) VALUES (?, ?)").run(otherGrade, "9班").lastInsertRowid as number;
+const eOtherMath = db.prepare("INSERT INTO exams (name, subject, status, grade_id, class_id, start_time) VALUES (?, ?, 'closed', ?, ?, ?)")
+  .run("G2-数学新卷", "数学", otherGrade, otherClass, "2099-01-01 08:00:00").lastInsertRowid as number;
+const eOtherChinese = db.prepare("INSERT INTO exams (name, subject, status, grade_id, class_id, start_time) VALUES (?, ?, 'closed', ?, ?, ?)")
+  .run("G2-语文新卷", "语文", otherGrade, otherClass, "2099-01-02 08:00:00").lastInsertRowid as number;
+insertS.run(eOtherMath, uA, 88, 88);
+insertS.run(eOtherChinese, uA, 77, 77);
+
+const unscopedOpts = await repo.getLatestExamPerSubject();
+ok(
+  unscopedOpts.some((o) => o.examId === eOtherMath) && unscopedOpts.some((o) => o.examId === eOtherChinese),
+  "无作用域时他年级更新的考试会顶掉本年级候选（P2 成因）",
+  unscopedOpts.map((o) => `${o.subject}/${o.examName}`)
+);
+
+const anchorExam = db.prepare("INSERT INTO exams (name, subject, status, grade_id, class_id) VALUES (?, ?, 'closed', ?, ?)")
+  .run("高一锚点考试", "物理", gradeId, class1).lastInsertRowid as number;
+const anchorScope = await repo.getExamScope(anchorExam);
+ok(anchorScope?.gradeId === gradeId && anchorScope?.classId === class1, "getExamScope 取到年级 / 班级锚点", anchorScope);
+ok((await repo.getExamScope(999999)) === null, "不存在的考试返回 null");
+
+const scopedOpts = await repo.getLatestExamPerSubject({ gradeId, classId: class1 });
+ok(
+  !scopedOpts.some((o) => o.examId === eOtherMath || o.examId === eOtherChinese),
+  "限定锚点年级后他年级考试不再进入候选（P2 修复）",
+  scopedOpts.map((o) => `${o.subject}/${o.examName}`)
+);
+ok(
+  scopedOpts.some((o) => o.examId === e2),
+  "本年级语文候选仍在（未标注年级的历史考试不被误排除）",
+  scopedOpts.map((o) => o.examId)
+);
+const scopedDev = await repo.getSubjectDeviation(scopedOpts.map((o) => o.examId), { classId: class1 });
+ok(scopedDev.items.length > 0, "限定作用域后班级维度偏科分析不再算成空集", scopedDev.items.length);
+
+// 「全部班级」视图（锚点是年级统考）只能取统考：否则某个班的最新考试会顶掉统考候选，
+// 他班学生只覆盖到部分学科、相对落差恒 0，预警静默丢失。
+const gradeWideAnchor = db.prepare("INSERT INTO exams (name, subject, status, grade_id, class_id) VALUES (?, ?, 'closed', ?, NULL)")
+  .run("高一统考锚点", "物理", gradeId).lastInsertRowid as number;
+const scopeGw = await repo.getExamScope(gradeWideAnchor);
+ok(scopeGw?.gradeId === gradeId && scopeGw?.classId === null, "年级统考锚点：年级有效、班级锚点为空", scopeGw);
+const eClassMathNew = db.prepare("INSERT INTO exams (name, subject, status, grade_id, class_id, start_time) VALUES (?, ?, 'closed', ?, ?, ?)")
+  .run("1班数学新卷", "数学", gradeId, class1, "2099-03-01 08:00:00").lastInsertRowid as number;
+insertS.run(eClassMathNew, uA, 95, 95);
+const gwOpts = await repo.getLatestExamPerSubject({ gradeId, gradeWideOnly: true });
+ok(
+  !gwOpts.some((o) => o.examId === eClassMathNew),
+  "全部班级视图不取某个班的最新考试（P2 修复）",
+  gwOpts.map((o) => `${o.subject}/${o.examName}`)
+);
+const classOpts = await repo.getLatestExamPerSubject({ gradeId, classId: class1 });
+ok(classOpts.some((o) => o.examId === eClassMathNew), "具体班级视图仍可取本班最新考试", classOpts.map((o) => o.examId));
 
 // 清理
 try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}

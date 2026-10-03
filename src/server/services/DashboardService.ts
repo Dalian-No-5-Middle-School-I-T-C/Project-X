@@ -25,12 +25,21 @@ export async function getDashboardData(
       : ` AND e.id IN (${visibleExamIds.map(() => "?").join(",")})`;
   const scopeParams: number[] = visibleExamIds ?? [];
 
-  // 科任老师：额外限定本人所教学科（或本人创建的考试），晨测（quiz）全量可见下也保持科目口径
+  // 科任老师：额外限定本人所教学科（或本人创建的考试），晨测（quiz）全量可见下也保持科目口径。
+  // 但担任班主任的班级必须按全科口径——与 getVisibleExamIds 的「按班班主任班级全科可见」一致，
+  // 否则该班其它学科的考试在首页统计与「最新出卷/出分」里会被漏掉（评审 P2）。
   let subjectFilter = "";
   let subjectParams: (string | number)[] = [];
   if (user?.teacher_role === "subject_teacher" && user.subject) {
-    subjectFilter = " AND (e.subject = ? OR e.created_by = ?)";
-    subjectParams = [user.subject, user.id];
+    const headClassIds = (await db.all<{ class_id: number }>(
+      "SELECT class_id FROM teacher_classes WHERE teacher_id = ? AND is_head_teacher = 1",
+      userId
+    )).map((r) => r.class_id);
+    const headClause = headClassIds.length > 0
+      ? ` OR e.class_id IN (${headClassIds.map(() => "?").join(",")})`
+      : "";
+    subjectFilter = ` AND (e.subject = ? OR e.created_by = ?${headClause})`;
+    subjectParams = [user.subject, userId, ...headClassIds];
   }
 
   const data: DashboardData = {

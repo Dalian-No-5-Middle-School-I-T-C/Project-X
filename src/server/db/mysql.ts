@@ -968,6 +968,58 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE twain_scan_sessions ADD COLUMN identity_mode VARCHAR(16) NOT NULL DEFAULT 'strict'",
     "ALTER TABLE twain_scan_records ADD COLUMN identity_json TEXT",
   ] });
+  mariadbMigrations.push({ version: 52, name: "class-head-teacher", sqls: [
+    "ALTER TABLE teacher_classes ADD COLUMN is_head_teacher TINYINT NOT NULL DEFAULT 0",
+  ] });
+  mariadbMigrations.push({ version: 53, name: "wechat-grade-release-notifications", sqls: [
+    `CREATE TABLE IF NOT EXISTS wechat_subscription_bindings (
+      id          INT AUTO_INCREMENT PRIMARY KEY,
+      student_id  INT NOT NULL,
+      openid      VARCHAR(128) NOT NULL,
+      template_id VARCHAR(128) NOT NULL,
+      accepted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_wsb_student_template (student_id, template_id),
+      INDEX idx_wsb_student (student_id),
+      INDEX idx_wsb_openid (openid),
+      FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+    `CREATE TABLE IF NOT EXISTS wechat_grade_release_notifications (
+      exam_id       INT PRIMARY KEY,
+      status        VARCHAR(32) NOT NULL DEFAULT 'sending',
+      success_count INT NOT NULL DEFAULT 0,
+      failure_count INT NOT NULL DEFAULT 0,
+      created_at    DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at    DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ] });
+  mariadbMigrations.push({ version: 54, name: "exam-original-paper-and-answer-keys", sqls: [
+    "ALTER TABLE exams ADD COLUMN show_original_paper TINYINT DEFAULT 0",
+    `CREATE TABLE IF NOT EXISTS exam_answer_keys (
+      exam_id         INT NOT NULL,
+      question_number INT NOT NULL,
+      answer_text     TEXT NOT NULL,
+      page_index      INT,
+      updated_by      INT,
+      created_at      DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (exam_id, question_number),
+      FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+      FOREIGN KEY (updated_by) REFERENCES users(id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+    `CREATE TABLE IF NOT EXISTS exam_answer_key_pages (
+      id          INT AUTO_INCREMENT PRIMARY KEY,
+      exam_id     INT NOT NULL,
+      page_index  INT NOT NULL,
+      filename    VARCHAR(255) NOT NULL,
+      stored_path VARCHAR(500) NOT NULL,
+      created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_exam_answer_key_pages (exam_id, page_index),
+      FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ] });
 
   // v56: 题组标题锁定（与 SQLite v56 对齐）
   mariadbMigrations.push({ version: 56, name: "block-title-locked", sqls: [
@@ -1006,6 +1058,38 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     }
     await conn.execute("INSERT INTO schema_migrations (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)", [m.version, m.name]);
     console.log(`[MariaDB] Migration ${m.version}: ${m.name}`);
+  }
+
+  // 迁移 55（与 SQLite 侧 backfill-class-head-teacher 同口径）：版本号取 55 而非 53/54，
+  // 后者已被并行分支 #301 的 wechat / exam-original-paper 迁移占用——执行器按已记录版本判重，
+  // 同号会让其中一套永久跳过。
+  // 把历史「全局 head_teacher 角色」表达的班主任回填成按班标记 is_head_teacher。
+  // 逐班只保留一名班主任需要先聚合再写，SQL 直写会踩 MySQL「不能在子查询中引用被更新的表」，
+  // 故用一次 TS 步骤完成；版本号照常写入 schema_migrations 以保证幂等。
+  const BACKFILL_HEAD_TEACHER_VERSION = 55;
+  if (!applied.has(BACKFILL_HEAD_TEACHER_VERSION)) {
+    const [headRows] = await conn.execute(
+      `SELECT tc.class_id AS class_id, MIN(tc.teacher_id) AS teacher_id
+         FROM teacher_classes tc
+         JOIN users u ON u.id = tc.teacher_id
+        WHERE u.teacher_role = 'head_teacher'
+          AND NOT EXISTS (
+            SELECT 1 FROM teacher_classes h
+             WHERE h.class_id = tc.class_id AND h.is_head_teacher = 1
+          )
+        GROUP BY tc.class_id`
+    ) as [RowDataPacket[], any];
+    for (const row of headRows as Array<{ class_id: number; teacher_id: number }>) {
+      await conn.execute(
+        "UPDATE teacher_classes SET is_head_teacher = 1 WHERE teacher_id = ? AND class_id = ?",
+        [row.teacher_id, row.class_id]
+      );
+    }
+    await conn.execute(
+      "INSERT INTO schema_migrations (version, name) VALUES (?, ?) ON DUPLICATE KEY UPDATE name = VALUES(name)",
+      [BACKFILL_HEAD_TEACHER_VERSION, "backfill-class-head-teacher"]
+    );
+    console.log(`[MariaDB] Migration ${BACKFILL_HEAD_TEACHER_VERSION}: backfill-class-head-teacher（回填 ${headRows.length} 个班级）`);
   }
 }
 export { getMariadbConfig };

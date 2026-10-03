@@ -19,7 +19,7 @@ import type {
   GroupSubjectMetric, OptionAnalysisQuestion, OptionAnalysisResponse,
   OptionStat, QuestionAnalysisItem, QuestionStudentScore,
   PreviousExamComparison, ScoreSummary, ScoreTrendPoint, StudentRankingItem, StudentTrendPoint,
-  SubjectDeviationItem, SubjectDeviationResponse, SubjectQualityPoint, SubjectQualityResponse, WrongQuestionRow
+  SubjectDeviationItem, SubjectDeviationResponse, SubjectQualityPoint, SubjectQualityResponse, SubjectZScore, WrongQuestionRow
 } from "../../shared/types";
 
 export interface ExportRow {
@@ -366,6 +366,89 @@ export class AnalysisRepository {
       : await this.db.all(`SELECT e.id as examId, ROUND(AVG(ss.total_score), 1) as classAvg, COUNT(*) as classCount FROM exams e JOIN student_scores ss ON ss.exam_id = e.id JOIN class_students cs ON cs.student_id = ss.student_id WHERE e.subject = ? AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql} AND cs.class_id = ? GROUP BY e.id`, s, ...scopeParams, classId) as any[];
     const m = new Map(classRows.map(r => [r.examId, r]));
     return gradeRows.map(r => ({ ...r, classAvg: m.get(r.examId)?.classAvg ?? null, classCount: m.get(r.examId)?.classCount ?? 0 }));
+  }
+
+  /**
+   * Issue #264 / PR #303 审查 P1：偏科分析需要「跨科」考试集合。
+   * 取每个学科最近的一场（可按 perSubject 取多场）供面板默认勾选；
+   * 单科考试集合会让相对个人基线的算法永远无法成立（bySubject.size 恒为 1）。
+   *
+   * PR #303 审查 P2：必须限定到「当前年级 / 当前班级」的作用域。此前只按可见性收敛，
+   * 对视全可见的账号等于全校范围取卷——他年级更新的考试会把本班候选整批顶掉，
+   * 而面板又会带上 classId 过滤，结果是班级维度静默算成空集。作用域由 getExamScope 提供。
+   */
+  async getLatestExamPerSubject(options: {
+    perSubject?: number;
+    visibleExamIds?: number[] | null;
+    gradeId?: number | null;
+    classId?: number | null;
+    /**
+     * true 时只取年级统考（class_id 为空）。
+     * 用于「全部班级」视图：锚点考试本身就是年级统考时，不能放任某个班的最新考试
+     * 顶掉统考候选——否则他班学生只覆盖到部分学科，相对落差恒 0、预警静默丢失。
+     */
+    gradeWideOnly?: boolean;
+  } = {}): Promise<ScoreTrendPoint[]> {
+    const perSubject = Math.max(1, options.perSubject ?? 1);
+    const visibleExamIds = options.visibleExamIds;
+    if (visibleExamIds != null && visibleExamIds.length === 0) return [];
+
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (visibleExamIds != null) {
+      conditions.push(`e.id IN (${visibleExamIds.map(() => "?").join(",")})`);
+      params.push(...visibleExamIds);
+    }
+    if (options.gradeId != null) {
+      // 未标注年级的历史考试（grade_id 为空）不参与排除，避免静默丢掉候选
+      conditions.push("(e.grade_id = ? OR e.grade_id IS NULL)");
+      params.push(options.gradeId);
+    }
+    if (options.classId != null) {
+      // 班级维度：本班考试 + 年级统考（class_id 为空），不把同年级其它班的考试算进候选
+      conditions.push("(e.class_id = ? OR e.class_id IS NULL)");
+      params.push(options.classId);
+    } else if (options.gradeWideOnly) {
+      // 全部班级视图：只认年级统考，避免单个班的最新考试顶掉统考候选
+      conditions.push("e.class_id IS NULL");
+    }
+    const scopeSql = conditions.length > 0 ? ` AND ${conditions.join(" AND ")}` : "";
+    // 与 getScoreTrend 同口径：只取已有成绩的未删除考试，时间升序后各学科截取尾部
+    const rows = await this.db.all(
+      `SELECT e.id as examId, e.name as examName, e.subject as subject,
+              COALESCE(e.start_time, e.end_time, e.created_at) as examTime,
+              ROUND(AVG(ss.total_score), 1) as gradeAvg, COUNT(*) as gradeCount
+       FROM exams e
+       JOIN student_scores ss ON ss.exam_id = e.id
+       WHERE e.subject IS NOT NULL AND e.subject <> '' AND ${EXAM_NOT_SOFT_DELETED_SQL}${scopeSql}
+       GROUP BY e.id
+       ORDER BY COALESCE(e.start_time, e.end_time, e.created_at) ASC, e.id ASC`,
+      ...params
+    ) as Array<{ examId: number; examName: string; subject: string; examTime: string; gradeAvg: number; gradeCount: number }>;
+    const bySubject = new Map<string, ScoreTrendPoint[]>();
+    for (const r of rows) {
+      const list = bySubject.get(r.subject) ?? [];
+      list.push({ examId: r.examId, examName: r.examName, subject: r.subject, examTime: r.examTime, gradeAvg: r.gradeAvg, gradeCount: r.gradeCount });
+      if (list.length > perSubject) list.shift();
+      bySubject.set(r.subject, list);
+    }
+    return Array.from(bySubject.values()).flat().sort((a, b) => a.subject.localeCompare(b.subject, "zh-CN") || a.examTime.localeCompare(b.examTime));
+  }
+
+  /**
+   * 取某场考试的年级 / 班级锚点，供跨科候选按同年级收敛。
+   * 班级为空（年级统考）时只锚年级，避免把年级统考排除在候选之外。
+   */
+  async getExamScope(examId: number): Promise<{ gradeId: number | null; classId: number | null } | null> {
+    const row = await this.db.get<{ grade_id: number | null; class_id: number | null }>(
+      "SELECT grade_id, class_id FROM exams WHERE id = ?",
+      examId
+    );
+    if (!row) return null;
+    return {
+      gradeId: row.grade_id == null ? null : Number(row.grade_id),
+      classId: row.class_id == null ? null : Number(row.class_id),
+    };
   }
 
   async getStudentRanking(examId: number, classId?: number): Promise<StudentRankingItem[]> {
@@ -1494,7 +1577,7 @@ export class AnalysisRepository {
     return { examId, lineKind, lineLabel, line: Math.round(line * 10) / 10, margin, fullScore, items };
   }
 
-  // ── 建议 7：偏科预警（Z 分，跨科比较）───────────────
+  // ── 建议 7 / Issue #264：偏科预警（相对个人跨科基线的 Z 分）──
   async getSubjectDeviation(examIds: number[], options: { classId?: number; threshold?: number } = {}): Promise<SubjectDeviationResponse> {
     const ids = normalizeExamIds(examIds);
     const threshold = options.threshold ?? 0.8;
@@ -1522,30 +1605,70 @@ export class AnalysisRepository {
     for (const [eid, list] of scoresByExam) statsByExam.set(eid, { mean: mean(list), std: stdDev(list) });
 
     const classFilter = options.classId;
-    const byStudent = new Map<number, SubjectDeviationItem>();
+    const round2 = (x: number) => Math.round(x * 100) / 100;
+    type RawRow = { examId: number; subject: string; score: number; gradeAvg: number; gradeStd: number; z: number; zRaw: number };
+    type StudentAcc = { item: Omit<SubjectDeviationItem, "subjects" | "ownMeanZ" | "lowestZ" | "lowestSubject" | "flagged">; rows: RawRow[] };
+    const byStudent = new Map<number, StudentAcc>();
     for (const r of scoreRows) {
       if (classFilter != null) {
         if (classFilter === 0 && r.class_id != null) continue;
         if (classFilter > 0 && Number(r.class_id) !== classFilter) continue;
       }
-      let entry = byStudent.get(r.student_id);
-      if (!entry) {
-        entry = { studentId: r.student_id, studentNumber: r.student_number ?? "", studentName: r.name ?? "", className: r.class_name ?? "未知班级", subjects: [], lowestZ: 0, lowestSubject: "", flagged: false };
-        byStudent.set(r.student_id, entry);
+      let acc = byStudent.get(r.student_id);
+      if (!acc) {
+        acc = {
+          item: { studentId: r.student_id, studentNumber: r.student_number ?? "", studentName: r.name ?? "", className: r.class_name ?? "未知班级" },
+          rows: [],
+        };
+        byStudent.set(r.student_id, acc);
       }
       const st = statsByExam.get(Number(r.exam_id)) ?? { mean: 0, std: 0 };
       const score = Number(r.total_score);
-      const z = st.std > 0 ? (score - st.mean) / st.std : 0;
-      entry.subjects.push({
+      // 未修约的 z 参与基线计算，修约值仅用于展示（Issue #294 评审期间确定的精度策略）
+      const zRaw = st.std > 0 ? (score - st.mean) / st.std : 0;
+      acc.rows.push({
         examId: Number(r.exam_id), subject: subjectOf.get(Number(r.exam_id)) ?? "",
         score, gradeAvg: Math.round(st.mean * 10) / 10, gradeStd: Math.round(st.std * 10) / 10,
-        z: Math.round(z * 100) / 100,
+        z: round2(zRaw), zRaw,
       });
     }
-    const items = Array.from(byStudent.values()).map((e) => {
-      const lowest = e.subjects.reduce((a, b) => (b.z < a.z ? b : a), e.subjects[0]);
-      return { ...e, lowestZ: lowest.z, lowestSubject: lowest.subject, flagged: lowest.z < -threshold };
-    });
+    const items: SubjectDeviationItem[] = [];
+    for (const acc of byStudent.values()) {
+      // 同一科目多场考试先求平均 Z，得到该科目的个人水平
+      const bySubject = new Map<string, { sum: number; count: number }>();
+      for (const row of acc.rows) {
+        const g = bySubject.get(row.subject) ?? { sum: 0, count: 0 };
+        g.sum += (row as RawRow & { zRaw: number }).zRaw;
+        g.count += 1;
+        bySubject.set(row.subject, g);
+      }
+      const subjectMeans = Array.from(bySubject.values()).map((g) => g.sum / g.count);
+      // 个人整体水平基线 = 各科平均 Z 的均值；偏科看「单科相对个人基线」而非各自比年级
+      const ownMeanZ = mean(subjectMeans);
+      const subjects: SubjectZScore[] = acc.rows.map((row) => ({
+        examId: row.examId, subject: row.subject, score: row.score,
+        gradeAvg: row.gradeAvg, gradeStd: row.gradeStd, z: row.z,
+        relativeZ: round2((row as RawRow & { zRaw: number }).zRaw - ownMeanZ),
+      }));
+      let lowestSubject = "";
+      let lowestRelative = 0;
+      for (const [subj, g] of bySubject) {
+        const relative = g.sum / g.count - ownMeanZ;
+        if (lowestSubject === "" || relative < lowestRelative) {
+          lowestSubject = subj;
+          lowestRelative = relative;
+        }
+      }
+      items.push({
+        ...acc.item,
+        subjects,
+        ownMeanZ: round2(ownMeanZ),
+        lowestZ: round2(lowestRelative),
+        lowestSubject,
+        // 只有 1 科时无法判定偏科（相对值恒为 0），需至少 2 科
+        flagged: bySubject.size >= 2 && lowestRelative < -threshold,
+      });
+    }
     items.sort((a, b) => Number(b.flagged) - Number(a.flagged) || a.lowestZ - b.lowestZ);
     return { examIds: ids, threshold, items };
   }
