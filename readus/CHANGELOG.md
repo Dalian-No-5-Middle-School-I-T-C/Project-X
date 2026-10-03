@@ -126,7 +126,7 @@
 
 > 分支 `fix-scanner-twain-adf-and-draft-card`（PR #304）。依据现场回传的 QQ 邮箱反馈与 `main.log`（含 `[checkpoint] scan ... pages=1` 全量证据、`Native recognizer exited with code 3221225794`）。共闭合 6 项，全部先在代码层定位到确定成因再改。
 >
-> **合并调整（2026-09-28）**：本 PR 的基座 PR #282 此前已以 squash 形式并入 main（`b2b8e03`），branch 上仍留有原始三提交，故与 main 产生整片冲突。本次改动已**重放到最新 main（`86256b4`，含 #282/#284/#285/#296/#299）之上**：迁移号顺延为 **v52/v53/v54**（main 已占用 v50 `archive-class-and-grade`、v51 `scanner-card-identity`）；第 4 条「题组名称改不了」与 #299 的 `isAutoBlockTitle` 启发式实现合并为**两级保护**。
+> **合并调整（2026-09-28 / 2026-10-03 二次顺延）**：本 PR 的基座 PR #282 此前已以 squash 形式并入 main（`b2b8e03`），branch 上仍留有原始三提交，故与 main 产生整片冲突。本次改动已**重放到最新 main（`86256b4`，含 #282/#284/#285/#296/#299）之上**：第 4 条「题组名称改不了」与 #299 的 `isAutoBlockTitle` 启发式实现合并为**两级保护**。迁移号原定 v52/v53/v54，但并行 PR #301 已把 **v52 `class-head-teacher`、v53 `wechat-grade-release-notifications`、v54 `exam-original-paper-and-answer-keys`、v55 `backfill-class-head-teacher`** 带进 main，同号会被执行器静默跳过（按 `schema_migrations` 版本判重），故本 PR 三条**再次顺延为 v56 `block-title-locked` / v57 `repair-published-status-desync` / v58 `dedupe-class-students`**（下文已按新号标注），SQLite 与 MariaDB 双方言同步。
 
 ### 1. 扫进 100 张只显示 1 份（双因叠加）
 - **成因 A（页间超时过短）**：`twain_controller.hpp` 的 `pageTimeoutMs` 默认 **15000ms**，而 UI「等纸超时」留 0 时整条链路回落到该值。300/600dpi 的 ADF 页间机械进纸 + 高分辨率传输常超过 15s，第 2 页起 `waitForState(6)` 提前超时 → 每会话恒 `pages=1`（日志中 `pages=` 只出现过 `1`）。**修复**：native 默认提到 **60s**，UI 文案、服务端注释与 `scanner-types` 同步；仍可经 UI/`--page-timeout-ms` 覆盖。
@@ -138,16 +138,16 @@
 
 ### 3. 已公布成绩仍显示「阅卷中」
 - 根因：`score_published`（0 未公布 / 1 已公布）与 `status`（draft/grading/closed）是**两个字段**。`ExamManagePage` 渲染两个徽章故显示正确，而 `ExamSelectPage` 只渲染 `status` 单徽章；更要命的是 `listExamsForSelection` 是显式列清单、**漏选 `score_published`**，导致选择页永远拿不到发布标志 → 已公布仍显示「阅卷中」。另有若干路径单独把 `status` 改回 `grading` 而不同步发布标志。
-- **修复**：`listExamsForSelection` 补选 `COALESCE(score_published,0)`；`toExamStatus()` 改为**发布标志优先**（1→已公布，再回落到 status）；`retry-grading` 改为事务内重读而非事务外快照，避免并发公布被漏撤；扫描撤回路径改为**同一事务同时写 `status` 与 `score_published`**，杜绝「只改 status、两字段永久错位」；新增迁移 **v53** 以发布标志为准把存量错位的 `status` 推回 `closed`。`score_published` 的取值约定（撤回置 `0`）保持不变，`verify:security-critical` 117 项全绿。
+- **修复**：`listExamsForSelection` 补选 `COALESCE(score_published,0)`；`toExamStatus()` 改为**发布标志优先**（1→已公布，再回落到 status）；`retry-grading` 改为事务内重读而非事务外快照，避免并发公布被漏撤；扫描撤回路径改为**同一事务同时写 `status` 与 `score_published`**，杜绝「只改 status、两字段永久错位」；新增迁移 **v57**（原 v53，因 #301 占用同号而顺延）以发布标志为准把存量错位的 `status` 推回 `closed`。`score_published` 的取值约定（撤回置 `0`）保持不变，`verify:security-critical` 117 项全绿。
 
 ### 4. 题组名称改不了
 - 根因：`App.tsx` 的 `updateCard()` **无条件**调用 `autoNameBlocks(draft)`，按「序号+类型+题数分值」重写 `block.title`，把用户手改的名称覆盖掉（后端与输入框本身无辜）。
 - **与 #299 的关系**：#299（2026-09-23 反馈第 2 条）已用 `cardModel.isAutoBlockTitle()` 启发式解决同一问题——「标题不像自动串」就跳过重命名。两者互补：启发式**兜住历史数据**（无需迁移即刻生效），但存在边界——用户若恰好手写成标准格式（如「一、单选（共10题，共50分）」）仍会被覆盖。
-- **修复**：在 #299 实现之上叠加**显式 `titleLocked` 标记**（`types.ts`），两个标题输入框 onChange 时置位；`autoNameBlocks` 判定改为 `locked || !isAutoBlockTitle(title)` 即跳过。保留 main 的 `toChineseBlockIndex` / `buildAutoBlockTitle` 单一事实源（不再使用分支自带的本地 `toChinese`）。配套迁移 **v52**（SQLite `objective_blocks`/`subjective_blocks` 加 `title_locked`，MariaDB 同步），`CardRepository` 读写贯通。
+- **修复**：在 #299 实现之上叠加**显式 `titleLocked` 标记**（`types.ts`），两个标题输入框 onChange 时置位；`autoNameBlocks` 判定改为 `locked || !isAutoBlockTitle(title)` 即跳过。保留 main 的 `toChineseBlockIndex` / `buildAutoBlockTitle` 单一事实源（不再使用分支自带的本地 `toChinese`）。配套迁移 **v56**（原 v52；SQLite `objective_blocks`/`subjective_blocks` 加 `title_locked`，MariaDB 同步），`CardRepository` 读写贯通。
 
 ### 5. 学生名单回到调班前的班级
 - 根因：`class_students` 主键是 `(class_id, student_id)`，**一人可多行**。各写入路径（重新导入 / 加入班级）只 `INSERT IGNORE` 新关联、**从不删旧行**，于是调班后旧班关联残留；而成绩分析部分查询按 `MIN(class_id)`（最旧）取班，必然命中旧班。与下钻详情的 `joined_at DESC`（最新）口径不一致，导致同一学生在不同页面显示不同班级。（另已排除「考号重复」：`users.student_number` 为 UNIQUE，且现场确认无多班就读学生。）
-- **修复**：① `AnalysisRepository` 新增 `CURRENT_CLASS_SUBQUERY` / `CURRENT_CLASS_JOIN_SUBQUERY` 统一「当前班 = `joined_at DESC, class_id DESC`」，并替换全部 `MIN(class_id)` 站点（含 `ScoreRepository` 成长曲线），两处排序改为 `cs.joined_at DESC`；② `ClassRepository.addStudent/addStudents` 与 `UserRepository` 重导入路径**先清该生全部分班关联再绑新班**，恢复「一人一行」不变量，`moveStudent` 同样归一；③ 新增迁移 **v54** 清理存量残留（保留 `joined_at` 最新行、同刻取 `class_id` 最大，与查询口径一致），SQLite/MariaDB 双方言各一版。
+- **修复**：① `AnalysisRepository` 新增 `CURRENT_CLASS_SUBQUERY` / `CURRENT_CLASS_JOIN_SUBQUERY` 统一「当前班 = `joined_at DESC, class_id DESC`」，并替换全部 `MIN(class_id)` 站点（含 `ScoreRepository` 成长曲线），两处排序改为 `cs.joined_at DESC`；② `ClassRepository.addStudent/addStudents` 与 `UserRepository` 重导入路径**先清该生全部分班关联再绑新班**，恢复「一人一行」不变量，`moveStudent` 同样归一；③ 新增迁移 **v58**（原 v54）清理存量残留（保留 `joined_at` 最新行、同刻取 `class_id` 最大，与查询口径一致），SQLite/MariaDB 双方言各一版。
 
 ### 6. 学校网络传不到服务器
 - 判定为**现场网络问题**（非代码缺陷），未改代码。附带发现上传 `413 File too large` 会触发约 40 次**无上限重试**，已记录为后续待办。
@@ -157,7 +157,7 @@
 
 ### 验证
 - `npm run typecheck` 全绿。
-- v54 去重 SQL 与 `CURRENT_CLASS_SUBQUERY` 两种形态均以隔离 x64 better-sqlite3 实测通过；B13 归组用例反向对照确认旧行为复现 bug、新行为修复。
+- v58（原 v54）去重 SQL 与 `CURRENT_CLASS_SUBQUERY` 两种形态均以隔离 x64 better-sqlite3 实测通过；B13 归组用例反向对照确认旧行为复现 bug、新行为修复。
 
 
 ## v2.5.6 (2026-09-21) — 扫描端「检测失败即无法扫描」解封 + 图片去向常驻 + 服务器地址归一化
