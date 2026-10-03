@@ -249,6 +249,12 @@ function createMariadbPool(): Pool {
     idleTimeout: 60000,
     // 多个语句（建表用）
     multipleStatements: true,
+    // 日期/时间列统一按字符串返回，与 SQLite（better-sqlite3）行为对齐。
+    // 否则 mysql2 会把 DATETIME 反序列化为 JS Date 对象，而共享类型
+    // （src/shared/types.ts 的 examTime: string）与仓储层的 .slice()/.localeCompare()
+    // 都按字符串处理 —— 线上 MariaDB 会抛 "xxx.slice is not a function"，
+    // 本地 SQLite 却因返回字符串而不复现（方言相关缺陷）。
+    dateStrings: true,
   });
 
   pool.on("connection", () => {

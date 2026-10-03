@@ -220,7 +220,7 @@ router.get("/me/subject-comparison", async (req: Request, res: Response) => {
     const bestScore = Math.max(...scores);
     const worstScore = Math.min(...scores);
     // 趋势判断：最近两次考试
-    const sorted = [...points].sort((a, b) => a.examTime.localeCompare(b.examTime));
+    const sorted = [...points].sort((a, b) => String(a.examTime).localeCompare(String(b.examTime)));
     let trend: "up" | "down" | "stable" = "stable";
     if (sorted.length >= 2) {
       const last = sorted[sorted.length - 1].totalScore;
@@ -334,7 +334,7 @@ router.post("/me/ai-analysis", async (req: Request, res: Response) => {
     const gap = Math.round((avg - classAvg) * 10) / 10;
     const best = Math.max(...scores);
     const worst = Math.min(...scores);
-    const sorted = [...points].sort((a, b) => a.examTime.localeCompare(b.examTime));
+    const sorted = [...points].sort((a, b) => String(a.examTime).localeCompare(String(b.examTime)));
     let trend: "up" | "down" | "stable" = "stable";
     if (sorted.length >= 2) {
       const last = sorted[sorted.length - 1].totalScore;

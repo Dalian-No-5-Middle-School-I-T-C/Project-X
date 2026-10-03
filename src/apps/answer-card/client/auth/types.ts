@@ -91,6 +91,8 @@ export interface StudentExamScore {
   objective_score: number;
   subjective_score: number;
   total_score: number;
+  /** 该场考试满分（后端 getExamFullScoreMap 口径）；无法解析时为 null，不虚构 */
+  full_score: number | null;
   rank: number | null;
   percentile: number | null;
   class_size: number;

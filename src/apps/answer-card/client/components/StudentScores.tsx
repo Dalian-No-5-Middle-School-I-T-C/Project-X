@@ -148,8 +148,10 @@ export function StudentScores() {
           <>
             <div className="grid w-full grid-cols-[repeat(auto-fill,minmax(248px,1fr))] items-stretch gap-4">
               {sortedExams.map((exam) => {
-                const full = Math.max(exam.objective_score + exam.subjective_score, 100);
-                const rate = Math.round((exam.total_score / full) * 100);
+                // 满分来自后端 full_score（答题卡分值投影 / 逐题满分合计）。
+                // 不再用「实际得分」推断，也不硬编码 100 —— 未知时按 null 处理。
+                const full = exam.full_score != null && exam.full_score > 0 ? exam.full_score : null;
+                const rate = full != null ? Math.round((exam.total_score / full) * 100) : null;
                 return (
                   <Card
                     key={exam.exam_id}
@@ -162,12 +164,12 @@ export function StudentScores() {
                         <CardTitle className="truncate text-base" title={exam.exam_name}>{exam.exam_name}</CardTitle>
                         <CardDescription className="mt-0.5 truncate text-xs">{exam.subject ?? "综合"} · {fmtDate(exam.graded_at)}</CardDescription>
                       </div>
-                      <Badge tone={rate >= 85 ? "success" : rate >= 60 ? "neutral" : "danger"} dot>{rate >= 85 ? "优势" : rate >= 60 ? "稳定" : "待提升"}</Badge>
+                      {rate != null && <Badge tone={rate >= 85 ? "success" : rate >= 60 ? "neutral" : "danger"} dot>{rate >= 85 ? "优势" : rate >= 60 ? "稳定" : "待提升"}</Badge>}
                     </div>
                     <div className="flex items-end justify-between gap-2">
                       <div className="flex items-baseline gap-1">
                         <strong className="text-3xl font-bold tabular-nums text-foreground">{exam.total_score}</strong>
-                        <span className="text-sm text-muted-foreground">/ {full}</span>
+                        <span className="text-sm text-muted-foreground">{full != null ? `/ ${full}` : "/ 满分未知"}</span>
                       </div>
                       {exam.paper_visible === 1 && (
                         <Button
@@ -225,8 +227,9 @@ export function StudentScores() {
       </div>
     );
   }
-  const scoreRate = selectedExam.total_score / Math.max(selectedExam.objective_score + selectedExam.subjective_score, 100);
-  const full = Math.max(selectedExam.objective_score + selectedExam.subjective_score, 100);
+  // 满分以后端 full_score 为准；未知时不虚构（不回落 100），得分率也标为未知
+  const full = selectedExam.full_score != null && selectedExam.full_score > 0 ? selectedExam.full_score : null;
+  const scoreRate = full != null ? selectedExam.total_score / full : null;
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between rounded-lg border border-border-subtle bg-card px-4 py-3">
@@ -245,7 +248,7 @@ export function StudentScores() {
       <Card>
         <CardHeader>
           <div><CardTitle>{selectedExam.exam_name} · 逐科成绩</CardTitle><p className="mt-1 text-sm text-muted-foreground">该场考试的得分与逐题明细</p></div>
-          <Badge tone={scoreRate >= 0.85 ? "success" : scoreRate >= 0.6 ? "neutral" : "danger"} dot>{scoreRate >= 0.85 ? "优势" : scoreRate >= 0.6 ? "稳定" : "待提升"}</Badge>
+          {scoreRate != null && <Badge tone={scoreRate >= 0.85 ? "success" : scoreRate >= 0.6 ? "neutral" : "danger"} dot>{scoreRate >= 0.85 ? "优势" : scoreRate >= 0.6 ? "稳定" : "待提升"}</Badge>}
         </CardHeader>
         <CardContent>
           <Table>
@@ -254,9 +257,9 @@ export function StudentScores() {
               <TableRow clickable onClick={() => void toggleExamDetail(selectedExam.exam_id)}>
                 <TableCell>{selectedExam.subject || "综合"}</TableCell>
                 <TableCell numeric><span className="tabular-nums">{selectedExam.total_score}</span></TableCell>
-                <TableCell numeric><span className="tabular-nums">{full}</span></TableCell>
-                <TableCell numeric><span className="tabular-nums">{Math.round(scoreRate * 100)}%</span></TableCell>
-                <TableCell><Badge tone={scoreRate >= 0.85 ? "success" : scoreRate >= 0.6 ? "neutral" : "danger"} dot>{scoreRate >= 0.85 ? "优势" : scoreRate >= 0.6 ? "稳定" : "待提升"}</Badge></TableCell>
+                <TableCell numeric><span className="tabular-nums">{full ?? "未知"}</span></TableCell>
+                <TableCell numeric><span className="tabular-nums">{scoreRate != null ? `${Math.round(scoreRate * 100)}%` : "—"}</span></TableCell>
+                <TableCell>{scoreRate != null ? <Badge tone={scoreRate >= 0.85 ? "success" : scoreRate >= 0.6 ? "neutral" : "danger"} dot>{scoreRate >= 0.85 ? "优势" : scoreRate >= 0.6 ? "稳定" : "待提升"}</Badge> : <span className="text-xs text-muted-foreground">满分未知</span>}</TableCell>
                 <TableCell numeric><ChevronDown size={16} className={expandedExamId === selectedExam.exam_id ? "rotate-180" : ""} /></TableCell>
               </TableRow>
             </TableBody>
