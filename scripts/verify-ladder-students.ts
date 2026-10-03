@@ -51,7 +51,17 @@ try {
   const mean = scores.reduce((a,b) => a+b,0) / scores.length;
   const std = Math.sqrt(scores.reduce((a,b) => a+(b-mean)**2,0)/scores.length);
   assert.equal(z.rows[0].displayValue, Math.round((100-mean)/std*100)/100);
-  console.log("PASS: unique students, same-name identities, ties, my rank, percentile, full class membership, same-name classes, unassigned students and population statistics");
+  // 导出模板走的是另一条 SQL（getExportData），必须与成绩表同口径，否则教师导出的表
+  // 会出现「多班学生占两行、同名两班共用一套班排」——界面看着对、导出的文件不对。
+  const exported = await repo.getExportData(exam);
+  assert.equal(exported.students.length, 13, "export must not duplicate multi-class students");
+  assert.deepEqual(exported.students.map((r: any) => r.gradeRank), [1,2,3,4,5,6,7,8,9,9,9,9,13]);
+  const exportedC2 = await repo.getExportData(exam, c2);
+  assert.deepEqual(exportedC2.students.map((r: any) => r.studentNumber), ["L0","L1","L8"]);
+  assert.deepEqual(exportedC2.students.map((r: any) => r.classRank), [1,2,3], "same-name classes must not share one classRank pool");
+  assert.equal((await repo.getExportData(exam, c1)).students.find((r: any) => r.studentNumber === "L8")!.classRank, 8);
+  assert.deepEqual((await repo.getExportData(exam, 0)).students.map((r: any) => r.studentNumber), ["L12"]);
+  console.log("PASS: unique students, same-name identities, ties, my rank, percentile, full class membership, same-name classes, unassigned students, population statistics and the export path");
 } finally {
   closeDatabase();
   rmSync(dir, { recursive: true, force: true });
