@@ -65,7 +65,9 @@ try {
   assert.equal(table.totalCount, 13);
   assert.equal(new Set(table.rows.map((r: any) => r.studentId)).size, 13);
   assert.deepEqual(table.rows.map((r: any) => r.gradeRank), [1,2,3,4,5,6,7,8,9,9,9,9,13]);
-  assert.equal(table.rows[0].classId, c1);
+  // 展示班级 = DISPLAY_CLASS_ORDER（在读优先，再 joined_at 最新、class_id 最大）：
+  // L0 同时挂在 c1/c2，joined_at 同刻，展示班取 id 更大的 c2（与「当前班级」口径一致）。
+  assert.equal(table.rows[0].classId, c2);
   const board = LadderService.fromScoreTableRows(table.rows, table.totalCount, ids[8]);
   assert.equal(board.board.length, 12, "cutoff includes every tied student");
   assert.equal(board.myRank, 9);
@@ -92,6 +94,43 @@ try {
   assert.deepEqual(exportedC2.students.map((r: any) => r.classRank), [1,2,3], "same-name classes must not share one classRank pool");
   assert.equal((await repo.getExportData(exam, c1)).students.find((r: any) => r.studentNumber === "L8")!.classRank, 8);
   assert.deepEqual((await repo.getExportData(exam, 0)).students.map((r: any) => r.studentNumber), ["L12"]);
+  // ── 评审 P2（#304/#305/#308 复核）：展示班级不得选中归档旧班 ──
+  // 转入新班的学生，归档旧班关联仍刻意保留（verify-class-archive 断言）；纯 c.id ASC 去重
+  // 会命中 id 更小的归档旧班，未筛选成绩表/导出显示旧班与其班排。这里把旧班造成**更大的
+  // class_id 且 joined_at 与新班同刻**——只有「在读优先」这一排序键能救回来。
+  const moverExam = (await db.run("INSERT INTO exams (name, subject, status) VALUES ('mover-exam', 'mover', 'closed')")).lastInsertRowid;
+  const newCls = (await db.run("INSERT INTO classes (grade_id, name) VALUES (?, 'new-class')", grade)).lastInsertRowid;
+  const oldCls = (await db.run("INSERT INTO classes (grade_id, name) VALUES (?, 'old-class')", grade)).lastInsertRowid;
+  const mover = (await db.run("INSERT INTO users (username, password_hash, role_id, student_number, name) VALUES ('ladder-mover', 'test', 3, 'LM', '转班学生')")).lastInsertRowid;
+  // 新班两个陪跑（80/60），转班学生 70 分在新班班排 2；旧班只剩他一人（班排 1），
+  // 若展示班选了旧班，classRank 会从 2 变 1，直接暴露选错班。
+  await db.run("INSERT INTO class_students (class_id, student_id, joined_at) VALUES (?, ?, '2020-01-01 00:00:00')", newCls, mover);
+  await db.run("INSERT INTO class_students (class_id, student_id, joined_at) VALUES (?, ?, '2020-01-01 00:00:00')", oldCls, mover);
+  for (const [i, score] of [80, 70, 60].entries()) {
+    const mate = i === 1 ? mover
+      : (await db.run("INSERT INTO users (username, password_hash, role_id, student_number, name) VALUES (?, 'test', 3, ?, '新班同学')", `ladder-mate-${i}`, `LM${i}`)).lastInsertRowid;
+    if (i !== 1) await db.run("INSERT INTO class_students (class_id, student_id, joined_at) VALUES (?, ?, '2020-01-01 00:00:00')", newCls, mate);
+    await db.run("INSERT INTO student_scores (exam_id, student_id, total_score, objective_score, subjective_score) VALUES (?, ?, ?, ?, 0)", moverExam, mate, score, score);
+  }
+  await db.run("UPDATE classes SET archived_at = '2020-02-01 00:00:00' WHERE id = ?", oldCls);
+  const moverTable = await repo.getScoreTableData(moverExam);
+  assert.equal(moverTable.totalCount, 3);
+  const moverRow = moverTable.rows.find((r: any) => r.studentId === mover);
+  assert.equal(moverRow.classId, newCls, "在读班级优先于（id 更大的）归档旧班");
+  assert.equal(moverRow.className, "new-class");
+  assert.equal(moverRow.classRank, 2, "班排取展示班（新班完整成员）的排名");
+  assert.equal(moverRow.gradeRank, 2);
+  const moverExport = await repo.getExportData(moverExam);
+  assert.equal(moverExport.students.length, 3);
+  assert.equal(moverExport.students.find((r: any) => r.name === "转班学生").className, "new-class");
+  assert.equal(moverExport.students.find((r: any) => r.name === "转班学生").classRank, 2);
+  // 全部关联已归档的学生（毕业班级）：回落到最新归档归属，仍显示历史班级而非「未知班级」。
+  const onlyOld = (await db.run("INSERT INTO users (username, password_hash, role_id, student_number, name) VALUES ('ladder-only-old', 'test', 3, 'LO', '旧班独存')")).lastInsertRowid;
+  await db.run("INSERT INTO class_students (class_id, student_id, joined_at) VALUES (?, ?, '2020-01-01 00:00:00')", oldCls, onlyOld);
+  await db.run("INSERT INTO student_scores (exam_id, student_id, total_score, objective_score, subjective_score) VALUES (?, ?, 55, 55, 0)", moverExam, onlyOld);
+  const onlyOldRow = (await repo.getScoreTableData(moverExam)).rows.find((r: any) => r.studentId === onlyOld);
+  assert.equal(onlyOldRow.classId, oldCls, "全部关联归档时保留最新归档归属作为展示班");
+  console.log("PASS: archived old class never wins the display class while an active class exists");
   console.log("PASS: unique students, same-name identities, ties, my rank, percentile, full class membership, same-name classes, unassigned students, population statistics and the export path");
   console.log(`ALL PASS (${db.dialect})`);
 } finally {
