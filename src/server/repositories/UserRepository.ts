@@ -3,6 +3,7 @@ import type { DbAdapter } from "../db";
 import { hashPassword, verifyPassword } from "../db";
 import { validateInitialPassword, generateRandomInitialPassword } from "../auth/passwordPolicy";
 import { encryptField, decryptField } from "../lib/field-crypto";
+import { clearActiveStudentClassLinks } from "../services/activeClassScope";
 import { csvCell } from "../../shared/csv";
 import crypto from "node:crypto";
 
@@ -282,9 +283,10 @@ export class UserRepository {
               let cls = await tx.get("SELECT id FROM classes WHERE grade_id = ? AND name = ? AND archived_at IS NULL", grade.id, className) as { id: number } | null;
               if (!cls) { const cr = await tx.run("INSERT INTO classes (grade_id, name) VALUES (?, ?)", grade.id, className); cls = { id: cr.lastInsertRowid }; }
               await tx.run("UPDATE users SET name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND role_id = 3", studentName, existingStudent.id);
-              // B12：恢复「一名学生一份班级关联」不变量。此前只 INSERT IGNORE 新关联、不清理旧行，
+              // B12：恢复「一名学生一份**当前**班级关联」不变量。此前只 INSERT IGNORE 新关联、不清理旧行，
               // 导致调班/重新导入后 class_students 残留旧班行，按 MIN(class_id) 归班的查询会命中旧班。
-              await tx.run("DELETE FROM class_students WHERE student_id = ?", existingStudent.id);
+              // 归档班级的关联是刻意保留的历史归属，clearActiveStudentClassLinks 只清未归档的那部分。
+              await clearActiveStudentClassLinks(tx, existingStudent.id);
               const linkSql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
               await tx.run(linkSql, cls.id, existingStudent.id);
             });

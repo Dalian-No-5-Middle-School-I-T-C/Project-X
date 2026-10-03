@@ -1027,23 +1027,37 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
     "ALTER TABLE subjective_blocks ADD COLUMN title_locked TINYINT DEFAULT 0",
   ] });
 
-  // v57: 修复存量「已公布但仍显示阅卷中」的两字段错位（与 SQLite v57 对齐）
-  mariadbMigrations.push({ version: 57, name: "repair-published-status-desync", sqls: [
-    "UPDATE exams SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE score_published = 1 AND (status IS NULL OR status <> 'closed')",
-  ] });
+  // v57：**故意留空**（与 SQLite v57 同号注释对齐）。原「以 score_published 为准把 status 推回 closed」
+  // 会把主线允许的正常状态当脏数据改写：公布接口本身是 `status IN ('grading','closed')`，
+  // 阅卷期间可以先公布部分成绩。改成 closed 后该考试不再接受扫描入库，
+  // 展示层口径已由 `toExamStatus()` 的发布标志优先解决，无需改数据。留注释占号避免复用歧义。
 
-  // v58: 清理存量「一名学生多份班级关联」残留（与 SQLite v58 对齐）
-  // 保留 joined_at 最新的一行（同刻并列取 class_id 最大者），与 CURRENT_CLASS_SUBQUERY 口径一致。
+  // v58: 清理存量「一名学生在**当前归属**上有多份关联」残留（与 SQLite v58 对齐）
+  // **只清理当前归属**：归档（班级或其所属年级归档）的关联是刻意保留的历史关系
+  // （verify-class-archive.ts:84 断言归档后 class_students 行仍在），全表去重会把学生读过的
+  // 历史班级一并抹掉。「当前归属」= 班级与年级均未归档，与
+  // services/activeClassScope.ts:clearActiveStudentClassLinks 的写入端口径一致。
+  // 保留策略：在当前归属里保留 joined_at 最新的一行（同刻并列取 class_id 最大者），
+  // 与 CURRENT_CLASS_SUBQUERY 口径一致。
   // MariaDB 不允许直接在 DELETE 的子查询里引用被删表，故用派生表包一层。
   mariadbMigrations.push({ version: 58, name: "dedupe-class-students", sqls: [
     `DELETE cs FROM class_students cs
+     JOIN classes c ON c.id = cs.class_id
+     JOIN grades gc ON gc.id = c.grade_id
      JOIN (
        SELECT student_id,
               (SELECT cs_keep.class_id FROM class_students cs_keep
-                 WHERE cs_keep.student_id = cs_all.student_id
-                 ORDER BY cs_keep.joined_at DESC, cs_keep.class_id DESC LIMIT 1) AS keep_class_id
-       FROM (SELECT DISTINCT student_id FROM class_students) cs_all
-     ) k ON k.student_id = cs.student_id AND cs.class_id <> k.keep_class_id`,
+                 JOIN classes c_keep ON c_keep.id = cs_keep.class_id
+                 JOIN grades g_keep ON g_keep.id = c_keep.grade_id
+                WHERE cs_keep.student_id = cs_all.student_id
+                  AND c_keep.archived_at IS NULL AND g_keep.archived_at IS NULL
+                ORDER BY cs_keep.joined_at DESC, cs_keep.class_id DESC LIMIT 1) AS keep_class_id
+       FROM (SELECT DISTINCT cs2.student_id FROM class_students cs2
+               JOIN classes c2 ON c2.id = cs2.class_id
+               JOIN grades g2 ON g2.id = c2.grade_id
+              WHERE c2.archived_at IS NULL AND g2.archived_at IS NULL) cs_all
+     ) k ON k.student_id = cs.student_id AND cs.class_id <> k.keep_class_id
+     WHERE c.archived_at IS NULL AND gc.archived_at IS NULL`,
   ] });
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;

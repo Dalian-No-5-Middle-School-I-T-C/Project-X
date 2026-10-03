@@ -36,15 +36,27 @@ function enqueuePersist(task: () => Promise<void>): Promise<void> {
 /** 等纸空闲超时的合法区间：下限 2s（慢于此值几乎必然截断正常进纸），上限 2min。 */
 const PAGE_TIMEOUT_MIN_MS = 2_000;
 const PAGE_TIMEOUT_MAX_MS = 120_000;
+/**
+ * 服务端兜底默认值。**必须在这里显式给出，不能指望 native 的头文件默认值**：
+ * 发布包里的 `resources/native/win-{ia32,x64}/scanner-bridge.exe` 是预编译二进制，
+ * `resolveScannerBridgeExe()` 优先取它们，打包脚本（electron:dist 等）只重编 better-sqlite3
+ * 就直接拷贝 resources/native——只改 `twain_controller.hpp` 的 60000 对现场无效，
+ * UI 宣称的「默认 60 秒」会退化成旧 exe 的 15000ms。
+ *
+ * 好在预编译 exe 本身支持该开关：两个二进制里都能检出 `--page-timeout-ms` 字串
+ * （main.cpp:96 解析、>0 才生效），因此由调用链恒定传参即可让默认值真正落地。
+ * 这条事实由 `scripts/verify-scanner-page-timeout.ts` 钉住。
+ */
+export const PAGE_TIMEOUT_DEFAULT_MS = 60_000;
 
 /**
  * 规范化前端传入的等纸超时。
- * 未传/非有限数/越界一律返回 undefined，由 native 侧使用默认 15000ms——
- * 避免把 0 或负数透传下去导致 native 行为不可预期。
+ * 未传/非有限数/越界一律回落到 {@link PAGE_TIMEOUT_DEFAULT_MS}，
+ * 既避免把 0 或负数透传给 native 产生不可预期行为，也让默认超时不依赖预编译二进制。
  */
-function normalizePageTimeoutMs(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  if (value < PAGE_TIMEOUT_MIN_MS || value > PAGE_TIMEOUT_MAX_MS) return undefined;
+export function normalizePageTimeoutMs(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return PAGE_TIMEOUT_DEFAULT_MS;
+  if (value < PAGE_TIMEOUT_MIN_MS || value > PAGE_TIMEOUT_MAX_MS) return PAGE_TIMEOUT_DEFAULT_MS;
   return Math.round(value);
 }
 

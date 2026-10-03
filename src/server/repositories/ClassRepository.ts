@@ -1,6 +1,7 @@
 import { buildInsertIgnore, buildUpsertSQL, getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { ensureExamParticipants } from "../services/examParticipants";
+import { clearActiveStudentClassLinks } from "../services/activeClassScope";
 
 export interface GradeRecord {
   id: number;
@@ -173,7 +174,9 @@ export class ClassRepository {
    * 新关联、从不删除旧行。于是学生被「加入」到新班级后，旧班级的关联行仍在，形成多行残留；
    * 而成绩分析的部分查询按 MIN(class_id) 取班，必然命中旧班。
    *
-   * 本方法在绑定新班级前先清掉该学生的全部分班关联，使 class_students 恒为一人一行。
+   * 本方法在绑定新班级前清掉该学生的**当前**分班关联，使「当前归属」恒为一班。
+   * 归档班级是刻意保留的历史归属（见 {@link clearActiveStudentClassLinks} 的说明），
+   * 不能连带删除，否则「归档旧班 → 加入新班」会让旧班的历史关系当场消失。
    *
    * @returns 是否产生了新的班级绑定（原本已在目标班则返回 false）
    */
@@ -182,9 +185,9 @@ export class ClassRepository {
       "SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ? LIMIT 1",
       classId, studentId
     );
-    // 不变量：无论是否已在目标班，都先清掉该生的全部分班关联，再单调写回目标班，
-    // 从而顺带清掉历史残留的其它班关联行。
-    await tx.run("DELETE FROM class_students WHERE student_id = ?", studentId);
+    // 不变量：无论是否已在目标班，都先清掉该生的当前分班关联，再单调写回目标班，
+    // 从而顺带清掉历史残留的其它**在读**班级关联行；归档班级的行保留。
+    await clearActiveStudentClassLinks(tx, studentId);
     const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
     await tx.run(sql, classId, studentId);
     return !existing;
@@ -197,8 +200,9 @@ export class ClassRepository {
   /** 学生迁移：从原班级移除并加入目标班级（目标班级所属年级即学生的新年级）。 */
   async moveStudent(fromClassId: number, toClassId: number, studentId: number): Promise<void> {
     await this.db.transaction(async (tx) => {
-      // B12：直接清掉该生全部分班关联再绑新班，避免旧行残留（一人一行不变量）
-      await tx.run("DELETE FROM class_students WHERE student_id = ?", studentId);
+      // B12：清掉该生的**当前**分班关联再绑新班，避免旧行残留（当前归属一人一行）；
+      // 归档班级的历史关联保留，否则换班等于抹掉学生读过的历史班级。
+      await clearActiveStudentClassLinks(tx, studentId);
       const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
       await tx.run(sql, toClassId, studentId);
     });

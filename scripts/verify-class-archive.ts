@@ -88,6 +88,52 @@ try {
   const next = await exam('新年级考试');
   assert.equal((await ensureExamParticipants(db, next)).participantCount, 1);
   console.log('PASS: archive hides active entries, retains exams/scores/relations and frozen rosters; new rosters exclude archived classes');
+
+  // ── 评审 P1(4)：归档关系必须在「转班 / 复用重新导入 / v58 去重」之后仍然保留 ──
+  // 原实现（replaceStudentClassLink / moveStudent / 导入复用 / v58 迁移）无条件执行
+  // `DELETE FROM class_students WHERE student_id = ?`，会把上面刚断言保留的归档关联当场抹掉，
+  // 两条测试互为矛盾。修复后删除只作用于「当前归属」（班级与年级均未归档）。
+  await repo.addStudent(current.id, student);
+  assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', old.id, student),
+    '转班不得删除已归档班级的历史关联');
+  assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', current.id, student));
+  assert.equal((await db.get<{ n: number }>(
+    `SELECT COUNT(*) AS n FROM class_students cs
+       JOIN classes c ON c.id = cs.class_id
+       JOIN grades g ON g.id = c.grade_id
+      WHERE cs.student_id = ? AND c.archived_at IS NULL AND g.archived_at IS NULL`, student))?.n, 1,
+    '当前归属仍须严格一人一行');
+  assert.equal((await users.getUserClasses(student)).length, 1, '学生可见班级只算未归档的当前归属');
+  console.log('PASS: 转班保留归档历史关联，同时维持当前归属一人一行');
+
+  // moveStudent 与导入复用共用 clearActiveStudentClassLinks，同样只清当前归属。
+  const residue = await repo.createClass(g.id, '高二9班');
+  await db.run('INSERT INTO class_students(class_id, student_id, joined_at) VALUES (?,?,?)', residue.id, student, '2020-01-01 00:00:00');
+  await repo.moveStudent(current.id, residue.id, student);
+  assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', old.id, student),
+    'moveStudent 不得删除归档关联');
+  assert.equal((await db.get<{ n: number }>(
+    'SELECT COUNT(*) AS n FROM class_students WHERE student_id = ? AND class_id <> ?', student, old.id))?.n, 1,
+    'moveStudent 后当前关联只剩目标班一条');
+  assert.equal(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', current.id, student), null);
+
+  // v58 去重迁移：制造「两条当前归属 + 一条归档历史」，重跑迁移后只应留下最新的当前归属。
+  await db.run('INSERT INTO class_students(class_id, student_id, joined_at) VALUES (?,?,?)', current.id, student, '2021-01-01 00:00:00');
+  await db.run('DELETE FROM schema_migrations WHERE version = 58');
+  if (maria) await initMariadbSchema();
+  else {
+    const { runMigrations } = await import('../src/server/db/migrations');
+    runMigrations(getDatabase());
+  }
+  assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', old.id, student),
+    'v58 不得删除归档关联');
+  assert.ok(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', residue.id, student),
+    'v58 应保留 joined_at 最新的当前归属');
+  assert.equal(await db.get('SELECT 1 FROM class_students WHERE class_id = ? AND student_id = ?', current.id, student), null,
+    'v58 应清除较旧的当前归属残留');
+  console.log('PASS: v58 去重只作用于当前归属，归档历史关联保留');
+  await repo.deleteClass(residue.id);
+
   // Reusing the name must create a new identity, never revive history.
   const replacement = await repo.createClass(g.id, '高二1班');
   assert.notEqual(replacement.id, old.id);

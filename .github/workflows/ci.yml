@@ -46,6 +46,25 @@ jobs:
       - name: Class teacher verify suite
         run: npm run verify:class-teachers
 
+      - name: Class archive / student link regression
+        run: npm run verify:class-archive
+
+      # v57 空置 + 「阅卷中已公布」考试不被强制结考，并检查两套方言迁移版本号不撞号
+      - name: Grading-published exam and migration numbering
+        run: npm run verify:grading-published-exam
+
+      - name: Scan page numbering regression
+        run: npm run verify:scan-page-numbering
+
+      - name: Scanner page timeout default regression
+        run: npm run verify:scanner-page-timeout
+
+      - name: Scanner batch results smoke
+        run: npm run verify:scanner-batch-results
+
+      - name: UCRT staging path regression
+        run: npm run verify:stage-vc-runtime
+
   mariadb-test:
     name: MariaDB 10.11 Integration
     runs-on: ubuntu-latest
@@ -83,6 +102,20 @@ jobs:
         run: npm install --no-save --ignore-scripts @rollup/rollup-linux-x64-gnu @esbuild/linux-x64
       - name: MariaDB integration tests
         run: npm run verify:mariadb
+      # 归档/分班关联在 MariaDB 下同样要成立：脚本自带 --mariadb 门禁，
+      # 要求一个空的专用库，故先用 root 建库并授权给 projectx_ci。
+      - name: Create disposable database for archive suite
+        env:
+          # 与上面 services.mariadb 的初始化口令一致（CI 专用一次性凭据）
+          MARIADB_ROOT_PASSWORD: ci-root-password
+        run: |
+          mysql -h 127.0.0.1 -u root -p"$MARIADB_ROOT_PASSWORD" -e \
+            "CREATE DATABASE IF NOT EXISTS projectx_class_archive_test; \
+             GRANT ALL PRIVILEGES ON projectx_class_archive_test.* TO 'projectx_ci'@'%'; FLUSH PRIVILEGES;"
+      - name: Class archive MariaDB regression
+        env:
+          PROJECTX_MARIADB_DATABASE: projectx_class_archive_test
+        run: npm run verify:class-archive:mariadb
 
   build:
     name: Build

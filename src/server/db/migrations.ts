@@ -1282,30 +1282,43 @@ MIGRATIONS.push({ version: 56, name: "block-title-locked", up(db) {
   addColumnIfMissing(db, "subjective_blocks", "title_locked", "INTEGER DEFAULT 0");
 } });
 
-// v57: 修复存量「已公布但仍显示阅卷中」的两字段错位。
-// 历史上有几条路径会把 exams.status 单独改回 'grading' 而未同步 score_published，
-// 导致考试管理页「已公布」徽章仍在、成绩分析页却显示「阅卷中」。
-// 以发布标志为准把 status 推回 'closed'（score_published=1 语义上必然已结考）。
-MIGRATIONS.push({ version: 57, name: "repair-published-status-desync", up(db) {
-  db.exec(`UPDATE exams SET status = 'closed', updated_at = CURRENT_TIMESTAMP
-           WHERE score_published = 1 AND (status IS NULL OR status <> 'closed')`);
-} });
+// v57：**故意留空**。此号原先是「以 score_published 为准把 status 推回 closed」的存量修补，
+// 但 `grading + score_published = 1` 是主线允许的正常状态——公布接口本身就是
+// `WHERE ... status IN ('grading','closed')`（apps/answer-card/server/index.ts:2402、:2505），
+// 阅卷期间可以先公布部分成绩。把这种行当成脏数据改写为 closed，会让该考试从此不再接受扫描入库
+// （`答题卡未关联可阅卷的考试，成绩未入库`），并可能被按结考执行的保留策略提前处理。
+// 「已公布仍显示阅卷中」属展示层口径，由 `toExamStatus()` 的发布标志优先已修复，无需改数据。
+// 留此注释占号，避免后续复用同号造成判重歧义。
 
-// v58: 清理存量「一名学生多份班级关联」残留，恢复一人一行不变量。
+// v58: 清理存量「一名学生在**读班级**上有多份关联」残留，恢复「当前归属一人一行」不变量。
 // 历史缺陷：UserRepository 重新导入已存在学生、ClassRepository.addStudent(s) 只 INSERT IGNORE
 // 新关联、从不删除旧行，导致调班后 class_students 残留旧班行；成绩分析按 MIN(class_id) 归班时
 // 会命中旧班，表现为「名单回到调班前的班级」。
-// 保留策略：保留 joined_at 最新的一行（同刻并列时取 class_id 最大者），与 CURRENT_CLASS_SUBQUERY 口径一致。
+// **只清理当前归属**：归档（班级本身或其所属年级归档）的关联是刻意保留的历史关系
+// （verify-class-archive.ts:84 明确断言归档后 `class_students` 行仍在），全表去重会把
+// 学生读过的历史班级一并抹掉——评审实测复现的「归档旧班 → 加入新班，旧班关联立即消失」。
+// 「当前归属」= 班级与年级均未归档，与 services/activeClassScope.ts:clearActiveStudentClassLinks
+// 的写入端口径一致；迁移为避免依赖可变模块，此处内联展开同一条件。
+// 保留策略：在当前归属里保留 joined_at 最新的一行（同刻并列取 class_id 最大者），
+// 与 CURRENT_CLASS_SUBQUERY 口径一致。
 MIGRATIONS.push({ version: 58, name: "dedupe-class-students", up(db) {
   db.exec(`DELETE FROM class_students
-           WHERE EXISTS (
-             SELECT 1 FROM class_students newer
-             WHERE newer.student_id = class_students.student_id
-               AND (
-                 newer.joined_at > class_students.joined_at
-                 OR (newer.joined_at = class_students.joined_at AND newer.class_id > class_students.class_id)
-               )
-           )`);
+           WHERE class_id IN (
+             SELECT c.id FROM classes c
+             JOIN grades g ON g.id = c.grade_id
+             WHERE c.archived_at IS NULL AND g.archived_at IS NULL
+           )
+             AND EXISTS (
+               SELECT 1 FROM class_students newer
+               JOIN classes nc ON nc.id = newer.class_id
+               JOIN grades ng ON ng.id = nc.grade_id
+               WHERE nc.archived_at IS NULL AND ng.archived_at IS NULL
+                 AND newer.student_id = class_students.student_id
+                 AND (
+                   newer.joined_at > class_students.joined_at
+                   OR (newer.joined_at = class_students.joined_at AND newer.class_id > class_students.class_id)
+                 )
+             )`);
 } });
 
 export function runMigrations(db: Database.Database): void {
