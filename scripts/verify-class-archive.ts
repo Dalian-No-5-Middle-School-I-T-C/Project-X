@@ -160,6 +160,20 @@ try {
   console.log('PASS: 当前班级在读优先，归档班（id 更大、同刻）不选中');
   await repo.deleteClass(residue.id);
 
+  // 成长曲线班均分（#305 的 ScoreRepository.getStudentTrendData 消费 CURRENT_CLASS_JOIN_SUBQUERY）：
+  // 班均分必须取在读班成员。给 second 班添一名 30 分陪跑后，在读班均分 = (90+30)/2 = 60；
+  // 若误选归档旧班（仅本人 90 分）会得到 90 —— 正是二次评审实测「30 变 73.3」的形态。
+  await db.run('UPDATE exams SET score_published = 1 WHERE id = ?', e);
+  const trendMate = (await db.run("INSERT INTO users(username,password_hash,name,role_id,student_number) VALUES ('trend_mate','disabled','班均分陪跑',3,'ARC003')")).lastInsertRowid;
+  await db.run('INSERT INTO class_students(class_id, student_id) VALUES (?,?)', second.id, trendMate);
+  await db.run('INSERT INTO student_scores(exam_id, student_id, total_score) VALUES (?,?,30)', e, trendMate);
+  const { ScoreRepository } = await import('../src/server/repositories/ScoreRepository');
+  const trendRows = await new ScoreRepository().getStudentTrendData(Number(student));
+  const trendRow = trendRows.find(p => Number(p.examId) === Number(e));
+  assert.ok(trendRow, '已公布考试应进入学生成长曲线');
+  assert.equal(Number(trendRow!.classAvg), 60, '成长曲线班均分取在读班（60），不得取归档旧班（90）');
+  console.log('PASS: 成长曲线班均分消费在读班级口径');
+
   // Reusing the name must create a new identity, never revive history.
   const replacement = await repo.createClass(g.id, '高二1班');
   assert.notEqual(replacement.id, old.id);
