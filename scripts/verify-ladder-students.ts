@@ -4,18 +4,44 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-const dir = mkdtempSync(path.join(tmpdir(), "px-ladder-"));
-process.env.PROJECTX_DB_PATH = path.join(dir, "test.db");
+/**
+ * 双方言回归（PR #308 评审 P1）。
+ *
+ * 排名/去重发生在 `AnalysisRepository.getScoreTableData` 与 `getExportData` 的
+ * SQL 里（`LEFT JOIN class_students` + `ORDER BY ... c.id ASC`），而生产环境跑的是
+ * MariaDB：SQLite 绿了并不代表线上绿。默认仍走一次性 SQLite 库，
+ * `--mariadb` 则要求一个专用的空 MariaDB 库（CI 里由 `projectx_ladder_test` 提供），
+ * 断言完全共用——差异本身就是我们要抓的缺陷。
+ */
+const maria = process.argv.includes("--mariadb");
+const dir = maria ? null : mkdtempSync(path.join(tmpdir(), "px-ladder-"));
+if (!maria) process.env.PROJECTX_DB_PATH = path.join(dir!, "test.db");
 for (const key of Object.keys(process.env)) {
-  if (key.startsWith("PROJECTX_MARIADB_") || key.startsWith("PROJECTX_MYSQL_")) delete process.env[key];
+  if (key.startsWith("PROJECTX_MARIADB_") || key.startsWith("PROJECTX_MYSQL_")) {
+    if (maria && key.startsWith("PROJECTX_MARIADB_")) continue;
+    delete process.env[key];
+  }
 }
-const { initializeDatabase, getMysqlDb, closeDatabase } = await import("../src/server/db/index");
+if (maria) {
+  assert.equal(process.env.PROJECTX_MARIADB_DATABASE, "projectx_ladder_test",
+    "MariaDB 变体只允许跑在一次性库 projectx_ladder_test 上（verify:mariadb 会复用 projectx_ci 的表）");
+  assert.equal(process.env.PROJECTX_MARIADB_HOST, "127.0.0.1", "MariaDB 变体只连本机 CI 服务");
+}
+
+const { initializeDatabase, closeDatabase } = await import("../src/server/db/index");
+const { getMysqlDb, initMariadbSchema, resetAdapter } = await import("../src/server/db/mysql");
+if (!maria) initializeDatabase();
+const db = getMysqlDb();
+if (maria) {
+  const tables = await db.all<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM information_schema.tables WHERE table_schema = DATABASE()");
+  assert.equal(Number(tables[0]?.n ?? 0), 0, "Use a new disposable database");
+  await initMariadbSchema();
+}
 const { AnalysisRepository } = await import("../src/server/repositories/AnalysisRepository");
 const { LadderService } = await import("../src/server/services/LadderService");
 
 try {
-  initializeDatabase();
-  const db = getMysqlDb();
   const grade = (await db.run("INSERT INTO grades (name) VALUES ('ladder-test')")).lastInsertRowid;
   const c1 = (await db.run("INSERT INTO classes (grade_id, name) VALUES (?, 'same-name')", grade)).lastInsertRowid;
   const c2 = (await db.run("INSERT INTO classes (grade_id, name) VALUES (?, 'same-name')", grade)).lastInsertRowid;
@@ -29,6 +55,11 @@ try {
     if ([0, 1, 8].includes(i)) await db.run("INSERT INTO class_students (class_id, student_id) VALUES (?, ?)", c2, id);
     await db.run("INSERT INTO student_scores (exam_id, student_id, total_score, objective_score, subjective_score) VALUES (?, ?, ?, ?, 0)", exam, id, scores[i], scores[i]);
   }
+  // 夹具自检：多班必须在 MariaDB 下同样落成两行关联，否则这套断言会在
+  // 「没有多班残留」的空场景里假绿。L0/L8 各 2 行，L1 只挂在 c2（1 行）= 5 行。
+  assert.equal((await db.get<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM class_students WHERE student_id IN (?, ?, ?)", ids[0], ids[1], ids[8]))?.n, 5);
+
   const repo = new AnalysisRepository();
   const table = await repo.getScoreTableData(exam, undefined, "percentile");
   assert.equal(table.totalCount, 13);
@@ -62,7 +93,8 @@ try {
   assert.equal((await repo.getExportData(exam, c1)).students.find((r: any) => r.studentNumber === "L8")!.classRank, 8);
   assert.deepEqual((await repo.getExportData(exam, 0)).students.map((r: any) => r.studentNumber), ["L12"]);
   console.log("PASS: unique students, same-name identities, ties, my rank, percentile, full class membership, same-name classes, unassigned students, population statistics and the export path");
+  console.log(`ALL PASS (${db.dialect})`);
 } finally {
-  closeDatabase();
-  rmSync(dir, { recursive: true, force: true });
+  resetAdapter();
+  if (!maria) { closeDatabase(); rmSync(dir!, { recursive: true, force: true }); }
 }
