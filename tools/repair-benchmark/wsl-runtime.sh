@@ -100,6 +100,9 @@ cd "$run/server"
 export PORT="$backend_port" PROJECTX_AUTH_ENFORCE=1 PROJECTX_ENABLE_SCANNER=0 PROJECTX_ENABLE_SCANNER_CLIENT_API=1
 export PROJECTX_MARIADB_HOST=127.0.0.1 PROJECTX_MARIADB_PORT="$database_port" PROJECTX_MARIADB_USER=root PROJECTX_MARIADB_DATABASE=projectx_bench PROJECTX_MARIADB_PASSWORD=benchmark-database-only
 export PROJECTX_DB_PATH="$run/server/data/projectx.db" ANSWER_CARD_DATA_DIR="$run/server/data/answer-card" ANSWER_CARD_CLIENT_DIST="$run/server/dist/web"
+# R01 起管理员引导口令是随机一次性口令；隔离基准环境用逃生阀固定它，
+# 必须与 run.mjs 里 login() 使用的 password 常量保持一致（仅本机隔离部署，非生产）。
+export PROJECTX_ADMIN_PASSWORD="${PROJECTX_ADMIN_PASSWORD:-Benchmark-2026-Local!}"
 export LLMCLIENT_URL="http://127.0.0.1:$ai_port" LLMCLIENT_PYTHON="$cache/venv/bin/python"
 export NO_PROXY=127.0.0.1,localhost no_proxy=127.0.0.1,localhost
 # Deterministic provider fixture: no real key, no billable requests by default.

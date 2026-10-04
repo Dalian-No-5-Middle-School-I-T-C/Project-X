@@ -2,6 +2,19 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-04：R01 管理员引导口令改为一次性随机口令（安全审查整改第一批）
+
+- **根因**：`src/server/db/index.ts` 把管理员口令写死为公开常量 `admin123`，且只要 admin 还停留在「未改密」引导态，**每次启动都把哈希重置回该常量**并吊销全部会话；而 `/api/auth` 挂在强制改密门（428）之前，引导态会话可直接调 `change-password`。两者叠加＝任何读到公开文档的人都能登录未改密的部署，改密后把公开凭据永久转成私有所有权。安全审查清单 R01（核对日期 2026-10-03）判为 P0。
+- **机制**：删除 `BOOTSTRAP_ADMIN_PASSWORD` 常量，新增 `generateBootstrapAdminPassword()`（16 位、四类字符至少各一、剔除易混淆字符、`randomBytes` 拒绝采样后洗牌）。`ensureDefaultAdmin()` 改为**以 `bootstrap-admin.txt` 为引导态口令的唯一事实源**：文件里是有效口令时什么都不做（不再重启恢复、不再踢掉既有会话）；只有文件缺失/为空，或内容等于历史公开口令时才换发新随机口令。已完成首次改密的账号行为不变。
+- **升级影响（主理人决策：直接失效，不设宽限期）**：仍处引导态的存量库在升级后首次启动即换发新随机口令，`admin123` 当场失效，需读 `bootstrap-admin.txt` 登录；已改密的库完全不受影响。行为、各部署形态的取回路径、备份还原后的语义详见新增文档 [readus/ADMIN-BOOTSTRAP-PASSWORD.md](ADMIN-BOOTSTRAP-PASSWORD.md)。
+- **逃生阀**（独立提交，可单独回退）：`PROJECTX_ADMIN_PASSWORD` 显式指定引导态口令并不写引导文件，供容器/一键部署与基准工具使用；仅在引导态生效，口令与库中哈希一致时幂等不轮换。
+- **恢复流程**：`src/server/routes/backup.ts` 还原后的再引导逻辑随新语义自动正确（先删引导文件 → 引导态库换发新口令 / 已改密库不动），本次仅更正注释口径。
+- **文档脱钩**：`README.md`、`SERVER-README.md`、`readus/SCANNER-SETUP.md`（含原先「删库重启回到 admin/admin123」的复位配方，改为按账号状态分两条路径）、`src/server/db/schema.sql` 注释全部去掉固定口令；`user guide/Project-X用户使用说明.md` 里与代码不符的「随机密码」表述改为与新实现一致，并写明升级时旧口令当场失效。
+- **脚本脱钩**：`scripts/verify-security-critical.ts` 原先正向断言「新库使用 admin123」「引导态存量库启动时重置为 admin123」，现改为 9 条新断言（随机口令、事实源稳定不轮换、公开口令失效、文件缺失自愈、逃生阀及其幂等、HTTP 层 `admin123` 401、以及「引导态登录 → 强制改密 → 再次引导」的接管链关闭）；`scripts/deployment-business-smoke.ts` 改读被测部署引导文件；`testdata/demo-exams/scripts/verify.ts` 与 `testdata/demo-exams/README.md` 去掉 `admin123` 兜底改为显式报错；`tools/repair-benchmark`（`run.mjs` + `wsl-runtime.sh`）通过 `PROJECTX_ADMIN_PASSWORD` 固定隔离部署口令。
+- **验证**：`npm run typecheck` 通过；`npm run verify:security-critical` **165 项全过、0 失败**（含新增的 9 条管理员引导断言）。反向对照：把 `ensureDefaultAdmin()` 恢复为「引导态一律重置」时，「引导态库重复启动不轮换口令」与「已改密账号重启后状态不变」两组断言即失败。
+- 未覆盖：MariaDB 侧的本机临时实例回归在下一步执行（`ensureDefaultAdmin` 的 `buildInsertIgnore` 新库分支与 `restoreMariadb` 还原分支）；生产环境（dl5zx.cn）仍为上一版本，本次变更的现场生效要等上线。
+- 全仓口径核对：`grep -rn "admin123"` 现只应出现在历史 CHANGELOG / 审计报告条目、本条变更说明、失效口令黑名单（`LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS`）与「已失效」的测试标签中。
+
 ## 2026-09-29：班主任清空后的遗留权限撤销
 
 - 班主任替换和清空在同一事务内处理按班标记及全局 `head_teacher` 的无科目旧关联，防止清空最后一个标记后旧关系重新获得全科权限；保留带科目的任课关系及其他班关系，不新增迁移。

@@ -1,5 +1,6 @@
 /** Run against an isolated local deployment; never points at production. */
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
@@ -12,6 +13,21 @@ const out = path.resolve("data/e2e-business");
 await mkdir(out, { recursive: true });
 const password = "E2e-Local-2026!";
 const tokens = new Map<string, string>();
+
+/**
+ * R01 起不再有固定初始口令：优先用 E2E_INITIAL_PASSWORD（被测部署已改密的场景），
+ * 否则读取该部署数据目录下的 bootstrap-admin.txt 一次性随机口令。
+ */
+function resolveInitialAdminPassword(): string {
+  const fromEnv = (process.env.E2E_INITIAL_PASSWORD ?? "").trim();
+  if (fromEnv) return fromEnv;
+  const dbPath = process.env.PROJECTX_DB_PATH
+    ? path.resolve(process.env.PROJECTX_DB_PATH)
+    : path.resolve("data", "projectx.db");
+  const file = path.join(path.dirname(dbPath), "bootstrap-admin.txt");
+  assert(existsSync(file), `缺少管理员引导口令：请设置 E2E_INITIAL_PASSWORD，或提供被测部署的 ${file}`);
+  return readFileSync(file, "utf8").trim();
+}
 async function request(root: string, route: string, method = "GET", body?: unknown): Promise<any> {
   const response = await fetch(root + route, { method,
     headers: { ...(tokens.has(root) ? { Authorization: `Bearer ${tokens.get(root)}` } : {}),
@@ -22,7 +38,7 @@ async function request(root: string, route: string, method = "GET", body?: unkno
   return text ? JSON.parse(text) : null;
 }
 async function login(root: string) {
-  const initial = process.env.E2E_INITIAL_PASSWORD || "admin123";
+  const initial = resolveInitialAdminPassword();
   let response = await fetch(root + "/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ identifier: "admin", password }) });
   if (!response.ok) response = await fetch(root + "/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" },

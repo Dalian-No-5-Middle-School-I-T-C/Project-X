@@ -9,13 +9,17 @@ ZIP="$ROOT/testdata/demo-exams/backup/projectx-demo.zip"
 
 cd "$ROOT"
 
-# #185 起管理员为随机一次性密码，写入数据库旁的 bootstrap-admin.txt；优先读取它
+# R01 起管理员为一次性随机口令，只写在数据库同目录的 bootstrap-admin.txt；没有固定兜底值
 BOOTSTRAP_FILE="$ROOT/data/bootstrap-admin.txt"
-if [[ -f "$BOOTSTRAP_FILE" ]]; then
-  ADMIN_PW="$(tr -d '[:space:]' < "$BOOTSTRAP_FILE")"
-else
-  ADMIN_PW="admin123"
+if [[ -n "${PROJECTX_DB_PATH:-}" ]]; then
+  BOOTSTRAP_FILE="$(dirname "$PROJECTX_DB_PATH")/bootstrap-admin.txt"
 fi
+if [[ ! -f "$BOOTSTRAP_FILE" ]]; then
+  echo "找不到管理员引导口令文件：$BOOTSTRAP_FILE" >&2
+  echo "R01 起不再有固定初始口令：请先启动一次服务（首次启动自动生成），或为隔离部署设置 PROJECTX_ADMIN_PASSWORD。" >&2
+  exit 1
+fi
+ADMIN_PW="$(tr -d '[:space:]' < "$BOOTSTRAP_FILE")"
 
 case "$MODE" in
   seed)

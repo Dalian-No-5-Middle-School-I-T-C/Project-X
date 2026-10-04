@@ -15,7 +15,9 @@ process.env.PROJECTX_ENABLE_SCANNER_CLIENT_API = "true";
 process.env.ANSWER_CARD_MAX_PROGRESS_STREAMS_PER_USER = "2";
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
-  "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST"
+  "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST",
+  // R01 逃生阀：宿主机若已设置该变量会污染随机口令断言，测试内自行显式设置/清除
+  "PROJECTX_ADMIN_PASSWORD"
 ]) delete process.env[key];
 
 let passed = 0;
@@ -110,25 +112,64 @@ async function main(): Promise<void> {
     const db = getDatabase();
 
     section("管理员安全初始化");
-    const firstBootstrap = await ensureDefaultAdmin();
-    const firstPassword = readFileSync(firstBootstrap.passwordFile, "utf8").trim();
-    check(firstPassword === "admin123", "新库使用固定初始密码 admin123");
-    check(existsSync(getBootstrapAdminPath()), "初始密码写入数据库同目录引导文件");
-    const initialAdmin = db.prepare("SELECT password_change_required FROM users WHERE username='admin'").get() as { password_change_required: number };
-    check(initialAdmin.password_change_required === 1, "新管理员被标记为强制改密");
+    const readAdminHash = () => (db.prepare("SELECT password_hash FROM users WHERE username='admin'").get() as { password_hash: string }).password_hash;
+    const readAdminFlag = () => (db.prepare("SELECT password_change_required FROM users WHERE username='admin'").get() as { password_change_required: number }).password_change_required;
+    const readBootstrapFile = () => readFileSync(getBootstrapAdminPath(), "utf8").trim();
 
-    // 存量库迁移：停留在强制改密引导态的旧随机密码（含引导文件丢失）→ 启动时重置为固定初始密码
+    const firstBootstrap = await ensureDefaultAdmin();
+    const firstPassword = readBootstrapFile();
+    check(
+      firstBootstrap.rotated && firstPassword.length >= 16 && firstPassword !== "admin123",
+      "新库使用一次性随机口令（不再落任何公开固定值）"
+    );
+    check(existsSync(getBootstrapAdminPath()), "初始密码写入数据库同目录引导文件");
+    check(readAdminFlag() === 1, "新管理员被标记为强制改密");
+
+    // R01 核心：引导文件是引导态口令的唯一事实源，重启不得恢复到任何固定值。
+    const hashAfterFirst = readAdminHash();
+    const repeatBootstrap = await ensureDefaultAdmin();
+    check(
+      !repeatBootstrap.rotated && readAdminHash() === hashAfterFirst && readBootstrapFile() === firstPassword,
+      "引导态库重复启动不轮换口令、不重写引导文件（旧行为是每次重置回 admin123 并吊销全部会话）"
+    );
+
+    // 升级场景：存量引导态库 + 文件里仍是历史公开口令 → 当场换发新随机口令。
+    db.prepare("UPDATE users SET password_hash=?, password_change_required=1 WHERE username='admin'").run(await hashPassword("admin123"));
+    writeFileSync(getBootstrapAdminPath(), "admin123\n", { encoding: "utf8" });
+    const upgradedBootstrap = await ensureDefaultAdmin();
+    const upgradedPassword = readBootstrapFile();
+    check(
+      upgradedBootstrap.rotated && upgradedPassword !== "admin123"
+        && readAdminFlag() === 1 && await verifyPassword(upgradedPassword, readAdminHash()),
+      "升级时残留的历史公开口令 admin123 被立即失效并换发随机口令"
+    );
+    check(!(await verifyPassword("admin123", readAdminHash())), "admin123 不再能作为管理员口令");
+
+    // 存量库迁移：停留在强制改密引导态的旧随机密码且引导文件丢失 → 换发新的随机口令（自愈）
     db.prepare("UPDATE users SET password_hash=?, password_change_required=1 WHERE username='admin'").run(await hashPassword("Legacy-Random-Pw"));
     rmSync(getBootstrapAdminPath(), { force: true });
     const recoveredBootstrap = await ensureDefaultAdmin();
-    const recoveredPassword = readFileSync(recoveredBootstrap.passwordFile, "utf8").trim();
-    const recoveredHash = (db.prepare("SELECT password_hash FROM users WHERE username='admin'").get() as { password_hash: string }).password_hash;
+    const recoveredPassword = readBootstrapFile();
     check(
-      recoveredBootstrap.rotated && recoveredPassword === "admin123"
-        && (db.prepare("SELECT password_change_required FROM users WHERE username='admin'").get() as { password_change_required: number }).password_change_required === 1
-        && await verifyPassword("admin123", recoveredHash),
-      "强制改密状态的存量库启动时重置为固定初始密码"
+      recoveredBootstrap.rotated && recoveredPassword !== "admin123" && recoveredPassword !== "Legacy-Random-Pw"
+        && readAdminFlag() === 1 && await verifyPassword(recoveredPassword, readAdminHash()),
+      "引导文件缺失的存量库换发新的随机口令并可据此登录"
     );
+
+    // 逃生阀：显式提供 PROJECTX_ADMIN_PASSWORD 时口令由环境变量决定，且不写引导文件。
+    process.env.PROJECTX_ADMIN_PASSWORD = "Deploy-Hatch-2026!";
+    const hatchBootstrap = await ensureDefaultAdmin();
+    check(
+      hatchBootstrap.rotated && !existsSync(getBootstrapAdminPath())
+        && readAdminFlag() === 1 && await verifyPassword("Deploy-Hatch-2026!", readAdminHash()),
+      "PROJECTX_ADMIN_PASSWORD 指定引导态口令且不写引导文件"
+    );
+    const hatchRepeat = await ensureDefaultAdmin();
+    check(!hatchRepeat.rotated, "环境变量口令与库中哈希一致时重复启动幂等（不轮换、不吊销会话）");
+    delete process.env.PROJECTX_ADMIN_PASSWORD;
+    // 撤掉逃生阀后回到「文件缺失即自愈」语义，为下面的登录链路准备随机口令
+    await ensureDefaultAdmin();
+    const loginPassword = readBootstrapFile();
 
     const app = await createApp();
     server = app.listen(0);
@@ -180,12 +221,18 @@ async function main(): Promise<void> {
       "扫描上传 API 预检请求通过且携带安全响应头"
     );
 
+    const legacyLogin = await fetch(`${base}/api/auth/login`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier: "admin", password: "admin123" })
+    });
+    check(legacyLogin.status === 401, "历史公开口令 admin123 经 HTTP 登录被 401 拒绝");
+
     const bootstrapLogin = await fetch(`${base}/api/auth/login`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier: "admin", password: recoveredPassword })
+      body: JSON.stringify({ identifier: "admin", password: loginPassword })
     });
     const bootstrapBody = await bootstrapLogin.json() as { token: string; passwordChangeRequired: boolean };
-    check(bootstrapLogin.status === 200 && bootstrapBody.passwordChangeRequired === true, "固定初始密码登录后强制改密");
+    check(bootstrapLogin.status === 200 && bootstrapBody.passwordChangeRequired === true, "引导文件随机口令登录后强制改密");
     const badTypeLogin = await fetch(`${base}/api/auth/login`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ identifier: 12345, password: "x" })
@@ -233,13 +280,24 @@ async function main(): Promise<void> {
     const changed = await fetch(`${base}/api/auth/change-password`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders(bootstrapBody.token) },
-      body: JSON.stringify({ oldPassword: recoveredPassword, newPassword: "CriticalAdmin-2026!" })
+      body: JSON.stringify({ oldPassword: loginPassword, newPassword: "CriticalAdmin-2026!" })
     });
     check(changed.status === 200 && !existsSync(getBootstrapAdminPath()), "改密成功后清除强制标记和引导文件");
     const staleSession = await fetch(`${base}/api/auth/me`, { headers: authHeaders(bootstrapBody.token) });
     check(staleSession.status === 401, "改密后旧管理员会话失效");
     const adminLogin = await authService.login("admin", "CriticalAdmin-2026!");
     const adminToken = adminLogin.token!;
+
+    // R01 接管链回归：完成首次改密后，重启既不能改写口令，也不能让公开凭据重新取得所有权。
+    const ownedHash = readAdminHash();
+    const afterChangeBootstrap = await ensureDefaultAdmin();
+    check(
+      !afterChangeBootstrap.rotated && readAdminHash() === ownedHash && readAdminFlag() === 0
+        && !existsSync(getBootstrapAdminPath()),
+      "已改密账号重启后口令、改密标记与引导文件均保持改密后的状态"
+    );
+    check((await authService.login("admin", "admin123")).success === false, "历史公开口令无法登录已改密的管理员");
+    check(Boolean((await authService.login("admin", "CriticalAdmin-2026!")).token), "改密后的口令在重启后持续有效");
 
     section("扫描双认证");
     const users = new UserRepository();

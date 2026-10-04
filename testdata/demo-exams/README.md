@@ -88,8 +88,9 @@ verify.ts 会自动处理管理员首次强制改密：读 `bootstrap-admin.txt`
 ## 手动 API 导入
 
 ```bash
-# #185 起管理员为随机一次性密码，读取数据库旁的 bootstrap-admin.txt
-ADMIN_PW="$(tr -d '[:space:]' < data/bootstrap-admin.txt 2>/dev/null || echo admin123)"
+# R01 起管理员为一次性随机口令，只写在 bootstrap-admin.txt；文件缺失就直接报错，无固定兜底值
+[[ -f data/bootstrap-admin.txt ]] || { echo "缺少 data/bootstrap-admin.txt：请确认服务已启动过（首次启动自动生成）" >&2; exit 1; }
+ADMIN_PW="$(tr -d '[:space:]' < data/bootstrap-admin.txt)"
 TOKEN=$(curl -s -X POST http://127.0.0.1:5174/api/auth/login \
   -H 'Content-Type: application/json' \
   -d "{\"identifier\":\"admin\",\"password\":\"$ADMIN_PW\"}" | jq -r .token)

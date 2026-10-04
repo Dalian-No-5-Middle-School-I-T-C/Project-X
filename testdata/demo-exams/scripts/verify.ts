@@ -28,7 +28,10 @@ function resolveBootstrapFile(): string {
 function readAdminPassword(): string {
   const file = resolveBootstrapFile();
   if (existsSync(file)) return readFileSync(file, "utf8").trim();
-  return "admin123";
+  // R01 起管理员引导口令是随机一次性口令，只存在于引导文件里；没有固定兜底值可用。
+  throw new Error(
+    `找不到管理员引导口令文件：${file}。请确认服务已启动过（会自动生成），或用 PROJECTX_DB_PATH 指向被测部署的数据目录。`
+  );
 }
 
 function writeAdminPassword(pw: string): void {

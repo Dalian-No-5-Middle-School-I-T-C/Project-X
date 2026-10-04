@@ -97,6 +97,14 @@
 拒绝正常管理员会话和公网暴露。详细说明：
 findings/known-default-administrator/known-default-administrator.md。
 
+> **处置状态（2026-10-04，安全审查清单 R01）**：上述最小修复已落地——`admin123`
+> 常量从代码、README、SERVER-README、SCANNER-SETUP 与 schema 注释中全部移除，
+> 管理员引导口令改为一次性随机值并以 `bootstrap-admin.txt` 为唯一事实源，停留在
+> 引导态的存量库升级后旧公开口令当场失效。强制改密门（428）仍在，但引导态会话可
+> 调用 `/api/auth/change-password` 这一点未变（正是完成改密的正常路径），改密后
+> 重启不再改写口令，接管链已由 `verify:security-critical` 断言锁死。机制与运维
+> 口径见 [ADMIN-BOOTSTRAP-PASSWORD.md](ADMIN-BOOTSTRAP-PASSWORD.md)。
+
 ### PX-SEC-002：任意已登录学生可用伪 API Key 绕过扫描权限（高危）
 
 optionalAuth 会先把任意有效账号附加到请求。dualAuth 只根据是否存在
