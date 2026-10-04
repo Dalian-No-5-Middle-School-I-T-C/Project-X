@@ -80,6 +80,9 @@ jobs:
       - name: Scanner batch results smoke
         run: npm run verify:scanner-batch-results
 
+      - name: Plaintext remote transport guard (R32)
+        run: npm run verify:insecure-remote-transport
+
       - name: UCRT staging path regression
         run: npm run verify:stage-vc-runtime
 

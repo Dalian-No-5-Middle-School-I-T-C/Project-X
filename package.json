@@ -57,6 +57,7 @@
     "verify:176-178": "tsx scripts/verify-176-178-smoke.ts",
     "verify:scanner-cancel": "tsx scripts/verify-scanner-cancel.ts",
     "verify:scanner-dpi": "tsx scripts/verify-scanner-dpi-clamp.ts",
+    "verify:insecure-remote-transport": "tsx scripts/verify-insecure-remote-transport.ts",
     "verify:grade-stage": "tsx src/apps/answer-card/client/util/gradeStage.ts",
     "verify:score-grid": "tsx scripts/verify-score-grid.ts",
     "verify:pdf-font": "tsx scripts/verify-pdf-font.ts",

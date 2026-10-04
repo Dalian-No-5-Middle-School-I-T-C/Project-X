@@ -49,6 +49,9 @@ async function fetchSynced<T>(localPath: string): Promise<{ data: T; source: Syn
       return { data: (await res.json()) as T, source: "remote" };
     } catch (e: any) {
       if (e?.remoteAuthFailed || e?.remoteNotFound || e?.status === 401 || e?.status === 403 || e?.status === 404) throw e;
+      // 安全（R32）：跨机明文被闸门拦下是**配置错误**，不是网络抖动。
+      // 静默回退本机会让老师看到「卡列表出来了」而以为同步正常，比直接报错更难查。
+      if (e?.code === "INSECURE_REMOTE_TRANSPORT_BLOCKED" || e?.code === "SERVER_URL_UNPARSABLE") throw e;
       // 网络错误 / 5xx / 超时 -> 静默回退本地
     }
   }

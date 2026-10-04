@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { fetchJson, mediaUrl } from "../auth/api";
 import { getScannerMode, isRemoteServerConfigured, readServerUrl, useScannerMode } from "../lib/scannerMode";
+import { canSendCredentialsToConfiguredServer, isInsecureRemoteTarget } from "../lib/remoteCredentialTransport";
 import { downloadGradingCsv } from "../lib/gradingCsv";
 import { scannerUploadManager } from "../lib/scannerUploadManager";
 import { ScannerPanel } from "./ScannerPanel";
@@ -241,6 +242,14 @@ export function ScannerWorkspace({ cardId, cardTitle, onBack, skin, onSkinChange
                   isRemoteServerConfigured() ? (
                     <p className="mt-2 m-0 rounded-md bg-secondary p-2 text-xs text-muted-foreground">
                       已连接服务器：<code className="font-mono">{readServerUrl()}</code>。扫描与导入的图片都会上传。
+                      {isInsecureRemoteTarget(readServerUrl()) && (
+                        <span className="mt-1 block text-warning-foreground">
+                          该地址是跨机明文 HTTP：
+                          {canSendCredentialsToConfiguredServer(readServerUrl()).allowed
+                            ? "已按你的显式确认继续发送 API Key，建议尽快换成 https://。"
+                            : "API Key 不会被发送，上传会失败。请在「服务器连接」中改用 https:// 或显式勾选明文许可。"}
+                        </span>
+                      )}
                     </p>
                   ) : (
                     <div className="mt-2 flex flex-col gap-2 rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-xs text-warning-foreground">

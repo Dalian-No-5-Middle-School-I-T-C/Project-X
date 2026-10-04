@@ -2,6 +2,37 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-04：跨机明文凭据闸门（安全审查第五批 C · R32）
+
+第五批 A 收浏览器侧、B 收原生进程，C 收的是**部署与现场配置**：地址怎么填、包怎么装、
+演示数据能不能进生产库。本批第一条 R32 直接对着 v2.5.6 那条现场修复的副作用来。
+
+- **R32 跨机明文 HTTP 默认不再发送凭据**：服务器地址由老师手输，少写一个 `s` 就是明文；
+  v2.5.6 为了修「填 `192.168.1.10:5174` 连不上」给缺 scheme 的输入自动补 `http://`，
+  那条修复要留（不能要求每台内网机都装证书），但**明文不能继续是送 Key 的默认路径**。
+  新增单一来源 `src/apps/answer-card/client/lib/remoteCredentialTransport.ts`，判定顺序固定为
+  `https` → 回环 → 老师按 `host:port` 显式放行 → 拒绝；`api.ts`（`fetchJson`/`authFetch`/
+  `remoteScannerFetch`/带 token 的媒体地址）、`scannerUploadManager`（按**建单时快照**的
+  `remoteBase` 判定，否则「先 https 建单再切 http」可绕过）、`scannerSync`（被拦是配置错误，
+  **不静默回退本机缓存**）三处接同一份判定。回环识别只认 `localhost`、完整四段 `127.0.0.0/8`、
+  `::1`，`127.1`/`128.127.0.0.1` 一律按远端 fail-closed。构建期的 `VITE_PROJECTX_API_BASE`
+  **不在闸门内**（部署方的显式选择，Web 端没有界面可放行）。
+  无凭据的 `/api/app/health` 探测照常放行，所以「测试连接」能分清「连不上」与「连得上但明文被拦」；
+  被拦的错误带 `noRetry` + `code`，上传队列不会把它当网络抖动重试。
+  `ServerConfigDialog` 增加「隔离内网测试环境」勾选框，**地址一改勾选就自动取消**，
+  保存时先撤销旧放行再按当前地址记账；`ScannerWorkspace` 在已连接状态下把明文风险直接写在界面上。
+  三份用户文档的 `http://192.168.x.x` 示例全部换成 `https://`（示例就是现场照抄的东西）。
+
+**验证**：`npm run verify:insecure-remote-transport` 57 通过 / 0 失败——起真实 HTTP 服务并从
+`os.networkInterfaces()` 取 LAN 地址，跨机明文发带 Key 请求时**服务端观察到 0 个请求**
+（证明凭据没离开进程），去 Key 的健康探测通过，放行后 Key 送达、撤销后再次被拦，
+回环明文在空放行列表下仍可用；`verify:security-critical` 380 通过 / 0 失败（新增 R32 静态断言：
+判定顺序、精确匹配、闸门在 `X-Api-Key` 之前、快照 base、保存拒绝先于 `saveUrl`、
+勾选框随主机变化取消、`normalizeServerUrl` 的 http 补全不得回退）；`scanner-sync-smoke` 全部通过
+（新增场景 10 锁 R32 行为，并顺手修好第五批 B 起就红着的场景 4/8——R35 把
+`fetchCardByIdSynced` 改名成 `fetchCardDetailSynced`，smoke 当时漏跑没发现）。
+CI 增加 `Plaintext remote transport guard (R32)` 步骤。
+
 ## 2026-10-04：扫描端与原生进程边界（安全审查第五批 B · R19/R23/R31/R34/R35/R38/R40）
 
 前四批加的都是**服务端**闸门，第五批 A 收的是浏览器侧。本批改的是三个 **Windows 原生进程**：

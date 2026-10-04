@@ -5,6 +5,7 @@
 // 网络恢复自动续传；存在彻底失败页时不发 complete（服务端会话保持可续传态）。
 import { authFetch, getStoredApiKey, remoteScannerFetch } from "../auth/api";
 import { SERVER_URL_KEY, readServerUrl } from "./scannerMode";
+import { assertCredentialTransportAllowed } from "./remoteCredentialTransport";
 import { serverStatus, type ServerStatusKind } from "./remoteServerStatus";
 import { applyScanStudentId } from "../../../../shared/scanPages";
 import type { ScanBatchFailure, ScanConflictCard } from "../../../../shared/scanPages";
@@ -198,6 +199,17 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     if (!j.remoteBase) return baseRemoteFetch;
     return (url: string, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
+      const sendsCredential = Boolean(j.apiKey) || headers.has("X-Api-Key") || headers.has("Authorization");
+      // 安全（R32）：快照里记的是**建任务时**的地址，闸门必须按这个地址判，
+      // 否则「先配 https 建任务、再改成 http」会把 Key 送到明文目标上。
+      if (sendsCredential) {
+        try {
+          assertCredentialTransportAllowed(j.remoteBase);
+        } catch (error) {
+          // 走 rejected promise 而不是同步抛：调用点有的在事件回调里，同步异常会逃出队列的错误处理
+          return Promise.reject(error);
+        }
+      }
       if (j.apiKey && !headers.has("X-Api-Key")) headers.set("X-Api-Key", j.apiKey);
       const resolved = /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `${j.remoteBase}${url.startsWith("/") ? url : `/${url}`}`;
       return fetch(resolved, { ...init, headers });

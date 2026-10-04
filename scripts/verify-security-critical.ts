@@ -2547,6 +2547,73 @@ async function main(): Promise<void> {
         check(existsSync(path.resolve("resources/native", arch, "answer-card-recognizer.exe")),
           `R19：${arch} 的识别器产物在包内（改了 C++ 记得 npm run native:build:${arch === "win-x64" ? "x64" : "ia32"} 重建）`);
       }
+
+      // ── R32：跨机明文 HTTP 上不得发送账号与 API Key ──
+      // 运行时证据（真实 http 服务 + 本机局域网地址，断言「服务端一个请求都没收到」）
+      // 在 `npm run verify:insecure-remote-transport`；这里锁三个发送点都接了闸门，防止只改一处。
+      const transportSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/lib/remoteCredentialTransport.ts"), "utf8");
+      const apiSource = readFileSync(path.resolve("src/apps/answer-card/client/auth/api.ts"), "utf8");
+      const uploadManagerSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/lib/scannerUploadManager.ts"), "utf8");
+      const serverConfigSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/components/ServerConfigDialog.tsx"), "utf8");
+      const scannerModeSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/lib/scannerMode.ts"), "utf8");
+
+      // 用返回的 reason 字面量定序：isLoopbackHost/includes 在文件里还有定义处与白名单函数，
+      // 按标识符找会先撞上定义，看不出判定顺序。
+      const orderHttps = transportSource.indexOf('reason: "https"');
+      const orderLoopback = transportSource.indexOf('reason: "loopback"');
+      const orderAllowance = transportSource.indexOf('reason: "explicit-allowance"');
+      const orderBlocked = transportSource.indexOf('reason: "blocked-plaintext"');
+      check(orderHttps >= 0 && orderHttps < orderLoopback && orderLoopback < orderAllowance
+        && orderAllowance < orderBlocked,
+        "R32：判定顺序是 https → 回环 → 显式勾选，三档之外一律拒绝（blocked-plaintext 是兜底分支）");
+      check(!/grantedHosts\.some\(|startsWith\(target\.host|includes\(target\.host\.split/.test(transportSource)
+        && /return grantedHosts\.includes\(target\.host\);/.test(transportSource),
+        "R32：白名单按 host:port 全等比对，没有通配或同网段推断（换端口/换主机都不继承同意）");
+      check(/allowed: false,\s*\n\s*reason: "unparsable"/.test(transportSource)
+        && /if \(!target\) \{/.test(transportSource),
+        "R32：解析不出目标时按拒绝处理，不把 Key 送进看不懂的目标");
+
+      check(apiSource.indexOf("assertCredentialTransportAllowed(base)") >= 0
+        && apiSource.indexOf("assertCredentialTransportAllowed(base)") < apiSource.indexOf('headers.set("X-Api-Key", apiKey)'),
+        "R32：remoteScannerFetch 在附加 X-Api-Key 之前先过闸门");
+      check(/wantsCredential = Boolean\(apiKey\) \|\| headers\.has\("X-Api-Key"\) \|\| headers\.has\("Authorization"\)/.test(apiSource),
+        "R32：闸门认「任何凭据」，不只认自己塞的那把 Key（调用方自带的 Authorization 同样被拦）");
+      check(apiSource.indexOf("isRuntimeTransportAllowed") >= 0
+        && (apiSource.match(/isRuntimeTransportAllowed\(\)/g) ?? []).length >= 2,
+        "R32：URL 凭据（?mt= / ?token=）两条路径也过闸门——明文链路上宁可 401，也不把令牌写进 URL");
+      check(/function assertRuntimeConfiguredTransportAllowed\(\): void \{\s*\n\s*if \(isScannerBuild\(\)\) return;\s*\n\s*const runtimeBase = readServerUrl\(\);/.test(apiSource)
+        && /`VITE_PROJECTX_API_BASE` 不在此列/.test(apiSource),
+        "R32：闸门只管运行时填写的地址，构建期写死的 VITE_PROJECTX_API_BASE 不受影响（内网 Web 部署不会被堵死且无从勾选）");
+
+      check(uploadManagerSource.indexOf("assertCredentialTransportAllowed(j.remoteBase)") >= 0
+        && uploadManagerSource.indexOf("assertCredentialTransportAllowed(j.remoteBase)")
+          < uploadManagerSource.indexOf('headers.set("X-Api-Key", j.apiKey)'),
+        "R32：上传管理器的快照路径按**建任务时**的地址判定，先配 https 建任务再改 http 也绕不过去");
+      check(/return Promise\.reject\(error\);/.test(uploadManagerSource),
+        "R32：闸门失败走 rejected promise，不逃出队列的错误处理");
+
+      check(/decision\.reason === "blocked-plaintext" && !allowInsecure/.test(serverConfigSource)
+        && serverConfigSource.indexOf("blocked-plaintext") < serverConfigSource.indexOf("saveUrl(serverUrl)"),
+        "R32：跨机明文未勾选时「保存配置」直接拒绝，不会存下一个注定发不出 Key 的地址");
+      check(serverConfigSource.indexOf("revokeInsecureTransportAllowance()") >= 0
+        && serverConfigSource.indexOf("grantInsecureTransportAllowance(loadUrl())")
+          > serverConfigSource.indexOf("revokeInsecureTransportAllowance()"),
+        "R32：保存时先清空历史明文同意、再只给当前 host:port 记一笔（改回 https 即撤销）");
+      check(/setAllowInsecure\(false\);/.test(serverConfigSource) && /hostRef\.current === typedHost/.test(serverConfigSource),
+        "R32：地址 host 一变就清掉勾选——同意不随地址搬家");
+      check(/const sendKey = Boolean\(key\) && maySendCredential;/.test(serverConfigSource),
+        "R32：「测试连接」在未勾选时只做无凭据探测，不把 Key 试出去");
+
+      check(/return `http:\/\/\$\{trimmed\}`;/.test(scannerModeSource),
+        "R32：normalizeServerUrl 仍会为缺 scheme 的地址补 http://（v2.5.6 的现场修复不能因这条整改回退，明文由闸门负责拦）");
+
+      const deployGuideSource = readFileSync(path.resolve("deploy-guide.md"), "utf8");
+      check(deployGuideSource.includes("R32") && /扫描端接入必须走 HTTPS/.test(deployGuideSource),
+        "R32：部署指南写明扫描接入需 HTTPS，以及扫描端会拒绝明文发送 Key");
     }
 
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);
