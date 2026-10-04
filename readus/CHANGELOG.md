@@ -2,6 +2,40 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-05：发布产物完整性凭据（安全审查第五批 C · R42）
+
+扫描端的 exe / msi 一直是**未签名**的（`build.win.signAndEditExecutable` 是 `false`），发布时也没有任何
+校验和：收件方看到的是一个「未知发布者」的可执行文件，而且**没办法判断手上这份有没有被改过**——
+这个客户端持有能向服务器写入扫描结果的 API Key。没有证书就签不了名，证书更不能入库，
+所以这一条的处置不是「补上签名」，而是把未签名变成**可验证、可交代**。
+
+- **R42 打包即产出完整性清单**：新增 `scripts/hash-release-artifacts.cjs`（`npm run release:hash`），
+  在 `release/` 下生成 `SHA256SUMS.txt`（`sha256sum -c` 兼容、LF、按路径排序，跳过构建中间物与
+  `*-unpacked/`）与 `BUILD-INTEGRITY.txt`（版本、构建提交、是否 dirty、每个产物的校验和与**签名状态**、
+  未签名的原因与现场后果、两种校验方法）。`--check` 模式给收件方：篡改一个字节、清单外多出文件、
+  清单里有而目录里缺文件，三种情况都退出码 1 并点名。
+- **五条打包命令全部接线**：`electron:dist` / `electron:dist:ia32` / `electron:msi` / `electron:msi:ia32` /
+  `package:server:ubuntu24` 都以 `npm run release:hash` 收尾，产物不可能在没有清单的情况下被打出来；
+  `electron:pack`（`--dir`，产物是目录不是分发物）刻意不接。Ubuntu 包内部署说明也加了 Package Integrity 一节。
+- **签名状态是量出来的，不是从配置推的**：脚本用 PowerShell `Get-AuthenticodeSignature` 逐个 exe/msi 取状态；
+  产物名是中文，所以文件清单写成 UTF-8 文件让 PowerShell 自己读、结果落文件再取回（直接拼 `-Command`
+  会被控制台代码页吃掉）。本机把 `release/win-ia32-unpacked/答题卡扫描端.exe`（180 MB 真实产物）交给它，
+  返回 **`NotSigned`**。
+- **「以为签了」的守卫**：环境里给了 `CSC_LINK`/`WIN_CSC_LINK` 但 `signAndEditExecutable` 仍是 `false` 时打印警告
+  ——这种情况下 electron-builder 不会用那张证书，产物照样未签名。
+- **顺带查清了开关来历**：`signAndEditExecutable: false` 是 2026-06-14 提交 `c4cdb02`（修图标显示异常）
+  顺带加上的规避手段，不是一个签名决策。README 新增「Windows 扫描端安装包：未签名与完整性校验（安全 R42）」
+  一节，写明现状、`certutil` 与 `--check` 两种校验方法、以及拿到证书后启用签名的步骤与前置检查
+  （图标与非 ASCII `executableName` 在 rcedit 环节要重新确认）。
+
+**验证**：`npm run verify:release-integrity` 61 通过 / 0 失败——一次性临时目录里真跑生成与校验，
+覆盖改一字节 → 失败、改回 → 通过、塞入清单外文件 → 失败、删掉清单内文件 → 失败、
+目录里没有清单 → 失败且不静默通过、空目录 → 不生成空清单冒充「已校验」，产物名刻意用中文；
+Windows 上另断言报告里的签名状态是逐个产物的真实值而不是笼统的「无法检测」。
+CI 增加 `Release artifact integrity manifest (R42)`。
+**边界**：校验通过只说明「与打包机产出时相同」，不等于已签名——它防传输途中的篡改与拿错包，
+防不了发布方本身被攻破。这句话同时写在 `BUILD-INTEGRITY.txt` 与 README 里。
+
 ## 2026-10-05：Ubuntu 服务器包不再以 root 运行（安全审查第五批 C · R37）
 
 第五批 C 前两条收的是「凭据怎么过网段」「演示数据能不能进生产库」，这一条收的是**部署形态**：

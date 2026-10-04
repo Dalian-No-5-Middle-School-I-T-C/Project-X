@@ -315,6 +315,20 @@ systemctl show project-x-server -p User -p Group -p UMask
 sudo -u projectx test -r /var/lib/project-x && echo "service account can read data"
 \`\`\`
 
+## Package Integrity
+
+The build machine writes \`release/SHA256SUMS.txt\` and \`release/BUILD-INTEGRITY.txt\`
+after packaging (security R42). Distribute them together with this zip. To verify a
+copy you received:
+
+\`\`\`bash
+sha256sum -c SHA256SUMS.txt          # in the directory holding the artifacts
+\`\`\`
+
+Nothing here is code-signed; the checksum manifest is the only tamper evidence
+available. \`BUILD-INTEGRITY.txt\` also records the exact build commit and states the
+signing status plainly.
+
 ## Health Check
 
 \`\`\`bash

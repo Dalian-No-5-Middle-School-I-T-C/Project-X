@@ -94,6 +94,12 @@ jobs:
       - name: Ubuntu server package systemd hardening (R37)
         run: npm run verify:systemd-hardening
 
+      # 发布产物完整性清单（R42）：exe/msi 没有代码签名（无证书，且证书不得入库），
+      # 处置是每次打包都生成 SHA256SUMS.txt + BUILD-INTEGRITY.txt，并把签名状态如实写出来。
+      # 脚本用一次性临时目录真跑生成与校验（含篡改 / 多出文件 / 缺清单三条失败路径）。
+      - name: Release artifact integrity manifest (R42)
+        run: npm run verify:release-integrity
+
       # 上面锁的是生成物内容；这里再用 systemd 自己的解析器复核单元能否被接受。
       # 运行器上既没有 projectx 账号也没有 /usr/bin/node，告警属预期，所以只作参考、不判失败。
       - name: systemd-analyze verify (advisory)

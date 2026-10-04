@@ -7,7 +7,8 @@
 **这类条目不静默消失，而是留一份说明**：写清判定、证据、以及重新评估的触发条件。
 
 本文件随批次滚动更新（第四批已录入；第五批 A 的判定见第六节、第五批 B 的判定与真机证据见第七节，
-第五批 C 的判定与证据见第八节：R32/R33/R48 是代码整改，R36/R39 给出的是明确处置而非新增代码）。
+第五批 C 的判定与证据见第八节：R32/R33/R37/R48 是代码整改；R42 的判定是「没有证书就签不了名」，
+处置改为可验证的完整性凭据并附实测签名状态；R36/R39 给出的是明确处置而非新增代码）。
 
 ---
 
@@ -449,6 +450,46 @@ systemd 默认以 **root** 启动；部署说明教的又是 `sudo cp -a . /opt/
 - **未验证的部分说清楚**：打包机是 Windows，本机跑不了 systemd，因此「服务真的以 `projectx` 身份起来、
   上传 / 字体读取 / 自动备份在沙箱里都能写」这一步**没有实测证据**，靠部署说明里的 `systemctl show`
   与三条 `sudo -u` 自检命令在现场兜底。这也是本条与第五批 B 的差别：B 组每条都有真机或双架构证据。
+
+### R42 Windows 产物未签名：**没有证书就签不了**，改为提供可验证的完整性凭据
+
+**原判定**：`package.json` 的 `build.win.signAndEditExecutable` 是 `false`，扫描端 exe / msi 既没有
+Authenticode 签名，发布时也没有任何校验和。收件方看到的是一个「未知发布者」的可执行文件，
+且**无法判断手上这份有没有被改过**——而这个客户端持有 API Key，能向服务器写入扫描结果。
+
+**为什么不是「去签名」**：代码签名证书是私钥材料，**不得入库**；本轮也没有证书可用。
+所以处置不是修好签名，而是把「未签名」这件事变成**可验证、可交代**的：
+
+- 查了历史，`signAndEditExecutable: false` 是 2026-06-14 提交 `c4cdb02`（「修复了软件图标显示异常问题」）
+  顺带加上的——它是图标 / rcedit 问题的规避手段，不是一个签名决策。README 里写明了打开它的前置条件
+  （重新确认图标与非 ASCII 的 `executableName` 在 rcedit 环节没问题）。
+- 新增 `scripts/hash-release-artifacts.cjs`，由 `release:hash` 调用，在 `release/` 下生成
+  `SHA256SUMS.txt`（`sha256sum -c` 兼容、LF、按路径排序、跳过构建中间物与 `*-unpacked/`）与
+  `BUILD-INTEGRITY.txt`（版本、构建提交、是否 dirty、每个产物的校验和与**签名状态**、
+  未签名的原因与现场后果、两种校验方法）。`--check` 模式给收件方用：篡改、清单外多出的文件、
+  清单里有而目录里缺的文件，三种情况都退出码 1 并点名。
+- **接线到打包命令**：`electron:dist` / `electron:dist:ia32` / `electron:msi` / `electron:msi:ia32` /
+  `package:server:ubuntu24` 五条全部以 `npm run release:hash` 收尾，所以产物不可能在没有清单的情况下
+  被打出来。`electron:pack`（`--dir`，产物是目录、不是分发物）刻意不接。
+- **签名状态不是猜的**：脚本用 PowerShell 的 `Get-AuthenticodeSignature` 逐个 exe/msi 取真实状态。
+  产物名是中文（`答题卡扫描端.exe`），直接拼进 `-Command` 会被控制台代码页吃掉，
+  所以文件清单写成 UTF-8 文件让 PowerShell 自己读、结果同样落文件再取回。
+- **「以为签了」的守卫**：环境里给了 `CSC_LINK` / `WIN_CSC_LINK` 但 `signAndEditExecutable` 仍是 false 时，
+  `release:hash` 打印警告——electron-builder 在这种情况下不会用那张证书，产物照样是未签名的。
+
+**证据**：
+
+- `npm run verify:release-integrity` **61 通过 / 0 失败**：一次性临时目录里真跑生成与校验，
+  含改一个字节 → `--check` 失败并给出两个校验和、改回原样 → 重新通过、塞入清单外文件 → 失败、
+  删掉清单内文件 → 失败、目录里根本没有清单 → 失败且不静默通过、空目录 → 不生成空清单冒充「已校验」。
+  产物名刻意用中文，验证清单路径与签名检测都能处理非 ASCII。
+- **实测确认了审计判断**：把本机 `release/win-ia32-unpacked/答题卡扫描端.exe`（180 MB，ia32 真实产物）
+  交给脚本，`Get-AuthenticodeSignature` 返回 **`NotSigned`**——这条不是从配置推断的，是量出来的。
+  非 PE 的假 exe 返回 `UnknownError`，同样被如实写进报告而不是被吞掉。
+- 报告里的 `certutil -hashfile` 示例用**本次真实产物名**渲染，现场可以直接复制。
+
+**边界**：校验通过只说明「与打包机产出时相同」，**不等于已签名**——它防的是传输途中的篡改与拿错包，
+防不了「发布方本身被攻破」。这句话同时写在 `BUILD-INTEGRITY.txt` 与 README 里，避免清单被当成签名用。
 
 
 

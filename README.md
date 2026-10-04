@@ -196,6 +196,38 @@
   要固定位置请显式设 `PROJECTX_DB_PATH`
 - **支持项目**：账号菜单低调入口，JSON 配置驱动的收款码预留接口（详见 [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md)）
 
+#### Windows 扫描端安装包：未签名与完整性校验（安全 R42）
+
+扫描端的 exe / msi **没有代码签名**：`build.win.signAndEditExecutable` 是 `false`，仓库里也不含证书
+（代码签名证书属于私钥材料，不能入库）。现场表现是 Windows SmartScreen 提示「未知发布者」，
+以及收件方无法凭签名判断文件真伪。
+
+补偿措施：`electron:dist` / `electron:dist:ia32` / `electron:msi` / `electron:msi:ia32` /
+`package:server:ubuntu24` 五条打包命令都以 `npm run release:hash` 收尾，在 `release/` 下生成两份文件：
+
+- `SHA256SUMS.txt`：`sha256sum -c` 兼容的校验和清单（LF、按路径排序、不含构建中间物与 `*-unpacked/`）
+- `BUILD-INTEGRITY.txt`：版本、构建提交、每个产物的校验和与**签名状态**，未签名时把原因与后果写明
+
+**发布时必须把这两个文件连同安装包一起给出**，否则收件方没有任何验证手段。收件方两种校验方式：
+
+```bash
+# 方式一：不需要本仓库，Windows 自带
+certutil -hashfile "答题卡扫描端-<版本>-x64.exe" SHA256
+# 把输出的 64 位十六进制与 SHA256SUMS.txt 中同名那行比对，全等即未被改动
+
+# 方式二：有本仓库，一次校验全部产物（任何一项不符即退出码 1 并点名文件）
+node scripts/hash-release-artifacts.cjs --check --root <产物目录>
+```
+
+校验通过只说明「与打包机产出时相同」，**不等于已签名**。
+
+拿到证书后启用签名的步骤：把 `build.win.signAndEditExecutable` 改为 `true`（或删掉该行），
+用环境变量提供证书（`CSC_LINK` 指向 .pfx、`CSC_KEY_PASSWORD` 提供口令，证书文件不入库），
+重新打包后 `BUILD-INTEGRITY.txt` 里的签名状态会变成 `Valid` 并列出证书主体。
+注意这个开关当年是为修图标显示异常而关掉的（提交 `c4cdb02`），打开后要重新确认图标与非 ASCII 的
+`executableName` 在 rcedit 环节没问题；只给了 `CSC_LINK` 却没打开开关时，`release:hash` 会打印警告，
+避免「以为签了」的产物照样发出去。
+
 > 多端详细说明见 [`readus/多端使用说明.md`](./readus/多端使用说明.md)
 
 ---
