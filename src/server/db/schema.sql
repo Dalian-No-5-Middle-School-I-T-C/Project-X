@@ -710,6 +710,16 @@ CREATE TABLE IF NOT EXISTS exam_participants (
 );
 CREATE INDEX IF NOT EXISTS idx_ep_student ON exam_participants(student_id);
 
+-- class_id=0 is an explicit unknown-class snapshot, not a classes foreign key.
+CREATE TABLE IF NOT EXISTS exam_class_memberships (
+  exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+  student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  class_id INTEGER NOT NULL,
+  joined_at DATETIME,
+  PRIMARY KEY (exam_id, student_id, class_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ecm_student ON exam_class_memberships(student_id, exam_id);
+
 CREATE INDEX IF NOT EXISTS idx_users_student_number ON users(student_number);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role_id);
 CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active);

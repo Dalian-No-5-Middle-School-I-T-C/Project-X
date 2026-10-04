@@ -5,6 +5,7 @@
  */
 import type { DbAdapter } from "../db";
 import { ROLE_IDS } from "../auth/permissions";
+import { captureExamClasses } from "./examClassMemberships";
 
 export type ParticipantSource = "roster" | "explicit";
 
@@ -163,6 +164,7 @@ export async function setExplicitParticipants(
     const insertSQL = "INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?, ?, 'explicit')";
     for (const sid of uniq) {
       await tx.run(insertSQL, examId, sid);
+      await captureExamClasses(tx, examId, sid);
     }
     return uniq.length;
   });
@@ -180,6 +182,29 @@ export async function hasExplicitParticipants(db: DbAdapter, examId: number): Pr
     examId
   ) as { ok: number } | undefined;
   return Boolean(row);
+}
+
+/** Call within the transaction that changes the student's class memberships.
+ * Preserve scoped rosters, including absent students, before they lose a link. */
+export async function preserveStudentExamHistory(db: DbAdapter, studentId: number): Promise<void> {
+  await db.run("UPDATE users SET name = name WHERE id = ?", studentId);
+  const scoped = await db.all<{ id: number }>(`SELECT DISTINCT e.id FROM exams e
+    JOIN class_students cs ON cs.student_id = ? JOIN classes c ON c.id = cs.class_id
+    WHERE (e.class_id = c.id OR (e.class_id IS NULL AND e.grade_id = c.grade_id))
+      AND NOT EXISTS (SELECT 1 FROM exam_participants ep_frozen WHERE ep_frozen.exam_id = e.id)
+      AND (e.status <> 'draft'
+        OR EXISTS (SELECT 1 FROM exam_participants ep WHERE ep.exam_id = e.id)
+        OR EXISTS (SELECT 1 FROM student_scores ss WHERE ss.exam_id = e.id))
+    ORDER BY e.id`, studentId);
+  for (const exam of scoped) await ensureExamParticipants(db, exam.id);
+  const exams = await db.all<{ exam_id: number }>(
+    `SELECT ss.exam_id FROM student_scores ss WHERE ss.student_id = ?
+       AND NOT EXISTS (SELECT 1 FROM exam_class_memberships snap WHERE snap.exam_id = ss.exam_id AND snap.student_id = ss.student_id)
+     UNION SELECT ep.exam_id FROM exam_participants ep WHERE ep.student_id = ?
+       AND NOT EXISTS (SELECT 1 FROM exam_class_memberships snap WHERE snap.exam_id = ep.exam_id AND snap.student_id = ep.student_id)
+     ORDER BY exam_id`,
+    studentId, studentId);
+  for (const exam of exams) await captureExamClasses(db, exam.exam_id, studentId);
 }
 
 export async function isExamParticipant(db: DbAdapter, examId: number, studentId: number): Promise<boolean> {

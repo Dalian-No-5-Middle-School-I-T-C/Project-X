@@ -1,6 +1,7 @@
 import express from "express";
 import type { NextFunction, Request, Response } from "express";
 import { getMysqlDb } from "../db";
+import { examClassJoin, examClassId, examClassJoinedAt } from "../services/examClassMemberships";
 import { ZipArchive } from "archiver";
 import XLSX from "xlsx";
 import { competitionRank } from "../../shared/ranking";
@@ -299,10 +300,11 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
         g.name as grade_name
       FROM student_scores ss
       JOIN users u ON u.id = ss.student_id
-      LEFT JOIN class_students cs ON cs.student_id = ss.student_id
-      LEFT JOIN classes c ON c.id = cs.class_id
+      ${examClassJoin("ss.student_id", "ss.exam_id")}
+      LEFT JOIN classes c ON c.id = ${examClassId()}
       LEFT JOIN grades g ON g.id = c.grade_id
       WHERE ss.exam_id IN (${memberIds.map(() => "?").join(",")}) ${trackStudentClause}
+      ORDER BY (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, ${examClassJoinedAt()} DESC, c.id DESC
     `, ...allScoreParams) as Array<{
       student_id: number; exam_id: number; total_score: number; assigned_score: number | null;
       objective_score: number; subjective_score: number;
@@ -310,10 +312,13 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
       class_name: string | null; class_id: number | null; grade_name: string | null;
     }>;
 
+    allScores.sort((a, b) => memberIds.indexOf(a.exam_id) - memberIds.indexOf(b.exam_id));
+
     // Build per-student map
     const studentMap = new Map<number, {
       studentId: number; studentNumber: string; studentName: string;
       className: string; classId: number | null; gradeName: string | null;
+      referenceExamId: number; classIds: Set<number | null>;
       scores: Map<number, { totalScore: number; assignedScore: number | null; objectiveScore: number; subjectiveScore: number }>;
     }>();
 
@@ -323,9 +328,12 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
           studentId: s.student_id, studentNumber: s.student_number,
           studentName: s.name, className: s.class_name || "未知班级",
           classId: s.class_id, gradeName: s.grade_name || null,
+          referenceExamId: s.exam_id, classIds: new Set(),
           scores: new Map()
         });
       }
+      const student = studentMap.get(s.student_id)!;
+      if (student.referenceExamId === s.exam_id) student.classIds.add(s.class_id);
       studentMap.get(s.student_id)!.scores.set(s.exam_id, {
         totalScore: s.total_score,
         assignedScore: s.assigned_score,
@@ -343,31 +351,38 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
         SELECT ss.student_id, ss.total_score, c.name as class_name, c.id as class_id
         FROM student_scores ss
         JOIN users u ON u.id = ss.student_id
-        LEFT JOIN class_students cs ON cs.student_id = ss.student_id
-        LEFT JOIN classes c ON c.id = cs.class_id
+        ${examClassJoin("ss.student_id", "ss.exam_id")}
+        LEFT JOIN classes c ON c.id = ${examClassId()}
+        LEFT JOIN grades g ON g.id = c.grade_id
         WHERE ss.exam_id = ? ${trackStudentClause}
-        ORDER BY ss.total_score DESC
+        ORDER BY ss.total_score DESC, (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, ${examClassJoinedAt()} DESC, c.id DESC
       `, ...rankParams) as Array<{ student_id: number; total_score: number; class_name: string | null; class_id: number | null }>;
 
       const rankMap = new Map<number, { gradeRank: number; classRank: number }>();
       examRanks[examId] = rankMap;
 
       // Grade rank — dense ranking
-      competitionRank(rankRows, (r) => r.total_score, (r, rank) => {
+      const displayRows = new Map<number, typeof rankRows[number]>();
+      for (const row of rankRows) {
+        if (!displayRows.has(row.student_id) || (classId !== undefined && (row.class_id ?? 0) === classId)) {
+          displayRows.set(row.student_id, row);
+        }
+      }
+      competitionRank([...displayRows.values()], (r) => r.total_score, (r, rank) => {
         rankMap.set(r.student_id, { gradeRank: rank, classRank: 0 });
       });
 
       // Class rank by group — dense ranking within each class
-      const classGroups = new Map<string, Array<{ student_id: number; total_score: number }>>();
+      const classGroups = new Map<number | null, Array<{ student_id: number; total_score: number }>>();
       for (const r of rankRows) {
-        const key = r.class_name || "__unassigned__";
+        const key = r.class_id;
         if (!classGroups.has(key)) classGroups.set(key, []);
         classGroups.get(key)!.push({ student_id: r.student_id, total_score: r.total_score });
       }
-      for (const cg of classGroups.values()) {
+      for (const [cid, cg] of classGroups) {
         competitionRank(cg, (r) => r.total_score, (r, rank) => {
           const entry = rankMap.get(r.student_id);
-          if (entry) entry.classRank = rank;
+          if (entry && displayRows.get(r.student_id)?.class_id === cid) entry.classRank = rank;
         });
       }
     }
@@ -432,23 +447,34 @@ router.get("/rankings", requireReadableGroup, requireGroupViewStudents, async (r
     competitionRank(rows, sortScore, (r: any, rank: number) => { r.totalGradeRank = rank; });
 
     // Class rank
-    const classGroups2 = new Map<string, any[]>();
+    const classGroups2 = new Map<number | null, any[]>();
     for (const r of rows) {
-      const key = r.className === "未知班级" ? "__unassigned__" : r.className;
-      if (!classGroups2.has(key)) classGroups2.set(key, []);
-      classGroups2.get(key)!.push(r);
+      for (const key of studentMap.get(r.studentId)!.classIds) {
+        if (!classGroups2.has(key)) classGroups2.set(key, []);
+        classGroups2.get(key)!.push(r);
+      }
     }
-    for (const cg of classGroups2.values()) {
-      competitionRank(cg, sortScore, (r: any, rank: number) => { r.totalClassRank = rank; });
+    for (const [cid, cg] of classGroups2) {
+      competitionRank(cg, sortScore, (r: any, rank: number) => {
+        const targetClass = classId === undefined ? r.classId : classId === 0 ? null : classId;
+        if (targetClass === cid) r.totalClassRank = rank;
+      });
     }
 
     // Filter by class
     let filtered = rows;
     if (classId !== undefined) {
       if (classId === 0) {
-        filtered = rows.filter((r) => r.classId == null);
+        filtered = rows.filter((r) => studentMap.get(r.studentId)!.classIds.has(null));
       } else {
-        filtered = rows.filter((r) => r.classId === classId);
+        filtered = rows.filter((r) => studentMap.get(r.studentId)!.classIds.has(classId));
+        const classRow = await db.get<{ name: string; grade_name: string }>(
+          "SELECT c.name, g.name as grade_name FROM classes c JOIN grades g ON g.id = c.grade_id WHERE c.id = ?", classId);
+        for (const row of filtered) {
+          row.classId = classId;
+          row.className = classRow?.name ?? row.className;
+          row.gradeName = classRow?.grade_name ?? row.gradeName;
+        }
       }
     }
 
@@ -514,13 +540,17 @@ router.post("/export", requireReadableGroup, requireGroupViewScores, async (req:
           c.name as class_name
         FROM student_scores ss
         JOIN users u ON u.id = ss.student_id
-        LEFT JOIN class_students cs ON cs.student_id = ss.student_id
-        LEFT JOIN classes c ON c.id = cs.class_id
+        ${examClassJoin("ss.student_id", "ss.exam_id")}
+        LEFT JOIN classes c ON c.id = ${examClassId()}
+        LEFT JOIN grades g ON g.id = c.grade_id
         WHERE ss.exam_id IN (${memberIds.map(() => "?").join(",")})
+        ORDER BY (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, ${examClassJoinedAt()} DESC, c.id DESC
       `, ...memberIds) as Array<{
         student_id: number; exam_id: number; total_score: number; assigned_score: number | null;
         student_number: string; name: string; class_name: string | null;
       }>;
+
+      allScores.sort((a, b) => memberIds.indexOf(a.exam_id) - memberIds.indexOf(b.exam_id));
 
       // Build student map
       const stuMap = new Map<number, { number: string; name: string; className: string; exams: Map<number, { raw: number; assigned: number | null }> }>();
@@ -618,10 +648,11 @@ router.post("/export", requireReadableGroup, requireGroupViewScores, async (req:
                u.student_number, u.name, c.name as class_name
         FROM question_scores qs
         JOIN users u ON u.id = qs.student_id
-        LEFT JOIN class_students cs ON cs.student_id = qs.student_id
-        LEFT JOIN classes c ON c.id = cs.class_id
+        ${examClassJoin("qs.student_id", "qs.exam_id")}
+        LEFT JOIN classes c ON c.id = ${examClassId()}
+        LEFT JOIN grades g ON g.id = c.grade_id
         WHERE qs.exam_id = ?
-        ORDER BY u.student_number, qs.question_number
+        ORDER BY u.student_number, qs.question_number, (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, ${examClassJoinedAt()} DESC, c.id DESC
       `, m.exam_id) as Array<{
         student_id: number; question_number: number; score: number;
         max_score: number; score_type: string;
@@ -647,10 +678,11 @@ router.post("/export", requireReadableGroup, requireGroupViewScores, async (req:
       const classSorted = await db.all(`
         SELECT ss.student_id, ss.total_score, c.name as class_name
         FROM student_scores ss
-        LEFT JOIN class_students cs ON cs.student_id = ss.student_id
-        LEFT JOIN classes c ON c.id = cs.class_id
+        ${examClassJoin("ss.student_id", "ss.exam_id")}
+        LEFT JOIN classes c ON c.id = ${examClassId()}
+        LEFT JOIN grades g ON g.id = c.grade_id
         WHERE ss.exam_id = ?
-        ORDER BY ss.total_score DESC
+        ORDER BY ss.total_score DESC, (c.id IS NOT NULL AND c.archived_at IS NULL AND g.archived_at IS NULL) DESC, ${examClassJoinedAt()} DESC, c.id DESC
       `, m.exam_id) as Array<{ student_id: number; total_score: number; class_name: string | null }>;
       const classRankMap = new Map<number, number>();
       const cGroups = new Map<string, Array<{ student_id: number; total_score: number }>>();

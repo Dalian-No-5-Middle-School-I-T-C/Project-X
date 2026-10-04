@@ -133,6 +133,7 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string }> = [
   { table: "exam_archives", primaryKey: "id" },
   { table: "exam_publish_events", primaryKey: "id" },
   { table: "exam_participants", primaryKey: "exam_id, student_id" },
+  { table: "exam_class_memberships", primaryKey: "exam_id, student_id, class_id" },
   { table: "exam_answer_keys", primaryKey: "exam_id, question_number" },
   { table: "exam_answer_key_pages", primaryKey: "id" },
   { table: "wechat_grade_release_notifications", primaryKey: "exam_id" },

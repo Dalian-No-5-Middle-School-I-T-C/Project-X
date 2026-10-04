@@ -1,6 +1,8 @@
 import { buildInsertIgnore, buildUpsertSQL, getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
-import { ensureExamParticipants } from "../services/examParticipants";
+import { ensureExamParticipants, preserveStudentExamHistory } from "../services/examParticipants";
+import { captureExistingExamClasses } from "../services/examClassMemberships";
+import { analysisCache } from "../services/analysisCache";
 
 export interface GradeRecord {
   id: number;
@@ -73,6 +75,7 @@ export class ClassRepository {
       await tx.run("UPDATE classes SET archived_at = CURRENT_TIMESTAMP WHERE grade_id = ? AND archived_at IS NULL", id);
       await tx.run("UPDATE grades SET archived_at = CURRENT_TIMESTAMP WHERE id = ? AND archived_at IS NULL", id);
     });
+    analysisCache.clear();
   }
 
   private async freezeGradeParticipants(tx: DbAdapter, gradeId: number): Promise<void> {
@@ -84,7 +87,12 @@ export class ClassRepository {
     for (const exam of exams) {
       const snapshot = await ensureExamParticipants(tx, exam.id);
       if (!snapshot.rosterKnown) throw new Error("无法保留考试应考名单，未归档班级");
+      await captureExistingExamClasses(tx, exam.id);
     }
+    const students = await tx.all<{ student_id: number }>(`SELECT DISTINCT cs.student_id
+      FROM class_students cs JOIN classes c ON c.id = cs.class_id WHERE c.grade_id = ?
+      ORDER BY cs.student_id`, gradeId);
+    for (const student of students) await preserveStudentExamHistory(tx, student.student_id);
   }
 
   // ── 班级 ──────────────────────────────────────────────
@@ -135,6 +143,7 @@ export class ClassRepository {
       // Retain exam foreign keys, rosters, scores and historical teacher access.
       await tx.run("UPDATE classes SET archived_at = CURRENT_TIMESTAMP WHERE id = ?", id);
     });
+    analysisCache.clear();
   }
 
   // ── 花名册 ────────────────────────────────────────────
@@ -153,6 +162,7 @@ export class ClassRepository {
     await this.db.transaction(async (tx) => {
       await this.insertStudentClassLink(tx, classId, studentId);
     });
+    analysisCache.clear();
   }
 
   async addStudents(classId: number, studentIds: number[]): Promise<number> {
@@ -163,6 +173,7 @@ export class ClassRepository {
         if (changed) added++;
       }
     });
+    analysisCache.clear();
     return added;
   }
 
@@ -185,23 +196,30 @@ export class ClassRepository {
       classId, studentId
     );
     const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
+    if (!existing) await preserveStudentExamHistory(tx, studentId);
     await tx.run(sql, classId, studentId);
     return !existing;
   }
 
   async removeStudent(classId: number, studentId: number): Promise<void> {
-    await this.db.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", classId, studentId);
+    await this.db.transaction(async (tx) => {
+      await preserveStudentExamHistory(tx, studentId);
+      await tx.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", classId, studentId);
+    });
+    analysisCache.clear();
   }
 
   /** 学生迁移：从原班级移除并加入目标班级（目标班级所属年级即学生的新年级）。 */
   async moveStudent(fromClassId: number, toClassId: number, studentId: number): Promise<void> {
     await this.db.transaction(async (tx) => {
+      await preserveStudentExamHistory(tx, studentId);
       // 调班语义只移除**原班**关联；其他在读班（合法多班）与归档班级的历史关联一律保留。
       // 此前「清空全部当前归属再绑新班」会把学生同时就读的其他在读班一并抹掉（评审 P1）。
       await tx.run("DELETE FROM class_students WHERE class_id = ? AND student_id = ?", fromClassId, studentId);
       const sql = buildInsertIgnore(tx.dialect, "class_students", ["class_id", "student_id"]);
       await tx.run(sql, toClassId, studentId);
     });
+    analysisCache.clear();
   }
 
   async isStudentInClass(classId: number, studentId: number): Promise<boolean> {

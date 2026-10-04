@@ -12,6 +12,7 @@ import { databaseTimestamp } from "../db/timestamp";
 import { getMysqlDb } from "../db";
 import type { DbAdapter } from "../db";
 import { listReviewBlockCrops } from "./AnswerBlockCropService";
+import { examClassPredicate } from "./examClassMemberships";
 import { getAssignmentsByBlock } from "./ReviewAssignmentService";
 import type { ReviewPoolEntry, ReviewPoolSummary } from "../../shared/types";
 
@@ -159,7 +160,7 @@ export async function claimNextPaper(
 ): Promise<ReviewPoolEntry> {
   const cropId = await db.transaction(async (tx) => {
     const classFilter = options.classId
-      ? `AND EXISTS (SELECT 1 FROM class_students cs WHERE cs.student_id = answer_block_crops.student_id AND cs.class_id = ?)`
+      ? `AND ${examClassPredicate("answer_block_crops.student_id", "answer_block_crops.exam_id")}`
       : "";
     const classParams = options.classId ? [options.classId] : [];
     const candidates = await tx.all(

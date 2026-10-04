@@ -1045,6 +1045,16 @@ export async function runMariadbMigrations(conn: mariadb.Connection | mariadb.Po
   // 两条在读关联变成一条）。归班歧义由读取侧「在读优先 → joined_at 最新 →
   // class_id 最大」口径消解（AnalysisRepository 的 CURRENT_CLASS_* 与
   // DISPLAY_CLASS_ORDER）；显式调班走 moveStudent 只移除原班关联。留注释占号。
+  mariadbMigrations.push({ version: 59, name: "exam-class-memberships", sqls: [
+    `CREATE TABLE IF NOT EXISTS exam_class_memberships (
+      exam_id INT NOT NULL, student_id INT NOT NULL, class_id INT NOT NULL,
+      joined_at DATETIME,
+      PRIMARY KEY (exam_id, student_id, class_id),
+      INDEX idx_ecm_student (student_id, exam_id),
+      FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+      FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`,
+  ] });
   for (const m of mariadbMigrations) {
     if (applied.has(m.version)) continue;
     for (const sql of m.sqls) {

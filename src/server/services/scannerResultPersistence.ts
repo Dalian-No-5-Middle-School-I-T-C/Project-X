@@ -2,6 +2,7 @@ import { databaseTimestamp } from "../db/timestamp";
 import type { CombinedStudentResult } from "../../shared/grading";
 import type { DbAdapter } from "../db";
 import { markScoreMutated } from "./examPublishEvents";
+import { captureExamClasses } from "./examClassMemberships";
 export async function persistScannerResultToMainDb(
     cardId: string,
     result: CombinedStudentResult,
@@ -64,6 +65,7 @@ export async function persistScannerResultToMainDb(
         const obj = roundScore(result.objectiveScore);
         const subj = roundScore(result.subjectiveScore);
         const total = roundScore(result.totalScore);
+        await captureExamClasses(tx, exam.id, user.id);
         await tx.run(scoreUpsertSQL, exam.id, user.id, obj, subj, total, gradedAt);
 
         for (const q of result.objectiveQuestions) {

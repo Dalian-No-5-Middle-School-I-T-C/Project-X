@@ -1300,6 +1300,17 @@ MIGRATIONS.push({ version: 56, name: "block-title-locked", up(db) {
 // （repositories/AnalysisRepository.ts 的 CURRENT_CLASS_* 与 DISPLAY_CLASS_ORDER），
 // 显式调班走 moveStudent 只移除原班关联。号位保留，避免复用造成判重歧义。
 
+// v59 only adds storage. Earlier moves without historical records cannot be reconstructed.
+MIGRATIONS.push({ version: 59, name: "exam-class-memberships", up(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS exam_class_memberships (
+    exam_id INTEGER NOT NULL REFERENCES exams(id) ON DELETE CASCADE,
+    student_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    class_id INTEGER NOT NULL,
+    joined_at DATETIME,
+    PRIMARY KEY (exam_id, student_id, class_id)
+  ); CREATE INDEX IF NOT EXISTS idx_ecm_student ON exam_class_memberships(student_id, exam_id);`);
+} });
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (

@@ -81,6 +81,8 @@
     "verify:scanner-skin-patch": "tsx scripts/verify-scanner-skin-patch-guard.ts",
     "verify:class-archive": "tsx scripts/verify-class-archive.ts",
     "verify:class-archive:mariadb": "tsx scripts/verify-class-archive.ts --mariadb",
+    "verify:exam-class-memberships": "tsx scripts/verify-exam-class-memberships.ts",
+    "verify:exam-class-memberships:mariadb": "tsx scripts/verify-exam-class-memberships.ts --mariadb",
     "verify:scan-page-numbering": "tsx scripts/verify-scan-page-numbering.ts",
     "verify:scanner-page-timeout": "tsx scripts/verify-scanner-page-timeout.ts",
     "verify:stage-vc-runtime": "tsx scripts/verify-stage-vc-runtime.ts",
