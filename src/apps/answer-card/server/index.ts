@@ -10,6 +10,9 @@ import {
 } from "../../../shared/scanUploadLimits";
 import { requestUploadBudget } from "../../../server/lib/uploadBudget";
 import { describeReviewPoolLimits } from "../../../shared/reviewPoolLimits";
+import { describeRestoreZipLimits } from "../../../shared/restoreZipLimits";
+import { describePaperStorageLimits } from "../../../shared/paperStorageLimits";
+import { describeAiQuotaLimits } from "../../../shared/aiQuotaLimits";
 import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -2911,10 +2914,16 @@ export async function createApp(): Promise<express.Express> {
       res.status(400).json({ code: "INVALID_JSON", message: "请求体不是有效的 JSON" });
       return;
     }
-    const typed = error as { status?: unknown; code?: unknown; message?: unknown };
+    const typed = error as { status?: unknown; code?: unknown; message?: unknown; retryAfterSeconds?: unknown };
     const status = typeof typed?.status === "number" && typed.status >= 400 && typed.status < 600 ? typed.status : 500;
     const code = typeof typed?.code === "string" ? typed.code : ApiError.INTERNAL;
     const message = typeof typed?.message === "string" ? typed.message : "服务器内部错误";
+    // 安全（R11）：配额类错误自带建议重试间隔，转成标准 Retry-After 头，
+    // 客户端（含扫描端、学生端）据此退避，而不是把它当 500 反复重试打爆模型。
+    const retryAfter = Number(typed?.retryAfterSeconds);
+    if (status === 429 && Number.isFinite(retryAfter) && retryAfter > 0) {
+      res.setHeader("Retry-After", String(Math.min(86400, Math.ceil(retryAfter))));
+    }
     res.status(status).json({ code, message });
   });
 
@@ -2940,6 +2949,12 @@ export async function startServer(port = Number(process.env.PORT ?? 5174)): Prom
       console.log(`[upload-limits] ${describeScanUploadLimits()}`);
       // 安全（R15）：试卷池持有量配额同样按「默认 + 环境变量 + 天花板」解析，启动即打印生效档位
       console.log(`[review-pool-limits] ${describeReviewPoolLimits()}`);
+      // 安全（R43）：备份恢复的 ZIP 解压预算，同样打印实际生效档位
+      console.log(`[restore-zip-limits] ${describeRestoreZipLimits()}`);
+      // 安全（R10/R14）：原卷容量与每请求体积档位，现场排查「为什么 413」时先看这一行
+      console.log(`[paper-storage-limits] ${describePaperStorageLimits()}`);
+      // 安全（R11）：AI 并发与计费配额档位
+      console.log(`[ai-quota] ${describeAiQuotaLimits()}`);
       logWechatSubscriptionStatus();
       startLlmClientSidecar();
       const shutdown = () => {

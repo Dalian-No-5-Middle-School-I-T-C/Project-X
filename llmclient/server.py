@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -62,6 +63,15 @@ from llmclient.providers_knowledge_points import (
 
 
 app = FastAPI(title="Project-X LLM Client", version="0.2.0")
+
+# 安全审计（R16）：把 PDF 渲染子进程的实际生效档位打在启动日志里，
+# 现场调过 PROJECTX_PDF_* 后只看这一行就能确认真的生效（而不是拼错数字被静默回落）。
+try:
+    from llmclient.pdf_to_images import describe_pdf_render_limits
+
+    print(f"[pdf-render-limits] {describe_pdf_render_limits()}", flush=True)
+except Exception as _exc:  # noqa: BLE001 - 日志不该让服务起不来
+    print(f"[pdf-render-limits] unavailable: {_exc}", file=sys.stderr, flush=True)
 
 
 def require_internal_key(authorization: str | None = Header(default=None)) -> None:
@@ -214,6 +224,12 @@ def knowledge_points(
     # TODO: Read provider from ai_providers table via DB
     # For now, use env defaults based on mode
     if mode == "direct":
+        from llmclient.pdf_to_images import (  # 延迟导入：与其它 llmclient 依赖同一风格
+            PdfPageLimitError,
+            PdfRenderError,
+            PdfRenderTimeoutError,
+        )
+
         try:
             result = run_direct_multimodal(
                 model=model,
@@ -225,6 +241,14 @@ def knowledge_points(
                 provider_override=provider_override,
             )
             return result
+        except PdfRenderTimeoutError as exc:
+            # 安全审计（R16）：渲染超时是「已终止的子进程」，不是模型故障——
+            # 给 504 + 可重试语义，前端才不会把它当成服务商不可用去换 key 重打。
+            logger.warning("knowledge-points PDF render timed out: %s", exc)
+            raise HTTPException(status_code=504, detail=str(exc)) from exc
+        except (PdfPageLimitError, PdfRenderError) as exc:
+            logger.warning("knowledge-points PDF rejected: %s", exc)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             logger.exception("knowledge-points direct analysis failed for model %s", model.id)
             raise HTTPException(status_code=502, detail="Direct analysis failed; see server logs") from exc

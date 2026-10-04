@@ -8,7 +8,18 @@ import {
 
 
   storePaperPageFile,
+  discardStoredPaths,
 } from "../paper-converter";
+import {
+  MAX_PAPER_BYTES_PER_CARD,
+  MAX_PAPER_BYTES_TOTAL,
+  MAX_PAPER_FILE_BYTES,
+  MAX_PAPER_FILES_PER_REQUEST,
+  MAX_PAPER_PAGES_PER_CARD,
+  MAX_PAPER_REQUEST_BYTES,
+} from "../../../../shared/paperStorageLimits";
+import { evaluatePaperQuota, invalidatePaperUsageCache, purgeStaleTmpUploads, readPaperQuota } from "../paperQuota";
+import { requestUploadBudget } from "../../../../server/lib/uploadBudget";
 import { autoExtractPaperText, getFileMime, getPaperInputKind } from "../paper-ocr";
 import { PaperInputError } from "../paper-docx";
 import type { DbAdapter } from "../../../../server/db/mysql";
@@ -19,6 +30,9 @@ import type { Request, Response } from "express";
 import { readFile, readdir } from "node:fs/promises";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "../llm-client";
 import { recordAiRun, finalizeAiRun } from "../../../../server/services/aiTelemetry";
+// 安全（R11）：AI 计费与并发配额；安全（R25）：对外错误摘要脱敏
+import { AiQuotaError, assertAiQuota } from "../../../../server/services/aiQuota";
+import { sanitizeOpsMessage } from "../../../../server/lib/opsErrorMessage";
 import { decryptField } from "../../../../server/lib/field-crypto";
 import { isVisionProvider, resolveKnowledgePointMode } from "../llm-capabilities";
 import { buildObjectiveContext } from "../objective-context";
@@ -44,12 +58,16 @@ type AiProviderRow = {
   is_system?: number;
 };
 
+/** multer 的暂存目录：请求中断/被拒时留下的临时件由 `purgeStaleTmpUploads` 兜底清理（安全 R14）。 */
+export const paperTmpDir = path.join(papersDir, "_tmp");
+
 const paperUpload = multer({
-  dest: path.join(papersDir, "_tmp"),
-  limits: { fileSize: 50 * 1024 * 1024 },
+  dest: paperTmpDir,
+  // 安全 R10：单文件与单次文件数都走「默认 + 环境变量 + 天花板」三档，不再是硬编码 50MB/40 个
+  limits: { fileSize: MAX_PAPER_FILE_BYTES, files: MAX_PAPER_FILES_PER_REQUEST },
   fileFilter: (_req, file, cb) => {
     const name = decodeMultipartFilename(file.originalname);
-    const err = validatePaperFile(name, 50 * 1024 * 1024);
+    const err = validatePaperFile(name, MAX_PAPER_FILE_BYTES);
     if (err) {
       cb(new Error(err));
     } else {
@@ -136,104 +154,158 @@ export function paperRoutes(): Router {
   const router = Router();
 
   // POST /api/cards/:cardId/paper — 上传原卷（支持多页）
-  router.post("/api/cards/:cardId/paper", paperUpload.array("files", 40), async (req: Request, res: Response) => {
-    try {
-      const cardId = String(req.params.cardId);
-      const files = ((req.files as Express.Multer.File[]) || []).filter(Boolean);
-      if (files.length === 0) {
-        res.status(400).json({ error: "未选择文件" });
-        return;
-      }
-
-
-      await ensurePaperDir(cardId);
-      const dir = paperDir(cardId);
-      const db = getMysqlDb();
-
-      // 先校验全部文件，收集通过/失败列表（不静默跳过）
-      const validFiles: Array<{ file: Express.Multer.File; originalname: string }> = [];
-      const failed: Array<{ filename: string; error: string }> = [];
-      for (const file of files) {
-        const name = decodeMultipartFilename(file.originalname);
-        const errMsg = validatePaperFile(name, file.size);
-        if (errMsg) {
-          failed.push({ filename: name, error: errMsg });
-          try { unlinkSync(file.path); } catch {}
-        } else {
-          validFiles.push({ file, originalname: name });
+  //
+  // 安全 R10：除了单文件体积，还要看「这张卡已有多少」「整个 papers/ 还剩多少额度」；
+  // 安全 R14：任何失败路径（校验、转换、入库、请求中断）都不留无人引用的文件。
+  router.post(
+    "/api/cards/:cardId/paper",
+    requestUploadBudget({ maxTotalBytes: MAX_PAPER_REQUEST_BYTES, label: "原卷上传" }),
+    (req: Request, res: Response, next) => {
+      paperUpload.array("files", MAX_PAPER_FILES_PER_REQUEST)(req, res, (err) => {
+        if (err) {
+          // 安全（R14）：multer 因体积/数量越界而报错时，已经落盘的兄弟文件不会经过
+          // 下面那个带 `finally` 的处理函数——这里必须自己清掉，否则每次越界尝试都在
+          // `_tmp` 里留下一份无人引用的副本（越界重试本身就是免费的磁盘填满攻击）。
+          const partial = (req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []);
+          void discardStoredPaths(partial.map((f) => f.path));
+          res.status(400).json({ error: err.message || "原卷上传失败" });
+          return;
         }
-      }
+        next();
+      });
+    },
+    async (req: Request, res: Response) => {
+      const staged = ((req.files as Express.Multer.File[]) || []).filter(Boolean);
+      // 本次已落盘但尚未被 DB 行引用的文件；提交成功后清空，失败时逐个删除（安全 R14）
+      const storedPaths: string[] = [];
+      try {
+        const cardId = String(req.params.cardId);
+        if (staged.length === 0) {
+          res.status(400).json({ error: "未选择文件" });
+          return;
+        }
 
-      if (validFiles.length === 0) {
-        res.status(400).json({
-          error: "文件校验失败，未上传任何页",
-          failed,
-        });
-        return;
-      }
+        // 上一次进程留下的滞留临时件（请求被中断、multer 越界拒绝都不会进到这个路由）：
+        // 顺手扫一遍，只删超过存活期的普通文件，不阻塞本次上传。
+        purgeStaleTmpUploads(paperTmpDir)
+          .then((removed) => { if (removed > 0) console.log(`[paper] 清理滞留临时上传件 ${removed} 个`); })
+          .catch(() => {});
 
-      // 事务内完成 page_index 分配与入库，避免并发竞争
+        await ensurePaperDir(cardId);
+        const dir = paperDir(cardId);
+        const db = getMysqlDb();
 
-      const uploaded: Array<{ pageIndex: number; filename: string }> = [];
-      let firstFilename = "";
-      let firstRelPath = "";
-
-
-      await db.transaction(async (tx) => {
-        const maxRow = await tx.get(
-          "SELECT COALESCE(MAX(page_index), 0) AS mx FROM original_paper_pages WHERE card_id = ?",
-          cardId
-        ) as { mx: number } | undefined;
-        let nextIndex = (maxRow?.mx ?? 0) + 1;
-
-        for (const { file, originalname } of validFiles) {
-          const pageIndex = nextIndex;
-          nextIndex += 1;
-
-          const { diskFilename, relPath } = await storePaperPageFile(file.path, originalname, dir, pageIndex);
-          try { unlinkSync(file.path); } catch {}
-
-          // UNIQUE(card_id, page_index) 约束保证不会重复写入
-          await tx.run(
-            "INSERT INTO original_paper_pages (card_id, page_index, filename, stored_path) VALUES (?, ?, ?, ?)",
-            cardId, pageIndex, diskFilename, relPath
-          );
-          if (pageIndex === 1) {
-            firstFilename = diskFilename;
-            firstRelPath = relPath;
+        // 先校验全部文件，收集通过/失败列表（不静默跳过）
+        const validFiles: Array<{ file: Express.Multer.File; originalname: string }> = [];
+        const failed: Array<{ filename: string; error: string }> = [];
+        for (const file of staged) {
+          const name = decodeMultipartFilename(file.originalname);
+          const errMsg = validatePaperFile(name, file.size);
+          if (errMsg) {
+            failed.push({ filename: name, error: errMsg });
+          } else {
+            validFiles.push({ file, originalname: name });
           }
-          uploaded.push({ pageIndex, filename: diskFilename });
         }
-      });
+
+        if (validFiles.length === 0) {
+          res.status(400).json({
+            error: "文件校验失败，未上传任何页",
+            failed,
+          });
+          return;
+        }
+
+        // ── 累计容量闸门（安全 R10）：按上传件字节数估计本次增量，真实占盘在下一次读取时反映 ──
+        const incomingBytes = validFiles.reduce((sum, item) => sum + Math.max(0, item.file.size), 0);
+        const quota = evaluatePaperQuota(
+          await readPaperQuota(db, cardId),
+          { pages: validFiles.length, bytes: incomingBytes }
+        );
+        if (!quota.ok) {
+          res.status(413).json({
+            code: "PAPER_QUOTA_EXCEEDED",
+            reason: quota.reason,
+            error: quota.message,
+            limits: { pagesPerCard: MAX_PAPER_PAGES_PER_CARD, bytesPerCard: MAX_PAPER_BYTES_PER_CARD, bytesTotal: MAX_PAPER_BYTES_TOTAL },
+          });
+          return;
+        }
+
+        // 事务内完成 page_index 分配与入库，避免并发竞争
+
+        const uploaded: Array<{ pageIndex: number; filename: string }> = [];
+        let firstFilename = "";
+        let firstRelPath = "";
 
 
-      // legacy 字段保留首页，向后兼容预览/导出/AI 读取
-      const firstRow = firstFilename
-        ? { filename: firstFilename, stored_path: firstRelPath }
-        : await db.get(
-            "SELECT filename, stored_path FROM original_paper_pages WHERE card_id = ? ORDER BY page_index LIMIT 1",
+        await db.transaction(async (tx) => {
+          const maxRow = await tx.get(
+            "SELECT COALESCE(MAX(page_index), 0) AS mx FROM original_paper_pages WHERE card_id = ?",
             cardId
-          ) as { filename: string; stored_path: string } | undefined;
-      const firstFilenameOut = firstRow?.filename || "";
-      const firstRelPathOut = firstFilename ? firstRelPath : (firstRow?.stored_path || "");
-      await db.run(
-        "UPDATE answer_cards SET has_original_paper = 1, original_paper_filename = ?, original_paper_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        firstFilenameOut, firstRelPathOut, cardId
-      );
+          ) as { mx: number } | undefined;
+          let nextIndex = (maxRow?.mx ?? 0) + 1;
+
+          for (const { file, originalname } of validFiles) {
+            const pageIndex = nextIndex;
+            nextIndex += 1;
+
+            const stored = await storePaperPageFile(file.path, originalname, dir, pageIndex);
+            // 先登记再入库：这一页此刻还没有任何 DB 行引用，失败时必须由本路由删掉（安全 R14）
+            storedPaths.push(...stored.writtenPaths);
+
+            // UNIQUE(card_id, page_index) 约束保证不会重复写入
+            await tx.run(
+              "INSERT INTO original_paper_pages (card_id, page_index, filename, stored_path) VALUES (?, ?, ?, ?)",
+              cardId, pageIndex, stored.diskFilename, stored.relPath
+            );
+            if (pageIndex === 1) {
+              firstFilename = stored.diskFilename;
+              firstRelPath = stored.relPath;
+            }
+            uploaded.push({ pageIndex, filename: stored.diskFilename });
+          }
+        });
+        // 事务已提交：这些文件正式被 DB 行引用，回滚窗口到此结束
+        storedPaths.length = 0;
 
 
-      res.json({
-        success: true,
-        pages: uploaded,
-        count: uploaded.length,
-        ...(failed.length > 0 ? { failed } : {}),
-      });
+        // legacy 字段保留首页，向后兼容预览/导出/AI 读取
+        const firstRow = firstFilename
+          ? { filename: firstFilename, stored_path: firstRelPath }
+          : await db.get(
+              "SELECT filename, stored_path FROM original_paper_pages WHERE card_id = ? ORDER BY page_index LIMIT 1",
+              cardId
+            ) as { filename: string; stored_path: string } | undefined;
+        const firstFilenameOut = firstRow?.filename || "";
+        const firstRelPathOut = firstFilename ? firstRelPath : (firstRow?.stored_path || "");
+        await db.run(
+          "UPDATE answer_cards SET has_original_paper = 1, original_paper_filename = ?, original_paper_path = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          firstFilenameOut, firstRelPathOut, cardId
+        );
 
-    } catch (err: any) {
-      console.error("[paper] upload failed:", err);
-      res.status(500).json({ error: err.message || "上传失败" });
+
+        res.json({
+          success: true,
+          pages: uploaded,
+          count: uploaded.length,
+          ...(failed.length > 0 ? { failed } : {}),
+        });
+
+      } catch (err: any) {
+        // 事务未提交就失败：本轮落地的文件没有任何 DB 行引用，全部删掉（安全 R14）
+        if (storedPaths.length > 0) await discardStoredPaths(storedPaths);
+        console.error("[paper] upload failed:", err);
+        res.status(500).json({ error: err.message || "上传失败" });
+      } finally {
+        // multer 已把文件写进 _tmp：任何返回路径（400 校验失败 / 413 配额 / 500）都要清干净
+        for (const file of staged) {
+          try { unlinkSync(file.path); } catch {}
+        }
+        invalidatePaperUsageCache();
+      }
     }
-  });
+  );
 
   // GET /api/cards/:cardId/paper — 预览/下载原卷（支持 ?page=N 指定页码）
   // ?info=type 返回 { mimeType, filename, page } JSON（前端判断渲染方式）
@@ -366,6 +438,7 @@ export function paperRoutes(): Router {
           cardId
         );
       }
+      invalidatePaperUsageCache(); // 删除改变了磁盘占用：让下一次配额判定重新实测（安全 R10）
       res.json({ success: true });
     } catch (err: any) {
       console.error("[paper] delete page failed:", err);
@@ -484,6 +557,10 @@ export function paperRoutes(): Router {
         return;
       }
 
+      // 安全（R11）：先过配额，再留观测记录——否则被拒的请求会在 ai_analysis_runs
+      // 里留下永远无法结算的幽灵行，把「谁在打模型」的账本本身污染掉。
+      await assertAiQuota(db, req.user?.id ?? null);
+
       // 观测：逻辑任务层（原卷知识点分析），后续 3 处边车调用以 runId 关联实际层
       runId = await recordAiRun({
         userId: req.user?.id ?? null,
@@ -567,9 +644,16 @@ export function paperRoutes(): Router {
         res.status(err.status).json({ error: err.code, message: err.message });
         return;
       }
+      // 安全（R11）：配额拒绝原样 429 + Retry-After，不当成「分析失败」的 500 处理
+      if (err instanceof AiQuotaError) {
+        res.setHeader("Retry-After", String(err.retryAfterSeconds));
+        res.status(429).json({ error: err.code, message: err.message, retryAfterSeconds: err.retryAfterSeconds });
+        return;
+      }
       console.error("[knowledge-points] analyze failed:", err);
       await finalizeAiRun(runId, { success: false, errorCode: "EXCEPTION" });
-      res.status(500).json({ error: err.message || "分析失败" });
+      // 安全（R25）：异常消息可能带本机绝对路径（读原卷文件失败时常见），对外只给脱敏文案
+      res.status(500).json({ error: "ANALYZE_FAILED", message: sanitizeOpsMessage(err?.message, { fallback: "分析失败，请查看服务端日志中的 [knowledge-points] 记录" }) });
     }
   });
 
@@ -624,6 +708,11 @@ export function paperRoutes(): Router {
 
 /**
  * 读取原卷文件并转为 base64 数组（用于多模态/OCR增强模式）
+ *
+ * 安全（R10）：AI 组包也受预算约束。一张「合法但很大」的卡（例如 60 页 × 每页 50MB）
+ * 在旧实现里会被整份读进内存再 base64（体积再涨约 4/3），一次点击就能把服务端内存打满。
+ * 这里复用同一档「单次请求体积」预算：页数 ≤ 每请求文件数、字节 ≤ 每请求体积，
+ * 超限直接 413，而不是悄悄截断——截断会让 AI 分析出「只看了前几页」的错误结论。
  */
 async function getPaperFiles(cardId: string): Promise<Array<{ mimeType: string; base64: string }>> {
   const dir = paperDir(cardId);
@@ -633,22 +722,29 @@ async function getPaperFiles(cardId: string): Promise<Array<{ mimeType: string; 
 
   const imgRe = /^original(-\d+)?\.(jpg|jpeg|png|bmp|tiff|webp)$/i;
   const pdfRe = /^original(-\d+)?\.pdf$/i;
+  let totalBytes = 0;
+
+  const collect = async (names: string[], mimeOf: (name: string) => string) => {
+    for (const name of names) {
+      if (files.length >= MAX_PAPER_FILES_PER_REQUEST) {
+        throw new PaperInputError("PAPER_AI_BUNDLE_TOO_LARGE",
+          `原卷共 ${names.length} 个文件，超过 AI 组包上限 ${MAX_PAPER_FILES_PER_REQUEST} 个，请拆分后分析`, 413);
+      }
+      const buf = await readFile(path.join(dir, name));
+      if (totalBytes + buf.length > MAX_PAPER_REQUEST_BYTES) {
+        throw new PaperInputError("PAPER_AI_BUNDLE_TOO_LARGE",
+          `原卷累计 ${Math.round((totalBytes + buf.length) / 1024 / 1024)}MB 超过 AI 组包预算 ${Math.round(MAX_PAPER_REQUEST_BYTES / 1024 / 1024)}MB`, 413);
+      }
+      totalBytes += buf.length;
+      files.push({ mimeType: mimeOf(name), base64: buf.toString("base64") });
+    }
+  };
 
   // 所有页的图片（按页码排序）
-  const imgEntries = entries.filter((e) => imgRe.test(e)).sort();
-  for (const e of imgEntries) {
-    const fp = path.join(dir, e);
-    const buf = await readFile(fp);
-    files.push({ mimeType: getFileMime(e), base64: buf.toString("base64") });
-  }
+  await collect(entries.filter((e) => imgRe.test(e)).sort(), (name) => getFileMime(name));
   if (files.length) return files;
 
   // 回退：所有页的 PDF
-  const pdfEntries = entries.filter((e) => pdfRe.test(e)).sort();
-  for (const e of pdfEntries) {
-    const fp = path.join(dir, e);
-    const buf = await readFile(fp);
-    files.push({ mimeType: "application/pdf", base64: buf.toString("base64") });
-  }
+  await collect(entries.filter((e) => pdfRe.test(e)).sort(), () => "application/pdf");
   return files;
 }

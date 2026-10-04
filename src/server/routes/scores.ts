@@ -13,6 +13,8 @@ import {
 } from "../../apps/answer-card/server/middleware";
 import { fetchLlmClient } from "../../apps/answer-card/server/llm-client";
 import { trackAnalysisCall } from "../services/aiTelemetry";
+// 安全（R11）：AI 计费与并发配额
+import { AiQuotaError, assertAiQuota } from "../services/aiQuota";
 import type { SubjectWeaknessItem, StudentTrendPoint } from "../../shared/types";
 import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropService";
 import {
@@ -265,6 +267,8 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
   const classId = await resolveStudentPrimaryClassId(req.user!.id);
 
   try {
+    // 安全（R11）：学生侧 AI 分析是同步打模型的，配额闸门必须在这一行之前。
+    await assertAiQuota(getMysqlDb(), req.user?.id ?? null);
     // 复用统一的 llmclient 转发封装（自动拉起 sidecar + 内部鉴权头），
     // 避免与 llm-client.ts 的环境变量命名（LLMCLIENT_URL/LLMCLIENT_INTERNAL_API_KEY）不一致。
     const model = typeof req.body?.model === "string" ? req.body.model : undefined;
@@ -301,6 +305,13 @@ router.post("/me/exams/:examId/ai-analysis", async (req: Request, res: Response)
 
     res.json(await response.json());
   } catch (error) {
+    // 安全（R11）：配额拒绝不是「AI 服务不可用」，必须原样 429 + Retry-After，
+    // 否则客户端会把限流当成故障反复重试，反而放大模型开销。
+    if (error instanceof AiQuotaError) {
+      res.setHeader("Retry-After", String(error.retryAfterSeconds));
+      res.status(429).json({ code: error.code, message: error.message, retryAfterSeconds: error.retryAfterSeconds });
+      return;
+    }
     if (error instanceof Error && error.name === "AbortError") {
       res.status(504).json({ message: "AI 服务请求超时。" });
       return;

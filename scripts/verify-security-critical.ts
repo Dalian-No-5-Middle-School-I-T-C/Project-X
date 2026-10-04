@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
@@ -23,13 +23,36 @@ const uploadEnvVarsClearedHere = [
 ];
 // 试卷池持有量配额（安全 R15）同样是「默认值 + 环境变量 + 天花板」三档，宿主机变量会污染默认档位断言。
 const reviewPoolEnvVarsClearedHere = ["PROJECTX_REVIEW_MAX_HELD_PER_BLOCK", "PROJECTX_REVIEW_MAX_HELD_TOTAL"];
+// 备份恢复解压预算（安全 R43）同样是「默认值 + 环境变量 + 天花板」三档，宿主机变量会污染按默认预算的断言。
+const restoreZipEnvVarsClearedHere = [
+  "PROJECTX_RESTORE_ZIP_MAX_ENTRIES", "PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB", "PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB"
+];
+// 原卷累计容量（R10/R14）、AI 配额（R11）、微信出站档位（R20）共用同一套三档设计：
+// 宿主机若设置了任一档位，本脚本「按默认边界」的断言全部失真，必须先清掉，
+// 再由下面的一致性断言把这份名单与各模块的 LIMIT_DEFS 锁死。
+const paperStorageEnvVarsClearedHere = [
+  "PROJECTX_PAPER_MAX_FILE_MIB", "PROJECTX_PAPER_MAX_REQUEST_MIB", "PROJECTX_PAPER_MAX_FILES_PER_REQUEST",
+  "PROJECTX_PAPER_MAX_PAGES_PER_CARD", "PROJECTX_PAPER_MAX_BYTES_PER_CARD_MIB", "PROJECTX_PAPER_MAX_TOTAL_MIB"
+];
+const aiQuotaEnvVarsClearedHere = [
+  "PROJECTX_AI_MAX_ACTIVE_JOBS_PER_USER", "PROJECTX_AI_MAX_ACTIVE_JOBS_GLOBAL",
+  "PROJECTX_AI_MAX_RUNS_PER_HOUR", "PROJECTX_AI_MAX_TOKENS_PER_DAY"
+];
+const wechatEnvVarsClearedHere = [
+  "PROJECTX_WECHAT_TIMEOUT_MS", "PROJECTX_WECHAT_BIND_MAX_PER_HOUR",
+  "PROJECTX_WECHAT_BIND_MAX_GLOBAL_PER_MINUTE", "PROJECTX_WECHAT_MAX_CONCURRENT"
+];
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST",
   // R01 逃生阀：宿主机若已设置该变量会污染随机口令断言，测试内自行显式设置/清除
   "PROJECTX_ADMIN_PASSWORD",
   ...uploadEnvVarsClearedHere,
-  ...reviewPoolEnvVarsClearedHere
+  ...reviewPoolEnvVarsClearedHere,
+  ...restoreZipEnvVarsClearedHere,
+  ...paperStorageEnvVarsClearedHere,
+  ...aiQuotaEnvVarsClearedHere,
+  ...wechatEnvVarsClearedHere
 ]) delete process.env[key];
 
 let passed = 0;
@@ -553,6 +576,391 @@ async function main(): Promise<void> {
       "持有量配额可收紧、非法值回落默认、超天花板被夹紧（放宽有上界）");
     check(describeReviewPoolLimits().includes("maxHeldPapersPerBlock=20"),
       "试卷池配额进入启动摘要，与上传上限一致的可见性");
+
+    // ── 备份恢复解压预算与运维错误脱敏（安全 R43 / R25）
+    const {
+      resolveRestoreZipLimits, DEFAULT_RESTORE_ZIP_LIMITS, RESTORE_ZIP_ENV_VARS, describeRestoreZipLimits,
+      MAX_RESTORE_ZIP_ENTRIES, MAX_RESTORE_ZIP_ENTRY_BYTES, MAX_RESTORE_ZIP_TOTAL_BYTES
+    } = await import("../src/shared/restoreZipLimits");
+    check(RESTORE_ZIP_ENV_VARS.slice().sort().join() === restoreZipEnvVarsClearedHere.slice().sort().join()
+      && RESTORE_ZIP_ENV_VARS.every((name) => !(name in process.env)),
+      "脚本清理的 PROJECTX_RESTORE_ZIP_* 名单与解压预算表逐一对应，宿主机变量不会渗入默认预算断言");
+    check(MAX_RESTORE_ZIP_ENTRIES === DEFAULT_RESTORE_ZIP_LIMITS.maxZipEntries && MAX_RESTORE_ZIP_ENTRIES === 20000
+      && MAX_RESTORE_ZIP_ENTRY_BYTES === 1024 * 1024 * 1024 && MAX_RESTORE_ZIP_TOTAL_BYTES === 6144 * 1024 * 1024,
+      "未配置时按默认解压预算生效（2 万条目 / 单条 1GiB / 累计 6GiB），上传侧 128MiB 不再是唯一的闸");
+    check(resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_ENTRIES: "100" }).limits.maxZipEntries === 100
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_TOTAL_MIB: "abc" }).limits.maxTotalUncompressedBytes
+        === DEFAULT_RESTORE_ZIP_LIMITS.maxTotalUncompressedBytes
+      && resolveRestoreZipLimits({ PROJECTX_RESTORE_ZIP_MAX_ENTRY_MIB: "999999" }).limits.maxEntryUncompressedBytes
+        === 8192 * 1024 * 1024,
+      "解压预算可收紧、非法值回落默认、超天花板被夹紧（一个拼错的数字关不掉保护）");
+    check(describeRestoreZipLimits().includes("≤20000") && describeRestoreZipLimits().includes("6144MiB"),
+      "解压预算进入启动摘要");
+    const {
+      classifyEntryName, resolveEntryDest, checkEntryBudget, extractZipWithinBudget, RestoreZipError
+    } = await import("../src/server/services/restoreZip");
+    const { sanitizeOpsMessage, containsHostPath } = await import("../src/server/lib/opsErrorMessage");
+    const AdmZip = (await import("adm-zip")).default;
+    const rejectStatus = (run: () => void): number => {
+      try { run(); return 0; } catch (err) { return err instanceof RestoreZipError ? err.status : -1; }
+    };
+
+    check(classifyEntryName("metadata.json").safe && classifyEntryName("data/answer-card/papers/a.png").safe,
+      "合法条目名通过解压前的路径判定");
+    check(!classifyEntryName("../escape.txt").safe && !classifyEntryName("data/../../escape.txt").safe
+      && !classifyEntryName("/etc/passwd").safe && !classifyEntryName("C:\\Windows\\x.db").safe
+      && !classifyEntryName("..\\escape.txt").safe,
+      "相对越界、绝对路径、Windows 盘名与反斜杠写法全部判为非法（此前是剥掉前缀继续解，等于默认目录可被改写）");
+    const r43Dir = path.join(tempDir, "r43-restore");
+    mkdirSync(r43Dir, { recursive: true });
+    const goodZip = new AdmZip();
+    goodZip.addFile("metadata.json", Buffer.from(JSON.stringify({ version: 1, files: [] })));
+    goodZip.addFile("data/answer-card/papers/p1.png", pngBytes);
+    check(rejectStatus(() => extractZipWithinBudget(goodZip.toBuffer(), r43Dir)) === 0
+      && existsSync(path.join(r43Dir, "data", "answer-card", "papers", "p1.png")),
+      "预算内的正常备份逐条落盘（收紧没有打断恢复主流程）");
+    const slipZip = new AdmZip();
+    slipZip.addFile("metadata.json", Buffer.from(JSON.stringify({ version: 1 })));
+    // adm-zip 的写入端会把条目名归一化（`../x` → `x`），所以伪造越界条目只能直接改 ZIP 字节：
+    // 等长替换（13 字符 → 13 字符）不会破坏 CRC 与偏移，解出来的 entryName 就是 `../r43esc.png`。
+    const renameZipEntry = (zipBuf: Buffer, from: string, to: string): Buffer => {
+      if (from.length !== to.length) throw new Error("等长替换才能保持 ZIP 头部偏移");
+      const out = Buffer.from(zipBuf);
+      const needle = Buffer.from(from, "latin1");
+      const repl = Buffer.from(to, "latin1");
+      for (let at = out.indexOf(needle); at >= 0; at = out.indexOf(needle, at + needle.length)) {
+        repl.copy(out, at);
+      }
+      return out;
+    };
+    const slipBody = (() => {
+      const inner = new AdmZip();
+      inner.addFile("safe-name.png", pngBytes);
+      return renameZipEntry(inner.toBuffer(), "safe-name.png", "../r43esc.png");
+    })();
+    check(rejectStatus(() => extractZipWithinBudget(slipBody, r43Dir)) === 400
+      && !existsSync(path.join(tempDir, "r43esc.png")),
+      "含 .. 越界条目的备份被 400 整体拒绝，而不是跳过该条目后继续恢复出半成品");
+    check(rejectStatus(() => resolveEntryDest(r43Dir, "C:\\Windows\\x.db")) === 400, "盘符绝对路径条目被拒绝");
+    check(rejectStatus(() => checkEntryBudget({ entries: 0, bytes: 0 }, MAX_RESTORE_ZIP_ENTRIES + 1, 0, 0)) === 413
+      && rejectStatus(() => checkEntryBudget({ entries: 0, bytes: 0 }, 1, MAX_RESTORE_ZIP_ENTRY_BYTES + 1, 0)) === 413
+      && rejectStatus(() => checkEntryBudget(
+        { entries: 0, bytes: MAX_RESTORE_ZIP_TOTAL_BYTES - 1024 }, 1, 0, 4096)) === 413,
+      "条目数 / 单条解压体积 / 累计解压体积三道预算各自越界即 413（ZIP 头声明的体积不再被无条件相信）");
+    check(rejectStatus(() => {
+      const state = { entries: 0, bytes: 0 };
+      checkEntryBudget(state, 1, 1, MAX_RESTORE_ZIP_ENTRY_BYTES + 1);
+    }) === 413, "头部声明很小、实际读出体积巨大的谎报条目同样被拦下");
+    const corruptStatus = rejectStatus(() =>
+      extractZipWithinBudget(Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(512, 0x41)]), r43Dir));
+    check(corruptStatus === 400 || corruptStatus === 0,
+      "损坏 ZIP 只会被判为格式非法或无条目可解，不会抛出未分类错误变成 500");
+    const r43Http = await fetch(`${base}/api/db/restore`, {
+      method: "POST",
+      headers: { ...authHeaders(adminToken), "Content-Type": "application/zip" },
+      body: slipBody
+    });
+    const r43HttpBody = await r43Http.json() as { code?: string; message?: string };
+    check(r43Http.status === 400 && r43HttpBody.code === "RESTORE_ZIP_REJECTED"
+      && !containsHostPath(r43HttpBody.message ?? "") && !(r43HttpBody.message ?? "").includes(tempDir),
+      "恢复接口按解压预算 400 拒绝，且响应体不带出服务端目录");
+    const r43Teacher = await fetch(`${base}/api/db/restore`, {
+      method: "POST",
+      headers: { ...authHeaders(teacherToken), "Content-Type": "application/zip" },
+      body: slipZip.toBuffer()
+    });
+    check(r43Teacher.status === 403, "恢复接口仍只对具备系统管理权限的账号开放（预算闸门口没有扩大攻击面）");
+    const leakyCopy = "ENOENT: no such file or directory, copyfile '/var/lib/projectx/data/projectx.db' -> "
+      + "'C:\\Users\\teacher\\AppData\\Local\\Temp\\projectx-restore-1\\projectx.db'";
+    const leakyCleaned = sanitizeOpsMessage(leakyCopy, { fallback: "导入失败" });
+    check(!containsHostPath(leakyCleaned) && leakyCleaned.includes("ENOENT"),
+      "恢复失败摘要保留错误类别（ENOENT）但抹掉 POSIX 与 Windows 绝对路径");
+    const mysqlLeak = "ERROR 1045 (28000): Access denied for user 'projectx_app'@'10.0.0.7' (using password: YES)";
+    const mysqlCleaned = sanitizeOpsMessage(mysqlLeak, { fallback: "数据库导入失败" });
+    check(!mysqlCleaned.includes("projectx_app") && !mysqlCleaned.includes("10.0.0.7")
+      && mysqlCleaned.includes("1045"),
+      "mysql 导入失败摘要不再外送数据库账号与内网主机，仅保留错误码");
+    check(sanitizeOpsMessage("read ECONNRESET", { fallback: "导入失败" }) === "read ECONNRESET"
+      && sanitizeOpsMessage("", { fallback: "导入失败" }) === "导入失败",
+      "无路径信息的安全摘要保持原样，空消息回落到固定文案");
+
+    // ── 原卷累计容量与上传残留（安全 R10 / R14）
+    const {
+      PAPER_STORAGE_ENV_VARS, DEFAULT_PAPER_STORAGE_LIMITS, resolvePaperStorageLimits,
+      describePaperStorageLimits, MAX_PAPER_FILE_BYTES, MAX_PAPER_PAGES_PER_CARD, MAX_PAPER_FILES_PER_REQUEST
+    } = await import("../src/shared/paperStorageLimits");
+    check(PAPER_STORAGE_ENV_VARS.slice().sort().join() === paperStorageEnvVarsClearedHere.slice().sort().join()
+      && PAPER_STORAGE_ENV_VARS.every((name) => !(name in process.env)),
+      "脚本清理的 PROJECTX_PAPER_* 名单与容量表逐一对应，宿主机变量不会渗入默认容量断言");
+    check(MAX_PAPER_FILE_BYTES === DEFAULT_PAPER_STORAGE_LIMITS.maxPaperFileBytes
+      && MAX_PAPER_PAGES_PER_CARD === DEFAULT_PAPER_STORAGE_LIMITS.maxPaperPagesPerCard
+      && resolvePaperStorageLimits({}).notices.length === 0,
+      "未配置时按默认原卷容量档位生效（单文件 50MiB / 单卡 60 页），且不产生告警噪音");
+    check(resolvePaperStorageLimits({ PROJECTX_PAPER_MAX_PAGES_PER_CARD: "8" }).limits.maxPaperPagesPerCard === 8
+      && resolvePaperStorageLimits({ PROJECTX_PAPER_MAX_FILE_MIB: "abc" }).limits.maxPaperFileBytes
+        === DEFAULT_PAPER_STORAGE_LIMITS.maxPaperFileBytes
+      && resolvePaperStorageLimits({ PROJECTX_PAPER_MAX_TOTAL_MIB: "999999" }).limits.maxPaperBytesTotal
+        === 204800 * 1024 * 1024,
+      "容量可收紧、非法值回落默认、超天花板被夹紧（一个拼错的数字关不掉容量保护）");
+    check(describePaperStorageLimits().includes("≤60") && describePaperStorageLimits().includes("20480MiB"),
+      "原卷容量档位进入启动摘要");
+
+    const {
+      evaluatePaperQuota, purgeStaleTmpUploads, readPaperQuota, readPapersTotalBytes, invalidatePaperUsageCache
+    } = await import("../src/apps/answer-card/server/paperQuota");
+    const r10Limits = { maxPaperPagesPerCard: 3, maxPaperBytesPerCard: 4096, maxPaperBytesTotal: 8192 };
+    check(evaluatePaperQuota(
+      { cardPages: 2, cardBytes: 100, totalBytes: 100, totalExact: true }, { pages: 1, bytes: 0 }, r10Limits).ok === true,
+      "恰好补满上限的上传放行：磁盘实测可能只是下界，等于上限时宁可不拒");
+    const r10Pages = evaluatePaperQuota(
+      { cardPages: 3, cardBytes: 0, totalBytes: 0, totalExact: true }, { pages: 1, bytes: 0 }, r10Limits);
+    const r10CardBytes = evaluatePaperQuota(
+      { cardPages: 0, cardBytes: 4096, totalBytes: 0, totalExact: true }, { pages: 1, bytes: 1 }, r10Limits);
+    const r10TotalBytes = evaluatePaperQuota(
+      { cardPages: 0, cardBytes: 0, totalBytes: 8192, totalExact: true }, { pages: 1, bytes: 1 }, r10Limits);
+    check(!r10Pages.ok && r10Pages.reason === "pages" && !r10CardBytes.ok && r10CardBytes.reason === "card-bytes"
+      && !r10TotalBytes.ok && r10TotalBytes.reason === "total-bytes",
+      "页数 / 单卡体积 / 全局体积三条容量线各自越界时给出对应原因（此前只有「单文件 50MB」一道闸）");
+    check(!containsHostPath(r10Pages.message) && r10Pages.message.includes("PROJECTX_PAPER_MAX_PAGES_PER_CARD"),
+      "容量拒绝文案只给档位与调整入口，不外泄服务端目录");
+
+    const r10CardId = "critical-r10-card";
+    const r10Dir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "papers", r10CardId);
+    mkdirSync(r10Dir, { recursive: true });
+    writeFileSync(path.join(r10Dir, "original-1.jpg"), Buffer.alloc(3072, 7));
+    writeFileSync(path.join(r10Dir, "original-1.pdf"), Buffer.alloc(1024, 7));
+    db.prepare("INSERT INTO original_paper_pages (card_id, page_index, filename, stored_path) VALUES (?,?,?,?)")
+      .run(r10CardId, 1, "original-1.jpg", `papers/${r10CardId}/original-1.jpg`);
+    const quotaDb = (await import("../src/server/db")).getMysqlDb();
+    const r10Snapshot = await readPaperQuota(quotaDb, r10CardId);
+    check(r10Snapshot.cardPages === 1 && r10Snapshot.cardBytes === 4096,
+      "单卡占用按磁盘实测：配生的 PDF 与 jpg 一并计入（表里没有体积列，加列对存量部署等于没保护）");
+    const r10BeforeTotal = await readPapersTotalBytes();
+    writeFileSync(path.join(r10Dir, "original-2.jpg"), Buffer.alloc(2048, 1));
+    const r10CachedTotal = await readPapersTotalBytes();
+    invalidatePaperUsageCache();
+    const r10FreshTotal = await readPapersTotalBytes();
+    check(r10CachedTotal.bytes === r10BeforeTotal.bytes && r10FreshTotal.bytes >= r10BeforeTotal.bytes + 2048,
+      "全局用量走 TTL 缓存、上传/删除后即时失效（否则每次上传都要全目录走一遍）");
+
+    const r14TmpDir = path.join(process.env.ANSWER_CARD_DATA_DIR!, "papers", "_tmp");
+    mkdirSync(r14TmpDir, { recursive: true });
+    const r14Stale = path.join(r14TmpDir, "r14-stale.tmp");
+    const r14Fresh = path.join(r14TmpDir, "r14-fresh.tmp");
+    writeFileSync(r14Stale, "stale");
+    writeFileSync(r14Fresh, "fresh");
+    const r14Old = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    utimesSync(r14Stale, r14Old, r14Old);
+    mkdirSync(path.join(r14TmpDir, "r14-subdir"), { recursive: true });
+    check(await purgeStaleTmpUploads(r14TmpDir) === 1 && !existsSync(r14Stale)
+      && existsSync(r14Fresh) && existsSync(path.join(r14TmpDir, "r14-subdir")),
+      "滞留临时件按存活期清理：新件与目录不被动（不会误删正在上传的请求）");
+    // 清掉上一步留下的样例，让 `_tmp` 回到空目录，下面「越界上传后残留为 0」才是真边界
+    rmSync(r14Fresh);
+    rmSync(path.join(r14TmpDir, "r14-subdir"), { recursive: true });
+    const r14Form = new FormData();
+    for (let i = 0; i < MAX_PAPER_FILES_PER_REQUEST + 1; i += 1) {
+      r14Form.append("files", new Blob([pngBytes], { type: "image/png" }), `r14-${i}.png`);
+    }
+    const r14Overflow = await fetch(`${base}/api/cards/critical-r14-card/paper`, {
+      method: "POST", headers: authHeaders(teacherToken), body: r14Form
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const r14Residue = existsSync(r14TmpDir)
+      ? readdirSync(r14TmpDir, { withFileTypes: true }).filter((entry) => entry.isFile()).length : 0;
+    check(r14Overflow.status === 400,
+      `超过每请求文件数时原卷上传被拒（实际 ${r14Overflow.status}）`);
+    check(r14Residue === 0,
+      "multer 越界拒绝后临时目录不留已落盘文件（越界重试不再是免费的填满磁盘攻击）");
+
+    // ── AI 计费与并发配额（安全 R11）
+    const {
+      AI_QUOTA_ENV_VARS, DEFAULT_AI_QUOTA_LIMITS, resolveAiQuotaLimits, describeAiQuotaLimits,
+      MAX_AI_ACTIVE_JOBS_PER_USER, MAX_AI_ACTIVE_JOBS_GLOBAL, MAX_AI_RUNS_PER_USER_HOUR, MAX_AI_TOKENS_PER_USER_DAY
+    } = await import("../src/shared/aiQuotaLimits");
+    check(AI_QUOTA_ENV_VARS.slice().sort().join() === aiQuotaEnvVarsClearedHere.slice().sort().join()
+      && AI_QUOTA_ENV_VARS.every((name) => !(name in process.env)),
+      "脚本清理的 PROJECTX_AI_* 名单与配额表逐一对应，宿主机变量不会渗入默认配额断言");
+    check(MAX_AI_ACTIVE_JOBS_PER_USER === DEFAULT_AI_QUOTA_LIMITS.maxActiveJobsPerUser
+      && MAX_AI_TOKENS_PER_USER_DAY === 1000000,
+      "未配置时按默认 AI 配额生效（单用户 2 个未完成任务 / 24 小时 100 万 tokens）");
+    check(resolveAiQuotaLimits({ PROJECTX_AI_MAX_RUNS_PER_HOUR: "3" }).limits.maxRunsPerUserHour === 3
+      && resolveAiQuotaLimits({ PROJECTX_AI_MAX_TOKENS_PER_DAY: "0" }).limits.maxTokensPerUserDay
+        === DEFAULT_AI_QUOTA_LIMITS.maxTokensPerUserDay
+      && resolveAiQuotaLimits({ PROJECTX_AI_MAX_ACTIVE_JOBS_GLOBAL: "99999" }).limits.maxActiveJobsGlobal === 100,
+      "AI 配额可收紧、非法值回落默认、超天花板被夹紧");
+    check(describeAiQuotaLimits().includes("≤2") && describeAiQuotaLimits().includes("1000000"),
+      "AI 配额档位进入启动摘要");
+    const { evaluateAiQuota, readAiQuotaSnapshot, AiQuotaError } = await import("../src/server/services/aiQuota");
+    check(evaluateAiQuota({
+      activeJobsForUser: MAX_AI_ACTIVE_JOBS_PER_USER - 1, activeJobsGlobal: 0, runsLastHour: 0, tokensLastDay: 0
+    }).ok === true, "未到并发线的用户照常提交分析（配额没有变成默认拒绝）");
+    const aiUserJobs = evaluateAiQuota({
+      activeJobsForUser: MAX_AI_ACTIVE_JOBS_PER_USER, activeJobsGlobal: 0, runsLastHour: 0, tokensLastDay: 0
+    });
+    const aiGlobalJobs = evaluateAiQuota({
+      activeJobsForUser: 0, activeJobsGlobal: MAX_AI_ACTIVE_JOBS_GLOBAL, runsLastHour: 0, tokensLastDay: 0
+    });
+    const aiRuns = evaluateAiQuota({
+      activeJobsForUser: 0, activeJobsGlobal: 0, runsLastHour: MAX_AI_RUNS_PER_USER_HOUR, tokensLastDay: 0
+    });
+    const aiTokens = evaluateAiQuota({
+      activeJobsForUser: 0, activeJobsGlobal: 0, runsLastHour: 0, tokensLastDay: MAX_AI_TOKENS_PER_USER_DAY
+    });
+    check(!aiUserJobs.ok && aiUserJobs.reason === "maxActiveJobsPerUser"
+      && !aiGlobalJobs.ok && aiGlobalJobs.reason === "maxActiveJobsGlobal"
+      && !aiRuns.ok && aiRuns.reason === "maxRunsPerUserHour"
+      && !aiTokens.ok && aiTokens.reason === "maxTokensPerUserDay",
+      "并发（单用户/全局）与计费（次/天 tokens）四条线各自越界时给出对应原因");
+    check([aiUserJobs, aiGlobalJobs, aiRuns, aiTokens].every((verdict) => !("ok" in verdict && verdict.ok))
+      && aiTokens.retryAfterSeconds === 86400 && aiUserJobs.retryAfterSeconds === 30
+      && !containsHostPath(aiTokens.message),
+      "拒绝按维度给出重试间隔（并发 30 秒、日用量 24 小时），文案不含主机信息");
+    const r11JobA = Number(db.prepare("INSERT INTO ai_analysis_jobs (exam_id,status,created_by) VALUES (?, 'queued', ?)")
+      .run(visibleExam, teacher.id).lastInsertRowid);
+    const r11JobB = Number(db.prepare("INSERT INTO ai_analysis_jobs (exam_id,status,created_by) VALUES (?, 'running', ?)")
+      .run(visibleExam, teacher.id).lastInsertRowid);
+    const r11Base = await readAiQuotaSnapshot(quotaDb, teacher.id);
+    // 观测记录的 created_at 有两种真实形态：列默认值（SQLite 写空格分隔的 UTC）与应用侧 ISO。
+    // 窗口判定必须都算进来，否则配额在 SQLite 上「看着生效、实际恒为 0」。
+    const r11RunIds: number[] = [];
+    const insertR11Run = (tokensIn: number, tokensOut: number, createdAtSql: string, ...extra: unknown[]): void => {
+      r11RunIds.push(Number(db.prepare(
+        `INSERT INTO ai_analysis_runs (user_id, feature, tokens_in, tokens_out, created_at) VALUES (?,?,?,?,${createdAtSql})`)
+        .run(teacher.id, "exam_analysis", tokensIn, tokensOut, ...extra).lastInsertRowid));
+    };
+    // 观测记录的 created_at 有两种真实形态：列默认值（SQLite 写空格分隔的 UTC）与应用侧 ISO。
+    // 窗口判定必须都算进来，否则配额在 SQLite 上「看着生效、实际恒为 0」。
+    insertR11Run(1200, 300, "CURRENT_TIMESTAMP");
+    insertR11Run(500, 200, "?", new Date().toISOString());
+    // 窗口外的两条（24 小时之外）：证明统计是真窗口而不是全表
+    insertR11Run(90000, 90000, "?", new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString());
+    insertR11Run(80000, 80000, "?",
+      new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString().replace("T", " ").slice(0, 19));
+    const r11Snapshot = await readAiQuotaSnapshot(quotaDb, teacher.id);
+    check(r11Snapshot.activeJobsForUser >= MAX_AI_ACTIVE_JOBS_PER_USER
+      && r11Snapshot.activeJobsGlobal >= r11Snapshot.activeJobsForUser
+      && r11Snapshot.runsLastHour === r11Base.runsLastHour + 2
+      && r11Snapshot.tokensLastDay === r11Base.tokensLastDay + 2200,
+      "配额账本读的是已落库事实：两种时间格式都计入、窗口外的两条不计（SQLite 与 MariaDB 同一口径）");
+    check((await readAiQuotaSnapshot(quotaDb, null)).activeJobsForUser === 0
+      && (await readAiQuotaSnapshot(quotaDb, -1)).tokensLastDay === 0,
+      "无身份调用不虚构他人账本（读的是 0，而不是把全表当成某人用量）");
+    check((await readAiQuotaSnapshot(quotaDb, student.id)).activeJobsForUser === 0
+      && (await readAiQuotaSnapshot(quotaDb, student.id)).runsLastHour === 0,
+      "配额按人归因：教师占满不会把学生一起挡在门外");
+    const r11Http = await fetch(`${base}/api/analysis/exams/${visibleExam}/ai-analysis`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) }, body: "{}"
+    });
+    const r11Body = await r11Http.json().catch(() => ({})) as { code?: string; message?: string };
+    check(r11Http.status === 429 && r11Body.code === "AI_QUOTA_EXCEEDED"
+      && Number(r11Http.headers.get("retry-after")) === 30,
+      "并发配额已满时提交分析返回 429 + Retry-After，而不是排到队列里再慢慢失败");
+    check(!(r11Body.message ?? "").includes(tempDir) && !containsHostPath(r11Body.message ?? ""),
+      "配额拒绝响应不带服务端目录");
+    // 学生入口：先让该学生「有成绩 + 成绩已公布」，请求才会走到配额闸门（此前的 403 是查分门）。
+    // 用一个临时考试，避免给可见考试插入未评分的应考记录干扰后续断言。
+    const r11StuExam = Number(db.prepare(
+      "INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,score_published,created_by) VALUES (?,?,?,?,?,'closed',1,?)")
+      .run("配额专用考试", "critical-card", grade.id, classA, "数学", teacher.id).lastInsertRowid);
+    db.prepare("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?,?,?)")
+      .run(r11StuExam, student.id, 88);
+    const r11StudentJobs: number[] = [];
+    for (let i = 0; i < MAX_AI_ACTIVE_JOBS_PER_USER; i += 1) {
+      r11StudentJobs.push(Number(db.prepare("INSERT INTO ai_analysis_jobs (exam_id,status,created_by) VALUES (?, 'queued', ?)")
+        .run(r11StuExam, student.id).lastInsertRowid));
+    }
+    const r11JobCountBefore = Number((db.prepare("SELECT COUNT(*) AS c FROM ai_analysis_jobs").get() as { c: number }).c);
+    const r11Student = await fetch(`${base}/api/scores/me/exams/${r11StuExam}/ai-analysis`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...authHeaders(studentToken) }, body: "{}"
+    });
+    const r11StudentBody = await r11Student.json().catch(() => ({})) as { code?: string; message?: string };
+    check(r11Student.status === 429 && r11StudentBody.code === "AI_QUOTA_EXCEEDED"
+      && Number((db.prepare("SELECT COUNT(*) AS c FROM ai_analysis_jobs").get() as { c: number }).c) === r11JobCountBefore,
+      `学生入口走的是同一道闸门，被拒请求不落任务行（实际 ${r11Student.status}）`);
+    db.prepare("DELETE FROM ai_analysis_jobs WHERE id IN (?,?)").run(r11JobA, r11JobB);
+    for (const jobId of r11StudentJobs) db.prepare("DELETE FROM ai_analysis_jobs WHERE id=?").run(jobId);
+    db.prepare("DELETE FROM student_scores WHERE exam_id=?").run(r11StuExam);
+    db.prepare("DELETE FROM exams WHERE id=?").run(r11StuExam);
+    db.prepare("DELETE FROM ai_analysis_runs WHERE id IN (?,?,?,?)").run(...r11RunIds);
+    check(AiQuotaError.name === "AiQuotaError", "配额错误类型可被路由单独识别（不会与 AI 服务故障混为一谈）");
+
+    // ── 微信出站超时、并发与绑定配额（安全 R20）
+    const {
+      WECHAT_ENV_VARS, DEFAULT_WECHAT_LIMITS, resolveWechatLimits, describeWechatLimits,
+      WECHAT_REQUEST_TIMEOUT_MS, MAX_WECHAT_BIND_PER_USER_HOUR, MAX_WECHAT_BIND_GLOBAL_PER_MINUTE,
+      WECHAT_MAX_CONCURRENT_REQUESTS
+    } = await import("../src/shared/wechatLimits");
+    check(WECHAT_ENV_VARS.slice().sort().join() === wechatEnvVarsClearedHere.slice().sort().join()
+      && WECHAT_ENV_VARS.every((name) => !(name in process.env)),
+      "脚本清理的 PROJECTX_WECHAT_* 名单与档位表逐一对应，宿主机变量不会渗入默认出站断言");
+    check(WECHAT_REQUEST_TIMEOUT_MS === DEFAULT_WECHAT_LIMITS.requestTimeoutMs
+      && WECHAT_MAX_CONCURRENT_REQUESTS === DEFAULT_WECHAT_LIMITS.maxConcurrentRequests,
+      "未配置时按默认出站档位生效（8 秒超时 / 并发 4 / 单账号 1 小时 10 次绑定）");
+    check(resolveWechatLimits({ PROJECTX_WECHAT_TIMEOUT_MS: "1500" }).limits.requestTimeoutMs === 1500
+      && resolveWechatLimits({ PROJECTX_WECHAT_TIMEOUT_MS: "1" }).limits.requestTimeoutMs
+        === DEFAULT_WECHAT_LIMITS.requestTimeoutMs
+      && resolveWechatLimits({ PROJECTX_WECHAT_MAX_CONCURRENT: "9999" }).limits.maxConcurrentRequests === 32,
+      "出站档位可收紧、低于最小可用值回落默认、超天花板被夹紧");
+    check(describeWechatLimits().includes(`${WECHAT_REQUEST_TIMEOUT_MS}ms`) && describeWechatLimits().includes("绑定"),
+      "微信出站档位进入启动摘要");
+    const wechatThrottle = await import("../src/server/services/wechatThrottle");
+    let bindAccepted = 0;
+    let bindError: unknown = null;
+    try {
+      for (let i = 0; i < MAX_WECHAT_BIND_PER_USER_HOUR + 1; i += 1) {
+        wechatThrottle.takeWechatBindAttempt(700001);
+        bindAccepted += 1;
+      }
+    } catch (error) { bindError = error; }
+    check(bindAccepted === MAX_WECHAT_BIND_PER_USER_HOUR && bindError instanceof wechatThrottle.WechatThrottleError
+      && bindError.status === 429 && bindError.retryAfterSeconds === 3600
+      && !containsHostPath(bindError.message),
+      "单账号绑定按小时配额逐次放行到线即拒（无配额时一个脚本就能把 AppID 当日额度打空）");
+    wechatThrottle.resetWechatThrottleCounters();
+    let globalError: unknown = null;
+    try {
+      for (let i = 0; i < MAX_WECHAT_BIND_GLOBAL_PER_MINUTE + 1; i += 1) {
+        wechatThrottle.takeWechatBindAttempt(700100 + i); // 每个用户只试一次：越过的是全校线
+      }
+    } catch (error) { globalError = error; }
+    check(globalError instanceof wechatThrottle.WechatThrottleError
+      && (globalError as Error).message.includes("全校"),
+      "全校每分钟总量单独成线（换账号也绕不出去，微信侧频控是按 AppID 算的）");
+    wechatThrottle.resetWechatThrottleCounters();
+    const nodeHttp = await import("node:http");
+    let observedConcurrent = 0;
+    let peakConcurrent = 0;
+    const wechatProbe = nodeHttp.createServer((req, res) => {
+      observedConcurrent += 1;
+      peakConcurrent = Math.max(peakConcurrent, observedConcurrent);
+      setTimeout(() => {
+        observedConcurrent -= 1;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ errcode: 0 }));
+      }, 60);
+    });
+    const hangProbe = nodeHttp.createServer(() => { /* 永不响应：模拟微信侧半挂连接 */ });
+    await new Promise<void>((resolve) => wechatProbe.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => hangProbe.listen(0, "127.0.0.1", resolve));
+    const wechatProbePort = (wechatProbe.address() as { port: number }).port;
+    const hangProbePort = (hangProbe.address() as { port: number }).port;
+    await Promise.all(Array.from({ length: WECHAT_MAX_CONCURRENT_REQUESTS * 3 }, async () => {
+      const response = await wechatThrottle.wechatFetch(`http://127.0.0.1:${wechatProbePort}/token`);
+      await response.json();
+    }));
+    check(peakConcurrent > 1 && peakConcurrent <= WECHAT_MAX_CONCURRENT_REQUESTS,
+      "批量公布时的出站呼叫确实受并发闸门约束（超过微信频控只会换来 45009，受害的是全校推送）");
+    let timeoutError: unknown = null;
+    const timeoutStarted = Date.now();
+    try {
+      await wechatThrottle.wechatFetch(`http://127.0.0.1:${hangProbePort}/jscode2session`, {}, 400);
+    } catch (error) { timeoutError = error; }
+    wechatProbe.close();
+    hangProbe.close();
+    check(timeoutError instanceof wechatThrottle.WechatTimeoutError
+      && Date.now() - timeoutStarted < 3000,
+      "半挂连接在预算内被判超时（此前不带信号的 fetch 会永久占住这个请求）");
 
     // ── R04：记录/会话级接口收敛到考试范围（critical-card 被可见/越权两场考试复用）
     const r04Session = await newScanSession();

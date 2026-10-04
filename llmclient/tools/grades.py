@@ -262,9 +262,42 @@ def get_score_distribution(examId: int, classId: int | None = None) -> dict[str,
     }
 
 
-def get_class_summaries(examId: int) -> dict[str, Any]:
+def get_class_summaries(examId: int, classId: int | None = None) -> dict[str, Any]:
+    """班级汇总。classId 由服务端强制注入（安全 R26）：
+
+    - 传入具体班级时，只返回该班汇总。此前本函数根本不接收 classId，`call_tool`
+      把强制范围塞进 safe_args 后又按函数签名过滤掉，导致「只看本班」的请求把
+      整场考试的各班横向对比（含无班级学生）一并交给模型——越权且失真。
+    - classId=0 沿用「无班级归属学生」口径（与 `_class_filter` 一致）。
+    - classId 为 None（无强制范围）时保持旧的全班列表行为。
+    """
     with connect_db() as conn:
         context = _score_context(conn, examId)
+        if classId is not None:
+            if classId == 0:
+                return {
+                    "classes": [{
+                        "classId": 0,
+                        "className": "Unknown class",
+                        "summary": _score_summary(_scores(conn, examId, 0), context),
+                    }],
+                    "scopedClassId": 0,
+                }
+            row = conn.execute(
+                "SELECT id AS classId, name AS className FROM classes WHERE id = ?",
+                [classId],
+            ).fetchone()
+            if row is None:
+                return {"classes": [], "scopedClassId": int(classId)}
+            class_id = int(row["classId"])
+            return {
+                "classes": [{
+                    "classId": class_id,
+                    "className": row["className"],
+                    "summary": _score_summary(_scores(conn, examId, class_id), context),
+                }],
+                "scopedClassId": class_id,
+            }
         classes = conn.execute(
             """
             SELECT DISTINCT c.id AS classId, c.name AS className

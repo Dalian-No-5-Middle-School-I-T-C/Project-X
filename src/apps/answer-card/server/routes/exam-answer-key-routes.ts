@@ -26,6 +26,8 @@ import {
 } from "../../../../server/services/ExamPaperViewService";
 import { answerKeyDir, answerKeysDir, ensureAnswerKeyDir } from "../storage";
 import { MAX_FILE_SIZE, storeAnswerKeyPageFile, validatePaperFile } from "../paper-converter";
+// 安全（R14）：滞留临时件的兜底清理
+import { purgeStaleTmpUploads } from "../paperQuota";
 import { extractDocxText, extractPdfText, extractImageText } from "../paper-ocr";
 import { MAX_ANSWER_TEXT_LENGTH, MAX_QUESTION_NUMBER, parseAnswerKeyText } from "../answer-key-ocr";
 import { requireExamAccess } from "../middleware";
@@ -241,6 +243,12 @@ export function examAnswerKeyRoutes(): Router {
   router.post("/api/exams/:examId/answer-key/pages", requireExamAccess, (req, res, next) => {
     answerKeyUpload.array("files", MAX_ANSWER_KEY_PAGES)(req, res, (err) => {
       if (err) {
+        // 安全（R14）：数量/体积越界时 multer 直接报错，已落盘的兄弟文件不会经过
+        // 下面带 `finally` 的处理函数——必须在这里清掉，否则越界重试会留下无人引用的副本。
+        const partial = (req.files as Express.Multer.File[] | undefined) ?? (req.file ? [req.file] : []);
+        for (const file of partial) {
+          try { unlinkSync(file.path); } catch { /* multer 已回收或文件不存在 */ }
+        }
         res.status(400).json({ message: err.message || "答案文件上传失败" });
         return;
       }
@@ -258,6 +266,13 @@ export function examAnswerKeyRoutes(): Router {
 
       await ensureAnswerKeyDir(exam.id);
       const dir = answerKeyDir(exam.id);
+
+      // 安全（R14）：与 /api/cards/:cardId/paper 同一道兜底清理。multer 的落盘发生在路由之前，
+      // 请求被中断、被 multer 越界拒绝时都没有人能引用那些临时件；这里顺手扫一遍，
+      // 只删超过存活期的普通文件，且不阻塞本次上传。
+      purgeStaleTmpUploads(path.join(answerKeysDir, "_tmp"))
+        .then((removed) => { if (removed > 0) console.log(`[answer-key] 清理滞留临时上传件 ${removed} 个`); })
+        .catch(() => {});
 
       // 逐个校验，不静默跳过（与 /api/cards/:cardId/paper 行为一致）
       const valid: Array<{ file: Express.Multer.File; originalname: string }> = [];

@@ -22,6 +22,8 @@ import {
   isWechatConfigured,
   probeWechatAccessToken,
 } from "../services/WechatMiniProgramService";
+// 安全（R20）：绑定配额与超时（WechatTimeoutError 由 wechatThrottle 抛出）
+import { takeWechatBindAttempt, WechatThrottleError, WechatTimeoutError } from "../services/wechatThrottle";
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -55,10 +57,21 @@ router.post(
 
     let openid: string;
     try {
+      // 安全（R20）：先记账再打微信——绑定接口会真实消耗 AppID 的调用额度，
+      // 无配额时一个脚本就能把当天额度打空，让全校都无法订阅。
+      takeWechatBindAttempt(req.user!.id);
       openid = await getOpenIdByLoginCode(code);
     } catch (error) {
+      if (error instanceof WechatThrottleError) {
+        res.setHeader("Retry-After", String(error.retryAfterSeconds));
+        res.status(429).json({ code: error.code, message: error.message, retryAfterSeconds: error.retryAfterSeconds });
+        return;
+      }
+      // 超时/链路故障与微信业务错误同样对外收敛为 502：不把 errmsg 原文回给前端
       console.error("wechat jscode2session failed:", { studentId: req.user.id, error: error instanceof Error ? error.message : String(error) });
-      res.status(502).json({ message: "微信登录凭证校验失败" });
+      res.status(error instanceof WechatTimeoutError ? 504 : 502).json({
+        message: error instanceof WechatTimeoutError ? "微信服务响应超时，请稍后重试" : "微信登录凭证校验失败"
+      });
       return;
     }
 

@@ -2,14 +2,15 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import { raw as expressRaw } from "express";
 import { ZipArchive } from "archiver";
-import AdmZip from "adm-zip";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { mkdir, readdir, copyFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 
 import { authMiddleware, requirePermission } from "../middleware/auth";
+import { extractZipWithinBudget, RestoreZipError } from "../services/restoreZip";
+import { sanitizeOpsMessage } from "../lib/opsErrorMessage";
 import { PERMISSIONS } from "../auth/permissions";
 import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect, ensureDefaultAdmin, removeBootstrapAdminFile } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
@@ -161,7 +162,7 @@ router.get("/backup", async (_req: Request, res: Response) => {
     console.error("[Backup] Export failed:", error);
     cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     if (!res.headersSent) {
-      res.status(500).json({ message: error instanceof Error ? error.message : "导出失败" });
+      respondOpsFailure(res, error, "导出失败");
     }
   }
 });
@@ -193,8 +194,8 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
   try {
     await mkdir(tmpDir, { recursive: true });
 
-    // 使用 adm-zip 解压
-    extractZipFromBuffer(zipBuffer, tmpDir);
+    // 使用 adm-zip 解压（条目名越界与解压预算见 services/restoreZip.ts，安全 R43）
+    extractZipWithinBudget(zipBuffer, tmpDir);
 
     // 验证 metadata
     const metadataPath = path.join(tmpDir, "metadata.json");
@@ -294,7 +295,7 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
   } catch (error) {
     console.error("[Restore] Import failed:", error);
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
-    res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
+    respondOpsFailure(res, error, "导入失败");
   }
 });
 
@@ -359,7 +360,7 @@ async function backupMariadb(res: Response): Promise<void> {
     const db = getMysqlDb();
     const health = await (await import("../db")).healthCheck();
     if (!health.ok) {
-      res.status(500).json({ message: `数据库连接失败: ${health.error}` });
+      res.status(500).json({ message: `数据库连接失败: ${sanitizeOpsMessage(health.error, { fallback: "数据库连接失败，请查看服务端日志" })}` });
       return;
     }
 
@@ -395,7 +396,10 @@ async function backupMariadb(res: Response): Promise<void> {
       try {
         await execFileAsync("mariadb-dump", args, { timeout: 300_000 });
       } catch (err2: any) {
-        res.status(500).json({ message: `mysqldump 执行失败: ${err2.message}。请确保已安装 MariaDB 客户端工具。` });
+        res.status(500).json({
+          // 报错里的 `--result-file=<绝对路径>` 与账号信息不外发（安全 R25）
+          message: `mysqldump 执行失败: ${sanitizeOpsMessage(err2?.message, { fallback: "导出失败" })}。请确保已安装 MariaDB 客户端工具。`,
+        });
         return;
       }
     }
@@ -445,7 +449,7 @@ async function backupMariadb(res: Response): Promise<void> {
     console.error("[Backup] MariaDB export failed:", error);
     cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
     if (!res.headersSent) {
-      res.status(500).json({ message: error instanceof Error ? error.message : "导出失败" });
+      respondOpsFailure(res, error, "导出失败");
     }
   }
 }
@@ -467,7 +471,7 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
   const tmpDir = path.join(os.tmpdir(), `projectx-restore-${crypto.randomUUID()}`);
   try {
     await mkdir(tmpDir, { recursive: true });
-    extractZipFromBuffer(zipBuffer, tmpDir);
+    extractZipWithinBudget(zipBuffer, tmpDir);
 
     const dumpFile = path.join(tmpDir, "dump.sql");
     if (!existsSync(dumpFile)) {
@@ -529,13 +533,15 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
       await cleanupDir(tmpDir);
       res.json({ ok: true, message: "数据已恢复！请重启服务器以使更改完全生效。" });
     } catch (err: any) {
-      await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
-      res.status(500).json({ message: `mysql 导入失败: ${err.message}` });
+      console.error("[Restore] MariaDB mysql 导入失败:", err);
+      await cleanupDir(tmpDir).catch((e) => console.warn("[Backup] cleanupDir 异常:", e));
+      // mysql 客户端的报错自带 dump 文件绝对路径与 `user@host`，只进日志（安全 R25）
+      respondOpsFailure(res, err, "数据库导入失败，请查看服务端日志中的 [Restore] 记录");
     }
   } catch (error) {
     console.error("[Restore] MariaDB import failed:", error);
     await cleanupDir(tmpDir).catch((err) => console.warn("[Backup] cleanupDir 异常:", err));
-    res.status(500).json({ message: error instanceof Error ? error.message : "导入失败" });
+    respondOpsFailure(res, error, "导入失败");
   }
 }
 
@@ -576,28 +582,19 @@ async function moveDir(src: string, dest: string): Promise<void> {
 }
 
 /**
- * 从 Buffer 解压 ZIP 到目标目录（使用 adm-zip，全内存操作，稳定可靠）
+ * 恢复/导出失败时的统一应答（安全 R25 + R43）。
+ *
+ *  - `RestoreZipError` 的消息本身就是为对外而写的（只有数量与限额，不含主机路径），原样给出；
+ *  - 其余底层错误（copyFile/mysqldump/mysql 导入）几乎必然带绝对路径或数据库账号，
+ *    一律走 `sanitizeOpsMessage`，完整原文只进服务端日志。
  */
-function extractZipFromBuffer(zipBuffer: Buffer, destDir: string): void {
-  const zip = new AdmZip(zipBuffer);
-  const entries = zip.getEntries();
-  for (const entry of entries) {
-    // 安全检查：防止路径穿越攻击
-    const relativePath = path.normalize(entry.entryName).replace(/^[\\/]+/, "");
-    const resolvedDest = path.resolve(destDir);
-    const safePath = path.join(resolvedDest, relativePath);
-    const rel = path.relative(resolvedDest, safePath);
-    // 拒绝解析到目标目录之外的条目（防止前缀绕过，如 destDir-evil）
-    if (rel.startsWith("..") || path.isAbsolute(rel)) {
-      continue;
-    }
-    if (entry.isDirectory) {
-      mkdirSync(safePath, { recursive: true });
-    } else {
-      mkdirSync(path.dirname(safePath), { recursive: true });
-      writeFileSync(safePath, entry.getData());
-    }
+function respondOpsFailure(res: Response, error: unknown, fallback: string): void {
+  if (error instanceof RestoreZipError) {
+    res.status(error.status).json({ code: "RESTORE_ZIP_REJECTED", message: error.message });
+    return;
   }
+  const raw = error instanceof Error ? error.message : "";
+  res.status(500).json({ message: sanitizeOpsMessage(raw, { fallback }) });
 }
 
 /**
