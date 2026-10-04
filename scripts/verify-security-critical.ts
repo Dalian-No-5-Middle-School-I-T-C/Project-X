@@ -2616,6 +2616,101 @@ async function main(): Promise<void> {
         "R32：部署指南写明扫描接入需 HTTPS，以及扫描端会拒绝明文发送 Key");
     }
 
+    section("演示数据凭据与导入闸门（安全 R33/R48）");
+    {
+      // 运行时证据（真实建库、真实 bcrypt、零改动快照）在 `npm run verify:demo-credentials`；
+      // 这里锁的是「代码形状」：口令来源、教师角色、闸门位置、每个写块路径的归属判据，
+      // 以及文档里不再把公开口令当成生产可用值——这些都是回归时最容易被顺手改掉的点。
+      const policySource = readFileSync(path.resolve("src/server/services/demo/demoDataPolicy.ts"), "utf8");
+      const demoServiceSource = readFileSync(path.resolve("src/server/services/DemoDataService.ts"), "utf8");
+      const cardIdsSource = readFileSync(path.resolve("src/server/services/demo/demoCardIds.ts"), "utf8");
+      const backupRouteSource = readFileSync(path.resolve("src/server/routes/backup.ts"), "utf8");
+      const settingsPageSource = readFileSync(
+        path.resolve("src/apps/answer-card/client/components/GlobalSettingsPage.tsx"), "utf8");
+      const seedScriptSource = readFileSync(path.resolve("testdata/demo-exams/scripts/seed.ts"), "utf8");
+      const readmeSource = readFileSync(path.resolve("README.md"), "utf8");
+
+      // ── R33：口令来源与教师可见范围 ──
+      check(/password: fixedCredentials \? LEGACY_PUBLIC_DEMO_TEACHER_PASSWORD : generateBootstrapAdminPassword\(\)/
+        .test(demoServiceSource),
+        "R33：演示教师口令默认走随机生成，固定口令只在显式开关下使用（默认分支不是 teacher123）");
+      check(!demoServiceSource.includes('"teacher123"') && !demoServiceSource.includes("'teacher123'"),
+        "R33：DemoDataService 里没有硬编码的公开演示口令字面量");
+      check(/\.\.\.\(fixedCredentials \? \{ password: num \} : \{\}\)/.test(demoServiceSource),
+        "R33：演示学生口令只在固定凭据模式下才等于学号，默认交给 batchCreateStudents 随机生成");
+      check((demoServiceSource.match(/teacher_role/g) ?? []).length >= 3
+        && /"subject_teacher"/.test(demoServiceSource),
+        "R33：演示教师的 INSERT 与 UPDATE 都写 teacher_role='subject_teacher'（不再命中「未配置角色=全校可见」兼容分支）");
+      check(demoServiceSource.includes('"teacher_classes"')
+        && demoServiceSource.indexOf("insertTeacherClass, teacherId, class1.id") >= 0
+        && demoServiceSource.indexOf("insertTeacherClass, teacherId, class2.id") >= 0,
+        "R33：演示教师任课到两个演示班级——subject_teacher 的可见范围来自 teacher_classes，且恰好圈在演示数据里");
+      check(demoServiceSource.includes("encryptField(row.password)")
+        && demoServiceSource.includes("initial_password"),
+        "R33：随机口令加密存入 users.initial_password，管理员可从既有「导出账密」查回（不需要新的明文通道）");
+
+      // ── R33：开关默认关闭、非法值不放宽 ──
+      check(/if \(!raw\) return false;/.test(policySource)
+        && /if \(TRUTHY\.has\(raw\)\) return true;\s*\n\s*if \(FALSY\.has\(raw\)\) return false;/.test(policySource),
+        "R33：两个演示开关未设即关闭，取值只认 1/true/yes/on 与 0/false/no/off");
+      check(/warnOnce\(`bad-\$\{name\}`/.test(policySource) && /按关闭处理/.test(policySource),
+        "R33：开关取值非法时打印 [demo-policy] 并按关闭处理，绝不静默放宽");
+      check(/DEMO_POLICY_ENV_VARS/.test(policySource),
+        "R33：模块声明自己的环境变量清单，供 verify 脚本断言「清空的变量 == 声明的变量」");
+
+      // ── R33：闸门在任何写入之前 ──
+      const gateAt = demoServiceSource.indexOf("await assertDemoImportAllowed(db, options);");
+      check(gateAt >= 0
+        && gateAt < demoServiceSource.indexOf("await ensureCrossExamTables(db);")
+        && gateAt < demoServiceSource.indexOf("await cleanupDemoData(db);"),
+        "R33/R48：三道闸全部在建表与 cleanupDemoData 之前判完，拒绝时库里一个字节都没动");
+      check(/await assertDemoCardIdsFree\(db\);\s*\n\s*await assertDemoTeacherUsernamesAvailable\(db\);\s*\n\s*await assertDemoImportConfirmed\(db, options\?\.confirmedProductionImport\);/
+        .test(demoServiceSource),
+        "R33/R48：闸门按「卡号冲突 → 保留用户名被占 → 生产库需确认」顺序执行，三条都在同一个入口里");
+      check(/DEMO_CARD_ID_CONFLICT/.test(demoServiceSource) && /DEMO_TEACHER_USERNAME_TAKEN/.test(demoServiceSource)
+        && /DEMO_IMPORT_REQUIRES_CONFIRMATION/.test(demoServiceSource),
+        "R33/R48：三种拒绝各带独立错误码，前端与运维能区分处置");
+      check(/status: 409/.test(demoServiceSource),
+        "R33/R48：拒绝是 409（请求本身可修正），不是 500（看起来像服务坏了）");
+
+      // ── R33：接口与前端不把口令写进日志 ──
+      check(/teacherCredentials: stats\.teacherCredentials\.map\(\(\{ username, fixed \}\) => \(\{ username, fixed \}\)\)/
+        .test(backupRouteSource),
+        "R33：响应体的 stats 里剥掉口令明文，只在 message 里出现一次（避免同一份口令被抓包/前端日志带走两遍）");
+      check(!/console\.(log|warn|error)\([^)]*credentials/.test(backupRouteSource),
+        "R33：服务端日志不打印演示口令");
+      check(/confirm === DEMO_IMPORT_PRODUCTION_CONFIRM/.test(backupRouteSource),
+        "R33：确认串按常量比对，路由里没有第二份硬编码字面量");
+      check(settingsPageSource.includes("DEMO_IMPORT_REQUIRES_CONFIRMATION")
+        && settingsPageSource.includes("postImportDemo(err.confirm)"),
+        "R33：前端在 409 时二次确认并回传服务端给的确认串，不自己拼字面量");
+
+      // ── R48：卡号清单同源 + 每条写块路径都过归属判据 ──
+      check(/export const DEMO_CARD_IDS/.test(demoServiceSource)
+        && /DEMO_REVIEW_CARD_ID,/.test(demoServiceSource),
+        "R48：DemoDataService 导出全部演示卡号清单（含网阅卡），与闸门比对用的是同一份");
+      check(/"88000001"/.test(cardIdsSource) && /"88000002"/.test(cardIdsSource) && /"88000999"/.test(cardIdsSource),
+        "R48：固定演示卡号集中在 demoCardIds.ts 单一来源（此前散落在各 seeder 里，改一处漏三处）");
+      check(/Number\(row\.is_demo\) === 1/.test(cardIdsSource) && /SELECT is_demo FROM answer_cards WHERE id = \?/.test(cardIdsSource),
+        "R48：isDemoCard 只认 is_demo 归属标记，不按卡号前缀猜——真实卡拿到 88000001 也不算演示卡");
+      for (const file of ["essayDemo.ts", "fillBlankDemo.ts", "reviewDemo.ts"]) {
+        const src = readFileSync(path.resolve(`src/server/services/demo/${file}`), "utf8");
+        check(/if \(!\(await isDemoCard\(db, /.test(src),
+          `R48：${file} 在写演示题块前先过 isDemoCard（纵深防线，不只依赖导入前的整单拒绝）`);
+      }
+      check(demoServiceSource.indexOf("if (!(await isDemoCard(db, cardId))) return;") >= 0,
+        "R48：ensureDemoObjectiveBlock 同样跳过非演示卡——那正是会写入标准答案 A/B/C/D/A 的地方");
+
+      // ── 文档口径：公开口令不再被当成生产可用值 ──
+      check(!/\| `demo-teacher` \| `teacher123` \|/.test(readmeSource),
+        "R33：README 的登录表不再把 teacher123 列为演示教师口令");
+      check(readmeSource.includes("PROJECTX_DEMO_FIXED_CREDENTIALS")
+        && readmeSource.includes("PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT"),
+        "R33：README 写明两个演示开关及默认值（布尔开关，非法值按关闭处理）");
+      check(/仅限隔离测试库/.test(seedScriptSource) && /process\.env\[DEMO_FIXED_CREDENTIALS_ENV\] = "1"/.test(seedScriptSource),
+        "R33：只有测试数据包的 seed.ts 会打开固定凭据开关，且打印「仅限隔离测试库」警告");
+    }
+
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);
     if (failures.length > 0) {
       for (const failure of failures) console.error(`  - ${failure}`);

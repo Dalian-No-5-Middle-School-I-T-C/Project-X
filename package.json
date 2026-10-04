@@ -39,6 +39,8 @@
     "verify:permission-scope": "tsx scripts/verify-permission-scope.ts",
     "verify:p1-security": "tsx scripts/verify-p1-fixes.ts",
     "verify:demo-safety": "tsx scripts/verify-demo-safety.ts",
+    "verify:demo-credentials": "tsx scripts/verify-demo-credentials.ts",
+    "verify:demo-credentials:mariadb": "tsx scripts/verify-demo-credentials.ts --mariadb",
     "verify:a3": "tsx scripts/verify-a3.ts",
     "verify:feedback-260923": "tsx scripts/feedback-260923-smoke.ts",
     "verify:round5-db-upsert": "tsx scripts/verify-round5-db-upsert.ts",

@@ -2,6 +2,63 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-04：演示数据凭据与导入闸门（安全审查第五批 C · R33/R48）
+
+演示数据本来是给现场演示用的，但它有两个副作用会**直接落到生产库上**：导入即安装一套口令写在公开文档里的
+教师账号，以及固定演示卡号可能撞上一张真实答题卡、然后静默改写它。这两条都不再靠「记得别在生产库点」。
+
+- **R33 演示口令随机换发，教师可见范围收敛**：`demo-teacher` / `demo-teacher-2` 的口令曾固定为
+  README、`testdata/README.md`、`readus/演示数据.md`、`manifest.json` 里公开写着的 `teacher123`，
+  16 名演示学生的口令等于学号；而这两个教师账号建号时**没有 `teacher_role`**，正好命中
+  `routes/scores.ts` 的兼容分支「未配置角色的教师＝全校可见」。合起来就是：生产库导入过一次演示数据，
+  任何读过 README 的人都能用公开口令登录并看到全校成绩。现在教师口令用 R01 那套
+  `generateBootstrapAdminPassword()`（16 位四类字符）每次导入随机换发，学生口令走批量导入既有的
+  随机初始密码；口令只在导入响应的 `message` 里出现一次，并用 `encryptField` 存入 `users.initial_password`
+  （管理员从既有「导出账密」即可查回，**不需要新的明文通道**，也不进服务端日志）。
+  同时补上 `teacher_role='subject_teacher'` 并任课「演示1班 / 演示2班」——`subject_teacher` 的可见班级
+  来自 `teacher_classes`，挂演示班级后可见范围恰好圈在演示数据里；网阅演示不受影响（阅卷访问按
+  `review_assignments` 判）。v1.9.8 之前崩溃残留的同名账号（`is_demo=0`）照旧收编，但一律换发口令、
+  补角色、打 `is_demo=1`，因此**升级后 `teacher123` 当场失效**（与 R01 同口径）。
+- **R33 导入闸门**：新增单一来源 `src/server/services/demo/demoDataPolicy.ts` 与两个布尔开关——
+  `PROJECTX_DEMO_FIXED_CREDENTIALS`（恢复固定口令，**仅限隔离测试环境**；`testdata/demo-exams/scripts/seed.ts`
+  会自己打开它并打印警告，好让 `verify.ts` 能按 `manifest.json` 逐条登录断言）与
+  `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT`（免逐次确认）。开关取值非法一律**按关闭处理**并打印
+  `[demo-policy] …`，绝不静默放宽。库里已有真实考试或真实账号（`admin` 除外）时，
+  `POST /api/db/import-demo` 返回 **409 `DEMO_IMPORT_REQUIRES_CONFIRMATION`** 并带回确认串
+  `IMPORT_DEMO_INTO_PRODUCTION`，前端二次确认后回传；若 `demo-teacher` / `demo-teacher-2` 已被
+  **在用**的真实教师占用（任课真实班级 / 被分配过阅卷 / 创建过考试）则返回
+  **409 `DEMO_TEACHER_USERNAME_TAKEN`**，不改一个真实账号的口令与角色。
+- **R48 演示卡号撞真实卡：整单拒绝而不是静默改写**：演示用固定卡号（`88000001`/`88000002`/`88000999`
+  与周报晨测卡号），而真实卡号由 `generateCardId()` 产出、落在 `10000000~99999999`——**同一区间**。
+  建卡用的是 `INSERT … IGNORE`，撞号不报错：演示考试会静默挂到那张真实卡上，再给它补一个标准答案为
+  `A/B/C/D/A` 的 5 题选择题块、作文/填空块、知识点与 `assets/<cardId>/fig-demo.png`，
+  **真实考试从此按演示答案判分**且界面看不出异常。现在 `assertDemoCardIdsFree` 在导入前比对全部演示卡号，
+  命中即 **409 `DEMO_CARD_ID_CONFLICT`**（错误里点名卡号与卡标题，处置＝删除或重建那几张真实卡）；
+  三道闸全部在 `ensureCrossExamTables` / `cleanupDemoData` **之前**判完，拒绝时库里一个字节都没动。
+  另有纵深防线 `isDemoCard()`（`src/server/services/demo/demoCardIds.ts`，卡号单一来源）挡在
+  `ensureDemoObjectiveBlock`、`essayDemo`、`fillBlankDemo`、`reviewDemo` 四条写题块路径前面，
+  判据**只看 `is_demo` 归属标记、不按卡号前缀猜**。
+- **文档口径同步**：README 的登录表不再把 `teacher123` 列为演示教师口令，改为「一次性随机口令」，
+  并新增一节写明两个开关；`testdata/README.md`、`testdata/demo-exams/README.md`、`manifest.json`、
+  `readus/演示数据.md`（新增「演示账号口令口径」小节）、`readus/ADMIN-GUIDE.md`、
+  `user guide/Project-X用户使用说明.md`、`docs/视觉检查方法论与依赖.md`、`deploy-guide.md` 一并更正。
+  `verify.ts` 的演示口令改由 `PROJECTX_DEMO_TEACHER_PASSWORD` / `PROJECTX_DEMO_STUDENT_PASSWORD`
+  覆盖，登录失败时直接给出「用 seed.ts 重新导入或传入口令」的提示，而不是含糊的 ✗。
+
+**验证**：新增 `npm run verify:demo-credentials`（SQLite **84 通过 / 0 失败**，MariaDB 同一脚本
+`--mariadb` 跑同一套断言，CI 两个 job 各加一步）——默认导入下两名教师口令互不相同、长度 ≥16、
+用 `teacher123` 校验**失败**、`teacher_role='subject_teacher'`、`teacher_classes` 恰好 2 条且全部指向
+`is_demo=1` 的班级（指向真实班级为 0 条）、`decryptField(initial_password)` 等于返回口令；
+16 名演示学生逐条 bcrypt 校验，**用学号登录成功的数量为 0**；重复导入后上一轮口令立即失效且账号不叠加；
+开关 `=1` 时 `teacher123` 确实能登录（证明开关生效而非被静默忽略）、`=maybe` 按关闭处理；
+生产闸门与卡号冲突两条都断言**拒绝时零改动**（用户/考试/答题卡/年级/题块计数逐项比对、
+真实卡上的 `subjective_blocks` 与 `knowledge_points` 为 0、没有「演示-」考试挂到真实卡上）；
+保留名被占用时 `password_hash` / `is_demo` / `teacher_role` 原样不动，三条「在用」判据逐条触发拒绝；
+并断言脚本接管的变量清单与 `DEMO_POLICY_ENV_VARS` 全等。`verify:security-critical` **406 通过 / 0 失败**
+（新增 26 条 R33/R48 静态断言：口令来源、教师角色、闸门位置与顺序、错误码、响应体剥离口令明文、
+四条写块路径的 `isDemoCard`、文档不再列公开口令）；`verify:demo-safety` 23 通过 / 0 失败
+（其中「与演示 id 重叠会主键冲突，无法构造」那句旧注释是错的——`INSERT IGNORE` 根本不报冲突，已更正）。
+
 ## 2026-10-04：跨机明文凭据闸门（安全审查第五批 C · R32）
 
 第五批 A 收浏览器侧、B 收原生进程，C 收的是**部署与现场配置**：地址怎么填、包怎么装、

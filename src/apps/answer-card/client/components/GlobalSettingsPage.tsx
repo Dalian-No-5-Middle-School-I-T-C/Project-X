@@ -158,12 +158,31 @@ export function GlobalSettingsPage({ onBack }: Props) {
     }
   }, []);
 
+  // 安全 R33：库里已有真实数据时后端先回 409 + 确认串，要求管理员再确认一次；
+  // 前端不自己猜「什么算生产库」，只把后端给的串原样回传一次。
+  const postImportDemo = (confirmToken?: string) =>
+    fetchJson<{ ok: boolean; message?: string }>("/api/db/import-demo", {
+      method: "POST",
+      body: JSON.stringify(confirmToken ? { confirm: confirmToken } : {}),
+    });
+
   async function handleImportDemo() {
-    if (!confirm("将导入演示测试数据（9 场考试、16 名学生、2 个合集，含网阅演示），大概率不会覆盖现有数据。是否继续？")) return;
+    if (!confirm("将导入演示测试数据（十几场考试、16 名学生、3 个合集，含网阅演示）。演示教师口令随机生成、只显示一次；原有「演示-」前缀数据（含在其上完成的阅卷/改分）会被清空重建。是否继续？")) return;
     setDevMsg(null);
     setDevBusy(true);
     try {
-      const result = await fetchJson<{ ok: boolean; message?: string }>("/api/db/import-demo", { method: "POST" });
+      let result: { ok: boolean; message?: string };
+      try {
+        result = await postImportDemo();
+      } catch (err: any) {
+        if (err?.code !== "DEMO_IMPORT_REQUIRES_CONFIRMATION" || typeof err?.confirm !== "string") throw err;
+        if (!confirm(`${err.message || "当前库已有真实数据。"}\n\n点击「确定」= 确认在这个库上导入演示数据。`)) {
+          setDevMsg("已取消：库中已有真实数据，未导入任何演示数据");
+          setDevMsgTone("error");
+          return;
+        }
+        result = await postImportDemo(err.confirm);
+      }
       setDevMsg(result.message || "演示数据导入完成");
       setDevMsgTone("success");
     } catch (err: any) {

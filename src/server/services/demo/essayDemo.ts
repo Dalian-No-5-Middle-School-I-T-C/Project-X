@@ -1,9 +1,10 @@
 import { buildInsertIgnore, type DbAdapter } from "../../db";
 import { ESSAY_DEFAULT_LINE_COLOR } from "../../../shared/essayGrid";
+import { DEMO_LANGUAGE_CARD_ID, isDemoCard } from "./demoCardIds";
 // 作文格仿高考样式演示种子（答题卡设计器修复）：朱红格线 / 行间虚线 / 每 100 字刻度
 // ────────────────────────────────────────────────────────────────────────────
 
-const LANGUAGE_CARD_ID = "88000001"; // 演示-语文卡（填空题 + 作文块演示）
+const LANGUAGE_CARD_ID = DEMO_LANGUAGE_CARD_ID; // 演示-语文卡（填空题 + 作文块演示）
 
 /**
  * 为演示-语文卡补一个作文块（1 道题）：
@@ -14,8 +15,8 @@ const LANGUAGE_CARD_ID = "88000001"; // 演示-语文卡（填空题 + 作文块
  * 清除演示数据时经 subjective_blocks.card_id → answer_cards ON DELETE CASCADE 自动级联。
  */
 export async function seedEssayDemo(db: DbAdapter): Promise<void> {
-  const card = await db.get("SELECT id FROM answer_cards WHERE id = ?", LANGUAGE_CARD_ID) as { id: string } | undefined;
-  if (!card) return;
+  // 安全 R48：只对演示卡补块（ID 撞上真实卡时静默跳过，见 demoCardIds.isDemoCard）
+  if (!(await isDemoCard(db, LANGUAGE_CARD_ID))) return;
 
   const blockId = "essay-demo-1";
   await db.run(

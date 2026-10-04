@@ -15,6 +15,7 @@ import { PERMISSIONS } from "../auth/permissions";
 import { closeDatabase, getDatabase, getMysqlDb, getMariadbConfig, resolveAnswerCardDataDir, resolveProjectDbPath, resolveScannerDbPath, detectDialect, ensureDefaultAdmin, removeBootstrapAdminFile } from "../db";
 import { closeDb } from "../../apps/answer-card/server/database";
 import { seedDemoData, clearDemoData } from "../services/DemoDataService";
+import { DEMO_IMPORT_PRODUCTION_CONFIRM } from "../services/demo/demoDataPolicy";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -307,16 +308,49 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
  * 鉴权：路由级 requirePermission(USER_MANAGE) 已过滤非管理员；此路由额外要求
  * SYSTEM_MANAGE「系统维护（数据清理、归档等）」权限，作为「最高权限管理员」语义闸口。
  * 当前仅 admin（持 "*" 通配）能通过；未来若要拆分管理子角色，SYSTEM_MANAGE 可单独授予。
+ *
+ * 安全 R33：库里已有真实数据时必须带 `confirm: "IMPORT_DEMO_INTO_PRODUCTION"` 才执行，
+ * 否则 409 —— 权限够不等于「知道自己在往生产库里塞 16 个演示账号」。
+ * 演示教师口令每次导入随机换发，只在这一次的响应里出现（不再回显文档里的固定口令）。
  */
-router.post("/import-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async (_req: Request, res: Response) => {
+router.post("/import-demo", requirePermission(PERMISSIONS.SYSTEM_MANAGE), async (req: Request, res: Response) => {
   try {
-    const stats = await seedDemoData();
+    const confirm = typeof req.body?.confirm === "string" ? req.body.confirm.trim() : "";
+    const stats = await seedDemoData({ confirmedProductionImport: confirm === DEMO_IMPORT_PRODUCTION_CONFIRM });
+    const credentials = stats.teacherCredentials
+      .map((c) => `${c.username} / ${c.password}`)
+      .join("，");
+    const credentialNote = stats.teacherCredentials.some((c) => c.fixed)
+      ? `⚠️ 当前使用公开文档里的固定演示口令（PROJECTX_DEMO_FIXED_CREDENTIALS 已打开），仅限隔离测试环境。`
+      : `演示教师口令本次随机生成、只显示这一次：${credentials}（也已存入账号的「初始密码」，可在账号导出里查回）。`;
+    const studentNote = stats.studentPasswordIsStudentNumber
+      ? "演示学生口令＝学号（固定凭据模式）。"
+      : "演示学生口令随机生成，可在学生账号导出里查回。";
     res.json({
       ok: true,
-      message: `演示数据已重置并重新导入：${stats.exams} 场考试 / 16 名学生 / ${stats.groups} 个合集（教师 demo-teacher，密码 teacher123）。⚠️ 原有「演示-」前缀数据（含在其上完成的阅卷/改分）会被清空并更换考试 ID；演示账号凭据固定且可预测，仅限测试环境使用，请勿在生产环境导入。`,
-      stats
+      message: `演示数据已重置并重新导入：${stats.exams} 场考试 / 16 名学生 / ${stats.groups} 个合集。`
+        + `${credentialNote}${studentNote}`
+        + `⚠️ 原有「演示-」前缀数据（含在其上完成的阅卷/改分）会被清空并更换考试 ID；演示账号只应存在于测试环境，生产库请导入后尽快用「清除演示数据」移除。`,
+      stats: {
+        ...stats,
+        // 口令只在 message 里出现一次；stats 里留用户名与「是否固定口令」即可，
+        // 避免同一份明文口令在响应体里出现两遍（前端日志/抓包都会原样带走）。
+        teacherCredentials: stats.teacherCredentials.map(({ username, fixed }) => ({ username, fixed })),
+      },
     });
   } catch (error) {
+    const status = typeof (error as any)?.status === "number" ? (error as any).status : 500;
+    const code = typeof (error as any)?.code === "string" ? (error as any).code : undefined;
+    if (status !== 500) {
+      // 409 是「本次导入被闸门拒绝、库里没动过」，不是失败到需要看日志的程度：把原因原样交给前端。
+      console.warn(`[DemoData] 导入被拒绝（${code ?? status}）:`, error instanceof Error ? error.message : error);
+      res.status(status).json({
+        message: error instanceof Error ? error.message : "演示数据导入被拒绝",
+        code,
+        confirm: (error as any)?.confirm,
+      });
+      return;
+    }
     console.error("[DemoData] 导入失败:", error);
     res.status(500).json({ message: error instanceof Error ? error.message : "演示数据导入失败" });
   }

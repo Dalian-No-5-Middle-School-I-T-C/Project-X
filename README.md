@@ -384,16 +384,29 @@ npx tsx testdata/demo-exams/scripts/seed.ts
 种子会写入：
 
 - 一场「演示-网阅测试」考试，含题块 **A**（满分 15、含 0.5 小数）与题块 **B**（满分 25）；
-- 第二教师账号 `demo-teacher-2` / `teacher123`（学科数学），用于演示工作量均衡；
+- 第二教师账号 `demo-teacher-2`（学科数学），用于演示工作量均衡；
 - 切块与分配：题块 A 故意把卷拆给两位教师并留 2 份未分配，触发 `rebalanceWorkload` 自动均衡（份数差收敛到 ≤ 4）。
 
 登录实测：
 
 | 账号 | 密码 | 可验证 |
 |------|------|--------|
-| `demo-teacher` | `teacher123` | 题块 A 枚举模式 + 0.5 底部行；题块 B 位值模式；本人块 `has_half_point` 可改 |
-| `demo-teacher-2` | `teacher123` | 工作量均衡后被追加的卷（`auto_assigned`）；教师改局部设置的 403/200 边界 |
+| `demo-teacher` | 一次性随机口令（导入时返回一次，并加密存入该账号的「初始密码」，管理员可在账号导出里查回） | 题块 A 枚举模式 + 0.5 底部行；题块 B 位值模式；本人块 `has_half_point` 可改 |
+| `demo-teacher-2` | 同上（与 `demo-teacher` 不同值，每次导入都换发） | 工作量均衡后被追加的卷（`auto_assigned`）；教师改局部设置的 403/200 边界 |
+| `demo-teacher*` 的数据范围 | — | `teacher_role='subject_teacher'`，只任课「演示1班 / 演示2班」，看不到真实班级成绩 |
+| `20260101` ~ `20260116`（演示学生） | 一次性随机口令（同学生批量导入口径，8 位十六进制，存入「初始密码」） | 学生端查分、原卷查看开关、正态性检验样本 |
 | `admin` | 一次性随机口令（启动时写入数据库同目录 `bootstrap-admin.txt`；首次登录强制改密，改密后文件自动删除） | Home → 全局设置（仅管理员可见）；仲裁人留空自动改派争议卷 |
+
+> **演示口令不再固定**（安全审查 R33）：历史版本把演示教师口令写成公开文档里的 `teacher123`、演示学生口令写成学号，
+> 而演示教师又没有 `teacher_role` —— 按成绩接口的兼容分支，未配置角色的教师「全校可见」。两者叠加意味着
+> 任何读过 README 的人都能在生产库上以全校可见的教师身份登录。现在口令一律随机换发，`teacher123` 与「口令=学号」
+> 在升级后当场失效。只有在**隔离测试环境**里、确实需要可预期的固定口令（例如 `testdata/demo-exams` 的验收脚本）时，
+> 才设置 `PROJECTX_DEMO_FIXED_CREDENTIALS=1` 恢复旧口径，服务端会打印一行 `[demo-policy]` 警告。
+>
+> 演示导入还有两道闸（拒绝时**不写入任何数据**）：库里已有真实考试/真实账号时，必须在前端二次确认
+> （接口需带 `confirm: "IMPORT_DEMO_INTO_PRODUCTION"`，或设 `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT=1` 免逐次确认）；
+> 固定演示卡号 `88000001` 等撞上真实答题卡时整单取消（安全审查 R48，详见
+> `readus/SECURITY-AUDIT-NOTES-2026-10-04.md` 第八节）。
 
 清理 / 重置演示数据：脚本每次运行会先执行 `cleanupDemoData`（删除「演示-」前缀的考试、答题卡、演示账号等），再重建，因此**重复运行即自动重置**，无需单独 clean 子命令：
 
@@ -958,6 +971,23 @@ Project-X/
 >   带 `await` 用在非 async 回调里的语法错误）随 R41 一并删除，需要历史版本从 git 取回。
 > - 成绩与临界生 CSV 导出的公式注入防护统一到 `src/shared/csv.ts` 的 `csvCell()`（服务端名册导出与客户端
 >   成绩导出共用一套），以 `=`/`+`/`-`/`@`/TAB/CR 开头的值加前导单引号，`8/10`、`3-4` 这类日期歧义值加前导制表符。
+
+> **演示数据的凭据与导入闸门**（安全 R33/R48，单一来源 `src/server/services/demo/demoDataPolicy.ts`）
+>
+> 这两档是**布尔开关**而不是数值上限，因此没有「默认 / 环境变量 / 天花板」三档；但沿用同一条纪律：
+> 取值非法（不是 `1|true|yes|on` 或 `0|false|no|off`）一律按**关闭**处理，并打印一行 `[demo-policy] …`，
+> 绝不静默放宽。默认状态下演示口令每次导入随机换发、生产库导入需前端二次确认。
+>
+> | 环境变量 | 默认 | 打开后的效果 |
+> |----------|------|--------------|
+> | `PROJECTX_DEMO_FIXED_CREDENTIALS` | 关 | 演示教师口令回到公开文档里的 `teacher123`、演示学生口令回到「=学号」。**仅限隔离测试环境**（例如 `testdata/demo-exams` 的验收脚本），生产库打开等于把全校成绩挂在一个口令公开的账号上 |
+> | `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT` | 关 | 库里已有真实考试/真实账号时，导入演示数据不再要求逐次确认（CI、批量装机用）；关闭时接口返回 **409 `DEMO_IMPORT_REQUIRES_CONFIRMATION`** 并带回确认串 `IMPORT_DEMO_INTO_PRODUCTION` |
+>
+> 无论开关如何，`POST /api/db/import-demo` 都不会把口令写进服务端日志：随机口令只在**本次响应的 `message`**
+> 里出现一次，同时加密存入 `users.initial_password`（管理员可从既有「导出账密」里查回）。
+> 卡号冲突（409 `DEMO_CARD_ID_CONFLICT`）与保留用户名被真实教师占用（409 `DEMO_TEACHER_USERNAME_TAKEN`）
+> 两道闸**不受这两个开关影响**，拒绝时库里一个字节都没动。
+> 回归：`npm run verify:demo-credentials`（MariaDB 加 `--mariadb`）。
 
 
 ---
