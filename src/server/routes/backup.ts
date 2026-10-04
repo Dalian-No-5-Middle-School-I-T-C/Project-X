@@ -250,8 +250,10 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
     }
     await copyFile(projectxBak, projectxDbPath);
 
-    // 恢复后重新引导管理员账号（#185 安全模型）：还原出的库若使用旧默认口令 admin123
-    // 或引导文件丢失，则重新生成一次性口令并写入 bootstrap-admin.txt，确保还原后可用引导文件登录。
+    // 恢复后重新引导管理员账号（#185 安全模型 + R01 整改）：先删掉当前引导文件，
+    // 让 ensureDefaultAdmin() 以「文件缺失」判定口令事实源不可用——
+    // 还原出的库若仍停留在引导态，会换发一个新的随机一次性口令并写入 bootstrap-admin.txt；
+    // 若还原出的库已完成首次改密，则口令与改密标记都不受影响（只清理泄露过的引导文件）。
     try {
       removeBootstrapAdminFile();
       await ensureDefaultAdmin();

@@ -100,12 +100,66 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 
 const BOOTSTRAP_ADMIN_FILE = "bootstrap-admin.txt";
 
-// v2.x: 初始/恢复密码固定为 admin123（部署便利优先，主理人决策）。
-// 生产环境暴露网络端口时，部署完成后请立即在界面中修改 admin 密码。
-const BOOTSTRAP_ADMIN_PASSWORD = "admin123";
+// R01 安全整改：管理员初始/恢复口令改为**一次性随机口令**，且引导文件是引导态口令的事实源。
+// 旧实现把口令固定为 admin123 并在每次启动重置哈希，等于向公开渠道永久提供可用凭据；
+// 同时任何停留在引导态的存量库都会被「重启恢复到公开口令」，可被自助改密永久接管。
+//
+// 历史公开口令清单：出现在任何公开文档/旧版本代码里的引导口令一律视为**无效**。
+// 升级到本修复后，仍停留在引导态（未改密）的库会在首次启动时被换发新的随机口令，
+// 这些历史口令当场失效 —— 这是本次整改的目的，不是回归。
+const LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS = new Set(["admin123"]);
 
 export function getBootstrapAdminPath(): string {
   return path.join(path.dirname(resolveProjectDbPath()), BOOTSTRAP_ADMIN_FILE);
+}
+
+// 口令字母表剔除易混淆字符（i/l/o/I/O/0/1）与 shell/引号敏感字符，便于运维抄录。
+const PWD_LOWER = "abcdefghjkmnpqrstuvwxyz";
+const PWD_UPPER = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+const PWD_DIGITS = "23456789";
+const PWD_SYMBOLS = "!#$%&*+-=?@^~";
+const PWD_ALL = PWD_LOWER + PWD_UPPER + PWD_DIGITS + PWD_SYMBOLS;
+const BOOTSTRAP_ADMIN_PASSWORD_LENGTH = 16;
+
+function randomInt(bound: number): number {
+  // 拒绝采样消除取模偏置（bounded integers 的标准做法）。
+  const max = Math.floor(0x100000000 / bound) * bound;
+  let value = Number.MAX_SAFE_INTEGER;
+  while (value >= max) {
+    value = randomBytes(4).readUInt32BE(0);
+  }
+  return value % bound;
+}
+
+function pickFrom(alphabet: string): string {
+  return alphabet[randomInt(alphabet.length)];
+}
+
+/**
+ * 生成管理员一次性引导口令：长度 16，四类字符至少各一，随机排布。
+ * 纯本地函数（不依赖数据库），便于脚本化回归。
+ */
+export function generateBootstrapAdminPassword(): string {
+  const chars = [pickFrom(PWD_LOWER), pickFrom(PWD_UPPER), pickFrom(PWD_DIGITS), pickFrom(PWD_SYMBOLS)];
+  while (chars.length < BOOTSTRAP_ADMIN_PASSWORD_LENGTH) {
+    chars.push(pickFrom(PWD_ALL));
+  }
+  // Fisher-Yates 洗牌，保证四类字符的位置随机。
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = randomInt(i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
+/** 读取引导文件中的口令；文件缺失或内容为空返回 null。 */
+function readBootstrapAdminPassword(): string | null {
+  try {
+    const value = readFileSync(getBootstrapAdminPath(), "utf8").trim();
+    return value || null;
+  } catch {
+    return null;
+  }
 }
 
 function writeBootstrapAdminPassword(password: string): void {
@@ -121,7 +175,7 @@ function writeBootstrapAdminPassword(password: string): void {
     renameSync(temp, target);
   }
   try { chmodSync(target, 0o600); } catch { /* Windows ACLs may ignore POSIX modes. */ }
-  console.warn(`[DB] 管理员初始密码已写入引导文件（生产环境请尽快修改）: ${target}`);
+  console.warn(`[DB] 管理员一次性初始口令已写入引导文件（请读取后尽快修改）: ${target}`);
 }
 
 export function removeBootstrapAdminFile(): void {
@@ -136,6 +190,18 @@ export interface DefaultAdminBootstrapResult {
   passwordFile: string;
 }
 
+/**
+ * 确保存在管理员账号，并维护「引导态口令」的唯一事实源 = `bootstrap-admin.txt`。
+ *
+ * 四种情形：
+ * 1. 库中没有 admin（新库）：生成随机口令、写哈希、写引导文件，`rotated: true`。
+ * 2. admin 已完成首次改密（`password_change_required = 0`）：完全不做任何变更。
+ * 3. admin 停留在引导态且引导文件里是**有效**口令：不做任何变更（`rotated: false`）。
+ *    这一条是整改的核心 —— 重启不再把口令恢复到任何固定值，也不再吊销既有会话。
+ * 4. admin 停留在引导态，但口令事实源不可信（文件缺失/为空，或内容是历史公开口令）：
+ *    换发新的随机口令并重写文件（`rotated: true`）。覆盖两类场景：升级到本修复时的
+ *    存量 `admin123` 库（旧口令当场失效），以及备份还原/误删文件后的自愈。
+ */
 export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult> {
   const dialect = detectDialect();
   const db = getMysqlDb();
@@ -144,29 +210,40 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
     "admin"
   );
   const passwordFile = getBootstrapAdminPath();
+  const ensureApiKey = async () => {
+    await (dialect === "mariadb" ? ensureDefaultApiKey(db) : ensureDefaultApiKeySqlite(getDatabase()));
+  };
 
   if (existing) {
     if (!existing.password_change_required) {
       // 已完成首次改密（或显式沿用初始密码）的在用账号：不做任何变更
-      await (dialect === "mariadb" ? ensureDefaultApiKey(db) : ensureDefaultApiKeySqlite(getDatabase()));
+      await ensureApiKey();
       return { adminId: existing.id, rotated: false, passwordFile };
     }
-    // 停留在引导态的存量库（旧随机一次性密码残留、改密标记未清除等）：统一重置为固定初始密码
+    const filePassword = readBootstrapAdminPassword();
+    if (filePassword && !LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS.has(filePassword)) {
+      // 引导文件仍是可信的口令事实源：保持现状，不重置哈希、不重写文件。
+      await ensureApiKey();
+      return { adminId: existing.id, rotated: false, passwordFile };
+    }
+    // 口令事实源缺失或已公开泄露（历史固定口令）：换发一次性随机口令。
+    const password = generateBootstrapAdminPassword();
     await db.run(
       "UPDATE users SET password_hash = ?, password_change_required = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-      await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), existing.id
+      await hashPassword(password), existing.id
     );
-    writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
-    await (dialect === "mariadb" ? ensureDefaultApiKey(db) : ensureDefaultApiKeySqlite(getDatabase()));
+    writeBootstrapAdminPassword(password);
+    await ensureApiKey();
     return { adminId: existing.id, rotated: true, passwordFile };
   }
 
+  const newPassword = generateBootstrapAdminPassword();
   if (dialect === "mariadb") {
     const insertAdminSql = buildInsertIgnore("mariadb", "users", [
       "username", "password_hash", "name", "role_id", "is_active", "password_change_required",
     ]);
-    const result = await db.run(insertAdminSql, "admin", await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), "系统管理员", 1, 1, 1);
-    writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
+    const result = await db.run(insertAdminSql, "admin", await hashPassword(newPassword), "系统管理员", 1, 1, 1);
+    writeBootstrapAdminPassword(newPassword);
     await ensureDefaultApiKey(db);
     return { adminId: result.lastInsertRowid, rotated: true, passwordFile };
   }
@@ -176,8 +253,8 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
   const result = sqlite.prepare(
     `INSERT INTO users (username, password_hash, name, role_id, is_active, password_change_required)
      VALUES (?, ?, ?, ?, ?, ?)`
-  ).run("admin", await hashPassword(BOOTSTRAP_ADMIN_PASSWORD), "系统管理员", 1, 1, 1);
-  writeBootstrapAdminPassword(BOOTSTRAP_ADMIN_PASSWORD);
+  ).run("admin", await hashPassword(newPassword), "系统管理员", 1, 1, 1);
+  writeBootstrapAdminPassword(newPassword);
   await ensureDefaultApiKeySqlite(sqlite);
   return { adminId: Number(result.lastInsertRowid), rotated: true, passwordFile };
 }
