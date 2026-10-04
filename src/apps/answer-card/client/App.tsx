@@ -202,6 +202,10 @@ type GroupDeleteTarget = {
 
 type AutoSaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
+// 导出 PDF 前把待存改动收敛掉的最多轮数（安全 R45）。正常一轮就够；只有在「保存期间用户又改了」
+// 时才需要第二轮。有界是为了避免用户持续敲键时无限重试。
+const EXPORT_SETTLE_ATTEMPTS = 3;
+
 
 
 
@@ -769,6 +773,26 @@ function App() {
     return persistCardSnapshot(cloneCard(snapshot), revision, source);
   }
 
+  /**
+   * 导出前的收敛：等到「手上这版就是已落库那版」。
+   * 一次 PUT 期间用户可能又改了卡，persistCardSnapshot 会再排一次自动保存、却返回上一版，
+   * 所以循环复查而不是只 flush 一次（安全 R45）。
+   */
+  async function settleCardForExport(card: AnswerCard): Promise<AnswerCard | null> {
+    let settled = card;
+    for (let attempt = 0; attempt < EXPORT_SETTLE_ATTEMPTS; attempt++) {
+      if (editRevisionRef.current === savedRevisionRef.current) return settled;
+      const next = await flushPendingCardSave("pdf");
+      if (!next) return null;
+      settled = next;
+    }
+    if (editRevisionRef.current !== savedRevisionRef.current) {
+      setStatus("答题卡仍在持续改动，已取消导出：请停手一两秒后重试");
+      return null;
+    }
+    return settled;
+  }
+
   function saveCurrentCardBestEffort() {
     const snapshot = latestCardRef.current;
     if (!snapshot || editRevisionRef.current === savedRevisionRef.current) return;
@@ -1035,13 +1059,27 @@ function App() {
     let savedCard: AnswerCard | null = null;
     try {
       savedCard = await flushPendingCardSave("pdf");
+      if (savedCard) savedCard = await settleCardForExport(savedCard);
     } catch {
       return;
     }
     if (!savedCard) return;
 
+    // 安全 R45：PDF 在新标签页打开，服务端版本闸门回 409 时这边接不到，
+    // 所以先在本地比一次 revision，不一致就当场说清楚，而不是让用户打开一个渲染失败的空白页。
+    const serverCard = await fetchJson<AnswerCard>(`/api/cards/${savedCard.id}`).catch(() => null);
+    const localRevision = typeof savedCard.revision === "number" ? savedCard.revision : undefined;
+    const serverRevision = typeof serverCard?.revision === "number" ? serverCard.revision : undefined;
+    if (localRevision !== undefined && serverRevision !== undefined && localRevision !== serverRevision) {
+      setStatus(`答题卡已被其他窗口改动（本地 v${localRevision}，服务器 v${serverRevision}），请重新加载后再导出`);
+      return;
+    }
+    const revision = localRevision ?? serverRevision;
+
     // 安全（R30）：PDF 地址走单次资源票据（可 await，不必把主令牌放进 URL）。
-    const pdfUrl = await ticketedMediaUrl(`/api/cards/${savedCard.id}/pdf?v=${encodeURIComponent(savedCard.updatedAt)}`);
+    const pdfUrl = await ticketedMediaUrl(
+      `/api/cards/${savedCard.id}/pdf` + (revision === undefined ? "" : `?v=${revision}`)
+    );
     await showExportCheck(savedCard, pdfUrl);
   }
 

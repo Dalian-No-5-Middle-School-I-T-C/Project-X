@@ -165,6 +165,10 @@ import {
 import { assertScoresPublishable } from "../../../server/services/examPublication";
 import { ApiError } from "../../../server/api-error";
 import { assetsDir, cardAssetsDir, dataDir, ensureDataDirs, layoutPath, rootDir, safeId } from "./storage";
+import {
+  CARD_REVISION_INVALID, CARD_REVISION_MISMATCH,
+  pdfRevisionInvalidMessage, pdfRevisionMismatchMessage, resolvePdfRevisionGate
+} from "./cardRevision";
 
 
 
@@ -302,15 +306,18 @@ async function saveCardWithLayout(cardRepo: CardRepository, card: AnswerCard, cr
   const layout = buildLayout(normalized);
   const exists = await cardRepo.findById(normalized.id);
 
+  let revision: number;
   if (exists) {
-    await cardRepo.updateCard(normalized);
+    revision = await cardRepo.updateCard(normalized);
   } else {
     await cardRepo.createCard(normalized, createdBy);
-    await cardRepo.updateCard(normalized);
+    revision = await cardRepo.updateCard(normalized);
   }
 
   await writeLayoutDocument(normalized.id, layout);
-  return normalized;
+  // 回给前端的 revision 一律取落库后的值：normalizeCard 是展开请求体的，
+  // 直接返回 normalized 会把调用方自带的版本号原样吐回去（安全 R45）。
+  return { ...normalized, revision };
 }
 
 async function prepareLayoutForCard(cardRepo: CardRepository, card: AnswerCard): Promise<string> {
@@ -1756,6 +1763,25 @@ export async function createApp(): Promise<express.Express> {
       const card = await cardRepo.findById(safeId(paramValue(req.params.cardId)));
       if (!card) {
         res.status(404).json({ message: "答题卡不存在" });
+        return;
+      }
+
+      // 安全 R45：把这次导出绑到「调用方认为已经保存好」的那一版。闸门必须在 createPdf 之前判定——
+      // 否则自动保存竞态会让老师打印到旧版式的纸，而阅卷用的是新版式的坐标。
+      const currentRevision = Number(card.revision ?? 0);
+      res.setHeader("X-Card-Revision", String(currentRevision));
+      const revisionGate = resolvePdfRevisionGate(currentRevision, req.query.v);
+      if (revisionGate.decision === "invalid") {
+        res.status(400).json({ code: CARD_REVISION_INVALID, message: pdfRevisionInvalidMessage(revisionGate.raw) });
+        return;
+      }
+      if (revisionGate.decision === "mismatch") {
+        res.status(409).json({
+          code: CARD_REVISION_MISMATCH,
+          message: pdfRevisionMismatchMessage(revisionGate.requested, revisionGate.current),
+          requestedRevision: revisionGate.requested,
+          currentRevision: revisionGate.current
+        });
         return;
       }
 

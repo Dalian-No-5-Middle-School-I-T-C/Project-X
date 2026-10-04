@@ -152,6 +152,15 @@
 - **知识点弱项诊断**（v1.8.0）：成绩分析 AI 可通过知识点维度诊断班级薄弱环节，按得分率排序，"勾股定理得分率 62%" 级别精准定位
 - **系统 AI 配置**（v1.8.0）：AI 提供商改为管理员统一配置（`ai_providers.is_system=1`），教师无需了解 API，账号设置仅 admin 可见
 - **导出检查**（v1.8.0）：PDF 导出前三步检查卡片——分值验证 → 原卷预览（按文件类型内联渲染：图片/img+缩放、PDF/iframe、DOCX/Office链接）→ 知识点分析（内联 AI 分析+编辑），三步含「← 上一步」回退，全部 ✓ 方可导出，侧栏橙色标识未上传原卷的考试
+- **打印件版本绑定**（安全 R45）：自动保存是 1200ms 防抖的，而 PDF 从库里当前值渲染，
+  所以「点导出时手上那一版」和「渲染时库里那一版」可以不是同一版——纸上的题格与阅卷坐标布局对不上且无提示。
+  现在每次保存把 `answer_cards.revision` +1（**自增写在 SQL 里**，请求体自带的值一律不采信），
+  导出前先把待存改动有界收敛（≤3 轮，用户持续敲键时明确放弃而不是无限重试）、再本地比对一次版本，
+  `/pdf` 于渲染**之前**过闸门：版本不等 409 `CARD_REVISION_MISMATCH`、取值非法 400 `CARD_REVISION_INVALID`，
+  三种结果都回 `X-Card-Revision`。版本令牌**只能是 `revision`**，不能用 `updated_at`——它是 `CURRENT_TIMESTAMP`
+  写入的秒级值，同一秒内的两次保存分不开。`?v=` 可省略（部署冒烟与修复基准工具不带它，不经过防抖），
+  但传了就必须是合法整数。闸门只管「导出那一刻」，**不解决多写者丢更新**：两个窗口同改一张卡，
+  后保存的仍会覆盖先保存的，要做严需要 PUT 层乐观锁（`If-Match`），那是产品决策、当前未启用。
 - **原卷预览**（v1.8.0）：放大 Modal 支持 ± 缩放（25%~300%），按钮实时显示当前倍率，`?format=image` 参数避免图片/PDF格式冲突
 
 ### 账户与安全
@@ -668,11 +677,11 @@ Project-X/
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET/POST` | `/api/cards` | 答题卡列表 / 创建（含 subject/title/examDate/englishListening/chineseChoicePlacement） |
-| `GET/PUT/DELETE` | `/api/cards/:id` | 答题卡详情 / 保存 / 删除（引用考试时支持解绑或联删） |
+| `GET/PUT/DELETE` | `/api/cards/:id` | 答题卡详情 / 保存 / 删除（引用考试时支持解绑或联删；返回 `revision`，每次保存 +1，只由服务端自增） |
 | `GET` | `/api/cards/:id/export` | 导出为 .projectx-card.json（含答案+配图+实时生成布局） |
 | `POST` | `/api/cards/import` | 导入答题卡 |
 | `GET` | `/api/cards/:id/layout` | 实时生成布局坐标 |
-| `GET` | `/api/cards/:id/pdf` | 导出 PDF |
+| `GET` | `/api/cards/:id/pdf` | 导出 PDF。可选 `?v=<revision>` 做版本闸门：与库里当前版本不一致返回 409 `CARD_REVISION_MISMATCH`，取值非法返回 400 `CARD_REVISION_INVALID`；省略则照常渲染（安全 R45，见下） |
 | `POST` | `/api/cards/:id/recognition` | 单张识别（客观+主观） |
 | `POST` | `/api/cards/:id/grading` | 批量识别判分（支持 examId 落库） |
 | `POST` | `/api/cards/:id/assets` | 上传资源图片 |
@@ -728,8 +737,8 @@ Project-X/
 | `POST` | `/api/users/import-csv` | 批量导入学生/教师（CSV/Excel） |
 | `GET` | `/api/export/students` | 导出学生账密 Excel |
 | `GET` | `/api/export/teachers` | 导出教师账密 Excel |
-| `GET` | `/api/sponsor` | 赞助页配置（各渠道收款码 URL） |
-| `GET` | `/api/sponsor/qr/:channelId` | 收款码图片 |
+| `GET` | `/api/sponsor` | 赞助页配置（各渠道收款码 URL）**——按设计匿名可读**，内容只有运营方自己的收款渠道，不含任何校务数据；要收口请把渠道 `enabled` 置 `false` 或在反代屏蔽 `/api/sponsor`（安全 R36） |
+| `GET` | `/api/sponsor/qr/:channelId` | 收款码图片（同上，匿名；文件名经 `path.basename` + 目录前缀双重约束，不能穿越到 qr 目录之外） |
 | `GET/PUT/DELETE` | `/api/exams/:id/assigned-formula` | 赋分公式配置 |
 | `POST` | `/api/exams/:id/recalculate-assigned` | 批量重新计算赋分 |
 | `GET/POST` | `/api/exam-groups` | 大考组列表 / 创建 |

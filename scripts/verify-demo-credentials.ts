@@ -83,7 +83,7 @@ interface CountRow {
 
 const { initializeDatabase, ensureDefaultAdmin, closeDatabase, hashPassword, verifyPassword } =
   await import("../src/server/db/index");
-const { getMysqlDb, initMariadbSchema } = await import("../src/server/db/mysql");
+const { getMysqlDb, initMariadbSchema, resetAdapter } = await import("../src/server/db/mysql");
 const { decryptField } = await import("../src/server/lib/field-crypto");
 const { ROLE_IDS } = await import("../src/server/auth/permissions");
 const { seedDemoData, clearDemoData, DEMO_CARD_IDS } = await import("../src/server/services/DemoDataService");
@@ -429,7 +429,10 @@ ok(
   "全程收尾：真实考试仍在，演示数据已清空"
 );
 
-closeDatabase();
+// closeDatabase() 只关 SQLite 实例；MariaDB 模式下真正持有连接的是 mariadbPool，
+// 必须 resetAdapter() 才会 end()，否则进程挂在空闲连接上退不出去，CI 步骤会一直等到超时。
+resetAdapter();
+if (!maria) closeDatabase();
 console.log(
   `\n────────────────────────────────────────\n结果（${maria ? "MariaDB" : "SQLite"}）：\x1b[32m${passed} 通过\x1b[0m，\x1b[31m${failed} 失败\x1b[0m`
 );

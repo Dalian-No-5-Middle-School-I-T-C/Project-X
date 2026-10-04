@@ -111,6 +111,35 @@ sudo -u nobody test -r /var/lib/project-x/projectx.db && echo "数据目录对 o
 会让 V8 的 JIT 起不来，`SystemCallFilter=@system-service` 在 Node/Python 版本漂移下容易变成生产崩溃循环
 （需要时用 drop-in 打开，再用 `systemd-analyze security project-x-server` 复核）。
 
+### 2.4 换机器 / 搬数据目录：整目录一起搬，搬完对数（安全 R39）
+
+卡片的**元数据**（标题、题块、分值、标准答案）在数据库里，而**坐标布局 JSON、上传的配图、原卷文件、
+答案卷、识别裁图全在答题卡数据目录下**（`ANSWER_CARD_DATA_DIR`，默认 `<工作目录>/data/answer-card`，
+其下 `cards/` `layouts/` `assets/` `papers/` `answer-keys/` `recognition/crops/`）。
+只改环境变量或换了工作目录、却没有把目录一起搬走，表现不是报错而是
+「列表里答题卡都在，点进去原卷 404、配图不见了」——看起来像数据丢了。
+
+```bash
+# 1) 停服，整目录搬迁（不要只改环境变量）
+sudo systemctl stop project-x-server
+sudo mv /var/lib/project-x/answer-card /data/project-x/answer-card
+
+# 2) 新位置写进 unit（或 drop-in），不要让数据目录跟着工作目录走
+sudo systemctl edit project-x-server   # 加 Environment=ANSWER_CARD_DATA_DIR=/data/project-x/answer-card
+sudo chown -R projectx:projectx /data/project-x/answer-card
+sudo chmod -R g+rX,o-rwx /data/project-x/answer-card
+sudo systemctl daemon-reload && sudo systemctl start project-x-server
+
+# 3) 对数：两个数字应当同量级（layouts 里每张已保存的卡各一份）
+ls /data/project-x/answer-card/layouts | wc -l
+sqlite3 /var/lib/project-x/projectx.db "SELECT COUNT(*) FROM answer_cards"   # MariaDB 同样执行 SELECT COUNT(*) FROM answer_cards;
+```
+
+服务端**故意不做**「自动去找另一个数据目录」或「目录空着就告警」这两件事，与 R31 同一个理由：
+静默改用一个别的数据目录，和静默新建一个空目录，是同一类错误而且更难发现；而「新目录是空的、
+库里却有 N 张卡」这个信号对**迁移过来的全新装**同样成立，按它告警会在最该安静的场合喊狼。
+判据要可靠，得先在数据目录里落一份清单文件（记录卡号集合），有了它才能谈启动时拒绝或警告。
+
 ---
 
 ## 三、前端网页部署
@@ -323,6 +352,9 @@ GET /api/analysis/exams/1/questions
 7. **最小权限运行**（安全 R37）：后端不要用 root 常驻。Ubuntu 包里的 `sudo systemd/install.sh`
    会建专用系统账号、把数据目录置 `0750` 并安装带沙箱指令的 systemd 单元；升级重跑同一条命令即可，
    详见 2.3 节。手工 `sudo node dist/server/index.mjs` 或 `sudo ./start.sh` 的部署应改为该脚本安装。
+8. **数据目录跟着库一起走**（安全 R39）：答题卡的原卷、配图与坐标布局在 `ANSWER_CARD_DATA_DIR` 下，
+   不在数据库里。只改环境变量或换工作目录而不搬目录，表现为「答题卡还在、文件打不开」而不是报错；
+   `PROJECTX_DB_PATH` 与 `ANSWER_CARD_DATA_DIR` 都要显式写进 unit，搬完按 2.4 节对数。
 
 ---
 
