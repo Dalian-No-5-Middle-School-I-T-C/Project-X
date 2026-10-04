@@ -2,6 +2,14 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-04：扫描/判分上传上限改为可配置（安全 R22/R28 追加）
+
+- **为什么要改**：上一节把限制值集中到 `src/shared/scanUploadLimits.ts` 时按**硬编码常量**交付，理由是「少一个能配错的开关」。实际场景不成立——300dpi 整场联考一次提交、单页原卷体积随扫描仪设置浮动，把数字写死意味着现场要么上传被拒、要么只能改代码发版。主理人要求改成可配置，本轮据此返工。
+- **机制（默认值 + 环境变量覆盖 + 安全天花板三档）**：`LIMIT_DEFS` 描述八档（键名、环境变量名、单位、默认值、天花板），`resolveScanUploadLimits(env)` 是纯函数解析器：未设置用默认；非数字 / 0 / 负数**回落默认值**并记一条 `[upload-limits]` 告警；超过天花板**夹紧到天花板**并记告警；合法覆盖则采纳并在告警里写明是哪一档。体积类环境变量按 **MiB** 填（`PROJECTX_UPLOAD_MAX_SCAN_IMAGE_MIB`、`..._CROP_IMAGE_MIB`、`..._CROPS_TOTAL_MIB`、`..._PAGE_REQUEST_TOTAL_MIB`、`..._BATCH_TOTAL_MIB`），数量类按个数填（`..._MAX_SESSION_PAGES`、`..._MAX_CROPS_PER_REQUEST`、`..._MAX_BATCH_FILES`）。这样「可配」不等于「可关」——一个拼错的数字只会退回默认值，不会把保护整档取消。
+- **对外接口保持不变**：八个导出名（`MAX_SCAN_IMAGE_BYTES` 等）仍是编译期常量语义，取值来自解析结果，`scanner-upload.ts` 与答题卡服务端零改动；新增 `describeScanUploadLimits()` 一行摘要与 `SCAN_UPLOAD_ENV_VARS` / `DEFAULT_SCAN_UPLOAD_LIMITS`，摘要打在 `startServer()` 的启动日志里（沿用 F-12-8 的脱敏口径，**没有**塞进公开的 `/api/app/health`）。解析发生在导入期且不抛错，避免「一个错别字导致服务起不来」。
+- **验证**：`npm run typecheck` 通过；`npm run verify:security-critical` **196 项全过、0 失败**（新增 6 条解析器断言：脚本清理的 `PROJECTX_UPLOAD_*` 名单与限制表逐一对应、未配置时等于默认值且无告警、合法覆盖按 MiB/个数采纳并逐项留痕、非法值三例全部回落默认、超天花板两例被夹紧、启动摘要按生效值输出）；反向对照用 `tsx -e` 实跑一次三层配置（`MAX_SESSION_PAGES=999999` → 夹紧 2000、`MAX_CROPS_PER_REQUEST=oops` → 回落 50、`MAX_BATCH_TOTAL_MIB=2` → 生效 2 MiB），启动摘要如实显示 `会话页数 ≤2000 … 累计2MiB`；并在宿主机预置 `PROJECTX_UPLOAD_MAX_SESSION_PAGES=1 MAX_CROP_IMAGE_MIB=9999` 的污染环境下重跑整套，仍是 196/0（测试自行清场）。`scanner-image-limits-smoke`（7 例真实 HTTP）、`verify:scanner-dpi` 退出码 0。本档改动不涉及 SQL，MariaDB 侧沿用上一节的 11 节 PASS。
+- **文档**：README 的「API 接口一览」新增八档默认值/天花板对照表（顺带修掉了此前把接口表格拦腰截断的引用块），`readus/SCANNER-SETUP.md` 的 400/413 排障行补充「默认值可放宽、天花板、启动日志确认」的现场操作口径。
+
 ## 2026-10-04：扫描接入与上传预算（安全审查整改第二批 · R02/R04/R07/R22/R28）
 
 - **R02 已完成会话的上传令牌可重放**：`POST /api/scanner/upload/sessions/:id/pages` 只校验令牌属于该会话，页面 `ocr_status` 变成 `completed` 之后旧令牌仍然可用；切块端点 `/pages/:recordId/crops` 同样不看会话终态。持有历史令牌（日志、截屏、被回收的扫描机）即可覆盖已判分页面的图片与识别结果，把「已完成扫描」变成对既有成绩的静默改写。现两端点在会话 `status='completed'` 或该页 `ocr_status='completed'` 时返回 409 并明确提示「请新建扫描会话后重新上传」。`/complete` 自身的语义未改动——既有设计依赖关闭后的回执完成补交与切块关联，收紧它会更危险。

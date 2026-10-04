@@ -675,14 +675,34 @@ Project-X/
 | `GET`             | `/api/scanner/upload/sessions/:id/status`   | 查询扫描状态 |
 | `GET`             | `/api/scanner/upload/records/:recordId/image` | 读取扫描原卷图片（按考试范围授权，越权 403） |
 | `GET`             | `/api/scanner/scan/:sessionId`、`GET /api/scanner/record/:recordId` | 扫描会话/记录详情（仅返回 `hasImage`，服务端绝对路径不外发） |
-
-> **扫描/判分上传的硬限制**（安全 R22/R28，单一来源 `src/shared/scanUploadLimits.ts`）：单张原卷 50 MiB；单个会话 1–200 页；切块单次 50 张 / 单张 12 MiB / 累计 160 MiB；批量判分与识别上传单次 300 张 / 累计 1 GiB。超限分别返回 400（数量、页码）或 413（单张体积、累计字节）。
 | `GET/POST/PUT/DELETE` | `/api/admin/api-keys` | API Key 管理（管理员） |
 | `GET` | `/api/ladder/config` | 天梯开关状态 |
 | `PUT` | `/api/ladder/config` | 管理员设置天梯开关 |
 | `GET` | `/api/ladder/exams/:id` | 单场考试天梯数据 |
 | `GET` | `/api/ladder/exam-groups/:id` | 大考组天梯数据 |
 | `GET` | `/api/ladder/cross-exam` | 跨考累计天梯数据（?mode=week\|selected\|group） |
+
+> **扫描/判分上传限制**（安全 R22/R28，单一来源 `src/shared/scanUploadLimits.ts`）
+>
+> 默认档位：单张原卷 50 MiB；单个会话 1–200 页；切块单次 50 张 / 单张 12 MiB / 累计 160 MiB；
+> 单页上传请求累计 64 MiB；批量判分与识别上传单次 300 张 / 累计 1 GiB。
+> 超限分别返回 400（数量、页码）或 413（单张体积、累计字节，累计字节超限的 `code` 为 `UPLOAD_BUDGET_EXCEEDED`）。
+>
+> 各档位可用环境变量调整（体积类按 **MiB** 填写，数量类按个数），但只能在默认值与「安全天花板」之间放宽；
+> 非法值（非数字、0、负数）回落默认值，超过天花板的值被夹紧，两者都会在启动日志留一行 `[upload-limits]` 说明：
+>
+> | 环境变量 | 默认 | 天花板 |
+> |----------|------|--------|
+> | `PROJECTX_UPLOAD_MAX_SCAN_IMAGE_MIB` | 50 | 512 |
+> | `PROJECTX_UPLOAD_MAX_SESSION_PAGES` | 200 | 2000 |
+> | `PROJECTX_UPLOAD_MAX_CROPS_PER_REQUEST` | 50 | 500 |
+> | `PROJECTX_UPLOAD_MAX_CROP_IMAGE_MIB` | 12 | 128 |
+> | `PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB` | 160 | 2048 |
+> | `PROJECTX_UPLOAD_MAX_PAGE_REQUEST_TOTAL_MIB` | 64 | 1024 |
+> | `PROJECTX_UPLOAD_MAX_BATCH_FILES` | 300 | 5000 |
+> | `PROJECTX_UPLOAD_MAX_BATCH_TOTAL_MIB` | 1024 | 8192 |
+>
+> 当前生效值会打在服务启动日志的 `[upload-limits] …` 一行，改完重启看这一行即可确认。
 
 ---
 

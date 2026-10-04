@@ -13,11 +13,20 @@ process.env.PROJECTX_ENABLE_SCANNER = "false";
 process.env.PROJECTX_ENABLE_SCANNER_CLIENT_API = "true";
 // 单账号并发进度流上限收紧到 2，便于断言「换 batchId 也绕不过」（PR280 评审 P1）
 process.env.ANSWER_CARD_MAX_PROGRESS_STREAMS_PER_USER = "2";
+// R22/R28 上传上限覆盖位：宿主机若设置了任一档位，本脚本所有「按默认上限边界」的断言都会失真，
+// 因此必须先清掉。这份名单与 shared/scanUploadLimits 的 LIMIT_DEFS 靠下面的一致性断言锁定。
+const uploadEnvVarsClearedHere = [
+  "PROJECTX_UPLOAD_MAX_SCAN_IMAGE_MIB", "PROJECTX_UPLOAD_MAX_SESSION_PAGES",
+  "PROJECTX_UPLOAD_MAX_CROPS_PER_REQUEST", "PROJECTX_UPLOAD_MAX_CROP_IMAGE_MIB",
+  "PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB", "PROJECTX_UPLOAD_MAX_PAGE_REQUEST_TOTAL_MIB",
+  "PROJECTX_UPLOAD_MAX_BATCH_FILES", "PROJECTX_UPLOAD_MAX_BATCH_TOTAL_MIB"
+];
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST",
   // R01 逃生阀：宿主机若已设置该变量会污染随机口令断言，测试内自行显式设置/清除
-  "PROJECTX_ADMIN_PASSWORD"
+  "PROJECTX_ADMIN_PASSWORD",
+  ...uploadEnvVarsClearedHere
 ]) delete process.env[key];
 
 let passed = 0;
@@ -423,7 +432,8 @@ async function main(): Promise<void> {
 
     section("扫描接入：令牌重放、越权读取与上传预算（安全 R02/R04/R07/R22/R28）");
     const {
-      MAX_SCAN_SESSION_PAGES, MAX_CROP_IMAGE_BYTES, MAX_CROPS_PER_REQUEST
+      MAX_SCAN_SESSION_PAGES, MAX_CROP_IMAGE_BYTES, MAX_CROPS_PER_REQUEST,
+      resolveScanUploadLimits, describeScanUploadLimits, DEFAULT_SCAN_UPLOAD_LIMITS, SCAN_UPLOAD_ENV_VARS
     } = await import("../src/shared/scanUploadLimits");
     const { parseScanSessionPageCount } = await import("../src/server/routes/scanner-upload");
     const { persistAnswerBlockCrops, isInsideDir } = await import("../src/server/services/AnswerBlockCropService");
@@ -480,6 +490,46 @@ async function main(): Promise<void> {
       "缺省页数仍按 1 页处理，小数与负数被判定为非法");
     db.prepare("DELETE FROM twain_scan_records WHERE session_id=?").run(maxPageSession.sessionId);
     db.prepare("DELETE FROM twain_scan_sessions WHERE id=?").run(maxPageSession.sessionId);
+
+    // ── 上限可配置（安全 R22/R28 的三档设计）：默认值 / 环境变量覆盖 / 非法回落 / 天花板夹紧
+    check(SCAN_UPLOAD_ENV_VARS.slice().sort().join() === uploadEnvVarsClearedHere.slice().sort().join()
+      && SCAN_UPLOAD_ENV_VARS.every((name) => !(name in process.env)),
+      "脚本清理的 PROJECTX_UPLOAD_* 名单与限制表逐一对应，宿主机变量不会渗入默认上限断言");
+    const asString = (limits: Record<string, number>) => JSON.stringify(limits);
+    const untouched = resolveScanUploadLimits({});
+    check(asString(untouched.limits) === asString(DEFAULT_SCAN_UPLOAD_LIMITS) && untouched.notices.length === 0,
+      "全部未配置时按默认上限生效且无告警（原卷 50MiB / 会话 200 页 / 切块 50 张·12MiB·160MiB / 批量 300 张·1GiB）");
+    const overridden = resolveScanUploadLimits({
+      PROJECTX_UPLOAD_MAX_SESSION_PAGES: "500",
+      PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB: "512",
+      PROJECTX_UPLOAD_MAX_CROP_IMAGE_MIB: "1.5"
+    });
+    check(overridden.limits.maxScanSessionPages === 500
+      && overridden.limits.maxCropsTotalBytes === 512 * 1024 * 1024
+      && overridden.limits.maxCropImageBytes === Math.round(1.5 * 1024 * 1024)
+      && overridden.notices.length === 3 && overridden.notices.every((n) => n.includes("覆盖")),
+      "合法的环境变量按 MiB/个数被采纳，并逐项留下覆盖记录");
+    const invalid = resolveScanUploadLimits({
+      PROJECTX_UPLOAD_MAX_SCAN_IMAGE_MIB: "abc",
+      PROJECTX_UPLOAD_MAX_BATCH_FILES: "0",
+      PROJECTX_UPLOAD_MAX_PAGE_REQUEST_TOTAL_MIB: "-8"
+    });
+    check(asString(invalid.limits) === asString(DEFAULT_SCAN_UPLOAD_LIMITS)
+      && invalid.notices.length === 3
+      && invalid.notices.every((n) => n.includes("按默认值")),
+      "非数字、0、负数一律回落默认值（打错一个数字不会把保护关掉）");
+    const clamped = resolveScanUploadLimits({
+      PROJECTX_UPLOAD_MAX_SESSION_PAGES: "999999",
+      PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB: "999999"
+    });
+    check(clamped.limits.maxScanSessionPages === 2000
+      && clamped.limits.maxCropsTotalBytes === 2048 * 1024 * 1024
+      && clamped.notices.length === 2 && clamped.notices.every((n) => n.includes("天花板")),
+      "超过安全天花板的配置被夹紧而不是照单全收（放宽有上界）");
+    const describeText = describeScanUploadLimits();
+    check(describeText.includes("50MiB") && describeText.includes("≤200")
+      && describeText.includes("≤300") && describeText.includes("1024MiB"),
+      "启动摘要按当前生效值输出，运维无需读代码即可确认闸门档位");
 
     // ── R04：记录/会话级接口收敛到考试范围（critical-card 被可见/越权两场考试复用）
     const r04Session = await newScanSession();

@@ -6,6 +6,7 @@ import {
   MAX_SCAN_PAGE_REQUEST_TOTAL_BYTES,
   MAX_GRADING_BATCH_FILES,
   MAX_GRADING_BATCH_TOTAL_BYTES,
+  describeScanUploadLimits,
 } from "../../../shared/scanUploadLimits";
 import { requestUploadBudget } from "../../../server/lib/uploadBudget";
 import { cpus } from "node:os";
@@ -2829,6 +2830,9 @@ export async function startServer(port = Number(process.env.PORT ?? 5174)): Prom
       (server as ProjectXServer).actualPort = actualPort;
       (server as ProjectXServer).localUrl = `http://127.0.0.1:${actualPort}`;
       console.log(`Answer card designer API running at http://127.0.0.1:${actualPort}`);
+      // 安全（R22/R28）：把当前生效的上传闸门打在启动日志里，现场调过 PROJECTX_UPLOAD_* 后
+      // 只需看这一行即可确认「实际生效值」，而不是去猜默认值有没有被一个拼错的数字带跑。
+      console.log(`[upload-limits] ${describeScanUploadLimits()}`);
       logWechatSubscriptionStatus();
       startLlmClientSidecar();
       const shutdown = () => {
