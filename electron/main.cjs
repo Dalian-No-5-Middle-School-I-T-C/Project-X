@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, shell } = require("electron");
+const { app, BrowserWindow, dialog, session, shell } = require("electron");
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
@@ -231,6 +231,37 @@ async function resolveStartUrl() {
   return startLocalServer();
 }
 
+/**
+ * 安全（R23）：设备能力一律默认拒绝。
+ *
+ * 扫描端加载的是**配置好的远端 URL**（PROJECTX_SERVER_MODE=remote + PROJECTX_REMOTE_URL），
+ * 而 Electron 对权限请求的默认行为是弹窗询问、对权限**检查**（`navigator.permissions.query`、
+ * `navigator.mediaDevices.enumerateDevices`）则直接按已授予返回——同源内容一旦被攻陷，
+ * 摄像头/麦克风/剪贴板/地理位置与设备清单都在可拿范围内。
+ * 窗口导航限制（`setWindowOpenHandler`）挡不住这条通路：它管「去哪个页面」，不管「页面能用什么设备」。
+ *
+ * 这里全部拒绝是有依据的：本机扫描走主进程的 TWAIN 桥（IPC），页面不需要任何媒体/设备权限；
+ * 判分与预览都是服务端渲染的图片/PDF。将来确有需要时，只在这里按「能力 + 可信来源」白名单放行，
+ * 并把放行的理由写进 readus/SCANNER-SETUP.md，不要改回默认行为。
+ */
+function installDevicePermissionPolicy() {
+  const target = session.defaultSession;
+  target.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    appendLog("WARN", `[Electron] 已拒绝权限请求 permission=${permission} url=${details?.requestingUrl ?? "unknown"}`);
+    callback(false);
+  });
+  target.setPermissionCheckHandler((_webContents, permission, requestingOrigin) => {
+    // 检查类调用频率可能很高（页面每次枚举设备都会问），只在被拒绝时记一次日志由日志侧自行去重。
+    appendLog("WARN", `[Electron] 已拒绝权限检查 permission=${permission} origin=${requestingOrigin}`);
+    return false;
+  });
+  // USB/HID/串口/蓝牙的设备枚举同样默认拒绝：不给设备清单，也就拿不到设备指纹。
+  target.setDevicePermissionHandler((details) => {
+    appendLog("WARN", `[Electron] 已拒绝设备权限 deviceType=${details?.deviceType} origin=${details?.origin}`);
+    return false;
+  });
+}
+
 async function createWindow() {
   const baseUrl = await resolveStartUrl();
 
@@ -275,6 +306,27 @@ async function createWindow() {
     return { action: "deny" };
   });
 
+  // 顺带收口（本批发现的存量缺口，非 R23 要求）：主框架导航此前完全不受限——
+  // setWindowOpenHandler 只管「新窗口」，页面内 location 跳转可以走到任意来源，
+  // 之后所有请求都出自那个来源，权限默认拒绝就成了唯一防线。现按同源放行，
+  // 跨源 https 交系统浏览器打开（与新窗口同一套口径），其余协议一律拦下。
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    try {
+      const parsed = new URL(url);
+      if (baseOrigin && parsed.origin === baseOrigin) return;
+      event.preventDefault();
+      if (ALLOWED_EXTERNAL_SCHEMES.has(parsed.protocol)) {
+        appendLog("WARN", `[Electron] 主框架跨源导航已改由系统浏览器打开: ${url}`);
+        shell.openExternal(url);
+      } else {
+        appendLog("WARN", `[Electron] 主框架导航已拒绝: ${url}`);
+      }
+    } catch {
+      event.preventDefault();
+      appendLog("WARN", `[Electron] 主框架导航已拒绝（URL 无法解析）: ${url}`);
+    }
+  });
+
   // ── 黑匣子诊断：渲染进程日志落盘 ──
   mainWindow.webContents.on("console-message", (_event, level, message, line, sourceId) => {
     const lvl = level === 0 ? "INFO" : level === 1 ? "WARN" : "ERROR";
@@ -306,6 +358,8 @@ configureAppIdentity();
 
 app.whenReady().then(async () => {
   try {
+    // 必须在加载任何页面之前装好（安全 R23）：权限策略按会话生效，晚装就有一个窗口期。
+    installDevicePermissionPolicy();
     await createWindow();
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

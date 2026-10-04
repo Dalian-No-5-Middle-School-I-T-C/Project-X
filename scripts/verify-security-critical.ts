@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
@@ -2238,6 +2239,124 @@ async function main(): Promise<void> {
       check(isMultiSelectMode("indefinite") === true && isMultiSelectMode("indeterminate") === true
         && isMultiSelectMode("single") === false,
         "多选判定不再漏掉 canonical 的 indefinite 拼写");
+    }
+
+    section("Electron 渲染进程权限默认拒绝（安全 R23）与库路径诊断（安全 R31）");
+    {
+      // ── R23：三个权限处理器一律拒绝 + 主框架跨源导航收口 ──
+      const electronMain = readFileSync(path.resolve("electron/main.cjs"), "utf8");
+      execFileSync(process.execPath, ["--check", path.resolve("electron/main.cjs")], { windowsHide: true });
+      check(true, "electron/main.cjs 语法可解析（node --check）");
+
+      const policyBody = electronMain.slice(
+        electronMain.indexOf("function installDevicePermissionPolicy()"),
+        electronMain.indexOf("function createWindow"),
+      );
+      check(policyBody.length > 0 && policyBody.indexOf("function createWindow") === -1,
+        "installDevicePermissionPolicy 定义在 createWindow 之前");
+      check(/setPermissionRequestHandler\([\s\S]*?callback\(false\);/.test(policyBody)
+        && !/callback\(true\)/.test(policyBody),
+        "权限请求处理器一律 callback(false)（无放行分支）");
+      check(/setPermissionCheckHandler\([\s\S]*?return false;/.test(policyBody)
+        && /setDevicePermissionHandler\([\s\S]*?return false;/.test(policyBody),
+        "权限检查与设备授权处理器一律返回 false（USB/串口/摄像头等不落到默认放行）");
+      const readyBody = electronMain.slice(electronMain.indexOf("app.whenReady().then(async () => {"));
+      check(readyBody.indexOf("installDevicePermissionPolicy();") > -1
+        && readyBody.indexOf("installDevicePermissionPolicy();") < readyBody.indexOf("await createWindow();"),
+        "权限策略在 createWindow 之前安装（窗口加载页面时策略已生效）");
+      check(/contextIsolation: true/.test(electronMain) && /nodeIntegration: false/.test(electronMain)
+        && /sandbox: true/.test(electronMain),
+        "webPreferences 仍是 contextIsolation + sandbox + 关闭 nodeIntegration");
+      const navBody = electronMain.slice(electronMain.indexOf('mainWindow.webContents.on("will-navigate"'));
+      check(navBody.indexOf("event.preventDefault();") > -1
+        && /const ALLOWED_EXTERNAL_SCHEMES = new Set\(\["https:"\]\)/.test(electronMain),
+        "主框架跨源导航被拦下，只有 https 交系统浏览器（与 setWindowOpenHandler 同一套口径）");
+      check(!/webContents\.on\("will-navigate"[\s\S]{0,200}?return;[\s\S]{0,80}?\}\);/.test(electronMain)
+        && !/setWindowOpenHandler\(\(\) => \(\{ action: "allow" \}\)\)/.test(electronMain),
+        "导航/新窗口处理没有退化成无条件放行");
+
+      // ── R31：默认库路径依赖 cwd，启动时必须把「用哪个库、是否存在」说出来 ──
+      const { diagnoseProjectDbPath, candidateProjectDbPaths, resolveProjectDbPath } = await import("../src/server/db/paths");
+      const savedDbPath = process.env.PROJECTX_DB_PATH;
+      const probeRoot = mkdtempSync(path.join(tempDir, "dbpath-"));
+      // 造一个「同机另有库」的目录树：probeRoot/data/projectx.db 与 probeRoot/app/data/projectx.db
+      mkdirSync(path.join(probeRoot, "data"), { recursive: true });
+      writeFileSync(path.join(probeRoot, "data", "projectx.db"), "");
+      const appDir = path.join(probeRoot, "app", "srv", "db");
+      mkdirSync(appDir, { recursive: true });
+      mkdirSync(path.join(probeRoot, "app", "data"), { recursive: true });
+      writeFileSync(path.join(probeRoot, "app", "data", "projectx.db"), "");
+
+      const candidates = candidateProjectDbPaths(appDir);
+      check(candidates.length === 4 && candidates.every((c) => path.isAbsolute(c) && c.endsWith(path.join("data", "projectx.db"))),
+        `向上四级探测候选库，全部为绝对路径（实际 ${candidates.length} 个）`);
+      check(candidates.includes(path.join(probeRoot, "data", "projectx.db"))
+        && candidates.includes(path.join(probeRoot, "app", "data", "projectx.db")),
+        "候选包含各级 data/projectx.db（不写死任何厂商路径）");
+
+      try {
+        // 显式指定 + 文件存在 → 无提示
+        process.env.PROJECTX_DB_PATH = path.join(probeRoot, "data", "projectx.db");
+        const explicitOk = diagnoseProjectDbPath({ searchFromDir: appDir });
+        check(explicitOk.explicit === true && explicitOk.exists === true && explicitOk.warnings.length === 0,
+          "显式 PROJECTX_DB_PATH 指向既有库 → 不产生提示");
+
+        // 显式指定但文件不存在 → 必须提示「将新建空库」
+        process.env.PROJECTX_DB_PATH = path.join(probeRoot, "data", "typo.db");
+        const explicitMissing = diagnoseProjectDbPath({ searchFromDir: appDir });
+        check(explicitMissing.exists === false
+          && explicitMissing.warnings.some((w) => w.includes("PROJECTX_DB_PATH") && w.includes("不存在")),
+          "显式路径指向不存在的文件 → 提示将新建空库（路径拼写/挂载点复核）");
+
+        // 未显式指定 + cwd 下没有库 → 必须同时提示「新建空库」与「同机另发现候选」
+        delete process.env.PROJECTX_DB_PATH;
+        const previousCwd = process.cwd();
+        process.chdir(mkdtempSync(path.join(tempDir, "cwd-")));
+        try {
+          const implicit = diagnoseProjectDbPath({ searchFromDir: appDir });
+          check(implicit.explicit === false && implicit.exists === false,
+            "未设置 PROJECTX_DB_PATH 时按 cwd 推导，且该路径当前不存在");
+          check(implicit.warnings.some((w) => w.includes("新建空库") && w.includes("PROJECTX_DB_PATH")),
+            "未显式指定且库不存在 → 提示将新建空库并给出显式设置 PROJECTX_DB_PATH 的处置");
+          check(implicit.candidates.length >= 2
+            && implicit.warnings.some((w) => w.includes(`同机另发现 ${implicit.candidates.length} 个`)),
+            `探测到 ${implicit.candidates.length} 个同机候选库 → 提示确认选中的是预期的那个`);
+          check(!implicit.candidates.includes(path.resolve(implicit.resolved)),
+            "候选列表不含当前解析出的路径本身（不自我重复提示）");
+          check(!existsSync(implicit.resolved) && !existsSync(path.dirname(implicit.resolved)),
+            "诊断是只读的：不创建目录、不新建库文件、不打开数据库");
+          check(resolveProjectDbPath() === path.join(process.cwd(), "data", "projectx.db"),
+            "诊断不改变解析结果（仍是 cwd 推导）");
+        } finally {
+          process.chdir(previousCwd);
+        }
+      } finally {
+        if (savedDbPath === undefined) delete process.env.PROJECTX_DB_PATH;
+        else process.env.PROJECTX_DB_PATH = savedDbPath;
+      }
+      check(resolveProjectDbPath() === path.resolve(savedDbPath ?? ""),
+        "断言结束后 PROJECTX_DB_PATH 已还原（不影响本脚本后续用例）");
+
+      // ── R31：getDatabase 必须在建库之前先打印诊断 ──
+      const dbIndexSource = readFileSync(path.resolve("src/server/db/index.ts"), "utf8");
+      const getDbBody = dbIndexSource.slice(dbIndexSource.indexOf("export function getDatabase()"));
+      check(getDbBody.indexOf("diagnoseProjectDbPath()") > -1
+        && getDbBody.indexOf("diagnoseProjectDbPath()") < getDbBody.indexOf("mkdirSync(")
+        && getDbBody.indexOf("diagnoseProjectDbPath()") < getDbBody.indexOf("new Database("),
+        "getDatabase 在 mkdirSync / new Database 之前打印 [db-path] 诊断（新建空库事后看不出原因）");
+      check(/\[db-path\]/.test(getDbBody), "诊断日志带 [db-path] 前缀，便于现场按标签过滤");
+
+      // ── R38：兜底强杀的身份校验断言在 verify:scanner-cancel 里，这里锁住源码不退化 ──
+      const bridgeSource = readFileSync(
+        path.resolve("src/apps/answer-card/server/scanner/twain-bridge.ts"), "utf8");
+      check(/taskkill/.test(bridgeSource)
+        && bridgeSource.indexOf("decideForceKill(") < bridgeSource.indexOf('execFile("taskkill"'),
+        "taskkill 之前必须先过 decideForceKill 判定（R38：认不出身份就不杀）");
+      check(/matchesBridgeProcess[\s\S]{0,600}?parentPid !== expected\.parentPid[\s\S]{0,400}?IDENTITY_TOLERANCE_MS/.test(bridgeSource),
+        "身份判定同时校验父 PID、可执行路径与启动时刻偏差");
+      check(/retireActiveScan\(sessionId\)/.test(bridgeSource)
+        && !/activeScans\.delete\(sessionId\);\s*\n\s*\}/.test(bridgeSource.slice(bridgeSource.indexOf("child.on(\"close\""))),
+        "close/error 走 retireActiveScan（清注册项 + 清兜底定时器），不再裸 delete");
     }
 
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);

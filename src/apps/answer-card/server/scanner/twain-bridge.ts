@@ -4,36 +4,161 @@ import path from "node:path";
 import { rootDir } from "../storage";
 import type { BridgeScanResult, ScannerSourcesResult } from "./scanner-types";
 
-// 进行中的扫描子进程注册表：sessionId → scanner-bridge.exe 子进程，
+// 进行中的扫描子进程注册表：sessionId → 桥接子进程及其身份快照，
 // 供取消接口终止扫描（M4b：不再只关 SSE，真正杀进程）
-const activeScans = new Map<string, ReturnType<typeof spawn>>();
+interface ActiveScan {
+  child: ReturnType<typeof spawn>;
+  identity: BridgeProcessIdentity;
+  /** 是否已观察到退出（close / error 任一）。兜底强杀必须先看这个，只看 exitCode 会漏掉信号退出。 */
+  exited: boolean;
+  /** 兜底强杀的计时器；子进程一退出就清掉，避免在 PID 被复用后再去杀别的进程（安全 R38）。 */
+  fallbackTimer?: ReturnType<typeof setTimeout>;
+}
+
+const activeScans = new Map<string, ActiveScan>();
 
 // 已请求取消的会话集合：取消可能早于子进程注册到达（POST 202 后立即取消），
 // 子进程尚未注册时无法杀进程，靠此集合在 runBridge spawn 前拦截启动
 const cancelRequested = new Set<string>();
 
-/** 取消指定会话的扫描：记录取消意图 + 杀主进程，2 秒后若仍存活用 taskkill /F /T 强杀进程树。
+/** 启动时记录下来的「这是谁」，强杀前要用它确认 PID 还没被复用（安全 R38）。 */
+export interface BridgeProcessIdentity {
+  exePath: string;
+  startedAtMs: number;
+  parentPid: number;
+}
+
+/** 从操作系统读回的真实进程信息；任何一项读不到都不允许强杀。 */
+export interface WindowsProcessInfo {
+  exePath: string | null;
+  startedAtMs: number | null;
+  parentPid: number | null;
+}
+
+/** 启动时刻与系统记录的时刻允许的偏差：同一进程应为毫秒级，留 5 秒余量给时钟粒度。 */
+const IDENTITY_TOLERANCE_MS = 5000;
+
+/**
+ * PID 在 Windows 上会被回收复用，`taskkill /F /T /PID` 打到的可能是一个完全无关的进程
+ * （连它整棵子树一起带走）。三条同时成立才认账：父进程仍是本 Node 进程、可执行文件路径一致、
+ * 创建时刻与记录的启动时刻吻合。任一项读不到（权限不足、进程已消失）一律判为不匹配。
+ */
+export function matchesBridgeProcess(actual: WindowsProcessInfo | null, expected: BridgeProcessIdentity): boolean {
+  if (!actual || actual.exePath === null || actual.startedAtMs === null || actual.parentPid === null) return false;
+  if (actual.parentPid !== expected.parentPid) return false;
+  if (path.resolve(actual.exePath).toLowerCase() !== path.resolve(expected.exePath).toLowerCase()) return false;
+  return Math.abs(actual.startedAtMs - expected.startedAtMs) <= IDENTITY_TOLERANCE_MS;
+}
+
+/**
+ * 用 CIM 读回进程的真实身份。`CreationDate` 由 PowerShell 转成本地时间后按
+ * `[DateTimeOffset]::new($dt)`（单参）取 epoch 毫秒——单参构造会沿用 DateTime 自身的时区语义，
+ * 因此不会像「按字符串比较 ISO」那样在时区上翻车（参见第四批 R11 的 SQLite 时间窗事故）。
+ */
+export async function queryWindowsProcessInfo(pid: number): Promise<WindowsProcessInfo | null> {
+  if (process.platform !== "win32") return null;
+  const target = Number(pid);
+  if (!Number.isInteger(target) || target <= 0) return null;
+  const script =
+    `$p = Get-CimInstance Win32_Process -Filter 'ProcessId=${target}'; ` +
+    `if ($p) { '{0}|{1}|{2}' -f [DateTimeOffset]::new($p.CreationDate).ToUnixTimeMilliseconds(), $p.ParentProcessId, $p.ExecutablePath }`;
+  const stdout = await new Promise<string>((resolve) => {
+    execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { windowsHide: true, timeout: 8000 },
+      (error, out) => resolve(error ? "" : String(out)),
+    );
+  });
+  const line = stdout.trim().split(/\r?\n/)[0];
+  if (!line) return null;
+  const [startedRaw, parentRaw, exeRaw] = line.split("|");
+  const startedAtMs = Number(startedRaw);
+  const parentPid = Number(parentRaw);
+  return {
+    exePath: exeRaw && exeRaw !== "null" ? exeRaw : null,
+    startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null,
+    parentPid: Number.isFinite(parentPid) ? parentPid : null,
+  };
+}
+
+export type ForceKillDecision = "kill" | "skip-exited" | "skip-unverified";
+
+/**
+ * 兜底强杀的判定，抽成纯函数是为了让 verify 脚本能直接断言「认不出身份就不杀」，
+ * 不必真去 spawn 一个 Windows 桥接进程。
+ */
+export function decideForceKill(
+  actual: WindowsProcessInfo | null,
+  expected: BridgeProcessIdentity,
+  exited: boolean,
+): ForceKillDecision {
+  if (exited) return "skip-exited";
+  return matchesBridgeProcess(actual, expected) ? "kill" : "skip-unverified";
+}
+
+/** 兜底强杀：先确认「这个 PID 还是我们启动的那个桥接进程」，认不出来就不杀。 */
+async function forceKillBridgeTree(active: ActiveScan): Promise<void> {
+  if (hasExited(active)) return;
+  const pid = active.child.pid;
+  if (!pid) return;
+  const info = await queryWindowsProcessInfo(pid);
+  // 异步查询期间子进程可能已经自己退出了，判定要拿查询后的最新状态再做一次。
+  const decision = decideForceKill(info, active.identity, hasExited(active));
+  if (decision !== "kill") {
+    console.warn(
+      `[twain-bridge] 已跳过兜底强杀（${decision}）：无法确认 PID ${pid} 仍是本次启动的桥接进程` +
+        `（可能已退出且 PID 被系统复用），交由桥接超时兜底，不会波及无关进程`,
+    );
+    return;
+  }
+  execFile("taskkill", ["/F", "/T", "/PID", String(pid)], { windowsHide: true }, () => {
+    // 强杀结果不阻塞调用方；失败时进程也会被桥接超时兜底
+  });
+}
+
+function hasExited(active: ActiveScan): boolean {
+  return active.exited || active.child.exitCode !== null || active.child.signalCode !== null;
+}
+
+/** 子进程退出（error / close 任一）：标记退出并清掉兜底强杀计时器——留着它就会在 PID 被复用后误杀。 */
+function retireActiveScan(sessionId: string): void {
+  const active = activeScans.get(sessionId);
+  activeScans.delete(sessionId);
+  if (!active) return;
+  active.exited = true;
+  if (active.fallbackTimer) clearTimeout(active.fallbackTimer);
+}
+
+/** 仅供验证脚本断言：仍被视为「活着」的桥接子进程数（退出后必须归零，否则兜底强杀会打到复用的 PID）。 */
+export function liveBridgeCount(): number {
+  let n = 0;
+  for (const active of activeScans.values()) {
+    if (!hasExited(active)) n++;
+  }
+  return n;
+}
+
+/** 取消指定会话的扫描：记录取消意图 + 杀主进程，2 秒后若仍存活且身份可确认，用 taskkill /F /T 强杀进程树。
  *  返回是否找到并终止了正在运行的子进程（未注册的由 cancelRequested 拦截）。 */
 export function cancelScan(sessionId: string): boolean {
   cancelRequested.add(sessionId);
 
-  const child = activeScans.get(sessionId);
-  if (!child || child.exitCode !== null || child.signalCode !== null) {
+  const active = activeScans.get(sessionId);
+  if (!active || hasExited(active)) {
     return false; // 子进程尚未注册或已退出，交由 runBridge 的取消检查拦截
   }
 
-  child.kill(); // Windows 下 SIGTERM → TerminateProcess
+  active.child.kill(); // Windows 下 SIGTERM → TerminateProcess
 
-  const pid = child.pid;
-  setTimeout(() => {
-    if (child.exitCode === null && pid) {
-      execFile("taskkill", ["/F", "/T", "/PID", String(pid)], { windowsHide: true }, () => {
-        // 强杀结果不阻塞调用方；失败时进程也会被 10 分钟超时兜底
-      });
-    }
-  }, 2000).unref();
+  const timer = setTimeout(() => {
+    void forceKillBridgeTree(active);
+  }, 2000);
+  timer.unref();
+  active.fallbackTimer = timer;
   return true;
 }
+
 
 function processResourcesPath(): string | undefined {
   return (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
@@ -93,7 +218,13 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
     });
 
     if (sessionId) {
-      activeScans.set(sessionId, child);
+      const active: ActiveScan = {
+        child,
+        // 身份快照（安全 R38）：兜底强杀前先比对这三项，避免打到被复用的 PID。
+        identity: { exePath, startedAtMs: Date.now(), parentPid: process.pid },
+        exited: false,
+      };
+      activeScans.set(sessionId, active);
       // 子进程已注册，后续取消走杀进程路径，清除待启动拦截标志
       cancelRequested.delete(sessionId);
     }
@@ -113,7 +244,7 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
     child.on("error", (error) => {
       clearTimeout(timeout);
       if (sessionId) {
-        activeScans.delete(sessionId);
+        retireActiveScan(sessionId);
       }
       // spawn 级失败：exe 不存在、无权执行等。0xC0000135/0xC000007B 这类
       // DLL 加载失败会在 close 事件里以退出码形式出现，不走这里。
@@ -126,7 +257,7 @@ function runBridge(args: string[], timeoutMs = 120_000, sessionId?: string): Pro
     child.on("close", (code) => {
       clearTimeout(timeout);
       if (sessionId) {
-        activeScans.delete(sessionId);
+        retireActiveScan(sessionId);
       }
       const stdout = Buffer.concat(stdoutChunks).toString("utf8");
       const stderr = Buffer.concat(stderrChunks).toString("utf8").trim();
