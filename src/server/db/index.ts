@@ -162,6 +162,28 @@ function readBootstrapAdminPassword(): string | null {
   }
 }
 
+/**
+ * 部署逃生阀：显式设置 `PROJECTX_ADMIN_PASSWORD` 时，引导态口令由该环境变量决定，
+ * 不再写 `bootstrap-admin.txt`（用于容器/一键部署等「读不到数据目录文件」的场景）。
+ * 仅在账号仍处于引导态时生效；完成首次改密后该变量再改也不会覆盖在用口令。
+ */
+const ADMIN_PASSWORD_ENV = "PROJECTX_ADMIN_PASSWORD";
+
+function readEnvAdminPassword(): string | null {
+  const value = (process.env[ADMIN_PASSWORD_ENV] ?? "").trim();
+  return value || null;
+}
+
+/** 换发口令后落地事实源：环境变量态删除引导文件，随机态写入引导文件。 */
+function publishBootstrapPassword(password: string, fromEnv: boolean): void {
+  if (fromEnv) {
+    removeBootstrapAdminFile();
+    console.warn(`[DB] 管理员引导口令由环境变量 ${ADMIN_PASSWORD_ENV} 指定（不写引导文件）`);
+    return;
+  }
+  writeBootstrapAdminPassword(password);
+}
+
 function writeBootstrapAdminPassword(password: string): void {
   const target = getBootstrapAdminPath();
   const dir = path.dirname(target);
@@ -201,6 +223,9 @@ export interface DefaultAdminBootstrapResult {
  * 4. admin 停留在引导态，但口令事实源不可信（文件缺失/为空，或内容是历史公开口令）：
  *    换发新的随机口令并重写文件（`rotated: true`）。覆盖两类场景：升级到本修复时的
  *    存量 `admin123` 库（旧口令当场失效），以及备份还原/误删文件后的自愈。
+ *
+ * 设置了 `PROJECTX_ADMIN_PASSWORD` 时，引导态口令改由该环境变量决定（见逃生阀说明），
+ * 引导文件被删除，且口令与库中哈希一致时不轮换、不吊销会话。
  */
 export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult> {
   const dialect = detectDialect();
@@ -210,6 +235,7 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
     "admin"
   );
   const passwordFile = getBootstrapAdminPath();
+  const envPassword = readEnvAdminPassword();
   const ensureApiKey = async () => {
     await (dialect === "mariadb" ? ensureDefaultApiKey(db) : ensureDefaultApiKeySqlite(getDatabase()));
   };
@@ -219,6 +245,19 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
       // 已完成首次改密（或显式沿用初始密码）的在用账号：不做任何变更
       await ensureApiKey();
       return { adminId: existing.id, rotated: false, passwordFile };
+    }
+    if (envPassword) {
+      // 逃生阀态：环境变量是口令事实源，引导文件让位。
+      const alreadyMatches = await verifyPassword(envPassword, existing.password_hash);
+      if (!alreadyMatches) {
+        await db.run(
+          "UPDATE users SET password_hash = ?, password_change_required = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+          await hashPassword(envPassword), existing.id
+        );
+      }
+      publishBootstrapPassword(envPassword, true);
+      await ensureApiKey();
+      return { adminId: existing.id, rotated: !alreadyMatches, passwordFile };
     }
     const filePassword = readBootstrapAdminPassword();
     if (filePassword && !LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS.has(filePassword)) {
@@ -237,13 +276,13 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
     return { adminId: existing.id, rotated: true, passwordFile };
   }
 
-  const newPassword = generateBootstrapAdminPassword();
+  const newPassword = envPassword ?? generateBootstrapAdminPassword();
   if (dialect === "mariadb") {
     const insertAdminSql = buildInsertIgnore("mariadb", "users", [
       "username", "password_hash", "name", "role_id", "is_active", "password_change_required",
     ]);
     const result = await db.run(insertAdminSql, "admin", await hashPassword(newPassword), "系统管理员", 1, 1, 1);
-    writeBootstrapAdminPassword(newPassword);
+    publishBootstrapPassword(newPassword, Boolean(envPassword));
     await ensureDefaultApiKey(db);
     return { adminId: result.lastInsertRowid, rotated: true, passwordFile };
   }
@@ -254,7 +293,7 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
     `INSERT INTO users (username, password_hash, name, role_id, is_active, password_change_required)
      VALUES (?, ?, ?, ?, ?, ?)`
   ).run("admin", await hashPassword(newPassword), "系统管理员", 1, 1, 1);
-  writeBootstrapAdminPassword(newPassword);
+  publishBootstrapPassword(newPassword, Boolean(envPassword));
   await ensureDefaultApiKeySqlite(sqlite);
   return { adminId: Number(result.lastInsertRowid), rotated: true, passwordFile };
 }
