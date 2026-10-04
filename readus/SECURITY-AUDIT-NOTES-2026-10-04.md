@@ -396,5 +396,59 @@ if (!user.teacher_role) return null; // plain teacher: back-compat 全部可见
 - `verify-demo-safety.ts` 里那句「与演示 id 重叠会主键冲突，无法构造」的旧注释是**错的**（`INSERT IGNORE`
   根本不报冲突），已连同新增的撞号断言一并更正。
 
+### R37 Ubuntu 服务器包以 root 运行：改为专用账号 + 幂等安装脚本
+
+**原判定**：`scripts/package-server-ubuntu.cjs` 生成的 systemd 单元只有
+`Type`/`WorkingDirectory`/`Environment`/`ExecStart`/`Restart`，**没有 `User=`/`Group=`/`UMask=`**，
+systemd 默认以 **root** 启动；部署说明教的又是 `sudo cp -a . /opt/project-x-server/` +
+`sudo cp systemd/*.service /etc/systemd/system/`，全程没有一步涉及属主或权限。结果是一个持有全校成绩、
+答题卡扫描件与 SQLite 库的进程以 root 身份常驻，而数据目录还是解压时的 `0777&umask`。
+
+**处置**（全部做在打包侧，现场不需要记规则）：
+
+- 单元加 `User=projectx`/`Group=projectx`/`NoNewPrivileges=yes`/`UMask=0027`，外加
+  `ProtectSystem=full`、`ProtectHome`、`PrivateTmp`、`PrivateDevices`、
+  `ProtectKernel{Tunables,Modules,Logs}`、`ProtectControlGroups`、`ProtectClock`、`RestrictNamespaces`、
+  `RestrictSUIDSGID`、`RestrictRealtime`、`LockPersonality`、空 `CapabilityBoundingSet`、
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`、`SystemCallArchitectures=native`；
+  `HOME` 指到数据目录（非 root 身份下 `/root` 不可读，写缓存会失败）；
+  `After`/`Wants` 从 `network.target` 改成 `network-online.target`（MariaDB 远端模式下路由未就绪会直接起不来）。
+- 新增幂等 `systemd/install.sh`：建 nologin 系统账号 → 铺包体到 `/opt/project-x-server`
+  （root 所有、`g+rX,o-rwx`、目录 `0750`）→ `/var/lib/project-x`（库 / 答题卡 / 自动备份）交给服务账号并
+  `0750` → 安装单元 + `daemon-reload`/`enable`/`restart` → 回显 `User`/`Group`/`UMask`。
+  **首次安装与升级是同一条命令**，所以「升级又变回 root」这条路不存在；旧的 root 手工安装重跑一次即完成迁移
+  （属主与权限被重新纠正）。用 `g+rX` 而不是统一 `chmod 0640`，是为了不把 `node_modules/.bin`、
+  `dist/server/index.mjs`、`.venv/bin/python` 的执行位改坏。
+- `start.sh` 检测到自己是 root 时打印警告并指向安装脚本（前台试跑仍可用，但不留「就这么跑生产」的错觉）。
+- 包内 `data/answer-card` 用 `mode: 0o750` 创建。
+- **顺带修掉一个会让整条整改失效的既有缺陷**：`package-server-ubuntu.cjs` 在 Windows 上是 CRLF 检出，
+  模板字面量把 `\r\n` 带进生成物——`start.sh`/`install.sh` 的 shebang 会变成 `/usr/bin/env bash\r`
+  （Ubuntu 上直接 bad interpreter），单元的 `Environment=PORT=5174` 也会多个尾随 `\r`。
+  四个生成器现在统一过 `toLf()`，与 `.gitattributes` 的 `*.sh text eol=lf` 对齐。这条不是审计项。
+
+**两条刻意不启用**（理由写进单元注释与部署说明，避免下一个人当成漏项又加回去）：
+
+- `MemoryDenyWriteExecute=yes`：V8 的 JIT 需要「先写后执行」的内存页，打开后 node 在启动阶段就崩。
+- `SystemCallFilter=@system-service`：Node 与 Python sidecar 的实际系统调用集随版本漂移，
+  收紧过头的表现是生产环境崩溃循环。单元里给了 drop-in 示例，启用后用
+  `systemd-analyze security project-x-server` 复核。
+
+`ProtectSystem` 用 `full` 而不是 `strict`：AI sidecar 的 `.venv` 与 `llmclient/.env` 就住在
+`/opt/project-x-server` 下，`strict` 会把 `/opt` 变成只读。部署说明因此也改了 venv 的创建位置——
+**必须在最终位置建**：临时解压目录里建好的 venv 复制过去后，console script 的 shebang 会指向失效路径。
+
+**证据与边界**：
+
+- `npm run verify:systemd-hardening` **77 通过 / 0 失败**：直接 require 打包脚本、渲染四份生成物做静态断言，
+  其中包含两条**否定**断言（不得出现 `MemoryDenyWriteExecute`、不得有生效的 `SystemCallFilter`）、
+  单元身份与安装脚本默认值逐项一致、数据目录三处 `0750`、代码目录 `g+rX,o-rwx`、
+  以及对 `install.sh`/`start.sh` 的 `bash -n` 语法检查与「四份生成物都不含 `\r`」。
+- 打包动作收进 `buildPackage()` 并由 `require.main === module` 触发，验证脚本无需 `dist/` 即可 require 生成器。
+- CI 增加 `Ubuntu server package systemd hardening (R37)`；另加一个 `continue-on-error` 的
+  `systemd-analyze verify`（运行器上既没有 projectx 账号也没有 `/usr/bin/node`，只作参考输出、不判失败）。
+- **未验证的部分说清楚**：打包机是 Windows，本机跑不了 systemd，因此「服务真的以 `projectx` 身份起来、
+  上传 / 字体读取 / 自动备份在沙箱里都能写」这一步**没有实测证据**，靠部署说明里的 `systemctl show`
+  与三条 `sudo -u` 自检命令在现场兜底。这也是本条与第五批 B 的差别：B 组每条都有真机或双架构证据。
+
 
 

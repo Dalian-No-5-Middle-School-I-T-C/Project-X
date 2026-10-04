@@ -79,6 +79,40 @@ server {
 
 ---
 
+### 2.3 以非 root 账号常驻运行（安全 R37）
+
+后端进程持有全校成绩、扫描件与数据库文件，不该以 root 身份常驻：进程内一旦出现任意文件读写，
+root 身份直接等于整机沦陷。Ubuntu 服务器包内置了幂等安装脚本：
+
+```bash
+cd project-x-server-ubuntu24-<version>
+npm install --omit=dev
+sudo systemd/install.sh
+```
+
+它会建一个 nologin 系统账号 `projectx`，把代码铺到 `/opt/project-x-server`（root 所有、
+服务账号只读+可执行），把 `/var/lib/project-x`（SQLite 库、答题卡图片、自动备份）交给
+`projectx` 并置 `0750`，再安装带沙箱指令的 systemd 单元（`UMask=0027`、`NoNewPrivileges=yes`、
+`ProtectSystem=full`、`ProtectHome`、`PrivateTmp`、`PrivateDevices`、空 `CapabilityBoundingSet`
+等）并 `daemon-reload + enable + restart`。升级时重跑同一条命令即可：属主与权限会被重新纠正，
+不会退回 root。
+
+装完自检（第三条命令**不该**有输出）：
+
+```bash
+systemctl show project-x-server -p User -p Group -p UMask
+sudo -u projectx test -r /var/lib/project-x/projectx.db && echo "服务账号可读数据库"
+sudo -u nobody test -r /var/lib/project-x/projectx.db && echo "数据目录对 other 可读，权限没收紧"
+```
+
+`npm run dev` 与 `./start.sh` 只适合前台试跑；`start.sh` 发现自己以 root 运行时会打印警告并指向安装脚本。
+
+单元里刻意**没有**两条常见加固指令，原因写在单元注释与部署说明里：`MemoryDenyWriteExecute=yes`
+会让 V8 的 JIT 起不来，`SystemCallFilter=@system-service` 在 Node/Python 版本漂移下容易变成生产崩溃循环
+（需要时用 drop-in 打开，再用 `systemd-analyze security project-x-server` 复核）。
+
+---
+
 ## 三、前端网页部署
 
 ### 3.1 部署方式选择
@@ -286,6 +320,9 @@ GET /api/analysis/exams/1/questions
    `PROJECTX_DEMO_FIXED_CREDENTIALS`（恢复文档里的 `teacher123` / 口令=学号）与
    `PROJECTX_DEMO_ALLOW_PRODUCTION_IMPORT`（跳过「库中已有真实数据」的二次确认）**只应在隔离测试环境打开**；
    生产环境保持未设即可，两个开关取值非法时一律按关闭处理。
+7. **最小权限运行**（安全 R37）：后端不要用 root 常驻。Ubuntu 包里的 `sudo systemd/install.sh`
+   会建专用系统账号、把数据目录置 `0750` 并安装带沙箱指令的 systemd 单元；升级重跑同一条命令即可，
+   详见 2.3 节。手工 `sudo node dist/server/index.mjs` 或 `sudo ./start.sh` 的部署应改为该脚本安装。
 
 ---
 

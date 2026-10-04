@@ -2,6 +2,53 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-05：Ubuntu 服务器包不再以 root 运行（安全审查第五批 C · R37）
+
+第五批 C 前两条收的是「凭据怎么过网段」「演示数据能不能进生产库」，这一条收的是**部署形态**：
+服务以谁的身份跑、数据目录谁能读。改动全部做在打包脚本里，现场不需要记任何新规则。
+
+- **R37 生成的 systemd 单元从 root 改为专用系统账号**：原来单元里只有
+  `Type`/`WorkingDirectory`/`Environment`/`ExecStart`/`Restart`，systemd 默认以 **root** 启动，
+  而部署说明教的又是 `sudo cp -a . /opt/project-x-server/`——一个持有全校成绩、答题卡扫描件与
+  SQLite 库的进程以 root 常驻，数据目录还是解压时的 `0777&umask`。现在单元带
+  `User=projectx`/`Group=projectx`/`NoNewPrivileges=yes`/`UMask=0027`，外加
+  `ProtectSystem=full`、`ProtectHome`、`PrivateTmp`、`PrivateDevices`、
+  `ProtectKernel{Tunables,Modules,Logs}`、`ProtectControlGroups`、`ProtectClock`、`RestrictNamespaces`、
+  `RestrictSUIDSGID`、`RestrictRealtime`、`LockPersonality`、空 `CapabilityBoundingSet`、
+  `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`（少了 `AF_NETLINK` 会让 glibc
+  的 `getifaddrs` 失败）、`SystemCallArchitectures=native`；`HOME` 指到数据目录，
+  `After`/`Wants` 改用 `network-online.target`（MariaDB 远端模式下路由未就绪会直接起不来）。
+- **新增幂等 `systemd/install.sh`，安装与升级走同一条命令**：建 nologin 系统账号 →
+  铺包体到 `/opt/project-x-server`（root 所有、`g+rX,o-rwx`、目录 `0750`，用 `g+rX` 而不是统一
+  `chmod 0640` 是为了不改坏 `node_modules/.bin`、`dist/server/index.mjs`、`.venv/bin/python` 的执行位）→
+  `/var/lib/project-x`（库 / 答题卡 / 自动备份）交给服务账号并 `0750` → 安装单元 +
+  `daemon-reload`/`enable`/`restart` → 回显 `User`/`Group`/`UMask`。因此「升级时不小心退回 root」
+  这条路不存在，旧的 root 手工安装重跑一次即完成迁移。账号名与路径可用
+  `PROJECTX_SERVICE_USER`/`PROJECTX_SERVICE_GROUP`/`PROJECTX_APP_DIR`/`PROJECTX_DATA_DIR` 覆盖，
+  自定义账号名时脚本会 `sed` 重写单元里的 `User=`/`Group=`。`start.sh` 以 root 运行时打印警告并指向它。
+- **两条常见加固刻意不启用，理由写在单元注释与部署说明里**：`MemoryDenyWriteExecute=yes` 会让
+  V8 的 JIT 起不来（node 启动阶段即崩）；`SystemCallFilter=@system-service` 在 Node 与 Python sidecar
+  的系统调用集随版本漂移的前提下容易变成生产崩溃循环——单元里给出 drop-in 启用示例与
+  `systemd-analyze security project-x-server` 复核命令。`ProtectSystem` 同理用 `full` 而不是 `strict`：
+  AI sidecar 的 `.venv` 与 `llmclient/.env` 就在 `/opt/project-x-server` 下。部署说明因此也改了
+  venv 的创建位置——**必须在最终位置建**，临时目录里建好的 venv 复制过去后 console script 的
+  shebang 会指向失效路径。
+- **顺带修掉一个会让整条整改失效的既有缺陷**：`scripts/package-server-ubuntu.cjs` 在 Windows 上是
+  CRLF 检出，模板字面量把 `\r\n` 带进生成物——`start.sh`（以及新的 `install.sh`）的 shebang 会变成
+  `/usr/bin/env bash\r`，Ubuntu 上直接 `bad interpreter`，单元的 `Environment=PORT=5174` 也会多个尾随 `\r`。
+  四个生成器统一过 `toLf()`；打包动作收进 `buildPackage()` 并由 `require.main === module` 触发，
+  这样验证脚本不需要 `dist/` 就能 require 生成器。
+
+**验证**：`npm run verify:systemd-hardening` 77 通过 / 0 失败——渲染四份生成物做静态断言，含两条**否定**断言
+（不得出现 `MemoryDenyWriteExecute`、不得有生效的 `SystemCallFilter`）、单元身份与安装脚本默认值逐项一致、
+数据目录三处 `0750`、代码目录 `g+rX,o-rwx`，并对 `install.sh`/`start.sh` 跑 `bash -n` 语法检查、
+断言四份生成物都不含 `\r`。CI 增加 `Ubuntu server package systemd hardening (R37)`，另加一个
+`continue-on-error` 的 `systemd-analyze verify` 作参考输出。**未验证的部分**：打包机是 Windows，
+本机跑不了 systemd，「服务真的以 `projectx` 身份起来、上传/字体/备份在沙箱里都能写」没有实测证据，
+靠部署说明里的 `systemctl show` 与三条 `sudo -u` 自检命令在现场兜底。
+文档同步：`deploy-guide.md` 新增 2.3 节与第九节第 7 条，包内部署说明的 Contents / AI Service /
+Systemd Service 三节重写，`readus/SECURITY-AUDIT-NOTES-2026-10-04.md` 第八节记录判定与边界。
+
 ## 2026-10-04：演示数据凭据与导入闸门（安全审查第五批 C · R33/R48）
 
 演示数据本来是给现场演示用的，但它有两个副作用会**直接落到生产库上**：导入即安装一套口令写在公开文档里的

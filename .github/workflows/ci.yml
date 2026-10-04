@@ -88,6 +88,22 @@ jobs:
       - name: Demo credentials / import gates (R33/R48)
         run: npm run verify:demo-credentials
 
+      # Ubuntu 服务器包的 systemd 单元与安装脚本（R37）：非 root 身份、UMask=0027、
+      # 数据目录 0750、沙箱指令齐全，且刻意不启用会打死 V8 JIT 的 MemoryDenyWriteExecute。
+      # 纯静态断言 + bash -n 语法检查，直接 require 生成器，不需要 dist/。
+      - name: Ubuntu server package systemd hardening (R37)
+        run: npm run verify:systemd-hardening
+
+      # 上面锁的是生成物内容；这里再用 systemd 自己的解析器复核单元能否被接受。
+      # 运行器上既没有 projectx 账号也没有 /usr/bin/node，告警属预期，所以只作参考、不判失败。
+      - name: systemd-analyze verify (advisory)
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/px-unit
+          node -e "const p=require('./scripts/package-server-ubuntu.cjs');require('fs').writeFileSync('/tmp/px-unit/project-x-server.service',p.createSystemdUnit())"
+          systemd-analyze verify /tmp/px-unit/project-x-server.service || true
+          systemd-analyze security --offline --root=/ /tmp/px-unit/project-x-server.service || true
+
       - name: UCRT staging path regression
         run: npm run verify:stage-vc-runtime
 
