@@ -51,6 +51,40 @@ export async function checkLadderPublished(req: Request, res: Response, examIds:
   return false;
 }
 
+/**
+ * 安全 R13：学生只能读**本人参与**的跨考/大考天梯。
+ *
+ * `getVisibleExamIds` 对学生返回 null（不受限，学生端靠 `requireExamAccess` 逐场判定），
+ * 于是组天梯与跨考天梯这两条不走 `requireExamAccess` 的聚合入口只被「全部已公布」挡住：
+ * 学生可枚举 `groupId` / 拼 `examIds`，读到其它班级、其它年级考场的整张榜单
+ * （姓名、学号、班级、逐科分数），并把自己的名次算进不属于他的群体。
+ * 判定口径：显式/名册应考名单内，或在该集合中已有成绩记录（存量库未冻结快照时仍能查分）。
+ * 返回 true=放行；false=已写 403。
+ */
+export async function checkLadderParticipation(req: Request, res: Response, examIds: number[]): Promise<boolean> {
+  if (!req.user || req.user.role_name !== "student") return true;
+  if (examIds.length === 0) return true; // 无明确集合（按日期范围聚合）时由下层的公布过滤兜底
+  try {
+    const db = getMysqlDb();
+    const placeholders = examIds.map(() => "?").join(",");
+    const row = await db.get<{ ok: number }>(
+      `SELECT 1 AS ok FROM (
+         SELECT ep.exam_id AS eid FROM exam_participants ep
+          WHERE ep.student_id = ? AND ep.exam_id IN (${placeholders})
+          UNION
+         SELECT ss.exam_id AS eid FROM student_scores ss
+          WHERE ss.student_id = ? AND ss.exam_id IN (${placeholders})
+       ) t LIMIT 1`,
+      req.user.id, ...examIds, req.user.id, ...examIds
+    );
+    if (row) return true;
+  } catch {
+    return true; // 判定表缺失（极老的存量库）→ 不因新门而中断查分
+  }
+  res.status(403).json({ message: "权限不足：你未参加该范围内的任何考试" });
+  return false;
+}
+
 // ── GET /api/ladder/config ──
 
 router.get("/config", async (_req: Request, res: Response) => {
@@ -176,6 +210,8 @@ router.get("/exam-groups/:groupId", async (req: Request, res: Response) => {
     if (!(await validateExamIdsAccess(req, res, memberIds))) return;
     // PR #256：组内任一成员考试未公布，学生不可经组天梯取分（教师端不受限）
     if (!(await checkLadderPublished(req, res, memberIds))) return;
+    // 安全 R13：学生还须真的参加组内考试，否则读的是别班/别年级的榜单
+    if (!(await checkLadderParticipation(req, res, memberIds))) return;
 
     const allScores = await db.all<{
       student_id: number;
@@ -349,6 +385,9 @@ router.get("/cross-exam", async (req: Request, res: Response) => {
       requestedExamIds = group.examIds;
     }
     if (requestedExamIds.length > 0 && !(await validateExamIdsAccess(req, res, requestedExamIds))) return;
+    // 安全 R13：`selected` / `group` 两种模式都带明确考试集合，学生须参与其中至少一场。
+    // `week`/`month` 等日期模式按调用者所在群体聚合，不在此收敛（另有公布过滤）。
+    if (requestedExamIds.length > 0 && !(await checkLadderParticipation(req, res, requestedExamIds))) return;
 
     // PR #256：学生端跨考天梯仅聚合已公布考试（教师/管理员不受限）
     const crossExamData = await analysisRepo.getCrossExamTotal(request, {

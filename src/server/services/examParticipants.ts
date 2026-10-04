@@ -54,6 +54,60 @@ export async function searchStudentsForExam(
   return rows.map((r) => ({ id: r.id, name: r.name, student_number: r.student_number }));
 }
 
+/**
+ * 显式应考名单写入前的范围校验（安全 R29）。
+ *
+ * 显式名单是**权威应考名单**：写入即决定谁能参加这场考试并出成绩。此前 PUT 只确认目标 ID
+ * 是学生账号，教师可把任意年级/班级的学生塞进自己的考试（既越权建立名单，也借名单读到
+ * 范围外学生的姓名与考号）。现在要求同时满足两条：
+ * 1. 学生属于考试的应考范围——班级考试看该班名册，年级考试看该年级任一名册；
+ *    无范围的历史考试不做考试侧收敛；
+ * 2. 学生在调用者可访问的班级内——`accessibleClassIds` 为 null（管理员 / 学年主任 /
+ *    未配置 teacher_role 的旧部署教师）时不叠加此约束，`[]` 时一律视为越权。
+ *
+ * 返回越权（含名册缺失、无法判定归属）的学生 ID 列表。
+ */
+export async function findStudentsOutsideParticipantScope(
+  db: DbAdapter,
+  exam: { class_id: number | null; grade_id: number | null },
+  studentIds: number[],
+  accessibleClassIds: number[] | null
+): Promise<number[]> {
+  if (studentIds.length === 0) return [];
+  const placeholders = studentIds.map(() => "?").join(",");
+  const inExamScope = new Set<number>();
+  if (exam.class_id != null) {
+    const rows = await db.all(
+      `SELECT cs.student_id FROM class_students cs
+       WHERE cs.class_id = ? AND cs.student_id IN (${placeholders})`,
+      exam.class_id, ...studentIds
+    ) as Array<{ student_id: number }>;
+    for (const r of rows) inExamScope.add(Number(r.student_id));
+  } else if (exam.grade_id != null) {
+    const rows = await db.all(
+      `SELECT cs.student_id FROM class_students cs
+       JOIN classes c ON c.id = cs.class_id
+       WHERE c.grade_id = ? AND cs.student_id IN (${placeholders})`,
+      exam.grade_id, ...studentIds
+    ) as Array<{ student_id: number }>;
+    for (const r of rows) inExamScope.add(Number(r.student_id));
+  } else {
+    for (const id of studentIds) inExamScope.add(id);
+  }
+  const outside = studentIds.filter((id) => !inExamScope.has(id));
+  if (accessibleClassIds === null) return outside;
+  if (accessibleClassIds.length === 0) return [...studentIds];
+  const callerPlaceholders = accessibleClassIds.map(() => "?").join(",");
+  const rows = await db.all(
+    `SELECT cs.student_id FROM class_students cs
+     WHERE cs.student_id IN (${placeholders}) AND cs.class_id IN (${callerPlaceholders})`,
+    ...studentIds, ...accessibleClassIds
+  ) as Array<{ student_id: number }>;
+  const accessible = new Set(rows.map((r) => Number(r.student_id)));
+  const notAccessible = studentIds.filter((id) => !accessible.has(id));
+  return [...new Set([...outside, ...notAccessible])];
+}
+
 /** 读取考试应考名单（含学生学号/姓名），按 source 优先返回：显式名单 → 名册快照 */
 export async function listParticipants(
   db: DbAdapter,

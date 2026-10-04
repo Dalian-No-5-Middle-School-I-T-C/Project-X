@@ -19,7 +19,14 @@ import { listAnswerBlockCropsForStudent } from "../services/AnswerBlockCropServi
 import { recomputeExamRankings, roundScore } from "../services/rankingUpdate";
 import { analysisCache } from "../services/analysisCache";
 import { resolveReviewConfidenceThreshold } from "../services/userSettings";
-import { requireExamAccess, makeViewPermissionGate } from "../../apps/answer-card/server/middleware";
+import {
+  requireExamAccess,
+  makeViewPermissionGate,
+  requirePermissionCompat,
+  requireWholeExamGradingAccess,
+  isBlockedToOwnGradingBlocks,
+} from "../../apps/answer-card/server/middleware";
+import { PERMISSIONS } from "../auth/permissions";
 import { markScoreMutated } from "../services/examPublishEvents";
 import {
   objectiveQuestionDefinitions,
@@ -28,6 +35,34 @@ import {
 import type { AnswerCard, ObjectiveRecognitionQuestion } from "../../shared/types";
 
 const router = express.Router();
+
+/**
+ * 安全（R08）：学生读「本人逐题明细」是小程序成绩详情的既有契约（PR #232），而学生角色
+ * 本就不持有 `grade:read`，权限矩阵也只描述教师。因此这条链路上的教师侧门（grade:read +
+ * 查看矩阵）对学生不适用，学生由 `requireStudentOwnDetail` 单独收敛为「只能读本人」。
+ */
+const requireStudentOwnDetail: express.RequestHandler = (req, res, next) => {
+  const user = (req as Request & { user?: { id?: number; role_name?: string } }).user;
+  if (user?.role_name !== "student") {
+    next();
+    return;
+  }
+  if (Number(user.id) === Number(req.params.studentId)) {
+    next();
+    return;
+  }
+  res.status(403).json({ message: "权限不足：只能查看本人的逐题成绩明细" });
+};
+
+/** 只在非学生身份上生效的包装（学生由上一道门处理） */
+const teacherSideOnly = (handler: express.RequestHandler): express.RequestHandler => (req, res, next) => {
+  const user = (req as Request & { user?: { role_name?: string } }).user;
+  if (user?.role_name === "student") {
+    next();
+    return;
+  }
+  handler(req, res, next);
+};
 
 // ── 搜索考生（考号/姓名） ──────────────────────────
 // 评审 P1：考生搜索返回姓名/考号（名单类），叠加 can_view_students 查看门，
@@ -60,11 +95,35 @@ router.get("/:examId/students/search", requireExamAccess, makeViewPermissionGate
 });
 
 // ── 获取某学生全部题目得分 + 答题卡图片路径 ──────────
-router.get("/:examId/student/:studentId/scores", requireExamAccess, async (req: Request, res: Response) => {
+// 安全（R08）：这份详情包含全卷逐题分、总分、班级均分、学生姓名考号与扫描记录，
+// 属于「整卷 + 名单」级数据。此前只过 requireExamAccess，于是
+// ① 学生只要参加了本场考试，就能按 studentId 读走**任意同学**的完整成绩单；
+// ② 被关闭「成绩/学生名单」查看权限的教师可经此旁路绕过权限矩阵；
+// ③ 只被分配了单个题块的阅卷教师能读到整卷数据。
+// 现按「代查逐题明细」的既有口径收口：学生只读本人；教师需要 grade:read + 两个查看门 + 非题块级受限。
+router.get(
+  "/:examId/student/:studentId/scores",
+  requireExamAccess,
+  requireStudentOwnDetail,
+  teacherSideOnly(requirePermissionCompat(PERMISSIONS.GRADE_READ)),
+  teacherSideOnly(makeViewPermissionGate("can_view_scores")),
+  teacherSideOnly(makeViewPermissionGate("can_view_students")),
+  async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   const studentId = Number(req.params.studentId);
   if (!Number.isFinite(examId) || !Number.isFinite(studentId)) {
     res.status(400).json({ message: "非法考试或学生 ID" });
+    return;
+  }
+
+  // 仅持有题块级授权的教师不得读取整卷详情（见 isBlockedToOwnGradingBlocks 的语义）
+  const blockScope = await isBlockedToOwnGradingBlocks(req.user, examId);
+  if (blockScope !== null) {
+    res.status(403).json({
+      message: blockScope.length === 0
+        ? "权限不足：你在这场考试没有被授权的题块，无法查看整卷成绩详情"
+        : "权限不足：你仅有题块级阅卷授权，请从题块网阅界面查看，整卷成绩详情需要整卷授权"
+    });
     return;
   }
 
@@ -219,7 +278,17 @@ router.get("/:examId/student/:studentId/scores", requireExamAccess, async (req: 
 });
 
 // ── 逐题修改分数 ──────────────────────────────────
-router.put("/:examId/student/:studentId/scores", requireExamAccess, async (req: Request, res: Response) => {
+// 安全（R09）：这里会改写 question_scores、重算 student_scores 总分与全场排名，并按审计撤回
+// 已公布状态——是整卷级写操作，但此前只过 requireExamAccess：
+// 晨测经 `withQuizExamIds` 对**全体教师**可见，于是「可见」直接变成「可写」，
+// 任意教师都能改写与自己无关的晨测成绩；can_grade=0 或仅有单题块授权的教师同样能整卷改分。
+// 现叠加 grade:write 与整卷写授权门（矩阵/分配优先，兼容回退时再要求组织归属）。
+router.put(
+  "/:examId/student/:studentId/scores",
+  requireExamAccess,
+  requirePermissionCompat(PERMISSIONS.GRADE_WRITE),
+  requireWholeExamGradingAccess,
+  async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   const studentId = Number(req.params.studentId);
   if (!Number.isFinite(examId) || !Number.isFinite(studentId)) {
@@ -380,7 +449,14 @@ router.get("/:examId/answers", requireExamAccess, async (req: Request, res: Resp
 });
 
 // ── 修改答案并自动重算所有学生分数 ────────────────
-router.put("/:examId/answers", requireExamAccess, async (req: Request, res: Response) => {
+// 安全（R09）：本端点改写答题卡标准答案并重算**全场**学生成绩（还会 upsert question_scores），
+// 破坏面比逐题改分更大，同样必须过整卷写授权而不是「可见即可写」。
+router.put(
+  "/:examId/answers",
+  requireExamAccess,
+  requirePermissionCompat(PERMISSIONS.GRADE_WRITE),
+  requireWholeExamGradingAccess,
+  async (req: Request, res: Response) => {
   const examId = Number(req.params.examId);
   if (!Number.isFinite(examId)) {
     res.status(400).json({ message: "非法考试 ID" });

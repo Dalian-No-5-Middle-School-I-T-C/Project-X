@@ -106,6 +106,27 @@ system:manage               系统维护（仅管理员）
 | `requireRole(...names)` | 要求属于指定角色之一，否则 403 |
 | `requirePermission(perm)` | 基于角色权限做细粒度判定（支持通配），否则 403 |
 
+### 考试范围数据门（2026-10 安全整改·第三批）
+
+上表是「角色/权限位」级别的门；考试数据还需要第二层「这条记录是不是你的范围」的门，
+集中在 `src/apps/answer-card/server/middleware.ts`：
+
+| 门 | 判定内容 | 拒绝时 |
+|------|----------|--------|
+| `requireExamAccess` / `validateExamIdsAccess` | 考试是否在 `getVisibleExamIds` 结果内（管理员、学年主任放行；学生一律不因考试可见而获得教师侧数据；晨测对全体教师放大） | 403 `EXAM_OUT_OF_SCOPE` |
+| `makeViewPermissionGate(flag)` / `requirePermissionCompat` | 权限矩阵的查看位（`can_view_scores` / `can_view_charts` / `can_view_students`）与角色权限位 | 403 |
+| `requireGradingScope` / `isBlockedToOwnGradingBlocks` | 判分是否落在本人被分配的题块 | 403 |
+| `requireWholeExamGradingAccess` | 整卷判分上传：需整卷授权或本人任教范围，题块级分配不构成整卷授权（考试创建者例外保留） | 403 |
+| `hasExamOrganizationAffinity` / `canManageExamOrganization` | 删除/解绑答题卡时只能作用于与自己有组织归属（年级/班级/学科）的考试；无归属者只拿到引用**数量**，不拿到考试名单 | 403 / 名单置空 |
+| `getPermittedBlocks` | 题块级阅卷人的题块集合，`[]` 表示什么都看不到（空集合不等于「未配置」） | 403 / 空列表 |
+| `hasClassViewPermission` | 花名册、应考名单写入按教师可访问班级收敛（`getAccessibleClassIds`：null=全校，`[]`=无） | 403 |
+
+学生侧的三条硬约束（学生只有 `score:read`，因此凡带 `grade:read` 的门都不得挡在学生自助路径上）：
+
+- `GET /api/scores/me/exams/:examId` 与 `/api/exams/:examId/student/:studentId/scores`：学生只能读**本人**逐题明细，越界 403；教师侧的矩阵门对学生不叠加（`requireStudentOwnDetail` + `teacherSideOnly`）。
+- 天梯（`/api/ladder/*`）：学生只能读自己**参加过**的考试或大考组，未参加的考试 403，不能借跨考/组天梯聚合读到他人排名。
+- 成绩公布门（v41/PR #256）仍是硬过滤：未公布时学生侧详情返回 404，改分会自动撤回公布状态。
+
 ---
 
 ## 5. 接口清单

@@ -36,6 +36,7 @@
     "verify:student-score-display": "tsx scripts/verify-student-score-fullscore-examtime.ts",
     "verify:mariadb": "tsx scripts/verify-mariadb.ts",
     "verify:security-critical": "tsx scripts/verify-security-critical.ts",
+    "verify:permission-scope": "tsx scripts/verify-permission-scope.ts",
     "verify:p1-security": "tsx scripts/verify-p1-fixes.ts",
     "verify:demo-safety": "tsx scripts/verify-demo-safety.ts",
     "verify:a3": "tsx scripts/verify-a3.ts",

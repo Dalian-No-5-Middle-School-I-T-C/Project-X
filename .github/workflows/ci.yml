@@ -53,6 +53,15 @@ jobs:
       - name: Class archive / student link regression
         run: npm run verify:class-archive
 
+      # 安全整改回归：关键安全项（R01/R02/R04/R07/R22/R28 + 上传/试卷池配额）与
+      # 权限边界项（R03/R06/R08/R09/R13/R15/R18/R21/R29/R47）。两者都用临时隔离库，
+      # 不依赖服务容器，可并行在 SQLite 上跑。
+      - name: Security-critical regression
+        run: npm run verify:security-critical
+
+      - name: Permission-scope regression
+        run: npm run verify:permission-scope
+
       # v57 空置 + 「阅卷中已公布」考试不被强制结考，并检查两套方言迁移版本号不撞号
       - name: Grading-published exam and migration numbering
         run: npm run verify:grading-published-exam

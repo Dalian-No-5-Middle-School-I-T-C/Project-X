@@ -258,6 +258,75 @@ async function main(): Promise<void> {
     await db.run("DELETE FROM users WHERE id = ?", student.lastInsertRowid);
     console.log("PASS: participant search, literal wildcard escaping, mixed-collation scanner receipts");
 
+    // ===== 安全 R03 相关：题块列表 SQL 必须在真库可执行 =====
+    // 历史实现把「各小题满分求和」写成「相关子查询里套派生表」，MariaDB 的派生表无法
+    // 引用外层 abc.*（ERROR 1054 Unknown column），SQLite 又要求不同的别名规则，
+    // 于是题块列表接口在 MariaDB 上整块 500。改为独立聚合查询后，这里做真库回归。
+    const { listReviewBlocks } = await import("../src/server/services/ReviewService");
+    await db.run("INSERT INTO answer_cards (id, title) VALUES ('blocks_ci', '题块列表回归')");
+    const blocksExam = await db.run("INSERT INTO exams (name, card_id) VALUES ('题块列表回归', 'blocks_ci')");
+    const blocksExamId = Number(blocksExam.lastInsertRowid);
+    const blocksStudent = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id, student_number) VALUES ('blocks_ci_student', 'test-only', '题块回归生', 3, '93010001')",
+    );
+    const blocksStudentId = Number(blocksStudent.lastInsertRowid);
+    const otherStudent = await db.run(
+      "INSERT INTO users (username, password_hash, name, role_id, student_number) VALUES ('blocks_ci_student2', 'test-only', '题块回归生2', 3, '93010002')",
+    );
+    const otherStudentId = Number(otherStudent.lastInsertRowid);
+    const cropCols = `id, card_id, exam_id, student_id, source_type, source_record_id, block_id,
+       block_title, block_type, page_number, segment_index, question_numbers, rect_json,
+       image_path, width_px, height_px, dpi, status, review_round`;
+    for (const [id, blockId, title, status, round] of [
+      ["blocks_ci_1", "B1", "第 21-22 题", "ready", 0],
+      ["blocks_ci_2", "B1", "第 21-22 题", "pending", 0],
+      ["blocks_ci_3", "B2", "第 23 题", "reviewed", 1],
+    ] as Array<[string, string, string, string, number]>) {
+      await db.run(
+        `INSERT INTO answer_block_crops (${cropCols})
+         VALUES (?, 'blocks_ci', ?, ?, 'scan', ?, ?, ?, 'subjective', 1, 0, '[]', '{}', ?, 100, 200, 300, ?, ?)`,
+        id, blocksExamId, status === "reviewed" ? otherStudentId : blocksStudentId,
+        `blocks_ci_rec_${id}`, blockId, title, `data/blocks_ci/${id}.png`, status, round,
+      );
+    }
+    await db.run(
+      "INSERT INTO block_grading_config (exam_id, block_id, has_half_point) VALUES (?, 'B1', 1)",
+      blocksExamId,
+    );
+    // 同一小题的多条落库分取 MAX(max_score) 后再累加；题块外的历史行不得串入
+    for (const [studentId, blockId, questionNumber, maxScore] of [
+      [blocksStudentId, "B1", 21, 10],
+      [blocksStudentId, "B1", 22, 5],
+      [otherStudentId, "B1", 21, 8],
+      [otherStudentId, "B2", 23, 7],
+      [blocksStudentId, null, 99, 100],
+    ] as Array<[number, string | null, number, number]>) {
+      await db.run(
+        `INSERT INTO question_scores (exam_id, student_id, question_number, block_id, score, max_score, score_type)
+         VALUES (?, ?, ?, ?, 0, ?, 'objective')`,
+        blocksExamId, studentId, questionNumber, blockId, maxScore,
+      );
+    }
+    const allBlocks = await listReviewBlocks(blocksExamId, db);
+    assert.deepEqual(allBlocks.map((b) => b.blockId), ["B1", "B2"]);
+    const [blockB1, blockB2] = allBlocks;
+    assert.equal(Number(blockB1.totalCount), 2, "B1 应有两份切块");
+    assert.equal(Number(blockB1.pendingCount), 2, "ready/pending 都计入待阅");
+    assert.equal(Number(blockB1.reviewedCount), 0);
+    assert.equal(Number(blockB1.hasHalfPoint), 1, "阅卷配置 HALF 位应带出");
+    assert.equal(Number(blockB1.maxScore), 15, "B1 满分 = 21 题满分 10（跨生取 MAX）+ 22 题满分 5");
+    assert.equal(Number(blockB2.maxScore), 7, "B2 满分只取本块小题");
+    assert.equal(Number(blockB2.reviewedCount), 1);
+    assert.equal((await listReviewBlocks(blocksExamId, db, ["B2"])).length, 1, "题块级授权只列出被分配的题块（R03）");
+    assert.deepEqual(await listReviewBlocks(blocksExamId, db, []), [], "题块授权为空集时不返回任何题块（R03）");
+    await db.run("DELETE FROM question_scores WHERE exam_id = ?", blocksExamId);
+    await db.run("DELETE FROM block_grading_config WHERE exam_id = ?", blocksExamId);
+    await db.run("DELETE FROM answer_block_crops WHERE exam_id = ?", blocksExamId);
+    await db.run("DELETE FROM exams WHERE id = ?", blocksExamId);
+    await db.run("DELETE FROM answer_cards WHERE id = 'blocks_ci'");
+    await db.run("DELETE FROM users WHERE id IN (?, ?)", blocksStudentId, otherStudentId);
+    console.log("PASS: review block listing (per-block max score, half-point, R03 block scope)");
+
     const upsert = buildUpsertSQL(db.dialect, "system_settings", ["key", "value"], ["key"]);
     const readValue = () => db.get<{ value: string }>("SELECT `value` FROM system_settings WHERE `key` = ?", "ci_test");
     const initial = "中文与 emoji 🧪 ' ?";

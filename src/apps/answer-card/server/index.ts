@@ -9,6 +9,7 @@ import {
   describeScanUploadLimits,
 } from "../../../shared/scanUploadLimits";
 import { requestUploadBudget } from "../../../server/lib/uploadBudget";
+import { describeReviewPoolLimits } from "../../../shared/reviewPoolLimits";
 import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -59,7 +60,7 @@ import { isAuthEnforced } from "../../../server/lib/authEnforce";
 import { isScannerClientApiEnabled, isScannerClientOrigin } from "../../../server/lib/scannerClientAccess";
 import { recordLifecycleEvent } from "../../../server/services/lifecycleEvents";
 import { markScoreMutated } from "../../../server/services/examPublishEvents";
-import { ensureExamParticipants, isExamParticipant, listParticipants, searchStudentsForExam, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants } from "../../../server/services/examParticipants";
+import { ensureExamParticipants, isExamParticipant, listParticipants, searchStudentsForExam, setExplicitParticipants, clearExplicitParticipants, hasExplicitParticipants, findStudentsOutsideParticipantScope } from "../../../server/services/examParticipants";
 import authRoutes from "../../../server/routes/auth";
 import userRoutes from "../../../server/routes/users";
 import classRoutes from "../../../server/routes/classes";
@@ -136,7 +137,8 @@ import {
 } from "./helpers";
 import {
   makeGate, getVisibleExamIds, requireExamAccess,
-  validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam
+  validateExamIdsAccess, setAuthEnforced, hasViewPermission, makeViewPermissionGate, isTeacherPermittedForWholeExam,
+  requirePermissionCompat, requireWholeExamGradingAccess, canManageExamOrganization, hasExamOrganizationAffinity
 } from "./middleware";
 import { llmClientUrl, llmClientHeaders, fetchLlmClient } from "./llm-client";
 import analysisRoutes from "./routes/analysis";
@@ -1760,6 +1762,17 @@ export async function createApp(): Promise<express.Express> {
       const examRepo = new ExamRepository();
       const exams = await examRepo.listExams();
       const referenced = exams.filter((e: any) => e.card_id === cardId);
+      // 安全 R06：删除答题卡本身是设计器操作，但 `unlinkExams` / `deleteReferencedExams`
+      // 两个分支实际改的是**别人的考试**。这里按「与考试有组织归属关系」过滤
+      // （管理员/学年主任/本人创建/该班班主任或任课教师），越权引用既不被改写也不被点名。
+      const manageable: number[] = [];
+      for (const e of referenced as Array<{ id: number }>) {
+        // 未开启强制鉴权（单机设计器，无身份）→ 不收敛；与 `requirePermissionCompat` 同口径
+        if (!req.user || await hasExamOrganizationAffinity(req.user, Number(e.id))) manageable.push(Number(e.id));
+      }
+      const visibleNames = (referenced as Array<{ id: number; name: string }>)
+        .filter((e) => manageable.includes(Number(e.id)))
+        .map((e) => e.name);
       if (referenced.length > 0) {
         const body = (req.body ?? {}) as Record<string, unknown>;
         const unlinkExams = requestFlag(body.unlinkExams);
@@ -1768,7 +1781,16 @@ export async function createApp(): Promise<express.Express> {
           res.status(409).json({
             message: `无法直接删除答题卡：已被 ${referenced.length} 个考试引用`,
             referencedExamCount: referenced.length,
-            referencedExamNames: referenced.map((e: any) => e.name)
+            referencedExamNames: visibleNames
+          });
+          return;
+        }
+        if (manageable.length !== referenced.length) {
+          res.status(403).json({
+            ok: false,
+            code: "EXAM_OUT_OF_SCOPE",
+            message: `无法删除答题卡：其关联考试中有 ${referenced.length - manageable.length} 场不属于你的任教/创建范围，请先由该范围的责任教师处理`,
+            outOfScopeExamCount: referenced.length - manageable.length
           });
           return;
         }
@@ -1779,7 +1801,11 @@ export async function createApp(): Promise<express.Express> {
             await recordLifecycleEvent({ entityType: "exam", entityId: e.id, action: "delete", actorId: req.user?.id });
           }
         } else {
-          await db.run("UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ?", cardId);
+          // 只解绑已确认在范围内的考试，避免 `card_id = ?` 的全表 UPDATE 波及范围外考试
+          await db.run(
+            `UPDATE exams SET card_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE card_id = ? AND id IN (${manageable.map(() => "?").join(",")})`,
+            cardId, ...manageable
+          );
         }
         // 解绑/删除关联考试后满分依据失效，清掉这些考试的分析缓存（评审 P1）
         for (const e of referenced as Array<{ id: number }>) analysisCache.invalidateExam(Number(e.id));
@@ -1792,7 +1818,7 @@ export async function createApp(): Promise<express.Express> {
           unlinkedExamCount: deleteReferencedExams ? 0 : referenced.length,
           deletedExamCount: deleteReferencedExams ? referenced.length : 0,
           referencedExamCount: referenced.length,
-          referencedExamNames: referenced.map((e: any) => e.name)
+          referencedExamNames: visibleNames
         });
         return;
       }
@@ -1804,7 +1830,7 @@ export async function createApp(): Promise<express.Express> {
         ok: true,
         deleted,
         referencedExamCount: referenced.length,
-        referencedExamNames: referenced.map((e: any) => e.name)
+        referencedExamNames: visibleNames
       });
     } catch (error) {
       next(error);
@@ -1988,6 +2014,16 @@ export async function createApp(): Promise<express.Express> {
           createdExamId = exam.id;
         }
       } else if (imported.examAction === "link" && imported.linkExamId) {
+        // 安全 R06：`link` 会改写目标考试的 `card_id`，即换掉那场考试的判分依据。
+        // 此前对目标毫无校验：任何持 `card:write` 者可把**别人的考试**指向这张卡。
+        if (req.user && !(await hasExamOrganizationAffinity(req.user, Number(imported.linkExamId)))) {
+          res.status(403).json({
+            ok: false,
+            code: "EXAM_OUT_OF_SCOPE",
+            message: "无权关联该考试：它不由你创建，也不在你的任教/班主任范围内"
+          });
+          return;
+        }
         const { getMysqlDb } = await import("../../../server/db");
         const db = getMysqlDb();
         await db.run("UPDATE exams SET card_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
@@ -2121,6 +2157,20 @@ export async function createApp(): Promise<express.Express> {
         );
         examSubject = card?.subject_label || card?.subject || undefined;
       }
+      // 安全（R18）：`getVisibleExamIds` 把「本人创建的考试」计入可见范围，因此教师指定任意
+      // grade_id / class_id 等于自行开通那个组织的名单与成绩可见性。建考的目标组织必须落在
+      // 调用者真正任教（或担任班主任）的班级/年级内；管理员与学年主任不受此约束。
+      if (!(await canManageExamOrganization(req.user, {
+        gradeId: gradeId ? Number(gradeId) : null,
+        classId: classId ? Number(classId) : null,
+        subject: examSubject ?? null
+      }))) {
+        res.status(403).json({
+          message: "权限不足：只能在本人任教（或担任班主任）的班级/年级创建考试，如需跨组织建考请联系管理员",
+          code: "ORG_OUT_OF_SCOPE"
+        });
+        return;
+      }
       const exam = await examRepo.createExam({
         name: String(name),
         card_id: String(cardId),
@@ -2165,9 +2215,13 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
+  // 安全（R09）：赋分公式变更可在 recalculate=true 时重算全场 assigned_score，
+  // 属于整卷写操作，与逐题改分同门禁（grade:write + 整卷写授权 / 组织归属）。
   app.put(
     "/api/exams/:examId/assigned-formula",
     requireExamAccess,
+    requirePermissionCompat(PERMISSIONS.GRADE_WRITE),
+    requireWholeExamGradingAccess,
     validateBody(UpdateAssignedFormulaSchema),
     async (req, res, next) => {
       try {
@@ -2357,6 +2411,29 @@ export async function createApp(): Promise<express.Express> {
             return;
           }
           updates.retention_policy_id = pid;
+        }
+      }
+
+      // 安全（R18）：改年级/班级即改组织数据范围，`getVisibleExamIds` 会把本人创建的考试计入
+      // 可见集合，因此「把已有考试重定向到无权组织」与「建考时任意指定」是同一个洞；
+      // 改学科同样改变任教学科匹配，改 exam_mode=quiz 会经 `withQuizExamIds` 放大为全体教师可见。
+      // 现要求目标组织仍落在调用者可管理范围内（管理员/学年主任不受限）。
+      const touchesScope = updates.grade_id !== undefined || updates.class_id !== undefined
+        || updates.subject !== undefined || updates.exam_mode !== undefined;
+      if (touchesScope) {
+        const current = await getMysqlDb().get<{ grade_id: number | null; class_id: number | null; subject: string | null }>(
+          "SELECT grade_id, class_id, subject FROM exams WHERE id = ?", exam.id
+        );
+        if (!(await canManageExamOrganization(req.user, {
+          gradeId: updates.grade_id !== undefined ? Number(updates.grade_id) : (current?.grade_id ?? null),
+          classId: updates.class_id !== undefined ? Number(updates.class_id) : (current?.class_id ?? null),
+          subject: updates.subject !== undefined ? String(updates.subject) : (current?.subject ?? null)
+        }))) {
+          res.status(403).json({
+            message: "权限不足：只能变更本人任教（或担任班主任）班级/年级的考试范围、学科与模式，如需跨组织调整请联系管理员",
+            code: "ORG_OUT_OF_SCOPE"
+          });
+          return;
         }
       }
 
@@ -2595,7 +2672,10 @@ export async function createApp(): Promise<express.Express> {
   // 显式名单用于核对学生身份，不作为公布已有成绩的前置条件。
 
   // GET /api/exams/:examId/participants — 查看当前应考名单（含来源标记）
-  app.get("/api/exams/:examId/participants", requireExamAccess, async (req, res, next) => {
+  // 安全 R29：名单是整班/整年级的姓名+学号集合，`requireExamAccess` 对**学生**也放行 GET，
+  // 学生因此可读到同班/同年级全部同学的名单。改为按成绩读取权限 + 名单查看门收敛，
+  // 与 `participant-search` 同口径（用 compat 版以免破坏未开启强制鉴权的存量部署）。
+  app.get("/api/exams/:examId/participants", requireExamAccess, requirePermissionCompat(PERMISSIONS.GRADE_READ), makeViewPermissionGate("can_view_students"), async (req, res, next) => {
     try {
       const examId = Number(req.params.examId);
       if (!Number.isInteger(examId) || examId <= 0) {
@@ -2662,7 +2742,7 @@ export async function createApp(): Promise<express.Express> {
       }
       const body = (req.body ?? {}) as { studentIds?: unknown; studentNumbers?: unknown };
       const db = getMysqlDb();
-      const exam = await db.get("SELECT id FROM exams WHERE id = ?", examId) as { id: number } | undefined;
+      const exam = await db.get("SELECT id, class_id, grade_id FROM exams WHERE id = ?", examId) as { id: number; class_id: number | null; grade_id: number | null } | undefined;
       if (!exam) {
         res.status(404).json({ message: "考试不存在" });
         return;
@@ -2713,6 +2793,31 @@ export async function createApp(): Promise<express.Express> {
         const missingIds = ids.filter((id) => !found.has(id));
         if (missingIds.length > 0) {
           res.status(400).json({ message: `以下学生不存在或非学生账号：${missingIds.join("、")}` });
+          return;
+        }
+      }
+
+      // 安全 R29：显式名单是权威应考集合，写入前必须收敛范围——否则教师可把任意
+      // 年级/班级的学生挂进自己的考试（既越权建立名单，也借名单读到范围外学生的姓名与学号）。
+      // 考试无班级/年级（历史无范围考试）时只做调用者可访问班级一侧的收敛。
+      if (ids.length > 0) {
+        const outside = await findStudentsOutsideParticipantScope(
+          db,
+          { class_id: exam.class_id, grade_id: exam.grade_id },
+          ids,
+          await getAccessibleClassIds(req.user)
+        );
+        if (outside.length > 0) {
+          const rows = await db.all(
+            `SELECT id, name, student_number FROM users WHERE id IN (${outside.map(() => "?").join(",")})`,
+            ...outside
+          ) as Array<{ id: number; name: string; student_number: string | null }>;
+          const labels = rows.map((r) => r.student_number ? `${r.name}(${r.student_number})` : r.name);
+          res.status(403).json({
+            message: `以下学生不在本考试的应考范围内，或你不具备其所在班级的管理权限：${labels.join("、")}`,
+            code: "PARTICIPANT_OUT_OF_SCOPE",
+            studentIds: outside,
+          });
           return;
         }
       }
@@ -2833,6 +2938,8 @@ export async function startServer(port = Number(process.env.PORT ?? 5174)): Prom
       // 安全（R22/R28）：把当前生效的上传闸门打在启动日志里，现场调过 PROJECTX_UPLOAD_* 后
       // 只需看这一行即可确认「实际生效值」，而不是去猜默认值有没有被一个拼错的数字带跑。
       console.log(`[upload-limits] ${describeScanUploadLimits()}`);
+      // 安全（R15）：试卷池持有量配额同样按「默认 + 环境变量 + 天花板」解析，启动即打印生效档位
+      console.log(`[review-pool-limits] ${describeReviewPoolLimits()}`);
       logWechatSubscriptionStatus();
       startLlmClientSidecar();
       const shutdown = () => {

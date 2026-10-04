@@ -246,7 +246,7 @@ export async function listAnswerBlockCropsForStudent(
 }
 
 export async function listReviewBlockCrops(
-  params: { examId: number; blockId?: string; classId?: number; status?: string; cropId?: string },
+  params: { examId: number; blockId?: string; blockIds?: string[]; classId?: number; status?: string; cropId?: string },
   db: DbAdapter = getMysqlDb()
 ): Promise<AnswerBlockCrop[]> {
   const filters = ["abc.exam_id = ?"];
@@ -254,6 +254,12 @@ export async function listReviewBlockCrops(
   if (params.blockId) {
     filters.push("abc.block_id = ?");
     values.push(params.blockId);
+  }
+  // 安全 R03：题块级阅卷人的读取范围收敛（空集合 = 无任何题块可阅，必须返回空而非忽略条件）
+  if (params.blockIds) {
+    if (params.blockIds.length === 0) return [];
+    filters.push(`abc.block_id IN (${params.blockIds.map(() => "?").join(",")})`);
+    values.push(...params.blockIds);
   }
   if (params.status) {
     filters.push("abc.status = ?");

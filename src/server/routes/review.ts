@@ -5,7 +5,7 @@
 import { Router } from "express";
 import { requirePermission } from "../middleware/auth";
 import { PERMISSIONS } from "../auth/permissions";
-import { requireExamAccess, requireGradingScope } from "../../apps/answer-card/server/middleware";
+import { requireExamAccess, requireGradingScope, getPermittedBlocks } from "../../apps/answer-card/server/middleware";
 import { optionalPositiveNumber } from "../../apps/answer-card/server/helpers";
 import {
   listReviewBlockCropItems,
@@ -61,7 +61,9 @@ router.get("/exams/:examId/blocks", requireExamAccess, async (req, res, next) =>
       res.status(400).json({ message: "Invalid examId" });
       return;
     }
-    const blocks = await listReviewBlocks(examId);
+    // 安全 R03：`requireExamAccess` 只判定「能否看到这场考试」，题块级阅卷人因此能
+    // 列出全卷题块与每题统计。读取侧按 `getPermittedBlocks` 收敛（null = 不受限）。
+    const blocks = await listReviewBlocks(examId, getMysqlDb(), await getPermittedBlocks(req.user, examId));
     res.json({ examId, blocks });
   } catch (error) {
     next(error);
@@ -78,9 +80,17 @@ router.get("/exams/:examId/block-crops", requireExamAccess, async (req, res, nex
     const blockId = typeof req.query.blockId === "string" ? req.query.blockId.trim() : "";
     const status = typeof req.query.status === "string" ? req.query.status.trim() : "";
     const classId = optionalPositiveNumber(req.query.classId);
+    // 安全 R03：切块清单含学生姓名/学号与答案图，题块级阅卷人只能读本人题块；
+    // 显式请求了越权题块时直接 403（而非静默返回空列表，避免前端误判「无待阅」）。
+    const permitted = await getPermittedBlocks(req.user, examId);
+    if (permitted && blockId && !permitted.includes(blockId)) {
+      res.status(403).json({ message: `权限不足：未获分配题块 ${blockId}` });
+      return;
+    }
     const rows = await listReviewBlockCropItems({
       examId,
       blockId: blockId || undefined,
+      blockIds: permitted ?? undefined,
       classId: classId ?? undefined,
       status: status || undefined
     });
@@ -158,7 +168,13 @@ router.get("/exams/:examId/trace", requireExamAccess, async (req, res, next) => 
       return;
     }
     const blockId = typeof req.query.blockId === "string" ? req.query.blockId : undefined;
-    const trace = await getReviewTrace(examId, blockId);
+    // 安全 R03：溯源表暴露全卷每题得分与评审人，同样按题块范围收敛。
+    const permitted = await getPermittedBlocks(req.user, examId);
+    if (permitted && blockId && !permitted.includes(blockId)) {
+      res.status(403).json({ message: `权限不足：未获分配题块 ${blockId}` });
+      return;
+    }
+    const trace = await getReviewTrace(examId, blockId, getMysqlDb(), permitted);
     res.json({ ok: true, data: trace });
   } catch (error) {
     next(error);

@@ -21,12 +21,15 @@ const uploadEnvVarsClearedHere = [
   "PROJECTX_UPLOAD_MAX_CROPS_TOTAL_MIB", "PROJECTX_UPLOAD_MAX_PAGE_REQUEST_TOTAL_MIB",
   "PROJECTX_UPLOAD_MAX_BATCH_FILES", "PROJECTX_UPLOAD_MAX_BATCH_TOTAL_MIB"
 ];
+// 试卷池持有量配额（安全 R15）同样是「默认值 + 环境变量 + 天花板」三档，宿主机变量会污染默认档位断言。
+const reviewPoolEnvVarsClearedHere = ["PROJECTX_REVIEW_MAX_HELD_PER_BLOCK", "PROJECTX_REVIEW_MAX_HELD_TOTAL"];
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST",
   // R01 逃生阀：宿主机若已设置该变量会污染随机口令断言，测试内自行显式设置/清除
   "PROJECTX_ADMIN_PASSWORD",
-  ...uploadEnvVarsClearedHere
+  ...uploadEnvVarsClearedHere,
+  ...reviewPoolEnvVarsClearedHere
 ]) delete process.env[key];
 
 let passed = 0;
@@ -530,6 +533,26 @@ async function main(): Promise<void> {
     check(describeText.includes("50MiB") && describeText.includes("≤200")
       && describeText.includes("≤300") && describeText.includes("1024MiB"),
       "启动摘要按当前生效值输出，运维无需读代码即可确认闸门档位");
+
+    // ── 试卷池持有量配额（安全 R15）：与上传上限同一套三档设计
+    const {
+      MAX_HELD_PAPERS_PER_BLOCK, MAX_HELD_PAPERS_TOTAL,
+      resolveReviewPoolLimits, DEFAULT_REVIEW_POOL_LIMITS, REVIEW_POOL_ENV_VARS, describeReviewPoolLimits
+    } = await import("../src/shared/reviewPoolLimits");
+    const poolEnvNames = Object.values(REVIEW_POOL_ENV_VARS);
+    check(poolEnvNames.slice().sort().join() === reviewPoolEnvVarsClearedHere.slice().sort().join()
+      && poolEnvNames.every((name) => !(name in process.env)),
+      "脚本清理的试卷池配额变量名单与限制表逐一对应，宿主机变量不会渗入默认档位断言");
+    check(MAX_HELD_PAPERS_PER_BLOCK === DEFAULT_REVIEW_POOL_LIMITS.maxHeldPapersPerBlock
+      && MAX_HELD_PAPERS_TOTAL === DEFAULT_REVIEW_POOL_LIMITS.maxHeldPapersTotal
+      && resolveReviewPoolLimits({}).notices.length === 0,
+      "未配置时按默认持有量配额生效（题块 20 份 / 全局 60 份）");
+    check(resolveReviewPoolLimits({ PROJECTX_REVIEW_MAX_HELD_PER_BLOCK: "3" }).limits.maxHeldPapersPerBlock === 3
+      && resolveReviewPoolLimits({ PROJECTX_REVIEW_MAX_HELD_TOTAL: "-1" }).limits.maxHeldPapersTotal === 60
+      && resolveReviewPoolLimits({ PROJECTX_REVIEW_MAX_HELD_TOTAL: "999999" }).limits.maxHeldPapersTotal === 2000,
+      "持有量配额可收紧、非法值回落默认、超天花板被夹紧（放宽有上界）");
+    check(describeReviewPoolLimits().includes("maxHeldPapersPerBlock=20"),
+      "试卷池配额进入启动摘要，与上传上限一致的可见性");
 
     // ── R04：记录/会话级接口收敛到考试范围（critical-card 被可见/越权两场考试复用）
     const r04Session = await newScanSession();
