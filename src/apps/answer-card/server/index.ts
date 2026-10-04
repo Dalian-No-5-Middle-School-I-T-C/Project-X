@@ -1,7 +1,13 @@
 import { databaseTimestamp } from "../../../server/db/timestamp";
 import express from "express";
 import multer from "multer";
-import { MAX_SCAN_IMAGE_BYTES } from "../../../shared/scanUploadLimits";
+import {
+  MAX_SCAN_IMAGE_BYTES,
+  MAX_SCAN_PAGE_REQUEST_TOTAL_BYTES,
+  MAX_GRADING_BATCH_FILES,
+  MAX_GRADING_BATCH_TOTAL_BYTES,
+} from "../../../shared/scanUploadLimits";
+import { requestUploadBudget } from "../../../server/lib/uploadBudget";
 import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -1131,6 +1137,9 @@ export async function createApp(): Promise<express.Express> {
   });
 
   const recognitionUpload = multer({
+    // 安全（R28）：批量判分/识别上传此前只有单文件 50 MiB 上限，文件数量与单次请求累计
+    // 字节都不受约束（一次提交可以压进任意多张原卷）。数量用 multer 原生 limits.files，
+    // 累计字节用 requestUploadBudget 在请求层拦截；单文件上限保持不变以免影响真实扫描尺寸。
     storage: multer.diskStorage({
       destination: async (req, _file, cb) => {
         const cardId = safeId(paramValue(req.params.cardId));
@@ -1145,7 +1154,15 @@ export async function createApp(): Promise<express.Express> {
         cb(null, name);
       }
     }),
-    limits: { fileSize: MAX_SCAN_IMAGE_BYTES }
+    limits: { fileSize: MAX_SCAN_IMAGE_BYTES, files: MAX_GRADING_BATCH_FILES }
+  });
+
+  /** 识别/判分上传的请求级预算：单页识别按一页原卷，批量判分按整场提交。 */
+  const recognitionPageBudget = requestUploadBudget({
+    maxTotalBytes: MAX_SCAN_PAGE_REQUEST_TOTAL_BYTES, label: "答题卡识别上传",
+  });
+  const recognitionBatchBudget = requestUploadBudget({
+    maxTotalBytes: MAX_GRADING_BATCH_TOTAL_BYTES, label: "答题卡批量上传",
   });
 
   app.get("/api/cards", async (_req, res, next) => {
@@ -1250,7 +1267,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/recognition/objective", recognitionUpload.single("file"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/recognition/objective", recognitionPageBudget, recognitionUpload.single("file"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -1287,7 +1304,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/recognition", recognitionUpload.single("file"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/recognition", recognitionPageBudget, recognitionUpload.single("file"), async (req, res, next) => {
     try {
       const cardId = safeId(paramValue(req.params.cardId));
       const card = await cardRepo.findById(cardId);
@@ -1390,7 +1407,7 @@ export async function createApp(): Promise<express.Express> {
     });
   });
 
-  app.post("/api/cards/:cardId/grading/objective", recognitionUpload.array("files"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading/objective", recognitionBatchBudget, recognitionUpload.array("files"), async (req, res, next) => {
     let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
@@ -1486,7 +1503,7 @@ export async function createApp(): Promise<express.Express> {
     }
   });
 
-  app.post("/api/cards/:cardId/grading", recognitionUpload.array("files"), async (req, res, next) => {
+  app.post("/api/cards/:cardId/grading", recognitionBatchBudget, recognitionUpload.array("files"), async (req, res, next) => {
     let progressId = "";
     try {
       const cardId = safeId(paramValue(req.params.cardId));
@@ -2771,6 +2788,8 @@ export async function createApp(): Promise<express.Express> {
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error(error);
+    // 请求级上传预算（R28）已经给出 413 并销毁请求，随后 multer 抛出的断流错误不再改写响应
+    if (res.headersSent) { res.end(); return; }
     // 上传类错误映射：multer 超限应 413、其它上传错误 400，而不是 500
     if (error && typeof error === "object" && (error as any)?.name === "MulterError") {
       const multerCode = String((error as any)?.code ?? "");

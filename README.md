@@ -668,10 +668,15 @@ Project-X/
 | `POST` | `/api/db/clear-demo` | 一键清除「演示-」前缀数据（管理员） |  ← v1.9.4 |
 | `GET` | `/api/app/health` | 健康检查（含数据库状态与 `capabilities.scannerClientApi`） |
 | `GET/PATCH` | `/api/app/db-config` | 数据库配置读取/修改（管理员） |
-| `POST`            | `/api/scanner/upload/sessions`              | 创建扫描上传会话（API Key + JWT 双鉴权） |
-| `POST`            | `/api/scanner/upload/sessions/:id/pages`   | 上传扫描页（multipart） |
+| `POST`            | `/api/scanner/upload/sessions`              | 创建扫描上传会话（API Key + JWT 双鉴权；`pageCount` 1–200） |
+| `POST`            | `/api/scanner/upload/sessions/:id/pages`   | 上传扫描页（multipart；会话完成后旧令牌 409 失效） |
+| `POST`            | `/api/scanner/upload/sessions/:id/pages/:recordId/crops` | 上传题块切图（单次 ≤50 张、单张 ≤12 MiB、累计 ≤160 MiB） |
 | `POST`            | `/api/scanner/upload/sessions/:id/complete` | 标记扫描完成 |
 | `GET`             | `/api/scanner/upload/sessions/:id/status`   | 查询扫描状态 |
+| `GET`             | `/api/scanner/upload/records/:recordId/image` | 读取扫描原卷图片（按考试范围授权，越权 403） |
+| `GET`             | `/api/scanner/scan/:sessionId`、`GET /api/scanner/record/:recordId` | 扫描会话/记录详情（仅返回 `hasImage`，服务端绝对路径不外发） |
+
+> **扫描/判分上传的硬限制**（安全 R22/R28，单一来源 `src/shared/scanUploadLimits.ts`）：单张原卷 50 MiB；单个会话 1–200 页；切块单次 50 张 / 单张 12 MiB / 累计 160 MiB；批量判分与识别上传单次 300 张 / 累计 1 GiB。超限分别返回 400（数量、页码）或 413（单张体积、累计字节）。
 | `GET/POST/PUT/DELETE` | `/api/admin/api-keys` | API Key 管理（管理员） |
 | `GET` | `/api/ladder/config` | 天梯开关状态 |
 | `PUT` | `/api/ladder/config` | 管理员设置天梯开关 |

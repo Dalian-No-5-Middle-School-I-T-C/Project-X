@@ -99,9 +99,27 @@ async function moveCropFile(sourcePath: string, targetPath: string): Promise<voi
   }
 }
 
+/**
+ * 安全（R07）：切块文件名由清单字段拼出，页码/分段号必须先收敛为非负整数。
+ * 未收敛时 `"pageNumber": "../../x"` 这类值会直接进入文件名，把切块搬到切块目录之外。
+ */
+function safePartIndex(value: unknown, max = 9999): number {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 && n <= max ? n : 0;
+}
+
 function targetFileName(crop: RecognitionBlockCrop, index: number): string {
   const block = safeId(crop.blockId) || "block";
-  return `p${crop.pageNumber}_s${crop.segmentIndex}_${String(index + 1).padStart(2, "0")}_${block}.png`;
+  const page = safePartIndex(crop.pageNumber, 9999);
+  const segment = safePartIndex(crop.segmentIndex, 9999);
+  return `p${page}_s${segment}_${String(index + 1).padStart(2, "0")}_${block}.png`;
+}
+
+/** 路径必须严格落在 base 目录内（R07：拒绝 `..`、绝对路径与同前缀目录名）。 */
+export function isInsideDir(base: string, target: string): boolean {
+  const resolvedBase = path.resolve(base);
+  const resolved = path.resolve(target);
+  return resolved === resolvedBase || resolved.startsWith(resolvedBase + path.sep);
 }
 
 /** 切块持久化统计（五轮D1：空/无效切块不再静默，返回统计 + 日志定位） */
@@ -159,7 +177,15 @@ export async function persistAnswerBlockCrops(
 
       const id = randomUUID();
       const targetPath = path.join(targetDir, targetFileName(crop, index));
-      await moveCropFile(crop.path, targetPath);
+      // 安全（R07）：目标路径必须仍在「该卡/该记录」的切块目录内。
+      // 清单里的页码/分段号参与文件名拼装，越界就等于让上传方决定服务端写文件的位置。
+      // 源文件由服务端自己产生（识别器临时目录 / 扫描上传临时目录），远端已无法指定。
+      if (!isInsideDir(targetDir, targetPath)) {
+        stats.skipped += 1;
+        console.warn(`[crop] 拒绝越出切块目录的目标路径 #${index} (target=${targetPath}, dir=${targetDir})`);
+        continue;
+      }
+      await moveCropFile(path.resolve(crop.path), targetPath);
       movedPaths.push(targetPath);
 
       await db.run(

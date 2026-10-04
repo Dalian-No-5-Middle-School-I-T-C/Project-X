@@ -1,6 +1,6 @@
 import { processScannerSession } from "../../../../server/services/scannerSubmissions";
 import { scannerLegacyRecoveryRouter } from "../../../../server/routes/scanner-legacy-recovery";
-import { requireScannerExamScope } from "../../../../server/middleware/scanner-scope";
+import { requireScannerExamScope, requireScannerRecordScope } from "../../../../server/middleware/scanner-scope";
 import { parseIdentityMode } from "../../../../shared/cardIdentity";
 import { parseRecognitionDpi } from "../helpers";
 import { Router, type Response } from "express";
@@ -69,6 +69,10 @@ export function normalizePageTimeoutMs(value: unknown): number {
 export function createScannerRouter(twainEnabled = true): Router {
   const router = Router();
   router.use("/session/:sessionId", requireScannerExamScope);
+  // 安全（R04）：这些路由只带 sessionId / recordId，此前完全不受考试范围约束——
+  // 任何具备扫描侧凭据的账号都能按 ID 遍历读取甚至删除其它考试的扫描记录与原卷图片。
+  router.use("/scan/:sessionId", requireScannerRecordScope());
+  router.use(["/record/:recordId", "/scan-image/:recordId"], requireScannerRecordScope({ recordIdParam: "recordId" }));
   router.use(scannerLegacyRecoveryRouter());
 
   // Write scanner result to projectx.db for linked exams
@@ -245,6 +249,7 @@ export function createScannerRouter(twainEnabled = true): Router {
       const records = await listScanRecords(session.id);
       res.json({
         session,
+        // 安全（R04）：不再回传服务端绝对路径；预览走 /api/scanner/scan-image/:recordId
         records: records.map((r) => ({
           id: r.id,
           pageNum: r.page_num,
@@ -253,7 +258,7 @@ export function createScannerRouter(twainEnabled = true): Router {
           studentConf: r.student_conf,
           ocrStatus: r.ocr_status,
           scanQuality: r.scan_quality,
-          imagePath: r.image_path
+          hasImage: Boolean(r.image_path && !String(r.image_path).startsWith("pending:"))
         }))
       });
     } catch (error) {
@@ -298,7 +303,9 @@ export function createScannerRouter(twainEnabled = true): Router {
         res.status(404).json({ message: "扫描记录不存在" });
         return;
       }
-      res.json(record);
+      // 安全（R04）：绝对路径不外发，图片预览走 /scan-image
+      const { image_path, ...safeRecord } = record;
+      res.json({ ...safeRecord, hasImage: Boolean(image_path && !image_path.startsWith("pending:")) });
     } catch (error) {
       next(error);
     }
@@ -334,7 +341,8 @@ export function createScannerRouter(twainEnabled = true): Router {
           ocrStatus: s.record.ocr_status,
           pageNum: s.record.page_num,
           side: s.record.side,
-          imagePath: s.record.image_path,
+          // 安全（R04）：不外发服务端绝对路径，预览走 /api/scanner/scan-image/:recordId
+          hasImage: Boolean(s.record.image_path && !String(s.record.image_path).startsWith("pending:")),
           scanQuality: s.record.scan_quality,
           createdAt: s.record.created_at,
           recognition: s.recognition
@@ -509,19 +517,26 @@ export function createScannerRouter(twainEnabled = true): Router {
   router.get("/scan-image/:recordId", async (req, res, next) => {
     try {
       const record = await getScanRecordWithResult(safeId(req.params.recordId));
-      if (!record || !record.image_path) {
+      if (!record || !record.image_path || !existsSync(record.image_path)) {
         res.status(404).json({ message: "扫描记录不存在" });
         return;
       }
-      if (!existsSync(record.image_path)) {
+      // 安全（R04）：只允许读取数据目录内的图片；遗留的绝对路径/被改写的路径不外发任意文件
+      const imagePath = path.resolve(record.image_path);
+      const dataRoot = path.resolve(dataDir);
+      if (imagePath !== dataRoot && !imagePath.startsWith(dataRoot + path.sep)) {
         res.status(404).json({ message: "图片文件不存在" });
         return;
       }
-      const ext = path.extname(record.image_path).toLowerCase();
+      if (!existsSync(imagePath)) {
+        res.status(404).json({ message: "图片文件不存在" });
+        return;
+      }
+      const ext = path.extname(imagePath).toLowerCase();
       const contentType = ext === ".png" ? "image/png" : "image/jpeg";
       res.setHeader("Content-Type", contentType);
       res.setHeader("Cache-Control", "private, max-age=3600");
-      res.sendFile(record.image_path);
+      res.sendFile(imagePath);
     } catch (error) {
       next(error);
     }

@@ -15,15 +15,24 @@ import multer from "multer";
 import { parseIdentityMode } from "../../shared/cardIdentity";
 import { buildLayout } from "../../shared/layout";
 import { mapScanPageToLayout } from "../../shared/scanPages";
-import { MAX_SCAN_IMAGE_BYTES } from "../../shared/scanUploadLimits";
+import {
+  MAX_SCAN_IMAGE_BYTES,
+  MAX_SCAN_SESSION_PAGES,
+  MAX_SCAN_PAGE_REQUEST_TOTAL_BYTES,
+  MAX_CROP_IMAGE_BYTES,
+  MAX_CROPS_PER_REQUEST,
+  MAX_CROPS_TOTAL_BYTES,
+} from "../../shared/scanUploadLimits";
+import { requestUploadBudget } from "../lib/uploadBudget";
 import path from "node:path";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import crypto from "node:crypto";
 import { dualAuth } from "../middleware/scanner-auth";
-import { requireScannerExamScope } from "../middleware/scanner-scope";
+import { requireScannerExamScope, requireScannerRecordScope } from "../middleware/scanner-scope";
 import { resolveScannerExam } from "../services/scannerExam";
 import { getMysqlDb } from "../db";
-import { persistAnswerBlockCrops } from "../services/AnswerBlockCropService";
+import { persistAnswerBlockCrops, isInsideDir, type CropPersistenceStats } from "../services/AnswerBlockCropService";
 import { isValidImageBuffer } from "../../apps/answer-card/server/validate-upload";
 import type { RecognitionBlockCrop } from "../../shared/types";
 import { z } from "zod";
@@ -53,7 +62,70 @@ const recognitionSchema = z.object({
   })).max(1000),
 });
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_SCAN_IMAGE_BYTES } });
+/**
+ * 安全（R07）：切块清单（manifest）参与服务端落盘文件名与题块记录，字段必须先收敛。
+ *
+ * 风险点：`pageNumber` / `segmentIndex` 会被拼进目标文件名，未校验时携带 `..` 或路径
+ * 分隔符就能把切块写到切块目录之外；`path` 若采信客户端值则等于任意路径。
+ * 因此这里只承认下列字段，其余（含客户端上报的 `path`）一律丢弃，落盘路径由服务端决定。
+ */
+const cropManifestSchema = z.object({
+  blockId: z.string().min(1).max(64),
+  blockTitle: z.string().max(120).optional(),
+  blockType: z.string().max(32).optional(),
+  pageNumber: z.number().int().min(1).max(MAX_SCAN_SESSION_PAGES),
+  segmentIndex: z.number().int().min(0).max(MAX_CROPS_PER_REQUEST),
+  questionNumbers: z.array(z.union([z.number().int().min(0).max(99999), z.string().min(1).max(16)])).min(1).max(200),
+  rect: z.object({
+    x: z.number().finite().min(0), y: z.number().finite().min(0),
+    width: z.number().finite().min(0), height: z.number().finite().min(0),
+  }),
+  widthPx: z.number().finite().min(0).max(20000),
+  heightPx: z.number().finite().min(0).max(20000),
+  dpi: z.number().finite().min(0).max(2400),
+  fileName: z.string().min(1).max(120).optional(),
+});
+
+/** 上传切块必须落在本次请求的临时目录内；任何越出该目录的路径都视为清单被篡改。 */
+function insideDir(dir: string, target: string): boolean {
+  const base = path.resolve(dir);
+  const resolved = path.resolve(target);
+  return resolved === base || resolved.startsWith(base + path.sep);
+}
+
+/**
+ * 安全（R28）：扫描页与切块上传的三级限制。
+ *  - 单文件：原卷 50 MiB、切块 12 MiB（multer limits.fileSize）；
+ *  - 数量：单页请求 1 张、切块请求 50 张（multer limits.files，超限即 400）；
+ *  - 累计：整个请求体的字节预算（requestUploadBudget，超限 413）。
+ * 此前切块只有「单张 50 MiB」，最坏一次请求吃掉 50 × 50 MiB = 2.5 GiB 服务端内存。
+ */
+const pageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_SCAN_IMAGE_BYTES, files: 1 },
+});
+const cropUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_CROP_IMAGE_BYTES, files: MAX_CROPS_PER_REQUEST },
+});
+const pageUploadBudget = requestUploadBudget({
+  maxTotalBytes: MAX_SCAN_PAGE_REQUEST_TOTAL_BYTES, label: "扫描页上传",
+});
+const cropUploadBudget = requestUploadBudget({
+  maxTotalBytes: MAX_CROPS_TOTAL_BYTES, label: "扫描切块上传",
+});
+
+/**
+ * 安全（R22）：单个扫描会话的页数上界见 `shared/scanUploadLimits`。
+ * pageCount 由远端扫描端上报，既决定会话创建时向 twain_scan_records 插入的行数，
+ * 也决定一次性发放的上传令牌数量；没有上界时，一次请求就能写入任意多行。
+ */
+export function parseScanSessionPageCount(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return 1;
+  const pages = Number(value);
+  if (!Number.isInteger(pages) || pages < 1 || pages > MAX_SCAN_SESSION_PAGES) return null;
+  return pages;
+}
 
 const router = Router();
 // Same authorization as an upload, without creating a session or touching scans.
@@ -61,6 +133,9 @@ router.get("/check", dualAuth, (_req, res) => {
   res.json({ ok: true });
 });
 router.use("/sessions/:sessionId", dualAuth, requireScannerExamScope);
+// 安全（R04）：/records/:recordId/* 只带记录 ID，此前任何扫描端凭据都能按 ID 逐个读走
+// 其它考试、其它学生的原卷图片。先映射到所属会话再走考试范围校验。
+router.use("/records/:recordId", dualAuth, requireScannerRecordScope({ recordIdParam: "recordId" }));
 router.use("/legacy", dualAuth);
 router.use(scannerLegacyRecoveryRouter());
 
@@ -71,10 +146,13 @@ function genId(): string {
   return crypto.randomBytes(12).toString("hex");
 }
 
-function scannerUploadDir(): string {
-  const base = process.env.ANSWER_CARD_DATA_DIR
+function scannerDataDir(): string {
+  return process.env.ANSWER_CARD_DATA_DIR
     || path.join(process.cwd(), "data", "answer-card");
-  const dir = path.join(base, "scanner-uploads");
+}
+
+function scannerUploadDir(): string {
+  const dir = path.join(scannerDataDir(), "scanner-uploads");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -82,47 +160,55 @@ function scannerUploadDir(): string {
 // ── POST /api/scanner/sessions ────────────────────────
 router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
   try {
-    const { cardId, name, dpi, paperSize, pageCount } = req.body ?? {};
+    const { cardId, name, dpi, paperSize } = req.body ?? {};
     if (!cardId) {
       res.status(400).json({ message: "cardId 必填" });
+      return;
+    }
+    // 安全（R22）：页数先夹紧再落库，避免一次请求插入任意多条记录/令牌
+    const requestedPages = parseScanSessionPageCount(req.body?.pageCount);
+    if (requestedPages === null) {
+      res.status(400).json({ message: `pageCount 需为 1–${MAX_SCAN_SESSION_PAGES} 的整数` });
       return;
     }
 
     const sessionId = `scan_${genId()}`;
     const db = await getMysqlDb();
 
-    await db.run(
-      `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
-      sessionId,
-      String(cardId),
-      name || `扫描_${new Date().toISOString().slice(0, 10)}`,
-      // 安全（#24）：远端扫描端上报的 DPI 同样夹紧后再落库。
-      parseRecognitionDpi(dpi),
-      1,            // duplex
-      "gray",       // color_mode
-      paperSize || "A4",
-      pageCount || 0,
-      parseIdentityMode(req.body?.identityMode),
-    );
-
     // 给每页生成上传 token（简单防篡改）
-    const totalPages = pageCount || 1;
     const uploadTokens: string[] = [];
-    for (let i = 0; i < totalPages; i++) {
-      const token = genId();
-      uploadTokens.push(token);
-      await db.run(
-        `INSERT INTO twain_scan_records (id, session_id, card_id, image_path, page_num, side, ocr_status)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
-        token, sessionId, String(cardId), `pending:${token}`, i + 1, i === 0 ? "front" : "back"
+    for (let i = 0; i < requestedPages; i++) uploadTokens.push(genId());
+
+    // 会话与其全部待上传页必须在同一事务内写入：中途失败会留下「会话存在但缺页」的半成品，
+    // 客户端后续 complete 会因页数为 0 而卡死。
+    await db.transaction(async (tx) => {
+      await tx.run(
+        `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'uploading')`,
+        sessionId,
+        String(cardId),
+        name || `扫描_${new Date().toISOString().slice(0, 10)}`,
+        // 安全（#24）：远端扫描端上报的 DPI 同样夹紧后再落库。
+        parseRecognitionDpi(dpi),
+        1,            // duplex
+        "gray",       // color_mode
+        paperSize || "A4",
+        requestedPages,
+        parseIdentityMode(req.body?.identityMode),
       );
-    }
+      for (let i = 0; i < requestedPages; i++) {
+        await tx.run(
+          `INSERT INTO twain_scan_records (id, session_id, card_id, image_path, page_num, side, ocr_status)
+           VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+          uploadTokens[i], sessionId, String(cardId), `pending:${uploadTokens[i]}`, i + 1, i === 0 ? "front" : "back"
+        );
+      }
+    });
 
     res.status(201).json({
       sessionId,
       uploadTokens,
-      message: `会话已创建，共 ${totalPages} 页待上传`,
+      message: `会话已创建，共 ${requestedPages} 页待上传`,
     });
   } catch (err: any) {
     // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
@@ -132,7 +218,7 @@ router.post("/sessions", dualAuth, async (req: Request, res: Response) => {
 });
 
 // ── POST /api/scanner/sessions/:sessionId/pages ─────────
-router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), async (req: Request, res: Response) => {
+router.post("/sessions/:sessionId/pages", dualAuth, pageUploadBudget, pageUpload.single("image"), async (req: Request, res: Response) => {
   try {
     const { sessionId } = req.params;
     const token = (req.body?.token ?? req.query?.token) as string;
@@ -162,13 +248,23 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
     const db = await getMysqlDb();
 
     // 验证 session
-    const session = await db.get<{ id: string; card_id: string; identity_mode: string }>("SELECT id, card_id, identity_mode FROM twain_scan_sessions WHERE id = ?", sessionId);
+    const session = await db.get<{ id: string; card_id: string; identity_mode: string; status: string }>(
+      "SELECT id, card_id, identity_mode, status FROM twain_scan_sessions WHERE id = ?", sessionId);
     if (!session) {
       res.status(404).json({ message: "会话不存在" });
       return;
     }
-    const record = await db.get("SELECT id FROM twain_scan_records WHERE id = ? AND session_id = ?", token, sessionId);
+    const record = await db.get<{ ocr_status: string }>(
+      "SELECT id, ocr_status FROM twain_scan_records WHERE id = ? AND session_id = ?", token, sessionId);
     if (!record) { res.status(400).json({ message: "扫描页不属于当前会话" }); return; }
+    // 安全（R02）：会话完成（或该页已入库）后，令牌即失效。
+    // 此前令牌在 ocr_status='completed' 后仍然可用，任何持有旧令牌者都能覆盖已判分页面
+    // 的图片与识别结果，把「已完成扫描」变成对既有成绩的静默改写。
+    // 需要重扫时由扫描端新建会话，归属仍按原会话回执保持不变。
+    if (session.status === "completed" || record.ocr_status === "completed") {
+      res.status(409).json({ message: "该扫描会话已完成，页面不可再改写；请新建扫描会话后重新上传" });
+      return;
+    }
     let recognition: z.infer<typeof recognitionSchema> | undefined;
     if (req.body.recognition) {
       try { recognition = recognitionSchema.parse(JSON.parse(req.body.recognition)); }
@@ -226,7 +322,7 @@ router.post("/sessions/:sessionId/pages", dualAuth, upload.single("image"), asyn
 });
 
 // ── POST /api/scanner/sessions/:sessionId/complete ──────
-router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array("crops", 50), async (req: Request, res: Response) => {
+router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, cropUploadBudget, cropUpload.array("crops", MAX_CROPS_PER_REQUEST), async (req: Request, res: Response) => {
   try {
     const sessionId = String(req.params.sessionId);
     const recordId = String(req.params.recordId);
@@ -241,16 +337,27 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array
       return;
     }
 
+    // 安全（R02）：会话终态后切块同样不可重放——否则已入库成绩的阅卷图会被静默替换
+    const session = await db.get<{ status: string }>(
+      "SELECT status FROM twain_scan_sessions WHERE id = ?", sessionId);
+    if (!session) { res.status(404).json({ message: "会话不存在" }); return; }
+    if (session.status === "completed") {
+      res.status(409).json({ message: "该扫描会话已完成，切块不可再改写；请新建扫描会话后重新上传" });
+      return;
+    }
+
     if (!record.identity_json || !["uploaded", "completed"].includes(record.ocr_status)) {
       res.status(409).json({ message: "页面尚未通过身份校验，不能上传切块" }); return;
     }
     const manifestRaw = typeof req.body?.manifest === "string" ? req.body.manifest : "[]";
-    let manifest: Array<RecognitionBlockCrop & { fileName?: string }>;
+    let manifest: Array<z.infer<typeof cropManifestSchema>>;
     try {
-      manifest = JSON.parse(manifestRaw) as Array<RecognitionBlockCrop & { fileName?: string }>;
-      if (!Array.isArray(manifest)) throw new Error("manifest 必须是数组");
+      const parsed: unknown = JSON.parse(manifestRaw);
+      if (!Array.isArray(parsed)) throw new Error("manifest 必须是数组");
+      if (parsed.length > MAX_CROPS_PER_REQUEST) throw new Error(`单次最多 ${MAX_CROPS_PER_REQUEST} 个切块`);
+      manifest = parsed.map((item, index) => cropManifestSchema.parse(item));
     } catch (err: any) {
-      res.status(400).json({ message: `切块清单无效: ${err.message}` });
+      res.status(400).json({ message: `切块清单无效: ${err?.message ?? "格式错误"}` });
       return;
     }
     const files = Array.isArray(req.files) ? req.files as Express.Multer.File[] : [];
@@ -260,27 +367,49 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array
         return;
       }
     }
-    const tempDir = path.join(scannerUploadDir(), "crops-temp", sessionId, recordId);
+    const tempDir = path.resolve(scannerUploadDir(), "crops-temp", path.basename(sessionId), path.basename(recordId));
     if (!existsSync(tempDir)) mkdirSync(tempDir, { recursive: true });
 
-    const crops = manifest.map((crop, index) => {
-      const file = crop.fileName
-        ? files.find((item) => item.originalname === crop.fileName)
-        : files[index];
-      if (!file) return null;
-      const targetPath = path.join(tempDir, `${index}_${path.basename(file.originalname || "crop.png")}`);
-      writeFileSync(targetPath, file.buffer);
-      return { ...crop, path: targetPath };
-    }).filter((crop): crop is RecognitionBlockCrop => Boolean(crop));
+    let saved: CropPersistenceStats;
+    try {
+      const crops: RecognitionBlockCrop[] = [];
+      for (const [index, crop] of manifest.entries()) {
+        const file = crop.fileName
+          ? files.find((item) => item.originalname === crop.fileName)
+          : files[index];
+        if (!file) continue;
+        const targetPath = path.join(tempDir, `${index}_${path.basename(file.originalname || "crop.png")}`);
+        // 安全（R07）：写入前再确认一次路径仍在本次请求的临时目录内
+        if (!insideDir(tempDir, targetPath)) continue;
+        writeFileSync(targetPath, file.buffer);
+        // 只采用校验过的字段；客户端上报的 path 与其它额外字段一律丢弃
+        crops.push({
+          blockId: crop.blockId,
+          blockTitle: crop.blockTitle ?? "",
+          blockType: crop.blockType ?? "",
+          pageNumber: crop.pageNumber,
+          segmentIndex: crop.segmentIndex,
+          questionNumbers: crop.questionNumbers,
+          rect: crop.rect,
+          widthPx: crop.widthPx,
+          heightPx: crop.heightPx,
+          dpi: crop.dpi,
+          path: targetPath,
+        });
+      }
 
-    const saved = await persistAnswerBlockCrops({
-      cardId: String(record.card_id),
-      studentNumber: record.student_id ?? null,
-      sourceType: "twain_scan_record",
-      sourceRecordId: recordId,
-      crops
-    }, db);
-
+      saved = await persistAnswerBlockCrops({
+        cardId: String(record.card_id),
+        studentNumber: record.student_id ?? null,
+        sourceType: "twain_scan_record",
+        sourceRecordId: recordId,
+        crops
+      }, db);
+    } finally {
+      // 切块要么被持久化搬走，要么本次无效；临时目录不留残余（否则每次重试都在涨盘）
+      await rm(tempDir, { recursive: true, force: true }).catch((err) => console.warn("[scanner-upload] 切块临时目录清理失败:", err));
+    }
+    // 响应排在清理之后：客户端拿到 200 时磁盘状态已确定，重试不会与残余目录相互干扰
     res.json({ ok: true, count: saved.persisted, skipped: saved.skipped, crops: [] });
   } catch (err: any) {
     // 安全审计（F-12-1）：不向客户端回传内部错误原文，仅写服务端日志
@@ -292,9 +421,14 @@ router.post("/sessions/:sessionId/pages/:recordId/crops", dualAuth, upload.array
 router.get("/records/:recordId/image", dualAuth, async (req, res, next) => {
   try {
     const row = await getMysqlDb().get<{ image_path: string }>("SELECT image_path FROM twain_scan_records WHERE id = ?", req.params.recordId);
-    if (!row || !existsSync(row.image_path)) { res.status(404).json({ message: "原卷图片不存在" }); return; }
+    if (!row || !row.image_path || !existsSync(row.image_path)) { res.status(404).json({ message: "原卷图片不存在" }); return; }
+    // 安全（R04）：只允许读取数据目录内的图片，路径被改写/遗留绝对路径时不外发任意文件
+    const imagePath = path.resolve(row.image_path);
+    if (!isInsideDir(scannerDataDir(), imagePath) || !/\.(jpg|jpeg|png|webp|bmp)$/i.test(imagePath)) {
+      res.status(404).json({ message: "原卷图片不存在" }); return;
+    }
     res.setHeader("Cache-Control", "private, no-store");
-    res.sendFile(path.resolve(row.image_path));
+    res.sendFile(imagePath);
   } catch (error) { next(error); }
 });
 router.get("/sessions/:sessionId/results", dualAuth, async (req, res, next) => {

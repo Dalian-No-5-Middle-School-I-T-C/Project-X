@@ -1,8 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Server } from "node:http";
-import type { CombinedGradingRow, StudentTrendPoint } from "../src/shared/types";
+import type { CombinedGradingRow, RecognitionBlockCrop, StudentTrendPoint } from "../src/shared/types";
 
 const tempDir = mkdtempSync(path.join(tmpdir(), "projectx-security-critical-"));
 process.env.PROJECTX_DB_PATH = path.join(tempDir, "projectx.db");
@@ -420,6 +420,222 @@ async function main(): Promise<void> {
     const unlinkedBody = await unlinkedUpload.json() as { message?: string };
     check(unlinkedUpload.status === 400 && (unlinkedBody.message ?? "").includes("未关联该答题卡"),
       "考试未关联答题卡（card_id 为 NULL）的判分上传被 400 拒绝");
+
+    section("扫描接入：令牌重放、越权读取与上传预算（安全 R02/R04/R07/R22/R28）");
+    const {
+      MAX_SCAN_SESSION_PAGES, MAX_CROP_IMAGE_BYTES, MAX_CROPS_PER_REQUEST
+    } = await import("../src/shared/scanUploadLimits");
+    const { parseScanSessionPageCount } = await import("../src/server/routes/scanner-upload");
+    const { persistAnswerBlockCrops, isInsideDir } = await import("../src/server/services/AnswerBlockCropService");
+    const { requestUploadBudget } = await import("../src/server/lib/uploadBudget");
+    const { blockCropsDir } = await import("../src/apps/answer-card/server/storage");
+    const dataRoot = process.env.ANSWER_CARD_DATA_DIR!;
+    const scannerUploadsDir = path.join(dataRoot, "scanner-uploads");
+    mkdirSync(scannerUploadsDir, { recursive: true });
+    // 带 PNG 魔数的最小正文：扫描页与切块都要过 `isValidImageBuffer`
+    const pngBytes = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(64, 0x20)
+    ]);
+    const scannerKeyHeaders = { "X-Api-Key": "key-scanner" };
+    const rowCount = (sql: string, ...args: unknown[]) =>
+      (db.prepare(sql).get(...args) as { count: number }).count;
+    async function newScanSession(pageCount?: number | string): Promise<{ status: number; sessionId: string; token: string }> {
+      const response = await fetch(`${base}/api/scanner/upload/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...scannerKeyHeaders },
+        body: JSON.stringify({
+          cardId: "critical-card", name: "安全批次验收", dpi: 300, paperSize: "A4",
+          ...(pageCount === undefined ? {} : { pageCount })
+        })
+      });
+      const body = await response.json() as { sessionId?: string; uploadTokens?: string[] };
+      return { status: response.status, sessionId: body.sessionId ?? "", token: body.uploadTokens?.[0] ?? "" };
+    }
+    const cropsUrl = (sessionId: string, recordId: string) =>
+      `${base}/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/pages/${encodeURIComponent(recordId)}/crops`;
+    const validManifest = (fileName: string) => ({
+      blockId: "r07-block", blockTitle: "第 1 题", blockType: "objective",
+      pageNumber: 1, segmentIndex: 0, questionNumbers: [1],
+      rect: { x: 0, y: 0, width: 40, height: 40 },
+      widthPx: 40, heightPx: 40, dpi: 300, fileName
+    });
+
+    // ── R22：会话页数上界（pageCount 决定一次性写入的记录数与令牌数）
+    const overPageSession = await newScanSession(MAX_SCAN_SESSION_PAGES + 1);
+    check(overPageSession.status === 400, `pageCount=${MAX_SCAN_SESSION_PAGES + 1} 被 400 拒绝（此前无任何上限）`);
+    check((await newScanSession("1e9")).status === 400, "pageCount=\"1e9\" 被 400 拒绝");
+    check((await newScanSession(1.5)).status === 400, "非整数 pageCount 被 400 拒绝");
+    check((await newScanSession(0)).status === 400, "pageCount=0 被 400 拒绝");
+    check(rowCount("SELECT COUNT(*) count FROM twain_scan_sessions") === 1,
+      "非法 pageCount 的请求不产生半成品会话（此前会先建会话再落任意多行）");
+    const maxPageSession = await newScanSession(MAX_SCAN_SESSION_PAGES);
+    const maxPageRecords = rowCount("SELECT COUNT(*) count FROM twain_scan_records WHERE session_id=?", maxPageSession.sessionId);
+    const maxPageRow = db.prepare("SELECT page_count FROM twain_scan_sessions WHERE id=?").get(maxPageSession.sessionId) as { page_count: number };
+    check(maxPageSession.status === 201 && maxPageRecords === MAX_SCAN_SESSION_PAGES
+      && Number(maxPageRow.page_count) === MAX_SCAN_SESSION_PAGES,
+      `上界内的 ${MAX_SCAN_SESSION_PAGES} 页会话正常创建：令牌数与待上传记录数一致`);
+    check(parseScanSessionPageCount(undefined) === 1 && parseScanSessionPageCount("") === 1
+      && parseScanSessionPageCount(2.5) === null && parseScanSessionPageCount(-1) === null,
+      "缺省页数仍按 1 页处理，小数与负数被判定为非法");
+    db.prepare("DELETE FROM twain_scan_records WHERE session_id=?").run(maxPageSession.sessionId);
+    db.prepare("DELETE FROM twain_scan_sessions WHERE id=?").run(maxPageSession.sessionId);
+
+    // ── R04：记录/会话级接口收敛到考试范围（critical-card 被可见/越权两场考试复用）
+    const r04Session = await newScanSession();
+    const scanImagePath = path.join(scannerUploadsDir, "r04-page.png");
+    writeFileSync(scanImagePath, pngBytes);
+    db.prepare("UPDATE twain_scan_records SET image_path=?, ocr_status='uploaded' WHERE id=?")
+      .run(scanImagePath, r04Session.token);
+    const teacherImage = await fetch(`${base}/api/scanner/upload/records/${r04Session.token}/image`, {
+      headers: authHeaders(teacherToken)
+    });
+    const teacherImageBody = await teacherImage.json().catch(() => null) as { message?: string } | null;
+    check(teacherImage.status === 403 && (teacherImageBody?.message ?? "").includes("权限不足"),
+      "教师不能按记录 ID 读走「另一场越权考试也在用」的答题卡原卷图片");
+    const adminImage = await fetch(`${base}/api/scanner/upload/records/${r04Session.token}/image`, {
+      headers: authHeaders(adminToken)
+    });
+    check(adminImage.status === 200 && (adminImage.headers.get("content-type") ?? "").startsWith("image/"),
+      "全量权限账号仍可正常读取原卷图片（阅卷预览未被误伤）");
+    const teacherScanView = await fetch(`${base}/api/scanner/scan/${r04Session.sessionId}`, {
+      headers: authHeaders(teacherToken)
+    });
+    check(teacherScanView.status === 403, "扫描会话详情同样受考试范围约束（此前只要扫描侧凭据即可读）");
+    const adminScanView = await fetch(`${base}/api/scanner/scan/${r04Session.sessionId}`, {
+      headers: authHeaders(adminToken)
+    });
+    const adminScanText = await adminScanView.text();
+    check(adminScanView.status === 200 && adminScanText.includes("hasImage")
+      && !adminScanText.includes("image_path") && !adminScanText.includes(dataRoot),
+      "会话详情不再外发服务端绝对路径，改以 hasImage + scan-image 预览");
+    const outsideFile = path.join(tempDir, "outside-data-dir.png");
+    writeFileSync(outsideFile, pngBytes);
+    db.prepare("UPDATE twain_scan_records SET image_path=? WHERE id=?").run(outsideFile, r04Session.token);
+    const outsideImage = await fetch(`${base}/api/scanner/upload/records/${r04Session.token}/image`, {
+      headers: authHeaders(adminToken)
+    });
+    check(outsideImage.status === 404, "记录中的图片路径指向数据目录之外时返回 404（不再外送任意文件）");
+    db.prepare("UPDATE twain_scan_records SET image_path=? WHERE id=?").run(scanImagePath, r04Session.token);
+    const teacherDelete = await fetch(`${base}/api/scanner/record/${r04Session.token}`, {
+      method: "DELETE", headers: authHeaders(teacherToken)
+    });
+    check(teacherDelete.status === 403
+      && rowCount("SELECT COUNT(*) count FROM twain_scan_records WHERE id=?", r04Session.token) === 1,
+      "越权教师不能按记录 ID 删除扫描记录，被拒请求不产生任何写入");
+
+    // ── R02：会话进入终态后，页面/切块上传令牌失效
+    const r02Session = await newScanSession();
+    db.prepare("UPDATE twain_scan_sessions SET status='completed' WHERE id=?").run(r02Session.sessionId);
+    const replayPageForm = new FormData();
+    replayPageForm.append("image", new Blob([pngBytes], { type: "image/png" }), "page.png");
+    replayPageForm.append("token", r02Session.token);
+    replayPageForm.append("pageNum", "1");
+    const replayPage = await fetch(`${base}/api/scanner/upload/sessions/${r02Session.sessionId}/pages`, {
+      method: "POST", headers: scannerKeyHeaders, body: replayPageForm
+    });
+    const replayPageBody = await replayPage.json() as { message?: string };
+    check(replayPage.status === 409 && (replayPageBody.message ?? "").includes("新建扫描会话"),
+      "会话完成后的页面上传被 409 拒绝，并提示改建新会话（此前旧令牌可静默覆盖已判分页面）");
+    const replayCropForm = new FormData();
+    replayCropForm.append("crops", new Blob([pngBytes], { type: "image/png" }), "crop.png");
+    replayCropForm.append("manifest", JSON.stringify([validManifest("crop.png")]));
+    const replayCrops = await fetch(cropsUrl(r02Session.sessionId, r02Session.token), {
+      method: "POST", headers: scannerKeyHeaders, body: replayCropForm
+    });
+    check(replayCrops.status === 409, "会话完成后的切块上传也被 409 拒绝（阅卷图不可静默替换）");
+
+    // ── R07：切块清单字段收敛，落盘路径由服务端决定
+    const r07Session = await newScanSession();
+    db.prepare("UPDATE twain_scan_records SET ocr_status='uploaded', identity_json=?, student_id=? WHERE id=?")
+      .run(JSON.stringify({ status: "verified", code: "OK", cardId: "critical-card", pageNumber: 1 }), "S1001", r07Session.token);
+    const evilManifestForm = new FormData();
+    evilManifestForm.append("crops", new Blob([pngBytes], { type: "image/png" }), "crop.png");
+    evilManifestForm.append("manifest", JSON.stringify([{ ...validManifest("crop.png"), pageNumber: "../../evil" }]));
+    const evilManifest = await fetch(cropsUrl(r07Session.sessionId, r07Session.token), {
+      method: "POST", headers: scannerKeyHeaders, body: evilManifestForm
+    });
+    const evilManifestBody = await evilManifest.json() as { message?: string };
+    check(evilManifest.status === 400 && (evilManifestBody.message ?? "").includes("切块清单无效"),
+      "清单里的 pageNumber=\"../../evil\" 被 400 拒绝（不再参与落盘文件名）");
+    const escapedTarget = path.join(dataRoot, "..", "r07-escaped.png");
+    const pathOverrideForm = new FormData();
+    pathOverrideForm.append("crops", new Blob([pngBytes], { type: "image/png" }), "crop.png");
+    pathOverrideForm.append("manifest", JSON.stringify([
+      { ...validManifest("crop.png"), path: escapedTarget, imagePath: escapedTarget, extra: "x" }
+    ]));
+    const pathOverride = await fetch(cropsUrl(r07Session.sessionId, r07Session.token), {
+      method: "POST", headers: scannerKeyHeaders, body: pathOverrideForm
+    });
+    const pathOverrideBody = await pathOverride.json() as { ok?: boolean; count?: number };
+    const storedCrop = db.prepare(
+      "SELECT image_path FROM answer_block_crops WHERE source_type='twain_scan_record' AND source_record_id=?"
+    ).get(r07Session.token) as { image_path: string } | undefined;
+    check(pathOverride.status === 200 && pathOverrideBody.count === 1
+      && !existsSync(escapedTarget) && Boolean(storedCrop) && isInsideDir(blockCropsDir, storedCrop!.image_path),
+      "客户端上报的 path 被丢弃：切块只写进服务端决定的切块目录");
+    const r07TempDir = path.join(scannerUploadsDir, "crops-temp",
+      path.basename(r07Session.sessionId), path.basename(r07Session.token));
+    check(!existsSync(r07TempDir), "切块临时目录不残留（此前每次重试都在盘上留一份副本）");
+    const unitSourcePath = path.join(scannerUploadsDir, "r07-unit-source.png");
+    writeFileSync(unitSourcePath, pngBytes);
+    const evilRawCrop = {
+      blockId: "r07-unit-block", blockTitle: "", blockType: "objective",
+      pageNumber: "../../evil", segmentIndex: "../x", questionNumbers: [1],
+      rect: { x: 0, y: 0, width: 1, height: 1 }, widthPx: 10, heightPx: 10, dpi: 300,
+      path: unitSourcePath
+    } as unknown as RecognitionBlockCrop;
+    const unitStats = await persistAnswerBlockCrops({
+      cardId: "critical-card", sourceType: "twain_scan_record",
+      sourceRecordId: "r07-service-unit", crops: [evilRawCrop]
+    });
+    const unitCrop = db.prepare("SELECT image_path FROM answer_block_crops WHERE source_record_id=?")
+      .get("r07-service-unit") as { image_path: string } | undefined;
+    check(unitStats.persisted === 1 && Boolean(unitCrop) && isInsideDir(blockCropsDir, unitCrop!.image_path)
+      && !unitCrop!.image_path.includes("..") && existsSync(unitCrop!.image_path),
+      "服务层兜底：绕过路由校验的越界清单也被收敛到切块目录内");
+    check(isInsideDir(dataRoot, path.join(dataRoot, "a.png")) && !isInsideDir(dataRoot, `${dataRoot}-backup/a.png`)
+      && !isInsideDir(dataRoot, path.join(dataRoot, "..", "etc", "passwd")),
+      "目录判定同时拒绝同前缀兄弟目录与向上穿越");
+
+    // ── R28：文件数量、单文件与「整次请求累计」三级上限
+    const tooManyForm = new FormData();
+    for (let i = 0; i <= MAX_CROPS_PER_REQUEST; i++) {
+      tooManyForm.append("crops", new Blob([pngBytes], { type: "image/png" }), `crop-${i}.png`);
+    }
+    tooManyForm.append("manifest", "[]");
+    const tooManyCrops = await fetch(cropsUrl(r07Session.sessionId, r07Session.token), {
+      method: "POST", headers: scannerKeyHeaders, body: tooManyForm
+    });
+    check(tooManyCrops.status === 400, `一次携带 ${MAX_CROPS_PER_REQUEST + 1} 张切块被 400 拒绝（数量上限）`);
+    const oversizedForm = new FormData();
+    oversizedForm.append("crops", new Blob([Buffer.alloc(MAX_CROP_IMAGE_BYTES + 1024, 0x89)], { type: "image/png" }), "big.png");
+    oversizedForm.append("manifest", "[]");
+    const oversizedCrop = await fetch(cropsUrl(r07Session.sessionId, r07Session.token), {
+      method: "POST", headers: scannerKeyHeaders, body: oversizedForm
+    });
+    check(oversizedCrop.status === 413, `单张切块超过 ${Math.round(MAX_CROP_IMAGE_BYTES / 1024 / 1024)} MiB 被 413 拒绝`);
+    const express = (await import("express")).default;
+    const budgetApp = express();
+    budgetApp.use(requestUploadBudget({ maxTotalBytes: 1024, label: "预算验收" }));
+    budgetApp.post("/budget", (_req, res) => { res.json({ ok: true }); });
+    const budgetServer = budgetApp.listen(0);
+    await new Promise<void>((resolve) => budgetServer.once("listening", resolve));
+    const budgetBase = `http://127.0.0.1:${(budgetServer.address() as { port: number }).port}`;
+    const withinBudget = await fetch(`${budgetBase}/budget`, {
+      method: "POST", body: Buffer.from("x".repeat(128))
+    });
+    check(withinBudget.status === 200, "累计预算内的请求正常放行（不误伤小文件上传）");
+    let overBudgetStatus = 0;
+    let overBudgetCode = "";
+    try {
+      const overBudget = await fetch(`${budgetBase}/budget`, { method: "POST", body: Buffer.from("y".repeat(4096)) });
+      overBudgetStatus = overBudget.status;
+      overBudgetCode = ((await overBudget.json() as { code?: string }).code) ?? "";
+    } catch { /* 超预算后连接会被断开：状态码/错误码已取到即可 */ }
+    check(overBudgetStatus === 413 && overBudgetCode === "UPLOAD_BUDGET_EXCEEDED",
+      `累计字节超预算的请求返回 413 UPLOAD_BUDGET_EXCEEDED (实际 ${overBudgetStatus}/${overBudgetCode || "无错误码"})`);
+    budgetServer.close();
 
     section("阅卷进度流订阅上限（云端安全检查 #22 / PR280 评审 P1）");
     const streamAbort = new AbortController();

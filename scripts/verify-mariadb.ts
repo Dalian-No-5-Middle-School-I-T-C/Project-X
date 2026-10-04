@@ -284,6 +284,38 @@ async function main(): Promise<void> {
     assert.equal((await db.run("DELETE FROM system_settings WHERE `key` = ?", "ci_test")).changes, 1);
     assert.equal(await readValue(), null);
     console.log("PASS: transaction commit, rollback, delete");
+
+    // ===== R22 扫描会话创建：会话行与其全部待上传页必须在同一事务内落库 =====
+    // 路由用 `db.transaction(tx => …)` 写入 N 页；MariaDB 下若方言差异导致部分失败，
+    // 会留下「会话存在但缺页」的半成品，客户端 complete 会因页数为 0 而卡死。
+    await db.transaction(async (tx) => {
+      await tx.run(
+        `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, status)
+         VALUES ('r22_session', 'r22_card', 'r22_session', 300, 1, 'gray', 'A4', 3, 'qr', 'uploading')`);
+      for (let page = 1; page <= 3; page++) {
+        await tx.run(
+          `INSERT INTO twain_scan_records (id, session_id, card_id, image_path, page_num, side, ocr_status)
+           VALUES (?, 'r22_session', 'r22_card', ?, ?, ?, 'pending')`,
+          `r22_token_${page}`, `pending:r22_token_${page}`, page, page === 1 ? "front" : "back");
+      }
+    });
+    assert.equal(Number((await db.get<{ page_count: number }>("SELECT page_count FROM twain_scan_sessions WHERE id='r22_session'"))?.page_count), 3);
+    assert.equal((await db.all("SELECT id FROM twain_scan_records WHERE session_id='r22_session'")).length, 3);
+    await assert.rejects(db.transaction(async (tx) => {
+      await tx.run(
+        `INSERT INTO twain_scan_sessions (id, card_id, name, dpi, duplex, color_mode, paper_size, page_count, identity_mode, status)
+         VALUES ('r22_rollback', 'r22_card', 'r22_rollback', 300, 1, 'gray', 'A4', 1, 'qr', 'uploading')`);
+      await tx.run(
+        `INSERT INTO twain_scan_records (id, session_id, card_id, image_path, page_num, side, ocr_status)
+         VALUES ('r22_bad', 'r22_rollback', 'r22_card', 'pending:r22_bad', 1, 'front', 'pending')`);
+      throw new Error("intentional session rollback");
+    }));
+    assert.equal(await db.get("SELECT id FROM twain_scan_sessions WHERE id='r22_rollback'"), null);
+    assert.equal(await db.get("SELECT id FROM twain_scan_records WHERE id='r22_bad'"), null);
+    await db.run("DELETE FROM twain_scan_records WHERE session_id='r22_session'");
+    await db.run("DELETE FROM twain_scan_sessions WHERE id='r22_session'");
+    console.log("PASS: scanner session + pending pages commit atomically, rollback leaves no half session (R22)");
+
     // Real MariaDB: replacing/clearing a head must also remove unmarked legacy links.
     const { ClassRepository } = await import("../src/server/repositories/ClassRepository");
     const classRepo = new ClassRepository();

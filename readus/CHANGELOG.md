@@ -2,6 +2,18 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-04：扫描接入与上传预算（安全审查整改第二批 · R02/R04/R07/R22/R28）
+
+- **R02 已完成会话的上传令牌可重放**：`POST /api/scanner/upload/sessions/:id/pages` 只校验令牌属于该会话，页面 `ocr_status` 变成 `completed` 之后旧令牌仍然可用；切块端点 `/pages/:recordId/crops` 同样不看会话终态。持有历史令牌（日志、截屏、被回收的扫描机）即可覆盖已判分页面的图片与识别结果，把「已完成扫描」变成对既有成绩的静默改写。现两端点在会话 `status='completed'` 或该页 `ocr_status='completed'` 时返回 409 并明确提示「请新建扫描会话后重新上传」。`/complete` 自身的语义未改动——既有设计依赖关闭后的回执完成补交与切块关联，收紧它会更危险。
+- **R04 扫描记录图片与删除接口越过考试/题块范围**：只带 `recordId` / `sessionId` 的接口此前完全没有考试口径，任何具备扫描侧凭据的账号按 ID 递增即可读走其它考试、其它学生的原卷图片（`/api/scanner/upload/records/:recordId/image`、`/api/scanner/scan/:sessionId`、`/api/scanner/record/:recordId` 的 GET/DELETE）。新增 `requireScannerRecordScope()`（`src/server/middleware/scanner-scope.ts`）：记录 → 会话 → 答题卡 → `resolveScannerExam` 映射后，归属唯一时复用 `requireExamAccess`，**一张卡被多场考试复用时要求全部候选考试都可见**（否则越权考试会借「另一场可见」的名义被读走），学生一律 403，`DELETE` 额外要求整份答题卡的阅卷权限（取消/读取不再要求整卷）。同时列表与详情接口不再外发 `imagePath` / `image_path`（改为 `hasImage`，预览统一走图片端点），两个图片端点还加了「解析后必须仍在数据目录内 + 扩展名白名单」，被改写的绝对路径不再变成任意文件读取。
+- **R07 切块清单可越出切块目录**：`manifest` 的 `pageNumber` / `segmentIndex` 会被直接拼进落盘文件名，且 `path` 采信客户端上报值——`"pageNumber": "../../evil"` 或一个绝对 `path` 就能让上传方决定服务端写文件的位置。现在清单走 `cropManifestSchema`（页码/分段号/题号/矩形/像素/dpi/文件名全部收敛，客户端的 `path` 与任何额外字段被 zod 丢弃），落盘路径由服务端生成并双重确认（路由侧仍在本次临时目录内、服务层仍在「该卡该记录」切块目录内），文件名拼装前 `safePartIndex` 再兜一次；切块临时目录改为**在响应之前**清理，重试不再在盘上留残余。
+- **R22 会话页数无上限**：`pageCount` 由扫描端上报，直接决定一次请求写入多少条 `twain_scan_records` 与发放多少枚令牌，此前没有任何上界。新增 `parseScanSessionPageCount()`（1–200 的整数，缺省 1 页），并将会话行与其全部待上传页收进同一个 `db.transaction`——中途失败不再留下「会话存在但缺页」导致 `complete` 卡死的半成品，`page_count` 也改存真实页数。
+- **R28 multipart 只有单文件上限**：multer 的 `limits` 没有「本次请求累计字节」这一档，切块上传的最坏情况是 50 张 × 50 MiB = **2.5 GiB 全进服务端内存**，批量判分上传连文件数量都没有上限。新增 `src/server/lib/uploadBudget.ts`：`requestUploadBudget()` 先看 `Content-Length` 零成本预拒，再在 `req` 的 `data` 事件上旁路累计实际字节，超限返回 413 `UPLOAD_BUDGET_EXCEEDED` 并在响应写完后断开剩余正文。限制值统一到 `src/shared/scanUploadLimits.ts`：原卷单张 50 MiB / 页请求累计 64 MiB；切块单张 12 MiB / 单次 50 张 / 累计 160 MiB；落盘批量判分与识别 300 张 / 累计 1 GiB（保留既有「24 张 × 3 MiB 批量必须通过」的验收口径）。扫描端 `recognition` 上传链与远程上传链同口径。
+- **实现踩坑（避免重演）**：① 累计字节计数最初挂在自定义 StorageEngine 的 `file.stream` 上，结果流在 `diskStorage` 的 `pipeline` 接管前就开始流动，真实上传全部以 `MulterError: STREAM_DESTROYED`（HTTP 400）失败——计数必须放在请求层旁路观测，不能介入存储引擎；② 超预算后请求被销毁，全局错误处理若无 `res.headersSent` 兜底会尝试二次写响应；③ 服务层曾对「源切块文件必须在 `dataDir` 内」加反向校验，误伤了以系统临时目录作源的识别器链路（`verify-round5-crop-silence` 2 项失败），已回退该处只保留目标路径收敛——生产里的切块源本就由服务端自建临时目录产生，远端无法指定。
+- **验证**：`npm run typecheck` 通过；`npm run verify:security-critical` **190 项全过、0 失败**（本批新增 25 条：R22 页数上下界与非法请求不留半成品会话、R04 越权教师 403 / 全量权限 200 / 目录外路径 404 / 被拒删除零写入 / 详情不再外发绝对路径、R02 页面与切块 409、R07 清单 400 + `path` 覆盖失效 + 临时目录无残余 + 服务层兜底 + `isInsideDir` 拒绝同前缀兄弟目录、R28 数量 400 / 单张 413 / 独立 express 实例的累计预算 413 与放行）；`scanner-image-limits-smoke`、`scanner-upload-manager-smoke`、`verify:round5-crop-silence`、`verify:scanner-cancel`、`verify:scan-page-numbering`、`verify:scanner-batch-results`、`verify:scanner-dpi`、`verify:p1-scope` 全部退出码 0。MariaDB 侧用本机 12.3.2 起 13306 临时实例真跑 `npm run verify:mariadb`，11 节全 PASS，其中新增一节「扫描会话 + 待上传页同事务提交、回滚不留半成品会话（R22）」；CI 的 MariaDB 作业为 10.11，版本不同源，仍以 CI 为最终裁判。
+- 未覆盖：真实 TWAIN 硬件与 Electron 扫描端未做端到端联调，「会话完成后重扫」在扫描端界面上的体验（新建会话、归属回执不变）仅由 API 层断言保证；Web 端预览改用 `hasImage` 后未做浏览器视觉验收；生产环境（dl5zx.cn）仍是上一版本，本批变更需随上线才生效。
+
+
 ## 2026-10-04：R01 管理员引导口令改为一次性随机口令（安全审查整改第一批）
 
 - **根因**：`src/server/db/index.ts` 把管理员口令写死为公开常量 `admin123`，且只要 admin 还停留在「未改密」引导态，**每次启动都把哈希重置回该常量**并吊销全部会话；而 `/api/auth` 挂在强制改密门（428）之前，引导态会话可直接调 `change-password`。两者叠加＝任何读到公开文档的人都能登录未改密的部署，改密后把公开凭据永久转成私有所有权。安全审查清单 R01（核对日期 2026-10-03）判为 P0。
