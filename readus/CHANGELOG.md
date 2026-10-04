@@ -2,6 +2,108 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-04：扫描端与原生进程边界（安全审查第五批 B · R19/R23/R31/R34/R35/R38/R40）
+
+前四批加的都是**服务端**闸门，第五批 A 收的是浏览器侧。本批改的是三个 **Windows 原生进程**：
+Electron 主进程、TWAIN 桥接子进程、答题卡识别器子进程。共同点是「一旦出错就不是 4xx，
+而是崩溃、误杀进程、把答卷挂到别人名下，或加载到别人的 DLL」，所以每条都配了真机或双架构证据。
+识别器的新档位仍按前四批定下的三档口径交付（默认值 + `PROJECTX_*` 环境变量 + 安全天花板，
+非法值回落、超天花板夹紧、生效档位打印出来），只是打印目标是 **stderr**——`stdout` 必须只有那一份 JSON。
+
+- **R19 识别器解码与布局无资源边界**：识别器原先用 `std::istreambuf_iterator` 把整张图片读进内存再交
+  `cv::imdecode`，布局 JSON 同样不设限、`width` 写 `1e9` 或 `--dpi` 写 `1e9` 都会一路走到
+  `std::llround` 的整型溢出；#280 只在服务端夹了 dpi，**子进程这一侧完全没有闸门**。
+  新增 `recognizer_limits.{hpp,cpp}` 作为单一来源，七档：`MAX_IMAGE_BYTES`、`MAX_IMAGE_PIXELS`、
+  `MAX_LAYOUT_BYTES`、`MAX_LAYOUT_ITEMS`、`MAX_LAYOUT_MM`、`MIN_DPI`、`MAX_DPI`。
+  图片走**三段**：压缩字节上限 → **解码前**按容器头声明的宽高预拒（PNG IHDR、BMP DIB 含
+  BITMAPCOREHEADER、JPEG SOF 标记游走、TIFF 首个 IFD 的 256/257 标签且条目循环上限 512、
+  WebP VP8X/VP8L/VP8 ）→ 解码后按真实 `total()` 复核。**像素预算放在解码之前是本条的关键**：
+  声明炸弹（头部写 20000×20000、数据几 KB）若只在解码后判，OpenCV 会先把几 GB 分配出来，
+  在 32 位扫描端上那是崩溃而不是拒绝。布局侧按数组条目数、毫米有限性与 `±MAX_LAYOUT_MM` 界、
+  非负宽高逐项校验（`assert_array_size` 落在 9 处数组上）；mm→px 先做 `double` 预检再 `std::llround`，
+  结果过一遍像素预算。`warp_to_layout` 的输出尺寸同样过预算。
+  `main.cpp` 另加 `SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX)`——
+  被 Node 逐页 spawn 的子进程绝不能停在模态错误框上等点击。
+  **像素默认值按架构分档**：x64 默认 100 Mpx / 天花板 400 Mpx，ia32 默认 40 Mpx / 天花板 70 Mpx
+  （32 位只有 2 GB 用户地址空间）。参照物 A4@300 = 8.7 Mpx、A4@600 = 34.8、A3@600 = 69.6、
+  A4@1200 = 139、A3@1200 = 278：UI 只提供 150–600 dpi，所以默认档位覆盖到 A3@600；
+  真要在 x64 上跑 A4@1200 需显式设 `PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS=160000000`，
+  而 **ia32 天花板抬到 70 Mpx 以上没有意义**（再高不是拒绝而是崩），这点写进了 README。
+- **R23 Electron 权限与导航未收口**：扫描端页面不需要任何媒体/设备权限（扫描走 TWAIN 桥接子进程），
+  但 Electron 默认会弹权限询问，且 `setWindowOpenHandler` 只管新窗口——**页面内 `location` 跳转不受限**，
+  一旦跳到任意来源，之后所有请求都出自那个来源。现在 `session` 级安装
+  permission request/check/device 三个处理器一律拒绝；主框架导航按同源放行、跨源 https 交系统浏览器
+  （与新窗口同一套口径）、其余协议一律拦下。
+- **R31 默认库路径依赖 `process.cwd()`**：换个工作目录启动就静默新建空库，现场表现为「数据全没了 +
+  管理员口令按引导态换发」（并因此触发 R01 的随机口令）。**这里刻意不做自动切库**——
+  静默改用探测到的另一个库与静默新建空库是同一类错误、只是更难发现。改为在建库之前把事实说出来：
+  解析到哪、是否已存在、同机还有哪些候选库（从模块目录向上四级探测 `data/projectx.db`，
+  不写死任何厂商路径），日志前缀 `[db-path]`，由运维显式设 `PROJECTX_DB_PATH` 收口。
+- **R38 兜底强杀可能打到无关进程**：Windows 回收复用 PID，取消扫描那条 2 秒兜底 `taskkill /F /T /PID`
+  有可能杀掉一个完全无关的进程并带走它整棵子树。现在启动时记录身份快照（父 PID + 可执行文件路径 +
+  启动时刻），强杀前用 PowerShell CIM 读回真实进程信息比对；**任一项读不到**（权限不足、进程已消失）
+  或已观察到退出，一律跳过强杀，交桥接自身超时兜底。判定抽成纯函数 `decideForceKill` 以便直接断言；
+  `close`/`error` 统一走 `retireActiveScan`（既清注册项也清兜底定时器），避免定时器在 PID 被复用后才触发。
+- **R34 兼容模式页序错位会把答卷静默挂到别人名下**：无二维码时学号只靠填涂区识别，页序一错就是
+  「分数没错、人错了」。现在兼容模式下**只有布局第 1 页能为本组定学号**（学号填涂区只在第 1 页生成），
+  其它页即使读到学号也只记在自己名下并打 WARN，人工订正不受此限；`session-results` 新增
+  `legacyIdentityProblems`（单份卡：没有第 1 页 / 第 1 页无学号 / 别页冒出学号 / 与第 1 页不一致）与
+  `legacySessionBlockReason`（会话级：纸张总数不是每份卡用纸数的整数倍，或任一份第 1 页学号不可信 →
+  **整批不入库**，交人工归组）。两者都只在存在 legacy 记录时生效，严格模式有二维码逐页校验、行为不变。
+- **R35 扫描端离线期间服务器改了卡，按旧版卡算出的分数静默入库**：新增 `src/shared/cardVersion.ts`
+  按卡内容算 96bit 指纹，客户端在 `ScannerPanel`/`ScannerWorkspace` 与上传管理器（建会话 + 提交完成两处）
+  都带上；缺指纹按**不可重试**错误立即失败而不是盲发。选卡改走 `fetchCardDetailSynced`，
+  命中离线缓存时先让老师确认，工作台常驻版本提示。服务端 `POST /sessions` 与
+  `/sessions/:sessionId/complete` 双端核验，返回 400 `CARD_VERSION_REQUIRED` / 404 `CARD_NOT_FOUND` /
+  409 `CARD_VERSION_MISMATCH`，被拒时不建会话、不改状态、不入库并打 WARN。
+  **指纹刻意不含 `updatedAt`**（本地导入会重盖时间戳，含进去会让每次上传都被误判为版本不一致），
+  也**不用 Web Crypto**（`http://局域网IP` 这类非安全上下文没有 `crypto.subtle`）。
+- **R40 TWAIN DSM 走不受限搜索回退**：候选里最后两项是裸名 `TWAINDSM.dll` / `twain_32.dll`，
+  交给 `LoadLibraryW` 按默认搜索顺序解析（当前工作目录与 PATH 都在其中），而扫描端的工作目录取决于
+  启动方式——往 CWD 或任何可写搜索目录放一个同名 DLL 就能让扫描端执行任意代码。现在候选一律先规范化成
+  绝对路径，顺序为「显式环境覆盖 > 安装包自带（exe 同目录）> Windows 目录」，裸名候选删除；
+  `TWAIN_DSM_DLL` 只接受绝对路径（相对值/裸名忽略并写进诊断）；加载前校验目标是存在的**非空常规文件**
+  并把字节数记进 `dsm_path`，包内那份还要经 `GetFinalPathNameByHandleW` 解析 junction/符号链接、
+  真实路径离开安装目录即拒绝；加载改用
+  `LoadLibraryExW(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR)`
+  （DSM 自身依赖也不再走 CWD/PATH，老系统返回 `ERROR_INVALID_PARAMETER` 时退回
+  `LOAD_WITH_ALTERED_SEARCH_PATH`，同样不搜 CWD）；`wmain` 第一件事就是
+  `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS)`。**代价**：便携使用（exe 拷到别处、
+  旁边放一份 DSM）不再可行，安装包因此必须自带 `TWAINDSM.dll`——`verify:security-critical` 已加断言：
+  凡 `resources/native/win-*/scanner-bridge.exe` 存在，同目录必须有 `TWAINDSM.dll`。
+- **踩坑（四处）**：① 本机原本缺 `D:\opencv4-13` 与 `D:\nlohmann`，两个架构都编不出来，
+  也就无法给出 R19/R40 的真机证据。恢复方式全部在仓库外、不改任何构建脚本：目录 junction 指回本机已有的
+  OpenCV，ia32 的导入库用 `dumpbin /exports` + **不带引号**的 `.def` + `lib /def /machine:x86` 从已打包的
+  ia32 DLL 合成，`json.hpp` 取 nlohmann/json v3.11.3（`curl` 直连 raw.githubusercontent 报 SSL exit 60，
+  改 git clone）。`.def` 里给导出名加引号会让 `lib.exe` 把引号写进符号名，链接时 41 个 LNK2001 全对不上。
+  ② `/sdl` 下 `std::getenv` 是**编译错误**，环境变量一律走 `getenv_s`。③ `recognizer_limits()` 单例
+  调用了定义在它之后的 `describe_recognizer_limits_raw`，需要文件作用域前向声明。
+  ④ `layout_pixel_size` 里保留了历史的浮点运算顺序（`mm / 25.4 * dpi`）——换成等价写法会带来 ±1 px 漂移，
+  而识别器的定位标记判定对这一像素是敏感的。
+- **验证**：`npm run typecheck` 通过。新增 `npm run verify:recognizer-limits`（`scripts/verify-recognizer-limits.ts`）
+  在 x64 与 ia32 两份产物上各 **45 通过 / 0 失败**（ia32 用 `ANSWER_CARD_RECOGNIZER_EXE=…` 指定）：
+  正常卡识别 + 学号 + `[recognizer-limits]` 摘要、七个档位各自的越界拒绝（退出码 2 且错误信息点名对应环境变量）、
+  `MAX_IMAGE_PIXELS` 收紧时错误信息含「头部声明」以证明**拒绝发生在解码前**、非法值回落默认、
+  超天花板夹紧（并用一对相反用例证明夹紧是有效的）、`MIN_DPI > MAX_DPI` 时按 `MAX_DPI` 回落、
+  脚本清理的环境变量名单 == 模块 `*_ENV_VARS`、README 含全部 7 个变量名。
+  既有的 `verify:recognizer-layout`、`verify:recognizer-pencil` 在**两个架构**上同样全绿
+  （即「加了边界没有把正常卡拒掉」）。`verify:security-critical` 从 300 项增到 **365 项全过 / 0 失败**
+  （第五批 B 逐次为 324 → 344 → 352 → 365），新增 R23/R31/R38/R34/R35/R40/R19 的源码不退化断言，
+  其中 R40 七条锁的是「裸名候选与 `LoadLibraryW` 不得回来」、R19 锁的是「三档齐全且每档天花板不低于默认值、
+  `read_capped_file` 在 `cv::imdecode` 之前、`assert_pixel_budget` 在 `cv::warpPerspective` 之前」。
+  `verify:scanner-cancel` **33/0**（新增第 5 节 13 条 R38 身份校验断言）；`verify:scan-page-numbering`、
+  `scanner-batch-results-smoke`（SQLite 与本机 MariaDB 12.3.2 / 13306 临时实例 + 专用空库两种方言都跑）、
+  `scanner-upload-manager-smoke`、`scanner-upload-release-smoke`、`verify:card-identity`、
+  `verify:permission-scope`、`verify:scanner-dpi`、`verify:scanner-page-timeout` 全通过。
+  R40 的真机证据（KODAK i3000、x64/ia32 各自 `list` 成功、CWD 投毒被拒、相对路径环境覆盖被忽略）
+  记在 `readus/SECURITY-AUDIT-NOTES-2026-10-04.md` 第七节。
+- **文档**：README 新增「原生识别器的解码与布局边界」档位表（7 档 × x64/ia32 默认与天花板）、
+  扫描端的兼容模式归属规则与卡版本核验口径、DSM 加载路径与 `TWAIN_DSM_DLL` 必须为绝对路径的说明、
+  `[db-path]` 日志与 `PROJECTX_DB_PATH`、Electron 权限默认拒绝；`SECURITY-AUDIT-NOTES-2026-10-04.md`
+  新增第七节，逐条记下取舍理由、真机证据与本机恢复构建前提的方式（**这些路径不入库、不进 CI**）。
+- **产物**：`resources/native/win-x64` 与 `win-ia32` 下的 `answer-card-recognizer.exe`、
+  `scanner-bridge.exe` 均按仓库既有脚本重新构建并提交（x64 与 ia32 两个配置 MSBuild Release 均成功）。
+
 ## 2026-10-04：Web 端凭据、导入资源与数据保真（安全审查第五批 A · R05/R12/R17/R30/R41/R44/R46/R49）
 
 前四批都在服务端加闸门。本批的前四条改的是**浏览器这一侧怎么带凭据、以及教师上传的东西会不会反过来打到本域名的用户身上**，后三条是核对清单时发现的数据保真与显示错误。新增的档位仍按三套口径交付（默认值 + `PROJECTX_*` + 安全天花板，非法值回落、超天花板夹紧、启动日志打印生效档位）。

@@ -1,11 +1,14 @@
 #include "layout_io.hpp"
 
 #include "common.hpp"
+#include "recognizer_limits.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
+#include <string>
 
 #include <nlohmann/json.hpp>
 
@@ -19,6 +22,34 @@ const std::vector<std::string> REQUIRED_MARKER_ROLES = {
     "bottom-left",
     "bottom-right",
 };
+
+namespace {
+
+/**
+ * 安全 R19：布局里的数组长度由文件自己声明，不设上限就等于把「解析 + 后续按项分配」交给输入方控制。
+ * 一份十万项的 items/options 列表足以让识别进程在采样阶段耗光内存。
+ */
+void assert_array_size(const json& value, const std::string& what) {
+    if (!value.is_array()) {
+        return;
+    }
+    const long long limit = recognizer_limits().max_layout_items;
+    if (static_cast<long long>(value.size()) > limit) {
+        throw std::runtime_error(what + " 有 " + std::to_string(value.size()) + " 项，超过识别器上限 " + std::to_string(limit)
+            + " 项（安全 R19：布局数组长度必须设界；可用 PROJECTX_RECOGNIZER_MAX_LAYOUT_ITEMS 在天花板内调整）");
+    }
+}
+
+/** 安全 R19：mm 数值必须是有限正数且不超档位，否则 mm→px 换算会溢出成负尺寸。 */
+void assert_layout_mm(double value, const std::string& what) {
+    const long long limit = recognizer_limits().max_layout_mm;
+    if (!std::isfinite(value) || value <= 0 || value > static_cast<double>(limit)) {
+        throw std::runtime_error(what + " = " + std::to_string(value) + " 毫米不是 (0, " + std::to_string(limit)
+            + "] 内的有限数（安全 R19：布局尺寸参与像素分配换算；可用 PROJECTX_RECOGNIZER_MAX_LAYOUT_MM 在天花板内调整）");
+    }
+}
+
+}  // namespace
 
 std::pair<double, double> Rect::center() const {
     return {x + width / 2.0, y + height / 2.0};
@@ -37,13 +68,25 @@ static Rect rect_from_json(const json& value) {
             throw std::runtime_error(std::string("Rect missing field: ") + key);
         }
     }
-    return Rect{
-        value.at("x").get<double>(),
-        value.at("y").get<double>(),
-        value.at("width").get<double>(),
-        value.at("height").get<double>(),
+    const double limit_mm = static_cast<double>(recognizer_limits().max_layout_mm);
+    auto finite_mm = [&](const char* key) {
+        if (!value.at(key).is_number()) {
+            throw std::runtime_error(std::string("Rect field is not a number: ") + key);
+        }
+        const double number = value.at(key).get<double>();
+        if (!std::isfinite(number) || std::fabs(number) > limit_mm) {
+            throw std::runtime_error(std::string("Rect field ") + key + " = " + std::to_string(number)
+                + " 超出 ±" + std::to_string(recognizer_limits().max_layout_mm) + " 毫米（安全 R19：非有限或越界的坐标会让 mm→px 换算溢出）");
+        }
+        return number;
     };
+    Rect rect{finite_mm("x"), finite_mm("y"), finite_mm("width"), finite_mm("height")};
+    if (rect.width < 0 || rect.height < 0) {
+        throw std::runtime_error("Rect width/height must not be negative（安全 R19）");
+    }
+    return rect;
 }
+
 
 static std::string question_number_from_json(const json& value) {
     if (value.is_string()) {
@@ -62,6 +105,7 @@ static std::vector<ObjectiveOption> objective_options_from_page(const json& page
     std::vector<ObjectiveOption> options;
 
     if (page_data.contains("blocks") && page_data.at("blocks").is_array()) {
+        assert_array_size(page_data.at("blocks"), "布局 blocks");
         for (const auto& block : page_data.at("blocks")) {
             if (!block.is_object() || block.value("type", "") != "objective") {
                 continue;
@@ -70,6 +114,7 @@ static std::vector<ObjectiveOption> objective_options_from_page(const json& page
             if (!block.contains("items") || !block.at("items").is_array()) {
                 continue;
             }
+            assert_array_size(block.at("items"), "客观题大题 items");
             for (const auto& item : block.at("items")) {
                 if (!item.is_object()) {
                     continue;
@@ -78,6 +123,7 @@ static std::vector<ObjectiveOption> objective_options_from_page(const json& page
                 if (question_number <= 0 || !item.contains("options") || !item.at("options").is_array()) {
                     continue;
                 }
+                assert_array_size(item.at("options"), "客观题选项 options");
                 for (const auto& option : item.at("options")) {
                     if (!option.is_object()) {
                         continue;
@@ -100,6 +146,7 @@ static std::vector<ObjectiveOption> objective_options_from_page(const json& page
     }
 
     if (page_data.contains("elements") && page_data.at("elements").is_array()) {
+        assert_array_size(page_data.at("elements"), "布局 elements");
         for (const auto& element : page_data.at("elements")) {
             if (!element.is_object() || element.value("type", "") != "objective_option") {
                 continue;
@@ -128,6 +175,7 @@ static std::vector<SubjectiveScoreCell> subjective_score_cells_from_page(const j
     std::vector<SubjectiveScoreCell> cells;
 
     if (page_data.contains("blocks") && page_data.at("blocks").is_array()) {
+        assert_array_size(page_data.at("blocks"), "布局 blocks");
         for (const auto& block : page_data.at("blocks")) {
             if (!block.is_object() || block.value("type", "") != "subjective") {
                 continue;
@@ -136,10 +184,12 @@ static std::vector<SubjectiveScoreCell> subjective_score_cells_from_page(const j
             if (!block.contains("questions") || !block.at("questions").is_array()) {
                 continue;
             }
+            assert_array_size(block.at("questions"), "主观题大题 questions");
             for (const auto& question : block.at("questions")) {
                 if (!question.is_object() || !question.contains("scoreCells") || !question.at("scoreCells").is_array()) {
                     continue;
                 }
+                assert_array_size(question.at("scoreCells"), "主观题分数格 scoreCells");
                 const std::string question_id = question.value("questionId", "");
                 const std::string question_number = question.contains("questionNumber") ? question_number_from_json(question.at("questionNumber")) : "";
                 const double max_score = question.value("score", 0.0);
@@ -168,6 +218,7 @@ static std::vector<SubjectiveScoreCell> subjective_score_cells_from_page(const j
     }
 
     if (page_data.contains("elements") && page_data.at("elements").is_array()) {
+        assert_array_size(page_data.at("elements"), "布局 elements");
         for (const auto& element : page_data.at("elements")) {
             if (!element.is_object() || element.value("type", "") != "score_cell") {
                 continue;
@@ -197,6 +248,7 @@ static std::vector<StudentDigit> student_digits_from_page(const json& page_data)
     if (!page_data.contains("elements") || !page_data.at("elements").is_array()) {
         return digits;
     }
+    assert_array_size(page_data.at("elements"), "布局 elements");
 
     for (const auto& element : page_data.at("elements")) {
         if (!element.is_object() || element.value("type", "") != "student_digit") {
@@ -223,6 +275,7 @@ static std::vector<LayoutBlockCrop> block_crops_from_page(const json& page_data)
     if (!page_data.contains("blocks") || !page_data.at("blocks").is_array()) {
         return crops;
     }
+    assert_array_size(page_data.at("blocks"), "布局 blocks");
 
     for (const auto& block : page_data.at("blocks")) {
         if (!block.is_object()) {
@@ -285,17 +338,10 @@ static std::vector<LayoutBlockCrop> block_crops_from_page(const json& page_data)
 }
 
 LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_number) {
-    if (!std::filesystem::exists(layout_path)) {
-        throw std::runtime_error("Layout JSON not found: " + path_to_utf8(layout_path));
-    }
+    // 安全 R19：布局 JSON 也是外部输入，先按字节上限读入再解析，别让 nlohmann 在几十 MB 的文本上建 DOM
+    const std::vector<unsigned char> raw = read_capped_file(layout_path, recognizer_limits().max_layout_bytes, "布局 JSON");
 
-    std::ifstream input(layout_path, std::ios::binary);
-    if (!input) {
-        throw std::runtime_error("Failed to open layout JSON: " + path_to_utf8(layout_path));
-    }
-
-    json layout;
-    input >> layout;
+    json layout = json::parse(std::string(reinterpret_cast<const char*>(raw.data()), raw.size()));
 
     const std::string card_id = layout.value("cardId", "");
     if (card_id.empty()) {
@@ -305,6 +351,7 @@ LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_n
     if (!layout.contains("pages") || !layout.at("pages").is_array()) {
         throw std::runtime_error("Layout JSON pages must be a list: " + path_to_utf8(layout_path));
     }
+    assert_array_size(layout.at("pages"), "布局 pages");
 
     const json* page_data = nullptr;
     for (const auto& page : layout.at("pages")) {
@@ -319,6 +366,7 @@ LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_n
     if (!page_data->contains("markers") || !page_data->at("markers").is_array()) {
         throw std::runtime_error("Page " + std::to_string(page_number) + " has no marker list: " + path_to_utf8(layout_path));
     }
+    assert_array_size(page_data->at("markers"), "定位标记 markers");
 
     std::map<std::string, LayoutMarker> markers;
     for (const auto& marker : page_data->at("markers")) {
@@ -354,11 +402,17 @@ LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_n
         required_markers[role] = markers.at(role);
     }
 
+    // 安全 R19：页宽高直接决定「mm×DPI」要分配多少像素，必须在进 OpenCV 之前收口
+    const double width_mm = page_data->value("width", layout.value("width", 210.0));
+    const double height_mm = page_data->value("height", layout.value("height", 297.0));
+    assert_layout_mm(width_mm, "布局页宽");
+    assert_layout_mm(height_mm, "布局页高");
+
     return LayoutPage{
         card_id,
         page_number,
-        page_data->value("width", layout.value("width", 210.0)),
-        page_data->value("height", layout.value("height", 297.0)),
+        width_mm,
+        height_mm,
         required_markers,
         objective_options_from_page(*page_data),
         student_digits_from_page(*page_data),
@@ -370,16 +424,30 @@ LayoutPage load_layout_page(const std::filesystem::path& layout_path, int page_n
 }
 
 std::pair<int, int> layout_pixel_size(double width_mm, double height_mm, int dpi) {
-    if (dpi <= 0) {
-        throw std::runtime_error("DPI must be positive");
+    // 安全 R19：DPI 与 mm 都来自外部输入，两者相乘再转 int 时任何一端越界都会得到负尺寸或溢出，
+    // 交给 cv::warpPerspective 就是不可控行为；这里先把三个维度（DPI 档位、mm 档位、像素预算）都校一遍。
+    assert_recognizer_dpi(dpi);
+    assert_layout_mm(width_mm, "布局页宽");
+    assert_layout_mm(height_mm, "布局页高");
+
+    const double max_side = static_cast<double>(std::numeric_limits<int>::max());
+    for (const auto& [name, mm] : {std::pair<const char*, double>{"宽", width_mm}, {"高", height_mm}}) {
+        if (!(mm / 25.4 * dpi < max_side)) {
+            throw std::runtime_error(std::string("布局页") + name + " " + std::to_string(mm) + " 毫米在 " + std::to_string(dpi)
+                + " DPI 下超过 " + std::to_string(std::numeric_limits<int>::max()) + " 像素，无法安全换算（安全 R19）");
+        }
     }
-    return {
-        static_cast<int>(std::llround(width_mm / 25.4 * dpi)),
-        static_cast<int>(std::llround(height_mm / 25.4 * dpi)),
-    };
+
+    // 保持与历史实现一致的运算次序（mm / 25.4 * dpi），避免边界上四舍五入差一个像素
+    const long long width_px = std::llround(width_mm / 25.4 * dpi);
+    const long long height_px = std::llround(height_mm / 25.4 * dpi);
+    assert_pixel_budget(width_px * height_px,
+        "按 " + std::to_string(dpi) + " DPI 还原的整页布局 " + std::to_string(width_px) + "×" + std::to_string(height_px) + " 尺寸");
+    return {static_cast<int>(width_px), static_cast<int>(height_px)};
 }
 
 std::map<std::string, std::pair<double, double>> marker_centers_px(const LayoutPage& page, int dpi) {
+    assert_recognizer_dpi(dpi);
     const double scale = static_cast<double>(dpi) / 25.4;
     std::map<std::string, std::pair<double, double>> centers;
     for (const auto& [role, marker] : page.markers) {

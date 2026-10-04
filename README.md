@@ -97,6 +97,21 @@
 - **实时进度**：SSE 推送扫描进度 + 逐页缩略图预览
 - **自动识别评分**：扫描完成自动调用识别引擎提取考号、判分
 - **考号-图片持久化**：学号与图片路径存入 SQLite 数据库
+- **兼容模式归属口径**（安全 R34）：无二维码时**只有布局第 1 页能为本组定学号**（学号填涂区只在第 1 页生成），
+  其它页即使读到学号也只记在自己名下并打 WARN，人工订正不受此限；会话级另有一道闸——
+  纸张总数不是每份卡用纸数的整数倍，或任一份第 1 页学号不可信，则**整批不入库**、交人工归组。
+  严格模式有二维码逐页校验，行为不变
+- **答题卡版本核验**（安全 R35）：扫描端离线期间服务器上改了卡，按旧版卡算出的分数不会再静默入库。
+  客户端按卡内容算 96bit 指纹（`src/shared/cardVersion.ts`，不含 `updatedAt`、不用 Web Crypto），
+  建会话与提交完成两处都上报，缺指纹按不可重试错误立即失败；服务端核验不通过返回
+  400 `CARD_VERSION_REQUIRED` / 404 `CARD_NOT_FOUND` / 409 `CARD_VERSION_MISMATCH`，被拒时不建会话、不改状态、不入库。
+  选卡改走同步拉取，命中离线缓存时先让老师确认，工作台常驻版本提示
+- **TWAIN DSM 加载路径**（安全 R40）：DSM 只从**规范化后的受信绝对路径**加载，顺序为
+  「`TWAIN_DSM_DLL` 环境覆盖 > 安装包自带（exe 同目录）> Windows 目录」，不再退回裸名搜索
+  （裸名会交给默认搜索顺序解析，当前工作目录与 PATH 都在其中）。`TWAIN_DSM_DLL` **必须是绝对路径**，
+  相对值/裸名一律忽略并写进诊断日志；包内那份还要经符号链接解析后确认仍在安装目录内。
+  便携使用（exe 拷到别处、旁边放一份 DSM）因此不再可行，安装包必须自带 `TWAINDSM.dll`；
+  加载失败会报 `DSM_LOAD_FAILED` 并提示「只在安装目录与 Windows 目录内查找」
 
 ### 成绩分析
 
@@ -159,6 +174,18 @@
 - **x64 / ia32 双架构**：扫描端均支持 64 位与 32 位 Windows 包；32 位原生资源位于 `resources/native/win-ia32/`
 - **打包入口修复**：扫描端构建最终产物统一提供 `dist/scanner/index.html`，Electron 运行时与服务端 SPA fallback 使用同一入口；ia32 包不再复用 x64 Electron 运行时。
 - **数据共用**：`%APPDATA%\answer-card-designer\`（管理员 Web 端建账号→扫描端/学生 Web 端直接使用）
+- **权限默认拒绝**（安全 R23）：Electron 主进程装了 session 级权限策略，permission request / check / device
+  三个处理器一律拒绝——扫描走 TWAIN 桥接子进程，页面本身不需要任何媒体/设备权限。
+  主框架导航同时收口：同源放行，跨源 https 交系统浏览器（与新窗口同一套口径），其余协议一律拦下
+  （此前只有 `setWindowOpenHandler` 管新窗口，页面内 `location` 跳转可以走到任意来源）
+- **兜底强杀先验身份**（安全 R38）：取消扫描的 2 秒兜底 `taskkill /F /T /PID` 现在要先比对启动时记录的
+  身份快照（父 PID + 可执行文件路径 + 启动时刻），因为 Windows 会回收复用 PID；
+  任一项读不到（权限不足、进程已消失）或已观察到退出，一律跳过强杀，交桥接自身超时兜底
+- **默认库路径可诊断**（安全 R31）：默认库位置依赖 `process.cwd()`，换个工作目录启动会静默新建空库
+  （现场表现为「数据全没了 + 管理员口令按引导态换发」）。现在建库之前会先打印事实：解析到哪、是否已存在、
+  同机还有哪些候选库（从模块目录向上四级探测 `data/projectx.db`），日志前缀 `[db-path]`。
+  **刻意不自动切库**——静默改用别的库与静默新建空库是同一类错误、只是更难发现；
+  要固定位置请显式设 `PROJECTX_DB_PATH`
 - **支持项目**：账号菜单低调入口，JSON 配置驱动的收款码预留接口（详见 [SPONSOR-PAGE.md](./readus/SPONSOR-PAGE.md)）
 
 > 多端详细说明见 [`readus/多端使用说明.md`](./readus/多端使用说明.md)
@@ -713,6 +740,34 @@ Project-X/
 > | `PROJECTX_UPLOAD_MAX_BATCH_TOTAL_MIB` | 1024 | 8192 |
 >
 > 当前生效值会打在服务启动日志的 `[upload-limits] …` 一行，改完重启看这一行即可确认。
+
+> **原生识别器的解码与布局边界**（安全 R19，单一来源 `native/AnswerCardRecognizer/answer-card-recognizer/recognizer_limits.cpp`）
+>
+> `answer-card-recognizer.exe` 是服务端/扫描端拉起的子进程，输入（答题卡图片、布局 JSON、`--dpi`）来自文件与 HTTP 请求。
+> 此前它在 `cv::imdecode` 与 `cv::warpPerspective` 之前**没有任何数值边界**：一张几十 KB 的 PNG 可以声明 60000×60000，
+> 一份布局可以写 `width: 1e9` 毫米或十万个 `items`，`--dpi 1e9` 会让 mm→px 溢出成负尺寸（#280 只夹了服务端一侧）。
+> 现在按「字节 → 文件头声明尺寸 → 解码后实际像素」三段收口，布局侧按「文件字节 / 数组条数 / 毫米 / 矩形数值有限性」收口，
+> DPI 侧按档位收口；越界一律抛错并由 `wmain` 转成 `{"status":"failed"}` + 退出码 2，不会把内存吃光或崩在 OpenCV 里。
+>
+> | 环境变量 | 默认（x64） | 默认（ia32） | 天花板（x64 / ia32） | 含义 |
+> |----------|-------------|--------------|----------------------|------|
+> | `PROJECTX_RECOGNIZER_MAX_IMAGE_BYTES` | 67108864（64 MiB） | 同 x64 | 536870912（512 MiB） | 图片文件**解码前**的字节上限 |
+> | `PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS` | 100000000 | 40000000 | 400000000 / 70000000 | 单张图的像素上限（面积，同时用于文件头预检与校正后整页图） |
+> | `PROJECTX_RECOGNIZER_MAX_LAYOUT_BYTES` | 8388608（8 MiB） | 同 x64 | 67108864（64 MiB） | 布局 JSON 的字节上限 |
+> | `PROJECTX_RECOGNIZER_MAX_LAYOUT_ITEMS` | 20000 | 同 x64 | 200000 | 布局里任一数组（pages/markers/blocks/items/options/questions/scoreCells/elements）的条数上限 |
+> | `PROJECTX_RECOGNIZER_MAX_LAYOUT_MM` | 1200 | 同 x64 | 5000 | 页宽高与矩形坐标的毫米上限（A0 长边 1189 mm） |
+> | `PROJECTX_RECOGNIZER_MIN_DPI` | 50 | 同 x64 | 300 | `--dpi` 下限（与服务端 `parseRecognitionDpi` 的 [50,1200] 对齐） |
+> | `PROJECTX_RECOGNIZER_MAX_DPI` | 1200 | 同 x64 | 2400 | `--dpi` 上限 |
+>
+> 生效档位写在子进程 **stderr** 的 `[recognizer-limits] …` 一行（stdout 只留给 JSON 结果，因此不影响调用方解析）；
+> 非法值回落默认、超天花板被夹紧、下限高于上限时按上限回落，三种情况都会在 stderr 留痕。
+> 环境变量由拉起识别器的进程继承，扫描端/服务端无需改动即可透传。
+>
+> **默认档位是按真实工作流取的**：扫描端界面只提供 150–600 DPI，A4@600 = 34.8 Mpx、A3@600 = 69.6 Mpx 都在 x64 默认档内；
+> A4@1200 = 139 Mpx 需要显式放宽（`PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS=160000000`）。
+> 32 位扫描端只有 2 GB 用户地址空间，默认 40 Mpx、天花板 70 Mpx（≈A3@600），**再高就是崩而不是拒**，因此不设更高天花板。
+> 回归见 `npm run verify:recognizer-limits`（超大图片/超大布局/越界 DPI 安全退出 + 三档约定生效 + 源码与 README 清单一致）；
+> 换另一个位宽的产物跑同一套：`ANSWER_CARD_RECOGNIZER_EXE=<路径> npm run verify:recognizer-limits`。
 
 > **试卷池领取配额**（安全 R15，单一来源 `src/shared/reviewPoolLimits.ts`）
 >

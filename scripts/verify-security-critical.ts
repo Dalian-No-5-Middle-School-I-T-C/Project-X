@@ -2490,6 +2490,63 @@ async function main(): Promise<void> {
         check(existsSync(path.join(stagedDir, "TWAINDSM.dll")),
           `R40：已打包的 ${arch} 产物目录里带着 TWAINDSM.dll（缺失时现场只能报错，不能退回搜索路径）`);
       }
+
+      // ── R19：原生识别器在解码与矩阵分配之前必须自己收口 ──
+      // 真机功能验证（x64 + ia32 各自跑「超大图片/超大布局/越界 DPI 安全退出 + 三档约定」45 项）
+      // 在 `npm run verify:recognizer-limits`；这里锁构建接线与调用顺序，防止改了源码却漏掉模块或漏重建。
+      const limitsSource = readFileSync(
+        path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/recognizer_limits.cpp"), "utf8");
+      const vcxprojSource = readFileSync(
+        path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/answer-card-recognizer.vcxproj"), "utf8");
+      check(/<ClCompile Include="recognizer_limits\.cpp" \/>/.test(vcxprojSource)
+        && /<ClInclude Include="recognizer_limits\.hpp" \/>/.test(vcxprojSource),
+        "R19：recognizer_limits 已挂进 vcxproj（漏挂就等于静默编译出没有边界的识别器）");
+      const limitEnvNames = [...new Set(limitsSource.match(/PROJECTX_RECOGNIZER_[A-Z_]+/g) ?? [])].sort();
+      const readmeSource = readFileSync(path.resolve("README.md"), "utf8");
+      check(limitEnvNames.length === 7
+        && limitEnvNames.every((name) => readmeSource.includes(name)),
+        `R19：识别器 7 个档位环境变量与 README 表格一致（源码 ${limitEnvNames.length} 个）`);
+      const limitRows = [...limitsSource.matchAll(
+        /\{LimitKey::(\w+),\s*"(PROJECTX_RECOGNIZER_[A-Z_]+)",\s*"[^"]*",\s*([^,]+),\s*([^,}]+)\}/g)];
+      check(limitRows.length === 7 && limitRows.every((row) => row[2].startsWith("PROJECTX_RECOGNIZER_")),
+        `R19：7 个档位都写成「默认值 + 环境变量 + 天花板」三档（实际解析到 ${limitRows.length} 行）`);
+      const ceilingsBelowDefault = limitRows.filter((row) => {
+        const fallback = Number(row[3].replace(/LL/g, "").trim());
+        const ceiling = Number(row[4].replace(/LL/g, "").trim());
+        return Number.isFinite(fallback) && Number.isFinite(ceiling) && ceiling < fallback;
+      }).map((row) => row[2]);
+      check(ceilingsBelowDefault.length === 0,
+        `R19：每档的安全天花板都不低于默认值（否则默认值自己就会被夹紧：${ceilingsBelowDefault.join(", ") || "无"}）`);
+      check(/kIs64Bit \? 100000000LL : 40000000LL/.test(limitsSource),
+        "R19：像素档位按位宽分档（32 位扫描端只有 2GB 地址空间，档位必须更低）");
+      const recognizerVisionSource = readFileSync(
+        path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/vision_utils.cpp"), "utf8");
+      check(!/std::istreambuf_iterator/.test(recognizerVisionSource)
+        && recognizerVisionSource.indexOf("read_capped_file(path, limits.max_image_bytes") >= 0
+        && recognizerVisionSource.indexOf("read_capped_file") < recognizerVisionSource.indexOf("cv::imdecode(buffer"),
+        "R19：图片先按字节上限整份读入、再按头部声明尺寸预检，最后才 imdecode");
+      check(recognizerVisionSource.indexOf("assert_pixel_budget") >= 0
+        && recognizerVisionSource.indexOf("assert_pixel_budget") < recognizerVisionSource.indexOf("cv::warpPerspective"),
+        "R19：warpPerspective 之前先过像素预算，输出尺寸不再由「布局 mm × DPI」直接决定");
+      const recognizerLayoutSource = readFileSync(
+        path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/layout_io.cpp"), "utf8");
+      check(!/input >> layout/.test(recognizerLayoutSource)
+        && /read_capped_file\(layout_path, recognizer_limits\(\)\.max_layout_bytes/.test(recognizerLayoutSource),
+        "R19：布局 JSON 先按字节上限读入再解析，不再让 nlohmann 在任意大小文本上建 DOM");
+      check(recognizerLayoutSource.indexOf("assert_recognizer_dpi(dpi)") >= 0
+        && recognizerLayoutSource.indexOf("assert_recognizer_dpi(dpi)") < recognizerLayoutSource.indexOf("std::llround(width_mm"),
+        "R19：layout_pixel_size 先校 DPI 档位与毫米档位，再做 mm→px 换算（防 int 溢出成负尺寸）");
+      check((recognizerLayoutSource.match(/assert_array_size\(/g) ?? []).length >= 9,
+        "R19：布局里每个外部数组（pages/markers/blocks/items/options/questions/scoreCells/elements）都过条数上限");
+      const recognizerMainSource = readFileSync(
+        path.resolve("native/AnswerCardRecognizer/answer-card-recognizer/main.cpp"), "utf8");
+      check(/SetErrorMode\(SEM_FAILCRITICALERRORS \| SEM_NOGPFAULTERRORBOX\)/.test(recognizerMainSource)
+        && /\[recognizer-limits\]/.test(recognizerMainSource),
+        "R19：子进程禁用模态错误框（否则调用方白等 30s 超时）并把生效档位写到 stderr");
+      for (const arch of ["win-x64", "win-ia32"] as const) {
+        check(existsSync(path.resolve("resources/native", arch, "answer-card-recognizer.exe")),
+          `R19：${arch} 的识别器产物在包内（改了 C++ 记得 npm run native:build:${arch === "win-x64" ? "x64" : "ia32"} 重建）`);
+      }
     }
 
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);

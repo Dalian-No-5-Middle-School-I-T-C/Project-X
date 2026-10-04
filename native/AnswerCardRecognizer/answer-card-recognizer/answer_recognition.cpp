@@ -2,6 +2,7 @@
 
 #include "common.hpp"
 #include "layout_io.hpp"
+#include "recognizer_limits.hpp"
 #include "vision_utils.hpp"
 #include "card_identity.hpp"
 
@@ -730,6 +731,8 @@ json recognize_objective_answers(
     bool legacy
 ) {
     try {
+        // 安全 R19：DPI 先过档位校验，再去读布局与图片——越界的 DPI 会让后面每一次 mm→px 换算都失真
+        assert_recognizer_dpi(output_dpi);
         const LayoutPage layout_page = load_layout_page(layout_path, page_number);
         if (layout_page.objective_options.empty() && layout_page.subjective_score_cells.empty()) {
             return failed_result("Layout page has no recognizable answer or score cells.", image_path, layout_path, page_number);

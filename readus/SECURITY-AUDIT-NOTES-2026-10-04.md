@@ -6,7 +6,8 @@
 真实利用判定后不成立、要么它本质上是一个需要产品/现场决策而非服务端闸门的问题。按主理人定的规矩，
 **这类条目不静默消失，而是留一份说明**：写清判定、证据、以及重新评估的触发条件。
 
-本文件随批次滚动更新（第四批已录入；第五批 A 的判定见第六节，第五批 C 会给出 R36/R39 的明确处置）。
+本文件随批次滚动更新（第四批已录入；第五批 A 的判定见第六节、第五批 B 的判定与真机证据见第七节，
+第五批 C 会给出 R36/R39 的明确处置）。
 
 ---
 
@@ -124,4 +125,128 @@
 **为什么白名单只有 14 条**：模式逐条与 `grep router.get / app.get` 的真实注册核对过，
 并按「浏览器会不会自己发起这个 URL」取舍。CSV/Excel 导出经 `downloadBlob → authFetch` 走头认证，
 不需要 URL 凭据，因此**不进**白名单；多写的模式等于无谓扩大 `?token=` 的适用面。
+
+---
+
+## 七、第五批 B（扫描端与原生识别器）的判定与证据
+
+这一批改的是 **Windows 原生进程**：Electron 主进程、TWAIN 桥接子进程、答题卡识别器子进程。
+与前四批不同，这里没有「服务端全绿就代表生效」的余地——原生侧的行为只能靠真机、真驱动、
+真图片去验。下面记下每条的取舍理由与可复现证据。
+
+### R19 识别器资源边界：边界放在**解码之前**，档位放在**子进程环境变量**里
+
+清单给的说法是「解码 bomb / 超大布局」。真正的取舍有两处：
+
+1. **像素预算必须在 `cv::imdecode` 之前生效**。只在解码后判 `image.total()` 是不够的——
+   声明炸弹（IHDR 写 20000×20000、实际数据几 KB）会让 OpenCV 先把几 GB 分配出来再失败，
+   32 位扫描端上这直接是崩溃而不是拒绝。因此 `vision_utils.cpp` 先按容器头声明的尺寸预拒
+   （PNG IHDR / BMP DIB 含 BITMAPCOREHEADER / JPEG SOF 标记游走 / TIFF 首个 IFD 的 256、257 标签，
+   条目循环上限 512 / WebP VP8X·VP8L·VP8 ），解码后再按真实 `total()` 复核一次。
+   `verify:recognizer-limits` 用 `PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS=1000000` 断言错误信息里
+   含「头部声明」四个字——**这条断言就是为了证明拒绝发生在解码前**，不是解码后。
+2. **默认档位按架构分档**，因为 32 位进程只有 2 GB 用户地址空间：x64 默认 100 Mpx / 天花板 400 Mpx，
+   ia32 默认 40 Mpx / 天花板 70 Mpx。参照物：A4@300 = 8.7 Mpx、A4@600 = 34.8、A3@600 = 69.6、
+   A4@1200 = 139、A3@1200 = 278。也就是说 **ia32 上把天花板抬到 70 Mpx 以上没有意义**——
+   再高不是「拒绝」而是「崩」，这属于必须写进文档、不能靠环境变量放宽的一类。
+   UI 只提供 150–600 dpi，服务端夹在 [50,1200]；真要在 x64 上跑 A4@1200（139 Mpx），
+   出路是显式设 `PROJECTX_RECOGNIZER_MAX_IMAGE_PIXELS=160000000`，README 已写明。
+3. **诊断一律走 stderr**，`stdout` 仍然只有那一份 JSON——`recognition.ts` 的契约没动，
+   档位摘要（`[recognizer-limits] …`）由父进程环境继承，服务端与 Electron 都不需要改代码。
+
+**证据**：`npm run verify:recognizer-limits` 在 x64 与 ia32 两个产物上各 **45 通过 / 0 失败**
+（ia32 用 `ANSWER_CARD_RECOGNIZER_EXE=resources/native/win-ia32/answer-card-recognizer.exe` 指定）；
+既有的 `verify:recognizer-layout`、`verify:recognizer-pencil` 在**两个架构**上同样全绿
+（即「加了边界没有把正常卡拒掉」）；`verify:security-critical` **365 / 0**（新增 R19 静态断言：
+7 个档位都写成「默认值 + 环境变量 + 天花板」三档、每档天花板不低于默认值、
+`read_capped_file` 出现在 `cv::imdecode` 之前且源码里不再有 `std::istreambuf_iterator`、
+`assert_pixel_budget` 出现在 `cv::warpPerspective` 之前、`assert_array_size` ≥ 9 处、
+`SetErrorMode` 与档位摘要都在 `main.cpp` 里）。
+
+**踩坑（写下来是为了下次别再踩）**：本机原本缺 `D:\opencv4-13` 与 `D:\nlohmann`，
+两个架构都编不出来，也就无法给出上面那份真机证据。恢复方式全部在仓库外、不改任何构建脚本：
+
+- `D:\opencv4-13\opencv\build` 与 `D:\opencv4-13\32\opencv_install_win32_vs18\include`
+  都是指向本机已有 `D:\opencv-dl\opencv\opencv\build`（及其 `include`）的目录 junction；
+- ia32 的 `x86\vc18\bin\opencv_world4130.dll` 取自仓库里已打包的 `resources/native/win-ia32/`，
+  而**配套的导入库本机没有**，于是用 `dumpbin /exports` 导出符号表 → 生成**不带引号**的 `.def`
+  → `lib /def /machine:x86` 合成 `opencv_world4130.lib`（放在 `…\x86\vc18\lib\`）。
+  这里有一个坑：`.def` 里给导出名加引号会让 `lib.exe` 把引号**写进符号名**
+  （`__imp__"?imdecode@cv@@…"`），链接时 41 个 LNK2001 全部对不上；去掉引号后即干净通过。
+- `D:\nlohmann\include\single_include\nlohmann\json.hpp` 取自 nlohmann/json **v3.11.3**
+  （`curl` 直连 raw.githubusercontent 在本机报 SSL 错误 exit 60，改用 git clone 后拷单头文件）。
+
+**这些路径不入库、也不进 CI**：`scripts/build-answer-card-recognizer.bat` 与 `.vcxproj`
+里写的仍是仓库原有的绝对路径约定，本次只是把本机补齐到那个约定上。别人复现时要么按同一约定准备 SDK，
+要么改自己的本地路径——但**不要**把 junction 或合成库写进仓库。
+
+### R23 Electron 权限：**默认全拒**，连主框架导航一起收
+
+扫描端页面不需要任何媒体/设备权限（扫描走 TWAIN 桥接子进程），所以 `permission-request` /
+`permission-check` / `device-permission` 三个处理器一律 deny。顺带修掉一个同源问题：
+原先只有 `setWindowOpenHandler` 管新窗口，**页面内 `location` 跳转不受限**，
+一旦跳到任意来源，之后的请求就都出自那个来源。现在按同源放行、跨源 https 交系统浏览器
+（与新窗口同一套口径）、其余协议一律拦下。
+
+### R31 默认库路径：**只把事实说出来，不自动切库**
+
+`process.cwd()` 决定默认库位置，换个工作目录启动就会静默新建空库，现场表现为
+「数据全没了 + 管理员口令按引导态换发」（并因此触发 R01 的随机口令）。
+这里的取舍是**不做自动切换**：静默改用探测到的另一个库，与静默新建空库是同一类错误、只是更难发现。
+改为在建库之前打印「解析到哪、是否已存在、同机还有哪些候选库」（从模块目录向上四级探测
+`data/projectx.db`，不写死任何厂商路径），日志前缀 `[db-path]`，由运维显式设 `PROJECTX_DB_PATH` 收口。
+
+### R38 兜底强杀：**宁可不杀，也不能杀错**
+
+Windows 回收复用 PID，取消扫描时那条 2 秒兜底 `taskkill /F /T /PID` 有可能打到一个完全无关的进程
+并带走它整棵子树。现在启动时记录身份快照（父 PID + 可执行文件路径 + 启动时刻），
+强杀前用 PowerShell CIM 读回真实进程信息比对；**任一项读不到**（权限不足、进程已消失）
+或已观察到退出，一律跳过强杀，交桥接自身超时兜底。判定抽成纯函数 `decideForceKill` 以便直接断言
+（`verify:scanner-cancel` 第 5 节 13 条）。`close`/`error` 统一走 `retireActiveScan`，
+既清注册项也清兜底定时器——否则定时器可能在 PID 已被复用之后才触发。
+
+### R34/R35：两条「静默出错」的闭合
+
+- **R34**（无二维码时页序错位会把答卷挂到别人名下）：兼容模式下**只有布局第 1 页能为本组定学号**
+  （学号填涂区只在第 1 页生成），其它页即使读到学号也只记在自己名下并打 WARN；人工订正不受此限。
+  会话级再加一道：纸张总数不是每份卡用纸数的整数倍，或任一份第 1 页学号不可信 → **整批不入库**，
+  交人工归组。严格模式有二维码逐页校验，行为不变。
+- **R35**（扫描端离线期间服务器改了卡，按旧版卡算出的分数静默入库）：新增 `src/shared/cardVersion.ts`
+  按卡内容算 96bit 指纹，`POST /sessions` 与 `/sessions/:id/complete` 双端核验
+  （400 `CARD_VERSION_REQUIRED` / 404 `CARD_NOT_FOUND` / 409 `CARD_VERSION_MISMATCH`），
+  被拒时不建会话、不改状态、不入库并打 WARN。**指纹刻意不含 `updatedAt`**：
+  本地导入会重盖时间戳，含进去会让每次上传都被误判为版本不一致；
+  也**不用 Web Crypto**——`http://局域网IP` 这类非安全上下文里没有 `crypto.subtle`。
+
+### R40 TWAIN DSM：真机证据（这是本批唯一「必须靠设备」才能确认的一条）
+
+改法见 CHANGELOG（候选一律绝对路径、`LoadLibraryExW(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS |
+LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR)`、`wmain` 第一件事 `SetDefaultDllDirectories`、
+`TWAIN_DSM_DLL` 只接受绝对路径、包内那份还要经 `GetFinalPathNameByHandleW` 确认没离开安装目录）。
+真机验证（Windows，本机装有 KODAK i3000 TWAIN 驱动）：
+
+- **x64**：`resources/native/win-x64/scanner-bridge.exe list` → `dsm_loaded=true`，
+  `dsm_path` 为安装目录内的绝对路径（203120 字节），枚举出 `KODAK Scanner: i3000`。
+- **ia32**：`resources/native/win-ia32/scanner-bridge.exe list` → `dsm_loaded=true`（173424 字节），
+  同样枚举出该扫描仪。
+- **CWD 投毒**：把 `scanner-bridge.exe` 单独放进空目录、在另一个目录里放伪造的 `TWAINDSM.dll`
+  与 `twain_32.dll` 并从该目录启动 → 两个伪造文件都没进候选，`dsm_search` 只列出绝对路径，
+  最终按 `DSM_LOAD_FAILED` 安全报错；`c:\windows\twain_32.dll` 因位宽不符被 `err=193` 拒绝。
+- **环境覆盖**：`TWAIN_DSM_DLL=TWAINDSM.dll`（相对值）被忽略；改成绝对路径后正常加载并枚举成功。
+
+**代价（要告诉现场）**：便携使用（把 exe 拷到别处、旁边放一份 DSM）不再可行，
+DSM 必须在安装目录或 Windows 目录内；安装包因此**必须带上 `TWAINDSM.dll`**——
+`verify:security-critical` 已加断言：凡是 `resources/native/win-*/scanner-bridge.exe` 存在，
+同目录必须有 `TWAINDSM.dll`，缺了只能报错，不允许退回搜索路径。
+
+### 复检口径（沿用第五节，本批的两点差别）
+
+- **原生侧不看汇总**：识别器与桥接的每条边界都按**边界值**断言
+  （恰好等于上限放行、越一格拒绝；非法值回落默认；超天花板夹紧并留 stderr 一行），
+  并且「夹紧是有效的」用一对相反用例证明（同一档位先设合法值再设超天花板值）。
+- **两个架构都要跑**：x64 绿不能代表 ia32 绿——像素档位、DSM 位宽、导入库都不同。
+  本批所有识别器回归都在 `win-x64` 与 `win-ia32` 两份产物上各跑一遍。
+- **SHA 固定**：本批结论对应分支 `fix/security-batch5-web-scan-deploy` 上第五批 B 的四次提交
+  （`ba7f970` R23/R31/R38、`8d68ba4` R34/R35、`b8bbbc4` R40，以及 R19 那一次）；
+  重跑请固定到这些 SHA。
 

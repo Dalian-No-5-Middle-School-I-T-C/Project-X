@@ -65,6 +65,7 @@
     "verify:exam-paper": "tsx scripts/exam-paper-answer-key-smoke.ts",
     "verify:recognizer-layout": "tsx scripts/verify-recognizer-layout.ts",
     "verify:recognizer-pencil": "tsx scripts/verify-recognizer-pencil.ts",
+    "verify:recognizer-limits": "tsx scripts/verify-recognizer-limits.ts",
     "verify:core-logic": "tsx scripts/verify-core-logic.ts",
     "verify:review-submit": "tsx scripts/verify-review-submit.ts",
     "migrate:mariadb": "tsx scripts/migrate-to-mariadb.ts",
