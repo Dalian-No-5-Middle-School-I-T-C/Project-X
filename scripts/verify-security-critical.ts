@@ -814,18 +814,24 @@ async function main(): Promise<void> {
     check(partialResult.persisted === 1 && partialResult.failedCount === 1 && keptScores === 1 && rolledBackRecords === 0, "失败学生的扫描、总分和题目分整体回滚，成功学生保留");
     check(partialResult.failed[0]?.code === "PERSISTENCE_FAILED" && Boolean(partialBatch.error_summary), "partial 返回稳定错误码并保存脱敏 error_summary");
 
-    // Publish through the real HTTP routes between two student transactions.
-    // The next student must withdraw that publication in its own transaction.
+    // Publish through the real HTTP routes between score-writing transactions.
+    // The next student write must withdraw that publication in its own transaction.
     const { getMysqlDb } = await import("../src/server/db");
     const adapter = getMysqlDb();
+    // 收紧发布校验：中途公布必须「应考集合 ⊆ 已评分集合」，因此在两名学生都出分后才放行，
+    // 再由第三次写分（同一学生重判）验证撤回仍然在同一事务内原子生效。
+    const raceClass = Number(db.prepare("INSERT INTO classes (grade_id,name) VALUES (?,?)").run(grade.id, "写分间隙班").lastInsertRowid);
+    db.prepare("INSERT INTO class_students (class_id,student_id) VALUES (?,?)").run(raceClass, student.id);
+    db.prepare("INSERT INTO class_students (class_id,student_id) VALUES (?,?)").run(raceClass, rollbackStudent.id);
     for (const batchPublish of [false, true]) {
-      const raceExam = createExam(`写分期间公布-${batchPublish}`);
+      const raceExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,?,?,?,?,?,?)")
+        .run(`写分期间公布-${batchPublish}`, "critical-card", grade.id, raceClass, "数学", "active", teacher.id).lastInsertRowid);
       const originalTransaction = adapter.transaction.bind(adapter);
       let publishedBetweenRows = false;
       adapter.transaction = async (fn) => {
         const value = await originalTransaction(fn);
         const count = (db.prepare("SELECT COUNT(*) AS n FROM student_scores WHERE exam_id=?").get(raceExam) as { n: number }).n;
-        if (!publishedBetweenRows && count === 1) {
+        if (!publishedBetweenRows && count === 2) {
           publishedBetweenRows = true;
           const response = await fetch(`${base}/api/exams/${batchPublish ? "publish-batch" : `${raceExam}/publish`}`, {
             method: "POST", headers: { ...authHeaders(teacherToken), "Content-Type": "application/json" },
@@ -836,12 +842,17 @@ async function main(): Promise<void> {
         return value;
       };
       try {
-        const outcome = await persistGradingResults(String(raceExam), [gradingRow("first.png", "S1001"), gradingRow("second.png", "S1002")], teacher.id);
-        check(publishedBetweenRows && outcome.persisted === 2, "真实两学生写入经过公布间隙");
+        const firstRun = await persistGradingResults(String(raceExam), [gradingRow("first.png", "S1001")], teacher.id);
+        const secondRun = await persistGradingResults(String(raceExam), [gradingRow("second.png", "S1002")], teacher.id);
+        const thirdRun = await persistGradingResults(String(raceExam), [gradingRow("third.png", "S1001")], teacher.id);
+        check(publishedBetweenRows && firstRun.persisted === 1 && secondRun.persisted === 1 && thirdRun.persisted === 1,
+          "逐学生写入之间有公布间隙（第三次写分前撤回）");
         const state = db.prepare("SELECT score_published FROM exams WHERE id=?").get(raceExam) as { score_published: number };
         check(state.score_published === 0, "后续学生写入原子撤回中途公布");
-        const audit = db.prepare("SELECT actor_id FROM exam_publish_events WHERE exam_id=? AND action='unpublish' AND reason=?").get(raceExam, "批量成绩入库自动撤回") as { actor_id: number } | undefined;
-        check(audit?.actor_id === teacher.id, "逐学生撤回保留操作者审计");
+        const audit = db.prepare(
+          "SELECT actor_id FROM exam_publish_events WHERE exam_id=? AND action='unpublish' AND actor_id=? LIMIT 1"
+        ).get(raceExam, teacher.id) as { actor_id: number } | undefined;
+        check(audit?.actor_id === teacher.id, "写分撤回保留操作者审计");
       } finally {
         adapter.transaction = originalTransaction;
       }
@@ -1085,11 +1096,13 @@ async function main(): Promise<void> {
       check(Boolean(autoUnpublishAudit), "自动撤回写入审计事件");
     }
 
-    // 部分成绩可以公布；无成绩仍拒绝，公布不改动应考名单或补造零分。
-    section("部分成绩公布与空成绩拦截");
+    // 收紧后的发布校验：名单未全部出分拒绝；缺考者走应考名单剔除；无成绩拒绝；批量整体拒绝无部分写入。
+    section("发布完整性校验与空成绩拦截");
     {
       const auditCount = (examId: number): number =>
         (db.prepare("SELECT COUNT(*) AS c FROM exam_publish_events WHERE exam_id = ?").get(examId) as { c: number }).c;
+      const scoreCount = (examId: number): number =>
+        (db.prepare("SELECT COUNT(*) AS c FROM student_scores WHERE exam_id = ?").get(examId) as { c: number }).c;
       const publishClass = Number(db.prepare("INSERT INTO classes (grade_id,name) VALUES (?,?)").run(grade.id, "安全C班").lastInsertRowid);
       const rosterStudent1 = await users.createUser({ username: "crit-roster1", password: "student-pass", name: "批改名单生1", role_id: 3, student_number: "S3001" });
       const rosterStudent2 = await users.createUser({ username: "crit-roster2", password: "student-pass", name: "批改名单生2", role_id: 3, student_number: "S3002" });
@@ -1108,37 +1121,47 @@ async function main(): Promise<void> {
       db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)")
         .run(partialScoreExam, rosterStudent1.id, 40, 20, 60);
 
-      // 单场：无成绩拒绝，部分成绩（1/2 人）允许。
+      // 单场：无成绩拒绝；1/2 人出分同样拒绝（应考集合 ⊆ 已评分集合）。
       const publishNoScore = await fetch(`${base}/api/exams/${noScoreExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
       const publishPartial = await fetch(`${base}/api/exams/${partialScoreExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
+      const publishPartialBody = await publishPartial.json() as { message?: string };
       check(publishNoScore.status === 409 && auditCount(noScoreExam) === 0, "closed 但无成绩记录：单场公布被 409 拒绝且不写审计");
-      check(publishPartial.status === 200 && auditCount(partialScoreExam) === 1, "仅 1/2 人出分：单场公布成功且写入审计");
+      check(publishPartial.status === 409 && auditCount(partialScoreExam) === 0 && /不完整|缺/.test(String(publishPartialBody.message || "")),
+        "收紧：仅 1/2 人出分 → 409 且提示缺应考学生成绩");
 
-      // 批量：允许部分出分的考试；已公布考试保持幂等。
+      // 名单齐全可公布
       const fullScoreExam = seedRosterExam("公布门控-P1完整");
       for (const sid of [rosterStudent1.id, rosterStudent2.id]) {
         db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)")
           .run(fullScoreExam, sid, 40, 20, 60);
       }
+      const publishFull = await fetch(`${base}/api/exams/${fullScoreExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
+      check(publishFull.status === 200 && auditCount(fullScoreExam) === 1, "应考名单全部出分：单场公布成功并写入审计");
+
+      // 批量：任一场缺人 → 整体 409，已完整场次也不得被部分写入
       const batchIncomplete = await fetch(`${base}/api/exams/publish-batch`, {
         method: "POST", headers: { "Content-Type": "application/json", ...authHeaders(teacherToken) },
-        body: JSON.stringify({ examIds: [partialScoreExam, fullScoreExam] })
+        body: JSON.stringify({ examIds: [partialScoreExam, noScoreExam] })
       });
-      check(batchIncomplete.status === 200 && auditCount(partialScoreExam) === 1 && auditCount(fullScoreExam) === 1, "批量允许部分成绩，已公布场次保持幂等");
+      check(batchIncomplete.status === 409 && auditCount(partialScoreExam) === 0 && auditCount(noScoreExam) === 0,
+        "批量含未完整场次：整体 409 且无任何审计写入");
 
-      // 补全成绩后放行（回归：批改完整的考试可正常公布）
-      db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)")
-        .run(partialScoreExam, rosterStudent2.id, 30, 20, 50);
-      const gradingPartial = seedRosterExam("阅卷中部分出分");
-      db.prepare("UPDATE exams SET status = 'grading' WHERE id = ?").run(gradingPartial);
-      db.prepare("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?,?,?)").run(gradingPartial, rosterStudent1.id, 60);
-      const publishGradingPartial = await fetch(`${base}/api/exams/${gradingPartial}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
-      check(publishGradingPartial.status === 200 && auditCount(gradingPartial) === 1, "阅卷中已有部分成绩即可公布，无需结考");
-      check(!db.prepare("SELECT 1 FROM student_scores WHERE exam_id = ? AND student_id = ?").get(gradingPartial, rosterStudent2.id), "公布不为尚未出分学生创建零分记录");
-      const batchNoScores = await fetch(`${base}/api/exams/publish-batch`, { method: "POST", headers: { ...authHeaders(teacherToken), "Content-Type": "application/json" }, body: JSON.stringify({ examIds: [noScoreExam, gradingPartial] }) });
-      check(batchNoScores.status === 409 && auditCount(noScoreExam) === 0 && auditCount(gradingPartial) === 1, "批量含无成绩考试仍拒绝且不新增审计");
-      const publishCompleted = await fetch(`${base}/api/exams/${partialScoreExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
-      check(publishCompleted.status === 200 && auditCount(partialScoreExam) === 1, "补全成绩后单场公布成功并写入审计");
+      // 缺考学生按 #248 §3.2 从应考名单剔除后即可公布（显式名单优先于名册快照）
+      db.prepare("DELETE FROM exam_participants WHERE exam_id = ?").run(partialScoreExam);
+      db.prepare("INSERT INTO exam_participants (exam_id, student_id, source) VALUES (?,?,'explicit')")
+        .run(partialScoreExam, rosterStudent1.id);
+      const publishAfterRemoval = await fetch(`${base}/api/exams/${partialScoreExam}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
+      check(publishAfterRemoval.status === 200 && auditCount(partialScoreExam) === 1,
+        "缺考者从应考名单剔除后公布成功（显式名单优先）");
+
+      // 阅卷中（未结考）名单齐全仍可公布，且公布不为任何人补造成绩行
+      const gradingComplete = seedRosterExam("阅卷中名单齐全");
+      db.prepare("UPDATE exams SET status = 'grading' WHERE id = ?").run(gradingComplete);
+      db.prepare("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?,?,?)").run(gradingComplete, rosterStudent1.id, 60);
+      db.prepare("INSERT INTO student_scores (exam_id, student_id, total_score) VALUES (?,?,?)").run(gradingComplete, rosterStudent2.id, 55);
+      const publishGrading = await fetch(`${base}/api/exams/${gradingComplete}/publish`, { method: "POST", headers: authHeaders(teacherToken) });
+      check(publishGrading.status === 200 && auditCount(gradingComplete) === 1, "阅卷中名单齐全即可公布，无需结考");
+      check(scoreCount(gradingComplete) === 2, "公布不为未出分学生创建零分记录");
     }
 
     // ── 评审 P1-1：发布完整性集合校验与扫描入库拒识（A/B 名册 + A/C 成绩绕过）──
@@ -1163,7 +1186,7 @@ async function main(): Promise<void> {
       db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)").run(p1ExamBypass, p1C.id, 30,20,50);
       const pubBypass = await fetch(`${base}/api/exams/${p1ExamBypass}/publish`, { method:"POST", headers: authHeaders(teacherToken) });
       const pubBypassBody = await pubBypass.json() as { message?: string };
-      check(pubBypass.status === 409 && auditCnt(p1ExamBypass)===0 && String(pubBypassBody.message||"").includes("非应考学生"), "A/C 凑数绕过：单场公布被 409 拒绝且提示非应考学生");
+      check(pubBypass.status === 409 && auditCnt(p1ExamBypass)===0 && /不完整|缺/.test(String(pubBypassBody.message||"")), "A/C 凑数绕过：单场公布被 409 拒绝且提示缺应考学生成绩");
 
       const p1Complete = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,score_published,created_by) VALUES (?,?,?,?,?,'closed',0,?)").run("P1-完整", p1Card, grade.id, p1Class, "数学", teacher.id).lastInsertRowid);
       db.prepare("INSERT INTO student_scores (exam_id, student_id, objective_score, subjective_score, total_score) VALUES (?,?,?,?,?)").run(p1Complete, p1A.id, 40,20,60);
@@ -1214,8 +1237,9 @@ async function main(): Promise<void> {
       db.prepare("DELETE FROM class_students WHERE class_id=? AND student_id=?").run(snap2Class, sRemB.id);
       db.prepare("UPDATE exams SET status='closed' WHERE id=?").run(remExam);
       const remPublish = await fetch(`${base}/api/exams/${remExam}/publish`, { method:"POST", headers: authHeaders(teacherToken) });
-      check(remPublish.status===200, "快照名单缺 B 不阻塞已有 A 成绩公布");
-      check(Boolean(db.prepare("SELECT 1 FROM exam_participants WHERE exam_id=? AND student_id=?").get(remExam, sRemB.id)), "部分公布保留原应考名单中的 B");
+      const remBody = await remPublish.json() as { message?: string };
+      check(remPublish.status===409 && /不完整|缺/.test(String(remBody.message||"")), "收紧：快照仍含已调走的 B，缺 B 成绩 → 拒绝公布");
+      check(Boolean(db.prepare("SELECT 1 FROM exam_participants WHERE exam_id=? AND student_id=?").get(remExam, sRemB.id)), "拒绝公布不移除原应考名单中的 B");
     }
 
     // ── 评审 P1：发布后手动改分/改答案/仲裁/网阅/赋分不会自动撤回并写审计 ──

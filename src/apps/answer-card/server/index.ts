@@ -2478,7 +2478,7 @@ export async function createApp(): Promise<express.Express> {
         res.status(404).json({ message: "考试不存在" });
         return;
       }
-      // 阅卷中已有成绩也可先公布，无需等待全场结考。
+      // 允许阅卷中先公布，但完整性校验照常生效（应考集合 ⊆ 已评分集合）。
       if (exam.status !== "closed" && exam.status !== "grading") {
         res.status(409).json({ message: "考试尚未进入阅卷阶段，无法公布成绩" });
         return;
@@ -2488,7 +2488,7 @@ export async function createApp(): Promise<express.Express> {
         res.json({ ok: true, scorePublished: 1, showOriginalPaper: exam.show_original_paper === 1 ? 1 : 0 });
         return;
       }
-      // 已有成绩即可公布，不要求应考名单全部出分。
+      // 收紧校验：应考集合 ⊆ 已评分集合，缺任何一名应考学生即 409（缺考者走应考名单剔除）。
       await assertScoresPublishable(db, exam);
       // 状态更新与审计日志在同一事务中保证原子性；
       // WHERE 带状态条件，防止校验与写入之间考试被并发改回阅卷中（TOCTOU）
@@ -2579,7 +2579,7 @@ export async function createApp(): Promise<express.Express> {
       const toPublish = existing
         .filter((item) => item.score_published !== 1)
         .map((item) => item.id);
-      // 任一场无成绩或存在身份异常时整体拒绝，部分学生尚未出分不阻塞公布。
+      // 任一场未通过完整性校验（无成绩 / 无应考范围 / 名单为空 / 缺应考学生成绩）时整体拒绝。
       const incompleteReasons: string[] = [];
       for (const exam of existing.filter((item) => item.score_published !== 1)) {
         try {

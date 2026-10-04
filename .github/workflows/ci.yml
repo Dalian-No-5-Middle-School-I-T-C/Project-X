@@ -62,6 +62,11 @@ jobs:
       - name: Permission-scope regression
         run: npm run verify:permission-scope
 
+      # 成绩公布完整性（#248 P1-1/P1-2）：公布前必须「应考集合 ⊆ 已评分集合」，
+      # 且不存在「仅校验非空」退路。三条脚本各自使用临时 SQLite 库。
+      - name: Score publication integrity regression
+        run: npm run verify:p1-integrity && npm run verify:p1-scope && npm run verify:p1-readgate
+
       # v57 空置 + 「阅卷中已公布」考试不被强制结考，并检查两套方言迁移版本号不撞号
       - name: Grading-published exam and migration numbering
         run: npm run verify:grading-published-exam

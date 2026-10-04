@@ -2,6 +2,18 @@
 
 > **项目起点：2026-06-07 建库**（GitHub 仓库创建，`Initial commit` 于同一分钟提交）。本文件只记录建库之后的真实提交与发版；建库之前的任何日期/版本均为误记，已删除。
 
+## 2026-10-04：成绩公布校验收紧（回到 #248 P1-1/P1-2 口径）
+
+上一批留了一条「已知红」：`verify:p1-integrity` 9 通过 / 6 失败，争的是发布前要不要要求整班名册覆盖。主理人定调**收紧**，本批据此把校验恢复到 #248 发布说明的原始契约，并顺带把三条 P1 回归注册进 CI。
+
+- **收紧后的唯一谓词（单场与批量共用，`src/server/services/examPublication.ts`）**：① 一条成绩都没有 → 409「该考试尚无成绩记录（批改未完成）」；② 既无年级/班级范围又无显式名单 → 409「【完整性校验】未确定应考范围」，**#296 留下的「仅校验非空」退路不再恢复**；③ 名单为空（空班级 / 显式名单被清空）→ 409「【完整性校验】应考名单为空」；④ 名单可知且非空 → 做集合校验「**应考集合 ⊆ 已评分集合**」，缺任何一名应考学生即 409，并把缺的人按「姓名(学号)」点名回去（最多 5 人，超出写「等 N 人」）。
+- **单向校验保持不变**：快照之外的多余成绩（外班学生、误识别）**不阻断**发布，也不会被并进快照——#248 就是这么定的，收紧的是「缺人」而不是「多人」。结考门槛（`status IN ('grading','closed')`）与「缺考者从应考名单剔除」的官方出路（发布说明 §3.2）都照旧。
+- **代价（必须让一线知道）**：恢复严格口径等于**要等名单里每个人都出分才能公布**。现场若确有缺考/辍考学生，只能走「应考名单」把缺考者剔除，或补设范围后按名册剔除；不能像 #296 那样先公布一部分。这也是本次收紧的已知副作用，不是缺陷。
+- **踩坑（三处，都是"测试比代码先漂移"）**：① `verify-mariadb.ts`、`verify-p1-scope.ts`、`verify-security-critical.ts` 里都留有 #296 时代的断言（「无范围 + 1 条成绩 → 200」「显式名单缺人 → 200」「批量含无范围 → 200」「快照缺 B 不阻塞 A 公布」），收紧后全部变红——这些是**期望值本身要跟着口径改**，不是回归失败；② 直接 `INSERT INTO exam_participants … 'explicit'` 模拟剔除缺考者会撞 (exam_id, student_id) 主键（名册快照已占位），必须先 `DELETE` 再插，与真实路由 `setExplicitParticipants` 的「先清空再写」保持一致；③ 「写分间隙公布后被下一次写分撤回」的竞速夹具原来靠"只数人数"才可能在一半学生出分时公布，收紧后必须让名单齐全才放行——改成「班级只有已出分的那名学生 / 或两次写分后再公布、第三次写分撤回」，`markScoreMutated` 的撤回语义本身没有动。
+- **验证**：`npm run typecheck` 通过；`verify:p1-integrity` **15 通过 / 0 失败**（原 9/6）、`verify:p1-scope` **19/0**（原 15 项，收紧后补了"剔除缺考者可公布""入班后可公布""批量拒绝不部分生效"等 4 条正向出路）、`verify:p1-readgate` **15/0**；`verify:security-critical` **200/0**、`verify:permission-scope` **53/0**、`verify:auth` 137、`verify:p1-security` 11，以及其余依赖公布/阅卷的 smoke 与回归（`verify:exam-paper`、`verify:grading-published-exam`、`verify:weekly-demo`、`verify:block-total{,-coverage}`、`verify:scoring-mode{,-config}`、`verify:online-review-scoring-mode`、`verify:review-ranking-degradation`、`verify:review-submit`、`verify:176-178`、`verify:demo-safety`、`verify:class-teachers`、`verify:card-identity`、`verify:wechat-grade-release`、`verify:reliability-filter`、`verify:objective-context`、`verify:core-logic`、`verify:score-grid`、`verify:round5-db-upsert`、`verify:round5-demo-cleanup`、`verify:round5-participant-search`、`verify:round5-crop-silence`、`verify:scanner-cancel`、`verify:scan-page-numbering`、`verify:scanner-page-timeout`、`verify:fill-blank-upgrade`、`verify:student-score-display`、`verify:class-archive`）退出码全 0。MariaDB 侧本机 12.3.2 / 13306 临时实例真跑：`verify:mariadb` **12 节全 PASS**（其中「发布完整性」一节按新口径重写：无范围 409 → 名单缺人 409 且 `listMissingParticipants` 在 MariaDB 上能正确点出缺考者 → 剔除后 200 → 无成绩 409），`verify:class-archive:mariadb`、天梯 `verify-ladder-students.ts --mariadb` 均 ALL PASS。
+- **CI**：`typecheck-and-test` 作业新增一步 `Score publication integrity regression`（`verify:p1-integrity && verify:p1-scope && verify:p1-readgate`），此前这三条 P1 回归只在本地跑，正是 #296 能悄悄放宽的原因。
+- **未覆盖 / 已知红**：`scripts/verify-a3.ts`（需要原生识别器与 A3 样张，本机 `未找到二维码`）与 `scripts/verify-round5-groupby.ts`（`AnalysisRepository.getExamFullScoreMap` 引用的 `card_id` 列在当前 schema 不存在）为本批之前既有失败，与发布校验无关，未一并处理；`testdata/demo-exams/scripts/verify.ts` 需要本地 5174 服务在跑，本轮未启动服务故未执行。
+
 ## 2026-10-04：权限边界整改（安全审查第三批 · R03/R06/R08/R09/R13/R15/R18/R21/R29/R47）
 
 前两批处理的是扫描接入与上传闸门；本批处理「谁能读/写谁的数据」——即所有已通过身份认证、也确实看得见这场考试，却不该拿到这份数据的通路。
@@ -17,7 +29,7 @@
 - **R47 争议复评可被原老师自决**：`answer_block_crops.score_breakdown` 的每一条都算一票，而争议卷恰恰会回退给原老师追加复评打破僵局——A=10、B=4 触发争议后 A 再提交一次就成了 `[10,4,10]` 三票，中位数与均值被同一人重复计票拉向自己，原老师靠反复提交即可把争议判成想要的结果。新增 `latestVotesByReviewer()` 按 `reviewerId` 取最后一轮（保持首次出现顺序）再进聚合；**故意不动**轮次闸门（`scoreBreakdown.length >= reviewMode`）与 `reviewMode + 2` 的复评上限，让僵局照常落进争议池走仲裁，而不是被自愈掩盖。反向对照：还原旧的「逐条算票」实现，「原老师复评不把自己的票变成两票」与「争议卷仍留在争议池」两条断言即失败。
 - **顺带发现的存量缺陷（非本批引入）——题块满分 SQL 在 MariaDB 直接报错**：`listReviewBlocks` 把「各小题满分求和」写成相关子查询里套派生表，MariaDB 的派生表看不到外层 `abc.*`（无别名 `ERROR 1064`，加别名 `ERROR 1054`），SQLite 却能跑——即线上 MariaDB 部署打开题块列表就是 500，而本地 SQLite 全绿看不出来。现改为 `loadBlockMaxScores()` 独立非相关聚合 + 内存按题块合并，一句话两方言通用；并把口径写进 `readus/双方言SQL函数安全清单.md`（新增「相关派生表」与「空数组 `IN ()`」两条禁止项，另附本条事故记录）。同批给 `listReviewBlocks` 补上空集合短路，避免权限集合为空时拼出 `IN ()`。
 - **验证**：`npm run typecheck` 通过；新增 `npm run verify:permission-scope`（隔离 SQLite + 真实 HTTP，**53 项全过 / 0 失败**，覆盖上表每一条的正反两向：范围外 403、范围内 200、越权写入零改写、R06 破坏性步骤放最后）；`npm run verify:security-critical` **200 项全过**（新增试卷池配额的 4 组解析器断言）；`verify:auth` 137、`verify:p1-scope` 15、`verify:p1-readgate` 15、`verify:review-ranking-degradation` 30/0、`verify:review-submit`、`verify:block-total`、`verify:scoring-mode`、`verify:online-review-scoring-mode`、`verify:176-178` 12、`verify:class-teachers` 全部退出码 0。MariaDB 侧用本机 12.3.2 起 13306 临时实例真跑：`verify:mariadb` 全 PASS（**新增一节「题块列表」**，按真库断言满分汇总、HALF 位与 R03 题块收敛），`verify:class-archive:mariadb`、天梯 `verify-ladder-students.ts --mariadb` 均 ALL PASS。`verify:permission-scope` 与 `verify:security-critical` 已注册进 CI 的 `typecheck-and-test` 作业（此前这两个安全回归只在本地跑）。
-- **已知红（非本批引入，未动）**：`npm run verify:p1-integrity` 为 9 通过 / 6 失败（T2/T4/T6a/T6b/T7/T8，集中在「发布前是否要求整班名册覆盖」的口径），stash 基线复现同样 6 条，属 `assertScoresPublishable` 的既有语义争议，留待主理人定调。
+- **已知红（非本批引入，未动）**：`npm run verify:p1-integrity` 为 9 通过 / 6 失败（T2/T4/T6a/T6b/T7/T8，集中在「发布前是否要求整班名册覆盖」的口径），stash 基线复现同样 6 条，属 `assertScoresPublishable` 的既有语义争议，留待主理人定调。 → **同日已定调并修复**：见本文件顶部「成绩公布校验收紧」一节，现 `verify:p1-integrity` 15/0。
 - **未覆盖**：`/api/cards/*` 除本次新增的关联/删除门外，读取与 `PUT` 仍缺「按考试归属」的鉴权（设计器语义，收紧会影响单机使用）；生产（dl5zx.cn）仍是上一版本，本批需随上线生效；教师端界面未做浏览器视觉验收（改动全在服务端门层）。
 
 ## 2026-10-04：扫描/判分上传上限改为可配置（安全 R22/R28 追加）
