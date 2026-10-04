@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import type { AnswerCard, LayoutDocument } from "../src/shared/types";
+import { cardFingerprint } from "../src/shared/cardVersion";
 
 const base = process.env.E2E_SERVER_URL || "http://127.0.0.1:5187";
 const local = process.env.E2E_SCANNER_URL || "http://127.0.0.1:5186";
@@ -88,7 +89,9 @@ const pdf = await fetch(`${base}/api/cards/${card.id}/pdf`, { headers: { Authori
 assert(pdf.ok, `PDF export ${pdf.status}`);
 await writeFile(path.join(out, "答题卡.pdf"), Buffer.from(await pdf.arrayBuffer()));
 console.log("PASS card creation/edit, roster, scanner sync, PDF export");
-const session = await request(base, "/api/scanner/upload/sessions", "POST", { cardId: card.id, pageCount: students.length, dpi: 300 });
+// R35：上传会话要声明扫描端在用哪一版卡；这里按扫描端的做法重新 GET 一次卡再算指纹。
+const cardVersion = cardFingerprint(await request(base, `/api/cards/${card.id}`) as AnswerCard);
+const session = await request(base, "/api/scanner/upload/sessions", "POST", { cardId: card.id, cardVersion, pageCount: students.length, dpi: 300 });
 const rect = (r: any, fill: string) => `<rect x="${r.x}" y="${r.y}" width="${r.width}" height="${r.height}" fill="${fill}" stroke="#111" stroke-width="0.18"/>`;
 for (let i = 0; i < students.length; i++) {
   const page = layout.pages[0];
@@ -119,8 +122,8 @@ for (let i = 0; i < students.length; i++) {
   const saved = await request(base, `/api/scanner/upload/sessions/${session.sessionId}/pages/${session.uploadTokens[i]}/crops`, "POST", cropForm);
   assert.equal(saved.count, manifest.length);
 }
-await request(base, `/api/scanner/upload/sessions/${session.sessionId}/complete`, "POST");
-await request(base, `/api/scanner/upload/sessions/${session.sessionId}/complete`, "POST");
+await request(base, `/api/scanner/upload/sessions/${session.sessionId}/complete`, "POST", { cardVersion });
+await request(base, `/api/scanner/upload/sessions/${session.sessionId}/complete`, "POST", { cardVersion });
 const completed = await request(base, `/api/scanner/upload/sessions/${session.sessionId}/status`);
 assert.equal(completed.progress.recognized, students.length);
 console.log("PASS native OMR, image/results upload, idempotent completion");

@@ -377,6 +377,17 @@ async function main(): Promise<void> {
     check((await middlewareResult(dualAuth, { authorization: `Bearer ${teacherToken}`, "x-api-key": "fake-key" })).status === 401, "JWT 与伪 Key 同时存在时不回退 JWT");
     check((await middlewareResult(dualAuth, { authorization: `Bearer ${studentToken}`, "x-api-key": "fake-key" })).status === 401, "学生 JWT 加伪 Key 返回 401");
     check((await middlewareResult(dualAuth, { "x-api-key": "key-wrong" })).status === 403, "错误 scope 的 Key 返回 403");
+    // 安全 R35：上传会话必须携带「扫描端正在用哪一版卡」，服务端拿自己那一版比对。
+    const { cardFingerprint, parseCardVersion } = await import("../src/shared/cardVersion");
+    const { CardRepository } = await import("../src/server/repositories/CardRepository");
+    const serverCardVersion = async (cardId: string): Promise<string> => {
+      const card = await new CardRepository().findById(cardId);
+      if (!card) throw new Error(`测试前置条件缺失：答题卡 ${cardId} 不存在`);
+      return cardFingerprint(card);
+    };
+    db.prepare("INSERT INTO answer_cards (id,title,subject,subject_label) VALUES (?,?,?,?)")
+      .run("critical-remote-card", "远程接入验收卡", "shuxue", "数学");
+    const remoteCardVersion = await serverCardVersion("critical-remote-card");
     const remoteUploadSession = await fetch(`${base}/api/scanner/upload/sessions`, {
       method: "POST",
       headers: {
@@ -385,7 +396,8 @@ async function main(): Promise<void> {
         "X-Api-Key": "key-scanner"
       },
       body: JSON.stringify({
-        cardId: "critical-card",
+        cardId: "critical-remote-card",
+        cardVersion: remoteCardVersion,
         name: "远程扫描接入验收",
         dpi: 300,
         paperSize: "A4",
@@ -404,6 +416,96 @@ async function main(): Promise<void> {
       "有效 scanner Key 可从环回来源创建远程上传会话"
     );
 
+    // ── R35：扫描端必须声明「正在用哪一版卡」，服务端拿自己那一版比对后才建会话
+    const createVersionedSession = async (cardVersion: unknown, cardId = "critical-remote-card") => {
+      const response = await fetch(`${base}/api/scanner/upload/sessions`, {
+        method: "POST",
+        headers: { Origin: scannerOrigin, "Content-Type": "application/json", "X-Api-Key": "key-scanner" },
+        body: JSON.stringify({ cardId, cardVersion, name: "R35 版本核验", dpi: 300, paperSize: "A4", pageCount: 1 })
+      });
+      const body = await response.json() as { code?: string; sessionId?: string };
+      return { status: response.status, code: body.code ?? "", sessionId: body.sessionId ?? "" };
+    };
+    const noVersion = await createVersionedSession(undefined);
+    check(noVersion.status === 400 && noVersion.code === "CARD_VERSION_REQUIRED" && noVersion.sessionId === "",
+      "不带 cardVersion 的会话请求被 400 拒绝（此前扫描端用哪一版卡服务器无从知晓）");
+    check((await createVersionedSession("")).status === 400, "空字符串 cardVersion 被 400 拒绝");
+    check((await createVersionedSession("v2.6.0")).status === 400, "非指纹格式 cardVersion 被 400 拒绝");
+    check((await createVersionedSession(remoteCardVersion.slice(0, 23))).status === 400
+      && (await createVersionedSession(remoteCardVersion + "0")).status === 400,
+      "长度不足或超出的 cardVersion 均被 400 拒绝（24 位十六进制之外一律不认）");
+    const flipped = remoteCardVersion[0] === "f" ? "0" + remoteCardVersion.slice(1) : "f" + remoteCardVersion.slice(1);
+    const mismatched = await createVersionedSession(flipped);
+    check(mismatched.status === 409 && mismatched.code === "CARD_VERSION_MISMATCH" && mismatched.sessionId === "",
+      "版本指纹对不上时返回 409（旧版卡识别出的成绩不允许入库）");
+    check((await createVersionedSession(remoteCardVersion, "critical-no-such-card")).status === 404,
+      "版本号合法但答题卡不存在时返回 404，不会被当作「版本一致」放行");
+    check((db.prepare("SELECT COUNT(*) count FROM twain_scan_sessions WHERE card_id='critical-remote-card'").get() as { count: number }).count === 1,
+      "被 R35 拒绝的请求没有留下半成品会话");
+    check(parseCardVersion(" " + remoteCardVersion.toUpperCase() + " ") === remoteCardVersion
+      && parseCardVersion("abc") === null && parseCardVersion(12345) === null && parseCardVersion(null) === null,
+      "parseCardVersion 容忍大小写与首尾空白，其余一律判非法");
+
+    // 指纹是「内容」的指纹：同一张卡两次计算一致，改答案/改布局会变，而本地导入重盖的时间戳不会
+    const remoteCardOnce = await new CardRepository().findById("critical-remote-card");
+    const fingerprintAgain = cardFingerprint(remoteCardOnce!);
+    check(fingerprintAgain === cardFingerprint(remoteCardOnce!) && fingerprintAgain === remoteCardVersion,
+      "同一张卡的指纹可重复计算，且与服务端核验用的值一致");
+    const restamped = { ...remoteCardOnce!, updatedAt: "1999-01-01 00:00:00" } as typeof remoteCardOnce;
+    check(cardFingerprint(restamped!) === remoteCardVersion,
+      "updatedAt 不参与指纹（扫描端本地导入会重盖时间戳，若参与则每次上传都会被误判为版本不一致）");
+    const editedKey = JSON.parse(JSON.stringify(remoteCardOnce!)) as typeof remoteCardOnce;
+    if (Array.isArray((editedKey as { bodyBlocks?: unknown }).bodyBlocks) && (editedKey as { bodyBlocks: unknown[] }).bodyBlocks.length > 0) {
+      ((editedKey as { bodyBlocks: Array<Record<string, unknown>> }).bodyBlocks[0]).changed = true;
+    } else {
+      (editedKey as { title?: string }).title = `${(editedKey as { title?: string }).title ?? ""}改`;
+    }
+    check(cardFingerprint(editedKey!) !== remoteCardVersion, "卡内容被改动后指纹随之改变");
+    check(cardFingerprint(editedKey!).length === 24 && /^[0-9a-f]{24}$/.test(cardFingerprint(editedKey!)),
+      "指纹为 24 位小写十六进制，可直接放进请求体与日志");
+
+    // 完成会话时再核一次：建会话之后服务器上的卡被改了，就不能把旧版结果落库
+    const completeWithVersion = async (sessionId: string, cardVersion: unknown) => {
+      const response = await fetch(`${base}/api/scanner/upload/sessions/${encodeURIComponent(sessionId)}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Api-Key": "key-scanner" },
+        body: JSON.stringify(cardVersion === undefined ? {} : { cardVersion })
+      });
+      const body = await response.json() as { code?: string };
+      return { status: response.status, code: body.code ?? "" };
+    };
+    const versionedSession = await createVersionedSession(remoteCardVersion);
+    check(versionedSession.status === 201 && versionedSession.sessionId !== "", "版本一致的会话正常创建（201）");
+    const completeNoVersion = await completeWithVersion(versionedSession.sessionId, undefined);
+    check(completeNoVersion.status === 400 && completeNoVersion.code === "CARD_VERSION_REQUIRED",
+      "完成阶段缺少 cardVersion 同样被 400 拒绝");
+    const completeMismatch = await completeWithVersion(versionedSession.sessionId, flipped);
+    check(completeMismatch.status === 409 && completeMismatch.code === "CARD_VERSION_MISMATCH",
+      "完成阶段版本不一致返回 409，不会触发识别入库");
+    check(db.prepare("SELECT status FROM twain_scan_sessions WHERE id=?").get(versionedSession.sessionId)
+      && (db.prepare("SELECT status FROM twain_scan_sessions WHERE id=?").get(versionedSession.sessionId) as { status: string }).status !== "completed",
+      "被 R35 拦下的会话不会被标记为已完成");
+    db.prepare("DELETE FROM twain_scan_records WHERE session_id=?").run(versionedSession.sessionId);
+    db.prepare("DELETE FROM twain_scan_sessions WHERE id=?").run(versionedSession.sessionId);
+
+    // 扫描端接线：三处入口都要把「本机这一版卡的指纹」带上，否则服务端只能 400
+    const uploadManagerSource = readFileSync(path.resolve("src/apps/answer-card/client/lib/scannerUploadManager.ts"), "utf8");
+    const scannerPanelSource = readFileSync(path.resolve("src/apps/answer-card/client/components/ScannerPanel.tsx"), "utf8");
+    const scannerWorkspaceSource = readFileSync(path.resolve("src/apps/answer-card/client/components/ScannerWorkspace.tsx"), "utf8");
+    const scannerSyncSource = readFileSync(path.resolve("src/apps/answer-card/client/lib/scannerSync.ts"), "utf8");
+    const scannerAppSource = readFileSync(path.resolve("src/apps/answer-card/client/ScannerApp.tsx"), "utf8");
+    check(/cardVersion:\s*j\.cardVersion/.test(uploadManagerSource)
+      && /cardVersion:\s*string/.test(uploadManagerSource)
+      && /未能确定本机答题卡版本/.test(uploadManagerSource),
+      "上传管理器在建会话与完成会话时都带 cardVersion，缺失时先失败而不是静默上传");
+    check(/cardFingerprint\(card\)/.test(scannerPanelSource) && /cardVersion/.test(scannerPanelSource),
+      "扫描仪直扫入口按服务端返回的卡计算指纹后交给上传管理器");
+    check(/cardVersion:\s*cardFingerprint\(card\)/.test(scannerWorkspaceSource),
+      "导入图片入口同样携带卡版本指纹");
+    check(!/fetchCardByIdSynced\s*\(/.test(scannerSyncSource + scannerAppSource)
+      && /fetchCardDetailSynced/.test(scannerSyncSource) && /stale/.test(scannerAppSource),
+      "选卡走 fetchCardDetailSynced：命中离线缓存时先告知版本可能过期，而不是拿旧卡直接开工");
+
     section("考试组权限与事务");
     let grade = db.prepare("SELECT id FROM grades ORDER BY id LIMIT 1").get() as { id: number } | undefined;
     if (!grade) {
@@ -413,6 +515,7 @@ async function main(): Promise<void> {
     const classB = Number(db.prepare("INSERT INTO classes (grade_id,name) VALUES (?,?)").run(grade.id, "安全B班").lastInsertRowid);
     db.prepare("INSERT INTO teacher_classes (teacher_id,class_id,subject) VALUES (?,?,?)").run(teacher.id, classA, "数学");
     db.prepare("INSERT INTO answer_cards (id,title,subject,subject_label) VALUES (?,?,?,?)").run("critical-card", "安全验收卡", "shuxue", "数学");
+    const criticalCardVersion = await serverCardVersion("critical-card");
     const visibleExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,?,?,?,?,'active',?)").run("可见考试", "critical-card", grade.id, classA, "数学", teacher.id).lastInsertRowid);
     const hiddenExam = Number(db.prepare("INSERT INTO exams (name,card_id,grade_id,class_id,subject,status,created_by) VALUES (?,?,?,?,?,'active',?)").run("越权考试", "critical-card", grade.id, classB, "语文", leader.id).lastInsertRowid);
 
@@ -493,7 +596,7 @@ async function main(): Promise<void> {
         method: "POST",
         headers: { "Content-Type": "application/json", ...scannerKeyHeaders },
         body: JSON.stringify({
-          cardId: "critical-card", name: "安全批次验收", dpi: 300, paperSize: "A4",
+          cardId: "critical-card", cardVersion: criticalCardVersion, name: "安全批次验收", dpi: 300, paperSize: "A4",
           ...(pageCount === undefined ? {} : { pageCount })
         })
       });

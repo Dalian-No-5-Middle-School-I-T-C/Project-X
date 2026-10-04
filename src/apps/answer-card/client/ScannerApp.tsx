@@ -3,7 +3,9 @@
 import { useState, useEffect, useRef } from "react";
 import { useAuth } from "./auth/AuthContext";
 import { fetchJson } from "./auth/api";
-import { fetchCardByIdSynced, importCardLocally } from "./lib/scannerSync";
+import { fetchCardDetailSynced, importCardLocally } from "./lib/scannerSync";
+import { shortCardVersion } from "../../../shared/cardVersion";
+import type { AnswerCard } from "../../../shared/types";
 import { LoginPageScanner } from "./components/LoginPageScanner";
 import { UploadProgressCard } from "./components/UploadProgressCard";
 import { CardSelectPage } from "./components/CardSelectPage";
@@ -28,6 +30,8 @@ function ScannerAppInner() {
   const [page, setPage] = useState<Page>("select");
   const [selectedCardId, setSelectedCardId] = useState<string>("");
   const [selectedCardTitle, setSelectedCardTitle] = useState<string>("");
+  // 安全 R35：离线用缓存卡进入时的工作台提示（版本 + 缓存时间），空串表示版本与服务器一致
+  const [cardVersionNote, setCardVersionNote] = useState<string>("");
   // v2.1.0: 皮肤 = 风格维度（与明暗正交），同步策略与 web 端 App 保持一致。
   const [skin, setSkin] = useState<string>(() => {
     try {
@@ -117,6 +121,7 @@ function ScannerAppInner() {
       <ScannerWorkspace
         cardId={selectedCardId}
         cardTitle={selectedCardTitle}
+        cardVersionNote={cardVersionNote}
         onBack={() => setPage("select")}
         skin={skin}
         onSkinChange={setSkin}
@@ -134,11 +139,32 @@ function ScannerAppInner() {
           if (validatingCardId) return;
           setValidatingCardId(cardId);
           try {
-            const card = (await fetchCardByIdSynced(cardId)) as { title?: string };
+            const { card, stale } = await fetchCardDetailSynced(cardId);
+            // 安全 R35：远端连不上时这份卡来自本机缓存，服务器上的布局/答案可能已经改过。
+            // 不静默进入工作区——把版本摆出来，让老师显式选择「离线继续」。
+            if (stale) {
+              const version = card ? shortCardVersion(card as AnswerCard) : "未知";
+              const updatedAt = (card as { updatedAt?: string } | null)?.updatedAt || "未知";
+              const proceed = confirm(
+                `无法连接服务器，读到的是本机缓存的答题卡：\n\n` +
+                  `名称：${(card as { title?: string } | null)?.title || cardId}\n` +
+                  `本机版本：${version}（缓存于 ${updatedAt}）\n\n` +
+                  `服务器上的版面或答案可能已经修改，按旧卡识别会把分数算错，` +
+                  `且上传时会被服务器拒绝（版本不一致）。\n\n` +
+                  `仍要以本机缓存版本离线继续吗？`,
+              );
+              if (!proceed) return;
+              setCardVersionNote(`本机缓存版本 ${version}（未连上服务器，${updatedAt}）`);
+              setSelectedCardId(cardId);
+              setSelectedCardTitle(card?.title || cardId);
+              setPage("workspace");
+              return;
+            }
             // 远端新建的卡不在本机库：直扫/阅卷只读本机服务，先进本机库（幂等 upsert）
             if (card && typeof (card as { id?: string }).id === "string") {
               await importCardLocally(card as { id: string });
             }
+            setCardVersionNote("");
             setSelectedCardId(cardId);
             setSelectedCardTitle(card?.title || cardId);
             setPage("workspace");

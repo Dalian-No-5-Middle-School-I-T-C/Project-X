@@ -34,6 +34,13 @@ export interface StartUploadInput {
   identityMode?: "strict" | "legacy";
   kind: UploadJobKind;
   cardId: string;
+  /**
+   * 安全 R35：本机识别所用答题卡的版本指纹（shared/cardVersion.cardFingerprint）。
+   * 服务器会拿自己那一版比对，不一致就拒绝入库——扫描端离线期间服务器改了卡
+   * （版面挪了、答案改了）时，按旧卡算出来的分数不能静默写进成绩。
+   * 读不到本机卡就传空串，任务会直接失败而不是不带版本上传。
+   */
+  cardVersion: string;
   name: string;
   dpi?: number;
   paperSize?: string;
@@ -81,6 +88,8 @@ interface JobRecord {
   kind: UploadJobKind;
   name: string;
   cardId: string;
+  /** 安全 R35：随会话创建上报的卡版本指纹，服务端据此拒绝旧版本上传 */
+  cardVersion: string;
   dpi: number;
   paperSize: string;
   identityMode: "strict" | "legacy";
@@ -150,6 +159,7 @@ const friendlyErr = (err: unknown): string => {
 };
 
 function isConfigError(err: unknown): boolean {
+  if ((err as { noRetry?: boolean }).noRetry) return true;
   const status = (err as { status?: number }).status;
   return typeof status === "number" && status >= 400 && status < 500;
 }
@@ -272,12 +282,19 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
   }
 
   async function createSession(j: JobRecord): Promise<{ sessionId: string; tokens: string[] }> {
+    // 安全 R35：不知道本机用的是哪一版卡就不要上传——服务器无法核验，
+    // 旧布局/旧答案算出来的分数会静默进到别人的成绩里。
+    if (!j.cardVersion) {
+      // 重试也不会凭空多出本机版本号，按不可重试错误立即失败，把提示原样交给用户
+      throw Object.assign(new Error("未能确定本机答题卡版本，请重新选择该答题卡（联网同步）后再上传"), { noRetry: true });
+    }
     const fetcher = jobFetch(j);
     const res = await fetcher("/api/scanner/upload/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         cardId: j.cardId,
+        cardVersion: j.cardVersion,
         name: j.name,
         dpi: j.dpi,
         paperSize: j.paperSize,
@@ -370,6 +387,10 @@ export function createScannerUploadManager(deps: UploadManagerDeps = {}) {
     const fetcher = jobFetch(j);
     const res = await fetcher(`/api/scanner/upload/sessions/${j.remoteSessionId}/complete`, {
       method: "POST",
+      // 安全 R35：完成时再报一次版本——从扫描到入库可能隔很久，服务器上的卡若已改动，
+      // 这一批就不能入库（服务端返回 409 CARD_VERSION_MISMATCH）。
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cardVersion: j.cardVersion }),
       signal: timeoutSignal(pageTimeoutMs),
     });
     if (!res.ok) {
@@ -570,6 +591,7 @@ if (j.cancelled) throw cancelledError(j);
       kind: input.kind,
       name: input.name,
       cardId: input.cardId,
+      cardVersion: input.cardVersion,
       dpi: input.dpi ?? 300,
       paperSize: input.paperSize ?? "A4",
       identityMode: input.identityMode ?? "strict",

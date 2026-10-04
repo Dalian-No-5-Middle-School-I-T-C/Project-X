@@ -48,6 +48,9 @@ assert.equal(buildLayout(card).pages.length, 1);
 await new CardRepository().createCard(card);
 await new CardRepository().updateCard(card);
 assert.equal(existsSync(cardPath(card.id)), false, "Database cards need no legacy JSON copy");
+// R35：/complete 会用服务端这一版卡核验扫描端上报的指纹，这里按同一口径取值
+const { cardFingerprint } = await import("../src/shared/cardVersion");
+const cardVersion = cardFingerprint((await new CardRepository().findById(card.id))!);
 const role = await db.get<{ id: number }>("SELECT id FROM roles WHERE name = 'student'");
 assert(role);
 const users: number[] = [];
@@ -269,11 +272,22 @@ try {
     return s;
   }
   async function remote(sid: string, endpoint = "complete", body?: unknown) {
+    const payload = body ?? (endpoint === "complete" ? { cardVersion } : undefined);
     const response = await fetch(`http://127.0.0.1:${address.port}/api/scanner/upload/sessions/${sid}/${endpoint}`, {
       method: "POST", headers: { "X-Api-Key": "scanner-test-only", "Content-Type": "application/json" },
-      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(payload ? { body: JSON.stringify(payload) } : {}),
     });
     return { status: response.status, data: await response.json() as ScanBatchResponse };
+  }
+  // R35：服务器上的卡改过之后，扫描端仍报旧指纹就不能入库（缺指纹/错指纹都要挡住且不落库）
+  {
+    const statusBefore = JSON.stringify(await db.get("SELECT status FROM twain_scan_sessions WHERE id=?", session.id));
+    const staleVersion = cardVersion.replace(/^./, cardVersion[0] === "f" ? "0" : "f");
+    const stale = await remote(session.id, "complete", { cardVersion: staleVersion });
+    assert.equal(stale.status, 409, "Stale card fingerprint must be rejected at completion");
+    assert.equal((await remote(session.id, "complete", {})).status, 400, "Missing card fingerprint must be rejected at completion");
+    assert.equal(JSON.stringify(await db.get("SELECT status FROM twain_scan_sessions WHERE id=?", session.id)), statusBefore,
+      "Rejected completions leave the session untouched");
   }
   // A scanner key can save a new student's result after partial publication,
   // but cannot expose that score without a fresh teacher publication.

@@ -158,6 +158,7 @@ async function main(): Promise<void> {
   const jobId = um.startUpload({
     kind: "scan",
     cardId: "card-cancel-test",
+    cardVersion: "0123456789abcdef01234567",
     name: "取消资源释放测试",
     pages,
     dpi: 300,
