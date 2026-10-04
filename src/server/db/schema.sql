@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS objective_blocks (
     question_start   INTEGER NOT NULL,
     question_count   INTEGER NOT NULL,
     option_count     INTEGER NOT NULL,
-    mode             TEXT NOT NULL,                -- single / multiple / indeterminate
+    mode             TEXT NOT NULL,                -- single / multiple / indefinite
     score_per_question REAL NOT NULL,
     density          TEXT DEFAULT 'compact',       -- loose / normal / compact / dense
     option_layout    TEXT DEFAULT 'horizontal',    -- horizontal / vertical

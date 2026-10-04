@@ -13,6 +13,14 @@ import { describeReviewPoolLimits } from "../../../shared/reviewPoolLimits";
 import { describeRestoreZipLimits } from "../../../shared/restoreZipLimits";
 import { describePaperStorageLimits } from "../../../shared/paperStorageLimits";
 import { describeAiQuotaLimits } from "../../../shared/aiQuotaLimits";
+import { safeErrorForLog } from "../../../server/lib/logRedaction";
+import {
+  MAX_CARD_ASSET_BYTES,
+  MAX_CARD_ASSET_UPLOAD_BYTES,
+  MAX_CARD_ASSETS_PER_IMPORT,
+  MAX_CARD_ASSETS_TOTAL_BYTES,
+  describeCardAssetLimits,
+} from "../../../shared/cardAssetLimits";
 import { cpus } from "node:os";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
@@ -132,7 +140,7 @@ import { recognizeAnswerCard, recognizeObjectiveAnswers } from "./recognition";
 import { createScannerRouter } from "./scanner/index";
 import { makeScannerAuth } from "../../../server/middleware/scanner-auth";
 
-import { assertImageFile, isImageExtension, safeImageExtension } from "./validate-upload";
+import { assertImageFile, imageContentTypeFor, isImageExtension, rejectReasonForImportedAsset, safeImageExtension } from "./validate-upload";
 import {
   paramValue, fieldValue, boolField, isValidExamDate,
   MIN_EXAM_YEAR, MAX_EXAM_YEAR, requestFlag, numberArray,
@@ -800,6 +808,14 @@ export async function createApp(): Promise<express.Express> {
   app.get("/api/assets/:cardId/:assetId", optionalAuth, makeGate(enforceAuth, PERMISSIONS.CARD_READ, PERMISSIONS.CARD_READ), (req, res) => {
     const cardId = safeId(paramValue(req.params.cardId));
     const assetId = path.basename(String(req.params.assetId));
+    // 安全（R05）：本端点按扩展名给出内容，历史上「导入」入口可以放进 .html/任意字节，
+    // 于是试卷插图能变成该域名下的同源脚本执行（CSP 允许 inline script）。
+    // 现在服务端只承认图片扩展名，且响应类型由闭合映射给出，不让 sendFile 猜。
+    const contentType = imageContentTypeFor(assetId);
+    if (!contentType) {
+      res.status(404).json({ message: "资源不存在" });
+      return;
+    }
     const dir = cardAssetsDir(cardId);
     const target = path.join(dir, assetId);
     if (!target.startsWith(dir)) {
@@ -810,6 +826,13 @@ export async function createApp(): Promise<express.Express> {
       res.status(404).json({ message: "资源不存在" });
       return;
     }
+    // nosniff：即使历史数据里已落盘了伪装成图片的 HTML，浏览器也不会嗅探执行。
+    // 再叠一层响应级 CSP：全局 CSP 允许 'unsafe-inline'（旧版内联脚本依赖），但资源端点
+    // 只该出图——把这一条响应的可执行能力单独关到零，历史脏数据也渲染不出脚本。
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; img-src 'self'; sandbox");
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Content-Disposition", `inline; filename="${assetId.replace(/[^\w.\-]/g, "_")}"`);
     res.setHeader("Cache-Control", "private, max-age=86400");
     res.sendFile(target);
   });
@@ -1121,16 +1144,16 @@ export async function createApp(): Promise<express.Express> {
         cb(null, dir);
       },
       filename: (_req, file, cb) => {
-        const ext = path.extname(file.originalname).toLowerCase() || ".png";
+        // 安全（R05）：扩展名走闭合白名单，非图片一律回落 .png（与扫描上传入口同口径）。
+        const ext = safeImageExtension(file.originalname);
         const name = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}${ext}`;
         cb(null, name);
       }
     }),
-    limits: { fileSize: 12 * 1024 * 1024 },
+    limits: { fileSize: MAX_CARD_ASSET_UPLOAD_BYTES },
     fileFilter: (_req, file, cb) => {
       const ext = path.extname(file.originalname).toLowerCase();
-      const allowedExts = [".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"];
-      if (!allowedExts.includes(ext)) {
+      if (!isImageExtension(ext)) {
         cb(new Error("仅支持图片文件"));
         return;
       }
@@ -1903,6 +1926,14 @@ export async function createApp(): Promise<express.Express> {
         res.status(400).json({ message: "文件中缺少答题卡数据" });
         return;
       }
+      // 资源条数在落库前判定：超预算时直接拒收，不能先建卡再报错留下半成品。
+      const importedAssetCount = imported.assets ? Object.keys(imported.assets).length : 0;
+      if (importedAssetCount > MAX_CARD_ASSETS_PER_IMPORT) {
+        res.status(413).json({
+          message: `导入文件包含 ${importedAssetCount} 个资源，超过单次导入上限 ${MAX_CARD_ASSETS_PER_IMPORT} 个（${describeCardAssetLimits()}）`
+        });
+        return;
+      }
       // Apply overrides from import modal (deep clone to avoid reference issues)
       const card = JSON.parse(JSON.stringify(imported.card)) as AnswerCard;
       if (imported.overrideTitle) card.title = imported.overrideTitle;
@@ -1979,23 +2010,50 @@ export async function createApp(): Promise<express.Express> {
       const saved = await saveCardWithLayout(cardRepo, card, req.user?.id);
 
       // 导入 assets
+      // 安全（R05）：导入走 JSON body，不经过 multer——原先只看文件名字符集，
+      // 于是 `.html` + 任意字节可以落成一张「插图」，再由资源端点按 text/html 同源返回。
+      // 现在与图片上传入口共用同一套判定：扩展名白名单 + 解码字节魔数一致 + 三道容量闸。
       const failedImports: string[] = [];
-      if (imported.assets && Object.keys(imported.assets).length > 0) {
+      const rejectedAssets: Array<{ name: string; reason: string }> = [];
+      if (imported.assets && importedAssetCount > 0) {
+        const entries = Object.entries(imported.assets);
         const assetsPath = cardAssetsDir(newId);
         await mkdir(assetsPath, { recursive: true });
-        for (const [filename, base64] of Object.entries(imported.assets)) {
+        let importedBytesTotal = 0;
+        for (const [filename, base64] of entries) {
           const safeFilename = path.basename(filename);
-          if (safeFilename && /^[a-zA-Z0-9_\-\.]+$/.test(safeFilename)) {
-            try {
-              const buffer = Buffer.from(base64, "base64");
-              if (buffer.length === 0) throw new Error("空数据");
-              await writeFile(path.join(assetsPath, safeFilename), buffer);
-            } catch (err) {
-              console.warn(`[Import Card] 写入资源失败 ${safeFilename}:`, err);
-              failedImports.push(safeFilename);
+          try {
+            const buffer = Buffer.from(typeof base64 === "string" ? base64 : "", "base64");
+            if (buffer.length === 0) throw new Error("空数据");
+            if (buffer.length > MAX_CARD_ASSET_BYTES) {
+              rejectedAssets.push({
+                name: safeFilename,
+                reason: `单图 ${Math.round(buffer.length / 1024 / 1024)}MiB 超过上限 ${Math.round(MAX_CARD_ASSET_BYTES / 1024 / 1024)}MiB`
+              });
+              continue;
             }
+            const reason = rejectReasonForImportedAsset(safeFilename, buffer);
+            if (reason) {
+              rejectedAssets.push({ name: safeFilename, reason });
+              continue;
+            }
+            if (importedBytesTotal + buffer.length > MAX_CARD_ASSETS_TOTAL_BYTES) {
+              rejectedAssets.push({ name: safeFilename, reason: "导入资源累计体积超预算" });
+              continue;
+            }
+            await writeFile(path.join(assetsPath, safeFilename), buffer);
+            importedBytesTotal += buffer.length;
+          } catch (err) {
+            console.warn(`[Import Card] 写入资源失败 ${safeFilename}:`, err);
+            failedImports.push(safeFilename);
           }
         }
+      }
+      if (rejectedAssets.length > 0) {
+        console.warn(
+          `[Import Card] 已拒绝 ${rejectedAssets.length} 个不合规资源（卡 ${newId}）：` +
+          rejectedAssets.slice(0, 5).map((r) => `${r.name}=${r.reason}`).join("；")
+        );
       }
 
       // Handle exam action
@@ -2038,7 +2096,9 @@ export async function createApp(): Promise<express.Express> {
         createdExamId,
         duplicateExamName: duplicateExamName || undefined,
         idConflictMsg: conflictMsg || undefined,
-        ...(failedImports.length > 0 ? { warnings: { failedImports } } : {})
+        ...(failedImports.length > 0 || rejectedAssets.length > 0
+          ? { warnings: { failedImports, ...(rejectedAssets.length > 0 ? { rejectedAssets } : {}) } }
+          : {})
       });
     } catch (error) {
       next(error);
@@ -2896,7 +2956,9 @@ export async function createApp(): Promise<express.Express> {
   }
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error(error);
+    // 安全（R30）：错误对象里可能带着完整 URL（侧车/第三方接口失败时 message 常含请求地址），
+    // 落日志前先打码凭据类查询参数。
+    console.error(safeErrorForLog(error));
     // 请求级上传预算（R28）已经给出 413 并销毁请求，随后 multer 抛出的断流错误不再改写响应
     if (res.headersSent) { res.end(); return; }
     // 上传类错误映射：multer 超限应 413、其它上传错误 400，而不是 500
@@ -2907,6 +2969,12 @@ export async function createApp(): Promise<express.Express> {
         code: "UPLOAD_ERROR",
         message: isSizeLimit ? "上传文件超过大小限制" : `上传错误：${multerCode}`
       });
+      return;
+    }
+    // multer 的 fileFilter 拒绝（非图片扩展名/MIME）抛出的是普通 Error，不是 MulterError：
+    // 落到下面的通用分支会变成 500，而它是用户直接可控的输入，应当是 400。
+    if (error && error instanceof Error && error.message === "仅支持图片文件") {
+      res.status(400).json({ code: "UPLOAD_ERROR", message: "仅支持图片文件" });
       return;
     }
     // JSON 请求体解析失败应 400
@@ -2955,6 +3023,8 @@ export async function startServer(port = Number(process.env.PORT ?? 5174)): Prom
       console.log(`[paper-storage-limits] ${describePaperStorageLimits()}`);
       // 安全（R11）：AI 并发与计费配额档位
       console.log(`[ai-quota] ${describeAiQuotaLimits()}`);
+      // 安全（R05）：答题卡插图导入/上传档位
+      console.log(`[card-asset-limits] ${describeCardAssetLimits()}`);
       logWechatSubscriptionStatus();
       startLlmClientSidecar();
       const shutdown = () => {

@@ -3,6 +3,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- 安全（R12）：后端地址由部署方在这一行写死，不再从 URL 查询参数读取。
+     同源部署留空即可；前后端分离部署把 content 改成固定的 https 后端地址。 -->
+<meta name="px-api-base" content="">
 <title>Project-X 成绩分析系统</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -189,7 +192,37 @@ body { font-family: 'Noto Sans SC', sans-serif; background: #f1f5f9; }
 <script>
 // ==================== 全局配置 ====================
 const urlParams = new URLSearchParams(location.search);
-const API_BASE = (urlParams.get('api_base') || urlParams.get('apiBase') || '').replace(/\/$/, '');
+// 安全（R12）：API 目标来源收紧为「页面里的固定值」或「同源」。
+// 旧实现取 URL 查询参数 api_base / apiBase，而本页又会把 localStorage 里的 px_token
+// 以 Bearer 发往该目标——一条 `?api_base=https://attacker.example` 的链接就足以
+// 把登录者的会话凭据直接送到攻击者主机上（链接内容属于外部可控输入，不是信任边界）。
+// 现在查询参数一律忽略：同源部署走相对路径，跨源部署必须改本页 <meta name="px-api-base">。
+const API_BASE = (() => {
+  const configured = (document.querySelector('meta[name="px-api-base"]')?.getAttribute('content') || '').trim().replace(/\/$/, '');
+  if (!configured) return '';
+  try {
+    const target = new URL(configured, location.href);
+    // 明文的跨源 http 目标会把凭据降级成可窃听；本地调试除外。
+    if (target.protocol === 'http:' && !['127.0.0.1', 'localhost'].includes(target.hostname)) {
+      console.warn('[api] 已拒绝非 https 的 px-api-base：凭据会以明文跨网传输', target.origin);
+      return '';
+    }
+    return target.origin === location.origin ? '' : target.origin;
+  } catch (error) {
+    console.warn('[api] px-api-base 配置无法解析，已回落到同源请求', error);
+    return '';
+  }
+})();
+// 检测到有人在链接里塞 api_base 时给一次可见提示（不改变请求目标）。
+const IGNORED_API_PARAM = urlParams.get('api_base') || urlParams.get('apiBase');
+if (IGNORED_API_PARAM) {
+  console.warn('[api] URL 参数 api_base 已被忽略（防止凭据发往链接指定的任意主机）；请由部署方设置 <meta name="px-api-base">');
+}
+// 「有没有可用的后端地址」：显式配置了 px-api-base，或本页通过 http(s) 打开可以走同源相对路径。
+// file:// 直接双击打开时两者都不成立，页面回落为演示模式。
+function hasApiTarget() {
+  return Boolean(API_BASE) || location.protocol === 'http:' || location.protocol === 'https:';
+}
 let apiMode = urlParams.get('demo') === '1' ? 'demo' : 'live';
 let authToken = localStorage.getItem('px_token') || null;
 let currentUser = null;
@@ -540,7 +573,10 @@ async function fetchRankings(examId, scope, studentId) {
 async function checkApiHealth() {
   const statusEl = document.getElementById('apiStatus');
   if (statusEl) statusEl.innerHTML = '<span class="text-xs text-slate-500">检测中...</span>';
-  if (API_BASE) {
+  // 安全（R12）后 API_BASE 可能为空——空值代表「同源」而不是「没有后端」，
+  // 因此能否探活取决于页面自身的打开方式：http(s) 下同源相对路径可用，file:// 下不行。
+  const sameOriginUsable = location.protocol === 'http:' || location.protocol === 'https:';
+  if (API_BASE || sameOriginUsable) {
     try {
       const res = await fetch(API_BASE + '/api/exams', { method: 'GET', signal: AbortSignal.timeout(5000) });
       if (res.ok) {
@@ -1546,7 +1582,16 @@ function exportData() {
 
 // 初始化
 document.addEventListener('DOMContentLoaded', async () => {
-  if (authToken && API_BASE) {
+  // 安全（R12）：链接里带 api_base/apiBase 时给出可见提示——请求目标已回落到部署方配置，
+  // 但用户有权知道「这条链接试图把页面指向别处」。
+  if (IGNORED_API_PARAM) {
+    const banner = document.createElement('div');
+    banner.className = 'glass fixed bottom-4 left-4 right-4 z-50 rounded-lg p-3 text-sm text-amber-800 shadow-lg';
+    banner.textContent = '本链接携带的 api_base 参数已被忽略：接口地址由部署方在页面配置中固定，不会发往链接指定的服务器。';
+    document.body.appendChild(banner);
+    setTimeout(() => banner.remove(), 8000);
+  }
+  if (authToken && hasApiTarget()) {
     try {
       const me = await API.me();
       currentUser = me;

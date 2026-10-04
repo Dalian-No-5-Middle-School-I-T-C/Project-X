@@ -12,6 +12,7 @@ import { SkinOnboarding, shouldShowSkinOnboarding } from "./components/SkinOnboa
 import { notify, Spinner } from "./components/ui/v2";
 import { DEFAULT_SKIN, SKIN_CHOSEN_KEY } from "./components/SkinSwitcher";
 import { skinPatchDecision } from "./lib/skinPatchGuard";
+import { useSkinPreferenceWriter } from "./lib/skinSync";
 
 // ── ScannerApp：双屏容器 ──
 // page="select" → CardSelectPage（答题卡选择，含单科/大考双Tab）
@@ -20,7 +21,9 @@ import { skinPatchDecision } from "./lib/skinPatchGuard";
 type Page = "select" | "workspace";
 
 function ScannerAppInner() {
-  const { user, loading } = useAuth();
+  const { user, loading, patchUserLocal, refreshUser } = useAuth();
+  // 皮肤偏好回写（R49）：与 web 端共用同一套「成功更新权威快照 / 失败以服务端为准」的实现。
+  const writeSkinPreference = useSkinPreferenceWriter();
 
   const [page, setPage] = useState<Page>("select");
   const [selectedCardId, setSelectedCardId] = useState<string>("");
@@ -75,12 +78,14 @@ function ScannerAppInner() {
     const decision = skinPatchDecision(skinPatchPrevUserRef.current, userId, skin, serverSkin, chosen);
     skinPatchPrevUserRef.current = decision.nextPrevUserId;
     if (!decision.patch) return;
-    void fetchJson("/api/users/me/settings", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ themeSkin: skin }),
-    }).catch(() => { /* 同步失败不打扰用户 */ });
-  }, [skin, user?.id, user?.themeSkin]);
+    // R49：PATCH 成功后必须把值写回本地用户快照，否则「切 A→B→A」的最后一步
+    // 会因为与登录快照一致而被上面的判断跳过，账号最终留在 B。
+    void writeSkinPreference(
+      skin,
+      (applied) => patchUserLocal({ themeSkin: applied }),
+      () => { void refreshUser(); }
+    );
+  }, [skin, user?.id, user?.themeSkin, writeSkinPreference, patchUserLocal, refreshUser]);
 
   if (loading) {
     return (

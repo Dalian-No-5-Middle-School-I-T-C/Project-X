@@ -34,8 +34,9 @@ import {
   ArrowLeft,
 } from "lucide-react";
 import { useAuth } from "./auth/AuthContext";
-import { apiUrl, authFetch, fetchJson, mediaUrl, urlWithToken } from "./auth/api";
+import { apiUrl, authFetch, fetchJson, mediaUrl, ticketedMediaUrl, urlWithToken } from "./auth/api";
 import { cn } from "./lib/utils";
+import { useSkinPreferenceWriter } from "./lib/skinSync";
 import { PROMO_SITE_URL } from "./lib/external-links";
 import { PERMISSIONS } from "./auth/types";
 import { LoginPage } from "./components/LoginPage";
@@ -268,7 +269,9 @@ function asArray<T>(value: unknown): T[] {
 
 
 function App() {
-  const { user, loading, hasPermission, persona, teacherRoleOverride } = useAuth();
+  const { user, loading, hasPermission, persona, teacherRoleOverride, patchUserLocal, refreshUser } = useAuth();
+  // 皮肤偏好回写（R49）：成功要更新本地权威快照，失败要以服务端为准。
+  const writeSkinPreference = useSkinPreferenceWriter();
   // v1.6.0: 运行时 persona 替换 compile-time VITE_PROJECTX_VARIANT
   const appVariant = useMemo(
     () => getProjectXVariantConfig(persona),
@@ -580,12 +583,14 @@ function App() {
     if (!user) return;
     const serverSkin = user.themeSkin || DEFAULT_SKIN;
     if (skin === serverSkin) return;
-    void fetchJson("/api/users/me/settings", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ themeSkin: skin }),
-    }).catch(() => { /* 皮肤偏好同步失败不打扰用户 */ });
-  }, [skin, user?.id, user?.themeSkin]);
+    // R49：PATCH 成功后把值写回本地用户快照，A→B→A 才不会被「与登录快照相同」的判断跳过；
+    // 失败则 refresh，避免本地与账号长期背离。
+    void writeSkinPreference(
+      skin,
+      (applied) => patchUserLocal({ themeSkin: applied }),
+      () => { void refreshUser(); }
+    );
+  }, [skin, user?.id, user?.themeSkin, writeSkinPreference, patchUserLocal, refreshUser]);
 
   // v37: 明暗变更 → 同步到账号（与皮肤同步对称）。仅在与服务端读取值不一致时写入；
   // fire-and-forget，离线/失败静默。账号值更新后，theme_change_events 审计与
@@ -979,7 +984,8 @@ function App() {
 
   async function exportCard(cardId: string) {
     const a = document.createElement("a");
-    a.href = urlWithToken(`/api/cards/${cardId}/export`);
+    // 安全（R30）：下载链接走单次资源票据，不把主会话令牌写进会被历史/日志记录的 URL。
+    a.href = await ticketedMediaUrl(`/api/cards/${cardId}/export`);
     a.download = `答题卡_${cardId}.projectx-card.json`;
     document.body.appendChild(a);
     a.click();
@@ -1034,7 +1040,8 @@ function App() {
     }
     if (!savedCard) return;
 
-    const pdfUrl = urlWithToken(`/api/cards/${savedCard.id}/pdf?v=${encodeURIComponent(savedCard.updatedAt)}`);
+    // 安全（R30）：PDF 地址走单次资源票据（可 await，不必把主令牌放进 URL）。
+    const pdfUrl = await ticketedMediaUrl(`/api/cards/${savedCard.id}/pdf?v=${encodeURIComponent(savedCard.updatedAt)}`);
     await showExportCheck(savedCard, pdfUrl);
   }
 
@@ -1118,8 +1125,10 @@ function App() {
 
   /** 根据题块顺序和类型自动生成标题，如 "一、单选（共10题，共50分）"；格式与识别共用 cardModel */
   function autoNameBlocks(draft: AnswerCard) {
+    // 数据保真（R46）：规范拼写是 `indefinite`（shared/types.ts 的 ObjectiveMode），
+    // 这里此前只写了 `indeterminate`——合法的不定项题块取不到名字，只能落到兜底的「客观题」。
     const modeName: Record<string, string> = {
-      single: "单选", multiple: "多选", indeterminate: "不定项"
+      single: "单选", multiple: "多选", indefinite: "不定项", indeterminate: "不定项"
     };
     let index = 0;
     for (const block of draft.bodyBlocks) {
@@ -1316,10 +1325,12 @@ function App() {
     return `grading_${Date.now()}_${randomPart}`;
   }
 
-  function listenGradingProgress(cardId: string, progressId: string, initialTotal: number) {
+  async function listenGradingProgress(cardId: string, progressId: string, initialTotal: number) {
     gradingProgressSourceRef.current?.close();
     setGradingProgress({ active: true, finished: 0, total: initialTotal });
-    const es = new EventSource(urlWithToken(`/api/cards/${encodeURIComponent(cardId)}/grading/progress/${encodeURIComponent(progressId)}`));
+    // 安全（R30）：SSE 地址用单次资源票据；票据按路径绑定，重连由上层重新发起。
+    const streamUrl = await ticketedMediaUrl(`/api/cards/${encodeURIComponent(cardId)}/grading/progress/${encodeURIComponent(progressId)}`);
+    const es = new EventSource(streamUrl);
     gradingProgressSourceRef.current = es;
 
     es.onmessage = (event) => {

@@ -2,6 +2,7 @@ import express from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { authService } from "../services/AuthService";
 import { AUTH_COOKIE_NAME, extractToken, getCurrentUserHandler, authMiddleware } from "../middleware/auth";
+import { issueMediaTicket, revokeMediaTicketsForUser } from "../services/mediaTicket";
 import type { Request, Response } from "express";
 
 const router = express.Router();
@@ -121,13 +122,60 @@ router.post("/login", loginIpLimiter, loginAccountLimiter, async (req: Request, 
  * POST /api/auth/logout
  * 退出登录
  */
-router.post("/logout", (req: Request, res: Response) => {
+router.post("/logout", async (req: Request, res: Response) => {
   const token = extractToken(req);
   if (token) {
+    const user = (await authService.getUserByToken(token)) as { id?: number } | null;
+    // 安全（R30）：登出要连带作废该用户签出的单次资源票据，否则「已退出」之后
+    // 浏览器历史里的 ?mt= 链接在剩余寿命内仍可读取媒体。
+    if (typeof user?.id === "number") revokeMediaTicketsForUser(user.id);
     authService.logout(token);
   }
   clearAuthCookie(req, res);
   res.json({ message: "已退出登录" });
+});
+
+/**
+ * POST /api/auth/media-ticket
+ * 签发单次资源票据（安全 R30）
+ * Body: { path: "/api/cards/xxx/pdf" }
+ *
+ * 票据只绑定「当前用户 + 这一条只读媒体路径 + 时限」，用于替代把主会话令牌拼进 URL。
+ * 路径必须命中媒体白名单（server/lib/mediaAllowlist.ts），否则 400——票据不能变成万能令牌。
+ */
+router.post("/media-ticket", authMiddleware, (req: Request, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ code: "MEDIA_TICKET_UNAUTHENTICATED", message: "签发资源票据需要先登录" });
+    return;
+  }
+  const requested = (req.body as { path?: unknown })?.path;
+  const issued = issueMediaTicket(
+    {
+      id: req.user.id,
+      username: req.user.username,
+      name: req.user.name,
+      role_id: req.user.role_id,
+      role_name: req.user.role_name,
+      student_number: req.user.student_number,
+      teacher_role: req.user.teacher_role,
+      subject: req.user.subject,
+      password_change_required: req.user.password_change_required
+    },
+    requested
+  );
+  if (!issued) {
+    res.status(400).json({
+      code: "MEDIA_TICKET_SCOPE_INVALID",
+      message: "该路径不接受资源票据；只有图片/PDF/导出/SSE 类只读端点可以签发"
+    });
+    return;
+  }
+  res.json({
+    ticket: issued.ticket,
+    path: issued.path,
+    expiresAt: issued.expiresAt,
+    ttlSeconds: issued.ttlSeconds
+  });
 });
 
 /**

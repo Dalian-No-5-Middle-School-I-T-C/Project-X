@@ -79,6 +79,8 @@ export function setAuthToken(token: string | null): void {
 
 function notifyUnauthorized(): void {
   setAuthToken(null);
+  // 安全（R30）：会话失效时把已签发的媒体票据一并丢掉，别让缓存继续产出注定 401 的 URL。
+  ticketCache.clear();
   window.dispatchEvent(new Event("projectx:unauthorized"));
 }
 
@@ -166,22 +168,86 @@ export function remoteScannerFetch(url: string, options?: RequestInit): Promise<
   return fetch(resolved, { ...options, headers });
 }
 
-/** 为无法在请求头携带 Token 的场景（PDF、SSE 等）追加 ?token= */
+/**
+ * 为无法在请求头携带凭据的场景（PDF、图片、SSE、下载）追加 URL 凭据。
+ *
+ * 安全（R30）：优先使用「单次资源票据」`?mt=`——它由 `/api/auth/media-ticket` 签发，
+ * 只绑定「当前用户 + 这一条只读路径 + 时限」。主会话令牌 `?token=` 保留为兜底
+ * （同步渲染的 `<img src>` 拿不到异步票据时），但服务端已把它限制在只读媒体白名单内，
+ * 泄漏一条 URL 不再等于交出全部接口的只读权限。
+ */
+const ticketCache = new Map<string, { ticket: string; expiresAt: number }>();
+
+function pathnameOf(resolvedUrl: string): string {
+  try {
+    return new URL(resolvedUrl, typeof location !== "undefined" ? location.href : "http://localhost").pathname;
+  } catch {
+    return resolvedUrl.split("?")[0];
+  }
+}
+
+async function ensureMediaTicket(pathname: string): Promise<string | null> {
+  const cached = ticketCache.get(pathname);
+  if (cached && cached.expiresAt - Date.now() > 15_000) return cached.ticket;
+  try {
+    const issued = await fetchJson<{ ticket: string; expiresAt: number }>(
+      "/api/auth/media-ticket",
+      { method: "POST", body: JSON.stringify({ path: pathname }) }
+    );
+    if (issued?.ticket) {
+      ticketCache.set(pathname, { ticket: issued.ticket, expiresAt: Number(issued.expiresAt) });
+      return issued.ticket;
+    }
+  } catch (error) {
+    console.warn(`[media-ticket] 为 ${pathname} 签发票据失败，本次回落 URL 令牌`, error);
+  }
+  return cached?.ticket ?? null;
+}
+
+function appendQuery(url: string, key: string, value: string): string {
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}${key}=${encodeURIComponent(value)}`;
+}
+
+/** 异步取得票据后再拼 URL：下载、window.open、EventSource 等可控时机都应走这一条。 */
+export async function ticketedMediaUrl(url: string): Promise<string> {
+  const resolved = apiUrl(url);
+  if (!isCrossOriginApiMode()) return resolved; // 同源：HttpOnly Cookie 足够，URL 里不留任何凭据
+  const pathname = pathnameOf(resolved);
+  const ticket = await ensureMediaTicket(pathname);
+  if (ticket) return appendQuery(resolved, "mt", ticket);
+  const token = getAuthToken();
+  return token ? appendQuery(resolved, "token", token) : resolved;
+}
+
+/**
+ * 同步版本（`<img src>` / `<a href>` 字面量）。
+ * 命中缓存则用票据；未命中时先回落 `?token=`，同时后台补签一张，下一次渲染即用票据。
+ */
 export function urlWithToken(url: string): string {
   const token = getAuthToken();
   const resolved = apiUrl(url);
   if (!token) return resolved;
-  const sep = resolved.includes("?") ? "&" : "?";
-  return `${resolved}${sep}token=${encodeURIComponent(token)}`;
+  const cached = ticketCache.get(pathnameOf(resolved));
+  if (cached && cached.expiresAt > Date.now()) {
+    return appendQuery(resolved, "mt", cached.ticket);
+  }
+  void ensureMediaTicket(pathnameOf(resolved));
+  return appendQuery(resolved, "token", token);
+}
+
+/** 退出登录/令牌失效时清空票据缓存，避免继续携带已作废的凭据。 */
+export function clearMediaTicketCache(): void {
+  ticketCache.clear();
 }
 
 /** P1-14: 媒体资源URL（图片、PDF iframe等）。
  *  同源请求依靠 httpOnly cookie 认证，不暴露 token 在 URL 中；
- *  跨源请求（远端 API 模式）才追加 ?token=。 */
+ *  跨源请求（远端 API 模式）才追加 URL 凭据。 */
 export function mediaUrl(url: string): string {
   const base = getApiBase();
   // 同源：cookies 自动发送，不需要 token
   if (!base) return apiUrl(url);
-  // 跨源：需要 token query param
+  // 跨源：需要 URL 凭据（优先单次票据）
   return urlWithToken(url);
 }

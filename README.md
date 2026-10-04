@@ -840,6 +840,63 @@ Project-X/
 >   停用的服务商也不得继续执行。
 > - **R26**：班级/年级汇总类工具调用的 `classId` 等范围参数由服务端强制注入，模型自带范围参数会被拒绝而不是采信。
 
+> **答题卡插图导入的体积与类型预算**（安全 R05，单一来源 `src/shared/cardAssetLimits.ts`）
+>
+> 导入答题卡时插图是**以 base64 内联在 JSON 请求体**里的（不走 multer），因此它绕过上传侧的全部预算；
+> 而资源落盘后由 `GET /api/cards/:id/assets/:file` 在**本系统域名下**直接回给浏览器——一张伪装成图片的
+> `.html` 就等于「在该域名下执行任意脚本」，会话令牌可被直接读走。现在两道一起收：扩展名白名单
+> （**不含 `.svg`**，SVG 是 XML 文本、可以内嵌 `<script>`）+ 魔数必须与扩展名一致 + 逐条与累计体积上限。
+> 不合规资源在入库之前就被拒绝，并计入响应的 `warnings.rejectedAssets`（导入本身继续成功，不静默丢图、
+> 也不让一张坏图毁掉整份答题卡）。资源响应带 `X-Content-Type-Options: nosniff`、
+> `Content-Security-Policy: default-src 'none'; img-src 'self'; sandbox` 与显式 `Content-Type`/`Content-Disposition`。
+>
+> | 环境变量 | 默认 | 天花板 | 含义 |
+> |----------|------|--------|------|
+> | `PROJECTX_CARD_ASSET_MAX_MIB` | 6 | 512 | 单张插图**解码后**体积 |
+> | `PROJECTX_CARD_ASSET_MAX_COUNT` | 200 | 2000 | 单次导入的插图条数 |
+> | `PROJECTX_CARD_ASSET_TOTAL_MIB` | 8 | 4096 | 单次导入的累计解码体积 |
+> | `PROJECTX_CARD_ASSET_UPLOAD_MIB` | 12 | 512 | 单个资源上传件体积 |
+>
+> 生效值打在 `[card-asset-limits] …` 一行。**放宽这几档并不会让更大的导入通过**：导入请求受全局
+> `express.json({ limit: "8mb" })` 约束，而 base64 会把体积放大到约 4/3，所以真正的外层上限是请求体大小
+> （实测：单张 6 MiB 插图即由 body-parser 返回 413，与配额判定分属两层）。现场要导入更大的图集，
+> 应该改前端形态（分批导入或改走 multipart 上传），而不是把这里调大。
+
+> **URL 凭据换成单次媒体票据**（安全 R30，单一来源 `src/shared/mediaTicketLimits.ts`）
+>
+> 跨域 API 模式下浏览器无法给 `<img>` / `<iframe>` / `EventSource` 带 `Authorization` 头，前端于是把
+> **主会话令牌**拼进 URL（`?token=`）。URL 会进浏览器历史、代理与访问日志，而主令牌能读任意 GET 接口——
+> 泄漏一次等于整份只读权限外泄。现在 `?token=` 只对**只读媒体白名单**
+> （`src/server/lib/mediaAllowlist.ts`，图片 / PDF / SSE 共 14 条模式，按真实路由注册逐条核对过）放行，
+> 其余路径一律 401 并提示改用 `Authorization` 头；媒体则先 `POST /api/auth/media-ticket` 换一张
+> **短命、绑定路径、只允许 GET/HEAD** 的 `?mt=` 票据（换路径复用、POST、过期一律 401）。
+> 票据刻意只放内存：落库就会随备份长期存活，变成它本来要替代的那种长效凭据；登出即刻吊销。
+> CSV/Excel 导出经 `downloadBlob` → `authFetch` 走头认证，因此**不在**白名单内。
+>
+> | 环境变量 | 默认 | 天花板 | 含义 |
+> |----------|------|--------|------|
+> | `PROJECTX_MEDIA_TICKET_TTL_SEC` | 300 | 3600 | 票据寿命；SSE 长连接需要更久时按批次时长放宽 |
+> | `PROJECTX_MEDIA_TICKET_MAX_PER_USER` | 8 | 64 | 单账号同时存活的票据数 |
+> | `PROJECTX_MEDIA_TICKET_MAX_TOTAL` | 20000 | 100000 | 全局存活上限（票据在内存里，这就是内存与误用上限） |
+>
+> 生效值打在 `[media-ticket-limits] …` 一行。服务端日志侧由 `src/server/lib/logRedaction.ts` 把
+> `token` / `mt` / `access_token` / `api_key` / `key` 的查询串值与 `Authorization` 头统一截断为前 6 位 + `***`。
+> **反向代理仍需部署方配合**：nginx 的 `access_log` 默认记录完整查询串，收紧后请把 `token=` / `mt=` 的
+> 值过滤掉或改用不含查询串的日志格式，口径见 [readus/SECURITY-AUDIT-NOTES-2026-10-04.md](readus/SECURITY-AUDIT-NOTES-2026-10-04.md)。
+
+> **独立 HTML 页面的接口地址与公式注入**（安全 R12/R41/R17）
+>
+> - `Grade-Analysis-System-mobile.html` 原先从 `?api_base=` / `?apiBase=` 选择后端地址，又把 localStorage
+>   里的 `px_token` 以 Bearer 发往该地址——**一条链接**就能把点开它的人的会话凭据送到攻击者主机。
+>   现在目标只取自页面内的 `<meta name="px-api-base">`（同源部署留空即可，跨源部署由部署方写死 https 地址），
+>   链接里带 `api_base` 会被忽略并在页面底部给出可见提示；非 https 的跨源配置同样被拒绝。部署写法见
+>   [deploy-guide.md](deploy-guide.md)。
+> - `Grade-Analysis-System-database.html`（不在 Vite 生产入口、无任何文档或脚本引用、且内联脚本本身
+>   带 `await` 用在非 async 回调里的语法错误）随 R41 一并删除，需要历史版本从 git 取回。
+> - 成绩与临界生 CSV 导出的公式注入防护统一到 `src/shared/csv.ts` 的 `csvCell()`（服务端名册导出与客户端
+>   成绩导出共用一套），以 `=`/`+`/`-`/`@`/TAB/CR 开头的值加前导单引号，`8/10`、`3-4` 这类日期歧义值加前导制表符。
+
+
 ---
 
 ## 贡献者

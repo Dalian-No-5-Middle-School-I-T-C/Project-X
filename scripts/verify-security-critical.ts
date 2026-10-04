@@ -42,6 +42,15 @@ const wechatEnvVarsClearedHere = [
   "PROJECTX_WECHAT_TIMEOUT_MS", "PROJECTX_WECHAT_BIND_MAX_PER_HOUR",
   "PROJECTX_WECHAT_BIND_MAX_GLOBAL_PER_MINUTE", "PROJECTX_WECHAT_MAX_CONCURRENT"
 ];
+// 答题卡插图导入/上传预算（安全 R05）与媒体票据档位（安全 R30）同为三档设计，
+// 宿主机变量会污染「按默认边界」的断言，名单由各模块的 ENV_VARS 常量反向锁定。
+const cardAssetEnvVarsClearedHere = [
+  "PROJECTX_CARD_ASSET_MAX_MIB", "PROJECTX_CARD_ASSET_MAX_COUNT",
+  "PROJECTX_CARD_ASSET_TOTAL_MIB", "PROJECTX_CARD_ASSET_UPLOAD_MIB"
+];
+const mediaTicketEnvVarsClearedHere = [
+  "PROJECTX_MEDIA_TICKET_TTL_SEC", "PROJECTX_MEDIA_TICKET_MAX_PER_USER", "PROJECTX_MEDIA_TICKET_MAX_TOTAL"
+];
 for (const key of [
   "PROJECTX_MARIADB_HOST", "PROJECTX_MARIADB_PORT", "PROJECTX_MARIADB_USER",
   "PROJECTX_MARIADB_PASSWORD", "PROJECTX_MARIADB_DATABASE", "PROJECTX_MYSQL_HOST",
@@ -52,7 +61,9 @@ for (const key of [
   ...restoreZipEnvVarsClearedHere,
   ...paperStorageEnvVarsClearedHere,
   ...aiQuotaEnvVarsClearedHere,
-  ...wechatEnvVarsClearedHere
+  ...wechatEnvVarsClearedHere,
+  ...cardAssetEnvVarsClearedHere,
+  ...mediaTicketEnvVarsClearedHere
 ]) delete process.env[key];
 
 let passed = 0;
@@ -1981,6 +1992,252 @@ async function main(): Promise<void> {
         adminCreatePolicy.status === 201 && adminCreatePolicyBody.retention_policy_id === policyId,
         "管理员创建考试显式指定保留策略成功且绑定生效"
       );
+    }
+
+    section("答题卡插图导入与资源端点（安全 R05）、URL 凭据收紧与单次票据（安全 R30）");
+    {
+      // ── R05：导入预算三档（默认 / 环境变量 / 天花板）──
+      const {
+        CARD_ASSET_ENV_VARS, DEFAULT_CARD_ASSET_LIMITS, resolveCardAssetLimits, describeCardAssetLimits,
+        MAX_CARD_ASSET_BYTES, MAX_CARD_ASSETS_PER_IMPORT, MAX_CARD_ASSETS_TOTAL_BYTES, MAX_CARD_ASSET_UPLOAD_BYTES
+      } = await import("../src/shared/cardAssetLimits");
+      const {
+        MEDIA_TICKET_ENV_VARS, DEFAULT_MEDIA_TICKET_LIMITS, resolveMediaTicketLimits, describeMediaTicketLimits,
+        MEDIA_TICKET_TTL_SECONDS
+      } = await import("../src/shared/mediaTicketLimits");
+      const MIB = 1024 * 1024;
+      check(CARD_ASSET_ENV_VARS.slice().sort().join() === cardAssetEnvVarsClearedHere.slice().sort().join()
+        && CARD_ASSET_ENV_VARS.every((name) => !(name in process.env)),
+        "脚本清理的 PROJECTX_CARD_ASSET_* 名单与限制表逐一对应，宿主机变量不会渗入默认档位断言");
+      check(MEDIA_TICKET_ENV_VARS.slice().sort().join() === mediaTicketEnvVarsClearedHere.slice().sort().join()
+        && MEDIA_TICKET_ENV_VARS.every((name) => !(name in process.env)),
+        "脚本清理的 PROJECTX_MEDIA_TICKET_* 名单与限制表逐一对应");
+      check(MAX_CARD_ASSET_BYTES === DEFAULT_CARD_ASSET_LIMITS.maxAssetBytes
+        && MAX_CARD_ASSETS_PER_IMPORT === DEFAULT_CARD_ASSET_LIMITS.maxAssetsPerImport
+        && MAX_CARD_ASSETS_TOTAL_BYTES === DEFAULT_CARD_ASSET_LIMITS.maxAssetsTotalBytes
+        && MAX_CARD_ASSET_UPLOAD_BYTES === DEFAULT_CARD_ASSET_LIMITS.maxAssetUploadBytes
+        && resolveCardAssetLimits({}).notices.length === 0,
+        "未配置时按默认预算生效：单图 6MiB / 单次导入 200 条 / 导入累计 8MiB / 上传 12MiB");
+      check(resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_MIB: "2", PROJECTX_CARD_ASSET_MAX_COUNT: "5" }).limits.maxAssetBytes === 2 * MIB
+        && resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_MIB: "2" }).limits.maxAssetBytes === 2 * MIB,
+        "PROJECTX_CARD_ASSET_* 在天花板内可覆盖默认值");
+      check(resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_MIB: "abc" }).limits.maxAssetBytes === DEFAULT_CARD_ASSET_LIMITS.maxAssetBytes
+        && resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_COUNT: "0" }).limits.maxAssetsPerImport === DEFAULT_CARD_ASSET_LIMITS.maxAssetsPerImport
+        && resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_COUNT: "-3" }).notices.length >= 1,
+        "非法覆盖值（非数字 / 0 / 负数）回落默认值并留告警，不会把闸门关掉");
+      check(resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_MIB: "999999" }).limits.maxAssetBytes === 512 * MIB
+        && resolveCardAssetLimits({ PROJECTX_CARD_ASSET_MAX_COUNT: "999999" }).limits.maxAssetsPerImport === 2000
+        && resolveCardAssetLimits({ PROJECTX_CARD_ASSET_UPLOAD_MIB: "999999" }).limits.maxAssetUploadBytes === 512 * MIB,
+        "超天花板的覆盖值被夹紧（512MiB / 2000 条 / 512MiB）");
+      check(describeCardAssetLimits().includes("单图 ≤6MiB") && describeCardAssetLimits().includes("上传 ≤12MiB"),
+        `启动摘要可读：${describeCardAssetLimits()}`);
+      check(resolveMediaTicketLimits({ PROJECTX_MEDIA_TICKET_TTL_SEC: "60" }).limits.ttlSeconds === 60
+        && resolveMediaTicketLimits({ PROJECTX_MEDIA_TICKET_TTL_SEC: "99999" }).limits.ttlSeconds === 3600
+        && resolveMediaTicketLimits({}).limits.ttlSeconds === DEFAULT_MEDIA_TICKET_LIMITS.ttlSeconds
+        && MEDIA_TICKET_TTL_SECONDS === DEFAULT_MEDIA_TICKET_LIMITS.ttlSeconds,
+        `票据寿命默认 300s、可覆盖、天花板 3600s；当前生效 ${describeMediaTicketLimits()}`);
+
+      // ── R05：判定函数——扩展名白名单 + 魔数一致，SVG/HTML 一律出局 ──
+      const { imageContentTypeFor, detectImageLabel, rejectReasonForImportedAsset } =
+        await import("../src/apps/answer-card/server/validate-upload");
+      const { cardAssetsDir } = await import("../src/apps/answer-card/server/storage");
+      const pngBytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 0x20)]);
+      const htmlBytes = Buffer.from("<script>fetch('/api/users',{headers:{authorization:x}})</script>", "utf8");
+      const jpegBytes = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("JFIF", "ascii"), Buffer.alloc(48, 0x20)]);
+      check(imageContentTypeFor("a.png") === "image/png" && imageContentTypeFor("a.jpeg") === "image/jpeg",
+        "图片扩展名映射到闭合的 Content-Type");
+      check(imageContentTypeFor("evil.html") === null && imageContentTypeFor("payload.svg") === null
+        && imageContentTypeFor("noext") === null,
+        "HTML/SVG/无扩展名不在映射内（SVG 本身即脚本载体，永久排除）");
+      check(detectImageLabel(pngBytes) === "PNG" && detectImageLabel(htmlBytes) === null,
+        "魔数识别只对图片返回标签");
+      check(rejectReasonForImportedAsset("ok.png", pngBytes) === null,
+        "扩展名与魔数一致的图片资源通过判定");
+      check(String(rejectReasonForImportedAsset("evil.html", htmlBytes)).includes("不支持的资源类型"),
+        "非图片扩展名被拒");
+      check(String(rejectReasonForImportedAsset("fake.png", htmlBytes)).includes("不是受支持的图片格式"),
+        "纯文本改名为 .png 因魔数不合格被拒");
+      check(String(rejectReasonForImportedAsset("lying.png", jpegBytes)).includes("JPEG")
+        && String(rejectReasonForImportedAsset("lying.png", jpegBytes)).includes(".png"),
+        "「扩展名与真实图片类型不一致」（JPEG 冒充 PNG）也被拒——魔数合格但扩展名说谎同样不合格");
+
+      // ── R05：真实导入端点（混合三类资源：合规图 / HTML 扩展名 / 伪装图）──
+      const exported = await fetch(`${base}/api/cards/CRITICALCARD001/export`, { headers: authHeaders(adminToken) });
+      check(exported.status === 200, "导出既有卡得到可回灌的 .projectx-card 信封");
+      const envelope = await exported.json() as { format: string; version: number; card: unknown; layout: unknown; assets?: Record<string, string> };
+      const cardCountBefore = (db.prepare("SELECT COUNT(*) count FROM answer_cards").get() as { count: number }).count;
+      const importResponse = await fetch(`${base}/api/cards/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({
+          ...envelope,
+          card: { ...(envelope.card as { id?: string; title?: string; subject?: string; bodyBlocks?: unknown[] }), title: "R05 导入资源校验" },
+          assets: {
+            "ok.png": pngBytes.toString("base64"),
+            "evil.html": htmlBytes.toString("base64"),
+            "fake.png": htmlBytes.toString("base64"),
+            "lying.png": jpegBytes.toString("base64")
+          }
+        })
+      });
+      const importBody = await importResponse.json() as { id?: string; warnings?: { rejectedAssets?: Array<{ name: string; reason: string }> } };
+      const rejected = (importBody.warnings?.rejectedAssets ?? []).map((item) => item.name).sort().join(",");
+      check(importResponse.status === 201 && !!importBody.id, "导入本身成功（不合规资源只拒收该资源，不作废整张卡）");
+      check(rejected === "evil.html,fake.png,lying.png",
+        `不合规资源逐条拒收并回传原因（实际拒绝：${rejected || "无"}）`);
+      const importedAssetDir = cardAssetsDir(importBody.id ?? "none");
+      check(!!importBody.id && existsSync(path.join(importedAssetDir, "ok.png"))
+        && !existsSync(path.join(importedAssetDir, "evil.html"))
+        && !existsSync(path.join(importedAssetDir, "fake.png"))
+        && !existsSync(path.join(importedAssetDir, "lying.png")),
+        "落盘只剩合规图片，伪装/超限资源未进入数据目录");
+
+      // ── R05：资源端点——非图片扩展名 404，图片响应带 nosniff 与响应级 CSP ──
+      const assetCardId = importBody.id ?? "none";
+      const htmlAsset = await fetch(`${base}/api/assets/${assetCardId}/evil.html`, { headers: authHeaders(adminToken) });
+      check(htmlAsset.status === 404, "资源端点拒绝按非图片类型提供内容（历史脏数据也拿不到同源 HTML）");
+      const imageAsset = await fetch(`${base}/api/assets/${assetCardId}/ok.png`, { headers: authHeaders(adminToken) });
+      check(imageAsset.status === 200 && imageAsset.headers.get("x-content-type-options") === "nosniff"
+        && /default-src 'none'/.test(imageAsset.headers.get("content-security-policy") ?? "")
+        && imageAsset.headers.get("content-type") === "image/png",
+        "图片响应显式声明类型，并叠加 nosniff + 只出图的 CSP/sandbox");
+      const traversal = await fetch(`${base}/api/assets/${assetCardId}/..%2F..%2Fprojectx.db`, { headers: authHeaders(adminToken) });
+      check(traversal.status === 404 || traversal.status === 400, "资源端点的路径穿越尝试被拒");
+
+      // ── R05：条数上限在落库前判定，超预算不留半成品卡 ──
+      const overQuotaAssets: Record<string, string> = {};
+      for (let i = 0; i <= MAX_CARD_ASSETS_PER_IMPORT; i++) overQuotaAssets[`a${i}.png`] = pngBytes.toString("base64");
+      const overQuota = await fetch(`${base}/api/cards/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({ ...envelope, assets: overQuotaAssets })
+      });
+      const cardCountAfter = (db.prepare("SELECT COUNT(*) count FROM answer_cards").get() as { count: number }).count;
+      check(overQuota.status === 413 && cardCountAfter === cardCountBefore + 1,
+        `超过 ${MAX_CARD_ASSETS_PER_IMPORT} 条的导入被 413 拒收且不落库（本次仅新增上一张合规卡那一行）`);
+
+      // ── R05：与请求体上限的关系（文档口径的技术佐证）──
+      // 单图默认预算 6MiB，base64 后约 8MiB，正好撞上全局 express.json 的 8mb：
+      // 也就是说「导入侧」真正的天花板是请求体，把本模块数字调大并不能导入更大的包。
+      const oversizedSingle = await fetch(`${base}/api/cards/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({ ...envelope, assets: { "huge.png": Buffer.alloc(MAX_CARD_ASSET_BYTES + 96 * 1024, 0x41).toString("base64") } })
+      });
+      check(oversizedSingle.status === 413,
+        `单图超出请求体预算时先被 body-parser 判 413（实际 ${oversizedSingle.status}），与「放宽本模块数字无效」的说明一致`);
+
+      // ── R30：?token= 只承认媒体白名单 ──
+      const { isUrlCredentialAllowedPath } = await import("../src/server/lib/mediaAllowlist");
+      check(isUrlCredentialAllowedPath("/api/cards/CRITICALCARD001/export") && isUrlCredentialAllowedPath("/api/scanner/progress/s1")
+        && isUrlCredentialAllowedPath("/api/answer-block-crops/c1/image"),
+        "PDF/导出/SSE/切块图仍在只读媒体白名单内（浏览器自发请求不受影响）");
+      check(!isUrlCredentialAllowedPath("/api/users") && !isUrlCredentialAllowedPath("/api/scores/me/exams/1/paper/blocks/b1/image")
+        && !isUrlCredentialAllowedPath("/api/export/students.csv") && !isUrlCredentialAllowedPath("/api/health"),
+        "数据类 GET、无路由的路径与 CSV 导出（走请求头）都不接受 URL 凭据");
+      const tokenOnMedia = await fetch(`${base}/api/cards/CRITICALCARD001/export?token=${adminToken}`);
+      check(tokenOnMedia.status === 200, "白名单内端点仍可用 ?token=（PDF/图片/SSE 不因收紧而坏掉）");
+      const tokenOnData = await fetch(`${base}/api/users?token=${adminToken}`);
+      check(tokenOnData.status === 401, "同一枚主令牌用于非媒体 GET 被拒——一次 URL 泄漏不再等于全量只读权限");
+
+      // ── R30：单次资源票据的绑定关系（纯函数 + 真实签发端点）──
+      const {
+        issueMediaTicket, resolveMediaTicket, revokeMediaTicketsForUser, __resetMediaTicketsForTests
+      } = await import("../src/server/services/mediaTicket");
+      __resetMediaTicketsForTests();
+      const snapshot = {
+        id: 9001, username: "crit-ticket", name: "票据回归", role_id: 2, role_name: "teacher",
+        student_number: null, teacher_role: null, subject: null, password_change_required: false
+      };
+      const boundPath = "/api/cards/CRITICALCARD001/pdf";
+      const issued = issueMediaTicket(snapshot, boundPath);
+      check(!!issued && issued!.path === boundPath && issued!.ttlSeconds === MEDIA_TICKET_TTL_SECONDS,
+        "票据签发成功并绑定具体路径与寿命");
+      check(resolveMediaTicket(issued!.ticket, "GET", boundPath)?.id === 9001, "票据对其绑定路径放行");
+      check(resolveMediaTicket(issued!.ticket, "GET", "/api/cards/CRITICALCARD001/export") === null,
+        "同一票据改读另一条媒体路径被拒（票据不是缩小版的主令牌）");
+      check(resolveMediaTicket(issued!.ticket, "POST", boundPath) === null, "票据只读：写方法一律拒绝");
+      check(resolveMediaTicket(issued!.ticket, "GET", boundPath, Date.now() + (MEDIA_TICKET_TTL_SECONDS + 1) * 1000) === null,
+        "超过 TTL 后同一票据失效");
+      check(issueMediaTicket(snapshot, "/api/users") === null && issueMediaTicket(snapshot, "not-a-path") === null,
+        "非媒体路径与非法入参不签发票据");
+      const ticketProbe = { ...snapshot, id: 9002 };
+      const firstTicket = issueMediaTicket(ticketProbe, "/api/cards/CRITICALCARD001/pdf");
+      issueMediaTicket(ticketProbe, "/api/cards/CRITICALCARD001/layout");
+      check(revokeMediaTicketsForUser(9002) === 2
+        && resolveMediaTicket(firstTicket!.ticket, "GET", "/api/cards/CRITICALCARD001/pdf") === null,
+        "登出/改密作废该用户全部票据（已签出的 2 张一次清空）");
+      __resetMediaTicketsForTests();
+
+      const issueHttp = await fetch(`${base}/api/auth/media-ticket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({ path: "/api/cards/CRITICALCARD001/export" })
+      });
+      const issueHttpBody = await issueHttp.json() as { ticket?: string; path?: string };
+      check(issueHttp.status === 200 && !!issueHttpBody.ticket && issueHttpBody.path === "/api/cards/CRITICALCARD001/export",
+        "签发端点走完整鉴权链路，返回票据与绑定路径");
+      const viaTicket = await fetch(`${base}/api/cards/CRITICALCARD001/export?mt=${issueHttpBody.ticket}`);
+      check(viaTicket.status === 200, "凭票据访问其绑定路径成功（等价于该用户亲自请求）");
+      const ticketReplay = await fetch(`${base}/api/users?mt=${issueHttpBody.ticket}`);
+      check(ticketReplay.status === 401, "票据用于另一条路径被拒");
+      const badScope = await fetch(`${base}/api/auth/media-ticket`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders(adminToken) },
+        body: JSON.stringify({ path: "/api/users" })
+      });
+      const badScopeBody = await badScope.json() as { code?: string };
+      check(badScope.status === 400 && badScopeBody.code === "MEDIA_TICKET_SCOPE_INVALID",
+        "请求为数据端点签发票据被 400 拒绝");
+      const anonymousIssue = await fetch(`${base}/api/auth/media-ticket`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: "/api/cards/1/pdf" })
+      });
+      check(anonymousIssue.status === 401, "未登录不能签发票据");
+
+      // ── R30：日志脱敏（URL 里的凭据不得进日志/错误堆栈）──
+      const { redactUrlCredentials, redactAuthorizationHeader, safeErrorForLog } = await import("../src/server/lib/logRedaction");
+      const redacted = redactUrlCredentials("GET /api/cards/1/pdf?token=abcdefghijklmnop&mt=qwertyuiopasdf 500");
+      check(redacted.includes("token=abcdef***") && redacted.includes("mt=qwerty***") && !redacted.includes("abcdefghijklmnop"),
+        `token/mt 值只留前 6 位：${redacted}`);
+      check(redactUrlCredentials("/api/x?a=1&b=2") === "/api/x?a=1&b=2", "无凭据的 URL 原样保留");
+      check(redactAuthorizationHeader(`Bearer ${adminToken}`) === `Bearer ${adminToken.slice(0, 6)}***`
+        && !redactAuthorizationHeader(`Bearer ${adminToken}`).includes(adminToken.slice(6)),
+        "Authorization 头值只保留前 6 位，日志里读不出完整令牌");
+      const rawError = new Error(`request failed https://x/api/auth/me?token=${adminToken}`);
+      const safeError = safeErrorForLog(rawError) as Error;
+      check(safeError.message !== rawError.message && !safeError.message.includes(adminToken)
+        && !(safeError.stack ?? "").includes(adminToken) && rawError.message.includes(adminToken),
+        "错误副本的 message 与 stack 均已脱敏，原始对象保持不变供上层判型");
+
+      // ── R17：前端 CSV 导出一律走 csvCell ──
+      const { csvCell } = await import("../src/shared/csv");
+      const downloadSource = readFileSync(path.resolve("src/apps/answer-card/client/util/download.ts"), "utf8");
+      check(csvCell("=SUM(1+1)") === "\"'=SUM(1+1)\"" && csvCell("8/10") === "\"'\t8/10\"" && csvCell("a\"b") === "\"a\"\"b\"",
+        "csvCell 对公式前缀加单引号、对「8/10」类日期歧义加制表符（前导 TAB 同样触发单引号防公式），并整体加引号转义");
+      check(/row\.map\(csvCell\)/.test(downloadSource) && !/function esc\(/.test(downloadSource),
+        "downloadCsv 已改用共享 csvCell，本地弱转义函数已移除");
+
+      // ── R44：逐题 optionLayout 在归一化中不再丢失 ──
+      const { normalizeObjectiveQuestions } = await import("../src/shared/grading");
+      const normalized = normalizeObjectiveQuestions({
+        id: "r44-block", type: "objective", title: "一、单选", mode: "single",
+        questionStart: 1, questionCount: 2, optionCount: 4, scorePerQuestion: 5, optionLayout: "horizontal",
+        questions: [
+          { questionNumber: 1, optionLayout: "vertical" },
+          { questionNumber: 2 }
+        ]
+      } as never);
+      check(normalized[0]?.optionLayout === "vertical" && normalized[1]?.optionLayout === "horizontal",
+        "逐题版式保留（第 1 题 vertical、第 2 题继承块级 horizontal），保存-读取往返不再压平");
+
+      // ── R46：不定项模式拼写的统一判定入口 ──
+      const { objectiveModeLabel, isMultiSelectMode } = await import("../src/shared/objectiveMode");
+      check(objectiveModeLabel("indefinite") === "不定项" && objectiveModeLabel("multiple") === "多选"
+        && objectiveModeLabel("single") === "单选" && objectiveModeLabel("indeterminate") === "不定项",
+        "名称映射同时认 canonical 与历史拼写（此前合法的不定项只能落到兜底「客观题」）");
+      check(isMultiSelectMode("indefinite") === true && isMultiSelectMode("indeterminate") === true
+        && isMultiSelectMode("single") === false,
+        "多选判定不再漏掉 canonical 的 indefinite 拼写");
     }
 
     console.log(`\n关键安全验收：${passed} 通过，${failures.length} 失败`);

@@ -108,6 +108,21 @@ location /api/ {
 }
 ```
 
+媒体资源（图片 / PDF / SSE）在跨域模式下只能用 URL 携带凭据，后端已把它收紧为**短命、绑定路径的单次票据**
+（`?mt=…`，默认 5 分钟；默认主令牌 `?token=` 仅对白名单媒体路径放行，其余接口一律要求 `Authorization` 头）。
+票据与令牌仍会出现在查询串里，而 nginx 的 `access_log` 默认记录完整请求行，因此**请把查询串从访问日志里去掉**：
+
+```nginx
+# 只记路径、不记查询串：避免票据与历史 ?token= 落进日志
+log_format px_noquery '$remote_addr - $remote_user [$time_local] '
+                      '"$request_method $scheme://$host$uri $server_protocol" '
+                      '$status $body_bytes_sent rt=$request_time';
+access_log /var/log/nginx/access.log px_noquery;
+```
+
+后端自身的日志已对 `token` / `mt` / `api_key` 等查询参数与 `Authorization` 头做截断脱敏，
+但代理日志归部署方管。可用档位与行为口径见 [README.md](README.md) 的「URL 凭据换成单次媒体票据」。
+
 访问地址：
 ```
 https://your-domain.com/Grade-Analysis-System-mobile.html
@@ -123,11 +138,17 @@ PROJECTX_CORS_ORIGIN=https://your-frontend-domain.com
 
 未设置时默认仅允许本机调试地址。学生端小程序使用原生 `wx.request` / `downloadFile`，不受浏览器 CORS 限制，无需加入白名单。
 
-并在 `Grade-Analysis-System-mobile.html` 的 URL 中通过 `?api_base=...` 指定后端地址：
+并在 `Grade-Analysis-System-mobile.html` 里**由部署方写死后端地址**（安全 R12）：编辑该文件头部的
+`<meta name="px-api-base">`，把 `content` 填成你的 API 域名；同源部署留空即可。
 
+```html
+<!-- 跨源部署：写死 https 后端地址 -->
+<meta name="px-api-base" content="https://your-api-domain.com">
 ```
-https://your-frontend-domain.com/Grade-Analysis-System-mobile.html?api_base=https://your-api-domain.com
-```
+
+> **不要用 URL 参数指定后端**。页面曾支持 `?api_base=...`，而它会把浏览器本地保存的会话令牌
+> 以 Bearer 发往该参数指定的主机——任何人转发一条带 `api_base` 的链接，就能收走点开它的人的凭据。
+> 现在该参数一律被忽略，页面会在底部提示「api_base 参数已被忽略」；非 https 的跨源配置同样被拒绝。
 
 ---
 

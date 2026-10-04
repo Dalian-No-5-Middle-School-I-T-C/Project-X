@@ -123,7 +123,13 @@ export function normalizeObjectiveQuestions(block: ObjectiveBlock): ObjectiveQue
       optionCount: question.optionCount,
       score: question.score,
       answerKey: question.mode === "single" && options.length > 1 ? [options[0]] : options,
-      scoringRule: question.scoringRule
+      scoringRule: question.scoringRule,
+      // 数据保真（R44）：`objectiveQuestionDefinitions()` 已经算出「逐题布局」
+      // （config.optionLayout ?? block.optionLayout ?? "horizontal"），但归一化返回对象以前
+      // **漏掉了这个字段**——于是 `normalizeCard` 与 `CardRepository` 每次写库都把逐题
+      // vertical 抹成 undefined，题块级 horizontal 覆盖上去，前端 PUT→GET 之后布局就变了。
+      // 判分用的坐标系与 PDF 排版的坐标系必须同源，这里显式带上。
+      optionLayout: question.optionLayout
     };
   });
 }

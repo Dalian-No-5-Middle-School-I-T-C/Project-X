@@ -698,7 +698,7 @@ export type OptionStat = {
 
 export type OptionAnalysisQuestion = {
   questionNumber: number;
-  /** single / multiple / indeterminate */
+  /** single / multiple / indefinite（历史数据里出现过 indeterminate 拼写，判定时见 shared/objectiveMode.ts） */
   mode: string;
   optionCount: number;
   maxScore: number;
