@@ -76,6 +76,25 @@ try {
   }
   console.log("PASS: original multi-class omission fixed; one student per class across subjects; overall remains unique");
 
+  await db.run("INSERT INTO answer_cards(id,title) VALUES ('90000001','知识点回归')");
+  await db.run("UPDATE exams SET card_id = '90000001' WHERE id = ?", e1);
+  await db.run("INSERT INTO knowledge_points(card_id,question_number,point_text) VALUES ('90000001',1,'函数')");
+  async function assertKnowledgeClasses(): Promise<void> {
+    const stats = await analysis.getClassKnowledgeStats(e1);
+    assert.equal(stats.empty, false);
+    assert.equal(stats.coverageRate, 100);
+    assert.deepEqual(stats.classes.map(r => r.classId).sort((x, y) => x - y), [old.id, selected.id]);
+    const point = stats.matrix.find(r => r.knowledgePoint === '函数');
+    assert.equal(point?.byClass.find(r => r.classId === old.id)?.scoreRate, 80);
+    assert.equal(point?.byClass.find(r => r.classId === selected.id)?.scoreRate, 70);
+    assert.equal(point?.byClass.find(r => r.classId === old.id)?.questionCount, 1);
+    const filtered = await analysis.getClassKnowledgeStats(e1, [old.id]);
+    assert.deepEqual(filtered.classes.map(r => r.classId), [old.id]);
+    assert.equal(filtered.matrix[0].byClass[0].scoreRate, 80);
+  }
+  await assertKnowledgeClasses();
+  console.log("PASS: tagged knowledge statistics return class IDs, rates and filtered classes");
+
   // Existing pre-v59 scores have no snapshots. Upgrade cannot guess prior moves.
   await db.run("DROP TABLE exam_class_memberships");
   await db.run("DELETE FROM schema_migrations WHERE version = 59");
@@ -97,6 +116,7 @@ try {
   await score(future, b, 70);
   assert.deepEqual(await membership(future, b), [selected.id]);
   assert.deepEqual(await membership(e1, b), [old.id]);
+  await assertKnowledgeClasses();
   assert.deepEqual(await membership(rosterExam, absent), [old.id]);
   assert.equal((await ensureExamParticipants(db, rosterExam)).participantCount, 3);
   await score(rosterExam, absent, 50);

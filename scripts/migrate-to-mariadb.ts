@@ -16,6 +16,7 @@
  * - 默认迁移前自动 mysqldump 完整备份（--skip-backup 显式关闭；找不到 mysqldump 时拒绝继续）
  * - 逐表三重验证：行数对比 + 列结构对比（PRAGMA vs information_schema）+ 可选抽样逐字段比对
  * - --dry-run 只检查不写入；--verify-only 只验证（不迁移/不备份/不补结构）
+ * - SQLite 源库始终只读；旧版本未创建的新增可选表会明确跳过
  * - 迁移失败或验证不通过时打印回滚命令（mysql 恢复备份），退出码非 0
  */
 
@@ -38,6 +39,8 @@ const MARIA_CONFIG = {
   password: process.env.PROJECTX_MARIADB_PASSWORD || process.env.PROJECTX_MYSQL_PASSWORD || "projectx",
   database: process.env.PROJECTX_MARIADB_DATABASE || process.env.PROJECTX_MYSQL_DATABASE || "projectx",
   charset: "utf8mb4",
+  // Compare stored dates directly with SQLite values, without JS Date/timezone conversion.
+  dateStrings: true,
   multipleStatements: false,
   connectTimeout: 30000,
 };
@@ -95,7 +98,7 @@ const SQLITE_ONLY_VERSIONS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 10]);
 //         wechat_subscription_bindings / wechat_grade_release_notifications / exam_answer_keys /
 //         exam_answer_key_pages（漏登记的表会被静默丢数据，见 assertMigrationCoverage）
 
-const MIGRATION_ORDER: Array<{ table: string; primaryKey: string }> = [
+const MIGRATION_ORDER: Array<{ table: string; primaryKey: string; optionalInSource?: boolean }> = [
   // 独立表（无外键依赖）
   { table: "schema_migrations", primaryKey: "version" },
   { table: "roles", primaryKey: "id" },
@@ -133,7 +136,9 @@ const MIGRATION_ORDER: Array<{ table: string; primaryKey: string }> = [
   { table: "exam_archives", primaryKey: "id" },
   { table: "exam_publish_events", primaryKey: "id" },
   { table: "exam_participants", primaryKey: "exam_id, student_id" },
-  { table: "exam_class_memberships", primaryKey: "exam_id, student_id, class_id" },
+  // v59 adds this table without backfilling historical classes. Pre-v59 sources
+  // have no snapshot data to copy and must remain read-only, including dry-run.
+  { table: "exam_class_memberships", primaryKey: "exam_id, student_id, class_id", optionalInSource: true },
   { table: "exam_answer_keys", primaryKey: "exam_id, question_number" },
   { table: "exam_answer_key_pages", primaryKey: "id" },
   { table: "wechat_grade_release_notifications", primaryKey: "exam_id" },
@@ -372,9 +377,17 @@ async function main() {
       await mysqlConn.execute("SET FOREIGN_KEY_CHECKS = 0");
     }
 
-    for (const { table, primaryKey } of MIGRATION_ORDER) {
+    for (const { table, primaryKey, optionalInSource } of MIGRATION_ORDER) {
       if (SKIP_TABLES.has(table)) {
         console.log(`⏭️  跳过 ${table}`);
+        skipped.push(table);
+        continue;
+      }
+
+      if (optionalInSource && !sqlite.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?"
+      ).get(table)) {
+        console.log(`⏭️  跳过 ${table}（SQLite 源库无此表，旧版本未创建）`);
         skipped.push(table);
         continue;
       }

@@ -1780,7 +1780,7 @@ export class AnalysisRepository {
     if (classIds && classIds.length > 0) params.push(...classIds);
     const rows = await this.db.all(
       `SELECT qs.student_id, qs.question_number, qs.score, qs.max_score,
-              ${examClassId()}, c.name as class_name, kp.point_text
+              ${examClassId()} AS class_id, c.name as class_name, kp.point_text
        FROM question_scores qs
        JOIN exams e ON e.id = qs.exam_id
        JOIN knowledge_points kp ON kp.card_id = e.card_id AND kp.question_number = qs.question_number
