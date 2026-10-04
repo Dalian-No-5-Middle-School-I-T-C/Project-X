@@ -8,11 +8,11 @@
 - **机制**：删除 `BOOTSTRAP_ADMIN_PASSWORD` 常量，新增 `generateBootstrapAdminPassword()`（16 位、四类字符至少各一、剔除易混淆字符、`randomBytes` 拒绝采样后洗牌）。`ensureDefaultAdmin()` 改为**以 `bootstrap-admin.txt` 为引导态口令的唯一事实源**：文件里是有效口令时什么都不做（不再重启恢复、不再踢掉既有会话）；只有文件缺失/为空，或内容等于历史公开口令时才换发新随机口令。已完成首次改密的账号行为不变。
 - **升级影响（主理人决策：直接失效，不设宽限期）**：仍处引导态的存量库在升级后首次启动即换发新随机口令，`admin123` 当场失效，需读 `bootstrap-admin.txt` 登录；已改密的库完全不受影响。行为、各部署形态的取回路径、备份还原后的语义详见新增文档 [readus/ADMIN-BOOTSTRAP-PASSWORD.md](ADMIN-BOOTSTRAP-PASSWORD.md)。
 - **逃生阀**（独立提交，可单独回退）：`PROJECTX_ADMIN_PASSWORD` 显式指定引导态口令并不写引导文件，供容器/一键部署与基准工具使用；仅在引导态生效，口令与库中哈希一致时幂等不轮换。
-- **恢复流程**：`src/server/routes/backup.ts` 还原后的再引导逻辑随新语义自动正确（先删引导文件 → 引导态库换发新口令 / 已改密库不动），本次仅更正注释口径。
+- **恢复流程**：SQLite 还原分支原先只是「删引导文件 → 再引导」，注释以 `admin123` 为事实描述，现更正口径并补上轮换后吊销该管理员会话；MariaDB 还原分支（`restoreMariadb`）此前**完全没有**再引导步骤，跨机还原备份后本机引导文件会对不上库，现补上与 SQLite 同口径的清理 + 再引导。另外把「引导文件是事实源」收紧为**文件口令必须与库中哈希对得上**才认定可信，否则照样换发——避免「换了库没换文件」把管理员锁死成无人能自愈的状态。
 - **文档脱钩**：`README.md`、`SERVER-README.md`、`readus/SCANNER-SETUP.md`（含原先「删库重启回到 admin/admin123」的复位配方，改为按账号状态分两条路径）、`src/server/db/schema.sql` 注释全部去掉固定口令；`user guide/Project-X用户使用说明.md` 里与代码不符的「随机密码」表述改为与新实现一致，并写明升级时旧口令当场失效。
 - **脚本脱钩**：`scripts/verify-security-critical.ts` 原先正向断言「新库使用 admin123」「引导态存量库启动时重置为 admin123」，现改为 9 条新断言（随机口令、事实源稳定不轮换、公开口令失效、文件缺失自愈、逃生阀及其幂等、HTTP 层 `admin123` 401、以及「引导态登录 → 强制改密 → 再次引导」的接管链关闭）；`scripts/deployment-business-smoke.ts` 改读被测部署引导文件；`testdata/demo-exams/scripts/verify.ts` 与 `testdata/demo-exams/README.md` 去掉 `admin123` 兜底改为显式报错；`tools/repair-benchmark`（`run.mjs` + `wsl-runtime.sh`）通过 `PROJECTX_ADMIN_PASSWORD` 固定隔离部署口令。
-- **验证**：`npm run typecheck` 通过；`npm run verify:security-critical` **165 项全过、0 失败**（含新增的 9 条管理员引导断言）。反向对照：把 `ensureDefaultAdmin()` 恢复为「引导态一律重置」时，「引导态库重复启动不轮换口令」与「已改密账号重启后状态不变」两组断言即失败。
-- 未覆盖：MariaDB 侧的本机临时实例回归在下一步执行（`ensureDefaultAdmin` 的 `buildInsertIgnore` 新库分支与 `restoreMariadb` 还原分支）；生产环境（dl5zx.cn）仍为上一版本，本次变更的现场生效要等上线。
+- **验证**：`npm run typecheck` 通过；`npm run verify:security-critical` **165 项全过、0 失败**（含新增的管理员引导断言）。MariaDB 侧用本机 MariaDB 12.3.2 起 13306 临时实例真跑 `npm run verify:mariadb`，新增一节 `mariadb admin bootstrap`（新库随机口令 / 事实源稳定 / 公开口令失效 / 失配换发 / 已改密不动 / 逃生阀幂等）连同既有 8 节全部 PASS。反向对照：把 `ensureDefaultAdmin()` 恢复为「引导态一律重置」时，「引导态库重复启动不轮换口令」与「已改密账号重启后状态不变」两组断言即失败。
+- 未覆盖：生产环境（dl5zx.cn）仍为上一版本，本次变更的现场生效要等上线；`verify-mariadb.ts` 的管理员引导节需要空库，CI 的 MariaDB 作业会在下次运行时自然覆盖。
 - 全仓口径核对：`grep -rn "admin123"` 现只应出现在历史 CHANGELOG / 审计报告条目、本条变更说明、失效口令黑名单（`LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS`）与「已失效」的测试标签中。
 
 ## 2026-09-29：班主任清空后的遗留权限撤销

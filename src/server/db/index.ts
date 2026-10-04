@@ -218,11 +218,12 @@ export interface DefaultAdminBootstrapResult {
  * 四种情形：
  * 1. 库中没有 admin（新库）：生成随机口令、写哈希、写引导文件，`rotated: true`。
  * 2. admin 已完成首次改密（`password_change_required = 0`）：完全不做任何变更。
- * 3. admin 停留在引导态且引导文件里是**有效**口令：不做任何变更（`rotated: false`）。
+ * 3. admin 停留在引导态且引导文件里的口令与库中哈希对得上：不做任何变更（`rotated: false`）。
  *    这一条是整改的核心 —— 重启不再把口令恢复到任何固定值，也不再吊销既有会话。
- * 4. admin 停留在引导态，但口令事实源不可信（文件缺失/为空，或内容是历史公开口令）：
- *    换发新的随机口令并重写文件（`rotated: true`）。覆盖两类场景：升级到本修复时的
- *    存量 `admin123` 库（旧口令当场失效），以及备份还原/误删文件后的自愈。
+ * 4. admin 停留在引导态，但口令事实源不可信（文件缺失/为空、内容是历史公开口令，
+ *    或与库中哈希对不上）：换发新的随机口令并重写文件（`rotated: true`）。覆盖三类场景：
+ *    升级到本修复时的存量 `admin123` 库（旧口令当场失效）、备份还原/误删文件后的自愈，
+ *    以及「换了库但文件没换」导致的锁死。
  *
  * 设置了 `PROJECTX_ADMIN_PASSWORD` 时，引导态口令改由该环境变量决定（见逃生阀说明），
  * 引导文件被删除，且口令与库中哈希一致时不轮换、不吊销会话。
@@ -260,12 +261,19 @@ export async function ensureDefaultAdmin(): Promise<DefaultAdminBootstrapResult>
       return { adminId: existing.id, rotated: !alreadyMatches, passwordFile };
     }
     const filePassword = readBootstrapAdminPassword();
-    if (filePassword && !LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS.has(filePassword)) {
-      // 引导文件仍是可信的口令事实源：保持现状，不重置哈希、不重写文件。
+    if (
+      filePassword
+      && !LEGACY_PUBLIC_BOOTSTRAP_PASSWORDS.has(filePassword)
+      && await verifyPassword(filePassword, existing.password_hash)
+    ) {
+      // 引导文件与库中哈希对得上：它仍是可信的口令事实源，保持现状，
+      // 不重置哈希、不重写文件（重启既不恢复到固定值，也不吊销既有会话）。
       await ensureApiKey();
       return { adminId: existing.id, rotated: false, passwordFile };
     }
-    // 口令事实源缺失或已公开泄露（历史固定口令）：换发一次性随机口令。
+    // 口令事实源不可信：文件缺失/为空、内容是历史公开口令，或与库中哈希对不上
+    // （例如手工导入了另一台机器的备份、文件被单独改动）——换发一次性随机口令，
+    // 否则会出现「文件里的口令登录不进去」这种无人能自愈的锁死状态。
     const password = generateBootstrapAdminPassword();
     await db.run(
       "UPDATE users SET password_hash = ?, password_change_required = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",

@@ -156,6 +156,18 @@ async function main(): Promise<void> {
       "引导文件缺失的存量库换发新的随机口令并可据此登录"
     );
 
+    // 库换了但引导文件没换（例如跨机还原备份）：文件口令与哈希对不上时必须换发，
+    // 否则会出现「文件里的口令登录不进去」这种无人能自愈的锁死。
+    const staleFilePassword = readBootstrapFile();
+    db.prepare("UPDATE users SET password_hash=?, password_change_required=1 WHERE username='admin'").run(await hashPassword("From-Other-Machine-Pw"));
+    const mismatchBootstrap = await ensureDefaultAdmin();
+    const mismatchPassword = readBootstrapFile();
+    check(
+      mismatchBootstrap.rotated && mismatchPassword !== staleFilePassword
+        && await verifyPassword(mismatchPassword, readAdminHash()),
+      "引导文件与库中哈希不匹配时换发新口令（跨机还原不会把管理员锁死）"
+    );
+
     // 逃生阀：显式提供 PROJECTX_ADMIN_PASSWORD 时口令由环境变量决定，且不写引导文件。
     process.env.PROJECTX_ADMIN_PASSWORD = "Deploy-Hatch-2026!";
     const hatchBootstrap = await ensureDefaultAdmin();

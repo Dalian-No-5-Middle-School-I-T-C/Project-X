@@ -256,7 +256,12 @@ router.post("/restore", rawBodyParser, async (req: Request, res: Response) => {
     // 若还原出的库已完成首次改密，则口令与改密标记都不受影响（只清理泄露过的引导文件）。
     try {
       removeBootstrapAdminFile();
-      await ensureDefaultAdmin();
+      const rebootstrap = await ensureDefaultAdmin();
+      if (rebootstrap.rotated) {
+        // 换发了新口令，说明还原前的管理员会话已不再可信，全部吊销（与启动时的处理一致）。
+        const { authService } = await import("../services/AuthService");
+        authService.revokeUserTokens(rebootstrap.adminId);
+      }
     } catch (e) {
       console.warn("[Restore] 管理员再引导失败（可重启服务自动修复）:", e);
     }
@@ -505,6 +510,20 @@ async function restoreMariadb(req: Request, res: Response): Promise<void> {
           await moveDir(dataDir, path.join(path.dirname(dataDir), `answer-card.bak.${Date.now()}`));
         }
         await copyDirectory(bakDataDir, dataDir, () => true);
+      }
+
+      // 与 SQLite 还原分支同口径（#185 + R01）：还原出来的库可能带着另一台机器的
+      // 引导态口令，本机 bootstrap-admin.txt 会对不上而把管理员锁死。这里主动清理并
+      // 重新引导：引导态库换发新的随机口令写回引导文件；已改密库口令与标记都不受影响。
+      try {
+        removeBootstrapAdminFile();
+        const rebootstrap = await ensureDefaultAdmin();
+        if (rebootstrap.rotated) {
+          const { authService } = await import("../services/AuthService");
+          authService.revokeUserTokens(rebootstrap.adminId);
+        }
+      } catch (e) {
+        console.warn("[Restore] MariaDB 管理员再引导失败（可重启服务自动修复）:", e);
       }
 
       await cleanupDir(tmpDir);

@@ -1,5 +1,8 @@
 /** Real MariaDB integration checks. Requires an empty, disposable projectx_ci database. */
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 async function main(): Promise<void> {
   // Validate explicit configuration before importing application modules. Never use config.yml.
@@ -7,8 +10,14 @@ async function main(): Promise<void> {
   assert.equal(process.env.PROJECTX_MARIADB_DATABASE, "projectx_ci", "Only projectx_ci is allowed");
   assert.ok(process.env.PROJECTX_MARIADB_USER, "Set PROJECTX_MARIADB_USER explicitly");
   assert.ok(process.env.PROJECTX_MARIADB_PASSWORD, "Set PROJECTX_MARIADB_PASSWORD explicitly");
+  // 管理员引导文件写在「数据库路径」的同目录；MariaDB 模式下把该指针指向临时目录，
+  // 避免测试往仓库 data/ 里落真实的 bootstrap-admin.txt。
+  const bootstrapTmpDir = mkdtempSync(path.join(tmpdir(), "projectx-mariadb-bootstrap-"));
+  process.env.PROJECTX_DB_PATH = path.join(bootstrapTmpDir, "projectx.db");
   const { getMysqlDb, initMariadbSchema, resetAdapter, buildUpsertSQL, buildInsertIgnore } =
     await import("../src/server/db/mysql");
+  const { ensureDefaultAdmin, getBootstrapAdminPath, hashPassword, verifyPassword } =
+    await import("../src/server/db/index");
   const db = getMysqlDb();
   try {
     assert.equal(db.dialect, "mariadb");
@@ -41,6 +50,67 @@ async function main(): Promise<void> {
     await initMariadbSchema();
     assert.deepEqual(await db.all("SELECT version, name FROM schema_migrations ORDER BY version"), migrations);
     console.log("PASS: fresh schema, migrations, repeated initialization");
+
+    // ===== R01 管理员引导口令（MariaDB 分支：buildInsertIgnore 新库路径 + 引导文件事实源）=====
+    const adminFile = getBootstrapAdminPath();
+    const readAdminRow = () => db.get<{ password_hash: string; password_change_required: number }>(
+      "SELECT password_hash, password_change_required FROM users WHERE username = 'admin'",
+    );
+    await db.run("DELETE FROM users WHERE username = 'admin'");
+    rmSync(adminFile, { force: true });
+
+    const freshBootstrap = await ensureDefaultAdmin();
+    const freshPassword = readFileSync(adminFile, "utf8").trim();
+    assert.ok(freshBootstrap.rotated && freshBootstrap.adminId > 0, "MariaDB 新库应创建 admin 并标记轮换");
+    assert.ok(freshPassword.length >= 16 && freshPassword !== "admin123", "MariaDB 新库口令为随机一次性值，不落公开常量");
+    assert.equal(Number((await readAdminRow())!.password_change_required), 1, "MariaDB 新管理员被标记强制改密");
+    assert.ok(await verifyPassword(freshPassword, (await readAdminRow())!.password_hash), "引导文件口令可通过 bcrypt 校验");
+
+    const freshHash = (await readAdminRow())!.password_hash;
+    const repeatBootstrap = await ensureDefaultAdmin();
+    assert.equal(repeatBootstrap.rotated, false, "MariaDB 引导态库重复启动不得轮换口令");
+    assert.equal((await readAdminRow())!.password_hash, freshHash, "哈希必须保持引导文件里那份，不恢复成固定值");
+    assert.equal(readFileSync(adminFile, "utf8").trim(), freshPassword, "引导文件不得被重写");
+
+    await db.run("UPDATE users SET password_hash = ?, password_change_required = 1 WHERE username = 'admin'", await hashPassword("admin123"));
+    writeFileSync(adminFile, "admin123\n", { encoding: "utf8" });
+    const upgradedBootstrap = await ensureDefaultAdmin();
+    const upgradedPassword = readFileSync(adminFile, "utf8").trim();
+    assert.equal(upgradedBootstrap.rotated, true, "残留历史公开口令的 MariaDB 库必须换发新口令");
+    assert.notEqual(upgradedPassword, "admin123", "升级后引导文件不再是公开口令");
+    assert.ok(await verifyPassword(upgradedPassword, (await readAdminRow())!.password_hash), "新随机口令生效");
+    assert.equal(await verifyPassword("admin123", (await readAdminRow())!.password_hash), false, "admin123 在 MariaDB 侧同样失效");
+
+    // 引导文件与库中哈希不匹配（跨机还原备份）：必须换发，否则管理员被锁死
+    const stalePassword = freshPassword;
+    await db.run("UPDATE users SET password_hash = ?, password_change_required = 1 WHERE username = 'admin'", await hashPassword("From-Other-Machine-Pw"));
+    const mismatchBootstrap = await ensureDefaultAdmin();
+    const mismatchPassword = readFileSync(adminFile, "utf8").trim();
+    assert.equal(mismatchBootstrap.rotated, true, "文件与哈希不匹配时应换发口令");
+    assert.notEqual(mismatchPassword, stalePassword, "旧的失配口令不得继续沿用");
+    assert.ok(await verifyPassword(mismatchPassword, (await readAdminRow())!.password_hash), "失配场景下新口令生效");
+
+    const changedHash = await hashPassword("Owner-Changed-2026!");
+    await db.run("UPDATE users SET password_hash = ?, password_change_required = 0 WHERE username = 'admin'", changedHash);
+    rmSync(adminFile, { force: true });
+    const ownedBootstrap = await ensureDefaultAdmin();
+    assert.equal(ownedBootstrap.rotated, false, "已改密的 MariaDB 账号不得被改写");
+    assert.equal((await readAdminRow())!.password_hash, changedHash, "已改密哈希保持不变");
+    assert.equal(existsSync(adminFile), false, "已改密后不得重新生成引导文件");
+
+    process.env.PROJECTX_ADMIN_PASSWORD = "Hatch-Mariadb-2026!";
+    try {
+      await db.run("UPDATE users SET password_hash = ?, password_change_required = 1 WHERE username = 'admin'", await hashPassword("Pre-Hatch-Pw"));
+      const hatchBootstrap = await ensureDefaultAdmin();
+      assert.equal(hatchBootstrap.rotated, true, "逃生阀在引导态应接管口令");
+      assert.equal(existsSync(adminFile), false, "逃生阀态不写引导文件");
+      assert.ok(await verifyPassword("Hatch-Mariadb-2026!", (await readAdminRow())!.password_hash), "环境变量口令写入哈希");
+      const hatchAgain = await ensureDefaultAdmin();
+      assert.equal(hatchAgain.rotated, false, "环境变量口令与库一致时重复启动幂等");
+    } finally {
+      delete process.env.PROJECTX_ADMIN_PASSWORD;
+    }
+    console.log("PASS: mariadb admin bootstrap (fresh / stable source-of-truth / legacy invalidated / owned untouched / env hatch)");
 
     // v53 微信订阅：一个 openid 允许绑定多个学生，去重位是 exam_id 主键
     const wsbTables = await db.all<{ table_name: string }>(
@@ -241,6 +311,7 @@ async function main(): Promise<void> {
     console.log("PASS: head teacher cleanup preserves subject/other-class links and removes legacy links");
   } finally {
     resetAdapter();
+    rmSync(bootstrapTmpDir, { recursive: true, force: true });
   }
 }
 
